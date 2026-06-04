@@ -12,6 +12,7 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | File | What it is |
 |------|-----------|
 | **`START-HERE.md`** | Run first — walks you through Inception, including choosing your stack. |
+| **`WALKTHROUGH.md`** | A narrative of the kit in motion — one feature from idea to operating software. |
 | **`CLAUDE.md`** | Principles + Definition of Done. Authoritative. |
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
