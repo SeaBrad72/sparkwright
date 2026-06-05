@@ -227,7 +227,7 @@ This makes the loop measure *value delivered*, not just *work completed* — and
 
 ## 10. Safe Change Delivery
 
-How to change a running system without breaking it — the release-engineering mechanisms behind the **Release** stage (§4) and the L2 "merge behind flags" autonomy (§13). Most are maturity-gated: a Stage-1 project uses the basics; depth promotes with scale.
+How to change a running system without breaking it — the release-engineering mechanisms behind the **Release** stage (§4) and the L2 "merge behind flags" autonomy (§13). Most are maturity-gated: a Stage-1 project uses the basics; depth promotes with scale. (Supply-chain integrity below is the exception — it is a required baseline CI gate, `DEVELOPMENT-STANDARDS.md` §14.)
 
 ### Feature flags
 - **Purpose** — decouple deploy from release: merge incomplete or risky work to trunk **behind a flag**, keeping `main` always deployable. This is what makes trunk-based development and L2 agent autonomy safe.
@@ -384,7 +384,7 @@ GATES   Ready · [threat-model] · Spec · Review(+security) · [eval] · [compl
 RETROS  L0 in-action · L1 increment (agent) · L2 milestone (human) · L3 process · Event
         every retro exits into an artifact (PR → memory → backlog → docs) = "adjust"
 SHIP    flags (kill-switch · retire stale=debt) · expand-contract migrations · canary/blue-green
-        rollback > forward-fix (flag-off→redeploy→revert) · SBOM · semver+tag
+        rollback > forward-fix (flag-off→redeploy→revert) · SBOM+provenance (required CI gates §14) · semver+tag
 OPERATE monitor → triage → resolve → feed Discover; SLO/error-budget + cost soft→gating by maturity
 OUTCOME validate shipped feature vs its success-metric hypothesis; misses → Discover (value, not output)
 VISIBILITY board digest · milestone demos · DORA metrics → stakeholders (cadence set per org)
