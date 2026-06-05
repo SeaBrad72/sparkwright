@@ -17,5 +17,7 @@ A **conformance check** proves that a reference implementation still satisfies i
 | Check | Type | Contract it proves | Gate |
 |-------|------|--------------------|------|
 | `15-factor-checklist.md` | checklist | `DEVELOPMENT-STANDARDS.md` §13 (15-Factor Architecture) | Review (conditional) |
+| `ci-gates.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (CI/CD Pipeline) | CI / Definition of Done |
+| `check-links.sh` | script | Docs link integrity (`DEVELOPMENT-STANDARDS.md` §11) | CI |
 
-> Future slices add: `ci-gates` (CI/CD), `agent-autonomy` (governance), `template-lint` (templates), `profile-completeness` (profiles). See `../docs/ROADMAP-KIT.md`.
+> Future slices add: `agent-autonomy` (governance), `template-lint` (templates), `profile-completeness` (profiles). See `../docs/ROADMAP-KIT.md`.
