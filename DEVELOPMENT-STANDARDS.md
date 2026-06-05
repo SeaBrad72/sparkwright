@@ -163,4 +163,38 @@ The authoritative checklist is in **`CLAUDE.md`**. A feature is done only when c
 
 ---
 
+## 13. 15-Factor Architecture
+
+The architectural contract for **deployable services**, after Hoffman's *Beyond the Twelve-Factor App* (the 12 Heroku factors plus API-first, Telemetry, and Auth). It is **binding but conditional**: factors that don't apply to a project type (a CLI, batch job, or library has no port binding or horizontal-concurrency story) are marked **N/A with a one-line reason** at the architecture review — the same conditional pattern as the threat-model and eval gates. Conformance is checked at the **Review gate** (`DEVELOPMENT-PROCESS.md` §7) via `conformance/15-factor-checklist.md`. Stack-specific *how* lives in **→ profile**.
+
+| # | Factor | Requirement | Where enforced |
+|---|--------|-------------|----------------|
+| 1 | **Codebase** | One application, version-controlled, one repo; many deploys from one codebase. | git workflow |
+| 2 | **API-first** | Define the API contract before implementing; design consumers and providers against it. | §9 |
+| 3 | **Dependencies** | Declare and isolate all dependencies; commit a lockfile; pin exact versions for production. Never rely on system-wide packages. | **→ profile** |
+| 4 | **Build, release, run** | Strictly separate the stages; a release is an immutable build + config; runs are reproducible. | CI/CD; process §10 |
+| 5 | **Config** | Store config in the environment; keep code, config, and credentials separate. | §2 |
+| 6 | **Logs** | Treat logs as event streams to stdout/stderr; never manage log files in-process. | §3 |
+| 7 | **Disposability** | Fast startup and graceful shutdown; handle termination signals, drain in-flight work, make operations idempotent so a killed process loses nothing. | §4 |
+| 8 | **Backing services** | Treat datastores, caches, queues, and third-party APIs as attached resources, swappable by config with no code change. | §2; **→ profile** |
+| 9 | **Dev/prod parity** | Keep development, staging, and production as similar as possible (same backing-service types, small time/personnel/tooling gaps). | **→ profile** |
+| 10 | **Admin processes** | Run one-off and admin tasks (migrations, backfills) as first-class, versioned processes in an identical environment — never manual production surgery. | §6 |
+| 11 | **Port binding** | A service is self-contained and exports itself by binding to a port; no injection into a runtime web server. | **→ profile** |
+| 12 | **Stateless processes** | Processes are stateless and share-nothing; any persistent state lives in a backing service, never in process memory or local disk between requests. | §6; backing services (Factor 8) |
+| 13 | **Concurrency** | Scale out horizontally via the process model rather than only scaling a single process up. | **→ profile** |
+| 14 | **Telemetry** | Emit metrics, distributed traces, and health signals — not just logs — so the running system is observable. | §3 |
+| 15 | **Authentication & Authorization (AuthN/Z)** | Treat identity and least-privilege authorization as architecture: authenticate every actor, authorize every protected action server-side. | §2 |
+
+**New requirements this section adds to the universal bar** (previously uncovered, now binding for services):
+
+- **Dependencies (Factor 3)** — a committed lockfile is mandatory; production builds pin exact versions; no reliance on globally-installed tools.
+- **Disposability (Factor 7)** — services handle SIGTERM/SIGINT, stop accepting new work, drain in-flight requests within a bounded grace period, and rely on idempotency (§4) so an abrupt kill is safe.
+- **Backing services (Factor 8)** — every datastore/cache/queue/external API is reached through configuration (a URL/credential in the environment), so it can be swapped (local ↔ managed) without code change.
+- **Dev/prod parity (Factor 9)** — local and production use the same *types* of backing services; document any deliberate gap in the RUNBOOK.
+- **Stateless processes (Factor 12)** — no sticky in-process or local-disk session state; horizontal scaling and disposability depend on this.
+- **Concurrency (Factor 13)** — the scaling model is the process model; document expected concurrency and how the service scales out.
+- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs.
+
+---
+
 **Remember:** this is the *universal* bar. Keep stack-specifics out of this file — they belong in `profiles/<stack>.md`. That separation is what lets any team adopt these standards without inheriting someone else's technology choices.
