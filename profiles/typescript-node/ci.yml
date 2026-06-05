@@ -1,0 +1,78 @@
+# Reference CI pipeline for the TypeScript/Node profile.
+# COPY & ADAPT: copy this file to your project's .github/workflows/ci.yml.
+# It is INERT here in the kit repo (GitHub only runs workflows under .github/workflows/).
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14 (CI/CD Pipeline).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write       # required by build-provenance attestation
+  attestations: write   # required by build-provenance attestation
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the secret scan sees all commits
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        id: gate-install
+        run: npm ci
+
+      - name: Lint
+        id: gate-lint
+        run: npm run lint
+
+      - name: Type-check
+        id: gate-type-check
+        run: npm run type-check
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: npm run test:coverage   # vitest --coverage; thresholds enforced in vitest.config.ts
+
+      - name: Build
+        id: gate-build
+        run: npm run build
+
+      - name: Secret scan
+        id: gate-secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: npm audit --audit-level=high
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Attest build provenance
+        id: gate-provenance
+        # Provenance attaches to a published build artifact; there is nothing to attest on a
+        # no-artifact PR. Declared as a gate, guarded to the release/build (push-to-main) path.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: sbom.json
