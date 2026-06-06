@@ -21,5 +21,6 @@ A **conformance check** proves that a reference implementation still satisfies i
 | `check-links.sh` | script | Docs link integrity (`DEVELOPMENT-STANDARDS.md` §11) | CI |
 | `agent-autonomy.sh` | script | `DEVELOPMENT-PROCESS.md` §13 (autonomy tiers) — guard denies a tier breach | PreToolUse hook / CI |
 | `inception-done.sh` | script | `DEVELOPMENT-PROCESS.md` §3 / `START-HERE.md` (the Inception gate) | CI (bootstrap-into-temp) |
+| `profile-completeness.sh` | script | `profiles/_TEMPLATE.md` (every profile fills all 11 sections; companion ci.yml conformant) | CI |
 
-> Future slices add: `template-lint` (templates), `profile-completeness` (profiles). See `../docs/ROADMAP-KIT.md`.
+> Future slices add: enterprise addendum checks (compliance/audit-evidence). See `../docs/ROADMAP-KIT.md`.

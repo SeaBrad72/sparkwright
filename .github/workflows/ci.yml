@@ -23,6 +23,8 @@ jobs:
         run: test -f conformance/15-factor-checklist.md
       - name: Agent-autonomy guard conformance (§13)
         run: sh conformance/agent-autonomy.sh
+      - name: Profile-completeness conformance
+        run: sh conformance/profile-completeness.sh
 
   bootstrap:
     runs-on: ubuntu-latest
