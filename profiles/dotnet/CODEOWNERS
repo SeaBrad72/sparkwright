@@ -1,0 +1,8 @@
+# Reference CODEOWNERS for the .NET profile.
+# COPY & ADAPT: copy to .github/CODEOWNERS (or repo root). Routes review so the
+# builder is never the sole reviewer/merger (DEVELOPMENT-PROCESS.md §2, §12).
+# Replace @your-org/* with real teams.
+
+*            @your-org/engineering
+/.github/    @your-org/platform
+/src/        @your-org/engineering
