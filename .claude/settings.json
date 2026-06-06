@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push origin feature/*:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run test:*)",
+      "Bash(sh conformance/*:*)"
+    ],
+    "ask": [
+      "Bash(npm install:*)",
+      "Bash(npm ci:*)",
+      "Bash(brew install:*)",
+      "WebFetch"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(npm publish:*)",
+      "Write(.env)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
+        ]
+      }
+    ]
+  }
+}
