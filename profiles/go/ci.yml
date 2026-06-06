@@ -1,0 +1,81 @@
+# Reference CI pipeline for the Go profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14. HARDENING: pin `uses:`/tools to versions for production.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install dependencies
+        id: gate-install
+        run: go mod download
+
+      - name: Lint
+        id: gate-lint
+        uses: golangci/golangci-lint-action@v6
+
+      - name: Type-check
+        id: gate-type-check
+        run: go vet ./...
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: |
+          go test -race -coverprofile=cover.out ./...
+          go tool cover -func=cover.out | awk '/^total:/ {gsub(/%/,"",$3); if ($3+0 < 80) {print "coverage " $3 "% < 80%"; exit 1}}'
+
+      - name: Build
+        id: gate-build
+        run: go build ./...
+
+      - name: Secret scan
+        id: gate-secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # required for org repos
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: |
+          go install github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@latest
+          cyclonedx-gomod app -json -output sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Attest build provenance
+        id: gate-provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ./<app>   # TODO: path to the built binary
