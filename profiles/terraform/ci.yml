@@ -5,7 +5,13 @@
 #   gate-dep-scan = Trivy config scan (incl. tfsec-style misconfig — tfsec is merged into Trivy)
 #   gate-sbom = Trivy CycloneDX provider/module inventory
 # conformance/ci-gates.sh asserts the 8 standard ids; gate-policy is an allowed extra.
-# HARDENING: pin uses:/tool versions for production.
+# HARDENING (do before production):
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
+#  - Pin tool installs to exact versions.
+#  - The conftest binary is downloaded over HTTPS; verify its checksum for production.
+#  - OIDC is least-privilege here: id-token:write lives only on the push-only `provenance`
+#    job, so PR-triggered steps cannot mint a token. Your cloud trust policy MUST restrict
+#    `sub` to `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
 name: CI
 
 on:
@@ -15,12 +21,12 @@ on:
 
 permissions:
   contents: read
-  id-token: write
-  attestations: write
 
 jobs:
   ci:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,7 +65,7 @@ jobs:
       - name: Policy-as-code (Checkov + OPA/conftest)
         id: gate-policy
         run: |
-          pipx run checkov -d . --quiet --compact
+          pipx run --spec 'checkov==3.2.533' checkov -d . --quiet --compact
           CONFTEST_VERSION=0.56.0
           curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar -xz conftest
           ./conftest test .
@@ -95,10 +101,29 @@ jobs:
           name: sbom
           path: sbom.json
 
+      - name: Upload build artifact (for provenance)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: tfplan          # the Terraform plan (the IaC artifact)
+          if-no-files-found: error
+
+  provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # scoped to this push-only job (build-provenance attestation)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: build-artifact
       - name: Attest build provenance
         id: gate-provenance
-        # Attest the Terraform plan on the release path.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/attest-build-provenance@v1
         with:
-          subject-path: tfplan
+          subject-path: build-artifact/**

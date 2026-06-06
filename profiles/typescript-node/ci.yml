@@ -4,10 +4,12 @@
 # Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
 # Satisfies DEVELOPMENT-STANDARDS.md §14 (CI/CD Pipeline).
 #
-# HARDENING (recommended for production, on-message with §14's supply-chain gates):
-#   - Pin every `uses:` action to a full commit SHA, not a mutable @vN tag.
-#   - Pin the CycloneDX (and any npx) tool to a fixed version.
-# Left on major tags here for reference readability.
+# HARDENING (do before production):
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
+#  - Pin tool installs to exact versions.
+#  - OIDC is least-privilege here: id-token:write lives only on the push-only `provenance`
+#    job, so PR-triggered steps cannot mint a token. Your cloud trust policy MUST restrict
+#    `sub` to `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
 name: CI
 
 on:
@@ -17,12 +19,12 @@ on:
 
 permissions:
   contents: read
-  id-token: write       # required by build-provenance attestation
-  attestations: write   # required by build-provenance attestation
 
 jobs:
   ci:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -75,13 +77,29 @@ jobs:
           name: sbom
           path: sbom.json
 
+      - name: Upload build artifact (for provenance)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: sbom.json          # placeholder — set to your real artifact (e.g. dist/** or the published package/image)
+          if-no-files-found: error
+
+  provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # scoped to this push-only job (build-provenance attestation)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: build-artifact
       - name: Attest build provenance
         id: gate-provenance
-        # Provenance attaches to a published build artifact; there is nothing to attest on a
-        # no-artifact PR. Declared as a gate, guarded to the release/build (push-to-main) path.
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/attest-build-provenance@v1
         with:
-          # Set this to your actual built artifact (e.g. dist/** or the published
-          # package/image). sbom.json is used here only as a runnable placeholder.
-          subject-path: sbom.json
+          subject-path: build-artifact/**
