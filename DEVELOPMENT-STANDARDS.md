@@ -217,6 +217,8 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 
 **Conformance:** a project's pipeline is verified by `conformance/ci-gates.sh <workflow>`, which asserts every required gate is declared (the Definition-of-Done "CI/CD" check, `CLAUDE.md`).
 
+**CI security hardening (required posture, not a gate).** The provenance/attestation step requires `id-token: write`; grant it via a **separate job that runs only on push-to-main**, keeping the main gate job at `contents: read` so PR-triggered steps cannot mint an OIDC token a poisoned dependency could exfiltrate. Pin third-party actions to a full commit SHA in production. The cloud OIDC trust policy **MUST** restrict `sub` to the main-branch ref (`refs/heads/main`), never `pull_request`. The profile reference pipelines model this two-job split.
+
 > This raises the supply-chain posture (gates 6–7) to the baseline for **all** projects — see `DEVELOPMENT-PROCESS.md` §10.
 
 ---
