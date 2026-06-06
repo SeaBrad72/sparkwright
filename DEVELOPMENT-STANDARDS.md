@@ -29,6 +29,9 @@ Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the c
 ### Secrets management
 Never commit secrets (API keys, DB credentials, signing keys, passwords, tokens). Load from environment; fail fast if a required secret is missing. Keep real values in an untracked local env file; commit a `.env.example` with placeholders.
 
+### Secrets at scale
+`.env` is the floor (local dev). For shared, staging, and production environments — and any regulated data — secrets belong in a **managed secret store** (HashiCorp Vault or a cloud KMS + secrets manager), never in env files baked into images or in committed state. Requirements: a central store with **least-privilege access policies**; **rotation** — prefer **short-lived / dynamic** secrets issued per-workload over long-lived static ones; **no plaintext secrets in state, logs, or images**; CI **fetches secrets at run time** (e.g. OIDC → cloud role, reusing the §14 push-only attestation pattern), never storing them in the workflow; **break-glass** access is time-boxed and audited. → `docs/enterprise/secrets-at-scale.md` for patterns and the per-stack client.
+
 ### Input validation & sanitization
 Validate and sanitize **all** input at system boundaries against an explicit schema. Reject by default. Validate on **every** mutation path, not just create.
 

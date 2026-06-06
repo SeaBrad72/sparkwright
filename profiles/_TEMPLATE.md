@@ -38,6 +38,7 @@ The concrete pipeline that enforces the gates (install → lint → type-check �
 ## 5. Security implementation
 How each universal security requirement is met in this stack — recommended libraries + a short snippet each:
 - Secrets / env loading: [...]
+- Secrets at scale (shared/regulated envs): use a managed store (Vault/KMS) — see [secrets-at-scale.md](../docs/enterprise/secrets-at-scale.md)
 - Input validation / schema: [...]
 - Injection-safe data access (ORM / parameterized): [...]
 - AuthN/Z (hashing, tokens): [...]

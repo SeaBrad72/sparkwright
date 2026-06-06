@@ -7,7 +7,7 @@ Governance, compliance, and privacy guidance for organizations adopting this kit
 | Doc | Purpose |
 |-----|---------|
 | [compliance-crosswalk.md](compliance-crosswalk.md) | Maps the controls this kit enforces to SOC 2 (Security + Privacy) and ISO 27001:2022 Annex A. |
-| secrets-at-scale.md *(Slice 6b)* | Managed-secret-store contract (Vault/KMS) + secret-manager client by stack. |
+| [secrets-at-scale.md](secrets-at-scale.md) | Managed-secret-store contract (Vault/KMS) + secret-manager client by stack. |
 | ratification-rbac.md *(Slice 6c)* | Which roles may ratify what; the governed-exception process. |
 | conformance/audit-evidence-checklist.md *(Slice 6d)* | Per-control evidence checklist for an audit. |
 
