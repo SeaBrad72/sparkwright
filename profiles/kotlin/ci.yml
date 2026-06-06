@@ -63,7 +63,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sbom
-          path: build/reports/bom.json
+          path: build/reports/cyclonedx/bom.json   # cyclonedx-gradle-plugin v3+ default output dir
 
       - name: Attest build provenance
         id: gate-provenance

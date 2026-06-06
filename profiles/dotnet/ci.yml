@@ -41,7 +41,8 @@ jobs:
 
       - name: Test + coverage (>=80%)
         id: gate-test
-        run: dotnet test --no-build -c Release --collect:"XPlat Code Coverage"
+        # coverlet.msbuild in the test project enforces the threshold (fails the build < 80%).
+        run: dotnet test --no-build -c Release /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:Threshold=80 /p:ThresholdType=line
 
       - name: Build
         id: gate-build
@@ -64,7 +65,7 @@ jobs:
         id: gate-sbom
         run: |
           dotnet tool install --global CycloneDX
-          dotnet CycloneDX *.sln -o . -j -f sbom.json
+          dotnet CycloneDX *.sln -o . -F Json -fn sbom.json
 
       - name: Upload SBOM
         uses: actions/upload-artifact@v4

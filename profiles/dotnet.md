@@ -75,7 +75,8 @@ ASP.NET Core · EF Core (+ Npgsql) · FluentValidation · ASP.NET Core Identity 
 - `dotnet format --verify-no-changes` fails on drift (CI); `dotnet format` fixes locally.
 - Set `TreatWarningsAsErrors=true` + `EnableNETAnalyzers=true` so analyzer findings gate.
 - `dotnet list package --vulnerable --include-transitive` exits 0 even with findings — the CI step greps output and fails on any vulnerability.
-- Install the SBOM tool: `dotnet tool install --global CycloneDX`.
+- Install the SBOM tool: `dotnet tool install --global CycloneDX` (CLI flags: `-F Json -fn <file>`).
+- The coverage **gate** needs the `coverlet.msbuild` package in the test project — `/p:Threshold=80 /p:ThresholdType=line` fails the build below 80% (the `--collect` collector alone only gathers, it does not enforce).
 
 ---
 
