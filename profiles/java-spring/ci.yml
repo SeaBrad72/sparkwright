@@ -68,7 +68,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sbom
-          path: target/*-cyclonedx.json
+          path: target/bom.json   # cyclonedx-maven-plugin default output (set <outputName> in pom.xml to change)
 
       - name: Attest build provenance
         id: gate-provenance

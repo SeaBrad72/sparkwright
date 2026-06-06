@@ -18,4 +18,4 @@ The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). The Foundat
 
 ---
 
-**Last Updated:** 2026-06-05
+**Last Updated:** 2026-06-06
