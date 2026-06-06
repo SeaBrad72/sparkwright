@@ -1,0 +1,73 @@
+# Reference CI pipeline for the Kotlin/Spring profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14. HARDENING: pin `uses:` SHAs + Gradle plugin versions.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Lint / format check
+        id: gate-lint
+        run: ./gradlew ktlintCheck detekt
+
+      - name: Type-check (compile)
+        id: gate-type-check
+        run: ./gradlew compileKotlin
+
+      - name: Test + coverage (JaCoCo >=80%)
+        id: gate-test
+        run: ./gradlew test jacocoTestCoverageVerification
+
+      - name: Build
+        id: gate-build
+        run: ./gradlew build -x test
+
+      - name: Secret scan
+        id: gate-secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # required for org repos
+
+      - name: Dependency vulnerability scan (OWASP)
+        id: gate-dep-scan
+        run: ./gradlew dependencyCheckAnalyze
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: ./gradlew cyclonedxBom
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: build/reports/bom.json
+
+      - name: Attest build provenance
+        id: gate-provenance
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: build/libs/*.jar
