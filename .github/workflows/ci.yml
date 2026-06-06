@@ -21,6 +21,8 @@ jobs:
         run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
       - name: 15-Factor checklist present
         run: test -f conformance/15-factor-checklist.md
+      - name: Agent-autonomy guard conformance (§13)
+        run: sh conformance/agent-autonomy.sh
 
   docs-links:
     runs-on: ubuntu-latest
