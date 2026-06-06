@@ -1,0 +1,84 @@
+# Reference CI pipeline for the Python profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14.
+#
+# HARDENING (recommended for production): pin every `uses:` to a commit SHA and pin tool
+# versions (uvx tool@version). Left on major tags / latest here for reference readability.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write       # build-provenance attestation
+  attestations: write   # build-provenance attestation
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for secret scanning
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        id: gate-install
+        run: uv sync --frozen
+
+      - name: Lint
+        id: gate-lint
+        run: uv run ruff check .
+
+      - name: Type-check
+        id: gate-type-check
+        run: uv run mypy .
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: uv run pytest --cov --cov-fail-under=80
+
+      - name: Build
+        id: gate-build
+        run: uv build
+
+      - name: Secret scan
+        id: gate-secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Organization-owned repos additionally require:
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: uvx pip-audit
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: uvx cyclonedx-py environment --output-format JSON --outfile sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Attest build provenance
+        id: gate-provenance
+        # Provenance attaches to a published build artifact (the wheel/sdist in dist/),
+        # so it runs on the release/build (push-to-main) path.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/**
