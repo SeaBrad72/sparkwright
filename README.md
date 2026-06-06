@@ -46,6 +46,16 @@ So the kit **dictates the contract and offers the implementation**: rewrite the 
 - **Agent governance:** autonomy tiers by risk × reversibility; irreversible actions are human-gated; autonomy is earned by metrics.
 - **Universal + profile:** standards stay stack-neutral; the one stack-specific layer is a swappable profile.
 
+## Generate your own profile (any stack)
+
+The kit ships first-class profiles for **TypeScript/Node, Python, Java/Spring, C#/.NET, Go, Rust, and Kotlin** — but it is **never limited to them**. For any other stack:
+
+1. `sh scripts/new-profile.sh <stack>` — scaffolds `profiles/<stack>.md` (from the template) + a stub `profiles/<stack>/ci.yml` whose 8 quality-gate ids already satisfy `conformance/ci-gates.sh`.
+2. Fill the 11 profile sections and replace each `run:` command with your stack's tooling.
+3. `sh conformance/profile-completeness.sh` validates it to the same bar as the shipped profiles.
+
+Then select it at Inception (`incept.sh --stack <stack>`) and record it as ADR-000. A generated profile is held to the identical conformance bar — so "unsupported stack" is a guided, validated path, not a dead end.
+
 ## Adapting it
 Everything is meant to be tailored. Stack-specific → a profile. Project-specific → the project's own `CLAUDE.md`. Org-specific (stakeholder cadence, spend thresholds, SLO gating) → the configuration hooks the docs call out. Keep the universal files universal.
 

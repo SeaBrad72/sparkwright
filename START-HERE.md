@@ -23,7 +23,7 @@ Then set up your **stack profile**, two ways:
 
 **A — Use a ready profile.** If `profiles/` has your stack (e.g. `typescript-node.md`), select it. Done.
 
-**B — Generate a custom profile (any stack).** If your stack isn't there — Python, Go, Rust, Java, Elixir, anything:
+**B — Generate a custom profile (any stack).** If your stack isn't there — Elixir, Scala, Swift, anything not already shipped. Fastest start: `sh scripts/new-profile.sh <stack>` scaffolds the profile + a conformance-passing stub `ci.yml`, then:
 1. Copy `profiles/_TEMPLATE.md` → `profiles/<your-stack>.md`.
 2. Fill **every** section. Each maps to a universal standard (§ pointers in `DEVELOPMENT-STANDARDS.md`) — you're expressing the standard in your stack, not inventing it. An agent can author this from the team's answers about toolchain, libraries, and commands.
 3. Keep every universal requirement intact; describe *how* your stack meets it.
