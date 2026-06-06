@@ -282,7 +282,7 @@ These mechanics work for a single agent spawning sub-agents today and scale to m
 - **Worktree / branch isolation.** Parallel agents work in isolated git worktrees / short-lived branches.
 - **Integration cadence.** Trunk-based with frequent, small integrations — avoid big-bang merges across streams.
 - **Conflict resolution.** Defined precedence and a re-sync procedure when parallel work overlaps.
-- **Review routing / ownership.** CODEOWNERS-style mapping of who/which agent/lens reviews what. **An agent never reviews-and-merges its own work.**
+- **Review routing / ownership.** CODEOWNERS-style mapping of who/which agent/lens reviews what. **An agent never reviews-and-merges its own work.** Ratification authority by role → §13 and `docs/enterprise/ratification-rbac.md`.
 - **WIP limits.** Cap concurrent work to protect integration safety and human review bandwidth.
 - **Stakeholder visibility.** The board is the live status; beyond it, surface progress to non-builder stakeholders via an on-demand board digest, milestone demos, and the flow/DORA metrics (§14) — on a cadence and in a format the adopting org sets. (A configuration point, not a fixed ritual.)
 
@@ -313,6 +313,21 @@ Autonomy is a spectrum; an agent's tier is **how far it proceeds before a human 
 | Delete data · rotate secrets · incur spend | Human gate | Irreversible |
 
 **Irreversible / high-blast-radius actions are always human-gated regardless of tier.** A project raises an action's tier as the agent-quality metrics earn it.
+
+### Ratification roles & exceptions
+
+"Humans ratify" (§12) means a **named role**, not merely "a human." Roles and what each may ratify:
+
+| Role | May ratify |
+|------|-----------|
+| **Project Owner** | requirements & scope, architecture (ADRs), breaking changes |
+| **Code Owner** (per CODEOWNERS) | code PRs in their domain — the independent reviewer (builder ≠ sole merger, §12) |
+| **Security Owner** | governing-doc changes (`CLAUDE.md` / STANDARDS / PROCESS), gate definitions, **supply-chain / OIDC posture exceptions**, secret-rotation policy, autonomy-tier raises |
+| **Release Manager** | production deploys / promotions, rollbacks |
+
+One person may hold several roles in a small org, but **never both the builder and the sole ratifier of the same change**. Roles map to GitHub via CODEOWNERS + branch-protection required reviewers.
+
+**Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **Security-Owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`.
 
 ### Auditability
 Every agent action is **traceable**: which agent, what, when, against which work item — via commit/PR attribution, work-item ownership, and L1 retro notes. No anonymous agent changes.
