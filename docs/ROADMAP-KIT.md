@@ -8,7 +8,7 @@ The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). The Foundat
 | 2 ✅ | **Agent governance** *(shipped v2.1.0)* | process §13 + enforcement-reference note | `.claude/` — `settings.json`, `hooks/guard.sh`, `reviewer` + `security-reviewer` subagents, `README.md` | `conformance/agent-autonomy.sh` |
 | 3 ✅ | **Inception bootstrap** *(shipped v2.2.0; absorbed templates)* | START-HERE 8-step gate | `scripts/incept.sh` + `RUNBOOK-TEMPLATE.md` + flow-board `BACKLOG-TEMPLATE.md` | `conformance/inception-done.sh` |
 | ~~4~~ | **Template fixes** *(absorbed into Slice 3, v2.2.0)* | DoD + process §6 | RUNBOOK-TEMPLATE.md + flow-board BACKLOG-TEMPLATE.md shipped | covered by `inception-done.sh` |
-| 5 | **Enterprise profiles** | `profiles/_TEMPLATE.md` | `profiles/python.md` + `profiles/java-spring.md` with real config files | `conformance/profile-completeness` — every section filled |
+| 5 ✅ | **Enterprise profiles** *(shipped v2.3.0)* | `profiles/_TEMPLATE.md` | `profiles/python.md` + `profiles/java-spring.md` + companion `ci.yml`/`CODEOWNERS`/`BRANCH-PROTECTION.md` | `conformance/profile-completeness.sh` |
 | 6 | **Enterprise addendum** | standards §2 (partial) | compliance-control mapping (SOC2/ISO), secrets-at-scale (Vault/KMS) patterns, RBAC for ratification | `conformance/audit-evidence` checklist |
 
 ## Notes
