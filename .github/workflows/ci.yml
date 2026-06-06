@@ -1,0 +1,30 @@
+# Kit-own CI — the Agentic SDLC Kit dogfooding its own governance.
+# Runs the kit's conformance checks and lints its docs on every PR.
+# (This is the kit's REAL pipeline. The adopter REFERENCE pipeline lives at
+#  profiles/typescript-node/ci.yml and is inert here.)
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: CI-gates conformance (reference workflow satisfies §14)
+        run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
+      - name: 15-Factor checklist present
+        run: test -f conformance/15-factor-checklist.md
+
+  docs-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Relative Markdown link integrity
+        run: sh conformance/check-links.sh

@@ -61,7 +61,7 @@ A feature is NOT done until ALL are true:
 
 **Code** — implemented · self- and peer/agent-reviewed · no lint/type/compiler warnings.
 **Tests** — unit + integration (+ e2e for critical flows) passing · 80%+ coverage (100% on critical paths) · edge/error cases covered · **AI features: evals pass and don't regress**.
-**CI/CD** — pipeline green · build succeeds · no known high/critical vulnerabilities.
+**CI/CD** — pipeline green · build succeeds · the 7 required gates pass, incl. secret-scan and SBOM+provenance · no known high/critical vulnerabilities (per `DEVELOPMENT-STANDARDS.md` §14).
 **Docs** — README, API docs, ADRs, and **RUNBOOK** updated · `.env.example` current · known issues/tech-debt captured · **project resumable cold by another engineer or agent**.
 **Review & merge** — PR reviewed (builder ≠ sole reviewer) · approved · merged · branch deleted.
 **Accessibility** — keyboard-navigable · screen-reader/contrast checks pass (for user-facing UI).

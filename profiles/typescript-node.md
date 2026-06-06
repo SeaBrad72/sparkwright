@@ -37,7 +37,12 @@ start:         node dist/server.js   # or: next start
 ```
 
 ## 4. CI/CD pipeline
-GitHub Actions on push/PR to `main`: `actions/checkout@v4` → `actions/setup-node@v4` (node 24, `cache: npm`) → `npm ci` → `lint` → `type-check` → `test` → `build` → upload coverage (`codecov-action@v4`). All green required to merge.
+Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/typescript-node/`**:
+- **`ci.yml`** → copy to `.github/workflows/ci.yml`. GitHub Actions on push/PR to `main`: `npm ci` → lint → type-check → test+coverage(≥80) → build → secret-scan (gitleaks) → dependency scan (`npm audit --audit-level=high`) → SBOM (CycloneDX) → build provenance (`actions/attest-build-provenance`). All green required to merge.
+- **`CODEOWNERS`** → copy to `.github/CODEOWNERS`; routes review so builder ≠ sole reviewer.
+- **`BRANCH-PROTECTION.md`** → how to protect `main` (required check, required review).
+
+Conformance: `sh conformance/ci-gates.sh profiles/typescript-node/ci.yml` asserts every gate is present.
 
 ## 5. Security implementation
 - **Env/secrets:** `process.env.X` with a fail-fast check; never hardcode. `.env.local` gitignored.

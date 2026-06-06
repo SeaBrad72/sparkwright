@@ -197,4 +197,28 @@ The architectural contract for **deployable services**, after Hoffman's *Beyond 
 
 ---
 
+## 14. CI/CD Pipeline
+
+Automated quality gates are the contract's teeth: *if it isn't automated, it isn't enforced.* Every project's CI **must run, on every pull request, seven required gates** before code can merge. Tool choices are stack-specific — **→ profile**.
+
+| # | Gate | Requirement |
+|---|------|-------------|
+| 1 | **Lint** | Style/correctness linter passes with zero errors. |
+| 2 | **Type-check** | Static type analysis passes (where the stack has types). |
+| 3 | **Test + coverage** | Test suite passes; line coverage ≥ 80% (100% on critical paths, per §7). |
+| 4 | **Build** | A production build/compile succeeds and is reproducible. |
+| 5 | **Secret scan** | The diff/history is scanned for committed secrets; any finding fails the build. |
+| 6 | **Dependency scan** | Dependencies are scanned for known vulnerabilities; a high/critical finding fails the build. |
+| 7 | **Supply-chain integrity** | An **SBOM** is generated for the build, and **build provenance** is attested for released artifacts. |
+
+**Branch protection (governance):** `main` is protected — no direct pushes; a green CI run is required to merge; and the **builder is never the sole merger** of their own change (an independent review is required, per `DEVELOPMENT-PROCESS.md` §2 and §12). This is where the autonomy boundary of `DEVELOPMENT-PROCESS.md` §13 is enforced mechanically.
+
+**Provenance scope:** the SBOM and dependency/secret scans run on every PR; **build-provenance attestation attaches to a published build artifact** (there is nothing to attest on a change that produces no artifact). The pipeline owns provenance; the profile's reference shows where it attaches.
+
+**Conformance:** a project's pipeline is verified by `conformance/ci-gates.sh <workflow>`, which asserts every required gate is declared (the Definition-of-Done "CI/CD" check, `CLAUDE.md`).
+
+> This raises the supply-chain posture (gates 6–7) to the baseline for **all** projects — see `DEVELOPMENT-PROCESS.md` §10.
+
+---
+
 **Remember:** this is the *universal* bar. Keep stack-specifics out of this file — they belong in `profiles/<stack>.md`. That separation is what lets any team adopt these standards without inheriting someone else's technology choices.
