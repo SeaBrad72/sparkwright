@@ -28,7 +28,12 @@ done
 
 # escape a string for safe use as a sed REPLACEMENT (handles & / \)
 esc() { printf '%s' "$1" | sed 's/[&/\\]/\\&/g'; }
-sedi() { sed -i.bak "$@" && rm -f "${@: -1}.bak" 2>/dev/null || true; }  # portable in-place
+# portable in-place sed: last positional arg is the FILE (POSIX; no bash ${@: -1})
+sedi() {
+  last=
+  for last in "$@"; do :; done
+  sed -i.bak "$@" && rm -f "${last}.bak"
+}
 
 # --- safety guards ---
 [ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
