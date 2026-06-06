@@ -1,0 +1,86 @@
+# Reference CI pipeline for the ML profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Carries the 8 standardized gate-* ids (DEVELOPMENT-STANDARDS.md §14) PLUS gate-eval
+# (the §7 eval gate). conformance/ci-gates.sh asserts the 8; gate-eval is an allowed extra.
+# HARDENING: pin uses:/tool versions for production.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        id: gate-install
+        run: uv sync --frozen
+
+      - name: Lint
+        id: gate-lint
+        run: |
+          uv run ruff check .
+          uv run nbqa ruff notebooks/
+
+      - name: Type-check
+        id: gate-type-check
+        run: uv run mypy .
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: uv run pytest --cov --cov-fail-under=80   # includes pandera data-validation + nbmake notebook smoke
+
+      - name: Evaluate model/prompt quality (eval gate, §7)
+        id: gate-eval
+        run: uv run python -m evals.run --threshold 0.8   # fails the build below the eval threshold
+
+      - name: Build
+        id: gate-build
+        run: uv build
+
+      - name: Secret scan
+        id: gate-secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # required for org repos
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: uvx pip-audit
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: uvx cyclonedx-py environment --output-format JSON --outfile sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Attest build provenance
+        id: gate-provenance
+        # Attest the build artifact (and/or the registered model artifact) on the release path.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/**
