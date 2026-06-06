@@ -1,0 +1,79 @@
+# Reference CI pipeline for the Java/Spring profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14. NOTE: compilation IS type-checking in Java, so
+# gate-type-check = `mvn compile` and gate-build = `mvn package`.
+#
+# HARDENING (recommended for production): pin every `uses:` to a commit SHA and pin Maven
+# plugin versions in pom.xml. Left on major tags here for reference readability.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write       # build-provenance attestation
+  attestations: write   # build-provenance attestation
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for secret scanning
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Lint / format check
+        id: gate-lint
+        run: ./mvnw -q spotless:check checkstyle:check
+
+      - name: Type-check (compile)
+        id: gate-type-check
+        run: ./mvnw -q compile
+
+      - name: Test + coverage (JaCoCo >=80%)
+        id: gate-test
+        run: ./mvnw -q verify   # JaCoCo check binds to verify
+
+      - name: Build
+        id: gate-build
+        run: ./mvnw -q -DskipTests package
+
+      - name: Secret scan
+        id: gate-secret-scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Organization-owned repos additionally require:
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Dependency vulnerability scan (OWASP)
+        id: gate-dep-scan
+        run: ./mvnw -q org.owasp:dependency-check-maven:check
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: ./mvnw -q org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: target/*-cyclonedx.json
+
+      - name: Attest build provenance
+        id: gate-provenance
+        # Provenance attaches to the built jar, so it runs on the release/build (push-to-main) path.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: target/*.jar
