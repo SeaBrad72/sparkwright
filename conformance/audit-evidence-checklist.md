@@ -17,11 +17,12 @@ Copy this file into your project (or your audit/review record). For each control
 | SBOM + build provenance | CC7.1, CC9.2 / A.8.8, A.5.21 | SBOM file + attestation (gate-sbom / gate-provenance) | **Auto:** `sh conformance/ci-gates.sh …` + the SBOM artifact | |
 | Least-privilege OIDC in CI | CC6.1, CC6.3 / A.8.2 | the workflow's push-only `provenance` job (no workflow-level `id-token`) | Manual (review the workflow) | |
 | Branch protection · builder ≠ sole merger | CC8.1, CC6.1 / A.8.32, A.8.4 | branch-protection settings + PR approval records | Manual (GitHub settings + PR history) | |
+| Change management via PR + green CI | CC8.1 / A.8.32 | merge history (every change via reviewed PR with green CI) | Manual (PR / merge records) | |
 | Agent autonomy · human gates for irreversible actions | CC6.1, CC6.3 / A.8.2 | guard hook denies the gated set | **Auto:** `sh conformance/agent-autonomy.sh` | |
 | Inception completed (project resumable cold) | — | the Inception gate passes | **Auto:** `sh conformance/inception-done.sh` | |
 | Profile completeness (chosen stack) | — | the profile fills all sections; companion CI conformant | **Auto:** `sh conformance/profile-completeness.sh` | |
 | Docs link integrity | A.5.x (documentation) | all relative links resolve | **Auto:** `sh conformance/check-links.sh` | |
-| 15-factor architecture (services) | CC8.1 / A.8.9 | the completed checklist | **Auto/Checklist:** `conformance/15-factor-checklist.md` | |
+| 15-factor architecture (services) | CC8.1 / A.8.9 | the completed checklist | **Checklist:** `conformance/15-factor-checklist.md` | |
 | Immutable audit logging | CC7.2, CC7.3 / A.8.15, A.8.16 | audit log stream (who/what/when/resource) | Manual | |
 | Secrets management & secrets-at-scale | CC6.1 / A.8.24 | `.env.example` + managed-store config (→ `../docs/enterprise/secrets-at-scale.md`) | Manual | |
 | Input validation / injection prevention | CC6.1, CC6.6 / A.8.28, A.8.26 | schema-validation code + tests | Manual | |
@@ -31,7 +32,9 @@ Copy this file into your project (or your audit/review record). For each control
 | Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 | `docs/ADR-*` files | Manual (files present) | |
 | RUNBOOK · DR / rollback | CC7.4, CC7.5 / A.5.29, A.8.13 | RUNBOOK | Manual (file present) | |
 | Cost governance · rate-limiting | CC7.1 / A.8.6 | config, budget alerts | Manual | |
-| Personnel / physical / vendor controls | CC1.4, CC6.4, CC9.2 / A.6, A.7, A.5.19–22 | org programs (outside the kit) | Manual — **Org-owned** | |
+| Personnel / HR security | CC1.4 / A.6.1–A.6.6 | org program (outside the kit) | Manual — **Org-owned** | |
+| Physical & environmental security | CC6.4 / A.7.1–A.7.14 | org program (outside the kit) | Manual — **Org-owned** | |
+| Vendor / third-party risk management | CC9.2 / A.5.19, A.5.20, A.5.22 | org program (outside the kit) | Manual — **Org-owned** | |
 
 ## Privacy & data-protection controls
 
