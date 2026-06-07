@@ -25,7 +25,7 @@ Automate rotation in the store (lease/TTL for dynamic; scheduled rotation for st
 For data the app encrypts itself, use **envelope encryption**: a KMS-held key-encryption-key (KEK) wraps a per-record data-encryption-key (DEK). The KEK never leaves the KMS; rotating it re-wraps DEKs without re-encrypting data. Maps to ISO A.8.24 (use of cryptography).
 
 ### Break-glass
-Define an audited, time-boxed emergency-access path for when the automated path fails — who may invoke it, how it's logged, and the post-use review. This is itself an auditable control (ties to `audit-evidence-checklist.md`, Slice 6d).
+Define an audited, time-boxed emergency-access path for when the automated path fails — who may invoke it, how it's logged, and the post-use review. This is itself an auditable control (ties to [audit-evidence-checklist.md](../../conformance/audit-evidence-checklist.md), Slice 6d).
 
 ## Secret-manager client by stack
 

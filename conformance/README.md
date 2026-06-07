@@ -22,5 +22,6 @@ A **conformance check** proves that a reference implementation still satisfies i
 | `agent-autonomy.sh` | script | `DEVELOPMENT-PROCESS.md` §13 (autonomy tiers) — guard denies a tier breach | PreToolUse hook / CI |
 | `inception-done.sh` | script | `DEVELOPMENT-PROCESS.md` §3 / `START-HERE.md` (the Inception gate) | CI (bootstrap-into-temp) |
 | `profile-completeness.sh` | script | `profiles/_TEMPLATE.md` (every profile fills all 11 sections; companion ci.yml conformant) | CI |
+| `audit-evidence-checklist.md` | checklist | enterprise addendum (`../docs/enterprise/`) — per-control audit evidence | Review / pre-audit |
 
-> Future slices add: enterprise addendum checks (compliance/audit-evidence). See `../docs/ROADMAP-KIT.md`.
+> The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.

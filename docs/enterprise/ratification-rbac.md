@@ -44,4 +44,4 @@ Required gates and posture are **universally required**. There is no "conditiona
 | Granted / Expires | dates — **time-boxed**, no open-ended waivers |
 | Review | date the exception is re-evaluated or auto-expires |
 
-An expired exception that hasn't been renewed means the requirement is back in force. Exceptions are evidence (see `conformance/audit-evidence-checklist.md`, Slice 6d).
+An expired exception that hasn't been renewed means the requirement is back in force. Exceptions are evidence (see [audit-evidence-checklist.md](../../conformance/audit-evidence-checklist.md), Slice 6d).
