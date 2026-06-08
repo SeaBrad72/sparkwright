@@ -7,9 +7,13 @@
 # doc that merely *mentions* a dangerous command (in file CONTENT) is NOT blocked.
 #
 # Within the Bash .command field, matching errs toward OVER-blocking: a dangerous token
-# inside a quoted string (e.g. `bash -c "rm -rf /"`, and likewise `echo "rm -rf"`) is
-# denied, because a guard cannot safely distinguish quoting from execution and
+# inside a quoted string (e.g. bash -c with a recursive-rm payload, or an echo of the
+# same) is denied, because a guard cannot safely distinguish quoting from execution and
 # under-blocking a real deletion is worse than over-blocking an echo.
+#
+# Covered: recursive rm, force-push, push to main/master, destructive SQL/DDL,
+# migration-runner resets, ORM/cloud/cluster DB destruction, and a
+# production-context catch-all.
 #
 # Requires `jq`. If jq is absent, OR the tool input is not valid JSON, mutating tools
 # (Bash/Write/Edit/NotebookEdit) are denied (fail-safe toward caution); read-only allowed.
@@ -73,7 +77,7 @@ case "$TOOL" in
       emit_deny "13: pushing directly to main/master bypasses review - open a PR (human-gated)."
     fi
     # destructive SQL via a DB client
-    if printf '%s' "$CMD" | grep -Eiq '(psql|mysql|mariadb|sqlite3|mongosh?).*(drop[[:space:]]+table|truncate|delete[[:space:]]+from)'; then
+    if printf '%s' "$CMD" | grep -Eiq '(psql|mysql|mariadb|sqlite3|mongosh?).*(drop[[:space:]]+(table|database)|truncate|delete[[:space:]]+from)'; then
       emit_deny "13: destructive SQL (DROP/TRUNCATE/DELETE via a DB client) - human-gated."
     fi
     # destructive DB resets via migration runners
@@ -85,11 +89,43 @@ case "$TOOL" in
     if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)dropdb([[:space:]]|$)'; then
       emit_deny "13: dropdb destroys a database irreversibly - human-gated."
     fi
+    # ORM / framework DB destruction (drop/reset/wipe/fresh) across stacks
+    if printf '%s' "$CMD" | grep -Eiq '(rails|rake)[[:space:]]+db:(drop|reset|migrate:reset|purge)|artisan[[:space:]]+(migrate:fresh|migrate:reset|db:wipe)|manage\.py[[:space:]]+(flush|reset_db|sqlflush)|alembic[[:space:]]+downgrade[[:space:]]+base|flyway[[:space:]]+clean|dotnet[[:space:]]+ef[[:space:]]+database[[:space:]]+drop'; then
+      emit_deny "13: destructive DB drop/reset via an ORM/framework tool - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq 'pg_restore[^|]*(--clean|[[:space:]]-c([[:space:]]|$))'; then
+      emit_deny "13: pg_restore --clean drops objects irreversibly - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eiq 'redis-cli[^|]*(flushall|flushdb)'; then
+      emit_deny "13: redis FLUSHALL/FLUSHDB wipes the datastore - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq 'kubectl[[:space:]]+([^|]*[[:space:]])?delete([[:space:]]|$)'; then
+      emit_deny "13: kubectl delete removes cluster resources - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq 'docker[[:space:]]+(volume[[:space:]]+(rm|prune)|system[[:space:]]+prune[^|]*-a)'; then
+      emit_deny "13: docker volume/system prune destroys persistent state - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq 'aws[[:space:]]+s3[[:space:]]+rm[^|]*--recursive|aws[[:space:]]+s3[[:space:]]+rb|aws[[:space:]]+rds[[:space:]]+delete-db-instance|aws[[:space:]]+dynamodb[[:space:]]+delete-table|gcloud[[:space:]]+sql[[:space:]]+instances[[:space:]]+delete|az[[:space:]]+group[[:space:]]+delete|az[[:space:]]+sql[^|]*[[:space:]]delete'; then
+      emit_deny "13: cloud resource deletion (storage/DB/instance) is irreversible - human-gated."
+    fi
     if printf '%s' "$CMD" | grep -Eq '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash)([[:space:]]|$)'; then
       emit_deny "13: piping a remote script into a shell is high-blast-radius - human-gated."
     fi
     if printf '%s' "$CMD" | grep -Eiq '(vercel[[:space:]]+(deploy[[:space:]]+)?--prod|railway[[:space:]]+up|fly[[:space:]]+deploy|terraform[[:space:]]+apply|kubectl[[:space:]]+apply|helm[[:space:]]+(install|upgrade))'; then
       emit_deny "13: production deploy / infra apply is high-blast-radius - human-gated."
+    fi
+    # prod-context catch-all: a mutating kube/helm op against a production context
+    if printf '%s' "$CMD" | grep -Eiq '.(-(kube-)?context[[:space:]=][^[:space:]]*prod)' \
+       && printf '%s' "$CMD" | grep -Eiq '(kubectl|helm)[[:space:]]([^|]*[[:space:]])?(apply|delete|create|replace|patch|scale|rollout|upgrade|install|uninstall|destroy)'; then
+      emit_deny "13: mutating operation against a production context - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)([A-Z_]*ENV)=prod[a-z]*[[:space:]]' \
+       && printf '%s' "$CMD" | grep -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
+      emit_deny "13: destructive/deploy command in a production environment - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eiq '.(--(env|environment)[[:space:]=]prod)' \
+       && printf '%s' "$CMD" | grep -Eiq '(migrate|deploy|apply|reset|drop|delete|destroy|publish|flush|truncate|prune)'; then
+      emit_deny "13: destructive/deploy command targeting production - human-gated."
     fi
     allow ;;
   Write|Edit|NotebookEdit)

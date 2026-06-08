@@ -59,6 +59,33 @@ assert_allow "rm single file"           '{"tool_name":"Bash","tool_input":{"comm
 assert_allow "confirm -r in message"    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"confirm -r removal\""}}'
 assert_allow "dropdb word in message"   '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"fix dropdb bug\""}}'
 
+# --- 7a: expanded destructive coverage + prod-context catch-all (must DENY) ---
+assert_deny "DROP DATABASE"        '{"tool_name":"Bash","tool_input":{"command":"psql -c \"DROP DATABASE app\""}}'
+assert_deny "rails db:drop"        '{"tool_name":"Bash","tool_input":{"command":"rails db:drop"}}'
+assert_deny "rake db:reset"        '{"tool_name":"Bash","tool_input":{"command":"bundle exec rake db:reset"}}'
+assert_deny "artisan migrate:fresh" '{"tool_name":"Bash","tool_input":{"command":"php artisan migrate:fresh"}}'
+assert_deny "manage.py flush"      '{"tool_name":"Bash","tool_input":{"command":"python manage.py flush"}}'
+assert_deny "alembic downgrade base" '{"tool_name":"Bash","tool_input":{"command":"alembic downgrade base"}}'
+assert_deny "flyway clean"         '{"tool_name":"Bash","tool_input":{"command":"flyway clean"}}'
+assert_deny "ef database drop"     '{"tool_name":"Bash","tool_input":{"command":"dotnet ef database drop -f"}}'
+assert_deny "pg_restore --clean"   '{"tool_name":"Bash","tool_input":{"command":"pg_restore --clean -d app dump.sql"}}'
+assert_deny "redis FLUSHALL"       '{"tool_name":"Bash","tool_input":{"command":"redis-cli FLUSHALL"}}'
+assert_deny "kubectl delete"       '{"tool_name":"Bash","tool_input":{"command":"kubectl delete deployment api"}}'
+assert_deny "docker volume rm"     '{"tool_name":"Bash","tool_input":{"command":"docker volume rm pgdata"}}'
+assert_deny "aws s3 rm recursive"  '{"tool_name":"Bash","tool_input":{"command":"aws s3 rm s3://bucket --recursive"}}'
+assert_deny "gcloud sql delete"    '{"tool_name":"Bash","tool_input":{"command":"gcloud sql instances delete prod-db"}}'
+assert_deny "prod kube apply"      '{"tool_name":"Bash","tool_input":{"command":"kubectl --context prod-cluster apply -f k8s/"}}'
+assert_deny "prod env migrate"     '{"tool_name":"Bash","tool_input":{"command":"NODE_ENV=production npm run migrate"}}'
+assert_deny "--env production deploy" '{"tool_name":"Bash","tool_input":{"command":"./deploy.sh --env production"}}'
+
+# --- 7a: false-positive guards (must ALLOW) ---
+assert_allow "kubectl get pods"        '{"tool_name":"Bash","tool_input":{"command":"kubectl get pods -n app"}}'
+assert_allow "docker build"            '{"tool_name":"Bash","tool_input":{"command":"docker build -t app ."}}'
+assert_allow "aws s3 ls"               '{"tool_name":"Bash","tool_input":{"command":"aws s3 ls s3://bucket"}}'
+assert_allow "prod-context read"       '{"tool_name":"Bash","tool_input":{"command":"kubectl --context prod-cluster get pods"}}'
+assert_allow "NODE_ENV prod build"     '{"tool_name":"Bash","tool_input":{"command":"NODE_ENV=production npm run build"}}'
+assert_allow "commit msg flush cache"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"flush the cache on deploy\""}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0
