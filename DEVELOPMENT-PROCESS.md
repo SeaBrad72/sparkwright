@@ -41,14 +41,14 @@ Roles are **functions, each mappable to a human or an agent** — not job titles
 
 ### Personas (who holds which function)
 
-The functions above are authoritative. **Personas are lenses on them** — an enterprise puts named roles around the loop; this maps each to the function it holds, where it plugs in, and its entry/exit artifact. One person or agent may hold several (the §2 rule).
+The functions above are authoritative. **Personas are lenses on them** — an enterprise puts named roles around the loop; this maps each to the function it holds, where it plugs in, and its entry/exit artifact. One person or agent may hold several (as above).
 
 | Persona | Holds function(s) | Plugs in at | Entry → exit artifact |
 |---------|-------------------|-------------|-----------------------|
 | **Product Owner / BA** | Intent owner | Discover → Plan; accepts increments | `FEATURE-REQUEST` in → accepted increment out |
-| **Designer** | informs Intent owner | Discover (UX input) → Review (a11y sign-off) | design assets/handoff in → accessibility sign-off |
+| **Designer** | *informs Intent owner (advisory — no standalone §2 function)* | Discover (UX input) → Review (a11y sign-off) | design assets/handoff in → accessibility sign-off |
 | **Engineer** | Builder (often also Reviewer / Lead) | Plan → Build → Review | spec in → reviewed PR out |
-| **QA Engineer** | Reviewer (test lens) + acceptance | Review + UAT acceptance gate (§9 Environments & promotion) | test strategy/cases in → UAT sign-off out |
+| **QA Engineer** | Reviewer (test lens) + acceptance | Review + UAT acceptance gate (§9 — "Environments & promotion") | test strategy/cases in → UAT sign-off out |
 | **DevOps / SRE** | On-call / operator | Release → Operate (promotion, deploy, rollback, monitoring) | promotion run in → operated service out |
 | **Security owner** | Security owner | the security / ratification gate (§7, §13) | threat model in → gate pass / governed exception |
 | **Lead / Agent** | Lead / integrator, Builder | the whole loop | the board in → integrated, ratified work out |
