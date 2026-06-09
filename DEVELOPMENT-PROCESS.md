@@ -189,7 +189,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **Acceptance** | Did we build the *right thing*? (intent/need) | Intent owner |
 | **Definition of Done** | Truly complete? (per `DEVELOPMENT-STANDARDS.md`) | Automated + human |
 
-Review and Acceptance fail *differently* and are kept distinct. Threat-model, eval, compliance, 15-factor, Definition-of-Deployable, DR-readiness, and Resilience-readiness gates are **conditional** — they apply to sensitive / AI / regulated / deployable-service / data-handling work respectively, not every item (don't impose them where they optimize nothing). For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
+Review and Acceptance fail *differently* and are kept distinct. Threat-model, eval, compliance, 15-factor, Definition-of-Deployable, DR-readiness, and Resilience-readiness gates are **conditional** — each applies only where it fits: threat-model to sensitive/regulated features, eval to AI features, compliance to regulated domains, 15-factor / Definition-of-Deployable / Resilience-readiness to deployable services, DR-readiness to data-handling work — not every item (don't impose them where they optimize nothing). For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
 
 ---
 
@@ -439,7 +439,7 @@ BACKLOG ordered by value×urgency÷risk (intent-owner ranks, lead breaks ties)
         feature·bug·tech-debt·spike·recurring share one board; tech-debt = paydown allocation
 ROLES   intent-owner · lead/integrator · builder · reviewer · on-call · security-owner
         (functions, human OR agent; builder ≠ reviewer; humans ratify)
-GATES   Ready · [threat-model] · Spec · Review(+security) · [eval] · [compliance] · Accept · Done
+GATES   Ready · [threat-model] · Spec · Review(+security) · [eval] · [compliance] · [15-factor] · [deployable] · [DR] · [resilience] · Accept · Done
 RETROS  L0 in-action · L1 increment (agent) · L2 milestone (human) · L3 process · Event
         every retro exits into an artifact (PR → memory → backlog → docs) = "adjust"
 SHIP    flags (kill-switch · retire stale=debt) · expand-contract migrations · canary/blue-green

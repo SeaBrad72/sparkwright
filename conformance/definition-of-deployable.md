@@ -21,7 +21,7 @@ Copy this file into your project (or your release record). For each item: mark *
 | 8 | Monitoring / alerts wired on the change's critical paths (`DEVELOPMENT-STANDARDS.md` §3) *(wired)* | | | Manual |
 | 9 | Supply-chain CI gates green — SBOM + provenance (§14) *(documented)* | | | **Auto:** `ci-gates.sh <workflow>` |
 | 10 | RUNBOOK has a **Deploy** section + a **Rollback** section *(documented)* | | | **Auto:** `deployable-ready.sh` |
-| 11 | CHANGELOG entry recorded for this release (§15) | | | Manual |
+| 11 | CHANGELOG entry recorded for this release (`DEVELOPMENT-PROCESS.md` §15) | | | Manual |
 
 ## Worked example — TypeScript/Node reference profile (a deployable HTTP service, no DB change this release)
 
