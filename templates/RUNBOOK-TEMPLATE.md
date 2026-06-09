@@ -41,7 +41,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Every release declares its rollback path before shipping (DEVELOPMENT-PROCESS.md §10).
 
 ## 6. Disaster recovery
-- **RPO:** [< 24h default] · **RTO:** [< 4h default]
+- **RPO:** [< 24h default] · **RTO:** [< 4h default] — always fill these headline targets (replace the placeholders); for multi-criticality systems also fill the per-tier table below.
 - **Per-tier targets (multi-criticality systems, from the BIA — `docs/continuity/BIA.md`):**
 
   | Tier | RTO | RPO |

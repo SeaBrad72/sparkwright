@@ -66,7 +66,7 @@ Mirrors `definition-of-deployable.md`: intro (Checklist-type; conditional N/A fo
 | 5 | Restore drill **succeeded** — data actually restored, integrity verified *(verified)* | Manual |
 | 6 | RTO/RPO **actuals met** the tier targets in the last drill *(verified)* | Manual |
 | 7 | Backups stored durably + access-controlled (off-host/region) *(verified)* | Manual |
-| 8 | Drill scheduled as recurring maintenance (§15) *(documented)* | Manual |
+| 8 | Drill scheduled as recurring maintenance (§15) — untagged process item | Manual |
 
 ### Script (`dr-ready.sh`)
 POSIX `sh`, `set -eu`, structured like `deployable-ready.sh`. Operates on a project dir (`DIR="${1:-.}"`).
