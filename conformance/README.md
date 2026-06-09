@@ -26,5 +26,6 @@ A **conformance check** proves that a reference implementation still satisfies i
 | `audit-evidence-checklist.md` | checklist | enterprise addendum (`../docs/enterprise/`) — per-control audit evidence | Review / pre-audit |
 | `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |
 | `backlog-adapters.sh` | script | `DEVELOPMENT-PROCESS.md` §6 (named backends agree across incept / §6 / the adapter guide) | CI / Review |
+| `guard-wired.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — the `.claude/` runtime guard is actually wired (fail-closed; gates Inception) | CI / Inception |
 
 > The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.

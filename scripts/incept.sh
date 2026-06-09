@@ -43,6 +43,13 @@ sedi() {
 { [ -f CLAUDE.md ] && grep -q "Engineering Principles & Definition of Done" CLAUDE.md; } || {
   echo "error: not an un-incepted Agentic SDLC Kit (principles CLAUDE.md not found). Aborting." >&2; exit 1; }
 
+# brownfield safety: warn (never modify) if a .claude/ exists without the kit guard wired.
+if [ -f .claude/settings.json ] && ! grep -q 'guard\.sh' .claude/settings.json; then
+  echo "warning: .claude/settings.json present but the kit guard is not registered." >&2
+  echo "         If this is an existing repo, MERGE .claude/ per docs/adoption/brownfield.md" >&2
+  echo "         (add, do not overwrite) before running agents. Continuing without touching .claude/." >&2
+fi
+
 # --- collect inputs ---
 if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$NAME" ]  || { printf 'Project name: '; read -r NAME; }

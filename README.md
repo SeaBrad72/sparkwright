@@ -29,6 +29,15 @@ Any team — humans, agents, or both — starting a new project who wants produc
 3. At stack selection: pick a ready profile **or** generate one from `profiles/_TEMPLATE.md` for your stack — recorded as **ADR-000**.
 4. Pass the **Inception Done** gate → enter the loop at **Discover**.
 
+## Where `.claude/` lives (scoping)
+
+The kit ships a project-level **`.claude/`** (the `guard.sh` PreToolUse hook + `settings.json`). It is **scoped to this repo only** — it governs Claude Code within this repository's tree and does **not** touch your global `~/.claude/` or your machine.
+
+- `.claude/settings.json` — committed **team policy** (registers the guard; permission allow/ask/deny).
+- `.claude/settings.local.json` — **gitignored** personal per-developer overrides; never committed.
+
+Dropping the kit into a repo affects only that repo. Adopting into an **existing** repo that already has its own `.claude/`? Follow `docs/adoption/brownfield.md` — **merge**, never overwrite, and verify with `sh conformance/guard-wired.sh`.
+
 ## How the kit is built
 
 Every capability ships as three parts (full detail in `MAINTAINING.md`):

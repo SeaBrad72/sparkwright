@@ -15,6 +15,13 @@ need RUNBOOK.md
 need .claude
 need .github/workflows/ci.yml
 
+# the guard must be WIRED, not just present (slice 7e; docs/adoption/brownfield.md)
+if [ -f conformance/guard-wired.sh ] && sh conformance/guard-wired.sh . >/dev/null 2>&1; then
+  echo "PASS: runtime guard wired (PreToolUse → guard.sh)"
+else
+  echo "FAIL: runtime guard not wired — run: sh conformance/guard-wired.sh"; fail=1
+fi
+
 if ls docs/architecture/ADR-000*.md >/dev/null 2>&1; then
   echo "PASS present: docs/architecture/ADR-000*.md"
 else

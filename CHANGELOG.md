@@ -3,6 +3,23 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] - 2026-06-08
+
+Slice 7e — Brownfield adoption & `.claude/` hygiene. Fifth sub-slice of Slice 7. Makes the kit safely adoptable into an existing repo and enforces that the runtime guard is actually wired.
+
+### Added
+- **`conformance/guard-wired.sh`** — fail-closed check that the `.claude/` PreToolUse guard is actually registered and present. **Wired into `inception-done.sh`**, so no project (greenfield or brownfield) passes Inception with a dead guard.
+- **`docs/adoption/brownfield.md`** — threat-model-first brownfield path: copy-in steps, the `.claude/` **merge** policy (add the guard, never overwrite; with explicit duplicate-key JSON guidance), Inception adapted, and honest residual gaps (pattern coverage + the Org-owned platform backstop).
+- **`README.md` `.claude/` scoping** — project-level vs global `~/.claude/`; `settings.json` (committed) vs `settings.local.json` (gitignored). Dropping the kit affects only that repo, not the machine.
+
+### Changed
+- `conformance/inception-done.sh` now requires the guard to be **wired**, not just `.claude/` present.
+- `scripts/incept.sh` **warns** (never modifies) when a `.claude/` without the kit guard is detected, pointing at the brownfield merge guide.
+- `START-HERE.md` brownfield router row points at the adoption guide; `conformance/README.md` indexes `guard-wired.sh`.
+
+### Note
+MINOR (2.17.0): no new universally-required CI gate, no integration code, no breaking change. Brownfield inverts the kit's risk gradient (a legacy repo's blast radius pre-exists), so the guard-liveness check is the enforcement teeth behind the merge guidance.
+
 ## [2.16.0] - 2026-06-08
 
 Slice 7d — Work-tracking adapter guidance. Fourth sub-slice of Slice 7. Lifts named backlog backends from "named" to "documented adapter."

@@ -17,7 +17,7 @@ This guide's numbered steps are the **engineer/lead Inception path**. If you're 
 | **QA Engineer** | the testing standards (`DEVELOPMENT-STANDARDS.md` §7) + the UAT acceptance gate (`DEVELOPMENT-PROCESS.md` §9) | own acceptance |
 | **DevOps / SRE** | the environment model (`DEVELOPMENT-PROCESS.md` §9) + `RUNBOOK.md` + CI (`DEVELOPMENT-STANDARDS.md` §14) | own promotion & operate |
 | **Engineer / Lead — new project** | **run `sh scripts/incept.sh`**, then work the judgment steps below | full Inception (steps 1–7) |
-| **Engineer — existing repo (brownfield)** | adapt the numbered steps below to your existing repo | a dedicated brownfield path is planned |
+| **Engineer — existing repo (brownfield)** | **`docs/adoption/brownfield.md`** (copy-in + `.claude/` merge + guard verify) | then the Inception judgment steps below |
 
 ---
 
