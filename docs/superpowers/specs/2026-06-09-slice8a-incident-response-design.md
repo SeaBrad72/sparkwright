@@ -73,7 +73,7 @@ House style: guidance blockquotes (matching the other templates' `> _Fill this w
 ## 7. Validation / testing
 
 - `sh conformance/check-links.sh` → 0 (new §15 internal refs and the POSTMORTEM template path resolve; no link broken by the repoints).
-- `sh conformance/ci-gates.sh .github/workflows/ci.yml`, `profile-completeness.sh`, `agent-autonomy.sh`, `container-supply-chain.sh`, `backlog-adapters.sh`, `guard-wired.sh` → green (no regression; this slice adds no script and changes no profile/CI).
+- `sh conformance/ci-gates.sh profiles/<stack>/ci.yml` (the app-pipeline target — loop over `profiles/*/ci.yml`, as the kit's own CI does; NOT the kit's meta-CI `.github/workflows/ci.yml`, which lacks the 8 app gate-ids by design), `profile-completeness.sh`, `agent-autonomy.sh`, `container-supply-chain.sh`, `backlog-adapters.sh`, `guard-wired.sh` → green (no regression; this slice adds no script and changes no profile/CI).
 - `grep -n "Incident Response / postmortem procedure in" DEVELOPMENT-PROCESS.md` → **no match** (both dangling forms repointed); `grep -rn "§15" DEVELOPMENT-STANDARDS.md` confirms the section exists and is numbered 15.
 - `grep -c "Incident response" conformance/audit-evidence-checklist.md` ≥ 1 (row added in the Security & engineering controls block).
 - Template: `templates/POSTMORTEM-TEMPLATE.md` exists, all nine sections present, guidance-blockquote style matches a sibling template.

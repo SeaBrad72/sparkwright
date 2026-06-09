@@ -251,7 +251,7 @@ Required reviewers on the `production` environment make the promotion human-gate
 
 ## 15. Incident Response
 
-How a production incident is declared, commanded, resolved, and learned from. Aligns with **NIST SP 800-61** (computer-security incident handling) and SRE incident-management practice. This section owns *response to an incident*; *continuity and recovery planning* (backup/restore drills, RTO/RPO, BIA) lives with your RUNBOOK DR section and §10. The kit standardizes the **practice and artifacts**; incident **tooling** (paging, on-call rotation, status page) and the human on-call program are **Org-owned** — named here, wired to your platform.
+How a production incident is declared, commanded, resolved, and learned from. Aligns with **NIST SP 800-61** (computer-security incident handling) and SRE incident-management practice. This section owns *response to an incident*; *continuity and recovery planning* (backup/restore drills, RTO/RPO, BIA) lives with your RUNBOOK DR section and §10 (Data Management & Backup). The kit standardizes the **practice and artifacts**; incident **tooling** (paging, on-call rotation, status page) and the human on-call program are **Org-owned** — named here, wired to your platform.
 
 ### Severity
 
