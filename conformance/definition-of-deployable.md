@@ -15,8 +15,8 @@ Copy this file into your project (or your release record). For each item: mark *
 | 2 | Rollback path **tested** — the chosen path was actually exercised *(tested)* | | | Manual |
 | 3 | DB migration **reversible** — down-path tested, expand-contract; N/A if no migration *(tested)* | | | Manual |
 | 4 | Feature flags have **owner + expiry**; N/A if no flags (no-expiry flag is a defect, §10) *(wired)* | | | Manual |
-| 5 | Progressive-delivery plan — canary / blue-green / staged (§10); N/A at Stage 1 with reason *(wired)* | | | Manual |
-| 6 | Smoke test **defined** and post-deploy result recorded *(tested)* | | | Manual |
+| 5 | Progressive-delivery plan — canary / blue-green / staged (§10; `docs/operations/progressive-delivery.md`); N/A at Stage 1 with reason *(wired)* | | | Manual |
+| 6 | **Post-deploy smoke gate wired (deploy → smoke → rollback-on-fail), and smoke run at each promotion boundary** incl. the canary/green slice before widening (`docs/operations/progressive-delivery.md`); result recorded *(tested)* | | | Manual |
 | 7 | Smoke test **referenced** in RUNBOOK or a workflow *(documented)* | | | **Auto:** `deployable-ready.sh` |
 | 8 | Monitoring / alerts wired on the change's critical paths (`DEVELOPMENT-STANDARDS.md` §3) *(wired)* | | | Manual |
 | 9 | Supply-chain CI gates green — SBOM + provenance (§14) *(documented)* | | | **Auto:** `ci-gates.sh <workflow>` |
@@ -32,7 +32,7 @@ Copy this file into your project (or your release record). For each item: mark *
 | 3 | Migration reversible *(tested)* | **N/A** | no schema change this release | — |
 | 4 | Flags owner + expiry *(wired)* | Y | `checkout-v2` flag — owner @release-mgr, expiry 2026-07-01 (flag registry) | Manual ✅ |
 | 5 | Progressive delivery *(wired)* | Y | staged: 10% canary → full, watch error rate (§9) | Manual ✅ |
-| 6 | Smoke defined + result *(tested)* | Y | post-deploy smoke job; run #1423 green | Manual ✅ |
+| 6 | Smoke gate + multi-stage *(tested)* | Y | smoke gate in `deploy-prod` (rollback-on-fail); canary smoked before widening; run #1423 green | Manual ✅ |
 | 7 | Smoke referenced *(documented)* | Y | `smoke` step in `deploy.yml` + RUNBOOK §4 | Auto ✅ |
 | 8 | Monitoring/alerts *(wired)* | Y | Sentry alert rule + p95 latency alert on the changed route (`DEVELOPMENT-STANDARDS.md` §3) | Manual ✅ |
 | 9 | Supply-chain gates *(documented)* | Y | `gate-sbom` + `gate-provenance` green (profile ci.yml) | Auto ✅ |

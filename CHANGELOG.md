@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.23.0] - 2026-06-09
+
+Slice 8e — Progressive-delivery reference + smoke gates. Fifth sub-slice of Slice 8 (continuity & safe-delivery hardening). Closes gaps B2 (progressive delivery had no reference) + B3 (post-deploy smoke verification was thin). The reference leg of a triad whose contract (§10) and conformance (8b Definition of Deployable) already shipped.
+
+### Added
+- **`docs/operations/progressive-delivery.md`** — a stack-neutral reference: staged / canary / blue-green strategies; **smoke gates at every promotion boundary** (lower-env → the canary/green slice *before* widening → post-full-rollout); automated canary analysis tied to SLOs / error budget (§9); rollback. Tooling (Argo Rollouts / Flagger / flag-driven) named Org-owned.
+- **`DEVELOPMENT-STANDARDS.md` §14** — the `deploy-prod` reference now shows **deploy → smoke → rollback-on-fail** (the `if: failure()` step makes it a gate, not a log).
+
+### Changed
+- **`conformance/definition-of-deployable.md`** — the smoke row is tightened from "smoke defined + result recorded" to "**post-deploy smoke gate wired (deploy → smoke → rollback-on-fail), and smoke run at each promotion boundary** incl. the canary/green slice before widening"; rows 5/6 reference the new doc. Rows stay Manual (behavioural). No script change.
+- **`DEVELOPMENT-PROCESS.md` §10**, **`CLAUDE.md` DoD**, **`conformance/README.md`** reference the new doc.
+
+### Note
+MINOR (2.23.0): additive — a reference + a tightened checklist row. **No new conformance script**: a post-deploy smoke *gate* is a pipeline behaviour (step ordering + failure semantics) that a cross-stack YAML grep can't reliably detect, so it stays a Manual checklist row with a reference (honest enforcement, not theatre). No new CI gate-id; §14's gate set unchanged.
+
 ## [2.22.0] - 2026-06-09
 
 Slice 8d — Resilience + load/soak verification. Fourth sub-slice of Slice 8 (continuity & safe-delivery hardening). Closes gap A3 (resilience principles + load/soak asserted but never verified). Chaos-engineering / SRE anchor.

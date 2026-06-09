@@ -243,7 +243,12 @@ deploy-prod:
   environment: production   # set required reviewers on this environment in repo settings
   runs-on: ubuntu-latest
   steps:
-    - run: echo "promote the verified artifact to production"
+    - run: echo "promote the verified artifact to production (canary/blue-green — see docs/operations/progressive-delivery.md)"
+    - name: smoke
+      run: echo "run post-deploy smoke tests against the new release (and the canary slice before widening)"
+    - name: rollback-on-smoke-failure
+      if: failure()
+      run: echo "smoke failed — roll back (flag-off / redeploy previous) per DEVELOPMENT-PROCESS.md §10"
 ```
 Required reviewers on the `production` environment make the promotion human-gated at the platform level, complementing the `DEVELOPMENT-PROCESS.md` §13 agent guard.
 
