@@ -7,6 +7,7 @@ npm-debug.log
 dist
 coverage
 .github
+# excludes dev docs; scope this if your app reads markdown at runtime
 *.md
 Dockerfile
 .dockerignore
