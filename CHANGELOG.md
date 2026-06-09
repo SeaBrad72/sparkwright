@@ -3,6 +3,23 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] - 2026-06-08
+
+Slice 7d — Work-tracking adapter guidance. Fourth sub-slice of Slice 7. Lifts named backlog backends from "named" to "documented adapter."
+
+### Added
+- **`docs/work-tracking/adapters.md`** — contract-anchored mapping guide: per-tracker **state map · field map · atomic claim · fit notes** for `BACKLOG.md`, GitHub, Jira, **Azure DevOps**, Linear, **GitLab**, plus a "bring your own tracker" recipe. Guidance only — no integration code.
+- **`conformance/backlog-adapters.sh`** — fail-closed drift lock: the named set must agree across `incept.sh --backlog`, `DEVELOPMENT-PROCESS.md` §6, and the guide.
+
+### Changed
+- `DEVELOPMENT-PROCESS.md` §6 names six backends (adds Azure DevOps + GitLab) and points at the guide; the §6 contract (states/fields/atomic-claim) is unchanged.
+- `scripts/incept.sh` `--backlog` accepts `md|github|jira|ado|linear|gitlab`, validates the choice, and points non-`md` choices at the guide (still scaffolds only `BACKLOG.md`).
+- `templates/PROJECT-CLAUDE-TEMPLATE.md` §3 names the six backends + the guide.
+- `conformance/README.md` indexes `backlog-adapters.sh` and `container-supply-chain.sh` (the latter a 7c index omission).
+
+### Note
+MINOR (2.16.0): no new required CI gate, no integration code. General PM tools (Asana/Monday/ClickUp) are intentionally excluded from the named set — they lack a race-safe atomic-claim primitive; the bring-your-own recipe covers them with caveats.
+
 ## [2.15.0] - 2026-06-08
 
 Slice 7c — Containers & image supply-chain (pattern + reference profile). Third sub-slice of Slice 7. Containers are first-class for services and explicitly absent for non-services.

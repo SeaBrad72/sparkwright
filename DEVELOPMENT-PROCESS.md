@@ -146,11 +146,13 @@ The backlog is an **abstraction** so the storage backend swaps per project witho
 | Backend | When |
 |---------|------|
 | **`BACKLOG.md`** (repo-native) | **Default.** Zero setup, travels with the repo, directly agent-readable. Created at Inception/Plan. |
-| GitHub Issues + Projects | GitHub-centric teams |
+| GitHub (Issues + Projects) | GitHub-centric teams |
+| Jira (Atlassian) | Enterprise / Jira shops |
+| Azure DevOps (Boards) | Microsoft / .NET shops |
 | Linear | Teams already in Linear |
-| Atlassian / Jira | Enterprise/Jira shops |
+| GitLab (Issues / Boards) | GitLab shops; self-hosted / regulated |
 
-The loop, gates, and retros are identical regardless of backend — only storage swaps. An adapter must satisfy the contract: the states above, the required fields, and atomic claiming.
+The loop, gates, and retros are identical regardless of backend — only storage swaps. An adapter must satisfy the contract: the states above, the required fields, and atomic claiming. **Per-tracker mappings** (state map · field map · atomic claim · fit notes) for each named backend, plus a "bring your own tracker" recipe, are in `docs/work-tracking/adapters.md`. General PM tools (Asana/Monday/ClickUp) are intentionally not named here — they lack a race-safe atomic-claim primitive; use the bring-your-own recipe with its caveats.
 
 ### Two altitudes: roadmap vs. board
 - **Roadmap** (strategic) — vision, phases, parking lot, success metrics. Seeded at Inception; feeds **Discover**; reviewed at milestone retros.

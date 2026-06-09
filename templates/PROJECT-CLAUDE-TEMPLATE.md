@@ -44,7 +44,7 @@ This file holds only what is **specific to this project**.
 
 > These are the knobs `DEVELOPMENT-PROCESS.md` says are set per project.
 
-- **Backlog backend** (§6): [`BACKLOG.md` / GitHub Issues+Projects / Linear / Jira] — [link]
+- **Backlog backend** (§6): [`BACKLOG.md` / GitHub / Jira / Azure DevOps / Linear / GitLab] — [link] (mapping: `docs/work-tracking/adapters.md`)
 - **Autonomy-tier defaults** (§12): [defaults, or deltas from the standard action→tier matrix]
   - e.g. `deploy to staging → L2 (autonomous behind smoke gate)`; everything else inherits defaults
 - **SLO / error-budget posture** (§9): [soft track-and-guide / hard-gating] — [target SLOs if defined]

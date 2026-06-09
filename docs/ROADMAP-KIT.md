@@ -19,6 +19,7 @@ The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). The Foundat
 | 7a ✅ | **Environments & prod safety** *(shipped v2.13.0)* | process env model + standards §14 | Dev/QA/UAT/Prod + env-aware `guard.sh` + `branch-protection.sh` | `agent-autonomy.sh` + `branch-protection.sh` |
 | 7b ✅ | **Multi-persona touchpoints** *(shipped v2.14.0)* | process §2/§5/§15 | persona map + `FEATURE-REQUEST`/`SPEC` templates + persona-routed START-HERE | `check-links.sh` (+ `inception-done.sh` no regression) |
 | 7c ✅ | **Containers & image supply-chain** *(shipped v2.15.0)* | standards §14/§13 + process §9 | ts-node Dockerfile/compose/devcontainer/k8s/Helm + conditional image gate | `container-supply-chain.sh` + `ci-gates.sh` (8 ids intact) |
+| 7d ✅ | **Work-tracking adapters** *(shipped v2.16.0)* | process §6 | `docs/work-tracking/adapters.md` (6 trackers + BYO) + incept `--backlog` set + template | `backlog-adapters.sh` + `check-links.sh` |
 | 6 ✅ | **Enterprise addendum** | standards §2 (partial) | compliance-control mapping (SOC2/ISO), secrets-at-scale (Vault/KMS) patterns, RBAC for ratification | `conformance/audit-evidence` checklist — enterprise addendum complete (6a–6d), v3.0.0 milestone |
 
 ## Notes

@@ -4,7 +4,7 @@
 # project, in place. Interactive by default; --noninteractive for automation/CI.
 #
 #   sh scripts/incept.sh [--name N] [--intent-owner O] [--stack S] \
-#                        [--backlog md|github|linear|jira] [--noninteractive]
+#                        [--backlog md|github|jira|ado|linear|gitlab] [--noninteractive]
 #
 # It frees the root Claude-Code memory slot (CLAUDE.md = kit principles) by renaming the
 # principles doc to ENGINEERING-PRINCIPLES.md and rewriting the principles-sense references,
@@ -13,6 +13,9 @@ set -eu
 
 NAME="${INCEPT_NAME:-}"; OWNER="${INCEPT_INTENT_OWNER:-}"
 STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTERACTIVE=1
+# Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
+# asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
+BACKLOG_BACKENDS="md github jira ado linear gitlab"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -21,7 +24,7 @@ while [ $# -gt 0 ]; do
     --stack) STACK="$2"; shift 2 ;;
     --backlog) BACKLOG="$2"; shift 2 ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|linear|jira] [--noninteractive]"; exit 0 ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -45,10 +48,11 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$NAME" ]  || { printf 'Project name: '; read -r NAME; }
   [ -n "$OWNER" ] || { printf 'Intent owner: '; read -r OWNER; }
   printf 'Stack [%s]: ' "$STACK"; read -r _s || true; [ -n "${_s:-}" ] && STACK="$_s"
-  printf 'Backlog backend (md/github/linear/jira) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
+  printf 'Backlog backend (md/github/jira/ado/linear/gitlab) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
+case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
 
 DATE=$(date +%Y-%m-%d)
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
@@ -88,7 +92,7 @@ sedi -e "s/\*\*Project:\*\* \[name\]/**Project:** ${ENAME}/" \
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
 case "$BACKLOG" in
   md) [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;
-  *)  echo "note: backlog backend '$BACKLOG' selected — declare it in CLAUDE.md §3; no BACKLOG.md created." ;;
+  *)  echo "note: backlog backend '$BACKLOG' selected — declare it in CLAUDE.md §3 and map it via docs/work-tracking/adapters.md; no BACKLOG.md created." ;;
 esac
 mkdir -p docs/architecture
 [ -f docs/architecture/ADR-000-stack.md ] || { cp docs/ADR-000-EXAMPLE.md docs/architecture/ADR-000-stack.md; sedi "s/\[YYYY-MM-DD\]/${DATE}/g" docs/architecture/ADR-000-stack.md; }
