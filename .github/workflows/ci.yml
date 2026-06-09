@@ -43,6 +43,8 @@ jobs:
         run: sh conformance/resilience-ready.sh
       - name: Resilience-ready self-test (na/no-surface/ok/placeholder/missing fixtures)
         run: sh conformance/resilience-ready.sh --selftest
+      - name: DORA collector smoke (executes + degrades cleanly)
+        run: sh scripts/dora.sh --selftest
 
   bootstrap:
     runs-on: ubuntu-latest
