@@ -15,8 +15,10 @@ fail=0
 
 if [ ! -f "$S" ]; then
   echo "FAIL: $S missing — no .claude/ settings to register the guard"; fail=1
-elif ! grep -q 'PreToolUse' "$S" || ! grep -q 'guard\.sh' "$S"; then
-  echo "FAIL: $S does not register the guard (need a PreToolUse hook invoking guard.sh)"; fail=1
+elif ! grep -q 'PreToolUse' "$S" || ! grep -qE '"command".*guard\.sh' "$S"; then
+  # require guard.sh inside a "command" value (an actually-invoked hook), not a stray
+  # mention elsewhere in the JSON — closes a false-pass on a guard.sh reference in prose.
+  echo "FAIL: $S does not register the guard (need a PreToolUse hook whose command runs guard.sh)"; fail=1
 else
   echo "PASS: guard registered as a PreToolUse hook in settings.json"
 fi
