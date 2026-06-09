@@ -37,3 +37,5 @@ A **conformance check** proves that a reference implementation still satisfies i
 > The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.
 
 > **Note on `inception-done.sh` at the kit root:** this gate is *expected to FAIL* when run against the kit's own repository — the kit is the reference/template **source**, not an instantiated project (it has no `ADR-000`, `RUNBOOK.md`, etc.). It passes only inside a project that has completed Inception. Do not "fix" the kit root to satisfy it.
+
+> **Progressive delivery (reference, no separate check):** `definition-of-deployable.md`'s progressive-delivery + smoke-gate rows pair with [`../docs/operations/progressive-delivery.md`](../docs/operations/progressive-delivery.md) for the *how* (canary/blue-green + smoke gates at every promotion boundary). The checklist is the conformance; the reference completes the triad.

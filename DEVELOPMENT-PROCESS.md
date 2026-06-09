@@ -280,7 +280,7 @@ How to change a running system without breaking it — the release-engineering m
 
 ### Progressive delivery
 - Release by **canary or blue-green**, not big-bang: ship to a slice, watch SLOs/error rate (§9), then widen or abort.
-- **Default:** staged rollout (staging → small % → full). **Maturity step:** automated canary analysis. Same soft→gating progression as error budgets.
+- **Default:** staged rollout (staging → small % → full). **Maturity step:** automated canary analysis. Same soft→gating progression as error budgets. **Reference: `docs/operations/progressive-delivery.md`** (strategies, multi-stage smoke gates, canary analysis).
 
 ### Rollback vs. forward-fix
 - **Default to rollback** when production is degraded and the cause isn't obvious early in the incident — restore service first, diagnose after.
