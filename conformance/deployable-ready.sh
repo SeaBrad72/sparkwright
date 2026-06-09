@@ -20,12 +20,19 @@
 # Run at the Release gate (DEVELOPMENT-PROCESS.md §7); also self-tested in kit CI.
 set -eu
 
-# Does $1 (a workflow file) indicate a deploy surface?
+# Does $1 (a workflow file) indicate a deploy surface? We match only STRUCTURAL
+# deploy signals — a GitHub deployment `environment:` key, or a job KEY named
+# deploy-ish (`deploy:`, `deploy-prod:`). We deliberately do NOT match free-text
+# step `name:`/`id:` containing "deploy": that over-triggers on benign workflows
+# like a "deploy docs" GitHub Pages step, which would wrongly force release-readiness
+# on a non-service project (a library/CLI). Detection stays conservative; the
+# definition-of-deployable.md checklist is the gate of record, so a missed signal is
+# still caught by a human applying the checklist. (_wf is prefixed to avoid clobbering
+# a caller's `wf` loop variable — POSIX sh functions have no local scope.)
 wf_is_deploy() {
-  wf="$1"
-  if grep -Eq '^[[:space:]]*environment:' "$wf"; then return 0; fi
-  if grep -Eq '^[[:space:]]+deploy[A-Za-z0-9_-]*:[[:space:]]*$' "$wf"; then return 0; fi
-  if grep -Eiq '^[[:space:]]*(-[[:space:]]+)?(id|name):[[:space:]].*deploy' "$wf"; then return 0; fi
+  _wf="$1"
+  if grep -Eq '^[[:space:]]*environment:' "$_wf"; then return 0; fi
+  if grep -Eq '^[[:space:]]+deploy[A-Za-z0-9_-]*:[[:space:]]*$' "$_wf"; then return 0; fi
   return 1
 }
 
@@ -121,11 +128,30 @@ selftest() {
     echo "selftest FAIL: workflow-deployable should pass"; st_fail=1
   fi
 
+  # d5: a "deploy docs" GitHub Pages step name must NOT count as a deploy surface
+  # (anti-false-positive — a docs-only workflow shouldn't force release-readiness).
+  d5="$base/docsdeploy"; mkdir -p "$d5/.github/workflows"
+  printf 'jobs:\n  pages:\n    steps:\n      - name: deploy docs to pages\n        run: echo build\n' > "$d5/.github/workflows/pages.yml"
+  if check_dir "$d5" >/dev/null 2>&1; then
+    echo "selftest PASS: docs-deploy step -> N/A (not over-triggered)"
+  else
+    echo "selftest FAIL: docs-deploy step should be N/A, not a deploy surface"; st_fail=1
+  fi
+
+  # d6: deployable (Dockerfile) but NO RUNBOOK.md -> FAIL (the early-return path)
+  d6="$base/norunbook"; mkdir -p "$d6"
+  printf 'FROM scratch\n' > "$d6/Dockerfile"
+  if check_dir "$d6" >/dev/null 2>&1; then
+    echo "selftest FAIL: deployable without RUNBOOK should FAIL"; st_fail=1
+  else
+    echo "selftest PASS: deployable without RUNBOOK -> FAIL as expected"
+  fi
+
   if [ "$st_fail" -ne 0 ]; then
     echo "deployable-ready --selftest: FAIL" >&2
     return 1
   fi
-  echo "deployable-ready --selftest: OK (skip/OK/FAIL/workflow all behaved; fixtures left in $base)"
+  echo "deployable-ready --selftest: OK (skip/OK/FAIL/workflow/docs/no-runbook all behaved; fixtures left in $base)"
   return 0
 }
 
@@ -133,3 +159,4 @@ case "${1:-}" in
   --selftest) selftest ;;
   *)          check_dir "${1:-.}" ;;
 esac
+exit $?
