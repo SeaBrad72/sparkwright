@@ -45,6 +45,10 @@ jobs:
         run: sh conformance/resilience-ready.sh --selftest
       - name: DORA collector smoke (executes + degrades cleanly)
         run: sh scripts/dora.sh --selftest
+      - name: branch-protection three-state self-test (no silent pass)
+        run: sh conformance/branch-protection.sh --selftest
+      - name: conformance aggregate verify self-test (control vs doc)
+        run: sh conformance/verify.sh --selftest
 
   bootstrap:
     runs-on: ubuntu-latest
