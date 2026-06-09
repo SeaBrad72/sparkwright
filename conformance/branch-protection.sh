@@ -37,23 +37,35 @@ have_gh() {
   command -v gh >/dev/null 2>&1
 }
 
+# classify RC BODY — decide PASS/FAIL/UNVERIFIED from the HTTP outcome, NOT body substrings.
+# Only a genuine HTTP 200 (gh exit 0) is allowed to reach the required-settings check, so a
+# non-200 ERROR body that merely *names* the settings can never read as protected.
+classify() {
+  rc=$1; body=$2
+  if [ "$rc" = "0" ]; then
+    # HTTP 200: this IS the live protection config — verify the required settings are present.
+    ok=0
+    printf '%s' "$body" | grep -q '"required_pull_request_reviews"' || { echo "FAIL: required PR reviews not enabled on $BRANCH"; ok=1; }
+    printf '%s' "$body" | grep -q '"required_status_checks"' || { echo "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
+    [ "$ok" -eq 0 ] && echo "OK: $BRANCH on ${REPO:-?} is protected (PR reviews + status checks required)."
+    exit "$ok"
+  fi
+  # Non-200. A definitive "no protection" (404) is a real FAIL; anything else (403 admin-rights,
+  # 401, rate-limit, empty/transient body) is NOT determinable here -> UNVERIFIED (never a pass).
+  if printf '%s' "$body" | grep -q 'Branch not protected'; then
+    echo "FAIL: $BRANCH on ${REPO:-?} has no branch protection."; exit 1
+  fi
+  unverifiable "protection endpoint returned non-200 (token may lack repo-admin, or transient/empty) on ${REPO:-?}"
+}
+
 run() {
+  # selftest stub seam: inject a canned (rc, body) without touching the network or gh.
+  [ -n "${BP_STUB_RC:-}" ] && classify "$BP_STUB_RC" "${BP_STUB_BODY:-}"
   have_gh || unverifiable "gh not installed"
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
   [ -n "$REPO" ] || unverifiable "no GitHub repo context"
-  PROT=$(gh api "repos/$REPO/branches/$BRANCH/protection" 2>/dev/null || true)
-  if [ -z "$PROT" ] || printf '%s' "$PROT" | grep -q '"Branch not protected"'; then
-    echo "FAIL: $BRANCH on $REPO has no branch protection."
-    exit 1
-  fi
-  if printf '%s' "$PROT" | grep -Eq '"status":[[:space:]]*"40[13]"|Not Found|Resource not accessible'; then
-    unverifiable "branch-protection not readable (token lacks repo-admin) on $REPO"
-  fi
-  ok=0
-  printf '%s' "$PROT" | grep -q '"required_pull_request_reviews"' || { echo "FAIL: required PR reviews not enabled on $BRANCH"; ok=1; }
-  printf '%s' "$PROT" | grep -q '"required_status_checks"' || { echo "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
-  [ "$ok" -eq 0 ] && echo "OK: $BRANCH on $REPO is protected (PR reviews + status checks required)."
-  exit "$ok"
+  PROT=$(gh api "repos/$REPO/branches/$BRANCH/protection" 2>/dev/null) && rc=0 || rc=$?
+  classify "$rc" "$PROT"
 }
 
 selftest() {
@@ -65,6 +77,18 @@ selftest() {
   if [ "$rc" = "1" ]; then echo "selftest PASS: no-gh + CI -> exit 1 (FAIL escalation)"; else echo "selftest FAIL: no-gh+CI should be exit 1 (got $rc)"; st=1; fi
   out=$(CI= BP_FORCE_NO_GH=1 sh "$0" --require 2>&1) && rc=0 || rc=$?
   if [ "$rc" = "1" ]; then echo "selftest PASS: no-gh + --require -> exit 1"; else echo "selftest FAIL: no-gh+--require should be exit 1 (got $rc)"; st=1; fi
+  # HTTP-status-based parse (stub seam): only a real 200 with both settings is a pass.
+  out=$(CI= BP_STUB_RC=0 BP_STUB_BODY='{"required_pull_request_reviews":{},"required_status_checks":{}}' sh "$0" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" = "0" ]; then echo "selftest PASS: 200 + both settings -> exit 0"; else echo "selftest FAIL: 200+both should pass (got $rc)"; st=1; fi
+  out=$(CI= BP_STUB_RC=0 BP_STUB_BODY='{}' sh "$0" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" = "1" ]; then echo "selftest PASS: 200 + missing settings -> exit 1"; else echo "selftest FAIL: 200+missing should fail (got $rc)"; st=1; fi
+  out=$(CI= BP_STUB_RC=1 BP_STUB_BODY='{"message":"Branch not protected","status":"404"}' sh "$0" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" = "1" ]; then echo "selftest PASS: 404 not-protected -> exit 1"; else echo "selftest FAIL: 404 should fail (got $rc)"; st=1; fi
+  out=$(CI= BP_STUB_RC=1 BP_STUB_BODY='{"message":"Must have admin rights to Repository."}' sh "$0" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" = "2" ]; then echo "selftest PASS: 403 admin-rights -> exit 2 (UNVERIFIED)"; else echo "selftest FAIL: 403 should be UNVERIFIED (got $rc)"; st=1; fi
+  # the spoof: a non-200 error body that NAMES the settings must NOT read as a pass.
+  out=$(CI= BP_STUB_RC=1 BP_STUB_BODY='{"message":"validation failed","errors":["required_pull_request_reviews","required_status_checks"]}' sh "$0" 2>&1) && rc=0 || rc=$?
+  if [ "$rc" = "2" ]; then echo "selftest PASS: non-200 spoof body -> exit 2 (NOT a false pass)"; else echo "selftest FAIL: spoof body must not pass (got $rc)"; st=1; fi
   [ "$st" = "0" ] && echo "branch-protection --selftest: OK"
   return "$st"
 }

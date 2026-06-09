@@ -21,6 +21,8 @@ Replace the binary OK / Informational-exit-0 with three outcomes:
 - **exit 1** — verified *not* protected, or a required setting missing (real fail).
 - **exit 2** — **could not verify** (no `gh`, unauthenticated, or no GitHub remote). Prints `UNVERIFIED: …` — never the word OK/pass.
 
+**Parse method (HTTP-status-based, not body-substring):** the decision keys on the **gh exit code / HTTP status**, never on grepping the response body for substrings. Only a genuine HTTP 200 (gh exit 0) reaches the required-settings check; a non-200 error body that merely *names* `required_pull_request_reviews`/`required_status_checks` can therefore never read as protected. 404 "Branch not protected" → FAIL; any other non-200 (403 admin-rights, 401, rate-limit, empty/transient) → UNVERIFIED. A `BP_STUB_RC`/`BP_STUB_BODY` seam makes every branch deterministically self-testable (incl. the spoof case). *(Added per the 9a security review — substring-grepping a discarded-status body was a residual false-PASS vector.)*
+
 **CI escalation:** when `${CI:-}` is non-empty (GitHub Actions sets `CI=true`), an unverifiable result escalates to **exit 1 (FAIL)** — in CI the check *must* be runnable; a silent skip there is the dangerous case. A `--require` flag forces the same escalation anywhere (for adopters who wire it into a gate).
 
 Add `--selftest` (mirrors the other conformance scripts): exercises the three states with stubbed conditions (force-no-gh path → exit 2 locally; `CI=1` + force-no-gh → exit 1), printing `branch-protection --selftest: OK`. Deterministic, no network.
