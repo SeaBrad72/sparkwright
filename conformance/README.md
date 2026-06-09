@@ -12,6 +12,17 @@ A **conformance check** proves that a reference implementation still satisfies i
 - **In the kit's own CI** (`.github/workflows/ci.yml`) — the kit proves it satisfies its own contracts.
 - **In an adopting project** — at the gate named by the contract (Review, Definition of Done, etc., per `../DEVELOPMENT-PROCESS.md` §7).
 
+## What a green run means — and doesn't
+
+Conformance checks fall into two honesty classes. Run **`sh conformance/verify.sh`** for an aggregate that labels each one:
+
+- **control** — proves a *working* control holds: the agent guard denies the destructive battery (`agent-autonomy.sh`), CI declares the required gate ids (`ci-gates.sh`), the guard is wired (`guard-wired.sh`), `main` is protected on the remote (`branch-protection.sh`), links resolve (`check-links.sh`), named backlog backends agree (`backlog-adapters.sh`), the image supply-chain is wired (`container-supply-chain.sh`). Green here is load-bearing.
+- **documentation / evidence** — proves a procedure is *written down* and (for readiness) a drill **date is recorded** — NOT that the rollback, restore, or fault-injection was actually tested: `deployable-ready.sh`, `dr-ready.sh`, `resilience-ready.sh`, and the paired `*-readiness.md` / `definition-of-deployable.md` checklists. The "did it actually work" half lives in the checklist's Manual rows, requiring release-manager / on-call evidence.
+
+**`UNVERIFIED` is not a pass.** A check that cannot run — e.g. `branch-protection.sh` with no `gh`/remote — exits **2** and is reported `UNVERIFIED`, distinct from PASS; in CI or under `--require` it escalates to a **FAIL**. A green dashboard hiding an unseen UNVERIFIED is the false assurance this layer exists to prevent.
+
+In short: **green proves controls hold and safety is documented; it does not prove the documented procedures were tested.**
+
 ## Index
 
 | Check | Type | Contract it proves | Gate |
@@ -33,6 +44,7 @@ A **conformance check** proves that a reference implementation still satisfies i
 | `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |
 | `backlog-adapters.sh` | script | `DEVELOPMENT-PROCESS.md` §6 (named backends agree across incept / §6 / the adapter guide) | CI / Review |
 | `guard-wired.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — the `.claude/` runtime guard is actually wired (fail-closed; gates Inception) | CI / Inception |
+| `verify.sh` | script | the honest **aggregate** — runs the checks, labels each **control** vs **documentation**, gates on control failures; prints what a green run does and does not prove | CI (`--selftest`) / Review |
 
 > The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.
 
