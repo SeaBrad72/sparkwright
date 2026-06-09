@@ -95,3 +95,40 @@ The guard is necessary, not sufficient:
 
 - **Pattern coverage.** `guard.sh` matches *common* destructive verbs. Your legacy repo may have **bespoke destructive tooling** (`make nuke-db`, a homegrown deploy/migration script) the patterns don't recognize. Extend `.claude/hooks/guard.sh` with your repo's destructive commands. Then **add a deny case for each new pattern to `conformance/agent-autonomy.sh`** and re-run it: that suite is a **regression guard, not a coverage oracle** — running it as-is only confirms the *existing* cases still pass; it does not validate your new patterns unless you add cases for them.
 - **Runtime scope.** The guard covers only the **Claude Code runtime**. Humans at a shell and other agent runtimes are **not** covered — and a legacy system is more likely to have other automation/people holding prod access. The **platform backstop is Org-owned** and matters *more* here because the blast radius pre-exists: production IAM, separate prod accounts/credentials, and deploy approvals (`../enterprise/README.md` — the human-coverage boundary). The kit's guard reduces agent risk; it does not replace platform controls.
+
+## 5. Adopting when you already fail the gates
+
+A real legacy repo arrives **below 80% coverage, with vulnerable deps, no SBOM, and an unprotected `main`**. The DoD's seven gates are blocking on every PR (`../../DEVELOPMENT-STANDARDS.md` §14), so your *first* PR after adoption can't merge. The wrong fix is to disable a gate — that fakes green and discards the kit's whole point. The right fix is a **governed exception**: a tracked, time-boxed, owned, ratified waiver with a remediation plan. *Don't hide the gap — declare it, own it, and put it on a clock.*
+
+### Day-one non-negotiables vs. deferrable gates
+
+| Tier | Gates | Posture |
+|------|-------|---------|
+| **Non-negotiable (never waivable)** | `secret-scan`, `branch-protection` | Must pass on day one. A repo never ships secrets, and segregation-of-duties is not optional. If secret-scan can't run, that is a blocker to fix, not a waiver. |
+| **Day-one quick wins** | lint · type-check · build | Usually green or near-green; fix these first (hours, not sprints). |
+| **Deferrable (time-boxed waiver)** | coverage · SBOM · provenance · dependency-vuln · a11y · container-image | Open a waiver with an owner, expiry (≤ 90 days), and remediation plan; tighten on a schedule. |
+
+### The ramp
+
+1. **Wire the non-negotiables first.** Protect `main` (`conformance/branch-protection.sh` must pass) and make secret-scan green. These have no waiver path.
+2. **Record a coverage baseline and ratchet up.** Don't gate on absolute 80% on day one — gate on *no regression below your current floor*:
+   ```sh
+   sh scripts/coverage-ratchet.sh <your-current-coverage-%>   # seeds .coverage-baseline on first run
+   ```
+   Commit `.coverage-baseline`. Each sprint, raise it as you add tests; the absolute-80% DoD is the target your coverage waiver's remediation plan drives toward.
+3. **Open waivers for the rest.** Copy `templates/WAIVER-REGISTER.md` to your repo root as `WAIVER-REGISTER.md`. Add one ratified row per gap (gate · reason · owner · opened · expires ≤ 90d · remediation plan · ratified-by). Validate it:
+   ```sh
+   sh conformance/waivers-valid.sh        # FAILs on expired / non-negotiable / over-90d / missing-field
+   ```
+4. **Tighten on a schedule, close waivers as you go.** A suggested cadence:
+
+   | When | Close out |
+   |------|-----------|
+   | Day one | secret-scan + branch-protection green (non-negotiable) |
+   | Week one | lint · type-check · build green |
+   | Each sprint | coverage ratchet +N points toward 80% |
+   | Within 90 days | SBOM + provenance wired; high/critical deps patched or pinned; a11y audited |
+
+5. **The register is the honest dashboard.** An expired waiver fails `waivers-valid.sh` — it forces a renew-or-fix decision instead of letting the gap rot silently. When every gap is closed, delete `WAIVER-REGISTER.md`; the check goes back to N/A and the full gate set is blocking unwaived.
+
+> This operationalizes the governed-exception process (`../enterprise/ratification-rbac.md`) for adoption. A waiver is **ratified by the security owner**, not self-granted — the same separation the kit enforces everywhere.

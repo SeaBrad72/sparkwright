@@ -44,6 +44,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |
 | `backlog-adapters.sh` | script | `DEVELOPMENT-PROCESS.md` §6 (named backends agree across incept / §6 / the adapter guide) | CI / Review |
 | `guard-wired.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — the `.claude/` runtime guard is actually wired (fail-closed; gates Inception) | CI / Inception |
+| `waivers-valid.sh` | script | `DEVELOPMENT-PROCESS.md` §13 / `DEVELOPMENT-STANDARDS.md` §14 — brownfield `WAIVER-REGISTER.md` is well-formed (no expired / non-negotiable / over-90d / missing-field waivers); N/A without a register | Review / CI (adoption-conditional) |
 | `verify.sh` | script | the honest **aggregate** — runs the checks, labels each **control** vs **documentation**, gates on control failures; prints what a green run does and does not prove | CI (`--selftest`) / Review |
 
 > The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.
