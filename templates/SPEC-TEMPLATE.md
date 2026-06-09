@@ -1,6 +1,6 @@
 # [Feature Name] — Spec (PRD)
 
-> **Template.** The design/PRD produced at the **Plan** gate (`DEVELOPMENT-PROCESS.md` §4, §7) from a validated `FEATURE-REQUEST` (or direct Discovery). Tool-neutral — if you use the superpowers brainstorming flow, that produces an equivalent spec; this is the manual form. A reviewer signs off before Build begins.
+> **Template.** The design/PRD produced at the **Plan** stage (`DEVELOPMENT-PROCESS.md` §4, the Loop) and signed off at the **spec gate** (§7, Gates & Checkpoints), from a validated `FEATURE-REQUEST` (or direct Discovery). Tool-neutral — if you use the superpowers brainstorming flow, that produces an equivalent spec; this is the manual form. A reviewer signs off before Build begins.
 
 **Author:** [name / agent] · **Intent owner:** [who accepts it] · **Date:** [date] · **Status:** draft / in review / approved
 
@@ -42,7 +42,7 @@
 [...]
 
 ## Data & privacy considerations
-> What data is touched; PII/consent/retention/children's-data implications (`DEVELOPMENT-STANDARDS.md` §2 + the enterprise privacy family). "None" is a valid, explicit answer.
+> What data is touched; PII/consent/retention/children's-data implications (`DEVELOPMENT-STANDARDS.md` §2 + the enterprise privacy family in `docs/enterprise/compliance-crosswalk.md`). "None" is a valid, explicit answer.
 
 [...]
 
