@@ -42,7 +42,14 @@ Documented in `.env.example` (committed, placeholders only). Required:
 
 ## 6. Disaster recovery
 - **RPO:** [< 24h default] · **RTO:** [< 4h default]
-- Backups: [cadence, location] · Restore verified: [date] (recurring-maintenance item)
+- **Per-tier targets (multi-criticality systems, from the BIA — `docs/continuity/BIA.md`):**
+
+  | Tier | RTO | RPO |
+  |------|-----|-----|
+  | [Critical] | [1h] | [15m] |
+  | [Standard] | [4h] | [24h] |
+
+- Backups: [cadence, location] · Restore verified: [date] (recurring-maintenance item — see `docs/continuity/backup-restore-drill.md`)
 
 ## 7. Test accounts & credentials
 - [account/role] — [location of credentials, e.g. secrets manager path] (never commit secrets)
