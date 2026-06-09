@@ -43,6 +43,7 @@ Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in refe
 - **`BRANCH-PROTECTION.md`** → how to protect `main` (required check, required review).
 
 Conformance: `sh conformance/ci-gates.sh profiles/typescript-node/ci.yml` asserts every gate is present.
+- **Container image supply-chain (this profile ships a service):** the reference `profiles/typescript-node/ci.yml` adds `gate-image-sbom` (Syft/CycloneDX, on PR) and `gate-image-provenance` (digest-bound, push-only) on top of the 8 universal gates. Verified by `conformance/container-supply-chain.sh`.
 
 ## 5. Security implementation
 - **Env/secrets:** `process.env.X` with a fail-fast check; never hardcode. `.env.local` gitignored.
@@ -69,6 +70,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/typescript-node/ci.yml` assert
 - **Deploy:** Vercel (apps) / Railway or container (services); merge to `main` → auto-deploy.
 - **Feature flags:** a flag service or env-backed flags; flag-off = fastest rollback.
 - **Rollout:** staging → production; **rollback:** redeploy previous deployment (Vercel/Railway one-click) or revert + redeploy.
+- **Container (service):** build the multi-stage non-root image (`profiles/typescript-node/Dockerfile`), run locally via `compose.yaml`/devcontainer (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** to Kubernetes via `deploy/k8s/` or the Helm chart in `deploy/helm/` (probes, resource limits, non-root `securityContext`). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. See `DEVELOPMENT-STANDARDS.md` §14 (container image supply-chain).
 
 ## 10. Recommended libraries
 Zod (validation) · Prisma (ORM) · bcrypt + jsonwebtoken (auth) · helmet + express-rate-limit (HTTP security) · pino/winston (logging) · Sentry (errors) · Vitest + Playwright + supertest (testing) · Anthropic SDK (`@anthropic-ai/sdk`) for AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.

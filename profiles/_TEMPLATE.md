@@ -58,6 +58,8 @@ ORM/migration tool; how expand-contract / zero-downtime migrations are done here
 ## 9. Release & deploy
 Build artifact, deploy target, feature-flag system, rollout mechanism, rollback command: [...]
 
+**Containerization & image supply-chain (if this stack ships a deployable service image):** describe the multi-stage non-root Dockerfile, the local dev mirror (compose/devcontainer), and how CI generates an image SBOM + a **digest-bound** provenance attestation (`DEVELOPMENT-STANDARDS.md` §14). See `profiles/typescript-node/` for the worked reference. If this stack does **not** ship a service image (library, CLI, batch, IaC), state **N/A + reason** here — the conditional check (`conformance/container-supply-chain.sh`) skips profiles with no `Dockerfile`.
+
 ## 10. Recommended libraries
 Vetted defaults (with the *why*) so teams don't re-litigate every choice: [...]
 
