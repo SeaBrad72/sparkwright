@@ -18,6 +18,7 @@ Make containers and their **supply-chain integrity** first-class in the kit — 
 - **Reference profile: `typescript-node`** — the most broadly legible deployable-service stack. One profile proves the bar; roll-out is a separate ratified slice.
 - **Non-service profiles excluded.** `terraform` (IaC) and library/batch-oriented profiles get no container scaffolding. The standard reads "*if you ship a deployable service image, then…*" — honestly scoped, not papered over.
 - **Default registry: GHCR.** Consistent with the kit's GitHub-Actions-centric CI. The push-only provenance job gains `packages: write` (scoped to that job only).
+- **Image SBOM via Syft (`anchore/sbom-action`), CycloneDX file** — chosen over `docker buildx --sbom` because it runs identically on PR and push (real scan-before-merge), matches the kit's existing CycloneDX-file SBOM convention and the audit-evidence "SBOM file + attestation" expectation, and is decoupled from registry referrers. SHA-pinned per §14.
 - **Reuse the 5e two-job least-privilege OIDC structure** — the PR-running `ci` job stays `contents: read`; `id-token: write` / `attestations: write` / `packages: write` live only on the push-to-main `provenance` job.
 
 ## 3. Deliverables
@@ -50,7 +51,7 @@ Add a subsection **"Container image supply-chain (conditional)"** after the exis
 - **`compose.yaml`** — app service (built from the Dockerfile) + a sample dependency (PostgreSQL, matching the profile's Prisma stack); env via `.env`; for local dev mirroring prod.
 - **`devcontainer.json`** — references the compose/Dockerfile for a reproducible dev environment.
 - **`ci.yml`** — extend the existing pipeline:
-  - In the `ci` job (PR + push), add `gate-image-sbom` — build the image and generate an **image SBOM** (e.g. `docker buildx build --sbom=true` or `anchore/sbom-action` against the built image). On PR this builds-and-scans but does not push.
+  - In the `ci` job (PR + push), add `gate-image-sbom` — build the image and generate an **image SBOM** with **Syft (`anchore/sbom-action`, SHA-pinned) in CycloneDX** form, emitting an `image-sbom.json` **file** uploaded as an artifact. This matches the kit's existing `gate-sbom` file convention and runs **identically on PR and push** (real scan-before-merge), unlike a buildx in-registry SBOM attestation that would only materialize on push. On PR this builds-and-scans but does not push.
   - In the push-only `provenance` job, add `packages: write`; build/push the image to **GHCR** on `main`; add `gate-image-provenance` — `actions/attest-build-provenance` with `subject-name` = the GHCR image and `subject-digest` = the pushed digest (`push-to-registry: true`).
   - The existing 8 universal gate-ids remain intact and unmodified. The two new ids (`gate-image-sbom`, `gate-image-provenance`) are **profile-local**, asserted by the new conditional conformance check, NOT added to `ci-gates.sh`'s REQUIRED set.
 - **`deploy/k8s/`** — `deployment.yaml` + `service.yaml`: liveness/readiness probes, resource `requests`/`limits`, `securityContext` (non-root, read-only root FS, drop capabilities), `RollingUpdate` strategy, image referenced **by digest** placeholder.
