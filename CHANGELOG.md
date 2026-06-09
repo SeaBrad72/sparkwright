@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-06-08
+
+Slice 7f — Doc refresh & consistency. Final sub-slice of Slice 7 (adoption/safety hardening). Docs-only; no behavior or contract change.
+
+### Changed
+- **Ratification-role casing** normalized to the §2 "functions, not titles" convention (labels first-word-capitalized, prose lowercase) across `DEVELOPMENT-PROCESS.md` §13, `docs/enterprise/ratification-rbac.md`, and `conformance/audit-evidence-checklist.md`. (`CHANGELOG.md` history left untouched.)
+- `README.md` now names all **10** shipped profiles (was 7); `README.md` "What's inside" and `CLAUDE.md` document-set tables refreshed to include the enterprise addendum and the current template/docs set.
+- `conformance/README.md` describes the kit's own CI in the present tense and adds a note that `inception-done.sh` is *expected to fail at the kit root* (the kit is the template source, not an instantiated project) — also noted in the script header.
+
+### Note
+MINOR (2.18.0): documentation consistency only. **Completes Slice 7** (environments & prod safety, personas, containers, work-tracking, brownfield, doc refresh).
+
 ## [2.17.0] - 2026-06-08
 
 Slice 7e — Brownfield adoption & `.claude/` hygiene. Fifth sub-slice of Slice 7. Makes the kit safely adoptable into an existing repo and enforces that the runtime guard is actually wired.

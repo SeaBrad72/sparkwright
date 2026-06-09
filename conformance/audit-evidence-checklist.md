@@ -4,7 +4,7 @@ Proves that a repo built with this kit can produce the **evidence** an auditor e
 
 ## How to use
 
-Copy this file into your project (or your audit/review record). For each control, fill **Present?** (`Y` / `N` / `N/A + reason`) and point **Evidence** at the concrete artifact. For **Auto** rows, run the named command and attach its output. A reviewer (Security Owner for governing controls — see [`../docs/enterprise/ratification-rbac.md`](../docs/enterprise/ratification-rbac.md)) signs off only when every applicable control has evidence **or** a governed, time-boxed exception on record. A waived control cites its exception ID; nothing is silently skipped.
+Copy this file into your project (or your audit/review record). For each control, fill **Present?** (`Y` / `N` / `N/A + reason`) and point **Evidence** at the concrete artifact. For **Auto** rows, run the named command and attach its output. A reviewer (security owner for governing controls — see [`../docs/enterprise/ratification-rbac.md`](../docs/enterprise/ratification-rbac.md)) signs off only when every applicable control has evidence **or** a governed, time-boxed exception on record. A waived control cites its exception ID; nothing is silently skipped.
 
 ## Security & engineering controls
 
@@ -55,8 +55,8 @@ Mark **N/A (no personal data)** for projects that handle none. Most are **Org-ow
 
 ## Governed exceptions
 
-Any waived control above must cite a **governed exception** (`../docs/enterprise/ratification-rbac.md`): a Security-Owner-ratified, time-boxed record (what / why / expiry / compensating control). List active exception IDs here at review time. An expired exception means the control is back in force.
+Any waived control above must cite a **governed exception** (`../docs/enterprise/ratification-rbac.md`): a security-owner-ratified, time-boxed record (what / why / expiry / compensating control). List active exception IDs here at review time. An expired exception means the control is back in force.
 
-| Exception ID | Control waived | Ratified by (Security Owner) | Expires | Compensating control |
+| Exception ID | Control waived | Ratified by (security owner) | Expires | Compensating control |
 |--------------|----------------|------------------------------|---------|----------------------|
 | | | | | |

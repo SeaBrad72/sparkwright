@@ -10,10 +10,10 @@ The kit's rule is *agents propose, humans ratify* and *builder ≠ sole merger* 
 
 | Role | May ratify | Must NOT solely ratify |
 |------|-----------|------------------------|
-| **Project Owner** | requirements & scope, architecture (ADRs), breaking changes | their own code PRs |
-| **Code Owner** (per CODEOWNERS domain) | code PRs in their domain — the independent reviewer | a PR they authored |
-| **Security Owner** | governing-doc changes (`CLAUDE.md`/STANDARDS/PROCESS), gate definitions, supply-chain/OIDC **posture exceptions**, secret-rotation policy, autonomy-tier raises | a posture exception they themselves need for their own change |
-| **Release Manager** | production deploys / promotions, rollback decisions | a deploy of their own unreviewed change |
+| **Project owner** | requirements & scope, architecture (ADRs), breaking changes | their own code PRs |
+| **Code owner** (per CODEOWNERS domain) | code PRs in their domain — the independent reviewer | a PR they authored |
+| **Security owner** | governing-doc changes (`CLAUDE.md`/STANDARDS/PROCESS), gate definitions, supply-chain/OIDC **posture exceptions**, secret-rotation policy, autonomy-tier raises | a posture exception they themselves need for their own change |
+| **Release manager** | production deploys / promotions, rollback decisions | a deploy of their own unreviewed change |
 
 ### Separation of duties
 - **Builder ≠ sole ratifier** of the same change (the core §12 rule, applied to every role).
@@ -22,16 +22,16 @@ The kit's rule is *agents propose, humans ratify* and *builder ≠ sole merger* 
 
 ## Mapping to GitHub
 
-- **Code Owner** → `CODEOWNERS` (per-path reviewers); see each profile's `CODEOWNERS` companion.
+- **Code owner** → `CODEOWNERS` (per-path reviewers); see each profile's `CODEOWNERS` companion.
 - **Builder ≠ sole merger** → branch protection requiring ≥1 review from someone other than the author; see each profile's `BRANCH-PROTECTION.md` companion and STANDARDS §14.
-- **Security Owner** → a CODEOWNERS entry on the governing docs (`CLAUDE.md`, `DEVELOPMENT-STANDARDS.md`, `DEVELOPMENT-PROCESS.md`, `.github/workflows/`, `conformance/`) so changes there require their review.
-- **Release Manager** → environment protection rules / required reviewers on the production deploy job.
+- **Security owner** → a CODEOWNERS entry on the governing docs (`CLAUDE.md`, `DEVELOPMENT-STANDARDS.md`, `DEVELOPMENT-PROCESS.md`, `.github/workflows/`, `conformance/`) so changes there require their review.
+- **Release manager** → environment protection rules / required reviewers on the production deploy job.
 
 ## Governed exceptions
 
 Required gates and posture are **universally required**. There is no "conditional" gate — an exception is an explicit, auditable event.
 
-**Process:** a posture/gate exception requires a **Security-Owner-ratified** record, time-boxed, before the waiver takes effect. Record it (issue, ADR, or exception log) with these fields:
+**Process:** a posture/gate exception requires a **security-owner-ratified** record, time-boxed, before the waiver takes effect. Record it (issue, ADR, or exception log) with these fields:
 
 | Field | Content |
 |-------|---------|
@@ -40,7 +40,7 @@ Required gates and posture are **universally required**. There is no "conditiona
 | Scope | repos/branches/jobs affected |
 | Justification | why the exception is necessary |
 | Compensating control | what mitigates the risk meanwhile |
-| Ratified by | the Security Owner (≠ the requester) |
+| Ratified by | the security owner (≠ the requester) |
 | Granted / Expires | dates — **time-boxed**, no open-ended waivers |
 | Review | date the exception is re-evaluated or auto-expires |
 

@@ -20,8 +20,8 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
-| **`templates/`** | `PROJECT-CLAUDE-TEMPLATE.md`, `BACKLOG-TEMPLATE.md`. |
-| **`docs/`** | `ADR-000-EXAMPLE.md` — worked stack-decision record. |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`. |
+| **`docs/`** | `ADR-000-EXAMPLE.md`; `enterprise/` (compliance addendum), `work-tracking/` (backlog adapters), `adoption/` (brownfield). |
 
 ## Quickstart (drop-in & go)
 1. Copy this kit into your new project repo.
@@ -57,7 +57,7 @@ So the kit **dictates the contract and offers the implementation**: rewrite the 
 
 ## Generate your own profile (any stack)
 
-The kit ships first-class profiles for **TypeScript/Node, Python, Java/Spring, C#/.NET, Go, Rust, and Kotlin** — but it is **never limited to them**. For any other stack:
+The kit ships first-class profiles for **TypeScript/Node, Python, Java/Spring, C#/.NET, Go, Rust, Kotlin, Data Engineering, ML, and Terraform** (10 in all) — but it is **never limited to them**. For any other stack:
 
 1. `sh scripts/new-profile.sh <stack>` — scaffolds `profiles/<stack>.md` (from the template) + a stub `profiles/<stack>/ci.yml` whose 8 quality-gate ids already satisfy `conformance/ci-gates.sh`.
 2. Fill the 11 profile sections and replace each `run:` command with your stack's tooling.

@@ -9,7 +9,7 @@ A **conformance check** proves that a reference implementation still satisfies i
 
 ## Where checks run
 
-- **In the kit's own CI** (a later slice) — the kit proves it satisfies its own contracts.
+- **In the kit's own CI** (`.github/workflows/ci.yml`) — the kit proves it satisfies its own contracts.
 - **In an adopting project** — at the gate named by the contract (Review, Definition of Done, etc., per `../DEVELOPMENT-PROCESS.md` §7).
 
 ## Index
@@ -29,3 +29,5 @@ A **conformance check** proves that a reference implementation still satisfies i
 | `guard-wired.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — the `.claude/` runtime guard is actually wired (fail-closed; gates Inception) | CI / Inception |
 
 > The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.
+
+> **Note on `inception-done.sh` at the kit root:** this gate is *expected to FAIL* when run against the kit's own repository — the kit is the reference/template **source**, not an instantiated project (it has no `ADR-000`, `RUNBOOK.md`, etc.). It passes only inside a project that has completed Inception. Do not "fix" the kit root to satisfy it.

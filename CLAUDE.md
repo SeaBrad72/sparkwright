@@ -14,10 +14,12 @@
 | **`DEVELOPMENT-PROCESS.md`** | How work flows & improves — the agentic SDLC (Inception → loop → operate). |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal quality bar — stack-neutral. |
 | **`profiles/<stack>.md`** | The concrete *how* for your chosen stack (config, examples, commands). Selected at Inception. |
-| **`templates/`** | `PROJECT-CLAUDE-TEMPLATE.md`, `BACKLOG-TEMPLATE.md`. |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`. |
 | **`START-HERE.md`** | Run this first — it walks you through Inception, including choosing your stack. |
 | **`MAINTAINING.md`** | How the kit itself is built, versioned (`VERSION`, `CHANGELOG.md`), and contributed back to — the contract/reference/conformance convention. |
 | **`conformance/`** | Executable checks/checklists proving a reference implementation satisfies its contract. |
+| **`docs/enterprise/`** | Enterprise addendum — compliance crosswalk, secrets-at-scale, ratification RBAC, audit-evidence (maps the kit's controls to SOC 2 + ISO 27001:2022). |
+| **`docs/`** (other) | `work-tracking/adapters.md` (backlog backends), `adoption/brownfield.md` (existing-repo adoption + `.claude/` hygiene). |
 
 New here? **Read `START-HERE.md`.**
 

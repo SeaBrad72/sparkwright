@@ -242,7 +242,7 @@ Changes flow through a promotion pipeline with a gate between each tier:
 | **Dev** | Active development / integration | CI green on the PR |
 | **QA** | Automated + integration acceptance | Dev green + test suite/integration pass |
 | **UAT** | Stakeholder / business acceptance | QA green + acceptance sign-off (PO/QA) |
-| **Prod** | Live users | UAT sign-off + **human approval (Release Manager)** |
+| **Prod** | Live users | UAT sign-off + **human approval (release manager)** |
 
 **Production promotion is always human-gated** regardless of agent autonomy tier (§13) — it is in the irreversible/high-blast set. Promotion is forward-only through the tiers; no skipping straight to Prod.
 
@@ -356,14 +356,14 @@ Autonomy is a spectrum; an agent's tier is **how far it proceeds before a human 
 
 | Role | May ratify |
 |------|-----------|
-| **Project Owner** | requirements & scope, architecture (ADRs), breaking changes |
-| **Code Owner** (per CODEOWNERS) | code PRs in their domain — the independent reviewer (builder ≠ sole merger, §12) |
-| **Security Owner** | governing-doc changes (`CLAUDE.md` / STANDARDS / PROCESS), gate definitions, **supply-chain / OIDC posture exceptions**, secret-rotation policy, autonomy-tier raises |
-| **Release Manager** | production deploys / promotions, rollbacks |
+| **Project owner** | requirements & scope, architecture (ADRs), breaking changes |
+| **Code owner** (per CODEOWNERS) | code PRs in their domain — the independent reviewer (builder ≠ sole merger, §12) |
+| **Security owner** | governing-doc changes (`CLAUDE.md` / STANDARDS / PROCESS), gate definitions, **supply-chain / OIDC posture exceptions**, secret-rotation policy, autonomy-tier raises |
+| **Release manager** | production deploys / promotions, rollbacks |
 
 One person may hold several roles in a small org, but **never both the builder and the sole ratifier of the same change**. Roles map to GitHub via CODEOWNERS + branch-protection required reviewers.
 
-**Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **Security-Owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`.
+**Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **security-owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`.
 
 ### Auditability
 Every agent action is **traceable**: which agent, what, when, against which work item — via commit/PR attribution, work-item ownership, and L1 retro notes. No anonymous agent changes.

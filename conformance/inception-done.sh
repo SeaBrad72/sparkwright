@@ -1,6 +1,8 @@
 #!/bin/sh
 # inception-done.sh — verify the Inception-Done gate (START-HERE.md / DEVELOPMENT-PROCESS.md §3)
 # in a project directory. Usage: sh conformance/inception-done.sh [dir]   (default: .)
+# NOTE: expected to FAIL at the kit root (the kit is the template source, not an
+# instantiated project). It passes only in a project that has completed Inception.
 set -eu
 
 DIR="${1:-.}"
