@@ -14,7 +14,9 @@ RUN npm run build            # produces dist/
 RUN npm prune --omit=dev     # keep only production deps for the runtime copy
 
 # ---- runtime: distroless, non-root by construction ----
-FROM gcr.io/distroless/nodejs24-debian12:nonroot AS runtime
+# Node 24 distroless ships on debian13. If your app has native modules, match the
+# builder OS (e.g. node:24-trixie-slim) so prebuilt binaries are ABI-compatible.
+FROM gcr.io/distroless/nodejs24-debian13:nonroot AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=builder /app/node_modules ./node_modules
