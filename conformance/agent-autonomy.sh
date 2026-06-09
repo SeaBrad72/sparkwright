@@ -112,6 +112,17 @@ assert_allow "rsync no delete"     '{"tool_name":"Bash","tool_input":{"command":
 assert_allow "git clean dry-run"   '{"tool_name":"Bash","tool_input":{"command":"git clean -n"}}'
 assert_allow "commit msg truncate" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"truncate log output\""}}'
 
+# --- 9b Layer 1b: scalpel rm — deny glob/data-file/absolute, ALLOW plain single files ---
+assert_deny "rm single data file"  '{"tool_name":"Bash","tool_input":{"command":"rm production.db"}}'
+assert_deny "rm glob db"           '{"tool_name":"Bash","tool_input":{"command":"rm *.db"}}'
+assert_deny "rm glob sqlite"       '{"tool_name":"Bash","tool_input":{"command":"rm -- *.sqlite"}}'
+assert_deny "rm absolute etc"      '{"tool_name":"Bash","tool_input":{"command":"rm /etc/hosts"}}'
+assert_deny "rm dump file"         '{"tool_name":"Bash","tool_input":{"command":"rm backup.dump"}}'
+assert_deny "rm dotenv"            '{"tool_name":"Bash","tool_input":{"command":"rm .env"}}'
+assert_allow "rm stale txt 1b"     '{"tool_name":"Bash","tool_input":{"command":"rm stale.txt"}}'
+assert_allow "rm build artifact"   '{"tool_name":"Bash","tool_input":{"command":"rm dist/bundle.js"}}'
+assert_allow "rm old lockfile"     '{"tool_name":"Bash","tool_input":{"command":"rm package-lock-old.json"}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

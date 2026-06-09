@@ -60,6 +60,19 @@ case "$TOOL" in
     if printf '%s' "$CMD" | grep -Eq '(^|[^[:alnum:]_])rm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alnum:]]*[rR]|--recursive)'; then
       emit_deny "13: recursive rm is irreversible - human-gated."
     fi
+    # 9b: non-recursive rm of a DANGEROUS target — a glob, a data/critical file extension,
+    # an absolute path, or a dotfile of record. Anchored to command position so a commit
+    # message mentioning rm is not matched. Plain relative single files (rm stale.txt,
+    # rm dist/bundle.js) remain ALLOWED to avoid over-blocking normal dev work.
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]'; then
+      if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?(--[[:space:]]+)?[^;&|[:space:]]*[*?[][^;&|[:space:]]*([[:space:]]|$)' \
+         || printf '%s' "$CMD" | grep -Eiq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$)' \
+         || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?/[^[:space:]]' \
+         || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]][^;&|]*(\.env|/\.git)([[:space:]]|$|/)' \
+         || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rm[[:space:]]+([^;&|]*[[:space:]])?\.env([[:space:]]|$)'; then
+        emit_deny "13: rm of a glob, data file, absolute path, or dotfile-of-record can be irreversible - human-gated."
+      fi
+    fi
     # 9b: non-rm destruction primitives. Binaries are anchored to COMMAND POSITION
     # (start, or after a ; && || | separator, optional sudo) so a word like "truncate"
     # inside a commit message is NOT matched — only an actually-invoked command is.
