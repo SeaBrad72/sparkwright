@@ -1,0 +1,30 @@
+# Local dev mirroring prod (DEVELOPMENT-STANDARDS.md §13 dev/prod parity).
+# COPY & ADAPT to your project root. The app builds from the same Dockerfile that ships.
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://app:app@db:5432/app
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:

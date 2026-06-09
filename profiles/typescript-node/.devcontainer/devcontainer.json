@@ -1,0 +1,9 @@
+{
+  "name": "typescript-node",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/app",
+  "forwardPorts": [3000],
+  "overrideCommand": true,
+  "postCreateCommand": "npm ci"
+}
