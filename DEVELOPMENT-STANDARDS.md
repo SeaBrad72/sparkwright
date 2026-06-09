@@ -249,4 +249,42 @@ Required reviewers on the `production` environment make the promotion human-gate
 
 ---
 
+## 15. Incident Response
+
+How a production incident is declared, commanded, resolved, and learned from. Aligns with **NIST SP 800-61** (computer-security incident handling) and SRE incident-management practice. This section owns *response to an incident*; *continuity and recovery planning* (backup/restore drills, RTO/RPO, BIA) lives with your RUNBOOK DR section and §10 (Data Management & Backup). The kit standardizes the **practice and artifacts**; incident **tooling** (paging, on-call rotation, status page) and the human on-call program are **Org-owned** — named here, wired to your platform.
+
+### Severity
+
+The same P0–P3 ladder the Operate triage step routes on (`DEVELOPMENT-PROCESS.md` §9):
+
+| Severity | Declare when | Response |
+|----------|--------------|----------|
+| **P0 — critical** | Production down · data loss · security breach · safety / children's-audience exposure (where applicable) | All-hands; declare immediately |
+| **P1 — high** | Major feature broken or significant user impact, no full outage | Urgent; declare |
+| **P2 — medium** | Degraded or partial; a workaround exists | Handle in-hours |
+| **P3 — low** | Minor / cosmetic | Scheduled fix |
+
+### Roles (functions, not titles)
+
+One person may hold several on a small team — these are functions, not headcount.
+
+- **Incident commander** — owns the response; the only role that changes the declared severity and authorizes mitigations. **A human commands**; **agents assist** — detect, correlate, summarize, draft the timeline, propose mitigations. Irreversible production actions are human-authorized (`DEVELOPMENT-PROCESS.md` §13 guard + autonomy tiers).
+- **Comms lead** — stakeholder and status updates at a stated cadence.
+- **Scribe** — keeps the timeline and records decisions as they happen.
+
+### Response arc
+
+```
+detect → declare (severity + named commander)
+       → stabilize / mitigate FIRST (flag-off · rollback — restore service before root-causing; DEVELOPMENT-PROCESS.md §10)
+       → resolve
+       → postmortem
+```
+
+### Postmortem (blameless)
+
+Required for **P0/P1**, recommended for P2. Use `templates/POSTMORTEM-TEMPLATE.md`. The postmortem examines **systems and contributing factors, never individual blame**. Its action items **route back into the loop** — backlog items (`DEVELOPMENT-PROCESS.md` §6) or recurring-maintenance (`DEVELOPMENT-PROCESS.md` §15) with an owner and due date — so the incident teaches the next iteration (the loop closes; `CLAUDE.md` principle 6).
+
+---
+
 **Remember:** this is the *universal* bar. Keep stack-specifics out of this file — they belong in `profiles/<stack>.md`. That separation is what lets any team adopt these standards without inheriting someone else's technology choices.

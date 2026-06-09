@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.0] - 2026-06-09
+
+Slice 8a — Incident Response standard + blameless postmortem template. First sub-slice of Slice 8 (continuity & safe-delivery hardening). Closes gap A1 (no incident-response standard + a dangling cross-reference).
+
+### Added
+- **`DEVELOPMENT-STANDARDS.md` §15 — Incident Response**: P0–P3 severity matrix, incident roles as functions (commander · comms · scribe; agents assist, a human commands), the detect→declare→mitigate→resolve→postmortem arc, and a blameless-postmortem requirement (P0/P1) whose action items route back into the loop. NIST SP 800-61 anchor; incident tooling named Org-owned.
+- **`templates/POSTMORTEM-TEMPLATE.md`** — an eight-section blameless postmortem (summary, impact, timeline, root cause, detection, went well/didn't, action items, blameless statement).
+- **`conformance/audit-evidence-checklist.md`** — an Incident-response row (CC7.3/7.4 / ISO A.5.24–A.5.28; Manual).
+
+### Fixed
+- The two **dangling cross-references** in `DEVELOPMENT-PROCESS.md` §8/§9 (lines 212, 225) that pointed at a non-existent STANDARDS incident-response section now cite `DEVELOPMENT-STANDARDS.md` §15. The artifact-flow Postmortem row links the new template.
+
+### Note
+MINOR (2.19.0): additive — a new standard section, a template, and reference fixes. No new required CI gate; no behavior change. §1–§14 of `DEVELOPMENT-STANDARDS.md` are unrenumbered (§15 appended).
+
 ## [2.18.0] - 2026-06-08
 
 Slice 7f — Doc refresh & consistency. Final sub-slice of Slice 7 (adoption/safety hardening). Docs-only; no behavior or contract change.

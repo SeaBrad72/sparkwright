@@ -30,6 +30,7 @@ Copy this file into your project (or your audit/review record). For each control
 | Authentication & authorization | CC6.1–6.3 / A.8.5, A.5.15 | auth code/config | Manual | |
 | Encryption at rest & in transit | CC6.1, CC6.7 / A.8.24 | infra/config | Manual | |
 | Observability / monitoring | CC7.2 / A.8.15, A.8.16 | dashboards, alerts | Manual | |
+| Incident response · postmortem | CC7.3, CC7.4 / A.5.24–A.5.28 | postmortem record(s) (`templates/POSTMORTEM-TEMPLATE.md`) + action-item backlog links | Manual | |
 | Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 | `docs/ADR-*` files | Manual (files present) | |
 | RUNBOOK · DR / rollback | CC7.4, CC7.5 / A.5.29, A.8.13 | RUNBOOK | Manual (file present) | |
 | Cost governance · rate-limiting | CC7.1 / A.8.6 | config, budget alerts | Manual | |

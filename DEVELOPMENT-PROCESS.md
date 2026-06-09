@@ -209,7 +209,7 @@ Same structure at every level (fractal); different scope and frequency. **Every 
 1. **L1 is a tiny note** — heaviness kills the per-increment habit.
 2. **Agents propose, humans ratify** — agents never silently edit the standards/process docs that govern them; proposed changes surface at L2.
 
-**Event retro = impediment / bug / anomaly handler.** Handles in-flight blockers, bugs, and anomalies. *Production* incidents follow Operate & Support (§9) and the Incident Response / postmortem procedure in `DEVELOPMENT-STANDARDS.md`.
+**Event retro = impediment / bug / anomaly handler.** Handles in-flight blockers, bugs, and anomalies. *Production* incidents follow Operate & Support (§9) and the Incident Response / postmortem standard in `DEVELOPMENT-STANDARDS.md` §15.
 
 ---
 
@@ -222,7 +222,7 @@ The loop is only closed when production teaches the next iteration. Operate is *
 monitor → detect (alert · error spike · support ticket · user feedback · usage telemetry)
         → triage (severity P0–P3) → route → resolve → feed back to Discover
 ```
-- **Route** decides: fix-now (Event retro → hotfix), backlog item, or spike. P0/P1 escalate to Incident Response + postmortem (`DEVELOPMENT-STANDARDS.md`).
+- **Route** decides: fix-now (Event retro → hotfix), backlog item, or spike. P0/P1 escalate to Incident Response + postmortem (`DEVELOPMENT-STANDARDS.md` §15).
 - **On-call / watch** — a human is on-call; **agents assist**: detect, summarize, correlate, and *propose* remediation. Production actions obey the autonomy/reversibility rules in §13 (irreversible prod actions are human-gated).
 - **Feedback edge** — production signals (errors, tickets, telemetry, user feedback) are **first-class Discover inputs**. This is the arc that turns a delivery pipeline into a closed-loop SDLC.
 
@@ -409,7 +409,7 @@ Artifacts are created **and maintained**, not written once. Each has a producing
 | `RUNBOOK.md` | Inception, then Release | deploy or ops change | shipping agent |
 | CHANGELOG | Release | every user-facing change | shipping agent |
 | L1 retro note | Done | per increment | building agent |
-| Postmortem | Incident (P0/P1) | — | responder + human |
+| Postmortem (`templates/POSTMORTEM-TEMPLATE.md`) | Incident (P0/P1) | — | responder + human |
 | Pattern library | L2 / L3 retro | new reusable pattern found | lead |
 
 The Definition of Done *requires* several of these; this flow says *when in the loop* each appears and who keeps it current.
