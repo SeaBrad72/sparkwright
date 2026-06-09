@@ -651,6 +651,8 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            # ADOPTER NOTE: read-only root FS — if your app writes to /tmp or
+            # node_modules/.cache it will crash (EROFS); mount a writable emptyDir.
             capabilities:
               drop: ["ALL"]
           resources:
