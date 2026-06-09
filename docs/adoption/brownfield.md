@@ -36,24 +36,44 @@ If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md`
 
 If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks and settings; **add** the kit's guard:
 
-1. Copy `.claude/hooks/guard.sh` into your `.claude/hooks/` (keep your existing hooks).
-2. In your `.claude/settings.json`, **add** the kit's PreToolUse guard hook (merge into any existing `hooks.PreToolUse` array — don't replace it):
+1. Copy `.claude/hooks/guard.sh` into your `.claude/hooks/` (keep your existing hooks), then `chmod +x .claude/hooks/guard.sh`.
+2. In your `.claude/settings.json`, **add** the kit's PreToolUse guard hook. **JSON has no duplicate keys** — how you add it depends on what's already there:
 
-```json
-"hooks": {
-  "PreToolUse": [
-    {
-      "matcher": "Bash|Write|Edit|NotebookEdit",
-      "hooks": [
-        { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
-      ]
-    }
-  ]
-}
-```
+   **If your `settings.json` has no `hooks` key:** add the whole block.
+
+   ```json
+   "hooks": {
+     "PreToolUse": [
+       {
+         "matcher": "Bash|Write|Edit|NotebookEdit",
+         "hooks": [
+           { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
+         ]
+       }
+     ]
+   }
+   ```
+
+   **If `hooks.PreToolUse` already exists:** do **not** paste a second `hooks` block (that makes invalid duplicate-key JSON and your guard or your existing hooks may silently vanish). Add only the **array element** into your existing `PreToolUse` list:
+
+   ```json
+   // inside your existing "PreToolUse": [ ... ] array, add:
+   {
+     "matcher": "Bash|Write|Edit|NotebookEdit",
+     "hooks": [
+       { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
+     ]
+   }
+   ```
+
+   After editing, confirm the file is valid JSON (e.g. `python3 -m json.tool .claude/settings.json >/dev/null && echo valid`).
 
 3. Leave `.claude/settings.local.json` alone — it is **gitignored** (personal, per-developer). Do not copy the kit's over yours.
-4. Verify: `sh conformance/guard-wired.sh` → must be `guard-wired: OK`.
+4. **Gate — do not start a Claude Code session in this repo until this prints `guard-wired: OK`:**
+
+   ```sh
+   sh conformance/guard-wired.sh
+   ```
 
 > The kit does **not** script this merge: a merge bug could clobber exactly the hooks we're protecting. The merge is human-performed; `guard-wired.sh` verifies the result.
 
@@ -73,5 +93,5 @@ It now checks that the **runtime guard is wired** (not just that `.claude/` exis
 
 The guard is necessary, not sufficient:
 
-- **Pattern coverage.** `guard.sh` matches *common* destructive verbs. Your legacy repo may have **bespoke destructive tooling** (`make nuke-db`, a homegrown deploy/migration script) the patterns don't recognize. Extend `.claude/hooks/guard.sh` with your repo's destructive commands, and re-run `sh conformance/agent-autonomy.sh` after editing.
+- **Pattern coverage.** `guard.sh` matches *common* destructive verbs. Your legacy repo may have **bespoke destructive tooling** (`make nuke-db`, a homegrown deploy/migration script) the patterns don't recognize. Extend `.claude/hooks/guard.sh` with your repo's destructive commands. Then **add a deny case for each new pattern to `conformance/agent-autonomy.sh`** and re-run it: that suite is a **regression guard, not a coverage oracle** — running it as-is only confirms the *existing* cases still pass; it does not validate your new patterns unless you add cases for them.
 - **Runtime scope.** The guard covers only the **Claude Code runtime**. Humans at a shell and other agent runtimes are **not** covered — and a legacy system is more likely to have other automation/people holding prod access. The **platform backstop is Org-owned** and matters *more* here because the blast radius pre-exists: production IAM, separate prod accounts/credentials, and deploy approvals (`../enterprise/README.md` — the human-coverage boundary). The kit's guard reduces agent risk; it does not replace platform controls.
