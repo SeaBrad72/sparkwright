@@ -90,6 +90,28 @@ assert_allow "prod-context read"       '{"tool_name":"Bash","tool_input":{"comma
 assert_allow "NODE_ENV prod build"     '{"tool_name":"Bash","tool_input":{"command":"NODE_ENV=production npm run build"}}'
 assert_allow "commit msg flush cache"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"flush the cache on deploy\""}}'
 
+# --- 9b Layer 1a: non-rm destruction primitives (must DENY) ---
+assert_deny "truncate -s 0"        '{"tool_name":"Bash","tool_input":{"command":"truncate -s 0 prod.db"}}'
+assert_deny "redirect truncate"    '{"tool_name":"Bash","tool_input":{"command":": > production.db"}}'
+assert_deny "cat /dev/null >"      '{"tool_name":"Bash","tool_input":{"command":"cat /dev/null > important.log"}}'
+assert_deny "dd of= file"          '{"tool_name":"Bash","tool_input":{"command":"dd if=/dev/zero of=database.sqlite"}}'
+assert_deny "dd of= device"        '{"tool_name":"Bash","tool_input":{"command":"dd if=/dev/zero of=/dev/sda bs=1M"}}'
+assert_deny "shred"                '{"tool_name":"Bash","tool_input":{"command":"shred -u -z secrets.env"}}'
+assert_deny "mkfs"                 '{"tool_name":"Bash","tool_input":{"command":"mkfs.ext4 /dev/sdb1"}}'
+assert_deny "wipefs"               '{"tool_name":"Bash","tool_input":{"command":"wipefs -a /dev/sda"}}'
+assert_deny "blkdiscard"           '{"tool_name":"Bash","tool_input":{"command":"blkdiscard /dev/nvme0n1"}}'
+assert_deny "find -delete"         '{"tool_name":"Bash","tool_input":{"command":"find /important -type f -delete"}}'
+assert_deny "find -exec rm"        '{"tool_name":"Bash","tool_input":{"command":"find . -name \"*.db\" -exec rm {} +"}}'
+assert_deny "rsync --delete"       '{"tool_name":"Bash","tool_input":{"command":"rsync -a --delete /empty/ /data/"}}'
+assert_deny "git clean -fdx"       '{"tool_name":"Bash","tool_input":{"command":"git clean -fdx"}}'
+assert_deny "mv to /dev/null"      '{"tool_name":"Bash","tool_input":{"command":"mv important.db /dev/null"}}'
+# --- 9b Layer 1a: over-block guards (must ALLOW) ---
+assert_allow "dd to project file"  '{"tool_name":"Bash","tool_input":{"command":"dd if=seed.img of=test-fixture.img"}}'
+assert_allow "find without delete" '{"tool_name":"Bash","tool_input":{"command":"find . -name \"*.ts\" -type f"}}'
+assert_allow "rsync no delete"     '{"tool_name":"Bash","tool_input":{"command":"rsync -a src/ dst/"}}'
+assert_allow "git clean dry-run"   '{"tool_name":"Bash","tool_input":{"command":"git clean -n"}}'
+assert_allow "commit msg truncate" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"truncate log output\""}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

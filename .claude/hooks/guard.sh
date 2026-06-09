@@ -60,6 +60,38 @@ case "$TOOL" in
     if printf '%s' "$CMD" | grep -Eq '(^|[^[:alnum:]_])rm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alnum:]]*[rR]|--recursive)'; then
       emit_deny "13: recursive rm is irreversible - human-gated."
     fi
+    # 9b: non-rm destruction primitives. Binaries are anchored to COMMAND POSITION
+    # (start, or after a ; && || | separator, optional sudo) so a word like "truncate"
+    # inside a commit message is NOT matched — only an actually-invoked command is.
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?(truncate|shred|wipefs|blkdiscard|mkfs(\.[a-z0-9]+)?)([[:space:]]|$)'; then
+      emit_deny "13: in-place file/device destruction (truncate/shred/wipefs/blkdiscard/mkfs) is irreversible - human-gated."
+    fi
+    # dd is a scalpel like rm: deny only when of= targets a device or a data-file extension
+    # (dd of=test-fixture.img stays allowed; dd of=/dev/sda and dd of=db.sqlite are denied).
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?dd[[:space:]]' \
+       && printf '%s' "$CMD" | grep -Eiq 'of=(/dev/|[^[:space:]]*\.(db|sqlite|sqlite3|sql|dump|pgdump|bak|rdb|mdb)([[:space:]]|$))'; then
+      emit_deny "13: dd of= a device or data file overwrites it irreversibly - human-gated."
+    fi
+    # redirection/empty-source truncation of an existing target
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*):[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
+       || printf '%s' "$CMD" | grep -Eq '/dev/null[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
+       || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(cat|cp)[[:space:]]+/dev/null[[:space:]]+[>]?[[:space:]]*[^[:space:]&|;]+' \
+       || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)echo[[:space:]]+-n[[:space:]]*>[[:space:]]*[^[:space:]&|;]+'; then
+      emit_deny "13: redirection/empty-source truncation zeroes a file irreversibly - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-delete([[:space:]]|$)' \
+       || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-exec[[:space:]]+(rm|shred|truncate)([[:space:]]|$)'; then
+      emit_deny "13: find -delete / -exec rm performs bulk irreversible deletion - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?rsync[[:space:]]+[^|]*--delete([[:space:]]|$|[^a-z])'; then
+      emit_deny "13: rsync --delete mirrors a source and removes destination files irreversibly - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)git[[:space:]]+clean[[:space:]]+[^|]*-[a-z]*[fdx]'; then
+      emit_deny "13: git clean -f/-d/-x force-deletes untracked/ignored files irreversibly - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?mv[[:space:]]+[^;&|]*[[:space:]]/dev/null([[:space:]]|$)'; then
+      emit_deny "13: moving a file onto /dev/null destroys its contents - human-gated."
+    fi
     if printf '%s' "$CMD" | grep -Eq 'git[[:space:]]+reset[[:space:]]+.*--hard'; then
       emit_deny "13: git reset --hard discards work irreversibly - human-gated."
     fi
