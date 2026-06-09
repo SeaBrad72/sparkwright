@@ -232,7 +232,7 @@ monitor → detect (alert · error spike · support ticket · user feedback · u
 **SLOs & error budgets (per service, per project):**
 - Define SLOs and an error budget for production services.
 - **Default: soft** — surface budget burn in metrics and retros; do not hard-gate releases.
-- **Maturity step: hard-gate** — a project at production scale may promote to SRE-style gating (non-critical releases freeze when the budget is burned until reliability recovers). Mirrors the Stage 1–4 scale progression in `DEVELOPMENT-STANDARDS.md`.
+- **Maturity step: hard-gate** — a project at production scale may promote to SRE-style gating (non-critical releases freeze when the budget is burned until reliability recovers). Mirrors the Stage 1–4 scale progression in `DEVELOPMENT-STANDARDS.md`. The same soft→hard promotion applies to the DORA change-failure rate / MTTR — see `docs/operations/dora-metrics.md`.
 
 **Cost / spend governance (per project):** track delivery and runtime cost — including agent/compute spend, which can grow fast. **Default: tracked and surfaced in metrics; a spend-gate (alert/throttle on budget burn) promotes at maturity** — same soft→gating progression as error budgets.
 
@@ -392,7 +392,7 @@ Replacing velocity/estimation, mapped to the industry-standard **DORA** four for
 | **Review latency** | — | The human bottleneck (agentic-specific) |
 | **Retro-action closure** | — | Does the learning loop actually close? |
 
-The last two have no DORA equivalent and are the agentic-specific signals: review latency (the real constraint) and whether *adjust* actually lands.
+The last two have no DORA equivalent and are the agentic-specific signals: review latency (the real constraint) and whether *adjust* actually lands. **Collect them:** `docs/operations/dora-metrics.md` (per-metric GitHub data source + the maturity-gating path + a dashboard pattern); `scripts/dora.sh` reports the GitHub-derivable subset (release cadence, PR lead time, review latency).
 
 ---
 
