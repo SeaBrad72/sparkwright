@@ -246,7 +246,7 @@ Changes flow through a promotion pipeline with a gate between each tier:
 
 A project may **collapse tiers with a one-line reason** (e.g. a tiny internal tool runs Dev→Prod) — but the contract is: at least one non-prod tier, gated promotion, and a human gate on prod. Environments and per-tier deploy triggers are declared in the project `CLAUDE.md` (§3).
 
-For containerized services, promotion moves an **attested image by digest** (not a rebuilt tag) across Dev → QA → UAT → Prod; rollback is a redeploy of the previous digest. Kubernetes + Helm is the reference orchestration (`profiles/typescript-node/deploy/`).
+For containerized services, promotion moves an **attested image by digest** (not a rebuilt tag) across Dev → QA → UAT → Prod; rollback is a redeploy of the previous digest. Kubernetes + Helm is **one** reference orchestration pattern (`profiles/typescript-node/deploy/`); the principle — promote by digest, not tag — holds for any orchestrator.
 
 ### Outcome validation
 
