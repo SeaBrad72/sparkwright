@@ -247,6 +247,8 @@ deploy-prod:
 ```
 Required reviewers on the `production` environment make the promotion human-gated at the platform level, complementing the `DEVELOPMENT-PROCESS.md` §13 agent guard.
 
+---
+
 ## 15. Incident Response
 
 How a production incident is declared, commanded, resolved, and learned from. Aligns with **NIST SP 800-61** (computer-security incident handling) and SRE incident-management practice. This section owns *response to an incident*; *continuity and recovery planning* (backup/restore drills, RTO/RPO, BIA) lives with your RUNBOOK DR section and §10. The kit standardizes the **practice and artifacts**; incident **tooling** (paging, on-call rotation, status page) and the human on-call program are **Org-owned** — named here, wired to your platform.
@@ -257,7 +259,7 @@ The same P0–P3 ladder the Operate triage step routes on (`DEVELOPMENT-PROCESS.
 
 | Severity | Declare when | Response |
 |----------|--------------|----------|
-| **P0 — critical** | Production down · data loss · security breach · safety / children's-audience exposure | All-hands; declare immediately |
+| **P0 — critical** | Production down · data loss · security breach · safety / children's-audience exposure (where applicable) | All-hands; declare immediately |
 | **P1 — high** | Major feature broken or significant user impact, no full outage | Urgent; declare |
 | **P2 — medium** | Degraded or partial; a workaround exists | Handle in-hours |
 | **P3 — low** | Minor / cosmetic | Scheduled fix |
