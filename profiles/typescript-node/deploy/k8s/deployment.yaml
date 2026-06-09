@@ -1,5 +1,7 @@
 # Reference k8s Deployment for the TypeScript/Node profile. COPY & ADAPT.
 # Image is referenced BY DIGEST (immutable) — the attested digest from CI.
+# For HA production, also add: a startupProbe (slow-starting apps), a PodDisruptionBudget
+# (minAvailable: 1), and topologySpreadConstraints (spread replicas across nodes).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +37,10 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            # ADOPTER NOTE: with a read-only root FS, an app that writes to /tmp or
+            # node_modules/.cache will crash (EROFS). Mount a writable emptyDir:
+            #   volumeMounts: [{ name: tmp, mountPath: /tmp }]
+            # and under spec.template.spec: volumes: [{ name: tmp, emptyDir: {} }]
             capabilities:
               drop: ["ALL"]
           resources:
