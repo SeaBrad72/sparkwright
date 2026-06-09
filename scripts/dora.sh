@@ -17,6 +17,7 @@ set -eu
 
 WINDOW="${WINDOW:-30}"
 case "$WINDOW" in ""|*[!0-9]*) echo "WINDOW must be a positive integer" >&2; exit 2 ;; esac
+[ "$WINDOW" -gt 0 ] || { echo "WINDOW must be a positive integer (got 0)" >&2; exit 2; }
 
 have_gh() {
   [ "${DORA_FORCE_NO_GH:-0}" = "1" ] && return 1
@@ -87,6 +88,7 @@ case "${1:-}" in
   --window)
     WINDOW="${2:-}"
     case "$WINDOW" in ""|*[!0-9]*) echo "usage: --window needs a positive integer" >&2; exit 2 ;; esac
+    [ "$WINDOW" -gt 0 ] || { echo "usage: --window needs a positive integer (got 0)" >&2; exit 2; }
     report; exit 0 ;;
   "") report; exit 0 ;;
   *) echo "usage: sh scripts/dora.sh [--window DAYS] | --selftest" >&2; exit 2 ;;
