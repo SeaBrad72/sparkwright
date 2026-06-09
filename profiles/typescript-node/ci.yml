@@ -7,6 +7,7 @@
 #
 # HARDENING (do before production):
 #  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
+#    Note `anchore/sbom-action@v0` is a MAJOR-version float (highest-risk) — pin it first.
 #  - Pin tool installs to exact versions.
 #  - OIDC is least-privilege here: id-token:write / packages:write live only on the
 #    push-only provenance jobs, so PR-triggered steps cannot mint a token or push an
@@ -81,6 +82,12 @@ jobs:
 
       # --- conditional container image supply-chain (service profile) ---
       # Builds the image and scans it on EVERY PR (real scan-before-merge); no push here.
+      # NOTE: this PR-time build and the push-only `image-provenance` build are independent,
+      # so the scanned digest is not guaranteed identical to the attested digest. Least-
+      # privilege forbids the PR job from pushing, so a single shared build can't span both.
+      # For production, make SBOM and provenance cover identical bits: e.g. in image-provenance,
+      # also generate an SBOM of the pushed digest (Syft against ghcr.io/...@<digest>) and
+      # attest it alongside provenance — so the release SBOM matches the attested image.
       - name: Build container image (local, for SBOM scan)
         run: docker build -t ts-node-app:ci .
 
@@ -142,17 +149,22 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute lowercase image name
+        id: image
+        # GHCR stores image paths lowercase; github.repository may be mixed-case
+        # (e.g. SeaBrad72/App). A mixed-case subject-name breaks attestation verification.
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         id: build-push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
       - name: Attest image provenance (digest-bound)
         id: gate-image-provenance
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name: ghcr.io/${{ github.repository }}
+          subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build-push.outputs.digest }}
           push-to-registry: true
