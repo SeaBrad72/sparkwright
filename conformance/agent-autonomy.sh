@@ -149,6 +149,23 @@ assert_allow "curl GET api"        '{"tool_name":"Bash","tool_input":{"command":
 assert_allow "curl download -O"    '{"tool_name":"Bash","tool_input":{"command":"curl -O https://example.com/file.tgz"}}'
 assert_allow "scp in commit msg"   '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"document scp usage\""}}'
 
+# --- 9b Layer 1e: cloud/infra capability families (must DENY) ---
+assert_deny "terraform destroy"    '{"tool_name":"Bash","tool_input":{"command":"terraform destroy -auto-approve"}}'
+assert_deny "aws ec2 terminate"    '{"tool_name":"Bash","tool_input":{"command":"aws ec2 terminate-instances --instance-ids i-123"}}'
+assert_deny "aws s3api del bucket"  '{"tool_name":"Bash","tool_input":{"command":"aws s3api delete-bucket --bucket b"}}'
+assert_deny "aws rds del cluster"   '{"tool_name":"Bash","tool_input":{"command":"aws rds delete-db-cluster --db-cluster-identifier c"}}'
+assert_deny "gcloud compute del"    '{"tool_name":"Bash","tool_input":{"command":"gcloud compute instances delete vm-1"}}'
+assert_deny "az vm delete"          '{"tool_name":"Bash","tool_input":{"command":"az vm delete --name v --yes"}}'
+assert_deny "helm uninstall"        '{"tool_name":"Bash","tool_input":{"command":"helm uninstall myrelease"}}'
+assert_deny "kubectl drain"         '{"tool_name":"Bash","tool_input":{"command":"kubectl drain node-1"}}'
+assert_deny "mongosh dropDatabase"  '{"tool_name":"Bash","tool_input":{"command":"mongosh --eval \"db.dropDatabase()\""}}'
+assert_deny "liquibase dropAll"     '{"tool_name":"Bash","tool_input":{"command":"liquibase dropAll"}}'
+# --- 9b Layer 1e: over-block guards (must ALLOW) ---
+assert_allow "aws s3 cp"           '{"tool_name":"Bash","tool_input":{"command":"aws s3 cp file s3://bucket/"}}'
+assert_allow "gcloud list"         '{"tool_name":"Bash","tool_input":{"command":"gcloud compute instances list"}}'
+assert_allow "terraform plan"      '{"tool_name":"Bash","tool_input":{"command":"terraform plan"}}'
+assert_allow "kubectl describe"    '{"tool_name":"Bash","tool_input":{"command":"kubectl describe pod api"}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

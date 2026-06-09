@@ -153,6 +153,21 @@ case "$TOOL" in
     if printf '%s' "$CMD" | grep -Eq 'aws[[:space:]]+s3[[:space:]]+rm[^|]*--recursive|aws[[:space:]]+s3[[:space:]]+rb|aws[[:space:]]+rds[[:space:]]+delete-db-instance|aws[[:space:]]+dynamodb[[:space:]]+delete-table|gcloud[[:space:]]+sql[[:space:]]+instances[[:space:]]+delete|az[[:space:]]+group[[:space:]]+delete|az[[:space:]]+sql[^|]*[[:space:]]delete'; then
       emit_deny "13: cloud resource deletion (storage/DB/instance) is irreversible - human-gated."
     fi
+    # 9b: cloud/infra destruction as capability families (verb-agnostic across vendors)
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)terraform[[:space:]]+(destroy|apply)([[:space:]]|$)'; then
+      emit_deny "13: terraform destroy/apply changes real infrastructure - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eiq '(^|[;&|][[:space:]]*)(aws|gcloud|az)[[:space:]][^|]*[[:space:]](delete|delete-[a-z-]+|terminate-[a-z-]+|remove|rb|destroy)([[:space:]]|$)'; then
+      emit_deny "13: cloud resource deletion/termination is irreversible - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)helm[[:space:]]+(uninstall|delete)([[:space:]]|$)' \
+       || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)kubectl[[:space:]]+(drain|cordon)([[:space:]]|$)'; then
+      emit_deny "13: helm uninstall / kubectl drain disrupts running workloads - human-gated."
+    fi
+    if printf '%s' "$CMD" | grep -Eiq '(mongosh?|cockroach|psql|mysql)[^|]*(dropDatabase|drop[[:space:]]+database)' \
+       || printf '%s' "$CMD" | grep -Eiq '(^|[;&|][[:space:]]*)(liquibase[[:space:]]+dropAll|flyway[[:space:]]+undo)'; then
+      emit_deny "13: database drop via a client/migration tool is irreversible - human-gated."
+    fi
     if printf '%s' "$CMD" | grep -Eq '(curl|wget|base64[[:space:]]+(-d|--decode)|xxd[[:space:]]+-r)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash)([[:space:]]|$)'; then
       emit_deny "13: piping a fetched/decoded payload into a shell is high-blast-radius - human-gated."
     fi
