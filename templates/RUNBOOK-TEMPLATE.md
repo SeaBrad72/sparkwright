@@ -41,8 +41,15 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Every release declares its rollback path before shipping (DEVELOPMENT-PROCESS.md §10).
 
 ## 6. Disaster recovery
-- **RPO:** [< 24h default] · **RTO:** [< 4h default]
-- Backups: [cadence, location] · Restore verified: [date] (recurring-maintenance item)
+- **RPO:** [< 24h default] · **RTO:** [< 4h default] — always fill these headline targets (replace the placeholders); for multi-criticality systems also fill the per-tier table below.
+- **Per-tier targets (multi-criticality systems, from the BIA — `docs/continuity/BIA.md`):**
+
+  | Tier | RTO | RPO |
+  |------|-----|-----|
+  | [Critical] | [1h] | [15m] |
+  | [Standard] | [4h] | [24h] |
+
+- Backups: [cadence, location] · Restore verified: [date] (recurring-maintenance item — see `docs/continuity/backup-restore-drill.md`)
 
 ## 7. Test accounts & credentials
 - [account/role] — [location of credentials, e.g. secrets manager path] (never commit secrets)

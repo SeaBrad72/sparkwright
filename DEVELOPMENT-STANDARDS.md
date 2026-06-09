@@ -145,7 +145,7 @@ WCAG 2.1 AA. Semantic elements (never style a `div` as a control). Full keyboard
 ## 10. Data Management & Backup
 
 - **Automated backups** for production data; **verify restore** works at least once per project (a recurring-maintenance item).
-- **Retention & DR** — define RPO/RTO in the RUNBOOK (sensible defaults: RPO < 24h, RTO < 4h).
+- **Retention & DR** — define RPO/RTO in the RUNBOOK (sensible defaults: RPO < 24h, RTO < 4h); **for multi-criticality systems, tier them by data criticality from the BIA** (`templates/BIA-TEMPLATE.md`). Prove restore with a drill (`docs/continuity/backup-restore-drill.md`) — a recorded drill is the floor, a passed drill is the bar.
 - **Migrations** versioned and reversible.
 
 ---

@@ -3,6 +3,24 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.0] - 2026-06-09
+
+Slice 8c — DR / backup-restore drill + BIA-at-Inception. Third sub-slice of Slice 8 (continuity & safe-delivery hardening). Closes gap A2 (DR was prose-only — no reference, no drill proof, no criticality tiering, no BIA). NIST SP 800-34 anchor.
+
+### Added
+- **`docs/continuity/backup-restore-drill.md`** — a stack-neutral restore-drill reference: the isolated-env do-no-harm rule, the 6-step drill, RTO/RPO actuals, and "recorded ≠ passed".
+- **`templates/BIA-TEMPLATE.md`** — a Business Impact Analysis (data inventory, criticality tiers, per-tier RTO/RPO, dependencies, max tolerable downtime). Produced at Inception for data-handling projects.
+- **`conformance/dr-readiness.md`** — a conditional DR-readiness checklist (Manual judgment rows + Auto rows) with a "necessary, not sufficient" callout and an explicit "the script's N/A is advisory; this checklist applies regardless" note.
+- **`conformance/dr-ready.sh`** — a conditional, fail-closed, **escalate-only** companion: for a project with a persistent-data surface it asserts a BIA exists, RUNBOOK RTO/RPO are filled (not placeholder), and a restore-drill date is recorded; otherwise N/A. Its `N/A` is **self-incriminating** (detection is conservative, so a miss never exempts a data project) and its success output self-discloses scope (documented + recorded ≠ tested). `--selftest` battery.
+- **Tiered RTO/RPO** by data criticality — `DEVELOPMENT-STANDARDS.md` §10 + RUNBOOK §6 per-tier table.
+- **BIA-at-Inception** — a `START-HERE.md` §6 step + a conditional Inception-Done line (data projects); `inception-done.sh` unchanged (a prompt, not a hard gate).
+- **`DEVELOPMENT-PROCESS.md`** — a conditional **DR readiness** gate (§7); the §15 recurring item references the drill.
+- **Definition of Done anchor** — "DR proven for data services" on the `CLAUDE.md` Production line, so a data service is not "done" without a passed DR-readiness check (backstops the Inception prompt).
+- **`audit-evidence-checklist.md`** — a DR-drill row (CC7.5, A1.2 / A.5.29, A.8.13–14; Auto-conditional).
+
+### Note
+MINOR (2.21.0): additive — a conditional gate, a conditional DoD item (data services, like the existing AI-eval / accessibility DoD items), a template, and references. No new universally-required CI gate; the 8 application gate-ids and §14 are unchanged.
+
 ## [2.20.0] - 2026-06-09
 
 Slice 8b — Definition of Deployable. Second sub-slice of Slice 8 (continuity & safe-delivery hardening). Closes gap B1 (release-readiness contract not enforced): converts §10's "every release declares its rollback path before it ships" into a conditional Release gate.

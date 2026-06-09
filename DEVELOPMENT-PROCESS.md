@@ -184,10 +184,11 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **Compliance gate** *(regulated domains)* | Does this meet the regulatory bar before release? | Security owner + human |
 | **15-Factor conformance** *(deployable services)* | Does the architecture satisfy the applicable 15 factors? (`conformance/15-factor-checklist.md`) | Reviewer + lead |
 | **Definition of Deployable** *(deployable services)* | Is the release safe to promote — rollback ready, smoke + monitoring wired? (`conformance/definition-of-deployable.md`) | Release manager + reviewer |
+| **DR readiness** *(data services)* | Is DR provable — BIA done, RTO/RPO tiered, restore drill passed? (`conformance/dr-readiness.md`) | On-call / operator + reviewer |
 | **Acceptance** | Did we build the *right thing*? (intent/need) | Intent owner |
 | **Definition of Done** | Truly complete? (per `DEVELOPMENT-STANDARDS.md`) | Automated + human |
 
-Review and Acceptance fail *differently* and are kept distinct. Threat-model, eval, compliance, 15-factor, and Definition-of-Deployable gates are **conditional** — they apply to sensitive / AI / regulated / deployable-service work respectively, not every item (don't impose them where they optimize nothing). For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
+Review and Acceptance fail *differently* and are kept distinct. Threat-model, eval, compliance, 15-factor, Definition-of-Deployable, and DR-readiness gates are **conditional** — they apply to sensitive / AI / regulated / deployable-service / data-handling work respectively, not every item (don't impose them where they optimize nothing). For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
 
 ---
 
@@ -420,7 +421,7 @@ Cadence-triggered (not intake-triggered) work that flows through the same board 
 - Dependency audits / vulnerability scans + SBOM refresh — the **deeper, full-tree** periodic audit (monthly + pre-release) complementing the per-PR dependency gate (`DEVELOPMENT-STANDARDS.md` §14)
 - Security scans
 - Stale feature-flag cleanup (flag debt)
-- Backup-restore verification (prove DR actually works)
+- Backup-restore verification (prove DR actually works — how: `docs/continuity/backup-restore-drill.md`; gate: `conformance/dr-readiness.md`)
 - Documentation-freshness sweeps (RUNBOOK/README still accurate)
 
 ---

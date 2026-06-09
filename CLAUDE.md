@@ -67,7 +67,7 @@ A feature is NOT done until ALL are true:
 **Docs** — README, API docs, ADRs, and **RUNBOOK** updated · `.env.example` current · known issues/tech-debt captured · **project resumable cold by another engineer or agent**.
 **Review & merge** — PR reviewed (builder ≠ sole reviewer) · approved · merged · branch deleted.
 **Accessibility** — keyboard-navigable · screen-reader/contrast checks pass (for user-facing UI).
-**Production** — deployed · smoke-tested · no errors in logs · rollback path ready · monitoring/alerting on critical paths.
+**Production** — deployed · smoke-tested · no errors in logs · rollback path ready · monitoring/alerting on critical paths · **DR proven for data services** (`conformance/dr-readiness.md`).
 
 **If any box is unchecked, it isn't done.**
 

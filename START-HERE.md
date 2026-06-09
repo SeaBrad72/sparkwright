@@ -68,6 +68,7 @@ Stand up formatter, linter, type-checker, test runner, and a CI pipeline with qu
 - **Cost/spend posture** (§9)
 - **Review routing / ownership** (§12) — remember: an agent never reviews-and-merges its own work
 - **WIP limits** and **environments** (local → staging? → prod)
+- **Business continuity** *(data-handling projects)* — run a BIA (`templates/BIA-TEMPLATE.md` → `docs/continuity/BIA.md`); set per-tier RTO/RPO in RUNBOOK §6; schedule the restore drill (`docs/continuity/backup-restore-drill.md`). Not required for stateless tools.
 
 ## 7. Assign roles
 Fill each function in `DEVELOPMENT-PROCESS.md` §2 — intent owner, lead/integrator, builder(s), reviewer(s), on-call, security owner — with a human or agent. One may hold several; enforce: builder ≠ sole reviewer; humans ratify governance/standards changes.
@@ -82,5 +83,6 @@ Fill each function in `DEVELOPMENT-PROCESS.md` §2 — intent owner, lead/integr
 - [ ] Project `CLAUDE.md`, `RUNBOOK.md`, backlog, seed roadmap created
 - [ ] Per-project config declared
 - [ ] Roles assigned
+- [ ] *(data-handling projects)* BIA done (`docs/continuity/BIA.md`); per-tier RTO/RPO set; restore drill scheduled
 
 **All checked?** Delete this file (or keep for reference), and enter the loop at **Discover** (`DEVELOPMENT-PROCESS.md` §4). Welcome aboard.
