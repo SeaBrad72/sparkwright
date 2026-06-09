@@ -375,7 +375,9 @@ Every agent action is **traceable**: which agent, what, when, against which work
 Track per agent (or agent type) and use to adjust autonomy: **rework rate · review-rejection rate · escalation rate · retro-action quality**. Reliability earns autonomy; regressions revoke it.
 
 ### Enforcement reference
-This matrix is tool-neutral. For **Claude Code** it is enforced by the committed `.claude/` layer: `settings.json` permission globs + a `PreToolUse` guard hook (`.claude/hooks/guard.sh`) that denies the irreversible/high-blast set above, plus `reviewer`/`security-reviewer` subagents for the §12 separations. Conformance: `conformance/agent-autonomy.sh` proves a tier breach is actually denied. Other agent runtimes express the same matrix their own way.
+This matrix is tool-neutral. For **Claude Code** it is enforced by the committed `.claude/` layer: `settings.json` permission globs + a `PreToolUse` guard hook (`.claude/hooks/guard.sh`) that denies the irreversible/high-blast set above and protects its own integrity, plus `reviewer`/`security-reviewer` subagents for the §12 separations. Conformance: `conformance/agent-autonomy.sh` proves a tier breach is actually denied. Other agent runtimes express the same matrix their own way.
+
+The guard is a **best-effort speed bump for honest agent mistakes, not a security boundary** — a deny-list over a shell cannot contain a determined or compromised agent. The real boundary is platform-owned (network-egress allowlist, separate prod credentials, sandboxed filesystem, scoped tokens); see [`docs/enterprise/platform-safety-boundary.md`](docs/enterprise/platform-safety-boundary.md). Adopt both.
 
 ---
 

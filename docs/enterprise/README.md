@@ -9,6 +9,7 @@ Governance, compliance, and privacy guidance for organizations adopting this kit
 | [compliance-crosswalk.md](compliance-crosswalk.md) | Maps the controls this kit enforces to SOC 2 (Security + Privacy) and ISO 27001:2022 Annex A. |
 | [secrets-at-scale.md](secrets-at-scale.md) | Managed-secret-store contract (Vault/KMS) + secret-manager client by stack. |
 | [ratification-rbac.md](ratification-rbac.md) | Which roles may ratify what; the governed-exception process. |
+| [platform-safety-boundary.md](platform-safety-boundary.md) | The Org-owned **real** safety boundary behind the agent guard — egress allowlist, separate prod credentials, sandboxed FS, scoped tokens. |
 | [audit-evidence-checklist.md](../../conformance/audit-evidence-checklist.md) | Per-control evidence checklist for an audit. |
 
 ## What this kit does — and does not — cover
