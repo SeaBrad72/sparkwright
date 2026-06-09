@@ -72,7 +72,7 @@ Log all critical operations to an immutable trail: who, what, when, on which res
 - **Idempotency** for retryable operations (idempotency keys).
 - **Retry with exponential backoff** for transient external failures.
 - **Circuit breakers** around unreliable dependencies.
-- **Graceful degradation** — handle the unhappy path; never assume the happy path. **→ profile** for idioms.
+- **Graceful degradation** — handle the unhappy path; never assume the happy path. **→ profile** for idioms. **Verify these under failure — don't just assert them** (`docs/operations/resilience-verification.md`).
 
 ---
 
@@ -92,7 +92,7 @@ Log all critical operations to an immutable trail: who, what, when, on which res
 - **Indexes** on queried columns; **pagination** on list endpoints; **no N+1** queries.
 - **Schema changes** via versioned migrations only — never manual production DDL. (Migration *discipline* — expand-contract, zero-downtime — is in `DEVELOPMENT-PROCESS.md` §10.)
 - **Performance/SLA targets** (tune per project): API < 200ms p95 standard / < 500ms complex; page TTI < 3s on a mid-tier connection; no unindexed query > 100ms without justification.
-- **Core Web Vitals** "Good" for user-facing web. **Load-test** before any public launch. **→ profile** for query tooling and perf budgets.
+- **Core Web Vitals** "Good" for user-facing web. **Load-test (and soak-test)** before any public launch (`docs/operations/resilience-verification.md`). **→ profile** for query tooling and perf budgets.
 
 ---
 
