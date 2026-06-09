@@ -31,6 +31,12 @@ jobs:
         run: sh conformance/deployable-ready.sh
       - name: Deployable-ready self-test (skip/OK/FAIL fixtures)
         run: sh conformance/deployable-ready.sh --selftest
+      - name: DR-readiness checklist present
+        run: test -f conformance/dr-readiness.md
+      - name: DR-ready conditional (N/A at kit root)
+        run: sh conformance/dr-ready.sh
+      - name: DR-ready self-test (na/stateless/ok/placeholder/no-bia fixtures)
+        run: sh conformance/dr-ready.sh --selftest
 
   bootstrap:
     runs-on: ubuntu-latest
