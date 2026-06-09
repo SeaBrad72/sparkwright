@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.24.1] - 2026-06-09
+
+Doc-coherence closeout — a holistic consistency pass after the Slice 8 arc (v2.19.0–2.24.0). Orientation-layer-only; no contract, behavior, or mechanism change. The kit's first **PATCH** release (corrections, not new capability).
+
+### Fixed
+- **README version badge** `v1.0.0` → `v2.24.0` (it had drifted from `VERSION`).
+- **Doc-set tables** (`README.md`, `CLAUDE.md`) now list `docs/operations/` (progressive delivery · resilience verification · DORA) and `docs/continuity/` (backup-restore drill · BIA) — previously undiscoverable from the entry-point docs — and add the `BIA` template (shipped in 8c) to the templates list.
+- **`DEVELOPMENT-PROCESS.md` §8 conditional-gates clause** — replaced the strained "respectively" 1:1 mapping (7 gates, 5 work-types) with an explicit each-applies-where-it-fits mapping.
+- **`DEVELOPMENT-PROCESS.md` §16 quick-reference GATES line** — added the four Slice-8 conditional gates ([15-factor] · [deployable] · [DR] · [resilience]).
+- **`conformance/definition-of-deployable.md`** row 11 — qualified the bare `§15` as `DEVELOPMENT-PROCESS.md §15` (disambiguated from the new `DEVELOPMENT-STANDARDS.md` §15 Incident Response added in 8a).
+- **`conformance/README.md`** — explained the escalate-only (`dr-ready.sh`) vs plain-N/A (`deployable-ready.sh` / `resilience-ready.sh`) distinction (N/A weight matches blast radius).
+
+### Note
+PATCH (2.24.1): documentation coherence only. No `VERSION`-gated behavior, no new gate, no contract change. The continuity & safe-delivery arc (Slice 8) remains complete.
+
 ## [2.24.0] - 2026-06-09
 
 Slice 8f — DORA metrics collection. Sixth and final sub-slice of Slice 8 (continuity & safe-delivery hardening). Closes gap C1 (DORA defined but not instrumented). **Completes Slice 8.**
