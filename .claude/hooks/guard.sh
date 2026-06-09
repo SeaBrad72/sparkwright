@@ -156,6 +156,16 @@ case "$TOOL" in
     if printf '%s' "$CMD" | grep -Eq '(curl|wget|base64[[:space:]]+(-d|--decode)|xxd[[:space:]]+-r)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash)([[:space:]]|$)'; then
       emit_deny "13: piping a fetched/decoded payload into a shell is high-blast-radius - human-gated."
     fi
+    # 9b: data-exfiltration channels (PARTIAL — binary-name denial only; interpreters
+    # (python -c, node -e) remain channels. The real control is the platform network-egress
+    # allowlist — see docs/enterprise/platform-safety-boundary.md. This is a speed bump.)
+    if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?(scp|sftp)[[:space:]]' \
+       || printf '%s' "$CMD" | grep -Eq '(curl|wget)[[:space:]][^|]*(-T[[:space:]]|--upload-file|-F[[:space:]]|--data-binary[[:space:]]*@|--post-file)' \
+       || printf '%s' "$CMD" | grep -Eq '\|[[:space:]]*(nc|ncat|netcat)[[:space:]]+[^[:space:]]' \
+       || printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)rclone[[:space:]]+(copy|sync|move)[[:space:]][^|]*[a-zA-Z0-9_-]+:' \
+       || printf '%s' "$CMD" | grep -Eq '\|[[:space:]]*mail[[:space:]]'; then
+      emit_deny "13: possible data exfiltration (scp/sftp/curl-upload/nc/rclone/mail). Partial guard - the boundary is the platform egress allowlist - human-gated."
+    fi
     # 9b: eval of a command substitution hides the real command from inspection.
     # Anchored to command position so "eval $(...)" inside a commit message is NOT matched.
     if printf '%s' "$CMD" | grep -Eq '(^|[;&|][[:space:]]*)(sudo[[:space:]]+)?eval[[:space:]]+[^;&|]*(\$\(|`)'; then
