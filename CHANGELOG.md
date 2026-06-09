@@ -3,6 +3,23 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.0] - 2026-06-09
+
+Runtime-safety hardening & honest reframe (Slice 9b — first slice of the "Honest Assurance & Adoption Reach" arc). An adversarial red-team of the agent guard found it **~16% effective and self-disabling** (183 payloads → 111 confirmed bypasses); this slice raises empirical effectiveness to **~91%** on the red-team battery, makes the guard protect its own integrity, and corrects the docs that oversold it. **MINOR** — additive guard coverage + new docs; no new universally-required CI gate.
+
+### Added
+- **Hardened deny-list** in `.claude/hooks/guard.sh`: non-rm destruction (`truncate`/`dd of=`/`shred`/`mkfs`/`wipefs`/`blkdiscard`/`find -delete`/`rsync --delete`/`git clean`/redirect-truncation/`mv →/dev/null`); **scalpel `rm`** (denies globs, data-file extensions, absolute paths, dotfiles-of-record while keeping plain `rm stale.txt` allowed); obfuscation-technique denial (`<decode> | sh`, `eval $(…)`, `git -c … push` indirection); **partial** exfiltration denial (`scp`/`sftp`/`curl`-upload/`wget --post-file`/`nc`/`rclone`/`mail`, honestly labelled partial); cloud/infra **capability families** (`terraform destroy`, `*-delete`/`terminate-*` across aws/gcloud/az, `helm uninstall`, `kubectl drain`, DB `drop` via clients/migration tools).
+- **Absolute self/control-plane protection**: no agent `Bash`/`Write`/`Edit`/`NotebookEdit` may modify `guard.sh`, `settings.json`/`.local`, `.github/workflows/`, `CODEOWNERS`, or `.git/` internals — fixes the `NotebookEdit` `notebook_path` blind spot. Human-only `KIT_GUARD_SELFEDIT=1` maintenance escape (an agent cannot set it; the hook process env is human-controlled).
+- **`docs/enterprise/platform-safety-boundary.md`** — the Org-owned *real* boundary (network-egress allowlist, separate prod credentials, sandboxed FS, scoped tokens), mapped into `compliance-crosswalk.md`.
+- **Regression corpus**: `conformance/agent-autonomy.sh` extended with the red-team bypasses (deny) plus over-block guards (allow) and a self-protection block — locking the fix in CI.
+
+### Changed
+- **Honest reframe** of the guard across its header, `.claude/README.md`, and `DEVELOPMENT-PROCESS.md` §13: a **best-effort speed bump for honest mistakes, not a security boundary**. The real boundary is platform-owned.
+
+### Known residuals (by design — the deny-list tail)
+- **Interpreter exfiltration** (`python3 -c`, `node -e`) is not pattern-blockable; the control is the platform egress allowlist (Layer 3).
+- **Variable-indirection obfuscation** (`X=rm; $X -rf`) is a *deliberate* evasion; the guard targets honest mistakes — deliberate evasion is the platform boundary's job.
+
 ## [2.24.1] - 2026-06-09
 
 Doc-coherence closeout — a holistic consistency pass after the Slice 8 arc (v2.19.0–2.24.0). Orientation-layer-only; no contract, behavior, or mechanism change. The kit's first **PATCH** release (corrections, not new capability).

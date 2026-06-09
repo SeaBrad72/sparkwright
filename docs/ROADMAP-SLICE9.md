@@ -25,7 +25,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | Step | Type | What | Sev | Ver |
 |------|:----:|------|:---:|:---:|
 | **A2** | A | **Adversarial guard red-team** — *do, don't read*: fuzz destructive patterns, encodings, quoting, MCP-tool paths against the live guard; enumerate every bypass (review already found 5: `find -delete`, `truncate`, `shred`, single-file `rm`, exfil) | — | — |
-| **9b** | B | **Guard hardening & scope** (R2) — close the red-team bypass list; add a "best-effort / non-exhaustive" posture + fail-toward-deny; extend coverage to mutating MCP tools (or require an MCP allow/deny policy at Inception); add a **PII/secret-egress** primitive (read-then-network) | P1 | MINOR |
+| **9b** ✅ | B | **Guard hardening & scope** (R2) — *shipped v2.25.0.* Red-team battery 16%→~91%; absolute self/control-plane protection (closes the self-disable P0); honest reframe; partial exfil + capability-family cloud rules; real boundary documented as Org-owned (`platform-safety-boundary.md`). Residuals by design: interpreter-exfil + var-indirection (deliberate-evasion → platform boundary). MCP-tool coverage deferred to 9d (runtime portability). | P1 | MINOR ✅ |
 | **9a** | B | **Conformance honesty** (R1) — aggregate "ready" output must state *documented vs verified* (not just the script header); add evidence-artifact slots (dated drill log / smoke run id) where feasible; `branch-protection.sh` **fails or redirects** off-GitHub instead of silently passing | P2 | MINOR |
 
 ### Stage III — Tier 1: adoption reach
