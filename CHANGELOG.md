@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.32.0] - 2026-06-10
+
+Stack-decision aid (Slice 9g, Tier 2 of the "Honest Assurance & Adoption Reach" arc). Closes the stack-undecided persona (review 5/10): the "⭐ key step" now has comparison material, and `incept` no longer silently defaults. **MINOR** — additive docs + a notice + a completeness check.
+
+### Added
+- **`docs/STACK-SELECTION.md`** — comparison matrix across all 10 profiles (Best for / Avoid when / domain), per-stack blurbs, and full-stack (SPA + API) / polyglot guidance.
+- **`## Best for / Avoid when`** sections in all 10 `profiles/<stack>.md`, each pointing at the guide.
+- **`conformance/stack-selection.sh`** — completeness drift-guard (guide present · every profile has the section · a matrix row per profile); `--selftest`. CI-gated.
+
+### Changed
+- **`incept` no longer silently defaults the stack** — prints a loud notice + the guide pointer when no `--stack` is given (the default still works; automation unaffected).
+- `START-HERE.md` §2 and `README.md` link the decision aid; `conformance/README.md` indexes the check.
+
 ## [2.31.0] - 2026-06-10
 
 Beginner on-ramp (Slice 9f, Tier 2 of the "Honest Assurance & Adoption Reach" arc). Closes the lowest-scoring review persona (beginner, 4/10), aimed by the A6 dogfood: the mechanical bootstrap was already fine; the friction was cognitive. **MINOR** — additive script + docs.

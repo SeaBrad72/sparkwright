@@ -41,7 +41,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | Step | Type | What | Sev | Ver |
 |------|:----:|------|:---:|:---:|
 | **9f** ✅ | B | **Beginner on-ramp** (R6) — *shipped v2.31.0.* `preflight.sh` (universal + per-stack, `--selftest`; incept fails fast); `GLOSSARY.md`; CLAUDE.md→ENGINEERING-PRINCIPLES rename disclosure (incept banner + START-HERE); solo/lite track. Aimed by the A6 dogfood (friction was cognitive, not mechanical). | P0¹ | MINOR ✅ |
-| **9g** | B | **Stack-decision aid** (R7) — comparison matrix + per-profile "Best for / Avoid when"; address multi-stack/full-stack (SPA + API); stop silently defaulting the undecided to typescript-node | P0¹ | MINOR |
+| **9g** ✅ | B | **Stack-decision aid** (R7) — *shipped v2.32.0.* `STACK-SELECTION.md` (matrix + per-stack Best-for/Avoid-when + full-stack guidance); per-profile sections (×10) drift-guarded by `stack-selection.sh`; incept default now loud-not-silent. | P0¹ | MINOR ✅ |
 | **9h** | B | **Hosted-tracker bootstrap + contract check** (R8) — `incept.sh --backlog jira` emits a concrete `JIRA-SETUP.md` (states, fields, the "Only Assignee" transition); add `tracker-contract.sh` that can verify a live Jira instance | P0¹ | MINOR |
 | **9i** | B | **Persona symmetry** (R9) — `TEST-PLAN-TEMPLATE.md` for QA; a lightweight auditable sign-off record (signer/date/gate/evidence) for QA-UAT & Designer-a11y; annotate the persona table to distinguish "dedicated artifact" from "works through someone else's" | P1 | MINOR |
 
