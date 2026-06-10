@@ -19,6 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: CI-gates conformance (reference workflow satisfies §14)
         run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
+      - name: CI-gates conformance — GitLab reference satisfies §14 (platform portability)
+        run: sh conformance/ci-gates.sh profiles/typescript-node/ci.gitlab-ci.yml
       - name: 15-Factor checklist present
         run: test -f conformance/15-factor-checklist.md
       - name: Agent-autonomy guard conformance (§13)
@@ -49,6 +51,10 @@ jobs:
         run: sh conformance/branch-protection.sh --selftest
       - name: conformance aggregate verify self-test (control vs doc)
         run: sh conformance/verify.sh --selftest
+      - name: Waiver-register validator self-test (governed-exception corpus)
+        run: sh conformance/waivers-valid.sh --selftest
+      - name: Coverage-ratchet self-test (no-regression-below-baseline)
+        run: sh scripts/coverage-ratchet.sh --selftest
 
   bootstrap:
     runs-on: ubuntu-latest

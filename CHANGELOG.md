@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.28.0] - 2026-06-09
+
+CI-platform portability (Slice 9d, Tier 1 of the "Honest Assurance & Adoption Reach" arc). Closes the review's convergent finding #3: the kit assumed **GitHub Actions** — `ci-gates.sh` only recognized GitHub `id: gate-X` syntax and `incept.sh` hardcoded `.github/workflows/ci.yml`, so a GitLab or Azure-DevOps adopter had to rewrite all CI and could never pass conformance. The contract was always the gate-ids; only the matcher and the reference were GitHub-bound. **MINOR** — additive matcher branch, a new reference, a new flag, and docs (no new universally-required gate; existing GitHub workflows are unaffected). The companion **9d-b runtime-guard portability** (extracting the guard deny-matrix into a runtime-agnostic core) is split out to its own slice — it edits the control-plane `guard.sh` and is human-gated at the terminal.
+
+### Added
+- **`profiles/typescript-node/ci.gitlab-ci.yml`** — a real GitLab CI reference expressing the same 8 gate-ids as GitLab job keys (`gate-lint:`, `gate-test:`, …), using the ts-node toolchain; comments name the GitLab-native equivalents (Secret-Detection / Dependency-Scanning / CycloneDX templates). Passes `ci-gates.sh`.
+- **`scripts/incept.sh --ci github|gitlab`** — wires the matching platform reference: `github` → `.github/workflows/ci.yml` (unchanged default); `gitlab` → `.gitlab-ci.yml` at the repo root plus `.gitlab/CODEOWNERS`. Validates the value before any mutation; the post-inception branch-protection hint is now platform-aware.
+- **`docs/operations/ci-platforms.md`** — the portability reference: the gate-id contract as the platform-neutral interface, how to express it on GitHub / GitLab / Azure DevOps (documented mapping, with the ADO step-name identifier caveat), and the **honest coupling note** — `branch-protection.sh` and `dora.sh` use the GitHub API; the GitLab/ADO equivalent is adopter-owned and reports UNVERIFIED rather than a false pass.
+
+### Changed
+- **`conformance/ci-gates.sh`** now recognizes a gate declared **either** as a GitHub Actions `id: gate-X` step **or** a GitLab CI `gate-X:` job key (line-anchored, comment-excluded — same anti-false-positive discipline). No behavior change for existing GitHub workflows. Header updated; the contract is the gate-ids, the platform is open.
+- **Tie-ins**: `DEVELOPMENT-STANDARDS.md` §14 conformance line (gates declared by id on any CI platform → `ci-platforms.md`) and the `conformance/README.md` `ci-gates.sh` index row (recognizes GitHub + GitLab).
+
 ## [2.27.0] - 2026-06-09
 
 Brownfield ratchet & waiver (Slice 9c, Tier 1 of the "Honest Assurance & Adoption Reach" arc). Closes the brownfield persona's P0: a legacy repo that already fails the gates had no sanctioned path to adopt — it could only abandon the kit or silently disable gates. Now adoption is a tracked, time-boxed, owned **governed exception**, not "comply or fake it". **MINOR** — additive templates/scripts/docs.

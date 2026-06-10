@@ -7,15 +7,16 @@
 # Usage: sh conformance/ci-gates.sh <workflow-file>
 # Exit:  0 = all gates present; 1 = missing gate(s) or bad usage.
 #
-# Matching is best-effort and structural: a gate counts only when `id: <gate>`
-# appears as a YAML key at the start of a line (leading whitespace allowed),
-# NOT inside a comment or a quoted value. This prevents a workflow from passing
-# by merely *mentioning* a gate id (e.g. `# id: gate-lint`) without running it.
-# It does not parse YAML, so a gate id inside a multi-line block scalar could
-# still be a false positive. For stronger guarantees use a YAML parser, e.g.
-#   yq -r '.jobs[].steps[].id' <workflow> | grep -Fxq <gate>
-# This shell check is a portable, zero-dependency gate and should be paired with
-# the pipeline actually running (the kit's own CI runs the real workflow).
+# Matching is best-effort and structural; a gate counts when it appears either as a
+# GitHub Actions step id — `id: <gate>` — OR as a GitLab CI job key — `<gate>:` at
+# column 0 — at the start of a line (NOT inside a comment or a quoted value). The
+# contract is the gate-ids; the CI platform is open (GitHub Actions, GitLab CI, or any
+# platform that adopts the ids — see docs/operations/ci-platforms.md). This prevents a
+# workflow passing by merely *mentioning* a gate id (e.g. `# id: gate-lint`).
+# It does not parse YAML, so a gate id inside a multi-line block scalar, or a non-gate
+# job coincidentally named `gate-X`, could still be a false positive. For stronger
+# guarantees use a YAML parser (e.g. `yq -r '.jobs[].steps[].id'`). This shell check is a
+# portable, zero-dependency gate and should be paired with the pipeline actually running.
 set -eu
 
 WORKFLOW="${1:-}"
@@ -35,7 +36,10 @@ REQUIRED="gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-d
 
 missing=""
 for gate in $REQUIRED; do
-  if ! grep -Eq "^[[:space:]]*(-[[:space:]]+)?id:[[:space:]]*[\"']?${gate}[\"']?[[:space:]]*(#.*)?\$" "$WORKFLOW"; then
+  # GitHub Actions step id, OR GitLab CI job key (a top-level job named exactly gate-X).
+  gh_id="^[[:space:]]*(-[[:space:]]+)?id:[[:space:]]*[\"']?${gate}[\"']?[[:space:]]*(#.*)?\$"
+  gl_job="^${gate}:[[:space:]]*(#.*)?\$"
+  if ! grep -Eq "$gh_id" "$WORKFLOW" && ! grep -Eq "$gl_job" "$WORKFLOW"; then
     missing="$missing $gate"
   fi
 done
