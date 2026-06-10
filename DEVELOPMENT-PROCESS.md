@@ -8,8 +8,6 @@
 
 **Relationship to other docs:** This is the **process** companion to `DEVELOPMENT-STANDARDS.md` (the universal quality bar) and `CLAUDE.md` (authoritative principles + Definition of Done). This doc owns *flow, cadence, and improvement*; the standards doc owns *what good looks like* (with stack specifics in your chosen `profiles/<stack>.md`). When they overlap, `CLAUDE.md` is authoritative.
 
-**Last Updated:** June 4, 2026
-
 ---
 
 ## 1. Governing Lens
@@ -53,9 +51,7 @@ The functions above are authoritative. **Personas are lenses on them** — an en
 | **Security owner** | Security owner | the security / ratification gate (§7, §13) | threat model in → gate pass / governed exception |
 | **Lead / Agent** | Lead / integrator, Builder | the whole loop | the board in → integrated, ratified work out |
 
-Markers above: *dedicated* = a template this persona owns in `templates/`; *shared* = the persona works through another artifact (no persona-specific template). The unmarked core roles (Engineer, Security owner, Lead/Agent) likewise work through shared artifacts — the spec/PR, the security gate, and the board — not a persona-specific template. The asymmetry is deliberate: not every lens needs its own template.
-
-QA's UAT acceptance ties to the Dev→QA→UAT→Prod model (§9); Designer's a11y sign-off ties to the Definition-of-Done accessibility item.
+Markers above: *dedicated* = a template this persona owns in `templates/`; *shared* = the persona works through another artifact (no persona-specific template). The unmarked core roles (Engineer, Security owner, Lead/Agent) likewise work through shared artifacts — the spec/PR, the security gate, and the board — not a persona-specific template. The asymmetry is deliberate: not every lens needs its own template. (QA's UAT acceptance ties to the Dev→QA→UAT→Prod model, §9; the Designer's a11y sign-off to the Definition-of-Done accessibility item.)
 
 ---
 
@@ -127,7 +123,7 @@ Discovery turns a raw idea into a **validated candidate** before it earns a plac
 - **Evidence** — what tells us this is real (signal, request volume, telemetry, support tickets)? Not "we assume."
 - **Success metric / hypothesis** — how will we know it worked? State it as a measurable hypothesis.
 - **Rough scope & risk** — small enough to slice? Any obvious risk/complexity/compliance flags?
-- **Innovation lens** — could AI materially improve this? Is there a reusable or product angle? (The surviving spirit of the archived innovation pipeline, as a prompt — not a separate doc.)
+- **Innovation lens** — could AI materially improve this? Is there a reusable or product angle?
 - **UX & accessibility lens** — is there a user-experience or visual surface? If so, the Designer informs the candidate here; capture rough flows/assets and flag the WCAG 2.1 AA accessibility obligation that the Definition of Done will check. The Designer signs the WCAG check at Review using `templates/A11Y-SIGNOFF-TEMPLATE.md`.
 
 **Output:** a candidate item with intent + a validation note, ready for Plan. Items that fail validation go to the roadmap parking lot, not the board.
@@ -192,7 +188,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **Acceptance** | Did we build the *right thing*? (intent/need) | Intent owner |
 | **Definition of Done** | Truly complete? (the enumerated exit gate in `CLAUDE.md`; quality bar in `DEVELOPMENT-STANDARDS.md`) | Automated + human |
 
-Review and Acceptance fail *differently* and are kept distinct. Threat-model, eval, compliance, 15-factor, Definition-of-Deployable, DR-readiness, and Resilience-readiness gates are **conditional** — each applies only where it fits: threat-model to sensitive/regulated features, eval to AI features, compliance to regulated domains, 15-factor / Definition-of-Deployable / Resilience-readiness to deployable services, DR-readiness to data-handling work — not every item (don't impose them where they optimize nothing). For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
+Review and Acceptance fail *differently* and are kept distinct. The gates marked *(…)* above are **conditional** — each applies only where its trigger fits (sensitive/regulated, AI, regulated domain, deployable service, data-handling); don't impose them where they optimize nothing. For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
 
 ---
 
