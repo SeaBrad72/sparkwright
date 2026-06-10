@@ -220,7 +220,7 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 
 **Provenance scope:** the SBOM and dependency/secret scans run on every PR; **build-provenance attestation attaches to a published build artifact** (there is nothing to attest on a change that produces no artifact). The pipeline owns provenance; the profile's reference shows where it attaches.
 
-**Conformance:** a project's pipeline is verified by `conformance/ci-gates.sh <workflow>`, which asserts every required gate is declared (the Definition-of-Done "CI/CD" check, `CLAUDE.md`).
+**Conformance:** a project's pipeline is verified by `conformance/ci-gates.sh <workflow>`, which asserts every required gate is declared (the Definition-of-Done "CI/CD" check, `CLAUDE.md`). Gates are declared **by id on any CI platform** — GitHub Actions `id: gate-X` steps, GitLab CI `gate-X:` job keys, or a documented mapping for other platforms — because the contract is the gate-ids, not a vendor. See `docs/operations/ci-platforms.md`.
 
 **CI security hardening (required posture, not a gate).** The provenance/attestation step requires `id-token: write`; grant it via a **separate job that runs only on push-to-main**, keeping the main gate job at `contents: read` so PR-triggered steps cannot mint an OIDC token a poisoned dependency could exfiltrate. Pin third-party actions to a full commit SHA in production. The cloud OIDC trust policy **MUST** restrict `sub` to the main-branch ref (`refs/heads/main`), never `pull_request`. The profile reference pipelines model this two-job split.
 
