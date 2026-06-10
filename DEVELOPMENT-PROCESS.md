@@ -45,13 +45,15 @@ The functions above are authoritative. **Personas are lenses on them** — an en
 
 | Persona | Holds function(s) | Plugs in at | Entry → exit artifact |
 |---------|-------------------|-------------|-----------------------|
-| **Product Owner / BA** | Intent owner | Discover → Plan; accepts increments | `FEATURE-REQUEST` in → accepted increment out |
-| **Designer** | *informs Intent owner (advisory — no standalone §2 function)* | Discover (UX input) → Review (a11y sign-off) | design assets / UX handoff in → accessibility sign-off |
+| **Product Owner / BA** | Intent owner | Discover → Plan; accepts increments | `FEATURE-REQUEST` in → accepted increment out *(dedicated)* |
+| **Designer** | *informs Intent owner (advisory — no standalone §2 function)* | Discover (UX input) → Review (a11y sign-off) | design assets / UX handoff in → `A11Y-SIGNOFF` out *(dedicated)* |
 | **Engineer** | Builder (often also Reviewer / Lead) | Plan → Build → Review | spec in → reviewed PR out |
-| **QA Engineer** | Reviewer (test lens) + acceptance | Review + UAT acceptance gate (§9 — "Environments & promotion") | test strategy/cases in → UAT sign-off out |
-| **DevOps / SRE** | On-call / operator | Release → Operate (promotion, deploy, rollback, monitoring) | promotion run in → operated service out |
+| **QA Engineer** | Reviewer (test lens) + acceptance | Review + UAT acceptance gate (§9 — "Environments & promotion") | `TEST-PLAN` in → `UAT-SIGNOFF` out *(dedicated)* |
+| **DevOps / SRE** | On-call / operator | Release → Operate (promotion, deploy, rollback, monitoring) | promotion run in → operated service out — works through `RUNBOOK` *(shared)* |
 | **Security owner** | Security owner | the security / ratification gate (§7, §13) | threat model in → gate pass / governed exception |
 | **Lead / Agent** | Lead / integrator, Builder | the whole loop | the board in → integrated, ratified work out |
+
+*Dedicated* = a template this persona owns in `templates/`; *shared* = the persona works through another artifact (no persona-specific template). The asymmetry is deliberate — not every lens needs its own template.
 
 QA's UAT acceptance ties to the Dev→QA→UAT→Prod model (§9); Designer's a11y sign-off ties to the Definition-of-Done accessibility item.
 
@@ -126,7 +128,7 @@ Discovery turns a raw idea into a **validated candidate** before it earns a plac
 - **Success metric / hypothesis** — how will we know it worked? State it as a measurable hypothesis.
 - **Rough scope & risk** — small enough to slice? Any obvious risk/complexity/compliance flags?
 - **Innovation lens** — could AI materially improve this? Is there a reusable or product angle? (The surviving spirit of the archived innovation pipeline, as a prompt — not a separate doc.)
-- **UX & accessibility lens** — is there a user-experience or visual surface? If so, the Designer informs the candidate here; capture rough flows/assets and flag the WCAG 2.1 AA accessibility obligation that the Definition of Done will check.
+- **UX & accessibility lens** — is there a user-experience or visual surface? If so, the Designer informs the candidate here; capture rough flows/assets and flag the WCAG 2.1 AA accessibility obligation that the Definition of Done will check. The Designer signs the WCAG check at Review using templates/A11Y-SIGNOFF-TEMPLATE.md.
 
 **Output:** a candidate item with intent + a validation note, ready for Plan. Items that fail validation go to the roadmap parking lot, not the board.
 
@@ -244,7 +246,7 @@ Changes flow through a promotion pipeline with a gate between each tier:
 |------|---------|------------------------|
 | **Dev** | Active development / integration | CI green on the PR |
 | **QA** | Automated + integration acceptance | Dev green + test suite/integration pass |
-| **UAT** | Stakeholder / business acceptance | QA green + acceptance sign-off (PO/QA) |
+| **UAT** | Stakeholder / business acceptance | QA green + acceptance sign-off (PO/QA) (record it with templates/UAT-SIGNOFF-TEMPLATE.md) |
 | **Prod** | Live users | UAT sign-off + **human approval (release manager)** |
 
 **Production promotion is always human-gated** regardless of agent autonomy tier (§13) — it is in the irreversible/high-blast set. Promotion is forward-only through the tiers; no skipping straight to Prod.
