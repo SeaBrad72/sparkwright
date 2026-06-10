@@ -14,13 +14,15 @@ set -eu
 # (spaces normalized to hyphens below so "In Progress" matches "In-Progress").
 REQUIRED="Backlog Ready In-Progress In-Review Released Done Blocked Size Risk"
 
-# check_blob <file>: every required name must appear (whitespace-insensitive); return 1 on any miss.
+# check_blob <file>: every required name must appear as an EXACT quoted value (whitespace-insensitive).
+# Matching the quoted JSON value ("In Progress" -> "In-Progress") avoids loose substring over-passes —
+# e.g. a status "Ready for Dev" must NOT satisfy the "Ready" requirement. Return 1 on any miss.
 check_blob() {
   bf=$1; f=0
   if [ ! -f "$bf" ]; then echo "FAIL: missing $bf"; return 1; fi
   norm=$(tr -s '[:space:]' '-' < "$bf")
   for name in $REQUIRED; do
-    if printf '%s' "$norm" | grep -q -- "$name"; then
+    if printf '%s' "$norm" | grep -qF -- "\"$name\""; then
       echo "PASS: contract names '$name'"
     else
       echo "FAIL: contract omits '$name'"; f=1
@@ -45,10 +47,15 @@ live_check() {
 case "${1:-}" in
   --selftest)
     sfail=0
-    okf=$(mktemp); printf 'Backlog Ready In Progress In Review Released Done Blocked Size Risk\n' > "$okf"
+    # fixtures mimic Jira REST JSON (quoted "name" values), exercising the exact-quoted match.
+    okf=$(mktemp); printf '"Backlog" "Ready" "In Progress" "In Review" "Released" "Done" "Blocked" "Size" "Risk"\n' > "$okf"
     if check_blob "$okf" >/dev/null 2>&1; then echo "PASS: selftest — conformant config passes"; else echo "FAIL: selftest — conformant wrongly rejected"; sfail=1; fi
-    gapf=$(mktemp); printf 'Backlog Ready In Progress In Review Released Done Blocked Size\n' > "$gapf"   # missing Risk
+    gapf=$(mktemp); printf '"Backlog" "Ready" "In Progress" "In Review" "Released" "Done" "Blocked" "Size"\n' > "$gapf"   # missing "Risk"
     if check_blob "$gapf" >/dev/null 2>&1; then echo "FAIL: selftest — gap (missing Risk) not detected"; sfail=1; else echo "PASS: selftest — gap detected"; fi
+    # near-miss fixture: a "Ready for Dev" status must NOT satisfy the exact "Ready" requirement.
+    nmf=$(mktemp); printf '"Backlog" "Ready for Dev" "In Progress" "In Review" "Released" "Done" "Blocked" "Size" "Risk"\n' > "$nmf"
+    if check_blob "$nmf" >/dev/null 2>&1; then echo "FAIL: selftest — loose 'Ready for Dev' wrongly accepted as 'Ready'"; sfail=1; else echo "PASS: selftest — near-miss status name rejected"; fi
+    rm -f "$okf" "$gapf" "$nmf"
     [ "$sfail" -eq 0 ] && { echo "OK: tracker-contract selftest"; exit 0; } || { echo "FAIL: tracker-contract selftest"; exit 1; }
     ;;
   "") : ;;
