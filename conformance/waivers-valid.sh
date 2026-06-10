@@ -47,7 +47,7 @@ extract_rows() {
     /^##[[:space:]]+Active waivers/ { insec=1; afterhdr=0; hdrseen=0; next }
     /^##[[:space:]]/ { insec=0 }
     !insec { next }
-    /^\|[[:space:]]*-+/ { afterhdr=1; next }                 # the |---| separator
+    /^\|([[:space:]]*-+[[:space:]]*\|)+[[:space:]]*$/ { afterhdr=1; next }   # separator: EVERY cell is dashes (a data row whose gate starts with "-" must NOT match)
     # exactly one header row is allowed before the separator; consume it.
     !afterhdr && /^\|/ && !hdrseen { hdrseen=1; next }
     # ANY other table-shaped line before the separator (extra header, data above the
@@ -167,6 +167,13 @@ selftest() {
   # data row ABOVE the separator must not be ignored
   printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n| secret-scan | x | @jdoe | 2099-01-01 | 2099-02-01 | y | @sec |\n|--|--|--|--|--|--|--|\n' > "$d/databefore"
   expect databefore 1 "data row above separator -> FAIL (not skipped)"
+  # dash-leading gate must NOT be mistaken for a separator row and dropped
+  mk dashgate '| -secret-scan | x | @jdoe | 2099-01-01 | 2099-02-01 | y | @sec |'
+  expect dashgate 1 "dash-leading gate (-secret-scan) -> FAIL (not eaten as separator)"
+  # Exploit C: a malicious dash-leading row hidden NEXT TO a valid row must still FAIL
+  mk dashhide '| coverage | ok | @jdoe | 2099-01-01 | 2099-03-01 | ratchet | @sec |
+| -secret-scan | hidden | @jdoe | 2099-01-01 | 2099-02-01 | y | @sec |'
+  expect dashhide 1 "hidden dash-leading secret-scan beside a valid row -> FAIL"
   # no register -> N/A pass
   if main "$d/does-not-exist.md" >/dev/null 2>&1; then echo "selftest PASS: no register -> N/A pass"; else echo "selftest FAIL: no register should N/A-pass"; st=1; fi
   [ "$st" = "0" ] && echo "waivers-valid --selftest: OK"
