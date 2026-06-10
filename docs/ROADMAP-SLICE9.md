@@ -50,7 +50,8 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | Step | Type | What | Sev | Ver |
 |------|:----:|------|:---:|:---:|
 | **9j** | B | **Best-practice fidelity** (R10) — declare **SLSA level** + signed commits/tags path; add **NIST SSDF** crosswalk column; **a11y/load/eval: promote-to-gate (MAJOR) or honest-demote (MINOR)** ← decision fork; pin reference `ci.yml` `uses:` to full SHAs (reference must satisfy its own pinning contract) | P2 | **MINOR or MAJOR** |
-| **9k** | B | **Economics & hygiene** (R11) — a ≤1-page **agent operating brief** loaded per feature with §-pointers to expand; **de-dup DoD + security** to one canonical home; **badge-from-VERSION** CI check (ends the recurring drift). Target: cut the ~24K/feature governance load materially | P2 | MINOR |
+| **9k** ✅ | B | **Economics & hygiene** (R11) — *shipped v2.35.0.* `AGENTS.md` load-first brief (on-demand governance load); one canonical home per concept (DoD→`CLAUDE.md`; security summary↔expansion labeled); `badge-version.sh` (assert + `--fix`, release-wired) + `agents-brief.sh` drift-guards. | P2 | MINOR ✅ |
+| **9k-b** | B | **Core-doc trim** (fast-follow of 9k) — tighten `CLAUDE.md` / `DEVELOPMENT-PROCESS.md` / `DEVELOPMENT-STANDARDS.md` prose and push detail to references, measured against the `AGENTS.md` brief-enabled load. Cut the ~24K/feature standing load materially, from data not feel. | P2 | MINOR |
 
 ### Stage VI — Prove the gap is closed
 | Step | Type | What |

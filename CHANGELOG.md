@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.35.0] - 2026-06-10
+
+Economics & hygiene (Slice 9k, Stage V of the "Honest Assurance & Adoption Reach" arc). A load-first agent brief, one canonical home per governance concept, and a self-healing version badge. **MINOR** — additive brief + two completeness checks + label-only doc edits; no governing rule changed.
+
+### Added
+- **`AGENTS.md`** — a ≤1-page load-first operating brief (loop · gates · security · agent boundary · stack), each with a §-pointer; an index that defers to `CLAUDE.md`. Instructs agents to expand a full doc only when the task touches it — turning the standing per-feature governance load into an on-demand pull.
+- **`conformance/badge-version.sh`** — asserts the README badge equals `VERSION`; `--fix` rewrites it; `--selftest`. The release flow calls `--fix`, ending the recurring badge drift (was 10 versions stale).
+- **`conformance/agents-brief.sh`** — keeps `AGENTS.md` a brief: exists, points at the canonical docs, within a line-bound; `--selftest`.
+
+### Changed
+- **One canonical home per concept:** the §7 Definition-of-Done gate now points at `CLAUDE.md` (its real home); the `CLAUDE.md` security section is labeled the authoritative summary and `DEVELOPMENT-STANDARDS.md` §2 its expansion — the layering is explicit, no rule changed.
+- **README version badge** synced to the current release (no longer stale).
+
 ## [2.34.0] - 2026-06-10
 
 Definition-of-Ready robustness (Slice 9i-b, fast-follow of 9i). Promotes the DoR from a scattered parenthetical to a first-class enumerated entry gate, peer to the DoD. **MINOR** — additive block + template checklist + a completeness check; the Definition of Done is unchanged.
