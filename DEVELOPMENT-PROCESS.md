@@ -188,6 +188,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **Definition of Deployable** *(deployable services)* | Is the release safe to promote — rollback ready, smoke + monitoring wired? (`conformance/definition-of-deployable.md`) | Release manager + reviewer |
 | **DR readiness** *(data services)* | Is DR provable — BIA done, RTO/RPO tiered, restore drill passed? (`conformance/dr-readiness.md`) | On-call / operator + reviewer |
 | **Resilience readiness** *(deployable services)* | Do resilience + load/soak verifications pass — breaker trips, degrades gracefully, within perf budget? (`conformance/resilience-readiness.md`) | On-call / operator + reviewer |
+| **Accessibility** *(user-facing UI)* | Keyboard / screen-reader / contrast pass (WCAG 2.1 AA)? Recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse evidence). | Designer / reviewer |
 | **Acceptance** | Did we build the *right thing*? (intent/need) | Intent owner |
 | **Definition of Done** | Truly complete? (the enumerated exit gate in `CLAUDE.md`; quality bar in `DEVELOPMENT-STANDARDS.md`) | Automated + human |
 

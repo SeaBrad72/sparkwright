@@ -55,6 +55,14 @@ jobs:
         run: sh conformance/agents-brief.sh
       - name: AGENTS.md brief self-test
         run: sh conformance/agents-brief.sh --selftest
+      - name: Conditional gates named in §7 (a11y / load / eval)
+        run: sh conformance/conditional-gates.sh
+      - name: Conditional-gates self-test
+        run: sh conformance/conditional-gates.sh --selftest
+      - name: Reference pipeline pins every action to a SHA
+        run: sh conformance/action-pinning.sh
+      - name: Action-pinning self-test
+        run: sh conformance/action-pinning.sh --selftest
       - name: Definition-of-Deployable checklist present
         run: test -f conformance/definition-of-deployable.md
       - name: Deployable-ready conditional (N/A at kit root)

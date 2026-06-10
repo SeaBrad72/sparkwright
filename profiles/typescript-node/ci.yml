@@ -29,11 +29,11 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0   # full history so the secret scan sees all commits
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '24'
           cache: npm
@@ -60,7 +60,7 @@ jobs:
 
       - name: Secret scan
         id: gate-secret-scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7  # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Organization-owned repos additionally require a gitleaks license:
@@ -75,7 +75,7 @@ jobs:
         run: npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: sbom
           path: sbom.json
@@ -93,21 +93,21 @@ jobs:
 
       - name: Generate image SBOM (Syft, CycloneDX)
         id: gate-image-sbom
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
         with:
           image: ts-node-app:ci
           format: cyclonedx-json
           output-file: image-sbom.json
 
       - name: Upload image SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: image-sbom
           path: image-sbom.json
 
       - name: Upload build artifact (for provenance)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: build-artifact
           path: dist/**           # the real build output (npm run build)
@@ -122,13 +122,13 @@ jobs:
       id-token: write       # scoped to this push-only job (build-provenance attestation)
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: build-artifact
           path: build-artifact
       - name: Attest build provenance
         id: gate-provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
         with:
           subject-path: build-artifact/**
 
@@ -142,9 +142,9 @@ jobs:
       id-token: write       # OIDC for digest-bound attestation
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -156,14 +156,14 @@ jobs:
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         id: build-push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           push: true
           tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
       - name: Attest image provenance (digest-bound)
         id: gate-image-provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build-push.outputs.digest }}

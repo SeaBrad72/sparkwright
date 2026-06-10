@@ -3,6 +3,20 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.36.0] - 2026-06-10
+
+Best-practice fidelity (Slice 9j, Stage V of the "Honest Assurance & Adoption Reach" arc). Declares the kit's SLSA level, adds a NIST SSDF crosswalk, formalizes a11y/load/eval as conditional gates, and makes the reference pipeline satisfy its own SHA-pinning contract. **MINOR** — the a11y/load/eval fork resolved in favor of *honest conditional gates*, not a new universal gate, so no MAJOR.
+
+### Added
+- **SLSA Build L2 declaration** (`DEVELOPMENT-STANDARDS.md` §14) — authenticated, service-generated provenance bound to the artifact/image digest; the honest L3 path documented (not claimed).
+- **NIST SSDF (SP 800-218) column** in `docs/enterprise/compliance-crosswalk.md`, alongside SOC 2 + ISO 27001:2022.
+- **Commit & tag signing** subsection (`DEVELOPMENT-STANDARDS.md` §2) — Sigstore `gitsign` / GPG, recommended hardening (not a gate).
+- **`conformance/conditional-gates.sh`** + **`conformance/action-pinning.sh`** drift-guards (`--selftest`), CI-gated.
+
+### Changed
+- **a11y / load / eval formalized as conditional gates** (§7 + §14 + DoD): first-class but trigger-bound (UI / service / AI), N/A-with-reason otherwise — not universal. No new universal required gate.
+- **`profiles/typescript-node/ci.yml`** now SHA-pins every `uses:` (with `# vX` comments; Dependabot keeps them current) — the canonical reference satisfies its own pinning contract.
+
 ## [2.35.0] - 2026-06-10
 
 Economics & hygiene (Slice 9k, Stage V of the "Honest Assurance & Adoption Reach" arc). A load-first agent brief, one canonical home per governance concept, and a self-healing version badge. **MINOR** — additive brief + two completeness checks + label-only doc edits; no governing rule changed.
