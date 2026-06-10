@@ -32,9 +32,9 @@ esac
 # --- selftest: the adversarial corpus IS the test (runs the core through the CLI) ---
 fail=0
 deny()  { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
-allow() { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fi; }
+allow() { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 pdeny() { if sh "$0" path "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
-pallow(){ if sh "$0" path "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fi; }
+pallow(){ if sh "$0" path "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 
 deny  "recursive rm"      "rm -rf /tmp/x"
 deny  "force push"        "git push --force origin feature/x"

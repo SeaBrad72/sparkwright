@@ -10,7 +10,11 @@ CORE=".claude/hooks/guard-core.sh"
 fail=0
 for consumer in ".claude/hooks/guard.sh" "hooks/pre-push" "scripts/kit-guard"; do
   if [ ! -f "$consumer" ]; then echo "FAIL: missing consumer $consumer"; fail=1; continue; fi
-  if grep -Eq 'guard-core\.sh' "$consumer"; then
+  # Require BOTH a reference to the core AND an actual POSIX source command (`. ` or `source `).
+  # A mere comment mentioning guard-core.sh is not enough; an inlined/forked matrix has no
+  # source line and fails. (Consumers may source indirectly via `. "$CORE"`, so we don't
+  # require the path on the source line itself — the anti-redefinition check below closes the gap.)
+  if grep -Eq 'guard-core\.sh' "$consumer" && grep -Eq '^[[:space:]]*(\.|source)[[:space:]]' "$consumer"; then
     echo "PASS: $consumer sources guard-core.sh"
   else
     echo "FAIL: $consumer does not source guard-core.sh (matrix may be forked)"; fail=1

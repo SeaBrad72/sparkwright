@@ -24,7 +24,7 @@ Pipe each proposed shell command through the CLI before running it:
 ```sh
 kit-guard cmd "$PROPOSED_COMMAND" || { echo "blocked by kit guard"; exit 1; }
 ```
-`kit-guard` resolves the core relative to itself, or via `KIT_GUARD_CORE=/path/to/guard-core.sh`. Examples:
+**Treat any non-zero exit as block** — `1` = denied, `2` = core not found / usage error. The `||` form above does this correctly; do **not** key only on `-eq 1`, or a missing core (exit 2) would be mis-read as "not denied." `kit-guard` resolves the core relative to itself, or via `KIT_GUARD_CORE=/path/to/guard-core.sh`. Examples:
 - **Cursor / Aider / Continue:** they already inherit the universal `pre-push` hook; for command coverage, wire `kit-guard` into the runtime's pre-command step where one exists. A first-party plugin per runtime is intentionally not shipped (build on demand).
 - **CI bots / scripts:** call `kit-guard cmd …` before executing a templated command.
 
