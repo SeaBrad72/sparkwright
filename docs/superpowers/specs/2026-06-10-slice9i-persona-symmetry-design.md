@@ -27,8 +27,11 @@ Update the "Entry → exit artifact" column to reference the real templates and 
 - **DevOps/SRE** — **works through** the `RUNBOOK` + promotion run (shared — no persona-specific template), annotated honestly.
 A one-line legend defines "dedicated artifact" (a template this persona owns) vs "works through another's." Closes the over-promised-symmetry finding by being explicit about which is which.
 
-### 5. DoD tie-in (`CLAUDE.md` — authoritative principles file)
-A careful, minimal governing-surface edit (ratified by human merge): the **Accessibility** DoD item names `A11Y-SIGNOFF` as its auditable evidence; the production/UAT acceptance names `UAT-SIGNOFF`. Names the artifacts; does not rewrite the DoD. Closes "Designer absent from the authoritative DoD."
+### 5. Evidence tie-ins (where each sign-off is named)
+Two minimal edits naming the artifacts as the auditable evidence for obligations that **already exist** — no new requirements, no new gates:
+- **`CLAUDE.md` DoD → Accessibility line** (authoritative principles file; careful governing-surface edit, ratified by human merge): the existing "keyboard-navigable · screen-reader/contrast checks pass" item names **`A11Y-SIGNOFF`** as its auditable evidence. Closes "Designer absent from the authoritative DoD."
+- **`DEVELOPMENT-PROCESS.md` §9 UAT gate** (NOT the DoD's Production line — UAT acceptance lives in §9's Dev→QA→UAT→Prod promotion model): the existing "UAT green + acceptance sign-off (PO/QA)" names **`UAT-SIGNOFF`** as that record.
+Both name an artifact for a bar that was always there; neither rewrites the DoD or adds a requirement.
 
 ### 6. `conformance/persona-artifacts.sh` (new — completeness drift-guard)
 Like `stack-selection.sh`: asserts (a) `templates/TEST-PLAN-TEMPLATE.md`, `templates/UAT-SIGNOFF-TEMPLATE.md`, `templates/A11Y-SIGNOFF-TEMPLATE.md` all exist; (b) the §2 persona table in `DEVELOPMENT-PROCESS.md` names each of `TEST-PLAN`, `UAT-SIGNOFF`, `A11Y-SIGNOFF`. `--selftest` with a two-tree fixture (no `rm`). Completeness, not content-equality. Wired into kit CI (**one control-plane `cp`**).
@@ -40,8 +43,8 @@ Like `stack-selection.sh`: asserts (a) `templates/TEST-PLAN-TEMPLATE.md`, `templ
 | `templates/TEST-PLAN-TEMPLATE.md` | **New** | agent |
 | `templates/UAT-SIGNOFF-TEMPLATE.md` | **New** | agent |
 | `templates/A11Y-SIGNOFF-TEMPLATE.md` | **New** | agent |
-| `DEVELOPMENT-PROCESS.md` | §2 persona-table annotation (dedicated vs shared + real template refs); §9 UAT → UAT-SIGNOFF; §5 Designer lens → A11Y-SIGNOFF | agent |
-| `CLAUDE.md` | DoD: a11y item → A11Y-SIGNOFF evidence; UAT acceptance → UAT-SIGNOFF | agent |
+| `DEVELOPMENT-PROCESS.md` | §2 persona-table annotation (dedicated vs shared + real template refs); §9 UAT gate → UAT-SIGNOFF; §5 Designer lens → A11Y-SIGNOFF | agent |
+| `CLAUDE.md` | DoD Accessibility line → A11Y-SIGNOFF evidence (only) | agent |
 | `conformance/persona-artifacts.sh` | **New** — completeness + `--selftest` | agent |
 | `conformance/README.md` | index row | agent |
 | `START-HERE.md` | QA/Designer role rows link their templates | agent |
