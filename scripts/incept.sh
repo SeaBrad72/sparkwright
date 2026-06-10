@@ -44,6 +44,13 @@ sedi() {
   sed -i.bak "$@" && rm -f "${last}.bak"
 }
 
+# 9f: fail fast if universal prerequisites are missing — jq is hard-required by the
+# guard and conformance, so proceeding would only defer a cryptic failure.
+if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh >/dev/null 2>&1; then
+  echo "incept: missing prerequisites. Run 'sh scripts/preflight.sh' for the list + install hints. Aborting." >&2
+  exit 1
+fi
+
 # --- safety guards ---
 [ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
 { [ -f CLAUDE.md ] && grep -q "Engineering Principles & Definition of Done" CLAUDE.md; } || {
@@ -162,6 +169,7 @@ esac
 cat <<EOF
 
 ✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}).
+Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAUDE.md is YOUR project guide (charter, config, roles).
 
 Do the judgment steps incept does NOT automate (see START-HERE.md):
   1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
