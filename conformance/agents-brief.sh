@@ -27,13 +27,21 @@ check_brief() {
 
 if [ "${1:-}" = "--selftest" ]; then
   sfail=0
-  # gap tree: no refs AND over a tiny bound -> must be detected
-  g=$(mktemp -d)
-  printf 'line one\nline two\nline three\n' > "$g/AGENTS.md"
-  if check_brief "$g/AGENTS.md" 2 >/dev/null 2>&1; then
-    echo "FAIL: selftest — gap not detected"; sfail=1
+  # gap A — over-bound ONLY (all refs present, but exceeds the tiny bound)
+  ga=$(mktemp -d)
+  printf 'CLAUDE.md\nDEVELOPMENT-PROCESS.md\nDEVELOPMENT-STANDARDS.md\n' > "$ga/AGENTS.md"
+  if check_brief "$ga/AGENTS.md" 2 >/dev/null 2>&1; then
+    echo "FAIL: selftest — over-bound not detected"; sfail=1
   else
-    echo "PASS: selftest — missing refs / over-bound detected"
+    echo "PASS: selftest — over-bound detected"
+  fi
+  # gap B — missing-ref ONLY (within bound, but lacks a canonical-doc ref)
+  gb=$(mktemp -d)
+  printf 'CLAUDE.md\nDEVELOPMENT-PROCESS.md\n' > "$gb/AGENTS.md"
+  if check_brief "$gb/AGENTS.md" 80 >/dev/null 2>&1; then
+    echo "FAIL: selftest — missing ref not detected"; sfail=1
+  else
+    echo "PASS: selftest — missing ref detected"
   fi
   # complete tree: refs present, within bound
   ok=$(mktemp -d)
