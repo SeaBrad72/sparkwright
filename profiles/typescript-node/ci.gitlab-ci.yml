@@ -7,8 +7,23 @@
 # Drop in as `.gitlab-ci.yml` at your repo root (incept.sh --ci gitlab does this).
 # Tool choices mirror the GitHub profile (pnpm + eslint + tsc + vitest + gitleaks + syft).
 # Where GitLab ships a native control, the comment names it — prefer it at scale.
+#
+# HARDENING (do before production):
+#  - Supply-chain tools are PINNED to the versions in `variables:` (not `latest`). Bump
+#    deliberately, and verify a published checksum/signature before exec — or vendor the
+#    tools through your package registry. A floating `latest` lets a moved release silently
+#    change what runs inside your supply-chain gates.
+#  - Prefer the GitLab-native security templates named in the comments below at scale.
+#  - OIDC (`id_tokens`) is least-privilege: SIGSTORE_ID_TOKEN is requested only by the
+#    provenance job. On self-managed runners, wire keyless cosign to your IdP.
 
 stages: [setup, verify, supply-chain]
+
+variables:
+  # Pinned supply-chain tool versions (HARDENING). Verify checksums for production.
+  GITLEAKS_VERSION: "8.30.1"
+  SYFT_VERSION: "1.45.1"
+  COSIGN_VERSION: "3.1.1"
 
 default:
   image: node:20-bookworm
@@ -44,10 +59,15 @@ gate-test:
   script: [pnpm run test -- --coverage]
   coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
 
+# Build output (dist/) is published as an artifact so the supply-chain stage can attest the
+# actual built bits — mirrors the GitHub profile uploading/downloading build-artifact/**.
 gate-build:
   stage: verify
   needs: [gate-install]
   script: [pnpm run build]
+  artifacts:
+    paths: [dist/]
+    expire_in: 1h
 
 # Secret scan — gitleaks. GitLab-native alternative: include the Secret-Detection template
 #   ( - template: Security/Secret-Detection.gitlab-ci.yml ) and name the job gate-secret-scan.
@@ -55,7 +75,7 @@ gate-secret-scan:
   stage: verify
   needs: []
   script:
-    - 'command -v gitleaks >/dev/null || (curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks)'
+    - 'command -v gitleaks >/dev/null 2>&1 || curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks'
     - gitleaks detect --no-banner --redact
 
 # Dependency vulnerability scan. GitLab-native alternative: the Dependency-Scanning template.
@@ -69,15 +89,18 @@ gate-sbom:
   stage: supply-chain
   needs: [gate-build]
   script:
-    - 'command -v syft >/dev/null || curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin'
+    - 'command -v syft >/dev/null 2>&1 || curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"'
     - syft dir:. -o cyclonedx-json=sbom.cdx.json
   artifacts:
     paths: [sbom.cdx.json]
     expire_in: 30 days
 
-# Build provenance / attestation. GitLab equivalent: SLSA provenance via the build job's
-# artifacts:metadata + a signed attestation (cosign). On GitLab.com, prefer the built-in
-# artifact attestation; self-managed runners need cosign keyless (OIDC) wired to your IdP.
+# Build provenance / attestation — keyless cosign (Sigstore). The id_tokens block requests a
+# SIGSTORE_ID_TOKEN (OIDC); on GitLab.com this signs against the public Sigstore. This job
+# FAILS RED if attestation fails — a provenance gate that self-certified on failure would be
+# false assurance (the GitHub profile's attest-build-provenance fails the job too). On a
+# self-managed runner, wire keyless cosign to your IdP (docs/operations/ci-platforms.md);
+# until then this gate fails, which is the honest state: the artifact is NOT attested.
 gate-provenance:
   stage: supply-chain
   needs: [gate-build, gate-sbom]
@@ -85,8 +108,9 @@ gate-provenance:
     SIGSTORE_ID_TOKEN:
       aud: sigstore
   script:
-    - 'command -v cosign >/dev/null || (curl -sSfL -o /usr/local/bin/cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 && chmod +x /usr/local/bin/cosign)'
-    - cosign attest-blob --yes --predicate sbom.cdx.json --bundle provenance.bundle dist/ || echo "wire cosign keyless (OIDC) to your runner's IdP — see docs/operations/ci-platforms.md"
+    - 'command -v cosign >/dev/null 2>&1 || { curl -sSfL -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" && chmod +x /usr/local/bin/cosign; }'
+    - tar -czf build-artifact.tgz dist/          # single subject blob = the build output
+    - cosign attest-blob --yes --type cyclonedx --predicate sbom.cdx.json --bundle provenance.bundle build-artifact.tgz
   artifacts:
-    paths: [provenance.bundle]
+    paths: [provenance.bundle, build-artifact.tgz]
     expire_in: 30 days
