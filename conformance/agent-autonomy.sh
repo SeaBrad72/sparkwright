@@ -194,6 +194,15 @@ assert_deny "mv parent .claude"     '{"tool_name":"Bash","tool_input":{"command"
 assert_deny "chmod -R .claude"      '{"tool_name":"Bash","tool_input":{"command":"chmod -R 000 .claude"}}'
 assert_deny "rmdir hooks"           '{"tool_name":"Bash","tool_input":{"command":"rmdir .claude/hooks"}}'
 assert_deny "install over guard"    '{"tool_name":"Bash","tool_input":{"command":"install /dev/null .claude/hooks/guard.sh"}}'
+# --- 9d-b: new control-plane files (guard-core / kit-guard / pre-push) (must DENY) ---
+assert_deny "Write guard-core"     '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks/guard-core.sh","content":"x"}}'
+assert_deny "Edit kit-guard"       '{"tool_name":"Edit","tool_input":{"file_path":"scripts/kit-guard","old_string":"a","new_string":"b"}}'
+assert_deny "Write pre-push"       '{"tool_name":"Write","tool_input":{"file_path":"hooks/pre-push","content":"x"}}'
+assert_deny "sed -i guard-core"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/hooks/guard-core.sh"}}'
+assert_deny "rm kit-guard"         '{"tool_name":"Bash","tool_input":{"command":"rm scripts/kit-guard"}}'
+# --- 9d-b: must still ALLOW (no new over-block) ---
+assert_allow "read guard-core"     '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/guard-core.sh"}}'
+assert_allow "run kit-guard sh"    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-guard --selftest"}}'
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
 assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Bradley"}}'
 assert_allow "git checkout src"     '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- src/app.ts"}}'

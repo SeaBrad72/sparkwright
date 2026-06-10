@@ -37,6 +37,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `ci-gates.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (CI/CD Pipeline) — recognizes GitHub `id: gate-X` steps **and** GitLab `gate-X:` job keys; the contract is the gate-ids, the platform is open (`../docs/operations/ci-platforms.md`) | CI / Definition of Done |
 | `check-links.sh` | script | Docs link integrity (`DEVELOPMENT-STANDARDS.md` §11) | CI |
 | `agent-autonomy.sh` | script | `DEVELOPMENT-PROCESS.md` §13 (autonomy tiers) — guard denies a tier breach | PreToolUse hook / CI |
+| `guard-core-sourced.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — all guard consumers source one deny-matrix core (anti-fork); pairs with `agent-autonomy.sh` (`../docs/operations/runtime-guards.md`) | CI |
 | `inception-done.sh` | script | `DEVELOPMENT-PROCESS.md` §3 / `START-HERE.md` (the Inception gate) | CI (bootstrap-into-temp) |
 | `profile-completeness.sh` | script | `profiles/_TEMPLATE.md` (every profile fills all 11 sections; companion ci.yml conformant) | CI |
 | `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |

@@ -136,6 +136,21 @@ case "$CI" in
     ;;
 esac
 
+# --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---
+# Git hooks are not version-controlled, so incept installs the reference per-clone.
+# Never clobber an existing hook (same discipline as the .claude/ brownfield path).
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ -f hooks/pre-push ]; then
+  HOOK_DST=$(git rev-parse --git-path hooks/pre-push)
+  if [ -e "$HOOK_DST" ]; then
+    echo "note: $HOOK_DST already exists — NOT overwriting (brownfield-safe). To chain the kit"
+    echo "      guard, call 'sh \"$PWD/hooks/pre-push\"' from your existing hook, or replace it."
+  else
+    mkdir -p "$(dirname "$HOOK_DST")"
+    cp hooks/pre-push "$HOOK_DST" && chmod +x "$HOOK_DST"
+    echo "installed runtime guard: $HOOK_DST (blocks force-push/push-to-main; bypass: git push --no-verify)"
+  fi
+fi
+
 # --- 6. next steps (the judgment incept does NOT automate) ---
 # Branch-protection guidance is platform-specific: branch-protection.sh / BRANCH-PROTECTION.md
 # use the GitHub API; on GitLab the protected-branches equivalent is adopter-owned (honest
@@ -154,6 +169,8 @@ Do the judgment steps incept does NOT automate (see START-HERE.md):
   3. ${PROTECT_HINT}
   4. Declare per-project config in CLAUDE.md §3 (autonomy tiers, SLO, review routing, WIP).
   5. Assign roles in CLAUDE.md §4.
+  6. Local runtime guard installed at .git/hooks/pre-push (force-push/push-to-main; bypass: --no-verify).
+     Other runtimes: pipe proposed commands through scripts/kit-guard (docs/operations/runtime-guards.md).
 
 Verify: sh conformance/inception-done.sh
 EOF

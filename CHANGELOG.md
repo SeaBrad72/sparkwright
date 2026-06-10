@@ -3,6 +3,22 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.29.0] - 2026-06-10
+
+Runtime-guard portability (Slice 9d-b, Tier 1 of the "Honest Assurance & Adoption Reach" arc). The destructive-action guard previously protected only the Claude Code runtime; now the red-teamed deny-matrix is a sourceable single source of truth reused by a universal git pre-push hook and a `kit-guard` CLI, so other runtimes and humans inherit the same denials. **MINOR** — additive; the Claude path is proven behavior-identical, no new universally-required CI gate.
+
+### Added
+- **`.claude/hooks/guard-core.sh`** — the deny-matrix as pure functions (`guard_check_command` / `guard_check_path` / `guard_check_push`) + the 9b control-plane helpers. Single source of truth.
+- **`hooks/pre-push`** — universal git hook (any runtime + humans): blocks force-push / push-to-main from real refs, before the network round-trip; `--no-verify` is the deliberate override. `--selftest`.
+- **`scripts/kit-guard`** — portable CLI (`cmd` / `path` / `--selftest`) any non-Claude runtime pipes proposed actions through.
+- **`conformance/guard-core-sourced.sh`** — proves every consumer sources the one core (anti-fork).
+- **`docs/operations/runtime-guards.md`** — one matrix, three surfaces; runtime wiring; Windows = WSL/Git-Bash; PATH-shims named as the coverage-depth upgrade; honesty boundary.
+
+### Changed
+- **`.claude/hooks/guard.sh`** slimmed to a thin Claude PreToolUse adapter over `guard-core.sh`; behavior proven identical via `conformance/agent-autonomy.sh`.
+- **`scripts/incept.sh`** installs the pre-push hook by default (brownfield-safe; never clobbers an existing hook).
+- **`conformance/agent-autonomy.sh`** denies edits to the new control-plane files (guard-core / kit-guard / pre-push); kit CI gates the three new selftests.
+
 ## [2.28.0] - 2026-06-09
 
 CI-platform portability (Slice 9d, Tier 1 of the "Honest Assurance & Adoption Reach" arc). Closes the review's convergent finding #3: the kit assumed **GitHub Actions** — `ci-gates.sh` only recognized GitHub `id: gate-X` syntax and `incept.sh` hardcoded `.github/workflows/ci.yml`, so a GitLab or Azure-DevOps adopter had to rewrite all CI and could never pass conformance. The contract was always the gate-ids; only the matcher and the reference were GitHub-bound. **MINOR** — additive matcher branch, a new reference, a new flag, and docs (no new universally-required gate; existing GitHub workflows are unaffected). The companion **9d-b runtime-guard portability** (extracting the guard deny-matrix into a runtime-agnostic core) is split out to its own slice — it edits the control-plane `guard.sh` and is human-gated at the terminal.

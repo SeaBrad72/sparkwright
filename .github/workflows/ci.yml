@@ -25,6 +25,12 @@ jobs:
         run: test -f conformance/15-factor-checklist.md
       - name: Agent-autonomy guard conformance (§13)
         run: sh conformance/agent-autonomy.sh
+      - name: Guard single-source-of-truth (all consumers source the core)
+        run: sh conformance/guard-core-sourced.sh
+      - name: kit-guard CLI self-test (deny battery through the CLI)
+        run: sh scripts/kit-guard --selftest
+      - name: pre-push hook self-test (force-push / push-to-main)
+        run: sh hooks/pre-push --selftest
       - name: Profile-completeness conformance
         run: sh conformance/profile-completeness.sh
       - name: Definition-of-Deployable checklist present

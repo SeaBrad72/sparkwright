@@ -1,0 +1,53 @@
+#!/bin/sh
+# pre-push — kit runtime guard for git (any runtime + humans). Sources the shared
+# deny-matrix core and blocks force-push / push-to-main BEFORE the network round-trip.
+# Deliberate override: git push --no-verify. A SPEED BUMP, not a boundary
+# (docs/enterprise/platform-safety-boundary.md). Run `sh hooks/pre-push --selftest` to test.
+# Fail-open-with-warning if the core is missing: a missing optional file must not brick
+# all pushes (the real boundary is platform-owned); it warns loudly instead.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
+CORE="${KIT_GUARD_CORE:-$ROOT/.claude/hooks/guard-core.sh}"
+if [ ! -f "$CORE" ]; then
+  echo "kit pre-push: guard-core.sh not found ($CORE) — allowing push UNPROTECTED." >&2
+  exit 0
+fi
+. "$CORE"
+
+if [ "${1:-}" = "--selftest" ]; then
+  fail=0
+  Z=0000000000000000000000000000000000000000
+  # Hermetic: build a throwaway 2-commit repo so ancestry (merge-base) is deterministic
+  # regardless of the ambient checkout depth — a shallow CI clone has no usable history,
+  # which would make a real fast-forward read as indeterminate (deny). Left in place
+  # (no rm) per the guard-safe fixture convention.
+  T=$(mktemp -d)
+  ( cd "$T" && git init -q \
+      && git -c user.email=t@kit -c user.name=kit commit -q --allow-empty -m c1 \
+      && git -c user.email=t@kit -c user.name=kit commit -q --allow-empty -m c2 )
+  HEAD=$(cd "$T" && git rev-parse HEAD)
+  PREV=$(cd "$T" && git rev-parse HEAD~1)
+  check() { # desc remote-ref local-sha remote-sha want  (merge-base runs in the temp repo)
+    if ( cd "$T" && guard_check_push "$2" "$3" "$4" ) >/dev/null 2>&1; then got=allow; else got=deny; fi
+    if [ "$got" = "$5" ]; then echo "PASS $5: $1"; else echo "FAIL (wanted $5): $1"; fail=1; fi
+  }
+  check "push to main"        refs/heads/main "$HEAD" "$Z"   deny
+  check "delete main"         refs/heads/main "$Z"    "$HEAD" deny
+  check "new feature branch"  refs/heads/feature/x "$HEAD" "$Z" allow
+  check "fast-forward push"   refs/heads/feature/x "$HEAD" "$PREV" allow
+  check "force (non-ff) push" refs/heads/feature/x "$PREV" "$HEAD" deny
+  [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
+fi
+
+# Normal invocation: git passes "<local-ref> <local-sha> <remote-ref> <remote-sha>" per line on stdin.
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+  if reason=$(guard_check_push "$remote_ref" "$local_sha" "$remote_sha"); then
+    :
+  else
+    echo "kit guard: $reason" >&2
+    echo "  override (deliberate): git push --no-verify" >&2
+    status=1
+  fi
+done
+exit $status
