@@ -24,7 +24,7 @@
 
 ## 2. Security, Governance & Guardrails
 
-Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the concrete libraries/snippets in your stack.
+Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the concrete libraries/snippets in your stack. This section is the **expansion** of the authoritative summary in `CLAUDE.md` ("Security (non-negotiable)") — the two must agree.
 
 ### Secrets management
 Never commit secrets (API keys, DB credentials, signing keys, passwords, tokens). Load from environment; fail fast if a required secret is missing. Keep real values in an untracked local env file; commit a `.env.example` with placeholders.
