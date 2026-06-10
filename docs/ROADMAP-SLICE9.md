@@ -6,7 +6,7 @@
 
 **Economics baseline (measured 2026-06-09):** an agent operating by-the-book carries **~24K tokens** of standing governance per feature (core 3 docs ~16.5K + global 2 ~4.6K + 1 profile + 2 templates), before reading any feature code. Whole-kit weight ≈ 21,880 lines of Markdown. This is the number R11 must move.
 
-**Versioning note:** most slices are additive → MINOR (2.25.0+). One slice (**9j**) contains a genuine fork — *promote a11y/load/eval to universally-required CI gates* (a new required gate = **MAJOR / realizes a clean 3.0.0**) **vs.** *honestly demote them in the DoD to human-attested rows* (MINOR). Decision taken at 9j brainstorm.
+**Versioning note:** most slices are additive → MINOR (2.25.0+). One slice (**9j**) contains a genuine fork — *promote a11y/load/eval to universally-required CI gates* (a new required gate = **MAJOR / realizes a clean 3.0.0**) **vs.** *honestly demote them in the DoD to human-attested rows* (MINOR). Decision taken at 9j brainstorm. **Resolved (v2.36.0): honest-demote — a11y/load/eval are conditional gates, MINOR; no 3.0.0 from this fork.**
 
 ---
 
@@ -49,7 +49,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 ### Stage V — Fidelity + economics
 | Step | Type | What | Sev | Ver |
 |------|:----:|------|:---:|:---:|
-| **9j** | B | **Best-practice fidelity** (R10) — declare **SLSA level** + signed commits/tags path; add **NIST SSDF** crosswalk column; **a11y/load/eval: promote-to-gate (MAJOR) or honest-demote (MINOR)** ← decision fork; pin reference `ci.yml` `uses:` to full SHAs (reference must satisfy its own pinning contract) | P2 | **MINOR or MAJOR** |
+| **9j** ✅ | B | **Best-practice fidelity** (R10) — *shipped v2.36.0 (MINOR).* SLSA Build L2 declared (L3 path noted); NIST SSDF crosswalk column; a11y/load/eval formalized as **conditional** gates (honest-demote, not universal → no MAJOR); commit/tag-signing documented; canonical reference `ci.yml` SHA-pinned + `action-pinning.sh`; `conditional-gates.sh`. | P2 | MINOR ✅ |
 | **9k** ✅ | B | **Economics & hygiene** (R11) — *shipped v2.35.0.* `AGENTS.md` load-first brief (on-demand governance load); one canonical home per concept (DoD→`CLAUDE.md`; security summary↔expansion labeled); `badge-version.sh` (assert + `--fix`, release-wired) + `agents-brief.sh` drift-guards. | P2 | MINOR ✅ |
 | **9k-b** | B | **Core-doc trim** (fast-follow of 9k) — tighten `CLAUDE.md` / `DEVELOPMENT-PROCESS.md` / `DEVELOPMENT-STANDARDS.md` prose and push detail to references, measured against the `AGENTS.md` brief-enabled load. Cut the ~24K/feature standing load materially, from data not feel. | P2 | MINOR |
 
