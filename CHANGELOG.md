@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.37.0] - 2026-06-10
+
+Hosted-tracker bootstrap (Slice 9h, Tier 2 of the "Honest Assurance & Adoption Reach" arc). Turns hosted-tracker adoption from prose into a concrete setup artifact plus a contract verifier. **MINOR** — templates + an incept arm + a three-state conformance check; no API client shipped.
+
+### Added
+- **`templates/JIRA-SETUP-TEMPLATE.md`** — `incept --backlog jira` emits a project-stamped guide: the six §6 statuses, Size/Risk fields (not Story Points), and the step-by-step **Only-Assignee transition condition** (the server-enforced single-owner claim).
+- **`templates/TRACKER-SETUP-TEMPLATE.md`** — convention-tier stub for github/ado/linear/gitlab (board = the six states; claim = assign-when-empty + re-read).
+- **`conformance/tracker-contract.sh`** — three-state Jira §6 verifier: live REST checks the states + Size/Risk fields, **UNVERIFIED (exit 2)** without creds, `--selftest` proves the logic in CI. The Only-Assignee condition is **attested, not auto-verified** (honest about REST's limits).
+
+### Changed
+- **`scripts/incept.sh`** now writes the matching setup artifact for the chosen backend (`md`→BACKLOG.md unchanged).
+- **`docs/work-tracking/adapters.md`** (Jira) points at the bootstrap + verifier.
+
 ## [2.36.0] - 2026-06-10
 
 Best-practice fidelity (Slice 9j, Stage V of the "Honest Assurance & Adoption Reach" arc). Declares the kit's SLSA level, adds a NIST SSDF crosswalk, formalizes a11y/load/eval as conditional gates, and makes the reference pipeline satisfy its own SHA-pinning contract. **MINOR** — the a11y/load/eval fork resolved in favor of *honest conditional gates*, not a new universal gate, so no MAJOR.
