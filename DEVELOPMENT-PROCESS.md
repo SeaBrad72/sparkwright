@@ -189,7 +189,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **DR readiness** *(data services)* | Is DR provable — BIA done, RTO/RPO tiered, restore drill passed? (`conformance/dr-readiness.md`) | On-call / operator + reviewer |
 | **Resilience readiness** *(deployable services)* | Do resilience + load/soak verifications pass — breaker trips, degrades gracefully, within perf budget? (`conformance/resilience-readiness.md`) | On-call / operator + reviewer |
 | **Acceptance** | Did we build the *right thing*? (intent/need) | Intent owner |
-| **Definition of Done** | Truly complete? (per `DEVELOPMENT-STANDARDS.md`) | Automated + human |
+| **Definition of Done** | Truly complete? (the enumerated exit gate in `CLAUDE.md`; quality bar in `DEVELOPMENT-STANDARDS.md`) | Automated + human |
 
 Review and Acceptance fail *differently* and are kept distinct. Threat-model, eval, compliance, 15-factor, Definition-of-Deployable, DR-readiness, and Resilience-readiness gates are **conditional** — each applies only where it fits: threat-model to sensitive/regulated features, eval to AI features, compliance to regulated domains, 15-factor / Definition-of-Deployable / Resilience-readiness to deployable services, DR-readiness to data-handling work — not every item (don't impose them where they optimize nothing). For AI features, **evals are the dev-time quality bar** — the AI analog of TDD: written alongside the feature, run in CI, and gating like tests (see `DEVELOPMENT-STANDARDS.md`).
 

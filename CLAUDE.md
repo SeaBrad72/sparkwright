@@ -45,6 +45,8 @@ New here? **Read `START-HERE.md`.**
 
 ## Security (non-negotiable)
 
+> **Authoritative summary.** These are the non-negotiable rules in brief; the full bar (secrets-at-scale, cost governance, per-rule detail) is their expansion in `DEVELOPMENT-STANDARDS.md` §2. This summary and that expansion must agree.
+
 - **Secrets:** never commit keys/passwords/tokens. Env vars + a committed `.env.example`.
 - **Input validation:** validate and sanitize all input at system boundaries (schema-validate).
 - **Injection:** parameterized queries / ORM — never string-interpolate untrusted input.

@@ -47,6 +47,14 @@ jobs:
         run: sh conformance/dor-defined.sh
       - name: Definition-of-Ready self-test
         run: sh conformance/dor-defined.sh --selftest
+      - name: README badge matches VERSION (no drift)
+        run: sh conformance/badge-version.sh
+      - name: Badge-version self-test
+        run: sh conformance/badge-version.sh --selftest
+      - name: AGENTS.md load-first brief (exists + refs + line-bound)
+        run: sh conformance/agents-brief.sh
+      - name: AGENTS.md brief self-test
+        run: sh conformance/agents-brief.sh --selftest
       - name: Definition-of-Deployable checklist present
         run: test -f conformance/definition-of-deployable.md
       - name: Deployable-ready conditional (N/A at kit root)

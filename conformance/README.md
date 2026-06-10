@@ -44,6 +44,8 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `stack-selection.sh` | script | Slice 9g / R7 — the stack-decision aid is complete (guide + per-profile Best-for/Avoid-when + a matrix row per profile); drift-guard | CI |
 | `persona-artifacts.sh` | script | Slice 9i / R9 — the QA/Designer persona artifacts exist (TEST-PLAN, UAT-SIGNOFF, A11Y-SIGNOFF) and are named in the §2 persona table; drift-guard | CI |
 | `dor-defined.sh` | script | Slice 9i-b — the Definition of Ready is enumerated in `CLAUDE.md`, referenced by the gate doc, and carried by the `FEATURE-REQUEST` intake; drift-guard | CI |
+| `badge-version.sh` | script | Slice 9k — the README version badge equals `VERSION` (drift-guard with `--fix` sync) | CI |
+| `agents-brief.sh` | script | Slice 9k — `AGENTS.md` exists, points at the canonical docs, and stays within the brief line-bound | CI |
 | `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |
 | `audit-evidence-checklist.md` | checklist | enterprise addendum (`../docs/enterprise/`) — per-control audit evidence | Review / pre-audit |
 | `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |
