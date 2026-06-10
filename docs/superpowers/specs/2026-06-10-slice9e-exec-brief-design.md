@@ -9,6 +9,8 @@ Three leadership-facing documents in `docs/enterprise/` (the auditor/leadership 
 
 Ratified at brainstorm: **brief + rollout + ROI** (full R5); ROI as a **parameterized worksheet + one labeled worked example** (no fabricated figures).
 
+**Anonymization (kit-wide principle, applied here):** all deliverables are **generic and adoptable by any org** — no PBS / public-media framing, no named sector, no personal-name references. The example archetype is "a regulated, privacy-sensitive mid-to-large enterprise." The *only* necessary identity reference is the real GitHub repo URL in release links. This slice also scrubs the two remaining shippable references: `docs/ROADMAP-SLICE9.md` ("PBS-scale, children's-data" goal line and "Owner: Bradley") → generic.
+
 ## A5 — competitive benchmark (the differentiation spine)
 
 Recorded at `docs/superpowers/reviews/2026-06-10-competitive-benchmark.md`. Findings (grounded in 2026 sources):
@@ -42,7 +44,7 @@ The VP-Eng/CTO entry point. Sections:
 - **Inputs (adopter supplies):** team size, avg production-incident cost, deploy frequency, current audit-evidence prep hours/cycle, agentic token spend.
 - **Three value levers (logic shown):** (1) risk reduction — incidents avoided × incident cost, downside baselined on A5's +30% / +23.5%; (2) audit-evidence time saved — hours saved × loaded rate; (3) agentic velocity **net** of guardrail overhead (~24K governance tokens/feature, prompt-cached) and token cost.
 - **Output:** low/expected/high ranges + sensitivity on the 2–3 highest-impact inputs; every assumption labeled; bold disclaimer — *"a planning model parameterized by your inputs, not a measured result or guarantee."*
-- **One worked example:** fictional PBS-scale org (~200 eng, stated inputs), computed end-to-end, labeled *"illustration of the method, not a claim about your org."*
+- **One worked example:** a fictional, unnamed regulated enterprise (~200 engineers, stated inputs), computed end-to-end, labeled *"illustration of the method, not a claim about your org."* No real org, sector, or person named.
 
 ## Cross-links & dangling-ref fix
 

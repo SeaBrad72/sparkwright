@@ -1,7 +1,7 @@
 # Slice 9 Arc — Honest Assurance & Adoption Reach (remediation roadmap)
 
 **Source:** the 9-agent independent review at [docs/superpowers/reviews/2026-06-09-independent-multiagent-review.md](superpowers/reviews/2026-06-09-independent-multiagent-review.md).
-**Goal:** close every gap that review found, in priority order, until the kit's headline — *"drop into a regulated, PBS-scale, children's-data org with relative assurance that agents cannot cause damage"* — holds end-to-end, not partially.
+**Goal:** close every gap that review found, in priority order, until the kit's headline — *"drop into a regulated, privacy-sensitive enterprise with relative assurance that agents cannot cause damage"* — holds end-to-end, not partially.
 **Method:** each sub-slice runs the kit's own loop (brainstorm → spec → plan → subagent build → PR → **human ratification** → merge). Analysis runs that *inform* a fix are scheduled immediately before it. We close the arc by **re-running the same 9-agent review** to prove the gap is gone.
 
 **Economics baseline (measured 2026-06-09):** an agent operating by-the-book carries **~24K tokens** of standing governance per feature (core 3 docs ~16.5K + global 2 ~4.6K + 1 profile + 2 templates), before reading any feature code. Whole-kit weight ≈ 21,880 lines of Markdown. This is the number R11 must move.
@@ -76,4 +76,4 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 
 ---
 
-**Created:** 2026-06-09 · **Owner:** Bradley (ratifier) · **Status:** approved-pending → Stage I/II on go.
+**Created:** 2026-06-09 · **Owner:** kit maintainer (ratifier) · **Status:** approved-pending → Stage I/II on go.
