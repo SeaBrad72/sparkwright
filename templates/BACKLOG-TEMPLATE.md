@@ -13,7 +13,7 @@
 ---
 
 ## Ready
-> Passed Definition of Ready (criteria present, sliced, deps known). Safe to start.
+> Passed the Definition of Ready (the enumerated entry gate in `CLAUDE.md`). Safe to start.
 
 | Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |
 |------|--------------|---------------------|------|------|------|-------|-------|

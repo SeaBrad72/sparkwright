@@ -40,3 +40,18 @@
 > Is there a screen or visual surface? Attach/link any sketches or designer handoff. Note accessibility needs (the Definition of Done requires WCAG 2.1 AA for user-facing UI).
 
 [...]
+
+## Definition of Ready
+> The entry gate (`DEVELOPMENT-PROCESS.md` §7; enumerated in `CLAUDE.md`). Tick each mandatory box; flag each conditional item or write **N/A**. If a mandatory box can't be ticked, the item isn't Ready — that's useful signal, not a failure.
+
+**Mandatory**
+- [ ] Acceptance criteria written (testable)
+- [ ] INVEST-sliced (small vertical increment)
+- [ ] Dependencies known
+- [ ] Success metric / hypothesis stated (see *Success metric / hypothesis* above)
+
+**Conditional (flag or N/A)**
+- [ ] Threat-model flagged — if sensitive/regulated
+- [ ] UX/a11y obligation flagged — if user-facing (see *UX & accessibility* above)
+- [ ] Eval criteria flagged — if an AI feature
+- [ ] Compliance obligation flagged — if a regulated domain
