@@ -14,6 +14,7 @@ set -eu
 
 NAME="${INCEPT_NAME:-}"; OWNER="${INCEPT_INTENT_OWNER:-}"
 STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTERACTIVE=1
+STACK_EXPLICIT=0
 CI="${INCEPT_CI:-github}"
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
@@ -29,7 +30,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --name) reqval $# --name; NAME="$2"; shift 2 ;;
     --intent-owner) reqval $# --intent-owner; OWNER="$2"; shift 2 ;;
-    --stack) reqval $# --stack; STACK="$2"; shift 2 ;;
+    --stack) reqval $# --stack; STACK="$2"; STACK_EXPLICIT=1; shift 2 ;;
     --backlog) reqval $# --backlog; BACKLOG="$2"; shift 2 ;;
     --ci) reqval $# --ci; CI="$2"; shift 2 ;;
     --noninteractive) INTERACTIVE=0; shift ;;
@@ -70,7 +71,7 @@ fi
 if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$NAME" ]  || { printf 'Project name: '; read -r NAME; }
   [ -n "$OWNER" ] || { printf 'Intent owner: '; read -r OWNER; }
-  printf 'Stack [%s]: ' "$STACK"; read -r _s || true; [ -n "${_s:-}" ] && STACK="$_s"
+  printf 'Stack [%s] (compare: docs/STACK-SELECTION.md): ' "$STACK"; read -r _s || true; [ -n "${_s:-}" ] && { STACK="$_s"; STACK_EXPLICIT=1; }
   printf 'Backlog backend (md/github/jira/ado/linear/gitlab) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
   printf 'CI platform (github/gitlab) [%s]: ' "$CI"; read -r _c || true; [ -n "${_c:-}" ] && CI="$_c"
 fi
@@ -78,6 +79,11 @@ fi
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
 case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
 case " $CI_PLATFORMS " in *" $CI "*) : ;; *) echo "error: unknown --ci '$CI' (one of: $CI_PLATFORMS)" >&2; exit 2 ;; esac
+
+# 9g: never SILENTLY default the stack — make the default choice explicit + pointed.
+if [ "$STACK_EXPLICIT" -eq 0 ]; then
+  echo "notice: no --stack given — using '$STACK'. Choose deliberately: docs/STACK-SELECTION.md" >&2
+fi
 
 DATE=$(date +%Y-%m-%d)
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
