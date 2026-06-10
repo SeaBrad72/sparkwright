@@ -43,6 +43,10 @@ jobs:
         run: sh conformance/persona-artifacts.sh
       - name: Persona-artifact self-test
         run: sh conformance/persona-artifacts.sh --selftest
+      - name: Definition-of-Ready wiring (DoR enumerated + gate + intake)
+        run: sh conformance/dor-defined.sh
+      - name: Definition-of-Ready self-test
+        run: sh conformance/dor-defined.sh --selftest
       - name: Definition-of-Deployable checklist present
         run: test -f conformance/definition-of-deployable.md
       - name: Deployable-ready conditional (N/A at kit root)

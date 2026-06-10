@@ -44,7 +44,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | **9g** ✅ | B | **Stack-decision aid** (R7) — *shipped v2.32.0.* `STACK-SELECTION.md` (matrix + per-stack Best-for/Avoid-when + full-stack guidance); per-profile sections (×10) drift-guarded by `stack-selection.sh`; incept default now loud-not-silent. | P0¹ | MINOR ✅ |
 | **9h** | B | **Hosted-tracker bootstrap + contract check** (R8) — `incept.sh --backlog jira` emits a concrete `JIRA-SETUP.md` (states, fields, the "Only Assignee" transition); add `tracker-contract.sh` that can verify a live Jira instance | P0¹ | MINOR |
 | **9i** ✅ | B | **Persona symmetry** (R9) — *shipped v2.33.0.* `TEST-PLAN` + `UAT-SIGNOFF` + `A11Y-SIGNOFF` templates; §2 persona table annotated dedicated-vs-shared; DoD a11y line + §9 UAT gate name their sign-off records; `persona-artifacts.sh` drift-guard. | P1 | MINOR ✅ |
-| **9i-b** | B | **Definition-of-Ready robustness** (fast-follow of 9i) — promote the DoR from a scattered one-liner to a first-class enumerated checklist (peer to the DoD): acceptance criteria written · INVEST-sliced · deps known · threat-model flagged if sensitive · UX/a11y obligation flagged. Tie to the `Ready`→Build gate + `FEATURE-REQUEST`. So "development doesn't proceed without requirements met" is explicit + auditable. | P1 | MINOR |
+| **9i-b** ✅ | B | **Definition-of-Ready robustness** (fast-follow of 9i) — *shipped v2.34.0.* DoR promoted to a first-class enumerated entry gate in `CLAUDE.md` (peer to the DoD): 4 mandatory + 4 conditional flags mapping to existing §7 gates; §7/§11/§4 reference it; `FEATURE-REQUEST` carries the checklist; `dor-defined.sh` drift-guard. | P1 | MINOR ✅ |
 
 ### Stage V — Fidelity + economics
 | Step | Type | What | Sev | Ver |

@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.34.0] - 2026-06-10
+
+Definition-of-Ready robustness (Slice 9i-b, fast-follow of 9i). Promotes the DoR from a scattered parenthetical to a first-class enumerated entry gate, peer to the DoD. **MINOR** — additive block + template checklist + a completeness check; the Definition of Done is unchanged.
+
+### Added
+- **`CLAUDE.md` — `## Definition of "Ready"`** entry gate above the DoD: 4 mandatory items (acceptance criteria · INVEST-sliced · deps known · success metric/hypothesis) + 4 conditional flags that map to existing §7 gates (threat-model / UX-a11y / eval / compliance). Frames DoR (entry) vs DoD (exit).
+- **`templates/FEATURE-REQUEST-TEMPLATE.md` — `## Definition of Ready`** checklist so an item is filled-to-ready at intake.
+- **`conformance/dor-defined.sh`** — completeness drift-guard (DoR enumerated in `CLAUDE.md` + referenced by the gate doc + carried by the intake template); `--selftest`. CI-gated.
+
+### Changed
+- **`DEVELOPMENT-PROCESS.md` §7/§11/§4** DoR references now point at the canonical `CLAUDE.md` entry gate (no list duplication).
+- **`templates/BACKLOG-TEMPLATE.md`** "Ready" column points at the enumerated DoR.
+
 ## [2.33.0] - 2026-06-10
 
 Persona symmetry (Slice 9i, Tier 2 of the "Honest Assurance & Adoption Reach" arc). Closes the SDLC-personas finding (review 6/10): QA and Designer were named with "→ exit artifact" promises that dissolved. **MINOR** — additive templates + annotations + a completeness check; no new DoD requirement.

@@ -57,6 +57,26 @@ New here? **Read `START-HERE.md`.**
 
 ---
 
+## Definition of "Ready"
+
+The **entry gate** — an item is NOT ready to enter Build until ALL mandatory items are true. (The Definition of Done below is the **exit gate**: safe to ship.) Conditional items are quick applicability checks — mark **N/A** when they don't apply.
+
+**Mandatory**
+- **Acceptance criteria** — written and testable (how we'll know it's done).
+- **INVEST-sliced** — a small, independent, vertical increment (not a phase or an epic).
+- **Dependencies known** — blocking deps, data, and access identified.
+- **Success metric / hypothesis** — a measurable statement of what "worked" means (§5 Discovery).
+
+**Conditional flags** *(flag the obligation now so no downstream gate is a surprise)*
+- **Threat-model** *(if sensitive/regulated)* — flagged for the §7 security gate.
+- **UX/a11y obligation** *(if a user-facing surface)* — flagged; recorded later in the a11y sign-off (the Accessibility item below).
+- **Eval criteria** *(if an AI feature)* — flagged for the §7 eval gate.
+- **Compliance obligation** *(if a regulated domain)* — flagged for the §7 compliance gate.
+
+If any **mandatory** box is unchecked, the item is **not Ready** — it does not enter Build.
+
+---
+
 ## Definition of "Done"
 
 A feature is NOT done until ALL are true:
