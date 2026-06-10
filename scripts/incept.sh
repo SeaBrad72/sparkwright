@@ -4,7 +4,8 @@
 # project, in place. Interactive by default; --noninteractive for automation/CI.
 #
 #   sh scripts/incept.sh [--name N] [--intent-owner O] [--stack S] \
-#                        [--backlog md|github|jira|ado|linear|gitlab] [--noninteractive]
+#                        [--backlog md|github|jira|ado|linear|gitlab] \
+#                        [--ci github|gitlab] [--noninteractive]
 #
 # It frees the root Claude-Code memory slot (CLAUDE.md = kit principles) by renaming the
 # principles doc to ENGINEERING-PRINCIPLES.md and rewriting the principles-sense references,
@@ -13,9 +14,13 @@ set -eu
 
 NAME="${INCEPT_NAME:-}"; OWNER="${INCEPT_INTENT_OWNER:-}"
 STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTERACTIVE=1
+CI="${INCEPT_CI:-github}"
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
 BACKLOG_BACKENDS="md github jira ado linear gitlab"
+# CI platforms with a shipped reference pipeline. The contract is the gate-ids (the platform
+# is open — see docs/operations/ci-platforms.md); these are the two with a worked reference.
+CI_PLATFORMS="github gitlab"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -23,8 +28,9 @@ while [ $# -gt 0 ]; do
     --intent-owner) OWNER="$2"; shift 2 ;;
     --stack) STACK="$2"; shift 2 ;;
     --backlog) BACKLOG="$2"; shift 2 ;;
+    --ci) CI="$2"; shift 2 ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--noninteractive]"; exit 0 ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,10 +62,12 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$OWNER" ] || { printf 'Intent owner: '; read -r OWNER; }
   printf 'Stack [%s]: ' "$STACK"; read -r _s || true; [ -n "${_s:-}" ] && STACK="$_s"
   printf 'Backlog backend (md/github/jira/ado/linear/gitlab) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
+  printf 'CI platform (github/gitlab) [%s]: ' "$CI"; read -r _c || true; [ -n "${_c:-}" ] && CI="$_c"
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
 case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
+case " $CI_PLATFORMS " in *" $CI "*) : ;; *) echo "error: unknown --ci '$CI' (one of: $CI_PLATFORMS)" >&2; exit 2 ;; esac
 
 DATE=$(date +%Y-%m-%d)
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
@@ -104,24 +112,46 @@ esac
 mkdir -p docs/architecture
 [ -f docs/architecture/ADR-000-stack.md ] || { cp docs/ADR-000-EXAMPLE.md docs/architecture/ADR-000-stack.md; sedi "s/\[YYYY-MM-DD\]/${DATE}/g" docs/architecture/ADR-000-stack.md; }
 
-# --- 5. wire CI from the chosen profile ---
-mkdir -p .github/workflows
-if [ -f "profiles/${STACK}/ci.yml" ]; then
-  cp "profiles/${STACK}/ci.yml" .github/workflows/ci.yml
-  [ -f "profiles/${STACK}/CODEOWNERS" ] && cp "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
-else
-  echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
-fi
+# --- 5. wire CI from the chosen profile (platform-specific path/reference) ---
+# The contract is the gate-ids; the platform is open (docs/operations/ci-platforms.md).
+# github → .github/workflows/ci.yml ; gitlab → .gitlab-ci.yml at the repo root.
+case "$CI" in
+  github)
+    mkdir -p .github/workflows
+    if [ -f "profiles/${STACK}/ci.yml" ]; then
+      cp "profiles/${STACK}/ci.yml" .github/workflows/ci.yml
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && cp "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
+    else
+      echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
+    fi
+    ;;
+  gitlab)
+    if [ -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
+      cp "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml
+      # GitLab reads CODEOWNERS from root, .gitlab/, or docs/ — .gitlab/ mirrors .github/.
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; cp "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS; }
+    else
+      echo "note: no profiles/${STACK}/ci.gitlab-ci.yml — add a .gitlab-ci.yml satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it; see docs/operations/ci-platforms.md)."
+    fi
+    ;;
+esac
 
 # --- 6. next steps (the judgment incept does NOT automate) ---
+# Branch-protection guidance is platform-specific: branch-protection.sh / BRANCH-PROTECTION.md
+# use the GitHub API; on GitLab the protected-branches equivalent is adopter-owned (honest
+# coupling note — see docs/operations/ci-platforms.md).
+case "$CI" in
+  github) PROTECT_HINT="Protect main NOW — run the gh-api command in profiles/${STACK}/BRANCH-PROTECTION.md; verify with: sh conformance/branch-protection.sh" ;;
+  gitlab) PROTECT_HINT="Protect main NOW — in GitLab: Settings → Repository → Protected branches (require merge request + pipeline success + an approval rule). branch-protection.sh uses the GitHub API; the GitLab equivalent is adopter-owned — see docs/operations/ci-platforms.md." ;;
+esac
 cat <<EOF
 
-✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}).
+✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}).
 
 Do the judgment steps incept does NOT automate (see START-HERE.md):
   1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
   2. Record the real stack decision in docs/architecture/ADR-000-stack.md.
-  3. Protect main NOW — run the gh-api command in profiles/${STACK}/BRANCH-PROTECTION.md; verify with: sh conformance/branch-protection.sh
+  3. ${PROTECT_HINT}
   4. Declare per-project config in CLAUDE.md §3 (autonomy tiers, SLO, review routing, WIP).
   5. Assign roles in CLAUDE.md §4.
 
