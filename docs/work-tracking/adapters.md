@@ -41,6 +41,7 @@ The repo-native backend (`../../templates/BACKLOG-TEMPLATE.md`). Every other ada
 - **Field map** — Summary→title · Description→intent + acceptance (or a dedicated Acceptance Criteria field) · a **Size** select custom field · a **Risk** custom field · Assignee→owner · the development panel auto-links branches/commits/PRs. Do **not** map Size to Story Points used for velocity — the kit forbids estimation-as-forecast (`DEVELOPMENT-PROCESS.md` §1).
 - **Atomic claim** — *structural tier, once configured* (see tiers above). A workflow **transition** to In Progress is processed server-side; add an **"Only Assignee" (or equivalent) transition condition** so only the current assignee can perform it — then the transition is a genuine server-enforced single-owner claim, the strongest of the hosted set. **This condition is opt-in: default Jira workflows do not restrict the In-Progress transition, so without it you are back on the convention tier.**
 - **Fit notes** — strongest workflow modeling and enterprise governance; a real server-enforced claim *when the transition condition is configured*. Heavyweight; resist the Story-Points-as-size trap.
+- **Bootstrap & verify** — `incept --backlog jira` writes a project-stamped `JIRA-SETUP.md` (statuses · Size/Risk fields · the Only-Assignee condition); `sh conformance/tracker-contract.sh` verifies the live instance (states/fields verified; the transition condition attested).
 
 ## Azure DevOps (Boards)
 

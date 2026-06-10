@@ -49,6 +49,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `conditional-gates.sh` | script | Slice 9j — §7 names the conditional gates (a11y / load / eval), trigger-bound not universal; drift-guard | CI |
 | `action-pinning.sh` | script | Slice 9j — the canonical reference pipeline SHA-pins every `uses:` (the reference satisfies its own pinning contract) | CI |
 | `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |
+| `tracker-contract.sh` | script | Slice 9h — a Jira instance satisfies the §6 work-item contract (six states + Size/Risk fields, live); three-state (UNVERIFIED without creds); the Only-Assignee claim is attested | CI (`--selftest`) / adopter (live) |
 | `audit-evidence-checklist.md` | checklist | enterprise addendum (`../docs/enterprise/`) — per-control audit evidence | Review / pre-audit |
 | `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |
 | `backlog-adapters.sh` | script | `DEVELOPMENT-PROCESS.md` §6 (named backends agree across incept / §6 / the adapter guide) | CI / Review |

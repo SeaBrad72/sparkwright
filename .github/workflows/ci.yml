@@ -63,6 +63,10 @@ jobs:
         run: sh conformance/action-pinning.sh
       - name: Action-pinning self-test
         run: sh conformance/action-pinning.sh --selftest
+      - name: Tracker-contract self-test (Jira §6 verifier logic)
+        run: sh conformance/tracker-contract.sh --selftest
+      - name: Tracker-contract UNVERIFIED without creds (honest non-pass)
+        run: 'if sh conformance/tracker-contract.sh; then echo "ERROR: expected UNVERIFIED (exit 2), got a pass"; exit 1; else test $? -eq 2; fi'
       - name: Definition-of-Deployable checklist present
         run: test -f conformance/definition-of-deployable.md
       - name: Deployable-ready conditional (N/A at kit root)
