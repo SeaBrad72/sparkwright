@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.30.0] - 2026-06-10
+
+Exec brief + org rollout + ROI model (Slice 9e, Tier 1 of the "Honest Assurance & Adoption Reach" arc). Closes the review's eng-leader finding — credible audit substance but no leadership front door. **MINOR** — additive docs; no new conformance gate (an exec brief is not a verifiable control).
+
+### Added
+- **`docs/enterprise/EXEC-BRIEF.md`** — ≤2-page VP/CTO entry point: what / why / what-you-get, A5-grounded differentiation, honest boundaries, compliance-at-a-glance, pointers.
+- **`docs/enterprise/ORG-ROLLOUT.md`** — Pilot→Expand→Fleet adoption, the canonical **Stage 1–4 "tighten at scale"** maturity model, and the fleet version-upgrade process.
+- **`docs/enterprise/ROI-MODEL.md`** — parameterized ROI worksheet (adopter inputs + three value levers) and one labeled worked example; honest "planning model, not a result" framing.
+- **`docs/superpowers/reviews/2026-06-10-competitive-benchmark.md`** — the A5 record behind the brief's differentiation (with sources).
+
+### Changed
+- Leadership cross-links from `README.md` / `START-HERE.md` / `docs/enterprise/README.md`.
+- **Fixed the dangling "Stage 1–4" reference**: `DEVELOPMENT-PROCESS.md` and `docs/operations/dora-metrics.md` now point at the canonical model in `ORG-ROLLOUT.md`.
+- **Anonymized** remaining shippable references (ROADMAP goal line + owner) to a generic regulated-enterprise archetype.
+
 ## [2.29.0] - 2026-06-10
 
 Runtime-guard portability (Slice 9d-b, Tier 1 of the "Honest Assurance & Adoption Reach" arc). The destructive-action guard previously protected only the Claude Code runtime; now the red-teamed deny-matrix is a sourceable single source of truth reused by a universal git pre-push hook and a `kit-guard` CLI, so other runtimes and humans inherit the same denials. **MINOR** — additive; the Claude path is proven behavior-identical, no new universally-required CI gate.

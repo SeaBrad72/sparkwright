@@ -1,7 +1,7 @@
 # Slice 9 Arc — Honest Assurance & Adoption Reach (remediation roadmap)
 
 **Source:** the 9-agent independent review at [docs/superpowers/reviews/2026-06-09-independent-multiagent-review.md](superpowers/reviews/2026-06-09-independent-multiagent-review.md).
-**Goal:** close every gap that review found, in priority order, until the kit's headline — *"drop into a regulated, PBS-scale, children's-data org with relative assurance that agents cannot cause damage"* — holds end-to-end, not partially.
+**Goal:** close every gap that review found, in priority order, until the kit's headline — *"drop into a regulated, privacy-sensitive enterprise with relative assurance that agents cannot cause damage"* — holds end-to-end, not partially.
 **Method:** each sub-slice runs the kit's own loop (brainstorm → spec → plan → subagent build → PR → **human ratification** → merge). Analysis runs that *inform* a fix are scheduled immediately before it. We close the arc by **re-running the same 9-agent review** to prove the gap is gone.
 
 **Economics baseline (measured 2026-06-09):** an agent operating by-the-book carries **~24K tokens** of standing governance per feature (core 3 docs ~16.5K + global 2 ~4.6K + 1 profile + 2 templates), before reading any feature code. Whole-kit weight ≈ 21,880 lines of Markdown. This is the number R11 must move.
@@ -35,7 +35,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | **9d** ✅ | B | **CI-platform portability** (R4) — *shipped v2.28.0.* `ci-gates.sh` recognizes GitHub `id:` steps **and** GitLab `gate-X:` job keys; GitLab reference pipeline (`ci.gitlab-ci.yml`); `incept.sh --ci github\|gitlab`; `docs/operations/ci-platforms.md` (gate-id contract + GitHub/GitLab/ADO expression + honest gh-coupling note: `branch-protection.sh`/`dora.sh` are GitHub-API, GitLab/ADO adopter-owned → UNVERIFIED not false-pass). Also enabled `main` branch protection (closing 9a's finding). | P1 | MINOR ✅ |
 | **9d-b** ✅ | B | **Runtime-guard portability** (R4 cont.) — *shipped v2.29.0.* Deny-matrix extracted to sourceable `guard-core.sh` (behavior-identical via agent-autonomy.sh); universal `hooks/pre-push` (block + --no-verify); `kit-guard` CLI; `guard-core-sourced.sh` anti-fork; default-on brownfield-safe incept install; `runtime-guards.md`. PATH-shims named as the future coverage-depth upgrade. | P1 | MINOR ✅ |
 | **A5** | A | **Competitive benchmark** — position vs other agentic-SDLC / paved-road offerings; sharpen the differentiation for the exec brief | — | — |
-| **9e** | B | **Exec brief + org rollout** (R5) — `EXECUTIVE-BRIEF.md` (assures-vs-Org-owned, SOC2/ISO in one table, honest safety boundary, adoption effort); `org-rollout.md` (pilot→expand, central profile ownership, fleet upgrade); **fix the Stage 1–4 dangling ref** | P1 | MINOR |
+| **9e** ✅ | B | **Exec brief + org rollout + ROI** (R5) — *shipped v2.30.0.* `EXEC-BRIEF.md` (what/why/assurance/honest-boundary/compliance-at-a-glance), `ORG-ROLLOUT.md` (pilot→expand→fleet + canonical Stage 1–4 + fleet upgrade), `ROI-MODEL.md` (worksheet + labeled worked example), A5 benchmark recorded. Fixed the Stage 1–4 dangling ref; anonymized shippable refs. | P1 | MINOR ✅ |
 
 ### Stage IV — Tier 2: usability & persona completeness
 | Step | Type | What | Sev | Ver |
@@ -76,4 +76,4 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 
 ---
 
-**Created:** 2026-06-09 · **Owner:** Bradley (ratifier) · **Status:** approved-pending → Stage I/II on go.
+**Created:** 2026-06-09 · **Owner:** kit maintainer (ratifier) · **Status:** approved-pending → Stage I/II on go.

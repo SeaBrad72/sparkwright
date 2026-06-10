@@ -4,6 +4,8 @@ You've dropped the Agentic SDLC Kit into a new project. This guide walks you (hu
 
 Work top to bottom. Don't enter the development loop until the **Inception Done** checklist at the end is fully checked.
 
+Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-BRIEF.md) first (what / why / risk / ROI); engineers continue to Inception below.
+
 ---
 
 ## Who are you? Start here
