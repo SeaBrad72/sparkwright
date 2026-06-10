@@ -6,6 +6,8 @@
 
 **Economics baseline (measured 2026-06-09):** an agent operating by-the-book carries **~24K tokens** of standing governance per feature (core 3 docs ~16.5K + global 2 ~4.6K + 1 profile + 2 templates), before reading any feature code. Whole-kit weight ≈ 21,880 lines of Markdown. This is the number R11 must move.
 
+**Update (v2.38.0):** R11 was met by **9k's `AGENTS.md`** — the standing per-feature load is now an *on-demand pull* (read the ≤1-page brief first; expand a full doc only when the task touches it), not a front-load. **9k-b** then confirmed by measurement that the core docs were already lean (the whole arc added only ~39 lines to the core-3), removed genuine cruft, and **ratcheted the size** (`conformance/doc-budget.sh`) so the gain can't silently erode.
+
 **Versioning note:** most slices are additive → MINOR (2.25.0+). One slice (**9j**) contains a genuine fork — *promote a11y/load/eval to universally-required CI gates* (a new required gate = **MAJOR / realizes a clean 3.0.0**) **vs.** *honestly demote them in the DoD to human-attested rows* (MINOR). Decision taken at 9j brainstorm. **Resolved (v2.36.0): honest-demote — a11y/load/eval are conditional gates, MINOR; no 3.0.0 from this fork.**
 
 ---
@@ -51,7 +53,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 |------|:----:|------|:---:|:---:|
 | **9j** ✅ | B | **Best-practice fidelity** (R10) — *shipped v2.36.0 (MINOR).* SLSA Build L2 declared (L3 path noted); NIST SSDF crosswalk column; a11y/load/eval formalized as **conditional** gates (honest-demote, not universal → no MAJOR); commit/tag-signing documented; canonical reference `ci.yml` SHA-pinned + `action-pinning.sh`; `conditional-gates.sh`. | P2 | MINOR ✅ |
 | **9k** ✅ | B | **Economics & hygiene** (R11) — *shipped v2.35.0.* `AGENTS.md` load-first brief (on-demand governance load); one canonical home per concept (DoD→`CLAUDE.md`; security summary↔expansion labeled); `badge-version.sh` (assert + `--fix`, release-wired) + `agents-brief.sh` drift-guards. | P2 | MINOR ✅ |
-| **9k-b** | B | **Core-doc trim** (fast-follow of 9k) — tighten `CLAUDE.md` / `DEVELOPMENT-PROCESS.md` / `DEVELOPMENT-STANDARDS.md` prose and push detail to references, measured against the `AGENTS.md` brief-enabled load. Cut the ~24K/feature standing load materially, from data not feel. | P2 | MINOR |
+| **9k-b** ✅ | B | **Core-doc trim** (fast-follow of 9k) — *shipped v2.38.0.* Measurement-first: the arc added only ~39 lines to the core-3 and the economics win was already banked by `AGENTS.md`, so the docs were confirmed lean. Removed genuine cruft from `DEVELOPMENT-PROCESS.md` (466→462); the other two left unchanged (no safe cut). Added `doc-budget.sh` ratchet to prevent re-bloat. No governance removed (full suite green). | P2 | MINOR ✅ |
 
 ### Stage VI — Prove the gap is closed
 | Step | Type | What |

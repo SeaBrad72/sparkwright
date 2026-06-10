@@ -3,6 +3,16 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.0] - 2026-06-10
+
+Core-doc trim (Slice 9k-b, fast-follow of 9k). A measurement-first pass that **confirmed the core governing docs were already lean** (the Slice 9 arc had added only ~39 lines to the core-3, and the economics win was already banked by 9k's on-demand `AGENTS.md`), tightened the one doc with genuine cruft, and installed a ratchet so they can't silently re-bloat. **MINOR** — no governance content removed; every normative line, gate, and conformance marker preserved (proven by the full suite staying green).
+
+### Changed
+- **`DEVELOPMENT-PROCESS.md`** (466→462 lines) — removed stale metadata, a non-normative aside, and a redundant re-listing of the conditional gates (the §7 table already annotates them); no section renumbered. **`DEVELOPMENT-STANDARDS.md`** and **`CLAUDE.md`** were reviewed and left unchanged — already tight, no safe cut without losing substance.
+
+### Added
+- **`conformance/doc-budget.sh`** — a per-doc + core-3 line-budget ratchet (CLAUDE.md ≤120, DEVELOPMENT-PROCESS.md ≤470, DEVELOPMENT-STANDARDS.md ≤310, core-3 ≤890); a future PR that re-bloats a core doc fails CI. Budgets raised only by a ratified PR. `--selftest`, CI-gated.
+
 ## [2.37.0] - 2026-06-10
 
 Hosted-tracker bootstrap (Slice 9h, Tier 2 of the "Honest Assurance & Adoption Reach" arc). Turns hosted-tracker adoption from prose into a concrete setup artifact plus a contract verifier. **MINOR** — templates + an incept arm + a three-state conformance check; no API client shipped.
