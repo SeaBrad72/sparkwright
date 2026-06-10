@@ -4,39 +4,39 @@ Maps the controls **this kit enforces or assists** to SOC 2 Trust Services Crite
 
 **How to read it:** the `Responsibility` column is the honest part — **Kit-enforced** (mechanical, automatic evidence), **Kit-assisted** (kit gives the pattern; team produces evidence), **Org-owned** (see [README responsibility boundary](README.md)). Rows that don't apply to a given project are marked **N/A (reason)** — e.g. a service with no personal data marks the Privacy rows N/A.
 
-**Frameworks covered:** SOC 2 (Security + Privacy categories) · ISO 27001:2022 Annex A.
+**Frameworks covered:** SOC 2 (Security + Privacy categories) · ISO 27001:2022 Annex A · NIST SSDF (SP 800-218 v1.1).
 **Extensible the same way (not yet mapped):** NIST CSF 2.0 (organizing lens — a re-mapping of the same controls), PCI-DSS (*triggers only if you process/store/transmit cardholder data — outsource/tokenize to a compliant processor to keep it out of scope*), ISO 27701 (privacy ISMS extension if certification is later required). Adding any of these = appending a column against the same kit controls.
 
 ## Security & engineering controls
 
-| Kit control | Where in the kit | SOC 2 | ISO 27001:2022 | Evidence artifact | Responsibility |
-|-------------|------------------|-------|----------------|-------------------|----------------|
-| Lint / type-check / test + 80% coverage | STANDARDS §14 gates 1–3; `profiles/*/ci.yml` | CC8.1 | A.8.28 (secure coding), A.8.29 (security testing in dev) | CI gate run logs | Kit-enforced |
-| Reproducible production build | STANDARDS §14 gate 4; `gate-build` | CC8.1 | A.8.25 (secure development life cycle), A.8.31 (separation of dev/test/prod) | build CI log / artifact | Kit-enforced |
-| Secret scanning (no committed secrets) | STANDARDS §14 gate 5; `gate-secret-scan` | CC6.1 | A.8.28 (secure coding), A.5.15 (access control) | secret-scan CI log | Kit-enforced |
-| Dependency vulnerability scan | STANDARDS §14 gate 6; `gate-dep-scan` | CC7.1 | A.8.8 (management of technical vulnerabilities) | dep-scan CI log | Kit-enforced |
-| SBOM + build-provenance attestation | STANDARDS §14 gate 7; `gate-sbom` / `gate-provenance` | CC7.1, CC9.2 | A.8.8 (management of technical vulnerabilities), A.5.21 (managing information security in the ICT supply chain) | SBOM file, attestation | Kit-enforced |
-| Least-privilege OIDC in CI (push-only provenance job) | STANDARDS §14 hardening note; `profiles/*/ci.yml` | CC6.1, CC6.3 | A.8.2 (privileged access rights), A.5.15 (access control) | workflow definition | Kit-enforced |
-| Branch protection · builder ≠ sole merger | STANDARDS §14 governance; PROCESS §12 | CC8.1, CC6.1 | A.8.32 (change management), A.8.4 (access to source code) | PR approval records | Kit-enforced |
-| Change management via PR + green CI | STANDARDS §14; PROCESS §12 | CC8.1 | A.8.32 (change management) | merge history | Kit-enforced |
-| Agent autonomy guard · human gates for irreversible actions | PROCESS §13; `.claude/`, `conformance/agent-autonomy.sh` | CC6.1, CC6.3, CC8.1 | A.8.2 (privileged access rights), A.5.15 (access control) | guard hook, agent-autonomy.sh | Kit-enforced |
-| Immutable audit logging (who/what/when/resource) | STANDARDS §2 (Audit logging) | CC7.2, CC7.3 | A.8.15 (logging), A.8.16 (monitoring activities) | audit log stream | Kit-assisted |
-| Secrets management (env + managed store) | STANDARDS §2; secrets-at-scale.md *(6b)* | CC6.1 | A.8.24 (use of cryptography), A.5.15 (access control), A.8.9 (configuration management) | `.env.example`, store config | Kit-assisted |
-| Input validation / injection prevention | STANDARDS §2 | CC6.1, CC6.6 | A.8.28 (secure coding), A.8.26 (application security requirements) | code, tests | Kit-assisted |
-| Authentication & authorization (hashing, least-priv tokens) | STANDARDS §2 | CC6.1, CC6.2, CC6.3 | A.8.5 (secure authentication), A.5.15 (access control), A.5.18 (access rights management) | code, config | Kit-assisted |
-| Encryption at rest & in transit | STANDARDS §2 (PII) | CC6.1, CC6.7 | A.8.24 (use of cryptography) | infra/config | Kit-assisted |
-| Observability / monitoring | STANDARDS §3 | CC7.2 | A.8.15 (logging), A.8.16 (monitoring activities) | dashboards, alerts | Kit-assisted |
-| Config in environment (15-factor) | STANDARDS §13; `conformance/15-factor-checklist.md` | CC8.1 | A.8.9 (configuration management) | 15-factor checklist | Kit-assisted |
-| Architecture decisions recorded (ADRs) | PROCESS; `docs/ADR-*` | CC1.2, CC3.1 | A.5.4 (management responsibilities), A.8.27 (secure system architecture) | ADR files | Kit-assisted |
-| RUNBOOK · DR / rollback | DoD (CLAUDE.md); `templates/RUNBOOK-TEMPLATE.md` | CC7.4, CC7.5 | A.5.29 (information security during disruption), A.5.30 (ICT readiness for business continuity), A.8.13 (information backup), A.8.14 (redundancy of information processing facilities) | RUNBOOK | Kit-assisted |
-| Cost governance · rate-limiting external/LLM spend | STANDARDS §2 (Cost management) | CC7.1 | A.8.6 (capacity management) | config, alerts | Kit-assisted |
-| Personnel / HR security | — | CC1.4 | A.6.1 (screening), A.6.2 (terms and conditions of employment), A.6.3 (information security awareness), A.6.4 (disciplinary process), A.6.5 (responsibilities after termination), A.6.6 (confidentiality agreements) | — | Org-owned |
-| Physical & environmental security | — | CC6.4 | A.7.1–A.7.14 (physical controls) | — | Org-owned |
-| Vendor / third-party risk management | — | CC9.2 | A.5.19 (information security in supplier relationships), A.5.20 (addressing security within supplier agreements), A.5.22 (monitoring, review and change management of supplier services) | — | Org-owned |
-| Agent/runtime platform boundary · network-egress allowlist | `docs/enterprise/platform-safety-boundary.md` | CC6.6, CC6.7 | A.8.20 (networks security), A.8.21 (security of network services), A.8.22 (segregation of networks), A.8.23 (web filtering) | egress policy, deny-by-default network config | Org-owned |
-| Agent/runtime platform boundary · separate prod credentials (SoD) | `docs/enterprise/platform-safety-boundary.md` | CC6.1, CC6.3 | A.5.15 (access control), A.5.18 (access rights), A.8.2 (privileged access rights) | break-glass workflow, access logs | Org-owned |
-| Agent/runtime platform boundary · sandboxed filesystem | `docs/enterprise/platform-safety-boundary.md` | CC6.1 | A.8.31 (separation of development, test and production environments) | container/sandbox config | Org-owned |
-| Agent/runtime platform boundary · scoped short-lived tokens | `docs/enterprise/platform-safety-boundary.md` | CC6.1 | A.5.17 (authentication information), A.8.2 (privileged access rights) | token TTL/scope config | Org-owned |
+| Kit control | Where in the kit | SOC 2 | ISO 27001:2022 | NIST SSDF (800-218) | Evidence artifact | Responsibility |
+|-------------|------------------|-------|----------------|---------------------|-------------------|----------------|
+| Lint / type-check / test + 80% coverage | STANDARDS §14 gates 1–3; `profiles/*/ci.yml` | CC8.1 | A.8.28 (secure coding), A.8.29 (security testing in dev) | PW.7, PW.8 | CI gate run logs | Kit-enforced |
+| Reproducible production build | STANDARDS §14 gate 4; `gate-build` | CC8.1 | A.8.25 (secure development life cycle), A.8.31 (separation of dev/test/prod) | PW.6, PS.3 | build CI log / artifact | Kit-enforced |
+| Secret scanning (no committed secrets) | STANDARDS §14 gate 5; `gate-secret-scan` | CC6.1 | A.8.28 (secure coding), A.5.15 (access control) | PW.8, PS.1 | secret-scan CI log | Kit-enforced |
+| Dependency vulnerability scan | STANDARDS §14 gate 6; `gate-dep-scan` | CC7.1 | A.8.8 (management of technical vulnerabilities) | PW.4, RV.1 | dep-scan CI log | Kit-enforced |
+| SBOM + build-provenance attestation | STANDARDS §14 gate 7; `gate-sbom` / `gate-provenance` | CC7.1, CC9.2 | A.8.8 (management of technical vulnerabilities), A.5.21 (managing information security in the ICT supply chain) | PS.2, PS.3 (SLSA Build L2) | SBOM file, attestation | Kit-enforced |
+| Least-privilege OIDC in CI (push-only provenance job) | STANDARDS §14 hardening note; `profiles/*/ci.yml` | CC6.1, CC6.3 | A.8.2 (privileged access rights), A.5.15 (access control) | PO.3, PO.5 | workflow definition | Kit-enforced |
+| Branch protection · builder ≠ sole merger | STANDARDS §14 governance; PROCESS §12 | CC8.1, CC6.1 | A.8.32 (change management), A.8.4 (access to source code) | PS.1, PW.7 | PR approval records | Kit-enforced |
+| Change management via PR + green CI | STANDARDS §14; PROCESS §12 | CC8.1 | A.8.32 (change management) | PO.3, PS.1 | merge history | Kit-enforced |
+| Agent autonomy guard · human gates for irreversible actions | PROCESS §13; `.claude/`, `conformance/agent-autonomy.sh` | CC6.1, CC6.3, CC8.1 | A.8.2 (privileged access rights), A.5.15 (access control) | PO.5, PS.1 | guard hook, agent-autonomy.sh | Kit-enforced |
+| Immutable audit logging (who/what/when/resource) | STANDARDS §2 (Audit logging) | CC7.2, CC7.3 | A.8.15 (logging), A.8.16 (monitoring activities) | PO.5 | audit log stream | Kit-assisted |
+| Secrets management (env + managed store) | STANDARDS §2; secrets-at-scale.md *(6b)* | CC6.1 | A.8.24 (use of cryptography), A.5.15 (access control), A.8.9 (configuration management) | PO.3, PO.5 | `.env.example`, store config | Kit-assisted |
+| Input validation / injection prevention | STANDARDS §2 | CC6.1, CC6.6 | A.8.28 (secure coding), A.8.26 (application security requirements) | PW.5 | code, tests | Kit-assisted |
+| Authentication & authorization (hashing, least-priv tokens) | STANDARDS §2 | CC6.1, CC6.2, CC6.3 | A.8.5 (secure authentication), A.5.15 (access control), A.5.18 (access rights management) | PW.5 | code, config | Kit-assisted |
+| Encryption at rest & in transit | STANDARDS §2 (PII) | CC6.1, CC6.7 | A.8.24 (use of cryptography) | PW.5, PW.9 | infra/config | Kit-assisted |
+| Observability / monitoring | STANDARDS §3 | CC7.2 | A.8.15 (logging), A.8.16 (monitoring activities) | PO.5 | dashboards, alerts | Kit-assisted |
+| Config in environment (15-factor) | STANDARDS §13; `conformance/15-factor-checklist.md` | CC8.1 | A.8.9 (configuration management) | PW.9 | 15-factor checklist | Kit-assisted |
+| Architecture decisions recorded (ADRs) | PROCESS; `docs/ADR-*` | CC1.2, CC3.1 | A.5.4 (management responsibilities), A.8.27 (secure system architecture) | PW.1, PW.2 | ADR files | Kit-assisted |
+| RUNBOOK · DR / rollback | DoD (CLAUDE.md); `templates/RUNBOOK-TEMPLATE.md` | CC7.4, CC7.5 | A.5.29 (information security during disruption), A.5.30 (ICT readiness for business continuity), A.8.13 (information backup), A.8.14 (redundancy of information processing facilities) | — | RUNBOOK | Kit-assisted |
+| Cost governance · rate-limiting external/LLM spend | STANDARDS §2 (Cost management) | CC7.1 | A.8.6 (capacity management) | — | config, alerts | Kit-assisted |
+| Personnel / HR security | — | CC1.4 | A.6.1 (screening), A.6.2 (terms and conditions of employment), A.6.3 (information security awareness), A.6.4 (disciplinary process), A.6.5 (responsibilities after termination), A.6.6 (confidentiality agreements) | — | — | Org-owned |
+| Physical & environmental security | — | CC6.4 | A.7.1–A.7.14 (physical controls) | — | — | Org-owned |
+| Vendor / third-party risk management | — | CC9.2 | A.5.19 (information security in supplier relationships), A.5.20 (addressing security within supplier agreements), A.5.22 (monitoring, review and change management of supplier services) | PW.4 | — | Org-owned |
+| Agent/runtime platform boundary · network-egress allowlist | `docs/enterprise/platform-safety-boundary.md` | CC6.6, CC6.7 | A.8.20 (networks security), A.8.21 (security of network services), A.8.22 (segregation of networks), A.8.23 (web filtering) | PO.5 | egress policy, deny-by-default network config | Org-owned |
+| Agent/runtime platform boundary · separate prod credentials (SoD) | `docs/enterprise/platform-safety-boundary.md` | CC6.1, CC6.3 | A.5.15 (access control), A.5.18 (access rights), A.8.2 (privileged access rights) | PO.5 | break-glass workflow, access logs | Org-owned |
+| Agent/runtime platform boundary · sandboxed filesystem | `docs/enterprise/platform-safety-boundary.md` | CC6.1 | A.8.31 (separation of development, test and production environments) | PO.5 | container/sandbox config | Org-owned |
+| Agent/runtime platform boundary · scoped short-lived tokens | `docs/enterprise/platform-safety-boundary.md` | CC6.1 | A.5.17 (authentication information), A.8.2 (privileged access rights) | PO.5 | token TTL/scope config | Org-owned |
 
 ## Privacy & data-protection family
 
