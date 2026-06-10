@@ -47,5 +47,3 @@ Full mapping, with per-row *Kit-enforced / Kit-assisted / Org-owned* responsibil
 | **Engineer** | [START-HERE.md](../../START-HERE.md) — Inception and stack selection |
 | **Auditor** | The enterprise docs in [this directory](./) — crosswalk, evidence checklist, RBAC, safety boundary |
 | **Operator** | Your project RUNBOOK (from [RUNBOOK-TEMPLATE.md](../../templates/RUNBOOK-TEMPLATE.md)) and [conformance/README.md](../../conformance/README.md) |
-
-*(`ORG-ROLLOUT.md` and `ROI-MODEL.md` are created in sibling tasks of this slice.)*

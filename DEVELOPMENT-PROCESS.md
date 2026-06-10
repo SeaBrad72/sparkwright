@@ -232,7 +232,7 @@ monitor → detect (alert · error spike · support ticket · user feedback · u
 **SLOs & error budgets (per service, per project):**
 - Define SLOs and an error budget for production services.
 - **Default: soft** — surface budget burn in metrics and retros; do not hard-gate releases.
-- **Maturity step: hard-gate** — a project at production scale may promote to SRE-style gating (non-critical releases freeze when the budget is burned until reliability recovers). Mirrors the Stage 1–4 scale progression in `DEVELOPMENT-STANDARDS.md`. The same soft→hard promotion applies to the DORA change-failure rate / MTTR — see `docs/operations/dora-metrics.md`.
+- **Maturity step: hard-gate** — a project at production scale may promote to SRE-style gating (non-critical releases freeze when the budget is burned until reliability recovers). Mirrors the Stage 1–4 maturity progression in `docs/enterprise/ORG-ROLLOUT.md`. The same soft→hard promotion applies to the DORA change-failure rate / MTTR — see `docs/operations/dora-metrics.md`.
 
 **Cost / spend governance (per project):** track delivery and runtime cost — including agent/compute spend, which can grow fast. **Default: tracked and surfaced in metrics; a spend-gate (alert/throttle on budget burn) promotes at maturity** — same soft→gating progression as error budgets.
 

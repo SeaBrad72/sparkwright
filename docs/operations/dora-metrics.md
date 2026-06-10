@@ -33,7 +33,7 @@ sh scripts/dora.sh --window 7  # last 7 days
 ## The maturity-gating path (the home for DORA enforcement)
 Per §9 (error budgets, soft → hard):
 - **Default — surface, don't gate.** Report the metrics in dashboards and retros; let trends inform improvement.
-- **Maturity step — gate.** At production scale, promote to gating: e.g. **freeze non-critical releases when change-failure rate or MTTR breaches the budget** until reliability recovers. Mirrors the §9 error-budget promotion and the Stage 1–4 scale progression. This is opt-in at scale — not a baseline check.
+- **Maturity step — gate.** At production scale, promote to gating: e.g. **freeze non-critical releases when change-failure rate or MTTR breaches the budget** until reliability recovers. Mirrors the §9 error-budget promotion and the Stage 1–4 maturity progression in `../enterprise/ORG-ROLLOUT.md`. This is opt-in at scale — not a baseline check.
 
 ## Dashboard pattern
 Surface the metrics on a cadence/format the org sets (a configuration point, not a fixed ritual; ties to §12 stakeholder visibility):

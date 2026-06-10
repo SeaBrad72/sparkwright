@@ -6,6 +6,8 @@ A complete, **stack-agnostic** software development lifecycle designed for teams
 
 It is opinionated about *how to build well with agents* and deliberately neutral about *what you build it with*.
 
+**For engineering leaders →** [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-BRIEF.md) — what it is, why now, risk posture, ROI.
+
 ## Who it's for
 Any team — humans, agents, or both — starting a new project who wants production-grade discipline without inventing a process from scratch. Adopt it as-is, or hand it to a team and let them tailor it.
 
