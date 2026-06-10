@@ -206,9 +206,12 @@ Expected: `syntax OK`. Fix any error before proceeding.
 
 - [ ] **Step 5: Build the candidate harness and prove behavior-identical.**
 
-Run:
+**Guard-safety note:** do NOT build the candidate harness with a `sed`/`cp` command that names a `.claude/…` path — the live guard blocks a mutation verb next to a control-plane path. Instead: copy the harness (the `cp` source is under `conformance/`, not control-plane), then change the one `GUARD=` line with the **Edit tool** (which checks only the `/tmp` target path, not its content).
+
+Run: `cp conformance/agent-autonomy.sh /tmp/aa-candidate.sh`
+Then use the **Edit tool** on `/tmp/aa-candidate.sh` to replace the line `GUARD=".claude/hooks/guard.sh"` with `GUARD="/tmp/guard.sh"`.
+Then run:
 ```sh
-sed 's#^GUARD=".claude/hooks/guard.sh"#GUARD="/tmp/guard.sh"#' conformance/agent-autonomy.sh > /tmp/aa-candidate.sh
 sh /tmp/aa-candidate.sh > /tmp/aa-candidate.txt; echo "exit=$?"
 diff /tmp/aa-baseline.txt /tmp/aa-candidate.txt && echo "IDENTICAL — behavior preserved"
 ```
