@@ -8,30 +8,30 @@ Copy this file into your project (or your audit/review record). For each control
 
 ## Security & engineering controls
 
-| Control | Crosswalk ref | Evidence artifact (where) | Check | Present? |
-|---------|---------------|---------------------------|-------|----------|
-| Lint / type-check / test + coverage | CC8.1 / A.8.28–29 | CI gate run logs (gates 1–3) | **Auto:** `sh conformance/ci-gates.sh .github/workflows/ci.yml` | |
-| Reproducible build | CC8.1 / A.8.25 | build CI log / artifact (gate-build) | **Auto:** `sh conformance/ci-gates.sh .github/workflows/ci.yml` | |
-| Secret scanning | CC6.1 / A.8.28 | secret-scan CI log (gate-secret-scan) | **Auto:** `sh conformance/ci-gates.sh …` | |
-| Dependency vulnerability scan | CC7.1 / A.8.8 | dep-scan CI log (gate-dep-scan) | **Auto:** `sh conformance/ci-gates.sh …` | |
-| SBOM + build provenance | CC7.1, CC9.2 / A.8.8, A.5.21 | SBOM file + attestation (gate-sbom / gate-provenance) | **Auto:** `sh conformance/ci-gates.sh …` + the SBOM artifact | |
-| Container image supply-chain (if service image) | CC7.1, CC8.1 / A.8.25, A.8.28 | image SBOM + digest-bound provenance attestation | **Auto (conditional):** `sh conformance/container-supply-chain.sh` | |
-| Least-privilege OIDC in CI | CC6.1, CC6.3 / A.8.2 | the workflow's push-only `provenance` job (no workflow-level `id-token`) | Manual (review the workflow) | |
-| Branch protection · builder ≠ sole merger | CC8.1, CC6.1 / A.8.32, A.8.4 | branch-protection settings + PR approval records | **Auto (where reachable):** `sh conformance/branch-protection.sh` + PR history | |
-| Change management via PR + green CI | CC8.1 / A.8.32 | merge history (every change via reviewed PR with green CI) | Manual (PR / merge records) | |
-| Agent autonomy · human gates for irreversible actions | CC6.1, CC6.3 / A.8.2 | guard hook denies the gated set | **Auto:** `sh conformance/agent-autonomy.sh` | |
+| Control | Crosswalk ref (SOC 2 / ISO / SSDF) | Evidence artifact (where) | Check | Present? |
+|---------|-----------------------------------|---------------------------|-------|----------|
+| Lint / type-check / test + coverage | CC8.1 / A.8.28–29 / PW.7, PW.8 | CI gate run logs (gates 1–3) | **Auto:** `sh conformance/ci-gates.sh .github/workflows/ci.yml` | |
+| Reproducible build | CC8.1 / A.8.25 / PW.6, PS.3 | build CI log / artifact (gate-build) | **Auto:** `sh conformance/ci-gates.sh .github/workflows/ci.yml` | |
+| Secret scanning | CC6.1 / A.8.28 / PW.8, PS.1 | secret-scan CI log (gate-secret-scan) | **Auto:** `sh conformance/ci-gates.sh …` | |
+| Dependency vulnerability scan | CC7.1 / A.8.8 / PW.4, RV.1 | dep-scan CI log (gate-dep-scan) | **Auto:** `sh conformance/ci-gates.sh …` | |
+| SBOM + build provenance (SLSA Build L2) | CC7.1, CC9.2 / A.8.8, A.5.21 / PS.2, PS.3 | SBOM file + attestation (gate-sbom / gate-provenance) | **Auto:** `sh conformance/ci-gates.sh …` + the SBOM artifact | |
+| Container image supply-chain (if service image) | CC7.1, CC8.1 / A.8.25, A.8.28 / PS.2, PS.3 | image SBOM + digest-bound provenance attestation | **Auto (conditional):** `sh conformance/container-supply-chain.sh` | |
+| Least-privilege OIDC in CI | CC6.1, CC6.3 / A.8.2 / PO.3, PO.5 | the workflow's push-only `provenance` job (no workflow-level `id-token`) | Manual (review the workflow) | |
+| Branch protection · builder ≠ sole merger | CC8.1, CC6.1 / A.8.32, A.8.4 / PS.1, PW.7 | branch-protection settings + PR approval records | **Auto (where reachable):** `sh conformance/branch-protection.sh` + PR history | |
+| Change management via PR + green CI | CC8.1 / A.8.32 / PO.3, PS.1 | merge history (every change via reviewed PR with green CI) | Manual (PR / merge records) | |
+| Agent autonomy · human gates for irreversible actions | CC6.1, CC6.3 / A.8.2 / PO.5, PS.1 | guard hook denies the gated set | **Auto:** `sh conformance/agent-autonomy.sh` | |
 | Inception completed (project resumable cold) | — | the Inception gate passes | **Auto:** `sh conformance/inception-done.sh` | |
 | Profile completeness (chosen stack) | — | the profile fills all sections; companion CI conformant | **Auto:** `sh conformance/profile-completeness.sh` | |
 | Docs link integrity | A.5.x (documentation) | all relative links resolve | **Auto:** `sh conformance/check-links.sh` | |
-| 15-factor architecture (services) | CC8.1 / A.8.9 | the completed checklist | **Checklist:** `conformance/15-factor-checklist.md` | |
+| 15-factor architecture (services) | CC8.1 / A.8.9 / PW.9 | the completed checklist | **Checklist:** `conformance/15-factor-checklist.md` | |
 | Immutable audit logging | CC7.2, CC7.3 / A.8.15, A.8.16 | audit log stream (who/what/when/resource) | Manual | |
-| Secrets management & secrets-at-scale | CC6.1 / A.8.24 | `.env.example` + managed-store config (→ `../docs/enterprise/secrets-at-scale.md`) | Manual | |
-| Input validation / injection prevention | CC6.1, CC6.6 / A.8.28, A.8.26 | schema-validation code + tests | Manual | |
-| Authentication & authorization | CC6.1–6.3 / A.8.5, A.5.15 | auth code/config | Manual | |
-| Encryption at rest & in transit | CC6.1, CC6.7 / A.8.24 | infra/config | Manual | |
+| Secrets management & secrets-at-scale | CC6.1 / A.8.24 / PO.3, PO.5 | `.env.example` + managed-store config (→ `../docs/enterprise/secrets-at-scale.md`) | Manual | |
+| Input validation / injection prevention | CC6.1, CC6.6 / A.8.28, A.8.26 / PW.5 | schema-validation code + tests | Manual | |
+| Authentication & authorization | CC6.1–6.3 / A.8.5, A.5.15 / PW.5 | auth code/config | Manual | |
+| Encryption at rest & in transit | CC6.1, CC6.7 / A.8.24 / PW.5, PW.9 | infra/config | Manual | |
 | Observability / monitoring | CC7.2 / A.8.15, A.8.16 | dashboards, alerts | Manual | |
 | Incident response · postmortem | CC7.3, CC7.4 / A.5.24–A.5.28 | postmortem record(s) (`templates/POSTMORTEM-TEMPLATE.md`) + action-item backlog links | Manual | |
-| Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 | `docs/ADR-*` files | Manual (files present) | |
+| Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 / PW.1, PW.2 | `docs/ADR-*` files | Manual (files present) | |
 | RUNBOOK · DR / rollback | CC7.4, CC7.5 / A.5.29, A.8.13 | RUNBOOK | Manual (file present) | |
 | DR drill · backup-restore | CC7.5, A1.2 / A.5.29, A.8.13, A.8.14 | BIA (`docs/continuity/BIA.md`) + RUNBOOK §6 + recorded drill date + drill log | **Auto (conditional):** `sh conformance/dr-ready.sh` | |
 | Resilience · load/soak + fault-injection | A1.2, A1.3 / A.8.6, A.8.16 | resilience-verification records (RUNBOOK §8) + drill/load logs | **Auto (conditional):** `sh conformance/resilience-ready.sh` | |

@@ -2,6 +2,10 @@
 # Runs the kit's conformance checks and lints its docs on every PR.
 # (This is the kit's REAL pipeline. The adopter REFERENCE pipeline lives at
 #  profiles/typescript-node/ci.yml and is inert here.)
+# Honesty notes (A4 auditor sim): (1) live controls — branch-protection, tracker-contract — run
+#  UNVERIFIED here (CI has no remote-admin creds); they are exercised via --selftest, and the LIVE
+#  checks belong in the adopter's own pipeline. (2) Actions below are SHA-pinned per
+#  DEVELOPMENT-STANDARDS.md §14 — the kit dogfoods its own pinning rule.
 name: CI
 
 on:
@@ -16,7 +20,7 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: CI-gates conformance (reference workflow satisfies §14)
         run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
       - name: CI-gates conformance — GitLab reference satisfies §14 (platform portability)
@@ -103,7 +107,7 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Bootstrap a temp project and verify Inception-Done
         run: |
           tmp=$(mktemp -d)
@@ -114,6 +118,6 @@ jobs:
   docs-links:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
       - name: Relative Markdown link integrity
         run: sh conformance/check-links.sh

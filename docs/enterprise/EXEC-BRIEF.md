@@ -15,7 +15,7 @@ Agents increasingly take the first pass at the SDLC. The field's own data is the
 ## 3. What leadership gets
 
 - **Relative assurance against irreversible damage.** A committed agent guard (PROCESS §13), branch protection (builder ≠ sole merger), and destructive-action denials make it hard for an agent *or* a human to trivially cause irreversible harm — now reused across runtimes via a git `pre-push` hook and a `kit-guard` CLI ([runtime-guards.md](../operations/runtime-guards.md)). This is risk reduction, not a guarantee — see §5.
-- **Audit-ready evidence.** Controls map to SOC 2 and ISO 27001:2022 ([compliance-crosswalk.md](compliance-crosswalk.md)), with a per-control evidence list ([audit-evidence-checklist.md](../../conformance/audit-evidence-checklist.md)), a ratification RBAC model ([ratification-rbac.md](ratification-rbac.md)), and a tested guard.
+- **Audit-ready evidence.** Controls map to SOC 2, ISO 27001:2022, and NIST SSDF (SP 800-218) ([compliance-crosswalk.md](compliance-crosswalk.md)), with a per-control evidence list ([audit-evidence-checklist.md](../../conformance/audit-evidence-checklist.md)), a ratification RBAC model ([ratification-rbac.md](ratification-rbac.md)), and a tested guard.
 - **No lock-in.** Vendor-neutral, stack-neutral, POSIX-clean. It sits *alongside* your IDP and CI, not instead of them.
 
 ## 4. How it's different
@@ -36,6 +36,7 @@ The runtime guard is a **speed bump, not a boundary.** It is a deny-list over a 
 |-----------|----------------------|-----------|
 | **SOC 2** (Security + Privacy) | CI quality gates, secret-scan, SBOM + provenance, branch protection, agent guard, audit-logging primitives — mechanical evidence (CC6–CC9, CC1) | Personnel/HR, physical security, vendor risk, the platform safety boundary, and the privacy *program* (notice, consent, DSAR) |
 | **ISO 27001:2022** (Annex A) | Secure development life cycle, change management, supply-chain integrity, access control in CI, logging (A.8.25/.28/.32, A.5.21) | Screening (A.6), physical controls (A.7), supplier relationships (A.5.19–.22), network egress/segregation (A.8.20–.23) |
+| **NIST SSDF** (SP 800-218) + **SLSA** | Secure-build practices mapped per control (PO/PS/PW/RV); **SLSA Build L2** provenance on released artifacts (authenticated, service-generated, digest-bound) | The org's broader SSDF program adoption; SLSA L3 (hermetic build) if required |
 
 Full mapping, with per-row *Kit-enforced / Kit-assisted / Org-owned* responsibility → [compliance-crosswalk.md](compliance-crosswalk.md).
 
