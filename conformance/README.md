@@ -41,6 +41,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `../scripts/preflight.sh` | script | beginner on-ramp (Slice 9f) — prerequisite check (jq/git/toolchain); `--selftest` regression-locks the detector | CI / pre-Inception |
 | `inception-done.sh` | script | `DEVELOPMENT-PROCESS.md` §3 / `START-HERE.md` (the Inception gate) | CI (bootstrap-into-temp) |
 | `profile-completeness.sh` | script | `profiles/_TEMPLATE.md` (every profile fills all 11 sections; companion ci.yml conformant) | CI |
+| `stack-selection.sh` | script | Slice 9g / R7 — the stack-decision aid is complete (guide + per-profile Best-for/Avoid-when + a matrix row per profile); drift-guard | CI |
 | `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |
 | `audit-evidence-checklist.md` | checklist | enterprise addendum (`../docs/enterprise/`) — per-control audit evidence | Review / pre-audit |
 | `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |

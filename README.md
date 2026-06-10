@@ -6,6 +6,8 @@ A complete, **stack-agnostic** software development lifecycle designed for teams
 
 It is opinionated about *how to build well with agents* and deliberately neutral about *what you build it with*.
 
+Choosing a stack? See [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md).
+
 **For engineering leaders →** [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-BRIEF.md) — what it is, why now, risk posture, ROI.
 
 New to the terminology? See [GLOSSARY.md](GLOSSARY.md).

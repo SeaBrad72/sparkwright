@@ -40,6 +40,8 @@ Write the project charter (into the project `CLAUDE.md` you'll create in step 5)
 ## 2. Choose your stack → ADR-000  ⭐ the key step
 Decide the technology stack. This is a **spike** if there's genuine uncertainty — compare options, don't guess.
 
+**Compare the shipped stacks:** [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md) — a matrix of "Best for / Avoid when" plus full-stack (SPA + API) guidance. (Don't see your stack? Generate one — option B below.)
+
 Then set up your **stack profile**, two ways:
 
 **A — Use a ready profile.** If `profiles/` has your stack (e.g. `typescript-node.md`), select it. Done.
