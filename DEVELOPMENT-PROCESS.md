@@ -108,7 +108,7 @@ DISCOVER → PLAN →│spec│→ BUILD → REVIEW →│merge│→ RELEASE �
 | Stage | What happens | Exit |
 |-------|--------------|------|
 | **Discover** | Intake, **product validation** (§5), triage, innovation lens. | Validated candidate item |
-| **Plan** | Slice into small vertical increments; acceptance criteria; spec for non-trivial work; **threat-model** sensitive features. Must reach **Definition of Ready**. | Spec gate (human) |
+| **Plan** | Slice into small vertical increments; acceptance criteria; spec for non-trivial work; **threat-model** sensitive features. Must reach the **Definition of Ready** (the entry gate in `CLAUDE.md`). | Spec gate (human) |
 | **Build** | TDD per `DEVELOPMENT-STANDARDS.md`. L0 reflection-in-action runs continuously. | Self-verified, tests green |
 | **Review** | "Did we build it *right*?" — code + adversarial/multi-lens + **security lens**, routed per ownership. | Merge gate (human) |
 | **Release** | "Done → Live": deploy, feature flags, staged rollout, smoke test, CHANGELOG, rollback ready — see **Safe Change Delivery (§10)**; verified against `conformance/definition-of-deployable.md`. Breaking changes need explicit approval. | Live in production |
@@ -178,7 +178,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 
 | Gate | Question | Owner |
 |------|----------|-------|
-| **Definition of Ready** | Safe to start? (criteria present, sliced, deps known) | Human/lead |
+| **Definition of Ready** | Safe to start? (the enumerated entry gate in `CLAUDE.md` — criteria, INVEST slice, deps, success metric, + conditional flags) | Human/lead |
 | **Threat model** *(sensitive/regulated features)* | What can go wrong security/privacy-wise? | Security owner |
 | **Spec gate** | Is the plan sound before building? | Human |
 | **Review** | Did we build it *right*? (quality, **security lens**, standards) | Different agent + human |
@@ -299,7 +299,7 @@ Tag releases with **semantic versioning**; the CHANGELOG (§15) records what eac
 
 ## 11. Rituals We Keep, Adapted
 
-- **Definition of Ready** — readiness gate before Build.
+- **Definition of Ready** — the enumerated entry gate before Build (`CLAUDE.md`, peer to the Definition of Done).
 - **Acceptance criteria + INVEST slicing** — testable criteria, small vertical increments.
 - **Acceptance checkpoint** — intent validation, distinct from code review.
 - **Spike** — explicit time-boxed research/de-risk work-item type for unknowns, *before* committing a plan (used heavily at Inception for tech selection).
