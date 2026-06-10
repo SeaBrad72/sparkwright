@@ -204,6 +204,8 @@ The architectural contract for **deployable services**, after Hoffman's *Beyond 
 
 Automated quality gates are the contract's teeth: *if it isn't automated, it isn't enforced.* Every project's CI **must run, on every pull request, seven required gates** before code can merge. Tool choices are stack-specific — **→ profile**.
 
+> **Brownfield exception (never silent).** A repo adopting the kit mid-life may not pass every gate on day one. A gate may be **time-boxed-waived** — but only via a tracked, owned, ratified entry in `WAIVER-REGISTER.md` (≤ 90 days, validated by `conformance/waivers-valid.sh`), never by silently disabling the gate. `secret-scan` and `branch-protection` are **non-negotiable** and can never be waived. See `docs/adoption/brownfield.md` §5.
+
 | # | Gate | Requirement |
 |---|------|-------------|
 | 1 | **Lint** | Style/correctness linter passes with zero errors. |

@@ -366,7 +366,7 @@ Autonomy is a spectrum; an agent's tier is **how far it proceeds before a human 
 
 One person may hold several roles in a small org, but **never both the builder and the sole ratifier of the same change**. Roles map to GitHub via CODEOWNERS + branch-protection required reviewers.
 
-**Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **security-owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`.
+**Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **security-owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`. For **brownfield adoption**, this is operationalized as `templates/WAIVER-REGISTER.md` (validated by `conformance/waivers-valid.sh`; `secret-scan` and `branch-protection` are non-negotiable) — see `docs/adoption/brownfield.md` §5.
 
 ### Auditability
 Every agent action is **traceable**: which agent, what, when, against which work item — via commit/PR attribution, work-item ownership, and L1 retro notes. No anonymous agent changes.

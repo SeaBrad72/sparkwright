@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.27.0] - 2026-06-09
+
+Brownfield ratchet & waiver (Slice 9c, Tier 1 of the "Honest Assurance & Adoption Reach" arc). Closes the brownfield persona's P0: a legacy repo that already fails the gates had no sanctioned path to adopt — it could only abandon the kit or silently disable gates. Now adoption is a tracked, time-boxed, owned **governed exception**, not "comply or fake it". **MINOR** — additive templates/scripts/docs.
+
+### Added
+- **`templates/WAIVER-REGISTER.md`** — operationalizes the governed-exception process for adoption. Per-waiver: gate · reason · owner · opened · expires · remediation plan · ratified-by. States the **non-negotiable set** (`secret-scan`, `branch-protection` — never waivable) and the **90-day max lifetime**.
+- **`conformance/waivers-valid.sh`** — validates a register: FAILs on expired, non-negotiable-gate, over-90-day, or missing-field waivers; N/A-pass without a register (adoption-conditional). Portable dates (GNU/BSD); `--selftest` (7 cases).
+- **`scripts/coverage-ratchet.sh`** — stack-neutral "no-regression-below-baseline": pass your current coverage number, gate on *no drop* below a committed `.coverage-baseline` (seeded on first run) instead of an absolute-80% wall on day one. `--selftest`.
+
+### Changed
+- **`docs/adoption/brownfield.md` §5 "Adopting when you already fail the gates"** — the ramp: non-negotiable-vs-deferrable gate tiers, baseline-then-tighten, the waiver register + ratchet workflow, and a recommended tightening schedule.
+- **Contract tie-ins**: `DEVELOPMENT-STANDARDS.md` §14 (gates blocking EXCEPT under a tracked/expiring/ratified waiver — never silent) and `DEVELOPMENT-PROCESS.md` governed-exceptions (→ the brownfield register). `conformance/README.md` index row.
+
 ## [2.26.0] - 2026-06-09
 
 Conformance honesty — "green ≠ verified" (Slice 9a, the other Tier-0 item of the "Honest Assurance & Adoption Reach" arc). Closes the review's convergent finding #1: conformance checks that pass on documentation/declaration, and a `branch-protection.sh` that silently passed when it could not verify. **MINOR** — additive surfacing + a check behavior change (no new universally-required CI gate).

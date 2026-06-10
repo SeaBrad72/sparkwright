@@ -31,7 +31,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 ### Stage III — Tier 1: adoption reach
 | Step | Type | What | Sev | Ver |
 |------|:----:|------|:---:|:---:|
-| **9c** | B | **Brownfield ratchet/waiver** (R3) — coverage "no-regression-below-baseline" adoption window; recorded time-boxed waiver register (owner + expiry) for pre-existing high/critical deps & missing SBOM; named day-one non-negotiables (branch protection + secret-scan) | P0¹ | MINOR |
+| **9c** ✅ | B | **Brownfield ratchet/waiver** (R3) — *shipped v2.27.0.* `WAIVER-REGISTER.md` + `waivers-valid.sh` (governed exception: no expired/non-negotiable/over-90d/missing-field), `coverage-ratchet.sh` (no-regression-below-baseline), brownfield §5 ramp + §14/§13 tie-ins. Non-negotiable: secret-scan + branch-protection. | P0¹ | MINOR ✅ |
 | **9d** | B | **CI-platform + runtime portability** (R4) — a non-GitHub CI reference (GitLab and/or ADO) + `incept.sh --ci` flag; extract the guard deny-matrix into a runtime-agnostic core + one second-runtime reference (generic pre-exec/pre-push hook) | P1 | MINOR |
 | **A5** | A | **Competitive benchmark** — position vs other agentic-SDLC / paved-road offerings; sharpen the differentiation for the exec brief | — | — |
 | **9e** | B | **Exec brief + org rollout** (R5) — `EXECUTIVE-BRIEF.md` (assures-vs-Org-owned, SOC2/ISO in one table, honest safety boundary, adoption effort); `org-rollout.md` (pilot→expand, central profile ownership, fleet upgrade); **fix the Stage 1–4 dangling ref** | P1 | MINOR |
