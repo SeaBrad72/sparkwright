@@ -1,0 +1,86 @@
+#!/bin/sh
+# preflight.sh — prerequisite check for the Agentic SDLC Kit. Fails fast with
+# install hints so a missing tool surfaces HERE, not as a cryptic guard/conformance
+# failure later (jq is hard-required by the guard + conformance). Universal check
+# always; optional per-stack toolchain via --stack.
+#   sh scripts/preflight.sh [--stack <name>] [--selftest]
+# Exit: 0 = all present · 1 = a required tool missing · 2 = bad usage.
+# POSIX sh; dash-clean. New stack? add a row to stack_tools() (unknown degrades gracefully).
+set -eu
+
+miss=0
+need() {  # need <tool> <install-hint>
+  if command -v "$1" >/dev/null 2>&1; then
+    echo "  ok   $1"
+  else
+    echo "  MISS $1 — $2"
+    miss=1
+  fi
+}
+
+stack_tools() {  # print "tool|hint" lines for a stack; return 1 if unknown
+  case "$1" in
+    typescript-node) printf 'node|nodejs.org or nvm\nnpm|ships with Node\n' ;;
+    python|ml|data-engineering) printf 'python3|python.org or pyenv\npip3|ships with Python\n' ;;
+    go) printf 'go|go.dev/dl\n' ;;
+    dotnet) printf 'dotnet|dotnet.microsoft.com/download\n' ;;
+    rust) printf 'cargo|rustup.rs\n' ;;
+    java-spring) printf 'java|adoptium.net\nmvn|maven.apache.org\n' ;;
+    kotlin) printf 'java|adoptium.net\n' ;;
+    terraform) printf 'terraform|developer.hashicorp.com/terraform/install\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+STACK=""; SELFTEST=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --stack) STACK="${2:-}"; shift 2 ;;
+    --selftest) SELFTEST=1; shift ;;
+    -h|--help) echo "usage: preflight.sh [--stack <name>] [--selftest]"; exit 0 ;;
+    *) echo "preflight: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ "$SELFTEST" -eq 1 ]; then
+  fail=0
+  if command -v kit_definitely_absent_tool_xyz >/dev/null 2>&1; then
+    echo "FAIL: sentinel tool unexpectedly exists"; fail=1
+  else
+    echo "PASS: absent tool detected as missing"
+  fi
+  if command -v sh >/dev/null 2>&1; then echo "PASS: present tool (sh) detected"; else echo "FAIL: sh not detected"; fail=1; fi
+  if stack_tools __nope__ >/dev/null 2>&1; then echo "FAIL: unknown stack not handled"; fail=1; else echo "PASS: unknown stack handled gracefully"; fi
+  if stack_tools python >/dev/null 2>&1; then echo "PASS: known stack mapped"; else echo "FAIL: known stack not mapped"; fail=1; fi
+  [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
+fi
+
+echo "Agentic SDLC Kit — preflight"
+echo "Universal prerequisites:"
+need jq  "brew install jq | apt-get install jq | dnf install jq"
+need git "git-scm.com/downloads"
+need sh  "any POSIX shell"
+
+if [ -n "$STACK" ]; then
+  echo "Stack toolchain ($STACK):"
+  if tools=$(stack_tools "$STACK"); then
+    oldIFS=$IFS; IFS='
+'
+    for line in $tools; do
+      [ -n "$line" ] || continue
+      t=${line%%|*}; hint=${line#*|}
+      need "$t" "$hint"
+    done
+    IFS=$oldIFS
+  else
+    echo "  (no toolchain map for '$STACK' — see profiles/$STACK.md)"
+  fi
+fi
+
+if [ "$miss" -eq 0 ]; then
+  echo "All prerequisites present."
+  exit 0
+else
+  echo "Missing prerequisites above — install them, then re-run."
+  exit 1
+fi
