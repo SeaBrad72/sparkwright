@@ -222,9 +222,18 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 
 **Conformance:** a project's pipeline is verified by `conformance/ci-gates.sh <workflow>`, which asserts every required gate is declared (the Definition-of-Done "CI/CD" check, `CLAUDE.md`). Gates are declared **by id on any CI platform** — GitHub Actions `id: gate-X` steps, GitLab CI `gate-X:` job keys, or a documented mapping for other platforms — because the contract is the gate-ids, not a vendor. See `docs/operations/ci-platforms.md`.
 
-**CI security hardening (required posture, not a gate).** The provenance/attestation step requires `id-token: write`; grant it via a **separate job that runs only on push-to-main**, keeping the main gate job at `contents: read` so PR-triggered steps cannot mint an OIDC token a poisoned dependency could exfiltrate. Pin third-party actions to a full commit SHA in production. The cloud OIDC trust policy **MUST** restrict `sub` to the main-branch ref (`refs/heads/main`), never `pull_request`. The profile reference pipelines model this two-job split.
+**CI security hardening (required posture, not a gate).** The provenance/attestation step requires `id-token: write`; grant it via a **separate job that runs only on push-to-main**, keeping the main gate job at `contents: read` so PR-triggered steps cannot mint an OIDC token a poisoned dependency could exfiltrate. Pin third-party actions to a full commit SHA in production (keep the SHAs current with Dependabot, which updates the SHA and its `# vX` comment together); the canonical reference `profiles/typescript-node/ci.yml` models this and is enforced by `conformance/action-pinning.sh`. The cloud OIDC trust policy **MUST** restrict `sub` to the main-branch ref (`refs/heads/main`), never `pull_request`. The profile reference pipelines model this two-job split.
 
 > This raises the supply-chain posture (gates 6–7) to the baseline for **all** projects — see `DEVELOPMENT-PROCESS.md` §10.
+
+**Conditional gates (a11y / load / eval).** The seven above are **universal**. Three further gates are **first-class but conditional** — binding only when their trigger is present, **N/A-with-reason** otherwise (the same pattern as the 15-factor and threat-model gates):
+- **Accessibility** *(user-facing UI)* — WCAG 2.1 AA; recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse). `DEVELOPMENT-PROCESS.md` §7.
+- **Load / soak** *(deployable services)* — resilience + perf-budget verification; `conformance/resilience-readiness.md`.
+- **Eval** *(AI features)* — model/prompt output meets the eval bar and does not regress; `DEVELOPMENT-PROCESS.md` §7.
+
+They are deliberately **not** universal required gates: forcing an a11y, load, or eval gate on a CLI, library, or batch job that has no UI, no service, and no model would be false universality. Verified by `conformance/conditional-gates.sh`.
+
+**SLSA level.** This kit's released artifacts reach **SLSA Build L2**: provenance is **authenticated and service-generated** (`actions/attest-build-provenance` runs in the push-only, least-privilege OIDC job and binds the attestation to the artifact / image digest). The **evidence** is the attestation itself. The kit does **not** yet claim **L3** — that requires a hermetic / isolated build with non-falsifiable provenance; the path is documented here as the next hardening step, not a current guarantee.
 
 **Container image supply-chain (conditional).** *Applies only when a project ships a deployable service container image* — a library, CLI, batch job, or IaC module marks this **N/A with a one-line reason** (the same conditional pattern as the 15-factor gate, §13). When it applies, the image **MUST**:
 - be built **multi-stage** (build tooling never ships in the runtime image);
