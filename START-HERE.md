@@ -6,6 +6,8 @@ Work top to bottom. Don't enter the development loop until the **Inception Done*
 
 Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-BRIEF.md) first (what / why / risk / ROI); engineers continue to Inception below.
 
+**Before anything:** run `sh scripts/preflight.sh` (add `--stack <yours>` once you've chosen) — it checks prerequisites (jq, git, your toolchain) and prints install hints. New to the terms here? See [GLOSSARY.md](GLOSSARY.md).
+
 ---
 
 ## Who are you? Start here
@@ -20,6 +22,8 @@ This guide's numbered steps are the **engineer/lead Inception path**. If you're 
 | **DevOps / SRE** | the environment model (`DEVELOPMENT-PROCESS.md` §9) + `RUNBOOK.md` + CI (`DEVELOPMENT-STANDARDS.md` §14) | own promotion & operate |
 | **Engineer / Lead — new project** | **run `sh scripts/incept.sh`**, then work the judgment steps below | full Inception (steps 1–7) |
 | **Engineer — existing repo (brownfield)** | **`docs/adoption/brownfield.md`** (copy-in + `.claude/` merge + guard verify) | then the Inception judgment steps below |
+
+(Note: `incept` renames the kit's principles `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps a new project `CLAUDE.md` — your project guide. The glossary and START-HERE references to the *principles* file mean `ENGINEERING-PRINCIPLES.md` after Inception.)
 
 ---
 
@@ -74,6 +78,16 @@ Stand up formatter, linter, type-checker, test runner, and a CI pipeline with qu
 
 ## 7. Assign roles
 Fill each function in `DEVELOPMENT-PROCESS.md` §2 — intent owner, lead/integrator, builder(s), reviewer(s), on-call, security owner — with a human or agent. One may hold several; enforce: builder ≠ sole reviewer; humans ratify governance/standards changes.
+
+---
+
+## Solo / lite track
+
+Working alone? The kit assumes multiple people in places (builder ≠ sole reviewer, CODEOWNERS, ratification RBAC). Here is the sanctioned solo path:
+
+- **builder ≠ reviewer, solo.** You still open a PR and let CI gate it, then **merge your own PR via owner admin-merge.** GitHub records the admin bypass — that log *is* your audit trail of "solo maintainer self-ratified." When a second engineer joins, the required-review rule starts enforcing real review with **zero reconfiguration.**
+- **Deferrable gates at solo / Stage-1 scale.** Coverage, dependency-scan, SBOM, provenance, and a11y can ride the waiver ramp ([templates/WAIVER-REGISTER.md](templates/WAIVER-REGISTER.md)) while you grow; **`secret-scan` and `branch-protection` stay non-negotiable.** You begin at **Stage 1** of the maturity model ([docs/enterprise/ORG-ROLLOUT.md](docs/enterprise/ORG-ROLLOUT.md)).
+- Everything else in this guide applies unchanged.
 
 ---
 

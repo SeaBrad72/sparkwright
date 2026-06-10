@@ -18,7 +18,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | Step | Type | What | Informs | Status |
 |------|:----:|------|---------|--------|
 | **A1** | A | Token-economics instrumentation — static surface measured; optional deeper pass measures a real feature transcript's governance load | 9k, economics tier | **baseline done** (~24K/feature) |
-| **A6** | A | Empirical dogfood timing — actually run `incept.sh` in clean temp repos on 2–3 stacks, walk one feature end-to-end, capture real time-to-first-feature + every friction point | 9f, 9g (validates the doc-read persona inferences) | pending |
+| **A6** ✅ | A | Empirical dogfood timing — ran `incept.sh` in clean temp repos on ts-node/python/go; bootstrap is clean ~1s, friction is cognitive (F1 no preflight, F2 silent rename, F3 no glossary, F4 no solo track). Artifact: `superpowers/reviews/2026-06-10-dogfood-timing.md`. Aimed 9f. | 9f, 9g | **done** |
 | **A3** | A | Cross-doc consistency linter — sweep 21.8k lines for claim/version drift the link-checker can't catch (badge≠VERSION, Stage 1–4 dangling ref class) | 9a, 9k (the check becomes a tool) | pending |
 
 ### Stage II — Tier 0: protect the spirit (false-assurance + safety holes)
@@ -40,7 +40,7 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 ### Stage IV — Tier 2: usability & persona completeness
 | Step | Type | What | Sev | Ver |
 |------|:----:|------|:---:|:---:|
-| **9f** | B | **Beginner on-ramp** (R6) — `preflight.sh` prerequisites check; **disclose the CLAUDE.md→ENGINEERING-PRINCIPLES rename** in onboarding + incept banner; one-page `GLOSSARY.md`; a solo/lite track (how one person satisfies builder≠reviewer; deferrable gates) | P0¹ | MINOR |
+| **9f** ✅ | B | **Beginner on-ramp** (R6) — *shipped v2.31.0.* `preflight.sh` (universal + per-stack, `--selftest`; incept fails fast); `GLOSSARY.md`; CLAUDE.md→ENGINEERING-PRINCIPLES rename disclosure (incept banner + START-HERE); solo/lite track. Aimed by the A6 dogfood (friction was cognitive, not mechanical). | P0¹ | MINOR ✅ |
 | **9g** | B | **Stack-decision aid** (R7) — comparison matrix + per-profile "Best for / Avoid when"; address multi-stack/full-stack (SPA + API); stop silently defaulting the undecided to typescript-node | P0¹ | MINOR |
 | **9h** | B | **Hosted-tracker bootstrap + contract check** (R8) — `incept.sh --backlog jira` emits a concrete `JIRA-SETUP.md` (states, fields, the "Only Assignee" transition); add `tracker-contract.sh` that can verify a live Jira instance | P0¹ | MINOR |
 | **9i** | B | **Persona symmetry** (R9) — `TEST-PLAN-TEMPLATE.md` for QA; a lightweight auditable sign-off record (signer/date/gate/evidence) for QA-UAT & Designer-a11y; annotate the persona table to distinguish "dedicated artifact" from "works through someone else's" | P1 | MINOR |

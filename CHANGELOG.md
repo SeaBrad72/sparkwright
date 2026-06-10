@@ -3,6 +3,19 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.31.0] - 2026-06-10
+
+Beginner on-ramp (Slice 9f, Tier 2 of the "Honest Assurance & Adoption Reach" arc). Closes the lowest-scoring review persona (beginner, 4/10), aimed by the A6 dogfood: the mechanical bootstrap was already fine; the friction was cognitive. **MINOR** — additive script + docs.
+
+### Added
+- **`scripts/preflight.sh`** — fail-fast prerequisite check (universal jq/git/sh always; optional `--stack <name>` toolchain) with install hints; `--selftest`. `incept` runs it at startup and aborts on a missing universal prerequisite.
+- **`GLOSSARY.md`** — one-page launchpad for the ~12 load-bearing terms, each linking to its authoritative section.
+- **Solo / lite track** in `START-HERE.md` — how one person satisfies builder≠reviewer (owner admin-merge as logged self-ratification) and which gates are deferrable at Stage 1.
+
+### Changed
+- **`incept` discloses the `CLAUDE.md → ENGINEERING-PRINCIPLES.md` rename** (banner) — closing A6 finding F2.
+- `START-HERE.md` / `README.md` point newcomers at preflight + the glossary; `conformance/README.md` indexes the preflight selftest (CI-gated).
+
 ## [2.30.0] - 2026-06-10
 
 Exec brief + org rollout + ROI model (Slice 9e, Tier 1 of the "Honest Assurance & Adoption Reach" arc). Closes the review's eng-leader finding — credible audit substance but no leadership front door. **MINOR** — additive docs; no new conformance gate (an exec brief is not a verifiable control).

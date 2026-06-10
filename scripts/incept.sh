@@ -22,13 +22,16 @@ BACKLOG_BACKENDS="md github jira ado linear gitlab"
 # is open — see docs/operations/ci-platforms.md); these are the two with a worked reference.
 CI_PLATFORMS="github gitlab"
 
+# reqval: a value-taking flag must have a value (else dash's `shift 2` would fail
+# under set -e/-u and abort with a confusing error instead of a clean exit 2).
+reqval() { [ "$1" -ge 2 ] || { echo "incept: $2 requires a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --name) NAME="$2"; shift 2 ;;
-    --intent-owner) OWNER="$2"; shift 2 ;;
-    --stack) STACK="$2"; shift 2 ;;
-    --backlog) BACKLOG="$2"; shift 2 ;;
-    --ci) CI="$2"; shift 2 ;;
+    --name) reqval $# --name; NAME="$2"; shift 2 ;;
+    --intent-owner) reqval $# --intent-owner; OWNER="$2"; shift 2 ;;
+    --stack) reqval $# --stack; STACK="$2"; shift 2 ;;
+    --backlog) reqval $# --backlog; BACKLOG="$2"; shift 2 ;;
+    --ci) reqval $# --ci; CI="$2"; shift 2 ;;
     --noninteractive) INTERACTIVE=0; shift ;;
     -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -43,6 +46,13 @@ sedi() {
   for last in "$@"; do :; done
   sed -i.bak "$@" && rm -f "${last}.bak"
 }
+
+# 9f: fail fast if universal prerequisites are missing — jq is hard-required by the
+# guard and conformance, so proceeding would only defer a cryptic failure.
+if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh >/dev/null 2>&1; then
+  echo "incept: missing prerequisites. Run 'sh scripts/preflight.sh' for the list + install hints. Aborting." >&2
+  exit 1
+fi
 
 # --- safety guards ---
 [ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
@@ -162,6 +172,7 @@ esac
 cat <<EOF
 
 ✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}).
+Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAUDE.md is YOUR project guide (charter, config, roles).
 
 Do the judgment steps incept does NOT automate (see START-HERE.md):
   1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
