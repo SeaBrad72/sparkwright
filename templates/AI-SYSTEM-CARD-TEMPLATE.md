@@ -30,6 +30,7 @@
 ## Guardrails (links, not restated)
 - **Runtime controls:** [prompt-injection defense · MCP policy · egress · containment — link the kit controls already in place]
 - **Eval / quality bar:** [link the EVAL-PLAN + §7 eval gate]
+- **Transparency** *(user-facing AI)*: [AI interaction disclosed + synthetic content labeled — `templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md`]
 
 ## Known limitations + failure modes
 - [what it gets wrong; degradation modes; monitoring in production]

@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.49.0] - 2026-06-11
+
+Responsible-AI arc, Slice RAI-2 — fairness eval + AI-output transparency. The two genuine content gaps from the arc design, plus the good-citizen AI-incident feedback loop. **US-anchored** (EEOC / NYC LL144 / CO-CA consequential-decision; CA SB 942 / AB 2013 / COPPA-FTC; EU Art. 10/50 optional overlays). **MINOR** — additive templates; **no new gate or conformance script** (all Manual, owner-verified).
+
+### Added
+- **Fairness / bias eval dimension** — `templates/EVAL-PLAN-TEMPLATE.md` gains a Fairness/bias section (protected dimensions, disparate-impact / four-fifths metric, owner review; N/A for non-human-subject features) + a Manual row in `conformance/eval-readiness.md`. Rides the existing eval wiring.
+- **`templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md`** — AI-output disclosure record (AI interaction disclosed · synthetic content labeled · C2PA provenance · children's-audience disclosure); referenced from the AI System Card + the responsible-ai-readiness transparency row. No separate §7 gate row — folds into the AI System Card gate (no gate proliferation).
+- **AI-incident feedback** — `templates/POSTMORTEM-TEMPLATE.md` names AI incidents (harmful output, jailbreak, bias) and feeds the failing case back to the EVAL-PLAN red-team set, closing the eval loop.
+
+### Honesty
+- Fairness and transparency are **Manual** (owner-verified) — the kit records the dimension is *declared/considered*, never that the AI is *actually fair* or the disclosure *actually shipped*. All additions are N/A-able; non-AI and non-human-subject features carry zero overhead. No new fail-closed check.
+
 ## [2.48.0] - 2026-06-11
 
 Responsible-AI arc, Slice RAI-1 — the AI System Card. Closes the substantive AI-governance gap surfaced by the Leanly coverage analysis: the kit had eval (*is the model good?*) and threat-model (*how is it attacked?*) but not *is it fair, disclosed, human-overseen, and risk-classified?* **US-first** (NIST AI RMF + GenAI Profile anchor; TX TRAIGA / CO SB 26-189 / CA ADMT / COPPA-FTC the real surface; EU AI Act an optional overlay). **MINOR** — conditional check + two templates; no new universal gate.

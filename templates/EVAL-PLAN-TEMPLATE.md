@@ -23,5 +23,11 @@
 - [ ] Harmful-output checks run
 - [ ] Judge is independent of the system under test (no self-grading)
 
+## Fairness / bias (Manual)
+*US drivers: EEOC · NYC Local Law 144 · CO/CA consequential-decision · FTC. Mark **N/A — no human-subject dimension** when the feature does not affect people (e.g. a code helper).*
+- [ ] Protected dimensions evaluated (e.g. by group: gender / race / age) — or **N/A with reason**
+- [ ] Fairness metric + threshold recorded (e.g. disparate-impact / four-fifths ratio ≥ 0.8)
+- [ ] Result reviewed by the owner before shipping (a fairness regression is tech debt)
+
 ## Quality tracking
 - **Eval score trend:** [where tracked] — a decline is tech debt, surfaced at retro.

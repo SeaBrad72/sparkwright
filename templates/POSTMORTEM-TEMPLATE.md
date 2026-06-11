@@ -46,6 +46,7 @@
 
 ## 7. Action items
 > The loop-closing artifact. Each item has an owner, a due date, and a backlog link. Type: prevent (stop recurrence) · detect-faster · mitigate-faster.
+> **AI incident** (harmful output · jailbreak / prompt-injection · bias): add the failing case to the feature's EVAL-PLAN **red-team set** as an action item — closing the eval loop so it can't regress.
 
 | Action | Owner | Due | Backlog link | Type |
 |--------|-------|-----|--------------|------|

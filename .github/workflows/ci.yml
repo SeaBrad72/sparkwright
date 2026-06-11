@@ -105,6 +105,8 @@ jobs:
         run: sh conformance/eval-ready.sh --selftest
       - name: Observability-ready self-test (SLOs + telemetry recorded)
         run: sh conformance/observability-ready.sh --selftest
+      - name: Responsible-AI-ready self-test (AI System Card discipline)
+        run: sh conformance/responsible-ai-ready.sh --selftest
       - name: DORA collector smoke (executes + degrades cleanly)
         run: sh scripts/dora.sh --selftest
       - name: branch-protection three-state self-test (no silent pass)
