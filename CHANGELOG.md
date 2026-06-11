@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.47.0] - 2026-06-11
+
+Gate parity, Slice 2 — observability/SLO and threat-model get the declared-artifact treatment, **closing the gate-parity arc**. Both were named in prose but lacked an artifact: observability had no readiness check, the threat-model gate had no template. **MINOR** — one conditional check + two templates; no new universal gate.
+
+### Added
+- **`conformance/observability-ready.sh`** + **`conformance/observability-readiness.md`** — conditional check (binds on a deploy surface: Dockerfile or deploy workflow) asserting the observability posture is **recorded** — RUNBOOK §8 declares an `SLOs:` target and a `Telemetry wired:` signal set (not placeholders); N/A for non-deployed. Wired into `verify.sh` + CI. Mirrors the `resilience-ready` family.
+- **`templates/THREAT-MODEL-TEMPLATE.md`** — STRIDE + LINDDUN-lite privacy lens + security-owner sign-off. Wired into the §7 security gate, the DoR threat-model flag, the templates list, and `DEVELOPMENT-STANDARDS.md` §2. **No conformance script by decision** — a script cannot tell a real threat model from a box-ticked one, and "sensitive" is not honestly auto-detectable.
+- **`templates/RUNBOOK-TEMPLATE.md`** §8 now records SLOs + telemetry (the keyed phrases `observability-ready.sh` greps).
+
+### Honesty
+- Each readiness check proves the posture is **declared/recorded**, never that it **works** — signals emitting in prod, alerts firing, the error budget being tracked, and the threat model's *quality* stay **Manual** operator/security-owner rows. Necessary, not sufficient.
+
 ## [2.46.0] - 2026-06-11
 
 Gate parity, Slice 1 — eval-driven development gets the kit's declared-artifact + conformance treatment. The AI-feature Eval gate was named in prose but lacked a template and a readiness check; this closes that. **MINOR** — additive template + conditional check; no new universal gate.
