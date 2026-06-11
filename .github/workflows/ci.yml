@@ -97,6 +97,8 @@ jobs:
         run: sh conformance/resilience-ready.sh --selftest
       - name: Egress-policy self-test (declared/attested three-state)
         run: sh conformance/egress-policy.sh --selftest
+      - name: Containment-ready self-test (sandbox/tokens/prod-creds three-state)
+        run: sh conformance/containment-ready.sh --selftest
       - name: DORA collector smoke (executes + degrades cleanly)
         run: sh scripts/dora.sh --selftest
       - name: branch-protection three-state self-test (no silent pass)

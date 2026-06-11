@@ -29,6 +29,9 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Steps: `[deploy command(s)]`
 - Smoke test: after each deploy run the post-deploy smoke test (`[smoke test command]`) and record the result before declaring the release live — gates the **Definition of Deployable** (`conformance/definition-of-deployable.md`).
 - Network egress: default-deny via [k8s NetworkPolicy | cloud egress firewall | forward proxy] — enforced: [date]  <!-- The only reliable exfiltration defense (`docs/operations/egress-control.md`); verified declared+attested by `conformance/egress-policy.sh`. If no outbound network, replace this entire line with: N/A — [reason] -->
+- Sandbox FS: read-only work-tree mounts ([mechanism]) — enforced: [date]  <!-- Agent FS scoped to the work tree (host secrets unreachable); see docs/operations/containment.md; verified declared+attested by conformance/containment-ready.sh. If not applicable: replace with N/A — [reason] -->
+- Scoped tokens: OIDC->role, short TTL ([mechanism]) — enforced: [date]  <!-- Least-privilege, time-boxed credentials -->
+- Prod credentials: separate + break-glass ([mechanism]) — enforced: [date]  <!-- Agents never hold prod write creds; SoD -->
 
 **Container / Kubernetes deploy (if applicable):**
 - Image: built multi-stage & non-root in CI; pushed to GHCR on merge to `main` with a **digest-bound provenance attestation**.

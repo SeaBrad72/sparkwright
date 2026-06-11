@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.42.0] - 2026-06-11
+
+Sandbox + scoped-credential references + conformance (Slice 11c — Containment arc). Formalizes platform-safety-boundary controls #2/#3/#4 (sandboxed FS · scoped tokens · separate prod creds) as a declared, verifiable posture. **MINOR** — conditional three-state check + reference docs; no new universal gate.
+
+### Added
+- **`docs/operations/containment.md`** — reference: read-only-FS compose/devcontainer snippet, OIDC→role short-TTL token pattern, separate-prod-creds/break-glass pattern + how to attest.
+- **`conformance/containment-ready.sh`** — one conditional three-state check over three sub-aspects (Sandbox FS / Scoped tokens / Prod credentials), overall = weakest aspect; UNVERIFIED escalates under CI/`--require`; `--selftest` corpus; CI-wired. Pairs with `conformance/containment-readiness.md` (Auto vs Manual).
+- **RUNBOOK** containment attestation lines (`templates/RUNBOOK-TEMPLATE.md`).
+
+### Changed
+- Compliance crosswalk + audit-evidence: the three agent-boundary rows (#2/#3/#4) **Org-owned → Kit-assisted** (reference shipped + wiring verified). `platform-safety-boundary.md` notes each is now reference-shipped + verify-wired.
+
+### Honesty
+- The check **verifies declaration + attestation, never enforcement** — PASS ≠ "FS actually read-only / tokens actually expire / prod creds actually unreachable" (Manual rows). UNVERIFIED is a first-class non-pass; enforcement stays platform-owned.
+
 ## [2.41.0] - 2026-06-11
 
 Egress-allowlist reference + conformance (Slice 11b — Containment arc, the honest W2). Ships a default-deny network-egress reference and verifies the platform control is declared + attested-wired. **MINOR** — conditional three-state check + reference docs; no new universal gate.
