@@ -18,5 +18,6 @@ Produce an `EVAL-PLAN.md` from `templates/EVAL-PLAN-TEMPLATE.md`. Items tagged *
 | 5 | Regression checked on the latest model/prompt/param change *(verified)* | | | Manual / §7 Eval gate |
 | 6 | Safety / red-team set **run** (jailbreaks, harmful-output) *(verified)* | | | Manual |
 | 7 | Judge independent of the system under test (no self-grading) *(verified)* | | | Manual |
+| 8 | Fairness / disparate-impact tested where the feature affects people (or N/A) *(verified)* | | | Manual |
 
 > A non-AI project (CLI, library, batch job with no model) marks the whole check **N/A — not an AI feature**; `eval-ready.sh` skip-passes it automatically.
