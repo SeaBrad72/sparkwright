@@ -28,6 +28,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Trigger: [per-tier deploy trigger; e.g. CI green on PR → Dev; human approval → Prod]
 - Steps: `[deploy command(s)]`
 - Smoke test: after each deploy run the post-deploy smoke test (`[smoke test command]`) and record the result before declaring the release live — gates the **Definition of Deployable** (`conformance/definition-of-deployable.md`).
+- Network egress: default-deny via [k8s NetworkPolicy | cloud egress firewall | forward proxy] — enforced: [date]  <!-- The only reliable exfiltration defense (`docs/operations/egress-control.md`); verified declared+attested by `conformance/egress-policy.sh`. If no outbound network, replace this entire line with: N/A — [reason] -->
 
 **Container / Kubernetes deploy (if applicable):**
 - Image: built multi-stage & non-root in CI; pushed to GHCR on merge to `main` with a **digest-bound provenance attestation**.
