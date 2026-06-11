@@ -323,6 +323,7 @@ These mechanics work for a single agent spawning sub-agents today and scale to m
 - **Review routing / ownership.** CODEOWNERS-style mapping of who/which agent/lens reviews what. **An agent never reviews-and-merges its own work.** Ratification authority by role → §13 and `docs/enterprise/ratification-rbac.md`.
 - **WIP limits.** Cap concurrent work to protect integration safety and human review bandwidth.
 - **Stakeholder visibility.** The board is the live status; beyond it, surface progress to non-builder stakeholders via an on-demand board digest, milestone demos, and the flow/DORA metrics (§14) — on a cadence and in a format the adopting org sets. (A configuration point, not a fixed ritual.)
+- **Context-bound dispatch.** Every qualifying agent step (proportionality rule in the template) carries a **Task Context Contract** (`templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md`) — its Reads (constraints/inputs), Writes, and Prohibitions. It is **advisory and declared, not self-certifying**: a present TCC records the binding, never that the step obeyed it — **the reviewer receives the same contract** and verifies obedience against it (not generically). Tool-neutral: the kit owns the contract; a runtime realizes it (Claude Code as the subagent dispatch + reviewer prompt; others their own way) — "one contract, many runtimes," as with the guard and CI.
 
 ---
 
@@ -368,7 +369,7 @@ One person may hold several roles in a small org, but **never both the builder a
 **Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **security-owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`. For **brownfield adoption**, this is operationalized as `templates/WAIVER-REGISTER.md` (validated by `conformance/waivers-valid.sh`; `secret-scan` and `branch-protection` are non-negotiable) — see `docs/adoption/brownfield.md` §5.
 
 ### Auditability
-Every agent action is **traceable**: which agent, what, when, against which work item — via commit/PR attribution, work-item ownership, and L1 retro notes. No anonymous agent changes.
+Every agent action is **traceable**: which agent, what, when, against which work item, and bound by which governing clauses (its Task Context Contract) — via commit/PR attribution, work-item ownership, and L1 retro notes. No anonymous agent changes.
 
 ### Agent-quality metrics
 Track per agent (or agent type) and use to adjust autonomy: **rework rate · review-rejection rate · escalation rate · retro-action quality**. Reliability earns autonomy; regressions revoke it.
@@ -408,6 +409,7 @@ Artifacts are created **and maintained**, not written once. Each has a producing
 | Spec (design) | Plan | scope changes | author agent + human |
 | Design assets / UX handoff | Discover → Plan (referenced in spec) | UX surface changes | designer (informs intent owner) |
 | Code + tests | Build | every change | building agent |
+| Task Context Contract | Build (dispatch) | per qualifying agent step | building agent / controller |
 | README | Build / Done | feature or setup change | building agent |
 | `.env.example` | Inception / Build | any new env var | building agent |
 | `RUNBOOK.md` | Inception, then Release | deploy or ops change | shipping agent |

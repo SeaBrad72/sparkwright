@@ -14,7 +14,7 @@
 | **`DEVELOPMENT-PROCESS.md`** | How work flows & improves — the agentic SDLC (Inception → loop → operate). |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal quality bar — stack-neutral. |
 | **`profiles/<stack>.md`** | The concrete *how* for your chosen stack (config, examples, commands). Selected at Inception. |
-| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `POSTMORTEM`, `BIA`. |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `TASK-CONTEXT-CONTRACT`, `POSTMORTEM`, `BIA`. |
 | **`START-HERE.md`** | Run this first — it walks you through Inception, including choosing your stack. |
 | **`MAINTAINING.md`** | How the kit itself is built, versioned (`VERSION`, `CHANGELOG.md`), and contributed back to — the contract/reference/conformance convention. |
 | **`conformance/`** | Executable checks/checklists proving a reference implementation satisfies its contract. |

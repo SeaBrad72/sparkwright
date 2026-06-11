@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.45.0] - 2026-06-11
+
+Task Context Contract (TCC) — declared per-step context envelope. Applies the kit's "declare the contract, make it inspectable" discipline to the build/dispatch layer: a qualifying agent step now carries a declared Reads (constraints/inputs) · Writes · Prohibitions contract, verified by the same reviewers. **MINOR** — additive template + tool-neutral process convention; advisory (no new gate), no behaviour change.
+
+### Added
+- **`templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md`** — the four-sided contract + constraints-vs-material framing, the proportionality rule (full TCC on governing-surface OR security OR multi-file; one-line default otherwise), conflict precedence, the honesty note (declared ≠ obeyed), reviewer-binding, and a worked example.
+- **`DEVELOPMENT-PROCESS.md`** — §12 "Context-bound dispatch" convention (tool-neutral; reviewer receives the same contract), §13 Auditability extended to record which governing clauses bound each action, §15 artifact-flow row.
+
+### Notes
+- **Advisory in v1** — no conformance drift-guard yet (added only once the format proves out). The self-improving "recurring-violation → promote" loop is a deferred fast-follow.
+- Origin: evaluation of the ICM paper (arXiv:2603.16021v2), whose declared per-stage inputs + reference-vs-working distinction surfaced the gap. No new runtime dependency; superpowers remains authoring-only.
+
 ## [2.44.0] - 2026-06-11
 
 Arc exit gate + secret.read remediation (A9 + Slice 11e — **Containment arc CLOSED**). The exit-gate red-team (A9) confirmed W3 closed-in-kit and W2 honestly-bounded, and caught one blocker: the MCP gate allowed `secret.read` tools (A8 family 6) despite A8 designating them deny-by-default. 11e closes it. **MINOR** — additive gate coverage + the A9 findings artifact.
