@@ -34,6 +34,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `dr-ready.sh` | script | `DEVELOPMENT-STANDARDS.md` §10 — documented DR (BIA + RUNBOOK §6 + recorded drill); escalate-only; pairs with the checklist | Review / CI (conditional on a data surface) |
 | `resilience-readiness.md` | checklist | `DEVELOPMENT-STANDARDS.md` §4 / §6 (resilience + load/soak) | Review / recurring (conditional) |
 | `resilience-ready.sh` | script | `DEVELOPMENT-STANDARDS.md` §4 / §6 — recorded resilience drills (RUNBOOK §8); pairs with the checklist | Review / CI (conditional on a deploy surface) |
+| `egress-policy.sh` | script | Slice 11b — default-deny network egress is declared + attested-wired (three-state; UNVERIFIED-honest; never inspects traffic). Pairs with `egress-readiness.md` / `../docs/operations/egress-control.md` | Review / CI (conditional on a network surface) |
 | `ci-gates.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (CI/CD Pipeline) — recognizes GitHub `id: gate-X` steps **and** GitLab `gate-X:` job keys; the contract is the gate-ids, the platform is open (`../docs/operations/ci-platforms.md`) | CI / Definition of Done |
 | `check-links.sh` | script | Docs link integrity (`DEVELOPMENT-STANDARDS.md` §11) | CI |
 | `agent-autonomy.sh` | script | `DEVELOPMENT-PROCESS.md` §13 (autonomy tiers) — guard denies a tier breach | PreToolUse hook / CI |
