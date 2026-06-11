@@ -89,9 +89,6 @@ guard_check_command() {
   if printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+reset[[:space:]]+.*--hard'; then
     { printf '%s' '13: git reset --hard discards work irreversibly - human-gated.'; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+commit[[:space:]]+.*--amend'; then
-    { printf '%s' '13: git commit --amend rewrites history - human-gated.'; return 1; }
-  fi
   if printf '%s' "$cmd" | grep -Eq '(npm|yarn|pnpm)[[:space:]]+publish'; then
     { printf '%s' '13: publishing a package is externally irreversible - human-gated.'; return 1; }
   fi

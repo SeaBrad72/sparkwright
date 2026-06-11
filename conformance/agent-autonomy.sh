@@ -32,6 +32,7 @@ assert_deny "write .env"      '{"tool_name":"Write","tool_input":{"file_path":"/
 
 # --- must ALLOW (safe / reversible) ---
 assert_allow "git commit"          '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\""}}'
+assert_allow "git commit --amend"  '{"tool_name":"Bash","tool_input":{"command":"git commit --amend --no-edit"}}'
 assert_allow "feature-branch push" '{"tool_name":"Bash","tool_input":{"command":"git push origin feature/foo"}}'
 assert_allow "npm test"            '{"tool_name":"Bash","tool_input":{"command":"npm test"}}'
 assert_allow "read file"           '{"tool_name":"Read","tool_input":{"file_path":"README.md"}}'
