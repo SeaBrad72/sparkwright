@@ -3,6 +3,17 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.40.0] - 2026-06-11
+
+MCP capability gate (Slice 11a — Containment arc). Closes W3: the guard now sees MCP tool calls and denies un-allowlisted destructive/egress MCP capabilities by default. **MINOR** — additive in-kit control + a portable contract; no universal gate added.
+
+### Added
+- **`guard_check_mcp`** (in `guard-core.sh`) — classifies `mcp__<server>__<action>` by action verb; read-only allowed, destructive/egress denied, **fail-closed** on the unclassifiable. The Claude PreToolUse matcher now routes `mcp__.*`; `.claude/mcp-policy.json` (control-plane-protected, shipped empty-allow) carries the per-project allowlist + classOverride; `kit-guard mcp` exposes the same gate to any runtime (the portable mcp-policy contract).
+- **`conformance/mcp-policy.sh`** — classification corpus (deny destructive, allow read, honor allowlist/override, fail-closed). CI-gated; plus `agent-autonomy.sh` MCP live-path cases.
+
+### Honesty
+- The gate is **Kit-enforced for what the tool name reveals** — a renamed/obfuscated action is not caught, and the egress class is a name-match speed bump, **not** egress containment (the platform allowlist, 11b). Documented in `runtime-guards.md` + `platform-safety-boundary.md`.
+
 ## [2.39.0] - 2026-06-10
 
 A7 residual cleanup (Slice 10). Clears the small backlog the arc-closure re-review surfaced. **MINOR** — additive checks/docs + one guard over-block lifted; no governance bar lowered.
