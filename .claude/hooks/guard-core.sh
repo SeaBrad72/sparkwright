@@ -195,9 +195,12 @@ guard_check_command() {
 #   The heuristic tokenizes the action (camelCase->snake, lowercased): the first token must be a
 #   read verb to allow, and ANY destructive verb token downgrades to deny (so get_and_delete /
 #   fetchAndExport deny; list_deployments / get_updates stay read - the noun is not the verb).
+# secret.read (A8 family 6) is deny-by-default by NAME: an action naming secret material, or a
+# known secret-store server on a read, is denied even when a read verb leads.
 # Honest ceiling: classifies by what the NAME reveals; a renamed action (get_data that exfiltrates),
-# a server wildcard that admits a destructive tool, and real egress are NOT caught here
-# (egress is the platform allowlist — docs/enterprise/platform-safety-boundary.md).
+# a secret read via a generic-named server/action (mcp__storage__read_blob), a server wildcard that
+# admits a destructive tool, and real egress are NOT caught here — the platform egress allowlist +
+# the 11c sandbox are the real controls (docs/enterprise/platform-safety-boundary.md).
 guard_check_mcp() {
   t=$1; al=$2; ov=$3
   # 1. explicit allowlist: exact tool, or its server wildcard (mcp__server__*)
@@ -205,6 +208,7 @@ guard_check_mcp() {
   if printf '%s\n' "$al" | grep -qxF -- "${t%__*}__*" 2>/dev/null; then return 0; fi
   # 2. class: a per-tool override wins; else heuristic on the action segment.
   act=${t##*__}
+  _rest=${t#mcp__}; srv=$(printf '%s' "${_rest%%__*}" | tr 'A-Z' 'a-z')  # server segment, lowercased
   cls=$(printf '%s\n' "$ov" | while IFS='=' read -r k v; do [ "$k" = "$t" ] && { printf '%s' "$v"; break; }; done || true)
   if [ -z "$cls" ]; then
     # Tokenize the action: split camelCase to snake, lowercase, turn _/- into spaces.
@@ -220,9 +224,20 @@ guard_check_mcp() {
     for tok in $norm; do
       case "$dverbs" in *" $tok "*) cls=destructive; break ;; esac
     done
+    # secret-material READ is deny-by-default even when a read verb leads (A8 family 6 - the read
+    # half of exfil). Catch it by NAME: (a) the action names secret material, or (b) the server is
+    # a known secret store on a read. Ceiling: a secret read via a generic-named server/action
+    # (e.g. mcp__storage__read_blob holding a secret) is NOT caught - that is the 11c sandbox's job.
+    if [ "$cls" = "read" ] && printf '%s' "$act" | grep -Eiq 'secret|credential|passphrase|password|api[_-]?key|private[_-]?key|access[_-]?key|secret[_-]?key|auth[_-]?token|access[_-]?token'; then
+      cls=secret.read
+    fi
+    if [ "$cls" = "read" ] && printf '%s' "$srv" | grep -Eiq 'vault|1password|onepassword|secretsmanager|secrets[_-]?manager|secret[_-]?manager|keyvault|key[_-]?vault|credstash|doppler|infisical|akeyless'; then
+      cls=secret.read
+    fi
   fi
   case "$cls" in
     read|data.read) return 0 ;;
+    secret.read) printf '13: MCP tool %s reads secret/credential material - deny-by-default (the read half of exfil; A8 family 6). Allowlist it in .claude/mcp-policy.json if intended.' "$t"; return 1 ;;
     unknown) printf '13: MCP tool %s is not classifiable as read-only - denied (fail-closed). Allowlist it in .claude/mcp-policy.json if safe.' "$t"; return 1 ;;
     *) printf '13: MCP tool %s is a destructive/egress capability (%s) - human-gated. Allowlist it in .claude/mcp-policy.json if intended.' "$t" "$cls"; return 1 ;;
   esac
