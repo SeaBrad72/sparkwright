@@ -107,6 +107,8 @@ Tests are the regression suite. **Mock at boundaries, not internals. Test behavi
 
 **Coverage:** 80% line coverage is the floor; **100% on critical paths** (auth, payments/orders, money math, compensation, anything irreversible).
 
+**Test data:** non-prod uses synthetic or anonymized data; **never raw production data** (PII / children's → masked or synthetic, COPPA-grade). Patterns: `docs/operations/test-data-management.md`; recorded in RUNBOOK §2 (`conformance/test-data-readiness.md`).
+
 **Testing pyramid** (prioritize top-down; add each when its trigger arrives):
 
 | Type | Purpose | When |
