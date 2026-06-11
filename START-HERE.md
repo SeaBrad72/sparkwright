@@ -87,7 +87,7 @@ Fill each function in `DEVELOPMENT-PROCESS.md` §2 — intent owner, lead/integr
 
 Working alone? The kit assumes multiple people in places (builder ≠ sole reviewer, CODEOWNERS, ratification RBAC). Here is the sanctioned solo path:
 
-- **builder ≠ reviewer, solo.** You still open a PR and let CI gate it, then **merge your own PR via owner admin-merge.** GitHub records the admin bypass — that log *is* your audit trail of "solo maintainer self-ratified." When a second engineer joins, the required-review rule starts enforcing real review with **zero reconfiguration.**
+- **builder ≠ reviewer, solo.** Open a PR, let CI gate it, then **merge your own PR via owner admin-merge** (`gh pr merge --admin`). At solo scale set **`enforce_admins: false`** in your branch protection so the admin-merge is permitted — GitHub records the bypass, and that log *is* your audit trail of "solo maintainer self-ratified." When a second engineer joins, flip `enforce_admins` back to **`true`**: the required-review rule then enforces real review (you can no longer self-merge), with no other reconfiguration.
 - **Deferrable gates at solo / Stage-1 scale.** Coverage, dependency-scan, SBOM, provenance, and a11y can ride the waiver ramp ([templates/WAIVER-REGISTER.md](templates/WAIVER-REGISTER.md)) while you grow; **`secret-scan` and `branch-protection` stay non-negotiable.** You begin at **Stage 1** of the maturity model ([docs/enterprise/ORG-ROLLOUT.md](docs/enterprise/ORG-ROLLOUT.md)).
 - Everything else in this guide applies unchanged.
 

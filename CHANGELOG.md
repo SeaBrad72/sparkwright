@@ -3,6 +3,17 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.39.0] - 2026-06-10
+
+A7 residual cleanup (Slice 10). Clears the small backlog the arc-closure re-review surfaced. **MINOR** — additive checks/docs + one guard over-block lifted; no governance bar lowered.
+
+### Added / Changed
+- **`preflight.sh`** soft-recommends `gh` + auth for GitHub flows (warns, never fails — GitLab/ADO unaffected).
+- **Solo/lite track** now sets `enforce_admins: false` so the owner admin-merge self-ratification actually works (flip to `true` with a second reviewer); the reference `BRANCH-PROTECTION.md` carries a solo note. Conformance unaffected (`branch-protection.sh` never asserted `enforce_admins`).
+- **`tracker-contract.sh --deep`** introspects the Jira workflow and **verifies** the Only-Assignee transition condition (the atomic claim moves from *attested* to *verified*); three-state, fixture-tested.
+- **Brownfield guide** instructs adding `.claude/settings.local.json` to the adopter's own `.gitignore`.
+- **Guard:** lifted the over-block on the reversible `git commit --amend` (force-push / non-fast-forward / `reset --hard` stay denied); regression-locked by an `agent-autonomy.sh` allow-case.
+
 ## [2.38.0] - 2026-06-10
 
 Core-doc trim (Slice 9k-b, fast-follow of 9k). A measurement-first pass that **confirmed the core governing docs were already lean** (the Slice 9 arc had added only ~39 lines to the core-3, and the economics win was already banked by 9k's on-demand `AGENTS.md`), tightened the one doc with genuine cruft, and installed a ratchet so they can't silently re-bloat. **MINOR** — no governance content removed; every normative line, gate, and conformance marker preserved (proven by the full suite staying green).

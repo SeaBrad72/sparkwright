@@ -23,4 +23,5 @@ Now claiming = assign to the agent, then transition; a second agent cannot perfo
 ## 4. Verify
 Set `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_TOKEN` (an Atlassian API token), then:
 `sh conformance/tracker-contract.sh`
-It verifies the six states + Size/Risk fields live, and reminds you to confirm the Only-Assignee condition (which basic REST cannot introspect — it is **attested**, not auto-verified).
+It verifies the six states + Size/Risk fields live. Add **`--deep`** to also introspect the workflow and **verify** the In-Progress transition carries the Only-Assignee condition (turning the atomic claim from *attested* into *verified*):
+`sh conformance/tracker-contract.sh --deep`

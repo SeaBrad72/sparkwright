@@ -28,3 +28,5 @@ JSON
 ```
 
 > "Builder ≠ sole merger" is enforced by required reviews + CODEOWNERS. GitHub cannot strictly forbid every user from merging their own PR on all plans; on GitHub Enterprise use rulesets / required reviewers. Document the policy in the project `CLAUDE.md` regardless.
+
+> **Solo scale:** set `"enforce_admins": false` so the owner can admin-merge their own PR (`gh pr merge --admin`) — the audit-trailed self-ratification of `START-HERE.md`'s solo/lite track. Flip it back to `true` the moment a second reviewer exists, so the required-review rule then enforces real review.

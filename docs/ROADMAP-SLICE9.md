@@ -61,6 +61,8 @@ Legend: **B** = build slice (loop pass) · **A** = analysis run (no production c
 | **A4** ✅ | A | **Auditor simulation** — *done.* A SOC2/ISO/SSDF assessor probed the evidence chain: **survives, no Critical/High**; 3 narrow gaps (SSDF carry-through, kit self-pin, dogfood disclosure) closed. Artifact: `superpowers/reviews/2026-06-10-A4-auditor-simulation.md`. |
 | **A7** ✅ | A | **Re-ran the 9-agent review** — *done; exit gate met.* Every lens lifted (persona avg **5.5→8.5**, overall **5.8→8.4**); 4/5 convergent findings fully resolved, the 5th (guard) resolved to its honestly-disclosed platform boundary. Artifact: `superpowers/reviews/2026-06-10-A7-rereview-arc-closure.md`. **The arc is closed.** |
 
+**Post-arc (v2.39.0):** the A7 residual backlog (gh preflight · solo `enforce_admins` trap · Jira `--deep` · brownfield `.gitignore` · amend over-block) was cleared in **Slice 10**.
+
 ¹ P0 *for that persona* — not a P0 safety defect, but the single largest usability hole in that persona's journey.
 
 ---
