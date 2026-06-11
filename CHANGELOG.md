@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.43.0] - 2026-06-11
+
+Honesty & assurance restatement (Slice 11d — Containment arc). Reconciles the kit's narrative/summary docs to the post-11a/b/c reality and regression-locks the responsibility tiers. **MINOR** — docs + one drift-guard; no behaviour change.
+
+### Added
+- **`conformance/assurance-tiers.sh`** — drift-guard asserting the compliance crosswalk states each arc control at its real tier (MCP capability gate = **Kit-enforced**; egress / sandboxed FS / scoped tokens / separate prod creds = **Kit-assisted**); `--selftest`; wired into CI and `verify.sh` (live control).
+- **MCP capability gate** now recorded in the compliance crosswalk + audit-evidence checklist as **Kit-enforced** (with the honest by-name caveat: it gates MCP tool capability by name; the net.egress class is a name-match speed bump).
+
+### Changed
+- `platform-safety-boundary.md`, `EXEC-BRIEF.md`, and `DEVELOPMENT-PROCESS.md` §13 reconciled: the guard is a speed bump for shell/interpreter **and** a deny-by-default MCP capability gate (Kit-enforced); the four platform controls are kit-referenced + verify-wired (**Kit-assisted**) — enforcement remains platform-owned. No caveat removed (no overclaim).
+- `containment-readiness.md`: documented that attestation dates are honor-based (the carried 11c LOW — resolved by documentation; both candidate code fixes would false-negative).
+
+### Honesty
+- The restatement only **adds qualifiers**; every honest caveat (deny-list speed bump, "these four controls are the boundary", platform-owned enforcement) is preserved. "Kit-enforced" appears only for the MCP gate, always with the by-name caveat. The drift-guard verifies the tiers are *stated*, not "true".
+
 ## [2.42.0] - 2026-06-11
 
 Sandbox + scoped-credential references + conformance (Slice 11c — Containment arc). Formalizes platform-safety-boundary controls #2/#3/#4 (sandboxed FS · scoped tokens · separate prod creds) as a declared, verifiable posture. **MINOR** — conditional three-state check + reference docs; no new universal gate.

@@ -50,6 +50,7 @@ check control agent-autonomy   sh conformance/agent-autonomy.sh
 check control ci-gates         sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
 check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
+check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
 check control branch-protect   sh conformance/branch-protection.sh
 check doc     deployable-ready sh conformance/deployable-ready.sh

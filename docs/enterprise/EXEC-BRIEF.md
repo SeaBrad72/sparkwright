@@ -28,7 +28,7 @@ From the [A5 benchmark](../superpowers/reviews/2026-06-10-competitive-benchmark.
 
 ## 5. Honest boundaries
 
-The runtime guard is a **speed bump, not a boundary.** It is a deny-list over a shell, and a deny-list cannot contain a determined or compromised agent (interpreters and obfuscation defeat pattern-matching; `--no-verify` bypasses the git hook). The **real** controls are **Org-owned** and live in your platform: a network-egress allowlist (the only real exfiltration defense), separate production credentials, a sandboxed filesystem, and scoped short-lived tokens. Adopt both — the guard prevents accidents cheaply; the platform boundary is what you certify. See [platform-safety-boundary.md](platform-safety-boundary.md).
+The runtime guard is a **speed bump, not a boundary** for shell and interpreter commands — a deny-list over a shell cannot contain a determined or compromised agent (interpreters and obfuscation defeat pattern-matching; `--no-verify` bypasses the git hook). Two honest refinements (Slices 11a–11c): the guard now **enforces** a deny-by-default **MCP capability gate** in-process (the one in-process control that is real enforcement — by tool name only), and the kit now **ships + verifies references** for the four platform controls — a network-egress allowlist (the only real exfiltration defense), separate production credentials, a sandboxed filesystem, and scoped short-lived tokens — which remain **platform-enforced** (Kit-assisted, not Kit-enforced). Adopt both — the guard prevents accidents cheaply; the platform boundary is what you certify. See [platform-safety-boundary.md](platform-safety-boundary.md).
 
 ## 6. Compliance at a glance
 
@@ -39,6 +39,8 @@ The runtime guard is a **speed bump, not a boundary.** It is a deny-list over a 
 | **NIST SSDF** (SP 800-218) + **SLSA** | Secure-build practices mapped per control (PO/PS/PW/RV); **SLSA Build L2** provenance on released artifacts (authenticated, service-generated, digest-bound) | The org's broader SSDF program adoption; SLSA L3 (hermetic build) if required |
 
 Full mapping, with per-row *Kit-enforced / Kit-assisted / Org-owned* responsibility → [compliance-crosswalk.md](compliance-crosswalk.md).
+
+Since Slices 11a–11c, the agent/runtime platform-boundary rows (egress, sandboxed FS, scoped tokens, separate prod credentials) are **Kit-assisted** (reference shipped + wiring verified, host-enforced), and the **MCP capability gate** is **Kit-enforced** (by tool name). The drift-guard `conformance/assurance-tiers.sh` holds these tiers in place.
 
 ## 7. Where to go next
 

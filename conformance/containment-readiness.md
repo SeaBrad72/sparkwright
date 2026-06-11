@@ -19,3 +19,4 @@ Closes what is reachable to exfiltrate at the source (platform-safety-boundary c
 
 ## Honesty
 PASS means the posture is **declared + attested**, never that the kit verified read-only FS / token TTL / cred separation. Enforcement is platform-owned (`docs/enterprise/platform-safety-boundary.md` controls #2/#3/#4); 11c makes it **verifiable** (Kit-assisted), not Kit-enforced.
+- **Attestation dates are honor-based.** The gate verifies an `enforced: <date>` is present and well-shaped on the aspect's own line — not that the date is accurate or that the aspect isn't self-contradicted elsewhere on that line. Keep one aspect per line; the date attests *that line's* aspect.
