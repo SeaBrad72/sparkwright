@@ -24,7 +24,9 @@ is_ai_feature() {
     [ -f "$p" ] && return 0
   done
   for m in "$_d/RUNBOOK.md" "$_d/CLAUDE.md"; do
-    [ -f "$m" ] && grep -Eiq 'ai feature:[[:space:]]*(yes|true)' "$m" && return 0
+    # tolerate markdown between the key and the value (e.g. '**AI feature:** yes') so a bold
+    # marker is not silently missed (an AI feature escaping the gate is the worse direction).
+    [ -f "$m" ] && grep -Eiq 'ai feature:[^[:alnum:]]*(yes|true)' "$m" && return 0
   done
   return 1
 }
@@ -83,6 +85,11 @@ selftest() {
   printf '# RUNBOOK\nAI feature: yes\n' > "$d/RUNBOOK.md"
   printf '%b' "$PLAN_OK" > "$d/EVAL-PLAN.md"
   if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: AI(marker) + complete plan -> OK"; else echo "selftest FAIL: complete plan should pass"; st=1; fi
+
+  # a BOLD marker ('**AI feature:** yes') must still bind (not slip to N/A): no plan -> FAIL
+  d="$base/ai-boldmarker-noplan"; mkdir -p "$d"
+  printf '# RUNBOOK\n- **AI feature:** yes\n' > "$d/RUNBOOK.md"
+  if check_dir "$d" >/dev/null 2>&1; then echo "selftest FAIL: bold marker should bind -> FAIL (no plan)"; st=1; else echo "selftest PASS: bold marker binds -> FAIL (no plan)"; fi
 
   d="$base/ai-plan-threshold-placeholder"; mkdir -p "$d"
   printf '# Eval Plan\n- **Regression threshold:** [threshold]\n- **Harness:** evals/run.py\n' > "$d/EVAL-PLAN.md"
