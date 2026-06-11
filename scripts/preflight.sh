@@ -8,13 +8,21 @@
 # POSIX sh; dash-clean. New stack? add a row to stack_tools() (unknown degrades gracefully).
 set -eu
 
-miss=0
+miss=0; rec=0
 need() {  # need <tool> <install-hint>
   if command -v "$1" >/dev/null 2>&1; then
     echo "  ok   $1"
   else
     echo "  MISS $1 — $2"
     miss=1
+  fi
+}
+recommend() {  # recommend <tool> <why+hint> — warns, never fails the run
+  if command -v "$1" >/dev/null 2>&1; then
+    echo "  ok   $1"
+  else
+    echo "  warn $1 — $2"
+    rec=1
   fi
 }
 
@@ -52,6 +60,8 @@ if [ "$SELFTEST" -eq 1 ]; then
   if command -v sh >/dev/null 2>&1; then echo "PASS: present tool (sh) detected"; else echo "FAIL: sh not detected"; fail=1; fi
   if stack_tools __nope__ >/dev/null 2>&1; then echo "FAIL: unknown stack not handled"; fail=1; else echo "PASS: unknown stack handled gracefully"; fi
   if stack_tools python >/dev/null 2>&1; then echo "PASS: known stack mapped"; else echo "FAIL: known stack not mapped"; fail=1; fi
+  miss=0; recommend kit_definitely_absent_tool_xyz "x" >/dev/null 2>&1
+  if [ "$miss" -eq 0 ]; then echo "PASS: recommend warns without failing (miss untouched)"; else echo "FAIL: recommend set miss"; fail=1; fi
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 
@@ -60,6 +70,12 @@ echo "Universal prerequisites:"
 need jq  "brew install jq | apt-get install jq | dnf install jq"
 need git "git-scm.com/downloads"
 need sh  "any POSIX shell"
+
+echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
+recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"
+if command -v gh >/dev/null 2>&1; then
+  if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=1; fi
+fi
 
 if [ -n "$STACK" ]; then
   echo "Stack toolchain ($STACK):"
