@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.0] - 2026-06-11
+
+Responsible-AI arc, Slice RAI-1 — the AI System Card. Closes the substantive AI-governance gap surfaced by the Leanly coverage analysis: the kit had eval (*is the model good?*) and threat-model (*how is it attacked?*) but not *is it fair, disclosed, human-overseen, and risk-classified?* **US-first** (NIST AI RMF + GenAI Profile anchor; TX TRAIGA / CO SB 26-189 / CA ADMT / COPPA-FTC the real surface; EU AI Act an optional overlay). **MINOR** — conditional check + two templates; no new universal gate.
+
+### Added
+- **`templates/AI-SYSTEM-CARD-TEMPLATE.md`** — the per-AI-feature declaration: model+version, **US risk classification** (consequential-decision / children's-data / prohibited-use triggers; optional EU overlay), intended/out-of-scope use, data flows+consent, human oversight, guardrail links, known limitations, security/compliance-owner sign-off. Doubles as the ISO/IEC 42005 impact assessment.
+- **`templates/AI-POLICY-TEMPLATE.md`** — one-page org AI policy (ISO 42001 Clause 5.2).
+- **`conformance/responsible-ai-ready.sh`** + **`conformance/responsible-ai-readiness.md`** — conditional check (binds on an AI feature: `evals/`, `EVAL-PLAN`, `AI-SYSTEM-CARD`, or `AI feature: yes`) asserting the card is **present + classified + oversight-named**; N/A for non-AI. Wired into `verify.sh` + CI + a §7 gate row.
+
+### Good-citizen guardrails (opt-in, never gated)
+- Distilled the *substantive* best practices from EU AI Act (Arts. 10/12/14/15/50/72) + US state law into recommended template lines — **prohibited-use acknowledgment, data-minimization, human review/appeal path** — that the fail-closed check does **not** enforce. Lean into the good practice, skip the certification bureaucracy.
+
+### Honesty
+- A green check proves the card is **declared/classified/recorded**, never that the classification is *correct*, the AI is *fair*, or it is *compliant* — those stay Manual security/compliance-owner rows. Conditional + proportional: non-AI → N/A (zero overhead); low-risk = a two-line card. US-first: no EU-only burden (conformity assessment / CE / FRIA / EU-DB) in any baseline.
+
 ## [2.47.0] - 2026-06-11
 
 Gate parity, Slice 2 — observability/SLO and threat-model get the declared-artifact treatment, **closing the gate-parity arc**. Both were named in prose but lacked an artifact: observability had no readiness check, the threat-model gate had no template. **MINOR** — one conditional check + two templates; no new universal gate.
