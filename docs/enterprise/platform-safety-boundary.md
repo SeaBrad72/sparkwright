@@ -19,7 +19,7 @@ This is not a hypothetical. An adversarial red-team of the guard (2026-06-09) co
 
 | Layer | What it is | What it catches |
 |-------|-----------|-----------------|
-| Agent guard (`.claude/hooks/guard.sh`) | Best-effort speed bump | Honest accidental destructive commands; common irreversible verbs; protects its own integrity |
+| Agent guard (`.claude/hooks/guard.sh`) | Best-effort speed bump | Honest accidental destructive commands; common irreversible verbs; protects its own integrity · un-allowlisted destructive/egress MCP tool calls (by name — see `../operations/runtime-guards.md`) |
 | **Platform boundary (this doc)** | The real control | A determined / compromised agent, exfiltration, prod blast radius, lateral access |
 
 Adopt both. The guard reduces accidents cheaply and immediately; the platform boundary is what you certify to an auditor. Neither replaces the other.

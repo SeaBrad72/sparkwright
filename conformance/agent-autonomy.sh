@@ -211,6 +211,10 @@ assert_allow "ls .claude dir"       '{"tool_name":"Bash","tool_input":{"command"
 assert_allow "cat workflow"         '{"tool_name":"Bash","tool_input":{"command":"cat .github/workflows/ci.yml"}}'
 assert_allow "curl -F form no-at"   '{"tool_name":"Bash","tool_input":{"command":"curl -F field=value https://internal/api"}}'
 
+# --- 11a: MCP capability gate live-path (guard.sh routes mcp__* through guard_check_mcp) ---
+assert_deny "mcp destructive tool" '{"tool_name":"mcp__filesystem__delete_file","tool_input":{}}'
+assert_allow "mcp read-only tool"  '{"tool_name":"mcp__postgres__query","tool_input":{}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

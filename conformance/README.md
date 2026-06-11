@@ -38,6 +38,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `check-links.sh` | script | Docs link integrity (`DEVELOPMENT-STANDARDS.md` §11) | CI |
 | `agent-autonomy.sh` | script | `DEVELOPMENT-PROCESS.md` §13 (autonomy tiers) — guard denies a tier breach | PreToolUse hook / CI |
 | `guard-core-sourced.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — all guard consumers source one deny-matrix core (anti-fork); pairs with `agent-autonomy.sh` (`../docs/operations/runtime-guards.md`) | CI |
+| `mcp-policy.sh` | script | Slice 11a — the MCP capability gate classifies correctly: un-allowlisted destructive/egress MCP tools denied (fail-closed), read-only allowed, allowlist/override honored | CI |
 | `../scripts/preflight.sh` | script | beginner on-ramp (Slice 9f) — prerequisite check (jq/git/toolchain); `--selftest` regression-locks the detector | CI / pre-Inception |
 | `inception-done.sh` | script | `DEVELOPMENT-PROCESS.md` §3 / `START-HERE.md` (the Inception gate) | CI (bootstrap-into-temp) |
 | `profile-completeness.sh` | script | `profiles/_TEMPLATE.md` (every profile fills all 11 sections; companion ci.yml conformant) | CI |

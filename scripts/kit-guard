@@ -1,9 +1,10 @@
 #!/bin/sh
 # kit-guard — portable CLI over the runtime-agnostic deny-matrix (guard-core.sh).
 # The entry point any non-Claude runtime pipes a proposed action through:
-#   kit-guard cmd "<command>"   -> exit 0 allow · exit 1 deny (reason on stderr)
-#   kit-guard path "<file>"     -> exit 0 allow · exit 1 deny (reason on stderr)
-#   kit-guard --selftest        -> run the deny battery through the CLI
+#   kit-guard cmd "<command>"        -> exit 0 allow · exit 1 deny (reason on stderr)
+#   kit-guard path "<file>"          -> exit 0 allow · exit 1 deny (reason on stderr)
+#   kit-guard mcp "<mcp__tool>" [pol] -> exit 0 allow · exit 1 deny (the MCP capability gate)
+#   kit-guard --selftest             -> run the deny battery through the CLI
 #   kit-guard --help
 # A SPEED BUMP, not a boundary (docs/enterprise/platform-safety-boundary.md).
 # Resolve the core relative to this script, or via KIT_GUARD_CORE override.
@@ -14,7 +15,7 @@ CORE="${KIT_GUARD_CORE:-$SELF_DIR/../.claude/hooks/guard-core.sh}"
 [ -f "$CORE" ] || { echo "kit-guard: guard-core.sh not found ($CORE); set KIT_GUARD_CORE" >&2; exit 2; }
 . "$CORE"
 
-usage() { sed -n '2,9p' "$0"; }
+usage() { sed -n '2,10p' "$0"; }
 
 cmd=${1:-}
 case "$cmd" in
@@ -24,9 +25,18 @@ case "$cmd" in
   path)
     [ $# -ge 2 ] || { echo "usage: kit-guard path \"<file>\"" >&2; exit 2; }
     if reason=$(guard_check_path "$2"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
+  mcp)
+    [ $# -ge 2 ] || { echo "usage: kit-guard mcp \"<mcp__tool>\" [policy-path]" >&2; exit 2; }
+    pol=${3:-$SELF_DIR/../.claude/mcp-policy.json}
+    al=""; ov=""
+    if [ -f "$pol" ] && command -v jq >/dev/null 2>&1; then
+      al=$(jq -r '.allow[]? // empty' "$pol" 2>/dev/null || printf '')
+      ov=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$pol" 2>/dev/null || printf '')
+    fi
+    if reason=$(guard_check_mcp "$2" "$al" "$ov"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
   --help|-h) usage; exit 0 ;;
   --selftest) ;;  # fall through to the selftest block below
-  *) echo "kit-guard: unknown command '${cmd:-}' (cmd|path|--selftest|--help)" >&2; exit 2 ;;
+  *) echo "kit-guard: unknown command '${cmd:-}' (cmd|path|mcp|--selftest|--help)" >&2; exit 2 ;;
 esac
 
 # --- selftest: the adversarial corpus IS the test (runs the core through the CLI) ---
@@ -35,6 +45,8 @@ deny()  { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $
 allow() { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 pdeny() { if sh "$0" path "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
 pallow(){ if sh "$0" path "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
+mdeny() { if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
+mallow(){ if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 
 deny  "recursive rm"      "rm -rf /tmp/x"
 deny  "force push"        "git push --force origin feature/x"
@@ -50,5 +62,7 @@ pdeny  "write .env"       "/repo/.env"
 pdeny  "write guard-core" ".claude/hooks/guard-core.sh"
 pallow "write app src"    "src/app.ts"
 pallow ".env.example"     ".env.example"
+mdeny  "mcp destructive"  "mcp__filesystem__delete_file"
+mallow "mcp read-only"    "mcp__postgres__query"
 
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }

@@ -14,6 +14,7 @@ is_control_plane_path() {
   case "$1" in
     *.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh|\
     *.claude/settings.json|*.claude/settings.local.json|\
+    *.claude/mcp-policy.json|.claude/mcp-policy.json|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
     */.github/workflows/*|.github/workflows/*|*/CODEOWNERS|CODEOWNERS|*/.git/*|.git/*)
       return 0 ;;
@@ -185,6 +186,48 @@ guard_check_command() {
   return 0
 }
 
+# guard_check_mcp "<tool>" "<allowlist>" "<overrides>": ALLOW (return 0) / DENY (return 1 + reason).
+# Pure: the adapter loads the policy and passes it in (the core never reads a file).
+#   <tool>      a Claude MCP tool name, mcp__<server>__<action> (action = segment after the last __)
+#   <allowlist> newline list of exact mcp__server__action OR mcp__server__* wildcards (explicit permit)
+#   <overrides> newline list of "mcp__server__action=class" (reclassify; class 'read'/'data.read' => allow)
+# Decision: allowlist > override-class > tokenized action-verb heuristic > fail-closed deny.
+#   The heuristic tokenizes the action (camelCase->snake, lowercased): the first token must be a
+#   read verb to allow, and ANY destructive verb token downgrades to deny (so get_and_delete /
+#   fetchAndExport deny; list_deployments / get_updates stay read - the noun is not the verb).
+# Honest ceiling: classifies by what the NAME reveals; a renamed action (get_data that exfiltrates),
+# a server wildcard that admits a destructive tool, and real egress are NOT caught here
+# (egress is the platform allowlist — docs/enterprise/platform-safety-boundary.md).
+guard_check_mcp() {
+  t=$1; al=$2; ov=$3
+  # 1. explicit allowlist: exact tool, or its server wildcard (mcp__server__*)
+  if printf '%s\n' "$al" | grep -qxF -- "$t" 2>/dev/null; then return 0; fi
+  if printf '%s\n' "$al" | grep -qxF -- "${t%__*}__*" 2>/dev/null; then return 0; fi
+  # 2. class: a per-tool override wins; else heuristic on the action segment.
+  act=${t##*__}
+  cls=$(printf '%s\n' "$ov" | while IFS='=' read -r k v; do [ "$k" = "$t" ] && { printf '%s' "$v"; break; }; done || true)
+  if [ -z "$cls" ]; then
+    # Tokenize the action: split camelCase to snake, lowercase, turn _/- into spaces.
+    # Whole-token verb matching keeps legit compounds read (list_deployments, get_updates -
+    # 'deployments'/'updates' are not the verbs 'deploy'/'update') while downgrading a read-
+    # prefixed action that carries a destructive verb token (get_and_delete, fetchAndExport).
+    rverbs=' read get list search query fetch describe show view find count '
+    dverbs=' delete drop destroy remove truncate reset write update create insert upsert patch put set upload publish deploy send post email notify apply merge push revoke rotate export download '
+    norm=$(printf '%s' "$act" | sed 's/\([a-zA-Z0-9]\)\([A-Z]\)/\1_\2/g' | tr 'A-Z_-' 'a-z  ')
+    first=${norm%% *}
+    cls=unknown
+    case "$rverbs" in *" $first "*) cls=read ;; esac
+    for tok in $norm; do
+      case "$dverbs" in *" $tok "*) cls=destructive; break ;; esac
+    done
+  fi
+  case "$cls" in
+    read|data.read) return 0 ;;
+    unknown) printf '13: MCP tool %s is not classifiable as read-only - denied (fail-closed). Allowlist it in .claude/mcp-policy.json if safe.' "$t"; return 1 ;;
+    *) printf '13: MCP tool %s is a destructive/egress capability (%s) - human-gated. Allowlist it in .claude/mcp-policy.json if intended.' "$t" "$cls"; return 1 ;;
+  esac
+}
+
 # guard_check_path "<path>": print reason + return 1 if denied, else 0.
 # Moved from guard.sh:245-265 (drop the jq line — caller passes the path).
 guard_check_path() {
@@ -196,7 +239,7 @@ guard_check_path() {
   fi
   if ! selfedit_allowed; then
     case "$base" in
-      guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|CODEOWNERS)
+      guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|CODEOWNERS)
         printf '13: modifying a control-plane file (%s) is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
     esac
   fi
