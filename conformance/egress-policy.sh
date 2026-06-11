@@ -61,7 +61,11 @@ has_egress_manifest() {
            "$_d"/deploy/*.yaml "$_d"/deploy/*.yml \
            "$_d"/manifests/*.yaml "$_d"/manifests/*.yml; do
     [ -f "$f" ] || continue
-    if grep -qiE 'kind:[[:space:]]*NetworkPolicy' "$f" 2>/dev/null && grep -qi 'Egress' "$f" 2>/dev/null; then
+    # require Egress as an actual policyTypes ENTRY (inline `[... Egress]` or a `- Egress`
+    # list item), not a stray mention in a comment — so an Ingress-only NetworkPolicy that
+    # merely says "Egress" in prose does not falsely satisfy `declared`.
+    if grep -qiE 'kind:[[:space:]]*NetworkPolicy' "$f" 2>/dev/null \
+       && grep -qE '(policyTypes:.*Egress|^[[:space:]]*-[[:space:]]*Egress[[:space:]]*$)' "$f" 2>/dev/null; then
       return 0
     fi
   done
@@ -172,11 +176,18 @@ selftest() {
   printf '# RUNBOOK\n## Deploy\n- Network egress: default-deny via cloud egress firewall — enforced: 2026-06-01\n' > "$d/RUNBOOK.md"
   expect "cloud-mechanism+attest -> PASS" "$d" 0
 
-  # 8. escalation: fixture 5 under CI/--require -> FAIL (1)
+  # 9. Ingress-only NetworkPolicy that only MENTIONS Egress in a comment -> NOT declared -> FAIL (1)
+  #    (regression: a non-egress manifest must not falsely satisfy `declared`)
+  d="$base/fail-ingress-only"; mkdir -p "$d/k8s"; printf 'FROM scratch\n' > "$d/Dockerfile"
+  printf 'kind: NetworkPolicy\nspec:\n  # blocks all Egress in prose only\n  policyTypes:\n    - Ingress\n' > "$d/k8s/np.yaml"
+  printf '# RUNBOOK\n## Deploy\n- (no egress record)\n' > "$d/RUNBOOK.md"
+  expect "ingress-only-mentions-egress -> FAIL" "$d" 1
+
+  # 10. escalation: fixture 5 under CI/--require -> FAIL (1)
   expect "declared-not-attested + require -> FAIL" "$base/unv-placeholder" 1 1
 
   if [ "$st_fail" -ne 0 ]; then echo "egress-policy --selftest: FAIL" >&2; return 1; fi
-  echo "egress-policy --selftest: OK (na/explicit-na/bare-fail/manifest-unv/placeholder-unv/pass-manifest/pass-cloud/escalation all behaved; fixtures left in $base)"
+  echo "egress-policy --selftest: OK (na/explicit-na/bare-fail/manifest-unv/placeholder-unv/pass-manifest/pass-cloud/ingress-only-fail/escalation all behaved; fixtures left in $base)"
   return 0
 }
 
