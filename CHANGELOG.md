@@ -3,6 +3,21 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.44.0] - 2026-06-11
+
+Arc exit gate + secret.read remediation (A9 + Slice 11e — **Containment arc CLOSED**). The exit-gate red-team (A9) confirmed W3 closed-in-kit and W2 honestly-bounded, and caught one blocker: the MCP gate allowed `secret.read` tools (A8 family 6) despite A8 designating them deny-by-default. 11e closes it. **MINOR** — additive gate coverage + the A9 findings artifact.
+
+### Added
+- **A9 arc-exit red-team** (`docs/superpowers/reviews/2026-06-11-A9-arc-exit-redteam.md`) — three adversarial red-teams (MCP gate / egress+containment honesty / cross-arc ledger); verdict: arc closes honestly once `secret.read` is gated. W3 → closed-in-kit; W2 → honestly-bounded/platform-owned.
+- **`secret.read` gating** (`guard_check_mcp`, Slice 11e) — secret-material reads are now deny-by-default by **name**: an action naming a secret (`secret/credential/password/api_key/private_key/access_token…`) **or** a known secret-store server (`vault/1password/secretsmanager/keyvault/doppler…`) on a read → deny, even when a read verb leads. Restores A8 family 6. Corpus cases added; allowlist/override escape hatches preserved.
+
+### Honesty
+- The gate's honest ceiling is updated: a secret read via a **generic-named** server/action (`mcp__storage__read_blob` holding a credential) is **not** caught by name — the real controls are the platform egress allowlist + the 11c sandbox.
+- **Carried residual:** attestation in `egress-policy.sh` / `containment-ready.sh` is honor-based (disclosed since 2.43.0); keep the Manual-row adjacency explicit in auditor-facing packaging.
+
+### Containment arc — closed
+W2 (no interpreter-egress control) → **honestly-bounded, platform-owned** (reference shipped + wiring verified three-state; in-process tail never claimed closed). W3 (guard saw only Bash-family tools) → **closed-in-kit** (MCP capability gate, deny-by-default incl. secret.read, Kit-enforced by name, regression-locked). No green check implies containment a shell can't deliver.
+
 ## [2.43.0] - 2026-06-11
 
 Honesty & assurance restatement (Slice 11d — Containment arc). Reconciles the kit's narrative/summary docs to the post-11a/b/c reality and regression-locks the responsibility tiers. **MINOR** — docs + one drift-guard; no behaviour change.
