@@ -14,7 +14,7 @@
 | **`DEVELOPMENT-PROCESS.md`** | How work flows & improves — the agentic SDLC (Inception → loop → operate). |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal quality bar — stack-neutral. |
 | **`profiles/<stack>.md`** | The concrete *how* for your chosen stack (config, examples, commands). Selected at Inception. |
-| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `TASK-CONTEXT-CONTRACT`, `EVAL-PLAN`, `THREAT-MODEL`, `POSTMORTEM`, `BIA`. |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `TASK-CONTEXT-CONTRACT`, `EVAL-PLAN`, `THREAT-MODEL`, `AI-SYSTEM-CARD`, `AI-POLICY`, `POSTMORTEM`, `BIA`. |
 | **`START-HERE.md`** | Run this first — it walks you through Inception, including choosing your stack. |
 | **`MAINTAINING.md`** | How the kit itself is built, versioned (`VERSION`, `CHANGELOG.md`), and contributed back to — the contract/reference/conformance convention. |
 | **`conformance/`** | Executable checks/checklists proving a reference implementation satisfies its contract. |
@@ -72,7 +72,7 @@ The **entry gate** — an item is NOT ready to enter Build until ALL mandatory i
 **Conditional flags** *(flag the obligation now so no downstream gate is a surprise)*
 - **Threat-model** *(if sensitive/regulated)* — flagged for the §7 security gate (`templates/THREAT-MODEL-TEMPLATE.md`).
 - **UX/a11y obligation** *(if a user-facing surface)* — flagged; recorded later in the a11y sign-off (the Accessibility item below).
-- **Eval criteria** *(if an AI feature)* — flagged for the §7 eval gate.
+- **Eval criteria** *(if an AI feature)* — flagged for the §7 eval gate; the feature carries an AI System Card (`templates/AI-SYSTEM-CARD-TEMPLATE.md`).
 - **Compliance obligation** *(if a regulated domain)* — flagged for the §7 compliance gate.
 
 If any **mandatory** box is unchecked, the item is **not Ready** — it does not enter Build.

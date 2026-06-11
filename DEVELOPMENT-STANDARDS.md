@@ -51,6 +51,7 @@ For paid/external services (incl. LLM/compute): rate-limit, track usage, and ale
 - **Prompt-injection defense** — never let user input override system instructions; treat tool outputs as untrusted.
 - **Output validation** — validate model output against a schema before acting; gate high-risk actions on confidence/criteria.
 - **Capability boundaries** — agents act only within explicitly granted capabilities (see governance in `DEVELOPMENT-PROCESS.md` §13).
+- **AI System Card** *(AI features)* — every AI feature declares its governance: a US-anchored risk classification (consequential / children's / prohibited) + named human oversight (`templates/AI-SYSTEM-CARD-TEMPLATE.md`; readiness `conformance/responsible-ai-readiness.md`).
 
 ### Commit & tag signing (recommended hardening)
 Sign commits and **release tags** so authorship and releases are verifiable. Prefer **Sigstore `gitsign`** (keyless, OIDC-backed — no long-lived keys) or GPG where an org already runs a key infrastructure. This is **recommended, not a required gate** — mandating it is a deliberate future step (it would be a contract change). Adopters who opt in verify signatures in CI; the kit documents the path and does not block on it.

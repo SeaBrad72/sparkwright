@@ -179,6 +179,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **Spec gate** | Is the plan sound before building? | Human |
 | **Review** | Did we build it *right*? (quality, **security lens**, standards) | Different agent + human |
 | **Eval gate** *(AI features)* | Do model/prompt outputs meet the eval bar — and did this change not regress evals? | Builder + reviewer |
+| **AI System Card** *(AI features)* | Is the AI governance declared — risk classified (consequential / children's / prohibited), human oversight named? (`conformance/responsible-ai-readiness.md`) | Security / compliance owner + reviewer |
 | **Compliance gate** *(regulated domains)* | Does this meet the regulatory bar before release? | Security owner + human |
 | **15-Factor conformance** *(deployable services)* | Does the architecture satisfy the applicable 15 factors? (`conformance/15-factor-checklist.md`) | Reviewer + lead |
 | **Definition of Deployable** *(deployable services)* | Is the release safe to promote — rollback ready, smoke + monitoring wired? (`conformance/definition-of-deployable.md`) | Release manager + reviewer |
