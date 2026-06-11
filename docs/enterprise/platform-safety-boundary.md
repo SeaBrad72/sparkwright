@@ -15,6 +15,14 @@ This is not a hypothetical. An adversarial red-team of the guard (2026-06-09) co
 3. **Read-only / sandboxed filesystem.** Agent workspaces are scoped to the project working tree and cannot read host secrets, other projects, `~/.aws`, or `~/.ssh`. Prefer ephemeral containers with read-only mounts for everything outside the working tree. The kit now ships a reference (docs/operations/containment.md) and verifies this is declared + attested (conformance/containment-ready.sh) — enforcement remains platform-owned.
 4. **Scoped, short-lived tokens.** Least-privilege, time-boxed credentials for every integration; no long-lived broad-scope tokens within agent reach. The kit now ships a reference (docs/operations/containment.md) and verifies this is declared + attested (conformance/containment-ready.sh) — enforcement remains platform-owned.
 
+## What the kit now provides (Slices 11a–11c)
+
+The boundary above stays **platform-owned and platform-enforced** — but the kit no longer only *documents* it:
+- **Kit-enforced (one surface):** the agent guard now gates **MCP tool capabilities** in-process — `guard_check_mcp` denies un-allowlisted destructive/egress MCP calls deny-by-default (Slice 11a). This is real enforcement *for MCP tool names*; it does **not** contain a renamed action, an interpreter, or in-server egress — the `net.egress` class is a name-match speed bump.
+- **Kit-assisted (the four controls):** for the network-egress allowlist (#1), sandboxed filesystem (#3), scoped tokens (#4), and separate prod credentials (#2), the kit now ships a copy-pasteable reference and a three-state conformance check that the control is **declared + attested-wired** (`conformance/egress-policy.sh`, `conformance/containment-ready.sh`). The **host still enforces** — the kit verifies the posture is wired, not that a packet is dropped or a mount is read-only.
+
+Net: the shell/interpreter deny-list is still a **speed bump**; one narrow surface (MCP capability) is now Kit-enforced; the four platform controls moved Org-owned → **Kit-assisted**. Per-row detail: [compliance-crosswalk.md](compliance-crosswalk.md); verified by `conformance/assurance-tiers.sh`.
+
 ## Relationship to the guard
 
 | Layer | What it is | What it catches |
