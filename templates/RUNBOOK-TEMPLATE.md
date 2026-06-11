@@ -61,6 +61,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 ## 8. Monitoring & alerting
 - Error tracking: [tool/link] · Health check: [endpoint] · Alerts: [what fires, to whom]
 - **Resilience verification** *(deployable services — see `docs/operations/resilience-verification.md`)*: Load/soak tested: [date] · Fault-injection drill: [date]
+- **Observability** *(deployable services — Factor 14 / §9; verified by `conformance/observability-ready.sh`)*: SLOs: [target] · Telemetry wired: [signals]
 
 ## 9. Known issues / technical debt
 - [issue] — [impact] — [tracking link]
