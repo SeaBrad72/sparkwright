@@ -199,7 +199,7 @@ The architectural contract for **deployable services**, after Hoffman's *Beyond 
 - **Dev/prod parity (Factor 9)** — all tiers (Dev/QA/UAT/Prod) use the same *types* of backing services; document any deliberate gap in the RUNBOOK. For a containerized service, the **image** is the unit of parity — local dev (devcontainer/compose) builds from the same Dockerfile that ships (§14 container image supply-chain).
 - **Stateless processes (Factor 12)** — no sticky in-process or local-disk session state; horizontal scaling and disposability depend on this.
 - **Concurrency (Factor 13)** — the scaling model is the process model; document expected concurrency and how the service scales out.
-- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs.
+- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs. Readiness: `conformance/observability-readiness.md` (SLOs + telemetry recorded in RUNBOOK §8; verified by `conformance/observability-ready.sh`).
 
 ---
 
