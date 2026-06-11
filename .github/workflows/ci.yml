@@ -67,6 +67,8 @@ jobs:
         run: sh conformance/action-pinning.sh
       - name: Action-pinning self-test
         run: sh conformance/action-pinning.sh --selftest
+      - name: MCP capability gate classification
+        run: sh conformance/mcp-policy.sh
       - name: Tracker-contract self-test (Jira §6 verifier logic)
         run: sh conformance/tracker-contract.sh --selftest
       - name: Tracker-contract UNVERIFIED without creds (honest non-pass)

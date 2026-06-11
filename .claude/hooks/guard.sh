@@ -21,7 +21,7 @@ tool_name_grep() {
 }
 deny_if_mutating() {
   case "$1" in
-    Bash|Write|Edit|NotebookEdit)
+    Bash|Write|Edit|NotebookEdit|mcp__*)
       emit_deny "agent-guard: $2 (DEVELOPMENT-PROCESS.md 13). Mutating tools are denied until resolved." ;;
     *) allow ;;
   esac
@@ -41,6 +41,14 @@ case "$TOOL" in
   Write|Edit|NotebookEdit)
     FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || printf '')
     if reason=$(guard_check_path "$FP"); then allow; else emit_deny "$reason"; fi ;;
+  mcp__*)
+    POL="$(dirname "$0")/../mcp-policy.json"
+    AL=""; OV=""
+    if [ -f "$POL" ]; then
+      AL=$(jq -r '.allow[]? // empty' "$POL" 2>/dev/null || printf '')
+      OV=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$POL" 2>/dev/null || printf '')
+    fi
+    if reason=$(guard_check_mcp "$TOOL" "$AL" "$OV"); then allow; else emit_deny "$reason"; fi ;;
   *)
     allow ;;
 esac
