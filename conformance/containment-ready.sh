@@ -74,11 +74,15 @@ has_readonly_mount_config() {
 classify_aspect() {
   _rb="$1"; _key="$2"; _extra="$3"
   _present=0; _is_na=0; _attested=0
+  # Anchor the key to the START of a (optionally bulleted) line so a substring heading like
+  # 'Non-prod credentials:' does not satisfy 'prod credentials:', and a prose mention mid-line
+  # does not count as a declaration. Keeps '- Sandbox FS:', '* Sandbox FS:', 'Sandbox FS:'.
+  _pre="^[[:space:]]*[-*]?[[:space:]]*$_key:"
   if [ -f "$_rb" ]; then
     # N/A token-anchored ([^[:alnum:]] is -i-safe) so 'NAS'/'native' don't read as N/A
-    if grep -Eiq "$_key:[[:space:]]*n/?a([^[:alnum:]]|\$)" "$_rb"; then _is_na=1; fi
-    if grep -Eiq "$_key:" "$_rb"; then _present=1; fi
-    if grep -Eiq "$_key:.*enforced:[[:space:]]*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "$_rb"; then _attested=1; fi
+    if grep -Eiq "$_pre[[:space:]]*n/?a([^[:alnum:]]|\$)" "$_rb"; then _is_na=1; fi
+    if grep -Eiq "$_pre" "$_rb"; then _present=1; fi
+    if grep -Eiq "$_pre.*enforced:[[:space:]]*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "$_rb"; then _attested=1; fi
   fi
   if [ "$_is_na" = "1" ]; then echo NA; return 0; fi
   if [ "$_present" = "0" ] && [ "$_extra" = "0" ]; then echo FAIL; return 0; fi
@@ -191,6 +195,13 @@ selftest() {
   d="$base/pass-na-cred"; mkdir -p "$d"; printf 'FROM scratch\n' > "$d/Dockerfile"
   printf '# RUNBOOK\n## Deploy\n%s\n%s\n- Prod credentials: N/A — no production environment\n' "$L_FS" "$L_TOK" > "$d/RUNBOOK.md"
   expect "prod-creds N/A -> PASS" "$d" 0
+
+  # 7b. a substring heading ('Non-prod credentials:') must NOT satisfy 'Prod credentials:'
+  #     (regression: keys are anchored to line/list-item start). FS/tokens dated, no real
+  #     Prod credentials line -> creds aspect FAIL -> overall FAIL (1).
+  d="$base/fail-substring-key"; mkdir -p "$d"; printf 'FROM scratch\n' > "$d/Dockerfile"
+  printf '# RUNBOOK\n## Deploy\n%s\n%s\n- Non-prod credentials: shared dev key — enforced: 2026-06-01\n' "$L_FS" "$L_TOK" > "$d/RUNBOOK.md"
+  expect "substring 'Non-prod credentials' not a match -> FAIL" "$d" 1
 
   # 8. only two of three lines present (creds absent, no config) -> FAIL (1)
   d="$base/fail-missing-one"; mkdir -p "$d"; printf 'FROM scratch\n' > "$d/Dockerfile"
