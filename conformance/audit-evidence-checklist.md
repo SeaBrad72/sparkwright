@@ -16,6 +16,7 @@ Copy this file into your project (or your audit/review record). For each control
 | Dependency vulnerability scan | CC7.1 / A.8.8 / PW.4, RV.1 | dep-scan CI log (gate-dep-scan) | **Auto:** `sh conformance/ci-gates.sh …` | |
 | SBOM + build provenance (SLSA Build L2) | CC7.1, CC9.2 / A.8.8, A.5.21 / PS.2, PS.3 | SBOM file + attestation (gate-sbom / gate-provenance) | **Auto:** `sh conformance/ci-gates.sh …` + the SBOM artifact | |
 | Container image supply-chain (if service image) | CC7.1, CC8.1 / A.8.25, A.8.28 / PS.2, PS.3 | image SBOM + digest-bound provenance attestation | **Auto (conditional):** `sh conformance/container-supply-chain.sh` | |
+| Network egress · default-deny allowlist (if networked) | CC6.6, CC6.7 / A.8.20–A.8.23 / PO.5 | egress reference + RUNBOOK attestation (declared + wired) | **Auto (conditional):** `sh conformance/egress-policy.sh` | |
 | Least-privilege OIDC in CI | CC6.1, CC6.3 / A.8.2 / PO.3, PO.5 | the workflow's push-only `provenance` job (no workflow-level `id-token`) | Manual (review the workflow) | |
 | Branch protection · builder ≠ sole merger | CC8.1, CC6.1 / A.8.32, A.8.4 / PS.1, PW.7 | branch-protection settings + PR approval records | **Auto (where reachable):** `sh conformance/branch-protection.sh` + PR history | |
 | Change management via PR + green CI | CC8.1 / A.8.32 / PO.3, PS.1 | merge history (every change via reviewed PR with green CI) | Manual (PR / merge records) | |
