@@ -104,7 +104,7 @@ DISCOVER → PLAN →│spec│→ BUILD → REVIEW →│merge│→ RELEASE �
 | Stage | What happens | Exit |
 |-------|--------------|------|
 | **Discover** | Intake, **product validation** (§5), triage, innovation lens. | Validated candidate item |
-| **Plan** | Slice into small vertical increments; acceptance criteria; spec for non-trivial work; **threat-model** sensitive features. Must reach the **Definition of Ready** (the entry gate in `CLAUDE.md`). | Spec gate (human) |
+| **Plan** | Slice into small vertical increments; acceptance criteria; spec for non-trivial work; **threat-model** sensitive features (→ `templates/THREAT-MODEL-TEMPLATE.md`). Must reach the **Definition of Ready** (the entry gate in `CLAUDE.md`). | Spec gate (human) |
 | **Build** | TDD per `DEVELOPMENT-STANDARDS.md`. L0 reflection-in-action runs continuously. | Self-verified, tests green |
 | **Review** | "Did we build it *right*?" — code + adversarial/multi-lens + **security lens**, routed per ownership. | Merge gate (human) |
 | **Release** | "Done → Live": deploy, feature flags, staged rollout, smoke test, CHANGELOG, rollback ready — see **Safe Change Delivery (§10)**; verified against `conformance/definition-of-deployable.md`. Breaking changes need explicit approval. | Live in production |
@@ -175,7 +175,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | Gate | Question | Owner |
 |------|----------|-------|
 | **Definition of Ready** | Safe to start? (the enumerated entry gate in `CLAUDE.md` — criteria, INVEST slice, deps, success metric, + conditional flags) | Human/lead |
-| **Threat model** *(sensitive/regulated features)* | What can go wrong security/privacy-wise? | Security owner |
+| **Threat model** *(sensitive/regulated features)* | What can go wrong security/privacy-wise? (`templates/THREAT-MODEL-TEMPLATE.md`) | Security owner |
 | **Spec gate** | Is the plan sound before building? | Human |
 | **Review** | Did we build it *right*? (quality, **security lens**, standards) | Different agent + human |
 | **Eval gate** *(AI features)* | Do model/prompt outputs meet the eval bar — and did this change not regress evals? | Builder + reviewer |
@@ -184,6 +184,7 @@ Humans gate only where judgment matters; agents flow at machine speed between ga
 | **Definition of Deployable** *(deployable services)* | Is the release safe to promote — rollback ready, smoke + monitoring wired? (`conformance/definition-of-deployable.md`) | Release manager + reviewer |
 | **DR readiness** *(data services)* | Is DR provable — BIA done, RTO/RPO tiered, restore drill passed? (`conformance/dr-readiness.md`) | On-call / operator + reviewer |
 | **Resilience readiness** *(deployable services)* | Do resilience + load/soak verifications pass — breaker trips, degrades gracefully, within perf budget? (`conformance/resilience-readiness.md`) | On-call / operator + reviewer |
+| **Observability readiness** *(deployable services)* | Are SLOs declared and telemetry wired — signals emit, alerts fire on breach, error budget tracked? (`conformance/observability-readiness.md`) | On-call / operator + reviewer |
 | **Accessibility** *(user-facing UI)* | Keyboard / screen-reader / contrast pass (WCAG 2.1 AA)? Recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse evidence). | Designer / reviewer |
 | **Acceptance** | Did we build the *right thing*? (intent/need) | Intent owner |
 | **Definition of Done** | Truly complete? (the enumerated exit gate in `CLAUDE.md`; quality bar in `DEVELOPMENT-STANDARDS.md`) | Automated + human |

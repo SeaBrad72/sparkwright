@@ -24,7 +24,7 @@
 
 ## 2. Security, Governance & Guardrails
 
-Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the concrete libraries/snippets in your stack. This section is the **expansion** of the authoritative summary in `CLAUDE.md` ("Security (non-negotiable)") — the two must agree.
+Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the concrete libraries/snippets in your stack. This section is the **expansion** of the authoritative summary in `CLAUDE.md` ("Security (non-negotiable)") — the two must agree. Sensitive / regulated features are **threat-modeled first** (`templates/THREAT-MODEL-TEMPLATE.md`; the §7 security gate).
 
 ### Secrets management
 Never commit secrets (API keys, DB credentials, signing keys, passwords, tokens). Load from environment; fail fast if a required secret is missing. Keep real values in an untracked local env file; commit a `.env.example` with placeholders.
@@ -199,7 +199,7 @@ The architectural contract for **deployable services**, after Hoffman's *Beyond 
 - **Dev/prod parity (Factor 9)** — all tiers (Dev/QA/UAT/Prod) use the same *types* of backing services; document any deliberate gap in the RUNBOOK. For a containerized service, the **image** is the unit of parity — local dev (devcontainer/compose) builds from the same Dockerfile that ships (§14 container image supply-chain).
 - **Stateless processes (Factor 12)** — no sticky in-process or local-disk session state; horizontal scaling and disposability depend on this.
 - **Concurrency (Factor 13)** — the scaling model is the process model; document expected concurrency and how the service scales out.
-- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs.
+- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs. Readiness: `conformance/observability-readiness.md` (SLOs + telemetry recorded in RUNBOOK §8; verified by `conformance/observability-ready.sh`).
 
 ---
 
