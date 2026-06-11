@@ -68,7 +68,7 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
    After editing, confirm the file is valid JSON (e.g. `python3 -m json.tool .claude/settings.json >/dev/null && echo valid`).
 
-3. Leave `.claude/settings.local.json` alone — it is **gitignored** (personal, per-developer). Do not copy the kit's over yours.
+3. Leave `.claude/settings.local.json` alone — it is **gitignored** (personal, per-developer). Do not copy the kit's over yours. **Add `.claude/settings.local.json` to your repo's `.gitignore`** if it isn't already — the kit's own `.gitignore` has the line, but your existing repo's won't, and the personal overrides must never be committed.
 4. **Gate — do not start a Claude Code session in this repo until this prints `guard-wired: OK`:**
 
    ```sh
