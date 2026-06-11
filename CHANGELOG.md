@@ -3,6 +3,17 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.0] - 2026-06-11
+
+Gate parity, Slice 1 — eval-driven development gets the kit's declared-artifact + conformance treatment. The AI-feature Eval gate was named in prose but lacked a template and a readiness check; this closes that. **MINOR** — additive template + conditional check; no new universal gate.
+
+### Added
+- **`templates/EVAL-PLAN-TEMPLATE.md`** — the AI-feature eval artifact (dataset + rubric, regression threshold, safety/red-team, pinned judge + model version, harness, model-upgrade-regression trigger).
+- **`conformance/eval-ready.sh`** + **`conformance/eval-readiness.md`** — conditional check (binds on an AI-feature signal: `evals/` dir, `EVAL-PLAN.md`, or `AI feature: yes`) asserting the eval discipline is **declared** (plan + threshold + harness recorded); N/A for non-AI. Wired into `verify.sh` + CI.
+
+### Honesty
+- The readiness check proves the discipline is **declared**, never that the evals **pass** — execution stays the §7 Eval gate (CI runs the suite); red-team + judge-independence are Manual rows. Necessary, not sufficient.
+
 ## [2.45.0] - 2026-06-11
 
 Task Context Contract (TCC) — declared per-step context envelope. Applies the kit's "declare the contract, make it inspectable" discipline to the build/dispatch layer: a qualifying agent step now carries a declared Reads (constraints/inputs) · Writes · Prohibitions contract, verified by the same reviewers. **MINOR** — additive template + tool-neutral process convention; advisory (no new gate), no behaviour change.
