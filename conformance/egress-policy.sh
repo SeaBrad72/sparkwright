@@ -91,8 +91,11 @@ check_dir() {
 
   rb="$dir/RUNBOOK.md"
 
-  # 2. explicit N/A escape (a deployable with genuinely no outbound network)
-  if [ -f "$rb" ] && grep -Eiq 'network egress:[[:space:]]*n/?a' "$rb"; then
+  # 2. explicit N/A escape (a deployable with genuinely no outbound network).
+  # Anchor N/A to a token boundary ([^[:alnum:]] is -i-safe, unlike [^a-z]) so a mechanism
+  # that merely STARTS with "na" (NAT gateway, namespace-scoped policy, native mesh) is NOT
+  # mis-read as N/A and short-circuited to a false green.
+  if [ -f "$rb" ] && grep -Eiq 'network egress:[[:space:]]*n/?a([^[:alnum:]]|$)' "$rb"; then
     echo "N/A: $dir RUNBOOK records no outbound network (Network egress: N/A)"
     return 0
   fi
@@ -148,6 +151,12 @@ selftest() {
   d="$base/na-explicit"; mkdir -p "$d"; printf 'FROM scratch\n' > "$d/Dockerfile"
   printf '# RUNBOOK\n## Deploy\n- Network egress: N/A — no outbound network\n' > "$d/RUNBOOK.md"
   expect "explicit N/A -> N/A" "$d" 0
+
+  # 2b. mechanism STARTING with "na" must NOT be mis-read as N/A (regression).
+  #     'NAT gateway only' names no recognized mechanism + no manifest -> FAIL, not green N/A.
+  d="$base/na-prefix-not-na"; mkdir -p "$d"; printf 'FROM scratch\n' > "$d/Dockerfile"
+  printf '# RUNBOOK\n## Deploy\n- Network egress: NAT gateway only, no default-deny\n' > "$d/RUNBOOK.md"
+  expect "na-prefix mechanism -> FAIL (not N/A)" "$d" 1
 
   # 3. networked, nothing declared -> FAIL (1)
   d="$base/fail-bare"; mkdir -p "$d"; printf 'FROM scratch\n' > "$d/Dockerfile"
