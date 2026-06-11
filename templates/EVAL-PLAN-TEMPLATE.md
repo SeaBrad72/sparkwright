@@ -14,8 +14,8 @@
 - **Pinned judge + model version:** [e.g. claude-sonnet-4-6 as judge; system-under-test model + version]
 
 ## Regression bar (the §7 gate)
-- **Regression threshold:** [threshold]   <!-- e.g. "score >= 0.85; no metric drops > 2pts vs baseline" — the bar the CI Eval gate enforces. Replace [threshold] with a real value. -->
-- **Harness:** [harness]   <!-- where the suite lives + how the gate runs it, e.g. "evals/run.py, pytest-driven, run in CI on any prompt/model/param change". Replace [harness]. -->
+- **Regression threshold:** [threshold]   <!-- e.g. "score >= 0.85; no metric drops > 2pts vs baseline" — the bar the CI Eval gate enforces. Replace the bracketed placeholder above with a real value. -->
+- **Harness:** [harness]   <!-- where the suite lives + how the gate runs it, e.g. "evals/run.py, pytest-driven, run in CI on any prompt/model/param change". Replace the bracketed placeholder above. -->
 - **Model-upgrade regression:** on any model / prompt / parameter change, the suite re-runs before merge (the gate's trigger).
 
 ## Safety / red-team (Manual)
