@@ -17,7 +17,7 @@
 - Test: `[test command]` · Coverage: `[coverage command]` (≥80%, 100% critical)
 - Lint / type-check: `[commands]`
 - Build: `[build command]`
-- **Test data** *(data-handling projects — see `docs/operations/test-data-management.md`)*: [approach]
+- **Test data:** [approach] *(data-handling projects — synthetic/masked/never-raw-prod; see `docs/operations/test-data-management.md`)*
 
 ## 3. Environment variables
 Documented in `.env.example` (committed, placeholders only). Required:

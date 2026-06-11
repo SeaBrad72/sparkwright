@@ -63,14 +63,16 @@ selftest() {
   d="$base/no-data"; mkdir -p "$d"; printf '# a stateless CLI\n' > "$d/README.md"
   if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: no-data -> N/A"; else echo "selftest FAIL: no-data should be N/A"; st=1; fi
 
+  # data-ok fixture mirrors the real RUNBOOK template shape (bold key + parenthetical), filled.
   d="$base/data-ok"; mkdir -p "$d"
   printf 'DATABASE_URL=postgres://localhost/app\n' > "$d/.env.example"
-  printf '# RUNBOOK\n\n## 2. Test / build\n- Test data: synthetic via faker; seeded fixtures; never raw prod\n' > "$d/RUNBOOK.md"
+  printf '# RUNBOOK\n\n## 2. Test / build\n- **Test data:** synthetic via faker; seeded fixtures *(never raw prod)*\n' > "$d/RUNBOOK.md"
   if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: data + recorded -> OK"; else echo "selftest FAIL: recorded should pass"; st=1; fi
 
+  # placeholder fixture mirrors the unfilled template line verbatim.
   d="$base/data-placeholder"; mkdir -p "$d"
   printf 'DATABASE_URL=postgres://localhost/app\n' > "$d/.env.example"
-  printf '# RUNBOOK\n- Test data: [approach]\n' > "$d/RUNBOOK.md"
+  printf '# RUNBOOK\n- **Test data:** [approach] *(data-handling projects — see docs/operations/test-data-management.md)*\n' > "$d/RUNBOOK.md"
   if check_dir "$d" >/dev/null 2>&1; then echo "selftest FAIL: [approach] placeholder should FAIL"; st=1; else echo "selftest PASS: [approach] placeholder -> FAIL"; fi
 
   d="$base/data-missing"; mkdir -p "$d"
