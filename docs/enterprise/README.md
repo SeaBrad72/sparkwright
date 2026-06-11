@@ -10,6 +10,7 @@ Governance, compliance, and privacy guidance for organizations adopting this kit
 | [ORG-ROLLOUT.md](ORG-ROLLOUT.md) | Pilot→expand→fleet adoption, the canonical Stage 1–4 maturity model, fleet upgrade. |
 | [ROI-MODEL.md](ROI-MODEL.md) | Parameterized ROI worksheet + a labeled worked example. |
 | [compliance-crosswalk.md](compliance-crosswalk.md) | Maps the controls this kit enforces to SOC 2 (Security + Privacy) and ISO 27001:2022 Annex A. |
+| [ai-governance-crosswalk.md](ai-governance-crosswalk.md) | US-first AI-governance map — NIST AI RMF / ISO 42001 / US state law / OWASP+MITRE; EU AI Act optional overlay. |
 | [secrets-at-scale.md](secrets-at-scale.md) | Managed-secret-store contract (Vault/KMS) + secret-manager client by stack. |
 | [ratification-rbac.md](ratification-rbac.md) | Which roles may ratify what; the governed-exception process. |
 | [platform-safety-boundary.md](platform-safety-boundary.md) | The Org-owned **real** safety boundary behind the agent guard — egress allowlist, separate prod credentials, sandboxed FS, scoped tokens. |

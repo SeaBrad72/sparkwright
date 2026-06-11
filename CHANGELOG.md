@@ -3,6 +3,20 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.50.0] - 2026-06-11
+
+Responsible-AI arc, Slice RAI-3 — AI-governance crosswalk + agentic-threat lens. **Closes the Responsible-AI arc.** **US-first**; **MINOR** — documentation only, no gate/script.
+
+### Added
+- **`docs/enterprise/ai-governance-crosswalk.md`** — US-first map of the kit's AI-governance controls + the RAI artifacts to **NIST AI RMF + GenAI Profile** (the practical US anchor + TX TRAIGA safe harbor), **ISO/IEC 42001** (clauses + Annex A), **US state law / COPPA / FTC**, and **OWASP LLM + Agentic Top 10 + MITRE ATLAS**. The **EU AI Act** is a fenced optional overlay (only with EU market exposure; conformity-assessment / CE / FRIA / EU-DB are Org-owned, out of the US baseline). Sibling of `compliance-crosswalk.md` with the same honest `Responsibility` column.
+- **Agentic-AI lens** on `templates/THREAT-MODEL-TEMPLATE.md` — an OWASP-Agentic-Top-10 (ASI01–10) subsection so an AI agent's threat model considers goal-hijack, tool-misuse, identity abuse, memory poisoning, human-trust exploitation, and rogue-agent behavior, each pointing at the kit control that mitigates it. N/A for non-agent features.
+
+### Honesty
+- The crosswalk **shows its own edges**: agentic-threat coverage is reported truthfully — **5 of 10 fully covered, 3 partial, 2 platform-owned gaps** (memory poisoning, inter-agent comms) — not a rounded-up number. ISO 42001 *certification* and state-law *legal determination* are **Org-owned**; the kit provides the evidence, not the compliance program.
+
+### Arc closed
+- The Responsible-AI arc (RAI-1 System Card · RAI-2 fairness + transparency · RAI-3 crosswalk + agentic lens) completes the third AI-governance axis — *is the AI fair, disclosed, human-overseen, risk-classified, and mappable to US regimes?* — alongside the existing eval gate (*is it good?*) and threat-model (*how is it attacked?*).
+
 ## [2.49.0] - 2026-06-11
 
 Responsible-AI arc, Slice RAI-2 — fairness eval + AI-output transparency. The two genuine content gaps from the arc design, plus the good-citizen AI-incident feedback loop. **US-anchored** (EEOC / NYC LL144 / CO-CA consequential-decision; CA SB 942 / AB 2013 / COPPA-FTC; EU Art. 10/50 optional overlays). **MINOR** — additive templates; **no new gate or conformance script** (all Manual, owner-verified).

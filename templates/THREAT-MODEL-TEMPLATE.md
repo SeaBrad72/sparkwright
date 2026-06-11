@@ -31,6 +31,19 @@
 - **Third-party / AI data flow:** [what leaves the boundary; consent; redaction] — N/A if none
 - **Prompt-injection / AI abuse** *(if an AI feature)*: [untrusted-input → model guardrails, output validation] — N/A if no model
 
+## Agentic-AI lens (if an autonomous / tool-using agent) — OWASP Agentic Top 10
+*Mark **N/A — not an agent** if the AI feature does not plan/act with tools. The rows below are a curated subset — the full ASI01–10 coverage map is in `docs/enterprise/ai-governance-crosswalk.md`.*
+
+| Agentic risk | Considered? | Mitigation (link the control) |
+|---|---|---|
+| ASI01 Goal hijack (injection redirects the agent) | | prompt-injection defense; treat tool output as untrusted |
+| ASI02 Tool misuse | | MCP capability policy + guard |
+| ASI03 Identity / privilege abuse | | scoped short-lived tokens + containment |
+| ASI05 Unexpected code execution | | guard deny-matrix + sandboxed FS |
+| ASI06 Memory / context poisoning | | [platform — validate persisted context] |
+| ASI09 Human-agent trust exploitation | | ratify on evidence, not a polished agent rationale |
+| ASI10 Rogue agent / misalignment | | autonomy tiers + immutable audit |
+
 ## Residual risk
 - [risk accepted, why, compensating control, expiry/review date — ties to the governed-exception register if a gate is waived]
 
