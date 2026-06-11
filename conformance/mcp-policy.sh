@@ -34,6 +34,18 @@ deny  "camelCase getDelete" "mcp__fs__getDelete"           "" ""
 # non-verb lookalikes are not read VERBS -> fail-closed (getter != get, counter != count)
 deny  "getter not a verb"  "mcp__x__getter"                "" ""
 deny  "counter not a verb" "mcp__x__counter"               "" ""
+# secret.read (A8 family 6) is deny-by-default even when a read verb leads: by action-noun...
+deny  "secret in action"   "mcp__aws__get_secret_value"    "" ""
+deny  "credential action"  "mcp__x__getCredential"         "" ""
+deny  "api_key action"     "mcp__x__read_api_key"          "" ""
+# ...or by known secret-store server on a read
+deny  "vault server read"  "mcp__vault__read"              "" ""
+deny  "1password server"   "mcp__1password__get_item"      "" ""
+# a benign read on a non-secret server with no secret noun stays read (no over-deny)
+allow "benign get_item"    "mcp__store__get_item"          "" ""
+# secret.read honors the allowlist/override escape hatches (explicit human intent)
+allow "secret allowlisted" "mcp__vault__read"              "mcp__vault__read" ""
+allow "secret override"    "mcp__vault__read"              "" "mcp__vault__read=read"
 # allowlist + wildcard + override escape hatches
 allow "allowlisted exact"  "mcp__filesystem__delete_file"  "mcp__filesystem__delete_file" ""
 allow "allowlisted wild"   "mcp__filesystem__write_file"   "mcp__filesystem__*" ""
