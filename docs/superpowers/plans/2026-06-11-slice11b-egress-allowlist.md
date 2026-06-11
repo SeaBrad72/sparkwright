@@ -399,10 +399,10 @@ Expected: section headings incl. `## 4. Deploy` and `## 8. Monitoring & alerting
 - [ ] **Step 2: Add the egress attestation line under `## 4. Deploy`** (general bullet, applies to all targets — k8s, cloud-firewall, proxy). Insert it immediately after the `- Smoke test: …` bullet and **before** the `**Container / Kubernetes deploy (if applicable):**` subsection:
 
 ```markdown
-- Network egress: default-deny via [k8s NetworkPolicy | cloud egress firewall | forward proxy] — enforced: [date]  <!-- or: Network egress: N/A — [reason]. The only reliable exfiltration defense (`docs/operations/egress-control.md`); verified declared+attested by `conformance/egress-policy.sh`. -->
+- Network egress: default-deny via [k8s NetworkPolicy | cloud egress firewall | forward proxy] — enforced: [date]  <!-- The only reliable exfiltration defense (`docs/operations/egress-control.md`); verified declared+attested by `conformance/egress-policy.sh`. If no outbound network, replace this entire line with: N/A — [reason] -->
 ```
 
-(The literal phrase `Network egress:` + `enforced: [date]` must match `egress-policy.sh`'s greps exactly — keep them in sync, same discipline as the §8 resilience line.)
+(The literal phrase `Network egress:` + `enforced: [date]` must match `egress-policy.sh`'s greps exactly — keep them in sync, same discipline as the §8 resilience line. **Do NOT put the literal `Network egress: N/A` inside the comment** — the script's N/A-escape grep would match it and the template would read as N/A instead of the required UNVERIFIED. Phrase the N/A guidance without that prefix.)
 
 - [ ] **Step 3: Verify the template parses against the check** (a fresh template should read as UNVERIFIED — placeholder `[date]`, not a false PASS):
 
