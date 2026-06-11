@@ -126,7 +126,7 @@ For any feature whose behavior depends on a model or prompt, **evals are the tes
 - **Task quality** — outputs scored against a curated dataset + rubric (exact-match, graded criteria, or LLM-as-judge with a pinned judge + rubric).
 - **Regression** — the eval suite runs in CI on any prompt/model/parameter change; a drop below threshold **fails the build** (the Eval gate, `DEVELOPMENT-PROCESS.md` §7).
 - **Safety / red-team** — adversarial prompts, jailbreaks, harmful-output checks before shipping.
-- **Discipline** — eval set is versioned with the code and grows from production misses and retros; pin the judge; evals *complement* runtime guards; track eval scores as a quality metric (decline = tech debt). **→ profile** for the eval harness.
+- **Discipline** — eval set is versioned with the code and grows from production misses and retros; pin the judge; evals *complement* runtime guards; track eval scores as a quality metric (decline = tech debt). **→ profile** for the eval harness. Plan it with `templates/EVAL-PLAN-TEMPLATE.md`; readiness `conformance/eval-ready.sh`.
 
 ---
 
@@ -232,7 +232,7 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 **Conditional gates (a11y / load / eval).** The seven above are **universal**. Three further gates are **first-class but conditional** — binding only when their trigger is present, **N/A-with-reason** otherwise (the same pattern as the 15-factor and threat-model gates):
 - **Accessibility** *(user-facing UI)* — WCAG 2.1 AA; recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse). `DEVELOPMENT-PROCESS.md` §7.
 - **Load / soak** *(deployable services)* — resilience + perf-budget verification; `conformance/resilience-readiness.md`.
-- **Eval** *(AI features)* — model/prompt output meets the eval bar and does not regress; `DEVELOPMENT-PROCESS.md` §7.
+- **Eval** *(AI features)* — model/prompt output meets the eval bar and does not regress; `DEVELOPMENT-PROCESS.md` §7; readiness `conformance/eval-readiness.md`, plan `templates/EVAL-PLAN-TEMPLATE.md`.
 
 They are deliberately **not** universal required gates: forcing an a11y, load, or eval gate on a CLI, library, or batch job that has no UI, no service, and no model would be false universality. Verified by `conformance/conditional-gates.sh`.
 

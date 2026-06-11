@@ -56,6 +56,7 @@ check control branch-protect   sh conformance/branch-protection.sh
 check doc     deployable-ready sh conformance/deployable-ready.sh
 check doc     dr-ready         sh conformance/dr-ready.sh
 check doc     resilience-ready sh conformance/resilience-ready.sh
+check doc     eval-ready       sh conformance/eval-ready.sh
 
 echo ""
 printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d failed\n' "$controls" "$docs" "$unverified" "$failed"
