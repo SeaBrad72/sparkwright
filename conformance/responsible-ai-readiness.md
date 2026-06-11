@@ -16,7 +16,7 @@ Produce an `AI-SYSTEM-CARD.md` from `templates/AI-SYSTEM-CARD-TEMPLATE.md`. Item
 | 3 | Human-oversight mechanism named *(documented)* | | | **Auto:** `responsible-ai-ready.sh` |
 | 4 | Classification is **correct** for the actual use *(verified)* | | | Manual |
 | 5 | Fairness / disparate-impact tested where consequential (→ EVAL-PLAN) *(verified)* | | | Manual / §7 Eval gate |
-| 6 | User-facing AI disclosure + content labeling shipped where applicable *(verified)* | | | Manual |
+| 6 | User-facing AI disclosure + content labeling shipped where applicable (`templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md`) *(verified)* | | | Manual |
 | 7 | Children's-data care (COPPA: consent, minimization, retention) where applicable *(verified)* | | | Manual |
 | 8 | Security/compliance owner signed the card *(verified)* | | | Manual |
 
