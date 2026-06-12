@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.53.0] - 2026-06-12
+
+Modern Practices arc, Slice MP-1 — test quality beyond coverage. Adds the two practices the audit found genuinely absent, both especially relevant when **agents write the tests**. **MINOR** — guidance + STANDARDS principle + per-stack profile tooling; no new gate (mutation is too slow to gate every PR).
+
+### Added
+- **`docs/operations/test-quality.md`** — coverage ≠ quality. **Mutation testing** (injects bugs, checks the suite catches them; the honest test-quality signal — "green ≠ verified" applied to the suite itself; the reliable catch for an agent that gamed the coverage gate with assertion-light tests; run on critical paths / nightly, not every PR). **Property-based testing** (generative inputs find edge cases a human or agent didn't write). Per-stack tools for both.
+- **`DEVELOPMENT-STANDARDS.md` §7** — a Test-quality principle (coverage = execution, not assertion strength) + a Property-based row in the testing pyramid.
+- **Profile tooling** — `profiles/python.md` (`hypothesis` + `mutmut`/`cosmic-ray`), `profiles/typescript-node.md` (`fast-check` + Stryker).
+
+### Honesty
+- Both are **recommended, not fail-closed gates** — a green coverage gate stays necessary but is **not sufficient** evidence of test quality. The kit names the principle and ships the tools; the team sets the cadence + critical-path scope.
+
 ## [2.52.0] - 2026-06-11
 
 Safe Non-Prod arc, Slice SNP-2 — ephemeral / preview environments. **Closes the Safe Non-Prod arc** (and the deferred list from the feature-coverage analysis). Seeds from SNP-1 test data. **MINOR** — guidance + conditional check + RUNBOOK record.

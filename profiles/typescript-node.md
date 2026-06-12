@@ -20,7 +20,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 - **Runtime:** Node.js 24 LTS · **Language:** TypeScript (strict mode)
 - **Package manager:** npm (lockfile committed; exact versions for production apps)
 - **Format/lint/types:** Prettier · ESLint (`@typescript-eslint`) · `tsc --noEmit`
-- **Tests:** Vitest (+ v8 coverage) · Playwright for e2e
+- **Tests:** Vitest (+ v8 coverage) · Playwright for e2e · **Test quality:** `fast-check` (property-based) + Stryker (mutation, critical paths/nightly — `docs/operations/test-quality.md`)
 - **Build:** `tsc` (services) or `next build` (Next.js apps)
 
 ## 2. Project scaffold

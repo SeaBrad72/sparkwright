@@ -107,6 +107,8 @@ Tests are the regression suite. **Mock at boundaries, not internals. Test behavi
 
 **Coverage:** 80% line coverage is the floor; **100% on critical paths** (auth, payments/orders, money math, compensation, anything irreversible).
 
+**Test quality (not just coverage):** coverage measures *execution*, not assertion strength — a suite can hit 80% and assert nothing (a common failure when tests are AI-generated). Verify with **mutation testing** (a mutation score on critical paths) and broaden inputs with **property-based testing**. **Recommended** (esp. critical paths / nightly), not a universal CI gate — mutation runs are too slow to gate every PR. Patterns + per-stack tools: `docs/operations/test-quality.md`.
+
 **Test data:** non-prod uses synthetic or anonymized data; **never raw production data** (PII / children's → masked or synthetic, COPPA-grade). Patterns: `docs/operations/test-data-management.md`; recorded in RUNBOOK §2 (`conformance/test-data-readiness.md`).
 
 **Testing pyramid** (prioritize top-down; add each when its trigger arrives):
@@ -114,6 +116,7 @@ Tests are the regression suite. **Mock at boundaries, not internals. Test behavi
 | Type | Purpose | When |
 |------|---------|------|
 | **Unit** | Pure logic, validators, helpers | Day 1 with code |
+| **Property-based** | Generative inputs find edge cases examples miss | High-value pure logic / boundaries |
 | **Integration** | Service + datastore (mocked or real) | With services |
 | **API / contract** | HTTP status, auth guards, payload shapes | When routes exist |
 | **E2E** | Critical user journeys | Phase 2+ |
