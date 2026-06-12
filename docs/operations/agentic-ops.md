@@ -37,11 +37,13 @@ Anchored on **OpenTelemetry GenAI semantic conventions** (`gen_ai.*`) as a neutr
 
 Per-step `latency`, `decision`/rationale notes, `task.intent` / `acceptance_ref`, `model` id. Ship the core; let these earn their place per project.
 
+> **The `unknown` sentinel.** An emitter that cannot derive a field records the literal `unknown` (or `null` for `parent.run.id`) rather than guessing — honesty over false precision. MP-3b treats `unknown` as missing, not as a value.
+
 ## Emitters (tool/harness-neutral)
 
 The schema is the **portable contract**; an emitter is a **thin per-harness adapter** that maps a harness's native record to it — the same "portable contract + adapter" split as the §13 guard.
 
-- **Dev-time (reference adapter):** Claude Code writes a JSONL session transcript (tool calls, outcomes, token usage). A transcript→trace emitter derives the schema from it. The **working reference emitter is MP-3a.2**; until then, derive traces manually or document the mapping. A Gemini-CLI / Codex / Aider shop writes its own equivalent adapter against the same schema.
+- **Dev-time (reference adapter):** Claude Code writes a JSONL session transcript (tool calls, outcomes, token usage). **`scripts/agent-trace.sh`** derives an MP-3a-schema trace from it — transcript-native fields (timing, tokens, cost, the tool-step sequence with `ok`/`error`/`denied` outcomes) are solid; `gh`/`git`-correlated fields (`pr.ref`, `review.rounds`, `outcome`, gates/tests) are **best-effort, set to `unknown` when not derivable** (never fabricated). Run `scripts/agent-trace.sh --latest --stdout` for this repo's newest session, or pass a transcript path. A Gemini-CLI / Codex / Aider shop writes its own equivalent adapter against the same schema.
 - **Runtime (product agent):** emit OpenTelemetry GenAI spans (or Langfuse) directly from the running agent; the spans already carry most required-core fields.
 
 ## Declaration & conformance
@@ -53,5 +55,5 @@ Record the posture in **RUNBOOK §8** (`Agent-ops:` — schema + emitter + sink)
 ## Roadmap
 
 - **MP-3a (this):** the trace contract + conformance trio + declaration wiring.
-- **MP-3a.2:** the working Claude Code dev-time emitter (transcript→trace) — turns the kit's own session transcripts into the corpus that calibrates MP-3b.
+- **MP-3a.2 (done):** `scripts/agent-trace.sh` — the working Claude Code dev-time emitter (transcript→trace); turns the kit's own session transcripts into the corpus that calibrates MP-3b.
 - **MP-3b:** the behavior-conformance rubric (scored over a window, per agent) → autonomy-tier feedback; thresholds set against real MP-3a.2 traces.
