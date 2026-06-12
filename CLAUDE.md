@@ -14,11 +14,11 @@
 | **`DEVELOPMENT-PROCESS.md`** | How work flows & improves — the agentic SDLC (Inception → loop → operate). |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal quality bar — stack-neutral. |
 | **`profiles/<stack>.md`** | The concrete *how* for your chosen stack (config, examples, commands). Selected at Inception. |
-| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `TASK-CONTEXT-CONTRACT`, `EVAL-PLAN`, `THREAT-MODEL`, `AI-SYSTEM-CARD`, `AI-POLICY`, `AI-TRANSPARENCY-SIGNOFF`, `POSTMORTEM`, `BIA`. |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `TASK-CONTEXT-CONTRACT`, `EVAL-PLAN`, `THREAT-MODEL`, `AI-SYSTEM-CARD`, `AI-POLICY`, `AI-TRANSPARENCY-SIGNOFF`, `TEST-PLAN`, `UAT-SIGNOFF`, `A11Y-SIGNOFF`, `WAIVER-REGISTER`, `POSTMORTEM`, `BIA` (+ tracker-setup templates). |
 | **`START-HERE.md`** | Run this first — it walks you through Inception, including choosing your stack. |
 | **`MAINTAINING.md`** | How the kit itself is built, versioned (`VERSION`, `CHANGELOG.md`), and contributed back to — the contract/reference/conformance convention. |
 | **`conformance/`** | Executable checks/checklists proving a reference implementation satisfies its contract. |
-| **`docs/enterprise/`** | Enterprise addendum — compliance crosswalk, secrets-at-scale, ratification RBAC, audit-evidence (maps the kit's controls to SOC 2 + ISO 27001:2022). |
+| **`docs/enterprise/`** | Enterprise addendum — compliance crosswalk (SOC 2 · ISO 27001:2022 · NIST SSDF · SLSA) + AI-governance crosswalk (NIST AI RMF · ISO 42001 · US state law · OWASP), secrets-at-scale, ratification RBAC, audit-evidence. |
 | **`docs/`** (other) | `work-tracking/adapters.md` (backlog backends), `adoption/brownfield.md` (existing-repo adoption + `.claude/` hygiene), `operations/` (live-system guidance: progressive delivery, resilience verification, DORA metrics), `continuity/` (recovery/DR: backup-restore drill, BIA). |
 
 New here? **Read `START-HERE.md`.**

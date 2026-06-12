@@ -18,8 +18,8 @@ Every capability the kit ships has three parts. This is the same "universal stan
 
 **Worked example (CI/CD):**
 - *Contract* — `DEVELOPMENT-STANDARDS.md`: "CI MUST enforce lint, type-check, test+coverage≥80%, build, and secret-scan; `main` is protected; the builder is never the sole merger."
-- *Reference* — `.github/workflows/ci.yml` in the TypeScript profile (a later slice), marked "copy & adapt to your stack."
-- *Conformance* — `conformance/ci-gates.<ext>` (a later slice) that asserts each gate fires.
+- *Reference* — `.github/workflows/ci.yml` in the TypeScript profile, marked "copy & adapt to your stack."
+- *Conformance* — `conformance/ci-gates.<ext>` that asserts each gate fires.
 
 A team on Python deletes the Node workflow, writes their own, and stays conformant because the gates still fire.
 
@@ -56,4 +56,4 @@ The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature bra
 
 ---
 
-**Last Updated:** 2026-06-05
+**Last Updated:** 2026-06-12

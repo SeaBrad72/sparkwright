@@ -12,3 +12,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local tool cache (firecrawl web-search results) — never commit
+.firecrawl/

@@ -98,7 +98,7 @@ State the value of every dominant input next to the result, and **label every as
 
 ## Worked example (illustration of the method — not a claim about your org)
 
-An UNNAMED regulated, privacy-sensitive enterprise, ~200 engineers. The figures below are **example inputs chosen to demonstrate the worksheet** — they are not measured, not benchmarked, and not a forecast for any real organization.
+A regulated, privacy-sensitive enterprise, ~200 engineers. The figures below are **example inputs chosen to demonstrate the worksheet** — they are not measured, not benchmarked, and not a forecast for any real organization.
 
 **Example inputs (all illustrative):**
 

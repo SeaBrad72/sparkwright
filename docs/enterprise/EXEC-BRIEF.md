@@ -36,7 +36,7 @@ The runtime guard is a **speed bump, not a boundary** for shell and interpreter 
 |-----------|----------------------|-----------|
 | **SOC 2** (Security + Privacy) | CI quality gates, secret-scan, SBOM + provenance, branch protection, agent guard, audit-logging primitives — mechanical evidence (CC6–CC9, CC1) | Personnel/HR, physical security, vendor risk, the platform safety boundary, and the privacy *program* (notice, consent, DSAR) |
 | **ISO 27001:2022** (Annex A) | Secure development life cycle, change management, supply-chain integrity, access control in CI, logging (A.8.25/.28/.32, A.5.21) | Screening (A.6), physical controls (A.7), supplier relationships (A.5.19–.22), network egress/segregation (A.8.20–.23) |
-| **NIST SSDF** (SP 800-218) + **SLSA** | Secure-build practices mapped per control (PO/PS/PW/RV); **SLSA Build L2** provenance on released artifacts (authenticated, service-generated, digest-bound) | The org's broader SSDF program adoption; SLSA L3 (hermetic build) if required |
+| **NIST SSDF** (SP 800-218) + **SLSA** | Secure-build practices mapped per control (PO/PS/PW/RV); **SLSA Build L2** provenance on artifacts built by the reference pipeline (authenticated, service-generated, digest-bound) | The org's broader SSDF program adoption; SLSA L3 (hermetic build) if required |
 
 Full mapping, with per-row *Kit-enforced / Kit-assisted / Org-owned* responsibility → [compliance-crosswalk.md](compliance-crosswalk.md).
 
