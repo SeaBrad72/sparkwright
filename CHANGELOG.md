@@ -3,6 +3,20 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.57.0] - 2026-06-12
+
+**Security & Privacy completeness arc** — closes the verified gaps from a repo-grounded gap-scan so the kit's security/privacy posture is whole before the pivot to UX/product-design. **MINOR** — new conditional gates + reference tools + readiness checks; no new *universal-required* gate. Three ratified, security-reviewed slices (#79 SP-1, #82 SP-2, #83 SP-3).
+
+### Added
+- **SP-1 — security gates** (`#79`): two **conditional** gates (the a11y/load/eval family). `gate-sast` (first-party static analysis — Semgrep default / CodeQL alt, per profile) for the injection/auth-bypass/SSRF class that `gate-dep-scan` and `gate-secret-scan` miss. `gate-license` — `scripts/license-check.sh` (sh+jq) acts on the existing CycloneDX SBOM: flags denylisted strong-copyleft (anchor spares weak-copyleft `LGPL`), evaluates every license entry + splits SPDX `AND`/`OR` expressions, and **self-flags undetermined/NOASSERTION** components, pointing to a **per-stack upgrade ladder** (`cargo-deny`, `go-licenses`, …) that keeps the same `gate-license` id. Named in §7/§14 + `conditional-gates.sh`; `docs/operations/security-scanning.md`.
+- **SP-2 — disclosure policy** (`#82`): `templates/SECURITY-TEMPLATE.md` + `conformance/security-policy.sh` (conditional three-state; triggers on a governed repo via `CLAUDE.md`) + `incept.sh` scaffolding. The kit **dogfoods** its own `SECURITY.md` (GitHub private vulnerability reporting — anonymization-safe).
+- **SP-3 — data governance** (`#83`): a 4-tier **classification scheme** (Public/Internal/Confidential/Restricted) + `templates/PRIVACY-REVIEW-TEMPLATE.md` (DPIA-lite) + `conformance/privacy-ready.sh` (triggers only on a declared Confidential/Restricted value → a recorded privacy review). `docs/enterprise/data-governance.md`. COPPA/children's-data framed as **one applicability, not a mandate**.
+
+### Honesty / engineering notes
+- **Conditional, not universal** — SAST/license/privacy apply on the N/A-with-reason basis; no forced friction on a CLI/IaC/Public-data repo. Green proves the scan *ran* / policy *applied* / posture *recorded* — never that code is secure, licenses legally cleared, or processing lawful (Manual operator rows).
+- **License is stack-neutral but self-aware** — necessary-not-sufficient over the SBOM, with an explicit, contract-preserving upgrade path when an enterprise needs higher fidelity.
+- **Guardrails held under pressure** — independent security-owner review per slice caught and fixed: 2 copyleft false-negatives + a CI-pin break (SP-1), an attempted doc-budget guardrail loosening (SP-2, reverted), and a privacy-gate fail-open (SP-3). The core-doc budget stayed at its deliberate 900 cap throughout.
+
 ## [2.56.0] - 2026-06-12
 
 Modern Practices arc, Slice **MP-3 — agentic-ops**: observe and govern an agent's *own work*, the layer the kit lacked (the §13 guard *prevents* harm, §7 evals judge a *feature's* output, §2 tracks *spend* — none observed the **execution**). **MINOR** — new reference tools + contract + readiness rows; no new required gate (the tools are validated by their own selftests, not by failing a PR). Shipped as five ratified PRs (#73 MP-3a, #74 MP-3a.2, #75 MP-3b, #76/#77 kit-CI smokes), each independently security-reviewed (builder ≠ sole reviewer) → SHIP.
