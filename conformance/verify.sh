@@ -65,6 +65,7 @@ check doc     test-data-ready  sh conformance/test-data-ready.sh
 check doc     preview-env-ready sh conformance/preview-env-ready.sh
 check doc     agentops-ready  sh conformance/agentops-ready.sh
 check doc     security-policy sh conformance/security-policy.sh
+check doc     privacy-ready   sh conformance/privacy-ready.sh
 
 echo ""
 printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d failed\n' "$controls" "$docs" "$unverified" "$failed"

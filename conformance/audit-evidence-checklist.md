@@ -41,6 +41,8 @@ Copy this file into your project (or your audit/review record). For each control
 | Observability / monitoring | CC7.2 / A.8.15, A.8.16 | dashboards, alerts | Manual | |
 | SECURITY.md present + real contact | CC6.1, CC6.6 / A.5.24 | repo `SECURITY.md` | **Auto:** `sh conformance/security-policy.sh` | |
 | Disclosure process actually works (SLAs, triage) | CC7.3, CC7.4 / A.5.24–A.5.28 | advisory response log | Manual — operator evidence | |
+| Privacy review recorded (Confidential/Restricted) | CC6.1, C1.1 / A.8.10, A.5.31 / NIST Privacy Framework | `PRIVACY-REVIEW.md` | **Auto (conditional):** `sh conformance/privacy-ready.sh` | |
+| Processing lawful + deletion works | CC6.1 / A.5.31, A.8.10 | operator/DPO evidence | Manual — DPIA sign-off + erasure test | |
 | Incident response · postmortem | CC7.3, CC7.4 / A.5.24–A.5.28 | postmortem record(s) (`templates/POSTMORTEM-TEMPLATE.md`) + action-item backlog links | Manual | |
 | Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 / PW.1, PW.2 | `docs/ADR-*` files | Manual (files present) | |
 | RUNBOOK · DR / rollback | CC7.4, CC7.5 / A.5.29, A.8.13 | RUNBOOK | Manual (file present) | |
