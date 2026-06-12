@@ -21,6 +21,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 - **Package manager:** npm (lockfile committed; exact versions for production apps)
 - **Format/lint/types:** Prettier · ESLint (`@typescript-eslint`) · `tsc --noEmit`
 - **Tests:** Vitest (+ v8 coverage) · Playwright for e2e · **Test quality:** `fast-check` (property-based) + Stryker (mutation, critical paths/nightly — `docs/operations/test-quality.md`)
+- **Inner loop:** `husky` + `lint-staged` (prettier + eslint on staged, `vitest related --run`) on commit — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 - **Build:** `tsc` (services) or `next build` (Next.js apps)
 
 ## 2. Project scaffold
