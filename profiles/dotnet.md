@@ -48,6 +48,7 @@ start:         dotnet <Project>.dll
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/dotnet/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. `dotnet restore` → `dotnet format --verify-no-changes` → `dotnet build` (type-check) → `dotnet test`+coverage(≥80) → `dotnet publish -c Release` → secret-scan (gitleaks) → dependency scan (`dotnet list package --vulnerable`) → SBOM (`dotnet CycloneDX`) → build provenance.
 - **`CODEOWNERS`**, **`BRANCH-PROTECTION.md`** → governance companions.
+- **Container image supply-chain (this profile ships a service):** the reference `ci.yml` adds `gate-image-sbom` (Syft/CycloneDX, on PR) and `gate-image-provenance` (digest-bound, push-only) on top of the 8 universal gate-ids. Verified by `conformance/container-supply-chain.sh`.
 
 Conformance: `sh conformance/ci-gates.sh profiles/dotnet/ci.yml`. Note: compilation **is** type-checking — `gate-type-check`=`dotnet build`, `gate-build`=`dotnet publish`.
 
@@ -74,6 +75,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/dotnet/ci.yml`. Note: compilat
 
 ## 9. Release & deploy
 - **Build artifact:** framework-dependent publish + container image. **Deploy:** container to Azure Container Apps / AKS / Fly; merge to `main` → deploy.
+- **Container (service):** build the multi-stage non-root image (`profiles/dotnet/Dockerfile`, chiseled `aspnet:8.0` base, `USER 1654`), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/` (read-only root FS + writable `/tmp`; persist Data Protection keys to a volume/vault if used). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. (No in-image HEALTHCHECK or devcontainer — chiseled has no shell; k8s probes are the health mechanism.)
 - **Feature flags:** `Microsoft.FeatureManagement` or a flag service; flag-off = fastest rollback.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 

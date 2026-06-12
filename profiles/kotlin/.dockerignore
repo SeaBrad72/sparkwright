@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+build
+.gradle
+.idea
+*.iml
+.github
+# excludes dev docs; scope this if your app reads markdown at runtime
+*.md
+Dockerfile
+.dockerignore
+compose.yaml
+deploy
