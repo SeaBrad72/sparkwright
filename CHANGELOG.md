@@ -3,6 +3,22 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.56.0] - 2026-06-12
+
+Modern Practices arc, Slice **MP-3 — agentic-ops**: observe and govern an agent's *own work*, the layer the kit lacked (the §13 guard *prevents* harm, §7 evals judge a *feature's* output, §2 tracks *spend* — none observed the **execution**). **MINOR** — new reference tools + contract + readiness rows; no new required gate (the tools are validated by their own selftests, not by failing a PR). Shipped as five ratified PRs (#73 MP-3a, #74 MP-3a.2, #75 MP-3b, #76/#77 kit-CI smokes), each independently security-reviewed (builder ≠ sole reviewer) → SHIP.
+
+### Added
+- **MP-3a — the trace contract + conformance** (`#73`): a stack/harness-neutral **agent-run trace schema** (OTel-GenAI-anchored required-core + recommended; identity-keyed `agent.id`/`run.id`/`work_item.id`/`parent.run.id` for multi-agent safety) in `docs/operations/agentic-ops.md`, the **sensor→§13-autonomy-tier** model, plus `conformance/agentops-ready.sh` (conditional, three-state, declared-discipline) + `agentic-ops-readiness.md` + RUNBOOK/CLAUDE declaration wiring.
+- **MP-3a.2 — the dev-time emitter** (`#74`): `scripts/agent-trace.sh` (sh+jq+gh, the `dora.sh` idiom) derives a schema-conformant trace from a Claude Code JSONL transcript — transcript-native fields solid, `gh`/`git`-correlated fields best-effort (`unknown` when not derivable, never fabricated). The reference *adapter* in the "portable contract + thin per-harness adapter" model; turns the kit's own session transcripts into MP-3b's calibration corpus.
+- **MP-3b — the behavior→tier loop** (`#75`): `scripts/agent-scorecard.sh` groups traces by agent, computes behavior metrics over a window, classifies each agent `regressed | steady | earned` against its **own trailing baseline**, and emits the **asymmetric** tier directive — fail-safe **auto-downgrade** on regression, **Security-owner-ratified raise** recommendation on earned improvement. Operationalizes the agent-quality-metrics → autonomy-adjustment §13 already names. §13 pointer (a `+0` append) + `agentic-ops-readiness.md` row 6.
+- **Kit-CI smokes** (`#76`, `#77`): `agent-trace.sh` and `agent-scorecard.sh` `--selftest` run in the kit's own pipeline.
+
+### Honesty / engineering notes
+- **The kit emits directives; it never actuates** — it never mutates `.claude/`, the guard, or any tier store; the adopter wires the directive into their enforcement plane (the standing "real boundary is platform-owned" stance).
+- **`unknown` = missing, never zero** — an agent is never downgraded on absent data; thin data (`< min-runs`) → `steady`/no-directive (fail-safe).
+- **Relative-to-self, locally calibrated, no data pooling** — thresholds compare an agent to its own history; calibration is local to each adopter; the kit never phones home or pools agent-behavior data (a deliberate privacy property).
+- **No new blocking gate** — behavior is trend-scored, not run-gated; the tools fail no PR (enforcement is the tier, via the adopter's plane). Each slice's independent review hardened it (MP-3a.2: timestamp-less-crash + path-traversal; MP-3b: two silent-drop bugs) before SHIP.
+
 ## [2.55.0] - 2026-06-12
 
 Profile-depth: **deployable artifacts**. Closes the measured gap where only `typescript-node` shipped drop-in container/deploy companions — now **all 6 other service stacks** do, and the 3 non-service stacks document why they don't. **MINOR** — additive reference artifacts + a CI lock; the image gates were already in the contract (`conformance/container-supply-chain.sh`), so no new required gate. Shipped as four ratified PRs (#68 batch A, #69 batch B, #70 batch C, #71 kit-CI lock), each independently security-reviewed (builder ≠ sole reviewer) → SHIP.
