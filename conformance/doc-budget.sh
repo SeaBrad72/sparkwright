@@ -10,7 +10,7 @@ set -eu
 
 # Per-doc line budgets (post-9k-b sizes rounded up to the next 10). "<path>:<max-lines>".
 BUDGETS="CLAUDE.md:120 DEVELOPMENT-PROCESS.md:470 DEVELOPMENT-STANDARDS.md:320"
-TOTAL_BUDGET=910
+TOTAL_BUDGET=900
 
 # check_one <path> <max>: print PASS/FAIL; return 1 if over budget or missing.
 check_one() {

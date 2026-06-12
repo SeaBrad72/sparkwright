@@ -47,8 +47,7 @@ New here? **Read `START-HERE.md`.**
 
 > **Authoritative summary.** These are the non-negotiable rules in brief; the full bar (secrets-at-scale, cost governance, per-rule detail) is their expansion in `DEVELOPMENT-STANDARDS.md` §2. This summary and that expansion must agree.
 
-- **Secrets:** never commit keys/passwords/tokens. Env vars + a committed `.env.example`.
-- **Disclosure policy:** ship a `SECURITY.md` (coordinated-disclosure process + a real security contact); verified by `conformance/security-policy.sh`.
+- **Secrets:** never commit keys/passwords/tokens. Env vars + a committed `.env.example`. **Disclosure:** ship a `SECURITY.md` (coordinated-disclosure + a real contact); verified by `conformance/security-policy.sh`.
 - **Input validation:** validate and sanitize all input at system boundaries (schema-validate).
 - **Injection:** parameterized queries / ORM — never string-interpolate untrusted input.
 - **AuthN/Z:** hash passwords (strong adaptive hash); least-privilege tokens, short expiry.
