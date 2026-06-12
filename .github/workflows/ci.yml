@@ -115,9 +115,10 @@ jobs:
         run: sh conformance/preview-env-ready.sh --selftest
       - name: Agent-ops-ready self-test (agentic trace-discipline record)
         run: sh conformance/agentops-ready.sh --selftest
-
       - name: DORA collector smoke (executes + degrades cleanly)
         run: sh scripts/dora.sh --selftest
+      - name: Agent-trace emitter smoke (selftest over fixture)
+        run: sh scripts/agent-trace.sh --selftest
       - name: branch-protection three-state self-test (no silent pass)
         run: sh conformance/branch-protection.sh --selftest
       - name: conformance aggregate verify self-test (control vs doc)
