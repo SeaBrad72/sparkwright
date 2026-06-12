@@ -59,6 +59,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/dotnet/ci.yml`. Note: compilat
 - **AuthN/Z:** ASP.NET Core Identity (BCrypt/PBKDF2) or JWT bearer (minimal claims, short expiry); `[Authorize]` policies server-side.
 - **HTTP headers / CSRF:** security-headers middleware (`NetEscapades.AspNetCore.SecurityHeaders`); antiforgery tokens for cookie auth.
 - **Rate limiting:** built-in `RateLimiter` middleware (relax in test env).
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep (or CodeQL)** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **Convention:** `tests/<Project>.Tests`; `*Tests.cs`. Arrange-Act-Assert.

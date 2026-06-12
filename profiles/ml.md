@@ -63,6 +63,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/ml/ci.yml` (the 8 standard gat
 - **Validation:** **pandera** schemas on datasets at boundaries; Pydantic on serving inputs; validate on every path.
 - **AI / LLM security:** prompt-injection defense (never let inputs override system instructions; treat tool outputs as untrusted); **output validation against a schema** before acting; capability boundaries for agents (`DEVELOPMENT-STANDARDS.md` §2).
 - **Artifact integrity:** attest/sign model artifacts; pin training data + base-model versions.
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep + `bandit`** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **Convention:** `tests/` mirrors `src/`; `test_*.py`. Arrange-Act-Assert.

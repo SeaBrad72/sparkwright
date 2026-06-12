@@ -61,6 +61,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/terraform/ci.yml` (8 standard 
 - **State:** remote backend **encrypted at rest + locked** (S3+DynamoDB / Terraform Cloud); least-privilege state access; sensitive outputs marked `sensitive`; secrets sourced from a secrets manager, never plaintext in state.
 - **Misconfig prevention:** Checkov + Trivy gate insecure defaults (public buckets, open security groups, unencrypted volumes, wildcard IAM); gitleaks catches hardcoded secrets.
 - **Policy:** OPA/conftest enforces org rules (allowed regions, required tags, mandatory encryption) at `gate-policy`.
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** `gate-sast` is satisfied by the existing Checkov/Trivy policy gate (IaC SAST); `gate-license` is N/A for Terraform (providers, not library dependencies).
 
 ## 6. Testing
 - **`terraform test`** (native): `run` blocks asserting plan/apply outcomes and outputs on modules (with mocked or ephemeral providers).

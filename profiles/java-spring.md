@@ -60,6 +60,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/java-spring/ci.yml`. Note: Jav
 - **AuthN/Z:** **Spring Security** — BCrypt password encoder; JWT (minimal claims, short expiry); method/route authorization server-side.
 - **HTTP headers / CSRF:** Spring Security default security headers; CSRF tokens for cookie-auth forms.
 - **Rate limiting:** Resilience4j `RateLimiter` or a gateway (skip/relax in test profile).
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep (or CodeQL)** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **Convention:** `src/test/java` mirrors `src/main/java`; `*Test.java`. Arrange-Act-Assert.

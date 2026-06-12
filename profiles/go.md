@@ -60,6 +60,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/go/ci.yml`. Note: `gate-type-c
 - **AuthN/Z:** `golang.org/x/crypto/bcrypt`; JWT (`golang-jwt`) minimal claims + short expiry; middleware authorization.
 - **HTTP headers / CSRF:** secure-headers middleware (e.g. `unrolled/secure`); `gorilla/csrf` for cookie auth.
 - **Rate limiting:** `golang.org/x/time/rate` or middleware (relax in test mode).
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep + `gosec` (already via golangci-lint)** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **Convention:** `_test.go` beside source; table-driven tests; `t.Run` subtests.

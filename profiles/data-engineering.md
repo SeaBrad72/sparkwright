@@ -62,6 +62,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/data-engineering/ci.yml` (8 st
 - **Data governance / PII:** column-level masking; **least-privilege warehouse roles** (CI uses a scoped role); PII tagging; right-to-erasure; **lineage** retained for audit (Dagster asset graph / OpenLineage).
 - **Injection-safe:** dbt `ref()`/`source()` + parameterized; never string-build SQL from untrusted input.
 - **Validation:** dbt contracts + GE at ingestion/marts boundaries; pandera on Python dataframes.
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep + `bandit`** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **dbt tests:** schema tests (not_null/unique/relationships) + singular data tests.

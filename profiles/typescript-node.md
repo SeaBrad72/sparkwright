@@ -62,6 +62,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/typescript-node/ci.yml` assert
 - **AuthN/Z:** **bcrypt** (≥12 rounds) for passwords; **jsonwebtoken** with minimal claims + short expiry; verify on protected routes.
 - **HTTP headers / XSS / CSRF:** **helmet**; React auto-escapes (use `textContent`, not `innerHTML`, in vanilla); CSRF tokens for cookie-auth forms.
 - **Rate limiting:** `express-rate-limit` (skip in test mode).
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep (or CodeQL)** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **Convention:** `*.test.ts` next to source or under `tests/`. Arrange-Act-Assert. `describe` behavior, not implementation.

@@ -45,6 +45,7 @@ How each universal security requirement is met in this stack — recommended lib
 - Injection-safe data access (ORM / parameterized): [...]
 - AuthN/Z (hashing, tokens): [...]
 - HTTP security headers / XSS / CSRF: [...]
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **[stack SAST tool]** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - Test file convention & layout: [...]

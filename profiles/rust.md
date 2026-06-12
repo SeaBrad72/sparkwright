@@ -60,6 +60,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/rust/ci.yml`. Note: `gate-type
 - **AuthN/Z:** `argon2` (or `bcrypt`) password hashing; `jsonwebtoken` minimal claims + short expiry; extractor/middleware authorization.
 - **HTTP headers / CSRF:** `tower-http` `SetResponseHeaderLayer` / security middleware; CSRF for cookie auth.
 - **Rate limiting:** `tower_governor` (relax in test config).
+- **Static analysis & licenses (conditional gates — `docs/operations/security-scanning.md`):** SAST via **Semgrep + `cargo-auditable`/clippy security lints** (`gate-sast`); license policy via `scripts/license-check.sh` over the CycloneDX SBOM (`gate-license`, stack-neutral default — upgrade per the ladder if needed).
 
 ## 6. Testing
 - **Convention:** unit tests in-module (`#[cfg(test)]`); integration tests in `tests/`.
