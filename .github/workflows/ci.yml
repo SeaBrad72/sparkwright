@@ -25,7 +25,7 @@ jobs:
         run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
       - name: CI-gates conformance — GitLab reference satisfies §14 (platform portability)
         run: sh conformance/ci-gates.sh profiles/typescript-node/ci.gitlab-ci.yml
-      - name: Container image supply-chain conformance (service profiles: multi-stage, non-root, image SBOM + digest provenance)
+      - name: "Container image supply-chain conformance (service profiles: multi-stage, non-root, image SBOM + digest provenance)"
         run: sh conformance/container-supply-chain.sh
       - name: 15-Factor checklist present
         run: test -f conformance/15-factor-checklist.md
