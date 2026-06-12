@@ -1,0 +1,1 @@
+{"agent.id":"bad-bot","run.id":"b3","start":"2026-06-10T03:00:00Z","outcome":"blocked","review.rounds":4,"gates.skipped":"unknown","steps":[{"name":"Bash","outcome":"denied","retries":2}]}

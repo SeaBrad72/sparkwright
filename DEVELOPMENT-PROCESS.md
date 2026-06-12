@@ -376,7 +376,7 @@ One person may hold several roles in a small org, but **never both the builder a
 Every agent action is **traceable**: which agent, what, when, against which work item, and bound by which governing clauses (its Task Context Contract) — via commit/PR attribution, work-item ownership, and L1 retro notes. No anonymous agent changes.
 
 ### Agent-quality metrics
-Track per agent (or agent type) and use to adjust autonomy: **rework rate · review-rejection rate · escalation rate · retro-action quality**. Reliability earns autonomy; regressions revoke it.
+Track per agent (or agent type) and use to adjust autonomy: **rework rate · review-rejection rate · escalation rate · retro-action quality**. Reliability earns autonomy; regressions revoke it. These metrics are computed by `scripts/agent-scorecard.sh` over a per-agent window and feed tier moves **asymmetrically** — a fail-safe auto-downgrade directive on regression, a Security-owner-ratified raise on earned improvement (`docs/operations/agentic-ops.md`).
 
 ### Enforcement reference
 This matrix is tool-neutral. For **Claude Code** it is enforced by the committed `.claude/` layer: `settings.json` permission globs + a `PreToolUse` guard hook (`.claude/hooks/guard.sh`) that denies the irreversible/high-blast set above and protects its own integrity, plus `reviewer`/`security-reviewer` subagents for the §12 separations. Conformance: `conformance/agent-autonomy.sh` proves a tier breach is actually denied. Other agent runtimes express the same matrix their own way.

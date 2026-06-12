@@ -52,8 +52,28 @@ Record the posture in **RUNBOOK §8** (`Agent-ops:` — schema + emitter + sink)
 
 > **Honesty.** A green `agentops-ready.sh` proves the posture is **declared** — not that traces emit, are complete, or that the agent behaved. Those are Manual rows. Necessary, not sufficient.
 
+## Behavior → autonomy-tier loop (MP-3b)
+
+`scripts/agent-scorecard.sh` reads a window of traces, groups by `agent.id`, and computes
+the trace-derivable behavior metrics — `denial_rate`, `error_blocked_rate`, `retry_rate`,
+`review_rounds_mean` (the risk metrics). `gate_skip_rate`
+is `unknown` in v1 (a non-run isn't observable from a transcript). It classifies each agent
+against its **own trailing baseline** (older half vs recent half of the window):
+
+- **regressed** — a risk metric jumped past the baseline by ≥ the margin → a **fail-safe
+  auto-downgrade directive** (tighten the agent's tier; no ratification needed).
+- **earned** — sustained improvement to clean → a **raise recommendation** routed to the
+  **Security owner** to ratify a tier raise (§13).
+- **steady** (incl. `< --min-runs`) — no directive.
+
+**The kit emits directives; it never actuates** — it never mutates `.claude/`, the guard, or
+any tier store; the adopter wires the directive into their enforcement plane. **`unknown` is
+treated as missing, never zero** — an agent is never downgraded on absent data. Thresholds are
+**relative to the agent's own history**, calibrated **locally** from the adopter's own traces;
+the kit ships only sensitivity defaults and **never pools or phones home** any agent data.
+
 ## Roadmap
 
 - **MP-3a (this):** the trace contract + conformance trio + declaration wiring.
 - **MP-3a.2 (done):** `scripts/agent-trace.sh` — the working Claude Code dev-time emitter (transcript→trace); turns the kit's own session transcripts into the corpus that calibrates MP-3b.
-- **MP-3b:** the behavior-conformance rubric (scored over a window, per agent) → autonomy-tier feedback; thresholds set against real MP-3a.2 traces.
+- **MP-3b (done):** `scripts/agent-scorecard.sh` — the behavior scorecard tool; reads a trace dir, computes risk metrics per agent, classifies regressed/steady/earned, and emits the asymmetric tier directive.
