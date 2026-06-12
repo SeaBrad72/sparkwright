@@ -121,6 +121,8 @@ jobs:
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)
         run: sh scripts/agent-scorecard.sh --selftest
+      - name: License-check selftest (SBOM license gate)
+        run: sh scripts/license-check.sh --selftest
       - name: branch-protection three-state self-test (no silent pass)
         run: sh conformance/branch-protection.sh --selftest
       - name: conformance aggregate verify self-test (control vs doc)
