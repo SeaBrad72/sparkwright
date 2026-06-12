@@ -1,0 +1,1 @@
+{"agent.id":"good-bot","run.id":"g4","start":"2026-06-10T04:00:00Z","outcome":"completed","review.rounds":1,"gates.skipped":"unknown","steps":[{"name":"Bash","outcome":"ok","retries":0}]}

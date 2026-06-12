@@ -1,0 +1,1 @@
+{"agent.id":"thin-bot","run.id":"t1","start":"2026-06-10T01:00:00Z","outcome":"completed","review.rounds":1,"gates.skipped":"unknown","steps":[{"name":"Read","outcome":"ok","retries":0}]}

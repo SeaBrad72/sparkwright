@@ -1,0 +1,1 @@
+{"agent.id":"good-bot","run.id":"g2","start":"2026-06-10T02:00:00Z","outcome":"completed","review.rounds":2,"gates.skipped":"unknown","steps":[{"name":"Read","outcome":"ok","retries":0}]}
