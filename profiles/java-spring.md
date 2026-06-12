@@ -19,7 +19,8 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 ## 1. Toolchain
 - **Runtime:** JDK 21 (Temurin) · **Build/deps:** Maven via wrapper `./mvnw` (reproducible)
 - **Format/lint:** Spotless (format) + Checkstyle (lint) · **Types:** the compiler (`mvn compile` = type-checking)
-- **Tests:** JUnit 5 + JaCoCo (coverage gate) · **Build:** `mvn package`
+- **Tests:** JUnit 5 + JaCoCo (coverage gate) · **Test quality:** jqwik (property-based) + PITest (mutation, critical paths/nightly — `docs/operations/test-quality.md`) · **Build:** `mvn package`
+- **Inner loop:** `pre-commit` (spotless + checkstyle; `mvn -o test` for the changed module) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 
 ## 2. Project scaffold
 ```

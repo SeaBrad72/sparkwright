@@ -19,7 +19,8 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 ## 1. Toolchain
 - **Runtime:** .NET 8 LTS · **Build/deps:** `dotnet` CLI + NuGet (lockfile `packages.lock.json`, `RestoreLockedMode` in CI)
 - **Format/lint:** `dotnet format` + Roslyn analyzers (`TreatWarningsAsErrors`) · **Types:** the compiler (`dotnet build` = type-check)
-- **Tests:** xUnit + coverlet (coverage gate) · **Build:** `dotnet publish -c Release`
+- **Tests:** xUnit + coverlet (coverage gate) · **Test quality:** FsCheck/CsCheck (property-based) + Stryker.NET (mutation — `docs/operations/test-quality.md`) · **Build:** `dotnet publish -c Release`
+- **Inner loop:** `pre-commit` (`dotnet format` + analyzers; `dotnet test --filter`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 
 ## 2. Project scaffold
 ```

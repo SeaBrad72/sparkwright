@@ -16,6 +16,8 @@ Every capability the kit ships has three parts. This is the same "universal stan
 
 **The rule for adopters:** you may rewrite any reference implementation freely — change the CI file, swap the stack, restructure the scaffold — **as long as the matching conformance check still passes.** The contract is law; the implementation is yours.
 
+**Maintainer rule — cross-cutting per-stack tooling reaches *all* profiles or none.** The contract + the §14 gates are conformance-enforced across all 10 profiles (`profile-completeness.sh`, `ci-gates.sh`). But *recommended per-stack tooling* added to a section's content (e.g. test-quality, the inner loop) is **not** conformance-checked — so adding it to only the "representative" `typescript-node`/`python` profiles leaves the other stacks thinner without the net catching it. When you add a cross-cutting recommended practice, add its per-stack tooling line to **every applicable profile and `profiles/_TEMPLATE.md`** (the source for new stacks), or don't add it piecemeal.
+
 **Worked example (CI/CD):**
 - *Contract* — `DEVELOPMENT-STANDARDS.md`: "CI MUST enforce lint, type-check, test+coverage≥80%, build, and secret-scan; `main` is protected; the builder is never the sole merger."
 - *Reference* — `.github/workflows/ci.yml` in the TypeScript profile, marked "copy & adapt to your stack."

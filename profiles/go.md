@@ -19,7 +19,8 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 ## 1. Toolchain
 - **Runtime:** Go 1.22+ · **Deps:** Go modules (`go.mod`/`go.sum` committed)
 - **Format/lint:** `gofmt` + `golangci-lint` · **Types:** the compiler (`go vet` / `go build`)
-- **Tests:** `go test -race -cover` · **Build:** `go build` (single static binary)
+- **Tests:** `go test -race -cover` · **Test quality:** rapid/gopter (property-based) + go-mutesting (mutation — `docs/operations/test-quality.md`) · **Build:** `go build` (single static binary)
+- **Inner loop:** `pre-commit` (gofmt + golangci-lint; `go test ./<changed-pkg>`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 
 ## 2. Project scaffold
 ```

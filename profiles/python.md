@@ -20,6 +20,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 - **Runtime:** Python 3.12+ · **Package/deps:** `uv` (lockfile `uv.lock` committed; exact pins for prod)
 - **Format/lint:** `ruff` (format + lint; replaces black/isort/flake8) · **Types:** `mypy` (strict)
 - **Tests:** `pytest` + `pytest-cov` (coverage gate) · **Test quality:** `hypothesis` (property-based) + `mutmut`/`cosmic-ray` (mutation, critical paths/nightly — `docs/operations/test-quality.md`) · **Build:** `uv build` (wheel + sdist)
+- **Inner loop:** `pre-commit` (ruff format+lint, mypy, `pytest-testmon` fast subset) on commit — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 
 ## 2. Project scaffold
 ```

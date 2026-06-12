@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.54.0] - 2026-06-12
+
+Modern Practices arc, Slice MP-2 — the developer inner loop, **with both MP-1 (test-quality) and MP-2 (inner-loop) tooling now completed across all 10 profiles + the template** (MP-1 had shipped them only to the python/typescript-node representatives). **MINOR** — guidance + per-stack profile tooling; no new gate.
+
+### Added
+- **`docs/operations/dev-inner-loop.md`** — the **three-tier feedback model**: **pre-commit** (format · lint · type-check · affected/fast test subset, seconds-fast, `--no-verify`-able) → **pre-push** (the agent guard) → **CI** (the authoritative §14 gate set). Layered, not redundant — fast checks on changed files locally; the full/slow gates in CI.
+- **Per-stack test-quality + inner-loop tooling in all 10 profiles + `profiles/_TEMPLATE.md`** — mutation + property-based libs and a pre-commit inner loop, mapped to each stack (PITest/jqwik for JVM, Stryker.NET/FsCheck for .NET, cargo-mutants/proptest for Rust, go-mutesting/rapid for Go, etc.). For **data-engineering** and **terraform**, the existing `gate-data-quality` / `gate-policy` gates **are** the test-quality bar (mutation/property are N/A for SQL-dbt / HCL) — stated explicitly.
+- **`MAINTAINING.md`** — a maintainer rule: cross-cutting per-stack tooling must reach **all** applicable profiles + the template, not just the representatives (recommended tooling isn't conformance-enforced, so piecemeal adds leave stacks thin).
+
+### Honesty / agentic
+- Pre-commit is a **recommended accelerator, not a gate** (gating it just trains bypass) — enforcement stays in CI + the guard. Tightens the agent's inner loop: faster feedback, fewer broken commits, less wasted CI.
+
 ## [2.53.0] - 2026-06-12
 
 Modern Practices arc, Slice MP-1 — test quality beyond coverage. Adds the two practices the audit found genuinely absent, both especially relevant when **agents write the tests**. **MINOR** — guidance + STANDARDS principle + per-stack profile tooling; no new gate (mutation is too slow to gate every PR).

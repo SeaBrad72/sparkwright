@@ -19,7 +19,8 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 ## 1. Toolchain
 - **Runtime:** JDK 21 (Temurin) · **Build/deps:** Gradle (Kotlin DSL) via wrapper `./gradlew`
 - **Format/lint:** ktlint (format) + detekt (static analysis) · **Types:** the compiler (`compileKotlin`)
-- **Tests:** JUnit 5 / Kotest + JaCoCo (coverage gate) · **Build:** `./gradlew build`
+- **Tests:** JUnit 5 / Kotest + JaCoCo (coverage gate) · **Test quality:** Kotest-property / jqwik (property-based) + PITest (mutation — `docs/operations/test-quality.md`) · **Build:** `./gradlew build`
+- **Inner loop:** `pre-commit` (ktlint/spotless + detekt; Gradle `test --tests`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 
 ## 2. Project scaffold
 ```

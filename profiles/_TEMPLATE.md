@@ -14,6 +14,8 @@
 - **Package/dependency manager:** [...]
 - **Formatter · linter · type-checker:** [...]
 - **Test runner + coverage tool:** [...]
+- **Test quality:** [property-based lib] + [mutation tool, critical paths/nightly] — `docs/operations/test-quality.md` (for IaC/data stacks, the policy/data-quality gate IS the test-quality bar)
+- **Inner loop:** [pre-commit / lint-staged + format + lint + fast/affected test subset] — `docs/operations/dev-inner-loop.md`
 - **Build tool:** [...]
 
 ## 2. Project scaffold

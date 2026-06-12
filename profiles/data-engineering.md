@@ -21,6 +21,8 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 - **Transform:** **dbt-core** (warehouse SQL) · **Orchestrate:** **Dagster** (asset-centric + asset checks)
 - **Format/lint:** `sqlfluff` (SQL) + `ruff` (Python) · **Validate/types:** `dbt parse` + `mypy`
 - **Tests/data-quality:** `pytest` · dbt tests + dbt contracts · **Great Expectations** · `pandera` · data-diff
+- **Test quality:** here the **data-quality suite IS the bar** (GE + dbt tests = the `gate-data-quality` gate); add Hypothesis + mutmut for the **Python transform logic** (`docs/operations/test-quality.md`)
+- **Inner loop:** `pre-commit` (sqlfluff + ruff; `pytest-testmon` for Python) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 
 ## 2. Project scaffold
 ```
