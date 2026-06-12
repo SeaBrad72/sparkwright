@@ -3,6 +3,18 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.52.0] - 2026-06-11
+
+Safe Non-Prod arc, Slice SNP-2 — ephemeral / preview environments. **Closes the Safe Non-Prod arc** (and the deferred list from the Leanly coverage analysis). Seeds from SNP-1 test data. **MINOR** — guidance + conditional check + RUNBOOK record.
+
+### Added
+- **`docs/operations/preview-environments.md`** — per-PR isolated-environment lifecycle (open → exercise → auto-teardown) + the security guardrails (safe data only · scoped short-lived creds · TTL/auto-teardown · isolation; never prod data or secrets).
+- **`conformance/preview-env-ready.sh`** + **`preview-environments-readiness.md`** — conditional, fail-closed check (binds on a **deploy surface**: Dockerfile or deploy workflow) asserting the RUNBOOK §4 records the preview-env approach; N/A for non-deployable. `verify.sh` now **8 doc-checks**.
+- **`DEVELOPMENT-PROCESS.md`** §9 gains an ephemeral-preview-environments contract; **`templates/RUNBOOK-TEMPLATE.md`** §4 records the approach.
+
+### Honesty
+- A green check proves the approach is **recorded**, never that previews *actually* spin up / tear down / isolate / exclude prod data — those stay Manual operator rows. Conditional + proportional: non-deployable → N/A; recommended-not-required (a tiny tool may record N/A-with-reason). Records the colon-adjacent record-line lesson from SNP-1 (fresh→FAIL and filled→OK both verified).
+
 ## [2.51.0] - 2026-06-11
 
 Safe Non-Prod arc, Slice SNP-1 — cross-stack test-data management. Closes the "never use prod data unsanitized — but *how*?" gap with a stack-neutral pattern + a light conditional check. The foundation preview environments (SNP-2) will seed from. **MINOR** — guidance + conditional check + RUNBOOK record.

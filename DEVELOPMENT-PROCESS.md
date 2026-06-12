@@ -252,6 +252,8 @@ Changes flow through a promotion pipeline with a gate between each tier:
 
 A project may **collapse tiers with a one-line reason** (e.g. a tiny internal tool runs Dev→Prod) — but the contract is: at least one non-prod tier, gated promotion, and a human gate on prod. Environments and per-tier deploy triggers are declared in the project `CLAUDE.md` (§3).
 
+**Ephemeral preview environments** *(recommended for deployable services)* — a per-PR isolated environment seeded with **safe test data** (`docs/operations/test-data-management.md`), **scoped short-lived credentials**, a **TTL/auto-teardown** on merge/close, and **never prod data or secrets**; it accelerates Review/Acceptance. Declared in RUNBOOK §4; reference `docs/operations/preview-environments.md` (`conformance/preview-environments-readiness.md`).
+
 For containerized services, promotion moves an **attested image by digest** (not a rebuilt tag) across Dev → QA → UAT → Prod; rollback is a redeploy of the previous digest. Kubernetes + Helm is **one** reference orchestration pattern (`profiles/typescript-node/deploy/`); the principle — promote by digest, not tag — holds for any orchestrator.
 
 ### Outcome validation

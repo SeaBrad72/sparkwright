@@ -26,6 +26,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 ## 4. Deploy
 - Target: [Vercel / Railway / container / …]
 - Promotion: Dev → QA → UAT → Prod (prod is human-gated — see `DEVELOPMENT-PROCESS.md` "Environments & promotion")
+- **Preview environments:** [approach] *(deployable services — per-PR isolated, safe test data, scoped creds, auto-teardown; see `docs/operations/preview-environments.md`)*
 - Trigger: [per-tier deploy trigger; e.g. CI green on PR → Dev; human approval → Prod]
 - Steps: `[deploy command(s)]`
 - Smoke test: after each deploy run the post-deploy smoke test (`[smoke test command]`) and record the result before declaring the release live — gates the **Definition of Deployable** (`conformance/definition-of-deployable.md`).
