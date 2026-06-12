@@ -21,10 +21,13 @@ declares_sensitive() {
   _d="$1"
   for f in "$_d/CLAUDE.md" "$_d/RUNBOOK.md"; do
     [ -f "$f" ] || continue
-    # the classification line, lowercased; skip if it still holds the bracketed placeholder list
+    # the classification line, lowercased; skip ONLY if it still holds the unfilled tier-menu
+    # placeholder (a bracketed list of the tiers with a '/'). A real value with an unrelated
+    # bracket annotation (e.g. "restricted [phi/hipaa]") must NOT be skipped — that would
+    # fail-open and drop a sensitive project out of the gate.
     _line=$(grep -i 'data classification:' "$f" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') || true
     [ -n "$_line" ] || continue
-    printf '%s' "$_line" | grep -q '\[' && continue   # unfilled placeholder -> not a real declaration
+    printf '%s' "$_line" | grep -Eq '\[[^]]*(public|internal|confidential|restricted)[^]]*/[^]]*\]' && continue
     printf '%s' "$_line" | grep -Eq 'confidential|restricted' && return 0
   done
   return 1
