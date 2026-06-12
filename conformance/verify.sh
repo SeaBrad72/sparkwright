@@ -49,6 +49,7 @@ echo "-------------------------------------------"
 check control agent-autonomy   sh conformance/agent-autonomy.sh
 check control ci-gates         sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
 check control image-supply     sh conformance/container-supply-chain.sh
+check control license-check    sh scripts/license-check.sh --selftest
 check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh

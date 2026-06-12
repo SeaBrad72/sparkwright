@@ -58,7 +58,8 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `dor-defined.sh` | script | Slice 9i-b — the Definition of Ready is enumerated in `CLAUDE.md`, referenced by the gate doc, and carried by the `FEATURE-REQUEST` intake; drift-guard | CI |
 | `badge-version.sh` | script | Slice 9k — the README version badge equals `VERSION` (drift-guard with `--fix` sync) | CI |
 | `agents-brief.sh` | script | Slice 9k — `AGENTS.md` exists, points at the canonical docs, and stays within the brief line-bound | CI |
-| `conditional-gates.sh` | script | Slice 9j — §7 names the conditional gates (a11y / load / eval), trigger-bound not universal; drift-guard | CI |
+| `conditional-gates.sh` | script | SP-1 / Slice 9j — §7 names the conditional gates (a11y / load / eval / SAST / license), trigger-bound not universal; drift-guard | CI |
+| `../scripts/license-check.sh` | script | SP-1 — stack-neutral SBOM license-policy gate; flags denylisted copyleft + counts undetermined; `--selftest` regression-locked | CI (`--selftest`) / gate-license |
 | `action-pinning.sh` | script | Slice 9j — the canonical reference pipeline SHA-pins every `uses:` (the reference satisfies its own pinning contract) | CI |
 | `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |
 | `tracker-contract.sh` | script | Slice 9h — a Jira instance satisfies the §6 work-item contract (six states + Size/Risk fields, live); three-state (UNVERIFIED without creds); the Only-Assignee claim is attested | CI (`--selftest`) / adopter (live) |

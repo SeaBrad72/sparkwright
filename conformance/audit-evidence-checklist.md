@@ -16,6 +16,9 @@ Copy this file into your project (or your audit/review record). For each control
 | Dependency vulnerability scan | CC7.1 / A.8.8 / PW.4, RV.1 | dep-scan CI log (gate-dep-scan) | **Auto:** `sh conformance/ci-gates.sh …` | |
 | SBOM + build provenance (SLSA Build L2) | CC7.1, CC9.2 / A.8.8, A.5.21 / PS.2, PS.3 | SBOM file + attestation (gate-sbom / gate-provenance) | **Auto:** `sh conformance/ci-gates.sh …` + the SBOM artifact | |
 | Container image supply-chain (if service image) | CC7.1, CC8.1 / A.8.25, A.8.28 / PS.2, PS.3 | image SBOM + digest-bound provenance attestation | **Auto (conditional):** `sh conformance/container-supply-chain.sh` | |
+| SAST gate ran (first-party code) | CC6.1, CC6.6 / A.8.28, A.8.26 / PW.5, PW.7 | `gate-sast` (Semgrep/CodeQL) CI run log | **Auto (conditional):** CI run log for `gate-sast` step | |
+| License policy applied | CC7.1, CC9.2 / A.5.21 / PS.2 | `scripts/license-check.sh` output (`gate-license` CI step) | **Auto (conditional):** `sh scripts/license-check.sh --selftest` | |
+| Undetermined licenses reviewed | CC7.1 / A.5.21 | operator evidence + upgrade per ladder if needed | Manual (conditional) | |
 | AI-feature eval discipline (if AI feature) | CC8.1 / A.8.29 / PW.7 | EVAL-PLAN (threshold + harness) + the §7 Eval gate run | **Auto (conditional):** `sh conformance/eval-ready.sh` (+ the CI Eval gate for execution) | |
 | Agent/runtime MCP capability gate (deny-by-default) | CC6.1, CC6.3 / A.8.2, A.5.15 / PO.5, PS.1 | un-allowlisted destructive/egress MCP tool denied in-process (by name) | **Auto:** `sh conformance/mcp-policy.sh` + `sh conformance/agent-autonomy.sh` | |
 | Network egress · default-deny allowlist (if networked) | CC6.6, CC6.7 / A.8.20–A.8.23 / PO.5 | egress reference + RUNBOOK attestation (declared + wired) | **Auto (conditional):** `sh conformance/egress-policy.sh` | |
