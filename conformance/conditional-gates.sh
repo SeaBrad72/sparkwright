@@ -23,6 +23,8 @@ check_doc() {
 Accessibility** *(user-facing UI)*
 Eval gate** *(AI features)*
 Resilience readiness** *(deployable services)*
+SAST** *(first-party code)*
+License compliance** *(when an SBOM is produced)*
 EOF
   return $f
 }
@@ -38,11 +40,11 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "PASS: selftest — missing conditional-gate row detected"
   fi
   ok=$(mktemp -d)
-  printf '# proc\n| **Accessibility** *(user-facing UI)* | x |\n| **Eval gate** *(AI features)* | x |\n| **Resilience readiness** *(deployable services)* | x |\n' > "$ok/proc.md"
+  printf '# proc\n| **Accessibility** *(user-facing UI)* | x |\n| **Eval gate** *(AI features)* | x |\n| **Resilience readiness** *(deployable services)* | x |\n| **SAST** *(first-party code)* | x |\n| **License compliance** *(when an SBOM is produced)* | x |\n' > "$ok/proc.md"
   if check_doc "$ok/proc.md" >/dev/null 2>&1; then
-    echo "PASS: selftest — complete trio passes"
+    echo "PASS: selftest — complete set passes"
   else
-    echo "FAIL: selftest — complete trio wrongly rejected"; sfail=1
+    echo "FAIL: selftest — complete set wrongly rejected"; sfail=1
   fi
   [ "$sfail" -eq 0 ] && { echo "OK: conditional-gates selftest"; exit 0; } || { echo "FAIL: conditional-gates selftest"; exit 1; }
 fi
