@@ -122,6 +122,7 @@ sedi -e "s/\*\*Project:\*\* \[name\]/**Project:** ${ENAME}/" \
 
 # --- 4. RUNBOOK / BACKLOG / ADR-000 ---
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
+[ -f SECURITY.md ] || cp templates/SECURITY-TEMPLATE.md SECURITY.md
 case "$BACKLOG" in
   md) [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;
   jira)

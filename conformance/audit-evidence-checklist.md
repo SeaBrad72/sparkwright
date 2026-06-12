@@ -39,6 +39,8 @@ Copy this file into your project (or your audit/review record). For each control
 | Authentication & authorization | CC6.1–6.3 / A.8.5, A.5.15 / PW.5 | auth code/config | Manual | |
 | Encryption at rest & in transit | CC6.1, CC6.7 / A.8.24 / PW.5, PW.9 | infra/config | Manual | |
 | Observability / monitoring | CC7.2 / A.8.15, A.8.16 | dashboards, alerts | Manual | |
+| SECURITY.md present + real contact | CC6.1, CC6.6 / A.5.24 | repo `SECURITY.md` | **Auto:** `sh conformance/security-policy.sh` | |
+| Disclosure process actually works (SLAs, triage) | CC7.3, CC7.4 / A.5.24–A.5.28 | advisory response log | Manual — operator evidence | |
 | Incident response · postmortem | CC7.3, CC7.4 / A.5.24–A.5.28 | postmortem record(s) (`templates/POSTMORTEM-TEMPLATE.md`) + action-item backlog links | Manual | |
 | Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 / PW.1, PW.2 | `docs/ADR-*` files | Manual (files present) | |
 | RUNBOOK · DR / rollback | CC7.4, CC7.5 / A.5.29, A.8.13 | RUNBOOK | Manual (file present) | |
