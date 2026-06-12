@@ -3,6 +3,20 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.55.0] - 2026-06-12
+
+Profile-depth: **deployable artifacts**. Closes the measured gap where only `typescript-node` shipped drop-in container/deploy companions — now **all 6 other service stacks** do, and the 3 non-service stacks document why they don't. **MINOR** — additive reference artifacts + a CI lock; the image gates were already in the contract (`conformance/container-supply-chain.sh`), so no new required gate. Shipped as four ratified PRs (#68 batch A, #69 batch B, #70 batch C, #71 kit-CI lock), each independently security-reviewed (builder ≠ sole reviewer) → SHIP.
+
+### Added
+- **Container/deploy companions for the 6 service stacks** (`go`, `rust`, `python`, `java-spring`, `kotlin`, `dotnet`): a stack-appropriate multi-stage non-root `Dockerfile` + `.dockerignore`, a `compose.yaml` (app + Postgres, §13 dev/prod parity), and a `deploy/` reference (k8s manifests + Helm chart) mirroring `profiles/typescript-node/`. Each wires the conditional container image supply-chain into `ci.yml`: `gate-image-sbom` (Syft/CycloneDX, on PR) + a push-only `image-provenance` job attesting provenance **bound to the image digest** (`gate-image-provenance`).
+- **Reference-pointers for the 3 non-service stacks** — `ml` (model-serving / batch image), `data-engineering` (orchestrated job / code-location image), and `terraform` (**N/A by design** — `plan`/`apply` *is* the deploy) document the pattern in §9 instead of shipping a generic Dockerfile. Recorded as a convention in `MAINTAINING.md` §1.
+- **`container-supply-chain.sh` wired into `conformance/verify.sh` (a control check) and the kit's own `.github/workflows/ci.yml`** — the new Dockerfiles are regression-guarded on every push/PR (multi-stage + non-root + both image gates; non-service profiles N/A).
+
+### Honesty / engineering notes
+- **Base images chosen for correctness, not uniformity:** python = `slim` **not distroless** (distroless-python tracks Debian's 3.11 and would silently downgrade the declared 3.12); `go` = distroless/static, `rust` = distroless/cc (glibc), JVM = distroless/java21, `dotnet` = chiseled aspnet (`USER 1654`).
+- **No in-image HEALTHCHECK on distroless/chiseled** (java-spring, kotlin, dotnet) — they ship no shell/curl, so a HEALTHCHECK would be a claim that can't execute; k8s liveness/readiness probes (Actuator for Spring) are the health mechanism. Read-only root FS is paired with a writable `/tmp` emptyDir where the runtime needs it.
+- **No devcontainer** for these stacks — distroless/chiseled have no shell to exec into; `compose.yaml` already delivers the §13 dev/prod-parity requirement.
+
 ## [2.54.0] - 2026-06-12
 
 Modern Practices arc, Slice MP-2 — the developer inner loop, **with both MP-1 (test-quality) and MP-2 (inner-loop) tooling now completed across all 10 profiles + the template** (MP-1 had shipped them only to the python/typescript-node representatives). **MINOR** — guidance + per-stack profile tooling; no new gate.
