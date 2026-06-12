@@ -161,7 +161,7 @@ Replace with:
 - [ ] **Step 3: Verify + commit.**
   Run: `sh conformance/check-links.sh 2>&1 | tail -1` → resolve.
   Run: `grep -q "Definition of Ready" templates/FEATURE-REQUEST-TEMPLATE.md && echo "intake ok"` → `intake ok`.
-  Run: `grep -niE "PBS|public.media|bradley" templates/FEATURE-REQUEST-TEMPLATE.md templates/BACKLOG-TEMPLATE.md || echo clean` → `clean`.
+  Run: `grep -niE "enterprise|public.media|bradley" templates/FEATURE-REQUEST-TEMPLATE.md templates/BACKLOG-TEMPLATE.md || echo clean` → `clean`.
   ```bash
   git add templates/FEATURE-REQUEST-TEMPLATE.md templates/BACKLOG-TEMPLATE.md
   git commit -m "docs(9i-b): FEATURE-REQUEST carries the DoR checklist; BACKLOG Ready column points at it"
@@ -306,7 +306,7 @@ fi
 
 - [ ] **Step 3: Hand to Bradley (human `cp`).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9ib .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9i-b — gate dor-defined wiring + selftest"
+  cd ~/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9ib .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9i-b — gate dor-defined wiring + selftest"
   ```
   Wait for confirmation before continuing.
 
@@ -358,7 +358,7 @@ fi
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
   git diff main..HEAD -- CLAUDE.md   # confirm the DoD block is byte-for-byte unchanged; only the DoR block is added
-  grep -rniE "PBS|public.media|bradley" conformance/dor-defined.sh templates/FEATURE-REQUEST-TEMPLATE.md || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" conformance/dor-defined.sh templates/FEATURE-REQUEST-TEMPLATE.md || echo "anon clean"
   ```
   Expected: all OK; the `CLAUDE.md` diff is purely the additive DoR block (no DoD line touched); anon clean.
 

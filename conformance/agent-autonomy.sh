@@ -205,7 +205,7 @@ assert_deny "rm kit-guard"         '{"tool_name":"Bash","tool_input":{"command":
 assert_allow "read guard-core"     '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/guard-core.sh"}}'
 assert_allow "run kit-guard sh"    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-guard --selftest"}}'
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
-assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Bradley"}}'
+assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Dev"}}'
 assert_allow "git checkout src"     '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- src/app.ts"}}'
 assert_allow "ls .claude dir"       '{"tool_name":"Bash","tool_input":{"command":"ls .claude/"}}'
 assert_allow "cat workflow"         '{"tool_name":"Bash","tool_input":{"command":"cat .github/workflows/ci.yml"}}'

@@ -86,7 +86,7 @@ Assignment is last-writer-wins, so the claim is **narrowed, not closed**: claim 
 
 - [ ] **Step 3: Verify + commit.**
   Run: `sh conformance/check-links.sh 2>&1 | tail -1` → resolve.
-  Run: `grep -niE "PBS|public.media|bradley|atlassian.net/[a-z]" templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md || echo clean` → `clean` (no real Jira URL).
+  Run: `grep -niE "enterprise|public.media|bradley|atlassian.net/[a-z]" templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md || echo clean` → `clean` (no real Jira URL).
   ```bash
   git add templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md
   git commit -m "docs(9h): JIRA-SETUP + TRACKER-SETUP templates (hosted-tracker bootstrap guides)"
@@ -283,7 +283,7 @@ Append a new line immediately after it:
 
 - [ ] **Step 3: Hand to Bradley (human `cp`).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9h .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9h — gate tracker-contract selftest + UNVERIFIED-without-creds honesty"
+  cd ~/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9h .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9h — gate tracker-contract selftest + UNVERIFIED-without-creds honesty"
   ```
   Wait for confirmation.
 
@@ -340,7 +340,7 @@ Append a new line immediately after it:
   sh conformance/check-links.sh 2>&1 | tail -1
   # incept arms produce the right artifact:
   t=$(mktemp -d); git archive HEAD | tar -x -C "$t"; ( cd "$t" && sh scripts/incept.sh --noninteractive --name DemoApp --intent-owner CI --stack typescript-node --backlog jira >/dev/null 2>&1 ); [ -f "$t/JIRA-SETUP.md" ] && echo "incept jira → JIRA-SETUP.md ok"
-  grep -rniE "PBS|public.media|bradley|[a-z0-9]+\.atlassian\.net" templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md conformance/tracker-contract.sh || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley|[a-z0-9]+\.atlassian\.net" templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md conformance/tracker-contract.sh || echo "anon clean"
   ```
   Expected: all OK; anon clean.
 

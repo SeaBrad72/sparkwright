@@ -45,7 +45,7 @@ _(Original first-pass analysis below, retained for context.)_
 
 ## Gaps, by theme (prioritized within each)
 
-### A. Continuity / BC-DR — the thinnest area, and existential for a PBS-scale, regulated, customer+affiliate-data adopter
+### A. Continuity / BC-DR — the thinnest area, and existential for a enterprise-scale, regulated, customer+affiliate-data adopter
 
 - **A1 — No Incident Response standard, and a broken cross-reference.** PROCESS §9 says "P0/P1 escalate to **Incident Response + postmortem** (`DEVELOPMENT-STANDARDS.md`)" — but STANDARDS has **no incident-response section**. The pointer dangles. Missing: severity matrix (P0–P3 exists in §9 only), incident roles (commander / comms / scribe), comms cadence, declared SEV criteria, and a **blameless postmortem template** in `templates/` (there is none). *High value, low effort, fixes a real dangling ref.*
 - **A2 — DR is prose-only; no reference, no drill enforcement.** §10 says "verify restore at least once per project (recurring-maintenance)" — but nothing references *how* to run a restore drill, and no conformance proves a drill happened. For regulated data this is the gap that matters most. Missing: a **backup-restore drill runbook/reference**, a **DR conformance checklist** (like `15-factor-checklist.md`), tiered RTO/RPO by service criticality, and a **Business Impact Analysis (BIA)** prompt at Inception. *High value.*
@@ -86,5 +86,5 @@ Each is a kit-loop slice (brainstorm → spec → plan → subagent execution �
 
 **Open questions for the morning:**
 - Scope: one consolidated "continuity & safe-delivery hardening" arc (Slice 8) vs. cherry-pick the top 2–3?
-- For the adopter (PBS-scale, regulated): does continuity (A2/A1) outrank delivery-automation references (B2/B4), or do we want both?
+- For the adopter (enterprise-scale, regulated): does continuity (A2/A1) outrank delivery-automation references (B2/B4), or do we want both?
 - DSOMM / NIST 800-34 crosswalk now (extends 6a), or defer?

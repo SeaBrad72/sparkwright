@@ -406,7 +406,7 @@ fi
 
 - [ ] **Step 3: Hand to Bradley (human `cp`).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9j .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9j — gate conditional-gates + action-pinning (+ selftests)"
+  cd ~/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9j .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9j — gate conditional-gates + action-pinning (+ selftests)"
   ```
   Wait for confirmation.
 
@@ -466,7 +466,7 @@ fi
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
   git diff main..HEAD -- CLAUDE.md     # confirm DoD adds NO universal gate (one conditional-gates clause)
-  grep -rniE "PBS|public.media|bradley" conformance/conditional-gates.sh conformance/action-pinning.sh || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" conformance/conditional-gates.sh conformance/action-pinning.sh || echo "anon clean"
   ```
   Expected: all OK; the `CLAUDE.md` diff is the single conditional-gates clause; anon clean.
 

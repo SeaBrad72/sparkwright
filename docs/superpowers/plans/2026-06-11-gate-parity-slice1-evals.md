@@ -317,7 +317,7 @@ Validate: `diff .github/workflows/ci.yml /tmp/ci.yml.evals` → only the two add
 - [ ] **Step 2: Hand Bradley the control-plane `cp`.** Present exactly:
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 sh -c '
+cd ~/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 sh -c '
   cp /tmp/ci.yml.evals .github/workflows/ci.yml &&
   git add .github/workflows/ci.yml &&
   git commit -m "ci(gate-parity): run eval-ready.sh --selftest in the conformance job"

@@ -78,7 +78,7 @@
 
 - [ ] **Step 4: Verify + commit.**
   Run: `git add templates/TEST-PLAN-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md && sh conformance/check-links.sh 2>&1 | tail -1` → links resolve.
-  Run: `grep -niE "PBS|public.media|bradley" templates/TEST-PLAN-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md || echo clean` → `clean`.
+  Run: `grep -niE "enterprise|public.media|bradley" templates/TEST-PLAN-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md || echo clean` → `clean`.
   ```bash
   git commit -m "docs(9i): TEST-PLAN + UAT-SIGNOFF + A11Y-SIGNOFF templates (QA/Designer dedicated artifacts)"
   ```
@@ -312,7 +312,7 @@ fi
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
   git diff main..HEAD -- CLAUDE.md   # confirm ONLY the Accessibility line changed
-  grep -rniE "PBS|public.media|bradley" templates/TEST-PLAN-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md conformance/persona-artifacts.sh || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" templates/TEST-PLAN-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md conformance/persona-artifacts.sh || echo "anon clean"
   ```
   Expected: all OK; the `CLAUDE.md` diff is the single Accessibility line; anon clean.
 

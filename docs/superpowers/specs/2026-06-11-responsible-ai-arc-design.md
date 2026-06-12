@@ -2,7 +2,7 @@
 
 **Status:** design (brainstorm), pre-plan. Approved shape: a **three-slice arc**, full arc before the deferred items (ephemeral environments, cross-stack test-data).
 **Jurisdiction:** **US-first.** The target adopter is a US enterprise. The arc anchors on US drivers (NIST AI RMF, state AI laws, COPPA/FTC) and treats the **EU AI Act as an optional overlay** for adopters with EU market exposure — never baseline. We deliberately do **not** impose EU-only machinery (conformity assessment, CE marking, fundamental-rights impact assessment, EU-database registration) on a US project.
-**Origin:** coverage analysis of the Leanly v3 feature docs (early-2025 "Responsible ML" framing) against the kit, re-grounded to **mid-2026** US regulatory reality (sources at the end). The one substantive SDLC gap the analysis surfaced.
+**Origin:** coverage analysis of an archived v3 feature-spec set (early-2025 "Responsible ML" framing) against the kit, re-grounded to **mid-2026** US regulatory reality (sources at the end). The one substantive SDLC gap the analysis surfaced.
 
 ---
 
@@ -13,7 +13,7 @@ The kit answers two of the three AI-governance questions and not the third:
 - **Threat-model** (v2.47.0) — *"how can it be attacked?"* (STRIDE/LINDDUN-lite).
 - **Missing:** *"is the AI feature fair, disclosed, human-overseen, risk-classified, and mappable to the AI-specific regimes that apply to a US company?"* — a distinct governance axis.
 
-This modernizes the early-2025 "Responsible ML" paradigm for a **mid-2026 agentic kit**. The Leanly docs framed it as bias/explainability/model-cards for models you *train*. But the kit governs **agents orchestrating frontier LLMs that take actions** — a different risk surface (OWASP **Agentic** Top 10, not just the LLM Top 10).
+This modernizes the early-2025 "Responsible ML" paradigm for a **mid-2026 agentic kit**. Those feature docs framed it as bias/explainability/model-cards for models you *train*. But the kit governs **agents orchestrating frontier LLMs that take actions** — a different risk surface (OWASP **Agentic** Top 10, not just the LLM Top 10).
 
 ## The reframe (and why the kit is already ~60% there)
 

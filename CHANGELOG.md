@@ -5,7 +5,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 ## [2.52.0] - 2026-06-11
 
-Safe Non-Prod arc, Slice SNP-2 — ephemeral / preview environments. **Closes the Safe Non-Prod arc** (and the deferred list from the Leanly coverage analysis). Seeds from SNP-1 test data. **MINOR** — guidance + conditional check + RUNBOOK record.
+Safe Non-Prod arc, Slice SNP-2 — ephemeral / preview environments. **Closes the Safe Non-Prod arc** (and the deferred list from the feature-coverage analysis). Seeds from SNP-1 test data. **MINOR** — guidance + conditional check + RUNBOOK record.
 
 ### Added
 - **`docs/operations/preview-environments.md`** — per-PR isolated-environment lifecycle (open → exercise → auto-teardown) + the security guardrails (safe data only · scoped short-lived creds · TTL/auto-teardown · isolation; never prod data or secrets).
@@ -55,7 +55,7 @@ Responsible-AI arc, Slice RAI-2 — fairness eval + AI-output transparency. The 
 
 ## [2.48.0] - 2026-06-11
 
-Responsible-AI arc, Slice RAI-1 — the AI System Card. Closes the substantive AI-governance gap surfaced by the Leanly coverage analysis: the kit had eval (*is the model good?*) and threat-model (*how is it attacked?*) but not *is it fair, disclosed, human-overseen, and risk-classified?* **US-first** (NIST AI RMF + GenAI Profile anchor; TX TRAIGA / CO SB 26-189 / CA ADMT / COPPA-FTC the real surface; EU AI Act an optional overlay). **MINOR** — conditional check + two templates; no new universal gate.
+Responsible-AI arc, Slice RAI-1 — the AI System Card. Closes the substantive AI-governance gap surfaced by the feature-coverage analysis: the kit had eval (*is the model good?*) and threat-model (*how is it attacked?*) but not *is it fair, disclosed, human-overseen, and risk-classified?* **US-first** (NIST AI RMF + GenAI Profile anchor; TX TRAIGA / CO SB 26-189 / CA ADMT / COPPA-FTC the real surface; EU AI Act an optional overlay). **MINOR** — conditional check + two templates; no new universal gate.
 
 ### Added
 - **`templates/AI-SYSTEM-CARD-TEMPLATE.md`** — the per-AI-feature declaration: model+version, **US risk classification** (consequential-decision / children's-data / prohibited-use triggers; optional EU overlay), intended/out-of-scope use, data flows+consent, human oversight, guardrail links, known limitations, security/compliance-owner sign-off. Doubles as the ISO/IEC 42005 impact assessment.

@@ -117,7 +117,7 @@ Terraform · tflint (+ cloud ruleset) · Checkov · conftest/OPA · Trivy (confi
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/terraform.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
 grep -Fq '[...]' profiles/terraform.md && echo "FAIL placeholder" || echo "no [...] placeholder"
 git add profiles/terraform.md
@@ -243,7 +243,7 @@ jobs:
 - [ ] **Step 2: Derive the governance companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/Terraform profile/' profiles/python/CODEOWNERS > profiles/terraform/CODEOWNERS
 sed 's/(Python profile)/(Terraform profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/terraform/BRANCH-PROTECTION.md
 ```
@@ -251,7 +251,7 @@ sed 's/(Python profile)/(Terraform profile)/' profiles/python/BRANCH-PROTECTION.
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/terraform/ci.yml; echo "exit=$?"
 grep -q "id: gate-policy" profiles/terraform/ci.yml && echo "gate-policy present"
 ruby -ryaml -e "YAML.load_file('profiles/terraform/ci.yml'); puts 'YAML OK'"
@@ -324,7 +324,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.7.0\]" CHANGELOG.md
 grep -c "shipped v2.7.0" docs/ROADMAP-KIT.md
@@ -342,7 +342,7 @@ Expected: `2.7.0`; `1`; `1`.
 - [ ] **Step 1: Full conformance sweep (10 profiles)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/profile-completeness.sh; echo "exit=$?"
 for p in typescript-node python java-spring dotnet go rust kotlin ml data-engineering terraform; do sh conformance/ci-gates.sh "profiles/$p/ci.yml" >/dev/null && echo "ci-gates $p OK"; done
 grep -q "id: gate-policy" profiles/terraform/ci.yml && echo "gate-policy present"
@@ -354,7 +354,7 @@ Expected: profile-completeness all PASS + `exit=0`; `ci-gates <p> OK` for all 10
 - [ ] **Step 2: incept wires the terraform profile (end-to-end)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 tmp=$(mktemp -d); git archive HEAD | tar -x -C "$tmp"
 ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name DemoIaC --intent-owner "CI" --stack terraform --backlog md ) >/dev/null
 sh conformance/inception-done.sh "$tmp" >/dev/null && echo "incept --stack terraform -> inception-done OK"
@@ -367,7 +367,7 @@ Expected: all three OK lines.
 - [ ] **Step 3: Existing 9 profiles untouched (additive)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git diff --stat main..HEAD -- profiles/typescript-node.md profiles/python.md profiles/java-spring.md profiles/dotnet.md profiles/go.md profiles/rust.md profiles/kotlin.md profiles/ml.md profiles/data-engineering.md | tail -1
 echo "(empty above = unchanged)"
 ```
@@ -376,7 +376,7 @@ Expected: no diff line.
 - [ ] **Step 4: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-5d-terraform-profile
 gh pr create --title "Slice 5d: Terraform/IaC profile — gate-policy, §14 via IaC analogs (v2.7.0)" --body "$(cat <<'EOF'
 ## Summary
@@ -406,7 +406,7 @@ Expected: branch pushed; PR URL printed; CI starts.
 - [ ] **Step 5: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 15
 gh pr checks 2>&1 | head
 ```

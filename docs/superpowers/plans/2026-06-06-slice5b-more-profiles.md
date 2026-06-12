@@ -215,7 +215,7 @@ jobs:
 - [ ] **Step 3: Derive the governance companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/.NET profile/' profiles/python/CODEOWNERS > profiles/dotnet/CODEOWNERS
 sed 's/(Python profile)/(.NET profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/dotnet/BRANCH-PROTECTION.md
 ```
@@ -223,7 +223,7 @@ sed 's/(Python profile)/(.NET profile)/' profiles/python/BRANCH-PROTECTION.md > 
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/dotnet/ci.yml; echo "exit=$?"
 ruby -ryaml -e "YAML.load_file('profiles/dotnet/ci.yml'); puts 'YAML OK'"
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/dotnet.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
@@ -418,7 +418,7 @@ jobs:
 - [ ] **Step 3: Derive companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/Go profile/' profiles/python/CODEOWNERS > profiles/go/CODEOWNERS
 sed 's/(Python profile)/(Go profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/go/BRANCH-PROTECTION.md
 ```
@@ -426,7 +426,7 @@ sed 's/(Python profile)/(Go profile)/' profiles/python/BRANCH-PROTECTION.md > pr
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/go/ci.yml; echo "exit=$?"
 ruby -ryaml -e "YAML.load_file('profiles/go/ci.yml'); puts 'YAML OK'"
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/go.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
@@ -622,7 +622,7 @@ jobs:
 - [ ] **Step 3: Derive companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/Rust profile/' profiles/python/CODEOWNERS > profiles/rust/CODEOWNERS
 sed 's/(Python profile)/(Rust profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/rust/BRANCH-PROTECTION.md
 ```
@@ -630,7 +630,7 @@ sed 's/(Python profile)/(Rust profile)/' profiles/python/BRANCH-PROTECTION.md > 
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/rust/ci.yml; echo "exit=$?"
 ruby -ryaml -e "YAML.load_file('profiles/rust/ci.yml'); puts 'YAML OK'"
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/rust.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
@@ -817,7 +817,7 @@ jobs:
 - [ ] **Step 3: Derive companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/Kotlin profile/' profiles/python/CODEOWNERS > profiles/kotlin/CODEOWNERS
 sed 's/(Python profile)/(Kotlin profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/kotlin/BRANCH-PROTECTION.md
 ```
@@ -825,7 +825,7 @@ sed 's/(Python profile)/(Kotlin profile)/' profiles/python/BRANCH-PROTECTION.md 
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/kotlin/ci.yml; echo "exit=$?"
 ruby -ryaml -e "YAML.load_file('profiles/kotlin/ci.yml'); puts 'YAML OK'"
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/kotlin.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
@@ -949,7 +949,7 @@ EOF
 - [ ] **Step 2: Syntax check + dash check**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 chmod +x scripts/new-profile.sh
 sh -n scripts/new-profile.sh && echo "syntax OK"
 dash -n scripts/new-profile.sh 2>/dev/null && echo "dash OK" || echo "dash check skipped/failed"
@@ -959,7 +959,7 @@ Expected: `syntax OK`; `dash OK` (dash present on this host).
 - [ ] **Step 3: Functional test (create → stub passes ci-gates → completeness flags unfilled → re-run refuses → clean up)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh scripts/new-profile.sh demostack
 echo "--- stub ci.yml passes ci-gates (structure) ---"
 sh conformance/ci-gates.sh profiles/demostack/ci.yml; echo "exit=$?"
@@ -978,7 +978,7 @@ Expected: ci-gates on the stub `OK`/`exit=0`; profile-completeness `FAIL demosta
 - [ ] **Step 4: Commit (only the script — confirm no demostack residue)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git status --short
 git add scripts/new-profile.sh
 git commit -m "feat: add new-profile.sh scaffolder for bring-your-own stacks"
@@ -1030,7 +1030,7 @@ Replace with:
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -c "Generate your own profile" README.md
 grep -c "new-profile.sh" README.md START-HERE.md
 sh conformance/check-links.sh >/dev/null && echo "links OK"
@@ -1113,7 +1113,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.4.0\]" CHANGELOG.md
 grep -c "v2.4.0" docs/ROADMAP-KIT.md
@@ -1131,7 +1131,7 @@ Expected: `2.4.0`; `1`; `1` or more.
 - [ ] **Step 1: Full conformance sweep over all 7 profiles**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/profile-completeness.sh; echo "exit=$?"
 for p in typescript-node python java-spring dotnet go rust kotlin; do sh conformance/ci-gates.sh "profiles/$p/ci.yml" >/dev/null && echo "ci-gates $p OK"; done
 sh conformance/agent-autonomy.sh >/dev/null && echo "agent-autonomy OK"
@@ -1142,7 +1142,7 @@ Expected: profile-completeness all PASS + `exit=0`; `ci-gates <p> OK` for all 7;
 - [ ] **Step 2: incept wires each new profile (end-to-end)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 for stack in dotnet go rust kotlin; do
   tmp=$(mktemp -d); git archive HEAD | tar -x -C "$tmp"
   ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name "Demo-$stack" --intent-owner "CI" --stack "$stack" --backlog md ) >/dev/null
@@ -1156,7 +1156,7 @@ Expected: for all four stacks, `incept --stack <stack> -> inception-done OK` and
 - [ ] **Step 3: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-5b-more-profiles
 gh pr create --title "Slice 5b: .NET + Go + Rust + Kotlin profiles + bring-your-own on-ramp (v2.4.0)" --body "$(cat <<'EOF'
 ## Summary
@@ -1185,7 +1185,7 @@ Expected: branch pushed; PR URL printed; CI starts.
 - [ ] **Step 4: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 15
 gh pr checks 2>&1 | head
 ```

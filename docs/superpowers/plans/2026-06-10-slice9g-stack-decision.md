@@ -61,7 +61,7 @@
 
 - [ ] **Step 2: Verify + commit.**
   Run: `git add docs/STACK-SELECTION.md && sh conformance/check-links.sh 2>&1 | tail -1` → links resolve (the `../profiles/<stack>.md` links must all exist — they do).
-  Run: `grep -niE "PBS|public.media|bradley" docs/STACK-SELECTION.md || echo clean` → `clean`.
+  Run: `grep -niE "enterprise|public.media|bradley" docs/STACK-SELECTION.md || echo clean` → `clean`.
   ```bash
   git commit -m "docs(9g): STACK-SELECTION.md — comparison matrix + per-stack guidance + full-stack pattern"
   ```
@@ -223,7 +223,7 @@ fi
 ```sh
 #!/bin/sh
 set -eu
-SRC=/Users/bradleyjames/Development/agentic-sdlc-kit
+SRC=~/Development/agentic-sdlc-kit
 T=$(mktemp -d); rsync -a --exclude '.git' --exclude 'node_modules' --exclude '.firecrawl' "$SRC"/ "$T"/
 cd "$T" && git init -q && git add -A && git -c user.email=ci@x -c user.name=ci commit -qm init
 echo "--- no --stack: expect notice ---"
@@ -343,7 +343,7 @@ Choosing a stack? See [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md).
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
   sh /tmp/test-incept-9g.sh
-  grep -rniE "PBS|public.media|bradley" docs/STACK-SELECTION.md profiles/*.md conformance/stack-selection.sh || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" docs/STACK-SELECTION.md profiles/*.md conformance/stack-selection.sh || echo "anon clean"
   ```
   Expected: all OK; notice shown only without `--stack`; anon clean.
 

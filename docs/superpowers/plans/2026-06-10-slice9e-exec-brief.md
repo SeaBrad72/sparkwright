@@ -13,7 +13,7 @@
 ## Execution notes
 
 - **All files here are agent-editable** — none are control-plane (no `.claude/`, `.github/workflows/`, `CODEOWNERS`, `guard*`, `kit-guard`, `pre-push`). No `cp` handoffs.
-- **Anonymization is a hard requirement on every deliverable** ([[kit-anonymization]]): no "PBS"/public-media framing, no named sector, no personal names. Archetype = "a regulated, privacy-sensitive mid-to-large enterprise (~200 engineers)." Each task ends with an anonymization grep.
+- **Anonymization is a hard requirement on every deliverable** ([[kit-anonymization]]): no "enterprise"/public-media framing, no named sector, no personal names. Archetype = "a regulated, privacy-sensitive mid-to-large enterprise (~200 engineers)." Each task ends with an anonymization grep.
 - **Branch:** `feature/slice-9e-exec-brief` (already created). Spec: `docs/superpowers/specs/2026-06-10-slice9e-exec-brief-design.md`.
 
 ## File structure
@@ -43,7 +43,7 @@
   - **Anonymization:** generic throughout; no named adopter, no person.
 
 - [ ] **Step 2: Verify + commit.**
-  Run: `grep -niE "PBS|public.media|bradley|bradleyjames" docs/superpowers/reviews/2026-06-10-competitive-benchmark.md || echo "clean"` → `clean`.
+  Run: `grep -niE "enterprise|public.media|bradley|bradleyjames" docs/superpowers/reviews/2026-06-10-competitive-benchmark.md || echo "clean"` → `clean`.
   ```bash
   git add docs/superpowers/reviews/2026-06-10-competitive-benchmark.md
   git commit -m "docs(slice-9e): A5 competitive benchmark record (differentiation + business-case stat)"
@@ -67,7 +67,7 @@
   - **Anonymization:** generic enterprise only; no named org/sector/person.
 
 - [ ] **Step 2: Verify length, links, anonymization + commit.**
-  Run: `wc -l docs/enterprise/EXEC-BRIEF.md` (target ≤ ~120 lines for ~2pp); `sh conformance/check-links.sh 2>&1 | tail -1` → links OK; `grep -niE "PBS|public.media|bradley" docs/enterprise/EXEC-BRIEF.md || echo clean` → `clean`.
+  Run: `wc -l docs/enterprise/EXEC-BRIEF.md` (target ≤ ~120 lines for ~2pp); `sh conformance/check-links.sh 2>&1 | tail -1` → links OK; `grep -niE "enterprise|public.media|bradley" docs/enterprise/EXEC-BRIEF.md || echo clean` → `clean`.
   ```bash
   git add docs/enterprise/EXEC-BRIEF.md
   git commit -m "docs(enterprise): 9e — EXEC-BRIEF.md, the leadership entry point"
@@ -94,7 +94,7 @@
   - **Anonymization:** generic enterprise only.
 
 - [ ] **Step 2: Verify + commit.**
-  Run: `sh conformance/check-links.sh 2>&1 | tail -1`; `grep -niE "PBS|public.media|bradley" docs/enterprise/ORG-ROLLOUT.md || echo clean`.
+  Run: `sh conformance/check-links.sh 2>&1 | tail -1`; `grep -niE "enterprise|public.media|bradley" docs/enterprise/ORG-ROLLOUT.md || echo clean`.
   ```bash
   git add docs/enterprise/ORG-ROLLOUT.md
   git commit -m "docs(enterprise): 9e — ORG-ROLLOUT.md with the canonical Stage 1-4 tighten-at-scale model"
@@ -118,7 +118,7 @@
   - **Anonymization:** no named org/sector/person anywhere.
 
 - [ ] **Step 2: Verify + commit.**
-  Run: `grep -niE "PBS|public.media|bradley" docs/enterprise/ROI-MODEL.md || echo clean`; confirm the disclaimer + the "illustration" label are present (`grep -c "planning model\|illustration of the method" docs/enterprise/ROI-MODEL.md` → ≥ 2).
+  Run: `grep -niE "enterprise|public.media|bradley" docs/enterprise/ROI-MODEL.md || echo clean`; confirm the disclaimer + the "illustration" label are present (`grep -c "planning model\|illustration of the method" docs/enterprise/ROI-MODEL.md` → ≥ 2).
   ```bash
   git add docs/enterprise/ROI-MODEL.md
   git commit -m "docs(enterprise): 9e — ROI-MODEL.md (parameterized worksheet + labeled worked example)"
@@ -199,10 +199,10 @@
   ```sh
   sh conformance/check-links.sh 2>&1 | tail -1
   sh conformance/verify.sh 2>&1 | tail -2
-  grep -rniE "PBS|public.media" --include="*.md" docs/enterprise/ README.md START-HERE.md DEVELOPMENT-PROCESS.md docs/operations/dora-metrics.md docs/ROADMAP-SLICE9.md || echo "no PBS in shippable"
+  grep -rniE "enterprise|public.media" --include="*.md" docs/enterprise/ README.md START-HERE.md DEVELOPMENT-PROCESS.md docs/operations/dora-metrics.md docs/ROADMAP-SLICE9.md || echo "no enterprise in shippable"
   grep -rn "Stage 1–4|Stage 1-4" --include="*.md" . | grep "DEVELOPMENT-STANDARDS" && echo "DANGLING REMAINS (fix)" || echo "no dangling Stage 1-4 ref"
   ```
-  Expected: links OK; verify.sh OK; "no PBS in shippable"; "no dangling Stage 1-4 ref".
+  Expected: links OK; verify.sh OK; "no enterprise in shippable"; "no dangling Stage 1-4 ref".
 
 - [ ] **Step 2: Independent review (builder ≠ sole reviewer).** Dispatch a reviewer focused on the kit's own honesty standard applied to *itself*: does the EXEC-BRIEF over-claim (vs the disclosed boundaries)? Does the ROI-MODEL assert any number as fact rather than labeled input/illustration? Is the differentiation in A5 fair (not strawmanning competitors)? Is anything non-generic (named org/sector/person)? Fix any finding.
 

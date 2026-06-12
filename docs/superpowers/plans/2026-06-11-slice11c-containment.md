@@ -506,7 +506,7 @@ Expected: `conformance,bootstrap,docs-links`.
 - [ ] **Step 2: Hand Bradley the control-plane `cp`** (self-edit flag; the guard denies the agent writing `.github/workflows/`). Present exactly:
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 sh -c '
+cd ~/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 sh -c '
   cp /tmp/ci.yml.11c .github/workflows/ci.yml &&
   git add .github/workflows/ci.yml &&
   git commit -m "ci(11c): run containment-ready.sh --selftest in the conformance job"

@@ -4,7 +4,7 @@
 **Method:** 9 independent, skeptical agents, each given a fresh read of the real files and instructed *not* to assume the work is good. Findings are file-cited and were spot-verified by the orchestrator.
 **Lenses:** whole-framework SWOT · 6 persona-usability journeys · industry-best-practice benchmark · portability & token-economics.
 
-> **Bottom line:** Best-in-class on *agentic process design*, *supply-chain CI hardening*, and *intellectual honesty about its own boundaries*. It falls short of its own headline — "drop into a regulated, PBS-scale, children's-data org with relative assurance that agents cannot cause damage" — on three fronts: the **runtime safety layer has real holes and ports to exactly one agent runtime**, several **conformance "gates" verify documentation rather than working controls** (false-assurance risk), and the **adoption on-ramp assumes a clean, GitHub-based, multi-person, stack-decided team**. An excellent foundation an enterprise can adopt and harden — not yet a turnkey guarantee.
+> **Bottom line:** Best-in-class on *agentic process design*, *supply-chain CI hardening*, and *intellectual honesty about its own boundaries*. It falls short of its own headline — "drop into a regulated, enterprise-scale, children's-data org with relative assurance that agents cannot cause damage" — on three fronts: the **runtime safety layer has real holes and ports to exactly one agent runtime**, several **conformance "gates" verify documentation rather than working controls** (false-assurance risk), and the **adoption on-ramp assumes a clean, GitHub-based, multi-person, stack-decided team**. An excellent foundation an enterprise can adopt and harden — not yet a turnkey guarantee.
 
 ---
 
@@ -98,7 +98,7 @@ These are the spine of any remediation, ordered by how directly they undercut th
 
 ## Portability & economics (6)
 
-**Portable mechanics:** POSIX `#!/bin/sh` throughout, **zero hardcoded `/Users/bradleyjames` in any shippable asset** (only in historical plan docs), stack-neutral conformance-by-contract-id, first-class custom-profile path.
+**Portable mechanics:** POSIX `#!/bin/sh` throughout, **zero hardcoded `~` in any shippable asset** (only in historical plan docs), stack-neutral conformance-by-contract-id, first-class custom-profile path.
 
 **Structural couplings that hit the value prop:**
 - **Runtime guard ports to exactly one agent runtime** — Cursor/Copilot/Windsurf/Aider/custom shops get zero runtime "does no harm" and must rebuild the deny matrix.

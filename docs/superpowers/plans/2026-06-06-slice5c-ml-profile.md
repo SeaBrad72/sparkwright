@@ -126,7 +126,7 @@ scikit-learn / PyTorch · MLflow · DVC · pandera · nbstripout + jupytext + nb
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/ml.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
 grep -Fq '[...]' profiles/ml.md && echo "FAIL placeholder" || echo "no [...] placeholder"
 git add profiles/ml.md
@@ -234,7 +234,7 @@ jobs:
 - [ ] **Step 2: Derive the governance companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/ML profile/' profiles/python/CODEOWNERS > profiles/ml/CODEOWNERS
 sed 's/(Python profile)/(ML profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/ml/BRANCH-PROTECTION.md
 ```
@@ -242,7 +242,7 @@ sed 's/(Python profile)/(ML profile)/' profiles/python/BRANCH-PROTECTION.md > pr
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/ml/ci.yml; echo "exit=$?"
 grep -q "id: gate-eval" profiles/ml/ci.yml && echo "gate-eval present"
 ruby -ryaml -e "YAML.load_file('profiles/ml/ci.yml'); puts 'YAML OK'"
@@ -315,7 +315,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.5.0\]" CHANGELOG.md
 grep -c "v2.5.0" docs/ROADMAP-KIT.md
@@ -333,7 +333,7 @@ Expected: `2.5.0`; `1`; `1` or more.
 - [ ] **Step 1: Full conformance sweep (8 profiles incl. ml)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/profile-completeness.sh; echo "exit=$?"
 for p in typescript-node python java-spring dotnet go rust kotlin ml; do sh conformance/ci-gates.sh "profiles/$p/ci.yml" >/dev/null && echo "ci-gates $p OK"; done
 grep -q "id: gate-eval" profiles/ml/ci.yml && echo "gate-eval present in ml"
@@ -345,7 +345,7 @@ Expected: profile-completeness all PASS + `exit=0`; `ci-gates <p> OK` for all 8;
 - [ ] **Step 2: incept wires the ML profile (end-to-end)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 tmp=$(mktemp -d); git archive HEAD | tar -x -C "$tmp"
 ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name DemoML --intent-owner "CI" --stack ml --backlog md ) >/dev/null
 sh conformance/inception-done.sh "$tmp" >/dev/null && echo "incept --stack ml -> inception-done OK"
@@ -357,7 +357,7 @@ Expected: `incept --stack ml -> inception-done OK`; `wired ml CI satisfies §14`
 - [ ] **Step 3: Existing 7 profiles untouched (additive)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git diff --stat main..HEAD -- profiles/typescript-node.md profiles/python.md profiles/java-spring.md profiles/dotnet.md profiles/go.md profiles/rust.md profiles/kotlin.md | tail -1
 echo "(no line above = unchanged)"
 ```
@@ -366,7 +366,7 @@ Expected: no diff line (existing profiles unchanged).
 - [ ] **Step 4: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-5c-ml-profile
 gh pr create --title "Slice 5c: ML stack profile — the kit's first eval gate (v2.5.0)" --body "$(cat <<'EOF'
 ## Summary
@@ -395,7 +395,7 @@ Expected: branch pushed; PR URL printed; CI starts.
 - [ ] **Step 5: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 15
 gh pr checks 2>&1 | head
 ```

@@ -115,7 +115,7 @@ esac
 - [ ] **Step 2: Smoke-test the guard manually (deny + allow + field-scoping)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 chmod +x .claude/hooks/guard.sh
 echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}' | sh .claude/hooks/guard.sh
 echo '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\""}}' | sh .claude/hooks/guard.sh; echo "commit-exit=$?"
@@ -126,7 +126,7 @@ Expected: first prints a JSON object containing `"permissionDecision":"deny"`; s
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add .claude/hooks/guard.sh
 git commit -m "feat: add PreToolUse guard hook enforcing §13 autonomy matrix"
 ```
@@ -195,7 +195,7 @@ exit 0
 - [ ] **Step 2: Run it — must pass**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 chmod +x conformance/agent-autonomy.sh
 sh conformance/agent-autonomy.sh; echo "exit=$?"
 ```
@@ -204,7 +204,7 @@ Expected: every line `PASS ...`, final `OK: ...`, `exit=0`. If any `FAIL` appear
 - [ ] **Step 3: Negative meta-test (prove the harness can fail)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 # temporarily neuter the guard so a deny case should fail
 cp .claude/hooks/guard.sh /tmp/guard.bak
 printf '#!/bin/sh\nexit 0\n' > .claude/hooks/guard.sh
@@ -217,7 +217,7 @@ Expected: with the neutered guard, deny cases report `FAIL (wanted deny)` and `e
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add conformance/agent-autonomy.sh
 git commit -m "feat: add agent-autonomy conformance check for the §13 guard"
 ```
@@ -279,7 +279,7 @@ Report findings as Critical / High / Medium / Low with `file:line` and remediati
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -q "name: reviewer" .claude/agents/reviewer.md && grep -q "name: security-reviewer" .claude/agents/security-reviewer.md && echo OK
 git add .claude/agents/reviewer.md .claude/agents/security-reviewer.md
 git commit -m "feat: add reviewer + security-reviewer subagents (§12 separations)"
@@ -321,7 +321,7 @@ Start conservative; raise an action's autonomy as agent-quality metrics earn it.
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -q "Agent Governance Layer" .claude/README.md && echo OK
 git add .claude/README.md
 git commit -m "docs: add .claude/ README (governance layer + adapter guidance)"
@@ -367,7 +367,7 @@ Replace with:
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -c "agent-autonomy.sh" conformance/README.md
 git add conformance/README.md
 git commit -m "docs: index agent-autonomy.sh in conformance README"
@@ -404,7 +404,7 @@ Replace with:
 - [ ] **Step 2: Verify locally (same checks CI runs) and YAML parses**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/typescript-node/ci.yml && \
 test -f conformance/15-factor-checklist.md && \
 sh conformance/agent-autonomy.sh && \
@@ -416,7 +416,7 @@ Expected: `ALL KIT-CI CHECKS PASS` then `YAML OK`.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add .github/workflows/ci.yml
 git commit -m "feat: run agent-autonomy conformance in kit CI (dogfooding §13)"
 ```
@@ -456,7 +456,7 @@ This matrix is tool-neutral. For **Claude Code** it is enforced by the committed
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -c "### Enforcement reference" DEVELOPMENT-PROCESS.md
 git add DEVELOPMENT-PROCESS.md
 git commit -m "docs: add §13 enforcement-reference note (.claude/ + agent-autonomy)"
@@ -539,7 +539,7 @@ Replace with:
 - [ ] **Step 3: Verify JSON parses, hook path resolves, and local settings stay untracked**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 ruby -rjson -e "JSON.parse(File.read('.claude/settings.json')); puts 'JSON OK'"
 test -f .claude/hooks/guard.sh && echo "hook present"
 git check-ignore .claude/settings.local.json && echo "local settings ignored"
@@ -550,7 +550,7 @@ Expected: `JSON OK`; `hook present`; `.claude/settings.local.json` (ignored); `g
 - [ ] **Step 4: Commit (settings.json + .gitignore only — never settings.local.json)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add .claude/settings.json .gitignore
 git commit -m "feat: wire .claude/settings.json (permissions + PreToolUse guard) + gitignore local"
 ```
@@ -643,7 +643,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.1.0\]" CHANGELOG.md
 grep -c "shipped v2.1.0" docs/ROADMAP-KIT.md
@@ -661,7 +661,7 @@ Expected: `2.1.0`; `1`; `1`.
 - [ ] **Step 1: Full conformance sweep (everything the kit CI runs)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
 test -f conformance/15-factor-checklist.md && echo "15-factor present"
 sh conformance/agent-autonomy.sh
@@ -672,7 +672,7 @@ Expected: ci-gates `OK`; `15-factor present`; agent-autonomy `OK`; check-links `
 - [ ] **Step 2: Guard self-non-interference (the slice's own flow is allowed)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 echo '{"tool_name":"Bash","tool_input":{"command":"git push -u origin feature/slice-2-agent-governance"}}' | sh .claude/hooks/guard.sh; echo "push-exit=$? (expect 0, no deny output)"
 echo '{"tool_name":"Bash","tool_input":{"command":"gh pr create --fill"}}' | sh .claude/hooks/guard.sh; echo "pr-exit=$? (expect 0, no deny output)"
 ```
@@ -681,7 +681,7 @@ Expected: both print nothing and exit 0 (the guard does not block this slice's o
 - [ ] **Step 3: jq-missing fallback behaves (deny mutating, allow read-only)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 PATH=/usr/bin:/bin; export PATH
 # emulate jq-absent by running with a PATH that lacks it — if jq is in /usr/bin this won't emulate; use a temp wrapper instead:
 mkdir -p /tmp/nojqbin
@@ -695,7 +695,7 @@ Expected: `jq-missing: Bash denied (fail-safe)`; the Read prints nothing with ex
 - [ ] **Step 4: Confirm settings.local.json is not tracked**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git ls-files .claude/ | sort
 git check-ignore .claude/settings.local.json && echo "local ignored"
 ```
@@ -704,7 +704,7 @@ Expected: tracked `.claude/` files are exactly `README.md`, `agents/reviewer.md`
 - [ ] **Step 5: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-2-agent-governance
 gh pr create --title "Slice 2: Agent governance — .claude/ guard hook, subagents, conformance" --body "$(cat <<'EOF'
 ## Summary
@@ -736,7 +736,7 @@ Expected: branch pushed; PR URL printed; kit CI starts.
 - [ ] **Step 6: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 10
 gh pr checks 2>&1 | head
 ```

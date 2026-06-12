@@ -52,7 +52,7 @@ A `## Solo / lite track` section in `START-HERE.md`:
 - `incept.sh` in a temp repo still completes (preflight passes where jq/git present); aborts cleanly if the universal check fails.
 - `sh conformance/inception-done.sh` still PASS; bootstrap CI unaffected (jq/git present in CI).
 - `sh conformance/check-links.sh` green (GLOSSARY + START-HERE/README links resolve).
-- Anonymization: generic throughout (no PBS/sector/personal names) — [[kit-anonymization]].
+- Anonymization: generic throughout (no enterprise/sector/personal names) — [[kit-anonymization]].
 - Governance: feature branch → PR → human ratification; the `.github/workflows` step applied by human `cp`.
 
 ## Out of scope / deferred

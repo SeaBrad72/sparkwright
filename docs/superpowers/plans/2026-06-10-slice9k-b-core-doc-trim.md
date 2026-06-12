@@ -240,7 +240,7 @@ fi
 
 - [ ] **Step 3: Hand to Bradley (human `cp`).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9kb .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9k-b — gate core-doc budget + selftest"
+  cd ~/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9kb .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9k-b — gate core-doc budget + selftest"
   ```
   Wait for confirmation.
 

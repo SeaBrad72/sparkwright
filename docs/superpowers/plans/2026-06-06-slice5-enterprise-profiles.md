@@ -124,7 +124,7 @@ Pydantic + pydantic-settings (validation/config) · SQLAlchemy + Alembic (ORM/mi
 - [ ] **Step 2: Verify (11 sections, no leftover placeholder) and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/python.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
 grep -Fq '[...]' profiles/python.md && echo "FAIL placeholder" || echo "no [...] placeholder"
 git add profiles/python.md
@@ -285,7 +285,7 @@ JSON
 - [ ] **Step 4: Verify the workflow satisfies §14 and parses; commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/python/ci.yml; echo "exit=$?"
 ruby -ryaml -e "YAML.load_file('profiles/python/ci.yml'); puts 'YAML OK'"
 test -f profiles/python/CODEOWNERS && grep -q "required_status_checks" profiles/python/BRANCH-PROTECTION.md && echo "companions OK"
@@ -394,7 +394,7 @@ Spring Boot starters (web, security, data-jpa, validation, actuator) · Resilien
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/java-spring.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
 grep -Fq '[...]' profiles/java-spring.md && echo "FAIL placeholder" || echo "no [...] placeholder"
 git add profiles/java-spring.md
@@ -550,7 +550,7 @@ JSON
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/java-spring/ci.yml; echo "exit=$?"
 ruby -ryaml -e "YAML.load_file('profiles/java-spring/ci.yml'); puts 'YAML OK'"
 test -f profiles/java-spring/CODEOWNERS && grep -q "required_status_checks" profiles/java-spring/BRANCH-PROTECTION.md && echo "companions OK"
@@ -613,7 +613,7 @@ exit 0
 - [ ] **Step 2: Run it — all three profiles must pass (incl. the existing TS profile)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 chmod +x conformance/profile-completeness.sh
 sh conformance/profile-completeness.sh; echo "exit=$?"
 ```
@@ -622,7 +622,7 @@ Expected: `PASS` lines for `typescript-node.md`, `python.md`, `java-spring.md` (
 - [ ] **Step 3: Negative test (a profile missing a section fails)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cp profiles/python.md /tmp/python.bak
 # remove the "## 7." heading to simulate an incomplete profile
 sed '/^## 7\. /d' profiles/python.md > /tmp/p.md && cp /tmp/p.md profiles/python.md
@@ -635,7 +635,7 @@ Expected: with §7 removed, `FAIL python.md: missing section(s): §7` and `exit=
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git status --short profiles/python.md
 git add conformance/profile-completeness.sh
 git commit -m "feat: add profile-completeness conformance check"
@@ -698,7 +698,7 @@ Replace with:
 - [ ] **Step 4: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 ruby -ryaml -e "YAML.load_file('.github/workflows/ci.yml'); puts 'YAML OK'"
 grep -c "profile-completeness.sh" conformance/README.md
 git add conformance/README.md .github/workflows/ci.yml
@@ -782,7 +782,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.3.0\]" CHANGELOG.md
 grep -c "shipped v2.3.0" docs/ROADMAP-KIT.md
@@ -800,7 +800,7 @@ Expected: `2.3.0`; `1`; `1`.
 - [ ] **Step 1: Full conformance sweep**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/profile-completeness.sh >/dev/null && echo "profile-completeness OK"
 sh conformance/ci-gates.sh profiles/typescript-node/ci.yml >/dev/null && echo "ci-gates TS OK"
 sh conformance/ci-gates.sh profiles/python/ci.yml >/dev/null && echo "ci-gates py OK"
@@ -814,7 +814,7 @@ Expected: all OK lines.
 - [ ] **Step 2: incept wires each new profile (end-to-end)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 for stack in python java-spring; do
   tmp=$(mktemp -d); git archive HEAD | tar -x -C "$tmp"
   ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name "Demo-$stack" --intent-owner "CI" --stack "$stack" --backlog md ) >/dev/null
@@ -828,7 +828,7 @@ Expected: for both stacks, `incept --stack <stack> → inception-done OK` and `w
 - [ ] **Step 3: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-5-enterprise-profiles
 gh pr create --title "Slice 5: Enterprise profiles — Python + Java/Spring + profile-completeness (v2.3.0)" --body "$(cat <<'EOF'
 ## Summary
@@ -857,7 +857,7 @@ Expected: branch pushed; PR URL printed; CI starts.
 - [ ] **Step 4: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 15
 gh pr checks 2>&1 | head
 ```

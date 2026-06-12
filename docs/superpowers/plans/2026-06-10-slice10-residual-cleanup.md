@@ -345,7 +345,7 @@ Everything else (force-push, non-fast-forward, `reset --hard`, `git clean -fdx`,
 
 - [ ] **Step 4: Hand to Bradley (human `cp`, control-plane + self-edit flag).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 cp /tmp/guard-core.sh.s10 .claude/hooks/guard-core.sh && git add .claude/hooks/guard-core.sh conformance/agent-autonomy.sh && git commit -m "fix(guard): 9-residual — allow reversible git commit --amend (force-push/non-ff still denied); regression-locked"
+  cd ~/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 cp /tmp/guard-core.sh.s10 .claude/hooks/guard-core.sh && git add .claude/hooks/guard-core.sh conformance/agent-autonomy.sh && git commit -m "fix(guard): 9-residual — allow reversible git commit --amend (force-push/non-ff still denied); regression-locked"
   ```
   Wait for confirmation, THEN continue.
 

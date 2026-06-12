@@ -91,7 +91,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -q "cold resume" templates/RUNBOOK-TEMPLATE.md && grep -q "## 5. Rollback" templates/RUNBOOK-TEMPLATE.md && echo OK
 git add templates/RUNBOOK-TEMPLATE.md
 git commit -m "feat: add RUNBOOK-TEMPLATE.md (cold-resume runbook)"
@@ -175,7 +175,7 @@ Overwrite `templates/BACKLOG-TEMPLATE.md` with exactly this content (replaces th
 - [ ] **Step 2: Verify the stale model is gone and the flow-board is present**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 grep -Eqi "Completed Phases|Innovation Features|PROGRESS.md|Phase X" templates/BACKLOG-TEMPLATE.md && echo "FAIL: stale model remains" || echo "OK: no stale phase model"
 grep -q "## In Progress" templates/BACKLOG-TEMPLATE.md && grep -q "atomic ownership claim" templates/BACKLOG-TEMPLATE.md && echo "OK: flow-board present"
 ```
@@ -184,7 +184,7 @@ Expected: `OK: no stale phase model` then `OK: flow-board present`.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add templates/BACKLOG-TEMPLATE.md
 git commit -m "feat: rewrite BACKLOG-TEMPLATE.md to the §6 flow-board model"
 ```
@@ -245,7 +245,7 @@ exit 0
 - [ ] **Step 2: Test against a passing fixture, then a failing one**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 chmod +x conformance/inception-done.sh
 fx=$(mktemp -d)
 mkdir -p "$fx/.claude" "$fx/.github/workflows" "$fx/docs/architecture"
@@ -262,7 +262,7 @@ Expected: first run all `PASS`, `OK: ...`, `pass-exit=0`; second run `FAIL missi
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add conformance/inception-done.sh
 git commit -m "feat: add inception-done.sh conformance check (the Inception gate)"
 ```
@@ -397,7 +397,7 @@ EOF
 - [ ] **Step 2: Syntax check**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 chmod +x scripts/incept.sh
 sh -n scripts/incept.sh && echo "syntax OK"
 ```
@@ -406,7 +406,7 @@ Expected: `syntax OK`.
 - [ ] **Step 3: Bootstrap a temp copy and verify (the real test)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 tmp=$(mktemp -d)
 git archive HEAD | tar -x -C "$tmp"
 ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name DemoApp --intent-owner "CI Bot" --stack typescript-node --backlog md )
@@ -429,7 +429,7 @@ If any sed left a stale principles reference or a placeholder unfilled, fix the 
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add scripts/incept.sh
 git commit -m "feat: add incept.sh Inception bootstrap (rename + stamp + CI wire)"
 ```
@@ -487,7 +487,7 @@ Replace with:
 - [ ] **Step 3: Verify YAML + local equivalence**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 ruby -ryaml -e "YAML.load_file('.github/workflows/ci.yml'); puts 'YAML OK'"
 grep -c "inception-done.sh" conformance/README.md
 ```
@@ -496,7 +496,7 @@ Expected: `YAML OK`; `1`.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git add conformance/README.md .github/workflows/ci.yml
 git commit -m "feat: index inception-done + add CI bootstrap-into-temp job"
 ```
@@ -590,7 +590,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.2.0\]" CHANGELOG.md
 grep -c "shipped v2.2.0" docs/ROADMAP-KIT.md
@@ -608,7 +608,7 @@ Expected: `2.2.0`; `1`; `1`.
 - [ ] **Step 1: Full conformance sweep (the kit itself is unchanged & still green)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/typescript-node/ci.yml >/dev/null && echo "ci-gates OK"
 sh conformance/agent-autonomy.sh >/dev/null && echo "agent-autonomy OK"
 sh conformance/check-links.sh >/dev/null && echo "check-links OK"
@@ -622,7 +622,7 @@ Expected: all OK lines; `kit CLAUDE.md unchanged (principles)`; `kit not incepte
 - [ ] **Step 2: End-to-end bootstrap (same as CI) passes locally**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 tmp=$(mktemp -d); git archive HEAD | tar -x -C "$tmp"
 ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name DemoApp --intent-owner "CI" --stack typescript-node --backlog md ) >/dev/null
 sh conformance/inception-done.sh "$tmp" >/dev/null && echo "bootstrap → inception-done OK"
@@ -635,7 +635,7 @@ Expected: `bootstrap → inception-done OK`; `bootstrapped CI satisfies §14`.
 - [ ] **Step 2b: Guard does not block this slice's flow**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 for c in "git push -u origin feature/slice-3-inception-bootstrap" "git mv a b" "gh pr create --fill"; do
   printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$c" | sh .claude/hooks/guard.sh 2>/dev/null | grep -q deny && echo "DENY: $c" || echo "ALLOW: $c"
 done
@@ -645,7 +645,7 @@ Expected: all `ALLOW`.
 - [ ] **Step 3: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-3-inception-bootstrap
 gh pr create --title "Slice 3: Inception bootstrap — incept.sh + templates + inception-done (v2.2.0)" --body "$(cat <<'EOF'
 ## Summary
@@ -674,7 +674,7 @@ Expected: branch pushed; PR URL printed; kit CI starts (now with conformance + d
 - [ ] **Step 4: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 15
 gh pr checks 2>&1 | head
 ```

@@ -12,7 +12,7 @@
 
 ## Execution notes
 - **One control-plane `cp`:** Task 6 edits `.github/workflows/ci.yml` (build in `/tmp` → human applies). Everything else is agent-editable (`scripts/preflight.sh` is in `scripts/`, not control-plane; `scripts/kit-guard`/`hooks/pre-push` are the only protected `scripts/`/`hooks/` paths).
-- **Anonymization** ([[kit-anonymization]]): generic throughout — no PBS/sector/personal names.
+- **Anonymization** ([[kit-anonymization]]): generic throughout — no enterprise/sector/personal names.
 - **Branch:** `feature/slice-9f-beginner-onramp` (created; holds the A6 record + the spec already).
 - **Guard-safety:** when testing, never put a dangerous token in a Bash command string; run corpora via `sh scripts/preflight.sh --selftest`.
 
@@ -177,7 +177,7 @@ Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAU
   ```sh
   #!/bin/sh
   set -eu
-  SRC=/Users/bradleyjames/Development/agentic-sdlc-kit
+  SRC=~/Development/agentic-sdlc-kit
   T=$(mktemp -d)
   rsync -a --exclude '.git' --exclude 'node_modules' --exclude '.firecrawl' "$SRC"/ "$T"/
   cd "$T" && git init -q && git add -A && git -c user.email=ci@x -c user.name=ci commit -qm init
@@ -348,7 +348,7 @@ Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAU
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
   sh /tmp/test-incept-9f.sh   # banner + inception-done
-  grep -rniE "PBS|public.media|bradley" GLOSSARY.md scripts/preflight.sh START-HERE.md || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" GLOSSARY.md scripts/preflight.sh START-HERE.md || echo "anon clean"
   ```
   Expected: all OK; banner present; anon clean.
 

@@ -9,7 +9,7 @@ Three leadership-facing documents in `docs/enterprise/` (the auditor/leadership 
 
 Ratified at brainstorm: **brief + rollout + ROI** (full R5); ROI as a **parameterized worksheet + one labeled worked example** (no fabricated figures).
 
-**Anonymization (kit-wide principle, applied here):** all deliverables are **generic and adoptable by any org** — no PBS / public-media framing, no named sector, no personal-name references. The example archetype is "a regulated, privacy-sensitive mid-to-large enterprise." The *only* necessary identity reference is the real GitHub repo URL in release links. This slice also scrubs the two remaining shippable references: `docs/ROADMAP-SLICE9.md` ("PBS-scale, children's-data" goal line and "Owner: Bradley") → generic.
+**Anonymization (kit-wide principle, applied here):** all deliverables are **generic and adoptable by any org** — no enterprise / public-media framing, no named sector, no personal-name references. The example archetype is "a regulated, privacy-sensitive mid-to-large enterprise." The *only* necessary identity reference is the real GitHub repo URL in release links. This slice also scrubs the two remaining shippable references: `docs/ROADMAP-SLICE9.md` ("enterprise-scale, children's-data" goal line and "Owner: Bradley") → generic.
 
 ## A5 — competitive benchmark (the differentiation spine)
 

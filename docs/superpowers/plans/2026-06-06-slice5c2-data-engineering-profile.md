@@ -123,7 +123,7 @@ dbt-core (+ warehouse adapter) · Dagster (+ dagster-dbt) · sqlfluff · Great E
 - [ ] **Step 2: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 i=1; ok=1; while [ "$i" -le 11 ]; do grep -Eq "^## ${i}\. " profiles/data-engineering.md || { echo "missing §$i"; ok=0; }; i=$((i+1)); done; [ "$ok" -eq 1 ] && echo "11 sections OK"
 grep -Fq '[...]' profiles/data-engineering.md && echo "FAIL placeholder" || echo "no [...] placeholder"
 git add profiles/data-engineering.md
@@ -255,7 +255,7 @@ jobs:
 - [ ] **Step 2: Derive the governance companions**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sed 's/Python profile/data-engineering profile/' profiles/python/CODEOWNERS > profiles/data-engineering/CODEOWNERS
 sed 's/(Python profile)/(data-engineering profile)/' profiles/python/BRANCH-PROTECTION.md > profiles/data-engineering/BRANCH-PROTECTION.md
 ```
@@ -263,7 +263,7 @@ sed 's/(Python profile)/(data-engineering profile)/' profiles/python/BRANCH-PROT
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/ci-gates.sh profiles/data-engineering/ci.yml; echo "exit=$?"
 grep -q "id: gate-data-quality" profiles/data-engineering/ci.yml && echo "gate-data-quality present"
 ruby -ryaml -e "YAML.load_file('profiles/data-engineering/ci.yml'); puts 'YAML OK'"
@@ -335,7 +335,7 @@ Replace with:
 - [ ] **Step 5: Verify and commit**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 cat VERSION
 grep -c "## \[2.6.0\]" CHANGELOG.md
 grep -c "shipped v2.6.0" docs/ROADMAP-KIT.md
@@ -353,7 +353,7 @@ Expected: `2.6.0`; `1`; `1`.
 - [ ] **Step 1: Full conformance sweep (9 profiles)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sh conformance/profile-completeness.sh; echo "exit=$?"
 for p in typescript-node python java-spring dotnet go rust kotlin ml data-engineering; do sh conformance/ci-gates.sh "profiles/$p/ci.yml" >/dev/null && echo "ci-gates $p OK"; done
 grep -q "id: gate-data-quality" profiles/data-engineering/ci.yml && echo "gate-data-quality present"
@@ -365,7 +365,7 @@ Expected: profile-completeness all PASS + `exit=0`; `ci-gates <p> OK` for all 9;
 - [ ] **Step 2: incept wires the data-engineering profile (end-to-end)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 tmp=$(mktemp -d); git archive HEAD | tar -x -C "$tmp"
 ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name DemoDE --intent-owner "CI" --stack data-engineering --backlog md ) >/dev/null
 sh conformance/inception-done.sh "$tmp" >/dev/null && echo "incept --stack data-engineering -> inception-done OK"
@@ -378,7 +378,7 @@ Expected: all three OK lines.
 - [ ] **Step 3: Existing 8 profiles untouched (additive)**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git diff --stat main..HEAD -- profiles/typescript-node.md profiles/python.md profiles/java-spring.md profiles/dotnet.md profiles/go.md profiles/rust.md profiles/kotlin.md profiles/ml.md | tail -1
 echo "(empty above = unchanged)"
 ```
@@ -387,7 +387,7 @@ Expected: no diff line.
 - [ ] **Step 4: Push and open the PR**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 git push -u origin feature/slice-5c2-data-engineering-profile
 gh pr create --title "Slice 5c2: data-engineering profile — dbt+Dagster, gate-data-quality (v2.6.0)" --body "$(cat <<'EOF'
 ## Summary
@@ -417,7 +417,7 @@ Expected: branch pushed; PR URL printed; CI starts.
 - [ ] **Step 5: Report CI status, stop for ratification**
 
 ```bash
-cd /Users/bradleyjames/Development/agentic-sdlc-kit
+cd ~/Development/agentic-sdlc-kit
 sleep 15
 gh pr checks 2>&1 | head
 ```

@@ -302,7 +302,7 @@ The guard sees MCP tool calls too (Claude PreToolUse matcher `mcp__.*`). `guard_
 
 - [ ] **Step 2: Hand Bradley the bundle (control-plane `cp`, self-edit flag).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 sh -c '
+  cd ~/Development/agentic-sdlc-kit && KIT_GUARD_SELFEDIT=1 sh -c '
     cp /tmp/guard-core.sh.11a .claude/hooks/guard-core.sh &&
     cp /tmp/guard.sh.11a .claude/hooks/guard.sh &&
     cp /tmp/settings.json.11a .claude/settings.json &&
@@ -379,7 +379,7 @@ The guard sees MCP tool calls too (Claude PreToolUse matcher `mcp__.*`). `guard_
   sh conformance/guard-core-sourced.sh >/dev/null && echo "single-core OK"
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
-  grep -rniE "PBS|public.media|bradley" conformance/mcp-policy.sh .claude/mcp-policy.json 2>/dev/null || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" conformance/mcp-policy.sh .claude/mcp-policy.json 2>/dev/null || echo "anon clean"
   ```
 - [ ] **Step 2: Independent review (security-owner lens — control-plane safety surface).** Dispatch a reviewer on `git diff main...HEAD`: (a) the guard diff adds ONLY the MCP routing + `guard_check_mcp` + the policy-path protection — the entire existing destructive matrix is byte-for-byte intact (confirm via `agent-autonomy.sh` green + read the diff); (b) **fail-closed holds** — jq-absent denies `mcp__*`, and an unclassifiable action denies; (c) `.claude/mcp-policy.json` is control-plane-protected (an agent editing it is denied — Task 7 Step 2); (d) `guard_check_mcp` POSIX correctness (the allowlist exact+wildcard match, the override lookup `while IFS='='`, the verb heuristics incl. camelCase boundary, `export`/`download` excluded from read-only); (e) the honesty docs do not overclaim (name-reveal not containment; egress still platform); (f) anonymization. Fix findings.
 - [ ] **Step 3: Push + PR.**

@@ -68,7 +68,7 @@ Concrete commands, libraries, and CI live in **`profiles/<stack>.md`** (chosen a
   Run: `awk 'END{print NR}' AGENTS.md` → a number ≤ 80.
   Run: `for r in CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md; do grep -q "$r" AGENTS.md && echo "ref ok $r" || echo "MISSING $r"; done` → 3 × `ref ok`.
   Run: `sh conformance/check-links.sh 2>&1 | tail -1` → `OK: all relative Markdown links resolve`.
-  Run: `grep -niE "PBS|public.media|bradley" AGENTS.md || echo clean` → `clean`.
+  Run: `grep -niE "enterprise|public.media|bradley" AGENTS.md || echo clean` → `clean`.
 
 - [ ] **Step 3: Commit.**
   ```bash
@@ -345,7 +345,7 @@ Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the c
 
 - [ ] **Step 3: Hand to Bradley (human `cp`).** Present exactly:
   ```bash
-  cd /Users/bradleyjames/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9k .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9k — gate badge-version + agents-brief (+ selftests)"
+  cd ~/Development/agentic-sdlc-kit && cp /tmp/ci.yml.9k .github/workflows/ci.yml && git add .github/workflows/ci.yml && git commit -m "ci(kit): 9k — gate badge-version + agents-brief (+ selftests)"
   ```
   Wait for confirmation before continuing.
 
@@ -404,7 +404,7 @@ Apply to EVERY project, EVERY feature. Non-negotiable. **→ profile** for the c
   sh conformance/verify.sh 2>&1 | tail -1
   sh conformance/check-links.sh 2>&1 | tail -1
   git diff main..HEAD -- CLAUDE.md     # confirm security edit is labels-only (one added blockquote; bullets untouched)
-  grep -rniE "PBS|public.media|bradley" AGENTS.md conformance/badge-version.sh conformance/agents-brief.sh || echo "anon clean"
+  grep -rniE "enterprise|public.media|bradley" AGENTS.md conformance/badge-version.sh conformance/agents-brief.sh || echo "anon clean"
   ```
   Expected: all OK; the `CLAUDE.md` diff is a single added blockquote under the security heading; anon clean.
 

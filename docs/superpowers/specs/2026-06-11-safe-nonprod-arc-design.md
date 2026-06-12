@@ -1,7 +1,7 @@
 # Safe Non-Prod — arc design (SNP-1 test-data · SNP-2 preview environments)
 
 **Status:** design (brainstorm), pre-plan. Approved: a **two-slice arc**, **test-data first** (dependency order), **a light conditional readiness check each** (N/A-able, mirrors `observability-ready` / `dr-ready`).
-**Origin:** the two deferred items from the Leanly coverage analysis — the remaining paved-road gaps after the Responsible-AI arc.
+**Origin:** the two deferred items from the feature-coverage analysis — the remaining paved-road gaps after the Responsible-AI arc.
 
 ---
 
