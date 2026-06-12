@@ -81,6 +81,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/data-engineering/ci.yml` (8 st
 ## 9. Release & deploy
 - **Artifact:** the dbt package (compiled `target/manifest.json`) + the Dagster code location. **Build provenance attested on the dbt package.**
 - **Rollout:** dev → staging warehouse → prod target; promote dbt + deploy Dagster. **Rollback:** redeploy the previous dbt package / revert models and re-run affected assets.
+- **Container/deploy (reference-pattern, not a drop-in):** this profile ships **no generic web-Dockerfile** — the deploy unit is an *orchestrated job / code-location image* (Dagster/dbt runner), not a long-running request/response service. When you containerize that runner, follow the service-profile pattern (multi-stage, non-root, `gate-image-sbom` + digest-bound `gate-image-provenance`) — `profiles/python/{Dockerfile,ci.yml,deploy/}` is the closest reference. `conformance/container-supply-chain.sh` validates it once a Dockerfile exists.
 
 ## 10. Recommended libraries
 dbt-core (+ warehouse adapter) · Dagster (+ dagster-dbt) · sqlfluff · Great Expectations (or Soda) · pandera · data-diff · pytest + pytest-cov · ruff + mypy · OpenLineage · pydantic-settings · Sentry · Anthropic SDK for any AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.

@@ -75,6 +75,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/terraform/ci.yml` (8 standard 
 
 ## 9. Release & deploy
 - **plan → human review of the plan → apply** (the merge/apply gate). dev → staging → prod via separate roots/workspaces; **build provenance attested on the plan**. **Rollback:** apply the previous known-good revision (or `terraform apply` a reverted config); targeted applies for canary changes.
+- **Container/deploy: N/A by design.** Terraform provisions infrastructure — the `plan → apply` **is** the deploy; there is no application container artifact, so this profile ships no Dockerfile/compose/deploy and `conformance/container-supply-chain.sh` skips it (N/A). The *infrastructure you provision* must still let the apps that run on it meet §14's container image supply-chain.
 
 ## 10. Recommended tools
 Terraform · tflint (+ cloud ruleset) · Checkov · conftest/OPA · Trivy (config scan + SBOM; includes tfsec checks) · `terraform test` (native; Terratest for heavy integration) · Infracost (cost) · gitleaks · `actions/attest-build-provenance`. Default Claude models: `claude-sonnet-4-6`, escalate to Opus for hard reasoning.
