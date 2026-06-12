@@ -49,6 +49,7 @@ start:         ./target/release/<app>
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/rust/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. `cargo fetch` → `clippy -D warnings` → `cargo check` (type-check) → `cargo test`+`llvm-cov`(≥80) → `cargo build --release` → secret-scan (gitleaks) → dependency scan (`cargo audit`) → SBOM (`cargo cyclonedx`) → build provenance.
 - **`CODEOWNERS`**, **`BRANCH-PROTECTION.md`** → governance companions.
+- **Container image supply-chain (this profile ships a service):** the reference `ci.yml` adds `gate-image-sbom` (Syft/CycloneDX, on PR) and `gate-image-provenance` (digest-bound, push-only) on top of the 8 universal gate-ids. Verified by `conformance/container-supply-chain.sh`.
 
 Conformance: `sh conformance/ci-gates.sh profiles/rust/ci.yml`. Note: `gate-type-check`=`cargo check`, `gate-build`=`cargo build --release`.
 
@@ -75,6 +76,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/rust/ci.yml`. Note: `gate-type
 
 ## 9. Release & deploy
 - **Build artifact:** release binary + minimal container (distroless/scratch). **Deploy:** container to K8s/Fly; merge to `main` → deploy.
+- **Container (service):** build the multi-stage non-root image (`profiles/rust/Dockerfile`, distroless `cc` base for glibc-linked binaries — switch to `static` for a musl target), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/`. Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. (No devcontainer shipped — distroless has no shell; add one against `rust:1` if desired.)
 - **Feature flags:** env-backed or a flag service; flag-off = fastest rollback.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 

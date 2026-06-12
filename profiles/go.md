@@ -49,6 +49,7 @@ start:         ./<app>
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/go/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. `go mod download` → `golangci-lint` → `go vet` (type-check) → `go test -race -cover`(≥80) → `go build` → secret-scan (gitleaks) → dependency scan (`govulncheck`) → SBOM (`cyclonedx-gomod`) → build provenance.
 - **`CODEOWNERS`**, **`BRANCH-PROTECTION.md`** → governance companions.
+- **Container image supply-chain (this profile ships a service):** the reference `ci.yml` adds `gate-image-sbom` (Syft/CycloneDX, on PR) and `gate-image-provenance` (digest-bound, push-only) on top of the 8 universal gate-ids. Verified by `conformance/container-supply-chain.sh`.
 
 Conformance: `sh conformance/ci-gates.sh profiles/go/ci.yml`. Note: `gate-type-check`=`go vet`, `gate-build`=`go build`.
 
@@ -75,6 +76,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/go/ci.yml`. Note: `gate-type-c
 
 ## 9. Release & deploy
 - **Build artifact:** static binary + minimal container (distroless/scratch). **Deploy:** container to K8s/Fly; merge to `main` → deploy.
+- **Container (service):** build the multi-stage non-root image (`profiles/go/Dockerfile`, distroless `static` base), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/` (probes, resource limits, non-root `securityContext`). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. (A devcontainer isn't shipped — distroless has no shell; add one against `golang:1.22` if desired.)
 - **Feature flags:** env-backed or a flag service; flag-off = fastest rollback.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 

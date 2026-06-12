@@ -48,6 +48,7 @@ start:         uv run uvicorn <package>.api:app
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/python/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. `uv sync` → ruff → mypy → pytest+coverage(≥80) → `uv build` → secret-scan (gitleaks) → dependency scan (`pip-audit`) → SBOM (CycloneDX-py) → build provenance.
 - **`CODEOWNERS`** → copy to `.github/CODEOWNERS`. · **`BRANCH-PROTECTION.md`** → how to protect `main`.
+- **Container image supply-chain (this profile ships a service):** the reference `ci.yml` adds `gate-image-sbom` (Syft/CycloneDX, on PR) and `gate-image-provenance` (digest-bound, push-only) on top of the 8 universal gate-ids. Verified by `conformance/container-supply-chain.sh`.
 
 Conformance: `sh conformance/ci-gates.sh profiles/python/ci.yml`.
 
@@ -74,6 +75,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/python/ci.yml`.
 
 ## 9. Release & deploy
 - **Build artifact:** wheel + container image. **Deploy:** container to Fly/Railway/K8s; merge to `main` → deploy.
+- **Container (service):** build the multi-stage non-root image (`profiles/python/Dockerfile`, `python:3.12-slim` base — distroless tracks 3.11, so slim keeps the declared 3.12), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/` (read-only root FS + a writable `/tmp` emptyDir). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest.
 - **Feature flags:** env-backed or a flag service; flag-off = fastest rollback.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 

@@ -1,0 +1,31 @@
+# Local dev mirroring prod (DEVELOPMENT-STANDARDS.md §13 dev/prod parity).
+# COPY & ADAPT to your project root. The app builds from the same Dockerfile that ships.
+services:
+  app:
+    # Prod-parity by default (runs the shipped image). For hot-reload during dev,
+    # add a source mount and a dev command (e.g. `air`).
+    build:
+      context: .
+      target: runtime
+    environment:
+      DATABASE_URL: postgres://app:app@db:5432/app?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
