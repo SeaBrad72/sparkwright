@@ -45,6 +45,8 @@ Copy this file into your project (or your audit/review record). For each control
 | AI governance · System Card (if AI feature) | CC1.2, CC2.1 / A.5.1 / NIST AI RMF GOVERN, MAP | AI-SYSTEM-CARD + classification + sign-off (framework map: `../docs/enterprise/ai-governance-crosswalk.md`) | **Auto (conditional):** `sh conformance/responsible-ai-ready.sh` (+ Manual fairness/disclosure/compliance) | |
 | Test data · non-prod safety (if data surface) | CC6.1, C1.1 / A.8.10, A.8.11 (data masking) | RUNBOOK §2 test-data record + masking/synthetic evidence | **Auto (conditional):** `sh conformance/test-data-ready.sh` (+ Manual no-prod-data) | |
 | Preview environments · per-PR safety (if deploy surface) | CC8.1, CC6.1 / A.8.31 (env separation) | RUNBOOK §4 preview-env record + teardown/isolation evidence | **Auto (conditional):** `sh conformance/preview-env-ready.sh` (+ Manual spin-up/teardown/no-prod-data) | |
+| Agent-ops trace discipline recorded (agentic) | — | RUNBOOK §8 `Agent-ops:` record | **Auto (conditional):** `sh conformance/agentops-ready.sh` | |
+| Traces actually emit / behavior conforms (agentic) | — | real agent-run traces in the sink | Manual | |
 | Release readiness · Definition of Deployable | CC8.1 / A.8.31, A.8.32 | filled `definition-of-deployable.md` + script output | **Auto (conditional):** `sh conformance/deployable-ready.sh` | |
 | Cost governance · rate-limiting | CC7.1 / A.8.6 | config, budget alerts | Manual | |
 | Personnel / HR security | CC1.4 / A.6.1–A.6.6 | org program (outside the kit) | Manual — **Org-owned** | |

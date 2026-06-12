@@ -113,6 +113,8 @@ jobs:
         run: sh conformance/test-data-ready.sh --selftest
       - name: Preview-env-ready self-test (per-PR preview discipline)
         run: sh conformance/preview-env-ready.sh --selftest
+      - name: Agent-ops-ready self-test (agentic trace-discipline record)
+        run: sh conformance/agentops-ready.sh --selftest
 
       - name: DORA collector smoke (executes + degrades cleanly)
         run: sh scripts/dora.sh --selftest

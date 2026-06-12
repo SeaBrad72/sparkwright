@@ -62,6 +62,7 @@ check doc     observability-ready sh conformance/observability-ready.sh
 check doc     responsible-ai-ready sh conformance/responsible-ai-ready.sh
 check doc     test-data-ready  sh conformance/test-data-ready.sh
 check doc     preview-env-ready sh conformance/preview-env-ready.sh
+check doc     agentops-ready  sh conformance/agentops-ready.sh
 
 echo ""
 printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d failed\n' "$controls" "$docs" "$unverified" "$failed"

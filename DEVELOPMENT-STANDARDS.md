@@ -207,6 +207,7 @@ The architectural contract for **deployable services**, after Hoffman's *Beyond 
 - **Stateless processes (Factor 12)** — no sticky in-process or local-disk session state; horizontal scaling and disposability depend on this.
 - **Concurrency (Factor 13)** — the scaling model is the process model; document expected concurrency and how the service scales out.
 - **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs. Readiness: `conformance/observability-readiness.md` (SLOs + telemetry recorded in RUNBOOK §8; verified by `conformance/observability-ready.sh`).
+- **Agent-ops (agentic projects)** — observe the *agent's own execution* (trace: tool-calls, retries, cost, gates) feeding per-agent §13 autonomy tiers. Reference + trace contract: `docs/operations/agentic-ops.md`; readiness `conformance/agentic-ops-readiness.md` (verified by `conformance/agentops-ready.sh`).
 
 ---
 

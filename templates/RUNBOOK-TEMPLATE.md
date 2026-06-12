@@ -64,6 +64,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Error tracking: [tool/link] · Health check: [endpoint] · Alerts: [what fires, to whom]
 - **Resilience verification** *(deployable services — see `docs/operations/resilience-verification.md`)*: Load/soak tested: [date] · Fault-injection drill: [date]
 - **Observability** *(deployable services — Factor 14 / §3; verified by `conformance/observability-ready.sh`)*: SLOs: [target] · Telemetry wired: [signals]
+- **Agent observability** *(agentic projects — see `docs/operations/agentic-ops.md`; verified by `conformance/agentops-ready.sh`)*: Agent-ops: [trace]
 
 ## 9. Known issues / technical debt
 - [issue] — [impact] — [tracking link]

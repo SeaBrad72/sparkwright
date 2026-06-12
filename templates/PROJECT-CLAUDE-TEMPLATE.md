@@ -51,6 +51,7 @@ This file holds only what is **specific to this project**.
 - **Review routing / ownership** (§11): [who/which agent reviews what; CODEOWNERS link]
 - **WIP limits:** [per-stage or global cap]
 - **Environments** (§ "Environments & promotion"): Dev → QA → UAT → Prod — [per-tier deploy trigger]; [if collapsing tiers, name which you use + one-line reason]. Production promotion is human-gated.
+- **Agent-ops** *(if agentic)*: set `Agentic: yes` and declare the agent-run trace posture in RUNBOOK §8 (`Agent-ops:`); see `docs/operations/agentic-ops.md`. Verified by `conformance/agentops-ready.sh`.
 
 ## 4. Roles (this project)
 
