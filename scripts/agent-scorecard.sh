@@ -36,34 +36,32 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# score_agent: stdin = JSON array of an agent's trace objects; args control thresholds.
-# Emits the per-agent scorecard object (metrics + classification + directive).
-# All metric math + classification is in jq (no JSON parsed in sh).
-score_agent() {
-  jq -s --argjson window "$WINDOW" --argjson minruns "$MIN_RUNS" \
-        --argjson margin "$MARGIN" '
+# The scorecard jq program. `score` scores ONE agent's run-array (`.`); the trailer
+# groups all traces by agent.id and maps `score` over each group — so agent ids never
+# transit shell word-splitting (a spaced id can't spawn phantom cards). No apostrophes
+# in any string (the program is single-quoted in sh). No JSON is parsed in sh.
+SCORECARD_JQ='
+  def denial($a): ($a | [.[].steps[]?.outcome] | if length==0 then 0
+                   else (map(select(.=="denied")) | length) / length end);
+  def errrate($a): ($a | if length==0 then 0
+                   else (map(select(.outcome=="error" or .outcome=="blocked")) | length)/length end);
+  def retry($a): ($a | if length==0 then 0 else (map([.steps[]?.retries] | add // 0) | add / length) end);
+  def reviews($a): ($a | [.[]."review.rounds" | select(type=="number")]
+                   | if length==0 then null else (add/length) end);
+  def score($window; $minruns; $margin):
     (sort_by(.start) | (if length > $window then .[-$window:] else . end)) as $runs
     | ($runs | length) as $n
     | ($runs[: ($n/2 | floor)]) as $base
     | ($runs[($n/2 | floor):]) as $rec
-    | def denial($a): ($a | [.[].steps[]?.outcome] | if length==0 then 0
-                       else (map(select(.=="denied")) | length) / length end);
-      def errrate($a): ($a | if length==0 then 0
-                       else (map(select(.outcome=="error" or .outcome=="blocked")) | length)/length end);
-      def retry($a): ($a | if length==0 then 0 else (map([.steps[]?.retries] | add // 0) | add / length) end);
-      def reviews($a): ($a | [.[]."review.rounds" | select(type=="number")]
-                       | if length==0 then null else (add/length) end);
-    {
-      "agent.id": ($runs[0]["agent.id"] // "unknown"),
-      runs: $n,
-      metrics: {
-        denial_rate: denial($runs), error_blocked_rate: errrate($runs),
-        retry_rate: retry($runs), review_rounds_mean: reviews($runs),
-        gate_skip_rate: "unknown"
-      },
-      baseline: {denial: denial($base), err: errrate($base)},
-      recent:   {denial: denial($rec), err: errrate($rec)}
-    }
+    | {
+        "agent.id": ($runs[0]["agent.id"] // "unknown"),
+        runs: $n,
+        metrics: { denial_rate: denial($runs), error_blocked_rate: errrate($runs),
+                   retry_rate: retry($runs), review_rounds_mean: reviews($runs),
+                   gate_skip_rate: "unknown" },
+        baseline: {denial: denial($base), err: errrate($base)},
+        recent:   {denial: denial($rec), err: errrate($rec)}
+      }
     | .classification = (
         if $n < $minruns then "steady"
         elif (.recent.denial - .baseline.denial) >= $margin
@@ -74,35 +72,33 @@ score_agent() {
     | .directive = (
         if .classification == "regressed" then
           {action:"auto-downgrade", reason:"recent risk metrics exceed trailing baseline by >= margin",
-           recommend:"lower this agent'\''s autonomy tier one level (fail-safe; no ratification needed)"}
+           recommend:"lower the agent autonomy tier one level (fail-safe; no ratification needed)"}
         elif .classification == "earned" then
           {action:"raise-recommendation", reason:"sustained improvement vs trailing baseline",
-           recommend:"route to Security owner to ratify a one-level autonomy-tier raise (§13)"}
-        else null end )
-  '
-}
+           recommend:"route to the Security owner to ratify a one-level autonomy-tier raise (see section 13)"}
+        else null end );
+  group_by(."agent.id") | map(score($window; $minruns; $margin))
+'
 
-# run_all: group all traces by agent.id, score each, collect into one report array.
+# run_all: collect valid traces (skip + warn on an unparseable file — never silently
+# zero the report), then group + score entirely in jq. Emits a JSON array.
 run_all() {
   _dir="$1"
-  # Handle missing or empty traces dir gracefully
-  if [ ! -d "$_dir" ] || [ -z "$(ls "$_dir"/*.json 2>/dev/null)" ]; then
-    printf '[]'
-    return 0
-  fi
-  _agents=$(jq -r '."agent.id" // "unknown"' "$_dir"/*.json 2>/dev/null | sort -u)
-  if [ -z "$_agents" ]; then
-    printf '[]'
-    return 0
-  fi
-  printf '['
-  _first=1
-  for _a in $_agents; do
-    _card=$(jq -c --arg a "$_a" 'select(."agent.id" == $a)' "$_dir"/*.json | score_agent)
-    [ "$_first" -eq 1 ] && _first=0 || printf ','
-    printf '%s' "$_card"
-  done
-  printf ']'
+  [ -d "$_dir" ] || { printf '[]'; return 0; }
+  # Per-file parse so one corrupt trace cannot abort the whole stream (and drop a real
+  # agent). Valid objects go to stdout (collected); unparseable files warn on stderr.
+  _stream=$(for _f in "$_dir"/*.json; do
+    [ -f "$_f" ] || continue
+    if _obj=$(jq -c . "$_f" 2>/dev/null); then
+      printf '%s\n' "$_obj"
+    else
+      printf 'agent-scorecard: skipping unparseable trace %s\n' "$_f" >&2
+    fi
+  done)
+  [ -n "$_stream" ] || { printf '[]'; return 0; }
+  printf '%s\n' "$_stream" | jq -s \
+    --argjson window "$WINDOW" --argjson minruns "$MIN_RUNS" --argjson margin "$MARGIN" \
+    "$SCORECARD_JQ"
 }
 
 selftest() {

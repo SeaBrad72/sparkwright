@@ -56,7 +56,7 @@ Record the posture in **RUNBOOK §8** (`Agent-ops:` — schema + emitter + sink)
 
 `scripts/agent-scorecard.sh` reads a window of traces, groups by `agent.id`, and computes
 the trace-derivable behavior metrics — `denial_rate`, `error_blocked_rate`, `retry_rate`,
-`review_rounds_mean` (risk metrics), plus an informational `out_token_trend`. `gate_skip_rate`
+`review_rounds_mean` (the risk metrics). `gate_skip_rate`
 is `unknown` in v1 (a non-run isn't observable from a transcript). It classifies each agent
 against its **own trailing baseline** (older half vs recent half of the window):
 

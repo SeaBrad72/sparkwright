@@ -16,7 +16,7 @@ Copy this file into your project (or your reliability record). For each item: ma
 | 3 | Traces actually emit per agent-run — a real run's trace is viewable in the sink *(verified)* | | | Manual |
 | 4 | Multi-agent keying holds — concurrent runs have distinct `(agent.id, run.id)`; `parent.run.id` builds the spawn tree *(verified)* | | | Manual |
 | 5 | Guard denials captured — a `tool.outcome: denied` step appears when the §13 guard blocks an action *(verified)* | | | Manual |
-| 6a | Behavior-scorecard discipline declared — agent traces scored over a window (`scripts/agent-scorecard.sh`) *(documented)* | | | **Auto:** agentops-ready.sh (RUNBOOK §8) |
+| 6a | Behavior-scorecard discipline declared — agent traces scored over a window (`scripts/agent-scorecard.sh`) *(documented)* | | | Manual (no auto check asserts scorecard discipline yet) |
 | 6b | Tier directives actually drive moves — a downgrade tightened / a ratified raise loosened a real agent's tier *(verified)* | | | Manual |
 
 ## Worked example — a project built by an agent (the kit dogfooding itself)
@@ -28,7 +28,7 @@ Copy this file into your project (or your reliability record). For each item: ma
 | 3 | Traces emit per run *(verified)* | Y | every merged PR's build run has a corresponding trace file | Manual ✅ |
 | 4 | Multi-agent keying *(verified)* | Y | two parallel sub-agent runs show distinct run.ids + shared parent.run.id | Manual ✅ |
 | 5 | Guard denials captured *(verified)* | Y | a blocked `rm -rf` shows `tool.outcome: denied` in the trace | Manual ✅ |
-| 6a | Behavior-scorecard discipline declared *(documented)* | Y | scorecard run in CI weekly over `traces/` via `sh scripts/agent-scorecard.sh --selftest` | Auto ✅ |
+| 6a | Behavior-scorecard discipline declared *(documented)* | Y | scorecard run in CI weekly over `traces/` (`scripts/agent-scorecard.sh`); discipline noted in RUNBOOK §8 | Manual ✅ |
 | 6b | Tier directives actually drive moves *(verified)* | Y | a regressed agent's tier was lowered via the platform policy after receiving an auto-downgrade directive | Manual ✅ |
 
 > A non-agentic project (a plain library/CLI with no agent actor) marks the whole check **N/A — no agent runs to trace**; `agentops-ready.sh` skip-passes it automatically.
