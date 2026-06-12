@@ -29,7 +29,7 @@ check_dir() {
     echo "FAIL: SECURITY.md has no 'Security contact:' line — name a real reporting channel"
     return 1
   fi
-  if grep -Fiq 'security contact:** [security-contact]' "$sec" || grep -Fiq '[security-contact]' "$sec"; then
+  if grep -Fiq '[security-contact]' "$sec"; then
     echo "FAIL: SECURITY.md still holds the [security-contact] placeholder — record a real contact"
     return 1
   fi
