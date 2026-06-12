@@ -1,0 +1,15 @@
+# Reference k8s Service for the Python profile. COPY & ADAPT.
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-app
+  labels:
+    app: python-app
+spec:
+  type: ClusterIP
+  selector:
+    app: python-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000

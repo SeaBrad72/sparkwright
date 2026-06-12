@@ -1,0 +1,21 @@
+.git
+.gitignore
+.env
+.env.*
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage
+dist
+build
+.github
+# excludes dev docs; scope this if your app reads markdown at runtime
+*.md
+Dockerfile
+.dockerignore
+compose.yaml
+deploy

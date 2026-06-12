@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+bin
+dist
+coverage
+cover.out
+.github
+# excludes dev docs; scope this if your app reads markdown at runtime
+*.md
+Dockerfile
+.dockerignore
+compose.yaml
+.devcontainer
+deploy
