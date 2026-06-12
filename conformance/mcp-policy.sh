@@ -8,6 +8,7 @@ set -eu
 
 CORE="${KIT_GUARD_CORE:-.claude/hooks/guard-core.sh}"
 [ -f "$CORE" ] || { echo "FAIL: guard-core not found ($CORE)"; exit 1; }
+# shellcheck disable=SC1090  # dynamic source path; guarded by the [ -f ] check above
 . "$CORE"
 
 fail=0

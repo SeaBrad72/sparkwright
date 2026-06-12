@@ -18,7 +18,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 
 ## 1. Toolchain
 - **Runtime:** Rust stable (pin via `rust-toolchain.toml`) · **Deps:** Cargo (`Cargo.lock` committed)
-- **Format/lint:** `cargo fmt` + `cargo clippy` · **Types:** the compiler (`cargo check`)
+- **Format/lint:** `cargo fmt` + `cargo clippy` · **Types:** the compiler (`cargo check`) · **Complexity/duplication** (recommended `gate-lint` config): `clippy::cognitive_complexity` + `jscpd` (`docs/operations/code-quality.md`)
 - **Tests:** `cargo test` + `cargo-llvm-cov` (coverage gate) · **Test quality:** proptest/quickcheck (property-based) + cargo-mutants (mutation — `docs/operations/test-quality.md`) · **Build:** `cargo build --release`
 - **Inner loop:** `pre-commit` (rustfmt + clippy; `cargo test`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 

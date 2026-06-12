@@ -100,6 +100,7 @@ emit() {
   _t="$1"
   # Pad with empty trailing fields so $4/$5 stay bound under `set -u` even when the
   # transcript has no timestamps (start/end collapse to empty — compacted transcripts).
+  # shellcheck disable=SC2046  # word-splitting the token/timing fields is intended here
   set -- $(extract_tokens_timing "$_t") "" "" ""
   _in=${1:-0}; _out=${2:-0}; _cache=${3:-0}; _start=${4:-}; _end=${5:-}
   _steps=$(extract_steps "$_t")

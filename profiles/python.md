@@ -18,7 +18,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 
 ## 1. Toolchain
 - **Runtime:** Python 3.12+ · **Package/deps:** `uv` (lockfile `uv.lock` committed; exact pins for prod)
-- **Format/lint:** `ruff` (format + lint; replaces black/isort/flake8) · **Types:** `mypy` (strict)
+- **Format/lint:** `ruff` (format + lint; replaces black/isort/flake8) · **Types:** `mypy` (strict) · **Complexity/duplication** (recommended `gate-lint` config): `ruff` `C901` (mccabe) / `radon cc` + `jscpd` (`docs/operations/code-quality.md`)
 - **Tests:** `pytest` + `pytest-cov` (coverage gate) · **Test quality:** `hypothesis` (property-based) + `mutmut`/`cosmic-ray` (mutation, critical paths/nightly — `docs/operations/test-quality.md`) · **Build:** `uv build` (wheel + sdist)
 - **Inner loop:** `pre-commit` (ruff format+lint, mypy, `pytest-testmon` fast subset) on commit — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 

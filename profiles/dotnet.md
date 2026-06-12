@@ -18,7 +18,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 
 ## 1. Toolchain
 - **Runtime:** .NET 8 LTS · **Build/deps:** `dotnet` CLI + NuGet (lockfile `packages.lock.json`, `RestoreLockedMode` in CI)
-- **Format/lint:** `dotnet format` + Roslyn analyzers (`TreatWarningsAsErrors`) · **Types:** the compiler (`dotnet build` = type-check)
+- **Format/lint:** `dotnet format` + Roslyn analyzers (`TreatWarningsAsErrors`) · **Types:** the compiler (`dotnet build` = type-check) · **Complexity/duplication** (recommended `gate-lint` config): Roslyn analyzers / SonarAnalyzer + `jscpd` (`docs/operations/code-quality.md`)
 - **Tests:** xUnit + coverlet (coverage gate) · **Test quality:** FsCheck/CsCheck (property-based) + Stryker.NET (mutation — `docs/operations/test-quality.md`) · **Build:** `dotnet publish -c Release`
 - **Inner loop:** `pre-commit` (`dotnet format` + analyzers; `dotnet test --filter`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 

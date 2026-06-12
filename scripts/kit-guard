@@ -10,9 +10,11 @@
 # Resolve the core relative to this script, or via KIT_GUARD_CORE override.
 set -eu
 
+# shellcheck disable=SC1007  # CDPATH= intentionally clears CDPATH to avoid cd side-effects
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 CORE="${KIT_GUARD_CORE:-$SELF_DIR/../.claude/hooks/guard-core.sh}"
 [ -f "$CORE" ] || { echo "kit-guard: guard-core.sh not found ($CORE); set KIT_GUARD_CORE" >&2; exit 2; }
+# shellcheck disable=SC1090  # dynamic source path; guarded by the [ -f ] check above
 . "$CORE"
 
 usage() { sed -n '2,10p' "$0"; }

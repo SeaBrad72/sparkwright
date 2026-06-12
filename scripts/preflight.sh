@@ -74,6 +74,7 @@ need sh  "any POSIX shell"
 echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
 recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"
 if command -v gh >/dev/null 2>&1; then
+  # shellcheck disable=SC2034  # rec mirrors miss for recommended tools; warnings don't fail the run
   if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=1; fi
 fi
 

@@ -18,7 +18,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 
 ## 1. Toolchain
 - **Engine:** Terraform ≥1.6 (HCL); providers pinned via `.terraform.lock.hcl` (committed)
-- **Format/lint:** `terraform fmt` + **tflint** (provider ruleset) · **Validate:** `terraform validate`
+- **Format/lint:** `terraform fmt` + **tflint** (provider ruleset) · **Validate:** `terraform validate` · **Complexity/duplication** (recommended `gate-lint` config): tflint / Checkov (policy is the bar) + `jscpd` (HCL) (`docs/operations/code-quality.md`)
 - **Tests:** **`terraform test`** (native HCL `*.tftest.hcl`) · **Policy:** **Checkov** + **conftest/OPA** (tfsec-style misconfig is covered by **Trivy**, which tfsec is now merged into)
 - **Test quality:** here the **policy/plan tests ARE the bar** (`terraform test` + Checkov/conftest = the `gate-policy` gate); mutation/property-based testing is **N/A for HCL** (no unit logic to mutate) — see `docs/operations/test-quality.md`
 - **Inner loop:** `pre-commit` (`terraform fmt` + tflint; `terraform validate`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)

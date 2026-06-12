@@ -11,6 +11,7 @@ if [ ! -f "$CORE" ]; then
   echo "kit pre-push: guard-core.sh not found ($CORE) — allowing push UNPROTECTED." >&2
   exit 0
 fi
+# shellcheck disable=SC1090  # dynamic source path; guard check above handles missing
 . "$CORE"
 
 if [ "${1:-}" = "--selftest" ]; then
@@ -40,6 +41,7 @@ fi
 
 # Normal invocation: git passes "<local-ref> <local-sha> <remote-ref> <remote-sha>" per line on stdin.
 status=0
+# shellcheck disable=SC2034  # local_ref is required by the git hook protocol (4-field stdin)
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${remote_ref:-}" ] || continue
   if reason=$(guard_check_push "$remote_ref" "$local_sha" "$remote_sha"); then

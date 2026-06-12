@@ -106,7 +106,7 @@ DISCOVER → PLAN →│spec│→ BUILD → REVIEW →│merge│→ RELEASE �
 | **Discover** | Intake, **product validation** (§5), triage, innovation lens. | Validated candidate item |
 | **Plan** | Slice into small vertical increments; acceptance criteria; spec for non-trivial work; **threat-model** sensitive features (→ `templates/THREAT-MODEL-TEMPLATE.md`). Must reach the **Definition of Ready** (the entry gate in `CLAUDE.md`). | Spec gate (human) |
 | **Build** | TDD per `DEVELOPMENT-STANDARDS.md`. L0 reflection-in-action runs continuously. Fast inner loop (`docs/operations/dev-inner-loop.md`). | Self-verified, tests green |
-| **Review** | "Did we build it *right*?" — code + adversarial/multi-lens + **security lens**, routed per ownership. | Merge gate (human) |
+| **Review** | "Did we build it *right*?" — code + adversarial/multi-lens + **security lens** + **code-quality lens** (`templates/CODE-REVIEW-CHECKLIST.md`), routed per ownership. | Merge gate (human) |
 | **Release** | "Done → Live": deploy, feature flags, staged rollout, smoke test, CHANGELOG, rollback ready — see **Safe Change Delivery (§10)**; verified against `conformance/definition-of-deployable.md`. Breaking changes need explicit approval. | Live in production |
 | **Done** | **Acceptance** ("right thing?"), Definition of Done met, **L1 retro** written. | Closed |
 | **Operate** | Monitor, triage, resolve; **feed signals back to Discover** (§9). | Continuous |

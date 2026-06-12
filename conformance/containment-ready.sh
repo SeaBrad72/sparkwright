@@ -80,7 +80,7 @@ classify_aspect() {
   _pre="^[[:space:]]*[-*]?[[:space:]]*$_key:"
   if [ -f "$_rb" ]; then
     # N/A token-anchored ([^[:alnum:]] is -i-safe) so 'NAS'/'native' don't read as N/A
-    if grep -Eiq "$_pre[[:space:]]*n/?a([^[:alnum:]]|\$)" "$_rb"; then _is_na=1; fi
+    if grep -Eiq "${_pre}[[:space:]]*n/?a([^[:alnum:]]|\$)" "$_rb"; then _is_na=1; fi
     if grep -Eiq "$_pre" "$_rb"; then _present=1; fi
     if grep -Eiq "$_pre.*enforced:[[:space:]]*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" "$_rb"; then _attested=1; fi
   fi

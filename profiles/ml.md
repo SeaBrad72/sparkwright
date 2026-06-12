@@ -18,7 +18,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 
 ## 1. Toolchain
 - **Runtime:** Python 3.12+ · **Deps:** `uv` (lockfile `uv.lock`; exact pins for prod)
-- **Format/lint:** `ruff` (+ `nbqa ruff` for notebooks) · **Types:** `mypy`
+- **Format/lint:** `ruff` (+ `nbqa ruff` for notebooks) · **Types:** `mypy` · **Complexity/duplication** (recommended `gate-lint` config): `ruff` `C901` (mccabe) / `radon cc` + `jscpd` (`docs/operations/code-quality.md`)
 - **Tests:** `pytest` (+ `pandera` data validation, `nbmake` notebook smoke) · **Eval:** an `evals/` harness (the §7 eval gate) · **Test quality:** Hypothesis (property-based) + mutmut (mutation — `docs/operations/test-quality.md`) · **Build:** `uv build`
 - **Inner loop:** `pre-commit` (ruff/mypy + nbqa for notebooks; `pytest-testmon`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
 - **ML ops:** MLflow (experiment tracking + model registry) · DVC (data/model versioning) · notebook hygiene (`nbstripout` + `jupytext`)
