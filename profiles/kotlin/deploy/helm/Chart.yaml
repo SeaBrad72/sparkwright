@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kotlin-app
+description: Reference Helm chart for the Kotlin / Spring Boot profile (COPY & ADAPT).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

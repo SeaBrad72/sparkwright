@@ -49,6 +49,7 @@ start:         java -jar target/*.jar
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/java-spring/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. spotless/checkstyle → `mvn compile` (type-check) → JUnit5+JaCoCo(≥80) → `mvn package` → secret-scan (gitleaks) → dependency scan (OWASP) → SBOM (CycloneDX-maven) → build provenance.
 - **`CODEOWNERS`** → copy to `.github/CODEOWNERS`. · **`BRANCH-PROTECTION.md`** → how to protect `main`.
+- **Container image supply-chain (this profile ships a service):** the reference `ci.yml` adds `gate-image-sbom` (Syft/CycloneDX, on PR) and `gate-image-provenance` (digest-bound, push-only) on top of the 8 universal gate-ids. Verified by `conformance/container-supply-chain.sh`.
 
 Conformance: `sh conformance/ci-gates.sh profiles/java-spring/ci.yml`. Note: Java has no separate type-check step — compilation **is** type-checking, so `gate-type-check`=`mvn compile` and `gate-build`=`mvn package`.
 
@@ -75,6 +76,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/java-spring/ci.yml`. Note: Jav
 
 ## 9. Release & deploy
 - **Build artifact:** executable jar + container image (Jib/buildpacks). **Deploy:** container to K8s/Fly; merge to `main` → deploy.
+- **Container (service):** build the multi-stage non-root image (`profiles/java-spring/Dockerfile`, distroless `java21` JRE base), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/` (Actuator liveness/readiness probes, read-only root FS + writable `/tmp`, JVM-slow-start ⇒ prefer a startupProbe). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. (No in-image HEALTHCHECK or devcontainer — distroless has no shell; k8s probes are the health mechanism.)
 - **Feature flags:** a flag service or Spring `@ConfigurationProperties`; flag-off = fastest rollback.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 

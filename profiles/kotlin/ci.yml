@@ -1,14 +1,16 @@
 # Reference CI pipeline for the Kotlin/Spring profile.
 # COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
 # Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
-# Satisfies DEVELOPMENT-STANDARDS.md §14.
+# Satisfies DEVELOPMENT-STANDARDS.md §14, incl. the conditional container image
+# supply-chain (gate-image-sbom + gate-image-provenance — this profile ships a service).
 #
 # HARDENING (do before production):
 #  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
 #  - Pin tool installs to exact versions.
-#  - OIDC is least-privilege here: id-token:write lives only on the push-only `provenance`
-#    job, so PR-triggered steps cannot mint a token. Your cloud trust policy MUST restrict
-#    `sub` to `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
+#  - OIDC is least-privilege here: id-token:write / packages:write live only on the
+#    push-only `provenance` and `image-provenance` jobs, so PR-triggered steps cannot mint a
+#    token or push an image. Your cloud trust policy MUST restrict `sub` to
+#    `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
 name: CI
 
 on:
@@ -72,6 +74,28 @@ jobs:
           name: sbom
           path: build/reports/cyclonedx/bom.json   # cyclonedx-gradle-plugin v3+ default output dir
 
+      # --- conditional container image supply-chain (service profile) ---
+      # Builds the image and scans it on EVERY PR (real scan-before-merge); no push here.
+      # NOTE: this PR-time build and the push-only `image-provenance` build are independent,
+      # so the scanned digest is not guaranteed identical to the attested digest. Least-
+      # privilege forbids the PR job from pushing, so a single shared build can't span both.
+      - name: Build container image (local, for SBOM scan)
+        run: docker build -t kotlin-app:ci .
+
+      - name: Generate image SBOM (Syft, CycloneDX)
+        id: gate-image-sbom
+        uses: anchore/sbom-action@v0
+        with:
+          image: kotlin-app:ci
+          format: cyclonedx-json
+          output-file: image-sbom.json
+
+      - name: Upload image SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-sbom
+          path: image-sbom.json
+
       - name: Upload build artifact (for provenance)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
@@ -98,3 +122,39 @@ jobs:
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: build-artifact/**
+
+  image-provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push image to GHCR (scoped to this push-only job)
+      id-token: write       # OIDC for digest-bound attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute lowercase image name
+        id: image
+        # GHCR stores image paths lowercase; github.repository may be mixed-case.
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - name: Build and push image
+        id: build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+      - name: Attest image provenance (digest-bound)
+        id: gate-image-provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build-push.outputs.digest }}
+          push-to-registry: true

@@ -1,0 +1,15 @@
+# Reference k8s Service for the .NET / ASP.NET Core profile. COPY & ADAPT.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dotnet-app
+  labels:
+    app: dotnet-app
+spec:
+  type: ClusterIP
+  selector:
+    app: dotnet-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

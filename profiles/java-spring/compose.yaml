@@ -1,0 +1,33 @@
+# Local dev mirroring prod (DEVELOPMENT-STANDARDS.md §13 dev/prod parity).
+# COPY & ADAPT to your project root. The app builds from the same Dockerfile that ships.
+services:
+  app:
+    # Prod-parity by default (runs the shipped image). For hot-reload during dev,
+    # use `./mvnw spring-boot:run` on the host against the compose db instead.
+    build:
+      context: .
+      target: runtime
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/app
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: app
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
