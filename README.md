@@ -8,7 +8,7 @@ A complete, **stack-agnostic** software development lifecycle designed for teams
 
 It is opinionated about *how to build well with agents* and deliberately neutral about *what you build it with*.
 
-> **Sparkwright is the execution engine** — it takes you from a *Ready* backlog to operating, monitored software, with the guardrails built in. If you already have product + design figured out, drop it in and build. (A discovery front-end — turning raw signals into Ready work — is a separate, optional upstream layer; see the roadmap.)
+> **Sparkwright is the execution engine** — it takes you from a *Ready* backlog to operating, monitored software, with the guardrails built in. If you already have product + design figured out, drop it in and build. (A discovery front-end — turning raw signals into Ready work — is an optional upstream layer — see **[docs/discovery/discovery-loop.md](docs/discovery/discovery-loop.md)**.)
 
 Choosing a stack? See [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md).
 
@@ -29,6 +29,7 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | **`ONBOARDING.md`** | The experience-aware front door — meet developers from vibe-coder to principal, then hand to START-HERE. |
 | **`MAINTAINING.md`** | How the kit is built, versioned, and contributed back to (the contract/reference/conformance convention). |
 | **`WALKTHROUGH.md`** | A narrative of the kit in motion — one feature from idea to operating software. |
+| **`docs/discovery/`** | The optional upstream **discovery loop** (FRAME → SHAPE → Ready) — turn a raw signal into a Ready backlog. Skip it if you already have one. |
 | **`CLAUDE.md`** | Principles + Definition of Done. Authoritative. |
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |

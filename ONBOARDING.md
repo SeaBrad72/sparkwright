@@ -22,6 +22,10 @@ Pick the one that sounds like you. Non-punitive — feels too basic? Jump up a l
 - **Practitioner** — *"I've shipped enterprise software; route me to the contract."* →
   **straight to [START-HERE.md](START-HERE.md)** + the principles (`CLAUDE.md`). Skip the rest.
 
+> **Don't have the product or design figured out yet?** Most of this kit assumes you arrive with a
+> *Ready* backlog. If you're upstream of that — raw idea, no validated problem yet — start with the
+> optional **[discovery loop](docs/discovery/discovery-loop.md)** (FRAME → SHAPE → Ready), then come back.
+
 ## Learning lane (Novice + Adjacent)
 
 You don't need to learn all of this before you start — you need to know it *exists* and *why*, then
