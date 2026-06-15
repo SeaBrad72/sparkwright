@@ -3,6 +3,20 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.58.0] - 2026-06-15
+
+**Code-quality lens + CI-coverage lock** — a deliberately right-sized quality pass (pulled back from a 3-slice arc after a strategic check: the kit was already strong on `gate-lint`/type-checks/test-quality/coverage-ratchet/builder≠reviewer, so this polishes the last 20%) plus a meta-check that makes the kit's own CI enforcement self-auditing. **MINOR** — a new control check + adopter-facing review discipline; **no new universal-required gate** (the code-quality lens is review discipline, not a fail-closed gate, by design).
+
+### Added
+- **Code-quality lens** (`#85`): `docs/operations/code-quality.md` — the review dimensions a metric can't gate (readability · simplicity · function size · naming · comment quality · type/interface design · cohesion/coupling · dead code) + complexity/duplication as **recommended per-stack `gate-lint` config** (not new gates) + consistency as the through-line. `templates/CODE-REVIEW-CHECKLIST.md` for the §7 Review gate; a `+0` fold in `DEVELOPMENT-PROCESS.md` §7 naming the lens; the per-stack complexity/duplication linter line across all 10 profiles + `_TEMPLATE`.
+- **Shellcheck regression-lock** (`#85`): `conformance/shellcheck.sh` lints the kit's **maintainer-editable** shell (`scripts/`, `conformance/`, `hooks/pre-push`) at the error/warning floor; conditional on shellcheck installed (SKIP-pass if absent; CI runs it for real). Kit shell made clean via justified `# shellcheck disable=SCnnnn # reason` comments.
+- **CI smokes** (`#86`): `security-policy.sh` + `privacy-ready.sh` selftests and the `shellcheck.sh` real-run/selftest wired into the kit's own pipeline (closing the SP-2/SP-3/code-quality CI-wiring gap).
+- **CI-coverage meta-check** (this release): `conformance/ci-selftest-coverage.sh` — flags (fail-closed) any selftest-capable kit check (`conformance/*.sh`, `scripts/*.sh`, `hooks/pre-push`) that is not wired into `ci.yml`, so a checker can't quietly ship "existing but unenforced." "Wired" means named in an execution context (comments and `name:` labels are stripped before matching, so a *mention* isn't mistaken for a *run*). **Self-excluded** (a meta-check can't non-circularly verify its own wiring — its presence in `ci.yml` is a one-time maintainer bootstrap). Registered as a `verify.sh` control; it gates the push **as its own real-run CI step** (the kit's `verify.sh --selftest` step is a renderer check and does not propagate control exit codes).
+
+### Honesty / engineering notes
+- **The shellcheck scope is honest, not maximal**: the §13 control-plane guard (`.claude/hooks/guard*.sh`) is **excluded** from the lint lock — it carries only benign warnings (redundant-but-still-denying case patterns + a `cls=read` false positive; no dead deny-rule, independently verified) and is regression-locked **behaviorally** by its own deny-corpus conformance instead. The README/header scope the claim to maintainer shell rather than overclaiming "the kit's own shell code."
+- **A check "existing" ≠ "enforced"**: a `.sh` with a `--selftest` only protects against regressions once it runs in CI on every push. The coverage meta-check turns that from a thing a human must remember into a thing the kit guarantees.
+
 ## [2.57.0] - 2026-06-12
 
 **Security & Privacy completeness arc** — closes the verified gaps from a repo-grounded gap-scan so the kit's security/privacy posture is whole before the pivot to UX/product-design. **MINOR** — new conditional gates + reference tools + readiness checks; no new *universal-required* gate. Three ratified, security-reviewed slices (#79 SP-1, #82 SP-2, #83 SP-3).
