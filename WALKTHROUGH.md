@@ -32,7 +32,7 @@ Trace *"add CSV export"* through `Discover → Plan → Build → Review → Rel
 
 - **Discover** — idea enters and is validated lightly (who needs it? evidence? success metric: "X% of users export within 30 days"). Becomes a board candidate, ranked **value × urgency ÷ risk**.
 - **Plan** — sliced into a small vertical increment; acceptance criteria written; threat-model if sensitive. Reaches **Definition of Ready** → **spec gate (human approves).**
-- **Build** — a builder agent **claims it atomically**, works in an **isolated worktree**, TDD per the profile. **L0 reflection-in-action** runs continuously (test → observe → adjust). The agent acts at its **autonomy tier**: writes code + opens a PR unattended (reversible), but stops at the merge gate.
+- **Build** — a builder agent **claims it atomically**, works in an **isolated worktree**, TDD per the profile (**new to TDD? see the worked red-green-refactor: `docs/onboarding/first-feature-tdd.md`**). **L0 reflection-in-action** runs continuously (test → observe → adjust). The agent acts at its **autonomy tier**: writes code + opens a PR unattended (reversible), but stops at the merge gate.
 - **Review** — a *different* agent + human review quality, security lens, standards (+ the **eval gate** if a prompt/model changed) → **merge gate (human approves).**
 - **Release** — deploy behind a **feature flag**, staged rollout, smoke test, CHANGELOG updated, **rollback path ready** (flag-off is fastest).
 - **Done** — **acceptance checkpoint** (did we build the *right* thing?), Definition of Done met, builder writes a tiny **L1 retro** on the PR.
