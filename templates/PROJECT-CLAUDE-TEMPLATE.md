@@ -6,13 +6,13 @@
 **Intent owner:** [who owns the why]
 **Status:** [Inception / Active / Maintenance / Paused]
 **Created:** [date]
-**Kit version adopted:** [vX.Y.Z — the Agentic SDLC Kit release this project was incepted from; see the kit's `CHANGELOG.md`]
+**Kit version adopted:** [vX.Y.Z — the Sparkwright release this project was incepted from; see the kit's `CHANGELOG.md`]
 
 ---
 
 ## Inherited standards (do not duplicate)
 
-This project follows the Agentic SDLC Kit. Read these (paths relative to wherever the kit lives in/by your repo), do not restate them here:
+This project follows Sparkwright (the agentic SDLC kit). Read these (paths relative to wherever the kit lives in/by your repo), do not restate them here:
 
 - **Principles + Definition of Done:** `CLAUDE.md`
 - **Process (the flow):** `DEVELOPMENT-PROCESS.md`

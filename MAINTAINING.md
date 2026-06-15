@@ -1,6 +1,6 @@
 # Maintaining the Kit
 
-How the Agentic SDLC Kit is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it has a `CHANGELOG`, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; it is not copied into adopting projects.
+How Sparkwright is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it has a `CHANGELOG`, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; it is not copied into adopting projects.
 
 ---
 

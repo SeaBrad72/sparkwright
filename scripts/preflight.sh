@@ -1,5 +1,5 @@
 #!/bin/sh
-# preflight.sh — prerequisite check for the Agentic SDLC Kit. Fails fast with
+# preflight.sh — prerequisite check for Sparkwright (the agentic SDLC kit). Fails fast with
 # install hints so a missing tool surfaces HERE, not as a cryptic guard/conformance
 # failure later (jq is hard-required by the guard + conformance). Universal check
 # always; optional per-stack toolchain via --stack.
@@ -65,7 +65,7 @@ if [ "$SELFTEST" -eq 1 ]; then
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 
-echo "Agentic SDLC Kit — preflight"
+echo "Sparkwright — preflight"
 echo "Universal prerequisites:"
 need jq  "brew install jq | apt-get install jq | dnf install jq"
 need git "git-scm.com/downloads"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # incept.sh — Inception bootstrap (DEVELOPMENT-PROCESS.md §3 / START-HERE.md).
-# Transforms a freshly-cloned Agentic SDLC Kit into a configured, Inception-complete
+# Transforms a freshly-cloned Sparkwright kit into a configured, Inception-complete
 # project, in place. Interactive by default; --noninteractive for automation/CI.
 #
 #   sh scripts/incept.sh [--name N] [--intent-owner O] [--stack S] \
@@ -62,7 +62,7 @@ fi
 # --- safety guards ---
 [ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
 { [ -f CLAUDE.md ] && grep -q "Engineering Principles & Definition of Done" CLAUDE.md; } || {
-  echo "error: not an un-incepted Agentic SDLC Kit (principles CLAUDE.md not found). Aborting." >&2; exit 1; }
+  echo "error: not an un-incepted Sparkwright kit (principles CLAUDE.md not found). Aborting." >&2; exit 1; }
 
 # brownfield safety: warn (never modify) if a .claude/ exists without the kit guard wired.
 if [ -f .claude/settings.json ] && ! grep -q 'guard\.sh' .claude/settings.json; then

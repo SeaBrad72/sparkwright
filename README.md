@@ -1,10 +1,14 @@
-# Agentic SDLC Kit
+# Sparkwright
 
-`v2.59.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+*The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating system.*
+
+`v2.60.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and go.
 
 It is opinionated about *how to build well with agents* and deliberately neutral about *what you build it with*.
+
+> **Sparkwright is the execution engine** — it takes you from a *Ready* backlog to operating, monitored software, with the guardrails built in. If you already have product + design figured out, drop it in and build. (A discovery front-end — turning raw signals into Ready work — is a separate, optional upstream layer; see the roadmap.)
 
 Choosing a stack? See [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md).
 

@@ -1,4 +1,4 @@
-# ROI Model — Agentic SDLC Kit
+# ROI Model — Sparkwright
 
 **This is a *planning model parameterized by your inputs* — not a measured result, a benchmark, or a guarantee. Consistent with the kit's honesty standard: it shows the logic and labels every assumption; it does not assert savings.**
 

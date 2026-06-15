@@ -1,6 +1,6 @@
 # START HERE — Incepting a New Project
 
-You've dropped the Agentic SDLC Kit into a new project. This guide walks you (human or agent) through **Inception (Phase 0)** — the one-time gate that turns an empty repo into a project ready to run the loop. Full detail: `DEVELOPMENT-PROCESS.md` §3.
+You've dropped Sparkwright into a new project. This guide walks you (human or agent) through **Inception (Phase 0)** — the one-time gate that turns an empty repo into a project ready to run the loop. Full detail: `DEVELOPMENT-PROCESS.md` §3.
 
 Work top to bottom. Don't enter the development loop until the **Inception Done** checklist at the end is fully checked.
 

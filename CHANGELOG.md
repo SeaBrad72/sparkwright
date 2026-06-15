@@ -1,7 +1,17 @@
 # Changelog
 
-All notable changes to the Agentic SDLC Kit are recorded here.
+All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.60.0] - 2026-06-15
+
+**Named *Sparkwright* + execution-engine milestone.** The kit gets its real name — *Sparkwright* (`spark` + `-wright`, a maker who turns the spark into built, shipped software) — replacing the placeholder "Agentic SDLC Kit" descriptor across the prose. **MINOR** — naming + positioning only; no functional, contract, or process change (the product *name* is not logic-bearing; the repo slug stays `agentic-sdlc-kit` until a deliberate pre-launch rename).
+
+### Changed
+- **Name** — "Agentic SDLC Kit" → **Sparkwright** across README/MAINTAINING/START-HERE/templates/enterprise docs/scripts display text. "an agentic SDLC kit" is kept as the *descriptor* (clarity/SEO). Repo slug unchanged for now (renamed once, pre-launch).
+
+### Added
+- **Milestone positioning** — README now states Sparkwright is the **execution engine** (Ready backlog → operating, monitored software): drop it in and build. A **discovery front-end** (raw signal → Ready work — the FRAME/SHAPE upstream stages) is named as a **separate, optional upstream layer** on the roadmap, so the build-mode user is never forced through discovery they don't need.
 
 ## [2.59.0] - 2026-06-15
 

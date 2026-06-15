@@ -1,4 +1,4 @@
-# Executive Brief — Agentic SDLC Kit
+# Executive Brief — Sparkwright
 
 The leadership (VP-Eng / CTO) front door. Two pages, scope-honest. For the full enterprise addendum see [README.md](README.md); for the framework mapping, [compliance-crosswalk.md](compliance-crosswalk.md).
 
