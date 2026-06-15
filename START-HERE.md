@@ -14,6 +14,8 @@ Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-
 
 This guide's numbered steps are the **engineer/lead Inception path**. If you're a different role, start at your row — you generally won't need the numbered engineer steps below.
 
+> **Not sure you're ready for Inception?** If enterprise SDLC practices are new to you, start at [ONBOARDING.md](ONBOARDING.md) first — it routes by *experience*; this page routes by *role*.
+
 | If you are… | Start with | Then |
 |-------------|-----------|------|
 | **Product Owner / BA / stakeholder** | skim `CLAUDE.md` for context, then `templates/FEATURE-REQUEST-TEMPLATE.md` | hand it to the team or drop it on the board (`DEVELOPMENT-PROCESS.md` §6) — no engineering setup needed |

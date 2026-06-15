@@ -22,6 +22,8 @@ The load-bearing terms of this kit, each with a one-line definition and a link t
 
 **Stage 1–4** — The maturity progression that tightens conformance as a project or org scales, from solo/lite up to full enterprise enforcement. ([`docs/enterprise/ORG-ROLLOUT.md`](docs/enterprise/ORG-ROLLOUT.md))
 
+**Operator fluency** — A project's declared signal of the human operator's enterprise-SDLC experience (Novice / Adjacent / Practitioner), set in `CLAUDE.md` §3. The agent adapts how it communicates to match (see [`docs/operations/operator-fluency.md`](docs/operations/operator-fluency.md)); it never changes what the agent is permitted to do.
+
 **Profile** — The per-stack concrete config, commands, and examples you select at Inception; keeps the rest of the kit stack-neutral. ([`profiles/`](profiles/))
 
 **Control-plane** — The kit's own integrity files (guard, settings, CI, CODEOWNERS) that an agent may not silently edit; changes here require ratification. ([`docs/operations/runtime-guards.md`](docs/operations/runtime-guards.md))
