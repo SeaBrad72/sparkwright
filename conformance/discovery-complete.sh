@@ -21,7 +21,9 @@ check_tree() {
   onb="$root/ONBOARDING.md"
   if [ -f "$loop" ]; then
     for s in $STAGES; do
-      if grep -q "$s" "$loop"; then echo "PASS: discovery-loop names $s"; else echo "FAIL: discovery-loop omits $s"; f=1; fi
+      # require the stage as a bolded token (**STAGE**) — a real loop entry, not an incidental
+      # substring (so PLAN can't be satisfied by "PLANNING", SHIP by "SHIPPED", etc.)
+      if grep -q "\*\*$s\*\*" "$loop"; then echo "PASS: discovery-loop names $s"; else echo "FAIL: discovery-loop omits $s"; f=1; fi
     done
   else echo "FAIL: missing $loop"; f=1; fi
   if [ -f "$frame" ]; then echo "PASS: frame.md exists"; else echo "FAIL: missing $frame"; f=1; fi
@@ -37,7 +39,7 @@ if [ "${1:-}" = "--selftest" ]; then
   g=$(mktemp -d); mkdir -p "$g/docs/discovery" "$g/templates"
   if check_tree "$g" >/dev/null 2>&1; then echo "FAIL: selftest — gap not detected"; sfail=1; else echo "PASS: selftest — missing discovery artifacts detected"; fi
   ok=$(mktemp -d); mkdir -p "$ok/docs/discovery" "$ok/templates"
-  printf '# loop\nFRAME SHAPE PLAN BUILD SHIP OBSERVE\n' > "$ok/docs/discovery/discovery-loop.md"
+  printf '# loop\n**FRAME** **SHAPE** **PLAN** **BUILD** **SHIP** **OBSERVE**\n' > "$ok/docs/discovery/discovery-loop.md"
   printf '# frame\n' > "$ok/docs/discovery/frame.md"
   printf '# shape\n' > "$ok/docs/discovery/shape.md"
   printf '# brief\n' > "$ok/templates/OPPORTUNITY-BRIEF-TEMPLATE.md"
