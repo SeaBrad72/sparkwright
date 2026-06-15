@@ -5,7 +5,7 @@
 #
 #   sh scripts/incept.sh [--name N] [--intent-owner O] [--stack S] \
 #                        [--backlog md|github|jira|ado|linear|gitlab] \
-#                        [--ci github|gitlab] [--noninteractive]
+#                        [--ci github|gitlab] [--operator-fluency novice|adjacent|practitioner] [--noninteractive]
 #
 # It frees the root Claude-Code memory slot (CLAUDE.md = kit principles) by renaming the
 # principles doc to ENGINEERING-PRINCIPLES.md and rewriting the principles-sense references,
@@ -17,6 +17,8 @@ STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTER
 # A stack chosen via INCEPT_STACK is deliberate too — only an un-set stack is a silent default.
 [ -n "${INCEPT_STACK:-}" ] && STACK_EXPLICIT=1 || STACK_EXPLICIT=0
 CI="${INCEPT_CI:-github}"
+FLUENCY="${INCEPT_OPERATOR_FLUENCY:-}"          # empty = undeclared (nudge); else stamped
+OPERATOR_FLUENCIES="novice adjacent practitioner"
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
 BACKLOG_BACKENDS="md github jira ado linear gitlab"
@@ -34,8 +36,9 @@ while [ $# -gt 0 ]; do
     --stack) reqval $# --stack; STACK="$2"; STACK_EXPLICIT=1; shift 2 ;;
     --backlog) reqval $# --backlog; BACKLOG="$2"; shift 2 ;;
     --ci) reqval $# --ci; CI="$2"; shift 2 ;;
+    --operator-fluency) reqval $# --operator-fluency; FLUENCY="$2"; shift 2 ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--noninteractive]"; exit 0 ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--operator-fluency novice|adjacent|practitioner] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -80,11 +83,15 @@ fi
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
 case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
 case " $CI_PLATFORMS " in *" $CI "*) : ;; *) echo "error: unknown --ci '$CI' (one of: $CI_PLATFORMS)" >&2; exit 2 ;; esac
+if [ -n "$FLUENCY" ]; then
+  case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
+fi
 
 # 9g: never SILENTLY default the stack — make the default choice explicit + pointed.
 if [ "$STACK_EXPLICIT" -eq 0 ]; then
   echo "notice: no --stack given — using '$STACK'. Choose deliberately: docs/STACK-SELECTION.md" >&2
 fi
+[ -n "$FLUENCY" ] || echo "notice: operator fluency not declared. New to enterprise SDLC? read ONBOARDING.md. Already fluent? pass --operator-fluency practitioner. Leaving the field for you to fill in CLAUDE.md." >&2
 
 DATE=$(date +%Y-%m-%d)
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
@@ -119,6 +126,11 @@ sedi -e "s/\*\*Project:\*\* \[name\]/**Project:** ${ENAME}/" \
      -e "s/\*\*Created:\*\* \[date\]/**Created:** ${DATE}/" \
      -e "s#\*\*Kit version adopted:\*\* \[vX.Y.Z.*\]#**Kit version adopted:** v${VER}#" \
      CLAUDE.md
+if [ -n "$FLUENCY" ]; then
+  # Capitalize first letter for the human-facing value (Novice/Adjacent/Practitioner)
+  FCAP=$(printf '%s' "$FLUENCY" | cut -c1 | tr '[:lower:]' '[:upper:]')$(printf '%s' "$FLUENCY" | cut -c2-)
+  sedi "s#\*\*Operator fluency\*\* (§onboarding): \[Novice / Adjacent / Practitioner\]#**Operator fluency** (§onboarding): ${FCAP}#" CLAUDE.md
+fi
 
 # --- 4. RUNBOOK / BACKLOG / ADR-000 ---
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
