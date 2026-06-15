@@ -3,6 +3,21 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.61.0] - 2026-06-15
+
+**Discovery loop (FRAME + SHAPE)** — an **optional, opt-in** upstream front-end that turns a raw signal into a *Ready* backlog the Sparkwright engine consumes. **MINOR** — new docs + templates + one structural control; **no change to the existing process** (stages 3–6 are documented as the existing engine).
+
+### Added
+- **`docs/discovery/discovery-loop.md`** — the six-stage product loop (owner · ART=human turns · AI=tasks · gate · loop-backs); maps stages 3–6 onto Sparkwright's existing loop; states the opt-in/skip rule and the Ready seam.
+- **`docs/discovery/frame.md` + `shape.md`** — the two new stage guides (FRAME = Product/Frame-approved; SHAPE = Design/Direction-chosen), each with its human-turns vs AI-tasks split.
+- **`templates/OPPORTUNITY-BRIEF-TEMPLATE.md` + `SHAPING-DOC-TEMPLATE.md`** — the upstream artifacts that feed the existing FEATURE-REQUEST/SPEC at PLAN → Ready (no duplication).
+- **`conformance/discovery-complete.sh`** — structural drift-guard (present + wired); wired into CI.
+- Wiring: an ONBOARDING discovery door, README milestone link + What's-inside row, GLOSSARY entries.
+
+### Honesty / engineering notes
+- **Opt-in, never a turnstile** — arrive with a Ready backlog and you skip discovery entirely (the onboarding Practitioner fast-path). The default drop-in-and-build path is untouched.
+- **Zero process change** — the core-3 docs are unchanged (900/900); the layer is all new files. The ART/AI split is guidance, not an automated gate (discovery is judgment work).
+
 ## [2.60.0] - 2026-06-15
 
 **Named *Sparkwright* + execution-engine milestone.** The kit gets its real name — *Sparkwright* (`spark` + `-wright`, a maker who turns the spark into built, shipped software) — replacing the placeholder "Agentic SDLC Kit" descriptor across the prose. **MINOR** — naming + positioning only; no functional, contract, or process change (the product *name* is not logic-bearing; the repo slug stays `agentic-sdlc-kit` until a deliberate pre-launch rename).
