@@ -49,6 +49,7 @@ This file holds only what is **specific to this project**.
   - e.g. `deploy to staging → L2 (autonomous behind smoke gate)`; everything else inherits defaults
 - **SLO / error-budget posture** (§9): [soft track-and-guide / hard-gating] — [target SLOs if defined]
 - **Data classification** (§privacy): [Public / Internal / Confidential / Restricted] — the highest tier this project handles. Confidential/Restricted ⇒ a privacy review (`docs/enterprise/data-governance.md`; verified by `conformance/privacy-ready.sh`).
+- **Operator fluency** (§onboarding): [Novice / Adjacent / Practitioner] — the human operator's enterprise-SDLC experience; the agent adapts its assistance accordingly (`ONBOARDING.md`; behaviour in `docs/operations/operator-fluency.md`).
 - **Review routing / ownership** (§11): [who/which agent reviews what; CODEOWNERS link]
 - **WIP limits:** [per-stage or global cap]
 - **Environments** (§ "Environments & promotion"): Dev → QA → UAT → Prod — [per-tier deploy trigger]; [if collapsing tiers, name which you use + one-line reason]. Production promotion is human-gated.

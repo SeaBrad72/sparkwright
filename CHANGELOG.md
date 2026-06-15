@@ -3,6 +3,20 @@
 All notable changes to the Agentic SDLC Kit are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.59.0] - 2026-06-15
+
+**Onboarding on-ramp** — a fluency-aware front door that meets developers across the experience spectrum (vibe-coder → principal), teaches *the system around the code* by routing to canonical sources (never duplicating the standards), and lets the agent adapt its assistance. **MINOR** — new front-door docs + a structural conformance control; no new universal-required gate.
+
+### Added
+- **`ONBOARDING.md`** — experience-axis front door: the *coding ≠ engineering* thesis + 3 self-select lanes (Novice / Adjacent / Practitioner, non-punitive to switch) + a layered Learning lane that motivates each pillar (TDD · 15-factor · security · governance · environments · observability) and routes to canonical sources + the existing kit docs. Hands off to `START-HERE.md` (role axis).
+- **`docs/onboarding/first-feature-tdd.md`** — a worked red-green-refactor TDD walkthrough (reference stack), the one concrete code beat the whole-loop `WALKTHROUGH.md` lacked.
+- **Operator fluency** — declared in the project-CLAUDE template (§3) and read by the agent via `docs/operations/operator-fluency.md`: adapts *communication* to the operator's level (explain + confirm-before-irreversible for Novice/Adjacent; terse for Practitioner), refined by observation, **never** changing what the agent is permitted to do. `incept.sh --operator-fluency <level>` stamps it; an undeclared run nudges (not walls) toward the on-ramp.
+- **`conformance/onboarding-complete.sh`** — structural drift-guard: the on-ramp is present + wired (registered as a `verify.sh` control).
+
+### Honesty / engineering notes
+- **The on-ramp teaches; the guard + gates protect.** A bypass (the Practitioner lane / `--operator-fluency practitioner`) skips the *teaching*, never the *protection* — which is what makes "functional and not dangerous" hold even for someone who skips onboarding.
+- **No duplication of the standards** — the Learning lane motivates and routes; the canonical content stays in the standards/profiles as the single source of truth (DRY).
+
 ## [2.58.0] - 2026-06-15
 
 **Code-quality lens + CI-coverage lock** — a deliberately right-sized quality pass (pulled back from a 3-slice arc after a strategic check: the kit was already strong on `gate-lint`/type-checks/test-quality/coverage-ratchet/builder≠reviewer, so this polishes the last 20%) plus a meta-check that makes the kit's own CI enforcement self-auditing. **MINOR** — a new control check + adopter-facing review discipline; **no new universal-required gate** (the code-quality lens is review discipline, not a fail-closed gate, by design).

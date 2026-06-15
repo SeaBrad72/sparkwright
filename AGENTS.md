@@ -17,5 +17,8 @@ Secrets in env / a managed store, never committed · validate input at boundarie
 ## The agent boundary
 Agents act only within granted capabilities; the runtime guard blocks destructive and control-plane actions. **Agents propose; humans ratify** — never self-merge, never edit the control plane (guard, CI, CODEOWNERS, settings) without a human applying it. Autonomy tiers + guard: **`DEVELOPMENT-PROCESS.md` §13**.
 
+## Working with the human
+- **Operator fluency** (adapt to the human's level): `docs/operations/operator-fluency.md`
+
 ## Your stack
 Concrete commands, libraries, and CI live in **`profiles/<stack>.md`** (chosen at Inception). New here? Start at **`START-HERE.md`**.

@@ -1,6 +1,6 @@
 # Agentic SDLC Kit
 
-`v2.58.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v2.59.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and go.
 
@@ -12,6 +12,8 @@ Choosing a stack? See [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md).
 
 New to the terminology? See [GLOSSARY.md](GLOSSARY.md).
 
+**Brand new to enterprise software practices?** Start at [ONBOARDING.md](ONBOARDING.md) — it places you by experience and teaches the system around the code.
+
 ## Who it's for
 Any team — humans, agents, or both — starting a new project who wants production-grade discipline without inventing a process from scratch. Adopt it as-is, or hand it to a team and let them tailor it.
 
@@ -20,6 +22,7 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | File | What it is |
 |------|-----------|
 | **`START-HERE.md`** | Run first — walks you through Inception, including choosing your stack. |
+| **`ONBOARDING.md`** | The experience-aware front door — meet developers from vibe-coder to principal, then hand to START-HERE. |
 | **`MAINTAINING.md`** | How the kit is built, versioned, and contributed back to (the contract/reference/conformance convention). |
 | **`WALKTHROUGH.md`** | A narrative of the kit in motion — one feature from idea to operating software. |
 | **`CLAUDE.md`** | Principles + Definition of Done. Authoritative. |
