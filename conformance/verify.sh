@@ -57,6 +57,7 @@ check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
 check control branch-protect   sh conformance/branch-protection.sh
 check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
+check control onboarding       sh conformance/onboarding-complete.sh
 check doc     deployable-ready sh conformance/deployable-ready.sh
 check doc     dr-ready         sh conformance/dr-ready.sh
 check doc     resilience-ready sh conformance/resilience-ready.sh
