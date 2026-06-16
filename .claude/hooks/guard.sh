@@ -10,10 +10,13 @@ set -eu
 
 INPUT=$(cat)
 
+# escape for a JSON double-quoted value (backslash + quote; reasons have no control chars)
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 emit_deny() {
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$1"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$(json_escape "$1")"
   exit 0
 }
+
 allow() { exit 0; }
 
 tool_name_grep() {

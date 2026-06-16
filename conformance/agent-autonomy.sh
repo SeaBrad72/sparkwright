@@ -21,7 +21,7 @@ assert_allow() {
 
 # --- must DENY (irreversible / high-blast) ---
 assert_deny "rm -rf"          '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}'
-assert_deny "force push"      '{"tool_name":"Bash","tool_input":{"command":"git push --force origin feature/x"}}'
+assert_deny "mirror push"     '{"tool_name":"Bash","tool_input":{"command":"git push --mirror origin"}}'
 assert_deny "push to main"    '{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}'
 assert_deny "reset --hard"    '{"tool_name":"Bash","tool_input":{"command":"git reset --hard HEAD~3"}}'
 assert_deny "npm publish"     '{"tool_name":"Bash","tool_input":{"command":"npm publish"}}'
