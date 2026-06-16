@@ -65,7 +65,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/python/ci.yml`.
 - **Convention:** `tests/` mirrors `src/`; `test_*.py`. Arrange-Act-Assert; describe behavior.
 - **Integration:** `pytest` + `httpx.AsyncClient` against the app; assert status + body + DB state (Testcontainers or a test DB).
 - **E2E:** Playwright (Python) against the dev server.
-- **AI evals:** an `evals/` dir with JSONL datasets; a runner scoring against a rubric (LLM-as-judge via the Anthropic SDK, pinned judge) that fails below threshold in CI.
+- **AI evals:** an `evals/` dir with JSONL datasets + a runner scoring against a rubric (LLM-as-judge via a pinned Anthropic SDK model). The drop-in CI runs it as a **conditional `gate-eval`** — active when an `evals/` dir is present; see `profiles/ml/evals` for a reference runner.
 
 ## 7. Resilience & observability
 - **Retry/backoff:** `tenacity`; **circuit breaker:** `pybreaker`.

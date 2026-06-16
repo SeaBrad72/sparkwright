@@ -1,6 +1,6 @@
 # Eval Plan — TEMPLATE
 
-> **Template.** The dev-time quality bar for an **AI feature** (any behaviour that depends on a model or prompt) — *evals are the test suite* (`DEVELOPMENT-STANDARDS.md` §AI Evaluations). Produced at **Plan**, enforced at the **§7 Eval gate** (the suite runs in CI; a drop below threshold fails the build), and grown from production misses + retros. Its *presence* makes a project an AI feature for `conformance/eval-ready.sh`. Stack-specific harness → your `profiles/<stack>.md` (e.g. the `ml` profile ships `evals/run.py`).
+> **Template.** The dev-time quality bar for an **AI feature** (any behaviour that depends on a model or prompt) — *evals are the test suite* (`DEVELOPMENT-STANDARDS.md` §AI Evaluations). Produced at **Plan**, enforced at the **§7 Eval gate** (the suite runs in CI; a drop below threshold fails the build), and grown from production misses + retros. Its *presence* makes a project an AI feature for `conformance/eval-ready.sh`. Stack-specific harness → your `profiles/<stack>.md` (e.g. the `ml` profile ships a reference `evals/run.py` — a deterministic offline scorer you upgrade to an LLM judge).
 
 > **What the readiness check proves — and doesn't.** `eval-ready.sh` confirms this plan is *declared*: a recorded regression threshold and a located harness/gate. It does **not** run the evals or prove they pass — that is the §7 Eval gate in CI, and the red-team/judge-independence items below are **Manual**. A green readiness check is necessary, not sufficient.
 

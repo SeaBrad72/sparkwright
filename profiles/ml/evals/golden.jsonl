@@ -1,0 +1,5 @@
+{"id": "g1", "input": "I love this product, it works great", "expected": "positive"}
+{"id": "g2", "input": "This is terrible and arrived broken", "expected": "negative"}
+{"id": "g3", "input": "It arrived on Tuesday in a cardboard box", "expected": "neutral"}
+{"id": "g4", "input": "Absolutely amazing, a perfect experience", "expected": "positive"}
+{"id": "g5", "input": "Worst purchase ever, I hate it", "expected": "negative"}

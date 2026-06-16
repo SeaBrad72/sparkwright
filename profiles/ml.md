@@ -52,7 +52,7 @@ pipeline:      dvc repro          # reproduce data/training pipeline
 
 ## 4. CI/CD pipeline
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14 **plus the §7 eval gate**. Drop-in reference files live in **`profiles/ml/`**:
-- **`ci.yml`** → copy to `.github/workflows/ci.yml`. `uv sync` → ruff (+nbqa) → mypy → pytest+coverage(≥80) → **`gate-eval` (evals/run.py, fails below threshold)** → `uv build` → gitleaks → `pip-audit` → CycloneDX-py SBOM → build provenance.
+- **`ci.yml`** → copy to `.github/workflows/ci.yml`. `uv sync` → ruff (+nbqa) → mypy → pytest+coverage(≥80) → **`gate-eval` (runs the shipped reference `evals/run.py`, fails below threshold)** → `uv build` → gitleaks → `pip-audit` → CycloneDX-py SBOM → build provenance.
 - **`CODEOWNERS`**, **`BRANCH-PROTECTION.md`** → governance companions.
 
 Conformance: `sh conformance/ci-gates.sh profiles/ml/ci.yml` (the 8 standard gates; `gate-eval` is an additional ML gate). **`gate-eval` is the headline** — the AI analog of TDD, gating like tests.
@@ -86,7 +86,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/ml/ci.yml` (the 8 standard gat
 - **Container/deploy (reference-pattern, not a drop-in):** this profile ships **no generic web-Dockerfile** — an ML deploy unit is a *model-serving image* or a *batch/training job*, not a uniform request/response service. When you containerize, follow the service-profile pattern (multi-stage, non-root, `gate-image-sbom` + digest-bound `gate-image-provenance`) — `profiles/python/{Dockerfile,ci.yml,deploy/}` is the closest reference (FastAPI/BentoML server, or a job image for batch). `conformance/container-supply-chain.sh` validates it once a Dockerfile exists.
 
 ## 10. Recommended libraries
-scikit-learn / PyTorch · MLflow · DVC · pandera · nbstripout + jupytext + nbqa + nbmake · pytest + pytest-cov · the eval harness (`evals/run.py`, pytest-driven; Anthropic SDK as the pinned LLM judge) · Evidently (drift) · FastAPI / BentoML (serving) · pydantic + pydantic-settings · structlog + Sentry · Anthropic SDK (`anthropic`). Default Claude models: `claude-sonnet-4-6` (workhorse and default pinned eval judge unless a project pins another), escalate to Opus for hard reasoning.
+scikit-learn / PyTorch · MLflow · DVC · pandera · nbstripout + jupytext + nbqa + nbmake · pytest + pytest-cov · the eval harness (`evals/run.py` — shipped as a deterministic offline reference scorer; swap in the Anthropic SDK as the pinned LLM judge for production, see `evals/rubric.md`) · Evidently (drift) · FastAPI / BentoML (serving) · pydantic + pydantic-settings · structlog + Sentry · Anthropic SDK (`anthropic`). Default Claude models: `claude-sonnet-4-6` (workhorse and default pinned eval judge unless a project pins another), escalate to Opus for hard reasoning.
 
 ## 11. Stack-specific gotchas
 - **Never commit data/models/secrets** — DVC remote + `.env`; gitignore data dirs.
