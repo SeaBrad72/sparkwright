@@ -20,7 +20,7 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: CI-gates conformance (reference workflow satisfies §14)
         run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
       - name: CI-gates conformance — GitLab reference satisfies §14 (platform portability)
@@ -152,7 +152,7 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: Bootstrap a temp project and verify Inception-Done
         run: |
           tmp=$(mktemp -d)
@@ -163,6 +163,6 @@ jobs:
   docs-links:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: Relative Markdown link integrity
         run: sh conformance/check-links.sh
