@@ -54,6 +54,15 @@ jobs:
         id: gate-test
         run: uv run pytest --cov --cov-fail-under=80
 
+      - name: AI eval gate (conditional — runs only if an evals/ dir is present)
+        id: gate-eval
+        run: |
+          if [ -d evals ]; then
+            uv run python -m evals.run --threshold 0.8
+          else
+            echo "no evals/ dir — skipping the eval gate (add one when your feature uses a model; see profiles/ml/evals for a reference)"
+          fi
+
       - name: Build
         id: gate-build
         run: uv build

@@ -68,7 +68,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/typescript-node/ci.yml` assert
 - **Convention:** `*.test.ts` next to source or under `tests/`. Arrange-Act-Assert. `describe` behavior, not implementation.
 - **Integration:** `supertest` against the app; assert status + body + DB state.
 - **E2E:** Playwright against the dev server.
-- **AI evals:** a `evals/` dir with JSONL datasets; an eval runner that scores against a rubric (LLM-as-judge via the Anthropic SDK, pinned judge model) and throws below threshold in CI.
+- **AI evals:** an `evals/` dir with JSONL datasets + an eval runner scoring against a rubric (LLM-as-judge via a pinned Anthropic SDK model). The drop-in CI runs it as a **conditional `gate-eval`** (an `npm run eval` script) — active when an `evals/` dir is present; see `profiles/ml/evals` for a reference runner.
 
 ## 7. Resilience & observability
 - **Retry/backoff:** small helper or `p-retry`; **circuit breaker:** `opossum` for flaky upstreams.

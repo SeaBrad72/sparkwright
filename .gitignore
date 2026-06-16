@@ -7,6 +7,10 @@ Thumbs.db
 *.swo
 *~
 
+# Python caches (the ml profile ships a reference evals/ harness)
+__pycache__/
+*.pyc
+
 # Claude Code — personal/local settings (shared settings.json IS committed)
 .claude/settings.local.json
 

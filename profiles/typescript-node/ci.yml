@@ -54,6 +54,15 @@ jobs:
         id: gate-test
         run: npm run test:coverage   # vitest --coverage; thresholds enforced in vitest.config.ts
 
+      - name: AI eval gate (conditional — runs only if an evals/ dir is present)
+        id: gate-eval
+        run: |
+          if [ -d evals ]; then
+            npm run eval   # define an "eval" script that scores against a rubric and exits non-zero below threshold
+          else
+            echo "no evals/ dir — skipping the eval gate (add one when your feature uses a model; see profiles/ml/evals for a reference)"
+          fi
+
       - name: Build
         id: gate-build
         run: npm run build

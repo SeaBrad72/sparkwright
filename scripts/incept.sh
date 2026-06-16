@@ -171,6 +171,14 @@ case "$CI" in
     ;;
 esac
 
+# --- 5a. copy a reference eval harness if the profile ships one (currently ml) ---
+# Platform-independent; brownfield-safe (never clobber an existing evals/). The shipped runner
+# is a deterministic offline scorer — swap in your model/judge per evals/rubric.md.
+if [ -d "profiles/${STACK}/evals" ] && [ ! -d evals ]; then
+  cp -R "profiles/${STACK}/evals" evals
+  echo "copied reference eval harness: evals/ (deterministic offline scorer; the drop-in CI runs it as gate-eval — see evals/rubric.md)"
+fi
+
 # --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---
 # Git hooks are not version-controlled, so incept installs the reference per-clone.
 # Never clobber an existing hook (same discipline as the .claude/ brownfield path).
