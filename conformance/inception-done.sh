@@ -14,6 +14,7 @@ need() { if [ -e "$1" ]; then echo "PASS present: $1"; else echo "FAIL missing: 
 need ENGINEERING-PRINCIPLES.md
 need CLAUDE.md
 need RUNBOOK.md
+need .env.example
 need .claude
 need .github/workflows/ci.yml
 

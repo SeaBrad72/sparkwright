@@ -23,6 +23,32 @@ A stack profile is the concrete *how* for one deployable service: its toolchain,
 
 ---
 
+## Environments & backing services
+
+Picking a stack also implies *which environments and backing services* you need. Each service
+profile ships a `compose.yaml` matching its **default archetype**, and `scripts/incept.sh` copies
+it into your project. Start from this and add only what your feature needs — each profile's
+**"Environments this stack needs"** section has the per-stack detail.
+
+| Stack | Default archetype | Shipped `compose.yaml` | Typical services to add |
+|-------|-------------------|------------------------|-------------------------|
+| typescript-node | DB-backed service | app + Postgres | Redis (cache/session), object store |
+| python | DB-backed service | app + Postgres | Redis, object store, task queue |
+| go | **Stateless** service | app only | DB / Redis only if needed |
+| rust | **Stateless** service | app only | DB / Redis only if needed |
+| java-spring | DB-backed service | app + Postgres | Redis, message broker (Kafka/Rabbit) |
+| kotlin | DB-backed service | app + Postgres | Redis, message broker |
+| dotnet | DB-backed service | app + Postgres | Redis, Azure Service Bus |
+| ml | Serving / batch | reference-only (no generic compose) | model/feature store, vector DB |
+| data-engineering | Batch / pipeline | reference-only | warehouse, object store, orchestrator |
+| terraform | Provisions infra (not an app) | — | — |
+
+**Environment promotion.** Run each environment Dev → QA → UAT → Prod with gated promotion;
+**production is always human-gated** (DEVELOPMENT-PROCESS.md env model). Whether you *already have*
+an environment or need to *stand one up*, record the approach in your RUNBOOK §1 and §4.
+
+---
+
 ## Per-stack guidance
 
 ### typescript-node → [../profiles/typescript-node.md](../profiles/typescript-node.md)

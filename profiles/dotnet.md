@@ -44,6 +44,20 @@ build:         dotnet publish -c Release
 start:         dotnet <Project>.dll
 ```
 
+### Environments this stack needs
+**Default archetype: DB-backed service.** The shipped `compose.yaml` provides the app + a Postgres database for dev/prod parity.
+`scripts/incept.sh` copies `compose.yaml` into your project; add services only as your feature needs them.
+
+| Need | Default | Add when |
+|------|---------|----------|
+| Database | Postgres (in compose) | relational data (the default) |
+| Cache | — | sessions / hot-path caching (Redis) |
+| Queue / broker | — | events / async messaging (Azure Service Bus / RabbitMQ) |
+| Object store | — | blobs / file storage (Azure Blob / S3) |
+
+Promote **Dev → QA → UAT → Prod** with gated promotion; **production is human-gated**
+(DEVELOPMENT-PROCESS.md env model). Record your approach in RUNBOOK §1/§4.
+
 ## 4. CI/CD pipeline
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/dotnet/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. `dotnet restore` → `dotnet format --verify-no-changes` → `dotnet build` (type-check) → `dotnet test`+coverage(≥80) → `dotnet publish -c Release` → secret-scan (gitleaks) → dependency scan (`dotnet list package --vulnerable`) → SBOM (`dotnet CycloneDX`) → build provenance.
