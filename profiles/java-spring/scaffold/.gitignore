@@ -1,0 +1,13 @@
+# Maven build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+
+# Local env (commit .env.example instead)
+.env

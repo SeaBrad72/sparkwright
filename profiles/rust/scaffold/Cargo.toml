@@ -1,0 +1,8 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+# Dependency-free (std only) starter — keeps Cargo.lock trivial and the pipeline
+# clone-green. Add deps (e.g. axum/tokio for a real HTTP server) as you grow.
+[dependencies]
