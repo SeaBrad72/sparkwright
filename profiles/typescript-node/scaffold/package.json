@@ -1,0 +1,28 @@
+{
+  "name": "app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node --import tsx src/server.ts",
+    "lint": "eslint .",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "eval": "node -e \"console.error('No eval runner wired yet. Add an evals/ dir + a real eval runner before defining this gate (see profiles/ml/evals).'); process.exit(1)\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "@types/node": "^20.16.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "eslint": "^9.13.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.10.0",
+    "vitest": "^2.1.0"
+  }
+}

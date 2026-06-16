@@ -1,0 +1,25 @@
+# detekt config for the scaffold. Layered on top of detekt's default rules
+# (build.gradle.kts sets buildUponDefaultConfig = true). Keep this lean; tighten
+# per project. See https://detekt.dev/docs/introduction/configurations
+build:
+  maxIssues: 0
+
+# detekt-formatting (ktlint wrapper) is also on the classpath; ktlintCheck is the
+# authoritative formatter gate, so disable the overlapping formatting ruleset here
+# to avoid double-reporting in `detekt`.
+formatting:
+  active: false
+
+style:
+  # Backtick test names (`GET healthz returns 200`) are idiomatic JUnit 5 + Kotlin.
+  FunctionNaming:
+    active: true
+    ignoreAnnotated: ['Test']
+  # The scaffold is intentionally tiny; no magic-number noise to flag.
+  MagicNumber:
+    active: false
+
+complexity:
+  # Defaults are fine for the scaffold; placeholder for project-specific tuning.
+  LongParameterList:
+    active: true

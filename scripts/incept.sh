@@ -179,6 +179,21 @@ if [ -d "profiles/${STACK}/evals" ] && [ ! -d evals ]; then
   echo "copied reference eval harness: evals/ (deterministic offline scorer; the drop-in CI runs it as gate-eval — see evals/rubric.md)"
 fi
 
+# --- 5a2. copy the profile's starter scaffold so the drop-in CI is green on the empty project ---
+# Brownfield-safe: each file is copied ONLY where absent (never clobbers existing app source),
+# so 'green pipeline on the empty project' (the Inception gate) is reachable in one command.
+# See profiles/${STACK}/scaffold/README.md for any one-time lockfile/wrapper step.
+if [ -d "profiles/${STACK}/scaffold" ]; then
+  ( cd "profiles/${STACK}/scaffold" && find . -type f ) | while IFS= read -r rel; do
+    rel=${rel#./}
+    if [ ! -e "$rel" ]; then
+      mkdir -p "$(dirname "$rel")"
+      cp "profiles/${STACK}/scaffold/$rel" "$rel"
+    fi
+  done
+  echo "copied starter scaffold from profiles/${STACK}/scaffold/ where files were absent (brownfield-safe) — see its README for the first-green-pipeline steps"
+fi
+
 # --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---
 # Git hooks are not version-controlled, so incept installs the reference per-clone.
 # Never clobber an existing hook (same discipline as the .claude/ brownfield path).
