@@ -45,6 +45,20 @@ build:         ./mvnw -q -DskipTests package
 start:         java -jar target/*.jar
 ```
 
+### Environments this stack needs
+**Default archetype: DB-backed service.** The shipped `compose.yaml` provides the app + a Postgres database for dev/prod parity.
+`scripts/incept.sh` copies `compose.yaml` into your project; add services only as your feature needs them.
+
+| Need | Default | Add when |
+|------|---------|----------|
+| Database | Postgres (in compose) | relational data (the default) |
+| Cache | — | sessions / hot-path caching (Redis) |
+| Queue / broker | — | events / async messaging (Kafka/RabbitMQ) |
+| Object store | — | blobs / file storage (S3/blob store) |
+
+Promote **Dev → QA → UAT → Prod** with gated promotion; **production is human-gated**
+(DEVELOPMENT-PROCESS.md env model). Record your approach in RUNBOOK §1/§4.
+
 ## 4. CI/CD pipeline
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/java-spring/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. spotless/checkstyle → `mvn compile` (type-check) → JUnit5+JaCoCo(≥80) → `mvn package` → secret-scan (gitleaks) → dependency scan (OWASP) → SBOM (CycloneDX-maven) → build provenance.

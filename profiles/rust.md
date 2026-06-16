@@ -45,6 +45,20 @@ build:         cargo build --release
 start:         ./target/release/<app>
 ```
 
+### Environments this stack needs
+**Default archetype: stateless service.** The shipped `compose.yaml` provides the **app only — no database**; this stack defaults to a systems service / CLI with no backing store.
+`scripts/incept.sh` copies `compose.yaml` into your project; add services only as your feature needs them.
+
+| Need | Default | Add when |
+|------|---------|----------|
+| Database | — (none; add if needed) | you need relational/persistent data |
+| Cache | — | hot-path caching / shared state (Redis) |
+| Queue / broker | — | async/background jobs |
+| Object store | — | blobs / file storage (S3/MinIO) |
+
+Promote **Dev → QA → UAT → Prod** with gated promotion; **production is human-gated**
+(DEVELOPMENT-PROCESS.md env model). Record your approach in RUNBOOK §1/§4.
+
 ## 4. CI/CD pipeline
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/rust/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. `cargo fetch` → `clippy -D warnings` → `cargo check` (type-check) → `cargo test`+`llvm-cov`(≥80) → `cargo build --release` → secret-scan (gitleaks) → dependency scan (`cargo audit`) → SBOM (`cargo cyclonedx`) → build provenance.

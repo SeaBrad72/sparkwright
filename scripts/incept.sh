@@ -135,6 +135,31 @@ fi
 # --- 4. RUNBOOK / BACKLOG / ADR-000 ---
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
 [ -f SECURITY.md ] || cp templates/SECURITY-TEMPLATE.md SECURITY.md
+# .env.example — the committed env template the DoD + RUNBOOK require (never a real .env).
+if [ ! -f .env.example ]; then
+  cat > .env.example <<'ENVEOF'
+# Environment variables — TEMPLATE. Copy to `.env` (gitignored) and fill real values.
+# Document each in RUNBOOK.md §1 and the profile's "Environments this stack needs".
+# NEVER commit real secrets (DEVELOPMENT-STANDARDS.md §2).
+
+# App (set PORT to match your service/compose — e.g. 3000 node, 8000 python, 8080 go/rust)
+PORT=8080
+
+# Secrets — replace placeholders with strong values kept out of git
+APP_SECRET=replace-me
+
+# Backing services — uncomment what your stack/archetype needs (see compose.yaml)
+# DATABASE_URL=postgres://app:app@localhost:5432/app
+# REDIS_URL=redis://localhost:6379
+ENVEOF
+  echo "wrote .env.example (copy to a gitignored .env and fill values — see RUNBOOK §1)"
+fi
+# Ensure real .env files are never committed — the template above tells the user to create one,
+# so guarantee the ignore rule exists (not all stack scaffolds carry it). Idempotent.
+if [ ! -f .gitignore ] || ! grep -qE '^\.env' .gitignore 2>/dev/null; then
+  printf '\n# Local env files — never commit real secrets (.env.example IS the committed template)\n.env\n.env.*\n!.env.example\n' >> .gitignore
+  echo "ensured .env is gitignored (real secrets stay out of git)"
+fi
 case "$BACKLOG" in
   md) [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;
   jira)
@@ -192,6 +217,15 @@ if [ -d "profiles/${STACK}/scaffold" ]; then
     fi
   done
   echo "copied starter scaffold from profiles/${STACK}/scaffold/ where files were absent (brownfield-safe) — see its README for the first-green-pipeline steps"
+fi
+
+# --- 5a3. copy the profile's local-dev compose (brownfield-safe) ---
+# The profile's compose.yaml reflects the stack's DEFAULT archetype (e.g. go/rust ship a
+# stateless app-only compose; web stacks ship app + Postgres). Review it against the
+# "Environments this stack needs" section in profiles/${STACK}.md / docs/STACK-SELECTION.md.
+if [ -f "profiles/${STACK}/compose.yaml" ] && [ ! -f compose.yaml ]; then
+  cp "profiles/${STACK}/compose.yaml" compose.yaml
+  echo "copied compose.yaml from profiles/${STACK}/ (local dev mirroring prod) — review the services it declares against your 'Environments this stack needs'"
 fi
 
 # --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---

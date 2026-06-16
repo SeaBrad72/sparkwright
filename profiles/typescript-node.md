@@ -46,6 +46,20 @@ build:         tsc            # or: next build
 start:         node dist/server.js   # or: next start
 ```
 
+### Environments this stack needs
+**Default archetype: DB-backed service.** The shipped `compose.yaml` provides the app + a Postgres database for dev/prod parity.
+`scripts/incept.sh` copies `compose.yaml` into your project; add services only as your feature needs them.
+
+| Need | Default | Add when |
+|------|---------|----------|
+| Database | Postgres (in compose) | relational data (the default) |
+| Cache | — | sessions / rate-limit (Redis) |
+| Queue / broker | — | async/background jobs |
+| Object store | — | user uploads / blobs (S3/MinIO) |
+
+Promote **Dev → QA → UAT → Prod** with gated promotion; **production is human-gated**
+(DEVELOPMENT-PROCESS.md env model). Record your approach in RUNBOOK §1/§4.
+
 ## 4. CI/CD pipeline
 Implements the 7 required gates of `DEVELOPMENT-STANDARDS.md` §14. Drop-in reference files live in **`profiles/typescript-node/`**:
 - **`ci.yml`** → copy to `.github/workflows/ci.yml`. GitHub Actions on push/PR to `main`: `npm ci` → lint → type-check → test+coverage(≥80) → build → secret-scan (gitleaks) → dependency scan (`npm audit --audit-level=high`) → SBOM (CycloneDX) → build provenance (`actions/attest-build-provenance`). All green required to merge.
