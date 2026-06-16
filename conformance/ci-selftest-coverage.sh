@@ -26,7 +26,9 @@ scan() {
     [ -f "$f" ] || continue
     _base=$(basename "$f")
     [ "$_base" = "$SELF" ] && continue
-    grep -q -- '--selftest' "$f" || continue
+    # "Ships a --selftest" means it HANDLES the flag, not merely mentions it: strip comments
+    # first, so a doc comment like "(no --selftest)" in a sourced helper isn't miscounted.
+    sed 's/#.*//' "$f" | grep -q -- '--selftest' || continue
     # "Wired" means the basename appears in an EXECUTION context, not merely mentioned: strip
     # comments and `name:` label lines first, so a step titled after a script (or a commented-out
     # step) is never mistaken for one that actually runs it.

@@ -43,13 +43,8 @@ for a in "$@"; do
   esac
 done
 
-# Does $1 (a workflow file) indicate a deploy surface? (Same signals as resilience-ready.sh.)
-wf_is_deploy() {
-  _wf="$1"
-  if grep -Eq '^[[:space:]]*environment:' "$_wf"; then return 0; fi
-  if grep -Eq '^[[:space:]]+deploy[A-Za-z0-9_-]*:[[:space:]]*$' "$_wf"; then return 0; fi
-  return 1
-}
+# shellcheck disable=SC1091  # shared helper, sourced at runtime (sibling of this script)
+. "$(dirname "$0")/wf-helpers.sh"   # provides wf_is_deploy() — single source of truth
 
 # In-repo egress manifest in a conventional location? (NetworkPolicy declaring Egress.)
 # Bounded glob (not a full-tree find) — manifests elsewhere rely on the RUNBOOK attestation,

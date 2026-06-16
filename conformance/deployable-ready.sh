@@ -20,21 +20,8 @@
 # Run at the Release gate (DEVELOPMENT-PROCESS.md §7); also self-tested in kit CI.
 set -eu
 
-# Does $1 (a workflow file) indicate a deploy surface? We match only STRUCTURAL
-# deploy signals — a GitHub deployment `environment:` key, or a job KEY named
-# deploy-ish (`deploy:`, `deploy-prod:`). We deliberately do NOT match free-text
-# step `name:`/`id:` containing "deploy": that over-triggers on benign workflows
-# like a "deploy docs" GitHub Pages step, which would wrongly force release-readiness
-# on a non-service project (a library/CLI). Detection stays conservative; the
-# definition-of-deployable.md checklist is the gate of record, so a missed signal is
-# still caught by a human applying the checklist. (_wf is prefixed to avoid clobbering
-# a caller's `wf` loop variable — POSIX sh functions have no local scope.)
-wf_is_deploy() {
-  _wf="$1"
-  if grep -Eq '^[[:space:]]*environment:' "$_wf"; then return 0; fi
-  if grep -Eq '^[[:space:]]+deploy[A-Za-z0-9_-]*:[[:space:]]*$' "$_wf"; then return 0; fi
-  return 1
-}
+# shellcheck disable=SC1091  # shared helper, sourced at runtime (sibling of this script)
+. "$(dirname "$0")/wf-helpers.sh"   # provides wf_is_deploy() — single source of truth
 
 # Core check over a single project directory. Returns 0 (OK or N/A) / 1 (FAIL).
 check_dir() {
