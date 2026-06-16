@@ -26,7 +26,7 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | File | What it is |
 |------|-----------|
 | **`START-HERE.md`** | Run first — walks you through Inception, including choosing your stack. |
-| **`ONBOARDING.md`** | The experience-aware front door — meet developers from vibe-coder to principal, then hand to START-HERE. |
+| **`ONBOARDING.md`** | The experience-aware front door — meet developers from vibe-coder to principal/architect, then hand to START-HERE. |
 | **`MAINTAINING.md`** | How the kit is built, versioned, and contributed back to (the contract/reference/conformance convention). |
 | **`WALKTHROUGH.md`** | A narrative of the kit in motion — one feature from idea to operating software. |
 | **`docs/discovery/`** | The optional upstream **discovery loop** (FRAME → SHAPE → Ready) — turn a raw signal into a Ready backlog. Skip it if you already have one. |
@@ -34,7 +34,7 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
-| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `POSTMORTEM`, `BIA`. |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `POSTMORTEM`, `BIA`, … (~24 in all — see [`templates/`](templates/)). |
 | **`docs/`** | `ADR-000-EXAMPLE.md`; `enterprise/` (compliance addendum), `work-tracking/` (backlog adapters), `adoption/` (brownfield), `operations/` (progressive delivery · resilience · DORA), `continuity/` (DR drill · BIA). |
 
 ## Quickstart (drop-in & go)

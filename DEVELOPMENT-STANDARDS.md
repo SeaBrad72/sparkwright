@@ -237,14 +237,14 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 
 > This raises the supply-chain posture (gates 6–7) to the baseline for **all** projects — see `DEVELOPMENT-PROCESS.md` §10.
 
-**Conditional gates (a11y / load / eval).** The seven above are **universal**. Three further gates are **first-class but conditional** — binding only when their trigger is present, **N/A-with-reason** otherwise (the same pattern as the 15-factor and threat-model gates):
+**Conditional gates (a11y / load / eval / SAST / license).** The seven above are **universal**. Five further gates are **first-class but conditional** — binding only when their trigger is present, **N/A-with-reason** otherwise (the same pattern as the 15-factor and threat-model gates):
 - **Accessibility** *(user-facing UI)* — WCAG 2.1 AA; recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse). `DEVELOPMENT-PROCESS.md` §7.
 - **Load / soak** *(deployable services)* — resilience + perf-budget verification; `conformance/resilience-readiness.md`.
 - **Eval** *(AI features)* — model/prompt output meets the eval bar and does not regress; `DEVELOPMENT-PROCESS.md` §7; readiness `conformance/eval-readiness.md`, plan `templates/EVAL-PLAN-TEMPLATE.md`.
 - **SAST** *(first-party code)* — static analysis (Semgrep/CodeQL) for injection/auth-bypass/SSRF; `DEVELOPMENT-PROCESS.md` §7; guidance `docs/operations/security-scanning.md`.
 - **License compliance** *(when an SBOM is produced)* — `scripts/license-check.sh` over the CycloneDX SBOM; N/A-with-reason on same basis (`docs/operations/security-scanning.md`).
 
-They are deliberately **not** universal required gates: forcing an a11y, load, or eval gate on a CLI, library, or batch job that has no UI, no service, and no model would be false universality. Verified by `conformance/conditional-gates.sh`.
+They are deliberately **not** universal required gates: forcing a conditional gate (say a11y, load, or eval) on a CLI, library, or batch job that has no UI, no service, and no model would be false universality. Verified by `conformance/conditional-gates.sh`.
 
 **SLSA level.** The kit's **reference pipeline** builds adopter artifacts at **SLSA Build L2** (the kit's own repo is docs/scripts — no build artifact of its own): provenance is **authenticated and service-generated** (`actions/attest-build-provenance` runs in the push-only, least-privilege OIDC job and binds the attestation to the artifact / image digest). The **evidence** is the attestation itself. The kit does **not** yet claim **L3** — that requires a hermetic / isolated build with non-falsifiable provenance; the path is documented here as the next hardening step, not a current guarantee.
 

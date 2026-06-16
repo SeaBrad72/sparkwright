@@ -1,4 +1,4 @@
-# Compliance Crosswalk — SOC 2 & ISO 27001:2022
+# Compliance Crosswalk — SOC 2 · ISO 27001:2022 · NIST SSDF
 
 Maps the controls **this kit enforces or assists** to SOC 2 Trust Services Criteria (Security Common Criteria + Privacy) and ISO/IEC 27001:2022 Annex A. Use it to show an auditor *where the evidence lives* in a repo built with this kit.
 
@@ -41,7 +41,7 @@ Maps the controls **this kit enforces or assists** to SOC 2 Trust Services Crite
 
 ## Privacy & data-protection family
 
-Applies to projects handling personal data. **N/A (reason)** for projects with no personal data. The kit provides PII/consent/erasure *primitives* (STANDARDS §2) and maps them; the **privacy program is Org-owned**. Triggers to watch: **COPPA** (children's data), **GDPR** (incl. minors' provisions), **CCPA/CPRA**.
+Applies to projects handling personal data. **N/A (reason)** for projects with no personal data. The kit provides PII/consent/erasure *primitives* (STANDARDS §2) and maps them; the **privacy program is Org-owned**. The data-classification scheme + DPIA-lite live in [data-governance.md](data-governance.md). Triggers to watch: **COPPA** (children's data), **GDPR** (incl. minors' provisions), **CCPA/CPRA**.
 
 | Privacy control | Where in the kit | SOC 2 Privacy | ISO 27001:2022 | Evidence artifact | Responsibility |
 |-----------------|------------------|---------------|----------------|-------------------|----------------|

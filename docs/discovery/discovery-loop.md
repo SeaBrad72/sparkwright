@@ -22,6 +22,12 @@ does), a **gate**, and **loop-backs** (a later stage routing deliberately back �
 **Stages 3–6 already are Sparkwright's loop** (Plan → Build → Review/Release → Operate). They are
 shown here only to place FRAME and SHAPE; they are unchanged by this layer.
 
+> **FRAME/SHAPE vs. the loop's "Discover" (§5).** The core loop's `DEVELOPMENT-PROCESS.md` §5 Discovery
+> is the *light* intake — it validates a candidate that already has a problem and a sponsor. FRAME and
+> SHAPE are the **richer expansion upstream of it**: they're how a *raw* signal becomes that validated,
+> shaped candidate in the first place. Same territory, more structure — not a competing stage. Skip
+> them and §5 still works exactly as written.
+
 ## The seam: Ready
 
 FRAME produces an **Opportunity Brief** ([template](../../templates/OPPORTUNITY-BRIEF-TEMPLATE.md));

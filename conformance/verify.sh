@@ -7,6 +7,10 @@
 #   [doc] checks that are present-but-untested PASS — honestly labelled, not hidden.
 # A green run proves controls hold AND release/DR/resilience safety is DOCUMENTED — NOT
 # that those procedures were tested. See conformance/README.md "What a green run means".
+# SCOPE: this is a curated aggregate of the repo-runnable checks — NOT every conformance
+# script. Checks needing project context or live creds (e.g. inception-done, tracker-contract,
+# stack-selection) and conditionally-wired checks (e.g. container-supply-chain) run in their own
+# CI steps / at the adopter's gate, not here. "aggregate" means representative, not exhaustive.
 #   usage: sh conformance/verify.sh [--require] | --selftest
 set -eu
 cd "$(dirname "$0")/.."
