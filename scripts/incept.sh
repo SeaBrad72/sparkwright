@@ -83,6 +83,16 @@ fi
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
 case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
 case " $CI_PLATFORMS " in *" $CI "*) : ;; *) echo "error: unknown --ci '$CI' (one of: $CI_PLATFORMS)" >&2; exit 2 ;; esac
+# GitLab CI ships only for stacks with a reference pipeline (typescript-node today). Refuse EARLY
+# (before any file changes) rather than silently writing no CI file and dead-ending at the
+# Inception-Done gate. GitHub ships a pipeline for every service stack.
+if [ "$CI" = "gitlab" ] && [ ! -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
+  _gl=$(ls profiles/*/ci.gitlab-ci.yml 2>/dev/null | sed 's#profiles/##; s#/ci.gitlab-ci.yml##' | tr '\n' ' ')
+  echo "error: --ci gitlab is not yet available for stack '${STACK}' (no profiles/${STACK}/ci.gitlab-ci.yml)." >&2
+  echo "       Use --ci github (ships for every service stack), or add profiles/${STACK}/ci.gitlab-ci.yml." >&2
+  echo "       GitLab references today: ${_gl:-none}." >&2
+  exit 2
+fi
 if [ -n "$FLUENCY" ]; then
   case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
 fi

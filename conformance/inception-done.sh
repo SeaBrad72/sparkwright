@@ -16,7 +16,14 @@ need CLAUDE.md
 need RUNBOOK.md
 need .env.example
 need .claude
-need .github/workflows/ci.yml
+
+# CI pipeline — platform-aware: accept the GitHub OR GitLab path (incept writes one per --ci),
+# so a GitLab adopter doesn't dead-end at this gate (it hard-required the GitHub path before).
+if [ -f .github/workflows/ci.yml ] || [ -f .gitlab-ci.yml ]; then
+  echo "PASS present: CI pipeline (.github/workflows/ci.yml or .gitlab-ci.yml)"
+else
+  echo "FAIL missing: a CI pipeline (.github/workflows/ci.yml or .gitlab-ci.yml)"; fail=1
+fi
 
 # the guard must be WIRED, not just present (slice 7e; docs/adoption/brownfield.md).
 # guard-wired is three-state: 0 wired · 1 dark · 2 UNVERIFIED (jq absent). UNVERIFIED is
