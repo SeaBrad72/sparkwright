@@ -58,3 +58,4 @@ Each surface is a speed bump for honest mistakes, not containment of a hostile p
 - `DEVELOPMENT-PROCESS.md` §13 (autonomy matrix) · `conformance/agent-autonomy.sh` (the red-team corpus).
 - `docs/operations/ci-platforms.md` — the analogous "one contract, many platforms" pattern for CI.
 - `docs/operations/harness-adapters.md` — the harness-adapter boundary contract (the "one contract, many harnesses" pattern this guard plugs into).
+- `docs/operations/harness-enforcement-evidence.md` — the maintainer-verified proof that the floor blocks for non-Claude harnesses (the three CI-locked surface selftests).

@@ -90,6 +90,25 @@ sh conformance/harness-adapter.sh --selftest
 
 ---
 
+## BYO — adding a new harness
+
+Any harness is supported via a guided, validated workflow — parity with the `scripts/new-profile.sh` story for stacks:
+
+```sh
+sh scripts/new-adapter.sh <harness-name>
+```
+
+This scaffolds `adapters/<harness>/{adapter.json,README.md}` from the `adapters/_TEMPLATE/` skeleton. The generated adapter is **floor-only** and conforms immediately (`sh conformance/harness-adapter.sh adapters/<harness>` exits 0). Refine from there:
+
+1. Set `controlPlanePaths` for the harness's namespace (config file, rules directory, settings path).
+2. Upgrade a dimension to `"native"` with a `proof` (`check` and/or `files`) when the harness supports inline pre-exec interception, native subagents, or an MCP gate.
+3. Validate after each change: `sh conformance/harness-adapter.sh adapters/<harness>`.
+4. Select it at Inception: `sh scripts/incept.sh --harness <harness-name>`.
+
+A floor-only adapter is always fully covered by the universal governance layer. The kit is never limited to the adapters it ships.
+
+---
+
 ## Honest note
 
 The floor is the equal-enforcement guarantee — it holds on every harness without cooperation from the runtime. Native is additive: it tightens enforcement when the harness supports inline interception (pre-exec hooks, subagents). A harness that supports native should declare it and prove it; one that doesn't stays at floor and is still fully covered by the universal layer.

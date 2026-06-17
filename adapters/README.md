@@ -21,6 +21,22 @@ An adapter is a thin, harness-native binding that *references* the repo's univer
 
 `adapters/claude-code/` is the reference adapter. It references the live `.claude/` governance layer in this repo — the files there are **not** duplicated here.
 
+## BYO — adding a new harness
+
+Any harness is supported. Run:
+
+```sh
+sh scripts/new-adapter.sh <harness-name>
+```
+
+This scaffolds `adapters/<harness>/{adapter.json,README.md}` from the `adapters/_TEMPLATE/` skeleton — floor-only, conforms immediately. Customize `controlPlanePaths` for the harness's namespace and upgrade any dimension to `"native"` with a `proof` when the harness supports inline interception. Validate with:
+
+```sh
+sh conformance/harness-adapter.sh adapters/<harness>
+```
+
+This is the same guided, validated workflow that `scripts/new-profile.sh` provides for stacks.
+
 ## Contract
 
 The adapter boundary contract — the 5-dimension table, manifest schema, and conformance rules — is in `docs/operations/harness-adapters.md`.

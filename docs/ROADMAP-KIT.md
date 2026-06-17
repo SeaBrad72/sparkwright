@@ -66,7 +66,7 @@ Make the kit **LLM/harness-neutral** — anyone can pick it up with any agent ha
 | **N1 — `agent-boundary` CI gate** | harness-independent control-plane-ratification gate + `conformance/agent-boundary.sh` + reference job + §13 clause | ✅ **shipped 2.63.0** |
 | **N2 — adapter contract + `harness-adapter.sh`** | boundary-contract doc + adapter manifest + composing conformance check + name `.claude/` the `claude-code` reference adapter | ✅ **shipped 2.64.0** |
 | **N3 — `generic` adapter + `incept --harness`** | generic/AGENTS.md adapter + `--harness` flag (default `claude-code`) + per-harness verification + Inception-Done enforcement | ✅ **shipped 2.65.0** |
-| **N4 — proof + positioning → cut `3.0.0`** | enforcement corpus through non-Claude surfaces + one live cross-harness demo + positioning + adapter `_TEMPLATE` + **release `3.0.0`** | ⬜ planned |
+| **N4 — proof + positioning → cut `3.0.0`** | enforcement-evidence doc (the 3 CI-locked surface selftests) + BYO adapter `_TEMPLATE` + `new-adapter.sh` + stack/harness-neutral positioning + **release `3.0.0`** | ✅ **shipped 3.0.0 — harness-neutrality arc COMPLETE** |
 
 ---
 
