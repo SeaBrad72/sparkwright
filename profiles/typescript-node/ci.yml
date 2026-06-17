@@ -77,7 +77,7 @@ jobs:
 
       - name: Dependency vulnerability scan
         id: gate-dep-scan
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high   # prod-dep posture; triage dev-tool advisories separately (they don't ship)
 
       - name: Generate SBOM (CycloneDX)
         id: gate-sbom

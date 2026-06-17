@@ -256,6 +256,15 @@ if [ -f "profiles/${STACK}/compose.yaml" ] && [ ! -f compose.yaml ]; then
   echo "copied compose.yaml from profiles/${STACK}/ (local dev mirroring prod) — review the services it declares against your 'Environments this stack needs'"
 fi
 
+# --- 5a4. copy the profile's Dockerfile (brownfield-safe) ---
+# Every service ci.yml runs `docker build` (image SBOM + provenance gates) and the compose
+# above builds from it — so the project needs the Dockerfile, or the first CI push / `docker
+# compose up` fails. Copy it where absent. (Non-service profiles ship no Dockerfile — skipped.)
+if [ -f "profiles/${STACK}/Dockerfile" ] && [ ! -f Dockerfile ]; then
+  cp "profiles/${STACK}/Dockerfile" Dockerfile
+  echo "copied Dockerfile from profiles/${STACK}/ (the image-build CI gates + compose build from it)"
+fi
+
 # --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---
 # Git hooks are not version-controlled, so incept installs the reference per-clone.
 # Never clobber an existing hook (same discipline as the .claude/ brownfield path).

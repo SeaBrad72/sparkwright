@@ -82,7 +82,7 @@ gate-secret-scan:
 gate-dep-scan:
   stage: verify
   needs: [gate-install]
-  script: [pnpm audit --audit-level=high]
+  script: [pnpm audit --prod --audit-level=high]   # prod-dep posture; dev-tool advisories triaged separately (they don't ship)
 
 # SBOM (CycloneDX). GitLab-native alternative: the CycloneDX/Dependency-Scanning artifact.
 gate-sbom:
