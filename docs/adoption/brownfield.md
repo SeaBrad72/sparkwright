@@ -27,7 +27,7 @@ Bring these into your repo root (adapt, don't blindly overwrite):
 
 - Governing docs: `ENGINEERING-PRINCIPLES.md` (the kit's principles `CLAUDE.md`, renamed), `DEVELOPMENT-PROCESS.md`, `DEVELOPMENT-STANDARDS.md`, `MAINTAINING.md`.
 - `profiles/`, `conformance/`, `templates/`, `docs/`, `scripts/`.
-- `.github/workflows/ci.yml` (from your chosen `profiles/<stack>/ci.yml`) — **merge** with any existing CI; don't drop your pipeline.
+- `.github/workflows/ci.yml` (from your chosen `profiles/<stack>/ci.yml`) — **merge** with any existing CI; don't drop your pipeline. *(If you run `incept` in a populated repo, it now **preserves** an existing `ci.yml`/CODEOWNERS — it warns and skips rather than overwriting — but you must still merge the profile's gate-ids into your pipeline by hand.)*
 - `.claude/` — **merge, never overwrite** (next section).
 
 If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md` and bring the kit's principles in as `ENGINEERING-PRINCIPLES.md` (the name the kit uses post-Inception).
