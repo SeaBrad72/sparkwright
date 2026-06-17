@@ -38,4 +38,23 @@ The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). The Foundat
 
 ---
 
-**Last Updated:** 2026-06-09
+## Post-2.62.0 fix-forward backlog (from the pre-launch go/no-go arc)
+
+The pre-launch go/no-go (8 adversarial rounds) reached **0 blockers on the supported path**; these are the surviving non-blocking findings, deferred as fix-forward. None breaks the verified `typescript-node` path or a headline claim — they are per-stack reproducibility, doc consistency, and adapt-me-reference polish.
+
+**Highs (per-stack reproducibility — close before promoting a stack to "verified"):**
+- **go** `gate-lint` installs `golangci-lint@latest` with no `.golangci.yml` — pin the action `version:` and ship the `.golangci.yml` baseline (govet/staticcheck/errcheck/gosec) profile §2 promises.
+- **java-spring** OWASP dep-scan has no NVD cache/key — add a cache step + optional `NVD_API_KEY` secret, or document the slow/keyless first-run caveat.
+- **kotlin** documented `gradle wrapper` step is version-unpinned — pin `--gradle-version` (or ship `gradle-wrapper.properties`) so an old local Gradle can't generate an incompatible wrapper.
+
+**Mediums:**
+- ts-node Dockerfile `HEALTHCHECK` references `dist/healthcheck.js` the scaffold never builds — add `src/healthcheck.ts` or repoint the probe (container reads `unhealthy` after the adopter containerizes).
+- dotnet scaffold: add the `.editorconfig` + `Directory.Build.props` the profile §2 declares mandatory; dotnet Dockerfile `COPY packages.lock.json` path is per-project, not root (fails `docker build` when adapted).
+- Unify dep-scan prod-scoping across stacks (ts uses `--omit=dev`; python `pip-audit` and java/kotlin OWASP don't) + add a non-blocking dev-advisory audit.
+- `incept` scaffold-copy uses `find -type f`, so it would copy stray build artifacts (`.coverage`, `__pycache__`) from a *dirty* dev tree — harden to skip gitignored paths. (No shipped leak: a clean clone has none, and the scaffold `.gitignore` blocks committing them.)
+
+**Lows/Nits:** gate-sast `--config auto` network/Pro-rules caveat note · rust `llvm-tools-preview` component note · java-spring Dockerfile `mvnw`-wrapper comment · non-ts reference `ci.yml` SHA-pin (vs major-float) for parity with ts-node · run `mvn wrapper:wrapper && ./mvnw verify` once to convert java-spring from "authored" to "maintainer-verified."
+
+---
+
+**Last Updated:** 2026-06-17
