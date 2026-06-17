@@ -83,7 +83,7 @@ selftest() {
   . "$CORE"
   dc() {  # expect_rc paths ratified label
     e=$1; p=$2; r=$3; lbl=$4
-    ( boundary_decide "$p" "$r" ) >/dev/null 2>&1 && g=0 || g=$?
+    ( boundary_decide "$p" "$r" ) >/dev/null && g=0 || g=$?
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> rc $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
   dc 0 "src/app.ts
@@ -100,16 +100,16 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   printf '.github/workflows/ci.yml\n' > "$miss/cp.txt"
   printf 'src/app.ts\n' > "$miss/clean.txt"
   # shellcheck disable=SC1007  # CI= intentionally clears the var for the subprocess
-  CI= REQUIRE=0 sh "$0" --ratified 0 >/dev/null 2>&1 && r=0 || r=$?
+  CI= REQUIRE=0 sh "$0" --ratified 0 >/dev/null && r=0 || r=$?
   if [ "$r" = "2" ]; then echo "selftest PASS: no --changed local -> exit 2 (UNVERIFIED)"; else echo "selftest FAIL: no --changed local want 2 got $r"; st=1; fi
-  CI=true sh "$0" --ratified 0 >/dev/null 2>&1 && r=0 || r=$?
+  CI=true sh "$0" --ratified 0 >/dev/null && r=0 || r=$?
   if [ "$r" = "1" ]; then echo "selftest PASS: no --changed + CI -> exit 1 (escalation)"; else echo "selftest FAIL: no --changed + CI want 1 got $r"; st=1; fi
   # end-to-end CLI over a real listing file
-  sh "$0" --changed "$miss/cp.txt" --ratified 0 >/dev/null 2>&1 && r=0 || r=$?
+  sh "$0" --changed "$miss/cp.txt" --ratified 0 >/dev/null && r=0 || r=$?
   if [ "$r" = "1" ]; then echo "selftest PASS: cli unratified control-plane -> exit 1"; else echo "selftest FAIL: cli cp unratified want 1 got $r"; st=1; fi
-  sh "$0" --changed "$miss/cp.txt" --ratified 1 >/dev/null 2>&1 && r=0 || r=$?
+  sh "$0" --changed "$miss/cp.txt" --ratified 1 >/dev/null && r=0 || r=$?
   if [ "$r" = "0" ]; then echo "selftest PASS: cli ratified control-plane -> exit 0"; else echo "selftest FAIL: cli cp ratified want 0 got $r"; st=1; fi
-  sh "$0" --changed "$miss/clean.txt" --ratified 0 >/dev/null 2>&1 && r=0 || r=$?
+  sh "$0" --changed "$miss/clean.txt" --ratified 0 >/dev/null && r=0 || r=$?
   if [ "$r" = "0" ]; then echo "selftest PASS: cli clean diff -> exit 0"; else echo "selftest FAIL: cli clean want 0 got $r"; st=1; fi
 
   [ "$st" = "0" ] && echo "agent-boundary --selftest: OK"
