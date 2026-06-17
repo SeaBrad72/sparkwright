@@ -4,8 +4,9 @@
 # guard under .claude/hooks/ is DELIBERATELY excluded — see collect() for why.
 # Floor: error + warning (POSIX -s sh). This shell is currently shellcheck-clean; this keeps it
 # that way (dash -n only checks syntax, not lint). CONDITIONAL on shellcheck being installed:
-# SKIP-pass if absent (a dev may not have it) — the kit CI installs it and runs it for real,
-# so drift is caught in CI regardless.
+# SKIP-pass if absent (a dev may not have it) — the kit CI installs it and runs it for real, so
+# drift IN THE LINTED SCOPE is caught in CI. (The excluded .claude/hooks/ guard core is linted
+# NOWHERE — by design; it is regression-locked behaviorally instead, see collect() below.)
 #   sh conformance/shellcheck.sh [--selftest]
 # Exit: 0 = clean or SKIP · 1 = a finding · 2 = bad usage. POSIX sh; dash-clean.
 set -eu

@@ -1,10 +1,12 @@
 #!/bin/sh
-# ci-selftest-coverage.sh — every selftest-capable kit check is ENFORCED in CI.
-# Closes the drift class where a conformance script ships with a `--selftest` but is never wired
-# into .github/workflows/ci.yml, so a regression in that checker would never be caught on push
-# (the check "exists" but is not "enforced"). Scans the kit's own checks (conformance/*.sh,
-# scripts/*.sh, hooks/pre-push); any that support `--selftest` MUST be referenced by basename in
-# ci.yml. Fail-closed: lists every unwired check.
+# ci-selftest-coverage.sh — every selftest-capable kit check has its `--selftest` wired into CI.
+# Closes the drift class where a conformance script ships a `--selftest` but is never referenced
+# in .github/workflows/ci.yml, so a regression in that CHECKER'S OWN LOGIC would never be caught
+# on push. This regression-locks the checker's logic; it does NOT by itself prove the checker's
+# verdict runs against the kit repo — that is the check's own real-path CI step (or a Review/Manual
+# row; see conformance/README.md). Scans the kit's own checks (conformance/*.sh, scripts/*.sh,
+# hooks/pre-push); any that support `--selftest` MUST be referenced by basename in ci.yml.
+# Fail-closed: lists every unwired check.
 #
 # Self-exclusion: this script excludes ITSELF from the scan. Its own presence in ci.yml is a
 # one-time maintainer bootstrap (a meta-check can't non-circularly verify its own wiring); if it
