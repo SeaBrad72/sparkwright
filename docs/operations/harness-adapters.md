@@ -18,6 +18,8 @@ Multi-harness coexistence rule: adapters occupy additive, non-conflicting namesp
 | **review-roles** | `agent-boundary` gate + branch-protection reference | Native subagents (`reviewer.md`, `security-reviewer.md`) | `conformance/branch-protection.sh` |
 | **mcp-gate** | N/A if no MCP | `mcp-policy` wired (`guard_check_mcp` + `mcp-policy.json`) | `conformance/mcp-policy.sh` |
 
+> The "Verified by" column spans both the floor verifier (e.g. `conformance/guard-core-sourced.sh`, run for every harness) and the native-proof verifier (e.g. `conformance/guard-wired.sh`, `conformance/mcp-policy.sh`, run only when `level` is `"native"`); the manifest-schema section below documents which script fills which role.
+
 ---
 
 ## The manifest schema
@@ -54,6 +56,7 @@ Each adapter declares its binding in `adapters/<harness>/adapter.json`. The shap
 - Every dimension's **floor** must hold regardless of `level` — a `native` claim does not exempt the floor.
 - A `native` dimension **must** carry a `proof` that passes — the lying-native guard enforces this (`harness-adapter.sh` fails if proof is absent or the check exits non-zero).
 - Only `mcp-gate` may carry `"n-a"` — every other dimension has a floor that applies universally.
+- A `proof.check` script is trusted on the same basis as any `conformance/*.sh` the kit already runs: adapter manifests are control-plane-adjacent and change only through ratified review (they sit beside the `.claude/` paths the `agent-boundary` gate guards).
 
 ---
 
