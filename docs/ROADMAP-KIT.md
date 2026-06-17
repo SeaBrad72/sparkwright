@@ -57,4 +57,17 @@ The pre-launch go/no-go (8 adversarial rounds) reached **0 blockers on the suppo
 
 ---
 
+## Harness-neutrality arc (→ `3.0.0`)
+
+Make the kit **LLM/harness-neutral** — anyone can pick it up with any agent harness out of the gate, while **Claude Code stays the default** and is regression-locked by its existing conformance. Full adapter model; first target = the generic/AGENTS.md baseline; **split proof bar** (enforcement maintainer-verified, process authored-to-contract). Design spec: `docs/superpowers/specs/2026-06-17-harness-neutrality-design.md`. Ships as additive minors; `3.0.0` is cut at N4.
+
+| Slice | Ships | Status |
+|-------|-------|--------|
+| **N1 — `agent-boundary` CI gate** | harness-independent control-plane-ratification gate + `conformance/agent-boundary.sh` + reference job + §13 clause | ✅ **shipped 2.63.0** |
+| **N2 — adapter contract + `harness-adapter.sh`** | boundary-contract doc + adapter manifest + composing conformance check + name `.claude/` the `claude-code` reference adapter | ⬜ planned |
+| **N3 — `generic` adapter + `incept --harness`** | generic/AGENTS.md adapter + `--harness` flag (default `claude-code`) + per-harness verification | ⬜ planned |
+| **N4 — proof + positioning → cut `3.0.0`** | enforcement corpus through non-Claude surfaces + one live cross-harness demo + positioning + adapter `_TEMPLATE` + **release `3.0.0`** | ⬜ planned |
+
+---
+
 **Last Updated:** 2026-06-17

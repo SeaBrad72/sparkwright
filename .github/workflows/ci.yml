@@ -31,6 +31,8 @@ jobs:
         run: test -f conformance/15-factor-checklist.md
       - name: Agent-autonomy guard conformance (§13)
         run: sh conformance/agent-autonomy.sh
+      - name: Agent-boundary CI gate self-test (§13 — ratify control-plane diffs)
+        run: sh conformance/agent-boundary.sh --selftest
       - name: Preflight self-test (prerequisite detector)
         run: sh scripts/preflight.sh --selftest
       - name: Guard single-source-of-truth (all consumers source the core)

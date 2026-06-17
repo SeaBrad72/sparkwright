@@ -3,6 +3,22 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.63.0] - 2026-06-17
+
+**Harness-neutrality — N1: the agent-boundary CI gate.** First slice of the LLM/harness-neutral milestone (→ `3.0.0`). **MINOR** — additive: a new §13 governance gate + reference job + conformance check; the 7 required build gates are unchanged and nothing breaks. Claude Code stays the default, regression-locked.
+
+### Added
+- **`conformance/agent-boundary.sh`** — a harness-independent, three-state CI check (`0`/`1`/`2`; UNVERIFIED escalates under CI/`--require`) that fails a PR whose diff touches a control-plane path without an explicit human ratification signal (a CODEOWNER approval or the `ratified-control-plane` label). Reuses `guard-core.sh::is_control_plane_path` (single source of truth — no forked path list); a pure decision core with an in-process `--selftest`.
+- **`gate-agent-boundary`** reference job in `profiles/typescript-node/ci.yml` — computes the changed-file set + the ratification signal (label or a non-author approval, taking each reviewer's latest review) and runs the check fail-closed; a `gh` failure fails the step loudly. It is a §13 governance gate, **not** one of the 7 required build gates.
+- **§13 contract clause** in `DEVELOPMENT-PROCESS.md` + a fourth surface row in `docs/operations/runtime-guards.md`: the gate makes "agents propose, humans ratify; never self-edit the control plane" hold on **every** harness — including one with no inline guard — because CI catches an unratified control-plane edit before merge.
+
+### Changed
+- The kit dogfoods the new check: `agent-boundary.sh --selftest` is wired into the kit's own `ci.yml` and registered in the `verify.sh` aggregate (so `ci-selftest-coverage` enforces it).
+
+### Honesty / engineering notes
+- **Split proof bar:** the enforcement half is deterministic and maintainer-verified (the selftest corpus + the conformance run); the live ratification shell (`gh`) runs only inside a real GitHub PR and is authored-to-contract — the gates catch deviation, the agent's compliance is not assumed.
+- **Honest ceiling:** CI is post-hoc and `.github/workflows/*` is itself control-plane — the real boundary remains platform-owned (`docs/enterprise/platform-safety-boundary.md`).
+
 ## [2.62.1] - 2026-06-17
 
 **PATCH** — closes the post-launch go/no-go backlog (per-stack reproducibility + container/config completeness). No new capability; makes 2.62.0's per-stack promises true. Several fixes Docker-verified.

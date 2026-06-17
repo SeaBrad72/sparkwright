@@ -1,0 +1,122 @@
+#!/bin/sh
+# agent-boundary.sh — CI-side, harness-independent enforcement of the DEVELOPMENT-PROCESS.md §13
+# agent boundary: a PR diff that touches a CONTROL-PLANE path must carry an explicit HUMAN
+# ratification signal (a CODEOWNER approval on those paths, or a human-applied label). This is the
+# enforcement floor that holds on EVERY harness — incl. a harness with no inline guard — because CI
+# catches an unratified control-plane edit post-hoc, before merge.
+#
+# Pure decision via boundary_decide(): the CI job computes the inputs (changed-file listing +
+# ratified flag) from the PR event and passes them in, so this stays deterministic + --selftest-able.
+# Reuses guard-core.sh::is_control_plane_path — the SINGLE SOURCE OF TRUTH for the control-plane set
+# (no forked path list; this is another honored consumer of the core).
+#
+# THREE-STATE: 0 = boundary holds · 1 = violated (unratified control-plane change) · 2 = UNVERIFIED
+#   (changed-file listing unavailable). 2 escalates to 1 under CI (CI env) or --require — a gate must
+#   be runnable. See conformance/branch-protection.sh for the same contract.
+#
+#   usage: sh conformance/agent-boundary.sh --changed <listing-file> --ratified <0|1> [--require]
+#          sh conformance/agent-boundary.sh --selftest
+set -eu
+
+REQUIRE="${REQUIRE:-0}"
+[ -n "${CI:-}" ] && REQUIRE=1
+CHANGED=""
+RATIFIED="0"
+MODE="run"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --changed) CHANGED="${2:-}"; shift 2 ;;
+    --ratified) RATIFIED="${2:-0}"; shift 2 ;;
+    --require) REQUIRE=1; shift ;;
+    --selftest) MODE="selftest"; shift ;;
+    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest" >&2; exit 2 ;;
+  esac
+done
+
+# Resolve + source the deny-matrix core (the control-plane path set lives there).
+CORE="${KIT_GUARD_CORE:-$(dirname "$0")/../.claude/hooks/guard-core.sh}"
+
+unverifiable() {  # <reason>
+  if [ "$REQUIRE" = "1" ]; then
+    echo "FAIL: agent-boundary could not verify ($1) and verification is required (CI/--require)."
+    exit 1
+  fi
+  echo "UNVERIFIED: $1 — provide --changed <listing> in a PR context. (NOT a pass.)"
+  exit 2
+}
+
+# boundary_decide <newline-separated-paths> <ratified 0|1>: print verdict; return 0 ok / 1 violation.
+# Kept pure so the selftest can exercise it in-process (an env var must never force a pass).
+boundary_decide() {
+  _list=$1; _rat=$2; _hits=""
+  # Read the listing line-by-line in the CURRENT shell (heredoc, not a pipe) so _hits persists.
+  while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    if is_control_plane_path "$_p"; then _hits="$_hits $_p"; fi
+  done <<EOF
+$_list
+EOF
+  if [ -n "$_hits" ]; then
+    if [ "$_rat" = "1" ]; then
+      echo "OK: control-plane change present and ratified —$_hits"; return 0
+    fi
+    echo "FAIL: unratified control-plane change —$_hits"; return 1
+  fi
+  echo "OK: no control-plane paths in the diff"; return 0
+}
+
+run() {
+  [ -f "$CORE" ] || unverifiable "deny-matrix core not found at $CORE (set KIT_GUARD_CORE)"
+  # shellcheck disable=SC1090  # core path is resolved at runtime, intentionally dynamic
+  . "$CORE"
+  [ -n "$CHANGED" ] || unverifiable "no --changed listing supplied"
+  [ -f "$CHANGED" ] || unverifiable "--changed listing not found: $CHANGED"
+  _paths=$(cat "$CHANGED")
+  if boundary_decide "$_paths" "$RATIFIED"; then exit 0; else exit 1; fi
+}
+
+selftest() {
+  st=0
+  # source the core so is_control_plane_path is available to boundary_decide in-process
+  [ -f "$CORE" ] || { echo "selftest FAIL: core not found at $CORE"; return 1; }
+  # shellcheck disable=SC1090
+  . "$CORE"
+  dc() {  # expect_rc paths ratified label
+    e=$1; p=$2; r=$3; lbl=$4
+    ( boundary_decide "$p" "$r" ) >/dev/null && g=0 || g=$?
+    if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> rc $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
+  }
+  dc 0 "src/app.ts
+README.md" 0 "ordinary diff, unratified -> PASS"
+  dc 1 "src/app.ts
+.github/workflows/ci.yml" 0 "workflow change, unratified -> FAIL"
+  dc 0 "src/app.ts
+.github/workflows/ci.yml" 1 "workflow change, ratified -> PASS"
+  dc 1 "CODEOWNERS" 0 "CODEOWNERS change, unratified -> FAIL"
+  dc 0 "" 0 "empty diff -> PASS"
+
+  # three-state CLI: no --changed is UNVERIFIED (exit 2) locally, FAIL (exit 1) under CI/--require.
+  miss=$(mktemp -d)  # fixtures left in place (no rm; 7e guard)
+  printf '.github/workflows/ci.yml\n' > "$miss/cp.txt"
+  printf 'src/app.ts\n' > "$miss/clean.txt"
+  # shellcheck disable=SC1007  # CI= intentionally clears the var for the subprocess
+  CI= REQUIRE=0 sh "$0" --ratified 0 >/dev/null && r=0 || r=$?
+  if [ "$r" = "2" ]; then echo "selftest PASS: no --changed local -> exit 2 (UNVERIFIED)"; else echo "selftest FAIL: no --changed local want 2 got $r"; st=1; fi
+  CI=true sh "$0" --ratified 0 >/dev/null && r=0 || r=$?
+  if [ "$r" = "1" ]; then echo "selftest PASS: no --changed + CI -> exit 1 (escalation)"; else echo "selftest FAIL: no --changed + CI want 1 got $r"; st=1; fi
+  # end-to-end CLI over a real listing file
+  sh "$0" --changed "$miss/cp.txt" --ratified 0 >/dev/null && r=0 || r=$?
+  if [ "$r" = "1" ]; then echo "selftest PASS: cli unratified control-plane -> exit 1"; else echo "selftest FAIL: cli cp unratified want 1 got $r"; st=1; fi
+  sh "$0" --changed "$miss/cp.txt" --ratified 1 >/dev/null && r=0 || r=$?
+  if [ "$r" = "0" ]; then echo "selftest PASS: cli ratified control-plane -> exit 0"; else echo "selftest FAIL: cli cp ratified want 0 got $r"; st=1; fi
+  sh "$0" --changed "$miss/clean.txt" --ratified 0 >/dev/null && r=0 || r=$?
+  if [ "$r" = "0" ]; then echo "selftest PASS: cli clean diff -> exit 0"; else echo "selftest FAIL: cli clean want 0 got $r"; st=1; fi
+
+  [ "$st" = "0" ] && echo "agent-boundary --selftest: OK"
+  return "$st"
+}
+
+case "$MODE" in
+  selftest) selftest; exit $? ;;
+  *) run ;;
+esac

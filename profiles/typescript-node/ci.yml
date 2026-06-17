@@ -190,3 +190,36 @@ jobs:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build-push.outputs.digest }}
           push-to-registry: true
+
+  gate-agent-boundary:
+    # §13 governance gate (harness-independent): a control-plane diff must be human-ratified.
+    # NOT one of the 7 required build gates (ci-gates.sh) — a separate, required governance step.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Compute changed files
+        run: git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed.txt
+      - name: Compute ratification signal (label or non-author approval)
+        id: ratify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          rat=0
+          labels=$(gh pr view "$PR" --json labels -q '.labels[].name')
+          if printf '%s\n' "$labels" | grep -qx 'ratified-control-plane'; then rat=1; fi
+          if [ "$rat" = "0" ]; then
+            approvers=$(gh pr view "$PR" --json reviews \
+              -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login')
+            if printf '%s\n' "$approvers" | grep -vx "$AUTHOR" | grep -q .; then rat=1; fi
+          fi
+          echo "ratified=$rat" >> "$GITHUB_OUTPUT"
+      - name: Agent-boundary gate
+        run: sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}" --require

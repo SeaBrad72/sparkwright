@@ -360,7 +360,6 @@ Autonomy is a spectrum; an agent's tier is **how far it proceeds before a human 
 **Irreversible / high-blast-radius actions are always human-gated regardless of tier.** A project raises an action's tier as the agent-quality metrics earn it.
 
 ### Ratification roles & exceptions
-
 "Humans ratify" (§12) means a **named role**, not merely "a human." Roles and what each may ratify:
 
 | Role | May ratify |
@@ -384,6 +383,7 @@ Track per agent (or agent type) and use to adjust autonomy: **rework rate · rev
 This matrix is tool-neutral. For **Claude Code** it is enforced by the committed `.claude/` layer: `settings.json` permission globs + a `PreToolUse` guard hook (`.claude/hooks/guard.sh`) that denies the irreversible/high-blast set above and protects its own integrity, plus `reviewer`/`security-reviewer` subagents for the §12 separations. Conformance: `conformance/agent-autonomy.sh` proves a tier breach is actually denied. Other agent runtimes express the same matrix their own way.
 
 The guard is a **best-effort speed bump for honest agent mistakes, not a security boundary** — a deny-list over a shell cannot contain a determined or compromised agent. Two refinements (Slices 11a–11c): the guard additionally **enforces a deny-by-default MCP capability gate** in-process (`guard_check_mcp` — real enforcement, by tool name only), and the four platform controls are now kit-referenced + verify-wired (**Kit-assisted**). The real boundary remains platform-owned (network-egress allowlist, separate prod credentials, sandboxed filesystem, scoped tokens); see [`docs/enterprise/platform-safety-boundary.md`](docs/enterprise/platform-safety-boundary.md). Adopt both.
+**The agent-boundary CI gate (harness-independent enforcement).** Every PR is checked by `conformance/agent-boundary.sh` (job: `gate-agent-boundary`): a diff touching a control-plane path (the set defined in `guard-core.sh::is_control_plane_path`) must carry a CODEOWNER approval or the `ratified-control-plane` label, or the gate fails — making the rule hold on every harness including one with no inline guard. It is a §13 governance gate, not one of the 7 required build gates. Honest ceiling: CI is post-hoc; the real boundary remains platform-owned (`docs/enterprise/platform-safety-boundary.md`).
 
 ---
 
