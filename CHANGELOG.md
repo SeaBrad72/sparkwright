@@ -3,6 +3,21 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.0] - 2026-06-17
+
+**Harness-neutrality — N2: the adapter boundary contract.** Second slice of the LLM/harness-neutral milestone (→ `3.0.0`). **MINOR** — additive: a contract doc, the `claude-code` reference adapter, and a composing conformance check; no change to existing gates, nothing breaks.
+
+### Added
+- **Adapter boundary contract** (`docs/operations/harness-adapters.md`) — the 5 dimensions (`context-binding`, `command-guard`, `history-protection`, `review-roles`, `mcp-gate`), each with a **Kit-enforced floor** (the equal-enforcement guarantee — asserted for every harness) and an optional **Kit-assisted native** bonus, plus the JSON manifest schema.
+- **`adapters/` + the `claude-code` reference adapter** (`adapters/claude-code/adapter.json`) — a declarative manifest that **references** the existing `.claude/` governance layer (not a copy): control-plane paths, binding files, and per-dimension `native`/`floor`/`n-a` with a per-dimension proof. The kit's `.claude/` stays exactly where it is.
+- **`conformance/harness-adapter.sh`** — a *composing* meta-check (three-state; `--selftest`): validates the manifest, asserts the floor for **every** dimension by calling existing checks (`agents-brief.sh`, `guard-core-sourced.sh`, …), and runs each `native` dimension's declared proof so an adapter **cannot overclaim** (the "lying-native" guard — `command-guard: native` must pass `guard-wired.sh`; `mcp-gate: native` must pass `mcp-policy.sh`). It composes the existing checks, never reimplements them.
+
+### Changed
+- The kit dogfoods it: `harness-adapter.sh --selftest` plus a real-run against the `claude-code` adapter are wired into the kit's `ci.yml`, and the real-run is registered in the `verify.sh` aggregate.
+
+### Honesty / engineering notes
+- The **floor is the equal-enforcement guarantee** (asserted for every dimension regardless of declared level); `native` is an additive bonus whose claim must pass a real proof. The `generic`/AGENTS.md adapter + `incept --harness` are N3.
+
 ## [2.63.0] - 2026-06-17
 
 **Harness-neutrality — N1: the agent-boundary CI gate.** First slice of the LLM/harness-neutral milestone (→ `3.0.0`). **MINOR** — additive: a new §13 governance gate + reference job + conformance check; the 7 required build gates are unchanged and nothing breaks. Claude Code stays the default, regression-locked.

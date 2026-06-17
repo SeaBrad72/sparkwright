@@ -33,6 +33,10 @@ jobs:
         run: sh conformance/agent-autonomy.sh
       - name: Agent-boundary CI gate self-test (§13 — ratify control-plane diffs)
         run: sh conformance/agent-boundary.sh --selftest
+      - name: Harness-adapter conformance self-test (boundary-contract fixtures)
+        run: sh conformance/harness-adapter.sh --selftest
+      - name: Harness-adapter real-run (kit dogfoods its own claude-code adapter)
+        run: sh conformance/harness-adapter.sh adapters/claude-code
       - name: Preflight self-test (prerequisite detector)
         run: sh scripts/preflight.sh --selftest
       - name: Guard single-source-of-truth (all consumers source the core)
