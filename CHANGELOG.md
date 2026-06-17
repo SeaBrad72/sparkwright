@@ -3,6 +3,24 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-06-17
+
+**Harness-neutrality milestone — N4: proof, positioning, and the release.** Closes the LLM/harness-neutral arc (N1–N4): the kit is now usable with any agent harness out of the gate, with the enforcement floor **maintainer-verified to block regardless of harness**. **MAJOR as a milestone marker, NOT a breaking change** — an existing Claude Code adopter upgrades with nothing broken; everything added across N1–N4 is additive and the default experience is untouched.
+
+### The milestone (N1–N4)
+- **N1 (`2.63.0`)** — the `agent-boundary` CI gate: harness-independent control-plane ratification, so the §13 agent boundary holds on any harness (including one with no inline guard, because CI catches an unratified control-plane edit before merge).
+- **N2 (`2.64.0`)** — the adapter boundary contract + `conformance/harness-adapter.sh` (the composing meta-check with the "lying-native" guard) + the `claude-code` reference adapter.
+- **N3 (`2.65.0`)** — the `generic` floor-only adapter + `incept --harness` (multi-select, default `claude-code`) + Inception-Done enforcement (a project can't pass Inception unless each declared adapter conforms — greenfield **and** brownfield).
+- **N4 (this release)** — see below.
+
+### Added (N4)
+- **`docs/operations/harness-enforcement-evidence.md`** — names the maintainer-verified enforcement proof: three deterministic, CI-locked surface selftests — `scripts/kit-guard --selftest` (the CLI surface any non-Claude runtime pipes through), `hooks/pre-push --selftest` (git-history), and `conformance/agent-boundary.sh --selftest` (the CI gate) — that block destructive/control-plane actions regardless of caller.
+- **BYO adapters** — `adapters/_TEMPLATE/` (a floor-only skeleton that conforms immediately) + `scripts/new-adapter.sh <harness>` (mirrors `scripts/new-profile.sh`), so any harness (Cursor, Gemini, …) is a guided, validated path — parity with the stack BYO story.
+- **Positioning** — the README is now explicitly **stack- AND harness-neutral**.
+
+### Honesty / engineering notes
+- **Split proof bar:** enforcement is *maintainer-verified* (the three surface selftests — deterministic, CI-locked — block any caller); process-following is *authored-to-contract*; and the **live cross-harness agent demo** (driving a real third-party agent end-to-end) is documented as the recommended **first real-world validation**, honestly *not* claimed as already-run. The floor is a maintainer-verified **speed bump, not containment** — the real boundary remains platform-owned (`docs/enterprise/platform-safety-boundary.md`).
+
 ## [2.65.0] - 2026-06-17
 
 **Harness-neutrality — N3: the `generic` adapter + `incept --harness`.** Third slice of the LLM/harness-neutral milestone (→ `3.0.0`). The kit becomes pickup-able with a non-Claude harness out of the gate, provably enforced for greenfield **and** brownfield. **MINOR** — additive; the no-flag `incept` experience is unchanged.
