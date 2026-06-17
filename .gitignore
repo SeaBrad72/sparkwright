@@ -11,6 +11,15 @@ Thumbs.db
 __pycache__/
 *.pyc
 
+# Build artifacts / deps — never committed at the kit root (the kit's code lives in
+# conformance/, scripts/, profiles/; root src/test/dist/coverage are stray dogfooding output
+# and node_modules must never ship — c8/istanbul also bake absolute paths into coverage).
+node_modules/
+coverage/
+dist/
+/src/
+/test/
+
 # Claude Code — personal/local settings (shared settings.json IS committed)
 .claude/settings.local.json
 
