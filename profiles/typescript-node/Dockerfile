@@ -26,7 +26,9 @@ COPY --from=builder /app/package.json ./package.json
 # where the 'nonroot' name isn't defined, and matches the k8s securityContext runAsUser.
 USER 65532
 EXPOSE 3000
-# Distroless has no shell; use exec form. dist/healthcheck.js exits non-zero on failure.
+# Distroless has no shell; use exec form. NOTE: a HEALTHCHECK bypasses the image ENTRYPOINT,
+# and `node` is NOT on PATH in distroless/nodejs — invoke the binary by its full path.
+# dist/healthcheck.js GETs /healthz and exits non-zero on failure.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD ["node", "dist/healthcheck.js"]
+  CMD ["/nodejs/bin/node", "dist/healthcheck.js"]
 CMD ["dist/server.js"]

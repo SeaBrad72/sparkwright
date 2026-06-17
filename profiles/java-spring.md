@@ -101,7 +101,7 @@ Spring Boot starters (web, security, data-jpa, validation, actuator) · Resilien
 ## 11. Stack-specific gotchas
 - Use `./mvnw` (the wrapper) everywhere for reproducible builds; commit `.mvn/wrapper`.
 - JaCoCo coverage check binds to the `verify` phase — `mvn test` alone won't enforce it; CI runs the check explicitly.
-- OWASP dependency-check's first run downloads the NVD database (slow) — cache it in CI.
+- OWASP dependency-check's first run downloads the NVD database (slow, and keyless it can rate-limit/time out). The reference `ci.yml` caches the NVD data and passes an optional `NVD_API_KEY` secret if set — get a free key at nvd.nist.gov and add it as a repo secret to make the first dep-scan reliable.
 - Spotless `apply` fixes formatting; CI uses `check` (fails on drift).
 - Use Spring profiles (`application-<env>.yml`) for env config — never env conditionals in code.
 

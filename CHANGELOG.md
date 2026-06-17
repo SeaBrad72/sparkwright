@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.62.1] - 2026-06-17
+
+**PATCH** — closes the post-launch go/no-go backlog (per-stack reproducibility + container/config completeness). No new capability; makes 2.62.0's per-stack promises true. Several fixes Docker-verified.
+
+### Fixed
+- **go** — ship the `.golangci.yml` baseline (govet/staticcheck/errcheck/gosec) that profile §2 promised, and **pin** the `golangci-lint-action` version so green is reproducible. Refactored the scaffold to a configured `http.Server` (`newServer()`, `ReadHeaderTimeout`) to satisfy gosec G114; added its test (coverage 88.9%). *Docker-verified: lint clean + tests pass.*
+- **typescript-node** — the Dockerfile `HEALTHCHECK` referenced an unbuilt `dist/healthcheck.js` **and** `node` isn't on `$PATH` in distroless. Added `src/healthcheck.ts` (coverage-excluded) and fixed the probe to `/nodejs/bin/node`. *Docker-verified: container reports `healthy`.*
+- **dotnet** — added the `.editorconfig` + `Directory.Build.props` (`TreatWarningsAsErrors`, analyzers) profile §2 declared mandatory; fixed the Dockerfile to publish the app project only (not the `.sln`) and drop the non-existent root `packages.lock.json` COPY. *Docker-verified: build 0 warnings/0 errors, test passes.*
+- **kotlin** — the one-time `gradle wrapper` step is now version-pinned (`--gradle-version 8.10`) so an older local Gradle can't generate an incompatible wrapper.
+- **java-spring** — OWASP dep-scan now caches the NVD dataset and accepts an optional `NVD_API_KEY` secret, with a first-run caveat (keyless runs can rate-limit).
+- **incept** — the scaffold-copy now skips stray build artifacts (`node_modules`, `dist`, `coverage`, `__pycache__`, `.coverage`, `target`, `bin`, `obj`, …) so a project incepted from a dirty dev tree stays clean.
+
 ## [2.62.0] - 2026-06-16
 
 **Deliver the scaffold** — the second pre-launch go/no-go found the kit overclaimed turnkey readiness in its headline surfaces; this release makes those claims true. **MINOR** — additive (the new eval gate is conditional, not universally required); closes all seven verified Highs (H1–H7) from that review.

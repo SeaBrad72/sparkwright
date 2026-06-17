@@ -1,0 +1,8 @@
+# golangci-lint baseline for the Go profile (profiles/go.md §2: govet, staticcheck, errcheck, gosec).
+# Pin the runner version in ci.yml's golangci-lint-action `with: version:` so green is reproducible.
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - gosec

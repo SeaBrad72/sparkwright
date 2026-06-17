@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 )
 
 // Health is a pure function returning the service health payload.
@@ -32,14 +33,25 @@ func newMux() *http.ServeMux {
 	return mux
 }
 
-// main is a thin wrapper (kept minimal so the covered Health + handler
-// statements clear the 80% line threshold on their own).
+// newServer builds the configured HTTP server. A configured server (not http.ListenAndServe)
+// sets ReadHeaderTimeout — satisfying gosec G114 and modelling the production-grade default a
+// starter should show (slow-loris guard). Extracted so its config is unit-tested (keeps main()
+// trivial and coverage >= 80%).
+func newServer() *http.Server {
+	return &http.Server{
+		Addr:              ":8080",
+		Handler:           newMux(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
+
+// main is a thin wrapper (kept minimal so covered statements clear the 80% line threshold).
 //
-// Plain HTTP is intentional: a starter service runs behind a TLS-terminating
-// ingress/load balancer (the kit's k8s deploy model — see profiles/go/deploy/),
-// so the process itself serves cleartext on the cluster network. Terminate TLS
-// at the edge, or switch to ListenAndServeTLS if this is internet-facing.
+// Plain HTTP is intentional: a starter service runs behind a TLS-terminating ingress/load
+// balancer (the kit's k8s deploy model — see profiles/go/deploy/), so the process serves
+// cleartext on the cluster network. Terminate TLS at the edge, or use ListenAndServeTLS if
+// this is internet-facing.
 func main() {
 	// nosemgrep: go.lang.security.audit.net.use-tls.use-tls -- TLS terminated at the ingress (see above)
-	log.Fatal(http.ListenAndServe(":8080", newMux()))
+	log.Fatal(newServer().ListenAndServe())
 }

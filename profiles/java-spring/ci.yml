@@ -62,9 +62,17 @@ jobs:
           # Organization-owned repos additionally require:
           # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
+      - name: Cache OWASP NVD data
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ runner.os }}
       - name: Dependency vulnerability scan (OWASP)
         id: gate-dep-scan
-        run: ./mvnw -q org.owasp:dependency-check-maven:check
+        # NOTE: the FIRST run downloads the full NVD dataset and is slow; keyless it can rate-limit
+        # or time out. Strongly recommended: set an NVD_API_KEY repo secret (free, from nvd.nist.gov)
+        # and the cache above keeps subsequent runs fast. See profiles/java-spring.md §5.
+        run: ./mvnw -q org.owasp:dependency-check-maven:check ${{ secrets.NVD_API_KEY && format('-DnvdApiKey={0}', secrets.NVD_API_KEY) || '' }}
 
       - name: Generate SBOM (CycloneDX)
         id: gate-sbom

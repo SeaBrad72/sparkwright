@@ -227,6 +227,13 @@ if [ -d "profiles/${STACK}/scaffold" ]; then
     rel=${rel#./}
     # .gitignore is MERGED below (the project already has a root .gitignore), not copied here.
     if [ "$rel" = ".gitignore" ]; then continue; fi
+    # Never copy stray build artifacts (a dirty dev tree may have them; they are gitignored but
+    # `find` still sees them). Keeps an incepted project clean — no node_modules/coverage/pyc/etc.
+    case "$rel" in
+      node_modules/*|*/node_modules/*|dist/*|*/dist/*|build/*|*/build/*|coverage/*|*/coverage/*|\
+      target/*|*/target/*|bin/*|*/bin/*|obj/*|*/obj/*|__pycache__/*|*/__pycache__/*|\
+      .pytest_cache/*|*/.pytest_cache/*|.gradle/*|*/.gradle/*|.coverage|*.pyc) continue ;;
+    esac
     if [ ! -e "$rel" ]; then
       mkdir -p "$(dirname "$rel")"
       cp "profiles/${STACK}/scaffold/$rel" "$rel"

@@ -8,10 +8,13 @@ A minimal Spring Boot (Kotlin) service that satisfies the Kotlin profile's CI la
 ## One-time Gradle wrapper step
 
 The gates call the Gradle **wrapper** (`./gradlew`). The wrapper binary (`gradlew`,
-`gradle/wrapper/gradle-wrapper.jar`) is intentionally not shipped — generate it once:
+`gradle/wrapper/gradle-wrapper.jar`) is intentionally not shipped — generate it once.
+**Pin the version** (`--gradle-version`): this build needs Gradle **8.5+** (Kotlin 2.0 +
+Spring Boot 3.3 + JDK 21), and a bare `gradle wrapper` pins whatever Gradle is on your PATH —
+an older system Gradle would generate a wrapper that then fails every `./gradlew` gate.
 
 ```sh
-gradle wrapper            # writes gradlew + gradle/wrapper/*
+gradle wrapper --gradle-version 8.10 --distribution-type bin    # needs a local Gradle >= 8.5 to bootstrap
 git add gradlew gradle/ && git commit -m "chore: gradle wrapper"
 ```
 
@@ -37,4 +40,4 @@ git add gradlew gradle/ && git commit -m "chore: gradle wrapper"
 ## Verification status
 
 > **Authored to the `profiles/kotlin/ci.yml` contract; not executed here (gradle toolchain absent).
-> Verify with `gradle wrapper && ./gradlew test jacocoTestCoverageVerification` in an adopter env.**
+> Verify with `gradle wrapper --gradle-version 8.10 && ./gradlew test jacocoTestCoverageVerification` in an adopter env.**

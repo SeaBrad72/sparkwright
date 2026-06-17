@@ -40,20 +40,20 @@ The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). The Foundat
 
 ## Post-2.62.0 fix-forward backlog (from the pre-launch go/no-go arc)
 
-The pre-launch go/no-go (8 adversarial rounds) reached **0 blockers on the supported path**; these are the surviving non-blocking findings, deferred as fix-forward. None breaks the verified `typescript-node` path or a headline claim — they are per-stack reproducibility, doc consistency, and adapt-me-reference polish.
+The pre-launch go/no-go (8 adversarial rounds) reached **0 blockers on the supported path**. **Most of this backlog shipped in 2.62.1** (Docker-verified where marked); the rest remains fix-forward. None breaks the verified `typescript-node` path or a headline claim.
 
-**Highs (per-stack reproducibility — close before promoting a stack to "verified"):**
-- **go** `gate-lint` installs `golangci-lint@latest` with no `.golangci.yml` — pin the action `version:` and ship the `.golangci.yml` baseline (govet/staticcheck/errcheck/gosec) profile §2 promises.
-- **java-spring** OWASP dep-scan has no NVD cache/key — add a cache step + optional `NVD_API_KEY` secret, or document the slow/keyless first-run caveat.
-- **kotlin** documented `gradle wrapper` step is version-unpinned — pin `--gradle-version` (or ship `gradle-wrapper.properties`) so an old local Gradle can't generate an incompatible wrapper.
+**Highs — ✅ all closed in 2.62.1:**
+- ✅ **go** — shipped `.golangci.yml` (govet/staticcheck/errcheck/gosec) + pinned `golangci-lint` version + `newServer()` refactor for gosec G114. *(Docker-verified)*
+- ✅ **java-spring** — OWASP dep-scan now caches NVD + accepts optional `NVD_API_KEY` + first-run caveat.
+- ✅ **kotlin** — `gradle wrapper` step pinned to `--gradle-version 8.10`.
 
 **Mediums:**
-- ts-node Dockerfile `HEALTHCHECK` references `dist/healthcheck.js` the scaffold never builds — add `src/healthcheck.ts` or repoint the probe (container reads `unhealthy` after the adopter containerizes).
-- dotnet scaffold: add the `.editorconfig` + `Directory.Build.props` the profile §2 declares mandatory; dotnet Dockerfile `COPY packages.lock.json` path is per-project, not root (fails `docker build` when adapted).
-- Unify dep-scan prod-scoping across stacks (ts uses `--omit=dev`; python `pip-audit` and java/kotlin OWASP don't) + add a non-blocking dev-advisory audit.
-- `incept` scaffold-copy uses `find -type f`, so it would copy stray build artifacts (`.coverage`, `__pycache__`) from a *dirty* dev tree — harden to skip gitignored paths. (No shipped leak: a clean clone has none, and the scaffold `.gitignore` blocks committing them.)
+- ✅ **ts-node** Dockerfile `HEALTHCHECK` — added `src/healthcheck.ts` + fixed the distroless node path (`/nodejs/bin/node`). *(Docker-verified: container `healthy`)*
+- ✅ **dotnet** — added `.editorconfig` + `Directory.Build.props`; Dockerfile publishes the app project only + drops the bad root lockfile COPY. *(Docker-verified: 0 warnings)*
+- ✅ **incept** scaffold-copy now skips stray build artifacts (`node_modules`/`dist`/`coverage`/`__pycache__`/`.coverage`/`target`/`bin`/`obj`/…).
+- ⬜ **dep-scan prod-scoping consistency** *(remaining)* — ts uses `--omit=dev`; python `pip-audit` and java/kotlin OWASP audit all scopes. Unify the prod-dep posture + add a non-blocking dev-advisory audit. *(Cross-stack mechanic change; ts already prod-scoped — lower value, deferred.)*
 
-**Lows/Nits:** gate-sast `--config auto` network/Pro-rules caveat note · rust `llvm-tools-preview` component note · java-spring Dockerfile `mvnw`-wrapper comment · non-ts reference `ci.yml` SHA-pin (vs major-float) for parity with ts-node · run `mvn wrapper:wrapper && ./mvnw verify` once to convert java-spring from "authored" to "maintainer-verified."
+**Lows/Nits (remaining, fix-forward):** gate-sast `--config auto` network/Pro-rules caveat note · rust `llvm-tools-preview` component note · java-spring Dockerfile `mvnw`-wrapper comment · non-ts reference `ci.yml` SHA-pin (vs major-float) for parity with ts-node · run `mvn wrapper:wrapper && ./mvnw verify` once to convert java-spring from "authored" to "maintainer-verified."
 
 ---
 

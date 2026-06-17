@@ -6,6 +6,8 @@ Thumbs.db
 *.swp
 *.swo
 *~
+.vscode/
+.idea/
 
 # Python caches (the ml profile ships a reference evals/ harness)
 __pycache__/

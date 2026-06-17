@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestHealth(t *testing.T) {
@@ -36,5 +37,18 @@ func TestHealthzHandler(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("body[status] = %q, want %q", body["status"], "ok")
+	}
+}
+
+func TestNewServer(t *testing.T) {
+	srv := newServer()
+	if srv.Addr != ":8080" {
+		t.Fatalf("Addr = %q, want :8080", srv.Addr)
+	}
+	if srv.ReadHeaderTimeout != 5*time.Second {
+		t.Fatalf("ReadHeaderTimeout = %v, want 5s", srv.ReadHeaderTimeout)
+	}
+	if srv.Handler == nil {
+		t.Fatal("Handler is nil")
 	}
 }

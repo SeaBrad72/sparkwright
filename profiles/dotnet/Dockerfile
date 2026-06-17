@@ -7,12 +7,12 @@
 # ---- builder: full .NET SDK, never shipped ----
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS builder
 WORKDIR /src
-# Cache restore: copy the solution/project + lockfile first, restore, then the source.
-COPY *.sln packages.lock.json ./
+# Copy the source and restore. (The per-project packages.lock.json files live under src/ and
+# tests/, not at the repo root — `COPY . .` brings them; don't COPY a non-existent root lockfile.)
 COPY . .
 RUN dotnet restore
-# ADAPT the project path; publish framework-dependent (the aspnet runtime base supplies it).
-RUN dotnet publish -c Release -o /app/publish --no-restore
+# Publish the APP project only (not the .sln, which would also publish the test project).
+RUN dotnet publish src/App/App.csproj -c Release -o /app/publish --no-restore
 
 # ---- runtime: chiseled ASP.NET (ultra-minimal, no shell) ----
 FROM mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled AS runtime

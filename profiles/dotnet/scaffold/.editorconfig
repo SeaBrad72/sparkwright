@@ -1,0 +1,17 @@
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.cs]
+indent_size = 4
+# Treat analyzer diagnostics as warnings by default; Directory.Build.props promotes warnings to
+# errors in CI. Adjust severities here per rule as your codebase grows.
+dotnet_analyzer_diagnostic.category-style.severity = warning
+
+[*.{csproj,props,json,yml,yaml}]
+indent_size = 2
