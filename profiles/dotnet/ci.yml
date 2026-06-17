@@ -55,7 +55,7 @@ jobs:
 
       - name: Build
         id: gate-build
-        run: dotnet publish -c Release -o ./publish
+        run: dotnet publish src/App/App.csproj -c Release -o ./publish   # publish the app project only (not the .sln, which would drag in the test project)
 
       - name: Secret scan
         id: gate-secret-scan
@@ -136,7 +136,7 @@ jobs:
 
   image-provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('Dockerfile') != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read

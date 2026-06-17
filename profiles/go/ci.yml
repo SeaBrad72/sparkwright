@@ -55,7 +55,7 @@ jobs:
 
       - name: Build
         id: gate-build
-        run: go build ./...
+        run: go build -o app .
 
       - name: Secret scan
         id: gate-secret-scan
@@ -112,7 +112,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-artifact
-          path: ./<app>          # TODO: path to the built binary
+          path: app          # the scaffold builds ./ to ./app; adapt if you restructure
           if-no-files-found: error
 
   provenance:
@@ -136,7 +136,7 @@ jobs:
 
   image-provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('Dockerfile') != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -26,6 +26,16 @@ when you change dependencies.
 | `src/server.ts`     | node:http server exposing `/healthz` (main-guarded; coverage-excluded).|
 | `test/health.test.ts`| vitest test on `health()`.                                         |
 
+## See it run
+
+```sh
+npm ci
+npm run dev            # starts the server on :3000 (tsx)
+# in another terminal:
+curl localhost:3000/healthz     # -> {"status":"ok"}
+```
+Or the built artifact: `npm run build && npm start`.
+
 ## Commands (match `profiles/typescript-node/ci.yml`)
 
 ```sh
