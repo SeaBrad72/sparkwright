@@ -129,6 +129,7 @@ sedi -e 's/and `CLAUDE.md` (authoritative principles + Definition of Done)/and `
      DEVELOPMENT-PROCESS.md
 sedi 's/| \*\*`CLAUDE.md`\*\* | Principles + Definition of Done. Authoritative. |/| **`ENGINEERING-PRINCIPLES.md`** | Principles + Definition of Done. Authoritative. |/' README.md
 sedi 's/`CLAUDE.md` (principles + Definition of Done)/`ENGINEERING-PRINCIPLES.md` (principles + Definition of Done)/' START-HERE.md
+sedi 's/the principles (`CLAUDE.md`)/the principles (`ENGINEERING-PRINCIPLES.md`)/' ONBOARDING.md
 sedi 's#`DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `CLAUDE.md`#`DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `ENGINEERING-PRINCIPLES.md`#' MAINTAINING.md
 sedi 's/\*\*Principles + Definition of Done:\*\* `CLAUDE.md`/**Principles + Definition of Done:** `ENGINEERING-PRINCIPLES.md`/' templates/PROJECT-CLAUDE-TEMPLATE.md
 
@@ -242,7 +243,16 @@ if [ -d "profiles/${STACK}/scaffold" ]; then
       grep -qxF "$pat" .gitignore 2>/dev/null || printf '%s\n' "$pat" >> .gitignore
     done < "$sgi"
   fi
-  echo "copied starter scaffold from profiles/${STACK}/scaffold/ (brownfield-safe) + merged its .gitignore rules — see its README; some stacks need a one-time lockfile/wrapper step before CI is green"
+  echo "copied starter scaffold from profiles/${STACK}/scaffold/ (brownfield-safe) + merged its .gitignore rules"
+  # Stack-specific one-time step to make the first CI push green (exact command, not a generic hint).
+  case "$STACK" in
+    python)      echo "  first-green step: uv lock && git add uv.lock && git commit -m 'lock deps'" ;;
+    java-spring) echo "  first-green step: mvn wrapper:wrapper && git add mvnw .mvn && git commit -m 'add maven wrapper'" ;;
+    kotlin)      echo "  first-green step: gradle wrapper && git add gradlew gradle && git commit -m 'add gradle wrapper'" ;;
+    dotnet)      echo "  first-green step: dotnet restore (writes packages.lock.json) && git add '**/packages.lock.json' && git commit -m 'lock deps'" ;;
+    go|rust)     echo "  no lockfile step — this scaffold is dependency-free and clone-green." ;;
+  esac
+  echo "  run it: see profiles/${STACK}/scaffold/README.md → 'See it run' (start the app, curl /healthz)"
 else
   echo "warning: no starter scaffold for '${STACK}' — incept copied its CI but no app source, so CI will be RED until you add code. Non-service stacks (ml / data-engineering / terraform) ship a CI contract you populate, not a /healthz starter (see profiles/${STACK}.md §2)."
 fi

@@ -1,7 +1,8 @@
 # app — .NET starter scaffold
 
-A minimal solution (web app + test project) that satisfies the .NET profile's CI language
-pipeline (`profiles/dotnet/ci.yml`) on an empty repo, plus a `/healthz` → 200 endpoint and its test.
+A minimal solution (web app + test project) **authored to satisfy** the .NET profile's CI language
+pipeline (`profiles/dotnet/ci.yml`) after the one-time lockfile step — plus a `/healthz` → 200
+endpoint and its test. (Maintainer-authored, **not** executed here — see *Verification status* below.)
 
 > Incept-copied starter — **brownfield-safe**: `incept` copies these files into a fresh repo only.
 

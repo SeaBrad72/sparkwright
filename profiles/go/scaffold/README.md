@@ -14,8 +14,11 @@ This scaffold uses **only the Go standard library**. There are therefore:
 - **no `require` block** in `go.mod`, and
 - **no `go.sum`** (no external modules to verify, nothing to lock).
 
-`go mod download` is a no-op, so there is **no lockfile step to keep in sync** —
-the repo is **green by construction** the moment it is cloned.
+`go mod download` is a no-op, so there is **no lockfile step to keep in sync** — the *dependency
+graph* is green by construction the moment it is cloned. (One caveat: `gate-dep-scan` runs
+`govulncheck`, which also scans the Go **stdlib** — a future patch-level stdlib advisory in the
+pinned `go1.22.x` could flag the build until you bump the toolchain. That's time-dependent, not a
+scaffold defect.)
 
 ## Layout
 
