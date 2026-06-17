@@ -213,12 +213,13 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           rat=0
-          if gh pr view "$PR" --json labels -q '.labels[].name' | grep -qx 'ratified-control-plane'; then rat=1; fi
+          labels=$(gh pr view "$PR" --json labels -q '.labels[].name')
+          if printf '%s\n' "$labels" | grep -qx 'ratified-control-plane'; then rat=1; fi
           if [ "$rat" = "0" ]; then
-            if gh pr view "$PR" --json reviews \
-              -q '.reviews[] | select(.state=="APPROVED") | .author.login' \
-              | grep -vx "$AUTHOR" | grep -q .; then rat=1; fi
+            approvers=$(gh pr view "$PR" --json reviews \
+              -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login')
+            if printf '%s\n' "$approvers" | grep -vx "$AUTHOR" | grep -q .; then rat=1; fi
           fi
           echo "ratified=$rat" >> "$GITHUB_OUTPUT"
       - name: Agent-boundary gate
-        run: sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified ${{ steps.ratify.outputs.ratified }} --require
+        run: sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}" --require
