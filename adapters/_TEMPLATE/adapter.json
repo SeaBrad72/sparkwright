@@ -4,7 +4,8 @@
     ".github/workflows/",
     "CODEOWNERS",
     "hooks/pre-push",
-    "scripts/kit-guard"
+    "scripts/kit-guard",
+    "AGENTS.md"
   ],
   "bindingFiles": ["AGENTS.md"],
   "dimensions": {
