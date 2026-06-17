@@ -35,6 +35,7 @@ dependencies {
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation(kotlin("test"))   // HealthControllerTest uses kotlin.test.assertEquals
     detektPlugins("io.gitlab.arturbosch.detekt:detekt-formatting:1.23.7")
 }
 

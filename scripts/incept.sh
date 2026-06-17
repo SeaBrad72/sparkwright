@@ -247,22 +247,15 @@ else
   echo "warning: no starter scaffold for '${STACK}' — incept copied its CI but no app source, so CI will be RED until you add code. Non-service stacks (ml / data-engineering / terraform) ship a CI contract you populate, not a /healthz starter (see profiles/${STACK}.md §2)."
 fi
 
-# --- 5a3. copy the profile's local-dev compose (brownfield-safe) ---
-# The profile's compose.yaml reflects the stack's DEFAULT archetype (e.g. go/rust ship a
-# stateless app-only compose; web stacks ship app + Postgres). Review it against the
-# "Environments this stack needs" section in profiles/${STACK}.md / docs/STACK-SELECTION.md.
-if [ -f "profiles/${STACK}/compose.yaml" ] && [ ! -f compose.yaml ]; then
-  cp "profiles/${STACK}/compose.yaml" compose.yaml
-  echo "copied compose.yaml from profiles/${STACK}/ (local dev mirroring prod) — review the services it declares against your 'Environments this stack needs'"
-fi
-
-# --- 5a4. copy the profile's Dockerfile (brownfield-safe) ---
-# Every service ci.yml runs `docker build` (image SBOM + provenance gates) and the compose
-# above builds from it — so the project needs the Dockerfile, or the first CI push / `docker
-# compose up` fails. Copy it where absent. (Non-service profiles ship no Dockerfile — skipped.)
-if [ -f "profiles/${STACK}/Dockerfile" ] && [ ! -f Dockerfile ]; then
-  cp "profiles/${STACK}/Dockerfile" Dockerfile
-  echo "copied Dockerfile from profiles/${STACK}/ (the image-build CI gates + compose build from it)"
+# --- 5a3. point at the profile's COPY-&-ADAPT container references (do NOT auto-copy) ---
+# The profile's Dockerfile + compose.yaml are explicitly "COPY & ADAPT" references written for a
+# real app (e.g. a cmd/server entrypoint, a DB-backed service) — NOT drop-in artifacts for the
+# minimal /healthz starter. Auto-copying them would make `docker build` / `docker compose up` fail
+# until adapted, so incept leaves them in the profile and the image-supply-chain CI gates are
+# conditional on a Dockerfile existing (they skip until you add one). See profiles/${STACK}/ +
+# the "Environments this stack needs" section in profiles/${STACK}.md / docs/STACK-SELECTION.md.
+if [ -f "profiles/${STACK}/Dockerfile" ] || [ -f "profiles/${STACK}/compose.yaml" ]; then
+  echo "note: containerize when ready — adapt profiles/${STACK}/Dockerfile + compose.yaml to your app, then the image-build CI gates activate (they skip until a Dockerfile is present)."
 fi
 
 # --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---

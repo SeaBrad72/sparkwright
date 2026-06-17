@@ -108,9 +108,11 @@ jobs:
       # also generate an SBOM of the pushed digest (Syft against ghcr.io/...@<digest>) and
       # attest it alongside provenance — so the release SBOM matches the attested image.
       - name: Build container image (local, for SBOM scan)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
         run: docker build -t ts-node-app:ci .
 
       - name: Generate image SBOM (Syft, CycloneDX)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
         id: gate-image-sbom
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
         with:
@@ -119,6 +121,7 @@ jobs:
           output-file: image-sbom.json
 
       - name: Upload image SBOM
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: image-sbom

@@ -47,7 +47,7 @@ start:         ./target/release/<app>
 
 ### Environments this stack needs
 **Default archetype: stateless service.** The shipped `compose.yaml` provides the **app only — no database**; this stack defaults to a systems service / CLI with no backing store.
-`scripts/incept.sh` copies `compose.yaml` into your project; add services only as your feature needs them.
+The profile ships `compose.yaml` + `Dockerfile` as **COPY-&-ADAPT references** (incept does not auto-copy them); adapt them when you containerize, adding services only as your feature needs them. The image-build CI gates skip until a `Dockerfile` is present.
 
 | Need | Default | Add when |
 |------|---------|----------|

@@ -46,7 +46,7 @@ start:         dotnet <Project>.dll
 
 ### Environments this stack needs
 **Default archetype: DB-backed service.** The shipped `compose.yaml` provides the app + a Postgres database for dev/prod parity.
-`scripts/incept.sh` copies `compose.yaml` into your project; add services only as your feature needs them.
+The profile ships `compose.yaml` + `Dockerfile` as **COPY-&-ADAPT references** (incept does not auto-copy them); adapt them when you containerize, adding services only as your feature needs them. The image-build CI gates skip until a `Dockerfile` is present.
 
 | Need | Default | Add when |
 |------|---------|----------|
