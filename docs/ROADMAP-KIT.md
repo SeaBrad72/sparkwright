@@ -70,4 +70,17 @@ Make the kit **LLM/harness-neutral** — anyone can pick it up with any agent ha
 
 ---
 
+## Post-3.0.0 go/no-go fix-forward backlog
+
+An 11-dimension adversarial go/no-go on 3.0.0 returned **GO-WITH-CONDITIONS** (0 blockers, 0 of 26 material findings refuted). The four pre-announce conditions (3 Highs + the PORT DX) **shipped in `3.0.1`**. The remaining **Medium/Low** findings are fix-forward — none breaks the verified `typescript-node` path or a headline claim:
+
+- **Profile doc/scaffold parity** — python scaffold missing `fail_under=80`; GitLab ts-node CI missing the conditional `gate-eval`.
+- **Persona routing** — `ONBOARDING.md` doesn't route non-engineer personas (QA/designer/PO); Security Owner missing from the §13 role table; `incept` interactive mode never prompts operator-fluency.
+- **Conformance hardening** — `branch-protection.sh` doesn't flag CODEOWNERS placeholders + `require_code_owner_reviews=false`; a few guard-bypass classes the README over-promises against (extend regexes or narrow the claim).
+- **Operability / meta-docs** — RUNBOOK template lacks an incident-response section; meta-doc staleness across MAINTAINING/ROADMAP/CLAUDE/conformance-README.
+- **`controlPlanePaths` union wiring** — the natural **N5**: wire the `agent-boundary` gate to read the union of adapter-declared control-plane paths (3.0.1 corrected the doc to say this is future).
+- **Polish (Low)** — designer handoff guidance (axe/Lighthouse); a ts-node AI-security pointer + eval scaffold; documentation-only CI-label renames.
+
+---
+
 **Last Updated:** 2026-06-17

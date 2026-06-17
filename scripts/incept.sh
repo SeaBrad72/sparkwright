@@ -57,6 +57,17 @@ sedi() {
   for last in "$@"; do :; done
   sed -i.bak "$@" && rm -f "${last}.bak"
 }
+# Inception replaces the kit's OWN reference/dogfooding files (expected in a greenfield kit copy) but
+# must NEVER clobber a genuine adopter file in a brownfield merge. A kit-own file is identified by a
+# marker; an ABSENT destination is also safe to write. (go/no-go #2 — a bare cp silently overwrote an
+# adopter's CI/CODEOWNERS.) Brownfield adopters merge per docs/adoption/brownfield.md.
+cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
+  if [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; then
+    cp "$1" "$2"
+  else
+    echo "warning: $2 exists and is not a kit reference file — NOT overwritten (brownfield-safe). Merge $1 into it per docs/adoption/brownfield.md." >&2
+  fi
+}
 
 # 9f: fail fast if universal prerequisites are missing — jq is hard-required by the
 # guard and conformance, so proceeding would only defer a cryptic failure.
@@ -180,7 +191,15 @@ APP_SECRET=replace-me
 # DATABASE_URL=postgres://app:app@localhost:5432/app
 # REDIS_URL=redis://localhost:6379
 ENVEOF
-  echo "wrote .env.example (copy to a gitignored .env and fill values — see RUNBOOK §1)"
+  # Stamp a stack-appropriate default PORT so .env.example matches the scaffold/docs (go/no-go #4:
+  # the ts-node scaffold + docs use 3000; a hardcoded 8080 made the documented `curl :3000` fail).
+  case "$STACK" in
+    python)  _port=8000 ;;
+    go|rust) _port=8080 ;;
+    *)       _port=3000 ;;
+  esac
+  sedi "s/^PORT=8080/PORT=${_port}/" .env.example
+  echo "wrote .env.example (PORT=${_port} for ${STACK}; copy to a gitignored .env and fill values — see RUNBOOK §1)"
 fi
 # Ensure real .env files are never committed — the template above tells the user to create one,
 # so guarantee the ignore rule exists (not all stack scaffolds carry it). Idempotent.
@@ -207,17 +226,17 @@ case "$CI" in
   github)
     mkdir -p .github/workflows
     if [ -f "profiles/${STACK}/ci.yml" ]; then
-      cp "profiles/${STACK}/ci.yml" .github/workflows/ci.yml
-      [ -f "profiles/${STACK}/CODEOWNERS" ] && cp "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
+      cp_kit_replace "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && cp_kit_replace "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS 'COPY & ADAPT|@your-org'
     else
       echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
     fi
     ;;
   gitlab)
     if [ -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
-      cp "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml
+      cp_kit_replace "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml 'Sparkwright'
       # GitLab reads CODEOWNERS from root, .gitlab/, or docs/ — .gitlab/ mirrors .github/.
-      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; cp "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS; }
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; cp_kit_replace "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS 'COPY & ADAPT|@your-org'; }
     else
       echo "note: no profiles/${STACK}/ci.gitlab-ci.yml — add a .gitlab-ci.yml satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it; see docs/operations/ci-platforms.md)."
     fi

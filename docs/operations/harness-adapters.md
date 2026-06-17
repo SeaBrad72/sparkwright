@@ -46,7 +46,7 @@ Each adapter declares its binding in `adapters/<harness>/adapter.json`. The shap
 **Field rules:**
 
 - **`harness`** — string; must match the directory name under `adapters/`.
-- **`controlPlanePaths`** — non-empty array; feeds the `agent-boundary` gate's union set (the gate denies PRs that touch any listed path without ratification). Must include every control-plane file the harness can modify.
+- **`controlPlanePaths`** — non-empty array declaring the control-plane surface this harness can modify (the guard + its config, CI, CODEOWNERS, the harness's own settings). **Today this is a declarative inventory:** the `agent-boundary` gate enforces the kit-standard control-plane set (`guard-core.sh::is_control_plane_path`) for *every* harness — it does **not** yet read per-adapter manifests. Wiring this `controlPlanePaths` **union** into the gate is planned future work; list every control-plane file the harness can touch so that wiring (and a human reviewer) has the complete set.
 - **`bindingFiles`** — array; every listed path must exist in the repo (verified by `harness-adapter.sh`).
 - **`dimensions`** — all five dimensions must appear. Each carries:
   - `level`: `"native"` | `"floor"` | `"n-a"`. Only `mcp-gate` may be `"n-a"` (when the harness has no MCP surface).
