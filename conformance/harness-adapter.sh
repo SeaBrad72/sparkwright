@@ -111,6 +111,9 @@ selftest() {
   mkconf "$base/lie" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"files":["does-not-exist-xyz.txt"]}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
   expect 1 "$base/lie" "lying-native (native proof file missing)"
 
+  mkconf "$base/badcheck" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"false"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  expect 1 "$base/badcheck" "lying-native (proof.check exits non-zero)"
+
   mkconf "$base/noproof" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"native"},"mcp-gate":{"level":"n-a"}}}'
   expect 1 "$base/noproof" "native with no proof declared"
 
