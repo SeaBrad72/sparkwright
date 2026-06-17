@@ -306,7 +306,7 @@ fi
 # --- 5c. verify each selected harness adapter against the boundary contract (real project; non-fatal) ---
 for _h in $HARNESS_LIST; do
   if sh conformance/harness-adapter.sh "adapters/${_h}" >/dev/null 2>&1; then
-    echo "harness adapter '${_h}': conforms to the boundary contract (floor + native proofs)."
+    echo "harness adapter '${_h}': conforms to the boundary contract."
   else
     echo "WARNING: harness adapter '${_h}' does NOT yet conform — close the gaps before you build:" >&2
     echo "         run 'sh conformance/harness-adapter.sh adapters/${_h}' for the specifics." >&2
