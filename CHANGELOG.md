@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-06-17
+
+**PATCH** — closes the four pre-announce conditions from the 3.0.0 go/no-go (an 11-dimension adversarial review: **GO-WITH-CONDITIONS, 0 blockers**). No new capability; makes the release safe to announce. The remaining Medium/Low findings are tracked as a 3.0.x fix-forward follow-up.
+
+### Fixed
+- **Brownfield safety (High):** `scripts/incept.sh` no longer silently overwrites an existing repo's `.github/workflows/ci.yml` or CODEOWNERS. It marker-detects the kit's *own* reference files (replacing them in a greenfield kit copy, as before) but **preserves and warns** for a genuine adopter file. (go/no-go #2)
+- **Governance-doc honesty (High):** `docs/operations/harness-adapters.md` no longer claims an adapter's `controlPlanePaths` "feeds the `agent-boundary` gate's union." The gate enforces the `guard-core.sh::is_control_plane_path` set for *every* harness and does not read per-adapter manifests; the field is now described as a declarative inventory with the union-wiring named as future work. (go/no-go #3)
+- **First-run DX (Medium):** `incept` now stamps a **stack-appropriate** default `PORT` into `.env.example` (3000 node, 8000 python, 8080 go/rust) instead of a hardcoded 8080 — fixing the documented `curl localhost:3000` for the default typescript-node stack. (go/no-go #4)
+
+### Release integrity (go/no-go #1)
+- The mis-pointed `v3.0.0` git tag (it pointed at an old v2.12.0-era commit) is corrected to the real 3.0.0 release commit, and the previously-untagged `2.63.0`–`2.65.0` releases are back-tagged — a release-maintenance action performed alongside this patch.
+
 ## [3.0.0] - 2026-06-17
 
 **Harness-neutrality milestone — N4: proof, positioning, and the release.** Closes the LLM/harness-neutral arc (N1–N4): the kit is now usable with any agent harness out of the gate, with the enforcement floor **maintainer-verified to block regardless of harness**. **MAJOR as a milestone marker, NOT a breaking change** — an existing Claude Code adopter upgrades with nothing broken; everything added across N1–N4 is additive and the default experience is untouched.
