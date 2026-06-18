@@ -3,6 +3,21 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-06-18
+
+**MINOR** — P2/WS4 of the usability-governance milestone (the **last P2 slice**): **persona routing**. Non-engineer personas now find their entry at the front door, and interactive `incept` prompts operator-fluency. **Surface/route only — nothing deleted, no gate disabled, no applicable control weakened**; the routing copy explicitly *reinforces* gate universality ("rigor is carried, not waived").
+
+### Added
+- **`ONBOARDING.md`** — a "**Which role are you?**" section: a thin persona-routing table (Product Owner/BA · Designer · QA Engineer · Security Owner · DevOps/SRE · Engineer) mapping each to where it plugs into the loop and its entry → exit artifact, pointing to the authoritative function map (`DEVELOPMENT-PROCESS.md` §2) rather than copying it (drift-safe). A "**the rigor is carried, not waived**" note makes explicit that a non-builder is routed to *their own* additional bar (testable acceptance criteria, a11y sign-off), never *out* of an applicable control — the CI/agent-boundary gates bind to the PR regardless of author role ("routing by role changes which doc you open, never which gate applies").
+- **`scripts/incept.sh`** — the interactive flow now prompts operator-fluency (the 7th field; previously flag/env-only). Empty-enter stays **non-coercive** — the existing undeclared-fluency notice fires, no silent default, no `CLAUDE.md` stamp; a typo is rejected by the existing membership validation.
+
+### Notes
+- **Security Owner in the §13 ratification role table** (a third WS4 item in the original spec) was **verified already present** — across `DEVELOPMENT-PROCESS.md` §2 Roles/Personas, the §7 threat-model/compliance gates, the §13 ratification matrix, and `docs/enterprise/ratification-rbac.md` (added during WS2/3.4.0). No edit made — editing complete, consistent governing tables would be redundant control-plane churn.
+- **Deferred-with-reason (residual):** the operator-fluency membership test (`incept.sh` :118-119) uses the POSIX space-padded `case` idiom, which loose-matches a multi-token string containing a valid token (e.g. `"x novice y"`). Assessed pre-existing (reachable today via `--operator-fluency`), non-exploitable (only space-delimited words pass → no sed metacharacter can reach the `:170` `sedi`; threat model is an operator scaffolding their own repo), and out of WS4 item-3 scope. Independently re-verified by the reviewer. Tracked for a later control-plane validation-hardening ticket.
+
+### Why
+A go/no-go usability finding: the front door routed only the *experience* axis (novice → practitioner); a QA, designer, product owner, or security owner had no signposted entry, and interactive `incept` collected six fields but never fluency. WS4 closes both without weakening anything — persona routing is additive surfacing, and the fluency prompt is non-coercive.
+
 ## [3.6.0] - 2026-06-18
 
 **MINOR** — D4-presentation: **"ratification required" is now a merge-gate, not a red failure.** The `gate-agent-boundary` job exits 0 and posts a distinct `control-plane-ratification` check-run instead of `exit 1`-ing red — so an unratified control-plane PR **blocks the merge in amber, sends no "CI failed" email**, and red ❌ / failure emails are reserved for genuine failures. Decision logic unchanged; enforcement, audit trail, and harness-independence preserved. **Live-verified on PR #114** (`ACTION_REQUIRED` · workflow `success`/no-email · merge `BLOCKED`).

@@ -36,6 +36,29 @@ Pick the one that sounds like you. Non-punitive — feels too basic? Jump up a l
 > *Ready* backlog. If you're upstream of that — raw idea, no validated problem yet — start with the
 > optional **[discovery loop](docs/discovery/discovery-loop.md)** (FRAME → SHAPE → Ready), then come back.
 
+## Which role are you?
+
+The lane above is about *how much SDLC you know*; this is about *which function you hold* — the two
+are independent (a novice QA and a principal QA are the same role, different lanes). The pillars in the
+Learning lane below are for whoever will hold the **Builder** function. If you're a **non-builder**,
+here's where you plug in and what you produce — the authoritative function map is
+[`DEVELOPMENT-PROCESS.md` §2](DEVELOPMENT-PROCESS.md).
+
+| Your role | Where you plug into the loop | Your entry → exit artifact |
+|-----------|------------------------------|----------------------------|
+| **Product Owner / BA** | Discover → Plan; you accept increments | [FEATURE-REQUEST](templates/FEATURE-REQUEST-TEMPLATE.md) → accepted increment |
+| **Designer (UX)** | Discover (UX input, advisory) → Review (a11y) | design assets → [A11Y-SIGNOFF](templates/A11Y-SIGNOFF-TEMPLATE.md) |
+| **QA Engineer** | Review (test lens) + the UAT acceptance gate | [TEST-PLAN](templates/TEST-PLAN-TEMPLATE.md) → [UAT-SIGNOFF](templates/UAT-SIGNOFF-TEMPLATE.md) |
+| **Security Owner** | The security / ratification gate (§7, §13) | [THREAT-MODEL](templates/THREAT-MODEL-TEMPLATE.md) → gate pass / governed exception |
+| **DevOps / SRE** | Release → Operate (deploy, rollback, monitoring) | works through the [RUNBOOK](templates/RUNBOOK-TEMPLATE.md) |
+| **Engineer** | Plan → Build → Review (you hold Builder) | spec → reviewed PR — **and the Learning-lane pillars below are yours** |
+
+> **Non-builders: the rigor is carried, not waived.** You don't hand-craft tests or 15-factor config.
+> When your intent becomes code, the agent builds it test-first and the CI gates enforce 15-factor,
+> observability, and security on **every** PR — regardless of who filed it. Your own artifact has its
+> own bar (testable acceptance criteria, an a11y sign-off); the code that realizes it gets the full
+> standard. Routing by role changes *which doc you open*, never *which gate applies*.
+
 ## Learning lane (Novice + Adjacent)
 
 You don't need to learn all of this before you start — you need to know it *exists* and *why*, then
