@@ -49,3 +49,4 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+fail_under = 80   # enforce the 80% coverage floor the profile + Definition of Done require

@@ -35,6 +35,32 @@ done
 
 # Resolve + source the deny-matrix core (the control-plane path set lives there).
 CORE="${KIT_GUARD_CORE:-$(dirname "$0")/../.claude/hooks/guard-core.sh}"
+# adapters/ registry — beyond the kit-standard guard-core set, the gate also protects each harness's
+# OWN declared control-plane surface: the union of controlPlanePaths across adapters/*/adapter.json
+# (P1 / N5 — turns the manifest's declarative inventory into real enforcement).
+ADAPTERS_DIR="${KIT_ADAPTERS_DIR:-$(dirname "$0")/../adapters}"
+
+# adapter_union: echo the union of controlPlanePaths across adapters/*/adapter.json (sorted-unique).
+# jq-absent or no adapters/ -> empty union (the hardcoded guard-core floor still applies regardless).
+adapter_union() {
+  command -v jq >/dev/null 2>&1 || return 0
+  [ -d "$ADAPTERS_DIR" ] || return 0
+  for _m in "$ADAPTERS_DIR"/*/adapter.json; do
+    [ -f "$_m" ] || continue
+    jq -r '.controlPlanePaths[]? // empty' "$_m" 2>/dev/null
+  done | sort -u
+}
+
+# path_in_union <path> <union-list>: 0 if <path> matches a union entry — exact, or a directory-prefix
+# entry ending in '/'. Union entries never contain spaces, so word-splitting the list is safe.
+path_in_union() {
+  _pp=$1; _u=$2
+  for _e in $_u; do
+    [ "$_pp" = "$_e" ] && return 0
+    case "$_e" in */) case "$_pp" in "$_e"*) return 0 ;; esac ;; esac
+  done
+  return 1
+}
 
 unverifiable() {  # <reason>
   if [ "$REQUIRE" = "1" ]; then
@@ -48,11 +74,12 @@ unverifiable() {  # <reason>
 # boundary_decide <newline-separated-paths> <ratified 0|1>: print verdict; return 0 ok / 1 violation.
 # Kept pure so the selftest can exercise it in-process (an env var must never force a pass).
 boundary_decide() {
-  _list=$1; _rat=$2; _hits=""
+  _list=$1; _rat=$2; _union=${3:-}; _hits=""
   # Read the listing line-by-line in the CURRENT shell (heredoc, not a pipe) so _hits persists.
+  # A path is control-plane if guard-core's hardcoded set knows it OR an adapter declared it (union).
   while IFS= read -r _p; do
     [ -n "$_p" ] || continue
-    if is_control_plane_path "$_p"; then _hits="$_hits $_p"; fi
+    if is_control_plane_path "$_p" || path_in_union "$_p" "$_union"; then _hits="$_hits $_p"; fi
   done <<EOF
 $_list
 EOF
@@ -72,7 +99,8 @@ run() {
   [ -n "$CHANGED" ] || unverifiable "no --changed listing supplied"
   [ -f "$CHANGED" ] || unverifiable "--changed listing not found: $CHANGED"
   _paths=$(cat "$CHANGED")
-  if boundary_decide "$_paths" "$RATIFIED"; then exit 0; else exit 1; fi
+  _union=$(adapter_union)
+  if boundary_decide "$_paths" "$RATIFIED" "$_union"; then exit 0; else exit 1; fi
 }
 
 selftest() {
@@ -81,9 +109,9 @@ selftest() {
   [ -f "$CORE" ] || { echo "selftest FAIL: core not found at $CORE"; return 1; }
   # shellcheck disable=SC1090
   . "$CORE"
-  dc() {  # expect_rc paths ratified label
-    e=$1; p=$2; r=$3; lbl=$4
-    ( boundary_decide "$p" "$r" ) >/dev/null && g=0 || g=$?
+  dc() {  # expect_rc paths ratified label [union]
+    e=$1; p=$2; r=$3; lbl=$4; u=${5:-}
+    ( boundary_decide "$p" "$r" "$u" ) >/dev/null && g=0 || g=$?
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> rc $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
   dc 0 "src/app.ts
@@ -94,6 +122,13 @@ README.md" 0 "ordinary diff, unratified -> PASS"
 .github/workflows/ci.yml" 1 "workflow change, ratified -> PASS"
   dc 1 "CODEOWNERS" 0 "CODEOWNERS change, unratified -> FAIL"
   dc 0 "" 0 "empty diff -> PASS"
+
+  # N5 union: a path declared ONLY in an adapter manifest's controlPlanePaths (NOT in guard-core's
+  # hardcoded set) is now caught — proving the gate enforces what adapters declare, per harness.
+  dc 1 ".cursor/rules" 0 "adapter-union path, unratified -> FAIL" ".cursor/rules .github/workflows/"
+  dc 0 ".cursor/rules" 1 "adapter-union path, ratified -> PASS" ".cursor/rules .github/workflows/"
+  dc 0 "src/app.ts" 0 "non-union ordinary path -> PASS" ".cursor/rules"
+  dc 1 ".cursor/rules/foo.md" 0 "dir-prefix union entry -> FAIL" ".cursor/rules/"
 
   # three-state CLI: no --changed is UNVERIFIED (exit 2) locally, FAIL (exit 1) under CI/--require.
   miss=$(mktemp -d)  # fixtures left in place (no rm; 7e guard)

@@ -47,6 +47,9 @@ classify() {
     ok=0
     printf '%s' "$body" | grep -q '"required_pull_request_reviews"' || { echo "FAIL: required PR reviews not enabled on $BRANCH"; ok=1; }
     printf '%s' "$body" | grep -q '"required_status_checks"' || { echo "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
+    # advisory (non-fatal): CODEOWNER-review enforcement is recommended but not required by this gate
+    # (an adopter who never fills CODEOWNERS can leave builder=reviewer paths under-covered — §12).
+    printf '%s' "$body" | grep -q '"require_code_owner_reviews":[[:space:]]*true' || echo "ADVISORY: require_code_owner_reviews is not enabled on $BRANCH — CODEOWNER review is recommended so builder ≠ sole reviewer holds on protected paths (DEVELOPMENT-PROCESS.md §12)."
     [ "$ok" -eq 0 ] && echo "OK: $BRANCH on ${REPO:-?} is protected (PR reviews + status checks required)."
     exit "$ok"
   fi

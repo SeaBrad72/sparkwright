@@ -101,6 +101,21 @@ gate-sbom:
 # false assurance (the GitHub profile's attest-build-provenance fails the job too). On a
 # self-managed runner, wire keyless cosign to your IdP (docs/operations/ci-platforms.md);
 # until then this gate fails, which is the honest state: the artifact is NOT attested.
+
+# Conditional eval gate (parity with the GitHub profile's gate-eval): runs ONLY when an evals/ dir is
+# present (an AI feature). Mirrors profiles/typescript-node/ci.yml — green-on-clone when no evals/ yet.
+gate-eval:
+  stage: verify
+  script:
+    - |
+      if [ -d evals ]; then
+        corepack enable
+        pnpm install --frozen-lockfile
+        pnpm run eval   # scores against a rubric, exits non-zero below threshold
+      else
+        echo "no evals/ dir — skipping the eval gate (add one when your feature uses a model; see profiles/ml/evals for a reference)"
+      fi
+
 gate-provenance:
   stage: supply-chain
   needs: [gate-build, gate-sbom]
