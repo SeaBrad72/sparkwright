@@ -3,6 +3,21 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-06-18
+
+**MINOR** — P2/WS2 of the usability-governance milestone: **risk-tiered solo review lane**. A solo maintainer now has a recorded, audit-defensible way to satisfy `builder ≠ reviewer` — without faking it and without a second human — that upgrades to enforced two-human SoD with a single `enforce_admins: true` flip and zero rework of the recorded evidence when a teammate joins. Additive (docs/template/process + one presence conformance check); no applicable control weakened.
+
+### Added
+- **`templates/REVIEW-RECORD-TEMPLATE.md`** — the recorded-review artifact: agent-review findings + human ratification, plus (high-risk) specific acknowledgments tied to each finding (the anti-theater requirement). Carries the solo compensating-control statement + the one-flip (`enforce_admins: true`), zero-evidence-rework upgrade note.
+- **`docs/operations/review-lane.md`** — the two tiers (default = recorded `reviewer`-subagent review + recorded ratification; high-risk [control-plane / security-auth / data-schema / prod / irreversible] = + a structured human self-review), the already-wired trigger (the `agent-boundary` control-plane set + the §13 autonomy tiers), the compensating-controls compliance rationale, and the solo→team upgrade (one `enforce_admins: true` flip — the second human's approval meets the existing required-review rule; the flip removes the owner `--admin` bypass — with zero rework of recorded evidence).
+- **`conformance/review-lane.sh`** — presence/wiring conformance check, wired into the kit's own CI.
+
+### Changed
+- **`DEVELOPMENT-PROCESS.md` §12** — a **net-zero** solo-lane pointer (the doc is at its 470-line cap). **`conformance/audit-evidence-checklist.md`** gains an Independent-code-review / SoD evidence row mapping the bundle to the SoD control.
+
+### Honest ceiling
+- The high-risk self-review is **process discipline, not a fail-closed gate** (mechanically blocking it needs a second actor the solo case lacks) — the kit makes it the path of least resistance + audit-visible, and the `agent-boundary` CI gate still forces ratification on control-plane diffs regardless.
+
 ## [3.3.0] - 2026-06-18
 
 **MINOR** — P2/WS1 of the usability-governance milestone: **guard false-positive fix (deny-by-default)**. The control-plane guard stops falsely blocking read-only commands that merely *mention* a control-plane path, and the path check no longer false-denies a same-named file in a non-control-plane directory — without weakening any protection (verified across four adversarial security reviews + a dual corpus).

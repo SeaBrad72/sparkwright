@@ -163,6 +163,8 @@ jobs:
         run: sh conformance/onboarding-complete.sh
       - name: Discovery layer completeness (present + wired)
         run: sh conformance/discovery-complete.sh
+      - name: Solo review-lane present + wired (§12 / WS2)
+        run: sh conformance/review-lane.sh --selftest
 
 
   bootstrap:
