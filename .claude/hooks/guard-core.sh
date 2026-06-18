@@ -46,7 +46,27 @@ guard_check_command() {
     if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
        || printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
        || printf '%s' "$cmd" | grep -Eq '>[[:space:]]*[^[:space:]]*(\.claude|\.github/workflows|CODEOWNERS|\.git|hooks/pre-push|scripts/kit-guard)'; then
-      printf '%s' '13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
+      # WS1 (DENY-BY-DEFAULT): the co-occurrence test above is the safe FLOOR — it would deny. Allow
+      # back ONLY a provably-safe SINGLE READ command: no ;/&&/||/|/&/redirect chaining, and a leading
+      # verb (after stripping a leading backslash / env-assignments / sudo+common wrappers) that is a
+      # read tool, or `sed` without -i. A read command cannot mutate the path it merely mentions. Any
+      # unrecognized leading token (wrapper, interpreter, prefix) is NOT proven safe → stays denied.
+      _safe=0
+      if ! printf '%s' "$cmd" | grep -Eq '[;&|<>$()`]'; then
+        _lead=$(printf '%s' "$cmd" | sed -E 's/^[[:space:]]*\\?//; s/^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//; s/^[[:space:]]*(sudo|command|env|exec|time|nice|nohup|stdbuf|builtin)[[:space:]]+//; s/[[:space:]].*$//')
+        # STRICT read-only set: every tool here writes ONLY to stdout. Deliberately EXCLUDES any tool
+        # with a write/exec escape: sed (w/e cmds), awk (system()/print>), find (-exec/-delete),
+        # sort -o, uniq <out>, less/more (!cmd), xxd (-r writes a file). Those stay denied (a residual:
+        # use cat/grep, or KIT_GUARD_SELFEDIT). Command substitution / chaining is rejected by the
+        # [;&|<>$()`] guard above, so a read leading-verb cannot front a hidden write.
+        case "$_lead" in
+          grep|egrep|fgrep|rg|ls|cat|head|tail|wc|diff|stat|file|du|cut|tr|nl|od|hexdump|column|tac|comm|cmp|basename|dirname|realpath|readlink)
+            _safe=1 ;;
+        esac
+      fi
+      if [ "$_safe" = 0 ]; then
+        printf '%s' '13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
+      fi
     fi
   fi
   # --- destructive matrix: moved VERBATIM from guard.sh:96-242 ---
@@ -261,16 +281,29 @@ guard_check_mcp() {
 # Moved from guard.sh:245-265 (drop the jq line — caller passes the path).
 guard_check_path() {
   fp=$1
-  fpn=$(printf '%s' "$fp" | sed -e 's#//*#/#g' -e 's#/\./#/#g')
+  fpn=$(printf '%s' "$fp" | sed -e 's#//*#/#g' -e 's#/\./#/#g' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta')
   base=$(basename "$fp" 2>/dev/null || printf '%s' "$fp")
   if ! selfedit_allowed && { is_control_plane_path "$fp" || is_control_plane_path "$fpn"; }; then
     printf '%s' '13: modifying the guard / its config / CI gates is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
   fi
+  # WS1: validate by basename when the NORMALIZED path has no real parent directory — either it is a
+  # bare name, OR it still ESCAPES its root (a leading/unresolved `..` the fixpoint could not consume),
+  # which cannot be trusted by directory. A path with a genuine parent dir (`.vscode/settings.json`) is
+  # matched precisely by is_control_plane_path above, so the net is skipped only there. This closes the
+  # `./settings.json`, `a/../guard.sh`, multi-`..`, trailing-slash, AND leading-`../name` bypasses while
+  # still allowing an innocent `.vscode/settings.json` / `app/config/settings.json`.
   if ! selfedit_allowed; then
-    case "$base" in
-      guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|CODEOWNERS)
-        printf '13: modifying a control-plane file (%s) is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
+    _bare=1
+    case "$fpn" in
+      ..|../*|*/../*) _bare=1 ;;
+      */*)           _bare=0 ;;
     esac
+    if [ "$_bare" = 1 ]; then
+      case "$base" in
+        guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|CODEOWNERS)
+          printf '13: modifying a control-plane file (%s) is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
+      esac
+    fi
   fi
   [ "$base" = ".env.example" ] && return 0
   case "$fp" in

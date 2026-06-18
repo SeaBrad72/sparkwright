@@ -235,6 +235,29 @@ assert_allow "curl -F form no-at"   '{"tool_name":"Bash","tool_input":{"command"
 assert_deny "mcp destructive tool" '{"tool_name":"mcp__filesystem__delete_file","tool_input":{}}'
 assert_allow "mcp read-only tool"  '{"tool_name":"mcp__postgres__query","tool_input":{}}'
 
+# --- WS1 (deny-by-default): control-plane FALSE-POSITIVES now allowed; real mutations + the
+#     reviewer-found bypass classes still denied. Both directions locked. ---
+# ALLOW: a provably-safe single READ command that merely MENTIONS a control-plane path
+assert_allow "WS1 grep verb-pattern" '{"tool_name":"Bash","tool_input":{"command":"grep cp scripts/kit-guard"}}'
+assert_allow "WS1 cat workflow"      '{"tool_name":"Bash","tool_input":{"command":"cat .github/workflows/ci.yml"}}'
+assert_allow "WS1 ls kit-guard"      '{"tool_name":"Bash","tool_input":{"command":"ls -l scripts/kit-guard"}}'
+assert_allow "WS1 diff settings"     '{"tool_name":"Bash","tool_input":{"command":"diff .claude/settings.json /tmp/o"}}'
+assert_allow "WS1 Write .vscode"     '{"tool_name":"Write","tool_input":{"file_path":".vscode/settings.json","content":"{}"}}'
+assert_allow "WS1 Write app cfg"     '{"tool_name":"Write","tool_input":{"file_path":"app/config/settings.json","content":"{}"}}'
+# DENY: real mutations (the deny-by-default floor) + write-verb destination variants
+assert_deny "WS1 cp into ci"         '{"tool_name":"Bash","tool_input":{"command":"cp evil.sh .github/workflows/ci.yml"}}'
+assert_deny "WS1 cp opt-after-dest"  '{"tool_name":"Bash","tool_input":{"command":"cp evil.sh .github/workflows/ci.yml -f"}}'
+assert_deny "WS1 mv cp away"         '{"tool_name":"Bash","tool_input":{"command":"mv .claude/settings.json bak"}}'
+assert_deny "WS1 Write bare settings" '{"tool_name":"Write","tool_input":{"file_path":"settings.json","content":"{}"}}'
+# DENY: reviewer bypass classes (wrappers, pipe, command-substitution, interpreter, leading/multi `..`)
+assert_deny "WS1 wrapper sed-i"      '{"tool_name":"Bash","tool_input":{"command":"command sed -i s/a/b/ .claude/settings.json"}}'
+assert_deny "WS1 pipe sed-i"         '{"tool_name":"Bash","tool_input":{"command":"echo x | sed -i s/a/b/ .claude/settings.json"}}'
+assert_deny "WS1 cmd-subst rm"       '{"tool_name":"Bash","tool_input":{"command":"cat $(rm .claude/settings.json) x"}}'
+assert_deny "WS1 interpreter sh -c"  '{"tool_name":"Bash","tool_input":{"command":"sh -c \"rm .claude/settings.json\""}}'
+assert_deny "WS1 leading .. write"   '{"tool_name":"Write","tool_input":{"file_path":"../settings.json","content":"x"}}'
+assert_deny "WS1 multi .. write"     '{"tool_name":"Write","tool_input":{"file_path":"x/y/z/../../../guard.sh","content":"x"}}'
+assert_deny "WS1 trailing slash"     '{"tool_name":"Write","tool_input":{"file_path":".claude/settings.json/","content":"x"}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

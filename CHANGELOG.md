@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-06-18
+
+**MINOR** — P2/WS1 of the usability-governance milestone: **guard false-positive fix (deny-by-default)**. The control-plane guard stops falsely blocking read-only commands that merely *mention* a control-plane path, and the path check no longer false-denies a same-named file in a non-control-plane directory — without weakening any protection (verified across four adversarial security reviews + a dual corpus).
+
+### Changed
+- **WS1 — control-plane command rule, deny-by-default.** `guard-core.sh` keeps the prior co-occurrence deny as the **floor** (no protection removed) and allows back ONLY a *provably-safe single read command*: no `;`/`&&`/`||`/`|`/`&`/redirect/command-substitution chaining, and a leading verb (after stripping a leading `\`, env-assignments, and `sudo`/`command`/`env`/`exec`/`time`/`nice`/`nohup`/`stdbuf`/`builtin`) in a strict write/exec-free read allowlist (`grep`/`cat`/`ls`/`wc`/`diff`/`cut`/`od`/… — `sed`/`awk`/`find`/`sort`/`uniq`/`less`/`xxd` are excluded as write/exec-capable). So `grep cp scripts/kit-guard`, `cat .github/workflows/ci.yml`, `ls -l scripts/kit-guard` are allowed while every real mutation — and any unrecognized leading token (wrapper, interpreter, prefix) — stays denied.
+- **Path basename net narrowed + normalized (found via a real `.vscode/settings.json` report).** The bare-basename fallback fires only for a normalized path with no genuine parent directory, or one that escapes its root via `..`; `fpn` strips a leading `./`, a trailing `/`, and resolves `..` to a fixpoint. So `.vscode/settings.json` / `app/config/settings.json` are allowed while `./settings.json`, `../guard.sh`, `a/../../kit-guard`, and `.claude/settings.json/` are denied.
+- Both directions are regression-locked by an expanded dual corpus in `conformance/agent-autonomy.sh`; the `.claude/README.md` over-block note is updated to the precise behavior.
+
+### Honest ceilings
+- The guard remains a speed bump: variable/`eval`/command-substitution indirection, and uncommon write-via-flag tools (`sort -o`, `xxd -r`, `perl -pi`, `ed`) are documented pre-existing gaps, backstopped by the `agent-boundary` CI gate on the diff. A compound command that merely *mentions* a control-plane path stays denied (safer than parsing compound shell) — use `KIT_GUARD_SELFEDIT=1` or split the command.
+
 ## [3.2.0] - 2026-06-17
 
 **MINOR** — H1 of the post-3.0.0 backlog: **enforcement integrity** — the kit's own controls now resist the agent they govern. Brings the enforcement layer into the control-plane set, constrains adapter `proof.check` execution, removes an agent-forgeable ratification label, and makes the kit dogfood its own governance gate. Additive hardening; the supported `typescript-node` path stays green.
