@@ -50,13 +50,13 @@ Each adapter declares its binding in `adapters/<harness>/adapter.json`. The shap
 - **`bindingFiles`** — array; every listed path must exist in the repo (verified by `harness-adapter.sh`).
 - **`dimensions`** — all five dimensions must appear. Each carries:
   - `level`: `"native"` | `"floor"` | `"n-a"`. Only `mcp-gate` may be `"n-a"` (when the harness has no MCP surface).
-  - `proof` (optional on `"floor"`; required on `"native"`): either `check` (a conformance script that must exit 0), `files` (paths that must exist), or both.
+  - `proof` (optional on `"floor"`; required on `"native"`): either `check` (a **bare `conformance/*.sh` path** — no arguments, shell metacharacters, or `..` traversal — that must exit 0; `harness-adapter.sh` rejects anything else *before running it*), `files` (paths that must exist), or both.
 
 **Invariants:**
 - Every dimension's **floor** must hold regardless of `level` — a `native` claim does not exempt the floor.
 - A `native` dimension **must** carry a `proof` that passes — the lying-native guard enforces this (`harness-adapter.sh` fails if proof is absent or the check exits non-zero).
 - Only `mcp-gate` may carry `"n-a"` — every other dimension has a floor that applies universally.
-- A `proof.check` script is trusted on the same basis as any `conformance/*.sh` the kit already runs: adapter manifests are control-plane-adjacent and change only through ratified review (they sit beside the `.claude/` paths the `agent-boundary` gate guards).
+- A `proof.check` is **executed only if it is a bare `conformance/*.sh` path** that exists (no arguments, no shell metacharacters, no `..` traversal) — `harness-adapter.sh` rejects anything else *before running it*, so a malformed or hostile `check` cannot run and cannot then prove `native`. Combined with `adapters/` being control-plane (an unratified adapter change fails the `agent-boundary` gate), adding or changing a `proof.check` is both ratification-gated and value-constrained.
 
 ---
 

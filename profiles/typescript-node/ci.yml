@@ -205,7 +205,7 @@ jobs:
           fetch-depth: 0
       - name: Compute changed files
         run: git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed.txt
-      - name: Compute ratification signal (label or non-author approval)
+      - name: Compute ratification signal (non-author approval)
         id: ratify
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,13 +213,13 @@ jobs:
           AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           rat=0
-          labels=$(gh pr view "$PR" --json labels -q '.labels[].name')
-          if printf '%s\n' "$labels" | grep -qx 'ratified-control-plane'; then rat=1; fi
-          if [ "$rat" = "0" ]; then
-            approvers=$(gh pr view "$PR" --json reviews \
-              -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login')
-            if printf '%s\n' "$approvers" | grep -vx "$AUTHOR" | grep -q .; then rat=1; fi
-          fi
+          # Ratification = a non-author APPROVAL (an agent cannot approve its own PR; GitHub forbids
+          # self-approval). The self-appliable `ratified-control-plane` label was REMOVED (H1.3): it
+          # was forgeable by an agent with a token (`gh pr edit --add-label`). Solo maintainers ratify
+          # via a logged `enforce_admins: false` admin-merge (START-HERE.md) — recorded, not faked.
+          approvers=$(gh pr view "$PR" --json reviews \
+            -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login')
+          if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q .; then rat=1; fi
           echo "ratified=$rat" >> "$GITHUB_OUTPUT"
-      - name: Agent-boundary gate
+      - name: Agent-boundary gate — ratification required (not a build failure)
         run: sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}" --require

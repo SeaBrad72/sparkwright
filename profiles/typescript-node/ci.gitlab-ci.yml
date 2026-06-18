@@ -8,6 +8,11 @@
 # Tool choices mirror the GitHub profile (pnpm + eslint + tsc + vitest + gitleaks + syft).
 # Where GitLab ships a native control, the comment names it — prefer it at scale.
 #
+# NOTE (H1): this GitLab reference does NOT yet carry the `gate-agent-boundary` §13 control-plane
+# ratification gate that profiles/typescript-node/ci.yml (GitHub) has. The 8 required BUILD gates
+# above are fully present; the governance gate is N/A here pending GitLab parity, tracked as H4 in
+# docs/ROADMAP-KIT.md.
+#
 # HARDENING (do before production):
 #  - Supply-chain tools are PINNED to the versions in `variables:` (not `latest`). Bump
 #    deliberately, and verify a published checksum/signature before exec — or vendor the
