@@ -3,6 +3,25 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.0] - 2026-06-18
+
+**MINOR** — D1a: **claims-registry meta-check — continuous semantic-drift detection.** Structural drift was already caught continuously (badge/links/coverage); *semantic* drift — a headline factual claim that no longer matches reality — was caught only by the periodic human go/no-go. This generalises `badge-version.sh` (one claim: badge == VERSION) to a registry of N headline claims, each paired with a verifier, failing CI on drift **or** on a silently-dropped claim. **Control-plane slice; additive; no control weakened.** (D1b — a scheduled drift-watch that runs this on a timer — is a fast-follow.)
+
+### Added
+- **`conformance/claims.tsv`** — the registry (control-plane: adding/removing/weakening a claim is a ratified act): `id | claim + where stated | verifier`. Seven seed claims — six **delegate** to existing checks (badge-version, ci-selftest-coverage, doc-budget, guard-core-sourced, action-pinning, security-policy), making the registry a single *claim → proof* pane; one is the new verifier below.
+- **`conformance/claims-registry.sh`** (CI-wired) — runs every verifier; fails on a drifted verifier, a **silently-dropped** headline claim (a `REQUIRED_IDS` coverage assertion — you can't quietly delete a claim's protection without a ratified edit), a duplicate id, or an empty verifier. `--selftest` covers all four.
+- **`conformance/claim-gate-counts.sh`** — the new drift verifier (proves the "a number drifts" capability beyond delegation): awk-scoped to `DEVELOPMENT-STANDARDS.md` §14, it asserts the **"seven required gates"** word == the 7 enumerated table rows and **"Five … conditional"** == the 5 enumerated bullets, cross-checked against `CLAUDE.md` — so adding/removing a gate without updating the number word fails CI. Emits a distinct "check-scope problem" message (not a phantom count) if §14 is renumbered or the anchor phrase is reworded.
+
+### Changed
+- **`.github/workflows/ci.yml`** — runs both new selftests + the real registry as the drift gate.
+- **`docs/ROADMAP-KIT.md`** — D1a marked shipped; D1b (scheduled drift-watch) flagged fast-follow.
+
+### Review
+Independent review (drift-robustness lens): **APPROVE.** The silent-drop promise holds with an honestly-bounded residual (weakening a verifier is gated by *ratification*, not by this script — by design); no false-PASS / missed-drift; fragility is all in the "re-verify a reworded claim" direction. Two reviewer improvements folded in pre-transfer: the §14 anchor-not-found diagnostic, and processing a final row with no trailing newline (no silent skip).
+
+### Honest ceiling
+The registry verifies **registered** claims and guards against silent drops; it does **not** auto-detect brand-new unregistered claim-like statements in docs (heuristic/noisy — deferred). Weakening a verifier is caught by ratification, not mechanically.
+
 ## [3.9.0] - 2026-06-18
 
 **MINOR** — H2b of the Tier-2 hardening arc: **`kit-guard install-shims` — an inline command guard for non-Claude harnesses.** Codex/Cursor/Aider adopters previously had no inline command coverage (only `pre-push` + the CI floor). `install-shims` installs PATH-shims that call `kit-guard cmd` before `exec`. **Control-plane change; no control weakened.**
