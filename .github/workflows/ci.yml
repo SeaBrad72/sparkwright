@@ -167,6 +167,11 @@ jobs:
         run: sh conformance/review-lane.sh --selftest
       - name: Single-invocation shim coverage (install-shims generates working shims; H2b)
         run: sh conformance/shim-coverage.sh
+      - name: Claims registry — headline claims verified + no silent drop (D1a)
+        run: |
+          sh conformance/claim-gate-counts.sh --selftest
+          sh conformance/claims-registry.sh --selftest
+          sh conformance/claims-registry.sh
 
 
   bootstrap:
