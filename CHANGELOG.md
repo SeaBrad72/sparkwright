@@ -3,6 +3,17 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-06-17
+
+**MINOR** — P1 of the post-3.0.0 backlog: turns the adapter `controlPlanePaths` from a declarative inventory into real enforcement (N5), plus profile parity and conformance-honesty hardening. Additive; the supported `typescript-node` path stays green.
+
+### Added
+- **N5 — `controlPlanePaths` union enforcement.** The `agent-boundary` gate now denies an unratified PR that touches any path in the **union of adapter-declared `controlPlanePaths`** (across `adapters/*/adapter.json`), in addition to the kit-standard `guard-core.sh::is_control_plane_path` floor. Entries match exactly or as a directory prefix (a value ending in `/`). So each harness's *own* control-plane surface is enforced — e.g. an unratified `AGENTS.md` edit (declared by the `generic` adapter, outside the guard-core set) is now caught. `jq`-absent or no `adapters/` degrades to the floor. `docs/operations/harness-adapters.md` updated from "future work" to "enforced."
+
+### Fixed
+- **Profile parity** — the `python` scaffold now sets `fail_under = 80` (the 80% coverage floor the profile + Definition of Done require); the GitLab `typescript-node` CI reference gains the conditional `gate-eval` the GitHub reference already had.
+- **Conformance honesty** — `branch-protection.sh` adds a non-fatal advisory when `require_code_owner_reviews` is disabled (so builder ≠ sole reviewer stays visible on protected paths); `runtime-guards.md` now honestly enumerates the known guard-bypass classes (redirect/`printf` writes, `curl --data @file`, `git am`/`git apply`, interpreters) as within the speed-bump ceiling, rather than over-promising.
+
 ## [3.0.1] - 2026-06-17
 
 **PATCH** — closes the four pre-announce conditions from the 3.0.0 go/no-go (an 11-dimension adversarial review: **GO-WITH-CONDITIONS, 0 blockers**). No new capability; makes the release safe to announce. The remaining Medium/Low findings are tracked as a 3.0.x fix-forward follow-up.
