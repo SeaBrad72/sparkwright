@@ -3,6 +3,24 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-06-18
+
+**MINOR** — H2a of the Tier-2 hardening arc: **containment reference — ship the boundary the guard only documents.** A verify-before-build pass found most of H2.1 already shipped (the egress-allowlist NetworkPolicy landed in 11b) and that "no-egress devcontainer" is a category error for a dev inner-loop (it needs egress for package installs). Reframed to **sandbox-FS devcontainer + egress-allowlist pairing** and closed the two real gaps. **Additive reference material; no control weakened; the verified `typescript-node` path is untouched.**
+
+### Added
+- **`profiles/typescript-node/compose.yaml`** — a host-isolated **`agent` service** so the kit *dogfoods* the read-only-FS pattern it documents (it previously shipped only prose): `read_only` root, `tmpfs` scratch, **work-tree-only** mount (no `$HOME`/`~/.aws`/`~/.ssh`/`docker.sock`), `cap_drop: [ALL]`, `no-new-privileges`, `network_mode: none`, `HOME`/`npm_config_cache`→tmpfs so it actually runs read-only. **Opt-in behind `profiles: [agent]`** — a plain `docker compose up` never starts it, so the `app`/`db` dev path is byte-unchanged.
+- **`profiles/typescript-node/.devcontainer/devcontainer.sandbox.json`** — the IDE sandbox variant (`--read-only`/`--tmpfs`/`--cap-drop ALL`/`--security-opt no-new-privileges`, work-tree-only `workspaceMount`).
+- **`docs/operations/containment.md` §2** — concrete, copy-pasteable **AWS / GCP / Azure OIDC-federation** snippets (was prose-only): AWS IAM role trust policy (`aud` + repo/ref-pinned `sub`) + `configure-aws-credentials`; GCP Workload Identity Pool with a repo-pinned attribute-condition + `google-github-actions/auth`; Azure Federated Credential + `azure/login` — all zero-static-secret.
+
+### Changed
+- **`docs/operations/containment.md` §1** — now points to both shipped artifacts and states the **honest ceiling**: an IDE-attached container is inherently weaker than the headless `agent` service (the editor injects a writable, networked server), so the devcontainer is host-isolated but **not** no-egress; FS-sandbox and egress are separate controls — pair either with `egress-control.md` for the network layer.
+- **`docs/ROADMAP-KIT.md`** — H2 split into **H2a** (✅ this release) / **H2b** (`kit-guard install-shims`, pending); "no-egress devcontainer" reframed; **P2 marked complete** and **WS4 ✅** (the deferred 3.7.0 housekeeping).
+
+### Honest ceilings (no overclaim)
+- A green `containment-ready.sh` proves *declared + attested*, **never** that the FS is truly read-only or tokens truly expire — enforcement stays platform-owned (`docs/enterprise/platform-safety-boundary.md`).
+- This does **not** give the kit a new passing CI containment signal — CI runs `containment-ready.sh --selftest` only and never scans the profile. The win is an *adoptable artifact* + self-consistency (the kit now models the pattern it documents).
+- **Deferred (tracked):** `containment-ready.sh::has_readonly_mount_config` scans `.devcontainer/devcontainer.json` but not the new `.sandbox.json` filename (and not `--read-only` runArgs); the `compose.yaml` `read_only: true` already provides the match for profile adopters, so this is a future one-line heuristic tidy, not a defect.
+
 ## [3.7.0] - 2026-06-18
 
 **MINOR** — P2/WS4 of the usability-governance milestone (the **last P2 slice**): **persona routing**. Non-engineer personas now find their entry at the front door, and interactive `incept` prompts operator-fluency. **Surface/route only — nothing deleted, no gate disabled, no applicable control weakened**; the routing copy explicitly *reinforces* gate universality ("rigor is carried, not waived").

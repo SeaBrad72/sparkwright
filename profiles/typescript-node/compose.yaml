@@ -15,6 +15,34 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  # --- Agent sandbox (containment reference — docs/operations/containment.md §1) ---
+  # A headless agent/dev shell with the HOST UNREACHABLE: root FS read-only, ONLY the work tree
+  # mounted (no $HOME, ~/.aws, ~/.ssh, docker.sock), all caps dropped, no new privileges, and NO
+  # network by default. Opt-in and never auto-started:
+  #     docker compose --profile agent run --rm agent
+  # A plain `docker compose up` ignores it (the `agent` profile gates it) — the verified app path
+  # is untouched. Network is OFF on purpose: FS-sandbox and egress are SEPARATE layers. For work
+  # that needs package installs, attach an egress-ALLOWLISTED network (not the open bridge) per
+  # docs/operations/egress-control.md — do not just flip this to default networking.
+  agent:
+    build:
+      context: .
+      target: builder              # node + npm + a shell (the runtime stage is distroless: no shell)
+    profiles: [agent]              # opt-in; excluded from `docker compose up`
+    read_only: true                # root filesystem read-only
+    network_mode: none             # no egress by default; pair with an allowlist for real network work
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp                       # ephemeral scratch — the only writable path
+    volumes:
+      - ./:/work:rw                # ONLY the work tree — nothing from $HOME or the host
+    working_dir: /work
+    environment:
+      HOME: /tmp                   # any $HOME write lands on tmpfs, not a host mount
+      npm_config_cache: /tmp/.npm  # keep npm's cache off the read-only root so tooling still runs
+    command: ["bash"]
   db:
     image: postgres:16-alpine
     environment:
