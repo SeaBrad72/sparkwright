@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-06-18
+
+**MINOR** — D4-presentation: **"ratification required" is now a merge-gate, not a red failure.** The `gate-agent-boundary` job exits 0 and posts a distinct `control-plane-ratification` check-run instead of `exit 1`-ing red — so an unratified control-plane PR **blocks the merge in amber, sends no "CI failed" email**, and red ❌ / failure emails are reserved for genuine failures. Decision logic unchanged; enforcement, audit trail, and harness-independence preserved. **Live-verified on PR #114** (`ACTION_REQUIRED` · workflow `success`/no-email · merge `BLOCKED`).
+
+### Changed
+- **`.github/workflows/ci.yml` + `profiles/typescript-node/ci.yml`** — the `gate-agent-boundary` job now exits 0 and posts the `control-plane-ratification` check-run via the Checks API (needs `checks: write`); `CI=` is cleared on the `agent-boundary.sh` call so its true three-state (0 ratified/no-cp · 1 unratified-cp · 2 cannot-evaluate) maps to `success` / `action_required` / `failure`. `conformance/agent-boundary.sh` is untouched — **presentation only.**
+- **Branch protection:** require the `control-plane-ratification` check so `action_required` blocks the merge (GitHub blocks any required check that isn't `success`). Keep `enforce_admins: false` solo (the logged admin-merge is the ratification); flip `enforce_admins: true` when a team forms (WS2).
+- Docs updated to the verified behavior (`docs/operations/harness-enforcement-evidence.md` live evidence; `START-HERE.md` solo note).
+
+### Why
+A permanently-red, *required-less* gate emailed "CI failed" on every solo control-plane PR — training red-blindness in the PR view **and** the inbox (the alert-fatigue anti-pattern). "Ratification required" is an awaiting-action **merge-gate** (like "Review required"), not a test; presenting it as such protects the failure channel so a *real* failure still cuts through. (We also found the old gate was never a required check — noise without enforcement; now it's enforcement without noise.)
+
 ## [3.5.0] - 2026-06-18
 
 **MINOR** — P2/WS3 of the usability-governance milestone: **progressive-disclosure front door**. Curates the first impression to a ~5-file core path with a pull-not-push map for the enterprise/operability/continuity depth — so a newcomer sees a front door, not the full file wall. **Nothing deleted, no gate disabled, no applicable control hidden**; ordering and emphasis only.
