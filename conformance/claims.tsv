@@ -8,3 +8,4 @@ action-pinning	all third-party GitHub Actions are SHA-pinned	sh conformance/acti
 security-policy	a real SECURITY.md coordinated-disclosure policy ships	sh conformance/security-policy.sh
 gate-counts	"seven required" + "five conditional" gate words == the enumerated gates (§14)	sh conformance/claim-gate-counts.sh
 drift-watch	a scheduled drift-watch re-runs the aggregate + claims + links	sh conformance/drift-watch-wired.sh
+cost-governance	a declared+attested cost-governance posture is verifiable (budget + platform cap)	sh conformance/cost-governance-ready.sh --selftest

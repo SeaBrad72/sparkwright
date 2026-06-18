@@ -29,6 +29,9 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 ### Writes (declared outputs — and NOTHING else)
 - <exact path(s) this step may create or modify>
 
+### Budget (STOP at)
+- **<token/$ ceiling>** — stop + escalate at the ceiling; do not silently exceed it. (A declared budget is a contract, not a mechanical stop — the platform spend-cap is the hard enforcement; `docs/operations/cost-governance.md`.)
+
 ### Prohibitions (do NOT)
 - touch control-plane files unless this step's whole purpose is a ratified control-plane change
 - add a runtime dependency

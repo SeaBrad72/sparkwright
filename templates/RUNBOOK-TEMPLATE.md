@@ -35,6 +35,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Sandbox FS: read-only work-tree mounts ([mechanism]) — enforced: [date]  <!-- Agent FS scoped to the work tree (host secrets unreachable); see docs/operations/containment.md; verified declared+attested by conformance/containment-ready.sh. If not applicable: replace with N/A — [reason] -->
 - Scoped tokens: OIDC->role, short TTL ([mechanism]) — enforced: [date]  <!-- Least-privilege, time-boxed credentials -->
 - Prod credentials: separate + break-glass ([mechanism]) — enforced: [date]  <!-- Agents never hold prod write creds; SoD -->
+- Cost governance: per-run budget + platform spend-cap ([Anthropic usage limit | harness budget]) — enforced: [date]  <!-- LLM/metered-API spend bounded by a declared budget + the platform cap; docs/operations/cost-governance.md; verified declared+attested by conformance/cost-governance-ready.sh. If no metered external/LLM spend: N/A — [reason] -->
 
 **Container / Kubernetes deploy (if applicable):**
 - Image: built multi-stage & non-root in CI; pushed to GHCR on merge to `main` with a **digest-bound provenance attestation**.

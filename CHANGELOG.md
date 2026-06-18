@@ -3,6 +3,23 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.0] - 2026-06-18
+
+**MINOR** — H3b of the Tier-3 agentic-risk hardening: **cost/token governance.** A PreToolUse guard cannot see token counts, so this is the honest two-layer model (mirroring containment): the kit ships the **contract** and references the **platform cap** as the real enforcement. **Control-plane slice; additive; no control weakened.**
+
+### Added
+- **`docs/operations/cost-governance.md`** — the reference: a per-run **budget** (token/$ ceiling) + a **stop discipline** (approach the ceiling → stop + escalate); the **platform cap** (Anthropic API usage limits / harness budget) as the real enforcement; the existing `agent-trace.sh` `cost`/`tokens` emission as the monitor (measure → compare → stop). Honest ceiling stated: declared+attested ≠ spend actually capped.
+- **`templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md`** — a `Budget (STOP at)` field (per-task ceiling + stop rule).
+- **`templates/RUNBOOK-TEMPLATE.md`** — a `Cost governance:` attestation line (declared+attested, N/A-escapable).
+- **`conformance/cost-governance-ready.sh`** — a single-aspect three-state posture check (PASS/FAIL/UNVERIFIED/N-A; escalates under CI/`--require`), a mirror of `containment-ready.sh`; registered as a `cost-governance` claim (+ `REQUIRED_IDS`), CI-wired, indexed in `conformance/README.md`.
+
+### Review
+Independent review: **APPROVE** — *a real (honest-ceiling) control, not ceremony* (the measure→compare→stop loop is coherent, with the platform cap as backstop), and it **overclaims nothing** (no artifact implies mechanical capping). Three doc-accuracy fixes folded pre-tag: corrected the monitor attribution (`agent-trace.sh`, not `agent-scorecard.sh`), the `../enterprise/` path, and the README index row.
+
+### Honest ceiling
+The guard is blind to tokens. A green check proves the posture is *declared + attested*, never that spend was capped — the cap is platform-owned (Anthropic usage limits / harness budget). The budget is a contract (process discipline), like the high-risk self-review.
+- **Tracked follow-up:** `cost-governance-ready.sh` gates on a deploy surface (Dockerfile/workflow) like `containment-ready.sh`, but spend governance's natural trigger is "metered/LLM calls" — an LLM CLI with no surface escapes to N/A; refine the applicability trigger.
+
 ## [3.12.0] - 2026-06-18
 
 **MINOR** — H3a of the Tier-3 agentic-risk hardening: **secret-in-context read guard.** The guard already blocked *writing* secret material; it now denies the agent **reading** secret material into its context — the read half of exfil (A8 family 6), where a `.env`/key reaches the model provider, logs, or a PR. **Security + control-plane slice; deny-by-default with a `KIT_GUARD_SELFEDIT` escape; no existing control weakened.**
