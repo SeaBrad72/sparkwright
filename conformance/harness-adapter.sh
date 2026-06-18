@@ -52,7 +52,20 @@ native_proof_ok() {
   # shellcheck disable=SC2086 # intentional word-split: files is a newline-separated list of paths
   files=$(jq -r --arg d "$d" '.dimensions[$d].proof.files[]? // empty' "$m")
   [ -n "$chk" ] || [ -n "$files" ] || return 1
-  if [ -n "$chk" ]; then sh "$chk" >/dev/null 2>&1 || return 1; fi
+  if [ -n "$chk" ]; then
+    # D2 allowlist: execute a proof.check ONLY if it is a bare conformance/*.sh path
+    # (no metacharacters, no args, no traversal) that exists. Anything else => not ok, NOT run.
+    case "$chk" in
+      conformance/*.sh) : ;;
+      *) return 1 ;;
+    esac
+    if printf '%s' "$chk" | grep -Eq '[^A-Za-z0-9._/-]' || printf '%s' "$chk" | grep -q '\.\.'; then
+      return 1
+    fi
+    [ -f "$chk" ] || return 1
+    if [ -L "$chk" ]; then return 1; fi   # -f follows symlinks; reject a symlinked check
+    sh "$chk" >/dev/null 2>&1 || return 1
+  fi
   for f in $files; do [ -e "$f" ] || return 1; done
   return 0
 }
@@ -119,6 +132,16 @@ selftest() {
 
   mkconf "$base/badbind" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["nope-not-here.txt"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
   expect 1 "$base/badbind" "missing bindingFile"
+
+  # D2: proof.check allowlist — a check with shell metacharacters or outside conformance/
+  # must be REJECTED BEFORE EXECUTION (no side effect), not run.
+  canary="$base/canary"
+  mkconf "$base/metachar" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/agents-brief.sh; touch __CANARY__"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  sed "s#__CANARY__#$canary#" "$base/metachar/adapter.json" > "$base/metachar/adapter.tmp" && mv "$base/metachar/adapter.tmp" "$base/metachar/adapter.json"
+  expect 1 "$base/metachar" "proof.check with metacharacters (lying-native)"
+  if [ -e "$canary" ]; then echo "selftest FAIL: metachar proof.check EXECUTED (canary created)"; st=1; else echo "selftest PASS: metachar proof.check not executed"; fi
+  mkconf "$base/escape" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"../evil.sh"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  expect 1 "$base/escape" "proof.check outside conformance/ (lying-native)"
 
   # adapter dir not found -> UNVERIFIED(2) local, FAIL(1) under CI/--require
   # shellcheck disable=SC1007 # CI= is intentional: clears CI in the subshell to test non-CI path

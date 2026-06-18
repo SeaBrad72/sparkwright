@@ -51,7 +51,7 @@ The universal git pre-push hook — installed by `incept.sh` for every git clien
 
 ### 3. `sh conformance/agent-boundary.sh --selftest` — the CI-gate surface
 
-The harness-independent control-plane ratification gate. A PR diff that touches a control-plane path (`.github/workflows/`, `CODEOWNERS`, `conformance/`, `.claude/hooks/`, etc.) must carry an explicit human ratification signal or the gate fails — regardless of which harness opened the PR. The selftest exercises both the `boundary_decide` logic in-process and the CLI end-to-end:
+The harness-independent control-plane ratification gate. A PR diff that touches a control-plane path (`.github/workflows/`, `CODEOWNERS`, `conformance/`, `.claude/hooks/`, the named `scripts/`, `adapters/`, and the governing docs `DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `CLAUDE.md` — see `guard-core.sh::is_control_plane_path`) must carry a **non-author approval** or the gate fails — regardless of which harness opened the PR. (The self-appliable `ratified-control-plane` label was **removed in H1.3** as agent-forgeable; solo maintainers ratify via a logged `enforce_admins: false` admin-merge.) The selftest exercises both the `boundary_decide` logic in-process and the CLI end-to-end:
 
 | Case | Expected |
 |------|----------|
@@ -59,12 +59,20 @@ The harness-independent control-plane ratification gate. A PR diff that touches 
 | Workflow change (`.github/workflows/ci.yml`), unratified | fail (exit 1) |
 | Workflow change, ratified | pass |
 | `CODEOWNERS` change, unratified | fail (exit 1) |
+| `conformance/` script change, unratified (H1.1) | fail (exit 1) |
+| `DEVELOPMENT-STANDARDS.md` / `CLAUDE.md` change, unratified (H1.1) | fail (exit 1) |
+| `adapters/*/adapter.json` change, unratified (H1.1) | fail (exit 1) |
+| Adopter's own `scripts/deploy.sh` (not kit machinery) | pass |
 | Empty diff | pass |
 | No `--changed` listing supplied, local (non-CI) | exit 2 (UNVERIFIED — not a pass) |
 | No `--changed` listing, `CI=true` | exit 1 (escalated — gate must be runnable) |
 | CLI: control-plane listing, unratified | exit 1 |
 | CLI: control-plane listing, ratified | exit 0 |
 | CLI: clean listing, unratified | exit 0 |
+
+**Dogfooded (H1.4):** beyond this selftest, the kit's own `.github/workflows/ci.yml` now runs the **real** `gate-agent-boundary` job on every PR (not just `--selftest`) — so an unratified control-plane change to the kit itself is blocked pre-merge, the same gate adopters get.
+
+**Live evidence (PR #110, 2026-06-17):** an unratified control-plane diff makes the job `exit 1`, which GitHub renders as a **failed (red) check**. The *"ratification required"* meaning is carried by the **job/step naming + docs**, *not* by a distinct `action_required`/`neutral` conclusion — a plain `run:` step exiting non-zero has no non-failing-but-blocking state on a required check. So the red is the **expected ratification step, not a code regression**; you clear it with a non-author approval, or (solo) a logged admin-merge. A true non-failing presentation would require emitting the conclusion via a check-run action — a possible follow-up, tracked as a D4 refinement.
 
 ---
 

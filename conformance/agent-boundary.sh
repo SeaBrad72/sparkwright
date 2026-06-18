@@ -1,7 +1,7 @@
 #!/bin/sh
 # agent-boundary.sh — CI-side, harness-independent enforcement of the DEVELOPMENT-PROCESS.md §13
 # agent boundary: a PR diff that touches a CONTROL-PLANE path must carry an explicit HUMAN
-# ratification signal (a CODEOWNER approval on those paths, or a human-applied label). This is the
+# ratification signal (a CODEOWNER (non-author) approval on those paths). This is the
 # enforcement floor that holds on EVERY harness — incl. a harness with no inline guard — because CI
 # catches an unratified control-plane edit post-hoc, before merge.
 #
@@ -122,6 +122,12 @@ README.md" 0 "ordinary diff, unratified -> PASS"
 .github/workflows/ci.yml" 1 "workflow change, ratified -> PASS"
   dc 1 "CODEOWNERS" 0 "CODEOWNERS change, unratified -> FAIL"
   dc 0 "" 0 "empty diff -> PASS"
+  dc 1 "conformance/agent-boundary.sh" 0 "conformance change, unratified -> FAIL"
+  dc 0 "conformance/agent-boundary.sh" 1 "conformance change, ratified -> PASS"
+  dc 1 "DEVELOPMENT-STANDARDS.md" 0 "standards doc change, unratified -> FAIL"
+  dc 1 "CLAUDE.md" 0 "CLAUDE.md change, unratified -> FAIL"
+  dc 1 "adapters/generic/adapter.json" 0 "adapter manifest change, unratified -> FAIL"
+  dc 0 "scripts/deploy.sh" 0 "adopter own script (not kit) -> PASS"
 
   # N5 union: a path declared ONLY in an adapter manifest's controlPlanePaths (NOT in guard-core's
   # hardcoded set) is now caught — proving the gate enforces what adapters declare, per harness.

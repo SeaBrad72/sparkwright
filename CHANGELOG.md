@@ -3,6 +3,22 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-06-17
+
+**MINOR** — H1 of the post-3.0.0 backlog: **enforcement integrity** — the kit's own controls now resist the agent they govern. Brings the enforcement layer into the control-plane set, constrains adapter `proof.check` execution, removes an agent-forgeable ratification label, and makes the kit dogfood its own governance gate. Additive hardening; the supported `typescript-node` path stays green.
+
+### Added
+- **H1.1 — the enforcement layer is now control-plane.** `guard-core.sh::is_control_plane_path` (the single source of truth honored by the inline guard, `pre-push`, `kit-guard`, and the `agent-boundary` CI gate) now covers `conformance/`, `adapters/`, `scripts/fixtures/`, the named kit scripts (`incept`, `dora`, `agent-scorecard`, `agent-trace`, `coverage-ratchet`, `license-check`, `preflight`, `new-adapter`, `new-profile`), and the governing docs `DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `CLAUDE.md`. An agent can no longer weaken a gate's logic, relax the Definition of Done, or add an adapter without ratification. `scripts/` is a **named-script set, not a blanket prefix**, so an adopter's own `scripts/` code is unaffected (adopter friction = zero).
+- **H1.4 — the kit dogfoods its own gate.** `.github/workflows/ci.yml` now runs the **real** `gate-agent-boundary` job on every PR (previously only `--selftest`). An unratified control-plane PR makes the job `exit 1`, which GitHub renders as a **failed (red) check** meaning *"ratification required"* — the expected human step, **not a code regression** (live-verified on PR #110). The "ratification required" semantics ride the job/step naming + docs; GitHub offers no non-failing-but-blocking state for a plain step, so a true neutral presentation is a tracked D4 follow-up.
+
+### Changed
+- **H1.2 — `proof.check` allowlist.** `conformance/harness-adapter.sh` executes an adapter's `proof.check` only if it is a bare `conformance/*.sh` path (no arguments, shell metacharacters, or `..` traversal) that exists — anything else is rejected *before execution* and cannot prove `native`. Closes arbitrary-code execution from an unratified adapter manifest; a new selftest canary proves the dangerous check never runs.
+- **H1.3 — removed the self-ratifiable label.** The `agent-boundary` ratification signal is now a **non-author approval only**; the `ratified-control-plane` label (self-appliable by an agent via `gh pr edit --add-label`) is gone. Solo maintainers ratify via a logged `enforce_admins: false` admin-merge — recorded, never faked.
+
+### Honest ceilings
+- The inline guard remains a speed bump: a control-plane edit made through a language interpreter (`python -c`, a script) is **not** caught by its command-string heuristic — the `agent-boundary` CI gate is the post-hoc backstop that catches the resulting diff before merge. Command-string false-positive tuning is deferred to **P2/WS1**; GitLab gate parity to **H4**.
+- The `proof.check` allowlist also rejects a **symlinked** check (`[ ! -L ]`), closing the residual where `[ -f ]` would follow a committed symlink under `conformance/` to a payload elsewhere (itself ratification-gated by H1.1 — this is belt-and-suspenders). One named-set residual remains: a newly-added kit `scripts/*.sh` is not control-plane until hand-enrolled in `is_control_plane_path` — a conformance check asserting full enrollment is a possible follow-up.
+
 ## [3.1.0] - 2026-06-17
 
 **MINOR** — P1 of the post-3.0.0 backlog: turns the adapter `controlPlanePaths` from a declarative inventory into real enforcement (N5), plus profile parity and conformance-honesty hardening. Additive; the supported `typescript-node` path stays green.
@@ -79,7 +95,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 **Harness-neutrality — N1: the agent-boundary CI gate.** First slice of the LLM/harness-neutral milestone (→ `3.0.0`). **MINOR** — additive: a new §13 governance gate + reference job + conformance check; the 7 required build gates are unchanged and nothing breaks. Claude Code stays the default, regression-locked.
 
 ### Added
-- **`conformance/agent-boundary.sh`** — a harness-independent, three-state CI check (`0`/`1`/`2`; UNVERIFIED escalates under CI/`--require`) that fails a PR whose diff touches a control-plane path without an explicit human ratification signal (a CODEOWNER approval or the `ratified-control-plane` label). Reuses `guard-core.sh::is_control_plane_path` (single source of truth — no forked path list); a pure decision core with an in-process `--selftest`.
+- **`conformance/agent-boundary.sh`** — a harness-independent, three-state CI check (`0`/`1`/`2`; UNVERIFIED escalates under CI/`--require`) that fails a PR whose diff touches a control-plane path without an explicit human ratification signal (a CODEOWNER approval or the `ratified-control-plane` label — the label path was later removed in 3.2.0/H1.3 as agent-forgeable). Reuses `guard-core.sh::is_control_plane_path` (single source of truth — no forked path list); a pure decision core with an in-process `--selftest`.
 - **`gate-agent-boundary`** reference job in `profiles/typescript-node/ci.yml` — computes the changed-file set + the ratification signal (label or a non-author approval, taking each reviewer's latest review) and runs the check fail-closed; a `gh` failure fails the step loudly. It is a §13 governance gate, **not** one of the 7 required build gates.
 - **§13 contract clause** in `DEVELOPMENT-PROCESS.md` + a fourth surface row in `docs/operations/runtime-guards.md`: the gate makes "agents propose, humans ratify; never self-edit the control plane" hold on **every** harness — including one with no inline guard — because CI catches an unratified control-plane edit before merge.
 

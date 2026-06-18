@@ -182,3 +182,36 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: Relative Markdown link integrity
         run: sh conformance/check-links.sh
+
+  gate-agent-boundary:
+    # H1.4 — the kit dogfoods its own §13 governance gate (previously only --selftest ran here).
+    # An unratified control-plane diff is the EXPECTED "ratification required" step, not a build
+    # break: ratify via a non-author approval, or (solo) a logged enforce_admins:false admin-merge.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Compute changed files
+        run: git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed.txt
+      - name: Compute ratification signal (non-author approval)
+        id: ratify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          rat=0
+          # Ratification = a non-author APPROVAL (an agent cannot approve its own PR; GitHub forbids
+          # self-approval). The self-appliable `ratified-control-plane` label was REMOVED (H1.3) as
+          # agent-forgeable; solo maintainers ratify via a logged enforce_admins:false admin-merge.
+          approvers=$(gh pr view "$PR" --json reviews \
+            -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login')
+          if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q .; then rat=1; fi
+          echo "ratified=$rat" >> "$GITHUB_OUTPUT"
+      - name: Agent-boundary gate — ratification required (not a build failure)
+        run: sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}" --require

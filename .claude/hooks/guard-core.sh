@@ -16,7 +16,20 @@ is_control_plane_path() {
     *.claude/settings.json|*.claude/settings.local.json|\
     *.claude/mcp-policy.json|.claude/mcp-policy.json|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
-    */.github/workflows/*|.github/workflows/*|*/CODEOWNERS|CODEOWNERS|*/.git/*|.git/*)
+    */.github/workflows/*|.github/workflows/*|*/CODEOWNERS|CODEOWNERS|*/.git/*|.git/*|\
+    conformance/*|*/conformance/*|adapters/*|*/adapters/*|\
+    scripts/fixtures/*|*/scripts/fixtures/*|\
+    scripts/incept.sh|*/scripts/incept.sh|scripts/dora.sh|*/scripts/dora.sh|\
+    scripts/agent-scorecard.sh|*/scripts/agent-scorecard.sh|\
+    scripts/agent-trace.sh|*/scripts/agent-trace.sh|\
+    scripts/coverage-ratchet.sh|*/scripts/coverage-ratchet.sh|\
+    scripts/license-check.sh|*/scripts/license-check.sh|\
+    scripts/preflight.sh|*/scripts/preflight.sh|\
+    scripts/new-adapter.sh|*/scripts/new-adapter.sh|\
+    scripts/new-profile.sh|*/scripts/new-profile.sh|\
+    DEVELOPMENT-STANDARDS.md|*/DEVELOPMENT-STANDARDS.md|\
+    DEVELOPMENT-PROCESS.md|*/DEVELOPMENT-PROCESS.md|\
+    CLAUDE.md|*/CLAUDE.md)
       return 0 ;;
   esac
   return 1
