@@ -96,6 +96,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   printf 'Backlog backend (md/github/jira/ado/linear/gitlab) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
   printf 'CI platform (github/gitlab) [%s]: ' "$CI"; read -r _c || true; [ -n "${_c:-}" ] && CI="$_c"
   printf 'Harness(es), comma-separated, of: %s [%s]: ' "$HARNESS_ADAPTERS" "$HARNESS"; read -r _h || true; [ -n "${_h:-}" ] && HARNESS="$_h"
+  printf 'Operator fluency (novice/adjacent/practitioner) [skip to decide later]: '; read -r _f || true; [ -n "${_f:-}" ] && FLUENCY="$_f"
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
