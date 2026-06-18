@@ -72,28 +72,48 @@ Make the kit **LLM/harness-neutral** — anyone can pick it up with any agent ha
 
 ## Post-3.0.0 backlog (consolidated + prioritized)
 
-Sources: the 11-dimension adversarial go/no-go on 3.0.0 (**GO-WITH-CONDITIONS**, 0 blockers, 0 of 26 material findings refuted — the 4 pre-announce conditions shipped in `3.0.1`), the post-3.0.0 weight/usefulness review, and the forward-functionality directions. Priority tiers are the default sequence, not a commitment; re-prioritize at a retro. None of the below breaks the verified `typescript-node` path or a headline claim.
+Sources: the 11-dimension adversarial go/no-go on 3.0.0 (**GO-WITH-CONDITIONS**, 0 blockers), the post-3.0.0 weight/usefulness review, the solo-vs-team review discussion, and a proactive hardening/edge-case sweep. **Burn-down order** (default — re-prioritize at a retro): **P1 ✅ → H1 → P2 → H2 → D1 → H3 → H4 → P3 → P4.** Hardening the *enforcement model* (H1) outranks usability polish — a kit whose own gates the agent can quietly disable is worse than a slightly heavier, tamper-resistant one. None below breaks the verified `typescript-node` path or a headline claim.
 
-### P1 — Integrity & honest enforcement (close what the go/no-go exposed)
-- **N5 — `controlPlanePaths` union wiring** *(the one real capability gap).* Wire the `agent-boundary` gate to read the union of every adapter-declared `controlPlanePaths`, turning the declarative inventory into real per-harness enforcement. `3.0.1` corrected the doc to say this is future; this builds it. (contract→reference→conformance vertical.)
-- **Profile doc/scaffold parity** — python scaffold missing `fail_under=80` (doc claims it); GitLab ts-node CI missing the conditional `gate-eval` the GitHub ref has.
-- **Conformance hardening** — `branch-protection.sh` doesn't flag CODEOWNERS `@your-org` placeholders + `require_code_owner_reviews=false`; tighten the README's guard-coverage claim (or extend the regexes) for the documented bypass classes (`echo/true>file`, `curl --data @file`, `git am/apply`).
+### P1 — Integrity & honest enforcement ✅ *shipped 3.1.0*
+N5 `controlPlanePaths` union enforcement (the gate now denies unratified changes to the union of adapter-declared paths) + profile parity (python `fail_under=80`; GitLab `gate-eval`) + conformance hardening (branch-protection advisory; honest guard-bypass-class enumeration).
 
-### P2 — Usability & adoption friction (make it light, not just powerful)
-- **Guard false-positive tuning** *(biggest UX win, small change).* The guard blocks **read-only** commands whose *string* merely mentions a control-plane token (`.github`, `CODEOWNERS`, `cp`, `sed`) — it should match an *executed* control-plane mutation, not any mention. A real corpus of false positives exists from the 3.0.0 build/go-no-go sessions; use it as the regression fixture.
-- **Solo / lightweight governance lane.** `builder ≠ reviewer` is mechanically unsatisfiable solo (you can't approve your own PR → `--admin` every merge). Add a solo lane: a ratified self-review checklist + the gates substitute for a second human, without faking the separation. The onboarding fluency lanes hint at this; make it real for governance.
-- **Modular enterprise layers.** The kit ships ~124 docs incl. SOC2/ISO/DORA/DR/resilience/AI-governance by default — right for an enterprise team, heavy at a vibe-coder's front door. Make the enterprise/compliance/continuity/AI-governance layers **opt-in modules** added on demand, so the default drop-in is small.
-- **Persona routing** — `ONBOARDING.md` doesn't route non-engineer personas (QA/designer/PO); Security Owner missing from the §13 role table; `incept` interactive mode never prompts operator-fluency.
+### H1 — Enforcement integrity (Tier 1 · HIGHEST) — the kit's own controls must resist the agent they govern
+- **Bring the enforcement layer into the control-plane set.** `conformance/` + the gating scripts + the standards docs (`DEVELOPMENT-STANDARDS/PROCESS`) + `adapters/` are NOT control-plane today, so an agent can weaken a gate's logic or add an adapter **without ratification** — the agent-boundary gate protects the guard/CI but not the checks that *do* the enforcing. Add them to `guard-core.sh::is_control_plane_path` (the N5 union already covers per-adapter paths once `adapters/` is in).
+- **`harness-adapter.sh` executes `proof.check` from a manifest** — combined with `adapters/` being editable, a PR could add an adapter that runs arbitrary code, unratified. The control-plane fix above closes ratification; also constrain `proof.check` to a vetted allowlist of conformance scripts.
+- **Self-ratification via the label.** The `agent-boundary` gate accepts a `ratified-control-plane` label the agent can apply itself (`gh pr edit --add-label`) → self-ratification defeats the gate. Drop the label path or make it human-only; keep the CODEOWNER-approval path (the sound one).
 
-### P3 — Growth & verification (authored → verified; broaden reach)
-- **Verified second harness (Codex) + first-class adapters.** Drive a real non-Claude agent through a slice to flip the split bar's process half from *authored-to-contract* to *maintainer-verified*; ship first-class `codex`/`cursor`/`gemini` adapters beyond `generic`. (Also the natural by-product of real dogfooding.)
-- **`sparkwright doctor` — an adopter posture command.** One command that runs the full conformance + readiness sweep on the *adopter's own* project and emits a posture verdict — a lightweight, repeatable go/no-go for every project, not just the kit. All the checks already exist; this composes them.
-- **Close the "operate" loop with tooling.** Make "production teaches the next iteration" real: incident → auto-postmortem stub → backlog item; DORA + `agent-scorecard` → automatic autonomy-tier adjustment.
-- **Broaden the front door** — more archetype scaffolds (frontend SPA, serverless, mobile, monorepo) + deeper discovery (AI-assisted opportunity shaping).
+### P2 — Usability & governance ergonomics (light, not weak) — *design spec: `docs/superpowers/specs/2026-06-17-p2-usability-governance-design.md`*
+*(NOTE: "opt-in/modular enterprise layers" from the first backlog draft is **REJECTED** — conditional-applicability already auto-skips inapplicable controls; opt-in would re-create the add-compliance-later trap. The fix is friction-removal + surfacing, never weakening an applicable control.)*
+- **WS1 — Guard false-positive fix** *(highest UX leverage).* Deny an *actual mutation of a control-plane path*, not any command that merely *mentions* one (`sed` is read-only without `-i`; a token in a grep pattern isn't a target; the verb must act on the path; evaluate compound segments). Dual conformance corpus: real mutations still denied **and** the real false positives now allowed. (Guard edits are control-plane → human-applied.)
+- **WS2 — Risk-tiered solo review lane.** Default = recorded agent-review + recorded human ratification (the logged independent review); high-risk (control-plane/security/data/prod) = + a human structured self-review with specific acknowledgments. Compliance-honest *compensating controls* → zero-retrofit auto-upgrade to two-human SoD when a teammate joins. Deliverables: `REVIEW-RECORD` template, §12 solo-lane clause, `docs/operations/review-lane.md`, audit-evidence row.
+- **WS3 — Progressive-disclosure front door.** Curate the first impression to ~5 files ("you don't need to read all of this"); enterprise depth pull-not-push. Nothing deleted, no gate disabled.
+- **WS4 — Persona routing.** ONBOARDING routes QA/designer/PO; add Security Owner to the §13 role table; interactive `incept` prompts operator-fluency.
+
+### H2 — Containment reference (Tier 2) — ship the boundary the guard only documents
+- **Reference platform boundary** — the guard is a speed-bump; the REAL containment (network-egress allowlist, sandboxed FS, scoped/short-lived tokens) is "platform-owned" but the kit ships no reference. Ship one (a no-egress devcontainer, an egress-allowlist config, scoped-token patterns) so the safety the kit *depends on* is actually adoptable.
+- **Non-Claude inline guard** — Codex/Cursor adopters have NO inline command guard (only `pre-push` + the CI floor). Build the named `kit-guard install-shims` (PATH-shims wrapping dangerous binaries → call `kit-guard` before exec) so non-Claude harnesses get inline coverage too.
+
+### D1 — Continuous drift detection — make semantic-drift detection continuous, not heroic
+Structural drift is caught continuously (badge/links/coverage-meta); SEMANTIC drift (doc-claims-vs-code, staleness) is caught only by the periodic go/no-go. Close it: a **scheduled go/no-go-lite** (cron, a few key dimensions) + a **claims-registry meta-check** (every headline claim links to a verifying check; an unbacked claim fails — generalizing `badge-version.sh`). Feeds / overlaps `sparkwright doctor` (P3).
+
+### H3 — Agentic-risk hardening (Tier 3)
+- **Secret-in-context** — the guard blocks *writing* secrets but not the agent *reading* a `.env`/key into its context (→ model provider, logs, PR). Add redaction guidance + a nudge against `cat .env`-style reads.
+- **Cost/token circuit-breaker** — no budget guardrail today (the 3.0.0 go/no-go alone was ~2.36M tokens). Add a per-run budget contract + a stop.
+- **Long-session drift self-check** — a periodic mid-session re-check against the active plan/standards.
+
+### H4 — Coverage gaps (Tier 4)
+- **GitLab governance parity** — branch-protection, ratification, and DORA enforcement are GitHub-only; GitLab adopters get materially less. Build the GitLab equivalents or scope the claim honestly.
+- **Kit's own tool supply chain** — `jq`/`gh`/`shellcheck`/`cosign`/`syft` the conformance layer shells out to are unpinned/unverified; a compromised tool subverts the gates. Pin + verify.
+
+### P3 — Growth & verification
+- **Verified second harness (Codex) + first-class adapters** — flip the split bar's process half to *maintainer-verified*; ship `codex`/`cursor`/`gemini` adapters beyond `generic`.
+- **`sparkwright doctor`** — an adopter posture command composing the conformance + readiness sweep (doubles as the adopter-facing drift detector; overlaps D1).
+- **Close the operate loop** — incident → auto-postmortem stub → backlog item; DORA + `agent-scorecard` → autonomy-tier adjustment.
+- **Broaden the front door** — more archetype scaffolds + deeper discovery.
 
 ### P4 — Polish (Low)
-- **Operability / meta-docs** — RUNBOOK template lacks an incident-response section (link STANDARDS §15); meta-doc staleness sweep across MAINTAINING / ROADMAP / CLAUDE / conformance-README (bump dates, reconcile counts).
-- **Misc** — designer handoff guidance (axe/Lighthouse); a ts-node AI-security pointer + eval scaffold; rename documentation-only CI step labels that imply more enforcement than they run.
+- **Operability / meta-docs** — RUNBOOK incident-response section; meta-doc staleness sweep (dates, counts).
+- **Misc** — designer handoff guidance (axe/Lighthouse); ts-node AI-security pointer + eval scaffold; rename documentation-only CI step labels.
 
 ---
 
