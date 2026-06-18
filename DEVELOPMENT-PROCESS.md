@@ -369,7 +369,7 @@ Autonomy is a spectrum; an agent's tier is **how far it proceeds before a human 
 | **Security owner** | governing-doc changes (`CLAUDE.md` / STANDARDS / PROCESS), gate definitions, **supply-chain / OIDC posture exceptions**, secret-rotation policy, autonomy-tier raises |
 | **Release manager** | production deploys / promotions, rollbacks |
 
-One person may hold several roles in a small org, but **never both the builder and the sole ratifier of the same change**. Roles map to GitHub via CODEOWNERS + branch-protection required reviewers.
+One person may hold several roles in a small org, but **never both the builder and the sole ratifier of the same change**. Roles map to GitHub via CODEOWNERS + branch-protection required reviewers. **Solo:** the recorded independent agent-review + recorded human ratification (high-risk adds specific acknowledgments tied to findings) is the compensating control for `builder ≠ reviewer`; a teammate joining tightens it to enforced two-human SoD with a single `enforce_admins: true` flip (zero rework of recorded evidence) — `docs/operations/review-lane.md`.
 
 **Governed exceptions.** Required gates (§14 of the standards) and security posture are **universally required — never silently "conditional."** An exception is an auditable event: a **security-owner-ratified, time-boxed** record stating what is waived, why, the expiry, and the compensating control. → `docs/enterprise/ratification-rbac.md`. For **brownfield adoption**, this is operationalized as `templates/WAIVER-REGISTER.md` (validated by `conformance/waivers-valid.sh`; `secret-scan` and `branch-protection` are non-negotiable) — see `docs/adoption/brownfield.md` §5.
 
