@@ -60,7 +60,7 @@ has_surface() {
 has_readonly_mount_config() {
   _d="$1"
   for f in "$_d"/compose.yaml "$_d"/compose.yml "$_d"/docker-compose.yaml "$_d"/docker-compose.yml \
-           "$_d"/.devcontainer/devcontainer.json "$_d"/.devcontainer/compose.yaml; do
+           "$_d"/.devcontainer/devcontainer.json "$_d"/.devcontainer/devcontainer.sandbox.json "$_d"/.devcontainer/compose.yaml; do
     [ -f "$f" ] || continue
     if grep -Eiq 'read_only:[[:space:]]*true|"readOnly"[[:space:]]*:[[:space:]]*true|,readonly|readonly,' "$f" 2>/dev/null; then
       return 0

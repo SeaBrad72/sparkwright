@@ -165,6 +165,8 @@ jobs:
         run: sh conformance/discovery-complete.sh
       - name: Solo review-lane present + wired (§12 / WS2)
         run: sh conformance/review-lane.sh --selftest
+      - name: Single-invocation shim coverage (install-shims generates working shims; H2b)
+        run: sh conformance/shim-coverage.sh
 
 
   bootstrap:

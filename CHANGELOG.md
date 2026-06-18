@@ -3,6 +3,25 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.9.0] - 2026-06-18
+
+**MINOR** — H2b of the Tier-2 hardening arc: **`kit-guard install-shims` — an inline command guard for non-Claude harnesses.** Codex/Cursor/Aider adopters previously had no inline command coverage (only `pre-push` + the CI floor). `install-shims` installs PATH-shims that call `kit-guard cmd` before `exec`. **Control-plane change; no control weakened.**
+
+### Added
+- **`scripts/kit-guard install-shims [--dir <d>] [--force]`** — writes a shim per curated **single-invocation** dangerous binary (`rm dd truncate shred wipefs blkdiscard mkfs dropdb psql mysql mariadb sqlite3 mongosh pg_restore redis-cli git npm yarn pnpm kubectl rsync`). Each shim reconstructs its argv, runs `kit-guard cmd`, and on allow execs the **real** binary — resolved by **device+inode identity (`-ef`)** so a symlinked/relative/duplicated shim-dir spelling can never make it re-exec itself, with a **bounded re-entry depth** circuit-breaker as a fork-bomb fail-safe. Warns when the shim dir is agent-writable (integrity needs a read-only mount — H2a).
+- **`conformance/shim-coverage.sh`** (CI-wired) — proves the generated shims **deny + allow + pass through (exit/stdio) + don't recurse** (including a symlinked shim-dir case), with a fake "real" binary behind them on PATH.
+
+### Changed
+- **`docs/operations/runtime-guards.md`** — **honesty correction:** the prior claim that shims give "automatic full-matrix coverage" was wrong. A shim sees one binary's argv *after the shell parses the line*, so coverage is **single-invocation only** — blind to shell composition (pipes/redirects/chaining), absolute-path calls (`/bin/rm`), and interpreters. The full-string path remains `kit-guard cmd`; shim integrity is platform-owned (read-only mount).
+- **`conformance/containment-ready.sh`** — folded the deferred H2a tidy: `has_readonly_mount_config` now also matches `.devcontainer/devcontainer.sandbox.json`.
+- **`docs/ROADMAP-KIT.md`** — H2b marked shipped.
+
+### Security review (the WS1 lesson: review the scratch before live transfer)
+An independent security review of the scratch found and **BLOCKED a fork-bomb**: the first implementation resolved the real binary via logical `pwd`, which on macOS `/bin/sh` doesn't resolve symlinks, so a symlinked spelling of the default relative shim dir defeated the self-skip and the shim `exec`d itself forever. Fixed with `-ef` inode identity + the bounded depth breaker (which makes even a hypothetical `-ef`-absent shell fail **closed**, never spin); the symlink case is now regression-locked in `shim-coverage.sh`. Re-review: **PASS, safe to transfer.**
+
+### Honest ceiling
+Single-invocation only; absolute-path/interpreter/composition calls bypass it; integrity requires an agent-unwritable mount. A speed bump for the common direct-destructive-call mistake on non-Claude runtimes — not containment (platform-owned: `docs/enterprise/platform-safety-boundary.md`).
+
 ## [3.8.0] - 2026-06-18
 
 **MINOR** — H2a of the Tier-2 hardening arc: **containment reference — ship the boundary the guard only documents.** A verify-before-build pass found most of H2.1 already shipped (the egress-allowlist NetworkPolicy landed in 11b) and that "no-egress devcontainer" is a category error for a dev inner-loop (it needs egress for package installs). Reframed to **sandbox-FS devcontainer + egress-allowlist pairing** and closed the two real gaps. **Additive reference material; no control weakened; the verified `typescript-node` path is untouched.**

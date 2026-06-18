@@ -4,6 +4,7 @@
 #   kit-guard cmd "<command>"        -> exit 0 allow · exit 1 deny (reason on stderr)
 #   kit-guard path "<file>"          -> exit 0 allow · exit 1 deny (reason on stderr)
 #   kit-guard mcp "<mcp__tool>" [pol] -> exit 0 allow · exit 1 deny (the MCP capability gate)
+#   kit-guard install-shims [--dir D] [--force]  -> PATH-shims for the dangerous binaries (off-Claude floor)
 #   kit-guard --selftest             -> run the deny battery through the CLI
 #   kit-guard --help
 # A SPEED BUMP, not a boundary (docs/enterprise/platform-safety-boundary.md).
@@ -17,7 +18,100 @@ CORE="${KIT_GUARD_CORE:-$SELF_DIR/../.claude/hooks/guard-core.sh}"
 # shellcheck disable=SC1090  # dynamic source path; guarded by the [ -f ] check above
 . "$CORE"
 
-usage() { sed -n '2,10p' "$0"; }
+usage() { sed -n '2,11p' "$0"; }
+
+# Curated SINGLE-INVOCATION dangerous binaries — each fronts a guard rule that fits in one argv.
+# Deliberately EXCLUDES find/xargs/sed (composition/read-only escapes), interpreters (python/node/
+# ruby/php — the interpreter-channel ceiling), and cp/mv/chmod (only dangerous via path-context the
+# shim can't see). See docs/operations/runtime-guards.md "PATH-shims" for the rationale + ceiling.
+SHIM_BINS='rm dd truncate shred wipefs blkdiscard mkfs dropdb psql mysql mariadb sqlite3 mongosh pg_restore redis-cli git npm yarn pnpm kubectl rsync'
+
+install_shims() {
+  shim_dir="${KIT_GUARD_SHIM_DIR:-.kit-guard/shims}"
+  force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ $# -ge 2 ] || { echo "usage: kit-guard install-shims [--dir <d>] [--force]" >&2; exit 2; }; shim_dir="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) echo "kit-guard: unknown install-shims arg '$1' (--dir <d> | --force)" >&2; exit 2 ;;
+    esac
+  done
+  mkdir -p "$shim_dir" || { echo "kit-guard: cannot create $shim_dir" >&2; exit 2; }
+  # shellcheck disable=SC1007  # CDPATH= clears CDPATH (env prefix to cd), not an empty assignment
+  shim_abs=$(CDPATH= cd -- "$shim_dir" && pwd) || { echo "kit-guard: cannot resolve $shim_dir" >&2; exit 2; }
+  kg_abs="$SELF_DIR/$(basename -- "$0")"
+  made=0; skipped=0
+  for b in $SHIM_BINS; do
+    target="$shim_abs/$b"
+    if [ -e "$target" ] && [ "$force" -eq 0 ]; then
+      # idempotent: silently overwrite our OWN shim, but never clobber a foreign file without --force.
+      if head -n 2 "$target" 2>/dev/null | grep -q 'kit-guard shim'; then :; else
+        echo "kit-guard: $target exists and is not a kit-guard shim — skipping (use --force to overwrite)" >&2
+        skipped=$((skipped + 1)); continue
+      fi
+    fi
+    # Header (expanded: self/KG/SHIM_DIR baked per-shim) + static body (literal $self/$@/$PATH).
+    {
+      cat <<EOF_HEADER
+#!/bin/sh
+# kit-guard shim — single-invocation deny-check before exec. GENERATED; do not edit.
+# Ceiling: sees only THIS argv (not pipes/redirects/chaining); an absolute-path call bypasses it.
+set -eu
+self=$b
+KG='$kg_abs'
+SHIM_DIR='$shim_abs'
+EOF_HEADER
+      cat <<'EOF_BODY'
+c=$self
+for a in "$@"; do c="$c $a"; done
+if ! "$KG" cmd "$c"; then
+  echo "kit-guard: blocked single-invocation '$self' (reason above)" >&2
+  exit 1
+fi
+# Circuit-breaker: even if real-binary resolution below ever fails to skip this shim, a bounded
+# re-entry depth makes the shim ABORT (block) rather than exec itself forever (fork-/spin-bomb).
+# Legit self-invoking tools (git→git) nest only a few levels; a PATH loop blows past 25 instantly.
+# This is also the fail-safe on a shell lacking test's -ef: the self-skip inverts, but the depth
+# cap turns that into a clean block (exit 70), never a spin. (dash/bash/busybox/macOS sh have -ef.)
+__kgd=$(( ${KIT_GUARD_SHIM_DEPTH:-0} + 1 ))
+if [ "$__kgd" -gt 25 ]; then
+  echo "kit-guard shim: re-entry depth $__kgd for '$self' — aborting (PATH loop / real not resolving)" >&2
+  exit 70
+fi
+export KIT_GUARD_SHIM_DEPTH=$__kgd
+# Resolve the REAL binary: first PATH entry holding an executable that is NOT this shim. The -ef
+# test compares device+inode (resolving symlinks), so a symlinked / trailing-slash / relative /
+# duplicated spelling of the shim dir all point at the same file and are skipped → never recurse.
+real=''
+IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || d=.
+  if [ -x "$d/$self" ] && ! [ "$d/$self" -ef "$SHIM_DIR/$self" ]; then
+    real="$d/$self"; break
+  fi
+done
+unset IFS
+if [ -z "$real" ]; then
+  echo "kit-guard shim: real '$self' not found in PATH" >&2
+  exit 127
+fi
+exec "$real" "$@"
+EOF_BODY
+    } > "$target" || { echo "kit-guard: cannot write $target" >&2; exit 2; }
+    chmod +x "$target"
+    made=$((made + 1))
+  done
+  echo "kit-guard: installed $made shim(s) in $shim_abs (skipped $skipped)."
+  # Decision 3: WARN on a writable shim dir; integrity is platform-owned (H2a read-only mount).
+  if [ -w "$shim_abs" ]; then
+    echo "kit-guard: WARNING $shim_abs is writable — an agent could neuter a shim (rewrite it to a no-op)." >&2
+    echo "           Integrity needs an agent-unwritable path: mount it read-only (docs/operations/containment.md)." >&2
+  fi
+  echo "Add the shim dir FIRST on PATH so the agent's commands hit it:"
+  echo "    export PATH=\"$shim_abs:\$PATH\""
+  echo "Ceiling: SINGLE-INVOCATION only — blind to pipes/redirects/chaining, absolute-path calls, and"
+  echo "interpreters. The full-string check is 'kit-guard cmd' (docs/operations/runtime-guards.md)."
+}
 
 cmd=${1:-}
 case "$cmd" in
@@ -36,9 +130,13 @@ case "$cmd" in
       ov=$(jq -r '(.classOverride // {}) | to_entries[] | "\(.key)=\(.value)"' "$pol" 2>/dev/null || printf '')
     fi
     if reason=$(guard_check_mcp "$2" "$al" "$ov"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
+  install-shims)
+    shift
+    install_shims "$@"
+    exit 0 ;;
   --help|-h) usage; exit 0 ;;
   --selftest) ;;  # fall through to the selftest block below
-  *) echo "kit-guard: unknown command '${cmd:-}' (cmd|path|mcp|--selftest|--help)" >&2; exit 2 ;;
+  *) echo "kit-guard: unknown command '${cmd:-}' (cmd|path|mcp|install-shims|--selftest|--help)" >&2; exit 2 ;;
 esac
 
 # --- selftest: the adversarial corpus IS the test (runs the core through the CLI) ---
@@ -48,7 +146,7 @@ allow() { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else 
 pdeny() { if sh "$0" path "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
 pallow(){ if sh "$0" path "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 mdeny() { if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
-mallow(){ if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
+mallow(){ if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fi; }
 
 deny  "recursive rm"      "rm -rf /tmp/x"
 deny  "force push"        "git push --force origin feature/x"
