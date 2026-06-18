@@ -70,7 +70,9 @@ The harness-independent control-plane ratification gate. A PR diff that touches 
 | CLI: control-plane listing, ratified | exit 0 |
 | CLI: clean listing, unratified | exit 0 |
 
-**Dogfooded (H1.4):** beyond this selftest, the kit's own `.github/workflows/ci.yml` now runs the **real** `gate-agent-boundary` job on every PR (not just `--selftest`) — so an unratified control-plane change to the kit itself is blocked pre-merge, the same gate adopters get. An unratified control-plane PR surfaces as *"ratification required"* (the expected human step), not a build failure.
+**Dogfooded (H1.4):** beyond this selftest, the kit's own `.github/workflows/ci.yml` now runs the **real** `gate-agent-boundary` job on every PR (not just `--selftest`) — so an unratified control-plane change to the kit itself is blocked pre-merge, the same gate adopters get.
+
+**Live evidence (PR #110, 2026-06-17):** an unratified control-plane diff makes the job `exit 1`, which GitHub renders as a **failed (red) check**. The *"ratification required"* meaning is carried by the **job/step naming + docs**, *not* by a distinct `action_required`/`neutral` conclusion — a plain `run:` step exiting non-zero has no non-failing-but-blocking state on a required check. So the red is the **expected ratification step, not a code regression**; you clear it with a non-author approval, or (solo) a logged admin-merge. A true non-failing presentation would require emitting the conclusion via a check-run action — a possible follow-up, tracked as a D4 refinement.
 
 ---
 
