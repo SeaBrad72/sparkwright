@@ -11,6 +11,13 @@ coding gets you working code; it does not get you software that an enterprise ca
 and not be harmed by. **This kit is that "everything around it."** The goal of this page: get you
 *functional and not dangerous*, fast.
 
+## You will not read all of this
+
+The kit is comprehensive so it can carry you from intent to operating software — but the *reading* is
+just-in-time. Get functional first; pull depth when a trigger fires. `START-HERE.md` has the **"first 5"
+core path + the pull-not-push map** — that is all you need open to begin. Enterprise, operability, and
+continuity depth are there for the moment your context needs them, not before.
+
 ## Which lane are you in?
 
 Pick the one that sounds like you. Non-punitive — feels too basic? Jump up a lane.

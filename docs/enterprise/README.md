@@ -2,6 +2,8 @@
 
 Governance, compliance, and privacy guidance for organizations adopting this kit. This addendum **hangs off** the authoritative docs (`../../CLAUDE.md`, `../../DEVELOPMENT-STANDARDS.md`, `../../DEVELOPMENT-PROCESS.md`) and never overrides them — where they overlap, the governing docs win.
 
+**Pull-not-push:** this addendum is **not** part of the first-5 core path. Reach it when a regulated / audited / at-scale context makes its controls apply — the front-door map in [`../../START-HERE.md`](../../START-HERE.md) routes you here on trigger. Adopting nothing here weakens the kit's floor; it adds the depth a heavier compliance posture needs.
+
 ## Contents
 
 | Doc | Purpose |

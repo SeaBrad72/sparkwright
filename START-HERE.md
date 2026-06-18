@@ -10,6 +10,36 @@ Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-
 
 ---
 
+## You do not need to read all of this
+
+Sparkwright ships a lot of files because it covers the whole lifecycle — but **you read almost none of
+it up front.** Per-task reading is small and just-in-time (`AGENTS.md` is ~24 lines, read when an agent
+acts). Here is the whole map at a glance.
+
+**Your first 5 (the core path):**
+1. **`START-HERE.md`** (this file) — Inception.
+2. **`CLAUDE.md`** — principles + the Definition of Done (the bar).
+3. **`DEVELOPMENT-PROCESS.md`** — the loop (Discover → Plan → Build → Review → Release → Operate).
+4. **`profiles/<your-stack>.md`** — the concrete *how* for your stack (chosen at Inception).
+5. **`AGENTS.md`** — the 1-page agent brief (if you drive with an agent).
+
+*This is the **set**; §0 Orient below is the reading **order** for your first sitting — you read 1–3, **skim** `DEVELOPMENT-STANDARDS.md`, and open your profile when you pick it at Inception step 2.*
+
+**Everything else is pull-not-push** — you reach for it *when a trigger fires*, never before:
+
+| When this is true… | …pull this |
+|--------------------|-----------|
+| You hit a specific quality bar (security pattern, retry/backoff, CI config) | `DEVELOPMENT-STANDARDS.md` + your `profiles/<stack>.md` |
+| Regulated / sensitive / audited domain | `docs/enterprise/` (compliance crosswalk · secrets-at-scale · audit-evidence) |
+| Live system — deploy, resilience, metrics | `docs/operations/` (progressive delivery · resilience · DORA · review-lane) |
+| Data service — backup/restore, DR | `docs/continuity/` |
+| You need an artifact (spec, RUNBOOK, threat model, review record) | `templates/` — pull the one you need |
+
+The conditional **gates** already work this way — each activates only when its trigger applies. The
+docs are discovered the same way. Nothing here is optional-to-*skip*; it is optional-to-*read-now*.
+
+---
+
 ## Who are you? Start here
 
 This guide's numbered steps are the **engineer/lead Inception path**. If you're a different role, start at your row — you generally won't need the numbered engineer steps below.
@@ -30,7 +60,7 @@ This guide's numbered steps are the **engineer/lead Inception path**. If you're 
 ---
 
 ## 0. Orient (5 min)
-Read, in order: this file → `CLAUDE.md` (principles + Definition of Done) → `DEVELOPMENT-PROCESS.md` (the loop) → skim `DEVELOPMENT-STANDARDS.md` (the universal bar). Don't read profiles yet — you pick one below.
+Read, in order: this file → `CLAUDE.md` (principles + Definition of Done) → `DEVELOPMENT-PROCESS.md` (the loop) → skim `DEVELOPMENT-STANDARDS.md` (the universal bar — deep-dive only on a specific quality bar, per the front-door map above). Don't read profiles yet — you pick one below (it's in your "first 5" *set*, opened here at step 2).
 
 ## 1. Charter
 Write the project charter (into the project `CLAUDE.md` you'll create in step 5):

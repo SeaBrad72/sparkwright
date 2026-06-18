@@ -28,6 +28,10 @@ check_tree() {
   if [ -f "$fluency" ]; then echo "PASS: operator-fluency.md exists"; else echo "FAIL: missing $fluency"; f=1; fi
   if [ -f "$brief" ] && grep -q "operator-fluency" "$brief"; then echo "PASS: AGENTS.md points at operator-fluency"; else echo "FAIL: AGENTS.md omits operator-fluency pointer"; f=1; fi
   if [ -f "$tdd" ]; then echo "PASS: first-feature-tdd.md exists"; else echo "FAIL: missing $tdd"; f=1; fi
+  start="$root/START-HERE.md"
+  if [ -f "$start" ] && grep -q "You do not need to read all of this" "$start" && grep -qi "pull-not-push" "$start"; then
+    echo "PASS: START-HERE.md carries the progressive-disclosure front door (first-5 + pull-not-push)"
+  else echo "FAIL: START-HERE.md missing the progressive-disclosure front door"; f=1; fi
   return $f
 }
 
@@ -47,6 +51,7 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '# fluency\n' > "$ok/docs/operations/operator-fluency.md"
   printf 'see docs/operations/operator-fluency.md\n' > "$ok/AGENTS.md"
   printf '# tdd\n' > "$ok/docs/onboarding/first-feature-tdd.md"
+  printf '# START\nYou do not need to read all of this\npull-not-push map\n' > "$ok/START-HERE.md"
   if check_tree "$ok" >/dev/null 2>&1; then
     echo "PASS: selftest — complete on-ramp passes"
   else

@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-06-18
+
+**MINOR** — P2/WS3 of the usability-governance milestone: **progressive-disclosure front door**. Curates the first impression to a ~5-file core path with a pull-not-push map for the enterprise/operability/continuity depth — so a newcomer sees a front door, not the full file wall. **Nothing deleted, no gate disabled, no applicable control hidden**; ordering and emphasis only.
+
+### Added
+- **`START-HERE.md`** — a top-of-file "you do not need to read all of this" block: the **first 5** core path (`START-HERE.md` · `CLAUDE.md` · `DEVELOPMENT-PROCESS.md` · your `profiles/<stack>.md` · `AGENTS.md`) + a **pull-not-push** trigger map (regulated → `docs/enterprise/`; live system → `docs/operations/`; data service → `docs/continuity/`; need an artifact → `templates/`). The conditional gates already activate by trigger; the docs are now discovered the same way.
+- **`ONBOARDING.md`** — a matching "you will not read all of this" note that hands to the START-HERE core-5 map.
+- **`docs/enterprise/README.md`** — explicit pull-not-push framing (reached on trigger; not part of the core path; adopting nothing here weakens no floor).
+
+### Changed
+- **`conformance/onboarding-complete.sh`** — extended to assert the front-door signal (first-5 + pull-not-push map) is present in `START-HERE.md`, so the progressive-disclosure surface can't silently regress. Wired in the kit's CI.
+
 ## [3.4.0] - 2026-06-18
 
 **MINOR** — P2/WS2 of the usability-governance milestone: **risk-tiered solo review lane**. A solo maintainer now has a recorded, audit-defensible way to satisfy `builder ≠ reviewer` — without faking it and without a second human — that upgrades to enforced two-human SoD with a single `enforce_admins: true` flip and zero rework of the recorded evidence when a teammate joins. Additive (docs/template/process + one presence conformance check); no applicable control weakened.
