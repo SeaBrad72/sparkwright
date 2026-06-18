@@ -193,12 +193,15 @@ jobs:
 
   gate-agent-boundary:
     # §13 governance gate (harness-independent): a control-plane diff must be human-ratified.
-    # NOT one of the 7 required build gates (ci-gates.sh) — a separate, required governance step.
+    # NOT one of the 7 required build gates — a separate governance step. D4: presented as a MERGE-GATE
+    # (a non-failing, still-blocking `control-plane-ratification` action_required check) so red ❌ /
+    # "run failed" emails stay reserved for real failures. Require this check in branch protection.
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
       pull-requests: read
+      checks: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
@@ -221,5 +224,29 @@ jobs:
             -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login')
           if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q .; then rat=1; fi
           echo "ratified=$rat" >> "$GITHUB_OUTPUT"
-      - name: Agent-boundary gate — ratification required (not a build failure)
-        run: sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}" --require
+      - name: Ratification merge-gate (action_required, not a build failure)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
+          #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
+          set +e
+          CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}"
+          rc=$?
+          set -e
+          case "$rc" in
+            0) concl=success;         title="ratified / no control-plane change" ;;
+            1) concl=action_required; title="ratification required — control-plane change awaiting a human" ;;
+            *) concl=failure;         title="gate error — could not evaluate the control-plane diff" ;;
+          esac
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name='control-plane-ratification' \
+            -f head_sha="$SHA" \
+            -f status='completed' \
+            -f conclusion="$concl" \
+            -f 'output[title]'="$title" \
+            -f 'output[summary]'="$title. A §13 governance merge-gate, not a build failure (see docs/operations/review-lane.md). Ratify via a non-author approval, or (solo) a logged enforce_admins:false admin-merge."
+          echo "control-plane-ratification => $concl (rc=$rc)"
+          # The job exits 0 regardless of $concl — no failure email; the check-run carries the state.
+          # NOTE: add `control-plane-ratification` to branch-protection required checks so it BLOCKS.
