@@ -37,6 +37,8 @@ Cost governance: per-run budget + platform spend-cap <Anthropic usage limit | ha
 No metered external/LLM spend (a pure offline CLI/library)? Replace the line with `Cost governance:
 N/A — <reason>`.
 
+**Applicability — deploy surface OR metered-LLM/AI feature (as of 3.17.0).** `cost-governance-ready.sh` previously triggered only on a deploy surface (Dockerfile / workflow). A metered LLM CLI or library with no deploy surface silently escaped to N/A. The check now also triggers when the project has a metered-LLM/AI feature: an `evals/` directory, a filled AI System Card (`templates/AI-SYSTEM-CARD-TEMPLATE.md`), or `Agentic: yes` in the project `CLAUDE.md`. This closes the LLM-CLI-with-no-Dockerfile gap. The N/A escape remains valid for genuinely-unmetered projects (offline computation, no LLM calls).
+
 ## The ceiling (honest)
 A green `cost-governance-ready.sh` proves the posture is **declared + attested**, **never** that spend
 was actually capped — that is the platform layer's job, and a Manual row in any audit. The kit's

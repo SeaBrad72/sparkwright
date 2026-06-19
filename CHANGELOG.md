@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.17.0] - 2026-06-19
+
+**MINOR** — batched hardening follow-ups: **secret-write parity + cost-governance metered trigger.** Two tracked follow-ups from H3a and H3b shipped together. Control-plane slice; additive; no control weakened.
+
+### Changed
+- **`guard_check_path` secret-WRITE deny** (`.claude/hooks/guard-core.sh`) — broadened to mirror `guard_check_read`: now enumerates the same `.env.<suffix>` set (`.env*`, `.pem`, `.key`, `id_rsa`, `secrets/`) with the matched template allow-list (`.env.example`/`.sample`/`.template`/`.dist`), closing the read/write parity gap for secret-material enumeration. Regression cases added to `conformance/agent-autonomy.sh`.
+- **`conformance/cost-governance-ready.sh`** — applicability now triggers on a metered-LLM/AI feature (an `evals/` dir, a filled AI System Card, or `Agentic: yes` in the project `CLAUDE.md`) in addition to a deploy surface (Dockerfile/workflow), so a metered LLM CLI with no deploy surface no longer silently escapes to N/A. New selftest fixtures cover the LLM-feature trigger path.
+- **`docs/operations/runtime-guards.md`** · **`docs/operations/cost-governance.md`** · **`docs/ROADMAP-KIT.md`** — follow-up bullets closed; parity and applicability change documented.
+
+### Honest ceiling
+Secret-material parity is specifically about the enumeration in `guard_check_path`/`guard_check_read` — the control-plane read⊊write asymmetry (H3a: `guard_check_read` does not deny control-plane reads) is unchanged. The cost-governance N/A escape remains valid for genuinely-unmetered projects (offline computation, no LLM calls). Plan: docs/superpowers/plans/2026-06-18-batched-followups.md
+
 ## [3.16.0] - 2026-06-18
 
 **MINOR** — H4a of the Tier-4 coverage gaps: **GitLab governance parity (honest-scope, doc-first).** Consolidates the manual wiring for GitLab branch-protection, control-plane-ratification, and DORA into a single adopter guide; locks the guide's completeness with a drift-guard conformance check. **H4 complete (H4a + H4b).** Control-plane slice; additive; no control weakened.
