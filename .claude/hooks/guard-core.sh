@@ -29,6 +29,7 @@ is_control_plane_path() {
     scripts/new-profile.sh|*/scripts/new-profile.sh|\
     scripts/doctor.sh|*/scripts/doctor.sh|\
     scripts/postmortem.sh|*/scripts/postmortem.sh|\
+    scripts/tier-advice.sh|*/scripts/tier-advice.sh|\
     scripts/sparkwright|*/scripts/sparkwright|\
     DEVELOPMENT-STANDARDS.md|*/DEVELOPMENT-STANDARDS.md|\
     DEVELOPMENT-PROCESS.md|*/DEVELOPMENT-PROCESS.md|\

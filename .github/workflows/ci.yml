@@ -149,6 +149,12 @@ jobs:
         run: sh conformance/operate-loop-wired.sh
       - name: Operate-loop-wired self-test
         run: sh conformance/operate-loop-wired.sh --selftest
+      - name: Tier-advice decision view self-test
+        run: sh scripts/tier-advice.sh --selftest
+      - name: Tier-advice-wired regression-lock
+        run: sh conformance/tier-advice-wired.sh
+      - name: Tier-advice-wired self-test
+        run: sh conformance/tier-advice-wired.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)

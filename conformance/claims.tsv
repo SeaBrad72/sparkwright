@@ -13,3 +13,4 @@ supply-chain-verify	GitLab profile tool installs are checksum-verified (no curl-
 gitlab-adoption	GitLab adopter guide covers branch-protection + ratification + DORA and the profile references it	sh conformance/gitlab-adoption-complete.sh
 doctor	sparkwright doctor posture command is wired (dispatcher routes it; --selftest green)	sh conformance/doctor-wired.sh
 operate-loop	postmortem generator/parser is wired (sparkwright postmortem routes; --selftest green)	sh conformance/operate-loop-wired.sh
+tier-advice	tier-advice decision view is wired + honest (dispatcher routes; DORA-not-a-tier-input + asymmetric apply path locked; --selftest green)	sh conformance/tier-advice-wired.sh
