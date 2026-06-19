@@ -3,6 +3,22 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.16.0] - 2026-06-18
+
+**MINOR** — H4a of the Tier-4 coverage gaps: **GitLab governance parity (honest-scope, doc-first).** Consolidates the manual wiring for GitLab branch-protection, control-plane-ratification, and DORA into a single adopter guide; locks the guide's completeness with a drift-guard conformance check. **H4 complete (H4a + H4b).** Control-plane slice; additive; no control weakened.
+
+### Added
+- **`docs/operations/gitlab-adoption.md`** — adopter guide covering three governance areas: (1) branch-protection settings (UI walkthrough for the four recommended rules), (2) control-plane-ratification keystone (MR-approval wired as the non-author-review equivalent via `CODEOWNERS` + a protected approval rule), (3) DORA (pipeline-level instrumentation pattern). Honest ceiling stated: GitLab governance is adopter-owned and UNVERIFIED by the kit's automated conformance; enforcement lives in the adopter's GitLab instance, not in the kit's CI.
+- **`conformance/gitlab-adoption-complete.sh`** — drift-guard: fails if any of the three required sections disappear from `gitlab-adoption.md` or if the GitLab profile's cross-link to the guide is removed. Registered claim → 11 claims total. Selftest: a stub file missing a section fails; the real guide passes.
+
+### Changed
+- **`profiles/typescript-node/ci.gitlab-ci.yml`** (profile note) — now includes a cross-link to `docs/operations/gitlab-adoption.md` for GitLab-specific governance wiring.
+- **`docs/operations/ci-platforms.md`** — cross-link added pointing to `gitlab-adoption.md` for GitLab adopters.
+- **`docs/ROADMAP-KIT.md`** — H4a ✅ shipped 3.16.0; deliberate non-scope decisions recorded; **H4 complete**; next → P3.
+
+### Honest ceiling
+GitLab governance (branch-protection enforcement, MR-approval ratification, DORA metrics) is **adopter-owned / UNVERIFIED** off GitHub. The kit deliberately did NOT build an automated GitLab branch-protection API check (would require a live GitLab instance — untestable = the over-claim trap; also reverses the "out of scope, adopter-owned" decision in `ci-platforms.md`) nor an MR-approval ratification gate (same untestable-without-live-instance reason). Both remain adopter-owned. Design: `docs/superpowers/specs/2026-06-18-h4a-gitlab-governance-parity-design.md`.
+
 ## [3.15.0] - 2026-06-18
 
 **MINOR** — H4b of the Tier-4 coverage gaps: **kit's own tool supply chain (pin + verify).** Sequenced first in H4 (the trust root: a compromised tool can make any gate falsely pass). Corrects the stale "all unpinned/unverified" claim with the verified state and closes the real gaps. **Control-plane slice; additive; no control weakened.**
