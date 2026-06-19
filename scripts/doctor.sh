@@ -24,7 +24,7 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '%s\n' "$out" | grep -q "POSTURE"             || { echo "doctor --selftest: FAIL (no POSTURE section)"; sfail=1; }
   printf '%s\n' "$out" | grep -q "conformance"         || { echo "doctor --selftest: FAIL (no conformance dimension)"; sfail=1; }
   printf '%s\n' "$out" | grep -q "claims"              || { echo "doctor --selftest: FAIL (no claims dimension)"; sfail=1; }
-  printf '%s\n' "$out" | grep -q "git"                 || { echo "doctor --selftest: FAIL (no git dimension)"; sfail=1; }
+  printf '%s\n' "$out" | grep -qE 'git[[:space:]]+(OK|WARN)' || { echo "doctor --selftest: FAIL (no git dimension row)"; sfail=1; }
   printf '%s\n' "$out" | grep -q "Overall:"            || { echo "doctor --selftest: FAIL (no Overall verdict)"; sfail=1; }
   printf '%s\n' "$out" | grep -q "drift-self-check.md" || { echo "doctor --selftest: FAIL (no drift-self-check.md footer)"; sfail=1; }
   [ "$sfail" -eq 0 ] && { echo "doctor --selftest: OK"; exit 0; } || exit 1
@@ -70,7 +70,9 @@ if [ -f "conformance/verify.sh" ]; then
     UNVERIFIED) [ "$REQUIRE" = "1" ] && gate_fail=1 || true ;;
   esac
 else
-  printf '  %-14s N/A (not present)\n' "conformance"
+  printf '  %-14s UNVERIFIED (not present)\n' "conformance"
+  warns=$((warns+1))
+  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
 fi
 
 # 2. claims [GATING]
@@ -83,7 +85,9 @@ if [ -f "conformance/claims-registry.sh" ]; then
   printf '  %-14s %s\n' "claims" "$_cstatus"
   [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
 else
-  printf '  %-14s N/A (not present)\n' "claims"
+  printf '  %-14s UNVERIFIED (not present)\n' "claims"
+  warns=$((warns+1))
+  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
 fi
 
 # 3. git [ADVISORY — WARN-only; never sets gate_fail]
@@ -130,7 +134,7 @@ echo ""
 if [ "$gate_fail" = "1" ]; then
   echo "Overall: FAIL  (a gating dimension failed — fix conformance/claims before shipping)"
 elif [ "$warns" != "0" ]; then
-  echo "Overall: WARN  (gating dimensions pass; git advisory has warnings — review above)"
+  echo "Overall: WARN  (review above — gating dimension(s) unverified or git advisory warnings present)"
 else
   echo "Overall: PASS"
 fi
