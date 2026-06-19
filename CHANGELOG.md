@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.21.0] — 2026-06-19
+
+### Added
+- **Named harness adapters** `codex`, `cursor`, `gemini` — first-class floor-only adapters beyond
+  `generic`, each conformance-locked by `conformance/named-adapters.sh` (claims registry → 15) and
+  declaring its own control surface (`.cursor/rules/`, `GEMINI.md`/`.gemini/`) so the agent-boundary
+  gate protects the union across all harnesses in a shared repo. Floor-only by honest necessity (no
+  third-party native inline guard); live cross-harness behavior is adopter-verified, not maintainer-claimed.
+
+### Changed
+- Corrected the "verified second harness" roadmap wording to the honest maintainer- vs adopter-verified split.
+
 ## [3.20.0] — 2026-06-19
 
 ### Added

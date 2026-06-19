@@ -1,0 +1,31 @@
+{
+  "harness": "cursor",
+  "controlPlanePaths": [
+    ".github/workflows/",
+    "CODEOWNERS",
+    "hooks/pre-push",
+    "scripts/kit-guard",
+    "AGENTS.md",
+    ".cursor/rules/"
+  ],
+  "bindingFiles": [
+    "AGENTS.md"
+  ],
+  "dimensions": {
+    "context-binding": {
+      "level": "floor"
+    },
+    "command-guard": {
+      "level": "floor"
+    },
+    "history-protection": {
+      "level": "floor"
+    },
+    "review-roles": {
+      "level": "floor"
+    },
+    "mcp-gate": {
+      "level": "n-a"
+    }
+  }
+}

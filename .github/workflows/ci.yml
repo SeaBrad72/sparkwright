@@ -35,6 +35,10 @@ jobs:
         run: sh conformance/agent-boundary.sh --selftest
       - name: Harness-adapter conformance self-test (boundary-contract fixtures)
         run: sh conformance/harness-adapter.sh --selftest
+      - name: Named adapters conform (codex/cursor/gemini)
+        run: sh conformance/named-adapters.sh
+      - name: Named-adapters self-test
+        run: sh conformance/named-adapters.sh --selftest
       - name: Harness-adapter real-run (kit dogfoods its own claude-code adapter)
         run: sh conformance/harness-adapter.sh adapters/claude-code
       - name: Harness-adapter real-run — generic floor-only adapter

@@ -2,13 +2,13 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.20.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.21.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 
 It is opinionated about *how to build well with agents* and deliberately neutral about *what you build it with* — both the **stack** and the **AI harness**.
 
-**Harness-neutral.** Claude Code is the default and the reference adapter, but any harness that reads `AGENTS.md` (Codex, Cursor, Copilot…) is supported via the `generic` adapter, and you can BYO with `sh scripts/new-adapter.sh <harness>`. The enforcement floor — the `kit-guard` CLI, the `pre-push` hook, and the `agent-boundary` CI gate — is **maintainer-verified to block destructive and control-plane actions regardless of harness** ([docs/operations/harness-enforcement-evidence.md](docs/operations/harness-enforcement-evidence.md)), and every adapter is held to the boundary contract ([docs/operations/harness-adapters.md](docs/operations/harness-adapters.md)). Driving a specific third-party agent through it is the recommended first real-world validation — not a claim we make for you.
+**Harness-neutral.** Claude Code is the default and the reference adapter, but any harness that reads `AGENTS.md` (Codex, Cursor, Copilot…) is supported via the `generic` adapter, and you can BYO with `sh scripts/new-adapter.sh <harness>`. Named `codex`, `cursor`, and `gemini` adapters ship as curated, conformance-locked starting points. The enforcement floor — the `kit-guard` CLI, the `pre-push` hook, and the `agent-boundary` CI gate — is **maintainer-verified to block destructive and control-plane actions regardless of harness** ([docs/operations/harness-enforcement-evidence.md](docs/operations/harness-enforcement-evidence.md)), and every adapter is held to the boundary contract ([docs/operations/harness-adapters.md](docs/operations/harness-adapters.md)). Driving a specific third-party agent through it is the recommended first real-world validation — not a claim we make for you.
 
 > **Sparkwright is the execution engine** — it takes you from a *Ready* backlog to operating, monitored software, with the guardrails built in. If you already have product + design figured out, drop it in and build: for a service stack, `incept` gives you a runnable starter wired to CI to build on (each profile's `scaffold/README.md` carries the per-stack first-green step). (A discovery front-end — turning raw signals into Ready work — is an optional upstream layer — see **[docs/discovery/discovery-loop.md](docs/discovery/discovery-loop.md)**.)
 
@@ -36,7 +36,7 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
-| **`adapters/`** | Per-harness adapters: `claude-code` (reference) + `generic` (floor-only, for any `AGENTS.md` reader) + `_TEMPLATE` / `new-adapter.sh` to BYO. Boundary contract: [docs/operations/harness-adapters.md](docs/operations/harness-adapters.md). |
+| **`adapters/`** | Per-harness adapters: `claude-code` (reference) + `codex` / `cursor` / `gemini` (named, conformance-locked floor adapters) + `generic` (floor-only, for any `AGENTS.md` reader) + `_TEMPLATE` / `new-adapter.sh` to BYO. Boundary contract: [docs/operations/harness-adapters.md](docs/operations/harness-adapters.md). |
 | **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `POSTMORTEM`, `BIA`, … (~24 in all — see [`templates/`](templates/)). |
 | **`docs/`** | `ADR-000-EXAMPLE.md`; `enterprise/` (compliance addendum), `work-tracking/` (backlog adapters), `adoption/` (brownfield), `operations/` (progressive delivery · resilience · DORA), `continuity/` (DR drill · BIA). |
 

@@ -13,8 +13,8 @@ The kit asserts that the destructive-action deny-matrix enforces equally for any
 The floor blocks for any harness because every surface operates on **the invoking shell call** — not on which runtime issued it. A command piped through `kit-guard`, a push from any git client, and a PR diff in any CI system all hit the same deny-matrix (`guard-core.sh`) through the same interface. No runtime-specific wiring is required for the floor to hold.
 
 This is the maintainer-verified half of the split bar:
-- **Maintainer-verified (this doc):** the three surfaces deny, deterministically, for any caller — proven by CI-locked selftests.
-- **Adopter-verified (live demo):** a specific third-party harness was driven through the surfaces end-to-end and the floor blocked as expected — proven by running the harness in a real repo.
+- **Maintainer-verified (this doc):** the three surfaces deny, deterministically, for any caller — proven by CI-locked selftests. The named `codex`, `cursor`, and `gemini` adapters' **floor-conformance** is additionally maintainer-verified via `conformance/named-adapters.sh` (claims registry → 15): each adapter declares its own control surface (`.cursor/rules/`, `GEMINI.md`/`.gemini/`) so the `agent-boundary` gate protects the union across all harnesses in a shared repo.
+- **Adopter-verified (live demo):** a specific third-party harness was driven through the surfaces end-to-end and the floor blocked as expected — proven by running the harness in a real repo. **This half stays adopter-owned — it is not a future maintainer-verified target.** No third-party harness has a native inline guard, so the kit cannot maintainer-claim a live cross-harness session; the live "this harness blocked a bad command" demo is the adopter's confirmatory run, folded into the pre-release living-reference-project validation.
 
 ---
 
