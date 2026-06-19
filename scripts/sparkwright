@@ -3,6 +3,7 @@ set -eu
 here=$(dirname "$0")
 case "${1:-}" in
   doctor) shift; exec sh "$here/doctor.sh" "$@" ;;
-  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor" >&2; exit 2 ;;
-  *) echo "sparkwright: unknown command '$1'; commands: doctor" >&2; exit 2 ;;
+  postmortem) shift; exec sh "$here/postmortem.sh" "$@" ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem" >&2; exit 2 ;;
 esac

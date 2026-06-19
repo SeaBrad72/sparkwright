@@ -12,3 +12,4 @@ cost-governance	a declared+attested cost-governance posture is verifiable (budge
 supply-chain-verify	GitLab profile tool installs are checksum-verified (no curl-pipe-to-shell)	sh conformance/supply-chain-verify.sh
 gitlab-adoption	GitLab adopter guide covers branch-protection + ratification + DORA and the profile references it	sh conformance/gitlab-adoption-complete.sh
 doctor	sparkwright doctor posture command is wired (dispatcher routes it; --selftest green)	sh conformance/doctor-wired.sh
+operate-loop	postmortem generator/parser is wired (sparkwright postmortem routes; --selftest green)	sh conformance/operate-loop-wired.sh

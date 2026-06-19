@@ -3,6 +3,24 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.19.0] - 2026-06-19
+
+**MINOR** — operate-loop Slice 1: `sparkwright postmortem` stub generator + action-item parser + `docs/operations/operate-loop.md` reference. Control-plane slice; additive; no control weakened.
+
+### Added
+- **`scripts/postmortem.sh`** (`sparkwright postmortem`) — two modes: `new --id --severity --title [--commander --date --out]` scaffolds a postmortem stub from incident metadata (reads `templates/POSTMORTEM-TEMPLATE.md`, substitutes header placeholders, writes `postmortems/<ID>.md`; no-clobber); `to-backlog <file>` parses the `## 7. Action items` table and emits backlog Ready-row stubs to stdout (skips header, separator, blank, and placeholder rows). `--selftest` (T1–T6): row parsing, ID presence, placeholder-skip, no-clobber, missing-file error, `&`/`/` literal preservation. POSIX sh; dash-clean; awk-based substitution avoids sed-delimiter collisions.
+- **`docs/operations/operate-loop.md`** — the reference: the closed loop (incident → `sparkwright postmortem new` → human-authored analysis → `to-backlog` → human review + tracker actuation); both modes explained; known limitation (literal `|` in action cell truncates); governance ties to `DEVELOPMENT-STANDARDS.md` §15, `CLAUDE.md` principle 6, `DEVELOPMENT-PROCESS.md` §6/§15; honest ceiling stated; Slice 2 context.
+- **`conformance/operate-loop-wired.sh`** — regression-lock: fails CI if `scripts/postmortem.sh` is removed or `--selftest` stops passing; verifies the dispatcher routes `sparkwright postmortem`. Registered `operate-loop` claim → **13 claims total**.
+
+### Changed
+- **`scripts/sparkwright`** (dispatcher) — gains the `postmortem` route (`sparkwright postmortem` → `postmortem.sh`).
+- **`scripts/postmortem.sh`** — added to the guard's control-plane named-set; an unratified edit is denied by the guard and flagged by the `agent-boundary` CI gate.
+- **CI** (`.github/workflows/ci.yml`) — wires `postmortem.sh --selftest` + `conformance/operate-loop-wired.sh` into the conformance sweep.
+- **`docs/ROADMAP-KIT.md`** — "Close the operate loop" bullet split: Slice 1 marked ✅ shipped 3.19.0 with the honest scope (generate + parse the mechanizable edges; human-ratified; never-actuate); Slice 2 (DORA + scorecard → tier RECOMMENDATION, human-ratified apply) noted as remaining; "auto-postmortem stub → backlog item" wording corrected to the honest state.
+
+### Honest ceiling
+Scaffolds + parses the mechanizable edges of the postmortem lifecycle. No incident auto-detection (the kit's never-actuate principle); no live-tracker auto-creation (human reviews the emitted stubs and actuates in their tracker). The judgment work — analysis, ratification, tracker actuation — is human-owned. Closes operate-loop Slice 1 of 2. Control-plane protection resists the agent it governs; ratification required to change governance tooling. Plan: docs/superpowers/plans/2026-06-19-operate-loop-incident-postmortem-backlog.md
+
 ## [3.18.0] - 2026-06-19
 
 **MINOR** — P3 `sparkwright doctor`: adopter-facing POSTURE command + `doctor.md` reference + H3c fold-in closed. Control-plane slice; additive; no control weakened.

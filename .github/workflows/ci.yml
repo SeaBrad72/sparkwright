@@ -143,6 +143,12 @@ jobs:
         run: sh conformance/doctor-wired.sh
       - name: Doctor-wired self-test
         run: sh conformance/doctor-wired.sh --selftest
+      - name: Postmortem self-test (operate-loop generator/parser)
+        run: sh scripts/postmortem.sh --selftest
+      - name: Operate-loop-wired regression-lock
+        run: sh conformance/operate-loop-wired.sh
+      - name: Operate-loop-wired self-test
+        run: sh conformance/operate-loop-wired.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)
