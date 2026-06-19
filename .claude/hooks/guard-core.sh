@@ -341,9 +341,11 @@ guard_check_path() {
       esac
     fi
   fi
-  [ "$base" = ".env.example" ] && return 0
+  case "$base" in
+    .env.example|.env.sample|.env.template|.env.dist) return 0 ;;
+  esac
   case "$fp" in
-    *.env|*/.env|*.env.local|*.env.production|*.env.development|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*)
+    *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
       printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1 ;;
   esac
   return 0

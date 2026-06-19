@@ -7,7 +7,8 @@
 # verifies the posture is DECLARED + ATTESTED, mirroring containment-ready.sh / egress-policy.sh.
 #
 # ONE aspect, keyed on a RUNBOOK line; applicable when the project has a deploy/integration surface
-# (where metered LLM/external spend lands):
+# (where metered LLM/external spend lands) OR uses a metered LLM/AI feature (evals dir, AI System
+# Card, or an Agentic:yes declaration) — even a CLI-only project that makes metered LLM calls:
 #   Cost governance:  per-run budget + platform spend-cap (LLM/metered-API spend bounded)
 #
 # THREE-STATE:
@@ -39,7 +40,24 @@ for a in "$@"; do
   esac
 done
 
+# Metered-LLM / AI-feature surface? Returns 0 (true) if any AI-feature signal exists:
+#   - an evals/ directory (metered evaluation runs)
+#   - a filled AI System Card (AI-SYSTEM-CARD.md)
+#   - a RUNBOOK.md or CLAUDE.md line matching 'Agentic: yes' (case-insensitive)
+has_ai_surface() {
+  _d="$1"
+  [ -d "$_d/evals" ] && return 0
+  [ -f "$_d/AI-SYSTEM-CARD.md" ] && return 0
+  for _f in "$_d/RUNBOOK.md" "$_d/CLAUDE.md"; do
+    if [ -f "$_f" ]; then
+      grep -iqE '^[-*[:space:]]*Agentic:[-*[:space:]]*yes' "$_f" && return 0
+    fi
+  done
+  return 1
+}
+
 # Deploy/integration surface? (Dockerfile or any GitHub workflow — where metered spend lands.)
+# Also triggers for any metered-LLM / AI feature (has_ai_surface).
 has_surface() {
   _d="$1"
   [ -f "$_d/Dockerfile" ] && return 0
@@ -48,6 +66,7 @@ has_surface() {
       [ -f "$wf" ] && return 0
     done
   fi
+  if has_ai_surface "$_d"; then return 0; fi
   return 1
 }
 
@@ -72,7 +91,7 @@ classify_aspect() {
 check_dir() {
   dir="$1"
   if ! has_surface "$dir"; then
-    echo "N/A: $dir has no deploy/integration surface (no Dockerfile / GitHub workflow) — no metered LLM/external spend to govern"
+    echo "N/A: $dir has no deploy/integration surface and no metered-LLM/AI feature (no Dockerfile / GitHub workflow / evals dir / AI System Card / Agentic:yes) — no metered LLM/external spend to govern"
     return 0
   fi
   rb="$dir/RUNBOOK.md"
@@ -86,7 +105,7 @@ check_dir() {
       echo "cost-governance-ready: OK — Cost governance DECLARED + ATTESTED. NOTE: does NOT prove spend was actually capped (the cap is platform-owned — Anthropic usage limits / harness budget; docs/operations/cost-governance.md)."
       return 0 ;;
     FAIL)
-      echo "FAIL: $dir has a deploy surface but no Cost-governance posture — declare a per-run budget + platform spend-cap (or N/A with reason) per docs/operations/cost-governance.md"
+      echo "FAIL: $dir has a deploy/integration surface or metered-LLM/AI feature but no Cost-governance posture — declare a per-run budget + platform spend-cap (or N/A with reason) per docs/operations/cost-governance.md"
       return 1 ;;
     UNVERIFIED)
       msg="$dir declares Cost governance but does not ATTEST enforcement (need 'enforced: <date>' on the line)"
@@ -133,8 +152,40 @@ selftest() {
 
   expect "declared-not-attested + require -> FAIL" "$base/unv-placeholder" 1 1
 
+  # --- New AI-surface fixtures ---
+
+  # evals/ dir only — no Dockerfile/workflow, no posture → APPLICABLE → FAIL (exit 1)
+  d="$base/ai-evals-noposture"; mkdir -p "$d/evals"
+  printf '# a CLI LLM tool\n' > "$d/README.md"
+  expect "evals-only, no posture -> FAIL" "$d" 1
+
+  # evals/ dir + RUNBOOK with declared+attested posture → PASS (exit 0)
+  d="$base/ai-evals-pass"; mkdir -p "$d/evals"
+  printf '# RUNBOOK\n## Cost\n%s\n' "$L" > "$d/RUNBOOK.md"
+  expect "evals-only + declared+attested -> PASS" "$d" 0
+
+  # AI-SYSTEM-CARD.md only — no other surface, no posture → APPLICABLE → FAIL (exit 1)
+  d="$base/ai-card-noposture"; mkdir -p "$d"
+  printf '# AI System Card\n' > "$d/AI-SYSTEM-CARD.md"
+  expect "AI-SYSTEM-CARD only, no posture -> FAIL" "$d" 1
+
+  # evals/ dir + N/A escape → PASS (exit 0) — N/A path still reachable
+  d="$base/ai-evals-na"; mkdir -p "$d/evals"
+  printf '# RUNBOOK\n## Cost\n- Cost governance: N/A — no metered spend (evals use local models)\n' > "$d/RUNBOOK.md"
+  expect "evals-only + N/A escape -> PASS" "$d" 0
+
+  # Agentic:yes in CLAUDE.md — no other surface, no posture → APPLICABLE → FAIL (exit 1)
+  d="$base/ai-agentic-flag"; mkdir -p "$d"
+  printf '# CLAUDE.md\nAgentic: yes\n' > "$d/CLAUDE.md"
+  expect "Agentic:yes in CLAUDE.md, no posture -> FAIL" "$d" 1
+
+  # Bulleted/bold form '- **Agentic:** yes' in CLAUDE.md — no other surface, no posture → APPLICABLE → FAIL
+  d="$base/ai-agentic-bulleted"; mkdir -p "$d"
+  printf '# CLAUDE.md\n- **Agentic:** yes\n' > "$d/CLAUDE.md"
+  expect "bulleted Agentic:**yes in CLAUDE.md, no posture -> FAIL" "$d" 1
+
   if [ "$st_fail" -ne 0 ]; then echo "cost-governance-ready --selftest: FAIL" >&2; return 1; fi
-  echo "cost-governance-ready --selftest: OK (na/bare-fail/pass/placeholder-unv/na-pass/substring-fail/escalation all behaved; fixtures left in $base)"
+  echo "cost-governance-ready --selftest: OK (na/bare-fail/pass/placeholder-unv/na-pass/substring-fail/escalation all behaved; ai-evals-noposture/ai-evals-pass/ai-card-noposture/ai-evals-na/ai-agentic-flag/ai-agentic-bulleted all behaved; fixtures left in $base)"
   return 0
 }
 

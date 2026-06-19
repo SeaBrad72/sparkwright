@@ -286,6 +286,16 @@ assert_allow "ls -la .env metadata" '{"tool_name":"Bash","tool_input":{"command"
 assert_allow "Read .env.example"    '{"tool_name":"Read","tool_input":{"file_path":".env.example"}}'
 assert_allow "Read source"          '{"tool_name":"Read","tool_input":{"file_path":"src/app.ts"}}'
 assert_allow "Read control-plane"   '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/guard-core.sh"}}'
+
+# --- H3b: secret-WRITE/READ parity — write-deny must mirror read-deny (must DENY) ---
+assert_deny  "Write .env.staging"  '{"tool_name":"Write","tool_input":{"file_path":".env.staging","content":"SECRET=1"}}'
+assert_deny  "Write .env.test"     '{"tool_name":"Write","tool_input":{"file_path":".env.test","content":"SECRET=1"}}'
+assert_deny  "Write .env.foo"      '{"tool_name":"Write","tool_input":{"file_path":".env.foo","content":"SECRET=1"}}'
+assert_deny  "Edit .env.staging"   '{"tool_name":"Edit","tool_input":{"file_path":".env.staging","old_string":"A","new_string":"B"}}'
+# H3b allows: template env files must still be writable (no over-block)
+assert_allow "Write .env.sample"   '{"tool_name":"Write","tool_input":{"file_path":".env.sample","content":"KEY="}}'
+assert_allow "Write .env.template" '{"tool_name":"Write","tool_input":{"file_path":".env.template","content":"KEY="}}'
+assert_allow "Write .env.dist"     '{"tool_name":"Write","tool_input":{"file_path":".env.dist","content":"KEY="}}'
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0
