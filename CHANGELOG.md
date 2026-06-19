@@ -3,6 +3,24 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.18.0] - 2026-06-19
+
+**MINOR** — P3 `sparkwright doctor`: adopter-facing POSTURE command + `doctor.md` reference + H3c fold-in closed. Control-plane slice; additive; no control weakened.
+
+### Added
+- **`scripts/doctor.sh`** — the posture command. Composes `conformance/verify.sh` (GATING) + `conformance/claims-registry.sh` (GATING) + an inline git ground-truth dimension (ADVISORY/WARN-only) into one sweep. `--full` appends `dora.sh` + `agent-scorecard.sh` as an INFORMATIONAL metrics section (labelled *"does not affect exit"*; never changes exit code). `--require` / `$CI` auto-tightens UNVERIFIED to exit 1. Missing composed script → UNVERIFIED, never a false PASS. `--selftest` stubs the composed commands and verifies render contract + exit-code logic.
+- **`scripts/sparkwright`** — thin dispatcher (`sparkwright doctor` → `doctor.sh`). Entry point for adopters; built for future subcommands.
+- **`docs/operations/doctor.md`** — the reference: what doctor composes; the posture (gating) vs metrics (informational, never gates) split and why (DORA and agentic-ops are measurement tools — metrics measure, they don't gate); git ground-truth as an advisory dimension; graceful degradation (missing check → UNVERIFIED/N/A, never a false pass); invocation and flags; honest ceiling (automates D/E, not semantic drift; green doctor ≠ correct project); control-plane protection.
+- **`conformance/doctor-wired.sh`** — regression-lock: fails CI if `scripts/doctor.sh` or `scripts/sparkwright` is removed or `--selftest` stops passing. Registered `doctor` claim → **12 claims total**.
+
+### Changed
+- **`scripts/doctor.sh` + `scripts/sparkwright`** — added to the guard's control-plane named-set; an unratified edit is denied by the guard and flagged by the `agent-boundary` CI gate.
+- **`docs/operations/drift-self-check.md`** — the "folds into P3 / planned to automate" note (H3c) closed: the mechanizable axes (D claim-integrity, E git ground-truth) are now automated by `sparkwright doctor`; link added. Semantic axes (A/B/C + judgment half of D) remain agent/human.
+- **`docs/ROADMAP-KIT.md`** — `sparkwright doctor` P3 bullet marked ✅ shipped 3.18.0; doctor's delivered scope described; 12-claim total recorded.
+
+### Honest ceiling
+Posture dimensions gate; metrics (DORA, agent-scorecard) are informational and never gate — the principle is "metrics measure, they don't gate." Doctor automates the mechanizable drift axes (D claim-integrity, E git ground-truth); it does NOT detect semantic drift (intent, scope, overclaim judgment) — that remains the agent/human checkpoint in `drift-self-check.md`. A green `sparkwright doctor` does not mean "the project is correct." Control-plane protection resists the agent it governs; ratification required to change governance tooling. Plan: docs/superpowers/plans/2026-06-19-p3-sparkwright-doctor.md
+
 ## [3.17.0] - 2026-06-19
 
 **MINOR** — batched hardening follow-ups: **secret-write parity + cost-governance metered trigger.** Two tracked follow-ups from H3a and H3b shipped together. Control-plane slice; additive; no control weakened.

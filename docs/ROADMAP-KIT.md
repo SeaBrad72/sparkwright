@@ -111,7 +111,7 @@ Structural drift is caught continuously (badge/links/coverage-meta); SEMANTIC dr
 
 ### P3 — Growth & verification
 - **Verified second harness (Codex) + first-class adapters** — flip the split bar's process half to *maintainer-verified*; ship `codex`/`cursor`/`gemini` adapters beyond `generic`.
-- **`sparkwright doctor`** — an adopter posture command composing the conformance + readiness sweep (doubles as the adopter-facing drift detector; overlaps D1). **Absorbs the mechanizable half of H3c's drift self-check** (`docs/operations/drift-self-check.md`): re-run conformance · re-check the claims-registry · re-establish git ground-truth — automating axes D/E as a one-command sweep, while the semantic axes (intent/scope, overclaim judgment) stay agent/human.
+- ✅ **`sparkwright doctor`** *(shipped 3.18.0)* — adopter-facing POSTURE command that composes `conformance/verify.sh` (GATING) + `conformance/claims-registry.sh` (GATING) + an inline git ground-truth dimension (ADVISORY/WARN-only) into one sweep; `--full` adds `dora.sh` + `agent-scorecard.sh` as an INFORMATIONAL metrics section (never affects exit code). **Absorbs the mechanizable half of H3c's drift self-check** (axes D claim-integrity + E git ground-truth are now automated; the semantic axes stay agent/human). Protected in the guard's control-plane named-set. Registered `doctor` claim → **12 claims total**. `conformance/doctor-wired.sh` regression-locks the selftest in CI.
 - **Close the operate loop** — incident → auto-postmortem stub → backlog item; DORA + `agent-scorecard` → autonomy-tier adjustment.
 - **Broaden the front door** — more archetype scaffolds + deeper discovery.
 
@@ -122,4 +122,4 @@ Structural drift is caught continuously (badge/links/coverage-meta); SEMANTIC dr
 
 ---
 
-**Last Updated:** 2026-06-19
+**Last Updated:** 2026-06-19 (3.18.0)

@@ -137,6 +137,12 @@ jobs:
         run: sh conformance/agentops-ready.sh --selftest
       - name: DORA collector smoke (executes + degrades cleanly)
         run: sh scripts/dora.sh --selftest
+      - name: Doctor posture self-test (resolves UNWIRED:doctor.sh)
+        run: sh scripts/doctor.sh --selftest
+      - name: Doctor-wired regression-lock
+        run: sh conformance/doctor-wired.sh
+      - name: Doctor-wired self-test
+        run: sh conformance/doctor-wired.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)

@@ -56,10 +56,13 @@ self-attestation**, i.e. ceremony. So this reference ships **no `*-ready.sh`** a
 claim**: the honest enforcement is the practice plus the real downstream gates, not a green check that
 proves nothing.
 
-## Roadmap — folds into `sparkwright doctor` (P3)
+## Mechanizable axes now automated by `sparkwright doctor`
 
 The **mechanizable** axes (E and part of D — re-run conformance, re-check the claims-registry,
-re-establish git ground truth) are what P3's `sparkwright doctor` is *planned* to automate as a
-one-command posture sweep (see [`../ROADMAP-KIT.md`](../ROADMAP-KIT.md)) — unbuilt today. The
-**semantic** axes (A/B intent & scope, D's overclaim judgment) stay agent/human judgment regardless.
-This reference ships the practice now; the mechanizable half waits on `doctor`.
+re-establish git ground truth) are **now automated** by [`sparkwright doctor`](./doctor.md)
+(shipped 3.18.0). Run `sh scripts/sparkwright doctor` to execute the one-command posture sweep.
+
+The **semantic** axes (A/B intent & scope, C standards, D's overclaim judgment) remain agent/human
+judgment — a script cannot read intent. Run the full checklist above before requesting review,
+before a release, and at each long-session boundary. A green `sparkwright doctor` means the
+mechanizable checks pass; it does not substitute for axes A, B, C, or the judgment half of D.

@@ -11,3 +11,4 @@ drift-watch	a scheduled drift-watch re-runs the aggregate + claims + links	sh co
 cost-governance	a declared+attested cost-governance posture is verifiable (budget + platform cap)	sh conformance/cost-governance-ready.sh --selftest
 supply-chain-verify	GitLab profile tool installs are checksum-verified (no curl-pipe-to-shell)	sh conformance/supply-chain-verify.sh
 gitlab-adoption	GitLab adopter guide covers branch-protection + ratification + DORA and the profile references it	sh conformance/gitlab-adoption-complete.sh
+doctor	sparkwright doctor posture command is wired (dispatcher routes it; --selftest green)	sh conformance/doctor-wired.sh
