@@ -63,7 +63,8 @@ In short: **green proves controls hold and safety is documented; it does not pro
 | `agents-brief.sh` | script | Slice 9k — `AGENTS.md` exists, points at the canonical docs, and stays within the brief line-bound | CI |
 | `conditional-gates.sh` | script | SP-1 / Slice 9j — §7 names the conditional gates (a11y / load / eval / SAST / license), trigger-bound not universal; drift-guard | CI |
 | `../scripts/license-check.sh` | script | SP-1 — stack-neutral SBOM license-policy gate; flags denylisted copyleft + counts undetermined; `--selftest` regression-locked | CI (`--selftest`) / gate-license |
-| `action-pinning.sh` | script | Slice 9j — the canonical reference pipeline SHA-pins every `uses:` (the reference satisfies its own pinning contract) | CI |
+| `action-pinning.sh` | script | Slice 9j / H4b — SHA-pins every `uses:` across the kit's own `.github/workflows/` AND the canonical reference pipeline (the kit pins actions everywhere it runs them) | CI |
+| `supply-chain-verify.sh` | script | H4b — the GitLab profile's by-download tools (syft/cosign/gitleaks) are checksum-verified before exec (no curl-pipe-to-shell); regression-lock. Pairs with `../docs/operations/tool-supply-chain.md` | CI |
 | `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |
 | `tracker-contract.sh` | script | Slice 9h — a Jira instance satisfies the §6 work-item contract (six states + Size/Risk fields, live); three-state (UNVERIFIED without creds); the Only-Assignee claim is attested | CI (`--selftest`) / adopter (live) |
 | `doc-budget.sh` | script | Slice 9k-b — the core governing docs stay within their post-trim line budget (no silent re-bloat); budgets raised only by a ratified PR | CI |

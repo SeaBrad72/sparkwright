@@ -77,10 +77,14 @@ jobs:
         run: sh conformance/conditional-gates.sh
       - name: Conditional-gates self-test
         run: sh conformance/conditional-gates.sh --selftest
-      - name: Reference pipeline pins every action to a SHA
+      - name: Kit + reference pipelines pin every action to a SHA
         run: sh conformance/action-pinning.sh
       - name: Action-pinning self-test
         run: sh conformance/action-pinning.sh --selftest
+      - name: Supply-chain tool verification (GitLab profile installs are checksum-verified; H4b)
+        run: sh conformance/supply-chain-verify.sh
+      - name: Supply-chain-verify self-test
+        run: sh conformance/supply-chain-verify.sh --selftest
       - name: MCP capability gate classification
         run: sh conformance/mcp-policy.sh
       - name: Tracker-contract self-test (Jira §6 verifier logic)

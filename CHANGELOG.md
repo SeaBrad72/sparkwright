@@ -3,6 +3,22 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.0] - 2026-06-18
+
+**MINOR** — H4b of the Tier-4 coverage gaps: **kit's own tool supply chain (pin + verify).** Sequenced first in H4 (the trust root: a compromised tool can make any gate falsely pass). Corrects the stale "all unpinned/unverified" claim with the verified state and closes the real gaps. **Control-plane slice; additive; no control weakened.**
+
+### Added
+- **`conformance/supply-chain-verify.sh`** — a regression-lock: fails CI if the GitLab profile's tool installs reintroduce a `curl … | sh` pipe-to-shell or drop a `sha256sum -c` verify. Selftest (a tampered `curl|sh` fixture fails; the real profile passes); registered as a `supply-chain-verify` claim (+ `REQUIRED_IDS`), CI-wired, indexed in `conformance/README.md`.
+- **`docs/operations/tool-supply-chain.md`** — the kit's tool trust model across three classes (SHA-pinned Actions · checksum-verified profile downloads · runner-provided tools) + the honest ceiling.
+
+### Changed
+- **`conformance/action-pinning.sh`** — now enforces SHA-pins across the kit's **own** `.github/workflows/*.yml` in addition to the canonical profile reference (closes the D1b tracked follow-up; the kit's own 4 pins were correct-but-unenforced). The `action-pinning` claim description updated accordingly.
+- **`profiles/typescript-node/ci.gitlab-ci.yml`** — the syft/cosign/gitleaks installs now download each pinned version's published `*_checksums.txt` and `sha256sum -c` before exec (fail-closed via `test -s`), replacing the prior `curl … | sh`-from-`main` (syft) and no-checksum binary downloads. HARDENING header updated to the verified state.
+- **`docs/ROADMAP-KIT.md`** — H4b ✅; H4a reframed to honest-scope + verifiable subset; the stale "unpinned/unverified" H4 text corrected.
+
+### Honest ceiling
+A green `action-pinning.sh` + `supply-chain-verify.sh` proves SHA-pinned Actions (kit + profile) and checksum-verified profile downloads against each pinned version's **published manifest** — **not** upstream-release integrity (the next tier is keyless cosign verify of the checksums `.sig`) nor the runner base image (`jq`/`gh`/`shellcheck` root in `ubuntu-latest`, platform-owned, out of scope — the same "enforcement is platform-owned" boundary as containment/cost-governance). Design: `docs/superpowers/specs/2026-06-18-h4b-tool-supply-chain-design.md`.
+
 ## [3.14.0] - 2026-06-18
 
 **MINOR** — H3c of the Tier-3 agentic-risk hardening (**H3 complete**): **long-session drift self-check.** The agent's in-loop re-check *during* a long build — before any gate sees the drift — institutionalizing the verify-before-build pass that repeatedly caught this kit's own roadmap/docs over-promising. **Scope = Hybrid:** ships the **practice** now (docs-only); the **tooling** half folds into P3's `sparkwright doctor`. **Docs-only slice; agent-editable; no control-plane, no conformance gate, no control weakened.**

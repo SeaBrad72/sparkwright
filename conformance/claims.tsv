@@ -4,8 +4,9 @@ badge-version	README version badge == VERSION	sh conformance/badge-version.sh
 conformance-ci-wired	every selftest-capable check is wired into CI	sh conformance/ci-selftest-coverage.sh
 doc-budget	core-3 governing docs within their line budget	sh conformance/doc-budget.sh
 guard-single-source	one deny-matrix, no forked copy (every consumer sources guard-core)	sh conformance/guard-core-sourced.sh
-action-pinning	all third-party GitHub Actions are SHA-pinned	sh conformance/action-pinning.sh
+action-pinning	all third-party GitHub Actions are SHA-pinned (kit workflows + canonical reference)	sh conformance/action-pinning.sh
 security-policy	a real SECURITY.md coordinated-disclosure policy ships	sh conformance/security-policy.sh
 gate-counts	"seven required" + "five conditional" gate words == the enumerated gates (§14)	sh conformance/claim-gate-counts.sh
 drift-watch	a scheduled drift-watch re-runs the aggregate + claims + links	sh conformance/drift-watch-wired.sh
 cost-governance	a declared+attested cost-governance posture is verifiable (budget + platform cap)	sh conformance/cost-governance-ready.sh --selftest
+supply-chain-verify	GitLab profile tool installs are checksum-verified (no curl-pipe-to-shell)	sh conformance/supply-chain-verify.sh

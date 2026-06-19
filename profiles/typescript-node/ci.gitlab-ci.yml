@@ -13,11 +13,14 @@
 # above are fully present; the governance gate is N/A here pending GitLab parity, tracked as H4 in
 # docs/ROADMAP-KIT.md.
 #
-# HARDENING (do before production):
-#  - Supply-chain tools are PINNED to the versions in `variables:` (not `latest`). Bump
-#    deliberately, and verify a published checksum/signature before exec — or vendor the
-#    tools through your package registry. A floating `latest` lets a moved release silently
-#    change what runs inside your supply-chain gates.
+# HARDENING:
+#  - Supply-chain tools are PINNED to the versions in `variables:` (not `latest`) AND
+#    checksum-verified before exec: each install downloads the release's published
+#    `*_checksums.txt` and runs `sha256sum -c` (fail-closed via `test -s`). This defeats a
+#    moved tag, MITM, and the prior `curl … | sh`-from-`main` pattern. Honest ceiling: a
+#    fully-compromised upstream release (binary + checksums both swapped) is the residual —
+#    the next tier is upstream signing (keyless cosign verify of the checksums `.sig`). See
+#    docs/operations/tool-supply-chain.md. Bump versions deliberately.
 #  - Prefer the GitLab-native security templates named in the comments below at scale.
 #  - OIDC (`id_tokens`) is least-privilege: SIGSTORE_ID_TOKEN is requested only by the
 #    provenance job. On self-managed runners, wire keyless cosign to your IdP.
@@ -80,7 +83,20 @@ gate-secret-scan:
   stage: verify
   needs: []
   script:
-    - 'command -v gitleaks >/dev/null 2>&1 || curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks'
+    # Verified install: download the pinned release + its published checksums file, then
+    # sha256sum -c before exec. `test -s` fails closed if the artifact line is absent (wrong
+    # name/version) so a missing checksum never silently skips verification. See the honest
+    # ceiling in docs/operations/tool-supply-chain.md.
+    - |
+      set -eu
+      if ! command -v gitleaks >/dev/null 2>&1; then
+        curl -sSfL -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+        curl -sSfL -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+        grep "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" > sha.txt
+        test -s sha.txt
+        sha256sum -c sha.txt
+        tar -xz -C /usr/local/bin -f "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
+      fi
     - gitleaks detect --no-banner --redact
 
 # Dependency vulnerability scan. GitLab-native alternative: the Dependency-Scanning template.
@@ -94,7 +110,19 @@ gate-sbom:
   stage: supply-chain
   needs: [gate-build]
   script:
-    - 'command -v syft >/dev/null 2>&1 || curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "v${SYFT_VERSION}"'
+    # Verified install (replaces the prior `curl … | sh` from the install script on `main`, which
+    # piped an unpinned, unverified script to a shell): download the pinned release + its published
+    # checksums, sha256sum -c before exec. See docs/operations/tool-supply-chain.md.
+    - |
+      set -eu
+      if ! command -v syft >/dev/null 2>&1; then
+        curl -sSfL -O "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+        curl -sSfL -O "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_checksums.txt"
+        grep "syft_${SYFT_VERSION}_linux_amd64.tar.gz$" "syft_${SYFT_VERSION}_checksums.txt" > sha.txt
+        test -s sha.txt
+        sha256sum -c sha.txt
+        tar -xz -C /usr/local/bin -f "syft_${SYFT_VERSION}_linux_amd64.tar.gz" syft
+      fi
     - syft dir:. -o cyclonedx-json=sbom.cdx.json
   artifacts:
     paths: [sbom.cdx.json]
@@ -128,7 +156,20 @@ gate-provenance:
     SIGSTORE_ID_TOKEN:
       aud: sigstore
   script:
-    - 'command -v cosign >/dev/null 2>&1 || { curl -sSfL -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" && chmod +x /usr/local/bin/cosign; }'
+    # Verified install: download the pinned cosign binary + its published checksums, sha256sum -c
+    # before exec (two-space + end anchor matches the exact filename, never a .sig/.sbom sibling).
+    # Honest ceiling (upstream-release compromise; keyless verify of the checksums .sig is the next
+    # tier): docs/operations/tool-supply-chain.md.
+    - |
+      set -eu
+      if ! command -v cosign >/dev/null 2>&1; then
+        curl -sSfL -O "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64"
+        curl -sSfL -O "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_checksums.txt"
+        grep "  cosign-linux-amd64$" cosign_checksums.txt > sha.txt
+        test -s sha.txt
+        sha256sum -c sha.txt
+        install -m 0755 cosign-linux-amd64 /usr/local/bin/cosign
+      fi
     - tar -czf build-artifact.tgz dist/          # single subject blob = the build output
     - cosign attest-blob --yes --type cyclonedx --predicate sbom.cdx.json --bundle provenance.bundle build-artifact.tgz
   artifacts:
