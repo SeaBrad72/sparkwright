@@ -67,6 +67,10 @@ Two helper scripts call the **GitHub API** (`gh`) directly. They are honest abou
 
 This is the same honesty discipline as the three-state conformance model (`conformance/verify.sh`): **green ≠ verified** — an unverifiable control reports UNVERIFIED, never a silent pass. Porting these two scripts to GitLab/ADO APIs is deliberately out of scope (adopter-owned, named here) rather than faked.
 
+For the full GitLab adopter guide — branch protection wiring, control-plane ratification (the
+keystone gap: the `gate-agent-boundary` merge-gate has no kit-shipped GitLab equivalent), and
+DORA derivation — see [`gitlab-adoption.md`](gitlab-adoption.md).
+
 ## See also
 - `DEVELOPMENT-STANDARDS.md` §14 — the gate contract and CI security hardening (two-job OIDC split).
 - `conformance/ci-gates.sh` — the verifier; `conformance/README.md` — the conformance index.

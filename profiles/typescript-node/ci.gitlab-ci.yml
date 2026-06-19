@@ -10,8 +10,9 @@
 #
 # NOTE (H1): this GitLab reference does NOT yet carry the `gate-agent-boundary` §13 control-plane
 # ratification gate that profiles/typescript-node/ci.yml (GitHub) has. The 8 required BUILD gates
-# above are fully present; the governance gate is N/A here pending GitLab parity, tracked as H4 in
-# docs/ROADMAP-KIT.md.
+# above are fully present; the governance gate is N/A here (no kit-shipped GitLab equivalent —
+# adopter-owned). Wire it manually via a GitLab MR approval rule + CODEOWNERS scoped to the
+# control-plane paths: see docs/operations/gitlab-adoption.md §"Control-plane ratification".
 #
 # HARDENING:
 #  - Supply-chain tools are PINNED to the versions in `variables:` (not `latest`) AND
