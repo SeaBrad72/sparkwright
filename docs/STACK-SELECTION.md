@@ -26,9 +26,11 @@ A stack profile is the concrete *how* for one deployable service: its toolchain,
 ## Environments & backing services
 
 Picking a stack also implies *which environments and backing services* you need. Each service
-profile ships a `compose.yaml` matching its **default archetype**, and `scripts/incept.sh` copies
-it into your project. Start from this and add only what your feature needs — each profile's
-**"Environments this stack needs"** section has the per-stack detail.
+profile ships a `compose.yaml` matching its **default archetype** as a **COPY-&-ADAPT reference** —
+`scripts/incept.sh` points you at it but does **not** copy it (auto-copying the container files would
+make `docker build` fail on the bare `/healthz` starter; you adapt them when you containerize, which
+activates the image-build CI gates). Start from this and add only what your feature needs — each
+profile's **"Environments this stack needs"** section has the per-stack detail.
 
 | Stack | Default archetype | Shipped `compose.yaml` | Typical services to add |
 |-------|-------------------|------------------------|-------------------------|
@@ -42,6 +44,11 @@ it into your project. Start from this and add only what your feature needs — e
 | ml | Serving / batch | reference-only (no generic compose) | model/feature store, vector DB |
 | data-engineering | Batch / pipeline | reference-only | warehouse, object store, orchestrator |
 | terraform | Provisions infra (not an app) | — | — |
+
+**Archetype coverage.** The auto-incepted `profiles/<stack>/scaffold/` starters cover the **service**
+archetypes (stateless / db-backed). For a **CLI** tool, the verified reference is
+[`profiles/typescript-node/scaffold-cli/`](../profiles/typescript-node/scaffold-cli/) — copy it instead
+of the service scaffold. For **batch/worker**, adapt a service or CLI scaffold to your trigger.
 
 **Environment promotion.** Run each environment Dev → QA → UAT → Prod with gated promotion;
 **production is always human-gated** (DEVELOPMENT-PROCESS.md env model). Whether you *already have*

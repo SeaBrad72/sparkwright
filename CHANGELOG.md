@@ -3,6 +3,18 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.22.0] — 2026-06-19
+
+### Added
+- **typescript-node CLI archetype reference** (`profiles/typescript-node/scaffold-cli/`) — a verified,
+  green-on-clone non-service starter (`app [--name <name>]`) proving the ts-node CI contract holds for a
+  CLI shape, not just `/healthz` services. Conformance-locked via `profile-completeness.sh`. Not
+  auto-incepted (a COPY-&-ADAPT reference; incept's default stays the service scaffold).
+
+### Changed
+- **Honesty fix:** `docs/STACK-SELECTION.md` no longer claims `incept` copies `compose.yaml` — it is a
+  COPY-&-ADAPT reference (auto-copying would break green-on-clone). Added an archetype-coverage note.
+
 ## [3.21.0] — 2026-06-19
 
 ### Added
