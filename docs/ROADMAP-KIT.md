@@ -118,7 +118,8 @@ Structural drift is caught continuously (badge/links/coverage-meta); SEMANTIC dr
 ### P4 — Polish (Low)
 - **Operability / meta-docs** — RUNBOOK incident-response section; meta-doc staleness sweep (dates, counts).
 - **Misc** — designer handoff guidance (axe/Lighthouse); ts-node AI-security pointer + eval scaffold; rename documentation-only CI step labels.
+- **Multi-stack scaffold / IDE friction** — the kit ships reference scaffolds for every stack in one tree (`profiles/<stack>/scaffold/`), so a language IDE extension auto-discovers *all* of them, not just the adopter's chosen stack — e.g. VS Code C# Dev Kit finds `profiles/dotnet/scaffold/app.sln` and fails a NuGet restore (cosmetic; nothing in-repo broken). Add a one-line note in each profile / `profiles/_TEMPLATE.md` that scaffolds are inert templates and IDE tooling should be scoped to the chosen stack via *local* prefs (e.g. `dotnet.defaultSolution: disable`), never a committed `.vscode/` (an adopter who picks that stack wants the tooling live).
 
 ---
 
-**Last Updated:** 2026-06-17
+**Last Updated:** 2026-06-19
