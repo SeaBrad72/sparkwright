@@ -3,6 +3,19 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.29.0] — 2026-06-20
+
+Pre-release dogfood **G11** — `incept` warns on `@your-org` CODEOWNERS placeholders.
+(Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings".)
+
+### Fixed
+- **`incept` now warns when it writes a CODEOWNERS that still contains `@your-org/*`
+  placeholder teams** — these block every merge once `require_code_owner_reviews` is
+  enabled (the placeholder owners don't exist). The warning (to stderr, exit-0-preserving)
+  names the file and points to `docs/operations/review-lane.md`. Placeholders are left
+  intact as fill-me-in markers (incept's `--intent-owner` is a human name, not a GitHub
+  `@org/team`, so there is no valid value to substitute — WARN is the honest fix).
+
 ## [3.28.0] — 2026-06-20
 
 Pre-release dogfood **G13** — honesty wording + harness-parse tolerance. Two Low fixes.
