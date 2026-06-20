@@ -24,6 +24,8 @@ permissions:
 
 jobs:
   ci:
+    outputs:
+      has_dockerfile: ${{ steps.detect-dockerfile.outputs.has_dockerfile }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,6 +33,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # full history for secret scanning
+
+      - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
+        id: detect-dockerfile
+        run: |
+          if [ -f Dockerfile ]; then echo "has_dockerfile=true"; else echo "has_dockerfile=false"; fi >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@v4
         with:
@@ -56,11 +63,17 @@ jobs:
 
       - name: Secret scan
         id: gate-secret-scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Organization-owned repos additionally require:
-          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
+        # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
+        # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
+        run: |
+          GL_VER=8.24.3
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks dir . --no-banner --redact
 
       - name: Cache OWASP NVD data
         uses: actions/cache@v4
@@ -138,7 +151,7 @@ jobs:
 
   image-provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && hashFiles('Dockerfile') != ''
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_dockerfile == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
