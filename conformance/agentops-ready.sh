@@ -19,8 +19,14 @@ set -eu
 is_agentic() {
   _d="$1"
   for f in "$_d/CLAUDE.md" "$_d/RUNBOOK.md"; do
-    # tolerate list markers + bold (`- **Agentic:** yes`) around the marker.
-    [ -f "$f" ] && grep -Eiq '^[-*[:space:]]*agentic:[-*[:space:]]*yes' "$f" && return 0
+    [ -f "$f" ] || continue
+    # the structured 'Agentic:' field (mirrors the Data-classification field): field-leading, tolerating
+    # list/bold markers, a bold-wrapped key with the colon outside the bold (`- **Agentic**: yes`), and an
+    # italic annotation before the colon. The unfilled [yes / no] placeholder is skipped; only 'yes' triggers.
+    _line=$(grep -Ei '^[-*[:space:]]*agentic[^:]*:' "$f" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') || true
+    [ -n "$_line" ] || continue
+    printf '%s' "$_line" | grep -Eq '\[[^]]*yes[^]]*/[^]]*\]' && continue
+    _val=${_line#*:}; printf '%s' "$_val" | grep -Eqw 'yes' && return 0
   done
   return 1
 }
@@ -101,6 +107,19 @@ selftest() {
   else
     echo "selftest FAIL: bold Agentic marker should trigger and pass"; st_fail=1
   fi
+
+  d6="$base/template_format"; mkdir -p "$d6"
+  printf '# CLAUDE\n\n- **Agentic** *(does this project run autonomous agents?)*: yes\n' > "$d6/CLAUDE.md"
+  printf '# RUNBOOK\n\n## 8. Monitoring & alerting\n- Error tracking: Sentry\n' > "$d6/RUNBOOK.md"
+  if check_dir "$d6" >/dev/null 2>&1; then echo "selftest FAIL: template-format Agentic + missing record should FAIL"; st_fail=1; else echo "selftest PASS: template-format '- **Agentic** …: yes' -> FAIL (detected)"; fi
+
+  d7="$base/agentic_placeholder"; mkdir -p "$d7"
+  printf '# CLAUDE\n\n- **Agentic** *(does this project run autonomous agents?)*: [yes / no]\n' > "$d7/CLAUDE.md"
+  if check_dir "$d7" >/dev/null 2>&1; then echo "selftest PASS: unfilled [yes / no] -> N/A (not over-triggered)"; else echo "selftest FAIL: unfilled Agentic placeholder should be N/A"; st_fail=1; fi
+
+  d8="$base/annot_fp"; mkdir -p "$d8"
+  printf '# CLAUDE\n\n- **Agentic** *(answer yes or no)*: no\n' > "$d8/CLAUDE.md"
+  if check_dir "$d8" >/dev/null 2>&1; then echo "selftest PASS: value 'no' with 'yes' in annotation -> N/A (no FP)"; else echo "selftest FAIL: agentic annotation false-positive — should be N/A"; st_fail=1; fi
 
   if [ "$st_fail" -ne 0 ]; then
     echo "agentops-ready --selftest: FAIL" >&2

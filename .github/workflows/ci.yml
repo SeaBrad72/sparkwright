@@ -173,6 +173,8 @@ jobs:
         run: sh conformance/security-policy.sh .
       - name: Privacy-ready real-path (kit data-classification verdict)
         run: sh conformance/privacy-ready.sh .
+      - name: Template-detectors-aligned (detectors fire on the kit's own template format; G3)
+        run: sh conformance/template-detectors-aligned.sh
       - name: Shellcheck available (fail loudly if the runner drops it, no silent SKIP)
         run: shellcheck --version
       - name: Kit shellcheck regression-lock — maintainer shell clean

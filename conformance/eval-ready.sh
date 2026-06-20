@@ -20,7 +20,7 @@ set -eu
 is_ai_feature() {
   _d="$1"
   [ -d "$_d/evals" ] && return 0
-  for p in "$_d/EVAL-PLAN.md" "$_d/docs/EVAL-PLAN.md" "$_d/evals/EVAL-PLAN.md"; do
+  for p in "$_d/EVAL-PLAN.md" "$_d/docs/EVAL-PLAN.md" "$_d/docs/sign-offs/EVAL-PLAN.md" "$_d/evals/EVAL-PLAN.md"; do
     [ -f "$p" ] && return 0
   done
   for m in "$_d/RUNBOOK.md" "$_d/CLAUDE.md"; do
@@ -33,7 +33,7 @@ is_ai_feature() {
 
 # Echo the EVAL-PLAN path if one exists, else empty.
 find_plan() {
-  for p in "$1/EVAL-PLAN.md" "$1/docs/EVAL-PLAN.md" "$1/evals/EVAL-PLAN.md"; do
+  for p in "$1/EVAL-PLAN.md" "$1/docs/EVAL-PLAN.md" "$1/docs/sign-offs/EVAL-PLAN.md" "$1/evals/EVAL-PLAN.md"; do
     [ -f "$p" ] && { printf '%s' "$p"; return 0; }
   done
   return 1

@@ -25,10 +25,10 @@ declares_sensitive() {
     # placeholder (a bracketed list of the tiers with a '/'). A real value with an unrelated
     # bracket annotation (e.g. "restricted [phi/hipaa]") must NOT be skipped — that would
     # fail-open and drop a sensitive project out of the gate.
-    _line=$(grep -i 'data classification:' "$f" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') || true
+    _line=$(grep -Ei 'data classification[^:]*:' "$f" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') || true
     [ -n "$_line" ] || continue
     printf '%s' "$_line" | grep -Eq '\[[^]]*(public|internal|confidential|restricted)[^]]*/[^]]*\]' && continue
-    printf '%s' "$_line" | grep -Eq 'confidential|restricted' && return 0
+    _val=${_line#*:}; printf '%s' "$_val" | grep -Eq 'confidential|restricted' && return 0
   done
   return 1
 }
@@ -76,6 +76,12 @@ selftest() {
   d5="$base/ok"; mkdir -p "$d5"; printf '# CLAUDE\n\n- **Data classification:** Restricted\n' > "$d5/CLAUDE.md"
   printf '# Privacy Review\n\n- **Lawful basis / basis for processing:** verifiable parental consent (COPPA)\n' > "$d5/PRIVACY-REVIEW.md"
   if check_dir "$d5" >/dev/null 2>&1; then echo "selftest PASS: filled review -> OK"; else echo "selftest FAIL: filled review should pass"; st_fail=1; fi
+
+  d6="$base/template_format"; mkdir -p "$d6"; printf '# CLAUDE\n\n- **Data classification** (§privacy): Confidential\n' > "$d6/CLAUDE.md"
+  if check_dir "$d6" >/dev/null 2>&1; then echo "selftest FAIL: template-format '(§privacy): Confidential' + no review should FAIL"; st_fail=1; else echo "selftest PASS: template-format '(§privacy): Confidential' -> FAIL (detected)"; fi
+
+  d8="$base/annot_fp"; mkdir -p "$d8"; printf '# CLAUDE\n\n- **Data classification** (e.g. confidential for PII): Internal\n' > "$d8/CLAUDE.md"
+  if check_dir "$d8" >/dev/null 2>&1; then echo "selftest PASS: annotation mentions confidential but value Internal -> N/A (no FP)"; else echo "selftest FAIL: annotation false-positive — should be N/A"; st_fail=1; fi
 
   if [ "$st_fail" -ne 0 ]; then echo "privacy-ready --selftest: FAIL" >&2; return 1; fi
   echo "privacy-ready --selftest: OK (na/placeholder/missing/review-placeholder/ok all behaved; fixtures left in $base)"

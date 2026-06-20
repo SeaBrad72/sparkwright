@@ -22,8 +22,8 @@ set -eu
 is_ai_feature() {
   _d="$1"
   [ -d "$_d/evals" ] && return 0
-  for p in "$_d/EVAL-PLAN.md" "$_d/docs/EVAL-PLAN.md" "$_d/evals/EVAL-PLAN.md" \
-           "$_d/AI-SYSTEM-CARD.md" "$_d/docs/AI-SYSTEM-CARD.md"; do
+  for p in "$_d/EVAL-PLAN.md" "$_d/docs/EVAL-PLAN.md" "$_d/docs/sign-offs/EVAL-PLAN.md" "$_d/evals/EVAL-PLAN.md" \
+           "$_d/AI-SYSTEM-CARD.md" "$_d/docs/AI-SYSTEM-CARD.md" "$_d/docs/sign-offs/AI-SYSTEM-CARD.md"; do
     [ -f "$p" ] && return 0
   done
   for m in "$_d/RUNBOOK.md" "$_d/CLAUDE.md"; do
@@ -35,7 +35,7 @@ is_ai_feature() {
 
 # Echo the AI-SYSTEM-CARD path if one exists, else empty.
 find_card() {
-  for p in "$1/AI-SYSTEM-CARD.md" "$1/docs/AI-SYSTEM-CARD.md"; do
+  for p in "$1/AI-SYSTEM-CARD.md" "$1/docs/AI-SYSTEM-CARD.md" "$1/docs/sign-offs/AI-SYSTEM-CARD.md"; do
     [ -f "$p" ] && { printf '%s' "$p"; return 0; }
   done
   return 1

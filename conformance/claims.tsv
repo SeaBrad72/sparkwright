@@ -16,3 +16,4 @@ operate-loop	postmortem generator/parser is wired (sparkwright postmortem routes
 tier-advice	tier-advice decision view is wired + honest (dispatcher routes; DORA-not-a-tier-input + asymmetric apply path locked; --selftest green)	sh conformance/tier-advice-wired.sh
 named-adapters	named codex/cursor/gemini adapters conform to the boundary contract (harness-adapter.sh green for each)	sh conformance/named-adapters.sh
 actionlint-valid	every shipped GitHub Actions workflow is a valid GHA document (kit workflows + all profile ci.yml)	sh conformance/actionlint-valid.sh
+template-detectors-aligned	conformance detectors fire on the kit's own PROJECT-CLAUDE / AI-System-Card template format (no silent-skip)	sh conformance/template-detectors-aligned.sh

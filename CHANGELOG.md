@@ -3,6 +3,42 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.24.0] — 2026-06-20
+
+Pre-release dogfood fix **G3** — the kit's conformance **detectors** now fire on the kit's **own
+template format**. The feedback-triage stress test found governance gates that *silently skipped*
+(returned N/A) a project declaring sensitive/agentic/AI data exactly as the templates instruct — a
+Confidential project bypassing its own DPIA gate, the worst kind of gap (the gate looks satisfied).
+(Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings" G3.)
+
+### Fixed
+- **`privacy-ready.sh` silently skipped a Confidential declaration.** It grepped `data classification:`
+  (colon-adjacent), but the PROJECT-CLAUDE template emits `**Data classification** (§privacy): Confidential`
+  (colon after the parenthetical) → never matched → a Confidential project bypassed its privacy review.
+  Now matches `data classification[^:]*:` and tests the **post-colon value** (so an annotation mentioning
+  "confidential" on a line whose value is Internal no longer false-triggers).
+- **`agentops-ready.sh` silently skipped an agentic declaration.** It anchored `^…agentic: yes`, but the
+  template's marker was mid-line prose. `is_agentic` is restructured to a structured-field detector
+  (field-leading, `[yes / no]` placeholder-skip, post-colon whole-word `yes` value) — fires on the new
+  field and the legacy forms without over-triggering on a `no` value whose annotation contains "yes".
+- **`eval-ready.sh` / `responsible-ai-ready.sh` missed `docs/sign-offs/`.** The AI-System-Card and Eval-Plan
+  templates recommend storing artifacts under `docs/sign-offs/`, but the detectors only probed hardcoded
+  root/`docs/`/`evals/` paths → an AI feature was reported as having no governance. `docs/sign-offs/` added
+  to both the is-AI-feature detection and the artifact-locate functions.
+
+### Changed
+- **PROJECT-CLAUDE template** — the prose `Agent-ops *(if agentic)*: set \`Agentic: yes\`` instruction
+  became a structured fillable field `- **Agentic** *(does this project run autonomous agents?)*: [yes / no]`,
+  mirroring the Data-classification field so the detector can match a filled value (and skip the placeholder).
+
+### Added
+- **`conformance/template-detectors-aligned.sh`** — a meta-lock that stamps a fixture project using the
+  templates' **own** declaration format (Confidential + agentic + an AI System Card under `docs/sign-offs/`)
+  and asserts every detector **fires** (never silent-skips), plus a drift guard that the template's field
+  markers still exist. Red-first on the old detectors, green after the fix. Wired into CI + registered as
+  the `template-detectors-aligned` claim (claims registry → 17). Stops the kit's format drifting from its
+  own regexes — the privacy/agentops analogue of `actionlint-valid`.
+
 ## [3.23.0] — 2026-06-20
 
 Pre-release dogfood fix **G1** — the reference CI pipelines are now validated as **GitHub Actions
