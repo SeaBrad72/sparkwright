@@ -32,6 +32,7 @@ acts). Here is the whole map at a glance.
 | You hit a specific quality bar (security pattern, retry/backoff, CI config) | `DEVELOPMENT-STANDARDS.md` + your `profiles/<stack>.md` |
 | Regulated / sensitive / audited domain | `docs/enterprise/` (compliance crosswalk · secrets-at-scale · audit-evidence) |
 | Live system — deploy, resilience, metrics | `docs/operations/` (progressive delivery · resilience · DORA · review-lane) |
+| Building an AI feature — handling its API key + the eval boundary | `docs/operations/secrets-for-ai.md` |
 | Data service — backup/restore, DR | `docs/continuity/` |
 | You need an artifact (spec, RUNBOOK, threat model, review record) | `templates/` — pull the one you need |
 

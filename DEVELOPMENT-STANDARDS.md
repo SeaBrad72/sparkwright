@@ -133,7 +133,7 @@ For any feature whose behavior depends on a model or prompt, **evals are the tes
 - **Task quality** — outputs scored against a curated dataset + rubric (exact-match, graded criteria, or LLM-as-judge with a pinned judge + rubric).
 - **Regression** — the eval suite runs in CI on any prompt/model/parameter change; a drop below threshold **fails the build** (the Eval gate, `DEVELOPMENT-PROCESS.md` §7).
 - **Safety / red-team** — adversarial prompts, jailbreaks, harmful-output checks before shipping.
-- **Discipline** — eval set is versioned with the code and grows from production misses and retros; pin the judge; evals *complement* runtime guards; track eval scores as a quality metric (decline = tech debt). **→ profile** for the eval harness. Plan it with `templates/EVAL-PLAN-TEMPLATE.md`; readiness `conformance/eval-ready.sh`.
+- **Discipline** — eval set is versioned with the code and grows from production misses and retros; pin the judge; evals *complement* runtime guards; track eval scores as a quality metric (decline = tech debt). **→ profile** for the eval harness. Plan it with `templates/EVAL-PLAN-TEMPLATE.md`; readiness `conformance/eval-ready.sh`. Running the live eval is a human/CI step (policy): the agent authors and wires the evals but should not run the live provider — the guard blocks reading a live key file into context as a speed bump, not a hard boundary; see `docs/operations/secrets-for-ai.md`.
 
 ---
 

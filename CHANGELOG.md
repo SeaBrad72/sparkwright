@@ -3,6 +3,27 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.27.0] — 2026-06-20
+
+Pre-release dogfood **G14** — secrets-for-AI playbook + the "running the live eval is a
+human/CI step" boundary. Pure docs (closes the last Low-severity G-finding).
+(Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings".)
+
+### Added
+- **`docs/operations/secrets-for-ai.md`** — an adopter inner-loop playbook for the secret
+  friction the dogfood hit hardest: set CI secrets from a file (never hand-paste), don't
+  rotate the key mid-loop, don't select the key in-editor, and `.env` is the local floor
+  (→ `secrets-at-scale.md` for the managed-store story). Indexed in `START-HERE.md` + the
+  `CLAUDE.md` doc table.
+
+### Changed
+- **Eval-driven-dev guidance now states the live-eval handoff.** `DEVELOPMENT-STANDARDS.md`
+  §AI Evaluations and `conformance/eval-readiness.md` note that running the eval against the
+  **real provider** is a human/CI step (policy) — the agent authors and wires the evals but
+  the guard's secret-read deny blocks reading a live key *file* into context as a **speed
+  bump, not a hard boundary** (an already-exported env var or the interpreter channel is not
+  mechanically stopped; the human/CI handoff is the actual control).
+
 ## [3.26.0] — 2026-06-20
 
 Pre-release dogfood **CI cluster G6 · G7 · G9** — control-plane fixes to the reference pipelines.
