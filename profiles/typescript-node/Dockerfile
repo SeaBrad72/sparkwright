@@ -10,6 +10,13 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+# If your app uses Prisma (the profile's recommended ORM) generate the client BEFORE build, so tsc
+# sees @prisma/client types and the query engine is produced. IMPORTANT: the runtime stage below is
+# distroless-debian13 (trixie) while this builder is bookworm — the Prisma engine is platform-specific,
+# so your prisma/schema.prisma MUST declare binaryTargets covering the runtime, e.g.:
+#   generator client { binaryTargets = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"] }
+# Otherwise the image builds but crashes on first DB query. (No-op for non-Prisma apps.)
+RUN if [ -f prisma/schema.prisma ]; then npx prisma generate; else echo "no prisma/schema.prisma — skipping prisma generate"; fi
 RUN npm run build            # produces dist/
 RUN npm prune --omit=dev     # keep only production deps for the runtime copy
 

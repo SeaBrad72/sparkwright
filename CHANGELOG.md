@@ -3,6 +3,37 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.25.0] — 2026-06-20
+
+Pre-release dogfood fixes **G4 · G5 · G10 · G12** — a batch of `profiles/` (agent-editable) reference
+fixes the feedback-triage stress test surfaced. (Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood
+findings".)
+
+### Fixed
+- **G4 — reference `Dockerfile` is now Prisma-ready** (Prisma is the profile's recommended ORM). Added a
+  conditional `prisma generate` *before* `npm run build` (as an `if/then/else` so a generate **failure**
+  aborts the build rather than shipping an image with no client) plus a `binaryTargets` note: the runtime
+  is distroless-debian13 (trixie) while the builder is bookworm, so `schema.prisma` must declare engine
+  targets covering the runtime or the image builds then crashes on first query. No-op for non-Prisma apps.
+- **G5 — an incepted project no longer silently un-tracks its own app source.** A kit-obtained project can
+  inherit a `.gitignore` that ignores `/src/` `/test/` (the kit's maintainer scratch), and `incept` only
+  *appends* the scaffold's ignore rules — so the scaffold's `src/test` stayed ignored and never reached CI.
+  The scaffold `.gitignore` now appends `!/src/` `!/test/` to force them tracked (verified: both stage
+  despite an inherited ignore). *(A universal `incept`-level strip remains an optional stronger follow-up.)*
+- **G10 — scaffold `vitest` bumped `^2.1.0` → `^4.0.0`** (resolves 4.1.9) across both the service and CLI
+  scaffolds, clearing the known high/critical advisories. Full green-on-clone pipeline holds (lint →
+  type-check → test:coverage → build, 100% coverage) and `npm audit --omit=dev --audit-level=high` is clean;
+  no vitest.config migration needed.
+
+### Added
+- **G12 — runnable smoke + DR-drill stubs for the service archetype** (`profiles/typescript-node/scaffold/
+  scripts/`). `smoke.sh` — post-deploy healthz + core-flow curl, `BASE_URL`-configurable, fails non-zero on
+  any bad check (wired as `npm run smoke`). `dr-drill.sh` — a Postgres backup/restore drill that `pg_dump`s
+  the source, restores into an **isolated** scratch DB, verifies row-count + a null-safe all-column checksum
+  (`concat_ws`/`coalesce`, never bare `||`), then drops the scratch DB + scrubs the dump. **Fail-closed**:
+  three guards make it impossible to drop the source or a real DB (scratch must differ from source, must not
+  be a protected name, and must end `_restore_drill`); every DB name comes from a `-d` flag, never the URL.
+
 ## [3.24.0] — 2026-06-20
 
 Pre-release dogfood fix **G3** — the kit's conformance **detectors** now fire on the kit's **own
