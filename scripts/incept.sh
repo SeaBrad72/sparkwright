@@ -69,6 +69,14 @@ cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
   fi
 }
 
+warn_codeowners_placeholder() {  # <dst> — G11: a copied CODEOWNERS with @your-org/* blocks merges if owner-review is on before it's hand-edited
+  if [ -f "$1" ] && grep -q '@your-org' "$1" 2>/dev/null; then
+    echo "warning: $1 contains @your-org/* placeholder teams — replace them with REAL teams/users" >&2
+    echo "         BEFORE enabling branch protection (require_code_owner_reviews), or EVERY merge" >&2
+    echo "         will block (the placeholder owners don't exist). See docs/operations/review-lane.md." >&2
+  fi
+}
+
 # 9f: fail fast if universal prerequisites are missing — jq is hard-required by the
 # guard and conformance, so proceeding would only defer a cryptic failure.
 if [ -f scripts/preflight.sh ] && ! sh scripts/preflight.sh >/dev/null 2>&1; then
@@ -228,7 +236,7 @@ case "$CI" in
     mkdir -p .github/workflows
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       cp_kit_replace "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
-      [ -f "profiles/${STACK}/CODEOWNERS" ] && cp_kit_replace "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS 'COPY & ADAPT|@your-org'
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && cp_kit_replace "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS 'COPY & ADAPT|@your-org' && warn_codeowners_placeholder .github/CODEOWNERS
     else
       echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
     fi
@@ -237,7 +245,7 @@ case "$CI" in
     if [ -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
       cp_kit_replace "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml 'Sparkwright'
       # GitLab reads CODEOWNERS from root, .gitlab/, or docs/ — .gitlab/ mirrors .github/.
-      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; cp_kit_replace "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS 'COPY & ADAPT|@your-org'; }
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; cp_kit_replace "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS 'COPY & ADAPT|@your-org'; } && warn_codeowners_placeholder .gitlab/CODEOWNERS
     else
       echo "note: no profiles/${STACK}/ci.gitlab-ci.yml — add a .gitlab-ci.yml satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it; see docs/operations/ci-platforms.md)."
     fi
