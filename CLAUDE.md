@@ -19,7 +19,7 @@
 | **`MAINTAINING.md`** | How the kit itself is built, versioned (`VERSION`, `CHANGELOG.md`), and contributed back to — the contract/reference/conformance convention. |
 | **`conformance/`** | Executable checks/checklists proving a reference implementation satisfies its contract. |
 | **`docs/enterprise/`** | Enterprise addendum — compliance crosswalk (SOC 2 · ISO 27001:2022 · NIST SSDF · SLSA) + AI-governance crosswalk (NIST AI RMF · ISO 42001 · US state law · OWASP), secrets-at-scale, ratification RBAC, audit-evidence. |
-| **`docs/`** (other) | `work-tracking/adapters.md` (backlog backends), `adoption/brownfield.md` (existing-repo adoption + `.claude/` hygiene), `operations/` (live-system guidance: progressive delivery, resilience verification, DORA metrics), `continuity/` (recovery/DR: backup-restore drill, BIA). |
+| **`docs/`** (other) | `work-tracking/adapters.md` (backlog backends), `adoption/brownfield.md` (existing-repo adoption + `.claude/` hygiene), `operations/` (live-system guidance: progressive delivery, resilience verification, DORA metrics, secrets-for-AI), `continuity/` (recovery/DR: backup-restore drill, BIA). |
 
 New here? **Read `START-HERE.md`.**
 
