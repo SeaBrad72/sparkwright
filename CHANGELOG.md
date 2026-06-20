@@ -3,6 +3,23 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.28.0] — 2026-06-20
+
+Pre-release dogfood **G13** — honesty wording + harness-parse tolerance. Two Low fixes.
+(Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings".)
+
+### Changed
+- **Scaffold READMEs no longer over-promise.** "Verified green with the real npm pipeline" →
+  the npm steps were **run green locally**; the workflow file is statically validated
+  (`actionlint`); the full pipeline's first real run is the adopter's first push to GitHub
+  (the reference `ci.yml` was never executed as a GHA document — the root of G1).
+
+### Fixed
+- **`conformance/inception-done.sh` tolerates a trailing period/space** in the stamped
+  `Target harness(es)` value — `claude-code.` now resolves to `adapters/claude-code` instead
+  of failing the Inception-Done gate. Each harness token is stripped of trailing
+  punctuation/whitespace before the adapter lookup.
+
 ## [3.27.0] — 2026-06-20
 
 Pre-release dogfood **G14** — secrets-for-AI playbook + the "running the live eval is a

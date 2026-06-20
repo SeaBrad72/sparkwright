@@ -1,7 +1,7 @@
 # typescript-node — CLI archetype reference
 
 A **non-service** starter: a command-line tool (`app [--name <name>]`), authored to the
-typescript-node `ci.yml` contract and **verified green** (`npm ci → lint → type-check → test → build`).
+typescript-node `ci.yml` contract; its npm steps (`npm ci → lint → type-check → test → build`) were **run green locally**.
 
 **Not auto-incepted.** `scripts/incept.sh` copies the default service starter (`../scaffold/`,
 a `/healthz` service). When you are building a **CLI** instead, copy *this* directory's contents

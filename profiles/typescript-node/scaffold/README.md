@@ -48,8 +48,10 @@ npm run build        # gate-build  (tsc)
 
 ## Verification status
 
-> **Authored to the `profiles/typescript-node/ci.yml` contract and verified green with the real
-> npm pipeline** (install → lint → type-check → test+coverage → build) before shipping.
+> **Authored to the `profiles/typescript-node/ci.yml` contract; its npm steps (install → lint →
+> type-check → test+coverage → build) were run green locally** before shipping. The workflow file
+> itself is statically validated (`actionlint`); the full pipeline runs end-to-end on your first
+> push to GitHub.
 
 On first push the scaffold also passes the other unconditional gates — **secret-scan** (gitleaks),
 **dep-scan** (`npm audit --omit=dev`), **SBOM** (CycloneDX), **SAST** (semgrep), and **license** —
