@@ -73,6 +73,8 @@ else
     *'['*|'') echo "FAIL: Target harness(es) not stamped (placeholder remains)"; fail=1 ;;
     *)
       for _h in $(printf '%s' "$hval" | tr ',' ' '); do
+        _h=$(printf '%s' "$_h" | sed 's/[[:punct:][:space:]]*$//')  # G13: tolerate a trailing period/space in the stamped value
+        [ -z "$_h" ] && continue
         if ! [ -d "adapters/$_h" ]; then
           echo "FAIL: harness adapter '$_h' directory not found — expected: adapters/$_h"; fail=1
         elif sh conformance/harness-adapter.sh "adapters/$_h" >/dev/null 2>&1; then
