@@ -3,6 +3,37 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.23.0] — 2026-06-20
+
+Pre-release dogfood fix **G1** — the reference CI pipelines are now validated as **GitHub Actions
+documents**, not just as npm steps. The feedback-triage adopter stress test surfaced that the shipped
+`ci.yml` workflows were never executed end-to-end on GitHub Actions; this closes the first defect class
+kit-wide. (Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings" G1.)
+
+### Fixed
+- **Invalid GHA document — `hashFiles()` in a job-level `if:`** (the `image-provenance` job) made the
+  workflow fail at startup on a real push with no jobs scheduled. Fixed across **all 7 affected profiles**
+  (dotnet, go, java-spring, kotlin, python, rust, typescript-node) by computing a `has_dockerfile` job
+  output (a `Detect Dockerfile` step after checkout) and gating the job on
+  `needs.ci.outputs.has_dockerfile == 'true'`. The legal step-context `hashFiles()` uses are unchanged.
+- **Secret-scan gate (all 10 profiles)** switched from `gitleaks-action` (commit-range mode — failed with
+  "Invalid revision range" on PR merge-refs and required `pull-requests: read`) to a **checksum-pinned
+  `gitleaks dir .`** run step (gitleaks v8.24.3, `sha256` verified, fail-closed). Range-independent,
+  scans the full committed tree, makes no API call (least-privilege: `contents: read` suffices). The
+  `gate-secret-scan` id is retained (ci-gates parity). *Honest ceiling:* a working-tree scan does not
+  cover secrets that existed only in removed git history — rotate on any past exposure.
+- **Shell-injection — `${{ github.base_ref }}` spliced into a `run:`** (the "Compute changed files" step)
+  fixed via `env: BASE_REF` indirection in `profiles/typescript-node/ci.yml` and the kit's own
+  `.github/workflows/ci.yml`.
+
+### Added
+- **`conformance/actionlint-valid.sh`** — validates every shipped GHA workflow (`.github/workflows/*.yml`
+  + every `profiles/*/ci.yml`) as a real GitHub Actions **document** (actionlint v1.7.7, checksum-pinned
+  per-platform, document-validity only via `-shellcheck=`). Wired into the kit's conformance CI job with
+  a `--selftest` (the selftest reproduces the exact `hashFiles`-in-job-`if` defect class), and registered
+  as the `actionlint-valid` claim (claims registry → 16). This is the regression lock that would have
+  caught the defect class before it shipped.
+
 ## [3.22.0] — 2026-06-19
 
 ### Added

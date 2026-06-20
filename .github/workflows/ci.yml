@@ -204,6 +204,10 @@ jobs:
           sh conformance/drift-watch-wired.sh --selftest
           sh conformance/cost-governance-ready.sh --selftest
           sh conformance/claims-registry.sh
+      - name: Workflows are valid GHA documents (actionlint; G1)
+        run: sh conformance/actionlint-valid.sh
+      - name: Actionlint-valid self-test
+        run: sh conformance/actionlint-valid.sh --selftest
 
 
   bootstrap:
@@ -240,7 +244,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Compute changed files
-        run: git diff --name-only "origin/${{ github.base_ref }}...HEAD" > /tmp/changed.txt
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed.txt
       - name: Compute ratification signal (non-author approval)
         id: ratify
         env:
