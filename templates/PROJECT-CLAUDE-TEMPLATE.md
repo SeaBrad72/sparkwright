@@ -50,6 +50,7 @@ This file holds only what is **specific to this project**.
 - **SLO / error-budget posture** (§9): [soft track-and-guide / hard-gating] — [target SLOs if defined]
 - **Data classification** (§privacy): [Public / Internal / Confidential / Restricted] — the highest tier this project handles. Confidential/Restricted ⇒ a privacy review (`docs/enterprise/data-governance.md`; verified by `conformance/privacy-ready.sh`).
 - **Operator fluency** (§onboarding): [Novice / Adjacent / Practitioner] — the human operator's enterprise-SDLC experience; the agent adapts its assistance accordingly (`ONBOARDING.md`; behaviour in `docs/operations/operator-fluency.md`).
+- **Process mode** (§ ceremony): [prototype / team / enterprise] — how much ceremony incept scaffolds + (S4) surfaces. Does **not** change which controls are ENFORCED: every gate keys on its detected trigger (Dockerfile, `evals/`, data surface, classification), never on this field.
 - **Target harness(es)** (§harness-neutrality): [claude-code] — the LLM/agent harness(es) this project runs; each is verified against the boundary contract at Inception (`docs/operations/harness-adapters.md`).
 - **Review routing / ownership** (§11): [who/which agent reviews what; CODEOWNERS link]
 - **WIP limits:** [per-stage or global cap]

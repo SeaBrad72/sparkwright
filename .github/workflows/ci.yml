@@ -169,6 +169,10 @@ jobs:
         run: sh conformance/adopter-export-wired.sh
       - name: Adopter-export-wired self-test
         run: sh conformance/adopter-export-wired.sh --selftest
+      - name: Mode-enforcement-blind regression-lock
+        run: sh conformance/mode-enforcement-blind.sh
+      - name: Mode-enforcement-blind self-test
+        run: sh conformance/mode-enforcement-blind.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)
