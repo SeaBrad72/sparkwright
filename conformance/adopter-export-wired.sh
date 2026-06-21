@@ -1,0 +1,66 @@
+#!/bin/sh
+# adopter-export-wired.sh — regression-lock for the S3 adopter-clean obtain mechanism.
+# Asserts: the export mechanism exists, the .gitattributes export-ignore set is present, the set is
+# LINK-SAFE (no export-ignored path is a `](path)` markdown-link target from a kept doc), and the
+# export actually prunes the maintainer-only set + unused profiles while keeping the adopter tree.
+#   sh conformance/adopter-export-wired.sh [--selftest]
+# Exit: 0 = wired + link-safe + prunes · 1 = regression · 2 = setup. POSIX sh; dash-clean.
+set -eu
+cd "$(dirname "$0")/.."
+ROOT="${EXPORT_ROOT:-.}"
+
+# the export-ignore set this lock enforces (must match .gitattributes)
+IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml scripts/fixtures/ docs/superpowers/ .superpowers/"
+
+run() {
+  rc=0
+  [ -f "$ROOT/.gitattributes" ] || { echo "FAIL: no .gitattributes"; return 1; }
+  [ -f "$ROOT/scripts/adopter-export.sh" ] || { echo "FAIL: no scripts/adopter-export.sh"; return 1; }
+  # (a) each export-ignore entry present with the attribute
+  for p in $IGN; do
+    grep -Eq "^$(printf '%s' "$p" | sed 's/[.[\*^$/]/\\&/g')[[:space:]]+export-ignore" "$ROOT/.gitattributes" \
+      || { echo "FAIL: .gitattributes missing export-ignore for $p"; rc=1; }
+  done
+  # (b) LINK-SAFETY: no export-ignored path is a `](…path…)` link target in any tracked kept doc.
+  # Match the BASENAME inside a markdown link `](…)` so relative forms (](../ROADMAP-KIT.md)) are
+  # caught too, not just the full path. Files only (a dir basename like 'fixtures' is rarely a link
+  # target and an over-match there is a safe false-positive).
+  for p in $IGN; do
+    _bn=$(basename "$(printf '%s' "$p" | sed 's#/$##')")
+    if ( cd "$ROOT" && git grep -I -lE "\]\([^)]*${_bn}" -- '*.md' 2>/dev/null | grep -q .); then
+      echo "FAIL: export-ignored '$p' is a markdown-link target (would break check-links on the adopter tree)"; rc=1
+    fi
+  done
+  # (c) the export prunes + keeps correctly (drive the real script)
+  _t=$(mktemp -d); _d="$_t/exp"
+  if ( cd "$ROOT" && sh scripts/adopter-export.sh "$_d" --profile typescript-node >/dev/null 2>&1 ); then
+    [ -e "$_d/docs/ROADMAP-KIT.md" ] && { echo "FAIL: export kept ROADMAP-KIT.md"; rc=1; }
+    [ -e "$_d/profiles/go" ]        && { echo "FAIL: export kept pruned profile go"; rc=1; }
+    [ -e "$_d/MAINTAINING.md" ]     || { echo "FAIL: export dropped kept MAINTAINING.md"; rc=1; }
+    [ -e "$_d/conformance" ]        || { echo "FAIL: export dropped kept conformance/"; rc=1; }
+  else
+    echo "FAIL: adopter-export.sh errored"; rc=1
+  fi
+  rm -rf "$_t"
+  [ "$rc" -eq 0 ] && echo "PASS: adopter-export wired + link-safe + prunes"
+  return $rc
+}
+
+if [ "${1:-}" = "--selftest" ]; then
+  sfail=0
+  run >/dev/null 2>&1 || { echo "adopter-export-wired --selftest: FAIL (real tree not green)"; sfail=1; }
+  # negative: a tree whose .gitattributes lacks the export-ignore set must FAIL the lock.
+  # Base the throwaway archive on $ROOT (= EXPORT_ROOT, default ".") so this is exercisable from flat
+  # scratch (EXPORT_ROOT=<real-repo>) AND in production (ROOT="." after the top-of-file cd).
+  _n=$(mktemp -d)
+  ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_n" 2>/dev/null || true
+  : > "$_n/.gitattributes"   # empty attributes => entries missing
+  cp "$ROOT/scripts/adopter-export.sh" "$_n/scripts/adopter-export.sh" 2>/dev/null || true
+  if ROOT="$_n" run >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (empty .gitattributes still passed)"; sfail=1
+  fi
+  rm -rf "$_n"
+  [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
+fi
+
+run

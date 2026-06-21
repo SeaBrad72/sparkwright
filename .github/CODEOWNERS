@@ -1,8 +1,7 @@
-# Reference CODEOWNERS for the TypeScript/Node profile.
-# COPY & ADAPT: copy to .github/CODEOWNERS (or repo root). Routes review so the
-# builder is never the sole reviewer/merger (DEVELOPMENT-PROCESS.md §2, §12).
-# Replace @your-org/* with real teams.
+# CODEOWNERS for the Sparkwright kit's own repo. Routes review so the builder is
+# never the sole reviewer/merger (DEVELOPMENT-PROCESS.md §2, §12).
+# (Adopters get their own from profiles/<stack>/CODEOWNERS via scripts/incept.sh.)
 
-*            @your-org/engineering
-/.github/    @your-org/platform
-/profiles/   @your-org/platform
+*            @SeaBrad72
+/.github/    @SeaBrad72
+/profiles/   @SeaBrad72
