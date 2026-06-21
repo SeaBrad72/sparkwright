@@ -214,6 +214,10 @@ jobs:
         run: sh conformance/provenance-precondition.sh
       - name: Provenance-precondition self-test
         run: sh conformance/provenance-precondition.sh --selftest
+      - name: Golden-path harness wired (G2 — reference artifacts run end-to-end)
+        run: sh conformance/golden-path-wired.sh
+      - name: Golden-path-wired self-test
+        run: sh conformance/golden-path-wired.sh --selftest
 
 
   bootstrap:

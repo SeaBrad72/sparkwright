@@ -18,3 +18,4 @@ named-adapters	named codex/cursor/gemini adapters conform to the boundary contra
 actionlint-valid	every shipped GitHub Actions workflow is a valid GHA document (kit workflows + all profile ci.yml)	sh conformance/actionlint-valid.sh
 template-detectors-aligned	conformance detectors fire on the kit's own PROJECT-CLAUDE / AI-System-Card template format (no silent-skip)	sh conformance/template-detectors-aligned.sh
 provenance-precondition	SLSA provenance jobs are gated on repo visibility (no red main on user-owned private repos)	sh conformance/provenance-precondition.sh
+golden-path	golden-path harness runs the reference pipeline + image end-to-end (.github/workflows/golden-path.yml)	sh conformance/golden-path-wired.sh

@@ -1,0 +1,56 @@
+name: golden-path
+# G2 — run the reference adopter artifacts END-TO-END (npm pipeline + docker build + liveness).
+# Heavy + path-filtered/scheduled so the fast per-PR ci.yml stays seconds-quick.
+on:
+  pull_request:
+    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml']
+  push:
+    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml']
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  golden-path:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '24'
+      - name: Scaffold a temp adopter project (incept the reference stack)
+        run: |
+          tmp=$(mktemp -d)
+          git archive HEAD | tar -x -C "$tmp"
+          ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name GoldenPath \
+              --intent-owner "CI" --stack typescript-node --backlog md --ci github --harness claude-code )
+          echo "GP_DIR=$tmp" >> "$GITHUB_ENV"
+      - name: Run the reference npm pipeline end-to-end
+        working-directory: ${{ env.GP_DIR }}
+        run: |
+          npm ci
+          npm run lint
+          npm run type-check
+          npm test
+          npm run build
+      - name: Stage the reference Dockerfile (incept leaves it COPY-&-ADAPT; G2 exercises it)
+        working-directory: ${{ env.GP_DIR }}
+        run: |
+          cp profiles/typescript-node/Dockerfile .
+          cp profiles/typescript-node/.dockerignore . 2>/dev/null || true
+      - name: docker build the reference image
+        working-directory: ${{ env.GP_DIR }}
+        run: docker build -t golden-path:ci .
+      - name: Boot the image and verify /healthz liveness (asserts the health body)
+        run: |
+          docker run -d --name gp -p 3000:3000 golden-path:ci
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/healthz 2>/dev/null | grep -q '"status":"ok"'; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs gp || true
+          docker rm -f gp >/dev/null 2>&1 || true
+          [ "$ok" = 1 ] || { echo "golden-path: /healthz liveness failed (no {\"status\":\"ok\"})"; exit 1; }
+          echo "golden-path: reference pipeline + image + liveness all green"
