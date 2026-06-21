@@ -3,6 +3,41 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.33.0] — 2026-06-20
+
+Pre-release dogfood **S3** — adopter-clean obtain / prune (second S-series epic). Gives adopters a
+clean distribution via git-native `export-ignore`, instead of the vague "copy this kit" that dragged
+maintainer scratch + unused stacks. Also resolves the S2-surfaced CODEOWNERS finding.
+(Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings".)
+
+### Added
+- **`.gitattributes`** — marks 6 **link-safe** maintainer-only paths `export-ignore` (`docs/ROADMAP-KIT.md`,
+  the two maintainer workflows `drift-watch.yml`/`golden-path.yml`, `scripts/fixtures/`, and the
+  gitignored scratch dirs). Affects only `git archive` — never the kit's own tree or CI.
+- **`scripts/adopter-export.sh <dest> [--profile <stack>]`** — wraps `git archive --worktree-attributes HEAD`
+  (so it honors `export-ignore` and auto-excludes gitignored scratch + `node_modules`, since an archive
+  is committed tracked files only) and prunes the 9 unused stack profiles. Fail-loud on archive failure
+  (no silent empty-success), refuses a non-empty dest, validates `--profile` before any prune.
+  A clean obtain drops **392 → 242 files** (for typescript-node).
+- **`conformance/adopter-export-wired.sh`** — regression-lock (claim `adopter-export`, claims 20 → 21):
+  asserts the `export-ignore` set is present, **statically link-safe** (no pruned path is a markdown-link
+  target → no broken links on the adopter tree), and that the export prunes maintainer-only + unused
+  profiles while keeping the adopter tree. CI-wired.
+
+### Changed
+- **`README.md`** Quickstart — honest clean-obtain flow (clone → `adopter-export.sh`), the real file
+  count, and the caveat that `export-ignore` only takes effect via `git archive`/the script (a plain
+  `cp -R`/clone still carries the full kit).
+- **`.github/CODEOWNERS`** adapted from the `@your-org` reference template to the kit's real owner
+  `@SeaBrad72` (the S2-surfaced finding). The `profiles/<stack>/CODEOWNERS` templates keep `@your-org`
+  (adopter-facing; incept warns + S2 re-checks them).
+
+### Notes
+- **Deliberately deferred** (its own slice): pruning the kit-self `conformance/` suite (~75 files) — it
+  would need `verify.sh` skip-missing tolerance (a safety hazard) + a 75-file triage. Three small
+  maintainer docs (`MAINTAINING.md`/`CHANGELOG.md`/`WALKTHROUGH.md`) remain in the distribution because
+  they are markdown-link targets from kept docs.
+
 ## [3.32.0] — 2026-06-20
 
 Pre-release dogfood **S2** — adopter-environment preflight (the first S-series strategic epic).

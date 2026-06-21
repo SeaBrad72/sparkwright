@@ -34,6 +34,7 @@ dist/
 # Internal build scaffolding — kept locally, NOT shipped in the public repo
 # (specs/plans/reviews/roadmaps contain personal paths + pre-anonymization context)
 docs/superpowers/
+.superpowers/
 docs/ROADMAP-SLICE9.md
 docs/ROADMAP-SLICE11.md
 

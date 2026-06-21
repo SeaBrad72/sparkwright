@@ -163,6 +163,12 @@ jobs:
         run: sh conformance/adopter-preflight-wired.sh
       - name: Adopter-preflight-wired self-test
         run: sh conformance/adopter-preflight-wired.sh --selftest
+      - name: Adopter-export script self-test
+        run: sh scripts/adopter-export.sh --selftest
+      - name: Adopter-export-wired regression-lock
+        run: sh conformance/adopter-export-wired.sh
+      - name: Adopter-export-wired self-test
+        run: sh conformance/adopter-export-wired.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)

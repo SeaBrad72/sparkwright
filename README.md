@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.32.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.33.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 
@@ -41,7 +41,16 @@ Any team — humans, agents, or both — starting a new project who wants produc
 | **`docs/`** | `ADR-000-EXAMPLE.md`; `enterprise/` (compliance addendum), `work-tracking/` (backlog adapters), `adoption/` (brownfield), `operations/` (progressive delivery · resilience · DORA), `continuity/` (DR drill · BIA). |
 
 ## Quickstart (drop-in & go)
-1. Copy this kit into your new project repo. *(If it's a git repo, commit the kit first — `git add -A && git commit -m "add Sparkwright kit"` — recommended so history is clean; `incept` also works on an uncommitted or non-git tree.)*
+1. **Obtain a clean copy** (use the export script — not `cp -R` or a plain clone):
+   ```sh
+   git clone --depth 1 <kit-url> /tmp/sparkwright-src
+   sh /tmp/sparkwright-src/scripts/adopter-export.sh ./my-project --profile typescript-node
+   ```
+   You get **242 files** for typescript-node (the kit + your chosen stack), down from 392. The export drops the kit's own
+   backlog/CI-watchers/test-fixtures and the 9 stack profiles you aren't using.
+   *(Why the script: `export-ignore` only takes effect via `git archive`/this script. A plain
+   `cp -R` drags gitignored scratch + `node_modules`; a plain `git clone` carries the full kit.
+   The kit's conformance suite and a few maintainer docs are intentionally retained.)*
 2. Open **`START-HERE.md`** and work through Inception (Phase 0).
 3. At stack selection: pick a ready profile **or** generate one from `profiles/_TEMPLATE.md` for your stack — recorded as **ADR-000**.
 4. Run **`scripts/incept.sh`** — for a **service stack** it scaffolds a runnable starter (a `/healthz` service + test wired to the stack's CI) and writes `.env.example`. **Green-on-clone scope, honest per stack:** `typescript-node`'s **language gates** (install → lint → type-check → test+coverage → build) are maintainer-verified green on clone; `go` and `rust` are **dependency-free** (stdlib-only scaffolds — no lockfile step); `python`, `java-spring`, `kotlin`, and `dotnet` need a **one-time lockfile/wrapper step** (see each `scaffold/README.md`). Stacks other than `typescript-node` have not been maintainer-executed. The **image-supply-chain gates are conditional** — they skip until you adapt the profile's **COPY-&-ADAPT `Dockerfile`** (and `compose.yaml`) into your repo, so a bare scaffold's first push is green on the language gates, not red on `docker build`. **`ml` / `data-engineering` / `terraform`** ship a CI contract you populate (no `/healthz` starter — first push is red until you add source).
