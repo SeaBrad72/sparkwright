@@ -9,7 +9,7 @@ set -eu
 
 REGISTRY="${KIT_CLAIMS:-conformance/claims.tsv}"
 # Headline claims that MUST stay registered (no silent drop). Change this set deliberately + ratified.
-REQUIRED_IDS="badge-version conformance-ci-wired doc-budget guard-single-source action-pinning security-policy gate-counts drift-watch cost-governance supply-chain-verify gitlab-adoption doctor operate-loop tier-advice named-adapters actionlint-valid template-detectors-aligned provenance-precondition golden-path adopter-preflight adopter-export mode-blind"
+REQUIRED_IDS="badge-version conformance-ci-wired doc-budget guard-single-source action-pinning security-policy gate-counts drift-watch cost-governance supply-chain-verify gitlab-adoption doctor operate-loop tier-advice named-adapters actionlint-valid template-detectors-aligned provenance-precondition golden-path adopter-preflight adopter-export mode-blind explain"
 
 TAB=$(printf '\t')
 

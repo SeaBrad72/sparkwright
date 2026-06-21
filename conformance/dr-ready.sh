@@ -1,4 +1,5 @@
 #!/bin/sh
+# Why this gate: sparkwright explain dr
 # dr-ready.sh — conditional, fail-closed, ESCALATE-ONLY DR-readiness DOC check.
 #
 # Companion to conformance/dr-readiness.md (the DR-readiness gate; DEVELOPMENT-PROCESS.md

@@ -22,3 +22,4 @@ golden-path	golden-path harness runs the reference pipeline + image end-to-end (
 adopter-preflight	preflight surfaces the adopter GitHub environment (user-private->provenance-skip, @your-org CODEOWNERS, workflow validity) advisorily without changing its exit code	sh conformance/adopter-preflight-wired.sh
 adopter-export	the adopter-clean obtain mechanism is wired + link-safe (.gitattributes export-ignore set present, no pruned path is a markdown-link target, adopter-export.sh prunes maintainer-only + unused profiles)	sh conformance/adopter-export-wired.sh
 mode-blind	the S1 process-weight mode is enforcement-blind — no conformance check / CI gate reads it, so a mode can never weaken an applicable control	sh conformance/mode-enforcement-blind.sh
+explain	the learner-facing why-layer is wired + drift-locked (sparkwright explain routes; no orphan rationale; every S1-checklist enforcer is taught)	sh conformance/explain-wired.sh

@@ -173,6 +173,12 @@ jobs:
         run: sh conformance/mode-enforcement-blind.sh
       - name: Mode-enforcement-blind self-test
         run: sh conformance/mode-enforcement-blind.sh --selftest
+      - name: Explain why-layer smoke (selftest)
+        run: sh scripts/explain.sh --selftest
+      - name: Explain-wired regression-lock
+        run: sh conformance/explain-wired.sh
+      - name: Explain-wired self-test
+        run: sh conformance/explain-wired.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)

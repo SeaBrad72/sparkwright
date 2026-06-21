@@ -3,6 +3,35 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.35.0] — 2026-06-21
+
+Pre-release dogfood **S4** — the `explain` why-layer (the last S-series epic; pairs with S1). The kit
+*enforces* gates well but rarely *teaches* — a newcomer learns *that* they need a threat model, not
+*why*. S4 makes the rationale queryable at the moment of friction. **It adds no enforcement and waives
+nothing** — the "why" is synthesized from the existing standards, single-sourced, and drift-locked.
+(Backlog: `docs/ROADMAP-KIT.md` → "Strategic adoption epics".)
+
+### Added
+- **`docs/why-gates.md`** — the single source of truth for gate rationale: one browsable block per
+  teachable obligation (12 topics — the S1 conditional-obligations set plus the high-value §14 floor
+  gates), each naming its trigger, a 1–3 sentence *why*, the enforcing check, and a *Read more* pointer
+  back to the canonical standard. Readable directly on any harness (no CLI required).
+- **`scripts/explain.sh`** + the `sparkwright explain` dispatch route — a read-only, mode-blind reader
+  over `why-gates.md`: `sparkwright explain <topic>` prints a block; `sparkwright explain --list`
+  enumerates the topics. A missing rationale source fails cleanly (install-error, not a crash).
+- **`conformance/explain-wired.sh`** — the drift-lock (claim `explain`, claims 22 → 23). Asserts the
+  why-layer is wired, that **no rationale is orphaned** (every repo-path `Enforced by:` exists, and
+  `..`-escaping citations are rejected), and **teaching-completeness**: every S1-checklist enforcer
+  *and* every always-on floor topic is taught in `why-gates.md`. So a gate can never be added without
+  its *why*, nor a *why* point at a deleted check, nor a documented topic silently vanish. Half-gated
+  `--selftest` proves it fails on doc-side gaps, incept-side gaps, floor-topic gaps, orphans, and
+  missing files.
+
+### Changed
+- The S1 `docs/conditional-obligations.md` checklist and the `privacy-ready` / `eval-ready` / `dr-ready`
+  conformance headers now cross-link to `sparkwright explain <control>` — turning each enforced
+  obligation into a launch point for understanding *why* it matters.
+
 ## [3.34.0] — 2026-06-20
 
 Pre-release dogfood **S1** — process-weight mode (the highest-approachability-leverage S-series epic),

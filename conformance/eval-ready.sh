@@ -1,4 +1,5 @@
 #!/bin/sh
+# Why this gate: sparkwright explain evals
 # eval-ready.sh — conditional, fail-closed eval-discipline-declared check (gate parity, Slice 1).
 #
 # Companion to conformance/eval-readiness.md (the §7 Eval gate readiness; DEVELOPMENT-PROCESS.md §7).

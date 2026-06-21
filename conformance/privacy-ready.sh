@@ -1,4 +1,5 @@
 #!/bin/sh
+# Why this gate: sparkwright explain threat-model
 # privacy-ready.sh — conditional, fail-closed privacy-review check (SP-3).
 #
 # Trigger: a project that DECLARES it handles Confidential/Restricted personal data

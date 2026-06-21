@@ -211,6 +211,8 @@ Your project starts on the floor; each below activates the moment you add its tr
 | Container supply-chain (image SBOM + provenance) | you add a Dockerfile | conformance/container-supply-chain.sh |
 
 The floor (lint · type · test+coverage · build · secret-scan · deps · SBOM · branch-protection · builder≠reviewer) applies in EVERY mode and is never waived.
+
+Ask *why* any of these matters: `sparkwright explain <control>` (or see docs/why-gates.md).
 EOF
       fi
       ;;

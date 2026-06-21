@@ -5,6 +5,7 @@ case "${1:-}" in
   doctor) shift; exec sh "$here/doctor.sh" "$@" ;;
   postmortem) shift; exec sh "$here/postmortem.sh" "$@" ;;
   tier-advice) shift; exec sh "$here/tier-advice.sh" "$@" ;;
-  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice" >&2; exit 2 ;;
-  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice" >&2; exit 2 ;;
+  explain) shift; exec sh "$here/explain.sh" "$@" ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain" >&2; exit 2 ;;
 esac
