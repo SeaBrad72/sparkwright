@@ -40,6 +40,72 @@ stack_tools() {  # print "tool|hint" lines for a stack; return 1 if unknown
   esac
 }
 
+is_github_repo() {  # 0 iff inside a work tree whose origin is a github.com remote
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  _origin=$(git remote get-url origin 2>/dev/null) || return 1
+  case "$_origin" in *github.com*) return 0 ;; *) return 1 ;; esac
+}
+
+check_repo_class() {  # warn when the repo is user-owned PRIVATE (SLSA provenance gate skips there)
+  if [ -z "${PREFLIGHT_GH_CMD:-}" ] && ! command -v gh >/dev/null 2>&1; then
+    echo "  skip repo-class — gh not installed (cannot detect repo visibility)"; return 0
+  fi
+  _json=$(${PREFLIGHT_GH_CMD:-gh repo view --json isPrivate,isInOrganization} 2>/dev/null) || _json=""
+  if [ -z "$_json" ]; then
+    echo "  skip repo-class — gh unavailable/unauthenticated/offline (run 'gh auth login')"; return 0
+  fi
+  _priv=$(printf '%s' "$_json" | jq -r '.isPrivate' 2>/dev/null || echo "")
+  _org=$(printf '%s' "$_json"  | jq -r '.isInOrganization' 2>/dev/null || echo "")  # isInOrganization is gh's proxy for the gate's owner.type == 'Organization'
+  if [ "$_priv" = "true" ] && [ "$_org" = "false" ]; then
+    echo "  warn repo is user-owned PRIVATE — SLSA provenance gate will SKIP (make it public or move to an org for build attestation)"
+    rec=1
+  elif [ "$_priv" = "true" ] || [ "$_priv" = "false" ]; then
+    echo "  ok   repo class supports the provenance gate (public or org-owned)"
+  else
+    echo "  skip repo-class — could not parse repo metadata"
+  fi
+}
+
+check_workflows_valid() {  # surface workflow validity via the existing conformance check (reuse, never reimplement)
+  _cmd="${ACTIONLINT_VALID_CMD:-}"
+  if [ "$_cmd" = "__skip__" ]; then
+    echo "  skip workflows — actionlint-valid.sh / actionlint not available"; return 0
+  fi
+  if [ -z "$_cmd" ]; then
+    if [ ! -f conformance/actionlint-valid.sh ]; then
+      echo "  skip workflows — conformance/actionlint-valid.sh not present (pruned?)"; return 0
+    fi
+    if [ -z "${ACTIONLINT_BIN:-}" ] && ! command -v actionlint >/dev/null 2>&1; then
+      echo "  skip workflows — actionlint not installed (set ACTIONLINT_BIN or install actionlint)"; return 0
+    fi
+    _cmd="sh conformance/actionlint-valid.sh"
+  fi
+  if $_cmd >/dev/null 2>&1; then
+    echo "  ok   workflows valid (actionlint via conformance/actionlint-valid.sh)"
+  else
+    echo "  warn an invalid GitHub Actions workflow — run 'sh conformance/actionlint-valid.sh' for details"
+    rec=1
+  fi
+}
+
+check_codeowners_placeholders() {  # standing re-check of @your-org placeholders (incept warns once; this re-warns any time)
+  _paths="${CODEOWNERS_PATHS:-.github/CODEOWNERS .gitlab/CODEOWNERS}"
+  _found=""
+  _any=0
+  for _co in $_paths; do
+    [ -f "$_co" ] || continue
+    _any=1
+    if grep -q '@your-org' "$_co" 2>/dev/null; then _found="$_found $_co"; fi
+  done
+  [ "$_any" -eq 0 ] && return 0   # N/A — no CODEOWNERS yet (pre-inception): print nothing
+  if [ -n "$_found" ]; then
+    echo "  warn$_found still has @your-org/* placeholders — replace with real teams before enabling owner review"
+    rec=1
+  else
+    echo "  ok   CODEOWNERS has no @your-org placeholders"
+  fi
+}
+
 STACK=""; SELFTEST=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -62,6 +128,48 @@ if [ "$SELFTEST" -eq 1 ]; then
   if stack_tools python >/dev/null 2>&1; then echo "PASS: known stack mapped"; else echo "FAIL: known stack not mapped"; fail=1; fi
   miss=0; recommend kit_definitely_absent_tool_xyz "x" >/dev/null 2>&1
   if [ "$miss" -eq 0 ]; then echo "PASS: recommend warns without failing (miss untouched)"; else echo "FAIL: recommend set miss"; fail=1; fi
+
+  # — S2: repo-class check (PREFLIGHT_GH_CMD seam) ————————————————————————————
+  out=$(PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":false}' check_repo_class 2>&1)
+  case "$out" in *warn*PRIVATE*) echo "PASS: user-private repo warns (provenance skip)";; *) echo "FAIL: user-private repo did not warn ($out)"; fail=1;; esac
+
+  out=$(PREFLIGHT_GH_CMD='printf {"isPrivate":false,"isInOrganization":false}' check_repo_class 2>&1)
+  case "$out" in *ok*) echo "PASS: public repo ok, no warn";; *) echo "FAIL: public repo not ok ($out)"; fail=1;; esac
+
+  out=$(PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":true}' check_repo_class 2>&1)
+  case "$out" in *ok*) echo "PASS: org-owned private ok (provenance runs via org)";; *) echo "FAIL: org repo not ok ($out)"; fail=1;; esac
+
+  out=$(PREFLIGHT_GH_CMD='false' check_repo_class 2>&1)
+  case "$out" in *skip*) echo "PASS: gh-failure degrades to skip";; *) echo "FAIL: gh-failure not skipped ($out)"; fail=1;; esac
+
+  # WARN-only invariant: a warning must NOT set miss
+  miss=0; PREFLIGHT_GH_CMD='printf {"isPrivate":true,"isInOrganization":false}' check_repo_class >/dev/null 2>&1
+  if [ "$miss" -eq 0 ]; then echo "PASS: repo-class warn leaves miss untouched"; else echo "FAIL: repo-class warn set miss"; fail=1; fi
+
+  # — S2: CODEOWNERS placeholder check ————————————————————————————————————————
+  _t=$(mktemp -d)
+  printf '* @your-org/team\n' > "$_t/CODEOWNERS"
+  out=$(CODEOWNERS_PATHS="$_t/CODEOWNERS" check_codeowners_placeholders 2>&1)
+  case "$out" in *warn*your-org*) echo "PASS: @your-org placeholder warns";; *) echo "FAIL: placeholder not warned ($out)"; fail=1;; esac
+  printf '* @real-team\n' > "$_t/CODEOWNERS"
+  out=$(CODEOWNERS_PATHS="$_t/CODEOWNERS" check_codeowners_placeholders 2>&1)
+  case "$out" in *ok*) echo "PASS: clean CODEOWNERS ok";; *) echo "FAIL: clean CODEOWNERS not ok ($out)"; fail=1;; esac
+  out=$(CODEOWNERS_PATHS="$_t/none" check_codeowners_placeholders 2>&1)
+  if [ -z "$out" ]; then echo "PASS: absent CODEOWNERS is N/A (no line)"; else echo "FAIL: absent CODEOWNERS printed ($out)"; fail=1; fi
+  miss=0; printf '* @your-org/team\n' > "$_t/CODEOWNERS"; CODEOWNERS_PATHS="$_t/CODEOWNERS" check_codeowners_placeholders >/dev/null 2>&1
+  if [ "$miss" -eq 0 ]; then echo "PASS: codeowners warn leaves miss untouched"; else echo "FAIL: codeowners warn set miss"; fail=1; fi
+  rm -rf "$_t"
+
+  # — S2: workflow-validity check (delegates to actionlint-valid.sh) ——————————
+  out=$(ACTIONLINT_VALID_CMD='true' check_workflows_valid 2>&1)
+  case "$out" in *ok*workflows*) echo "PASS: valid workflows ok";; *) echo "FAIL: valid workflows not ok ($out)"; fail=1;; esac
+  out=$(ACTIONLINT_VALID_CMD='false' check_workflows_valid 2>&1)
+  case "$out" in *warn*workflow*) echo "PASS: invalid workflow warns (pointer to actionlint-valid)";; *) echo "FAIL: invalid workflow not warned ($out)"; fail=1;; esac
+  out=$(ACTIONLINT_VALID_CMD='__skip__' check_workflows_valid 2>&1)
+  case "$out" in *skip*) echo "PASS: unavailable check degrades to skip";; *) echo "FAIL: unavailable check not skipped ($out)"; fail=1;; esac
+  miss=0; ACTIONLINT_VALID_CMD='false' check_workflows_valid >/dev/null 2>&1
+  if [ "$miss" -eq 0 ]; then echo "PASS: workflow warn leaves miss untouched"; else echo "FAIL: workflow warn set miss"; fail=1; fi
+
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 
@@ -76,6 +184,13 @@ recommend gh "GitHub CLI — needed for the branch-protection setup at Inception
 if command -v gh >/dev/null 2>&1; then
   # shellcheck disable=SC2034  # rec mirrors miss for recommended tools; warnings don't fail the run
   if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=1; fi
+fi
+
+if is_github_repo; then
+  echo "Adopter environment (GitHub repo detected):"
+  check_repo_class
+  check_codeowners_placeholders
+  check_workflows_valid
 fi
 
 if [ -n "$STACK" ]; then
@@ -93,6 +208,11 @@ EOF
   else
     echo "  (no toolchain map for '$STACK' — see profiles/$STACK.md)"
   fi
+fi
+
+if [ "$rec" -gt 0 ]; then
+  echo ""
+  echo "$rec advisory warning(s) above — non-blocking (they do not affect this check's result)."
 fi
 
 if [ "$miss" -eq 0 ]; then

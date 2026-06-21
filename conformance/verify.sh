@@ -66,6 +66,7 @@ check control branch-protect   sh conformance/branch-protection.sh
 check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
 check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
+check control adopter-preflight sh conformance/adopter-preflight-wired.sh
 check doc     deployable-ready sh conformance/deployable-ready.sh
 check doc     dr-ready         sh conformance/dr-ready.sh
 check doc     resilience-ready sh conformance/resilience-ready.sh

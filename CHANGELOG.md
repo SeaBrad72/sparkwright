@@ -3,6 +3,31 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.32.0] — 2026-06-20
+
+Pre-release dogfood **S2** — adopter-environment preflight (the first S-series strategic epic).
+Surfaces three late/cryptic GitHub-environment problems *at preflight time* so a newcomer sees them
+clearly here, not as a cryptic failure later. Advisory (WARN-only) — never changes preflight's exit code.
+(Backlog: `docs/ROADMAP-KIT.md` → "Pre-release dogfood findings".)
+
+### Added
+- **`scripts/preflight.sh`** gains an auto-activated "Adopter environment" section (only inside a
+  `github.com` git repo) with three advisory checks: (a) **repo class** — warns when the repo is
+  user-owned **private**, where the SLSA provenance gate silently skips (make it public/org for build
+  attestation); (b) **CODEOWNERS** — a *standing* re-check for lingering `@your-org` placeholders
+  (incept warns only once, at inception); (c) **workflow validity** — reuses
+  `conformance/actionlint-valid.sh` to flag an invalid reference workflow *when an `actionlint` binary is
+  already available locally* (preflight deliberately does not trigger a download at preflight time). Each
+  check degrades to an honest `skip — <reason>` when `gh`/`actionlint`/network is unavailable. The accumulated advisory count is
+  now displayed as a non-blocking "N advisory warning(s)" summary.
+- **`conformance/adopter-preflight-wired.sh`** — a regression-lock (registered claim `adopter-preflight`,
+  claims 19 → 20) asserting the section is wired and stays advisory (a warn never sets `miss`). CI-wired.
+
+### Notes
+- This is **reuse + surface + detect-actual-environment**, not three new validators: it complements the
+  kit-side/one-shot checks already shipped (G1 `actionlint-valid`, G7 `provenance-precondition`, G11
+  incept CODEOWNERS warning) with an adopter-side, standing, environment-aware view.
+
 ## [3.31.0] — 2026-06-20
 
 Pre-release dogfood **G2** — golden-path end-to-end execution harness (the headline meta-fix).

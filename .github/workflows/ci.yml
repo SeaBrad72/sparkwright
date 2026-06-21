@@ -159,6 +159,10 @@ jobs:
         run: sh conformance/tier-advice-wired.sh
       - name: Tier-advice-wired self-test
         run: sh conformance/tier-advice-wired.sh --selftest
+      - name: Adopter-preflight-wired regression-lock
+        run: sh conformance/adopter-preflight-wired.sh
+      - name: Adopter-preflight-wired self-test
+        run: sh conformance/adopter-preflight-wired.sh --selftest
       - name: Agent-trace emitter smoke (selftest over fixture)
         run: sh scripts/agent-trace.sh --selftest
       - name: Agent-scorecard smoke (selftest over fixture corpus)
