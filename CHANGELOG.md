@@ -3,6 +3,32 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.34.0] — 2026-06-20
+
+Pre-release dogfood **S1** — process-weight mode (the highest-approachability-leverage S-series epic),
+resolving the inverted-gradient finding for the left column. `incept --mode prototype|team|enterprise`
+curates *scaffolding + surfacing* to the declared mode — **without changing a single enforced control.**
+(Backlog: `docs/ROADMAP-KIT.md` → "Strategic adoption epics".)
+
+### Added
+- **`scripts/incept.sh --mode prototype|team|enterprise`** (default `team`; unknown → exit 2), recorded
+  as `Process mode:` in the project `CLAUDE.md` §3. It curates scaffolding by mode: **prototype/team**
+  write a trigger-named conditional-obligation checklist (`docs/conditional-obligations.md` — "threat-model
+  applies IF Confidential data", never a premature `N/A`); **enterprise** proactively stamps the governance
+  apparatus (`docs/governance/{THREAT-MODEL,PRIVACY-REVIEW,AI-SYSTEM-CARD,…}.md`) ready-to-fill.
+- **`conformance/mode-enforcement-blind.sh`** — the keystone lock (claim `mode-blind`, claims 21 → 22):
+  asserts **no gate across the enforcement surface** (conformance checks · the gating scripts · CI
+  workflows · the pre-push hook) reads the stamped mode, so a mode can **never weaken an applicable
+  control**. This is the durable, grep-able resolution of the standing "modular-enterprise rejected" (P2)
+  tension. CI-wired.
+
+### Notes
+- **Honest scope: S1 changes NO enforcement and adds NO safety.** Every gate keys on its detected trigger
+  (Dockerfile, `evals/`, data surface, classification), exactly as before — the kit's conditional-applicability
+  already auto-activates each control when its trigger appears (the ratchet already existed). The mode is
+  *pure friction-removal + surfacing* (what P2 prescribes); its wins are the curated newcomer experience and
+  the declared mode that the S4 `--explain` layer will leverage.
+
 ## [3.33.0] — 2026-06-20
 
 Pre-release dogfood **S3** — adopter-clean obtain / prune (second S-series epic). Gives adopters a

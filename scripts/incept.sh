@@ -6,7 +6,8 @@
 #   sh scripts/incept.sh [--name N] [--intent-owner O] [--stack S] \
 #                        [--backlog md|github|jira|ado|linear|gitlab] \
 #                        [--ci github|gitlab] [--harness claude-code[,generic,...]] \
-#                        [--operator-fluency novice|adjacent|practitioner] [--noninteractive]
+#                        [--operator-fluency novice|adjacent|practitioner] \
+#                        [--mode prototype|team|enterprise] [--noninteractive]
 #
 # It frees the root Claude-Code memory slot (CLAUDE.md = kit principles) by renaming the
 # principles doc to ENGINEERING-PRINCIPLES.md and rewriting the principles-sense references,
@@ -21,6 +22,8 @@ CI="${INCEPT_CI:-github}"
 HARNESS="${INCEPT_HARNESS:-claude-code}"        # default keeps today's experience identical
 FLUENCY="${INCEPT_OPERATOR_FLUENCY:-}"          # empty = undeclared (nudge); else stamped
 OPERATOR_FLUENCIES="novice adjacent practitioner"
+MODE="${INCEPT_PROCESS_MODE:-}"
+PROCESS_MODES="prototype team enterprise"
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
 BACKLOG_BACKENDS="md github jira ado linear gitlab"
@@ -43,8 +46,9 @@ while [ $# -gt 0 ]; do
     --ci) reqval $# --ci; CI="$2"; shift 2 ;;
     --harness) reqval $# --harness; HARNESS="$2"; shift 2 ;;
     --operator-fluency) reqval $# --operator-fluency; FLUENCY="$2"; shift 2 ;;
+    --mode) reqval $# --mode; MODE="$2"; shift 2 ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--noninteractive]"; exit 0 ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode prototype|team|enterprise] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -105,6 +109,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   printf 'CI platform (github/gitlab) [%s]: ' "$CI"; read -r _c || true; [ -n "${_c:-}" ] && CI="$_c"
   printf 'Harness(es), comma-separated, of: %s [%s]: ' "$HARNESS_ADAPTERS" "$HARNESS"; read -r _h || true; [ -n "${_h:-}" ] && HARNESS="$_h"
   printf 'Operator fluency (novice/adjacent/practitioner) [skip to decide later]: '; read -r _f || true; [ -n "${_f:-}" ] && FLUENCY="$_f"
+  printf 'Process mode (prototype/team/enterprise) [team]: '; read -r _m || true; [ -n "${_m:-}" ] && MODE="$_m"
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
@@ -127,6 +132,8 @@ fi
 if [ -n "$FLUENCY" ]; then
   case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
 fi
+[ -n "$MODE" ] || MODE="team"
+case " $PROCESS_MODES " in *" $MODE "*) : ;; *) echo "error: unknown --mode '$MODE' (one of: $PROCESS_MODES)" >&2; exit 2 ;; esac
 
 # 9g: never SILENTLY default the stack — make the default choice explicit + pointed.
 if [ "$STACK_EXPLICIT" -eq 0 ]; then
@@ -179,6 +186,53 @@ if [ -n "$FLUENCY" ]; then
 fi
 # stamp the target harness(es)
 sedi "s#\*\*Target harness(es)\*\* (§harness-neutrality): \[claude-code\]#**Target harness(es)** (§harness-neutrality): $(esc "$HARNESS")#" CLAUDE.md
+# S1: stamp the process mode (lowercase — matches the flag values, PROCESS_MODES, and the template field)
+sedi "s#\*\*Process mode\*\* (§ ceremony): \[prototype / team / enterprise\]#**Process mode** (§ ceremony): $(esc "$MODE")#" CLAUDE.md
+
+# --- 3a. S1: mode-driven curation — surfacing/scaffolding only; NEVER an enforcement input. ---
+curate_for_mode() {  # $1 = mode
+  case "$1" in
+    prototype|team)
+      if [ ! -f docs/conditional-obligations.md ]; then
+        mkdir -p docs
+        cat > docs/conditional-obligations.md <<'EOF'
+# Conditional obligations (process mode: lean)
+
+These gates are **enforced automatically when their trigger appears** — you do not opt in or out.
+Your project starts on the floor; each below activates the moment you add its trigger.
+
+| Control | Applies IF | Enforced by |
+|---|---|---|
+| Threat model / privacy review | you declare Confidential/Restricted data (CLAUDE.md §3) | conformance/privacy-ready.sh |
+| Eval gate + AI System Card | you add an `evals/` dir or declare `AI feature: yes` | conformance/eval-ready.sh |
+| Agent-ops trace posture | you declare `Agentic: yes` | conformance/agentops-ready.sh |
+| Accessibility sign-off | you ship a user-facing UI | a11y gate (DEVELOPMENT-STANDARDS §14) |
+| Deployable / resilience / DR | you add a Dockerfile or deploy workflow / durable data | deployable-ready, resilience-ready, dr-ready |
+| Container supply-chain (image SBOM + provenance) | you add a Dockerfile | conformance/container-supply-chain.sh |
+
+The floor (lint · type · test+coverage · build · secret-scan · deps · SBOM · branch-protection · builder≠reviewer) applies in EVERY mode and is never waived.
+EOF
+      fi
+      ;;
+    enterprise)
+      mkdir -p docs/governance
+      for _t in THREAT-MODEL PRIVACY-REVIEW AI-SYSTEM-CARD AI-POLICY AI-TRANSPARENCY-SIGNOFF A11Y-SIGNOFF BIA UAT-SIGNOFF WAIVER-REGISTER; do
+        _src="templates/${_t}-TEMPLATE.md"; [ -f "$_src" ] || _src="templates/${_t}.md"  # WAIVER-REGISTER ships as WAIVER-REGISTER.md (no -TEMPLATE suffix)
+        _dst="docs/governance/${_t}.md"
+        [ -f "$_src" ] && [ ! -f "$_dst" ] && cp "$_src" "$_dst"
+      done
+      [ -f docs/governance/README.md ] || cat > docs/governance/README.md <<'EOF'
+# Governance apparatus (process mode: enterprise)
+
+These templates are stamped ready-to-fill. They are SURFACING, not enforcement — each gate still
+keys on its detected trigger (data classification, AI feature, UI, data service). Delete the ones
+your project genuinely does not need; fill the rest and move/reference them where each conformance
+check looks (see each `conformance/*-ready.sh` header).
+EOF
+      ;;
+  esac
+}
+curate_for_mode "$MODE"
 
 # --- 4. RUNBOOK / BACKLOG / ADR-000 ---
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
@@ -352,7 +406,7 @@ case "$CI" in
 esac
 cat <<EOF
 
-✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}).
+✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}, mode ${MODE}).
 Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAUDE.md is YOUR project guide (charter, config, roles).
 
 Do the judgment steps incept does NOT automate (see START-HERE.md):
