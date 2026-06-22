@@ -15,6 +15,7 @@
 #   sh conformance/ci-selftest-coverage.sh [--selftest]
 # Exit: 0 = all wired · 1 = an unwired selftest-capable check · 2 = bad usage. POSIX sh; dash-clean.
 set -eu
+cd "$(dirname "$0")/.."
 
 CI_FILE="${KIT_CI_FILE:-.github/workflows/ci.yml}"
 SELF=ci-selftest-coverage.sh
@@ -86,7 +87,15 @@ selftest() {
 
 case "${1:-}" in
   --selftest) selftest ;;
-  "")         run ;;
+  "")
+    # Kit-repo detector (C1 / R3): this check only has meaning inside the kit's own repo.
+    # OR-of-markers is fail-closed: golden-path.yml is control-plane + export-ignored (un-spoofable);
+    # deleting only the unprotected ROADMAP-KIT.md marker cannot make the kit skip its own checks.
+    # N/A-skip only when BOTH are absent (true adopter tree). When either is present, run full.
+    if [ ! -f "docs/ROADMAP-KIT.md" ] && [ ! -f ".github/workflows/golden-path.yml" ]; then
+      echo "ci-selftest-coverage: N/A — kit-self check (not applicable outside the kit repo)"; exit 0
+    fi
+    run ;;
   *)          echo "usage: ci-selftest-coverage.sh [--selftest]" >&2; exit 2 ;;
 esac
 exit $?

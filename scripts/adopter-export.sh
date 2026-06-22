@@ -50,6 +50,15 @@ do_export() {  # <dest> <profile-or-empty>  — returns nonzero on bad dest/prof
       sed "s/ ${_c}\\([\"[:space:]]\\)/\\1/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
     done
   fi
+  # R3/C2: the kit's root .gitignore ignores /src/ and /test/ (stray KIT dogfooding output); an
+  # adopter puts product source there, so strip those two EXACT lines from the EXPORTED .gitignore
+  # (the kit's own .gitignore is untouched). `grep -vx` matches whole lines only, so an adopter path
+  # like `my/src/lib` or `/src/foo` is never clobbered. Idempotent.
+  _gi="$_dest/.gitignore"
+  if [ -f "$_gi" ]; then
+    grep -vxE '/(src|test)/' "$_gi" > "$_gi.$$.r3c2" 2>/dev/null || true
+    mv "$_gi.$$.r3c2" "$_gi"
+  fi
   _pruned=0
   if [ -n "$_prof" ]; then
     for _p in $(known_profiles); do
@@ -97,6 +106,10 @@ if [ "${1:-}" = "--selftest" ]; then
   if [ -f "$_d/docs/STACK-SELECTION.md" ] && ! grep -Fq '](../profiles/go.md)' "$_d/docs/STACK-SELECTION.md"; then
     echo "PASS: STACK-SELECTION stubbed (no pruned-profile link)"
   else echo "FAIL: STACK-SELECTION still links a pruned profile (or missing)"; fail=1; fi
+  # R3/C2: the exported .gitignore must NOT ignore /src/ or /test/ (an adopter's source goes there)
+  if grep -qxE '/(src|test)/' "$_d/.gitignore" 2>/dev/null; then
+    echo "FAIL: exported .gitignore still ignores /src/ or /test/ (adopter source un-committable)"; fail=1
+  else echo "PASS: exported .gitignore does not ignore /src/ or /test/"; fi
   # S3b: the maintainer-only claims are carved from the export's registry copies
   for p in drift-watch golden-path adopter-export; do
     if grep -q "^$p$(printf '\t')" "$_d/conformance/claims.tsv"; then echo "FAIL: claim $p not carved from claims.tsv"; fail=1
@@ -107,8 +120,14 @@ if [ "${1:-}" = "--selftest" ]; then
   # pruned profile → ABSENT
   [ -e "$_d/profiles/go" ] && { echo "FAIL: pruned profile present: go"; fail=1; } || echo "PASS: pruned profiles/go"
   [ -e "$_d/profiles/go.md" ] && { echo "FAIL: pruned profile doc present: go.md"; fail=1; } || echo "PASS: pruned profiles/go.md"
+  # R3/C2 bare-export path: export WITHOUT a profile arg must also strip /src/ and /test/
+  _d2="$_t/exp2"
+  do_export "$_d2" >/dev/null 2>&1 || { echo "FAIL: bare export errored"; fail=1; }
+  if grep -qxE '/(src|test)/' "$_d2/.gitignore" 2>/dev/null; then
+    echo "FAIL: bare-export .gitignore still ignores /src/ or /test/"; fail=1
+  else echo "PASS: bare-export .gitignore clean"; fi
   # unknown profile → nonzero
-  if ( do_export "$_t/exp2" nonsuch >/dev/null 2>&1 ); then echo "FAIL: unknown profile accepted"; fail=1; else echo "PASS: unknown profile rejected"; fi
+  if ( do_export "$_t/exp3" nonsuch >/dev/null 2>&1 ); then echo "FAIL: unknown profile accepted"; fail=1; else echo "PASS: unknown profile rejected"; fi
   # non-empty dest → nonzero
   mkdir -p "$_t/full"; : > "$_t/full/x"
   if ( do_export "$_t/full" >/dev/null 2>&1 ); then echo "FAIL: non-empty dest accepted"; fail=1; else echo "PASS: non-empty dest rejected"; fi

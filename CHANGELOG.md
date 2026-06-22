@@ -3,6 +3,28 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.39.0] — 2026-06-22
+
+**R3 — adopter-scoped posture + committable source (RETEST-2 fix-forward).** The second cold-adopter run
+found two adopter-experience bugs: the adopter-facing `doctor` reported **POSTURE: FAIL by construction**
+after `incept` (two kit-*self* conformance checks fail in an adopter repo), and the shipped root
+`.gitignore` ignored `/src/ /test/` so an adopter's source was **silently un-committable**.
+
+### Fixed
+- **Kit-self conformance checks self-skip outside the kit repo.** `conformance/ci-selftest-coverage.sh`
+  (asserts the kit's own CI wires every checker) and `conformance/adopter-export-wired.sh` (verifies the
+  kit's own export mechanism) now print `N/A` and exit 0 when run in an adopter project, so `doctor`/`verify`
+  no longer show FAIL on checks with no adopter meaning. Detection is **fail-closed**: it N/A-skips only when
+  *both* `docs/ROADMAP-KIT.md` **and** the control-plane-protected, export-ignored `.github/workflows/golden-path.yml`
+  are absent — so deleting the (unprotected) backlog marker alone can't make the kit skip its own checks.
+- **`scripts/adopter-export.sh` strips `/src/` and `/test/` from the exported `.gitignore`** (exact-line, idempotent;
+  the kit's own `.gitignore` is untouched), so a generated-profile adopter can commit their source.
+
+### Notes
+- Bounded scope: only the two empirically-failing kit-self checks self-skip; the full conformance-carve
+  (relocating all kit-self checks) remains deferred. A plain-`git clone` adopter (vs. `adopter-export`) still
+  carries the markers and runs the checks — documented ceiling.
+
 ## [3.38.0] — 2026-06-22
 
 **R2 — agent-boundary honesty patch (RETEST-2 fix-forward).** The second cold-adopter run found the kit's

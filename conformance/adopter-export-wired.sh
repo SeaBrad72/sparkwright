@@ -80,6 +80,8 @@ run() {
         echo "FAIL: claim $_cc not carved from the export"; rc=1
       fi
     done
+    # R3/C2 assertion: the exported .gitignore must NOT still ignore /src/ or /test/
+    grep -qxE '/(src|test)/' "$_d/.gitignore" 2>/dev/null && { echo "FAIL: exported .gitignore still ignores /src/ or /test/"; rc=1; }
   else
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
@@ -103,6 +105,14 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -rf "$_n"
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
+fi
+
+# Kit-repo detector (C1 / R3): this check only has meaning inside the kit's own repo.
+# OR-of-markers is fail-closed: golden-path.yml is control-plane + export-ignored (un-spoofable);
+# deleting only the unprotected ROADMAP-KIT.md marker cannot make the kit skip its own checks.
+# N/A-skip only when BOTH are absent (true adopter tree). When either is present, run full.
+if [ ! -f "$ROOT/docs/ROADMAP-KIT.md" ] && [ ! -f "$ROOT/.github/workflows/golden-path.yml" ]; then
+  echo "adopter-export-wired: N/A — kit-self check (not applicable outside the kit repo)"; exit 0
 fi
 
 run
