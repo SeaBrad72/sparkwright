@@ -3,6 +3,28 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.38.0] — 2026-06-22
+
+**R2 — agent-boundary honesty patch (RETEST-2 fix-forward).** The second cold-adopter run found the kit's
+headline "humans ratify via code-owner approval" control is, in the **single-maintainer + agent-authored-PR**
+configuration the kit otherwise prescribes, both **bypassable** and **unsatisfiable** — and the docs didn't
+say so. Documentation-only; the *gated* fix (a separate author identity so author ≠ approver) is deferred to
+the E-series containment work (E4).
+
+### Changed
+- **`AGENTS.md`** — the agent boundary now states the guard sees only **local** git, not a server-side
+  `gh pr merge --admin`; so the agent **prepares the green PR and hands the human the merge command**, and
+  admin-merges only on an explicit instruction.
+- **`docs/operations/runtime-guards.md`** — "Honesty boundary" now notes the git surfaces act locally; a
+  server-side `gh pr merge --admin` (a GitHub API call) is outside the guard's reach — the boundary on *who
+  merges* is branch protection + agent discipline, not the guard.
+- **`docs/operations/review-lane.md`** — new "Solo + agent-authored PRs" caveats: (1) admin-merge is an
+  audit-trailed **convention, not a kit-enforced gate**; (2) requiring code-owner review while the sole owner
+  is the sole code owner is **structurally unsatisfiable** (GitHub forbids self-approval → permanent
+  `BLOCKED`) — rely on required status checks + the logged admin-merge, or use a separate author identity (E4).
+- **All 10 profile `BRANCH-PROTECTION.md`** — a consistent solo-track caveat so a solo adopter isn't steered
+  into the code-owner trap (the team-config JSON is unchanged).
+
 ## [3.37.0] — 2026-06-22
 
 **R1 — conformant generated profiles, behaviour-locked (RETEST-2 fix-forward).** The second cold-adopter

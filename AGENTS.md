@@ -15,7 +15,7 @@ Discover → Plan → Build → Review → Release → Operate, with retrospecti
 Secrets in env / a managed store, never committed · validate input at boundaries · parameterized queries / ORM · least-privilege, short-lived tokens · PII consent + redaction + erasure · immutable audit trail · AI: prompt-injection defense + output validation + evals. Summary in **`CLAUDE.md`**; full bar in **`DEVELOPMENT-STANDARDS.md` §2**.
 
 ## The agent boundary
-Agents act only within granted capabilities; the runtime guard blocks destructive and control-plane actions. **Agents propose; humans ratify** — never self-merge, never edit the control plane (guard, CI, CODEOWNERS, settings) without a human applying it. Autonomy tiers + guard: **`DEVELOPMENT-PROCESS.md` §13**.
+Agents act only within granted capabilities; the runtime guard blocks destructive and control-plane actions. **Agents propose; humans ratify** — never self-merge, never edit the control plane (guard, CI, CODEOWNERS, settings) without a human applying it. The guard sees only **local** git, **not** a server-side `gh pr merge --admin` — so for a merge/ratification, prepare the green PR and **hand the human the merge command**; admin-merge only on an explicit "you merge it." Autonomy tiers + guard: **`DEVELOPMENT-PROCESS.md` §13**; solo-track ratification + the code-owner trap: **`docs/operations/review-lane.md`**.
 
 ## Working with the human
 - **Operator fluency** (adapt to the human's level): `docs/operations/operator-fluency.md`

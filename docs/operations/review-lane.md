@@ -66,8 +66,15 @@ and that log is the audit trail of "solo maintainer self-ratified" (see `../../S
 That is the **only** change: no process is rebuilt and no evidence re-created — every `REVIEW-RECORD` you
 wrote solo remains valid history, and the branch-protection rule itself is unchanged. Optionally also set
 `require_code_owner_reviews` + populate `CODEOWNERS` to route approval by path (the P1 branch-protection
-advisory nudges this). So the solo→team upgrade is **one `enforce_admins` flip with zero rework of the
+advisory nudges this) — **but only once a second human exists; enabling it solo traps you (see the caveats below).** So the solo→team upgrade is **one `enforce_admins` flip with zero rework of the
 recorded compensating-control evidence** — not a re-architecture.
+
+## Solo + agent-authored PRs — two honesty caveats
+
+When the agent opens PRs under your identity, two things are true that the headline "humans ratify via code-owner approval" wording can hide:
+
+1. **`gh pr merge --admin` is server-side — the runtime guard never sees it.** The guard/`pre-push` hook gates only *local* git; an `--admin` merge is a GitHub API call outside its reach. So the admin-merge is an **audit-trailed convention, not a kit-enforced gate** — and the agent must **prepare the green PR and hand you the merge command**, never run it itself (see [`runtime-guards.md`](./runtime-guards.md) "Honesty boundary" and [`../../AGENTS.md`](../../AGENTS.md)).
+2. **Don't require code-owner review while solo + agent-authored.** If the sole owner is also the sole code owner, GitHub **forbids self-approval**, so a required code-owner approval is **structurally unsatisfiable** — the PR stays `BLOCKED` with green CI, and only `--admin` clears it (observed live). Rely on required status checks + the logged admin-merge instead. For a *real* approval gate, have the agent author PRs under a **separate identity** so author ≠ approver — the bot-identity pattern, **deferred to the E-series containment work (E4)**.
 
 ## See also
 - [`drift-self-check.md`](./drift-self-check.md) — the agent's in-loop re-check; **run it before requesting review** so the reviewer inherits less drift (the cheapest catch is the earliest one).
