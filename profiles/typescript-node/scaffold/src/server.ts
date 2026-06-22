@@ -3,11 +3,18 @@
 // pure logic is what the coverage gate measures — the socket-binding main guard is not.
 import { createServer } from 'node:http';
 import { health } from './health.js';
+import { isEnabled } from './flags.js';
 
 export const server = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(health()));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/greeting') {
+    const greeting = isEnabled('newGreeting') ? 'Hello, world! (new)' : 'Hello, world!';
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ greeting }));
     return;
   }
   res.writeHead(404, { 'Content-Type': 'application/json' });

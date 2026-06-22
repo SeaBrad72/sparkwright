@@ -23,3 +23,5 @@ Per §10 preference order: **flag-off → redeploy previous → revert + redeplo
 
 ## Tooling (Org-owned)
 Argo Rollouts, Flagger, a service-mesh canary, or a **flag-driven** staged rollout (§10 feature flags) are platform choices. The kit standardizes the **practice** — slice → smoke → analyze → widen-or-abort — not the tool.
+
+> **Reference + lifecycle:** see [feature-flags.md](feature-flags.md) for the kill-switch flag the kit ships (registry, env toggle, retire ritual) and what it does/doesn't claim.

@@ -23,3 +23,5 @@ adopter-preflight	preflight surfaces the adopter GitHub environment (user-privat
 adopter-export	the adopter-clean obtain mechanism is wired + link-safe (.gitattributes export-ignore set present, no pruned path is a markdown-link target, adopter-export.sh prunes maintainer-only + unused profiles)	sh conformance/adopter-export-wired.sh
 mode-blind	the S1 process-weight mode is enforcement-blind — no conformance check / CI gate reads it, so a mode can never weaken an applicable control	sh conformance/mode-enforcement-blind.sh
 explain	the learner-facing why-layer is wired + drift-locked (sparkwright explain routes; no orphan rationale; every S1-checklist enforcer is taught)	sh conformance/explain-wired.sh
+feature-flags-wired	the feature-flag kill-switch reference is wired end-to-end (flags registry + flagged endpoint + flag-aware smoke + golden-path two-boot flip)	sh conformance/feature-flags-wired.sh
+feature-flags-ready	a project with a feature-flag surface documents the kill-switch toggle + flag-retirement ritual (conditional; N/A when no flag surface)	sh conformance/feature-flags-ready.sh
