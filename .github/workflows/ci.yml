@@ -109,6 +109,10 @@ jobs:
         run: sh conformance/deployable-ready.sh
       - name: Deployable-ready self-test (skip/OK/FAIL fixtures)
         run: sh conformance/deployable-ready.sh --selftest
+      - name: feature-flags-wired self-test (reference + golden-path flip wired)
+        run: sh conformance/feature-flags-wired.sh --selftest
+      - name: feature-flags-ready self-test (skip/OK/FAIL fixtures)
+        run: sh conformance/feature-flags-ready.sh --selftest
       - name: DR-readiness checklist present
         run: test -f conformance/dr-readiness.md
       - name: DR-ready conditional (N/A at kit root)

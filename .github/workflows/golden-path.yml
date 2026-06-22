@@ -42,18 +42,31 @@ jobs:
       - name: docker build the reference image
         working-directory: ${{ env.GP_DIR }}
         run: docker build -t golden-path:ci .
-      - name: Boot the image and verify /healthz liveness (asserts the health body)
+      - name: Boot OFF then ON — prove the feature-flag kill-switch end-to-end (via smoke.sh)
+        working-directory: ${{ env.GP_DIR }}
         run: |
+          wait_live() {  # poll /healthz until the container answers (or fail after 30s)
+            ok=0
+            for _ in $(seq 1 30); do
+              if curl -fsS http://localhost:3000/healthz 2>/dev/null | grep -q '"status":"ok"'; then ok=1; break; fi
+              sleep 1
+            done
+            [ "$ok" = 1 ] || { echo "golden-path: container never became live on /healthz"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          }
+
+          # Boot 1 — flag OFF (default). smoke (also OFF) expects the kill-switch greeting.
           docker run -d --name gp -p 3000:3000 golden-path:ci
-          ok=0
-          for _ in $(seq 1 30); do
-            if curl -fsS http://localhost:3000/healthz 2>/dev/null | grep -q '"status":"ok"'; then ok=1; break; fi
-            sleep 1
-          done
-          docker logs gp || true
+          wait_live
+          if ! sh scripts/smoke.sh; then echo "golden-path: OFF smoke failed (kill-switch path)"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; fi
           docker rm -f gp >/dev/null 2>&1 || true
-          [ "$ok" = 1 ] || { echo "golden-path: /healthz liveness failed (no {\"status\":\"ok\"})"; exit 1; }
-          echo "golden-path: reference pipeline + image + liveness all green"
+
+          # Boot 2 — flag ON. smoke (also ON) expects the new greeting. Proves the flag flips behaviour.
+          docker run -d --name gp -p 3000:3000 -e FEATURE_NEW_GREETING=true golden-path:ci
+          wait_live
+          if ! FEATURE_NEW_GREETING=true sh scripts/smoke.sh; then echo "golden-path: ON smoke failed (feature path)"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; fi
+          docker rm -f gp >/dev/null 2>&1 || true
+
+          echo "golden-path: pipeline + image + flag-flip (OFF kill-switch / ON feature) all green"
 
   generator-golden-path:
     # R1 — execute scripts/new-profile.sh against a REAL pruned export (the condition that hid B1:

@@ -199,6 +199,8 @@ Second cold-adopter run (`SeaBrad72/feedback-triage`, Python/FastAPI **generated
 
 **Ratified plan (2026-06-22): fix-forward FIRST (R1–R4), THEN build the E-series.** First E-build = **E2** (owner-ratified); **brainstorm E3 now** (it sizes E4); build order **E2 → E4 → E3 → E1/E5/E6**.
 
+**E2 ✅ SHIPPED — v3.41.0 (2026-06-22).** Feature flags: kill-switch floor, PROVEN. Zero-dep default-OFF flag registry (`src/flags.ts`) + flagged `GET /greeting` + flag-aware `smoke.sh` + a `golden-path` two-boot flip drill that proves the kill-switch end-to-end (OFF→kill-switch / ON→feature; also closes the "smoke wired into CI" gap-item) + two-part conformance (`feature-flags-wired` behaviour lock · `feature-flags-ready` adopter conditional; claims 23→25). Expand-contract migration · canary/blue-green drill · managed-provider (OpenFeature/Unleash) · live runtime flips are documented as next steps in `docs/operations/feature-flags.md`, not built (deferred to E1/E5/later). **Next: brainstorm E3 (orchestration) → build E4 (containment) → E3.**
+
 ### Fix-forward — R-series (ranked; each its own loop slice, control-plane via the AMBER scratch+apply mechanic)
 
 | # | Sev | Finding (field-note ID) | Fix | Disposition |

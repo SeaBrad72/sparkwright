@@ -3,6 +3,35 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.41.0] — 2026-06-22
+
+**E2 — Feature flags: kill-switch floor, PROVEN (first E-series build).** Closes the gap-assessment
+finding that feature flags were *prescribed-only* — zero reference, zero conformance — despite being the
+kill-switch/rollback foundation. Ships the smallest complete declaration→behaviour vertical: a
+zero-dependency flag the kit *provides*, a golden-path drill that *proves* the kill-switch flips behaviour
+end-to-end, and two-part conformance.
+
+### Added
+- **`profiles/typescript-node/scaffold/src/flags.ts`** — a typed, **default-OFF** feature-flag registry
+  resolved from the environment with a strict `=== 'true'` parse, so an unset / unknown / malformed value
+  can never silently enable a feature. Reference flag `newGreeting` → `FEATURE_NEW_GREETING`.
+- **`GET /greeting`** reference endpoint whose body flips on the flag (`Hello, world!` ↔ `Hello, world! (new)`).
+- **`docs/operations/feature-flags.md`** — flag lifecycle (add → dark-launch → enable → **retire**),
+  kill-switch vs rollback, and the honesty note: an env flag is dark-launch + restart-to-toggle, **not** a
+  live runtime flip (that needs a dynamic/managed provider). Cross-linked from `progressive-delivery.md`.
+- **`conformance/feature-flags-wired.sh`** — kit-side behaviour lock (the registry + endpoint + flag-aware
+  smoke + the golden-path two-boot flip are wired; comment-stripped so inert tokens can't satisfy it).
+- **`conformance/feature-flags-ready.sh`** — adopter-facing conditional: a project with a feature-flag
+  surface must document the kill-switch toggle + retirement ritual; N/A (skip-pass) otherwise.
+  Declaration-only and fail-closed by presence.
+
+### Changed
+- **`profiles/typescript-node/scaffold/scripts/smoke.sh`** is now a runnable, flag-aware kill-switch proof
+  (liveness + a two-sided `/greeting` assertion) — and the `golden-path` workflow now **runs it**, booting the
+  reference image twice (flag OFF → kill-switch greeting; flag ON → new greeting) to prove the flip
+  end-to-end. Closes the "smoke wired into CI" gap-item: `smoke.sh` previously never executed.
+- Headline conformance claims: **23 → 25**.
+
 ## [3.40.0] — 2026-06-22
 
 **R4 — honesty & staleness fixes (RETEST-2 fix-forward, final slice).** Three small corrections the
