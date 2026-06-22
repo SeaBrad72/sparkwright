@@ -33,6 +33,10 @@ dist/
 
 # Internal build scaffolding — kept locally, NOT shipped in the public repo
 # (specs/plans/reviews/roadmaps contain personal paths + pre-anonymization context)
+# NOTE: the superpowers harness (brainstorming/writing-plans skills) defaults to writing design
+# specs here — they are gitignored as kit pre-anonymization scratch. If you use that harness,
+# keep TRACKED design docs elsewhere (e.g. under docs/architecture/; see docs/ADR-000-EXAMPLE.md), or remove
+# this ignore for your project. See docs/adoption/brownfield.md "Residual gaps".
 docs/superpowers/
 .superpowers/
 docs/ROADMAP-SLICE9.md

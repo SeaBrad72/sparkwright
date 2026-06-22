@@ -78,6 +78,12 @@ check_dir() {
   elif grep -Fiq 'restore verified: [date]' "$rb"; then
     echo "FAIL: 'Restore verified:' still holds the [date] placeholder — run a restore drill and record the date"
     fail=1
+  elif grep -Eiq 'restore verified:[[:space:]]*(not[[:space:]]*yet|pending|scheduled|tbd|todo|n/?a|none)' "$rb"; then
+    echo "FAIL: 'Restore verified:' says the drill is not yet run (not yet / pending / scheduled / ...) — run the drill and record its date"
+    fail=1
+  elif ! grep -Eiq 'restore verified:[^0-9]*(19|20)[0-9][0-9]' "$rb"; then
+    echo "FAIL: 'Restore verified:' records no date (a 4-digit year) — run the restore drill and record the date it passed"
+    fail=1
   fi
 
   if [ "$fail" -ne 0 ]; then return 1; fi
@@ -133,11 +139,21 @@ selftest() {
     echo "selftest PASS: no-BIA -> FAIL as expected"
   fi
 
+  d6="$base/unrun"; mkdir -p "$d6/docs/continuity"
+  printf 'DATABASE_URL=postgres://localhost/app\n' > "$d6/.env.example"
+  printf '# BIA\n' > "$d6/docs/continuity/BIA.md"
+  printf '# RUNBOOK\n\n## Disaster recovery\n- RPO: 1h RTO: 2h\n- Restore verified: not yet executed — scheduled at INC-1\n' > "$d6/RUNBOOK.md"
+  if check_dir "$d6" >/dev/null 2>&1; then
+    echo "selftest FAIL: not-yet-run restore verified should FAIL (over-claim)"; st_fail=1
+  else
+    echo "selftest PASS: not-yet-run 'Restore verified:' -> FAIL as expected (over-claim caught)"
+  fi
+
   if [ "$st_fail" -ne 0 ]; then
     echo "dr-ready --selftest: FAIL" >&2
     return 1
   fi
-  echo "dr-ready --selftest: OK (na/stateless/ok/placeholder/no-bia all behaved; fixtures left in $base)"
+  echo "dr-ready --selftest: OK (na/stateless/ok/placeholder/no-bia/unrun all behaved; fixtures left in $base)"
   return 0
 }
 

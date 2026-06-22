@@ -3,6 +3,25 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.40.0] — 2026-06-22
+
+**R4 — honesty & staleness fixes (RETEST-2 fix-forward, final slice).** Three small corrections the
+second cold-adopter run surfaced. Completes the RETEST-2 fix-forward arc (R1–R4).
+
+### Fixed
+- **`conformance/dr-ready.sh` no longer over-claims "RECORDED" for an unrun drill.** It only caught the
+  literal `[date]` placeholder, so an honest `Restore verified: not yet executed` PASSED. It now also FAILs
+  when the `Restore verified:` line says the drill is not-yet-run (not yet / pending / scheduled / tbd / todo
+  / n-a / none) or records no date (a 4-digit year). New `--selftest` "unrun" fixture locks it. (Tightens a
+  safety gate — the safe direction.)
+- **`docs/operations/runtime-guards.md`** — the `KIT_GUARD_SELFEDIT` workaround now states the **inline**
+  `KIT_GUARD_SELFEDIT=1 <cmd>` form does **not** work (the PreToolUse hook runs in its own process before the
+  command); export it in the launching shell or via a `.claude/settings.json` `env` block (verified: an `env`
+  block is visible to hook subprocesses).
+- **`.gitignore` + `docs/adoption/brownfield.md`** — document the superpowers spec-path collision: the
+  harness defaults to writing specs under the kit-`.gitignore`d `docs/superpowers/`, so a combined-framework
+  adopter's `git add` silently no-ops. Guidance: keep tracked design docs under `docs/architecture/`.
+
 ## [3.39.0] — 2026-06-22
 
 **R3 — adopter-scoped posture + committable source (RETEST-2 fix-forward).** The second cold-adopter run
