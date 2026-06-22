@@ -16,7 +16,11 @@ check_wired() {  # <file>
     'npm run build' \
     'cp profiles/typescript-node/Dockerfile' \
     'docker build' \
-    '/healthz'; do
+    '/healthz' \
+    'generator-golden-path' \
+    'sh scripts/adopter-export.sh' \
+    'sh scripts/new-profile.sh teststack' \
+    'provenance-precondition.sh'; do
     grep -qF -- "$tok" "$f" || { echo "FAIL: golden-path workflow missing: $tok"; miss=1; }
   done
   return $miss
@@ -24,8 +28,8 @@ check_wired() {  # <file>
 
 if [ "${1:-}" = "--selftest" ]; then
   d=$(mktemp -d)
-  printf 'name: golden-path\nprofiles/typescript-node\nworkflow_dispatch\nschedule\nnpm ci\nnpm run build\ncp profiles/typescript-node/Dockerfile\ndocker build\n/healthz\n' > "$d/ok.yml"
-  printf 'name: golden-path\nprofiles/typescript-node\nworkflow_dispatch\nschedule\nnpm ci\nnpm run build\ncp profiles/typescript-node/Dockerfile\n/healthz\n' > "$d/bad.yml"
+  printf 'name: golden-path\nprofiles/typescript-node\nworkflow_dispatch\nschedule\nnpm ci\nnpm run build\ncp profiles/typescript-node/Dockerfile\ndocker build\n/healthz\ngenerator-golden-path\nsh scripts/adopter-export.sh\nsh scripts/new-profile.sh teststack\nprovenance-precondition.sh\n' > "$d/ok.yml"
+  printf 'name: golden-path\nprofiles/typescript-node\nworkflow_dispatch\nschedule\nnpm ci\nnpm run build\ncp profiles/typescript-node/Dockerfile\ndocker build\n/healthz\ngenerator-golden-path\nsh scripts/adopter-export.sh\nprovenance-precondition.sh\n' > "$d/bad.yml"
   if check_wired "$d/ok.yml" >/dev/null 2>&1; then echo "PASS: selftest complete fixture wired"; else echo "FAIL: selftest complete fixture wrongly failed"; exit 1; fi
   if check_wired "$d/bad.yml" >/dev/null 2>&1; then echo "FAIL: selftest missing-step not detected"; exit 1; else echo "PASS: selftest missing-step detected"; fi
   echo "OK: golden-path-wired selftest"; exit 0

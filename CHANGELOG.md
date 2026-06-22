@@ -3,6 +3,34 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.37.0] — 2026-06-22
+
+**R1 — conformant generated profiles, behaviour-locked (RETEST-2 fix-forward).** The second cold-adopter
+run (Python/FastAPI, a *generated* profile) found `scripts/new-profile.sh` emitted a stub below the kit's
+own conformance bar — and it **hard-failed on the first Inception action** for any non-TypeScript stack:
+it derived its CODEOWNERS/BRANCH-PROTECTION companions from `profiles/python/`, which a `--profile` export
+prunes. Invisible to the kit's own CI because `profiles/python/` exists in the kit tree; it only vanishes
+in the adopter's export. The generator was validated against the full tree, never executed against a real
+export — the "validated piecemeal" pattern, in the generator.
+
+### Fixed
+- **`scripts/new-profile.sh` emits a *conformant* stub.** The CODEOWNERS + BRANCH-PROTECTION companions are
+  now emitted **inline** (no dependency on any other `profiles/<stack>/` dir), so generation works in any
+  `--profile` export. The stub `ci.yml` is conformant on creation: every `uses:` is SHA-pinned (mirroring
+  the reference), secret-scan uses the checksum-verified gitleaks binary, the provenance step is now a
+  separate **visibility-gated `provenance` job** (passes `provenance-precondition.sh`), the `run:` steps are
+  valid-YAML block scalars, and the SBOM/dep-scan TODOs point at worked examples (incl. the Python
+  `cyclonedx-bom` footgun).
+
+### Added
+- **`generator-golden-path` job in `.github/workflows/golden-path.yml`** — exports the kit
+  (`--profile typescript-node`, where `profiles/python/` is absent), runs `new-profile.sh` **inside** the
+  export, and asserts the generated stub is conformant (`actionlint-valid` parse · `provenance-precondition`
+  · `ci-gates` · a direct per-file pin check). This *executes* the generator against a real export — the
+  only test that catches the export-only class. `conformance/golden-path-wired.sh` extended to lock it.
+  Honest scope: proves the generator **runs** and emits a **conformant stub**, not that a *filled* profile
+  is correct.
+
 ## [3.36.1] — 2026-06-21
 
 **S3b — adopter conformance-carve (completes the obtain fix).** After S3a, a fresh `--profile` export's

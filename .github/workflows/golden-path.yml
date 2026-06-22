@@ -3,9 +3,9 @@ name: golden-path
 # Heavy + path-filtered/scheduled so the fast per-PR ci.yml stays seconds-quick.
 on:
   pull_request:
-    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml']
+    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'profiles/_TEMPLATE.md']
   push:
-    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml']
+    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'profiles/_TEMPLATE.md']
   schedule:
     - cron: '0 7 * * 1'
   workflow_dispatch:
@@ -54,3 +54,34 @@ jobs:
           docker rm -f gp >/dev/null 2>&1 || true
           [ "$ok" = 1 ] || { echo "golden-path: /healthz liveness failed (no {\"status\":\"ok\"})"; exit 1; }
           echo "golden-path: reference pipeline + image + liveness all green"
+
+  generator-golden-path:
+    # R1 — execute scripts/new-profile.sh against a REAL pruned export (the condition that hid B1:
+    # profiles/python/ is absent there) and assert the generated stub is conformant. Proves the
+    # generator RUNS + emits a conformant stub; does NOT prove a FILLED profile is correct.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Export the kit (pruned --profile typescript-node; python/ absent)
+        run: |
+          tmp=$(mktemp -d)
+          sh scripts/adopter-export.sh "$tmp/export" --profile typescript-node
+          echo "EXPORT=$tmp/export" >> "$GITHUB_ENV"
+      - name: Generate a profile INSIDE the export (RED on the pre-fix generator)
+        working-directory: ${{ env.EXPORT }}
+        run: sh scripts/new-profile.sh teststack
+      - name: Assert the generated stub is conformant
+        working-directory: ${{ env.EXPORT }}
+        run: |
+          sh conformance/actionlint-valid.sh
+          PROV_ROOT=. sh conformance/provenance-precondition.sh
+          sh conformance/ci-gates.sh profiles/teststack/ci.yml
+          # B2 pin check on the GENERATED file directly. action-pinning.sh scopes to the canonical
+          # reference (profiles/typescript-node/ci.yml) + kit workflows, NOT generated profiles, so
+          # it would pass VACUOUSLY here — assert the generated stub's pins ourselves, mirroring
+          # action-pinning's extraction (strip trailing # comments, take the ref, require @<40-hex>).
+          bad=$(grep -E '^[[:space:]]*-?[[:space:]]*uses:' profiles/teststack/ci.yml | sed 's/#.*//' | awk '{print $NF}' | grep -Ev '^[^@]*@[0-9a-f]{40}$' || true)
+          [ -z "$bad" ] || { echo "FAIL: unpinned uses: in generated stub: $bad"; exit 1; }
+          echo "OK: every uses: in the generated stub is SHA-pinned"

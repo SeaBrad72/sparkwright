@@ -193,4 +193,31 @@ The assessment's central structural finding: **the kit's approachability gradien
 
 ---
 
-**Last Updated:** 2026-06-21 (pre-release dogfood synthesis — G1–G14 + S1–S4 ranked; **13/14 G's closed** (G8 ⏸️ deferred, doc'd 3.30.0); **S-series COMPLETE** — **S2 ✅ 3.32.0** (adopter-env preflight) · **S3 ✅ 3.33.0** (adopter-clean obtain) · **S1 ✅ 3.34.0** (process-weight mode; mode-blind enforcement resolves the P2 tension) · **S4 ✅ 3.35.0** (the `explain` why-layer; teaching-complete, drift-locked); next = the refactor pass (scope TBD, recon when there) + the deferred adopter-clean conformance-carve)
+## RETEST-2 fix-forward (second-stack stress test — Python/FastAPI, kit v3.36.1, 2026-06-22)
+
+Second cold-adopter run (`SeaBrad72/feedback-triage`, Python/FastAPI **generated** profile) on v3.36.1. **Verdict: the kit materially hardened and demonstrably learns** — **zero** kit-caused GHA failures (vs v1's 4), builder≠reviewer caught a real defect on all 3 increments (stack-agnostic), conditional gates fired on real triggers, and v1's H6 is now regression-locked (`provenance-precondition.sh`). The two original export bugs were already closed by **S3a (#148) + S3b (#149)**. The newly-surfaced weaknesses are mostly **stack-independent** — invisible on v1 only because TS ships the *complete* reference profile (the generator path + the solo-merge boundary were never exercised). Source of record: the adopter repo's `KIT-FIELD-NOTES.md` (31 entries) + `docs/retros/2026-06-22-kit-validation-second-stack-run.md` + the kit-side `docs/superpowers/dogfood/FIELD-NOTES.md`.
+
+**Ratified plan (2026-06-22): fix-forward FIRST (R1–R4), THEN build the E-series.** First E-build = **E2** (owner-ratified); **brainstorm E3 now** (it sizes E4); build order **E2 → E4 → E3 → E1/E5/E6**.
+
+### Fix-forward — R-series (ranked; each its own loop slice, control-plane via the AMBER scratch+apply mechanic)
+
+| # | Sev | Finding (field-note ID) | Fix | Disposition |
+|---|-----|------|-----|-------------|
+| **R1** | HIGH | `new-profile.sh` hard-codes `profiles/python/` (lines 86–88) → any non-TS profile generation **hard-fails on the FIRST Inception action** (B1, confirmed live); generated stub `ci.yml` also ships unpinned actions (B2), ungated provenance (B3), echo-TODO sbom/dep-scan (B4) — one root cause: the generator falls below the kit's own conformance bar | Conformant inline-companion stub + the **export-aware `generator-golden-path`** (B1 is export-only — only running the generator INSIDE an export catches it; the B-meta permanent kill) | ✅ **3.37.0** |
+| **R2** | HIGH/process | Agent-boundary at merge is convention-not-gate in solo+agent: `gh pr merge --admin` bypasses the pre-push guard (server-side) AND the code-owner approval gate is **unsatisfiable** (author==sole owner; GitHub forbids self-approval) (A1+A2) | **Doc patch now** (retro opt b): document solo-track ratification = human `--admin` merge; guard covers only local git. **Deep gated fix (bot-identity authorship, opt a) → E4** | fix-forward (doc) + E4 (gate) |
+| **R3** | MED-HIGH | `doctor.sh` reports **POSTURE: FAIL by construction** post-incept (`ci-selftest-cov`/`adopter-export` don't apply to an adopter) (C1); root `.gitignore:22–23` ships `/src/`+`/test/` → adopter source **silently un-committable** (C2, confirmed live) | Scope `doctor.sh` to adopter-relevant controls; drop `/src/`+`/test/` from the shipped `.gitignore` | fix-forward |
+| **R4** | MED | `dr-ready.sh` over-claims "RECORDED" for an unrun drill (C3); stale `KIT_GUARD_SELFEDIT` inline guidance (C4); harness/kit spec-path collision — superpowers writes specs to kit-gitignored `docs/superpowers/specs/` (C7) | date/`not yet\|pending` negation check; fix `runtime-guards.md`; reconcile the spec path | fix-forward |
+
+**Folded elsewhere / deferred:** guard ergonomics — agent can't run the in-place DR drill (D1) + localhost `curl /healthz` blocked (D2) → **E4** with the deferred **G8 per-segment guard** (same root cause: whole-command substring grep); `gate-eval` secret-exposure default (C5) → **E6** (ship push-to-main / `environment:`-approval reference); Node-20 action pins (C6) → maintenance pin-refresh cadence.
+
+### Testing (Stream 3, interleaved)
+- **Generated-profile golden-path** (extend G2 to generate a profile + run its CI end-to-end) = the B-meta fix AND the permanent generator-class regression-kill → folds into R1.
+- **Team-track dogfood** after R2/E4 — A1 is a *solo+agent* pathology; a two-identity / `enforce_admins:true` run validates the team path + the bot-identity gate.
+- **Exit-interview harvest** (`docs/superpowers/dogfood/RETEST-2-exit-interview.md`) → pre-seed E8/E9/E10 with lived evidence.
+
+### Meta-flag
+The E-series + E8–E14 is a large arc; the retest verdict is the **core is strong** (gaps are references/depth, not broken foundations). Keep the **release-line decision** (E10 capstone: "is this too much?" + one comprehensive validation + maintenance model) in view so the arc doesn't run open-ended.
+
+---
+
+**Last Updated:** 2026-06-22 (RETEST-2 second-stack synthesis — R-series fix-forward ranked + ratified build order E2 → E4 → E3 → E1/E5/E6; brainstorm E3 now. Superseding: pre-release dogfood synthesis — G1–G14 + S1–S4 ranked; **13/14 G's closed** (G8 ⏸️ deferred, doc'd 3.30.0); **S-series COMPLETE** — **S2 ✅ 3.32.0** (adopter-env preflight) · **S3 ✅ 3.33.0** (adopter-clean obtain) · **S1 ✅ 3.34.0** (process-weight mode; mode-blind enforcement resolves the P2 tension) · **S4 ✅ 3.35.0** (the `explain` why-layer; teaching-complete, drift-locked); next = the refactor pass (scope TBD, recon when there) + the deferred adopter-clean conformance-carve)
