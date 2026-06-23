@@ -25,8 +25,12 @@ jobs:
         run: |
           approvers=$(gh api "repos/$REPO/pulls/$PR/reviews" \
             --jq '.[] | select(.state=="APPROVED") | .user.login' | sort -u | tr '\n' ' ')
+          # A commit whose author email is not linked to a forge account yields a null login;
+          # map it to a non-login placeholder so an unlinked committer cannot silently vanish
+          # from the exclusion set (and so a real user literally named "null" is never confused
+          # with one). See separation-of-duties.md "Honest ceiling".
           commit_authors=$(gh api "repos/$REPO/pulls/$PR/commits" \
-            --jq '.[].author.login' | sort -u | tr '\n' ' ')
+            --jq '.[].author.login // "UNLINKED-COMMIT-AUTHOR"' | sort -u | tr '\n' ' ')
           {
             echo "author=$PR_AUTHOR"
             echo "approvers=$approvers"
