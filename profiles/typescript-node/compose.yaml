@@ -39,6 +39,7 @@ services:
     volumes:
       - ./:/work:rw                # ONLY the work tree — nothing from $HOME or the host
     working_dir: /work
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"   # run as host uid so the work tree is writable under cap_drop:[ALL]
     environment:
       HOME: /tmp                   # any $HOME write lands on tmpfs, not a host mount
       npm_config_cache: /tmp/.npm  # keep npm's cache off the read-only root so tooling still runs

@@ -29,5 +29,29 @@ services:
       retries: 10
     volumes:
       - pgdata:/var/lib/postgresql/data
+  # --- Agent sandbox (containment reference — docs/operations/containment.md §1) ---
+  # Headless agent/dev shell, host UNREACHABLE: read-only root, ONLY the work tree mounted, all caps
+  # dropped, no-new-privileges, no network. Opt-in; never auto-started. Run as the HOST uid so the
+  # work-tree bind mount is writable under cap_drop:[ALL] (which strips DAC_OVERRIDE):
+  #     HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile agent run --rm agent
+  agent:
+    build:
+      context: .
+      target: builder
+    profiles: [agent]
+    read_only: true
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./:/work:rw
+    working_dir: /work
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      HOME: /tmp
+    command: ["bash"]
 volumes:
   pgdata:
