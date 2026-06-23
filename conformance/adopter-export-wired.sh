@@ -86,7 +86,18 @@ run() {
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
   rm -rf "$_t"
-  [ "$rc" -eq 0 ] && echo "PASS: adopter-export wired + link-safe + prunes"
+  # (e) DESIGN B / F1: the README must NOT hardcode the export file-count — it drifts silently
+  # (this lock now prevents the 242/392 -> 277/416 drift). The export script prints the exact count
+  # at run time; the README defers to it. Guard the two stale phrasings so a count can't creep back.
+  if [ -f "$ROOT/README.md" ]; then
+    # catch the "down from N" / "~N" phrasing AND any bare 3+-digit "NNN files" count (the export
+    # is always a few hundred files); a 1–2-digit count near "files" is plausibly legit prose, so it
+    # is deliberately not matched (zero false-positive on the current README).
+    if grep -Eq 'down from [~]?[0-9]|[0-9]{3,}[[:space:]]+files' "$ROOT/README.md"; then
+      echo "FAIL: README hardcodes a drifting export file-count — say the export script prints the exact count instead (design B / F1)"; rc=1
+    fi
+  fi
+  [ "$rc" -eq 0 ] && echo "PASS: adopter-export wired + link-safe + prunes + README-count-clean"
   return $rc
 }
 
@@ -100,10 +111,24 @@ if [ "${1:-}" = "--selftest" ]; then
   ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_n" 2>/dev/null || true
   : > "$_n/.gitattributes"   # empty attributes => entries missing
   cp "$ROOT/scripts/adopter-export.sh" "$_n/scripts/adopter-export.sh" 2>/dev/null || true
-  if ROOT="$_n" run >/dev/null 2>&1; then
+  # Subshell scoping (not `ROOT=x run`) is required: a `VAR=val function` prefix LEAKS in POSIX sh,
+  # and the _r fixture below reads $ROOT — an env-prefix leak would corrupt it with the deleted $_n.
+  if ( ROOT="$_n"; run ) >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (empty .gitattributes still passed)"; sfail=1
   fi
   rm -rf "$_n"
+  # negative (F1): a tree identical to HEAD but whose README hardcodes a count must FAIL the lock.
+  _r=$(mktemp -d)
+  ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_r" 2>/dev/null || true
+  cp "$ROOT/scripts/adopter-export.sh" "$_r/scripts/adopter-export.sh" 2>/dev/null || true
+  printf '\nYou get 242 files for typescript-node, down from 392.\n' >> "$_r/README.md"
+  # git-init so the tree passes every OTHER block (export needs `git archive HEAD`) — isolating the
+  # README guard as the SOLE failure cause, so this fixture is load-bearing (run() fails ONLY on (e)).
+  ( cd "$_r" && git init -q && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm r >/dev/null 2>&1 ) || true
+  if ( ROOT="$_r"; run ) >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (README hardcoded count not caught)"; sfail=1
+  fi
+  rm -rf "$_r"
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
 fi
 

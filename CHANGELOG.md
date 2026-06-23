@@ -3,6 +3,22 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.47.1] — 2026-06-23
+
+**Consolidation Tier 1 / F1 — honest, drift-proof export file-count.** The Quickstart over-promised
+"242 files (down from 392)"; the real export is 277 / HEAD 416, and the conformance lock never asserted
+the count, so it drifted green as the E-series added files.
+
+### Fixed
+- **README** no longer hardcodes the drifting absolute — it defers to the export script, which already
+  prints the exact count (`exported … files`). Eliminates the drift class rather than chasing the number.
+- **`conformance/adopter-export-wired.sh`** now guards against a hardcoded export count reappearing
+  (`down from …` / `NNN files`), with a load-bearing negative selftest. Also fixes a latent
+  `VAR=val function` env-prefix leak in the existing `--selftest` (subshell-scoped now). No new claim.
+
+Part of the consolidation arc (`docs/architecture/2026-06-23-e-series-consolidation-audit.md`):
+pause net-new epics (E3 deferred), pay down confirmed over-promise/over-build first.
+
 ## [3.47.0] — 2026-06-23
 
 **E4e — Separation of duties: author ≠ approver, proven (FLOOR + NATIVE).** Closes the R2-deferred

@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.47.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.47.1` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 
@@ -46,8 +46,8 @@ Any team — humans, agents, or both — starting a new project who wants produc
    git clone --depth 1 <kit-url> /tmp/sparkwright-src
    sh /tmp/sparkwright-src/scripts/adopter-export.sh ./my-project --profile typescript-node
    ```
-   You get **242 files** for typescript-node (the kit + your chosen stack), down from 392. The export drops the kit's own
-   backlog/CI-watchers/test-fixtures and the 9 stack profiles you aren't using.
+   The export script prints the exact file count it wrote (`exported … files`) — the kit plus your chosen stack, with the kit's own
+   backlog, CI-watchers, and test-fixtures plus the stack profiles you aren't using pruned out.
    *(Why the script: `export-ignore` only takes effect via `git archive`/this script. A plain
    `cp -R` drags gitignored scratch + `node_modules`; a plain `git clone` carries the full kit.
    The kit's conformance suite and a few maintainer docs are intentionally retained.)*
