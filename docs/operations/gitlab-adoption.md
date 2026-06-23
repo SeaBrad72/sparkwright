@@ -114,6 +114,22 @@ returns UNVERIFIED on GitLab rather than pretending it checked.
 
 ---
 
+## Separation of duties (author ≠ approver)
+
+GitLab has this natively — no additional CI gate or script is required. Enable both settings in
+**Settings → Merge requests → Approval settings**:
+
+- **Prevent approval by author** — the MR author cannot approve their own MR.
+- **Prevent approvals by users who added commits** — any user who pushed a commit to the branch
+  is excluded from approving it.
+
+Together these are GitLab's native realization of the SoD FLOOR (`scripts/sod-check.sh`): the
+same author ≠ approver ≠ commit-authors contract, enforced server-side by the platform rather
+than via a CI script. See [`separation-of-duties.md`](separation-of-duties.md) for the neutral
+contract, the selftest, and the GitHub binding.
+
+---
+
 ## DORA
 
 `scripts/dora.sh` derives the DORA subset from **GitHub APIs** (`gh`). On GitLab it prints
