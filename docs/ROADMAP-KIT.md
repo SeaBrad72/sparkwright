@@ -2,6 +2,20 @@
 
 The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). The Foundation increment (this release, `v1.0.0`) established the meta-layer. Each remaining slice ships as a **contract → reference → conformance** vertical (`MAINTAINING.md` §1), in priority order, each with its own spec → plan → build.
 
+## ★ Reprioritized backlog (2026-06-23 — authoritative order)
+
+A 4-dimension adversarial audit (`docs/architecture/2026-06-23-e-series-consolidation-audit.md`) found the kit was accreting rigor faster than it validated fit — locally-good slices drifting globally. **Pivot: consolidate before E3; elevate a cadenced meta-control above feature epics so this can't recur.** This list supersedes the build-order tables below.
+
+1. **T1 honesty** — F1 ✅ (v3.47.1, file-count fix+lock); **F3** README maturity-disclosure + surface the never-externally-adopted caveat in *exported* docs; **F4** downgrade over-claimed "PROVEN" verbs to single-reference reality.
+2. **M — cadenced meta-control (NEW, elevated).** Go/no-go + retro as an automatable adversarial agent-panel, triggered at epic/release boundaries + every N slices (= thin **E8** cadence + an **E3** critic/steward sliver; update E3's Kit-Steward remit to own it). First use: decide the rest of the consolidation order.
+3. **T4** conformance hardening (real `verify` on push + diagnostics; extract selftest harness → `wf-helpers.sh`; conformance-carve) · **T3** right-weight (retire/merge ceremony; release-line decision) · **T2** real validation (external adopter / from-scratch Quickstart run).
+4. **Feature epics, each THROUGH the go/no-go gate** (order set by M, not pre-committed): E3 orchestration (+E4d) · E5 observability · E1 test battery · E6 AI-native depth · E9 env/promotion · E11 AI-artifact lifecycle · E12 context engineering · E14 human-in-loop · E13 FinOps · E8 (remainder).
+5. **Capstone:** **E10** holistic "is this too much?" + one comprehensive end-to-end validation on the finished kit + maintenance model · **R (NEW)** deliberate area-by-area refactoring model+plan, executed last (subtractive, *not* a rewrite; small because of continuous right-weighting).
+
+**Done:** E2 (v3.41.0) · E4a–E4e containment (v3.42–v3.47.0) · T1-F1 (v3.47.1). **Parked:** G8 (workarounds; E4f killed) · dotnet NuGet-lock Q · stray feedback-triage `v3.37.0` tag.
+
+---
+
 | Order | Slice | Contract (mostly written) | Reference implementation to build | Conformance check |
 |-------|-------|---------------------------|-----------------------------------|-------------------|
 | 1 ✅ | **CI/CD** *(shipped v2.0.0)* | standards §14 + process §10/§15 | `profiles/typescript-node/ci.yml`, `CODEOWNERS`, `BRANCH-PROTECTION.md`; kit-own `.github/workflows/ci.yml` | `conformance/ci-gates.sh` |
