@@ -3,6 +3,28 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.44.0] — 2026-06-23
+
+**E4a′ — Token-scope static gate (completes the 4-platform-controls coverage).** E4a proved three
+containment controls behaviourally (FS-scope/egress/caps); the remaining two (scoped-tokens,
+prod-cred SoD) are cloud-IAM-owned. E4a′ adds a *static structural* gate over the workflows the kit
+ships, so the OIDC discipline the RUNBOOK attests is also machine-checked.
+
+### Added
+- **`conformance/token-scope.sh`** (claim `token-scope`; claims **26 → 27**) — over `profiles/*/ci.yml`
+  + `.github/workflows/*.yml`, asserts (1) the **top-level** `permissions:` block grants no
+  `id-token: write` / `write-all` (OIDC tokens must be **job-scoped**, never workflow-wide), and (2)
+  **no long-lived cloud credentials** (curated AWS/Azure/GCP static-key identifiers — `secrets.GITHUB_TOKEN`
+  and OIDC role ARNs are allowed). Mirrors `provenance-precondition.sh`; wired into `verify.sh` + CI.
+
+### Changed
+- **`docs/operations/containment.md` §2** — notes the static gate complements the RUNBOOK attestation.
+
+### Honest boundary
+Static-structural on the shipped workflows — **not** a behavioural proof of the adopter's cloud IAM,
+and prod-cred SoD's deployment-specific separation stays RUNBOOK-attested (`containment-ready.sh`
+unchanged). The gate fires only on a regression (kit + all profiles pass today).
+
 ## [3.43.0] — 2026-06-23
 
 **E4b — Image-vuln gate: a Trivy CVE scan that actually gates (second E4 build).** Closes the

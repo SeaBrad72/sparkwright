@@ -104,6 +104,8 @@ steps:
 
 The kit ships an instance of the **GitHub→GitHub** form already — the push-only `provenance` / `image-provenance` jobs in `../../profiles/typescript-node/ci.yml` hold `id-token: write` scoped to just those jobs. The snippets above extend the same model to cloud providers; enforcement (the actual role/SA/RBAC scoping and TTL) is platform-owned.
 
+**Statically gated (E4a′).** `../../conformance/token-scope.sh` machine-checks this discipline on the shipped workflows: `id-token: write` must be **job-scoped** (never granted in the workflow-level `permissions:` block), and **no long-lived cloud static keys** (AWS/Azure/GCP) may appear — OIDC federation only. It is a structural check on the YAML the kit ships; it does **not** prove the adopter's cloud IAM actually scopes the token (that, and the deployment-specific prod-cred SoD, stay platform-owned + RUNBOOK-attested above).
+
 ## 3. Separate production credentials (SoD)
 - Agents and dev sessions **never** hold prod write credentials.
 - Production access is brokered through an audited **break-glass / approval** workflow.

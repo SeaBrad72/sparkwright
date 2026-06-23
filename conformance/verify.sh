@@ -71,6 +71,7 @@ check control adopter-export   sh conformance/adopter-export-wired.sh
 check control mode-blind       sh conformance/mode-enforcement-blind.sh
 check control feature-flags-wired sh conformance/feature-flags-wired.sh
 check control containment-audit   sh conformance/containment-audit-wired.sh
+check control token-scope         sh conformance/token-scope.sh
 check doc     deployable-ready sh conformance/deployable-ready.sh
 check doc     dr-ready         sh conformance/dr-ready.sh
 check doc     resilience-ready sh conformance/resilience-ready.sh

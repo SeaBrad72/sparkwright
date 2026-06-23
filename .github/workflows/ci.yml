@@ -242,6 +242,8 @@ jobs:
         run: sh conformance/provenance-precondition.sh
       - name: Provenance-precondition self-test
         run: sh conformance/provenance-precondition.sh --selftest
+      - name: token-scope self-test (OIDC id-token per-job; no static cloud creds)
+        run: sh conformance/token-scope.sh --selftest
       - name: Golden-path harness wired (G2 — reference artifacts run end-to-end)
         run: sh conformance/golden-path-wired.sh
       - name: Golden-path-wired self-test
