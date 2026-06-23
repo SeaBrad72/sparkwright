@@ -3,9 +3,9 @@ name: golden-path
 # Heavy + path-filtered/scheduled so the fast per-PR ci.yml stays seconds-quick.
 on:
   pull_request:
-    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'profiles/_TEMPLATE.md']
+    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'scripts/containment-audit.sh', 'profiles/_TEMPLATE.md']
   push:
-    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'profiles/_TEMPLATE.md']
+    paths: ['profiles/typescript-node/**', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'scripts/containment-audit.sh', 'profiles/_TEMPLATE.md']
   schedule:
     - cron: '0 7 * * 1'
   workflow_dispatch:
@@ -98,3 +98,27 @@ jobs:
           bad=$(grep -E '^[[:space:]]*-?[[:space:]]*uses:' profiles/teststack/ci.yml | sed 's/#.*//' | awk '{print $NF}' | grep -Ev '^[^@]*@[0-9a-f]{40}$' || true)
           [ -z "$bad" ] || { echo "FAIL: unpinned uses: in generated stub: $bad"; exit 1; }
           echo "OK: every uses: in the generated stub is SHA-pinned"
+
+  containment-audit:
+    # E4a — boot the reference `agent` sandbox and PROVE it contains (FS-scope/egress/caps),
+    # each negative probe paired with a positive control. The behavioural backing for the
+    # attestation in conformance/containment-ready.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Scaffold a temp adopter project (incept the reference stack)
+        run: |
+          tmp=$(mktemp -d)
+          git archive HEAD | tar -x -C "$tmp"
+          ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name Containment \
+              --intent-owner "CI" --stack typescript-node --backlog md --ci github --harness claude-code )
+          echo "CA_DIR=$tmp" >> "$GITHUB_ENV"
+      - name: Stage the reference compose + Dockerfile (incept leaves them COPY-&-ADAPT)
+        working-directory: ${{ env.CA_DIR }}
+        run: |
+          cp profiles/typescript-node/compose.yaml .
+          cp profiles/typescript-node/Dockerfile .
+          cp profiles/typescript-node/.dockerignore . 2>/dev/null || true
+      - name: Boot the agent sandbox and probe containment (FS/egress/caps PROVEN)
+        working-directory: ${{ env.CA_DIR }}
+        run: CI=1 sh scripts/containment-audit.sh .

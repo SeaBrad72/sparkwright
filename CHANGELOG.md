@@ -3,6 +3,33 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.42.0] — 2026-06-22
+
+**E4a — Containment-audit: the agent sandbox is PROVEN to contain (first E4 build).** Closes the
+gap-assessment finding that the platform containment controls were *attestation-only* — `containment-ready.sh`
+read a RUNBOOK line, nothing booted the sandbox. E4a moves three of the four controls from attestation to
+**behaviour**: it boots the shipped `agent` sandbox and probes that the boundary actually holds, each negative
+probe paired with a positive control so a dead container cannot pass vacuously. Scoped-tokens / prod-cred-SoD
+stay honestly-labelled attestation (cloud-IAM owned, not container-bootable) — slated for E4a′.
+
+### Added
+- **`scripts/containment-audit.sh`** — boots the reference `agent` service (`docker compose --profile agent
+  run`) and probes **FS-scope** (write outside `/work` fails, inside succeeds), **egress**
+  (`network_mode: none` blocks outbound), and **caps** (`cap_drop: [ALL]` blocks a CAP-gated op). Fail-closed:
+  under CI/`--require`, docker-absent is a failure, not a skip. Adopter-runnable against their own compose.
+  Added to the guard's control-plane set so the gate can't be silently weakened.
+- **`conformance/containment-audit-wired.sh`** — regression lock: the runner + its `golden-path` job + the
+  negative/positive probe **pairing** are wired and can't rot to a vacuous negatives-only check. Claim
+  `containment-audit`; headline claims **25 → 26**.
+- **`containment-audit` job in `golden-path.yml`** — runs the audit live on PR + main (real docker boot+probe)
+  — the behavioural proof, the same bar `golden-path` set in G2.
+
+### Changed
+- **`docs/operations/containment.md`** — documents the audit as the runnable behavioural backing for the
+  shipped reference (the kit proves its artifact; the adopter still attests their deployment).
+- The `containment-audit` claim is carved from the adopter export (its verifier reads the export-ignored
+  `golden-path.yml`), mirroring `feature-flags-wired`; the runner script itself ships as an adopter capability.
+
 ## [3.41.0] — 2026-06-22
 
 **E2 — Feature flags: kill-switch floor, PROVEN (first E-series build).** Closes the gap-assessment

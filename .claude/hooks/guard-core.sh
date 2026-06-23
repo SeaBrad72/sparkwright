@@ -31,6 +31,7 @@ is_control_plane_path() {
     scripts/postmortem.sh|*/scripts/postmortem.sh|\
     scripts/tier-advice.sh|*/scripts/tier-advice.sh|\
     scripts/sparkwright|*/scripts/sparkwright|\
+    scripts/containment-audit.sh|*/scripts/containment-audit.sh|\
     DEVELOPMENT-STANDARDS.md|*/DEVELOPMENT-STANDARDS.md|\
     DEVELOPMENT-PROCESS.md|*/DEVELOPMENT-PROCESS.md|\
     CLAUDE.md|*/CLAUDE.md)

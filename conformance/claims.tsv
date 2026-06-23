@@ -25,3 +25,4 @@ mode-blind	the S1 process-weight mode is enforcement-blind — no conformance ch
 explain	the learner-facing why-layer is wired + drift-locked (sparkwright explain routes; no orphan rationale; every S1-checklist enforcer is taught)	sh conformance/explain-wired.sh
 feature-flags-wired	the feature-flag kill-switch reference is wired end-to-end (flags registry + flagged endpoint + flag-aware smoke + golden-path two-boot flip)	sh conformance/feature-flags-wired.sh
 feature-flags-ready	a project with a feature-flag surface documents the kill-switch toggle + flag-retirement ritual (conditional; N/A when no flag surface)	sh conformance/feature-flags-ready.sh
+containment-audit	the agent sandbox is PROVEN to contain — boot + probe FS-scope/egress/caps, each negative paired with a positive control (.github/workflows/golden-path.yml containment-audit job)	sh conformance/containment-audit-wired.sh
