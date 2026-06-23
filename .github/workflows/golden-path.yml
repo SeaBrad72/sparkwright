@@ -122,3 +122,54 @@ jobs:
       - name: Boot the agent sandbox and probe containment (FS/egress/caps PROVEN)
         working-directory: ${{ env.CA_DIR }}
         run: CI=1 sh scripts/containment-audit.sh .
+  image-vuln:
+    # E4b — PROVE the image-vuln gate runs + discriminates. Scan the reference image (must PASS
+    # clean) and a pinned KNOWN-VULNERABLE fixture (must FAIL) under the identical policy, so the
+    # gate can't vacuously pass. Single mechanism (the SHA-pinned trivy-action); the RED uses the
+    # GHA continue-on-error + outcome-assert idiom (the action fails the step on findings).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '24'
+      - name: Scaffold a temp adopter project (incept the reference stack)
+        run: |
+          tmp=$(mktemp -d)
+          git archive HEAD | tar -x -C "$tmp"
+          ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name ImageVuln \
+              --intent-owner "CI" --stack typescript-node --backlog md --ci github --harness claude-code )
+          echo "IV_DIR=$tmp" >> "$GITHUB_ENV"
+      - name: Stage the reference Dockerfile + build the reference image
+        working-directory: ${{ env.IV_DIR }}
+        run: |
+          cp profiles/typescript-node/Dockerfile .
+          cp profiles/typescript-node/.dockerignore . 2>/dev/null || true
+          docker build -t ts-node-app:ci .
+      - name: PASS — the reference image is clean under the gate policy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ts-node-app:ci
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          exit-code: '1'
+      - name: RED — scan a pinned KNOWN-VULNERABLE fixture (must be blocked)
+        id: red_scan
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: python@sha256:2d97f6910b16bd338d3060f261f53f144965f755599aab1acda1e13cf1731b1b  # ~2yr-old python:3.9-slim; swap per design §3 if it ever scans clean
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          exit-code: '1'
+          format: 'json'
+          output: 'trivy-red.json'
+      - name: Assert the gate BLOCKED the vulnerable fixture (non-vacuous RED)
+        run: |
+          if [ "${{ steps.red_scan.outcome }}" = "failure" ] && [ "$(jq '[.Results[]?.Vulnerabilities // [] | length] | add // 0' trivy-red.json 2>/dev/null)" -gt 0 ]; then
+            echo "RED OK: gate blocked the vulnerable fixture"
+          else
+            echo "RED FAIL: fixture produced no CRITICAL/HIGH findings (clean, stale, or unpullable) — gate not proven non-vacuous"; exit 1
+          fi

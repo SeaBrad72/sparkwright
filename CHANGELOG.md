@@ -3,6 +3,30 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.43.0] — 2026-06-23
+
+**E4b — Image-vuln gate: a Trivy CVE scan that actually gates (second E4 build).** Closes the
+gap-assessment blind spot "the SBOM enumerates, nothing gates" — the reference CI built the image and
+listed its packages (`gate-image-sbom`) but never scanned for CVEs or failed on them. E4b adds a real
+image-vulnerability gate and proves, in golden-path, that it runs and discriminates.
+
+### Added
+- **`gate-image-vuln`** — a SHA-pinned `aquasecurity/trivy-action` step in all **7 Dockerfile profiles'**
+  `ci.yml`, scanning the built image and failing on **fixable CRITICAL/HIGH**
+  (`severity: CRITICAL,HIGH · ignore-unfixed · vuln-type: os,library · exit-code: 1`). Unfixed CVEs stay
+  enumerated by the SBOM, not gated — the gate covers *actionable* risk so it stays enabled.
+- **`image-vuln` job in `golden-path.yml`** — the behavioural proof: it scans the reference image (must
+  PASS clean) **and** a pinned known-vulnerable fixture (must be **blocked by actual findings**, asserted
+  via a `jq` vulnerability count, not merely a non-zero exit) — so the gate can't vacuously pass. Runs
+  live on PR + main.
+
+### Changed
+- **`conformance/container-supply-chain.sh`** now requires `gate-image-vuln` wherever a Dockerfile ships
+  (fail-closed, profile-wide — consistent with the image SBOM + provenance gates).
+- **`conformance/golden-path-wired.sh`** locks the new `image-vuln` job (no new headline claim; reuses
+  the `golden-path` claim — count stays 26).
+- **`DEVELOPMENT-STANDARDS.md` §14** — the container image supply-chain gate now includes the image-vuln scan.
+
 ## [3.42.0] — 2026-06-22
 
 **E4a — Containment-audit: the agent sandbox is PROVEN to contain (first E4 build).** Closes the

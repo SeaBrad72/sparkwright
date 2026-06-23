@@ -56,7 +56,7 @@ for dir in "$ROOT"/*/; do
     echo "FAIL $name: Dockerfile present but no sibling ci.yml"
     pfail=1
   else
-    for id in gate-image-sbom gate-image-provenance; do
+    for id in gate-image-sbom gate-image-provenance gate-image-vuln; do
       grep -Eq "^[[:space:]]*(-[[:space:]]+)?id:[[:space:]]*[\"']?${id}[\"']?[[:space:]]*(#.*)?\$" "$ci" \
         || { echo "FAIL $name: ci.yml missing $id"; pfail=1; }
     done

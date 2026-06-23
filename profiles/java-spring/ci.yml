@@ -115,6 +115,17 @@ jobs:
           format: cyclonedx-json
           output-file: image-sbom.json
 
+      - name: Image vulnerability scan (fixable CRITICAL/HIGH)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        id: gate-image-vuln
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: spring-app:ci
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          exit-code: '1'
+
       - name: Upload image SBOM
         if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
         uses: actions/upload-artifact@v4
