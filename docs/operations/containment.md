@@ -23,8 +23,13 @@ services:
 
 devcontainer equivalent: set `"workspaceMount"` to the work tree only and add `"runArgs": ["--read-only", "--tmpfs", "/tmp"]`.
 
-**Shipped in this kit (copy & adapt).** The `typescript-node` profile carries both, so you start from a working reference, not prose:
-- **Headless agent sandbox** — the `agent` service in [`profiles/typescript-node/compose.yaml`](../../profiles/typescript-node/compose.yaml): `read_only` root, `tmpfs` scratch, **work-tree-only** mount, `cap_drop: [ALL]`, `no-new-privileges`, and `network_mode: none`. Opt-in (`docker compose --profile agent run --rm agent`); a plain `docker compose up` never starts it, so the verified app path is untouched. This is the **strong** reference — genuinely host-isolated and no-network.
+**Shipped in this kit (copy & adapt).** The `agent` sandbox ships in **all container profiles'** `compose.yaml` (provided for all; behaviourally **proven on the `typescript-node` reference**, §below). You start from a working reference, not prose:
+- **Headless agent sandbox** — the `agent` service in [`profiles/typescript-node/compose.yaml`](../../profiles/typescript-node/compose.yaml) (and every other container profile): `read_only` root, `tmpfs` scratch, **work-tree-only** mount, `cap_drop: [ALL]`, `no-new-privileges`, and `network_mode: none`. Opt-in (`docker compose --profile agent run --rm agent`); a plain `docker compose up` never starts it, so the verified app path is untouched. This is the **strong** reference — genuinely host-isolated and no-network.
+  - **Writing the work tree (run as your uid).** The builder runs as root, and `cap_drop: [ALL]` strips DAC_OVERRIDE — so on Linux root cannot write a host-owned bind mount. The service runs as `${HOST_UID:-1000}:${HOST_GID:-1000}`; pass your ids so the agent owns (and can write) the work tree, keeping every containment property intact (running non-root is, if anything, stronger):
+    ```
+    HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose --profile agent run --rm agent
+    ```
+    (Docker-Desktop/macOS virtualizes mount ownership, so it is writable there even without the prefix; the prefix is what makes Linux writable.)
 - **IDE sandbox** — [`profiles/typescript-node/.devcontainer/devcontainer.sandbox.json`](../../profiles/typescript-node/.devcontainer/devcontainer.sandbox.json): the same `--read-only`/`--tmpfs`/`--cap-drop` hardening for a Dev-Containers workflow.
 
 **Honest ceiling on the IDE variant.** An IDE-attached container is **inherently weaker** than the headless `agent` service: the editor injects a server that needs a writable area (the `tmpfs` here) and network for extensions — so the devcontainer is read-only-root and host-isolated but **not** no-egress. For the network layer, pair *either* artifact with the egress allowlist (`egress-control.md`); FS-sandbox and egress are separate controls and neither substitutes for the other.
