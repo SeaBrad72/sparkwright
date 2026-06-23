@@ -32,6 +32,7 @@ is_control_plane_path() {
     scripts/tier-advice.sh|*/scripts/tier-advice.sh|\
     scripts/sparkwright|*/scripts/sparkwright|\
     scripts/containment-audit.sh|*/scripts/containment-audit.sh|\
+    scripts/sod-check.sh|*/scripts/sod-check.sh|\
     DEVELOPMENT-STANDARDS.md|*/DEVELOPMENT-STANDARDS.md|\
     DEVELOPMENT-PROCESS.md|*/DEVELOPMENT-PROCESS.md|\
     CLAUDE.md|*/CLAUDE.md)

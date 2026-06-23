@@ -3,6 +3,37 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.47.0] — 2026-06-23
+
+**E4e — Separation of duties: author ≠ approver, proven (FLOOR + NATIVE).** Closes the R2-deferred
+bot-identity ratification gate — makes "author ≠ approver" a *proven* control, not a convention,
+without binding the kit to GitHub. The principle is forge-neutral; only the binding is forge-specific.
+
+### Added
+- **`scripts/sod-check.sh`** — the forge-neutral SoD FLOOR: a pure identity-set gate (PR/MR author vs
+  approver-set vs commit-author-set) that PASSes only when a ratifier distinct from the author and every
+  commit-author exists, and **fails closed under CI** when inputs are absent. Whole-line fixed-string
+  comparison (no word-split, no glob — any metacharacter is a literal identity); proven by `--selftest`
+  (9 fixtures incl. metachar/casing/anti-vacuity). What the kit *proves* — and being neutral, the proof is too.
+- **`docs/operations/separation-of-duties.md`** — the neutral contract + tiers (solo/lite keeps the honest
+  admin-merge convention; team/enterprise use a distinct ratifying identity) + the honest ceiling.
+- **`docs/operations/sod-gate.github.yml`** — a copy-and-enable GitHub reference workflow (injection-safe;
+  deliberately *not* in `.github/workflows/` so it never auto-runs on the kit) that feeds `sod-check.sh`
+  from the PR event, with the bot-identity-via-App pattern documented.
+- **GitLab native binding** — `gitlab-adoption.md` points to the native MR approval rules
+  *"Prevent approval by author"* + *"Prevent approvals by users who added commits"*.
+- **`conformance/author-not-approver-wired.sh`** (new claim `author-not-approver`, claims 28 → **29**) —
+  runs the FLOOR selftest (behaviour) + static-locks the bindings + `actionlint`-parses the reference
+  workflow. **Mode-blind.**
+- **Guard protection** for `scripts/sod-check.sh` (`is_control_plane_path`, mirroring `containment-audit.sh`).
+
+### Honest ceiling
+- The kit proves the SoD *logic*; **server-side enforcement is the adopter's** branch-protection / forge
+  approval rules (kit CI cannot run a live distinct-approver scenario — the kit is itself the solo case).
+  `gh pr merge --admin` remains a human-only, audit-trailed escape hatch; an `--admin` detective audit is a
+  deferred follow-up. Unattributed (unlinked-email) commits weaken the commit-author check — require linked
+  or signed commits; SoD does not defend against collusion between two distinct identities.
+
 ## [3.46.0] — 2026-06-23
 
 **E4 — Agent sandbox: hardened + writable across all container profiles.** Closes the E4a `/work`

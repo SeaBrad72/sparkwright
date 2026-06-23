@@ -117,6 +117,10 @@ jobs:
         run: sh conformance/containment-audit-wired.sh --selftest
       - name: runtime-security self-test (reference app security headers wired)
         run: sh conformance/runtime-security.sh --selftest
+      - name: SoD logic core self-test (author != approver identity logic)
+        run: sh scripts/sod-check.sh --selftest
+      - name: author-not-approver-wired self-test (SoD FLOOR+NATIVE wiring)
+        run: sh conformance/author-not-approver-wired.sh --selftest
       - name: feature-flags-ready self-test (skip/OK/FAIL fixtures)
         run: sh conformance/feature-flags-ready.sh --selftest
       - name: DR-readiness checklist present
