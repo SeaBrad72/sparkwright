@@ -49,6 +49,9 @@ grep -Eq '^[[:space:]]*agent:' "$COMPOSE" || { echo "FAIL: no \`agent\` service 
 cleanup() { ( cd "$DIR" && docker compose --profile agent down --remove-orphans >/dev/null 2>&1 ) || true; }
 trap cleanup EXIT INT TERM
 
+# Run the agent as the caller's uid so the work-tree bind mount is writable under cap_drop:[ALL]
+# (which strips DAC_OVERRIDE). The compose `agent` service reads ${HOST_UID}/${HOST_GID}.
+HOST_UID="$(id -u)"; HOST_GID="$(id -g)"; export HOST_UID HOST_GID  # declare-then-export (SC2155)
 echo "containment-audit: building the agent sandbox in $DIR ..."
 ( cd "$DIR" && docker compose --profile agent build agent ) || { echo "FAIL: agent sandbox build failed."; exit 1; }
 
@@ -60,18 +63,19 @@ fail=0
 # produce this, so it alone defeats a vacuous pass of the negatives below (a read_only + no-net box
 # fails almost everything — the negatives are only meaningful if the container is provably alive).
 if echo x > /tmp/.ca_probe 2>/dev/null; then echo "POS fs-tmp: PASS"; rm -f /tmp/.ca_probe; else echo "POS fs-tmp: FAIL"; fail=1; fi
-# /work mount-presence — INFORMATIONAL ONLY (never gates). The ./:/work bind attaches on
-# Docker-Desktop (fakeowner) but mounts EMPTY on some Linux/CI runtimes, and work-tree writability
-# is host-uid dependent under cap_drop:[ALL] (root loses DAC_OVERRIDE). Neither is a containment
-# property — containment is the negatives, liveness is the tmpfs positive above. Diagnostic for the
-# separate reference-usability finding; it does NOT set fail.
-if [ -n "$(ls -A /work 2>/dev/null)" ]; then echo "INFO fs-work: work tree mounted + readable"; else echo "INFO fs-work: work tree NOT populated in this runtime (informational; not a containment property)"; fi
+# /work POSITIVE: the agent runs as the host uid (compose `user:` mapping), so the work-tree bind
+# mount is writable even under cap_drop:[ALL]. A writable work tree is what makes the contained
+# sandbox usable; pairs with the read-only-root negatives below.
+if echo x > /work/.ca_probe 2>/dev/null && rm -f /work/.ca_probe 2>/dev/null; then echo "POS fs-work: PASS"; else echo "POS fs-work: FAIL (work tree not writable)"; fail=1; fi
 # FS NEGATIVE: read-only root
 if echo x > /ca_probe 2>/dev/null; then echo "NEG fs-root: FAIL (root writable)"; rm -f /ca_probe; fail=1; else echo "NEG fs-root: PASS (root read-only)"; fi
 if echo x > /etc/ca_probe 2>/dev/null; then echo "NEG fs-etc: FAIL (/etc writable)"; rm -f /etc/ca_probe; fail=1; else echo "NEG fs-etc: PASS (/etc read-only)"; fi
 # Host-unreachable NEGATIVE: no host secrets/socket mounted
 if [ -e /var/run/docker.sock ] || [ -e /root/.aws ] || [ -e /root/.ssh ] || [ -e "$HOME/.aws" ] || [ -e "$HOME/.ssh" ]; then echo "NEG host: FAIL (host path reachable)"; fail=1; else echo "NEG host: PASS (host unreachable)"; fi
-# Egress NEGATIVE: outbound connect must fail (node is guaranteed in the builder stage; IP avoids DNS)
+# Egress NEGATIVE: outbound connect must fail. Uses node (present in the ts-node builder); IP avoids DNS.
+# NOTE: this audit is ts-node-only (golden-path); the other 6 profiles sandboxes are reference configs,
+# not booted. If ever generalized to a non-node profile, make this probe language-neutral. node-absent
+# falls to the inconclusive then FAIL branch (fail-closed), so it does NOT false-pass, just cannot audit.
 ev=$(node -e "var s=require(\"net\").connect(443,\"1.1.1.1\");s.setTimeout(5000);s.on(\"connect\",function(){console.log(\"CONNECTED\");process.exit(0)});s.on(\"timeout\",function(){console.log(\"BLOCKED-timeout\");process.exit(3)});s.on(\"error\",function(e){console.log(\"BLOCKED-\"+e.code);process.exit(3)});" 2>&1) || true
 case "$ev" in
   *CONNECTED*) echo "NEG egress: FAIL (network reachable: $ev)"; fail=1 ;;
@@ -92,7 +96,7 @@ echo "$out"
 # Anti-vacuous gate: the run must exit 0 AND every control marker must be PASS in the output
 # (so an empty/short-circuited run cannot pass on exit code alone).
 miss=0
-for m in "POS fs-tmp: PASS" "NEG fs-root: PASS" "NEG fs-etc: PASS" "NEG host: PASS" "NEG egress: PASS" "NEG caps: PASS"; do
+for m in "POS fs-tmp: PASS" "POS fs-work: PASS" "NEG fs-root: PASS" "NEG fs-etc: PASS" "NEG host: PASS" "NEG egress: PASS" "NEG caps: PASS"; do
   printf '%s\n' "$out" | grep -qF -- "$m" || { echo "containment-audit: MISSING expected PASS marker: $m"; miss=1; }
 done
 

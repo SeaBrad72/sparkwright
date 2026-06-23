@@ -3,6 +3,25 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.46.0] — 2026-06-23
+
+**E4 — Agent sandbox: hardened + writable across all container profiles.** Closes the E4a `/work`
+follow-up *and* a propagation gap: the hardened agent sandbox shipped only in `typescript-node`.
+
+### Added
+- **The hardened `agent` sandbox in all 7 container profiles' `compose.yaml`** (was ts-node only):
+  `read_only` root, `network_mode: none`, `cap_drop: [ALL]`, `no-new-privileges`, work-tree-only mount,
+  opt-in (`profiles: [agent]`). Provided for all; behaviourally proven on the ts-node reference.
+
+### Fixed
+- **The agent sandbox can now write `/work` on Linux.** It builds as root and `cap_drop: [ALL]` strips
+  DAC_OVERRIDE, so root couldn't write a host-owned bind mount (worked on Docker-Desktop/macOS via
+  fakeowner). The service now runs as `${HOST_UID:-1000}:${HOST_GID:-1000}` — pass `HOST_UID=$(id -u)
+  HOST_GID=$(id -g)` so the agent owns the work tree, **keeping every containment property** (running
+  non-root is, if anything, stronger). `conformance/containment-audit.sh` re-promotes the `/work`
+  write probe from informational back to a **gated positive** (`POS fs-work: PASS`), proven live on
+  Linux in the `containment-audit` job alongside the unchanged negatives.
+
 ## [3.45.0] — 2026-06-23
 
 **E4c — DAST / runtime-security: proven security-header floor + documented ZAP reference.** Closes
