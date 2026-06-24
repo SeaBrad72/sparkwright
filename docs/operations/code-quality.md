@@ -9,7 +9,7 @@ plus how to switch on complexity/duplication via the lint gate you already have.
 ## The code-quality review lens (§7 Review gate)
 
 At the Review gate, a reviewer (human or agent) checks dimensions a gate can't honestly score —
-use `templates/CODE-REVIEW-CHECKLIST.md`:
+use the quality-lens rubric in `templates/REVIEW-RECORD-TEMPLATE.md`:
 
 - **Readability** — a new reader follows it without the author.
 - **Simplicity (DRY / YAGNI)** — no needless abstraction; no copy-paste that should be one thing.
