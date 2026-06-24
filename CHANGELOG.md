@@ -5,6 +5,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.9] — 2026-06-24
+
+**T4 — golden-path hardening: catch incept.sh breaks per-PR + quiet adopter editor false-positives.**
+
+### Changed
+- **`.github/workflows/golden-path.yml`** — (F7) the `pull_request`/`push` path-filters now include
+  **`scripts/incept.sh`**: golden-path runs `sh scripts/incept.sh` in three of its jobs (it generates the
+  scaffold the harness then exercises), so a break there is now caught per-PR instead of only on the
+  weekly/dispatch run.
+- **`.github/workflows/golden-path.yml`** — each job now declares its runtime temp-dir var at job level
+  with an empty default (`env: { GP_DIR/EXPORT/CA_DIR/IV_DIR: '' }`). The value is still set at runtime
+  via `$GITHUB_ENV`; the declaration only resolves the GitHub Actions VS Code extension's "Context
+  access might be invalid" false-positives — adopter-experience hygiene (an adopter copying the workflow
+  no longer sees confusing red squiggles). No behavior change (reviewer-confirmed: empty defaults are a
+  safe fail-loud mode; path-widening is strictly additive).
+
 ## [3.48.8] — 2026-06-24
 
 **T4 (CI-trust Blocker b) — claims-registry: surface diagnostics + preserve the three-state.**
