@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.8] — 2026-06-24
+
+**T4 (CI-trust Blocker b) — claims-registry: surface diagnostics + preserve the three-state.**
+The second CI-trust Blocker the M1 meta-control first run surfaced. Diagnostics/labels only — no
+behavior change on the happy path (every claim still PASSes, exit 0); the registry stays fail-closed.
+
+### Changed
+- **`conformance/claims-registry.sh`** — each claim's verifier ran as `sh -c "$v" >/dev/null 2>&1`,
+  which (a) **swallowed** the verifier's output (a failing claim showed no *why*) and (b) **collapsed**
+  the three-state (any non-zero → FAIL, so an `exit 2` UNVERIFIED was mislabeled FAIL). Now mirrors
+  `verify.sh`: captures output, classifies **0 = PASS · 2 = UNVERIFIED · other = FAIL**, and **prints
+  the captured output (indented) on any non-pass** so a CI failure shows the reason. Both UNVERIFIED and
+  FAIL still fail the registry (fail-closed). Added a verifier contract note (structural output only —
+  never a secret value, since output is now surfaced) + selftest fixtures for the new three-state and
+  diagnostics. builder ≠ reviewer + security-review-of-scratch both APPROVE (no net weakening: every
+  outcome that failed the registry before still fails it).
+
 ## [3.48.7] — 2026-06-24
 
 **T4 (CI-trust Blocker a) — per-PR control enforcement + a trustworthy weekly drift-watch.**
