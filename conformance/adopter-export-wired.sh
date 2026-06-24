@@ -50,7 +50,7 @@ run() {
     _badf=$(mktemp)
     find "$_d" -name '*.md' -type f | while IFS= read -r _f; do
       _fdir=$(dirname "$_f")
-      grep -oE '\]\([^)]+\)' "$_f" 2>/dev/null | sed -E 's/^\]\(//; s/\)$//' | while IFS= read -r _ln; do
+      awk '/^[[:space:]]*(```|~~~)/{f=!f;next} f{next} {gsub(/`[^`]*`/,"");print}' "$_f" 2>/dev/null | grep -oE '\]\([^)]+\)' | sed -E 's/^\]\(//; s/\)$//' | while IFS= read -r _ln; do
         case "$_ln" in
           http://*|https://*|mailto:*|'#'*) continue ;;
         esac

@@ -5,6 +5,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.10] — 2026-06-24
+
+**T4 — check-links: skip code spans + fenced blocks (the kit's own linter, made CommonMark-correct).**
+`check-links.sh` extracted links from raw text, so any doc that *quoted* link syntax inside a backtick
+span or a fenced block was false-flagged as a broken link (it bit this very arc three times). Fixed +
+locked with a selftest so it can't silently return.
+
+### Changed
+- **`conformance/check-links.sh`** — link extraction now pre-processes each file (drops fenced `/~~~`
+  blocks + strips inline `` `code` `` spans) before matching `](…)`. A link inside code isn't rendered
+  as a link, so ignoring it is correctness, not a loophole. **No regression** — real (rendered) broken
+  links are still caught, including a real link on the same line as a code span (proven against a real
+  CommonMark renderer; the dropped set is a strict subset of the renderer's non-rendered set).
+  Conservative by design (rare nested-fence shapes may over-extract = fail-safe false-flag, never a
+  missed link). Adds a `--selftest` (code-span / fence skipping is load-bearing) wired into `ci.yml`.
+- **`conformance/adopter-export-wired.sh`** — the same gotcha lived in its inline export link-check
+  (CI caught it: this entry's own code-span examples tripped it); applied the identical (reviewed)
+  awk code-strip. *(There are now two copies of the awk — the `wf-helpers.sh` refactor, the next T4
+  item, dedupes both, incl. line 31's narrower basename grep.)*
+- builder ≠ reviewer + security-review-of-scratch both APPROVE.
+
 ## [3.48.9] — 2026-06-24
 
 **T4 — golden-path hardening: catch incept.sh breaks per-PR + quiet adopter editor false-positives.**
