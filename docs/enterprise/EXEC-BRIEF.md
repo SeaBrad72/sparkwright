@@ -30,6 +30,8 @@ From the same directional industry benchmark data, three properties together are
 
 The runtime guard is a **speed bump, not a boundary** for shell and interpreter commands — a deny-list over a shell cannot contain a determined or compromised agent (interpreters and obfuscation defeat pattern-matching; `--no-verify` bypasses the git hook). Two honest refinements (Slices 11a–11c): the guard now **enforces** a deny-by-default **MCP capability gate** in-process (the one in-process control that is real enforcement — by tool name only), and the kit now **ships + verifies references** for the four platform controls — a network-egress allowlist (the only real exfiltration defense), separate production credentials, a sandboxed filesystem, and scoped short-lived tokens — which remain **platform-enforced** (Kit-assisted, not Kit-enforced). Adopt both — the guard prevents accidents cheaply; the platform boundary is what you certify. See [platform-safety-boundary.md](platform-safety-boundary.md).
 
+**Maturity:** the kit is pre-adoption — validated in-house (its own CI on every push plus two synthetic end-to-end dogfoods), not yet adopted by an external team. Treat an external pilot's results as the next validation signal.
+
 ## 6. Compliance at a glance
 
 | Framework | What the kit assures | Org-owned |

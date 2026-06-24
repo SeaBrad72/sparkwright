@@ -23,6 +23,15 @@ New to the terminology? See [GLOSSARY.md](GLOSSARY.md).
 ## Who it's for
 Any team — humans, agents, or both — starting a new project who wants production-grade discipline without inventing a process from scratch. Adopt it as-is, or hand it to a team and let them tailor it.
 
+## Maturity & validation status
+
+Sparkwright is **pre-adoption**. It is built by dogfooding its own loop, runs its own CI on every push, and has been validated end-to-end by **two synthetic adopter dogfoods** (the feedback-triage service) — both authored in-house, by the same author. It has **not yet been adopted by an external team**.
+
+What that means for you:
+- **`typescript-node` is the maturity-verified reference path** — its language gates are maintainer-executed green on clone. Other stacks are **provided, not maintainer-executed** (see the Quickstart's per-stack honesty).
+- The conformance harness, guard, and CI gates run identically on this repo every push, so the *builder-facing* machinery is genuinely exercised; the *adopter experience* is validated by synthetic dogfoods, not yet by an outside team.
+- Driving a real third-party project — or a non-Claude harness — through the kit is the recommended first real-world validation. We surface where our own validation stops rather than claim coverage we don't have ("green ≠ verified").
+
 ## What's inside
 
 | File | What it is |
