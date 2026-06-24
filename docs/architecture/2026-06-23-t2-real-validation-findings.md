@@ -45,17 +45,22 @@ the F1/F3/F4 honesty work is validated by running, not just by audit. Export rep
 - *(none)* — onboarding, green-on-clone, and the solo governance path all held.
 
 ### Important → T3 / T4 (or a small incept/export fix)
-1. **CODEOWNERS brownfield false-alarm on a clean greenfield install.** `adopter-export.sh` copies the
-   kit's `.github/CODEOWNERS` into the new project; `incept.sh` then sees it, treats it as user-owned,
-   refuses to overwrite, and routes the adopter to `docs/adoption/brownfield.md` — wrong destination
-   for a first clean install; the `"NOT overwritten"` warning implies something broke when nothing did.
+1. **CODEOWNERS brownfield false-alarm on a clean greenfield install.** The kit's `.github/CODEOWNERS`
+   (containing `@SeaBrad72`) ships into the export **by omission** — it is NOT listed `export-ignore` in
+   `.gitattributes`, so `git archive` includes it. `incept.sh` then sees it, treats it as user-owned,
+   refuses to overwrite, and routes the adopter to `docs/adoption/brownfield.md` — wrong destination for
+   a first clean install; the `"NOT overwritten"` warning implies something broke when nothing did.
    *(Cold-run surfaced; the meta-control audit missed it — exactly the "never run end-to-end" class.)*
-   **Route:** a small incept/export fix (treat the exported CODEOWNERS as a kit reference, or template
-   it) — candidate quick win, or T4.
-2. **Mode-dial is silent.** `incept --mode prototype` is accepted but produces **no visible difference**
-   and **no echo** of what the mode did → misleading. *(Independently confirms the meta-control panel's
-   finding — two methods, same result.)* **Route:** T3 (right-weight: make the mode visible / echo its
-   effect, or reconsider it).
+   **Root cause:** missing `.github/CODEOWNERS export-ignore` entry (not an explicit copy in
+   `adopter-export.sh`). **Route:** T4 — add the `export-ignore` entry (and update
+   `adopter-export-wired.sh`'s `IGN` set) **or** template the kit's CODEOWNERS.
+2. **Mode-dial: `prototype` ≡ `team` (no behavioral difference).** The mode **is** echoed (the
+   `incept` completion banner prints `mode ${MODE}`, `incept.sh:411`), but `prototype` and `team` hit
+   the *same* `curate_for_mode()` branch → identical `conditional-obligations.md` output, so the mode
+   choice carries **no observable effect** for the two most common values. *(Independently aligns with
+   the meta-control panel's "mode-dial cosmetic" note — though enforcement-blindness is by ratified
+   design; the issue is the two non-enterprise modes being indistinguishable.)* **Route:** T3
+   (right-weight: differentiate `prototype` from `team`, or collapse them).
 
 ### Medium → T4
 3. **`explain` is blind to process vocabulary.** `autonomy tier`, `intent owner`, `WIP limit` appear
@@ -93,12 +98,15 @@ the F1/F3/F4 honesty work is validated by running, not just by audit. Export rep
   org/paid repo).
 - **Audit record:** `SeaBrad72/sparkwright-t2-validation` (private) — PR #1, branch-protection config,
   and the self-merge-block message are the evidence trail.
+- **Audit record is private → not independently verifiable** by a third party; the evidence exists in
+  that repo but cannot be confirmed externally without access.
 
 ## Routing summary
 
-- **T3 (right-weight):** mode-dial visibility (#2), route-scaffolding (#6).
-- **T4 (conformance/UX hardening):** CODEOWNERS false-alarm (#1, or a quick incept fix), `explain`
-  process-vocab (#3), the enforce_admins honesty note (#4).
+- **T3 (right-weight):** `prototype`≡`team` differentiation (#2, Important), route-scaffolding (#6, Low).
+- **T4 (conformance/UX hardening):** CODEOWNERS export-ignore fix (#1, Important), `explain`
+  process-vocab (#3, Medium), the enforce_admins honesty note (#4 — *honesty-note only; the live
+  validation of #4 is in `T2-team-live`*).
 - **`T2-team-live` (next):** live `enforce_admins` + 2-human + solo-discoverability probe (#4, #5).
 - **Validated-as-quality (Ledger 1):** green-on-clone honesty, the solo compensating-control bundle
   (agent-review + self-merge-block + FLOOR logic) — all held under execution.
