@@ -42,6 +42,7 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
 
 1. Land the change on a feature branch via PR (the kit's own loop — see §5).
 2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version.
+   - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
 
 ## 4. Contributing back (the closed loop, applied to the kit)

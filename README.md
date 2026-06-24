@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.47.1` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.47.2` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 
@@ -22,6 +22,15 @@ New to the terminology? See [GLOSSARY.md](GLOSSARY.md).
 
 ## Who it's for
 Any team — humans, agents, or both — starting a new project who wants production-grade discipline without inventing a process from scratch. Adopt it as-is, or hand it to a team and let them tailor it.
+
+## Maturity & validation status
+
+Sparkwright is **pre-adoption**. It is built by dogfooding its own loop, runs its own CI on every push, and has been validated end-to-end by **two synthetic in-house dogfood runs** of a feedback-triage service (the same project, exercised twice) — both authored by the same author. It has **not yet been adopted by an external team**.
+
+What that means for you:
+- **`typescript-node` is the maturity-verified reference path** — its language gates are maintainer-executed green on clone. Other stacks are **provided, not maintainer-executed** (see the Quickstart's per-stack honesty).
+- The conformance harness, guard, and CI gates run identically on this repo every push, so the *builder-facing* machinery is genuinely exercised; the *adopter experience* is validated by synthetic dogfoods, not yet by an outside team.
+- Driving a real third-party project — or a non-Claude harness — through the kit is the recommended first real-world validation. We surface where our own validation stops rather than claim coverage we don't have ("green ≠ verified").
 
 ## What's inside
 
