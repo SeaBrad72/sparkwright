@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md](MAINTAINING.md) §3.
 
+## [3.47.2] — 2026-06-23
+
+**Consolidation Tier 1 / F3 + F4 — honesty closeout.** The "never externally adopted" maturity
+caveat lived only in the export-ignored `ROADMAP-KIT.md` (stripped from what adopters receive), and
+several release headlines used a bare "PROVEN" verb their bodies already scoped to the ts-node reference.
+
+### Changed
+- **README** — new `## Maturity & validation status` section: the kit is pre-adoption, validated
+  in-house (own CI + 2 synthetic dogfoods), `typescript-node` is the maturity-verified reference path.
+  Now in an **exported** doc, so adopters actually receive the caveat (F3).
+- **`docs/enterprise/EXEC-BRIEF.md`** §5 — adds the pre-adoption maturity line to the honest-boundaries
+  picture (F3).
+- **CHANGELOG** — re-scoped four over-claimed headline verbs (E4a / E2 / E4c / E4e) to single-reference
+  reality; entry bodies were already honest (F4).
+- **`MAINTAINING.md`** §3 + CHANGELOG header — a forward claim-verb discipline so "proven" can't
+  out-claim its scope again (F4).
+
+Docs-only; no contract, conformance, or claim change. Part of the consolidation arc
+(`docs/architecture/2026-06-23-e-series-consolidation-audit.md`).
+
 ## [3.47.1] — 2026-06-23
 
 **Consolidation Tier 1 / F1 — honest, drift-proof export file-count.** The Quickstart over-promised
