@@ -5,6 +5,37 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.0] — 2026-06-23
+
+**M1 — cadenced meta-control: the adversarial go/no-go + retro, productized (panel + first use).**
+The kit's own meta-controls were designed but never operationalized — nothing triggered them, so
+locally-good slices drifted globally (direction/proportion, which CI can't see). M1 makes the panel a
+committed, harness-neutral, runnable artifact and runs it once; M2 (next) adds the staleness gate that
+forces it to run.
+
+### Added
+- **`docs/operations/meta-control.md`** — the canonical, harness-neutral runbook: a tiered adversarial
+  panel (5-lens *light* every-N-slices, **N=5**; 11-dim *full* at epic/release boundaries), the
+  evidence standard, per-lens schema, adversarial verify pass, GO/CONDITIONS/NO-GO verdict, the two
+  ledgers, retro fold-in, and routing. The institutional counterpart to `drift-self-check.md` — and,
+  unlike it, gateable (it produces a verdict artifact).
+- **`.claude/agents/kit-steward.md`** — the Claude-native binding (read-mostly) that runs the panel;
+  the "E3 critic/steward sliver". Any harness uses the runbook directly.
+- **`docs/governance/meta-control-log.md`** — the verdict log (kit instance; M2 export-ignores it).
+- **First run** (`docs/architecture/2026-06-23-meta-control-first-run.md`) — the 5-lens panel run on
+  the kit (verdict **GO-WITH-CONDITIONS**). It validated the consolidation pivot *by the mechanism* and
+  resequenced the backlog (T2 first; E4d decoupled; E3 not default-first) — including a **new CI-trust
+  Blocker the manual audit missed** (per-PR CI ran `verify.sh --selftest`, not `--require`). Ratified
+  by the subsequent `ROADMAP-KIT.md` commit in this PR (agents propose, humans ratify).
+
+### Changed
+- **`docs/ROADMAP-KIT.md`** — reprioritized to the meta-control-ratified order (the runbook's "closing
+  the loop" step); T1 marked complete; staleness fixed.
+
+Harness-neutral by design: the runbook is the canonical definition; no `.claude/workflows/` script is
+committed (orchestration is harness-local). No control-plane change, no new claim — the enforcement
+(staleness gate + verdict ledger + lock + claim) is M2.
+
 ## [3.47.2] — 2026-06-23
 
 **Consolidation Tier 1 / F3 + F4 — honesty closeout.** The "never externally adopted" maturity
