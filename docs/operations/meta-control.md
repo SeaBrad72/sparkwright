@@ -78,6 +78,13 @@ equivalent agent and follow this runbook.)
   re-reading essays).
 - **Adversarial verify pass** — each *material* finding is independently re-checked / refuted before
   it counts. Kills false-positive churn.
+  - **For cut/retire decisions, the verify pass MUST include a design-intent check** (banked from the
+    T3a run, 2026-06-24): for each proposed retire/merge, ask *"does this exist for a deliberate
+    design / compliance-crosswalk / persona / process-phase / harness-neutral reason that low-usage
+    doesn't capture?"* — **default KEEP** unless genuinely *redundant* (content lives elsewhere) or
+    *dead* (completed artifact captured in CHANGELOG + live code). "Few inbound references / rarely
+    used" is **not** a cut reason in a front-load-rigor + conditional-obligations kit; the answer to
+    "too much" is usually *de-emphasize (partition), not remove*.
 - **One synthesis → verdict** — a single integrator produces the verdict and both ledgers.
 - **Two ledgers, always** — regardless of verdict (below).
 - **Retro fold-in** — the synthesis also answers: *what did the last N slices teach, and into which
