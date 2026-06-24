@@ -3,6 +3,8 @@
 All notable changes to Sparkwright are recorded here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md](MAINTAINING.md) §3.
+
 ## [3.47.1] — 2026-06-23
 
 **Consolidation Tier 1 / F1 — honest, drift-proof export file-count.** The Quickstart over-promised
@@ -21,8 +23,8 @@ pause net-new epics (E3 deferred), pay down confirmed over-promise/over-build fi
 
 ## [3.47.0] — 2026-06-23
 
-**E4e — Separation of duties: author ≠ approver, proven (FLOOR + NATIVE).** Closes the R2-deferred
-bot-identity ratification gate — makes "author ≠ approver" a *proven* control, not a convention,
+**E4e — Separation of duties: author ≠ approver gate (FLOOR + NATIVE).** Closes the R2-deferred
+bot-identity ratification gate — makes "author ≠ approver" a *gate* (FLOOR logic proven by selftest), not a convention,
 without binding the kit to GitHub. The principle is forge-neutral; only the binding is forge-specific.
 
 ### Added
@@ -71,7 +73,7 @@ follow-up *and* a propagation gap: the hardened agent sandbox shipped only in `t
 
 ## [3.45.0] — 2026-06-23
 
-**E4c — DAST / runtime-security: proven security-header floor + documented ZAP reference.** Closes
+**E4c — DAST / runtime-security: security-header floor proven on the reference server + documented ZAP reference.** Closes
 the last named gap-assessment blind spot (no DAST / runtime security). The reference CI did only
 *static* analysis (`gate-sast`, deps, image) — nothing exercised the *running* app.
 
@@ -141,7 +143,7 @@ image-vulnerability gate and proves, in golden-path, that it runs and discrimina
 
 ## [3.42.0] — 2026-06-22
 
-**E4a — Containment-audit: the agent sandbox is PROVEN to contain (first E4 build).** Closes the
+**E4a — Containment-audit: the agent sandbox is proven to contain on the ts-node reference (first E4 build).** Closes the
 gap-assessment finding that the platform containment controls were *attestation-only* — `containment-ready.sh`
 read a RUNBOOK line, nothing booted the sandbox. E4a moves three of the four controls from attestation to
 **behaviour**: it boots the shipped `agent` sandbox and probes that the boundary actually holds, each negative
@@ -168,7 +170,7 @@ stay honestly-labelled attestation (cloud-IAM owned, not container-bootable) —
 
 ## [3.41.0] — 2026-06-22
 
-**E2 — Feature flags: kill-switch floor, PROVEN (first E-series build).** Closes the gap-assessment
+**E2 — Feature flags: kill-switch floor, proven on the ts-node reference (first E-series build).** Closes the gap-assessment
 finding that feature flags were *prescribed-only* — zero reference, zero conformance — despite being the
 kill-switch/rollback foundation. Ships the smallest complete declaration→behaviour vertical: a
 zero-dependency flag the kit *provides*, a golden-path drill that *proves* the kill-switch flips behaviour
