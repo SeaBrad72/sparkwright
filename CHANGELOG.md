@@ -5,6 +5,24 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.4] — 2026-06-24
+
+**T3c (consolidation) — CODE-REVIEW-CHECKLIST folded into REVIEW-RECORD as a rubric block.**
+Content-preserving: all 10 quality dimensions kept verbatim, now co-located with the review record they
+feed. Keeps the deliberate distinction — the rubric is *what to check* (a distinct block), the record is
+*what was found*. Templates 24→23.
+
+### Removed
+- `templates/CODE-REVIEW-CHECKLIST.md` — its 10 dimensions migrated.
+
+### Changed
+- **`templates/REVIEW-RECORD-TEMPLATE.md`** — gains a `## Quality-lens rubric (what to check)` section
+  (the 10 dimensions verbatim), placed before *Agent-review findings* so the rubric drives the findings.
+- **`docs/operations/code-quality.md`** — the §7 review-lens pointer now references the REVIEW-RECORD
+  quality-lens rubric.
+- **`DEVELOPMENT-PROCESS.md`** — the §Review row's code-quality-lens pointer repointed likewise
+  (control-plane; applied via human-run apply.py).
+
 ## [3.48.3] — 2026-06-24
 
 **T3c (consolidation) — SPEC template consolidated into FEATURE-REQUEST (one fewer template).**
