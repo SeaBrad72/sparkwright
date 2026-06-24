@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.5] — 2026-06-24
+
+**T3c (consolidation) — frame.md + shape.md folded into discovery-loop.md as sections.**
+Content-preserving: the two thin per-stage guides become `## FRAME` / `## SHAPE` sections of the loop
+overview they belong to — one reader-journey instead of three files. The completeness gate is updated
+in lockstep (file-presence → section-presence) and is **not weakened**: a discovery-loop that names the
+stages in its overview table but lacks the actual FRAME/SHAPE guide sections still FAILS (a new
+load-bearing selftest fixture proves it).
+
+### Removed
+- `docs/discovery/frame.md`, `docs/discovery/shape.md` — content migrated verbatim into discovery-loop.md.
+
+### Changed
+- **`docs/discovery/discovery-loop.md`** — gains `## FRAME` and `## SHAPE` stage-guide sections; the
+  three former `[frame.md]`/`[shape.md]` links now point to those in-page sections.
+- **`conformance/discovery-complete.sh`** (control-plane; applied via human-run apply.py) — asserts the
+  FRAME/SHAPE **sections** exist in discovery-loop.md (`^## FRAME`/`^## SHAPE`, distinct from the
+  overview `**FRAME**` token) instead of the separate files; selftest gains a green-while-dark RED
+  fixture (overview-only loop, sections stripped → must fail).
+
 ## [3.48.4] — 2026-06-24
 
 **T3c (consolidation) — CODE-REVIEW-CHECKLIST folded into REVIEW-RECORD as a rubric block.**
