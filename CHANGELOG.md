@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.1] — 2026-06-24
+
+**T3c (consolidation) — profile maturity relabel: honest first-class vs experimental tiers.**
+Right-weighting by honesty, not subtraction — no profile removed, all still ship and `adopter-export
+--profile` still prunes any. Closes the flagged residue *"first-class 10 profiles unqualified"* (only
+`typescript-node` is maintainer-executed).
+
+### Changed
+- **All 10 profile `Status:` fields now carry a maturity tier** — first-class
+  (`typescript-node`, `python`, `go`, `ml`, `terraform`) vs experimental (`java-spring`, `kotlin`,
+  `dotnet`, `rust`, `data-engineering`). The 9 non-ts profiles remain provided-not-maintainer-executed.
+- **`docs/STACK-SELECTION.md`** — comparison matrix gains a **Maturity** column + a "Maturity tiers"
+  definition (first-class-verified = `typescript-node` only; first-class = actively-maintained
+  references; experimental = least-exercised, expect more adaptation).
+- **`README.md`** — the profile line no longer calls all 10 "first-class"; it states the honest
+  5 first-class / 5 experimental split and links the maturity tiers.
+
+### Notes
+- The Group-4 SHA-pin "paired finding" (SHA-pin the 9 profiles' `ci.yml`) was **dropped** as a
+  design-intent reversal — `conformance/action-pinning.sh` deliberately treats those profiles as
+  "pin at adoption" templates and enforces SHA-pinning where the kit actually executes Actions.
+  Recorded as reversal #11 in `docs/architecture/2026-06-24-t3a-rightweight-assessment.md`.
+
 ## [3.48.0] — 2026-06-23
 
 **M1 — cadenced meta-control: the adversarial go/no-go + retro, productized (panel + first use).**

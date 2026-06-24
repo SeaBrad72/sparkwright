@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a Kotlin/JVM stack. Copy/adapt per project; record selection as ADR-000. (Sibling of `java-spring` — Gradle + ktlint/detekt deltas.)
 
 **Stack:** Kotlin · JDK 21 (LTS) · Gradle (Kotlin DSL) · Spring Boot 3.x · PostgreSQL + JPA/Hibernate + Flyway · JUnit 5/Kotest · hosted (container / K8s)
-**Status:** reference
+**Status:** reference (experimental)
 
 ---
 

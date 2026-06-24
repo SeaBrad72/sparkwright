@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a TypeScript/Node stack. Copy/adapt per project; record selection as ADR-000.
 
 **Stack:** TypeScript (strict) · Node.js · Express or Next.js · PostgreSQL + Prisma · Vitest · hosted (Vercel/Railway/container)
-**Status:** reference
+**Status:** reference (first-class — verified)
 
 ---
 

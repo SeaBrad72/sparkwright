@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a Java/Spring stack. Copy/adapt per project; record selection as ADR-000.
 
 **Stack:** Java 21 (LTS) · Maven · Spring Boot 3.x · PostgreSQL + JPA/Hibernate + Flyway · JUnit 5 · hosted (container / K8s)
-**Status:** reference
+**Status:** reference (experimental)
 
 ---
 

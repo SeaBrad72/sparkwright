@@ -8,18 +8,29 @@ A stack profile is the concrete *how* for one deployable service: its toolchain,
 
 ## Comparison matrix
 
-| Stack | Best for | Avoid when | Typical domain/runtime |
-|-------|----------|------------|------------------------|
-| typescript-node | Full-stack web, APIs, SPAs, serverless; large JS/TS ecosystem; fast iteration | CPU-bound numeric/parallel work; hard real-time; tight memory | Node.js / browser |
-| python | Data, ML, scripting, APIs, automation, glue; rapid development | Perf-critical hot loops without native extensions; mobile front-ends | CPython / data stack |
-| go | Networked services, CLIs, high-concurrency, single-binary cloud infra | Rich desktop GUIs; heavy data-science/numerics | Go runtime / static binary |
-| java-spring | Large transactional enterprise services; mature JVM ecosystem; big teams | Cold-start-sensitive tiny serverless; quick throwaway scripts | JVM |
-| kotlin | Modern-language JVM services; Android; Spring with less ceremony | Non-JVM targets; minimal-dependency tiny CLIs | JVM / Android |
-| dotnet | C#/Azure enterprise, Windows shops, high-performance services | One-off scripts; teams with no .NET familiarity | .NET runtime |
-| rust | Performance- and safety-critical systems, embedded-adjacent, WASM | Rapid CRUD where delivery velocity dominates; exploratory prototyping | Native / WASM |
-| ml | Model training/serving, experiments, eval-driven development | Plain web APIs with no ML component | Python ML stack |
-| data-engineering | ETL/ELT, batch & stream pipelines, warehouse/lakehouse work | Interactive apps / request-serving APIs | Python data/orchestration |
-| terraform | Infrastructure-as-code, cloud provisioning | Application logic — it provisions infra, it is not an app stack (pair with an app profile) | Terraform / cloud |
+| Stack | Maturity | Best for | Avoid when | Typical domain/runtime |
+|-------|----------|----------|------------|------------------------|
+| typescript-node | first-class (verified) | Full-stack web, APIs, SPAs, serverless; large JS/TS ecosystem; fast iteration | CPU-bound numeric/parallel work; hard real-time; tight memory | Node.js / browser |
+| python | first-class | Data, ML, scripting, APIs, automation, glue; rapid development | Perf-critical hot loops without native extensions; mobile front-ends | CPython / data stack |
+| go | first-class | Networked services, CLIs, high-concurrency, single-binary cloud infra | Rich desktop GUIs; heavy data-science/numerics | Go runtime / static binary |
+| ml | first-class | Model training/serving, experiments, eval-driven development | Plain web APIs with no ML component | Python ML stack |
+| terraform | first-class | Infrastructure-as-code, cloud provisioning | Application logic — it provisions infra, it is not an app stack (pair with an app profile) | Terraform / cloud |
+| java-spring | experimental | Large transactional enterprise services; mature JVM ecosystem; big teams | Cold-start-sensitive tiny serverless; quick throwaway scripts | JVM |
+| kotlin | experimental | Modern-language JVM services; Android; Spring with less ceremony | Non-JVM targets; minimal-dependency tiny CLIs | JVM / Android |
+| dotnet | experimental | C#/Azure enterprise, Windows shops, high-performance services | One-off scripts; teams with no .NET familiarity | .NET runtime |
+| rust | experimental | Performance- and safety-critical systems, embedded-adjacent, WASM | Rapid CRUD where delivery velocity dominates; exploratory prototyping | Native / WASM |
+| data-engineering | experimental | ETL/ELT, batch & stream pipelines, warehouse/lakehouse work | Interactive apps / request-serving APIs | Python data/orchestration |
+
+**Maturity tiers** — all ten are copy-and-adapt reference profiles held to the same conformance bar;
+the tier signals how *exercised* each is, not how complete:
+- **first-class (verified)** — `typescript-node` only: its language gates are maintainer-executed green
+  on clone and it is the path the golden-path CI boots end-to-end.
+- **first-class** — `python`, `go`, `ml`, `terraform`: actively-maintained references the kit stands
+  behind (mainstream stacks + the headline eval / policy-as-code gates). Provided, not
+  maintainer-executed.
+- **experimental** — `java-spring`, `kotlin`, `dotnet`, `rust`, `data-engineering`: provided as
+  starting points but least-exercised (heavier or nicher toolchains). Expect to do more adaptation,
+  and pin/upgrade tooling as you adopt.
 
 ---
 

@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on an infrastructure-as-code (Terraform) stack. Copy/adapt per project; record selection as ADR-000. The headline addition is the **policy-as-code gate**. (Pulumi/CDK/Ansible teams: generate a profile via `scripts/new-profile.sh`.)
 
 **Stack:** Terraform ≥1.6 (HCL) · tflint · Checkov + OPA/conftest · Trivy · remote state (S3+DynamoDB / Terraform Cloud)
-**Status:** reference
+**Status:** reference (first-class)
 
 ---
 

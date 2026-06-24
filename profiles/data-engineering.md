@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a modern ELT/data-engineering stack — warehouse transformations, orchestration, and data-quality contracts. Copy/adapt per project; record selection as ADR-000. The headline addition is the **data-quality gate**.
 
 **Stack:** Python 3.12+ · uv · dbt-core · Dagster · PostgreSQL/Snowflake/BigQuery · Great Expectations · hosted (orchestrated batch; container/K8s)
-**Status:** reference
+**Status:** reference (experimental)
 
 ---
 

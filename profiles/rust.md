@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a Rust stack. Copy/adapt per project; record selection as ADR-000.
 
 **Stack:** Rust (stable) · axum · PostgreSQL + sqlx · `cargo test` · hosted (single-binary container / K8s)
-**Status:** reference
+**Status:** reference (experimental)
 
 ---
 

@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a Go stack. Copy/adapt per project; record selection as ADR-000.
 
 **Stack:** Go 1.22+ · net/http or chi · PostgreSQL + pgx/sqlc · `go test` · hosted (single-binary container / K8s)
-**Status:** reference
+**Status:** reference (first-class)
 
 ---
 

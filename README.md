@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.48.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.48.1` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 
@@ -93,7 +93,7 @@ So the kit **dictates the contract and offers the implementation**: rewrite the 
 
 ## Generate your own profile (any stack)
 
-The kit ships first-class profiles for **TypeScript/Node, Python, Java/Spring, C#/.NET, Go, Rust, Kotlin, Data Engineering, ML, and Terraform** (10 in all) — but it is **never limited to them**. For any other stack:
+The kit ships **10 reference profiles** — five first-class (**TypeScript/Node, Python, Go, ML, Terraform**) and five experimental (**Java/Spring, Kotlin, C#/.NET, Rust, Data Engineering** — provided as starting points, less exercised; see the [maturity tiers](docs/STACK-SELECTION.md)) — but it is **never limited to them**. For any other stack:
 
 1. `sh scripts/new-profile.sh <stack>` — scaffolds `profiles/<stack>.md` (from the template) + a stub `profiles/<stack>/ci.yml` whose 8 quality-gate ids already satisfy `conformance/ci-gates.sh`.
 2. Fill the 11 profile sections and replace each `run:` command with your stack's tooling.

@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a C#/.NET stack. Copy/adapt per project; record selection as ADR-000.
 
 **Stack:** .NET 8 (LTS) · C# · ASP.NET Core · PostgreSQL + EF Core · xUnit · hosted (container / Azure / K8s)
-**Status:** reference
+**Status:** reference (experimental)
 
 ---
 

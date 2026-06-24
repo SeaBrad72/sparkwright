@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a Python stack. Copy/adapt per project; record selection as ADR-000.
 
 **Stack:** Python 3.12+ · uv · FastAPI · PostgreSQL + SQLAlchemy/Alembic · pytest · hosted (container / Fly / Railway)
-**Status:** reference
+**Status:** reference (first-class)
 
 ---
 

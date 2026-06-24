@@ -3,7 +3,7 @@
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a machine-learning stack — data → training → **evaluation** → optional serving. Copy/adapt per project; record selection as ADR-000. (Sibling of `python`; the headline addition is the **eval gate**.)
 
 **Stack:** Python 3.12+ · uv · scikit-learn / PyTorch (+ Anthropic SDK for LLM features) · MLflow · DVC · pandera · pytest · hosted training/serving (container / K8s)
-**Status:** reference
+**Status:** reference (first-class)
 
 ---
 
