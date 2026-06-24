@@ -25,7 +25,8 @@ forces it to run.
 - **First run** (`docs/architecture/2026-06-23-meta-control-first-run.md`) — the 5-lens panel run on
   the kit (verdict **GO-WITH-CONDITIONS**). It validated the consolidation pivot *by the mechanism* and
   resequenced the backlog (T2 first; E4d decoupled; E3 not default-first) — including a **new CI-trust
-  Blocker the manual audit missed** (per-PR CI ran `verify.sh --selftest`, not `--require`). Ratified.
+  Blocker the manual audit missed** (per-PR CI ran `verify.sh --selftest`, not `--require`). Ratified
+  by the subsequent `ROADMAP-KIT.md` commit in this PR (agents propose, humans ratify).
 
 ### Changed
 - **`docs/ROADMAP-KIT.md`** — reprioritized to the meta-control-ratified order (the runbook's "closing

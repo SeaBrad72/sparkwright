@@ -133,10 +133,11 @@ reads this file to compute whether a review is overdue.
 
 ## Who runs it (the Kit-Steward — neutral role)
 
-A **steward agent** owns the meta-control: it runs the panel, synthesizes the ledgers, writes the
-verdict artifact + log row, and routes findings — proposing, never ratifying. The role is
-harness-neutral; the Claude-native binding is [`../../.claude/agents/kit-steward.md`](../../.claude/agents/kit-steward.md).
-On any other harness, assign the same remit to an equivalent agent.
+A **steward agent** owns the meta-control: it runs the panel, synthesizes the ledgers, and *produces*
+the verdict artifact + log row + routed proposals — **as text the human commits**, proposing, never
+ratifying or writing to the repo itself. The role is harness-neutral; the Claude-native binding is
+[`../../.claude/agents/kit-steward.md`](../../.claude/agents/kit-steward.md). On any other harness,
+assign the same remit to an equivalent agent.
 
 ## Where it sits (not redundant with the other layers)
 

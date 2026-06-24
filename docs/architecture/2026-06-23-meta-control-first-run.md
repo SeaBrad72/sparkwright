@@ -63,9 +63,10 @@ conformance header).
   (`ci.yml:221`); the real `--require` runs **weekly** (`drift-watch.yml:18`). → A PR that breaks a
   verify.sh-only `[control]` (e.g. `branch-protect`) passes per-PR CI. **Fix:** selftest must assert
   ≥1 `[control]` PASS + 0 FAIL + inner exit 0; add `verify.sh --require` as a per-PR step.
-- **[Blocker]** `claims-registry.sh:25` runs `sh -c "$v" >/dev/null 2>&1` — swallows all diagnostics
-  and collapses exit-2 (UNVERIFIED) → FAIL (F2). **Fix:** capture+print on failure; preserve the
-  three-state.
+- **[Blocker]** `claims-registry.sh:25` runs `sh -c "$v" >/dev/null 2>&1` — swallows the verifier's own
+  output and collapses *every* non-zero exit to FAIL, so an UNVERIFIED result (the third state
+  `verify.sh` preserves per-check) is indistinguishable from a hard failure (F2). **Fix:** capture +
+  print verifier output on failure; preserve the three-state distinction.
 - **[High]** `*-wired` checks verify NAMED-not-RUN, and `golden-path.yml`'s path filter excludes
   `conformance/**` and `scaffold/src/**` → the live containment/runtime-security/flag proofs can drift
   without re-trigger (F7). **Fix:** widen the path filter, or document "periodic-only" honestly.
