@@ -21,8 +21,9 @@ audit (run by hand) was this panel's prototype.
 
 ## When to run it (the cadence)
 
-- **Every N slices** → the **light (5-lens)** profile. (M2 enforces "due" via a staleness gate that
-  reads the verdict log.)
+- **Every N slices** → the **light (5-lens)** profile. **N defaults to 5** (a review is *due* once 5
+  release tags have landed since the last logged run). (M2 enforces "due" via a staleness gate that
+  reads the verdict log; N is the gate's input.)
 - **At an epic / release / major boundary** → the **full (11-dim)** profile.
 - **On demand** when a direction feels off — the cheapest place to catch drift is before the next big
   build, not after (the banked meta-lesson: *re-question the plan, don't just execute it*).
