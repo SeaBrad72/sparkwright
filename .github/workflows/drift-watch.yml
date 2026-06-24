@@ -14,7 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-      - name: Aggregate conformance (controls must hold; UNVERIFIED fails under --require)
+      - name: jq available (fail loudly if the runner drops it, no silent UNVERIFIED)
+        run: jq --version
+      # branch-protection is verified at the governance gate (admin creds), NOT in this aggregate —
+      # keeping it here would red this run forever (least-privilege token can't read protection).
+      - name: Aggregate conformance (offline controls must hold; clean under --require)
         run: sh conformance/verify.sh --require
       - name: Claims registry — headline claims still hold + no silent drop
         run: sh conformance/claims-registry.sh

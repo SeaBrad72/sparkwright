@@ -9,8 +9,9 @@
 # that those procedures were tested. See conformance/README.md "What a green run means".
 # SCOPE: this is a curated aggregate of the repo-runnable checks — NOT every conformance
 # script. Checks needing project context or live creds (e.g. inception-done, tracker-contract,
-# stack-selection) and conditionally-wired checks (e.g. container-supply-chain) run in their own
-# CI steps / at the adopter's gate, not here. "aggregate" means representative, not exhaustive.
+# stack-selection, branch-protection — repo-admin creds it can't have in least-privilege CI; verified
+# at the governance gate, see its header) and conditionally-wired checks (e.g. container-supply-chain)
+# run in their own CI steps / at the adopter's gate, not here. "aggregate" means representative.
 #   usage: sh conformance/verify.sh [--require] | --selftest
 set -eu
 cd "$(dirname "$0")/.."
@@ -22,6 +23,10 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '%s\n' "$out" | grep -q "control-checks" || { echo "verify --selftest: FAIL (no summary)"; exit 1; }
   printf '%s\n' "$out" | grep -q "UNVERIFIED is NOT a pass" || { echo "verify --selftest: FAIL (no honesty footer)"; exit 1; }
   printf '%s\n' "$out" | grep -Eq '\[control\]|\[doc\]' || { echo "verify --selftest: FAIL (no classification)"; exit 1; }
+  # non-vacuous: at least one [control] must actually PASS — a render of only FAILs (green-while-dark)
+  # must NOT satisfy --selftest. The synthetic line below proves the control-PASS grep is load-bearing.
+  printf '%s\n' "$out" | grep -q '\[control\] .* PASS' || { echo "verify --selftest: FAIL (no [control] PASS — vacuous render)"; exit 1; }
+  if printf '  [control] x                FAIL\n' | grep -q '\[control\] .* PASS'; then echo "verify --selftest: FAIL (vacuous fixture wrongly matched control-PASS)"; exit 1; fi
   echo "verify --selftest: OK"; exit 0
 fi
 
@@ -62,7 +67,6 @@ check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
-check control branch-protect   sh conformance/branch-protection.sh
 check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
 check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh

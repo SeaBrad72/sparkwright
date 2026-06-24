@@ -29,3 +29,4 @@ containment-audit	the agent sandbox is PROVEN to contain — boot + probe FS-sco
 runtime-security	the reference app ships security headers + golden-path asserts them on the booted app (server.ts + .github/workflows/golden-path.yml)	sh conformance/runtime-security.sh
 token-scope	workflows scope OIDC id-token per-job + ship no AWS/Azure/GCP static keys (curated list) (profiles/*/ci.yml + .github/workflows)	sh conformance/token-scope.sh
 author-not-approver	author ≠ approver is a proven separation-of-duties FLOOR — scripts/sod-check.sh (selftested) + GitHub/GitLab bindings (docs/operations/separation-of-duties.md)	sh conformance/author-not-approver-wired.sh
+verify-enforced	ci.yml enforces the conformance aggregate on every PR (runs verify.sh --require, not only --selftest)	sh conformance/verify-enforced-wired.sh

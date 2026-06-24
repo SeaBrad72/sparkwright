@@ -5,6 +5,40 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.7] — 2026-06-24
+
+**T4 (CI-trust Blocker a) — per-PR control enforcement + a trustworthy weekly drift-watch.**
+The kit's own controls now actually enforce on every PR, and the weekly detective signal is
+green-when-healthy instead of perpetually red. (One of the two CI-trust Blockers the M1 meta-control
+first run surfaced.)
+
+### Added
+- **`conformance/verify-enforced-wired.sh`** (claim `verify-enforced`; claims 31→32) — a durable lock
+  asserting `ci.yml` runs the conformance aggregate **enforcing** (`verify.sh --require`), not
+  renderer-only (`--selftest`). Rejects whole-line-comment, trailing-comment, and `|| true`-suppressed
+  bypasses (selftest-proven).
+
+### Changed
+- **`conformance/verify.sh`** — the `[control]` aggregate no longer includes `branch-protection` (a
+  remote-state control needing repo-admin creds the least-privilege CI token can't have); the aggregate
+  is now all-offline, so `--require` runs clean in CI. `--selftest` is hardened **non-vacuous**
+  (requires ≥1 `[control]` PASS — a green-while-dark all-FAIL render is rejected).
+- **`.github/workflows/ci.yml`** — adds an **enforcing** `verify.sh --require` step (the missing per-PR
+  control enforcement) + the new lock + its self-test.
+- **`.github/workflows/drift-watch.yml`** — runs the now-offline aggregate (goes green-when-healthy
+  instead of failing every week on branch-protection) + a `jq` preflight so a dropped-tool runner fails
+  loud, not as an opaque UNVERIFIED.
+- **`conformance/branch-protection.sh`** — honest header: NOT in the per-PR aggregate (least-privilege);
+  real-path verification is maintainer/governance-gated (admin `gh`); config-as-code
+  (`github_branch_protection`) + a least-privilege `administration:read` detective verifier are the **E9**
+  reference.
+
+### Security
+- **No net weakening** — branch-protection had no PASS path under a least-privilege CI token (proven by
+  security review: it was `--selftest`-only per-PR and red-failing weekly, i.e. never CI-verified). This
+  makes that honest and lets the other 23 controls actually enforce per-PR. builder ≠ reviewer +
+  security-review-of-scratch both APPROVE.
+
 ## [3.48.6] — 2026-06-24
 
 **T3d — consolidation wrap-up: backlog reorg, release-line, and the retire-convention doc.**

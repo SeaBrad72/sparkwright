@@ -8,6 +8,11 @@
 # Escalation: in CI (CI env set) or with --require, "could not verify" becomes exit 1 —
 # in a gate the check MUST be runnable. Requires `gh` authenticated to verify.
 #   usage: sh conformance/branch-protection.sh [BRANCH] [--require] | --selftest
+# NOTE (T4-B1): NOT in the per-PR conformance aggregate (verify.sh) — it needs repo-admin creds the
+# least-privilege CI token can't have, so it cannot be verified in per-PR/weekly CI. Real-path
+# verification is maintainer/governance-gated (run locally with an admin-authenticated gh).
+# Config-as-code (github_branch_protection) + a least-privilege administration:read detective
+# verifier are the E9 (env/promotion governance) reference.
 set -eu
 
 REQUIRE="${REQUIRE:-0}"

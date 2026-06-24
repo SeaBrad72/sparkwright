@@ -219,6 +219,12 @@ jobs:
         run: sh conformance/branch-protection.sh --selftest
       - name: conformance aggregate verify self-test (control vs doc)
         run: sh conformance/verify.sh --selftest
+      - name: Conformance aggregate ENFORCED (offline controls must hold on every PR)
+        run: sh conformance/verify.sh --require
+      - name: Verify-enforced lock (ci.yml runs the aggregate enforcing, not renderer-only)
+        run: sh conformance/verify-enforced-wired.sh
+      - name: Verify-enforced lock self-test
+        run: sh conformance/verify-enforced-wired.sh --selftest
       - name: Waiver-register validator self-test (governed-exception corpus)
         run: sh conformance/waivers-valid.sh --selftest
       - name: Coverage-ratchet self-test (no-regression-below-baseline)
