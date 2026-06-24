@@ -55,3 +55,51 @@
 - [ ] UX/a11y obligation flagged — if user-facing (see *UX & accessibility* above)
 - [ ] Eval criteria flagged — if an AI feature
 - [ ] Compliance obligation flagged — if a regulated domain
+
+---
+
+## Extended spec (Plan phase) — *optional*
+> Fill this **only** when the request is promoted to **Plan** (`DEVELOPMENT-PROCESS.md` §4) and needs a
+> fuller PRD before Build. It is the **manual alternative** to a brainstorming-flow spec — tool-neutral;
+> if you use the superpowers brainstorming flow it produces an equivalent. A reviewer signs it off at
+> the **spec gate** (§7) before Build. Leave blank for small/obvious slices — a vibe-coder or a tiny
+> increment never needs it. (The base sections above — *Problem & user*, *Success metric*,
+> *UX & accessibility* — carry forward; this section adds the Plan-phase depth, it doesn't repeat them.)
+
+### Goals & non-goals
+> What this delivers; what it explicitly does **not** (the YAGNI fence).
+
+[...]
+
+### Users & personas
+> Who uses this and in what role (persona map, `DEVELOPMENT-PROCESS.md` §2).
+
+[...]
+
+### Functional requirements (numbered)
+> Numbered, specific behaviors the system must exhibit.
+
+[...]
+
+### Acceptance criteria (testable)
+> Pass/fail conditions; each maps to at least one test. 100% on critical paths (auth, payments, data
+> integrity). These become the tests and the Reviewer's checklist.
+
+[...]
+
+### Data & privacy considerations
+> What data is touched; PII/consent/retention/children's-data implications (`DEVELOPMENT-STANDARDS.md`
+> §2 + the enterprise privacy family in `docs/enterprise/compliance-crosswalk.md`). "None" is a valid,
+> explicit answer.
+
+[...]
+
+### Risks & mitigations
+> What could go wrong technically or operationally, and the mitigation.
+
+[...]
+
+### Out of scope
+> Deferred or explicitly excluded — so reviewers don't flag them as gaps.
+
+[...]

@@ -5,6 +5,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.3] — 2026-06-24
+
+**T3c (consolidation) — SPEC template consolidated into FEATURE-REQUEST (one fewer template).**
+Content-preserving: no PRD capability lost. The Plan-phase spec is now an **optional** "Extended spec"
+section of the intake template, keeping the harness-neutral manual-fallback framing (the manual
+alternative to a brainstorming-flow spec, signed off at the §7 spec gate).
+
+### Removed
+- `templates/SPEC-TEMPLATE.md` — its distinct value (goals/non-goals, personas, numbered functional
+  requirements, testable acceptance criteria, data&privacy, risks&mitigations, out-of-scope) migrated.
+
+### Changed
+- **`templates/FEATURE-REQUEST-TEMPLATE.md`** — gains an optional `## Extended spec (Plan phase)`
+  section. Explicitly skippable for small/obvious slices (a vibe-coder is never forced into a PRD); the
+  base sections (Problem, Success metric, UX&a11y) are not duplicated.
+- **`templates/TEST-PLAN-TEMPLATE.md`** — the 2 `SPEC-TEMPLATE.md` references now point at
+  FEATURE-REQUEST's *Extended spec*.
+- **`README.md`** — the "What's inside" templates example list drops `SPEC` (now part of FEATURE-REQUEST).
+
 ## [3.48.2] — 2026-06-24
 
 **T3c (consolidation) — retire 6 completed E4 build-design docs (dead artifacts).**

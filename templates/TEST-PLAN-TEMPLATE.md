@@ -6,13 +6,13 @@
 
 ## How to use
 - Every section is required unless marked optional. "None" is a valid, explicit answer.
-- The **Cases → acceptance criteria** table is the load-bearing part: it ties each test back to the Product Owner's `FEATURE-REQUEST-TEMPLATE.md` / `SPEC-TEMPLATE.md` so coverage is auditable, not assumed.
+- The **Cases → acceptance criteria** table is the load-bearing part: it ties each test back to the Product Owner's `FEATURE-REQUEST-TEMPLATE.md` (its *Extended spec* / acceptance criteria) so coverage is auditable, not assumed.
 - Entry/exit criteria gate this plan; the exit criteria feed the §9 Dev→QA→**UAT** promotion.
 
 ---
 
 ## Feature / story
-> What is under test, and the source of truth for its behavior. Link the originating `FEATURE-REQUEST-TEMPLATE.md` and the approved `SPEC-TEMPLATE.md`.
+> What is under test, and the source of truth for its behavior. Link the originating `FEATURE-REQUEST-TEMPLATE.md` (and its approved *Extended spec* section, if used).
 
 [...]
 

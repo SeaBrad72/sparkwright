@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.48.2` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.48.3` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 
@@ -46,7 +46,7 @@ What that means for you:
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
 | **`adapters/`** | Per-harness adapters: `claude-code` (reference) + `codex` / `cursor` / `gemini` (named, conformance-locked floor adapters) + `generic` (floor-only, for any `AGENTS.md` reader) + `_TEMPLATE` / `new-adapter.sh` to BYO. Boundary contract: [docs/operations/harness-adapters.md](docs/operations/harness-adapters.md). |
-| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `SPEC`, `POSTMORTEM`, `BIA`, … (~24 in all — see [`templates/`](templates/)). |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST` (incl. an optional *Extended spec*), `POSTMORTEM`, `BIA`, … (~24 in all — see [`templates/`](templates/)). |
 | **`docs/`** | `ADR-000-EXAMPLE.md`; `enterprise/` (compliance addendum), `work-tracking/` (backlog adapters), `adoption/` (brownfield), `operations/` (progressive delivery · resilience · DORA), `continuity/` (DR drill · BIA). |
 
 ## Quickstart (drop-in & go)
