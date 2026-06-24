@@ -35,9 +35,13 @@ Classify each hit:
   `conformance/check-links.sh` on deletion. **Repoint or remove** every one. (`check-links.sh` scans
   *tracked* files only and only parenthesized link targets — it does **not** parse backtick code-spans,
   and it does **not** scan gitignored files.)
-- **Backtick code-spans** / prose mentions — do **not** break check-links. Repoint *live* ones (an
-  active doc/template pointing adopters at the deleted thing); **leave historical records** (CHANGELOG
-  entries, dated assessment/ledger docs) — rewriting history is dishonest.
+- **Backtick code-spans / prose mentions** — a backtick mention of a *filename* (e.g. `` `frame.md` ``)
+  is safe, **but** a span that *quotes literal link syntax* (bracket-then-paren) is **not**: check-links
+  greps raw text regardless of backticks, so it matches link-shaped content inside a code span too —
+  the **code-span gotcha** (banked to T4; it bit this very arc three times). When you must show link
+  syntax in prose, describe it in words. Repoint *live* filename mentions (an active doc/template
+  pointing adopters at the deleted thing); **leave historical records** (CHANGELOG entries, dated
+  assessment/ledger docs) — rewriting history is dishonest.
 
 ## 3. Prove nothing live depends on it
 

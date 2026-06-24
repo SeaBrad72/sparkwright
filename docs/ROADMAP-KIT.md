@@ -250,7 +250,7 @@ Second cold-adopter run (`SeaBrad72/feedback-triage`, Python/FastAPI **generated
 - **Exit-interview harvest** (`docs/superpowers/dogfood/RETEST-2-exit-interview.md`) → pre-seed E8/E9/E10 with lived evidence.
 
 ### Meta-flag
-The E-series + E8–E14 is a large arc; the retest verdict is the **core is strong** (gaps are references/depth, not broken foundations). The **release-line decision is now made** (T3d, 2026-06-24: stay 3.x; gate 1.0 on feature-complete + E10 + a real external adopter — see the reprioritized backlog). E10 (the "is this too much?" capstone + one comprehensive validation + maintenance model) remains the close so the arc doesn't run open-ended.
+The E-series was a large arc (originally E8–E14, now reorganized — item 5); the retest verdict is the **core is strong** (gaps are references/depth, not broken foundations). The **release-line decision is now made** (T3d, 2026-06-24: stay 3.x; gate 1.0 on feature-complete + E10 + a real external adopter — see the reprioritized backlog). E10 (the "is this too much?" capstone + one comprehensive validation + maintenance model) remains the close so the arc doesn't run open-ended.
 
 ---
 
