@@ -270,7 +270,7 @@ selftest() {
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   cfg="$tmp/c"; tally="$tmp/t"
   mkcfg() { printf 'MAX_TOKENS=%s\nMAX_STEPS=%s\nMAX_AGENTS=%s\nWARN_PCT=%s\nCOST_PER_1K_USD=0.003\n' "$1" "$2" "$3" "$4" >"$cfg"; }
-  R() { sh "$GUARD" "$@" --config "$cfg" --tally "$tally"; }
+  R() { _c=$1; shift; sh "$GUARD" "$_c" --config "$cfg" --tally "$tally" "$@"; }   # subcommand-first; defaults before caller args so caller --config wins (last-wins; script reads subcommand as $1 BEFORE the option loop)
   expect() { _w=$1; shift; "$@" >/dev/null 2>&1; _g=$?; [ "$_g" = "$_w" ] || fail "$_desc (want $_w, got $_g)"; }
 
   _desc="under-budget continues"; mkcfg 1000 10 5 80; : >"$tally"; expect 0 R step --tokens 100 --agents 1
