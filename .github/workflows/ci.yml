@@ -65,6 +65,8 @@ jobs:
         run: sh conformance/persona-artifacts.sh
       - name: Persona-artifact self-test
         run: sh conformance/persona-artifacts.sh --selftest
+      - name: Meta-control freshness gate self-test (M2 — mechanism + marker/log sync, not the verdict)
+        run: sh conformance/meta-control-fresh.sh --selftest
       - name: Definition-of-Ready wiring (DoR enumerated + gate + intake)
         run: sh conformance/dor-defined.sh
       - name: Definition-of-Ready self-test

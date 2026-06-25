@@ -134,8 +134,33 @@ Each run appends one row to the kit's verdict log (`docs/governance/meta-control
 
 `date · version · trigger · profile · verdict · verdict-artifact · one-line ledger summary`
 
-This is the kit's own run history; **adopters keep their own log** (start fresh). M2's staleness gate
-reads this file to compute whether a review is overdue.
+This is the kit's own run history; **adopters keep their own log** (start fresh).
+
+## The freshness gate (M2 — the cadence circuit-breaker)
+
+`conformance/meta-control-fresh.sh` enforces the cadence so the panel can't be *designed but never
+run*. It is **DUE** once more than **N=5** release tags have landed since the last addressed run, read
+from a one-line machine marker `docs/governance/.meta-control-last` (`VERSION VERDICT`, e.g.
+`3.48.0 GO-WITH-CONDITIONS`) that the check keeps in lockstep with the log's last row.
+
+- **Where it bites** — the gate runs in the weekly `drift-watch` as its own `meta-control-freshness`
+  job (an OVERDUE result fails *that* job — the loud, attributable signal) and is surfaced as an
+  advisory `doctor` metric. Per-PR CI runs only the gate's `--selftest` (mechanism + marker↔log sync),
+  **never** the live freshness verdict — so an overdue kit never blocks unrelated PRs; it stays visible
+  weekly until addressed.
+- **Applicability is a detected trigger, never a declared mode** — the gate applies when a project
+  *practices* the cadence (its log/marker exist) or on the kit's own repo; otherwise **N/A** (a
+  solo/vibe-coder who never adopted the cadence is never nagged). A declared mode can never weaken it
+  (`conformance/mode-enforcement-blind.sh`), so an autonomous squad cannot soften the circuit-breaker.
+- **What satisfies it** — a logged panel **run** *or* a dated, reasoned **`DEFERRED`** row (a
+  human-ratified "not now"). Both append a log row and advance the marker. The gate enforces *that a
+  conscious cadence decision was recorded*, not that a specific ritual was performed. Serial deferral
+  is a visible pattern in the log for the next panel to question — not a gate it can dodge forever (the
+  N-tag clock re-fires).
+
+> Logging a run **or** a deferral means updating two files together: append the row to
+> `meta-control-log.md` **and** set `.meta-control-last` to the same `VERSION VERDICT`. The gate fails
+> on desync, so they cannot drift apart silently.
 
 ## Who runs it (the Kit-Steward — neutral role)
 

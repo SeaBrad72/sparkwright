@@ -14,7 +14,7 @@ cd "$_here/.."
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
-IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/2026-06-22-e3-agentic-orchestration-design.md docs/architecture/2026-06-23-e-series-consolidation-audit.md docs/architecture/2026-06-23-t2-real-validation-findings.md docs/governance/meta-control-log.md docs/architecture/2026-06-23-meta-control-first-run.md docs/architecture/2026-06-24-t3a-rightweight-assessment.md"
+IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/2026-06-22-e3-agentic-orchestration-design.md docs/architecture/2026-06-23-e-series-consolidation-audit.md docs/architecture/2026-06-23-t2-real-validation-findings.md docs/governance/meta-control-log.md docs/architecture/2026-06-23-meta-control-first-run.md docs/architecture/2026-06-24-t3a-rightweight-assessment.md docs/governance/.meta-control-last"
 
 run() {
   rc=0

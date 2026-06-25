@@ -58,7 +58,7 @@ if [ "${1:-}" = "--selftest" ]; then
   posture_rc=0
   DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$0" >/dev/null 2>&1 || posture_rc=$?
   forced_rc=0
-  DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_DORA_CMD=false DOCTOR_SCORECARD_CMD=false sh "$0" --full >/dev/null 2>&1 || forced_rc=$?
+  DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_DORA_CMD=false DOCTOR_SCORECARD_CMD=false DOCTOR_META_CONTROL_CMD=false sh "$0" --full >/dev/null 2>&1 || forced_rc=$?
   [ "$forced_rc" = "$posture_rc" ] || {
     echo "doctor --selftest: FAIL (non-gating invariant broken: forced-failing metrics changed exit from $posture_rc to $forced_rc)"
     sfail=1
@@ -84,6 +84,7 @@ DOCTOR_VERIFY_CMD="${DOCTOR_VERIFY_CMD:-}"
 DOCTOR_CLAIMS_CMD="${DOCTOR_CLAIMS_CMD:-}"
 DOCTOR_DORA_CMD="${DOCTOR_DORA_CMD:-}"
 DOCTOR_SCORECARD_CMD="${DOCTOR_SCORECARD_CMD:-}"
+DOCTOR_META_CONTROL_CMD="${DOCTOR_META_CONTROL_CMD:-}"
 
 gate_fail=0
 warns=0
@@ -246,6 +247,17 @@ if [ "$FULL" = "1" ]; then
     printf '%s\n' "$_sc_out"
   else
     echo "  agent-scorecard: N/A (not present)"
+  fi
+
+  # meta-control freshness (M2 — advisory surfacing of the cadence circuit-breaker; NEVER gates doctor)
+  if [ -n "$DOCTOR_META_CONTROL_CMD" ]; then
+    _mc_out=$($DOCTOR_META_CONTROL_CMD 2>&1) || true
+    printf '%s\n' "$_mc_out"
+  elif [ -f "conformance/meta-control-fresh.sh" ]; then
+    _mc_out=$(sh conformance/meta-control-fresh.sh 2>&1) || true
+    printf '%s\n' "$_mc_out"
+  else
+    echo "  meta-control-fresh: N/A (not present)"
   fi
 fi
 

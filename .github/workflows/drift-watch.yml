@@ -24,3 +24,16 @@ jobs:
         run: sh conformance/claims-registry.sh
       - name: Relative Markdown link integrity
         run: sh conformance/check-links.sh
+  meta-control-freshness:
+    # M2 — the cadenced meta-control circuit-breaker. A SEPARATE job (not a step in drift-watch) on
+    # purpose: an OVERDUE red is attributable at a glance and does not desensitize the regression
+    # signal above (cry-wolf hygiene). A non-zero (OVERDUE / invalid-state / marker↔log desync) fails
+    # THIS job only — that is the enforcement point. Per-PR CI runs only `meta-control-fresh.sh
+    # --selftest` (mechanism + sync), never the live verdict, so an overdue kit never blocks PRs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0          # full tag history — the gate counts release tags since the last panel
+      - name: Meta-control panel freshness (OVERDUE fails this job — run the panel or log a deferral)
+        run: sh conformance/meta-control-fresh.sh

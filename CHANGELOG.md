@@ -5,6 +5,35 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.15] — 2026-06-25
+
+**M2-S2 — the meta-control freshness gate: the cadenced go/no-go can no longer go stale unnoticed.**
+M1 productized the adversarial meta-control panel; M2 ENFORCES its cadence. A new conformance check
+flags when a panel is OVERDUE (more than N=5 release tags since the last addressed run), so the control
+that catches direction / proportion / over-claim drift fires without depending on a human noticing —
+the exact failure the M-series was created to fix.
+
+### Added
+- **`conformance/meta-control-fresh.sh`** — the freshness gate. DUE = >N=5 release tags since the last
+  addressed run, read from a one-line marker `docs/governance/.meta-control-last` kept in lockstep with
+  the verdict log's last row (sync enforced). Applicability is a DETECTED trigger (the project keeps a
+  log/marker, or it's the kit) — never the declared mode (`mode-enforcement-blind.sh`), so a mode can
+  never weaken it. Satisfied by a logged run OR a dated `DEFERRED` row. `--selftest` locks the mechanism
+  + sync + wiring (8 fixtures incl. the strict `>N` boundary, fail-closed, desync, N/A).
+- **`docs/governance/.meta-control-last`** — the machine marker (export-ignored kit-instance state).
+- **claim `meta-control-fresh`** — its verifier is the `--selftest`, so per-PR CI enforces the MECHANISM
+  + sync, never the live freshness verdict (an overdue kit never blocks unrelated PRs).
+
+### Changed
+- **`.github/workflows/drift-watch.yml`** — a separate `meta-control-freshness` job runs the gate
+  weekly (an OVERDUE result fails that job — the loud, attributable circuit-breaker, kept distinct from
+  the regression job to avoid cry-wolf).
+- **`scripts/doctor.sh`** — surfaces freshness as an advisory METRICS row (never affects exit).
+- **`docs/operations/meta-control.md`** — documents the gate, the marker, and the run-or-deferral
+  satisfaction model. **`conformance/adopter-export-wired.sh`** + **`.gitattributes`** — export-ignore
+  the marker. **`docs/governance/meta-control-log.md`** — a `DEFERRED` row (v3.48.15): the gate ships
+  green and honest; the due light 5-lens panel is M2-S4.
+
 ## [3.48.14] — 2026-06-24
 
 **M2-S1 — export-ignore the meta-control verdict-log cluster + harden the export link-safety lock.**
