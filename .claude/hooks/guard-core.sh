@@ -15,6 +15,7 @@ is_control_plane_path() {
     *.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh|\
     *.claude/settings.json|*.claude/settings.local.json|\
     *.claude/mcp-policy.json|.claude/mcp-policy.json|\
+    *.claude/agents/*|.claude/agents/*|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
     */.github/workflows/*|.github/workflows/*|*/CODEOWNERS|CODEOWNERS|*/.git/*|.git/*|\
     conformance/*|*/conformance/*|adapters/*|*/adapters/*|\

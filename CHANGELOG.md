@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.16] — 2026-06-25
+
+**M2-S3 — `.claude/agents/*` is now control-plane (the guard's Edit/Write deny-matrix).**
+Closes the M1 security review's L2 finding: agent definitions — the `kit-steward`, `reviewer`, and
+`security-reviewer` prompts that drive the meta-control panel and the builder≠reviewer separation —
+could be silently modified via the Edit/Write tool. The shell path already caught
+`.claude/` mutations; the tool path enumerated specific `.claude/` files (the guard, settings,
+mcp-policy) but did not yet include agent definitions. They now live in `is_control_plane_path`, so changing an agent's
+instructions is a ratified act (`KIT_GUARD_SELFEDIT=1` for deliberate human maintenance), exactly like
+the guard itself and the CI gates.
+
+### Changed
+- **`.claude/hooks/guard-core.sh`** — `is_control_plane_path()` adds `*.claude/agents/*` /
+  `.claude/agents/*`, grouped with the other `.claude/` control-plane patterns.
+
 ## [3.48.15] — 2026-06-25
 
 **M2-S2 — the meta-control freshness gate: the cadenced go/no-go can no longer go stale unnoticed.**

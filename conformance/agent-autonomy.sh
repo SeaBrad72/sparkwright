@@ -224,6 +224,12 @@ assert_deny "rm kit-guard"         '{"tool_name":"Bash","tool_input":{"command":
 # --- 9d-b: must still ALLOW (no new over-block) ---
 assert_allow "read guard-core"     '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/guard-core.sh"}}'
 assert_allow "run kit-guard sh"    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-guard --selftest"}}'
+# --- M2-S3: agent definitions are control-plane (Edit/Write tool path must DENY) ---
+assert_deny "Edit agent def"       '{"tool_name":"Edit","tool_input":{"file_path":".claude/agents/kit-steward.md","old_string":"a","new_string":"b"}}'
+assert_deny "Write agent def"      '{"tool_name":"Write","tool_input":{"file_path":".claude/agents/reviewer.md","content":"x"}}'
+# --- M2-S3: must still ALLOW (the glob matches the agents/ dir only, not a sibling) ---
+assert_allow "Write agents-notes"  '{"tool_name":"Write","tool_input":{"file_path":".claude/agents-notes.md","content":"x"}}'
+assert_allow "read agent def"      '{"tool_name":"Read","tool_input":{"file_path":".claude/agents/kit-steward.md"}}'
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
 assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Dev"}}'
 assert_allow "git checkout src"     '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- src/app.ts"}}'
