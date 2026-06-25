@@ -130,8 +130,7 @@ A run that routes nothing is theater. After synthesis:
 
 ## The verdict log
 
-Each run appends one row to the kit's verdict log
-([`../governance/meta-control-log.md`](../governance/meta-control-log.md)):
+Each run appends one row to the kit's verdict log (`docs/governance/meta-control-log.md`):
 
 `date · version · trigger · profile · verdict · verdict-artifact · one-line ledger summary`
 

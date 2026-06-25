@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.14] — 2026-06-24
+
+**M2-S1 — export-ignore the meta-control verdict-log cluster + harden the export link-safety lock.**
+Prerequisite for the M2 freshness gate (the cadenced meta-control circuit-breaker). The kit's verdict
+log and its two dated run artifacts are kit-instance history (like `ROADMAP-KIT.md`), so they are now
+export-ignored — adopters start fresh. They are link-entangled (the log links its run artifacts; the
+runbook linked the log), which exposed a latent false-positive in the export link-safety lock.
+
+### Changed
+- **`.gitattributes`** — export-ignore `docs/governance/meta-control-log.md`,
+  `docs/architecture/2026-06-23-meta-control-first-run.md`, and
+  `docs/architecture/2026-06-24-t3a-rightweight-assessment.md`.
+- **`docs/operations/meta-control.md`** — the sole KEPT→ignored markdown link (to the verdict log)
+  becomes a backtick mention, so no kept doc dangles after the export.
+
+### Fixed
+- **`conformance/adopter-export-wired.sh`** — block-(b) link-safety scanned ALL tracked `.md`, so a
+  link BETWEEN two export-ignored docs (ignored→ignored) false-failed. It now excludes the IGN set
+  from the scan (only a KEPT→ignored link breaks a real adopter's CI). Adds a selftest fixture locking
+  that a real KEPT→ignored link still FAILs, and a fail-closed guard rejecting pathspec-hostile IGN
+  entries so the `:(exclude)` scan can never error-into-a-silent-pass.
+
 ## [3.48.13] — 2026-06-24
 
 **T4 — dedupe the Markdown link-extractor into `wf-helpers.sh` (single source of truth).**

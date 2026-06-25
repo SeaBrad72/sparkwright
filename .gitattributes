@@ -1,6 +1,8 @@
 # Maintainer-only paths excluded from `git archive` (the adopter distribution).
 # Affects ONLY git archive / scripts/adopter-export.sh — never the kit's own tree or CI.
-# Every entry is link-safe: no kept doc has a `](path)` markdown link to it (S3 spec §4.1).
+# Link-safety: no KEPT doc has a `](path)` markdown link to any entry (S3 spec §4.1). Links
+# BETWEEN export-ignored entries (ignored→ignored) are fine — both ends are pruned together;
+# adopter-export-wired.sh enforces this by excluding the IGN set from its kept-doc link scan.
 docs/ROADMAP-KIT.md                 export-ignore
 .github/workflows/drift-watch.yml   export-ignore
 .github/workflows/golden-path.yml   export-ignore
@@ -10,3 +12,6 @@ docs/superpowers/                   export-ignore
 docs/architecture/2026-06-22-e3-agentic-orchestration-design.md  export-ignore
 docs/architecture/2026-06-23-e-series-consolidation-audit.md     export-ignore
 docs/architecture/2026-06-23-t2-real-validation-findings.md      export-ignore
+docs/governance/meta-control-log.md                              export-ignore
+docs/architecture/2026-06-23-meta-control-first-run.md           export-ignore
+docs/architecture/2026-06-24-t3a-rightweight-assessment.md       export-ignore

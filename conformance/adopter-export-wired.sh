@@ -1,9 +1,10 @@
 #!/bin/sh
 # adopter-export-wired.sh — regression-lock for the S3 adopter-clean obtain mechanism.
 # Asserts: the export mechanism exists, the .gitattributes export-ignore set is present, the set is
-# LINK-SAFE (no export-ignored path is a `](path)` markdown-link target from a kept doc), the
-# export is CI-green: fixtures ship, STACK-SELECTION is stubbed on `--profile`, no broken links,
-# AND the exported tree's own claims-registry passes (orphaned-maintainer-only-claim guard).
+# LINK-SAFE (no export-ignored path is a `](path)` markdown-link target from a KEPT doc; links
+# BETWEEN export-ignored docs are fine — both ends prune together), the export is CI-green: fixtures
+# ship, STACK-SELECTION is stubbed on `--profile`, no broken links, AND the exported tree's own
+# claims-registry passes (orphaned-maintainer-only-claim guard).
 #   sh conformance/adopter-export-wired.sh [--selftest]
 # Exit: 0 = wired + link-safe + CI-green · 1 = regression · 2 = setup. POSIX sh; dash-clean.
 set -eu
@@ -13,7 +14,7 @@ cd "$_here/.."
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
-IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/2026-06-22-e3-agentic-orchestration-design.md docs/architecture/2026-06-23-e-series-consolidation-audit.md docs/architecture/2026-06-23-t2-real-validation-findings.md"
+IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/2026-06-22-e3-agentic-orchestration-design.md docs/architecture/2026-06-23-e-series-consolidation-audit.md docs/architecture/2026-06-23-t2-real-validation-findings.md docs/governance/meta-control-log.md docs/architecture/2026-06-23-meta-control-first-run.md docs/architecture/2026-06-24-t3a-rightweight-assessment.md"
 
 run() {
   rc=0
@@ -24,14 +25,31 @@ run() {
     grep -Eq "^$(printf '%s' "$p" | sed 's/[.[\*^$/]/\\&/g')[[:space:]]+export-ignore" "$ROOT/.gitattributes" \
       || { echo "FAIL: .gitattributes missing export-ignore for $p"; rc=1; }
   done
-  # (b) LINK-SAFETY: no export-ignored path is a `](…path…)` link target in any tracked kept doc.
+  # Fail-closed (M2 security review): every IGN entry must be a plain pathspec — no git-pathspec
+  # magic / regex-hostile chars — else `:(exclude)$entry` could make the block-(b) `git grep` error
+  # (rc>=2) and, because that grep's error is swallowed by `2>/dev/null | grep -q .`, the link scan
+  # would silently PASS. Reject unsafe entries up front so the exclude can never go dark.
+  for _i in $IGN; do
+    case "$_i" in
+      *[!A-Za-z0-9/._-]*) echo "FAIL: IGN entry '$_i' has an unsafe char (breaks the link-safety :(exclude) pathspec)"; rc=1 ;;
+    esac
+  done
+  # (b) LINK-SAFETY: no export-ignored path is a `](…path…)` link target from a KEPT doc.
   # Match the BASENAME inside a markdown link `](…)` so relative forms (](../ROADMAP-KIT.md)) are
   # caught too, not just the full path. Files only (a dir basename like 'fixtures' is rarely a link
   # target and an over-match there is a safe false-positive).
+  # Scan KEPT docs ONLY: exclude the IGN set itself from the search, so a link BETWEEN two
+  # export-ignored docs (ignored→ignored, e.g. the verdict log → its run artifacts) does NOT
+  # false-fail — both ends are pruned together, so the link never reaches the adopter tree. Only a
+  # KEPT→ignored link breaks check-links there. The exclude tokens come from a variable, so the
+  # `:(exclude)` parens are literal (no shell re-parse after expansion); intentionally unquoted to
+  # word-split into one pathspec per IGN entry.
+  _ign_excl=""
+  for _i in $IGN; do _ign_excl="$_ign_excl :(exclude)$_i"; done
   for p in $IGN; do
     _bn=$(basename "$(printf '%s' "$p" | sed 's#/$##')")
-    if ( cd "$ROOT" && git grep -I -lE "\]\([^)]*${_bn}" -- '*.md' 2>/dev/null | grep -q .); then
-      echo "FAIL: export-ignored '$p' is a markdown-link target (would break check-links on the adopter tree)"; rc=1
+    if ( cd "$ROOT" && git grep -I -lE "\]\([^)]*${_bn}" -- '*.md' $_ign_excl 2>/dev/null | grep -q .); then
+      echo "FAIL: export-ignored '$p' is a markdown-link target from a KEPT doc (would break check-links on the adopter tree)"; rc=1
     fi
   done
   # (c) the export prunes + keeps correctly AND is CI-green (drive the real script)
@@ -131,6 +149,21 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "adopter-export-wired --selftest: FAIL (README hardcoded count not caught)"; sfail=1
   fi
   rm -rf "$_r"
+  # negative (link-safety / M2): the block-(b) exclude must NOT blind the check to a real KEPT→ignored
+  # link. Build a tiny tree where a KEPT doc links an export-ignored doc; the lock MUST still FAIL.
+  # (Guards against the M2 fix over-broadening the exclusion and silently passing real breakage.)
+  _l=$(mktemp -d)
+  mkdir -p "$_l/docs" "$_l/scripts"
+  printf 'kept\nlink to [bad](ROADMAP-KIT.md)\n' > "$_l/keep.md"      # KEPT doc → ignored target
+  printf '# roadmap\n' > "$_l/docs/ROADMAP-KIT.md"
+  : > "$_l/.gitattributes"
+  for _e in $IGN; do printf '%s export-ignore\n' "$_e" >> "$_l/.gitattributes"; done
+  cp "$ROOT/scripts/adopter-export.sh" "$_l/scripts/adopter-export.sh" 2>/dev/null || true
+  ( cd "$_l" && git init -q && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm l >/dev/null 2>&1 ) || true
+  if ( ROOT="$_l"; run ) >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (KEPT→ignored markdown link not caught — exclusion over-broadened)"; sfail=1
+  fi
+  rm -rf "$_l"
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
 fi
 
