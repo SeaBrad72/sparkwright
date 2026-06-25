@@ -5,6 +5,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.12] — 2026-06-24
+
+**T4 — export hygiene: stop shipping maintainer-only paths to adopters.**
+Closes the T2 brownfield CODEOWNERS false-alarm. The export-ignore set now also strips three internal
+design/audit docs adopters don't need. (Control-plane: `.gitattributes` + the `adopter-export-wired`
+regression-lock; security-review + builder ≠ reviewer both APPROVE — link-safe, ADR-000 preserved.)
+
+### Changed
+- **`.gitattributes` + `conformance/adopter-export-wired.sh`** — added to the export-ignore set:
+  - **`.github/CODEOWNERS`** — the kit's own `@SeaBrad72` owners shipped by omission, so a clean
+    greenfield install saw a non-existent owner (T2 brownfield false-alarm). Adopters still get a
+    working CODEOWNERS: `incept.sh` copies the profile's `CODEOWNERS` template into place.
+  - **3 dated internal docs** — `2026-06-22-e3-agentic-orchestration-design.md`,
+    `2026-06-23-e-series-consolidation-audit.md`, `2026-06-23-t2-real-validation-findings.md`
+    (maintainer work-products, same category as the already-ignored `ROADMAP-KIT.md`).
+  - **Kept:** `docs/architecture/ADR-000-stack.md` (the adopter-facing ADR example).
+- *Deferred to M2:* the 2 remaining dated docs (`meta-control-first-run`, `t3a-rightweight-assessment`)
+  + `docs/governance/meta-control-log.md` — they're link-entangled with the verdict log, so ignoring
+  them needs the lock's intra-set link-safety fix, which lands with M2's verdict-log export-ignore.
+
 ## [3.48.11] — 2026-06-24
 
 **T4 — two T2 honesty findings: `explain` process vocabulary + the private-repo `enforce_admins` caveat.**

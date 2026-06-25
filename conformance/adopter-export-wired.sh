@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
-IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/"
+IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/2026-06-22-e3-agentic-orchestration-design.md docs/architecture/2026-06-23-e-series-consolidation-audit.md docs/architecture/2026-06-23-t2-real-validation-findings.md"
 
 run() {
   rc=0
