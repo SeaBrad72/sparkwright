@@ -69,6 +69,14 @@ wrote solo remains valid history, and the branch-protection rule itself is uncha
 advisory nudges this) — **but only once a second human exists; enabling it solo traps you (see the caveats below).** So the solo→team upgrade is **one `enforce_admins` flip with zero rework of the
 recorded compensating-control evidence** — not a re-architecture.
 
+> **Caveat — a private repo needs a paid plan for this flip.** Full branch protection (including
+> `enforce_admins`) on a **private** repo requires GitHub **Pro / Team / Enterprise**; on a private
+> *free-tier* repo the `enforce_admins` API returns **404** and the protection can't be set. **Public**
+> repos and **paid** private repos are unaffected. On a private free-tier repo the solo `--admin` lane
+> still holds — CI plus the recorded `REVIEW-RECORD` remain your compensating control — and the one-flip
+> upgrade lands the moment the repo is on a plan that supports `enforce_admins`. (The kit verifies the
+> SoD *logic* regardless of plan; only the server-side *enforcement* is plan-gated.)
+
 ## Solo + agent-authored PRs — two honesty caveats
 
 When the agent opens PRs under your identity, two things are true that the headline "humans ratify via code-owner approval" wording can hide:

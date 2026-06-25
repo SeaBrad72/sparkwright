@@ -107,3 +107,35 @@ Why: The person who wrote a change is the worst-placed to see its blind spots �
   defect filter there is, which is why builder ≠ reviewer is never waived.
 Enforced by: conformance/review-lane.sh
 Read more: DEVELOPMENT-PROCESS.md §12
+
+---
+
+*Beyond the gates, a few core **process terms** you'll meet in `START-HERE.md` — also queryable via
+`sparkwright explain <topic>`:*
+
+## autonomy-tier
+Applies IF: always — every change is classified by risk × reversibility before an agent acts (CLAUDE.md, Agent governance)
+Why: An agent's freedom should scale with how much a mistake costs and how hard it is to undo. Low-risk,
+  reversible work runs autonomously; irreversible or high-blast-radius actions (prod deploy, data
+  migration, money) stay human-gated. Tiering autonomy by risk is what lets you grant speed where it's
+  cheap and keep a hand on the wheel where it isn't — and autonomy is *earned* by metrics, not assumed.
+Enforced by: conformance/agent-autonomy.sh
+Read more: DEVELOPMENT-PROCESS.md §13
+
+## intent-owner
+Applies IF: always — every feature names the human who accepts it (the ratifier)
+Why: Agents propose; a human ratifies. Someone must own "is this actually what we want?" — the call no
+  gate can make for you. Naming the intent owner up front means a change always has an accountable human
+  behind its *purpose*, separate from whoever (or whatever) built it. It is the human half of "agents
+  propose, humans ratify".
+Defined in: DEVELOPMENT-PROCESS.md §12 (ratification) + CLAUDE.md (working style)
+Read more: docs/operations/review-lane.md
+
+## wip-limit
+Applies IF: always — pull-based flow caps how much work is in progress at once
+Why: Starting is easy; finishing is what ships. A WIP limit lets you pull the next item only when
+  capacity frees up, so bottlenecks surface instead of hiding behind a pile of half-done work, and
+  context-switching (the silent tax on quality) drops. It is the Kanban core the kit keeps after
+  dropping story points and sprints — flow over throughput theater.
+Defined in: DEVELOPMENT-PROCESS.md §6 (work-item flow)
+Read more: DEVELOPMENT-PROCESS.md

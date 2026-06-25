@@ -5,6 +5,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.11] — 2026-06-24
+
+**T4 — two T2 honesty findings: `explain` process vocabulary + the private-repo `enforce_admins` caveat.**
+Docs-only; agent-editable.
+
+### Changed
+- **`docs/why-gates.md`** — `explain` covered CI-gate vocabulary only, so `sparkwright explain
+  autonomy-tier` / `intent-owner` / `wip-limit` (terms used throughout START-HERE) returned nothing.
+  Added the three process-vocabulary topics (autonomy-tier is `Enforced by: conformance/agent-autonomy.sh`;
+  intent-owner / wip-limit are process concepts with doc references). They surface automatically via the
+  doc-driven `explain` reader; `explain-wired` stays green (orphan check validates the real enforcer).
+- **`docs/operations/review-lane.md`** — added an honest caveat to the solo→team "one `enforce_admins`
+  flip": on a **private free-tier** repo the `enforce_admins` API 404s (needs GitHub Pro/Team); public
+  and paid-private repos are unaffected, and the solo `--admin` lane + recorded `REVIEW-RECORD` remain
+  the compensating control until the plan supports the flip. (The kit verifies the SoD *logic*
+  regardless of plan; only server-side *enforcement* is plan-gated.)
+
 ## [3.48.10] — 2026-06-24
 
 **T4 — check-links: skip code spans + fenced blocks (the kit's own linter, made CommonMark-correct).**
