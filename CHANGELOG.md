@@ -5,6 +5,29 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.13] — 2026-06-24
+
+**T4 — dedupe the Markdown link-extractor into `wf-helpers.sh` (single source of truth).**
+The awk that strips fenced + inline code before extracting `](…)` links lived in two copies
+(`check-links.sh` + `adopter-export-wired.sh`) — the exact duplication that bit T4 (the code-span fix
+had to be applied twice; CI caught the missed twin). Extracted once; the gotcha can no longer drift.
+
+### Changed
+- **`conformance/wf-helpers.sh`** — gains `wf_extract_links()` (the code-span/fence-skipping link
+  extractor), alongside the existing `wf_is_deploy()`. wf-helpers is the established shared-helper file,
+  already sourced by 6 conformance checks.
+- **`conformance/check-links.sh`** + **`conformance/adopter-export-wired.sh`** — drop their inline copies
+  and source `wf_extract_links()`. Behavior byte-identical (dual-review verified against a 12-fixture
+  battery + a real CommonMark renderer); the export still ships `wf-helpers.sh` so the extractor resolves
+  inside the adopter tree too. adopter-export-wired now resolves its script dir *before* `cd` so sourcing
+  is cwd-independent.
+- builder ≠ reviewer + security-review-of-scratch both APPROVE (net security improvement — eliminates the
+  drift risk; no silent-vacuous-pass hole; `check-links --selftest` in CI guards the shared function).
+
+### Deferred (R capstone)
+- `adopter-export-wired.sh:31`'s narrower basename-link grep (its false-positive over-flags = safe);
+  the larger `*-wired.sh` selftest-harness deduplication.
+
 ## [3.48.12] — 2026-06-24
 
 **T4 — export hygiene: stop shipping maintainer-only paths to adopters.**

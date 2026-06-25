@@ -20,3 +20,18 @@ wf_is_deploy() {
   if grep -Eq '^[[:space:]]+deploy[A-Za-z0-9_-]*:[[:space:]]*$' "$_wf"; then return 0; fi
   return 1
 }
+
+# wf_extract_links <file>: print each relative-Markdown-link target in <file>, with code regions
+# removed FIRST — fenced blocks (``` / ~~~) AND inline `code` spans — so prose that merely *quotes*
+# link syntax (e.g. documenting the `]( )` form in backticks) is not mistaken for a real link. A link
+# inside code renders as text, never a live link, so ignoring it is correctness, not a loophole.
+# Single source of truth for the kit's two link-checkers (check-links.sh + adopter-export-wired.sh).
+# Conservative by design: rare nested-/mismatched-fence shapes may OVER-extract vs a strict CommonMark
+# renderer — fail-safe (a possible false-flag, never a missed real link; verified against `marked`).
+wf_extract_links() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }   # toggle on a fence line; drop the fence line
+    fence { next }                                       # drop everything inside a fenced block
+    { gsub(/`[^`]*`/, ""); print }                       # drop inline `code` spans, keep the rest
+  ' "$1" | grep -oE ']\([^)]+\)' | sed -E 's/^\]\(//; s/\)$//'
+}

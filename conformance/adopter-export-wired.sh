@@ -7,7 +7,9 @@
 #   sh conformance/adopter-export-wired.sh [--selftest]
 # Exit: 0 = wired + link-safe + CI-green · 1 = regression · 2 = setup. POSIX sh; dash-clean.
 set -eu
-cd "$(dirname "$0")/.."
+_here=$(CDPATH='' cd "$(dirname "$0")" && pwd)   # resolve dir BEFORE cd so sourcing is cwd-independent
+cd "$_here/.."
+. "$_here/wf-helpers.sh"   # provides wf_extract_links() (single source of truth)
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
@@ -50,7 +52,7 @@ run() {
     _badf=$(mktemp)
     find "$_d" -name '*.md' -type f | while IFS= read -r _f; do
       _fdir=$(dirname "$_f")
-      awk '/^[[:space:]]*(```|~~~)/{f=!f;next} f{next} {gsub(/`[^`]*`/,"");print}' "$_f" 2>/dev/null | grep -oE '\]\([^)]+\)' | sed -E 's/^\]\(//; s/\)$//' | while IFS= read -r _ln; do
+      wf_extract_links "$_f" | while IFS= read -r _ln; do
         case "$_ln" in
           http://*|https://*|mailto:*|'#'*) continue ;;
         esac
