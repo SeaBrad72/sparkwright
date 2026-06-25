@@ -12,7 +12,7 @@
 
 - **POSIX sh only** — `#!/bin/sh`, `set -eu`, no bashisms; parse config with `sed`/`grep` (never `source`). Sum the tally with `awk`. (Matches `conformance/cost-governance-ready.sh`.)
 - **Three-state exit convention** — `0` PASS/continue, `1` FAIL/stop, `2` UNVERIFIED; under CI (`CI` env set) or `--require`, UNVERIFIED escalates to `1`.
-- **Control-plane discipline** — `.claude/hooks/guard-core.sh`, `conformance/*`, `.github/workflows/*`, `scripts/runaway-guard.sh`, `.kit/budget.conf` are all control-plane. They are NOT edited in the working tree directly; they are materialized by `scratchpad/e4d/apply.py`, which is security-reviewed before it runs. Run `apply.py` with `KIT_GUARD_SELFEDIT=1` (deliberate human-authorized maintenance).
+- **Control-plane discipline (ratified AMBER convention)** — `.claude/hooks/guard-core.sh`, `conformance/*`, `.github/workflows/*`, `scripts/runaway-guard.sh`, `.kit/budget.conf` are all control-plane. The **agent never applies control-plane changes to the real tree.** It assembles every control-plane edit into `scratchpad/e4d/apply.py`, dual-reviews the scratch, and **dry-runs `apply.py` on a throwaway clone** (proving full `verify --require` green there). **Bradley** then runs `apply.py` on the real tree + finishing edits (VERSION/CHANGELOG/README/ROADMAP) + commit + PR + admin-merge + tag (mirrors the E4e slice; [[merge-tag-authority]]).
 - **Builder ≠ reviewer** — after build, dual review: a `reviewer` agent (correctness + §14 gates) AND a `security-reviewer` agent (probes the §4 integrity model). Stop at PR-green-reviewed; **Bradley** does the admin-merge + tag (see [[merge-tag-authority]]).
 - **Harness-neutral** — no Claude-Code-specific dependency; the orchestration loop is a documented pattern, not a `.claude/workflows/` artifact.
 - **Spec:** `docs/architecture/2026-06-25-e4d-runaway-killswitch-design.md`. **Config-format refinement (planning decision):** spec said `.kit/budget.json`; pinned to **`.kit/budget.conf`** (`KEY=VALUE`) for zero-dependency, hot-path-safe parsing (no `jq`).
@@ -399,43 +399,48 @@ Expected: `apply.py compiles`.
 
 ---
 
-## Task 5: Apply, verify, commit
+## Task 5: Dry-run `apply.py` on a throwaway clone (agent verifies; does NOT touch the real tree)
 
-- [ ] **Step 1: Apply (human-authorized control-plane maintenance)**
+The agent proves `apply.py` materializes a fully-green tree **on a clone**, never on the real control-plane files. Bradley applies for real in Task 7.
 
-Run: `KIT_GUARD_SELFEDIT=1 python3 scratchpad/e4d/apply.py`
-Expected: summary of changed files; exit 0.
-
-- [ ] **Step 2: Verify the new lock + guard integrity directly**
+- [ ] **Step 1: Clone the working tree to a scratch location**
 
 Run:
 ```bash
-sh conformance/runaway-killswitch-wired.sh --selftest
-sh conformance/agent-autonomy.sh
-sh scripts/runaway-guard.sh --selftest
+CLONE=$(mktemp -d)/e4d-dryrun
+git clone -q . "$CLONE" && git -C "$CLONE" checkout -q feature/e4d-runaway-killswitch
+cp -R scratchpad "$CLONE"/scratchpad   # carry the (gitignored) scratch artifacts + apply.py
+echo "clone: $CLONE"
+```
+
+- [ ] **Step 2: Apply on the clone**
+
+Run: `(cd "$CLONE" && python3 scratchpad/e4d/apply.py)`
+Expected: summary of changed files; exit 0; no anchor-missing abort.
+
+- [ ] **Step 3: Verify the new lock + guard integrity on the clone**
+
+Run:
+```bash
+( cd "$CLONE" \
+  && sh conformance/runaway-killswitch-wired.sh --selftest \
+  && sh conformance/agent-autonomy.sh \
+  && sh scripts/runaway-guard.sh --selftest )
 ```
 Expected: all exit 0; agent-autonomy reports the new budget-config fixtures PASS.
 
-- [ ] **Step 3: Full aggregate + claims (the real gate, on the committed shape)**
+- [ ] **Step 4: Full aggregate + claims + doctor on the clone (the real gate)**
 
-Run: `sh conformance/verify.sh --require && sh conformance/claims-registry.sh`
-Expected: 0 failed; `runaway-killswitch` present in the claims coverage (no silent-drop).
-
-- [ ] **Step 4: Run `doctor` (auto-picks the new check)**
-
-Run: `sh scripts/doctor.sh` (or `sparkwright doctor`)
-Expected: Overall PASS.
-
-- [ ] **Step 5: Commit the materialized slice**
-
+Run:
 ```bash
-git add scripts/runaway-guard.sh conformance/runaway-killswitch-wired.sh .kit/budget.conf \
-        .claude/hooks/guard-core.sh conformance/claims.tsv conformance/claims-registry.sh \
-        conformance/agent-autonomy.sh conformance/README.md .github/workflows/ci.yml .gitignore
-# bump VERSION (next patch, e.g. 3.48.19) + CHANGELOG entry per MAINTAINING.md, then:
-git add VERSION CHANGELOG.md
-git commit -q -m "feat(e4d): runaway kill-switch — executable circuit-breaker + conformance lock (v3.48.19)"
+( cd "$CLONE" \
+  && sh conformance/verify.sh --require \
+  && sh conformance/claims-registry.sh \
+  && sh scripts/doctor.sh )
 ```
+Expected: 0 failed; `runaway-killswitch` present in claims coverage (no silent-drop); doctor Overall PASS.
+
+- [ ] **Step 5: Record the dry-run result** in the report file (clone path, exit codes, claims count) for the reviewers. Do NOT modify the real tree.
 
 ---
 
@@ -447,16 +452,25 @@ git commit -q -m "feat(e4d): runaway kill-switch — executable circuit-breaker 
 
 ---
 
-## Task 7: PR — stop for ratification
+## Task 7: Handoff to Bradley (apply + finishing + PR + merge — human-ratified)
 
-- [ ] **Step 1: Push + open PR**
+The agent stops here with a reviewed, dry-run-verified `scratchpad/e4d/apply.py`. Bradley runs the AMBER apply + finishing on the real tree.
+
+- [ ] **Step 1: Agent presents the handoff packet** — the dry-run result (clone path, green verify, claims count), both review verdicts, and the exact commands below.
+
+- [ ] **Step 2: Bradley runs (on the real tree):**
 
 ```bash
+python3 scratchpad/e4d/apply.py                                  # materialize control-plane edits
+# finishing edits: bump VERSION (e.g. 3.48.19), add CHANGELOG entry (honest-ceiling verb),
+#                  README badge if needed, ROADMAP-KIT.md E4d -> done
+sh conformance/verify.sh --require && sh conformance/claims-registry.sh && sh scripts/doctor.sh
+git add -A && git commit -m "feat(e4d): runaway kill-switch — executable circuit-breaker + conformance lock (v3.48.19)"
 git push -u origin feature/e4d-runaway-killswitch
-gh pr create --title "feat(e4d): runaway kill-switch (v3.48.19)" --body "<summary + honest-ceiling note + review links>"
+gh pr create --title "feat(e4d): runaway kill-switch (v3.48.19)" --body "<summary + honest-ceiling note + review verdicts>"
 ```
 
-- [ ] **Step 2: Confirm CI green**, then **STOP**. Hand Bradley the admin-merge + tag commands (do not self-merge — [[merge-tag-authority]]).
+- [ ] **Step 3:** After CI green + review, Bradley does the admin-merge + tag (do not self-merge — [[merge-tag-authority]]).
 
 ---
 
