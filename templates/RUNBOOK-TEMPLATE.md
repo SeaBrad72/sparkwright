@@ -36,6 +36,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Scoped tokens: OIDC->role, short TTL ([mechanism]) — enforced: [date]  <!-- Least-privilege, time-boxed credentials -->
 - Prod credentials: separate + break-glass ([mechanism]) — enforced: [date]  <!-- Agents never hold prod write creds; SoD -->
 - Cost governance: per-run budget + platform spend-cap ([Anthropic usage limit | harness budget]) — enforced: [date]  <!-- LLM/metered-API spend bounded by a declared budget + the platform cap; docs/operations/cost-governance.md; verified declared+attested by conformance/cost-governance-ready.sh. If no metered external/LLM spend: N/A — [reason] -->
+- **Runaway kill-switch:** ceilings in `.kit/budget.conf`; the orchestration loop calls `scripts/runaway-guard.sh step` (see `docs/operations/runaway-killswitch.md`).
 
 **Container / Kubernetes deploy (if applicable):**
 - Image: built multi-stage & non-root in CI; pushed to GHCR on merge to `main` with a **digest-bound provenance attestation**.
