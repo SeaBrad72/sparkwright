@@ -42,6 +42,11 @@ if [ "${1:-}" = "--selftest" ]; then
   echo "OK: containment-audit-wired selftest"; exit 0
 fi
 
+# Kit-self (mirrors adopter-export-wired's detector): this verifies the kit's OWN golden-path
+# pipeline. On an adopter tree both kit markers are export-ignored/stripped → nothing to verify →
+# N/A. Fail-closed on the kit: ROADMAP-KIT.md remains even if golden-path is deleted, so the
+# [ -f "$WF" ] check below still FAILs.
+if [ ! -f "docs/ROADMAP-KIT.md" ] && [ ! -f "$WF" ]; then echo "containment-audit-wired: N/A — kit-self check (not applicable outside the kit repo)"; exit 0; fi
 fail=0
 [ -f "$AUDIT" ] || { echo "FAIL: containment-audit runner not found: $AUDIT"; fail=1; }
 sh -n "$AUDIT" 2>/dev/null || { echo "FAIL: containment-audit runner does not parse: $AUDIT"; fail=1; }

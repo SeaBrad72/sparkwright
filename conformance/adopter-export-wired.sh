@@ -95,6 +95,18 @@ run() {
     else
       echo "FAIL: exported tree's claims-registry does NOT pass (an orphaned maintainer-only claim — carve it in adopter-export.sh)"; rc=1
     fi
+    # Green-on-clone: the export must pass the SAME aggregate the adopter's ci.yml runs —
+    # verify.sh --require — not just claims-registry. A control-check that hard-fails on the export
+    # (e.g. a kit-self check needing an export-ignored file but not N/A-ing) would otherwise only
+    # surface when a real adopter pushes. The tree is committed above (git init+add+commit). This
+    # drives the FULL adopter aggregate on the export, so this lock's runtime ~doubles (expected,
+    # not a hang). RECURSION-SAFE: the export's OWN adopter-export-wired N/A-skips (both kit markers
+    # are stripped from the export) and returns before re-exporting — do NOT remove that N/A-skip.
+    if ( cd "$_d" && sh conformance/verify.sh --require >/dev/null 2>&1 ); then
+      echo "PASS: exported tree's verify --require passes (adopter first CI push is green)"
+    else
+      echo "FAIL: exported tree's verify.sh --require FAILS — green-on-clone is broken. A control-check hard-fails on the export; make it N/A when its export-ignored dependency is absent (the kit-self pattern)."; rc=1
+    fi
     for _cc in drift-watch golden-path adopter-export; do
       if grep -q "^$_cc$(printf '\t')" "$_d/conformance/claims.tsv"; then
         echo "FAIL: claim $_cc not carved from the export"; rc=1

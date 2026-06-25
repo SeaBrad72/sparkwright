@@ -42,5 +42,10 @@ if [ "${1:-}" = "--selftest" ]; then
   [ "$sfail" -eq 0 ] && { echo "OK: feature-flags-wired selftest"; exit 0; } || { echo "FAIL: feature-flags-wired selftest"; exit 1; }
 fi
 
+# Kit-self (mirrors adopter-export-wired's detector): this verifies the kit's OWN golden-path
+# pipeline. On an adopter tree both kit markers are export-ignored/stripped → nothing to verify →
+# N/A. Fail-closed on the kit: ROADMAP-KIT.md remains even if golden-path is deleted, so the
+# [ -f "$WF" ] check below still FAILs.
+if [ ! -f "docs/ROADMAP-KIT.md" ] && [ ! -f "$WF" ]; then echo "feature-flags-wired: N/A — kit-self check (golden-path is the kit's own pipeline; not applicable outside the kit repo)"; exit 0; fi
 [ -f "$WF" ] || { echo "FAIL: golden-path workflow not found: $WF"; exit 1; }
 if check_wired "$SCAFFOLD" "$WF"; then echo "OK: feature-flag reference + golden-path flip wired"; exit 0; else echo "FAIL: feature-flag vertical under-wired"; exit 1; fi

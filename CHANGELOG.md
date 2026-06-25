@@ -5,6 +5,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.48.18] — 2026-06-25
+
+**Adopter-export-RED fix — restore the green-on-clone promise.**
+The S4 meta-control panel found (a pre-M2 regression) that a fresh adopter export was RED on
+`verify --require`: `feature-flags-wired`, `containment-audit`, and `runtime-security` hard-`FAIL`
+because they require `.github/workflows/golden-path.yml`, which is export-ignored (it is the kit's own
+maintainer pipeline). The export carves the matching *claims* (so `claims-registry` passed), but
+`verify.sh` runs the three *scripts* directly as control-checks — and the export lock only ran
+`claims-registry`, never `verify --require`, so nothing kit-side caught it until a real adopter would push.
+
+### Fixed
+- **`conformance/feature-flags-wired.sh` · `runtime-security.sh` · `containment-audit-wired.sh`** — each
+  now N/A's on a non-kit tree via the OR-of-markers detector (`docs/ROADMAP-KIT.md` OR
+  `.github/workflows/golden-path.yml` present ⇒ kit). On an adopter both are stripped → N/A (nothing to
+  verify); on the kit they run as before. **Fail-closed**: if golden-path is deleted on the kit,
+  `ROADMAP-KIT.md` still flags it → the existing `[ -f golden-path ] || FAIL` fires.
+
+### Changed
+- **`conformance/adopter-export-wired.sh`** — the export lock now runs `verify.sh --require` on the
+  exported tree (the same aggregate the adopter's `ci.yml` runs), not just `claims-registry` — closing
+  the gap that let this regression ship and catching any future control-check that hard-fails on the export.
+
 ## [3.48.17] — 2026-06-25
 
 **M2-S5 — ratification integrity: the freshness circuit-breaker's headline guarantee now HOLDS.**

@@ -40,6 +40,11 @@ fi
 
 case "${1:-}" in "") : ;; *) echo "usage: runtime-security.sh [--selftest]" >&2; exit 2 ;; esac
 
+# Kit-self (mirrors adopter-export-wired's detector): this verifies the kit's OWN golden-path
+# pipeline. On an adopter tree both kit markers are export-ignored/stripped → nothing to verify →
+# N/A. Fail-closed on the kit: ROADMAP-KIT.md remains even if golden-path is deleted, so the
+# [ -f "$WF" ] check below still FAILs.
+if [ ! -f "$ROOT/docs/ROADMAP-KIT.md" ] && [ ! -f "$WF" ]; then echo "runtime-security: N/A — kit-self check (not applicable outside the kit repo)"; exit 0; fi
 fail=0
 [ -f "$SERVER" ] || { echo "FAIL: reference server not found: $SERVER"; fail=1; }
 [ -f "$WF" ]     || { echo "FAIL: golden-path workflow not found: $WF"; fail=1; }
