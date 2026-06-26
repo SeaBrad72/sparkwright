@@ -5,6 +5,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.49.0] — 2026-06-26
+
+**E4d — runaway kill-switch.**
+An executable, harness-neutral circuit-breaker (`scripts/runaway-guard.sh`, verbs `step`/`check`/`reset`)
+that halts an orchestrated flow when cumulative tokens, step count, or agent-spawn count breach a
+control-plane ceiling (`.kit/budget.conf`). It enforces a ceiling on *reported* usage at the
+orchestration seam; the platform LLM-API cap remains the hard backstop above it. Conformance-locked
+(`conformance/runaway-killswitch-wired.sh`, wired into `verify.sh` / CI / drift-watch / doctor), and the
+ceiling config is guarded against agent self-raising (Write/Edit **and** shell-redirect deny, regression-
+locked in `agent-autonomy`). Honest ceiling: no hard spend cap (platform-owned), best-effort runtime
+tally (`.kit-run/`, gitignored), wall-clock out of scope. Dual-reviewed (reviewer + security-reviewer
+APPROVE; the security review adversarially verified the fail-closed path into drift-watch/doctor). See
+`docs/operations/runaway-killswitch.md`. Delivers the cost/runaway item that E13 (FinOps) dissolved into.
+No new gate ids; claim `runaway-killswitch` added.
+
 ## [3.48.18] — 2026-06-25
 
 **Adopter-export-RED fix — restore the green-on-clone promise.**
