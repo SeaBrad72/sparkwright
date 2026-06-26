@@ -262,6 +262,8 @@ jobs:
         run: sh conformance/golden-path-wired.sh
       - name: Golden-path-wired self-test
         run: sh conformance/golden-path-wired.sh --selftest
+      - name: conformance — runaway kill-switch (E4d)
+        run: sh conformance/runaway-killswitch-wired.sh --selftest
 
 
   bootstrap:

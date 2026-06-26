@@ -45,3 +45,6 @@ docs/ROADMAP-SLICE11.md
 # Reference diagram (working input, not a shipped asset)
 Product:Design + pre-story discovery loops.png
 scratchpad/
+
+# E4d runaway-guard tally (runtime state; best-effort)
+.kit-run/

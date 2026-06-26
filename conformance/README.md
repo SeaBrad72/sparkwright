@@ -27,6 +27,7 @@ In short: **green proves controls hold and safety is documented; it does not pro
 
 | Check | Type | Contract it proves | Gate |
 |-------|------|--------------------|------|
+| `runaway-killswitch-wired.sh` | script | runaway ceilings enforced — `scripts/runaway-guard.sh` exists, is executable, and breaches halt the loop (token / step / agent dimensions) | per-PR + drift-watch |
 | `15-factor-checklist.md` | checklist | `DEVELOPMENT-STANDARDS.md` §13 (15-Factor Architecture) | Review (conditional) |
 | `definition-of-deployable.md` | checklist | `DEVELOPMENT-PROCESS.md` §10 / §4 (release readiness) | Release (conditional) |
 | `deployable-ready.sh` | script | `DEVELOPMENT-PROCESS.md` §10 — documented release-safety (RUNBOOK deploy/rollback + smoke); pairs with the checklist | Release / CI (conditional on a deploy surface) |
