@@ -270,8 +270,7 @@ selftest() {
   for k in '"agent.id"' '"outcome"' '"steps"' '"start"'; do
     [ "$(printf '%s' "$out" | jq "all(has($k))")" = "true" ] || { echo "FAIL: missing $k"; st_fail=1; }
   done
-  # sanity: feed it to the REAL scorecard and confirm a denial_rate>0 card exists
-  card=$(printf '%s' "$out" | jq -s 'add' 2>/dev/null || printf '%s' "$out")
+  # (the REAL scorecard end-to-end proof lives in Step 4, not the selftest)
   [ "$st_fail" -eq 0 ] || { echo "otel-to-scorecard --selftest: FAIL" >&2; return 1; }
   echo "otel-to-scorecard --selftest: OK (3 child records, denied mapped, required fields)"; return 0
 }
