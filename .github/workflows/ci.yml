@@ -151,6 +151,8 @@ jobs:
         run: sh conformance/responsible-ai-ready.sh --selftest
       - name: Test-data-ready self-test (non-prod data discipline)
         run: sh conformance/test-data-ready.sh --selftest
+      - name: conformance — test layers (selftest)
+        run: sh conformance/test-layers-ready.sh --selftest
       - name: Preview-env-ready self-test (per-PR preview discipline)
         run: sh conformance/preview-env-ready.sh --selftest
       - name: Agent-ops-ready self-test (agentic trace-discipline record)
