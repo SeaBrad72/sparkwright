@@ -27,6 +27,8 @@ In short: **green proves controls hold and safety is documented; it does not pro
 
 | Check | Type | Contract it proves | Gate |
 |-------|------|--------------------|------|
+| `version-helpers.sh` | script | shared semver helper lib (sourced by `meta-control-fresh.sh` and `version-tag-coherent.sh`) — not a gate itself | — |
+| `version-tag-coherent.sh` | script | VERSION agrees with the git tag state — no skipped release bump (HEAD tagged → VERSION matches; VERSION ≥ highest reachable tag) | per-PR + drift-watch + tag-push |
 | `runaway-killswitch-wired.sh` | script | runaway ceilings enforced — `scripts/runaway-guard.sh` exists, is executable, and breaches halt the loop (token / step / agent dimensions) | per-PR + drift-watch |
 | `15-factor-checklist.md` | checklist | `DEVELOPMENT-STANDARDS.md` §13 (15-Factor Architecture) | Review (conditional) |
 | `definition-of-deployable.md` | checklist | `DEVELOPMENT-PROCESS.md` §10 / §4 (release readiness) | Release (conditional) |

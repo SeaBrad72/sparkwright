@@ -171,6 +171,8 @@ from a one-line machine marker `docs/governance/.meta-control-last` (`VERSION VE
 >
 > *The shell-mutation deny is a speed-bump like the rest of the guard (`docs/operations/runtime-guards.md`);
 > the durable control is the Edit/Write-tool deny plus the human-reviewed commit that authors the verdict.*
+>
+> The freshness gate also rejects a marker that is future-pinned or that corresponds to no real release point (a tag or the current `VERSION`). This is **defense-in-depth, not a tamper boundary** — the actual guarantee that an agent cannot move the marker is its control-plane status (the guard denies writes); an offline file-based gate cannot resist an attacker who can already write the marker.
 
 ## Who runs it (the Kit-Steward — neutral role)
 

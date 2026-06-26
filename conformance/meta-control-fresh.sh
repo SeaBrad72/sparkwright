@@ -25,6 +25,7 @@
 # Exit: 0 = FRESH or N/A · 1 = OVERDUE / invalid-state / desync · 2 = usage. POSIX sh; dash-clean.
 set -eu
 _here=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+. "$_here/version-helpers.sh"
 cd "$_here/.."
 ROOT="${META_CONTROL_ROOT:-.}"
 N="${META_CONTROL_N:-5}"
@@ -39,8 +40,6 @@ is_kit() {
   [ -f "$ROOT/docs/ROADMAP-KIT.md" ] || [ -f "$ROOT/.github/workflows/golden-path.yml" ]
 }
 
-ver_norm() { printf '%s' "$1" | sed 's/^v//'; }
-
 # tags_list — normalized (v-stripped) X.Y.Z release tags, one per line. META_CONTROL_TAGS overrides
 # for the selftest (so freshness logic is testable without a fixture git repo).
 tags_list() {
@@ -54,7 +53,7 @@ count_newer() {
   for _t in $(tags_list); do
     [ -z "$_t" ] && continue
     [ "$_t" = "$_m" ] && continue
-    if [ "$(printf '%s\n%s\n' "$_m" "$_t" | sort -V | tail -1)" = "$_t" ]; then
+    if ver_gt "$_t" "$_m"; then
       _c=$((_c + 1))
     fi
   done
@@ -82,6 +81,13 @@ applicability() {
   return 3
 }
 
+# (b) verdict normalization: uppercase-normalize so case differences between marker and log don't
+# false-desync, and so a lowercase `deferred` normalizes consistently (the actual serial-cap evasion
+# fix lives in trailing_deferred's toupper). The verdict VOCABULARY is OPEN-ENDED (GO-WITH-CONDITIONS,
+# profile-specific verdicts like KEEP-BIASED, ...) — we deliberately do NOT restrict it to a fixed
+# enum, which would reject the kit's own legitimate richer verdicts.
+norm_verdict() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
+
 # validate_state — marker+log present, marker parseable, marker == log's last row. Prints FAIL
 # reason; returns 0/1. Sets MVER, MVERDICT. (Structural / time-invariant — safe for per-PR selftest.)
 validate_state() {
@@ -105,22 +111,32 @@ validate_state() {
     echo "FAIL: marker verdict missing ($MARKER must be 'VERSION VERDICT')."
     return 1
   fi
-  # M2-S5: reject a FUTURE-PINNED marker — marker version must be <= the working tree's VERSION. This
-  # allows the legitimate ship-seam (marker == the about-to-ship version before its tag exists, e.g.
-  # S2's 3.48.15 while 3.48.14 was newest) but rejects a fabricated 99.0.0 that would pin the gate FRESH
-  # forever. Skip gracefully if VERSION is absent / non-semver (an adopter may version otherwise).
+  # (a, trimmed) Two checks, both DEFENSE-IN-DEPTH only — the real guarantee is the marker's
+  # control-plane status (the guard denies agent writes; see docs/operations/meta-control.md).
+  #  i. marker must not be AHEAD of VERSION (rejects a fabricated 99.0.0 future-pin).
+  # ii. marker must correspond to a real release point: an existing semver tag OR exactly == VERSION
+  #     (the unreleased ship-seam). Rejects a plausible-but-fabricated in-between marker that (i) alone
+  #     would accept. Enforced only when an anchor exists (VERSION present); lenient otherwise so an
+  #     adopter who versions differently is not over-constrained.
   if [ -f "$ROOT/VERSION" ]; then
     _vraw=$(ver_norm "$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)")
-    if printf '%s' "$_vraw" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
-       && [ "$MVER" != "$_vraw" ] \
-       && [ "$(printf '%s\n%s\n' "$MVER" "$_vraw" | sort -V | tail -1)" = "$MVER" ]; then
-      echo "FAIL: marker version $MVER is ahead of VERSION $_vraw — a future-pinned marker would pin the gate FRESH forever. Set the marker to a real run's version (<= VERSION)."
-      return 1
+    if printf '%s' "$_vraw" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      if ver_gt "$MVER" "$_vraw"; then
+        echo "FAIL: marker version $MVER is ahead of VERSION $_vraw — a future-pinned marker would pin the gate FRESH forever. Set the marker to a real run's version (<= VERSION)."
+        return 1
+      fi
+      _is_tag=0
+      for _t in $(tags_list); do [ "$_t" = "$MVER" ] && { _is_tag=1; break; }; done
+      if [ "$_is_tag" = "0" ] && [ "$MVER" != "$_vraw" ]; then
+        echo "FAIL: marker $MVER is neither a released tag nor == VERSION $_vraw — the marker must correspond to a real release point or the current ship-seam version."
+        return 1
+      fi
     fi
   fi
   _lver=$(log_field 3) || { echo "FAIL: cannot parse a data row from $LOG."; return 1; }
   _lverdict=$(log_field 6)
   _lver=$(ver_norm "$_lver")
+  MVERDICT=$(norm_verdict "$MVERDICT"); _lverdict=$(norm_verdict "$_lverdict")
   if [ "$MVER" != "$_lver" ] || [ "$MVERDICT" != "$_lverdict" ]; then
     echo "FAIL: marker/log desync — marker='$MVER $MVERDICT' but log's last row='$_lver $_lverdict'. The two must advance together (update $MARKER whenever you append to $LOG)."
     return 1
@@ -135,7 +151,7 @@ trailing_deferred() {
       t=$2; gsub(/^[ \t]+|[ \t]+$/,"",t)
       if (t=="Date") next
       if ($0 ~ /^[ \t]*\|[ \t:|-]+$/) next
-      v=$6; gsub(/^[ \t]+|[ \t]+$/,"",v); rows[++n]=v
+      v=$6; gsub(/^[ \t]+|[ \t]+$/,"",v); rows[++n]=toupper(v)
     }
     END { c=0; for (i=n;i>=1;i--){ if(rows[i]=="DEFERRED") c++; else break } print c+0 }
   ' "$ROOT/$LOG" 2>/dev/null
@@ -255,6 +271,14 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '1.0.0 DEFERRED\n' > "$_d/docs/governance/.meta-control-last"
   { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t | l | GO | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | l | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
   rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run ) >/dev/null 2>&1 || rc=$?; _expect "single trailing DEFERRED = FRESH (one deferral allowed)" 0 "$rc"
+
+  # M. (a) marker is a non-tag value < VERSION and != VERSION → FAIL (the new clause; bare <=VERSION would pass)
+  _d="$_t/m"; _mkfix "$_d" "1.0.5 GO" "1.0.5" "GO" "2.0.0"; rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0 1.0.1" run ) >/dev/null 2>&1 || rc=$?; _expect "(a) non-tag marker !=VERSION = FAIL" 1 "$rc"
+  # N. (b) two consecutive lowercase `deferred` → OVERDUE (serial cap no longer evadable by case)
+  _d="$_t/n"; mkdir -p "$_d/docs/governance"; : > "$_d/docs/ROADMAP-KIT.md"; printf '99.99.99\n' > "$_d/VERSION"
+  printf '1.0.0 deferred\n' > "$_d/docs/governance/.meta-control-last"
+  { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t | l | deferred | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | l | deferred | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
+  rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run ) >/dev/null 2>&1 || rc=$?; _expect "(b) lowercase deferred x2 = OVERDUE" 1 "$rc"
 
   rm -rf "$_t"
   [ "$sfail" -eq 0 ] && { echo "meta-control-fresh --selftest: OK"; exit 0; } || exit 1

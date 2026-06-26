@@ -79,6 +79,7 @@ check control token-scope         sh conformance/token-scope.sh
 check control runtime-security    sh conformance/runtime-security.sh
 check control author-not-approver sh conformance/author-not-approver-wired.sh
 check control runaway-killswitch sh conformance/runaway-killswitch-wired.sh --selftest
+check control version-tag-coherent sh conformance/version-tag-coherent.sh
 check doc     deployable-ready sh conformance/deployable-ready.sh
 check doc     dr-ready         sh conformance/dr-ready.sh
 check doc     resilience-ready sh conformance/resilience-ready.sh

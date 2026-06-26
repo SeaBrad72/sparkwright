@@ -32,3 +32,4 @@ author-not-approver	author ≠ approver is a proven separation-of-duties FLOOR �
 verify-enforced	ci.yml enforces the conformance aggregate on every PR (runs verify.sh --require, not only --selftest)	sh conformance/verify-enforced-wired.sh
 meta-control-fresh	the cadenced meta-control panel can't go stale unnoticed — a freshness gate (weekly drift-watch + advisory doctor) flags >N tags since the last addressed run; mechanism + marker↔log sync are locked (conformance/meta-control-fresh.sh, docs/operations/meta-control.md)	sh conformance/meta-control-fresh.sh --selftest
 runaway-killswitch	the runaway circuit-breaker is installed and enforces token/step/agent ceilings	sh conformance/runaway-killswitch-wired.sh --selftest
+version-tag-coherent	VERSION agrees with the git tag state (no skipped release bump)	sh conformance/version-tag-coherent.sh --selftest

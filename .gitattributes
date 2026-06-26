@@ -18,4 +18,6 @@ docs/architecture/2026-06-24-t3a-rightweight-assessment.md       export-ignore
 docs/architecture/2026-06-25-meta-control-3.md                   export-ignore
 docs/architecture/2026-06-25-e4d-runaway-killswitch-design.md    export-ignore
 docs/architecture/2026-06-25-e4d-runaway-killswitch-plan.md      export-ignore
+docs/architecture/2026-06-26-m2-ratification-hardening-design.md export-ignore
+docs/architecture/2026-06-26-m2-ratification-hardening-plan.md   export-ignore
 docs/governance/.meta-control-last                              export-ignore
