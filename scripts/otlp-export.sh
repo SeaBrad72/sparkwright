@@ -44,6 +44,15 @@ to_otlp() {
 #   as quoted strings inside the curl config file — never passed as argv to
 #   curl, so there is no shell word-split injection and no ps/argv exposure of
 #   auth tokens.
+#
+#   Security: rejects any pair whose key or value contains a double-quote (")
+#   or a newline, and any pair with an empty key. Either character would allow
+#   an attacker-controlled OTEL_EXPORTER_OTLP_HEADERS value to break out of
+#   the "header = "..." line and inject arbitrary curl config directives
+#   (e.g. output = "/tmp/pwned"). We fail-closed (exit 2) rather than attempt
+#   escaping — escaping curl config syntax is error-prone and untestable at
+#   every curl version. The value is NOT echoed to stderr to avoid leaking
+#   auth secrets in logs.
 # ---------------------------------------------------------------------------
 build_header_config() {
   _h_str="$1"; _h_out="$2"
@@ -51,6 +60,19 @@ build_header_config() {
   for _pair in $_h_str; do
     _key="${_pair%%=*}"
     _val="${_pair#*=}"
+    # --- config-injection guard (fail-closed) ---
+    [ -n "$_key" ] || { echo "otlp-export: refusing header with empty key (config-injection guard)" >&2; IFS=$OLDIFS; exit 2; }
+    case "$_key$_val" in
+      *'"'*) echo "otlp-export: refusing header containing a double-quote (config-injection guard)" >&2; IFS=$OLDIFS; exit 2 ;;
+    esac
+    # Detect embedded newline: printf adds a sentinel char after the value; if the
+    # sentinel ends up on a second line after read, the value contains a newline.
+    # (Command substitution strips trailing newlines, so we can't use $(...) directly.)
+    _val_check=$(printf '%s|' "$_val")
+    case "$_val_check" in
+      *"
+"*) echo "otlp-export: refusing header containing a newline (config-injection guard)" >&2; IFS=$OLDIFS; exit 2 ;;
+    esac
     printf 'header = "%s: %s"\n' "$_key" "$_val" >> "$_h_out"
   done
   IFS=$OLDIFS
@@ -84,10 +106,9 @@ selftest() {
   err_code=$(printf '%s' "$err_sp" | jq '.status.code')
   [ "$err_code" = "2" ] || { echo "FAIL: ERROR span (gate:guard) must have status.code==2, got $err_code"; st_fail=1; }
 
-  # --- Injection-safety: build_header_config must survive a malicious header value ---
-  # A malicious header whose value contains curl flags (e.g. "--output /tmp/pwned").
-  # With the config-file approach, the whole value goes into a quoted "header = ..." line —
-  # curl treats it as one header value, not as injected flags.
+  # --- Injection-safety: benign flag-like-token value must be ACCEPTED (not over-broad) ---
+  # A value containing spaces/flags (e.g. "--output /tmp/pwned") has NO double-quote
+  # and NO newline, so it must be confined to a single "header = ..." line — not split.
   _inj_tmp=$(mktemp)
   chmod 600 "$_inj_tmp"
   build_header_config 'x-api-key=abc --output /tmp/pwned' "$_inj_tmp"
@@ -99,9 +120,24 @@ selftest() {
     'header = "x-api-key: abc --output /tmp/pwned"')
       : ;;  # safe — entire value in quoted header line
     *)
-      echo "FAIL: injection-safety: malicious header value not contained in quoted config line; got: $_inj_line"
+      echo "FAIL: injection-safety: benign flag-like-token value not contained in quoted config line; got: $_inj_line"
       st_fail=1 ;;
   esac
+
+  # --- Injection-safety: embedded double-quote must be REJECTED (config-injection guard) ---
+  # A value like: abc"<newline>output = "/tmp/pwned breaks out of the quoted header line.
+  # The guard must reject this with exit 2 BEFORE writing anything to the config file.
+  # build_header_config calls exit 2 on rejection, so we invoke it in a subshell.
+  _malicious=$(printf 'x-api-key=abc"\noutput = "/tmp/pwned')
+  _inj_tmp2=$(mktemp)
+  chmod 600 "$_inj_tmp2"
+  if ( build_header_config "$_malicious" "$_inj_tmp2" ) 2>/dev/null; then
+    echo "FAIL: injection-safety: malicious header with embedded quote was NOT rejected (should have exited non-zero)"
+    st_fail=1
+  else
+    : # correctly rejected
+  fi
+  rm -f "$_inj_tmp2"
 
   [ "$st_fail" -eq 0 ] || { echo "otlp-export --selftest: FAIL" >&2; return 1; }
   echo "otlp-export --selftest: OK (valid OTLP/JSON envelope + injection-safety + status.code assertions; no network)"
