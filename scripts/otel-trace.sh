@@ -63,8 +63,14 @@ selftest() {
   [ "$(tail -1 "$sink" | jq -r '.parent_span_id')" = "$root" ] || { echo "FAIL: child not linked to root"; st_fail=1; }
   [ "$(tail -1 "$sink" | jq -r '.attributes["agent.id"]')" = "engineer" ] || { echo "FAIL: attr lost"; st_fail=1; }
   rm -f "$sink"
+  # span subcommand: space-containing --attr value must survive word-split (Finding 1)
+  sink2=$(mktemp)
+  tid2=$(new_trace)
+  sh "$0" span --trace "$tid2" --name "space-test" --attr "msg=hello world" --sink "$sink2"
+  [ "$(jq -r '.attributes.msg' "$sink2")" = "hello world" ] || { echo "FAIL: space in attr value corrupted"; st_fail=1; }
+  rm -f "$sink2"
   [ "$st_fail" -eq 0 ] || { echo "otel-trace --selftest: FAIL" >&2; return 1; }
-  echo "otel-trace --selftest: OK (ids, span lines, OTel keys, parent linkage, attrs)"; return 0
+  echo "otel-trace --selftest: OK (ids, span lines, OTel keys, parent linkage, attrs, space-in-attr)"; return 0
 }
 
 # --- dispatch ---
@@ -74,16 +80,16 @@ case "${1:-}" in
   span)
     shift
     _trace=""; _name=""; _parent=""; _status="OK"; _start=""; _end=""
-    _attrs_list=""
+    _attr_n=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --trace)  _trace="${2:?--trace needs a value}"; shift 2 ;;
         --name)   _name="${2:?--name needs a value}"; shift 2 ;;
         --parent) _parent="${2:?--parent needs a value}"; shift 2 ;;
         --attr)
-          _kv="${2:?--attr needs k=v}"
-          if [ -z "$_attrs_list" ]; then _attrs_list="$_kv"; else _attrs_list="$_attrs_list
-$_kv"; fi
+          _attr_n=$((_attr_n + 1))
+          _attr_kv="${2:?--attr needs k=v}"
+          eval "_attr_${_attr_n}=\$_attr_kv"
           shift 2 ;;
         --status) _status="${2:?--status needs OK|ERROR}"; shift 2 ;;
         --start)  _start="${2:?--start needs nanos}"; shift 2 ;;
@@ -94,13 +100,13 @@ $_kv"; fi
         *)        break ;;
       esac
     done
-    # shellcheck disable=SC2086  # word-splitting the newline-delimited attr list is intended
-    if [ -n "$_attrs_list" ]; then
-      emit_span "$_trace" "$_name" "$_parent" "$_status" "$_start" "$_end" $_attrs_list
-    else
-      emit_span "$_trace" "$_name" "$_parent" "$_status" "$_start" "$_end"
-    fi
-    echo
+    # rebuild positional params from stored attrs (spaces in values preserved, no word-split)
+    set -- "$_trace" "$_name" "$_parent" "$_status" "$_start" "$_end"
+    _i=1; while [ $_i -le $_attr_n ]; do
+      eval "set -- \"\$@\" \"\$_attr_${_i}\""
+      _i=$((_i + 1))
+    done
+    emit_span "$@"
     exit 0
     ;;
   "")
