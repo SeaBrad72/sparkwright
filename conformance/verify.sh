@@ -87,6 +87,7 @@ check doc     eval-ready       sh conformance/eval-ready.sh
 check doc     observability-ready sh conformance/observability-ready.sh
 check doc     responsible-ai-ready sh conformance/responsible-ai-ready.sh
 check doc     test-data-ready  sh conformance/test-data-ready.sh
+check doc     test-layers-ready sh conformance/test-layers-ready.sh
 check doc     preview-env-ready sh conformance/preview-env-ready.sh
 check doc     agentops-ready  sh conformance/agentops-ready.sh
 check doc     security-policy sh conformance/security-policy.sh
