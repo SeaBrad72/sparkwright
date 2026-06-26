@@ -11,7 +11,10 @@ describe('integration: flag -> /greeting', () => {
   afterEach(() => { delete process.env[ENV]; });
 
   it('serves the default greeting with the flag OFF and the new one with it ON', async () => {
-    await new Promise<void>((resolve) => server.listen(0, resolve));
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, resolve);
+    });
     const { port } = server.address() as AddressInfo;
     const base = `http://127.0.0.1:${port}`;
     try {
@@ -23,6 +26,7 @@ describe('integration: flag -> /greeting', () => {
 
       process.env[ENV] = 'true';
       const on = await fetch(`${base}/greeting`);
+      expect(on.status).toBe(200);
       expect(await on.json()).toEqual({ greeting: 'Hello, world! (new)' });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

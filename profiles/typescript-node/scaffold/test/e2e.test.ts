@@ -7,7 +7,10 @@ import { server } from '../src/server.js';
 // proves the deployed container is alive); this is the runnable oracle E3 executes per branch.
 describe('e2e: service journey', () => {
   it('is live, serves a greeting, and 404s an unknown route', async () => {
-    await new Promise<void>((resolve) => server.listen(0, resolve));
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, resolve);
+    });
     const { port } = server.address() as AddressInfo;
     const base = `http://127.0.0.1:${port}`;
     try {

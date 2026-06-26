@@ -27,8 +27,8 @@ for an agentic fan-out that re-integrates through the gates.
 `conformance/test-layers-ready.sh` is a **conditional, three-state gate** that enforces layer presence
 when a project has a service surface:
 
-- **Applicability trigger:** the project has a service surface — a `Dockerfile`, a Compose file with a
-  `services:` block, or an HTTP server entrypoint. **No service surface (CLI, library) → N/A;** e2e is
+- **Applicability trigger:** the project has a service surface — a `Dockerfile` or a Compose file with a
+  `services:` block. **No service surface (CLI, library) → N/A;** e2e is
   not meaningful and the gate skip-passes.
 - **Detection is stack-neutral, by convention** — it looks for a test path whose name contains `integration`
   or `e2e` (case-insensitive). This covers the common idioms across stacks:

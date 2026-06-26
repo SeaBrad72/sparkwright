@@ -32,7 +32,7 @@ A conditional, three-state gate mirroring `conformance/test-data-ready.sh`:
 - **Honest ceiling (documented in the script + an ops note):** it verifies the layer is *present by convention*, not that the tests are meaningful; and it is *behaviorally proven only on the ts-node reference* (golden-path runs those tests). For other stacks it is a presence gate until those profiles are built out (E1-full).
 
 ### 2d. Registration *(control-plane → AMBER)*
-`conformance/claims.tsv` row `test-layers-ready` + add to `REQUIRED_IDS` in `claims-registry.sh` + a `--selftest` step in `ci.yml`.
+Register by mirroring `test-data-ready`: a `verify.sh` `check doc` line + a `ci.yml` `--selftest` step + a `conformance/README.md` index row. NOT in `claims.tsv`/`REQUIRED_IDS` (the precedent isn't either).
 
 ---
 
