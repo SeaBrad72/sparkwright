@@ -118,6 +118,9 @@ validate_state() {
   #     (the unreleased ship-seam). Rejects a plausible-but-fabricated in-between marker that (i) alone
   #     would accept. Enforced only when an anchor exists (VERSION present); lenient otherwise so an
   #     adopter who versions differently is not over-constrained.
+  #     The real-tag arm (ii) is ALSO skipped when no tags are visible — CI checkouts often omit tags
+  #     (actions/checkout fetches none by default), and requiring them would false-FAIL a legitimate
+  #     marker that IS a real released tag. Lenient-when-tagless; defense-in-depth, not a boundary.
   if [ -f "$ROOT/VERSION" ]; then
     _vraw=$(ver_norm "$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)")
     if printf '%s' "$_vraw" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
@@ -127,7 +130,7 @@ validate_state() {
       fi
       _is_tag=0
       for _t in $(tags_list); do [ "$_t" = "$MVER" ] && { _is_tag=1; break; }; done
-      if [ "$_is_tag" = "0" ] && [ "$MVER" != "$_vraw" ]; then
+      if [ -n "$(tags_list | head -1)" ] && [ "$_is_tag" = "0" ] && [ "$MVER" != "$_vraw" ]; then
         echo "FAIL: marker $MVER is neither a released tag nor == VERSION $_vraw — the marker must correspond to a real release point or the current ship-seam version."
         return 1
       fi
@@ -279,6 +282,13 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '1.0.0 deferred\n' > "$_d/docs/governance/.meta-control-last"
   { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t | l | deferred | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | l | deferred | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
   rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run ) >/dev/null 2>&1 || rc=$?; _expect "(b) lowercase deferred x2 = OVERDUE" 1 "$rc"
+  # P. (a) lenient-when-tagless — a REAL repo with NO tags, marker is a value that isn't a visible tag
+  #    and != VERSION → PASS. CI checkouts omit tags (actions/checkout fetches none); the real-tag arm
+  #    must not false-FAIL a legitimate marker it simply cannot see. (Regression: this FAILed before the
+  #    tagless guard, which broke the kit's own per-PR CI when the marker was a real but unfetched tag.)
+  _d="$_t/p"; _mkfix "$_d" "3.48.16 GO" "3.48.16" "GO" "3.49.0"
+  ( cd "$_d" && git init -q && git -c user.email=c@k -c user.name=c commit -q --allow-empty -m s ) >/dev/null 2>&1
+  rc=0; ( ROOT="$_d"; run ) >/dev/null 2>&1 || rc=$?; _expect "(a) tagless leniency: non-tag marker, no tags = PASS" 0 "$rc"
 
   rm -rf "$_t"
   [ "$sfail" -eq 0 ] && { echo "meta-control-fresh --selftest: OK"; exit 0; } || exit 1

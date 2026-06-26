@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.49.1] — 2026-06-26
+
+**Release-coherence gate + M2 ratification hardening.**
+- **Release-coherence (new).** `conformance/version-tag-coherent.sh` (+ `.github/workflows/release-coherence.yml`, tag-push) asserts `VERSION` ≥ the highest reachable tag and, on a tagged commit, `VERSION == tag` — catching a skipped VERSION bump at release time (previously invisible to CI; the v3.49.0 incident). Wired into `verify.sh` / CI / drift-watch / doctor; claim `version-tag-coherent`. The check is N/A in a tagless checkout (its real catch is the `fetch-depth: 0` tag-push job).
+- **M2 meta-control hardening.** Future-pin marker check also requires the marker be a real tag or the current `VERSION` (defense-in-depth; the marker's control-plane status remains the real guarantee), and is **lenient when tags are unavailable** (CI checkouts omit tags). Verdict parsing is case-normalized so a lowercase `deferred` still counts toward the serial-deferral cap; the verdict vocabulary stays open-ended (`GO-WITH-CONDITIONS`, `KEEP-BIASED`). Shared `conformance/version-helpers.sh` (`ver_ge`/`ver_gt`) dedups the semver comparison.
+
 ## [3.49.0] — 2026-06-26
 
 **E4d — runaway kill-switch.**
