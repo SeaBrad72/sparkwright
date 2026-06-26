@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.51.1] — 2026-06-26
+
+**Fix — `version-tag-coherent` adopter-export N/A-skip (restores green-on-clone).**
+The release-coherence gate `conformance/version-tag-coherent.sh` escalated "not a git repo" to
+UNVERIFIED→FAIL under `--require` — correct for the kit's CI, but wrong for the deliberately
+non-git adopter export, so `verify.sh --require` on a fresh export went RED. Broken since v3.49.1
+(the gate shipped without the kit-self N/A-skip the other golden-path-coupled claims got in v3.48.18);
+confirmed identical on the v3.50.0/v3.51.0 exports — not caused by E5-thin. The no-git branch now
+N/A-skips when the export-ignored `docs/ROADMAP-KIT.md` anchor is absent (an adopter export /
+pre-adoption tree), while the kit — where the anchor is present — still escalates to FAIL
+(fail-closed; mirrors `feature-flags-wired.sh:49`). N/A-skip, not carve: the check stays live for an
+adopter once they `git init`. New `--selftest` cases prove both arms (export → N/A; kit-without-git →
+escalates). See `docs/architecture/2026-06-26-version-tag-coherent-export-fix.md`.
+
 ## [3.51.0] — 2026-06-26
 
 **E5-thin — OTel-shaped agent-ops sensor → one real scorecard (the operate-loop sensor E3 consumes).**

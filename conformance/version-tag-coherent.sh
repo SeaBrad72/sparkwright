@@ -25,7 +25,16 @@ check() {
   [ -f "$_d/VERSION" ] || { echo "version-tag-coherent: N/A — no VERSION file"; return 0; }
   _v=$(ver_norm "$(tr -d '[:space:]' < "$_d/VERSION" 2>/dev/null || true)")
   printf '%s' "$_v" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "version-tag-coherent: N/A — VERSION '$_v' not semver"; return 0; }
-  ( cd "$_d" && git rev-parse --git-dir >/dev/null 2>&1 ) || unverified "not a git repo / git unavailable ($_d)"
+  ( cd "$_d" && git rev-parse --git-dir >/dev/null 2>&1 ) || {
+    # Non-git tree: an adopter export (pre-adoption) is N/A; the KIT must be a git repo
+    # (docs/ROADMAP-KIT.md present, export-ignored) -> escalate. Fail-closed; mirrors
+    # feature-flags-wired.sh:49 (same kit-self anchor). Single-marker (ROADMAP-KIT.md only,
+    # not the OR-of-two used by file-presence checks) because this check is git-state-scoped:
+    # a no-git tree without the kit anchor has no tags to verify regardless.
+    # N/A-skip (not carve): the check stays live for an adopter once they git init.
+    [ -f "$_d/docs/ROADMAP-KIT.md" ] || { echo "version-tag-coherent: N/A — not a git repo (adopter export / pre-adoption)"; return 0; }
+    unverified "not a git repo / git unavailable ($_d)"
+  }
   _tags=$( cd "$_d" && git tag --merged HEAD 2>/dev/null | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' || true )
   if [ -z "$_tags" ]; then echo "version-tag-coherent: N/A — no reachable semver tags yet"; return 0; fi
   _hi=$(printf '%s\n' "$_tags" | sort -V | tail -1)
@@ -66,10 +75,14 @@ if [ "${1:-}" = "--selftest" ]; then
   # E. no tags → N/A(0)
   d="$_t/e"; _repo "$d" "1.0.0"
   rc=0; ( REQUIRE=0; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no tags = N/A" 0 "$rc"
-  # F. not a git repo → UNVERIFIED(2), escalates to 1 under --require
+  # F. not a git repo, NO ROADMAP-KIT.md (adopter export) → N/A(0) regardless of --require
   d="$_t/f"; mkdir -p "$d"; printf '1.0.0\n' > "$d/VERSION"
-  rc=0; ( REQUIRE=0; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no git = UNVERIFIED(2)" 2 "$rc"
-  rc=0; ( REQUIRE=1; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no git + --require = FAIL(1)" 1 "$rc"
+  rc=0; ( REQUIRE=0; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no git + no ROADMAP (export) = N/A(0)" 0 "$rc"
+  rc=0; ( REQUIRE=1; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no git + no ROADMAP + --require = N/A(0)" 0 "$rc"
+  # G. not a git repo but ROADMAP-KIT.md PRESENT (the KIT) → UNVERIFIED(2), escalates to FAIL(1) under --require
+  d="$_t/g"; mkdir -p "$d/docs"; printf '1.0.0\n' > "$d/VERSION"; printf 'kit\n' > "$d/docs/ROADMAP-KIT.md"
+  rc=0; ( REQUIRE=0; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no git + ROADMAP (kit) = UNVERIFIED(2)" 2 "$rc"
+  rc=0; ( REQUIRE=1; check "$d" ) >/dev/null 2>&1 || rc=$?; _exp "no git + ROADMAP + --require = FAIL(1)" 1 "$rc"
   rm -rf "$_t"
   [ "$sf" = 0 ] && { echo "version-tag-coherent --selftest: OK"; exit 0; } || exit 1
 fi
