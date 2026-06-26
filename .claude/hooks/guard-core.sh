@@ -36,6 +36,8 @@ is_control_plane_path() {
     scripts/sparkwright|*/scripts/sparkwright|\
     scripts/containment-audit.sh|*/scripts/containment-audit.sh|\
     scripts/sod-check.sh|*/scripts/sod-check.sh|\
+    .kit/budget.conf|*/.kit/budget.conf|\
+    scripts/runaway-guard.sh|*/scripts/runaway-guard.sh|\
     DEVELOPMENT-STANDARDS.md|*/DEVELOPMENT-STANDARDS.md|\
     DEVELOPMENT-PROCESS.md|*/DEVELOPMENT-PROCESS.md|\
     CLAUDE.md|*/CLAUDE.md)
@@ -72,10 +74,10 @@ guard_check_command() {
   if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath'; then
     printf '%s' '13: git config core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
   fi
-  if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md)'; then
+  if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf)'; then
     if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
        || printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
-       || printf '%s' "$cmd" | grep -Eq '>[[:space:]]*[^[:space:]]*(\.claude|\.github/workflows|CODEOWNERS|\.git|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md)'; then
+       || printf '%s' "$cmd" | grep -Eq '>[[:space:]]*[^[:space:]]*(\.claude|\.github/workflows|CODEOWNERS|\.git|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf)'; then
       # WS1 (DENY-BY-DEFAULT): the co-occurrence test above is the safe FLOOR — it would deny. Allow
       # back ONLY a provably-safe SINGLE READ command: no ;/&&/||/|/&/redirect chaining, and a leading
       # verb (after stripping a leading backslash / env-assignments / sudo+common wrappers) that is a

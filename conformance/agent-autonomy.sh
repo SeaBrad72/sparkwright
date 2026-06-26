@@ -238,6 +238,15 @@ assert_deny "shell sed verdict log" '{"tool_name":"Bash","tool_input":{"command"
 # --- M2-S5: must still ALLOW (reading the verdict state is fine) ---
 assert_allow "read marker"         '{"tool_name":"Read","tool_input":{"file_path":"docs/governance/.meta-control-last"}}'
 assert_allow "cat verdict log"     '{"tool_name":"Bash","tool_input":{"command":"cat docs/governance/meta-control-log.md"}}'
+# --- E4d: agent CANNOT raise its own ceiling (.kit/budget.conf is control-plane) ---
+# Write/Edit tool path → guard_check_path → is_control_plane_path → DENY
+assert_deny "Write budget.conf"    '{"tool_name":"Write","tool_input":{"file_path":".kit/budget.conf","content":"MAX_TOKENS=9999999"}}'
+assert_deny "Edit budget.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/budget.conf","old_string":"MAX_TOKENS=2000000","new_string":"MAX_TOKENS=9999999"}}'
+# Shell redirect path → guard_check_command → redirect-target matcher → DENY
+assert_deny "redirect budget.conf" '{"tool_name":"Bash","tool_input":{"command":"echo MAX_TOKENS=9 > .kit/budget.conf"}}'
+# --- E4d: must still ALLOW (reading the ceiling config is legitimate) ---
+assert_allow "read budget.conf"    '{"tool_name":"Read","tool_input":{"file_path":".kit/budget.conf"}}'
+
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
 assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Dev"}}'
 assert_allow "git checkout src"     '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- src/app.ts"}}'
