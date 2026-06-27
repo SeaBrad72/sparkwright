@@ -1,52 +1,58 @@
-# Auto-tag-on-merge
+# Release tagging
 
-Removes the human from release tagging: after every merge to `main`, `v<VERSION>` is tagged and pushed automatically.
+`v<VERSION>` is tagged on the release commit by `scripts/release-tag.sh` — a coherence-guarded, idempotent FLOOR helper.
 
-## What it does
+## How a release is tagged
 
-After a PR is merged to `main`, the pipeline reads the `VERSION` file on that merge commit and creates + pushes the tag `v<VERSION>` — coherently and idempotently.
+`v<VERSION>` is tagged on the release commit coherently (the tag always equals the VERSION file on that commit) and idempotently (a re-run with the tag already present is a safe no-op). The portable FLOOR that does it is `scripts/release-tag.sh`:
 
-**Coherent by construction.** The script tags `v<VERSION>` on the commit whose `VERSION` file contains that value. It asserts this inline via `conformance/version-tag-coherent.sh . --require` before tagging. A premature or incoherent tag — tagging before `VERSION` is bumped, or tagging a commit whose `VERSION` lags behind an existing reachable tag — is structurally impossible: the coherence check would fail and the workflow would exit non-zero without creating any tag.
+1. Read `VERSION`.
+2. Assert coherence inline — `conformance/version-tag-coherent.sh . --require` — refusing to proceed if VERSION is already behind a reachable tag.
+3. Tag `v<VERSION>` if absent.
+4. Push the tag; on push failure, roll back the local tag.
 
-**Idempotent.** If `v<VERSION>` already exists (remotely or locally), the script is a no-op. Re-running on the same commit produces no duplicate tag and no error.
+## Default: guarded-manual (what the kit does)
 
-**Human removal.** The recurring failure pattern — manually tagging before `apply.py` finishes bumping `VERSION`, producing incoherent tags that had to be deleted — is eliminated. `apply.py` bumps `VERSION`, the PR merges, the workflow tags. No manual `git tag` step required.
+After a merge to `main`, run:
 
-## The FLOOR — `scripts/release-tag.sh`
+```sh
+sh scripts/release-tag.sh
+```
 
-Pure POSIX `sh`, forge-neutral. No forge SDK, no GitHub Actions context. Works anywhere `git` is available with a push-capable remote.
+This is the *foolproof* form of `git tag`:
 
-Decision logic:
+- A mistimed run (tag already present) is a safe no-op.
+- A VERSION behind a reachable tag is refused before any tag is written.
+- The tag always matches VERSION — coherence is guaranteed, not assumed.
 
-1. Read `VERSION`. Validate it is semver (`X.Y.Z`). Exit 2 if not.
-2. Assert coherence inline: `sh conformance/version-tag-coherent.sh . --require`. Exit 1 if `VERSION` lags a reachable tag.
-3. Check whether `v<VERSION>` already exists on the remote (`git ls-remote`) or locally (`git tag -l`). If yes, print `NOOP` and exit 0.
-4. `git tag v<VERSION>` + `git push <remote> v<VERSION>`. Default remote is `origin`; override with `RELEASE_TAG_REMOTE`.
+The human keeps the release decision. This is consistent with the kit's separation-of-duties and ratification posture: agents propose, humans ratify; automation assists, humans approve the cut.
 
-Modes:
+## Opt-in: auto-tag-on-merge
 
-- `sh scripts/release-tag.sh` — normal CI mode: decide + tag + push.
-- `sh scripts/release-tag.sh --dry-run` — prints the decision (`would create + push vX.Y.Z` or `NOOP`); never writes.
-- `sh scripts/release-tag.sh --selftest` — builds temporary git fixtures, exercises all decision branches, returns 0 if all pass.
+Adopters who want zero-touch tagging copy a reference binding into their CI:
 
-## Bindings
+- **GitHub** — `docs/operations/release-tag.github.yml` → copy to `.github/workflows/release-tag.yml` and enable.
+- **GitLab** — `docs/operations/release-tag.gitlab-ci.yml` → incorporate into your pipeline definition.
+- **Generic** — call `sh scripts/release-tag.sh` in a post-merge `main` pipeline with push credentials.
 
-**GitHub (live):** `.github/workflows/release-tag.yml`. Triggers on `push` to `main` and `workflow_dispatch`. Requires `permissions: contents: write` (push tags). Uses `actions/checkout` with `fetch-depth: 0` (full history for coherence check). Body: `sh scripts/release-tag.sh`.
+**The kit does not ship this active** — it is opt-in. The reference files are provided so adopters can enable automation without writing the binding from scratch.
 
-**GitLab (reference):** Copy `docs/operations/release-tag.gitlab-ci.yml` into your `.gitlab-ci.yml`. Requires a push-capable token (a Project Access Token or protected CI/CD variable) — `CI_JOB_TOKEN` cannot push tags by default. Configure the push-capable remote before calling the script (see the comment in the file).
+## Trade-offs of auto-tag-on-merge
 
-**Generic forge:** In your post-merge pipeline on `main`, with a push-capable remote configured, call `sh scripts/release-tag.sh`. That is the complete integration.
+Auto-tag-on-merge couples "merge to `main`" with "cut a release". This is a good fit for:
+
+- Continuous-delivery / one-slice-one-version flows where every merge is a shippable increment.
+- Teams that want to eliminate manual release steps entirely.
+
+It is a poor fit for:
+
+- **Batched releases** — multiple merges before a release tag; the auto binding fires on every merge.
+- **Release branches** — the push trigger on `main` doesn't capture branches like `release/v2`.
+- **Pre-releases and QA gates** — auto-tag fires before QA approval; the guarded-manual default keeps the human in the loop.
+- **Release governance / audit requirements** — a standing `contents: write` workflow is a larger permission surface; a human-initiated tag provides a clearer audit trail.
+
+Tags are hard to un-ring (especially if adopters have pulled them). Prefer the guarded-manual default when in doubt; opt into auto-tag only when the deployment model genuinely calls for it.
 
 ## Honest ceiling
 
-The conformance lock (`conformance/release-tag-wired.sh`) proves:
-
-- The decision logic is correct via `--selftest` (all branches exercised in isolated git fixtures).
-- The GitHub workflow file is present, invokes `release-tag.sh`, carries `contents: write`, and is triggered on `push` to `main`.
-- The GitLab reference file and this doc ship with the kit.
-
-What it does NOT prove: the live `git push` (forge auth is the binding's concern, not the FLOOR's). The `--selftest` exercises the decision, not the network call. Manual `git tag` still works — the workflow is idempotent and will no-op if the tag is already present.
-
-## Composition
-
-`release-coherence.yml` (triggers on `v*` tag push → runs `conformance/version-tag-coherent.sh --require`) is unchanged. It serves as the backstop for any tag — manual or automated. Auto-tags produced by this workflow satisfy it by construction (coherence is asserted inline before tagging), and they also validate it as a side-effect. The two workflows are complementary, not redundant.
+The FLOOR proves the *decision* logic via `--selftest`; the `git push` is live and requires real push credentials. The FLOOR does not choose the version value — that is the responsibility of `apply.py` version-finishing (which bumps `VERSION`, `CHANGELOG.md`, and the `README` badge before the commit that the tag will land on). `release-coherence.yml` remains the tag-push backstop that catches any mismatch between the tag and the published release.
