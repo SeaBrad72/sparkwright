@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.56.0] — 2026-06-27
+
+### Added
+- **E3b — conflict-safe parallel writes** (§10 item 6). Before integrating parallel engineer branches, the orchestration loop now detects overlapping changed-file sets (`git diff --name-only` across the built branches vs the run's cut-point) and **refuses to integrate** — fail-closed, with a trusted-layer `kit.conflict` span (`conflict.file`/`conflict.slices`, set by the orchestrator from the computed diffs, never agent-supplied) — *before* any corrupting merge, replacing implicit detect-by-failure with proactive, observable, locked detect-by-inspection. Proven non-vacuously by extending `orchestrator-run.sh --selftest` with a conflicting-fixture overlap case (overlap → refused + `kit.conflict` + no silent integration; disjoint → clean). Conformance right-weighted: no new gate — claim `conflict-safe-integration` + the wiring locked by extending `orchestrator-loop-wired.sh`. Honest ceiling: changed-file granularity (not semantic cross-file conflicts); the no-corruption floor is git's, the mechanic makes it proactive + observable + locked; the graceful re-sync/precedence procedure is deferred. Design: `docs/architecture/2026-06-27-e3b-conflict-safe-design.md`.
+
 ## [3.55.0] — 2026-06-27
 
 ### Added

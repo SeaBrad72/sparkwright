@@ -36,9 +36,9 @@ E3a proves the loop's **mechanics**, not that an LLM writes good code (not a gat
 
 | §10 item | E3a status | Owner |
 |---|---|---|
-| Per-agent FS scope (worktree) | **used, not enforced** — real worktrees, isolation-as-convention | E3b / E4 |
+| Per-agent FS scope (worktree) | **used, not enforced** — real worktrees, isolation-as-convention | E4 (harness-sandbox; E3b declined) |
 | Cost ceiling + kill-switch | **proven** — `runaway-guard.sh` wired at the loop | E3a |
-| Conflict-safe parallel writes | **avoided** — clean, disjoint slices only | E3b |
+| Conflict-safe parallel writes | **proven** — overlap detected + refused before integration (`kit.conflict`); no silent corruption | E3b ✅ |
 | Guard at fleet scale | **out of scope** — 2 agents, not a fleet | E4 |
 | Egress · scoped tokens · prod-SoD | **inherited** — E4a / E4a′ / E4e | done |
 

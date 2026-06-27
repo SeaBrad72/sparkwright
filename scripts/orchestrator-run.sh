@@ -27,7 +27,7 @@ run() {
   tid="${OTEL_TRACE_ID:-$(sh "$here/otel-trace.sh" new-trace)}"
   r_start=$(now)
   root=$(span --trace "$tid" --name orchestrator-run --status OK --start "$r_start" --end "$r_start" --attr "agent.id=orchestrator")
-  halted=0; built=""
+  halted=0; built=""; base=$(git rev-parse HEAD)
   for slice in "$@"; do
     [ "$halted" = 0 ] || break
     # slice names flow into paths/branches/merge refs — reject anything but a safe slug (defense-in-depth)
@@ -82,10 +82,50 @@ run() {
       *) echo "orchestrator-run: runaway-guard UNVERIFIED (rc=$rc) — fail-closed" >&2; exit 2 ;;
     esac
   done
-  # integrate disjoint worktree branches; disjoint by construction => merge MUST be clean (no swallow)
+  # E3b conflict-safe integration: detect overlapping changed-file sets BEFORE merging (detect by
+  # inspection, not by a corrupting merge). Uses --no-renames so a rename surfaces BOTH the deleted
+  # source AND the added target — two slices renaming the same source to different targets thus still
+  # collide on the source (closes the rename-divergence evasion). A path claimed by >=2 built slices ->
+  # refuse fail-closed with a TRUSTED kit.conflict span (set here from the computed diffs, never
+  # agent-supplied); do NOT attempt any merge (the tree stays clean). Changed-file granularity (honest
+  # ceiling: not semantic conflicts across DIFFERENT files); the merge loop below is the fail-closed
+  # floor for the residual. git-diff failure -> fail-closed; a claims-write failure -> fail-closed.
+  claims=$(mktemp)
   for slice in $built; do
-    git merge -q --no-edit "e3a/$slice" \
-      || { echo "orchestrator-run: integration merge failed for $slice (slices not disjoint?)" >&2; exit 1; }
+    cf_one=$(git diff --name-only --no-renames "$base..e3a/$slice") \
+      || { rm -f "$claims"; echo "orchestrator-run: cannot diff e3a/$slice — fail-closed" >&2; exit 2; }
+    printf '%s\n' "$cf_one" | while IFS= read -r f; do
+      [ -n "$f" ] && printf '%s\t%s\n' "$f" "$slice" || true
+    done >> "$claims"
+  done
+  dup=$(cut -f1 "$claims" | sort | uniq -d | head -n1)
+  if [ -n "$dup" ]; then
+    cslices=$(awk -F'\t' -v want="$dup" '$1==want{printf "%s ", $2}' "$claims")
+    span --trace "$tid" --parent "$root" --name "gate:integration" --status ERROR \
+         --start "$(now)" --end "$(now)" --attr "agent.id=orchestrator" \
+         --attr "kit.conflict=true" --attr "conflict.file=$dup" --attr "conflict.slices=$cslices" >/dev/null
+    rm -f "$claims"
+    for slice in $built; do git worktree remove -f "$wtbase/$slice" 2>/dev/null || true; done
+    echo "orchestrator-run: conflict — slices [$cslices] all modified '$dup' — refusing integration (no silent corruption)" >&2
+    printf '%s\n' "$OUT"
+    exit 1
+  fi
+  rm -f "$claims"
+  # integrate disjoint worktree branches. Detection above catches any same-path overlap; this merge is
+  # the fail-closed FLOOR for anything the changed-file granularity can miss. On failure: abort the
+  # half-merge (keep the tree clean), clean up worktrees, emit a TRUSTED kit.conflict span (observable),
+  # and refuse — never leave a dirty tree or a dangling worktree.
+  for slice in $built; do
+    if ! git merge -q --no-edit "e3a/$slice"; then
+      git merge --abort 2>/dev/null || true
+      span --trace "$tid" --parent "$root" --name "gate:integration" --status ERROR \
+           --start "$(now)" --end "$(now)" --attr "agent.id=orchestrator" \
+           --attr "kit.conflict=true" --attr "conflict.file=merge:$slice" --attr "conflict.slices=$slice" >/dev/null
+      for s in $built; do git worktree remove -f "$wtbase/$s" 2>/dev/null || true; done
+      echo "orchestrator-run: integration merge failed for $slice (detection floor) — refusing, tree clean" >&2
+      printf '%s\n' "$OUT"
+      exit 1
+    fi
   done
   # cleanup worktrees (branches retain the integrated commits on the current branch)
   for slice in $built; do git worktree remove -f "$wtbase/$slice" 2>/dev/null || true; done
@@ -184,8 +224,47 @@ PROBE
   grep -q 'KIT_ESCALATION_DIR=\[UNSET\]' "$eprobe" || { echo "FAIL: role-runner LEAKED KIT_ESCALATION_DIR (anti-spoof: engineer can locate the verdict channel)"; fail=1; }
   grep -q 'KIT_RUN_DIR=\[UNSET\]' "$eprobe"        || { echo "FAIL: role-runner LEAKED KIT_RUN_DIR"; fail=1; }
   rm -rf "$etmp"; rm -f "$eprobe" "$erun" "$eout" "$econf" "$etally"
+  # E3b conflict-safe: two slices write the SAME file (conflicting fixture) -> overlap DETECTED, the run
+  # REFUSES integration (exits nonzero), emits a kit.conflict span, does NOT merge (no silent corruption).
+  ctmp=$(mktemp -d); cout=$(mktemp); cconf=$(mktemp); ctally=$(mktemp)
+  printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$cconf"
+  crc=0
+  ( cd "$ctmp"; git init -q; git config user.email e@x; git config user.name e
+    echo seed > seed.txt; git add seed.txt; git commit -q -m seed
+    FIXTURE_CONFLICT_FILE=shared.txt OTEL_TRACE_FILE="$cout" \
+      RUNAWAY_BUDGET_CONFIG="$cconf" RUNAWAY_TALLY="$ctally" \
+      "$here/orchestrator-run.sh" ca cb >/dev/null 2>&1 ) || crc=$?
+  [ "$crc" -ne 0 ] || { echo "FAIL: overlapping slices did not refuse integration (expected nonzero exit)"; fail=1; }
+  [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$cout")" = "1" ] \
+    || { echo "FAIL: no kit.conflict span emitted on overlap (detect-by-inspection missing)"; fail=1; }
+  [ ! -f "$ctmp/shared.txt" ] || { echo "FAIL: overlap silently integrated shared.txt (corruption not prevented)"; fail=1; }
+  rm -rf "$ctmp"; rm -f "$cout" "$cconf" "$ctally"
+  # POSITIVE complement: disjoint slices still integrate cleanly (the existing clean-run assertion already
+  # covers this, but re-confirm no kit.conflict on a disjoint run):
+  dj=$(_isolated "MAX_TOKENS=0" "MAX_STEPS=0" "MAX_AGENTS=0" -- da db)
+  [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$dj")" = "0" ] \
+    || { echo "FAIL: disjoint run wrongly flagged a conflict"; fail=1; }
+  rm -f "$dj"
+  # E3b conflict-safe (DUELING RENAME — the rename-divergence evasion): two slices rename the SAME
+  # source file to DIFFERENT targets. --no-renames surfaces the deleted source in both diffs, so the
+  # overlap on the source is detected (a plain --name-only with rename detection would see disjoint
+  # {A} vs {B} and MISS it). Asserts kit.conflict fires (evasion closed) + the run refuses.
+  rtmp=$(mktemp -d); rout=$(mktemp); rconf=$(mktemp); rtally=$(mktemp)
+  printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$rconf"
+  rrc=0
+  ( cd "$rtmp"; git init -q; git config user.email e@x; git config user.name e
+    echo seed > seed.txt; git add seed.txt; git commit -q -m seed
+    echo orig > F.txt; git add F.txt; git commit -q -m "add F"
+    FIXTURE_RENAME_SRC=F.txt OTEL_TRACE_FILE="$rout" \
+      RUNAWAY_BUDGET_CONFIG="$rconf" RUNAWAY_TALLY="$rtally" \
+      "$here/orchestrator-run.sh" rra rrb >/dev/null 2>&1 ) || rrc=$?
+  [ "$rrc" -ne 0 ] || { echo "FAIL: dueling-rename did not refuse integration"; fail=1; }
+  [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$rout")" -ge 1 ] \
+    || { echo "FAIL: dueling-rename EVADED detection (no kit.conflict span) — rename-divergence not closed"; fail=1; }
+  [ ! -f "$rtmp/renamed-by-rra.txt" ] || { echo "FAIL: dueling-rename silently integrated a side (tree not clean)"; fail=1; }
+  rm -rf "$rtmp"; rm -f "$rout" "$rconf" "$rtally"
   [ "$fail" -eq 0 ] || { echo "orchestrator-run --selftest: FAIL" >&2; return 1; }
-  echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, scorecard maps denied, escalation pause+resume, role-runner env scrubbed)"; return 0
+  echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, scorecard maps denied, escalation pause+resume, role-runner env scrubbed, conflict-safe detect+refuse incl. dueling-rename)"; return 0
 }
 
 case "${1:-}" in

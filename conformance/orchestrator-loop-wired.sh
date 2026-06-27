@@ -1,10 +1,12 @@
 #!/bin/sh
-# orchestrator-loop-wired.sh -- behaviour-lock for the E3a thin orchestration loop.
+# orchestrator-loop-wired.sh -- behaviour-lock for the E3a/E3b thin orchestration loop.
 # Asserts the roster agent-defs have the required six-heading structure, that the loop
-# script wires the runaway kill-switch (A2: runaway-guard.sh step) and the trusted-denial
-# span (kit.denied), and that the golden-path CI job exercising the loop is present.
-# This locks the WIRING; behaviour (the loop actually halts on guard STOP and emits a
-# denied span) is proven by the orchestrator-run.sh --selftest and the golden-path job.
+# script wires the runaway kill-switch (A2: runaway-guard.sh step), the trusted-denial
+# span (kit.denied), and the conflict-safe wiring (kit.conflict + git diff --name-only),
+# and that the golden-path CI job exercising the loop is present.
+# This locks the WIRING; behaviour (the loop actually halts on guard STOP, emits a
+# denied span, and detects conflicts) is proven by orchestrator-run.sh --selftest and
+# the golden-path job.
 # SCOPE: kit-self lock (the golden-path job is the kit's OWN pipeline).
 # Usage: sh conformance/orchestrator-loop-wired.sh [--selftest]
 set -eu
@@ -28,12 +30,14 @@ check_roster() {  # <roster_dir> -- each of the four agent files has all six req
   return $miss
 }
 
-check_loop() {  # <loop_script> -- exists, executable, wires runaway kill-switch + trusted-denial span
+check_loop() {  # <loop_script> -- exists, executable, wires runaway kill-switch + trusted-denial span + conflict-safe wiring
   f=$1; miss=0
   [ -f "$f" ] || { echo "FAIL: missing loop script $f"; return 1; }
   [ -x "$f" ] || { echo "FAIL: loop script not executable: $f"; miss=1; }
   grep -Eq 'runaway-guard\.sh"?[[:space:]]+step' "$f" || { echo "FAIL: $f does not contain 'runaway-guard.sh step' (A2 kill-switch not wired)"; miss=1; }
-  grep -qF "kit.denied" "$f"           || { echo "FAIL: $f does not contain 'kit.denied' (trusted-denial span not wired)"; miss=1; }
+  grep -qF "kit.denied" "$f"            || { echo "FAIL: $f does not contain 'kit.denied' (trusted-denial span not wired)"; miss=1; }
+  grep -qF "kit.conflict" "$f"          || { echo "FAIL: $f does not stamp 'kit.conflict' (conflict-safe integration not wired)"; miss=1; }
+  grep -qF "git diff --name-only" "$f"  || { echo "FAIL: $f has no 'git diff --name-only' overlap check (conflict detection not wired)"; miss=1; }
   return $miss
 }
 
@@ -59,7 +63,7 @@ if [ "${1:-}" = "--selftest" ]; then
   r1="$d/case1"
   mkdir -p "$r1/agents" "$r1/scripts" "$r1/_gh_/workflows"
   for f in $ROSTER_FILES; do _agent_ok > "$r1/agents/$f"; done
-  printf '#!/bin/sh\n# wires the kill-switch\nrunaway-guard.sh step\nkit.denied=true\n' > "$r1/scripts/orchestrator-run.sh"
+  printf '#!/bin/sh\n# wires the kill-switch\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r1/scripts/orchestrator-run.sh"
   chmod +x "$r1/scripts/orchestrator-run.sh"
   printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r1/_gh_/workflows/gp.yml"
 
@@ -80,7 +84,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # Drop '## Stance' from orchestrator.agent.md
   printf '## Role\ntest\n## Responsibilities\ntest\n## Task-Context-Contract\ntest\n## Tools needed\ntest\n## Success criteria\ntest\n' \
     > "$r2/agents/orchestrator.agent.md"
-  printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\n' > "$r2/scripts/orchestrator-run.sh"
+  printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r2/scripts/orchestrator-run.sh"
   chmod +x "$r2/scripts/orchestrator-run.sh"
   printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r2/_gh_/workflows/gp.yml"
 
@@ -99,7 +103,7 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r3/agents" "$r3/scripts" "$r3/_gh_/workflows"
   for f in $ROSTER_FILES; do _agent_ok > "$r3/agents/$f"; done
   # The loop script is present and executable but has NO 'runaway-guard.sh step' string.
-  printf '#!/bin/sh\n# missing the kill-switch metering call\nkit.denied=true\necho loop ran\n' > "$r3/scripts/orchestrator-run.sh"
+  printf '#!/bin/sh\n# missing the kill-switch metering call\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\necho loop ran\n' > "$r3/scripts/orchestrator-run.sh"
   chmod +x "$r3/scripts/orchestrator-run.sh"
   printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r3/_gh_/workflows/gp.yml"
 
@@ -113,9 +117,19 @@ if [ "${1:-}" = "--selftest" ]; then
     sf=1
   fi
 
+  # -- case 4: conflict-safe teeth -- loop WITHOUT 'kit.conflict' -> exit 1 --
+  r4="$d/case4"; mkdir -p "$r4/agents" "$r4/scripts" "$r4/_gh_/workflows"
+  for f in $ROSTER_FILES; do _agent_ok > "$r4/agents/$f"; done
+  printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\ngit diff --name-only HEAD\n# conflict stamp intentionally absent\n' > "$r4/scripts/orchestrator-run.sh"
+  chmod +x "$r4/scripts/orchestrator-run.sh"
+  printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r4/_gh_/workflows/gp.yml"
+  c4_fail=0
+  (ORCH_LOOP_ROSTER_DIR="$r4/agents" ORCH_LOOP_SCRIPT="$r4/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r4/_gh_/workflows/gp.yml" sh "$0" >/dev/null 2>&1) || c4_fail=1
+  if [ "$c4_fail" -eq 1 ]; then echo "selftest PASS: missing 'kit.conflict' (conflict teeth) -> exit 1"; else echo "selftest FAIL: absent conflict wiring NOT caught"; sf=1; fi
+
   rm -rf "$d"
-  [ "$sf" -eq 0 ] && { echo "OK: orchestrator-loop-wired selftest"; exit 0; } \
-                  || { echo "FAIL: orchestrator-loop-wired selftest"; exit 1; }
+  if [ "$sf" -eq 0 ]; then echo "OK: orchestrator-loop-wired selftest (conflict-safe)"; exit 0
+  else echo "FAIL: orchestrator-loop-wired selftest"; exit 1; fi
 fi
 
 case "${1:-}" in "") : ;; *) echo "usage: orchestrator-loop-wired.sh [--selftest]" >&2; exit 2 ;; esac
@@ -130,10 +144,10 @@ fi
 fail=0
 # (a) roster section-structure -- four agent defs each carry the six required headings
 check_roster "$ROSTER_DIR" || fail=1
-# (b) loop wires the A2 kill-switch (runaway-guard.sh step) + trusted-denial span (kit.denied)
+# (b) loop wires the A2 kill-switch (runaway-guard.sh step) + trusted-denial span (kit.denied) + conflict-safe wiring
 check_loop "$LOOP_SCRIPT"  || fail=1
 # (c) golden-path CI job exercising the loop is present
 check_gp   "$GP"           || fail=1
 
-[ "$fail" -eq 0 ] && { echo "OK: orchestrator-loop wired (roster headings + A2 kill-switch + trusted-denial + golden-path job)"; exit 0; }
+[ "$fail" -eq 0 ] && { echo "OK: orchestrator-loop wired (roster headings + A2 kill-switch + trusted-denial + conflict-safe + golden-path job)"; exit 0; }
 echo "FAIL: orchestrator-loop under-wired"; exit 1
