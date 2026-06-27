@@ -147,9 +147,9 @@ The fixture engineer is a **null-LLM actor on real rails.** The golden-path prov
 
 | §10 item | E3a status | Owner |
 |---|---|---|
-| 1. Per-agent FS scope (worktree) | **used, not enforced** — real worktrees, isolation-as-convention | E3b mechanic / E4 enforces |
+| 1. Per-agent FS scope (worktree) | **used, not enforced** — real worktrees, isolation-as-convention | E4 (harness-sandbox; E3b declined) |
 | 5. Cost ceiling + kill-switch | **proven** — `runaway-guard.sh` wired at the loop (A2) | E3a |
-| 6. Conflict-safe parallel writes | **avoided** — clean non-overlapping slices only | E3b |
+| 6. Conflict-safe parallel writes | **proven** — overlap detected + refused before integration (`kit.conflict`) | E3b ✅ |
 | 7. Guard at fleet scale | **out of scope** — 2 agents, not a fleet | E4 |
 | 2. Egress control | **inherited** — E4a (ts-node, behavioural) | done |
 | 3. Scoped tokens | **inherited** — E4a′ (static-structural) | done |
