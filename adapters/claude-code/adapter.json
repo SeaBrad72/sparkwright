@@ -7,12 +7,53 @@
     ".claude/settings.local.json",
     ".claude/mcp-policy.json"
   ],
-  "bindingFiles": [".claude/settings.json"],
+  "bindingFiles": [
+    ".claude/settings.json"
+  ],
   "dimensions": {
-    "context-binding":    { "level": "native", "proof": { "files": ["CLAUDE.md", ".claude/settings.json"] } },
-    "command-guard":      { "level": "native", "proof": { "check": "conformance/guard-wired.sh" } },
-    "history-protection": { "level": "floor" },
-    "review-roles":       { "level": "native", "proof": { "files": [".claude/agents/reviewer.md", ".claude/agents/security-reviewer.md"] } },
-    "mcp-gate":           { "level": "native", "proof": { "check": "conformance/mcp-policy.sh" } }
+    "context-binding": {
+      "level": "native",
+      "proof": {
+        "files": [
+          "CLAUDE.md",
+          ".claude/settings.json"
+        ]
+      }
+    },
+    "command-guard": {
+      "level": "native",
+      "proof": {
+        "check": "conformance/guard-wired.sh"
+      }
+    },
+    "history-protection": {
+      "level": "floor"
+    },
+    "review-roles": {
+      "level": "native",
+      "proof": {
+        "files": [
+          ".claude/agents/reviewer.md",
+          ".claude/agents/security-reviewer.md"
+        ]
+      }
+    },
+    "mcp-gate": {
+      "level": "native",
+      "proof": {
+        "check": "conformance/mcp-policy.sh"
+      }
+    },
+    "orchestration": {
+      "level": "native",
+      "proof": {
+        "files": [
+          ".claude/agents/orchestrator.md",
+          ".claude/agents/engineer.md",
+          "agents/orchestrator.agent.md",
+          "agents/engineer.agent.md"
+        ]
+      }
+    }
   }
 }

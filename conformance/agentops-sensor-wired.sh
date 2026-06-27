@@ -10,7 +10,7 @@
 set -eu
 
 WF="${AGENTOPS_WF:-.github/workflows/golden-path.yml}"
-SCRIPTS="scripts/otel-trace.sh scripts/orchestrator-trace-demo.sh scripts/otel-to-scorecard.sh scripts/otlp-export.sh"
+SCRIPTS="scripts/otel-trace.sh scripts/orchestrator-run.sh scripts/otel-to-scorecard.sh scripts/otlp-export.sh"
 
 check_wf() {  # <golden-path.yml> — a job named agentops-sensor runs the emit->adapt->score scripts
   f=$1; miss=0
@@ -19,7 +19,7 @@ check_wf() {  # <golden-path.yml> — a job named agentops-sensor runs the emit-
   # feature-flags-wired's comment-strip).
   wf_code=$(sed 's/#.*//' "$f" 2>/dev/null || true)
   printf '%s\n' "$wf_code" | grep -qE '^[[:space:]]*agentops-sensor:[[:space:]]*$' || { echo "FAIL: $f has no agentops-sensor job"; miss=1; }
-  for tok in orchestrator-trace-demo.sh otel-to-scorecard.sh agent-scorecard.sh; do
+  for tok in orchestrator-run.sh otel-to-scorecard.sh agent-scorecard.sh; do
     printf '%s\n' "$wf_code" | grep -qF -- "$tok" || { echo "FAIL: $f agentops-sensor proof does not run $tok"; miss=1; }
   done
   return $miss
@@ -28,16 +28,16 @@ check_wf() {  # <golden-path.yml> — a job named agentops-sensor runs the emit-
 if [ "${1:-}" = "--selftest" ]; then
   sf=0; d=$(mktemp -d)
   # OK fixture: a live agentops-sensor job that runs all three loop scripts.
-  printf 'jobs:\n  agentops-sensor:\n    steps:\n      - run: |\n          sh scripts/orchestrator-trace-demo.sh\n          sh scripts/otel-to-scorecard.sh "$t"\n          sh scripts/agent-scorecard.sh --traces d\n' > "$d/wf_ok.yml"
+  printf 'jobs:\n  agentops-sensor:\n    steps:\n      - run: |\n          sh scripts/orchestrator-run.sh\n          sh scripts/otel-to-scorecard.sh "$t"\n          sh scripts/agent-scorecard.sh --traces d\n' > "$d/wf_ok.yml"
   if check_wf "$d/wf_ok.yml" >/dev/null 2>&1; then echo "selftest PASS: wired golden-path job -> PASS"; else echo "selftest FAIL: wf_ok wrongly failed"; sf=1; fi
   # BAD fixture 1: job present but missing agent-scorecard.sh (loop not closed) -> must FAIL.
-  printf 'jobs:\n  agentops-sensor:\n    steps:\n      - run: |\n          sh scripts/orchestrator-trace-demo.sh\n          sh scripts/otel-to-scorecard.sh "$t"\n' > "$d/wf_partial.yml"
+  printf 'jobs:\n  agentops-sensor:\n    steps:\n      - run: |\n          sh scripts/orchestrator-run.sh\n          sh scripts/otel-to-scorecard.sh "$t"\n' > "$d/wf_partial.yml"
   if check_wf "$d/wf_partial.yml" >/dev/null 2>&1; then echo "selftest FAIL: missing agent-scorecard NOT caught"; sf=1; else echo "selftest PASS: missing scorecard step -> FAIL"; fi
   # BAD fixture 2: no agentops-sensor job at all -> must FAIL.
-  printf 'jobs:\n  other:\n    steps:\n      - run: sh scripts/orchestrator-trace-demo.sh\n' > "$d/wf_nojob.yml"
+  printf 'jobs:\n  other:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$d/wf_nojob.yml"
   if check_wf "$d/wf_nojob.yml" >/dev/null 2>&1; then echo "selftest FAIL: absent job NOT caught"; sf=1; else echo "selftest PASS: absent agentops-sensor job -> FAIL"; fi
   # BAD fixture 3: the loop scripts present ONLY in comments -> must FAIL (comment-strip de-vacuums).
-  printf 'jobs:\n  agentops-sensor:\n    steps:\n      - run: |\n          # sh scripts/orchestrator-trace-demo.sh\n          # sh scripts/otel-to-scorecard.sh\n          # sh scripts/agent-scorecard.sh\n' > "$d/wf_commented.yml"
+  printf 'jobs:\n  agentops-sensor:\n    steps:\n      - run: |\n          # sh scripts/orchestrator-run.sh\n          # sh scripts/otel-to-scorecard.sh\n          # sh scripts/agent-scorecard.sh\n' > "$d/wf_commented.yml"
   if check_wf "$d/wf_commented.yml" >/dev/null 2>&1; then echo "selftest FAIL: commented-out loop NOT caught"; sf=1; else echo "selftest PASS: commented-out loop -> FAIL"; fi
   [ "$sf" -eq 0 ] && { echo "OK: agentops-sensor-wired selftest"; exit 0; } || { echo "FAIL: agentops-sensor-wired selftest"; exit 1; }
 fi
@@ -53,7 +53,7 @@ if [ ! -f "docs/ROADMAP-KIT.md" ] && [ ! -f "$WF" ]; then echo "agentops-sensor:
 fail=0
 # 1) the four reference scripts pass their own selftests (the sensor logic is non-rotted)
 sh scripts/otel-trace.sh --selftest >/dev/null 2>&1            || { echo "FAIL: scripts/otel-trace.sh --selftest"; fail=1; }
-sh scripts/orchestrator-trace-demo.sh --selftest >/dev/null 2>&1 || { echo "FAIL: scripts/orchestrator-trace-demo.sh --selftest"; fail=1; }
+sh scripts/orchestrator-run.sh --selftest >/dev/null 2>&1 || { echo "FAIL: scripts/orchestrator-run.sh --selftest"; fail=1; }
 sh scripts/otel-to-scorecard.sh --selftest >/dev/null 2>&1     || { echo "FAIL: scripts/otel-to-scorecard.sh --selftest"; fail=1; }
 sh scripts/otlp-export.sh --selftest >/dev/null 2>&1           || { echo "FAIL: scripts/otlp-export.sh --selftest"; fail=1; }
 # 2) the four scripts exist and are executable

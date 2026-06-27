@@ -319,6 +319,15 @@ assert_deny  "Edit .env.staging"   '{"tool_name":"Edit","tool_input":{"file_path
 assert_allow "Write .env.sample"   '{"tool_name":"Write","tool_input":{"file_path":".env.sample","content":"KEY="}}'
 assert_allow "Write .env.template" '{"tool_name":"Write","tool_input":{"file_path":".env.template","content":"KEY="}}'
 assert_allow "Write .env.dist"     '{"tool_name":"Write","tool_input":{"file_path":".env.dist","content":"KEY="}}'
+# --- E3a: roster FLOOR defs + the loop script are control-plane (DENY write/redirect/sed, ALLOW read/run) ---
+assert_deny "Write roster def"      '{"tool_name":"Write","tool_input":{"file_path":"agents/orchestrator.agent.md","content":"x"}}'
+assert_deny "Edit loop script"      '{"tool_name":"Edit","tool_input":{"file_path":"scripts/orchestrator-run.sh","old_string":"a","new_string":"b"}}'
+assert_deny "redirect over loop"    '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/orchestrator-run.sh"}}'
+assert_deny "redirect over roster"  '{"tool_name":"Bash","tool_input":{"command":"echo x > agents/orchestrator.agent.md"}}'
+assert_deny "sed -i over roster"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ agents/security.agent.md"}}'
+assert_allow "read roster def"      '{"tool_name":"Read","tool_input":{"file_path":"agents/engineer.agent.md"}}'
+assert_allow "run loop script"      '{"tool_name":"Bash","tool_input":{"command":"sh scripts/orchestrator-run.sh alpha"}}'
+assert_allow "adopter agents code"  '{"tool_name":"Write","tool_input":{"file_path":"src/agents/handler.ts","content":"x"}}'
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ADAPTER" ] || ADAPTER="adapters/claude-code"
 
-DIMS="context-binding command-guard history-protection review-roles mcp-gate"
+DIMS="context-binding command-guard history-protection review-roles mcp-gate orchestration"
 
 unverifiable() {
   if [ "$REQUIRE" = "1" ]; then echo "FAIL: harness-adapter could not verify ($1) — required (CI/--require)."; exit 1; fi
@@ -41,6 +41,7 @@ floor_holds() {
     history-protection) [ -f hooks/pre-push ] ;;
     review-roles)       [ -f conformance/agent-boundary.sh ] && [ -f conformance/branch-protection.sh ] ;;
     mcp-gate)           [ -f scripts/kit-guard ] ;;
+    orchestration)      [ -f agents/orchestrator.agent.md ] && [ -f agents/engineer.agent.md ] && [ -f agents/reviewer.agent.md ] && [ -f agents/security.agent.md ] ;;
   esac
 }
 
@@ -112,35 +113,38 @@ selftest() {
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> rc $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
 
-  mkconf "$base/ok" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/ok" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 0 "$base/ok" "conformant (all floor, mcp n-a)"
 
-  mkconf "$base/missing" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/missing" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/missing" "missing review-roles dimension"
 
-  mkconf "$base/nocp" '{"harness":"fixture","controlPlanePaths":[],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/missorch" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  expect 1 "$base/missorch" "missing orchestration dimension"
+
+  mkconf "$base/nocp" '{"harness":"fixture","controlPlanePaths":[],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/nocp" "empty controlPlanePaths"
 
-  mkconf "$base/lie" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"files":["does-not-exist-xyz.txt"]}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/lie" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"files":["does-not-exist-xyz.txt"]}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/lie" "lying-native (native proof file missing)"
 
-  mkconf "$base/badcheck" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"false"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/badcheck" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"false"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/badcheck" "lying-native (proof.check exits non-zero)"
 
-  mkconf "$base/noproof" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"native"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/noproof" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"native"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/noproof" "native with no proof declared"
 
-  mkconf "$base/badbind" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["nope-not-here.txt"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/badbind" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["nope-not-here.txt"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/badbind" "missing bindingFile"
 
   # D2: proof.check allowlist — a check with shell metacharacters or outside conformance/
   # must be REJECTED BEFORE EXECUTION (no side effect), not run.
   canary="$base/canary"
-  mkconf "$base/metachar" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/agents-brief.sh; touch __CANARY__"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/metachar" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/agents-brief.sh; touch __CANARY__"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   sed "s#__CANARY__#$canary#" "$base/metachar/adapter.json" > "$base/metachar/adapter.tmp" && mv "$base/metachar/adapter.tmp" "$base/metachar/adapter.json"
   expect 1 "$base/metachar" "proof.check with metacharacters (lying-native)"
   if [ -e "$canary" ]; then echo "selftest FAIL: metachar proof.check EXECUTED (canary created)"; st=1; else echo "selftest PASS: metachar proof.check not executed"; fi
-  mkconf "$base/escape" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"../evil.sh"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  mkconf "$base/escape" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"../evil.sh"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
   expect 1 "$base/escape" "proof.check outside conformance/ (lying-native)"
 
   # adapter dir not found -> UNVERIFIED(2) local, FAIL(1) under CI/--require

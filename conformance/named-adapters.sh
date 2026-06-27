@@ -44,8 +44,8 @@ selftest() {
   st=0
   base=$(mktemp -d)   # fixtures left in place (no rm; control-plane guard blocks recursive rm)
   mkad() { mkdir -p "$1"; printf '%s\n' "$2" > "$1/adapter.json"; }
-  VALID='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
-  MALFORMED='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"mcp-gate":{"level":"n-a"}}}'
+  VALID='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
+  MALFORMED='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"}}}'
 
   # OK fixture: all three valid -> exit 0
   for h in codex cursor gemini; do mkad "$base/ok/$h" "$VALID"; done

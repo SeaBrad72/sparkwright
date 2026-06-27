@@ -5,6 +5,15 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.52.0] — 2026-06-26
+
+### Added
+- **E3a — the thin 4-seat orchestrator loop** (Orchestrator + Engineer×N + Reviewer + Security): fresh-authored harness-neutral roster (`agents/*.agent.md` FLOOR + `.claude/agents/` NATIVE bindings) + the real mechanical loop `scripts/orchestrator-run.sh` (fan-out to isolated git worktrees -> meter each step through `runaway-guard.sh step` [the kill-switch's first live call-site] -> integrate -> emit the OTel trace the **unchanged** scorecard reads). Replaces the E5-thin stand-in (`orchestrator-trace-demo.sh`, retired). Deterministic fixture engineer proves the loop in CI without an LLM (self-isolating selftest + golden-path `orchestrator-loop` job). New `orchestration` adapter dimension proves the roster binding per harness. Behaviour lock `orchestrator-loop` (claim).
+- **Self-hosting commitment** (owner-ratified): the kit ships its own fresh-authored superpowers-equivalent and progressively shifts its own build onto it; E10 capstone = build a slice using only the kit's own roster.
+
+### Honest ceiling
+- E3a proves the loop's *mechanics*, not that an LLM writes good code. Enforced worktree isolation, conflict-safe parallel writes, and guard-at-fleet-scale are E3b/E4 (see the §10 status table in `docs/operations/orchestration.md`). The runaway meter is post-step/cumulative (bounds total fan-out; not per-action sandboxing). Security's threat-model hat is authored but only the review hat is exercised by the thin loop.
+
 ## [3.51.1] — 2026-06-26
 
 **Fix — `version-tag-coherent` adopter-export N/A-skip (restores green-on-clone).**

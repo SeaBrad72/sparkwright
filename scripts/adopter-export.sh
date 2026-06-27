@@ -45,7 +45,7 @@ do_export() {  # <dest> <profile-or-empty>  — returns nonzero on bad dest/prof
   _ct="$_dest/conformance/claims.tsv"; _cr="$_dest/conformance/claims-registry.sh"
   if [ -f "$_ct" ] && [ -f "$_cr" ]; then
     _tab=$(printf '\t')
-    for _c in drift-watch golden-path adopter-export feature-flags-wired containment-audit runtime-security agentops-sensor; do
+    for _c in drift-watch golden-path adopter-export feature-flags-wired containment-audit runtime-security agentops-sensor orchestrator-loop; do
       grep -v "^${_c}${_tab}" "$_ct" > "$_ct.$$.s3b" && mv "$_ct.$$.s3b" "$_ct"
       sed "s/ ${_c}\\([\"[:space:]]\\)/\\1/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
     done
@@ -112,7 +112,7 @@ if [ "${1:-}" = "--selftest" ]; then
   else echo "PASS: exported .gitignore does not ignore /src/ or /test/"; fi
   # S3b: the maintainer-only claims are carved from the export's registry copies
   # (feature-flags-wired is kit-self: it greps the export-ignored golden-path.yml — E2)
-  for p in drift-watch golden-path adopter-export feature-flags-wired containment-audit runtime-security agentops-sensor; do
+  for p in drift-watch golden-path adopter-export feature-flags-wired containment-audit runtime-security agentops-sensor orchestrator-loop; do
     if grep -q "^$p$(printf '\t')" "$_d/conformance/claims.tsv"; then echo "FAIL: claim $p not carved from claims.tsv"; fail=1
     else echo "PASS: $p carved from claims.tsv"; fi
     if grep -qE '[" ]'"$p"'[ "]' "$_d/conformance/claims-registry.sh"; then echo "FAIL: $p not carved from REQUIRED_IDS"; fail=1

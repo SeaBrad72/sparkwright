@@ -15,3 +15,5 @@ Review the change for:
 Report findings grouped Critical / Important / Minor, each with `file:line` and a concrete fix. End with a clear verdict: **APPROVE** or **NEEDS-FIXES**.
 
 You review and report only. You never merge — per DEVELOPMENT-PROCESS.md §12, an agent never reviews-and-merges its own work.
+
+> FLOOR contract: agents/reviewer.agent.md

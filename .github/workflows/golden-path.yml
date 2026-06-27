@@ -3,9 +3,9 @@ name: golden-path
 # Heavy + path-filtered/scheduled so the fast per-PR ci.yml stays seconds-quick.
 on:
   pull_request:
-    paths: ['profiles/typescript-node/**', 'scripts/incept.sh', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'scripts/containment-audit.sh', 'profiles/_TEMPLATE.md', 'scripts/otel-trace.sh', 'scripts/orchestrator-trace-demo.sh', 'scripts/otel-to-scorecard.sh', 'scripts/agent-scorecard.sh']
+    paths: ['profiles/typescript-node/**', 'scripts/incept.sh', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'scripts/containment-audit.sh', 'profiles/_TEMPLATE.md', 'scripts/otel-trace.sh', 'scripts/orchestrator-run.sh', 'scripts/fixtures/engineer-fixture.sh', 'conformance/orchestrator-loop-wired.sh', 'scripts/otel-to-scorecard.sh', 'scripts/agent-scorecard.sh']
   push:
-    paths: ['profiles/typescript-node/**', 'scripts/incept.sh', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'scripts/containment-audit.sh', 'profiles/_TEMPLATE.md', 'scripts/otel-trace.sh', 'scripts/orchestrator-trace-demo.sh', 'scripts/otel-to-scorecard.sh', 'scripts/agent-scorecard.sh']
+    paths: ['profiles/typescript-node/**', 'scripts/incept.sh', '.github/workflows/golden-path.yml', 'scripts/new-profile.sh', 'scripts/adopter-export.sh', 'scripts/containment-audit.sh', 'profiles/_TEMPLATE.md', 'scripts/otel-trace.sh', 'scripts/orchestrator-run.sh', 'scripts/fixtures/engineer-fixture.sh', 'conformance/orchestrator-loop-wired.sh', 'scripts/otel-to-scorecard.sh', 'scripts/agent-scorecard.sh']
   schedule:
     - cron: '0 7 * * 1'
   workflow_dispatch:
@@ -143,13 +143,26 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: emit -> adapt -> score, assert non-vacuous denial_rate
         run: |
-          t=$(sh scripts/orchestrator-trace-demo.sh)
+          t=$(sh scripts/orchestrator-run.sh)
           d=$(mktemp -d)
           i=0; sh scripts/otel-to-scorecard.sh "$t" | jq -c '.[]' | while read -r r; do echo "$r" > "$d/$i.json"; i=$((i+1)); done
           sh scripts/agent-scorecard.sh --traces "$d" --min-runs 1 --stdout > sc.json
           jq -e '[.[]|select(.metrics.denial_rate>0)]|length>=1' sc.json >/dev/null \
             || { echo "agentops-sensor: scorecard did not reflect the emitted denied span (vacuous)"; cat sc.json; exit 1; }
           echo "agentops-sensor: OK — real emit->adapt->score loop, denial_rate derived from emitted span"
+
+  orchestrator-loop:
+    # E3a — PROVE the thin 4-seat loop runs end-to-end: fan-out (isolated worktrees) -> contain
+    # (runaway-guard halts on breach) -> integrate -> emit the trace the scorecard reads. The
+    # fixture engineer is the deterministic null-LLM actor; an LLM engineer rides the same rails live.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: the orchestration loop runs (fan-out + guard-halt + integrate + trace)
+        run: |
+          sh scripts/orchestrator-run.sh --selftest
+          sh conformance/orchestrator-loop-wired.sh --selftest
+          echo "orchestrator-loop: OK — real loop self-isolating selftest + wiring lock green"
 
   image-vuln:
     # E4b — PROVE the image-vuln gate runs + discriminates. Scan the reference image (must PASS

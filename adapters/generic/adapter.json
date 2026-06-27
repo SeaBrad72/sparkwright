@@ -7,12 +7,27 @@
     "scripts/kit-guard",
     "AGENTS.md"
   ],
-  "bindingFiles": ["AGENTS.md"],
+  "bindingFiles": [
+    "AGENTS.md"
+  ],
   "dimensions": {
-    "context-binding":    { "level": "floor" },
-    "command-guard":      { "level": "floor" },
-    "history-protection": { "level": "floor" },
-    "review-roles":       { "level": "floor" },
-    "mcp-gate":           { "level": "n-a" }
+    "context-binding": {
+      "level": "floor"
+    },
+    "command-guard": {
+      "level": "floor"
+    },
+    "history-protection": {
+      "level": "floor"
+    },
+    "review-roles": {
+      "level": "floor"
+    },
+    "mcp-gate": {
+      "level": "n-a"
+    },
+    "orchestration": {
+      "level": "floor"
+    }
   }
 }

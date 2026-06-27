@@ -25,6 +25,9 @@
     },
     "mcp-gate": {
       "level": "n-a"
+    },
+    "orchestration": {
+      "level": "floor"
     }
   }
 }

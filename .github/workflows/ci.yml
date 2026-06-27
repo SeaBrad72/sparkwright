@@ -122,11 +122,13 @@ jobs:
       - name: E5-thin operate-loop sensor self-tests (emitter / stand-in / adapter / exporter)
         run: |
           sh scripts/otel-trace.sh --selftest
-          sh scripts/orchestrator-trace-demo.sh --selftest
+          sh scripts/orchestrator-run.sh --selftest
           sh scripts/otel-to-scorecard.sh --selftest
           sh scripts/otlp-export.sh --selftest
       - name: agentops-sensor self-test (operate-loop sensor wired into golden-path)
         run: sh conformance/agentops-sensor-wired.sh --selftest
+      - name: orchestrator-loop self-test (E3a — real loop + wiring lock)
+        run: sh conformance/orchestrator-loop-wired.sh --selftest
 
       - name: SoD logic core self-test (author != approver identity logic)
         run: sh scripts/sod-check.sh --selftest

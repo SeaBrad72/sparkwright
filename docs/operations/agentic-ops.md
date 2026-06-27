@@ -86,7 +86,7 @@ This section documents two complementary paths that share a single trace emissio
 
 The operate-loop feedback path:
 
-1. `scripts/orchestrator-trace-demo.sh` — emits an OTel-shaped NDJSON trace representing an orchestrator run. **This is a labelled stand-in**: it produces the same schema that E3a (the real multi-agent orchestrator, a future slice) will emit when it runs. Use it now to exercise the downstream tools against realistic data.
+1. `scripts/orchestrator-run.sh` — emits an OTel-shaped NDJSON trace representing an orchestrator run. **This is a labelled stand-in**: it produces the same schema that E3a (the real multi-agent orchestrator, a future slice) will emit when it runs. Use it now to exercise the downstream tools against realistic data.
 2. `scripts/otel-to-scorecard.sh` — adapter that reads the OTel NDJSON and maps it to the MP-3a trace schema the scorecard expects. This is the seam between the OTel shape and the kit-internal format.
 3. `scripts/agent-scorecard.sh` — the behavior scorecard tool (unchanged). Reads the adapted trace directory, computes risk metrics per agent, classifies regressed/steady/earned, and emits the tier directive. No modification needed; the adapter keeps this tool harness-neutral.
 
@@ -96,7 +96,7 @@ The result: orchestrator traces flow into the same tier-advice loop as Claude Co
 
 The same OTel NDJSON that drives the scorecard can be forwarded to an external observability backend without re-instrumenting anything:
 
-1. `scripts/otel-trace.sh` — emits the OTel-shaped NDJSON trace (the same format as `orchestrator-trace-demo.sh`, usable directly or as the source when integrating a real harness).
+1. `scripts/otel-trace.sh` — emits the OTel-shaped NDJSON trace (the same format as `orchestrator-run.sh`, usable directly or as the source when integrating a real harness).
 2. `scripts/otlp-export.sh` — reads the NDJSON and POSTs it to the configured OTLP HTTP endpoint. The exporter appends `/v1/traces` to `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 **Concrete backends the export path targets:**
@@ -129,14 +129,14 @@ otel-trace.sh (emits NDJSON)
         └── otlp-export.sh → POST /v1/traces             (enterprise backend)
 ```
 
-`orchestrator-trace-demo.sh` exercises this same graph with stand-in data today; E3a replaces it with real orchestrator spans at the same seam when it ships.
+`orchestrator-run.sh` exercises this same graph with stand-in data today; E3a replaces it with real orchestrator spans at the same seam when it ships.
 
 ### Honest ceiling
 
 The exporter produces and POSTs valid OTLP/HTTP JSON to the configured endpoint. What this kit does **not** assert:
 
 - **Live vendor backend delivery** — the adopter supplies the endpoint URL and auth credentials; the kit cannot verify delivery against a vendor that it does not connect to. Confirm receipt in your backend's UI after a test run.
-- **`orchestrator-trace-demo.sh` is a stand-in** — it emits realistic, schema-valid traces, but it is not a real orchestrator. E3a (the multi-agent orchestrator, a future slice) replaces it at the same seam.
+- **`orchestrator-run.sh` is a stand-in** — it emits realistic, schema-valid traces, but it is not a real orchestrator. E3a (the multi-agent orchestrator, a future slice) replaces it at the same seam.
 - **This is agent-ops sensor tracing, not app-level request tracing** — these traces record *how agents worked* (tool calls, gates, cost, outcome). They are not distributed traces of end-user HTTP requests, which your application stack instruments separately.
 
 ### Design reference
