@@ -5,6 +5,14 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.53.0] — 2026-06-27
+
+### Added
+- **Auto-tag-on-merge** — removes the human from release tagging (the recurring premature-tag fumble). Forge-neutral FLOOR `scripts/release-tag.sh` (read VERSION -> assert coherence inline via `version-tag-coherent.sh --require` -> tag `v<VERSION>` on the merge commit if absent -> push; idempotent, coherent by construction). NATIVE bindings: a live GitHub workflow (`.github/workflows/release-tag.yml`, `on: push main`, `contents: write`), a GitLab reference (`docs/operations/release-tag.gitlab-ci.yml`), and a generic-forge doc. Behaviour lock `release-tag-on-merge`. The existing `release-coherence.yml` stays as the tag-push backstop.
+
+### Honest ceiling
+- The FLOOR proves the *decision* (`--selftest`); the `git push` is exercised live, and forge auth is the binding's concern. It does not choose the version value (that's apply.py version-finishing). Manual `git tag` still works — the workflow no-ops if the tag exists.
+
 ## [3.52.0] — 2026-06-26
 
 ### Added

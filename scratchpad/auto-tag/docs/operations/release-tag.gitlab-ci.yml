@@ -1,0 +1,15 @@
+# Reference: GitLab binding for the auto-tag FLOOR (scripts/release-tag.sh).
+# COPY into your .gitlab-ci.yml. Needs a token that can push tags (a Project Access Token or
+# a protected CI/CD variable) exposed as the remote's credential — CI_JOB_TOKEN cannot push by
+# default. Pin images per your supply-chain policy.
+release-tag:
+  stage: deploy
+  image: alpine:3
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  before_script:
+    - apk add --no-cache git
+  script:
+    # configure a push-capable remote (example; use your token variable):
+    #   git remote set-url origin "https://oauth2:${RELEASE_TAG_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+    - sh scripts/release-tag.sh
