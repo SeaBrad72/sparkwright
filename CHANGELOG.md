@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.54.0] — 2026-06-27
+
+### Changed
+- **Release tagging: guarded-manual for the kit, opt-in for adopters** — corrects v3.53.0, which shipped the auto-tag binding LIVE in the kit's workflows, so an adopter's export received an active workflow that auto-creates release tags (an imposed release model). Now: the live binding is removed; the kit tags via the coherence-guarded FLOOR helper (`scripts/release-tag.sh`) run manually after merge — a mistimed run is a safe no-op and the tag always equals VERSION — keeping the human in the release decision. The auto-tag-on-merge binding ships as a copy-and-enable reference (`docs/operations/release-tag.github.yml` + the GitLab reference) for adopters who choose full automation — provided, not imposed. The FLOOR helper + coherence logic are unchanged.
+
 ## [3.53.0] — 2026-06-27
 
 ### Added

@@ -1,8 +1,8 @@
+# Reference: GitHub binding for auto-tag-on-merge (OPT-IN). COPY this into your repo's
+# .github/workflows/ to auto-tag v<VERSION> on every push to main. The kit itself does NOT run
+# this — it tags manually with `sh scripts/release-tag.sh` after merge (see release-tag.md);
+# this is provided for adopters who choose full automation. Pin actions to a full SHA in your repo.
 name: release-tag
-# Auto-tag-on-merge: after a push to main (a merged PR), create+push v<VERSION> on the merge
-# commit IF it doesn't already exist. Removes the human from release tagging (the 3x premature-tag
-# fumble). Coherence is asserted INLINE by scripts/release-tag.sh (version-tag-coherent --require)
-# before tagging; release-coherence.yml stays as the tag-push backstop.
 on:
   push:
     branches: [main]
