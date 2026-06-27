@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.57.0] — 2026-06-27
+
+### Added
+- **Skill-spine brick #1 — the kit's own `design` skill** (`skills/design/SKILL.md`). The kit now ships its own harness-neutral design/brainstorm methodology — invoked by the Orchestrator as the Architect hat (read + follow the SKILL) — toward **full replacement of (zero runtime dependency on) superpowers** (E10 = build a slice using only the kit's own roster + skills). The skill is **not a clone**: it bakes in the kit's own disciplines (architecture-first, the design-intent lens, "is the provable thing the meaningful thing?" / proven-not-prescribed slice-selection, the agents-vs-skills rule, honest-ceiling, non-vacuity, right-weight) — the conformance greps for these markers so a generic paraphrase fails. FLOOR-only-first: invoke-by-read (universal); the formal `skills` adapter dimension + native bindings are brick #2. Right-weighted: no new gate — claim `skill-spine` + the wiring extends `orchestrator-loop-wired.sh` (a new `check_skill` with a non-vacuous teeth case). `skills/` is guard-immutable. Design: `docs/architecture/2026-06-27-design-skill-design.md`.
+
 ## [3.56.0] — 2026-06-27
 
 ### Added

@@ -54,3 +54,10 @@ denial is read from the trusted guard's exit code only.
   `recommendation`/`options`, so the *proactive* "ratify before a risky action" path (the deferred
   tier-checkpoint, Option B) is a second caller on this same seam — not a rebuild. See
   `docs/architecture/2026-06-27-e3-escalation-design.md` §6.
+
+## Design (Architect hat)
+For the design + planning activity (Shape/Plan), BEFORE fan-out, follow the kit's own design skill —
+`skills/design/SKILL.md` — to turn the epic into an owner-approved design (and, via the plan skill, an
+INVEST-sliced plan the fan-out builds against). Design precedes implementation (architecture-first).
+This is the kit's own craft, invoked by reading + following the SKILL (replacing superpowers brainstorming);
+it is a *hat the Orchestrator wears*, not a separate seat (agents-vs-skills rule).

@@ -339,6 +339,12 @@ assert_deny "Write escalate"    '{"tool_name":"Write","tool_input":{"file_path":
 assert_deny "redirect escalate" '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/escalate.sh"}}'
 assert_deny "sed -i escalate"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/escalate.sh"}}'
 assert_allow "run escalate"     '{"tool_name":"Bash","tool_input":{"command":"sh scripts/escalate.sh --selftest"}}'
+
+# --- skill-spine: skills/ is control-plane (DENY write/redirect/sed, ALLOW read) ---
+assert_deny "Write skill"    '{"tool_name":"Write","tool_input":{"file_path":"skills/design/SKILL.md","content":"x"}}'
+assert_deny "redirect skill" '{"tool_name":"Bash","tool_input":{"command":"echo x > skills/design/SKILL.md"}}'
+assert_deny "sed -i skill"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ skills/design/SKILL.md"}}'
+assert_allow "read skill"    '{"tool_name":"Bash","tool_input":{"command":"cat skills/design/SKILL.md"}}'
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

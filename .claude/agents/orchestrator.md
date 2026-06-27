@@ -20,3 +20,8 @@ On a runaway-guard breach, surface the escalation record's `summary` + `options`
 write their choice as the verdict, then resume. Verdicts are human-ratified and never self-issued; stamp
 `kit.escalated`/`kit.verdict`/`kit.ratifier` only from the verdict file. FLOOR contract:
 `agents/orchestrator.agent.md` → `## Escalation discipline`.
+
+## Design (Architect hat)
+For design/planning (Shape/Plan) before fan-out, follow `skills/design/SKILL.md` (the kit's own design
+skill — read + follow it). Design precedes implementation; it is a hat, not a seat. FLOOR contract:
+`agents/orchestrator.agent.md` → `## Design (Architect hat)`.

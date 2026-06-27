@@ -45,3 +45,6 @@ E3a proves the loop's **mechanics**, not that an LLM writes good code (not a gat
 ## Self-host trajectory
 
 E3a is brick one of the kit's own superpowers-equivalent: we progressively shift the kit's own build onto this roster, dropping the external dependency incrementally. The **E10 capstone acceptance test** is "build a real slice using only the kit's own roster — zero superpowers." See `self-hosting` in the design doc §2.
+
+## Design (Architect hat) — the kit's own skill
+The Orchestrator follows the kit's own `skills/design/SKILL.md` for design/planning (the Architect hat — read + follow it) — brick #1 of the kit's own skill spine, replacing superpowers. The Architect is a *hat*, not a seat (agents-vs-skills rule).
