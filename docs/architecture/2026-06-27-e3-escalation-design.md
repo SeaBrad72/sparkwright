@@ -41,13 +41,15 @@ One JSON file at **`.kit-run/escalations/<run-id>.<seq>.json`** (under the exist
 | `created_unix_nano` | numeric **19-digit** | scorecard `sort_by(.start)` stays lexical==numeric |
 | `trigger` | `"runaway-breach"` | B adds `"tier-exceeded"` — same seam, new value |
 | `summary` | plain-language one-liner | the **non-engineer-readable headline** |
-| `detail` | plain-language paragraph (no shell/stack) | both |
-| `risk` | from the breach (e.g. `medium`) | the **autonomy-tier input B classifies on** |
-| `reversibility` | from the breach (e.g. `reversible`) | the autonomy-tier input B classifies on |
-| `recommendation` | the agent's recommended verdict | both |
+| `detail` | **empty stub** in A | B/richer callers populate a plain-language paragraph (no shell/stack) |
+| `risk` | **empty stub** in A | the **autonomy-tier input B classifies on** (e.g. `medium`) |
+| `reversibility` | **empty stub** in A | the autonomy-tier input B classifies on (e.g. `reversible`) |
+| `recommendation` | **empty stub** in A | the agent's recommended verdict |
 | `options` | `["raise-ceiling","abort","amend"]` | B: `["approve","reject","ask"]` |
 | `ratifier_role` | `"security-owner"` (budget exception → RBAC) | B: per-action role from `ratification-rbac.md` |
-| `context_ref` | trace/run path | the **escape hatch** for an engineer who *does* want shell |
+| `context_ref` | **empty stub** in A | the **escape hatch** (trace/run path) for an engineer who *does* want shell |
+
+> **A populates only `id`/`created_unix_nano`/`trigger`/`ratifier_role`/`summary`/`options`** — the thin runaway-breach path needs no more. The five fields marked "empty stub" are written empty by `raise()` and exist as the **B-ready seam** (a tier-checkpoint or richer caller fills them); they are not broken population. The gated affordance (§4) is therefore "a non-empty `summary` exists, distinct from the technical `detail`/`context_ref`" — not that every field is populated.
 
 `summary`/`detail`/`recommendation`/`options`/`ratifier_role` are the **plain-language affordance**: a named ratifier reads the decision without going to the source. `context_ref` keeps the technical trail one hop away for whoever wants it.
 
