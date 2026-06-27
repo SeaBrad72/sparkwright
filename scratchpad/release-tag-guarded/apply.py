@@ -49,6 +49,12 @@ patch("conformance/claims.tsv",
       "+ coherently on any forge (proven by --selftest); the kit runs it manually after merge, "
       "auto-tag-on-merge ships as OPT-IN GitHub/GitLab references")
 
+# -- 3b. ci.yml step label honesty (the kit no longer auto-tags; the FLOOR is run guarded-manual)
+print("-- ci.yml: relabel the FLOOR selftest step")
+patch(".github/workflows/ci.yml",
+      "release-tag FLOOR self-test (auto-tag decision logic)",
+      "release-tag FLOOR self-test (coherence-guarded tag decision)")
+
 # -- 4. version finishing -> 3.54.0
 print("-- version finishing -> %s" % VER)
 write("VERSION", VER + "\n")
