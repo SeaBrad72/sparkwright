@@ -35,3 +35,4 @@ runaway-killswitch	the runaway circuit-breaker is installed and enforces token/s
 version-tag-coherent	VERSION agrees with the git tag state (no skipped release bump)	sh conformance/version-tag-coherent.sh --selftest
 agentops-sensor	the operate-loop sensor emits an OTel-shaped trace + a real scorecard derives from it (golden-path agentops-sensor job; scripts/otel-trace.sh + otel-to-scorecard.sh)	sh conformance/agentops-sensor-wired.sh
 orchestrator-loop	the 4-seat orchestration loop runs end-to-end (fan-out -> contain -> integrate -> trace) -- reference loop proven by golden-path on a fixture engineer; LLM agent work exercised live, substituted in CI	sh conformance/orchestrator-loop-wired.sh
+release-tag-on-merge	auto-tag-on-merge: v<VERSION> is tagged on the merge commit coherently + idempotently on any forge (FLOOR scripts/release-tag.sh proven by --selftest; GitHub binding live, GitLab reference)	sh conformance/release-tag-wired.sh
