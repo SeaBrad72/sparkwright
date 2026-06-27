@@ -55,7 +55,7 @@ One JSON file at **`.kit-run/escalations/<run-id>.<seq>.json`** (under the exist
 
 1. **Raise.** Loop writes the record, sets state `pending`, and **stops** — returning control to the human (or, in CI, to the fixture driver). No live process is blocked.
 2. **Verdict.** The human/CI writes **`.kit-run/escalations/<id>.verdict`** — `{ "option": <one of record.options>, "note": <free text>, "ratifier_id": <identity> }`.
-3. **Resume.** The loop reads the verdict and **validates**: `option ∈ record.options`, `ratifier_id` present (B-ready: ratifier authorised for `ratifier_role`). It records the verdict on the trace (§2.3) and continues per option: `raise-ceiling` → bump the ceiling for this run and continue; `abort` → clean teardown; `amend` → return to re-slice.
+3. **Resume.** The loop reads the verdict and **validates**: `option ∈ record.options`, `ratifier_id` present (B-ready: ratifier authorised for `ratifier_role`). On success it **consumes** the verdict (single-use; renames to `.verdict.consumed`), records the verdict on the trace (§2.3), and continues per option: `raise-ceiling` → **clear the run's usage tally** so work continues (the ceiling itself is unchanged — the guard re-escalates if the budget refills); `abort` → clean teardown; `amend` → return to re-slice. **Resuming a paused run = re-invoke with the same `OTEL_TRACE_ID`** (the escalation id derives from it; the loop is stateless/durable-file-based, so a fresh id would never match the verdict and would just pause again).
 4. **Fail-closed.** No verdict · unparseable verdict · `option ∉ options` · missing ratifier → the loop **stays halted and makes no progress.** Safe default is never-proceed (the breach already halted; a missing human answer must not be read as consent).
 
 ### 2.3 Trace integration (the audit trail)
@@ -63,6 +63,8 @@ One JSON file at **`.kit-run/escalations/<run-id>.<seq>.json`** (under the exist
 The resolved span carries **`kit.escalated=true`**, **`kit.verdict=<option>`**, **`kit.ratifier=<id>`** — so the OTel trace (and anything downstream of it) shows a human touched the run, who, and how.
 
 > **Anti-spoof discipline (reused from E3a `kit.denied`):** `kit.escalated` / `kit.verdict` / `kit.ratifier` are set **only by the trusted orchestrator/escalation layer — never copied from agent-supplied span attributes.** They are autonomy/audit inputs; an agent that could author them could fabricate its own ratification. The golden-path proves an agent-supplied `kit.verdict` is rejected (§4).
+>
+> **Two further anti-spoof guarantees (added at security review):** (a) the engineer **role-runner's env is scrubbed** at dispatch — `env -u OTEL_TRACE_FILE -u OTEL_TRACE_ID -u KIT_ESCALATION_DIR -u KIT_RUN_DIR` — so an engineer cannot learn the deterministic escalation id *or* the verdict-channel directory, and therefore cannot pre-write its own verdict to self-ratify a breach (regression-locked by a role-runner env-leak selftest). (b) A verdict is **single-use** — `resolve` consumes it (renames to `.verdict.consumed`) so a one-time human approval cannot be **replayed** on a later re-run of the same (deterministic) escalation id. `kit.ratifier` is CR/LF-stripped before it is stamped onto the NDJSON trace.
 
 ## 3. Mechanics & where it plugs in
 
