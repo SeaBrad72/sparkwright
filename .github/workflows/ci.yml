@@ -129,6 +129,10 @@ jobs:
         run: sh conformance/agentops-sensor-wired.sh --selftest
       - name: orchestrator-loop self-test (E3a — real loop + wiring lock)
         run: sh conformance/orchestrator-loop-wired.sh --selftest
+      - name: escalation-seam self-test (E3-escalation — HITL primitive + wiring lock)
+        run: |
+          sh scripts/escalate.sh --selftest
+          sh conformance/escalation-wired.sh --selftest
       - name: release-tag FLOOR self-test (coherence-guarded tag decision)
         run: sh scripts/release-tag.sh --selftest
       - name: release-tag-wired self-test (FLOOR+NATIVE wiring lock)

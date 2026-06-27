@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.55.0] — 2026-06-27
+
+### Added
+- **E3-escalation — human-in-the-loop escalation seam** (E3 spine slice 4, ex-E14, positioned early). On a runaway-guard breach the orchestration loop now raises a plain-language, role-addressed escalation record (`scripts/escalate.sh` — `raise`/`await`/`resolve`) and **pauses**, resuming only on a human-ratified verdict (`raise-ceiling`/`abort`/`amend`), **fail-closed** on none/invalid. The trusted-layer span attributes `kit.escalated`/`kit.verdict`/`kit.ratifier` are stamped only from the verdict file — never agent-supplied (same discipline as `kit.denied`); the role-runner's env is scrubbed (`OTEL_TRACE_ID`/`KIT_ESCALATION_DIR`) so an engineer can't pre-forge a verdict, and a verdict is single-use (consumed on resolve, no replay). Ratifier identity is unverified at the FLOOR — server-side WHO-may-ratify is the adopter's forge controls (honest ceiling). The record schema is **B-ready** (carries `risk`/`reversibility`/`recommendation`/`options`/`ratifier_role`) so the deferred tier-checkpoint preemptive-approval path (Option B) is a second caller, not a rebuild. Behaviour lock `conformance/escalation-wired.sh` + claim `escalation-seam`; proven by the deterministic `orchestrator-loop` golden-path (fail-closed pause + raise-ceiling resume, no LLM). Design: `docs/architecture/2026-06-27-e3-escalation-design.md`.
+
 ## [3.54.0] — 2026-06-27
 
 ### Changed

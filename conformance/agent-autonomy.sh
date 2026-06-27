@@ -333,6 +333,12 @@ assert_deny "Write release-tag"    '{"tool_name":"Write","tool_input":{"file_pat
 assert_deny "redirect release-tag" '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/release-tag.sh"}}'
 assert_deny "sed -i release-tag"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/release-tag.sh"}}'
 assert_allow "run release-tag"     '{"tool_name":"Bash","tool_input":{"command":"sh scripts/release-tag.sh --dry-run"}}'
+
+# --- E3-escalation: escalate.sh is control-plane (DENY write/redirect/sed, ALLOW read/run) ---
+assert_deny "Write escalate"    '{"tool_name":"Write","tool_input":{"file_path":"scripts/escalate.sh","content":"x"}}'
+assert_deny "redirect escalate" '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/escalate.sh"}}'
+assert_deny "sed -i escalate"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/escalate.sh"}}'
+assert_allow "run escalate"     '{"tool_name":"Bash","tool_input":{"command":"sh scripts/escalate.sh --selftest"}}'
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

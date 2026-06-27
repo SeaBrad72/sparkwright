@@ -74,6 +74,7 @@ check control adopter-preflight sh conformance/adopter-preflight-wired.sh
 check control adopter-export   sh conformance/adopter-export-wired.sh
 check control mode-blind       sh conformance/mode-enforcement-blind.sh
 check control orchestrator-loop sh conformance/orchestrator-loop-wired.sh
+check control escalation-seam    sh conformance/escalation-wired.sh --selftest
 check control release-tag       sh conformance/release-tag-wired.sh
 check control feature-flags-wired sh conformance/feature-flags-wired.sh
 check control containment-audit   sh conformance/containment-audit-wired.sh

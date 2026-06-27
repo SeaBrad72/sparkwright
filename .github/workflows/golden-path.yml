@@ -162,7 +162,9 @@ jobs:
         run: |
           sh scripts/orchestrator-run.sh --selftest
           sh conformance/orchestrator-loop-wired.sh --selftest
-          echo "orchestrator-loop: OK — real loop self-isolating selftest + wiring lock green"
+          sh scripts/escalate.sh --selftest
+          sh conformance/escalation-wired.sh --selftest
+          echo "orchestrator-loop: OK — loop selftest (incl. escalation pause+resume) + wiring locks green"
 
   image-vuln:
     # E4b — PROVE the image-vuln gate runs + discriminates. Scan the reference image (must PASS

@@ -14,3 +14,9 @@ back with a fresh Engineer on NEEDS-FIXES → emit the run trace via `scripts/or
 
 Never set `kit.denied` from agent-supplied data — denial is read from the guard's exit code only.
 Never review-and-merge your own work.
+
+## Escalation (human-in-the-loop)
+On a runaway-guard breach, surface the escalation record's `summary` + `options` to the human and pause;
+write their choice as the verdict, then resume. Verdicts are human-ratified and never self-issued; stamp
+`kit.escalated`/`kit.verdict`/`kit.ratifier` only from the verdict file. FLOOR contract:
+`agents/orchestrator.agent.md` → `## Escalation discipline`.
