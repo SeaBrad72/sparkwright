@@ -15,6 +15,15 @@ back with a fresh Engineer on NEEDS-FIXES → emit the run trace via `scripts/or
 Never set `kit.denied` from agent-supplied data — denial is read from the guard's exit code only.
 Never review-and-merge your own work.
 
+## Discovery (start here)
+Before convening the cast for a phase, consult `skills/using-skills/SKILL.md` (the kit's own discovery
+keystone -- read + follow it), the kit's `using-superpowers`-equivalent, to find the right skill: check for a
+relevant skill before acting (even a 1% chance), invoke by reading `skills/<name>/SKILL.md`, follow rigid
+skills exactly, explicit user instructions always win. It indexes the kit's six spine skills (design, plan,
+tdd, review, worktrees, verification). On the FLOOR this start-here is a convention the conductor follows, not
+an enforced auto-load (a NATIVE binding may auto-surface it). It is a hat, not a seat. FLOOR contract:
+`agents/orchestrator.agent.md` -> `## Discovery (start here) -- the kit's own discovery keystone`.
+
 ## Escalation (human-in-the-loop)
 On a runaway-guard breach, surface the escalation record's `summary` + `options` to the human and pause;
 write their choice as the verdict, then resume. Verdicts are human-ratified and never self-issued; stamp

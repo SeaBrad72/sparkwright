@@ -59,6 +59,16 @@ artifacts — verifies the diff / a clone dry-run (`skills/verification/SKILL.md
   tier-checkpoint, Option B) is a second caller on this same seam — not a rebuild. See
   `docs/architecture/2026-06-27-e3-escalation-design.md` §6.
 
+## Discovery (start here) -- the kit's own discovery keystone
+Before convening the cast for any phase, consult the kit's own discovery keystone --
+`skills/using-skills/SKILL.md` (read + follow it), the kit's `using-superpowers`-equivalent -- to find the
+right skill for the work in hand. It encodes the discovery discipline (check for a relevant skill before
+acting, even a 1% chance; invoke by reading `skills/<name>/SKILL.md`; follow rigid skills exactly; explicit
+user instructions always win over a skill) and indexes the kit's six spine skills (design, plan, tdd, review,
+worktrees, verification). On the FLOOR this start-here is a **convention the conductor follows**, not an
+enforced auto-load (a NATIVE binding may auto-surface it); the conductor reads it first regardless. It is a
+*hat the Orchestrator wears* (agents-vs-skills rule).
+
 ## Design (Architect hat)
 For the design + planning activity (Shape/Plan), BEFORE fan-out, follow the kit's own design skill —
 `skills/design/SKILL.md` — to turn the epic into an owner-approved design, then the kit's own plan skill —
