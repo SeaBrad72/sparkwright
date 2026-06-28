@@ -47,4 +47,4 @@ E3a proves the loop's **mechanics**, not that an LLM writes good code (not a gat
 E3a is brick one of the kit's own superpowers-equivalent: we progressively shift the kit's own build onto this roster, dropping the external dependency incrementally. The **E10 capstone acceptance test** is "build a real slice using only the kit's own roster — zero superpowers." See `self-hosting` in the design doc §2.
 
 ## Design (Architect hat) — the kit's own skill
-The Orchestrator follows the kit's own `skills/design/SKILL.md` then `skills/plan/SKILL.md` for design/planning (the Architect hat) — bricks #1-2 of the kit's own skill spine.
+The Orchestrator follows the kit's own `skills/design/SKILL.md` then `skills/plan/SKILL.md` for design/planning (the Architect hat), and the Engineer follows the kit's own `skills/tdd/SKILL.md` for test-driven build — bricks #1-3 of the kit's own skill spine.

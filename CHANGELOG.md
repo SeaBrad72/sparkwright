@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.59.0] — 2026-06-28
+
+### Added
+- **Skill-spine brick #3 — the kit's own `tdd` skill** (`skills/tdd/SKILL.md`). The kit now ships its own harness-neutral test-driven-development methodology — invoked by the **Engineer** (read + follow the SKILL) — toward **full replacement of (zero runtime dependency on) superpowers** `test-driven-development`. The skill is **not a clone**: it reframes red-green-refactor as the kit's own **non-vacuity law applied to code** (Verify-RED = the same load-bearing negative the kit requires of every conformance lock), bakes in coverage disciplines (80%+ floor; 100% on critical paths), the testing pyramid, and AI-eval gating — the conformance greps for these markers so a generic test-driven-development paraphrase fails. FLOOR-only: invoke-by-read (universal); no adapter dimension (owner-ratified). Right-weighted: no new gate — claim `skill-spine` extended (description now covers design + plan + tdd, bricks #1-3) + the wiring extends `orchestrator-loop-wired.sh` (a new `check_tdd_skill` with non-vacuous teeth: case 7 [tdd-skill marker teeth] + case 8 [Engineer-omits-reference teeth — closes the banked brick-#2 item]). Wires the **Engineer** seat (not the Orchestrator): `agents/engineer.agent.md` + `.claude/agents/engineer.md`. Plan: `docs/superpowers/plans/2026-06-28-tdd-skill.md`.
+
 ## [3.58.0] — 2026-06-27
 
 ### Added
