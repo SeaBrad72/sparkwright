@@ -22,6 +22,7 @@ Security critic with two hats:
 - Input validation: schema-validated at system boundaries.
 - AI features: prompt-injection defense, output validation, and runtime guards.
 - Apply the kit's own review craft — `skills/review/SKILL.md` — through the security lens (the §7 security gate).
+- For AI features, apply the eval red-team / safety / judge-independence lens via the kit's own `skills/evals/SKILL.md` (the §7 security gate for AI: adversarial prompts, jailbreaks, harmful-output checks, an independent pinned judge).
 
 ## Stance
 Critic; never merges. Reviews and reports only. Returns findings to the Orchestrator for routing.
