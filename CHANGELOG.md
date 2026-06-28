@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.65.0] — 2026-06-28
+
+### Changed
+- **Keystone structural self-check (hardening)** — `check_keystone` in `conformance/orchestrator-loop-wired.sh` now **enumerates every on-disk `skills/*/SKILL.md`** (excluding the `using-skills` keystone itself) and asserts the discovery keystone indexes each, instead of grepping a hardcoded path list. The keystone index can no longer drift green relative to disk: a skill present on disk but absent from the keystone is RED on a fresh clone — closing the brick-#8 H1 failure mode (the spine grew a 7th content skill but the keystone index was not updated, caught only by the meta-control panel). POSIX-sh enumeration (`for d in "$skills_dir"/*/`, `basename`, `[ -f ... ]`; dash-safe). New selftest **case 20** is the load-bearing non-vacuity proof: a fully conformant fixture plus an EXTRA on-disk skill with a novel name (`skills/zzz-probe`) that the keystone does NOT index → exit 1. A hardcoded-list check would miss `zzz-probe`; the structural enumeration catches it (verified by a hardcoded-list regression: case 20 fails under the old list). Cases 1–19 unchanged. One wording line in `skills/using-skills/SKILL.md` makes the structural enforcement literal (“…enforces it against every `skills/*` on disk…”); the `skill-spine` claim wording is tightened (same id + verifier command). Right-weighted: no new skill, seat, claim row, or gate — verifier-only hardening. The tag-time CI gate (refuse to tag a red-CI commit — the incident’s other failure mode) is explicitly a separate slice. Design: `docs/architecture/2026-06-28-keystone-structural-check-design.md`. Plan: `docs/architecture/2026-06-28-keystone-structural-check-plan.md`.
+
 ## [3.64.1] — 2026-06-28
 
 ### Fixed

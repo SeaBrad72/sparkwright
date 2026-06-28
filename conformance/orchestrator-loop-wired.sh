@@ -10,8 +10,9 @@
 # that the kit's own worktrees/isolation skill ships + is referenced by the Orchestrator (brick #5),
 # that the kit's own verification skill ships + is referenced by BOTH the Engineer (evidence-before-claims)
 #   and the Orchestrator (confabulation-proofing) (brick #6),
-# that the kit's own using-skills discovery keystone ships + indexes all seven spine skills + is referenced
-#   by the Orchestrator (discovery start-here) (brick #7; keystone synced to brick #8 in this slice),
+# that the kit's own using-skills discovery keystone ships + indexes every on-disk skills/* spine skill
+#   (structural -- enumerated, not a hardcoded list) + is referenced
+#   by the Orchestrator (discovery start-here) (brick #7; keystone enumeration made structural in this slice),
 # that the kit's own debugging skill ships + is referenced by the Engineer (root-cause-first; brick #8),
 # and that the golden-path CI job exercising the loop is present.
 # This locks the WIRING; behaviour (the loop actually halts on guard STOP, emits a
@@ -147,7 +148,7 @@ check_vbc_skill() {  # <vbc_skill_file> <engineer_def> <orch_def> -- the kit's o
   return $miss
 }
 
-check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discovery keystone exists, carries the discovery discipline markers, indexes ALL SEVEN spine skills, and the Orchestrator references it (single-seat: discovery is the conductor's entry)
+check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discovery keystone exists, carries the discovery discipline markers, indexes every on-disk skills/* spine skill (structural -- enumerated, not a hardcoded list), and the Orchestrator references it (single-seat: discovery is the conductor's entry)
   s=$1; o=$2; miss=0
   [ -f "$s" ] || { echo "FAIL: missing using-skills keystone $s"; return 1; }
   # Discovery-discipline markers: a generic using-superpowers paraphrase lacking the kit's invoke-by-read
@@ -155,9 +156,15 @@ check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discov
   for m in "name: using-skills" "invoke by reading" "before acting" "user instructions"; do
     grep -qF "$m" "$s" || { echo "FAIL: $s missing kit-distinctive discipline marker '$m' (generic copy?)"; miss=1; }
   done
-  # Index teeth: the keystone must name ALL SEVEN spine skills as paths -- a keystone that forgets one is incomplete.
-  for p in "skills/design" "skills/plan" "skills/tdd" "skills/review" "skills/worktrees" "skills/verification" "skills/debugging"; do
-    grep -qF "$p" "$s" || { echo "FAIL: $s does not index spine skill '$p' (index not exhaustive)"; miss=1; }
+  # Index teeth (STRUCTURAL): enumerate every on-disk skills/*/SKILL.md (excluding the keystone itself) and
+  # assert the keystone indexes each. The index is checked against ground truth (the filesystem), not a
+  # hardcoded list the verifier author must remember to update -- so the index cannot drift green relative to disk.
+  skills_dir=$(dirname "$(dirname "$s")")
+  for d in "$skills_dir"/*/; do
+    [ -f "$d/SKILL.md" ] || continue          # only real skills (filters a literal no-match glob too)
+    name=$(basename "$d")
+    [ "$name" = "using-skills" ] && continue   # the keystone need not index itself
+    grep -qF "skills/$name" "$s" || { echo "FAIL: $s does not index on-disk spine skill 'skills/$name' (index not exhaustive)"; miss=1; }
   done
   [ -f "$o" ] || { echo "FAIL: missing orchestrator def $o"; return 1; }
   grep -qF "skills/using-skills/SKILL.md" "$o" || { echo "FAIL: $o does not reference skills/using-skills/SKILL.md (discovery start-here not wired to the Orchestrator)"; miss=1; }
@@ -663,6 +670,26 @@ if [ "${1:-}" = "--selftest" ]; then
   c19_fail=0
   (ORCH_LOOP_ROSTER_DIR="$r19/agents" ORCH_LOOP_SCRIPT="$r19/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r19/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r19/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r19/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r19/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r19/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r19/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r19/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r19/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r19/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r19/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r19/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r19/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c19_fail=1
   if [ "$c19_fail" -eq 1 ]; then echo "selftest PASS: Engineer def omits debugging reference -> exit 1"; else echo "selftest FAIL: missing debugging reference NOT caught (reference teeth vacuous)"; sf=1; fi
+
+  # -- case 20: structural-enumeration teeth -- fully conformant tree, PLUS an EXTRA on-disk skill with a NOVEL
+  #    name ('zzz-probe', in no hardcoded list) that the keystone does NOT index -> exit 1.
+  #    A hardcoded-list check would miss zzz-probe; the structural enumeration catches it. This is the load-bearing
+  #    proof that the index is checked against disk, not a static list.
+  r20="$d/case20"; mkdir -p "$r20/agents" "$r20/scripts" "$r20/_gh_/workflows" "$r20/skills/design" "$r20/skills/plan" "$r20/skills/tdd" "$r20/skills/review" "$r20/skills/worktrees" "$r20/skills/verification" "$r20/skills/using-skills" "$r20/skills/debugging"
+  for f in $ROSTER_FILES; do _agent_ok > "$r20/agents/$f"; done
+  printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r20/scripts/orchestrator-run.sh"; chmod +x "$r20/scripts/orchestrator-run.sh"
+  printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r20/_gh_/workflows/gp.yml"
+  _skill_ok > "$r20/skills/design/SKILL.md"; _plan_skill_ok > "$r20/skills/plan/SKILL.md"; _tdd_skill_ok > "$r20/skills/tdd/SKILL.md"; _review_skill_ok > "$r20/skills/review/SKILL.md"; _worktrees_skill_ok > "$r20/skills/worktrees/SKILL.md"; _vbc_skill_ok > "$r20/skills/verification/SKILL.md"; _debugging_skill_ok > "$r20/skills/debugging/SKILL.md"
+  # keystone indexes every standard skill (conformant) -- but NOT the novel zzz-probe added below
+  _keystone_ok > "$r20/skills/using-skills/SKILL.md"
+  printf '\nskills/design/SKILL.md\nskills/plan/SKILL.md\nskills/worktrees/SKILL.md\nskills/verification/SKILL.md\nskills/using-skills/SKILL.md\n' >> "$r20/agents/orchestrator.agent.md"
+  printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\nskills/debugging/SKILL.md\n' >> "$r20/agents/engineer.agent.md"
+  printf 'skills/review/SKILL.md\n' >> "$r20/agents/reviewer.agent.md"
+  # EXTRA on-disk skill with a NOVEL name, deliberately NOT indexed by the keystone above
+  mkdir -p "$r20/skills/zzz-probe"; printf 'x\n' > "$r20/skills/zzz-probe/SKILL.md"
+  c20_fail=0
+  (ORCH_LOOP_ROSTER_DIR="$r20/agents" ORCH_LOOP_SCRIPT="$r20/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r20/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r20/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r20/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r20/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r20/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r20/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r20/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r20/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r20/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r20/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r20/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r20/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c20_fail=1
+  if [ "$c20_fail" -eq 1 ]; then echo "selftest PASS: structural enumeration catches an unindexed on-disk skill -> exit 1"; else echo "selftest FAIL: novel on-disk skill unindexed NOT caught (structural enumeration vacuous -- a hardcoded list would miss it)"; sf=1; fi
 
   rm -rf "$d"
   if [ "$sf" -eq 0 ]; then echo "OK: orchestrator-loop-wired selftest (conflict-safe + design-skill + plan-skill + tdd-skill + review-skill + worktrees-skill + verification-skill + using-skills-keystone + debugging-skill)"; exit 0

@@ -39,7 +39,7 @@ Read the matching `skills/<name>/SKILL.md` and follow it. Process skills first.
 | verification | `skills/verification` | Evidence before any "done" claim (run the gate fresh, read the exit code, never trust a report). |
 | debugging | `skills/debugging` | Find a bug's root cause before fixing it (reproduce the bug as a red->green regression test). |
 
-The index names **all seven** spine skills. A keystone that forgets one is incomplete — the index is exhaustive by design, and `check_keystone` enforces it, so every new skill brick must add its row here.
+The index names **all seven** spine skills. A keystone that forgets one is incomplete — the index is exhaustive by design, and `check_keystone` enforces it against every `skills/*` on disk, so every new skill brick must add its row here.
 
 ## Entry-point honesty (the ceiling)
 On the **FLOOR**, this keystone is a **convention the conductor follows**, not an enforced auto-load. The kit owns the discovery discipline and the index completely, but a neutral harness cannot be forced to auto-inject this file at session start — that would be a Claude-Code-specific mechanism, exactly the platform coupling neutrality forbids. So first-contact is documented convention: the Orchestrator / standing session reads this keystone first (see `docs/operations/orchestration.md`) and consults the index before convening the cast. A NATIVE `.claude/` binding may auto-surface it for Claude Code as a bonus. The honest gap: the keystone is *provided and structurally proven* (it exists, indexes all seven, and the Orchestrator references it); whether an agent actually consults it at runtime is un-gateable — auto-load is harness-local, not a FLOOR guarantee.
