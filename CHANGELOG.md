@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.60.0] — 2026-06-28
+
+### Added
+- **Skill-spine brick #4 — the kit's own `review` skill** (`skills/review/SKILL.md`). The kit now ships its own harness-neutral code-review methodology — invoked by the **Reviewer** seat (read + follow the SKILL) and applied through a security lens by the security-reviewer — toward **full replacement of (zero runtime dependency on) superpowers** `requesting-code-review`. The skill is **not a clone**: it encodes the kit's own reviewing craft — adversarial verification of each finding (the kit's non-vacuity law at the review level), confidence-based filtering (signal over nitpicks), builder ≠ reviewer independence, behaviour-scoped diff review, and honest verdict (NEEDS-FIXES on any real Critical/Important; APPROVE means you stake the merge) — the conformance greps for these markers so a generic paraphrase fails. FLOOR-only: invoke-by-read (universal); no adapter dimension (owner-ratified). Right-weighted: no new gate — claim `skill-spine` extended (description now covers design + plan + tdd + review, bricks #1-4) + the wiring extends `orchestrator-loop-wired.sh` (a new `check_review_skill` with non-vacuous teeth: case 9 [review-skill marker teeth] + case 10 [Reviewer-omits-reference teeth]). Wires the **Reviewer** seat (gated: `agents/reviewer.agent.md` + `.claude/agents/reviewer.md`) and the **security-reviewer** (ungated consistency). Plan: `docs/superpowers/plans/2026-06-28-review-skill.md`.
+
 ## [3.59.0] — 2026-06-28
 
 ### Added

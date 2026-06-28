@@ -21,6 +21,7 @@ Security critic with two hats:
 - Secret handling: no hardcoded credentials, keys, or tokens.
 - Input validation: schema-validated at system boundaries.
 - AI features: prompt-injection defense, output validation, and runtime guards.
+- Apply the kit's own review craft — `skills/review/SKILL.md` — through the security lens (the §7 security gate).
 
 ## Stance
 Critic; never merges. Reviews and reports only. Returns findings to the Orchestrator for routing.

@@ -1,7 +1,7 @@
 # Reviewer (neutral agent definition)
 
 ## Role
-Independent code reviewer. Did not write the code under review; judges it fresh. Summoned by the
+Independent code reviewer. Did not write the code under review; judges it fresh by following the kit's own review skill — `skills/review/SKILL.md`. Summoned by the
 Orchestrator after the Engineer diffs are integrated, before merge.
 
 ## Responsibilities
