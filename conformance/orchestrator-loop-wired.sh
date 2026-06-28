@@ -10,8 +10,9 @@
 # that the kit's own worktrees/isolation skill ships + is referenced by the Orchestrator (brick #5),
 # that the kit's own verification skill ships + is referenced by BOTH the Engineer (evidence-before-claims)
 #   and the Orchestrator (confabulation-proofing) (brick #6),
-# that the kit's own using-skills discovery keystone ships + indexes all six spine skills + is referenced
-#   by the Orchestrator (discovery start-here) (brick #7),
+# that the kit's own using-skills discovery keystone ships + indexes all seven spine skills + is referenced
+#   by the Orchestrator (discovery start-here) (brick #7; keystone synced to brick #8 in this slice),
+# that the kit's own debugging skill ships + is referenced by the Engineer (root-cause-first; brick #8),
 # and that the golden-path CI job exercising the loop is present.
 # This locks the WIRING; behaviour (the loop actually halts on guard STOP, emits a
 # denied span, and detects conflicts) is proven by orchestrator-run.sh --selftest and
@@ -31,6 +32,7 @@ REVIEW_SKILL_FILE="${ORCH_LOOP_REVIEW_SKILL:-skills/review/SKILL.md}"
 WORKTREES_SKILL_FILE="${ORCH_LOOP_WORKTREES_SKILL:-skills/worktrees/SKILL.md}"
 VBC_SKILL_FILE="${ORCH_LOOP_VBC_SKILL:-skills/verification/SKILL.md}"
 KEYSTONE_FILE="${ORCH_LOOP_KEYSTONE:-skills/using-skills/SKILL.md}"
+DEBUGGING_SKILL_FILE="${ORCH_LOOP_DEBUGGING_SKILL:-skills/debugging/SKILL.md}"
 REVIEWER_DEF="${ORCH_LOOP_REVIEWER_DEF:-agents/reviewer.agent.md}"
 ENGINEER_DEF="${ORCH_LOOP_ENGINEER_DEF:-agents/engineer.agent.md}"
 ORCH_DEF="${ORCH_LOOP_ORCH_DEF:-agents/orchestrator.agent.md}"
@@ -145,7 +147,7 @@ check_vbc_skill() {  # <vbc_skill_file> <engineer_def> <orch_def> -- the kit's o
   return $miss
 }
 
-check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discovery keystone exists, carries the discovery discipline markers, indexes ALL SIX spine skills, and the Orchestrator references it (single-seat: discovery is the conductor's entry)
+check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discovery keystone exists, carries the discovery discipline markers, indexes ALL SEVEN spine skills, and the Orchestrator references it (single-seat: discovery is the conductor's entry)
   s=$1; o=$2; miss=0
   [ -f "$s" ] || { echo "FAIL: missing using-skills keystone $s"; return 1; }
   # Discovery-discipline markers: a generic using-superpowers paraphrase lacking the kit's invoke-by-read
@@ -153,12 +155,25 @@ check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discov
   for m in "name: using-skills" "invoke by reading" "before acting" "user instructions"; do
     grep -qF "$m" "$s" || { echo "FAIL: $s missing kit-distinctive discipline marker '$m' (generic copy?)"; miss=1; }
   done
-  # Index teeth: the keystone must name ALL SIX spine skills as paths -- a keystone that forgets one is incomplete.
-  for p in "skills/design" "skills/plan" "skills/tdd" "skills/review" "skills/worktrees" "skills/verification"; do
+  # Index teeth: the keystone must name ALL SEVEN spine skills as paths -- a keystone that forgets one is incomplete.
+  for p in "skills/design" "skills/plan" "skills/tdd" "skills/review" "skills/worktrees" "skills/verification" "skills/debugging"; do
     grep -qF "$p" "$s" || { echo "FAIL: $s does not index spine skill '$p' (index not exhaustive)"; miss=1; }
   done
   [ -f "$o" ] || { echo "FAIL: missing orchestrator def $o"; return 1; }
   grep -qF "skills/using-skills/SKILL.md" "$o" || { echo "FAIL: $o does not reference skills/using-skills/SKILL.md (discovery start-here not wired to the Orchestrator)"; miss=1; }
+  return $miss
+}
+
+check_debugging_skill() {  # <debugging_skill_file> <engineer_def> -- the kit's own debugging skill exists, is kit-distinctive (root-cause-first + regression-test framing), and the Engineer references it
+  s=$1; e=$2; miss=0
+  [ -f "$s" ] || { echo "FAIL: missing debugging skill $s"; return 1; }
+  # Kit-distinctive markers: a generic systematic-debugging paraphrase lacking the kit's root-cause-first +
+  # bug-becomes-a-regression-test + one-change-at-a-time disciplines fails here. None begins with '-', so plain grep -qF is safe.
+  for m in "name: debugging" "root cause" "reproduce" "regression test" "one hypothesis"; do
+    grep -qF "$m" "$s" || { echo "FAIL: $s missing kit-distinctive marker '$m' (generic copy?)"; miss=1; }
+  done
+  [ -f "$e" ] || { echo "FAIL: missing engineer def $e"; return 1; }
+  grep -qF "skills/debugging/SKILL.md" "$e" || { echo "FAIL: $e does not reference skills/debugging/SKILL.md (root-cause debugging not wired to the Engineer)"; miss=1; }
   return $miss
 }
 
@@ -193,9 +208,13 @@ if [ "${1:-}" = "--selftest" ]; then
   _vbc_skill_ok() {
     printf -- '---\nname: verification\n---\n## When to use\nx\nconfabulation\nclone dry-run\nevidence before claims\nfresh\n'
   }
-  # Build a conformant using-skills keystone: all four discipline markers + all six index paths.
+  # Build a conformant using-skills keystone: all four discipline markers + all seven index paths.
   _keystone_ok() {
-    printf -- '---\nname: using-skills\n---\n## When to use\nx\ninvoke by reading\nbefore acting\nuser instructions\nskills/design\nskills/plan\nskills/tdd\nskills/review\nskills/worktrees\nskills/verification\n'
+    printf -- '---\nname: using-skills\n---\n## When to use\nx\ninvoke by reading\nbefore acting\nuser instructions\nskills/design\nskills/plan\nskills/tdd\nskills/review\nskills/worktrees\nskills/verification\nskills/debugging\n'
+  }
+  # Build a conformant debugging skill carrying every kit-distinctive marker.
+  _debugging_skill_ok() {
+    printf -- '---\nname: debugging\n---\n## When to use\nx\nroot cause\nreproduce\nregression test\none hypothesis\n'
   }
 
   # -- case 1: fully conformant fixture -> exit 0 --
@@ -218,10 +237,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r1/skills/verification"; _vbc_skill_ok > "$r1/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r1/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r1/agents/orchestrator.agent.md"
+  mkdir -p "$r1/skills/debugging"; _debugging_skill_ok > "$r1/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r1/agents/engineer.agent.md"
   c1_fail=0
   mkdir -p "$r1/skills/using-skills"; _keystone_ok > "$r1/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r1/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r1/agents" ORCH_LOOP_SCRIPT="$r1/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r1/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r1/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r1/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r1/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r1/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r1/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r1/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r1/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r1/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r1/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r1/agents/reviewer.agent.md" \
+  (ORCH_LOOP_ROSTER_DIR="$r1/agents" ORCH_LOOP_SCRIPT="$r1/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r1/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r1/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r1/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r1/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r1/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r1/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r1/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r1/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r1/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r1/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r1/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r1/agents/reviewer.agent.md" \
     sh "$0" >/dev/null 2>&1) || c1_fail=1
   if [ "$c1_fail" -eq 0 ]; then
     echo "selftest PASS: conformant fixture -> exit 0"
@@ -253,10 +274,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r2/skills/verification"; _vbc_skill_ok > "$r2/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r2/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r2/agents/orchestrator.agent.md"
+  mkdir -p "$r2/skills/debugging"; _debugging_skill_ok > "$r2/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r2/agents/engineer.agent.md"
   c2_fail=0
   mkdir -p "$r2/skills/using-skills"; _keystone_ok > "$r2/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r2/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r2/agents" ORCH_LOOP_SCRIPT="$r2/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r2/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r2/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r2/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r2/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r2/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r2/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r2/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r2/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r2/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r2/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r2/agents/reviewer.agent.md" \
+  (ORCH_LOOP_ROSTER_DIR="$r2/agents" ORCH_LOOP_SCRIPT="$r2/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r2/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r2/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r2/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r2/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r2/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r2/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r2/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r2/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r2/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r2/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r2/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r2/agents/reviewer.agent.md" \
     sh "$0" >/dev/null 2>&1) || c2_fail=1
   if [ "$c2_fail" -eq 1 ]; then
     echo "selftest PASS: missing '## Stance' heading -> exit 1"
@@ -286,10 +309,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r3/skills/verification"; _vbc_skill_ok > "$r3/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r3/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r3/agents/orchestrator.agent.md"
+  mkdir -p "$r3/skills/debugging"; _debugging_skill_ok > "$r3/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r3/agents/engineer.agent.md"
   c3_fail=0
   mkdir -p "$r3/skills/using-skills"; _keystone_ok > "$r3/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r3/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r3/agents" ORCH_LOOP_SCRIPT="$r3/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r3/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r3/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r3/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r3/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r3/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r3/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r3/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r3/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r3/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r3/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r3/agents/reviewer.agent.md" \
+  (ORCH_LOOP_ROSTER_DIR="$r3/agents" ORCH_LOOP_SCRIPT="$r3/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r3/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r3/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r3/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r3/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r3/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r3/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r3/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r3/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r3/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r3/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r3/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r3/agents/reviewer.agent.md" \
     sh "$0" >/dev/null 2>&1) || c3_fail=1
   if [ "$c3_fail" -eq 1 ]; then
     echo "selftest PASS: missing 'runaway-guard.sh step' (A2 teeth) -> exit 1"
@@ -316,10 +341,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r4/skills/verification"; _vbc_skill_ok > "$r4/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r4/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r4/agents/orchestrator.agent.md"
+  mkdir -p "$r4/skills/debugging"; _debugging_skill_ok > "$r4/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r4/agents/engineer.agent.md"
   c4_fail=0
   mkdir -p "$r4/skills/using-skills"; _keystone_ok > "$r4/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r4/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r4/agents" ORCH_LOOP_SCRIPT="$r4/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r4/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r4/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r4/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r4/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r4/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r4/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r4/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r4/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r4/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r4/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r4/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c4_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r4/agents" ORCH_LOOP_SCRIPT="$r4/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r4/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r4/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r4/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r4/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r4/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r4/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r4/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r4/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r4/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r4/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r4/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r4/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c4_fail=1
   if [ "$c4_fail" -eq 1 ]; then echo "selftest PASS: missing 'kit.conflict' (conflict teeth) -> exit 1"; else echo "selftest FAIL: absent conflict wiring NOT caught"; sf=1; fi
 
   # -- case 5: skill teeth -- design skill MISSING a kit-distinctive marker ('## When to use') -> exit 1 --
@@ -342,10 +369,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r5/skills/verification"; _vbc_skill_ok > "$r5/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r5/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r5/agents/orchestrator.agent.md"
+  mkdir -p "$r5/skills/debugging"; _debugging_skill_ok > "$r5/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r5/agents/engineer.agent.md"
   c5_fail=0
   mkdir -p "$r5/skills/using-skills"; _keystone_ok > "$r5/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r5/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r5/agents" ORCH_LOOP_SCRIPT="$r5/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r5/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r5/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r5/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r5/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r5/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r5/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r5/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r5/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r5/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r5/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r5/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c5_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r5/agents" ORCH_LOOP_SCRIPT="$r5/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r5/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r5/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r5/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r5/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r5/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r5/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r5/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r5/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r5/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r5/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r5/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r5/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c5_fail=1
   if [ "$c5_fail" -eq 1 ]; then echo "selftest PASS: design skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent skill marker NOT caught (skill teeth vacuous)"; sf=1; fi
 
   # -- case 6: plan-skill teeth -- plan skill MISSING a kit-distinctive marker ('AMBER') -> exit 1 --
@@ -366,10 +395,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r6/skills/verification"; _vbc_skill_ok > "$r6/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r6/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r6/agents/orchestrator.agent.md"
+  mkdir -p "$r6/skills/debugging"; _debugging_skill_ok > "$r6/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r6/agents/engineer.agent.md"
   c6_fail=0
   mkdir -p "$r6/skills/using-skills"; _keystone_ok > "$r6/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r6/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r6/agents" ORCH_LOOP_SCRIPT="$r6/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r6/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r6/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r6/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r6/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r6/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r6/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r6/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r6/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r6/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r6/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r6/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c6_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r6/agents" ORCH_LOOP_SCRIPT="$r6/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r6/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r6/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r6/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r6/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r6/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r6/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r6/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r6/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r6/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r6/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r6/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r6/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c6_fail=1
   if [ "$c6_fail" -eq 1 ]; then echo "selftest PASS: plan skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent plan-skill marker NOT caught (plan-skill teeth vacuous)"; sf=1; fi
 
   # -- case 7: tdd-skill teeth -- tdd skill MISSING a kit-distinctive marker ('non-vacuity') -> exit 1 --
@@ -389,10 +420,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r7/skills/verification"; _vbc_skill_ok > "$r7/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r7/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r7/agents/orchestrator.agent.md"
+  mkdir -p "$r7/skills/debugging"; _debugging_skill_ok > "$r7/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r7/agents/engineer.agent.md"
   c7_fail=0
   mkdir -p "$r7/skills/using-skills"; _keystone_ok > "$r7/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r7/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r7/agents" ORCH_LOOP_SCRIPT="$r7/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r7/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r7/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r7/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r7/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r7/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r7/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r7/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r7/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r7/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r7/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r7/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c7_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r7/agents" ORCH_LOOP_SCRIPT="$r7/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r7/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r7/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r7/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r7/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r7/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r7/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r7/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r7/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r7/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r7/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r7/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r7/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c7_fail=1
   if [ "$c7_fail" -eq 1 ]; then echo "selftest PASS: tdd skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent tdd-skill marker NOT caught (tdd-skill teeth vacuous)"; sf=1; fi
 
   # -- case 8: tdd reference teeth -- conformant tdd skill but Engineer def OMITS the reference -> exit 1 --
@@ -410,10 +443,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r8/skills/verification"; _vbc_skill_ok > "$r8/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r8/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r8/agents/orchestrator.agent.md"
+  mkdir -p "$r8/skills/debugging"; _debugging_skill_ok > "$r8/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r8/agents/engineer.agent.md"
   c8_fail=0
   mkdir -p "$r8/skills/using-skills"; _keystone_ok > "$r8/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r8/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r8/agents" ORCH_LOOP_SCRIPT="$r8/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r8/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r8/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r8/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r8/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r8/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r8/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r8/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r8/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r8/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r8/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r8/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c8_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r8/agents" ORCH_LOOP_SCRIPT="$r8/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r8/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r8/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r8/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r8/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r8/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r8/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r8/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r8/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r8/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r8/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r8/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r8/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c8_fail=1
   if [ "$c8_fail" -eq 1 ]; then echo "selftest PASS: Engineer def omits tdd reference -> exit 1"; else echo "selftest FAIL: missing tdd reference NOT caught (reference teeth vacuous)"; sf=1; fi
 
   # -- case 9: review-skill teeth -- review skill MISSING a kit-distinctive marker ('adversarial') -> exit 1 --
@@ -432,10 +467,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r9/skills/verification"; _vbc_skill_ok > "$r9/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r9/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r9/agents/orchestrator.agent.md"
+  mkdir -p "$r9/skills/debugging"; _debugging_skill_ok > "$r9/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r9/agents/engineer.agent.md"
   c9_fail=0
   mkdir -p "$r9/skills/using-skills"; _keystone_ok > "$r9/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r9/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r9/agents" ORCH_LOOP_SCRIPT="$r9/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r9/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r9/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r9/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r9/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r9/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r9/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r9/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r9/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r9/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r9/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r9/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c9_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r9/agents" ORCH_LOOP_SCRIPT="$r9/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r9/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r9/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r9/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r9/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r9/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r9/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r9/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r9/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r9/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r9/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r9/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r9/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c9_fail=1
   if [ "$c9_fail" -eq 1 ]; then echo "selftest PASS: review skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent review-skill marker NOT caught"; sf=1; fi
 
   # -- case 10: review reference teeth -- conformant review skill but Reviewer def OMITS the reference -> exit 1 --
@@ -453,10 +490,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r10/skills/verification"; _vbc_skill_ok > "$r10/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r10/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r10/agents/orchestrator.agent.md"
+  mkdir -p "$r10/skills/debugging"; _debugging_skill_ok > "$r10/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r10/agents/engineer.agent.md"
   c10_fail=0
   mkdir -p "$r10/skills/using-skills"; _keystone_ok > "$r10/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r10/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r10/agents" ORCH_LOOP_SCRIPT="$r10/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r10/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r10/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r10/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r10/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r10/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r10/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r10/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r10/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r10/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r10/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r10/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c10_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r10/agents" ORCH_LOOP_SCRIPT="$r10/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r10/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r10/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r10/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r10/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r10/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r10/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r10/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r10/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r10/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r10/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r10/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r10/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c10_fail=1
   if [ "$c10_fail" -eq 1 ]; then echo "selftest PASS: Reviewer def omits review reference -> exit 1"; else echo "selftest FAIL: missing review reference NOT caught (reference teeth vacuous)"; sf=1; fi
 
   # -- case 11: worktrees-skill teeth -- worktrees skill MISSING a kit-distinctive marker ('disjoint file sets') -> exit 1 --
@@ -473,10 +512,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r11/skills/verification"; _vbc_skill_ok > "$r11/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r11/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r11/agents/orchestrator.agent.md"
+  mkdir -p "$r11/skills/debugging"; _debugging_skill_ok > "$r11/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r11/agents/engineer.agent.md"
   c11_fail=0
   mkdir -p "$r11/skills/using-skills"; _keystone_ok > "$r11/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r11/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r11/agents" ORCH_LOOP_SCRIPT="$r11/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r11/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r11/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r11/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r11/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r11/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r11/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r11/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r11/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r11/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r11/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r11/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c11_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r11/agents" ORCH_LOOP_SCRIPT="$r11/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r11/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r11/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r11/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r11/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r11/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r11/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r11/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r11/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r11/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r11/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r11/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r11/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c11_fail=1
   if [ "$c11_fail" -eq 1 ]; then echo "selftest PASS: worktrees skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent worktrees-skill marker NOT caught (worktrees-skill teeth vacuous)"; sf=1; fi
 
   # -- case 12: worktrees reference teeth -- conformant worktrees skill but Orchestrator def OMITS the reference -> exit 1 --
@@ -493,10 +534,12 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$r12/skills/verification"; _vbc_skill_ok > "$r12/skills/verification/SKILL.md"
   printf 'skills/verification/SKILL.md\n' >> "$r12/agents/engineer.agent.md"
   printf 'skills/verification/SKILL.md\n' >> "$r12/agents/orchestrator.agent.md"
+  mkdir -p "$r12/skills/debugging"; _debugging_skill_ok > "$r12/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r12/agents/engineer.agent.md"
   c12_fail=0
   mkdir -p "$r12/skills/using-skills"; _keystone_ok > "$r12/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r12/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r12/agents" ORCH_LOOP_SCRIPT="$r12/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r12/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r12/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r12/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r12/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r12/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r12/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r12/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r12/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r12/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r12/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r12/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c12_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r12/agents" ORCH_LOOP_SCRIPT="$r12/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r12/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r12/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r12/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r12/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r12/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r12/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r12/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r12/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r12/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r12/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r12/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r12/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c12_fail=1
   if [ "$c12_fail" -eq 1 ]; then echo "selftest PASS: Orchestrator def omits worktrees reference -> exit 1"; else echo "selftest FAIL: missing worktrees reference NOT caught (reference teeth vacuous)"; sf=1; fi
 
   # -- case 13: verification-skill marker teeth -- verification skill MISSING a kit-distinctive marker ('confabulation') -> exit 1 --
@@ -510,10 +553,12 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '\nskills/design/SKILL.md\nskills/plan/SKILL.md\nskills/worktrees/SKILL.md\nskills/verification/SKILL.md\n' >> "$r13/agents/orchestrator.agent.md"
   printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\n' >> "$r13/agents/engineer.agent.md"
   printf 'skills/review/SKILL.md\n' >> "$r13/agents/reviewer.agent.md"
+  mkdir -p "$r13/skills/debugging"; _debugging_skill_ok > "$r13/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r13/agents/engineer.agent.md"
   c13_fail=0
   mkdir -p "$r13/skills/using-skills"; _keystone_ok > "$r13/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r13/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r13/agents" ORCH_LOOP_SCRIPT="$r13/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r13/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r13/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r13/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r13/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r13/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r13/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r13/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r13/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r13/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r13/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r13/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c13_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r13/agents" ORCH_LOOP_SCRIPT="$r13/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r13/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r13/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r13/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r13/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r13/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r13/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r13/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r13/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r13/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r13/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r13/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r13/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c13_fail=1
   if [ "$c13_fail" -eq 1 ]; then echo "selftest PASS: verification skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent verification-skill marker NOT caught (marker teeth vacuous)"; sf=1; fi
 
   # -- case 14: verification Engineer-reference teeth -- conformant skill + Orchestrator ref present, but ENGINEER def OMITS the reference -> exit 1 --
@@ -527,10 +572,12 @@ if [ "${1:-}" = "--selftest" ]; then
   printf 'skills/tdd/SKILL.md\n' >> "$r14/agents/engineer.agent.md"
   printf 'skills/review/SKILL.md\n' >> "$r14/agents/reviewer.agent.md"
   # NOTE: deliberately do NOT append 'skills/verification/SKILL.md' to engineer.agent.md -> check_vbc_skill Engineer-reference branch must fail
+  mkdir -p "$r14/skills/debugging"; _debugging_skill_ok > "$r14/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r14/agents/engineer.agent.md"
   c14_fail=0
   mkdir -p "$r14/skills/using-skills"; _keystone_ok > "$r14/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r14/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r14/agents" ORCH_LOOP_SCRIPT="$r14/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r14/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r14/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r14/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r14/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r14/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r14/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r14/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r14/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r14/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r14/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r14/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c14_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r14/agents" ORCH_LOOP_SCRIPT="$r14/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r14/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r14/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r14/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r14/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r14/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r14/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r14/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r14/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r14/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r14/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r14/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r14/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c14_fail=1
   if [ "$c14_fail" -eq 1 ]; then echo "selftest PASS: Engineer def omits verification reference -> exit 1"; else echo "selftest FAIL: missing Engineer verification reference NOT caught (Engineer reference teeth vacuous)"; sf=1; fi
 
   # -- case 15: verification Orchestrator-reference teeth -- conformant skill + Engineer ref present, but ORCHESTRATOR def OMITS the reference -> exit 1 --
@@ -544,10 +591,12 @@ if [ "${1:-}" = "--selftest" ]; then
   printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\n' >> "$r15/agents/engineer.agent.md"
   printf 'skills/review/SKILL.md\n' >> "$r15/agents/reviewer.agent.md"
   # NOTE: deliberately do NOT append 'skills/verification/SKILL.md' to orchestrator.agent.md -> check_vbc_skill Orchestrator-reference branch must fail
+  mkdir -p "$r15/skills/debugging"; _debugging_skill_ok > "$r15/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r15/agents/engineer.agent.md"
   c15_fail=0
   mkdir -p "$r15/skills/using-skills"; _keystone_ok > "$r15/skills/using-skills/SKILL.md"
   printf 'skills/using-skills/SKILL.md\n' >> "$r15/agents/orchestrator.agent.md"
-  (ORCH_LOOP_ROSTER_DIR="$r15/agents" ORCH_LOOP_SCRIPT="$r15/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r15/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r15/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r15/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r15/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r15/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r15/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r15/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r15/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r15/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r15/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r15/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c15_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r15/agents" ORCH_LOOP_SCRIPT="$r15/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r15/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r15/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r15/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r15/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r15/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r15/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r15/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r15/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r15/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r15/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r15/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r15/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c15_fail=1
   if [ "$c15_fail" -eq 1 ]; then echo "selftest PASS: Orchestrator def omits verification reference -> exit 1"; else echo "selftest FAIL: missing Orchestrator verification reference NOT caught (Orchestrator reference teeth vacuous)"; sf=1; fi
 
   # -- case 16: keystone index teeth -- conformant tree, but the using-skills keystone is MISSING one index path (drop 'skills/verification') -> exit 1 --
@@ -556,16 +605,18 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r16/scripts/orchestrator-run.sh"; chmod +x "$r16/scripts/orchestrator-run.sh"
   printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r16/_gh_/workflows/gp.yml"
   _skill_ok > "$r16/skills/design/SKILL.md"; _plan_skill_ok > "$r16/skills/plan/SKILL.md"; _tdd_skill_ok > "$r16/skills/tdd/SKILL.md"; _review_skill_ok > "$r16/skills/review/SKILL.md"; _worktrees_skill_ok > "$r16/skills/worktrees/SKILL.md"; _vbc_skill_ok > "$r16/skills/verification/SKILL.md"
-  # keystone present + referenced, but the index DROPS 'skills/verification' -> check_keystone index branch must fail
-  printf -- '---\nname: using-skills\n---\n## When to use\nx\ninvoke by reading\nbefore acting\nuser instructions\nskills/design\nskills/plan\nskills/tdd\nskills/review\nskills/worktrees\n' > "$r16/skills/using-skills/SKILL.md"
+  # keystone present + referenced, but the index DROPS 'skills/verification' (lists the other six of seven) -> check_keystone index branch must fail
+  printf -- '---\nname: using-skills\n---\n## When to use\nx\ninvoke by reading\nbefore acting\nuser instructions\nskills/design\nskills/plan\nskills/tdd\nskills/review\nskills/worktrees\nskills/debugging\n' > "$r16/skills/using-skills/SKILL.md"
   printf '\nskills/design/SKILL.md\nskills/plan/SKILL.md\nskills/worktrees/SKILL.md\nskills/verification/SKILL.md\nskills/using-skills/SKILL.md\n' >> "$r16/agents/orchestrator.agent.md"
   printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\n' >> "$r16/agents/engineer.agent.md"
   printf 'skills/review/SKILL.md\n' >> "$r16/agents/reviewer.agent.md"
+  mkdir -p "$r16/skills/debugging"; _debugging_skill_ok > "$r16/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r16/agents/engineer.agent.md"
   c16_fail=0
-  (ORCH_LOOP_ROSTER_DIR="$r16/agents" ORCH_LOOP_SCRIPT="$r16/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r16/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r16/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r16/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r16/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r16/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r16/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r16/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r16/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r16/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r16/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r16/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c16_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r16/agents" ORCH_LOOP_SCRIPT="$r16/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r16/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r16/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r16/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r16/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r16/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r16/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r16/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r16/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r16/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r16/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r16/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r16/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c16_fail=1
   if [ "$c16_fail" -eq 1 ]; then echo "selftest PASS: keystone missing an index path -> exit 1"; else echo "selftest FAIL: keystone with an incomplete index NOT caught (index teeth vacuous)"; sf=1; fi
 
-  # -- case 17: keystone reference teeth -- conformant keystone (all six index paths), but the Orchestrator def does NOT reference the keystone -> exit 1 --
+  # -- case 17: keystone reference teeth -- conformant keystone (all seven index paths), but the Orchestrator def does NOT reference the keystone -> exit 1 --
   r17="$d/case17"; mkdir -p "$r17/agents" "$r17/scripts" "$r17/_gh_/workflows" "$r17/skills/design" "$r17/skills/plan" "$r17/skills/tdd" "$r17/skills/review" "$r17/skills/worktrees" "$r17/skills/verification" "$r17/skills/using-skills"
   for f in $ROSTER_FILES; do _agent_ok > "$r17/agents/$f"; done
   printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r17/scripts/orchestrator-run.sh"; chmod +x "$r17/scripts/orchestrator-run.sh"
@@ -576,12 +627,45 @@ if [ "${1:-}" = "--selftest" ]; then
   printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\n' >> "$r17/agents/engineer.agent.md"
   printf 'skills/review/SKILL.md\n' >> "$r17/agents/reviewer.agent.md"
   # NOTE: deliberately do NOT append 'skills/using-skills/SKILL.md' to orchestrator.agent.md -> check_keystone reference branch must fail
+  mkdir -p "$r17/skills/debugging"; _debugging_skill_ok > "$r17/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r17/agents/engineer.agent.md"
   c17_fail=0
-  (ORCH_LOOP_ROSTER_DIR="$r17/agents" ORCH_LOOP_SCRIPT="$r17/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r17/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r17/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r17/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r17/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r17/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r17/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r17/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r17/skills/using-skills/SKILL.md" ORCH_LOOP_ORCH_DEF="$r17/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r17/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r17/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c17_fail=1
+  (ORCH_LOOP_ROSTER_DIR="$r17/agents" ORCH_LOOP_SCRIPT="$r17/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r17/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r17/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r17/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r17/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r17/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r17/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r17/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r17/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r17/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r17/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r17/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r17/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c17_fail=1
   if [ "$c17_fail" -eq 1 ]; then echo "selftest PASS: Orchestrator def omits keystone reference -> exit 1"; else echo "selftest FAIL: missing keystone reference NOT caught (reference teeth vacuous)"; sf=1; fi
 
+  # -- case 18: debugging marker teeth -- conformant tree, but the debugging skill is MISSING one marker (drop 'regression test') -> exit 1 --
+  r18="$d/case18"; mkdir -p "$r18/agents" "$r18/scripts" "$r18/_gh_/workflows" "$r18/skills/design" "$r18/skills/plan" "$r18/skills/tdd" "$r18/skills/review" "$r18/skills/worktrees" "$r18/skills/verification" "$r18/skills/using-skills" "$r18/skills/debugging"
+  for f in $ROSTER_FILES; do _agent_ok > "$r18/agents/$f"; done
+  printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r18/scripts/orchestrator-run.sh"; chmod +x "$r18/scripts/orchestrator-run.sh"
+  printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r18/_gh_/workflows/gp.yml"
+  _skill_ok > "$r18/skills/design/SKILL.md"; _plan_skill_ok > "$r18/skills/plan/SKILL.md"; _tdd_skill_ok > "$r18/skills/tdd/SKILL.md"; _review_skill_ok > "$r18/skills/review/SKILL.md"; _worktrees_skill_ok > "$r18/skills/worktrees/SKILL.md"; _vbc_skill_ok > "$r18/skills/verification/SKILL.md"; _keystone_ok > "$r18/skills/using-skills/SKILL.md"
+  printf '\nskills/design/SKILL.md\nskills/plan/SKILL.md\nskills/worktrees/SKILL.md\nskills/verification/SKILL.md\nskills/using-skills/SKILL.md\n' >> "$r18/agents/orchestrator.agent.md"
+  printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\n' >> "$r18/agents/engineer.agent.md"
+  printf 'skills/review/SKILL.md\n' >> "$r18/agents/reviewer.agent.md"
+  # debugging skill present + Engineer references it, but the skill is MISSING the 'regression test' marker -> check_debugging_skill marker branch must fail
+  printf -- '---\nname: debugging\n---\n## When to use\nx\nroot cause\nreproduce\none hypothesis\n' > "$r18/skills/debugging/SKILL.md"
+  printf 'skills/debugging/SKILL.md\n' >> "$r18/agents/engineer.agent.md"
+  c18_fail=0
+  (ORCH_LOOP_ROSTER_DIR="$r18/agents" ORCH_LOOP_SCRIPT="$r18/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r18/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r18/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r18/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r18/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r18/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r18/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r18/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r18/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r18/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r18/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r18/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r18/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c18_fail=1
+  if [ "$c18_fail" -eq 1 ]; then echo "selftest PASS: debugging skill missing a kit-distinctive marker -> exit 1"; else echo "selftest FAIL: absent debugging-skill marker NOT caught (marker teeth vacuous)"; sf=1; fi
+
+  # -- case 19: debugging reference teeth -- conformant debugging skill, but the ENGINEER def does NOT reference the skill -> exit 1 --
+  r19="$d/case19"; mkdir -p "$r19/agents" "$r19/scripts" "$r19/_gh_/workflows" "$r19/skills/design" "$r19/skills/plan" "$r19/skills/tdd" "$r19/skills/review" "$r19/skills/worktrees" "$r19/skills/verification" "$r19/skills/using-skills" "$r19/skills/debugging"
+  for f in $ROSTER_FILES; do _agent_ok > "$r19/agents/$f"; done
+  printf '#!/bin/sh\nrunaway-guard.sh step\nkit.denied=true\nkit.conflict=false\ngit diff --name-only HEAD\n' > "$r19/scripts/orchestrator-run.sh"; chmod +x "$r19/scripts/orchestrator-run.sh"
+  printf 'jobs:\n  orchestrator-loop:\n    steps:\n      - run: sh scripts/orchestrator-run.sh\n' > "$r19/_gh_/workflows/gp.yml"
+  _skill_ok > "$r19/skills/design/SKILL.md"; _plan_skill_ok > "$r19/skills/plan/SKILL.md"; _tdd_skill_ok > "$r19/skills/tdd/SKILL.md"; _review_skill_ok > "$r19/skills/review/SKILL.md"; _worktrees_skill_ok > "$r19/skills/worktrees/SKILL.md"; _vbc_skill_ok > "$r19/skills/verification/SKILL.md"; _keystone_ok > "$r19/skills/using-skills/SKILL.md"
+  _debugging_skill_ok > "$r19/skills/debugging/SKILL.md"
+  printf '\nskills/design/SKILL.md\nskills/plan/SKILL.md\nskills/worktrees/SKILL.md\nskills/verification/SKILL.md\nskills/using-skills/SKILL.md\n' >> "$r19/agents/orchestrator.agent.md"
+  printf 'skills/tdd/SKILL.md\nskills/verification/SKILL.md\n' >> "$r19/agents/engineer.agent.md"
+  printf 'skills/review/SKILL.md\n' >> "$r19/agents/reviewer.agent.md"
+  # NOTE: deliberately do NOT append 'skills/debugging/SKILL.md' to engineer.agent.md -> check_debugging_skill reference branch must fail
+  c19_fail=0
+  (ORCH_LOOP_ROSTER_DIR="$r19/agents" ORCH_LOOP_SCRIPT="$r19/scripts/orchestrator-run.sh" ORCH_LOOP_GP="$r19/_gh_/workflows/gp.yml" ORCH_LOOP_SKILL="$r19/skills/design/SKILL.md" ORCH_LOOP_PLAN_SKILL="$r19/skills/plan/SKILL.md" ORCH_LOOP_TDD_SKILL="$r19/skills/tdd/SKILL.md" ORCH_LOOP_REVIEW_SKILL="$r19/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$r19/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$r19/skills/verification/SKILL.md" ORCH_LOOP_KEYSTONE="$r19/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$r19/skills/debugging/SKILL.md" ORCH_LOOP_ORCH_DEF="$r19/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$r19/agents/engineer.agent.md" ORCH_LOOP_REVIEWER_DEF="$r19/agents/reviewer.agent.md" sh "$0" >/dev/null 2>&1) || c19_fail=1
+  if [ "$c19_fail" -eq 1 ]; then echo "selftest PASS: Engineer def omits debugging reference -> exit 1"; else echo "selftest FAIL: missing debugging reference NOT caught (reference teeth vacuous)"; sf=1; fi
+
   rm -rf "$d"
-  if [ "$sf" -eq 0 ]; then echo "OK: orchestrator-loop-wired selftest (conflict-safe + design-skill + plan-skill + tdd-skill + review-skill + worktrees-skill + verification-skill + using-skills-keystone)"; exit 0
+  if [ "$sf" -eq 0 ]; then echo "OK: orchestrator-loop-wired selftest (conflict-safe + design-skill + plan-skill + tdd-skill + review-skill + worktrees-skill + verification-skill + using-skills-keystone + debugging-skill)"; exit 0
   else echo "FAIL: orchestrator-loop-wired selftest"; exit 1; fi
 fi
 
@@ -613,8 +697,10 @@ check_review_skill "$REVIEW_SKILL_FILE" "$REVIEWER_DEF" || fail=1
 check_worktrees_skill "$WORKTREES_SKILL_FILE" "$ORCH_DEF" || fail=1
 # (i) the kit's own verification skill ships + is referenced by BOTH the Engineer + Orchestrator (brick #6)
 check_vbc_skill "$VBC_SKILL_FILE" "$ENGINEER_DEF" "$ORCH_DEF" || fail=1
-# (j) the kit's own using-skills discovery keystone ships + indexes all six spine skills + is referenced by the Orchestrator (brick #7)
+# (j) the kit's own using-skills discovery keystone ships + indexes all seven spine skills + is referenced by the Orchestrator (brick #7)
 check_keystone "$KEYSTONE_FILE" "$ORCH_DEF" || fail=1
+# (k) the kit's own debugging skill ships + is referenced by the Engineer (root-cause-first; brick #8)
+check_debugging_skill "$DEBUGGING_SKILL_FILE" "$ENGINEER_DEF" || fail=1
 
-[ "$fail" -eq 0 ] && { echo "OK: orchestrator-loop wired (roster headings + A2 kill-switch + trusted-denial + conflict-safe + design-skill + plan-skill + tdd-skill + review-skill + worktrees-skill + verification-skill + using-skills-keystone + golden-path job)"; exit 0; }
+[ "$fail" -eq 0 ] && { echo "OK: orchestrator-loop wired (roster headings + A2 kill-switch + trusted-denial + conflict-safe + design-skill + plan-skill + tdd-skill + review-skill + worktrees-skill + verification-skill + using-skills-keystone + debugging-skill + golden-path job)"; exit 0; }
 echo "FAIL: orchestrator-loop under-wired"; exit 1

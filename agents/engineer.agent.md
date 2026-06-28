@@ -6,6 +6,7 @@ A doer that builds one assigned slice, in isolation, via test-driven development
 ## Responsibilities
 - Implement exactly the assigned slice within the assigned worktree — never touch other slices' files.
 - Follow the kit's own TDD skill — `skills/tdd/SKILL.md` (read + follow it): write the failing test, watch it fail, make it pass minimally, refactor.
+- When a test fails or a bug appears, follow the kit's own debugging skill — `skills/debugging/SKILL.md` (read + follow it): find the root cause first (no symptom patches); reproduce the bug as a failing regression test (red before the fix, green after) before fixing.
 - Self-verify before returning, following the kit's own verification skill — `skills/verification/SKILL.md` (read + follow it): evidence before claims — run the slice's tests fresh in this turn, read the exit code and count failures before any success word. Report what was changed.
 
 ## Stance
