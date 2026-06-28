@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.61.0] — 2026-06-28
+
+### Added
+- **Skill-spine brick #5 — the kit's own `worktrees` (isolation) skill** (`skills/worktrees/SKILL.md`). The kit now ships its own harness-neutral isolation methodology — invoked by the **Orchestrator** seat (read + follow the SKILL) to set up an isolated worktree per fanned-out Engineer — toward **full replacement of (zero runtime dependency on) superpowers** `using-git-worktrees`. The skill is **not a clone**: it reframes isolation around the kit's own disciplines — detect-existing-first (never nest; submodule guard), native-tools-first (git worktree only as a fallback; never-fight-the-harness), the kit's **disjoint-set parallel-safety rule** (two slices are parallel-safe only with disjoint file sets, no shared mutable state, and each independently testable), conflict-safe integration (`git diff --name-only --no-renames` vs the run cut-point, refuse fail-closed with a `kit.conflict` span), the Engineer's zero out-of-slice boundary, and an honest ceiling (isolation bounds blast-radius but is NOT a security sandbox; cleanup is best-effort/harness-owned) — the conformance greps for these markers so a generic paraphrase fails. FLOOR-only: invoke-by-read (universal); no adapter dimension (owner-ratified). Right-weighted: no new gate — claim `skill-spine` extended (description now covers design + plan + tdd + review + worktrees, bricks #1-5) + the wiring extends `orchestrator-loop-wired.sh` (a new `check_worktrees_skill` with non-vacuous teeth: case 11 [worktrees-skill marker teeth] + case 12 [Orchestrator-omits-reference teeth]). Wires the **Orchestrator** seat (`agents/orchestrator.agent.md` + `.claude/agents/orchestrator.md`). Plan: `docs/architecture/2026-06-28-worktrees-skill-plan.md`.
+
 ## [3.60.0] — 2026-06-28
 
 ### Added

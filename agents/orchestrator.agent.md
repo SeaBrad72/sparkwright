@@ -62,3 +62,12 @@ For the design + planning activity (Shape/Plan), BEFORE fan-out, follow the kit'
 Design precedes implementation (architecture-first). These are the kit's own craft, invoked by reading +
 following the SKILLs (replacing superpowers brainstorming + writing-plans); it is a *hat the Orchestrator
 wears*, not a separate seat (agents-vs-skills rule).
+
+## Isolation
+For setting up an isolated worktree per fanned-out Engineer — and for checking parallel-safety BEFORE
+fan-out and integrating returned branches conflict-safe AFTER — follow the kit's own isolation skill,
+`skills/worktrees/SKILL.md` (read + follow it), replacing superpowers using-git-worktrees. Detect existing
+isolation first (never nest), prefer the harness's native worktree mechanism (git worktree only as
+fallback), and apply the kit's parallel-safety rule — two slices are parallel-safe only with disjoint file
+sets, no shared mutable state, and each independently testable. Isolation is a precondition the Orchestrator
+checks before fan-out, not merely a directory; it is a *hat the Orchestrator wears* (agents-vs-skills rule).

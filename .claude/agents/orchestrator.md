@@ -25,3 +25,10 @@ write their choice as the verdict, then resume. Verdicts are human-ratified and 
 For design/planning (Shape/Plan) before fan-out, follow `skills/design/SKILL.md` then `skills/plan/SKILL.md`
 (the kit's own design + plan skills — read + follow them). Design precedes implementation; it is a hat, not a
 seat. FLOOR contract: `agents/orchestrator.agent.md` → `## Design (Architect hat)`.
+
+## Isolation
+For setting up an isolated worktree per fanned-out Engineer (and checking parallel-safety before fan-out +
+integrating conflict-safe after), follow `skills/worktrees/SKILL.md` (the kit's own isolation skill — read +
+follow it), replacing superpowers using-git-worktrees. Detect existing isolation first, prefer the native
+worktree mechanism (git worktree only as fallback), apply the kit's disjoint-set parallel-safety rule. It is a
+hat, not a seat. FLOOR contract: `agents/orchestrator.agent.md` → `## Isolation`.
