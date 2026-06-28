@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.62.0] — 2026-06-28
+
+### Added
+- **Skill-spine brick #6 — the kit's own `verification` (verification-before-completion) skill** (`skills/verification/SKILL.md`). The kit now ships its own harness-neutral evidence-before-claims methodology — wired **DUAL-SEAT**: the **Engineer** invokes it as *evidence-before-claims* (run the slice's tests fresh in the turn, read the exit code, count failures before any success word) and the **Orchestrator** invokes it as *confabulation-proofing* (a subagent can report "done" for files it never wrote — verify on the diff / a clone dry-run, never the report) — toward **full replacement of (zero runtime dependency on) superpowers** `verification-before-completion`. The skill is **not a clone**: it reframes verification around the kit's own scar tissue — confabulation-proofing, the clone dry-run (the clone + `verify --require` gate is confabulation-proof), and tagless-clone fidelity (`git clone .` carries tags `actions/checkout` does not fetch; validate tag-reading checks on a tagless clone) — atop the proven Iron-Law spine, so a generic paraphrase fails the conformance greps. FLOOR-only: invoke-by-read (universal); no adapter dimension (owner-ratified). Right-weighted: no new gate — claim `skill-spine` extended (description now covers design + plan + tdd + review + worktrees + verification, bricks #1-6) + the wiring extends `orchestrator-loop-wired.sh` (a new `check_vbc_skill` asserting the skill + both seat references, with non-vacuous teeth: case 13 [verification-skill marker teeth] + case 14 [Engineer-omits-reference teeth] + case 15 [Orchestrator-omits-reference teeth]). Wires **both** the Engineer (`agents/engineer.agent.md` + `.claude/agents/engineer.md`) and the Orchestrator (`agents/orchestrator.agent.md` + `.claude/agents/orchestrator.md`). Plan: `docs/architecture/2026-06-28-verification-skill-plan.md`.
+
 ## [3.61.0] — 2026-06-28
 
 ### Added

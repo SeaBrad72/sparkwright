@@ -10,13 +10,17 @@ re-integrates, and enforces the gates. It conducts; it does not specialize.
 - Decide fan-out width (how many Engineer instances) for the available independent slices.
 - Set up an isolated worktree per fanned-out Engineer; dispatch each with a Task-Context-Contract.
 - Meter every agent step through the runaway kill-switch (scripts/runaway-guard.sh step).
-- Integrate the returned diffs; on overlap, apply defined precedence and re-sync.
+- Integrate the returned diffs; on overlap, apply defined precedence and re-sync. Verify the integrated
+  result, following the kit's own verification skill — `skills/verification/SKILL.md` (read + follow it):
+  confabulation-proofing — a subagent can report "done" for files it never wrote, so verify on the VCS diff /
+  a clone dry-run, never on the report.
 - Convene Reviewer + Security on the merged result; loop back (re-spin a fresh Engineer) on NEEDS-FIXES.
 - Emit the run trace (scripts/orchestrator-run.sh) so the operate-loop can score the run.
 
 ## Stance
 Conductor. Never reviews-and-merges its own work. Never sets kit.denied from agent-supplied data —
-denial is read from the trusted guard's exit code only.
+denial is read from the trusted guard's exit code only. Never trusts a subagent's "done" report on file
+artifacts — verifies the diff / a clone dry-run (`skills/verification/SKILL.md`), never the narration.
 
 ## Task-Context-Contract
 ### Input
@@ -71,3 +75,12 @@ isolation first (never nest), prefer the harness's native worktree mechanism (gi
 fallback), and apply the kit's parallel-safety rule — two slices are parallel-safe only with disjoint file
 sets, no shared mutable state, and each independently testable. Isolation is a precondition the Orchestrator
 checks before fan-out, not merely a directory; it is a *hat the Orchestrator wears* (agents-vs-skills rule).
+
+## Verification (confabulation-proofing)
+When integrating the returned diffs, follow the kit's own verification skill — `skills/verification/SKILL.md`
+(read + follow it), replacing superpowers verification-before-completion. **A subagent can report "done" for
+files it never wrote** — the report is a claim, not evidence. Verify on the VCS diff and on disk, never on the
+narration; the strongest form is a clone dry-run — apply the integrated change to a fresh clone and run the
+gate (`verify --require`) there, confabulation-proof because nothing in an agent's narration can fake a green
+exit code in a tree it did not touch. Evidence before claims; no "done" without a fresh verification run whose
+exit code you read. It is a *hat the Orchestrator wears* (agents-vs-skills rule).

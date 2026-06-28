@@ -32,3 +32,11 @@ integrating conflict-safe after), follow `skills/worktrees/SKILL.md` (the kit's 
 follow it), replacing superpowers using-git-worktrees. Detect existing isolation first, prefer the native
 worktree mechanism (git worktree only as fallback), apply the kit's disjoint-set parallel-safety rule. It is a
 hat, not a seat. FLOOR contract: `agents/orchestrator.agent.md` → `## Isolation`.
+
+## Verification (confabulation-proofing)
+When integrating the returned diffs, follow `skills/verification/SKILL.md` (the kit's own
+verification-before-completion skill — read + follow it), replacing superpowers verification-before-completion.
+A subagent can report "done" for files it never wrote — verify on the diff / a clone dry-run (`verify
+--require` against a fresh clone is confabulation-proof), never on the report. Evidence before claims; no
+"done" without a fresh verification run whose exit code you read. It is a hat, not a seat. FLOOR contract:
+`agents/orchestrator.agent.md` → `## Verification (confabulation-proofing)`.

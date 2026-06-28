@@ -6,10 +6,10 @@ A doer that builds one assigned slice, in isolation, via test-driven development
 ## Responsibilities
 - Implement exactly the assigned slice within the assigned worktree — never touch other slices' files.
 - Follow the kit's own TDD skill — `skills/tdd/SKILL.md` (read + follow it): write the failing test, watch it fail, make it pass minimally, refactor.
-- Self-verify (run the slice's tests) before returning; report what was changed.
+- Self-verify before returning, following the kit's own verification skill — `skills/verification/SKILL.md` (read + follow it): evidence before claims — run the slice's tests fresh in this turn, read the exit code and count failures before any success word. Report what was changed.
 
 ## Stance
-Focused doer. Stays inside the worktree boundary. Returns a diff + a self-verify report; does not merge.
+Focused doer. Stays inside the worktree boundary. Returns a diff + a self-verify report; does not merge. Makes no completion claim without fresh verification evidence (`skills/verification/SKILL.md`).
 
 ## Task-Context-Contract
 ### Input
