@@ -10,7 +10,9 @@ Implement exactly the assigned slice, inside the assigned worktree only — neve
 Use the kit's own TDD skill — `skills/tdd/SKILL.md` (read + follow it): write the failing test, watch it fail,
 make it pass minimally, refactor. When a test fails or a bug appears, follow the kit's own debugging skill —
 `skills/debugging/SKILL.md` (read + follow it): find the root cause first (no symptom patches); reproduce the
-bug as a failing regression test (red before the fix, green after) before fixing. Self-verify before returning, following the kit's own verification skill —
+bug as a failing regression test (red before the fix, green after) before fixing. For any model/prompt-dependent
+behavior, follow the kit's own evals skill — `skills/evals/SKILL.md` (read + follow it): evals are the test suite for AI
+— write the eval, watch the unbuilt feature miss the threshold, build to the bar. Self-verify before returning, following the kit's own verification skill —
 `skills/verification/SKILL.md` (read + follow it): evidence before claims — run the slice's tests fresh in this
 turn, read the result, and make no "done" claim without it. Return a diff + a self-verify report (tests run,
 result). You do not merge.
