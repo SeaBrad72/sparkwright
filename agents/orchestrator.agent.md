@@ -57,7 +57,8 @@ denial is read from the trusted guard's exit code only.
 
 ## Design (Architect hat)
 For the design + planning activity (Shape/Plan), BEFORE fan-out, follow the kit's own design skill —
-`skills/design/SKILL.md` — to turn the epic into an owner-approved design (and, via the plan skill, an
-INVEST-sliced plan the fan-out builds against). Design precedes implementation (architecture-first).
-This is the kit's own craft, invoked by reading + following the SKILL (replacing superpowers brainstorming);
-it is a *hat the Orchestrator wears*, not a separate seat (agents-vs-skills rule).
+`skills/design/SKILL.md` — to turn the epic into an owner-approved design, then the kit's own plan skill —
+`skills/plan/SKILL.md` — to turn that design into an INVEST-sliced plan the fan-out builds against.
+Design precedes implementation (architecture-first). These are the kit's own craft, invoked by reading +
+following the SKILLs (replacing superpowers brainstorming + writing-plans); it is a *hat the Orchestrator
+wears*, not a separate seat (agents-vs-skills rule).

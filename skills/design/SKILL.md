@@ -11,6 +11,10 @@ The kit's own design skill: take an idea → a design the owner has approved, th
 Do NOT write code, scaffold a project, or take any implementation action until you have presented a design and the owner has approved it. Every slice, however simple. A "simple" change gets a short design — but it is still presented and approved.
 </HARD-GATE>
 
+<!-- The frontmatter and the discipline headings below are conformance-load-bearing:
+     conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers.
+     Edits that drop or rename them can turn the skill-spine lock RED. -->
+
 ## When to use
 Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin.
 
@@ -31,6 +35,7 @@ Before any feature, component, behaviour change, or new project — the moment i
 - **Agents-vs-skills rule.** A standing agent (seat) is earned only by a distinct skill AND (distinct tools OR must-run-parallel/independent); otherwise it is a skill a seat invokes. Few agents, many skills.
 - **Honest ceiling.** Name what is behaviourally provable versus attestation. Never let a green check imply more than it proves; state the ceiling in the design.
 - **Non-vacuity.** Every proof needs a positive liveness anchor AND a load-bearing negative — a dead or always-pass mechanism must fail the test.
+- **Control-plane completeness.** When a slice makes a path control-plane (the guard must protect it), lock it in all three guard matchers (`is_control_plane_path` for the Write/Edit path AND the two shell-redirect regexes) AND add an agent-autonomy fixture per mutation form (Write/Edit, `>` redirect, `sed -i`). This completeness gap has recurred 3 times and is caught only by security review — design it in up front.
 - **Right-weight / anti-ceremony.** Prefer extending an existing gate to adding one; defer build-ahead (no infrastructure for needs that do not exist yet).
 - **Progressive disclosure.** Make the rigorous path the default, surfaced progressively — a novice is not crushed, an expert is not constrained.
 

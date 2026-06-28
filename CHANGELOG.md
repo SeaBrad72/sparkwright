@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.58.0] — 2026-06-27
+
+### Added
+- **Skill-spine brick #2 — the kit's own `plan` skill** (`skills/plan/SKILL.md`). The kit now ships its own harness-neutral planning methodology — invoked by the Orchestrator as the Architect hat (read + follow the SKILL) after the design skill — toward **full replacement of (zero runtime dependency on) superpowers** `writing-plans`. The skill is **not a clone**: it bakes in the kit's own planning disciplines (INVEST/parallel-safety rule · control-plane→AMBER apply.py · conformance-lock non-vacuity · version-finishing folded into apply.py · dual-review · honest-ceiling per task) — the conformance greps for these markers so a generic writing-plans paraphrase fails. FLOOR-only-first: invoke-by-read (universal); the formal `skills` adapter dimension stays deferred (owner-ratified). Right-weighted: no new gate — claim `skill-spine` extended (description now covers design + plan, bricks #1-2) + the wiring extends `orchestrator-loop-wired.sh` (a new `check_plan_skill` with a non-vacuous teeth case 6). Folds in (a) control-plane-completeness discipline into `skills/design/SKILL.md` (the two-matcher gap fix, recurred 3×) + (c) conformance-load-bearing comment (cosmetic). Plan: `docs/superpowers/plans/2026-06-27-plan-skill.md`.
+
 ## [3.57.0] — 2026-06-27
 
 ### Added

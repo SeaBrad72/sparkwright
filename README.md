@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software, from intent to operating software.*
 
-`v3.57.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
+`v3.58.0` · Apache-2.0 · [CHANGELOG](CHANGELOG.md) · [how the kit is maintained](MAINTAINING.md)
 
 A complete, **stack-agnostic** software development lifecycle designed for teams working with AI agents — from idea through released, operating software. Drop it into a new project, choose your stack, and run `incept` — for a service stack it scaffolds a runnable starter whose **language CI pipeline is green on clone**; the `Dockerfile` + `compose.yaml` are **COPY-&-ADAPT references** you adapt when you containerize (the image-build gates skip until you do). So you start from a working language pipeline, not an empty repo. (Green-on-clone scope is honest per stack — see the Quickstart.)
 

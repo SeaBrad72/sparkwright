@@ -22,6 +22,6 @@ write their choice as the verdict, then resume. Verdicts are human-ratified and 
 `agents/orchestrator.agent.md` → `## Escalation discipline`.
 
 ## Design (Architect hat)
-For design/planning (Shape/Plan) before fan-out, follow `skills/design/SKILL.md` (the kit's own design
-skill — read + follow it). Design precedes implementation; it is a hat, not a seat. FLOOR contract:
-`agents/orchestrator.agent.md` → `## Design (Architect hat)`.
+For design/planning (Shape/Plan) before fan-out, follow `skills/design/SKILL.md` then `skills/plan/SKILL.md`
+(the kit's own design + plan skills — read + follow them). Design precedes implementation; it is a hat, not a
+seat. FLOOR contract: `agents/orchestrator.agent.md` → `## Design (Architect hat)`.
