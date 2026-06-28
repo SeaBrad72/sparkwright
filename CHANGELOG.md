@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.64.1] — 2026-06-28
+
+### Fixed
+- **Hotfix (brick #8 release coherence):** the v3.64.0 merge landed the verifier change that makes `check_keystone` require `skills/debugging` in the discovery keystone index, but the matching keystone edit (the `debugging` index row + the "six -> seven" / "`check_keystone` enforces it" wording) did not land in the commit — leaving `orchestrator-loop`, `conflict-safe-integration`, and `skill-spine` RED on a fresh clone. This syncs the keystone so the index is exhaustive again and the gate passes.
+
 ## [3.64.0] — 2026-06-28
 
 ### Added
