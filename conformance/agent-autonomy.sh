@@ -345,6 +345,13 @@ assert_deny "Write skill"    '{"tool_name":"Write","tool_input":{"file_path":"sk
 assert_deny "redirect skill" '{"tool_name":"Bash","tool_input":{"command":"echo x > skills/design/SKILL.md"}}'
 assert_deny "sed -i skill"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ skills/design/SKILL.md"}}'
 assert_allow "read skill"    '{"tool_name":"Bash","tool_input":{"command":"cat skills/design/SKILL.md"}}'
+# --- pre-E10 hardening: conformance/ + adapters/ shell two-matcher symmetry (DENY redirect/sed, ALLOW read) ---
+assert_deny  "redirect conformance" '{"tool_name":"Bash","tool_input":{"command":"echo x > conformance/verify.sh"}}'
+assert_deny  "sed -i conformance"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ conformance/verify.sh"}}'
+assert_deny  "redirect adapters"    '{"tool_name":"Bash","tool_input":{"command":"echo x > adapters/registry.tsv"}}'
+assert_deny  "sed -i adapters"      '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ adapters/registry.tsv"}}'
+assert_allow "read conformance"     '{"tool_name":"Bash","tool_input":{"command":"cat conformance/verify.sh"}}'
+assert_allow "read adapters"        '{"tool_name":"Bash","tool_input":{"command":"cat adapters/registry.tsv"}}'
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0
