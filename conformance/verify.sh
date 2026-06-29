@@ -66,6 +66,7 @@ check control "license-check(selftest)" sh scripts/license-check.sh --selftest
 check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh
+check control promotion-contract  sh conformance/promotion-contract-documented.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
 check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
 check control onboarding       sh conformance/onboarding-complete.sh
