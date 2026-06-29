@@ -17,10 +17,11 @@ This residual was banked from the E3b panel #7 (`E3-merge-atomicity`). The detec
 On the merge-floor failure path, after `git merge --abort`, reset the branch to the run cut-point `base` (captured at the top of `run()`):
 
 ```sh
-git reset --hard -q "$base" || true   # ATOMICITY: undo any already-integrated slices — all-or-nothing
+git reset --hard -q "$base" 2>/dev/null || echo "orchestrator-run: WARNING reset to base failed - manual cleanup may be needed" >&2
 ```
 
-- **Best-effort** (`|| true`), mirroring the existing `git merge --abort 2>/dev/null || true` defensive style, so the trusted `kit.conflict` span and the refusal (exit 1) still fire even if the reset somehow fails. `base` is a commit we held seconds earlier, so a reset failure is pathological, not expected.
+- **Best-effort but not silent** (folded from security review Low-2): on the pathological reset failure it WARNS to stderr rather than `|| true`-swallowing, so the rare non-atomic outcome is observable; the trusted `kit.conflict` span and the refusal (exit 1) still fire regardless. `base` is a commit we held seconds earlier, so a reset failure is pathological, not expected.
+- **Honest blast-radius (folded from security review Low-1):** `git reset --hard` also discards any uncommitted *tracked* working changes — but per the loop's clean-committed-base contract there are none at integration time; the inline comment states this so a reader at the call site sees the full ceiling without cross-referencing this doc.
 - **Only the merge-floor path** gets the reset. The detection-refuse path attempts no merge, so HEAD is already `base` — adding a reset there would be a no-op (right-weight: don't).
 
 ## Test (load-bearing red→green)
