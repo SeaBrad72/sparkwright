@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.69.0] — 2026-06-28
+
+### Changed
+- **E3-merge-atomicity — orchestrator integration is now all-or-nothing.** When the conflict-safe **merge floor** (the catch-all below changed-file detection) trips on a slice, `scripts/orchestrator-run.sh` now `git reset --hard`s the branch back to the run **cut-point base**, undoing any slices already merged earlier in the same run — no **partial-integration residual**. Previously `git merge --abort` only unwound the single failed merge, leaving earlier successful merges committed even though the run refused ("refusing, tree clean" meant a clean *working tree*, not a branch at base). Proven by a new load-bearing `--selftest` pair: a **directory/file clash** (`clash` as a file vs `clash/child` under a dir) whose name-only changed-file sets are disjoint, so it passes detection and reaches the merge floor — the NEGATIVE asserts `HEAD == base` + no residual after the trip (RED on the old code), and a disjoint clean run is the POSITIVE liveness anchor (HEAD advances + artifacts present, so a spurious always-reset would fail it). Honest ceiling: the reset is best-effort (`|| true`, so the `kit.conflict` span + refusal still fire) and assumes the run began at a committed base (the loop's standing contract); `base` is orchestrator-owned, never agent-supplied. **This slice is the E10 zero-superpowers acceptance vehicle** — built end-to-end on the kit's own design → plan → tdd → verification → review spine (no superpowers). Right-weighted: no new gate/claim/conformance change (the four `orchestrator-loop-wired.sh` markers are preserved). Design: `docs/architecture/2026-06-28-e3-merge-atomicity-design.md`.
+
 ## [3.68.0] — 2026-06-28
 
 ### Changed
