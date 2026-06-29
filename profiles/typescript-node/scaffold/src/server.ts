@@ -36,6 +36,41 @@ function emitSpan(span: Record<string, unknown>): void {
   else console.log(line);
 }
 
+// E5-metrics — zero-dep Prometheus text exposition (DEVELOPMENT-STANDARDS.md Factor 14: telemetry =
+// metrics + traces + health, not just logs). Two counters keyed by BOUNDED labels (method, status —
+// NOT path; cardinality + secret hygiene). An unknown method is bucketed as "other" so an attacker
+// cannot explode series cardinality. Updated on res.finish; scraped at GET /metrics.
+const KNOWN_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS']);
+const requestsTotal = new Map<string, number>(); // key: `${methodLabel}|${status}`
+let durationSecondsTotal = 0;
+
+function recordMetric(method: string | undefined, status: number, latencyMs: number): void {
+  const m = method && KNOWN_METHODS.has(method) ? method : 'other';
+  const key = `${m}|${status}`;
+  requestsTotal.set(key, (requestsTotal.get(key) ?? 0) + 1);
+  durationSecondsTotal += latencyMs / 1000;
+}
+
+// Render Prometheus text exposition. Label values are escaped per the spec (\\, \", \n) so an unusual
+// label can never break a series line — though method is already normalised to a known set above.
+function renderMetrics(): string {
+  const esc = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  const lines = [
+    '# HELP http_requests_total Total number of HTTP requests handled.',
+    '# TYPE http_requests_total counter',
+  ];
+  for (const [key, count] of requestsTotal) {
+    const [method, status] = key.split('|');
+    lines.push(`http_requests_total{method="${esc(method)}",status="${esc(status)}"} ${count}`);
+  }
+  lines.push(
+    '# HELP http_request_duration_seconds_total Total accumulated request duration in seconds.',
+    '# TYPE http_request_duration_seconds_total counter',
+    `http_request_duration_seconds_total ${durationSecondsTotal}`,
+  );
+  return lines.join('\n') + '\n';
+}
+
 export const server = createServer((req, res) => {
   const startMono = process.hrtime.bigint();
   const startNano = BigInt(Date.now()) * 1_000_000n; // wall-clock unix nanos at request start
@@ -50,6 +85,7 @@ export const server = createServer((req, res) => {
     const endMono = process.hrtime.bigint();
     const latencyMs = Math.round((Number(endMono - startMono) / 1e6) * 1000) / 1000;
     log({ requestId, method: req.method, path: req.url, status: res.statusCode, latencyMs });
+    recordMetric(req.method, res.statusCode, latencyMs);
     // OTel-semantic request span (real duration: wall-clock anchor + monotonic delta).
     const endNano = startNano + (endMono - startMono);
     const spanName = `${req.method} ${(req.url ?? '').split('?')[0]}`;
@@ -74,6 +110,11 @@ export const server = createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json', ...SECURITY_HEADERS });
     res.end(JSON.stringify(health()));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/metrics') {
+    res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4', ...SECURITY_HEADERS });
+    res.end(renderMetrics());
     return;
   }
   if (req.method === 'GET' && req.url === '/greeting') {

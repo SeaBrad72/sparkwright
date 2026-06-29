@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.72.0] — 2026-06-29
+
+### Added
+- **E5-metrics — a Prometheus `/metrics` endpoint on the reference app (zero-dep).** The reference `server.ts` now exposes `GET /metrics` in **Prometheus text exposition format** (`text/plain; version=0.0.4`) — completing **Factor 14** (telemetry = metrics + traces + health, not just logs) on the reference app, which already had `/healthz` (health), E5-log (logs), and E5-trace (traces). Two zero-dependency counters fed by the existing `res.on('finish')` hook: `http_requests_total{method,status}` and `http_request_duration_seconds_total`. **Labels are bounded** (method + status only — not path; same cardinality + secret-hygiene reason as E5-log/trace), and an unknown HTTP method is bucketed as `other` so an attacker cannot explode series cardinality. Label values are escaped per the Prometheus spec. The endpoint carries the standard `SECURITY_HEADERS`. Proven **behaviourally** by a new `golden-path` step that scrapes the booted container's `/metrics` and asserts valid exposition format + a live `http_requests_total{method="GET"...}` counter `> 0` (non-vacuous: the pre-metrics app 404s `/metrics`), and **statically** by a new `conformance/metrics-endpoint-wired.sh` lock + claim `metrics-endpoint` (mirrors `structured-logging`/`app-tracing`; `--selftest` good/bad fixtures load-bearing). Kit-self (carved from the adopter export — the adopter receives the metrics-emitting scaffold, not the kit's golden-path lock). Right-weighted: no new gate type. Honest ceiling: proves the RED metrics core (request count by method/status + total duration) on the reference app — histograms/quantiles, a live Prometheus scrape round-trip, and restricting `/metrics` to internal/auth are the adopter's. Third slice of epic E5. Design: `docs/architecture/2026-06-29-e5-metrics-endpoint-design.md`.
+
 ## [3.71.0] — 2026-06-29
 
 ### Added

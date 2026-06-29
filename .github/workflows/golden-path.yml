@@ -82,6 +82,12 @@ jobs:
           sh scripts/otlp-export.sh gp_spans.ndjson --dry-run 2>/dev/null | jq -e '.resourceSpans[0].scopeSpans[0].spans[0] | .traceId and .spanId and .name' >/dev/null \
             || { echo "app-tracing: spans did not convert through the otlp-export.sh OTLP seam"; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
           echo "app-tracing: OK — booted app emits OTel request spans that convert through the OTLP seam"
+          # E5-metrics — Prometheus /metrics: the booted app exposes a scrapeable metrics endpoint
+          # (DEVELOPMENT-STANDARDS Factor 14). Non-vacuous: the pre-metrics app 404s /metrics.
+          metrics=$(curl -fsS http://localhost:3000/metrics)
+          printf '%s\n' "$metrics" | grep -qF '# TYPE http_requests_total counter' || { echo "metrics-endpoint: /metrics not in Prometheus exposition format"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          printf '%s\n' "$metrics" | grep -F 'http_requests_total{method="GET"' | grep -qE '} [1-9]' || { echo "metrics-endpoint: GET counter not incremented"; printf '%s\n' "$metrics"; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          echo "metrics-endpoint: OK — booted app exposes a Prometheus /metrics endpoint with live counters"
           if ! sh scripts/smoke.sh; then echo "golden-path: OFF smoke failed (kill-switch path)"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; fi
           docker rm -f gp >/dev/null 2>&1 || true
 
