@@ -72,6 +72,16 @@ jobs:
           printf '%s' "$sl_line" | jq -e '.requestId and .method and .path and (.status|type=="number") and (.latencyMs|type=="number") and .level and .service and .ts' >/dev/null \
             || { echo "structured-logging: log line missing required fields: $sl_line"; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
           echo "structured-logging: OK — booted app emits structured request logs"
+          # E5-trace — app-level request tracing: the booted app emits an OTel-semantic span per
+          # request that converts through the existing OTLP seam (scripts/otlp-export.sh). Non-vacuous:
+          # the pre-trace app emitted no span line.
+          docker logs gp 2>&1 | grep -F '"trace_id"' > gp_spans.ndjson || true
+          [ -s gp_spans.ndjson ] || { echo "app-tracing: no OTel span line on the booted app"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          tail -1 gp_spans.ndjson | jq -e '(.trace_id|test("^[0-9a-f]{32}$")) and (.span_id|test("^[0-9a-f]{16}$")) and ((.end_unix_nano|tonumber) > (.start_unix_nano|tonumber)) and .attributes["http.request.method"] and .attributes.request_id and .status.code' >/dev/null \
+            || { echo "app-tracing: span line invalid: $(tail -1 gp_spans.ndjson)"; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          sh scripts/otlp-export.sh gp_spans.ndjson --dry-run 2>/dev/null | jq -e '.resourceSpans[0].scopeSpans[0].spans[0] | .traceId and .spanId and .name' >/dev/null \
+            || { echo "app-tracing: spans did not convert through the otlp-export.sh OTLP seam"; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          echo "app-tracing: OK — booted app emits OTel request spans that convert through the OTLP seam"
           if ! sh scripts/smoke.sh; then echo "golden-path: OFF smoke failed (kill-switch path)"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; fi
           docker rm -f gp >/dev/null 2>&1 || true
 
