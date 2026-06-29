@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.73.0] — 2026-06-29
+
+### Added
+- **E5-backend — the reference app’s telemetry reaches a real OTLP backend (live round-trip in CI).** A new dedicated `otlp-backend` golden-path job boots the reference app, captures its emitted OTel spans, boots a real **OpenTelemetry Collector** (OTLP/HTTP `:4318` → debug exporter, from a shipped reference config), and POSTs the spans through the **existing** `scripts/otlp-export.sh` **real path (no `--dry-run`)** — then asserts the exact emitted 32-hex `trace_id` **and** a decoded span appear in the collector’s output (non-vacuous: a dead/empty collector cannot print the app’s random id). This closes the forward reference from E5-trace (“a live OTLP backend round-trip is the later E5-backend slice”): emission + convertibility were proven; **delivery** now is. Provided as well as proven — a minimal reference collector config ships at `profiles/typescript-node/scaffold/observability/otel-collector.yaml` (the same file CI runs), which an adopter retargets to their vendor’s OTLP exporter. New `conformance/otlp-backend-wired.sh` lock + claim `otlp-backend` (kit-self, carved from the adopter export; `--selftest` good/bad fixtures load-bearing — a dry-run POST or a config missing the OTLP receiver fails). **`server.ts` and `otlp-export.sh` are unchanged** — the slice exercises the existing seam, retroactively validating it was real. Right-weighted: no new gate type. Honest ceiling: proves delivery + ingest-acceptance to a real collector on the reference app — long-term storage, trace query/retrieval, and a live vendor backend are the adopter’s; a queryable-backend round-trip (Jaeger/Tempo + query API) is banked for E5-ops. Fourth slice of epic E5. Design: `docs/architecture/2026-06-29-e5-backend-otlp-roundtrip-design.md`.
+
 ## [3.72.0] — 2026-06-29
 
 ### Added
