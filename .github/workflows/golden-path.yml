@@ -309,3 +309,69 @@ jobs:
           done
           [ "$rok" = 1 ] || { echo "otlp-backend: collector did not receive+decode trace_id ($EMITTED)"; echo "--- collector ---"; docker logs otelcol || true; echo "--- app ---"; docker logs gp || true; exit 1; }
           echo "otlp-backend: OK — app spans POSTed via otlp-export.sh and received+decoded by a real OTLP collector"
+
+  trace-query:
+    # E5-ops-query -- PROVE the operator can FIND the trace: app spans POSTed via the existing
+    # otlp-export.sh real path to a real Jaeger backend are STORED and RETRIEVABLE by trace_id via
+    # Jaeger's query API (GET /api/traces/{id}). One gradient past otlp-backend (receipt -> queryable
+    # storage). Non-vacuous: an empty store returns .data == [] and cannot fabricate the app's random id.
+    runs-on: ubuntu-latest
+    env:
+      TQ_DIR: ''  # runtime-set via $GITHUB_ENV; declared so the GitHub Actions linter resolves it
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '24'
+      - name: Scaffold a temp adopter project (incept the reference stack)
+        run: |
+          tmp=$(mktemp -d)
+          git archive HEAD | tar -x -C "$tmp"
+          ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name TraceQuery \
+              --intent-owner "CI" --stack typescript-node --backlog md --ci github --harness claude-code )
+          echo "TQ_DIR=$tmp" >> "$GITHUB_ENV"
+      - name: Stage the reference Dockerfile + build the reference image
+        working-directory: ${{ env.TQ_DIR }}
+        run: |
+          cp profiles/typescript-node/Dockerfile .
+          cp profiles/typescript-node/.dockerignore . 2>/dev/null || true
+          docker build -t trace-query:ci .
+      - name: Boot app + Jaeger, POST spans, RETRIEVE by trace_id via the query API
+        working-directory: ${{ env.TQ_DIR }}
+        run: |
+          cleanup() { docker rm -f gp jaeger >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          # 1) Boot the reference app; wait for liveness; it emits an OTel span per served request.
+          docker run -d --name gp -p 3000:3000 trace-query:ci
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/healthz 2>/dev/null | grep -q '"status":"ok"'; then ok=1; break; fi
+            sleep 1
+          done
+          [ "$ok" = 1 ] || { echo "trace-query: app never became live"; docker logs gp || true; exit 1; }
+          # 2) Capture emitted spans + the exact emitted trace_id (the non-vacuity key).
+          docker logs gp 2>&1 | grep -F '"trace_id"' > gp_spans.ndjson || true
+          [ -s gp_spans.ndjson ] || { echo "trace-query: app emitted no span line"; docker logs gp || true; exit 1; }
+          EMITTED=$(tail -1 gp_spans.ndjson | jq -r .trace_id)
+          printf '%s\n' "$EMITTED" | grep -qE '^[0-9a-f]{32}$' || { echo "trace-query: bad emitted trace_id: $EMITTED"; exit 1; }
+          # 3) Boot a REAL Jaeger backend (OTLP/HTTP ingest :4318 + query API :16686).
+          docker run -d --name jaeger -e COLLECTOR_OTLP_ENABLED=true -p 4318:4318 -p 16686:16686 \
+            jaegertracing/all-in-one@sha256:836e9b69c88afbedf7683ea7162e179de63b1f981662e83f5ebb68badadc710f  # v1.62.0
+          iok=0
+          for _ in $(seq 1 30); do
+            if curl -sS -o /dev/null http://localhost:4318/ 2>/dev/null && curl -sS -o /dev/null http://localhost:16686/ 2>/dev/null; then iok=1; break; fi
+            sleep 1
+          done
+          [ "$iok" = 1 ] || { echo "trace-query: jaeger never opened :4318/:16686"; docker logs jaeger || true; exit 1; }
+          # 4) REAL POST via the existing seam (NOT --dry-run) -- the path under test.
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 sh scripts/otlp-export.sh gp_spans.ndjson
+          # 5) QUERY round-trip: retrieve the trace by id from Jaeger's query API; poll for ingest consistency.
+          #    Non-vacuous: we query the SPECIFIC random id -> non-empty .data means Jaeger stored+matched it.
+          qok=0
+          for _ in $(seq 1 15); do
+            resp=$(curl -sS "http://localhost:16686/api/traces/$EMITTED" 2>/dev/null || true)
+            if printf '%s' "$resp" | jq -e --arg t "$EMITTED" '(.data | length > 0) and ((.data[0].traceID | ascii_downcase) == ($t | ascii_downcase)) and ([.data[0].spans[]] | length > 0)' >/dev/null 2>&1; then qok=1; break; fi
+            sleep 1
+          done
+          [ "$qok" = 1 ] || { echo "trace-query: Jaeger did not return the emitted trace_id ($EMITTED) via the query API"; echo "--- last query resp ---"; printf '%s\n' "$resp"; echo "--- jaeger logs ---"; docker logs jaeger || true; exit 1; }
+          echo "trace-query: OK -- app spans POSTed via otlp-export.sh and RETRIEVED by trace_id from a real Jaeger query API"

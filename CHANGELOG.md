@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.74.0] — 2026-06-29
+
+### Added
+- **E5-ops-query — the reference app's traces are retrievable from a real queryable backend (Jaeger query round-trip in CI).** A new dedicated `trace-query` golden-path job boots the reference app, captures its emitted OTel spans, boots a real **Jaeger** backend (`jaegertracing/all-in-one`, OTLP/HTTP ingest + query API), POSTs the spans through the **existing** `scripts/otlp-export.sh` **real path (no `--dry-run`)**, then **retrieves the exact emitted `trace_id` via Jaeger's query API** (`GET /api/traces/{id}`) and asserts the trace is returned with a span — non-vacuous (an empty store returns `.data == []` and cannot fabricate the app's random 32-hex id). This is one gradient past E5-backend (which proved *receipt* at a collector): emission + delivery + receipt were proven; **storage + query/retrieval** now are — the operate-loop's "an operator can *find* the trace" rung. Provided as well as proven — a vendor-neutral observability reference (`profiles/typescript-node/scaffold/observability/README.md`) shows the local Jaeger run + the query URL and documents pointing `OTEL_EXPORTER_OTLP_ENDPOINT` at any OTLP backend (Tempo, Honeycomb, Grafana Cloud, Datadog). New `conformance/trace-query-wired.sh` lock + claim `trace-query` (kit-self, carved from the adopter export; `--selftest` good/bad fixtures load-bearing — a dry-run POST or a job missing the query assertion fails). **`server.ts` and `otlp-export.sh` are unchanged** — the slice queries the far end of the seam E5-trace/E5-backend already proved. Right-weighted: no new gate type. Honest ceiling: proves storage + query round-trip on the reference app via Jaeger in-memory — production durability/sampling/retention, a live vendor query, and the operate **craft** (triage/decide) are out of scope (the operate craft is the next slice, E5-ops-skill). First of the two E5-ops slices. Design: `docs/architecture/2026-06-29-e5-ops-query-trace-roundtrip-design.md`.
+
 ## [3.73.0] — 2026-06-29
 
 ### Added

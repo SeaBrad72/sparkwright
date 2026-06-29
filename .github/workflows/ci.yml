@@ -127,6 +127,8 @@ jobs:
         run: sh conformance/metrics-endpoint-wired.sh --selftest
       - name: otlp-backend self-test (reference app spans reach a real OTLP collector — wiring lock)
         run: sh conformance/otlp-backend-wired.sh --selftest
+      - name: trace-query self-test (reference app spans retrievable from a real Jaeger query API — wiring lock)
+        run: sh conformance/trace-query-wired.sh --selftest
       - name: E5-thin operate-loop sensor self-tests (emitter / stand-in / adapter / exporter)
         run: |
           sh scripts/otel-trace.sh --selftest
