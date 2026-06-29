@@ -118,6 +118,13 @@ run() {
   for slice in $built; do
     if ! git merge -q --no-edit "e3a/$slice"; then
       git merge --abort 2>/dev/null || true
+      # ATOMICITY: a floor trip is all-or-nothing -- reset to the run cut-point base so any
+      # slices already merged this run are undone (no partial-integration residual). base is
+      # orchestrator-owned (captured at run start), never agent-supplied. Per the loop's
+      # clean-committed-base contract there are no uncommitted tracked changes to lose;
+      # reset is best-effort and WARNS (not silent) on the pathological failure so the rare
+      # non-atomic outcome is observable, while the kit.conflict span + refusal still fire.
+      git reset --hard -q "$base" 2>/dev/null || echo "orchestrator-run: WARNING reset to base failed - manual cleanup may be needed" >&2
       span --trace "$tid" --parent "$root" --name "gate:integration" --status ERROR \
            --start "$(now)" --end "$(now)" --attr "agent.id=orchestrator" \
            --attr "kit.conflict=true" --attr "conflict.file=merge:$slice" --attr "conflict.slices=$slice" >/dev/null
@@ -263,8 +270,60 @@ PROBE
     || { echo "FAIL: dueling-rename EVADED detection (no kit.conflict span) — rename-divergence not closed"; fail=1; }
   [ ! -f "$rtmp/renamed-by-rra.txt" ] || { echo "FAIL: dueling-rename silently integrated a side (tree not clean)"; fail=1; }
   rm -rf "$rtmp"; rm -f "$rout" "$rconf" "$rtally"
+  # E3-merge-atomicity (load-bearing NEGATIVE): two slices with DISJOINT changed-file sets that still
+  # collide at the merge FLOOR. clashF creates path 'clash' as a FILE; clashD creates 'clash/child' (a
+  # file under dir 'clash'). Name-only sets {clash} vs {clash/child} are disjoint so DETECTION passes; the
+  # merge floor then merges clashF (lands 'clash') and merging clashD FAILS (cannot create a dir over a
+  # file) -> floor trips. WITHOUT the atomic reset, clashF stays committed (partial-integration residual);
+  # WITH it, HEAD resets to the cut-point base. Asserts refuse + kit.conflict(merge:clashD) + HEAD==base
+  # + no residual 'clash'. This is the case the unfixed code FAILS (HEAD advanced) and the fix makes pass.
+  mtmp=$(mktemp -d); mout=$(mktemp); mconf=$(mktemp); mtally=$(mktemp); mrun=$(mktemp)
+  printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$mconf"
+  cat > "$mrun" <<'DIRFILE'
+#!/bin/sh
+slice="$1"; wt="$2"; cd "$wt" || exit 1
+case "$slice" in
+  *F) printf 'x\n' > clash; git add clash; git commit -q -m "f($slice)" ;;
+  *D) mkdir clash; printf 'y\n' > clash/child; git add clash/child; git commit -q -m "d($slice)" ;;
+esac
+DIRFILE
+  chmod +x "$mrun"
+  ( cd "$mtmp"; git init -q; git config user.email e@x; git config user.name e
+    echo seed > seed.txt; git add seed.txt; git commit -q -m seed )
+  mbase=$(git -C "$mtmp" rev-parse HEAD); mrc=0
+  ( cd "$mtmp"
+    ROLE_RUNNER="$mrun" OTEL_TRACE_FILE="$mout" \
+      RUNAWAY_BUDGET_CONFIG="$mconf" RUNAWAY_TALLY="$mtally" \
+      "$here/orchestrator-run.sh" clashF clashD >/dev/null 2>&1 ) || mrc=$?
+  [ "$mrc" -ne 0 ] || { echo "FAIL: merge-floor clash did not refuse integration (expected nonzero exit)"; fail=1; }
+  [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true" and .attributes["conflict.file"]=="merge:clashD")]|length' "$mout")" = "1" ] \
+    || { echo "FAIL: merge-floor trip did not emit kit.conflict span for merge:clashD"; fail=1; }
+  [ "$(git -C "$mtmp" rev-parse HEAD)" = "$mbase" ] \
+    || { echo "FAIL: merge-floor trip left a partial-integration residual (HEAD != base) — integration not atomic"; fail=1; }
+  [ ! -e "$mtmp/clash" ] \
+    || { echo "FAIL: merge-floor trip left residual artifact 'clash' (integration not atomic)"; fail=1; }
+  rm -rf "$mtmp"; rm -f "$mout" "$mconf" "$mtally" "$mrun"
+  # E3-merge-atomicity (POSITIVE liveness anchor): a disjoint clean run still INTEGRATES — HEAD advances
+  # past base and both artifacts are present. Guards against a regression where the atomic reset fires
+  # spuriously on the success path (an always-reset bug integrates nothing and fails here).
+  ptmp=$(mktemp -d); pout=$(mktemp); pconf=$(mktemp); ptally=$(mktemp)
+  printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$pconf"
+  ( cd "$ptmp"; git init -q; git config user.email e@x; git config user.name e
+    echo seed > seed.txt; git add seed.txt; git commit -q -m seed )
+  pbase=$(git -C "$ptmp" rev-parse HEAD); prc=0
+  ( cd "$ptmp"
+    OTEL_TRACE_FILE="$pout" RUNAWAY_BUDGET_CONFIG="$pconf" RUNAWAY_TALLY="$ptally" \
+      "$here/orchestrator-run.sh" pa pb >/dev/null 2>&1 ) || prc=$?
+  [ "$prc" -eq 0 ] || { echo "FAIL: disjoint clean run did not exit 0 (prc=$prc)"; fail=1; }
+  [ "$(git -C "$ptmp" rev-parse HEAD)" != "$pbase" ] \
+    || { echo "FAIL: disjoint clean run did not integrate (HEAD == base) — reset fired spuriously on success"; fail=1; }
+  { [ -f "$ptmp/built-by-pa.txt" ] && [ -f "$ptmp/built-by-pb.txt" ]; } \
+    || { echo "FAIL: disjoint clean run missing integrated artifacts"; fail=1; }
+  [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$pout")" = "0" ] \
+    || { echo "FAIL: disjoint clean run wrongly flagged a conflict"; fail=1; }
+  rm -rf "$ptmp"; rm -f "$pout" "$pconf" "$ptally"
   [ "$fail" -eq 0 ] || { echo "orchestrator-run --selftest: FAIL" >&2; return 1; }
-  echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, scorecard maps denied, escalation pause+resume, role-runner env scrubbed, conflict-safe detect+refuse incl. dueling-rename)"; return 0
+  echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, scorecard maps denied, escalation pause+resume, role-runner env scrubbed, conflict-safe detect+refuse incl. dueling-rename, integration atomic on floor-trip)"; return 0
 }
 
 case "${1:-}" in
