@@ -2,7 +2,8 @@
 // Kept separate from health.ts (and excluded from coverage in vitest.config.ts) so the
 // pure logic is what the coverage gate measures — the socket-binding main guard is not.
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
 import { health } from './health.js';
 import { isEnabled } from './flags.js';
 
@@ -24,8 +25,20 @@ function log(fields: Record<string, unknown>): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', service: SERVICE, ...fields }));
 }
 
+// E5-trace — emit one OTel-semantic span per request in the exact scripts/otel-trace.sh schema, so
+// scripts/otlp-export.sh converts it to OTLP/JSON. Zero-dep (node:crypto + node:fs). Sink: OTEL_TRACE_FILE
+// if set, else stdout (mirrors otel-trace.sh). The span correlates to the structured log line via the
+// request_id attribute. `name` strips the query string (span cardinality + secret hygiene).
+function emitSpan(span: Record<string, unknown>): void {
+  const line = JSON.stringify(span);
+  const sink = process.env.OTEL_TRACE_FILE;
+  if (sink) appendFileSync(sink, line + '\n');
+  else console.log(line);
+}
+
 export const server = createServer((req, res) => {
-  const start = process.hrtime.bigint();
+  const startMono = process.hrtime.bigint();
+  const startNano = BigInt(Date.now()) * 1_000_000n; // wall-clock unix nanos at request start
   // Honor an inbound correlation id (seeds distributed tracing later) ONLY if it is a safe, bounded
   // token; otherwise mint one. JSON.stringify already escapes the value (no log-line injection), but
   // validating bounds the length and rejects malformed ids defensively.
@@ -34,8 +47,28 @@ export const server = createServer((req, res) => {
   const requestId = raw && /^[A-Za-z0-9._-]{1,128}$/.test(raw) ? raw : randomUUID();
 
   res.on('finish', () => {
-    const latencyMs = Math.round((Number(process.hrtime.bigint() - start) / 1e6) * 1000) / 1000;
+    const endMono = process.hrtime.bigint();
+    const latencyMs = Math.round((Number(endMono - startMono) / 1e6) * 1000) / 1000;
     log({ requestId, method: req.method, path: req.url, status: res.statusCode, latencyMs });
+    // OTel-semantic request span (real duration: wall-clock anchor + monotonic delta).
+    const endNano = startNano + (endMono - startMono);
+    const spanName = `${req.method} ${(req.url ?? '').split('?')[0]}`;
+    emitSpan({
+      trace_id: randomBytes(16).toString('hex'),
+      span_id: randomBytes(8).toString('hex'),
+      parent_span_id: null,
+      name: spanName,
+      // Exact decimal strings (OTLP/JSON represents *_unix_nano as strings) — avoids the IEEE-754
+      // precision loss a JS Number incurs past ~9e15 (unix nanos are ~1.8e18).
+      start_unix_nano: startNano.toString(),
+      end_unix_nano: endNano.toString(),
+      attributes: {
+        'http.request.method': req.method,
+        'http.response.status_code': String(res.statusCode),
+        request_id: requestId,
+      },
+      status: { code: res.statusCode >= 500 ? 'ERROR' : 'OK' },
+    });
   });
 
   if (req.method === 'GET' && req.url === '/healthz') {
