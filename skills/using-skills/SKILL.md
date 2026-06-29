@@ -11,7 +11,8 @@ The kit's own discovery meta-skill: how its skills are found, invoked, and prior
      conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers
      (name: using-skills, invoke by reading, before acting, user instructions) and for each of
      the index paths (skills/design, skills/plan, skills/tdd, skills/review, skills/worktrees,
-     skills/verification, skills/debugging, skills/evals, skills/continuous-discovery). Edits that drop or rename them can turn the skill-spine lock RED. -->
+     skills/verification, skills/debugging, skills/evals, skills/continuous-discovery,
+     skills/operating). Edits that drop or rename them can turn the skill-spine lock RED. -->
 
 ## When to use
 At the **start of any task**, before any response or action. Before you write code, answer a question, or take a step, check whether one of the kit's skills applies — even if there is only a 1% chance it does. This is the meta-skill that runs first; every other skill is reached through the discipline it describes. The cost of checking the index is always less than the cost of skipping a skill that should have governed the work.
@@ -40,6 +41,7 @@ Read the matching `skills/<name>/SKILL.md` and follow it. Process skills first.
 | debugging | `skills/debugging` | Find a bug's root cause before fixing it (reproduce the bug as a red->green regression test). |
 | evals | `skills/evals` | Eval-driven development for AI features (write the eval, watch it miss the threshold, build to the bar). |
 | continuous-discovery | `skills/continuous-discovery` | Problem-space product discovery before solutioning (frame the outcome, surface + test the riskiest assumption). |
+| operating | `skills/operating` | Handle a live signal safely: assess blast radius, map to an autonomy tier, surface—don’t actuate (the human commands the catastrophic action). |
 
 The index names **every** spine skill on disk. A keystone that forgets one is incomplete — the index is exhaustive by design, and `check_keystone` enforces it against every `skills/*` on disk, so every new skill brick must add its row here.
 

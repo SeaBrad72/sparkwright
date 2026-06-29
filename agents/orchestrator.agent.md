@@ -104,3 +104,15 @@ narration; the strongest form is a clone dry-run — apply the integrated change
 gate (`verify --require`) there, confabulation-proof because nothing in an agent's narration can fake a green
 exit code in a tree it did not touch. Evidence before claims; no "done" without a fresh verification run whose
 exit code you read. It is a *hat the Orchestrator wears* (agents-vs-skills rule).
+
+## Operations (operating hat)
+At loop-close — after the build/review/integration cycle, when a live signal arrives on the deployed system —
+wear the Operations hat and follow the kit’s own operating skill, `skills/operating/SKILL.md` (read + follow
+it), to handle the signal safely: observe the Factor-14 telemetry quartet, triage + correlate
+(request_id ↔ trace_id, GET /api/traces/{id}), assess blast radius before any action, map to an autonomy
+tier (L0–L3, DEVELOPMENT-PROCESS §13), surface findings advisory-not-actuating, and close the loop back to
+Discover (postmortem → backlog). The human commands the catastrophic action; the agent surfaces and escalates,
+never actuates. It is a *hat the Orchestrator wears*, not a standing Ops seat (agents-vs-skills rule: the kit
+has no live system of its own; demand-gated on a live system + distinct prod authority). Operate feeds back to
+Discover — the hat completes the loop.
+

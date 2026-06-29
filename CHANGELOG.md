@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.75.0] — 2026-06-29
+
+### Added
+- **E5-ops-skill — the `operating` craft skill (operate-phase discipline; spine now 10 content skills).** A new FLOOR skill brick `skills/operating/SKILL.md` encodes how the operator-agent (Orchestrator’s Ops hat) handles a live signal safely: observe the kit’s telemetry (the Factor-14 quartet + the E5 trace-query retrieval) → triage (composing `debugging`) → **assess blast radius** → **map to an autonomy tier** (L0–L3; irreversible/high-blast-radius human-gated regardless) → **advisory, not actuating** (surface, don’t actuate; *the human commands the catastrophic action*; high-risk routes through the `escalate.sh` seam) → close the loop back to discovery. Single-seat = the Orchestrator’s Ops hat (Ops/SRE is a hat, not a standing seat — the kit has no live system of its own; demand-gated on a live system + distinct prod authority, a clean future promotion). Wired into `conformance/orchestrator-loop-wired.sh` (`check_operating_skill` + 2 load-bearing negative selftest cases — a dropped marker or a missing Orchestrator reference FAILs) and indexed by the `using-skills` keystone; extends the existing `skill-spine` claim (no new gate/claim/guard). Honest ceiling: triage *quality* is un-gateable (the proof is that the craft is provided + the agents-vs-skills rule is respected + escalation is the hand-off, not that judgement is good); the `escalate.sh` ops-trigger is a documented extension point (banked, not wired). Completes the E5-ops decomposition (after E5-ops-query v3.74.0) and the E5 operate-loop back half. Design: `docs/architecture/2026-06-29-e5-ops-skill-operating-design.md`.
+
 ## [3.74.0] — 2026-06-29
 
 ### Added

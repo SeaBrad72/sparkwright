@@ -56,3 +56,14 @@ A subagent can report "done" for files it never wrote — verify on the diff / a
 --require` against a fresh clone is confabulation-proof), never on the report. Evidence before claims; no
 "done" without a fresh verification run whose exit code you read. It is a hat, not a seat. FLOOR contract:
 `agents/orchestrator.agent.md` → `## Verification (confabulation-proofing)`.
+
+## Operations (operating hat)
+At loop-close, when a live signal arrives on the deployed system, wear the Operations hat and follow
+`skills/operating/SKILL.md` (the kit’s own operate-phase craft — read + follow it): observe the Factor-14
+telemetry quartet, triage + correlate (request_id ↔ trace_id, GET /api/traces/{id}), assess blast radius
+before any action, map to an autonomy tier (L0–L3, §13), surface findings advisory-not-actuating, and close
+the loop back to Discover (postmortem → backlog). The human commands the catastrophic action; the agent
+surfaces and escalates via `escalate.sh raise`, never actuates. A kit-original (no superpowers equivalent).
+It is a hat, not a seat (demand-gated on a live system + distinct prod authority). FLOOR contract:
+`agents/orchestrator.agent.md` → `## Operations (operating hat)`.
+
