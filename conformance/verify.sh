@@ -82,6 +82,7 @@ check control feature-flags-wired sh conformance/feature-flags-wired.sh
 check control containment-audit   sh conformance/containment-audit-wired.sh
 check control token-scope         sh conformance/token-scope.sh
 check control runtime-security    sh conformance/runtime-security.sh
+check control structured-logging  sh conformance/structured-logging-wired.sh
 check control agentops-sensor    sh conformance/agentops-sensor-wired.sh
 check control author-not-approver sh conformance/author-not-approver-wired.sh
 check control runaway-killswitch sh conformance/runaway-killswitch-wired.sh --selftest

@@ -65,6 +65,13 @@ jobs:
             printf '%s\n' "$rs_hdrs" | grep -iqF -- "$h" || { echo "runtime-security: MISSING header: $h"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
           done
           echo "runtime-security: OK — all security headers present on the booted app"
+          # E5-log — structured request logging: the booted app emits a structured JSON line per
+          # request (DEVELOPMENT-STANDARDS §3). Non-vacuous: the pre-logging app emitted no such line.
+          sl_line=$(docker logs gp 2>&1 | grep -F '"requestId"' | tail -1)
+          [ -n "$sl_line" ] || { echo "structured-logging: no structured request log line on the booted app"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          printf '%s' "$sl_line" | jq -e '.requestId and .method and .path and (.status|type=="number") and (.latencyMs|type=="number") and .level and .service and .ts' >/dev/null \
+            || { echo "structured-logging: log line missing required fields: $sl_line"; docker rm -f gp >/dev/null 2>&1 || true; exit 1; }
+          echo "structured-logging: OK — booted app emits structured request logs"
           if ! sh scripts/smoke.sh; then echo "golden-path: OFF smoke failed (kill-switch path)"; docker logs gp || true; docker rm -f gp >/dev/null 2>&1 || true; exit 1; fi
           docker rm -f gp >/dev/null 2>&1 || true
 

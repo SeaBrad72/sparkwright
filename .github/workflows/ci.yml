@@ -119,6 +119,8 @@ jobs:
         run: sh conformance/containment-audit-wired.sh --selftest
       - name: runtime-security self-test (reference app security headers wired)
         run: sh conformance/runtime-security.sh --selftest
+      - name: structured-logging self-test (reference app structured request logging wired)
+        run: sh conformance/structured-logging-wired.sh --selftest
       - name: E5-thin operate-loop sensor self-tests (emitter / stand-in / adapter / exporter)
         run: |
           sh scripts/otel-trace.sh --selftest

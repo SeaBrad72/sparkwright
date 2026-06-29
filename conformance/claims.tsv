@@ -27,6 +27,7 @@ feature-flags-wired	the feature-flag kill-switch reference is wired end-to-end (
 feature-flags-ready	a project with a feature-flag surface documents the kill-switch toggle + flag-retirement ritual (conditional; N/A when no flag surface)	sh conformance/feature-flags-ready.sh
 containment-audit	the agent sandbox is PROVEN to contain — boot + probe FS-scope/egress/caps, each negative paired with a positive control (.github/workflows/golden-path.yml containment-audit job)	sh conformance/containment-audit-wired.sh
 runtime-security	the reference app ships security headers + golden-path asserts them on the booted app (server.ts + .github/workflows/golden-path.yml)	sh conformance/runtime-security.sh
+structured-logging	reference app emits structured JSON request logs per DEVELOPMENT-STANDARDS §3 + golden-path asserts on the booted app (server.ts + .github/workflows/golden-path.yml)	sh conformance/structured-logging-wired.sh
 token-scope	workflows scope OIDC id-token per-job + ship no AWS/Azure/GCP static keys (curated list) (profiles/*/ci.yml + .github/workflows)	sh conformance/token-scope.sh
 author-not-approver	author ≠ approver is a proven separation-of-duties FLOOR — scripts/sod-check.sh (selftested) + GitHub/GitLab bindings (docs/operations/separation-of-duties.md)	sh conformance/author-not-approver-wired.sh
 verify-enforced	ci.yml enforces the conformance aggregate on every PR (runs verify.sh --require, not only --selftest)	sh conformance/verify-enforced-wired.sh

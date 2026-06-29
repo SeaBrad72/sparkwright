@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.70.0] — 2026-06-29
+
+### Added
+- **E5-log — structured request logging on the reference app (first E5 slice).** The reference `server.ts` now emits one **structured JSON line per request** to stdout — `{ ts, level, service, requestId, method, path, status, latencyMs }` — making `DEVELOPMENT-STANDARDS.md` §3 (Observability: structured logging with timestamp/level/request-or-correlation-id/service) **proven on the live reference app**, not just prescribed. Zero-dependency (`JSON.stringify` + `node:crypto` `randomUUID`); honors an inbound `x-request-id` correlation id **only** if it is a safe bounded token (`^[A-Za-z0-9._-]{1,128}$`), else mints one — so a malicious/oversized header cannot inject into or bloat the line (`JSON.stringify` already escapes; the regex also bounds length). Proven **behaviourally** by a new `golden-path` step asserting (via `jq`) the booted container emits a structured line with all required fields (non-vacuous: the pre-logging app emitted no such line) and **statically** by a new `conformance/structured-logging-wired.sh` lock + claim `structured-logging` (mirrors `runtime-security`; `--selftest` good/bad fixtures are load-bearing). Kit-self (carved from the adopter export — the adopter receives the logging scaffold, not the kit's golden-path lock). Right-weighted: no new gate type (extends the golden-path job + claims registry). Honest ceiling: proves the structured-logging FLOOR on the reference app (INFO-level request logs); adopters still select their stack's logger; log shipping / app tracing / metrics are later E5 slices. First slice of epic E5 (the agent operate-loop already runs on the real orchestrator). Design: `docs/architecture/2026-06-29-e5-log-structured-logging-design.md`.
+
 ## [3.69.0] — 2026-06-28
 
 ### Changed
