@@ -32,6 +32,55 @@ decide() {
 # on_remote V -> 0 if vV exists on the remote (authoritative), 1 otherwise
 on_remote() { git ls-remote --tags "$REMOTE" "$1" 2>/dev/null | grep -Fq "refs/tags/$1"; }
 
+# ci_probe -> prints "<status>\t<conclusion>" for HEAD's main CI run; empty if unknown.
+# Default: GitHub via gh. Overridable via RELEASE_TAG_CI_PROBE (a command) for tests / non-GitHub forges.
+# SECURITY: RELEASE_TAG_CI_PROBE is eval'd via 'sh -c' - set it only from trusted CI config, never repo/PR input.
+ci_probe() {
+  if [ -n "${RELEASE_TAG_CI_PROBE:-}" ]; then
+    sh -c "$RELEASE_TAG_CI_PROBE" 2>/dev/null || true
+    return 0
+  fi
+  command -v gh >/dev/null 2>&1 || return 0
+  _sha=$(git rev-parse HEAD 2>/dev/null) || return 0
+  gh run list --commit "$_sha" --workflow CI --json status,conclusion \
+    --jq '.[0] | .status + "\t" + (.conclusion // "")' 2>/dev/null || true
+}
+
+# ci_gate -> 0 = proceed (success OR degrade-open), 1 = refuse (definitive CI failure).
+# Bounded poll: the tag fires while CI may still be in-progress, so wait (bounded) for a conclusion;
+# refuse only on a definitive failure; degrade OPEN (warn + proceed) on no-signal / timeout (forge-neutral).
+ci_gate() {
+  _timeout=${RELEASE_TAG_CI_TIMEOUT:-600}
+  _interval=${RELEASE_TAG_CI_INTERVAL:-15}
+  if [ "$_interval" -lt 1 ]; then _interval=1; fi   # floor: never busy-loop on a 0 interval
+  _elapsed=0
+  while :; do
+    _out=$(ci_probe)
+    _status=$(printf '%s' "$_out" | cut -f1)
+    _concl=$(printf '%s' "$_out" | cut -f2)
+    if [ -z "$_out" ] || [ -z "$_status" ]; then
+      echo "release-tag: CI status unavailable for HEAD (no gh / not GitHub / no run) - proceeding (degrade-open)" >&2
+      return 0
+    fi
+    if [ "$_status" = "completed" ]; then
+      case "$_concl" in
+        success) return 0 ;;
+        failure|cancelled|timed_out|startup_failure)
+          echo "release-tag: main CI concluded '$_concl' for HEAD - refusing to tag a red commit" >&2
+          return 1 ;;
+        *) echo "release-tag: CI conclusion '$_concl' is not a clear pass - proceeding (degrade-open)" >&2
+           return 0 ;;
+      esac
+    fi
+    if [ "$_elapsed" -ge "$_timeout" ]; then
+      echo "release-tag: main CI still '$_status' after ${_timeout}s - proceeding (degrade-open); re-run after CI concludes for the gate to bite" >&2
+      return 0
+    fi
+    sleep "$_interval"
+    _elapsed=$((_elapsed + _interval))
+  done
+}
+
 run() {
   out=$(decide) || return $?
   v=${out#TAG }
@@ -43,6 +92,7 @@ run() {
   if [ "${1:-}" = "--dry-run" ]; then
     echo "release-tag: would create + push $v on $(git rev-parse --short HEAD)"; return 0
   fi
+  ci_gate || return 1
   git tag "$v"
   if git push "$REMOTE" "$v"; then
     echo "release-tag: created + pushed $v"; return 0
@@ -90,6 +140,16 @@ selftest() {
   # D. non-semver VERSION -> rc 2
   d="$t/d"; _repo "$d" "not-a-version"
   [ "$(_rc "$d")" = "2" ] && echo "PASS: non-semver -> rc 2" || { echo "FAIL: D"; st=1; }
+  # --- tag-time CI gate (injected probe, no network) ---
+  _gate_rc() { _x=0; ( RELEASE_TAG_CI_PROBE="$1" RELEASE_TAG_CI_TIMEOUT="${2:-0}" RELEASE_TAG_CI_INTERVAL=1; ci_gate ) >/dev/null 2>&1 || _x=$?; echo $_x; }
+  # E (teeth): definitive failure -> refuse (rc 1)
+  [ "$(_gate_rc 'printf "completed\tfailure\n"')" = "1" ] && echo "PASS: CI failure -> refuse tag" || { echo "FAIL: E (CI-gate failure not refused)"; st=1; }
+  # F: success -> proceed (rc 0)
+  [ "$(_gate_rc 'printf "completed\tsuccess\n"')" = "0" ] && echo "PASS: CI success -> proceed" || { echo "FAIL: F"; st=1; }
+  # G: in-progress + timeout 0 -> degrade-open proceed (rc 0)
+  [ "$(_gate_rc 'printf "in_progress\t\n"' 0)" = "0" ] && echo "PASS: CI in-progress timeout -> proceed (degrade-open)" || { echo "FAIL: G"; st=1; }
+  # H: no CI signal (empty probe) -> degrade-open proceed (rc 0)
+  [ "$(_gate_rc 'true')" = "0" ] && echo "PASS: no CI signal -> proceed (degrade-open)" || { echo "FAIL: H"; st=1; }
   rm -rf "$t"
   [ "$st" = 0 ] && { echo "release-tag --selftest: OK"; return 0; } || { echo "release-tag --selftest: FAIL"; return 1; }
 }
