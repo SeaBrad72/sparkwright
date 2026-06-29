@@ -172,6 +172,8 @@ jobs:
         run: sh conformance/containment-ready.sh --selftest
       - name: Assurance-tiers drift-guard self-test (crosswalk tiers)
         run: sh conformance/assurance-tiers.sh --selftest
+      - name: Promotion-contract documented self-test (proportional promotion model)
+        run: sh conformance/promotion-contract-documented.sh --selftest
       - name: Eval-ready self-test (AI-feature eval discipline)
         run: sh conformance/eval-ready.sh --selftest
       - name: Observability-ready self-test (SLOs + telemetry recorded)

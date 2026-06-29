@@ -13,7 +13,7 @@ The kit's **own backlog** (dogfooding `DEVELOPMENT-PROCESS.md` §6). Each remain
 The theme: **clean the board → lay the governance foundation → de-risk the one compounding smell → fix integrity defects → validate teams → resume feature/depth epics → capstone.** Each feature epic enters Build only on an affirmative per-epic meta-control verdict.
 
 1. **Roadmap rewrite** *(this file — housekeeping, done 2026-06-29).*
-2. **Proportional Promotion Contract — Slice 1** (model/standards keystone). The governance foundation; changes how all later work is governed; low-risk authoring.
+2. **Proportional Promotion Contract — Slice 1** (model/standards keystone) *(done 2026-06-29, v3.76.0)*. The governance foundation; changes how all later work is governed; low-risk authoring.
 3. **`orchestrator-loop-wired.sh` refactor** (the one real refactoring candidate — see Refactoring below). Behavior-preserving, selftest-guarded; do it before it compounds further.
 4. **T4 — CI-trust blockers** (honest integrity defects).
 5. **Proportional Promotion Contract — Slices 2–4** (enforcement; guard-touching slices last, sequenced by risk).

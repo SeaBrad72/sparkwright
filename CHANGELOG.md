@@ -5,6 +5,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.76.0] — 2026-06-29
+
+### Added
+- **Proportional Promotion Contract — Slice 1 (model + standards keystone).** Documents the human↔AI handoff model `rigor = f(rung × change-class)` (modulated by trust) as a canonical model doc (`docs/governance/promotion-contract.md`): the contract matrix (3 change-classes × 5 rungs), the change-class definitions + fail-safe derivation (default to the higher class; derived, not self-asserted), the deferral-not-waiver ratchet (rigor ratchets at every promotion, on the whole accumulated change), the promotion-readiness + **GO/NO-GO-judgment-not-keystroke** contract (execution delegable post-GO), and DoD / acceptance-criteria as the *content* of the Release-candidate go/no-go. Referenced from `DEVELOPMENT-PROCESS.md` §9 (Environments — the tiers are the rungs) and §13 (Agent Governance — the change-class axis joins the autonomy tiers), and from `CLAUDE.md`'s Definition of Ready / Done. Locked by a new `conformance/promotion-contract-documented.sh` (claim `promotion-contract`): a doc-coherence guard whose load-bearing negative is that the matrix's **Control-plane column can never document an agent-actuation disposition** — not just the canonical “agent autonomous” but euphemisms (“agent merges; human notified”, “auto-merge on green”, “delegated to agent”), hardened in dual review — the design's hardest invariant (“control-plane stays human-ratified”) encoded structurally, not as word-presence. **Documentation only — no new enforcement** (the proportional gates, the classifier, and the relaxed agent-commit rule are slices 2–4). Honest ceiling: judgment quality stays un-gateable; the classifier is fail-safe, not omniscient; solo SoD is named (state label), not faked.
+- **Doc-budget ratchet raised one bucket** (`conformance/doc-budget.sh`: `DEVELOPMENT-PROCESS.md` 470→480, core-3 total 900→910) — a ratified bump for the genuine §9/§13 governance additions above (the doc sat exactly at budget; the additions are minimal, with detail in the model doc). Design: `docs/architecture/2026-06-29-proportional-promotion-contract-design.md`; plan: `docs/architecture/2026-06-29-promotion-contract-slice1-plan.md`.
+
 ## [3.75.0] — 2026-06-29
 
 ### Added
