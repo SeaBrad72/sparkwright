@@ -83,7 +83,7 @@ It never claims a protection that wasn't exercised. Solo SoD genuinely cannot be
 | Slice | Scope | Status |
 |---|---|---|
 | **1. Model + standards (keystone)** | This doc + §9/§13 + DoR/DoD references + the coherence lock. | **this slice** |
-| **2. Change-class derivation + promotion-readiness surfacing** | `promotion-readiness.sh` classifies (reusing `is_control_plane_path`) + emits the surfacing; load-bearing fail-safe-classifier negative. | planned |
+| **2. Change-class derivation + promotion-readiness surfacing** | `promotion-readiness.sh` classifies (reusing `is_control_plane_path`) + emits the surfacing; load-bearing fail-safe-classifier negative. | **v3.81.0** |
 | **3. Proportional gates** | Gate/keystroke requirements conditional on (class × rung); `control-plane-ratification` emits the team/solo state label. | planned |
 | **4. Relax agent-commit + delegable execution** | "Free within rung after explicit GO; execution delegable post-GO; never unilateral at a promotion." | planned |
 
