@@ -141,7 +141,7 @@ The exporter produces and POSTs valid OTLP/HTTP JSON to the configured endpoint.
 
 ### Design reference
 
-Architecture and design-decision rationale: [`docs/architecture/2026-06-26-e5-thin-otel-sensor-design.md`](../architecture/2026-06-26-e5-thin-otel-sensor-design.md)
+Architecture and design-decision rationale lives in the kit's `docs/architecture/` design history (maintainer-internal; excluded from adopter exports).
 
 ---
 

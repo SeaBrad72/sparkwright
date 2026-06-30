@@ -14,7 +14,7 @@ cd "$_here/.."
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
-IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/2026-06-22-e3-agentic-orchestration-design.md docs/architecture/2026-06-23-e-series-consolidation-audit.md docs/architecture/2026-06-23-t2-real-validation-findings.md docs/governance/meta-control-log.md docs/architecture/2026-06-23-meta-control-first-run.md docs/architecture/2026-06-24-t3a-rightweight-assessment.md docs/governance/.meta-control-last docs/architecture/2026-06-25-meta-control-3.md"
+IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/governance/meta-control-log.md docs/governance/.meta-control-last"
 
 run() {
   rc=0
@@ -56,6 +56,7 @@ run() {
   _t=$(mktemp -d); _d="$_t/exp"
   if ( cd "$ROOT" && sh scripts/adopter-export.sh "$_d" --profile typescript-node >/dev/null 2>&1 ); then
     [ -e "$_d/docs/ROADMAP-KIT.md" ] && { echo "FAIL: export kept ROADMAP-KIT.md"; rc=1; }
+    [ -e "$_d/docs/architecture" ] && { echo "FAIL: export kept docs/architecture/ (blanket export-ignore not honored)"; rc=1; }
     [ -e "$_d/profiles/go" ]        && { echo "FAIL: export kept pruned profile go"; rc=1; }
     [ -e "$_d/MAINTAINING.md" ]     || { echo "FAIL: export dropped kept MAINTAINING.md"; rc=1; }
     [ -e "$_d/conformance" ]        || { echo "FAIL: export dropped kept conformance/"; rc=1; }
@@ -176,6 +177,24 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "adopter-export-wired --selftest: FAIL (KEPT→ignored markdown link not caught — exclusion over-broadened)"; sfail=1
   fi
   rm -rf "$_l"
+  # positive-blanket (item-6 teeth): a NEW, individually-unlisted docs/architecture/ doc must be
+  # export-ignored by the BLANKET rule — and must LEAK if the blanket rule is stripped (load-bearing negative).
+  _b=$(mktemp -d); _bx=$(mktemp -d); _bx2=$(mktemp -d)
+  ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_b" 2>/dev/null || true
+  cp "$ROOT/scripts/adopter-export.sh" "$_b/scripts/adopter-export.sh" 2>/dev/null || true
+  mkdir -p "$_b/docs/architecture"; printf '# unlisted design doc\n' > "$_b/docs/architecture/zzz-unlisted-probe.md"
+  ( cd "$_b" && git init -q && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm probe >/dev/null 2>&1 ) || true
+  ( cd "$_b" && sh scripts/adopter-export.sh "$_bx" >/dev/null 2>&1 ) || true
+  if [ -e "$_bx/docs/architecture/zzz-unlisted-probe.md" ]; then
+    echo "adopter-export-wired --selftest: FAIL (blanket did not export-ignore an unlisted docs/architecture/ doc)"; sfail=1
+  fi
+  grep -v '^docs/architecture/[[:space:]][[:space:]]*export-ignore' "$_b/.gitattributes" > "$_b/.ga.tmp" && mv "$_b/.ga.tmp" "$_b/.gitattributes"
+  ( cd "$_b" && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm strip >/dev/null 2>&1 ) || true
+  ( cd "$_b" && sh scripts/adopter-export.sh "$_bx2" >/dev/null 2>&1 ) || true
+  if [ ! -e "$_bx2/docs/architecture/zzz-unlisted-probe.md" ]; then
+    echo "adopter-export-wired --selftest: FAIL (probe vacuous — unlisted doc dropped even without the blanket rule)"; sfail=1
+  fi
+  rm -rf "$_b" "$_bx" "$_bx2"
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
 fi
 

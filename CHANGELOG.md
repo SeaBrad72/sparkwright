@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.78.0] — 2026-06-29
+
+### Changed
+- **Blanket export-ignore for `docs/architecture/` (T4 item 6 — stop design-doc leak into adopter exports).** Replaced the enumerated per-file `docs/architecture/<file> export-ignore` list in `.gitattributes` (frozen at 2026-06-26 — 66 of 78 design/meta-control docs were leaking into the `git archive` adopter distribution) with a single `docs/architecture/ export-ignore` directory rule, so every present and future design doc + meta-control panel self-excludes. `conformance/adopter-export-wired.sh` now asserts the blanket (the `docs/architecture/` dir-entry, mirroring the existing `docs/superpowers/` handling) rather than an enumeration, asserts the produced export contains no `docs/architecture/` at all, and gains a non-vacuous positive-blanket selftest (an individually-unlisted `docs/architecture/` doc is excluded by the blanket and leaks when the rule is stripped). De-linked the sole kept→architecture markdown reference (`docs/operations/agentic-ops.md`) so `check-links` stays green on the exported tree. `git archive --worktree-attributes` honors directory export-ignore natively — no export-script change. Design/plan: `docs/architecture/2026-06-29-blanket-export-ignore-{design,plan}.md`.
+
 ## [3.77.0] — 2026-06-29
 
 ### Changed
