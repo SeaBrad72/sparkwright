@@ -5,6 +5,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.77.0] — 2026-06-29
+
+### Changed
+- **`conformance/orchestrator-loop-wired.sh` made data-driven (behaviour-preserving refactor).** The 10 near-identical `check_*_skill` functions and the 27 copy-pasted `--selftest` cases collapse to one `spine_table()` (one row per spine skill) consumed by a single generic `check_spine_skill` plus a table-driven selftest (**1064 → 333 lines**); a future spine brick now costs ~1 table row instead of ~128 lines. The four structurally-distinct checks (roster headings, loop wiring, golden-path job, and the keystone's filesystem-enumerated index) stay bespoke. **No behaviour change** — every PASS/FAIL verdict and exit code is preserved, proven by a build-time differential characterization harness (the pre-refactor verifier vs the new one across an 81-fixture matrix: every marker-drop, every seat-reference omission, the keystone structural breaks, and the roster/loop/golden-path negatives) and the shipped 32-case selftest (ongoing non-vacuity teeth). The three backed claims (`orchestrator-loop`, `conflict-safe-integration`, `skill-spine`) are unchanged. Reference FAIL messages are preserved verbatim via per-row labels; diagnostic text for the file-absent and one operating-marker branches is generalized (exit codes identical, paths still named). Design/plan: `docs/architecture/2026-06-29-orchestrator-loop-refactor-{design,plan}.md`.
+
 ## [3.76.0] — 2026-06-29
 
 ### Added
