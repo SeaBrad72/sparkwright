@@ -47,6 +47,14 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
    - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
 
+### 3a. Authoring a control-plane change (the AMBER `apply.py`)
+
+Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits — they are authored under `scratchpad/`, assembled into an **idempotent `apply.py` a human runs**, and dual-reviewed. Three disciplines, each learned from a real incident:
+
+- **Fold version finishing in.** The `VERSION` bump + README badge + `CHANGELOG` entry live *inside* the slice's `apply.py`, so the release step cannot be skipped.
+- **One buffer per file.** An `apply.py` making **≥2 edits to the same file** must accumulate them on a single in-memory buffer and write that file once — never as independent full-file payloads, which **clobber** (only the last write survives). Stage every edit, validate every anchor, *then* write.
+- **Prove on a fresh clone, not the working tree.** Idempotence (re-run = clean no-op) and all-or-abort must be proven by cloning, applying, and running the gate in the clone. A clobber or half-apply manifests only on *application*, not on *inspection* — neither dual review catches it from the diff alone.
+
 ## 4. Contributing back (the closed loop, applied to the kit)
 
 The kit is improved by the teams using it. When a downstream team's **L3 process retro** (`DEVELOPMENT-PROCESS.md` §8) surfaces a kit-level improvement — a clearer standard, a better reference impl, a missing conformance check — it does **not** stop at the local copy:
@@ -63,4 +71,4 @@ The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature bra
 
 ---
 
-**Last Updated:** 2026-06-12
+**Last Updated:** 2026-06-29
