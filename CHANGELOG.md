@@ -5,6 +5,16 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.81.0] — 2026-06-30
+
+**Proportional Promotion Contract — Slice 2: change-class derivation + promotion-readiness surfacing.**
+
+### Added
+- **Claim `promotion-readiness` — `conformance/promotion-readiness.sh` derives a change-set's change-class and emits the promotion-readiness surfacing that *informs* a human GO/NO-GO.** **Advisory only** — it surfaces, it never gates (exits 0 always); the proportional *gates* are Slice 3. Classification is **derived, never self-asserted**, and **fail-safe**: control-plane > sensitive > ordinary (highest wins), and an empty/unreadable change-set or an unavailable guard core classifies **control-plane** — never silently ordinary. Control-plane detection **reuses the guard's `is_control_plane_path`** (sourced from `.claude/hooks/guard-core.sh`, not duplicated). The surfacing's *proven-vs-attested* field reuses `verify.sh`'s `[control]` vs `[doc]` split. Locked by `conformance/promotion-readiness-wired.sh` with a non-vacuous selftest whose load-bearing negative proves a mislabel cannot downgrade (a classifier mutated to always-ordinary fails the selftest) and the fail-safe defaults up (mutation-proven at build).
+
+### Changed
+- **`docs/governance/promotion-contract.md`** — Slice-2 build-status flipped `planned` → `v3.81.0`. No model change (this slice implements the model; enforcement remains Slices 3–4).
+
 ## [3.80.0] — 2026-06-30
 
 **Golden-path trigger-filter parity (T4 item 1) + item 5 closed.**
