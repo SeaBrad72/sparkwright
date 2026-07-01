@@ -37,3 +37,14 @@ jobs:
           fetch-depth: 0          # full tag history — the gate counts release tags since the last panel
       - name: Meta-control panel freshness (OVERDUE fails this job — run the panel or log a deferral)
         run: sh conformance/meta-control-fresh.sh
+  non-vacuity:
+    # The standing non-vacuity backstop: mutate each control-set check's FAIL path and assert its
+    # --selftest catches it. A SURVIVOR (vacuous check) fails THIS job only. Per-PR CI runs only
+    # `non-vacuity.sh --selftest` (mechanism); the live sweep runs here weekly. A SEPARATE job (not
+    # a step in drift-watch) for cry-wolf hygiene - an attributable red that does not desensitise
+    # the regression signal above.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Non-vacuity sweep (a surviving mutant = a vacuous check - fix its selftest)
+        run: sh conformance/non-vacuity.sh
