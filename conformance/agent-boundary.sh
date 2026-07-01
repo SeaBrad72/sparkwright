@@ -29,6 +29,7 @@ while [ $# -gt 0 ]; do
     --ratified) RATIFIED="${2:-0}"; shift 2 ;;
     --require) REQUIRE=1; shift ;;
     --selftest) MODE="selftest"; shift ;;
+    --state) MODE="state"; shift ;;
     *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest" >&2; exit 2 ;;
   esac
 done
@@ -92,6 +93,24 @@ EOF
   echo "OK: no control-plane paths in the diff"; return 0
 }
 
+# ratification_state <newline-paths> <ratified 0|1> [<union>]: the honest SoD state label for the
+# human GO. PURE (no env can force it; the selftest drives it directly). A PRE-MERGE PROJECTION —
+# it names the SoD reality the merge will have, it does not observe the future keystroke.
+#   control-plane present + ratified=1 -> RATIFIED-BY-SECOND-REVIEWER (team; SoD genuinely exercised)
+#   control-plane present + ratified=0 -> SOLO-ADMIN-OVERRIDE-LOGGED  (solo; logged admin-override)
+#   no control-plane path              -> NONE (N/A — nothing to ratify)
+ratification_state() {
+  _list=$1; _rat=$2; _union=${3:-}; _cp=0
+  while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    if is_control_plane_path "$_p" || path_in_union "$_p" "$_union"; then _cp=1; break; fi
+  done <<EOF
+$_list
+EOF
+  [ "$_cp" = 1 ] || { echo NONE; return 0; }
+  if [ "$_rat" = 1 ]; then echo RATIFIED-BY-SECOND-REVIEWER; else echo SOLO-ADMIN-OVERRIDE-LOGGED; fi
+}
+
 run() {
   [ -f "$CORE" ] || unverifiable "deny-matrix core not found at $CORE (set KIT_GUARD_CORE)"
   # shellcheck disable=SC1090  # core path is resolved at runtime, intentionally dynamic
@@ -136,6 +155,18 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   dc 0 "src/app.ts" 0 "non-union ordinary path -> PASS" ".cursor/rules"
   dc 1 ".cursor/rules/foo.md" 0 "dir-prefix union entry -> FAIL" ".cursor/rules/"
 
+  # slice 3: the honest SoD state label (pure ratification_state, driven in-process)
+  rs() {  # expect label paths ratified [union]
+    e=$1; p=$2; r=$3; u=${4:-}; g=$(ratification_state "$p" "$r" "$u")
+    if [ "$g" = "$e" ]; then echo "selftest PASS: state $e"; else echo "selftest FAIL: state want $e got $g"; st=1; fi
+  }
+  rs RATIFIED-BY-SECOND-REVIEWER ".github/workflows/ci.yml" 1 ""
+  rs SOLO-ADMIN-OVERRIDE-LOGGED  ".github/workflows/ci.yml" 0 ""
+  rs NONE                        "src/app.ts" 0 ""
+  # load-bearing negative: an always-team mutation flips the solo case above; assert distinction too
+  if [ "$(ratification_state '.github/workflows/ci.yml' 0)" = "$(ratification_state '.github/workflows/ci.yml' 1)" ]; then
+    echo "selftest FAIL: solo/team labels identical (vacuous)"; st=1; fi
+
   # three-state CLI: no --changed is UNVERIFIED (exit 2) locally, FAIL (exit 1) under CI/--require.
   miss=$(mktemp -d)  # fixtures left in place (no rm; 7e guard)
   printf '.github/workflows/ci.yml\n' > "$miss/cp.txt"
@@ -169,7 +200,17 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   return "$st"
 }
 
+state() {  # advisory label for the CI human-surface; CI-independent, always exit 0
+  [ -f "$CORE" ] || { echo NONE; exit 0; }
+  # shellcheck disable=SC1090
+  . "$CORE"
+  { [ -n "$CHANGED" ] && [ -f "$CHANGED" ]; } || { echo NONE; exit 0; }
+  ratification_state "$(cat "$CHANGED")" "$RATIFIED" "$(adapter_union)"
+  exit 0
+}
+
 case "$MODE" in
   selftest) selftest; exit $? ;;
+  state) state ;;
   *) run ;;
 esac

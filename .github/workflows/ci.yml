@@ -176,6 +176,8 @@ jobs:
         run: sh conformance/promotion-contract-documented.sh --selftest
       - name: Promotion-readiness classifier self-test (change-class derived + fail-safe)
         run: sh conformance/promotion-readiness-wired.sh --selftest
+      - name: Proportional-gate wiring self-test (class-aware + honest SoD state label)
+        run: sh conformance/proportional-gate-wired.sh --selftest
       - name: Eval-ready self-test (AI-feature eval discipline)
         run: sh conformance/eval-ready.sh --selftest
       - name: Observability-ready self-test (SLOs + telemetry recorded)
@@ -374,10 +376,39 @@ jobs:
           CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}"
           rc=$?
           set -e
+          state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
+                    --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
+          class=$(sh conformance/promotion-readiness.sh --class --no-verify \
+                    --changed /tmp/changed.txt 2>/dev/null || echo control-plane)
+          # reconcile displayed class with the gate verdict: the gate (state) is union-aware and is the
+          # authority on control-plane-ness; the guard-core-only --class can under-detect adapter-declared
+          # paths (e.g. AGENTS.md) or over-fail-safe on an empty diff. Never let the surface contradict itself.
+          if [ "$state" != NONE ]; then class=control-plane
+          elif [ "$class" = control-plane ]; then class=sensitive
+          fi
           case "$rc" in
-            0) concl=success;         title="ratified / no control-plane change" ;;
-            1) concl=action_required; title="ratification required — control-plane change awaiting a human" ;;
-            *) concl=failure;         title="gate error — could not evaluate the control-plane diff" ;;
+            0)
+              if [ "$state" = RATIFIED-BY-SECOND-REVIEWER ]; then
+                concl=success
+                title="Ratified by a second reviewer — control-plane change approved"
+                summary="What changed: a control-plane change (change-class: ${class}). State: RATIFIED-BY-SECOND-REVIEWER — a non-author reviewer approved this PR, so separation-of-duties is genuinely satisfied. No action needed. More: docs/operations/review-lane.md."
+              else
+                concl=success
+                title="No control-plane change — nothing to ratify"
+                summary="What changed: change-class ${class}; no control-plane paths in the diff. This §13 governance gate has nothing to ratify. No action needed."
+              fi
+              ;;
+            1)
+              class=control-plane  # rc=1 is definitionally control-plane-present — independent of the --state/--class reconciliation
+              concl=action_required
+              title="Ratification required — a control-plane change is awaiting a human"
+              summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: ${class}. Why: control-plane changes must be ratified by a human before merge. This is a §13 governance merge-gate, NOT a build failure — no test failed. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR -> becomes RATIFIED-BY-SECOND-REVIEWER; or (b) solo -- merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
+              ;;
+            *)
+              concl=failure
+              title="Gate error — could not evaluate the control-plane diff"
+              summary="The control-plane-ratification gate could not evaluate the PR diff (change listing unavailable). This IS a real error — unlike the other states it needs fixing. See conformance/agent-boundary.sh."
+              ;;
           esac
           gh api -X POST "repos/${{ github.repository }}/check-runs" \
             -f name='control-plane-ratification' \
@@ -385,6 +416,6 @@ jobs:
             -f status='completed' \
             -f conclusion="$concl" \
             -f 'output[title]'="$title" \
-            -f 'output[summary]'="$title. A §13 governance merge-gate, not a build failure (see docs/operations/review-lane.md). Ratify via a non-author approval, or (solo) a logged enforce_admins:false admin-merge."
-          echo "control-plane-ratification => $concl (rc=$rc)"
+            -f 'output[summary]'="$summary"
+          echo "control-plane-ratification => $concl (rc=$rc, class=$class, state=$state)"
           # The job exits 0 regardless of $concl — no failure email; the check-run carries the state.

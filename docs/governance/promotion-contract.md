@@ -2,7 +2,7 @@
 
 **Status:** Canonical model (ratified 2026-06-29). The single source of truth for *how much ceremony a change carries on its way to users.* `DEVELOPMENT-PROCESS.md` §9 (Environments) and §13 (Agent Governance) reference this doc; `CLAUDE.md`'s Definition of Ready/Done point here for the promotion judgment. Design rationale: `docs/architecture/2026-06-29-proportional-promotion-contract-design.md`.
 
-> **What this doc does:** it *documents the model* — the matrix, the change-classes, the deferral ratchet, the GO/NO-GO contract. **What it does not do:** it adds no new enforcement. The proportional gates, the `promotion-readiness.sh` classifier, and the relaxed agent-commit rule are **slices 2–4** of this epic; until they ship, the existing gates run unchanged. This is the kit becoming self-consistent with its own principles (proportional autonomy, surface-don't-actuate, honest-ceiling, agents-propose-humans-ratify), not new dogma.
+> **What this doc does:** it *documents the model* — the matrix, the change-classes, the deferral ratchet, the GO/NO-GO contract. **What it does not do:** it adds no new enforcement. The `promotion-readiness.sh` classifier (slice 2) and the proportional gates (slice 3) have shipped; the relaxed agent-commit rule is **slice 4** of this epic; until it ships, the existing gates run unchanged. This is the kit becoming self-consistent with its own principles (proportional autonomy, surface-don't-actuate, honest-ceiling, agents-propose-humans-ratify), not new dogma.
 
 ---
 
@@ -84,7 +84,7 @@ It never claims a protection that wasn't exercised. Solo SoD genuinely cannot be
 |---|---|---|
 | **1. Model + standards (keystone)** | This doc + §9/§13 + DoR/DoD references + the coherence lock. | **this slice** |
 | **2. Change-class derivation + promotion-readiness surfacing** | `promotion-readiness.sh` classifies (reusing `is_control_plane_path`) + emits the surfacing; load-bearing fail-safe-classifier negative. | **v3.81.0** |
-| **3. Proportional gates** | Gate/keystroke requirements conditional on (class × rung); `control-plane-ratification` emits the team/solo state label. | planned |
+| **3. Proportional gates** | Gate/keystroke requirements conditional on (class × rung); `control-plane-ratification` emits the team/solo state label. | **v3.82.0** |
 | **4. Relax agent-commit + delegable execution** | "Free within rung after explicit GO; execution delegable post-GO; never unilateral at a promotion." | planned |
 
-Slice 1 is the spec everything else implements; the enforcement slices (3, 4) carry the real risk and are sequenced deliberately, appetite decided after this slice.
+Slice 1 is the spec everything else implements; the remaining enforcement slice (4) carries the real risk and is sequenced deliberately, appetite decided after each slice.
