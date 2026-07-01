@@ -2,7 +2,7 @@
 
 **Status:** Canonical model (ratified 2026-06-29). The single source of truth for *how much ceremony a change carries on its way to users.* `DEVELOPMENT-PROCESS.md` §9 (Environments) and §13 (Agent Governance) reference this doc; `CLAUDE.md`'s Definition of Ready/Done point here for the promotion judgment. Design rationale: `docs/architecture/2026-06-29-proportional-promotion-contract-design.md`.
 
-> **What this doc does:** it *documents the model* — the matrix, the change-classes, the deferral ratchet, the GO/NO-GO contract. **What it does not do:** it adds no new enforcement. The `promotion-readiness.sh` classifier (slice 2) and the proportional gates (slice 3) have shipped; the relaxed agent-commit rule is **slice 4** of this epic; until it ships, the existing gates run unchanged. This is the kit becoming self-consistent with its own principles (proportional autonomy, surface-don't-actuate, honest-ceiling, agents-propose-humans-ratify), not new dogma.
+> **What this doc does:** it *documents the model* — the matrix, the change-classes, the deferral ratchet, the GO/NO-GO contract. **What it does not do:** it adds no new enforcement. The `promotion-readiness.sh` classifier (slice 2), the proportional gates (slice 3), and the relaxed agent-commit / delegable-execution rule (slice 4) have all shipped; the existing gates run unchanged and the delegable-execution contract below is now operative. This is the kit becoming self-consistent with its own principles (proportional autonomy, surface-don't-actuate, honest-ceiling, agents-propose-humans-ratify), not new dogma.
 
 ---
 
@@ -57,6 +57,19 @@ The cells are the kit's *existing* pieces connected: the autonomy tiers (§13) f
 
 The **Control-plane column stays human-ratified at every applicable rung.** The meta-level — the kit changing its own guardrails / standards / gates / governance marker — must not be agent-self-governable (fox/henhouse). This redesign does **not** relax it; it relaxes the *Ordinary* class where the ceremony is currently miscalibrated. This invariant is locked by `conformance/promotion-contract-documented.sh` (the Control-plane column of this matrix can never document an "agent autonomous" disposition).
 
+## Delegable execution — who may run the keystroke (operative)
+
+Execution of a promotion's keystrokes (merge, tag, release) is **delegable after an explicit recorded human GO** — the judgment is the control, not the keystroke. What is delegable depends on the change-class:
+
+- **Tier 1 — always (build phase, within a rung):** the agent reads/drafts, writes code + tests on a feature branch, `git commit`s (reversible), pushes feature branches, opens PRs, authors the AMBER `apply.py`. No per-action gate.
+- **Tier 2 — delegable only after a recorded GO (Ordinary/Sensitive):** the agent may execute a normal, branch-protection-permitted merge of an Ordinary/Sensitive PR and run the tag/release step for an Ordinary release. Never before the GO; **never unilateral at a promotion.**
+- **Tier 3 — human-executed, never delegable at any rung:** rendering the GO/NO-GO judgment itself; any Control-plane promotion — **Control-plane execution stays human at every rung** (merge/tag/apply); the `gh pr merge --admin` branch-protection bypass (server-side, outside the guard — the honesty boundary; a human act); push-to-main / force-push (guard-blocked); deploy-to-prod / delete-data / rotate-secrets / incur-spend.
+
+The decisive line is `is_control_plane_path` (change-class), not the keystroke: because the kit's own surface *is* the control-plane, Tier 2 is inapplicable to the kit's own work — the maintainer runs kit ship steps, enforced by the invariant, not merely by preference.
+
+**Honest ceiling:** this is the documented contract. The server-side merge is un-guardable (`docs/operations/runtime-guards.md` honesty boundary); live enforcement remains the guard (push-to-main / force-push) + the `agent-boundary` CI gate (control-plane ratification at merge). No agent auto-execution mechanism is wired — there is no live consumer.
+
+
 ---
 
 ## Solo vs. team — same model, honest label
@@ -85,6 +98,6 @@ It never claims a protection that wasn't exercised. Solo SoD genuinely cannot be
 | **1. Model + standards (keystone)** | This doc + §9/§13 + DoR/DoD references + the coherence lock. | **this slice** |
 | **2. Change-class derivation + promotion-readiness surfacing** | `promotion-readiness.sh` classifies (reusing `is_control_plane_path`) + emits the surfacing; load-bearing fail-safe-classifier negative. | **v3.81.0** |
 | **3. Proportional gates** | Gate/keystroke requirements conditional on (class × rung); `control-plane-ratification` emits the team/solo state label. | **v3.82.0** |
-| **4. Relax agent-commit + delegable execution** | "Free within rung after explicit GO; execution delegable post-GO; never unilateral at a promotion." | planned |
+| **4. Relax agent-commit + delegable execution** | "Free within rung after explicit GO; execution delegable post-GO; never unilateral at a promotion." | **v3.83.0** |
 
-Slice 1 is the spec everything else implements; the remaining enforcement slice (4) carries the real risk and is sequenced deliberately, appetite decided after each slice.
+Slice 1 is the spec everything else implements; all four slices have now shipped (the delegable-execution contract above is the last), each sequenced deliberately with appetite decided after the prior one.

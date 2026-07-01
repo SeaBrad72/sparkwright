@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.83.0] — 2026-06-30
+
+**Proportional Promotion Contract — Slice 4 (final): the delegable-execution rule made operative + locked.**
+
+### Added
+- **`docs/governance/promotion-contract.md` — a canonical "Delegable execution — who may run the keystroke" section** stating the three-tier contract operatively: Tier 1 (build-phase agent autonomy — already guard-permitted), Tier 2 (Ordinary/Sensitive **delegable only after a recorded human GO**, never unilateral at a promotion), Tier 3 (human-executed forever — the GO/NO-GO judgment itself, any **control-plane** promotion, the `gh pr merge --admin` server-side bypass, push-to-main/force-push, deploy/delete-data/rotate-secrets/incur-spend). The decisive line is `is_control_plane_path`, so the rule is structurally inapplicable to the kit's own (control-plane) work.
+- **`conformance/promotion-contract-documented.sh` — four new presence markers + four load-bearing-negative selftest fixtures** (now 10 fixtures). The lock asserts the delegable-execution rule is documented *with all four carve-outs*: dropping any one — "control-plane execution stays human" (`no-cp-carveout`), the "after a recorded GO" precondition (`no-after-go`), "never unilateral at a promotion" (`no-never-unilateral`), or the `gh pr merge --admin` honesty boundary (`no-admin-honesty`) — flips the selftest to FAIL, so each of the four new markers is load-bearing (euphemism/fox-henhouse gap caught). Extends the existing `promotion-contract` claim (no new claim; control count unchanged at 38).
+
+### Changed
+- **Prose reconciled to the operative rule** — `DEVELOPMENT-PROCESS.md` §13 ("delegable post-GO — now operative"), `AGENTS.md` ("never self-merge **unratified work**"; Ordinary/Sensitive normal merge delegable post-GO) and `docs/operations/review-lane.md` (Ordinary/Sensitive normal merge delegable post-GO; **`gh pr merge --admin` stays human, verbatim**), and `CLAUDE.md` DoD (dropped the stale "enforcement lands in slices 3–4" clause — routed L1 closed). No surface contradicts another; the honesty boundary is preserved.
+
+### Honest ceiling
+- This slice **documents + locks the contract**; it adds no mechanical enforcement of agent execution behaviour. The server-side `--admin` merge is un-guardable by design; live enforcement remains the guard (push-to-main/force-push) + the Slice-3 `agent-boundary` CI gate (control-plane ratification at merge). `guard-core.sh`/`guard.sh`/`agent-boundary.sh` untouched.
+
 ## [3.82.0] — 2026-06-30
 
 **Proportional Promotion Contract — Slice 3: proportional gates + honest team/solo SoD state label.**

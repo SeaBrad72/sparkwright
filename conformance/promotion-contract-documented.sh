@@ -39,6 +39,13 @@ check_file() {
   require 'judgment-not-keystroke' 'judgment,? *not.*keystroke'
   require 'state-label-team'    'RATIFIED-BY-SECOND-REVIEWER'
   require 'state-label-solo'    'SOLO-ADMIN-OVERRIDE-LOGGED'
+  # Slice 4: the delegable-execution rule is documented coherently — WITH its two load-bearing
+  # carve-outs (control-plane execution stays human; delegation is only AFTER a recorded GO). A doc
+  # that documents delegation but drops either carve-out is a fox/henhouse gap and MUST fail.
+  require 'delegable-post-go'        'delegable after.*recorded.*GO'
+  require 'never-unilateral'         'never unilateral'
+  require 'cp-execution-human'       'control-plane execution stays human'
+  require 'admin-merge-honesty'      'gh pr merge --admin'
 
   # --- Part B: the matrix header names all three change-classes -------------------------
   if grep -E '^\|' "$doc" | grep -qiE 'Ordinary' \
@@ -101,6 +108,10 @@ Relaxation = deferral, not a waiver. Rigor ratchets at every promotion.
 At each promotion the agent emits a promotion-readiness surfacing.
 The human renders a GO/NO-GO — a recorded judgment, not a keystroke.
 Solo/team: RATIFIED-BY-SECOND-REVIEWER vs SOLO-ADMIN-OVERRIDE-LOGGED.
+Execution is delegable after an explicit recorded human GO.
+The delegation is never unilateral at a promotion.
+Control-plane execution stays human at every rung.
+The gh pr merge --admin bypass is a human act.
 
 | Rung | Ordinary | Sensitive | Control-plane |
 |---|---|---|---|
@@ -141,8 +152,25 @@ EOF
   sed 's/AMBER apply + control-plane-ratification/auto-merge on green; human informed/' "$good" > "$bare"
   if check_file "$bare" >/dev/null 2>&1; then echo "selftest FAIL: auto-merge+human should FAIL"; st=1; else echo "selftest PASS: auto-merge+human -> FAIL (bare 'human' cannot rescue)"; fi
 
+  # Slice 4 load-bearing negatives: documenting delegation but DROPPING a carve-out must FAIL.
+  nocp="$base/no-cp-carveout.md"
+  grep -v 'Control-plane execution stays human' "$good" > "$nocp"
+  if check_file "$nocp" >/dev/null 2>&1; then echo "selftest FAIL: dropped control-plane carve-out should FAIL (fox/henhouse gap!)"; st=1; else echo "selftest PASS: dropped control-plane carve-out -> FAIL"; fi
+
+  nogo="$base/no-after-go.md"
+  grep -v 'delegable after an explicit recorded human GO' "$good" > "$nogo"
+  if check_file "$nogo" >/dev/null 2>&1; then echo "selftest FAIL: dropped after-GO precondition should FAIL"; st=1; else echo "selftest PASS: dropped after-GO precondition -> FAIL"; fi
+
+  nunil="$base/no-never-unilateral.md"
+  grep -v 'never unilateral at a promotion' "$good" > "$nunil"
+  if check_file "$nunil" >/dev/null 2>&1; then echo "selftest FAIL: dropped never-unilateral should FAIL"; st=1; else echo "selftest PASS: dropped never-unilateral -> FAIL"; fi
+
+  nadmin="$base/no-admin-honesty.md"
+  grep -v 'gh pr merge --admin' "$good" > "$nadmin"
+  if check_file "$nadmin" >/dev/null 2>&1; then echo "selftest FAIL: dropped admin-honesty should FAIL"; st=1; else echo "selftest PASS: dropped admin-honesty -> FAIL"; fi
+
   if [ "$st" -ne 0 ]; then echo "promotion-contract-documented --selftest: FAIL" >&2; return 1; fi
-  echo "promotion-contract-documented --selftest: OK (complete/missing/relaxed/prose-mask/euphemism/bare-human all behaved; fixtures left in $base)"
+  echo "promotion-contract-documented --selftest: OK (complete/missing/relaxed/prose-mask/euphemism/bare-human/no-cp-carveout/no-after-go/no-never-unilateral/no-admin-honesty all behaved; fixtures left in $base)"
   return 0
 }
 
