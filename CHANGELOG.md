@@ -5,6 +5,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.82.0] — 2026-06-30
+
+**Proportional Promotion Contract — Slice 3: proportional gates + honest team/solo SoD state label.**
+
+### Added
+- **Claim `proportional-gate` — the `control-plane-ratification` gate is now class-aware and emits the honest team/solo separation-of-duties (SoD) state label.** A pure `ratification_state()` derivation in `conformance/agent-boundary.sh` (a selftest-driven `--state` seam) maps `(control-plane-present, ratified)` to `RATIFIED-BY-SECOND-REVIEWER` (a non-author approval — SoD genuinely exercised) / `SOLO-ADMIN-OVERRIDE-LOGGED` (solo — the only merge path is a logged admin-override, honestly weaker) / `NONE` (nothing to ratify). `.github/workflows/ci.yml` consumes the label **and** Slice 2's `promotion-readiness.sh --class` seam to render a **legible, plain-language, class-aware** check-run answering five questions (what changed · what it means · honest SoD state · what to do, incl. the exact solo command · where to read more). The machine tokens are byte-stable; every human-facing surface pairs the token with the gloss. Locked by `conformance/proportional-gate-wired.sh` with a non-vacuous selftest (an always-team mutation flips the solo case; a removed `--class` call or a stripped legibility sentence flips the wiring/anchor checks).
+
+### Changed
+- **The gate's pass/fail teeth and exit codes are UNCHANGED** — control-plane still requires ratification, fail-closed; the three-state (0 hold / 1 violation / 2 unverified, with CI/`--require` escalation) is intact; all prior `agent-boundary --selftest` cases stay green. The label is a **pre-merge projection**, not a post-merge audit record, and **solo behaviour does not change**.
+- **`docs/governance/promotion-contract.md`** — Slice-3 build-status flipped `planned` → `v3.82.0`.
+
 ## [3.81.0] — 2026-06-30
 
 **Proportional Promotion Contract — Slice 2: change-class derivation + promotion-readiness surfacing.**
