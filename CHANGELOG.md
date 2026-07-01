@@ -5,6 +5,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning: [S
 
 > Claim verbs ("proven"/"PROVEN") are scoped to the reference implementation unless an entry states broader coverage — see [MAINTAINING.md §3](MAINTAINING.md#3-releasing-platform-team).
 
+## [3.84.0] - 2026-07-01
+
+**Non-vacuity continuous gate - automated mutation testing of the conformance checks.**
+
+### Added
+- **`conformance/non-vacuity.sh` - a mutation-testing harness** that automates the kit's non-vacuity law as a standing, author-independent gate (was a per-slice manual discipline). For each control-set check with a `--selftest`, it neuters the check's FAIL path on a **temp copy** written NEXT TO the check (so the check's `$0`-relative sourcing / `cd "$(dirname "$0")/.."` resolves), then runs the mutant's `--selftest`. Operators: **control-flow** (`return 1`/`exit 1` -> `...0`) and **accumulator** (any `<var>=1` -> `<var>=0`, word-boundary), syntax-preserving. Only lines strictly BEFORE the first selftest-oracle marker (`selftest()` def OR `if [ ... --selftest ]` block) are mutated; the oracle region to EOF is never touched. **KILLED** = the selftest caught it (load-bearing); **SURVIVED** = a vacuous check (an accumulator-flip went uncaught) -> the gate fails; **UNCOVERED** = surfaced, never silently skipped.
+- **Fail-safe by construction** - the harness reports KILLED only when CERTAIN and routes every uncertainty to a loud, enumerated UNCOVERED, because a false KILL would HIDE a vacuous check (the one direction that must never happen). Certainty guards: (a) an unmutated copy must pass AT THE MUTANT'S RUN LOCATION, else UNCOVERED (context/run-location); (b) a post-build diff VOIDs the run to UNCOVERED (region-ambiguous) if any mutation landed at/after the oracle marker - so a stray `fi`/`}` in a string or comment can never corrupt the oracle; (c) a CTL-only survivor is UNCOVERED (surfaced for manual review), not a false vacuity. Byte-safe (`LC_ALL=C`) for checks carrying multibyte characters.
+- **Temp-file safety** - each mutant/ctl copy is a UNIQUE `mktemp` file (not a seconds-granularity token that would collide for checks judged in the same second), cleaned VERDICT-AGNOSTICALLY after every judge, with a sweep-level `.nv-*` guarantee at start + end - so a leaked mutant can never poison a later self-scanning check (e.g. `mode-enforcement-blind` greps its conformance/ tree).
+- **Self-teeth (`--selftest`)** - a load-bearing fixture is KILLED, a deliberately-vacuous fixture SURVIVES (flagged), a no-FAIL-path fixture is UNCOVERED, a stray-`}`/`fi`-in-oracle fixture is handled without region corruption, and a sibling-sourcing fixture is KILLED at its run location; forcing the kill-detector to always-KILLED flips the selftest to FAIL (proven non-vacuous).
+- **Wiring** - a weekly **drift-watch** `non-vacuity` job (the live-sweep enforcement point), a `scripts/doctor.sh` **advisory** line (never gates), per-PR CI runs only `--selftest` (the mechanism), and a new registered claim **`non-vacuity-gate`** (claims.tsv + `REQUIRED_IDS`). Control-check count 38 -> 39.
+
+### Honest ceiling
+- Proves each selftest catches the **FAIL-path operator class** - not every conceivable weakness (the standing equivalent-mutant limit of mutation testing). Region delimitation is heuristic; ambiguous regions and non-sibling-safe run contexts are surfaced UNCOVERED, never mutated; equivalent (CTL-only) mutants are surfaced for review, not killed. A strong **automated floor**, not a completeness proof; it runs **weekly** (a standing backstop; the per-slice manual discipline stays the first line). No existing check's *logic* changed; `guard-core.sh`/`guard.sh` untouched.
+
 ## [3.83.0] — 2026-06-30
 
 **Proportional Promotion Contract — Slice 4 (final): the delegable-execution rule made operative + locked.**

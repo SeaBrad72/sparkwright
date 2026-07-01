@@ -50,7 +50,7 @@ if [ "${1:-}" = "--selftest" ]; then
   }
 
   # — T2a: --full output contains METRICS heading and non-gating label ———————
-  full_out=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$0" --full 2>&1) || true
+  full_out=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_NONVACUITY_CMD=true sh "$0" --full 2>&1) || true
   printf '%s\n' "$full_out" | grep -q "METRICS"              || { echo "doctor --selftest: FAIL (--full: no METRICS section)"; sfail=1; }
   printf '%s\n' "$full_out" | grep -q "does not affect exit" || { echo "doctor --selftest: FAIL (--full: no 'does not affect exit' label)"; sfail=1; }
 
@@ -58,7 +58,7 @@ if [ "${1:-}" = "--selftest" ]; then
   posture_rc=0
   DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$0" >/dev/null 2>&1 || posture_rc=$?
   forced_rc=0
-  DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_DORA_CMD=false DOCTOR_SCORECARD_CMD=false DOCTOR_META_CONTROL_CMD=false sh "$0" --full >/dev/null 2>&1 || forced_rc=$?
+  DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_DORA_CMD=false DOCTOR_SCORECARD_CMD=false DOCTOR_META_CONTROL_CMD=false DOCTOR_NONVACUITY_CMD=false sh "$0" --full >/dev/null 2>&1 || forced_rc=$?
   [ "$forced_rc" = "$posture_rc" ] || {
     echo "doctor --selftest: FAIL (non-gating invariant broken: forced-failing metrics changed exit from $posture_rc to $forced_rc)"
     sfail=1
@@ -85,6 +85,7 @@ DOCTOR_CLAIMS_CMD="${DOCTOR_CLAIMS_CMD:-}"
 DOCTOR_DORA_CMD="${DOCTOR_DORA_CMD:-}"
 DOCTOR_SCORECARD_CMD="${DOCTOR_SCORECARD_CMD:-}"
 DOCTOR_META_CONTROL_CMD="${DOCTOR_META_CONTROL_CMD:-}"
+DOCTOR_NONVACUITY_CMD="${DOCTOR_NONVACUITY_CMD:-}"
 
 gate_fail=0
 warns=0
@@ -247,6 +248,19 @@ if [ "$FULL" = "1" ]; then
     printf '%s\n' "$_sc_out"
   else
     echo "  agent-scorecard: N/A (not present)"
+  fi
+
+  # non-vacuity (advisory surfacing of the mutation-testing backstop; NEVER gates doctor).
+  # Variable-indirected like the other metrics so the selftest stubs it (the real live sweep is
+  # slow — it belongs in weekly drift-watch, not in every doctor --full / per-PR selftest run).
+  if [ -n "$DOCTOR_NONVACUITY_CMD" ]; then
+    _nv_out=$($DOCTOR_NONVACUITY_CMD 2>&1) || true
+    printf '%s\n' "$_nv_out" | tail -1
+  elif [ -f "conformance/non-vacuity.sh" ]; then
+    _nv_out=$(sh conformance/non-vacuity.sh 2>&1) || true
+    printf '%s\n' "$_nv_out" | tail -1
+  else
+    echo "  non-vacuity: N/A (not present)"
   fi
 
   # meta-control freshness (M2 — advisory surfacing of the cadence circuit-breaker; NEVER gates doctor)

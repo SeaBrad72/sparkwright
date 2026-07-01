@@ -178,6 +178,8 @@ jobs:
         run: sh conformance/promotion-readiness-wired.sh --selftest
       - name: Proportional-gate wiring self-test (class-aware + honest SoD state label)
         run: sh conformance/proportional-gate-wired.sh --selftest
+      - name: Non-vacuity self-test (mutation-testing mechanism + self-teeth; live sweep runs in drift-watch)
+        run: sh conformance/non-vacuity.sh --selftest
       - name: Eval-ready self-test (AI-feature eval discipline)
         run: sh conformance/eval-ready.sh --selftest
       - name: Observability-ready self-test (SLOs + telemetry recorded)
