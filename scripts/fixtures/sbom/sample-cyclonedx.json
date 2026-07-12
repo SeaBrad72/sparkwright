@@ -1,0 +1,12 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "components": [
+    { "type": "library", "name": "alpha", "version": "1.0.0", "licenses": [ { "license": { "id": "MIT" } } ] },
+    { "type": "library", "name": "beta", "version": "2.0.0", "licenses": [ { "license": { "id": "GPL-3.0-only" } } ] },
+    { "type": "library", "name": "delta", "version": "3.0.0", "licenses": [ { "license": { "id": "LGPL-3.0-only" } } ] },
+    { "type": "library", "name": "epsilon", "version": "5.0.0", "licenses": [ { "expression": "Apache-2.0 AND GPL-3.0-only" } ] },
+    { "type": "library", "name": "zeta", "version": "6.0.0", "licenses": [ { "license": { "id": "MIT" } }, { "license": { "id": "GPL-3.0-only" } } ] },
+    { "type": "library", "name": "gamma", "version": "4.0.0" }
+  ]
+}

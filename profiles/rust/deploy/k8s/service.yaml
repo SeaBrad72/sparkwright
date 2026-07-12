@@ -1,0 +1,15 @@
+# Reference k8s Service for the Rust profile. COPY & ADAPT.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-app
+  labels:
+    app: rust-app
+spec:
+  type: ClusterIP
+  selector:
+    app: rust-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

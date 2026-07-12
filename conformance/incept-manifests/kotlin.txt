@@ -1,0 +1,134 @@
+# first-run-green manifest — Kotlin/Spring archetype (KW8 follow-on)
+# ---------------------------------------------------------------------------
+# Consumed by incept-first-run-green.sh. STACK-AGNOSTIC engine + per-archetype data:
+# every Kotlin-specific token lives HERE, never in the check body. Same block grammar as
+# conformance/incept-manifests/typescript-node.txt; Kotlin's mechanisms differ (Gradle:
+# ktlintCheck + detekt for lint/SAST, compileKotlin type-check, JaCoCo coverage floor,
+# OWASP dependencyCheck dep-scan, CycloneDX-gradle SBOM, gitleaks secret scan).
+#
+# Block grammar (blank-line-separated): id / precondition / when-absent(na|skip) /
+# assert(repeatable, ALL must hold) / skip-reason / fix-hint. Predicate verbs:
+# present|absent <ERE> (LIVE comment-stripped ci.yml), comment <ERE> (RAW ci.yml),
+# scaffold <ERE>, scaffoldfile <relpath> <ERE>, file <relpath>, always.
+# ---------------------------------------------------------------------------
+
+# --- DB gate: genuinely N/A. Kotlin profile ships no postgres service and no .db-backed
+#     marker, so the database gate is omitted (N/A, not skipped). Mirrors the reference. ---
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: uncomment a `services: postgres` block and add DATABASE_URL to the `ci` job
+
+# --- SAST: Kotlin does NOT ship semgrep. Static analysis is covered by detekt (asserted
+#     below inside lint-detekt via the scaffold detekt.yml). This block legibly SKIPS when
+#     semgrep is absent so the "where's SAST?" question has a recorded answer. ---
+id: sast-semgrep
+precondition: present semgrep
+when-absent: skip
+assert: present --config p/default
+skip-reason: Kotlin SAST is detekt, run in the gate-lint step (see lint-detekt) — no semgrep step to scope
+fix-hint: keep detekt enabled (scaffold detekt.yml, build.maxIssues: 0); a separate semgrep step is not expected for Kotlin
+
+# --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
+#     (`gitleaks dir . --redact`, fetch-depth: 0). `gitleaks dir` respects .gitignore, so
+#     Kotlin's build output (.gradle/, build/) falls out of scope with NO allowlist file. ---
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks.*--redact
+assert: present fetch-depth:[[:space:]]*0
+assert: scaffoldfile .gitignore ^/?\.gradle/?$
+assert: scaffoldfile .gitignore ^/?build/?$
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (.gradle/, build/) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+# --- Lint / static-analysis (gate-lint): `./gradlew ktlintCheck detekt`. ktlintCheck is the
+#     format gate; detekt IS the Kotlin SAST layer (backed by scaffold detekt.yml with
+#     build.maxIssues: 0), so it must be asserted present and configured. ---
+id: lint-detekt
+precondition: present ktlintCheck
+when-absent: skip
+assert: present ktlintCheck
+assert: present detekt
+assert: scaffoldfile detekt.yml maxIssues:[[:space:]]*0
+assert: scaffoldfile build.gradle.kts io\.gitlab\.arturbosch\.detekt
+skip-reason: no ktlint/detekt step in this profile — nothing to lint or statically analyze
+fix-hint: run `./gradlew ktlintCheck detekt` and ship a scaffold detekt.yml with build.maxIssues:0 (detekt is the Kotlin SAST layer)
+
+# --- Type-check (gate-type-check): `./gradlew compileKotlin` compiles the whole module. ---
+id: type-check-compile
+precondition: present compileKotlin
+when-absent: skip
+assert: present compileKotlin
+skip-reason: no compileKotlin step in this profile — no static type/compile gate
+fix-hint: run `./gradlew compileKotlin` so the module is type-checked/compiled in CI
+
+# --- Test + coverage gate (gate-test): `./gradlew test jacocoTestCoverageVerification`. The
+#     >=80% floor lives in build.gradle.kts (JaCoCo violationRule, minimum "0.80" on LINE
+#     COVEREDRATIO), which FAILS the verification task below the floor. Assert both the CI
+#     invocation and the scaffold-side floor so the gate is real, not vacuous. ---
+id: test-coverage
+precondition: present jacocoTestCoverageVerification
+when-absent: skip
+assert: present test jacocoTestCoverageVerification
+assert: scaffoldfile build.gradle.kts minimum = "0\.80"
+assert: scaffoldfile build.gradle.kts COVEREDRATIO
+skip-reason: no test/coverage step in this profile — no test or >=80% coverage gate
+fix-hint: run `./gradlew test jacocoTestCoverageVerification` and enforce a JaCoCo LINE COVEREDRATIO minimum of 0.80 in build.gradle.kts
+
+# --- Dependency vulnerability scan (gate-dep-scan): OWASP dependency-check over the module. ---
+id: dep-scan
+precondition: present dependencyCheckAnalyze
+when-absent: skip
+assert: present dependencyCheckAnalyze
+assert: scaffoldfile build.gradle.kts failBuildOnCVSS[[:space:]]*=[[:space:]]*7\.0f
+skip-reason: no dependencyCheckAnalyze step in this profile — no dependency vuln scan to run
+fix-hint: run `./gradlew dependencyCheckAnalyze` (OWASP dependency-check) and set dependencyCheck { failBuildOnCVSS = 7.0f } in build.gradle.kts so a HIGH/CRITICAL finding actually fails the build (the plugin default of 11.0 never fails)
+
+# --- SBOM (gate-sbom): CycloneDX via the cyclonedx-gradle plugin, uploaded as an artifact. ---
+id: sbom-cyclonedx
+precondition: present cyclonedxBom
+when-absent: skip
+assert: present cyclonedxBom
+assert: present name:[[:space:]]*sbom
+skip-reason: no SBOM step in this profile — nothing to attest the dependency graph
+fix-hint: generate a CycloneDX SBOM with `./gradlew cyclonedxBom` and upload build/reports/cyclonedx/bom.json as the `sbom` artifact
+
+# --- Build gate (gate-build): `./gradlew build -x test` produces the bootJar that provenance
+#     attests (tests run in gate-test, so they are excluded here). ---
+id: build-jar
+precondition: present gradlew build
+when-absent: skip
+assert: present build -x test
+skip-reason: no gradle build step in this profile — nothing to compile/attest
+fix-hint: run `./gradlew build -x test` so a jar artifact exists for the provenance job
+
+# --- Build provenance (attest-build-provenance) gated on repo visibility so it doesn't RED on
+#     a private personal repo lacking the attestations API (first-run-green intent). ---
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate each provenance job-if on repo visibility (repository.private == false || owner.type == 'Organization') so a private personal repo legibly skips instead of RED-failing the attestations API
+
+# --- Conditional container-image supply-chain (this profile ships a service image): image
+#     SBOM (Syft/anchore) + image vuln scan (Trivy, fail on fixable CRITICAL/HIGH) + a
+#     digest-bound image provenance attestation. Present in ci.yml; runs when a Dockerfile
+#     is adapted in. Asserting the Trivy gate is real (severity + ignore-unfixed + exit 1). ---
+id: image-supply-chain
+precondition: present trivy-action
+when-absent: skip
+assert: present anchore/sbom-action
+assert: present severity:.*CRITICAL
+assert: present ignore-unfixed:[[:space:]]*true
+assert: present exit-code:[[:space:]]*.?1
+assert: present attest-build-provenance
+skip-reason: no container-image gates in this profile — no image to scan/attest
+fix-hint: build the service image on PR, SBOM it with anchore/sbom-action, scan with aquasecurity/trivy-action (severity CRITICAL,HIGH · ignore-unfixed:true · exit-code:1), and attest a digest-bound image provenance on push

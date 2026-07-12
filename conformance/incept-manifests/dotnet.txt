@@ -1,0 +1,156 @@
+# first-run-green manifest — C#/.NET archetype (KW8 follow-on)
+# ---------------------------------------------------------------------------
+# Consumed by incept-first-run-green.sh. STACK-AGNOSTIC engine + per-archetype data:
+# every .NET-specific token lives HERE, never in the check body. Same block grammar as
+# conformance/incept-manifests/typescript-node.txt and .../go.txt. .NET's mechanisms:
+# Roslyn analyzers (EnableNETAnalyzers + TreatWarningsAsErrors) are the SAST layer — NOT
+# semgrep; `dotnet list package --vulnerable` is the dep-scan; CycloneDX .NET tool for SBOM;
+# gitleaks for secrets; coverlet.msbuild Threshold=80 for the coverage floor.
+#
+# Block grammar (blank-line-separated): id / precondition / when-absent(na|skip) /
+# assert(repeatable, ALL must hold) / skip-reason / fix-hint. Predicate verbs:
+# present|absent <ERE> (LIVE comment-stripped ci.yml), comment <ERE> (RAW ci.yml),
+# scaffold <ERE>, scaffoldfile <relpath> <ERE>, file <relpath>, always.
+# ---------------------------------------------------------------------------
+
+# --- DB gate: genuinely N/A. The .NET profile ships no postgres service and no .db-backed
+#     marker, so the database gate is omitted (N/A, not skipped). Mirrors the reference. ---
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: uncomment a `services: postgres` block and add DATABASE_URL to the `ci` job
+
+# --- SAST: .NET does NOT ship semgrep. Static analysis is covered by Roslyn/.NET analyzers
+#     (asserted in static-analysis below, via Directory.Build.props). This block legibly SKIPS
+#     when semgrep is absent so the "where's SAST?" question has a recorded answer. ---
+id: sast-semgrep
+precondition: present semgrep
+when-absent: skip
+assert: present --config p/default
+skip-reason: .NET SAST is Roslyn analyzers (EnableNETAnalyzers + TreatWarningsAsErrors, see static-analysis) — no semgrep step to scope
+fix-hint: keep EnableNETAnalyzers + TreatWarningsAsErrors enabled in Directory.Build.props; a separate semgrep step is not expected for .NET
+
+# --- Static analysis (the .NET SAST layer): Roslyn/.NET analyzers, wired in Directory.Build.props
+#     and enforced because CI runs `dotnet build`/`dotnet test` with TreatWarningsAsErrors, which
+#     promotes analyzer diagnostics to build failures. Gated on the build step being present. ---
+id: static-analysis
+precondition: present dotnet build
+when-absent: skip
+assert: scaffoldfile Directory.Build.props EnableNETAnalyzers>true
+assert: scaffoldfile Directory.Build.props TreatWarningsAsErrors>true
+assert: scaffoldfile Directory.Build.props AnalysisLevel
+skip-reason: no dotnet build step — Roslyn analyzers have no compile pass to run in
+fix-hint: enable EnableNETAnalyzers + TreatWarningsAsErrors (AnalysisLevel latest) in Directory.Build.props so analyzers run and fail the build during `dotnet build`/`dotnet test`
+
+# --- Restore (locked-mode): reproducible dependency restore against the committed lock files.
+#     --locked-mode fails the restore if packages.lock.json is stale (supply-chain integrity). ---
+id: restore-locked
+precondition: present dotnet restore
+when-absent: skip
+assert: present dotnet restore --locked-mode
+skip-reason: no dotnet restore step in this profile — no locked-mode integrity gate
+fix-hint: run `dotnet restore --locked-mode` so a stale/absent packages.lock.json fails the build
+
+# --- Lint (dotnet format): verify formatting with no changes allowed. ---
+id: lint-format
+precondition: present dotnet format
+when-absent: skip
+assert: present dotnet format --verify-no-changes
+skip-reason: no dotnet format step in this profile — nothing to lint
+fix-hint: run `dotnet format --verify-no-changes` so unformatted code fails CI
+
+# --- Type-check (compile): `dotnet build` is the .NET compile/type-check gate (analyzers run here). ---
+id: type-check-build
+precondition: present dotnet build
+when-absent: skip
+assert: present dotnet build --no-restore
+assert: present -c Release
+skip-reason: no dotnet build step in this profile — no compile/type-check gate
+fix-hint: run `dotnet build --no-restore -c Release` so compile + analyzer errors fail the job
+
+# --- Test + coverage gate: coverlet.msbuild enforces an >=80% line-coverage floor
+#     (Threshold=80, ThresholdType=line) that FAILS the build when coverage drops below 80%. ---
+id: test-coverage
+precondition: present dotnet test
+when-absent: skip
+assert: present dotnet test
+assert: present /p:CollectCoverage=true
+assert: present /p:Threshold=80
+assert: present /p:ThresholdType=line
+skip-reason: no dotnet test step in this profile — no test/coverage gate
+fix-hint: run `dotnet test /p:CollectCoverage=true /p:Threshold=80 /p:ThresholdType=line` and fail when line coverage is below 80
+
+# --- Build gate (produces the ./publish output that provenance attests). Publishes the App
+#     project only (not the .sln, which would drag in the test project). ---
+id: build-publish
+precondition: present dotnet publish
+when-absent: skip
+assert: present dotnet publish src/App/App.csproj
+assert: present -c Release
+skip-reason: no dotnet publish step in this profile — nothing to publish/attest
+fix-hint: run `dotnet publish src/App/App.csproj -c Release -o ./publish` so a build artifact exists for the provenance job
+
+# --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
+#     (`gitleaks dir . --redact`, fetch-depth: 0). `gitleaks dir` respects .gitignore, so .NET's
+#     build output (bin/, obj/, publish/) falls out of scope with NO allowlist file. ---
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks.*--redact
+assert: present fetch-depth:[[:space:]]*0
+assert: scaffoldfile .gitignore ^/?bin/?$
+assert: scaffoldfile .gitignore ^/?obj/?$
+assert: scaffoldfile .gitignore ^/?publish/?$
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (bin/, obj/, publish/) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+# --- Dependency vulnerability scan (`dotnet list package --vulnerable` over transitive deps,
+#     failing the job when any Critical/High/Moderate advisory is reported). ---
+id: dep-scan
+precondition: present dotnet list package --vulnerable
+when-absent: skip
+assert: present dotnet list package --vulnerable
+assert: present --include-transitive
+assert: present ! grep -q
+skip-reason: no dependency vulnerability scan in this profile — no dep-scan to run
+fix-hint: run `dotnet list package --vulnerable --include-transitive` and fail the job (`! grep -q "Critical\|High\|Moderate"`) so any known-vulnerable dependency blocks the merge
+
+# --- SBOM (CycloneDX via the dotnet CycloneDX tool over the whole solution), uploaded as an artifact. ---
+id: sbom-cyclonedx
+precondition: present CycloneDX
+when-absent: skip
+assert: present dotnet CycloneDX .*\.sln
+assert: present -F Json
+assert: present name:[[:space:]]*sbom
+skip-reason: no SBOM step in this profile — nothing to attest the dependency graph
+fix-hint: generate a CycloneDX SBOM with `dotnet CycloneDX *.sln -o . -F Json -fn sbom.json` and upload it as the `sbom` artifact
+
+# --- Build provenance (attest-build-provenance) gated on repo visibility so it doesn't
+#     RED on a private personal repo lacking the attestations API (first-run-green intent). ---
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate each provenance job-if on repo visibility (repository.private == false || owner.type == 'Organization') so a private personal repo legibly skips instead of RED-failing the attestations API
+
+# --- Conditional container-image supply-chain (this profile ships a service image): image
+#     SBOM (Syft/anchore) + image vuln scan (Trivy, fail on fixable CRITICAL/HIGH) + a
+#     digest-bound image provenance attestation. Present in ci.yml; runs when a Dockerfile
+#     is adapted in. Asserting the Trivy gate is real (severity + ignore-unfixed + exit 1). ---
+id: image-supply-chain
+precondition: present trivy-action
+when-absent: skip
+assert: present anchore/sbom-action
+assert: present severity:.*CRITICAL
+assert: present ignore-unfixed:[[:space:]]*true
+assert: present exit-code:[[:space:]]*.?1
+assert: present attest-build-provenance
+skip-reason: no container-image gates in this profile — no image to scan/attest
+fix-hint: build the service image on PR, SBOM it with anchore/sbom-action, scan with aquasecurity/trivy-action (severity CRITICAL,HIGH · ignore-unfixed:true · exit-code:1), and attest a digest-bound image provenance on push

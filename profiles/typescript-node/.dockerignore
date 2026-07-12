@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+.env
+.env.*
+dist
+coverage
+.github
+# excludes dev docs; scope this if your app reads markdown at runtime
+*.md
+Dockerfile
+.dockerignore
+compose.yaml
+.devcontainer
+deploy

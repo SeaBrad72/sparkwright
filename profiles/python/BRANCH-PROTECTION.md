@@ -1,0 +1,32 @@
+# Branch Protection — reference setup (Python profile)
+
+Enforces the §14 contract at the repo boundary: `main` protected, green CI to merge, builder ≠ sole merger. COPY & ADAPT — replace `OWNER/REPO` and team handles.
+
+## What to require
+- The CI status check (`ci`) must pass before merge.
+- At least 1 approving review from someone other than the author.
+- Stale approvals dismissed on new commits.
+- Branch up to date before merge.
+- (Org/plan-dependent) CODEOWNERS review required; self-merge disallowed.
+
+## Apply via GitHub CLI
+Run **after** the CI workflow has run at least once (so the check name `ci` is registered):
+
+```bash
+gh api -X PUT repos/OWNER/REPO/branches/main/protection --input - <<'JSON'
+{
+  "required_status_checks": { "strict": true, "contexts": ["ci"] },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": true
+  },
+  "restrictions": null
+}
+JSON
+```
+
+> "Builder ≠ sole merger" is enforced by required reviews + CODEOWNERS. GitHub cannot strictly forbid every user from merging their own PR on all plans; on GitHub Enterprise use rulesets / required reviewers. Document the policy in the project `CLAUDE.md` regardless.
+
+> **Solo + agent-authored track:** set `"enforce_admins": false` so the owner can admin-merge their own PR (`gh pr merge --admin`) — the audit-trailed self-ratification of `START-HERE.md`'s solo/lite track. Flip it back to `true` the moment a second reviewer exists. **Do not set `"require_code_owner_reviews": true` while the sole owner is also the sole code owner:** GitHub forbids self-approval, so a required code-owner review is structurally unsatisfiable (the PR stays BLOCKED with green CI; only `--admin` clears it). Enable code-owner review only once a second reviewer exists. See [`docs/operations/review-lane.md`](../../docs/operations/review-lane.md) "Solo + agent-authored PRs".

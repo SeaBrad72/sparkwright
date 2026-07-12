@@ -1,0 +1,15 @@
+# Reference k8s Service for the Go profile. COPY & ADAPT.
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-app
+  labels:
+    app: go-app
+spec:
+  type: ClusterIP
+  selector:
+    app: go-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

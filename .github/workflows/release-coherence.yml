@@ -1,0 +1,18 @@
+name: release-coherence
+# (e) On every v* tag push, assert VERSION agrees with the tag (catches a skipped VERSION bump at
+# release time — the v3.49.0 incident). Per-PR/drift-watch coverage is via conformance/verify.sh.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  version-tag-coherent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: VERSION must agree with the pushed tag
+        run: sh conformance/version-tag-coherent.sh --require

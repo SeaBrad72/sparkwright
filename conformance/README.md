@@ -1,0 +1,97 @@
+# Conformance Checks
+
+A **conformance check** proves that a reference implementation still satisfies its binding **contract** (see `../MAINTAINING.md` §1). Checks are how the kit — and every project that adopts it — enforces the contracts instead of merely describing them.
+
+## Two kinds of check
+
+- **Checklist** — a human/agent-completed list with explicit evidence per item. Used when judgment is required (e.g. architecture conformance). Gates at a human checkpoint.
+- **Script** — an automated assertion runnable in CI. Used when the check is mechanical (e.g. "the CI pipeline runs a secret-scan step"). Gates in the pipeline.
+
+## Where checks run
+
+- **In the kit's own CI** (`.github/workflows/ci.yml`) — the kit proves it satisfies its own contracts.
+- **In an adopting project** — at the gate named by the contract (Review, Definition of Done, etc., per `../DEVELOPMENT-PROCESS.md` §7).
+
+## What a green run means — and doesn't
+
+Conformance checks fall into two honesty classes. Run **`sh conformance/verify.sh`** for an aggregate that labels each one:
+
+- **control** — proves a *working* control holds: the agent guard denies the destructive battery (`agent-autonomy.sh`), CI declares the required gate ids (`ci-gates.sh`), the guard is wired (`guard-wired.sh`), `main` is protected on the remote (`branch-protection.sh`), links resolve (`check-links.sh`), named backlog backends agree (`backlog-adapters.sh`), and — conditionally — the image supply-chain is wired (`container-supply-chain.sh`, only when a Dockerfile is present, so it is not in `verify.sh`'s unconditional aggregate). Green here is load-bearing.
+- **documentation / evidence** — proves a procedure is *written down* and (for readiness) a drill **date is recorded** — NOT that the rollback, restore, or fault-injection was actually tested: `deployable-ready.sh`, `dr-ready.sh`, `resilience-ready.sh`, `observability-ready.sh`, `eval-ready.sh`, `responsible-ai-ready.sh`, `test-data-ready.sh`, `preview-env-ready.sh`, `agentops-ready.sh`, and the paired `*-readiness.md` / `definition-of-deployable.md` checklists. The "did it actually work" half lives in the checklist's Manual rows, requiring release-manager / on-call evidence.
+
+**`UNVERIFIED` is not a pass.** A check that cannot run — e.g. `branch-protection.sh` with no `gh`/remote — exits **2** and is reported `UNVERIFIED`, distinct from PASS; in CI or under `--require` it escalates to a **FAIL**. A green dashboard hiding an unseen UNVERIFIED is the false assurance this layer exists to prevent.
+
+In short: **green proves controls hold and safety is documented; it does not prove the documented procedures were tested.**
+
+## Index
+
+| Check | Type | Contract it proves | Gate |
+|-------|------|--------------------|------|
+| `version-helpers.sh` | script | shared semver helper lib (sourced by `meta-control-fresh.sh` and `version-tag-coherent.sh`) — not a gate itself | — |
+| `version-tag-coherent.sh` | script | VERSION agrees with the git tag state — no skipped release bump (HEAD tagged → VERSION matches; VERSION ≥ highest reachable tag) | per-PR + drift-watch + tag-push |
+| `runaway-killswitch-wired.sh` | script | runaway ceilings enforced — `scripts/runaway-guard.sh` exists, is executable, and breaches halt the loop (token / step / agent dimensions) | per-PR + drift-watch |
+| `15-factor-checklist.md` | checklist | `DEVELOPMENT-STANDARDS.md` §13 (15-Factor Architecture) | Review (conditional) |
+| `definition-of-deployable.md` | checklist | `DEVELOPMENT-PROCESS.md` §10 / §4 (release readiness) | Release (conditional) |
+| `deployable-ready.sh` | script | `DEVELOPMENT-PROCESS.md` §10 — documented release-safety (RUNBOOK deploy/rollback + smoke); pairs with the checklist | Release / CI (conditional on a deploy surface) |
+| `dr-readiness.md` | checklist | `DEVELOPMENT-STANDARDS.md` §10 / NIST 800-34 (DR is provable) | Review / recurring / DoD (conditional) |
+| `dr-ready.sh` | script | `DEVELOPMENT-STANDARDS.md` §10 — documented DR (BIA + RUNBOOK §6 + recorded drill); escalate-only; pairs with the checklist | Review / CI (conditional on a data surface) |
+| `resilience-readiness.md` | checklist | `DEVELOPMENT-STANDARDS.md` §4 / §6 (resilience + load/soak) | Review / recurring (conditional) |
+| `resilience-ready.sh` | script | `DEVELOPMENT-STANDARDS.md` §4 / §6 — recorded resilience drills (RUNBOOK §8); pairs with the checklist | Review / CI (conditional on a deploy surface) |
+| `observability-readiness.md` | checklist | `DEVELOPMENT-STANDARDS.md` Factor 14 / §3 (SLOs + telemetry observable in prod) | Review / recurring (conditional) |
+| `observability-ready.sh` | script | `DEVELOPMENT-STANDARDS.md` Factor 14 / §3 — recorded observability posture (RUNBOOK §8 SLOs + telemetry); pairs with the checklist | Review / CI (conditional on a deploy surface) |
+| `eval-ready.sh` | script | gate parity — the AI-feature **eval discipline is declared** (EVAL-PLAN + regression threshold + harness/gate recorded); conditional (N/A for non-AI). Does NOT run evals — that is the §7 Eval gate. Pairs with `eval-readiness.md` | Review / CI (conditional on an AI feature) |
+| `responsible-ai-readiness.md` | checklist | RAI arc — AI System Card present + classified + oversight (US-anchored; EU optional) | Review / §7 (conditional on an AI feature) |
+| `responsible-ai-ready.sh` | script | RAI arc — the AI-governance declaration is present (AI System Card + classification + oversight); conditional (N/A for non-AI). Does NOT judge correctness/fairness/compliance. Pairs with `responsible-ai-readiness.md` | Review / CI (conditional on an AI feature) |
+| `test-data-ready.sh` | script | Safe Non-Prod — the test-data approach is recorded (RUNBOOK §2: synthetic/masked/never-raw-prod); conditional on a data surface. Pairs with `test-data-readiness.md` / `../docs/operations/test-data-management.md` | Review / CI (conditional on a data surface) |
+| `test-layers-ready.sh` | script | integration + e2e test layers are present when a project has a service surface (stack-neutral); conditional (N/A for projects with no Dockerfile / compose service). Pairs with `../docs/operations/test-layers.md` | per-PR + drift-watch |
+| `preview-env-ready.sh` | script | Safe Non-Prod — the preview-environment approach is recorded (RUNBOOK §4: per-PR isolated, safe data, auto-teardown); conditional on a deploy surface. Pairs with `preview-environments-readiness.md` / `../docs/operations/preview-environments.md` | Review / CI (conditional on a deploy surface) |
+| `agentops-ready.sh` | script | MP-3 agentic-ops — the agent-run **trace discipline is recorded** (RUNBOOK §8 `Agent-ops:`); conditional (N/A for non-agentic). Does NOT verify traces emit or behavior conforms. Pairs with `agentic-ops-readiness.md` / `../docs/operations/agentic-ops.md` | Review / CI (conditional on an agentic project) |
+| `security-policy.sh` | script | SP-2 — a governed repo (CLAUDE.md present) ships a `SECURITY.md` with a real security contact (not the `[security-contact]` placeholder); N/A for scratch dirs. Proves the disclosure policy is **recorded** — NOT that the process works (SLAs met, triage happens). | Review / CI (conditional on a governed repo) |
+| `privacy-ready.sh` | script | SP-3 — a project that declares it handles Confidential/Restricted data (real `Data classification:` value, not the template placeholder) MUST carry a filled `PRIVACY-REVIEW.md` (DPIA-lite with a real lawful basis); Public/Internal/placeholder/none → N/A. Proves the privacy review is **recorded** — NOT that the processing is lawful or that deletion works (those are Manual rows). Pairs with `../docs/enterprise/data-governance.md` | Review / CI (conditional on a sensitive-data surface) |
+| `egress-policy.sh` | script | Slice 11b — default-deny network egress is declared + attested-wired (three-state; UNVERIFIED-honest; never inspects traffic). Pairs with `egress-readiness.md` / `../docs/operations/egress-control.md` | Review / CI (conditional on a network surface) |
+| `containment-ready.sh` | script | Slice 11c — agent-containment posture declared + attested-wired (sandbox FS · scoped tokens · separate prod creds; three-state, overall=weakest; never verifies enforcement). Pairs with `containment-readiness.md` / `../docs/operations/containment.md` | Review / CI (conditional on an integration/deploy surface) |
+| `cost-governance-ready.sh` | script | H3b — cost-governance posture declared + attested-wired (per-run budget + platform spend-cap; three-state; never verifies spend was actually capped). Pairs with `../docs/operations/cost-governance.md` | Review / CI (conditional on a deploy/integration surface) |
+| `assurance-tiers.sh` | script | Slice 11d — the compliance crosswalk states each Containment-arc control at its real responsibility tier (MCP gate = Kit-enforced; egress/sandbox/tokens/prod-creds = Kit-assisted); drift-guard against a silent revert. Verifies the tiers are *stated*, not "true" | CI / Review |
+| `ci-gates.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (CI/CD Pipeline) — recognizes GitHub `id: gate-X` steps **and** GitLab `gate-X:` job keys; the contract is the gate-ids, the platform is open (`../docs/operations/ci-platforms.md`) | CI / Definition of Done |
+| `check-links.sh` | script | Docs link integrity (`DEVELOPMENT-STANDARDS.md` §11) | CI |
+| `agent-autonomy.sh` | script | `DEVELOPMENT-PROCESS.md` §13 (autonomy tiers) — guard denies a tier breach | PreToolUse hook / CI |
+| `guard-core-sourced.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — all guard consumers source one deny-matrix core (anti-fork); pairs with `agent-autonomy.sh` (`../docs/operations/runtime-guards.md`) | CI |
+| `mcp-policy.sh` | script | Slice 11a — the MCP capability gate classifies correctly: un-allowlisted destructive/egress MCP tools denied (fail-closed), read-only allowed, allowlist/override honored | CI |
+| `../scripts/preflight.sh` | script | beginner on-ramp (Slice 9f) — prerequisite check (jq/git/toolchain); `--selftest` regression-locks the detector | CI / pre-Inception |
+| `inception-done.sh` | script | `DEVELOPMENT-PROCESS.md` §3 / `START-HERE.md` (the Inception gate) | CI (bootstrap-into-temp) |
+| `profile-completeness.sh` | script | `profiles/_TEMPLATE.md` (every profile fills all 11 sections; companion ci.yml conformant) | CI |
+| `stack-selection.sh` | script | Slice 9g / R7 — the stack-decision aid is complete (guide + per-profile Best-for/Avoid-when + a matrix row per profile); drift-guard | CI |
+| `persona-artifacts.sh` | script | Slice 9i / R9 — the QA/Designer persona artifacts exist (TEST-PLAN, UAT-SIGNOFF, A11Y-SIGNOFF) and are named in the §2 persona table; drift-guard | CI |
+| `dor-defined.sh` | script | Slice 9i-b — the Definition of Ready is enumerated in `CLAUDE.md`, referenced by the gate doc, and carried by the `FEATURE-REQUEST` intake; drift-guard | CI |
+| `badge-version.sh` | script | Slice 9k — the README version badge equals `VERSION` (drift-guard with `--fix` sync) | CI |
+| `agents-brief.sh` | script | Slice 9k — `AGENTS.md` exists, points at the canonical docs, and stays within the brief line-bound | CI |
+| `conditional-gates.sh` | script | SP-1 / Slice 9j — §7 names the conditional gates (a11y / load / eval / SAST / license), trigger-bound not universal; drift-guard | CI |
+| `../scripts/license-check.sh` | script | SP-1 — stack-neutral SBOM license-policy gate; flags denylisted copyleft + counts undetermined; `--selftest` regression-locked | CI (`--selftest`) / gate-license |
+| `action-pinning.sh` | script | Slice 9j / H4b — SHA-pins every `uses:` across the kit's own `.github/workflows/` AND the canonical reference pipeline (the kit pins actions everywhere it runs them) | CI |
+| `supply-chain-verify.sh` | script | H4b — the GitLab profile's by-download tools (syft/cosign/gitleaks) are checksum-verified before exec (no curl-pipe-to-shell); regression-lock. Pairs with `../docs/operations/tool-supply-chain.md` | CI |
+| `gitlab-adoption-complete.sh` | script | H4a — the GitLab adopter guide covers all three governance areas (branch-protection + ratification + DORA) and the profile references it; drift-guard against silent rot. Pairs with `../docs/operations/gitlab-adoption.md` | CI |
+| `branch-protection.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 / `DEVELOPMENT-PROCESS.md` §12 — `main` is actually protected | CI (where gh can reach the API) |
+| `tracker-contract.sh` | script | Slice 9h — a Jira instance satisfies the §6 work-item contract (six states + Size/Risk fields, live); three-state (UNVERIFIED without creds); the Only-Assignee claim is attested | CI (`--selftest`) / adopter (live) |
+| `doc-budget.sh` | script | Slice 9k-b — the core governing docs stay within their post-trim line budget (no silent re-bloat); budgets raised only by a ratified PR | CI |
+| `shellcheck.sh` | script | lints the kit's **maintainer-editable** shell (`scripts/`, `conformance/`, `hooks/pre-push`) at the error/warning floor (`-s sh -S warning`); regression-lock (that shell is shellcheck-clean). The control-plane guard under `.claude/hooks/` is excluded — agent-non-editable, and regression-locked behaviorally by its own deny-corpus conformance instead. Conditional on shellcheck installed — CI installs it so drift is always caught; `--selftest` verifies clean fixture passes + dirty fixture fails | CI |
+| `ci-selftest-coverage.sh` | script | meta-check — every selftest-capable kit check (`conformance/*.sh`, `scripts/*.sh`, `hooks/pre-push`) is wired into `ci.yml`, so a check can't ship "existing but unenforced"; fail-closed, lists any unwired check. **Self-excluded** (a meta-check can't non-circularly verify its own wiring; its presence in `ci.yml` is a one-time maintainer bootstrap). `--selftest` proves it detects an unwired check, passes when all-wired, and ignores non-selftest scripts | CI |
+| `onboarding-complete.sh` | script | the onboarding on-ramp is structurally present + wired — `ONBOARDING.md` names the 3 fluency lanes, the project-CLAUDE template carries `Operator fluency`, `operator-fluency.md` exists and AGENTS.md points at it, the TDD walkthrough exists. Completeness only — green means present + wired, NOT that the teaching "works" (the guard + gates are the enforced safety net); `--selftest` covers gap + complete fixtures | CI |
+| `discovery-complete.sh` | script | the optional discovery layer is structurally present + wired — `discovery-loop.md` names all six loop stages, the FRAME/SHAPE guides + the two upstream templates exist, and `ONBOARDING.md` links the discovery door. Completeness only — green means present + wired, NOT that any discovery was good; `--selftest` covers gap + complete fixtures | CI |
+| `audit-evidence-checklist.md` | checklist | enterprise addendum (`../docs/enterprise/`) — per-control audit evidence | Review / pre-audit |
+| `container-supply-chain.sh` | script | `DEVELOPMENT-STANDARDS.md` §14 (conditional container image supply-chain) | Review (conditional on a Dockerfile) |
+| `backlog-adapters.sh` | script | `DEVELOPMENT-PROCESS.md` §6 (named backends agree across incept / §6 / the adapter guide) | CI / Review |
+| `guard-wired.sh` | script | `DEVELOPMENT-PROCESS.md` §13 — the `.claude/` runtime guard is actually wired (fail-closed; gates Inception) | CI / Inception |
+| `waivers-valid.sh` | script | `DEVELOPMENT-PROCESS.md` §13 / `DEVELOPMENT-STANDARDS.md` §14 — brownfield `WAIVER-REGISTER.md` is well-formed (no expired / non-negotiable / over-90d / missing-field waivers); N/A without a register | Review / CI (adoption-conditional) |
+| `operate-loop-wired.sh` | script | operate-loop Slice 1 — `scripts/postmortem.sh` exists; `postmortem --selftest` exits 0; dispatcher routes `sparkwright postmortem --selftest` | CI |
+| `doctor-wired.sh` | script | P3T4 — `scripts/doctor.sh` + `scripts/sparkwright` exist; `doctor --selftest` exits 0; dispatcher routes `sparkwright doctor --selftest`; rejects unknown commands with exit 2 | CI |
+| `verify.sh` | script | the honest **aggregate** — runs the checks, labels each **control** vs **documentation**, gates on control failures; prints what a green run does and does not prove | CI (`--selftest`) / Review |
+
+> The enterprise addendum (`../docs/enterprise/`) adds the compliance crosswalk and this audit-evidence checklist.
+
+> **Note on `inception-done.sh` at the kit root:** this gate is *expected to FAIL* when run against the kit's own repository — the kit is the reference/template **source**, not an instantiated project (it has no `ADR-000`, `RUNBOOK.md`, etc.). It passes only inside a project that has completed Inception. Do not "fix" the kit root to satisfy it.
+
+> **Progressive delivery (reference, no separate check):** `definition-of-deployable.md`'s progressive-delivery + smoke-gate rows pair with [`../docs/operations/progressive-delivery.md`](../docs/operations/progressive-delivery.md) for the *how* (canary/blue-green + smoke gates at every promotion boundary). The checklist is the conformance; the reference completes the triad.
+
+> **DORA metrics (measurement-enablement, no gate):** §14's DORA four + agentic signals are *collected*, not gated — `../scripts/dora.sh` (GitHub-derivable subset; CI-smoked via `--selftest`) + [`../docs/operations/dora-metrics.md`](../docs/operations/dora-metrics.md) (derivation + the maturity-gating path). Value-gating is a §9 maturity step, not a baseline check.
+
+> **Conditional checks — N/A semantics differ by blast radius.** `deployable-ready.sh` and `resilience-ready.sh` **skip-pass** cleanly when a project has no deploy surface — a miss is acceptable (it isn't a deployable service). `dr-ready.sh` is **escalate-only**: its `N/A` is *self-incriminating* (data detection is conservative, and a missed data project is a false negative with data-loss stakes), so `dr-readiness.md` applies regardless of what the script prints. The N/A weight matches the blast radius.

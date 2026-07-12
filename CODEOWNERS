@@ -1,0 +1,13 @@
+# CODEOWNERS — ownership of the control-plane surface, for separation-of-duties.
+# BOTH maintainer identities are listed so a non-author code owner can always
+# ratify a control-plane change (a single owner would deadlock solo — see
+# docs/operations/review-lane.md). require_code_owner_reviews stays OFF until
+# we deliberately enable it (T2 Phase 4).
+
+*                           @SeaBrad72 @ISBrad72
+/.claude/                   @SeaBrad72 @ISBrad72
+/conformance/               @SeaBrad72 @ISBrad72
+/.github/                   @SeaBrad72 @ISBrad72
+/CLAUDE.md                  @SeaBrad72 @ISBrad72
+/DEVELOPMENT-STANDARDS.md   @SeaBrad72 @ISBrad72
+/DEVELOPMENT-PROCESS.md     @SeaBrad72 @ISBrad72

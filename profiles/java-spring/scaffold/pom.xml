@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Reference starter scaffold for the java-spring profile.
+    Authored to the profile's ci.yml gate contract:
+      ./mvnw spotless:check checkstyle:check   (gate-lint)
+      ./mvnw compile                           (gate-type-check)
+      ./mvnw verify                            (gate-test; JaCoCo line >=0.80 binds to verify)
+      ./mvnw -DskipTests package               (gate-build)
+    Gates use the Maven wrapper ./mvnw. Run `mvn wrapper:wrapper` once to generate it (see README).
+  -->
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.example</groupId>
+  <artifactId>app</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>app</name>
+  <description>Starter scaffold for the java-spring profile</description>
+
+  <properties>
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Plugin versions pinned for reproducibility. -->
+    <spotless.version>2.43.0</spotless.version>
+    <google-java-format.version>1.22.0</google-java-format.version>
+    <checkstyle.plugin.version>3.5.0</checkstyle.plugin.version>
+    <checkstyle.version>10.18.2</checkstyle.version>
+    <jacoco.version>0.8.12</jacoco.version>
+    <!-- SAST (spotbugs + find-sec-bugs) — first-party static security analysis, at parity with go(gosec)/ts(semgrep). -->
+    <spotbugs.plugin.version>4.8.6.4</spotbugs.plugin.version>
+    <findsecbugs.version>1.13.0</findsecbugs.version>
+    <!-- Security supply-chain plugins pinned (were resolved as LATEST from Central via FQ goals). -->
+    <dependency-check.version>12.1.0</dependency-check.version>
+    <cyclonedx.plugin.version>2.8.1</cyclonedx.plugin.version>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- pluginManagement pins the versions of security plugins invoked as fully-qualified goals
+         from ci.yml (org.owasp:dependency-check-maven:check, org.cyclonedx:cyclonedx-maven-plugin:
+         makeAggregateBom). Without this they resolve to LATEST from Central — a supply-chain drift
+         risk. Maven applies these pinned versions when the goals are invoked without a version. -->
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.owasp</groupId>
+          <artifactId>dependency-check-maven</artifactId>
+          <version>${dependency-check.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.cyclonedx</groupId>
+          <artifactId>cyclonedx-maven-plugin</artifactId>
+          <version>${cyclonedx.plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+
+    <plugins>
+      <!-- Spring Boot: builds the executable (fat) jar consumed by gate-build. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+
+      <!-- gate-lint (format): Spotless with google-java-format. `apply` fixes; CI runs `check`. -->
+      <plugin>
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+        <version>${spotless.version}</version>
+        <configuration>
+          <java>
+            <googleJavaFormat>
+              <version>${google-java-format.version}</version>
+              <style>GOOGLE</style>
+            </googleJavaFormat>
+            <removeUnusedImports/>
+            <trimTrailingWhitespace/>
+            <endWithNewline/>
+          </java>
+        </configuration>
+      </plugin>
+
+      <!-- gate-lint (lint): Checkstyle against the local checkstyle.xml ruleset. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-checkstyle-plugin</artifactId>
+        <version>${checkstyle.plugin.version}</version>
+        <dependencies>
+          <dependency>
+            <groupId>com.puppycrawl.tools</groupId>
+            <artifactId>checkstyle</artifactId>
+            <version>${checkstyle.version}</version>
+          </dependency>
+        </dependencies>
+        <configuration>
+          <configLocation>checkstyle.xml</configLocation>
+          <includeTestSourceDirectory>true</includeTestSourceDirectory>
+          <consoleOutput>true</consoleOutput>
+          <failsOnError>true</failsOnError>
+          <violationSeverity>warning</violationSeverity>
+        </configuration>
+      </plugin>
+
+      <!-- gate-test: JaCoCo. prepare-agent instruments tests; check enforces line >=0.80 on verify.
+           The @SpringBootApplication main class is excluded so it can't drag coverage below 80%. -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.version}</version>
+        <configuration>
+          <excludes>
+            <exclude>com/example/app/Application.class</exclude>
+          </excludes>
+        </configuration>
+        <executions>
+          <execution>
+            <id>jacoco-prepare-agent</id>
+            <goals>
+              <goal>prepare-agent</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>jacoco-report</id>
+            <phase>test</phase>
+            <goals>
+              <goal>report</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>jacoco-check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.80</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- gate-sast: SpotBugs + find-sec-bugs static security analysis of first-party code.
+           `./mvnw spotbugs:check` fails the build on findings (failOnError). effort=Max /
+           threshold=Medium widen and sharpen the scan; the find-sec-bugs plugin adds the
+           security bug patterns (injection, crypto misuse, SSRF, etc.). Parity with
+           go(gosec)/ts(semgrep). -->
+      <plugin>
+        <groupId>com.github.spotbugs</groupId>
+        <artifactId>spotbugs-maven-plugin</artifactId>
+        <version>${spotbugs.plugin.version}</version>
+        <configuration>
+          <effort>Max</effort>
+          <threshold>Medium</threshold>
+          <failOnError>true</failOnError>
+          <plugins>
+            <plugin>
+              <groupId>com.h3xstream.findbugs</groupId>
+              <artifactId>findsecbugs-plugin</artifactId>
+              <version>${findsecbugs.version}</version>
+            </plugin>
+          </plugins>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

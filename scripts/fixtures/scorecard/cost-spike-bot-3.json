@@ -1,0 +1,1 @@
+{"agent.id": "cost-spike-bot", "run.id": "cs3", "start": "2026-06-10T03:00:00Z", "outcome": "completed", "review.rounds": 1, "gates.skipped": "unknown", "cost": 0.2, "eval.score": 0.9, "steps": [{"name": "Read", "outcome": "ok", "retries": 0}]}

@@ -1,0 +1,117 @@
+# Reference CI pipeline for the ML profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Carries the 8 standardized gate-* ids (DEVELOPMENT-STANDARDS.md §14) PLUS gate-eval
+# (the §7 eval gate). conformance/ci-gates.sh asserts the 8; gate-eval is an allowed extra.
+# HARDENING (do before production):
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
+#  - Pin tool installs to exact versions.
+#  - OIDC is least-privilege here: id-token:write lives only on the push-only `provenance`
+#    job, so PR-triggered steps cannot mint a token. Your cloud trust policy MUST restrict
+#    `sub` to `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        id: gate-install
+        run: uv sync --frozen
+
+      - name: Lint
+        id: gate-lint
+        run: |
+          uv run ruff check --extend-select S .
+          uv run nbqa ruff notebooks/
+
+      - name: Type-check
+        id: gate-type-check
+        run: uv run mypy .
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: uv run pytest --cov --cov-fail-under=80   # includes pandera data-validation + nbmake notebook smoke
+
+      - name: Evaluate model/prompt quality (eval gate, §7)
+        id: gate-eval
+        run: uv run python -m evals.run --threshold 0.8   # fails the build below the eval threshold
+
+      - name: Build
+        id: gate-build
+        run: uv build
+
+      - name: Secret scan
+        id: gate-secret-scan
+        # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
+        # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
+        # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
+        run: |
+          GL_VER=8.24.3
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks dir . --no-banner --redact
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: uvx pip-audit
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: uvx cyclonedx-py environment --output-format JSON --outfile sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Upload build artifact (for provenance)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: dist/**          # the build artifact (and/or registered model artifact)
+          if-no-files-found: error
+
+  provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # scoped to this push-only job (build-provenance attestation)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: build-artifact
+      - name: Attest build provenance
+        id: gate-provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: build-artifact/**

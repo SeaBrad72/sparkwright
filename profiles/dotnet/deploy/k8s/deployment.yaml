@@ -1,0 +1,70 @@
+# Reference k8s Deployment for the .NET / ASP.NET Core profile. COPY & ADAPT.
+# Image is referenced BY DIGEST (immutable) — the attested digest from CI.
+# For HA production, also add: a startupProbe, a PodDisruptionBudget (minAvailable: 1),
+# and topologySpreadConstraints (spread replicas across nodes).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dotnet-app
+  labels:
+    app: dotnet-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dotnet-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: dotnet-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654           # chiseled image 'app' user (APP_UID)
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # Replace @sha256:... with the digest attested by CI (never a mutable tag).
+          image: ghcr.io/ORG/REPO@sha256:REPLACE_WITH_ATTESTED_DIGEST
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # .NET may write to /tmp; a writable emptyDir keeps the root FS read-only.
+          # ADOPTER NOTE: if you use Data Protection (cookies/antiforgery), persist keys to
+          # a mounted volume or a key vault — the default ~/.aspnet path is not writable here.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          # Map ASP.NET Core health checks to these paths (AddHealthChecks + MapHealthChecks).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}

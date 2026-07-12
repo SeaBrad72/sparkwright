@@ -1,0 +1,145 @@
+# first-run-green manifest — Java/Spring archetype (KW8 follow-on)
+# ---------------------------------------------------------------------------
+# Consumed by incept-first-run-green.sh. STACK-AGNOSTIC engine + per-archetype data:
+# every Java-specific token lives HERE, never in the check body. Same block grammar as
+# conformance/incept-manifests/typescript-node.txt; Java's mechanisms differ: compilation
+# IS type-checking (mvn compile), the lint gate is spotless(format)+checkstyle(lint), the
+# coverage floor is JaCoCo LINE>=0.80 (in pom.xml, bound to `mvn verify`), the dep-scan is
+# OWASP dependency-check (gated at failBuildOnCVSS=7), and the SBOM is CycloneDX-maven. NOTE:
+# Java's SAST analog is spotbugs(+find-sec-bugs) — this profile SHIPS that gate (`mvn spotbugs:check`,
+# see sast-spotbugs), so the block RESOLVES GREEN; the former F1 security-parity gap is closed.
+#
+# Block grammar (blank-line-separated): id / precondition / when-absent(na|skip) /
+# assert(repeatable, ALL must hold) / skip-reason / fix-hint. Predicate verbs:
+# present|absent <ERE> (LIVE comment-stripped ci.yml), comment <ERE> (RAW ci.yml),
+# scaffold <ERE>, scaffoldfile <relpath> <ERE>, file <relpath>, always.
+# ---------------------------------------------------------------------------
+
+# --- DB gate: genuinely N/A. The Java/Spring profile ships no postgres service and no
+#     .db-backed marker, so the database gate is omitted (N/A, not skipped). Mirrors go/ts. ---
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: uncomment a `services: postgres` block and add DATABASE_URL to the `ci` job
+
+# --- SAST (spotbugs + find-sec-bugs): Java's static-analysis / security-bug layer. This profile
+#     now SHIPS a real SAST gate — `./mvnw spotbugs:check` (gate-sast) with the find-sec-bugs
+#     plugin wired in pom.xml (effort=Max, threshold=Medium, failOnError=true). checkstyle is a
+#     STYLE linter, not a bug/security SAST, and OWASP dep-check covers dep vulns, not first-party
+#     code — spotbugs+find-sec-bugs closes the F1 security-parity gap vs go(gosec)/ts(semgrep). This
+#     block now RESOLVES GREEN (was a legible SKIP before the parity fix). ---
+id: sast-spotbugs
+precondition: present spotbugs:check
+when-absent: skip
+assert: present spotbugs:check
+assert: scaffoldfile pom.xml findsecbugs-plugin
+skip-reason: the `./mvnw spotbugs:check` (gate-sast) step is absent — first-party SAST gate removed (checkstyle is style-only; OWASP dep-check is dependency-only), reopening the F1 security-parity gap vs go(gosec)/ts(semgrep)
+fix-hint: restore the spotbugs-maven-plugin gate (`./mvnw spotbugs:check`, effort=Max/threshold=Medium/failOnError=true) with the com.h3xstream.findbugs:findsecbugs-plugin so first-party code keeps real static security analysis, at parity with go(gosec)/ts(semgrep)
+
+# --- Lint gate: spotless (google-java-format) for FORMAT + checkstyle for LINT, both run in
+#     the single gate-lint step. checkstyle.xml is not merely present in scaffold — it is WIRED:
+#     ci.yml runs `checkstyle:check`, and pom.xml binds the plugin to <configLocation>checkstyle.xml
+#     with a <violationSeverity> filter; the ruleset carries real rules (UnusedImports et al.). ---
+id: lint-checkstyle
+precondition: present checkstyle:check
+when-absent: skip
+assert: present spotless:check
+assert: present checkstyle:check
+assert: scaffoldfile pom.xml <configLocation>checkstyle.xml</configLocation>
+assert: scaffoldfile pom.xml <violationSeverity>warning</violationSeverity>
+assert: scaffoldfile checkstyle.xml name="UnusedImports"
+skip-reason: no checkstyle gate in this profile — nothing to lint
+fix-hint: run `./mvnw spotless:check checkstyle:check` (format + lint) and wire the shipped checkstyle.xml via <configLocation>checkstyle.xml</configLocation> in pom.xml with a <violationSeverity> filter so the ruleset is enforced, not just present
+
+# --- Type-check gate: in Java, compilation IS type-checking. `mvn compile` is the type gate. ---
+id: type-check-compile
+precondition: present mvnw -q compile
+when-absent: skip
+assert: present mvnw -q compile
+skip-reason: no `mvn compile` step in this profile — no type/compile gate
+fix-hint: run `./mvnw -q compile` so the type-checking compile pass gates the build (compilation IS type-checking in Java)
+
+# --- Test + coverage gate: `mvn verify` runs the tests and binds the JaCoCo check, which FAILS
+#     the job when BUNDLE LINE coverage drops below 0.80. The floor lives in pom.xml (the
+#     load-bearing <minimum>0.80</minimum>), wired via the jacoco-maven-plugin. ---
+id: test-coverage
+precondition: present mvnw -q verify
+when-absent: skip
+assert: present mvnw -q verify
+assert: scaffoldfile pom.xml jacoco-maven-plugin
+assert: scaffoldfile pom.xml <minimum>0.80</minimum>
+skip-reason: no `mvn verify` test step in this profile — no test/coverage gate
+fix-hint: run `./mvnw -q verify` with the jacoco-maven-plugin `check` execution enforcing BUNDLE LINE COVEREDRATIO minimum 0.80 so coverage below 80% fails the build
+
+# --- Build gate: `mvn -DskipTests package` produces the executable jar that provenance attests. ---
+id: build-package
+precondition: present mvnw -q -DskipTests package
+when-absent: skip
+assert: present mvnw -q -DskipTests package
+skip-reason: no `mvn package` step in this profile — nothing to compile/attest
+fix-hint: run `./mvnw -q -DskipTests package` so a jar artifact exists for the provenance job
+
+# --- Secret scan (gitleaks): full working-tree scan via the pinned, checksum-verified binary
+#     (`gitleaks dir . --redact`, fetch-depth: 0). `gitleaks dir` respects .gitignore, so Java's
+#     build output (target/) falls out of scope with NO allowlist file. The pinned binary is
+#     sha256-verified before use (H4b supply-chain pattern). ---
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks.*--redact
+assert: present fetch-depth:[[:space:]]*0
+assert: present sha256sum -c
+assert: scaffoldfile .gitignore ^/?target/?$
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) from a pinned sha256-verified binary and .gitignore the build output (target/) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+# --- Dependency vulnerability scan (OWASP dependency-check over the whole project). Java's
+#     dep-scan analog (peer: go=govulncheck). The threshold is load-bearing: default failBuildOnCVSS
+#     is 11 (never fails); -DfailBuildOnCVSS=7 makes any HIGH/CRITICAL (CVSS>=7) dep FAIL the build.
+#     The second assert pins that the ENFORCING threshold is present, not just the goal. ---
+id: dep-scan
+precondition: present dependency-check-maven
+when-absent: skip
+assert: present org.owasp:dependency-check-maven:check
+assert: present -DfailBuildOnCVSS[[:space:]=]*7
+skip-reason: no OWASP dependency-check step in this profile — no dependency scan to run
+fix-hint: run `./mvnw org.owasp:dependency-check-maven:check -DfailBuildOnCVSS=7` so the whole dependency graph is scanned against the NVD vuln DB and any CVSS>=7 finding fails the build (the default failBuildOnCVSS=11 never fails)
+
+# --- SBOM (CycloneDX via cyclonedx-maven-plugin), then uploaded as the `sbom` artifact. ---
+id: sbom-cyclonedx
+precondition: present cyclonedx-maven-plugin
+when-absent: skip
+assert: present cyclonedx-maven-plugin:makeAggregateBom
+assert: present name:[[:space:]]*sbom
+skip-reason: no SBOM step in this profile — nothing to attest the dependency graph
+fix-hint: generate a CycloneDX SBOM with `./mvnw org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom` and upload it as the `sbom` artifact
+
+# --- Build provenance (attest-build-provenance) gated on repo visibility so it doesn't RED on a
+#     private personal repo lacking the attestations API (first-run-green intent). ---
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate each provenance job-if on repo visibility (repository.private == false || owner.type == 'Organization') so a private personal repo legibly skips instead of RED-failing the attestations API
+
+# --- Conditional container-image supply-chain (this profile ships a service image): image SBOM
+#     (Syft/anchore) + image vuln scan (Trivy, fail on fixable CRITICAL/HIGH) + a digest-bound
+#     image provenance attestation. Present in ci.yml; runs when a Dockerfile is adapted in.
+#     Asserting the Trivy gate is real (severity + ignore-unfixed + exit 1). ---
+id: image-supply-chain
+precondition: present trivy-action
+when-absent: skip
+assert: present anchore/sbom-action
+assert: present severity:.*CRITICAL
+assert: present ignore-unfixed:[[:space:]]*true
+assert: present exit-code:[[:space:]]*.?1
+assert: present attest-build-provenance
+skip-reason: no container-image gates in this profile — no image to scan/attest
+fix-hint: build the service image on PR, SBOM it with anchore/sbom-action, scan with aquasecurity/trivy-action (severity CRITICAL,HIGH · ignore-unfixed:true · exit-code:1), and attest a digest-bound image provenance on push

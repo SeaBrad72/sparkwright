@@ -1,0 +1,136 @@
+# Reference CI pipeline for the Terraform/IaC profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Satisfies DEVELOPMENT-STANDARDS.md §14 via IaC analogs (no contract change) PLUS gate-policy.
+#   gate-build = terraform plan (the plan is the artifact)
+#   gate-dep-scan = Trivy config scan (incl. tfsec-style misconfig — tfsec is merged into Trivy)
+#   gate-sbom = Trivy CycloneDX provider/module inventory
+# conformance/ci-gates.sh asserts the 8 standard ids; gate-policy is an allowed extra.
+# HARDENING (do before production):
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
+#  - Pin tool installs to exact versions.
+#  - The conftest binary is downloaded over HTTPS; verify its checksum for production.
+#  - OIDC is least-privilege here: id-token:write lives only on the push-only `provenance`
+#    job, so PR-triggered steps cannot mint a token. Your cloud trust policy MUST restrict
+#    `sub` to `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9'
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: Init (offline)
+        id: gate-install
+        run: terraform init -backend=false
+
+      - name: Lint
+        id: gate-lint
+        run: |
+          terraform fmt -check -recursive
+          tflint --init
+          tflint
+
+      - name: Validate
+        id: gate-type-check
+        run: terraform validate
+
+      - name: Test
+        id: gate-test
+        run: terraform test
+
+      - name: Build (terraform plan)
+        id: gate-build
+        # The plan is the IaC build artifact. Needs provider creds — wire read-only/plan
+        # credentials in your repo (e.g. OIDC to the cloud). -backend=false for pure validation.
+        run: terraform plan -out=tfplan -input=false
+
+      - name: Policy-as-code (Checkov + OPA/conftest)
+        id: gate-policy
+        run: |
+          pipx run --spec 'checkov==3.2.533' checkov -d . --quiet --compact
+          CONFTEST_VERSION=0.56.0
+          curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar -xz conftest
+          ./conftest test .
+
+      - name: Secret scan
+        id: gate-secret-scan
+        # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
+        # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
+        # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
+        run: |
+          GL_VER=8.24.3
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks dir . --no-banner --redact
+
+      - name: Dependency / misconfig scan (Trivy config)
+        id: gate-dep-scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      - name: Generate SBOM (Trivy CycloneDX)
+        id: gate-sbom
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Upload build artifact (for provenance)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: tfplan          # the Terraform plan (the IaC artifact)
+          if-no-files-found: error
+
+  provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # scoped to this push-only job (build-provenance attestation)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: build-artifact
+      - name: Attest build provenance
+        id: gate-provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: build-artifact/**

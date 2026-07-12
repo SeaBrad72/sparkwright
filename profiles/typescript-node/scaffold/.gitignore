@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+# Re-include the app source + tests: a kit-obtained project may have inherited /src/ /test/ ignores
+# from the kit's maintainer .gitignore; the scaffold populates these dirs, so force them tracked.
+!/src/
+!/test/

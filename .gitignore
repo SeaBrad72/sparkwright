@@ -1,0 +1,52 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Python caches (the ml profile ships a reference evals/ harness)
+__pycache__/
+*.pyc
+
+# Build artifacts / deps — never committed at the kit root (the kit's code lives in
+# conformance/, scripts/, profiles/; root src/test/dist/coverage are stray dogfooding output
+# and node_modules must never ship — c8/istanbul also bake absolute paths into coverage).
+node_modules/
+coverage/
+dist/
+
+# Claude Code — personal/local settings (shared settings.json IS committed)
+.claude/settings.local.json
+
+# Logs
+*.log
+
+# Local tool cache (firecrawl web-search results) — never commit
+.firecrawl/
+
+# Internal build scaffolding — kept locally, NOT shipped in the public repo
+# (specs/plans/reviews/roadmaps contain personal paths + pre-anonymization context)
+# NOTE: the superpowers harness (brainstorming/writing-plans skills) defaults to writing design
+# specs here — they are gitignored as kit pre-anonymization scratch. If you use that harness,
+# keep TRACKED design docs elsewhere (e.g. under docs/architecture/; see docs/ADR-000-EXAMPLE.md), or remove
+# this ignore for your project. See docs/adoption/brownfield.md "Residual gaps".
+docs/superpowers/
+.superpowers/
+docs/ROADMAP-SLICE9.md
+docs/ROADMAP-SLICE11.md
+
+# Reference diagram (working input, not a shipped asset)
+Product:Design + pre-story discovery loops.png
+scratchpad/
+
+# E4d runaway-guard tally (runtime state; best-effort)
+.kit-run/
+
+# Mutation-testing scratch — non-vacuity.sh writes + sweeps these; ignore so a leaked
+# artifact can never be committed into the tree (kit-eval finding, 2026-07-02).
+.nv-*

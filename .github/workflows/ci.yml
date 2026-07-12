@@ -1,0 +1,646 @@
+# Kit-own CI — Sparkwright dogfooding its own governance.
+# Runs the kit's conformance checks and lints its docs on every PR.
+# (This is the kit's REAL pipeline. The adopter REFERENCE pipeline lives at
+#  profiles/typescript-node/ci.yml and is inert here.)
+# Honesty notes (A4 auditor sim): (1) live controls — branch-protection, tracker-contract — run
+#  UNVERIFIED here (CI has no remote-admin creds); they are exercised via --selftest, and the LIVE
+#  checks belong in the adopter's own pipeline. (2) Actions below are SHA-pinned per
+#  DEVELOPMENT-STANDARDS.md §14 — the kit dogfoods its own pinning rule.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: CI-gates conformance (reference workflow satisfies §14)
+        run: sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
+      - name: CI-gates conformance — GitLab reference satisfies §14 (platform portability)
+        run: sh conformance/ci-gates.sh profiles/typescript-node/ci.gitlab-ci.yml
+      - name: "Container image supply-chain conformance (service profiles: multi-stage, non-root, image SBOM + digest provenance)"
+        run: sh conformance/container-supply-chain.sh
+      - name: 15-Factor checklist present
+        run: test -f conformance/15-factor-checklist.md
+      - name: Agent-autonomy guard conformance (§13)
+        run: sh conformance/agent-autonomy.sh
+      - name: Agent-boundary CI gate self-test (§13 — ratify control-plane diffs)
+        run: sh conformance/agent-boundary.sh --selftest
+      - name: Harness-adapter conformance self-test (boundary-contract fixtures)
+        run: sh conformance/harness-adapter.sh --selftest
+      - name: Named adapters conform (codex/cursor/gemini)
+        run: sh conformance/named-adapters.sh
+      - name: Named-adapters self-test
+        run: sh conformance/named-adapters.sh --selftest
+      - name: Harness-adapter real-run (kit dogfoods its own claude-code adapter)
+        run: sh conformance/harness-adapter.sh adapters/claude-code
+      - name: Harness-adapter real-run — generic floor-only adapter
+        run: sh conformance/harness-adapter.sh adapters/generic
+      - name: Preflight self-test (prerequisite detector)
+        run: sh scripts/preflight.sh --selftest
+      - name: Publish-public self-test (the private→public denylist — non-vacuity oracle)
+        run: sh scripts/publish-public.sh --selftest
+      - name: Guard single-source-of-truth (all consumers source the core)
+        run: sh conformance/guard-core-sourced.sh
+      - name: kit-guard CLI self-test (deny battery through the CLI)
+        run: sh scripts/kit-guard --selftest
+      - name: pre-push hook self-test (force-push / push-to-main)
+        run: sh hooks/pre-push --selftest
+      - name: jq available (fail loudly if the runner drops it, no silent UNVERIFIED)
+        run: jq --version
+      - name: Guard-wired matcher validation self-test (matcher admits mutating tools incl mcp__ wildcard)
+        run: sh conformance/guard-wired.sh --selftest
+      - name: Profile-completeness conformance
+        run: sh conformance/profile-completeness.sh
+      - name: Stack-selection completeness (decision aid present + per-profile sections)
+        run: sh conformance/stack-selection.sh
+      - name: Stack-selection self-test
+        run: sh conformance/stack-selection.sh --selftest
+      - name: Stack-decision-integrity self-test (anti-bias ADR-000 fit-rationale gate)
+        run: sh conformance/stack-decision-integrity.sh --selftest
+      - name: Deploy-decision-integrity self-test (anti-bias RUNBOOK deploy fit-rationale gate)
+        run: sh conformance/deploy-decision-integrity.sh --selftest
+      - name: Decision-integrity engine self-test (all axes — stack/deploy/harness anti-bias gates)
+        run: sh conformance/decision-integrity.sh --selftest
+      - name: Script-disclosure self-test (scripts declare what-they-change and guardrails)
+        run: sh conformance/script-disclosure.sh --selftest
+      - name: Backlog-current self-test (non-terminal board rows carry state-appropriate evidence)
+        run: sh conformance/backlog-current.sh --selftest
+      - name: Persona-artifact completeness (QA/Designer templates present + named)
+        run: sh conformance/persona-artifacts.sh
+      - name: Persona-artifact self-test
+        run: sh conformance/persona-artifacts.sh --selftest
+      - name: Meta-control freshness gate self-test (M2 — mechanism + marker/log sync, not the verdict)
+        run: sh conformance/meta-control-fresh.sh --selftest
+      - name: Definition-of-Ready wiring (DoR enumerated + gate + intake)
+        run: sh conformance/dor-defined.sh
+      - name: Definition-of-Ready self-test
+        run: sh conformance/dor-defined.sh --selftest
+      - name: README badge matches VERSION (no drift)
+        run: sh conformance/badge-version.sh
+      - name: Badge-version self-test
+        run: sh conformance/badge-version.sh --selftest
+      - name: AGENTS.md load-first brief (exists + refs + line-bound)
+        run: sh conformance/agents-brief.sh
+      - name: AGENTS.md brief self-test
+        run: sh conformance/agents-brief.sh --selftest
+      - name: Conditional gates named in §7 (a11y / load / eval)
+        run: sh conformance/conditional-gates.sh
+      - name: Conditional-gates self-test
+        run: sh conformance/conditional-gates.sh --selftest
+      - name: Kit + reference pipelines pin every action to a SHA
+        run: sh conformance/action-pinning.sh
+      - name: Action-pinning self-test
+        run: sh conformance/action-pinning.sh --selftest
+      - name: Supply-chain tool verification (GitLab profile installs are checksum-verified; H4b)
+        run: sh conformance/supply-chain-verify.sh
+      - name: Supply-chain-verify self-test
+        run: sh conformance/supply-chain-verify.sh --selftest
+      - name: GitLab adoption guide completeness (branch-protection + ratification + DORA; H4a)
+        run: sh conformance/gitlab-adoption-complete.sh
+      - name: GitLab-adoption-complete self-test
+        run: sh conformance/gitlab-adoption-complete.sh --selftest
+      - name: MCP capability gate classification
+        run: sh conformance/mcp-policy.sh
+      - name: Tracker-contract self-test (Jira §6 verifier logic)
+        run: sh conformance/tracker-contract.sh --selftest
+      - name: Tracker-contract UNVERIFIED without creds (honest non-pass)
+        run: 'if sh conformance/tracker-contract.sh; then echo "ERROR: expected UNVERIFIED (exit 2), got a pass"; exit 1; else test $? -eq 2; fi'
+      - name: Core-doc budget (no silent re-bloat)
+        run: sh conformance/doc-budget.sh
+      - name: Doc-budget self-test
+        run: sh conformance/doc-budget.sh --selftest
+      - name: Definition-of-Deployable checklist present
+        run: test -f conformance/definition-of-deployable.md
+      - name: Deployable-ready conditional (N/A at kit root)
+        run: sh conformance/deployable-ready.sh
+      - name: Deployable-ready self-test (skip/OK/FAIL fixtures)
+        run: sh conformance/deployable-ready.sh --selftest
+      - name: gate-eval-secrets self-test (E6-d C5 secret-reference coherence)
+        run: sh conformance/gate-eval-secrets-ready.sh --selftest
+      - name: artifact-lineage self-test (E11 lineage-template coherence)
+        run: sh conformance/artifact-lineage-ready.sh --selftest
+      - name: roster-authority self-test (roster-authority contract doc-coherence)
+        run: sh conformance/roster-authority-ready.sh --selftest
+      - name: roster-guard self-test (Slice B dial behaviour + wiring non-vacuity)
+        run: sh conformance/roster-guard-wired.sh --selftest
+      - name: feature-flags-wired self-test (reference + golden-path flip wired)
+        run: sh conformance/feature-flags-wired.sh --selftest
+      - name: containment-audit runner self-test (usage parse; behavioural proof in golden-path)
+        run: sh scripts/containment-audit.sh --selftest
+      - name: containment-audit self-test (sandbox boot+probe wired into golden-path)
+        run: sh conformance/containment-audit-wired.sh --selftest
+      - name: runtime-security self-test (reference app security headers wired)
+        run: sh conformance/runtime-security.sh --selftest
+      - name: structured-logging self-test (reference app structured request logging wired)
+        run: sh conformance/structured-logging-wired.sh --selftest
+      - name: app-tracing self-test (reference app OTel request spans wired)
+        run: sh conformance/app-tracing-wired.sh --selftest
+      - name: metrics-endpoint self-test (reference app Prometheus /metrics wired)
+        run: sh conformance/metrics-endpoint-wired.sh --selftest
+      - name: otlp-backend self-test (reference app spans reach a real OTLP collector — wiring lock)
+        run: sh conformance/otlp-backend-wired.sh --selftest
+      - name: trace-query self-test (reference app spans retrievable from a real Jaeger query API — wiring lock)
+        run: sh conformance/trace-query-wired.sh --selftest
+      - name: E5-thin operate-loop sensor self-tests (emitter / stand-in / adapter / exporter)
+        run: |
+          sh scripts/otel-trace.sh --selftest
+          sh scripts/orchestrator-run.sh --selftest
+          sh scripts/otel-to-scorecard.sh --selftest
+          sh scripts/otlp-export.sh --selftest
+      - name: agentops-sensor self-test (operate-loop sensor wired into golden-path)
+        run: sh conformance/agentops-sensor-wired.sh --selftest
+      - name: orchestrator-loop self-test (E3a — real loop + wiring lock)
+        run: sh conformance/orchestrator-loop-wired.sh --selftest
+      - name: eval-harness self-test (E6-a eval-judge seam + pinned/independent lock)
+        run: sh conformance/eval-harness-wired.sh --selftest
+      - name: eval-harness-runs self-test (KW24 — behavioral lock, harness executes + gate fires; neutered-threshold negative)
+        run: sh conformance/eval-harness-runs.sh --selftest
+      - name: eval-harness-runs live (KW24 — actually run the reference harness end-to-end offline in CI)
+        run: sh conformance/eval-harness-runs.sh
+      - name: escalation-seam self-test (E3-escalation — HITL primitive + wiring lock)
+        run: |
+          sh scripts/escalate.sh --selftest
+          sh conformance/escalation-wired.sh --selftest
+      - name: release-tag FLOOR self-test (coherence-guarded tag decision)
+        run: sh scripts/release-tag.sh --selftest
+      - name: release-tag-wired self-test (FLOOR+NATIVE wiring lock)
+        run: sh conformance/release-tag-wired.sh --selftest
+
+      - name: SoD logic core self-test (author != approver identity logic)
+        run: sh scripts/sod-check.sh --selftest
+      - name: author-not-approver-wired self-test (SoD FLOOR+NATIVE wiring)
+        run: sh conformance/author-not-approver-wired.sh --selftest
+      - name: feature-flags-ready self-test (skip/OK/FAIL fixtures)
+        run: sh conformance/feature-flags-ready.sh --selftest
+      - name: DR-readiness checklist present
+        run: test -f conformance/dr-readiness.md
+      - name: DR-ready conditional (N/A at kit root)
+        run: sh conformance/dr-ready.sh
+      - name: DR-ready self-test (na/stateless/ok/placeholder/no-bia fixtures)
+        run: sh conformance/dr-ready.sh --selftest
+      - name: Resilience-readiness checklist present
+        run: test -f conformance/resilience-readiness.md
+      - name: Resilience-ready conditional (N/A at kit root)
+        run: sh conformance/resilience-ready.sh
+      - name: Resilience-ready self-test (na/no-surface/ok/placeholder/missing fixtures)
+        run: sh conformance/resilience-ready.sh --selftest
+      - name: Egress-policy self-test (declared/attested three-state)
+        run: sh conformance/egress-policy.sh --selftest
+      - name: Containment-ready self-test (sandbox/tokens/prod-creds three-state)
+        run: sh conformance/containment-ready.sh --selftest
+      - name: Assurance-tiers drift-guard self-test (crosswalk tiers)
+        run: sh conformance/assurance-tiers.sh --selftest
+      - name: Promotion-contract documented self-test (proportional promotion model)
+        run: sh conformance/promotion-contract-documented.sh --selftest
+      - name: Promotion-readiness classifier self-test (change-class derived + fail-safe)
+        run: sh conformance/promotion-readiness-wired.sh --selftest
+      - name: Proportional-gate wiring self-test (class-aware + honest SoD state label)
+        run: sh conformance/proportional-gate-wired.sh --selftest
+      - name: Promotion-verify integrity self-test (shipped==approved; load-bearing shipped!=approved negative)
+        run: sh conformance/promotion-verify-wired.sh --selftest
+      - name: Control-plane revert drill self-test (revert restores last-good tree; load-bearing non-restoring negative)
+        run: sh conformance/control-plane-revert-drill.sh --selftest
+      - name: Promotion-actuate gate self-test (control-plane actuation on authenticated GO; load-bearing weak/wrong-SHA/self-approval negatives)
+        run: sh conformance/promotion-actuate-wired.sh --selftest
+      - name: Inception first-run-green self-test (a fresh incept yields green-or-legibly-skipped; load-bearing misconfigured-red negatives)
+        run: sh conformance/incept-first-run-green.sh --selftest
+      - name: Inception first-run-green — live TS/Node profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/typescript-node
+      - name: Inception first-run-green — live Go profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/go
+      - name: Inception first-run-green — live Python profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/python
+      - name: Inception first-run-green — live Rust profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/rust
+      - name: Inception first-run-green — live Java/Spring profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/java-spring
+      - name: Inception first-run-green — live Kotlin profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/kotlin
+      - name: Inception first-run-green — live .NET profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/dotnet
+      - name: Inception first-run-green — live Terraform profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/terraform
+      - name: Inception first-run-green — live data-engineering profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/data-engineering
+      - name: Inception first-run-green — live ML profile (the shipped profile is green-or-legibly-skipped on a fresh incept; config-shape is tool-free)
+        run: sh conformance/incept-first-run-green.sh profiles/ml
+      - name: Non-vacuity self-test (mutation-testing mechanism + self-teeth; the live sweep runs in the non-vacuity job)
+        run: sh conformance/non-vacuity.sh --selftest
+      - name: Eval-ready self-test (AI-feature eval discipline)
+        run: sh conformance/eval-ready.sh --selftest
+      - name: Observability-ready self-test (SLOs + telemetry recorded)
+        run: sh conformance/observability-ready.sh --selftest
+      - name: Responsible-AI-ready self-test (AI System Card discipline)
+        run: sh conformance/responsible-ai-ready.sh --selftest
+      - name: Test-data-ready self-test (non-prod data discipline)
+        run: sh conformance/test-data-ready.sh --selftest
+      - name: conformance — test layers (selftest)
+        run: sh conformance/test-layers-ready.sh --selftest
+      - name: Preview-env-ready self-test (per-PR preview discipline)
+        run: sh conformance/preview-env-ready.sh --selftest
+      - name: Agent-ops-ready self-test (agentic trace-discipline record)
+        run: sh conformance/agentops-ready.sh --selftest
+      - name: DORA collector smoke (executes + degrades cleanly)
+        run: sh scripts/dora.sh --selftest
+      - name: Doctor posture self-test (resolves UNWIRED:doctor.sh)
+        run: sh scripts/doctor.sh --selftest
+      - name: Doctor-wired regression-lock
+        run: sh conformance/doctor-wired.sh
+      - name: Doctor-wired self-test
+        run: sh conformance/doctor-wired.sh --selftest
+      - name: Postmortem self-test (operate-loop generator/parser)
+        run: sh scripts/postmortem.sh --selftest
+      - name: Operate-loop-wired regression-lock
+        run: sh conformance/operate-loop-wired.sh
+      - name: Operate-loop-wired self-test
+        run: sh conformance/operate-loop-wired.sh --selftest
+      - name: Tier-advice decision view self-test
+        run: sh scripts/tier-advice.sh --selftest
+      - name: Tier-advice-wired regression-lock
+        run: sh conformance/tier-advice-wired.sh
+      - name: Tier-advice-wired self-test
+        run: sh conformance/tier-advice-wired.sh --selftest
+      - name: Adopter-preflight-wired regression-lock
+        run: sh conformance/adopter-preflight-wired.sh
+      - name: Adopter-preflight-wired self-test
+        run: sh conformance/adopter-preflight-wired.sh --selftest
+      - name: Adopter-export script self-test
+        run: sh scripts/adopter-export.sh --selftest
+      - name: Adopter-export-wired regression-lock
+        run: sh conformance/adopter-export-wired.sh
+      - name: Adopter-export-wired self-test
+        run: sh conformance/adopter-export-wired.sh --selftest
+      - name: Mode-enforcement-blind regression-lock
+        run: sh conformance/mode-enforcement-blind.sh
+      - name: Mode-enforcement-blind self-test
+        run: sh conformance/mode-enforcement-blind.sh --selftest
+      - name: Explain why-layer smoke (selftest)
+        run: sh scripts/explain.sh --selftest
+      - name: Explain-wired regression-lock
+        run: sh conformance/explain-wired.sh
+      - name: Explain-wired self-test
+        run: sh conformance/explain-wired.sh --selftest
+      - name: Agent-trace emitter smoke (selftest over fixture)
+        run: sh scripts/agent-trace.sh --selftest
+      - name: Agent-scorecard smoke (selftest over fixture corpus)
+        run: sh scripts/agent-scorecard.sh --selftest
+      - name: License-check selftest (SBOM license gate)
+        run: sh scripts/license-check.sh --selftest
+      - name: Security-policy selftest (SECURITY.md disclosure discipline)
+        run: sh conformance/security-policy.sh --selftest
+      - name: Privacy-ready selftest (data-classification DPIA-lite three-state)
+        run: sh conformance/privacy-ready.sh --selftest
+      - name: Security-policy real-path (kit dogfoods its SECURITY.md gate)
+        run: sh conformance/security-policy.sh .
+      - name: Privacy-ready real-path (kit data-classification verdict)
+        run: sh conformance/privacy-ready.sh .
+      - name: Template-detectors-aligned (detectors fire on the kit's own template format; G3)
+        run: sh conformance/template-detectors-aligned.sh
+      - name: Shellcheck available (fail loudly if the runner drops it, no silent SKIP)
+        run: shellcheck --version
+      - name: Kit shellcheck regression-lock — maintainer shell clean
+        run: sh conformance/shellcheck.sh
+      - name: Shellcheck checker selftest (clean passes, dirty fails)
+        run: sh conformance/shellcheck.sh --selftest
+      - name: branch-protection three-state self-test (no silent pass)
+        run: sh conformance/branch-protection.sh --selftest
+      - name: conformance aggregate verify self-test (control vs doc)
+        run: sh conformance/verify.sh --selftest
+      - name: Conformance aggregate ENFORCED (offline controls must hold on every PR)
+        run: sh conformance/verify.sh --require
+      - name: Verify-enforced lock (ci.yml runs the aggregate enforcing, not renderer-only)
+        run: sh conformance/verify-enforced-wired.sh
+      - name: Verify-enforced lock self-test
+        run: sh conformance/verify-enforced-wired.sh --selftest
+      - name: Waiver-register validator self-test (governed-exception corpus)
+        run: sh conformance/waivers-valid.sh --selftest
+      - name: Coverage-ratchet self-test (no-regression-below-baseline)
+        run: sh scripts/coverage-ratchet.sh --selftest
+      - name: CI-selftest coverage (every selftest-capable check is wired)
+        run: sh conformance/ci-selftest-coverage.sh
+      - name: Onboarding on-ramp completeness (present + wired)
+        run: sh conformance/onboarding-complete.sh
+      - name: Discovery layer completeness (present + wired)
+        run: sh conformance/discovery-complete.sh
+      - name: Solo review-lane present + wired (§12 / WS2)
+        run: sh conformance/review-lane.sh --selftest
+      - name: Single-invocation shim coverage (install-shims generates working shims; H2b)
+        run: sh conformance/shim-coverage.sh
+      - name: Claims registry — headline claims verified + no silent drop (D1a)
+        run: |
+          sh conformance/claim-gate-counts.sh --selftest
+          sh conformance/claims-registry.sh --selftest
+          sh conformance/drift-watch-wired.sh --selftest
+          sh conformance/cost-governance-ready.sh --selftest
+          sh conformance/claims-registry.sh
+      - name: Workflows are valid GHA documents (actionlint; G1)
+        run: sh conformance/actionlint-valid.sh
+      - name: Actionlint-valid self-test
+        run: sh conformance/actionlint-valid.sh --selftest
+      - name: Provenance jobs gated on repo visibility (G7)
+        run: sh conformance/provenance-precondition.sh
+      - name: Provenance-precondition self-test
+        run: sh conformance/provenance-precondition.sh --selftest
+      - name: token-scope self-test (OIDC id-token per-job; no static cloud creds)
+        run: sh conformance/token-scope.sh --selftest
+      - name: Golden-path harness wired (G2 — reference artifacts run end-to-end)
+        run: sh conformance/golden-path-wired.sh
+      - name: Golden-path-wired self-test
+        run: sh conformance/golden-path-wired.sh --selftest
+      - name: Golden-path filter parity (filter covers every invoked script)
+        run: sh conformance/golden-path-filter-parity.sh
+      - name: Golden-path-filter-parity self-test
+        run: sh conformance/golden-path-filter-parity.sh --selftest
+      - name: conformance — runaway kill-switch (E4d)
+        run: sh conformance/runaway-killswitch-wired.sh --selftest
+      - name: conformance — version helpers (selftest)
+        run: sh conformance/version-helpers.sh --selftest
+      - name: conformance — version↔tag coherence (selftest)
+        run: sh conformance/version-tag-coherent.sh --selftest
+
+
+  non-vacuity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Non-vacuity sweep — mutation-test every control-set check (a survivor is a vacuous check)
+        run: sh conformance/non-vacuity.sh
+
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Bootstrap a temp project and verify Inception-Done
+        run: |
+          tmp=$(mktemp -d)
+          git archive HEAD | tar -x -C "$tmp"
+          ( cd "$tmp" && sh scripts/incept.sh --noninteractive --name DemoApp --intent-owner "CI" --stack typescript-node --backlog md --harness claude-code,generic )
+          sh conformance/inception-done.sh "$tmp"
+
+  # ==========================================================================================
+  # CP-5 — THE ARTIFACT GATE. The kit is qualified by the ARTIFACT IT SHIPS, not by its source repo.
+  #
+  # `bootstrap` (above) incepts a temp project and asks it exactly ONE question (inception-done).
+  # It never runs the adopter's own conformance on the artifact, and never runs the SAST gate the
+  # kit EMITS. Both CP-1 (22 blocking Semgrep findings in the kit's retained tree -> every adopter's
+  # first PR red) and CP-3 (a stateless --no-db project misclassified as data-backed; shipped
+  # scaffold scripts failing the kit's own lint) lived in exactly that gap, for 119 versions.
+  #
+  # This job walks the REAL adopter path — the actual exporter, the actual incept — and then runs,
+  # ON THE ARTIFACT, the two things an adopter runs: their own `verify.sh --require`, and the exact
+  # SAST command their emitted CI runs. It is BLOCKING. A gate that only reports is what we just
+  # deleted (CP-2); we are not adding another.
+  # ==========================================================================================
+  artifact-gate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both archetypes: --no-db is the stateless path (where CP-3's false DR obligation lived);
+        # the default is DB-backed. A defect in either is an adopter-facing defect.
+        archetype: [no-db, db-backed]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Export the kit exactly as an adopter would (the REAL exporter, not `git archive`)
+        run: sh scripts/adopter-export.sh "$RUNNER_TEMP/adopter" --profile typescript-node
+      - name: Incept the export (the REAL incept)
+        env:
+          ARCHETYPE: ${{ matrix.archetype }}
+        run: |
+          cd "$RUNNER_TEMP/adopter"
+          nodb=""
+          [ "$ARCHETYPE" = no-db ] && nodb="--no-db"
+          # shellcheck disable=SC2086  # $nodb is a deliberate single optional flag, not a word list
+          sh scripts/incept.sh --noninteractive --name ArtifactGate --intent-owner "CI" \
+            --stack typescript-node --backlog md --harness claude-code,generic $nodb
+      - name: The adopter's OWN conformance must be green ON THE ARTIFACT
+        run: |
+          cd "$RUNNER_TEMP/adopter"
+          sh conformance/verify.sh --require
+      - name: The EXACT SAST gate the emitted CI runs — ON THE ARTIFACT (CP-1's defect)
+        run: |
+          cd "$RUNNER_TEMP/adopter"
+          # Byte-for-byte the command in profiles/typescript-node/ci.yml. Whole-app scope is a
+          # deliberate security choice — never narrow it to make this pass; fix the files.
+          pipx run semgrep --config p/default --error .
+
+  # ==========================================================================================
+  # CP-4 — repository ownership is a hard precondition. BLOCKING.
+  # Holds BOTH the kit's own scripts AND the SHIPPED (exported, pre-incept) scripts to the same bar:
+  # preflight / incept / adopter-export must refuse to act on a repo they do not own, and must fail
+  # BEFORE any file or hook is written. The kit once wrote a pre-push hook into a stranger's repo.
+  # Pre-incept is deliberate: the fixtures RUN incept, which aborts in an already-incepted tree.
+  # ==========================================================================================
+  repo-ownership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: The kit's own scripts must refuse a repo they do not own
+        run: sh conformance/repo-ownership.sh
+      - name: The SHIPPED scripts must clear the same bar — on the exported artifact
+        run: |
+          sh scripts/adopter-export.sh "$RUNNER_TEMP/exported" --profile typescript-node
+          sh conformance/repo-ownership.sh --kit-root "$RUNNER_TEMP/exported"
+
+  docs-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Relative Markdown link integrity
+        run: sh conformance/check-links.sh
+      - name: check-links self-test (code-span / fence skipping is load-bearing)
+        run: sh conformance/check-links.sh --selftest
+
+  gate-agent-boundary:
+    # H1.4 + D4 — the kit dogfoods its §13 governance gate AND presents "ratification required" as a
+    # MERGE-GATE (a distinct, non-failing, still-blocking `control-plane-ratification` check), not a red
+    # CI failure — so red ❌ / "run failed" emails stay reserved for genuine failures. The job exits 0;
+    # the posted check-run carries the state. Decision logic (conformance/agent-boundary.sh) is unchanged.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Compute changed files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed.txt
+      - name: Compute ratification signal (non-author approval)
+        id: ratify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          rat=0
+          # Ratification = a non-author APPROVAL (an agent cannot approve its own PR; GitHub forbids
+          # self-approval). The self-appliable `ratified-control-plane` label was REMOVED (H1.3) as
+          # agent-forgeable; solo maintainers ratify via a logged enforce_admins:false admin-merge.
+          # Guard the review read inside an `if !` so a failing command substitution cannot trip
+          # set -e and abort the step. FAIL CLOSED: an unreadable review list is NOT an approval —
+          # rat stays 0 (unratified), approvers reset to "" so the grep below sees an empty list.
+          if ! approvers=$(gh pr view "$PR" --json reviews \
+              -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login'); then
+            echo "control-plane-ratification: could not read reviews (gh pr view rc != 0) — treating as UNRATIFIED."
+            approvers=""
+          fi
+          # A non-empty match must be a NON-whitespace line: `grep -q .` also matches a line of
+          # spaces/tabs (the `.` matches a space), which would count a whitespace-only line as an
+          # approver (rat=1). Unreachable via real data (GitHub logins carry no whitespace; a deleted
+          # author renders as the literal `null`), but strictly NARROWING to fix — it can only move a
+          # verdict toward unratified, never toward ratified. The `grep -vxF -- "$AUTHOR"` keeps its
+          # fixed-string / whole-line / `--` hardening against a hostile author login.
+          if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q '[^[:space:]]'; then rat=1; fi
+          echo "ratified=$rat" >> "$GITHUB_OUTPUT"
+      - name: Ratification merge-gate (action_required, not a build failure)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
+          #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
+          set +e
+          CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}"
+          rc=$?
+          set -e
+          state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
+                    --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
+          class=$(sh conformance/promotion-readiness.sh --class --no-verify \
+                    --changed /tmp/changed.txt 2>/dev/null || echo control-plane)
+          # reconcile displayed class with the gate verdict: the gate (state) is union-aware and is the
+          # authority on control-plane-ness; the guard-core-only --class can under-detect adapter-declared
+          # paths (e.g. AGENTS.md) or over-fail-safe on an empty diff. Never let the surface contradict itself.
+          if [ "$state" != NONE ]; then class=control-plane
+          elif [ "$class" = control-plane ]; then class=sensitive
+          fi
+          case "$rc" in
+            0)
+              if [ "$state" = RATIFIED-BY-SECOND-REVIEWER ]; then
+                concl=success
+                title="Ratified by a second reviewer — control-plane change approved"
+                summary="What changed: a control-plane change (change-class: ${class}). State: RATIFIED-BY-SECOND-REVIEWER — a non-author reviewer approved this PR, so separation-of-duties is genuinely satisfied. No action needed. More: docs/operations/review-lane.md."
+              else
+                concl=success
+                title="No control-plane change — nothing to ratify"
+                summary="What changed: change-class ${class}; no control-plane paths in the diff. This §13 governance gate has nothing to ratify. No action needed."
+              fi
+              ;;
+            1)
+              class=control-plane  # rc=1 is definitionally control-plane-present — independent of the --state/--class reconciliation
+              concl=action_required
+              title="Ratification required — a control-plane change is awaiting a human"
+              summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: ${class}. Why: control-plane changes must be ratified by a human before merge. This is a §13 governance merge-gate, NOT a build failure — no test failed. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR -> becomes RATIFIED-BY-SECOND-REVIEWER; or (b) solo -- merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
+              ;;
+            *)
+              concl=failure
+              title="Gate error — could not evaluate the control-plane diff"
+              summary="The control-plane-ratification gate could not evaluate the PR diff (change listing unavailable). This IS a real error — unlike the other states it needs fixing. See conformance/agent-boundary.sh."
+              ;;
+          esac
+          # Post the check-run under set +e. On a FORK pull_request the GITHUB_TOKEN is read-only
+          # REGARDLESS of this job's permissions block, so checks:write is downgraded and this POST
+          # returns non-zero (403). That must NOT redden the build — this job documents itself as
+          # exit-0-regardless. But we do not pretend the post succeeded either: we name what happened.
+          # Why this is FAIL-CLOSED, not fail-open: a check-run that never posts is a REQUIRED check
+          # that stays ABSENT, and an absent required check BLOCKS the merge. An unposted gate never
+          # lets an unratified control-plane PR through — it only withholds the green until the check
+          # can post (e.g. on a same-repo PR with a writable token). Failing here would be strictly
+          # worse: same blocked merge, plus a spurious red build and failure email.
+          set +e
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name='control-plane-ratification' \
+            -f head_sha="$SHA" \
+            -f status='completed' \
+            -f conclusion="$concl" \
+            -f 'output[title]'="$title" \
+            -f 'output[summary]'="$summary"
+          api_rc=$?
+          set -e
+          if [ "$api_rc" -ne 0 ]; then
+            echo "control-plane-ratification: the check-run could not be posted (gh api rc=$api_rc). On a fork pull_request this is EXPECTED — GITHUB_TOKEN is read-only there regardless of the job's permissions block, so checks:write is downgraded. The required 'control-plane-ratification' check will simply never post, which BLOCKS the merge rather than allowing it (fail-closed)."
+          fi
+          echo "control-plane-ratification => $concl (rc=$rc, class=$class, state=$state, api_rc=$api_rc)"
+          # The job exits 0 regardless of $concl AND of api_rc — the check-run, or its absence, carries the state.
+
+  backlog-presence:
+    # KW6-A2 — the presence half of KW6. A gated-change-class (control-plane / sensitive) PR must bind
+    # its number to a row on the project's BACKLOG.md. Presented as a MERGE-GATE (a distinct,
+    # non-failing, still-blocking `backlog-presence` check), not a red CI failure — red ❌ stays reserved
+    # for genuine failures. The first CI run on any gated PR necessarily finds no board row (the PR
+    # number cannot exist before the PR is opened), so action_required is DESIGNED behaviour: the agent
+    # then adds/updates the row and pushes, flipping the check to success. The job exits 0 regardless;
+    # the posted check-run carries the state. The real run needs a PR number, so this gate exists only
+    # in PR context — there is no verify.sh control-check companion (spec §5).
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      # Least privilege: this job never calls the PR API. backlog-presence.sh reads the checked-out
+      # BACKLOG.md and takes the PR number from github.event.pull_request.number, and the only API call
+      # is the check-run POST below (checks: write). No pull-requests scope is needed.
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Compute changed files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed.txt
+      - name: Board presence merge-gate — action_required, not a build failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          # Wrap the gate call in set +e/-e so an action_required (rc=1) or gate-error (rc=2) never fails
+          # the STEP — the check-run, not the build, carries the verdict. Targets pass by argument (--pr /
+          # --changed), never the environment (spec §7). $out is the script's own verdict line.
+          set +e
+          out=$(sh conformance/backlog-presence.sh --dir . --pr "$PR" --changed /tmp/changed.txt 2>&1); rc=$?
+          set -e
+          # concl is derived from $rc ONLY — never from $out — so the posted conclusion cannot drift from
+          # the gate's own verdict.
+          case "$rc" in
+            0) concl=success;         title="Board row bound — or not required" ;;
+            1) concl=action_required; title="Board row required — bind this PR to a backlog row" ;;
+            *) concl=failure;         title="Gate error — could not evaluate board presence" ;;
+          esac
+          # Post the check-run under set +e as well. On a FORK pull_request the GITHUB_TOKEN is read-only,
+          # so checks:write is not granted and this POST returns non-zero (403). That must NOT redden the
+          # build — this job documents itself as exit-0-regardless (spec §5.1). But we do not pretend the
+          # post succeeded either: we name exactly what happened.
+          # Why this is FAIL-CLOSED, not fail-open: a check-run that never posts is a REQUIRED check that
+          # stays ABSENT, and an absent required check BLOCKS the merge. An unposted gate therefore never
+          # lets a gated PR through — it only withholds the green until the check can post (e.g. on a
+          # same-repo PR with a writable token). Failing here would be strictly worse: same blocked merge,
+          # plus a spurious red build and failure email.
+          set +e
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name='backlog-presence' \
+            -f head_sha="$SHA" \
+            -f status='completed' \
+            -f conclusion="$concl" \
+            -f 'output[title]'="$title" \
+            -f 'output[summary]'="$out"
+          api_rc=$?
+          set -e
+          if [ "$api_rc" -ne 0 ]; then
+            echo "backlog-presence: the check-run could not be posted (gh api rc=$api_rc). On a fork pull_request this is EXPECTED — the token is read-only (no checks:write), so the required 'backlog-presence' check will simply never post, which BLOCKS the merge rather than allowing it (fail-closed)."
+          fi
+          echo "backlog-presence => $concl (rc=$rc, api_rc=$api_rc)"
+          # The job exits 0 regardless of $concl AND regardless of $api_rc — no failure email. When it can
+          # post, the check-run carries the state; when it cannot, its absence blocks the merge.

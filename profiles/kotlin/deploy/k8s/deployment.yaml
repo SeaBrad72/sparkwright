@@ -1,0 +1,70 @@
+# Reference k8s Deployment for the Kotlin / Spring Boot profile. COPY & ADAPT.
+# Image is referenced BY DIGEST (immutable) — the attested digest from CI.
+# For HA production, also add: a startupProbe (the JVM is slow to start — see below),
+# a PodDisruptionBudget (minAvailable: 1), and topologySpreadConstraints.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kotlin-app
+  labels:
+    app: kotlin-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kotlin-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: kotlin-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # distroless 'nonroot'
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # Replace @sha256:... with the digest attested by CI (never a mutable tag).
+          image: ghcr.io/ORG/REPO@sha256:REPLACE_WITH_ATTESTED_DIGEST
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # The JVM writes to /tmp (e.g. Tomcat work dir); a writable emptyDir keeps root FS read-only.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          # Spring Boot Actuator liveness/readiness groups (enable
+          # management.endpoint.health.probes.enabled=true). The JVM is slow to start —
+          # prefer a startupProbe over a large initialDelaySeconds in production.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: tmp
+          emptyDir: {}

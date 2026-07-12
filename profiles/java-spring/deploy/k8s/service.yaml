@@ -1,0 +1,15 @@
+# Reference k8s Service for the Java / Spring Boot profile. COPY & ADAPT.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-app
+  labels:
+    app: spring-app
+spec:
+  type: ClusterIP
+  selector:
+    app: spring-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080

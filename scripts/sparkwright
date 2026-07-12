@@ -1,0 +1,15 @@
+#!/bin/sh
+# What it changes: nothing directly — a pure router that dispatches (via exec) to the named
+# subcommand's script (doctor/postmortem/tier-advice/explain); every effect belongs to that subcommand.
+# Guardrails: no privileges of its own; empty/-h/--help prints usage and exits 2; an unknown subcommand
+# exits 2 without dispatching; all behavior is delegated to the subcommand it execs.
+set -eu
+here=$(dirname "$0")
+case "${1:-}" in
+  doctor) shift; exec sh "$here/doctor.sh" "$@" ;;
+  postmortem) shift; exec sh "$here/postmortem.sh" "$@" ;;
+  tier-advice) shift; exec sh "$here/tier-advice.sh" "$@" ;;
+  explain) shift; exec sh "$here/explain.sh" "$@" ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain" >&2; exit 2 ;;
+esac

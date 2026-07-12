@@ -1,0 +1,1 @@
+{"agent.id": "bad-bot", "run.id": "b2", "start": "2026-06-10T02:00:00Z", "outcome": "completed", "review.rounds": 1, "gates.skipped": "unknown", "steps": [{"name": "Read", "outcome": "ok", "retries": 0}], "cost": 0.2, "eval.score": 0.8}

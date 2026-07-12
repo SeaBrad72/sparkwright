@@ -1,0 +1,84 @@
+# Onboarding — Start Where You Are
+
+> New to the kit? This is the front door. It places you by **experience**, then hands you to
+> `START-HERE.md` for your **role** and Inception. Two minutes here saves you hours later.
+
+## The one idea that matters
+
+**Coding is the task. Software engineering is everything that has to go *around* the code for an
+enterprise** — tests, environments, security, governance, observability, release safety. Vibe
+coding gets you working code; it does not get you software that an enterprise can trust, operate,
+and not be harmed by. **This kit is that "everything around it."** The goal of this page: get you
+*functional and not dangerous*, fast.
+
+## You will not read all of this
+
+The kit is comprehensive so it can carry you from intent to operating software — but the *reading* is
+just-in-time. Get functional first; pull depth when a trigger fires. `START-HERE.md` has the **"first 5"
+core path + the pull-not-push map** — that is all you need open to begin. Enterprise, operability, and
+continuity depth are there for the moment your context needs them, not before.
+
+## Which lane are you in?
+
+Pick the one that sounds like you. Non-punitive — feels too basic? Jump up a lane.
+
+- **Novice / Coding-first** — *"I can make code work (often with AI), but tests, environments,
+  security, and governance are new to me."* → **Learning lane** below.
+- **Adjacent** — *"I've worked in or around software delivery (product, PM, BA) — I know these
+  practices exist but haven't done them myself."* → **Learning lane** below (skim what you know).
+- **Practitioner** — *"I've shipped enterprise software; route me to the contract."* →
+  **straight to [START-HERE.md](START-HERE.md)** + the principles (`CLAUDE.md`). Skip the rest.
+  *Senior / principal / architect:* your home is the architecture lens at the §7 review gate (ADRs,
+  15-factor), the autonomy-tier model (`DEVELOPMENT-PROCESS.md` §13), and the enterprise layer
+  ([docs/enterprise/](docs/enterprise/)) — `MAINTAINING.md` if you'll extend the kit itself.
+
+> **Don't have the product or design figured out yet?** Most of this kit assumes you arrive with a
+> *Ready* backlog. If you're upstream of that — raw idea, no validated problem yet — start with the
+> optional **[discovery loop](docs/discovery/discovery-loop.md)** (FRAME → SHAPE → Ready), then come back.
+
+## Which role are you?
+
+The lane above is about *how much SDLC you know*; this is about *which function you hold* — the two
+are independent (a novice QA and a principal QA are the same role, different lanes). The pillars in the
+Learning lane below are for whoever will hold the **Builder** function. If you're a **non-builder**,
+here's where you plug in and what you produce — the authoritative function map is
+[`DEVELOPMENT-PROCESS.md` §2](DEVELOPMENT-PROCESS.md).
+
+| Your role | Where you plug into the loop | Your entry → exit artifact |
+|-----------|------------------------------|----------------------------|
+| **Product Owner / BA** | Discover → Plan; you accept increments | [FEATURE-REQUEST](templates/FEATURE-REQUEST-TEMPLATE.md) → accepted increment |
+| **Designer (UX)** | Discover (UX input, advisory) → Review (a11y) | design assets → [A11Y-SIGNOFF](templates/A11Y-SIGNOFF-TEMPLATE.md) |
+| **QA Engineer** | Review (test lens) + the UAT acceptance gate | [TEST-PLAN](templates/TEST-PLAN-TEMPLATE.md) → [UAT-SIGNOFF](templates/UAT-SIGNOFF-TEMPLATE.md) |
+| **Security Owner** | The security / ratification gate (§7, §13) | [THREAT-MODEL](templates/THREAT-MODEL-TEMPLATE.md) → gate pass / governed exception |
+| **DevOps / SRE** | Release → Operate (deploy, rollback, monitoring) | works through the [RUNBOOK](templates/RUNBOOK-TEMPLATE.md) |
+| **Engineer** | Plan → Build → Review (you hold Builder) | spec → reviewed PR — **and the Learning-lane pillars below are yours** |
+
+> **Non-builders: the rigor is carried, not waived.** You don't hand-craft tests or 15-factor config.
+> When your intent becomes code, the agent builds it test-first and the CI gates enforce 15-factor,
+> observability, and security on **every** PR — regardless of who filed it. Your own artifact has its
+> own bar (testable acceptance criteria, an a11y sign-off); the code that realizes it gets the full
+> standard. Routing by role changes *which doc you open*, never *which gate applies*.
+
+## Learning lane (Novice + Adjacent)
+
+You don't need to learn all of this before you start — you need to know it *exists* and *why*, then
+learn each piece as you hit it. For each pillar: **why an enterprise needs it → learn it for real →
+where the kit applies it.** (Skip any you already know.)
+
+| Pillar | Why an enterprise needs it | Learn it (canonical) | Where the kit applies it |
+|--------|----------------------------|----------------------|--------------------------|
+| **Test-Driven Development** | Change without fear; tests are the safety net that lets agents move fast | [Martin Fowler — TDD](https://martinfowler.com/bliki/TestDrivenDevelopment.html) + the worked demo: [docs/onboarding/first-feature-tdd.md](docs/onboarding/first-feature-tdd.md) | `DEVELOPMENT-STANDARDS.md` §7 + your `profiles/<stack>.md` |
+| **15-Factor architecture** | Apps that run the same everywhere, scale, and don't lose data | [12factor.net](https://12factor.net) (+ the 3 modern factors) | `DEVELOPMENT-STANDARDS.md` §13 + `conformance/15-factor-checklist.md` |
+| **Security & privacy** | Enterprises hold real user/affiliate/children's data; a breach is existential | [OWASP Top 10](https://owasp.org/www-project-top-ten/) | `DEVELOPMENT-STANDARDS.md` §2 + `SECURITY.md` + `docs/enterprise/data-governance.md` |
+| **Governance & autonomy** | Agents (and humans) must not be able to cause irreversible harm | *kit-defined — learn it in the kit doc →* | `DEVELOPMENT-PROCESS.md` §12–13 + `.claude/` guard |
+| **Environments & scale** | Prod is not your laptop; promotion is gated; production is human-gated | [12factor.net](https://12factor.net) (dev/prod parity) | `DEVELOPMENT-PROCESS.md` "Environments & promotion" |
+| **Observability** | If you can't see it in prod, you can't operate it | [the three pillars](https://opentelemetry.io/docs/concepts/observability-primer/) | `DEVELOPMENT-STANDARDS.md` Factor 14 + `docs/operations/` |
+
+Then see the whole thing in motion: **[WALKTHROUGH.md](WALKTHROUGH.md)** — one feature from idea to
+operating software. When ready, go to **[START-HERE.md](START-HERE.md)**.
+
+> **You can't break things by reading the wrong lane.** The kit's runtime guard is a **best-effort
+> speed bump, not a security boundary** (it raises friction on many irreversible actions but does not
+> stop a determined bypass — see [`docs/operations/runtime-guards.md`](docs/operations/runtime-guards.md));
+> the real safety net is the platform controls your org owns. CI gates run on every project regardless
+> of what you read. This page makes you *educated*; the guardrails *reduce* risk — they don't remove it.

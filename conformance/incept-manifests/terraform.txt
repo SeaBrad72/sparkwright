@@ -1,0 +1,101 @@
+# first-run-green manifest — Terraform/IaC archetype (KW8-remaining)
+# --------------------------------------------------------------------------
+# Consumed by conformance/incept-first-run-green.sh. Pure ci.yml config-shape:
+# this profile ships NO scaffold/ dir, so only present/absent/comment/file
+# predicates are used (no scaffold/scaffoldfile, no live-gate). Every Terraform
+# token lives HERE. KW25: security gates assert the ENFORCING VALUE.
+# HONEST CEILING: proves ci.yml config-shape is green-or-legibly-skip; cannot
+# prove `terraform plan` runs (needs cloud creds) — that is the adopter's CI.
+# --------------------------------------------------------------------------
+
+id: deps-install
+precondition: present gate-install
+when-absent: skip
+assert: present terraform init -backend=false
+skip-reason: no install gate in this profile — nothing to activate
+fix-hint: offline init with `terraform init -backend=false`
+
+id: lint-fmt-tflint
+precondition: present gate-lint
+when-absent: skip
+assert: present terraform fmt -check -recursive
+assert: present tflint
+skip-reason: no lint gate in this profile — nothing to activate
+fix-hint: run `terraform fmt -check -recursive` and `tflint`
+
+id: type-check-validate
+precondition: present gate-type-check
+when-absent: skip
+assert: present terraform validate
+skip-reason: no validate gate in this profile — nothing to activate
+fix-hint: run `terraform validate`
+
+id: test
+precondition: present gate-test
+when-absent: skip
+assert: present terraform test
+skip-reason: no test gate in this profile — nothing to activate
+fix-hint: run `terraform test`
+
+id: build-plan
+precondition: present gate-build
+when-absent: skip
+assert: present terraform plan -out=tfplan
+skip-reason: no build gate in this profile — no plan artifact
+fix-hint: produce the IaC artifact with `terraform plan -out=tfplan -input=false`
+
+id: policy-as-code
+precondition: present gate-policy
+when-absent: skip
+assert: present checkov
+assert: present conftest test
+# KW25-family soft-fail-hardening: a presence-only assert for a fail-closed-by-default
+# tool would miss an adopter adding a gate-neutering flag. Checkov exits 0 even on
+# findings when `--soft-fail` is set; the real ci.yml has no such flag, so this holds GREEN.
+# HONEST CEILING: this closes the *documented* `--soft-fail` flag vector only. A broader
+# `|| true` shell append is a general gate-neutering pattern, not cleanly assertable per-gate.
+assert: absent [-]-soft-fail
+skip-reason: no policy gate in this profile — no IaC SAST layer to activate
+fix-hint: run Checkov (`checkov -d .`) and OPA/conftest (`conftest test .`)
+
+id: dep-scan-trivy
+precondition: present gate-dep-scan
+when-absent: skip
+assert: present scan-type: config
+assert: present severity:.*CRITICAL
+assert: present exit-code:[[:space:]]*.?1
+skip-reason: no dep-scan gate in this profile — no misconfig scan to activate
+fix-hint: run aquasecurity/trivy-action scan-type: config, severity HIGH,CRITICAL, exit-code: '1' (fail-closed)
+
+id: sbom-trivy
+precondition: present gate-sbom
+when-absent: skip
+assert: present format: cyclonedx
+assert: present sbom.json
+skip-reason: no SBOM gate in this profile — nothing to attest the module graph
+fix-hint: generate a CycloneDX SBOM with trivy scan-type: fs, format: cyclonedx
+
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present --redact
+assert: present fetch-depth:[[:space:]]*0
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full-tree, fetch-depth: 0)
+
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate the provenance job-if on repo visibility (private == false OR owner.type == 'Organization')
+
+id: db-postgres
+precondition: present ^[[:space:]]+postgres:
+when-absent: na
+assert: present image:[[:space:]]*postgres
+assert: present POSTGRES_
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: add a `services: postgres` block if this archetype becomes DB-backed

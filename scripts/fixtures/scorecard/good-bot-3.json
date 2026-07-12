@@ -1,0 +1,1 @@
+{"agent.id": "good-bot", "run.id": "g3", "start": "2026-06-10T03:00:00Z", "outcome": "completed", "review.rounds": 1, "gates.skipped": "unknown", "steps": [{"name": "Read", "outcome": "ok", "retries": 0}], "cost": 0.1, "eval.score": 0.9}

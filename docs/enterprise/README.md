@@ -1,0 +1,42 @@
+# Enterprise Addendum
+
+Governance, compliance, and privacy guidance for organizations adopting this kit. This addendum **hangs off** the authoritative docs (`../../CLAUDE.md`, `../../DEVELOPMENT-STANDARDS.md`, `../../DEVELOPMENT-PROCESS.md`) and never overrides them — where they overlap, the governing docs win.
+
+**Pull-not-push:** this addendum is **not** part of the first-5 core path. Reach it when a regulated / audited / at-scale context makes its controls apply — the front-door map in [`../../START-HERE.md`](../../START-HERE.md) routes you here on trigger. Adopting nothing here weakens the kit's floor; it adds the depth a heavier compliance posture needs.
+
+## Contents
+
+| Doc | Purpose |
+|-----|---------|
+| [EXEC-BRIEF.md](EXEC-BRIEF.md) | Leadership entry point — what / why / assurance / honest boundaries / compliance-at-a-glance. |
+| [ORG-ROLLOUT.md](ORG-ROLLOUT.md) | Pilot→expand→fleet adoption, the canonical Stage 1–4 maturity model, fleet upgrade. |
+| [ROI-MODEL.md](ROI-MODEL.md) | Parameterized ROI worksheet + a labeled worked example. |
+| [compliance-crosswalk.md](compliance-crosswalk.md) | Maps the controls this kit enforces to SOC 2 (Security + Privacy), ISO 27001:2022 Annex A, NIST SSDF (SP 800-218), and SLSA. |
+| [ai-governance-crosswalk.md](ai-governance-crosswalk.md) | US-first AI-governance map — NIST AI RMF / ISO 42001 / US state law / OWASP+MITRE; EU AI Act optional overlay. |
+| [secrets-at-scale.md](secrets-at-scale.md) | Managed-secret-store contract (Vault/KMS) + secret-manager client by stack. |
+| [ratification-rbac.md](ratification-rbac.md) | Which roles may ratify what; the governed-exception process. |
+| [platform-safety-boundary.md](platform-safety-boundary.md) | The Org-owned **real** safety boundary behind the agent guard — egress allowlist, separate prod credentials, sandboxed FS, scoped tokens. |
+| [audit-evidence-checklist.md](../../conformance/audit-evidence-checklist.md) | Per-control evidence checklist for an audit. |
+
+## What this kit does — and does not — cover
+
+This kit is a **portable SDLC framework**, not a compliance program. It bakes in the *engineering* controls that produce audit evidence (CI quality gates, supply-chain integrity, branch protection, agent governance, audit logging, security primitives). It **maps** those to framework controls so you can show an auditor where the evidence lives.
+
+It does **not** run your compliance or privacy *program*. The following control families are **Org-owned** (the kit may assist, but the organization owns them):
+
+- **Personnel / HR security** — background checks, onboarding/offboarding, security training.
+- **Physical & environmental security** — facilities, media handling, equipment.
+- **Vendor / third-party risk management** — supplier due diligence, contracts, ongoing monitoring (incl. affiliate/partner data-sharing agreements).
+- **Business continuity / disaster recovery** — beyond the technical RUNBOOK DR section (BIA, tested recovery, alternate sites).
+- **Privacy program** — the kit provides PII/consent/erasure *primitives* and maps them, but the organization owns its privacy program: lawful basis, notices, consent records, data-subject-request handling, retention schedules, and **children's-data obligations (COPPA / GDPR minors' provisions / CCPA-CPRA)** where applicable.
+- **Runtime coverage of the agent guard** — the committed `.claude/` guard prevents destructive actions only within the **Claude Code agent runtime**. Humans at a shell and other agent runtimes are not covered; production destructive-action prevention for them is **Org-owned** (database IAM, separate prod accounts/credentials, deploy approvals).
+
+## Responsibility legend
+
+Every crosswalk row carries one of:
+
+- **Kit-enforced** — the kit mechanically enforces this (a CI gate, a guard hook, branch protection); evidence is produced automatically.
+- **Kit-assisted** — the kit provides patterns/primitives/standards, but the team must apply them and produce evidence.
+- **Org-owned** — outside the kit's scope; the organization owns the control and its evidence.
+
+> A map that hides its own edges is misleading. "Kit-assisted" and "Org-owned" are first-class, honest outcomes — not gaps to paper over.

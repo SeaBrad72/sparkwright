@@ -1,0 +1,128 @@
+# first-run-green manifest — Rust archetype (KW8 follow-on)
+# ---------------------------------------------------------------------------
+# Consumed by incept-first-run-green.sh. STACK-AGNOSTIC engine + per-archetype data:
+# every Rust-specific token lives HERE, never in the check body. Same block grammar as
+# conformance/incept-manifests/typescript-node.txt; Rust's mechanisms differ (clippy
+# -D warnings + cargo check, NOT semgrep/eslint; cargo-cyclonedx SBOM; cargo-audit
+# dep-scan; cargo-llvm-cov coverage floor).
+#
+# Block grammar (blank-line-separated): id / precondition / when-absent(na|skip) /
+# assert(repeatable, ALL must hold) / skip-reason / fix-hint. Predicate verbs:
+# present|absent <ERE> (LIVE comment-stripped ci.yml), comment <ERE> (RAW ci.yml),
+# scaffold <ERE>, scaffoldfile <relpath> <ERE>, file <relpath>, always.
+# ---------------------------------------------------------------------------
+
+# --- DB gate: genuinely N/A. Rust profile ships no postgres service and no .db-backed
+#     marker, so the database gate is omitted (N/A, not skipped). Mirrors the reference. ---
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: uncomment a `services: postgres` block and add DATABASE_URL to the `ci` job
+
+# --- SAST: Rust does NOT ship semgrep. The static-analysis / lint layer is clippy run with
+#     `-D warnings` (asserted below in lint-clippy). This block legibly SKIPS when semgrep is
+#     absent so the "where's SAST?" question has a recorded answer. ---
+id: sast-semgrep
+precondition: present semgrep
+when-absent: skip
+assert: present --config p/default
+skip-reason: Rust static analysis is clippy run with -D warnings (see lint-clippy) — no semgrep step to scope
+fix-hint: keep clippy `-D warnings` enabled (see lint-clippy); a separate semgrep step is not expected for Rust
+
+# --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
+#     (`gitleaks dir . --redact`, fetch-depth: 0). `gitleaks dir` respects .gitignore, so Rust's
+#     build output (/target) falls out of scope with NO allowlist file. ---
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks.*--redact
+assert: present fetch-depth:[[:space:]]*0
+assert: scaffoldfile .gitignore ^/?target
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (/target) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+# --- Dependency vulnerability scan (cargo-audit over the whole crate against the RustSec
+#     advisory DB). This is Rust's dep-scan analog to Go's govulncheck. ---
+id: dep-scan
+precondition: present cargo-audit
+when-absent: skip
+assert: present cargo audit([[:space:]]|$)
+skip-reason: no cargo-audit step in this profile — no dependency scan to run
+fix-hint: run `cargo audit` so the whole dependency tree is scanned against the RustSec advisory DB
+
+# --- SBOM (CycloneDX via cargo-cyclonedx), then uploaded as an artifact. ---
+id: sbom-cyclonedx
+precondition: present cargo-cyclonedx
+when-absent: skip
+assert: present cargo cyclonedx -f json
+assert: present name:[[:space:]]*sbom
+skip-reason: no SBOM step in this profile — nothing to attest the dependency graph
+fix-hint: generate a CycloneDX SBOM with `cargo cyclonedx -f json` and upload it as the `sbom` artifact
+
+# --- Lint / static-analysis gate (clippy) with `-D warnings` (deny) over ALL targets. clippy
+#     IS the Rust SAST/lint layer, so `-D warnings` must be asserted present — a clippy run
+#     WITHOUT -D warnings is a silent non-gate (warnings do not fail the build). ---
+id: lint-clippy
+precondition: present cargo clippy
+when-absent: skip
+assert: present cargo clippy
+assert: present --all-targets
+assert: present -D warnings
+skip-reason: no clippy step in this profile — nothing to lint
+fix-hint: run `cargo clippy --all-targets -- -D warnings` so lints are denied (fail the build), not merely warned; clippy is the Rust static-analysis layer
+
+# --- Type-check gate (cargo check over all targets). ---
+id: type-check
+precondition: present cargo check
+when-absent: skip
+assert: present cargo check.*--all-targets
+skip-reason: no cargo check step in this profile — no type-check gate
+fix-hint: run `cargo check --all-targets` so all targets type-check
+
+# --- Test + coverage gate: cargo-llvm-cov with an >=80% line-coverage floor that FAILS the
+#     job when total coverage drops below 80% (--fail-under-lines 80). ---
+id: test-coverage
+precondition: present cargo llvm-cov
+when-absent: skip
+assert: present cargo llvm-cov
+assert: present --fail-under-lines[[:space:]]+80
+skip-reason: no cargo-llvm-cov step in this profile — no test/coverage gate
+fix-hint: run `cargo llvm-cov --fail-under-lines 80` and fail when total line coverage drops below 80
+
+# --- Build gate (produces the release binary that provenance attests). ---
+id: build-binary
+precondition: present cargo build
+when-absent: skip
+assert: present cargo build --release
+skip-reason: no cargo build step in this profile — nothing to compile/attest
+fix-hint: run `cargo build --release` so a build artifact exists for the provenance job
+
+# --- Build provenance (attest-build-provenance) gated on repo visibility so it doesn't
+#     RED on a private personal repo lacking the attestations API (first-run-green intent). ---
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate each provenance job-if on repo visibility (repository.private == false || owner.type == 'Organization') so a private personal repo legibly skips instead of RED-failing the attestations API
+
+# --- Conditional container-image supply-chain (this profile ships a service image): image
+#     SBOM (Syft/anchore) + image vuln scan (Trivy, fail on fixable CRITICAL/HIGH) + a
+#     digest-bound image provenance attestation. Present in ci.yml; runs when a Dockerfile
+#     is adapted in. Asserting the Trivy gate is real (severity + ignore-unfixed + exit 1). ---
+id: image-supply-chain
+precondition: present trivy-action
+when-absent: skip
+assert: present anchore/sbom-action
+assert: present severity:.*CRITICAL
+assert: present ignore-unfixed:[[:space:]]*true
+assert: present exit-code:[[:space:]]*.?1
+assert: present attest-build-provenance
+skip-reason: no container-image gates in this profile — no image to scan/attest
+fix-hint: build the service image on PR, SBOM it with anchore/sbom-action, scan with aquasecurity/trivy-action (severity CRITICAL,HIGH · ignore-unfixed:true · exit-code:1), and attest a digest-bound image provenance on push

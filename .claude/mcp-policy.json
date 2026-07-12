@@ -1,0 +1,5 @@
+{
+  "_comment": "MCP capability gate policy (Slice 11a). guard_check_mcp denies un-allowlisted destructive/egress MCP tools by default. Add the tools this project needs. Prefer exact 'mcp__server__action' entries over 'mcp__server__*' wildcards: a wildcard admits EVERY tool on that server (including destructive ones), bypassing classification. classOverride reclassifies a single tool (e.g. {\"mcp__x__export_report\": \"read\"}). Control-plane: edit only via human maintenance.",
+  "allow": [],
+  "classOverride": {}
+}

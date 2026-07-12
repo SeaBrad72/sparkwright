@@ -1,0 +1,15 @@
+# Image referenced by digest (immutable, attested in CI).
+image:
+  repository: ghcr.io/ORG/REPO
+  digest: "sha256:REPLACE_WITH_ATTESTED_DIGEST"
+replicaCount: 2
+service:
+  port: 80
+  targetPort: 3000
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"

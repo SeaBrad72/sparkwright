@@ -1,0 +1,376 @@
+# Reference CI pipeline for the TypeScript/Node profile.
+# COPY & ADAPT: copy this file to your project's .github/workflows/ci.yml.
+# It is INERT here in the kit repo (GitHub only runs workflows under .github/workflows/).
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14 (CI/CD Pipeline) incl. the conditional
+# container image supply-chain (gate-image-sbom + gate-image-provenance).
+#
+# HARDENING (do before production):
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v6.x).
+#    Note `anchore/sbom-action@v0` is a MAJOR-version float (highest-risk) — pin it first.
+#  - Pin tool installs to exact versions.
+#  - OIDC is least-privilege here: id-token:write / packages:write live only on the
+#    push-only provenance jobs, so PR-triggered steps cannot mint a token or push an
+#    image. Your cloud trust policy MUST restrict `sub` to
+#    `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    outputs:
+      has_dockerfile: ${{ steps.detect-dockerfile.outputs.has_dockerfile }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # >>> kit:db-backed (incept removes for non-DB archetypes)
+    # The ts-node default archetype IS a DB-backed service (authed CRUD + a relational store), so
+    # Postgres ships ACTIVE: integration tests get a real database in CI (the profile's §6 testing
+    # guidance asserts DB state). NOTE: `npx prisma generate` MUST run before type-check/build (tsc
+    # needs the client) and `prisma migrate deploy` before tests — add those steps when you wire an
+    # ORM/schema (the minimal /healthz starter does not connect, so the idle service stays green).
+    # `sh scripts/incept.sh --no-db …` strips this whole delimited region AND deletes the
+    # scaffold/.db-backed marker, so a NON-DB archetype ships no idle database service.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/app'
+    # <<< kit:db-backed
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0   # full history so the secret scan sees all commits
+
+      - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
+        id: detect-dockerfile
+        run: |
+          if [ -f Dockerfile ]; then echo "has_dockerfile=true"; else echo "has_dockerfile=false"; fi >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        id: gate-install
+        run: npm ci
+
+      - name: Lint
+        id: gate-lint
+        run: npm run lint
+
+      - name: Type-check
+        id: gate-type-check
+        run: npm run type-check
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: npm run test:coverage   # vitest --coverage; thresholds enforced in vitest.config.ts
+
+      - name: AI eval gate (conditional — runs only if an evals/ dir is present)
+        id: gate-eval
+        run: |
+          if [ -d evals ]; then
+            npm run eval   # define an "eval" script that scores against a rubric and exits non-zero below threshold
+          else
+            echo "no evals/ dir — skipping the eval gate (add one when your feature uses a model; see profiles/ml/evals for a reference)"
+          fi
+
+      - name: Build
+        id: gate-build
+        run: npm run build
+
+      - name: Secret scan
+        id: gate-secret-scan
+        # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
+        # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
+        # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
+        # SECRET-GATE SCOPE: this is a FULL-history, full-tree scan (fetch-depth: 0 above). The only
+        # thing out of scope is generated build output (dist/, coverage/) — and it is out of scope
+        # because it is `.gitignore`d (see scaffold/.gitignore), which `gitleaks dir` respects. No
+        # allowlist file is used or needed: gitleaks' `.gitleaksignore` holds finding FINGERPRINTS
+        # (commit:file:rule:line), NOT path globs, so a path-glob allowlist would be inert (rejected
+        # with a warning). Source, env files, and configs are never excluded — they stay fully in scope.
+        run: |
+          GL_VER=8.24.3
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks dir . --no-banner --redact
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: npm audit --omit=dev --audit-level=high   # prod-dep posture; triage dev-tool advisories separately (they don't ship)
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom.json
+
+      - name: SAST (Semgrep)
+        id: gate-sast
+        # `run:` (not a marketplace action) — nothing to SHA-pin, satisfies action-pinning.sh.
+        # `--error` makes findings fail the gate; tune `--config` to a pinned ruleset for prod.
+        # SAST SCOPE — EXCLUSION-scoping (deliberate, security reason): scan the WHOLE app by default
+        # (`--error .`) and opt OUT of only genuinely-noisy generated/vendored paths via the committed
+        # `.semgrepignore` (dist/, coverage/, node_modules/ — see scaffold/.semgrepignore). This is the
+        # secure default: a new code root you add later (app/, server/, lib/, pages/) stays covered
+        # automatically — the previous src/-only INCLUSION scope would have SILENTLY dropped SAST on any
+        # code outside src/. Never trade whole-app coverage for a single-dir scope. Keep `--config
+        # p/default` (a pinned ruleset); never `--config auto` (auto resolves a different registry
+        # ruleset per environment = a flaky required gate).
+        run: pipx run semgrep --config p/default --error .
+
+      - name: License policy (over the SBOM)
+        id: gate-license
+        run: sh scripts/license-check.sh --sbom sbom.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: sbom
+          path: sbom.json
+
+      - name: Emit agent-ops trace (agentops sensor)
+        id: gate-agent-trace
+        # Emits one OTel-shaped agent-ops span for this CI run (the agentops-sensor path). First-run-
+        # GREEN by construction: runs the shipped scripts/otel-trace.sh sensor when present, else emits
+        # a minimal inline NDJSON span — so an empty adopter that has not yet wired the sensor still
+        # passes (no missing-script RED). This step OBSERVES; it never narrows any gate.
+        run: |
+          if [ -f scripts/otel-trace.sh ]; then
+            sh scripts/otel-trace.sh --emit
+          else
+            printf '{"name":"agentops.ci","status":{"code":"OK"}}\n'
+          fi
+
+      # --- conditional container image supply-chain (service profile) ---
+      # Builds the image and scans it on EVERY PR (real scan-before-merge); no push here.
+      # NOTE: this PR-time build and the push-only `image-provenance` build are independent,
+      # so the scanned digest is not guaranteed identical to the attested digest. Least-
+      # privilege forbids the PR job from pushing, so a single shared build can't span both.
+      # For production, make SBOM and provenance cover identical bits: e.g. in image-provenance,
+      # also generate an SBOM of the pushed digest (Syft against ghcr.io/...@<digest>) and
+      # attest it alongside provenance — so the release SBOM matches the attested image.
+      - name: Build container image (local, for SBOM scan)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        run: docker build -t ts-node-app:ci .
+
+      - name: Generate image SBOM (Syft, CycloneDX)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        id: gate-image-sbom
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        with:
+          image: ts-node-app:ci
+          format: cyclonedx-json
+          output-file: image-sbom.json
+
+      - name: Image vulnerability scan (fixable CRITICAL/HIGH)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        id: gate-image-vuln
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: ts-node-app:ci
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          exit-code: '1'
+
+      - name: Upload image SBOM
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: image-sbom
+          path: image-sbom.json
+
+      - name: Upload build artifact (for provenance)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: build-artifact
+          path: dist/**           # the real build output (npm run build)
+          if-no-files-found: error
+
+  # NOTE (provenance precondition): the SLSA attestations API is unavailable on user-owned PRIVATE repos,
+  # so these jobs are gated to run only on public or org-owned repos — otherwise `main` would go red on
+  # first merge with no in-repo explanation. Make the repo public or move it to a GitHub org to enable.
+  # This is a SKIP-WITH-REASON, not a silent disable: the job still runs (and attests) wherever the
+  # precondition holds; it is legibly skipped only where the attestations API genuinely cannot mint one.
+  provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # scoped to this push-only job (build-provenance attestation)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: build-artifact
+          path: build-artifact
+      - name: Attest build provenance
+        id: gate-provenance
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
+        with:
+          subject-path: build-artifact/**
+
+  image-provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_dockerfile == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push image to GHCR (scoped to this push-only job)
+      id-token: write       # OIDC for digest-bound attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute lowercase image name
+        id: image
+        # GHCR stores image paths lowercase; github.repository may be mixed-case
+        # (e.g. SeaBrad72/App). A mixed-case subject-name breaks attestation verification.
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - name: Build and push image
+        id: build-push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+      - name: Attest image provenance (digest-bound)
+        id: gate-image-provenance
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build-push.outputs.digest }}
+          push-to-registry: true
+
+  gate-agent-boundary:
+    # §13 governance gate (harness-independent): a control-plane diff must be human-ratified.
+    # NOT one of the 7 required build gates — a separate governance step. D4: presented as a MERGE-GATE
+    # (a non-failing, still-blocking `control-plane-ratification` action_required check) so red ❌ /
+    # "run failed" emails stay reserved for real failures. Require this check in branch protection.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Compute changed files
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed.txt
+      - name: Compute ratification signal (non-author approval)
+        id: ratify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          rat=0
+          # Ratification = a non-author APPROVAL (an agent cannot approve its own PR; GitHub forbids
+          # self-approval). The self-appliable `ratified-control-plane` label was REMOVED as
+          # agent-forgeable; solo maintainers ratify via a logged enforce_admins:false admin-merge.
+          # FAIL CLOSED: an unreadable review list is NOT an approval. Guarded inside `if !` so a
+          # failing command substitution cannot trip set -e and abort the step.
+          if ! approvers=$(gh pr view "$PR" --json reviews \
+              -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login'); then
+            echo "control-plane-ratification: could not read reviews (gh pr view rc != 0) — treating as UNRATIFIED."
+            approvers=""
+          fi
+          # `grep -q .` also matches a line of spaces/tabs — a whitespace-only line would count as an
+          # approver and set rat=1. That is a FAIL-OPEN. Require a non-whitespace character.
+          if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q '[^[:space:]]'; then rat=1; fi
+          echo "ratified=$rat" >> "$GITHUB_OUTPUT"
+      - name: Ratification merge-gate (action_required, not a build failure)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
+          #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
+          set +e
+          CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}"
+          rc=$?
+          set -e
+          state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
+                    --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
+          class=$(sh conformance/promotion-readiness.sh --class --no-verify \
+                    --changed /tmp/changed.txt 2>/dev/null || echo control-plane)
+          # Reconcile the DISPLAYED class with the gate verdict. The gate (state) is union-aware and is
+          # the authority on control-plane-ness; the guard-core-only --class can UNDER-DETECT
+          # adapter-declared paths (e.g. AGENTS.md). `|| echo NONE` above is display-only — the VERDICT
+          # is $rc, never $state — so an unreadable state can never ratify anything.
+          if [ "$state" != NONE ]; then class=control-plane
+          elif [ "$class" = control-plane ]; then class=sensitive
+          fi
+          case "$rc" in
+            0)
+              if [ "$state" = RATIFIED-BY-SECOND-REVIEWER ]; then
+                concl=success
+                title="Ratified by a second reviewer — control-plane change approved"
+                summary="What changed: a control-plane change (change-class: ${class}). State: RATIFIED-BY-SECOND-REVIEWER — a non-author reviewer approved this PR, so separation-of-duties is genuinely satisfied. No action needed. More: docs/operations/review-lane.md."
+              else
+                concl=success
+                title="No control-plane change — nothing to ratify"
+                summary="What changed: change-class ${class}; no control-plane paths in the diff. This §13 governance gate has nothing to ratify. No action needed."
+              fi
+              ;;
+            1)
+              class=control-plane  # rc=1 is definitionally control-plane-present
+              concl=action_required
+              title="Ratification required — a control-plane change is awaiting a human"
+              summary="What changed: a control-plane change (your guardrails / CI / standards / governance). Change-class: ${class}. Why: control-plane changes must be ratified by a human before merge. This is a §13 governance merge-gate, NOT a build failure — no test failed. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet. To proceed: (a) get a non-author approval on this PR -> becomes RATIFIED-BY-SECOND-REVIEWER; or (b) solo -- merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
+              ;;
+            *)
+              concl=failure
+              title="Gate error — could not evaluate the control-plane diff"
+              summary="The control-plane-ratification gate could not evaluate the PR diff (change listing unavailable). This IS a real error — unlike the other states it needs fixing. See conformance/agent-boundary.sh."
+              ;;
+          esac
+          # FAIL-CLOSED, not fail-open: on a FORK pull_request the GITHUB_TOKEN is read-only regardless
+          # of this job's permissions block, so this POST returns 403. A check-run that never posts is a
+          # REQUIRED check that stays ABSENT — and an absent required check BLOCKS the merge. Reddening
+          # the build here would be strictly worse: same blocked merge, plus a spurious failure email.
+          set +e
+          gh api -X POST "repos/${{ github.repository }}/check-runs" \
+            -f name='control-plane-ratification' \
+            -f head_sha="$SHA" \
+            -f status='completed' \
+            -f conclusion="$concl" \
+            -f 'output[title]'="$title" \
+            -f 'output[summary]'="$summary"
+          api_rc=$?
+          set -e
+          if [ "$api_rc" -ne 0 ]; then
+            echo "control-plane-ratification: the check-run could not be posted (gh api rc=$api_rc). On a fork pull_request this is EXPECTED — GITHUB_TOKEN is read-only there. The required check stays ABSENT, which BLOCKS the merge rather than allowing it (fail-closed)."
+          fi
+          echo "control-plane-ratification => $concl (rc=$rc, state=$state, class=$class)"
+          # The job exits 0 regardless of $concl — no failure email; the check-run carries the state.
+          # NOTE: add `control-plane-ratification` to branch-protection required checks so it BLOCKS.

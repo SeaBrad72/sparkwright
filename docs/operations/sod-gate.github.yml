@@ -1,0 +1,44 @@
+# Reference: GitHub binding for the separation-of-duties FLOOR (scripts/sod-check.sh).
+# COPY into your repo's .github/workflows/ and add it as a REQUIRED status check.
+# Pin actions to a full SHA in your repo (see conformance/action-pinning.sh).
+name: separation-of-duties
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  author-not-approver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3 -- pin every `uses:` to a full SHA
+      - name: Gather identities
+        id: ids
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          approvers=$(gh api "repos/$REPO/pulls/$PR/reviews" \
+            --jq '.[] | select(.state=="APPROVED") | .user.login' | sort -u | tr '\n' ' ')
+          # A commit whose author email is not linked to a forge account yields a null login;
+          # map it to a non-login placeholder so an unlinked committer cannot silently vanish
+          # from the exclusion set (and so a real user literally named "null" is never confused
+          # with one). See separation-of-duties.md "Honest ceiling".
+          commit_authors=$(gh api "repos/$REPO/pulls/$PR/commits" \
+            --jq '.[].author.login // "UNLINKED-COMMIT-AUTHOR"' | sort -u | tr '\n' ' ')
+          {
+            echo "author=$PR_AUTHOR"
+            echo "approvers=$approvers"
+            echo "commit_authors=$commit_authors"
+          } >> "$GITHUB_OUTPUT"
+      - name: Enforce author != approver
+        env:
+          SOD_AUTHOR: ${{ steps.ids.outputs.author }}
+          SOD_APPROVERS: ${{ steps.ids.outputs.approvers }}
+          SOD_COMMIT_AUTHORS: ${{ steps.ids.outputs.commit_authors }}
+        run: sh scripts/sod-check.sh --require

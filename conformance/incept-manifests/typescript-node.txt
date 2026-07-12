@@ -1,0 +1,90 @@
+# first-run-green manifest — TypeScript/Node archetype
+# ---------------------------------------------------------------------------
+# Consumed by incept-first-run-green.sh. STACK-AGNOSTIC engine + per-archetype
+# data: every TS/Node-specific token lives HERE, never in the check body. KW4/KW8
+# add one manifest per stack (same grammar) with zero check rework.
+# Security gates: assert the ENFORCING VALUE (a threshold/deny-flag/scope), not mere presence — a
+# present-but-inert gate greens a presence-only assert (see DEVELOPMENT-STANDARDS.md §14; the sast-scoped
+# block's `absent --config auto` + `--error .` scope is the pattern to copy).
+#
+# Block grammar (blank-line-separated; `key: value` lines; unknown keys ignored):
+#   id:            <mechanism id>                  (required; names the mechanism)
+#   precondition:  <predicate>                     (when is the mechanism EXPECTED live?)
+#   when-absent:   na | skip                       (precondition false -> omit vs skip-with-reason)
+#   assert:        <predicate>                      (config-shape; repeatable; ALL must hold)
+#   skip-reason:   <plain text>                     (printed on SKIP/N/A)
+#   fix-hint:      <plain text>                     (printed on MISCONFIGURED-RED)
+#
+# Predicate grammar (shared by precondition: and assert:):
+#   present <ERE>    LIVE ci.yml (comments stripped) has a line matching <ERE>   (grep -E)
+#   absent  <ERE>    LIVE ci.yml (comments stripped) has NO line matching <ERE>
+#   comment <ERE>    RAW ci.yml (comments included) matches — for intentional in-repo
+#                    explanations that are by-design a comment (e.g. a legible skip-reason)
+#   scaffold <ERE>   some file under scaffold/ matches <ERE>                     (grep -rE)
+#   scaffoldfile <relpath> <ERE>  scaffold/<relpath> exists AND matches <ERE>    (file-scoped grep -E)
+#   file <relpath>   <archetype>/<relpath> exists
+#   always           always true
+# NOTE: present/absent read the comment-stripped view so a token that lives only in a comment
+# (e.g. "never --config auto") neither satisfies present nor trips absent — assertions bind LIVE config.
+#
+# Resolution per mechanism:
+#   precondition holds  + all asserts hold  -> GREEN
+#   precondition holds  + an assert fails   -> MISCONFIGURED-RED (exit non-zero; names the mechanism)
+#   precondition false  + when-absent=skip  -> SKIPPED-WITH-REASON
+#   precondition false  + when-absent=na    -> N/A (omitted; genuinely not applicable)
+# ---------------------------------------------------------------------------
+
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: uncomment the `services: postgres` block and add DATABASE_URL to the `ci` job
+
+id: sast-scoped
+precondition: present semgrep
+when-absent: skip
+# EXCLUSION-scoping (owner-ratified): scan the whole app by default (`--error .`) so a new code root
+# (app/, server/, lib/, pages/) stays covered without re-editing CI; opt OUT of only generated/vendored
+# noise via a scaffold .semgrepignore. The whole-tree assertion below FAILS a NARROWED single-subdir
+# scope (e.g. `--error src`) — a narrowed gate is a silent coverage loss, so it must RED, not green.
+assert: present --config p/default
+assert: absent --config auto
+assert: present semgrep.*--error[[:space:]]+\.([[:space:]]|$)
+assert: file scaffold/.semgrepignore
+skip-reason: no SAST step in this profile — nothing to scope
+fix-hint: scan the whole app (`semgrep --config p/default --error .`) so new code roots stay covered; ship a scaffold/.semgrepignore opting OUT of only generated/vendored noise (dist/, coverage/, node_modules/); keep p/default, never --config auto; do NOT inclusion-scope to one subdir
+
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+# The REAL, effective protection (asserted-and-locked, not changed by KW3): a FULL working-tree scan
+# (`gitleaks dir . --redact`, fetch-depth: 0) whose only exclusion is build output that is already
+# .gitignore'd (dist/, coverage/) — and `gitleaks dir` respects .gitignore, so generated artifacts are
+# out of scope with NO allowlist file. (The former scaffold `.gitleaksignore` was inert: gitleaks'
+# allowlist holds finding FINGERPRINTS, not path globs, so path entries were rejected with a warning.)
+assert: present gitleaks dir[[:space:]]+\.
+assert: present gitleaks.*--redact
+assert: present fetch-depth:[[:space:]]*0
+assert: scaffoldfile .gitignore ^/?dist/?$
+assert: scaffoldfile .gitignore ^/?coverage/?$
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (dist/, coverage/) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+assert: comment (provenance precondition|attestations API|legibly skipped)
+skip-reason: no provenance job in this profile
+fix-hint: gate each provenance job-if on repo visibility AND add a legible skip-reason comment (reuse provenance-precondition.sh's intent)
+
+id: agent-trace-emit
+precondition: always
+when-absent: skip
+assert: present (agent-trace|otel-trace\.sh|agentops)
+skip-reason: agent-trace not expected for this archetype
+fix-hint: add a CI step that emits the agent-ops trace (wire the agentops-sensor path, e.g. scripts/otel-trace.sh)

@@ -1,0 +1,197 @@
+# Reference CI pipeline for the Rust profile.
+# COPY & ADAPT: copy to your project's .github/workflows/ci.yml. Inert here in the kit.
+# Each quality gate carries a standardized `id: gate-*` that conformance/ci-gates.sh asserts.
+# Satisfies DEVELOPMENT-STANDARDS.md §14, incl. the conditional container image
+# supply-chain (gate-image-sbom + gate-image-provenance — this profile ships a service).
+#
+# HARDENING (do before production):
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v4.x).
+#  - Pin tool installs to exact versions.
+#  - OIDC is least-privilege here: id-token:write / packages:write live only on the
+#    push-only `provenance` and `image-provenance` jobs, so PR-triggered steps cannot mint a
+#    token or push an image. Your cloud trust policy MUST restrict `sub` to
+#    `repo:<org>/<repo>:ref:refs/heads/main` (never `pull_request`).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    outputs:
+      has_dockerfile: ${{ steps.detect-dockerfile.outputs.has_dockerfile }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
+        id: detect-dockerfile
+        run: |
+          if [ -f Dockerfile ]; then echo "has_dockerfile=true"; else echo "has_dockerfile=false"; fi >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        id: gate-install
+        run: cargo fetch
+
+      - name: Lint
+        id: gate-lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Type-check
+        id: gate-type-check
+        run: cargo check --all-targets
+
+      - name: Test + coverage (>=80%)
+        id: gate-test
+        run: |
+          cargo install cargo-llvm-cov
+          cargo llvm-cov --fail-under-lines 80
+
+      - name: Build
+        id: gate-build
+        run: cargo build --release
+
+      - name: Secret scan
+        id: gate-secret-scan
+        # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
+        # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
+        # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
+        run: |
+          GL_VER=8.24.3
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks dir . --no-banner --redact
+
+      - name: Dependency vulnerability scan
+        id: gate-dep-scan
+        run: |
+          cargo install cargo-audit
+          cargo audit
+
+      - name: Generate SBOM (CycloneDX)
+        id: gate-sbom
+        run: |
+          cargo install cargo-cyclonedx
+          cargo cyclonedx -f json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/*.cdx.json"
+
+      # --- conditional container image supply-chain (service profile) ---
+      # Builds the image and scans it on EVERY PR (real scan-before-merge); no push here.
+      # NOTE: this PR-time build and the push-only `image-provenance` build are independent,
+      # so the scanned digest is not guaranteed identical to the attested digest. Least-
+      # privilege forbids the PR job from pushing, so a single shared build can't span both.
+      - name: Build container image (local, for SBOM scan)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        run: docker build -t rust-app:ci .
+
+      - name: Generate image SBOM (Syft, CycloneDX)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        id: gate-image-sbom
+        uses: anchore/sbom-action@v0
+        with:
+          image: rust-app:ci
+          format: cyclonedx-json
+          output-file: image-sbom.json
+
+      - name: Image vulnerability scan (fixable CRITICAL/HIGH)
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        id: gate-image-vuln
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: rust-app:ci
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          exit-code: '1'
+
+      - name: Upload image SBOM
+        if: ${{ hashFiles('Dockerfile') != '' }}   # skips until you adapt the profile's COPY-&-ADAPT Dockerfile into the repo
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-sbom
+          path: image-sbom.json
+
+      - name: Upload build artifact (for provenance)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: target/release/app          # the scaffold crate is "app"; adapt to your [[bin]] name
+          if-no-files-found: error
+
+  provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # scoped to this push-only job (build-provenance attestation)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: build-artifact
+      - name: Attest build provenance
+        id: gate-provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: build-artifact/**
+
+  image-provenance:
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_dockerfile == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # push image to GHCR (scoped to this push-only job)
+      id-token: write       # OIDC for digest-bound attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute lowercase image name
+        id: image
+        # GHCR stores image paths lowercase; github.repository may be mixed-case.
+        run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - name: Build and push image
+        id: build-push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+      - name: Attest image provenance (digest-bound)
+        id: gate-image-provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build-push.outputs.digest }}
+          push-to-registry: true

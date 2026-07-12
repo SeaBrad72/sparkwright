@@ -1,0 +1,6 @@
+# semgrep exclusion list — opt OUT of only genuinely-noisy generated/vendored paths so the
+# default whole-app scan (semgrep --config p/default --error .) stays clean WITHOUT narrowing
+# coverage of any hand-written code. Never add a source/app dir here.
+dist/
+coverage/
+node_modules/

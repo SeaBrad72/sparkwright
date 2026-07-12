@@ -1,0 +1,34 @@
+# first-run-green GOOD fixture — every mechanism activated to green-or-legibly-skipped.
+# Minimal archetype-shaped ci.yml carrying exactly the tokens the manifest asserts.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+        env:
+    env:
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0   # full history so the secret scan sees all commits
+      - name: SAST (Semgrep)
+        id: gate-sast
+        run: pipx run semgrep --config p/default --error .   # whole-app exclusion-scope (new roots stay covered); pinned ruleset (never --config auto)
+      - name: Secret scan
+        id: gate-secret-scan
+        run: /tmp/gitleaks dir . --no-banner --redact
+      - name: Emit agent-ops trace
+        id: gate-agent-trace
+        run: sh scripts/otel-trace.sh --emit
+  provenance:
+    needs: ci
+    # provenance precondition: attestations API unavailable on user-owned private repos — legibly skipped there.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1

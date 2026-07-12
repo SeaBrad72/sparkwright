@@ -1,0 +1,151 @@
+# first-run-green manifest — Python archetype (KW8)
+# ---------------------------------------------------------------------------
+# Consumed by conformance/incept-first-run-green.sh (the STACK-AGNOSTIC detector).
+# Same block grammar as conformance/incept-manifests/typescript-node.txt; every
+# Python-specific token lives HERE, never in the check body. One block per mechanism
+# the Python profile's ci.yml actually ships (asserts bind LIVE, comment-stripped
+# config). Mechanisms the Python profile does NOT ship (postgres, semgrep, agent-
+# trace) are carried as precondition-gated SKIP/N-A blocks so the omission is legible,
+# never a silent gap and never a misconfigured-red.
+#
+# Block grammar (blank-line-separated; `key: value`):
+#   id / precondition / when-absent (na|skip) / assert (repeatable) / skip-reason / fix-hint
+# Predicate verbs: present <ERE> | absent <ERE> | comment <ERE> | scaffold <ERE>
+#                  | scaffoldfile <relpath> <ERE> | file <relpath> | always
+# NOTE: present/absent read the comment-stripped ci.yml, so asserts bind LIVE config.
+# ---------------------------------------------------------------------------
+
+id: deps-install
+precondition: present gate-install
+when-absent: skip
+# uv, frozen lockfile — reproducible installs (no drift from an unpinned resolve).
+assert: present uv sync --frozen
+skip-reason: no install gate in this profile — nothing to activate
+fix-hint: install deps from the committed lockfile with `uv sync --frozen`
+
+id: lint-ruff
+precondition: present gate-lint
+when-absent: skip
+assert: present ruff check
+skip-reason: no lint gate in this profile — nothing to activate
+fix-hint: lint the whole tree with `uv run ruff check .`
+
+id: type-check-mypy
+precondition: present gate-type-check
+when-absent: skip
+assert: present mypy
+skip-reason: no type-check gate in this profile — nothing to activate
+fix-hint: type-check with `uv run mypy .`
+
+id: test-coverage
+precondition: present gate-test
+when-absent: skip
+# 80% coverage floor enforced in CI (fail-under), matching the DoD.
+assert: present pytest --cov
+assert: present --cov-fail-under=80
+skip-reason: no test gate in this profile — nothing to activate
+fix-hint: run `uv run pytest --cov --cov-fail-under=80` so the 80% floor fails CI, not review
+
+id: eval-gate-conditional
+precondition: present gate-eval
+when-absent: skip
+# AI-eval gate: present-and-conditional — runs only when an evals/ dir exists, else
+# legibly skips at runtime (so a non-AI feature is green, an AI feature is gated).
+assert: present evals.run --threshold
+assert: present if \[ -d evals \]
+skip-reason: no eval gate in this profile — nothing to activate
+fix-hint: ship a conditional eval step (`if [ -d evals ]` -> `python -m evals.run --threshold 0.8`) so AI features gate and non-AI features skip
+
+id: build-wheel
+precondition: present gate-build
+when-absent: skip
+assert: present uv build
+skip-reason: no build gate in this profile — nothing to activate
+fix-hint: build the distributable with `uv build` (feeds the provenance attestation)
+
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+# The REAL protection: a FULL working-tree scan (`gitleaks dir . --redact`, fetch-depth: 0)
+# via a pinned+checksum-verified binary. `gitleaks dir` respects .gitignore, so build
+# output (dist/, .coverage) is out of scope with NO allowlist file needed.
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present --redact
+assert: present fetch-depth:[[:space:]]*0
+assert: scaffoldfile .gitignore ^/?dist/?$
+assert: scaffoldfile .gitignore ^\.coverage$
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (dist/, .coverage) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+id: dep-scan
+precondition: present gate-dep-scan
+when-absent: skip
+assert: present pip-audit
+skip-reason: no dependency-scan gate in this profile — nothing to activate
+fix-hint: scan installed deps for known vulns with `uvx pip-audit`
+
+id: sbom-cyclonedx
+precondition: present gate-sbom
+when-absent: skip
+# CycloneDX SBOM of the environment, uploaded as a build artifact (SSDF/SLSA evidence).
+assert: present cyclonedx-py environment
+assert: present --output-format JSON
+assert: present sbom.json
+skip-reason: no SBOM gate in this profile — nothing to activate
+fix-hint: generate a CycloneDX SBOM with `uvx cyclonedx-py environment --output-format JSON --outfile sbom.json` and upload it
+
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+# Build-provenance attestation on push-to-main, gated on repo visibility so a private
+# repo without the attestations API legibly skips instead of red-failing.
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate the provenance job-if on repo visibility (private == false OR owner.type == 'Organization') so private repos skip cleanly
+
+id: image-supply-chain
+precondition: present gate-image-provenance
+when-absent: na
+# Conditional container-image supply-chain (service profile): image SBOM (Syft) +
+# vuln scan (Trivy, fixable CRITICAL/HIGH) + digest-bound image provenance, all
+# Dockerfile-gated so the profile legibly skips until an adopter adds a Dockerfile.
+assert: present hashFiles\('Dockerfile'\)
+assert: present anchore/sbom-action
+assert: present trivy-action
+assert: present severity:.*CRITICAL
+assert: present ignore-unfixed:[[:space:]]*true
+assert: present exit-code:[[:space:]]*.?1
+skip-reason: no container-image supply-chain in this profile — not a service archetype
+fix-hint: gate image SBOM/vuln/provenance on hashFiles('Dockerfile') so they skip until the adopter ships a Dockerfile
+
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: add a `.db-backed` scaffold marker, a `services: postgres` block, and DATABASE_URL to the ci job
+
+# --- SAST (ruff-bandit): Python's SAST layer is flake8-bandit ("S") rules run INSIDE the
+#     ruff lint gate (gate-lint) — Python does NOT ship semgrep, so binding a semgrep step
+#     would be a phantom assert. This block binds the real SAST layer: the "S" ruleset being
+#     enabled in the scaffold pyproject.toml. NB: apply.py folds "S" into [tool.ruff.lint].select
+#     (+ an S101 per-file-ignore for tests) — until that lands, this block REDs BY DESIGN; its
+#     detector verification is deferred to the conductor's tagless-clone dry-run. ---
+id: sast-ruff-bandit
+precondition: present gate-lint
+when-absent: skip
+assert: scaffoldfile pyproject.toml "S"
+skip-reason: no lint gate in this profile — no ruff-bandit SAST layer to activate
+fix-hint: enable Python's SAST layer inside ruff — add "S" (flake8-bandit) to [tool.ruff.lint].select in the scaffold pyproject.toml, and ignore S101 (assert-in-tests) via [tool.ruff.lint.per-file-ignores] `"tests/**/*.py" = ["S101"]`; ruff-bandit runs inside the existing gate-lint step, so no separate SAST job is expected for Python
+
+id: agent-trace-emit
+precondition: present (agent-trace|otel|agentops)
+when-absent: skip
+# De-tautologized: the precondition alone decides this block (precondition ≈ the former assert made
+# it un-RED-able). Empty assert list -> precondition-holds => GREEN; precondition-absent => legible
+# SKIP (Python's case: no agent-ops trace step ships). The mechanism is present-or-legibly-skipped.
+skip-reason: no agent-ops trace step in this profile — not expected for this archetype
+fix-hint: if this archetype should emit agent-ops traces, add a CI step wiring the agentops-sensor path (e.g. scripts/otel-trace.sh)

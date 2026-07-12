@@ -1,0 +1,5 @@
+# Test coverage output
+cover.out
+
+# Built binary (module name: example.com/app)
+/app

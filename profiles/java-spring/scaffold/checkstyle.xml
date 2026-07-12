@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  Minimal Checkstyle ruleset for the java-spring starter scaffold.
+  Deliberately lean: it enforces hygiene that google-java-format already produces
+  (no unused/star imports, no trailing whitespace, no tabs) so the shipped source
+  passes cleanly. Expand toward google_checks.xml as the project grows.
+-->
+<module name="Checker">
+  <property name="charset" value="UTF-8"/>
+  <property name="severity" value="warning"/>
+  <property name="fileExtensions" value="java"/>
+
+  <!-- No tab characters anywhere (google-java-format uses spaces). -->
+  <module name="FileTabCharacter">
+    <property name="eachLine" value="true"/>
+  </module>
+
+  <!-- No trailing whitespace. -->
+  <module name="RegexpSingleline">
+    <property name="format" value="\s+$"/>
+    <property name="message" value="Line has trailing whitespace."/>
+  </module>
+
+  <!-- Files end with a newline. -->
+  <module name="NewlineAtEndOfFile"/>
+
+  <module name="TreeWalker">
+    <!-- Import hygiene (google-java-format removes unused / orders imports). -->
+    <module name="AvoidStarImport"/>
+    <module name="RedundantImport"/>
+    <module name="UnusedImports"/>
+
+    <!-- Naming conventions. -->
+    <module name="PackageName"/>
+    <module name="TypeName"/>
+    <module name="MethodName"/>
+    <module name="MemberName"/>
+    <module name="LocalVariableName"/>
+
+    <!-- Brace policy matches google-java-format output. -->
+    <module name="LeftCurly"/>
+    <module name="RightCurly"/>
+    <module name="NeedBraces"/>
+
+    <!-- Misc correctness hygiene. -->
+    <module name="EmptyStatement"/>
+    <module name="OneStatementPerLine"/>
+    <module name="UpperEll"/>
+  </module>
+</module>

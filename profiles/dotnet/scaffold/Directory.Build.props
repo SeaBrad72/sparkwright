@@ -1,0 +1,11 @@
+<Project>
+  <!-- profiles/dotnet.md §2 baseline: analyzers on, warnings are errors in CI. Applies to every
+       project in the solution (App + Tests). -->
+  <PropertyGroup>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>

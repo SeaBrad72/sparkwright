@@ -1,0 +1,64 @@
+# Reference k8s Deployment for the TypeScript/Node profile. COPY & ADAPT.
+# Image is referenced BY DIGEST (immutable) — the attested digest from CI.
+# For HA production, also add: a startupProbe (slow-starting apps), a PodDisruptionBudget
+# (minAvailable: 1), and topologySpreadConstraints (spread replicas across nodes).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ts-node-app
+  labels:
+    app: ts-node-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ts-node-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ts-node-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # distroless 'nonroot'
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          # Replace @sha256:... with the digest attested by CI (never a mutable tag).
+          image: ghcr.io/ORG/REPO@sha256:REPLACE_WITH_ATTESTED_DIGEST
+          ports:
+            - containerPort: 3000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            # ADOPTER NOTE: with a read-only root FS, an app that writes to /tmp or
+            # node_modules/.cache will crash (EROFS). Mount a writable emptyDir:
+            #   volumeMounts: [{ name: tmp, mountPath: /tmp }]
+            # and under spec.template.spec: volumes: [{ name: tmp, emptyDir: {} }]
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10

@@ -1,0 +1,150 @@
+# START HERE — Incepting a New Project
+
+You've dropped Sparkwright into a new project. This guide walks you (human or agent) through **Inception (Phase 0)** — the one-time gate that turns an empty repo into a project ready to run the loop. Full detail: `DEVELOPMENT-PROCESS.md` §3.
+
+Work top to bottom. Don't enter the development loop until the **Inception Done** checklist at the end is fully checked.
+
+Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-BRIEF.md) first (what / why / risk / ROI); engineers continue to Inception below.
+
+**Before anything:** run `sh scripts/preflight.sh` (add `--stack <yours>` once you've chosen) — it checks prerequisites (jq, git, your toolchain) and prints install hints. New to the terms here? See [GLOSSARY.md](GLOSSARY.md).
+
+---
+
+## You do not need to read all of this
+
+Sparkwright ships a lot of files because it covers the whole lifecycle — but **you read almost none of
+it up front.** Per-task reading is small and just-in-time (`AGENTS.md` is ~24 lines, read when an agent
+acts). Here is the whole map at a glance.
+
+**Your first 5 (the core path):**
+1. **`START-HERE.md`** (this file) — Inception.
+2. **`CLAUDE.md`** — principles + the Definition of Done (the bar).
+3. **`DEVELOPMENT-PROCESS.md`** — the loop (Discover → Plan → Build → Review → Release → Operate).
+4. **`profiles/<your-stack>.md`** — the concrete *how* for your stack (chosen at Inception).
+5. **`AGENTS.md`** — the 1-page agent brief (if you drive with an agent).
+
+*This is the **set**; §0 Orient below is the reading **order** for your first sitting — you read 1–3, **skim** `DEVELOPMENT-STANDARDS.md`, and open your profile when you pick it at Inception step 2.*
+
+**Everything else is pull-not-push** — you reach for it *when a trigger fires*, never before:
+
+| When this is true… | …pull this |
+|--------------------|-----------|
+| You hit a specific quality bar (security pattern, retry/backoff, CI config) | `DEVELOPMENT-STANDARDS.md` + your `profiles/<stack>.md` |
+| Regulated / sensitive / audited domain | `docs/enterprise/` (compliance crosswalk · secrets-at-scale · audit-evidence) |
+| Live system — deploy, resilience, metrics | `docs/operations/` (progressive delivery · resilience · DORA · review-lane) |
+| Building an AI feature — handling its API key + the eval boundary | `docs/operations/secrets-for-ai.md` |
+| Data service — backup/restore, DR | `docs/continuity/` |
+| You need an artifact (spec, RUNBOOK, threat model, review record) | `templates/` — pull the one you need |
+
+The conditional **gates** already work this way — each activates only when its trigger applies. The
+docs are discovered the same way. Nothing here is optional-to-*skip*; it is optional-to-*read-now*.
+
+---
+
+## Who are you? Start here
+
+This guide's numbered steps are the **engineer/lead Inception path**. If you're a different role, start at your row — you generally won't need the numbered engineer steps below.
+
+> **Not sure you're ready for Inception?** If enterprise SDLC practices are new to you, start at [ONBOARDING.md](ONBOARDING.md) first — it routes by *experience*; this page routes by *role*.
+
+| If you are… | Start with | Then |
+|-------------|-----------|------|
+| **Product Owner / BA / stakeholder** | skim `CLAUDE.md` for context, then `templates/FEATURE-REQUEST-TEMPLATE.md` | hand it to the team or drop it on the board (`DEVELOPMENT-PROCESS.md` §6) — no engineering setup needed |
+| **Designer** | the UX & accessibility lens in Discovery (`DEVELOPMENT-PROCESS.md` §5) + the a11y items in the Definition of Done (`CLAUDE.md`) | attach assets to the spec; sign the a11y check (`templates/A11Y-SIGNOFF-TEMPLATE.md`) at Review |
+| **QA Engineer** | the testing standards (`DEVELOPMENT-STANDARDS.md` §7) + the UAT acceptance gate (`DEVELOPMENT-PROCESS.md` §9) | own the test plan (`templates/TEST-PLAN-TEMPLATE.md`) and the UAT sign-off (`templates/UAT-SIGNOFF-TEMPLATE.md`) |
+| **DevOps / SRE** | the environment model (`DEVELOPMENT-PROCESS.md` §9) + `RUNBOOK.md` + CI (`DEVELOPMENT-STANDARDS.md` §14) | own promotion & operate |
+| **Engineer / Lead — new project** | **run `sh scripts/incept.sh`** (it `git init`s the repo for you if you're not already in one, then installs the runtime guard), then work the judgment steps below | full Inception (steps 1–7); use `--harness <list>` (default `claude-code`; pick `generic` for any AGENTS.md-reading harness; comma-separate for several — see `docs/operations/harness-adapters.md`) |
+| **Engineer — existing repo (brownfield)** | **`docs/adoption/brownfield.md`** (copy-in + `.claude/` merge + guard verify) | then the Inception judgment steps below; if your environment carries a foreign process-skill library (e.g. superpowers), see **`docs/adoption/skill-rosters.md`** |
+
+(Note: `incept` renames the kit's principles `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps a new project `CLAUDE.md` — your project guide. The glossary and START-HERE references to the *principles* file mean `ENGINEERING-PRINCIPLES.md` after Inception.)
+
+---
+
+## 0. Orient (5 min)
+Read, in order: this file → `CLAUDE.md` (principles + Definition of Done) → `DEVELOPMENT-PROCESS.md` (the loop) → skim `DEVELOPMENT-STANDARDS.md` (the universal bar — deep-dive only on a specific quality bar, per the front-door map above). Don't read profiles yet — you pick one below (it's in your "first 5" *set*, opened here at step 2).
+
+## 1. Charter
+Write the project charter (into the project `CLAUDE.md` you'll create in step 5):
+- **Problem & users** — what, for whom, current pain.
+- **Vision & success metrics** — what success looks like, measurably.
+- **Scope boundaries** — explicitly in / out.
+- **Intent owner** — who owns the *why* and accepts increments.
+
+## 2. Choose your stack → ADR-000  ⭐ the key step
+Decide the technology stack. This is a **spike** if there's genuine uncertainty — compare options, don't guess.
+
+**Compare the shipped stacks:** [docs/STACK-SELECTION.md](docs/STACK-SELECTION.md) — a matrix of "Best for / Avoid when" plus full-stack (SPA + API) guidance. (Don't see your stack? Generate one — option B below.)
+
+**Derive, don't default.** Pick from the *shape of the work*, not from familiarity — use the [derivation rubric + steer-away table](docs/STACK-SELECTION.md#how-to-derive-the-recommendation) (workload · ecosystem · team · deploy · data/ML · compliance).
+
+**Disclose fit vs. maturity (a required step).** When an agent recommends a stack it must state BOTH the fit recommendation AND the stack's maturity tier, and you ratify the trade-off (e.g. best-fit = Rust [experimental] vs most-exercised = TS/Node [verified]). Record the fit reason + maturity in ADR-000 (`## Fit rationale`, `## Maturity acknowledged`) — enforced by `conformance/stack-decision-integrity.sh`.
+
+**Choosing a deploy target?** Derive from fit, not familiarity — [docs/adoption/DEPLOYMENT-ENVIRONMENT.md](docs/adoption/DEPLOYMENT-ENVIRONMENT.md) (topology cards + rubric); record fit + maturity in RUNBOOK §4 (linted by `conformance/deploy-decision-integrity.sh`). The same neutrality pattern as the stack choice, one axis over.
+
+Then set up your **stack profile**, two ways:
+
+**A — Use a ready profile.** If `profiles/` has your stack (e.g. `typescript-node.md`), select it. Done.
+
+**B — Generate a custom profile (any stack).** If your stack isn't there — Elixir, Scala, Swift, anything not already shipped. Fastest start: `sh scripts/new-profile.sh <stack>` scaffolds the profile + a conformance-passing stub `ci.yml`, then:
+1. Copy `profiles/_TEMPLATE.md` → `profiles/<your-stack>.md`.
+2. Fill **every** section. Each maps to a universal standard (§ pointers in `DEVELOPMENT-STANDARDS.md`) — you're expressing the standard in your stack, not inventing it. An agent can author this from the team's answers about toolchain, libraries, and commands.
+3. Keep every universal requirement intact; describe *how* your stack meets it.
+
+> The selector is a convenience; generation is first-class. The kit is never limited to pre-written stacks.
+
+**Record the decision as `docs/architecture/ADR-000-stack.md`** (see `docs/ADR-000-EXAMPLE.md`). Your chosen profile + the universal standards = your project's effective quality bar.
+
+## 3. Repo & environment
+- The repo is already initialized — `incept.sh` runs `git init` for you (and installs the runtime guard into `.git/hooks/`) when you're not already inside one; if you ran incept inside an existing repo, it left it untouched. Now protect `main` (no direct pushes, PR + green CI to merge).
+- Add `.gitignore`, `.env.example` (placeholders only), and a reproducible local env (Docker / devcontainer) per your profile.
+- Wire secrets management (env vars; never commit real secrets).
+
+## 4. Tooling & CI/CD baseline
+Stand up formatter, linter, type-checker, test runner, and a CI pipeline with quality gates — using the **standard commands** and **pipeline** from your profile (§3–4). **Get a green pipeline on the empty project before any feature work.**
+
+Choosing a deploy target? Map it to the contract first — see `docs/adoption/DEPLOYMENT-ENVIRONMENT.md` (the kit owns the questions, you bring the platform).
+
+## 5. Instantiate project artifacts
+- `CLAUDE.md` — from `templates/PROJECT-CLAUDE-TEMPLATE.md`; fill identity, stack (link ADR-000 + your profile), per-project config (step 6), roles (step 7).
+- `RUNBOOK.md` — setup/deploy/troubleshoot/rollback (start it now; grow it at each release).
+- Backlog — `BACKLOG.md` from `templates/BACKLOG-TEMPLATE.md`, or your chosen backend (GitHub Issues/Projects, Linear, Jira).
+- Seed the roadmap with the charter's first phase.
+
+## 6. Per-project configuration (declare in the project `CLAUDE.md`)
+- **Backlog backend** (`DEVELOPMENT-PROCESS.md` §6)
+- **Autonomy-tier defaults** for agents (§13) — start conservative
+- **SLO / error-budget posture** (§9) — soft to start
+- **Cost/spend posture** (§9)
+- **Review routing / ownership** (§12) — remember: an agent never reviews-and-merges its own work
+- **WIP limits** and **environments** (local → staging? → prod)
+- **Business continuity** *(data-handling projects)* — run a BIA (`templates/BIA-TEMPLATE.md` → `docs/continuity/BIA.md`); set per-tier RTO/RPO in RUNBOOK §6; schedule the restore drill (`docs/continuity/backup-restore-drill.md`). Not required for stateless tools.
+
+## 7. Assign roles
+Fill each function in `DEVELOPMENT-PROCESS.md` §2 — intent owner, lead/integrator, builder(s), reviewer(s), on-call, security owner — with a human or agent. One may hold several; enforce: builder ≠ sole reviewer; humans ratify governance/standards changes.
+
+---
+
+## Solo / lite track
+
+**Solo or team? Decide at Inception** (`incept.sh` surfaces it) — default solo; flip to team by setting `enforce_admins:true` (below).
+
+Working alone? The kit assumes multiple people in places (builder ≠ sole reviewer, CODEOWNERS, ratification RBAC). Here is the sanctioned solo path:
+
+- **builder ≠ reviewer, solo.** Open a PR, let CI gate it, then **merge your own PR via owner admin-merge** (`gh pr merge --admin`). At solo scale set **`enforce_admins: false`** in your branch protection so the admin-merge is permitted — GitHub records the bypass, and that log *is* your audit trail of "solo maintainer self-ratified." When a second engineer joins, flip `enforce_admins` back to **`true`**: the required-review rule then enforces real review (you can no longer self-merge), with no other reconfiguration.
+- **Control-plane PRs show *"ratification required"* (amber, not red).** A PR touching the control plane (the guard, CI, `conformance/`, `adapters/`, the named `scripts/`, or the governing docs) posts a `control-plane-ratification` check in an **`action_required`** (amber) state that **blocks the merge** until a non-author approval lands — with *no red ❌ and no "CI failed" email* (those stay reserved for real failures). Solo, that's expected — your logged admin-merge above **is** the ratification. Require `control-plane-ratification` in branch protection so it enforces (`gh api --method POST repos/<owner>/<repo>/branches/main/protection/required_status_checks/contexts -f 'contexts[]=control-plane-ratification'`).
+- **Deferrable gates at solo / Stage-1 scale.** Coverage, dependency-scan, SBOM, provenance, and a11y can ride the waiver ramp ([templates/WAIVER-REGISTER.md](templates/WAIVER-REGISTER.md)) while you grow; **`secret-scan` and `branch-protection` stay non-negotiable.** You begin at **Stage 1** of the maturity model ([docs/enterprise/ORG-ROLLOUT.md](docs/enterprise/ORG-ROLLOUT.md)).
+- Everything else in this guide applies unchanged.
+
+---
+
+## ✅ Inception Done — gate to enter the loop
+- [ ] Charter written, intent owner named
+- [ ] Stack chosen; profile selected or generated; **ADR-000 recorded**
+- [ ] Repo created, `main` protected, env reproducible, secrets wired
+- [ ] CI pipeline green on the empty project
+- [ ] Project `CLAUDE.md`, `RUNBOOK.md`, backlog, seed roadmap created
+- [ ] Per-project config declared
+- [ ] Roles assigned
+- [ ] *(data-handling projects)* BIA done (`docs/continuity/BIA.md`); per-tier RTO/RPO set; restore drill scheduled
+
+**All checked?** Delete this file (or keep for reference), and enter the loop at **Discover** (`DEVELOPMENT-PROCESS.md` §4). Welcome aboard.

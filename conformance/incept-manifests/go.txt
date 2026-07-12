@@ -1,0 +1,130 @@
+# first-run-green manifest — Go archetype (KW8)
+# ---------------------------------------------------------------------------
+# Consumed by incept-first-run-green.sh. STACK-AGNOSTIC engine + per-archetype data:
+# every Go-specific token lives HERE, never in the check body. Same block grammar as
+# conformance/incept-manifests/typescript-node.txt; Go's mechanisms differ (golangci-lint
+# + go vet + gosec-via-linter, NOT semgrep; cyclonedx-gomod SBOM; govulncheck dep-scan).
+#
+# Block grammar (blank-line-separated): id / precondition / when-absent(na|skip) /
+# assert(repeatable, ALL must hold) / skip-reason / fix-hint. Predicate verbs:
+# present|absent <ERE> (LIVE comment-stripped ci.yml), comment <ERE> (RAW ci.yml),
+# scaffold <ERE>, scaffoldfile <relpath> <ERE>, file <relpath>, always.
+# NB: no live-gate: line — the live-gate tool registry is a separate control-plane step.
+# ---------------------------------------------------------------------------
+
+# --- DB gate: genuinely N/A. Go profile ships no postgres service and no .db-backed
+#     marker, so the database gate is omitted (N/A, not skipped). Mirrors the reference. ---
+id: db-postgres
+precondition: file scaffold/.db-backed
+when-absent: na
+assert: present ^[[:space:]]+postgres:
+assert: present image:[[:space:]]*postgres
+assert: present DATABASE_URL
+skip-reason: not a DB-backed archetype — no database gate to activate (genuinely N/A)
+fix-hint: uncomment a `services: postgres` block and add DATABASE_URL to the `ci` job
+
+# --- SAST: Go does NOT ship semgrep. Static analysis is covered by gosec (asserted below
+#     inside lint-golangci via the scaffold .golangci.yml). This block legibly SKIPS when
+#     semgrep is absent so the "where's SAST?" question has a recorded answer. ---
+id: sast-semgrep
+precondition: present semgrep
+when-absent: skip
+assert: present --config p/default
+skip-reason: Go SAST is gosec, run inside golangci-lint (see lint-golangci) — no semgrep step to scope
+fix-hint: keep gosec enabled in scaffold/.golangci.yml; a separate semgrep step is not expected for Go
+
+# --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
+#     (`gitleaks dir . --redact`, fetch-depth: 0). `gitleaks dir` respects .gitignore, so Go's
+#     build output (/app, cover.out) falls out of scope with NO allowlist file. ---
+id: secret-gate
+precondition: present gitleaks
+when-absent: skip
+assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks.*--redact
+assert: present fetch-depth:[[:space:]]*0
+assert: scaffoldfile .gitignore ^/?app
+assert: scaffoldfile .gitignore cover\.out
+skip-reason: no gitleaks step in this profile — nothing to scan
+fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (/app, cover.out) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+
+# --- Dependency vulnerability scan (govulncheck over the whole module). ---
+id: dep-scan
+precondition: present govulncheck
+when-absent: skip
+assert: present govulncheck[[:space:]]+\./\.\.\.
+skip-reason: no govulncheck step in this profile — no dependency scan to run
+fix-hint: run `govulncheck ./...` so the whole module is scanned against the Go vuln DB
+
+# --- SBOM (CycloneDX via cyclonedx-gomod), then uploaded as an artifact. ---
+id: sbom-gomod
+precondition: present cyclonedx-gomod
+when-absent: skip
+assert: present cyclonedx-gomod app -json
+assert: present name:[[:space:]]*sbom
+skip-reason: no SBOM step in this profile — nothing to attest the dependency graph
+fix-hint: generate a CycloneDX SBOM with `cyclonedx-gomod app -json -output sbom.json` and upload it as the `sbom` artifact
+
+# --- Lint (golangci-lint) with the scaffold .golangci.yml enabling govet/staticcheck/
+#     errcheck/gosec. gosec IS the Go SAST layer, so it must be asserted present. ---
+id: lint-golangci
+precondition: present golangci/golangci-lint-action
+when-absent: skip
+assert: present golangci/golangci-lint-action
+assert: scaffoldfile .golangci.yml govet
+assert: scaffoldfile .golangci.yml staticcheck
+assert: scaffoldfile .golangci.yml errcheck
+assert: scaffoldfile .golangci.yml gosec
+skip-reason: no golangci-lint step in this profile — nothing to lint
+fix-hint: run golangci/golangci-lint-action against a scaffold .golangci.yml enabling govet, staticcheck, errcheck, and gosec (gosec is the Go SAST layer)
+
+# --- Type/vet gate (go vet over the whole module). ---
+id: type-check-vet
+precondition: present go vet
+when-absent: skip
+assert: present go vet[[:space:]]+\./\.\.\.
+skip-reason: no go vet step in this profile — no static vet gate
+fix-hint: run `go vet ./...` so suspicious constructs are caught module-wide
+
+# --- Test + coverage gate: race-enabled test run with an >=80% coverage floor that FAILS
+#     the job when total coverage drops below 80%. ---
+id: test-coverage
+precondition: present go test
+when-absent: skip
+assert: present go test.*-race
+assert: present -coverprofile=cover.out
+assert: present < 80
+skip-reason: no go test step in this profile — no test/coverage gate
+fix-hint: run `go test -race -coverprofile=cover.out ./...` and fail when total coverage is `< 80`
+
+# --- Build gate (produces the ./app binary that provenance attests). ---
+id: build-binary
+precondition: present go build
+when-absent: skip
+assert: present go build -o app
+skip-reason: no go build step in this profile — nothing to compile/attest
+fix-hint: run `go build -o app .` so a build artifact exists for the provenance job
+
+# --- Build provenance (attest-build-provenance) gated on repo visibility so it doesn't
+#     RED on a private personal repo lacking the attestations API (first-run-green intent). ---
+id: provenance-gated
+precondition: present attest-build-provenance
+when-absent: na
+assert: present repository.private == false
+assert: present owner.type == 'Organization'
+skip-reason: no provenance job in this profile
+fix-hint: gate each provenance job-if on repo visibility (repository.private == false || owner.type == 'Organization') so a private personal repo legibly skips instead of RED-failing the attestations API
+
+# --- Conditional container-image supply-chain (this profile ships a service image): image
+#     SBOM (Syft/anchore) + image vuln scan (Trivy, fail on fixable CRITICAL/HIGH) + a
+#     digest-bound image provenance attestation. Present in ci.yml; runs when a Dockerfile
+#     is adapted in. Asserting the Trivy gate is real (severity + ignore-unfixed + exit 1). ---
+id: image-supply-chain
+precondition: present trivy-action
+when-absent: skip
+assert: present anchore/sbom-action
+assert: present severity:.*CRITICAL
+assert: present ignore-unfixed:[[:space:]]*true
+assert: present exit-code:[[:space:]]*.?1
+assert: present attest-build-provenance
+skip-reason: no container-image gates in this profile — no image to scan/attest
+fix-hint: build the service image on PR, SBOM it with anchore/sbom-action, scan with aquasecurity/trivy-action (severity CRITICAL,HIGH · ignore-unfixed:true · exit-code:1), and attest a digest-bound image provenance on push
