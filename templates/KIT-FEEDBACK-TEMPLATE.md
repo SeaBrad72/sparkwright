@@ -32,4 +32,4 @@ Give each finding a **K-style id** (`K1`, `K2`, …) so it is quotable in review
 
 ## Agent lapses (process drift you had to correct)
 
-- `[e.g. agent left an apply.py diff staged-but-uncommitted; had to force a commit + git show --stat]`
+- `[e.g. agent left the dev-clone diff staged-but-uncommitted; had to force a commit + git show --stat]`

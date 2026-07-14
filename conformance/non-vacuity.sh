@@ -42,6 +42,12 @@ set -eu
 cd "$(dirname "$0")/.." 2>/dev/null || true
 ONLY=""              # single check to judge (basename); set ONLY via --only <name> on argv, NEVER from
                      # the environment — the bare/CI path can never be narrowed. Empty = the whole set.
+SHARD_I=""           # CI shard coordinates; set ONLY via --shard <i>/<n> on argv, NEVER from the
+SHARD_N=""           # environment. LITERAL assignments on purpose: they overwrite any inherited env var
+                     # of the same name, so a decoy `SHARD_N=99` in the environment cannot narrow what CI
+                     # enforces. Same law as ONLY (proved behaviorally by F1/F6 in --selftest). Empty =
+                     # unsharded (the whole set). A shard that targets NOTHING is a FAILURE, never a
+                     # vacuous pass — sharding must never become a way to gut the gate (F5).
 
 # ── first_marker <src> : print the 1-based line number where the selftest ORACLE region begins — the
 #    earliest of a  ^selftest()  function definition OR an  if [ ... --selftest ... ]  block opener
@@ -254,7 +260,24 @@ _judge_core() {
   return 1
 }
 
+# ── shard_filter : partition the target list across SHARD_N parallel CI legs, emitting only leg SHARD_I.
+#    Round-robin on line number ((NR-1) % n == i-1) over the DETERMINISTIC, `sort -u`-ordered list. Two
+#    properties make this safe to shard a governance gate on:
+#      COMPLETE — every line satisfies exactly one residue class, so shards 1..N are a true PARTITION:
+#                 their union is the full set and they never overlap. No check can fall between legs.
+#                 (Asserted behaviorally by F5b in --selftest, which reassembles the union and diffs it
+#                 against the unsharded set — a partition bug fails the build, it does not go unnoticed.)
+#      BALANCED — round-robin interleaves rather than blocks, so the expensive checks spread evenly across
+#                 legs without needing per-check timings (which we do not have and would rot).
+#    A no-op when SHARD_N is empty: the bare/CI full sweep is byte-for-byte unchanged.
+shard_filter() {
+  [ -n "$SHARD_N" ] || { cat; return 0; }
+  awk -v i="$SHARD_I" -v n="$SHARD_N" '((NR - 1) % n) == (i - 1)'
+}
+
 # ── target_set : the conformance scripts wired as control checks that expose a --selftest mode.
+#    Sharding is applied LAST, after every membership filter, so a shard is always a strict subset of the
+#    true target set — never a different set.
 target_set() {
   grep -E '^check control' conformance/verify.sh 2>/dev/null \
     | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u \
@@ -263,7 +286,8 @@ target_set() {
         [ -z "$ONLY" ] || [ "$(basename "$_f")" = "$ONLY" ] || continue
         grep -q -- '--selftest' "$_f" 2>/dev/null || continue
         has_selftest_dispatch "$_f" && printf '%s\n' "$_f"
-      done
+      done \
+    | shard_filter
 }
 
 # ── nonbearing_set : control checks whose file contains the --selftest substring but expose NO dispatch
@@ -333,6 +357,14 @@ sweep() {
       echo "FAIL: --only '$ONLY' matched no targeted check (a targeted sweep that evaluates nothing must never report success)" >&2
       return 2
     fi
+    # F5 — an EMPTY SHARD is a gate FAILURE, never a vacuous pass. This is the anti-cheat that makes
+    # sharding safe: without it, `--shard 9/9` on a 4-check set would evaluate nothing, exit 0, and a CI
+    # leg would report GREEN having mutation-tested precisely zero checks. Sharding must never become a
+    # way to gut the gate — so an empty leg is as loud as an empty control set.
+    if [ -n "$SHARD_N" ]; then
+      echo "FAIL: shard $SHARD_I/$SHARD_N targeted no check (an empty shard must never report success — is SHARD_N larger than the control set?)" >&2
+      return 1
+    fi
     # F4 — a BARE sweep whose control set is empty is a gate FAILURE (return 1), not a vacuous OK.
     echo "FAIL: the control set is empty — no targeted check to mutation-test (a sweep that evaluates nothing must never report success)" >&2
     return 1
@@ -355,13 +387,33 @@ sweep() {
   return 0
 }
 
-# ── bare_sweep : the bare/CI dispatch body. Resets ONLY to empty, then runs the FULL sweep, so the
-#    bare/CI path can NEVER be narrowed by an inherited environment ONLY — it always sweeps the WHOLE
-#    control set. This is a one-line delegation, NOT a test hook: it contains no env read and no early
-#    exit. selftest proves the reset behaviorally by overriding sweep() in a subshell (POSIX lets a
-#    subshell shadow a function) and observing the ONLY that reaches it — no test-only env var, no
-#    fail-open code path, lives in production.
-bare_sweep() { ONLY=""; sweep; }
+# ── bare_sweep : the bare/CI dispatch body. Resets BOTH narrowing mechanisms — ONLY and the SHARD
+#    coordinates — to empty, then runs the FULL sweep, so the bare/CI path can NEVER be narrowed by an
+#    inherited environment: it always sweeps the WHOLE control set. The SHARD reset is defense-in-depth
+#    and deliberate: there must be exactly ONE way to narrow this gate (an explicit argv --shard), and the
+#    bare arm must not be it. Without the reset the invariant would hold only by accident (SHARD_* happen
+#    to be unset on that path); with it, the invariant is EXPLICIT and behaviorally testable (F1/F6).
+#    This is a one-line delegation, NOT a test hook: no env read, no early exit. selftest proves the reset
+#    by overriding sweep() in a subshell (POSIX lets a subshell shadow a function) and observing what
+#    actually reaches it — no test-only env var, no fail-open code path, lives in production.
+bare_sweep() { ONLY=""; SHARD_I=""; SHARD_N=""; sweep; }
+
+# ── shard_sweep <i> <n> : the CI shard dispatch body. Like bare_sweep it RESETS ONLY, so a sharded CI leg
+#    can never be narrowed twice (an inherited ONLY on top of a shard would silently reduce a leg to one
+#    check while still reporting GREEN). The shard coordinates arrive as POSITIONAL ARGUMENTS from argv —
+#    never from the environment — and are validated before any check runs. Bad coordinates EXIT 2 (usage):
+#    a leg that cannot state which slice of the gate it enforces must not run a partial gate and pass.
+shard_sweep() {
+  _si=$1; _sn=$2
+  case "$_si" in ''|*[!0-9]*) echo "usage: non-vacuity.sh --shard <i>/<n>  (i and n must be positive integers)" >&2; exit 2 ;; esac
+  case "$_sn" in ''|*[!0-9]*) echo "usage: non-vacuity.sh --shard <i>/<n>  (i and n must be positive integers)" >&2; exit 2 ;; esac
+  [ "$_sn" -ge 1 ] || { echo "FAIL: --shard n must be >= 1 (got $_sn)" >&2; exit 2; }
+  [ "$_si" -ge 1 ] || { echo "FAIL: --shard i must be >= 1 (got $_si)" >&2; exit 2; }
+  [ "$_si" -le "$_sn" ] || { echo "FAIL: --shard i ($_si) exceeds n ($_sn) — that leg does not exist" >&2; exit 2; }
+  ONLY=""; SHARD_I=$_si; SHARD_N=$_sn
+  echo "non-vacuity: SHARD $_si of $_sn (this leg enforces a strict subset; the union of all $_sn legs is the full control set)"
+  sweep
+}
 
 # ── selftest : the harness's OWN non-vacuity (self-teeth). A load-bearing fixture must be KILLED; a
 #    deliberately-vacuous fixture must SURVIVE (be flagged); the two verdicts must differ (proving the
@@ -551,6 +603,43 @@ EOF
   _bo=$( ONLY=script-disclosure.sh; sweep() { printf 'ONLY=[%s]\n' "$ONLY"; }; bare_sweep )
   if [ "$_bo" = "ONLY=[]" ]; then echo "PASS: bare/CI dispatch ignores an inherited ONLY (cannot be narrowed)"; else echo "FAIL: bare/CI dispatch honored env ONLY ($_bo) -- CI can be silently narrowed"; st=1; fi
 
+  # ── F5 — an EMPTY SHARD must FAIL, never report a vacuous success. This is THE anti-cheat that makes it
+  # safe to shard a governance gate. A leg that mutation-tests zero checks and exits 0 is a GREEN check
+  # attesting nothing — precisely the vacuity this tool exists to detect, reintroduced by the very
+  # mechanism meant to speed it up. Drive the REAL dispatch with coordinates whose residue class is empty
+  # (n far larger than the control set) and require a non-zero exit.
+  set +e; NV_IN_SWEEP='' sh "$0" --shard 999/999 >/dev/null 2>&1; _es=$?; set -e
+  if [ "$_es" != 0 ]; then echo "PASS: an empty shard FAILs (exit $_es) — a leg that tests nothing never reports success"; else echo "FAIL: an empty shard exited 0 — sharding can silently gut the gate"; st=1; fi
+
+  # ── F5b — COMPLETENESS: shards 1..n must be a true PARTITION of the unsharded target set. This is the
+  # property the whole design rests on: if a check fell between two legs, every leg would be GREEN and
+  # that check would be mutation-tested by NOBODY — a silent hole in the gate, invisible forever. Prove it
+  # by reassembling the union from the real shard_filter and diffing against the real unsharded set. A
+  # partition bug fails the build here rather than going unnoticed in CI.
+  _full=$(SHARD_I="" SHARD_N="" target_set | sort)
+  for _n in 2 3 4 7; do
+    _union=$(_i=1; while [ "$_i" -le "$_n" ]; do SHARD_I=$_i SHARD_N=$_n target_set; _i=$((_i + 1)); done | sort)
+    if [ "$_union" = "$_full" ]; then
+      echo "PASS: shards 1..$_n reassemble EXACTLY the unsharded target set (a true partition — no check falls between legs)"
+    else
+      echo "FAIL: shards 1..$_n do NOT reassemble the target set — a check would be tested by no leg"; st=1
+    fi
+  done
+  # Overlap is the other half of "partition": a check tested twice is only wasteful, but a shard_filter
+  # that emitted everything on every leg would ALSO satisfy the union test above while destroying the
+  # speedup. Require the legs to be disjoint by counting.
+  _cnt_full=$(printf '%s\n' "$_full" | grep -c . || true)
+  _cnt_legs=$(_i=1; while [ "$_i" -le 4 ]; do SHARD_I=$_i SHARD_N=4 target_set; _i=$((_i + 1)); done | grep -c . || true)
+  if [ "$_cnt_full" = "$_cnt_legs" ]; then echo "PASS: shards 1..4 are DISJOINT ($_cnt_legs = $_cnt_full checks, no duplication)"; else echo "FAIL: shard legs overlap ($_cnt_legs emitted vs $_cnt_full targets)"; st=1; fi
+
+  # ── F6 — the bare/CI dispatch must IGNORE inherited SHARD coordinates, exactly as F1 requires of ONLY.
+  # A gate the ENVIRONMENT can narrow is a gate an attacker (or a stray export) can silently reduce to one
+  # check while CI still prints GREEN. There must be exactly ONE way to narrow this sweep — an explicit
+  # argv --shard — and the bare arm must not be it. Drive the REAL bare_sweep with SHARD_* set and stub
+  # sweep() in a subshell to report what actually reached it.
+  _bs=$( SHARD_I=1; SHARD_N=99; sweep() { printf 'SHARD=[%s/%s]\n' "$SHARD_I" "$SHARD_N"; }; bare_sweep )
+  if [ "$_bs" = "SHARD=[/]" ]; then echo "PASS: bare/CI dispatch ignores inherited SHARD coords (cannot be narrowed by the environment)"; else echo "FAIL: bare/CI dispatch honored an inherited SHARD ($_bs) -- CI can be silently narrowed"; st=1; fi
+
   [ "$st" = 0 ] && echo "non-vacuity --selftest: OK" || { echo "non-vacuity --selftest: FAIL" >&2; return 1; }
   return "$st"
 }
@@ -560,8 +649,17 @@ case "${1:-}" in
   --only)     ONLY="${2:-}"
               [ -n "$ONLY" ] || { echo "usage: non-vacuity.sh --only <check.sh>" >&2; exit 2; }
               sweep; exit $? ;;
+  --shard)    # CI dispatch, parallel leg. Coordinates come from ARGV ONLY (never the environment) — an
+              # env-narrowable control gate is exactly the vacuity this tool exists to detect. Every leg
+              # enforces a strict subset; an EMPTY leg FAILS (F5); the union of legs 1..n is the full set
+              # (F5b). The ci.yml matrix that fans these out is locked by conformance/non-vacuity-wired.sh,
+              # so CI cannot declare n=4 and silently run only 3 legs.
+              _sarg="${2:-}"
+              [ -n "$_sarg" ] || { echo "usage: non-vacuity.sh --shard <i>/<n>" >&2; exit 2; }
+              case "$_sarg" in */*) : ;; *) echo "usage: non-vacuity.sh --shard <i>/<n>  (expected the form i/n, got '$_sarg')" >&2; exit 2 ;; esac
+              shard_sweep "${_sarg%%/*}" "${_sarg##*/}"; exit $? ;;
   "")         # bare/CI dispatch: the FULL sweep. bare_sweep resets ONLY so an inherited environment ONLY
               # can never narrow what CI enforces. No env var can short-circuit this arm — it always sweeps.
               bare_sweep; exit $? ;;
-  *) echo "usage: non-vacuity.sh [--selftest | --only <check.sh>]" >&2; exit 2 ;;
+  *) echo "usage: non-vacuity.sh [--selftest | --only <check.sh> | --shard <i>/<n>]" >&2; exit 2 ;;
 esac

@@ -121,8 +121,8 @@ case "$cmd" in
     [ $# -ge 2 ] || { echo "usage: kit-guard cmd \"<command>\"" >&2; exit 2; }
     if reason=$(guard_check_command "$2"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
   path)
-    [ $# -ge 2 ] || { echo "usage: kit-guard path \"<file>\"" >&2; exit 2; }
-    if reason=$(guard_check_path "$2"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
+    [ $# -ge 2 ] || { echo "usage: kit-guard path \"<file>\" [protected-root]" >&2; exit 2; }
+    if reason=$(guard_check_path "$2" "${3:-}"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
   mcp)
     [ $# -ge 2 ] || { echo "usage: kit-guard mcp \"<mcp__tool>\" [policy-path]" >&2; exit 2; }
     pol=${3:-$SELF_DIR/../.claude/mcp-policy.json}
@@ -177,5 +177,79 @@ pallow "claude-md near"      "CLAUDEX.md"
 pallow ".env.example"     ".env.example"
 mdeny  "mcp destructive"  "mcp__filesystem__delete_file"
 mallow "mcp read-only"    "mcp__postgres__query"
+
+# --- CP-8c: dev-clone affordance (relax control-plane ONLY: under-temp, outside-root, root-not-temp) ---
+CP8C_ROOT=$(CDPATH='' cd "$(dirname "$0")/.." 2>/dev/null && pwd -P)
+prdeny() { if sh "$0" path "$2" "$3" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
+prallow(){ if sh "$0" path "$2" "$3" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
+# POSITIVE LIVENESS — a clone under /tmp, outside the (real, non-temp) root: control-plane edit RELAXES.
+# NOTE: skipped when CP8C_ROOT is itself under temp (condition 3) — e.g. the mktemp'd export tree —
+# because the affordance is correctly OFF there; asserting ALLOW would then falsely fail.
+case "$CP8C_ROOT/" in
+  /tmp/*|/private/tmp/*|/var/folders/*/T/*) : ;;  # root under temp => affordance off; skip liveness
+  *)
+    prallow "dev-clone guard edit"   "/tmp/cp8c-clone/.claude/hooks/guard-core.sh" "$CP8C_ROOT"
+    prallow "dev-clone conformance"  "/tmp/cp8c-clone/conformance/verify.sh"       "$CP8C_ROOT"
+    CP8C_MKC=$(mktemp -d)/clone   # platform temp: /private/var/folders/* on macOS, /tmp/* on Linux
+    prallow "mktemp dev-clone"       "$CP8C_MKC/.claude/hooks/guard-core.sh"       "$CP8C_ROOT"
+    rm -rf "$(dirname "$CP8C_MKC")" 2>/dev/null || true
+    ;;
+esac
+# LOAD-BEARING NEGATIVES — must STAY denied regardless of where the root lives.
+prdeny  "in-root guard (live)"   "$CP8C_ROOT/.claude/hooks/guard-core.sh"      "$CP8C_ROOT"
+prdeny  "secret in the clone"    "/tmp/cp8c-clone/.env"                        "$CP8C_ROOT"
+prdeny  "dotdot escape to root"  "/tmp/cp8c-clone/../..$CP8C_ROOT/.claude/hooks/guard-core.sh" "$CP8C_ROOT"
+prdeny  "dotdot survivor tail" "/tmp/cp8c-noexist/../evil/.claude/hooks/guard-core.sh" "$CP8C_ROOT"
+# out-of-temp control-plane (the ~/.claude trap): HARDCODED temp set means a poisoned TMPDIR cannot widen.
+prdeny  "out-of-temp CP file"    "$HOME/.claude/settings.json"                 "$CP8C_ROOT"
+# Poison TMPDIR to a dir that is an ancestor of the TARGET but a SIBLING of the root — so if a
+# $TMPDIR-widener regression ever returns, THIS row RELAXes (REDs). With $CP8C_ROOT under $HOME
+# the old "$HOME" poison was vacuous (condition 3 denied first). Non-vacuous per code review.
+CP8C_POISON="$(dirname "$CP8C_ROOT")/cp8c-poisontmp"
+TMPDIR="$CP8C_POISON" prdeny "poisoned TMPDIR widener" "$CP8C_POISON/x/.claude/settings.json" "$CP8C_ROOT"
+# condition 3: a protected root UNDER temp disables the affordance (the export-tree break).
+prdeny  "root-under-temp escape" "/tmp/exp-sibling/.claude/hooks/guard-core.sh" "/tmp/exp-root"
+# FAIL-SAFE — the SAME clone edit with NO root passed stays denied (relaxation is opt-in).
+pdeny   "no-root => no relax"     "/tmp/cp8c-clone/.claude/hooks/guard-core.sh"
+
+# --- CP-8a corpus: leading-verb discipline (the argument is DATA, not CODE) ---
+# POSITIVE LIVENESS — benign reads whose ARGUMENT merely contains a dangerous verb.
+allow "grep for the rm -rf string"   'grep -rn "rm -rf" scripts/'
+allow "grep for git reset --hard"    'grep -rn "git reset --hard" docs/'
+allow "commit msg naming rm -rf"     'git commit -m "guard: deny rm -rf"'
+allow "rg for a dangerous string"    'rg "rm -rf" --glob "*.sh"'
+allow "echo a dangerous string"      'echo "rm -rf /tmp/x"'
+# `scripts/kit-guard cmd "rm -rf ..."` is NOT asserted here: it stays denied after CP-8a, by the
+# CONTROL-PLANE block (it names scripts/kit-guard, a guarded path) which runs before this matrix.
+# CP-8b owns that case. Asserting it either way here would lock in a verdict this slice does not own.
+# LOAD-BEARING NEGATIVES — deleting the discipline must turn these RED. An INTERPRETER's
+# argument is CODE; a redirect or substitution makes a segment unparseable; a read segment
+# must never launder a destructive one that follows it; and no tool with a write/exec escape
+# may be exempted (that is why sed/awk/find/sort/uniq are NOT in the strict set).
+deny  "interpreter: bash -c rm"      'bash -c "rm -rf /"'
+deny  "interpreter: sh -c rm"        'sh -c "rm -rf /"'
+deny  "xargs rm -rf"                 'xargs rm -rf'
+deny  "read THEN destroy"            'grep foo x && rm -rf /tmp/y'
+deny  "read lead + substitution"     'grep foo $(rm -rf /tmp/z)'
+# NOTE: the next two are CONTROL-PLANE-BLOCK regression guards (denied before the exemption
+# even runs), not tests of guard_read_only_command — labelled honestly (code review Minor 1).
+deny  "CP-block: truncate a workflow" 'echo -n > .github/workflows/ci.yml'
+deny  "CP-block: sed -i the guard"    'sed -i s/a/b/ conformance/verify.sh'
+# This one IS a guard_read_only_command test: a redirect to a NON-cp target is caught only by
+# the truncation rule in the matrix, so it flips to ALLOW if the exemption wrongly fires.
+deny  "redirect defeats read-lead"   'echo -n > /tmp/cp8a-scratch'
+deny  "awk system() escape"          'awk "BEGIN{system(\"rm -rf /tmp/q\")}"'
+deny  "find -exec rm escape"         'find . -exec rm -rf {} ;'
+deny  "env-assignment prefix"        'FOO=bar rm -rf /tmp/x'
+# --- CP-8a security fix: git --output=<file> is a file WRITE via the diff machinery ---
+deny  "git --output to cp"           'git diff --output=.github/workflows/ci.yml HEAD'
+deny  "git --output double-quoted"   'git diff --output=".github/workflows/ci.yml" HEAD'
+deny  "git --output single-quoted"   "git log --output='conformance/verify.sh' -1"
+deny  "git --output backslash-esc"   'git show --output=conformance\/verify.sh HEAD'
+deny  "git --output cmd-subst"       'git diff --output=$(echo conformance/x) HEAD'
+deny  "git --output space form"      'git diff --output .github/workflows/ci.yml HEAD'
+deny  "git --output to tmp (write)"  'git diff --output=/tmp/benign.txt HEAD'
+# residual: the guard ALLOWS a plain redirect to a non-control-plane path (the workaround).
+allow "residual: git diff > tmp"     'git diff > /tmp/benign.txt'
 
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }

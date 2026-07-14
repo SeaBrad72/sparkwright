@@ -8,6 +8,12 @@ set -eu
 
 . "$(dirname "$0")/guard-core.sh"
 
+# CP-8c: the protected repo root = the tree holding this hook (<root>/.claude/hooks/guard.sh).
+# Physically resolved to match guard_dev_clone_relaxable. Empty if unresolvable => no
+# relaxation (fail-safe). Unforgeable: the agent cannot move the live repo, and $0 comes
+# from control-plane config.
+PROTECTED_ROOT=$(CDPATH='' cd "$(dirname "$0")/../.." 2>/dev/null && pwd -P || printf '')
+
 INPUT=$(cat)
 
 # escape for a JSON double-quoted value (backslash + quote; reasons have no control chars)
@@ -47,7 +53,7 @@ case "$TOOL" in
     if reason=$(guard_check_command "$CMD"); then allow; else emit_deny "$reason"; fi ;;
   Write|Edit|NotebookEdit)
     FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || printf '')
-    if reason=$(guard_check_path "$FP"); then allow; else emit_deny "$reason"; fi ;;
+    if reason=$(guard_check_path "$FP" "$PROTECTED_ROOT"); then allow; else emit_deny "$reason"; fi ;;
   Read)
     FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || printf '')
     if reason=$(guard_check_read "$FP"); then allow; else emit_deny "$reason"; fi ;;

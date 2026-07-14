@@ -66,10 +66,56 @@ Net: shims raise the floor for non-Claude runtimes on the **common direct-call m
 ## Honesty boundary
 Each surface is a speed bump for honest mistakes, not containment of a hostile process. It is bypassable by design and does **not** claim to block every write/exfil path. **Local git only:** the git surfaces here (`pre-push`, `guard_check_push`) act *locally*, before the network round-trip. A **server-side `gh pr merge --admin`** is a GitHub API call — a different transport entirely — and is outside the guard's reach. **The S6 `--admin` deny is a local speed-bump, not this boundary:** it makes the bypass loud in the guard's own reasons and stops the honest-mistake local invocation, but a token with admin scope can still call the API directly (or a non-Claude runtime can). **The real boundary is credential-side — never issuing the agent an admin-scoped token** (`../enterprise/platform-safety-boundary.md`); a `gh` with only normal-merge scope simply *cannot* bypass. The boundary on *who merges* is GitHub branch protection + the agent's sanctioned path — a **normal** (non-`--admin`) merge on a recorded, authenticated GO via `scripts/promotion-verify.sh actuate` (team), or preparing the PR and handing the human the `--admin` kill-switch merge (solo) — see [`review-lane.md`](./review-lane.md), **not** the guard. Known bypass classes (all within this ceiling, not regressions): `--no-verify`; an uncooperative runtime; a language interpreter (`python -c`, `node -e`); a redirect/printf that writes a file without invoking a denied verb; an upload via `curl --data @file` / interpreter; and history-application like `git am` / `git apply`. The boundary that actually contains these is platform-owned — adopt the guard **with** the network-egress allowlist, separate prod credentials, sandboxed FS, and scoped tokens (`../enterprise/platform-safety-boundary.md`).
 
+## Doing control-plane work — the sanctioned route (READ THIS BEFORE REACHING FOR THE KILL SWITCH)
+
+The guard **correctly** denies an agent editing `conformance/`, `.github/workflows/`, `.claude/`,
+`scripts/kit-guard`, `CODEOWNERS`, … — that is its job, not a bug. But real control-plane work still has
+to happen (a CI gate needs fixing, a conformance check needs writing). **There is a sanctioned way to do
+it with the guard fully armed, and it is NOT `KIT_GUARD_SELFEDIT`.**
+
+### The dev-clone affordance (CP-8c, v3.124.0) — the default
+
+`guard_dev_clone_relaxable` relaxes the control-plane deny **iff** the target is physically **under a
+hardcoded temp root**, **outside the protected repo root**, and **the root is not itself under temp**. So:
+
+```sh
+git clone . /private/tmp/kit-work      # a LITERAL path — a variable target is denied (fail-closed)
+```
+
+The agent then edits `conformance/`, `.github/workflows/`, anything — **inside the clone**. Meanwhile the
+guard stays **armed and effective on the real repo**: the identical edit to `~/…/your-repo/conformance/x.sh`
+is still **DENIED**. Build there, run the checks there, push the branch, open the PR.
+
+**Why this is the right default:**
+
+| | Guard on your tree | What you review before saying GO |
+|---|---|---|
+| **dev-clone** | **armed + effective** | **a diff** — a PR, with CI already green on it |
+| `apply.py` hand-off | armed but *defeated* during the write (an interpreter is a documented bypass class — see *Honesty boundary*) | **a script** — you must reason about bytes it *will* write |
+| `KIT_GUARD_SELFEDIT=1` | **fully disarmed** | — |
+
+The `apply.py` hand-off ("author to scratch, a human runs an idempotent apply") was the **mandatory**
+pattern before CP-8c. **CP-8c abolished it** — it was *"built via the AMBER hand-off it abolishes, the last
+mandatory one for guard work."* Do not reintroduce it out of habit.
+
+The merge is still gated: `control-plane-ratification` demands a **non-author** approval, and the recorded
+GO — not the keystroke — is the control (`docs/governance/promotion-contract.md`). **Agents propose,
+humans ratify.** The clone changes *where the bytes are written*; it changes nothing about *who decides*.
+
+### `KIT_GUARD_SELFEDIT=1` — last resort, and understand what it actually does
+
+It is **not** a control-plane-edit permit. It is a **global kill switch**: it disables the destructive-op
+denies and the secret-read denies **too**, for the whole session, not just the edits you wanted. Reach for
+it only when you genuinely need the *entire* guard down for deliberate human maintenance (e.g. surgery on
+the guard's own deny-matrix, where a clone cannot help because the guard under test *is* the artifact).
+
+Using it to edit a handful of files is **over-broad** — that is what the dev-clone is for. If you do use
+it, remove it the moment the work lands.
+
 ## Over-deny (false-positive) ceiling — the other direction
 The control-plane shell-mutation check matches a control-plane path **and** a mutation verb by **substring over the whole command string** — it cannot tell *code* from *prose*. So it sometimes **over-denies** (a false positive, the guard failing *safe*): a commit message, a `gh pr create --body`, a heredoc body, or a `grep` pattern that merely *mentions* a control-plane path (`CODEOWNERS`, `.github/workflows`, `.claude/`) alongside a verb-looking word (`cp`, `sed`, `install`) is denied even though it mutates nothing. `git checkout -b <branch>` co-occurring with such a mention trips it too.
 
-This is annoying, not unsafe (over-deny ≠ bypass). **Workarounds:** run the command via the **`!` user-shell escape** (it runs in your terminal, outside the PreToolUse hook); use the **Read tool** instead of a shell `cat`/`grep` for reads; or set `KIT_GUARD_SELFEDIT=1` in the **launching** shell for deliberate maintenance. (An **inline** `KIT_GUARD_SELFEDIT=1 <cmd>` prefix does **not** work — the PreToolUse hook runs in its own process *before* your command, so the inline var never reaches it; export it in the launching shell, or add an `env` block to `.claude/settings.json`.) The structural fix — per-segment command parsing (judge each `;`/`&&`/`|`-separated segment's leading verb against the paths in *that* segment) — is tracked as **G8** in `../ROADMAP-KIT.md`; it is deferred because tightening this regex risks the *unsafe* direction (a false-negative), and the real backstop for an actual control-plane change is the PR-time `gate-agent-boundary` check, which diffs the files regardless of how they were edited.
+This is annoying, not unsafe (over-deny ≠ bypass). **Workarounds, in order:** for a long **commit or PR message** (the most common trip — a multi-line body is segmented on its newlines and a fragment mentioning a control-plane path is scanned as data-mistaken-for-code), pass the body from a **FILE** rather than inline `-m`/`--body` — `git commit -F <file>` / `gh pr create --body-file <file>` (the file content is a message, never executed). **As of DRIFT-2 the deny message names this escape itself** when the command is a `git commit`/`git tag`/`gh` invocation, so you see it at the moment of friction. Otherwise: run the command via the **`!` user-shell escape** (it runs in your terminal, outside the PreToolUse hook); use the **Read tool** instead of a shell `cat`/`grep` (or `sed -n`) for reads; if you are actually doing **control-plane work**, use the **dev-clone** (see the section above — that is the route, and it keeps the guard armed). **Only as a last resort** set `KIT_GUARD_SELFEDIT=1` in the **launching** shell — and know that it disarms the guard **globally** (destructive-op and secret-read denies included), not just the control-plane check. (An **inline** `KIT_GUARD_SELFEDIT=1 <cmd>` prefix does **not** work — the PreToolUse hook runs in its own process *before* your command, so the inline var never reaches it; export it in the launching shell, or add an `env` block to `.claude/settings.json`. In the **VSCode extension** a launching-shell export does not reach the hook either — the extension spawns its own process — so the `env` block is the only route there.) The structural fix — per-segment command parsing (judge each `;`/`&&`/`|`-separated segment's leading verb against the paths in *that* segment) — is tracked as **G8** in `../ROADMAP-KIT.md`; it is deferred because tightening this regex risks the *unsafe* direction (a false-negative), and the real backstop for an actual control-plane change is the PR-time `gate-agent-boundary` check, which diffs the files regardless of how they were edited.
 
 ## See also
 - `DEVELOPMENT-PROCESS.md` §13 (autonomy matrix) · `conformance/agent-autonomy.sh` (the red-team corpus).

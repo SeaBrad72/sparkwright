@@ -103,7 +103,7 @@ the kit's own build skill, `skills/build/SKILL.md` (read + follow it). Dispatch 
 gate each diff with an independent **review between tasks** (builder ≠ reviewer), keep a **durable ledger**
 that survives compaction, fan out only disjoint-file-set tasks (defer to `skills/worktrees` for the
 parallel-safety rule), and run a final **whole-branch review** before integration. Control-plane tasks are
-authored GREEN and staged as an AMBER `apply.py`, never silently committed. It is a *hat the Orchestrator
+authored in a **dev-clone** (the guard stays armed on the real repo), never silently committed. It is a *hat the Orchestrator
 wears*, not a separate seat (agents-vs-skills rule); build composes tdd (the executor builds each task
 test-first).
 

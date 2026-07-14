@@ -58,10 +58,22 @@ section of FEATURE-REQUEST; CODE-REVIEW-CHECKLIST → a rubric block in REVIEW-R
 ## 5. Control-plane refs go through ratification
 
 If a reference lives in a control-plane file (`CLAUDE.md`, `DEVELOPMENT-PROCESS.md`,
-`DEVELOPMENT-STANDARDS.md`, `conformance/`, `scripts/incept.sh`, …), the agent does **not** edit it
-directly: build the change in `/tmp` scratch and have a human run an idempotent `apply.py`
-(`MAINTAINING.md` AMBER mechanic). A **gate-logic** change additionally gets a **security-review of the
-scratch** — verify the updated gate isn't *weaker* (can't pass when the guarded thing is absent: the
+`DEVELOPMENT-STANDARDS.md`, `conformance/`, `scripts/incept.sh`, …), the agent does **not** edit it in
+the live repo. Build it in a **dev-clone** — `git clone . /private/tmp/<name>` (a literal path) — where the
+guard relaxes the control-plane deny **while staying armed on the real repo**, then push the branch and
+open a PR. See [`runtime-guards.md`](./runtime-guards.md) *"Doing control-plane work — the sanctioned
+route"*.
+
+> **Superseded:** this step used to prescribe the `apply.py` AMBER hand-off (author to `/tmp` scratch, a
+> human runs an idempotent apply). **CP-8c (v3.124.0) abolished that** — it was *"the last mandatory
+> [hand-off] for guard work."* The dev-clone replaces it: you review a **diff** (already CI-green) instead
+> of a **script** whose writes you must predict, and no interpreter ever writes to your tree. Do not
+> reintroduce `apply.py` out of habit. **Never** reach for `KIT_GUARD_SELFEDIT=1` for this — it is a
+> *global* kill switch (destructive-op and secret-read denies included), not a control-plane permit.
+
+The merge is unchanged: `control-plane-ratification` requires a **non-author** approval, and the recorded
+GO is the control, not the keystroke. A **gate-logic** change additionally gets a **security-review of the
+diff** — verify the updated gate isn't *weaker* (can't pass when the guarded thing is absent: the
 green-while-dark check), with a load-bearing RED selftest fixture proving it.
 
 ## 6. Keep the gate and the deletion in one change
@@ -75,5 +87,6 @@ branch is transiently broken (old gate red on the deleted file) or — worse —
 `conformance/badge-version.sh` (after any VERSION bump) · `sparkwright doctor`. Then independent review
 (builder ≠ reviewer), and the human merge + tag.
 
-See also: `MAINTAINING.md` (versioning + the apply.py mechanic), `docs/operations/meta-control.md` (the
+See also: `MAINTAINING.md` (versioning + §3a, authoring a control-plane change in a dev-clone),
+`docs/operations/meta-control.md` (the
 design-intent verify lens), `conformance/check-links.sh` (the link-scope rules above).

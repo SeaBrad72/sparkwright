@@ -8,8 +8,9 @@
 # Exit: 0 = all SHA-pinned · 1 = a tag/branch-pinned uses: · 2 = bad usage. POSIX sh; dash-clean.
 set -eu
 
-REF="profiles/typescript-node/ci.yml"        # canonical adopter reference
-KIT_WORKFLOWS=".github/workflows"             # the workflows the kit itself runs
+REF="profiles/typescript-node/ci.yml"                    # canonical adopter reference
+REF_RATIFICATION="profiles/typescript-node/ratification.yml"  # CP-9: its §13 gate, a separate workflow
+KIT_WORKFLOWS=".github/workflows"                         # the workflows the kit itself runs
 
 # has_uses <workflow>: 0 if the file declares at least one real `uses:` step.
 has_uses() { grep -Eq '^[[:space:]]*-?[[:space:]]*uses:' "$1"; }
@@ -87,6 +88,10 @@ esac
 rc=0
 # 1) the canonical adopter reference (strict — it must declare + pin actions)
 check_target "$REF" 1 || rc=1
+# 1b) CP-9: the reference's second document — the ratification gate, which ships as its own workflow
+# (it alone re-runs on pull_request_review). Strict: the adopter installs it verbatim, and it is the
+# file that carries a `checks: write` token, so an unpinned action here is the worst place to have one.
+check_target "$REF_RATIFICATION" 1 || rc=1
 # 2) the kit's OWN workflows (broadened in H4b): every actually-run workflow pins its actions
 if [ -d "$KIT_WORKFLOWS" ]; then
   for wf in "$KIT_WORKFLOWS"/*.yml "$KIT_WORKFLOWS"/*.yaml; do

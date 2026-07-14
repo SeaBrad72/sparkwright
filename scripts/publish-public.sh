@@ -46,6 +46,35 @@ PUBLIC_REMOTE_DEFAULT="https://github.com/SeaBrad72/sparkwright.git"
 PUBLISH_ID_FILE="${PUBLISH_ID_FILE:-$ROOT/.publish-identifiers}"
 
 usage() { echo "usage: publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] [--selftest]" >&2; exit 2; }
+
+# --- P1.2-pre-b: the immutability rule, as a PURE function so it can be proven ------------------
+# publish_decision <tag_already_published:0|1> <changed_paths:N> -> publish | noop | refuse
+#
+#   tag published?  tree differs?   decision   why
+#   ---------------------------------------------------------------------------------------------
+#   NO              no              publish    THE PARTIAL-PUBLISH CASE. main landed but the tag push
+#                                             failed (or a prior run half-published): the tree already
+#                                             matches, yet the TAG IS MISSING. "re-run to converge"
+#                                             only converges if this PUBLISHES the absent tag. (dual
+#                                             review: treating this as noop left a release permanently
+#                                             untagged while the check red-ed forever.)
+#   NO              yes             publish    a new release
+#   yes             no              noop       benign idempotent re-run — the tag is present AND its
+#                                             tree matches. MUST stay green: a gate that fires on the
+#                                             happy path teaches people to ignore it.
+#   yes             YES             refuse     THE DEFECT. Publishing would MOVE a released tag: every
+#                                             adopter pinned to it silently receives a different tree
+#                                             than the one they audited.
+#
+# Tag ABSENCE always publishes (the tag is the deliverable). Only a PRESENT tag with a MATCHING tree
+# is a no-op. A blunt "refuse whenever the tag exists" would kill the benign re-run; a blunt "noop
+# whenever the tree matches" leaves a half-published release stuck — precision matters at both edges.
+publish_decision() {
+  _tp=$1; _ch=$2
+  if [ "$_tp" -eq 0 ]; then echo publish; return 0; fi   # tag absent -> publish it, always
+  if [ "$_ch" -eq 0 ]; then echo noop;    return 0; fi   # tag present + tree matches -> benign no-op
+  echo refuse                                             # tag present + tree differs -> the defect
+}
 die()   { echo "publish-public: $*" >&2; exit 1; }
 say()   { echo "publish-public: $*"; }
 
@@ -200,6 +229,45 @@ selftest() {
     echo "  ok   RC    non-existent tree -> non-zero rc (fail-closed)"
   fi
 
+  # --- P1.2-pre-b: the immutability rule (pure decision) ----------------------------------------
+  echo "publish-public --selftest: immutable released tags"
+  _dec() {  # <want> <tag_published> <changed> <label>
+    _got=$(publish_decision "$2" "$3")
+    if [ "$_got" = "$1" ]; then echo "  ok   DEC   $4 -> $_got"
+    else echo "  FAIL $4: want $1 got $_got"; _fail=$((_fail+1)); fi
+  }
+  _dec publish 0 12 "tag NOT published, tree differs        (a new release)"
+  _dec publish 0 1  "tag NOT published, one path            (a new release)"
+  _dec publish 0 0  "tag ABSENT, tree matches               (PARTIAL PUBLISH -> publish the missing tag)"
+  _dec noop    1 0  "tag published, tree IDENTICAL          (benign re-run stays GREEN)"
+  _dec refuse  1 1  "tag PUBLISHED, tree DIFFERS            (THE DEFECT -> refuse)"
+  _dec refuse  1 99 "tag PUBLISHED, tree differs a lot      (THE DEFECT -> refuse)"
+
+  # --- P1.2-pre-b: prove the SECOND layer is real, not asserted ---------------------------------
+  # The refusal above is our logic. Underneath it, a NON-FORCE `git push` of an existing tag must be
+  # rejected by git itself — that is what still holds if a concurrent publish lands the tag between
+  # our clone and our push (the TOCTOU window our refusal cannot close). Do not take this on faith:
+  # exercise it against a real local repo (git ls-remote/push accept a path — no network, no creds).
+  _g="$_t/immutable"; mkdir -p "$_g/remote" "$_g/work"
+  ( cd "$_g/remote" && git init --quiet --bare ) 2>/dev/null
+  (
+    cd "$_g/work" && git init --quiet && git config user.email t@t && git config user.name t
+    echo one > f && git add f && git commit --quiet -m one
+    git tag v9.9.9 && git push --quiet "$_g/remote" HEAD:main "refs/tags/v9.9.9"
+    echo two > f && git commit --quiet -am two && git tag -f v9.9.9   # move the tag locally
+  ) >/dev/null 2>&1
+  if ( cd "$_g/work" && git push --quiet "$_g/remote" "refs/tags/v9.9.9" ) >/dev/null 2>&1; then
+    echo "  FAIL PUSH  a NON-FORCE tag push MOVED an existing tag (the second layer is not real!)"; _fail=$((_fail+1))
+  else
+    echo "  ok   PUSH  non-force tag push REFUSES to move a published tag (second layer holds)"
+  fi
+  # ...and the load-bearing negative: --force DOES move it, so the fixture above is live, not vacuous.
+  if ( cd "$_g/work" && git push --quiet --force "$_g/remote" "refs/tags/v9.9.9" ) >/dev/null 2>&1; then
+    echo "  ok   PUSH  --force DOES move it (so the non-force result above is load-bearing)"
+  else
+    echo "  FAIL PUSH  --force failed to move the tag — the fixture proves nothing"; _fail=$((_fail+1))
+  fi
+
   rm -rf "$_t"; rm -f "$PUBLISH_ID_FILE"
   [ "$_fail" -eq 0 ] || { echo "publish-public --selftest: $_fail failed" >&2; exit 1; }
   echo "publish-public --selftest: all passed"
@@ -254,6 +322,14 @@ fi
 # --- 3. MIRROR — full sync incl. deletes, so the public tree == the export exactly ---------------
 say "[3/5] mirror — full sync into the public repo (adds, updates, DELETES)"
 git clone --quiet "$REMOTE" "$MIRROR" 2>/dev/null || die "could not clone $REMOTE"
+# P1.2-pre-b — IMMUTABLE RELEASED TAGS. The clone carries the remote's tags, so we can learn HERE
+# whether $TAG is already published, before anything is written or pushed. The refusal itself fires
+# after CHANGED is known (below): a tag that is published AND whose tree still matches is a benign
+# idempotent re-run (the existing CHANGED -eq 0 no-op) and must stay green — a gate that fires on the
+# happy path teaches people to ignore it (release-tagged.sh's doctrine). The case that must NEVER be
+# allowed is published-tag + DIFFERENT tree: that is a silent tag MOVE under every pinned adopter.
+TAG_PUBLISHED=0
+( cd "$MIRROR" && git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 ) && TAG_PUBLISHED=1
 # Delete everything tracked (preserve .git), then lay the export down: no stale file survives a
 # release in which it was removed.
 find "$MIRROR" -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} + 2>/dev/null || true
@@ -267,7 +343,14 @@ say "[4/5] review — what changes in the public repo:"
 ( cd "$MIRROR" && git add -A && git status --short | head -50 )
 CHANGED=$(cd "$MIRROR" && git status --porcelain | wc -l | tr -d ' ')
 say "      $CHANGED path(s) changed"
-if [ "$CHANGED" -eq 0 ]; then say "nothing to publish — public repo already matches $TAG"; exit 0; fi
+case "$(publish_decision "$TAG_PUBLISHED" "$CHANGED")" in
+  noop)
+    say "nothing to publish — public repo already matches $TAG"; exit 0 ;;
+  refuse)
+    echo "publish-public: REFUSING — $TAG is ALREADY PUBLISHED on $REMOTE, but the export differs from the published tree ($CHANGED path(s) would change)." >&2
+    echo "  A released tag is IMMUTABLE. Publishing would silently move $TAG out from under every adopter pinned to it." >&2
+    die "Bump VERSION and publish a NEW release. Nothing published." ;;
+esac
 
 # --- 5. PUBLISH ----------------------------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -275,14 +358,31 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 say "[5/5] publish — commit + tag $TAG + push"
+# EACH step is checked (dual review, security M1): a `( … ) || die` subshell suppresses errexit and
+# reports only its LAST command's status, so a failed `git commit` — realistic, since a fresh mirror
+# clone inherits NO git identity — would let `git tag` tag the STALE head and the pushes publish a NEW
+# version tag pointing at OLD code, exit 0, "published". So: set an explicit committer identity, check
+# every step, and TOLERATE an empty commit (the partial-publish case: tree already matches, only the
+# tag is missing — `publish_decision` sent us here precisely to add it).
 (
-  cd "$MIRROR"
-  git commit --quiet -m "Release $TAG
+  cd "$MIRROR" || die "publish: cannot enter the mirror clone"
+  git config user.email "publish-bot@sparkwright.local" || die "publish: could not set committer email"
+  git config user.name  "sparkwright publish-public"    || die "publish: could not set committer name"
+  if git diff --cached --quiet; then
+    say "      tree already matches — publishing the MISSING tag only (partial-publish convergence)"
+  else
+    git commit --quiet -m "Release $TAG
 
 Generated from the Sparkwright kit at $TAG by scripts/publish-public.sh.
-This repository is a generated snapshot of the shippable product — do not edit by hand."
-  git tag -f "$TAG"
-  git push --quiet origin HEAD:main
-  git push --quiet --force origin "refs/tags/$TAG"
-) || die "push failed — the public repo may be partially updated; re-run to converge."
+This repository is a generated snapshot of the shippable product — do not edit by hand." \
+      || die "publish: git commit failed — nothing published"
+  fi
+  # No `-f`/`--force`: the refusal above PROVED $TAG is not published, so both would only mask a bug.
+  # A non-force tag push is rejected by git if it would MOVE a ref — the second layer under the
+  # refusal, and the one that still holds if a concurrent publish landed the tag between our clone and
+  # our push (the TOCTOU window the refusal alone cannot close).
+  git tag "$TAG"                          || die "publish: git tag $TAG failed — nothing published"
+  git push --quiet origin HEAD:main       || die "publish: push of main failed — re-run to converge"
+  git push --quiet origin "refs/tags/$TAG" || die "publish: tag push failed (a concurrent publish may have landed $TAG) — nothing moved"
+) || exit 1
 say "published $TAG -> $REMOTE"

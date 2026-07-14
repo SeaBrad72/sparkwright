@@ -97,12 +97,24 @@ check_file() {
     # "agent autonomous" phrasing — a future cell must not relax the control-plane by euphemism
     # ("agent merges; human notified", "auto-merge on green", "delegated to agent"). Dual-review
     # hardening (#27). 'auto' also covers autonomous/automated/auto-{merge,apply}. POSIX-portable (no \b).
-    if printf '%s' "$_cell" | grep -qiE 'no human gate|agent[ -]?(self|merge|commit|appl|tag|push|actuat|autonom)|self-govern|auto|delegat'; then
+    # DRIFT-1 hardening (dual review): the old pattern had NO ratify/approve verb and assumed the
+    # relaxing actor is literally called "agent". Both holes were live on main and PROVEN:
+    #   "control-plane-ratification rendered by the agent"                    -> passed GREEN
+    #   "control-plane-ratification; the orchestrator may ratify unattended"  -> passed GREEN
+    # i.e. a cell could say THE AGENT RATIFIES ITSELF and satisfy the lock whose entire job is to
+    # grade who ratifies (the CP-9 pwn-request class). Now: any non-human actor (agent/orchestrator/
+    # bot/model/llm) bound to any control verb — including ratif/approv/govern — is rejected, as is
+    # "unattended" and "by the agent". Validated against all five real cells: zero false positives.
+    if printf '%s' "$_cell" | grep -qiE 'no human gate|(agent|orchestrator|bot|model|llm)[ -]?(self|merge|commit|appl|tag|push|actuat|autonom|ratif|approv|govern)|by (the |an |a )?(agent|orchestrator|bot|model|llm)|unattended|self-govern|auto|delegat'; then
       echo "FAIL: Control-plane column relaxed at '$_lab' — cell is '$_cell' (control-plane must stay human-governed)"; fail=1; return 0
     fi
     # Positive: require an EXPLICIT human-actuation disposition. A bare 'human' mention cannot rescue
     # an agent-actuating cell (that gaming path was closed in dual review #27).
-    if printf '%s' "$_cell" | grep -qiE 'human-authored|control-plane-ratification|human ratif|human-gated|human gate|AMBER|meta-control|N/A'; then
+    # DRIFT-1: 'AMBER' (the retired hand-off ceremony) dropped from this alternation. NOTHING replaced
+    # it — in particular NOT 'dev-clone'. A dev-clone is where the AGENT authors; it is an authoring
+    # mechanism, not a human gate. This grep grades WHO RATIFIES, never where the bytes were written.
+    # Adding 'dev-clone' here would let a cell satisfy "human-governed" with no human in it.
+    if printf '%s' "$_cell" | grep -qiE 'human-authored|control-plane-ratification|human ratif|human-gated|human gate|meta-control|N/A'; then
       echo "PASS: Control-plane@$_lab human-governed -> '$_cell'"
     else
       echo "FAIL: Control-plane@$_lab cell '$_cell' is not a recognized human-governed disposition"; fail=1
@@ -150,7 +162,7 @@ After actuation the agent verifies shipped == approved at merge and at tag.
 | Rung | Ordinary | Sensitive | Control-plane |
 |---|---|---|---|
 | **Spike** | Agent autonomous (L3) | Human-gated | Human-authored |
-| **Integration** | Automated gates | Human GO | AMBER apply + control-plane-ratification |
+| **Integration** | Automated gates | Human GO | Dev-clone authoring + control-plane-ratification |
 | **Release candidate** | Human GO | Dual review + GO | human ratify + meta-control |
 | **Staging/UAT** | smoke + sign-off | + threat re-check | N/A |
 | **Production** | human-commanded | human-commanded | N/A |
@@ -164,14 +176,14 @@ EOF
 
   # THE LOAD-BEARING NEGATIVE: Control-plane@Integration relaxed to 'Agent autonomous' -> MUST FAIL.
   relaxed="$base/cp-relaxed.md"
-  sed 's/AMBER apply + control-plane-ratification/Agent autonomous (L3)/' "$good" > "$relaxed"
+  sed 's/Dev-clone authoring + control-plane-ratification/Agent autonomous (L3)/' "$good" > "$relaxed"
   if check_file "$relaxed" >/dev/null 2>&1; then echo "selftest FAIL: relaxed control-plane column should FAIL (non-vacuity broken!)"; st=1; else echo "selftest PASS: relaxed control-plane -> FAIL"; fi
 
   # Anti-gaming: cell reverted to autonomous but a prose line elsewhere says control-plane stays human.
   mask="$base/prose-mask.md"
   {
     echo 'Note: the Control-plane column stays human-authored at every rung in our intent.'
-    sed 's/| AMBER apply + control-plane-ratification |/| Agent autonomous |/' "$good"
+    sed 's/| Dev-clone authoring + control-plane-ratification |/| Agent autonomous |/' "$good"
   } > "$mask"
   if check_file "$mask" >/dev/null 2>&1; then echo "selftest FAIL: prose-mask should not rescue a relaxed cell"; st=1; else echo "selftest PASS: prose-mask -> FAIL (final cell wins)"; fi
 
@@ -185,13 +197,24 @@ EOF
   # Euphemism evasion (dual-review #27): a Control-plane cell that relaxes to agent actuation in
   # natural language — NOT the canonical "agent autonomous" — must STILL FAIL.
   euph="$base/euphemism.md"
-  sed 's/AMBER apply + control-plane-ratification/agent merges after GO; human notified/' "$good" > "$euph"
+  sed 's/Dev-clone authoring + control-plane-ratification/agent merges after GO; human notified/' "$good" > "$euph"
   if check_file "$euph" >/dev/null 2>&1; then echo "selftest FAIL: euphemistic relaxation should FAIL (teeth gap!)"; st=1; else echo "selftest PASS: euphemistic relaxation -> FAIL"; fi
 
   # And the bare-'human' rescue must not save an auto-merge cell.
   bare="$base/bare-human.md"
-  sed 's/AMBER apply + control-plane-ratification/auto-merge on green; human informed/' "$good" > "$bare"
+  sed 's/Dev-clone authoring + control-plane-ratification/auto-merge on green; human informed/' "$good" > "$bare"
   if check_file "$bare" >/dev/null 2>&1; then echo "selftest FAIL: auto-merge+human should FAIL"; st=1; else echo "selftest PASS: auto-merge+human -> FAIL (bare 'human' cannot rescue)"; fi
+
+  # SELF-RATIFICATION (DRIFT-1 dual review): a cell that keeps the ratification marker but hands the
+  # RATIFYING to the agent must FAIL. Both of these passed GREEN on main — the lock graded the words,
+  # not the actor. This is the CP-9 pwn-request class: an agent ratifying its own control-plane change.
+  selfratify="$base/self-ratify.md"
+  sed 's/Dev-clone authoring + control-plane-ratification/Dev-clone authoring + control-plane-ratification rendered by the agent/' "$good" > "$selfratify"
+  if check_file "$selfratify" >/dev/null 2>&1; then echo "selftest FAIL: agent-rendered ratification should FAIL (self-ratification hole open!)"; st=1; else echo "selftest PASS: agent-rendered ratification -> FAIL"; fi
+
+  unattended="$base/unattended.md"
+  sed 's/Dev-clone authoring + control-plane-ratification/Dev-clone authoring + control-plane-ratification; the orchestrator may ratify unattended/' "$good" > "$unattended"
+  if check_file "$unattended" >/dev/null 2>&1; then echo "selftest FAIL: unattended orchestrator ratification should FAIL"; st=1; else echo "selftest PASS: unattended orchestrator ratification -> FAIL"; fi
 
   # Slice 4 load-bearing negatives: documenting delegation but DROPPING a carve-out must FAIL.
   nocp="$base/no-cp-carveout.md"

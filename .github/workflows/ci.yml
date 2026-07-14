@@ -17,7 +17,89 @@ permissions:
   contents: read
 
 jobs:
-  conformance:
+  # ============================================================================================
+  # P1-CI — `conformance` is SHARDED. Read this before touching the job graph.
+  #
+  # It used to be ONE job of ~45 serial steps: 580s, and the wall-clock of the entire pipeline.
+  # Six of those steps were 511s of the 580s (88%) and are mutually INDEPENDENT, so they now run
+  # as parallel jobs. Wall-clock becomes the LONGEST LEG (~139s), not the SUM (~580s).
+  #
+  # THE REQUIRED CONTEXT IS `conformance` — and it still exists: the aggregator job at the bottom
+  # of this file carries that exact name and is what branch protection sees. The shards below are
+  # NOT individually required. Renaming any of this is a branch-protection change, not a refactor.
+  #
+  # TWO INVARIANTS, both load-bearing, both proven by mutation (see the PR that introduced this):
+  #   1. The aggregator MUST be `if: always()` and MUST test `needs.*.result` explicitly. A plain
+  #      `needs:` job is SKIPPED when a dependency fails — and a skipped REQUIRED check is not
+  #      "failed", it is "Expected — waiting", which BLOCKS THE MERGE FOREVER. An aggregator that
+  #      merely `needs:` its shards would turn every genuine RED into a hung PR. (This is the same
+  #      in_progress-blocks behaviour CP-9 shipped and relies on.)
+  #   2. Every step must stay in THIS FILE. `conformance/ci-selftest-coverage.sh` requires each
+  #      --selftest-capable check to be referenced by basename in ci.yml, and
+  #      `conformance/verify-enforced-wired.sh` requires a `run:` line invoking `verify.sh
+  #      --require`. Both grep this file AS A WHOLE and do not care which job a step lives in — so
+  #      splitting into parallel jobs here is safe, but MOVING A STEP TO ANOTHER WORKFLOW FILE
+  #      BREAKS BOTH GATES.
+  # ============================================================================================
+
+  # ============================================================================================
+  # changes — classify the change-set ONCE, so the heavy shards can skip on a docs-only PR.
+  #
+  # The verdict comes from conformance/ci-classify-changes.sh — a SCRIPT, not inline YAML, deliberately:
+  # inline shell in a workflow cannot be --selftested and cannot be reached by the non-vacuity mutation
+  # sweep. The classifier is registered as a control check, so a mutation that neuters it into
+  # "everything is docs-only" (which would silently skip the conformance gates) is caught by CI.
+  #
+  # FAIL-SAFE IN EVERY DIRECTION. `docs_only` is true only when the file listing was readable, non-empty,
+  # and EVERY path ended in `.md`. Unknown / mixed / unreadable / a push to main => false => run
+  # everything. A mis-classification must cost CI TIME, never COVERAGE.
+  #
+  # The listing comes from the PR FILES API (head-independent — we never execute or diff the PR's tree to
+  # decide what to run), reusing the pattern CP-9 established for the ratification gate.
+  # ============================================================================================
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Classify the change-set (docs-only, or does it need the full proof?)
+        id: classify
+        env:
+          # Bound through env, never interpolated into the shell — untrusted-input hygiene, even though
+          # these particular fields are numeric//repo-controlled.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # A push to main has no PR file listing to read. Unknown => full suite. Never optimise `push`
+          # by diffing HEAD~1: a squash/force-push/merge-commit makes that listing a lie, and a lie here
+          # skips gates.
+          if [ "$EVENT" != "pull_request" ] || [ -z "${PR:-}" ]; then
+            echo "not a pull_request (event=$EVENT) — classifying as NOT docs-only (run everything)"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `|| true`: an API failure must not crash the job into `failure` — it must fall through to an
+          # empty listing, which the classifier reads as unknown => docs_only=false => full suite.
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate -q '.[].filename' > /tmp/changed.txt || true
+          echo "--- changed files ---"; cat /tmp/changed.txt || true; echo "---------------------"
+          verdict=$(sh conformance/ci-classify-changes.sh /tmp/changed.txt)
+          echo "$verdict" >> "$GITHUB_OUTPUT"
+          echo "VERDICT: $verdict"
+
+  # conformance-core — the ~40 cheap checks (~70s combined). The six expensive steps that used to
+  # sit in here now run as their own jobs (cf-doctor / cf-export / cf-verify-* / cf-claims).
+  #
+  # NOT path-scoped: it is only ~80s, and it carries the doc-sensitive checks (badge/VERSION coherence,
+  # backlog-current, doc-budget, the link and claims locks) that a markdown change absolutely CAN break.
+  # Cheap AND doc-relevant => always run it. Skipping it would be optimising the wrong 80 seconds and
+  # losing real coverage on exactly the change class we are trying to make fast.
+  conformance-core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -47,6 +129,27 @@ jobs:
         run: sh scripts/preflight.sh --selftest
       - name: Publish-public self-test (the private→public denylist — non-vacuity oracle)
         run: sh scripts/publish-public.sh --selftest
+      # P1.2-pre — the merge base every kit->adopter update pipe needs.
+      # BOTH are KIT-ONLY, and deliberately NOT registered in conformance/verify.sh:
+      #   kit-base.sh runs `incept` inside a fresh export, but an ADOPTER's tree already carries
+      #   ENGINEERING-PRINCIPLES.md, so incept refuses (scripts/incept.sh:195) — the check would FAIL on
+      #   every adopter, and artifact-gate/cf-green-on-clone run the portable battery on the INCEPTED
+      #   export. kit-manifest.sh is kept with it: on an adopter it would merely re-export their own repo,
+      #   proving nothing while costing a full export on every run. Same call as release-tagged.sh /
+      #   board-drift.sh / green-on-clone.sh.
+      # HONEST CONSEQUENCE, named rather than glossed: they are therefore NOT reached by the non-vacuity
+      # mutation sweep (whose target_set is the verify.sh control set). Their teeth are the --selftest
+      # fixtures below plus hand mutation-testing at authoring time — a weaker guarantee than the sweep.
+      # Both mutants were witnessed RED: emitting the manifest pre-prune (kit-manifest), and dropping the
+      # manifest-scoping so an adopter file leaks into the base (kit-base — the data-loss case).
+      - name: kit-manifest — every export STATES what it shipped
+        run: sh conformance/kit-manifest.sh
+      - name: kit-manifest self-test (non-vacuity oracle)
+        run: sh conformance/kit-manifest.sh --selftest
+      - name: kit-base — incept vendors the received tree (the merge base for kit-update)
+        run: sh conformance/kit-base.sh
+      - name: kit-base self-test (incl. the adopter-file data-loss guard)
+        run: sh conformance/kit-base.sh --selftest
       - name: Guard single-source-of-truth (all consumers source the core)
         run: sh conformance/guard-core-sourced.sh
       - name: kit-guard CLI self-test (deny battery through the CLI)
@@ -159,6 +262,17 @@ jobs:
         run: sh conformance/agentops-sensor-wired.sh --selftest
       - name: orchestrator-loop self-test (E3a — real loop + wiring lock)
         run: sh conformance/orchestrator-loop-wired.sh --selftest
+      - name: governing-docs-current self-test (DRIFT-1 — recurrence latch for the retired apply.py hand-off)
+        run: sh conformance/governing-docs-current.sh --selftest
+      # P1.2-pre-b — SELFTESTS ONLY. The LIVE mirror-current check is deliberately NOT a PR gate: it is
+      # RED until the owner publishes, and publication happens AFTER merge+tag. A gate that is red on
+      # the happy path teaches people to ignore it. The live checks run weekly in drift-watch.yml.
+      - name: mirror-current self-test (P1.2-pre-b — tagged-but-unpublished release is detected)
+        run: sh conformance/mirror-current.sh --selftest
+      - name: mirror-tag-protection self-test (P1.2-pre-b — released tags protected at the forge)
+        run: sh conformance/mirror-tag-protection.sh --selftest
+      - name: governing-docs-current live (DRIFT-1 — no governing doc prescribes the retired route)
+        run: sh conformance/governing-docs-current.sh
       - name: eval-harness self-test (E6-a eval-judge seam + pinned/independent lock)
         run: sh conformance/eval-harness-wired.sh --selftest
       - name: eval-harness-runs self-test (KW24 — behavioral lock, harness executes + gate fires; neutered-threshold negative)
@@ -234,6 +348,25 @@ jobs:
         run: sh conformance/incept-first-run-green.sh profiles/ml
       - name: Non-vacuity self-test (mutation-testing mechanism + self-teeth; the live sweep runs in the non-vacuity job)
         run: sh conformance/non-vacuity.sh --selftest
+      # CP-10 — the release-integrity detectors LIVE in drift-watch.yml (weekly), because their question
+      # is only answerable AFTER a release. But their MECHANISM is proven HERE, on every PR: a detector
+      # that has silently rotted is a detector that certifies the hole it was built to find. The selftest
+      # runs on every PR; the detection runs weekly. (This is also what ci-selftest-coverage.sh demands —
+      # it caught these two as UNWIRED the moment they were written.)
+      # P1-CI-c — the green-on-clone SEAM is proven here on every PR (~0s: it drives run_aggregate against
+      # a TINY fixture, not a real 87-check export). The LIVE proof runs in the cf-green-on-clone job.
+      # Splitting it that way is the point: a selftest that re-ran the real battery would cost ~2 MINUTES
+      # on every PR and give back everything this slice saves.
+      - name: green-on-clone self-test (a failing aggregate MUST redden it; the control MUST be named)
+        run: sh conformance/green-on-clone.sh --selftest
+      - name: release-tagged self-test (untagged release / tag on an unmerged commit — CP-10)
+        run: sh conformance/release-tagged.sh --selftest
+      - name: board-drift self-test (a merged PR still sitting in 'In Review' — CP-10)
+        run: sh conformance/board-drift.sh --selftest
+      - name: Non-vacuity SHARD wiring lock (the matrix must launch every leg the sweep declares — P1-CI)
+        run: sh conformance/non-vacuity-wired.sh
+      - name: Non-vacuity-wired self-test
+        run: sh conformance/non-vacuity-wired.sh --selftest
       - name: Eval-ready self-test (AI-feature eval discipline)
         run: sh conformance/eval-ready.sh --selftest
       - name: Observability-ready self-test (SLOs + telemetry recorded)
@@ -252,10 +385,7 @@ jobs:
         run: sh scripts/dora.sh --selftest
       - name: Doctor posture self-test (resolves UNWIRED:doctor.sh)
         run: sh scripts/doctor.sh --selftest
-      - name: Doctor-wired regression-lock
-        run: sh conformance/doctor-wired.sh
-      - name: Doctor-wired self-test
-        run: sh conformance/doctor-wired.sh --selftest
+      # Doctor-wired (131s) moved to the `cf-doctor` job — P1-CI.
       - name: Postmortem self-test (operate-loop generator/parser)
         run: sh scripts/postmortem.sh --selftest
       - name: Operate-loop-wired regression-lock
@@ -274,10 +404,7 @@ jobs:
         run: sh conformance/adopter-preflight-wired.sh --selftest
       - name: Adopter-export script self-test
         run: sh scripts/adopter-export.sh --selftest
-      - name: Adopter-export-wired regression-lock
-        run: sh conformance/adopter-export-wired.sh
-      - name: Adopter-export-wired self-test
-        run: sh conformance/adopter-export-wired.sh --selftest
+      # Adopter-export-wired (93s + 46s) moved to the `cf-export` job — P1-CI.
       - name: Mode-enforcement-blind regression-lock
         run: sh conformance/mode-enforcement-blind.sh
       - name: Mode-enforcement-blind self-test
@@ -312,10 +439,11 @@ jobs:
         run: sh conformance/shellcheck.sh --selftest
       - name: branch-protection three-state self-test (no silent pass)
         run: sh conformance/branch-protection.sh --selftest
-      - name: conformance aggregate verify self-test (control vs doc)
-        run: sh conformance/verify.sh --selftest
-      - name: Conformance aggregate ENFORCED (offline controls must hold on every PR)
-        run: sh conformance/verify.sh --require
+      # The two verify.sh battery runs (92s + 90s) moved to the `cf-verify-selftest` and
+      # `cf-verify-enforced` jobs — P1-CI. They are SPLIT ACROSS TWO JOBS on purpose: together they
+      # are a 182s leg that would cap the whole pipeline at ~3min; apart, the longest leg is the
+      # 139s export cluster. verify-enforced-wired.sh still finds `verify.sh --require` in this
+      # file (it greps ci.yml as a whole, not per-job).
       - name: Verify-enforced lock (ci.yml runs the aggregate enforcing, not renderer-only)
         run: sh conformance/verify-enforced-wired.sh
       - name: Verify-enforced lock self-test
@@ -334,13 +462,7 @@ jobs:
         run: sh conformance/review-lane.sh --selftest
       - name: Single-invocation shim coverage (install-shims generates working shims; H2b)
         run: sh conformance/shim-coverage.sh
-      - name: Claims registry — headline claims verified + no silent drop (D1a)
-        run: |
-          sh conformance/claim-gate-counts.sh --selftest
-          sh conformance/claims-registry.sh --selftest
-          sh conformance/drift-watch-wired.sh --selftest
-          sh conformance/cost-governance-ready.sh --selftest
-          sh conformance/claims-registry.sh
+      # Claims registry (59s) moved to the `cf-claims` job — P1-CI.
       - name: Workflows are valid GHA documents (actionlint; G1)
         run: sh conformance/actionlint-valid.sh
       - name: Actionlint-valid self-test
@@ -367,12 +489,181 @@ jobs:
         run: sh conformance/version-tag-coherent.sh --selftest
 
 
+  # ── The five expensive conformance shards. Each was a serial step inside the old monolith; they are
+  #    mutually independent, so they run concurrently. Wall-clock = the LONGEST leg, not the sum.
+  #    NONE of these is a required check — the `conformance` aggregator below is. Do not add them to
+  #    branch protection: a required check per shard would make every shard-name change a protection
+  #    change, for no extra safety (the aggregator already fails if any shard fails).
+
+  cf-doctor:            # was 131s — the single most expensive step in the pipeline
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # skip on docs-only; fail-safe default is to RUN
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Doctor-wired regression-lock
+        run: sh conformance/doctor-wired.sh
+      - name: Doctor-wired self-test
+        run: sh conformance/doctor-wired.sh --selftest
+
+  cf-export:            # was 93s + 46s = 139s — THE LONGEST LEG, and therefore the pipeline's floor.
+    runs-on: ubuntu-latest             # Both steps rebuild a full adopter-export. Collapsing that
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # skip on docs-only; fail-safe default is to RUN
+    steps:                             # rebuild (export once, reuse) is the next lever — banked, not
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3   done here.
+      - name: Adopter-export-wired regression-lock
+        run: sh conformance/adopter-export-wired.sh
+      - name: Adopter-export-wired self-test
+        run: sh conformance/adopter-export-wired.sh --selftest
+
+  # cf-verify-* — the 87-check verify.sh battery. SPLIT ACROSS TWO JOBS ON PURPOSE: --selftest (92s)
+  # and --require (90s) together are a 182s leg that would cap the whole pipeline at ~3min. Apart, the
+  # longest leg falls to cf-export's 139s. The two runs are NOT redundant and must both survive:
+  #   --require  proves the controls HOLD (the enforcement).
+  #   --selftest proves the controls CAN FAIL (the non-vacuity).
+  # Deleting either turns a real gate into a green light that attests nothing.
+  cf-verify-enforced:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # skip on docs-only; fail-safe default is to RUN
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Conformance aggregate ENFORCED (offline controls must hold on every PR)
+        run: sh conformance/verify.sh --require
+
+  cf-verify-selftest:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # skip on docs-only; fail-safe default is to RUN
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: conformance aggregate verify self-test (control vs doc)
+        run: sh conformance/verify.sh --selftest
+
+  # cf-green-on-clone — P1-CI-c. THE PROOF THAT AN ADOPTER'S FIRST CI PUSH IS GREEN.
+  #
+  # NOT a new gate. It is the SAME `verify.sh --require`-on-the-export that used to run NESTED inside
+  # conformance/adopter-export-wired.sh. Un-nested for two reasons, both diagnosed by P0-FU(a)
+  # ("load-sensitive + opaque … refactor to a dedicated, visible green-on-clone job") and neither fixed
+  # until now:
+  #
+  #   COST    — it was ~58s of adopter-export-wired's 77s. And `non-vacuity` MUTATION-TESTS that check,
+  #             so EVERY MUTANT re-ran the ENTIRE 87-check battery. That was the 387s non-vacuity leg.
+  #             The export itself takes <1s — it was NEVER the cost. A proof nested inside a
+  #             mutation-tested check is paid for ONCE PER MUTANT.
+  #   OPACITY — it ran `>/dev/null 2>&1`. A failure told you green-on-clone broke, never WHICH control.
+  #
+  # Un-nesting cuts adopter-export-wired 77s -> 19s and takes the proof off the mutation sweep's bill,
+  # while the proof itself now runs ONCE, here, in parallel, printing the failing control.
+  # DO NOT re-nest it "to keep things together" — that IS the defect.
+  cf-green-on-clone:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # skip on docs-only; fail-safe default is to RUN
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: The adopter's FIRST CI push must be green (export -> commit -> their own verify --require)
+        run: sh conformance/green-on-clone.sh
+
+  cf-claims:            # was 59s
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # skip on docs-only; fail-safe default is to RUN
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - name: Claims registry — headline claims verified + no silent drop (D1a)
+        run: |
+          sh conformance/claim-gate-counts.sh --selftest
+          sh conformance/claims-registry.sh --selftest
+          sh conformance/drift-watch-wired.sh --selftest
+          sh conformance/cost-governance-ready.sh --selftest
+          sh conformance/claims-registry.sh
+
+  # ============================================================================================
+  # conformance — THE REQUIRED CHECK. This job carries the exact name branch protection requires.
+  # It runs NO checks of its own; it adjudicates the shards. It ALWAYS runs and ALWAYS reports.
+  #
+  # `if: always()` is LOAD-BEARING, not defensive habit. Without it, a failing shard would SKIP this
+  # job — and a skipped REQUIRED check does not report "failure", it reports "Expected — waiting",
+  # which blocks the merge FOREVER with no way to clear it. Every genuine RED would become a hung PR.
+  # Likewise the explicit `needs.*.result` test: `always()` alone makes the job run, but it would run
+  # GREEN regardless of its dependencies unless we inspect them. Both halves are required.
+  #
+  # ── THE SKIP PROBLEM (P1-CI 2/2) ────────────────────────────────────────────────────────────
+  # Path-scoping means a heavy shard may legitimately be `skipped` on a docs-only PR. But `skipped`
+  # is ALSO what a shard reports when its dependency died. Those two are indistinguishable from the
+  # result alone, and getting the distinction wrong is fatal in BOTH directions:
+  #
+  #   too strict -> a docs-only PR can NEVER merge (its skipped shards read as failures)
+  #   too loose  -> a shard that skipped for a BAD reason passes as if it had proven something
+  #
+  # So a skip is accepted ONLY when the classifier AUTHORIZED it — i.e. `changes` itself SUCCEEDED
+  # and returned docs_only=true. If `changes` failed, was cancelled, or is anything but a clean
+  # `true`, then NO skip is legitimate and every shard must have actually succeeded. The
+  # authorisation is what makes the skip safe; the skip alone never speaks for itself.
+  # ============================================================================================
+  conformance:
+    needs: [changes, conformance-core, cf-doctor, cf-export, cf-verify-enforced, cf-verify-selftest, cf-claims, cf-green-on-clone]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every conformance shard must have SUCCEEDED (or been legitimately skipped)
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+        run: |
+          echo "changes: result=$CHANGES_RESULT docs_only=$DOCS_ONLY"
+          echo "shard results: $RESULTS"
+
+          # Fail-closed: no results at all means we adjudicated nothing.
+          [ -n "$RESULTS" ] || { echo "FAIL: no shard results — refusing to pass a gate that adjudicated nothing"; exit 1; }
+
+          # The classifier MUST have succeeded. If we do not know what changed, we cannot know which
+          # skips are legitimate — so we allow none, and any skip below becomes a hard failure.
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "NOTE: the classifier did not succeed (result=$CHANGES_RESULT) — NO skip is authorised."
+            DOCS_ONLY=""
+          fi
+
+          # A skip is legitimate ONLY on an authorised docs-only PR. Anywhere else, `skipped` means a
+          # shard proved nothing and must be treated exactly like a failure.
+          if [ "$DOCS_ONLY" = "true" ]; then
+            echo "docs-only PR: the heavy shards are authorised to skip."
+            _allowed="success skipped"
+          else
+            _allowed="success"
+          fi
+
+          _bad=0
+          for _r in $RESULTS; do
+            case " $_allowed " in
+              *" $_r "*) ;;
+              *) echo "FAIL: a conformance shard reported '$_r' (allowed here: $_allowed)"; _bad=1 ;;
+            esac
+          done
+          [ "$_bad" = 0 ] || { echo "RESULT: FAIL — conformance is RED because at least one shard is RED."; exit 1; }
+          echo "RESULT: OK — every conformance shard succeeded or was legitimately skipped."
+
+  # non-vacuity — the mutation sweep, SHARDED 4 ways (was 363s serial, the pipeline's #2 cost).
+  # Each leg enforces a strict subset; the union of legs 1..4 is the full control set, proven as a true
+  # partition by non-vacuity.sh --selftest (F5b). Coordinates are passed as ARGUMENTS, never env vars —
+  # an env-narrowable gate is the vacuity this tool exists to detect. An EMPTY leg FAILS (F5).
+  # The matrix below is locked by conformance/non-vacuity-wired.sh, so CI cannot declare 4 legs and
+  # silently run 3. NOT a required check (it reports; it does not gate the merge).
   non-vacuity:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # not a required check -> a job-level skip is safe
+    strategy:
+      fail-fast: false     # one vacuous check must not mask another — surface EVERY survivor in one run
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - name: Non-vacuity sweep — mutation-test every control-set check (a survivor is a vacuous check)
-        run: sh conformance/non-vacuity.sh
+        run: sh conformance/non-vacuity.sh --shard ${{ matrix.shard }}/4
 
   bootstrap:
     runs-on: ubuntu-latest
@@ -401,6 +692,8 @@ jobs:
   # ==========================================================================================
   artifact-gate:
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'   # not a required check -> a job-level skip is safe
     strategy:
       fail-fast: false
       matrix:
@@ -459,122 +752,6 @@ jobs:
       - name: check-links self-test (code-span / fence skipping is load-bearing)
         run: sh conformance/check-links.sh --selftest
 
-  gate-agent-boundary:
-    # H1.4 + D4 — the kit dogfoods its §13 governance gate AND presents "ratification required" as a
-    # MERGE-GATE (a distinct, non-failing, still-blocking `control-plane-ratification` check), not a red
-    # CI failure — so red ❌ / "run failed" emails stay reserved for genuine failures. The job exits 0;
-    # the posted check-run carries the state. Decision logic (conformance/agent-boundary.sh) is unchanged.
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    permissions:
-      contents: read
-      pull-requests: read
-      checks: write
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          fetch-depth: 0
-      - name: Compute changed files
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: git diff --name-only "origin/${BASE_REF}...HEAD" > /tmp/changed.txt
-      - name: Compute ratification signal (non-author approval)
-        id: ratify
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: |
-          rat=0
-          # Ratification = a non-author APPROVAL (an agent cannot approve its own PR; GitHub forbids
-          # self-approval). The self-appliable `ratified-control-plane` label was REMOVED (H1.3) as
-          # agent-forgeable; solo maintainers ratify via a logged enforce_admins:false admin-merge.
-          # Guard the review read inside an `if !` so a failing command substitution cannot trip
-          # set -e and abort the step. FAIL CLOSED: an unreadable review list is NOT an approval —
-          # rat stays 0 (unratified), approvers reset to "" so the grep below sees an empty list.
-          if ! approvers=$(gh pr view "$PR" --json reviews \
-              -q '.reviews | group_by(.author.login) | map(last) | .[] | select(.state=="APPROVED") | .author.login'); then
-            echo "control-plane-ratification: could not read reviews (gh pr view rc != 0) — treating as UNRATIFIED."
-            approvers=""
-          fi
-          # A non-empty match must be a NON-whitespace line: `grep -q .` also matches a line of
-          # spaces/tabs (the `.` matches a space), which would count a whitespace-only line as an
-          # approver (rat=1). Unreachable via real data (GitHub logins carry no whitespace; a deleted
-          # author renders as the literal `null`), but strictly NARROWING to fix — it can only move a
-          # verdict toward unratified, never toward ratified. The `grep -vxF -- "$AUTHOR"` keeps its
-          # fixed-string / whole-line / `--` hardening against a hostile author login.
-          if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q '[^[:space:]]'; then rat=1; fi
-          echo "ratified=$rat" >> "$GITHUB_OUTPUT"
-      - name: Ratification merge-gate (action_required, not a build failure)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
-          #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
-          set +e
-          CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}"
-          rc=$?
-          set -e
-          state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
-                    --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
-          class=$(sh conformance/promotion-readiness.sh --class --no-verify \
-                    --changed /tmp/changed.txt 2>/dev/null || echo control-plane)
-          # reconcile displayed class with the gate verdict: the gate (state) is union-aware and is the
-          # authority on control-plane-ness; the guard-core-only --class can under-detect adapter-declared
-          # paths (e.g. AGENTS.md) or over-fail-safe on an empty diff. Never let the surface contradict itself.
-          if [ "$state" != NONE ]; then class=control-plane
-          elif [ "$class" = control-plane ]; then class=sensitive
-          fi
-          case "$rc" in
-            0)
-              if [ "$state" = RATIFIED-BY-SECOND-REVIEWER ]; then
-                concl=success
-                title="Ratified by a second reviewer — control-plane change approved"
-                summary="What changed: a control-plane change (change-class: ${class}). State: RATIFIED-BY-SECOND-REVIEWER — a non-author reviewer approved this PR, so separation-of-duties is genuinely satisfied. No action needed. More: docs/operations/review-lane.md."
-              else
-                concl=success
-                title="No control-plane change — nothing to ratify"
-                summary="What changed: change-class ${class}; no control-plane paths in the diff. This §13 governance gate has nothing to ratify. No action needed."
-              fi
-              ;;
-            1)
-              class=control-plane  # rc=1 is definitionally control-plane-present — independent of the --state/--class reconciliation
-              concl=action_required
-              title="Ratification required — a control-plane change is awaiting a human"
-              summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: ${class}. Why: control-plane changes must be ratified by a human before merge. This is a §13 governance merge-gate, NOT a build failure — no test failed. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR -> becomes RATIFIED-BY-SECOND-REVIEWER; or (b) solo -- merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
-              ;;
-            *)
-              concl=failure
-              title="Gate error — could not evaluate the control-plane diff"
-              summary="The control-plane-ratification gate could not evaluate the PR diff (change listing unavailable). This IS a real error — unlike the other states it needs fixing. See conformance/agent-boundary.sh."
-              ;;
-          esac
-          # Post the check-run under set +e. On a FORK pull_request the GITHUB_TOKEN is read-only
-          # REGARDLESS of this job's permissions block, so checks:write is downgraded and this POST
-          # returns non-zero (403). That must NOT redden the build — this job documents itself as
-          # exit-0-regardless. But we do not pretend the post succeeded either: we name what happened.
-          # Why this is FAIL-CLOSED, not fail-open: a check-run that never posts is a REQUIRED check
-          # that stays ABSENT, and an absent required check BLOCKS the merge. An unposted gate never
-          # lets an unratified control-plane PR through — it only withholds the green until the check
-          # can post (e.g. on a same-repo PR with a writable token). Failing here would be strictly
-          # worse: same blocked merge, plus a spurious red build and failure email.
-          set +e
-          gh api -X POST "repos/${{ github.repository }}/check-runs" \
-            -f name='control-plane-ratification' \
-            -f head_sha="$SHA" \
-            -f status='completed' \
-            -f conclusion="$concl" \
-            -f 'output[title]'="$title" \
-            -f 'output[summary]'="$summary"
-          api_rc=$?
-          set -e
-          if [ "$api_rc" -ne 0 ]; then
-            echo "control-plane-ratification: the check-run could not be posted (gh api rc=$api_rc). On a fork pull_request this is EXPECTED — GITHUB_TOKEN is read-only there regardless of the job's permissions block, so checks:write is downgraded. The required 'control-plane-ratification' check will simply never post, which BLOCKS the merge rather than allowing it (fail-closed)."
-          fi
-          echo "control-plane-ratification => $concl (rc=$rc, class=$class, state=$state, api_rc=$api_rc)"
-          # The job exits 0 regardless of $concl AND of api_rc — the check-run, or its absence, carries the state.
-
   backlog-presence:
     # KW6-A2 — the presence half of KW6. A gated-change-class (control-plane / sensitive) PR must bind
     # its number to a row on the project's BACKLOG.md. Presented as a MERGE-GATE (a distinct,
@@ -605,12 +782,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
+          # P1-CI (2/2): the BRANCH NAME, which — unlike the PR number — exists BEFORE the PR is opened.
+          # Binding a board row by branch lets the row land in the PR-OPENING COMMIT, which removes the
+          # structurally-forced second push (and its full CI run) from every gated PR, forever.
+          # github.head_ref is attacker-influenceable (anyone can open a PR from a branch), so it is bound
+          # through env and passed as an ARGUMENT — never interpolated into the shell, and escaped before
+          # it reaches a regex inside the script.
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           # Wrap the gate call in set +e/-e so an action_required (rc=1) or gate-error (rc=2) never fails
           # the STEP — the check-run, not the build, carries the verdict. Targets pass by argument (--pr /
-          # --changed), never the environment (spec §7). $out is the script's own verdict line.
+          # --changed / --branch), never the environment (spec §7). $out is the script's own verdict line.
           set +e
-          out=$(sh conformance/backlog-presence.sh --dir . --pr "$PR" --changed /tmp/changed.txt 2>&1); rc=$?
+          out=$(sh conformance/backlog-presence.sh --dir . --pr "$PR" --changed /tmp/changed.txt --branch "$HEAD_REF" 2>&1); rc=$?
           set -e
           # concl is derived from $rc ONLY — never from $out — so the posted conclusion cannot drift from
           # the gate's own verdict.

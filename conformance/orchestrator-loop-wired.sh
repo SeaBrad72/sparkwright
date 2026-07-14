@@ -62,7 +62,7 @@ KEYSTONE_MARKERS="name: using-skills|invoke by reading|before acting|user instru
 spine_table() {
 cat <<TABLE
 design${TAB}name: design|<HARD-GATE>|## When to use|Design-intent lens|RE-SELECT|Honest ceiling${TAB}orch:Architect hat not wired
-plan${TAB}name: plan|## When to use|INVEST|AMBER|Conformance lock|Dual review${TAB}orch:plan skill not wired
+plan${TAB}name: plan|## When to use|INVEST|dev-clone|Conformance lock|Dual review${TAB}orch:plan skill not wired
 tdd${TAB}name: tdd|## When to use|Red-Green-Refactor|non-vacuity|critical path|evals${TAB}eng:tdd skill not wired to the Engineer
 review${TAB}name: review|## When to use|Confidence|adversarial|builder|NEEDS-FIXES${TAB}rev:review skill not wired to the Reviewer
 worktrees${TAB}name: worktrees|disjoint file sets|--no-renames|out-of-slice|native${TAB}orch:Isolation not wired to the Orchestrator

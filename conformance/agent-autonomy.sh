@@ -11,12 +11,34 @@ command -v jq >/dev/null 2>&1 || { echo "agent-autonomy: jq required to run this
 
 fail=0
 denied() { printf '%s' "$1" | sh "$GUARD" 2>/dev/null | grep -q '"permissionDecision":"deny"'; }
+# A deny MUST carry a non-empty reason: an empty permissionDecisionReason leaves a blocked agent with no
+# explanation and no KIT_GUARD_SELFEDIT override hint (a regression the CP-8b reviews caught).
+denied_with_reason() {
+  _out=$(printf '%s' "$1" | sh "$GUARD" 2>/dev/null)
+  printf '%s' "$_out" | grep -q '"permissionDecision":"deny"' || return 1
+  printf '%s' "$_out" | grep -q '"permissionDecisionReason":""' && return 1
+  return 0
+}
+assert_deny_reason() {  # deny AND a non-empty reason
+  if denied_with_reason "$2"; then echo "PASS deny+reason: $1"; else echo "FAIL (deny with non-empty reason): $1"; fail=1; fi
+}
 
 assert_deny() {
   if denied "$2"; then echo "PASS deny : $1"; else echo "FAIL (wanted deny): $1"; fail=1; fi
 }
 assert_allow() {
   if denied "$2"; then echo "FAIL (wanted allow): $1"; fail=1; else echo "PASS allow: $1"; fi
+}
+# DRIFT-2: the deny DECISION is unchanged; only the reason gains an escape TIP. These assert the reason
+# TEXT, not the verdict. _reason emits the guard's permissionDecisionReason (empty if it allowed).
+_reason() { printf '%s' "$1" | sh "$GUARD" 2>/dev/null | sed -n 's/.*"permissionDecisionReason":"\(.*\)".*/\1/p'; }
+assert_reason_has() {   # <label> <json> <substr> — denies AND the reason contains <substr>
+  if denied "$2" && printf '%s' "$(_reason "$2")" | grep -qF -- "$3"; then echo "PASS reason-has [$3]: $1"
+  else echo "FAIL (deny + reason contains '$3'): $1"; fail=1; fi
+}
+assert_reason_lacks() { # <label> <json> <substr> — reason does NOT contain <substr> (no tip noise)
+  if printf '%s' "$(_reason "$2")" | grep -qF -- "$3"; then echo "FAIL (reason must NOT contain '$3'): $1"; fail=1
+  else echo "PASS reason-lacks [$3]: $1"; fi
 }
 
 # --- must DENY (irreversible / high-blast) ---
@@ -379,6 +401,122 @@ assert_deny "sed -i .checkov.yaml"  '{"tool_name":"Bash","tool_input":{"command"
 # must still ALLOW reading a scanner-config (reads of control-plane are permitted; no over-block)
 assert_allow "read .gitleaks.toml"  '{"tool_name":"Read","tool_input":{"file_path":".gitleaks.toml"}}'
 assert_allow "cat .semgrepignore"   '{"tool_name":"Bash","tool_input":{"command":"cat .semgrepignore"}}'
+
+# =============================================================================================
+# CP-8b — bind a verb/flag to its TARGET.
+# The guard used to match the CO-OCCURRENCE of a mutation verb and a control-plane path anywhere in
+# the flat command string, never asking whether the verb's TARGET was that path. Two symmetric faces:
+# it DENIED benign work, and it ALLOWED real writes whose verb simply was not in the mutation list.
+# Design: docs/architecture/2026-07-12-cp8-guard-ergonomics-design.md sections 7-13.
+#
+# NON-VACUITY: every row below was MUTATION-TESTED — the fix it locks was reverted and the row was
+# watched to go RED. A row that cannot be made to fail is not evidence. (Both CP-8c reviewers found
+# the author's non-vacuity tests were themselves vacuous; this is the discipline that closes that.)
+# =============================================================================================
+
+# --- (a) the co-occurrence FALSE POSITIVES: the verb's target is NOT the guarded path -> ALLOW ---
+assert_allow "cp cp-file OUT to /tmp"   '{"tool_name":"Bash","tool_input":{"command":"cp conformance/verify.sh /tmp/b.sh"}}'
+assert_allow "mv /tmp then READ a cp"   '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/a /tmp/b && cat conformance/verify.sh"}}'
+assert_allow "npm install then grep"    '{"tool_name":"Bash","tool_input":{"command":"npm install && grep -rn foo skills/"}}'
+assert_allow "checkout -b then READ"    '{"tool_name":"Bash","tool_input":{"command":"git checkout -b fix/x && cat conformance/verify.sh"}}'
+assert_allow "push branch + PR body"    '{"tool_name":"Bash","tool_input":{"command":"git push -u origin fix/x && gh pr create --title t --body \"merges to main\""}}'
+assert_allow "commit msg says --output" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"guard: deny git --output outright\""}}'
+
+# --- DRIFT-2: a MULTILINE commit/PR message body is segmented on its newlines and a fragment that
+#     mentions a control-plane path near a mutation verb is scanned as CODE (a false positive that hit 4x
+#     in one session). The guard is NOT relaxed here — a quote-aware segmenter would fail OPEN (miss a real
+#     `; rm -rf` split). Instead the deny reason NAMES the safe escape: pass the body from a FILE (data,
+#     never executed). These assert the REASON TEXT; the deny/allow decision is unchanged (proven by every
+#     other assertion in this file still passing). ---
+# (i) a multiline commit message that trips the control-plane deny must POINT AT the -F/--body-file escape.
+assert_reason_has  "multiline commit msg -> tip"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"Fix thing\nrewrite cp conformance/verify.sh handling\""}}' 'body-file'
+# (ii) the gh PR body path carries the same tip.
+assert_reason_has  "gh pr body -> tip"            '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body \"summary\nrm conformance/verify.sh in the diff\""}}' 'body-file'
+# (iii) a NON-message control-plane deny must NOT carry the tip (no noise on unrelated denials). Its
+#     deny-ANCHOR is the byte-identical `assert_deny "sed -i conformance"` above — a deny->allow regression
+#     reddens THAT (this assert_reason_lacks would pass vacuously on an empty reason). (iii) itself bites
+#     the over-broad direction: an unconditional tip turns it RED (mutation-verified).
+assert_reason_lacks "sed -i deny -> no tip"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ conformance/verify.sh"}}' 'body-file'
+
+# --- (b) genuine control-plane mutations: the target IS the guarded path -> DENY (regression floor) ---
+assert_deny  "rm a cp file"             '{"tool_name":"Bash","tool_input":{"command":"rm conformance/verify.sh"}}'
+assert_deny  "cp INTO a cp file"        '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/evil.sh conformance/verify.sh"}}'
+assert_deny  "mv ONTO a cp file"        '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/evil.sh conformance/verify.sh"}}'
+assert_deny  "chmod a cp file"          '{"tool_name":"Bash","tool_input":{"command":"chmod 000 scripts/kit-guard"}}'
+assert_deny  "tee into a workflow"      '{"tool_name":"Bash","tool_input":{"command":"echo x | tee .github/workflows/ci.yml"}}'
+assert_deny  "git checkout -- a cp"     '{"tool_name":"Bash","tool_input":{"command":"git checkout -- conformance/verify.sh"}}'
+
+# --- (c) the BARE control-plane DIRECTORY (D1). The path patterns all require a trailing slash, so
+#     `mv conformance/ /tmp` denied while `mv conformance /tmp` — which relocates EVERY gate in one
+#     command — did not. mv/rsync DESTROY the source, so for them the source is a target too; cp only
+#     READS it, which is why copying a control-plane dir OUT stays legitimate. ---
+assert_deny  "mv BARE cp dir out"       '{"tool_name":"Bash","tool_input":{"command":"mv conformance /tmp/gone"}}'
+assert_deny  "mv BARE skills dir out"   '{"tool_name":"Bash","tool_input":{"command":"mv skills /tmp/gone"}}'
+assert_deny  "cp INTO a bare cp dir"    '{"tool_name":"Bash","tool_input":{"command":"cp -R /tmp/evil conformance"}}'
+assert_allow "cp BARE cp dir OUT"       '{"tool_name":"Bash","tool_input":{"command":"cp -R conformance /tmp/backup"}}'
+# `cp -t <dir> <src>` / --target-directory INVERTS argument order: the destination is NOT the last
+# token, so a "last token is the destination" heuristic checks the SOURCE and misses the real write.
+# Bind the flag explicitly. (Allowed on main — a pre-existing gap this slice's cp handling closes.)
+assert_deny  "cp -t INTO a cp dir"      '{"tool_name":"Bash","tool_input":{"command":"cp -t conformance /tmp/evil.sh"}}'
+assert_deny  "cp --target-directory cp" '{"tool_name":"Bash","tool_input":{"command":"cp --target-directory=conformance /tmp/evil.sh"}}'
+assert_deny  "install -t INTO a cp dir" '{"tool_name":"Bash","tool_input":{"command":"install -t conformance /tmp/evil.sh"}}'
+# Joined short form + abbreviated long form (security review: GNU getopt honors both; the separated-only
+# match was an evasion). `-tconformance`, `--target-di=…`, and the git diff-machinery `-oconformance`.
+assert_deny  "cp -tJOINED cp dir"       '{"tool_name":"Bash","tool_input":{"command":"cp -tconformance /tmp/evil.sh"}}'
+assert_deny  "cp --target-di= abbrev"   '{"tool_name":"Bash","tool_input":{"command":"cp --target-di=conformance /tmp/evil.sh"}}'
+assert_deny  "archive -oJOINED cp"      '{"tool_name":"Bash","tool_input":{"command":"git archive -oconformance/verify.sh HEAD"}}'
+assert_deny  "format-patch -oJOINED cp" '{"tool_name":"Bash","tool_input":{"command":"git format-patch -oconformance HEAD"}}'
+
+# --- (c2) ln is a WRITABLE ALIAS, not a content-copy (security review BLOCKER, regression vs main).
+#     `ln -s conformance/x /tmp/link` then `echo … > /tmp/link` writes the control-plane file, so an ln
+#     naming a control-plane SOURCE is a write vector — every token is a target, like mv. The reverse
+#     (linkname IN the control plane) was already denied. Grouping ln with cp was the family's signature
+#     "safe-by-the-name-it-is-grouped-under" error. ---
+assert_deny  "ln -s cp source OUT"      '{"tool_name":"Bash","tool_input":{"command":"ln -s conformance/verify.sh /tmp/link"}}'
+assert_deny  "ln hardlink cp source"    '{"tool_name":"Bash","tool_input":{"command":"ln conformance/verify.sh /tmp/hard"}}'
+assert_deny  "ln -sf cp source OUT"     '{"tool_name":"Bash","tool_input":{"command":"ln -sf conformance/verify.sh /tmp/link"}}'
+assert_deny  "ln INTO a cp dir"         '{"tool_name":"Bash","tool_input":{"command":"ln -s /tmp/evil conformance/hook.sh"}}'
+
+# --- (i) a control-plane deny must carry a NON-EMPTY reason (regression: the refactor printed a reason
+#     only on the git-write path, so rm/mv/chmod/interpreter denies went out BLANK). ---
+assert_deny_reason "rm cp: non-empty reason"   '{"tool_name":"Bash","tool_input":{"command":"rm conformance/verify.sh"}}'
+assert_deny_reason "mv cp: non-empty reason"   '{"tool_name":"Bash","tool_input":{"command":"mv conformance /tmp/gone"}}'
+assert_deny_reason "sh -c: non-empty reason"   '{"tool_name":"Bash","tool_input":{"command":"sh -c \"rm conformance/verify.sh\""}}'
+
+# --- (d) git WRITE-PRIMITIVES, subcommand-bound. `-o` is --output (a WRITE) for `archive` and --only
+#     (a READ) for `commit`: the ambiguity a flat regex could not resolve. All were ALLOWED on main. ---
+assert_deny  "git archive -o a cp file" '{"tool_name":"Bash","tool_input":{"command":"git archive -o conformance/verify.sh HEAD"}}'
+assert_deny  "git archive -o QUOTED cp" '{"tool_name":"Bash","tool_input":{"command":"git archive -o \"conformance/verify.sh\" HEAD"}}'
+assert_deny  "git bundle create over cp" '{"tool_name":"Bash","tool_input":{"command":"git bundle create conformance/verify.sh HEAD"}}'
+assert_deny  "git worktree add into cp" '{"tool_name":"Bash","tool_input":{"command":"git worktree add conformance/wt HEAD"}}'
+assert_deny  "git worktree add -b br cp" '{"tool_name":"Bash","tool_input":{"command":"git worktree add -b br conformance/wt"}}'
+assert_deny  "git init inside a cp dir" '{"tool_name":"Bash","tool_input":{"command":"git init conformance/x"}}'
+assert_deny  "git clone into a cp dir"  '{"tool_name":"Bash","tool_input":{"command":"git clone /tmp/evil conformance/x"}}'
+
+# --- (e) the RESIDUAL positives: the same git writes OUTSIDE the control plane must STAY allowed.
+#     These prove the fix binds the TARGET, not the VERB. The orchestrator does `git worktree add
+#     /tmp/...` on every fan-out — over-denying here would break fan-out. ---
+assert_allow "git worktree add /tmp"    '{"tool_name":"Bash","tool_input":{"command":"git worktree add /tmp/wt HEAD"}}'
+assert_allow "git archive -o /tmp"      '{"tool_name":"Bash","tool_input":{"command":"git archive -o /tmp/x.tar HEAD"}}'
+assert_allow "git bundle create /tmp"   '{"tool_name":"Bash","tool_input":{"command":"git bundle create /tmp/x.bundle HEAD"}}'
+assert_allow "git clone into /tmp"      '{"tool_name":"Bash","tool_input":{"command":"git clone . /tmp/devclone"}}'
+
+# --- (f) FAIL-CLOSED on what the guard cannot parse. The guard reads PRE-shell-parse bytes; the tool
+#     acts POST-parse. A substituted/variable target is unresolvable, so a git WRITE subcommand
+#     carrying one is denied OUTRIGHT — otherwise it slips BOTH the target-bind (unparseable) AND the
+#     co-occurrence floor (`git archive` is not a mutation verb). This is the attack. ---
+assert_deny  "archive -o \$(...) target" '{"tool_name":"Bash","tool_input":{"command":"git archive -o $(echo conformance/verify.sh) HEAD"}}'
+assert_deny  "archive -o \$VAR target"   '{"tool_name":"Bash","tool_input":{"command":"git archive -o $OUT HEAD"}}'
+
+# --- (g) a git subcommand that EXECUTES must NOT be certified a "read". `git rebase --exec` RUNS the
+#     string. NOTE the payload: `--exec "rm -rf ..."` is VACUOUS here (the destructive matrix catches it
+#     independently); `mv <bare cp dir>` is caught by no other rule, so it isolates this decision. ---
+assert_deny  "git rebase --exec mv cp"  '{"tool_name":"Bash","tool_input":{"command":"git rebase --exec \"mv conformance /tmp/gone\" main"}}'
+
+# --- (h) a READ verb must not front a write. A redirect is never relaxed, whatever the leading verb. ---
+assert_deny  "cat evil > a workflow"    '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/evil > .github/workflows/ci.yml"}}'
+assert_allow "cat a cp file > /tmp"     '{"tool_name":"Bash","tool_input":{"command":"cat conformance/verify.sh > /tmp/copy.sh"}}'
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

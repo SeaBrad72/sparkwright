@@ -69,6 +69,19 @@ check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control promotion-contract  sh conformance/promotion-contract-documented.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
 check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
+# Registered here (unlike non-vacuity-wired below) BECAUSE IT IS PORTABLE: a pure classifier over a file
+# listing, with no dependency on the kit's own ci.yml, so it behaves identically on an adopter artifact.
+# It lives in conformance/ (not scripts/) DELIBERATELY: the non-vacuity sweep's target_set only greps
+# `conformance/*.sh`, so a classifier in scripts/ would never be mutation-tested. A classifier that could be
+# neutered into "everything is docs-only" would silently skip the conformance gates — it MUST be swept.
+check control ci-classify      sh conformance/ci-classify-changes.sh --selftest
+# NOT REGISTERED HERE (deliberate): conformance/non-vacuity-wired.sh. It locks THE KIT'S OWN ci.yml
+# (that the shard matrix launches every leg the sweep declares). This battery is PORTABLE — adopters run
+# it too — and after incept an adopter's .github/workflows/ci.yml is THEIR pipeline, which has no sharded
+# sweep to lock, so the check would correctly FAIL on every adopter. Same reason verify-enforced-wired.sh
+# is absent from this list. Both are enforced as ci.yml STEPS (in conformance-core, a shard of the
+# required `conformance` aggregate) — a failure there still reddens the required check. Caught by
+# artifact-gate on PR #309: the kit's own gate, run on the INCEPTED artifact, is what found this.
 check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
 check control adopter-preflight sh conformance/adopter-preflight-wired.sh

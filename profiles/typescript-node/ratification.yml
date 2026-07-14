@@ -1,0 +1,208 @@
+# Reference RATIFICATION workflow — the DEVELOPMENT-PROCESS.md §13 separation-of-duties gate, alone.
+# COPY & ADAPT: copy this file to your project's .github/workflows/ratification.yml (scripts/incept.sh
+# installs it for you). It is INERT here in the kit repo (GitHub only runs workflows under
+# .github/workflows/). The kit runs the same gate on itself — .github/workflows/ratification.yml.
+#
+# WHY A SEPARATE FILE FROM ci.yml. The gate must re-run when a human approves, or the approval lands
+# and the check stays stale at its pre-approval verdict. That needs a `pull_request_review` trigger —
+# and putting one on ci.yml would re-run your ENTIRE test suite on every review event. Guarding each
+# job with an `if:` would work only until someone adds a job and forgets. A separate workflow makes
+# "a review re-runs the gate and nothing else" structural instead of remembered.
+#
+# WHY YELLOW, NOT RED. This is the one check that goes non-green while working perfectly: "no human has
+# approved yet" is a WAITING state, not a broken build. Posting an action-required conclusion renders
+# the same red ✗ as a failure — so a gate doing its job looked like a broken pipeline, and a team that
+# sees red for normal operation learns to ignore red. It now posts `status: in_progress` (yellow) with
+# NO conclusion. A required check that is not `success` still blocks the merge, so enforcement is
+# unchanged and NO branch-protection change is needed. Red is now reserved for a genuine gate error.
+#
+# BRANCH PROTECTION: add `control-plane-ratification` to your required status checks so it BLOCKS.
+# The required context is the posted CHECK-RUN NAME, not this file's or the job's name.
+name: Ratification
+
+on:
+  pull_request:
+  pull_request_review:
+    # An approval IS the ratification signal, so every event that can add, change, or REVOKE one must
+    # re-evaluate the gate — `dismissed` included, so a withdrawn approval returns the check to yellow.
+    types: [submitted, edited, dismissed]
+
+permissions:
+  contents: read
+
+jobs:
+  gate-agent-boundary:
+    # §13 governance gate (harness-independent): a control-plane diff must be human-ratified.
+    # NOT one of the 7 required build gates — a separate governance step. The job exits 0 regardless;
+    # the posted check-run carries the verdict, so this gate never emits a red build for doing its job.
+    runs-on: ubuntu-latest
+    # The review re-trigger is deliberately restricted to SAME-REPO pull requests. Defense in depth: the
+    # base-tree checkout below is the primary control, and this is the second, independent one.
+    #
+    # WHY. `pull_request` from a fork gets a READ-ONLY token regardless of the permissions block — that
+    # is what makes the fork-PR contract fail-closed (the check never posts, stays ABSENT, and an absent
+    # required check BLOCKS the merge). `pull_request_review` is in the family of events that can run in
+    # the BASE-repo context, where the token may be WRITABLE even for a fork PR — which would both change
+    # fork behaviour and leave a `checks: write` token one mistake away from any future edit that
+    # reintroduces a PR-head checkout. Rather than depend on that token's scope, a fork PR never reaches
+    # the review-triggered path. It keeps the `pull_request` gate it already had, so this costs it nothing.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'pull_request_review' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      # ★ THE GATE IS ADJUDICATED FROM THE BASE TREE — IT NEVER CHECKS OUT OR EXECUTES PR-HEAD CODE.
+      #
+      # This job runs the gate's own logic (conformance/agent-boundary.sh, promotion-readiness.sh, and
+      # the deny-matrix they source) and holds `checks: write`. If it checked out the PR head, it would
+      # be RUNNING CODE THE PR UNDER TEST CONTROLS while holding the token that posts that PR's verdict.
+      # Two ways that ends badly, and neither needs a fork:
+      #   1. A PR rewrites conformance/agent-boundary.sh so the mapping always says `success`, then its
+      #      author submits a COMMENTED review on their own PR (GitHub forbids self-APPROVAL but permits
+      #      a self-comment-review, and it fires pull_request_review) -> the gate re-runs, executes the
+      #      PR's own mapping, and posts its green. The author ratifies themselves.
+      #   2. A PR neuters the control-plane path predicate -> the gate finds nothing to ratify -> rc=0 ->
+      #      `success`. The gate declares the very change that disarms it to be nothing to ratify.
+      # Checking out the BASE commit makes the adjudicating code the TRUSTED copy — the one already on
+      # your default branch, which a human already approved. A PR cannot weaken the gate judging it.
+      #
+      # It also makes the listing head-independent: it comes from the PR files API below, not a git diff
+      # of a working tree — so "which ref did we check out" can no longer produce an EMPTY diff that
+      # reads as "no control-plane paths" (rc=0) and posts GREEN on an unratified PR.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Compute changed files (from the PR files API — never from the PR's own tree)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # `set -e` is on: a failed API call aborts the step -> the job fails -> the required check is
+          # never posted -> it stays ABSENT -> the merge is BLOCKED. Fail-closed, by construction.
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate -q '.[].filename' > /tmp/changed.txt
+          echo "changed files seen by the gate:"
+          cat /tmp/changed.txt
+      - name: Compute ratification signal (non-author approval)
+        id: ratify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          rat=0
+          # Ratification = a non-author APPROVAL (an agent cannot approve its own PR; GitHub forbids
+          # self-approval). A self-appliable label would be agent-forgeable, so there isn't one; solo
+          # maintainers ratify via a logged enforce_admins:false admin-merge.
+          # FAIL CLOSED: an unreadable review list is NOT an approval. Guarded inside `if !` so a
+          # failing command substitution cannot trip set -e and abort the step.
+          # `map(last)` takes each author's most recent review OF ANY STATE — but a COMMENTED review does
+          # not supersede an APPROVED one in GitHub's semantics. Without the filter below, "approve, then
+          # leave a comment" reads back as UNRATIFIED, parking the check at yellow forever and pushing
+          # the maintainer toward an --admin override — the bug would push people AWAY from SoD.
+          if ! approvers=$(gh pr view "$PR" --json reviews \
+              -q '.reviews
+                  | map(select(.state=="APPROVED" or .state=="CHANGES_REQUESTED" or .state=="DISMISSED"))
+                  | group_by(.author.login) | map(last) | .[]
+                  | select(.state=="APPROVED") | .author.login'); then
+            echo "control-plane-ratification: could not read reviews (gh pr view rc != 0) — treating as UNRATIFIED."
+            approvers=""
+          fi
+          # `grep -q .` also matches a line of spaces/tabs — a whitespace-only line would count as an
+          # approver and set rat=1. That is a FAIL-OPEN. Require a non-whitespace character.
+          if printf '%s\n' "$approvers" | grep -vxF -- "$AUTHOR" | grep -q '[^[:space:]]'; then rat=1; fi
+          echo "ratified=$rat" >> "$GITHUB_OUTPUT"
+      - name: Ratification merge-gate (waiting is yellow, not red)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
+          #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
+          set +e
+          CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt --ratified "${{ steps.ratify.outputs.ratified }}"
+          rc=$?
+          set -e
+          # Every real PR changes at least one file. So an EMPTY listing never means "nothing to
+          # ratify" — it means the gate could not SEE the diff (wrong checkout ref, bad base, failed
+          # fetch). Left alone that reads as rc=0 and posts GREEN on an unratified control-plane PR.
+          # Force rc=2 (a genuine, red, gate error) so the fail-open is closed structurally.
+          if [ ! -s /tmp/changed.txt ]; then
+            echo "control-plane-ratification: the changed-file listing is EMPTY. A pull request always changes at least one file, so this is a gate ERROR (the diff could not be computed), NOT an absence of control-plane changes. Escalating rc -> 2 (fail-closed)."
+            rc=2
+          fi
+          state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
+                    --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
+          class=$(sh conformance/promotion-readiness.sh --class --no-verify \
+                    --changed /tmp/changed.txt 2>/dev/null || echo control-plane)
+          # Reconcile the DISPLAYED class with the gate verdict. The gate (state) is union-aware and is
+          # the authority on control-plane-ness; the guard-core-only --class can UNDER-DETECT
+          # adapter-declared paths (e.g. AGENTS.md). `|| echo NONE` above is display-only — the VERDICT
+          # is $rc, never $state — so an unreadable state can never ratify anything.
+          if [ "$state" != NONE ]; then class=control-plane
+          elif [ "$class" = control-plane ]; then class=sensitive
+          fi
+          # The rc -> (status, conclusion, title, summary) mapping lives in conformance/agent-boundary.sh,
+          # where it is --selftest-able. Inline YAML cannot be unit-tested. rc=1 comes back as
+          # status=in_progress with a DELIBERATELY EMPTY conclusion (the yellow, still-blocking state).
+          CI= sh conformance/agent-boundary.sh --conclusion "$rc" \
+                --for-state "$state" --for-class "$class" > /tmp/mapping.txt
+          status=""; concl=""; title=""; summary=""
+          while IFS='=' read -r k v; do
+            case "$k" in
+              status) status=$v ;;
+              conclusion) concl=$v ;;
+              title) title=$v ;;
+              summary) summary=$v ;;
+            esac
+          done < /tmp/mapping.txt
+          if [ -z "$status" ]; then
+            echo "control-plane-ratification: the rc->check-run mapping returned no status. Refusing to post a check-run we cannot characterise — the required check stays ABSENT, which BLOCKS the merge (fail-closed)."
+            exit 1
+          fi
+          # FAIL-CLOSED, not fail-open: on a FORK pull_request the GITHUB_TOKEN is read-only regardless
+          # of this job's permissions block, so this POST returns 403. A check-run that never posts is a
+          # REQUIRED check that stays ABSENT — and an absent required check BLOCKS the merge. Reddening
+          # the build here would be strictly worse: same blocked merge, plus a spurious failure email.
+          # UPDATE the existing check-run for this SHA if there is one, else create it. Every event
+          # (open, push, review) re-evaluates the gate, and a fresh POST each time leaves the previous
+          # `in_progress` runs hanging forever — they are never completed. Branch protection reads the
+          # latest, so it is not a correctness bug, but it litters the PR with permanent yellow spinners.
+          set +e
+          run_id=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
+                     -q '.check_runs[] | select(.name=="control-plane-ratification") | .id' 2>/dev/null | head -1)
+          if [ -n "$run_id" ]; then
+            method=PATCH; endpoint="repos/${{ github.repository }}/check-runs/${run_id}"
+          else
+            method=POST;  endpoint="repos/${{ github.repository }}/check-runs"
+          fi
+          if [ -n "$concl" ]; then
+            gh api -X "$method" "$endpoint" \
+              -f name='control-plane-ratification' \
+              -f head_sha="$SHA" \
+              -f status="$status" \
+              -f conclusion="$concl" \
+              -f 'output[title]'="$title" \
+              -f 'output[summary]'="$summary"
+          else
+            # The WAITING check-run. `-f conclusion=""` is NOT the same as omitting the field — GitHub
+            # would take the empty string as a conclusion and COMPLETE the check (making it red again).
+            gh api -X "$method" "$endpoint" \
+              -f name='control-plane-ratification' \
+              -f head_sha="$SHA" \
+              -f status="$status" \
+              -f 'output[title]'="$title" \
+              -f 'output[summary]'="$summary"
+          fi
+          api_rc=$?
+          set -e
+          if [ "$api_rc" -ne 0 ]; then
+            echo "control-plane-ratification: the check-run could not be posted (gh api rc=$api_rc). On a fork pull_request this is EXPECTED — GITHUB_TOKEN is read-only there. The required check stays ABSENT, which BLOCKS the merge rather than allowing it (fail-closed)."
+          fi
+          echo "control-plane-ratification => status=$status conclusion=${concl:-<none: waiting on a human>} (rc=$rc, class=$class, state=$state, api_rc=$api_rc)"
+          # The job exits 0 regardless of the posted state — no failure email; the check-run carries it.

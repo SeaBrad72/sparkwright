@@ -23,6 +23,9 @@ REQUIRE="${REQUIRE:-0}"
 CHANGED=""
 RATIFIED="0"
 MODE="run"
+RC=""
+FOR_STATE="NONE"
+FOR_CLASS="control-plane"
 while [ $# -gt 0 ]; do
   case "$1" in
     --changed) CHANGED="${2:-}"; shift 2 ;;
@@ -30,7 +33,12 @@ while [ $# -gt 0 ]; do
     --require) REQUIRE=1; shift ;;
     --selftest) MODE="selftest"; shift ;;
     --state) MODE="state"; shift ;;
-    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest" >&2; exit 2 ;;
+    # CP-9: the rc -> check-run mapping. `--state` is already a MODE flag (it takes no value), so the
+    # mapping's inputs get their own names rather than an ambiguous optional-argument overload.
+    --conclusion) MODE="conclusion"; RC="${2:-}"; shift 2 ;;
+    --for-state) FOR_STATE="${2:-NONE}"; shift 2 ;;
+    --for-class) FOR_CLASS="${2:-control-plane}"; shift 2 ;;
+    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>]" >&2; exit 2 ;;
   esac
 done
 
@@ -111,6 +119,51 @@ EOF
   if [ "$_rat" = 1 ]; then echo RATIFIED-BY-SECOND-REVIEWER; else echo SOLO-ADMIN-OVERRIDE-LOGGED; fi
 }
 
+# conclusion_map <rc> <state> <class>: the rc -> CHECK-RUN mapping, as parseable `key=value` lines
+# (status, conclusion, title, summary — each single-line, so `IFS='=' read -r k v` reads them back).
+#
+# CP-9. Red must mean "something is BROKEN", never "something is WAITING" — a team that sees red for a
+# gate working exactly as designed learns to ignore red. The three arms are therefore:
+#   rc=0 -> completed/success      green  · nothing to ratify, or ratified
+#   rc=1 -> in_progress/(none)     YELLOW · waiting on a human. A required check that is not `success`
+#                                           still BLOCKS the merge, so enforcement is preserved with no
+#                                           branch-protection change. Witnessed live, not assumed (#305).
+#   rc=2 -> completed/failure      RED    · the gate could not evaluate the diff. Genuinely broken.
+# The conclusion for rc=1 is EMPTY and must be OMITTED from the API call, not sent as "": a check-run
+# carrying any conclusion is `completed`, which is precisely the red we are removing.
+#
+# PURE: no env, no filesystem, no network. This is the half that can be unit-tested; whether GitHub
+# honours the status it is handed is a live question, and only a live probe can answer it.
+conclusion_map() {
+  _rc=$1; _cm_state=${2:-NONE}; _cm_class=${3:-control-plane}
+  case "$_rc" in
+    0)
+      _status=completed; _concl=success
+      if [ "$_cm_state" = RATIFIED-BY-SECOND-REVIEWER ]; then
+        _title="Ratified by a second reviewer — control-plane change approved"
+        _summary="What changed: a control-plane change (change-class: ${_cm_class}). State: RATIFIED-BY-SECOND-REVIEWER — a non-author reviewer approved this PR, so separation-of-duties is genuinely satisfied. No action needed. More: docs/operations/review-lane.md."
+      else
+        _title="No control-plane change — nothing to ratify"
+        _summary="What changed: change-class ${_cm_class}; no control-plane paths in the diff. This §13 governance gate has nothing to ratify. No action needed."
+      fi
+      ;;
+    1)
+      _status=in_progress; _concl=""
+      _title="Awaiting ratification — a human must approve before this control-plane change can merge"
+      _summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: control-plane. Why: control-plane changes must be ratified by a human before merge. This gate is WAITING, not failing — it is a §13 governance merge-gate, NOT a build failure, and no test failed. It will stay yellow (and keep blocking the merge) until a human acts. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR — this check re-runs on the approval and turns green as RATIFIED-BY-SECOND-REVIEWER; or (b) solo — merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
+      ;;
+    *)
+      _status=completed; _concl=failure
+      _title="Gate error — could not evaluate the control-plane diff"
+      _summary="The control-plane-ratification gate could not evaluate the PR diff (change listing unavailable). This IS a real error — unlike the other states it needs fixing. See conformance/agent-boundary.sh."
+      ;;
+  esac
+  printf 'status=%s\n' "$_status"
+  printf 'conclusion=%s\n' "$_concl"
+  printf 'title=%s\n' "$_title"
+  printf 'summary=%s\n' "$_summary"
+}
+
 run() {
   [ -f "$CORE" ] || unverifiable "deny-matrix core not found at $CORE (set KIT_GUARD_CORE)"
   # shellcheck disable=SC1090  # core path is resolved at runtime, intentionally dynamic
@@ -167,6 +220,62 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   if [ "$(ratification_state '.github/workflows/ci.yml' 0)" = "$(ratification_state '.github/workflows/ci.yml' 1)" ]; then
     echo "selftest FAIL: solo/team labels identical (vacuous)"; st=1; fi
 
+  # CP-9: the rc -> check-run (status, conclusion) mapping. Lives HERE, not in inline CI YAML, because
+  # inline YAML cannot be unit-tested — and this mapping is the whole slice: a WAITING gate must not
+  # render as a BROKEN one. Driven in-process (pure), so no env can force a verdict.
+  cn() {  # <label> <key> <want> <rc> [state] [class]
+    _lbl=$1; _k=$2; _want=$3; _rc=$4; _st=${5:-NONE}; _cl=${6:-control-plane}
+    # `|| true`: grep returns 1 on no-match, and an unmatched key must read as an EMPTY value (a real
+    # FAIL below), not abort the whole selftest under set -e.
+    _line=$(conclusion_map "$_rc" "$_st" "$_cl" | grep "^${_k}=" || true)
+    _got=${_line#*=}
+    if [ "$_got" = "$_want" ]; then echo "selftest PASS: $_lbl ($_k='$_got')"
+    else echo "selftest FAIL: $_lbl want $_k='$_want' got '$_got'"; st=1; fi
+  }
+  cn "rc=0 ratified -> completed"      status     completed   0 RATIFIED-BY-SECOND-REVIEWER
+  cn "rc=0 ratified -> success"        conclusion success     0 RATIFIED-BY-SECOND-REVIEWER
+  cn "rc=0 no-cp -> success"           conclusion success     0 NONE ordinary
+  # ★ THE LOAD-BEARING PAIR: waiting is YELLOW (in_progress) and carries NO conclusion. An empty
+  # conclusion is not cosmetic — a check-run with a conclusion is COMPLETED, and a completed non-success
+  # check is what renders red. Omitting it is what keeps the gate blocking-but-not-broken.
+  cn "rc=1 waiting -> in_progress"     status     in_progress 1 SOLO-ADMIN-OVERRIDE-LOGGED
+  # Asserted as an EXACT LINE, not as an empty value: `want ''` would also be satisfied by a mapping
+  # that emits no conclusion key at all (it passed against an unimplemented conclusion_map — vacuous).
+  # The contract is "the key is present and deliberately empty", so the test must say exactly that.
+  if conclusion_map 1 SOLO-ADMIN-OVERRIDE-LOGGED control-plane | grep -qx 'conclusion='; then
+    echo "selftest PASS: rc=1 waiting -> conclusion= (present, empty)"
+  else echo "selftest FAIL: rc=1 must emit an empty 'conclusion=' line"; st=1; fi
+  cn "rc=2 gate error -> completed"    status     completed   2 NONE
+  cn "rc=2 gate error -> failure"      conclusion failure     2 NONE
+  # red is RESERVED for a genuine error: only rc=2 may ever produce a failing conclusion.
+  for _r in 0 1; do
+    if conclusion_map "$_r" SOLO-ADMIN-OVERRIDE-LOGGED control-plane | grep -q '^conclusion=failure$'; then
+      echo "selftest FAIL: rc=$_r produced conclusion=failure (red is reserved for rc=2)"; st=1
+    fi
+  done
+  # legibility: the waiting title says WAITING, and still tells the human how to proceed.
+  _w=$(conclusion_map 1 SOLO-ADMIN-OVERRIDE-LOGGED control-plane)
+  # 'To proceed:' is anchored deliberately: without it the summary can keep every other token and
+  # still stop TELLING THE HUMAN WHAT TO DO. A mutation that gutted the instruction framing survived
+  # the other four anchors — legibility is the point of the yellow state, so it gets its own anchor.
+  for _a in 'Awaiting ratification' 'NOT a build failure' 'To proceed:' 'gh pr merge' 'review-lane.md'; do
+    case "$_w" in *"$_a"*) echo "selftest PASS: waiting text carries '$_a'" ;;
+      *) echo "selftest FAIL: waiting text missing '$_a'"; st=1 ;; esac
+  done
+  # non-vacuity: the three arms must not collapse into one another.
+  if [ "$(conclusion_map 1 X control-plane | grep '^status=')" = "$(conclusion_map 2 X control-plane | grep '^status=')" ]; then
+    echo "selftest FAIL: rc=1 and rc=2 statuses identical (mapping vacuous)"; st=1; fi
+  # the CLI surface, not just the function (the CI job calls the CLI).
+  _cli=$(sh "$0" --conclusion 1 --for-state SOLO-ADMIN-OVERRIDE-LOGGED --for-class control-plane)
+  case "$_cli" in *"status=in_progress"*) echo "selftest PASS: --conclusion CLI -> in_progress" ;;
+    *) echo "selftest FAIL: --conclusion CLI did not emit status=in_progress"; st=1 ;; esac
+  if printf '%s\n' "$_cli" | grep -q '^conclusion=.'; then
+    echo "selftest FAIL: --conclusion CLI emitted a non-empty conclusion for rc=1"; st=1
+  else echo "selftest PASS: --conclusion CLI rc=1 conclusion is empty"; fi
+  # the class the caller passes is what the human reads back.
+  case "$(conclusion_map 0 NONE sensitive)" in *'change-class sensitive'*) echo "selftest PASS: class interpolated" ;;
+    *) echo "selftest FAIL: class not interpolated into the summary"; st=1 ;; esac
+
   # three-state CLI: no --changed is UNVERIFIED (exit 2) locally, FAIL (exit 1) under CI/--require.
   miss=$(mktemp -d)  # fixtures left in place (no rm; 7e guard)
   printf '.github/workflows/ci.yml\n' > "$miss/cp.txt"
@@ -209,8 +318,18 @@ state() {  # advisory label for the CI human-surface; CI-independent, always exi
   exit 0
 }
 
+conclusion() {  # emit the check-run mapping for <rc>; no core, no filesystem — pure. Always exit 0.
+  case "$RC" in
+    0|1|2) ;;
+    *) echo "usage: agent-boundary.sh --conclusion <0|1|2> [--for-state <label>] [--for-class <class>]" >&2; exit 2 ;;
+  esac
+  conclusion_map "$RC" "$FOR_STATE" "$FOR_CLASS"
+  exit 0
+}
+
 case "$MODE" in
   selftest) selftest; exit $? ;;
   state) state ;;
+  conclusion) conclusion ;;
   *) run ;;
 esac

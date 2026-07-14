@@ -36,11 +36,11 @@ A `git clone .` of the local repo is **not** a faithful CI simulation: it carrie
 
 ## Dry-run parity — what the local dry-run cannot see
 
-The AMBER tagless-clone dry-run runs `verify.sh`, which does **not** parse `ci.yml` as YAML.
+The tagless-clone dry-run runs `verify.sh`, which does **not** parse `ci.yml` as YAML.
 A green local dry-run therefore does **not** guarantee a green CI — a handful of gates run
 only in CI and the local run is blind to them. Close the biggest gap explicitly:
 
-1. **When apply.py touches any `.github/workflows/*.yml`, validate it parses as YAML before pushing:** `uvx --with pyyaml python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' <workflow>` — `verify.sh` does not YAML-parse `ci.yml`, so a malformed workflow otherwise passes the local dry-run and only CI catches it (cost KW24 a cycle).
+1. **When a slice touches any `.github/workflows/*.yml`, validate it parses as YAML before pushing:** `uvx --with pyyaml python3 -c 'import yaml,sys; yaml.safe_load(open(sys.argv[1]))' <workflow>` — `verify.sh` does not YAML-parse `ci.yml`, so a malformed workflow otherwise passes the local dry-run and only CI catches it (cost KW24 a cycle).
 
 **Dry-run parity list** — the CI-only gates the local dry-run cannot see, and the cheap local
 equivalent for each:

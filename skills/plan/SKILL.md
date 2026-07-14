@@ -9,7 +9,7 @@ The kit's own planning skill: take an owner-approved design → a task-by-task i
 
 <!-- The frontmatter and the discipline headings below are conformance-load-bearing:
      conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers
-     (name: plan, ## When to use, INVEST, AMBER, Conformance lock, Dual review).
+     (name: plan, ## When to use, INVEST, dev-clone, Conformance lock, Dual review).
      Edits that drop or rename them can turn the skill-spine lock RED. -->
 
 ## When to use
@@ -26,14 +26,14 @@ After the design skill's terminal state (a committed, owner-approved spec) and b
 
 ## The kit's planning disciplines (what makes this MORE than generic writing-plans — apply to EVERY plan)
 - **INVEST slicing + the parallel-safety rule.** Slice into small, Independent, Negotiable, Valuable, Estimable, Small, Testable vertical increments. Two tasks are safely parallel ONLY when they have disjoint file sets, no shared mutable state, and are each independently testable — mark which tasks may fan out and which must serialize.
-- **Control-plane → AMBER apply.py, actuated on the recorded GO.** When a task touches control-plane (guard, CI, conformance, claims, agent/skill defs, governance markers), it does NOT land as a silent agent commit. Author it under `scratchpad/`, assemble an idempotent `apply.py`, and prove it on a clone dry-run; then on the human's recorded **GO** the **agent runs it** — apply → commit → push → open PR → tag → `scripts/promotion-verify.sh record` → `check`. The **human** does the **GO** and — solo, control-plane only — the single `gh pr merge --admin` (the kill-switch the guard denies the agent); ordinary/team work, the agent merges too. Identify control-plane tasks up front and route them to AMBER.
+- **Control-plane → author in a dev-clone, actuated on the recorded GO.** When a task touches control-plane (guard, CI, conformance, claims, agent/skill defs, governance markers), it does NOT land as a silent agent commit. Author it in a **dev-clone** — `git clone . <literal temp path>` — where the agent edits directly while **the guard stays armed on the real repo**; the human then reviews a **CI-green diff**, not a script whose writes they must predict. On the human's recorded **GO** the **agent actuates the mechanical steps** — commit → push → open PR → tag → `scripts/promotion-verify.sh record` → `check`. The **human** does the **GO** and — solo, control-plane only — the single `gh pr merge --admin` (the kill-switch the guard denies the agent); ordinary/team work, the agent merges too. Identify control-plane tasks up front and route them to a dev-clone. **Never `KIT_GUARD_SELFEDIT`** — it is a global kill switch, not a scalpel.
 - **Conformance lock per claim + non-vacuity.** Every new capability ships a conformance lock + a claim, wired into verify.sh / CI / drift-watch / doctor. Every lock has a positive liveness anchor AND a load-bearing negative — a `--selftest` case that a dead or always-pass mechanism fails.
-- **Version finishing folded into apply.py.** The VERSION bump + README badge + CHANGELOG entry live INSIDE the slice's apply.py so the release step cannot be skipped.
+- **Version finishing folded into the slice.** The VERSION bump + README badge + CHANGELOG entry land in the slice's own commits — never a follow-up — so the release step cannot be skipped.
 - **Dual review — the builder is never the sole reviewer.** The plan ends by handing the built slice to an independent Reviewer + (for any trust/security boundary) a Security-Reviewer. Never a self-review.
 - **Honest ceiling per task.** State what each task's proof actually establishes versus attests; never let a green check imply more than it proves.
 
 ## Plan document header
-Every plan starts with: **Goal** (one sentence), **Architecture** (2-3 sentences), **Tech Stack**, **Global Constraints** (project-wide requirements copied verbatim from the spec), and the **build model** (AMBER if any task is control-plane).
+Every plan starts with: **Goal** (one sentence), **Architecture** (2-3 sentences), **Tech Stack**, **Global Constraints** (project-wide requirements copied verbatim from the spec), and the **build model** (dev-clone if any task is control-plane).
 
 ## Terminal state
 A saved, self-reviewed plan (`docs/superpowers/plans/<date>-<name>.md`, or the project's plan location), handed to the build skill. This skill never starts implementation. On handoff the backlog item moves **`Ready → In Progress`**, linked to the plan (or spec) doc — a link always exists by this point.

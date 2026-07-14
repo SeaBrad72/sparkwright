@@ -27,7 +27,7 @@ Every capability the kit ships has three parts. This is the same "universal stan
 
 A team on Python deletes the Node workflow, writes their own, and stays conformant because the gates still fire.
 
-**Retiring an artifact** (doc/template/claim) is the reverse move — keep it honest and reversible with the discipline in **`docs/operations/retiring-conventions.md`** (design-intent KEEP-default · find inbound refs · prove no gate depends on it · migrate distinct value · control-plane refs via apply.py).
+**Retiring an artifact** (doc/template/claim) is the reverse move — keep it honest and reversible with the discipline in **`docs/operations/retiring-conventions.md`** (design-intent KEEP-default · find inbound refs · prove no gate depends on it · migrate distinct value · control-plane refs authored in a dev-clone).
 
 ---
 
@@ -47,13 +47,13 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
    - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
 
-### 3a. Authoring a control-plane change (the AMBER `apply.py`)
+### 3a. Authoring a control-plane change (the dev-clone)
 
-Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits — they are authored under `scratchpad/`, assembled into an **idempotent `apply.py` a human runs**, and dual-reviewed. Three disciplines, each learned from a real incident:
+Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits. They are authored in a **dev-clone** — `git clone . <literal temp path>` — where the agent edits directly while **the guard stays armed on the real repo**, and they are dual-reviewed. What the human ratifies is a **CI-green diff**, not a script whose writes they must predict. Three disciplines, each learned from a real incident:
 
-- **Fold version finishing in.** The `VERSION` bump + README badge + `CHANGELOG` entry live *inside* the slice's `apply.py`, so the release step cannot be skipped.
-- **One buffer per file.** An `apply.py` making **≥2 edits to the same file** must accumulate them on a single in-memory buffer and write that file once — never as independent full-file payloads, which **clobber** (only the last write survives). Stage every edit, validate every anchor, *then* write.
-- **Prove on a fresh clone, not the working tree.** Idempotence (re-run = clean no-op) and all-or-abort must be proven by cloning, applying, and running the gate in the clone. A clobber or half-apply manifests only on *application*, not on *inspection* — neither dual review catches it from the diff alone.
+- **Fold version finishing into the slice.** The `VERSION` bump + README badge + `CHANGELOG` entry land in the slice's own commits — never a follow-up — so the release step cannot be skipped.
+- **Never `KIT_GUARD_SELFEDIT`.** It is a **global kill switch**, not a scalpel: it disarms the destructive-op and secret-read denials too, for the whole session. The dev-clone is the sanctioned route *because* it leaves the guard armed. (Its honest limit: the clone relaxes `Edit`/`Write` only — `sed`/`cp`/`rm` against control-plane paths stay denied even inside it.)
+- **Prove in the clone, then prove the artifact — and don't mistake the clone for CI.** Run the gate in the dev-clone before asking for the GO, but remember: a `git clone .` is **not** a faithful CI simulation (it carries tags `actions/checkout` does not — see `skills/verification/SKILL.md`, dry-run parity), and local "conformance + shellcheck green" is TRUE and INSUFFICIENT — the emitted artifact is a larger surface (CI's SAST on the *artifact* has caught what a local run structurally could not).
 
 ## 4. Contributing back (the closed loop, applied to the kit)
 

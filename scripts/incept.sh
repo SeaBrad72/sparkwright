@@ -203,6 +203,78 @@ if [ -f .claude/settings.json ] && ! grep -q 'guard\.sh' .claude/settings.json; 
   echo "         (add, do not overwrite) before running agents. Continuing without touching .claude/." >&2
 fi
 
+# --- P1.2-pre: CAPTURE the pristine export, before any mutation --------------------------------------
+# Split in time, deliberately: CAPTURE here (the tree is still pristine, but there may be NO git repo yet
+# — the documented adopter path starts from a plain directory and §5b0 below is where `git init` runs),
+# then COMMIT the orphan branch after §5b0. The obvious implementation — "snapshot to an orphan branch
+# before mutating" — CANNOT work: the repo you would snapshot into does not exist yet, and by the time it
+# does, the pristine tree is gone. Reordering §5b0 earlier was rejected: it would move a `git init` that
+# five guard clauses and the CP-4 ownership gate are sequenced around.
+#
+# SCOPED TO .kit-manifest, NOT THE WORKTREE — this is the data-loss guard. A brownfield worktree contains
+# adopter-authored files; capturing them would make a later diff(kit-base, new-export) read them as "the
+# kit deleted these", and kit-update would propose DELETING THE ADOPTER'S OWN WORK. Only paths the
+# exporter said it shipped can enter the base.
+KIT_BASE_STAGE=""
+# S1: is the relative path <arg>, or ANY of its ancestor components, a symlink? Walks each prefix
+# (a/b/c -> a, a/b, a/b/c) and tests it. POSIX; no realpath/readlink dependency. Returns 0 iff a symlink
+# is found anywhere on the path — the caller then refuses the whole base.
+_kb_path_has_symlink() {
+  # Walk prefixes via parameter expansion — NOT IFS splitting (semgrep p/default flags ifs-tampering,
+  # and it runs on the emitted artifact; CP-8b's lesson). a/b/c -> a, a/b, a/b/c.
+  _kb_rest=$1; _kb_acc=""
+  while [ -n "$_kb_rest" ]; do
+    _kb_seg=${_kb_rest%%/*}
+    case "$_kb_rest" in */*) _kb_rest=${_kb_rest#*/} ;; *) _kb_rest="" ;; esac
+    [ -n "$_kb_seg" ] || continue
+    if [ -z "$_kb_acc" ]; then _kb_acc=$_kb_seg; else _kb_acc="$_kb_acc/$_kb_seg"; fi
+    [ -L "$_kb_acc" ] && return 0
+  done
+  return 1
+}
+capture_kit_base() {
+  if [ ! -f .kit-manifest ]; then
+    echo "notice: no .kit-manifest — this export predates the kit-base mechanism." >&2
+    echo "        NOT recording a base. 'kit-update' will be UNAVAILABLE for this project." >&2
+    echo "        Re-export with a current kit to get one. See docs/operations/kit-base.md." >&2
+    return 0
+  fi
+  # SECURITY: the manifest tells a privileged tool what to stage. Treat it as UNTRUSTED INPUT even though
+  # we wrote it — an absolute path, a '..' segment, or a leading '-' (option injection) must never be
+  # followed. Refuse the whole base rather than partially trust it; fail SAFE (no base), never fail open.
+  if LC_ALL=C grep -qE '^/|(^|/)\.\.(/|$)|^-' .kit-manifest; then
+    echo "warning: .kit-manifest contains an absolute path, a '..' segment, or a leading '-'." >&2
+    echo "         REFUSING to record a kit-base from it. 'kit-update' will be unavailable." >&2
+    return 0
+  fi
+  KIT_BASE_STAGE=$(mktemp -d) || { KIT_BASE_STAGE=""; return 0; }
+  # C3: clean the staging dir on ANY exit between here and commit_kit_base (input validation, preflight,
+  # an interactive Ctrl-C). commit_kit_base removes it on the success path; this catches every other one.
+  # shellcheck disable=SC2064
+  trap 'rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true' EXIT INT TERM
+  while IFS= read -r _kbp; do
+    [ -n "$_kbp" ] || continue
+    # S1 (security BLOCKER, review #318): a symlink — or a path whose ANY ancestor is a symlink — makes
+    # the copy below read a file OUTSIDE the export and bake its content into a committed, pushed git ref.
+    # The literal-text guard above cannot see it (the path text is clean; the filesystem resolves it out).
+    # The kit ships ZERO symlinks, so refuse the ENTIRE base on the first one — fail CLOSED, no base — and
+    # never copy through it. This is belt to the export side's braces (it no longer emits symlinks).
+    if _kb_path_has_symlink "$_kbp"; then
+      echo "warning: .kit-manifest entry '$_kbp' is, or traverses, a symlink." >&2
+      echo "         REFUSING to record a kit-base (it could copy a file from outside the export into your" >&2
+      echo "         git history). 'kit-update' will be unavailable. See docs/operations/kit-base.md." >&2
+      rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true; KIT_BASE_STAGE=""
+      return 0
+    fi
+    [ -f "$_kbp" ] || continue
+    mkdir -p "$KIT_BASE_STAGE/$(dirname "$_kbp")" 2>/dev/null || continue
+    # cp -P: NEVER dereference. Defense in depth — even if a symlink slipped past the check above, its
+    # content can never be materialized into the base (the link itself would be copied, not its target).
+    cp -P "$_kbp" "$KIT_BASE_STAGE/$_kbp" 2>/dev/null || true
+  done < .kit-manifest
+}
+capture_kit_base
+
 # --- collect inputs ---
 if [ "$INTERACTIVE" -eq 1 ]; then
   [ -n "$NAME" ]  || { printf 'Project name: '; read -r NAME; }
@@ -323,6 +395,13 @@ sedi "s#\*\*Governance\*\* (§ solo/team): \[solo / team\]#**Governance** (§ so
 # ([^]]* stops at the first ], so [link] is untouched) and the human still fills in the link. No-op if
 # the template lacks the §3 backlog slot; idempotent (the anchor requires `[` right after the field).
 sedi "s#\*\*Backlog backend\*\* (§6): \[[^]]*\]#**Backlog backend** (§6): $(esc "$BACKLOG")#" CLAUDE.md
+# P1.2-pre: stamp the STACK — the one inception input that nothing recorded. incept stamped seven answers
+# (project, owner, date, kit version, fluency, harness, process mode, governance, backlog) and never the
+# stack, so a project could not say which profile it was built from. That is a cold-resume hole on its own,
+# and it is load-bearing for kit-update: a new export must be pruned to the SAME profile before it can be
+# compared against kit-base (an un-pruned export would read as "the kit added eight profiles").
+# Replaces ONLY the bracketed choice-list; idempotent; no-op if the template lacks the §3 slot.
+sedi "s#\*\*Stack profile\*\* (§2): \[[^]]*\]#**Stack profile** (§2): $(esc "$STACK")#" CLAUDE.md
 
 # --- 3a. S1: mode-driven curation — surfacing/scaffolding only; NEVER an enforcement input. ---
 curate_for_mode() {  # $1 = mode
@@ -427,6 +506,10 @@ case "$CI" in
     mkdir -p .github/workflows
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       cp_kit_replace "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
+      # CP-9: the §13 ratification gate ships as its OWN workflow, not as a job inside ci.yml — it is
+      # the one gate that must re-run on `pull_request_review` (an approval IS the ratification signal),
+      # and a review event must re-run THAT and nothing else. Separate file = structural containment.
+      [ -f "profiles/${STACK}/ratification.yml" ] && cp_kit_replace "profiles/${STACK}/ratification.yml" .github/workflows/ratification.yml 'COPY & ADAPT|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && cp_kit_replace "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS 'COPY & ADAPT|@your-org' && warn_codeowners_placeholder .github/CODEOWNERS
     else
       echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
@@ -522,6 +605,64 @@ fi
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   git init >/dev/null 2>&1 && echo "initialized a git repo (git init) so the runtime guard can be installed"
 fi
+
+# --- P1.2-pre: COMMIT the captured base onto the `kit-base` orphan branch ------------------------------
+# The second half of the capture/commit split above: a repo is now guaranteed. This is the MERGE BASE
+# every kit->adopter update pipe needs — the answer to "what tree did this adopter receive?". It is
+# immutable by construction (a commit in a repo they own), works offline, and is automatically
+# profile-correct (it IS what they got). Locked by conformance/kit-base.sh.
+#
+# NEVER TOUCHES THE WORKTREE OR THE ADOPTER'S INDEX: built through a TEMPORARY index with GIT_WORK_TREE
+# pointed at the staging dir. No checkout, no stash, no `git add` against the real index. `git status` is
+# byte-identical before and after.
+commit_kit_base() {
+  [ -n "$KIT_BASE_STAGE" ] && [ -d "$KIT_BASE_STAGE" ] || return 0
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  _kb_gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 0
+
+  # S2 (review #318): NEVER clobber an adopter's existing ref. On re-adoption or a prior kit-base install
+  # the adopter may already have a `kit-base` branch or a `kit-base/v<VER>` tag; overwriting it is silent,
+  # after-GC-unrecoverable data loss on a namespace we do not own. Refuse and say so.
+  if GIT_DIR="$_kb_gd" git rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1; then
+    echo "warning: a 'kit-base' branch already exists — NOT overwriting it (brownfield-safe)." >&2
+    echo "         'kit-update' will use the existing base. Delete it first to re-record." >&2
+    rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true; return 0
+  fi
+
+  # The temp index path must NOT EXIST: git reads an existing EMPTY file as a CORRUPT index
+  # ("index file smaller than expected"), not an empty one. mktemp creates it, so remove it.
+  _kb_idx=$(mktemp) && rm -f "$_kb_idx" || return 0
+
+  # The kit-base commit carries a KIT identity, supplied explicitly — NOT the adopter's. Two reasons:
+  #   (1) a fresh `git init` adopter (the documented path) may have NO user.name/user.email configured,
+  #       so a bare `git commit-tree` would FAIL — which is exactly what CI (no ambient identity) caught,
+  #       and what a real adopter would hit. (2) This is the kit's snapshot, not the adopter's work, so
+  #       it should not be attributed to them. Deterministic identity also keeps the commit reproducible.
+  # C1 (review #318): `git add -Af` — force past core.excludesFile / info/exclude / .gitignore. The
+  #   manifest is AUTHORITATIVE: every path we staged must be committed. A bare `git add -A` honours the
+  #   adopter's ignore config and would SILENTLY DROP kit files (a global `*.md` ignore dropped 190),
+  #   producing a base that reports success while being wrong — with no 3-way anchor for those files later.
+  if ( cd "$KIT_BASE_STAGE" && GIT_DIR="$_kb_gd" GIT_INDEX_FILE="$_kb_idx" \
+         GIT_WORK_TREE="$KIT_BASE_STAGE" git add -Af . ) 2>/dev/null &&
+     _kb_tree=$(GIT_DIR="$_kb_gd" GIT_INDEX_FILE="$_kb_idx" git write-tree 2>/dev/null) &&
+     _kb_cmt=$(GIT_DIR="$_kb_gd" GIT_AUTHOR_NAME='Sparkwright kit-base' GIT_AUTHOR_EMAIL='kit-base@sparkwright.local' \
+         GIT_COMMITTER_NAME='Sparkwright kit-base' GIT_COMMITTER_EMAIL='kit-base@sparkwright.local' \
+         git commit-tree "$_kb_tree" \
+         -m "kit-base: pristine Sparkwright export v${VER} (the tree this project was adopted from)" 2>/dev/null) &&
+     GIT_DIR="$_kb_gd" git update-ref refs/heads/kit-base "$_kb_cmt" '' 2>/dev/null; then
+    # Create-only tag (no -f): S2 already refused if the branch existed; guard the tag independently.
+    if GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/kit-base/v${VER}" >/dev/null 2>&1; then :; else
+      GIT_DIR="$_kb_gd" git tag "kit-base/v${VER}" "$_kb_cmt" >/dev/null 2>&1 || true
+    fi
+    echo "recorded kit-base: the pristine v${VER} export you adopted from (branch 'kit-base', tag 'kit-base/v${VER}')"
+    echo "  It is the merge base 'kit-update' will diff against. Do not delete it. See docs/operations/kit-base.md."
+  else
+    echo "warning: could not record the kit-base branch — 'kit-update' will be unavailable for this project." >&2
+  fi
+  rm -f "$_kb_idx" 2>/dev/null || true
+  rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true
+}
+commit_kit_base
 
 # --- 5b. install the runtime-guard git pre-push hook (default-on, brownfield-safe) ---
 # Git hooks are not version-controlled, so incept installs the reference per-clone.

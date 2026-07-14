@@ -64,8 +64,33 @@ gate_class() {
 # skipped as data), so the two gates cannot drift over what "a row" or "the PR column" means.
 # PRECONDITION: <board> must exist. Callers guard with `[ -f "$board" ]` (check_pr does) because
 # `set -eu` + section_rows' awk on a MISSING file (rc 2) would abort the whole script.
+# ── BRANCH-NAME BINDING (P1-CI 2/2) ────────────────────────────────────────────────────────────
+# A row may be bound by the PR number `#123` OR by the BRANCH NAME. Both are accepted; either satisfies
+# the gate.
+#
+# WHY. The PR number CANNOT EXIST before the PR is opened. So a gate that only accepts `#<pr>` makes it
+# physically impossible to bind the row in the PR-opening commit — every gated PR is FORCED into a second
+# push, and therefore a second full CI run. Forever. That is not an oversight anyone made; it is designed
+# in, and it taxed every slice identically until this change. The branch name, by contrast, exists BEFORE
+# the PR does, so the row can land in the very first commit.
+#
+# IS IT WEAKER? No. This gate's ceiling was always "a `PR` cell bears this token — NOT that the row
+# describes the work, that its state is accurate, or that a human put it there" (see the header). A branch
+# name is exactly as strong an assertion as a number: both are a token an author wrote into the cell. The
+# gate proves REPRESENTATION ON THE BOARD, and it proves precisely that either way.
+#
+# esc_ere <s> : escape ERE metacharacters, so a branch containing `.` or `+` matches literally and can
+# never be read as a pattern. A branch name is attacker-influenceable (anyone can open a PR from a
+# branch), so it is untrusted input to a regex — never interpolate it raw.
+esc_ere() { printf '%s' "$1" | sed 's/[][\.^$*+?(){}|\\/]/\\&/g'; }
+
+# BRANCH_CHARS: the boundary class for a whole-token branch match. Any char legal INSIDE a git ref must
+# be a NON-boundary, or `fix/p1-ci` would spuriously match a cell bearing `fix/p1-ci-path-scope`.
+BRANCH_CHARS='A-Za-z0-9._/-'
+
 row_bears_pr() {
-  _bl="$1"; _pr="$2"; _rows_f=$(mktemp)
+  _bl="$1"; _pr="$2"; _br="${3:-}"; _rows_f=$(mktemp)
+  [ -n "$_br" ] && _bre=$(esc_ere "$_br") || _bre=""
   for _sec in "Ready" "In Progress" "In Review" "Blocked" "Released" "Done"; do
     # NO `section_rows … | while read` — POSIX runs a pipeline's while-body in a SUBSHELL, so a
     # success-return inside it would exit only the subshell and this function would fall through to
@@ -85,6 +110,11 @@ row_bears_pr() {
       if printf '%s' "$_c" | grep -Eq "(^|[^0-9])#${_pr}([^0-9]|$)"; then
         rm -f "$_rows_f"; return 0
       fi
+      # ...OR the BRANCH NAME as a whole token. Same boundary discipline as the number: `fix/p1-ci` must
+      # NOT match a cell bearing `fix/p1-ci-path-scope`, so every char legal in a git ref is a non-boundary.
+      if [ -n "$_bre" ] && printf '%s' "$_c" | grep -Eq "(^|[^${BRANCH_CHARS}])${_bre}([^${BRANCH_CHARS}]|\$)"; then
+        rm -f "$_rows_f"; return 0
+      fi
     done < "$_rows_f"
   done
   rm -f "$_rows_f"; return 1
@@ -96,7 +126,7 @@ row_bears_pr() {
 # without it a declared-md board that is absent would abort under `set -eu`; with it the absence becomes
 # the honest FAIL this dark-gate detector exists to raise.
 check_pr() {
-  _dir="$1"; _pr="$2"; _cf="$3"
+  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"
   [ "$(gate_class "$_cf")" = gated ] || { echo "N/A: ordinary change-class; board row not required"; return 0; }
   _tok=$(resolve_backend "$_dir")
   [ -n "$_tok" ] || { echo "N/A: no backlog backend declared"; return 0; }
@@ -114,10 +144,23 @@ check_pr() {
   _bl="$_dir/BACKLOG.md"
   [ -f "$_bl" ] || { echo "FAIL: declares an md backend but has no BACKLOG.md"; return 1; }
   if is_pure_template "$_bl"; then echo "N/A: board not yet in use (pristine template)"; return 0; fi
-  if row_bears_pr "$_bl" "$_pr"; then
-    echo "OK: backlog-presence — PR #$_pr is bound to a board row (PR column)"; return 0
+  # The verdict STRINGS are a contract (the selftest asserts them verbatim, and humans read them in CI
+  # logs). When no --branch is supplied the message is byte-for-byte what it always was — branch binding
+  # is ADDITIVE and must not perturb the existing surface. The branch is named only when it is in play.
+  if row_bears_pr "$_bl" "$_pr" "$_br"; then
+    if [ -n "$_br" ]; then
+      echo "OK: backlog-presence — PR #$_pr (or branch '$_br') is bound to a board row (PR column)"
+    else
+      echo "OK: backlog-presence — PR #$_pr is bound to a board row (PR column)"
+    fi
+    return 0
   fi
-  echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class)"; return 1
+  if [ -n "$_br" ]; then
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class)"
+  else
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class)"
+  fi
+  return 1
 }
 
 # ── ORACLE MARKER: selftest() and everything below is the non-vacuity oracle region. The mutation
@@ -154,6 +197,46 @@ selftest() {
   d="$base/t1_empty"
   _board "$d" '| KW6-A2 | — | |'
   assert_absent "$d" 280 "t1/empty: empty PR cell must not satisfy -> rc1 (absent)"
+
+  # ===== T1b — BRANCH-NAME BINDING (P1-CI 2/2) ==========================================
+  # The PR number cannot exist before the PR is opened, so a number-only gate FORCES a second push
+  # (and a second full CI run) on every gated PR, forever. A branch name exists BEFORE the PR — so a
+  # row bound by branch can land in the PR-opening commit. Both bindings are accepted.
+
+  # a row whose PR cell bears the BRANCH NAME, with NO number yet -> PRESENT.
+  d="$base/t1b_branch"
+  _board "$d" '| P1-CI | — | fix/p1-ci-path-scope |'
+  assert_present "$d" 999 "t1b/branch: PR cell bears the branch name (no number yet) -> rc0 (present)" "fix/p1-ci-path-scope"
+
+  # the number still works on its own — branch binding is ADDITIVE, never a replacement.
+  d="$base/t1b_number_still"
+  _board "$d" '| P1-CI | — | #280 |'
+  assert_present "$d" 280 "t1b/number-still-works: number binding unaffected by the branch arg" "some/other-branch"
+
+  # NO branch supplied -> behaves exactly as before (number-only). Regression lock.
+  d="$base/t1b_nobranch"
+  _board "$d" '| P1-CI | — | fix/p1-ci-path-scope |'
+  assert_absent "$d" 280 "t1b/no-branch-arg: a branch cell must NOT satisfy when no --branch was passed"
+
+  # PREFIX COLLISION — the boundary discipline the number match already has. A cell bearing
+  # `fix/p1-ci-path-scope` must NOT satisfy the branch `fix/p1-ci`: every char legal in a git ref is a
+  # non-boundary, so the trailing `-` blocks the match. Without this, a branch could bind to any row
+  # whose cell merely STARTS with its name.
+  d="$base/t1b_prefix"
+  _board "$d" '| P1-CI | — | fix/p1-ci-path-scope |'
+  assert_absent "$d" 999 "t1b/prefix: branch 'fix/p1-ci' must NOT match cell 'fix/p1-ci-path-scope'" "fix/p1-ci"
+
+  # a branch name in a NOTES cell must not satisfy — the binding is to the PR COLUMN, same as the number.
+  d="$base/t1b_notes"
+  _notes_board "$d" 'see fix/p1-ci-path-scope'
+  assert_absent "$d" 999 "t1b/notes-cell: a branch in a Notes cell must not satisfy -> rc1" "fix/p1-ci-path-scope"
+
+  # REGEX-METACHAR SAFETY — a branch name is attacker-influenceable (anyone can open a PR from a branch),
+  # so it is UNTRUSTED INPUT TO A REGEX. A branch of `.*` must match literally, never as a wildcard that
+  # satisfies every row on the board.
+  d="$base/t1b_meta"
+  _board "$d" '| P1-CI | — | #280 |'
+  assert_absent "$d" 999 "t1b/metachar: a branch of '.*' must not wildcard-match any PR cell" '.*'
 
   # ===== T2 — change-class reconciliation: gate_class (spec §4, §7) ====================
   # gate_class takes a CHANGE-SET LISTING file (newline-delimited paths), by argument.
@@ -258,7 +341,7 @@ selftest() {
 # (st_fail flip). The CHECK logic above the marker stays mutable, as it must.
 # assert_present <dir> <pr> <label> : row_bears_pr on <dir>/BACKLOG.md must rc0.
 assert_present() {
-  if row_bears_pr "$1/BACKLOG.md" "$2" >/dev/null 2>&1; then _r=0; else _r=$?; fi
+  if row_bears_pr "$1/BACKLOG.md" "$2" "${4:-}" >/dev/null 2>&1; then _r=0; else _r=$?; fi
   if [ "$_r" -eq 0 ]; then
     echo "selftest PASS: $3"
   else
@@ -267,7 +350,7 @@ assert_present() {
 }
 # assert_absent <dir> <pr> <label> : row_bears_pr on <dir>/BACKLOG.md must rc!=0.
 assert_absent() {
-  if row_bears_pr "$1/BACKLOG.md" "$2" >/dev/null 2>&1; then _r=0; else _r=$?; fi
+  if row_bears_pr "$1/BACKLOG.md" "$2" "${4:-}" >/dev/null 2>&1; then _r=0; else _r=$?; fi
   if [ "$_r" -ne 0 ]; then
     echo "selftest PASS: $3"
   else
@@ -410,22 +493,26 @@ case "${1:-}" in
   --selftest)
     selftest; exit $?
     ;;
-  --dir|--pr|--changed)
-    _dir=""; _pr=""; _cf=""
+  --dir|--pr|--changed|--branch)
+    # --branch is OPTIONAL and, like every other target here, comes BY ARGUMENT — never the environment.
+    # (An env-supplied target lets a decoy redirect a control-plane check; that pattern was rejected once
+    # already and is not coming back.) Absent --branch, the gate behaves exactly as before: PR-number only.
+    _dir=""; _pr=""; _cf=""; _br=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --dir)     [ $# -ge 2 ] || { echo "usage: --dir needs a value" >&2; exit 2; }; _dir=$2; shift 2 ;;
         --pr)      [ $# -ge 2 ] || { echo "usage: --pr needs a value" >&2; exit 2; }; _pr=$2; shift 2 ;;
         --changed) [ $# -ge 2 ] || { echo "usage: --changed needs a value" >&2; exit 2; }; _cf=$2; shift 2 ;;
-        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing>" >&2; exit 2 ;;
+        --branch)  [ $# -ge 2 ] || { echo "usage: --branch needs a value" >&2; exit 2; }; _br=$2; shift 2 ;;
+        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>]" >&2; exit 2 ;;
       esac
     done
     { [ -n "$_dir" ] && [ -n "$_pr" ] && [ -n "$_cf" ]; } || {
-      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing>" >&2; exit 2; }
-    check_pr "$_dir" "$_pr" "$_cf"; exit $?
+      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>]" >&2; exit 2; }
+    check_pr "$_dir" "$_pr" "$_cf" "$_br"; exit $?
     ;;
   *)
-    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing>" >&2
+    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>]" >&2
     exit 2
     ;;
 esac

@@ -45,6 +45,7 @@ This file holds only what is **specific to this project**.
 > These are the knobs `DEVELOPMENT-PROCESS.md` says are set per project.
 
 - **Backlog backend** (§6): [`BACKLOG.md` / GitHub / Jira / Azure DevOps / Linear / GitLab] — [link] (mapping: `docs/work-tracking/adapters.md`)
+- **Stack profile** (§2): [typescript-node / go / python / rust / dotnet / java / data-engineering / …] — the kit profile this project was incepted with (`incept --stack`). It determines the scaffold, the emitted CI, and which `profiles/*` survived the export prune. Recorded because it was the **one inception input nothing wrote down**, and a kit update must prune a new export to the same shape to compare it against `kit-base` (`docs/operations/kit-base.md`).
 - **Autonomy-tier defaults** (§12): [defaults, or deltas from the standard action→tier matrix]
   - e.g. `deploy to staging → L2 (autonomous behind smoke gate)`; everything else inherits defaults
 - **SLO / error-budget posture** (§9): [soft track-and-guide / hard-gating] — [target SLOs if defined]

@@ -189,6 +189,34 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
       } > "$_dest/docs/STACK-SELECTION.md"
     fi
   fi
+  # --- P1.2-pre: the export STATES what it shipped (.kit-manifest) -----------------------------------
+  # The exporter is the ONLY actor that knows the kit-own file set: it just built it (git archive, minus
+  # export-ignore, minus the --profile prune above) and, until now, threw it away. Every attempt to
+  # RE-DERIVE that set afterwards has failed — cp_kit_replace's marker does not even survive inception
+  # (the kit's ci.yml carries `Kit-own CI`; the profiles/*/ci.yml incept installs in its place carries
+  # none). So record the FACT here, where it is still known. Locked by conformance/kit-manifest.sh;
+  # consumed by scripts/incept.sh to vendor the `kit-base` orphan branch.
+  #
+  # Emitted AFTER the carves and the prune, so it describes the FINAL tree the adopter receives — a
+  # --profile export therefore states its PRUNED contents, which is what makes a per-adopter merge base
+  # well-defined ("the tree at version X" is otherwise NOT unique: the public mirror ships un-pruned).
+  #
+  # Two pinned decisions, both load-bearing:
+  #   LC_ALL=C — a locale-dependent sort order makes the manifest non-reproducible across machines, and
+  #              this artifact's entire job is to be a stable, comparable fact. It would pass on one box.
+  #   self-listing — the manifest is part of the export, so kit-base must be able to carry it forward.
+  # -type f ONLY (not -type l): the manifest must never NAME a symlink. A symlink in the manifest would
+  # let incept's kit-base capture copy a file from outside the export into a committed git ref (review
+  # #318 S1). The kit ships zero symlinks, so this drops nothing; conformance/kit-manifest.sh's own scan
+  # DOES include -type l, so a symlink appearing on disk but absent from the manifest turns it RED.
+  _mf=$(mktemp) || { echo "adopter-export: mktemp failed (manifest)" >&2; return 1; }
+  { ( cd "$_dest" && find . -type f | sed 's|^\./||' ); echo '.kit-manifest'; } \
+    | LC_ALL=C sort -u > "$_mf" || { rm -f "$_mf"; echo "adopter-export: manifest build failed" >&2; return 1; }
+  if [ ! -s "$_mf" ]; then
+    rm -f "$_mf"; echo "adopter-export: refusing to write an EMPTY .kit-manifest" >&2; return 1
+  fi
+  mv "$_mf" "$_dest/.kit-manifest" && chmod 644 "$_dest/.kit-manifest"
+
   _src_n=$( ( cd "$ROOT" && git ls-files | wc -l ) | tr -d ' ' )
   _out_n=$(find "$_dest" -type f | wc -l | tr -d ' ')
   # CP-4: a zero-file export is an ERROR, not a success. This used to print "exported 0 files" and

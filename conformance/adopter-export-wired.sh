@@ -11,6 +11,15 @@ set -eu
 _here=$(CDPATH='' cd "$(dirname "$0")" && pwd)   # resolve dir BEFORE cd so sourcing is cwd-independent
 cd "$_here/.."
 . "$_here/wf-helpers.sh"   # provides wf_extract_links() (single source of truth)
+# Kill git auto-gc for this check + ALL subprocesses (the nested verify, adopter-export, and the
+# selftest fixtures): a commit's detached `git gc --auto` keeps writing to .git after it returns,
+# racing the temp `rm -rf` into ENOTEMPTY under CI load (green locally/PR, red on the loaded
+# main-push runner). Env-scoped (no global mutation), additive (only forces gc.auto=0). Root-cause
+# hygiene for every cleanup site at once; the `|| true` on each rm below is the hard guarantee.
+# The structural refactor (isolate this green-on-clone verify into its own job) is boarded: Phase 1.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=gc.auto
+export GIT_CONFIG_VALUE_0=0
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
@@ -92,24 +101,28 @@ run() {
     # (e.g. check-links) work — matching what a real adopter does. This is the "run the whole adopter CI"
     # check: it catches ANY orphaned/maintainer-only claim.
     if ( cd "$_d" && git init -q && git add -A \
-         && git -c user.email=ci@kit -c user.name=ci commit -qm export >/dev/null 2>&1 \
+         && git -c gc.auto=0 -c user.email=ci@kit -c user.name=ci commit -qm export >/dev/null 2>&1 \
          && sh conformance/claims-registry.sh >/dev/null 2>&1 ); then
       echo "PASS: exported tree's claims-registry passes"
     else
       echo "FAIL: exported tree's claims-registry does NOT pass (an orphaned maintainer-only claim — carve it in adopter-export.sh)"; rc=1
     fi
-    # Green-on-clone: the export must pass the SAME aggregate the adopter's ci.yml runs —
-    # verify.sh --require — not just claims-registry. A control-check that hard-fails on the export
-    # (e.g. a kit-self check needing an export-ignored file but not N/A-ing) would otherwise only
-    # surface when a real adopter pushes. The tree is committed above (git init+add+commit). This
-    # drives the FULL adopter aggregate on the export, so this lock's runtime ~doubles (expected,
-    # not a hang). RECURSION-SAFE: the export's OWN adopter-export-wired N/A-skips (both kit markers
-    # are stripped from the export) and returns before re-exporting — do NOT remove that N/A-skip.
-    if ( cd "$_d" && sh conformance/verify.sh --require >/dev/null 2>&1 ); then
-      echo "PASS: exported tree's verify --require passes (adopter first CI push is green)"
-    else
-      echo "FAIL: exported tree's verify.sh --require FAILS — green-on-clone is broken. A control-check hard-fails on the export; make it N/A when its export-ignored dependency is absent (the kit-self pattern)."; rc=1
-    fi
+    # ── GREEN-ON-CLONE MOVED OUT (P1-CI-c) — it is NOT deleted; see conformance/green-on-clone.sh.
+    #
+    # A full 87-check `verify.sh --require` used to run RIGHT HERE, on the exported tree. Two problems,
+    # both named by P0-FU(a) ("load-sensitive + opaque … refactor to a dedicated, visible green-on-clone
+    # job") and neither fixed until now:
+    #
+    #   COST    — it was ~58s of this check's 77s. And `non-vacuity` MUTATION-TESTS this check, so EVERY
+    #             MUTANT re-ran the ENTIRE 87-check battery. That — not the export, which takes <1s —
+    #             was the 387s non-vacuity leg. A proof nested inside a mutation-tested check is paid for
+    #             ONCE PER MUTANT.
+    #   OPACITY — it ran `>/dev/null 2>&1`. You learned green-on-clone broke; you never learned WHICH
+    #             control failed.
+    #
+    # The proof now runs in its own check + its own parallel CI job (`cf-green-on-clone`), gating behind
+    # the same `conformance` aggregator. Same coverage, ~1/4 the cost here, and it prints the failing
+    # control. DO NOT re-nest it here to "keep things together" — that is the defect, not the design.
     for _cc in drift-watch golden-path adopter-export; do
       if grep -q "^$_cc$(printf '\t')" "$_d/conformance/claims.tsv"; then
         echo "FAIL: claim $_cc not carved from the export"; rc=1
@@ -120,7 +133,11 @@ run() {
   else
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
-  rm -rf "$_t"
+  # Cleanup must never fail the verdict: a background writer (git auto-gc from the nested
+  # commit, or a check inside the nested verify) can race `rm -rf` into ENOTEMPTY under CI
+  # load — green locally/PR, red on the loaded main-push runner. The assertions above ARE the
+  # verdict; a leaked temp dir on an ephemeral runner is harmless.
+  rm -rf "$_t" 2>/dev/null || true
   # (e) DESIGN B / F1: the README must NOT hardcode the export file-count — it drifts silently
   # (this lock now prevents the 242/392 -> 277/416 drift). The export script prints the exact count
   # at run time; the README defers to it. Guard the two stale phrasings so a count can't creep back.
@@ -151,7 +168,7 @@ if [ "${1:-}" = "--selftest" ]; then
   if ( ROOT="$_n"; run ) >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (empty .gitattributes still passed)"; sfail=1
   fi
-  rm -rf "$_n"
+  rm -rf "$_n" 2>/dev/null || true
   # negative (F1): a tree identical to HEAD but whose README hardcodes a count must FAIL the lock.
   _r=$(mktemp -d)
   ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_r" 2>/dev/null || true
@@ -163,7 +180,7 @@ if [ "${1:-}" = "--selftest" ]; then
   if ( ROOT="$_r"; run ) >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (README hardcoded count not caught)"; sfail=1
   fi
-  rm -rf "$_r"
+  rm -rf "$_r" 2>/dev/null || true
   # negative (link-safety / M2): the block-(b) exclude must NOT blind the check to a real KEPT→ignored
   # link. Build a tiny tree where a KEPT doc links an export-ignored doc; the lock MUST still FAIL.
   # (Guards against the M2 fix over-broadening the exclusion and silently passing real breakage.)
@@ -178,7 +195,7 @@ if [ "${1:-}" = "--selftest" ]; then
   if ( ROOT="$_l"; run ) >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (KEPT→ignored markdown link not caught — exclusion over-broadened)"; sfail=1
   fi
-  rm -rf "$_l"
+  rm -rf "$_l" 2>/dev/null || true
   # positive-blanket (item-6 teeth): a NEW, individually-unlisted docs/architecture/ doc must be
   # export-ignored by the BLANKET rule — and must LEAK if the blanket rule is stripped (load-bearing negative).
   _b=$(mktemp -d); _bx=$(mktemp -d); _bx2=$(mktemp -d)
@@ -196,7 +213,7 @@ if [ "${1:-}" = "--selftest" ]; then
   if [ ! -e "$_bx2/docs/architecture/zzz-unlisted-probe.md" ]; then
     echo "adopter-export-wired --selftest: FAIL (probe vacuous — unlisted doc dropped even without the blanket rule)"; sfail=1
   fi
-  rm -rf "$_b" "$_bx" "$_bx2"
+  rm -rf "$_b" "$_bx" "$_bx2" 2>/dev/null || true
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
 fi
 

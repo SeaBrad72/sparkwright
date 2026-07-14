@@ -47,7 +47,7 @@ On the documented adopter path, a **hookless harness** (Codex, Cursor, Copilot �
 - an installed `pre-push` git hook, and
 - the `agent-boundary` CI backstop.
 
-It does **not** get Claude Code's inline **`PreToolUse` denial**. That is a Claude-Code affordance — a write blocked *before it happens* — and the kit's AMBER / scratchpad discipline (author under `scratchpad/`, land on a recorded GO) leans on it. So a Codex adopter is covered at the floor by the git hook and CI: nothing merges unsafely, because CI still gates. But a risky local write is not intercepted before it lands the way it is under Claude Code. This is a real difference, not a formality — it is why `claude-code` is the reference harness and `generic` is floor-verified, not equivalent.
+It does **not** get Claude Code's inline **`PreToolUse` denial**. That is a Claude-Code affordance — a write blocked *before it happens* — and the kit's **dev-clone** discipline (author in a disposable clone while the guard stays armed on the real repo; land on a recorded GO) leans on it. So a Codex adopter is covered at the floor by the git hook and CI: nothing merges unsafely, because CI still gates. But a risky local write is not intercepted before it lands the way it is under Claude Code. This is a real difference, not a formality — it is why `claude-code` is the reference harness and `generic` is floor-verified, not equivalent.
 
 ## `green ≠ verified`
 

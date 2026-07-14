@@ -102,7 +102,7 @@ disposition() {
     sensitive:staging) echo "+ threat/privacy re-check" ;;
     sensitive:production) echo "human-commanded; irreversible-gated" ;;
     control-plane:spike) echo "Human-authored (always)" ;;
-    control-plane:integration) echo "AMBER apply + control-plane-ratification" ;;
+    control-plane:integration) echo "Dev-clone authoring + control-plane-ratification" ;;
     control-plane:rc) echo "human ratify + meta-control" ;;
     control-plane:staging|control-plane:production) echo "N/A — control-plane does not deploy to runtime rungs" ;;
     *) echo "(unknown cell)" ;;
