@@ -42,6 +42,7 @@ filled_set() {
   cat <<'SET'
 typescript-node
 python
+go
 SET
 }
 
@@ -49,7 +50,6 @@ SET
 # a PENDING entry with no reference is an untracked gap and FAILs below.
 pending_set() {
   cat <<'SET'
-go P1.5 fan-out (STACK-PARITY follow-on)
 rust P1.5 fan-out (STACK-PARITY follow-on)
 java-spring P1.5 fan-out (STACK-PARITY follow-on)
 kotlin P1.5 fan-out (STACK-PARITY follow-on)
@@ -197,6 +197,7 @@ audit_filled() {
   case "$_n" in
     typescript-node) _flags="$_sc/src/flags.ts";     _health="$_sc/src/health.ts";     _testdir="$_sc/test" ;;
     python)          _flags="$_sc/src/app/flags.py"; _health="$_sc/src/app/health.py"; _testdir="$_sc/tests" ;;
+    go)              _flags="$_sc/flags.go";          _health="$_sc/health.go";          _testdir="$_sc" ;;  # go: flat package main at scaffold root; *_test.go + integration_test.go/e2e_test.go co-located
     *) echo "FAIL $_n: FILLED profile has no capability path mapping — add one before admitting it to FILLED"; fail=1; gaps=$((gaps + 1)); return 0 ;;  # M1: return 0 (clean-FAIL via the global `fail`), never `return 1` — a bare `return 1` under `set -e` aborts the scan mid-loop and swallows the summary.
   esac
 

@@ -7,12 +7,16 @@
 # ---- builder: full Go toolchain, never shipped ----
 FROM golang:1.22-bookworm AS builder
 WORKDIR /src
-COPY go.mod go.sum ./
+# Stdlib-only scaffold: there is no go.sum (no external modules). COPY only go.mod;
+# `go mod download` is a no-op. If you add dependencies, run `go mod tidy` to generate
+# a go.sum and change this to `COPY go.mod go.sum ./`.
+COPY go.mod ./
 RUN go mod download
 COPY . .
 # CGO_ENABLED=0 → a fully static binary that runs on the distroless 'static' base.
-# ADAPT the package path (`./cmd/server`) to your main package.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
+# The scaffold is a flat `package main` at the repo root, so build `.`; if you
+# restructure to a cmd/ layout, change this to your main package path (e.g. ./cmd/server).
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/server .
 
 # ---- runtime: distroless static, non-root by construction ----
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime

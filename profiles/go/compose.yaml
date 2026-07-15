@@ -1,10 +1,10 @@
 # Local dev mirroring prod (DEVELOPMENT-STANDARDS.md §13 dev/prod parity).
 # COPY & ADAPT to your project root. The app builds from the same Dockerfile that ships.
 #
-# Default archetype: STATELESS service (a networked service / CLI — no backing store).
-# If your service needs a database, add a `db` service + DATABASE_URL and a `depends_on`
-# (see profiles/python/compose.yaml for a Postgres-backed example), and record it in your
-# RUNBOOK's "Environments this stack needs". See profiles/go.md and docs/STACK-SELECTION.md.
+# Default archetype: DB-BACKED service (Postgres — see the `db` service below and DATABASE_URL
+# on `app`). For a STATELESS archetype (no backing store), remove the `db` service + its
+# DATABASE_URL/depends_on wiring, and record the choice in your RUNBOOK's "Environments this
+# stack needs". See profiles/go.md and docs/STACK-SELECTION.md.
 services:
   app:
     # Prod-parity by default (runs the shipped image). For hot-reload during dev,
@@ -12,8 +12,26 @@ services:
     build:
       context: .
       target: runtime
+    environment:
+      DATABASE_URL: postgres://app:app@db:5432/app
     ports:
       - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
   # --- Agent sandbox (containment reference — docs/operations/containment.md §1) ---
   # Headless agent/dev shell, host UNREACHABLE: read-only root, ONLY the work tree mounted, all caps
   # dropped, no-new-privileges, no network. Opt-in; never auto-started. Run as the HOST uid so the
@@ -38,3 +56,5 @@ services:
     environment:
       HOME: /tmp
     command: ["bash"]
+volumes:
+  pgdata:
