@@ -3,6 +3,13 @@ name = "app"
 version = "0.1.0"
 edition = "2021"
 
+# The crate is named `app` (the library), but the produced binary is `server` so the
+# reference Dockerfile's `cargo build --bin server` + `/app/server` CMD/HEALTHCHECK and
+# ci.yml's `target/release/server` artifact all agree on ONE name. Adapt to taste.
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
 # Dependency-free (std only) starter — keeps Cargo.lock trivial and the pipeline
 # clone-green. Add deps (e.g. axum/tokio for a real HTTP server) as you grow.
 [dependencies]

@@ -14,7 +14,9 @@ RUN ./gradlew --no-daemon dependencies >/dev/null 2>&1 || true
 COPY . .
 # bootJar = the single runnable fat jar. If your build also emits a *-plain.jar,
 # disable the `jar` task or copy the boot jar by explicit name.
-RUN ./gradlew --no-daemon -x test bootJar && cp build/libs/*.jar /app.jar
+# -x cyclonedxBom: SBOM generation is a CI/release concern (ci.yml's gate-sbom emits it), not part of
+# building the runtime jar — and the cyclonedx-gradle plugin is version-sensitive; keep it out of the image build.
+RUN ./gradlew --no-daemon -x test -x cyclonedxBom bootJar && cp build/libs/*.jar /app.jar
 
 # ---- runtime: distroless Java 21 (JRE only, non-root by construction) ----
 # The distroless java base sets ENTRYPOINT ["java","-jar"]; CMD supplies the jar path.

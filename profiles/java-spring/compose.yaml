@@ -1,5 +1,10 @@
 # Local dev mirroring prod (DEVELOPMENT-STANDARDS.md §13 dev/prod parity).
 # COPY & ADAPT to your project root. The app builds from the same Dockerfile that ships.
+#
+# Default archetype: DB-BACKED service (Postgres — see the `db` service below and DATABASE_URL
+# on `app`). For a STATELESS archetype (no backing store), remove the `db` service + its
+# DATABASE_URL/depends_on wiring, and record the choice in your RUNBOOK's "Environments this
+# stack needs". See profiles/java-spring.md and docs/STACK-SELECTION.md.
 services:
   app:
     # Prod-parity by default (runs the shipped image). For hot-reload during dev,
@@ -11,6 +16,10 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/app
       SPRING_DATASOURCE_USERNAME: app
       SPRING_DATASOURCE_PASSWORD: app
+      # DATABASE_URL: the DB-generic DSN consumed by the ops scripts (scripts/dr-drill.sh) — same
+      # convention as the go/python profiles. Spring itself uses SPRING_DATASOURCE_* above; this is
+      # for ops tooling only (psql/pg_dump), not read by the application.
+      DATABASE_URL: postgres://app:app@db:5432/app
     ports:
       - "8080:8080"
     depends_on:

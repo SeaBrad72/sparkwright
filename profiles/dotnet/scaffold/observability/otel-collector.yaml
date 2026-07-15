@@ -1,0 +1,20 @@
+# otel-collector.yaml — minimal reference OpenTelemetry Collector config.
+#
+# LOCAL/CI REFERENCE ONLY. Receives OTLP/HTTP traces on :4318 and prints them to
+# stdout (debug exporter). An adopter swaps the `debug` exporter for their vendor's
+# OTLP exporter and points OTEL_EXPORTER_OTLP_ENDPOINT at it — exactly as
+# scripts/otlp-export.sh documents for the endpoint/headers. No auth is configured
+# here: the round-trip is a localhost CI/dev loop, not a production backend.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]

@@ -43,6 +43,10 @@ filled_set() {
 typescript-node
 python
 go
+dotnet
+rust
+java-spring
+kotlin
 SET
 }
 
@@ -50,10 +54,6 @@ SET
 # a PENDING entry with no reference is an untracked gap and FAILs below.
 pending_set() {
   cat <<'SET'
-rust P1.5 fan-out (STACK-PARITY follow-on)
-java-spring P1.5 fan-out (STACK-PARITY follow-on)
-kotlin P1.5 fan-out (STACK-PARITY follow-on)
-dotnet P1.5 fan-out (STACK-PARITY follow-on)
 SET
 }
 
@@ -198,6 +198,10 @@ audit_filled() {
     typescript-node) _flags="$_sc/src/flags.ts";     _health="$_sc/src/health.ts";     _testdir="$_sc/test" ;;
     python)          _flags="$_sc/src/app/flags.py"; _health="$_sc/src/app/health.py"; _testdir="$_sc/tests" ;;
     go)              _flags="$_sc/flags.go";          _health="$_sc/health.go";          _testdir="$_sc" ;;  # go: flat package main at scaffold root; *_test.go + integration_test.go/e2e_test.go co-located
+    dotnet)          _flags="$_sc/src/App/Flags.cs";  _health="$_sc/src/App/Health.cs";  _testdir="$_sc/tests" ;;  # dotnet: ASP.NET; Flags.cs holds FlagProvider + envProvider; tests/ holds *IntegrationTests.cs + *E2eTests.cs
+    rust)            _flags="$_sc/src/flags.rs";      _health="$_sc/src/health.rs";      _testdir="$_sc/tests" ;;  # rust: lib+bin; flags.rs holds FlagProvider + env_provider; tests/ holds integration.rs + e2e.rs
+    java-spring)     _flags="$_sc/src/main/java/com/example/app/FeatureFlags.java"; _health="$_sc/src/main/java/com/example/app/HealthController.java"; _testdir="$_sc/src/test/java" ;;  # Spring Boot; FeatureFlags.java holds FlagProvider + envProvider
+    kotlin)          _flags="$_sc/src/main/kotlin/com/example/app/FeatureFlags.kt"; _health="$_sc/src/main/kotlin/com/example/app/HealthController.kt"; _testdir="$_sc/src/test/kotlin" ;;  # Spring Boot (Kotlin); FeatureFlags.kt holds FlagProvider + envProvider
     *) echo "FAIL $_n: FILLED profile has no capability path mapping — add one before admitting it to FILLED"; fail=1; gaps=$((gaps + 1)); return 0 ;;  # M1: return 0 (clean-FAIL via the global `fail`), never `return 1` — a bare `return 1` under `set -e` aborts the scan mid-loop and swallows the summary.
   esac
 

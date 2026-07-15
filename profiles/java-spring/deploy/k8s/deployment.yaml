@@ -50,18 +50,18 @@ spec:
             limits:
               cpu: "1000m"
               memory: "768Mi"
-          # Spring Boot Actuator liveness/readiness groups (enable
-          # management.endpoint.health.probes.enabled=true). The JVM is slow to start —
-          # prefer a startupProbe over a large initialDelaySeconds in production.
+          # The app exposes a single /healthz endpoint (HealthController); this profile
+          # deliberately omits spring-boot-starter-actuator to stay minimal. The JVM is
+          # slow to start — prefer a startupProbe over a large initialDelaySeconds in production.
           livenessProbe:
             httpGet:
-              path: /actuator/health/liveness
+              path: /healthz
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /actuator/health/readiness
+              path: /healthz
               port: 8080
             initialDelaySeconds: 20
             periodSeconds: 10

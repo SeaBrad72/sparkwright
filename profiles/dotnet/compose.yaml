@@ -9,6 +9,10 @@ services:
       target: runtime
     environment:
       ConnectionStrings__Default: "Host=db;Port=5432;Database=app;Username=app;Password=app"
+      # DATABASE_URL: plain libpq DSN — consumed by scripts/dr-drill.sh (psql/pg_dump), not by the
+      # app itself (the app reads ConnectionStrings__Default above). Kept in sync with the `db`
+      # service credentials below so the ops scripts and the app point at the same database.
+      DATABASE_URL: postgres://app:app@db:5432/app
     ports:
       - "8080:8080"
     depends_on:

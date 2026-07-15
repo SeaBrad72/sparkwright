@@ -3,3 +3,4 @@ obj/
 publish/
 TestResults/
 *.user
+coverage.json

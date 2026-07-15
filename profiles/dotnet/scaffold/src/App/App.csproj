@@ -8,4 +8,9 @@
     <RootNamespace>App</RootNamespace>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Expose internal seam helpers (Flags.EnvName / RegistryDefault) to the unit tests. -->
+    <InternalsVisibleTo Include="Tests" />
+  </ItemGroup>
+
 </Project>

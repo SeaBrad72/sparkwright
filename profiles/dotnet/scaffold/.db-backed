@@ -1,0 +1,4 @@
+# kit:db-backed marker — presence signals this archetype is DB-backed, so the `kit:db-backed` CI
+# region (Postgres service + DATABASE_URL) ships ACTIVE. `sh scripts/incept.sh --no-db …` deletes
+# this file AND strips that CI region for a non-DB archetype. Consumed by the first-run-green
+# detector's `db-postgres` precondition (conformance/incept-first-run-green.sh).
