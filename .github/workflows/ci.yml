@@ -264,6 +264,10 @@ jobs:
         run: sh conformance/roster-guard-wired.sh --selftest
       - name: feature-flags-wired self-test (reference + golden-path flip wired)
         run: sh conformance/feature-flags-wired.sh --selftest
+      - name: profile-parity gate (every FILLED service profile fills the full DoD capability set)
+        run: sh conformance/profile-parity.sh
+      - name: profile-parity self-test (FILLED/PENDING/EXEMPT tri-state + kit-self N/A witnessed)
+        run: sh conformance/profile-parity.sh --selftest
       - name: containment-audit runner self-test (usage parse; behavioural proof in golden-path)
         run: sh scripts/containment-audit.sh --selftest
       - name: containment-audit self-test (sandbox boot+probe wired into golden-path)

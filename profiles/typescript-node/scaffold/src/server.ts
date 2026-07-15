@@ -5,7 +5,8 @@ import { createServer } from 'node:http';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { health } from './health.js';
-import { isEnabled } from './flags.js';
+import { isEnabled, setProvider } from './flags.js';
+import { fileConfigProvider } from './live-provider.js';
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
@@ -129,6 +130,13 @@ export const server = createServer((req, res) => {
 
 // Start only when run directly (not when imported by a test).
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
+  // Flag provider selection at boot. Default = the env floor (envProvider): restart-to-toggle, the
+  // DoD kill-switch floor, identical to shipping behaviour. Setting FLAG_FILE opts the RUNNING server
+  // into the reference file-config live provider (src/live-provider.ts) — the live-flip seam that
+  // re-reads the JSON flag file per resolution, so a rewrite flips /greeting with NO restart. Unset =>
+  // no behaviour change; the env floor stays the default.
+  const flagFile = process.env.FLAG_FILE;
+  if (flagFile) setProvider(fileConfigProvider(flagFile));
   const port = Number(process.env.PORT ?? 3000);
   server.listen(port, () => console.log(`listening on :${port}`));
 }

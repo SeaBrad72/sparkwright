@@ -207,6 +207,7 @@ conformance/preview-env-ready.sh
 conformance/preview-environments-readiness.md
 conformance/privacy-ready.sh
 conformance/profile-completeness.sh
+conformance/profile-parity.sh
 conformance/promotion-actuate-wired.sh
 conformance/promotion-contract-documented.sh
 conformance/promotion-readiness-wired.sh
@@ -498,6 +499,7 @@ profiles/typescript-node/scaffold/scripts/smoke.sh
 profiles/typescript-node/scaffold/src/flags.ts
 profiles/typescript-node/scaffold/src/health.ts
 profiles/typescript-node/scaffold/src/healthcheck.ts
+profiles/typescript-node/scaffold/src/live-provider.ts
 profiles/typescript-node/scaffold/src/server.ts
 profiles/typescript-node/scaffold/test/e2e.test.ts
 profiles/typescript-node/scaffold/test/flags.test.ts

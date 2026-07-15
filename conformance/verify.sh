@@ -98,6 +98,7 @@ check control conflict-safe-integration sh conformance/orchestrator-loop-wired.s
 check control skill-spine sh conformance/orchestrator-loop-wired.sh
 check control release-tag       sh conformance/release-tag-wired.sh
 check control feature-flags-wired sh conformance/feature-flags-wired.sh
+check control profile-parity   sh conformance/profile-parity.sh
 check control containment-audit   sh conformance/containment-audit-wired.sh
 check control token-scope         sh conformance/token-scope.sh
 check control runtime-security    sh conformance/runtime-security.sh
