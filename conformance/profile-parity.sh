@@ -41,6 +41,7 @@ PROFILES_ROOT=profiles
 filled_set() {
   cat <<'SET'
 typescript-node
+python
 SET
 }
 
@@ -48,7 +49,6 @@ SET
 # a PENDING entry with no reference is an untracked gap and FAILs below.
 pending_set() {
   cat <<'SET'
-python STACK-PARITY Slice 2 (python reference fill — this plan)
 go P1.5 fan-out (STACK-PARITY follow-on)
 rust P1.5 fan-out (STACK-PARITY follow-on)
 java-spring P1.5 fan-out (STACK-PARITY follow-on)
