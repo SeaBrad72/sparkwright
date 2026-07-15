@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.135.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.136.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -52,9 +52,13 @@ Any team — humans, agents, or both — starting a new project who wants produc
 
 If you already have product + design figured out, drop it in and build. If you're starting from raw signals, an optional upstream **discovery loop** (FRAME → SHAPE → Ready) turns them into a Ready backlog — see **[docs/discovery/discovery-loop.md](docs/discovery/discovery-loop.md)**. Skip it if you already have one.
 
+## Staying current with the kit
+
+Adopting is a fork, so the kit you adopted from keeps moving. `incept` vendors the **pristine tree you adopted from** into your own repo (the `kit-base` branch — [docs](docs/operations/kit-base.md)), and `sh scripts/kit-update.sh --from <kit>` uses it as a merge base to show you what a newer release would change: **offered** (kit-changed, you never touched it) · **CONFLICT** (changed on both sides — yours to decide) · **untouched** (yours). It **presents; it does not apply** — nothing of yours is written, and it moves you to *latest* only, never to an intermediate version. Full behaviour and its honest ceiling: **[docs/operations/kit-update.md](docs/operations/kit-update.md)**.
+
 ## Maturity & validation status
 
-Sparkwright is at the **`release-candidate`** stage — judged safe and honest to hand to someone who isn't its author, but **not yet driven by an external adopter** (the milestone that cuts `v3.135.0`). Its builder-facing machinery — conformance harness, control-plane guard, CI gates — runs on this repo every push, and the loop has been used to build a **real deployed product end-to-end** (Relay, a dead-man's-switch on Next.js/Prisma, ~30 PRs, deployed to Railway), where the review layer caught real fail-open bugs the agent had shipped as passing tests — alongside two synthetic in-house dogfood runs. All of it is **in-house**, by the kit's own author; the *adopter experience* is what remains unproven. The full ledger — and the kit's honest enforcement ceiling by harness — is in **[MATURITY.md](MATURITY.md)**. We surface where our own validation stops rather than claim coverage we don't have (**"green ≠ verified"**).
+Sparkwright is at the **`release-candidate`** stage — judged safe and honest to hand to someone who isn't its author, but **not yet driven by an external adopter** (the milestone that cuts `v3.136.0`). Its builder-facing machinery — conformance harness, control-plane guard, CI gates — runs on this repo every push, and the loop has been used to build a **real deployed product end-to-end** (Relay, a dead-man's-switch on Next.js/Prisma, ~30 PRs, deployed to Railway), where the review layer caught real fail-open bugs the agent had shipped as passing tests — alongside two synthetic in-house dogfood runs. All of it is **in-house**, by the kit's own author; the *adopter experience* is what remains unproven. The full ledger — and the kit's honest enforcement ceiling by harness — is in **[MATURITY.md](MATURITY.md)**. We surface where our own validation stops rather than claim coverage we don't have (**"green ≠ verified"**).
 
 ## Harness-neutral
 

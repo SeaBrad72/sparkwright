@@ -183,7 +183,10 @@ conformance/incept-manifests/terraform.txt
 conformance/incept-manifests/typescript-node.txt
 conformance/inception-done.sh
 conformance/kit-base.sh
+conformance/kit-current.sh
 conformance/kit-manifest.sh
+conformance/kit-update-identity.sh
+conformance/kit-update-merge.sh
 conformance/mcp-policy.sh
 conformance/meta-control-fresh.sh
 conformance/metrics-endpoint-wired.sh
@@ -283,6 +286,7 @@ docs/operations/gitlab-adoption.md
 docs/operations/harness-adapters.md
 docs/operations/harness-enforcement-evidence.md
 docs/operations/kit-base.md
+docs/operations/kit-update.md
 docs/operations/meta-control.md
 docs/operations/operate-loop.md
 docs/operations/operator-fluency.md
@@ -534,6 +538,7 @@ scripts/fixtures/scorecard/quality-drop-bot-4.json
 scripts/fixtures/scorecard/thin-bot-1.json
 scripts/incept.sh
 scripts/kit-guard
+scripts/kit-update.sh
 scripts/license-check.sh
 scripts/new-adapter.sh
 scripts/new-profile.sh

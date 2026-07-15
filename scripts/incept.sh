@@ -7,7 +7,11 @@
 #                        [--backlog md|github|jira|ado|linear|gitlab] \
 #                        [--ci github|gitlab] [--harness claude-code[,generic,...]] \
 #                        [--operator-fluency novice|adjacent|practitioner] \
-#                        [--mode lean|enterprise] [--noninteractive]
+#                        [--mode lean|enterprise] [--date YYYY-MM-DD] [--noninteractive]
+#
+# --date pins the stamped **Created:** date (default: today). Reproducible-reconstruction seam for
+# `kit-update`: re-running incept over the vendored kit-base must reproduce the adopter's ADOPTION
+# date, not today's, or the diff shows a phantom conflict in files nobody touched.
 #
 # It frees the root Claude-Code memory slot (CLAUDE.md = kit principles) by renaming the
 # principles doc to ENGINEERING-PRINCIPLES.md and rewriting the principles-sense references,
@@ -75,6 +79,12 @@ PROCESS_MODES="lean enterprise"
 # KW3: the ts-node default archetype is DB-backed (=1). --no-db (or INCEPT_DB_BACKED=0) strips the
 # profile's kit:db-backed CI region + the scaffold/.db-backed marker for a non-DB archetype.
 DB_BACKED="${INCEPT_DB_BACKED:-1}"
+# P1.2: the stamped date. Empty = "stamp today" (the default every adopter has always had).
+# `kit-update` reconstructs the adopter's base tree by re-running incept over the vendored kit-base
+# — that reconstruction runs TODAY, but the adopter's real tree carries their ADOPTION date, so an
+# unpinned stamp would fabricate a conflict in CLAUDE.md / ADR-000-stack.md (files nobody touched).
+# A FLAG, never an env var: an ambient INCEPT_DATE would let a decoy redirect a control-plane stamp.
+DATE_PIN=''
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
 BACKLOG_BACKENDS="md github jira ado linear gitlab"
@@ -84,6 +94,13 @@ CI_PLATFORMS="github gitlab"
 # Valid harness adapters = the adapters/ registry (one source of truth; each has an adapter.json).
 HARNESS_ADAPTERS=$(for _d in adapters/*/; do [ -f "${_d}adapter.json" ] && printf '%s ' "$(basename "$_d")" || true; done)
 [ -n "$HARNESS_ADAPTERS" ] || { echo "incept: no adapters/ registry found (adapters/<harness>/adapter.json). Aborting." >&2; exit 1; }
+# Valid stacks = the profiles/ registry (one source of truth; each shipped stack has a profiles/<stack>/
+# directory). DERIVED, never a hardcoded list that would drift. This is the reject-by-default set for
+# --stack: the value is stamped into CLAUDE.md via a `#`-delimited sed program (and kit-update replays
+# incept with the stack read back out of an adopter-controlled CLAUDE.md), so an unvalidated stack is a
+# sed-injection / arbitrary-file-write sink — it MUST be validated exactly as --ci/--harness/--team are.
+STACK_PROFILES=$(for _d in profiles/*/; do [ -d "$_d" ] && printf '%s ' "$(basename "$_d")" || true; done)
+[ -n "$STACK_PROFILES" ] || { echo "incept: no profiles/ registry found (profiles/<stack>/). Aborting." >&2; exit 1; }
 
 # reqval: a value-taking flag must have a value (else dash's `shift 2` would fail
 # under set -e/-u and abort with a confusing error instead of a clean exit 2).
@@ -99,10 +116,16 @@ while [ $# -gt 0 ]; do
     --harness) reqval $# --harness; HARNESS="$2"; shift 2 ;;
     --operator-fluency) reqval $# --operator-fluency; FLUENCY="$2"; shift 2 ;;
     --mode) reqval $# --mode; MODE="$2"; shift 2 ;;
+    # `reqval` checks ARITY, not EMPTINESS: `--date ""` satisfies it, and an empty DATE_PIN skips the
+    # `[ -n "$DATE_PIN" ]` validation below and falls open to TODAY with rc=0. That is a fail-open in the
+    # exact seam that exists to PREVENT a false alarm: kit-update passes the adoption date it parsed out
+    # of CLAUDE.md, so an empty parse (missing field, reformatted doc, a grep that missed) would silently
+    # stamp today and fabricate a phantom conflict in CLAUDE.md + ADR-000-stack.md. Refuse, loudly.
+    --date) reqval $# --date; [ -n "$2" ] || { echo "incept: --date requires a non-empty YYYY-MM-DD value" >&2; exit 2; }; DATE_PIN="$2"; shift 2 ;;
     --no-db) DB_BACKED=0; shift ;;
     --allow-nested) ALLOW_NESTED=1; shift ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--no-db] [--noninteractive]"; exit 0 ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -153,8 +176,11 @@ if ! owns_itself "$PWD" && [ "${ALLOW_NESTED:-0}" -eq 0 ]; then
   exit 1
 fi
 
-# escape a string for safe use as a sed REPLACEMENT (handles & / \)
-esc() { printf '%s' "$1" | sed 's/[&/\\]/\\&/g'; }
+# escape a string for safe use as a sed REPLACEMENT. Escapes & / \ AND the `#` delimiter every `sedi`
+# stamp below uses: without `#`, a `#`-bearing value terminates the `s#..#..#` program and the trailing
+# text is read as sed COMMANDS (e.g. `w <path>` = arbitrary file write). Escaping `#` closes EVERY
+# `#`-delimited stamp sink at once, not just one call site (T9 — defense in depth with --stack validation).
+esc() { printf '%s' "$1" | sed 's/[&/#\\]/\\&/g'; }
 # portable in-place sed: last positional arg is the FILE (POSIX; no bash ${@: -1})
 sedi() {
   last=
@@ -292,6 +318,12 @@ fi
 case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
 case " $CI_PLATFORMS " in *" $CI "*) : ;; *) echo "error: unknown --ci '$CI' (one of: $CI_PLATFORMS)" >&2; exit 2 ;; esac
 case " $TEAM_MODES " in *" $TEAM "*) : ;; *) echo "error: unknown --team '$TEAM' (one of: $TEAM_MODES)" >&2; exit 2 ;; esac
+# --stack is reject-by-default against the profiles/ registry, refused EARLY (before any file mutation).
+# SECURITY: unvalidated, the value flows into a `#`-delimited `sedi` stamp (arbitrary-file-write via sed
+# `w`) and kit-update replays it from an adopter-controlled CLAUDE.md. esc() also escapes `#` now — belt
+# and braces — but the registry check is the real boundary. A value starting with `-` lands here too (it
+# is consumed as the --stack VALUE, not a flag) and is refused unless it names a shipped profile.
+case " $STACK_PROFILES " in *" $STACK "*) : ;; *) echo "error: unknown --stack '$STACK' (one of: $STACK_PROFILES)" >&2; exit 2 ;; esac
 HARNESS_LIST=$(printf '%s' "$HARNESS" | tr ',' ' ')
 for _h in $HARNESS_LIST; do
   case " $HARNESS_ADAPTERS " in *" $_h "*) : ;; *) echo "error: unknown --harness '$_h' (one of: $HARNESS_ADAPTERS)" >&2; exit 2 ;; esac
@@ -314,6 +346,33 @@ fi
 # solo-vs-team governance is the separate enforce_admins / review-lane.md axis).
 case "$MODE" in prototype|team) echo "notice: --mode '$MODE' is deprecated; using 'lean' (ceremony only -- solo-vs-team governance is the separate enforce_admins / review-lane.md axis)" >&2; MODE="lean" ;; esac
 case " $PROCESS_MODES " in *" $MODE "*) : ;; *) echo "error: unknown --mode '$MODE' (one of: $PROCESS_MODES)" >&2; exit 2 ;; esac
+# --date is strictly YYYY-MM-DD. Not cosmetic: the value is interpolated into the `sedi` replacement
+# below, so an unvalidated string is a sed-expression injection surface (and a garbage stamp).
+#
+# The SHAPE glob alone is not enough — `[0-1][0-9]-[0-3][0-9]` accepts 2026-00-00 and 2026-13-32, which
+# are not dates. The charset is sed-safe either way, so this is not a security hole; it is a promise the
+# flag makes and must keep, since the value it stamps is what kit-update later reads back. So: shape
+# first (which also bounds the charset to digits + '-'), then the month and day RANGES, expressed as
+# case globs a POSIX `case` can state exactly.
+# Honest ceiling: this is a calendar-SHAPE check, not a calendar. 2026-02-31 has a valid month and a
+# valid day and is accepted; catching that needs a real date library, and the stamp is a label, not an
+# instant. The classes that mattered — empty, unpadded, out-of-range, and anything sed-active — are shut.
+if [ -n "$DATE_PIN" ]; then
+  case "$DATE_PIN" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
+    *) echo "error: --date must be YYYY-MM-DD (got '$DATE_PIN')" >&2; exit 2 ;;
+  esac
+  _dp_m=${DATE_PIN#*-}; _dp_m=${_dp_m%%-*}   # MM
+  _dp_d=${DATE_PIN##*-}                      # DD
+  case "$_dp_m" in
+    0[1-9]|1[0-2]) : ;;
+    *) echo "error: --date month must be 01-12 (got '$_dp_m' in '$DATE_PIN')" >&2; exit 2 ;;
+  esac
+  case "$_dp_d" in
+    0[1-9]|[12][0-9]|3[01]) : ;;
+    *) echo "error: --date day must be 01-31 (got '$_dp_d' in '$DATE_PIN')" >&2; exit 2 ;;
+  esac
+fi
 
 # 9g: never SILENTLY default the stack — make the default choice explicit + pointed.
 if [ "$STACK_EXPLICIT" -eq 0 ]; then
@@ -331,7 +390,7 @@ echo "notice: choose your deploy target deliberately — docs/adoption/DEPLOYMEN
 echo "notice: target harness(es) = '${HARNESS}'. Confirm this is the BEST-FIT harness (fit-derived, not the default). Only 'claude-code' is a VERIFIED harness (kit self-hosts on it); 'gemini'/'codex'/'cursor' are EXPERIMENTAL (declared against the boundary contract, not exercised end-to-end — unproven, not 'supported'). Record WHY it fits (cite a fit dimension) in CLAUDE.md §harness-neutrality — linted by conformance/harness-decision-integrity.sh. Cards + fit rubric: docs/operations/harness-adapters.md." >&2
 [ -n "$FLUENCY" ] || echo "notice: operator fluency not declared. New to enterprise SDLC? read ONBOARDING.md. Already fluent? pass --operator-fluency practitioner. Leaving the field for you to fill in CLAUDE.md." >&2
 
-DATE=$(date +%Y-%m-%d)
+DATE=$(esc "${DATE_PIN:-$(date +%Y-%m-%d)}")
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
 ENAME=$(esc "$NAME"); EOWNER=$(esc "$OWNER")
 
@@ -402,6 +461,23 @@ sedi "s#\*\*Backlog backend\*\* (§6): \[[^]]*\]#**Backlog backend** (§6): $(es
 # compared against kit-base (an un-pruned export would read as "the kit added eight profiles").
 # Replaces ONLY the bracketed choice-list; idempotent; no-op if the template lacks the §3 slot.
 sedi "s#\*\*Stack profile\*\* (§2): \[[^]]*\]#**Stack profile** (§2): $(esc "$STACK")#" CLAUDE.md
+# P1.2 (T3b): stamp the LAST TWO inception inputs nothing recorded — the CI PLATFORM and the DB ARCHETYPE.
+# Same reason as the stack stamp above, and the same mechanism. kit-update reconstructs the adopter's base
+# by REPLAYING incept over kit-base with the inputs this project recorded; anything not recorded has to be
+# INFERRED from the tree, and inference is where a wrong base comes from. It is not hypothetical: `--ci
+# gitlab` leaves the exported kit-own .github/workflows/ci.yml exactly where it is, so "a GitHub workflow
+# exists ⇒ --ci github" misreads EVERY GitLab adopter — and a wrong base cries CONFLICT on kit files the
+# adopter never touched. Record the FACT so nothing downstream has to guess it.
+# Both replace ONLY the bracketed choice-list (the trailing prose annotation survives); both are idempotent
+# (the anchor requires the `[` right after the field); both no-op if the template lacks the §3 slot — an
+# adopter incepted BEFORE these slots existed reconstructs identically, because their kit-base carries the
+# same slot-less template AND the same slot-less incept. Locked by conformance/incept-first-run-green.sh.
+sedi "s#\*\*CI platform\*\* (§14): \[[^]]*\]#**CI platform** (§14): $(esc "$CI")#" CLAUDE.md
+# The stamped token is the FLAG the operator chose (db-backed / no-db), not a fact re-derived from the
+# tree: --no-db's effects (CI region, marker, .env.example lines, dr-drill.sh) are a strict SUBSET of what
+# an adopter may later edit by hand, so only the input itself is a reliable record of the input.
+if [ "$DB_BACKED" = 1 ]; then _dbarch=db-backed; else _dbarch=no-db; fi
+sedi "s#\*\*DB archetype\*\* (§ archetype): \[[^]]*\]#**DB archetype** (§ archetype): ${_dbarch}#" CLAUDE.md
 
 # --- 3a. S1: mode-driven curation — surfacing/scaffolding only; NEVER an enforcement input. ---
 curate_for_mode() {  # $1 = mode

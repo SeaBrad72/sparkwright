@@ -19,10 +19,21 @@
 #   structurally impossible: only paths the exporter said it shipped can ever enter the base.
 #
 # WHY PRE-INCEPT, NOT POST-INCEPT: the base is the RAW export, so the kit delta is
-# diff(export@old, export@new) — pure kit change, no inception noise — and incept NEVER has to be
-# reproducible. That matters: incept REFUSES to re-run (scripts/incept.sh:195-197), and it overwrites
-# CLAUDE.md from the project template unconditionally (:293), which would destroy an adopter's charter
-# prose. Any design that needs incept replayed against a new version is dead on arrival.
+# diff(export@old, export@new) — pure kit change, no inception noise. And it keeps incept OFF the adopter's
+# tree, which is the part that actually matters: incept REFUSES to re-run (scripts/incept.sh), and it
+# overwrites CLAUDE.md from the project template unconditionally, which would destroy an adopter's charter
+# prose. NEVER RE-RUN INCEPT AGAINST AN ADOPTER'S WORKING TREE.
+#
+# CORRECTION (P1.2/T3 — this comment used to end "any design that needs incept replayed against a new
+# version is dead on arrival"; that was FALSE, and it was about to cost us the whole update mechanism).
+# Replaying incept ON THE ADOPTER is dead on arrival. Replaying it in a TEMP DIR, over the vendored
+# kit-base, with the inception inputs the project recorded, is not merely alive — it is the design:
+#     BASE = incept_old(kit-base)  ->  reconstructs an unmodified adopter's HEAD EXACTLY (477/477 entries,
+#                                      mode+sha+path; conformance/kit-update-identity.sh).
+# What made it reproducible is `incept --date` (the adoption date is pinned, not stamped as "today") plus
+# CLAUDE.md §3 recording EVERY inception input — stack, CI platform, DB archetype and the rest — so the
+# replay is fed facts rather than guesses. The narrow true claim is the one above: incept never touches the
+# adopter's tree. Do not rip the replay out on the strength of the sentence that used to live here.
 #
 # NOT REGISTERED IN conformance/verify.sh — deliberate. This check runs `incept` inside a fresh export,
 # but an ADOPTER's tree already carries ENGINEERING-PRINCIPLES.md, so incept refuses (scripts/incept.sh:195)

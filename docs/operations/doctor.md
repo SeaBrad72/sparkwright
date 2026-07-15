@@ -11,7 +11,8 @@ semantic axes (intent/scope, plan alignment, overclaim judgment) remain agent/hu
 sparkwright doctor
   ├─ conformance/verify.sh       [GATING]    every registered conformance check
   ├─ conformance/claims-registry.sh [GATING] every headline claim's verifier
-  └─ git ground-truth            [ADVISORY]  branch, dirty-tree, tag alignment
+  ├─ git ground-truth            [ADVISORY]  branch, dirty-tree, tag alignment
+  └─ conformance/kit-current.sh  [ADVISORY]  is the kit you ADOPTED behind the current release?
 ```
 
 Run via `sh scripts/sparkwright doctor` (or directly: `sh scripts/doctor.sh`).
@@ -20,17 +21,48 @@ Run via `sh scripts/sparkwright doctor` (or directly: `sh scripts/doctor.sh`).
 
 The split is intentional and the naming is exact.
 
-**POSTURE** — the default output. Three dimensions:
+**POSTURE** — the default output. Four dimensions:
 
-| Dimension    | Role    | What it runs                         |
-|--------------|---------|--------------------------------------|
-| `conformance`| GATING  | `conformance/verify.sh` (all checks) |
-| `claims`     | GATING  | `conformance/claims-registry.sh`     |
-| `git`        | ADVISORY| branch · dirty-tree · tag alignment  |
+| Dimension    | Role    | What it runs                                       |
+|--------------|---------|----------------------------------------------------|
+| `conformance`| GATING  | `conformance/verify.sh` (all checks)               |
+| `claims`     | GATING  | `conformance/claims-registry.sh`                   |
+| `git`        | ADVISORY| branch · dirty-tree · tag alignment                |
+| `kit-update` | ADVISORY| `conformance/kit-current.sh` — adopted kit vs current release |
 
 A FAIL or UNVERIFIED on either gating dimension sets exit 1. The git dimension is ADVISORY only
 (WARN-level, never hard-fails alone) — it re-establishes ground truth (axis E from
 `drift-self-check.md`) without blocking a green posture on working-branch commits.
+
+### The `kit-update` dimension — the surfacing (P1.2/T7)
+
+The kit's own recurring failure — the board calls it **KW21** — is a capability that is built,
+conformance-checked, and **invisible in practice**. P1.2 shipped an updater; *an updater nobody is ever
+prompted to run **is** that failure.* So the surfacing is not a nicety bolted onto `kit-update` — it is
+the half that makes it exist. `doctor` is the adopter's **decision point**: the moment they are already
+asking "what is my posture?". That is where they are told.
+
+`conformance/kit-current.sh` compares the version this project **adopted** (`kit-base:VERSION`, a fact
+recorded at inception) against the newest release **tag** at the kit source (`git ls-remote` — the git
+protocol, **no forge API**). It renders as one row:
+
+| Check's exit | Row | Meaning |
+|---|---|---|
+| `0` | `kit-update  OK` | up to date (or ahead). **One quiet line — an up-to-date adopter is never nagged.** |
+| `1` | `kit-update  WARN` | **BEHIND** — names `v<OLD>` → `v<NEW>` and the exact `kit-update` command to see the delta. |
+| `2` | `kit-update  N/A` | UNVERIFIED — the source is unreachable (offline). Staleness is **unknown**, and is *not* assumed OK. |
+| `3` | `kit-update  N/A` | Not an adopted tree (no `kit-base`) — e.g. the kit's own repo. Decided with **no network at all**. |
+
+**Why ADVISORY and never a gate.** *Being behind is not a defect.* A project pinned to last month's kit
+is making a legitimate choice — often the right one. A PR gate that reddened on it would fire on the
+happy path of every adopter, every week, and people would learn to ignore it; then it is worth nothing
+when it fires for real. It can never fail a build. (Same call as `mirror-current.sh` — a staleness check
+belongs in `doctor`/drift-watch, not in `verify.sh`.) The two halves are equally load-bearing: the
+adopter **must** be told when they are behind, and **must not** be nagged when they are not.
+
+**Honest ceiling.** It compares *versions*, not *trees*: `OK` means "no newer release is tagged at that
+source" — it does not mean your tree is unmodified, and it does not compute the delta. Computing the
+delta is `kit-update`'s job, and it is the thing this row tells you to go and run.
 
 **METRICS** (`--full` only) — appended after the posture summary, clearly labelled
 *"METRICS (informational — does not affect exit)"*. Runs `scripts/dora.sh` and

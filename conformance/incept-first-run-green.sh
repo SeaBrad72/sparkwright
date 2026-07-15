@@ -148,6 +148,348 @@ resolve_mechanism() {
 reset_block() { id=''; precond=''; whenabsent='skip'; asserts=''; skipreason=''; fixhint=''; }
 
 # ===========================================================================================
+# P1.2 (T1b) — the `--date` reproducible-stamp seam, proven by LIVE incept runs.
+#
+# WHY HERE: this file is the kit's "what does a fresh incept actually produce?" lock, and it is
+# CI-wired (`--selftest`). `--date` changes exactly that: the stamped **Created:** date.
+#
+# WHY IT MATTERS (the blocker this section exists to make impossible): `kit-update` reconstructs the
+# adopter's base tree by re-running incept over the vendored kit-base and passing the ADOPTION date it
+# parsed out of their CLAUDE.md. If incept ever stamps TODAY when a pin was intended, the diff shows a
+# phantom conflict in CLAUDE.md + ADR-000-stack.md — files nobody touched. A fail-open in the exact
+# seam whose only job is to prevent a false alarm. So the rejection path is asserted, not assumed:
+# an empty/ill-formed `--date` must EXIT 2, never silently fall back to today.
+#
+# And the counterweight: incept runs ONCE per adopter and cannot be re-run. The DEFAULT (no `--date`)
+# must still stamp today — that invariant is asserted FIRST, before any pinning case.
+# ===========================================================================================
+INCEPT_PRISTINE=''
+
+make_pristine_export() {  # build ONCE: the tree an adopter actually incepts. rc 1 = setup failed.
+  INCEPT_PRISTINE=$(mktemp -d) || return 1
+  # `git archive HEAD` — not `cp -R` — because EXPORT SEMANTICS are load-bearing here: .gitattributes
+  # export-ignores `docs/architecture/`, so the adopter's tree has NO ADR-000-stack.md and incept
+  # therefore CREATES and STAMPS it. A raw worktree copy carries the kit's own ADR-000-stack.md, incept's
+  # `[ -f ... ] ||` guard short-circuits, and the ADR assertion below would test nothing.
+  ( cd "$REPO_ROOT" && git archive HEAD ) | ( cd "$INCEPT_PRISTINE" && tar -xf - ) || return 1
+  # Overlay the WORKTREE content of every modified tracked file. `git archive` archives HEAD; without
+  # this the run would exercise the COMMITTED incept.sh, not the one under change — a green that proves
+  # the wrong artifact. No-op in CI (HEAD is the tree under test); load-bearing during development.
+  #
+  # NOT `... | while read`: `return` on the right of a pipeline exits the SUBSHELL, not this function, so
+  # a failed `cp` was silently swallowed — and because make_pristine_export is called in an `if !`
+  # condition, POSIX suppresses `set -e` inside it too. The HEAD files are still present, the anchors
+  # below still pass, and the whole suite runs against the COMMITTED incept.sh: precisely "a green that
+  # proves the wrong artifact", the thing the paragraph above exists to prevent. Command-substitute the
+  # file list instead, so the loop (and its `return 1`) runs in THIS shell. The unquoted `$_mods` split
+  # is glob-safe: the script is `set -euf`, so pathname expansion is off.
+  _mods=$( cd "$REPO_ROOT" && git diff --name-only HEAD ) || return 1
+  for _mf in $_mods; do
+    [ -f "$INCEPT_PRISTINE/$_mf" ] || continue   # export-ignored or deleted -> not in the adopter tree
+    cp "$REPO_ROOT/$_mf" "$INCEPT_PRISTINE/$_mf" || return 1
+  done
+  # Setup anchors — fail LOUDLY rather than let a broken fixture green the assertions below.
+  [ -f "$INCEPT_PRISTINE/scripts/incept.sh" ] || return 1
+  [ -f "$INCEPT_PRISTINE/CLAUDE.md" ] || return 1
+  # If the export ever STOPPED stripping docs/architecture/, incept would skip the ADR stamp and the
+  # ADR assertions would be testing a pre-existing file. Refuse to run rather than report on that.
+  [ ! -e "$INCEPT_PRISTINE/docs/architecture/ADR-000-stack.md" ] || return 1
+  return 0
+}
+
+fresh_export_tree() {  # echo a fresh, un-incepted copy of the pristine export
+  _ft=$(mktemp -d) || return 1
+  cp -R "$INCEPT_PRISTINE/." "$_ft/" || return 1
+  printf '%s\n' "$_ft"
+}
+
+run_incept() {  # <tree> [extra incept args...] -> rc; combined output in $INCEPT_OUT
+  _it="$1"; shift
+  if INCEPT_OUT=$( cd "$_it" && sh scripts/incept.sh --name DateProbe --intent-owner probe \
+       --stack typescript-node --backlog md --ci github --noninteractive "$@" 2>&1 ); then
+    return 0
+  else
+    return $?
+  fi
+}
+
+stamped_claude() { grep -c "^\*\*Created:\*\* $2\$" "$1/CLAUDE.md" 2>/dev/null || true; }
+stamped_adr()    { grep -c "^\*\*Date:\*\* $2\$" "$1/docs/architecture/ADR-000-stack.md" 2>/dev/null || true; }
+
+# A §3 config-list stamp: "- **<Field>** (§x): <value> …". Counts lines whose value STARTS with <value>
+# as a whole token — the trailing template annotation survives the stamp, so anchor on the token, not
+# on end-of-line. (This is the SAME shape kit-update.sh's stamp_list parser reads.)
+stamped_cfg() {  # <tree> <field-ERE> <value-ERE>
+  grep -Ec "^- \*\*$2\*\* \(§[^)]*\): $3( |\$)" "$1/CLAUDE.md" 2>/dev/null || true
+}
+# The UNFILLED slot still carries its bracketed choice-list. A stamp must REPLACE it, not sit beside it.
+unstamped_cfg() {  # <tree> <field-ERE>
+  grep -Ec "^- \*\*$2\*\* \(§[^)]*\): \[" "$1/CLAUDE.md" 2>/dev/null || true
+}
+# Every §3 occurrence of the field, stamped or not. Used to fail CLOSED: "no bracketed placeholder" is
+# trivially true when the SLOT DOES NOT EXIST, so the placeholder assertion must also demand the slot
+# be there, exactly once. (Absence must never read as cleanliness — the presence-check lesson.)
+anyline_cfg() {  # <tree> <field-ERE>
+  grep -Ec "^- \*\*$2\*\* \(§[^)]*\): " "$1/CLAUDE.md" 2>/dev/null || true
+}
+slot_filled_once() {  # <tree> <field-ERE>
+  [ "$(anyline_cfg "$1" "$2")" = 1 ] && [ "$(unstamped_cfg "$1" "$2")" = 0 ]
+}
+
+incept_date_tests() {  # appends to $st (0 = all good)
+  if ! make_pristine_export; then
+    echo "selftest FAIL: --date fixture setup — could not build the pristine export tree (fail-closed)"; st=1; return 0
+  fi
+
+  # --- (a) THE DEFAULT IS UNCHANGED: no --date -> TODAY. Asserted first, because incept runs once per
+  #         adopter and cannot be re-run: a regression here is unrecoverable for them. ---
+  _today=$(date +%Y-%m-%d)
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: --date fixture (a) — no tree"; st=1; return 0; }
+  if run_incept "$_t"; then
+    if [ "$(stamped_claude "$_t" "$_today")" = 1 ]; then
+      echo "selftest PASS: no --date -> CLAUDE.md stamps TODAY ($_today) — THE DEFAULT IS UNCHANGED"
+    else
+      echo "selftest FAIL: no --date did not stamp today ($_today) in CLAUDE.md"; st=1
+    fi
+    if [ "$(stamped_adr "$_t" "$_today")" = 1 ]; then
+      echo "selftest PASS: no --date -> ADR-000-stack.md stamps TODAY ($_today)"
+    else
+      echo "selftest FAIL: no --date did not stamp today ($_today) in ADR-000-stack.md"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept WITHOUT --date exited non-zero (rc=$?)"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # --- (b) A PINNED date reaches BOTH stamped files — and today's date reaches NEITHER. ---
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: --date fixture (b) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --date 2020-01-02; then
+    if [ "$(stamped_claude "$_t" 2020-01-02)" = 1 ]; then
+      echo "selftest PASS: --date 2020-01-02 -> CLAUDE.md carries 2020-01-02"
+    else
+      echo "selftest FAIL: --date 2020-01-02 did not reach CLAUDE.md"; st=1
+    fi
+    if [ "$(stamped_adr "$_t" 2020-01-02)" = 1 ]; then
+      echo "selftest PASS: --date 2020-01-02 -> ADR-000-stack.md carries 2020-01-02"
+    else
+      echo "selftest FAIL: --date 2020-01-02 did not reach ADR-000-stack.md"; st=1
+    fi
+    # The load-bearing half of the pin: TODAY must appear in NEITHER stamp. A "stamps both" bug would
+    # satisfy the two asserts above and still fabricate the phantom conflict kit-update exists to avoid.
+    if [ "$(stamped_claude "$_t" "$_today")" = 0 ] && [ "$(stamped_adr "$_t" "$_today")" = 0 ]; then
+      echo "selftest PASS: with a pin, TODAY ($_today) appears in NEITHER stamp (the pin REPLACES, not adds)"
+    else
+      echo "selftest FAIL: a pinned run still stamped today ($_today) somewhere"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept --date 2020-01-02 exited non-zero (rc=$?)"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # --- (c) REJECTION PATH: every ill-formed --date must EXIT 2 — never fall open to today.
+  #         '' is the BLOCKER case (`reqval` checks ARITY, not emptiness). '2026-1-1' is the un-padded
+  #         shape. '2026-01-01/w /tmp/x' is the sed-injection shape (the value is interpolated into a
+  #         `sedi` replacement). 2026-00-00 / 2026-13-32 / 2026-01-32 are the calendar cases.
+  #
+  #         ONE FRESH TREE PER CASE, deliberately: the first RED of this suite showed why. `--date ''`
+  #         fell open — it stamped today and exited 0 — which INCEPTED the shared tree, so every later
+  #         case returned rc=1 ("already incepted") instead of its own verdict. A shared tree lets one
+  #         bug mask the next; independent trees make each case say only what it knows. ---
+  for _bad in '' '2026-1-1' '2026-01-01/w /tmp/x' '2026-00-00' '2026-13-32' '2026-01-32' 'today'; do
+    _t=$(fresh_export_tree) || { echo "selftest FAIL: --date fixture (c) — no tree"; st=1; return 0; }
+    _rc=0; run_incept "$_t" --date "$_bad" || _rc=$?
+    if [ "$_rc" -eq 2 ]; then
+      echo "selftest PASS: --date '$_bad' -> REFUSED (exit 2)"
+    else
+      echo "selftest FAIL: --date '$_bad' -> rc=$_rc (expected 2 — an ill-formed pin must NEVER fall open to today)"; st=1
+    fi
+    # A refusal that already mutated the tree is not a refusal: assert the tree is untouched.
+    if [ ! -e "$_t/ENGINEERING-PRINCIPLES.md" ] && [ "$(stamped_claude "$_t" "$_today")" = 0 ]; then
+      echo "selftest PASS: --date '$_bad' left the tree PRISTINE (no rename, no stamp)"
+    else
+      echo "selftest FAIL: --date '$_bad' MUTATED the tree despite being invalid"; st=1
+    fi
+    rm -rf "$_t"
+  done
+
+  # --- (d) SOURCE INVARIANT (m2): every value interpolated into a `sedi` replacement goes through
+  #         esc(). A no-op on a valid YYYY-MM-DD; the net that keeps the sed-injection surface closed
+  #         if the accepted date format is ever widened.
+  #
+  #         THIS GREPS SOURCE, ON PURPOSE — do not "fix" it into a behavioural test. `--date` validation
+  #         bounds the value to `[0-9-]` (case (c) above proves every other shape EXITS 2), so esc() is
+  #         provably UNREACHABLE by behaviour today: no accepted input contains a `&`, `/` or `\` for it
+  #         to escape. A behavioural assertion here could therefore only test a value the parser already
+  #         refuses — it would pass identically with esc() deleted, i.e. it would be vacuous. The invariant
+  #         being held is a FUTURE one ("if someone widens the format, the escape is already there"), and
+  #         a source-level lock is the only thing that can hold it. Deleting esc() must break THIS line;
+  #         that is the entire point. If you make the date format richer, replace this with the behavioural
+  #         case the widening makes reachable — do not simply drop it. ---
+  if grep -Eq '^DATE=\$\(esc ' "$REPO_ROOT/scripts/incept.sh"; then
+    echo "selftest PASS: incept's DATE is esc'd before interpolation (every sed value is esc'd)"
+  else
+    echo "selftest FAIL: incept's DATE reaches a sedi replacement WITHOUT esc() — the invariant is broken"; st=1
+  fi
+
+  rm -rf "$INCEPT_PRISTINE"; INCEPT_PRISTINE=''
+}
+
+# ===========================================================================================
+# P1.2 (T3b) — the LAST TWO inception inputs incept never recorded: the CI PLATFORM (`--ci`) and the
+# DB ARCHETYPE (`--no-db`). Proven by LIVE incept runs, same as `--date` above.
+#
+# WHY IT MATTERS: `kit-update` reconstructs the adopter's base by REPLAYING incept over kit-base with the
+# inputs the project recorded. Every input is a CLAUDE.md §3 stamp — these two were not, so T3 INFERRED
+# them from evidence in the tree. Inference where a FACT is available is exactly the class of error this
+# project keeps paying for, and here it is provably wrong: incept `--ci gitlab` leaves the exported
+# kit-own `.github/workflows/ci.yml` in place, so "the GitHub workflow exists ⇒ --ci github" misreads
+# EVERY GitLab adopter. A wrong base does not lose data — it MISATTRIBUTES kit files to the adopter and
+# cries CONFLICT on files nobody touched, at the exact moment the tool must be trusted.
+#
+# So: record the FACT. These assertions are what make the stamp a fact rather than a hope.
+# ===========================================================================================
+stamp_case() {  # <label> <expect-ci> <expect-db> [extra incept args...]  — appends to $st
+  _lbl=$1; _xci=$2; _xdb=$3; shift 3
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: stamp fixture ($_lbl) — no tree"; st=1; return 0; }
+  if run_incept "$_t" "$@"; then
+    if [ "$(stamped_cfg "$_t" 'CI platform' "$_xci")" = 1 ]; then
+      echo "selftest PASS: [$_lbl] -> CLAUDE.md §3 stamps **CI platform**: $_xci"
+    else
+      echo "selftest FAIL: [$_lbl] did not stamp **CI platform**: $_xci in CLAUDE.md §3"; st=1
+    fi
+    if [ "$(stamped_cfg "$_t" 'DB archetype' "$_xdb")" = 1 ]; then
+      echo "selftest PASS: [$_lbl] -> CLAUDE.md §3 stamps **DB archetype**: $_xdb"
+    else
+      echo "selftest FAIL: [$_lbl] did not stamp **DB archetype**: $_xdb in CLAUDE.md §3"; st=1
+    fi
+    # The load-bearing half: the stamp REPLACES the bracketed choice-list. A stamp that ADDED a line and
+    # left the placeholder would satisfy the two asserts above, and kit-update's parser (which takes the
+    # FIRST match) would still read `[github` — i.e. UNDECLARED — and silently fall back to inference.
+    # Fail-CLOSED: each slot must exist EXACTLY ONCE and carry no bracket (a missing slot is not "clean").
+    if slot_filled_once "$_t" 'CI platform' && slot_filled_once "$_t" 'DB archetype'; then
+      echo "selftest PASS: [$_lbl] -> both slots exist EXACTLY ONCE and are FILLED (placeholder replaced, not duplicated)"
+    else
+      echo "selftest FAIL: [$_lbl] a §3 slot is missing, duplicated, or still bracketed — it reads as UNDECLARED"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept [$_lbl] exited non-zero (rc=$?)"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+}
+
+incept_stamp_tests() {  # appends to $st (0 = all good)
+  if ! make_pristine_export; then
+    echo "selftest FAIL: stamp fixture setup — could not build the pristine export tree (fail-closed)"; st=1; return 0
+  fi
+  # DEFAULTS first (incept runs ONCE per adopter — a regression in the default is unrecoverable for them):
+  # `--ci github` is run_incept's baseline, and the ts-node reference archetype is DB-backed.
+  stamp_case DEFAULT github db-backed
+  # The case the inference gets WRONG. --ci gitlab is only wired for typescript-node today (the stack
+  # run_incept uses), which is exactly why it is testable here.
+  stamp_case CI-GITLAB gitlab db-backed --ci gitlab
+  # --no-db: the other un-recorded input. Orthogonal to the CI platform, so the CI stamp must NOT move.
+  stamp_case NO-DB github no-db --no-db
+  rm -rf "$INCEPT_PRISTINE"; INCEPT_PRISTINE=''
+}
+
+# ===========================================================================================
+# T9 — SECURITY BLOCKER: `--stack` sed-injection -> arbitrary file write (CONTROL-PLANE). The stack
+# flows into a `#`-delimited `sedi` stamp in incept.sh, and kit-update REPLAYS incept with the stack
+# read back out of an adopter-controlled CLAUDE.md — so an unvalidated stack is an arbitrary-write sink
+# in a script every adopter runs. The reproduced PoC used sed's `w` to write a file at rc=0:
+#   incept ... --stack 'ts#;w ..PWNED_ARBITRARY_WRITE'   # => writes ..PWNED_ARBITRARY_WRITE, rc=0.
+#
+# Two defenses in depth, both asserted by LIVE incept runs (same shape as the --date suite):
+#   1. --stack is validated against the shipped profiles/ registry, reject-by-default, at PARSE time
+#      (before any file mutation) — exactly as --ci/--harness/--team are.
+#   2. esc() escapes the `#` delimiter, so even a #-bearing value that somehow reached the stamp cannot
+#      terminate the `s#..#..#` program (belt-and-braces; a direct esc() unit below).
+# ===========================================================================================
+incept_stack_tests() {  # appends to $st (0 = all good)
+  if ! make_pristine_export; then
+    echo "selftest FAIL: --stack fixture setup — could not build the pristine export tree (fail-closed)"; st=1; return 0
+  fi
+
+  # --- (a) THE REGRESSION THAT MATTERS: every VALID shipped stack still incepts unchanged. The valid
+  #         set is DERIVED from profiles/<stack>/ (one source of truth) — never a hardcoded list that
+  #         would drift out of sync with what the registry check accepts. run_incept passes a fixed
+  #         `--stack typescript-node`; the trailing `--stack $_sk` overrides it (last flag wins). ---
+  # `find`, not a `profiles/*/` glob: this script runs `set -euf`, so pathname expansion is OFF.
+  _stacks=$(find "$REPO_ROOT/profiles" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sed 's#.*/##' || true)
+  [ -n "$_stacks" ] || { echo "selftest FAIL: --stack (a) — no profiles/<stack>/ registry found (fail-closed)"; st=1; }
+  for _sk in $_stacks; do
+    _t=$(fresh_export_tree) || { echo "selftest FAIL: --stack fixture (a) — no tree"; st=1; return 0; }
+    _rc=0; run_incept "$_t" --stack "$_sk" || _rc=$?
+    if [ "$_rc" -eq 0 ] && [ "$(stamped_cfg "$_t" 'Stack profile' "$_sk")" = 1 ] && slot_filled_once "$_t" 'Stack profile'; then
+      echo "selftest PASS: valid --stack '$_sk' -> incepts (rc=0) and stamps §3 **Stack profile**: $_sk (registry accepts every shipped stack)"
+    else
+      echo "selftest FAIL: valid --stack '$_sk' -> rc=$_rc / stamp missing — the registry check REJECTED a legitimate stack (REGRESSION)"; st=1
+    fi
+    rm -rf "$_t"
+  done
+
+  # --- (b) THE BLOCKER: an unvalidated / injection stack must be REFUSED (exit 2), write NO file, and
+  #         leave the tree PRISTINE. `ts#;w <path>` is the reproduced sed-injection PoC (both an absolute
+  #         detect-path and the literal brief payload); 'nonesuch' is a plain unknown; '-oops' proves a
+  #         value starting with `-` is consumed as the stack VALUE (not mis-parsed as a flag) and then
+  #         rejected. ONE FRESH TREE PER CASE (a fell-open case would incept the shared tree and mask the
+  #         next), mirroring the --date suite. ---
+  _pwn="${TMPDIR:-/tmp}/kw-stack-pwn-$$"
+  for _bad in "ts#;w $_pwn" 'ts#;w ..PWNED_ARBITRARY_WRITE' 'nonesuch' '-oops'; do
+    rm -f "$_pwn"
+    _t=$(fresh_export_tree) || { echo "selftest FAIL: --stack fixture (b) — no tree"; st=1; return 0; }
+    _rc=0; run_incept "$_t" --stack "$_bad" || _rc=$?
+    if [ "$_rc" -eq 2 ]; then
+      echo "selftest PASS: --stack '$_bad' -> REFUSED (exit 2, reject-by-default vs the profiles/ registry)"
+    else
+      echo "selftest FAIL: --stack '$_bad' -> rc=$_rc (expected 2 — an unvalidated stack is a sed-injection / arbitrary-write sink)"; st=1
+    fi
+    if [ ! -e "$_t/ENGINEERING-PRINCIPLES.md" ] && [ ! -e "$_pwn" ] && [ ! -e "$_t/..PWNED_ARBITRARY_WRITE" ]; then
+      echo "selftest PASS: --stack '$_bad' left the tree PRISTINE and wrote NO file (no sed 'w' fired, no mutation)"
+    else
+      echo "selftest FAIL: --stack '$_bad' MUTATED the tree or wrote a file despite being invalid (ARBITRARY WRITE)"; st=1
+    fi
+    rm -rf "$_t"
+  done
+  rm -f "$_pwn"
+
+  # --- (c) esc() UNIT — the hardening that closes the `#`-delimited stamp sinks even if a #-bearing
+  #         value ever reached one. BEHAVIOURAL, not a source grep: pull the real esc() definition out
+  #         of incept.sh, feed a `w <path>` injection through it into a genuine `s#..#..#` program, and
+  #         assert (1) NO file is written and (2) the `#` survives as a literal (the payload round-trips).
+  #         With esc() escaping `#`, the delimiter can no longer terminate the program. ---
+  _epwn="${TMPDIR:-/tmp}/kw-esc-pwn-$$"; rm -f "$_epwn"
+  _escline=$(grep -E '^esc\(\) \{' "$REPO_ROOT/scripts/incept.sh" 2>/dev/null || true)
+  if [ -n "$_escline" ]; then
+    eval "$_escline"
+    _payload="a#;w $_epwn"
+    # `|| _res=...` + 2>/dev/null: an UN-hardened esc() lets the payload's `#` split the program so sed
+    # tries to open the `w` target and exits non-zero — that must fail this assertion CLEANLY, not abort
+    # the whole selftest under `set -e` (and the sed error must not leak to the log).
+    _res=$(printf 'X\n' | sed "s#X#$(esc "$_payload")#" 2>/dev/null) || _res='<sed-injection-fired>'
+    if [ ! -e "$_epwn" ] && [ "$_res" = "$_payload" ]; then
+      echo "selftest PASS: esc() escapes the # delimiter -> a 'w <path>' payload cannot terminate a s#..# program (no write; # survives literal)"
+    else
+      echo "selftest FAIL: esc() did NOT neutralize the # delimiter — the sed-injection sink is still open (wrote=$([ -e "$_epwn" ] && echo yes || echo no), res='$_res')"; st=1
+    fi
+    rm -f "$_epwn"
+  else
+    echo "selftest FAIL: esc() unit — could not locate the esc() definition in incept.sh (fail-closed)"; st=1
+  fi
+
+  # --- (d) SOURCE INVARIANT (mirrors the --date (d) lock): esc()'s escaped character class MUST include
+  #         the `#` delimiter. Deleting `#` from the class must break THIS line — the future-proofing that
+  #         keeps every `#`-delimited stamp sink closed even if the behavioural payload above is ever lost. ---
+  if grep -Eq "^esc\(\) \{.*sed 's/\[[^]]*#[^]]*\]" "$REPO_ROOT/scripts/incept.sh"; then
+    echo "selftest PASS: esc()'s escaped set includes the # delimiter (source lock — every #-delimited stamp is safe)"
+  else
+    echo "selftest FAIL: esc() no longer escapes # — the #-delimited stamp sinks are exposed"; st=1
+  fi
+
+  rm -rf "$INCEPT_PRISTINE"; INCEPT_PRISTINE=''
+}
+
+# ===========================================================================================
 # run_check TARGET MANIFEST — parse the manifest block-by-block, resolve each mechanism, print a
 # verdict + the honest ceiling. Sets RC (0 clean / 1 misconfigured-red / 2 setup error).
 # ===========================================================================================
@@ -246,6 +588,15 @@ selftest() {
   check_negative bad-secret-gitignore   secret-gate
   check_negative bad-provenance-ungated provenance-gated
   check_negative bad-agent-trace        agent-trace-emit
+
+  # --- P1.2 (T1b): the `--date` reproducible-stamp seam, on LIVE incept runs. Skipped inside the
+  #     neutered inner run (KW3_INNER): that run exists to prove `predicate_holds` is load-bearing, and
+  #     these live incepts are orthogonal to it — running them twice would only cost CI time. ---
+  if [ -z "${KW3_INNER:-}" ]; then
+    incept_date_tests
+    incept_stamp_tests
+    incept_stack_tests
+  fi
 
   # --- ★ LOCK SELF-NEGATIVE (mandatory): neutralize the detector (predicate_holds -> always-true) and
   #     assert its --selftest FAILS. A dead/always-green detector must NOT pass — else the whole proof

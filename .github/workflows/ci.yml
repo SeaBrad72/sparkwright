@@ -150,6 +150,34 @@ jobs:
         run: sh conformance/kit-base.sh
       - name: kit-base self-test (incl. the adopter-file data-loss guard)
         run: sh conformance/kit-base.sh --selftest
+      # P1.2/T3 — THE IDENTITY PROPERTY: incept_old(kit-base) == an unmodified adopter's HEAD, EXACTLY.
+      # The load-bearing proof of kit-update's reconstruction: a missed rename, an unpinned date, a wrong
+      # prune or a missing stamp all fail it LOUDLY, and it cannot be satisfied by a dead code path (an
+      # updater that does nothing yields an EMPTY tree, not an EQUAL one). Carries its own three negatives
+      # (no --date / wrong stack / no incept at all), so the green is proven non-vacuous in the same run.
+      - name: kit-update identity — incept_old(kit-base) == the adopter's HEAD (+ non-vacuity negatives)
+        run: sh conformance/kit-update-identity.sh
+      # P1.2/T4 — THE MERGE ITSELF: T3 proved BASE well-posed; this proves the OTHER TWO INPUTS and the
+      # merge they feed. THEIRS = incept_new(adopter-export(new release)), built by RUNNING the NEW
+      # RELEASE'S OWN exporter + incept (never a rename table), so incept's transformation CANCELS between
+      # the sides and only genuine kit changes survive. It carries its own anti-vacuity battery, because
+      # the failure this whole capability could hide is that an updater which computes NOTHING reports
+      # "0 changes" — indistinguishable from the happy no-op: the offered set must be NON-EMPTY for a
+      # release that genuinely changed (V1), the no-op case is asserted SEPARATELY (V2), the three trees'
+      # entry counts must be non-zero (V3), and a both-sides edit must surface as a CONFLICT, never as a
+      # silently-resolved `offered` (V4). It also asserts the tool NEVER writes the adopter's worktree/refs.
+      # Same KIT-ONLY rationale as its two siblings above: NOT registered in conformance/verify.sh.
+      - name: kit-update merge — THEIRS + the 3-way merge + a non-vacuous, non-mutating report
+        run: sh conformance/kit-update-merge.sh
+      # P1.2/T7 — SURFACING. An updater nobody is PROMPTED to run is the kit's own KW21 failure (built,
+      # conformance-checked, invisible in practice). kit-current answers "is the kit you ADOPTED behind
+      # the current release?" and is composed into scripts/doctor.sh as an ADVISORY dimension — the
+      # adopter's decision point. NOT a PR gate and NOT in verify.sh: being behind is a legitimate choice,
+      # so a gate would cry wolf on the happy path of every adopter (same call as mirror-current.sh).
+      # Only the --selftest runs here: the live check is N/A on the kit's own repo (it has no kit-base —
+      # the kit does not adopt itself), and the selftest proves exactly that, on THIS tree, offline.
+      - name: kit-current self-test (BEHIND is told · up-to-date is NOT nagged · N/A-with-reason)
+        run: sh conformance/kit-current.sh --selftest
       - name: Guard single-source-of-truth (all consumers source the core)
         run: sh conformance/guard-core-sourced.sh
       - name: kit-guard CLI self-test (deny battery through the CLI)

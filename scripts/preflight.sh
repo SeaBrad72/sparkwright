@@ -28,6 +28,73 @@ recommend() {  # recommend <tool> <why+hint> — warns, never fails the run
   fi
 }
 
+# --- T2: git version floor for `git merge-tree --write-tree` -------------------------------
+# kit-update prefers `git merge-tree --write-tree` — a NON-mutating 3-way merge (the adopter's
+# worktree is never touched). That subcommand landed in git 2.38 (2022); Ubuntu 20.04 still ships
+# git 2.25. DETECT AND DEGRADE: below the floor we warn and NAME the escape (the temporary-worktree
+# fallback, which is also non-mutating) — we never hard-fail, and we never silently fail open.
+GIT_FLOOR_MAJOR=2
+GIT_FLOOR_MINOR=38
+
+git_version_parts() {  # <version line> -> "MAJOR MINOR" on stdout; rc 1 when unparseable
+  # Takes the first whitespace-separated token starting with a digit, so it survives every real
+  # shape: "git version 2.39.5 (Apple Git-154)", "git version 2.25.1", "git version 2.41.0.windows.3".
+  #
+  # `set -f` around the split: unquoted $1 does word-splitting (which we WANT) *and* pathname expansion
+  # (which we do not). A '*' anywhere in the line would glob against the CWD, so a file named '9.9.9'
+  # would BE the version — the floor reading the filesystem instead of git. Quoting $1 is not the fix
+  # (it would collapse the line to a single word and parse nothing); disabling globbing is. No `return`
+  # inside the window, so globbing is always restored.
+  _tok=""
+  set -f
+  for _w in $1; do
+    case "$_w" in [0-9]*) _tok=$_w; break ;; esac
+  done
+  set +f
+  [ -n "$_tok" ] || return 1
+  _maj=${_tok%%.*}
+  case "$_tok" in *.*) _rest=${_tok#*.} ;; *) _rest=0 ;; esac
+  _min=${_rest%%.*}
+  _min=${_min%%[!0-9]*}   # tolerate a pre-release tail (2.39-rc1 -> 39)
+  case "$_maj" in ''|*[!0-9]*) return 1 ;; esac
+  case "$_min" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s %s\n' "$_maj" "$_min"
+}
+
+git_meets_floor() {  # <major> <minor> -> 0 iff >= the floor. NUMERIC compare, deliberately:
+  # `[ ]`'s -gt/-ge are integer operators, so 9 -lt 38 is TRUE. A lexical compare would say
+  # "2.9" > "2.38" and wave an ancient git through — a decorative floor. This is that bug's lock.
+  if [ "$1" -ne "$GIT_FLOOR_MAJOR" ]; then [ "$1" -gt "$GIT_FLOOR_MAJOR" ]; return $?; fi
+  [ "$2" -ge "$GIT_FLOOR_MINOR" ]
+}
+
+check_git_capability() {  # advisory: does the installed git support `merge-tree --write-tree`?
+  # FLAG-NOT-ENV: the PREFLIGHT_GIT_VERSION_CMD injection seam is honored ONLY when a seam flag was
+  # passed (--selftest, or --selftest-e2e for the wired end-to-end proof). In a real adopter run the
+  # ambient environment cannot tell preflight what version of git they have. Advisory-only, so no
+  # privilege boundary is crossed — but a check the environment can redirect is not a check, and this
+  # is the same rule `incept --date` honors (a flag, never an ambient INCEPT_DATE).
+  _vcmd="git --version"
+  [ "${SEAMS:-0}" -eq 1 ] && _vcmd="${PREFLIGHT_GIT_VERSION_CMD:-git --version}"
+  # shellcheck disable=SC2086  # deliberate word-split: the seam supplies a command line, not one word
+  _ver=$(${_vcmd} 2>/dev/null) || _ver=""
+  if [ -z "$_ver" ]; then
+    echo "  skip git version — could not run 'git --version' (cannot detect merge-tree support)"; return 0
+  fi
+  if ! _parts=$(git_version_parts "$_ver"); then
+    echo "  skip git version — unrecognised version string: $_ver"; return 0
+  fi
+  _gmaj=${_parts% *}; _gmin=${_parts#* }
+  if git_meets_floor "$_gmaj" "$_gmin"; then
+    echo "  ok   git $_gmaj.$_gmin — 'git merge-tree --write-tree' available (floor $GIT_FLOOR_MAJOR.$GIT_FLOOR_MINOR)"
+  else
+    echo "  warn git $_gmaj.$_gmin is below the $GIT_FLOOR_MAJOR.$GIT_FLOOR_MINOR floor — 'git merge-tree --write-tree' is unavailable."
+    echo "       kit-update will use its temporary-worktree fallback instead of merge-tree. The fallback is"
+    echo "       still non-mutating (your worktree is never touched); upgrading git only makes it faster."
+    rec=1
+  fi
+}
+
 stack_tools() {  # print "tool|hint" lines for a stack; return 1 if unknown
   case "$1" in
     typescript-node) printf 'node|nodejs.org or nvm\nnpm|ships with Node\n' ;;
@@ -135,11 +202,18 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
   fi
 }
 
-STACK=""; SELFTEST=0; ALLOW_NESTED=0
+# SEAMS: are the test injection seams (PREFLIGHT_GIT_VERSION_CMD) live? Only an explicit FLAG turns them
+# on — never the ambient environment. Default 0 = a real adopter run reports on the real machine.
+STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --stack) [ $# -ge 2 ] || { echo "preflight: --stack requires a value" >&2; exit 2; }; STACK=$2; shift 2 ;;
-    --selftest) SELFTEST=1; shift ;;
+    --selftest) SELFTEST=1; SEAMS=1; shift ;;
+    # --selftest-e2e: internal. Runs the REAL body with the injection seams live, so --selftest can prove
+    # the git-floor check is WIRED end-to-end (a defined-but-uncalled check is decorative) without an
+    # ambient env var being able to do the same thing in an adopter's shell. Not in --help: it is a test
+    # seam, not a user-facing option, and the flag IS the authorization.
+    --selftest-e2e) SEAMS=1; shift ;;
     --allow-nested) ALLOW_NESTED=1; shift ;;
     -h|--help) echo "usage: preflight.sh [--stack <name>] [--selftest] [--allow-nested]"; exit 0 ;;
     *) echo "preflight: unknown arg: $1" >&2; exit 2 ;;
@@ -200,6 +274,109 @@ if [ "$SELFTEST" -eq 1 ]; then
   miss=0; ACTIONLINT_VALID_CMD='false' check_workflows_valid >/dev/null 2>&1
   if [ "$miss" -eq 0 ]; then echo "PASS: workflow warn leaves miss untouched"; else echo "FAIL: workflow warn set miss"; fail=1; fi
 
+  # — T2: git version floor + `git merge-tree --write-tree` capability ————————————————
+  # The floor exists because kit-update prefers `git merge-tree --write-tree` (git >= 2.38, 2022).
+  # Ubuntu 20.04 ships git 2.25. DETECT AND DEGRADE: warn (never hard-fail) and NAME the escape.
+
+  # THE NUMERIC-COMPARE PROOF (the whole reason this task exists): as strings "2.9" > "2.38".
+  # Numerically 2.9 < 2.38. A string-naive floor would wave 2.9 through and be decorative.
+  if git_meets_floor 2 38 2>/dev/null; then echo "PASS: 2.38 meets the 2.38 floor (boundary, inclusive)"; else echo "FAIL: 2.38 rejected by its own floor"; fail=1; fi
+  if git_meets_floor 2 9 2>/dev/null; then echo "FAIL: 2.9 accepted — STRING-NAIVE compare ('2.9' > '2.38' lexically)"; fail=1; else echo "PASS: 2.9 rejected (numeric compare: 9 < 38)"; fi
+  if git_meets_floor 2 39 2>/dev/null; then echo "PASS: 2.39 meets the floor"; else echo "FAIL: 2.39 rejected"; fail=1; fi
+  if git_meets_floor 1 99 2>/dev/null; then echo "FAIL: 1.99 accepted (major below floor)"; fail=1; else echo "PASS: 1.99 rejected (major 1 < 2)"; fi
+  if git_meets_floor 3 0 2>/dev/null; then echo "PASS: 3.0 meets the floor (major above)"; else echo "FAIL: 3.0 rejected (major above floor)"; fail=1; fi
+
+  # the parser: real-world `git --version` shapes -> "MAJOR MINOR"
+  out=$(git_version_parts "git version 2.39.5 (Apple Git-154)" 2>&1) || out="<git_version_parts absent/errored>"
+  case "$out" in "2 39") echo "PASS: parses 'git version 2.39.5 (Apple Git-154)' -> 2 39";; *) echo "FAIL: Apple git line parsed as '$out'"; fail=1;; esac
+  out=$(git_version_parts "git version 2.25.1" 2>&1) || out="<absent>"
+  case "$out" in "2 25") echo "PASS: parses 'git version 2.25.1' -> 2 25";; *) echo "FAIL: 2.25.1 parsed as '$out'"; fail=1;; esac
+  out=$(git_version_parts "git version 2.9.5" 2>&1) || out="<absent>"
+  case "$out" in "2 9") echo "PASS: parses 'git version 2.9.5' -> 2 9";; *) echo "FAIL: 2.9.5 parsed as '$out'"; fail=1;; esac
+  out=$(git_version_parts "git version 2.41.0.windows.3" 2>&1) || out="<absent>"
+  case "$out" in "2 41") echo "PASS: parses the Windows build string -> 2 41";; *) echo "FAIL: windows line parsed as '$out'"; fail=1;; esac
+  if git_version_parts "git version banana" >/dev/null 2>&1; then echo "FAIL: unparseable version accepted"; fail=1; else echo "PASS: unparseable version rejected (rc 1)"; fi
+
+  # the check: below the floor -> WARN naming the version AND the fallback (the escape)
+  out=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.25.1' check_git_capability 2>&1) || out="<check_git_capability absent/errored>"
+  case "$out" in *warn*2.25*) echo "PASS: old git warns and names the version found";; *) echo "FAIL: old git did not warn with its version ($out)"; fail=1;; esac
+  case "$out" in *fallback*) echo "PASS: old-git warning names the temporary-worktree fallback (the escape)";; *) echo "FAIL: warning does not name the fallback ($out)"; fail=1;; esac
+  case "$out" in *non-mutating*) echo "PASS: old-git warning states the fallback is still non-mutating";; *) echo "FAIL: warning does not state non-mutating ($out)"; fail=1;; esac
+
+  # 2.9 is the trap case end-to-end, not just in the comparator
+  out=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.9.5' check_git_capability 2>&1) || out="<absent>"
+  case "$out" in *warn*2.9*fallback*) echo "PASS: git 2.9.5 warns (a string compare would have passed it)";; *) echo "FAIL: git 2.9.5 not warned ($out)"; fail=1;; esac
+
+  # at/above the floor -> ok, no warning
+  out=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.38.0' check_git_capability 2>&1) || out="<absent>"
+  case "$out" in *ok*2.38*) echo "PASS: git 2.38.0 ok (boundary)";; *) echo "FAIL: git 2.38.0 not ok ($out)"; fail=1;; esac
+  out=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.48.1' check_git_capability 2>&1) || out="<absent>"
+  case "$out" in *ok*merge-tree*) echo "PASS: modern git ok and names merge-tree";; *) echo "FAIL: modern git not ok ($out)"; fail=1;; esac
+
+  # degrade, never crash: unparseable / absent git -> skip
+  out=$(PREFLIGHT_GIT_VERSION_CMD='echo git version banana' check_git_capability 2>&1) || out="<absent>"
+  case "$out" in *skip*) echo "PASS: unparseable git version degrades to skip";; *) echo "FAIL: unparseable version not skipped ($out)"; fail=1;; esac
+  out=$(PREFLIGHT_GIT_VERSION_CMD='false' check_git_capability 2>&1) || out="<absent>"
+  case "$out" in *skip*) echo "PASS: unavailable git degrades to skip";; *) echo "FAIL: absent git not skipped ($out)"; fail=1;; esac
+
+  # WARN-only invariant: the floor is advisory — it must NEVER set miss (i.e. never fail the run)
+  miss=0; PREFLIGHT_GIT_VERSION_CMD='echo git version 2.25.1' check_git_capability >/dev/null 2>&1 || true
+  if [ "$miss" -eq 0 ]; then echo "PASS: git-floor warn leaves miss untouched"; else echo "FAIL: git-floor warn set miss (hard-failed old git)"; fail=1; fi
+  miss=0
+
+  # NO AMBIENT SPOOF (flag-not-env): in a REAL run — no --selftest, no --selftest-e2e — an ambient
+  # PREFLIGHT_GIT_VERSION_CMD must be IGNORED. The seam exists for the tests; if the environment alone
+  # can redirect it, a stale/hostile export in an adopter's shell rewrites what preflight reports about
+  # their machine. Advisory-only, so no privilege boundary is crossed — but it is the same flag-not-env
+  # rule --date honors (an ambient INCEPT_DATE was rejected for exactly this reason), and a check that
+  # can be told what to see is not a check.
+  #
+  # MARKER, NOT VERSION-STRING: the seam command TOUCHES a file, and we assert the file was not created.
+  # Keying on the OUTPUT instead (`case "$spoof" in *"git 2.25"*)`) reads the HOST's git: a machine whose
+  # real git is 2.25.x — Ubuntu 20.04, the exact platform this floor was written for — legitimately prints
+  # `warn git 2.25 ...`, and the assertion would call its own honest report an attack. CI (git 2.4x) would
+  # never see it. A false-RED generator is the same defect class as a vacuous green, inverted. So assert
+  # the CLAIM ("did the seam command RUN?") rather than a proxy the environment is allowed to satisfy.
+  _sd=$(mktemp -d); _marker="$_sd/ran"
+  printf '#!/bin/sh\ntouch "%s"\necho git version 2.25.1\n' "$_marker" > "$_sd/fakegit"
+  chmod +x "$_sd/fakegit"
+  PREFLIGHT_GIT_VERSION_CMD="$_sd/fakegit" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" >/dev/null 2>&1 || true
+  if [ -e "$_marker" ]; then
+    echo "FAIL: an AMBIENT PREFLIGHT_GIT_VERSION_CMD was honored in a real run (env, not flag)"; fail=1
+  else
+    echo "PASS: a real run IGNORES an ambient PREFLIGHT_GIT_VERSION_CMD (the seam needs an explicit flag)"
+  fi
+  rm -rf "$_sd"
+
+  # NO GLOB: the version line is word-SPLIT, never pathname-expanded. `for _w in $1` unquoted splits AND
+  # globs; a '*' in the string would expand against the CWD, so a file named e.g. '9.9.9' sitting in the
+  # working directory becomes the "version" — a floor that reads the filesystem instead of git. (Quoting
+  # $1 is not the fix: it would collapse the line to one word and parse nothing. Disabling globbing is.)
+  _gt=$(mktemp -d)
+  : > "$_gt/9.9.9"
+  out=$( cd "$_gt" && git_version_parts "git version * 2.25.1" 2>&1 ) || out="<absent>"
+  case "$out" in
+    "2 25") echo "PASS: a '*' in the version line does NOT glob against the cwd (2 25, not the filename)" ;;
+    *) echo "FAIL: the version line was GLOB-expanded — parsed '$out' from the filesystem"; fail=1 ;;
+  esac
+  rm -rf "$_gt"
+
+  # WIRED end-to-end: a REAL preflight run (not just the unit seam) must name the git version and,
+  # below the floor, the fallback — and must not change the run's verdict. A defined-but-uncalled check
+  # is decorative. `--selftest-e2e` runs the REAL body with the injection seams live (the flag IS the
+  # authorization — see the no-ambient-spoof assert above).
+  e2e_rc=0
+  e2e=$(PREFLIGHT_GIT_VERSION_CMD='echo git version 2.25.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e 2>&1) || e2e_rc=$?
+  case "$e2e" in *warn*2.25*fallback*) echo "PASS: real preflight run names the git version + the fallback";; *) echo "FAIL: real run did not surface the git floor (rc=$e2e_rc)"; fail=1;; esac
+  # DIFFERENTIAL, not absolute: `[ "$e2e_rc" -eq 0 ]` would assert a whole preflight run exits 0, which
+  # folds in the AMBIENT environment (the CP-4 non-root refusal, a missing jq) — it reddens for reasons
+  # that have nothing to do with the git floor. A false-RED generator is the same defect class as a
+  # vacuous green, inverted. The claim is "the floor is ADVISORY", so assert exactly that: an old git
+  # does not CHANGE preflight's exit code, whatever that code is in this environment.
+  new_rc=0
+  PREFLIGHT_GIT_VERSION_CMD='echo git version 2.48.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e >/dev/null 2>&1 || new_rc=$?
+  if [ "$e2e_rc" -eq "$new_rc" ]; then echo "PASS: the git floor does not change preflight's exit code (advisory, not blocking)"; else echo "FAIL: old git CHANGED the exit code (old=$e2e_rc modern=$new_rc)"; fail=1; fi
+
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 
@@ -208,6 +385,7 @@ echo "Universal prerequisites:"
 need jq  "brew install jq | apt-get install jq | dnf install jq"
 need git "git-scm.com/downloads"
 need sh  "any POSIX shell"
+check_git_capability
 
 echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
 recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"
