@@ -196,7 +196,9 @@ conformance/mirror-current.sh
 conformance/mirror-tag-protection.sh
 conformance/mode-enforcement-blind.sh
 conformance/model-map-binding.sh
+conformance/model-tiering-legible.sh
 conformance/model-tiering-plan-wired.sh
+conformance/model-tiering-value.sh
 conformance/model-tiering.sh
 conformance/named-adapters.sh
 conformance/non-vacuity-wired.sh
@@ -660,6 +662,7 @@ scripts/runaway-guard.sh
 scripts/sod-check.sh
 scripts/sparkwright
 scripts/tier-advice.sh
+scripts/tier-value.sh
 skills/build/SKILL.md
 skills/continuous-discovery/SKILL.md
 skills/debugging/SKILL.md

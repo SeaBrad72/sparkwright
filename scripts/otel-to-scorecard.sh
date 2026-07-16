@@ -36,6 +36,7 @@ map_trace() {
           end: (.end_unix_nano | tostring),
           outcome: $run,
           "review.rounds": ((.attributes["review.rounds"] // "0") | tonumber? // 0),
+          "model.tier": (.attributes["model.tier"] // "unknown"),
           steps: [ { outcome: (if $denied then "denied" else $run end),
                      retries: ((.attributes.retries // "0") | tonumber? // 0) } ]
         }

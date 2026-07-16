@@ -121,6 +121,12 @@ jobs:
         run: sh conformance/model-tiering-plan-wired.sh --selftest
       - name: "model-tier-bound (map guard-locked + claude-code dispatch reads map/passes model: — Slice 2b)"
         run: sh conformance/model-map-binding.sh --selftest
+      - name: "model-tiering-legible (tier stamped on the trace -> scorecard record — Slice 3)"
+        run: sh conformance/model-tiering-legible.sh --selftest
+      - name: "model-tiering-value (relative deep-equiv value model, builder vs reassembly tax — Slice 3)"
+        run: sh conformance/model-tiering-value.sh --selftest
+      - name: "tier-value analyzer selftest (builder saving, reassembly tax, quality-proxy, verdict — Slice 3)"
+        run: sh scripts/tier-value.sh --selftest
       - name: Agent-boundary CI gate self-test (§13 — ratify control-plane diffs)
         run: sh conformance/agent-boundary.sh --selftest
       - name: Harness-adapter conformance self-test (boundary-contract fixtures)

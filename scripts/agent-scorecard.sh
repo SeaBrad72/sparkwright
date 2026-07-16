@@ -53,6 +53,7 @@ SCORECARD_JQ='
   def evalmean($a): ($a | [.[]["eval.score"] | select(type=="number")] | if length==0 then null else add/length end);
   def reviews($a): ($a | [.[]."review.rounds" | select(type=="number")]
                    | if length==0 then null else (add/length) end);
+  def tiers($a): ($a | [.[]["model.tier"] | select(. != null and . != "unknown")] | unique);
   def score($window; $minruns; $margin; $costmargin):
     (sort_by(.start) | (if length > $window then .[-$window:] else . end)) as $runs
     | ($runs | length) as $n
@@ -64,6 +65,7 @@ SCORECARD_JQ='
         metrics: { denial_rate: denial($runs), error_blocked_rate: errrate($runs),
                    retry_rate: retry($runs), review_rounds_mean: reviews($runs),
                    cost_per_run: costmean($runs), eval_score_mean: evalmean($runs),
+                   model_tiers: tiers($runs),
                    gate_skip_rate: "unknown" },
         baseline: {denial: denial($base), err: errrate($base), cost: costmean($base), eval: evalmean($base)},
         recent:   {denial: denial($rec), err: errrate($rec), cost: costmean($rec), eval: evalmean($rec)}

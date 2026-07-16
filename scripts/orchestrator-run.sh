@@ -48,9 +48,14 @@ run() {
     env -u OTEL_TRACE_FILE -u OTEL_TRACE_ID -u KIT_ESCALATION_DIR -u KIT_RUN_DIR "$ROLE_RUNNER" "$slice" "$wt" >/dev/null
     e_end=$(now)
     rc=0; sh "$here/runaway-guard.sh" step --tokens "${STEP_TOKENS:-1000}" --agents 1 >/dev/null 2>&1 || rc=$?
+    # Legibility (Slice 3): resolve this builder's MODEL tier fail-safe (any error -> deep, the safe
+    # high floor) and stamp it on the span so otel-to-scorecard.sh -> the scorecard can render it.
+    # tokens seeds the value-analysis cost axis in the demo; a real Workflow run overwrites with actuals.
+    mt=$(sh "$here/model-tier.sh" resolve --role engineer --change-class ordinary 2>/dev/null || echo deep)
     case "$rc" in
       0) span --trace "$tid" --parent "$root" --name "agent:engineer" --status OK \
-              --start "$e_start" --end "$e_end" --attr "agent.id=engineer" --attr "slice=$slice" >/dev/null
+              --start "$e_start" --end "$e_end" --attr "agent.id=engineer" --attr "slice=$slice" \
+              --attr "model.tier=$mt" --attr "tokens=${STEP_TOKENS:-1000}" >/dev/null
          built="$built $slice" ;;
       1) # guard STOP -> governed breach: ESCALATE to a human (E3-escalation), don't bare-halt.
          eid="$tid.$slice"
