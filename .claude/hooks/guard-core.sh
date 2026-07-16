@@ -49,6 +49,9 @@ is_control_plane_path() {
     scripts/sod-check.sh|*/scripts/sod-check.sh|\
     .kit/budget.conf|*/.kit/budget.conf|\
     .kit/roster.conf|*/.kit/roster.conf|\
+    .kit/model-tiers.conf|*/.kit/model-tiers.conf|\
+    .kit/model-map.conf|*/.kit/model-map.conf|\
+    scripts/model-tier.sh|*/scripts/model-tier.sh|\
     scripts/runaway-guard.sh|*/scripts/runaway-guard.sh|\
     scripts/orchestrator-run.sh|*/scripts/orchestrator-run.sh|\
     scripts/release-tag.sh|*/scripts/release-tag.sh|\
@@ -516,7 +519,7 @@ _cp8b_git_write_denied() {
 _cp8b_scan_denied() {
   _ss=$1
   _pathhit=1
-  if printf '%s' "$_ss" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
+  if printf '%s' "$_ss" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
     _pathhit=0
   else
     # bare control-plane DIRECTORY token (the D1 gap): `bash -c "mv conformance /tmp"`.
@@ -533,7 +536,7 @@ _cp8b_scan_denied() {
   [ "$_pathhit" = 0 ] || return 1
   if printf '%s' "$_ss" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
      || printf '%s' "$_ss" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
-     || printf '%s' "$_ss" | grep -Eq '>[[:space:]]*[^[:space:]]*(\.claude|\.github/workflows|CODEOWNERS|\.git|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
+     || printf '%s' "$_ss" | grep -Eq '>[[:space:]]*[^[:space:]]*(\.claude|\.github/workflows|CODEOWNERS|\.git|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
     return 0
   fi
   return 1

@@ -15,6 +15,8 @@
 .gitignore
 .kit-manifest
 .kit/budget.conf
+.kit/model-map.conf
+.kit/model-tiers.conf
 .kit/roster.conf
 AGENTS.md
 CLAUDE.md
@@ -193,6 +195,9 @@ conformance/metrics-endpoint-wired.sh
 conformance/mirror-current.sh
 conformance/mirror-tag-protection.sh
 conformance/mode-enforcement-blind.sh
+conformance/model-map-binding.sh
+conformance/model-tiering-plan-wired.sh
+conformance/model-tiering.sh
 conformance/named-adapters.sh
 conformance/non-vacuity-wired.sh
 conformance/non-vacuity.sh
@@ -253,6 +258,7 @@ docs/ADR-000-EXAMPLE.md
 docs/STACK-SELECTION.md
 docs/adoption/DEPLOYMENT-ENVIRONMENT.md
 docs/adoption/brownfield.md
+docs/adoption/model-tier-binding.md
 docs/adoption/neutrality-by-construction.md
 docs/adoption/skill-rosters.md
 docs/adoption/vc-hosts.md
@@ -638,6 +644,7 @@ scripts/incept.sh
 scripts/kit-guard
 scripts/kit-update.sh
 scripts/license-check.sh
+scripts/model-tier.sh
 scripts/new-adapter.sh
 scripts/new-profile.sh
 scripts/orchestrator-run.sh

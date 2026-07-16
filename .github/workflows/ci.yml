@@ -113,6 +113,14 @@ jobs:
         run: test -f conformance/15-factor-checklist.md
       - name: Agent-autonomy guard conformance (§13)
         run: sh conformance/agent-autonomy.sh
+      - name: model-tiering resolver selftest (pins/floors/fail-closed teeth — KW20b)
+        run: sh scripts/model-tier.sh --selftest
+      - name: model-tiering claim (resolver enforces + guard-locks the policy)
+        run: sh conformance/model-tiering.sh --selftest
+      - name: model-tiering plan-wired (Slice 2a discipline wired into TCC + plan + orchestrator)
+        run: sh conformance/model-tiering-plan-wired.sh --selftest
+      - name: "model-tier-bound (map guard-locked + claude-code dispatch reads map/passes model: — Slice 2b)"
+        run: sh conformance/model-map-binding.sh --selftest
       - name: Agent-boundary CI gate self-test (§13 — ratify control-plane diffs)
         run: sh conformance/agent-boundary.sh --selftest
       - name: Harness-adapter conformance self-test (boundary-contract fixtures)

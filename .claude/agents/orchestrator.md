@@ -15,6 +15,15 @@ back with a fresh Engineer on NEEDS-FIXES → emit the run trace via `scripts/or
 Never set `kit.denied` from agent-supplied data — denial is read from the guard's exit code only.
 Never review-and-merge your own work.
 
+## Native model binding (claude-code)
+**Native model binding (claude-code).** When dispatching a Builder/Explorer, read the step's
+Task-Context-Contract **Model tier** field (`model_tier`), resolve the abstract tier through
+**`.kit/model-map.conf`** (`deep`/`fast`/`light` → model id), and pass the result as the **`model:`**
+parameter to the `Task`/`Workflow` spawn. If `.kit/model-map.conf` is absent or maps every tier to a
+single model, dispatch normally — the tier is advisory (graceful degradation). **Honest ceiling:**
+passing the model parameter declares the dispatch intent; whether the harness actually ran the subagent on that
+model is NATIVE and un-gateable — no conformance check proves it.
+
 ## Discovery (start here)
 Before convening the cast for a phase, consult `skills/using-skills/SKILL.md` (the kit's own discovery
 keystone -- read + follow it), the kit's `using-superpowers`-equivalent, to find the right skill: check for a

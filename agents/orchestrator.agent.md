@@ -107,6 +107,13 @@ authored in a **dev-clone** (the guard stays armed on the real repo), never sile
 wears*, not a separate seat (agents-vs-skills rule); build composes tdd (the executor builds each task
 test-first).
 
+**Model-tiering at dispatch (KW20b).** Before dispatching each Builder/Explorer, resolve its model tier via
+`scripts/model-tier.sh resolve` (role + derived change-class), **surface the per-task tier with rationale in
+the Build Plan for human approval** (Decision 6 — the Orchestrator decides, the human ratifies at plan
+approval), and dispatch at the approved tier via the harness adapter (Slice 2b will add `.kit/model-map.conf`
++ the binding). Pinned seats stay `deep` and the resolver's floors are non-negotiable; **declared ≠ bound** (the
+adapter's honest ceiling — the kit never proves the harness honored the tier).
+
 ## Verification (confabulation-proofing)
 When integrating the returned diffs, follow the kit's own verification skill — `skills/verification/SKILL.md`
 (read + follow it), replacing superpowers verification-before-completion. **A subagent can report "done" for

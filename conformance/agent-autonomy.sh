@@ -280,6 +280,28 @@ assert_deny "sed -i roster.conf"   '{"tool_name":"Bash","tool_input":{"command":
 # must still ALLOW reading the dial config (legitimate; reads of control-plane are permitted)
 assert_allow "read roster.conf"    '{"tool_name":"Read","tool_input":{"file_path":".kit/roster.conf"}}'
 
+# --- KW20(b): agent CANNOT rewrite the model-tier policy/resolver (control-plane integrity) ---
+# Write/Edit tool path -> guard_check_path -> is_control_plane_path -> DENY
+assert_deny "Write model-tiers.conf"    '{"tool_name":"Write","tool_input":{"file_path":".kit/model-tiers.conf","content":"PIN="}}'
+assert_deny "Edit model-tiers.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/model-tiers.conf","old_string":"PIN=orchestrator,reviewer,security,architect,plan,verification","new_string":"PIN="}}'
+assert_deny "Write model-tier.sh"       '{"tool_name":"Write","tool_input":{"file_path":"scripts/model-tier.sh","content":"echo deep"}}'
+# Shell redirect path -> guard_check_command -> redirect-target matcher -> DENY
+assert_deny "redirect model-tiers.conf" '{"tool_name":"Bash","tool_input":{"command":"echo PIN= > .kit/model-tiers.conf"}}'
+assert_deny "redirect model-tier.sh"    '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/model-tier.sh"}}'
+# Shell in-place edit -> guard_check_command -> command-scan (sed not read-only) -> DENY
+assert_deny "sed -i model-tiers.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/deep/fast/ .kit/model-tiers.conf"}}'
+assert_deny "sed -i model-tier.sh"      '{"tool_name":"Bash","tool_input":{"command":"sed -i s/deep/fast/ scripts/model-tier.sh"}}'
+# must still ALLOW reading + running (reads of control-plane are permitted; running is not a mutation)
+assert_allow "read model-tiers.conf"    '{"tool_name":"Read","tool_input":{"file_path":".kit/model-tiers.conf"}}'
+assert_allow "run model-tier.sh"        '{"tool_name":"Bash","tool_input":{"command":"sh scripts/model-tier.sh --selftest"}}'
+
+# --- KW20(b) Slice 2b: agent CANNOT remap the tier->model binding (.kit/model-map.conf is control-plane) ---
+assert_deny  "Write model-map.conf"    '{"tool_name":"Write","tool_input":{"file_path":".kit/model-map.conf","content":"deep=haiku"}}'
+assert_deny  "Edit model-map.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/model-map.conf","old_string":"deep=opus","new_string":"deep=haiku"}}'
+assert_deny  "redirect model-map.conf" '{"tool_name":"Bash","tool_input":{"command":"echo deep=haiku > .kit/model-map.conf"}}'
+assert_deny  "sed -i model-map.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/opus/haiku/ .kit/model-map.conf"}}'
+assert_allow "read model-map.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/model-map.conf"}}'
+
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
 assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Dev"}}'
 assert_allow "git checkout src"     '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- src/app.ts"}}'

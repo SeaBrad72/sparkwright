@@ -29,6 +29,14 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 ### Writes (declared outputs — and NOTHING else)
 - <exact path(s) this step may create or modify>
 
+### Model tier (dispatch)
+- **<deep|fast|light>** — the abstract MODEL tier this step is dispatched at, resolved by
+  `scripts/model-tier.sh resolve --role <role> --change-class <c>` (pins + floors enforced there). The
+  Orchestrator surfaces this tier **with a one-line rationale in the Build Plan** for human approval (the
+  ratification point); a harness adapter binds it (Slice 2b). **Declared ≠ bound** — this records the tier
+  the step was dispatched at, not proof the harness honored it. Pinned seats
+  (orchestrator/reviewer/security/architect/plan/verification) are always `deep`; absent ⇒ `deep` (fail-safe).
+
 ### Budget (STOP at)
 - **<token/$ ceiling>** — stop + escalate at the ceiling; do not silently exceed it. (A declared budget is a contract, not a mechanical stop — the platform spend-cap is the hard enforcement; `docs/operations/cost-governance.md`.)
 
@@ -74,4 +82,4 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 
 ## One-line default (when a full TCC is not required)
 
-> TCC: obey `<one clause>`; transform `<one input>`; write `<one file>`; no control-plane / deps. (full form N/A — single-file, non-governing, non-security task)
+> TCC: obey `<one clause>`; transform `<one input>`; write `<one file>`; tier `<deep|fast|light>`; no control-plane / deps. (full form N/A — single-file, non-governing, non-security task)

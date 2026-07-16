@@ -28,6 +28,9 @@
     },
     "orchestration": {
       "level": "floor"
+    },
+    "model-tiering": {
+      "level": "floor"
     }
   }
 }

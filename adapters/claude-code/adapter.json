@@ -54,6 +54,12 @@
           "agents/engineer.agent.md"
         ]
       }
+    },
+    "model-tiering": {
+      "level": "native",
+      "proof": {
+        "check": "conformance/model-map-binding.sh"
+      }
     }
   }
 }
