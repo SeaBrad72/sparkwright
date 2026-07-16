@@ -17,22 +17,27 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
-RUN uv sync --frozen --no-dev
+# --no-editable installs the app package AS A COPY into the venv's site-packages
+# (not an `.pth` back to ./src), so the runtime stage's venv is self-contained.
+RUN uv sync --frozen --no-dev --no-editable
 
 # ---- runtime: slim, non-root, venv-on-PATH ----
 FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PATH="/app/.venv/bin:$PATH"
 WORKDIR /app
-# ADAPT `app/` to your package directory; copy the resolved venv + the source.
+# The venv is self-contained (--no-editable copied the app package into site-packages),
+# so only the resolved venv is needed at runtime — no separate source copy.
 COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/app ./app
 # Numeric UID 65532 (matches the k8s securityContext runAsUser). World-readable copies
 # above keep the venv executable for this user. PYTHONDONTWRITEBYTECODE avoids __pycache__
 # writes under a read-only root filesystem.
+# HOST=0.0.0.0 so the app binds all interfaces in-container (reachable via -p); server.py
+# reads HOST (env-gated — local dev stays on loopback).
+ENV HOST=0.0.0.0
 USER 65532
 EXPOSE 8000
 # NOTE: the container stays UNHEALTHY until your app serves the /healthz endpoint below.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz').status==200 else 1)"]
-# ADAPT `app.api:app` to your FastAPI app import path.
-CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Runs the shipped stdlib app server (src/app/server.py `serve()`); no web framework.
+CMD ["python", "-m", "app.server"]

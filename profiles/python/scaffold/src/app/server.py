@@ -191,13 +191,18 @@ class AppHandler(BaseHTTPRequestHandler):
         self._handle("HEAD")
 
 
-def serve(host: str = "127.0.0.1", port: int | None = None) -> None:  # pragma: no cover
+def serve(host: str | None = None, port: int | None = None) -> None:  # pragma: no cover
     """Start the blocking app server (script entry point only).
 
     FLAG_FILE boot gate (the load-bearing wiring): when ``FLAG_FILE`` is set, install
     the file-config live provider BEFORE listening, so the running server's /greeting
     reflects live file flips with no restart. Unset -> the env floor (default).
+
+    HOST is env-gated: local dev stays on loopback (127.0.0.1); a container sets
+    ``HOST=0.0.0.0`` so the app is reachable through a published port.
     """
+    if host is None:
+        host = os.environ.get("HOST", "127.0.0.1")
     flag_file = os.environ.get("FLAG_FILE")
     if flag_file:
         set_provider(file_config_provider(flag_file))

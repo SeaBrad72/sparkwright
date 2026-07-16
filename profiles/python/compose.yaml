@@ -2,8 +2,9 @@
 # COPY & ADAPT to your project root. The app builds from the same Dockerfile that ships.
 services:
   app:
-    # Prod-parity by default (runs the shipped image). For hot-reload during dev,
-    # add a source mount (`volumes: [".:/app"]`) and `command: uvicorn app.api:app --reload`.
+    # Prod-parity by default (runs the shipped image's CMD: `python -m app.server`).
+    # For hot-reload during dev, add a source mount (`volumes: [".:/app"]`) and override
+    # `command:` to run the app server with your reloader of choice.
     build:
       context: .
       target: runtime
