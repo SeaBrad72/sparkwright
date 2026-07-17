@@ -115,11 +115,11 @@ for p in "$ROOT"/profiles/*/ci.yml; do
   [ -f "$p" ] && targets="$targets $p"
 done
 # CP-9: the §13 ratification gate ships as its own workflow (it alone re-runs on pull_request_review),
-# so the reference pipeline is now TWO documents. A profile workflow the adopter installs verbatim must
-# be validated here — otherwise the file carrying a `checks: write` token ships unlinted.
-for p in "$ROOT"/profiles/*/ratification.yml; do
-  [ -f "$p" ] && targets="$targets $p"
-done
+# so the reference pipeline is now TWO documents. RATIFY-PARITY: the gate is stack-neutral and lives at
+# the SINGLE top-level source profiles/ratification.yml (installed for every stack). This profile
+# workflow the adopter installs verbatim must be validated here — otherwise the file carrying a
+# `checks: write` token ships unlinted.
+[ -f "$ROOT/profiles/ratification.yml" ] && targets="$targets $ROOT/profiles/ratification.yml"
 if [ -z "$targets" ]; then echo "actionlint-valid: no workflows found under $ROOT" >&2; exit 2; fi
 
 echo "actionlint-valid: validating shipped GHA documents (actionlint v$AL_VER, document-validity only)"

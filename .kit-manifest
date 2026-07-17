@@ -9,9 +9,6 @@
 .claude/mcp-policy.json
 .claude/settings.json
 .gitattributes
-.github/workflows/ci.yml
-.github/workflows/ratification.yml
-.github/workflows/release-coherence.yml
 .gitignore
 .kit-manifest
 .kit/budget.conf
@@ -172,6 +169,7 @@ conformance/guard-core-sourced.sh
 conformance/guard-wired.sh
 conformance/harness-adapter.sh
 conformance/harness-decision-integrity.sh
+conformance/incept-containment.sh
 conformance/incept-first-run-green.sh
 conformance/incept-manifests/data-engineering.txt
 conformance/incept-manifests/dotnet.txt
@@ -222,6 +220,7 @@ conformance/promotion-readiness.sh
 conformance/promotion-verify-wired.sh
 conformance/proportional-gate-wired.sh
 conformance/provenance-precondition.sh
+conformance/ratification-parity.sh
 conformance/release-tag-wired.sh
 conformance/release-tagged.sh
 conformance/repo-ownership.sh
@@ -526,6 +525,7 @@ profiles/python/scaffold/tests/test_flags.py
 profiles/python/scaffold/tests/test_health.py
 profiles/python/scaffold/tests/test_telemetry.py
 profiles/python/scaffold/uv.lock
+profiles/ratification.yml
 profiles/rust.md
 profiles/rust/.dockerignore
 profiles/rust/BRANCH-PROTECTION.md
@@ -577,14 +577,16 @@ profiles/typescript-node/deploy/helm/templates/service.yaml
 profiles/typescript-node/deploy/helm/values.yaml
 profiles/typescript-node/deploy/k8s/deployment.yaml
 profiles/typescript-node/deploy/k8s/service.yaml
-profiles/typescript-node/ratification.yml
 profiles/typescript-node/scaffold-cli/.gitignore
 profiles/typescript-node/scaffold-cli/README.md
 profiles/typescript-node/scaffold-cli/eslint.config.js
 profiles/typescript-node/scaffold-cli/package-lock.json
 profiles/typescript-node/scaffold-cli/package.json
+profiles/typescript-node/scaffold-cli/src/bounded-input.ts
 profiles/typescript-node/scaffold-cli/src/cli.ts
 profiles/typescript-node/scaffold-cli/src/greet.ts
+profiles/typescript-node/scaffold-cli/test/bounded-input.test.ts
+profiles/typescript-node/scaffold-cli/test/cli-stdin.test.ts
 profiles/typescript-node/scaffold-cli/test/greet.test.ts
 profiles/typescript-node/scaffold-cli/tsconfig.build.json
 profiles/typescript-node/scaffold-cli/tsconfig.json

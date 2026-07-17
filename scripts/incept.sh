@@ -139,8 +139,10 @@ done
 # is not. On macOS /tmp -> /private/tmp, so a logical compare FALSE-REFUSES under /tmp while
 # passing on Linux CI. Normalizing both sides is the only compare that cannot drift.
 #
-# Honest ceiling: this proves OWNERSHIP. It does NOT cover GIT_DIR / GIT_WORK_TREE redirection,
-# submodules, or `git worktree add` trees. See CP-11.
+# CP-11 closes the git-dir-CONTAINMENT gap: GIT_DIR/GIT_WORK_TREE env redirects are hard-refused, and
+# submodule / `git worktree add` trees are refused unless gated behind --allow-nested. Residual (named,
+# not absorbed): core.hooksPath, GIT_OBJECT_DIRECTORY, insteadOf — the git dir stays inside the cwd, so
+# containment passes; out of CP-11 scope. See CP-11 design §6.
 owning_repo_root() {  # <dir> -> stdout: physical toplevel, or empty when <dir> is in no repo
   ( CDPATH='' cd "$1" 2>/dev/null || exit 0
     _t=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
@@ -156,6 +158,40 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
   [ -n "$_own" ] || return 0
   [ "$_own" = "$_phys" ]
 }
+
+# --- CP-11: git-dir redirection is a hard precondition (closes CP-4 §6) --------------------
+# CP-4 proves toplevel==pwd, but `--show-toplevel` reports the cwd even when GIT_DIR/GIT_WORK_TREE, a
+# submodule, or a `git worktree add` tree redirect the git dir ELSEWHERE (measured). The hook then lands
+# in a repo the operator does not own (env) or a shared/other .git (structural). Invariant: the git dir
+# that will receive the write lives INSIDE the tree I own. BOTH sides physical (the /tmp symlink landmine).
+git_env_redirected() { [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; }
+git_dir_outside() {  # <dir> -> 0 (true) iff the physical git-common-dir is NOT inside <dir>
+  _cwd=$( CDPATH='' cd "$1" 2>/dev/null && pwd -P ) || return 0
+  _gcd=$( CDPATH='' cd "$1" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null ) || return 1
+  [ -n "$_gcd" ] || return 1
+  _gcd_phys=$( CDPATH='' cd "$1" 2>/dev/null && CDPATH='' cd "$_gcd" 2>/dev/null && pwd -P ) || return 0
+  case "$_gcd_phys/" in "$_cwd"/*) return 1 ;; *) return 0 ;; esac
+}
+
+if git_env_redirected; then
+  echo "" >&2
+  echo "ERROR: your git environment redirects git away from this directory." >&2
+  [ -n "${GIT_DIR:-}" ]       && echo "  GIT_DIR=$GIT_DIR" >&2
+  [ -n "${GIT_WORK_TREE:-}" ] && echo "  GIT_WORK_TREE=$GIT_WORK_TREE" >&2
+  echo "  incept would git-init and install the pre-push hook there, outside your product." >&2
+  echo "  Nothing has been written. Clear the redirect and re-run:" >&2
+  echo "    env -u GIT_DIR -u GIT_WORK_TREE sh scripts/incept.sh ..." >&2
+  exit 1
+elif git_dir_outside "$PWD" && [ "${ALLOW_NESTED:-0}" -eq 0 ]; then
+  _gcd_raw=$( git rev-parse --git-common-dir 2>/dev/null )
+  _gcd_show=$( CDPATH='' cd "${_gcd_raw:-.}" 2>/dev/null && pwd -P )
+  [ -n "$_gcd_show" ] || _gcd_show=$_gcd_raw
+  echo "" >&2
+  echo "ERROR: this directory's git dir lives outside it (nested dir, submodule, or linked worktree)." >&2
+  echo "  git dir: $_gcd_show  — the pre-push hook would land in that shared/other repo." >&2
+  echo "  If this is intentional, re-run with:  sh scripts/incept.sh --allow-nested ..." >&2
+  exit 1
+fi
 
 # CP-4: assert ownership BEFORE ANY MUTATION — before the scaffold copy, before `git init`, before
 # the pre-push hook. Nested in a foreign worktree, incept skipped `git init` (the PARENT satisfied
@@ -221,6 +257,28 @@ fi
 [ -f ENGINEERING-PRINCIPLES.md ] && { echo "error: ENGINEERING-PRINCIPLES.md exists — already incepted. Aborting." >&2; exit 1; }
 { [ -f CLAUDE.md ] && grep -q "Engineering Principles & Definition of Done" CLAUDE.md; } || {
   echo "error: not an un-incepted Sparkwright kit (principles CLAUDE.md not found). Aborting." >&2; exit 1; }
+
+# --- INCEPT-CONTAIN: refuse a tree that carries kit-internal artifacts --------------------------
+# incept transforms a CLEAN adopter distribution: adopter-export.sh (git archive --worktree-attributes)
+# strips every export-ignored path, so an adopter tree carries NO kit internals. The kit's OWN dev repo
+# and a raw `git clone` of it DO. Refuse BEFORE any mutation and redirect to the export path. This is a
+# PROPERTY check (tree has kit internals), not an identity check (dev-repo vs clone are byte-identical).
+# Soundness: every marker below is export-ignored in .gitattributes, so a clean export can never trip
+# this — locked by conformance/incept-containment.sh (refusal-set ⊆ export-ignored). Sibling: CP-11
+# (GIT_DIR/GIT_WORK_TREE redirect). KEEP KIT_INTERNAL_MARKERS ON ONE LINE — the lock greps this line.
+# Markers MUST be glob-free and match [A-Za-z0-9._/-] only: the unquoted `for` word-split below relies
+# on no pathname expansion, and the soundness lock's ERE escaper covers exactly this character class.
+KIT_INTERNAL_MARKERS='SPARKWRIGHT-CONSOLIDATED-BACKLOG.md docs/ROADMAP-KIT.md docs/superpowers .superpowers .publish-identifiers docs/governance/meta-control-log.md'
+for _m in $KIT_INTERNAL_MARKERS; do   # values are glob-free literals; `set -eu` word-split is safe
+  [ -e "$_m" ] || continue
+  echo "" >&2
+  echo "ERROR: this tree contains Sparkwright kit-internal files ($_m)." >&2
+  echo "incept transforms a clean adopter distribution — not the kit source or a raw clone." >&2
+  echo "Produce one, then incept inside it:" >&2
+  echo "  sh scripts/adopter-export.sh <dest-dir>   &&   cd <dest-dir> && sh scripts/incept.sh ..." >&2
+  echo "Nothing has been written." >&2
+  exit 1
+done
 
 # brownfield safety: warn (never modify) if a .claude/ exists without the kit guard wired.
 if [ -f .claude/settings.json ] && ! grep -q 'guard\.sh' .claude/settings.json; then
@@ -337,6 +395,18 @@ if [ "$CI" = "gitlab" ] && [ ! -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
   echo "       Use --ci github (ships for every service stack), or add profiles/${STACK}/ci.gitlab-ci.yml." >&2
   echo "       GitLab references today: ${_gl:-none}." >&2
   exit 2
+fi
+
+# RATIFY-PARITY: the §13 control-plane-ratification gate installs (github CI) from the single
+# stack-neutral source profiles/ratification.yml. Refuse EARLY — before any working-tree mutation —
+# if it is missing, so a broken distribution fails clean instead of leaving a half-initialized tree.
+# A kit that lost its governance source must never silently produce an ungoverned project. Scoped to
+# --ci github (the gate is GitHub-specific); a valid kit/export always ships the source, so a real
+# adopter never hits this. The install site (github case) re-checks and fails closed too (defence-in-depth).
+if [ "$CI" = "github" ] && [ ! -f profiles/ratification.yml ]; then
+  echo "error: profiles/ratification.yml is MISSING — cannot install the §13 control-plane-ratification gate." >&2
+  echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
+  exit 1
 fi
 if [ -n "$FLUENCY" ]; then
   case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
@@ -580,12 +650,22 @@ mkdir -p docs/architecture
 case "$CI" in
   github)
     mkdir -p .github/workflows
+    # RATIFY-PARITY: the §13 control-plane-ratification gate is STACK-NEUTRAL (runs only conformance/*.sh),
+    # so it installs for EVERY stack from ONE shared source — UNCONDITIONALLY, not gated on the profile's
+    # ci.yml or on a per-stack copy (it used to live under profiles/typescript-node/, so 9 stacks silently
+    # got no gate). CP-9: it ships as its OWN workflow — it must re-run on `pull_request_review` (an
+    # approval IS the ratification signal) and a review must re-run THAT and nothing else; separate file =
+    # structural containment. FAIL-LOUD if the source is gone: a kit that lost its governance source must
+    # not silently produce an ungoverned adopter. (conformance/ratification-parity.sh locks this.)
+    if [ -f profiles/ratification.yml ]; then
+      cp_kit_replace profiles/ratification.yml .github/workflows/ratification.yml 'COPY & ADAPT|Sparkwright'
+    else
+      echo "incept: profiles/ratification.yml is MISSING — cannot install the §13 control-plane-ratification gate." >&2
+      echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
+      exit 1
+    fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       cp_kit_replace "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
-      # CP-9: the §13 ratification gate ships as its OWN workflow, not as a job inside ci.yml — it is
-      # the one gate that must re-run on `pull_request_review` (an approval IS the ratification signal),
-      # and a review event must re-run THAT and nothing else. Separate file = structural containment.
-      [ -f "profiles/${STACK}/ratification.yml" ] && cp_kit_replace "profiles/${STACK}/ratification.yml" .github/workflows/ratification.yml 'COPY & ADAPT|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && cp_kit_replace "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS 'COPY & ADAPT|@your-org' && warn_codeowners_placeholder .github/CODEOWNERS
     else
       echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."

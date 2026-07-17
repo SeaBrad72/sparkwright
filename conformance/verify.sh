@@ -97,10 +97,17 @@ check control eval-harness      sh conformance/eval-harness-wired.sh --selftest
 check control eval-harness-runs sh conformance/eval-harness-runs.sh --selftest
 check control roster-guard      sh conformance/roster-guard-wired.sh --selftest
 check control conflict-safe-integration sh conformance/orchestrator-loop-wired.sh
+# NOT REGISTERED HERE (deliberate): conformance/incept-containment.sh. It is KIT-ONLY — its fixtures build an
+# UN-INCEPTED export via `git archive HEAD`, which needs a committed kit SOURCE. The incepted adopter artifact
+# (artifact-gate) has no such HEAD, and a real adopter never re-incepts (incept refuses an already-incepted
+# tree), so the check cannot and should not run there. Same class as kit-base.sh / kit-manifest.sh. Its teeth
+# run as a dedicated ci.yml step on the kit source (which satisfies ci-selftest-coverage) plus the standing
+# self-negative inside --selftest; non-vacuity sweeps conformance/*.sh directly, so it is covered regardless.
 check control skill-spine sh conformance/orchestrator-loop-wired.sh
 check control release-tag       sh conformance/release-tag-wired.sh
 check control feature-flags-wired sh conformance/feature-flags-wired.sh
 check control profile-parity   sh conformance/profile-parity.sh
+check control ratification-parity sh conformance/ratification-parity.sh
 check control containment-audit   sh conformance/containment-audit-wired.sh
 check control token-scope         sh conformance/token-scope.sh
 check control runtime-security    sh conformance/runtime-security.sh

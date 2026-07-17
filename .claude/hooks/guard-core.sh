@@ -558,7 +558,17 @@ _cp8b_scan_denied() {
 _cp8b_message_tip() {
   case "$1" in
     *"git commit"*|*"git merge"*|*"git tag"*|*"git notes"*|*"gh pr"*|*"gh issue"*|*"gh release"*)
-      printf ' TIP: a multi-line commit/PR message body is scanned as data and can trip this; pass it from a FILE instead of an inline -m/--body — `git commit -F <file>` or `gh pr create --body-file <file>` (the file content is never executed).' ;;
+      printf ' TIP: a multi-line commit/PR message body is scanned as data and can trip this; pass it from a FILE instead of an inline -m/--body — `git commit -F <file>` or `gh pr create --body-file <file>` (the file content is never executed).'
+      return ;;
+  esac
+  # DRIFT-2b: a read-oriented sed/awk/… on a control-plane path is denied because these tools carry write/exec
+  # escapes (`sed s///e`/`w`, `awk system()`); NAME the escape-free paths. Detect the LEAD VERB (not a
+  # substring — a message body mentioning "sed" must not trigger this). Names BOTH read and edit exits, so it
+  # is accurate whether the operator meant `sed -n` (read) or `sed -i` (edit) — no program sub-parse.
+  _mt_lead=$(printf '%s' "$1" | sed -E 's/^[[:space:]]*\\?[[:space:]]*//; s/[[:space:]].*$//')
+  case "$_mt_lead" in
+    sed|awk|sort|uniq|find|less|more|xxd)
+      printf ' TIP: %s is denied on control-plane paths (write/exec escapes). For a plain READ use head/tail/cat or the Read tool; to EDIT a control-plane file use the Edit/Write tool in a dev-clone (never via shell).' "$_mt_lead" ;;
   esac
 }
 _cp8b_deny_reason() {
@@ -772,7 +782,7 @@ guard_check_command() {
      || printf '%s' "$cmd" | grep -Eq '/dev/null[[:space:]]*>[[:space:]]*[^[:space:]&|;]+' \
      || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(cat|cp)[[:space:]]+/dev/null[[:space:]]+[>]?[[:space:]]*[^[:space:]&|;]+' \
      || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)echo[[:space:]]+-n[[:space:]]*>[[:space:]]*[^[:space:]&|;]+'; then
-    { printf '%s' '13: redirection/empty-source truncation zeroes a file irreversibly - human-gated.'; return 1; }
+    { printf '%s' '13: redirection/empty-source truncation zeroes a file irreversibly - human-gated. TIP: to create or replace a file, use the Write tool (a shell >/: truncation is denied because it can irreversibly zero an existing file).'; return 1; }
   fi
   if printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-delete([[:space:]]|$)' \
      || printf '%s' "$cmd" | grep -Eq '(^[[:space:]]*|[;&|][[:space:]]*)(sudo[[:space:]]+)?find[[:space:]]+[^|]*-exec[[:space:]]+(rm|shred|truncate)([[:space:]]|$)' \

@@ -11,9 +11,10 @@ AB="conformance/agent-boundary.sh"
 # CP-9: the gate moved OUT of ci.yml into its own workflow — it is the one check that must re-run on
 # `pull_request_review`, and a review must re-run THAT and nothing else. This path is also the KIT↔PROFILE
 # PARITY LOCK: verify.sh runs this script both in the kit AND (via CI's artifact-gate) inside a freshly
-# incepted adopter project, where .github/workflows/ratification.yml is the copy of
-# profiles/typescript-node/ratification.yml. Fix the kit alone and this goes RED in the adopter — which
-# is exactly what stops the cry-wolf bug from shipping to customers while the kit quietly enjoys the fix.
+# incepted adopter project, where .github/workflows/ratification.yml is the copy of the single
+# stack-neutral source profiles/ratification.yml (RATIFY-PARITY: installed for EVERY stack, not just
+# ts-node). Fix the kit alone and this goes RED in the adopter — which is exactly what stops the
+# cry-wolf bug from shipping to customers while the kit quietly enjoys the fix.
 WF=".github/workflows/ratification.yml"
 CI_WF=".github/workflows/ci.yml"
 PR="conformance/promotion-readiness.sh"
@@ -31,6 +32,31 @@ label() { sh "$AB" --changed "$1" --ratified "$2" --state 2>/dev/null; }  # -> S
 # lock must not constrain what the documentation is allowed to say.)
 code_only() { grep -v '^[[:space:]]*#' "$1"; }
 
+# _wf_disposition <wf_exists:0|1> <must_have:0|1> -> RUN | NA | FAIL
+# Decides what to do when the ratification workflow is (P0-FU) export-ignored. By ARGUMENTS, never env:
+# an env-redirectable path on a control-plane check is exactly the vacuity this project forbids. Fail-CLOSED
+# — the only silent path (NA) requires BOTH "no workflow" AND "this tree is NOT one that must have it".
+# `must_have` = incepted adopter OR the kit repo itself (see the OR-of-markers at the call site): both are
+# expected to carry the workflow, so a missing one there is a real regression, never N/A. Only a raw
+# pre-incept export (neither) legitimately has no workflow yet — incept installs it.
+_wf_disposition() {
+  [ "$1" = 1 ] && { echo RUN; return; }    # the gate exists -> verify its wiring (kit repo + incepted adopter)
+  [ "$2" = 1 ] && { echo FAIL; return; }   # must-have context, yet the gate is gone -> a real regression
+  echo NA                                  # no gate AND a raw export -> incept installs it; nothing to wire yet
+}
+
+# _must_have_workflow [root] -> 1 iff this tree is expected to carry the kit workflows: an incepted adopter
+# (incept creates ENGINEERING-PRINCIPLES.md) OR the kit repo itself (kit-only markers, one control-plane +
+# export-ignored so it is un-spoofable). A raw pre-incept export has NONE of these -> 0. Fail-closed:
+# any ONE marker present makes a missing workflow a FAIL, so a raw export is the only path to N/A.
+# Parameterized on <root> (default cwd) SO THE SELFTEST CAN LOCK BOTH BRANCHES against fixtures — a marker
+# rename that made this return 0 on an incepted tree would silently fail-OPEN the gate, and that must fail a test.
+_must_have_workflow() {
+  _mhr=${1:-.}
+  { [ -f "$_mhr/ENGINEERING-PRINCIPLES.md" ] || [ -f "$_mhr/docs/ROADMAP-KIT.md" ] || [ -f "$_mhr/.github/workflows/golden-path.yml" ]; } \
+    && echo 1 || echo 0
+}
+
 selftest() {
   st=0; d=$(mktemp -d)
   printf '.github/workflows/ci.yml\n' > "$d/cp.txt"
@@ -42,7 +68,33 @@ selftest() {
   # load-bearing negative: solo and team labels must differ (always-team mutation -> this FAILs)
   if [ "$(label "$d/cp.txt" 0)" = "$(label "$d/cp.txt" 1)" ]; then
     echo "FAIL: solo and team labels identical (state derivation vacuous)"; st=1; fi
-  [ -f "$WF" ] || { echo "FAIL: $WF is missing — the ratification gate has no workflow to run in"; st=1; return $st; }
+
+  # P0-FU: the ratification gate is export-ignored (incept installs profiles/<stack>/ratification.yml),
+  # so a PRE-INCEPT adopter export ships no workflow and this content-lock has nothing to wire yet. But an
+  # INCEPTED tree missing its gate is a real regression. `_wf_disposition` makes that call fail-CLOSED, by
+  # ARGUMENTS (never env — an env-redirectable control-plane check is the vacuity we forbid). Load-bearing:
+  # an always-RUN mutation reddens the raw-export case; an always-NA mutation greens the incepted case.
+  [ "$(_wf_disposition 1 0)" = RUN ]  || { echo "FAIL: disposition — workflow present must RUN the content assertions"; st=1; }
+  [ "$(_wf_disposition 1 1)" = RUN ]  || { echo "FAIL: disposition — workflow present (incepted) must RUN"; st=1; }
+  [ "$(_wf_disposition 0 0)" = NA ]   || { echo "FAIL: disposition — raw pre-incept export (no gate, not incepted) must be N/A"; st=1; }
+  [ "$(_wf_disposition 0 1)" = FAIL ] || { echo "FAIL: disposition — incepted tree missing its gate must FAIL (fail-closed)"; st=1; }
+  # And the OTHER half of the fail-closed decision: _must_have_workflow's MARKER DETECTION. The truth table
+  # above is inert if this returns 0 on a real incepted/kit tree (a marker rename would do exactly that ->
+  # silent NA = fail-open). Lock every marker against fixtures so that regression fails HERE, not in an adopter.
+  _mh=$(mktemp -d)
+  [ "$(_must_have_workflow "$_mh")" = 0 ] || { echo "FAIL: _must_have_workflow — a markerless tree (raw export) must be 0"; st=1; }
+  for _mk in ENGINEERING-PRINCIPLES.md docs/ROADMAP-KIT.md .github/workflows/golden-path.yml; do
+    mkdir -p "$_mh/$(dirname "$_mk")"; : > "$_mh/$_mk"
+    [ "$(_must_have_workflow "$_mh")" = 1 ] || { echo "FAIL: _must_have_workflow — marker '$_mk' present must be 1 (fail-closed: a missing workflow here is a FAIL, never N/A)"; st=1; }
+    rm -f "$_mh/$_mk"
+  done
+  rm -rf "$_mh" 2>/dev/null || true
+
+  case "$(_wf_disposition "$([ -f "$WF" ] && echo 1 || echo 0)" "$(_must_have_workflow)")" in
+    RUN)  : ;;   # fall through to the workflow-content assertions below
+    NA)   echo "N/A: proportional-gate — pre-incept export (incept installs $WF; nothing to wire yet; state-label derivation above verified)"; return $st ;;
+    FAIL) echo "FAIL: $WF is missing in a kit/incepted tree — the ratification gate has no workflow to run in"; st=1; return $st ;;
+  esac
   # workflow wiring: class-aware (the actual promotion-readiness --class call, not the bare flag token —
   # a prose mention of '--class' must not satisfy this) + both state tokens surfaced. The state tokens
   # now reach the human via agent-boundary's --conclusion mapping, so they are anchored THERE; what the
@@ -158,7 +210,10 @@ selftest() {
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
-  "") for f in "$AB" "$WF" "$PR"; do [ -f "$f" ] || { echo "FAIL: missing $f"; exit 1; }; done
+  "") case "$(_wf_disposition "$([ -f "$WF" ] && echo 1 || echo 0)" "$(_must_have_workflow)")" in
+        NA) echo "N/A: proportional-gate — pre-incept export (incept installs $WF)"; exit 0 ;;
+      esac
+      for f in "$AB" "$WF" "$PR"; do [ -f "$f" ] || { echo "FAIL: missing $f"; exit 1; }; done
       echo "OK: proportional-gate wiring present"; exit 0 ;;
   *) echo "usage: proportional-gate-wired.sh [--selftest]" >&2; exit 2 ;;
 esac

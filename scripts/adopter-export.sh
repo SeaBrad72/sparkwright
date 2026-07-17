@@ -24,8 +24,10 @@ known_profiles() { ls -d "$ROOT"/profiles/*/ 2>/dev/null | sed 's#.*/profiles/##
 # is not. On macOS /tmp -> /private/tmp, so a logical compare FALSE-REFUSES under /tmp while
 # passing on Linux CI. Normalizing both sides is the only compare that cannot drift.
 #
-# Honest ceiling: this proves OWNERSHIP. It does NOT cover GIT_DIR / GIT_WORK_TREE redirection,
-# submodules, or `git worktree add` trees. See CP-11.
+# CP-11 closes the git-dir-CONTAINMENT gap: an ambient GIT_DIR/GIT_WORK_TREE env redirect is now hard-
+# refused here (env-ONLY — adopter-export takes no nested-tree path, so there is no --allow-nested gate).
+# Residual (named, not absorbed): core.hooksPath, GIT_OBJECT_DIRECTORY, insteadOf — the git dir stays
+# inside the cwd, so containment passes; out of CP-11 scope. See CP-11 design §6.
 owning_repo_root() {  # <dir> -> stdout: physical toplevel, or empty when <dir> is in no repo
   ( CDPATH='' cd "$1" 2>/dev/null || exit 0
     _t=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
@@ -41,6 +43,11 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
   [ -n "$_own" ] || return 0
   [ "$_own" = "$_phys" ]
 }
+
+# CP-11: an ambient GIT_DIR/GIT_WORK_TREE makes `git archive HEAD` read a repo OTHER than the kit. This is
+# env-ONLY: a structural linked worktree archives the kit's own HEAD correctly and maintainers run from
+# worktrees, so it must NOT refuse those (spec §3b). See CP-11 / conformance/repo-ownership.sh (E3, P3).
+git_env_redirected() { [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; }
 
 # CP-4: do_export is now ATOMIC. It stages into a sibling temp dir, verifies, and only then renames
 # into place. Previously it extracted into <dest> BEFORE the carve could fail — so a failed export
@@ -59,6 +66,14 @@ do_export() {  # <dest> <profile-or-empty>  — atomic: stage -> verify -> renam
   # CP-4: the kit must be the root of its OWN repo. Nested in a foreign worktree as an UNTRACKED dir,
   # `git archive HEAD` resolves to the PARENT's HEAD and the cwd prefix matches nothing — yielding an
   # empty archive, "exported 0 files", and exit 0. A silent success is the worst failure mode there is.
+  if git_env_redirected; then
+    echo "adopter-export: your git environment redirects git away from the kit." >&2
+    [ -n "${GIT_DIR:-}" ]       && echo "  GIT_DIR=$GIT_DIR" >&2
+    [ -n "${GIT_WORK_TREE:-}" ] && echo "  GIT_WORK_TREE=$GIT_WORK_TREE" >&2
+    echo "  'git archive HEAD' would archive THAT repo's HEAD, not the kit. Clear the redirect:" >&2
+    echo "    env -u GIT_DIR -u GIT_WORK_TREE sh scripts/adopter-export.sh <dest>" >&2
+    return 1
+  fi
   if ! owns_itself "$ROOT"; then
     _parent=$(owning_repo_root "$ROOT")
     echo "adopter-export: the kit at '$ROOT' is not the root of its own git repository." >&2
@@ -104,10 +119,14 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # adopter-export is ALSO carved: it is a kit-self check (an adopter has no reason to verify the kit's
   # OWN export mechanism), AND keeping it would recurse (claims-registry -> adopter-export-wired.sh ->
   # claims-registry -> ...). The kit still verifies adopter-export in its own CI.
+  # ratification-parity is carved for the same kit-self reason: it verifies the kit's OWN install
+  # mechanism (that incept ships the §13 gate for every stack), its real run N/As on an adopter tree, and
+  # its --selftest drives real incept via `git archive` — which needs the kit's .git, absent in an export.
+  # The kit still verifies ratification-parity in its own CI. The installed gate itself is unaffected.
   _ct="$_dest/conformance/claims.tsv"; _cr="$_dest/conformance/claims-registry.sh"
   if [ -f "$_ct" ] && [ -f "$_cr" ]; then
     _tab=$(printf '\t')
-    for _c in drift-watch golden-path adopter-export repo-ownership feature-flags-wired containment-audit runtime-security structured-logging app-tracing metrics-endpoint otlp-backend trace-query agentops-sensor orchestrator-loop escalation-seam conflict-safe-integration skill-spine; do
+    for _c in drift-watch golden-path adopter-export repo-ownership feature-flags-wired containment-audit runtime-security structured-logging app-tracing metrics-endpoint otlp-backend trace-query agentops-sensor orchestrator-loop escalation-seam conflict-safe-integration skill-spine ratification-parity; do
       grep -v "^${_c}${_tab}" "$_ct" > "$_ct.$$.s3b" && mv "$_ct.$$.s3b" "$_ct"
       sed "s/ ${_c}\\([\"[:space:]]\\)/\\1/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
     done

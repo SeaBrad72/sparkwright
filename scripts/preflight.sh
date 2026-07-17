@@ -124,8 +124,10 @@ is_github_repo() {  # 0 iff inside a work tree whose origin is a github.com remo
 # is not. On macOS /tmp -> /private/tmp, so a logical compare FALSE-REFUSES under /tmp while
 # passing on Linux CI. Normalizing both sides is the only compare that cannot drift.
 #
-# Honest ceiling: this proves OWNERSHIP. It does NOT cover GIT_DIR / GIT_WORK_TREE redirection,
-# submodules, or `git worktree add` trees. See CP-11.
+# CP-11 closes the git-dir-CONTAINMENT gap: GIT_DIR/GIT_WORK_TREE env redirects are hard-refused, and
+# submodule / `git worktree add` trees are refused unless gated behind --allow-nested. Residual (named,
+# not absorbed): core.hooksPath, GIT_OBJECT_DIRECTORY, insteadOf — the git dir stays inside the cwd, so
+# containment passes; out of CP-11 scope. See CP-11 design §6.
 owning_repo_root() {  # <dir> -> stdout: physical toplevel, or empty when <dir> is in no repo
   ( CDPATH='' cd "$1" 2>/dev/null || exit 0
     _t=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
@@ -140,6 +142,20 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
   _own=$(owning_repo_root "$1")
   [ -n "$_own" ] || return 0
   [ "$_own" = "$_phys" ]
+}
+
+# --- CP-11: git-dir redirection is a hard precondition (closes CP-4 §6) --------------------
+# CP-4 proves toplevel==pwd, but `--show-toplevel` reports the cwd even when GIT_DIR/GIT_WORK_TREE, a
+# submodule, or a `git worktree add` tree redirect the git dir ELSEWHERE (measured). The hook then lands
+# in a repo the operator does not own (env) or a shared/other .git (structural). Invariant: the git dir
+# that will receive the write lives INSIDE the tree I own. BOTH sides physical (the /tmp symlink landmine).
+git_env_redirected() { [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; }
+git_dir_outside() {  # <dir> -> 0 (true) iff the physical git-common-dir is NOT inside <dir>
+  _cwd=$( CDPATH='' cd "$1" 2>/dev/null && pwd -P ) || return 0
+  _gcd=$( CDPATH='' cd "$1" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null ) || return 1
+  [ -n "$_gcd" ] || return 1
+  _gcd_phys=$( CDPATH='' cd "$1" 2>/dev/null && CDPATH='' cd "$_gcd" 2>/dev/null && pwd -P ) || return 0
+  case "$_gcd_phys/" in "$_cwd"/*) return 1 ;; *) return 0 ;; esac
 }
 
 check_repo_class() {  # warn when the repo is user-owned PRIVATE (SLSA provenance gate skips there)
@@ -392,6 +408,26 @@ recommend gh "GitHub CLI — needed for the branch-protection setup at Inception
 if command -v gh >/dev/null 2>&1; then
   # shellcheck disable=SC2034  # rec mirrors miss for recommended tools; warnings don't fail the run
   if gh auth status >/dev/null 2>&1; then echo "  ok   gh auth (logged in)"; else echo "  warn gh auth — run 'gh auth login' before the branch-protection step"; rec=1; fi
+fi
+
+if git_env_redirected; then
+  echo "" >&2
+  echo "ERROR: your git environment redirects git away from this directory." >&2
+  [ -n "${GIT_DIR:-}" ]       && echo "  GIT_DIR=$GIT_DIR" >&2
+  [ -n "${GIT_WORK_TREE:-}" ] && echo "  GIT_WORK_TREE=$GIT_WORK_TREE" >&2
+  echo "  preflight would report on that repository instead of your product." >&2
+  echo "  Nothing has been written. Clear the redirect and re-run:" >&2
+  echo "    env -u GIT_DIR -u GIT_WORK_TREE sh scripts/preflight.sh ..." >&2
+  exit 1
+elif git_dir_outside "$PWD" && [ "${ALLOW_NESTED:-0}" -eq 0 ]; then
+  _gcd_raw=$( git rev-parse --git-common-dir 2>/dev/null )
+  _gcd_show=$( CDPATH='' cd "${_gcd_raw:-.}" 2>/dev/null && pwd -P )
+  [ -n "$_gcd_show" ] || _gcd_show=$_gcd_raw
+  echo "" >&2
+  echo "ERROR: this directory's git dir lives outside it (nested dir, submodule, or linked worktree)." >&2
+  echo "  git dir: $_gcd_show  — the pre-push hook would land in that shared/other repo." >&2
+  echo "  If this is intentional, re-run with:  sh scripts/preflight.sh --allow-nested ..." >&2
+  exit 1
 fi
 
 # CP-4: refuse before reporting on a repository we do not own. Nested in a foreign worktree,

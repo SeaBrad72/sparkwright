@@ -460,6 +460,34 @@ assert_reason_has  "gh pr body -> tip"            '{"tool_name":"Bash","tool_inp
 #     the over-broad direction: an unconditional tip turns it RED (mutation-verified).
 assert_reason_lacks "sed -i deny -> no tip"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ conformance/verify.sh"}}' 'body-file'
 
+# DRIFT-2b: the read/truncate over-denies gain an escape TIP — decision UNCHANGED (still denied).
+# P2a — a read-oriented sed on a control-plane path: denied, AND the reason names head/tail (the escape).
+assert_reason_has  "sed-read cp -> head/tail tip" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''1,5p'\'' scripts/preflight.sh"}}' \
+  "head/tail"
+# N2a — a control-plane deny whose lead is NOT a read-excluded tool: NO read-tool tip (no noise).
+assert_reason_lacks "non-readtool cp deny lacks read tip" \
+  '{"tool_name":"Bash","tool_input":{"command":"chmod 777 .claude/hooks/guard-core.sh"}}' \
+  "head/tail"
+# N2b — a MULTILINE git-message control-plane deny still fires the git -F/body-file tip AFTER the read arm was
+#   added: the git arm matches first and `return`s, so the two arms stay exclusive. A single-line -m that
+#   merely NAMES a cp path is ALLOWED on the current guard; the deny fires only when a message FRAGMENT pairs a
+#   mutation verb (`rm`) with a cp path — the same `\n`-segmented shape the DRIFT-2 #1 anchor above uses. This
+#   asserts the git arm still fires (body-file present). (A companion `assert_reason_lacks "head/tail"` here
+#   would be TAUTOLOGICAL — a git command's lead verb is never in the read-set {sed,awk,…}, so no tip-arm
+#   mutation can make a git deny carry the read tip; N2a is the over-fire guard — so it is deliberately absent.)
+assert_reason_has  "git-msg cp deny -> body-file tip" \
+  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"Fix\nrm .claude/hooks/guard-core.sh now\""}}' \
+  "body-file"
+# P3a — a truncation deny names the Write tool.
+assert_reason_has  "truncation -> Write-tool tip" \
+  '{"tool_name":"Bash","tool_input":{"command":": > /tmp/drift2b.txt"}}' \
+  "Write tool"
+# N3a — a non-truncation destructive deny does NOT carry the Write-tool tip.
+assert_reason_lacks "rm deny lacks Write-tool tip" \
+  '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}' \
+  "Write tool"
+
 # --- (b) genuine control-plane mutations: the target IS the guarded path -> DENY (regression floor) ---
 assert_deny  "rm a cp file"             '{"tool_name":"Bash","tool_input":{"command":"rm conformance/verify.sh"}}'
 assert_deny  "cp INTO a cp file"        '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/evil.sh conformance/verify.sh"}}'

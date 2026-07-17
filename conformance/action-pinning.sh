@@ -9,7 +9,7 @@
 set -eu
 
 REF="profiles/typescript-node/ci.yml"                    # canonical adopter reference
-REF_RATIFICATION="profiles/typescript-node/ratification.yml"  # CP-9: its §13 gate, a separate workflow
+REF_RATIFICATION="profiles/ratification.yml"  # CP-9 §13 gate; RATIFY-PARITY: the single stack-neutral source
 KIT_WORKFLOWS=".github/workflows"                         # the workflows the kit itself runs
 
 # has_uses <workflow>: 0 if the file declares at least one real `uses:` step.

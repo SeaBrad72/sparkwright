@@ -1,7 +1,14 @@
 # Reference RATIFICATION workflow — the DEVELOPMENT-PROCESS.md §13 separation-of-duties gate, alone.
-# COPY & ADAPT: copy this file to your project's .github/workflows/ratification.yml (scripts/incept.sh
-# installs it for you). It is INERT here in the kit repo (GitHub only runs workflows under
-# .github/workflows/). The kit runs the same gate on itself — .github/workflows/ratification.yml.
+# THE SINGLE, STACK-NEUTRAL SOURCE. This gate runs only conformance/agent-boundary.sh +
+# promotion-readiness.sh on ubuntu-latest — no toolchain step — so it is IDENTICAL for every stack and
+# lives here once (profiles/ratification.yml — a shared, non-stack asset, like profiles/_TEMPLATE.md),
+# NOT once per profile. scripts/incept.sh installs it for EVERY stack, unconditionally;
+# conformance/ratification-parity.sh locks that it stays the sole, wired, stack-neutral copy. (It was
+# under profiles/typescript-node/ only because ts-node was the first profile when CP-9 built it —
+# RATIFY-PARITY relocated it here so no stack is deficient on §13.)
+# COPY & ADAPT: incept copies this file to your project's .github/workflows/ratification.yml. It is
+# INERT here in the kit repo (GitHub only runs workflows under .github/workflows/). The kit runs the
+# same gate on itself — .github/workflows/ratification.yml (its own dogfooding copy, export-ignored).
 #
 # WHY A SEPARATE FILE FROM ci.yml. The gate must re-run when a human approves, or the approval lands
 # and the check stays stale at its pre-approval verdict. That needs a `pull_request_review` trigger —

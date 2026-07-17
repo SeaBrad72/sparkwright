@@ -25,7 +25,23 @@ ROOT="${EXPORT_ROOT:-.}"
 # the export-ignore set this lock enforces (must match .gitattributes)
 # BACKLOG.md + SPARKWRIGHT-CONSOLIDATED-BACKLOG.md (KW6-A2): the kit's work board + roadmap table are
 # export-ignored so incept.sh:344's `[ -f BACKLOG.md ] ||` guard still stamps each adopter their OWN board.
-IGN="docs/ROADMAP-KIT.md .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers"
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers"
+
+# _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
+# P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +
+# ratification.yml. The kit's own dev workflows are all export-ignored, so their kit-self jobs cannot
+# redden the adopter's first CI. COMPLETE-BY-CONSTRUCTION: it counts what ACTUALLY shipped, so a NEW
+# kit-dev workflow added without export-ignoring it (the enumeration trap) leaks here rather than into
+# a real adopter's first push.
+_no_shipped_workflows() {
+  # Match BOTH extensions: GitHub Actions honors *.yml AND *.yaml equally, so a *.yaml kit workflow
+  # would ship undetected if we only counted *.yml — reopening the very leak class this lock closes.
+  _leak=$(find "$1/.github/workflows" \( -name '*.yml' -o -name '*.yaml' \) -type f 2>/dev/null)
+  [ -z "$_leak" ] && return 0
+  echo "FAIL: the adopter export ships GitHub workflow(s) — a kit-dev workflow's jobs would redden the adopter's first CI (P0-FU); export-ignore it in .gitattributes:"
+  printf '%s\n' "$_leak" | sed 's#.*/\.github/#  .github/#'
+  return 1
+}
 
 run() {
   rc=0
@@ -130,6 +146,8 @@ run() {
     done
     # R3/C2 assertion: the exported .gitignore must NOT still ignore /src/ or /test/
     grep -qxE '/(src|test)/' "$_d/.gitignore" 2>/dev/null && { echo "FAIL: exported .gitignore still ignores /src/ or /test/"; rc=1; }
+    # (f) P0-FU: the export ships ZERO GitHub workflows (kit-dev CI is export-ignored; incept installs the profile's)
+    _no_shipped_workflows "$_d" || rc=1
   else
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
@@ -214,6 +232,19 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "adopter-export-wired --selftest: FAIL (probe vacuous — unlisted doc dropped even without the blanket rule)"; sfail=1
   fi
   rm -rf "$_b" "$_bx" "$_bx2" 2>/dev/null || true
+  # negative (P0-FU / item-6 teeth): the zero-workflow lock (f) must FLAG a shipped workflow and PASS a
+  # clean export. Driven directly (no export) — load-bearing: an always-clean mutation greens the leak case.
+  _z=$(mktemp -d); mkdir -p "$_z/.github/workflows"
+  _no_shipped_workflows "$_z" || { echo "adopter-export-wired --selftest: FAIL (empty workflows dir wrongly flagged as a leak)"; sfail=1; }
+  # BOTH extensions must trip it — GitHub Actions honors *.yml and *.yaml alike.
+  for _ext in yml yaml; do
+    printf 'name: kitdev\non: push\n' > "$_z/.github/workflows/kitdev-probe.$_ext"
+    if _no_shipped_workflows "$_z" >/dev/null 2>&1; then
+      echo "adopter-export-wired --selftest: FAIL (a shipped .$_ext GitHub workflow was NOT flagged — the zero-workflow lock is vacuous)"; sfail=1
+    fi
+    rm -f "$_z/.github/workflows/kitdev-probe.$_ext"
+  done
+  rm -rf "$_z" 2>/dev/null || true
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
 fi
 

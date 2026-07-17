@@ -9,8 +9,10 @@
 # The two answers diverge only when nested — which is why every non-nested test agrees, and why this
 # bug survived a bookend, two security reviews and a re-review.
 #
-# Honest ceiling: this proves OWNERSHIP. It does NOT cover GIT_DIR / GIT_WORK_TREE env redirection,
-# submodules, or `git worktree add` trees. See CP-11.
+# CP-11 closes the git-dir-CONTAINMENT gap: GIT_DIR/GIT_WORK_TREE env redirects are hard-refused, and
+# submodule / `git worktree add` trees are refused unless gated behind --allow-nested. Residual (named,
+# not absorbed): core.hooksPath, GIT_OBJECT_DIRECTORY, insteadOf — the git dir stays inside the cwd, so
+# containment passes; out of CP-11 scope. See CP-11 design §6.
 set -u
 
 KIT_ROOT=$(CDPATH='' cd "$(dirname "$0")/.." && pwd -P)
@@ -55,6 +57,13 @@ lay_kit() {  # <dir>
     case "${_f##*/}" in .git|node_modules|.worktrees|coverage) continue ;; esac
     cp -Rp "$_f" "$1/" || return 1
   done
+  # INCEPT-CONTAIN: a real adopter export STRIPS the export-ignored kit-internal markers, and incept now
+  # REFUSES a tree carrying them (conformance/incept-containment.sh). lay_kit is a raw copy (not `git
+  # archive`), so it must strip the SAME set to stay a faithful export shape — otherwise incept's
+  # containment guard refuses these (legitimately export-shaped) greenfield/brownfield fixtures. Single
+  # source of truth: incept.sh's KIT_INTERNAL_MARKERS line (markers are glob-free, [A-Za-z0-9._/-] only).
+  _kit_markers=$(sed -n "s/^KIT_INTERNAL_MARKERS='\(.*\)'.*/\1/p" "$KIT_ROOT/scripts/incept.sh")
+  for _m in $_kit_markers; do [ -n "$_m" ] && rm -rf "${1:?}/$_m"; done
   # Liveness anchor on the FIXTURE ITSELF — a seeding step that silently produced nothing must not
   # leave every assertion below trivially green. (An empty fixture is not a pass.)
   [ -f "$1/scripts/incept.sh" ] && [ -f "$1/scripts/preflight.sh" ] && return 0
@@ -218,6 +227,199 @@ if [ "$rc3" -ne 0 ]; then
   printf '     last: %s\n' "$(printf '%s' "$out3" | tail -1)"
 else
   pass "P3 brownfield at repo root — unchanged"
+fi
+
+# =============================================================================================
+# CP-11 — GIT_DIR / GIT_WORK_TREE env redirection + worktree/submodule nesting.
+#   CP-4 proves --show-toplevel == pwd. Under an env redirect that still holds, but git-common-dir
+#   (and thus the hook path / archive HEAD) points at ANOTHER repo. E1/E2/E3/W1/S1 are RED against
+#   the current scripts — they go green in T2-T4. N-sym/P2/P3 lock behavior after the fix.
+# =============================================================================================
+
+# E1 — incept with ambient GIT_DIR/GIT_WORK_TREE pointing at a STRANGER repo. Today CP-4's toplevel==pwd
+#      check PASSES (measured) and the hook lands in the stranger's .git/hooks/. Must refuse HARD (no flag).
+make_parent "$T/e1-stranger"
+lay_kit "$T/e1-victim"
+before=$(fp "$T/e1-stranger/.git/hooks")
+# shellcheck disable=SC2086
+out=$( cd "$T/e1-victim" && GIT_DIR="$T/e1-stranger/.git" GIT_WORK_TREE="$T/e1-victim" \
+       sh scripts/incept.sh $INCEPT_ARGS 2>&1 ); rc=$?
+after=$(fp "$T/e1-stranger/.git/hooks")
+if [ "$before" != "$after" ]; then
+  bad "E1 incept env-redirect — WROTE A HOOK INTO A STRANGER'S .git/hooks/ (GIT_DIR redirect)"
+elif [ "$rc" -eq 0 ]; then
+  bad "E1 incept env-redirect — exit 0 (must refuse before any mutation)"
+elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
+  bad "E1 incept env-redirect — refused but message does not name GIT_DIR/GIT_WORK_TREE + the unset escape"
+else
+  pass "E1 incept env-redirect — refused, stranger untouched, named the env vars"
+fi
+
+# E2 — preflight with ambient GIT_DIR redirect reports the STRANGER as the adopter environment.
+make_parent "$T/e2-stranger"
+lay_kit "$T/e2-victim"
+out=$( cd "$T/e2-victim" && GIT_DIR="$T/e2-stranger/.git" GIT_WORK_TREE="$T/e2-victim" \
+       sh scripts/preflight.sh 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then
+  bad "E2 preflight env-redirect — exit 0 (must refuse: env points git at a repo it does not own)"
+elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
+  bad "E2 preflight env-redirect — refused but did not name GIT_DIR/GIT_WORK_TREE"
+else
+  pass "E2 preflight env-redirect — refused, named the env vars"
+fi
+
+# E3 — adopter-export with ambient GIT_DIR redirect: `git archive HEAD` resolves to the STRANGER's HEAD.
+make_parent "$T/e3-stranger"
+lay_kit "$T/e3-kit" && ( cd "$T/e3-kit" && git_q init && git_q add -A && git_q commit -m base )
+out=$( cd "$T/e3-kit" && GIT_DIR="$T/e3-stranger/.git" GIT_WORK_TREE="$T/e3-kit" \
+       sh scripts/adopter-export.sh "$T/e3-out" 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then
+  bad "E3 export env-redirect — exit 0 (would archive the STRANGER's HEAD, not the kit)"
+elif [ -e "$T/e3-out" ]; then
+  bad "E3 export env-redirect — refused but LEFT a destination behind ($T/e3-out)"
+elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
+  bad "E3 export env-redirect — refused but did not name GIT_DIR/GIT_WORK_TREE"
+else
+  pass "E3 export env-redirect — refused, named the env vars"
+fi
+
+# W1 — incept inside a `git worktree add` tree (env CLEAN). git-common-dir is main/.git (measured);
+#      the hook would land in MAIN's shared .git/hooks/. Must refuse unless --allow-nested.
+lay_kit "$T/w1-main" && ( cd "$T/w1-main" && git_q init && git_q add -A && git_q commit -m base )
+( cd "$T/w1-main" && git_q worktree add ../w1-linked )
+[ -f "$T/w1-linked/scripts/incept.sh" ] || bad "W1 setup — linked worktree has no scripts/incept.sh"
+before=$(fp "$T/w1-main/.git/hooks")
+# shellcheck disable=SC2086
+out=$( cd "$T/w1-linked" && sh scripts/incept.sh $INCEPT_ARGS 2>&1 ); rc=$?
+after=$(fp "$T/w1-main/.git/hooks")
+if [ "$before" != "$after" ]; then
+  bad "W1 incept in a linked worktree — WROTE into MAIN's shared .git/hooks/ (git-common-dir outside cwd)"
+elif [ "$rc" -eq 0 ]; then
+  bad "W1 incept in a linked worktree — exit 0 (must refuse unless --allow-nested)"
+elif ! printf '%s' "$out" | grep -q 'allow-nested'; then
+  bad "W1 incept in a linked worktree — refused but did not signpost --allow-nested"
+else
+  pass "W1 incept in a linked worktree — refused, main's hooks untouched, signposted --allow-nested"
+fi
+
+# S1 — incept inside a submodule (env CLEAN). git-common-dir is super/.git/modules/... (measured).
+#      Must refuse unless --allow-nested; the module's hooks must be byte-identical on refusal.
+lay_kit "$T/s1-suborigin" && ( cd "$T/s1-suborigin" && git_q init && git_q add -A && git_q commit -m lib )
+mkdir -p "$T/s1-super" && ( cd "$T/s1-super" && git_q init && git_q commit --allow-empty -m top \
+  && git_q -c protocol.file.allow=always submodule add "$T/s1-suborigin" vendor/lib && git_q commit -m addsub )
+lay_kit "$T/s1-super/vendor/lib"
+_modhooks="$T/s1-super/.git/modules/vendor/lib/hooks"
+before=$(fp "$_modhooks")
+# shellcheck disable=SC2086
+out=$( cd "$T/s1-super/vendor/lib" && sh scripts/incept.sh $INCEPT_ARGS 2>&1 ); rc=$?
+after=$(fp "$_modhooks")
+if [ "$before" != "$after" ]; then
+  bad "S1 incept in a submodule — WROTE into super/.git/modules/.../hooks/"
+elif [ "$rc" -eq 0 ]; then
+  bad "S1 incept in a submodule — exit 0 (must refuse unless --allow-nested)"
+elif ! printf '%s' "$out" | grep -q 'allow-nested'; then
+  bad "S1 incept in a submodule — refused but did not signpost --allow-nested"
+else
+  pass "S1 incept in a submodule — refused, module hooks untouched"
+fi
+
+# E1b — incept with GIT_DIR pointing at a NOT-YET-A-REPO directory (the fail-open: git_dir_outside returns
+#       "inside" because rev-parse fails, so the nested env check is skipped and incept git-inits the target
+#       and writes a hook into it). git_env_redirected must be checked UNCONDITIONALLY. Target byte-identical.
+mkdir -p "$T/e1b-target" "$T/e1b-victim"
+lay_kit "$T/e1b-victim"
+before=$(fp "$T/e1b-target")
+# shellcheck disable=SC2086
+out=$( cd "$T/e1b-victim" && GIT_DIR="$T/e1b-target" GIT_WORK_TREE="$T/e1b-victim" \
+       sh scripts/incept.sh $INCEPT_ARGS 2>&1 ); rc=$?
+after=$(fp "$T/e1b-target")
+if [ "$before" != "$after" ]; then
+  bad "E1b incept env-redirect to a NON-REPO dir — git-inited/wrote into GIT_DIR target (foreign write)"
+elif [ "$rc" -eq 0 ]; then
+  bad "E1b incept env-redirect to a non-repo dir — exit 0 (must refuse: GIT_DIR is set)"
+elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
+  bad "E1b incept env-redirect to a non-repo dir — refused but did not name GIT_DIR"
+else
+  pass "E1b incept env-redirect to a non-repo dir — refused, target untouched, named GIT_DIR"
+fi
+
+# E1c — incept with GIT_WORK_TREE set ALONE (no GIT_DIR). Also makes rev-parse unresolvable in the victim,
+#       so the same nested-skip fail-open applies. Must refuse (GIT_WORK_TREE is set).
+mkdir -p "$T/e1c-victim"
+lay_kit "$T/e1c-victim"
+# shellcheck disable=SC2086
+out=$( cd "$T/e1c-victim" && GIT_WORK_TREE="$T/e1c-victim" \
+       sh scripts/incept.sh $INCEPT_ARGS 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then
+  bad "E1c incept with GIT_WORK_TREE alone — exit 0 (must refuse: GIT_WORK_TREE is set)"
+elif ! printf '%s' "$out" | grep -q 'GIT_WORK_TREE'; then
+  bad "E1c incept with GIT_WORK_TREE alone — refused but did not name GIT_WORK_TREE"
+else
+  pass "E1c incept with GIT_WORK_TREE alone — refused, named GIT_WORK_TREE"
+fi
+
+# E2b — preflight with GIT_DIR pointing at a NOT-YET-A-REPO dir. Same fail-open; preflight must refuse.
+mkdir -p "$T/e2b-target" "$T/e2b-victim"
+lay_kit "$T/e2b-victim"
+out=$( cd "$T/e2b-victim" && GIT_DIR="$T/e2b-target" GIT_WORK_TREE="$T/e2b-victim" \
+       sh scripts/preflight.sh 2>&1 ); rc=$?
+if [ "$rc" -eq 0 ]; then
+  bad "E2b preflight env-redirect to a non-repo dir — exit 0 (must refuse: GIT_DIR is set)"
+elif ! printf '%s' "$out" | grep -q 'GIT_DIR'; then
+  bad "E2b preflight env-redirect to a non-repo dir — refused but did not name GIT_DIR"
+else
+  pass "E2b preflight env-redirect to a non-repo dir — refused, named GIT_DIR"
+fi
+
+# N-sym — a NORMAL repo reached via a SYMLINK. The containment compare must use pwd -P on BOTH sides or it
+#         false-refuses under /tmp on macOS. (CP-4's N6, for CP-11.)
+mkdir -p "$T/nsym-real" && lay_kit "$T/nsym-real"
+( cd "$T/nsym-real" && git_q init && git_q add -A && git_q commit -m base )
+ln -s "$T/nsym-real" "$T/nsym-link"
+# shellcheck disable=SC2086
+out=$( cd "$T/nsym-link" && sh scripts/incept.sh $INCEPT_ARGS 2>&1 ); rc=$?
+if [ "$rc" -ne 0 ]; then
+  bad "N-sym incept via a symlinked repo root — FALSE REFUSAL (exit $rc). Compare pwd -P on BOTH sides."
+else
+  pass "N-sym incept via a symlinked repo root — proceeded (git-common-dir compare is physical)"
+fi
+
+# P2 — --allow-nested in a linked worktree: proceeds, and the summary names the REAL shared hook path.
+lay_kit "$T/p2w-main" && ( cd "$T/p2w-main" && git_q init && git_q add -A && git_q commit -m base )
+( cd "$T/p2w-main" && git_q worktree add ../p2w-linked )
+# shellcheck disable=SC2086
+out=$( cd "$T/p2w-linked" && sh scripts/incept.sh $INCEPT_ARGS --allow-nested 2>&1 ); rc=$?
+if [ "$rc" -ne 0 ]; then
+  bad "P2 --allow-nested in a worktree — not accepted (exit $rc)"
+elif ! printf '%s' "$out" | grep -q "$T/p2w-main/.git/hooks/pre-push"; then
+  bad "P2 --allow-nested in a worktree — summary does not name the real shared hook path"
+else
+  pass "P2 --allow-nested in a worktree — proceeded, named the real shared hook path"
+fi
+
+# P3 — adopter-export from a linked worktree (env CLEAN, NO flag): the git-dir gates must NOT refuse it
+#      (env-only scope for export — the load-bearing don't-over-refuse-the-maintainer positive).
+#      ASSERT ON THE GIT-DIR REFUSAL, not overall exit status: this fixture's "kit" is itself an
+#      already-EXPORTED tree on the artifact leg (--kit-root <export>), whose CLAUDE.md has had its
+#      backlog-backend declaration CARVED OUT — so re-exporting it legitimately fails the 'Backlog backend'
+#      carve, which runs AFTER owns_itself + git_env_redirected in do_export and is orthogonal to CP-11.
+#      Reaching the export body (carve) — or a full rc0 export on the source leg — proves the worktree was
+#      NOT refused by a git-dir gate. A structural refusal would exit BEFORE the body -> caught by the else.
+lay_kit "$T/p3-main" && ( cd "$T/p3-main" && git_q init && git_q add -A && git_q commit -m base )
+( cd "$T/p3-main" && git_q worktree add ../p3-linked )
+out=$( cd "$T/p3-linked" && sh scripts/adopter-export.sh "$T/p3-out" 2>&1 ); rc=$?
+if printf '%s' "$out" | grep -qE 'redirects git away|not the root of its own git repository|git dir lives outside'; then
+  bad "P3 export from a linked worktree — a git-dir gate REFUSED a structural worktree (env-only scope broken)"
+elif [ "$rc" -eq 0 ]; then
+  if [ -f "$T/p3-out/scripts/incept.sh" ]; then
+    pass "P3 export from a linked worktree — full export succeeded (git-dir gates allowed the worktree)"
+  else
+    bad "P3 export from a linked worktree — exit 0 but produced no files (silent success)"
+  fi
+elif printf '%s' "$out" | grep -q 'Backlog backend'; then
+  pass "P3 export from a linked worktree — git-dir gates allowed it (reached the export body; the re-export carve failure is orthogonal to CP-11)"
+else
+  bad "P3 export from a linked worktree — unexpected failure (exit $rc): $(printf '%s' "$out" | tail -1)"
 fi
 
 echo
