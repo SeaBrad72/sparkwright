@@ -75,6 +75,44 @@ publish_decision() {
   if [ "$_ch" -eq 0 ]; then echo noop;    return 0; fi   # tag present + tree matches -> benign no-op
   echo refuse                                             # tag present + tree differs -> the defect
 }
+
+# --- PUB-CHANGELOG — the public release note is the CURATED block, never the internal changelog -----
+# The public repo has no PR history (it is a generated mirror), so GitHub cannot auto-generate notes.
+# Each CHANGELOG.md entry carries a `<!-- public:start -->…<!-- public:end -->` block: a user-facing
+# summary, deliberately separate from the internal bullets. This extracts THAT block for <ver> — never
+# the internal detail. Empty output = no block; the caller fails closed rather than publish empty/sausage.
+extract_public_notes() {
+  _epn_ver=$1; _epn_file=${2:-$ROOT/CHANGELOG.md}
+  [ -f "$_epn_file" ] || return 1
+  # BOTH markers are required. Lines are BUFFERED and emitted ONLY on a complete start..end pair — a
+  # dangling start (missing `<!-- public:end -->`) or an absent block emits NOTHING and returns non-zero,
+  # so the caller fails closed. Without this, a forgotten end marker would spill the internal bullets
+  # (everything to the next `## [` heading or EOF) straight into the public Release note (security HIGH).
+  awk -v ver="$_epn_ver" '
+    index($0, "## [" ver "]") == 1 { insec=1; next }                 # closing "]" stops 9.9.9==9.9.99
+    insec && index($0, "## [") == 1 { exit }                         # left the entry (emit iff done)
+    insec && index($0, "<!-- public:start -->") { started=1; next }
+    insec && started && index($0, "<!-- public:end -->") { done=1; exit }
+    insec && started { buf = buf $0 ORS }
+    END { if (done) printf "%s", buf; else exit 1 }
+  ' "$_epn_file"
+}
+
+# --- PUB-CHANGELOG — create the GitHub Release from the (already-scanned) curated note ---------------
+# Idempotent + best-effort, and called on BOTH the publish path AND the noop path — so a re-run
+# CONVERGES a Release that a prior `gh` failure left missing (the noop path exits before the publish
+# block, so without this a missing Release would only ever be fixable by hand). The tag IS the release;
+# a gh failure degrades LOUD, never as a publish failure. Uses $NOTE_DIR/release-notes.md (scanned clean
+# in step 2b) and runs inside $MIRROR so gh targets the public remote.
+ensure_release() {
+  command -v gh >/dev/null 2>&1 || { say "WARNING: gh not installed — $TAG has no GitHub Release. Install gh and create it from the CHANGELOG public block."; return 0; }
+  ( cd "$MIRROR" && gh release view "$TAG" >/dev/null 2>&1 ) && return 0   # already exists -> idempotent
+  if ( cd "$MIRROR" && gh release create "$TAG" --title "$TAG" --notes-file "$NOTE_DIR/release-notes.md" >/dev/null 2>&1 ); then
+    say "      created GitHub Release $TAG with the curated public notes"
+  else
+    say "WARNING: could not create GitHub Release $TAG (it IS tagged/published). Create it by hand: (cd <clone of $REMOTE> && gh release create $TAG --title $TAG --notes-file notes.md)"
+  fi
+}
 die()   { echo "publish-public: $*" >&2; exit 1; }
 say()   { echo "publish-public: $*"; }
 
@@ -268,6 +306,75 @@ selftest() {
     echo "  FAIL PUSH  --force failed to move the tag — the fixture proves nothing"; _fail=$((_fail+1))
   fi
 
+  # --- PUB-CHANGELOG: the GitHub Release note is the CURATED public block, NEVER the internal bullets
+  echo "publish-public --selftest: public release-notes extraction"
+  _cl="$_t/CHANGELOG.md"
+  cat > "$_cl" <<'EOF'
+# Changelog
+
+## [9.9.9] — 2026-01-01
+<!-- public:start -->
+Ninety-nine: the user-facing summary.
+<!-- public:end -->
+### Changed — internal headline
+- INTERNAL-ONLY sausage bullet (CP-XYZ) that must NOT reach public.
+
+## [9.9.8] — 2026-01-01
+<!-- public:start -->
+Older release summary.
+<!-- public:end -->
+### Changed
+- older internal bullet.
+EOF
+  _notes=$(extract_public_notes 9.9.9 "$_cl")
+  if printf '%s' "$_notes" | grep -q "Ninety-nine: the user-facing summary."; then
+    echo "  ok   NOTES extracts the public block for the target version"
+  else
+    echo "  FAIL NOTES did not extract the public block"; _fail=$((_fail+1))
+  fi
+  if printf '%s' "$_notes" | grep -qE "INTERNAL-ONLY|sausage"; then
+    echo "  FAIL NOTES leaked the internal bullets into the public release note"; _fail=$((_fail+1))
+  else
+    echo "  ok   NOTES ships ONLY the public block (no internal detail leaks)"
+  fi
+  if printf '%s' "$_notes" | grep -q "Older release summary"; then
+    echo "  FAIL NOTES bled into an adjacent version's block"; _fail=$((_fail+1))
+  else
+    echo "  ok   NOTES scoped to the target version only"
+  fi
+  if [ -z "$(extract_public_notes 9.9.7 "$_cl")" ]; then
+    echo "  ok   NOTES empty for a version with no public block (caller fails closed)"
+  else
+    echo "  FAIL NOTES returned content for a version that has none"; _fail=$((_fail+1))
+  fi
+  # HIGH-1 (security): a dangling start (no matching end) must fail CLOSED — never spill the bullets.
+  _cld="$_t/CHANGELOG-dangling.md"
+  cat > "$_cld" <<'EOF'
+# Changelog
+
+## [7.7.7] — 2026-01-01
+<!-- public:start -->
+Public summary with NO end marker.
+### Changed — internal
+- INTERNAL sausage bullet that must NEVER leak.
+
+## [7.7.6] — 2026-01-01
+<!-- public:start -->
+older summary.
+<!-- public:end -->
+EOF
+  _dangling=$(extract_public_notes 7.7.7 "$_cld") || true
+  if [ -z "$_dangling" ]; then
+    echo "  ok   NOTES dangling start (no end marker) -> empty (fail-closed)"
+  else
+    echo "  FAIL NOTES leaked past a dangling start marker"; _fail=$((_fail+1))
+  fi
+  if printf '%s' "$_dangling" | grep -q "sausage"; then
+    echo "  FAIL NOTES leaked the internal bullet on a dangling start"; _fail=$((_fail+1))
+  else
+    echo "  ok   NOTES no internal bullet leaks on a dangling start"
+  fi
+
   rm -rf "$_t"; rm -f "$PUBLISH_ID_FILE"
   [ "$_fail" -eq 0 ] || { echo "publish-public --selftest: $_fail failed" >&2; exit 1; }
   echo "publish-public --selftest: all passed"
@@ -290,6 +397,12 @@ if [ "$ALLOW_UNTAGGED" -eq 0 ]; then
   git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1 || die "no tag $TAG — a publish promotes a RELEASE. Tag it, or pass --allow-untagged."
   [ "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$(git rev-parse HEAD)" ] || die "HEAD is not the commit tagged $TAG — refusing to publish an unreleased tree."
 fi
+
+# PUB-CHANGELOG — a release must carry a curated public note (fail-closed: never publish a release with
+# empty notes, and never fall back to the internal bullets). Checked on --dry-run too, so a missing block
+# is caught before the real publish, not after the tag is already pushed.
+PUBLIC_NOTES=$(extract_public_notes "$VERSION") || PUBLIC_NOTES=""
+[ -n "$PUBLIC_NOTES" ] || die "no public release note for $VERSION — add a complete '<!-- public:start -->…<!-- public:end -->' block to its CHANGELOG.md entry (a dangling start also fails here). It becomes the GitHub Release note; the internal bullets never ship."
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sw-publish.XXXXXX") || die "mktemp failed"
 TREE="$WORK/export"
@@ -319,6 +432,20 @@ else
   die "ABORT — gitleaks is not installed, and a publish must not be less safe because a tool is missing (fail-closed)."
 fi
 
+# --- 2b. GATE THE RELEASE NOTE — the note is extracted from CHANGELOG.md, which is export-IGNORED and
+#     therefore ABSENT from the tree the scan above saw (security HIGH-2). Without this, the note reaches
+#     the public (indexed) Releases page with NO leak gate — the tree gates never inspect it, and step-4
+#     shows the tree diff, not the note. Scan it with the SAME tools, fail-closed, before any publish.
+NOTE_DIR="$WORK/note"; mkdir -p "$NOTE_DIR"
+printf '%s\n' "$PUBLIC_NOTES" > "$NOTE_DIR/release-notes.md"
+if ! NOTE_HITS=$(sensitive_hits "$NOTE_DIR"); then
+  die "ABORT — the release note could not be scanned. Nothing published."
+fi
+[ -z "$NOTE_HITS" ] || die "ABORT — the release note for $VERSION carries withheld/owner content ($NOTE_HITS). Fix its CHANGELOG public block. Nothing published."
+gitleaks detect --source "$NOTE_DIR" --no-git --redact --exit-code 1 >/dev/null 2>&1 \
+  || die "ABORT — gitleaks found a secret in the release note for $VERSION. Nothing published."
+say "      release note: scanned clean"
+
 # --- 3. MIRROR — full sync incl. deletes, so the public tree == the export exactly ---------------
 say "[3/5] mirror — full sync into the public repo (adds, updates, DELETES)"
 git clone --quiet "$REMOTE" "$MIRROR" 2>/dev/null || die "could not clone $REMOTE"
@@ -345,6 +472,7 @@ CHANGED=$(cd "$MIRROR" && git status --porcelain | wc -l | tr -d ' ')
 say "      $CHANGED path(s) changed"
 case "$(publish_decision "$TAG_PUBLISHED" "$CHANGED")" in
   noop)
+    ensure_release   # tag+tree already published; converge a Release a prior gh failure left missing
     say "nothing to publish — public repo already matches $TAG"; exit 0 ;;
   refuse)
     echo "publish-public: REFUSING — $TAG is ALREADY PUBLISHED on $REMOTE, but the export differs from the published tree ($CHANGED path(s) would change)." >&2
@@ -385,4 +513,9 @@ This repository is a generated snapshot of the shippable product — do not edit
   git push --quiet origin HEAD:main       || die "publish: push of main failed — re-run to converge"
   git push --quiet origin "refs/tags/$TAG" || die "publish: tag push failed (a concurrent publish may have landed $TAG) — nothing moved"
 ) || exit 1
+
+# PUB-CHANGELOG — the tag pushed above IS the release; add the curated note as a GitHub Release so the
+# public repo has a changelog (its "Releases" page). Same idempotent helper the noop path uses.
+ensure_release
+
 say "published $TAG -> $REMOTE"
