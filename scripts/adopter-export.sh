@@ -151,10 +151,11 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # route, NOT by weakening the gate (the kit's own CLAUDE.md is untouched; source tree unchanged).
   # Anchor is VERBATIM resolve_backend's field grep (conformance/backlog-lib.sh:19) so the carve and the
   # reader agree on what a declaration IS — if they disagreed the export would ship a live declaration
-  # and go green while lying. Fail LOUDLY on a no-op carve (a silent carve is a dark carve): the kit
-  # always ships this declaration post-KW6-A2, so ZERO matches means the field's format drifted from the
-  # reader — refuse the export rather than ship a tree that might still declare. Idempotent (each fresh
-  # `git archive` re-extracts the source line; the carve removes it deterministically).
+  # and go green while lying. Idempotent BY DESIGN: 1 match => strip it (the dev-source path); 0 matches
+  # => already carved, nothing to strip => pass (the export-of-an-export path — the public mirror is
+  # itself an export). Because the anchor IS the reader's grep, zero matches means the reader sees no
+  # declaration, which is precisely the post-state to guarantee — so a no-op carve is success, not drift.
+  # The only loud-fail is >1 (ambiguous — refuse to blind-delete lines the reader never reads).
   _cm="$_dest/CLAUDE.md"
   _cm_anchor='^[-*[:space:]]*\**backlog backend\**[^:]*:'
   if [ -f "$_cm" ]; then
@@ -169,15 +170,26 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
     # keeps grep's no-match rc-1 from tripping `set -eu` (grep -c still prints the count "0").
     _cm_n=$(grep -Eic "$_cm_anchor" "$_cm" 2>/dev/null || true)
     if [ "$_cm_n" -eq 0 ]; then
-      echo "adopter-export: 'Backlog backend' carve anchor no longer matches CLAUDE.md — the declaration format drifted from conformance/backlog-lib.sh::resolve_backend. Update this carve and the reader together, or remove this carve if the kit stopped declaring a backend." >&2
-      return 1
+      # 0 matches = the tree is ALREADY in the exported post-state: its CLAUDE.md declares no backend.
+      # This is the NORMAL, correct input whenever adopter-export runs on its own output — the published
+      # public mirror IS an export (publish-public.sh generates it via adopter-export), and the README
+      # has the adopter re-export that mirror (export-of-an-export). Because this anchor is verbatim
+      # resolve_backend's grep (backlog-lib.sh:19), zero anchor matches == the reader will find no
+      # declaration == exactly the post-state this carve exists to guarantee. Nothing to strip → pass.
+      # (This makes adopter-export a fixpoint: export(export(X)) == export(X); locked by
+      # conformance/adopter-export-wired.sh block (g). A genuine format-drift in the DEV source is
+      # harmless here for the same reason — a declaration the anchor can't see, the reader can't read
+      # either, so the export never ships a live backend. The >1 case below still loud-fails.)
+      :
     fi
     if [ "$_cm_n" -gt 1 ]; then
       echo "adopter-export: 'Backlog backend' carve is ambiguous — $_cm_n lines in the exported CLAUDE.md match the declaration anchor, but resolve_backend reads only the first (head -1). Carve and reader disagree about which line is 'the declaration'; refusing to blind-delete $_cm_n lines. Make the kit declare its backend on exactly ONE line (offending lines):" >&2
       grep -Ein "$_cm_anchor" "$_cm" >&2 || true
       return 1
     fi
-    # Exactly one match: strip that single line. (`grep -Eiv` removes it; there is only the one.)
+    # Exactly one match: strip that single line. (`grep -Eiv` removes it; there is only the one.) The
+    # 0-match case also falls through to here and is a deliberate safe no-op: `grep -Eiv` re-emits every
+    # line unchanged, so the mv rewrites CLAUDE.md identically. Keep this in mind before editing below.
     grep -Eiv "$_cm_anchor" "$_cm" > "$_cm.$$.kw6a2" && mv "$_cm.$$.kw6a2" "$_cm"
     # Two-sided dark-carve detection: a declaration must NOT survive the strip.
     if grep -Eiq "$_cm_anchor" "$_cm"; then

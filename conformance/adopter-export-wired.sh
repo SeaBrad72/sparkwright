@@ -167,7 +167,41 @@ run() {
       echo "FAIL: README hardcodes a drifting export file-count — say the export script prints the exact count instead (design B / F1)"; rc=1
     fi
   fi
-  [ "$rc" -eq 0 ] && echo "PASS: adopter-export wired + link-safe + prunes + README-count-clean"
+  # (g) FIXPOINT / public-mirror front door. The public repo is produced BY adopter-export
+  # (publish-public.sh:[1/5] runs it), so the published mirror IS an export output. The README then has
+  # the adopter run adopter-export ON that mirror — export-of-an-export. That second run MUST succeed and
+  # be a fixpoint: export(export(X)) == export(X). CI only ever exported from the DEV tree, so this
+  # front-door path shipped BROKEN (v3.157.0: the Backlog-backend carve treated the already-carved
+  # zero-match state as fatal drift and aborted). This block is that missing leg — it exports twice,
+  # simulating publish then adopter, and asserts the second export both succeeds and is byte-identical.
+  _fp=$(mktemp -d); _fp1="$_fp/mirror"; _fp2="$_fp/adopter"
+  if ( cd "$ROOT" && sh scripts/adopter-export.sh "$_fp1" >/dev/null 2>&1 ) \
+     && ( cd "$_fp1" && git init -q && git add -A \
+          && git -c gc.auto=0 -c user.email=ci@kit -c user.name=ci commit -qm mirror >/dev/null 2>&1 ) \
+     && ( cd "$_fp1" && sh scripts/adopter-export.sh "$_fp2" >/dev/null 2>&1 ); then
+    # Behavioral, NOT a re-grep: ask the REAL reader (resolve_backend, sourced in a subshell so it
+    # neither pollutes run() nor needs a copy of the anchor) whether the twice-exported tree declares a
+    # backend. Using the reader's OWN grep means a future carve/reader anchor drift trips HERE —
+    # restoring the drift tripwire the carve's 0-match pass removed, and killing the 3rd anchor copy.
+    # (This is the [[presence-check-cannot-see-substitution]] lesson applied to this exact file.)
+    if [ -n "$( . "$ROOT/conformance/backlog-lib.sh"; resolve_backend "$_fp2" 2>/dev/null )" ]; then
+      echo "FAIL: export-of-an-export resolves a live Backlog backend (carve/reader drift)"; rc=1
+    fi
+    # Empty dirs are cosmetic: the FIRST export can leave an empty .github/workflows/ (git does not
+    # track empty dirs, so the re-export drops it); P0-FU requires zero workflow FILES, satisfied by
+    # both. Prune empty dirs from BOTH trees so the fixpoint asserts same files + same content, not
+    # incidental directory entries.
+    find "$_fp1" "$_fp2" -depth -type d -empty -not -path '*/.git/*' -delete 2>/dev/null || true
+    if diff -rq --exclude=.git "$_fp1" "$_fp2" >/dev/null 2>&1; then
+      echo "PASS: adopter-export is a fixpoint (public-mirror re-export succeeds)"
+    else
+      echo "FAIL: adopter-export is not a fixpoint — export(export(X)) != export(X):"; diff -rq --exclude=.git "$_fp1" "$_fp2" 2>&1 | head; rc=1
+    fi
+  else
+    echo "FAIL: export-of-an-export FAILED — the published mirror's front door is broken (an adopter following the README cannot run adopter-export on the mirror; cause: the Backlog-backend carve rejects the already-carved zero-match state)"; rc=1
+  fi
+  rm -rf "$_fp" 2>/dev/null || true
+  [ "$rc" -eq 0 ] && echo "PASS: adopter-export wired + link-safe + prunes + README-count-clean + fixpoint"
   return $rc
 }
 
@@ -245,6 +279,24 @@ if [ "${1:-}" = "--selftest" ]; then
     rm -f "$_z/.github/workflows/kitdev-probe.$_ext"
   done
   rm -rf "$_z" 2>/dev/null || true
+  # negative (g / KW27 non-vacuity): block (g) must have TEETH — with the PRE-FIX carve (zero-match =>
+  # loud-fail), export-of-an-export MUST fail. Export the real tree once (a mirror), reintroduce the
+  # pre-fix zero-match `return 1` into the FIXTURE's own script, commit (adopter-export archives HEAD),
+  # then re-export: it must FAIL. If it still succeeds, block (g) is vacuous — it would not catch the
+  # v3.157.0 front-door regression.
+  _fpm=$(mktemp -d); _fpo=$(mktemp -d)
+  if ( cd "$ROOT" && sh scripts/adopter-export.sh "$_fpm" >/dev/null 2>&1 ); then
+    sed 's/if \[ "$_cm_n" -eq 0 \]; then/if [ "$_cm_n" -eq 0 ]; then return 1;/' \
+      "$_fpm/scripts/adopter-export.sh" > "$_fpm/scripts/.ae.tmp" && mv "$_fpm/scripts/.ae.tmp" "$_fpm/scripts/adopter-export.sh"
+    ( cd "$_fpm" && git init -q && git add -A \
+      && git -c user.email=ci@kit -c user.name=ci commit -qm pre-fix >/dev/null 2>&1 ) || true
+    if ( cd "$_fpm" && sh scripts/adopter-export.sh "$_fpo" >/dev/null 2>&1 ); then
+      echo "adopter-export-wired --selftest: FAIL (pre-fix zero-match carve still let export-of-an-export succeed — block (g) is vacuous)"; sfail=1
+    fi
+  else
+    echo "adopter-export-wired --selftest: FAIL (could not build the export-of-export fixture)"; sfail=1
+  fi
+  rm -rf "$_fpm" "$_fpo" 2>/dev/null || true
   [ "$sfail" -eq 0 ] && { echo "adopter-export-wired --selftest: OK"; exit 0; } || exit 1
 fi
 
