@@ -9,6 +9,9 @@
 .claude/mcp-policy.json
 .claude/settings.json
 .gitattributes
+.github/ISSUE_TEMPLATE/bug_report.md
+.github/ISSUE_TEMPLATE/feedback.md
+.github/PULL_REQUEST_TEMPLATE.md
 .gitignore
 .kit-manifest
 .kit/budget.conf
@@ -18,6 +21,8 @@
 AGENTS.md
 CLAUDE.md
 CODEOWNERS
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
 DEVELOPMENT-PROCESS.md
 DEVELOPMENT-STANDARDS.md
 GLOSSARY.md
