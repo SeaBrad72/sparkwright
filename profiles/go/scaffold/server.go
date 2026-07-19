@@ -125,6 +125,21 @@ func writeResponse(w http.ResponseWriter, r *http.Request, status int, contentTy
 	}
 	w.WriteHeader(status)
 	if withBody {
+		// Reviewed false positive: this route table never emits an HTML/active-content
+		// body. dispatch() (above) returns either "application/json" (bytes from
+		// jsonBytes()/json.Marshal, which HTML-escapes <, >, & by default) or, for
+		// /metrics only, "text/plain; version=0.0.4" (Prometheus exposition text whose
+		// only variable field is the HTTP method, bounded to knownMethods + "other" in
+		// telemetry.go — no free-form/user-controlled text ever reaches this body). Both
+		// content-types are inert in a browser, and instrument() (above) stamps
+		// X-Content-Type-Options: nosniff on every response, so a browser cannot be
+		// tricked into sniffing either body as HTML. No HTML sink exists today.
+		//
+		// CAUTION: writeResponse is a GENERIC helper — it takes an arbitrary
+		// contentType/body from its caller. If a future route ever passes
+		// "text/html" (or any body containing unescaped user input rendered as
+		// markup), this suppression must be re-evaluated/removed at that call site.
+		// nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter
 		_, _ = w.Write(body)
 	}
 }

@@ -25,7 +25,7 @@ It must print `guard-wired: OK`. If it FAILs, the guard is not wired — fix the
 
 Bring these into your repo root (adapt, don't blindly overwrite):
 
-- Governing docs: `ENGINEERING-PRINCIPLES.md` (the kit's principles `CLAUDE.md`, renamed), `DEVELOPMENT-PROCESS.md`, `DEVELOPMENT-STANDARDS.md`, `MAINTAINING.md`.
+- Governing docs: the kit's principles doc — **the download ships it as `CLAUDE.md`; copy it in and rename it to `ENGINEERING-PRINCIPLES.md` yourself** (the rename only happens automatically in greenfield `incept`, which you don't run here) so it doesn't collide with your project's own root `CLAUDE.md` — plus `DEVELOPMENT-PROCESS.md`, `DEVELOPMENT-STANDARDS.md`, `MAINTAINING.md`.
 - `profiles/`, `conformance/`, `templates/`, `docs/`, `scripts/`.
 - `.github/workflows/ci.yml` (from your chosen `profiles/<stack>/ci.yml`) — **merge** with any existing CI; don't drop your pipeline. *(If you run `incept` in a populated repo, it now **preserves** an existing `ci.yml`/CODEOWNERS — it warns and skips rather than overwriting — but you must still merge the profile's gate-ids into your pipeline by hand.)*
 - `.claude/` — **merge, never overwrite** (next section).

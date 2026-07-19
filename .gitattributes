@@ -9,6 +9,7 @@ docs/ROADMAP-KIT.md                 export-ignore
 .github/workflows/release-coherence.yml export-ignore
 .github/workflows/drift-watch.yml   export-ignore
 .github/workflows/golden-path.yml   export-ignore
+.github/dependabot.yml              export-ignore
 docs/superpowers/                   export-ignore
 .superpowers/                       export-ignore
 .github/CODEOWNERS                                                export-ignore

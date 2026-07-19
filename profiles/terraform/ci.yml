@@ -28,14 +28,14 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           fetch-depth: 0
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd  # v3
         with:
           terraform_version: '1.9'
-      - uses: terraform-linters/setup-tflint@v4
+      - uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6  # v4
 
       - name: Init (offline)
         id: gate-install
@@ -86,7 +86,7 @@ jobs:
 
       - name: Dependency / misconfig scan (Trivy config)
         id: gate-dep-scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.24.0
         with:
           scan-type: config
           scan-ref: .
@@ -95,7 +95,7 @@ jobs:
 
       - name: Generate SBOM (Trivy CycloneDX)
         id: gate-sbom
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@6e7b7d1fd3e4fef0c5fa8cce1229c54b2c9bd0d8  # v0.24.0
         with:
           scan-type: fs
           scan-ref: .
@@ -103,14 +103,14 @@ jobs:
           output: sbom.json
 
       - name: Upload SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: sbom
           path: sbom.json
 
       - name: Upload build artifact (for provenance)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: build-artifact
           path: tfplan          # the Terraform plan (the IaC artifact)
@@ -125,12 +125,12 @@ jobs:
       id-token: write       # scoped to this push-only job (build-provenance attestation)
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: build-artifact
           path: build-artifact
       - name: Attest build provenance
         id: gate-provenance
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@ef244123eb79f2f7a7e75d99086184180e6d0018  # v1
         with:
           subject-path: build-artifact/**
