@@ -133,4 +133,3 @@ Discover (postmortem → backlog). The human commands the catastrophic action; t
 never actuates. It is a *hat the Orchestrator wears*, not a standing Ops seat (agents-vs-skills rule: the kit
 has no live system of its own; demand-gated on a live system + distinct prod authority). Operate feeds back to
 Discover — the hat completes the loop.
-

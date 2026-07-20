@@ -11,6 +11,15 @@ The kit's own design skill: take an idea → a design the owner has approved, th
 Do NOT write code, scaffold a project, or take any implementation action until you have presented a design and the owner has approved it. Every slice, however simple. A "simple" change gets a short design — but it is still presented and approved.
 </HARD-GATE>
 
+### Inception exception (Phase 0 is not a loop feature)
+The HARD-GATE above governs **loop** work — features, components, behaviour changes. It **does not
+govern Phase-0 Inception**: running `incept` is the one-time bootstrap that *creates* the repo and its
+control plane, not a loop feature. Inception has its own design gate (the charter + ADR-000, fit/maturity-
+disclosed and conformance-enforced; see `DEVELOPMENT-PROCESS.md` §3), satisfied *within* Inception — so
+architecture-first still holds at Phase 0, it is simply gated there. **Do not commit a spec before
+`incept`** — there is no repo yet, and a pre-incept commit breaks `inception-done`'s fixture build.
+`incept`'s ownership/guard refusals stay in force.
+
 <!-- The frontmatter and the discipline headings below are conformance-load-bearing:
      conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers.
      Edits that drop or rename them can turn the skill-spine lock RED. -->

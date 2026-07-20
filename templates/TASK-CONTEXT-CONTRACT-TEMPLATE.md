@@ -17,6 +17,12 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 ## Task Context Contract — <task name>
 > Parent: <backlog item id · spec ref · plan-task ref>
 
+### Class (optional — declares a non-implementation task)
+- **validation / field-test (cold)** — this step EXERCISES the subject under review; success is faithful
+  execution + honest recording, not a subject change. Enables the reviewer's FAITHFUL-FAILURE terminal
+  state (`skills/review`). Implies the subject-under-test Prohibition below. Absent a Class line, a step
+  defaults to **implementation** (the APPROVE / NEEDS-FIXES binary applies — the third verdict is opt-in).
+
 ### Reads
 - **Constraints (OBEY — cite the governing clause; do not paraphrase a rule, cite it):**
   - DEVELOPMENT-STANDARDS.md §14 (required CI gate ids)
@@ -44,6 +50,8 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 - touch control-plane files unless this step's whole purpose is a ratified control-plane change
 - add a runtime dependency
 - weaken or delete an existing gate / conformance assertion
+- **modify the subject-under-test** — for a validation / field-test class step, a repair inside the vehicle
+  voids the test (cold-integrity); route the discovered defect to the originating backlog instead
 - <task-specific prohibition>
 ```
 

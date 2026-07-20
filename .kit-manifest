@@ -111,6 +111,7 @@ conformance/eval-ready.sh
 conformance/explain-wired.sh
 conformance/feature-flags-ready.sh
 conformance/feature-flags-wired.sh
+conformance/feedback-link-lifecycle-documented.sh
 conformance/fixtures/bad-agent-trace/ci.yml
 conformance/fixtures/bad-agent-trace/scaffold/.db-backed
 conformance/fixtures/bad-agent-trace/scaffold/.gitignore
@@ -173,6 +174,7 @@ conformance/green-on-clone.sh
 conformance/guard-core-sourced.sh
 conformance/guard-wired.sh
 conformance/harness-adapter.sh
+conformance/harness-ceiling-disclosed.sh
 conformance/harness-decision-integrity.sh
 conformance/incept-containment.sh
 conformance/incept-first-run-green.sh
@@ -186,6 +188,7 @@ conformance/incept-manifests/python.txt
 conformance/incept-manifests/rust.txt
 conformance/incept-manifests/terraform.txt
 conformance/incept-manifests/typescript-node.txt
+conformance/inception-bootstrap-documented.sh
 conformance/inception-done.sh
 conformance/kit-base.sh
 conformance/kit-current.sh
@@ -237,6 +240,7 @@ conformance/review-lane.sh
 conformance/roster-authority-ready.sh
 conformance/roster-guard-wired.sh
 conformance/runaway-killswitch-wired.sh
+conformance/runtime-floor-coherent.sh
 conformance/runtime-security.sh
 conformance/script-disclosure.sh
 conformance/security-policy.sh
@@ -254,16 +258,19 @@ conformance/tier-advice-wired.sh
 conformance/token-scope.sh
 conformance/trace-query-wired.sh
 conformance/tracker-contract.sh
+conformance/validation-terminal-state-documented.sh
 conformance/verify-enforced-wired.sh
 conformance/verify.sh
 conformance/version-helpers.sh
 conformance/version-tag-coherent.sh
 conformance/waivers-valid.sh
 conformance/wf-helpers.sh
+conformance/whitespace-clean.sh
 docs/ADR-000-EXAMPLE.md
 docs/STACK-SELECTION.md
 docs/adoption/DEPLOYMENT-ENVIRONMENT.md
 docs/adoption/brownfield.md
+docs/adoption/inception-bootstrap.md
 docs/adoption/model-tier-binding.md
 docs/adoption/neutrality-by-construction.md
 docs/adoption/skill-rosters.md
@@ -583,6 +590,8 @@ profiles/typescript-node/deploy/helm/values.yaml
 profiles/typescript-node/deploy/k8s/deployment.yaml
 profiles/typescript-node/deploy/k8s/service.yaml
 profiles/typescript-node/scaffold-cli/.gitignore
+profiles/typescript-node/scaffold-cli/.node-version
+profiles/typescript-node/scaffold-cli/.nvmrc
 profiles/typescript-node/scaffold-cli/README.md
 profiles/typescript-node/scaffold-cli/eslint.config.js
 profiles/typescript-node/scaffold-cli/package-lock.json
@@ -598,6 +607,8 @@ profiles/typescript-node/scaffold-cli/tsconfig.json
 profiles/typescript-node/scaffold-cli/vitest.config.ts
 profiles/typescript-node/scaffold/.db-backed
 profiles/typescript-node/scaffold/.gitignore
+profiles/typescript-node/scaffold/.node-version
+profiles/typescript-node/scaffold/.nvmrc
 profiles/typescript-node/scaffold/.semgrepignore
 profiles/typescript-node/scaffold/README.md
 profiles/typescript-node/scaffold/eslint.config.js

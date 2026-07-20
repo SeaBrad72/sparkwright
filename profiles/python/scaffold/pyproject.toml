@@ -2,7 +2,7 @@
 name = "app"
 version = "0.1.0"
 description = "Sparkwright python-profile starter scaffold."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = []  # the app is stdlib-only; add real deps as the project grows
 
 [build-system]
@@ -23,7 +23,7 @@ dev = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
 
@@ -37,7 +37,7 @@ select = ["E", "F", "I", "UP", "B", "C90", "S"]
 max-complexity = 10
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 

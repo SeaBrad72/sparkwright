@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=24" },
   "bin": { "app": "dist/cli.js" },
   "scripts": {
     "dev": "node --import tsx src/cli.ts",

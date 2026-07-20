@@ -18,6 +18,9 @@ Without this stamp, three concurrent dogfoods produce three unattributable anecd
 
 Give each finding a **K-style id** (`K1`, `K2`, …) so it is quotable in review and in the field report. **Severity:** blocker / high / medium / low.
 
+> **Link lifecycle.** This log stays `untracked until the end-of-run synthesis commit`, yet `check-links` resolves relative links against the tracked set (`git ls-files`).
+> So when a BACKLOG or field-report entry needs a finding, `cite it by its K-id as plain text, never a Markdown link` to `KIT-FEEDBACK.md` — a link becomes safe only once the synthesis commit tracks this file.
+
 | Id | What I expected | What happened | Severity | Where (file / step) | Notes |
 |----|-----------------|---------------|----------|---------------------|-------|
 | K1 | [the kit's promise / my assumption] | [the actual friction] | [high] | [file, command, or phase] | [cause if known] |

@@ -101,4 +101,3 @@ done
 [ "$found" -eq 1 ] || { echo "token-scope: N/A — no workflow files under $ROOT"; exit 0; }
 if [ "$fail" -eq 0 ]; then echo "OK: every scanned workflow scopes id-token per-job + ships no AWS/Azure/GCP static keys (curated list)"; exit 0; fi
 echo "FAIL: a workflow over-grants OIDC tokens or ships static cloud credentials (see above)"; exit 1
-

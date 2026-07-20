@@ -60,6 +60,12 @@ check control agent-boundary   sh conformance/agent-boundary.sh --selftest
 check control harness-adapter  sh conformance/harness-adapter.sh adapters/claude-code
 check control harness-generic  sh conformance/harness-adapter.sh adapters/generic
 check control harness-adapter-selftest sh conformance/harness-adapter.sh --selftest
+check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
+check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
+check control validation-terminal-state           sh conformance/validation-terminal-state-documented.sh
+check control validation-terminal-state-selftest   sh conformance/validation-terminal-state-documented.sh --selftest
+check control feedback-link-lifecycle              sh conformance/feedback-link-lifecycle-documented.sh
+check control feedback-link-lifecycle-selftest      sh conformance/feedback-link-lifecycle-documented.sh --selftest
 check control named-adapters-selftest  sh conformance/named-adapters.sh --selftest
 check control ci-gates         sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
 check control image-supply     sh conformance/container-supply-chain.sh
@@ -67,10 +73,13 @@ check control shellcheck       sh conformance/shellcheck.sh
 check control "license-check(selftest)" sh scripts/license-check.sh --selftest
 check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
+check control whitespace-clean  sh conformance/whitespace-clean.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control promotion-contract  sh conformance/promotion-contract-documented.sh
+check control inception-bootstrap  sh conformance/inception-bootstrap-documented.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
 check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
+check control runtime-floor   sh conformance/runtime-floor-coherent.sh
 # Registered here (unlike non-vacuity-wired below) BECAUSE IT IS PORTABLE: a pure classifier over a file
 # listing, with no dependency on the kit's own ci.yml, so it behaves identically on an adopter artifact.
 # It lives in conformance/ (not scripts/) DELIBERATELY: the non-vacuity sweep's target_set only greps

@@ -9,6 +9,8 @@
 - **Order** by value × urgency ÷ effort-risk — the intent owner ranks; the lead breaks ties on risk/deps. No story points.
 - Work types share one board and are prioritized against each other: **feature · bug · tech-debt · spike · recurring**. Tech-debt gets a standing paydown share each cycle.
 - Move items down the states as they flow. Entering **In Progress** is an atomic ownership claim (no double-claims).
+- **Empty section?** Keep its header table with zero rows (the canonical form shown below), **or** write a bare `None.` — `backlog-current.sh` accepts either as an empty state. A section with any *content* always needs its schema table (so no item is ever tracked without its traceability column).
+- A failure/blocked item referencing a `KIT-FEEDBACK.md` finding must `cite the finding by its plain K-id until the synthesis commit tracks` the log; a Markdown link is safe only after that commit (`check-links` resolves against `git ls-files`).
 
 ---
 

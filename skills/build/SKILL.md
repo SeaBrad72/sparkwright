@@ -29,6 +29,14 @@ Read the owner-approved plan end to end (file structure, task order, which tasks
 7. **Final whole-branch review.** After all tasks integrate, run a final adversarial **whole-branch review** of the branch as a whole. Per-task green does not imply the branch is coherent — the integrated diff can drift, duplicate, or conflict in ways no single task's gate could see.
 8. **Control-plane → authored in a dev-clone, actuated on the recorded GO.** Any task touching control-plane (guard / CI / conformance / claims / agent-or-skill defs / governance markers) is authored in a **dev-clone** (`git clone . <literal temp path>`), where the agent edits directly while **the guard stays armed on the real repo**; the agent **never silently commits control-plane** (never *without* a recorded GO). The human reviews a **CI-green diff**. On the human's recorded **GO** the **agent actuates the mechanical steps** — commit → push → open PR → tag → `scripts/promotion-verify.sh record` → `check`; the **human** does the **GO** and — solo, control-plane only — the single `gh pr merge --admin` (the kill-switch the guard denies the agent). Ordinary/team work: the agent merges too, so the human does zero mechanical keystrokes. Version finishing (VERSION bump + README badge + CHANGELOG entry) folds into the slice's own commits so the release step cannot be skipped.
 
+> **Inception exception.** The dev-clone rule governs control-plane changes **in the loop**. It **does
+> not govern Inception**: `incept` transforms CI/governing files **in place** because it **is** the act
+> that creates the repo and its control plane — there is no prior repo to dev-clone, and no guard yet to
+> arm. See the Inception bootstrap sequence (`docs/adoption/inception-bootstrap.md`, summarized at
+> `DEVELOPMENT-PROCESS.md` §3). This exempts the *mechanism*,
+> not the rigor: `incept`'s ownership/guard refusals stay in force — it still refuses to run over a
+> foreign-owned tree (the ownership check stays live).
+
 ## build composes tdd
 Different altitudes, no overlap. **`build`** orchestrates *across* all tasks of a slice — dispatch, review, integrate. **`tdd`** builds *one* task test-first *within* a dispatched executor. `build` invokes `tdd` once per task; the two never do each other's job. This is why naming the skill `build` does not collide with `tdd`: the scope (whole plan vs. one task) is the boundary.
 

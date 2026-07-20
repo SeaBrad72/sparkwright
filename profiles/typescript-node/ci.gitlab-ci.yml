@@ -35,7 +35,7 @@ variables:
   COSIGN_VERSION: "3.1.1"
 
 default:
-  image: node:20-bookworm
+  image: node:24-bookworm
   cache:
     key:
       files: [pnpm-lock.yaml]

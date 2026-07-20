@@ -72,9 +72,11 @@ INCEPTION (one-time) ──▶ [ Discover → Plan → Build → Review → Rele
 5. **Instantiate project artifacts** — create the project's `CLAUDE.md` (from `templates/PROJECT-CLAUDE-TEMPLATE.md`), `RUNBOOK.md`, the backlog (`BACKLOG.md` from `templates/BACKLOG-TEMPLATE.md`, or chosen backend), and a seed roadmap.
 6. **Per-project configuration** — declare in the project `CLAUDE.md`: backlog backend (§6), autonomy-tier defaults (§13), SLO/error-budget posture (§9), review routing (§12), WIP limits, and environments (Dev/QA/UAT/Prod — see Environments & promotion).
 7. **Assign roles** — fill each function in §2 with a human or agent for this project.
-8. **Exit gate — "Inception Done"** — charter approved, stack decided (ADR-000), CI green, project `CLAUDE.md`/`RUNBOOK`/backlog in place, config declared, roles assigned. **Only then does the project enter the loop at Discover.**
+8. **Exit gate — "Inception Done"** — charter approved, stack decided (ADR-000), CI green, branch protection on `main`, project `CLAUDE.md`/`RUNBOOK`/backlog in place, config declared, roles assigned. **Only then does the project enter the loop at Discover.**
 
 Inception is itself subject to the standards (the empty repo already meets the structural bar) and produces its first artifacts per §15.
+
+**Bootstrap order (incept-first):** run `incept` *first* (it `git init`s) — **do not commit before it** (no repo yet; a pre-incept commit breaks `inception-done`'s fixtures). Commit the incepted baseline as the first commit; the first feature branches from it, never a restored `origin/main`. `incept` is exempt from the loop's design/build *mechanics* (see the "Inception exception" notes in `skills/design` + `skills/build`), not from architecture-first (ADR-000). Full sequence + the K1/K9/K15 detail: [`docs/adoption/inception-bootstrap.md`](docs/adoption/inception-bootstrap.md).
 
 ---
 
@@ -328,7 +330,7 @@ These mechanics work for a single agent spawning sub-agents today and scale to m
 - **Worktree / branch isolation.** Parallel agents work in isolated git worktrees / short-lived branches.
 - **Integration cadence.** Trunk-based with frequent, small integrations — avoid big-bang merges across streams.
 - **Conflict resolution.** Defined precedence and a re-sync procedure when parallel work overlaps.
-- **Review routing / ownership.** CODEOWNERS-style mapping of who/which agent/lens reviews what. **An agent never reviews-and-merges its own work.** Ratification authority by role → §13 and `docs/enterprise/ratification-rbac.md`.
+- **Review routing / ownership.** CODEOWNERS-style mapping of who/which agent/lens reviews what. **An agent never reviews-and-merges its own work.** A **validation / field-test** task under review carries a third terminal state (`skills/review` FAITHFUL-FAILURE) — a faithful test that surfaces a real defect is a test success (not NEEDS-FIXES); the defect routes to the originating backlog, never a repair in the vehicle. Ratification authority by role → §13 and `docs/enterprise/ratification-rbac.md`.
 - **WIP limits.** Cap concurrent work to protect integration safety and human review bandwidth.
 - **Stakeholder visibility.** The board is the live status; beyond it, surface progress to non-builder stakeholders via an on-demand board digest, milestone demos, and the flow/DORA metrics (§14) — on a cadence and in a format the adopting org sets. (A configuration point, not a fixed ritual.)
 - **Context-bound dispatch.** Every qualifying agent step (proportionality rule in the template) carries a **Task Context Contract** (`templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md`) — its Reads (constraints/inputs), Writes, and Prohibitions. It is **advisory and declared, not self-certifying**: a present TCC records the binding, never that the step obeyed it — **the reviewer receives the same contract** and verifies obedience against it (not generically). Tool-neutral: the kit owns the contract; a runtime realizes it (Claude Code as the subagent dispatch + reviewer prompt; others their own way) — "one contract, many runtimes," as with the guard and CI.

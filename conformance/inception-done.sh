@@ -167,6 +167,55 @@ else
   done
 fi
 
+# ── Branch-protection leg (K5). MODE strict (default) | surface. GitHub -> live verify via
+#    branch-protection.sh --raw (we apply our OWN policy, never its CI-collapsed exit). Non-GitHub
+#    -> a recorded CLAUDE.md attestation. No remote -> outstanding/fatal per mode. exit 1
+#    (verified-unprotected) is fatal in BOTH modes; unverifiable is fatal only in strict.
+MODE="${MODE:-strict}"
+if [ "$is_repo" -ne 1 ]; then
+  echo "SKIP: branch-protection leg — not a git repository (see the repo failure above)"
+else
+  _remote=$(git remote get-url origin 2>/dev/null || true)
+  if [ -z "$_remote" ]; then
+    if [ "$MODE" = surface ]; then
+      echo "OUTSTANDING: branch protection — no remote configured yet; protect main on the remote before entering the loop"
+    else
+      echo "FAIL: branch protection — no remote configured; main cannot be protected (not loop-ready). Add a protected remote, or run --surface for the local-surface check"; fail=1
+    fi
+  else
+    case "$_remote" in
+      *github.com*)
+        if sh conformance/branch-protection.sh --raw >/dev/null 2>&1; then _bp=0; else _bp=$?; fi
+        case "$_bp" in
+          0) echo "PASS: verified protected (main, GitHub)" ;;
+          1) echo "FAIL: branch protection — main is NOT protected on GitHub (required PR reviews / status checks missing)"; fail=1 ;;
+          2) if [ "$MODE" = surface ]; then
+               echo "OUTSTANDING: branch protection — GitHub state unverifiable (no gh / unauthenticated); re-run authenticated or in CI"
+             else
+               echo "FAIL: branch protection — GitHub state unverifiable (no gh / unauthenticated) and verification is required (strict); authenticate gh, or run --surface"; fail=1
+             fi ;;
+          *) echo "FAIL: branch protection — branch-protection.sh returned an unexpected status ($_bp); fail-closed"; fail=1 ;;
+        esac ;;
+      *)
+        _bpl=$(grep -E '^\- \*\*Branch protection\*\*' CLAUDE.md 2>/dev/null | head -1 || true)
+        _bpv=$(printf '%s' "$_bpl" | sed 's/^.*(§branch-protection): *//')
+        # A real attestation is "attested:<...>" with NO residual template placeholder markers
+        # (< > [ ]); an adopter who leaves the angle-bracket placeholder is NOT attested (fail-closed,
+        # same discipline as the Target harness placeholder guard above).
+        _attested=0
+        case "$_bpv" in attested:*) _attested=1 ;; esac
+        case "$_bpv" in *'<'*|*'>'*|*'['*|*']'*) _attested=0 ;; esac
+        if [ "$_attested" = 1 ]; then
+          echo "PASS: branch protection attested (non-GitHub host) [${_bpv}]"
+        elif [ "$MODE" = surface ]; then
+          echo "OUTSTANDING: branch protection — non-GitHub remote, no valid attestation recorded (stamp '- **Branch protection** (§branch-protection): attested: HOST and MECHANISM' in CLAUDE.md, no angle brackets; docs/adoption/vc-hosts.md)"
+        else
+          echo "FAIL: branch protection — non-GitHub remote and no valid recorded attestation (stamp '- **Branch protection** (§branch-protection): attested: HOST and MECHANISM' in CLAUDE.md, no angle brackets, or run --surface); docs/adoption/vc-hosts.md"; fail=1
+        fi ;;
+    esac
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: Inception-Done gate not satisfied in '$DIR'"; return 1; fi
 echo "OK: Inception-Done gate satisfied in '$DIR'"
 return 0
@@ -187,44 +236,10 @@ selftest() {
   st_fail=0
   ROOT=$(unset CDPATH; cd "$(dirname "$0")/.." && pwd)
   WORK=$(mktemp -d)
-  # CP-5: `git clone` copies only COMMITTED content. A freshly incepted adopter project has NO commit
-  # yet (incept git-inits the tree; it does NOT commit it), so cloning produced an EMPTY template:
-  # the fixtures then silently lacked hooks/pre-push and adapters/, every assertion missed, and this
-  # selftest FAILED inside every adopter tree — reddening their `verify.sh --require`. It passed in
-  # the kit repo only because the kit happens to have commits.
-  #
-  # Fix ONLY that case. Where a commit exists — the kit repo, and the exported tree (which
-  # adopter-export-wired.sh git init+add+commits before running the aggregate) — keep the proven
-  # `git clone`. It is what CI has always exercised.
-  #
-  # An earlier revision of this fix copied the worktree UNCONDITIONALLY with `tar --exclude='./.git'`.
-  # That passed on macOS and FAILED on Linux CI (BSD vs GNU tar disagree on the exclude), breaking
-  # adopter-export-wired's selftest. The non-vacuity sweep caught it. The worktree path below uses a
-  # portable `find` walk instead — no tar. Do not reintroduce tar here.
-  if git -C "$ROOT" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-    if ! git clone -q "$ROOT" "$WORK/tmpl" 2>/dev/null; then
-      echo "inception-done --selftest: FAIL — cannot clone the kit repo from $ROOT (fixtures need a real git tree)"
-      return 1
-    fi
-  else
-    # No commit yet — a freshly incepted adopter. Seed the template from the WORKING TREE, then
-    # init+commit it so st_mkfix can clone it exactly as it does the kit's.
-    mkdir -p "$WORK/tmpl"
-    ( cd "$ROOT" && find . -name .git -prune -o -type f -print ) | while IFS= read -r _f; do
-      _rel=${_f#./}
-      mkdir -p "$WORK/tmpl/$(dirname "$_rel")" 2>/dev/null || continue
-      cp "$ROOT/$_rel" "$WORK/tmpl/$_rel" 2>/dev/null || true
-    done
-    if [ ! -f "$WORK/tmpl/hooks/pre-push" ]; then
-      echo "inception-done --selftest: FAIL — cannot seed fixtures from $ROOT (hooks/pre-push absent)"
-      return 1
-    fi
-    if ! git -C "$WORK/tmpl" init -q \
-       || ! git -C "$WORK/tmpl" add -A \
-       || ! git -C "$WORK/tmpl" -c user.email=selftest@kit -c user.name=selftest commit -qm fixtures; then
-      echo "inception-done --selftest: FAIL — cannot seed the fixture template repo"
-      return 1
-    fi
+  # Build the once-cloned fixture template. seed_fixture_template (below the oracle marker with the
+  # st_* helpers) decides clone-vs-worktree-seed; its header documents the three cases (CP-5 + K9).
+  if ! seed_fixture_template "$ROOT" "$WORK/tmpl"; then
+    return 1
   fi
 
   # (a) tree with NO .git -> FAIL "not a git repository"
@@ -252,7 +267,7 @@ selftest() {
   # ADR/BACKLOG. A selftest must build its OWN world — these three legs print regardless of those.
   echo "--- (c) generic (floor) ---"
   d=$(st_mkfix c generic); st_install_hook "$d"
-  st_run "$d"
+  st_run "$d" surface
   st_has "PASS: git repository present"
   st_has "PASS present: pre-push git hook installed and executable"
   st_has "runtime guard = floor (git hook + CI backstop); 'generic' has no inline command-guard"
@@ -263,7 +278,7 @@ selftest() {
   # verdict — so the fixture is independent of the export-ignored ADR/BACKLOG.
   echo "--- (d) claude-code (native) ---"
   d=$(st_mkfix d claude-code); st_install_hook "$d"
-  st_run "$d"
+  st_run "$d" surface
   st_has "PASS: git repository present"
   st_has "PASS present: pre-push git hook installed and executable"
   st_has "'claude-code' runtime guard wired (PreToolUse"
@@ -289,10 +304,88 @@ selftest() {
   # whole-gate verdict — export/ADR/BACKLOG-independent, same rationale as (c)/(d).
   echo "--- (f) foreign pre-push hook (brownfield) ---"
   d=$(st_mkfix f claude-code); printf '#!/bin/sh\necho foreign\nexit 0\n' > "$d/.git/hooks/pre-push"; chmod +x "$d/.git/hooks/pre-push"
-  st_run "$d"
+  st_run "$d" surface
   st_has "PASS: git repository present"
   st_has "foreign hook preserved"
   st_hasnt "FAIL: pre-push git hook"
+
+  # (g) K9 — pre-incept HEAD: a commit EXISTS but HEAD does NOT track hooks/pre-push (it predates
+  # inception). The broken clone fast-path would copy that INCOMPLETE tree and the resulting template
+  # would silently LACK hooks/pre-push. seed_fixture_template must gate the clone on HEAD tracking
+  # hooks/pre-push and fall back to the worktree-seed, so the template DOES contain hooks/pre-push.
+  # This drives seed_fixture_template directly (the fixture-BUILD layer), which the (a)-(f) cases,
+  # keyed off the already-built $WORK/tmpl, cannot reach.
+  echo "--- (g) K9 pre-incept HEAD (worktree-seed fallback) ---"
+  PRE="$WORK/g-pre"; PRETMPL="$WORK/g-tmpl"   # PRETMPL must NOT pre-exist (clone fast-path needs it absent)
+  mkdir -p "$PRE/hooks"
+  printf '#!/bin/sh\n# KIT_GUARD_CORE\n' > "$PRE/hooks/pre-push"   # incepted worktree marker, UNTRACKED
+  printf 'spec\n' > "$PRE/SPEC.md"
+  git -C "$PRE" init -q
+  git -C "$PRE" add SPEC.md   # commit ONLY the spec-only file => a genuine pre-incept HEAD
+  git -C "$PRE" -c user.email=selftest@kit -c user.name=selftest commit -qm "pre-incept spec-only" >/dev/null 2>&1
+  if seed_fixture_template "$PRE" "$PRETMPL" >/dev/null 2>&1 && [ -f "$PRETMPL/hooks/pre-push" ]; then
+    printf '    ok  : pre-incept-HEAD seed contains hooks/pre-push (worktree-seed, not the broken clone)\n'
+  else
+    printf '    BAD : pre-incept-HEAD seed LACKS hooks/pre-push (clone copied an incomplete HEAD — K9)\n'; st_fail=1
+  fi
+
+  # ── Branch-protection leg (K5): every mode×host cell asserts a discriminating MESSAGE, not just rc.
+  # (h) GitHub, verified-unprotected (bp exit 1) -> FAIL both modes
+  echo "--- (h) github unprotected (bp exit 1) ---"
+  d=$(st_mkfix h claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 1
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "NOT protected"; st_rc 1
+  st_run "$d" surface; st_has "FAIL: branch protection"
+
+  # (h0) GitHub, protected (bp exit 0) -> PASS verified
+  echo "--- (h0) github protected (bp exit 0) ---"
+  d=$(st_mkfix h0 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  st_run "$d" strict;  st_has "PASS: verified protected"
+
+  # (h2) GitHub, unverifiable (bp exit 2) -> strict FAIL / surface OUTSTANDING
+  echo "--- (h2) github unverifiable (bp exit 2) ---"
+  d=$(st_mkfix h2 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 2
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "unverifiable"; st_rc 1
+  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_hasnt "FAIL: branch protection"
+
+  # (h3) LIVENESS: REAL branch-protection.sh (no stub), forced no-gh -> raw exit 2 -> OUTSTANDING (surface)
+  # proves the leg actually invokes the real script with --raw, not only the stub.
+  echo "--- (h3) github unverifiable via REAL script (BP_FORCE_NO_GH) ---"
+  d=$(st_mkfix h3 claude-code); st_install_hook "$d"; st_gh "$d"
+  OUT=$( ( export BP_FORCE_NO_GH=1; MODE=surface run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "OUTSTANDING: branch protection"
+
+  # (i) non-GitHub, attested -> PASS attested
+  echo "--- (i) non-github attested ---"
+  d=$(st_mkfix i claude-code); st_install_hook "$d"; st_nongh "$d"; st_attest "$d"
+  st_run "$d" strict;  st_has "PASS: branch protection attested (non-GitHub host)"
+
+  # (i2) non-GitHub, NOT attested -> strict FAIL / surface OUTSTANDING
+  echo "--- (i2) non-github unattested ---"
+  d=$(st_mkfix i2 claude-code); st_install_hook "$d"; st_nongh "$d"
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "no valid recorded attestation"; st_rc 1
+  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_hasnt "FAIL: branch protection"
+
+  # (i3) non-GitHub, PLACEHOLDER attestation left unfilled -> fail-closed (NOT a valid attestation)
+  echo "--- (i3) non-github placeholder attestation ---"
+  d=$(st_mkfix i3 claude-code); st_install_hook "$d"; st_nongh "$d"
+  printf '%s\n' '- **Branch protection** (§branch-protection): attested: <host + mechanism>' >> "$d/CLAUDE.md"
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "no valid recorded attestation"; st_rc 1
+  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_hasnt "FAIL: branch protection"
+
+  # (j) no remote, strict -> FAIL
+  echo "--- (j) no remote, strict ---"
+  d=$(st_mkfix j claude-code); st_install_hook "$d"; st_norem "$d"
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "no remote configured"; st_rc 1
+
+  # (k) no remote, surface -> OUTSTANDING
+  echo "--- (k) no remote, surface ---"
+  d=$(st_mkfix k claude-code); st_install_hook "$d"; st_norem "$d"
+  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_hasnt "FAIL: branch protection"
+
+  # (l) GitHub, unknown bp exit (3) -> fail-closed FAIL
+  echo "--- (l) github unknown bp exit -> fail-closed ---"
+  d=$(st_mkfix l claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 3
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_rc 1
 
   rm -rf "$WORK" 2>/dev/null || true
   if [ "$st_fail" = 0 ]; then
@@ -301,10 +394,62 @@ selftest() {
   echo "inception-done --selftest: FAIL" >&2; return 1
 }
 
+# ── seed_fixture_template <root> <dest> : build a committed fixture-template repo at <dest> from
+#    <root>, so st_mkfix can cheaply re-clone it. Lives BELOW the oracle marker (never mutated). It
+#    chooses clone-vs-worktree-seed across THREE cases:
+#      1. HEAD tracks hooks/pre-push (the kit repo; the exported tree adopter-export-wired.sh
+#         init+add+commits before the aggregate) -> `git clone` copies the committed content. Proven;
+#         what CI has always exercised.
+#      2. No commit yet (CP-5: a freshly incepted adopter — incept git-inits but does NOT commit) ->
+#         `git clone` would copy an EMPTY template, so every fixture assertion silently missed and this
+#         selftest reddened inside every adopter tree. Seed from the WORKING TREE instead.
+#      3. K9 — a commit EXISTS but is a PRE-INCEPT HEAD that does not reflect the incepted worktree
+#         (it lacks hooks/pre-push + adapters/). `git clone` would copy that INCOMPLETE tree, so the
+#         fixtures would silently lack hooks/pre-push and assertions would miss. So we gate the clone
+#         path on HEAD actually TRACKING hooks/pre-push (`git cat-file -e HEAD:hooks/pre-push` — the
+#         incepted-marker probe), NOT merely on HEAD existing, and fall back to the SAME worktree-seed
+#         as case 2. The worktree is the truth; the `hooks/pre-push absent` guard below keeps the
+#         fallback fail-closed.
+#    An earlier revision of the CP-5 fix copied the worktree UNCONDITIONALLY with `tar --exclude='./.git'`.
+#    That passed on macOS and FAILED on Linux CI (BSD vs GNU tar disagree on the exclude), breaking
+#    adopter-export-wired's selftest. The non-vacuity sweep caught it. The worktree path below uses a
+#    portable `find` walk instead — no tar. Do not reintroduce tar here.
+seed_fixture_template() {
+  _sft_root="$1"; _sft_dest="$2"
+  # K9: gate the clone fast-path on HEAD actually TRACKING hooks/pre-push (the incepted-marker probe),
+  # NOT merely on HEAD existing. A pre-incept HEAD exists but does not track hooks/pre-push, so `git
+  # cat-file -e HEAD:hooks/pre-push` is false and the `&&` falls through to the worktree-seed below.
+  if git -C "$_sft_root" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+     && git -C "$_sft_root" cat-file -e HEAD:hooks/pre-push 2>/dev/null; then
+    if ! git clone -q "$_sft_root" "$_sft_dest" 2>/dev/null; then
+      echo "inception-done --selftest: FAIL — cannot clone the kit repo from $_sft_root (fixtures need a real git tree)"
+      return 1
+    fi
+  else
+    # Seed the template from the WORKING TREE, then init+commit it so st_mkfix can clone it exactly.
+    mkdir -p "$_sft_dest"
+    ( cd "$_sft_root" && find . -name .git -prune -o -type f -print ) | while IFS= read -r _f; do
+      _rel=${_f#./}
+      mkdir -p "$_sft_dest/$(dirname "$_rel")" 2>/dev/null || continue
+      cp "$_sft_root/$_rel" "$_sft_dest/$_rel" 2>/dev/null || true
+    done
+    if [ ! -f "$_sft_dest/hooks/pre-push" ]; then
+      echo "inception-done --selftest: FAIL — cannot seed fixtures from $_sft_root (hooks/pre-push absent)"
+      return 1
+    fi
+    if ! git -C "$_sft_dest" init -q \
+       || ! git -C "$_sft_dest" add -A \
+       || ! git -C "$_sft_dest" -c user.email=selftest@kit -c user.name=selftest commit -qm fixtures; then
+      echo "inception-done --selftest: FAIL — cannot seed the fixture template repo"
+      return 1
+    fi
+  fi
+}
+
 # ── st_* helpers + the st_fail accumulator: BELOW the oracle marker (never mutated). ────────────
 # st_run <dir>: capture run_gate's combined output in OUT and its return in RC (subshelled so its
 #   `cd "$DIR"` does not move the selftest's own working directory).
-st_run() { OUT=$( ( run_gate "$1" ) 2>&1 ); RC=$?; }
+st_run() { OUT=$( ( MODE="${2:-strict}" run_gate "$1" ) 2>&1 ); RC=$?; }
 # st_has <substr>: OUT must contain <substr>. st_hasnt: OUT must NOT. st_rc <n>: RC must equal <n>.
 st_has()   { case "$OUT" in *"$1"*) printf '    ok  : has [%s]\n' "$1" ;; *) printf '    BAD : MISSING [%s]\n' "$1"; st_fail=1 ;; esac; }
 st_hasnt() { case "$OUT" in *"$1"*) printf '    BAD : SHOULD-NOT have [%s]\n' "$1"; st_fail=1 ;; *) printf '    ok  : absent [%s]\n' "$1" ;; esac; }
@@ -325,8 +470,20 @@ st_mkfix() {
   printf '%s' "$_d"
 }
 st_install_hook() { cp "$1/hooks/pre-push" "$1/.git/hooks/pre-push"; chmod +x "$1/.git/hooks/pre-push"; }
+# ── branch-protection leg fixtures (K5). st_gh/st_nongh/st_norem set the origin host; st_bpstub
+#    swaps in a branch-protection.sh returning a fixed exit; st_attest stamps a non-GitHub attestation.
+st_gh()     { git -C "$1" remote add origin https://github.com/fixture/repo.git 2>/dev/null || git -C "$1" remote set-url origin https://github.com/fixture/repo.git; }
+st_nongh()  { git -C "$1" remote add origin https://gitlab.com/fixture/repo.git 2>/dev/null || git -C "$1" remote set-url origin https://gitlab.com/fixture/repo.git; }
+st_norem()  { git -C "$1" remote remove origin 2>/dev/null || true; }
+# st_bpstub <dir> <exit>: replace branch-protection.sh in the fixture with a stub returning <exit> (for --raw and otherwise)
+st_bpstub() { printf '#!/bin/sh\nexit %s\n' "$2" > "$1/conformance/branch-protection.sh"; chmod +x "$1/conformance/branch-protection.sh"; }
+# st_attest <dir>: append a non-GitHub attestation using the STABLE (§branch-protection) marker
+st_attest() { printf '%s\n' '- **Branch protection** (§branch-protection): attested: gitlab protected-branches' >> "$1/CLAUDE.md"; }
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
-  *)          run_gate "$@"; exit $? ;;
+  *)
+    MODE=strict; _dir=.
+    for a in "$@"; do case "$a" in --surface) MODE=surface ;; --strict) MODE=strict ;; *) _dir="$a" ;; esac; done
+    MODE="$MODE" run_gate "$_dir"; exit $? ;;
 esac

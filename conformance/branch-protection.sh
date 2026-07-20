@@ -7,7 +7,9 @@
 # A silent pass when unverifiable is false assurance; this returns a distinct status.
 # Escalation: in CI (CI env set) or with --require, "could not verify" becomes exit 1 —
 # in a gate the check MUST be runnable. Requires `gh` authenticated to verify.
-#   usage: sh conformance/branch-protection.sh [BRANCH] [--require] | --selftest
+# Guardrails: --raw returns the un-escalated three-state (0/1/2) regardless of CI, so a
+#   policy-applying caller (inception-done) can tell "unverifiable" (2) from "verified-unprotected" (1).
+#   usage: sh conformance/branch-protection.sh [BRANCH] [--require] [--raw] | --selftest
 # NOTE (T4-B1): NOT in the per-PR conformance aggregate (verify.sh) — it needs repo-admin creds the
 # least-privilege CI token can't have, so it cannot be verified in per-PR/weekly CI. Real-path
 # verification is maintainer/governance-gated (run locally with an admin-authenticated gh).
@@ -16,16 +18,18 @@
 set -eu
 
 REQUIRE="${REQUIRE:-0}"
-[ -n "${CI:-}" ] && REQUIRE=1
+RAW=0
 BRANCH=main
 for a in "$@"; do
   case "$a" in
     --require) REQUIRE=1 ;;
+    --raw) RAW=1 ;;   # emit the un-escalated three-state (0/1/2) regardless of CI/--require; for callers (inception-done) that apply their own policy
     --selftest) ;;  # dispatched below
-    -*) echo "usage: branch-protection.sh [BRANCH] [--require] | --selftest" >&2; exit 2 ;;
+    -*) echo "usage: branch-protection.sh [BRANCH] [--require] [--raw] | --selftest" >&2; exit 2 ;;
     *) BRANCH="$a" ;;
   esac
 done
+[ "$RAW" = 0 ] && [ -n "${CI:-}" ] && REQUIRE=1   # CI makes the gate runnable — UNLESS --raw asked for the raw state
 
 # Unverifiable: exit 2 normally; exit 1 (FAIL) under CI/--require (a gate must be runnable).
 unverifiable() {
@@ -85,6 +89,12 @@ selftest() {
   # shellcheck disable=SC1007  # CI= intentionally clears the var for the subprocess
   out=$(CI= BP_FORCE_NO_GH=1 sh "$0" --require 2>&1) && rc=0 || rc=$?
   if [ "$rc" = "1" ]; then echo "selftest PASS: no-gh + --require -> exit 1"; else echo "selftest FAIL: no-gh+--require should be exit 1 (got $rc)"; st=1; fi
+  out=$(CI=true BP_FORCE_NO_GH=1 sh "$0" --raw 2>&1) && rc=0 || rc=$?
+  if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q UNVERIFIED && ! printf '%s' "$out" | grep -q '^usage:'; then
+    echo "selftest PASS: --raw ignores CI escalation -> exit 2 (UNVERIFIED)"
+  else
+    echo "selftest FAIL: --raw under CI should be UNVERIFIED exit 2 (got rc=$rc, out=$out)"; st=1
+  fi
   # HTTP-status-based parse, tested IN-PROCESS via classify() (no production-reachable stub
   # seam — an env var must never be able to force a pass). classify() calls exit, so each
   # case runs in a subshell that also sets the REQUIRE level for the unverifiable path.

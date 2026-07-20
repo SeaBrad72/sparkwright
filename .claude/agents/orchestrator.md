@@ -75,4 +75,3 @@ the loop back to Discover (postmortem → backlog). The human commands the catas
 surfaces and escalates via `escalate.sh raise`, never actuates. A kit-original (no superpowers equivalent).
 It is a hat, not a seat (demand-gated on a live system + distinct prod authority). FLOOR contract:
 `agents/orchestrator.agent.md` → `## Operations (operating hat)`.
-

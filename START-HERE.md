@@ -58,6 +58,8 @@ This guide's numbered steps are the **engineer/lead Inception path**. If you're 
 
 (Note: `incept` renames the kit's principles `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps a new project `CLAUDE.md` — your project guide. The glossary and START-HERE references to the *principles* file mean `ENGINEERING-PRINCIPLES.md` after Inception.)
 
+> **Bootstrap order:** run `incept` *first* — never commit before it. See the incept-first sequence in [`docs/adoption/inception-bootstrap.md`](docs/adoption/inception-bootstrap.md) (summarized at `DEVELOPMENT-PROCESS.md` §3).
+
 ---
 
 ## 0. Orient (5 min)

@@ -43,6 +43,20 @@ _no_shipped_workflows() {
   return 1
 }
 
+# _no_eof_blank <file> -> 0 = the file ends with exactly one newline (no blank line at EOF) · 1 = a
+# blank line at EOF (and NAMES the fix). K12 Cause B: the KW6-A2 carve deletes CLAUDE.md's LAST content
+# line (the `Backlog backend:` declaration), which in source sits below a blank separator — deleting it
+# leaves that blank as the new EOF, so `git diff --check` reports "new blank line at EOF" and incept.sh
+# inherits it into the renamed ENGINEERING-PRINCIPLES.md. Detect it from bytes (no git dependency): a
+# blank line at EOF means the final two bytes are both newlines (\n\n); od avoids $(...) newline-strip.
+_no_eof_blank() {
+  [ -f "$1" ] || { echo "FAIL: $1 missing (cannot check for a blank line at EOF)"; return 1; }
+  case "$(tail -c2 "$1" | od -An -tx1 | tr -d ' \n')" in
+    0a0a) echo "FAIL: exported $(basename "$1") orphans a blank line at EOF (KW6-A2 carve — strip trailing blanks after the carve in adopter-export.sh)"; return 1 ;;
+  esac
+  return 0
+}
+
 run() {
   rc=0
   [ -f "$ROOT/.gitattributes" ] || { echo "FAIL: no .gitattributes"; return 1; }
@@ -148,6 +162,11 @@ run() {
     grep -qxE '/(src|test)/' "$_d/.gitignore" 2>/dev/null && { echo "FAIL: exported .gitignore still ignores /src/ or /test/"; rc=1; }
     # (f) P0-FU: the export ships ZERO GitHub workflows (kit-dev CI is export-ignored; incept installs the profile's)
     _no_shipped_workflows "$_d" || rc=1
+    # (h) K12 Cause B: the exported CLAUDE.md must NOT orphan a blank line at EOF. The KW6-A2 carve
+    # (adopter-export.sh) deletes CLAUDE.md's last content line; if the trailing-blank strip below it
+    # regresses, the blank separator becomes the new EOF and incept.sh inherits it into the renamed
+    # ENGINEERING-PRINCIPLES.md (a `git diff --check` "new blank line at EOF" on the adopter's first commit).
+    _no_eof_blank "$_d/CLAUDE.md" || rc=1
   else
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
@@ -279,6 +298,17 @@ if [ "${1:-}" = "--selftest" ]; then
     rm -f "$_z/.github/workflows/kitdev-probe.$_ext"
   done
   rm -rf "$_z" 2>/dev/null || true
+  # negative (h / K12 Cause B / item-6 teeth): _no_eof_blank must FLAG a file ending in a blank line
+  # and PASS a clean file. Driven directly (no export) — load-bearing: a mutation that neuters the EOF
+  # detection greens the blank-ending case, which this KILLs. Mirrors the (f) zero-workflow negative.
+  _e=$(mktemp -d)
+  printf 'text\nBacklog backend: BACKLOG.md\n' > "$_e/clean.md"
+  _no_eof_blank "$_e/clean.md" >/dev/null 2>&1 || { echo "adopter-export-wired --selftest: FAIL (a clean CLAUDE.md was wrongly flagged as an EOF blank)"; sfail=1; }
+  printf 'text\n\n' > "$_e/blank.md"   # trailing blank line = the exact carve-orphaned state
+  if _no_eof_blank "$_e/blank.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (a blank line at EOF was NOT flagged — the EOF-blank lock (h) is vacuous)"; sfail=1
+  fi
+  rm -rf "$_e" 2>/dev/null || true
   # negative (g / KW27 non-vacuity): block (g) must have TEETH — with the PRE-FIX carve (zero-match =>
   # loud-fail), export-of-an-export MUST fail. Export the real tree once (a mirror), reintroduce the
   # pre-fix zero-match `return 1` into the FIXTURE's own script, commit (adopter-export archives HEAD),

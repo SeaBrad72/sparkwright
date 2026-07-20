@@ -10,6 +10,8 @@ The kit's own code-review skill: how to review a change well. The Reviewer seat'
 <!-- The frontmatter and discipline headings below are conformance-load-bearing:
      conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers
      (name: review, ## When to use, Confidence, adversarial, builder, NEEDS-FIXES).
+     conformance/validation-terminal-state-documented.sh additionally greps for the third
+     terminal state (FAITHFUL-FAILURE) + its cross-surface markers.
      Edits that drop or rename them can turn the skill-spine lock RED. -->
 
 ## When to use
@@ -33,3 +35,14 @@ If a finding is wrong, the author pushes back with technical reasoning (code or 
 
 ## Terminal state
 A severity-grouped findings list (each `file:line` + concrete fix) and one verdict — APPROVE or NEEDS-FIXES — returned to the Orchestrator for routing. The reviewer reports; it never merges. Before the human Go/No-Go, if the change carries a taste-surface, ensure the increment was demonstrated for the human's taste judgment (`skills/demonstrate`) and its verdict recorded — correctness review alone does not answer whether it is *good*. The reviewer's verdict is a `basis:` input to the human GO; it never ratifies — `builder ≠ ratifier` (peer to `builder ≠ reviewer`), and actuation follows **approve→execute→log** (execute + log + verify `shipped == approved`).
+
+## Validation-task terminal state — FAITHFUL-FAILURE (the third verdict)
+A **third** terminal state, available ONLY when the task under review declares its class in its **Task Context Contract** (§12).
+That declared class must be **validation / field-test**. For an ordinary implementation task the APPROVE / NEEDS-FIXES binary above is unchanged — FAITHFUL-FAILURE is opt-in and never the default.
+
+- **FAITHFUL-FAILURE** — the validation task was executed *faithfully* (methodology correct, cold-integrity held) AND it surfaced a real defect in the **subject-under-test**. **The test succeeded; the subject failed** — this is NOT an implementation failure and NOT NEEDS-FIXES.
+  - **Requires:** the discovered defect(s) are routed to the **originating backlog** via the feedback ledger (`KIT-FEEDBACK` / `FIELD-REPORT`) — logged out-of-band, not lost.
+  - **Forbids (cold-integrity):** the reviewer must NOT prescribe or perform a repair of the **subject-under-test** inside the vehicle — a repair in the vehicle contaminates the evidence and voids the test. Route it out; never fix it in place.
+  - **faithful methodology is the precondition** — a validation task run *un*faithfully, or one that repaired what it was exercising, is `NEEDS-FIXES` as usual, so the verdict cannot be used to dodge a real fix.
+
+**Honest ceiling:** this doctrine is documented and locked for coherence; whether a live reviewer applies it correctly is un-gateable (as with `skills/using-skills`' auto-load convention).

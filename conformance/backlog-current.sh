@@ -18,7 +18,11 @@
 #   section whose gated column is ABSENT (renamed) is a SCHEMA VIOLATION and FAILs — the template
 #   schema is the contract, and a renamed column must never silently disable the gate. The success
 #   line reports the column(s) it RESOLVED and the number of rows it EVALUATED per section, so
-#   "0 rows" and "column missing" cannot look alike.
+#   "0 rows" and "column missing" cannot look alike. An EMPTY gated section may be expressed
+#   two ways — a zero-row schema table (the canonical form) OR a bare `None.`/blank body (0
+#   items, nothing to trace); both ACCEPT. Any OTHER content without the schema table FAILs
+#   (anti-bypass: an item must never exist without its traceability column). Failures across
+#   all gated sections are reported in ONE pass, not one-at-a-time.
 #   BLOCKED is deliberately shaped: it is gated ONLY IF the section is present (Ready/In Progress/
 #   In Review are required headings; Blocked is not — a board may omit it, and a blocked item then
 #   cannot exist). It is NOT gated on a work-link — demanding "where is the work?" of an item that
@@ -50,6 +54,44 @@ is_bare_na() {
 # is_na_reason <cell> : rc0 iff the cell is the kit idiom `N/A — <reason>` (reason present).
 is_na_reason() { printf '%s' "$1" | grep -Eiq '^[[:space:]]*n/?a[[:space:]]*(—|-)[[:space:]]*[^[:space:]]'; }
 
+# is_empty_marker <trimmed-line> : rc0 iff the line is a bare `None.` empty-section idiom,
+# WHOLE-LINE anchored (R3): a `case` exact-match, so an item literally named "None of the
+# above" is NOT a marker — the anchoring is what keeps empty-acceptance from opening a hole.
+is_empty_marker() {
+  case "$1" in None.|None|none.|none|_None._|_None_|_none._|_none_) return 0 ;; *) return 1 ;; esac
+}
+# section_is_empty <file> <section> : rc0 iff the section body (between `## <section>` and the
+# next `## ` heading) carries NO Markdown table AND every non-blank line is an empty-marker.
+# Used ONLY when the section has no gated column resolved AND no table rows at all, so a bare
+# `None.`/blank section is accepted (0 items -> nothing to trace) while any other content
+# (item-like lines, prose) still demands the schema table (anti-bypass, spec §2 row 3). A
+# here-doc feeds the loop (NOT a `| while` pipeline — that runs in a subshell and would lose
+# _er, the trap backlog-presence.sh:95 warns of).
+section_is_empty() {
+  # EXACT heading match — no dynamic awk regex built from the arg (hardens against a future
+  # caller passing a section name with regex metacharacters); trailing whitespace on the
+  # heading is tolerated, mirroring check_dir's `^## H[[:space:]]*$`.
+  _shead="## $2"
+  _body=$(awk -v s="$_shead" '
+    { line=$0; sub(/[ \t]+$/, "", line) }
+    line==s {f=1; next}
+    f && /^## / {f=0}
+    f {print}
+  ' "$1")
+  _er=0
+  while IFS= read -r _l; do
+    _t=${_l#"${_l%%[! ]*}"}; _t=${_t%"${_t##*[! ]}"}  # trim leading/trailing spaces
+    [ -z "$_t" ] && continue                          # blank line -> ignore
+    # A table row (`| … |`), prose, or any item-like line is a non-marker -> content, NOT empty
+    # (anti-bypass, spec §2 row 3). The marker-loop alone rejects every non-empty-marker line,
+    # so no separate table/pipe pre-check is needed (a `*'|'*` guard here was fully shadowed).
+    is_empty_marker "$_t" || { _er=1; break; }
+  done <<EOF
+$_body
+EOF
+  return $_er
+}
+
 # check_section <file> <section> <gated-column-name> <mode: progress|review>
 # Evaluates the section's gated cell for every non-spacer body row. Increments the globals
 # SPACER_SKIPS (Item-empty rows) and NA_ESCAPES (In Progress `N/A — reason`), and appends the
@@ -64,7 +106,22 @@ check_section() {
   _ci=""
   [ -n "$_rows" ] && _ci=$(col_index "$_hdr" "$_col")
   if [ -z "$_ci" ]; then
-    _found=$(header_cols "$_hdr")                  # empty when the section has no table at all
+    # No gated column resolved. Two very different cases, distinguished by whether a table
+    # exists at all (spec §2): a section with NO table may be a legitimately EMPTY gated
+    # section (`None.`/blank -> 0 items, nothing to trace -> ACCEPT); a section WITH a table
+    # whose gated column is absent is a schema violation (a renamed column must never silently
+    # disable the gate). Content-without-table is the anti-bypass FAIL: an item must never
+    # exist without its traceability column.
+    if [ -z "$_rows" ]; then                       # no table at all
+      if section_is_empty "$_f" "$_sec"; then
+        _coltrace="$_col"; [ "$_mode" = "blocked" ] && _coltrace="${_col}+${_col2}"
+        BOARD_TRACE="${BOARD_TRACE:+$BOARD_TRACE, }${_sec}→${_coltrace} (0 rows, empty)"
+        return 0
+      fi
+      echo "FAIL: $_sec — expected a schema table with the '$_col' column (zero rows is fine, or write 'None.' if the section is empty); found content but no table"
+      return 1
+    fi
+    _found=$(header_cols "$_hdr")                  # a table exists but the gated column is renamed/absent
     echo "FAIL: $_sec — required column '$_col' not found (columns present: ${_found:-none}); a renamed/absent gated column is a schema violation, not a skip"
     return 1
   fi
@@ -179,15 +236,19 @@ check_dir() {
     fi
   done
   # Parse the gated state tables (Ready/Released/Done are ungated — untouched).
-  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; BOARD_TRACE=""
-  check_section "$_bl" "In Progress" "Links" progress || return 1
-  check_section "$_bl" "In Review" "PR" review || return 1
+  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; BOARD_TRACE=""; _agg=0
+  # Accumulate-all (K11): run EVERY gated section unconditionally and collect every failure,
+  # so ONE run surfaces the whole picture — never exit-on-first (fix In Review, re-run, only
+  # THEN discover Blocked also failed). return non-zero iff any section failed.
+  check_section "$_bl" "In Progress" "Links" progress || _agg=1
+  check_section "$_bl" "In Review" "PR" review || _agg=1
   # Blocked is OPTIONAL (Ready/In Progress/In Review are required headings; Blocked is not) —
   # gate it ONLY IF the section is present. A blocked *item* cannot exist without the section,
   # so nothing escapes the gate by the board omitting it.
   if grep -Eq "^## Blocked[[:space:]]*$" "$_bl"; then
-    check_section "$_bl" "Blocked" "Blocked on" blocked "Since" || return 1
+    check_section "$_bl" "Blocked" "Blocked on" blocked "Since" || _agg=1
   fi
+  [ "$_agg" -ne 0 ] && return 1
   echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES"
   return 0
 }
@@ -882,6 +943,180 @@ EOF
   # non-choice-list value that matches NO known token must FAIL, not skip.
   d="$base/bad-unrecognized-backend"; mkdir -p "$d"; _claude_md 'markdow' "$d/CLAUDE.md"
   assert_fail "$d" "unrecognized backlog backend 'markdow'" "bad-unrecognized-backend: a mistyped/unknown backend -> FAIL (never a silent N/A)"
+
+  # ===== S7 — board zero-row schema: empty-state (K10) + one-pass reporting (K11) =========
+
+  # P1 (None.) — an In Review whose body is the bare `None.` idiom (no table) is an EMPTY
+  # gated section: nothing to trace -> PASS, trace records '(0 rows, empty)'.
+  d="$base/s7-p1-none"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+None.
+EOF
+  assert_msg "$d" "In Review→PR (0 rows, empty)" "s7/p1-none: 'None.' In Review body -> PASS (0 rows, empty)"
+
+  # P2 (empty) — an In Review heading with a blank body (no table) is likewise EMPTY -> PASS.
+  d="$base/s7-p2-empty"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+EOF
+  assert_msg "$d" "In Review→PR (0 rows, empty)" "s7/p2-empty: blank In Review body -> PASS (0 rows, empty)"
+
+  # P3 (zero-row table, regression) — the canonical empty form (header+separator, no data
+  # rows) still PASSes with the pre-existing '(0 rows)' trace (NOT '(0 rows, empty)').
+  d="$base/s7-p3-zerorow"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+EOF
+  assert_msg "$d" "In Review→PR (0 rows)" "s7/p3-zerorow: zero-row In Review table -> PASS (0 rows)"
+
+  # N1 (anti-bypass — THE new teeth) — an In Review body that is a bare item line with NO
+  # table must STILL FAIL: accepting `None.`/empty weakens nothing, because any non-marker
+  # content still demands the schema table. A mutant that accepts it must go RED.
+  d="$base/s7-n1-bypass"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+- sneaky item
+EOF
+  assert_fail "$d" "expected a schema table" "s7/n1-bypass: bare item (no table) in In Review -> FAIL (anti-bypass, schema required)"
+  assert_fail "$d" "In Review" "s7/n1-bypass: the anti-bypass FAIL names the offending section (In Review)"
+
+  # N2 (renamed column, existing anti-silent-disable) — a table whose 'PR' is renamed 'Pull'
+  # is a schema violation (the gated column is ABSENT), NOT an empty section -> FAIL with the
+  # 'required column not found' message (empty-acceptance must NOT swallow this path).
+  d="$base/s7-n2-renamed"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | Pull |
+|------|----------|------|
+| Add login | ISBrad72 | #34 |
+EOF
+  assert_fail "$d" "required column 'PR' not found" "s7/n2-renamed: 'PR' renamed 'Pull' (table present) -> schema-violation FAIL (not 'empty')"
+
+  # N3 (missing value) — a real In Review row with an empty 'PR' cell -> FAIL (a blank PR is
+  # not review-ready). Regression guard: empty-acceptance must not leak into a real row.
+  d="$base/s7-n3-missing"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 |  |
+EOF
+  assert_fail "$d" "must be a real PR link" "s7/n3-missing: empty PR cell on a real row -> FAIL"
+
+  # N4 (one-pass proof — K11) — In Review AND Blocked are BOTH broken (bare item, no table).
+  # ONE run's output must contain BOTH section names (accumulate-all, not exit-on-first).
+  d="$base/s7-n4-onepass"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+- x
+
+## Blocked
+
+- y
+EOF
+  assert_fail "$d" "In Review" "s7/n4-onepass: broken In Review is named in the one-pass output"
+  assert_fail "$d" "Blocked" "s7/n4-onepass: broken Blocked is named in the SAME one-pass output (accumulate-all)"
 
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-current --selftest: FAIL" >&2

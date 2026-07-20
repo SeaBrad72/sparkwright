@@ -51,6 +51,13 @@ curate_db_backed() {  # MODE(1|0) — 0=non-DB: strip the CI region(s) + marker 
   if [ -f .env.example ]; then
     sed '/^# Backing services/d; /^# DATABASE_URL=/d; /^# REDIS_URL=/d' .env.example > .env.example.kwtmp \
       && mv .env.example.kwtmp .env.example
+    # I1 (K12 sibling): the three stripped lines are .env.example's EOF, sitting below a blank
+    # separator — deleting them orphans that blank as the new EOF (`git diff --check`: "new blank
+    # line at EOF"), so the adopter's first `git add -A` import is dirty. Re-emit only through the
+    # last non-blank line (the same idiom adopter-export.sh uses for the CLAUDE.md carve). Runs on
+    # the ADOPTER's .env.example, never on kit source. Idempotent on an already-clean file.
+    awk 'NF{p=NR} {a[NR]=$0} END{for(i=1;i<=p;i++) print a[i]}' .env.example > .env.example.kwtmp \
+      && mv .env.example.kwtmp .env.example
   fi
   rm -f scripts/dr-drill.sh
   echo "non-DB archetype: stripped the kit:db-backed CI region + the .db-backed marker + the DB/Redis .env.example lines + scripts/dr-drill.sh"
@@ -458,6 +465,17 @@ echo "notice: choose your deploy target deliberately — docs/adoption/DEPLOYMEN
 # unproven, not "supported"). Always emitted → non-interactive-safe. Mirrors the KW5 deploy nudge +
 # KW4-L1's stack fit-vs-maturity disclosure. Cards + fit rubric: docs/operations/harness-adapters.md.
 echo "notice: target harness(es) = '${HARNESS}'. Confirm this is the BEST-FIT harness (fit-derived, not the default). Only 'claude-code' is a VERIFIED harness (kit self-hosts on it); 'gemini'/'codex'/'cursor' are EXPERIMENTAL (declared against the boundary contract, not exercised end-to-end — unproven, not 'supported'). Record WHY it fits (cite a fit dimension) in CLAUDE.md §harness-neutrality — linted by conformance/harness-decision-integrity.sh. Cards + fit rubric: docs/operations/harness-adapters.md." >&2
+# K4/AC1: disclose the enforcement CEILING for hookless harnesses — a maturity label
+# ("experimental") is not a capability statement. A harness whose adapter declares
+# command-guard != "native" has NO inline PreToolUse-equivalent interception, so
+# control-plane enforcement is post-hoc (pre-push + CI), not pre-exec. Data-driven
+# from adapter.json (single source; fleet-general); fail-safe toward MORE disclosure.
+_ceiling_harnesses=''
+for _h in $HARNESS_LIST; do
+  _lvl=$(jq -r '.dimensions["command-guard"].level // "floor"' "adapters/${_h}/adapter.json" 2>/dev/null || echo floor)
+  [ "$_lvl" = "native" ] || _ceiling_harnesses="${_ceiling_harnesses:+$_ceiling_harnesses, }${_h}"
+done
+[ -z "$_ceiling_harnesses" ] || echo "notice: enforcement ceiling — harness(es) '${_ceiling_harnesses}' have NO inline PreToolUse-equivalent interception (no pre-exec deny). Control-plane enforcement is limited to the local pre-push hook + the CI agent-boundary gate (post-hoc, not pre-exec). See docs/operations/harness-adapters.md (the ceiling, stated plainly)." >&2
 [ -n "$FLUENCY" ] || echo "notice: operator fluency not declared. New to enterprise SDLC? read ONBOARDING.md. Already fluent? pass --operator-fluency practitioner. Leaving the field for you to fill in CLAUDE.md." >&2
 
 DATE=$(esc "${DATE_PIN:-$(date +%Y-%m-%d)}")
