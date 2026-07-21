@@ -8,7 +8,9 @@ autonomy tiers and CI gates are unchanged; adaptation is style, not permission).
 
 - **Novice / Adjacent** — explain the *why* before the *how*; surface what is about to happen before
   doing it; **confirm before irreversible or destructive steps**; teach as you go; link to
-  `ONBOARDING.md` and the relevant standard when introducing a new concept.
+  `ONBOARDING.md` and the relevant standard when introducing a new concept. **Explain or derive** routine
+  inception vocabulary (intent owner, representative real change) from the charter rather than surfacing it
+  as a blocker — see `docs/adoption/inception-bootstrap.md` ("Inception vocabulary — derive, don't block").
 - **Practitioner** — be terse; assume competence; skip the explanations and the hand-holding;
   surface only genuine decisions and risks.
 

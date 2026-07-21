@@ -30,6 +30,9 @@ LOOP_SCRIPT="${ORCH_LOOP_SCRIPT:-scripts/orchestrator-run.sh}"
 GP="${ORCH_LOOP_GP:-.github/workflows/golden-path.yml}"
 SKILL_FILE="${ORCH_LOOP_SKILL:-skills/design/SKILL.md}"
 PLAN_SKILL_FILE="${ORCH_LOOP_PLAN_SKILL:-skills/plan/SKILL.md}"
+# K6: the emitted .gitignore. The plan skill's recommended durable location must NOT be matched by it,
+# else a cold adopter's `git add` refuses the completed plan. Overridable so --selftest uses a fixture.
+GITIGNORE_FILE="${ORCH_LOOP_GITIGNORE:-.gitignore}"
 TDD_SKILL_FILE="${ORCH_LOOP_TDD_SKILL:-skills/tdd/SKILL.md}"
 REVIEW_SKILL_FILE="${ORCH_LOOP_REVIEW_SKILL:-skills/review/SKILL.md}"
 WORKTREES_SKILL_FILE="${ORCH_LOOP_WORKTREES_SKILL:-skills/worktrees/SKILL.md}"
@@ -189,6 +192,26 @@ check_keystone() {  # <keystone> <orch_def> -- the kit's own using-skills discov
   return $miss
 }
 
+check_plan_location() {  # <plan_skill> <gitignore> -- K6: IF the plan skill names a docs/ durable location, it must be trackable (not gitignored)
+  s=$1; gi=$2; miss=0
+  [ -f "$s" ] || { echo "FAIL: missing plan skill $s"; return 1; }
+  # Primary durable location = the FIRST backticked docs/...*.md token (the Terminal-state recommendation).
+  loc=$(grep -oE '`docs/[A-Za-z0-9._<>/-]+\.md`' "$s" | head -n1 | tr -d '`')
+  [ -n "$loc" ] || return 0   # names no docs/ durable location -> not this lock's concern (N/A)
+  [ -f "$gi" ] || return 0    # no .gitignore to check against -> N/A
+  # Behavioural invariant: a cold adopter must be able to `git add` the plan, so the recommended location
+  # must not be matched by any .gitignore prefix rule. Pure pattern match (runs without git, so the fixture
+  # needs no repo). Simple-prefix rules cover the real cases (docs/superpowers/, .superpowers/).
+  while IFS= read -r pat; do
+    case "$pat" in ''|\#*) continue ;; esac
+    p=${pat%/}; p=${p#/}
+    case "$loc" in
+      "$p"/*|"$p") echo "FAIL: $s recommends '$loc' but .gitignore ignores '$pat' (cold adopter cannot git add the plan)"; miss=1 ;;
+    esac
+  done < "$gi"
+  return $miss
+}
+
 # ============================ selftest (table-driven) =========================================
 if [ "${1:-}" = "--selftest" ]; then
   d=$(mktemp -d); trap 'rm -rf "$d"' EXIT INT TERM
@@ -222,6 +245,10 @@ if [ "${1:-}" = "--selftest" ]; then
         printf 'skills/%s/SKILL.md\n' "$name" >> "$t/agents/$(st_defbase "${r%%:*}")"
       done
     done
+    # K6 fixture: give the plan skill a trackable durable location + a .gitignore that ignores the local
+    # scratch dir (docs/superpowers/) but NOT docs/plans/ -- so the conformant run exercises the pass path.
+    printf 'Terminal state: a plan (`docs/plans/2026-01-01-x.md`), handed on.\n' >> "$t/skills/plan/SKILL.md"
+    printf 'docs/superpowers/\n' > "$t/.gitignore"
     mkdir -p "$t/skills/using-skills"
     {
       printf -- '---\nname: using-skills\n---\n'
@@ -243,7 +270,7 @@ if [ "${1:-}" = "--selftest" ]; then
     ORCH_LOOP_REVIEW_SKILL="$t/skills/review/SKILL.md" ORCH_LOOP_WORKTREES_SKILL="$t/skills/worktrees/SKILL.md" ORCH_LOOP_VBC_SKILL="$t/skills/verification/SKILL.md" \
     ORCH_LOOP_KEYSTONE="$t/skills/using-skills/SKILL.md" ORCH_LOOP_DEBUGGING_SKILL="$t/skills/debugging/SKILL.md" ORCH_LOOP_EVALS_SKILL="$t/skills/evals/SKILL.md" \
     ORCH_LOOP_DISCOVERY_SKILL="$t/skills/continuous-discovery/SKILL.md" ORCH_LOOP_OPERATING_SKILL="$t/skills/operating/SKILL.md" ORCH_LOOP_BUILD_SKILL="$t/skills/build/SKILL.md" \
-    ORCH_LOOP_DEMONSTRATE_SKILL="$t/skills/demonstrate/SKILL.md" \
+    ORCH_LOOP_DEMONSTRATE_SKILL="$t/skills/demonstrate/SKILL.md" ORCH_LOOP_GITIGNORE="$t/.gitignore" \
     ORCH_LOOP_ORCH_DEF="$t/agents/orchestrator.agent.md" ORCH_LOOP_ENGINEER_DEF="$t/agents/engineer.agent.md" \
     ORCH_LOOP_REVIEWER_DEF="$t/agents/reviewer.agent.md" ORCH_LOOP_SECURITY_DEF="$t/agents/security.agent.md" \
     sh "$0" >/dev/null 2>&1 || rc=$?
@@ -294,6 +321,12 @@ if [ "${1:-}" = "--selftest" ]; then
   fresh; st_drop "$d/fx/agents/orchestrator.agent.md" "skills/using-skills/SKILL.md"; st_expect "Orchestrator omits keystone reference -> exit 1" 1
   fresh; mkdir -p "$d/fx/skills/zzz-probe"; printf -- '---\nname: zzz-probe\n---\nx\n' > "$d/fx/skills/zzz-probe/SKILL.md"; st_expect "on-disk skill not indexed in keystone (structural teeth) -> exit 1" 1
 
+  # -- K6 plan-location teeth (main-path): a gitignored recommended location must RED (covers miss=1 + the || fail=1 wiring) --
+  fresh
+  st_drop "$d/fx/skills/plan/SKILL.md" "Terminal state: a plan (\`docs/plans/2026-01-01-x.md\`), handed on."
+  printf 'Terminal state: a plan (`docs/superpowers/plans/2026-01-01-x.md`), handed on.\n' >> "$d/fx/skills/plan/SKILL.md"
+  st_expect "plan skill recommends a gitignored location -> exit 1" 1
+
   if [ -f "$d/sf.fail" ]; then
     echo "FAIL: orchestrator-loop-wired selftest"; exit 1
   fi
@@ -338,6 +371,8 @@ $(spine_table)
 TABLE
 # (e) the using-skills discovery keystone indexes every on-disk spine skill + is referenced by the Orchestrator
 check_keystone "$KEYSTONE_FILE" "$ORCH_DEF" || fail=1
+# (f) the plan skill's recommended durable location is trackable (not gitignored) -- K6 regression lock
+check_plan_location "$PLAN_SKILL_FILE" "$GITIGNORE_FILE" || fail=1
 
-[ "$fail" -eq 0 ] && { echo "OK: orchestrator-loop wired (roster headings + A2 kill-switch + trusted-denial + conflict-safe + spine-table skills + using-skills-keystone + golden-path job)"; exit 0; }
+[ "$fail" -eq 0 ] && { echo "OK: orchestrator-loop wired (roster headings + A2 kill-switch + trusted-denial + conflict-safe + spine-table skills + using-skills-keystone + plan-location-trackable + golden-path job)"; exit 0; }
 echo "FAIL: orchestrator-loop under-wired"; exit 1

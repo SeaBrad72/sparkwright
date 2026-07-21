@@ -50,3 +50,20 @@ exempt from the loop's repo-presupposing *machinery*, not from the kit's ethos.
 - **Modes** — the default gate is **strict** (unverifiable ⇒ FAIL: not loop-ready). `--surface` is the
   local/post-incept check where the obligation is surfaced (OUTSTANDING) but non-fatal; the CI `bootstrap`
   job uses `--surface` because a freshly incepted temp has no remote yet.
+
+## Inception vocabulary — derive, don't block
+
+A cold operator's routine inception values are usually **derivable from the charter and repo context** — the
+agent should explain or derive them, not surface them as unexplained required inputs (K2). Two that recur:
+
+- **Intent owner** (`--intent-owner`) — *the human who accepts the outcome and signs off on the project's
+  "why."* For a certification/field test it is whoever accepts the result; for a product it is the sponsor.
+  Derive it from the charter's owner. A VCS `@handle` (e.g. `@seabrad72`) additionally seeds an active
+  CODEOWNERS rule; a plain name (`Bradley James`) does not (it is free text — see the CODEOWNERS handling in
+  `scripts/incept.sh`). When it is genuinely unknown, ask **once** — don't turn a lookup into a blocker.
+- **Representative real change** — *a small, real, tested change that exercises the full loop* (branch → PR →
+  gates → merge), used to prove the emitted gates actually enforce (the "adopter operates" evidence, AC5).
+  Pick the smallest genuine change in scope — e.g. a status/health endpoint with a test — never a throwaway
+  edit whose gates wouldn't meaningfully run.
+
+The rule: **derive safe values from the charter; surface a genuine decision, not a vocabulary lookup.**

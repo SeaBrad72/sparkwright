@@ -39,4 +39,4 @@ After the design skill's terminal state (a committed, owner-approved spec) and b
 Every plan starts with: **Goal** (one sentence), **Architecture** (2-3 sentences), **Tech Stack**, **Global Constraints** (project-wide requirements copied verbatim from the spec), and the **build model** (dev-clone if any task is control-plane).
 
 ## Terminal state
-A saved, self-reviewed plan (`docs/superpowers/plans/<date>-<name>.md`, or the project's plan location), handed to the build skill. This skill never starts implementation. On handoff the backlog item moves **`Ready → In Progress`**, linked to the plan (or spec) doc — a link always exists by this point.
+A saved, self-reviewed plan (`docs/plans/<date>-<name>.md` (tracked, cold-resumable), or `docs/superpowers/plans/` (local scratch), or the project's plan location), handed to the build skill. This skill never starts implementation. On handoff the backlog item moves **`Ready → In Progress`**, linked to the plan (or spec) doc — a link always exists by this point.
