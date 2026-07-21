@@ -242,12 +242,52 @@ cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
   fi
 }
 
-warn_codeowners_placeholder() {  # <dst> — G11: a copied CODEOWNERS with @your-org/* blocks merges if owner-review is on before it's hand-edited
-  if [ -f "$1" ] && grep -q '@your-org' "$1" 2>/dev/null; then
-    echo "warning: $1 contains @your-org/* placeholder teams — replace them with REAL teams/users" >&2
-    echo "         BEFORE enabling branch protection (require_code_owner_reviews), or EVERY merge" >&2
+warn_codeowners_active_placeholder() {  # <dst> — G11: warn ONLY on an ACTIVE (uncommented) @your-org rule
+  if [ -f "$1" ] && grep -Eq '^[[:space:]]*[^#].*@your-org' "$1" 2>/dev/null; then
+    echo "warning: $1 has an ACTIVE @your-org/* placeholder — replace it with REAL teams/users" >&2
+    echo "         BEFORE enabling branch protection (require_code_owner_reviews), or that merge gate" >&2
     echo "         will block (the placeholder owners don't exist). See docs/operations/review-lane.md." >&2
   fi
+}
+
+# K3 (CP-7 recert Slice 2): incept must ship an INERT CODEOWNERS so require_code_owner_reviews cannot
+# silently block every merge. OWNER is free text ("who owns the why"); a blind substitution is INVALID
+# CODEOWNERS syntax, so seed the `*` rule ONLY when OWNER is an explicit @handle (@user or @org/team).
+# A bare name / free text stays fully inert — seeding a wrong/non-existent owner would re-introduce the
+# very block K3 fixes. Honest ceiling: incept cannot confirm the handle exists (no guaranteed network).
+codeowners_seed_handle() {  # <owner> — echoes the normalized @handle iff handle-shaped, else nothing
+  case "$1" in '@'*) : ;; *) return 0 ;; esac
+  _csh_h=${1#@}
+  printf '%s' "$_csh_h" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9-]{0,38}(/[A-Za-z0-9._-]+)?$' || return 0
+  printf '@%s' "$_csh_h"
+}
+install_codeowners() {  # <src> <dst> — brownfield-safe copy + inert transform + opportunistic @handle seed
+  # Mirror cp_kit_replace's write condition up front so we only transform a file WE wrote (kit-own/absent);
+  # a brownfield-preserved adopter file is left untouched (only the active-placeholder warning fires).
+  _ic_write=0
+  { [ ! -f "$2" ] || grep -qE 'COPY & ADAPT|@your-org' "$2" 2>/dev/null; } && _ic_write=1
+  cp_kit_replace "$1" "$2" 'COPY & ADAPT|@your-org'
+  [ "$_ic_write" -eq 1 ] || { warn_codeowners_active_placeholder "$2"; return 0; }
+  _ic_seed=$(codeowners_seed_handle "$OWNER")
+  # Comment every active ownership rule: ANY line whose first non-blank char is not '#' (a CODEOWNERS rule,
+  # whatever its leading glyph — `*`, `/`, or a bare-word path a future profile might use). Header comments
+  # and blank lines are untouched. (dual-review Minor: don't couple to the current `*`/`/` rule shapes.)
+  sedi 's/^\([[:space:]]*[^#[:space:]]\)/# \1/' "$2"
+  # Unpredictable temp name (mktemp, O_EXCL) beside the target, falling back to the pid name if mktemp is
+  # unavailable — avoids following a pre-placed symlink at a predictable path (dual-review Low).
+  _ic_tmp=$(mktemp "$(dirname "$2")/.codeowners.XXXXXX" 2>/dev/null) || _ic_tmp="$2.co.$$"
+  {
+    echo "# EDIT before enabling require_code_owner_reviews: replace the commented @your-org/*"
+    echo "# placeholder teams below with REAL teams/users, then uncomment. An active @your-org"
+    echo "# owner does not exist and would block EVERY merge (K3 / DEVELOPMENT-PROCESS.md §12)."
+    if [ -n "$_ic_seed" ]; then
+      echo "# Seeded from --intent-owner; confirm it is a real VCS user/team and add co-reviewers."
+      echo "*            ${_ic_seed}"
+    fi
+    echo ""
+    cat "$2"
+  } > "$_ic_tmp" && mv "$_ic_tmp" "$2"
+  warn_codeowners_active_placeholder "$2"
 }
 
 # 9f: fail fast if universal prerequisites are missing — jq is hard-required by the
@@ -380,6 +420,15 @@ if [ "$INTERACTIVE" -eq 1 ]; then
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
 [ -n "$OWNER" ] || { echo "error: --intent-owner required" >&2; exit 2; }
+# SECURITY (dual-review K3): --name / --intent-owner are FREE TEXT that flow into `#`-delimited `sedi`
+# stamps (esc() escapes sed-special chars but NOT newlines/control bytes) and into the emitted CODEOWNERS
+# seed. A newline breaks a stamp cryptically ("unescaped newline inside substitute pattern"); a per-line
+# handle validator would pass a multi-line value's first line and inject the rest as ACTIVE CODEOWNERS
+# rules (re-opening the K3 block). Reject control chars at the boundary — reject-by-default, mirroring
+# --stack (T9) and the CP-6 terminal-control-in-input class. Normal names (spaces, hyphens, apostrophes,
+# accented UTF-8) are unaffected — only C0/C1 control bytes are refused.
+case "$NAME"  in *[[:cntrl:]]*) echo "error: --name contains control characters (newline / control bytes) — refused" >&2; exit 2 ;; esac
+case "$OWNER" in *[[:cntrl:]]*) echo "error: --intent-owner contains control characters (newline / control bytes) — refused" >&2; exit 2 ;; esac
 case " $BACKLOG_BACKENDS " in *" $BACKLOG "*) : ;; *) echo "error: unknown --backlog '$BACKLOG' (one of: $BACKLOG_BACKENDS)" >&2; exit 2 ;; esac
 case " $CI_PLATFORMS " in *" $CI "*) : ;; *) echo "error: unknown --ci '$CI' (one of: $CI_PLATFORMS)" >&2; exit 2 ;; esac
 case " $TEAM_MODES " in *" $TEAM "*) : ;; *) echo "error: unknown --team '$TEAM' (one of: $TEAM_MODES)" >&2; exit 2 ;; esac
@@ -684,7 +733,7 @@ case "$CI" in
     fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       cp_kit_replace "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
-      [ -f "profiles/${STACK}/CODEOWNERS" ] && cp_kit_replace "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS 'COPY & ADAPT|@your-org' && warn_codeowners_placeholder .github/CODEOWNERS
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && install_codeowners "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
     else
       echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
     fi
@@ -693,7 +742,7 @@ case "$CI" in
     if [ -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
       cp_kit_replace "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml 'Sparkwright'
       # GitLab reads CODEOWNERS from root, .gitlab/, or docs/ — .gitlab/ mirrors .github/.
-      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; cp_kit_replace "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS 'COPY & ADAPT|@your-org'; } && warn_codeowners_placeholder .gitlab/CODEOWNERS
+      [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; install_codeowners "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS; }
     else
       echo "note: no profiles/${STACK}/ci.gitlab-ci.yml — add a .gitlab-ci.yml satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it; see docs/operations/ci-platforms.md)."
     fi

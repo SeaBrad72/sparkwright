@@ -198,6 +198,11 @@ make_pristine_export() {  # build ONCE: the tree an adopter actually incepts. rc
 }
 
 fresh_export_tree() {  # echo a fresh, un-incepted copy of the pristine export
+  # SAFETY (critical): refuse if the pristine export was never built. An EMPTY $INCEPT_PRISTINE makes
+  # `cp -R "$INCEPT_PRISTINE/."` expand to `cp -R "/."` — copying the ENTIRE ROOT FILESYSTEM into a temp
+  # dir (a catastrophic disk-filling runaway). Callers MUST run make_pristine_export first; fail loud, never
+  # copy root.
+  [ -n "$INCEPT_PRISTINE" ] && [ -d "$INCEPT_PRISTINE/scripts" ] || return 1
   _ft=$(mktemp -d) || return 1
   cp -R "$INCEPT_PRISTINE/." "$_ft/" || return 1
   printf '%s\n' "$_ft"
@@ -463,6 +468,109 @@ incept_prune_tests() {  # appends to $st (0 = all good)
 }
 
 # ===========================================================================================
+# CP-7 recert (K3) — INERT CODEOWNERS. incept copied profiles/<stack>/CODEOWNERS verbatim, so a fresh
+# adopter shipped an ACTIVE @your-org/* rule; with require_code_owner_reviews on, those non-existent
+# owners block EVERY merge. incept now comments every active rule (inert) and seeds an active `*  @handle`
+# rule ONLY when --intent-owner is an explicit @handle (OWNER is free text otherwise; a blind substitution
+# is invalid CODEOWNERS syntax). Proven by LIVE incept over the pristine export. LOAD-BEARING: pre-fix
+# incept shipped an active @your-org line, so T-a/T-c/T-d FAIL without the fix; T-b proves the "active
+# placeholder" predicate has teeth (a dead always-pass predicate reds here).
+# ===========================================================================================
+codeowners_active_placeholder() {  # <file> -> rc 0 iff an ACTIVE (uncommented) @your-org line exists
+  grep -Eq '^[[:space:]]*[^#].*@your-org' "$1" 2>/dev/null
+}
+codeowners_active_rule_count() {  # <file> -> count of active (uncommented) ownership rule lines
+  grep -Ec '^[[:space:]]*[^#[:space:]].*@' "$1" 2>/dev/null || true
+}
+codeowners_inert_tests() {  # appends to $st (0 = all good)
+  # T-b FIRST (predicate teeth, no incept needed): a hand-built ACTIVE @your-org file must trip the predicate,
+  # and a COMMENTED one must NOT — else T-a would false-pass or false-fail on our own inert output.
+  _cb=$(mktemp -d) || { echo "selftest FAIL: codeowners fixture — no tmpdir (fail-closed)"; st=1; return 0; }
+  printf '%s\n' '*            @your-org/engineering' > "$_cb/CODEOWNERS"
+  if codeowners_active_placeholder "$_cb/CODEOWNERS"; then
+    echo "selftest PASS: active-placeholder predicate has teeth (an active @your-org line is detected)"
+  else
+    echo "selftest FAIL: active-placeholder predicate did NOT detect an active @your-org line (VACUOUS)"; st=1
+  fi
+  printf '%s\n' '# *            @your-org/engineering' > "$_cb/CODEOWNERS"
+  if codeowners_active_placeholder "$_cb/CODEOWNERS"; then
+    echo "selftest FAIL: predicate flagged a COMMENTED @your-org line as active (would break inert output)"; st=1
+  else
+    echo "selftest PASS: commented @your-org line correctly treated as inert"
+  fi
+  rm -rf "$_cb"
+
+  # Build the pristine export ONCE for the fresh_export_tree calls below — SELF-CONTAINED: the prune test
+  # above uses adopter-export (not make_pristine_export), so $INCEPT_PRISTINE is NOT guaranteed set here.
+  # (Skipping this is what let fresh_export_tree see an empty $INCEPT_PRISTINE and copy the root filesystem.)
+  make_pristine_export || { echo "selftest FAIL: codeowners fixture — make_pristine_export failed"; st=1; return 0; }
+
+  # T-a (inert) + T-d (bare-name inert): fresh_export_tree carries the under-test incept.sh (make_pristine_
+  # export's worktree overlay), so no adopter-export/overlay-cp needed — cheaper (cp -R) and mirrors T-e/T-f.
+  # baseline run_incept passes `--intent-owner probe` (a bare NON-@ token) -> the emitted .github/CODEOWNERS
+  # must ship NO active @your-org rule and ZERO active rules.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: codeowners inert fixture — no tree"; st=1; return 0; }
+  if run_incept "$_t"; then
+    _co="$_t/.github/CODEOWNERS"
+    if [ -f "$_co" ] && ! codeowners_active_placeholder "$_co"; then
+      echo "selftest PASS: emitted .github/CODEOWNERS ships NO active @your-org rule (owner-review can't block)"
+    else
+      echo "selftest FAIL: emitted .github/CODEOWNERS has an ACTIVE @your-org rule (K3 regression) or is missing"; st=1
+    fi
+    _arc=$(codeowners_active_rule_count "$_co")
+    if [ "${_arc:-1}" = 0 ]; then
+      echo "selftest PASS: bare-name intent-owner -> fully inert CODEOWNERS (0 active rules)"
+    else
+      echo "selftest FAIL: bare-name intent-owner left $_arc active rule(s) (expected 0 — inert)"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept (codeowners inert run) exited non-zero (rc=$?)"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # T-c (seed): live incept with an explicit @handle -> ONE active `*  @handle` rule, still no active @your-org.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: codeowners seed fixture — no tree"; st=1; return 0; }
+  if run_incept "$_t" --intent-owner '@sw-test-owner'; then
+    _co="$_t/.github/CODEOWNERS"
+    if grep -Eq '^[[:space:]]*\*[[:space:]]+@sw-test-owner$' "$_co" 2>/dev/null && ! codeowners_active_placeholder "$_co"; then
+      echo "selftest PASS: explicit @handle intent-owner -> active '*  @sw-test-owner' seed, no active @your-org"
+    else
+      echo "selftest FAIL: @handle intent-owner did not seed an active '*  @sw-test-owner' rule (or left active @your-org)"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept (codeowners seed run) exited non-zero (rc=$?)"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # T-e (INJECTION guard, dual-review Important): a control-char / multi-line --intent-owner must be
+  # REFUSED at parse (exit 2, reject-by-default like --stack/T9) — never flowed into a `sed` stamp (where it
+  # died with a cryptic "unescaped newline") nor into the CODEOWNERS seed (a per-line handle validator would
+  # pass the first line and inject the rest as ACTIVE rules, re-opening K3). Load-bearing: exit 2 + no
+  # CODEOWNERS written; the discriminating message (not just the exit code) is asserted.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: codeowners inject fixture — no tree"; st=1; return 0; }
+  _rc=0; run_incept "$_t" --intent-owner "$(printf '@acme\n/pwned/  @intruder')" || _rc=$?
+  if [ "$_rc" = 2 ] && printf '%s\n' "$INCEPT_OUT" | grep -q 'intent-owner contains control characters' \
+       && [ ! -f "$_t/.github/CODEOWNERS" ]; then
+    echo "selftest PASS: control-char/multi-line --intent-owner REFUSED (exit 2), no CODEOWNERS written (no injection)"
+  else
+    echo "selftest FAIL: control-char --intent-owner rc=$_rc (expected 2) / message missing / CODEOWNERS written — injection or cryptic-fail path"; st=1
+    grep -nE '@intruder|/pwned/' "$_t/.github/CODEOWNERS" 2>/dev/null | sed 's/^/    injected> /'
+  fi
+  rm -rf "$_t"
+
+  # T-f (SIBLING, dual-review sibling-surfacing): --name has the SAME free-text -> sed-stamp flow, so a
+  # control-char --name is refused at parse too (the guard is not intent-owner-only).
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: codeowners name-sibling fixture — no tree"; st=1; return 0; }
+  _rc=0; run_incept "$_t" --name "$(printf 'Proj\n@evil')" || _rc=$?
+  if [ "$_rc" = 2 ] && printf '%s\n' "$INCEPT_OUT" | grep -q 'name contains control characters'; then
+    echo "selftest PASS: control-char --name REFUSED at parse (exit 2, sibling of the intent-owner guard)"
+  else
+    echo "selftest FAIL: control-char --name rc=$_rc (expected 2) / message missing — sed-stamp injection sibling not guarded"; st=1
+  fi
+  rm -rf "$_t"
+}
+
+# ===========================================================================================
 # T9 — SECURITY BLOCKER: `--stack` sed-injection -> arbitrary file write (CONTROL-PLANE). The stack
 # flows into a `#`-delimited `sedi` stamp in incept.sh, and kit-update REPLAYS incept with the stack
 # read back out of an adopter-controlled CLAUDE.md — so an unvalidated stack is an arbitrary-write sink
@@ -617,6 +725,39 @@ run_check() {
 # ===========================================================================================
 selftest() {
   st=0
+  # DISK-SPACE PREFLIGHT (seatbelt): the live-incept sub-tests below build full-repo temp trees. Refuse to
+  # START if free space is under the floor, so a conformance run can NEVER fill the disk — worst case is a
+  # loud abort telling you to free space, not a wedged machine. Kit-dev safety; CI runners have ample space.
+  # (Checks the REAL $TMPDIR here, before the base-dir redirection below.)
+  # Ephemeral CI (GitHub Actions etc.) DISCARDS its disk after the run, so the hazard this guards — filling
+  # a PERSISTENT dev machine — doesn't exist there, and a low-but-sufficient runner (~14 GiB free) must not
+  # false-abort. Coverage is UNCHANGED: CI has ample disk and still runs every test; only the "should I
+  # start?" resource gate is skipped where disk is throwaway. Local dev keeps the seatbelt.
+  if [ -z "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+    _kw3_floor_kb=20971520   # 20 GiB
+    _kw3_avail_kb=$(df -k "${TMPDIR:-/tmp}" 2>/dev/null | awk 'NR==2 {print $4}')
+    case "$_kw3_avail_kb" in
+      ''|*[!0-9]*) echo "selftest: WARN — could not read free space for ${TMPDIR:-/tmp}; proceeding" >&2 ;;
+      *) if [ "$_kw3_avail_kb" -lt "$_kw3_floor_kb" ]; then
+           echo "selftest ABORT: only $((_kw3_avail_kb / 1024 / 1024)) GiB free in ${TMPDIR:-/tmp} (need >= 20 GiB)." >&2
+           echo "  The live-incept conformance tests build full-repo temp trees; refusing to run rather than fill the disk." >&2
+           echo "  Free space (clear \$TMPDIR/tmp.* and 'sudo tmutil deletelocalsnapshots /'), then re-run." >&2
+           return 1
+         fi ;;
+    esac
+  fi
+  # DISK HYGIENE (kit-dev): every live-incept sub-test builds a full-repo mktemp tree. Nest them ALL under
+  # ONE base and trap-clean it, so an INTERRUPTED run (kill / SIGTERM-timeout / ENOSPC / Ctrl-C) can't
+  # orphan gigabytes of trees — the leak that silently reached ~294 GB over the CP-7 arc. Sub-tests still
+  # rm their own dirs (early free); this trap is the crash backstop. Only SIGKILL escapes it (uncatchable).
+  # This is kit-DEVELOPMENT machinery (this check N/As on an adopter tree); the trap keeps kit builds clean.
+  _kw3_tmpbase=$(mktemp -d) || { echo "selftest FAIL: cannot create temp base (fail-closed)"; return 1; }
+  # EXIT does the single cleanup; a signal just exits (which fires EXIT) — never RESUME after a signal, or
+  # execution limps on into a base the handler already deleted.
+  trap 'rm -rf "$_kw3_tmpbase"' EXIT
+  trap 'exit 143' TERM
+  trap 'exit 130' INT
+  TMPDIR="$_kw3_tmpbase"; export TMPDIR
   MAN="$(resolve_manifest_default typescript-node)" \
     || { echo "selftest FAIL: cannot resolve the TS/Node manifest"; return 1; }
 
@@ -667,6 +808,7 @@ selftest() {
     incept_stamp_tests
     incept_stack_tests
     incept_prune_tests
+    codeowners_inert_tests
   fi
 
   # --- ★ LOCK SELF-NEGATIVE (mandatory): neutralize the detector (predicate_holds -> always-true) and
