@@ -393,6 +393,76 @@ incept_stamp_tests() {  # appends to $st (0 = all good)
 }
 
 # ===========================================================================================
+# CP-7 recert (K5) — PRUNE UNSELECTED PROFILES. The emitted CI runs whole-tree SAST; a fresh export
+# ships ALL stack profiles, so scanning a FOREIGN profile's scaffold (profiles/python/scaffold/tests
+# urllib) reddened a TS adopter's FIRST CI on code they never wrote. incept now removes every stack
+# profile except the selected one (mirroring adopter-export --profile). Proven by a LIVE incept over
+# the UNPRUNED pristine export (make_pristine_export = git archive HEAD + worktree overlay = all
+# profiles). LOAD-BEARING BY CONSTRUCTION: the pre-fix incept left all 10 profiles, so every assertion
+# below FAILs without the prune (the manifest ones catch a disk-pruned-but-manifest-stale regression,
+# which would give kit-update a phantom-deletion base). BOTH manifests are checked — working tree AND
+# the kit-base ref (capture_kit_base staged the UNPRUNED set before $STACK was known, so the prune must
+# reach the stage too, else kit-update reads a foreign-listing kit-base:.kit-manifest first).
+# ===========================================================================================
+manifest_foreign_count() {  # <manifest-text> — count profiles/ lines that are NOT the kept set (expect 0)
+  printf '%s\n' "$1" | grep -E '^profiles/' \
+    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|_TEMPLATE\.md$)' \
+    | grep -c . || true
+}
+incept_prune_tests() {  # appends to $st (0 = all good)
+  # Build via adopter-export (NOT make_pristine_export): only adopter-export WRITES the .kit-manifest
+  # this suite's reconcile assertions read (git archive HEAD ships no manifest — it is export-generated).
+  _pt=$(mktemp -d) || { echo "selftest FAIL: prune fixture — no tmpdir (fail-closed)"; st=1; return 0; }
+  _pe="$_pt/exp"
+  if ! sh "$REPO_ROOT/scripts/adopter-export.sh" "$_pe" >"$_pt/exp.log" 2>&1; then
+    echo "selftest FAIL: prune fixture — adopter-export failed"; sed 's/^/    /' "$_pt/exp.log"; st=1; rm -rf "$_pt"; return 0
+  fi
+  # git archive HEAD ships the COMMITTED incept.sh; overlay the worktree one under test (mirrors
+  # make_pristine_export's worktree overlay) so the suite exercises THIS incept.sh, not HEAD's.
+  cp "$REPO_ROOT/scripts/incept.sh" "$_pe/scripts/incept.sh" \
+    || { echo "selftest FAIL: prune fixture — incept overlay failed"; st=1; rm -rf "$_pt"; return 0; }
+  if run_incept "$_pe"; then   # run_incept baseline is --stack typescript-node
+    # (a) foreign profile DIRS gone; the selected one + the non-stack-dir files kept.
+    _foreign=$(ls -d "$_pe"/profiles/*/ 2>/dev/null | sed 's#.*/profiles/##; s#/$##' | grep -vxF typescript-node | tr '\n' ' ')
+    if [ -z "$_foreign" ] && [ -d "$_pe/profiles/typescript-node" ]; then
+      echo "selftest PASS: incept pruned every foreign profile dir, kept profiles/typescript-node"
+    else
+      echo "selftest FAIL: after incept, foreign profile dirs remain ('$_foreign') or the selected profile is missing"; st=1
+    fi
+    if [ -f "$_pe/profiles/ratification.yml" ] && [ -f "$_pe/profiles/_TEMPLATE.md" ]; then
+      echo "selftest PASS: incept kept the non-stack-dir files (ratification.yml, _TEMPLATE.md)"
+    else
+      echo "selftest FAIL: incept pruned a non-stack-dir file (ratification.yml / _TEMPLATE.md) it must keep"; st=1
+    fi
+    # (b) WORKING-TREE .kit-manifest: zero foreign-profile lines, selected profile still listed.
+    _wman=$(cat "$_pe/.kit-manifest" 2>/dev/null || true)
+    _wf=$(manifest_foreign_count "$_wman")
+    _wk=$(printf '%s\n' "$_wman" | grep -cE '^profiles/typescript-node/' || true)
+    if [ "$_wf" = 0 ] && [ "$_wk" -gt 0 ]; then
+      echo "selftest PASS: working-tree .kit-manifest reconciled (0 foreign lines, $_wk kept-profile lines)"
+    else
+      echo "selftest FAIL: working-tree .kit-manifest not reconciled (foreign=$_wf kept=$_wk)"; st=1
+    fi
+    # (c) kit-base REF .kit-manifest: same — kit-update reads THIS first, so a stale base = phantom deletions.
+    _bman=$( cd "$_pe" && git show kit-base:.kit-manifest 2>/dev/null || true )
+    if [ -n "$_bman" ]; then
+      _bf=$(manifest_foreign_count "$_bman")
+      _bk=$(printf '%s\n' "$_bman" | grep -cE '^profiles/typescript-node/' || true)
+      if [ "$_bf" = 0 ] && [ "$_bk" -gt 0 ]; then
+        echo "selftest PASS: kit-base:.kit-manifest reconciled (0 foreign lines, $_bk kept-profile lines)"
+      else
+        echo "selftest FAIL: kit-base:.kit-manifest not reconciled (foreign=$_bf kept=$_bk) — kit-update would rebuild a phantom-deletion base"; st=1
+      fi
+    else
+      echo "selftest FAIL: no kit-base:.kit-manifest after incept (expected the captured base)"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept (prune suite) exited non-zero (rc=$?)"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_pt"
+}
+
+# ===========================================================================================
 # T9 — SECURITY BLOCKER: `--stack` sed-injection -> arbitrary file write (CONTROL-PLANE). The stack
 # flows into a `#`-delimited `sedi` stamp in incept.sh, and kit-update REPLAYS incept with the stack
 # read back out of an adopter-controlled CLAUDE.md — so an unvalidated stack is an arbitrary-write sink
@@ -596,6 +666,7 @@ selftest() {
     incept_date_tests
     incept_stamp_tests
     incept_stack_tests
+    incept_prune_tests
   fi
 
   # --- ★ LOCK SELF-NEGATIVE (mandatory): neutralize the detector (predicate_holds -> always-true) and

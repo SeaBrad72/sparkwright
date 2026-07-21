@@ -71,15 +71,29 @@ build_adopter() {  # <dir> — a REAL adopter: exported, committed, incepted, co
     echo "FAIL: kit-update-merge — incept did not record refs/heads/kit-base" >&2; return 1; }
 }
 
-# build_adopter_unpruned <dir> — a REAL MULTI-STACK adopter: exported with NO --profile, so EVERY stack
-# profile is kept (adopter-export --profile is OPTIONAL, and a multi-stack org — the kit's stated consumer
-# — legitimately keeps all ten). Its .kit-manifest therefore records an un-pruned shape. This is the
-# fixture the single-profile suite never builds, which is why the T10 data-loss bug shipped green.
+# build_adopter_unpruned <dir> — a LEGACY un-pruned adopter: a project incepted BEFORE prune-at-incept
+# (CP-7 recert) shipped, so its tree still carries EVERY stack profile (un-pruned HEAD, kit-base, and
+# .kit-manifest). Built by exporting with NO --profile and running incept with its §5a4 prune block
+# STRIPPED (so it behaves like the pre-fix incept). This is the fixture the single-profile suite never
+# builds; it exercises the T10 MIGRATION — the one-time cleanup kit-update offers such an adopter.
 build_adopter_unpruned() {  # <dir>
   sh "$ROOT/scripts/adopter-export.sh" "$1" >/dev/null 2>&1 || {
     echo "FAIL: kit-update-merge — un-pruned adopter-export failed; cannot build a multi-stack fixture" >&2; return 1; }
   ( cd "$1" && git init -q . && git add -A && $GIT_C commit -qm 'kit export' ) >/dev/null 2>&1 || {
     echo "FAIL: kit-update-merge — could not init the un-pruned fixture repo" >&2; return 1; }
+  # Simulate a LEGACY adopter (incepted BEFORE prune-at-incept, CP-7 recert): strip incept's §5a4
+  # profile-prune block so the fixture keeps ALL profiles — un-pruned HEAD, kit-base, AND .kit-manifest,
+  # exactly as a real pre-fix adopter's tree. This is what makes the T10 MIGRATION assertions below
+  # non-vacuous: there ARE foreign profiles for the new (pruning) release's kit-update to offer removing.
+  awk '/^# --- 5a4\. prune unselected/{s=1} /^# --- 5b0\./{s=0} !s' \
+      "$1/scripts/incept.sh" > "$1/scripts/incept.sh.legacy" \
+    && mv "$1/scripts/incept.sh.legacy" "$1/scripts/incept.sh" || {
+      echo "FAIL: kit-update-merge — could not strip incept's prune block for the legacy fixture" >&2; return 1; }
+  # The strip is delimited by two incept.sh comment markers; if the closing `# --- 5b0.` marker is ever
+  # renamed the awk over-runs to EOF and could silently mask a regression. Assert the range CLOSED — the
+  # 5b0 marker must survive — so a marker rename fails LOUDLY here, not silently downstream.
+  grep -q '^# --- 5b0\.' "$1/scripts/incept.sh" || {
+    echo "FAIL: kit-update-merge — the prune-block strip over-ran (no '# --- 5b0.' marker left in incept.sh); the §5a4/§5b0 markers may have changed." >&2; return 1; }
   ( cd "$1" && sh scripts/incept.sh --noninteractive --name Flow --intent-owner B \
       --stack "$STACK" --date "$ADOPT_DATE" ) >/dev/null 2>&1 || {
     echo "FAIL: kit-update-merge — incept failed on the un-pruned fixture" >&2; return 1; }
@@ -510,17 +524,21 @@ EOF
   return $st
 }
 
-# ── T10 — THE UN-PRUNED ADOPTER: THEIRS must match the SHAPE the adopter received, never a GUESS ────────
-# adopter-export --profile is OPTIONAL. A multi-stack org keeps ALL profiles, and its .kit-manifest records
-# that. An updater that ALWAYS prunes THEIRS to one profile hands an unchanged un-pruned adopter a patch
-# DELETING ~143 kept profile files, and `git apply --check` passes — data loss with a progress bar. The
-# single-profile suite above cannot see it because every fixture there is profile-pruned. This check builds
-# the missing fixture and asserts three things the fix must satisfy TOGETHER:
-#   * an unchanged un-pruned adopter, same release in, gets an EMPTY delta (offered/CONFLICT/untouched all 0);
-#   * the HARD INVARIANT directly — NOT ONE profiles/ path is offered as a prune-mismatch deletion;
-#   * NON-VACUITY — a GENUINE upstream deletion of a profile file the adopter has IS still offered (if the
-#     fix hid that, it would have over-corrected into concealing real removals). Distinguished via the
-#     manifest/BASE, never via THEIRS's prune.
+# ── T10 — THE LEGACY UN-PRUNED ADOPTER: a one-time MIGRATION to the pruned shape, surgical & non-mutating ─
+# CP-7 recert (Option A): incept now PRUNES unselected profiles (a fresh export's un-pruned single project
+# ran the emitted whole-tree SAST over foreign scaffolds and reddened the adopter's first CI — the field
+# bug). A LEGACY adopter incepted BEFORE that fix still has all profiles on disk (an un-pruned kit-base +
+# HEAD + manifest). Their next update to the pruning release must offer a clean ONE-TIME cleanup, NOT a
+# guess and NOT data loss. This check builds that legacy fixture (by stripping incept's prune block, above)
+# and asserts, TOGETHER:
+#   * MIGRATION-REMOVES-FOREIGN — EVERY foreign (non-$STACK) profile file the adopter kept is offered for
+#     removal (complete — count matches the manifest), so the cleanup is not partial;
+#   * KEPT-PROFILE-PRESERVED — NOT ONE kept path (profiles/$STACK/, ratification.yml, _TEMPLATE.md) is
+#     offered — the migration is surgical, never over-pruning the adopter's OWN stack;
+#   * ADOPTER-FILE-PRESERVED — an adopter-authored file is never offered for removal;
+#   * NON-MUTATION — kit-update writes NOTHING to the adopter's repo;
+#   * TEETH — a GENUINE upstream deletion of a KEPT-stack profile file IS still offered (the migration does
+#     not blanket-suppress real removals in the adopter's own stack). Distinguished via the manifest/BASE.
 check_unpruned() {
   _t=$(mktemp -d) || { echo "kit-update-merge: cannot mktemp (unpruned)" >&2; return 2; }
   # shellcheck disable=SC2064
@@ -540,52 +558,82 @@ check_unpruned() {
     return 1
   fi
 
+  # Give the un-pruned adopter an authored file, so the migration below can be proven to preserve it.
+  mkdir -p "$_p/$(dirname "$MINE")" && echo '# product notes (ours)' > "$_p/$MINE"
+  ( cd "$_p" && git add -A && $GIT_C commit -qm 'adopter work' ) >/dev/null 2>&1 || {
+    echo "FAIL: T10 — could not add an adopter-authored file to the un-pruned fixture" >&2; return 1; }
+
   fingerprint "$_p" > "$_t/fp.before"
 
-  # ── unchanged un-pruned adopter, SAME release in => a TRUE no-op (empty delta) ──────────────────────
+  # ── THE MIGRATION (CP-7 recert, Option A): a LEGACY un-pruned adopter (all profiles on disk, incepted
+  #    BEFORE prune-at-incept) updating to the now-pruning release is offered a ONE-TIME cleanup — removal
+  #    of EXACTLY the foreign (non-$STACK) profiles, the shape incept now produces. It must be SURGICAL:
+  #    remove every foreign profile file (complete), NEVER the adopter's OWN stack profile, NEVER an
+  #    adopter-authored file. (Pre-CP-7 the invariant was the OPPOSITE — "offer no profile deletions" —
+  #    because incept kept all profiles; but that un-pruned single project's whole-tree SAST was the RED
+  #    field bug this recert fixes, so keeping it was never actually viable.)
   build_release "$_t/same" "" || return 1
   if ! ( cd "$_p" && sh scripts/kit-update.sh --from "$_t/same" ) >"$_t/noop" 2>"$_t/noop.err"; then
-    echo "FAIL: T10 — kit-update FAILED for an unchanged un-pruned adopter:" >&2
+    echo "FAIL: T10 — kit-update FAILED for the un-pruned adopter migration:" >&2
     sed 's/^/    /' "$_t/noop" >&2 || :; sed 's/^/    /' "$_t/noop.err" >&2 || :
     return 1
   fi
-  _noff=$(section "$_t/noop" offered | grep -c . || :)
-  _ncon=$(section "$_t/noop" CONFLICT | grep -c . || :)
-  _nunt=$(section "$_t/noop" untouched | grep -c . || :)
-  _ntheirs=$(sed -n 's/^computed: //p' "$_t/noop" | sed -n '1p' | sed -n 's/.*THEIRS=\([0-9]*\).*/\1/p')
-  if [ "${_noff:-1}" -eq 0 ] && [ "${_ncon:-1}" -eq 0 ] && [ "${_nunt:-1}" -eq 0 ] \
-     && grep -qi 'no changes' "$_t/noop" && [ -n "${_ntheirs:-}" ] && [ "$_ntheirs" -gt 0 ]; then
-    echo "PASS: T10 [UNCHANGED-UNPRUNED-IS-EMPTY] — an un-pruned adopter who changed nothing is offered"
-    echo "      NOTHING (offered/CONFLICT/untouched all empty), the tool SAYS 'no changes', and it still"
-    echo "      proves it built a non-empty THEIRS ($_ntheirs files) — 'no changes' means nothing changed"
+  # kept vs foreign, by the SAME filter over the offered set AND the adopter's own manifest.
+  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/_TEMPLATE\.md\$"
+  _foreign_off=$(section "$_t/noop" offered | grep '^profiles/' | grep -vE "$_keptfilter" | grep -c . || :)
+  _kept_off=$(section "$_t/noop" offered | grep -E "$_keptfilter" | grep -c . || :)
+  _foreign_have=$(git -C "$_p" show kit-base:.kit-manifest 2>/dev/null \
+    | grep '^profiles/' | grep -vE "$_keptfilter" | grep -c . || :)
+
+  # (1) MIGRATION-REMOVES-FOREIGN — every foreign profile file the adopter kept is offered for removal.
+  if [ "${_foreign_off:-0}" -gt 0 ] && [ "$_foreign_off" = "$_foreign_have" ]; then
+    echo "PASS: T10 [MIGRATION-REMOVES-FOREIGN] — all $_foreign_off foreign-profile file(s) are offered for"
+    echo "      removal (the one-time cleanup to the pruned shape incept now produces)"
   else
-    echo "FAIL: T10 [UNCHANGED-UNPRUNED-IS-EMPTY] — an unchanged un-pruned adopter must get an EMPTY delta." >&2
-    echo "      Got offered=$_noff CONFLICT=$_ncon untouched=$_nunt theirs=${_ntheirs:-<none>}. The updater" >&2
-    echo "      guessed the adopter pruned to one profile and offered to DELETE every profile they kept." >&2
+    echo "FAIL: T10 [MIGRATION-REMOVES-FOREIGN] — offered $_foreign_off foreign-profile file(s) but the adopter" >&2
+    echo "      holds $_foreign_have (kit-base:.kit-manifest); the migration is empty or INCOMPLETE." >&2
     st=1
   fi
 
-  # ── THE HARD INVARIANT, asserted directly: no profiles/ path is offered as a spurious deletion ──────
-  _offprof=$(section "$_t/noop" offered | grep -c '^profiles/' || :)
-  if [ "${_offprof:-0}" -eq 0 ]; then
-    echo "PASS: T10 [NO-SPURIOUS-PROFILE-DELETION] — not one profiles/ path is offered for an unchanged adopter"
+  # (2) KEPT-PROFILE-PRESERVED — the migration NEVER offers to delete the adopter's OWN stack profile (nor
+  #     ratification.yml / _TEMPLATE.md). The surgical half: an over-prune of the adopter's stack fails here.
+  if [ "${_kept_off:-0}" -eq 0 ]; then
+    echo "PASS: T10 [KEPT-PROFILE-PRESERVED] — not one kept path (profiles/$STACK/, ratification.yml, _TEMPLATE.md) is offered"
   else
-    echo "FAIL: T10 [NO-SPURIOUS-PROFILE-DELETION] — $_offprof profiles/ path(s) offered to an adopter who" >&2
-    echo "      changed nothing. THEIRS was pruned to a shape the adopter did NOT receive; every one of these" >&2
-    echo "      is a proposed deletion of a kit file present in BASE that the adopter legitimately kept." >&2
+    echo "FAIL: T10 [KEPT-PROFILE-PRESERVED] — $_kept_off kept profile path(s) offered — the migration over-pruned the adopter's OWN stack." >&2
     st=1
   fi
-  _npatch=$(sed -n 's/^patch: //p' "$_t/noop" | sed -n '1p')
-  case "$_npatch" in
-    /*) if grep -q '^diff --git a/profiles/' "$_npatch" 2>/dev/null \
-             && grep -q '^deleted file mode' "$_npatch" 2>/dev/null; then
-          echo "FAIL: T10 [PATCH-DELETES-KEPT-PROFILES] — the emitted patch deletes profile files the adopter kept." >&2
-          st=1
-        else
-          echo "PASS: T10 [PATCH-CLEAN] — the emitted patch deletes no profile file the adopter kept"
-        fi ;;
-    *) echo "PASS: T10 [PATCH-CLEAN] — nothing is offered, so there is no patch that could delete a kept profile" ;;
-  esac
+
+  # (3) ADOPTER-FILE-PRESERVED — an adopter-authored file is NEVER offered for removal.
+  if ! in_section "$_t/noop" offered "$MINE"; then
+    echo "PASS: T10 [ADOPTER-FILE-PRESERVED] — the adopter-authored $MINE is not offered for removal"
+  else
+    echo "FAIL: T10 [ADOPTER-FILE-PRESERVED] — the migration offered to delete the adopter-authored $MINE." >&2
+    st=1
+  fi
+
+  # (4) DELETES-ONLY-FOREIGN — the BOUND (dual-review hardening): the "surgical" claim above spot-checks
+  #     specific paths; this bounds it. EVERY file the migration PATCH deletes must be a foreign profile —
+  #     nothing kept (profiles/$STACK/, ratification.yml, _TEMPLATE.md) and nothing OUTSIDE profiles/ (a
+  #     doc, a root file, an adopter file). Offered MODIFICATIONS (e.g. the STACK-SELECTION.md stub) are
+  #     fine — only DELETIONS are bounded, read from the patch's `deleted file mode` markers.
+  _mpatch=$(sed -n 's/^patch: //p' "$_t/noop" | sed -n '1p')
+  if [ -n "$_mpatch" ] && [ -f "$_mpatch" ]; then
+    _deleted=$(awk '/^diff --git a\// { p=$3; sub(/^a\//,"",p) } /^deleted file mode/ { print p }' "$_mpatch")
+    _bad_del=$(printf '%s\n' "$_deleted" | grep -vE "^profiles/" | grep -c . || :)
+    _kept_del=$(printf '%s\n' "$_deleted" | grep -E "$_keptfilter" | grep -c . || :)
+    if [ "${_bad_del:-0}" -eq 0 ] && [ "${_kept_del:-0}" -eq 0 ]; then
+      echo "PASS: T10 [DELETES-ONLY-FOREIGN] — every file the migration patch DELETES is a foreign profile (no kept/non-profile deletion)"
+    else
+      echo "FAIL: T10 [DELETES-ONLY-FOREIGN] — the migration patch deletes $_bad_del non-profile and $_kept_del kept-profile file(s) it must not:" >&2
+      printf '%s\n' "$_deleted" | grep -vE "^profiles/" | sed 's/^/      non-profile: /' >&2 || :
+      printf '%s\n' "$_deleted" | grep -E "$_keptfilter" | sed 's/^/      kept: /' >&2 || :
+      st=1
+    fi
+  else
+    echo "FAIL: T10 [DELETES-ONLY-FOREIGN] — no migration patch to bound (the cleanup should emit one)." >&2
+    st=1
+  fi
 
   fingerprint "$_p" > "$_t/fp.after"
   if diff -u "$_t/fp.before" "$_t/fp.after" >/dev/null 2>&1; then
@@ -596,49 +644,48 @@ check_unpruned() {
     st=1
   fi
 
-  # ── NON-VACUITY — a GENUINE upstream deletion of a profile file the adopter HAS is STILL offered. ───
-  # Pick a real file from a profile OTHER than the adopter's stack (untouched by incept for this adopter),
-  # and a release that genuinely removes it. If the fix suppressed THIS, it would be hiding real deletions.
+  # ── TEETH — a GENUINE upstream deletion of a KEPT ($STACK) profile file is STILL offered. The migration
+  #    removes FOREIGN profiles by SHAPE (manifest/BASE), but it must NOT blanket-suppress real deletions in
+  #    the profile the adopter actually keeps: if upstream genuinely removes a profiles/$STACK/ file, THEIRS
+  #    lacks it and the adopter has it, so it must be offered. A fix that hid THIS would be concealing real
+  #    removals in the adopter's own stack (distinguished via the manifest/BASE, not via THEIRS's prune).
   _del=$(git -C "$_p" show kit-base:.kit-manifest 2>/dev/null \
-    | grep '^profiles/' | grep -v "^profiles/$STACK/" | grep -v '^profiles/[^/]*$' \
-    | LC_ALL=C sort | sed -n '1p')
+    | grep "^profiles/$STACK/" | LC_ALL=C sort | sed -n '1p')
   if [ -z "$_del" ] || ! git -C "$_p" cat-file -e "HEAD:$_del" 2>/dev/null; then
-    echo "FAIL: T10 [GENUINE-DELETION] — could not find a non-stack profile file to delete ('${_del:-<none>}')." >&2
+    echo "FAIL: T10 [GENUINE-DELETION] — could not find a kept-stack profile file to delete ('${_del:-<none>}')." >&2
     st=1
   else
     git clone --quiet --no-tags "$ROOT" "$_t/del" >/dev/null 2>&1 || {
       echo "FAIL: T10 [GENUINE-DELETION] — could not clone a fake release" >&2; return 1; }
     ( cd "$_t/del" && git rm -q "$_del" && echo "${_v}-del" > VERSION \
-        && git add -A && $GIT_C commit -qm 'release: genuinely remove a profile file' ) >/dev/null 2>&1 || {
+        && git add -A && $GIT_C commit -qm 'release: genuinely remove a kept-stack profile file' ) >/dev/null 2>&1 || {
       echo "FAIL: T10 [GENUINE-DELETION] — could not build the deleting release" >&2; return 1; }
     if ! ( cd "$_p" && sh scripts/kit-update.sh --from "$_t/del" ) >"$_t/del.out" 2>"$_t/del.err"; then
-      echo "FAIL: T10 [GENUINE-DELETION] — kit-update failed against a release that removed a profile file:" >&2
+      echo "FAIL: T10 [GENUINE-DELETION] — kit-update failed against a release that removed a kept-stack profile file:" >&2
       sed 's/^/    /' "$_t/del.err" >&2 || :
       st=1
     else
       _delpatch=$(sed -n 's/^patch: //p' "$_t/del.out" | sed -n '1p')
-      _offprof2=$(section "$_t/del.out" offered | grep -c '^profiles/' || :)
       if in_section "$_t/del.out" offered "$_del" \
          && [ -n "$_delpatch" ] && [ -f "$_delpatch" ] \
-         && grep -q "^diff --git a/$_del" "$_delpatch" \
-         && [ "${_offprof2:-0}" -eq 1 ]; then
-        echo "PASS: T10 [GENUINE-DELETION-STILL-OFFERED] — a real upstream removal of"
-        echo "      $_del IS offered (and is the ONLY profiles/ path offered — the"
-        echo "      ~143 kept profiles are not), so the invariant has teeth: a real deletion is distinguished"
-        echo "      from a prune-shape mismatch via the manifest/BASE, not via THEIRS's prune"
+         && grep -q "^diff --git a/$_del" "$_delpatch"; then
+        echo "PASS: T10 [GENUINE-DELETION-STILL-OFFERED] — a real upstream removal of the kept-stack file"
+        echo "      $_del IS offered, so the migration does not blanket-suppress real deletions in the"
+        echo "      adopter's OWN stack (distinguished via the manifest/BASE, not via THEIRS's prune)"
       else
-        echo "FAIL: T10 [GENUINE-DELETION-STILL-OFFERED] — a genuine upstream deletion of $_del was NOT offered" >&2
-        echo "      as expected (offered profiles/=$_offprof2, in patch='${_delpatch:-<none>}'). The fix has" >&2
-        echo "      over-corrected into HIDING real deletions." >&2
+        echo "FAIL: T10 [GENUINE-DELETION-STILL-OFFERED] — a genuine upstream deletion of the kept-stack file" >&2
+        echo "      $_del was NOT offered (in patch='${_delpatch:-<none>}'). The migration has over-corrected" >&2
+        echo "      into HIDING real deletions in the adopter's OWN stack." >&2
         st=1
       fi
     fi
   fi
 
   if [ "$st" -eq 0 ]; then
-    echo "OK: kit-update-merge [T10] — an un-pruned (multi-stack) adopter is handled by SHAPE, read from"
-    echo "    .kit-manifest: an unchanged one gets an empty delta (no spurious profile deletions), while a"
-    echo "    GENUINE upstream deletion is still offered — non-mutating throughout."
+    echo "OK: kit-update-merge [T10] — a LEGACY un-pruned (multi-stack) adopter migrating to the pruning"
+    echo "    release is offered removal of EXACTLY the foreign profiles (complete), never its OWN stack"
+    echo "    profile nor an adopter-authored file, and a genuine kept-stack deletion is still offered —"
+    echo "    non-mutating throughout."
   fi
   return $st
 }

@@ -770,6 +770,58 @@ if [ -f "profiles/${STACK}/Dockerfile" ] || [ -f "profiles/${STACK}/compose.yaml
   echo "note: containerize when ready — adapt profiles/${STACK}/Dockerfile + compose.yaml to your app, then the image-build CI gates activate (they skip until a Dockerfile is present)."
 fi
 
+# --- 5a4. prune unselected stack profiles (CP-7 recert, K5) ---------------------------------------
+# The emitted CI runs whole-tree SAST (`semgrep --config p/default --error .`). A fresh export ships
+# ALL stack profiles, so scanning a FOREIGN profile's scaffold (e.g. profiles/python/scaffold/tests/
+# urllib) reddens a TS adopter's very FIRST CI on code they never wrote. incept is the first point the
+# stack is known (the release is stack-neutral), so prune here — mirroring `adopter-export --profile`
+# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/_TEMPLATE.md
+# (adopter-export iterates known-profile DIRS only). Prune BOTH the working tree AND KIT_BASE_STAGE:
+# capture_kit_base already staged the UNPRUNED set (before $STACK was known), so pruning both keeps
+# kit-base, the tree, and both .kit-manifest files in agreement — kit-update then reconstructs a
+# matching pruned THEIRS (it reads kit-base:.kit-manifest first).
+# NOTE: conformance/kit-update-merge.sh builds its LEGACY-adopter fixture by stripping this block via the
+# `# --- 5a4.` / `# --- 5b0.` markers — do not rename them without updating that check (it asserts the strip).
+_prune_profiles_in() {  # <dir> — remove non-$STACK stack profiles + surgically reconcile <dir>/.kit-manifest
+  _pp_dir=$1
+  [ -d "$_pp_dir/profiles" ] || return 0
+  _pp_re=''
+  for _pp in $STACK_PROFILES; do
+    [ "$_pp" = "$STACK" ] && continue
+    [ -d "$_pp_dir/profiles/$_pp" ] && rm -rf "$_pp_dir/profiles/$_pp"
+    [ -f "$_pp_dir/profiles/$_pp.md" ] && rm -f "$_pp_dir/profiles/$_pp.md"
+    # Regex-ESCAPE the name before it enters the grep -Ev alternation below. Profile DIRS are not
+    # charset-validated at the registry (unlike --stack, which is), so a metachar-bearing dir name must
+    # not be able to broaden/narrow the manifest carve (security review, defense-in-depth; matches the
+    # fixed-string discipline of adopter-export.sh). The disk rm above is already fixed-string + [ -d ]-guarded.
+    _pp_esc=$(printf '%s' "$_pp" | sed 's/[][(){}.^$*+?|\\]/\\&/g')
+    _pp_re="${_pp_re:+$_pp_re|}$_pp_esc"
+  done
+  # Surgical manifest reconcile: drop ONLY the pruned profiles' lines — never a find-regenerate (incept
+  # runs in a messier context than adopter-export's clean staging). No manifest (old export) => no-op.
+  if [ -n "$_pp_re" ] && [ -f "$_pp_dir/.kit-manifest" ]; then
+    _pp_tmp="$_pp_dir/.kit-manifest.prune.$$"
+    if grep -Ev "^profiles/($_pp_re)(/|\.md\$)" "$_pp_dir/.kit-manifest" > "$_pp_tmp"; then
+      mv "$_pp_tmp" "$_pp_dir/.kit-manifest"
+    else
+      rm -f "$_pp_tmp"
+    fi
+  fi
+}
+_prune_profiles_in "."
+[ -n "${KIT_BASE_STAGE:-}" ] && [ -d "${KIT_BASE_STAGE:-}" ] && _prune_profiles_in "$KIT_BASE_STAGE"
+# Rewrite docs/STACK-SELECTION.md (working tree) to a single-profile stub so its links to the now-removed
+# profiles/<other>.md do not dangle (the adopter's check-links would RED on first push). Mirrors
+# adopter-export.sh's stub; kit-update's rebuilt THEIRS gets the same stub via adopter-export --profile.
+if [ -f docs/STACK-SELECTION.md ]; then
+  {
+    printf '# Stack selection\n\n'
+    printf 'This project was incepted for the **%s** profile — see [the profile guide](../profiles/%s.md).\n\n' "$STACK" "$STACK"
+    printf 'The full multi-stack comparison matrix lives in the upstream Sparkwright kit; it is omitted\n'
+    printf 'here because the other stack profiles are not included in a single-profile project.\n'
+  } > docs/STACK-SELECTION.md
+fi
+
 # --- 5b0. ensure a git repo exists so the runtime guard can be installed (F6) ---
 # The documented adopter path (adopter-export.sh → incept) starts from a plain directory, not a
 # repo, so the pre-push hook below has nowhere to install and the summary would claim a guard that
