@@ -25,7 +25,23 @@ ROOT="${EXPORT_ROOT:-.}"
 # the export-ignore set this lock enforces (must match .gitattributes)
 # BACKLOG.md + SPARKWRIGHT-CONSOLIDATED-BACKLOG.md (KW6-A2): the kit's work board + roadmap table are
 # export-ignored so incept.sh:344's `[ -f BACKLOG.md ] ||` guard still stamps each adopter their OWN board.
-IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers"
+# NOTE: this list is a SECOND SOURCE for the export-ignore set declared in .gitattributes. They must
+# agree — adding an `export-ignore` there without adding it here leaves the new path scanned as a KEPT
+# doc, so its (legitimate) links to other export-ignored files FAIL this check even though the real
+# export excludes it. That is exactly how docs/plans/ reddened this gate: Slice 3 moved plans to a
+# tracked location, the first plan doc landed there, and it cited ci.yml / golden-path.yml / a design
+# doc — all correct, all export-ignored.
+# The two drift directions are NOT symmetric, and only one is already enforced — know which:
+#   * IGN entry NOT export-ignored (the dangerous, fail-OPEN direction: the path ships to adopters while
+#     this check skips its links as "not a KEPT doc") is ALREADY caught by block (a) below, which
+#     requires every IGN entry to carry the attribute in .gitattributes. Measured, not assumed.
+#   * export-ignored but NOT in IGN (loud): reddens the link scan, self-announcing — that is exactly how
+#     docs/plans/ was caught. Deliberately NOT asserted as set-equality: .gitattributes legitimately
+#     export-ignores paths IGN has no reason to carry (.github/dependabot.yml, ROADMAP.md,
+#     KIT-FEEDBACK.md, scratchpad/**), and requiring equality produces 5 false FAILs on this tree.
+# The true relation is IGN ⊆ export-ignored, block (a) is what enforces it, and a separate equality
+# check here would be fully shadowed by it — dead defense-in-depth, removed rather than kept.
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers"
 
 # _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
 # P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +
@@ -162,6 +178,9 @@ run() {
     grep -qxE '/(src|test)/' "$_d/.gitignore" 2>/dev/null && { echo "FAIL: exported .gitignore still ignores /src/ or /test/"; rc=1; }
     # (f) P0-FU: the export ships ZERO GitHub workflows (kit-dev CI is export-ignored; incept installs the profile's)
     _no_shipped_workflows "$_d" || rc=1
+    # (i) removed — IGN ⊆ export-ignored is already enforced by block (a); set-equality is deliberately
+    # NOT asserted (see the note at the IGN definition). Kept as a numbered placeholder so the (a)…(h)
+    # lettering below stays stable.
     # (h) K12 Cause B: the exported CLAUDE.md must NOT orphan a blank line at EOF. The KW6-A2 carve
     # (adopter-export.sh) deletes CLAUDE.md's last content line; if the trailing-blank strip below it
     # regresses, the blank separator becomes the new EOF and incept.sh inherits it into the renamed

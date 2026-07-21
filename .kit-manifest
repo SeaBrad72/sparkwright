@@ -591,6 +591,7 @@ profiles/typescript-node/deploy/k8s/deployment.yaml
 profiles/typescript-node/deploy/k8s/service.yaml
 profiles/typescript-node/scaffold-cli/.gitignore
 profiles/typescript-node/scaffold-cli/.node-version
+profiles/typescript-node/scaffold-cli/.npmrc
 profiles/typescript-node/scaffold-cli/.nvmrc
 profiles/typescript-node/scaffold-cli/README.md
 profiles/typescript-node/scaffold-cli/eslint.config.js
@@ -608,6 +609,7 @@ profiles/typescript-node/scaffold-cli/vitest.config.ts
 profiles/typescript-node/scaffold/.db-backed
 profiles/typescript-node/scaffold/.gitignore
 profiles/typescript-node/scaffold/.node-version
+profiles/typescript-node/scaffold/.npmrc
 profiles/typescript-node/scaffold/.nvmrc
 profiles/typescript-node/scaffold/.semgrepignore
 profiles/typescript-node/scaffold/README.md

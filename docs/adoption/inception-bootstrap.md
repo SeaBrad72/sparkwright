@@ -22,12 +22,22 @@ clone the kit
                     and runs the full design → plan → build gates
 ```
 
-## The two traps
+## The three traps
 
 - **K1 / K9 — do not commit before `incept`.** There is no repo yet (`incept` is what `git init`s), and a
   pre-incept commit breaks `inception-done`'s fixture build: its selftest keys the throwaway fixture on an
   incepted HEAD, so a spec-only HEAD would seed an incomplete tree. The inception design artifacts (charter,
   ADR-000) are committed **as** the incepted baseline — never before it.
+
+- **Obtain the kit tree the way an adopter does — never by copying a working directory.** "Clone the kit"
+  above means a **git clone**, a public-mirror clone at the release tag, or `sh scripts/adopter-export.sh
+  <dest>`. All three carry only **committed** content. A `cp -R` of someone's working tree also carries
+  their **untracked** files — build output, `node_modules`, local scratch — none of which any adopter
+  receives, and none of which inception's manifest-driven pruning knows about (it reconciles
+  `.kit-manifest`, which lists tracked files). A CP-7 cold field test was staged by directory copy and
+  reported two "kit defects" that were purely artifacts of the copy. If you are standing up a *test*
+  vehicle, record how you obtained the tree alongside the result — an unstated provenance makes a failure
+  unattributable.
 
 - **K15 — branch the first feature from the incepted baseline.** The **first feature branches from the committed incepted baseline** (which carries the inception evidence / ADR-000 / ledger), **never from a restored `origin/main`** that would drop it. If the bootstrap produced reviewed evidence on a branch, the first feature branch descends from it so one coherent history carries both the bootstrap evidence and the first feature.
 

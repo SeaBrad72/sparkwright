@@ -162,8 +162,32 @@ eval_profile() {
     echo "FAIL: $_p container $_cont != CI $_cimaj"
     return 1
   fi
+  enforced_floor "$_d" || return 1
   echo "PASS: $_p (floor $(disp "$_floor") == CI $(disp "$_ci"), container $_cont)"
   return 0
+}
+
+# enforced_floor <profile-dir> — a DECLARED floor must also be ENFORCED at install time.
+# CP-7 K3: the TS profile declared Node 24 in five places and enforced it in none — `npm ci` merely
+# warned EBADENGINE and carried on, and the real failure surfaced far downstream as an unreadable
+# bundler error. `engine-strict=true` in .npmrc is npm's hard-fail switch. This lock exists because
+# without it BOTH .npmrc files could be deleted and every gate in the kit would stay green — the
+# declared-but-unenforced shape the slice was written to end.
+# Scope: npm-manifest scaffolds only. Other toolchains' floors are declared-not-enforced (stated in the
+# adopter-visible ceiling in docs/STACK-SELECTION.md); widening this is the v1-track item.
+enforced_floor() {
+  _d=$1; _miss=""
+  for _pj in $(find "$_d" -maxdepth 2 -name package.json 2>/dev/null | sort); do
+    grep -q '"engines"' "$_pj" || continue          # no declared floor -> nothing to enforce
+    _sd=$(dirname "$_pj")
+    grep -qE '^[[:space:]]*engine-strict[[:space:]]*=[[:space:]]*true' "$_sd/.npmrc" 2>/dev/null \
+      || _miss="$_miss $_sd"
+  done
+  [ -z "$_miss" ] && return 0
+  echo "FAIL: declares engines but does not ENFORCE it — missing 'engine-strict=true' in .npmrc:$_miss"
+  echo "A declared floor npm only warns about is the CP-7 K3 defect: green preflight, EBADENGINE warning," >&2
+  echo "install proceeds, and the failure surfaces later as an unrelated-looking error." >&2
+  return 1
 }
 
 # run_fleet <root> — enumerate every <root>/<dir>/ and evaluate each. Fail-closed: ZERO profile dirs is
@@ -183,7 +207,10 @@ run_fleet() {
 }
 
 # ── selftest (non-vacuity teeth: every exit-code assertion is paired with a discriminating message) ──
-_sf_mkpkg()   { mkdir -p "$1"; printf '{\n  "name": "fix",\n  "engines": { "node": "%s" }\n}\n' "$2" > "$1/package.json"; }
+# A scaffold that DECLARES engines must also ENFORCE them (enforced_floor), so the conformant fixture
+# ships .npmrc too. Pass a 3rd arg 'no-npmrc' to build the non-enforcing shape for the negative case.
+_sf_mkpkg()   { mkdir -p "$1"; printf '{\n  "name": "fix",\n  "engines": { "node": "%s" }\n}\n' "$2" > "$1/package.json"
+                [ "${3:-}" = "no-npmrc" ] || printf 'engine-strict=true\n' > "$1/.npmrc"; }
 _sf_mkci()    { mkdir -p "$1"; printf 'jobs:\n  x:\n    with:\n      %s: %s\n' "$2" "$3" > "$1/ci.yml"; }
 _sf_mkdocker(){ mkdir -p "$1"; printf 'FROM %s AS builder\nRUN echo hi\n' "$2" > "$1/Dockerfile"; }
 
@@ -250,6 +277,19 @@ selftest() {
     echo "PASS: selftest — (4) fail-closed: empty fleet root fails (rc 1, 'no profiles found')"
   else
     echo "FAIL: selftest — (4) fail-closed empty fleet: rc=$_r out=[$_o]"; _sf=1
+  fi
+
+  # (5) ENFORCEMENT negative (CP-7 K3) — a scaffold that DECLARES engines.node but ships no
+  # engine-strict .npmrc must FAIL, even when floor == CI == container. Without this leg the
+  # enforcement rule is inert: both real .npmrc files could be deleted and every gate stay green,
+  # which is precisely the declared-but-unenforced shape the rule exists to end.
+  _sf_mkpkg "$_base/noenf/scaffold" '>=20' no-npmrc
+  _sf_mkci "$_base/noenf" 'node-version' '20'; _sf_mkdocker "$_base/noenf" 'node:20-bookworm-slim'
+  if _o=$(eval_profile "$_base/noenf" 2>&1); then _r=0; else _r=$?; fi
+  if [ "$_r" = 1 ] && printf '%s' "$_o" | grep -q 'does not ENFORCE it'; then
+    echo "PASS: selftest — (5) declared-but-unenforced floor FAILs (rc 1, 'does not ENFORCE it')"
+  else
+    echo "FAIL: selftest — (5) missing engine-strict NOT caught: rc=$_r out=[$_o]"; _sf=1
   fi
 
   rm -rf "$_base"; trap - EXIT INT TERM

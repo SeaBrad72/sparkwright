@@ -14,6 +14,13 @@ docs/superpowers/                   export-ignore
 .superpowers/                       export-ignore
 .github/CODEOWNERS                                                export-ignore
 docs/architecture/                  export-ignore
+# docs/plans/ is TRACKED (Slice 3 moved plans out of gitignored docs/superpowers/ so a cold adopter
+# can commit one) but maintainer-INTERNAL, like docs/architecture/. Without this, the first plan doc
+# to live there took `adopter-export-wired` from green to red: a KEPT doc may not markdown-link an
+# export-ignored target, and plans necessarily cite ci.yml / golden-path.yml / design docs.
+# Safe w.r.t. Slice 3: orchestrator-loop-wired's check_plan_location asserts the location is not
+# GITIGNORED — export-ignore does not untrack, so the plan is still committable by an adopter.
+docs/plans/                         export-ignore
 docs/governance/meta-control-log.md                              export-ignore
 docs/governance/.meta-control-last                              export-ignore
 BACKLOG.md                                                       export-ignore

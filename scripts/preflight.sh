@@ -3,8 +3,8 @@
 # install hints so a missing tool surfaces HERE, not as a cryptic guard/conformance
 # failure later (jq is hard-required by the guard + conformance). Universal check
 # always; optional per-stack toolchain via --stack.
-#   sh scripts/preflight.sh [--stack <name>] [--selftest]
-# Exit: 0 = all present · 1 = a required tool missing · 2 = bad usage.
+#   sh scripts/preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest]
+# Exit: 0 = all present · 1 = a required tool missing OR the stack's runtime floor is not met · 2 = bad usage.
 # POSIX sh; dash-clean. New stack? add a row to stack_tools() (unknown degrades gracefully).
 # What it changes: Read-only — checks for required/recommended tools; mutates nothing.
 # Guardrails: exit 1 if a required tool is missing (recommended tools only warn); an unknown --stack degrades gracefully.
@@ -107,6 +107,117 @@ stack_tools() {  # print "tool|hint" lines for a stack; return 1 if unknown
     terraform) printf 'terraform|developer.hashicorp.com/terraform/install\n' ;;
     *) return 1 ;;
   esac
+}
+
+# --- T5 (CP-7 K3/K5): the DECLARED runtime floor is ENFORCED, not merely declared ----------
+# The typescript-node profile declares Node 24 in FIVE places (engines.node in both scaffolds,
+# node-version: '24' in the emitted CI, scaffold/.nvmrc, scaffold/.node-version, the profile doc) and
+# enforced it in NONE: preflight checked only that `node` EXISTS. A cold operator on Node 20.10 got a
+# green "All prerequisites present.", `npm ci` then proceeded on an EBADENGINE *warning*, and the
+# failure finally surfaced deep inside Rolldown as `node:util.styleText` — unreadable as a version
+# problem. That truncated install went on to drop an optional native package (a second, separate
+# finding). Enforcing the floor HERE, at the first thing anyone runs, retires both.
+#
+# POLICY (owner-ratified): HARD-FAIL WITH A NAMED ESCAPE.
+#   below the floor  -> REFUSE (non-zero), naming the running version, the required floor, AND
+#                       --allow-runtime-mismatch in the same message (never make the reader search).
+#   with that flag   -> proceed, but WARN loudly and SUPPRESS the clean green — a suppressed refusal
+#                       must never read as a pass. It exits 0 by design: the operator asked to proceed.
+#   floor unreadable -> WARN with the reason. Fail-safe toward disclosure; never a silent skip and
+#                       never a version-verified green we did not earn.
+# Warn-and-continue is precisely what produced the defect; a bare hard-fail would strand an adopter on
+# an unusual-yet-working runtime. Signpost the escape, don't relax the rule.
+#
+# SINGLE SOURCE: the floor is READ from profiles/<stack>/scaffold/.nvmrc — the declaration that already
+# exists. This adds no sixth declaration, so the floor cannot drift away from the profile.
+RUNTIME_REFUSE=0   # armed when the running runtime is below the floor and no escape was passed
+RUNTIME_WAIVED=0   # armed when that refusal was waived by --allow-runtime-mismatch
+RUNTIME_FOUND=""   # the running version line, as reported (e.g. v20.20.2)
+RUNTIME_FLOOR=""   # the required MAJOR, as declared (e.g. 24)
+RUNTIME_SRC=""     # where the floor was read from
+
+node_major() {  # <version line> -> MAJOR on stdout; rc 1 when unparseable
+  # Accepts every real shape: "v24.18.0" (node --version), "24" (.nvmrc), "v24.4.0" (.nvmrc), "20.10.0".
+  # `set -f` around the split, for the same reason git_version_parts needs it: unquoted $1 word-splits
+  # (which we WANT) *and* pathname-expands (which we do not). A '*' in the line would glob against the
+  # CWD, so a file named '99.9.9' would BE the running version — a floor reading the filesystem instead
+  # of the runtime, and here that would SILENCE a real refusal. No `return` inside the window.
+  _tok=""
+  set -f
+  for _w in $1; do
+    case "$_w" in
+      v[0-9]*) _tok=${_w#v}; break ;;
+      [0-9]*)  _tok=$_w;     break ;;
+    esac
+  done
+  set +f
+  [ -n "$_tok" ] || return 1
+  _nmaj=${_tok%%.*}
+  _nmaj=${_nmaj%%[!0-9]*}   # tolerate a pre-release tail (24-nightly -> 24)
+  case "$_nmaj" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$_nmaj"
+}
+
+read_runtime_floor() {  # <.nvmrc path> -> floor MAJOR on stdout; rc 1 when absent/unreadable/unparseable
+  # All three failure modes are rc 1 and the CALLER warns with the reason — a moving alias ("lts/iron")
+  # must never be turned into an invented number, and an absent file must never read as "verified".
+  [ -f "$1" ] && [ -r "$1" ] || return 1
+  _fl=""
+  while IFS= read -r _fline || [ -n "$_fline" ]; do
+    case "$_fline" in ''|'#'*) continue ;; esac
+    _fl=$_fline; break
+  done < "$1"
+  [ -n "$_fl" ] || return 1
+  node_major "$_fl"
+}
+
+runtime_floor_applies() {  # <stack> -> 0 iff this stack RUNS on node (so .nvmrc is its floor)
+  # PER-STACK, NEVER GLOBAL: go/python/rust have no .nvmrc and must be completely unaffected. The
+  # discriminator is the stack's own tool map, which is why an absent .nvmrc can be a silent N/A for a
+  # non-Node stack and an UNVERIFIED warning for a Node one (where the floor is expected to exist).
+  stack_tools "$1" 2>/dev/null | grep -q '^node|'
+}
+
+check_runtime_floor() {  # <stack> <.nvmrc path> — prints one report line; may arm the refusal/waiver
+  runtime_floor_applies "$1" || return 0
+  RUNTIME_SRC=$2
+  # FLAG-NOT-ENV: the seam is honored only when a seam flag was passed (--selftest/--selftest-e2e).
+  # Load-bearing here in a way it is not for the advisory git floor: this check BLOCKS, so an ambient
+  # export that could tell it "you are on Node 24" would turn a refusal into a pass.
+  _rtcmd="node --version"
+  [ "${SEAMS:-0}" -eq 1 ] && _rtcmd="${PREFLIGHT_NODE_VERSION_CMD:-node --version}"
+  # shellcheck disable=SC2086  # deliberate word-split: the seam supplies a command line, not one word
+  _rtline=$(${_rtcmd} 2>/dev/null) || _rtline=""
+  if [ -z "$_rtline" ]; then
+    echo "  warn node runtime floor UNVERIFIED — could not run 'node --version'"
+    rec=1; return 0
+  fi
+  if ! _rtmaj=$(node_major "$_rtline"); then
+    echo "  warn node runtime floor UNVERIFIED — unrecognised version string: $_rtline"
+    rec=1; return 0
+  fi
+  if ! _rtfloor=$(read_runtime_floor "$RUNTIME_SRC"); then
+    echo "  warn node runtime floor UNVERIFIED — $RUNTIME_SRC is missing, unreadable, or not a version"
+    echo "       (running node $_rtline; nothing here has verified it against the profile's floor)"
+    rec=1; return 0
+  fi
+  RUNTIME_FOUND=$_rtline; RUNTIME_FLOOR=$_rtfloor
+  # NUMERIC compare, deliberately — the git floor's lesson, one stack over: lexically "9" > "24", so a
+  # string-naive compare would wave Node 9 through a Node 24 floor and be decorative.
+  if [ "$_rtmaj" -ge "$_rtfloor" ]; then
+    echo "  ok   node $_rtline meets the Node $_rtfloor floor (declared in $RUNTIME_SRC)"
+    return 0
+  fi
+  if [ "$ALLOW_RUNTIME_MISMATCH" -eq 1 ]; then
+    RUNTIME_WAIVED=1
+    echo "  WARN node $_rtline is BELOW the required Node $_rtfloor floor ($RUNTIME_SRC)."
+    echo "       Proceeding ONLY because --allow-runtime-mismatch was passed. This is an UNSUPPORTED"
+    echo "       runtime: 'npm ci' will refuse it (engine-strict), and whatever does install can fail"
+    echo "       deep inside a dependency in ways that do not look like a version problem."
+    return 0
+  fi
+  RUNTIME_REFUSE=1
+  echo "  MISS node $_rtline is below the required Node $_rtfloor floor — see the error below"
 }
 
 is_github_repo() {  # 0 iff inside a work tree whose origin is a github.com remote
@@ -220,7 +331,7 @@ check_codeowners_placeholders() {  # standing re-check of @your-org placeholders
 
 # SEAMS: are the test injection seams (PREFLIGHT_GIT_VERSION_CMD) live? Only an explicit FLAG turns them
 # on — never the ambient environment. Default 0 = a real adopter run reports on the real machine.
-STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0
+STACK=""; SELFTEST=0; ALLOW_NESTED=0; SEAMS=0; ALLOW_RUNTIME_MISMATCH=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --stack) [ $# -ge 2 ] || { echo "preflight: --stack requires a value" >&2; exit 2; }; STACK=$2; shift 2 ;;
@@ -231,7 +342,10 @@ while [ $# -gt 0 ]; do
     # seam, not a user-facing option, and the flag IS the authorization.
     --selftest-e2e) SEAMS=1; shift ;;
     --allow-nested) ALLOW_NESTED=1; shift ;;
-    -h|--help) echo "usage: preflight.sh [--stack <name>] [--selftest] [--allow-nested]"; exit 0 ;;
+    # --allow-runtime-mismatch: the NAMED escape from the stack's runtime floor. It proceeds on an
+    # unsupported runtime, loudly, and suppresses the clean green — see the runtime-floor block above.
+    --allow-runtime-mismatch) ALLOW_RUNTIME_MISMATCH=1; shift ;;
+    -h|--help) echo "usage: preflight.sh [--stack <name>] [--allow-runtime-mismatch] [--selftest] [--allow-nested]"; exit 0 ;;
     *) echo "preflight: unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -393,6 +507,179 @@ if [ "$SELFTEST" -eq 1 ]; then
   PREFLIGHT_GIT_VERSION_CMD='echo git version 2.48.1' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e >/dev/null 2>&1 || new_rc=$?
   if [ "$e2e_rc" -eq "$new_rc" ]; then echo "PASS: the git floor does not change preflight's exit code (advisory, not blocking)"; else echo "FAIL: old git CHANGED the exit code (old=$e2e_rc modern=$new_rc)"; fail=1; fi
 
+  # — T5 (CP-7 K3/K5): the DECLARED Node floor is ENFORCED, not merely declared ————————————
+  # Field defect (cold run 4): preflight checked only that `node` EXISTS, so an operator on Node 20.10
+  # got a green "All prerequisites present."; `npm ci` then proceeded on an EBADENGINE *warning* and the
+  # failure surfaced deep inside Rolldown as `node:util.styleText` — unreadable as a version problem.
+  # Policy (owner-ratified): HARD-FAIL WITH A NAMED ESCAPE. These cases lock every leg of it.
+
+  # the parser: real `node --version` and .nvmrc shapes -> MAJOR
+  out=$(node_major "v24.18.0" 2>&1) || out="<node_major absent/errored>"
+  case "$out" in "24") echo "PASS: parses 'v24.18.0' -> 24";; *) echo "FAIL: v24.18.0 parsed as '$out'"; fail=1;; esac
+  out=$(node_major "v20.20.2" 2>&1) || out="<absent>"
+  case "$out" in "20") echo "PASS: parses 'v20.20.2' -> 20";; *) echo "FAIL: v20.20.2 parsed as '$out'"; fail=1;; esac
+  out=$(node_major "24" 2>&1) || out="<absent>"
+  case "$out" in "24") echo "PASS: parses a bare '24' (the .nvmrc shape) -> 24";; *) echo "FAIL: bare '24' parsed as '$out'"; fail=1;; esac
+  out=$(node_major "v9.11.2" 2>&1) || out="<absent>"
+  case "$out" in "9") echo "PASS: parses 'v9.11.2' -> 9 (the lexical-trap case)";; *) echo "FAIL: v9.11.2 parsed as '$out'"; fail=1;; esac
+  if node_major "lts/iron" >/dev/null 2>&1; then echo "FAIL: a moving alias ('lts/iron') was accepted as a version"; fail=1; else echo "PASS: 'lts/iron' is unparseable (rc 1) — no invented floor"; fi
+  if node_major "" >/dev/null 2>&1; then echo "FAIL: empty version accepted"; fail=1; else echo "PASS: empty version rejected (rc 1)"; fi
+
+  # NO GLOB (same landmine as git_version_parts): the version line is word-SPLIT, never pathname-expanded.
+  # A '*' would otherwise expand against the cwd, so a file named '99.9.9' would BE the running version —
+  # a floor reading the filesystem instead of the runtime, and one that silences a real refusal.
+  _ng=$(mktemp -d)
+  : > "$_ng/99.9.9"
+  out=$( cd "$_ng" && node_major "* v20.20.2" 2>&1 ) || out="<absent>"
+  case "$out" in
+    "20") echo "PASS: a '*' in the version line does NOT glob against the cwd (20, not the filename)" ;;
+    *) echo "FAIL: the node version line was GLOB-expanded — parsed '$out' from the filesystem"; fail=1 ;;
+  esac
+  rm -rf "$_ng"
+
+  # the floor reader: profiles/<stack>/scaffold/.nvmrc is the SINGLE source (no sixth declaration)
+  _rt=$(mktemp -d)
+  printf '24\n' > "$_rt/plain"
+  out=$(read_runtime_floor "$_rt/plain" 2>&1) || out="<read_runtime_floor absent/errored>"
+  case "$out" in "24") echo "PASS: reads a plain '24' .nvmrc -> floor 24";; *) echo "FAIL: plain .nvmrc read as '$out'"; fail=1;; esac
+  printf 'v24.4.0\n' > "$_rt/vform"
+  out=$(read_runtime_floor "$_rt/vform" 2>&1) || out="<absent>"
+  case "$out" in "24") echo "PASS: reads a 'v24.4.0' .nvmrc -> floor 24";; *) echo "FAIL: v-form .nvmrc read as '$out'"; fail=1;; esac
+  printf '# pinned by the profile\n\n24\n' > "$_rt/commented"
+  out=$(read_runtime_floor "$_rt/commented" 2>&1) || out="<absent>"
+  case "$out" in "24") echo "PASS: skips comments/blank lines in .nvmrc -> floor 24";; *) echo "FAIL: commented .nvmrc read as '$out'"; fail=1;; esac
+  printf 'lts/iron\n' > "$_rt/alias"
+  if read_runtime_floor "$_rt/alias" >/dev/null 2>&1; then echo "FAIL: an 'lts/iron' .nvmrc yielded a floor"; fail=1; else echo "PASS: an unparseable .nvmrc is rc 1 (caller must WARN, not invent a floor)"; fi
+  if read_runtime_floor "$_rt/nope" >/dev/null 2>&1; then echo "FAIL: a missing .nvmrc yielded a floor"; fail=1; else echo "PASS: a missing .nvmrc is rc 1"; fi
+  if read_runtime_floor "$_rt" >/dev/null 2>&1; then echo "FAIL: a directory yielded a floor"; fail=1; else echo "PASS: an unreadable (directory) .nvmrc is rc 1"; fi
+
+  # AT/ABOVE the floor -> ok, and NEITHER refusal nor waiver is armed
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=0; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='echo v24.18.0'
+  check_runtime_floor typescript-node "$_rt/plain" > "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  out=$(cat "$_rt/out")
+  case "$out" in *ok*"meets the Node 24 floor"*) echo "PASS: an in-floor runtime reports ok and states the version";; *) echo "FAIL: in-floor runtime not reported ok ($out)"; fail=1;; esac
+  if [ "$RUNTIME_REFUSE" -eq 0 ] && [ "$RUNTIME_WAIVED" -eq 0 ] && [ "$miss" -eq 0 ] && [ "$rec" -eq 0 ]; then
+    echo "PASS: an in-floor runtime arms nothing (no refusal, no waiver, no warn)"
+  else echo "FAIL: in-floor runtime armed something (refuse=$RUNTIME_REFUSE waive=$RUNTIME_WAIVED miss=$miss rec=$rec)"; fail=1; fi
+
+  # BELOW the floor, no escape -> REFUSE (this is the whole point: the green is gone)
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=0; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2'
+  check_runtime_floor typescript-node "$_rt/plain" > "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  out=$(cat "$_rt/out")
+  if [ "$RUNTIME_REFUSE" -eq 1 ] && [ "$RUNTIME_WAIVED" -eq 0 ]; then echo "PASS: a below-floor runtime REFUSES by default"; else echo "FAIL: below-floor runtime did not refuse (refuse=$RUNTIME_REFUSE waive=$RUNTIME_WAIVED)"; fail=1; fi
+  case "$out" in *v20.20.2*24*) echo "PASS: the below-floor line names BOTH the running version and the floor";; *) echo "FAIL: below-floor line does not name both versions ($out)"; fail=1;; esac
+
+  # THE NUMERIC-COMPARE PROOF: lexically "9" > "24", so a string-naive floor would wave Node 9 through.
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=0; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='echo v9.11.2'
+  check_runtime_floor typescript-node "$_rt/plain" > "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  if [ "$RUNTIME_REFUSE" -eq 1 ]; then echo "PASS: node 9 refused against a 24 floor (numeric compare: 9 < 24)"; else echo "FAIL: node 9 accepted — STRING-NAIVE compare ('9' > '24' lexically)"; fail=1; fi
+
+  # THE NAMED ESCAPE: --allow-runtime-mismatch proceeds, loudly, and NEVER silently
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=1; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2'
+  check_runtime_floor typescript-node "$_rt/plain" > "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  ALLOW_RUNTIME_MISMATCH=0
+  out=$(cat "$_rt/out")
+  if [ "$RUNTIME_WAIVED" -eq 1 ] && [ "$RUNTIME_REFUSE" -eq 0 ]; then echo "PASS: --allow-runtime-mismatch waives the refusal and records the waiver"; else echo "FAIL: escape did not waive (refuse=$RUNTIME_REFUSE waive=$RUNTIME_WAIVED)"; fail=1; fi
+  case "$out" in *WARN*) echo "PASS: the waived run WARNs loudly";; *) echo "FAIL: waived run did not WARN ($out)"; fail=1;; esac
+  case "$out" in *UNSUPPORTED*) echo "PASS: the waived run says UNSUPPORTED in as many words";; *) echo "FAIL: waived run does not say UNSUPPORTED ($out)"; fail=1;; esac
+  if [ "$miss" -eq 0 ]; then echo "PASS: the waiver does not set miss (it proceeds — that is the escape)"; else echo "FAIL: waiver set miss"; fail=1; fi
+
+  # .nvmrc ABSENT on a Node stack -> WARN WITH THE REASON. Fail-safe toward disclosure: never a silent
+  # skip, and never a version-verified green we did not earn.
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=0; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='echo v24.18.0'
+  check_runtime_floor typescript-node "$_rt/nope" > "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  out=$(cat "$_rt/out")
+  case "$out" in *warn*UNVERIFIED*) echo "PASS: a missing .nvmrc WARNs that the floor is UNVERIFIED";; *) echo "FAIL: missing .nvmrc did not warn UNVERIFIED ($out)"; fail=1;; esac
+  case "$out" in *"$_rt/nope"*) echo "PASS: the UNVERIFIED warning names the path it could not read (the reason)";; *) echo "FAIL: warning does not name the unreadable path ($out)"; fail=1;; esac
+  if [ "$miss" -eq 0 ] && [ "$RUNTIME_REFUSE" -eq 0 ]; then echo "PASS: an unreadable floor warns without hard-failing (disclosure, not refusal)"; else echo "FAIL: unreadable floor set miss/refuse (miss=$miss refuse=$RUNTIME_REFUSE)"; fail=1; fi
+  if [ "$rec" -eq 1 ]; then echo "PASS: the UNVERIFIED warning is counted as an advisory (rec)"; else echo "FAIL: UNVERIFIED warning not counted ($rec)"; fail=1; fi
+
+  # node absent / unreadable version -> WARN, never a crash and never a silent pass
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=0; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='false'
+  check_runtime_floor typescript-node "$_rt/plain" > "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  out=$(cat "$_rt/out")
+  case "$out" in *warn*UNVERIFIED*) echo "PASS: an unrunnable 'node --version' degrades to an UNVERIFIED warn";; *) echo "FAIL: unrunnable node not warned ($out)"; fail=1;; esac
+  if [ "$RUNTIME_REFUSE" -eq 0 ]; then echo "PASS: an unrunnable node does not fabricate a refusal"; else echo "FAIL: unrunnable node refused"; fail=1; fi
+
+  # PER-STACK, NOT GLOBAL: a stack that does not run on node is completely unaffected — no line at all.
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; ALLOW_RUNTIME_MISMATCH=0; miss=0; rec=0
+  PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2'
+  check_runtime_floor go "$_rt/plain" > "$_rt/out" 2>&1 || true
+  check_runtime_floor __nope__ "$_rt/plain" >> "$_rt/out" 2>&1 || true
+  unset PREFLIGHT_NODE_VERSION_CMD
+  out=$(cat "$_rt/out")
+  if [ -z "$out" ] && [ "$RUNTIME_REFUSE" -eq 0 ] && [ "$rec" -eq 0 ]; then
+    echo "PASS: a non-Node stack (and an unknown stack) is untouched by the Node floor"
+  else echo "FAIL: non-Node stack affected (out='$out' refuse=$RUNTIME_REFUSE rec=$rec)"; fail=1; fi
+  RUNTIME_REFUSE=0; RUNTIME_WAIVED=0; miss=0; rec=0
+  rm -rf "$_rt"
+
+  # WIRED end-to-end. The direct calls above prove the FUNCTION; they cannot see the `exit 1` wiring in
+  # the main path, and a defined-but-unacted-on check is decorative (the exact class that shipped twice
+  # in this repo). Drive all three legs through the REAL body via --selftest-e2e.
+  rf_bad_rc=0
+  rf_bad=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --selftest-e2e --stack typescript-node 2>&1) || rf_bad_rc=$?
+  case "$rf_bad" in *v20.20.2*) echo "PASS: a real below-floor run names the RUNNING version";; *) echo "FAIL: real run did not name the running version (rc=$rf_bad_rc): $rf_bad"; fail=1;; esac
+  case "$rf_bad" in *"Node 24"*|*"node >= 24"*|*">= 24"*) echo "PASS: a real below-floor run names the REQUIRED floor";; *) echo "FAIL: real run did not name the floor: $rf_bad"; fail=1;; esac
+  case "$rf_bad" in *--allow-runtime-mismatch*) echo "PASS: the refusal NAMES the escape in the same message (signpost, don't relax)";; *) echo "FAIL: refusal does not name --allow-runtime-mismatch: $rf_bad"; fail=1;; esac
+  if [ "$rf_bad_rc" -ne 0 ]; then echo "PASS: a real below-floor run EXITS NON-ZERO (the wiring, not just the function)"; else echo "FAIL: below-floor run exited 0 — the check is decorative"; fail=1; fi
+  case "$rf_bad" in *"All prerequisites present"*) echo "FAIL: a refused run still printed the green"; fail=1;; *) echo "PASS: a refused run prints NO 'All prerequisites present' green";; esac
+
+  rf_ok_rc=0
+  rf_ok=$(PREFLIGHT_NODE_VERSION_CMD='echo v24.18.0' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --selftest-e2e --stack typescript-node 2>&1) || rf_ok_rc=$?
+  case "$rf_ok" in *"meets the Node 24 floor"*) echo "PASS: a real in-floor run states the version it verified";; *) echo "FAIL: in-floor run did not state the verified floor (rc=$rf_ok_rc): $rf_ok"; fail=1;; esac
+
+  rf_esc_rc=0
+  rf_esc=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --selftest-e2e --stack typescript-node --allow-runtime-mismatch 2>&1) || rf_esc_rc=$?
+  case "$rf_esc" in *UNSUPPORTED*) echo "PASS: a real waived run says UNSUPPORTED";; *) echo "FAIL: waived run does not say UNSUPPORTED (rc=$rf_esc_rc): $rf_esc"; fail=1;; esac
+  # A SUPPRESSED REFUSAL MUST NEVER READ AS A PASS. DIFFERENTIAL, not absolute: assert the green is
+  # absent under the escape *given that the same environment prints it in-floor* — an absolute assert
+  # would false-RED on a machine that fails preflight for an unrelated ambient reason.
+  if printf '%s' "$rf_ok" | grep -q 'All prerequisites present'; then
+    case "$rf_esc" in
+      *"All prerequisites present"*) echo "FAIL: the escape printed the clean green — a suppressed refusal read as a pass"; fail=1 ;;
+      *) echo "PASS: the same environment prints the green in-floor but NOT under the escape (differential)" ;;
+    esac
+  else
+    echo "PASS: (weak) this environment prints no green even in-floor — the green/no-green differential is not observable here"
+  fi
+
+  # PER-STACK end-to-end: a non-Node stack run below the Node floor is unaffected by it.
+  rf_go=$(PREFLIGHT_NODE_VERSION_CMD='echo v20.20.2' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --selftest-e2e --stack go 2>&1) || true
+  case "$rf_go" in *"Node"*"floor"*) echo "FAIL: a go run was judged against the Node floor: $rf_go"; fail=1;; *) echo "PASS: a non-Node stack run is unaffected end-to-end";; esac
+
+  # NO AMBIENT SPOOF (flag-not-env) — load-bearing HERE in a way it is not for the advisory git floor:
+  # this check BLOCKS, so an ambient export that could tell it "you are on Node 24" would turn a refusal
+  # into a pass. MARKER, NOT VERSION-STRING (the git-floor lesson): assert the seam command never RAN,
+  # rather than keying on output the host's real node is entitled to produce.
+  _nd=$(mktemp -d); _nmarker="$_nd/ran"
+  printf '#!/bin/sh\ntouch "%s"\necho v24.18.0\n' "$_nmarker" > "$_nd/fakenode"
+  chmod +x "$_nd/fakenode"
+  PREFLIGHT_NODE_VERSION_CMD="$_nd/fakenode" PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' \
+    sh "$0" --stack typescript-node >/dev/null 2>&1 || true
+  if [ -e "$_nmarker" ]; then
+    echo "FAIL: an AMBIENT PREFLIGHT_NODE_VERSION_CMD was honored in a real run (env, not flag) — a blocking check the environment can redirect"; fail=1
+  else
+    echo "PASS: a real run IGNORES an ambient PREFLIGHT_NODE_VERSION_CMD (the seam needs an explicit flag)"
+  fi
+  rm -rf "$_nd"
+
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 
@@ -467,6 +754,9 @@ EOF
   else
     echo "  (no toolchain map for '$STACK' — see profiles/$STACK.md)"
   fi
+  # The stack's DECLARED runtime floor, read from the declaration that already exists. Self-gating:
+  # a stack that does not run on node prints nothing here.
+  check_runtime_floor "$STACK" "profiles/$STACK/scaffold/.nvmrc"
 fi
 
 if [ "$rec" -gt 0 ]; then
@@ -474,10 +764,36 @@ if [ "$rec" -gt 0 ]; then
   echo "$rec advisory warning(s) above — non-blocking (they do not affect this check's result)."
 fi
 
-if [ "$miss" -eq 0 ]; then
-  echo "All prerequisites present."
-  exit 0
-else
+if [ "$RUNTIME_REFUSE" -eq 1 ]; then
+  echo "" >&2
+  echo "ERROR: unsupported runtime — this stack's DECLARED floor is not met." >&2
+  echo "  running:  node $RUNTIME_FOUND" >&2
+  echo "  required: node >= $RUNTIME_FLOOR   (declared in $RUNTIME_SRC)" >&2
+  echo "" >&2
+  echo "  Refusing HERE, where it is legible. Below the floor, 'npm ci' refuses (engine-strict) and a" >&2
+  echo "  partial install fails deep inside a dependency — CP-7's cold run hit 'node:util.styleText'" >&2
+  echo "  inside Rolldown, which reads as anything except a Node version problem." >&2
+  echo "" >&2
+  echo "  Fix:  nvm install $RUNTIME_FLOOR && nvm use $RUNTIME_FLOOR    (or install Node $RUNTIME_FLOOR from nodejs.org)" >&2
+  echo "  If this runtime is deliberate, re-run with the escape and accept that it is unsupported:" >&2
+  echo "    sh scripts/preflight.sh --stack $STACK --allow-runtime-mismatch" >&2
+  exit 1
+fi
+
+if [ "$miss" -ne 0 ]; then
   echo "Missing prerequisites above — install them, then re-run."
   exit 1
 fi
+
+# A SUPPRESSED REFUSAL MUST NEVER READ AS A PASS: the escape proceeds (exit 0 — the operator asked for
+# it), but it does NOT get the clean green. Anyone reading this output, or pasting it into a field-test
+# report, sees an unsupported run for what it is.
+if [ "$RUNTIME_WAIVED" -eq 1 ]; then
+  echo "Prerequisites present, but this is an UNSUPPORTED runtime: node $RUNTIME_FOUND < the required"
+  echo "Node $RUNTIME_FLOOR floor ($RUNTIME_SRC). Proceeding only because --allow-runtime-mismatch was passed."
+  echo "This is NOT a supported configuration — failures beyond this point are expected, not defects."
+  exit 0
+fi
+
+echo "All prerequisites present."
+exit 0

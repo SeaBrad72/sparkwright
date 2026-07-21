@@ -120,7 +120,10 @@ jobs:
 
       - name: Generate SBOM (CycloneDX)
         id: gate-sbom
-        run: npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file sbom.json
+        # Version-pinned like every action SHA in this file: an unpinned `npx` fetches and EXECUTES
+        # whatever the registry serves at run time, which is a supply-chain surface the rest of this
+        # workflow deliberately closes.
+        run: npx --yes @cyclonedx/cyclonedx-npm@6.0.0 --output-format JSON --output-file sbom.json
 
       - name: SAST (Semgrep)
         id: gate-sast
@@ -148,13 +151,22 @@ jobs:
 
       - name: Emit agent-ops trace (agentops sensor)
         id: gate-agent-trace
-        # Emits one OTel-shaped agent-ops span for this CI run (the agentops-sensor path). First-run-
-        # GREEN by construction: runs the shipped scripts/otel-trace.sh sensor when present, else emits
-        # a minimal inline NDJSON span — so an empty adopter that has not yet wired the sensor still
-        # passes (no missing-script RED). This step OBSERVES; it never narrows any gate.
+        # Emits one OTel-shaped agent-ops span for this CI run (the agentops-sensor path): runs the
+        # shipped scripts/otel-trace.sh sensor when present, else a minimal inline NDJSON span — so an
+        # adopter that has not wired the sensor still passes (no missing-script RED). This step
+        # OBSERVES; it never narrows any gate.
+        #
+        # CP-7 K9: this step used to call `otel-trace.sh --emit`, which the sensor's dispatch does not
+        # provide (it offers new-trace | span | --selftest), so it exited 2 on EVERY adopter's first CI
+        # run — while carrying a comment claiming it was green by construction. Only the `else` branch
+        # had ever been reasoned about; the `if` branch is the one that always runs in production.
+        # conformance/ci-gates.sh now resolves this invocation statically, and the golden-path job
+        # EXECUTES this chain against a real incepted vehicle. Do not reintroduce an unsupported verb.
         run: |
           if [ -f scripts/otel-trace.sh ]; then
-            sh scripts/otel-trace.sh --emit
+            tid=$(sh scripts/otel-trace.sh new-trace)
+            sh scripts/otel-trace.sh span --trace "$tid" --name agentops.ci --status OK \
+              --attr "ci.run_id=${GITHUB_RUN_ID:-local}"
           else
             printf '{"name":"agentops.ci","status":{"code":"OK"}}\n'
           fi

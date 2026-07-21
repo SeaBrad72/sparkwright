@@ -67,7 +67,8 @@ check control validation-terminal-state-selftest   sh conformance/validation-ter
 check control feedback-link-lifecycle              sh conformance/feedback-link-lifecycle-documented.sh
 check control feedback-link-lifecycle-selftest      sh conformance/feedback-link-lifecycle-documented.sh --selftest
 check control named-adapters-selftest  sh conformance/named-adapters.sh --selftest
-check control ci-gates         sh conformance/ci-gates.sh profiles/typescript-node/ci.yml
+check control ci-gates         sh conformance/ci-gates.sh profiles/typescript-node/ci.yml --expect-seams
+check control ci-gates-selftest sh conformance/ci-gates.sh --selftest
 check control image-supply     sh conformance/container-supply-chain.sh
 check control shellcheck       sh conformance/shellcheck.sh
 check control "license-check(selftest)" sh scripts/license-check.sh --selftest

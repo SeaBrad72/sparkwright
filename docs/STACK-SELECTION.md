@@ -36,6 +36,31 @@ the tier signals how *exercised* each is, not how complete:
   starting points but least-exercised (heavier or nicher toolchains). Expect to do more adaptation,
   and pin/upgrade tooling as you adopt.
 
+**What "the golden-path CI boots it end-to-end" does and does not cover.** Three different levels:
+
+- **`typescript-node`** — the kit's own pipeline incepts a real project, runs its scaffold's build/test
+  pipeline, **and executes the kit-owned steps of the emitted `.github/workflows/ci.yml`**.
+- **`go`, `python`, `dotnet`, `rust`, `java-spring`, `kotlin`** — the reference image is built and booted,
+  but **their emitted `ci.yml` has never been executed by anything.**
+- **`ml`, `data-engineering`, `terraform`** — ship **no runnable scaffold**; they are neither booted nor
+  executed. Their emitted `ci.yml` is likewise unexecuted.
+
+All ten workflows are held to the same *structural* bar — the eight required gate ids
+(`conformance/ci-gates.sh`, applied fleet-wide by `profile-completeness.sh`), SHA-pinned actions
+(`action-pinning.sh`), and workflow lint (`actionlint-valid.sh`). **SAST is not part of that bar:** the
+required set has no `gate-sast`, and only `typescript-node` and `java-spring` (semgrep) and `go` (gosec)
+emit one — the other seven ship a secret scan and a vulnerability scan, which are not the same thing.
+And "structurally conformant" is not "observed green on a first run" in any case. Budget for a first-run
+fix on any non-`typescript-node` stack, and report what you hit: a real first-run failure of exactly this
+kind — an emitted step calling a sensor subcommand that did not exist — is what produced this note.
+
+Related enforcement boundary: the **runtime-version floor** is enforced at install time only for
+npm-based stacks (`engine-strict` in the TypeScript scaffolds). Of the rest, the five that declare a floor
+(`go`, `python`, `dotnet`, `java-spring`, `kotlin` — `go.mod`, `requires-python`, `pom.xml`, …) rely on
+toolchains that do **not** hard-enforce it on install;
+`rust`, `ml`, `terraform` and `data-engineering` declare **no** runtime floor at all (`rust` ships
+edition-only). Check your runtime matches the profile before you debug anything stranger.
+
 ---
 
 ## How to derive the recommendation
