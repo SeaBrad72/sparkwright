@@ -21,6 +21,12 @@ Conformance checks fall into two honesty classes. Run **`sh conformance/verify.s
 
 **`UNVERIFIED` is not a pass.** A check that cannot run — e.g. `branch-protection.sh` with no `gh`/remote — exits **2** and is reported `UNVERIFIED`, distinct from PASS; in CI or under `--require` it escalates to a **FAIL**. A green dashboard hiding an unseen UNVERIFIED is the false assurance this layer exists to prevent.
 
+**`INCOMPLETE` is not a pass either.** A run that was *interrupted* proves nothing about the checks that never ran — and a partial transcript looks a lot like one still in progress. **The completion signal is the terminal `RESULT:` line: if it is absent, the run did not finish.** Never read "no failures so far" as "passed".
+
+> **Budget for it: the full aggregate is ~103 checks and takes ~5 minutes** (measured: 281s, v3.171.0). That is **longer than the default foreground command cap of most agent harnesses** — so when driving this kit with an agent, run `verify.sh` **without a command timeout**: background it, or capture output to a file and read the file. A cap that fires mid-run kills the aggregate at whatever check it had reached, which is exactly how CP-7 run 4 produced a stall that looked like a defect in `verify.sh` itself (it was not; see `docs/architecture/2026-07-21-cp7r5-k16-incomplete-design.md`).
+
+A signalled run exits non-zero (`130` INT / `143` TERM) **and** prints `RESULT: FAIL (INCOMPLETE …)`, so neither a status check nor a human reading the transcript is misled. **Honest ceiling:** the announcement cannot fire on `SIGKILL`, and nothing can help a consumer that simply stops reading — which is why the runtime is documented above rather than left to be discovered.
+
 In short: **green proves controls hold and safety is documented; it does not prove the documented procedures were tested.**
 
 ## Index

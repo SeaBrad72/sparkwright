@@ -27,7 +27,37 @@ if [ "${1:-}" = "--selftest" ]; then
   # must NOT satisfy --selftest. The synthetic line below proves the control-PASS grep is load-bearing.
   printf '%s\n' "$out" | grep -q '\[control\] .* PASS' || { echo "verify --selftest: FAIL (no [control] PASS — vacuous render)"; exit 1; }
   if printf '  [control] x                FAIL\n' | grep -q '\[control\] .* PASS'; then echo "verify --selftest: FAIL (vacuous fixture wrongly matched control-PASS)"; exit 1; fi
-  echo "verify --selftest: OK"; exit 0
+
+  # ── INCOMPLETE leg (K16) — an INTERRUPTED run must SAY it was interrupted and exit non-zero ──────────
+  # WHY THIS EXISTS. The aggregate takes ~281s for 103 checks — longer than the default foreground
+  # command cap of the agent harnesses people drive this kit with. In CP-7 run 4 a wrapper stopped
+  # reading at ~43s of output and the run was read as an unexplained stall; with no trap, a killed run's
+  # partial output is INDISTINGUISHABLE from a run still in progress, so the consumer must notice an
+  # ABSENCE. That is the weakest possible signal, and it is how a truncated run gets mistaken for a
+  # green one. `INCOMPLETE is not a pass` is the second honesty class beside `UNVERIFIED is not a pass`.
+  #
+  # BEHAVIOURAL, never a text grep for `trap` — presence is not effect. This launches a REAL run, kills
+  # it mid-flight with SIGTERM, and asserts on what the process actually emitted and returned.
+  _kout=$(mktemp) || { echo "verify --selftest: FAIL (no tmpdir for the INCOMPLETE leg)"; exit 1; }
+  sh "$0" > "$_kout" 2>&1 &
+  _kpid=$!
+  sleep 2                      # let it start and clear at least one check; the trap fires regardless
+  kill -TERM "$_kpid" 2>/dev/null || true
+  if wait "$_kpid"; then _krc=0; else _krc=$?; fi
+  if ! grep -q 'RESULT: FAIL (INCOMPLETE' "$_kout"; then
+    echo "verify --selftest: FAIL (a SIGTERM-killed run did not announce INCOMPLETE — a truncated run is"
+    echo "  indistinguishable from a passing one; the consumer would have to notice an ABSENCE)"
+    rm -f "$_kout"; exit 1
+  fi
+  # Load-bearing: announcing INCOMPLETE while exiting 0 would be worse than silence — a caller checking
+  # only the exit status would score a truncated run as GREEN.
+  if [ "$_krc" = 0 ]; then
+    echo "verify --selftest: FAIL (interrupted run exited 0 — a truncated run must never score as a pass)"
+    rm -f "$_kout"; exit 1
+  fi
+  rm -f "$_kout"
+
+  echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt)"; exit 0
 fi
 
 REQUIRE=0
@@ -36,6 +66,30 @@ REQUIRE=0
 
 ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0
 line() { printf '  %-9s %-18s %s\n' "$1" "$2" "$3"; }
+
+# ── INCOMPLETE (K16) — an interrupted run must SAY so, in its own output ────────────────────────────
+# The aggregate is ~103 checks / ~281s — LONGER than the default foreground command cap of the agent
+# harnesses this kit is driven with. When one of those caps fires, the run is killed mid-flight.
+#
+# THE EXIT CODE WAS NEVER THE GAP. A signalled run already exits non-zero (143 for TERM, 130 for INT),
+# so a caller that inspects the status is not fooled. What was missing is any STATEMENT: the output
+# simply stopped, leaving a partial transcript indistinguishable from a run still in progress. A human
+# or agent READING that transcript had to infer completion from an ABSENCE — the weakest possible
+# signal, and how a truncated run gets mistaken for a green one (CP-7 run 4, finding K16).
+#
+# So this trap adds the sentence, and keeps the conventional 128+signal status. `INCOMPLETE is not a
+# pass` is the sibling of `UNVERIFIED is not a pass` — a second way output can look green without being
+# one. HONEST CEILING: cannot fire on SIGKILL, and cannot help a consumer that simply stops reading.
+_incomplete() {
+  echo ""
+  printf 'RESULT: FAIL (INCOMPLETE — interrupted after %d check(s); this is NOT a pass)\n' "$((controls+docs))"
+  echo "An interrupted run proves nothing about the checks that never ran."
+  echo "The full aggregate is ~103 checks / ~5 minutes — re-run WITHOUT a command timeout"
+  echo "(background it, or capture output to a file). See conformance/README.md \"What a green run means\"."
+  exit "${1:-1}"
+}
+trap '_incomplete 130' INT
+trap '_incomplete 143' TERM
 
 # check KIND NAME COMMAND...
 check() {
