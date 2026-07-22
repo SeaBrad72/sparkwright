@@ -16,6 +16,75 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+
+REQUIRE=0
+[ -n "${CI:-}" ] && REQUIRE=1
+[ "${1:-}" = "--require" ] && REQUIRE=1
+
+ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0
+line() { printf '  %-9s %-18s %s\n' "$1" "$2" "$3"; }
+
+# ── K3 — a failing gate must not hide WHY ───────────────────────────────────────────────────────────
+# check() already captures the child's combined output in $out and, until v3.173.0, threw it away: the
+# aggregate printed `whitespace-clean FAIL` in an otherwise 101-pass run and nothing else, so the
+# operator had to RE-RUN the individual gate to learn which file was at fault. That is a diagnostic
+# round trip on every failure, paid at exactly the moment the operator is least oriented — and on a
+# COLD field test (where nobody may assist) it is the difference between a self-explaining failure and
+# a dead end. The output was always in hand; it was simply never printed.
+#
+# Indented and clearly delimited so the aggregate stays SCANNABLE: only failures expand, passes stay
+# one line each. A child that prints nothing still shows nothing — this surfaces existing output, it
+# does not invent any.
+emit_diag() {  # <check-name> <captured-output>
+  [ -n "$2" ] || { printf '      (%s produced no output — re-run it directly)\n' "$1"; return 0; }
+  printf '      ── %s output ──────────────────────────────\n' "$1"
+  printf '%s\n' "$2" | sed 's/^/      /'
+  printf '      ──────────────────────────────────────────\n'
+}
+
+# ── INCOMPLETE (K16) — an interrupted run must SAY so, in its own output ────────────────────────────
+# The aggregate is ~103 checks / ~281s — LONGER than the default foreground command cap of the agent
+# harnesses this kit is driven with. When one of those caps fires, the run is killed mid-flight.
+#
+# THE EXIT CODE WAS NEVER THE GAP. A signalled run already exits non-zero (143 for TERM, 130 for INT),
+# so a caller that inspects the status is not fooled. What was missing is any STATEMENT: the output
+# simply stopped, leaving a partial transcript indistinguishable from a run still in progress. A human
+# or agent READING that transcript had to infer completion from an ABSENCE — the weakest possible
+# signal, and how a truncated run gets mistaken for a green one (CP-7 run 4, finding K16).
+#
+# So this trap adds the sentence, and keeps the conventional 128+signal status. `INCOMPLETE is not a
+# pass` is the sibling of `UNVERIFIED is not a pass` — a second way output can look green without being
+# one. HONEST CEILING: cannot fire on SIGKILL, and cannot help a consumer that simply stops reading.
+_incomplete() {
+  echo ""
+  printf 'RESULT: FAIL (INCOMPLETE — interrupted after %d check(s); this is NOT a pass)\n' "$((controls+docs))"
+  echo "An interrupted run proves nothing about the checks that never ran."
+  echo "The full aggregate is ~103 checks / ~5 minutes — re-run WITHOUT a command timeout"
+  echo "(background it, or capture output to a file). See conformance/README.md \"What a green run means\"."
+  exit "${1:-1}"
+}
+trap '_incomplete 130' INT
+trap '_incomplete 143' TERM
+
+# check KIND NAME COMMAND...
+check() {
+  kind=$1; name=$2; shift 2
+  if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
+  case "$kind" in control) controls=$((controls+1)) ;; doc) docs=$((docs+1)) ;; esac
+  if [ "$rc" = "0" ]; then
+    line "[$kind]" "$name" "PASS"
+  elif [ "$rc" = "2" ]; then
+    line "[$kind]" "$name" "UNVERIFIED"; unverified=$((unverified+1))
+    # Under --require/CI an UNVERIFIED IS a failure, so it earns its diagnostic too — otherwise the
+    # one state most likely to be environmental ("no gh, no remote") is the hardest to act on.
+    [ "$REQUIRE" = "1" ] && { failed=$((failed+1)); emit_diag "$name" "$out"; } || true
+  else
+    line "[$kind]" "$name" "FAIL"; failed=$((failed+1))
+    [ "$kind" = "control" ] && ctrl_fail=1 || true
+    emit_diag "$name" "$out"
+  fi
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   # deterministic: the aggregate renders its classification + honesty footer, and a
   # control failure is surfaced. We exercise the renderer, not live infra.
@@ -57,55 +126,30 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -f "$_kout"
 
-  echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt)"; exit 0
+
+  # -- K3 leg: a FAILING gate must print WHY, not just FAIL -----------------------------------------
+  # This block now sits AFTER the function definitions precisely so it can drive the REAL check() and
+  # emit_diag(), not a replica. Testing a copy of the logic is the classic way a green proves nothing
+  # about the shipped path.
+  _d=$(mktemp -d) || { echo "verify --selftest: FAIL (no tmpdir for the K3 leg)"; exit 1; }
+  printf '#!/bin/sh\necho "K3-DIAGNOSTIC-MARKER: /some/path:42"\nexit 1\n' > "$_d/failing.sh"
+  _k3=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0
+         check control k3demo sh "$_d/failing.sh" 2>&1 )
+  rm -f "$_d/failing.sh"; rmdir "$_d" 2>/dev/null || true
+  printf '%s\n' "$_k3" | grep -q 'K3-DIAGNOSTIC-MARKER' || {
+    echo "verify --selftest: FAIL (a failing check hid its diagnostic -- the operator must re-run the"
+    echo "  individual gate to learn what broke, which is the K3 round trip this gate exists to remove)"
+    exit 1; }
+  # Load-bearing the other way: a PASSING check must stay ONE line, or every green run drowns in output.
+  _k3p=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0
+          check control k3ok true 2>&1 )
+  [ "$(printf '%s\n' "$_k3p" | grep -c .)" = 1 ] || {
+    echo "verify --selftest: FAIL (a PASSING check emitted more than one line -- the aggregate must stay scannable)"
+    exit 1; }
+
+  echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt"
+  echo "                       + K3: a FAILING check surfaces its diagnostic, a PASSING one stays one line)"; exit 0
 fi
-
-REQUIRE=0
-[ -n "${CI:-}" ] && REQUIRE=1
-[ "${1:-}" = "--require" ] && REQUIRE=1
-
-ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0
-line() { printf '  %-9s %-18s %s\n' "$1" "$2" "$3"; }
-
-# ── INCOMPLETE (K16) — an interrupted run must SAY so, in its own output ────────────────────────────
-# The aggregate is ~103 checks / ~281s — LONGER than the default foreground command cap of the agent
-# harnesses this kit is driven with. When one of those caps fires, the run is killed mid-flight.
-#
-# THE EXIT CODE WAS NEVER THE GAP. A signalled run already exits non-zero (143 for TERM, 130 for INT),
-# so a caller that inspects the status is not fooled. What was missing is any STATEMENT: the output
-# simply stopped, leaving a partial transcript indistinguishable from a run still in progress. A human
-# or agent READING that transcript had to infer completion from an ABSENCE — the weakest possible
-# signal, and how a truncated run gets mistaken for a green one (CP-7 run 4, finding K16).
-#
-# So this trap adds the sentence, and keeps the conventional 128+signal status. `INCOMPLETE is not a
-# pass` is the sibling of `UNVERIFIED is not a pass` — a second way output can look green without being
-# one. HONEST CEILING: cannot fire on SIGKILL, and cannot help a consumer that simply stops reading.
-_incomplete() {
-  echo ""
-  printf 'RESULT: FAIL (INCOMPLETE — interrupted after %d check(s); this is NOT a pass)\n' "$((controls+docs))"
-  echo "An interrupted run proves nothing about the checks that never ran."
-  echo "The full aggregate is ~103 checks / ~5 minutes — re-run WITHOUT a command timeout"
-  echo "(background it, or capture output to a file). See conformance/README.md \"What a green run means\"."
-  exit "${1:-1}"
-}
-trap '_incomplete 130' INT
-trap '_incomplete 143' TERM
-
-# check KIND NAME COMMAND...
-check() {
-  kind=$1; name=$2; shift 2
-  if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
-  case "$kind" in control) controls=$((controls+1)) ;; doc) docs=$((docs+1)) ;; esac
-  if [ "$rc" = "0" ]; then
-    line "[$kind]" "$name" "PASS"
-  elif [ "$rc" = "2" ]; then
-    line "[$kind]" "$name" "UNVERIFIED"; unverified=$((unverified+1))
-    [ "$REQUIRE" = "1" ] && failed=$((failed+1)) || true
-  else
-    line "[$kind]" "$name" "FAIL"; failed=$((failed+1))
-    [ "$kind" = "control" ] && ctrl_fail=1 || true
-  fi
-}
 
 echo "Conformance verification (honest aggregate)"
 echo "-------------------------------------------"

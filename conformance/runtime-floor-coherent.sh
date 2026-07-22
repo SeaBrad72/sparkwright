@@ -219,6 +219,53 @@ selftest() {
   _base=$(mktemp -d)
   trap 'rm -rf "$_base"' EXIT INT TERM
 
+  # ── (0) ENFORCEMENT leg (K2, v3.173.0) — a floor that is COHERENTLY DECLARED but NEVER ENFORCED is
+  # exactly the CP-7 run-5 defect: preflight has refused a below-floor runtime since v3.169.0, and
+  # `incept` never invoked it, so the refusal was UNREACHABLE on the documented path. Declaration and
+  # enforcement therefore belong in ONE check — coherence alone was green while the floor did nothing.
+  #
+  # BEHAVIOURAL, never a grep for `--stack` in incept.sh: presence is not effect. This exports a real
+  # adopter tree, plants an UNMEETABLE floor, and runs the real `incept`, asserting on its exit status.
+  _sf_root=$(CDPATH='' cd "$(dirname "$0")/.." && pwd)
+  _sf_veh="$_base/enforce"
+  if sh "$_sf_root/scripts/adopter-export.sh" "$_sf_veh" >/dev/null 2>&1; then
+    printf '999\n' > "$_sf_veh/profiles/typescript-node/scaffold/.nvmrc"
+    ( cd "$_sf_veh" && git init -q . ) >/dev/null 2>&1
+    _sf_args="--name f --intent-owner o --stack typescript-node --team solo --backlog md --ci github --harness claude-code --operator-fluency practitioner --mode lean --no-db --noninteractive"
+    # (0a) load-bearing negative — an unmeetable floor must be SURFACED. Under --noninteractive the
+    # contract is WARN-AND-PROCEED (scaffold-and-inspect automation is legitimate; the kit's own CI does
+    # it constantly), so the assertion is on the WARNING, not on the exit status. A silent proceed — the
+    # pre-v3.173.0 behaviour — fails here.
+    _sf_out=$( cd "$_sf_veh" && sh scripts/incept.sh $_sf_args 2>&1 ) && _sf_rc=0 || _sf_rc=$?
+    if printf '%s' "$_sf_out" | grep -q 'does not meet its declared floor'; then
+      echo "PASS: selftest — (0a) incept SURFACES an unmeetable runtime floor (warn-and-proceed under --noninteractive)"
+    else
+      echo "FAIL: selftest — (0a) incept was SILENT about an unmeetable runtime floor (declared but NOT enforced — this is K2)"; _sf=1
+    fi
+    # (0a2) and it must still COMPLETE — scaffolding is safe on a below-floor runtime; only BUILDING is
+    # not. A refusal here would redden every fixture-incepting job in CI, which is exactly what the
+    # first version of this fix did.
+    if [ "${_sf_rc:-1}" = 0 ]; then
+      echo "PASS: selftest — (0a2) --noninteractive incept still completes (scaffold-and-inspect is not blocked)"
+    else
+      echo "FAIL: selftest — (0a2) --noninteractive incept REFUSED — this breaks every fixture-incepting CI job"; _sf=1
+    fi
+    # (0b) the escape must actually UNBLOCK the command that offers it. An escape naming a flag that
+    # only makes PREFLIGHT pass is a dead end: the operator follows it and is refused identically.
+    _sf_veh2="$_base/enforce-waived"
+    if sh "$_sf_root/scripts/adopter-export.sh" "$_sf_veh2" >/dev/null 2>&1; then
+      printf '999\n' > "$_sf_veh2/profiles/typescript-node/scaffold/.nvmrc"
+      ( cd "$_sf_veh2" && git init -q . ) >/dev/null 2>&1
+      if ( cd "$_sf_veh2" && sh scripts/incept.sh $_sf_args --allow-runtime-mismatch ) >/dev/null 2>&1; then
+        echo "PASS: selftest — (0b) --allow-runtime-mismatch unblocks incept itself (the escape is not a dead end)"
+      else
+        echo "FAIL: selftest — (0b) the documented escape did NOT unblock incept (a signpost pointing at a wall)"; _sf=1
+      fi
+    fi
+  else
+    echo "PASS: selftest — (0) enforcement leg SKIPPED (adopter-export unavailable here); coherence legs still run"
+  fi
+
   # (1) positive anchor — coherent profile (floor >=20, CI 20, container 20) -> PASS, rc 0.
   _sf_mkpkg "$_base/pos/scaffold" '>=20'; _sf_mkci "$_base/pos" 'node-version' '20'; _sf_mkdocker "$_base/pos" 'node:20-bookworm-slim'
   if _o=$(eval_profile "$_base/pos" 2>&1); then _r=0; else _r=$?; fi

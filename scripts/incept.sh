@@ -72,6 +72,7 @@ STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTER
 # CP-4 (security): the flag is the ONLY opt-in — never an ambient env var. Literal 0, not
 # ${...:-0}, so a hostile/leftover ALLOW_NESTED in the environment cannot skip the ownership gate.
 ALLOW_NESTED=0
+ALLOW_RUNTIME_MISMATCH=0   # K2: forwarded to the stack-aware preflight as its documented waiver
 # KW5: solo/team governance fork (mirrors STACK/STACK_EXPLICIT). Default solo (announced below).
 # A team chosen via INCEPT_TEAM is deliberate too — only an un-set team is a silent default.
 TEAM="${INCEPT_TEAM:-solo}"
@@ -131,8 +132,9 @@ while [ $# -gt 0 ]; do
     --date) reqval $# --date; [ -n "$2" ] || { echo "incept: --date requires a non-empty YYYY-MM-DD value" >&2; exit 2; }; DATE_PIN="$2"; shift 2 ;;
     --no-db) DB_BACKED=0; shift ;;
     --allow-nested) ALLOW_NESTED=1; shift ;;
+    --allow-runtime-mismatch) ALLOW_RUNTIME_MISMATCH=1; shift ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--noninteractive]"; exit 0 ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--allow-runtime-mismatch] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -451,6 +453,61 @@ if [ "$CI" = "gitlab" ] && [ ! -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
   echo "       Use --ci github (ships for every service stack), or add profiles/${STACK}/ci.gitlab-ci.yml." >&2
   echo "       GitLab references today: ${_gl:-none}." >&2
   exit 2
+fi
+
+# --- K2: the STACK-AWARE preflight — run it HERE, where $STACK is finally trusted ------------------
+# The universal preflight above (§9f) runs BEFORE --stack is validated, so it is deliberately BARE:
+# passing an unvalidated $STACK into another script is exactly the sed-injection / arbitrary-file-write
+# sink the registry check on the `--stack` line guards against. That is why this is a SECOND call, not
+# a flag added to the first one.
+#
+# WHAT IT CLOSES (CP-7 run-5, K2). preflight has enforced a per-stack runtime floor since v3.169.0 —
+# and `incept` never invoked it, so the refusal was UNREACHABLE on the documented path: START-HERE has
+# the operator run BARE preflight first, then `incept --stack <chosen>`. In run 5 that let
+# `incept --stack typescript-node` complete on Node 20.10 and hand the operator a project whose very
+# first `npm ci` failed against the emitted Node 24 floor — a fault detectable one step earlier, by a
+# check that already existed. Same shape as K9: a guard that had never executed on the path people use.
+#
+# Placement is load-bearing: AFTER validation (so $STACK is trusted) and BEFORE any working-tree
+# mutation (so a refusal leaves nothing half-written), alongside the other early refusals above.
+#
+# THE WAIVER MUST BE FORWARDABLE, OR THE ESCAPE IS A DEAD END. preflight's own failure text names
+# `--allow-runtime-mismatch`, but that flag makes PREFLIGHT pass — it does nothing for a subsequent
+# `incept`, which would call preflight again without it and refuse identically. An escape that does not
+# unblock the command that offered it is worse than none: it costs the operator a cycle to discover.
+# So incept accepts the same flag and FORWARDS it (see the arg parser above).
+if [ -f scripts/preflight.sh ]; then
+  _pf_waiver=""
+  [ "$ALLOW_RUNTIME_MISMATCH" -eq 1 ] && _pf_waiver="--allow-runtime-mismatch"
+  # shellcheck disable=SC2086  # both are deliberate single optional flags, not word lists
+  if ! _pf_out=$(sh scripts/preflight.sh --stack "$STACK" $_pf_nested $_pf_waiver 2>&1); then
+    echo "incept: the '$STACK' toolchain does not meet its declared floor." >&2
+    echo "" >&2
+    printf '%s\n' "$_pf_out" | sed 's/^/  /' >&2
+    echo "" >&2
+    # REFUSE FOR A HUMAN, WARN FOR AUTOMATION — the harm model discriminates, not the environment.
+    #
+    # K2's actual harm is a PERSON incepting and then hitting an incomprehensible `npm ci` failure. That
+    # is worth stopping for. But SCAFFOLD-AND-INSPECT automation is a different case entirely: the kit's
+    # own CI incepts fixture projects on a below-floor runtime constantly and never builds them — it only
+    # inspects the emitted structure. A blanket refusal cannot tell those apart, and the first version
+    # here proved it by reddening seven CI jobs that incept fixtures (bootstrap, containment-audit,
+    # artifact-gate ×2, cf-claims, cf-verify-enforced, conformance-core).
+    #
+    # `--noninteractive` is the caller's own declaration that nobody is present to read a prompt, so it
+    # is the right discriminator — NOT an `$CI` env sniff, which would guess at the situation instead of
+    # being told, and would leave an adopter's own automation refusing for a reason it cannot act on.
+    if [ "$INTERACTIVE" -eq 1 ]; then
+      echo "  Refusing before any file is written — fix the toolchain above, then re-run." >&2
+      echo "  To proceed anyway, accepting that the emitted project may not build, re-run with:" >&2
+      echo "    --allow-runtime-mismatch" >&2
+      exit 1
+    fi
+    echo "  WARNING (--noninteractive): proceeding anyway. Scaffolding is safe on this runtime, but" >&2
+    echo "  BUILDING the emitted project is not — its first dependency install will fail until the" >&2
+    echo "  floor above is met. Pass --allow-runtime-mismatch to acknowledge this deliberately." >&2
+  fi
+  [ "$ALLOW_RUNTIME_MISMATCH" -eq 1 ] && echo "notice: --allow-runtime-mismatch — the '$STACK' runtime floor was WAIVED, not met. The emitted project may not build." || true
 fi
 
 # RATIFY-PARITY: the §13 control-plane-ratification gate installs (github CI) from the single
