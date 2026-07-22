@@ -76,6 +76,16 @@ recorded compensating-control evidence** — not a re-architecture.
 > still holds — CI plus the recorded `REVIEW-RECORD` remain your compensating control — and the one-flip
 > upgrade lands the moment the repo is on a plan that supports `enforce_admins`. (The kit verifies the
 > SoD *logic* regardless of plan; only the server-side *enforcement* is plan-gated.)
+>
+> **Caveat — until that flip, `main` is admin-writable from *any* clone.** With solo
+> `enforce_admins: false`, a plain `git push` by the repository owner will land on `main`, bypassing the
+> PR and required-check rules; GitHub records the bypass, and that log is the audit trail. The local
+> `pre-push` hook reduces the chance of doing this by accident — but `git clone` copies neither
+> `.git/hooks/` nor `.git/config`, so a **fresh clone has no local guard at all** until one is installed.
+> `sh scripts/preflight.sh` refuses when it is missing and prints the install command. That is a *signal*,
+> not a boundary: the bypass itself is server-side, where no local hook can see it (see *Solo +
+> agent-authored PRs*, caveat 1, below), and the residual is **disclosed, not closed** — the one flip
+> above is what closes it.
 
 ## Solo + agent-authored PRs — two honesty caveats
 
