@@ -75,6 +75,7 @@ check control "license-check(selftest)" sh scripts/license-check.sh --selftest
 check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
 check control whitespace-clean  sh conformance/whitespace-clean.sh
+check control build-output-ignored  sh conformance/build-output-ignored.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control promotion-contract  sh conformance/promotion-contract-documented.sh
 check control inception-bootstrap  sh conformance/inception-bootstrap-documented.sh

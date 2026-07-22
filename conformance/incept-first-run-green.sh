@@ -409,9 +409,14 @@ incept_stamp_tests() {  # appends to $st (0 = all good)
 # the kit-base ref (capture_kit_base staged the UNPRUNED set before $STACK was known, so the prune must
 # reach the stage too, else kit-update reads a foreign-listing kit-base:.kit-manifest first).
 # ===========================================================================================
+# The KEPT set — profiles/ entries that are NOT a foreign stack profile and must survive the prune.
+# `.gitignore` joined this set in v3.171.0 (CP7R5-K4-IGNORE): profiles/.gitignore is a TREE-LEVEL file
+# carrying build-output ignore rules for every profile, and it must outlive the prune — that is the whole
+# point of it existing (per-profile scaffold ignore files die with their profile, which was the K4 defect).
+# Omitting it here counts a correctly-kept file as a foreign leftover and reddens the reconcile assertions.
 manifest_foreign_count() {  # <manifest-text> — count profiles/ lines that are NOT the kept set (expect 0)
   printf '%s\n' "$1" | grep -E '^profiles/' \
-    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|_TEMPLATE\.md$)' \
+    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|_TEMPLATE\.md$|\.gitignore$)' \
     | grep -c . || true
 }
 incept_prune_tests() {  # appends to $st (0 = all good)
@@ -438,6 +443,15 @@ incept_prune_tests() {  # appends to $st (0 = all good)
       echo "selftest PASS: incept kept the non-stack-dir files (ratification.yml, _TEMPLATE.md)"
     else
       echo "selftest FAIL: incept pruned a non-stack-dir file (ratification.yml / _TEMPLATE.md) it must keep"; st=1
+    fi
+    # CP7R5-K4-IGNORE — profiles/.gitignore MUST survive the prune. This is not bookkeeping: the whole
+    # defect was that build-output ignore rules lived INSIDE the profiles the prune deletes. If a future
+    # change let the prune take this file too, K4 returns silently — an adopter's first `git add -A`
+    # starts committing generated artifacts again and verify.sh --require goes red on an untouched tree.
+    if [ -f "$_pe/profiles/.gitignore" ] && grep -q '^obj/$' "$_pe/profiles/.gitignore" 2>/dev/null; then
+      echo "selftest PASS: incept kept profiles/.gitignore with its rules intact (K4 cannot return silently)"
+    else
+      echo "selftest FAIL: profiles/.gitignore did not survive the prune (or lost its rules) — K4 REGRESSION"; st=1
     fi
     # (b) WORKING-TREE .kit-manifest: zero foreign-profile lines, selected profile still listed.
     _wman=$(cat "$_pe/.kit-manifest" 2>/dev/null || true)

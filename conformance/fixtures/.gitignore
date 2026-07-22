@@ -1,0 +1,44 @@
+# Build output in the conformance FIXTURE tree — CP7R5-K4-IGNORE.
+#
+# Companion to profiles/.gitignore; see that file for the full rationale. The failure mode here is
+# the second of the two the per-item pattern suffers: fixtures are never pruned, but each fixture's
+# ignore rules live in ITS OWN scaffold/.gitignore, so a NEWLY ADDED fixture directory arrives with
+# no coverage at all until someone remembers to add one. This file covers the whole tree, so a new
+# fixture is protected by construction.
+#
+# Current exposure is low and this is mostly durable insurance: measured at authoring time, ZERO
+# directories under conformance/fixtures/ carry a build manifest (no package.json, no *.csproj), so
+# no toolchain runs here today. That can change the moment a fixture gains one.
+#
+# THIS DOES NOT AFFECT YOUR APPLICATION SOURCE — it applies only inside conformance/fixtures/.
+#
+# Enforced by conformance/build-output-ignored.sh.
+
+# .NET
+bin/
+obj/
+publish/
+TestResults/
+
+# JVM
+target/
+build/
+.gradle/
+
+# Python
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.venv/
+.coverage
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+
+# Go
+cover.out
+
+# .NET coverage artifact (coverlet)
+coverage.json

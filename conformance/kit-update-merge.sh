@@ -533,7 +533,8 @@ EOF
 # and asserts, TOGETHER:
 #   * MIGRATION-REMOVES-FOREIGN — EVERY foreign (non-$STACK) profile file the adopter kept is offered for
 #     removal (complete — count matches the manifest), so the cleanup is not partial;
-#   * KEPT-PROFILE-PRESERVED — NOT ONE kept path (profiles/$STACK/, ratification.yml, _TEMPLATE.md) is
+#   * KEPT-PROFILE-PRESERVED — NOT ONE kept path (profiles/$STACK/, ratification.yml, _TEMPLATE.md,
+#     .gitignore) is
 #     offered — the migration is surgical, never over-pruning the adopter's OWN stack;
 #   * ADOPTER-FILE-PRESERVED — an adopter-authored file is never offered for removal;
 #   * NON-MUTATION — kit-update writes NOTHING to the adopter's repo;
@@ -579,7 +580,12 @@ check_unpruned() {
     return 1
   fi
   # kept vs foreign, by the SAME filter over the offered set AND the adopter's own manifest.
-  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/_TEMPLATE\.md\$"
+  # THE KEPT SET. `.gitignore` joined it in v3.171.0 (CP7R5-K4-IGNORE): profiles/.gitignore is a
+  # TREE-LEVEL file that must outlive the prune. Omitting it here counts a correctly-KEPT file as a
+  # foreign leftover in _foreign_have while it is (correctly) absent from _foreign_off, so the two
+  # counts differ by one and MIGRATION-REMOVES-FOREIGN fails with a bogus "incomplete migration".
+  # This enumeration is duplicated in conformance/incept-first-run-green.sh — change both together.
+  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/_TEMPLATE\.md\$|^profiles/\.gitignore\$"
   _foreign_off=$(section "$_t/noop" offered | grep '^profiles/' | grep -vE "$_keptfilter" | grep -c . || :)
   _kept_off=$(section "$_t/noop" offered | grep -E "$_keptfilter" | grep -c . || :)
   _foreign_have=$(git -C "$_p" show kit-base:.kit-manifest 2>/dev/null \
@@ -596,7 +602,8 @@ check_unpruned() {
   fi
 
   # (2) KEPT-PROFILE-PRESERVED — the migration NEVER offers to delete the adopter's OWN stack profile (nor
-  #     ratification.yml / _TEMPLATE.md). The surgical half: an over-prune of the adopter's stack fails here.
+  #     ratification.yml / _TEMPLATE.md / .gitignore). The surgical half: an over-prune of the adopter's
+  #     stack fails here.
   if [ "${_kept_off:-0}" -eq 0 ]; then
     echo "PASS: T10 [KEPT-PROFILE-PRESERVED] — not one kept path (profiles/$STACK/, ratification.yml, _TEMPLATE.md) is offered"
   else

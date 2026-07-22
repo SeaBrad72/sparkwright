@@ -76,6 +76,7 @@ conformance/backlog-presence.sh
 conformance/badge-version.sh
 conformance/board-drift.sh
 conformance/branch-protection.sh
+conformance/build-output-ignored.sh
 conformance/check-links.sh
 conformance/ci-classify-changes.sh
 conformance/ci-gates.sh
@@ -112,6 +113,7 @@ conformance/explain-wired.sh
 conformance/feature-flags-ready.sh
 conformance/feature-flags-wired.sh
 conformance/feedback-link-lifecycle-documented.sh
+conformance/fixtures/.gitignore
 conformance/fixtures/bad-agent-trace/ci.yml
 conformance/fixtures/bad-agent-trace/scaffold/.db-backed
 conformance/fixtures/bad-agent-trace/scaffold/.gitignore
@@ -332,6 +334,7 @@ docs/operations/tool-supply-chain.md
 docs/why-gates.md
 docs/work-tracking/adapters.md
 hooks/pre-push
+profiles/.gitignore
 profiles/_TEMPLATE.md
 profiles/data-engineering.md
 profiles/data-engineering/BRANCH-PROTECTION.md

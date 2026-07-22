@@ -824,7 +824,8 @@ fi
 # ALL stack profiles, so scanning a FOREIGN profile's scaffold (e.g. profiles/python/scaffold/tests/
 # urllib) reddens a TS adopter's very FIRST CI on code they never wrote. incept is the first point the
 # stack is known (the release is stack-neutral), so prune here — mirroring `adopter-export --profile`
-# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/_TEMPLATE.md
+# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/_TEMPLATE.md,
+# profiles/.gitignore (the tree-level build-output ignore file — CP7R5-K4-IGNORE; it MUST outlive the prune)
 # (adopter-export iterates known-profile DIRS only). Prune BOTH the working tree AND KIT_BASE_STAGE:
 # capture_kit_base already staged the UNPRUNED set (before $STACK was known), so pruning both keeps
 # kit-base, the tree, and both .kit-manifest files in agreement — kit-update then reconstructs a

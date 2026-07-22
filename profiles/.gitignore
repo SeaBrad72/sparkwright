@@ -1,0 +1,50 @@
+# Build output in the kit's stack-profile REFERENCE tree — CP7R5-K4-IGNORE.
+#
+# WHY THIS FILE EXISTS, AT THIS LEVEL. Each profile's scaffold ships its own .gitignore, but
+# `incept` prunes unselected profiles and DELETES that file with the profile — so those rules are
+# scoped to a shorter lifetime than the paths they protect. Anything a toolchain drops under
+# profiles/ afterwards is then unignored, and a baseline `git add -A` commits it. In CP-7 run 5 that
+# put generated .NET obj/ artifacts into an adopter's first commit and turned `verify.sh --require`
+# RED on an untouched origin/main, failing acceptance criterion AC4.
+#
+# This file sits ABOVE every profile, so the prune cannot remove it, and a NEWLY ADDED profile is
+# covered by construction rather than by someone remembering to add a .gitignore.
+#
+# THIS DOES NOT AFFECT YOUR APPLICATION SOURCE. It applies only inside profiles/ — the kit's
+# reference material. Your own code lives outside this tree and is untouched.
+#
+# Enforced by conformance/build-output-ignored.sh, which asserts git's OWN verdict (check-ignore)
+# and requires the rule to come from a tree-level file like this one. Verified at authoring time:
+# ZERO of the 353 tracked files under profiles/ and conformance/fixtures/ match these patterns.
+#
+# Deliberately NOT here: editor/OS/user state (.idea/, *.iml, .vscode/, .DS_Store, *.csproj.user)
+# and env files. Those are not build output; the repo-root .gitignore owns that policy.
+
+# .NET — dotnet build / test / publish
+bin/
+obj/
+publish/
+TestResults/
+
+# JVM — Maven (target/), Gradle (build/, .gradle/)
+target/
+build/
+.gradle/
+
+# Python — bytecode, test cache, packaging metadata, virtualenvs, coverage data
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.venv/
+.coverage
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+
+# Go — `go test -coverprofile`
+cover.out
+
+# .NET coverage artifact (coverlet)
+coverage.json
