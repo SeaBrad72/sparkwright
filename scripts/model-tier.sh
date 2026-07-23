@@ -55,6 +55,7 @@ resolve() {
   tiers=$(cfg TIERS || true); [ -n "$tiers" ] || die2 "2: TIERS unset in $CONFIG (fail-closed)"
   pin=$(cfg PIN || true)
   variable=$(cfg VARIABLE || true)
+  apex_eligible=$(cfg APEX_ELIGIBLE || true)
   floor_cc=$(cfg FLOOR_CHANGE_CLASS || true)
   known_cc=$(cfg CHANGE_CLASSES || true)
 
@@ -69,19 +70,15 @@ resolve() {
     die2 "2: requested tier '$requested' not in TIERS=$tiers (fail-closed)"
   fi
 
-  # 1. PIN -> always top (request ignored, with a legibility note)
-  if in_csv "$role" "$pin"; then
-    if [ -n "$requested" ] && [ "$requested" != "$TOP" ]; then
-      printf 'note: role %s is pinned at %s; ignoring requested %s\n' "$role" "$TOP" "$requested" >&2
-    fi
-    printf '%s\n' "$TOP"; return 0
-  fi
-
-  # 2. FLOOR -> top. A critical-path task, or a floor change-class, forces `deep`. Crucially, a
+  # 1. FLOOR -> top. A critical-path task, or a floor change-class, forces `deep`. Crucially, a
   #    NON-EMPTY change-class that is not a recognized KNOWN class defaults HIGH (fail-safe) — a
   #    malformed/miscased/typo'd class can never DOWNGRADE a floored task (the asymmetric-fail bug:
   #    role fails closed, so change-class must too). Empty change-class = not provided -> no floor
   #    (e.g. a read-only Explorer), so the requested/default tier stands.
+  #    FABLE-TIER (2026-07-23): the floor is evaluated FIRST — BEFORE apex-escalation and the pin — so a
+  #    control-plane / sensitive / critical task is forced to `deep` and can NEVER reach `apex` (D1: the
+  #    highest-scrutiny work stays on the most-proven model). Behavior-preserving for pinned seats (a pin
+  #    on a floored task returns TOP either way, so moving the floor above the pin changes nothing there).
   if [ "$critical" -eq 1 ]; then printf '%s\n' "$TOP"; return 0; fi
   if [ -n "$change_class" ]; then
     if in_csv "$change_class" "$floor_cc"; then printf '%s\n' "$TOP"; return 0; fi
@@ -92,7 +89,25 @@ resolve() {
     fi
   fi
 
-  # 3. VARIABLE -> requested if allowed; else role default (default-to-higher)
+  # 2. APEX ESCALATION (FABLE-TIER) -> an apex-eligible seat may be RAISED to `apex` on a NON-floored task
+  #    (all floors already returned above). This is an UPGRADE above the pin's `deep`, so it precedes the
+  #    pin: architect/plan stay pinned against DOWNGRADES (handled in step 3) yet can reach apex here.
+  #    Non-eligible seats (reviewer/security/orchestrator/verification) never match and fall through to the
+  #    pin -> `deep`. apex is opt-in: it fires ONLY on an explicit `--requested apex`, never by default.
+  if [ "$requested" = "apex" ] && in_csv "$role" "$apex_eligible"; then
+    printf '%s\n' "apex"; return 0
+  fi
+
+  # 3. PIN -> top (request ignored, with a legibility note). A pinned seat refuses a DOWNGRADE; an apex
+  #    request from a pinned-but-eligible seat already returned in step 2.
+  if in_csv "$role" "$pin"; then
+    if [ -n "$requested" ] && [ "$requested" != "$TOP" ]; then
+      printf 'note: role %s is pinned at %s; ignoring requested %s\n' "$role" "$TOP" "$requested" >&2
+    fi
+    printf '%s\n' "$TOP"; return 0
+  fi
+
+  # 4. VARIABLE -> requested if allowed; else role default (default-to-higher)
   if in_csv "$role" "$variable"; then
     allowed=$(cfg "ALLOWED_$role" || true); [ -n "$allowed" ] || die2 "2: ALLOWED_$role unset (fail-closed)"
     default=$(cfg "DEFAULT_$role" || true); [ -n "$default" ] || die2 "2: DEFAULT_$role unset (fail-closed)"
@@ -103,7 +118,7 @@ resolve() {
     printf '%s\n' "$default"; return 0
   fi
 
-  # 4. unknown role -> fail-closed (never slip past the pins)
+  # 5. unknown role -> fail-closed (never slip past the pins)
   die2 "2: role '$role' is neither pinned nor variable in $CONFIG (fail-closed)"
 }
 
@@ -149,6 +164,21 @@ selftest() {
   x2 "missing role"                       --requested fast
   x2 "role with invalid chars"            --role "rev iewer"
   x2 "role with sed metachar"             --role "engineer/x"
+  # --- FABLE-TIER: apex escalation (opt-in tier above deep; owner-ratified 2026-07-23) ---
+  # positive liveness: eligible seats RAISE to apex on an ordinary/unfloored task (dead feature if not)
+  t  "apex: engineer raises"                    apex  --role engineer --requested apex --change-class ordinary
+  t  "apex: architect raises (pinned+eligible)" apex  --role architect --requested apex --change-class ordinary
+  t  "apex: plan raises (no change-class)"      apex  --role plan --requested apex
+  # LOAD-BEARING NEGATIVE — FLOOR beats apex: control-plane/sensitive/critical NEVER reach apex (D1)
+  t  "apex floored: architect control-plane"    deep  --role architect --requested apex --change-class control-plane
+  t  "apex floored: engineer sensitive"         deep  --role engineer --requested apex --change-class sensitive
+  t  "apex floored: engineer critical-path"     deep  --role engineer --requested apex --critical-path
+  # LOAD-BEARING NEGATIVE — non-eligible judgment seats IGNORE an apex request and stay deep (governance)
+  t  "apex denied: reviewer stays deep"         deep  --role reviewer --requested apex
+  t  "apex denied: security stays deep"         deep  --role security --requested apex
+  t  "apex denied: orchestrator stays deep"     deep  --role orchestrator --requested apex
+  # explorer: neither apex-eligible nor apex-in-ALLOWED -> clamps to its own default (never apex)
+  t  "apex denied: explorer -> default fast"    fast  --role explorer --requested apex
   if [ "$fail" -eq 0 ]; then echo "model-tier selftest: ALL PASS"; return 0
   else echo "model-tier selftest: FAILURES"; return 1; fi
 }

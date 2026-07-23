@@ -21,11 +21,13 @@ check_root() {
   _orch="$_root/.claude/agents/orchestrator.md"
   _guard="$_root/.claude/hooks/guard-core.sh"
 
-  # 1. the adopter-owned map declares all three abstract tiers.
-  if [ -f "$_map" ] && grep -q '^deep=' "$_map" && grep -q '^fast=' "$_map" && grep -q '^light=' "$_map"; then
-    echo "PASS: .kit/model-map.conf declares deep=/fast=/light="
+  # 1. the adopter-owned map declares the four abstract tiers (FABLE-TIER added apex=). A tier added to
+  #    TIERS with no map binding would leave a seat unbindable; the general "every TIERS entry bound" lock
+  #    is boarded as a follow-up — here apex is required explicitly, with a load-bearing negative below.
+  if [ -f "$_map" ] && grep -q '^apex=' "$_map" && grep -q '^deep=' "$_map" && grep -q '^fast=' "$_map" && grep -q '^light=' "$_map"; then
+    echo "PASS: .kit/model-map.conf declares apex=/deep=/fast=/light="
   else
-    echo "FAIL: .kit/model-map.conf missing or does not declare all of deep=/fast=/light="
+    echo "FAIL: .kit/model-map.conf missing or does not declare all of apex=/deep=/fast=/light="
     _miss=1
   fi
 
@@ -86,7 +88,7 @@ selftest() {
   mk_good() {
     _d=$1
     mkdir -p "$_d/.kit" "$_d/.claude/agents" "$_d/.claude/hooks"
-    printf 'deep=opus\nfast=sonnet\nlight=haiku\n' > "$_d/.kit/model-map.conf"
+    printf 'apex=fable\ndeep=opus\nfast=sonnet\nlight=haiku\n' > "$_d/.kit/model-map.conf"
     # Mirrors the real doc shape: ONE instruction line carries the literal model: token, and a
     # separate honest-ceiling caveat line references the model parameter WITHOUT the literal token.
     # This is what lets Negative D prove the predicate is anchored to the instruction, not the caveat.
@@ -131,6 +133,16 @@ selftest() {
     echo "selftest FAIL: orchestrator.md with model-map.conf stripped still passed (check is dead)"; st=1
   else
     echo "selftest PASS: model-map.conf stripped -> FAIL"
+  fi
+
+  # NEGATIVE E (FABLE-TIER, load-bearing): drop the apex= binding from the map -> must FAIL. Proves the
+  # apex-binding requirement has teeth (a mutant that always-passes the apex grep dies here).
+  mk_good "$base/negApex"
+  strip "$base/negApex/.kit/model-map.conf" '^apex='
+  if check_root "$base/negApex" >/dev/null 2>&1; then
+    echo "selftest FAIL: model-map.conf with apex= stripped still passed (apex-binding check is dead)"; st=1
+  else
+    echo "selftest PASS: apex= stripped -> FAIL"
   fi
 
   # NEGATIVE C (load-bearing): remove the guard lock line -> must FAIL (the completeness lock).

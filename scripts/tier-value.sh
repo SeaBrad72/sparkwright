@@ -45,16 +45,17 @@ weight_or_default() {
 analyse() {
   _f="$1"
   [ -f "$_f" ] || { echo "tier-value: trace not found: $_f" >&2; return 2; }
+  WA=$(weight_or_default WEIGHT_APEX)
   WD=$(weight_or_default WEIGHT_DEEP)
   WF=$(weight_or_default WEIGHT_FAST)
   WL=$(weight_or_default WEIGHT_LIGHT)
-  jq -s --argjson wd "$WD" --argjson wf "$WF" --argjson wl "$WL" '
+  jq -s --argjson wa "$WA" --argjson wd "$WD" --argjson wf "$WF" --argjson wl "$WL" '
     [ .[] | select(.parent_span_id != null) ]
     | map(
         (.attributes["model.tier"] // "deep") as $t
         | ((.attributes.tokens // "0") | tonumber? // 0) as $tok
         | $wd as $w
-        | (if $t=="fast" then $wf elif $t=="light" then $wl else $wd end) as $w   # KWTIER: tier-weight override (remove -> constant WEIGHT_DEEP)
+        | (if $t=="apex" then $wa elif $t=="fast" then $wf elif $t=="light" then $wl else $wd end) as $w   # KWTIER: tier-weight override (remove -> constant WEIGHT_DEEP)
         | "other" as $role
         | (if (.name=="agent:engineer" or .name=="agent:explorer") then "builder" else $role end) as $role
         | (if (.attributes["agent.id"]=="orchestrator") then "reassembly" else $role end) as $role   # KWREASM: reassembly classification (remove -> tax vanishes)

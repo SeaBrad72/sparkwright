@@ -226,7 +226,8 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "  markers absent; one present means run. An && -> || regression would mis-N-A here)"; exit 1; }
 
   echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt"
-  echo "                       + K3: a FAILING check surfaces its diagnostic, a PASSING one stays one line)"; exit 0
+  echo "                       + K3: a FAILING check surfaces its diagnostic, a PASSING one stays one line"
+  echo "                       + --kitself N-A/RUNS/mixed + VERIFY-SUMMARY: no 'docs present' over a doc-fail)"; exit 0
 fi
 
 echo "Conformance verification (honest aggregate)"

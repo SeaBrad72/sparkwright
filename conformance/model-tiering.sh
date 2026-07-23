@@ -17,7 +17,7 @@ if sh "$ROOT/scripts/model-tier.sh" --selftest >/dev/null 2>&1; then echo "PASS:
 else echo "FAIL: resolver selftest (pins/floors/liveness/fail-closed)"; fail=1; fi
 
 # 2. structural: policy config present + declares the load-bearing keys
-for k in TIERS PIN VARIABLE FLOOR_CHANGE_CLASS; do
+for k in TIERS PIN VARIABLE APEX_ELIGIBLE FLOOR_CHANGE_CLASS; do
   if grep -q "^$k=" "$ROOT/.kit/model-tiers.conf" 2>/dev/null; then echo "PASS: config has $k"
   else echo "FAIL: .kit/model-tiers.conf missing $k"; fail=1; fi
 done

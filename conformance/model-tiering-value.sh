@@ -42,6 +42,19 @@ build_all_deep() {
      --attr "model.tier=deep" --attr "tokens=1000" >/dev/null
 }
 
+# apex builder: one builder on `apex` (tokens=1000). Since WEIGHT_APEX (4.0) > WEIGHT_DEEP (1.0), the
+# all-deep baseline (1000) is LESS than the actual apex cost (4000) -> a NEGATIVE builder_discount, i.e. a
+# PREMIUM. This is what proves WEIGHT_APEX is actually wired into tier-value.sh (FABLE-TIER review finding):
+# drop the `$t=="apex"` branch and apex falls to WEIGHT_DEEP -> discount 0, and the leg below reddens.
+build_apex() {
+  _f="$1"; printf '' > "$_f"; _tid=$(sh "$SCRIPTS/otel-trace.sh" new-trace)
+  _root=$(sh "$SCRIPTS/otel-trace.sh" span --trace "$_tid" --name "orchestrator-run" --status OK \
+            --sink "$_f" --attr "agent.id=orchestrator")
+  sh "$SCRIPTS/otel-trace.sh" span --trace "$_tid" --parent "$_root" --name "agent:engineer" --status OK \
+     --start 1000 --end 2000 --sink "$_f" --attr "agent.id=engineer" --attr "slice=alpha" \
+     --attr "model.tier=apex" --attr "tokens=1000" >/dev/null
+}
+
 # mixed fast builders WITH a gate:integration rework span (the orchestrator's reassembly tax).
 build_mixed_rework() {
   _f="$1"; printf '' > "$_f"; _tid=$(sh "$SCRIPTS/otel-trace.sh" new-trace)
@@ -143,6 +156,18 @@ selftest() {
     echo "PASS: sign-discrimination — the net-negative report no longer claims it 'saved'"
   fi
   rm -f "$cc" "$rd"
+
+  # POSITIVE 2c — APEX is PRICED (FABLE-TIER): a builder on `apex` costs WEIGHT_APEX (4.0) > WEIGHT_DEEP, so
+  # the all-deep baseline is BELOW the actual -> builder_discount < 0 (a premium). This is the load-bearing
+  # proof that WEIGHT_APEX is wired into tier-value.sh: with the `$t=="apex"` branch dropped, apex would fall
+  # to WEIGHT_DEEP and the discount would be exactly 0 (not < 0), reddening this leg.
+  ax=$(mktemp); build_apex "$ax"; ja=$(sh "$TV" --json "$ax")
+  if [ "$(jval "$ja" '.builder_discount < 0')" = "true" ]; then
+    echo "PASS: apex builder priced at WEIGHT_APEX>deep -> NEGATIVE discount / premium ($(jval "$ja" .builder_discount)) — WEIGHT_APEX is live"
+  else
+    echo "FAIL: apex builder should price as a PREMIUM (WEIGHT_APEX>WEIGHT_DEEP -> discount<0); WEIGHT_APEX appears INERT ($(jval "$ja" .builder_discount))"; fail=1
+  fi
+  rm -f "$ax"
 
   # POSITIVE 3 — the two traces yield DIFFERENT verdicts.
   vd=$(verdict "$di"); vm=$(verdict "$mi")

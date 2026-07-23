@@ -5,6 +5,8 @@ The kit's model tiering is **harness-neutral**. The neutral core decides *which 
 - The neutral core — `scripts/model-tier.sh` + `.kit/model-tiers.conf` — **RESOLVES** the tier (pins the six judgment/verification seats to `deep`, floors control-plane / critical-path / sensitive work to `deep`, fail-closed). It is LLM-neutral and never names a model.
 - The per-harness adapter **BINDS** the resolved tier to a model via the adopter-owned `.kit/model-map.conf`, and passes that model to its subagent-spawn.
 
+**The `apex` tier (opt-in, above `deep`).** As of FABLE-TIER the policy also defines `apex` — a tier *above* `deep` for exceptionally-complex work, reachable only by the `engineer`/`architect`/`plan` seats and only on ordinary-class tasks (control-plane/sensitive/critical still floor to `deep`; judgment seats reviewer/security/orchestrator stay `deep`). The reference map binds `apex=fable`; **a non-Claude adopter maps `apex=` to their own most-capable model** (e.g. their provider's top-tier model), exactly as they map the other tiers. It is opt-in per plan — the resolver returns `apex` only on an explicit request, never by default.
+
 The split is deliberate: the resolver's *judgment* (what deserves the strong model) stays portable and testable; the *mapping* to a vendor model stays adopter-owned and swappable.
 
 ## The contract every harness must satisfy
@@ -12,7 +14,7 @@ The split is deliberate: the resolver's *judgment* (what deserves the strong mod
 The kit needs three things from your harness. The **names** differ per harness; the **mechanics** don't:
 
 1. **Read the resolved tier** — take the `model_tier` value the Orchestrator wrote into the step's Task-Context-Contract (`deep` / `fast` / `light`).
-2. **Map it through `.kit/model-map.conf`** — the adopter-owned `deep=`/`fast=`/`light=` → model-id map (control-plane, guard-locked). This file is opaque to the neutral core: it is the one place a vendor model id appears.
+2. **Map it through `.kit/model-map.conf`** — the adopter-owned `apex=`/`deep=`/`fast=`/`light=` → model-id map (control-plane, guard-locked). This file is opaque to the neutral core: it is the one place a vendor model id appears.
 3. **Pass the mapped model to the spawn** — hand the resolved model id to your harness's subagent-spawn as its model parameter (e.g. a `model:` argument).
 
 **Graceful degradation.** If `.kit/model-map.conf` is absent, or maps every tier to a single value, all tiers collapse to one model and tiering becomes *advisory* — the plan still stamps the tier for human judgment, but the harness dispatches one model. This is the honest single-model-harness case, not a failure.
