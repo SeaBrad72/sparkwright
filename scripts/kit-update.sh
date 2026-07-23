@@ -189,8 +189,8 @@ if filled "$CIP"; then
   esac
 else
   # LEGACY INFERENCE — pre-stamp tree. incept writes .github/workflows/ci.yml under --ci github and
-  # .gitlab-ci.yml under --ci gitlab. But the EXPORT already ships the kit's own .github/workflows/ci.yml,
-  # and `--ci gitlab` leaves it in place — so the GitHub workflow is NOT positive evidence, and .gitlab-ci.yml
+  # .gitlab-ci.yml under --ci gitlab. But the EXPORT ships .github/workflows/ EMPTY (ci.yml is export-ignored,
+  # P0-FU) — so a github-workflow FILE is not positive evidence either way, and .gitlab-ci.yml
   # (which ONLY incept --ci gitlab creates) must be tested FIRST. This is precisely why the stamp exists.
   if git -C "$REPO" cat-file -e "HEAD:.gitlab-ci.yml" 2>/dev/null; then
     CI=gitlab

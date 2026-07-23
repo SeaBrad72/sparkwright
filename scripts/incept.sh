@@ -695,9 +695,10 @@ sedi "s#\*\*Stack profile\*\* (§2): \[[^]]*\]#**Stack profile** (§2): $(esc "$
 # P1.2 (T3b): stamp the LAST TWO inception inputs nothing recorded — the CI PLATFORM and the DB ARCHETYPE.
 # Same reason as the stack stamp above, and the same mechanism. kit-update reconstructs the adopter's base
 # by REPLAYING incept over kit-base with the inputs this project recorded; anything not recorded has to be
-# INFERRED from the tree, and inference is where a wrong base comes from. It is not hypothetical: `--ci
-# gitlab` leaves the exported kit-own .github/workflows/ci.yml exactly where it is, so "a GitHub workflow
-# exists ⇒ --ci github" misreads EVERY GitLab adopter — and a wrong base cries CONFLICT on kit files the
+# INFERRED from the tree, and inference is where a wrong base comes from. It is not hypothetical: the
+# export ships .github/workflows/ EMPTY (ci.yml is export-ignored, P0-FU), so a GitHub-workflow FILE is no
+# signal at all — and .gitlab-ci.yml (which ONLY `--ci gitlab` creates) is the positive signal, tested
+# first. Any file-presence inference would misread adopters; a wrong base cries CONFLICT on kit files the
 # adopter never touched. Record the FACT so nothing downstream has to guess it.
 # Both replace ONLY the bracketed choice-list (the trailing prose annotation survives); both are idempotent
 # (the anchor requires the `[` right after the field); both no-op if the template lacks the §3 slot — an

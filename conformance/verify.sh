@@ -98,6 +98,20 @@ check() {
   fi
 }
 
+# CP7R5-VERIFY-SUMMARY — the RESULT sentence must not claim "docs present" over FAILING doc-checks.
+# Emitted via a function so --selftest drives it with synthetic counters (non-vacuous, no full aggregate).
+# Reads globals $ctrl_fail/$unverified/$failed/$REQUIRE; echoes the RESULT line; returns 1 on FAIL, 0 on OK.
+# When this is reached with $failed != 0, ctrl_fail is 0 and (under --require) unverified is 0, so every
+# remaining failure is a doc-check — hence "$failed doc-check(s)" is exact, not an over-count.
+result_sentence() {
+  if [ "$ctrl_fail" != "0" ]; then echo "RESULT: FAIL (a control check failed)"; return 1; fi
+  if [ "$REQUIRE" = "1" ] && [ "$unverified" != "0" ]; then echo "RESULT: FAIL (unverified under --require/CI)"; return 1; fi
+  if [ "$failed" != "0" ]; then
+    echo "RESULT: OK (controls verified; $failed doc-check(s) FAILED, shown above — advisory, non-blocking)"; return 0
+  fi
+  echo "RESULT: OK (controls verified; docs present)"; return 0
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   # deterministic: the aggregate renders its classification + honesty footer, and a
   # control failure is surfaced. We exercise the renderer, not live infra.
@@ -185,6 +199,21 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '%s\n' "$_krun" | grep -q 'kitdemo .* FAIL' || {
     echo "verify --selftest: FAIL (a --kitself check did not RUN on the kit tree -- an always-N-A guard would"
     echo "  mask a genuinely-broken kit-self reference; markers present must mean the check executes)"; exit 1; }
+
+  # -- CP7R5-VERIFY-SUMMARY leg: the RESULT sentence must be honest about failing doc-checks -----------
+  # A run with a failing doc-check must NOT print "docs present"; a fully-green run must keep it. Drives
+  # the REAL result_sentence() with synthetic counters -- no full aggregate. Both halves are load-bearing:
+  # the first kills a mutant that keeps "docs present" over a failure; the second kills one that always
+  # cries "FAILED". Exit semantics are UNCHANGED (a doc-only failure still returns 0) -- this is wording.
+  _rsf=$( ctrl_fail=0; unverified=0; failed=1; REQUIRE=0; result_sentence )
+  printf '%s\n' "$_rsf" | grep -q 'doc-check(s) FAILED' || {
+    echo "verify --selftest: FAIL (a failing doc-check did not surface in the RESULT sentence)"; exit 1; }
+  if printf '%s\n' "$_rsf" | grep -q 'docs present'; then
+    echo "verify --selftest: FAIL (RESULT claimed 'docs present' while a doc-check FAILED -- the summary lied)"; exit 1
+  fi
+  _rsok=$( ctrl_fail=0; unverified=0; failed=0; REQUIRE=0; result_sentence )
+  printf '%s\n' "$_rsok" | grep -q 'docs present' || {
+    echo "verify --selftest: FAIL (a fully-green run lost its 'docs present' summary)"; exit 1; }
   # Pins the JOINT predicate: N-A requires BOTH markers absent (`&&`). A MIXED tree (exactly one marker
   # present) must RUN -- so an `&&`->`||` mutation, which would N-A a mixed tree, dies here. This is the only
   # leg that constructs a one-marker tree; without it the conjunction is untested (both other legs use
@@ -348,6 +377,4 @@ echo "A green run proves controls hold AND release/DR/resilience safety is DOCUM
 echo "it does NOT prove those procedures were tested. doc-checks verify records exist."
 echo "UNVERIFIED is NOT a pass. See conformance/README.md \"What a green run means\"."
 
-if [ "$ctrl_fail" != "0" ]; then echo "RESULT: FAIL (a control check failed)"; exit 1; fi
-if [ "$REQUIRE" = "1" ] && [ "$unverified" != "0" ]; then echo "RESULT: FAIL (unverified under --require/CI)"; exit 1; fi
-echo "RESULT: OK (controls verified; docs present)"; exit 0
+result_sentence; exit $?

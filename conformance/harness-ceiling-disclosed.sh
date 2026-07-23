@@ -40,6 +40,18 @@ else
   REPO_ROOT="$SCRIPT_DIR"
 fi
 
+# Kit-self N/A guard — HOISTED above the jq/git preconditions (CP7R5-KITSELF-NA-ORDERING; mirrors
+# pipeline-origin.sh, which already orders it this way). This check DRIVES incept via `git archive HEAD`
+# + a real incept, meaningless on an already-incepted adopter tree. It MUST N/A (rc 0) there BEFORE the
+# jq/git preconditions can return UNVERIFIED (rc 2) — otherwise an adopter without git scores a check that
+# does not apply to them as a FAILURE (verify.sh --require treats UNVERIFIED as a failure). N/A when BOTH
+# kit markers are absent (the export strips both; golden-path.yml is control-plane + export-ignored, so the
+# marker set is un-spoofable). Placed before the mode dispatch so it covers BOTH `run` and `--selftest`.
+if [ ! -f "$REPO_ROOT/docs/ROADMAP-KIT.md" ] && [ ! -f "$REPO_ROOT/.github/workflows/golden-path.yml" ]; then
+  echo "harness-ceiling-disclosed: N/A — kit-self check (not applicable outside the kit repo)"
+  exit 0
+fi
+
 command -v jq  >/dev/null 2>&1 || { echo "UNVERIFIED: jq not installed (the adapter manifest is JSON)"; exit 2; }
 command -v git >/dev/null 2>&1 || { echo "UNVERIFIED: git not installed (needed to build the pristine export)"; exit 2; }
 
@@ -199,16 +211,6 @@ selftest() {
   fi
   return "$st"
 }
-
-# Kit-self N/A guard (mirrors incept-first-run-green.sh:650, BEFORE the mode dispatch so it covers
-# BOTH `run` and `--selftest`): every mode here DRIVES incept via `git archive HEAD` + real incept,
-# which is meaningless on an already-incepted adopter tree (no HEAD to archive). N/A-skip when BOTH
-# kit markers are absent (the export strips both; golden-path.yml is control-plane + export-ignored,
-# so the marker set is un-spoofable). In the kit repo both are present -> run/selftest fully.
-if [ ! -f "$REPO_ROOT/docs/ROADMAP-KIT.md" ] && [ ! -f "$REPO_ROOT/.github/workflows/golden-path.yml" ]; then
-  echo "harness-ceiling-disclosed: N/A — kit-self check (not applicable outside the kit repo)"
-  exit 0
-fi
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;

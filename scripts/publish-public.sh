@@ -406,9 +406,12 @@ PUBLIC_NOTES=$(extract_public_notes "$VERSION") || PUBLIC_NOTES=""
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sw-publish.XXXXXX") || die "mktemp failed"
 # Release-hygiene: the export + mirror clones under $WORK are throwaway. Reap them on ANY exit path
-# (success, die, or signal) so a publish does not leak a ~20 MB sw-publish.* tree per run
+# (success, die, or signal) so a real publish does not leak a ~20 MB sw-publish.* tree per run
 # (462 MB / 23 leaks measured 2026-07-23). Set immediately after $WORK exists so an early die still cleans.
-trap 'rm -rf "$WORK"' EXIT
+# EXCEPTION (CP7R5-PUBLISH-DRYRUN-TREE): on --dry-run, step [5/5] hands the operator this tree to INSPECT,
+# so PRESERVE it there — the unconditional reap deleted the very path the [5/5] message points at. DRY_RUN
+# is parsed above; a real publish (DRY_RUN=0) still reaps.
+[ "$DRY_RUN" -eq 1 ] || trap 'rm -rf "$WORK"' EXIT
 TREE="$WORK/export"
 MIRROR="$WORK/public"
 say "kit $VERSION ($TAG) -> $REMOTE"
