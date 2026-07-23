@@ -405,6 +405,10 @@ PUBLIC_NOTES=$(extract_public_notes "$VERSION") || PUBLIC_NOTES=""
 [ -n "$PUBLIC_NOTES" ] || die "no public release note for $VERSION — add a complete '<!-- public:start -->…<!-- public:end -->' block to its CHANGELOG.md entry (a dangling start also fails here). It becomes the GitHub Release note; the internal bullets never ship."
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/sw-publish.XXXXXX") || die "mktemp failed"
+# Release-hygiene: the export + mirror clones under $WORK are throwaway. Reap them on ANY exit path
+# (success, die, or signal) so a publish does not leak a ~20 MB sw-publish.* tree per run
+# (462 MB / 23 leaks measured 2026-07-23). Set immediately after $WORK exists so an early die still cleans.
+trap 'rm -rf "$WORK"' EXIT
 TREE="$WORK/export"
 MIRROR="$WORK/public"
 say "kit $VERSION ($TAG) -> $REMOTE"

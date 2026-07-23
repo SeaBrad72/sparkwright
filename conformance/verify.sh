@@ -21,7 +21,7 @@ REQUIRE=0
 [ -n "${CI:-}" ] && REQUIRE=1
 [ "${1:-}" = "--require" ] && REQUIRE=1
 
-ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0
+ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0; nas=0
 line() { printf '  %-9s %-18s %s\n' "$1" "$2" "$3"; }
 
 # ── K3 — a failing gate must not hide WHY ───────────────────────────────────────────────────────────
@@ -69,6 +69,19 @@ trap '_incomplete 143' TERM
 # check KIND NAME COMMAND...
 check() {
   kind=$1; name=$2; shift 2
+  # CP7R5-VERIFY-NONTS — a --kitself check validates the kit's OWN internals (a reference profile, a
+  # dev selftest) and is meaningless on an already-incepted ADOPTER tree, where incept has pruned the
+  # fixtures it reads. On an adopter tree it renders N-A (not a pass, not a fail); in the kit repo it runs.
+  # The tree is classified by the un-spoofable kit-marker set: an adopter export strips BOTH
+  # docs/ROADMAP-KIT.md (export-ignored) AND .github/workflows/golden-path.yml (control-plane +
+  # export-ignored), so their joint absence == an adopter tree. Same set incept-first-run-green.sh keys on.
+  # Paths are repo-root-relative (this script cd's to the root at startup).
+  if [ "${1:-}" = "--kitself" ]; then
+    shift
+    if [ ! -f docs/ROADMAP-KIT.md ] && [ ! -f .github/workflows/golden-path.yml ]; then
+      line "[$kind]" "$name" "N-A"; nas=$((nas+1)); return 0
+    fi
+  fi
   if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
   case "$kind" in control) controls=$((controls+1)) ;; doc) docs=$((docs+1)) ;; esac
   if [ "$rc" = "0" ]; then
@@ -147,6 +160,42 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "verify --selftest: FAIL (a PASSING check emitted more than one line -- the aggregate must stay scannable)"
     exit 1; }
 
+  # -- CP7R5-VERIFY-NONTS leg: a --kitself check N/As on an adopter tree, RUNS on the kit tree ----------
+  # A kit-self check (validates the kit's OWN reference profiles / dev selftests) has no meaning on an
+  # already-incepted ADOPTER tree, where incept has pruned the fixtures it needs (e.g. ci-gates hardcodes
+  # profiles/typescript-node/ci.yml; adopter-preflight's selftest reads the pruned .nvmrc). The --kitself
+  # flag renders N-A there -- keyed on the un-spoofable kit-marker set (BOTH docs/ROADMAP-KIT.md AND
+  # .github/workflows/golden-path.yml absent == an adopter export) -- and must ACTUALLY RUN in the kit repo.
+  # Both halves are load-bearing: without N-A a non-ts adopter's first verify.sh --require is red; without
+  # RUN an always-N-A mutant masks a genuinely-broken kit-self reference on the kit tree. Drives the REAL
+  # check() in a counter-reset subshell (mirrors the K3 leg), never a replica.
+  _kna=$( cd "$(mktemp -d)" || exit 1        # a marker-less cwd == an adopter export
+          controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+          check control kitdemo --kitself false 2>&1 )
+  printf '%s\n' "$_kna" | grep -q 'kitdemo .* N-A' || {
+    echo "verify --selftest: FAIL (a --kitself check did not render N-A on a marker-less adopter tree --"
+    echo "  a non-ts adopter's first verify.sh --require would be red on a kit-self check)"; exit 1; }
+  if printf '%s\n' "$_kna" | grep -q 'FAIL'; then
+    echo "verify --selftest: FAIL (a --kitself check RAN its command on a marker-less tree instead of N-A)"; exit 1
+  fi
+  # Load-bearing negative: in the kit repo (markers present) --kitself must NOT suppress the check -- a
+  # `false` command FAILs. An always-N-A mutant renders N-A here and dies on this assertion.
+  _krun=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+           check control kitdemo --kitself false 2>&1 )
+  printf '%s\n' "$_krun" | grep -q 'kitdemo .* FAIL' || {
+    echo "verify --selftest: FAIL (a --kitself check did not RUN on the kit tree -- an always-N-A guard would"
+    echo "  mask a genuinely-broken kit-self reference; markers present must mean the check executes)"; exit 1; }
+  # Pins the JOINT predicate: N-A requires BOTH markers absent (`&&`). A MIXED tree (exactly one marker
+  # present) must RUN -- so an `&&`->`||` mutation, which would N-A a mixed tree, dies here. This is the only
+  # leg that constructs a one-marker tree; without it the conjunction is untested (both other legs use
+  # all-absent / all-present trees, on which `&&` and `||` agree).
+  _kmix=$( _md=$(mktemp -d) && mkdir -p "$_md/docs" && : > "$_md/docs/ROADMAP-KIT.md" && cd "$_md" || exit 1
+           controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+           check control kitdemo --kitself false 2>&1 )
+  printf '%s\n' "$_kmix" | grep -q 'kitdemo .* FAIL' || {
+    echo "verify --selftest: FAIL (a --kitself check N-A'd a MIXED-marker tree -- N-A must require BOTH kit"
+    echo "  markers absent; one present means run. An && -> || regression would mis-N-A here)"; exit 1; }
+
   echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt"
   echo "                       + K3: a FAILING check surfaces its diagnostic, a PASSING one stays one line)"; exit 0
 fi
@@ -167,7 +216,7 @@ check control validation-terminal-state-selftest   sh conformance/validation-ter
 check control feedback-link-lifecycle              sh conformance/feedback-link-lifecycle-documented.sh
 check control feedback-link-lifecycle-selftest      sh conformance/feedback-link-lifecycle-documented.sh --selftest
 check control named-adapters-selftest  sh conformance/named-adapters.sh --selftest
-check control ci-gates         sh conformance/ci-gates.sh profiles/typescript-node/ci.yml --expect-seams
+check control ci-gates         --kitself sh conformance/ci-gates.sh profiles/typescript-node/ci.yml --expect-seams
 check control ci-gates-selftest sh conformance/ci-gates.sh --selftest
 check control dep-scan-visibility           sh conformance/dep-scan-visibility.sh
 check control dep-scan-visibility-selftest   sh conformance/dep-scan-visibility.sh --selftest
@@ -209,7 +258,7 @@ check control ci-classify      sh conformance/ci-classify-changes.sh --selftest
 check control verify-enforced  sh conformance/verify-enforced-wired.sh
 check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
-check control adopter-preflight sh conformance/adopter-preflight-wired.sh
+check control adopter-preflight --kitself sh conformance/adopter-preflight-wired.sh
 check control adopter-export   sh conformance/adopter-export-wired.sh
 check control mode-blind       sh conformance/mode-enforcement-blind.sh
 check control orchestrator-loop sh conformance/orchestrator-loop-wired.sh
@@ -294,7 +343,7 @@ check doc     artifact-lineage sh conformance/artifact-lineage-ready.sh
 check doc     roster-authority sh conformance/roster-authority-ready.sh
 
 echo ""
-printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d failed\n' "$controls" "$docs" "$unverified" "$failed"
+printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d n/a · %d failed\n' "$controls" "$docs" "$unverified" "$nas" "$failed"
 echo "A green run proves controls hold AND release/DR/resilience safety is DOCUMENTED —"
 echo "it does NOT prove those procedures were tested. doc-checks verify records exist."
 echo "UNVERIFIED is NOT a pass. See conformance/README.md \"What a green run means\"."
