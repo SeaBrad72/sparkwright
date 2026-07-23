@@ -64,6 +64,8 @@ conformance/agentic-ops-readiness.md
 conformance/agentops-ready.sh
 conformance/agentops-sensor-wired.sh
 conformance/agents-brief.sh
+conformance/aggregate-coverage.sh
+conformance/aggregate-exclusions.txt
 conformance/app-tracing-wired.sh
 conformance/artifact-lineage-ready.sh
 conformance/assurance-tiers.sh
@@ -218,6 +220,7 @@ conformance/operate-loop-wired.sh
 conformance/orchestrator-loop-wired.sh
 conformance/otlp-backend-wired.sh
 conformance/persona-artifacts.sh
+conformance/pipeline-origin.sh
 conformance/preview-env-ready.sh
 conformance/preview-environments-readiness.md
 conformance/privacy-ready.sh

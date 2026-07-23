@@ -244,6 +244,43 @@ cp_kit_replace() {  # <src> <dst> <kit-own-marker-ERE>
   fi
 }
 
+# CP7R5-GATE-AUTHORITY §4 — the RATIFIED provenance mechanism (option P2): stamp an ORIGIN MARKER into
+# the CI pipeline incept INSTALLS. It lets conformance/verify-enforced-wired.sh tell DRIFT (the kit
+# installed this pipeline and someone stripped a required step) apart from an UNMET DOCUMENTED MERGE
+# OBLIGATION (a brownfield adopter owns their pipeline and merges the gate-ids by hand, exactly as
+# docs/adoption/brownfield.md instructs). Nothing in an adopter tree recorded which of the two it was:
+# .kit-manifest lists the EXPORT's files (workflows are export-ignored), never an installed path.
+# Provenance written by the ACT of installation travels IN the artifact it describes, so it cannot go
+# stale relative to that artifact and survives a rename.
+#
+# TWO PROPERTIES ARE LOAD-BEARING — both locked by conformance/pipeline-origin.sh:
+#  1. NON-COLLISION. The marker must match NEITHER kit-own ERE passed below ('Kit-own CI|Sparkwright',
+#     'Sparkwright'). If it did, installing it would silently flip a LATER cp_kit_replace from PRESERVE
+#     to OVERWRITE and clobber an adopter's edited CI — a data-safety regression by the back door.
+#  2. ONLY STAMP A FILE WE WROTE. cp_kit_replace returns 0 whether it copied or preserved, so a blind
+#     post-call prepend would stamp a brownfield-PRESERVED adopter pipeline as kit-emitted — precisely
+#     the false-FAIL class this design exists to remove. Mirror its write condition up front instead,
+#     the same way install_codeowners does ("only transform a file WE wrote").
+# The marker goes at the TOP of the file, not inside it: curate_db_backed -> strip_db_region runs AFTER
+# the §5 wiring block and deletes the bounded `# >>> kit:db-backed` … `# <<< kit:db-backed` region, so a
+# marker placed inside that region would vanish on a --no-db incept.
+# HONEST CEILING: an adopter can delete this line. Under §4 that is an accepted self-assertion of
+# ownership — it downgrades enforcement to a DISCLOSED N/A, never to a silent pass.
+PIPELINE_ORIGIN_MARKER='# kit-pipeline-origin: emitted'
+install_pipeline() {  # <src> <dst> <kit-own-marker-ERE> — brownfield-safe copy + origin stamp
+  _ip_write=0
+  { [ ! -f "$2" ] || grep -qE "$3" "$2" 2>/dev/null; } && _ip_write=1
+  cp_kit_replace "$1" "$2" "$3"
+  [ "$_ip_write" -eq 1 ] || return 0     # brownfield-preserved — their file, not ours to label
+  [ -f "$2" ] || return 0
+  if ! grep -qF "$PIPELINE_ORIGIN_MARKER" "$2" 2>/dev/null; then   # idempotent: never double-stamp
+    # Unpredictable temp name beside the target (same idiom as install_codeowners) — avoids following
+    # a pre-placed symlink at a predictable path.
+    _ip_tmp=$(mktemp "$(dirname "$2")/.kitorigin.XXXXXX" 2>/dev/null) || _ip_tmp="$2.origin.$$"
+    { printf '%s\n' "$PIPELINE_ORIGIN_MARKER"; cat "$2"; } > "$_ip_tmp" && mv "$_ip_tmp" "$2"
+  fi
+}
+
 warn_codeowners_active_placeholder() {  # <dst> — G11: warn ONLY on an ACTIVE (uncommented) @your-org rule
   if [ -f "$1" ] && grep -Eq '^[[:space:]]*[^#].*@your-org' "$1" 2>/dev/null; then
     echo "warning: $1 has an ACTIVE @your-org/* placeholder — replace it with REAL teams/users" >&2
@@ -789,7 +826,7 @@ case "$CI" in
       exit 1
     fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
-      cp_kit_replace "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
+      install_pipeline "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && install_codeowners "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
     else
       echo "note: no profiles/${STACK}/ci.yml — add a CI workflow satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it)."
@@ -797,7 +834,7 @@ case "$CI" in
     ;;
   gitlab)
     if [ -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
-      cp_kit_replace "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml 'Sparkwright'
+      install_pipeline "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml 'Sparkwright'
       # GitLab reads CODEOWNERS from root, .gitlab/, or docs/ — .gitlab/ mirrors .github/.
       [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; install_codeowners "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS; }
     else

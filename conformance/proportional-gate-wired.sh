@@ -51,6 +51,31 @@ _wf_disposition() {
 # any ONE marker present makes a missing workflow a FAIL, so a raw export is the only path to N/A.
 # Parameterized on <root> (default cwd) SO THE SELFTEST CAN LOCK BOTH BRANCHES against fixtures — a marker
 # rename that made this return 0 on an incepted tree would silently fail-OPEN the gate, and that must fail a test.
+# _gitlab_only_adopter [root] -> 1 iff this tree is a GitLab-CI adopter for which the §13
+# control-plane-ratification gate is legitimately absent. Keyed ENTIRELY on STRUCTURE derived from the
+# tree — NEVER on prose in a mutable doc. §13 is declared GitHub-conditional in DEVELOPMENT-PROCESS.md
+# (built on GitHub check-runs + `pull_request_review`, which GitLab does not provide; locked by
+# conformance/conditional-gates.sh), so its absence on a GitLab tree is an already-ratified platform gap,
+# not drift. The structural triple, ALL THREE required:
+#   .gitlab-ci.yml present          — this tree's authoritative pipeline is GitLab
+#   .github/workflows/ci.yml absent — it is NOT a GitHub adopter (`incept --ci github` installs this;
+#                                     `--ci gitlab` never touches .github/workflows/, and both are
+#                                     export-ignored so a raw export ships only an EMPTY workflows dir)
+#   ratification.yml absent         — the §13 gate is genuinely not installed here
+# Load-bearing narrowness: a GitHub tree (ci.yml present) can NEVER reach the N/A; a GitLab tree that
+# somehow HAS the ratification workflow is checked normally, not waved through; and a tree with NO
+# .gitlab-ci.yml FAILs — including the prose-only exploit (a self-typed `**CI platform** (§14): gitlab`
+# line in CLAUDE.md) that the RETIRED grep-based escape accepted. The escape has no structural signal to
+# key on there, so the prose is not read at all: that self-exemptible bypass is closed.
+# Parameterized on <root> so BOTH branches are lockable against fixtures: this script cd's to its own
+# repo root (line 9), so a test that cd'd into a fixture would evaluate the KIT and pass for the wrong
+# reason — which is exactly what the first version of this selftest did.
+_gitlab_only_adopter() {
+  _gr=${1:-.}
+  { [ -f "$_gr/.gitlab-ci.yml" ] && [ ! -f "$_gr/$CI_WF" ] && [ ! -f "$_gr/$WF" ]; } \
+    && echo 1 || echo 0
+}
+
 _must_have_workflow() {
   _mhr=${1:-.}
   { [ -f "$_mhr/ENGINEERING-PRINCIPLES.md" ] || [ -f "$_mhr/docs/ROADMAP-KIT.md" ] || [ -f "$_mhr/.github/workflows/golden-path.yml" ]; } \
@@ -78,6 +103,39 @@ selftest() {
   [ "$(_wf_disposition 1 1)" = RUN ]  || { echo "FAIL: disposition — workflow present (incepted) must RUN"; st=1; }
   [ "$(_wf_disposition 0 0)" = NA ]   || { echo "FAIL: disposition — raw pre-incept export (no gate, not incepted) must be N/A"; st=1; }
   [ "$(_wf_disposition 0 1)" = FAIL ] || { echo "FAIL: disposition — incepted tree missing its gate must FAIL (fail-closed)"; st=1; }
+  # C1b legs — by ARGUMENT against fixture roots, NOT by cd-ing into a fixture and running this script.
+  # This script cd's to its own repo root (line 9), so a fixture-cwd test would silently evaluate the
+  # KIT instead of the fixture: the positive leg would pass for the wrong reason and prove nothing.
+  # (That is exactly what the first version of this leg did — caught only because the negative leg,
+  # which expected a FAIL, also evaluated the kit and got OK.)
+  _pgd=$(mktemp -d)
+  # STRUCTURAL fixtures — the disposition keys on tree STRUCTURE, never on CLAUDE.md prose. Positive/
+  # legitimate legs FIRST: a matcher broken SHUT would satisfy every negative assertion (governing lesson).
+  # (1) recorded GitLab adopter, §13 gate genuinely absent -> N/A (the escape's one legitimate case)
+  mkdir -p "$_pgd/gl"; : > "$_pgd/gl/.gitlab-ci.yml"
+  [ "$(_gitlab_only_adopter "$_pgd/gl")" = 1 ] || { echo "FAIL: selftest — a GitLab adopter (.gitlab-ci.yml, no §13 gate) must take the platform-conditional N/A"; st=1; }
+  # (2) GitLab tree that HAS the §13 gate -> checked normally, not waved through
+  mkdir -p "$_pgd/gl2/.github/workflows"; : > "$_pgd/gl2/.gitlab-ci.yml"; : > "$_pgd/gl2/$WF"
+  [ "$(_gitlab_only_adopter "$_pgd/gl2")" = 0 ] || { echo "FAIL: selftest — a GitLab tree that HAS the §13 ratification workflow must be checked, not waved through"; st=1; }
+  # (3) GitHub adopter (ci.yml present) -> can NEVER reach the escape; its missing §13 gate is real drift
+  mkdir -p "$_pgd/gh/.github/workflows"; : > "$_pgd/gh/$CI_WF"
+  [ "$(_gitlab_only_adopter "$_pgd/gh")" = 0 ] || { echo "FAIL: selftest — a GitHub adopter must NOT take the GitLab escape (its missing §13 gate is real drift, not a platform gap)"; st=1; }
+  # (4) neither pipeline -> fail-closed (no structural signal for the escape)
+  mkdir -p "$_pgd/bare"
+  [ "$(_gitlab_only_adopter "$_pgd/bare")" = 0 ] || { echo "FAIL: selftest — a tree with NEITHER pipeline must NOT take the GitLab escape (fail-closed)"; st=1; }
+  # (6) BOTH pipelines present (GitHub authoritative) -> NOT the gitlab-only escape; checked normally.
+  #     Load-bearing for the `.github/workflows/ci.yml absent` conjunct: without it this tree would
+  #     wrongly N/A despite carrying a GitHub pipeline that MUST run the §13 gate.
+  mkdir -p "$_pgd/both/.github/workflows"; : > "$_pgd/both/.gitlab-ci.yml"; : > "$_pgd/both/$CI_WF"
+  [ "$(_gitlab_only_adopter "$_pgd/both")" = 0 ] || { echo "FAIL: selftest — a tree with BOTH pipelines (GitHub authoritative) must NOT take the GitLab escape"; st=1; }
+  # (5) THE EXPLOIT LEG (mandatory — the single most important assertion in this check). The RETIRED
+  #     escape keyed on a CLAUDE.md prose stamp: a tree carrying `**CI platform** (§14): gitlab` with no
+  #     ratification workflow returned N/A — self-exemptible by anyone who can type that one line. With NO
+  #     structural `.gitlab-ci.yml` the tree now FAILs: the prose is not read at all. This locks out the
+  #     exact bypass security demonstrated.
+  mkdir -p "$_pgd/exploit"; printf '**CI platform** (§14): gitlab\n' > "$_pgd/exploit/CLAUDE.md"
+  [ "$(_gitlab_only_adopter "$_pgd/exploit")" = 0 ] || { echo "FAIL: selftest — a CLAUDE.md prose stamp with NO .gitlab-ci.yml must NOT take the GitLab escape (the self-exemptible bypass this task removes)"; st=1; }
+  rm -rf "$_pgd" 2>/dev/null || true
   # And the OTHER half of the fail-closed decision: _must_have_workflow's MARKER DETECTION. The truth table
   # above is inert if this returns 0 on a real incepted/kit tree (a marker rename would do exactly that ->
   # silent NA = fail-open). Lock every marker against fixtures so that regression fails HERE, not in an adopter.
@@ -90,6 +148,17 @@ selftest() {
   done
   rm -rf "$_mh" 2>/dev/null || true
 
+  # The GitLab escape must be honoured HERE TOO. verify.sh registers this check as `--selftest`
+  # (verify.sh's `check control proportional-gate … --selftest`), so the selftest — not the bare
+  # dispatch — is the path the required battery actually runs. Fixing only the dispatch left the
+  # battery red on a real --ci gitlab incept: the end-to-end run caught it, a unit selftest could not.
+  if [ "$(_gitlab_only_adopter)" = 1 ]; then
+    echo "N/A: proportional-gate — GitLab adopter; §13 control-plane ratification is declared a"
+    echo "     GitHub-conditional gate in DEVELOPMENT-PROCESS.md (GitHub check-runs + pull_request_review,"
+    echo "     which GitLab does not provide). Already-ratified platform gap; manual separation-of-duties"
+    echo "     guidance in docs/operations/gitlab-adoption.md. State-label derivation above verified."
+    return $st
+  fi
   case "$(_wf_disposition "$([ -f "$WF" ] && echo 1 || echo 0)" "$(_must_have_workflow)")" in
     RUN)  : ;;   # fall through to the workflow-content assertions below
     NA)   echo "N/A: proportional-gate — pre-incept export (incept installs $WF; nothing to wire yet; state-label derivation above verified)"; return $st ;;
@@ -210,7 +279,26 @@ selftest() {
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
-  "") case "$(_wf_disposition "$([ -f "$WF" ] && echo 1 || echo 0)" "$(_must_have_workflow)")" in
+  "") # CP7R5-GATE-AUTHORITY. `incept --ci gitlab` installs NO §13 ratification gate — §13 is declared a
+      # GitHub-conditional gate in DEVELOPMENT-PROCESS.md (GitHub check-runs + `pull_request_review`,
+      # which GitLab does not provide; locked by conformance/conditional-gates.sh), an already-ratified
+      # platform gap with manual separation-of-duties guidance. That was tolerable while nothing forced
+      # adopters to run this battery. It stopped being tolerable the moment the emitted pipeline began
+      # running `verify.sh --require` as a BLOCKING step: this check would redden every GitLab adopter's
+      # first run over a gap they cannot close in their own tree, and a required gate that can never go
+      # green is the classic path to the gate being deleted. Report the disclosed gap AS a disclosed gap.
+      # STRUCTURAL, not prose (the retired grep-based escape keyed on a self-typed CLAUDE.md line and was
+      # self-exemptible): the N/A requires the structural triple in `_gitlab_only_adopter` above —
+      # .gitlab-ci.yml present AND .github/workflows/ci.yml absent AND the ratification workflow absent —
+      # so a GitHub adopter (or the kit) that has genuinely LOST its ratification workflow still FAILs.
+      if [ "$(_gitlab_only_adopter)" = 1 ]; then
+        echo "N/A: proportional-gate — GitLab adopter; §13 control-plane ratification is declared a"
+        echo "     GitHub-conditional gate in DEVELOPMENT-PROCESS.md (GitHub check-runs + pull_request_review,"
+        echo "     which GitLab does not provide). Already-ratified platform gap; manual separation-of-duties"
+        echo "     guidance in docs/operations/gitlab-adoption.md."
+        exit 0
+      fi
+      case "$(_wf_disposition "$([ -f "$WF" ] && echo 1 || echo 0)" "$(_must_have_workflow)")" in
         NA) echo "N/A: proportional-gate — pre-incept export (incept installs $WF)"; exit 0 ;;
       esac
       for f in "$AB" "$WF" "$PR"; do [ -f "$f" ] || { echo "FAIL: missing $f"; exit 1; }; done

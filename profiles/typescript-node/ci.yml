@@ -55,6 +55,15 @@ jobs:
         with:
           fetch-depth: 0   # full history so the secret scan sees all commits
 
+      - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
+        # No `gate-*` id: this is the aggregate, not one of the eight §14 gate ids
+        # that conformance/ci-gates.sh REQUIREs. Blocks on the CONTROL battery — `[doc]` failures
+        # exit 0 by design (verify.sh's RESULT lines), so a day-one adopter is not blocked by an
+        # unwritten RPO/RTO. Placed before toolchain setup because the aggregate is POSIX sh with
+        # no toolchain dependency; identical placement across every emitted pipeline is what makes
+        # `conformance/verify-enforced-wired.sh --fleet` cheap to lock.
+        run: sh conformance/verify.sh --require
+
       - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
         id: detect-dockerfile
         run: |

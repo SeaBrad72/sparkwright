@@ -52,6 +52,23 @@ gate-install:
     paths: [node_modules/]
     expire_in: 1h
 
+# Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14). Mirrors the GitHub profile's
+# post-checkout placement: `needs: []` starts it immediately instead of waiting on setup, because the
+# aggregate is POSIX sh with no toolchain dependency. NO `gate-*` job key by design — this is the
+# aggregate, not one of the eight §14 required gate ids that conformance/ci-gates.sh REQUIREs. Blocks
+# on the CONTROL battery; `[doc]` failures exit 0 deliberately (see verify.sh's RESULT lines).
+#
+# ★ HONEST CEILING — this job has never been executed. The kit runs no GitLab runner, so unlike the
+# GitHub profile (proven green on an incepted tree by the artifact-gate job) this step is verified
+# STATICALLY only: conformance/verify-enforced-wired.sh --fleet asserts it is PRESENT and correctly
+# shaped, never that it PASSES here. The default image is node:24-bookworm rather than the
+# ubuntu-latest the GitHub proof used; a check that goes UNVERIFIED on this image would FAIL the run
+# under --require. Tracked as CP7R5-GITLAB-UNEXECUTED — do not read this job's presence as a proof.
+conformance-aggregate:
+  stage: verify
+  needs: []
+  script: [sh conformance/verify.sh --require]
+
 gate-lint:
   stage: verify
   needs: [gate-install]

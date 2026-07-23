@@ -160,6 +160,8 @@ check control harness-generic  sh conformance/harness-adapter.sh adapters/generi
 check control harness-adapter-selftest sh conformance/harness-adapter.sh --selftest
 check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
+check control pipeline-origin          sh conformance/pipeline-origin.sh
+check control pipeline-origin-selftest  sh conformance/pipeline-origin.sh --selftest
 check control validation-terminal-state           sh conformance/validation-terminal-state-documented.sh
 check control validation-terminal-state-selftest   sh conformance/validation-terminal-state-documented.sh --selftest
 check control feedback-link-lifecycle              sh conformance/feedback-link-lifecycle-documented.sh
@@ -189,10 +191,20 @@ check control ci-classify      sh conformance/ci-classify-changes.sh --selftest
 # NOT REGISTERED HERE (deliberate): conformance/non-vacuity-wired.sh. It locks THE KIT'S OWN ci.yml
 # (that the shard matrix launches every leg the sweep declares). This battery is PORTABLE — adopters run
 # it too — and after incept an adopter's .github/workflows/ci.yml is THEIR pipeline, which has no sharded
-# sweep to lock, so the check would correctly FAIL on every adopter. Same reason verify-enforced-wired.sh
-# is absent from this list. Both are enforced as ci.yml STEPS (in conformance-core, a shard of the
-# required `conformance` aggregate) — a failure there still reddens the required check. Caught by
-# artifact-gate on PR #309: the kit's own gate, run on the INCEPTED artifact, is what found this.
+# sweep to lock, so the check would correctly FAIL on every adopter. It is enforced as a ci.yml STEP (in
+# conformance-core, a shard of the required `conformance` aggregate) — a failure there still reddens the
+# required check. Caught by artifact-gate on PR #309: the kit's own gate, run on the INCEPTED artifact.
+# Every exclusion from this battery is named with its reason in conformance/aggregate-exclusions.txt,
+# and conformance/aggregate-coverage.sh FAILs on any check that is neither registered nor excluded.
+#
+# ★ verify-enforced-wired.sh USED TO SHARE THAT EXCLUSION — and no longer does (CP7R5-GATE-AUTHORITY).
+# The old reasoning was "an adopter's ci.yml is THEIR pipeline, so the check would fail on every
+# adopter". That was TRUE while no emitted pipeline ran the aggregate. Now that all 11 emitted
+# pipelines carry a real `verify.sh --require` step, an incepted tree PASSES it — measured on a real
+# export→incept before this line was written, not reasoned. So it is registered below, and an adopter
+# who deletes the step goes RED: that is the enforcement, not a regression. Its --fleet mode stays
+# kit-only (an adopter's tree is pruned to one profile) and is enforced as a ci.yml step instead.
+check control verify-enforced  sh conformance/verify-enforced-wired.sh
 check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
 check control adopter-preflight sh conformance/adopter-preflight-wired.sh

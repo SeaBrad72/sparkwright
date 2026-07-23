@@ -28,6 +28,22 @@ Bring these into your repo root (adapt, don't blindly overwrite):
 - Governing docs: the kit's principles doc — **the download ships it as `CLAUDE.md`; copy it in and rename it to `ENGINEERING-PRINCIPLES.md` yourself** (the rename only happens automatically in greenfield `incept`, which you don't run here) so it doesn't collide with your project's own root `CLAUDE.md` — plus `DEVELOPMENT-PROCESS.md`, `DEVELOPMENT-STANDARDS.md`, `MAINTAINING.md`.
 - `profiles/`, `conformance/`, `templates/`, `docs/`, `scripts/`.
 - `.github/workflows/ci.yml` (from your chosen `profiles/<stack>/ci.yml`) — **merge** with any existing CI; don't drop your pipeline. *(If you run `incept` in a populated repo, it now **preserves** an existing `ci.yml`/CODEOWNERS — it warns and skips rather than overwriting — but you must still merge the profile's gate-ids into your pipeline by hand.)*
+
+  **Merge the conformance aggregate step into your preserved pipeline.** Because `incept` never wrote its own pipeline over yours, your CI carries no origin marker, so `conformance/verify-enforced-wired.sh` classifies it **ADOPTER-OWNED** and returns **N/A-with-remedy** (a disclosed, unmet merge obligation — never a false failure). To actually enforce the battery, paste the profile's aggregate step — the exact YAML the N/A verdict prints — as the **first** blocking step of your CI job (it is POSIX `sh`, no toolchain, so it fails fast; `[doc]` failures exit 0 by design). On **GitHub Actions**:
+
+  ```yaml
+        - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
+          run: sh conformance/verify.sh --require
+  ```
+
+  On **GitLab CI**, add it as an early job (`profiles/<stack>/ci.gitlab-ci.yml` is the reference):
+
+  ```yaml
+        conformance-aggregate:
+          stage: verify
+          needs: []
+          script: [sh conformance/verify.sh --require]
+  ```
 - `.claude/` — **merge, never overwrite** (next section).
 
 If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md` and bring the kit's principles in as `ENGINEERING-PRINCIPLES.md` (the name the kit uses post-Inception).

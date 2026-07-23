@@ -1,0 +1,21 @@
+# aggregate-exclusions.txt — conformance/*.sh files that are NOT conformance checks.
+#
+# CP7R5-GATE-AUTHORITY. conformance/aggregate-coverage.sh partitions every conformance/*.sh into
+# exactly one of three categories, and FAILs on any file in none of them:
+#
+#   1. REGISTERED — named in conformance/verify.sh. The PORTABLE battery: adopters run it too, and
+#      every emitted pipeline now runs it (`verify.sh --require`).
+#   2. WORKFLOW   — named as a step in .github/workflows/*.yml. Enforced, but KIT-ONLY: these lock
+#      the kit's own control plane (its ci.yml shard matrix, its mirror, its release tags) and would
+#      correctly FAIL on an adopter tree, which has none of those things.
+#   3. LIBRARY    — listed below. Sourced, never executed; not a check and has no verdict.
+#
+# Only category 3 needs a hand-maintained list — 1 and 2 are derived from the files themselves, so
+# they cannot drift out of date. An entry here is a claim that the file is NOT a check; if that ever
+# stops being true, the file must move to category 1 or 2 and its line here must be deleted.
+#
+# Format: <basename><TAB><reason>. A reasonless entry FAILs — an unreasoned exclusion is a silent
+# widening, which is the defect this file exists to prevent rather than commit.
+
+backlog-lib.sh	Sourced board-parser primitives shared by backlog-current.sh and backlog-presence.sh (KW6-A2 T1.1). Pure functions: no dispatch, no exit, no set -eu, no top-level side effects. Its own header states it is sourced, never run.
+wf-helpers.sh	Sourced helper functions for the conformance checks (single source of truth), the same pattern hooks use for guard-core.sh. Defines functions only, owns no shell options, has no --selftest and no verdict. Linted by shellcheck.sh like any other shell source.
