@@ -103,8 +103,8 @@ Harness is a **concretization axis** — a place the kit forces a real-world cho
 | Tier | Meaning | Adapters |
 |------|---------|----------|
 | **verified (first-class)** | The kit **self-hosts** on it; native dimensions proven end-to-end. | `claude-code` |
-| **floor-verified** | The universal-layer floor (`AGENTS.md` + git hook + CI backstop) is proven; no native bonus by definition. | `generic` |
-| **experimental** | **Declared** against the boundary contract but **not exercised end-to-end by the kit** — *unproven*, not "supported." Adopt with the expectation that you are the one exercising it. | `gemini` · `codex` · `cursor` |
+| **floor-verified** | The universal-layer floor (`AGENTS.md` + git hook + CI backstop) is proven; no native bonus by definition. | `generic` · `codex` |
+| **experimental** | **Declared** against the boundary contract but **not exercised end-to-end by the kit** — *unproven*, not "supported." Adopt with the expectation that you are the one exercising it. | `gemini` · `cursor` |
 
 ### Comparable cards
 
@@ -129,9 +129,9 @@ Every option carries the same uniform fields: **Name · Best for · Avoid when �
 - **Key fit dimensions:** model-family (Gemini) · existing tooling.
 
 #### codex
-- **Best for:** teams on OpenAI Codex-family tooling that want the floor via the `generic` path.
+- **Best for:** teams on OpenAI Codex-family tooling that want the floor — now the one named adapter whose floor is **exercised end-to-end**, not merely declared.
 - **Avoid when:** you need verified native enforcement (subagents / MCP) out of the box.
-- **Maturity tier:** **experimental** — declared against the boundary contract but not exercised end-to-end by the kit (unproven).
+- **Maturity tier:** **floor-verified** — the universal-layer floor passed all five CP-7 acceptance criteria (AC1–AC5) **cold** on the `codex-pulse-6` vehicle ([evidence](harness-enforcement-evidence.md)). Floor-verified is `codex`'s honest maximum: Codex has no inline `PreToolUse`-equivalent interception, so it does **not** reach `verified (first-class)` (AC1 is the test that it discloses this).
 - **Key fit dimensions:** model-family · existing tooling · IDE surface.
 
 #### cursor
