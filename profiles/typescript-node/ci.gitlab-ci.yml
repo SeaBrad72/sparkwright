@@ -123,6 +123,15 @@ gate-dep-scan:
   needs: [gate-install]
   script: [pnpm audit --prod --audit-level=high]   # prod-dep posture; dev-tool advisories triaged separately (they don't ship)
 
+# Dependency advisories — full tree (report-only, non-enforcing). Visibility, not a gate:
+# surfaces dev/build-time advisories that gate-dep-scan (--prod) excludes. allow_failure keeps
+# it non-blocking; never promote to a required gate — see CP7R5-K4.
+dep-scan-report:
+  stage: verify
+  needs: [gate-install]
+  allow_failure: true
+  script: [pnpm audit --audit-level=high]
+
 # SBOM (CycloneDX). GitLab-native alternative: the CycloneDX/Dependency-Scanning artifact.
 gate-sbom:
   stage: supply-chain

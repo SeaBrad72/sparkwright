@@ -127,6 +127,12 @@ jobs:
         id: gate-dep-scan
         run: npm audit --omit=dev --audit-level=high   # prod-dep posture; triage dev-tool advisories separately (they don't ship)
 
+      - name: Dependency advisories — full tree (report-only, non-enforcing)
+        # Visibility, NOT a gate: surfaces dev/build-time advisories that gate-dep-scan
+        # (--omit=dev) excludes. Never promote to a required gate — see CP7R5-K4.
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
       - name: Generate SBOM (CycloneDX)
         id: gate-sbom
         # Version-pinned like every action SHA in this file: an unpinned `npx` fetches and EXECUTES

@@ -87,7 +87,7 @@ A feature is NOT done until ALL are true:
 
 **Code** — implemented · self- and peer/agent-reviewed · no lint/type/compiler warnings.
 **Tests** — unit + integration (+ e2e for critical flows) passing · 80%+ coverage (100% on critical paths) · edge/error cases covered · **AI features: evals pass and don't regress**.
-**CI/CD** — pipeline green · build succeeds · the 7 required gates pass, incl. secret-scan and SBOM+provenance · the conditional gates (the five in `DEVELOPMENT-STANDARDS.md` §14) pass where their trigger applies, else N/A-with-reason · no known high/critical vulnerabilities.
+**CI/CD** — pipeline green · build succeeds · the 7 required gates pass, incl. secret-scan and SBOM+provenance · the conditional gates (the five in `DEVELOPMENT-STANDARDS.md` §14) pass where their trigger applies, else N/A-with-reason · no known high/critical vulnerabilities in production/runtime dependencies.
 **Docs** — README, API docs, ADRs, and **RUNBOOK** updated · `.env.example` current · known issues/tech-debt captured · **project resumable cold by another engineer or agent**.
 **Review & merge** — PR reviewed (builder ≠ sole reviewer; **builder ≠ ratifier**) · approved · merged · branch deleted. The merge is a recorded **GO/NO-GO** judgment (not a keystroke) against a **promotion-readiness** surfacing whose content is the DoD + acceptance criteria; on that recorded GO the **agent may actuate** the merge/tag (control-plane included) bound to the approved SHA — see the promotion contract (`docs/governance/promotion-contract.md`). The judgment is the control; the keystroke is not.
 **Accessibility** — keyboard-navigable · screen-reader/contrast checks pass (for user-facing UI); recorded in an a11y sign-off (`templates/A11Y-SIGNOFF-TEMPLATE.md`).

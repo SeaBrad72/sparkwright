@@ -95,6 +95,7 @@ conformance/control-plane-revert-drill.sh
 conformance/cost-governance-ready.sh
 conformance/decision-integrity.sh
 conformance/definition-of-deployable.md
+conformance/dep-scan-visibility.sh
 conformance/deploy-decision-integrity.sh
 conformance/deployable-ready.sh
 conformance/discovery-complete.sh

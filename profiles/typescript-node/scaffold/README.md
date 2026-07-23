@@ -54,7 +54,9 @@ npm run build        # gate-build  (tsc)
 > push to GitHub.
 
 On first push the scaffold also passes the other unconditional gates — **secret-scan** (gitleaks),
-**dep-scan** (`npm audit --omit=dev`), **SBOM** (CycloneDX), **SAST** (semgrep), and **license** —
+**dep-scan** (`npm audit --omit=dev` fails the build on a high/critical in production deps; a
+report-only full-tree audit additionally surfaces dev/build-time advisories), **SBOM** (CycloneDX),
+**SAST** (semgrep), and **license** —
 not just the five language gates. **Only** the container-image gates (`docker build`, image
 SBOM/provenance) wait: they're conditional on a `Dockerfile` (the profile's `Dockerfile` is a
 COPY-&-ADAPT reference) and skip until you adapt one in.
