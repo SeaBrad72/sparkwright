@@ -18,7 +18,7 @@ Every axis MUST satisfy all four. They are operational, not aspirational — eac
 
 1. **Comparable cards** — every option is recorded with the *same* fields, side by side. No favourite gets a richer entry, a friendlier tone, or an extra paragraph of reassurance. Uniform structure is what makes "compare, don't guess" possible.
 2. **Fit-driven selection** — the choice is *derived* from the problem's dimensions (workload shape, team, constraints), not from familiarity, reputation, or "it's the default." The derivation is written in the decision artifact so a reviewer can retrace it.
-3. **Fit-vs-maturity disclosure + owner ratification** — the recommendation states *both* the best-fit option *and* its maturity tier (e.g. first-class / experimental). When best-fit and best-supported diverge, the owner ratifies the trade-off **explicitly** — the kit never silently downgrades fit to maturity or vice versa.
+3. **Fit-vs-maturity disclosure + owner ratification** *(axes that carry a maturity tier)* — where an axis has a maturity tier (harness: verified / floor-verified / experimental; deploy target), the recommendation states *both* the best-fit option *and* its tier, and when best-fit and best-supported diverge the owner ratifies the trade-off **explicitly** — the kit never silently downgrades fit to maturity or vice versa. The **stack** axis carries **no** maturity tier — all profiles are copy-and-adapt references held to one bar — so for stacks only the fit rationale is recorded; there is no ranking to disclose.
 4. **Anti-bias gate** — a conformance check on the decision artifact rejects bias-appeal ("it's the proven default," "everyone uses it") and *requires* a cited fit reason drawn from a defined fit-dimension vocabulary. If the artifact can't name a fit dimension, it doesn't pass.
 
 ---
@@ -32,7 +32,7 @@ Every option's card carries the same uniform field set. Do **not** create a sepa
 | **Name** | The option's canonical identifier. |
 | **Best for** | The workload/problem shapes this option fits. |
 | **Avoid when** | The dimensions where it is the wrong choice (every card must have honest limits). |
-| **Maturity tier** | Support level in the kit (e.g. first-class / experimental) — the input to obligation 3. |
+| **Maturity tier** | Support level in the kit, **for axes that have one** (e.g. harness: verified / floor-verified / experimental) — the input to obligation 3. The **stack** axis has none: all profiles are references at one bar. |
 | **Key fit dimensions** | The problem dimensions that drive selection toward or away from this option. |
 
 Canonical instances of this template:

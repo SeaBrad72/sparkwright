@@ -7,5 +7,3 @@ The service is a high-concurrency, IO-bound networking API where predictable
 goroutine concurrency and a single-binary deployment matter more than raw
 per-core numeric throughput. The team has Go experience and the deploy target
 is a container platform.
-## Maturity acknowledged
-go — first-class.

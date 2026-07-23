@@ -10,49 +10,38 @@ Part of the kit's [neutrality-by-construction](adoption/neutrality-by-constructi
 
 ## Comparison matrix
 
-| Stack | Maturity | Best for | Avoid when | Typical domain/runtime |
-|-------|----------|----------|------------|------------------------|
-| typescript-node | first-class (verified) | Full-stack web, APIs, SPAs, serverless; large JS/TS ecosystem; fast iteration | CPU-bound numeric/parallel work; hard real-time; tight memory | Node.js / browser |
-| python | first-class | Data, ML, scripting, APIs, automation, glue; rapid development | Perf-critical hot loops without native extensions; mobile front-ends | CPython / data stack |
-| go | first-class | Networked services, CLIs, high-concurrency, single-binary cloud infra | Rich desktop GUIs; heavy data-science/numerics | Go runtime / static binary |
-| ml | first-class | Model training/serving, experiments, eval-driven development | Plain web APIs with no ML component | Python ML stack |
-| terraform | first-class | Infrastructure-as-code, cloud provisioning | Application logic — it provisions infra, it is not an app stack (pair with an app profile) | Terraform / cloud |
-| java-spring | experimental | Large transactional enterprise services; mature JVM ecosystem; big teams | Cold-start-sensitive tiny serverless; quick throwaway scripts | JVM |
-| kotlin | experimental | Modern-language JVM services; Android; Spring with less ceremony | Non-JVM targets; minimal-dependency tiny CLIs | JVM / Android |
-| dotnet | experimental | C#/Azure enterprise, Windows shops, high-performance services | One-off scripts; teams with no .NET familiarity | .NET runtime |
-| rust | experimental | Performance- and safety-critical systems, embedded-adjacent, WASM | Rapid CRUD where delivery velocity dominates; exploratory prototyping | Native / WASM |
-| data-engineering | experimental | ETL/ELT, batch & stream pipelines, warehouse/lakehouse work | Interactive apps / request-serving APIs | Python data/orchestration |
+| Stack | Best for | Avoid when | Typical domain/runtime |
+|-------|----------|------------|------------------------|
+| typescript-node | Full-stack web, APIs, SPAs, serverless; large JS/TS ecosystem; fast iteration | CPU-bound numeric/parallel work; hard real-time; tight memory | Node.js / browser |
+| python | Data, ML, scripting, APIs, automation, glue; rapid development | Perf-critical hot loops without native extensions; mobile front-ends | CPython / data stack |
+| go | Networked services, CLIs, high-concurrency, single-binary cloud infra | Rich desktop GUIs; heavy data-science/numerics | Go runtime / static binary |
+| ml | Model training/serving, experiments, eval-driven development | Plain web APIs with no ML component | Python ML stack |
+| terraform | Infrastructure-as-code, cloud provisioning | Application logic — it provisions infra, it is not an app stack (pair with an app profile) | Terraform / cloud |
+| java-spring | Large transactional enterprise services; mature JVM ecosystem; big teams | Cold-start-sensitive tiny serverless; quick throwaway scripts | JVM |
+| kotlin | Modern-language JVM services; Android; Spring with less ceremony | Non-JVM targets; minimal-dependency tiny CLIs | JVM / Android |
+| dotnet | C#/Azure enterprise, Windows shops, high-performance services | One-off scripts; teams with no .NET familiarity | .NET runtime |
+| rust | Performance- and safety-critical systems, embedded-adjacent, WASM | Rapid CRUD where delivery velocity dominates; exploratory prototyping | Native / WASM |
+| data-engineering | ETL/ELT, batch & stream pipelines, warehouse/lakehouse work | Interactive apps / request-serving APIs | Python data/orchestration |
 
-The five columns above — **Stack · Maturity · Best for · Avoid when · Typical domain/runtime** — are **the stack card**: one uniform, side-by-side record per option. This matrix is the single source of truth for the cards; each `profiles/<stack>.md` links back here rather than restating them.
+The four columns above — **Stack · Best for · Avoid when · Typical domain/runtime** — are **the stack card**: one uniform, side-by-side record per option. This matrix is the single source of truth for the cards; each `profiles/<stack>.md` links back here rather than restating them.
 
-**Maturity tiers** — all ten are copy-and-adapt reference profiles held to the same conformance bar;
-the tier signals how *exercised* each is, not how complete:
-- **first-class (verified)** — `typescript-node` only: its language gates are maintainer-executed green
-  on clone and it is the path the golden-path CI boots end-to-end.
-- **first-class** — `python`, `go`, `ml`, `terraform`: actively-maintained references the kit stands
-  behind (mainstream stacks + the headline eval / policy-as-code gates). Provided, not
-  maintainer-executed.
-- **experimental** — `java-spring`, `kotlin`, `dotnet`, `rust`, `data-engineering`: provided as
-  starting points but least-exercised (heavier or nicher toolchains). Expect to do more adaptation,
-  and pin/upgrade tooling as you adopt.
+**References, not tiers.** All ten are **copy-and-adapt reference starting points held to the same
+structural conformance bar** — the eight required gate ids (`conformance/ci-gates.sh`, applied fleet-wide by
+`profile-completeness.sh`), SHA-pinned actions (`action-pinning.sh`), and workflow lint
+(`actionlint-valid.sh`). **None is advertised as more-exercised or more-proven than another** — the kit's
+answer to *"which stack?"* is **the loop handles any of them** (these ten, or any other you generate). Pick
+by fit, adapt the reference, and let the loop hold the quality bar.
 
-**What "the golden-path CI boots it end-to-end" does and does not cover.** Three different levels:
+**"Structurally conformant" is not "observed green on a first run."** Budget for a first-run fix on **any**
+stack and report what you hit — a real first-run failure of exactly this kind (an emitted step calling a
+sensor subcommand that did not exist) is what the kit's own one-time verify sweep exists to catch. **SAST is
+not part of the required bar:** the required set has no `gate-sast`, and only `typescript-node` and
+`java-spring` (semgrep) and `go` (gosec) emit one — the other seven ship a secret scan and a vulnerability
+scan, which are not the same thing.
 
-- **`typescript-node`** — the kit's own pipeline incepts a real project, runs its scaffold's build/test
-  pipeline, **and executes the kit-owned steps of the emitted `.github/workflows/ci.yml`**.
-- **`go`, `python`, `dotnet`, `rust`, `java-spring`, `kotlin`** — the reference image is built and booted,
-  but **their emitted `ci.yml` has never been executed by anything.**
-- **`ml`, `data-engineering`, `terraform`** — ship **no runnable scaffold**; they are neither booted nor
-  executed. Their emitted `ci.yml` is likewise unexecuted.
-
-All ten workflows are held to the same *structural* bar — the eight required gate ids
-(`conformance/ci-gates.sh`, applied fleet-wide by `profile-completeness.sh`), SHA-pinned actions
-(`action-pinning.sh`), and workflow lint (`actionlint-valid.sh`). **SAST is not part of that bar:** the
-required set has no `gate-sast`, and only `typescript-node` and `java-spring` (semgrep) and `go` (gosec)
-emit one — the other seven ship a secret scan and a vulnerability scan, which are not the same thing.
-And "structurally conformant" is not "observed green on a first run" in any case. Budget for a first-run
-fix on any non-`typescript-node` stack, and report what you hit: a real first-run failure of exactly this
-kind — an emitted step calling a sensor subcommand that did not exist — is what produced this note.
+**Three profiles ship no runnable scaffold** (`ml`, `data-engineering`, `terraform`): they are references
+plus guidance, and the loop builds the scaffold. That is simply what those references are — not a
+lesser tier.
 
 Related enforcement boundary: the **runtime-version floor** is enforced at install time only for
 npm-based stacks (`engine-strict` in the TypeScript scaffolds). Of the rest, the five that declare a floor
@@ -98,17 +87,12 @@ ADR-000 **`## Fit rationale`** field.
 non-placeholder, names ≥1 fit dimension) — it **cannot** prove the choice was *correct*. That
 judgment stays with the reviewer's / owner's Go/No-Go.
 
-### Fit vs. maturity — disclose both
-
-Best-fit and most-exercised are not always the same stack (e.g. best-fit = `rust` [experimental] vs
-most-exercised = `typescript-node` [verified]). When an agent recommends a stack it states **both**
-the fit recommendation **and** the maturity tier, and the owner ratifies the trade-off. Record both
-in ADR-000 (`## Fit rationale`, `## Maturity acknowledged`).
-
 > This applies the **Neutrality pattern (instance #1: stack)** — the reusable, axis-agnostic shape
-> (comparable cards · fit-driven selection · fit-vs-maturity disclosure · anti-bias lint) documented
+> (comparable cards · fit-driven selection · anti-bias lint) documented
 > in [DEVELOPMENT-STANDARDS.md §1 (Neutrality by construction)](../DEVELOPMENT-STANDARDS.md#neutrality-by-construction-standing-requirement).
 > Deploy-target (KW5) is instance #2; harness/model (KW9) is the next instance of the same pattern.
+> Unlike those axes, the **stack** axis carries **no maturity tier** — every profile is a copy-and-adapt
+> reference held to the same bar, so there is a fit rationale to record but no maturity ranking to disclose.
 
 ---
 
@@ -135,7 +119,7 @@ profile's **"Environments this stack needs"** section has the per-stack detail.
 | terraform | Provisions infra (not an app) | — | — |
 
 **Archetype coverage.** The auto-incepted `profiles/<stack>/scaffold/` starters cover the **service**
-archetypes (stateless / db-backed). For a **CLI** tool, the verified reference is
+archetypes (stateless / db-backed). For a **CLI** tool, the reference is
 [`profiles/typescript-node/scaffold-cli/`](../profiles/typescript-node/scaffold-cli/) — copy it instead
 of the service scaffold. For **batch/worker**, adapt a service or CLI scaffold to your trigger.
 

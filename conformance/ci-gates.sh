@@ -28,8 +28,10 @@ set -eu
 #
 # MEASURED CEILING — what this seam check does NOT see. Stated in the artifact, not only in the
 # design doc, because a reader of a green run is entitled to know the shape of that green:
-#   - EXTRACTION: only `sh|bash <unquoted scripts/... path> <token>` forms are seen.
-#     `./scripts/x.sh sub` and `sh "scripts/x.sh" sub` are invisible to it.
+#   - EXTRACTION: only `sh|bash <unquoted scripts/... OR conformance/... path> <token>` forms are seen.
+#     CP7R5-NINE-PROFILES added the conformance/ prefix, so the `sh conformance/verify.sh --require` seam
+#     shared by every emitted pipeline is now judged. `./scripts/x.sh sub` and `sh "scripts/x.sh" sub`
+#     remain invisible to it.
 #   - ROOT: resolution is against the KIT root (`$(dirname "$0")/..`), NOT the tree the emitted
 #     workflow will actually run in. It proves the kit is self-consistent, not that an adopter's
 #     checkout is.
@@ -41,18 +43,26 @@ set -eu
 #     zero-dependency (no YAML parser) constraint, but it is a real hole, not a rounding error.
 #   - FIRST TOKEN ONLY: a wrong FLAG passed to a right subcommand is invisible — `span --traec`
 #     resolves exactly as well as `span --trace`.
-#   - NOT A PARSER: the predicate knows exactly two dispatch shapes, both line-anchored — a `case`
-#     arm and an `if [ "$1" = sub ]` equality test. What happens to any OTHER dispatch shape depends
-#     on whether the script still contains SOME `case "$1"` line, because that is the gate the
-#     dispatch-style guard reads:
-#       * NO `case "$1"` anywhere (a pure table, an `eval` dispatch, `getopts` — which dispatches on
+#   - NOT A PARSER: the predicate knows three line-anchored dispatch shapes — a `case` arm, an
+#     `if/elif [ "$1" = sub ]` test, and (CP7R5-NINE-PROFILES) a BARE `[ "$1" = sub ]` equality, the form
+#     verify.sh uses for --require. The dispatch-style guard that decides whether a script is judged at
+#     all recognizes the same three shapes; what happens to any OTHER shape:
+#       * NONE of the three present (a pure table, an `eval` dispatch, `getopts` — which dispatches on
 #         `case "$opt"`, never on `$1`): the guard skips the script entirely -> SILENT PASS. These
 #         belong to the fail-OPEN bullet above, not here.
-#       * SOME `case "$1"` present but the real verb dispatch built another way — e.g. an unrelated
-#         inner option loop, as scripts/adopter-export.sh:385 has: the script IS judged, the verb is
-#         not found -> UNRESOLVED.
+#       * A recognized dispatch shape present but the real verb dispatch built another way — e.g. an
+#         unrelated inner option loop, as scripts/adopter-export.sh:385 has: the script IS judged, the
+#         verb is not found -> UNRESOLVED.
 #     That second, narrow band is the only one that fails CLOSED, and it is the one to widen first
 #     if a false FAIL appears. Do not read this bullet as a general fail-closed guarantee.
+#   - BARE-`[` PRECISION LOSS (CP7R5-NINE-PROFILES, named by security review): the bare `[ "$1" = sub ]`
+#     shape is indistinguishable from a stray guard/hint (`[ "$1" = X ] && echo ...`) or a negation
+#     (`[ "$1" != X ]` — `[^]]*=` matches `!=`). Such a line RESOLVES its token even when the token is NOT
+#     a working verb, so a genuine K9 (`case … *) exit 2`) coincidentally mentioned in a bare `[` line
+#     false-PASSes — a real fail-OPEN band, a sliver of the CP-7 I1 class reopened. Accepted, NOT a
+#     rounding error: verify.sh's real --require dispatch IS exactly `[ "${1:-}" = "--require" ] && …`, so
+#     a tighter predicate would false-FAIL it — the two are structurally identical. No live fleet seam is
+#     masked (every real seam is genuinely handled). If a false PASS appears, tighten the case-arm anchor.
 check_kit_seams() {  # <workflow-file> <script-root> [expect-seams:0|1] -> 0 ok, 1 unresolved
   _wf=$1; _root=$2; _expect=${3:-0}
   # No temp file: the judging loop is the LAST stage of the pipeline and its stdout is captured, so
@@ -63,7 +73,7 @@ check_kit_seams() {  # <workflow-file> <script-root> [expect-seams:0|1] -> 0 ok,
   # count from a second copy of this regex would recreate the two-sources-of-truth bug that took
   # adopter-export-wired red.
   _res=$(sed 's/#.*//' "$_wf" 2>/dev/null \
-    | grep -oE '(sh|bash)[[:space:]]+scripts/[a-zA-Z0-9_.-]+\.sh[[:space:]]+[-a-zA-Z0-9_./]+' \
+    | grep -oE '(sh|bash)[[:space:]]+(scripts|conformance)/[a-zA-Z0-9_.-]+\.sh[[:space:]]+[-a-zA-Z0-9_./]+' \
     | sed -E 's/^(sh|bash)[[:space:]]+//' | sort -u \
     | while read -r _script _sub; do
         # Not every token after a script path is a dispatch subcommand. Reject: empty; `--`
@@ -83,12 +93,14 @@ check_kit_seams() {  # <workflow-file> <script-root> [expect-seams:0|1] -> 0 ok,
           (*) continue ;;                    # all digits -> a redirection fd, not a subcommand
         esac
         [ -f "$_root/$_script" ] || continue  # pruned/absent in this tree -> not our seam to judge
-        # Only a verb-dispatch script HAS subcommands to resolve against; one that takes a
-        # positional argument (no `case "$1"`) must never be judged -- rejecting its legal
-        # invocation would be a false positive on a blocking gate.
-        grep -qE 'case[[:space:]]+"?\$\{?1' "$_root/$_script" || continue
-        # Resolve against the DISPATCH, not against the file. Two dispatch shapes are honoured, and
-        # BOTH must OPEN a line, so a mention of the verb in a usage string, a comment, or any other
+        # Only a verb-dispatch script HAS subcommands to resolve against; one that takes a positional
+        # argument (no `case "$1"`, no `if [ "$1"`, no bare `[ "$1"` equality) must never be judged --
+        # rejecting its legal invocation would be a false positive on a blocking gate. Three dispatch
+        # shapes are recognized: a `case "$1"` line, an `if/elif [ "$1"` test, and a bare `[ "$1"`
+        # equality (the form verify.sh uses for --require, added by CP7R5-NINE-PROFILES).
+        grep -qE 'case[[:space:]]+"?\$\{?1|(el)?if[[:space:]]+\[[[:space:]]+"?\$\{?1|^[[:space:]]*\[[[:space:]]+"?\$\{?1' "$_root/$_script" || continue
+        # Resolve against the DISPATCH, not against the file. Three dispatch shapes are honoured, and
+        # ALL must OPEN a line, so a mention of the verb in a usage string, a comment, or any other
         # prose can never satisfy the lock. A whole-file grep cannot tell "resolves against the
         # dispatch" from "appears somewhere" -- exactly how one `printf` help line in
         # scripts/otel-trace.sh silently vouched for two verbs it does not implement (CP-7 I1).
@@ -96,12 +108,17 @@ check_kit_seams() {  # <workflow-file> <script-root> [expect-seams:0|1] -> 0 ok,
         #           an `a|b|sub)` chain.
         #   _ifRE:  an `if [ "$1" = sub ]` / `elif` equality dispatch -- measured on the real tree in
         #           scripts/explain.sh and scripts/adopter-export.sh, whose live CI invocations a
-        #           case-arm-only predicate would falsely FAIL.
+        #           case-arm-only predicate would falsely FAIL. CP7R5-NINE-PROFILES made the `(el)?if`
+        #           keyword OPTIONAL so a BARE `[ "$1" = sub ]` also resolves -- the form verify.sh uses
+        #           for --require. NOT unconditionally sound: a bare (or negated) `[ "$1" = sub ]` line
+        #           resolves sub even when it is a stray guard/hint, not the real dispatch -- see the
+        #           "BARE-`[` PRECISION LOSS" bullet in the ceiling header. Accepted because verify.sh's
+        #           genuine --require dispatch is this exact shape and cannot be told apart.
         # Neither regex carries a top-level `|`, so alternating them in one pass is safe.
         _armRE="^[[:space:]]*\(?(\"?[-a-zA-Z0-9_*]+\"?[[:space:]]*\|[[:space:]]*)*\"?${_sub}\"?[[:space:]]*[)|]"
         # `[$]`, not `\$`: this is a DOUBLE-quoted string, where the shell collapses `\$` to a bare
         # `$` and ERE then reads it as the end-of-line anchor -- the regex silently never matches.
-        _ifRE="^[[:space:]]*(el)?if[[:space:]]+\[[[:space:]]+\"?[$]\{?1[^]]*=[[:space:]]*\"?${_sub}\"?[[:space:]]*\]"
+        _ifRE="^[[:space:]]*((el)?if[[:space:]]+)?\[[[:space:]]+\"?[$]\{?1[^]]*=[[:space:]]*\"?${_sub}\"?[[:space:]]*\]"
         printf 'J\n'                        # this token survived every filter: it WAS judged
         if ! sed 's/#.*//' "$_root/$_script" | grep -qE "$_armRE|$_ifRE"; then
           printf 'F %s %s\n' "$_script" "$_sub"
@@ -214,6 +231,25 @@ selftest() {
   if check_kit_seams "$d/none.yml" "$d" >/dev/null 2>&1; then
     echo "selftest PASS: no kit seams -> vacuously OK"
   else echo "selftest FAIL: seam-free workflow wrongly failed"; sf=1; fi
+
+  # CONFORMANCE-SEAM legs (CP7R5-NINE-PROFILES): the ONE kit-owned seam every emitted pipeline shares is
+  # `sh conformance/verify.sh --require` -- a `conformance/` path the extractor did not see, dispatched by
+  # verify.sh via a bare `[ "$1" = --require ]` (and an `if [ "$1" = --selftest ]`), NEITHER a `case` arm.
+  # This stub mirrors that exact dispatch shape, so a green here proves all three seams the real verify.sh
+  # exercises: conformance/-path extraction, if/bare-[ dispatch detection, and bare-[ equality resolution.
+  mkdir -p "$d/conformance"
+  printf '#!/bin/sh\n[ "${1:-}" = "--require" ] && exit 0\nif [ "${1:-}" = "--selftest" ]; then exit 0; fi\nexit 2\n' > "$d/conformance/verify.sh"
+  printf 'jobs:\n  ci:\n    steps:\n      - run: sh conformance/verify.sh --require\n' > "$d/conf-good.yml"
+  # --expect-seams=1: also proves the extractor now EXTRACTS the conformance seam (a still-blind extractor
+  # yields zero matches and FAILs here with "ZERO kit-owned invocations") -- the load-bearing non-vacuity.
+  if check_kit_seams "$d/conf-good.yml" "$d" 1 >/dev/null 2>&1; then
+    echo "selftest PASS: conformance/ seam with a resolvable flag -> PASS (bare-[ dispatch resolved; extractor saw it)"
+  else echo "selftest FAIL: real conformance/verify.sh --require wrongly unresolved or unseen"; sf=1; fi
+  # The K9 mutant for the SHARED seam: a bogus flag (what a `--requires` typo would be) must FAIL.
+  printf 'jobs:\n  ci:\n    steps:\n      - run: sh conformance/verify.sh --bogus\n' > "$d/conf-bad.yml"
+  if check_kit_seams "$d/conf-bad.yml" "$d" >/dev/null 2>&1; then
+    echo "selftest FAIL: unresolved conformance/ subcommand NOT caught (K9 class open on the shared seam)"; sf=1
+  else echo "selftest PASS: unresolved conformance/ subcommand -> FAIL"; fi
 
   # MAIN-PATH leg (load-bearing): the four cases above call check_kit_seams DIRECTLY, which proves the
   # function but NOT the `|| exit 1` wiring in the main path. A slice that only tests the function can

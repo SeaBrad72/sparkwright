@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.176.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.177.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -82,7 +82,7 @@ Claude Code is the default and the reference adapter, but any harness that reads
 
 ## Generate your own profile (any stack)
 
-The kit ships **10 reference profiles** — five first-class (**TypeScript/Node, Python, Go, ML, Terraform**) and five experimental (**Java/Spring, Kotlin, C#/.NET, Rust, Data Engineering** — provided as starting points, less exercised; see the [maturity tiers](docs/STACK-SELECTION.md)) — but it is **never limited to them**. For any other stack:
+The kit ships **10 reference profiles** (**TypeScript/Node, Python, Go, ML, Terraform, Java/Spring, Kotlin, C#/.NET, Rust, Data Engineering**) — **copy-and-adapt starting points held to one conformance bar, not a tiered or ranked set** ([how to choose](docs/STACK-SELECTION.md)) — and it is **never limited to them**. The stack-agnostic loop handles any of these, or any other stack. For any other stack:
 
 1. `sh scripts/new-profile.sh <stack>` — scaffolds `profiles/<stack>.md` + a stub `profiles/<stack>/ci.yml` whose 8 quality-gate ids already satisfy `conformance/ci-gates.sh`.
 2. Fill the 11 profile sections and replace each `run:` command with your stack's tooling.

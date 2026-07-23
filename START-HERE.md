@@ -79,7 +79,7 @@ Decide the technology stack. This is a **spike** if there's genuine uncertainty 
 
 **Derive, don't default.** Pick from the *shape of the work*, not from familiarity — use the [derivation rubric + steer-away table](docs/STACK-SELECTION.md#how-to-derive-the-recommendation) (workload · ecosystem · team · deploy · data/ML · compliance).
 
-**Disclose fit vs. maturity (a required step).** When an agent recommends a stack it must state BOTH the fit recommendation AND the stack's maturity tier, and you ratify the trade-off (e.g. best-fit = Rust [experimental] vs most-exercised = TS/Node [verified]). Record the fit reason + maturity in ADR-000 (`## Fit rationale`, `## Maturity acknowledged`) — enforced by `conformance/stack-decision-integrity.sh`.
+**Cite fit, not familiarity (a required step).** When an agent recommends a stack it must state the fit recommendation and record the fit reason in ADR-000 (`## Fit rationale`) — enforced by `conformance/stack-decision-integrity.sh`. Stack profiles carry **no maturity tier** (all ten are copy-and-adapt references held to one conformance bar), so there is no maturity ranking to disclose here — unlike the harness and deploy axes, one axis over.
 
 **Choosing a deploy target?** Derive from fit, not familiarity — [docs/adoption/DEPLOYMENT-ENVIRONMENT.md](docs/adoption/DEPLOYMENT-ENVIRONMENT.md) (topology cards + rubric); record fit + maturity in RUNBOOK §4 (linted by `conformance/deploy-decision-integrity.sh`). The same neutrality pattern as the stack choice, one axis over.
 

@@ -18,10 +18,6 @@ workload (CPU-bound vs IO/concurrent), ecosystem/libraries, team skills, deploy 
 data/ML, compliance, latency/cold-start. "It's the proven default" is NOT a fit reason —
 this record must cite fit (enforced by conformance/stack-decision-integrity.sh).]
 
-## Maturity acknowledged
-[chosen stack's kit-maturity tier (verified / first-class / experimental) — recorded so the
-fit-vs-maturity trade-off is explicit; see docs/STACK-SELECTION.md.]
-
 ## Alternatives considered
 1. **[Option A]** — pros: [...] · cons: [...]
 2. **[Option B]** — pros: [...] · cons: [...]
