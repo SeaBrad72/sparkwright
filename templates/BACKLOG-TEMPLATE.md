@@ -44,6 +44,7 @@
 
 ## Done
 > Definition of Done met, L1 retro written, outcome validated.
+> **Taste-surface?** If the item shipped a user-facing taste-surface, tag the **Item** cell with `[taste-surface]` and record a `UAT-SIGNOFF` reference — a link or path to the UAT sign-off (e.g. `docs/uat/UAT-SIGNOFF-<item>.md`) — in the **Retro/outcome** cell. `backlog-current.sh` (HITL-3) enforces the sign-off record on any Done row carrying that flag; an unflagged row is N/A. (Presence of the reference is checked, not that the link resolves — the diff-level backstop is HITL-2's PR-context gate.)
 
 | Item | Closed | Retro/outcome |
 |------|--------|---------------|

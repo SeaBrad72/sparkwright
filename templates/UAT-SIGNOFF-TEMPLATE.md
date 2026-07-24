@@ -5,11 +5,11 @@
 | Field | Value |
 |-------|-------|
 | Gate | UAT |
-| Feature / story | <link> |
+| Feature / story | [replace: link] |
 | Acceptance criteria verdict | met / not met (list any gaps) |
-| Test-plan reference | <link to the filled TEST-PLAN> |
-| Evidence | <links: test run, demo, screenshots> |
+| Test-plan reference | [replace: link to the filled TEST-PLAN] |
+| Evidence | [describe evidence: test run, demo, screenshots] |
 | Decision | **accept** / reject |
-| Signer (role) | <name> (QA / PO) |
+| Signer (role) | [your name] (QA / PO) |
 | Date | YYYY-MM-DD |
 | Notes | |

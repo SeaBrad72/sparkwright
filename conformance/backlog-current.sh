@@ -3,7 +3,8 @@
 # Resolves a project's declared backlog backend (from its own CLAUDE.md), N/As the
 # not-applicable routes, and — for a repo-native BACKLOG.md that is in use — asserts the
 # state-table item-traceability the loop depends on: In Progress -> Links, In Review -> PR,
-# and (only if the OPTIONAL section is present) Blocked -> Blocked on + Since.
+# (only if the OPTIONAL section is present) Blocked -> Blocked on + Since, and (Done-edge, HITL-3)
+# a Done row FLAGGED [taste-surface] -> a UAT-SIGNOFF reference.
 #
 #   sh conformance/backlog-current.sh [project-dir]   (default: .)
 #   sh conformance/backlog-current.sh --selftest
@@ -197,6 +198,50 @@ EOF
   return 0
 }
 
+# check_done_uat <file> : Done-edge UAT sign-off enforcement (HITL-3). A Done row FLAGGED as a
+# taste-surface — carrying the inline `[taste-surface]` token anywhere in the row — MUST record a
+# UAT sign-off: a resolvable `UAT-SIGNOFF` reference (a link or path token) somewhere in the row.
+# This mirrors the In-Review PR idiom: it asserts the RECORD EXISTS (presence of a reference), NOT
+# that the link resolves — demanding a resolved URL would only invite a fake link. An UNFLAGGED
+# Done row is N/A: no UAT is required (not every Done item touches a taste-surface). Done is
+# OPTIONAL and structurally UNGATED here (no column-schema enforcement) — the ONLY rule is
+# flagged-row -> UAT reference. Increments DONE_UAT_FLAGGED (rows that carried the flag). rc0 = pass.
+# HONEST CEILING: this enforces the RECORD on rows the builder FLAGGED; correct flagging is builder
+# discipline, and HITL-2 (the PR-context gate) is the hard diff-level backstop that flags the surface.
+check_done_uat() {
+  _f="$1"
+  _rows=$(section_rows "$_f" "Done")
+  [ -n "$_rows" ] || return 0                     # no Done table at all -> nothing to enforce
+  _ln=0
+  while IFS= read -r _row; do
+    _ln=$((_ln + 1))
+    if [ "$_ln" -eq 1 ]; then continue; fi        # header row
+    if is_sep_row "$_row"; then continue; fi       # separator row (has a dash)
+    _item=$(cell "$_row" 1)
+    if [ -z "$_item" ]; then continue; fi          # template 'no items' spacer row
+    # The taste-surface flag: an inline `[taste-surface]` token anywhere in the row (quoted in the
+    # case pattern so the brackets are LITERAL, not a character class). An unflagged Done row is
+    # N/A -> skip; only a flagged row must carry the UAT record.
+    case "$_row" in
+      *'[taste-surface]'*) ;;
+      *) continue ;;
+    esac
+    DONE_UAT_FLAGGED=$((DONE_UAT_FLAGGED + 1))
+    # A flagged row MUST carry a UAT-SIGNOFF reference — presence of the reference token, NOT a
+    # resolved URL (mirrors the In-Review PR idiom; presence-not-resolution is the fake-link guard).
+    case "$_row" in
+      *UAT-SIGNOFF*) ;;
+      *)
+        echo "FAIL: Done item '$_item' — flagged [taste-surface] but carries no UAT-SIGNOFF reference; a taste-surface reaching Done must record a UAT sign-off (a link or path to a UAT-SIGNOFF)"
+        return 1
+        ;;
+    esac
+  done <<EOF
+$_rows
+EOF
+  return 0
+}
+
 # check_dir <project-dir> -> routes the three N/A cases; for an in-use BACKLOG.md, parses the
 # state tables. N/A is always a pass (never a false FAIL). OK/FAIL reflect the board.
 check_dir() {
@@ -236,7 +281,7 @@ check_dir() {
     fi
   done
   # Parse the gated state tables (Ready/Released/Done are ungated — untouched).
-  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; BOARD_TRACE=""; _agg=0
+  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; DONE_UAT_FLAGGED=0; BOARD_TRACE=""; _agg=0
   # Accumulate-all (K11): run EVERY gated section unconditionally and collect every failure,
   # so ONE run surfaces the whole picture — never exit-on-first (fix In Review, re-run, only
   # THEN discover Blocked also failed). return non-zero iff any section failed.
@@ -248,8 +293,12 @@ check_dir() {
   if grep -Eq "^## Blocked[[:space:]]*$" "$_bl"; then
     check_section "$_bl" "Blocked" "Blocked on" blocked "Since" || _agg=1
   fi
+  # Done-edge UAT enforcement (HITL-3): a Done row flagged [taste-surface] must carry a UAT-SIGNOFF
+  # reference; an unflagged Done row is N/A. Self-guards on an absent/empty Done table (Done is
+  # optional). Accumulate-all (K11): collect its failure alongside the section gates in ONE pass.
+  check_done_uat "$_bl" || _agg=1
   [ "$_agg" -ne 0 ] && return 1
-  echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES"
+  echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES; done-uat-flagged=$DONE_UAT_FLAGGED"
   return 0
 }
 
@@ -1117,6 +1166,103 @@ EOF
 EOF
   assert_fail "$d" "In Review" "s7/n4-onepass: broken In Review is named in the one-pass output"
   assert_fail "$d" "Blocked" "s7/n4-onepass: broken Blocked is named in the SAME one-pass output (accumulate-all)"
+
+  # ===== HITL-3 — Done-edge: a flagged taste-surface must carry a UAT-SIGNOFF reference =========
+
+  # bad-done-flagged-no-uat/ — a Done row flagged [taste-surface] with NO UAT-SIGNOFF reference ->
+  # FAIL. THE enforced edge: a taste-surface reaching Done without a recorded sign-off. (Kills the
+  # new FAIL-path idiom: neutering its `return` flips this RED->green, failing the selftest.)
+  d="$base/bad-done-flagged-no-uat"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Redesign onboarding [taste-surface] | 2026-07-10 | shipped; L1 retro in #40 |
+EOF
+  assert_fail "$d" "carries no UAT-SIGNOFF reference" "bad-done-flagged-no-uat: flagged taste-surface, no UAT ref -> FAIL"
+
+  # good-done-unflagged/ — a Done row with NO taste-surface flag -> N/A for UAT (PASS). Not every
+  # Done item touches a taste-surface; an unflagged row must never demand a sign-off (over-gating).
+  d="$base/good-done-unflagged"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Fix a typo | 2026-07-10 | shipped; retro #41 |
+EOF
+  assert_ok "$d" "good-done-unflagged: unflagged Done row -> N/A for UAT (PASS)"
+
+  # good-done-flagged-with-uat/ — a Done row flagged [taste-surface] that DOES carry a UAT-SIGNOFF
+  # reference -> PASS, and the flagged row is counted (done-uat-flagged=1), proving the flag was
+  # DETECTED and the reference SATISFIED (a green here is not vacuous — the flagged path ran).
+  d="$base/good-done-flagged-with-uat"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Redesign onboarding [taste-surface] | 2026-07-10 | shipped; UAT sign-off docs/uat/UAT-SIGNOFF-onboarding.md |
+EOF
+  assert_msg "$d" "done-uat-flagged=1" "good-done-flagged-with-uat: flagged + UAT-SIGNOFF ref -> PASS (flagged row counted)"
 
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-current --selftest: FAIL" >&2

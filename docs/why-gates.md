@@ -52,6 +52,16 @@ Why: Accessibility is not a polish step — keyboard, contrast, and screen-reade
 Enforced by: DEVELOPMENT-STANDARDS.md §14 (a11y gate)
 Read more: DEVELOPMENT-STANDARDS.md §14
 
+## uat
+Applies IF: a change touches a user-facing taste surface (UI: components/views/pages/screens/templates/styles)
+Why: Automated tests prove a UI *works*; they cannot prove a human *accepts* it. A UAT sign-off is the
+  recorded moment someone with standing exercised the surface and judged it fit — the taste half of "done"
+  that green pixels alone never capture. Riding the obligation engine, an unfilled or absent record on a
+  taste-surface change fails the gate, so acceptance is evidenced, not assumed. Honest ceiling: it proves a
+  filled record exists, not that the reviewer's taste was sound (review backstops that).
+Enforced by: conformance/uat-obligation.sh
+Read more: DEVELOPMENT-PROCESS.md §9, DEVELOPMENT-STANDARDS.md §14
+
 ## dr
 Applies IF: you add durable data (a database / persistent store)
 Why: Backups you've never restored are a hope, not a plan. A recorded restore drill proves you

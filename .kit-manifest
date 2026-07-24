@@ -266,6 +266,7 @@ conformance/tier-advice-wired.sh
 conformance/token-scope.sh
 conformance/trace-query-wired.sh
 conformance/tracker-contract.sh
+conformance/uat-obligation.sh
 conformance/validation-terminal-state-documented.sh
 conformance/verify-enforced-wired.sh
 conformance/verify.sh

@@ -79,6 +79,16 @@ jobs:
         if: github.event_name == 'pull_request'
         run: sh conformance/threat-obligation.sh
 
+      # HITL obligation — the UAT-signoff gate runs HERE too, in PR context, for the same reason as the
+      # threat-model gate above: conformance/uat-obligation.sh is diff-relative (merge-base HEAD origin/main)
+      # and fails CLOSED with no resolvable base, so it belongs in a PR-context step with the fetch-depth: 0
+      # checkout, not the offline verify.sh --require aggregate. COPY-AND-ADAPT (reference, not a tier).
+      # A PR touching a user-facing TASTE surface (UI: components/views/pages/screens/templates/frontend/
+      # styles) with no filled UAT-SIGNOFF.md FAILs the build; any other PR is N/A and passes.
+      - name: UAT-signoff obligation (PR-context; user-facing taste surface requires a filled UAT-SIGNOFF)
+        if: github.event_name == 'pull_request'
+        run: sh conformance/uat-obligation.sh
+
       - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
         id: detect-dockerfile
         run: |
