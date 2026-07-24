@@ -214,6 +214,7 @@ conformance/model-tiering.sh
 conformance/named-adapters.sh
 conformance/non-vacuity-wired.sh
 conformance/non-vacuity.sh
+conformance/obligation-lib.sh
 conformance/observability-readiness.md
 conformance/observability-ready.sh
 conformance/onboarding-complete.sh
@@ -260,6 +261,7 @@ conformance/template-detectors-aligned.sh
 conformance/test-data-readiness.md
 conformance/test-data-ready.sh
 conformance/test-layers-ready.sh
+conformance/threat-obligation.sh
 conformance/tier-advice-wired.sh
 conformance/token-scope.sh
 conformance/trace-query-wired.sh
@@ -273,6 +275,7 @@ conformance/waivers-valid.sh
 conformance/wf-helpers.sh
 conformance/whitespace-clean.sh
 docs/ADR-000-EXAMPLE.md
+docs/CAPABILITIES.md
 docs/STACK-SELECTION.md
 docs/adoption/DEPLOYMENT-ENVIRONMENT.md
 docs/adoption/brownfield.md
@@ -335,6 +338,7 @@ docs/operations/test-data-management.md
 docs/operations/test-layers.md
 docs/operations/test-quality.md
 docs/operations/tool-supply-chain.md
+docs/positioning/sparkwright-overview.md
 docs/why-gates.md
 docs/work-tracking/adapters.md
 hooks/pre-push

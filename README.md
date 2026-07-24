@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.180.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.181.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -43,14 +43,25 @@ Any team — humans, agents, or both — starting a new project who wants produc
 
 - A **guided lifecycle** from idea → released, operating software: **Inception → Discover → Plan → Build → Review → Release → Operate ↺**.
 - **Guardrails built in** — a control-plane guard, CI quality gates, a Definition of Done, and separation-of-duties on risky changes.
-- **Stack-neutral standards + a swappable profile** for your chosen stack (10 shipped, or generate your own for *any* stack).
-- **Harness-neutral** — Claude Code is the reference; any `AGENTS.md`-reading agent works.
+- **Neutral on three axes — any stack, any harness, any model.** Stack-neutral standards + a swappable profile (10 shipped, or generate your own for *any* stack); harness-neutral (Claude Code is the reference; any `AGENTS.md`-reading agent works); model-neutral (abstract tiers you bind to your provider's models).
 
 ## How you actually use it
 
 **Sparkwright is the execution engine** — it takes you from a *Ready* backlog to operating, monitored software, with the guardrails built in. Each item flows through the loop (**Discover → Plan → Build → Review → Release → Operate**), and you, the human, sit on the gates: approve the design, make the go/no-go at release, accept the increment. The agents do the building between the gates.
 
 If you already have product + design figured out, drop it in and build. If you're starting from raw signals, an optional upstream **discovery loop** (FRAME → SHAPE → Ready) turns them into a Ready backlog — see **[docs/discovery/discovery-loop.md](docs/discovery/discovery-loop.md)**. Skip it if you already have one.
+
+## The agent team & how it's governed
+
+Between the gates, the work is done by a small **standing team of agents** — an **orchestrator** (slices the epic, assigns each task, fans out builders, integrates), **engineers** (build under a spec + tests), and independent **reviewer** and **security** seats — plus skill-defined roles (design, plan, verification, TDD) the orchestrator invokes. *Few agents, many skills, by design.*
+
+Three things make that team trustworthy rather than just fast:
+
+- **Separation of duties, enforced.** Builder ≠ reviewer ≠ ratifier. Control-plane changes require an independent ratifier; the merge is a recorded GO/NO-GO bound to the reviewed commit (`shipped == approved`, verified by tree equality), and the agent actuates the mechanics — *the judgment is the control, not the keystroke*.
+- **Model tiering.** Each seat runs at an abstract tier (judgment/review seats pinned to the top model, builders free to run cheaper where the task allows, high-stakes work floored to the top). You declare the tier→model map for your provider — the kit is opinionated about *structure*, neutral about *which model*.
+- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and the checks are themselves **mutation-tested** (a check that can't fail is caught and fixed). The kit is built with its own loop and held to its own Definition of Done.
+
+Full detail: **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)**.
 
 ## Staying current with the kit
 
@@ -96,7 +107,7 @@ Every capability ships as three parts (full detail in `MAINTAINING.md`):
 
 - **Contract** — the binding, stack-neutral requirement (in the standards/process docs).
 - **Reference implementation** — a working artifact you copy and adapt (in a profile or the repo). You own it.
-- **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`).
+- **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`), and the checks are themselves **mutation-tested** (a "non-vacuity" sweep proves each check *can* fail — a green that can't go red is caught and fixed, so the gates are real, not decorative).
 
 So the kit **dictates the contract and offers the implementation**: rewrite the reference freely as long as the conformance check still passes. The kit is itself a versioned product built with the very loop it prescribes — improvements adopters find flow back upstream as PRs.
 

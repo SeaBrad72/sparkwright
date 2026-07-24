@@ -64,6 +64,21 @@ jobs:
         # `conformance/verify-enforced-wired.sh --fleet` cheap to lock.
         run: sh conformance/verify.sh --require
 
+      # HITL obligation — the threat-model gate runs HERE, in PR context, NOT inside verify.sh --require.
+      # WHY IT IS NOT IN THE AGGREGATE ABOVE: conformance/threat-obligation.sh is diff-relative — it derives
+      # its change-set from `merge-base HEAD origin/main` and fails CLOSED when no base resolves. verify.sh
+      # --require must stay green on any tree regardless of git-fetch depth (a shallow checkout or a fresh
+      # clone), so the diff-relative gate belongs in a PR-context step with a resolvable base, not the
+      # offline aggregate. This mirrors the kit's own ci.yml (the `threat-obligation` job) and its
+      # promotion-readiness gate, which likewise run diff-relative logic only in PR context.
+      # COPY-AND-ADAPT (reference, not a tier): this step is the pattern adopters copy into their pipeline.
+      # It needs the `fetch-depth: 0` checkout above so `origin/main` resolves; on a non-PR event main IS
+      # the base, so it is gated to pull_request. A PR touching a secret/auth/payments/migrations/.env
+      # surface with no filled THREAT-MODEL.md FAILs the build; any other PR is N/A and passes.
+      - name: Threat-model obligation (PR-context; sensitive surface requires a filled THREAT-MODEL)
+        if: github.event_name == 'pull_request'
+        run: sh conformance/threat-obligation.sh
+
       - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
         id: detect-dockerfile
         run: |

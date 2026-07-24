@@ -47,6 +47,24 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
    - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
 
+### 3·cadence — publishing to the public mirror (milestone-gated, ratified 2026-07-23)
+
+Steps 1–3 above are the **private** dev cadence: every slice merges + tags on the private repo. Publishing to
+the **public mirror** (`scripts/publish-public.sh` → `github.com/SeaBrad72/sparkwright`) is a **separate,
+milestone-gated act** — you do NOT publish per slice.
+
+- **Why no fork is needed:** the private-dev → public-mirror split already isolates public adopters from dev
+  velocity. Nothing you merge privately reaches the public repo until you run `publish-public.sh`.
+- **What a milestone is:** an owner-chosen release point — a completed feature/epic bundle, or a version-line
+  you want adopters on. Publish the *cumulative* diff as one public version; the private `VERSION` keeps
+  ticking per slice, the public version jumps at milestones.
+- **The current baseline is RC1 @ `v3.180.0`** — the labeled point adopters trust until the next milestone.
+- **How adopters learn of a new public release:** GitHub Releases + Watch (broadcast); `conformance/kit-current.sh`
+  in their `scripts/doctor.sh` (advisory "you're behind" nudge — fired only by a *public* release, not by
+  private per-slice dev); `kit-update.sh --from <kit>` (they pull when they choose). No telemetry, no push.
+- **When to publish per-slice instead:** only for a hotfix an adopter is actively blocked on. Otherwise
+  accumulate to the next milestone.
+
 ### 3a. Authoring a control-plane change (the dev-clone)
 
 Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits. They are authored in a **dev-clone** — `git clone . <literal temp path>` — where the agent edits directly while **the guard stays armed on the real repo**, and they are dual-reviewed. What the human ratifies is a **CI-green diff**, not a script whose writes they must predict. Three disciplines, each learned from a real incident:
