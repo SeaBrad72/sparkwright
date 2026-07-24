@@ -50,6 +50,10 @@ EOF
 
 selftest() {
   st=0; d=$(mktemp -d)
+  # Trap-clean: the derivation legs below create real git repos under $d. Leaking mktemp trees from
+  # conformance selftests has twice filled this project's dev machine — clean up on every exit path.
+  # `[ -n ]` guards the empty-var case so this can never widen to an unintended path.
+  trap '[ -n "${d:-}" ] && rm -rf "$d"; :' EXIT INT TERM
   printf 'conformance/x.sh\n'                                        > "$d/cp.txt"
   printf 'src/auth/login.ts\n'                                       > "$d/sens.txt"
   printf 'deploy/id_rsa\n'                                           > "$d/key.txt"
@@ -71,6 +75,47 @@ selftest() {
   # (a classifier mutated to always-ordinary fails the cp/sens/mix checks above AND these).
   if [ "$(cls "$d/cp.txt")" = ordinary ]; then echo "FAIL: control-plane downgraded to ordinary"; st=1; fi
   if [ "$(cls "$d/sens.txt")" = ordinary ]; then echo "FAIL: sensitive downgraded to ordinary"; st=1; fi
+
+  # --- DERIVATION legs (PROMOTION-PATH-QUOTING) -------------------------------------------------
+  # Every `ck` leg above drives --changed, which BYPASSES the git derivation (promotion-readiness.sh
+  # :61-66) — the branch where the path-quoting fail-open lived. A --changed fixture therefore passes
+  # identically with and without the fix: a tautology. These legs stand up a REAL git repo and let the
+  # check derive, which is the only construction that can observe the defect.
+  # The producer cd's to its own ../, so each fixture carries COPIES of the producer and the guard
+  # core. A fixture missing guard-core.sh would set GUARD_OK=0 and fail-safe to control-plane —
+  # passing VACUOUSLY for the wrong reason. The `ordinary` liveness leg below is what excludes that:
+  # it can only pass when the classifier is genuinely loaded and the derivation genuinely ran.
+  derive_cls() {  # <repo> -> class derived from git, NOT from --changed
+    ( cd "$1" && sh conformance/promotion-readiness.sh --class --no-verify 2>/dev/null )
+  }
+  mkrepo() {  # <repo> <path> : base commit on main, then <path> on a branch so a merge-base EXISTS
+    _r="$1"; _p="$2"
+    mkdir -p "$_r/conformance" "$_r/.claude/hooks"
+    cp "$PR" "$_r/conformance/promotion-readiness.sh"
+    cp .claude/hooks/guard-core.sh "$_r/.claude/hooks/guard-core.sh"
+    ( cd "$_r" && git init -q && git config user.email t@t && git config user.name t \
+        && git add -A && git commit -q -m base && git branch -M main && git checkout -q -b feat )
+    mkdir -p "$_r/$(dirname "$_p")"
+    printf 'x\n' > "$_r/$_p"
+    ( cd "$_r" && git add -A && git commit -q -m probe )
+  }
+  dck() {  # <want> <path> <label> : build a repo committing <path>, derive, compare
+    _want="$1"; _dr="$d/derive-$3"
+    mkrepo "$_dr" "$2" >/dev/null 2>&1
+    _got=$(derive_cls "$_dr")
+    if [ "$_got" = "$_want" ]; then echo "PASS: derive $3 -> $_got"
+    else echo "FAIL: derive $3 want $_want got $_got"; st=1; fi
+  }
+  # LIVENESS ANCHOR — must be `ordinary`. If the guard core failed to load, or the derivation
+  # returned nothing, the fail-safe makes this control-plane and the leg goes RED. So a green here
+  # is positive evidence that the two legs below are classifying a REAL derived path.
+  dck ordinary     'src/util/format.ts'            ordinary-live
+  # THE FIX: core.quotePath=true wraps a non-ASCII path in double quotes; the leading '"' defeats
+  # is_control_plane_path, so this derives `ordinary` before the fix and `control-plane` after.
+  dck control-plane '.github/workflows/déploy.yml' nonascii
+  # `-z` is the STRICTLY STRONGER half: NUL output is never quoted, whereas core.quotePath=false
+  # still quotes a path containing '"'. This leg is the only one that kills a -z-dropped mutant.
+  dck control-plane '.github/workflows/de"ploy.yml' quote-in-name
 
   # --- the disposition lock, proven non-vacuous -------------------------------------------------
   if grade_dispositions "$PR" >/dev/null 2>&1; then

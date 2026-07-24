@@ -45,6 +45,7 @@
 ## Done
 > Definition of Done met, L1 retro written, outcome validated.
 > **Taste-surface?** If the item shipped a user-facing taste-surface, tag the **Item** cell with `[taste-surface]` and record a `UAT-SIGNOFF` reference — a link or path to the UAT sign-off (e.g. `docs/uat/UAT-SIGNOFF-<item>.md`) — in the **Retro/outcome** cell. `backlog-current.sh` (HITL-3) enforces the sign-off record on any Done row carrying that flag; an unflagged row is N/A. (Presence of the reference is checked, not that the link resolves — the diff-level backstop is HITL-2's PR-context gate.)
+> **L1 retro — enforced.** `backlog-current.sh` (HITL-6) grades every Done row: the **Retro/outcome** cell must carry real substance (a stub like `done` is rejected), and a row whose **Closed** date is on/after `2026-07-24` must additionally contain the marker `L1 retro`. Write what shipped *and* what you learned — e.g. `… ramped with no rollback. **L1 retro:** the thin-slice pattern held; the cost was all ceremony, not build.` A row with an unparseable **Closed** date is treated as recent and asked for the marker (fail-closed), so keep the date in `YYYY-MM-DD`. Rows closed before that date are exempt from the marker only — the substance floor always applies.
 
 | Item | Closed | Retro/outcome |
 |------|--------|---------------|

@@ -242,6 +242,108 @@ EOF
   return 0
 }
 
+# HITL-6 constants — declared HERE, OUTSIDE the board they grade, and deliberately NOT derived from
+# BACKLOG.md. HITL-4 spent four review rounds establishing that an oracle built out of the thing
+# under test goes blind to a whole class of defect (an unlisted glob, a renamed token, a mistyped
+# glob each survived in turn); the only construct that held was a constant declared externally,
+# which caught a wrong value on its first run. Do not replace these with anything computed.
+HITL6_RETRO_EPOCH="2026-07-24"    # rows Closed on/after this date owe an explicit 'L1 retro' marker
+HITL6_MIN_RETRO_CHARS=120         # substance floor. Measured 2026-07-24 across this kit's own 77
+                                  # Done rows: min 200, median 1462 — a FLOOR, not a fit to the corpus.
+
+# retro_cell <row> <header-row> <col-index> : the Retro/outcome cell, ROBUST to escaped pipes.
+# WHY THIS EXISTS: GFM treats `\|` as a literal pipe inside a table cell, but backlog-lib's cell()
+# splits on every raw '|' via awk -F'|', so a row using the CORRECT markdown escape has its trailing
+# columns shifted. MEASURED on BACKLOG.md:133 (HITL-1's Done row): it carries
+# `triggered\|none\|uncertain`, giving NF=7 where every other Done row has NF=5, which parks the
+# 'L1 retro' marker in field 6 instead of field 4. Plain cell() would read a TRUNCATED retro and
+# could both trip the substance floor and lose the marker on a perfectly valid row.
+# Retro/outcome is the LAST column of the shipped Done schema, so every extra split belongs to it:
+# rejoin fields (i+1)..NF, dropping the trailing empty the closing pipe produces. GUARD: if any
+# NAMED column follows Retro/outcome, joining would over-capture (a fail-OPEN), so fall back to
+# cell() in that case. The shared-parser gap itself is boarded, not fixed here — fixing cell() means
+# re-proving check_section, check_done_uat and backlog-presence, which is its own slice.
+retro_cell() {
+  _rc_after=$(printf '%s' "$2" | awk -F'|' -v i="$3" \
+    '{for(j=i+2;j<=NF;j++){v=$j; gsub(/^[ \t]+|[ \t]+$/,"",v); if(v!=""){print "y"; exit}}}')
+  if [ -n "$_rc_after" ]; then cell "$1" "$3"; return 0; fi
+  printf '%s' "$1" | awk -F'|' -v i="$3" '{
+    s=""; for(j=i+1;j<=NF;j++){ if(j==NF && $j ~ /^[[:space:]]*$/) continue
+      s = s (s==""?"":"|") $j }
+    gsub(/^[ \t]+|[ \t]+$/,"",s); print s}'
+}
+
+# check_done_retro <file> : Done-edge L1-retro enforcement (HITL-6). "The loop closes" is a stated
+# principle and the Done section's own header already declares "L1 retro written" — this makes that
+# declaration ENFORCED rather than discipline. TWO legs with DIFFERENT scopes:
+#   leg 1 — every Done row's Retro/outcome cell must clear HITL6_MIN_RETRO_CHARS. Without it a stub
+#           (`| x | date | done |`) reads as a filled retro — the cheapest available bypass.
+#   leg 2 — a row Closed on/after HITL6_RETRO_EPOCH must ALSO carry an 'L1 retro' marker.
+# WHY THE EPOCH: this kit's board carries 77 Done rows predating the marker convention (5 carry it).
+# Enforcing the marker retroactively would demand 72 retrospectives manufactured after the fact —
+# precisely the attestation theatre this gate exists to prevent. Leg 1 still applies to all 77 and
+# all 77 clear it, so the epoch buys backward compatibility without buying a hole.
+# WHY THIS DATE: 2026-07-24 is the day HITL-6 was built, NOT the day after. It is set one day
+# earlier than the obvious "ship date + 1" so that this slice's OWN Done rows — and the four HITL
+# rows closed the same day — are graded by the gate they introduce. Measured: the real board is
+# green at this epoch with zero backfill, and mutating the marker token reds it (so leg 2 is
+# demonstrably live on real rows here, not merely configured).
+# Columns are resolved BY NAME (col_index), never by position — the backlog-lib contract.
+# FAIL-CLOSED: an unparseable or absent Closed date is treated as POST-epoch (marker required); an
+# absent Closed/Retro column FAILs naming the columns that WERE found. A column-shifted row (see
+# BOARD-ROW-ARITY) therefore fails loudly instead of silently evading leg 2.
+# HONEST CEILING: leg 1 proves the cell is not a stub, NEVER that a retro was written; leg 2 proves
+# a marker is present, not that the prose beneath it is a real retro. Backdating the Closed cell
+# evades leg 2 — that edit is diff-visible and review-covered, and is not defended against here.
+# Increments DONE_RETRO_GRADED (rows that reached leg 1). rc0 = pass.
+check_done_retro() {
+  _f="$1"
+  _rows=$(section_rows "$_f" "Done")
+  [ -n "$_rows" ] || return 0                     # no Done table at all -> nothing to enforce
+  _hdr=$(printf '%s\n' "$_rows" | head -1)
+  _ci_c=$(col_index "$_hdr" "Closed")
+  _ci_r=$(col_index "$_hdr" "Retro/outcome")
+  if [ -z "$_ci_c" ] || [ -z "$_ci_r" ]; then
+    echo "FAIL: Done table lacks a 'Closed' and/or 'Retro/outcome' column (found: $(header_cols "$_hdr")); HITL-6 cannot grade an L1 retro without both"
+    return 1
+  fi
+  _epoch_n=$(printf '%s' "$HITL6_RETRO_EPOCH" | tr -d '-')
+  _ln=0
+  while IFS= read -r _row; do
+    _ln=$((_ln + 1))
+    if [ "$_ln" -eq 1 ]; then continue; fi        # header row
+    if is_sep_row "$_row"; then continue; fi      # separator row (has a dash)
+    _item=$(cell "$_row" 1)
+    if [ -z "$_item" ]; then continue; fi         # template 'no items' spacer row
+    _closed=$(cell "$_row" "$_ci_c")
+    _retro=$(retro_cell "$_row" "$_hdr" "$_ci_r")
+    DONE_RETRO_GRADED=$((DONE_RETRO_GRADED + 1))
+    # leg 1 — substance floor, EVERY row regardless of date.
+    _len=${#_retro}
+    if [ "$_len" -lt "$HITL6_MIN_RETRO_CHARS" ]; then
+      echo "FAIL: Done item '$_item' — Retro/outcome cell is too thin ($_len chars, floor $HITL6_MIN_RETRO_CHARS); a Done row must record what shipped and what was learned"
+      return 1
+    fi
+    # leg 2 — explicit marker for rows Closed on/after the epoch. A date this cannot parse falls
+    # THROUGH to the marker requirement (fail closed); it is never skipped.
+    case "$_closed" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+        _cn=$(printf '%s' "$_closed" | tr -d '-')
+        if [ "$_cn" -lt "$_epoch_n" ]; then continue; fi ;;   # pre-epoch -> N/A for the marker
+    esac
+    case "$_retro" in
+      *"L1 retro"*) ;;
+      *)
+        echo "FAIL: Done item '$_item' — closed '$_closed' (on/after $HITL6_RETRO_EPOCH, or undated) but carries no 'L1 retro' marker; a Done item must record an L1 retro"
+        return 1
+        ;;
+    esac
+  done <<EOF
+$_rows
+EOF
+  return 0
+}
+
 # check_dir <project-dir> -> routes the three N/A cases; for an in-use BACKLOG.md, parses the
 # state tables. N/A is always a pass (never a false FAIL). OK/FAIL reflect the board.
 check_dir() {
@@ -281,7 +383,7 @@ check_dir() {
     fi
   done
   # Parse the gated state tables (Ready/Released/Done are ungated — untouched).
-  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; DONE_UAT_FLAGGED=0; BOARD_TRACE=""; _agg=0
+  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; DONE_UAT_FLAGGED=0; DONE_RETRO_GRADED=0; BOARD_TRACE=""; _agg=0
   # Accumulate-all (K11): run EVERY gated section unconditionally and collect every failure,
   # so ONE run surfaces the whole picture — never exit-on-first (fix In Review, re-run, only
   # THEN discover Blocked also failed). return non-zero iff any section failed.
@@ -297,8 +399,12 @@ check_dir() {
   # reference; an unflagged Done row is N/A. Self-guards on an absent/empty Done table (Done is
   # optional). Accumulate-all (K11): collect its failure alongside the section gates in ONE pass.
   check_done_uat "$_bl" || _agg=1
+  # Done-edge L1-retro enforcement (HITL-6): every Done row clears a substance floor, and a row
+  # closed on/after HITL6_RETRO_EPOCH also carries an 'L1 retro' marker. Same accumulate-all (K11)
+  # contract as the gate above — collect its failure in the SAME pass rather than short-circuiting.
+  check_done_retro "$_bl" || _agg=1
   [ "$_agg" -ne 0 ] && return 1
-  echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES; done-uat-flagged=$DONE_UAT_FLAGGED"
+  echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES; done-uat-flagged=$DONE_UAT_FLAGGED; done-retro-graded=$DONE_RETRO_GRADED"
   return 0
 }
 
@@ -306,6 +412,10 @@ check_dir() {
 selftest() {
   st_fail=0
   base=$(mktemp -d)
+  # Trap-clean on every exit path — matches the sibling promotion-readiness-wired selftest fixed
+  # earlier this slice, and honours this project's documented history of leaked conformance mktemp
+  # trees filling the dev machine. `[ -n ]` guards the empty-var case so this can never widen.
+  trap '[ -n "${base:-}" ] && rm -rf "$base"; :' EXIT INT TERM
 
   # ===== T2.0 — backend resolution / routing (annotated template forms) ================
 
@@ -1197,7 +1307,7 @@ EOF
 
 | Item | Closed | Retro/outcome |
 |------|--------|---------------|
-| Redesign onboarding [taste-surface] | 2026-07-10 | shipped; L1 retro in #40 |
+| Redesign onboarding [taste-surface] | 2026-07-10 | shipped in v1.4; the three-step wizard replaced the single long form and first-week drop-off fell from 38% to 11%. L1 retro in #40. |
 EOF
   assert_fail "$d" "carries no UAT-SIGNOFF reference" "bad-done-flagged-no-uat: flagged taste-surface, no UAT ref -> FAIL"
 
@@ -1228,7 +1338,7 @@ EOF
 
 | Item | Closed | Retro/outcome |
 |------|--------|---------------|
-| Fix a typo | 2026-07-10 | shipped; retro #41 |
+| Fix a typo | 2026-07-10 | corrected a misspelling in the billing footer that shipped in v1.2; reported by a customer, no code path or data affected. L1 retro in #41. |
 EOF
   assert_ok "$d" "good-done-unflagged: unflagged Done row -> N/A for UAT (PASS)"
 
@@ -1260,15 +1370,253 @@ EOF
 
 | Item | Closed | Retro/outcome |
 |------|--------|---------------|
-| Redesign onboarding [taste-surface] | 2026-07-10 | shipped; UAT sign-off docs/uat/UAT-SIGNOFF-onboarding.md |
+| Redesign onboarding [taste-surface] | 2026-07-10 | shipped behind a flag then ramped to 100% over four days with no rollback; UAT sign-off recorded at docs/uat/UAT-SIGNOFF-onboarding.md. L1 retro in #42. |
 EOF
   assert_msg "$d" "done-uat-flagged=1" "good-done-flagged-with-uat: flagged + UAT-SIGNOFF ref -> PASS (flagged row counted)"
+
+  # ===== HITL-6 — a Done item must carry an L1 retro ============================================
+  # Two legs with DIFFERENT scopes, both anchored on constants declared outside this board:
+  #   leg 1 (substance floor) applies to EVERY Done row;
+  #   leg 2 (explicit marker) applies only to rows Closed on/after HITL6_RETRO_EPOCH.
+  # The split exists because the 77 rows on this kit's own board predate the marker convention:
+  # enforcing it retroactively would demand 72 retrospectives manufactured after the fact, which is
+  # the attestation theatre this gate exists to prevent. Measured 2026-07-24: 77 rows, 5 markers,
+  # col-3 min 200 chars — so the floor is met by every historical row without any backfill.
+
+  # bad-done-stub-retro/ — a Done row whose Retro/outcome cell is a stub -> FAIL. THE enforced
+  # floor, and the cheaper bypass: `| x | date | done |` would otherwise read as a filled retro.
+  d="$base/bad-done-stub-retro"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Add login | 2026-01-01 | done |
+EOF
+  assert_fail "$d" "Retro/outcome cell is too thin" "bad-done-stub-retro: stub retro cell -> FAIL"
+
+  # bad-done-postepoch-no-marker/ — a row Closed ON/AFTER the epoch, with substantial prose but NO
+  # 'L1 retro' marker -> FAIL. This is the leg that makes leg 1 more than a length check: the prose
+  # here CLEARS the floor, so only the marker rule can red it.
+  d="$base/bad-done-postepoch-no-marker"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Add login | 2026-07-25 | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
+EOF
+  assert_fail "$d" "carries no 'L1 retro' marker" "bad-done-postepoch-no-marker: post-epoch, no marker -> FAIL"
+
+  # good-done-preepoch-no-marker/ — the SAME row, Closed one day BEFORE the epoch -> PASS. Guards
+  # against over-gating the historical rows. HONEST: this leg is green before AND after the gate
+  # ships (nothing enforced it previously), so it detects no existing defect — it locks the epoch
+  # boundary against a future change that drops the date test and reds 72 historical rows.
+  d="$base/good-done-preepoch-no-marker"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Add login | 2026-07-23 | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
+EOF
+  assert_ok "$d" "good-done-preepoch-no-marker: pre-epoch, no marker -> N/A (PASS)"
+
+  # bad-done-onepoch-no-marker/ — a row Closed EXACTLY ON the epoch (2026-07-24), substantial prose,
+  # NO marker -> FAIL. This is the leg that LOCKS the boundary as INCLUSIVE ("on/after"), which is the
+  # entire point of the epoch tightening (commit 36bf637 — "so this slice grades itself"). Without it
+  # the pre/post fixtures straddle 2026-07-24 but never land on it, so mutating the comparison from
+  # `-lt` to `-le` (which would wrongly EXEMPT an on-epoch row) passes the selftest unchanged — an
+  # unfalsifiable claim. Verified: this fixture is RED under `-le` and green under the shipped `-lt`.
+  d="$base/bad-done-onepoch-no-marker"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Add login | 2026-07-24 | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
+EOF
+  assert_fail "$d" "carries no 'L1 retro' marker" "bad-done-onepoch-no-marker: ON the epoch, no marker -> FAIL (locks >= inclusivity)"
+
+  # bad-done-malformed-date/ — an unparseable Closed cell must FAIL CLOSED (treated as post-epoch),
+  # never skipped. Also the BOARD-ROW-ARITY mitigation: a stray '|' shifting columns lands here.
+  d="$base/bad-done-malformed-date"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Add login | someday | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
+EOF
+  assert_fail "$d" "carries no 'L1 retro' marker" "bad-done-malformed-date: unparseable Closed -> FAIL CLOSED"
+
+  # bad-done-missing-column/ — a Done table whose header renames 'Closed' to 'Shipped' -> FAIL. Locks
+  # the defensive branch that fails when either graded column is absent (HITL-6 cannot grade a retro
+  # without both), which was otherwise an unproven FAIL path.
+  d="$base/bad-done-missing-column"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Shipped | Retro/outcome |
+|------|---------|---------------|
+| Add login | 2026-07-23 | shipped and ramped without incident; session store moved to Redis and p95 login latency fell from 410ms to 120ms. L1 retro in #77. |
+EOF
+  assert_fail "$d" "lacks a 'Closed'" "bad-done-missing-column: Done header renames Closed -> FAIL (both graded columns required)"
+
+  # good-done-escaped-pipe/ — a POST-epoch row whose retro cell contains the GFM-correct escaped
+  # pipe `\|` -> PASS. Without retro_cell this row parses as NF=7, the marker lands in a shifted
+  # field, and a perfectly valid retro is falsely RED. Derived from a REAL row (BACKLOG.md:133,
+  # HITL-1), not invented — the plain-cell() parse was measured before this fixture was written.
+  d="$base/good-done-escaped-pipe"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links |
+|------|-------|-------|
+| x | a | #1 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| Add login | 2026-07-25 | shipped the `triggered\|none\|uncertain` detector with fail-closed derivation; the escaped pipes here are GFM-correct and must not shift the parse. L1 retro in #99. |
+EOF
+  # NB: no backticks in this label — inside a double-quoted shell string they are COMMAND
+  # SUBSTITUTION, which silently ate the label text on the first version of this line.
+  assert_ok "$d" 'good-done-escaped-pipe: GFM escaped pipe in retro cell -> parsed whole (PASS)'
 
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-current --selftest: FAIL" >&2
     return 1
   fi
-  echo "backlog-current --selftest: OK (fixtures left in $base)"
+  echo "backlog-current --selftest: OK (fixtures cleaned on exit)"
   return 0
 }
 

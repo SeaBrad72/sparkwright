@@ -59,10 +59,41 @@ if [ -n "$CHANGED" ]; then
   if [ -f "$CHANGED" ]; then CHANGED_LIST=$(cat "$CHANGED"); else CHANGED_LIST=""; CHANGED_READ_FAIL=1; fi
 else
   base=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)
-  if [ -n "$base" ]; then
-    CHANGED_LIST=$(git diff --name-only "$base"...HEAD 2>/dev/null || true)
+  # PATH QUOTING (PROMOTION-PATH-QUOTING; mirrors the obl_changeset fix at obligation-lib.sh:49-55).
+  # Under git's default core.quotePath=true a path with any non-ASCII byte is emitted WRAPPED IN
+  # DOUBLE QUOTES with octal escapes ("\.github/workflows/d\303\251ploy.yml"). The leading '"'
+  # defeats is_control_plane_path, so an accented control-plane file classified `ordinary` and the
+  # §13 promotion ceremony silently downgraded from human-ratified to agent-autonomous.
+  # MONOTONE: unquoting can only ever ADD matches — no change-set can classify LOWER after this fix.
+  # WHICH HALF IS PROVEN — measured, not reasoned. Mutants run against
+  # `sh conformance/promotion-readiness-wired.sh --selftest`:
+  #   drop `-z` only                   -> quote-in-name leg RED   (that leg is its ONLY killer)
+  #   drop `core.quotePath=false` only -> ALL THREE LEGS SURVIVE   (unproven — see below)
+  #   drop both                        -> nonascii AND quote-in-name RED
+  # So `-z` is the strictly stronger control and is the half that carries this fix: NUL output is
+  # never quoted at all, whereas core.quotePath=false only stops non-ASCII octal escaping and still
+  # quotes a path containing '"'. core.quotePath=false is retained as defense-in-depth for readers
+  # and for any future non-`-z` consumer, but NO leg proves it — do not claim otherwise.
+  # A temp file, NOT a pipe: `git … | tr` makes the pipeline's status tr's and would discard the
+  # derive-failure signal the line-87 fail-safe depends on. POSIX sh has no PIPESTATUS.
+  # HONEST CEILING: a filename containing a literal NEWLINE is still mis-split — POSIX sh cannot
+  # carry NUL through a command substitution and `read -d ''` is bash-only. Non-ASCII and '"' are
+  # covered; newline-in-name is not, and this check does not pretend otherwise.
+  _z=$(mktemp 2>/dev/null) || _z=""
+  if [ -z "$_z" ]; then
+    CHANGED_LIST=""; CHANGED_READ_FAIL=1
   else
-    CHANGED_LIST=$(git diff --name-only HEAD 2>/dev/null || true)
+    if [ -n "$base" ]; then
+      if git -c core.quotePath=false diff --name-only -z "$base"...HEAD > "$_z" 2>/dev/null; then _ok=1; else _ok=0; fi
+    else
+      if git -c core.quotePath=false diff --name-only -z HEAD > "$_z" 2>/dev/null; then _ok=1; else _ok=0; fi
+    fi
+    if [ "$_ok" = 1 ]; then
+      CHANGED_LIST=$(tr '\0' '\n' < "$_z") || CHANGED_READ_FAIL=1
+    else
+      CHANGED_LIST=""; CHANGED_READ_FAIL=1
+    fi
+    rm -f "$_z"
   fi
 fi
 
