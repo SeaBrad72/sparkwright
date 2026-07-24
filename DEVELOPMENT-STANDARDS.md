@@ -260,7 +260,7 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 > This raises the supply-chain posture (gates 6–7) to the baseline for **all** projects — see `DEVELOPMENT-PROCESS.md` §10.
 
 **Conditional gates (a11y / load / eval / SAST / license).** The seven above are **universal**. Five further gates are **first-class but conditional** — binding only when their trigger is present, **N/A-with-reason** otherwise (the same pattern as the 15-factor and threat-model gates):
-- **Accessibility** *(user-facing UI)* — WCAG 2.1 AA; recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse). `DEVELOPMENT-PROCESS.md` §7.
+- **Accessibility** *(user-facing UI)* — WCAG 2.1 AA; recorded in `templates/A11Y-SIGNOFF-TEMPLATE.md` (axe / Lighthouse). `DEVELOPMENT-PROCESS.md` §7. **Enforced** by `conformance/a11y-obligation.sh` (HITL-4): a change touching a user-facing UI surface requires the sign-off present *and filled*, else the PR-context gate reds. Trigger-absence (no UI surface touched) is the N/A path, derived — not self-asserted.
 - **Load / soak** *(deployable services)* — resilience + perf-budget verification; `conformance/resilience-readiness.md`.
 - **Eval** *(AI features)* — model/prompt output meets the eval bar and does not regress; `DEVELOPMENT-PROCESS.md` §7; readiness `conformance/eval-readiness.md`, plan `templates/EVAL-PLAN-TEMPLATE.md`.
 - **SAST** *(first-party code)* — static analysis (Semgrep/CodeQL) for injection/auth-bypass/SSRF; `DEVELOPMENT-PROCESS.md` §7; guidance `docs/operations/security-scanning.md`.

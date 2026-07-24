@@ -8,8 +8,13 @@
 # Fail-safe: a derive-FAILURE (no resolvable base / git error) or an uncertain surface -> require the record.
 set -eu
 
-# obl_changeset [--changed FILE]: newline-delimited changed paths. Mirrors promotion-readiness.sh:58-67
-# but DISTINGUISHES a derive-FAILURE from a genuinely-empty diff (the security-critical split):
+# obl_changeset [--changed FILE]: newline-delimited changed paths. Modelled on promotion-readiness.sh's
+# derivation but now DELIBERATELY DIVERGENT from it in two ways — do not "re-sync" them without reading
+# both notes. (a) It DISTINGUISHES a derive-FAILURE from a genuinely-empty diff (the security-critical
+# split, below); (b) it derives UNQUOTED paths (see PATH QUOTING). promotion-readiness.sh still uses the
+# bare quoted form and mis-classifies a non-ASCII control-plane path as Ordinary — boarded as
+# PROMOTION-PATH-QUOTING; that check is NOT fixed by this slice.
+# The derive-FAILURE split:
 #  - a valid base RESOLVES (merge-base HEAD origin/main, else HEAD main) and the diff is empty
 #    -> empty change-set, OBL_DERIVE_FAIL stays 0 -> 'none'/N-A (correct: nothing changed);
 #  - NO base resolves, OR any git step errors -> OBL_DERIVE_FAIL=1 so the caller fails CLOSED
@@ -24,7 +29,32 @@ obl_changeset() {
   if [ "${1:-}" = "--changed" ]; then cat "$2"; return 0; fi
   base="$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)"
   if [ -z "$base" ]; then OBL_DERIVE_FAIL=1; return 0; fi
-  git diff --name-only "$base"...HEAD 2>/dev/null || OBL_DERIVE_FAIL=1
+  # PATH QUOTING (HITL-4 F1 — a silent fail-open on every obligation). Under git's default
+  # core.quotePath=true a path with any non-ASCII byte is emitted WRAPPED IN DOUBLE QUOTES with octal
+  # escapes ("web/Caf\303\251.tsx"). The trailing '"' defeats every EXTENSION surface glob (*.tsx,
+  # *.html …) while directory globs still match (they are '*'-wrapped both sides), so `Café.tsx` derived
+  # N/A where `Cafe.tsx` correctly FAILed — one accented character bypassed the gate. This is MONOTONE:
+  # unquoting can only ever ADD matches, so no previously-triggering change-set can stop triggering.
+  # WHICH PART IS PROVEN (measured, and an earlier version of this note had it BACKWARDS — see below):
+  #   drop `core.quotePath=false` alone -> selftest SURVIVES
+  #   drop `-z` alone                   -> selftest SURVIVES  (until the quote leg below; now KILLED)
+  #   drop both                         -> KILLED by the non-ASCII leg
+  # `-z` is the STRICTLY STRONGER control: NUL output is never quoted at all, whereas
+  # `core.quotePath=false` only stops the non-ASCII octal escaping — it still quotes a path containing
+  # `"`, `\`, a newline or a control byte. obl_selftest therefore carries TWO assertions: a non-ASCII
+  # path (kills the both-dropped mutant) AND a quote-in-name path (kills the `-z`-dropped mutant, which
+  # nothing else covers). Keep both, and do not "simplify" `-z` away: it is the half that matters.
+  # A temp file, not a pipe: `git … | tr` would make the pipeline's status `tr`'s, silently discarding the
+  # derive-FAILURE signal this whole function exists to preserve. POSIX sh has no PIPESTATUS.
+  _z="$(mktemp 2>/dev/null)" || { OBL_DERIVE_FAIL=1; return 0; }
+  if git -c core.quotePath=false diff --name-only -z "$base"...HEAD > "$_z" 2>/dev/null; then
+    # tr's status is CAPTURED, not discarded: a bare `tr … < "$_z"` under `set -e` aborts the whole
+    # check with no NOTE, no FAIL text and a LEAKED temp file (measured). Fail closed, loudly, and clean up.
+    tr '\0' '\n' < "$_z" || OBL_DERIVE_FAIL=1
+  else
+    OBL_DERIVE_FAIL=1
+  fi
+  rm -f "$_z"
   return 0
 }
 
@@ -188,6 +218,54 @@ obl_selftest() {
   if ( cd "$_dr" && obligation_gate --name t --surface-globs '*auth*' \
          --record R.md --template-marker T --root "$_dr" ) >/dev/null 2>&1; then
     echo "OBL SELFTEST FAIL: underivable change-set did not FAIL (derive fail-open)"; rc=1
+  fi
+  # LIVENESS ONLY — this leg kills NO quoting mutant, and saying otherwise was a round-3 defect.
+  # Its change-set is {web/Cafe.tsx, web/Café.tsx}; the ASCII twin matches *.tsx however the accented one
+  # is rendered, so the gate fires under every derivation and this assertion is permanently green. It is
+  # kept because it does kill a "detection totally broken" mutant, and because the twin makes the NEXT
+  # leg's setup explicit — but it is NOT one of the two path-quoting assertions. Those are the
+  # accented-ALONE leg and the quote-in-name leg below, each of which is the sole triggering path in its
+  # own change-set. A fail-open assertion sharing a change-set with any other triggering path proves nothing.
+  _qr="$_t/quote"; mkdir -p "$_qr"
+  git -C "$_qr" init -q >/dev/null 2>&1
+  git -C "$_qr" config user.email obl@test.local
+  git -C "$_qr" config user.name obl-test
+  : > "$_qr/seed.txt"; git -C "$_qr" add seed.txt; git -C "$_qr" commit -qm seed >/dev/null 2>&1
+  git -C "$_qr" branch -M main >/dev/null 2>&1        # a resolvable base for merge-base HEAD main
+  git -C "$_qr" checkout -q -b feat >/dev/null 2>&1
+  mkdir -p "$_qr/web"
+  _acc="$(printf 'web/Caf\303\251.tsx')"              # UTF-8 'Café.tsx', written by byte so the
+  : > "$_qr/$_acc"                                    # selftest does not depend on this file's encoding
+  : > "$_qr/web/Cafe.tsx"
+  git -C "$_qr" add -A >/dev/null 2>&1; git -C "$_qr" commit -qm ui >/dev/null 2>&1
+  if ( cd "$_qr" && obligation_gate --name t --surface-globs '*.tsx' \
+         --record R.md --template-marker T --root "$_qr" ) >/dev/null 2>&1; then
+    echo "OBL SELFTEST FAIL: a change-set containing plain ASCII UI files was wrongly N/A — detection is broken outright"; rc=1
+  fi
+  # …and the accented file ALONE must still trigger. This is the assertion that actually bites: with the
+  # ASCII twin present, the twin triggers and masks the bug, so the leg above cannot prove equivalence on
+  # its own (verified — under the both-dropped mutant only THIS assertion fires).
+  git -C "$_qr" rm -q --cached web/Cafe.tsx >/dev/null 2>&1
+  rm -f "$_qr/web/Cafe.tsx"
+  git -C "$_qr" commit -qm ascii-gone >/dev/null 2>&1
+  if ( cd "$_qr" && obligation_gate --name t --surface-globs '*.tsx' \
+         --record R.md --template-marker T --root "$_qr" ) >/dev/null 2>&1; then
+    echo "OBL SELFTEST FAIL: a change-set whose ONLY UI file has a non-ASCII name was wrongly N/A"; rc=1
+  fi
+  # QUOTE-IN-NAME (kills the `-z`-dropped mutant, which the non-ASCII legs above CANNOT — git quotes a
+  # path containing `"` regardless of core.quotePath, so only `-z` unquotes it). Without this leg the
+  # engine's strongest half ships untested and a maintainer can "simplify" it away on a false attestation.
+  # The accented file is REMOVED first: with core.quotePath=false it emits raw, triggers, and MASKS this
+  # assertion (measured — the mutant survived until this line existed). Every fail-open leg here must be
+  # the ONLY triggering path in its change-set, or it proves nothing.
+  git -C "$_qr" rm -q --cached "$_acc" >/dev/null 2>&1
+  rm -f "$_qr/$_acc"
+  _qn="$(printf 'web/qu\42ote.tsx')"        # web/qu"ote.tsx, written by byte
+  : > "$_qr/$_qn"
+  git -C "$_qr" add -A >/dev/null 2>&1; git -C "$_qr" commit -qm quoted >/dev/null 2>&1
+  if ( cd "$_qr" && obligation_gate --name t --surface-globs '*.tsx' \
+         --record R.md --template-marker T --root "$_qr" ) >/dev/null 2>&1; then
+    echo "OBL SELFTEST FAIL: a UI path containing a double-quote was wrongly N/A — git quotes it whatever core.quotePath says, so the derivation must use -z"; rc=1
   fi
 
   [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; gate absent/placeholder/filled/none/derive-fail)"

@@ -54,6 +54,7 @@ agents/reviewer.agent.md
 agents/security.agent.md
 conformance/15-factor-checklist.md
 conformance/README.md
+conformance/a11y-obligation.sh
 conformance/action-pinning.sh
 conformance/actionlint-valid.sh
 conformance/adopter-export-wired.sh

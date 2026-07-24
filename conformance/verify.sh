@@ -294,24 +294,27 @@ check control mode-blind       sh conformance/mode-enforcement-blind.sh
 check control orchestrator-loop sh conformance/orchestrator-loop-wired.sh
 check control escalation-seam    sh conformance/escalation-wired.sh --selftest
 check control proportional-gate sh conformance/proportional-gate-wired.sh --selftest
-# HITL obligation engine (HITL-1/2). ONLY the fixture-driven, base-INDEPENDENT selftests are registered
-# in this offline aggregate. The REAL diff-relative gates (sh conformance/threat-obligation.sh and
-# conformance/uat-obligation.sh, no args) are DELIBERATELY NOT here: each derives its change-set from
+# HITL obligation engine (HITL-1/2/4). ONLY the fixture-driven, base-INDEPENDENT selftests are registered
+# in this offline aggregate. The REAL diff-relative gates (sh conformance/threat-obligation.sh,
+# conformance/uat-obligation.sh and conformance/a11y-obligation.sh, no args) are DELIBERATELY NOT here:
+# each derives its change-set from
 # `merge-base HEAD origin/main`, and by design a non-derivable base fails CLOSED (routes to 'uncertain' ->
 # requires the record). In a base-less context — a shallow CI checkout with origin/main unfetched, or a
 # fresh `git clone` on an adopter tree with no resolvable base — that correct fail-closed behavior would
 # redden `verify.sh --require` for every caller, which is a false positive at the aggregate level (the
 # aggregate must be green on any well-formed tree regardless of git-fetch depth). So each real gate runs as
 # a dedicated PR-context CI step with a resolvable base (fetch-depth: 0 -> origin/main resolves) — the kit's
-# own `threat-obligation`/`uat-obligation` jobs in ci.yml, and the reference adopter steps in
+# own `threat-obligation`/`uat-obligation`/`a11y-obligation` jobs in ci.yml, and the reference adopter steps in
 # profiles/typescript-node/ci.yml. This mirrors how promotion-readiness.sh (the same merge-base diff-relative
 # pattern) runs only in the PR-context ratification.yml, never in this aggregate. The engine
 # (obligation-lib.sh) still carries its own mutation-tested selftest so non-vacuity.sh mutates + kills its
-# FAIL paths directly; threat-obligation.sh and uat-obligation.sh each expose their selftest as behavioral
-# proof. All selftests are base-independent (they build their own fixtures), so they belong here.
+# FAIL paths directly; threat-obligation.sh, uat-obligation.sh and a11y-obligation.sh each expose their
+# selftest as behavioral proof. All selftests are base-independent (they build their own fixtures), so they
+# belong here.
 check control obligation-lib-selftest    sh conformance/obligation-lib.sh --selftest
 check control threat-obligation-selftest sh conformance/threat-obligation.sh --selftest
 check control uat-obligation-selftest    sh conformance/uat-obligation.sh --selftest
+check control a11y-obligation-selftest   sh conformance/a11y-obligation.sh --selftest
 check control non-vacuity      sh conformance/non-vacuity.sh --selftest
 check control eval-harness      sh conformance/eval-harness-wired.sh --selftest
 check control eval-harness-runs sh conformance/eval-harness-runs.sh --selftest

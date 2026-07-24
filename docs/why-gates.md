@@ -45,12 +45,17 @@ Enforced by: conformance/agentops-ready.sh
 Read more: DEVELOPMENT-PROCESS.md §13
 
 ## a11y
-Applies IF: you ship a user-facing UI
+Applies IF: a change touches a user-facing UI surface — the components/views/pages/screens/ui/frontend/styles directories (repo-root or nested), or a UI/view-template markup file (.tsx .jsx .vue .svelte .css .scss .less .html .htm .j2 .jinja .jinja2 .erb .hbs .handlebars .ejs .twig .pug .haml .slim .liquid .mustache .astro .njk .tmpl .gohtml .templ .tpl .cshtml .razor .jsp .jspx .ftl .heex .eex). A bare templates/ directory is deliberately NOT a trigger (Helm/CloudFormation use it). Known misses, both directions: config templates sharing a markup extension DO trigger (Ansible nginx.conf.j2, Terraform user_data.tpl, Helm _helpers.tpl); server-rendered .php/.blade.php, Android res/layout/*.xml, and unlisted engines (.vm/.st/.dust) do NOT.
 Why: Accessibility is not a polish step — keyboard, contrast, and screen-reader support are how
   a large fraction of users reach your product at all, and retrofitting them is far costlier than
-  building them in. It is also, in many jurisdictions, a legal floor.
-Enforced by: DEVELOPMENT-STANDARDS.md §14 (a11y gate)
-Read more: DEVELOPMENT-STANDARDS.md §14
+  building them in. It is also, in many jurisdictions, a legal floor. Riding the obligation engine, a
+  UI-surface change with no filled A11Y-SIGNOFF at the repository root fails the gate, so the WCAG 2.1 AA
+  audit is evidenced, not assumed. Honest ceiling: it proves a filled sign-off EXISTS — not that the audit
+  was performed competently, that its pass/fail verdicts are truthful, or that the record is FRESH for
+  this change (one committed record satisfies every later UI PR; the record carries a Date and a story
+  link so review can judge staleness, and "filled" is coarse enough that an empty record still passes).
+Enforced by: conformance/a11y-obligation.sh
+Read more: DEVELOPMENT-STANDARDS.md §14, templates/A11Y-SIGNOFF-TEMPLATE.md
 
 ## uat
 Applies IF: a change touches a user-facing taste surface (UI: components/views/pages/screens/templates/styles)

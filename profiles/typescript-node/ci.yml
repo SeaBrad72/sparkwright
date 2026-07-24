@@ -89,6 +89,20 @@ jobs:
         if: github.event_name == 'pull_request'
         run: sh conformance/uat-obligation.sh
 
+      # HITL obligation — the a11y sign-off gate runs HERE too, in PR context, for the same reason as the two
+      # gates above: conformance/a11y-obligation.sh is diff-relative (merge-base HEAD origin/main) and fails
+      # CLOSED with no resolvable base, so it belongs in a PR-context step with the fetch-depth: 0 checkout,
+      # not the offline verify.sh --require aggregate. COPY-AND-ADAPT (reference, not a tier).
+      # A PR touching a user-facing UI surface — the components/views/pages/screens/ui/frontend/styles
+      # directories (repo-root or nested), plus the UI and view-template markup extensions listed in the
+      # check's A11Y_SURFACE_GLOBS (.tsx/.jsx/.vue/.svelte/.css/.scss/.less/.html and the template engines) —
+      # with no filled A11Y-SIGNOFF.md at the repo root FAILs the build; any other PR is N/A and passes.
+      # This is the enforcement behind the Definition-of-Done Accessibility item. Note it deliberately does
+      # NOT gate a bare templates/ directory: that fires on Helm/CloudFormation manifests, not UI.
+      - name: A11y sign-off obligation (PR-context; user-facing UI requires a filled A11Y-SIGNOFF)
+        if: github.event_name == 'pull_request'
+        run: sh conformance/a11y-obligation.sh
+
       - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
         id: detect-dockerfile
         run: |
