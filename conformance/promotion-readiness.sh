@@ -59,7 +59,10 @@ if [ -n "$CHANGED" ]; then
   if [ -f "$CHANGED" ]; then CHANGED_LIST=$(cat "$CHANGED"); else CHANGED_LIST=""; CHANGED_READ_FAIL=1; fi
 else
   base=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)
-  # PATH QUOTING (PROMOTION-PATH-QUOTING; mirrors the obl_changeset fix at obligation-lib.sh:49-55).
+  # PATH QUOTING (PROMOTION-PATH-QUOTING; mirrors the `git -c core.quotePath=false … -z` derivation
+  # in obligation-lib.sh's obl_changeset — referenced BY NAME, never by line number: an earlier
+  # citation here drifted twice as that function's commentary grew, which is the same staleness class
+  # BOARD-ROW-ARITY and the T1/T2 comment corrections were about).
   # Under git's default core.quotePath=true a path with any non-ASCII byte is emitted WRAPPED IN
   # DOUBLE QUOTES with octal escapes ("\.github/workflows/d\303\251ploy.yml"). The leading '"'
   # defeats is_control_plane_path, so an accented control-plane file classified `ordinary` and the

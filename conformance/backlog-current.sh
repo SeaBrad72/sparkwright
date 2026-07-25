@@ -4,7 +4,9 @@
 # not-applicable routes, and — for a repo-native BACKLOG.md that is in use — asserts the
 # state-table item-traceability the loop depends on: In Progress -> Links, In Review -> PR,
 # (only if the OPTIONAL section is present) Blocked -> Blocked on + Since, and (Done-edge, HITL-3)
-# a Done row FLAGGED [taste-surface] -> a UAT-SIGNOFF reference.
+# a Done row FLAGGED [taste-surface] -> a UAT-SIGNOFF reference. It also asserts column ARITY
+# (BOARD-ROW-ARITY): every non-spacer body row carries exactly as many columns as its own section
+# header declares, so an unescaped '|' inside a cell cannot silently shift a row's metadata.
 #
 #   sh conformance/backlog-current.sh [project-dir]   (default: .)
 #   sh conformance/backlog-current.sh --selftest
@@ -32,6 +34,10 @@
 #   for non-emptiness so rot is VISIBLE: there is NO date/age arithmetic anywhere — staleness is
 #   surfaced, never adjudicated (failing on "blocked > N days" is time-dependent, non-deterministic
 #   in CI, and a Go/No-Go policy call).
+#   ARITY's ceiling: it proves a row has the RIGHT NUMBER of columns, never that the right CONTENT
+#   is in them — and it counts GFM delimiters (an escaped `\|` renders as a literal and is excluded),
+#   so it does NOT detect that the shared cell() still splits on raw pipes. That parser gap is
+#   BOARD-PIPE-ESCAPE, boarded separately; retro_cell() is HITL-6's local workaround for it.
 set -eu
 # Shared board-parser primitives (resolve_backend, is_pure_template, section_rows, cell,
 # col_index, is_sep_row) live in backlog-lib.sh so this check and backlog-presence.sh consume
@@ -344,6 +350,139 @@ EOF
   return 0
 }
 
+# _arity_nf <row> : the row's FIELD count under GFM delimiter rules — `awk -F'|' NF` AFTER removing
+# every ESCAPED pipe (`\|`), which GFM renders as a literal and which therefore does NOT delimit a
+# column. NOTE the units: on a pipe-BOUNDED row (the canonical GFM form the template ships) NF
+# counts the two EMPTY boundary fields as well, so a 3-column row returns 5. The comparison below
+# is NF-to-NF so the units cancel; the FAIL MESSAGE subtracts them, because a board author counts
+# columns, not awk fields.
+# Counting raw pipes instead of GFM delimiters would false-FAIL every correctly-escaped row.
+# MEASURED on this kit's own board as this commit leaves it (2026-07-24), by comparing each row's
+# raw NF against its escape-aware NF: EIGHT rows carry `\|` legitimately — the BOARD-ROW-ARITY and
+# CP7R5-KITOWN-MARKER **Ready** rows, and the HITL-1 / CP7R5-NINE-PROFILES / CP7R5-GATE-AUTHORITY /
+# CP-7-recert-run-5 / CP-8a / P0-FU(a) **Done** rows — and every one of the eight raw-splits WIDER
+# than its own header, so a raw count would red all eight. One of them (HITL-1's Done row) is the
+# exact shape the shipped `good-done-escaped-pipe` fixture asserts must PASS, so a raw count would
+# also contradict an already-shipped contract. Rows are named, NOT cited by line number: a line
+# citation goes stale on the next board edit, and an earlier draft of this comment cited a line
+# that was in fact the Done table's SEPARATOR row.
+# This is NOT a fix for BOARD-PIPE-ESCAPE (the shared cell() splitting on raw pipes, boarded
+# separately): it only makes THIS check count what a GFM renderer counts.
+_arity_nf() { printf '%s' "$1" | sed 's/\\|//g' | awk -F'|' '{print NF}'; }
+
+# _ra_label <row> : the row's FIRST non-empty cell — the name a diagnostic calls the row by. Empty
+# output means EVERY cell is empty, which is also the TRUE-spacer test (see _arity_one_section).
+# Deliberately variable-free (a pure pipeline) so it cannot collide with any caller's namespace.
+_ra_label() {
+  printf '%s' "$1" | awk -F'|' '{for(i=2;i<=NF;i++){v=$i; gsub(/^[ \t]+|[ \t]+$/,"",v);
+    if(v!=""){print v; exit}}}'
+}
+
+# _ra_body_rows <file> : a crude, whole-file count of CONTENT-BEARING table body rows — a row that
+# follows a delimiter row inside the same table and has at least one non-empty cell. This is the
+# vacuous-green floor's independent oracle, NOT a second grader: it is deliberately a DIFFERENT
+# parser (delimiter-anchored and section-agnostic, no section_rows/cell) so it cannot go blind the
+# same way the graded path can. Per the shipped schema (locked by the arity-section-set selftest
+# leg) a board's ONLY tables are its six state sections, so a positive count here with zero rows
+# graded means either the grader went blind or the board grew a table-bearing section outside the
+# six — and both are the same silent-coverage-loss defect.
+_ra_body_rows() {
+  awk '
+    /^[[:space:]]*$/                        { inb=0; next }
+    /^[[:space:]]*\|[-:| ]+\|[[:space:]]*$/ { inb=1; next }
+    /^[[:space:]]*\|/                       { if (inb) { s=$0; gsub(/[[:space:]|]/,"",s)
+                                                         if (s != "") n++ }
+                                              next }
+                                            { inb=0 }
+    END { print n+0 }
+  ' "$1"
+}
+
+# _arity_one_section <file> <section> : every non-spacer body row's column count must equal its
+# section HEADER's. An unescaped '|' inside a cell shifts every later column, so the row's metadata
+# is silently wrong and any positional reader (col_index + cell, the contract the gates above are
+# built on) mis-reads it — a shifted row can evade a gate while looking well-formed. The header is
+# the oracle because it is the section's own declared schema. Increments BOARD_ARITY_CHECKED per
+# row actually compared. rc0 = pass. Accumulates within the section (reports EVERY bad row, not the
+# first) so one run surfaces the whole picture, matching check_dir's K11 contract — proven by the
+# bad-arity-two leg, which asserts BOTH offending rows are named in ONE run.
+# THE SPACER SKIP IS NARROW ON PURPOSE. It used to be `[ -z "$(cell "$_row" 1)" ]` — skip any row
+# whose ITEM cell is empty — which swallowed a mis-shaped row that simply left Item blank: it
+# shipped green and was not even COUNTED (reproduced; now the bad-arity-empty-item leg). A TRUE
+# spacer is a row where EVERY cell is empty, and such a row carries no metadata for a column shift
+# to corrupt, so skipping exactly that is safe. Verified before narrowing: every empty-Item row on
+# this kit's live board (3) and in templates/BACKLOG-TEMPLATE.md (3) is an all-cells-empty spacer.
+# VARIABLE NAMING IS LOAD-BEARING HERE: this file is POSIX sh with NO `local`, so every helper
+# shares ONE namespace and a bare `_f`/`_row`/`_item` in a leaf function is a live footgun — this
+# exact class already bit inside this subsystem (see check_row_arity's `_agg` note below). Hence
+# the `_ra_` prefix on everything the arity subsystem owns; `_ra_sf` is deliberately NOT `_ra_f`,
+# which belongs to check_row_arity, our caller.
+_arity_one_section() {
+  _ra_sf="$1"; _ra_sec="$2"; _ra_bad=0
+  _ra_rows=$(section_rows "$_ra_sf" "$_ra_sec")
+  [ -n "$_ra_rows" ] || return 0                  # section absent or table-less -> nothing to compare
+  _ra_hdr=$(printf '%s\n' "$_ra_rows" | head -1)
+  _ra_want=$(_arity_nf "$_ra_hdr")
+  _ra_ln=0
+  while IFS= read -r _ra_row; do
+    _ra_ln=$((_ra_ln + 1))
+    if [ "$_ra_ln" -eq 1 ]; then continue; fi     # header row (the oracle itself)
+    if is_sep_row "$_ra_row"; then continue; fi   # separator row (has a dash)
+    _ra_item=$(_ra_label "$_ra_row")
+    if [ -z "$_ra_item" ]; then continue; fi      # TRUE spacer: EVERY cell empty (see above)
+    _ra_got=$(_arity_nf "$_ra_row")
+    BOARD_ARITY_CHECKED=$((BOARD_ARITY_CHECKED + 1))
+    if [ "$_ra_got" != "$_ra_want" ]; then
+      # Report COLUMNS, not awk fields: NF counts the two empty boundary fields of a pipe-bounded
+      # row, so the raw numbers read one table wider than the one the author is looking at (the
+      # live board printed "19 against 10" for an 8-column table). A message a board author cannot
+      # count against is a message that sends them to the wrong cell.
+      echo "FAIL: '$_ra_sec' row '$_ra_item' carries $((_ra_got - 2)) columns but the section header declares $((_ra_want - 2)) — an unescaped '|' inside a cell shifts every later column and silently corrupts this row's metadata (escape it as '\\|')"
+      _ra_bad=1
+    fi
+  done <<EOF
+$_ra_rows
+EOF
+  return $_ra_bad
+}
+
+# check_row_arity <file> : run the arity rule over every board section that carries items.
+# The section list is ENUMERATED here, deliberately NOT derived from the board under test: a set
+# derived from its own subject can always be satisfied by deleting a section (the same oracle
+# lesson HITL-6's externally-declared constants record). They are separate calls rather than an
+# `IFS='|'` split loop on purpose — the save/restore IFS form is exactly what this slice REMOVES
+# from obl_detect (semgrep bash.lang.security.ifs-tampering); adding a new instance here would be
+# incoherent. rc0 = pass.
+# VARIABLE NAMING IS LOAD-BEARING HERE: this file is POSIX sh with NO `local`, so every helper
+# shares one namespace. Naming this accumulator `_agg` CLOBBERED check_dir's own `_agg` and reset
+# every failure accumulated before it — a green verdict on a board with a real Done-retro failure.
+# Caught by the pre-existing bad-done-* legs going RED. Hence the `_ra_` prefix, which now covers
+# _arity_one_section's locals too (it was still using bare names, safe only by leaf-call accident).
+# The enumerated set is LOCKED to the shipped schema by the arity-section-set selftest leg: adding
+# a seventh table-bearing state section to templates/BACKLOG-TEMPLATE.md without adding it here
+# reds the selftest, so a new section can never ship arity-unchecked in silence.
+# VACUOUS-GREEN FLOOR: a gate that inspected NOTHING must never report OK. `board-arity-checked=0`
+# is legitimate on a genuinely empty board (a brand-new adopter's — protecting incept first-run-
+# green), but NOT on a board that plainly carries rows, so the floor is conditioned on an
+# independent row count (_ra_body_rows) rather than being unconditional.
+check_row_arity() {
+  _ra_f="$1"; _ra_agg=0
+  _arity_one_section "$_ra_f" "Ready"       || _ra_agg=1
+  _arity_one_section "$_ra_f" "In Progress" || _ra_agg=1
+  _arity_one_section "$_ra_f" "In Review"   || _ra_agg=1
+  _arity_one_section "$_ra_f" "Released"    || _ra_agg=1
+  _arity_one_section "$_ra_f" "Done"        || _ra_agg=1
+  _arity_one_section "$_ra_f" "Blocked"     || _ra_agg=1
+  if [ "$BOARD_ARITY_CHECKED" -eq 0 ]; then
+    _ra_seen=$(_ra_body_rows "$_ra_f")
+    if [ "$_ra_seen" -gt 0 ]; then
+      echo "FAIL: the column-arity gate inspected 0 rows on a board that carries $_ra_seen content-bearing table row(s) — either it went blind (a renamed or reshaped state section) or the board tracks items in a table outside the six sections it grades (Ready / In Progress / In Review / Released / Done / Blocked); a gate that inspects nothing must never report OK"
+      _ra_agg=1
+    fi
+  fi
+  return $_ra_agg
+}
+
 # check_dir <project-dir> -> routes the three N/A cases; for an in-use BACKLOG.md, parses the
 # state tables. N/A is always a pass (never a false FAIL). OK/FAIL reflect the board.
 check_dir() {
@@ -383,7 +522,7 @@ check_dir() {
     fi
   done
   # Parse the gated state tables (Ready/Released/Done are ungated — untouched).
-  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; DONE_UAT_FLAGGED=0; DONE_RETRO_GRADED=0; BOARD_TRACE=""; _agg=0
+  SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; DONE_UAT_FLAGGED=0; DONE_RETRO_GRADED=0; BOARD_ARITY_CHECKED=0; BOARD_TRACE=""; _agg=0
   # Accumulate-all (K11): run EVERY gated section unconditionally and collect every failure,
   # so ONE run surfaces the whole picture — never exit-on-first (fix In Review, re-run, only
   # THEN discover Blocked also failed). return non-zero iff any section failed.
@@ -403,8 +542,11 @@ check_dir() {
   # closed on/after HITL6_RETRO_EPOCH also carries an 'L1 retro' marker. Same accumulate-all (K11)
   # contract as the gate above — collect its failure in the SAME pass rather than short-circuiting.
   check_done_retro "$_bl" || _agg=1
+  # Column-arity (BOARD-ROW-ARITY): every non-spacer body row's column count matches its section
+  # header's. Same accumulate-all (K11) contract — a shifted row is reported in the SAME pass.
+  check_row_arity "$_bl" || _agg=1
   [ "$_agg" -ne 0 ] && return 1
-  echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES; done-uat-flagged=$DONE_UAT_FLAGGED; done-retro-graded=$DONE_RETRO_GRADED"
+  echo "OK: backlog-current — backend is BACKLOG.md and the in-use board traces: $BOARD_TRACE; spacer-rows-skipped=$SPACER_SKIPS; in-progress N/A-escapes=$NA_ESCAPES; blocked N/A-escapes=$BLOCKED_NA_ESCAPES; done-uat-flagged=$DONE_UAT_FLAGGED; done-retro-graded=$DONE_RETRO_GRADED; board-arity-checked=$BOARD_ARITY_CHECKED"
   return 0
 }
 
@@ -1611,6 +1753,275 @@ EOF
   # NB: no backticks in this label — inside a double-quoted shell string they are COMMAND
   # SUBSTITUTION, which silently ate the label text on the first version of this line.
   assert_ok "$d" 'good-done-escaped-pipe: GFM escaped pipe in retro cell -> parsed whole (PASS)'
+
+  # ===== BOARD-ROW-ARITY — a body row's column count must match its section header's ======
+  # Fixtures live under $base so the ONE trap installed at the top of selftest() cleans them
+  # (a second mktemp -d + trap here would REPLACE that trap and leak the whole $base tree —
+  # this project has filled its dev machine that way twice).
+
+  # bad-arity-extra/ — a Ready row carrying one column MORE than its header. This is what an
+  # unescaped '|' inside a cell does: every later column shifts, so the row's metadata is
+  # silently wrong and any positional reader mis-reads it. Measured live on this kit's own board:
+  # the Ready row fusing MODEL-TIER-FAILSPAN and CP7R5-BOT-BOARD-BINDING carried 17 columns against
+  # its header's 8 (named, not cited by line — a line citation goes stale on the next board edit).
+  d="$base/bad-arity-extra"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+| A | why | S | EXTRA |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "carries 4 columns but the section header declares 3" \
+    "bad-arity-extra: a Ready row with an EXTRA column -> FAIL"
+
+  # bad-arity-missing/ — the other direction: a row SHORT of its header. Locks the comparison
+  # as an equality, not a "no more than" (a `>` would let this one through silently).
+  d="$base/bad-arity-missing"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+| A | why |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "carries 2 columns but the section header declares 3" \
+    "bad-arity-missing: a Ready row with a MISSING column -> FAIL"
+
+  # good-arity-exact/ — the positive liveness anchor, COUNTED: three well-formed body rows across
+  # three sections, plus a spacer row that must NOT be counted. `board-arity-checked=3` is the
+  # anti-vacuity assertion — a check that inspected nothing would report 0 and still exit 0.
+  d="$base/good-arity-exact"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+| A | why | S |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| Add login | ISBrad72 | #34 |
+EOF
+  assert_msg "$d" "board-arity-checked=3" \
+    "good-arity-exact: 3 well-formed rows counted, spacer not counted -> PASS"
+
+  # good-arity-escaped-pipe/ — a GFM-ESCAPED pipe inside a cell renders as a literal and does NOT
+  # delimit a column, so the row's arity is unchanged and it must PASS. Load-bearing: this row
+  # raw-splits to 6 fields against a 5-field header, so dropping the escape-awareness reddens it.
+  # MEASURED on this kit's own board as this commit leaves it (2026-07-24), by comparing each row's
+  # raw `awk -F'|' NF` against its escape-aware NF: EIGHT rows carry `\|` legitimately — the
+  # BOARD-ROW-ARITY and CP7R5-KITOWN-MARKER **Ready** rows, and the HITL-1 / CP7R5-NINE-PROFILES /
+  # CP7R5-GATE-AUTHORITY / CP-7-recert-run-5 / CP-8a / P0-FU(a) **Done** rows. Every one of the
+  # eight raw-splits WIDER than its section header (14/11 against 10; 7/6/9/7/8/9 against 5), so a
+  # raw-pipe count would false-FAIL all eight. Rows are named, never cited by line number — a line
+  # citation goes stale on the next board edit (an earlier draft of this comment cited a line that
+  # was the Done table's SEPARATOR row).
+  d="$base/good-arity-escaped-pipe"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+| A | guard teardown with \|\| true | S |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_ok "$d" 'good-arity-escaped-pipe: GFM escaped pipes do not delimit -> arity unchanged (PASS)'
+
+  # bad-arity-empty-item/ — THE EVASION. The spacer skip was `[ -z "$(cell "$_row" 1)" ]`, which
+  # swallowed ANY row with an empty Item cell — so a mis-shaped row that simply leaves Item blank
+  # reported `board-arity-checked=0` and exited 0: shipped green, and not even COUNTED. The skip is
+  # now a TRUE-spacer test (EVERY cell empty), so a row carrying content anywhere is graded and
+  # named by its first non-empty cell. VERIFIED before tightening: every empty-Item row on this
+  # kit's live board (3) and in templates/BACKLOG-TEMPLATE.md (3) is an all-cells-empty spacer, so
+  # the narrowing false-FAILs neither.
+  d="$base/bad-arity-empty-item"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+| | why | S | EXTRA | MORE |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "row 'why' carries 5 columns but the section header declares 3" \
+    "bad-arity-empty-item: an empty Item cell no longer buys a skip -> FAIL (named by first non-empty cell)"
+
+  # bad-arity-two/ — the ACCUMULATE-ALL contract the header claims, PROVEN: two mis-shaped rows in
+  # ONE section must BOTH be named in ONE run (never exit-on-first — fix ALPHA, re-run, only THEN
+  # discover BETA). Same shape as s7/n4-onepass, one level down (rows within a section, not
+  # sections within a board).
+  d="$base/bad-arity-two"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+| ALPHA | why | S | EXTRA |
+| BETA | why |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "row 'ALPHA' carries 4 columns" \
+    "bad-arity-two: the FIRST mis-shaped row is named"
+  assert_fail "$d" "row 'BETA' carries 2 columns" \
+    "bad-arity-two: the SECOND mis-shaped row is named in the SAME run (accumulate-all)"
+
+  # bad-arity-blind/ — the VACUOUS-GREEN FLOOR. A gate that inspects NOTHING must never report OK.
+  # Here the six graded sections are all empty while the board tracks its items in a SEVENTH
+  # table-bearing section (`## Shipped`) — the silent-coverage-loss shape: `board-arity-checked=0`
+  # on a board that plainly carries rows. Without the floor this exits 0 and the `=3` count
+  # assertion above lives only inside a fixture, never on a real board.
+  d="$base/bad-arity-blind"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+
+## Shipped
+
+| Item | Closed | Notes |
+|------|--------|-------|
+| A | 2026-07-01 | shipped |
+EOF
+  assert_fail "$d" "inspected 0 rows on a board that carries 1 content-bearing table row" \
+    "bad-arity-blind: 0 rows inspected on a board that HAS rows -> FAIL (vacuous-green floor)"
+
+  # good-arity-empty-board/ — the floor's other side, and its false-FAIL control: a genuinely EMPTY
+  # board (zero-row schema tables + all-cells-empty spacers, nothing else) legitimately inspects 0
+  # rows and must still PASS. Without this leg the floor could be tightened into an unconditional
+  # `checked==0 -> FAIL`, which would red every brand-new adopter board on its first run and break
+  # the incept first-run-green invariant this check is built to protect.
+  d="$base/good-arity-empty-board"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Size |
+|------|--------|------|
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_msg "$d" "board-arity-checked=0" \
+    "good-arity-empty-board: a truly empty board inspects 0 rows and still PASSES (floor does not false-FAIL)"
+
+  # arity-section-set/ — the ENUMERATION LOCK. check_row_arity hardcodes its six sections (on
+  # purpose: a set derived from the board under test can be satisfied by DELETING a section). But
+  # nothing tied that constant to the shipped schema, so adding a seventh state section to
+  # templates/BACKLOG-TEMPLATE.md would ship it arity-UNCHECKED with no signal — silent coverage
+  # loss. This leg compares two INDEPENDENT artifacts: the actual call sites in this script's own
+  # source ($0 — the mutant copy under the non-vacuity harness, so mutating a call site kills it)
+  # against the template's table-bearing `^## ` headings. `Backlog (unrefined)` is a list and
+  # `How to use` is prose — neither bears a table, so both are correctly absent from the set.
+  _ra_tpl=$(_find_template) || { echo "selftest FAIL: arity-section-set cannot locate templates/BACKLOG-TEMPLATE.md"; st_fail=1; _ra_tpl=/dev/null; }
+  _ra_have=$(sed -n 's/^[[:space:]]*_arity_one_section "[^"]*" "\([^"]*\)".*/\1/p' "$0" | sort)
+  _ra_want_set=$(awk '
+    /^##[[:space:]]/ { if (sec != "" && has) print sec
+                       sec=$0; sub(/^##[[:space:]]+/,"",sec); sub(/[[:space:]]+$/,"",sec); has=0; next }
+    /^[[:space:]]*\|/ { has=1 }
+    END { if (sec != "" && has) print sec }
+  ' "$_ra_tpl" | sort)
+  if [ -n "$_ra_have" ] && [ "$_ra_have" = "$_ra_want_set" ]; then
+    echo "selftest PASS: arity-section-set: the enumerated sections equal the template's table-bearing state sections"
+  else
+    echo "selftest FAIL: arity-section-set: enumerated=<$(printf '%s' "$_ra_have" | tr '\n' ',')> template=<$(printf '%s' "$_ra_want_set" | tr '\n' ',')>"
+    st_fail=1
+  fi
 
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-current --selftest: FAIL" >&2

@@ -294,7 +294,8 @@ check control mode-blind       sh conformance/mode-enforcement-blind.sh
 check control orchestrator-loop sh conformance/orchestrator-loop-wired.sh
 check control escalation-seam    sh conformance/escalation-wired.sh --selftest
 check control proportional-gate sh conformance/proportional-gate-wired.sh --selftest
-# HITL obligation engine (HITL-1/2/4). ONLY the fixture-driven, base-INDEPENDENT selftests are registered
+# HITL obligation engine (HITL-1/2/4/5 — HITL-5's regulated-data surface rides threat-obligation.sh's own
+# selftest, so the scope label names it too). ONLY the fixture-driven, base-INDEPENDENT selftests are registered
 # in this offline aggregate. The REAL diff-relative gates (sh conformance/threat-obligation.sh,
 # conformance/uat-obligation.sh and conformance/a11y-obligation.sh, no args) are DELIBERATELY NOT here:
 # each derives its change-set from

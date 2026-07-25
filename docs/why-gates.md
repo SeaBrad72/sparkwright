@@ -13,12 +13,17 @@ Query any entry from the CLI: `sparkwright explain <topic>` (or `sparkwright exp
 ---
 
 ## threat-model
-Applies IF: you declare Confidential/Restricted data (CLAUDE.md §3)
+Applies IF: a change touches a sensitive OR regulated-data surface — diff-relative and DECLARATION-INDEPENDENT, so it fires whether or not you ever wrote a Data classification line. Sensitive (unchanged since HITL-1): any path containing secret, auth, password or payment, anything under migrations/, and any .env file. Regulated data (HITL-5): pii, gdpr, patient, cardholder, phi, ssn, personal-data — the acronyms and tokens are case-insensitively matched, so src/PHI_export.ts, data/PATIENT_EXPORT.csv and db/CARDHOLDER_DATA.sql all trigger; phi and ssn are SEGMENT-ANCHORED (/phi/, phi_, _phi, -phi) because a bare *phi* matched 982 paths in a 162k-file corpus. Known misses, both directions: it is a PATH heuristic, so src/models/user.rb holding PII is N/A, and an ALL-CAPS PERSONAL-DATA/ directory is N/A (personal-data is cased per word, not per letter); against that, camelCase collisions DO trigger (…OpenApiIn… contains piI) and about-philosophy.tsx matches -phi — the fail-safe posture is deliberate, because for regulated data over-triggering beats under-triggering. RENAMES ARE FOLLOWED: the change-set derivation turns git's default rename detection OFF, so a file MOVED off a sensitive path still triggers on its source path — before that, a git mv in the same PR emitted only the destination and silently derived N/A (measured: an edit to svc2/pii/export.py FAILed in place and the same edit moved to svc2/core/export.py read N/A). You ALSO owe a threat model project-wide if you declare Confidential/Restricted data (CLAUDE.md §3); that separate, declaration-triggered obligation is privacy-ready.sh and the two compose rather than collide.
 Why: A threat model forces you to name what an attacker wants and how they'd reach it *before*
   you build, so your controls answer known risks instead of guessing. Discovering the same gap
   after a breach costs orders of magnitude more — and may be unrecoverable for the data involved.
-Enforced by: conformance/privacy-ready.sh
-Read more: DEVELOPMENT-STANDARDS.md §2, §14
+  The declaration path alone was not enough: a project that never recorded a data classification stayed
+  N/A while a PR *introduced* PII handling, so the gate is now diff-relative as well — a change-set on a
+  sensitive or regulated surface with no filled THREAT-MODEL fails. Honest ceiling: it proves a filled
+  record EXISTS for a triggered change — not that it is fresh for this change, nor that the analysis is
+  sound (review backstops both).
+Enforced by: conformance/threat-obligation.sh (diff-relative, per-change) and conformance/privacy-ready.sh (project-level, declaration-triggered)
+Read more: DEVELOPMENT-STANDARDS.md §2, §14, templates/THREAT-MODEL-TEMPLATE.md
 
 ## privacy-review
 Applies IF: you handle personal data (Confidential/Restricted; CLAUDE.md §3)
@@ -45,7 +50,7 @@ Enforced by: conformance/agentops-ready.sh
 Read more: DEVELOPMENT-PROCESS.md §13
 
 ## a11y
-Applies IF: a change touches a user-facing UI surface — the components/views/pages/screens/ui/frontend/styles directories (repo-root or nested), or a UI/view-template markup file (.tsx .jsx .vue .svelte .css .scss .less .html .htm .j2 .jinja .jinja2 .erb .hbs .handlebars .ejs .twig .pug .haml .slim .liquid .mustache .astro .njk .tmpl .gohtml .templ .tpl .cshtml .razor .jsp .jspx .ftl .heex .eex). A bare templates/ directory is deliberately NOT a trigger (Helm/CloudFormation use it). Known misses, both directions: config templates sharing a markup extension DO trigger (Ansible nginx.conf.j2, Terraform user_data.tpl, Helm _helpers.tpl); server-rendered .php/.blade.php, Android res/layout/*.xml, and unlisted engines (.vm/.st/.dust) do NOT.
+Applies IF: a change touches a user-facing UI surface — the components/views/pages/screens/ui/frontend/styles directories (repo-root or nested), or a UI/view-template markup file (.tsx .jsx .vue .svelte .css .scss .less .html .htm .j2 .jinja .jinja2 .erb .hbs .handlebars .ejs .twig .pug .haml .slim .liquid .mustache .astro .njk .tmpl .gohtml .templ .tpl .cshtml .razor .jsp .jspx .ftl .heex .eex). A bare templates/ directory is deliberately NOT a trigger (Helm/CloudFormation use it). Known misses, both directions: config templates sharing a markup extension are excused only where they are ENUMERATED — an exclusion list of compound suffixes (.conf.j2 .cfg.j2 .yaml.j2 .yml.j2 .conf.erb .ini.erb .conf.tpl .yaml.tpl .yml.tpl .sh.tpl) plus _-prefixed Helm partials (templates/_helpers.tpl), all evaluated BEFORE the surface globs, so Ansible nginx.conf.j2 and Helm _helpers.tpl are N/A. The residual is a CLASS, not a case, and it still triggers: any compound suffix not on that list (.json.tpl .sh.erb .ini.j2 .env.tpl .yml.erb), and a bare <name>.tpl with no inner extension (Terraform user_data.tpl) — which is indistinguishable by path from a Smarty view template and so could not be excluded even in principle. The list is the mainstream cases, deliberately not exhaustive: for an exclusion, ADDING is the dangerous direction. In the other direction, server-rendered .php/.blade.php, Android res/layout/*.xml, and unlisted engines (.vm/.st/.dust) do NOT trigger. Renames are followed (rename detection is off in the derivation), so a UI file MOVED out of a UI directory still triggers on its source path.
 Why: Accessibility is not a polish step — keyboard, contrast, and screen-reader support are how
   a large fraction of users reach your product at all, and retrofitting them is far costlier than
   building them in. It is also, in many jurisdictions, a legal floor. Riding the obligation engine, a
@@ -53,12 +58,13 @@ Why: Accessibility is not a polish step — keyboard, contrast, and screen-reade
   audit is evidenced, not assumed. Honest ceiling: it proves a filled sign-off EXISTS — not that the audit
   was performed competently, that its pass/fail verdicts are truthful, or that the record is FRESH for
   this change (one committed record satisfies every later UI PR; the record carries a Date and a story
-  link so review can judge staleness, and "filled" is coarse enough that an empty record still passes).
+  link so review can judge staleness). "Filled" is coarse — but not trivially faked: an empty, sub-floor
+  or heading-less record fails the engine's substance floor. Eight lines of prose under a heading passes.
 Enforced by: conformance/a11y-obligation.sh
 Read more: DEVELOPMENT-STANDARDS.md §14, templates/A11Y-SIGNOFF-TEMPLATE.md
 
 ## uat
-Applies IF: a change touches a user-facing taste surface (UI: components/views/pages/screens/templates/styles)
+Applies IF: a change touches a user-facing taste surface — the components/views/pages/screens/ui/frontend/styles directories (repo-root or nested), or a UI/view-template markup file (.tsx .jsx .vue .svelte .css .scss .less .j2 .jinja .jinja2 .erb .hbs .handlebars .ejs .twig .pug .haml .slim .liquid .mustache .astro .njk .tmpl .gohtml .templ .tpl .cshtml .razor .jsp .jspx .ftl .heex .eex). A bare templates/ directory is deliberately NOT a trigger (Helm/CloudFormation/cookiecutter use it). Known misses, both directions: config templates and non-view files sharing a markup extension DO trigger (Ansible nginx.conf.j2, mypyc's module_shim.tmpl); .html/.htm do NOT — the one deliberate divergence from a11y, because semantic HTML is an accessibility surface but a raw .html edit is not necessarily a change of *taste*, which also means app/templates/index.html is gated for a11y and N/A here — and neither do unlisted engines (.mako .vm .st .dust). Renames are followed (rename detection is off in the derivation), so a taste-surface file MOVED out of a UI directory still triggers on its source path.
 Why: Automated tests prove a UI *works*; they cannot prove a human *accepts* it. A UAT sign-off is the
   recorded moment someone with standing exercised the surface and judged it fit — the taste half of "done"
   that green pixels alone never capture. Riding the obligation engine, an unfilled or absent record on a

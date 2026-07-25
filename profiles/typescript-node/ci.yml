@@ -73,9 +73,21 @@ jobs:
       # promotion-readiness gate, which likewise run diff-relative logic only in PR context.
       # COPY-AND-ADAPT (reference, not a tier): this step is the pattern adopters copy into their pipeline.
       # It needs the `fetch-depth: 0` checkout above so `origin/main` resolves; on a non-PR event main IS
-      # the base, so it is gated to pull_request. A PR touching a secret/auth/payments/migrations/.env
-      # surface with no filled THREAT-MODEL.md FAILs the build; any other PR is N/A and passes.
-      - name: Threat-model obligation (PR-context; sensitive surface requires a filled THREAT-MODEL)
+      # the base, so it is gated to pull_request.
+      # WHAT MAKES IT RED — BOTH HALVES, because the regulated half is the one an adopter will not expect:
+      #  - SENSITIVE (HITL-1): any path containing secret / auth / password / payment, anything under
+      #    migrations/, any .env file.
+      #  - REGULATED DATA (HITL-5): pii · gdpr · patient · cardholder · phi · ssn · personal-data, matched
+      #    case-insensitively (src/PHI_export.ts and data/PATIENT_EXPORT.csv both trigger), with phi/ssn
+      #    segment-anchored (/phi/, phi_, _phi, -phi) so a bare `graphics.py` does not.
+      # THE REGULATED HALF IS DELIBERATELY DECLARATION-INDEPENDENT: it fires on a project whose data
+      # classification is `Internal`, or absent entirely, because the whole point is that a PR can
+      # INTRODUCE PII handling before anyone updates the declaration. If you hit this red without having
+      # declared anything, that is the gate working — write the record, or narrow the surface knowingly.
+      # The project-level, declaration-triggered obligation is a DIFFERENT gate (conformance/privacy-ready.sh);
+      # the two compose. `sparkwright explain threat-model` prints the full surface and its known misses.
+      # A PR touching either half with no filled THREAT-MODEL.md FAILs the build; any other PR is N/A and passes.
+      - name: Threat-model obligation (PR-context; sensitive/regulated-data surface requires a filled THREAT-MODEL)
         if: github.event_name == 'pull_request'
         run: sh conformance/threat-obligation.sh
 
@@ -83,8 +95,15 @@ jobs:
       # threat-model gate above: conformance/uat-obligation.sh is diff-relative (merge-base HEAD origin/main)
       # and fails CLOSED with no resolvable base, so it belongs in a PR-context step with the fetch-depth: 0
       # checkout, not the offline verify.sh --require aggregate. COPY-AND-ADAPT (reference, not a tier).
-      # A PR touching a user-facing TASTE surface (UI: components/views/pages/screens/templates/frontend/
-      # styles) with no filled UAT-SIGNOFF.md FAILs the build; any other PR is N/A and passes.
+      # WHAT MAKES IT RED: the user-facing TASTE surface — the components/views/pages/screens/ui/frontend/
+      # styles directories, at repo ROOT or nested (both forms are listed; `*/x/*` alone would miss the
+      # Next.js and Vite default layout), plus the UI and view-template markup extensions listed in the
+      # check's UAT_SURFACE_GLOBS (.tsx/.jsx/.vue/.svelte/.css/.scss/.less and the template engines).
+      # NOTE a bare `templates/` DIRECTORY is deliberately NOT a trigger — it fires on Helm/CloudFormation/
+      # cookiecutter manifests, not UI — and `.html`/`.htm` are deliberately NOT listed here either: a raw
+      # .html edit is an ACCESSIBILITY surface (see the a11y step below, which does list them) but not
+      # necessarily a change of TASTE. `sparkwright explain uat` prints the full surface and its known misses.
+      # A PR touching that surface with no filled UAT-SIGNOFF.md FAILs the build; any other PR is N/A and passes.
       - name: UAT-signoff obligation (PR-context; user-facing taste surface requires a filled UAT-SIGNOFF)
         if: github.event_name == 'pull_request'
         run: sh conformance/uat-obligation.sh
