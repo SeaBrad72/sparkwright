@@ -92,7 +92,16 @@ jobs:
         run: |
           # `set -e` is on: a failed API call aborts the step -> the job fails -> the required check is
           # never posted -> it stays ABSENT -> the merge is BLOCKED. Fail-closed, by construction.
-          gh api "repos/${REPO}/pulls/${PR}/files" --paginate -q '.[].filename' > /tmp/changed.txt
+          # RENAME COLLAPSE (T2). The Files API reports a rename as ONE entry whose `filename` is the
+          # DESTINATION; the source lives only in `previous_filename`. A bare `.[].filename` dropped the
+          # source, so moving a control-plane file to an ordinary path produced an all-ordinary listing
+          # and this gate passed with nothing to ratify. Emitting BOTH is monotone (a rename can only ADD
+          # the source; the class is the highest present). `// empty` omits the key for non-renames.
+          # NEWLINE GUARD (T2, second half). `jq -r` emits a RAW newline, so a crafted filename splits ONE
+          # API entry into TWO lines that each classify separately — measured to defeat a suffix-constrained
+          # control-plane pattern and post this gate GREEN. `error()` -> jq non-zero -> gh non-zero ->
+          # `set -e` aborts -> the check is never posted -> the merge is blocked. Fail-closed.
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate -q '[.[] | .filename, (.previous_filename // empty)] | if any(test("\n")) then error("changed path contains a newline byte — refusing to emit a splittable listing") else .[] end' > /tmp/changed.txt
           echo "changed files seen by the gate:"
           cat /tmp/changed.txt
       - name: Compute ratification signal (non-author approval)

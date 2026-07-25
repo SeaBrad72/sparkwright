@@ -9,6 +9,21 @@
 # `.yml`, `.tsv`, an extensionless file, a rename, a deletion of a non-.md file — makes the whole change
 # set NOT docs-only.
 #
+# ⚠️ THE "A RENAME" CLAUSE ABOVE DEPENDS ENTIRELY ON THE CALLER, and it was FALSE until 2026-07-25.
+# This predicate is only as good as the listing it is handed. `ci.yml` built that listing with
+# `gh api .../pulls/N/files -q '.[].filename'`, and the Files API reports a rename as ONE entry whose
+# `filename` is the DESTINATION — the source lives only in `previous_filename`. So a rename FROM a
+# non-`.md` path TO a `.md` path arrived here as an all-`.md` listing and this check correctly answered
+# `docs_only=true` on the data it was given. Measured consequence: `git mv conformance/<check>.sh
+# docs/<x>.md` skipped cf-verify-enforced, --selftest, claims, non-vacuity and green-on-clone while the
+# required `conformance` job still reported OK (its allowed set includes `skipped`). Fail-closed by
+# design, defeated upstream by its caller. The caller now also projects `previous_filename`, so the
+# non-`.md` source reappears and disqualifies the set — which is what this header always claimed.
+# ⚠️ NOTHING LOCKS THIS INVARIANT. A class-wide check was built and withdrawn (it was defeated three
+# times over three review rounds); it is boarded as `CHANGESET-DERIVATION-LOCK`. So the caller's
+# projection is correct TODAY by inspection only — if you change how `/tmp/changed.txt` is built, this
+# predicate's "a rename" clause is your responsibility to re-verify.
+#
 # WHY AN ALLOWLIST AND NOT A DENYLIST. The question is not "does this look risky?" but "can this change
 # POSSIBLY affect the expensive proofs?", and the answer must default to YES. A denylist of risky paths
 # fails OPEN on every path nobody thought of — and the paths nobody thinks of are exactly where the

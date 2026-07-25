@@ -7,8 +7,14 @@
 #
 #   conformance/promotion-readiness.sh [--changed FILE] [--rung RUNG] [--class] [--no-verify]
 # Change-class: control-plane > sensitive > ordinary (highest present wins). FAIL-SAFE: an empty or
-# unreadable change-set, or an unavailable guard core, classifies control-plane (never silently
-# ordinary). Class is DERIVED, never self-asserted — there is no flag to declare a lower class.
+# unreadable change-set, an unavailable guard core, **an unresolvable merge-base**, or **a newline byte in
+# any path name** classifies control-plane (never silently ordinary). Class is DERIVED, never
+# self-asserted — there is no flag to declare a lower class.
+#   NOTE FOR LOCAL USE: the base is resolved as `origin/main` then `main` ONLY. On a checkout whose default
+#   branch is `master`/`trunk`/`develop`, or a detached HEAD with no remote, no base resolves — so a local
+#   run reports `control-plane` for EVERYTHING. That is deliberate (the old fallback compared the WORKTREE
+#   to HEAD, which one dirty ordinary file could use to hide every committed control-plane change). To
+#   classify a specific set instead, pass `--changed FILE`. CI is unaffected: every CI caller passes it.
 #   --changed FILE  newline-delimited path list (default: git diff --name-only vs the merge-base)
 #   --rung RUNG     spike|integration|rc|staging|production (default rc — the meaningful go/no-go)
 #   --class         print only the aggregate class and exit (the stable seam slice 3 consumes)
@@ -59,6 +65,15 @@ if [ -n "$CHANGED" ]; then
   if [ -f "$CHANGED" ]; then CHANGED_LIST=$(cat "$CHANGED"); else CHANGED_LIST=""; CHANGED_READ_FAIL=1; fi
 else
   base=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || true)
+  # NO RESOLVABLE BASE -> DERIVE FAILURE (H3). Previously an empty $base fell through to the
+  # `git diff --name-only HEAD` fallback, which is WORKTREE-vs-HEAD, not branch-vs-base. Measured: with
+  # a single dirty ORDINARY file the fallback returned exactly that one path, so n=1, the n=0 fail-safe
+  # never fired, and every COMMITTED control-plane change on the branch was invisible -> `ordinary`.
+  # That is fail-OPEN on the derivation feeding a §13 authorization decision. This now matches
+  # obligation-lib.sh's obl_changeset (referenced BY NAME): an underivable base is a DERIVE FAILURE,
+  # which the fail-safe routes to `control-plane`. Removes a divergence that used to be documented as
+  # deliberate. An operator who genuinely wants to classify a specific set passes `--changed FILE`.
+  [ -n "$base" ] || CHANGED_READ_FAIL=1
   # PATH QUOTING (PROMOTION-PATH-QUOTING; mirrors the `git -c core.quotePath=false … -z` derivation
   # in obligation-lib.sh's obl_changeset — referenced BY NAME, never by line number: an earlier
   # citation here drifted twice as that function's commentary grew, which is the same staleness class
@@ -67,6 +82,17 @@ else
   # DOUBLE QUOTES with octal escapes ("\.github/workflows/d\303\251ploy.yml"). The leading '"'
   # defeats is_control_plane_path, so an accented control-plane file classified `ordinary` and the
   # §13 promotion ceremony silently downgraded from human-ratified to agent-autonomous.
+  # RENAMES (PROMOTION-RENAME-CLASS-DOWNGRADE; T2 in THREAT-MODEL.md — the same `--no-renames` fix
+  # obligation-lib.sh's obl_changeset carries, again referenced BY NAME, not by line number).
+  # Git detects renames BY DEFAULT and `--name-only` then emits ONLY THE DESTINATION path, so a file
+  # moved OUT of the control-plane set is classified on its destination alone: measured on git 2.48.1,
+  # a repo whose only change is `git mv .github/workflows/deploy.yml docs/x.yml` scores R100, derives
+  # `docs/x.yml` alone, and classified `ordinary` — the §13 ceremony silently downgraded from
+  # human-ratified to agent-autonomous. Same failure shape as PROMOTION-PATH-QUOTING, different door,
+  # same function. `--no-renames` is a FLAG, so it also overrides a user's or a CI host's
+  # `diff.renames` config — a config-only fix would be defeated by the next runner.
+  # MONOTONE: un-collapsing an `R` entry can only ever ADD the source path, and the aggregate is the
+  # HIGHEST class present, so no change-set can classify LOWER after this fix.
   # MONOTONE: unquoting can only ever ADD matches — no change-set can classify LOWER after this fix.
   # WHICH HALF IS PROVEN — measured, not reasoned. Mutants run against
   # `sh conformance/promotion-readiness-wired.sh --selftest`:
@@ -78,18 +104,32 @@ else
   # quotes a path containing '"'. core.quotePath=false is retained as defense-in-depth for readers
   # and for any future non-`-z` consumer, but NO leg proves it — do not claim otherwise.
   # A temp file, NOT a pipe: `git … | tr` makes the pipeline's status tr's and would discard the
-  # derive-failure signal the line-87 fail-safe depends on. POSIX sh has no PIPESTATUS.
-  # HONEST CEILING: a filename containing a literal NEWLINE is still mis-split — POSIX sh cannot
-  # carry NUL through a command substitution and `read -d ''` is bash-only. Non-ASCII and '"' are
-  # covered; newline-in-name is not, and this check does not pretend otherwise.
+  # derive-failure signal the `CHANGED_READ_FAIL` fail-safe below depends on (by NAME, not by line number —
+  # this file's own rule, and the numeric form had already drifted twice). POSIX sh has no PIPESTATUS.
+  # NEWLINE-IN-NAME: no longer mis-split — DETECTED and routed to the fail-safe (see the detector below).
+  # The old ceiling here said newline-in-name "is not covered"; that was a disclosed FAIL-OPEN, and the
+  # residual that bounded it wrongly claimed control-plane was safe from it. Both are now closed by
+  # refusing to classify a change-set whose NUL stream carries a newline byte.
   _z=$(mktemp 2>/dev/null) || _z=""
   if [ -z "$_z" ]; then
     CHANGED_LIST=""; CHANGED_READ_FAIL=1
   else
     if [ -n "$base" ]; then
-      if git -c core.quotePath=false diff --name-only -z "$base"...HEAD > "$_z" 2>/dev/null; then _ok=1; else _ok=0; fi
+      if git -c core.quotePath=false diff --name-only -z --no-renames "$base"...HEAD > "$_z" 2>/dev/null; then _ok=1; else _ok=0; fi
     else
-      if git -c core.quotePath=false diff --name-only -z HEAD > "$_z" 2>/dev/null; then _ok=1; else _ok=0; fi
+      if git -c core.quotePath=false diff --name-only -z --no-renames HEAD > "$_z" 2>/dev/null; then _ok=1; else _ok=0; fi
+    fi
+    # NEWLINE-IN-FILENAME -> DERIVE FAILURE (fail-closed). A path containing a literal newline cannot be
+    # carried through `$()` in POSIX sh, so `tr '\0' '\n'` SPLITS it into fragments and each fragment is
+    # classified separately. That is a real DOWNGRADE, not a cosmetic limit, and the "control-plane is
+    # fail-safe" reading was WRONG: `is_control_plane_path` includes SUFFIX-constrained patterns
+    # (`agents/*.agent.md`), so `agents/x<newline>.agent.md` splits into `agents/x` + `.agent.md` and
+    # NEITHER fragment matches -> ordinary. Sensitive patterns split the same way (`*secret*`, `*.pem`).
+    # We cannot PRESERVE such a path in POSIX sh — but we can DETECT it, which is all fail-closed needs:
+    # the NUL stream from `-z` contains a newline byte ONLY when a filename does. Measured: 0 for every
+    # well-formed change-set, >=1 for a crafted one. So refuse to classify instead of mis-classifying.
+    if [ "$_ok" = 1 ] && [ "$(LC_ALL=C tr -cd '\n' < "$_z" | wc -c | tr -d ' ')" != 0 ]; then
+      _ok=0   # a filename carries a literal newline -> route to the fail-safe, never split-and-classify
     fi
     if [ "$_ok" = 1 ]; then
       CHANGED_LIST=$(tr '\0' '\n' < "$_z") || CHANGED_READ_FAIL=1
@@ -160,8 +200,38 @@ if [ -f BACKLOG.md ]; then ac="see BACKLOG.md for the story's acceptance criteri
 echo "=== Promotion-readiness surfacing ==="
 echo "Rung (destination): $RUNG"
 echo ""
+# RENDER BOUNDARY — strip control bytes from attacker-influenceable path names (H2).
+# WHY: PROMOTION-PATH-QUOTING (v3.184.0) replaced git's default core.quotePath=true — which ESCAPED
+# control bytes — with `-z` + quotePath=false, which passes them through RAW. Nothing then stripped
+# them, and every path is rendered into the surfacing a HUMAN READS to give the §13 GO. Measured: a
+# filename carrying CR + ESC[2K + ESC[1A prints a FORGED "2. Change-class (aggregate): ordinary" line
+# and scrolls the true `control-plane` line away. A PR author names files, so this is untrusted input
+# reaching a decision surface — the class already fixed in a11y-obligation.sh (referenced BY NAME).
+# STRIP AT RENDER ONLY, NEVER BEFORE classify_path: stripping before classification would let a
+# crafted name become a DIFFERENT (lower) class — the fail-OPEN direction. Classification above sees
+# the raw bytes; only the human-facing echo is sanitized.
+# CEILING: removes control bytes, not a merely misleading printable name (e.g. a homoglyph).
+_render_safe() { LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+# DERIVE-FAILURE DISCLOSURE. When the base was underivable the class is fail-safed to control-plane, but
+# the listing below is a WORKTREE-vs-HEAD diff — the very derivation this check condemns — so printing it
+# unlabelled next to a `control-plane` verdict makes the two sections contradict each other on the surface
+# a human reads to give the §13 GO. Say so plainly instead.
+# Branch the wording on WHICH cause fired: with no resolvable base the listing below is a worktree diff;
+# with a newline in a path name the listing is EMPTY. Saying "worktree diff" for both is inaccurate in one
+# of its own branches, on the surface a human reads to give the §13 GO.
+if [ "$CHANGED_READ_FAIL" = 1 ] && [ -z "${CHANGED:-}" ]; then
+  if [ -z "$base" ]; then
+    echo "   (derive failure: NO RESOLVABLE BASE — the class below is FAIL-SAFED to control-plane, and the"
+    echo "    listing that follows is a WORKTREE diff, not the branch's change-set. The base is resolved as"
+    echo "    origin/main then main only; pass --changed FILE to classify a specific set.)"
+  else
+    echo "   (derive failure: A PATH NAME CARRIES A NEWLINE — such a path cannot be carried through POSIX"
+    echo "    sh without splitting into fragments that classify separately, so the class below is"
+    echo "    FAIL-SAFED to control-plane and the listing that follows is EMPTY, not the change-set.)"
+  fi
+fi
 echo "1. What changed ($n path(s)):"
-printf '%s\n' "$CHANGED_LIST" | while IFS= read -r _q; do [ -n "$_q" ] || continue; printf '   [%s] %s\n' "$(classify_path "$_q")" "$_q"; done
+printf '%s\n' "$CHANGED_LIST" | while IFS= read -r _q; do [ -n "$_q" ] || continue; printf '   [%s] %s\n' "$(classify_path "$_q")" "$(_render_safe "$_q")"; done
 echo ""
 echo "2. Change-class (aggregate): $agg"
 echo ""

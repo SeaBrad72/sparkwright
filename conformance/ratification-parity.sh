@@ -56,6 +56,16 @@ assert_wired() {  # <src-file>
   _w=0
   _wcode=$(grep -v '^[[:space:]]*#' "$1")
   printf '%s\n' "$_wcode" | grep -qF 'promotion-readiness.sh --class'  || { echo "FAIL: $1 does not invoke 'promotion-readiness.sh --class' — the gate would not classify the diff"; _w=1; }
+  # T2 (L9). The anchor above is satisfied by an invocation fed a DEFECTIVE listing — it sees the call,
+  # never the argument that decides the answer. A files-API listing built with a bare `.[].filename`
+  # drops a rename's SOURCE path, so `git mv <control-plane> <ordinary>` classified `ordinary` and this
+  # gate passed with "nothing to ratify". Anchor the projection itself so none of the emitted profiles
+  # can regress to the collapsing form while still satisfying the invocation anchor.
+  # T2. These two anchors are now the ONLY automated guard on the emitted profiles' listing shape — the
+  # class-wide scanner was built and withdrawn (boarded `CHANGESET-DERIVATION-LOCK`), so do not delete
+  # them expecting something else to catch it. Both have load-bearing negatives (selftest case 2c/2d).
+  printf '%s\n' "$_wcode" | grep -qF 'previous_filename'  || { echo "FAIL: $1 derives its changed-file listing without projecting 'previous_filename' — a rename's SOURCE path is dropped, so a renamed control-plane path would be invisible to the gate and §13 would silently downgrade to agent-autonomous"; _w=1; }
+  printf '%s\n' "$_wcode" | grep -qF 'test("\n")'  || { echo "FAIL: $1 derives its changed-file listing with no newline guard — \`jq -r\` emits a RAW newline, so a crafted filename splits one API entry into two lines that each classify separately (measured: a split control-plane path derives 'ordinary' and this gate posts GREEN)"; _w=1; }
   printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --conclusion'  || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --conclusion' — the gate would not map its verdict to a check-run"; _w=1; }
   return "$_w"
 }
@@ -138,6 +148,9 @@ selftest() {
     {
       printf '# COPY & ADAPT — reference ratification gate (Sparkwright)\n'
       printf 'jobs:\n  ratify:\n    runs-on: ubuntu-latest\n    steps:\n'
+      # The listing projection is part of the wired contract (T2/L9), so the CLEAN fixture must carry it —
+      # otherwise this fixture asserts a gap that the real shipped workflows do not have.
+      printf '      - run: gh api "repos/x/pulls/1/files" -q %s[.[] | .filename, (.previous_filename // empty)] | if any(test("\\n")) then error("nl") else .[] end%s > /tmp/changed.txt\n' "'" "'"
       printf '      - run: sh conformance/promotion-readiness.sh --class --no-verify\n'
       printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
     } > "$1"
@@ -165,6 +178,32 @@ selftest() {
     printf '      # - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
   } > "$base/hollow.yml"
   if assert_wired "$base/hollow.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2b — a source with COMMENTED-OUT wiring passed assert_wired (hollow gate)"; st=1; else echo "OK: commented-out wiring -> RED (assert_wired comment-strip)"; fi
+
+  # 2c. LOAD-BEARING NEGATIVE for the previous_filename anchor (T2/L9). Without this case, DELETING that
+  #     anchor leaves this selftest AND the real-tree run green, and `non-vacuity.sh` still reports KILLED
+  #     because it neuters all FAIL paths at once and structurally cannot see one missing assertion.
+  #     Measured. A source can carry both invocations and still derive a rename-collapsing listing.
+  {
+    printf '# COPY & ADAPT (Sparkwright)\n'
+    printf 'jobs:\n  ratify:\n    steps:\n'
+    printf '      - run: gh api "repos/x/pulls/1/files" -q %s.[].filename%s > /tmp/changed.txt\n' "'" "'"
+    printf '      - run: sh conformance/promotion-readiness.sh --class --no-verify\n'
+    printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
+  } > "$base/collapsing.yml"
+  if assert_wired "$base/collapsing.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2c — a source deriving its listing WITHOUT previous_filename passed assert_wired; a renamed control-plane path would be invisible to the gate"; st=1; else echo "OK: listing without previous_filename -> RED (T2 anchor is load-bearing)"; fi
+
+  # 2d. LOAD-BEARING NEGATIVE for the newline-guard anchor. A source can project previous_filename and
+  #     STILL emit a splittable listing, because `jq -r` renders a raw newline. Without this case, deleting
+  #     the guard anchor leaves the selftest green — the same gap case 2c was added to close for the other
+  #     anchor. These two anchors are the only automated guard left after the class scanner was withdrawn.
+  {
+    printf '# COPY & ADAPT (Sparkwright)\n'
+    printf 'jobs:\n  ratify:\n    steps:\n'
+    printf '      - run: gh api "repos/x/pulls/1/files" -q %s.[] | .filename, (.previous_filename // empty)%s > /tmp/changed.txt\n' "'" "'"
+    printf '      - run: sh conformance/promotion-readiness.sh --class --no-verify\n'
+    printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
+  } > "$base/noguard.yml"
+  if assert_wired "$base/noguard.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2d — a source projecting previous_filename but with NO newline guard passed assert_wired; a crafted filename would split one API entry into two lines that each classify separately"; st=1; else echo "OK: listing without a newline guard -> RED (guard anchor is load-bearing)"; fi
 
   # 3. STACK-SPECIALIZED source (plant actions/setup-node) -> assert_stack_neutral RED.
   mk_clean_src "$base/stacky.yml"

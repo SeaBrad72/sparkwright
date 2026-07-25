@@ -57,18 +57,28 @@ OBL_MIN_SUBSTANCE_LINES=8
 OBL_DEFAULT_STUB_PATTERN='\[(summary|threat|why|boundary [0-9]|planned/done|data, credentials|users, agents|auth, MFA|risk accepted|tracked items)'
 
 # obl_changeset [--changed FILE]: newline-delimited changed paths. Modelled on promotion-readiness.sh's
-# derivation but now DELIBERATELY DIVERGENT from it in two ways — do not "re-sync" them without reading
-# both notes. (a) It DISTINGUISHES a derive-FAILURE from a genuinely-empty diff (the security-critical
-# split, below); (b) it derives UNQUOTED paths (see PATH QUOTING). promotion-readiness.sh still uses the
-# bare quoted form and mis-classifies a non-ASCII control-plane path as Ordinary — boarded as
-# PROMOTION-PATH-QUOTING; that check is NOT fixed by this slice.
+# derivation. The two derivations have now CONVERGED — do not re-introduce a divergence without reading
+# both notes:
+#   (a) the derive-FAILURE-vs-empty-diff split (below) — promotion-readiness.sh adopted it in the T2
+#       slice (its no-base branch used to be a WORKTREE-vs-HEAD diff, which one dirty ordinary file made
+#       fail-OPEN); it now sets CHANGED_READ_FAIL when no base resolves, exactly as this does;
+#   (b) UNQUOTED paths (see PATH QUOTING) — promotion-readiness.sh adopted `core.quotePath=false … -z`
+#       in v3.184.0 (PROMOTION-PATH-QUOTING), so the note that used to say it "still uses the bare quoted
+#       form" was stale from that release onward and is corrected here;
+#   (c) `--no-renames` — this engine gained it in Slice B, promotion-readiness.sh in the T2 slice.
+# ⚠️ NOTHING GRADES THESE TWO DERIVATIONS AS A SET. A class-wide scanner was built and withdrawn after it
+# was defeated three times over three review rounds (boarded `CHANGESET-DERIVATION-LOCK`), so keeping the
+# two convergent is a HUMAN obligation for now: if you change one derivation, change the other, and note
+# that an argument reorder (`diff "$base"...HEAD --name-only -z`) silently drops `--no-renames` while
+# looking harmless in review. That reorder is one of the measured evasions on the boarded row.
 # The derive-FAILURE split:
 #  - a valid base RESOLVES (merge-base HEAD origin/main, else HEAD main) and the diff is empty
 #    -> empty change-set, OBL_DERIVE_FAIL stays 0 -> 'none'/N-A (correct: nothing changed);
 #  - NO base resolves, OR any git step errors -> OBL_DERIVE_FAIL=1 so the caller fails CLOSED
 #    (routes to 'uncertain' -> requires the record). We never collapse failure into empty via
 #    `|| echo HEAD` / `|| true` (the old fail-open). This is promotion-readiness.sh's CHANGED_READ_FAIL
-#    + its line-87 fail-safe-to-highest-class, applied to the diff-derivation path.
+#    + its `CHANGED_READ_FAIL` fail-safe-to-highest-class (referenced BY NAME, never by line number — an
+#    earlier numeric citation here drifted twice), applied to the diff-derivation path.
 # shellcheck disable=SC2120 # obl_changeset exposes an optional --changed API that current callers don't
 # use (they invoke it bare); the parameter is part of the engine's public surface. This also silences the
 # paired SC2119 info at the no-arg call site (obl_changeset > "$cs").
@@ -118,9 +128,18 @@ obl_changeset() {
   # derive-FAILURE signal this whole function exists to preserve. POSIX sh has no PIPESTATUS.
   _z="$(mktemp 2>/dev/null)" || { OBL_DERIVE_FAIL=1; return 0; }
   if git -c core.quotePath=false diff --name-only -z --no-renames "$base"...HEAD > "$_z" 2>/dev/null; then
-    # tr's status is CAPTURED, not discarded: a bare `tr … < "$_z"` under `set -e` aborts the whole
-    # check with no NOTE, no FAIL text and a LEAKED temp file (measured). Fail closed, loudly, and clean up.
-    tr '\0' '\n' < "$_z" || OBL_DERIVE_FAIL=1
+    # NEWLINE-IN-FILENAME -> DERIVE FAILURE (fail-closed), mirroring promotion-readiness.sh. `tr '\0' '\n'`
+    # SPLITS a path containing a literal newline into fragments that are then matched separately, so a
+    # surface glob can miss both halves (`svc/pii<newline>/export.py` matches no `*pii*` segment rule).
+    # POSIX sh cannot PRESERVE such a path, but the NUL stream carries a newline byte only when a filename
+    # does — so detect it and require the record rather than silently under-triggering the obligation.
+    if [ "$(LC_ALL=C tr -cd '\n' < "$_z" | wc -c | tr -d ' ')" != 0 ]; then
+      OBL_DERIVE_FAIL=1
+    else
+      # tr's status is CAPTURED, not discarded: a bare `tr … < "$_z"` under `set -e` aborts the whole
+      # check with no NOTE, no FAIL text and a LEAKED temp file (measured). Fail closed, loudly, and clean up.
+      tr '\0' '\n' < "$_z" || OBL_DERIVE_FAIL=1
+    fi
   else
     OBL_DERIVE_FAIL=1
   fi
@@ -834,12 +853,52 @@ obl_selftest() {
     echo "OBL SELFTEST FAIL: the rename DESTINATION is itself on the surface — the rename leg below would be green for free"; rc=1
   fi
   _mvbase="$(git -C "$_mv" merge-base HEAD main 2>/dev/null || true)"
+  # DO NOT "FIX" THE MISSING --no-renames ON THE NEXT LINE. It deliberately omits the flag because it
+  # MEASURES collapse: it is the premise assertion proving the fixture WOULD collapse without the fix.
+  # Adding the flag would make this selftest's own premise vacuous and the assertion below would then run
+  # on nothing while the OK banner still credited it.
   _mvdefault="$(git -C "$_mv" diff --name-only "$_mvbase"...HEAD 2>/dev/null | wc -l | tr -d ' ')"
   if [ "${_mvdefault:-0}" != 1 ]; then
     echo "OBL SELFTEST FAIL: the fixture move did not collapse into a rename (it lists ${_mvdefault:-0} paths, not 1) even with diff.renames pinned true in the fixture repo — the assertion below would have run on nothing while the OK banner still credited it"; rc=1
   elif ( cd "$_mv" && obligation_gate --name t --surface-globs '*auth*' \
            --record R.md --template-marker T --root "$_mv" ) >/dev/null 2>&1; then
     echo "OBL SELFTEST FAIL: a change-set whose ONLY change is a git mv OFF a sensitive path was wrongly N/A — rename detection is ON by default and emits the destination only, so the derivation must pass --no-renames"; rc=1
+  fi
+
+  # ---- NEWLINE-IN-FILENAME derive failure. `tr '\0' '\n'` SPLITS a path whose NAME contains a literal
+  # newline, and each fragment is then matched against the surface globs separately — so a path that
+  # WOULD trigger can be split into fragments that match nothing, silently under-triggering the
+  # obligation. obl_changeset now treats a newline byte in the `-z` stream as a DERIVE FAILURE, which
+  # routes to `--force-uncertain` and REQUIRES the record. This leg is the load-bearing negative for that
+  # detector: without it, the detector is behaviourally correct but observed by NOTHING (found in review —
+  # the sibling check `ratification-parity.sh` had the identical gap, fixed at the same time).
+  _nlr="$_t/nlrepo"
+  mkdir -p "$_nlr/docs"
+  ( cd "$_nlr" && git init -q && git config user.email t@t && git config user.name t \
+      && printf 'x\n' > docs/base.md && git add -A && git commit -q -m base && git branch -M main \
+      && git checkout -q -b feat ) >/dev/null 2>&1
+  # NOTE: the crafted commit MUST land on a BRANCH, not on main. Committing it on main makes
+  # `main...HEAD` EMPTY, the derivation succeeds with a null change-set, and the leg then passes without
+  # ever exercising the detector — measured (the mutant survived). Same class as the untracked-file
+  # fixture error in promotion-readiness-wired.sh's no-base leg.
+  # A name whose fragments match NOTHING on the surface: pre-detector this derived N/A and the obligation
+  # was silently skipped; post-detector the derive failure requires the record.
+  _nlname=$(printf 'docs/a\nb.md')
+  if ( cd "$_nlr" && printf 'y\n' > "$_nlname" && git add -A && git commit -q -m crafted ) >/dev/null 2>&1; then
+    # PREMISE: the fixture must really carry a newline, else the leg proves nothing.
+    _nlbytes=$( ( cd "$_nlr" && git diff --name-only -z --no-renames main...HEAD 2>/dev/null | LC_ALL=C tr -cd '\n' | wc -c | tr -d ' ' ) )
+    # Assert the FLAG directly, in-process. Going through obligation_gate's exit code is too indirect: a
+    # non-zero can mean "obligation required" OR any other refusal, so the mutant survived that form
+    # (measured twice). `OBL_DERIVE_FAIL` is the exact state the detector sets and the caller reads.
+    _nlflag=$( cd "$_nlr" && OBL_DERIVE_FAIL=0; obl_changeset >/dev/null 2>&1 || true; printf '%s' "${OBL_DERIVE_FAIL:-0}" )
+    _nlset=$( cd "$_nlr" && OBL_DERIVE_FAIL=0; obl_changeset 2>/dev/null | tr '\n' '|' )
+    if [ "${_nlbytes:-0}" -lt 1 ]; then
+      echo "OBL SELFTEST FAIL: the newline fixture carries NO newline byte in its derived stream — the derive-failure leg below proves nothing"; rc=1
+    elif [ "$_nlflag" != 1 ]; then
+      echo "OBL SELFTEST FAIL: a change-set carrying a NEWLINE in a path name did NOT set OBL_DERIVE_FAIL (got '$_nlflag'); tr splits such a path into fragments that can match no surface glob, so it must fail CLOSED and require the record. Derived: [$_nlset]"; rc=1
+    fi
+  else
+    echo "OBL SELFTEST FAIL: could not build a newline-in-filename fixture — the derive-failure leg did not run (do NOT read this as a pass)"; rc=1
   fi
 
   # ---- RECORD-FLOOR (OBLIGATION-RECORD-FLOOR). Before the floor, obl_is_placeholder treated ANY readable
