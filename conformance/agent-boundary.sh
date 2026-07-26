@@ -16,6 +16,11 @@
 #
 #   usage: sh conformance/agent-boundary.sh --changed <listing-file> --ratified <0|1> [--require]
 #          sh conformance/agent-boundary.sh --selftest
+#          sh conformance/agent-boundary.sh --check-complete --changed <listing-file>
+#
+# --check-complete EXIT SPACE IS 0 or 2, NEVER 1 (A4). `1` above means "unratified control-plane
+# change" — a state one human approval clears. A listing truncated at the API cap is NOT ratifiable,
+# so it must never render as "awaiting a human"; it is a gate error (2).
 set -eu
 
 REQUIRE="${REQUIRE:-0}"
@@ -33,12 +38,15 @@ while [ $# -gt 0 ]; do
     --require) REQUIRE=1; shift ;;
     --selftest) MODE="selftest"; shift ;;
     --state) MODE="state"; shift ;;
+    # A4: change-set completeness. Takes no value — the entry count is derived from --changed, never
+    # supplied, so no caller can hand in a stale or forged figure.
+    --check-complete) MODE="complete"; shift ;;
     # CP-9: the rc -> check-run mapping. `--state` is already a MODE flag (it takes no value), so the
     # mapping's inputs get their own names rather than an ambiguous optional-argument overload.
     --conclusion) MODE="conclusion"; RC="${2:-}"; shift 2 ;;
     --for-state) FOR_STATE="${2:-NONE}"; shift 2 ;;
     --for-class) FOR_CLASS="${2:-control-plane}"; shift 2 ;;
-    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>]" >&2; exit 2 ;;
+    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>] | --check-complete --changed <file>" >&2; exit 2 ;;
   esac
 done
 
@@ -62,12 +70,39 @@ adapter_union() {
 
 # path_in_union <path> <union-list>: 0 if <path> matches a union entry — exact, or a directory-prefix
 # entry ending in '/'. Union entries never contain spaces, so word-splitting the list is safe.
+# A2 (case). The adapter-declared surface is the OTHER half of this gate's control-plane set, and it
+# was byte-literal while is_control_plane_path folded — so `.Cursor/rules` stayed ordinary and the union
+# half remained evadable by one capital letter. Fold BOTH the subject and each declared entry; adapter
+# manifests are author-written, so an entry may itself carry uppercase.
 path_in_union() {
   _pp=$1; _u=$2
+  case "$_pp" in *[A-Z]*) _pp=$(printf '%s' "$_pp" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
+  # `for _e in $_u` needs WORD splitting but must NOT get PATHNAME expansion: a manifest entry such as
+  # `conformance/*` would otherwise expand to the existing files, so a NEW file under that directory
+  # would not match the union at all. Adapter manifests are author-controlled input to an
+  # authorization predicate, so disable globbing for the loop and restore it after.
+  # Save the caller's noglob state and restore it, rather than an unconditional `set +f` — the
+  # established pattern in guard-core.sh. An unconditional restore silently clears a caller's `set -f`.
+  _piu_g=0; case "$-" in *f*) _piu_g=1 ;; esac
+  set -f
   for _e in $_u; do
-    [ "$_pp" = "$_e" ] && return 0
-    case "$_e" in */) case "$_pp" in "$_e"*) return 0 ;; esac ;; esac
+    case "$_e" in *[A-Z]*) _e=$(printf '%s' "$_e" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
+    # IMPLEMENT the glob rather than degrading to match-all. An earlier draft treated any entry
+    # containing * ? or [ as an unsupported shape and returned MATCH, reasoning that fail-closed beats a
+    # silent no-match. Measured, that made ONE glob entry in ANY adapter manifest classify EVERY path
+    # control-plane — `README.md`, `package.json`, `totally/unrelated.txt` — turning the required gate
+    # into an always-red check with no diagnostic naming the offending entry. Over-classification is the
+    # safe direction but a blanket merge block is not a usable one.
+    # `case` patterns are NOT subject to pathname expansion, so the glob works directly and `set -f`
+    # (kept, for the unquoted word-split above) does not affect it. `docs/*` now matches
+    # `docs/CAPABILITIES.md` and NOT `src/App.tsx` — the behaviour the fail-closed branch was standing in
+    # for. Unquoted `$_e` on the pattern side is deliberate: that is what makes it a pattern.
+    # shellcheck disable=SC2254  # intentional: the union entry IS the pattern
+    case "$_pp" in $_e) [ "$_piu_g" = 1 ] || set +f; return 0 ;; esac
+    [ "$_pp" = "$_e" ] && { [ "$_piu_g" = 1 ] || set +f; return 0; }
+    case "$_e" in */) case "$_pp" in "$_e"*) [ "$_piu_g" = 1 ] || set +f; return 0 ;; esac ;; esac
   done
+  [ "$_piu_g" = 1 ] || set +f
   return 1
 }
 
@@ -164,6 +199,102 @@ conclusion_map() {
   printf 'summary=%s\n' "$_summary"
 }
 
+# ── A4: change-set completeness. THE CAP IS THE SIGNAL. ──────────────────────────────────────────
+# GitHub's *List pull request files* API returns a bounded number of entries and `--paginate` then
+# simply STOPS — a SUCCESS, not an error — so neither `set -e` nor ratification.yml's empty-listing
+# escalation (:173) sees it. The required §13 gate then classifies on a change-set missing paths it
+# cannot enumerate, and posts GREEN "nothing to ratify".
+#
+# WHY NOT A COUNT COMPARISON. The obvious design — reconcile the emitted count against the PR event's
+# `changed_files` — was built and WITHDRAWN after dual review measured two defects:
+#   (1) the listing emits `filename` AND `previous_filename` while `changed_files` counts a rename
+#       ONCE, so emitted = min(entries,CAP) + renames. 3000 renames + one hidden `skills/` path
+#       reconciles as "complete" — blind in exactly its target case.
+#   (2) `changed_files` is ABSENT from `pull_request_review` payloads, and ratification.yml fires on
+#       that trigger precisely so the check re-runs when a human approves — so the comparison would
+#       have reddened the gate at the moment of ratification.
+# Hitting the cap is itself sufficient evidence that the listing cannot be trusted. No arithmetic, no
+# payload field, no premise about how `changed_files` counts anything.
+#
+# ⚠️ UNVERIFIED PREMISE (EXTERNAL-PREMISE-EVIDENCE): the cap's VALUE is documented-by-GitHub, not
+# measured here. Failure directions are asymmetric and worth knowing:
+#   - real cap HIGHER than KIT_PR_FILES_CAP -> we fail closed early. Conservative, SAFE.
+#   - real cap LOWER  than KIT_PR_FILES_CAP -> a truncated listing sits below our threshold and PASSES.
+#     UNSAFE, and the only direction that matters.
+# Settle it with: a scratch repo, a branch adding CAP+1 files, then
+#   gh api repos/O/R/pulls/N/files --paginate -q '.[].filename' | wc -l
+# and record the number here.
+#
+# ⚠️ A PLAIN CONSTANT, DELIBERATELY NOT AN ENV OVERRIDE. An earlier draft read
+# `${KIT_PR_FILES_CAP:-3000}` and advertised it as "overridable so an adopter on a different forge can
+# correct it without editing a control-plane file". That INVERTED the security argument. On a
+# `pull_request` event GitHub runs the WORKFLOW from the PR, so a PR could add
+# `env: KIT_PR_FILES_CAP: 999999999` to the ratification job and silently disable this tripwire — and
+# unlike DELETING the call, neutering it that way passes BOTH wiring anchors, which grep only for the
+# literal call string. Meanwhile this file is checked out from the BASE tree, which is precisely what a
+# PR cannot reach: a constant here is strictly safer than a knob.
+# An adopter on another forge edits this line — a control-plane change, ratified once, visible in a diff.
+KIT_PR_FILES_CAP=3000
+
+# changeset_at_api_cap <entry_count> -> 0 below the cap (trustworthy) · 1 at/over it · 2 unusable input.
+# NOTE the empty case is deliberately 0 here, not an error: an EMPTY listing is already escalated by
+# ratification.yml:173 as its own fail-safe, and duplicating it here would misattribute a failed
+# checkout to the API cap.
+changeset_at_api_cap() {
+  _ca_n=${1:-}
+  # Bound the LENGTH before any arithmetic: an all-digit value past the shell's integer range makes
+  # `[` error out, and inside an &&/|| guard `set -e` is suppressed, so control would fall through to
+  # a PASS — a fail-OPEN inside a fail-closed function. Measured under dash.
+  case "$_ca_n" in
+    ''|*[!0-9]*) return 2 ;;
+    ??????????*) return 2 ;;
+  esac
+  # VALIDATE THE CAP TOO — it is the RIGHT operand and it comes from the environment. Guarding only the
+  # left one left a measured fail-OPEN: with KIT_PR_FILES_CAP="3,000" (or `abc`, `0x10`, " ") `[` errors
+  # out, the &&-list suppresses `set -e`, control falls through to `return 0`, and a 3500-entry listing
+  # is announced "complete". The header below ADVERTISES this override for other forges, so the invited
+  # path was the exploit path — a GitLab adopter setting "1,000" silently disabled the tripwire.
+  case "$KIT_PR_FILES_CAP" in
+    ''|*[!0-9]*) return 2 ;;
+    ??????????*) return 2 ;;
+  esac
+  [ "$KIT_PR_FILES_CAP" -lt 1 ] && return 2
+  [ "$_ca_n" -ge "$KIT_PR_FILES_CAP" ] && return 1
+  return 0
+}
+
+# complete — the CLI face, called by the ratification workflows right after they build the listing.
+# Counts entries itself so a caller cannot hand in a stale figure.
+#
+# EXIT SPACE IS 0 or 2 — NEVER 1. `1` in this file means "unratified control-plane change", which
+# conclusion_map renders as YELLOW "Awaiting ratification — a human must approve" and whose summary
+# tells the human to `gh pr merge --squash --admin`. A truncated change-set is NOT ratifiable: nobody,
+# human or agent, knows what is in it. Returning 1 here would be a fail-OPEN dressed as fail-closed.
+# NOTE the name: `complete` is a bash builtin and undefined in POSIX sh, so shellcheck SC3044 flags a
+# function of that name in a `#!/bin/sh` script. Named `check_completeness` to stay dash-clean.
+check_completeness() {
+  [ -n "$CHANGED" ] || { echo "agent-boundary --check-complete: no --changed listing supplied" >&2; exit 2; }
+  [ -f "$CHANGED" ] || { echo "agent-boundary --check-complete: --changed listing not found: $CHANGED" >&2; exit 2; }
+  # awk NR, not `wc -l`: a listing whose final line lacks a trailing newline undercounts by one under
+  # wc, which would misreport as "below cap" (or, in the old design, as a spurious truncation).
+  _c_n=$(awk 'END{print NR}' < "$CHANGED")
+  # Guard the call — `set -e` aborts on a non-zero simple command, so capturing $? on the NEXT
+  # statement never runs and the verdict message is silently lost (measured in the withdrawn build).
+  changeset_at_api_cap "$_c_n" && _c_rc=0 || _c_rc=$?
+  case "$_c_rc" in
+    0) echo "change-set listing complete: $_c_n entr(y|ies), below the $KIT_PR_FILES_CAP API cap."; exit 0 ;;
+    1) echo "LISTING NOT VERIFIABLE: the changed-file listing emitted $_c_n line(s), at or over the $KIT_PR_FILES_CAP cap. NOTE this counts EMITTED LINES, and a rename contributes TWO (filename + previous_filename), so this fires at files+renames >= cap — meaning EITHER the forge truncated the listing at its API cap OR the change-set is genuinely that large. Both are treated the same and both fail closed: a class derived from a listing this gate cannot vouch for is untrustworthy, and an unverifiable change-set is not ratifiable — nobody can approve what cannot be enumerated. If this is a legitimate very large change-set, split it or raise KIT_PR_FILES_CAP deliberately." >&2; exit 2 ;;
+    *) # Name WHICH operand is unusable. An earlier draft always blamed the entry count, so an operator
+       # debugging a malformed cap would inspect the listing and find nothing wrong with it.
+       if ! changeset_at_api_cap 1 >/dev/null 2>&1; then
+         echo "agent-boundary --check-complete: unusable CAP '$KIT_PR_FILES_CAP' (non-numeric, zero, or absurd) — the entry count '$_c_n' is fine. This is a gate ERROR. Fail-closed." >&2
+       else
+         echo "agent-boundary --check-complete: unusable entry count '$_c_n' (non-numeric or absurd). This is a gate ERROR, not an absence of changes. Fail-closed." >&2
+       fi
+       exit 2 ;;
+  esac
+}
+
 run() {
   [ -f "$CORE" ] || unverifiable "deny-matrix core not found at $CORE (set KIT_GUARD_CORE)"
   # shellcheck disable=SC1090  # core path is resolved at runtime, intentionally dynamic
@@ -205,6 +336,92 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   # hardcoded set) is now caught — proving the gate enforces what adapters declare, per harness.
   dc 1 ".cursor/rules" 0 "adapter-union path, unratified -> FAIL" ".cursor/rules .github/workflows/"
   dc 0 ".cursor/rules" 1 "adapter-union path, ratified -> PASS" ".cursor/rules .github/workflows/"
+  # A2 (case) on the UNION half. is_control_plane_path folds case, but the adapter-declared surface is
+  # a separate matcher — before the fold `.Cursor/rules` classified ordinary and the union half of this
+  # gate stayed evadable by one capital letter. Both directions, since manifests are author-written.
+  dc 1 ".Cursor/rules" 0 "adapter-union CASE VARIANT, unratified -> FAIL" ".cursor/rules .github/workflows/"
+  dc 1 ".cursor/rules" 0 "adapter-union path vs UPPERCASE manifest entry -> FAIL" ".Cursor/rules .github/workflows/"
+  # GLOB-BEARING union entries. Unlocked until now: the entire glob branch could be DELETED and this
+  # selftest stayed green, because every union leg above uses a glob-free entry. A behaviour whose
+  # removal ships green is not a control (the kit's own non-vacuity law), and this one guards an
+  # authorization predicate fed by author-controlled adapter manifests.
+  dc 1 "docs/CAPABILITIES.md"   0 "glob union entry MATCHES its subtree -> FAIL" "docs/*"
+  dc 0 "src/App.tsx"            0 "glob union entry does NOT match outside it -> PASS" "docs/*"
+  dc 0 "README.md"              0 "glob union entry does NOT match an unrelated root file -> PASS" "docs/*"
+  dc 1 "docs/deep/nested.md"    0 "glob union entry matches a NESTED path -> FAIL" "docs/*"
+  # The trailing-'/' prefix rule must still work alongside globbing, with set -f in force.
+  dc 1 "conformance/newfile.sh" 0 "prefix union entry matches a NEW file -> FAIL" "conformance/"
+
+  # ── A4: CHANGE-SET COMPLETENESS — THE CAP IS THE SIGNAL.
+  #    An earlier design compared the emitted line count against the PR event's `changed_files`. Dual
+  #    review measured it BLIND in its own target case: the listing emits `filename` AND
+  #    `previous_filename` while `changed_files` counts a rename ONCE, so `emitted = min(entries,3000) +
+  #    renames` and 3000 renames + one hidden `skills/` path passes as "complete". `changed_files` is
+  #    also ABSENT on `pull_request_review` payloads, so that wiring would have reddened the gate at the
+  #    exact moment a human ratifies. Both withdrawn: if the listing came back AT the cap it is
+  #    untrustworthy, full stop — no arithmetic, no payload dependency, no unverified premise.
+  cap() {  # expect_rc entries label
+    e=$1; n=$2; lbl=$3
+    ( changeset_at_api_cap "$n" ) >/dev/null 2>&1 && g=0 || g=$?
+    if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> rc $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
+  }
+  cap 0 0    "0 entries -> below cap (the EMPTY case is ratification.yml:173's, not ours)"
+  cap 0 1    "1 entry -> below cap"
+  cap 0 2999 "2999 entries -> below cap, trustworthy"
+  cap 1 3000 "3000 entries -> AT the API cap, untrustworthy"
+  cap 1 3001 "3001 entries -> over the cap, untrustworthy"
+  cap 2 ""   "entry count absent -> gate error"
+  cap 2 "x"  "entry count non-numeric -> gate error"
+  # Overflow: an all-digit value past the shell's integer range makes `[` error out; inside an &&/||
+  # guard `set -e` is suppressed and control would fall through to a PASS (a fail-OPEN in a
+  # fail-closed function). Bound the length before any arithmetic.
+  cap 2 "99999999999999999999" "absurd entry count -> gate error, never a silent pass"
+  # The CAP is the other operand and comes from the environment. Guarding only the entry count left a
+  # measured fail-OPEN (a thousands separator made `[` error out and control fell through to a PASS on
+  # a listing well over the cap). These legs make the cap's validation load-bearing.
+  _cap_saved=$KIT_PR_FILES_CAP
+  for _bad in "3,000" "abc" "0x10" " " "" "0" "99999999999999999999"; do
+    KIT_PR_FILES_CAP=$_bad
+    ( changeset_at_api_cap 3500 ) >/dev/null 2>&1 && _g=0 || _g=$?
+    if [ "$_g" = 2 ]; then echo "selftest PASS: malformed cap '$_bad' -> gate error (rc 2), never a silent pass"
+    else echo "selftest FAIL: malformed cap '$_bad' want rc 2 got $_g — a 3500-entry listing was judged against an unusable cap"; st=1; fi
+  done
+  KIT_PR_FILES_CAP=$_cap_saved
+  # And a VALID override must still work — the escape hatch has to survive its own validation.
+  KIT_PR_FILES_CAP=1000
+  ( changeset_at_api_cap 1500 ) >/dev/null 2>&1 && _g=0 || _g=$?
+  if [ "$_g" = 1 ]; then echo "selftest PASS: valid override cap=1000 -> 1500 entries is AT/over cap"
+  else echo "selftest FAIL: valid override cap=1000 with 1500 entries want rc 1 got $_g"; st=1; fi
+  KIT_PR_FILES_CAP=$_cap_saved
+
+  # ── CLI-level legs for --check-complete. The in-process `cap` legs above exercise the PURE function
+  #    only. The withdrawn build had NO CLI leg, and both defects it shipped — an unbound DECLARED
+  #    under `set -u`, and `set -e` swallowing the verdict before $? was captured — were invisible to
+  #    a fully green selftest. Assert the VERDICT TEXT as well as rc: a leg checking rc alone cannot
+  #    tell its own failure from a neighbour's.
+  _cbd=$(mktemp -d 2>/dev/null) || _cbd=""
+  if [ -n "$_cbd" ]; then
+    awk -v n="$KIT_PR_FILES_CAP" 'BEGIN{for(i=0;i<n;i++)printf "f%d.txt\n", i}' > "$_cbd/atcap.txt"
+    awk -v n="$KIT_PR_FILES_CAP" 'BEGIN{for(i=0;i<n-1;i++)printf "f%d.txt\n", i}' > "$_cbd/under.txt"
+    printf 'a.txt\nb.txt' > "$_cbd/nonl.txt"   # deliberately NO trailing newline
+    cli() {  # expect_rc expect_text label [args...]
+      e=$1; t=$2; lbl=$3; shift 3
+      o=$( sh "$0" --check-complete "$@" 2>&1 ) && g=0 || g=$?
+      if [ "$g" != "$e" ]; then echo "selftest FAIL: $lbl want rc $e got $g"; st=1; return; fi
+      case "$o" in *"$t"*) echo "selftest PASS: $lbl -> rc $g, verdict names '$t'" ;;
+        *) echo "selftest FAIL: $lbl rc $g correct but verdict lacks '$t': $o"; st=1 ;; esac
+    }
+    cli 0 "below the"        "CLI: under the cap -> rc 0"                --changed "$_cbd/under.txt"
+    cli 2 "NOT VERIFIABLE"   "CLI: AT the cap -> rc 2 (never 1)"         --changed "$_cbd/atcap.txt"
+    cli 2 "no --changed"     "CLI: --changed omitted -> rc 2"
+    cli 2 "not found"        "CLI: --changed points at nothing -> rc 2"  --changed "$_cbd/nope.txt"
+    # awk NR vs wc -l: `wc -l` reports 1 for this 2-entry file, which would undercount a listing
+    # whose last line lacks a newline. rc 0 either way here; the leg pins the COUNTING METHOD.
+    cli 0 "2 entr"           "CLI: no trailing newline counts 2, not 1"  --changed "$_cbd/nonl.txt"
+    [ -n "$_cbd" ] && rm -rf "$_cbd"
+  else
+    echo "selftest FAIL: could not mktemp for the --check-complete CLI legs"; st=1
+  fi
   dc 0 "src/app.ts" 0 "non-union ordinary path -> PASS" ".cursor/rules"
   dc 1 ".cursor/rules/foo.md" 0 "dir-prefix union entry -> FAIL" ".cursor/rules/"
 
@@ -331,5 +548,6 @@ case "$MODE" in
   selftest) selftest; exit $? ;;
   state) state ;;
   conclusion) conclusion ;;
+  complete) check_completeness ;;
   *) run ;;
 esac

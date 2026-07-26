@@ -16,7 +16,171 @@ selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }
 # DEDICATED scanner-config files (path-matchable). Coverage thresholds embedded in SHARED
 # multi-purpose files (pyproject.toml, .golangci.yml) are NOT path-matchable without blocking the
 # whole file — that is a content-level problem, out of scope here.
+# is_control_plane_path <path> — CASE-INSENSITIVE since A2. On a case-INSENSITIVE filesystem (the
+# macOS default, and the kit's own development platform) `.Claude/hooks/guard-core.sh` resolves to the
+# REAL guard while a byte-literal match classified it `ordinary` — so the guard could be edited out of
+# the way by typing one capital letter, and the required §13 gate derived `ordinary` for it. Measured.
+#
+# STRICTLY FAIL-SAFE: folding can only ever ADD paths to the control-plane set, and no consumer treats
+# a `true` verdict as a grant (guard_check_path denies, is_control_plane_target denies,
+# promotion-readiness escalates). The cost is that a genuinely-distinct `Skills/` file on a
+# case-SENSITIVE filesystem is now treated as control-plane — a guard prompt, never a bypass.
+#
+# HOT PATH: this runs on every PreToolUse, twice per path. The literal `case` below is tried FIRST and
+# decides every all-lowercase path with zero subprocesses; only a path that actually contains an
+# uppercase byte AND missed the literal match pays one `tr`. `LC_ALL=C` + the explicit `A-Z`/`a-z`
+# ranges keep it byte-safe: under a Turkish locale `[:upper:]` maps I->ı, which would then fail to
+# match `i` in the patterns.
+#
+# CEILING: closes CASE variance only. It does NOT close Unicode normalization (NFC/NFD) or homoglyphs —
+# a related class, deliberately not claimed. Do not read this green as closing those.
+# _fs_case_insensitive: is THIS filesystem case-insensitive? Probed ONCE and cached — the fold's cost
+# and its false-positive risk both depend on the answer, and it cannot change mid-process. Uses `/tmp`
+# (POSIX-required to exist) with `$HOME` as a fallback; no files are written. A Linux box that happens
+# to have a real `/TMP` directory answers "insensitive" and simply folds more — the safe direction.
+_kit_fs_ci=""
+_fs_case_insensitive() {
+  if [ -z "$_kit_fs_ci" ]; then
+    _kit_fs_ci=0
+    # PROBE THE TREE WE ARE JUDGING, not `/` or `$HOME`. An earlier draft tested `/tmp` vs `/TMP` with a
+    # `$HOME` fallback, which answers for the WRONG VOLUME and is wrong in real setups: a repo on a
+    # case-insensitive disk image or a `+F` casefold ext4 directory under a case-sensitive `/`, a Linux
+    # container with a macOS bind mount, or a case-sensitive APFS volume mounted under a
+    # case-insensitive `/`. In each the probe said "sensitive" while the variant genuinely resolved.
+    # `.github` is present in this repo and in every incepted adopter, so it is a reliable in-tree
+    # anchor; `$PWD` is the fallback for a caller running outside a kit tree. No files are written and
+    # no env value steers the answer.
+    for _kfd in "." ".."; do
+      if [ -d "$_kfd/.github" ] && [ -d "$_kfd/.GITHUB" ]; then _kit_fs_ci=1; break; fi
+    done
+    if [ "$_kit_fs_ci" = 0 ] && [ -d "${PWD:-.}" ]; then
+      _kfu=$(printf '%s' "${PWD:-.}" | LC_ALL=C tr 'a-z' 'A-Z')
+      [ "$_kfu" != "${PWD:-.}" ] && [ -d "$_kfu" ] && _kit_fs_ci=1
+    fi
+  fi
+  [ "$_kit_fs_ci" = 1 ]
+}
+
+# is_control_plane_path <path> — case-insensitive since A2, in TWO tiers.
+#
+# WHY TWO TIERS. Folding everything unconditionally was measured to break three SHIPPED profiles:
+# `src/Adapters/Repo.cs`, `Adapters/Http/StripeAdapter.cs` and `Skills/Onboarding.cs` all derived
+# control-plane, and PascalCase directories are the language convention in profiles/dotnet,
+# profiles/java-spring and profiles/kotlin — `Adapters/` being the idiomatic ports-and-adapters folder.
+# On a case-SENSITIVE filesystem (every CI runner) that is not a guard prompt but a MERGE BLOCK on an
+# ordinary PR, clearable only with `--admin` — defeating §13 rather than enforcing it. The design's
+# stated cost ("rare, and only a guard prompt") was wrong on both halves.
+#
+#   TIER 1 — kit-owned names, folded ALWAYS. `.claude/`, `.github/`, `.git/`, `.kit/`, `codeowners`,
+#   `claude.md`, `development-*.md`, the named scripts, the scanner-ignore files. Nobody names
+#   application code `CLAUDE.md`, so there is no false-positive surface and these stay closed on EVERY
+#   platform. This is the tier the real attacks used (`.Claude/hooks/guard-core.sh`, `Claude.md`).
+#
+#   TIER 2 — generic directory prefixes (`conformance/`, `skills/`, `adapters/`, `agents/`, `scripts/`),
+#   folded ONLY on a case-insensitive filesystem. There the variant genuinely RESOLVES to the real
+#   directory, which is what makes it dangerous; on a case-sensitive filesystem `Adapters/` is simply a
+#   different directory and folding it would be a false positive with no corresponding risk.
+#
+# ⚠️ RESIDUAL, stated rather than hidden: a path committed on a case-SENSITIVE machine that would
+# collide on a case-INSENSITIVE checkout is classified on the CI runner's filesystem, not the
+# developer's. Tier 1 is unconditional precisely because that is where a cross-platform collision would
+# actually matter; Tier 2's residual is a generic directory an adopter has deliberately named.
 is_control_plane_path() {
+  _cpp_match "$1" && return 0
+  case "$1" in *[A-Z]*) : ;; *) return 1 ;; esac
+  _cppf=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
+  _cpp_kitowned "$_cppf" && return 0
+  _fs_case_insensitive && _cpp_match "$_cppf" && return 0
+  return 1
+}
+
+# TIER 1 set — kit-owned, unambiguous, folded on every platform.
+#
+# ⚠️ THE LINE IS DRAWN AT FILENAME GRANULARITY, NOT DIRECTORY GRANULARITY. The first cut of this split
+# put whole directories in Tier 2 (`skills/`, `conformance/`, `agents/`, `scripts/`) because
+# `Skills/Onboarding.cs` and `src/Adapters/Repo.cs` are plausible adopter code. But the ambiguity is in
+# the FILE, not the folder: no dotnet/java/kotlin adopter ships `Skills/review/SKILL.md`,
+# `Agents/reviewer.agent.md`, `Conformance/verify.sh` or `Scripts/promotion-verify.sh`. Drawing the line
+# at the directory left those classified ORDINARY on every Linux runner — a live §13 bypass (below) —
+# while buying no false-positive protection they needed.
+#
+# THE BYPASS THIS CLOSES, measured: an attacker opens a PR adding `Skills/incident-response/SKILL.md`.
+# On ubuntu-latest the class derived `ordinary`, `control-plane-ratification` posted GREEN "nothing to
+# ratify", and it merged under an ordinary review. Git then checks a NEW file at a case-variant path
+# out SILENTLY into the real directory on any case-insensitive clone — no collision warning, unlike an
+# existing file (which warns, and whose real content wins because the lowercase path sorts later). So
+# the attacker's file becomes a live agent-instruction surface carrying kit authority.
+_cpp_kitowned() {
+  case "$1" in
+    *.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh|\
+    *.claude/settings.json|*.claude/settings.local.json|\
+    *.claude/mcp-policy.json|.claude/mcp-policy.json|\
+    *.claude/agents/*|.claude/agents/*|\
+    */.github/workflows/*|.github/workflows/*|*/.git/*|.git/*|\
+    .kit/budget.conf|*/.kit/budget.conf|.kit/roster.conf|*/.kit/roster.conf|\
+    .kit/model-tiers.conf|*/.kit/model-tiers.conf|.kit/model-map.conf|*/.kit/model-map.conf|\
+    codeowners|*/codeowners|claude.md|*/claude.md|\
+    development-standards.md|*/development-standards.md|\
+    development-process.md|*/development-process.md|\
+    */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
+    .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|\
+    .semgrepignore|*/.semgrepignore|.trivyignore|*/.trivyignore|\
+    .checkov.yaml|*/.checkov.yaml|.checkov.yml|*/.checkov.yml|\
+    docs/governance/.meta-control-last|*/docs/governance/.meta-control-last|\
+    docs/governance/meta-control-log.md|*/docs/governance/meta-control-log.md|\
+    conformance/*.sh|*/conformance/*.sh|\
+    skills/*/skill.md|*/skills/*/skill.md|\
+    agents/*.agent.md|*/agents/*.agent.md|\
+    scripts/incept.sh|*/scripts/incept.sh|scripts/dora.sh|*/scripts/dora.sh|\
+    scripts/agent-scorecard.sh|*/scripts/agent-scorecard.sh|\
+    scripts/agent-trace.sh|*/scripts/agent-trace.sh|\
+    scripts/escalate.sh|*/scripts/escalate.sh|\
+    scripts/coverage-ratchet.sh|*/scripts/coverage-ratchet.sh|\
+    scripts/license-check.sh|*/scripts/license-check.sh|\
+    scripts/preflight.sh|*/scripts/preflight.sh|\
+    scripts/new-adapter.sh|*/scripts/new-adapter.sh|\
+    scripts/new-profile.sh|*/scripts/new-profile.sh|\
+    scripts/doctor.sh|*/scripts/doctor.sh|\
+    scripts/postmortem.sh|*/scripts/postmortem.sh|\
+    scripts/tier-advice.sh|*/scripts/tier-advice.sh|\
+    scripts/sparkwright|*/scripts/sparkwright|\
+    scripts/containment-audit.sh|*/scripts/containment-audit.sh|\
+    scripts/sod-check.sh|*/scripts/sod-check.sh|\
+    scripts/model-tier.sh|*/scripts/model-tier.sh|\
+    scripts/runaway-guard.sh|*/scripts/runaway-guard.sh|\
+    scripts/orchestrator-run.sh|*/scripts/orchestrator-run.sh|\
+    scripts/release-tag.sh|*/scripts/release-tag.sh|\
+    scripts/promotion-verify.sh|*/scripts/promotion-verify.sh|\
+    adapters/*/adapter.json|*/adapters/*/adapter.json|\
+    conformance/claims.tsv|*/conformance/claims.tsv|\
+    conformance/aggregate-exclusions.txt|*/conformance/aggregate-exclusions.txt|\
+    conformance/incept-manifests/*|*/conformance/incept-manifests/*|\
+    conformance/fixtures/*|*/conformance/fixtures/*|\
+    scripts/fixtures/*|*/scripts/fixtures/*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+# ⚠️ TIER 1 MUST BE A STRICT SUBSET OF _cpp_match. The fold's only sound invariant is
+#   is_control_plane_path(p)  =>  is_control_plane_path(tolower(p))
+# i.e. folding may only ever PRESERVE control-plane-ness, never CREATE it. An earlier draft listed
+# `*.claude/*` and `*/.github/*` here while `_cpp_match` carried only `.github/workflows/*` and five
+# specific `.claude/` files — so Tier 1 was BROADER than the set it folds and manufactured new
+# classifications. Measured over all tracked files: `.github/ISSUE_TEMPLATE/*`,
+# `.github/PULL_REQUEST_TEMPLATE.md` and `.claude/README.md` flipped ordinary -> control-plane on EVERY
+# platform. Those are GitHub's own uppercase conventions, present in near-every adopter, so a PR editing
+# a bug-report template demanded non-author ratification — the merge block this whole split exists to
+# avoid, arriving through the tier that was supposed to be the safe one.
+# `conformance/invariant-fold-monotone` (promotion-readiness-wired.sh) now asserts the invariant over
+# every tracked path, because it is a PROPERTY, not an example — an anchor list cannot catch this.
+
+# The pattern set, LOWERCASED. Both sides of the comparison are folded — the subject by the wrapper
+# above, the patterns here at authoring time. ⚠️ Every pattern in this list MUST stay lowercase: a
+# pattern carrying an uppercase byte can never match a folded subject, which would SILENTLY DECLASSIFY
+# it. That is not hypothetical — the first draft of this change kept `CODEOWNERS`, `CLAUDE.md`,
+# `DEVELOPMENT-STANDARDS.md` and `DEVELOPMENT-PROCESS.md` byte-identical and turned all four `ordinary`.
+_cpp_match() {
   case "$1" in
     *.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh|\
     *.claude/settings.json|*.claude/settings.local.json|\
@@ -25,7 +189,7 @@ is_control_plane_path() {
     docs/governance/.meta-control-last|*/docs/governance/.meta-control-last|\
     docs/governance/meta-control-log.md|*/docs/governance/meta-control-log.md|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
-    */.github/workflows/*|.github/workflows/*|*/CODEOWNERS|CODEOWNERS|*/.git/*|.git/*|\
+    */.github/workflows/*|.github/workflows/*|*/codeowners|codeowners|*/.git/*|.git/*|\
     .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|\
     .semgrepignore|*/.semgrepignore|.trivyignore|*/.trivyignore|\
     .checkov.yaml|*/.checkov.yaml|.checkov.yml|*/.checkov.yml|\
@@ -57,9 +221,9 @@ is_control_plane_path() {
     scripts/release-tag.sh|*/scripts/release-tag.sh|\
     scripts/promotion-verify.sh|*/scripts/promotion-verify.sh|\
     agents/*.agent.md|*/agents/*.agent.md|\
-    DEVELOPMENT-STANDARDS.md|*/DEVELOPMENT-STANDARDS.md|\
-    DEVELOPMENT-PROCESS.md|*/DEVELOPMENT-PROCESS.md|\
-    CLAUDE.md|*/CLAUDE.md)
+    development-standards.md|*/development-standards.md|\
+    development-process.md|*/development-process.md|\
+    claude.md|*/claude.md)
       return 0 ;;
   esac
   return 1
@@ -237,10 +401,26 @@ guard_read_only_command() {
 # NOT widened: it also drives the Write/Edit path (guard_check_path), and this slice adds no blast
 # radius there. `mv conformance/ /tmp` was already denied; `mv conformance /tmp` was not - and that one
 # command relocates every gate in the repo.
+# CASE-INSENSITIVE since A2, for the same reason as is_control_plane_path and via the same two-step:
+# literal first (zero subprocesses for an all-lowercase target), fold only on an uppercase miss.
+# Measured before the fix: `mv skills /tmp/x` -> DENY but `mv Skills /tmp/x` -> ALLOW, and on a
+# case-insensitive filesystem that second command relocates the REAL skills/ directory — precisely the
+# command the comment above exists to deny. is_control_plane_path does NOT cover these: its patterns
+# are `skills/*`, which a bare directory name never matches.
 is_control_plane_target() {
   is_control_plane_path "$1" && return 0
   _ct=${1%/}; _ct=${_ct#./}
+  _ctm_match "$_ct" && return 0
   case "$_ct" in
+    *[A-Z]*) _ctm_match "$(printf '%s' "$_ct" | LC_ALL=C tr 'A-Z' 'a-z')" && return 0 ;;
+  esac
+  return 1
+}
+
+# Bare control-plane DIRECTORY names, LOWERCASED (see the _cpp_match warning: an uppercase byte in any
+# pattern here can never match a folded subject and would silently un-protect that directory).
+_ctm_match() {
+  case "$1" in
     conformance|skills|adapters|agents|scripts|hooks|.claude|.github|.git|.kit|\
     */conformance|*/skills|*/adapters|*/agents|*/scripts|*/hooks|*/.claude|*/.github|*/.git|*/.kit)
       return 0 ;;
@@ -516,6 +696,40 @@ _cp8b_git_write_denied() {
 # fail-closed floor for every segment whose lead is an interpreter, a wrapper, or simply unrecognized.
 # Extended in exactly one direction - it now also matches a BARE control-plane directory token - which
 # can only ADD denies (monotone).
+# _cp8b_redirect_hits_cp "<segment>": does any REDIRECT TARGET in this segment land on a control-plane
+# path? Derived from is_control_plane_path / is_control_plane_target — the SINGLE SOURCE OF TRUTH —
+# rather than a second, hand-maintained inventory.
+#
+# WHY: the redirect arm used to carry its own regex alternation listing control-plane paths. It drifted
+# from the classifier by construction, and the drift was measured: `echo evil > scripts/dora.sh`,
+# `> scripts/agent-scorecard.sh`, `> scripts/new-adapter.sh`, `> scripts/postmortem.sh`,
+# `> scripts/sparkwright`, `> scripts/fixtures/*` and three more were ALLOWED while classifying
+# control-plane at the gate. Adding names closed nine and left nine — "a named set with no
+# family-completeness lock rots by construction". Deriving the answer cannot drift.
+#
+# Targets are extracted after `>` or `>>`, with any fd digit and surrounding whitespace stripped, and
+# quotes removed so `> "conformance/x.sh"` is seen. Case folding is inherited from the classifier.
+_cp8b_redirect_hits_cp() {
+  _rh=$1
+  case "$_rh" in *'>'*) : ;; *) return 1 ;; esac
+  _rt=$(printf '%s' "$_rh" | tr '\n' ' ' | sed -e 's/[0-9]*>>*/\n/g' | sed -e '1d' \
+        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+  [ -n "$_rt" ] || return 1
+  _rg=0; case "$-" in *f*) _rg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $_rt
+  while [ $# -gt 0 ]; do
+    if [ -n "$1" ] && { is_control_plane_path "$1" || is_control_plane_target "$1"; }; then
+      [ "$_rg" = 1 ] || set +f
+      return 0
+    fi
+    shift
+  done
+  [ "$_rg" = 1 ] || set +f
+  return 1
+}
+
 _cp8b_scan_denied() {
   _ss=$1
   _pathhit=1
@@ -534,9 +748,23 @@ _cp8b_scan_denied() {
     [ "$_pg" = 1 ] || set +f
   fi
   [ "$_pathhit" = 0 ] || return 1
-  if printf '%s' "$_ss" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
-     || printf '%s' "$_ss" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
-     || printf '%s' "$_ss" | grep -Eq '>[[:space:]]*[^[:space:]]*(\.claude|\.github/workflows|CODEOWNERS|\.git|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
+  # A2 (case) — the REDIRECT arm is a matcher of its own and was still byte-literal. Measured before
+  # this fold: `echo evil > .claude/settings.json` DENY but `> .Claude/settings.json` ALLOW; `> CODEOWNERS`
+  # DENY but `> codeowners` ALLOW — the sharper one, because A2 ADDED `codeowners` to the classifier, so
+  # the class said control-plane while the guard still permitted the redirect write. Fold the scanned
+  # segment once here (the alternation below is authored lowercase to match), rather than duplicating
+  # case variants into an already-dense regex. `_ssl` is used ONLY for these greps; every message and
+  # every other decision still reads the original `$_ss`.
+  _ssl=$_ss
+  case "$_ss" in *[A-Z]*) _ssl=$(printf '%s' "$_ss" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
+  # VERBS FOLD TOO. On a case-insensitive filesystem `/bin/RM` resolves to `/bin/rm`, so a byte-literal
+  # verb match is the same defect as a byte-literal PATH match, one argument position to the left.
+  # Measured before this fold: `rm -rf conformance` DENY but `RM -rf conformance` ALLOW; likewise
+  # `MV conformance /tmp/x`, which relocates every gate in the repo — the exact command the
+  # is_control_plane_target comment exists to deny. `_ssl` is already computed above.
+  if printf '%s' "$_ssl" | grep -Eq '(^|[^[:alnum:]_])(rm|rmdir|mv|cp|truncate|shred|chmod|chown|dd|sed|tee|ln|install|patch)[[:space:]]' \
+     || printf '%s' "$_ssl" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+(checkout|restore)([[:space:]]|$)' \
+     || _cp8b_redirect_hits_cp "$_ss"; then
     return 0
   fi
   return 1
@@ -1001,8 +1229,15 @@ guard_check_path() {
       */*)           _bare=0 ;;
     esac
     if [ "$_bare" = 1 ]; then
-      case "$base" in
-        guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|CODEOWNERS|.meta-control-last|meta-control-log.md|\
+      # A2 (case) — the FIFTH matcher. This bare/escaping-name net exists precisely for the relative
+      # paths that is_control_plane_path's directory-anchored patterns cannot see, and it was still
+      # byte-literal: measured, `guard-core.sh` DENIED while `Guard-Core.sh` was ALLOWED, and likewise
+      # `Settings.json`, `MCP-Policy.json`, `../Guard-Core.sh`. Reachable via any harness or
+      # `scripts/kit-guard` that passes a bare or escaping name. Fold once, then match a LOWERCASE list.
+      _bn=$base
+      case "$_bn" in *[A-Z]*) _bn=$(printf '%s' "$_bn" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
+      case "$_bn" in
+        guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|codeowners|.meta-control-last|meta-control-log.md|\
         .gitleaks.toml|.gitleaksignore|.semgrepignore|.trivyignore|.checkov.yaml|.checkov.yml)
           printf '13: modifying a control-plane file (%s) is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
       esac

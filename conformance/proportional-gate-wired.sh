@@ -193,6 +193,19 @@ selftest() {
   if [ -f "$CI_WF" ] && grep -qE '^[[:space:]]+pull_request_review:[[:space:]]*$' "$CI_WF"; then
     echo "FAIL: $CI_WF triggers on pull_request_review — a review would re-run the whole suite (tests, conformance, artifact-gate), not just the gate"; st=1
   fi
+  # (2b, A4) ci.yml builds its OWN files-API listing and feeds the docs-only classifier, so a truncated
+  # listing there can drop non-.md paths, read docs_only=true and SKIP the conformance shards — a
+  # COVERAGE loss. That third wiring site was locked by NOTHING: ratification-parity anchors
+  # profiles/ratification.yml and the block below anchors this file's ratification workflow, so deleting
+  # the ci.yml call left the whole battery green. Comment-stripped, so commenting the call out is also
+  # caught (the sibling anchor's hollow-source case, applied here).
+  # Trigger on the LISTING FILE, not on one spelling of the API URL: `pulls/${PR}/files` vs
+  # `pulls/$PR/files` are functionally identical, so keying on the braced form let a plausible refactor
+  # silently disable this whole anchor — the hollow-defeat class, reintroduced inside the fix for it.
+  if [ -f "$CI_WF" ] && grep -qF -- '/tmp/changed.txt' "$CI_WF"; then
+    code_only "$CI_WF" | grep -qF -- 'agent-boundary.sh --check-complete' || {
+      echo "FAIL: $CI_WF derives a changed-file listing but never checks it for TRUNCATION — a listing capped by the forge's files API looks healthy (non-empty, exit 0) while paths are missing, so docs_only can read true and the conformance shards SKIP"; st=1; }
+  fi
 
   # (3) THE TRUST BOUNDARY, and the most important anchor in this file.
   #
@@ -217,6 +230,16 @@ selftest() {
     echo "FAIL: $WF does not take the changed-file listing from the PR files API — a git diff of a checked-out tree is head-dependent, and the wrong ref yields an EMPTY listing, which reads as 'no control-plane paths' (rc=0) and posts GREEN on an unratified PR"; st=1; }
   grep -qF -- '[ ! -s /tmp/changed.txt ]' "$WF" || {
     echo "FAIL: $WF has no empty-changed-file tripwire — a PR always changes >=1 file, so an empty listing means the listing could not be computed, NOT that there is nothing to ratify. Without this, a failed lookup reads as rc=0 (fail-open)"; st=1; }
+  # (A4) The empty tripwire above catches a listing that could not be BUILT. This catches one the forge
+  # TRUNCATED: the List-PR-files API stops at a cap and reports SUCCESS, so the listing is non-empty,
+  # `set -e` never fires, and the gate classifies on paths it cannot enumerate — posting GREEN "nothing
+  # to ratify" on a change-set nobody can see. Anchored on the CALL, because the decision deliberately
+  # lives in agent-boundary.sh where it is --selftest-able and reachable by the non-vacuity sweep.
+  # COMMENT-STRIPPED (I6): the raw-file grep was hollow-defeatable — commenting the call out left this
+  # selftest green, while the sibling anchor in ratification-parity.sh strips comments and catches it.
+  # Asymmetric hardening on two halves of the same anchor is how one half rots unnoticed.
+  code_only "$WF" | grep -qF -- 'agent-boundary.sh --check-complete' || {
+    echo "FAIL: $WF has no truncation tripwire — a changed-file listing capped by the forge's files API looks healthy (non-empty, exit 0) while paths are missing, so the gate would derive a change-class from an incomplete listing and post GREEN on a change-set it cannot fully enumerate"; st=1; }
 
   # (3b) The privileged-untrusted-code seam. This job checks out the PR HEAD and EXECUTES code from it
   # (conformance/*.sh). On `pull_request` a fork's token is read-only, so that is inert. But

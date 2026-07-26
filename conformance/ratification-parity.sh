@@ -67,6 +67,13 @@ assert_wired() {  # <src-file>
   printf '%s\n' "$_wcode" | grep -qF 'previous_filename'  || { echo "FAIL: $1 derives its changed-file listing without projecting 'previous_filename' — a rename's SOURCE path is dropped, so a renamed control-plane path would be invisible to the gate and §13 would silently downgrade to agent-autonomous"; _w=1; }
   printf '%s\n' "$_wcode" | grep -qF 'test("\n")'  || { echo "FAIL: $1 derives its changed-file listing with no newline guard — \`jq -r\` emits a RAW newline, so a crafted filename splits one API entry into two lines that each classify separately (measured: a split control-plane path derives 'ordinary' and this gate posts GREEN)"; _w=1; }
   printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --conclusion'  || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --conclusion' — the gate would not map its verdict to a check-run"; _w=1; }
+  # A4. Third anchor on the listing's TRUSTWORTHINESS, alongside 2c (rename source) and 2d (newline).
+  # Those two guard the listing's SHAPE; this guards its COMPLETENESS. GitHub's List-PR-files API stops
+  # at a cap and reports SUCCESS, so a truncated listing looks healthy and the gate classifies on paths
+  # it cannot enumerate — posting GREEN "nothing to ratify". An emitted profile that drops this call
+  # ships an adopter a gate blind to truncation while parity stays green, which is the Slice-B
+  # kit-tree-only regression shape. Load-bearing negative: selftest case 2e.
+  printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --check-complete'  || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --check-complete' — the gate would not notice a changed-file listing TRUNCATED at the forge's API cap, and would classify (and post GREEN) on a change-set it cannot fully enumerate"; _w=1; }
   return "$_w"
 }
 
@@ -151,6 +158,10 @@ selftest() {
       # The listing projection is part of the wired contract (T2/L9), so the CLEAN fixture must carry it —
       # otherwise this fixture asserts a gap that the real shipped workflows do not have.
       printf '      - run: gh api "repos/x/pulls/1/files" -q %s[.[] | .filename, (.previous_filename // empty)] | if any(test("\\n")) then error("nl") else .[] end%s > /tmp/changed.txt\n' "'" "'"
+      # A4: the completeness call is part of the wired contract too, for the same reason as the
+      # projection above — the CLEAN fixture must carry everything the real shipped workflows carry,
+      # or it asserts a gap they do not have.
+      printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
       printf '      - run: sh conformance/promotion-readiness.sh --class --no-verify\n'
       printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
     } > "$1"
@@ -204,6 +215,19 @@ selftest() {
     printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
   } > "$base/noguard.yml"
   if assert_wired "$base/noguard.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2d — a source projecting previous_filename but with NO newline guard passed assert_wired; a crafted filename would split one API entry into two lines that each classify separately"; st=1; else echo "OK: listing without a newline guard -> RED (guard anchor is load-bearing)"; fi
+
+  # 2e. LOAD-BEARING NEGATIVE for the A4 completeness anchor. A source can carry a perfectly-shaped
+  #     listing (previous_filename + newline guard) and still be blind to TRUNCATION, because the API
+  #     stops at its cap and reports SUCCESS. Without this case, deleting the --check-complete anchor
+  #     leaves the selftest green — the same gap 2c and 2d exist to close for the other two anchors.
+  {
+    printf '# COPY & ADAPT (Sparkwright)\n'
+    printf 'jobs:\n  ratify:\n    steps:\n'
+    printf '      - run: gh api "repos/x/pulls/1/files" -q %s.[] | .filename, (.previous_filename // empty) | if any(test("\\n")) then error("x") else .[] end%s > /tmp/changed.txt\n' "'" "'"
+    printf '      - run: sh conformance/promotion-readiness.sh --class --no-verify\n'
+    printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
+  } > "$base/nocap.yml"
+  if assert_wired "$base/nocap.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2e — a source with a well-shaped listing but NO --check-complete call passed assert_wired; a listing truncated at the forge's API cap would classify as complete and the gate would post GREEN on a change-set it cannot enumerate"; st=1; else echo "OK: listing with no truncation check -> RED (A4 anchor is load-bearing)"; fi
 
   # 3. STACK-SPECIALIZED source (plant actions/setup-node) -> assert_stack_neutral RED.
   mk_clean_src "$base/stacky.yml"

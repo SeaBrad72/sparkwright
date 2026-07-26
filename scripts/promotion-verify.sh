@@ -305,7 +305,7 @@ do_actuate() {
   aby_rest="$(printf '%s' "$aby_rest" | sed 's/^[[:space:]]*//')"
   label=""
   case "$aby_rest" in
-    *'['*']') label="${aby_rest##*[}"; label="${label%]}" ;;
+    *'['*']') label="${aby_rest##*\[}"; label="${label%]}" ;;
   esac
   if ! printf '%s' "$label" | grep -Eq '^authenticated: [A-Za-z0-9_-]+-review$'; then
     echo "ACTUATE REFUSED: assurance '$label' does not meet the control-plane bar ([authenticated: <forge>-review] required)" >&2
@@ -316,7 +316,11 @@ do_actuate() {
   #    the trailing ' [label]'. Strip from the SAME last '[' the label read used (not a
   #    space-prefixed '[') so a hand-crafted 'Name[label]' (no space) can't leave the bracket
   #    suffix in aby_id and slip the SoD check. Compare to the approved commit's author name AND email.
-  aby_id="${aby_rest%[*}"
+  #    ESCAPE THE BRACKET. An unescaped `[` starts a bracket expression in POSIX pattern syntax:
+  #    bash tolerates the unterminated form as a literal, but dash — which IS /bin/sh on ubuntu-latest
+  #    — does not match at all and returns the WHOLE string, corrupting both this SoD read and the
+  #    label read at :308. Same one-character fix as conformance/ceremony-binding.sh:216.
+  aby_id="${aby_rest%\[*}"
   aby_id="$(printf '%s' "$aby_id" | sed 's/[[:space:]]*$//')"
   # An empty / whitespace-only approver id can never satisfy SoD (a fabricated or malformed note) —
   # refuse rather than pass the `!= author` comparison vacuously.

@@ -10,6 +10,26 @@
 # unreadable change-set, an unavailable guard core, **an unresolvable merge-base**, or **a newline byte in
 # any path name** classifies control-plane (never silently ordinary). Class is DERIVED, never
 # self-asserted — there is no flag to declare a lower class.
+#
+# ⚠️ DISCLOSED CEILING — SUBMODULES. This is a stated LIMIT, not one of the fail-safe conditions above:
+# a changed gitlink is classified on the SUBMODULE PATH ALONE and is NOT escalated. Neither
+# `git diff --name-only` on the superproject nor the forge's PR-files API descends into a gitlink, so a
+# bump of `vendor/dep` emits exactly `vendor/dep` — the interior paths never reach classification.
+# Measured 2026-07-26 with a live superproject+submodule fixture.
+#   WHY NOT ESCALATED: control-plane PATTERNS inside a submodule are not control-plane AUTHORITY in the
+#   superproject — GitHub Actions reads workflows only from the superproject, so a submodule's
+#   `.github/workflows/*` never runs. A gitlink is a PINNED THIRD-PARTY DEPENDENCY WITH A RATIFIED CALL
+#   SITE, structurally like a lockfile bump, a `uses: org/action@sha` pin, or a container digest — none
+#   of which this kit classes as control-plane. Escalating gitlinks alone would be an inconsistency
+#   dressed as a fix.
+#   THE RESIDUAL THAT DOES BITE (this is the half worth knowing): if the superproject EXECUTES content
+#   from the submodule — a workflow step running `vendor/dep/script.sh`, or a symlink from a
+#   control-plane path into it — then that content has authority this gate never classified. Creating
+#   such a call site is ITSELF a control-plane change and is ratified once; only subsequent CONTENT
+#   changes ride free.
+#   Policy for opaque subtrees is deliberately unsettled here and is boarded as `SUBMODULE-CLASS-POLICY`
+#   (likely shape: an adopter-declared submodule policy, declared ONCE rather than per bump). Adopters
+#   using submodules carry this residual today.
 #   NOTE FOR LOCAL USE: the base is resolved as `origin/main` then `main` ONLY. On a checkout whose default
 #   branch is `master`/`trunk`/`develop`, or a detached HEAD with no remote, no base resolves — so a local
 #   run reports `control-plane` for EVERYTHING. That is deliberate (the old fallback compared the WORKTREE
@@ -48,6 +68,31 @@ command -v is_control_plane_path >/dev/null 2>&1 || GUARD_OK=0
 classify_path() {
   _p=$1
   if [ "$GUARD_OK" = 1 ] && is_control_plane_path "$_p"; then echo control-plane; return; fi
+  # A2 (case). The control-plane half above folds inside is_control_plane_path; the SENSITIVE tier below
+  # is a second, independent matcher and was byte-literal — measured: `Auth/x`, `*.PEM` and `.ENV` all
+  # fell through to `ordinary`, lowering the ceremony for exactly the reason A2 exists.
+  #
+  # ⚠️ EVALUATE BOTH SPELLINGS AND TAKE THE HIGHER CLASS — do NOT simply substitute the folded form.
+  # An earlier draft replaced the subject and evaluated once, which is NOT monotone: the `.env.example`
+  # EXEMPT branch comes first, so folding let a path reach an exemption it could not reach unfolded.
+  # Measured downgrade: `secrets/.ENV.EXAMPLE` and `auth/.ENV.TEMPLATE` went sensitive -> ORDINARY.
+  # is_control_plane_path is safe because it ORs (literal OR folded); this function must do the same.
+  _cs=$_p
+  case "$_p" in *[A-Z]*) _cs=$(printf '%s' "$_p" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
+  if [ "$_cs" != "$_p" ]; then
+    _c_raw=$(_classify_one "$_p")
+    _c_fold=$(_classify_one "$_cs")
+    # highest wins: sensitive > ordinary (control-plane is already returned above)
+    if [ "$_c_raw" = sensitive ] || [ "$_c_fold" = sensitive ]; then echo sensitive; else echo ordinary; fi
+    return
+  fi
+  _classify_one "$_p"
+}
+
+# The literal tier matcher, factored out so classify_path can evaluate both spellings and take the
+# higher class. Returns ordinary|sensitive for a path already known not to be control-plane.
+_classify_one() {
+  _p=$1
   case "$_p" in
     .env.example|*/.env.example|.env.sample|*/.env.sample|.env.template|*/.env.template|.env.dist|*/.env.dist)
       echo ordinary; return ;;

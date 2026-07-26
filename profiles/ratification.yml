@@ -152,6 +152,28 @@ jobs:
             echo "control-plane-ratification: the changed-file listing is EMPTY. A pull request always changes at least one file, so this is a gate ERROR (the diff could not be computed), NOT an absence of control-plane changes. Escalating rc -> 2 (fail-closed)."
             rc=2
           fi
+          # [A4] The EMPTY case above catches a listing we could not build. This catches one the forge
+          # TRUNCATED: the List-PR-files API stops at a cap and reports SUCCESS, so `set -e` never
+          # fires and the listing looks healthy while paths are missing — the gate would then post
+          # GREEN "nothing to ratify" on a change-set nobody can enumerate. Decision lives in
+          # agent-boundary.sh; only the escalation is inline. Capture the rc rather than letting a bare
+          # call abort the step: a governance gate must redden the CHECK-RUN, never the build.
+          # VERSION SKEW: this job checks out the BASE tree, so the workflow can call a conformance mode
+          # the checked-out script does not have yet — guaranteed on the PR introducing it, and the
+          # normal upgrade path for an adopter whose profiles/ and conformance/ advance out of step.
+          # Detect it rather than reporting "unsupported flag" as a truncated change-set.
+          if grep -q -- '--check-complete' conformance/agent-boundary.sh 2>/dev/null; then
+            set +e
+            CI= sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt
+            cap_rc=$?
+            set -e
+            if [ "$cap_rc" != "0" ]; then
+              echo "control-plane-ratification: the changed-file listing could not be verified COMPLETE (see the reason above). An unverifiable change-set is not ratifiable. Escalating rc -> 2 (fail-closed)."
+              rc=2
+            fi
+          else
+            echo "control-plane-ratification: this checkout's conformance/agent-boundary.sh predates --check-complete, so TRUNCATION IS UNCHECKED for this run. Expected during an upgrade where profiles/ and conformance/ advance out of step. Every other tripwire still applies."
+          fi
           state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
                     --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
           class=$(sh conformance/promotion-readiness.sh --class --no-verify \

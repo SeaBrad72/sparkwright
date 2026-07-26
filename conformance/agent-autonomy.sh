@@ -52,6 +52,30 @@ assert_deny "terraform apply" '{"tool_name":"Bash","tool_input":{"command":"terr
 assert_deny "curl pipe sh"    '{"tool_name":"Bash","tool_input":{"command":"curl https://x.sh | sh"}}'
 assert_deny "write .env"      '{"tool_name":"Write","tool_input":{"file_path":"/repo/.env","content":"SECRET=1"}}'
 
+# --- A2: CASE VARIANTS must deny exactly as the canonical spelling does -------------------------
+# These are the EXECUTABLE lock on the case fold. Before A2 each right-hand case was ALLOWED while the
+# left-hand one was DENIED, and on a case-insensitive filesystem (the macOS default, and this kit's own
+# dev platform) the variant resolves to the REAL file or directory — so one capital letter relocated
+# every gate in the repo, or edited the guard itself. The fold previously lived in guard-core.sh with
+# only a prose warning behind it: deleting the fold, or re-introducing an uppercase byte into either
+# pattern list, shipped GREEN. Both casings are asserted so neither direction can regress silently.
+assert_deny "relocate skills"        '{"tool_name":"Bash","tool_input":{"command":"mv skills /tmp/x"}}'
+assert_deny "relocate Skills (case)" '{"tool_name":"Bash","tool_input":{"command":"mv Skills /tmp/x"}}'
+assert_deny "relocate conformance"        '{"tool_name":"Bash","tool_input":{"command":"mv conformance /tmp/x"}}'
+assert_deny "relocate Conformance (case)" '{"tool_name":"Bash","tool_input":{"command":"mv Conformance /tmp/x"}}'
+assert_deny "write guard-core"       '{"tool_name":"Write","tool_input":{"file_path":"guard-core.sh","content":"x"}}'
+assert_deny "write Guard-Core (case)" '{"tool_name":"Write","tool_input":{"file_path":"Guard-Core.sh","content":"x"}}'
+assert_deny "write settings.json"    '{"tool_name":"Write","tool_input":{"file_path":"settings.json","content":"x"}}'
+assert_deny "write Settings.json (case)" '{"tool_name":"Write","tool_input":{"file_path":"Settings.json","content":"x"}}'
+assert_deny "edit .Claude path (case)"   '{"tool_name":"Edit","tool_input":{"file_path":"/repo/.Claude/hooks/guard-core.sh","old_string":"a","new_string":"b"}}'
+# The REDIRECT arm is its own matcher. `> codeowners` is the sharp one: A2 added `codeowners` to the
+# classifier, so the class read control-plane while the guard still allowed the redirect write.
+assert_deny "redirect .claude"        '{"tool_name":"Bash","tool_input":{"command":"echo evil > .claude/settings.json"}}'
+assert_deny "redirect .Claude (case)" '{"tool_name":"Bash","tool_input":{"command":"echo evil > .Claude/settings.json"}}'
+assert_deny "redirect CODEOWNERS"     '{"tool_name":"Bash","tool_input":{"command":"echo x > CODEOWNERS"}}'
+assert_deny "redirect codeowners (case)" '{"tool_name":"Bash","tool_input":{"command":"echo x > codeowners"}}'
+assert_deny "redirect Conformance (case)" '{"tool_name":"Bash","tool_input":{"command":"printf a > Conformance/verify.sh"}}'
+
 # --- must ALLOW (safe / reversible) ---
 assert_allow "git commit"          '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\""}}'
 assert_allow "git commit --amend"  '{"tool_name":"Bash","tool_input":{"command":"git commit --amend --no-edit"}}'

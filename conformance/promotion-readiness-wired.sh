@@ -229,6 +229,114 @@ selftest() {
     echo "FAIL: could not build a newline-in-filename fixture — the H1 leg did not run (do NOT read this as a pass)"; st=1
   fi
 
+  # --- A2: CASE-INSENSITIVE CLASSIFICATION -------------------------------------------------------
+  # On a case-INSENSITIVE filesystem (the macOS default, and this kit's own dev platform) a case
+  # variant resolves to the REAL file while a byte-literal matcher classified it `ordinary` — so the
+  # guard could be edited out of the way, and the required §13 gate derived `ordinary`, by typing one
+  # capital letter. Measured before the fix: all four families below returned `ordinary`.
+  _casef="$d/case-variants.txt"
+  for _cv in ".Claude/hooks/guard-core.sh" ".github/Workflows/ci.yml" "Conformance/verify.sh" "Claude.md"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = control-plane ]; then echo "PASS: case variant '$_cv' -> control-plane"
+    else echo "FAIL: case variant '$_cv' want control-plane got $_got — a case variant resolves to the real control-plane file on a case-insensitive filesystem, so classifying it ordinary silently downgrades the §13 ceremony"; st=1; fi
+  done
+  # LOAD-BEARING EXACT-CASE ANCHORS. Folding the SUBJECT while leaving an uppercase-bearing PATTERN in
+  # place declassifies that pattern — measured on the first draft of this change, which turned all four
+  # of these `ordinary`. A generic "exact-case paths still work" fixture over .claude/ or skills/ passes
+  # while these four are broken, so they are named individually and must stay named.
+  for _cv in "CODEOWNERS" "CLAUDE.md" "DEVELOPMENT-STANDARDS.md" "DEVELOPMENT-PROCESS.md"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = control-plane ]; then echo "PASS: exact-case anchor '$_cv' -> control-plane"
+    else echo "FAIL: exact-case anchor '$_cv' want control-plane got $_got — the pattern list carries an uppercase byte that can never match a folded subject, so this governing document is now UNPROTECTED"; st=1; fi
+  done
+  # ⚠️ THE LEGS THAT MAKE PATTERN-LOWERCASING LOAD-BEARING. The four anchors above are NOT sufficient:
+  # is_control_plane_path tries the LITERAL pattern first, so a pattern accidentally left uppercase
+  # still matches its own exact-case path and those legs stay green (measured — this exact mutation
+  # survived them). What an uppercase pattern actually breaks is every OTHER casing of that file, which
+  # is the whole point of the fold. These legs fail the moment any pattern regains an uppercase byte.
+  for _cv in "codeowners" "claude.md" "development-standards.md" "development-process.md"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = control-plane ]; then echo "PASS: folded form '$_cv' -> control-plane"
+    else echo "FAIL: folded form '$_cv' want control-plane got $_got — the matching pattern still carries an uppercase byte, so it can only ever match its own exact casing and every variant of this governing document is UNPROTECTED"; st=1; fi
+  done
+
+  # ⚠️ I2 — THE FOLD MUST NOT CAPTURE ORDINARY APPLICATION CODE. Folding every pattern
+  # unconditionally was measured to make `src/Adapters/Repo.cs`, `Adapters/Http/StripeAdapter.cs` and
+  # `Skills/Onboarding.cs` derive control-plane. PascalCase directories are the language convention in
+  # profiles/dotnet, profiles/java-spring and profiles/kotlin, and `Adapters/` is the idiomatic
+  # ports-and-adapters folder — so on a case-SENSITIVE runner every ordinary PR touching `Adapters/**`
+  # would demand non-author ratification: a MERGE BLOCK clearable only with `--admin`, defeating §13
+  # rather than enforcing it. The fold is therefore two-tier (kit-owned names always; generic directory
+  # prefixes only where the filesystem actually makes the variant resolve). These legs pin the split.
+  #
+  # NOTE the legs below run on WHATEVER filesystem CI provides. On a case-sensitive runner they assert
+  # `ordinary`; on a case-insensitive one the variant genuinely IS the same directory, so control-plane
+  # is correct there. Assert the tier-1 invariant unconditionally and the tier-2 one only where it holds.
+  for _cv in "src/Adapters/Repo.cs" "Adapters/Http/StripeAdapter.cs" "Skills/Onboarding.cs"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = ordinary ]; then echo "PASS: PascalCase app path '$_cv' -> ordinary (I2: no false control-plane)"
+    elif [ "$_got" = control-plane ] && sh -c ". \"$(dirname "$PR")/../.claude/hooks/guard-core.sh\" 2>/dev/null; _fs_case_insensitive" 2>/dev/null; then
+      # ACCEPT ONLY `control-plane` here. An earlier draft accepted ANY value on a case-insensitive
+      # filesystem, so `sensitive` or a garbled classifier output would have passed. And resolve the
+      # guard core from $PR rather than a hardcoded `./` — a CWD-relative probe silently fails when the
+      # selftest is run from anywhere else, sending the leg down the FAIL branch for the wrong reason.
+      echo "PASS: PascalCase app path '$_cv' -> control-plane on a case-INSENSITIVE filesystem (the variant resolves to the real directory here, so this is correct)"
+    else
+      echo "FAIL: PascalCase app path '$_cv' want ordinary got $_got on a case-SENSITIVE filesystem — the fold is capturing ordinary application code and would merge-block every dotnet/java-spring/kotlin PR touching it"; st=1
+    fi
+  done
+
+  # ★ FOLD MONOTONICITY, over EVERY TRACKED PATH. This is a PROPERTY, not an example, and no anchor list
+  # can catch its violation — which is exactly how it was missed. The fold's only sound invariant is:
+  #     is_control_plane_path(p)  =>  is_control_plane_path(tolower(p))
+  # Folding may PRESERVE control-plane-ness, never CREATE it. A draft where the always-folded tier was
+  # BROADER than the canonical pattern set violated it for four real files — `.github/ISSUE_TEMPLATE/*`,
+  # `.github/PULL_REQUEST_TEMPLATE.md`, `.claude/README.md` — flipping GitHub's own uppercase
+  # conventions to control-plane on every platform and merge-blocking any PR that edits a bug-report
+  # template. Runs with the fold's conditional tier DISABLED so it tests the unconditional tier alone,
+  # which is where the invariant must hold on every filesystem.
+  _inv_core="$(dirname "$PR")/../.claude/hooks/guard-core.sh"
+  if [ -f "$_inv_core" ] && command -v git >/dev/null 2>&1 && git -C "$(dirname "$PR")/.." rev-parse HEAD >/dev/null 2>&1; then
+    _inv_bad=$( git -C "$(dirname "$PR")/.." ls-files | sh -c '
+      . '"$_inv_core"' 2>/dev/null
+      _kit_fs_ci=0
+      while IFS= read -r p; do
+        case "$p" in *[A-Z]*) : ;; *) continue ;; esac
+        if is_control_plane_path "$p"; then
+          l=$(printf "%s" "$p" | LC_ALL=C tr "A-Z" "a-z")
+          is_control_plane_path "$l" || printf "%s\n" "$p"
+        fi
+      done' 2>/dev/null )
+    if [ -z "$_inv_bad" ]; then
+      echo "PASS: fold monotonicity holds over every tracked path (control-plane is preserved by folding, never created)"
+    else
+      echo "FAIL: fold monotonicity VIOLATED — these paths classify control-plane but their folded form does not, so the always-folded tier is BROADER than the canonical set and is MANUFACTURING control-plane classifications (each one merge-blocks an ordinary PR):"
+      printf '%s\n' "$_inv_bad" | sed 's/^/         /'
+      st=1
+    fi
+  else
+    echo "FAIL: could not run the fold-monotonicity sweep (guard core or git unavailable) — do NOT read this as a pass"; st=1
+  fi
+
+  # FALSE-POSITIVE anchors: folding must not drag ordinary paths in.
+  for _cv in "README.md" "docs/notes.md" "src/App.tsx" ".github/ISSUE_TEMPLATE/bug_report.md" ".github/PULL_REQUEST_TEMPLATE.md" ".claude/README.md"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = ordinary ]; then echo "PASS: ordinary path '$_cv' stays ordinary after the fold"
+    else echo "FAIL: ordinary path '$_cv' want ordinary got $_got — case folding over-matched"; st=1; fi
+  done
+  # SENSITIVE tier is a SEPARATE matcher from the control-plane one and needed its own fold.
+  for _cv in "Auth/x.ts" "k.PEM" ".ENV"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = sensitive ]; then echo "PASS: sensitive case variant '$_cv' -> sensitive"
+    else echo "FAIL: sensitive case variant '$_cv' want sensitive got $_got — the sensitive tier is a second matcher and folds independently of is_control_plane_path"; st=1; fi
+  done
+
   # --- CLASSIFY-BEFORE-STRIP invariant leg (I5) -------------------------------------------------
   # The render strip MUST NOT move ahead of classify_path. This is not theoretical: `.env.example` has an
   # EXPLICIT early-return to `ordinary`, so `.env.example\001` classifies `sensitive` (it is not the
