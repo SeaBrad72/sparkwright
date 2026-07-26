@@ -316,6 +316,11 @@ check control obligation-lib-selftest    sh conformance/obligation-lib.sh --self
 check control threat-obligation-selftest sh conformance/threat-obligation.sh --selftest
 check control uat-obligation-selftest    sh conformance/uat-obligation.sh --selftest
 check control a11y-obligation-selftest   sh conformance/a11y-obligation.sh --selftest
+# ceremony-binding follows the SAME split as the three obligations above: the selftest is
+# base-independent (every leg builds its own git fixture repos, each hermetic w.r.t. the surrounding
+# repository and its notes ref) and belongs here; the diff-relative REAL gate lives in ci.yml's PR-context job, where
+# `origin/main` and refs/notes/promotions both resolve.
+check control ceremony-binding-selftest  sh conformance/ceremony-binding.sh --selftest
 check control non-vacuity      sh conformance/non-vacuity.sh --selftest
 check control eval-harness      sh conformance/eval-harness-wired.sh --selftest
 check control eval-harness-runs sh conformance/eval-harness-runs.sh --selftest

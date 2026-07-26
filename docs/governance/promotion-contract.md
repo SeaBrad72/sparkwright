@@ -68,6 +68,16 @@ The cells are the kit's *existing* pieces connected: the autonomy tiers (§13) f
 
    **Never-weaken invariant:** a GO is never reached by weakening security, architecture, or governance. If the bar can't be met the change does not promote — you do not lower the bar to manufacture a green.
 5. **DoD + acceptance criteria are the *content* of the Release-candidate go/no-go** (frame vs. content): the RC promotion-readiness pulls the story's acceptance criteria (from the tracker — Jira / ADO / `BACKLOG.md`) and the kit's Definition of Done, and cross-checks "did it meet the criteria," not merely "does it not break."
+6. **The pre-build gates are recorded through the same ledger.** `scripts/promotion-verify.sh record` is not only the merge-time GO: `--gate design` and `--gate plan` record the **DESIGN GATE** and **SPEC/PLAN GATE** — the two pre-build touch points that were prose until v3.187.0. Same tool, same SHA-bound note, same derived assurance label; no new ceremony and no new artifact, since the design and plan documents are already mandated. `--basis` names the artifact the GO approves.
+
+   **Record and PUBLISH the GO before opening the PR** — `promotion-verify.sh record` only writes the
+   note locally and prints the push command; CI fetches `refs/notes/promotions` within seconds of the PR
+   being created, so a ledger pushed afterwards loses the race and the gate reds on a compliant change
+   until the job is re-run. (Measured on this mechanism's own PR: an 11-second gap was enough.)
+
+   For a Sensitive or Control-plane change `conformance/ceremony-binding.sh` checks this in CI: it flags a design artifact that is missing, stubbed, symlinked, unnamed by a `--gate design` record **scoped to that change**, or naming an artifact that is not a design document. Ordinary changes derive N-A and are untouched — the gate stays off XS and doc work by design. **It is a standalone job, therefore advisory until added to branch-protection required checks** (boarded as `CEREMONY-BINDING-REQUIRED-CONTEXT`); until that lands it reports, it does not block.
+
+   **Honest ceiling:** the check grades **existence and binding — NOT order, and not quality.** It makes no ordering claim at all: a design written *after* the work passes. That predicate was withdrawn after five defeats in three review rounds (successor boarded as `CEREMONY-ORDERING-PROOF`). It also cannot tell whether a design is sound or whether anyone read it. `refs/notes/*` also sits outside branch protection, so the ledger holding these records is itself unprotected. It raises the cost of skipping the gate; it does not make skipping impossible.
 
 ---
 

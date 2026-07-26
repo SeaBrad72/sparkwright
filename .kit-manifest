@@ -81,6 +81,7 @@ conformance/badge-version.sh
 conformance/board-drift.sh
 conformance/branch-protection.sh
 conformance/build-output-ignored.sh
+conformance/ceremony-binding.sh
 conformance/check-links.sh
 conformance/ci-classify-changes.sh
 conformance/ci-gates.sh
