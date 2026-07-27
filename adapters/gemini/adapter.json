@@ -12,6 +12,7 @@
   "bindingFiles": [
     "AGENTS.md"
   ],
+  "contextFile": "AGENTS.md",
   "dimensions": {
     "context-binding": {
       "level": "floor"

@@ -1,5 +1,30 @@
 # [Project Name] — Claude Project Guide
 
+## 1. Entry contract — do this BEFORE any mutating action
+
+**Five acts, every slice, before the first edit / commit / PR.** Process work here is governed by this repo's own roster (`skills/` + `agents/`) — a foreign skill library in your environment does not govern it; use the kit's own `skills/<name>`, per the foreign→kit map in `skills/using-skills/SKILL.md`.
+
+1. **Derive the change class** — `sh conformance/promotion-readiness.sh --class --changed <listing>`, where `<listing>` is a file *containing* the changed paths, one per line. **Passing a path directly classifies that file's CONTENTS, not its path** — always pass a listing. That classifier is guard-core-only and under-detects adapter-declared paths, so run the union-aware check too: `sh conformance/agent-boundary.sh --changed <listing> --ratified 0` (rc 1 = an unratified control-plane path). `--state` is **not** a classifier — it emits a ratification-state label, and with no `--changed` it answers `NONE` for every path on earth. Class is derived, never self-asserted.
+2. **Read the governing kit skill, and name it** — `skills/<name>/SKILL.md`; index + foreign→kit map at `skills/using-skills/SKILL.md`. Design before code; evidence before "done".
+3. **Claim the backlog row** this work satisfies — in whichever backend this project declared (`docs/work-tracking/adapters.md` maps them; the kit's own is `BACKLOG.md`). No row, no build; board it first.
+4. **Carry the Entry Declaration** as commit trailers — `Kit-Row`, `Kit-Stage`, `Kit-Class`, `Kit-Skill`, plus advisory `Kit-Intent`, `Kit-Ceremony`, `Kit-Stop`. **Declared now; gate-checked once `conformance/loop-state.sh` lands (B1)** — enforced / advisory / declared, stated honestly.
+5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence instead of discovering it hours later.
+
+> ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line before `Co-Authored-By:` silently drops every `Kit-*` field — git parses no trailers at all, while a grep-based check still passes the commit (measured).
+
+## The entry contract above is kit-owned
+
+> **Do not edit, reword or renumber the section above.** It is the kit's entry contract, held **byte-identical in every adapter's declared `contextFile`** (`adapters/*/adapter.json`) so that every harness reads the same one. A generated project charter carries it because `claude-code` declares `CLAUDE.md` — and after Inception that name belongs to *this* file, not the kit's principles doc (which is renamed `ENGINEERING-PRINCIPLES.md`). The project's **own** numbered sections are a separate sequence and begin at *§1 Overview* below; the `(§N)` labels elsewhere in this file refer to that sequence.
+>
+> **This heading is what CLOSES the contract.** The locked region runs from the `##` above to the next `##` — this one — so everything below is yours to fill in, and anything inserted *above* it (even a blank line) breaks byte-equality. `conformance/agents-brief.sh` compares the region, not a marker: keeping the heading while appending to the section is exactly the case it exists to refuse.
+>
+> **Three placement rules go with it**, because comparing the section is not enough — each of these was measured green before it was closed:
+> 1. §1 must be this document's **first** `## ` section. Only blank lines and the single `# ` title may precede it. Prose, a status line or a `### 0. …` heading above it renders *first*, and an entry contract an agent reads second is not an entry contract.
+> 2. Nothing between §1 and this heading — the region runs to here.
+> 3. **This heading must render visible text.** `## <!-- -->`, `## &nbsp;` and a zero-width-space heading are refused: they render as no heading at all, putting whatever follows flush under act 5.
+
+---
+
 > **Template.** Copy to a new project's `CLAUDE.md` during Inception (Phase 0, see `DEVELOPMENT-PROCESS.md` §3). Fill every `[...]`. Delete guidance blockquotes once filled. This file declares the project's identity and its per-project configuration of the global process/standards.
 
 **Project:** [name]

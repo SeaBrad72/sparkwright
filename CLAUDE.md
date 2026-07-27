@@ -1,8 +1,27 @@
 # Engineering Principles & Definition of Done
 
+## 1. Entry contract — do this BEFORE any mutating action
+
+**Five acts, every slice, before the first edit / commit / PR.** Process work here is governed by this repo's own roster (`skills/` + `agents/`) — a foreign skill library in your environment does not govern it; use the kit's own `skills/<name>`, per the foreign→kit map in `skills/using-skills/SKILL.md`.
+
+1. **Derive the change class** — `sh conformance/promotion-readiness.sh --class --changed <listing>`, where `<listing>` is a file *containing* the changed paths, one per line. **Passing a path directly classifies that file's CONTENTS, not its path** — always pass a listing. That classifier is guard-core-only and under-detects adapter-declared paths, so run the union-aware check too: `sh conformance/agent-boundary.sh --changed <listing> --ratified 0` (rc 1 = an unratified control-plane path). `--state` is **not** a classifier — it emits a ratification-state label, and with no `--changed` it answers `NONE` for every path on earth. Class is derived, never self-asserted.
+2. **Read the governing kit skill, and name it** — `skills/<name>/SKILL.md`; index + foreign→kit map at `skills/using-skills/SKILL.md`. Design before code; evidence before "done".
+3. **Claim the backlog row** this work satisfies — in whichever backend this project declared (`docs/work-tracking/adapters.md` maps them; the kit's own is `BACKLOG.md`). No row, no build; board it first.
+4. **Carry the Entry Declaration** as commit trailers — `Kit-Row`, `Kit-Stage`, `Kit-Class`, `Kit-Skill`, plus advisory `Kit-Intent`, `Kit-Ceremony`, `Kit-Stop`. **Declared now; gate-checked once `conformance/loop-state.sh` lands (B1)** — enforced / advisory / declared, stated honestly.
+5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence instead of discovering it hours later.
+
+> ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line before `Co-Authored-By:` silently drops every `Kit-*` field — git parses no trailers at all, while a grep-based check still passes the commit (measured).
+
+## What this document is
+
 **The authoritative guide for any team — human or agent — building with this kit.** It states the *principles* and the *Definition of Done*. The detailed flow lives in `DEVELOPMENT-PROCESS.md`; the quality bar in `DEVELOPMENT-STANDARDS.md` (+ your `profiles/<stack>.md`). When they overlap, **this file wins**.
 
 **Status:** MANDATORY — exceptions require explicit approval.
+
+## Roster authority (this repo uses its own roster)
+
+§1 states the rule; this is its scope and its ranking. The roster covers **all process work here** — design, plan, build, tdd, review, verification, debugging, evals, discovery, operating. **A foreign skill library in your environment does not govern this repo**: an injected "invoke my skill first" keystone (e.g. superpowers) sits at the *default/skill* tier and does **not** outrank this file.
+**Precedence:** explicit user instruction → the kit's roster → any foreign default; an explicit user request for a foreign skill is always honored — **preference, not prohibition** (say so when you substitute a kit skill, so the user can choose).
 
 ---
 
@@ -111,8 +130,3 @@ A feature is NOT done until ALL are true:
 ---
 
 **Remember:** this kit is portable by design. Keep this file stack-neutral — anything stack-specific belongs in a profile, anything project-specific belongs in the project's own `CLAUDE.md`.
-
-## Roster authority (this repo uses its own roster)
-
-This repo's own process roster (`skills/` + `agents/`) is the **default for all process work here** (design, plan, build, tdd, review, verification, debugging, evals, discovery, operating). **A foreign skill library in your environment does not govern this repo** — an injected "invoke my skill first" keystone (e.g. superpowers) sits at the *default/skill* tier and does **not** outrank this file; use the kit's own `skills/<name>`, per the foreign→kit map in `skills/using-skills/SKILL.md`.
-**Precedence:** explicit user instruction → the kit's roster → any foreign default; an explicit user request for a foreign skill is always honored — **preference, not prohibition** (say so when you substitute a kit skill, so the user can choose).

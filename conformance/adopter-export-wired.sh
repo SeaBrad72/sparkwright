@@ -73,6 +73,23 @@ _no_eof_blank() {
   return 0
 }
 
+# _no_double_blank <file> -> 0 = no run of 2+ consecutive blank lines · 1 = at least one (and NAMES it).
+# THE SAME DEFECT AS _no_eof_blank, ONE POSITION OVER. _no_eof_blank pins the carve's orphaned blank
+# only where the declaration happened to sit at the time it was written — the LAST content line. When the
+# Roster-authority section moved to the top of CLAUDE.md the declaration moved to line 20 of 132, the
+# orphan became a MID-FILE double blank, and the EOF lock stayed green over it (MEASURED on a real
+# adopter-export.sh -> incept.sh run: a double blank at lines 19-20 of the exported CLAUDE.md that the
+# `main` baseline does not have). A lock keyed to a POSITION cannot survive the content moving; this one
+# is keyed to the DEFECT, so it holds wherever the declaration lands next.
+_no_double_blank() {
+  [ -f "$1" ] || { echo "FAIL: $1 missing (cannot check for a double blank line)"; return 1; }
+  if [ "$(awk 'NF==0{c++;next} {if(c>1) n++; c=0} END{print n+0}' "$1")" != "0" ]; then
+    echo "FAIL: exported $(basename "$1") orphans a DOUBLE BLANK line (KW6-A2 carve — collapse blank runs after the carve in adopter-export.sh)"
+    return 1
+  fi
+  return 0
+}
+
 run() {
   rc=0
   [ -f "$ROOT/.gitattributes" ] || { echo "FAIL: no .gitattributes"; return 1; }
@@ -186,6 +203,7 @@ run() {
     # regresses, the blank separator becomes the new EOF and incept.sh inherits it into the renamed
     # ENGINEERING-PRINCIPLES.md (a `git diff --check` "new blank line at EOF" on the adopter's first commit).
     _no_eof_blank "$_d/CLAUDE.md" || rc=1
+    _no_double_blank "$_d/CLAUDE.md" || rc=1
   else
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
@@ -326,6 +344,16 @@ if [ "${1:-}" = "--selftest" ]; then
   printf 'text\n\n' > "$_e/blank.md"   # trailing blank line = the exact carve-orphaned state
   if _no_eof_blank "$_e/blank.md" >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (a blank line at EOF was NOT flagged — the EOF-blank lock (h) is vacuous)"; sfail=1
+  fi
+  # negative (h, MID-FILE half): _no_double_blank must FLAG a double blank that is NOT at EOF and PASS a
+  # clean file. The positive fixture is deliberately a file the EOF lock already calls clean — that is
+  # the whole point, since the EOF lock was green over exactly this defect on a real export.
+  printf 'a\n\nb\n' > "$_e/single.md"
+  _no_double_blank "$_e/single.md" >/dev/null 2>&1 || { echo "adopter-export-wired --selftest: FAIL (a single blank separator was wrongly flagged as a double blank)"; sfail=1; }
+  printf 'a\n\n\nb\n' > "$_e/dblank.md"   # mid-file double blank = the carve orphan at its NEW position
+  _no_eof_blank "$_e/dblank.md" >/dev/null 2>&1 || { echo "adopter-export-wired --selftest: FAIL (fixture invalid — the EOF lock should call this file clean)"; sfail=1; }
+  if _no_double_blank "$_e/dblank.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (a MID-FILE double blank was NOT flagged — the double-blank lock (h) is vacuous)"; sfail=1
   fi
   rm -rf "$_e" 2>/dev/null || true
   # negative (g / KW27 non-vacuity): block (g) must have TEETH — with the PRE-FIX carve (zero-match =>

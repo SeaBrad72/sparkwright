@@ -34,6 +34,12 @@ Scaffolded:
 Next:
   1. Customize adapters/${HARNESS}/adapter.json — set controlPlanePaths for the harness's
      namespace; upgrade any dimension to "native" with a "proof" (a check and/or files).
-  2. Validate:  sh conformance/harness-adapter.sh adapters/${HARNESS}
-  3. Select it at Inception:  sh scripts/incept.sh --harness ${HARNESS}
+  2. Set "contextFile" to the document ${HARNESS} ACTUALLY auto-loads — verify it, do not
+     assume it. The scaffold ships AGENTS.md, which is right for an AGENTS.md-reading runtime
+     and wrong for one with its own convention; a wrong value binds governance to a file
+     nobody reads. Then copy the entry contract (section 1) VERBATIM into that document — it
+     must be byte-identical in every adapter's declared contextFile.
+     Details: docs/operations/harness-adapters.md
+  3. Validate:  sh conformance/harness-adapter.sh adapters/${HARNESS}
+  4. Select it at Inception:  sh scripts/incept.sh --harness ${HARNESS}
 EOF

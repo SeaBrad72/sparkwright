@@ -196,15 +196,21 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
       echo "adopter-export: FAILED to carve the 'Backlog backend' declaration from the exported CLAUDE.md" >&2
       rm -f "$_cm.$$.kw6a2"; return 1
     fi
-    # K12 Cause B: strip any trailing blank line(s) the carve orphaned. In source the carved
-    # `Backlog backend:` declaration is CLAUDE.md's LAST content line, sitting below a blank
-    # separator; deleting it leaves that blank as the new EOF (`git diff --check`: "new blank line at
-    # EOF"), which incept.sh then inherits into the renamed ENGINEERING-PRINCIPLES.md. Re-emit only
-    # through the last non-blank line so the file ends with exactly one newline. UNCONDITIONAL and
-    # naturally idempotent: on an already-clean file (the 0-match export-of-an-export path) it re-emits
-    # byte-identically, so the block-(g) fixpoint holds. Locked by conformance/adopter-export-wired.sh
-    # block (h). (This awk RUNS at export time on the temp export file $_cm — never on kit source.)
-    awk 'NF{p=NR} {a[NR]=$0} END{for(i=1;i<=p;i++) print a[i]}' "$_cm" > "$_cm.$$.ws" && mv "$_cm.$$.ws" "$_cm"
+    # K12 Cause B: normalize the blank line(s) the carve orphaned. Deleting the `Backlog backend:`
+    # declaration leaves the blank ABOVE it adjacent to the blank BELOW it, and where that lands
+    # depends on where the declaration sits — which is why this must not assume a position:
+    #   - at EOF (the pre-A1.1 shape, when it was CLAUDE.md's LAST content line) the orphan became a
+    #     trailing blank -> `git diff --check`: "new blank line at EOF";
+    #   - MID-FILE (its shape since the Roster-authority section moved to the top — MEASURED at line 20
+    #     of 132) the orphan becomes a DOUBLE BLANK, which the old trailing-only trim did not touch.
+    # Both are inherited by incept.sh into the renamed ENGINEERING-PRINCIPLES.md.
+    # This re-emit collapses any run of blank lines to exactly one and drops leading/trailing blanks, so
+    # it is POSITION-INDEPENDENT and covers both. UNCONDITIONAL and naturally idempotent: on an
+    # already-clean file (the 0-match export-of-an-export path) it re-emits byte-identically, so the
+    # block-(g) fixpoint holds — VERIFIED, along with byte-identity against the previous trailing-only
+    # form on the `main` baseline. Locked by conformance/adopter-export-wired.sh block (h).
+    # (This awk RUNS at export time on the temp export file $_cm — never on kit source.)
+    awk 'NF==0{b=1;next} {if(n++ && b) print ""; b=0; print}' "$_cm" > "$_cm.$$.ws" && mv "$_cm.$$.ws" "$_cm"
   fi
   _pruned=0
   if [ -n "$_prof" ]; then

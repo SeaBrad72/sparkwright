@@ -9,8 +9,14 @@
 set -eu
 
 # Per-doc line budgets (post-9k-b sizes rounded up to the next 10). "<path>:<max-lines>".
-BUDGETS="CLAUDE.md:120 DEVELOPMENT-PROCESS.md:480 DEVELOPMENT-STANDARDS.md:345"
-TOTAL_BUDGET=945
+# CLAUDE.md 120 -> 135 and the total 945 -> 960: OWNER-RATIFIED for the §1 entry contract (A1). The
+# alternative on offer was to pay a CONTENT ratchet in FORMATTING characters — the entry contract had
+# been fitted under 120 by deleting all 7 of CLAUDE.md's `---` thematic breaks, taking it to 0 against
+# 17 in DEVELOPMENT-PROCESS.md and 16 in DEVELOPMENT-STANDARDS.md. That defeats the signal this ratchet
+# exists to send (see the header above: it prevents drift, it "does not forbid growth"), so the breaks
+# are restored and the budget is raised deliberately instead.
+BUDGETS="CLAUDE.md:135 DEVELOPMENT-PROCESS.md:480 DEVELOPMENT-STANDARDS.md:345"
+TOTAL_BUDGET=960
 
 # check_one <path> <max>: print PASS/FAIL; return 1 if over budget or missing.
 check_one() {

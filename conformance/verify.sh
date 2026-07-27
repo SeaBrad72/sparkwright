@@ -43,7 +43,7 @@ emit_diag() {  # <check-name> <captured-output>
 }
 
 # ── INCOMPLETE (K16) — an interrupted run must SAY so, in its own output ────────────────────────────
-# The aggregate is ~103 checks / ~281s — LONGER than the default foreground command cap of the agent
+# The aggregate is ~105 checks / ~281s — LONGER than the default foreground command cap of the agent
 # harnesses this kit is driven with. When one of those caps fires, the run is killed mid-flight.
 #
 # THE EXIT CODE WAS NEVER THE GAP. A signalled run already exits non-zero (143 for TERM, 130 for INT),
@@ -59,7 +59,7 @@ _incomplete() {
   echo ""
   printf 'RESULT: FAIL (INCOMPLETE — interrupted after %d check(s); this is NOT a pass)\n' "$((controls+docs))"
   echo "An interrupted run proves nothing about the checks that never ran."
-  echo "The full aggregate is ~103 checks / ~5 minutes — re-run WITHOUT a command timeout"
+  echo "The full aggregate is ~105 checks / ~5 minutes — re-run WITHOUT a command timeout"
   echo "(background it, or capture output to a file). See conformance/README.md \"What a green run means\"."
   exit "${1:-1}"
 }
@@ -237,6 +237,31 @@ check control agent-boundary   sh conformance/agent-boundary.sh --selftest
 check control harness-adapter  sh conformance/harness-adapter.sh adapters/claude-code
 check control harness-generic  sh conformance/harness-adapter.sh adapters/generic
 check control harness-adapter-selftest sh conformance/harness-adapter.sh --selftest
+# agents-brief carries the ENTRY-CONTRACT lock (§1 byte-identical in every adapter's declared
+# contextFile). It ran only in CI and via harness-adapter's floor_holds, so `non-vacuity.sh --only
+# agents-brief.sh` matched NO targeted check — the sweep selects from `^check control` rows here, and
+# the lock that makes the whole entry-contract slice real therefore had ZERO mutation coverage.
+# Registering it is what gives it teeth locally AND in the CI sweep.
+check control agents-brief             sh conformance/agents-brief.sh
+check control agents-brief-selftest     sh conformance/agents-brief.sh --selftest
+# doc-budget carried the SAME zero-mutation-coverage gap: it runs in CI, it was never a `check control`
+# row here, and the sweep selects only from these rows — so `non-vacuity.sh --only doc-budget.sh`
+# matched no targeted check. The ratchet that keeps the core governing docs from re-bloating had no
+# proof it can still fail. (It is one of a set of workflow-invoked conformance checks that are not
+# registered here — the COUNT IS UNRECONCILED: three methods have given three answers, so no number is
+# asserted anywhere in this slice. Scoping and closing the set is CONFORMANCE-MUTATION-COVERAGE-GAP in
+# BACKLOG.md, whose first task is to establish the number with a method that is itself tested.)
+#
+# --kitself IS LOAD-BEARING, and it is a CATEGORY distinction, not a convenience. doc-budget budgets
+# CLAUDE.md / DEVELOPMENT-PROCESS.md / DEVELOPMENT-STANDARDS.md — the KIT's own core-3 governing docs,
+# and its whole purpose is an anti-re-bloat ratchet on kit-authored prose. On an INCEPTED tree
+# `CLAUDE.md` is the project CHARTER: a different document that merely shares a filename, whose length
+# is the adopter's business. Registering the rows unqualified made this slice's own +25-line entry
+# contract in templates/PROJECT-CLAUDE-TEMPLATE.md red a BRAND-NEW project's first
+# `verify.sh --require` (MEASURED: stamped charter 143 lines vs a budget of 135, rc 1) — a kit ratchet
+# charged to adopter content. Raising the number would only postpone the same collision.
+check control doc-budget               --kitself sh conformance/doc-budget.sh
+check control doc-budget-selftest       --kitself sh conformance/doc-budget.sh --selftest
 check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
 check control pipeline-origin          sh conformance/pipeline-origin.sh

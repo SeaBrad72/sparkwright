@@ -44,8 +44,15 @@ selftest() {
   st=0
   base=$(mktemp -d)   # fixtures left in place (no rm; control-plane guard blocks recursive rm)
   mkad() { mkdir -p "$1"; printf '%s\n' "$2" > "$1/adapter.json"; }
-  VALID='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
-  MALFORMED='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  # THIS PAIR IS THE ONE THAT REDDENS ONLY IN CI. These fixtures duplicate the REQUIRED manifest shape
+  # that harness-adapter.sh owns, and `verify.sh` runs this selftest — but a required-field change made
+  # only in harness-adapter.sh's own fixtures leaves these two stale, and the "all-conformant -> 0" leg
+  # then fails somewhere no local per-task run looks. It happened for real when the 7th dimension
+  # (model-tiering) landed. `contextFile` is that same class of field, so it is carried here too — and
+  # MALFORMED carries it as well, so it keeps failing for the reason it is NAMED after (the missing
+  # review-roles dimension) rather than for an absent contextFile.
+  VALID='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  MALFORMED='{"harness":"FX","controlPlanePaths":[".github/workflows/","AGENTS.md"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
 
   # OK fixture: all three valid -> exit 0
   for h in codex cursor gemini; do mkad "$base/ok/$h" "$VALID"; done

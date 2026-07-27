@@ -11,6 +11,7 @@
   "bindingFiles": [
     ".claude/settings.json"
   ],
+  "contextFile": "CLAUDE.md",
   "dimensions": {
     "context-binding": {
       "level": "native",
