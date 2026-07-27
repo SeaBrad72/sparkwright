@@ -22,8 +22,12 @@ This adapter declares Claude Code's binding to the universal governance layer. I
 | `history-protection` | **floor** | Universal `pre-push` hook covers this; Claude Code has no git-push surface to add to |
 | `review-roles` | **native** | Dedicated subagents (`reviewer.md`, `security-reviewer.md`) enforce builder ≠ reviewer |
 | `mcp-gate` | **native** | `guard_check_mcp` + `mcp-policy.json` gate MCP tool calls inline |
+| `orchestration` | **native** | `.claude/agents/orchestrator.md` + `engineer.md` dispatch the kit's seats as native subagents |
+| `model-tiering` | **native** | `conformance/model-map-binding.sh` proves the per-seat model map is bound, not just declared |
+
+These seven are the whole contract — the dimension set is **closed**, so a key outside them is a manifest FAIL.
 
 ## See also
 
 - `../../.claude/README.md` — the governance layer this adapter points at
-- `../../docs/operations/harness-adapters.md` — the boundary contract (5-dimension table, manifest schema, conformance rules)
+- `../../docs/operations/harness-adapters.md` — the boundary contract (7-dimension table, manifest schema, conformance rules)

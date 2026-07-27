@@ -8,7 +8,7 @@ Multi-harness coexistence rule: adapters occupy additive, non-conflicting namesp
 
 ---
 
-## The boundary contract — 5 dimensions
+## The boundary contract — 7 dimensions
 
 | Dimension | Floor *(kit-enforced, every harness)* | Native bonus *(kit-assisted, if supported)* | Verified by |
 |-----------|--------------------------------------|---------------------------------------------|-------------|
@@ -17,6 +17,10 @@ Multi-harness coexistence rule: adapters occupy additive, non-conflicting namesp
 | **history-protection** | Universal `pre-push` hook (force-push / push-to-main) | *(none — universal hook is sufficient)* | `pre-push` presence |
 | **review-roles** | `agent-boundary` gate + branch-protection reference | Native subagents (`reviewer.md`, `security-reviewer.md`) | `conformance/branch-protection.sh` |
 | **mcp-gate** | N/A if no MCP | `mcp-policy` wired (`guard_check_mcp` + `mcp-policy.json`) | `conformance/mcp-policy.sh` |
+| **orchestration** | The four seat definitions present (`orchestrator`, `engineer`, `reviewer`, `security`) | Harness-native subagent dispatch | `agents/*.agent.md` presence |
+| **model-tiering** | `conformance/model-tiering.sh` present and passing | Harness-native per-seat model selection | `conformance/model-tiering.sh` |
+
+> **The dimension set is CLOSED.** These seven are the whole contract: a key outside them is a **FAIL**, not an extension, because the Kit enforces no floor for it and therefore cannot verify it. Declaring one does not add governance — it only creates an unverifiable claim, so `harness-adapter.sh` rejects the manifest and names the offending keys.
 
 > The "Verified by" column spans both the floor verifier (e.g. `conformance/guard-core-sourced.sh`, run for every harness) and the native-proof verifier (e.g. `conformance/guard-wired.sh`, `conformance/mcp-policy.sh`, run only when `level` is `"native"`); the manifest-schema section below documents which script fills which role.
 
@@ -48,11 +52,12 @@ Each adapter declares its binding in `adapters/<harness>/adapter.json`. The shap
 - **`harness`** — string; must match the directory name under `adapters/`.
 - **`controlPlanePaths`** — non-empty array declaring the control-plane surface this harness can modify (the guard + its config, CI, CODEOWNERS, the harness's own settings). The `agent-boundary` gate **enforces the union of these paths across all adapters**, in addition to the kit-standard `guard-core.sh::is_control_plane_path` floor: an unratified PR touching any declared path fails the gate. (For example, the `generic` adapter declares `AGENTS.md`, so an unratified `AGENTS.md` edit is caught even though it sits outside the guard-core set.) Entries are matched exactly or as a directory prefix (a value ending in `/`). List every control-plane file the harness can touch so the gate — and a human reviewer — protect the complete set.
 - **`bindingFiles`** — array; every listed path must exist in the repo (verified by `harness-adapter.sh`).
-- **`dimensions`** — all five dimensions must appear. Each carries:
+- **`dimensions`** — all seven dimensions must appear, and **no others**. Each carries:
   - `level`: `"native"` | `"floor"` | `"n-a"`. Only `mcp-gate` may be `"n-a"` (when the harness has no MCP surface).
   - `proof` (optional on `"floor"`; required on `"native"`): either `check` (a **bare `conformance/*.sh` path** — no arguments, shell metacharacters, or `..` traversal — that must exit 0; `harness-adapter.sh` rejects anything else *before running it*), `files` (paths that must exist), or both.
 
 **Invariants:**
+- **The dimension set is CLOSED: a key outside the seven is a FAIL, because the Kit enforces no floor for it.** There is nothing to verify, so accepting it would let a manifest carry an unenforced claim — `harness-adapter.sh` fails the manifest and names the offending keys. The keys are compared as whole strings, so an empty, whitespace-only, or space-containing key is caught like any other.
 - Every dimension's **floor** must hold regardless of `level` — a `native` claim does not exempt the floor.
 - A `native` dimension **must** carry a `proof` that passes — the lying-native guard enforces this (`harness-adapter.sh` fails if proof is absent or the check exits non-zero).
 - Only `mcp-gate` may carry `"n-a"` — every other dimension has a floor that applies universally.

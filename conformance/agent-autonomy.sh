@@ -270,6 +270,29 @@ assert_deny "rm kit-guard"         '{"tool_name":"Bash","tool_input":{"command":
 # --- 9d-b: must still ALLOW (no new over-block) ---
 assert_allow "read guard-core"     '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/guard-core.sh"}}'
 assert_allow "run kit-guard sh"    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-guard --selftest"}}'
+# --- .claude/hooks/ is control-plane by PREFIX, not by filename ---------------------------------
+# `guard.sh` and `guard-core.sh` were enumerated INDIVIDUALLY, so every OTHER file in the hook
+# directory classified `ordinary` — measured: `.claude/hooks/entry-core.sh` -> ordinary, and all three
+# mutation arms (Write, Edit, sed -i) ALLOWED it. That directory is wired into settings.json as agent
+# instrumentation, so a new hook file is a live control-plane surface an agent could author or rewrite
+# with no ratification: the enumeration protected the two names we happened to have, not the surface.
+# Asserted on a name that is NOT in any pattern list, so re-enumerating a filename cannot satisfy it.
+assert_deny "Write new hook file"  '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks/entry-core.sh","content":"x"}}'
+assert_deny "Edit new hook file"   '{"tool_name":"Edit","tool_input":{"file_path":".claude/hooks/anything.sh","old_string":"a","new_string":"b"}}'
+assert_deny "sed -i new hook file" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/hooks/entry-core.sh"}}'
+# must still ALLOW: reading a hook, and a SIBLING that merely shares the `hooks` prefix (the pattern is
+# directory-anchored — `hooks-notes.md` is not inside the hook directory and must not be captured).
+assert_allow "read new hook file"  '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/entry-core.sh"}}'
+assert_allow "Write hooks-notes"   '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks-notes.md","content":"x"}}'
+# The prefix must be DIRECTORY-ANCHORED. `*.claude/hooks/*` also matched any path whose component
+# merely ENDS in `.claude` — measured: `my.claude/hooks/x` and `src/mycompany.claude/hooks/z` both
+# classified control-plane. Those are ordinary adopter files, and an unnecessary control-plane
+# classification means an unnecessary ratification demand on an ordinary PR. The anchored form
+# `.claude/hooks/*|*/.claude/hooks/*` still captures a VENDORED hook dir and any case variant.
+assert_deny  "vendored hook dir"   '{"tool_name":"Write","tool_input":{"file_path":"vendor/pkg/.claude/hooks/h.sh","content":"x"}}'
+assert_deny  "case-variant hooks"  '{"tool_name":"Write","tool_input":{"file_path":".Claude/Hooks/Entry.sh","content":"x"}}'
+assert_allow "my.claude/ sibling"  '{"tool_name":"Write","tool_input":{"file_path":"my.claude/hooks/x","content":"x"}}'
+assert_allow "nested .claude-ish"  '{"tool_name":"Write","tool_input":{"file_path":"src/mycompany.claude/hooks/z","content":"x"}}'
 # --- M2-S3: agent definitions are control-plane (Edit/Write tool path must DENY) ---
 assert_deny "Edit agent def"       '{"tool_name":"Edit","tool_input":{"file_path":".claude/agents/kit-steward.md","old_string":"a","new_string":"b"}}'
 assert_deny "Write agent def"      '{"tool_name":"Write","tool_input":{"file_path":".claude/agents/reviewer.md","content":"x"}}'

@@ -39,4 +39,4 @@ This is the same guided, validated workflow that `scripts/new-profile.sh` provid
 
 ## Contract
 
-The adapter boundary contract — the 5-dimension table, manifest schema, and conformance rules — is in `docs/operations/harness-adapters.md`.
+The adapter boundary contract — the 7-dimension table, manifest schema, and conformance rules — is in `docs/operations/harness-adapters.md`. The dimension set is **closed**: a manifest key outside the seven is a FAIL, because the Kit enforces no floor for it.

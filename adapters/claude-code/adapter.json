@@ -1,6 +1,7 @@
 {
   "harness": "claude-code",
   "controlPlanePaths": [
+    ".claude/hooks/",
     ".claude/hooks/guard.sh",
     ".claude/hooks/guard-core.sh",
     ".claude/settings.json",

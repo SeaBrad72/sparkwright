@@ -26,4 +26,4 @@ The floor is the equal-enforcement guarantee: every harness provides it, no exce
 
 ## Contract reference
 
-- [`../../docs/operations/harness-adapters.md`](../../docs/operations/harness-adapters.md) — boundary contract, 5-dimension table, manifest schema, and conformance rules
+- [`../../docs/operations/harness-adapters.md`](../../docs/operations/harness-adapters.md) — boundary contract, 7-dimension table, manifest schema, and conformance rules. The set is **closed**: declare exactly the seven — a key outside them fails the manifest, because the Kit enforces no floor for it.

@@ -110,9 +110,35 @@ is_control_plane_path() {
 # out SILENTLY into the real directory on any case-insensitive clone — no collision warning, unlike an
 # existing file (which warns, and whose real content wins because the lowercase path sorts later). So
 # the attacker's file becomes a live agent-instruction surface carrying kit authority.
+#
+# `.claude/hooks/` IS THE ONE DIRECTORY THAT EARNS A PREFIX. `guard.sh` and `guard-core.sh` used to be
+# enumerated by name, so every other file in the hook directory derived `ordinary` — measured:
+# `.claude/hooks/entry-core.sh` -> ordinary, with Write, Edit and `sed -i` on it all ALLOWED. That
+# directory is wired into settings.json as agent instrumentation, so a new file in it is a live
+# control-plane surface an agent could author unratified; the enumeration protected the two names we
+# happened to have, not the surface.
+# The prefix is DIRECTORY-ANCHORED (`.claude/hooks/*|*/.claude/hooks/*`), NOT `*.claude/hooks/*`: the
+# loose form also matched any component merely ENDING in `.claude` — measured, `my.claude/hooks/x` and
+# `src/mycompany.claude/hooks/z` both derived control-plane. Those are ordinary adopter files, and an
+# unnecessary control-plane classification is an unnecessary ratification demand on an ordinary PR.
+# The anchored form still captures a vendored `vendor/pkg/.claude/hooks/h.sh` and, via this tier's
+# unconditional fold, the case variant `.Claude/Hooks/Entry.sh`.
+# The former `*.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh` pair is REMOVED DELIBERATELY, not
+# by oversight: the anchored prefix subsumes it for every real hook directory, and keeping it would
+# preserve precisely the `my.claude/hooks/guard.sh` false positive this narrowing exists to kill.
+# THE FOUR SIBLING `.claude/` PATTERNS KEEP THE LOOSE FORM ON PURPOSE — DO NOT "FINISH THE JOB" HERE.
+# `*.claude/settings.json` · `*.claude/settings.local.json` · `*.claude/mcp-policy.json` ·
+# `*.claude/agents/*` all carry the IDENTICAL `<x>.claude/...` false positive (measured: `my.claude/
+# settings.json`, `my.claude/settings.local.json`, `my.claude/mcp-policy.json` and `my.claude/agents/
+# x.md` each derive control-plane, while the narrowed `my.claude/hooks/x.sh` now derives ordinary).
+# They are left alone because the error is fail-SAFE (an extra ratification demand, never a missed
+# one), its blast radius in this repo is zero, and narrowing FOUR patterns on the file that decides
+# what may be edited at all is its own change: its own fixtures, its own monotonicity run, its own
+# review. It is boarded, not forgotten. Anyone who reads the anchoring rationale above and quietly
+# applies it to these four without that evidence is doing the thing this comment exists to prevent.
 _cpp_kitowned() {
   case "$1" in
-    *.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh|\
+    .claude/hooks/*|*/.claude/hooks/*|\
     *.claude/settings.json|*.claude/settings.local.json|\
     *.claude/mcp-policy.json|.claude/mcp-policy.json|\
     *.claude/agents/*|.claude/agents/*|\
@@ -180,9 +206,12 @@ _cpp_kitowned() {
 # pattern carrying an uppercase byte can never match a folded subject, which would SILENTLY DECLASSIFY
 # it. That is not hypothetical — the first draft of this change kept `CODEOWNERS`, `CLAUDE.md`,
 # `DEVELOPMENT-STANDARDS.md` and `DEVELOPMENT-PROCESS.md` byte-identical and turned all four `ordinary`.
+# The `.claude/hooks/` prefix is the IDENTICAL directory-anchored form Tier 1 carries (see the note
+# above `_cpp_kitowned`, which records the two measurements behind it): Tier 1 must stay a strict
+# subset of this set, so the two patterns are kept byte-identical rather than merely equivalent.
 _cpp_match() {
   case "$1" in
-    *.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh|\
+    .claude/hooks/*|*/.claude/hooks/*|\
     *.claude/settings.json|*.claude/settings.local.json|\
     *.claude/mcp-policy.json|.claude/mcp-policy.json|\
     *.claude/agents/*|.claude/agents/*|\
