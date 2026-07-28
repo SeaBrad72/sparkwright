@@ -262,6 +262,25 @@ check control agents-brief-selftest     sh conformance/agents-brief.sh --selftes
 # charged to adopter content. Raising the number would only postpone the same collision.
 check control doc-budget               --kitself sh conformance/doc-budget.sh
 check control doc-budget-selftest       --kitself sh conformance/doc-budget.sh --selftest
+# loop-state is the universal refusal floor (KIT-ADHERENCE-ENFORCEMENT B1). ONLY the --selftest is
+# registered here: this file accepts BASE-INDEPENDENT checks, and the REAL gate needs the PR head SHA
+# (`--head <sha>`), which does not exist on an arbitrary tree. The real gate runs as a PR-context job
+# in ci.yml — the same split ceremony-binding already uses (selftest backstop vs diff-relative gate).
+# Registering the selftest is also what puts loop-state inside `non-vacuity.sh`'s swept set, which
+# selects from these `^check control` rows: without this row the gate would ship a green nobody has
+# proven can go red — exactly the CONFORMANCE-MUTATION-COVERAGE-GAP this row avoids inheriting.
+# --kitself IS LOAD-BEARING here, exactly as it is for doc-budget above. THE LIVE REASON: this
+# selftest's map-completeness anchor grades the KIT's own roster, so an adopter who adds a single
+# project skill reds it — measured. On an adopter tree that roster is the adopter's business, not a
+# kit assertion.
+# ⚠️ A SECOND REASON WAS ONCE GIVEN HERE AND IS NOW STALE — that BACKLOG.md being export-ignore'd
+# inverted the row leg's negative. The same commit made the row legs hermetic (they run against a
+# fixture board), so the selftest now PASSES with BACKLOG.md removed; re-measured at ce49514. It is
+# recorded rather than deleted so nobody later "fixes" the hermetic fixtures and drops this flag on
+# the strength of a reason that no longer applies. The reason above carries the flag alone.
+# A --kitself row is still a `^check control` row, so non-vacuity coverage survives (verified:
+# `non-vacuity.sh --only loop-state.sh` reports KILLED).
+check control loop-state-selftest      --kitself sh conformance/loop-state.sh --selftest
 check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
 check control pipeline-origin          sh conformance/pipeline-origin.sh

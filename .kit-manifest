@@ -164,6 +164,9 @@ conformance/fixtures/harness-decision-integrity/bias-only.md
 conformance/fixtures/harness-decision-integrity/good.md
 conformance/fixtures/harness-decision-integrity/missing.md
 conformance/fixtures/harness-decision-integrity/placeholder.md
+conformance/fixtures/loop-state/changed-controlplane.txt
+conformance/fixtures/loop-state/changed-ordinary.txt
+conformance/fixtures/loop-state/roster-missing-skill.conf
 conformance/fixtures/script-disclosure/good.sh
 conformance/fixtures/script-disclosure/missing-changes.sh
 conformance/fixtures/script-disclosure/missing-guardrails.sh
@@ -203,6 +206,7 @@ conformance/kit-current.sh
 conformance/kit-manifest.sh
 conformance/kit-update-identity.sh
 conformance/kit-update-merge.sh
+conformance/loop-state.sh
 conformance/mcp-policy.sh
 conformance/meta-control-fresh.sh
 conformance/metrics-endpoint-wired.sh
