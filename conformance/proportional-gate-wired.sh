@@ -279,6 +279,85 @@ selftest() {
   code_only "$WF" | grep -qF -- 'action_required' && {
     echo "FAIL: $WF still posts action_required — that renders RED, and a WAITING gate must not read as a BROKEN one (CP-9)"; st=1; }
 
+  # (6) THE SECOND POSTER — ci.yml's ceremony-binding gate (WAITING-GATES-RENDER-AS-RED §9.4/§9.5).
+  #
+  # ⚠️ EVERY ANCHOR BELOW IS GATED ON THE POSTER EXISTING. This check is registered in verify.sh WITHOUT
+  # --kitself and runs inside a freshly incepted adopter project, whose emitted profiles/<stack>/ci.yml
+  # contains no poster at all. An unconditional positive anchor on $CI_WF would FAIL in every adopter
+  # tree over a gate they do not have — this file's own header calls that "the classic path to the gate
+  # being deleted". Conditional, exactly like anchors (2) and (2b) above.
+  #
+  # ⚠️ SCOPED TO THE JOB BLOCK, not grepped across the file. $CI_WF is a 1500-line multi-job workflow: a
+  # bare `grep -qF` passes if ANY job has the line, so it could not tell a correct poster from a broken
+  # one sitting next to a correct one. The awk range is the addressing unit.
+  # ⚠️ GATED ON A KIT-TREE MARKER, NOT ON THE POSTER'S OWN JOB KEY. The first draft used
+  # `grep -qE '^  post-ceremony-binding:$'` — a presence check on its own subject, which review defeated:
+  # renaming the poster job disarmed anchors 6a-6d entirely, and renaming it WHILE granting the gate job
+  # checks:write reinstated the §9.4 Critical with every lock still green. `post-ceremony-binding` is not
+  # a required context, so the rename is invisible everywhere. This is the same
+  # "a presence check cannot see a substitution" class the block below cites for the gate family — and it
+  # was reintroduced three lines away from that citation. docs/ROADMAP-KIT.md is export-ignored, so it
+  # distinguishes the kit tree from an adopter tree (the §9.6 false-red constraint) WITHOUT letting a
+  # rename switch the anchors off: in the kit tree, a missing poster job is now a FAILURE.
+  if [ -f "docs/ROADMAP-KIT.md" ] && [ -f "$CI_WF" ]; then
+    grep -qE '^  post-ceremony-binding:$' "$CI_WF" || {
+      echo "FAIL: $CI_WF has no post-ceremony-binding job — the ceremony-binding check-run has no poster, so the required context can never report (and anchors 6a-6d would silently stop checking anything)"; st=1; }
+  fi
+  if [ -f "docs/ROADMAP-KIT.md" ] && [ -f "$CI_WF" ] && grep -qE '^  post-ceremony-binding:$' "$CI_WF"; then
+    # ⚠️ COMMENT-STRIPPED, and this bit me during T3. A first draft grepped the raw block, so the gate
+    # job's own comment — "NO `checks: write` HERE, EVER" — matched the anchor looking for `checks:
+    # write` and reported the escalation it exists to prevent. The waiting-branch anchor false-fired the
+    # same way, on a comment explaining why `-f conclusion=""` is wrong. An anchor that reads PROSE
+    # rather than CODE is the exact defect class this slice ships to fix, reintroduced inside its own
+    # lock. Every anchor in this file uses code_only for this reason; these now do too.
+    _pcb=$(awk '/^  post-ceremony-binding:$/{f=1;next} f&&/^  [a-z]/{f=0} f' "$CI_WF" | grep -v '^[[:space:]]*#')
+    _gcb=$(awk '/^  gate-ceremony-binding:$/{f=1;next} f&&/^  [a-z]/{f=0} f' "$CI_WF" | grep -v '^[[:space:]]*#')
+    # (6a) THE TRUST BOUNDARY, second instance. The deciding job executes conformance/*.sh from the PR's
+    # own tree; if it also held checks:write, the PR under test could rewrite the gate that judges it and
+    # post its own green — and a checks:write token can post a check-run of ANY name on ANY sha,
+    # including control-plane-ratification. Same finding as anchor (3), one workflow over.
+    printf '%s\n' "$_gcb" | grep -qF -- 'checks: write' && {
+      echo "FAIL: $CI_WF's gate-ceremony-binding job holds checks:write while checking out and EXECUTING the PR's own conformance scripts — the PR under test could rewrite the gate that judges it and forge its own verdict"; st=1; }
+    # (6b) ...and the privileged half must not check out the PR's code. It takes the mapping from the
+    # BASE tree, the copy a human already ratified.
+    printf '%s\n' "$_pcb" | grep -qF -- 'ref: ${{ github.event.pull_request.base.sha }}' || {
+      echo "FAIL: $CI_WF's post-ceremony-binding job does not check out the BASE commit — it holds checks:write, so adjudicating or rendering with PR-controlled code lets the PR post its own verdict"; st=1; }
+    printf '%s\n' "$_pcb" | grep -qF -- 'ref: ${{ github.event.pull_request.head.sha }}' && {
+      echo "FAIL: $CI_WF's post-ceremony-binding job checks out the PR HEAD while holding checks:write"; st=1; }
+    # (6c) The omitted-conclusion mechanism, same as (4b) but for this poster. This is the line a
+    # reviewer collapsed once already, reverting an entire slice with every selftest still green.
+    printf '%s\n' "$_pcb" | grep -qF -- 'if [ -n "$concl" ]; then' || {
+      echo "FAIL: $CI_WF's ceremony-binding poster does not CONDITIONALLY omit the conclusion — posting -f conclusion=\"\" completes the check-run, which renders RED again"; st=1; }
+    printf '%s\n' "$_pcb" | grep -qF -- '-f status="$status"' || {
+      echo "FAIL: $CI_WF's ceremony-binding poster does not pass the mapping's status through — a hardcoded status ignores the yellow waiting state"; st=1; }
+    printf '%s\n' "$_pcb" | sed -n '/else$/,/^          fi$/p' | grep -q 'conclusion=' && {
+      echo "FAIL: the waiting (else) gh api call in $CI_WF's ceremony-binding poster carries a conclusion field — any conclusion completes the check and turns waiting red"; st=1; }
+    # (6d) ...and it must not reintroduce the red-rendering conclusion this slice removed.
+    printf '%s\n' "$_pcb" | grep -qF -- 'action_required' && {
+      echo "FAIL: $CI_WF's ceremony-binding poster uses action_required — that renders RED, and a WAITING gate must not read as a BROKEN one (CP-9)"; st=1; }
+  fi
+
+  # (7) NAME COLLISION: a job key must never equal a check-run name posted in the same workflow.
+  # Two same-named check-runs land on one sha, and the JOB's own run completes LAST — measured on this
+  # repo's PR #446: the posted `action_required` at 17:11:39, the job's own `success` at 17:11:42. If
+  # branch protection resolves a duplicate name to the most recent run, the posted verdict is discarded
+  # and the required context is satisfied by a job that exits 0 regardless. ratification.yml avoids this
+  # by construction (job key `gate-agent-boundary`, check-run `control-plane-ratification`).
+  #
+  # ⚠️ KNOWN-FAILING ALLOWLIST, deliberately. `backlog-presence` collides TODAY and is a live shipped
+  # defect, boarded as DUPLICATE-CHECKRUN-NAME-MAY-BE-INERT — whose FIRST acceptance criterion is to
+  # settle by measurement whether the context is inert, then rename. Fixing it here would be a fix
+  # riding inside another slice (standing veto). The allowlist is the debt, in code, where the fix must
+  # delete it to go green — not a silent exemption. DO NOT ADD ENTRIES.
+  if [ -f "$CI_WF" ]; then
+    for _nm in $(grep -oE "^[[:space:]]*-f name='[a-z][a-z0-9-]*'" "$CI_WF" | grep -oE "'[a-z][a-z0-9-]*'" | tr -d "'" | sort -u); do
+      case "$_nm" in backlog-presence) continue ;; esac
+      if grep -qE "^  ${_nm}:\$" "$CI_WF"; then
+        echo "FAIL: $CI_WF has a JOB named '${_nm}' AND posts a check-run of the same name — two same-named check-runs on one sha, with the job's own (exit-0-regardless) run completing last. Rename the job (see ratification.yml's gate-* convention); the REQUIRED CONTEXT keeps the posted name and needs no branch-protection change"; st=1
+      fi
+    done
+  fi
+
   # legibility anchors: the waiting check-run must stay plain-language and tell the human what to do.
   # DRIVEN, not grepped. The text now lives in agent-boundary.sh — but so does that script's own
   # selftest, whose expectation list contains these very literals, so grepping the FILE finds them even

@@ -31,6 +31,7 @@ MODE="run"
 RC=""
 FOR_STATE="NONE"
 FOR_CLASS="control-plane"
+FOR_GATE="control-plane-ratification"
 while [ $# -gt 0 ]; do
   case "$1" in
     --changed) CHANGED="${2:-}"; shift 2 ;;
@@ -46,7 +47,11 @@ while [ $# -gt 0 ]; do
     --conclusion) MODE="conclusion"; RC="${2:-}"; shift 2 ;;
     --for-state) FOR_STATE="${2:-NONE}"; shift 2 ;;
     --for-class) FOR_CLASS="${2:-control-plane}"; shift 2 ;;
-    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>] | --check-complete --changed <file>" >&2; exit 2 ;;
+    # WAITING-GATES-RENDER-AS-RED: which GATE's prose to render. DEFAULTED, deliberately — the default
+    # reproduces the pre-existing ratification wording byte-for-byte, so ratification.yml and its profile
+    # copy need no edit and no ratification-parity wiring token moves.
+    --for-gate) FOR_GATE="${2:-control-plane-ratification}"; shift 2 ;;
+    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>] [--for-gate <gate>] | --check-complete --changed <file>" >&2; exit 2 ;;
   esac
 done
 
@@ -169,11 +174,68 @@ EOF
 #
 # PURE: no env, no filesystem, no network. This is the half that can be unit-tested; whether GitHub
 # honours the status it is handed is a live question, and only a live probe can answer it.
+# WAITING-GATES-RENDER-AS-RED (design §9.2). THE DECLARED GATE SET — the family-completeness source.
+# A hardcoded list inside the selftest would be a PRESENCE CHECK, and a presence check cannot see a
+# SUBSTITUTION: a third gate added later with its own divergent colour arm would pass unnoticed. Declaring
+# the set here and ITERATING it in the selftest makes both drift directions FAIL — an arm with no token,
+# and a token with no arm. An unknown token returns non-zero and emits NOTHING, so the caller cannot post
+# a check-run it could not characterise (ratification.yml's `[ -z "$status" ]` refusal is the precedent).
+CONCLUSION_GATES="control-plane-ratification ceremony-binding"
+
 conclusion_map() {
-  _rc=$1; _cm_state=${2:-NONE}; _cm_class=${3:-control-plane}
+  _rc=$1; _cm_state=${2:-NONE}; _cm_class=${3:-control-plane}; _cm_gate=${4:-control-plane-ratification}
+  _cm_known=0
+  for _cm_g in $CONCLUSION_GATES; do
+    if [ "$_cm_g" = "$_cm_gate" ]; then _cm_known=1; fi
+  done
+  if [ "$_cm_known" != 1 ]; then return 3; fi
+  # ★ VALIDATE THE CLASS. This block used to be a COMMENT asserting "_cm_class is a closed token set"
+  # while nothing enforced it — and dual review reproduced the consequence end to end: a class carrying
+  # a NEWLINE injects its own `status=`/`conclusion=` lines into this function's key=value output, and
+  # the consumer's `while IFS='=' read -r k v` loop is LAST-WINS, so an rc=1 WAITING gate renders as
+  # completed/success. A forged green. Unreachable from either shipped call site (both pass a derived or
+  # literal token), but conformance/ is NOT export-ignored and the usage line advertises --for-class, so
+  # an adopter wiring this into their own pipeline inherits the hole. The claim is now the code.
+  case "$_cm_class" in
+    ordinary|sensitive|control-plane) ;;
+    *) return 3 ;;
+  esac
+  # ── THE ONE COLOUR DERIVATION. §4.1's constraint lives HERE and nowhere else. rc -> (status,
+  # conclusion) is computed ONCE, before any gate branching, so the gate dimension is STRUCTURALLY
+  # incapable of changing a colour — it can only change words. A second derivation is the sixth-derivation
+  # trap ceremony-binding.sh already refused once, and the selftest asserts this pair is identical for
+  # every declared token.
+  case "$_rc" in
+    0) _status=completed;   _concl=success ;;
+    1) _status=in_progress; _concl=""      ;;
+    *) _status=completed;   _concl=failure ;;
+  esac
+  # ── PROSE ONLY, from here down. ⚠️ STATIC TEXT: no runtime value (a `basis:` path, a --scope id, a
+  # branch name) may be interpolated into a title or summary. This output is parsed back by
+  # `while IFS='=' read -r k v`, so one newline inside an interpolated value would inject its own
+  # `status=`/`conclusion=` lines and forge the verdict. `_cm_class` is a closed token set, and is the
+  # only interpolation permitted. A caller that wants the gate's own verdict text in the check-run appends
+  # it at the API call site, where it never passes through this parser.
+  case "$_cm_gate" in
+  ceremony-binding)
   case "$_rc" in
     0)
-      _status=completed; _concl=success
+      _title="Design GATE satisfied — a scoped design GO is recorded for this change"
+      _summary="What changed: a ${_cm_class} change. A '--gate design' GO record scoped to this pull request exists in refs/notes/promotions, names an approver, and cites a substantive design artifact. No action needed. More: docs/governance/promotion-contract.md."
+      ;;
+    1)
+      _title="Awaiting the DESIGN GATE — a human must record the design GO before this change can merge"
+      _summary="What changed: a ${_cm_class} change, which may not enter merge without a recorded DESIGN GATE approval. This gate is WAITING, not failing — it is a governance merge-gate, NOT a build failure, and no test failed. Nothing is broken: no GO record scoped to this pull request exists yet, which is the normal state of a change that has not been approved yet. It will stay yellow (and keep blocking the merge) until a human acts. To proceed: (1) record the GO with 'sh scripts/promotion-verify.sh record --gate design --scope PR-<n> --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path>'; (2) publish it with 'git push origin refs/notes/promotions' — the gate reads the published ledger, so an unpublished record leaves this check yellow; (3) RE-RUN THIS CHECK. Steps 1 and 2 trigger no workflow on their own — recording and pushing notes does not re-run CI — so re-run the job or push a commit, or this check stays yellow forever while you wait for it. More: docs/governance/promotion-contract.md."
+      ;;
+    *)
+      _title="Design GATE error — the recorded GO is defective, or the gate could not evaluate"
+      _summary="This is NOT the waiting state. Either the gate could not evaluate this change at all, or a GO record exists and is defective — a missing, untracked, stubbed, or symlinked design artifact; an unauthenticated approver line; a malformed approved-sha; or a change-class that would not derive. This IS a real error and needs fixing. The gate's own verdict names which; read it in the gate job's log, linked below. More: docs/governance/promotion-contract.md."
+      ;;
+  esac
+  ;;
+  *)
+  case "$_rc" in
+    0)
       if [ "$_cm_state" = RATIFIED-BY-SECOND-REVIEWER ]; then
         _title="Ratified by a second reviewer — control-plane change approved"
         _summary="What changed: a control-plane change (change-class: ${_cm_class}). State: RATIFIED-BY-SECOND-REVIEWER — a non-author reviewer approved this PR, so separation-of-duties is genuinely satisfied. No action needed. More: docs/operations/review-lane.md."
@@ -183,15 +245,15 @@ conclusion_map() {
       fi
       ;;
     1)
-      _status=in_progress; _concl=""
       _title="Awaiting ratification — a human must approve before this control-plane change can merge"
       _summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: control-plane. Why: control-plane changes must be ratified by a human before merge. This gate is WAITING, not failing — it is a §13 governance merge-gate, NOT a build failure, and no test failed. It will stay yellow (and keep blocking the merge) until a human acts. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR — this check re-runs on the approval and turns green as RATIFIED-BY-SECOND-REVIEWER; or (b) solo — merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
       ;;
     *)
-      _status=completed; _concl=failure
       _title="Gate error — could not evaluate the control-plane diff"
       _summary="The control-plane-ratification gate could not evaluate the PR diff (change listing unavailable). This IS a real error — unlike the other states it needs fixing. See conformance/agent-boundary.sh."
       ;;
+  esac
+  ;;
   esac
   printf 'status=%s\n' "$_status"
   printf 'conclusion=%s\n' "$_concl"
@@ -493,6 +555,93 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   case "$(conclusion_map 0 NONE sensitive)" in *'change-class sensitive'*) echo "selftest PASS: class interpolated" ;;
     *) echo "selftest FAIL: class not interpolated into the summary"; st=1 ;; esac
 
+  # ── WAITING-GATES-RENDER-AS-RED: the gate dimension (design §9.2). ────────────────────────────────
+  # ★ THE LOAD-BEARING LOCK. The gate dimension may change WORDS, never COLOUR. Iterating the declared
+  # set (rather than naming two tokens here) is what makes this family-complete: a third gate added with
+  # its own divergent arm is caught, which a presence check cannot do. This is the leg that fails the
+  # moment someone splits the one rc->colour derivation in two.
+  for _cg in $CONCLUSION_GATES; do
+    _ref=$(conclusion_map 1 NONE control-plane control-plane-ratification | grep '^status=\|^conclusion=')
+    _cmp=$(conclusion_map 1 NONE control-plane "$_cg" | grep '^status=\|^conclusion=')
+    if [ "$_ref" = "$_cmp" ]; then echo "selftest PASS: gate '$_cg' rc=1 colour identical to the one derivation"
+    else echo "selftest FAIL: gate '$_cg' rc=1 DERIVED ITS OWN COLOUR ($_cmp vs $_ref)"; st=1; fi
+    for _cr in 0 2; do
+      _ref=$(conclusion_map "$_cr" NONE control-plane control-plane-ratification | grep '^status=\|^conclusion=')
+      _cmp=$(conclusion_map "$_cr" NONE control-plane "$_cg" | grep '^status=\|^conclusion=')
+      if [ "$_ref" != "$_cmp" ]; then
+        echo "selftest FAIL: gate '$_cg' rc=$_cr DERIVED ITS OWN COLOUR ($_cmp vs $_ref)"; st=1; fi
+    done
+  done
+  # ★ THE SUBSTITUTION CATCH. A declared token with NO prose arm falls through to the ratification `*)`
+  # branch and silently renders ratification wording — green, and wrong: it would tell a ceremony-binding
+  # author to go get a non-author approval. Asserting the ABSENCE of ratification-specific anchors at
+  # EVERY rc is what detects that, and it is why §9.2 rules all three arms rather than only the waiting
+  # one: the rc re-partition makes rc=2 the MAJORITY arm for ceremony-binding.
+  for _cg in $CONCLUSION_GATES; do
+    [ "$_cg" = control-plane-ratification ] && continue
+    for _cr in 0 1 2; do
+      _txt=$(conclusion_map "$_cr" NONE control-plane "$_cg")
+      for _anchor in 'Awaiting ratification' 'nothing to ratify' 'control-plane diff' 'review-lane.md'; do
+        case "$_txt" in
+          *"$_anchor"*) echo "selftest FAIL: gate '$_cg' rc=$_cr leaked ratification prose '$_anchor'"; st=1 ;;
+        esac
+      done
+    done
+    echo "selftest PASS: gate '$_cg' carries no ratification prose at any rc"
+  done
+  # legibility for the new gate: the waiting text says WAITING and names the EXACT next command. Same
+  # anchor discipline as the ratification arm above — a mutation that keeps every other token while
+  # gutting the instruction is the one that survived four anchors last time.
+  _cb=$(conclusion_map 1 NONE control-plane ceremony-binding)
+  # 'RE-RUN THIS CHECK' is anchored deliberately. Review measured that an operator following the earlier
+  # wording exactly — record, then push notes — would watch this check stay yellow forever, because
+  # neither action triggers a workflow. The instruction that actually clears the gate was the one missing.
+  for _a in 'Awaiting the DESIGN GATE' 'NOT a build failure' 'To proceed:' 'promotion-verify.sh record' 'git push origin refs/notes/promotions' 'RE-RUN THIS CHECK' 'promotion-contract.md'; do
+    case "$_cb" in *"$_a"*) echo "selftest PASS: ceremony-binding waiting text carries '$_a'" ;;
+      *) echo "selftest FAIL: ceremony-binding waiting text missing '$_a'"; st=1 ;; esac
+  done
+  # rc=2 must NOT read as the waiting state — it is the arm the re-partition fills with real defects.
+  case "$(conclusion_map 2 NONE control-plane ceremony-binding)" in
+    *'This is NOT the waiting state'*) echo "selftest PASS: ceremony-binding rc=2 disclaims the waiting state" ;;
+    *) echo "selftest FAIL: ceremony-binding rc=2 does not distinguish itself from waiting"; st=1 ;; esac
+  # an UNDECLARED token emits NOTHING and returns non-zero — never a silent ratification fall-back.
+  if _bogus=$(conclusion_map 1 NONE control-plane not-a-real-gate 2>/dev/null); then
+    echo "selftest FAIL: an undeclared --for-gate returned success"; st=1
+  elif [ -n "$_bogus" ]; then
+    echo "selftest FAIL: an undeclared --for-gate emitted output: $_bogus"; st=1
+  else echo "selftest PASS: undeclared gate -> non-zero, no output"; fi
+  # ★ A CLASS CARRYING A NEWLINE MUST BE REFUSED. Without the guard this forges a GREEN: the injected
+  # lines are parsed by the consumer's last-wins key=value loop and override the real verdict. Asserts
+  # the refusal AND that no second status= line escapes, because emitting output at all is the defect.
+  _inj=$(printf 'control-plane\nstatus=completed\nconclusion=success')
+  if _poison=$(conclusion_map 1 NONE "$_inj" ceremony-binding 2>/dev/null); then
+    echo "selftest FAIL: a newline-bearing --for-class was ACCEPTED — it forges a completed/success verdict through the caller's key=value parser"; st=1
+  elif [ -n "$_poison" ]; then
+    echo "selftest FAIL: a refused --for-class still emitted output: $_poison"; st=1
+  else echo "selftest PASS: newline-bearing class -> refused, no output"; fi
+  # ...and the CLI surface refuses it too, since that is what an adopter's pipeline calls.
+  if sh "$0" --conclusion 1 --for-gate ceremony-binding --for-class "$_inj" >/dev/null 2>&1; then
+    echo "selftest FAIL: --for-class CLI accepted a newline-bearing class"; st=1
+  else echo "selftest PASS: --for-class CLI rejects a newline-bearing class"; fi
+  # ★ FAMILY COMPLETENESS, THE OTHER DIRECTION. The token-with-no-arm case is covered by the prose
+  # leak legs above. This covers ARM-WITH-NO-TOKEN, which review measured as NOT locked: an arm added
+  # as `ceremony-binding|orphan-gate)` was unreachable-but-undetected, so the claim made in this file,
+  # the plan, the design and the CHANGELOG was half false. Read the arm labels out of the prose case
+  # and require every one to be declared.
+  _arms=$(sed -n '/^  case "\$_cm_gate" in$/,/^  esac$/p' "$0" \
+          | grep -oE '^  [a-z][a-z0-9|-]*\)' | tr -d ' )' | tr '|' '\n' | grep -v '^\*$' || true)
+  for _arm in $_arms; do
+    case " $CONCLUSION_GATES " in
+      *" $_arm "*) ;;
+      *) echo "selftest FAIL: conclusion_map has a prose arm '$_arm' that is NOT in CONCLUSION_GATES — an undeclared arm is unreachable, so its wording is never rendered and never tested"; st=1 ;;
+    esac
+  done
+  echo "selftest PASS: every conclusion_map prose arm is a declared gate ($(printf '%s' "$_arms" | tr '\n' ' '))"
+  # and the CLI surface turns that into exit 2, which is what makes the caller refuse to post.
+  if sh "$0" --conclusion 1 --for-gate not-a-real-gate >/dev/null 2>&1; then
+    echo "selftest FAIL: --for-gate CLI accepted an undeclared gate"; st=1
+  else echo "selftest PASS: --for-gate CLI rejects an undeclared gate"; fi
+
   # three-state CLI: no --changed is UNVERIFIED (exit 2) locally, FAIL (exit 1) under CI/--require.
   miss=$(mktemp -d)  # fixtures left in place (no rm; 7e guard)
   printf '.github/workflows/ci.yml\n' > "$miss/cp.txt"
@@ -535,12 +684,22 @@ state() {  # advisory label for the CI human-surface; CI-independent, always exi
   exit 0
 }
 
-conclusion() {  # emit the check-run mapping for <rc>; no core, no filesystem — pure. Always exit 0.
+conclusion() {  # emit the check-run mapping for <rc>; no core, no filesystem — pure.
   case "$RC" in
     0|1|2) ;;
-    *) echo "usage: agent-boundary.sh --conclusion <0|1|2> [--for-state <label>] [--for-class <class>]" >&2; exit 2 ;;
+    *) echo "usage: agent-boundary.sh --conclusion <0|1|2> [--for-state <label>] [--for-class <class>] [--for-gate <gate>]" >&2; exit 2 ;;
   esac
-  conclusion_map "$RC" "$FOR_STATE" "$FOR_CLASS"
+  # An UNKNOWN --for-gate is exit 2 with nothing on stdout — never a silent fall-back to ratification
+  # prose, which would tell a ceremony-binding author to go get a code review. The `if !` guard is
+  # load-bearing under `set -e`: conclusion_map RETURNS non-zero (it must not `exit`, or the in-process
+  # selftest and proportional-gate-wired's behavioural drive would abort mid-run), and a bare call would
+  # kill the script before this diagnostic could be printed.
+  if ! conclusion_map "$RC" "$FOR_STATE" "$FOR_CLASS" "$FOR_GATE"; then
+    echo "agent-boundary --conclusion: unknown --for-gate '$FOR_GATE' (declared: $CONCLUSION_GATES)." >&2
+    echo "  Refusing to emit a mapping we cannot characterise; the caller must then refuse to post, which" >&2
+    echo "  leaves the required check ABSENT and BLOCKS the merge (fail-closed)." >&2
+    exit 2
+  fi
   exit 0
 }
 

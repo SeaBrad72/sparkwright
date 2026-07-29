@@ -14,6 +14,33 @@
 # GO at the DESIGN GATE. This check cannot create that moment; it can only refuse a merge that skipped
 # it. See docs/architecture/2026-07-26-loop-ceremony-binding-design.md §4.0.
 #
+# ⚠️ EXIT CONTRACT — CHANGED, and it is a BREAKING change for anyone who wired this script into their
+# own CI (docs/architecture/2026-07-28-waiting-gates-render-as-red-design.md §8.3, §9.3, §9.6).
+# SCOPE: this is the GATE-RUN contract. `--selftest` is NOT part of it — it returns 1 on a genuine
+# suite failure, so routing a selftest rc through the check-run colour map would render a broken test
+# suite as the friendly amber. Arg-parse errors (missing --changed/--scope value, unknown argument, a
+# --scope outside the permitted charset, a universal CB_DESIGN_GLOB) are rc 2, correctly: they are
+# anomalies, not waits.
+#
+#     0  PASS, or N-A (change-class 'ordinary' — nothing is required)
+#     1  WAITING — reserved for EXACTLY ONE state: no `--gate design` GO record scoped to this change
+#        exists yet. A human has not approved yet. That is a normal stage of healthy work, and CI
+#        renders it YELLOW (status: in_progress, no conclusion) — still BLOCKING, but not a red ✗.
+#     2  ANOMALY — everything else. A scoped GO exists and is DEFECTIVE (artifact missing, untracked,
+#        stubbed, symlinked, traversing, or not a design artifact; approver line malformed or too weak;
+#        approved-sha absent, malformed, unresolvable, or not touching the artifact), OR the gate could
+#        not evaluate at all (change-class UNDERIVABLE, no --scope supplied, a universal CB_DESIGN_GLOB).
+#        Renders RED, because something is broken and a human must fix it.
+#
+# WHY IT CHANGED. Before this, rc 1 meant both "waiting on a human" and every one of the ~16 defects
+# above, so routing the rc through the check-run colour map would have painted a FORGED OR BROKEN GO
+# RECORD as the friendly yellow "just waiting for approval". Red must survive where it belongs, and the
+# discriminator is PHASE-AWARE: red means ANOMALOUS, yellow means a normal expected stage of work.
+#
+# ⚠️ IF YOU ADD A REFUSAL, IT IS rc 2 unless it is a genuine wait on another party. The selftest's
+# `_expect_fail` helper DEFAULTS its expected rc to 2, so a new negative leg asserts this for free and a
+# defect accidentally left at rc 1 FAILS the suite (leg8b proved it: mutation-tested during T2).
+#
 # HONEST CEILING (do not overclaim):
 #   * GREEN proves: a design artifact EXISTS, is tracked/non-symlink/non-placeholder, is named by a GO
 #     record SCOPED TO THIS CHANGE whose approver carries a derived assurance label, and is TOUCHED by
@@ -45,10 +72,10 @@
 #   sh conformance/ceremony-binding.sh --selftest
 #
 # What it changes: nothing — read-only. Reads the working tree, git history, and refs/notes/promotions.
-# Guardrails: fails CLOSED on an underivable change-class, an unreadable notes ref, a `basis:` path that
-# does not resolve to a tracked file, or a placeholder artifact. A run that grades ZERO implementation
-# a `basis:` that is not a design artifact, or an `approved-sha:` that is not a hex object name or does
-# not touch the artifact it approves.
+# Guardrails: fails CLOSED on an underivable change-class, an unreadable notes ref, a `basis:` path
+# that does not resolve to a tracked file, a placeholder artifact, a `basis:` that is not a design
+# artifact, or an `approved-sha:` that is not a hex object name or does not touch the artifact it
+# approves.
 set -eu
 # shellcheck disable=SC1007 # `CDPATH= cd` clears CDPATH for this one command so a user's CDPATH cannot
 # redirect the cd; the empty assignment is intentional, not a mistyped value.
@@ -148,7 +175,11 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
   fi
   if [ -z "$_cls" ]; then
     echo "FAIL: ceremony-binding — change-class is UNDERIVABLE; refusing to classify (fail closed)." >&2
-    return 1
+    # rc 2, not 1 (WAITING-GATES-RENDER-AS-RED, design §8.3/§9.3). The gate evaluated NOTHING here, which
+    # is anomalous — rc 1 is reserved for "a human has not recorded the GO yet", the one state that is a
+    # normal stage of healthy work. Rendering this as the waiting yellow would tell an operator to go ask
+    # for an approval when the real problem is that the classifier could not run.
+    return 2
   fi
   if [ "$_cls" = "ordinary" ]; then
     echo "N-A: ceremony-binding — change-class 'ordinary'; no design artifact required."
@@ -161,13 +192,17 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
   # discipline as promotion-verify.sh rejecting a mid-string `[signed: gpg]` decoy.
   # THE RECORD MUST BE BOUND TO **THIS** CHANGE (amendment §4.3, security HIGH-1). Selecting the first
   # `gate: design` record in the ledger was a full bypass: an unrelated design doc merged to trunk is an
-  # ancestor of every later commit, so the ordering predicate below went vacuously true and ANY future
-  # control-plane PR passed with no design and no record of its own. The scope id is what binds record
-  # to change; without it this gate stops exactly one merge — its own.
+  # ancestor of every later commit, so the ordering predicate (WITHDRAWN — see the tombstone below) went
+  # vacuously true and ANY future control-plane PR passed with no design and no record of its own. The
+  # scope id is what binds record to change; without it this gate stops exactly one merge — its own.
   if [ -z "$_cb_scope" ]; then
     echo "FAIL: ceremony-binding — no --scope supplied; refusing to match a GO record to this change" >&2
     echo "      by guesswork (fail closed). CI passes the PR number; locally pass --scope <id>." >&2
-    return 1
+    # rc 2 (design §9.3, review finding). Left at 1 this renders as normal waiting, which is exactly
+    # backwards: with no scope the gate did not evaluate ANYTHING. The live route is a broken CI wiring
+    # or an empty PR number yielding the charset-legal scope `PR-`, and that must be investigated, not
+    # read as "the owner has not got round to the GO yet".
+    return 2
   fi
   _design_note=""; _gate_seen=0
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
@@ -211,7 +246,14 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
     ?*\ \[*\]) : ;;
     *) echo "FAIL: ceremony-binding — the GO record carries no valid 'approved-by: <id> [<label>]' line." >&2
        echo "      Record it through scripts/promotion-verify.sh record, which derives the label." >&2
-       return 1 ;;
+       # ── rc 2 FROM HERE DOWN (WAITING-GATES-RENDER-AS-RED, design §8.3/§9.3). ──────────────────────
+       # A scoped GO record EXISTS; it is DEFECTIVE. That is an anomaly, and anomalies are RED.
+       # rc 1 is reserved, above, for the single state that is a normal stage of healthy work: no scoped
+       # GO recorded yet. Everything past that point — a malformed approver line, a basis that is
+       # missing, untracked, symlinked, traversing, or not a design artifact, a bad approved-sha — is a
+       # defect a human must fix, and rendering it as the waiting yellow is how a broken record comes to
+       # look like patience. If you add a new refusal below, it is rc 2 unless it is a genuine wait.
+       return 2 ;;
   esac
   # ESCAPE THE BRACKET. `${_appr##*[}` has an UNESCAPED `[`, which starts a bracket expression in
   # POSIX pattern syntax. bash tolerates an unterminated one as a literal; DASH DOES NOT MATCH AT ALL
@@ -238,12 +280,12 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
     *'['*|*']'*|'')
       echo "FAIL: ceremony-binding — the approver id must not contain '[' or ']' (the assurance label is" >&2
       echo "      derived, never supplied). Got: $_appr" >&2
-      return 1 ;;
+      return 2 ;;
   esac
   if [ "$_appr" != "$_id [$_label]" ]; then
     echo "FAIL: ceremony-binding — 'approved-by:' must be exactly '<id> [<label>]'; a trailing decoy" >&2
     echo "      label would otherwise override a weaker one. Got: $_appr" >&2
-    return 1
+    return 2
   fi
   case "$_label" in
     # `authenticated:` is NOT a wildcard — promotion-verify.sh only ever derives `authenticated:
@@ -256,22 +298,22 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
         echo "FAIL: ceremony-binding — a control-plane DESIGN GATE needs an assurance stronger than" >&2
         echo "      [self-asserted]. Record with --approved-by matching the design commit's committer" >&2
         echo "      identity (yields [committer]) or sign the commit (yields [signed: gpg])." >&2
-        return 1
+        return 2
       fi ;;
     *) echo "FAIL: ceremony-binding — unrecognised assurance label '[$_label]' on the GO record." >&2
-       return 1 ;;
+       return 2 ;;
   esac
 
   # ---- Identification: the GO record NAMES the artifact, in its `basis:` field.
-  # Without an explicit pointer the ancestry assertion below would have to accept ANY design doc in
-  # history — and every one of them is an ancestor of everything, so the ordering proof would be
-  # VACUOUSLY GREEN. The pointer is what makes the ordering claim non-trivial.
+  # The pointer originally stopped the WITHDRAWN ordering predicate accepting ANY design doc in history
+  # (every one is an ancestor of everything, so it would have gone VACUOUSLY GREEN). Ordering is gone —
+  # see the tombstone below — so the pointer now does one job: bind the GO to the artifact. NO ordering claim.
   _basis="$(git notes --ref="$NOTES_REF" show "$_design_note" 2>/dev/null \
             | sed -n 's/^basis: //p' | head -1)"
   if [ -z "$_basis" ] || [ "$_basis" = "(none recorded)" ]; then
     echo "FAIL: ceremony-binding — the '--gate design' record on $_design_note names no artifact." >&2
     echo "      Re-record it with --basis <path-to-the-design-doc>." >&2
-    return 1
+    return 2
   fi
 
   # PATH SAFETY. `basis:` is free text written by a human at GO time, so it is untrusted input to this
@@ -281,7 +323,7 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
   case "$_basis" in
     /*|*..*)
       echo "FAIL: ceremony-binding — refusing a basis path that is absolute or contains '..'." >&2
-      return 1 ;;
+      return 2 ;;
   esac
   # IT MUST BE A DESIGN ARTIFACT. Without this the chain validated traversal -> tracked -> non-symlink
   # -> non-placeholder and never asked WHAT the file is, so pointing `basis:` at any substantive
@@ -303,12 +345,12 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
       echo "      Expected $CB_DESIGN_GLOB (the kit convention, e.g." >&2
       echo "      docs/architecture/2026-07-26-my-slice-design.md)." >&2
       echo "      A GO naming an arbitrary tracked file is not a recorded DESIGN decision." >&2
-      return 1 ;;
+      return 2 ;;
   esac
   if ! git ls-files --error-unmatch -- "$_basis" >/dev/null 2>&1; then
     echo "FAIL: ceremony-binding — the design artifact named by the GO record is not a tracked file:" >&2
     echo "      $_basis" >&2
-    return 1
+    return 2
   fi
   # REFUSE A SYMLINK (git mode 120000). `ls-files --error-unmatch` proves the LINK is tracked; it does
   # NOT confine the target — obl_is_placeholder's `[ -r ]` and greps then FOLLOW it to content outside
@@ -318,7 +360,7 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
   if [ "$(git ls-files -s -- "$_basis" 2>/dev/null | awk '{print $1}')" = "120000" ]; then
     echo "FAIL: ceremony-binding — the design artifact is a SYMLINK; its content is not in this tree:" >&2
     echo "      $_basis" >&2
-    return 1
+    return 2
   fi
 
   # ---- Is the artifact REAL, or a stub? Reuse the engine's placeholder detector rather than
@@ -327,7 +369,7 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
   if obl_is_placeholder "$_basis"; then
     echo "FAIL: ceremony-binding — the design artifact is a PLACEHOLDER (${OBL_PLACEHOLDER_REASON:-template}):" >&2
     echo "      $_basis" >&2
-    return 1
+    return 2
   fi
 
   # shellcheck disable=SC2034 # consumed by T3's ancestry predicate, which resolves the commit that
@@ -348,7 +390,7 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
       # `set -u` referencing them would abort the whole run — which is exactly what it did, killing the
       # selftest mid-list with no diagnostic at all.
       echo "FAIL: ceremony-binding — the GO record carries no usable 'approved-sha:' line." >&2
-      return 1 ;;
+      return 2 ;;
   esac
   # NORMALISE FIRST. `git rev-list` always prints 40-hex, but promotion-verify.sh stores
   # `approved-sha:` VERBATIM as typed — it only checks resolvability, it never canonicalises. Measured
@@ -369,16 +411,16 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
       echo "FAIL: ceremony-binding — approved-sha must be a hex object name, not a revision" >&2
       echo "      expression (a name like HEAD or a branch re-resolves at check time and binds" >&2
       echo "      nothing). Got: $_asha_raw" >&2
-      return 1 ;;
+      return 2 ;;
   esac
   if [ "${#_asha}" -lt 7 ] || [ "${#_asha}" -gt 40 ]; then
     echo "FAIL: ceremony-binding — approved-sha must be 7-40 hex characters. Got: $_asha_raw" >&2
-    return 1
+    return 2
   fi
   _asha="$(git rev-parse -q --verify "${_asha}^{commit}" 2>/dev/null)" || _asha=""
   if [ -z "$_asha" ]; then
     echo "FAIL: ceremony-binding — approved-sha '$_asha_raw' does not resolve to a commit in this repo." >&2
-    return 1
+    return 2
   fi
   # THE BINDING ITSELF: the approved commit must actually TOUCH the artifact it approves. Without this a
   # GO could name design doc A while approving commit B, and neither would constrain the other.
@@ -389,7 +431,7 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
     echo "      approved-sha: $_asha" >&2
     echo "      basis:        $_basis" >&2
     echo "      A GO must approve a commit that touches the design it names." >&2
-    return 1
+    return 2
   fi
 
   CB_DESIGN_DOC="$_basis"
@@ -461,7 +503,11 @@ selftest() {
   # other negative leg — leg 2 was the last one checking rc alone, against this file's own stated rule.
   printf 'conformance/x.sh\n' > "$_tmp/changed-cp"
   _mkbare "$_tmp/f2"
-  _expect_fail leg2 "$_tmp/f2" "no '--gate design' record was found" "control-plane with no GO record"
+  # rc 1 EXPLICITLY. There is ONE waiting STATE (no scoped GO recorded yet), reported with TWO
+  # diagnoses (no record at all / a record scoped elsewhere) from ONE code path, and covered by THREE
+  # legs. The header says "exactly one state" and means the state; this means the legs.
+  # which is a normal stage of healthy work, not a broken build.
+  _expect_fail leg2 "$_tmp/f2" "no '--gate design' record was found" "control-plane with no GO record" 1
 
   # LEG 3 (fail-closed) — an UNDERIVABLE change-class must FAIL, never fall through to `ordinary`.
   #
@@ -477,9 +523,18 @@ selftest() {
   _nodir="$_tmp/no-authority"
   mkdir -p "$_nodir/conformance"
   _leg3_out="$( DIR="$_nodir" run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
-  case "$_leg3_out" in
-    *UNDERIVABLE*) echo "PASS leg3: authority unavailable -> FAIL closed, verdict names UNDERIVABLE" ;;
-    *) echo "FAIL leg3: expected an UNDERIVABLE fail-closed verdict, got: $_leg3_out"; _fails=$((_fails+1)) ;;
+  # ★ rc ASSERTED TOO (WAITING-GATES-RENDER-AS-RED). This is the ONE negative leg that does not route
+  # through _expect_fail, so it was the ONE defect path the partition's rc default did not cover —
+  # review mutated this branch 2 -> 1 and the whole suite stayed GREEN, which would have rendered an
+  # UNDERIVABLE change-class (a gate that evaluated NOTHING) as the friendly waiting yellow. §8.1's
+  # table rules that state RED. Text alone could not see it; text AND rc can.
+  ( DIR="$_nodir" run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+    && _rc3=0 || _rc3=$?
+  case "$_rc3:$_leg3_out" in
+    2:*UNDERIVABLE*) echo "PASS leg3: authority unavailable -> rc 2 (anomaly), verdict names UNDERIVABLE" ;;
+    1:*) echo "FAIL leg3: UNDERIVABLE returned rc 1 — a gate that evaluated NOTHING would render as the normal waiting yellow"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL leg3: expected rc 2 with an UNDERIVABLE verdict, got rc=$_rc3: $_leg3_out"; _fails=$((_fails+1)) ;;
   esac
 
   # ---- T2 legs: the GO record must NAME a real, tracked, non-placeholder artifact.
@@ -512,14 +567,14 @@ selftest() {
 
   # The line-anchoring proof: `gate: plan` must not match `^gate: design$`.
   _mkfix "$_tmp/f7" plan "docs/architecture/d-design.md" real
-  _expect_fail leg7 "$_tmp/f7" "no '--gate design' record was found" "wrong-gate record"
+  _expect_fail leg7 "$_tmp/f7" "no '--gate design' record was found" "wrong-gate record" 1
 
   # LEG 13 (HIGH-1, THE LOAD-BEARING NEGATIVE FOR RECORD BINDING) — a perfectly valid design record
   # scoped to a DIFFERENT change must NOT satisfy this one. Before the scope binding, the first
   # `gate: design` note in the ledger satisfied every future control-plane PR, so the gate went
   # permanently green after its own first use.
   _scope=PR-999 _mkfix "$_tmp/f13" design "docs/architecture/d-design.md" real
-  _expect_fail leg13 "$_tmp/f13" "NONE is scoped to this change" "GO record scoped to a different change"
+  _expect_fail leg13 "$_tmp/f13" "NONE is scoped to this change" "GO record scoped to a different change" 1
 
   # LEG 14 (HIGH-2) — a record with NO approved-by line must FAIL. A hand-written `git notes add` that
   # never went through promotion-verify.sh has no derived assurance label, and before this the check
@@ -565,6 +620,25 @@ selftest() {
   case "$_out13b" in
     *"may contain only"*) echo "PASS leg13b: multi-line --scope -> refused at the boundary" ;;
     *) echo "FAIL leg13b: expected a boundary refusal naming the charset, got: $_out13b"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG 13c (WAITING-GATES-RENDER-AS-RED) — NO --scope at all must be rc 2, the ANOMALY code, never rc 1.
+  # This path had ZERO legs before this slice: every other invocation in this selftest supplies --scope,
+  # so the partition's "no other path returns 1" claim was unprovable exactly here. It matters because
+  # the live route is not a hand-typed command — it is a broken CI wiring, or an empty PR number
+  # yielding the charset-LEGAL scope `PR-`. Left at rc 1 that renders as the normal yellow "the owner
+  # has not recorded the GO yet", so an operator waits patiently for a gate that evaluated nothing.
+  # Asserts rc AND verdict text together: rc alone cannot tell this refusal from any other.
+  _legs=$((_legs+1))   # leg13c
+  _out13c="$( cd "$_tmp/f2" && run_ceremony_binding --changed "$_tmp/changed-cp" 2>&1 || true )"
+  ( cd "$_tmp/f2" && run_ceremony_binding --changed "$_tmp/changed-cp" ) >/dev/null 2>&1 \
+    && _rc13c=0 || _rc13c=$?
+  case "$_rc13c:$_out13c" in
+    2:*"no --scope supplied"*) echo "PASS leg13c: absent --scope -> rc 2 (anomaly), naming the refusal" ;;
+    1:*) echo "FAIL leg13c: absent --scope returned rc 1 — a gate that evaluated NOTHING would render as the normal waiting yellow"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL leg13c: expected rc 2 naming 'no --scope supplied', got rc=$_rc13c: $_out13c"
        _fails=$((_fails+1)) ;;
   esac
 
@@ -658,10 +732,24 @@ selftest() {
 # expected text. A leg that only checks rc cannot distinguish its own failure mode from any other, which
 # is how two vacuous legs got written in this very file before this helper existed.
 _expect_fail() {
-  _ln="$1"; _fd="$2"; _exp="$3"; _desc="$4"; _legs=$((_legs+1))
+  _ln="$1"; _fd="$2"; _exp="$3"; _desc="$4"; _exp_rc="${5:-2}"; _legs=$((_legs+1))
   _out="$( cd "$_fd" && run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
-  if ( cd "$_fd" && run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1; then
+  # Capture the rc, guarded: a bare call would abort the whole selftest under `set -e`. The
+  # `&& x=0 || x=$?` form is the file's existing idiom for this.
+  ( cd "$_fd" && run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+    && _got_rc=0 || _got_rc=$?
+  if [ "$_got_rc" = 0 ]; then
     echo "FAIL $_ln: $_desc should FAIL but PASSed"; _fails=$((_fails+1)); return 0
+  fi
+  # ★ THE PARTITION ASSERTION (WAITING-GATES-RENDER-AS-RED). Defaulting to 2 is what makes this cheap
+  # AND complete: every one of the 17 existing negative legs gains the check with its call site
+  # UNEDITED, and only the three genuine waiting states opt in to 1. Before this the helper accepted
+  # ANY non-zero rc, so a defect path left at rc 1 — rendering a broken GO record as the normal yellow
+  # "waiting on a human" — would have passed all 17 legs unnoticed. A new negative leg must now
+  # deliberately declare itself a wait; silence means anomaly.
+  if [ "$_got_rc" != "$_exp_rc" ]; then
+    echo "FAIL $_ln: $_desc exited rc=$_got_rc, expected rc=$_exp_rc (1 = WAITING/yellow, 2 = anomaly/red)"
+    _fails=$((_fails+1))
   fi
   case "$_out" in
     *"$_exp"*) echo "PASS $_ln: $_desc -> FAIL naming '$_exp'" ;;

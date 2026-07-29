@@ -26,8 +26,8 @@
 #   * THIS GATE CAN BE SILENTLY UNBOUND. Nothing in the kit asserts WHICH contexts are in
 #     required_status_checks (branch-protection.sh:57-58 checks only that the feature is
 #     enabled), so removing this context leaves every kit check green. That is true of every
-#     required context today and is boarded as REQUIRED-CONTEXT-REGISTRY. Never describe this
-#     gate as unbypassable without that sentence attached.
+#     required context today and is boarded as BRANCH-PROTECTION-DECLARATION-LOCK. Never
+#     describe this gate as unbypassable without that sentence attached.
 #
 # ⚠️ THE HEAD DECLARATION DESCRIBES THE PULL REQUEST, NOT JUST THE LAST COMMIT. Kit-Class is
 # compared against the class derived from the WHOLE change-set (merge-base HEAD origin/main), so on
