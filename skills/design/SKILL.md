@@ -37,6 +37,34 @@ Before any feature, component, behaviour change, or new project — the moment i
 7. **Self-review the spec** — placeholders, internal consistency, scope, ambiguity; fix inline.
 8. **Owner reviews the written spec**, then hand to the **plan** skill. Do NOT start implementation from this skill.
 
+## Design provenance — four sources, two artifact shapes
+A design does not have to be *authored* by the slice that is governed by it. Provenance and artifact are different things:
+
+| # | Provenance of the design | The slice's design act |
+|---|---|---|
+| P1 | Authored in this slice | **originate** it (steps 1-8 above) |
+| P2 | Provided by the owner | **review + confirm** it |
+| P3 | A previous slice, or an initiative design of record | **review + confirm** it |
+| P4 | A backlog story carrying a reviewable design link (tracker-hosted — Jira et al.) | **review + confirm** it |
+
+**The invariant:** whatever the provenance, the slice commits an **in-repo design artifact**, and that artifact is what the design GO binds to. For P1 that artifact is an **originating design**; for P2-P4 it is a **confirming design**. Both are full design artifacts of equal standing — they differ in content, never in status. A slice governed by an already-ratified design therefore never has to choose between churning that document and skipping the design stage: it writes a confirming design instead.
+
+A **confirming design** records a judgment, and must carry:
+- **What it confirms** — a *stable* reference to the source: repo path + section for P2/P3; for a tracker-hosted or otherwise out-of-repo source, the URL **plus** the story key **plus** the page/revision id — never a bare link.
+- **Captured substance** — for an out-of-repo source, enough of the design's substance that the confirmation still means something if the source is changed, restricted, or deleted. An out-of-repo design is mutable and this repository cannot see it change.
+- **Scope coverage** — does that design actually govern *this* slice's scope, or is there a gap?
+- **Sizing** — does the inherited estimate still hold for this slice? This is the cheapest place to catch a mis-sized slice, and the place it has been missed.
+- **Deltas** — what differs from the inherited design, or explicitly *none, and why*.
+- **Obligations inherited** — the contracts this slice must carry forward.
+
+**Ceiling — a confirming design can degrade into a rubber stamp, and that is NOT enforceable.** Judging whether a confirmation embodies real judgment is semantic, and a prose scanner over design documents is a standing veto in this kit. What a green design gate establishes is **narrower than it looks**: a substantive artifact exists, and a GO scoped to this change names it, with an approver identity matching that artifact commit's git *committer* field. The artifact's **coverage of this scope is NOT checked** — no predicate relates the artifact's content to the change — and the identity is **git-attested, not authenticated** (a note binds; it does not authenticate). Never read a green as "the design was reviewed well", never as "this design governs this change", and **never as "a human approved this design"** — an identity matching the commit's *committer* field can be an agent running under the owner's configured git identity, or **the forge itself** (a squash-merge commit's committer is the forge, and naming it satisfies the derivation; measured 2026-07-29).
+
+<!-- The bold lead-in above deliberately reads "Ceiling" and NOT the two-word phrase used by the discipline
+     bullet further down: conformance/orchestrator-loop-wired.sh anchors this file on that phrase, and a
+     SECOND occurrence anywhere in this file silently disarms the lock — measured 2026-07-29, the lock
+     returned rc 0 with the discipline bullet deleted. Keep that phrase to exactly ONE occurrence here.
+     ⚠️ A comment quoting the phrase to explain this rule ALSO counts: that mistake was made and caught. -->
+
 ## The kit's design disciplines (what makes this MORE than generic brainstorming — apply to EVERY design)
 - **Architecture-first.** Design and trade-offs before code; hand the owner the 5-10 lines of meaningful business logic, not boilerplate.
 - **Design-intent lens — default-KEEP.** "Low usage / few references" is NOT a cut reason; cut only what is genuinely redundant (content exists elsewhere) or dead. Front-load rigor.
@@ -52,4 +80,4 @@ Before any feature, component, behaviour change, or new project — the moment i
 If the request spans multiple independent subsystems, decompose into sub-projects first and design the first through this flow. Each sub-project gets its own design → plan → build cycle.
 
 ## Terminal state
-A committed, owner-approved spec, handed to the **plan** skill. This skill never starts implementation. The committed spec **names the backlog item it satisfies** — the requirements → backlog trace link.
+A committed, owner-approved spec, handed to the **plan** skill. This skill never starts implementation. The committed spec **names the backlog item it satisfies** — the requirements → backlog trace link — and, when it is a **confirming** design, also names the design it confirms.

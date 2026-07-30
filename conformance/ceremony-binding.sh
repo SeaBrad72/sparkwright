@@ -292,12 +292,34 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
     # <forge>-review`, so `[authenticated: nonsense]` must not pass. Found by self-attack.
     "signed: gpg"|committer|"authenticated: "*-review) : ;;
     "self-asserted")
-      # Solo-compatible by design: the owner IS the committer of the design commit, so [committer] is
-      # reached at no cost. `approver != author` is deliberately NOT imposed — unusable solo, theatre here.
+      # Solo-compatible by design: for a design commit ON THIS BRANCH the owner IS its committer, so
+      # [committer] is reached at no cost. `approver != author` is deliberately NOT imposed — unusable
+      # solo, theatre here.
+      # ⚠️ NOT TRUE OF AN ALREADY-MERGED DESIGN. Squash-merge replaces the committer with the forge —
+      # measured 2026-07-29: 140 of 140 commits on `main` touching docs/architecture/*-design.md have
+      # committer `GitHub <noreply@github.com>`, ZERO have the owner. So for an inherited design
+      # [committer] is unreachable BY A HUMAN APPROVER — and this refusal is the one an inheriting
+      # successor actually hits (it returns before the basis/touch checks below).
+      # ⚠️⚠️ IT IS NOT UNREACHABLE, IT IS FORGEABLE. derive_assurance compares the caller-supplied
+      # --approved-by string against %cn/%ce, so `--approved-by GitHub` on a squash-merged design
+      # commit DERIVES [committer] and clears this bar. Measured end-to-end 2026-07-29 (security
+      # re-review, then reproduced on this repo's own d347fd4). That makes the derivation an OPEN
+      # HOLE, not a usability gap: the fix is to make the forge identity an UNACCEPTABLE APPROVER.
+      # Boarded as ASSURANCE-FORGE-IDENTITY-ACCEPTED-AS-APPROVER. Do NOT read the message below as
+      # "the weak path is impossible" — it is illegitimate, which prose cannot enforce.
       if [ "$_cls" = "control-plane" ]; then
         echo "FAIL: ceremony-binding — a control-plane DESIGN GATE needs an assurance stronger than" >&2
         echo "      [self-asserted]. Record with --approved-by matching the design commit's committer" >&2
         echo "      identity (yields [committer]) or sign the commit (yields [signed: gpg])." >&2
+        echo "      ⚠️ INHERITING an already-merged design? The committer of a squash-merged commit is" >&2
+        echo "      the FORGE, not a human. A GO naming the forge as approver is NOT a human approval" >&2
+        echo "      and must not be recorded. Write THIS slice's own design artifact instead, which" >&2
+        echo "      may CONFIRM the design you inherit rather than originate one. It records what" >&2
+        echo "      it confirms, scope coverage, whether the inherited sizing still holds, deltas," >&2
+        echo "      and inherited obligations. See skills/design ('Design provenance')." >&2
+        echo "      THEN RE-RECORD the GO with --basis <the new artifact> and --approved-sha <the" >&2
+        echo "      commit that touches it>. The label derives from approved-sha, so a new artifact" >&2
+        echo "      with the old record still fails here." >&2
         return 2
       fi ;;
     *) echo "FAIL: ceremony-binding — unrecognised assurance label '[$_label]' on the GO record." >&2
@@ -431,6 +453,23 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
     echo "      approved-sha: $_asha" >&2
     echo "      basis:        $_basis" >&2
     echo "      A GO must approve a commit that touches the design it names." >&2
+    # SIGNPOST THE ESCAPE, DO NOT RELAX THE CHECK. This refusal is correct — it is the DESIGN STAGE
+    # being enforced against a change-set with no design artifact of its own. Restating the rule was
+    # not enough: a whole session was spent rediscovering the compliant path and then proposing to
+    # delete this predicate twice. The ONE compliant satisfier is named here, and the artifact-to-scope
+    # hole is warned against — an earlier draft offered it as "option 2" and security review measured
+    # that as an endorsed bypass on a bound required context. So the next reader does
+    # not repeat that. See docs/architecture/2026-07-29-ceremony-binding-inherits-d12-design.md.
+    echo "      The compliant way to satisfy this:" >&2
+    echo "        Write THIS slice's own design artifact and approve a commit that touches it." >&2
+    echo "        It may ORIGINATE a design, or CONFIRM one you inherit (from the owner, a" >&2
+    echo "        previous slice, or a backlog story's design link). A confirming design is a" >&2
+    echo "        full design artifact: it records what it confirms, scope coverage, whether the" >&2
+    echo "        inherited sizing still holds, deltas, and inherited obligations. See" >&2
+    echo "        skills/design ('Design provenance')." >&2
+    echo "      Do NOT instead point approved-sha at some older design's own commit to make this" >&2
+    echo "      pass: NOTHING here binds the artifact's CONTENT to this change (only the RECORD is" >&2
+    echo "      scope-bound), so that satisfies the gate with no design for the work at hand." >&2
     return 2
   fi
 
