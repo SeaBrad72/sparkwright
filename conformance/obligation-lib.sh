@@ -533,6 +533,82 @@ obligation_gate() {
 # Accepted — the remedy is one line the author adds — but it is a real cost of the structure half, not a
 # free check. A SETEXT-underlined title is NOT in this class: it is CommonMark-legal, it reds-ed in the
 # first cut of this floor, and it is now accepted (with a selftest leg holding it accepted).
+
+# _obl_strip_code_markup FILE -> FILE's text with markdown CODE MARKUP removed: fenced code blocks
+# (``` and ~~~, the fence line and its whole body) and inline backtick spans. Used by Signal 1 ONLY.
+#
+# WHY, and what this is NOT. Signal 1's vocabulary is ordinary English (`fill`, `todo`, `replace`,
+# `your `, `describe `) plus the `**Template.**` banner, so a document that WRITES ABOUT the engine is
+# indistinguishable from a record that still CARRIES the stubs. Measured on this repository: four of its
+# own design/plan documents are denied for quoting the vocabulary while discussing it.
+# TWO OTHER SEPARATORS WERE RULED AND THEN VETOED BY MEASUREMENT. Neither may be reintroduced:
+#  - a HIT COUNT (">=2 hits before Signal 1 may deny"). Vetoed: eleven live records are caught by a
+#    SINGLE hit (a11y-obligation.sh's ten per-cell LEG-8 fixtures, each an otherwise-complete sign-off
+#    with one unfilled cell, plus this file's own BANNER.md), and nineteen shipped templates fire exactly
+#    once — on the banner, which is a single-occurrence marker by construction. A threshold of 2 makes an
+#    unsigned a11y sign-off and a wholly unedited template both read FILLED.
+#  - excluding BLOCKQUOTE lines. Vetoed twice over: the four false positives are not in blockquotes (they
+#    are in inline code spans), and `> **Template.**` IS a blockquote line — so the rule would delete the
+#    hit that catches all nineteen templates while fixing nothing. Blockquotes are deliberately NOT
+#    stripped here, and obl_selftest leg (m6) reds if that changes.
+# CODE MARKUP is the separator that measured clean in BOTH directions on the real corpus: all four false
+# positives sit inside it; all eleven true stubs and all nineteen template banners sit outside it.
+# COARSE BY DESIGN, and the coarseness is in the SAFE direction for the fence rule (an unterminated fence
+# swallows the rest of the file, which can only LOSE a hit — so the fence test insists on a closing line
+# of the SAME fence character, and an inline span must be CLOSED on its own line to be stripped). What is
+# left is what markdown itself leaves: a record whose author wraps a real unfilled stub in backticks is
+# not detected. That is a deliberate trade — a stub inside a code span is being displayed, not filled in,
+# and the alternative is the manufactured denial this rule exists to remove.
+# awk, not sed: the fence state is a LINE-SPANNING mode, and a sed range (`/```/,/```/d`) cannot tell a
+# closing ``` from a ~~~ nor stop at an unterminated one. Every `case` clause in this file starts on its
+# own line for the SAST parser's sake (see _obl_glob_scan); this function introduces no `case` at all.
+_obl_strip_code_markup() {
+  awk '
+    {
+      _line = $0
+      if (_fence == "") {
+        if (match(_line, /^[ \t]*(```+|~~~+)/)) {
+          _m = substr(_line, RSTART, RLENGTH)
+          sub(/^[ \t]*/, "", _m)
+          _fence = substr(_m, 1, 1)
+          next
+        }
+      } else {
+        if (match(_line, /^[ \t]*(```+|~~~+)[ \t]*$/)) {
+          _m = substr(_line, RSTART, RLENGTH)
+          sub(/^[ \t]*/, "", _m)
+          if (substr(_m, 1, 1) == _fence) { _fence = "" }
+        }
+        next
+      }
+      # INLINE SPANS, by the CommonMark RUN-LENGTH rule rather than by a naive gsub. An opening run of N
+      # backticks is closed by a run of EXACTLY N, which is why a `gsub(/`[^`]*`/,"")` is wrong and was
+      # measured wrong: on `` > **Template.** `` it pairs the two halves of the OPENING run with each
+      # other, deletes them, and leaves the quoted banner behind as bare text — the false positive intact.
+      # An UNCLOSED run is left in place, so an odd stray backtick can only ever leave MORE text for
+      # Signal 1 to see, never less.
+      _out = ""; _rest = _line
+      while (match(_rest, /`+/)) {
+        _pre = substr(_rest, 1, RSTART - 1)
+        _open = substr(_rest, RSTART, RLENGTH)
+        _n = RLENGTH
+        _after = substr(_rest, RSTART + RLENGTH)
+        # Walk the remainder for a run of exactly _n. RSTART/RLENGTH belong to the INNER match from here
+        # on, which is why _pre/_open/_n/_after are all captured BEFORE the walk starts.
+        _close = 0; _scan = _after; _off = 0
+        while (match(_scan, /`+/)) {
+          if (RLENGTH == _n) { _close = _off + RSTART; break }
+          _off = _off + RSTART + RLENGTH - 1
+          _scan = substr(_scan, RSTART + RLENGTH)
+        }
+        if (_close > 0) { _out = _out _pre; _rest = substr(_after, _close + _n) }
+        else { _out = _out _pre _open; _rest = _after }
+      }
+      print _out _rest
+    }
+  ' "$1" 2>/dev/null
+}
+
 obl_is_placeholder() {
   _rec="$1"
   # Signal 2's stub vocabulary, PARAMETERISED (OBLIGATION-STUB-PATTERN). Omitted or empty -> the shipped
@@ -569,8 +645,16 @@ obl_is_placeholder() {
   # pattern including the default, and obl_selftest's leg (a) (no --stub-pattern -> PASS) is what reds on it.
   _perr=0; printf '' | grep -qE -e "$_pat" 2>/dev/null || _perr=$?
   if [ "$_perr" -ge 2 ]; then OBL_PLACEHOLDER_REASON=pattern; return 0; fi
-  # Signal 1: the "> **Template.**" banner, or a generic unfilled bracket token.
-  if grep -Eiq '(\*\*template\.\*\*|\[(fill|todo|replace|your |describe ))' "$_rec" 2>/dev/null; then
+  # Signal 1: the "> **Template.**" banner, or a generic unfilled bracket token — read from the record with
+  # its markdown CODE MARKUP removed (OBLIGATION-SIGNAL1-CODE-MARKUP). See _obl_strip_code_markup for what
+  # is stripped, why the two rejected alternatives were rejected, and the corpus this was measured on.
+  # THE FALLBACK IS THE FAIL-CLOSED HALF and it is not decoration: the stripper is the only external
+  # dependency this function grew, and a stripper that dies silently would take Signal 1 with it — the
+  # fail-OPEN class every other guard in this file exists to close. On a non-zero status the raw record is
+  # appended, so the input degrades to TODAY's text (a superset of the stripped text) and detection can only
+  # get STRICTER, never weaker. obl_selftest leg (m8) shadows awk with a failing stub and holds this.
+  if { _obl_strip_code_markup "$_rec" || cat "$_rec" 2>/dev/null; } \
+       | grep -Eiq '(\*\*template\.\*\*|\[(fill|todo|replace|your |describe ))'; then
     return 0
   fi
   # Signal 2 (L1): residual template stubs. Anchor on the template's stub words — NOT arbitrary `[...]` —
@@ -1464,6 +1548,118 @@ obl_selftest() {
     *) echo "OBL SELFTEST FAIL: a legitimate compound-suffix exclusion list was refused or swallowed a path it does not match — it said: $_msg"; rc=1 ;;
   esac
 
+  # ---- SIGNAL 1 IGNORES CODE MARKUP (OBLIGATION-SIGNAL1-CODE-MARKUP). Signal 1's vocabulary is made of
+  # ordinary English words, so a document that DISCUSSES the vocabulary is indistinguishable from a record
+  # that still CARRIES it — measured, four of this repository's own design/plan documents were denied for
+  # quoting `[replace: …]` and `> **Template.**` while writing ABOUT the engine. The separator that works is
+  # not a hit COUNT (measured and vetoed: eleven live records are caught by a single hit, and nineteen
+  # shipped templates fire exactly once on the banner) and it is not BLOCKQUOTES (measured and vetoed: the
+  # banner IS a blockquote line, so excluding them deletes the hit that catches every template). It is CODE
+  # MARKUP: the quoting documents write the tokens inside backticks and fenced blocks, the records write
+  # them bare.
+  # EVERY leg below is PAIRED with its bare-token liveness run on the SAME token, because "the backticked
+  # form PASSes" is green for free if the token never denied in the first place. Fixtures are derived from
+  # $OBL_MIN_SUBSTANCE_LINES so a floor retune moves them instead of invalidating them, and each clears the
+  # floor, so every verdict here is attributable to Signal 1 and never to Signal 3.
+  _cm_pad() { _i=$1; while [ "$_i" -le "$OBL_MIN_SUBSTANCE_LINES" ]; do echo "line $_i"; _i=$((_i+1)); done; }
+  # (m1) BARE token -> DENY. The liveness anchor for (m2)-(m4): this is the shape a real unfilled a11y cell
+  # has, and it is the behaviour that must NOT be weakened.
+  { echo '# A11y Sign-off'; echo '| Decision | [replace: **pass** / fail] |'; _cm_pad 3; } > "$_t/CM-bare.md"
+  if ! obl_is_placeholder "$_t/CM-bare.md"; then
+    echo "OBL SELFTEST FAIL: a BARE '[replace: …]' cell was read as filled — Signal 1 no longer catches an unfilled cell, and every code-markup leg below is vacuous"; rc=1
+  fi
+  # (m2) the SAME token inside a single-backtick inline span -> PASS.
+  # shellcheck disable=SC2016 # the SINGLE quotes are the point: the backticks must reach the fixture as
+  # literal markdown, not be executed as a command substitution. Same for (m3) below.
+  { echo '# The a11y obligation, explained'; echo 'The template writes `[replace: **pass** / fail]` in that cell.'; _cm_pad 3; } > "$_t/CM-span.md"
+  if obl_is_placeholder "$_t/CM-span.md"; then
+    echo "OBL SELFTEST FAIL: a Signal-1 token inside an inline code span was read as an unfilled stub — a document DISCUSSING the vocabulary is denied for quoting it"; rc=1
+  fi
+  # (m3) …and inside a DOUBLE-backtick span, which is the shape the real design document uses (it has to
+  # be, because the quoted text itself contains no backtick but the surrounding prose does).
+  # shellcheck disable=SC2016 # literal backticks again — see (m2).
+  { echo '# The a11y obligation, explained'; echo 'The banner reads `` > **Template.** `` at line 3.'; _cm_pad 3; } > "$_t/CM-span2.md"
+  if obl_is_placeholder "$_t/CM-span2.md"; then
+    echo "OBL SELFTEST FAIL: a Signal-1 token inside a DOUBLE-backtick inline code span was read as an unfilled stub"; rc=1
+  fi
+  # (m4) …and inside a FENCED block, with the token BARE on its own line inside the fence — so this leg
+  # cannot be satisfied by the inline-span rule alone.
+  { echo '# The a11y obligation, explained'; echo 'The template ships:'; echo '```'
+    echo '| Decision | [replace: **pass** / fail] |'; echo '```'; _cm_pad 5; } > "$_t/CM-fence.md"
+  if obl_is_placeholder "$_t/CM-fence.md"; then
+    echo "OBL SELFTEST FAIL: a Signal-1 token inside a FENCED code block was read as an unfilled stub — the fence half of the rule is missing"; rc=1
+  fi
+  # (m5) …and a TILDE fence, which CommonMark treats identically and which a backtick-only implementation
+  # silently misses.
+  { echo '# The a11y obligation, explained'; echo 'The template ships:'; echo '~~~'
+    echo '| Decision | [replace: **pass** / fail] |'; echo '~~~'; _cm_pad 5; } > "$_t/CM-tilde.md"
+  if obl_is_placeholder "$_t/CM-tilde.md"; then
+    echo "OBL SELFTEST FAIL: a Signal-1 token inside a TILDE-fenced code block was read as an unfilled stub"; rc=1
+  fi
+  # (m6) BLOCKQUOTES ARE NOT EXCLUDED — the half that vetoed the withdrawn replacement rule. `> **Template.**`
+  # IS a blockquote line, so a rule that skipped blockquotes would delete the single hit that catches all
+  # nineteen shipped templates. This leg is what stops that rule being reintroduced as a "simplification".
+  { echo '> **Template.** Delete the guidance; fill the sections.'; echo '# Deployment Record'; _cm_pad 3; } > "$_t/CM-quote.md"
+  if ! obl_is_placeholder "$_t/CM-quote.md"; then
+    echo "OBL SELFTEST FAIL: the '> **Template.**' banner in a plain BLOCKQUOTE was read as filled — blockquotes must NOT be excluded, or every shipped template reads as a filled record"; rc=1
+  fi
+  # (m7) …and the same banner INSIDE a fence is code markup, so it must not deny. Paired with (m6) on the
+  # identical line, which makes the pair attributable to the MARKUP and to nothing else about the text.
+  { echo '# The banner, explained'; echo 'Line 3 of every template reads:'; echo '```markdown'
+    echo '> **Template.** Delete the guidance; fill the sections.'; echo '```'; _cm_pad 5; } > "$_t/CM-qfence.md"
+  if obl_is_placeholder "$_t/CM-qfence.md"; then
+    echo "OBL SELFTEST FAIL: the banner QUOTED inside a fenced block was read as an unfilled template"; rc=1
+  fi
+  # (m8) FAIL-CLOSED WHEN THE STRIPPER CANNOT RUN. The stripper is the one new external dependency in this
+  # function, and a silently-failing one would switch Signal 1 OFF — the exact fail-open class this file
+  # closes everywhere else (see the -e and compile-probe legs). The implementation falls back to the RAW
+  # record, which is strictly stricter, and this leg proves it by shadowing the stripper's binary with a
+  # failing stub on PATH. The fixture is (m4)'s, whose token is visible ONLY in the raw text.
+  mkdir -p "$_t/nobin"
+  printf '#!/bin/sh\nexit 127\n' > "$_t/nobin/awk"; chmod 755 "$_t/nobin/awk"
+  # shellcheck disable=SC2030,SC2031 # the PATH change being LOCAL TO THE SUBSHELL is exactly what is
+  # wanted — the shadow must not leak into the rest of the suite. Both legs open their own subshell.
+  if ! ( PATH="$_t/nobin:$PATH"; export PATH; obl_is_placeholder "$_t/CM-fence.md" ); then
+    echo "OBL SELFTEST FAIL: with the code-markup stripper unavailable, Signal 1 went SILENTLY OFF instead of falling back to the raw record — a weakening that fails open"; rc=1
+  fi
+  # …and the shadow really is potent (the stub is on PATH and really does break the stripper), or (m8) is
+  # green for free on a shell that resolved the real binary anyway.
+  # shellcheck disable=SC2031 # deliberately subshell-local, as in the leg above.
+  if ( PATH="$_t/nobin:$PATH"; export PATH; awk 'BEGIN{exit 0}' >/dev/null 2>&1 ); then
+    echo "OBL SELFTEST FAIL: the failing-stripper stub on PATH was not used — leg (m8) proved nothing"; rc=1
+  fi
+  # (m9) THE SHIPPED-TEMPLATE FAMILY LOCK. The legs above are synthetic; this one couples the rule to the
+  # artifacts a weakening would actually cost. Every template NAMED here must still read as unfilled, and
+  # the COUNT of shipped templates that do must equal the list — a named set alone cannot see a template
+  # SUBSTITUTED for another, and a count alone cannot see WHICH one was lost.
+  # The five templates deliberately absent (AI-ARTIFACT-LINEAGE, OPPORTUNITY-BRIEF, REVIEW-RECORD,
+  # SHAPING-DOC, WAIVER-REGISTER) carry no Signal-1 token at all and read FILLED today — an existing,
+  # separate gap, unchanged by this rule and not this leg's business.
+  _cm_named='A11Y-SIGNOFF AI-POLICY AI-SYSTEM-CARD AI-TRANSPARENCY-SIGNOFF BACKLOG BIA EVAL-PLAN
+FEATURE-REQUEST FIELD-REPORT JIRA-SETUP KIT-FEEDBACK POSTMORTEM PRIVACY-REVIEW PROJECT-CLAUDE
+RUNBOOK SECURITY TASK-CONTEXT-CONTRACT TEST-PLAN THREAT-MODEL TRACKER-SETUP UAT-SIGNOFF'
+  _cm_want=0
+  for _cm_n in $_cm_named; do
+    _cm_want=$((_cm_want + 1))
+    _cm_f="$_root/templates/$_cm_n-TEMPLATE.md"
+    if [ ! -f "$_cm_f" ]; then
+      echo "OBL SELFTEST FAIL: templates/$_cm_n-TEMPLATE.md is named by the Signal-1 family lock but is not present — the lock cannot be evaluated against it"; rc=1
+      continue
+    fi
+    if ! obl_is_placeholder "$_cm_f"; then
+      echo "OBL SELFTEST FAIL: the shipped templates/$_cm_n-TEMPLATE.md reads as a FILLED record — an unedited template now satisfies its obligation"; rc=1
+    fi
+  done
+  _cm_got=0
+  # `if`, never `obl_is_placeholder … && _cm_got=…`: an AND-list whose LAST command fails DOES trip
+  # errexit, and this suite runs under `set -e`, so the && form aborts the whole selftest on the first
+  # template that reads filled — silently turning the count lock into an abort with no FAIL text.
+  for _cm_f in "$_root"/templates/*.md; do
+    if obl_is_placeholder "$_cm_f"; then _cm_got=$((_cm_got + 1)); fi
+  done
+  [ "$_cm_got" = "$_cm_want" ] \
+    || { echo "OBL SELFTEST FAIL: $_cm_got shipped templates read as unfilled, but the family lock names $_cm_want — a template gained or lost its placeholder signal without the lock being updated"; rc=1; }
+
   # ---- CALIBRATION: the leg that pins the constant's VALUE. Everything above derives its fixtures FROM
   # $OBL_MIN_SUBSTANCE_LINES, so a retune moves the proof with it and nothing notices — measured: at 7, 9
   # and 12 every selftest in this suite stayed green. What governs in production is the SHIPPED TEMPLATES:
@@ -1486,7 +1682,7 @@ obl_selftest() {
       || { echo "OBL SELFTEST FAIL: $_rt-TEMPLATE.md is $_c non-blank lines banner-stripped — a record filled from it cannot clear the floor of $OBL_MIN_SUBSTANCE_LINES"; rc=1; }
   done
 
-  [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; exclusions before inclusions, per-path, real-view-template-still-triggers, degenerate-list-excludes-nothing, fail-safe outranks both; gate absent/placeholder/filled/none/derive-fail; derivation follows a rename (a git mv OFF a sensitive path still triggers) and every value-less two-argument flag is refused with a verdict rather than dying mid-parse; record-floor empty/one-line/floor-1/on-floor/heading-less/setext; diagnostic attribution floor/heading/template/unreadable+marker/bad-pattern, the pattern probe proven to run BEFORE every record signal; floor calibrated against the shipped templates; stub-pattern default-unchanged/custom-vocabulary/below-threshold/dash-leading/malformed-ERE-fail-closed/empty-refused/replaces-not-ors; gate-defining args first-wins AND '--'-sentinel-fenced for record/surface-globs/stub-pattern/exclude-globs/name/template-marker, each with its liveness pair, each discard announced without echoing the value; a surface defining no usable glob and an exclusion matching every path both refused rather than read as a blanket N/A)"
+  [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; exclusions before inclusions, per-path, real-view-template-still-triggers, degenerate-list-excludes-nothing, fail-safe outranks both; gate absent/placeholder/filled/none/derive-fail; derivation follows a rename (a git mv OFF a sensitive path still triggers) and every value-less two-argument flag is refused with a verdict rather than dying mid-parse; record-floor empty/one-line/floor-1/on-floor/heading-less/setext; diagnostic attribution floor/heading/template/unreadable+marker/bad-pattern, the pattern probe proven to run BEFORE every record signal; floor calibrated against the shipped templates; stub-pattern default-unchanged/custom-vocabulary/below-threshold/dash-leading/malformed-ERE-fail-closed/empty-refused/replaces-not-ors; gate-defining args first-wins AND '--'-sentinel-fenced for record/surface-globs/stub-pattern/exclude-globs/name/template-marker, each with its liveness pair, each discard announced without echoing the value; a surface defining no usable glob and an exclusion matching every path both refused rather than read as a blanket N/A; Signal 1 ignores CODE MARKUP — bare token denies, the same token in a single- and a double-backtick span and in a backtick- and a tilde-fenced block does not, blockquotes are NOT excluded so the banner still fires, the stripper falls back to the raw record when it cannot run, and all 21 shipped templates that carry a placeholder signal still read unfilled under a named-set + count lock)"
   return $rc
 }
 

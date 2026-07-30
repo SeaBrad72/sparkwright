@@ -281,6 +281,26 @@ check control doc-budget-selftest       --kitself sh conformance/doc-budget.sh -
 # A --kitself row is still a `^check control` row, so non-vacuity coverage survives (verified:
 # `non-vacuity.sh --only loop-state.sh` reports KILLED).
 check control loop-state-selftest      --kitself sh conformance/loop-state.sh --selftest
+# phase-gate is the EDIT-TIME sibling of loop-state's merge-time refusal floor ([S1a-i]). BOTH modes
+# are registered, and both are base-INDEPENDENT: the default mode checks the §5 reason vocabulary,
+# the totality of the rc contract over it and the T2 ceremony allowlist's must-refuse fixtures, while
+# the selftest builds every fixture it needs (hermetic w.r.t. the ambient tree — its green was
+# re-verified in a dev-clone, a fresh clone and a base-less checkout). No --kitself: nothing here
+# grades the kit's own roster or budgets, so an adopter tree answers the same.
+# ⚠️ WHAT THIS ROW BUYS FROM THE MUTATION SWEEP — MEASURED HERE, NOT INHERITED. Registering it is what
+# enrols the file in non-vacuity.sh (the sweep selects from these `^check control` rows). But that
+# sweep builds ONE COMPOSITE mutant per file, neutering every idiom above the selftest() marker at
+# once. Re-measured on this file at the shipped tree (plan §12 A7's ACC=0 + one control-flow idiom is
+# SUPERSEDED — the file has grown): APPLIED 46, ACC 7, CTL 39, MARK 2302; of those 46 sites, 7 are
+# PHANTOMS inside pre-marker COMMENTS (4 accumulator, 3 control-flow — the inflation non-vacuity.sh's
+# own honest ceiling warns about, since mutate() has no lexer), leaving 39 real CODE sites.
+# So a `KILLED: phase-gate.sh` green proves that AT LEAST ONE of those 39 sites is observed by the
+# selftest — never that each is, and never 39 kills. The load-bearing coverage is the hand-run
+# mutation evidence recorded at the legs themselves, together with the 13 sites the file DECLARES
+# unpoliced with a measured empty kill set. Do not quote the green as more than one mutant
+# (CONFORMANCE-MUTATION-COVERAGE-GAP on the board is the row that scopes this class).
+check control phase-gate               sh conformance/phase-gate.sh
+check control phase-gate-selftest       sh conformance/phase-gate.sh --selftest
 check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
 check control pipeline-origin          sh conformance/pipeline-origin.sh

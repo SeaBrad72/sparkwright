@@ -72,6 +72,15 @@ check_file() {
   # the correction so a future edit cannot silently restore "hand it to a human to apply." A per-marker
   # selftest negative below drops ONLY this sentence and FAILs (non-vacuity — owner ratified).
   require 'agent-actuates-mechanical'  'agent actuates the mechanical steps.*only control-plane keystroke, solo, is the'
+  # [S1a-i] the EDIT-TIME phase gate, as the design's §12.4 S1-surface-list correction requires. Two
+  # markers, each isolatable (a per-marker negative below drops ONLY its line and FAILs), because the
+  # two things that can drift are DIFFERENT: (a) the gate's DIRECTION — it is prevention that fails
+  # OPEN, so it can never be described as a boundary or a permit; and (b) its RELATION to this
+  # contract — it makes no ordering and no ratification claim, so acceptance stays at MERGE and the
+  # edit-time gate must never be documented as standing in for the recorded GO. Documenting (a)
+  # without (b) is how an advisory speed bump gets read as the promotion control.
+  require 'edit-gate-prevention'     'edit-time phase gate is prevention, not acceptance'
+  require 'edit-gate-not-acceptance' 'acceptance stays at merge'
 
   # --- Part B: the matrix header names all three change-classes -------------------------
   if grep -E '^\|' "$doc" | grep -qiE 'Ordinary' \
@@ -154,6 +163,8 @@ The delegation is never unilateral at a promotion.
 Control-plane GO stays human at every rung; actuation is delegable only on a SHA-bound, per-merge recorded GO.
 The gh pr merge --admin bypass is a human act.
 On a recorded GO the agent actuates the mechanical steps (apply, commit, push, tag, record, check); the human's only control-plane keystroke, solo, is the --admin merge.
+The edit-time phase gate is prevention, not acceptance: it fails OPEN on every undecidable state.
+It makes no ordering and no ratification claim, so acceptance stays at merge.
 Invariant: builder ≠ ratifier — peer to builder ≠ reviewer.
 Protocol: approve→execute→log — provide the means, wait, then execute and log after the GO.
 The human approves per-gate; approval is never inferred from conversation.
@@ -270,8 +281,21 @@ EOF
   grep -v 'agent actuates the mechanical steps' "$good" > "$nact"
   if check_file "$nact" >/dev/null 2>&1; then echo "selftest FAIL: dropped agent-actuates-mechanical should FAIL (regression teeth broken!)"; st=1; else echo "selftest PASS: dropped agent-actuates-mechanical -> FAIL"; fi
 
+  # NEW ([S1a-i]): each edit-time-phase-gate marker is load-bearing on its own. The first negative drops
+  # only the DIRECTION sentence — a doc that describes the gate without saying it fails OPEN can be read
+  # as a boundary. The second drops only the RELATION sentence — a doc that keeps the gate but loses
+  # "acceptance stays at merge" documents an edit-time check standing in for the recorded GO. Neither
+  # grep touches the other's line (verified: the direction line does not contain the relation phrase).
+  nepg="$base/no-edit-gate-prevention.md"
+  grep -v 'prevention, not acceptance' "$good" > "$nepg"
+  if check_file "$nepg" >/dev/null 2>&1; then echo "selftest FAIL: dropped edit-gate-prevention should FAIL"; st=1; else echo "selftest PASS: dropped edit-gate-prevention -> FAIL"; fi
+
+  nega="$base/no-edit-gate-acceptance.md"
+  grep -v 'acceptance stays at merge' "$good" > "$nega"
+  if check_file "$nega" >/dev/null 2>&1; then echo "selftest FAIL: dropped edit-gate-not-acceptance should FAIL"; st=1; else echo "selftest PASS: dropped edit-gate-not-acceptance -> FAIL"; fi
+
   if [ "$st" -ne 0 ]; then echo "promotion-contract-documented --selftest: FAIL" >&2; return 1; fi
-  echo "promotion-contract-documented --selftest: OK (complete/missing/relaxed/prose-mask/cp-blanket/euphemism/bare-human/no-cp-carveout/no-after-go/no-never-unilateral/no-admin-honesty/no-builder-ratifier/no-approve-execute-log/no-never-infer/no-shipped-approved/no-autonomy-modulator/no-lean-first-class/no-kill-switch/no-agent-actuates all behaved; fixtures left in $base)"
+  echo "promotion-contract-documented --selftest: OK (complete/missing/relaxed/prose-mask/cp-blanket/euphemism/bare-human/no-cp-carveout/no-after-go/no-never-unilateral/no-admin-honesty/no-builder-ratifier/no-approve-execute-log/no-never-infer/no-shipped-approved/no-autonomy-modulator/no-lean-first-class/no-kill-switch/no-agent-actuates/no-edit-gate-prevention/no-edit-gate-acceptance all behaved; fixtures left in $base)"
   return 0
 }
 

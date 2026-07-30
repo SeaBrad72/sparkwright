@@ -79,6 +79,10 @@ The cells are the kit's *existing* pieces connected: the autonomy tiers (§13) f
 
    **Honest ceiling:** the check grades **existence and binding — NOT order, and not quality.** It makes no ordering claim at all: a design written *after* the work passes. That predicate was withdrawn after five defeats in three review rounds (successor boarded as `CEREMONY-ORDERING-PROOF`). It also cannot tell whether a design is sound or whether anyone read it. `refs/notes/*` also sits outside branch protection, so the ledger holding these records is itself unprotected. It raises the cost of skipping the gate; it does not make skipping impossible.
 
+7. **The edit-time phase gate is prevention, not acceptance.** `conformance/phase-gate.sh` answers one question at *edit* time — *may this tool write this path right now?* — for the Edit/Write tool route, and it **fails OPEN on every undecidable state** (an unparseable argument, an absolute or `..` path, a control byte, an underivable base, a degraded classifier): rc 2, which the caller must read as allow, so a broken gate can never brick a keyboard. It is therefore a **drift control and a speed bump, never a boundary and never a permit** — its bypass floor is roughly sixteen lines of markdown under an always-allowed prefix, its unlock is branch-scoped rather than change-scoped, and bypasses of it are **unlogged**.
+
+   It makes **no ordering claim and no ratification claim**, so **acceptance stays at merge**: the recorded GO, `ceremony-binding` and `control-plane-ratification` remain the control, and a green edit-time decision is never evidence that a promotion was approved. It also does not close `ORDINARY-CLASS-UNGATED` — ordinary work still has no merge-time floor. Read the two together: the edit-time gate raises the cost of *starting* ungated work; only the merge-time gates decide whether it *ships*.
+
 ---
 
 ## What stays human-governed (unchanged)
