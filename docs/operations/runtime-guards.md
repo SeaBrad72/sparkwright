@@ -91,8 +91,10 @@ it with the guard fully armed, and it is NOT `KIT_GUARD_SELFEDIT`.**
 
 ### The dev-clone affordance (CP-8c, v3.124.0) — the default
 
-`guard_dev_clone_relaxable` relaxes the control-plane deny **iff** the target is physically **under a
-hardcoded temp root**, **outside the protected repo root**, and **the root is not itself under temp**. So:
+`guard_dev_clone_relaxable` relaxes the control-plane deny **iff** the target is **under a hardcoded temp
+root**, **outside the protected repo root**, and **the root is not itself under temp** — and, since
+v3.196.0, iff the path **as you typed it** also satisfies the first two, not merely the path it resolves to.
+So:
 
 ```sh
 git clone . /private/tmp/kit-work      # a LITERAL path — a variable target is denied (fail-closed)
@@ -101,6 +103,46 @@ git clone . /private/tmp/kit-work      # a LITERAL path — a variable target is
 The agent then edits `conformance/`, `.github/workflows/`, anything — **inside the clone**. Meanwhile the
 guard stays **armed and effective on the real repo**: the identical edit to `~/…/your-repo/conformance/x.sh`
 is still **DENIED**. Build there, run the checks there, push the branch, open the PR.
+
+#### What changed in v3.196.0 (`GUARD-PATH-ALIAS-BYPASS`, P0)
+
+The guard used to decide on the path **string** and never on the target it reached, so any alias with a
+benign name defeated it — measured, a write through an aliased path landed inside the real repository
+while the guard reported ALLOW, and a renamed symlink returned a real `.env`'s contents through the Read
+tool. Four user-visible consequences:
+
+1. **The affordance now takes the literal path into account too.** A control-plane file that *sits inside*
+   your repo but symlinks out to temp no longer relaxes. Neither does a dev-clone reached through a
+   symlink from outside temp — e.g. `~/work/clone -> /private/tmp/kit-work`, addressed by that absolute
+   spelling. **Workaround: use the real (`pwd -P`) path.** Working relative from inside the clone also
+   relaxes, but only when your *session* is rooted there, so do not rely on it.
+2. **A path that cannot be resolved is now DENIED**, not allowed — e.g. a file beneath a directory you
+   cannot search, or a symlink cycle. It carries its own reason so it is not mistaken for a
+   control-plane violation.
+3. **A new false positive on control-plane names, accepted deliberately:** an ordinary file whose
+   *resolved* path runs through **any directory the control-plane classifier matches** — `skills/`,
+   `conformance/`, `adapters/`, `.git/`, `.github/workflows/`, and others — is now denied on write. If
+   you keep notes at `~/notes -> ~/Documents/skills/notes`, that is why. The deny names the resolved
+   path so the reason is legible.
+4. **A new false positive on secret names, same trade, on BOTH read and write:** an ordinary file whose
+   resolved path traverses a `secret/` or `secrets/` directory is now denied. (An earlier draft of this
+   note scoped it to reads only; the write path gained it too.)
+5. **One widening, in the other direction.** `_under_temp` gained a case-folded second arm, so any
+   spelling containing at least one uppercase character whose lowercased form matches a temp root — e.g.
+   `/private/TMP/…`, `/VAR/folders/…/T/…` — now counts as temp. That **widens** the affordance's relax
+   side, so it is a DENY→ALLOW rather than a new denial. On a case-insensitive macOS filesystem
+   `/private/TMP` *is* `/private/tmp`, and on a case-sensitive one creating such a path needs write
+   access to `/` or `/var`. It is disclosed rather than omitted because the alternative — folding the
+   subject against a pattern list that carries a literal uppercase `T` — would have silently killed the
+   affordance for every `mktemp -d` clone on macOS while Linux CI stayed green.
+
+**What this does NOT close** — stated because a green here is narrower than it looks. It covers **symlink**
+aliases on the `Edit`/`Write`/`Read` route, and only where the terminal component is the target's own
+directory entry. It does **not** cover **hardlinks** (a symlink→hardlink chain still reaches a
+control-plane file — `GUARD-CP-HARDLINK-ALIAS`), the **shell write routes** (`tee`/`cp`/`mv` remain
+alias-blind — `GUARD-ALIAS-SHELL-ROUTE`), **alias-creation primitives** (`ln -s` at a literal
+control-plane target is denied, but interpreters and archive extractors are not —
+`GUARD-ALIAS-PRIMITIVES`), or **races** between the guard's decision and the write.
 
 **Why this is the right default:**
 

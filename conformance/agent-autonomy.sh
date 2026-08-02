@@ -614,6 +614,299 @@ assert_deny  "git rebase --exec mv cp"  '{"tool_name":"Bash","tool_input":{"comm
 assert_deny  "cat evil > a workflow"    '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/evil > .github/workflows/ci.yml"}}'
 assert_allow "cat a cp file > /tmp"     '{"tool_name":"Bash","tool_input":{"command":"cat conformance/verify.sh > /tmp/copy.sh"}}'
 
+# =============================================================================================
+# GUARD-PATH-ALIAS-BYPASS (P0) — the guard must judge the TARGET a path reaches, not the string.
+# Legs live at TOP LEVEL on purpose: verify.sh and ci.yml invoke this script WITHOUT --selftest,
+# so anything inside selftest() would never run in CI.
+#
+# Two fixture roots, because the F-legs need a fixture INSIDE a protected root and the real repo
+# cannot be it: GPAB_TMP is under temp (the "clone" side), GPAB_ROOT is NOT (the protected root).
+# /var/tmp is real on Linux and resolves to /private/var/tmp on macOS; both sit outside
+# _under_temp's set. Never $TMPDIR — _under_temp deliberately refuses to read it.
+# =============================================================================================
+GPAB_TRASH=''
+gpab_cleanup() { for _d in $GPAB_TRASH; do [ -n "$_d" ] && [ -d "$_d" ] && rm -rf "$_d"; done; }
+trap gpab_cleanup EXIT INT TERM   # the first trap in this file; a later one would disarm cleanup
+
+gpab_setup() {
+  GPAB_TMP=$(mktemp -d /tmp/gpab.XXXXXX) || return 1
+  GPAB_ROOT=$(mktemp -d /var/tmp/gpab-root.XXXXXX) || return 1
+  [ -d "$GPAB_ROOT" ] && [ ! -L "$GPAB_ROOT" ] || return 1
+  set -- $GPAB_TRASH "$GPAB_TMP" "$GPAB_ROOT"; GPAB_TRASH="$*"
+  mkdir -p "$GPAB_ROOT/.claude/hooks" "$GPAB_TMP/clone/.claude/hooks" "$GPAB_TMP/dir/.claude/hooks"
+  # guard.sh sources $(dirname $0)/guard-core.sh, so a copy of the pair is self-contained and its
+  # PROTECTED_ROOT ($0-derived) becomes GPAB_ROOT.
+  cp "$GUARD" .claude/hooks/guard-core.sh "$GPAB_ROOT/.claude/hooks/" || return 1
+  GPAB_G="$GPAB_ROOT/.claude/hooks/guard.sh"
+  ln -s "$GPAB_TMP/dir" "$GPAB_ROOT/link" || return 1
+  return 0
+}
+gpab_setup || { echo "FAIL: gpab fixture setup"; fail=1; }
+
+# root-parameterised variants: the shipped denied()/assert_*() are pinned to $GUARD, whose
+# PROTECTED_ROOT is the real repo.
+denied_at()       { printf '%s' "$2" | sh "$1" 2>/dev/null | grep -q '"permissionDecision":"deny"'; }
+assert_deny_at()  { if denied_at "$1" "$3"; then echo "PASS deny : $2"; else echo "FAIL (wanted deny): $2"; fail=1; fi; }
+assert_allow_at() { if denied_at "$1" "$3"; then echo "FAIL (wanted allow): $2"; fail=1; else echo "PASS allow: $2"; fi; }
+gpab_write() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1"; }
+
+if [ "${GPAB_G:-}" != "" ]; then
+  # F  — a GENUINE dev-clone control-plane edit must stay writable. THE load-bearing negative:
+  #      a fix that also broke this would push the operator onto KIT_GUARD_SELFEDIT.
+  assert_allow_at "$GPAB_G" "F: genuine dev-clone control-plane edit" \
+    "$(gpab_write "$GPAB_TMP/clone/.claude/hooks/guard-core.sh")"
+
+  # F4b — RED at T2. Literal sits inside the protected root but a DIRECTORY symlink carries it out
+  #       to temp, so the affordance's resolved-side conditions all hold and it relaxes TODAY.
+  assert_deny_at "$GPAB_G" "F4b: dir-symlink out of the root into temp" \
+    "$(gpab_write "$GPAB_ROOT/link/.claude/hooks/guard-core.sh")"
+
+  # H  — direct control-plane inside the root still denies; direct ordinary still allows.
+  assert_deny_at  "$GPAB_G" "H: direct control-plane inside root" \
+    "$(gpab_write "$GPAB_ROOT/.claude/hooks/guard-core.sh")"
+  assert_allow_at "$GPAB_G" "H: direct ordinary inside root" \
+    "$(gpab_write "$GPAB_ROOT/README.md")"
+
+  # --- resolver-level legs (T3). _resolve_physical must report the TARGET a path reaches. Run in a
+  #     subshell so sourcing the core cannot leak functions into the rest of this check. ---
+  gpab_resolve() { ( . ./.claude/hooks/guard-core.sh; _resolve_physical "$1" ); }
+  gpab_res_is() {  # <label> <path> <expected>
+    _got=$(gpab_resolve "$2" 2>/dev/null) || _got='<rc!=0>'
+    if [ "$_got" = "$3" ]; then echo "PASS resolve: $1"
+    else echo "FAIL resolve: $1 — got [$_got] wanted [$3]"; fail=1; fi
+  }
+  printf 'x\n' > "$GPAB_TMP/target.txt"
+  ln -s "$GPAB_TMP/target.txt" "$GPAB_TMP/leafalias"          # B: leaf symlink
+  ln -s "$GPAB_TMP/leafalias"  "$GPAB_TMP/chain"              # C: chained
+  ln -s "$GPAB_TMP/cycA"       "$GPAB_TMP/cycB"               # C: cycle
+  ln -s "$GPAB_TMP/cycB"       "$GPAB_TMP/cycA"
+  ln -s target.txt             "$GPAB_TMP/relalias"           # I: RELATIVE link target
+  ln -s "$GPAB_TMP/dir"        "$GPAB_TMP/dalias"             # I: ancestor symlink + escaping ..
+
+  # Expectations are computed PHYSICALLY: on macOS /tmp is itself a symlink to /private/tmp, so a
+  # literal "$GPAB_TMP/..." expectation would fail against a correct resolver. (Measured — this
+  # mis-specification produced four false reds before it was caught.)
+  GPAB_TMP_P=$(CDPATH='' cd -P "$GPAB_TMP" && pwd -P)
+
+  gpab_res_is "B: leaf symlink resolves to its target"  "$GPAB_TMP/leafalias" "$GPAB_TMP_P/target.txt"
+  gpab_res_is "C: chained symlink resolves"             "$GPAB_TMP/chain"     "$GPAB_TMP_P/target.txt"
+  gpab_res_is "I: relative link target resolves"        "$GPAB_TMP/relalias"  "$GPAB_TMP_P/target.txt"
+  gpab_res_is "I: non-existent leaf keeps its name"     "$GPAB_TMP/clone/nope.sh" "$GPAB_TMP_P/clone/nope.sh"
+  gpab_res_is "I: ancestor symlink + escaping .."       "$GPAB_TMP/dalias/../clone/x" "$GPAB_TMP_P/clone/x"
+  if gpab_resolve "$GPAB_TMP/cycA" >/dev/null 2>&1; then
+    echo "FAIL resolve: C: symlink cycle must fail (rc!=0), not resolve"; fail=1
+  else echo "PASS resolve: C: symlink cycle fails safe"; fi
+
+  # --- decision-site legs (T4/T5). The guard must judge the TARGET, not the string. ---
+  ln -s "$GPAB_ROOT/.claude" "$GPAB_TMP/vendor"        # A: directory alias -> the live control plane
+  for d in e2 e3 e4 e6; do mkdir -p "$GPAB_TMP/$d"; done
+  printf 'S=planted\n' > "$GPAB_TMP/e3/.env"
+  ln -s "$GPAB_TMP/e3/.env" "$GPAB_TMP/e3/.env.example"   # E3: TEMPLATE-NAMED alias -> a real secret
+  printf 'TPL=ok\n'   > "$GPAB_TMP/e4/.env.example"       # E4: a genuine template (pin: stays ALLOW)
+  printf 'TPL=ok\n'   > "$GPAB_TMP/e6/.env.example"
+  ln -s "$GPAB_TMP/e6/.env.example" "$GPAB_TMP/e6/.env"   # E6: secret-named alias -> a real template
+  printf 'S=planted\n' > "$GPAB_TMP/e2/.env"
+  ln -s "$GPAB_TMP/e2/.env" "$GPAB_TMP/e2/notes.txt"      # E2: benign-named alias -> a real secret
+
+  # A/E2/E3 are RED before T4: each classifies ordinary/allowlisted on its literal name while
+  # reaching a control-plane or secret target. E4/E6 are pins that must NOT change.
+  assert_deny_at  "$GPAB_G" "A: dir alias -> live control plane" \
+    "$(gpab_write "$GPAB_TMP/vendor/hooks/guard-core.sh")"
+  assert_deny_at  "$GPAB_G" "E3-write: template-NAMED alias -> real secret" \
+    "$(gpab_write "$GPAB_TMP/e3/.env.example")"
+  assert_allow_at "$GPAB_G" "E4-write: genuine template file" \
+    "$(gpab_write "$GPAB_TMP/e4/.env.example")"
+  assert_deny_at  "$GPAB_G" "E6-write: secret-NAMED alias -> real template" \
+    "$(gpab_write "$GPAB_TMP/e6/.env")"
+  assert_deny_at  "$GPAB_G" "E2: benign-NAMED alias -> real secret (write)" \
+    "$(gpab_write "$GPAB_TMP/e2/notes.txt")"
+
+  # --- READ side (T5). Same class, and this is the half proven reachable through the real Read
+  #     tool: a renamed symlink returned a planted secret's contents end to end. ---
+  gpab_read() { printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$1"; }
+  mkdir -p "$GPAB_TMP/e5" "$GPAB_TMP/store"
+  printf 'S=planted\n' > "$GPAB_TMP/store/creds-blob"   # deliberately NOT a secret-shaped basename,
+  ln -s "$GPAB_TMP/store/creds-blob" "$GPAB_TMP/e5/.env" # so E5 is not tautological on the resolved side
+
+  assert_deny_at  "$GPAB_G" "E3-read: template-NAMED alias -> real secret" \
+    "$(gpab_read "$GPAB_TMP/e3/.env.example")"
+  assert_allow_at "$GPAB_G" "E4-read: genuine template file" \
+    "$(gpab_read "$GPAB_TMP/e4/.env.example")"
+  assert_deny_at  "$GPAB_G" "E6-read: secret-NAMED alias -> real template" \
+    "$(gpab_read "$GPAB_TMP/e6/.env")"
+  assert_deny_at  "$GPAB_G" "E: benign-NAMED alias -> real secret (read)" \
+    "$(gpab_read "$GPAB_TMP/e2/notes.txt")"
+  # E5 pins the OTHER direction: a resolved-ONLY check would let this through, because the target's
+  # basename is not secret-shaped. It must stay DENY on the literal.
+  assert_deny_at  "$GPAB_G" "E5: .env -> a non-secret-named credentials store" \
+    "$(gpab_read "$GPAB_TMP/e5/.env")"
+
+  # --- legs the design commits to that were missing from the first build ---
+  # A2 (V9): an alias planted INSIDE a sanctioned dev-clone, pointing back at the live root. The
+  #          affordance must not relax it: the resolved path is inside the protected root.
+  ln -s "$GPAB_ROOT/.claude/hooks/guard-core.sh" "$GPAB_TMP/clone/.claude/hooks/backdoor.sh"
+  assert_deny_at "$GPAB_G" "A2: alias inside a clone pointing back at the root" \
+    "$(gpab_write "$GPAB_TMP/clone/.claude/hooks/backdoor.sh")"
+  # D (V5): a DANGLING leaf. At a control-plane target it must deny (is_control_plane_path is
+  #         prefix-based, so a not-yet-existing file still classifies); at an ordinary one, allow.
+  ln -s "$GPAB_ROOT/.claude/hooks/not-yet.sh" "$GPAB_TMP/dangling-cp"
+  ln -s "$GPAB_ROOT/notes-not-yet.md"         "$GPAB_TMP/dangling-ord"
+  assert_deny_at  "$GPAB_G" "D: dangling leaf -> a control-plane target" \
+    "$(gpab_write "$GPAB_TMP/dangling-cp")"
+  assert_allow_at "$GPAB_G" "D: dangling leaf -> an ordinary target" \
+    "$(gpab_write "$GPAB_TMP/dangling-ord")"
+  # C2: a path that cannot be resolved is itself a denial, at the DECISION site (not just the
+  #     resolver), and its reason must differ from the generic control-plane one.
+  assert_deny_at "$GPAB_G" "C2: unresolvable path denies (write)" "$(gpab_write "$GPAB_TMP/cycA")"
+  assert_deny_at "$GPAB_G" "C2: unresolvable path denies (read)"  "$(gpab_read  "$GPAB_TMP/cycA")"
+  _c2r=$(printf '%s' "$(gpab_write "$GPAB_TMP/cycA")" | sh "$GPAB_G" 2>/dev/null)
+  case "$_c2r" in
+    *"could not be resolved"*) echo "PASS reason  : C2 names the unresolvable path, not the generic deny" ;;
+    *) echo "FAIL reason  : C2 must carry its own reason, not the control-plane text"; fail=1 ;;
+  esac
+  # G: an ordinary temp file is untouched — it must discriminate or it is pure friction.
+  printf 'x\n' > "$GPAB_TMP/plain-note.md"
+  assert_allow_at "$GPAB_G" "G: genuine ordinary temp file" "$(gpab_write "$GPAB_TMP/plain-note.md")"
+  # J: the ACCEPTED false positive, pinned so it stays a decision rather than becoming a surprise.
+  #    An ordinary file whose resolved path runs through a control-plane-named directory is denied.
+  #    ⚠️ The alias must live OUTSIDE temp, or the dev-clone affordance relaxes it and the leg passes
+  #    for the wrong reason (measured — the first fixture sat under temp and reported ALLOW).
+  GPAB_OUT=$(mktemp -d /var/tmp/gpab-out.XXXXXX)
+  # NOT `set --`: this runs at TOP LEVEL, so it would overwrite the script's positional parameters
+  # and the --selftest dispatch at the bottom would never see its argument. Measured — it silently
+  # disabled the non-vacuity oracle while CI still reported the step green. The identical idiom
+  # inside gpab_setup() is function-scoped and harmless, which is why the first build was fine.
+  GPAB_TRASH="$GPAB_TRASH $GPAB_OUT"
+  mkdir -p "$GPAB_OUT/proj/skills/notes"
+  printf 'x\n' > "$GPAB_OUT/proj/skills/notes/todo.md"
+  ln -s "$GPAB_OUT/proj/skills/notes/todo.md" "$GPAB_OUT/mynotes.md"
+  assert_deny_at "$GPAB_G" "J: ACCEPTED false positive — ordinary file under a skills/ dir" \
+    "$(gpab_write "$GPAB_OUT/mynotes.md")"
+  # V1's fixture (a `..` escaping a symlinked ancestor) must ALSO sit outside temp, and must exist
+  # before the leg runs — in the first build it was created down in the mutant block, so the leg ran
+  # against a non-existent path and reported ALLOW.
+  mkdir -p "$GPAB_OUT/hooks"
+  ln -s "$GPAB_ROOT/.claude/hooks" "$GPAB_OUT/vendorh"
+  assert_deny_at "$GPAB_G" "V1: .. escaping a symlinked ancestor into the control plane" \
+    "$(gpab_write "$GPAB_OUT/vendorh/../hooks/guard-core.sh")"
+
+  # --- _under_temp: the one direction the design flags as NON-monotone (the fold widens :311) ---
+  gpab_temp_is() {  # <label> <path> <expected: temp|not>
+    if ( . ./.claude/hooks/guard-core.sh; _under_temp "$2" ); then _tv=temp; else _tv=not; fi
+    if [ "$_tv" = "$3" ]; then echo "PASS undertemp: $1"
+    else echo "FAIL undertemp: $1 — got $_tv wanted $3"; fail=1; fi
+  }
+  gpab_temp_is "F3b: /var/folders/../T/ is temp (must NOT regress)" "/var/folders/aa/bb/T/x" temp
+  gpab_temp_is "F3:  /private/TMP/ folds to temp"                   "/private/TMP/x"         temp
+  gpab_temp_is "F3c: all-lowercase near-miss is NOT widened"        "/var/folders/aa/bb/t/x" not
+  gpab_temp_is "     /var/tmp is not a temp root"                   "/var/tmp/x"             not
+
+  # === Leg K — SUBJECT MUTATION ==============================================================
+  # The non-vacuity sweep mutates the CHECK, never the subject, so nothing else can prove these
+  # legs are load-bearing. Mutate a COPY of guard-core.sh inside the synthetic root, re-run the
+  # copied guard, assert the verdict flips, restore. No control-plane file is touched and
+  # KIT_GUARD_SELFEDIT is never used. Each change binds SEPARATELY — one mutant per change, or a
+  # change ships unlocked.
+  GPAB_GC="$GPAB_ROOT/.claude/hooks/guard-core.sh"
+  cp "$GPAB_GC" "$GPAB_TMP/gc.pristine"
+  # The `cd -P` mutant reuses V1's fixture in $GPAB_OUT (built above, outside temp so the affordance
+  # does not relax it). The real ordinary $GPAB_OUT/hooks directory is the load-bearing part: it makes
+  # the LOGICAL resolution SUCCEED at an ordinary location, so reverting `-P` flips deny -> allow.
+  # Without it the logical `cd` fails, "failure => deny" fires, both arms deny, and the mutant
+  # survives proving nothing.
+
+  gpab_mutant() {  # <label> <sed-expr> <json> <want-after-mutation: allow|deny>
+    # Assert the FLIP, not just the post-mutation verdict. Comparing only the mutated verdict lets a
+    # mutant pass when the pristine verdict already equalled it — the leg would prove nothing and
+    # nothing here would notice. Also assert the sed actually changed the file: a stale expression
+    # that matches nothing is the same vacuity wearing a different hat (it happened twice in this
+    # slice — once when a fix reshaped the line the expression anchored on).
+    if denied_at "$GPAB_G" "$3"; then _pv=deny; else _pv=allow; fi
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      echo "FAIL mutant : $1 — the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
+    fi
+    if denied_at "$GPAB_G" "$3"; then _mv=deny; else _mv=allow; fi
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+    if [ "$_pv" = "$_mv" ]; then
+      echo "FAIL mutant : $1 — verdict did not change ($_pv before and after); the leg proves nothing"; fail=1
+    elif [ "$_mv" = "$4" ]; then echo "PASS mutant : $1 ($_pv -> $_mv, killed the leg as required)"
+    else echo "FAIL mutant : $1 — got $_mv, wanted $4"; fail=1; fi
+  }
+
+  # Reverting leaf resolution means reverting BOTH halves: the loop AND the "still a symlink =>
+  # fail" guard. Removing only the loop leaves that guard firing, so the verdict stays DENY via the
+  # resolution-failure arm and the mutant survives while proving nothing — measured.
+  gpab_mutant "leaf resolution removed -> E2" \
+    's#^  while \[ -L "$_rp" \] && \[ "$_n" -lt 64 \]; do#  while false; do#; s#^  \[ -L "$_rp" \] && return 1#  :#' \
+    "$(gpab_write "$GPAB_TMP/e2/notes.txt")" allow
+  gpab_mutant "cd -P reverted to cd -> V1" \
+    's#cd -P "$_rpd"#cd "$_rpd"#' \
+    "$(gpab_write "$GPAB_OUT/vendorh/../hooks/guard-core.sh")" allow
+  gpab_mutant "resolved control-plane disjunct removed -> A" \
+    's#\[ "$_resok" = 1 \] && is_control_plane_path "$_res"#false#' \
+    "$(gpab_write "$GPAB_TMP/vendor/hooks/guard-core.sh")" allow
+  # The two literal-side clauses are mutated TOGETHER because they are redundant with each other by
+  # construction, and the mutant that removes only one survives — measured. Condition 3 already
+  # refuses any root under temp, so a literal inside a NON-temp root can never be under temp either:
+  # `_under_temp "$_dpa"` subsumes the inside-root prefix test. The prefix test is kept as
+  # defence-in-depth (it is the clause the design names, and it stays correct if condition 3 is ever
+  # relaxed), but this leg pins the PAIR, not either half — claiming otherwise would be a lock that
+  # proves less than it says.
+  gpab_mutant "literal-side conjunction removed -> F4b" \
+    's#^  case "$_dpa/" in "$_drootp"/\*) return 1 ;; esac#  :#; s#^  if ! _under_temp "$_dpa"; then#  if false; then#' \
+    "$(gpab_write "$GPAB_ROOT/link/.claude/hooks/guard-core.sh")" allow
+  gpab_mutant "write allowlist made resolved-only -> E6-write" \
+    's#^  case "$base" in$#  case "$_rbase" in#' \
+    "$(gpab_write "$GPAB_TMP/e6/.env")" allow
+  gpab_mutant "secret-WRITE resolved disjunct removed -> E2" \
+    's#^  if \[ "$_resok" = 1 \]; then$#  if false; then#' \
+    "$(gpab_write "$GPAB_TMP/e2/notes.txt")" allow
+  gpab_mutant "secret-READ resolved disjunct removed -> E" \
+    's#^    if \[ "$_rrok" = 1 \]; then$#    if false; then#' \
+    "$(gpab_read "$GPAB_TMP/e2/notes.txt")" allow
+  gpab_mutant "read allowlist made literal-only -> E3-read" \
+    's#^      case "$_rrbase" in#      case "$base" in#' \
+    "$(gpab_read "$GPAB_TMP/e3/.env.example")" allow
+  gpab_mutant "rc capture discarded (_resok forced 1) -> C2" \
+    's#^  _res=$(_resolve_physical "$fp") && _resok=1 || _resok=0#  _res=$(_resolve_physical "$fp") || true; _resok=1#' \
+    "$(gpab_write "$GPAB_TMP/cycA")" allow
+fi
+
+# --- non-vacuity oracle -------------------------------------------------------------------------
+# The name `selftest` and this POSITION are both load-bearing. conformance/non-vacuity.sh takes the
+# EARLIEST of `^selftest()` / an `if [ ... --selftest ]` opener / a bare `--selftest)` arm as its
+# mutation marker, and rewrites only the lines strictly BEFORE it. Naming this anything else drops
+# the marker to the case arm at the very bottom, which puts this function's own body inside the
+# mutated region — the oracle would neuter itself and the sweep would report VACUOUS. Placing it
+# any higher would put the `fail=1` accumulators (lines ~23-40) below the marker, leaving nothing
+# mutable and yielding `UNCOVERED: no-idiom` — a green that proves nothing either way.
+#
+# The probes drive each accumulator through a case it MUST flag, so a sweep that neuters `fail=1`
+# is caught here rather than sailing through 380 green legs.
+selftest() {
+  _st=0; _save=$fail; fail=0
+  _allowing='{"tool_name":"Bash","tool_input":{"command":"echo hi"}}'
+  _denying='{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}'
+
+  assert_deny        "nv" "$_allowing"                 >/dev/null
+  [ "$fail" = 1 ] || { echo "nv: assert_deny accumulator is neutered"; _st=1; }; fail=0
+  assert_allow       "nv" "$_denying"                  >/dev/null
+  [ "$fail" = 1 ] || { echo "nv: assert_allow accumulator is neutered"; _st=1; }; fail=0
+  assert_deny_reason "nv" "$_allowing"                 >/dev/null
+  [ "$fail" = 1 ] || { echo "nv: assert_deny_reason accumulator is neutered"; _st=1; }; fail=0
+  assert_reason_has  "nv" "$_denying" "ZZZ-NOT-PRESENT" >/dev/null
+  [ "$fail" = 1 ] || { echo "nv: assert_reason_has accumulator is neutered"; _st=1; }; fail=0
+  assert_reason_lacks "nv" "$_denying" "irreversible"   >/dev/null
+  [ "$fail" = 1 ] || { echo "nv: assert_reason_lacks accumulator is neutered"; _st=1; }; fail=0
+
+  fail=$_save
+  [ "$_st" = 0 ] && echo "OK: agent-autonomy selftest — all five accumulators are live"
+  return $_st
+}
+case "${1:-}" in --selftest) selftest; exit $? ;; esac
+
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
 echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
 exit 0

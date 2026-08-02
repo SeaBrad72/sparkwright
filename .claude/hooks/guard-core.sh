@@ -261,18 +261,39 @@ _cpp_match() {
 # --- CP-8c: dev-clone affordance ----------------------------------------------------
 # _resolve_physical "<path>": echo the physical (symlink-resolved) absolute path. Resolves the
 # DEEPEST EXISTING ancestor with `cd … && pwd -P` (collapsing `..`, symlinks, the macOS
-# /tmp->/private/tmp landmine) and re-appends the not-yet-existing tail. `pwd -P` is the one
-# sanctioned subprocess (CP-4 uses it).
+# /tmp->/private/tmp landmine) and re-appends the not-yet-existing tail.
+# SUBPROCESSES: `pwd -P` (CP-4's sanctioned one), plus `readlink` for the leaf loop below and `tr`
+# in _under_temp's folded arm — both added 2026-08-01 by GUARD-PATH-ALIAS-BYPASS. The earlier
+# "`pwd -P` is the one sanctioned subprocess" wording is superseded; leaving it would have been a
+# false certification of the same shape as the cp/hardlink one this slice also corrects. Both new
+# calls fail SAFE: an absent `readlink` returns 127 => `return 1` => callers deny.
+# ⚠️ It resolves the physical PARENT plus a symlink-resolved leaf — it does NOT detect HARDLINKS
+# (a hardlink has no link to follow; see GUARD-CP-HARDLINK-ALIAS).
 _resolve_physical() {
   _rp=$1
   case "$_rp" in /*) : ;; *) _rp="$(pwd)/$_rp" ;; esac
+  # GUARD-PATH-ALIAS-BYPASS (P0): resolve a symlinked LEAF. The ancestor walk below never examines
+  # the final component, so a one-symlink leaf named innocuously reached any target unseen. Bounded
+  # at 64: SYMLOOP_MAX is 32 here, so exhaustion means adversarial, never deep-but-legitimate.
+  # Exit on "still a symlink" rather than on the counter, so a legitimate chain of exactly 64 that
+  # DID resolve is not refused. A relative target resolves against the LINK's own directory; `..`
+  # inside a target is left to `cd -P` and never collapsed textually. Failure => rc 1 => callers deny.
+  _n=0
+  while [ -L "$_rp" ] && [ "$_n" -lt 64 ]; do
+    _t=$(readlink "$_rp") || return 1
+    case "$_t" in /*) _rp=$_t ;; *) _rp="$(dirname "$_rp")/$_t" ;; esac
+    _n=$((_n+1))
+  done
+  [ -L "$_rp" ] && return 1
   [ "$_rp" = / ] && { printf '/'; return 0; }   # degenerate root; avoids a `//` result
   _rpd=$(dirname "$_rp"); _rpb=$(basename "$_rp"); _rps=$_rpb
   while [ ! -d "$_rpd" ]; do
     _rpb=$(basename "$_rpd"); _rpd=$(dirname "$_rpd"); _rps="$_rpb/$_rps"
     [ "$_rpd" = "/" ] && break
   done
-  _rpp=$(CDPATH='' cd "$_rpd" 2>/dev/null && pwd -P) || return 1
+  # `cd` (logical) canonicalises `..` against the path STRING before chdir, so a `..` following a
+  # symlink erases the symlink instead of following it — the original P0. `-P` chdirs physically.
+  _rpp=$(CDPATH='' cd -P "$_rpd" 2>/dev/null && pwd -P) || return 1
   if [ "$_rpp" = / ]; then printf '/%s' "$_rps"; else printf '%s/%s' "$_rpp" "$_rps"; fi
 }
 
@@ -283,6 +304,20 @@ _resolve_physical() {
 _under_temp() {
   case "$1/" in
     /tmp/*|/private/tmp/*|/var/folders/*/T/*|/private/var/folders/*/T/*) return 0 ;;
+  esac
+  # GUARD-UNDER-TEMP-CASE: a case-folded SECOND arm, never a replacement. Folding only the subject
+  # against the list above would make its literal uppercase `T` unmatchable — and since a bare
+  # `mktemp -d` yields /var/folders/…/T/… on macOS, every dev-clone would stop relaxing while Linux
+  # CI (TMPDIR unset => /tmp) stayed green. Arm 1 is byte-identical to before and returns first, so
+  # this can only ever ADD a temp match. The short-circuit keeps the hot path subprocess-free —
+  # but with an EXPLICIT set, not `[A-Z]`: under a UTF-8 locale bash's range collation matches
+  # lowercase too, so `[A-Z]` fires on every path and spawns the very subprocess it exists to avoid.
+  # Measured — bash-as-/bin/sh matched "/tmp/foo"; dash did not. (Line 90 carries the same latent
+  # issue in a colder path; left alone here to keep this slice's diff to its own subject.)
+  case "$1" in *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) : ;; *) return 1 ;; esac
+  _ut=$(printf '%s/' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
+  case "$_ut" in
+    /tmp/*|/private/tmp/*|/var/folders/*/t/*|/private/var/folders/*/t/*) return 0 ;;
   esac
   return 1
 }
@@ -305,6 +340,39 @@ guard_dev_clone_relaxable() {
   _dphys=$(_resolve_physical "$_dp") || return 1
   _drootp=$(_resolve_physical "$_droot") || return 1
   [ -n "$_dphys" ] && [ -n "$_drootp" ] || return 1
+  # GUARD-PATH-ALIAS-BYPASS (P0): this predicate is the one that turns control-plane denies OFF, so
+  # it takes the CONJUNCTION — the LITERAL path must qualify too, not just the resolved one.
+  # Without it, leaf resolution carries an inside-root control-plane path out to temp, all three
+  # resolved-side conditions hold, and DENY flips to ALLOW. $_dp arrives RAW (:303) — absolutise and
+  # collapse `..` (the same fixpoint guard_check_path uses) or relative spellings sail past.
+  # NOT `|| is_control_plane_path "$_dp"`: _cp8c_relax is only read where that is already true, so
+  # the disjunct would be unconditionally true and disable the affordance entirely (measured).
+  _dpa=$_dp
+  case "$_dpa" in /*) : ;; *) _dpa="$(CDPATH='' pwd -P)/$_dpa" ;; esac
+  _dpa=$(printf '%s' "$_dpa" | sed -e 's#//*#/#g' -e 's#/\./#/#g' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta')
+  case "$_drootp" in /) return 1 ;; esac              # degenerate root: `//*` matches nothing
+  case "$_dpa/" in "$_drootp"/*) return 1 ;; esac     # literal inside the root => never relax
+  # The literal must ALSO be under temp. When it is not but the RESOLVED path is, the caller was
+  # addressing a genuine clone through a symlink from outside temp — a legitimate workflow that used
+  # to work. Flag it so guard_check_path can name the real-path remedy instead of falling through to
+  # the generic control-plane reason, whose only signposted escape is the global kill switch.
+  if ! _under_temp "$_dpa"; then
+    # Only promise the real-path remedy when that spelling would GENUINELY relax — i.e. when the
+    # affordance's OTHER conditions already hold: the root must not itself be under temp (condition
+    # 3), the resolved path must be outside the root (condition 2), and must carry no surviving
+    # `..`. Without these the message sends the operator to a spelling that also denies, and THAT
+    # denial's only signpost is the global kill switch — the endorsed-bypass class, one hop out.
+    if _under_temp "$_dphys" && ! _under_temp "$_drootp"; then
+      case "/$_dphys/" in
+        *"/../"*) : ;;
+        *) case "$_dphys/" in
+             "$_drootp"/*) : ;;
+             *) _cp8c_hint=symlinked-clone ;;
+           esac ;;
+      esac
+    fi
+    return 1
+  fi
   case "/$_dphys/" in *"/../"*) return 1 ;; esac
   _under_temp "$_drootp" && return 1          # condition 3: disposable root => affordance off
   case "$_dphys/" in "$_drootp"/*) return 1 ;; esac  # condition 2: must be outside root
@@ -321,14 +389,35 @@ guard_dev_clone_relaxable() {
 guard_check_read() {
   fp=$1
   base=$(basename "$fp" 2>/dev/null || printf '%s' "$fp")
+  # GUARD-PATH-ALIAS-BYPASS (P0): the read half was the variant proven reachable end to end — a
+  # renamed symlink returned a planted secret's contents through the real Read tool. Same union
+  # rule as the write side: allowlist on literal AND resolved; deny on literal OR resolved; a
+  # failure to resolve is itself a denial. The allowlist below short-circuits before everything,
+  # which is exactly why it must take the conjunction rather than either name alone.
+  _rres=''; _rrok=0
+  _rres=$(_resolve_physical "$fp") && _rrok=1 || _rrok=0
+  _rrbase=''; [ "$_rrok" = 1 ] && _rrbase=$(basename "$_rres" 2>/dev/null || printf '%s' "$_rres")
+  if ! selfedit_allowed && [ "$_rrok" = 0 ]; then
+    printf '13: path (%s) could not be resolved - refusing to read a target that cannot be identified.' "$fp"; return 1
+  fi
   case "$base" in
-    .env.example|.env.sample|.env.template|.env.dist) return 0 ;;
+    .env.example|.env.sample|.env.template|.env.dist)
+      case "$_rrbase" in
+        .env.example|.env.sample|.env.template|.env.dist) return 0 ;;
+      esac ;;
   esac
   if ! selfedit_allowed; then
     case "$fp" in
       *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
         printf '13: reading secret material (%s) into context is the read half of exfil (-> model/logs/PR) - human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
     esac
+    # …and the union on the RESOLVED target, so a benign name cannot front a secret file.
+    if [ "$_rrok" = 1 ]; then
+      case "$_rres" in
+        *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
+          printf '13: this path resolves to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_rres"; return 1 ;;
+      esac
+    fi
   fi
   return 0
 }
@@ -909,6 +998,14 @@ _cp8b_control_plane_denied() {
       #        rm/chmod/… mutate their targets in place.
       #    - Only the DESTINATION is a target for cp/install, which copy CONTENT: editing the copy cannot
       #      reach the original, so copying a control-plane file OUT (`cp conformance/x /tmp/b`) is safe.
+      #      ⚠️ NOT TRUE OF EVERY cp/install INVOCATION. Some flags make the destination an ALIAS of
+      #      the source rather than a copy of its content, and this comment asserted otherwise until
+      #      2026-08-01. Same signature error the `ln` note above records — certifying a capability by
+      #      the family it is grouped under rather than by what it does. NOT fixed here: the remedy is
+      #      a command-matrix change with a different blast radius from this file's path work, and it
+      #      is tracked as GUARD-CP-HARDLINK-ALIAS. The flag detail lives on that row, not in this
+      #      file — a guard's own source is read by the agent it denies, so an open hole is described
+      #      here by its shape, not by a recipe.
       mv|rsync|ln|rm|rmdir|shred|truncate|chmod|chown|tee|patch|dd|sed)
         if _cp8b_cp_target_in all "$_seg"; then _cp8b_deny_reason "$_seg"; return 0; fi ;;
       cp|install)
@@ -1239,11 +1336,31 @@ guard_check_path() {
   # behavior (fail-safe).
   _cp8c_root=${2:-}
   _cp8c_relax=0
+  _cp8c_hint=''
   if [ -n "$_cp8c_root" ] && guard_dev_clone_relaxable "$fp" "$_cp8c_root"; then _cp8c_relax=1; fi
   fpn=$(printf '%s' "$fp" | sed -e 's#//*#/#g' -e 's#/\./#/#g' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta')
   base=$(basename "$fp" 2>/dev/null || printf '%s' "$fp")
+  # GUARD-PATH-ALIAS-BYPASS (P0): judge the UNION — literal OR normalised OR RESOLVED. The rc is
+  # CAPTURED, never discarded via `is_control_plane_path "$(_resolve_physical ...)"`: that form drops
+  # the rc, `is_control_plane_path ""` answers ordinary, and every resolution failure becomes a
+  # silent ALLOW. Any failure to resolve is itself a denial (design ceiling 9a).
+  _res=''; _resok=0
+  _res=$(_resolve_physical "$fp") && _resok=1 || _resok=0
+  _rbase=''; [ "$_resok" = 1 ] && _rbase=$(basename "$_res" 2>/dev/null || printf '%s' "$_res")
+  if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && [ "$_resok" = 0 ]; then
+    printf '13: path (%s) could not be resolved - refusing to write to a target that cannot be identified.' "$fp"; return 1
+  fi
   if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && { is_control_plane_path "$fp" || is_control_plane_path "$fpn"; }; then
+    # A dev-clone addressed through a symlink from OUTSIDE temp gets the real remedy, not the kill
+    # switch. Naming KIT_GUARD_SELFEDIT here would tell an operator to disarm the guard globally to
+    # do work the guard is happy to allow by its real path — the endorsed-bypass class.
+    if [ "${_cp8c_hint:-}" = symlinked-clone ]; then
+      printf '%s' '13: this dev-clone was addressed through a symlink from outside the temp root, so the clone affordance does not apply (control-plane integrity). Address it by its real path — `cd <clone> && pwd -P` — and the same edit is allowed.'; return 1
+    fi
     printf '%s' '13: modifying the guard / its config / CI gates is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
+  fi
+  if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && [ "$_resok" = 1 ] && is_control_plane_path "$_res"; then
+    printf '13: this path resolves to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes.' "$_res"; return 1
   fi
   # WS1: validate by basename when the NORMALIZED path has no real parent directory — either it is a
   # bare name, OR it still ESCAPES its root (a leading/unresolved `..` the fixpoint could not consume),
@@ -1272,13 +1389,27 @@ guard_check_path() {
       esac
     fi
   fi
+  # The template allowlist is the SECOND predicate that turns denies off, so it takes the
+  # CONJUNCTION: allow only when the literal AND the resolved basenames are both template names.
+  # Literal-only is a cloak (an alias NAMED .env.example reaching a real .env); resolved-only is a
+  # new fail-open (the common `.env -> .env.example` symlink would flip DENY to ALLOW).
   case "$base" in
-    .env.example|.env.sample|.env.template|.env.dist) return 0 ;;
+    .env.example|.env.sample|.env.template|.env.dist)
+      case "$_rbase" in
+        .env.example|.env.sample|.env.template|.env.dist) return 0 ;;
+      esac ;;
   esac
   case "$fp" in
     *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
       printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1 ;;
   esac
+  # …and the same union on the RESOLVED path, so a benign name cannot front a secret target.
+  if [ "$_resok" = 1 ]; then
+    case "$_res" in
+      *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
+        printf '13: this path resolves to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_res"; return 1 ;;
+    esac
+  fi
   return 0
 }
 

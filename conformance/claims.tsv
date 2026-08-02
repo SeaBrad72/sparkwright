@@ -1,5 +1,6 @@
 # id	claim (what + where stated)	verifier (exit 0 = the claim holds)
 # Control-plane: adding / removing / weakening a claim is a ratified act (claims-registry.sh enforces coverage).
+agent-autonomy-alias	the guard judges the RESOLVED target, not the path string: an Edit/Write/Read reaching a control-plane or secret file through a symlink is refused as if it named that file directly (NOT hardlinks, NOT shell write routes)	sh conformance/agent-autonomy.sh
 badge-version	README version badge == VERSION	sh conformance/badge-version.sh
 conformance-ci-wired	every selftest-capable check is wired into CI	sh conformance/ci-selftest-coverage.sh
 doc-budget	core-3 governing docs within their line budget	sh conformance/doc-budget.sh
