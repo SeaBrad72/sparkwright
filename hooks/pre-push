@@ -3,16 +3,116 @@
 # deny-matrix core and blocks force-push / push-to-main BEFORE the network round-trip.
 # Deliberate override: git push --no-verify. A SPEED BUMP, not a boundary
 # (docs/enterprise/platform-safety-boundary.md). Run `sh hooks/pre-push --selftest` to test.
-# Fail-open-with-warning if the core is missing: a missing optional file must not brick
-# all pushes (the real boundary is platform-owned); it warns loudly instead.
+# Fails CLOSED if the core is missing, unreadable, or does not define the matrix: the
+# push is REFUSED with recovery instructions, never allowed unprotected. A guard that
+# can be disarmed by deleting one file is not a rung anything can be built on; the same
+# core-resolution contract (KIT_GUARD_CORE + a default) in scripts/kit-guard:18-19 has
+# always failed closed.
+# RESIDUAL — arbitrary core CONTENT, including a core that exits during sourcing: that
+# is not reachable by truncation, and it still exits 0 SILENTLY (measured). Core
+# integrity is git's job (a tracked file + review), not this hook's.
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || ROOT=.
 CORE="${KIT_GUARD_CORE:-$ROOT/.claude/hooks/guard-core.sh}"
-if [ ! -f "$CORE" ]; then
-  echo "kit pre-push: guard-core.sh not found ($CORE) — allowing push UNPROTECTED." >&2
-  exit 0
+refuse_no_core() { # reason — refuse the push and name the recovery (never a bypass)
+  # printf, NEVER echo: on dash (Linux CI's /bin/sh) and bash-as-/bin/sh, echo expands
+  # backslash escapes, so a crafted CORE path can INJECT lines into this fail-closed
+  # refusal — including the one string this path must never carry (`--no-verify`) — and
+  # a plain Windows path (C:\nfs\core.sh) mangles it with no attacker at all. Measured.
+  # RESIDUAL, disclosed not hidden (review round 2): CORE is still echoed VERBATIM as
+  # diagnostics — deliberately, since which path failed is the message's most useful fact —
+  # so a caller who sets it may make that substring appear INSIDE the parentheses on the
+  # reason line. What this path guarantees is narrower and is the property that matters:
+  # no forged instruction LINE. Sanitizing CORE would trade the diagnostic for a cosmetic
+  # win against an actor who already has --no-verify, one documented flag away.
+  printf '%s\n' "kit pre-push: $1 ($CORE) — REFUSING the push." >&2
+  printf '%s\n' "  recovery: the core is a tracked file — from the repo root, restore it with" >&2
+  printf '%s\n' "            git checkout HEAD -- .claude/hooks/guard-core.sh" >&2
+  printf '%s\n' "            (if .claude/ is sparse-excluded: git sparse-checkout add .claude)" >&2
+  printf '%s\n' "  or, if this repo is meant to run without the kit guard, uninstall this hook deliberately." >&2
+  exit 1
+}
+if [ ! -f "$CORE" ] || [ ! -r "$CORE" ]; then
+  refuse_no_core "guard-core.sh not found or not readable"
 fi
-# shellcheck disable=SC1090  # dynamic source path; guard check above handles missing
+# shellcheck disable=SC1090  # dynamic source path; readability checked above
 . "$CORE"
+# `command -v guard_check_push >/dev/null` is ALSO satisfied by a PATH BINARY of that
+# name — measured: an empty core + such a binary exiting 0 allowed a push to main. Match
+# the OUTPUT instead: a shell function prints the bare name, a binary prints a path.
+case "$(command -v guard_check_push 2>/dev/null)" in
+  guard_check_push) : ;;
+  *) refuse_no_core "guard-core.sh sourced but defines no guard_check_push function" ;;
+esac
+
+# decl_check_ref — B1: the entry-declaration leg. Runs conformance/loop-state.sh --head against the
+# HEAD of each pushed refs/heads/* line (design Δ1: head-of-ref, not per-commit — identical SHA to
+# what CI grades as the PR head, so drift is impossible by construction). Defined ABOVE the
+# --selftest marker as convention + future-proofing only — this file's path (hooks/pre-push) is NOT
+# a `conformance/[a-z0-9-]+\.sh` token, so non-vacuity.sh's sweep CANNOT reach it regardless of
+# placement (measured; see the row comment in conformance/verify.sh). This leg's real kill-coverage
+# is the selftest's own positive control (a normal branch line must invoke the predicate) plus the
+# discriminating negative cases (D1 skip rules, D2 degradation, D3 verdict handling) below the
+# marker — not the sweep.
+# Observe-only by default; KIT_PUSH_DECL=enforce (exact string) escalates to a refusal. A speed
+# bump, not a boundary — --no-verify, an absent/never-installed hook, a stale installed copy, or an
+# absent predicate script all bypass this leg
+# (docs/architecture/2026-08-05-b1-pre-push-entry-declaration-design.md §7).
+decl_check_ref() { # local_ref local_sha remote_ref remote_sha
+  _decl_local_sha=$2
+  _decl_remote_ref=$3
+  # D1 — dispatch: skip anything that is not a branch update this predicate can grade.
+  case "$_decl_remote_ref" in
+    refs/heads/*) : ;;
+    *) return 0 ;;                                  # tags, notes, etc. — not a branch push
+  esac
+  case "$_decl_local_sha" in
+    *[!0]*) : ;;
+    *) return 0 ;;                                  # all-zero local_sha — a deletion, nothing to grade
+  esac
+  case "$_decl_remote_ref" in
+    refs/heads/main | refs/heads/master) return 0 ;; # Δ2 — trunk squash commits carry no trailers
+  esac
+  # Defense-in-depth: a genuine push local_sha is always a hex object id. Reject (silently skip)
+  # anything else so an option-like value (e.g. a string starting with "-") can never reach the
+  # predicate's argv — belt-and-suspenders alongside D1's own dispatch narrowing above.
+  case "$_decl_local_sha" in
+    *[!0-9a-fA-F]*) return 0 ;;
+  esac
+  # D2 — degradation: an absent/unreadable predicate N/As silently (first-run-green on adopter trees).
+  _decl_predicate="$ROOT/conformance/loop-state.sh"
+  [ -f "$_decl_predicate" ] && [ -r "$_decl_predicate" ] || return 0
+  # Capture stderr only (the predicate's reasons); its stdout success line is not this leg's business.
+  # </dev/null: this runs inside the caller's stdin `while read` loop over the git push protocol
+  # lines. Without isolating the child's stdin, a predicate that reads stdin (deliberately or by
+  # accident) can consume the loop's remaining push-protocol lines before this leg ever returns —
+  # fail-open past the guard leg for every ref-line after the one being graded (measured: SEC
+  # MEDIUM-1, killed by the selftest's stdin-isolation case below).
+  if _decl_out=$(sh "$_decl_predicate" --head "$_decl_local_sha" 2>&1 >/dev/null </dev/null); then
+    return 0                                        # D3 — rc 0: silent pass
+  fi
+  # D3 — nonzero (rc 1 AND rc 2, fail-closed on could-not-evaluate): observe prints and allows;
+  # enforce prints and refuses. Δ3 — the exact string "enforce"; anything else stays observe.
+  if [ "${KIT_PUSH_DECL:-}" = "enforce" ]; then
+    # [-n check] a predicate that fails closed with no stderr (e.g. rc 2, could-not-evaluate,
+    # with nothing printed) must not relay a bare "kit pre-push: " line with no reason on it.
+    if [ -n "$_decl_out" ]; then
+      printf '%s\n' "$_decl_out" | while IFS= read -r _decl_line; do
+        printf 'kit pre-push: %s\n' "$_decl_line" >&2
+      done
+    fi
+    printf 'kit pre-push:   remedy: fix the trailer block on the pushed head (Kit-Row, Kit-Stage,\n' >&2
+    printf 'kit pre-push:            Kit-Class, Kit-Skill) — git commit --amend, then push again.\n' >&2
+    printf '  override (deliberate): git push --no-verify\n' >&2
+    return 1
+  fi
+  if [ -n "$_decl_out" ]; then
+    printf '%s\n' "$_decl_out" | while IFS= read -r _decl_line; do
+      printf 'kit pre-push (observe): %s\n' "$_decl_line" >&2
+    done
+  fi
+  printf 'kit pre-push (observe):   set KIT_PUSH_DECL=enforce to refuse this push instead of observing.\n' >&2
+  return 0
+}
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0
@@ -36,6 +136,208 @@ if [ "${1:-}" = "--selftest" ]; then
   check "new feature branch"  refs/heads/feature/x "$HEAD" "$Z" allow
   check "fast-forward push"   refs/heads/feature/x "$HEAD" "$PREV" allow
   check "force (non-ff) push" refs/heads/feature/x "$PREV" "$HEAD" deny
+  # Load-bearing negatives — the hook must REFUSE when its core cannot be sourced.
+  # Re-invoke THIS file exactly as git does (remote + url in argv, push protocol on
+  # stdin) with a core path that does not exist. rc 0 would mean the guard is disarmed
+  # by deleting one file. The --selftest variant additionally proves the coreless
+  # selftest is no longer vacuously green (it once returned 0 having tested nothing).
+  case "$0" in /*) SELF="$0" ;; *) SELF="$PWD/$0" ;; esac
+  # $0 does NOT always name this file — argv[0] belongs to the CALLER. Measured: read on
+  # stdin (`sh -s -- --selftest < hooks/pre-push`) $0 is "sh", so SELF is $PWD/sh, every
+  # re-invocation below exits 127, and each prints "PASS deny" having executed NOTHING
+  # with the whole selftest green. (A PATH lookup does resolve $0 fully on macOS/dash/
+  # bash — the class is real, that particular form is not the trigger.) Fail loudly.
+  [ -f "$SELF" ] || { echo "FAIL: selftest cannot resolve \$0 (SELF=$SELF)"; fail=1; }
+  assert_refused() { # desc rc output — rc alone is NOT enough: a crashing target (syntax
+    # error before the refusal) also exits non-zero. Assert the REASON, and assert that a
+    # fail-closed refusal never advertises the bypass (design item 1's first real test).
+    if [ "$2" -eq 0 ]; then
+      echo "FAIL (wanted deny): $1"; fail=1
+    elif ! printf '%s' "$3" | grep -q 'REFUSING the push'; then
+      echo "FAIL (non-zero but no refusal message — crashed?): $1"; fail=1
+    elif printf '%s' "$3" | grep -q -e '--no-verify'; then
+      echo "FAIL (fail-closed refusal advertises a bypass): $1"; fail=1
+    else
+      echo "PASS deny: $1"
+    fi
+  }
+  refuses() { # desc arg...  (re-invocation with an absent core must refuse, and say why)
+    desc=$1; shift
+    # the absent path lives in this selftest's OWN disposable dir — a hardcoded /-rooted
+    # probe is writable in a root CI container, and a core there defining guard_check_push
+    # would send the child back into these same cases (unbounded recursion).
+    out=$(KIT_GUARD_CORE="$T/no-such-core" sh "$SELF" "$@" </dev/null 2>&1); rc=$?
+    assert_refused "$desc" "$rc" "$out"
+  }
+  refuses "absent core: push invocation refuses" origin "file:///dev/null"
+  refuses "absent core: --selftest is not vacuously green" --selftest
+  # A readable core defining NO matrix must refuse even when a PATH binary of that name
+  # exists — `command -v` alone accepts the binary and the push to main was allowed.
+  mkdir -p "$T/bin"
+  printf '' > "$T/empty-core"
+  printf '#!/bin/sh\nexit 0\n' > "$T/bin/guard_check_push"
+  chmod +x "$T/bin/guard_check_push"
+  out=$(printf 'refs/heads/main %s refs/heads/main %s\n' "$HEAD" "$Z" \
+        | PATH="$T/bin:$PATH" KIT_GUARD_CORE="$T/empty-core" sh "$SELF" origin "file:///dev/null" 2>&1); rc=$?
+  assert_refused "matrix-less core: a PATH binary named guard_check_push does not satisfy it" "$rc" "$out"
+
+  # ---------------------------------------------------------------------------------------------
+  # B1 — the entry-declaration leg (decl_check_ref). A permissive guard core isolates the guard
+  # leg (always allow) so only decl_check_ref's own dispatch/mode/verdict logic is under test. The
+  # predicate itself is a planted STUB conformance/loop-state.sh inside $T (scripted rc), never the
+  # real script — the real predicate is proven where it lives (loop-state.sh --selftest).
+  # ---------------------------------------------------------------------------------------------
+  DECL_CORE="$T/decl-permissive-core.sh"
+  printf '#!/bin/sh\nguard_check_push() { return 0; }\n' > "$DECL_CORE"
+
+  decl_plant_stub() { # rc [record-file] — a scripted conformance/loop-state.sh stub inside $T
+    mkdir -p "$T/conformance"
+    _dps_rc=$1; _dps_rec=${2:-}
+    {
+      echo '#!/bin/sh'
+      [ -n "$_dps_rec" ] && printf 'echo called >> "%s"\n' "$_dps_rec"
+      echo 'echo "loop-state: stub declaration reason" >&2'
+      echo 'echo "  stub remedy detail" >&2'
+      printf 'exit %s\n' "$_dps_rc"
+    } > "$T/conformance/loop-state.sh"
+    chmod +x "$T/conformance/loop-state.sh"
+  }
+
+  decl_run() { # KIT_PUSH_DECL-value ref-line -> sets decl_out, decl_rc (re-invokes $SELF in $T)
+    decl_out=$(cd "$T" && printf '%s\n' "$2" \
+      | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL="$1" sh "$SELF" 2>&1); decl_rc=$?
+  }
+
+  decl_expect_rc() { # rc want(allow|refuse) desc
+    if [ "$2" = allow ] && [ "$1" -eq 0 ]; then echo "PASS allow: $3"
+    elif [ "$2" = refuse ] && [ "$1" -ne 0 ]; then echo "PASS refuse: $3"
+    else echo "FAIL (wanted $2, rc=$1): $3"; fail=1
+    fi
+  }
+  decl_expect_contains() { # desc needle haystack
+    if printf '%s' "$3" | grep -qF -- "$2"; then echo "PASS contains '$2': $1"
+    else echo "FAIL (missing '$2'): $1"; echo "  got: $3"; fail=1
+    fi
+  }
+  decl_expect_not_invoked() { # desc record-file
+    if [ -f "$2" ]; then echo "FAIL: $1 — the predicate must NOT have been invoked"; fail=1
+    else echo "PASS: $1 — the predicate was not invoked"
+    fi
+  }
+
+  # enforce + rc1 -> REFUSED with the discriminating enforce message.
+  decl_plant_stub 1
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "enforce + failing predicate refuses the push"
+  decl_expect_contains "enforce message uses the enforce prefix" "kit pre-push:" "$decl_out"
+  decl_expect_contains "enforce message names the amend remedy" "amend" "$decl_out"
+  decl_expect_contains "enforce message keeps the --no-verify honesty line" "--no-verify" "$decl_out"
+  # [REV H2] Reason-relay: the stub emits TWO distinct stderr lines; both must survive the relay
+  # loop verbatim. A mutant that deletes the enforce relay loop (while still printing the fixed
+  # remedy/hint lines) passes every assertion above but fails these two.
+  decl_expect_contains "enforce relays the predicate's first reason line" "stub declaration reason" "$decl_out"
+  decl_expect_contains "enforce relays the predicate's second reason line" "stub remedy detail" "$decl_out"
+
+  # observe (default) + rc1 -> ALLOWED, with the observe prefix and the escalation hint.
+  decl_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "observe + failing predicate still allows the push"
+  decl_expect_contains "observe message uses the observe prefix" "kit pre-push (observe):" "$decl_out"
+  decl_expect_contains "observe message hints the enforce dial" "KIT_PUSH_DECL=enforce" "$decl_out"
+  # [REV H2] Same per-line relay proof, observe side (the mutant deletes both loops).
+  decl_expect_contains "observe relays the predicate's first reason line" "stub declaration reason" "$decl_out"
+  decl_expect_contains "observe relays the predicate's second reason line" "stub remedy detail" "$decl_out"
+
+  # [REV H3] rc 2 (could-not-evaluate) must fail CLOSED in enforce mode exactly like rc 1 — the
+  # leg's own comment is "D3 — nonzero (rc 1 AND rc 2 ...)"; a `-eq 1`-only check would silently
+  # allow rc 2 through instead and this case would go red.
+  decl_plant_stub 2
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "enforce + predicate rc 2 (could-not-evaluate) fails closed"
+  decl_expect_contains "rc-2 enforce message uses the enforce prefix" "kit pre-push:" "$decl_out"
+  decl_expect_contains "rc-2 enforce message names the amend remedy" "amend" "$decl_out"
+  decl_expect_contains "rc-2 enforce message keeps the --no-verify honesty line" "--no-verify" "$decl_out"
+
+  # rc 2, observe side — still allows, still prints (same non-zero handling as rc 1).
+  decl_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "observe + predicate rc 2 still allows the push"
+  decl_expect_contains "rc-2 observe message uses the observe prefix" "kit pre-push (observe):" "$decl_out"
+
+  # enforce + rc0 -> allowed, silent.
+  decl_plant_stub 0
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "enforce + passing predicate allows the push"
+  [ -z "$decl_out" ] && echo "PASS: passing predicate is silent" \
+    || { echo "FAIL: passing predicate must be silent, got: $decl_out"; fail=1; }
+
+  # Skip rules (D1) — the predicate must never be invoked on these ref-line shapes. A POSITIVE
+  # control comes first: without it, decl_check_ref always returning early (an always-skip mutant)
+  # would pass every negative below vacuously — same class of trap non-vacuity.sh itself polices.
+  decl_plant_stub 0 "$T/decl-invoked"
+  rm -f "$T/decl-invoked"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  [ -f "$T/decl-invoked" ] && echo "PASS: a normal branch line invokes the predicate (record control)" \
+    || { echo "FAIL: a normal branch line must invoke the predicate (record control)"; fail=1; }
+
+  decl_plant_stub 1 "$T/decl-invoked"
+  rm -f "$T/decl-invoked"
+  decl_run enforce "refs/heads/feature/x $Z refs/heads/feature/x $HEAD"
+  decl_expect_not_invoked "deletion line (zero local_sha)" "$T/decl-invoked"
+
+  rm -f "$T/decl-invoked"
+  decl_run enforce "refs/tags/v1 $HEAD refs/tags/v1 $Z"
+  decl_expect_not_invoked "tag line (remote_ref not refs/heads/*)" "$T/decl-invoked"
+
+  rm -f "$T/decl-invoked"
+  decl_run enforce "refs/heads/main $HEAD refs/heads/main $Z"
+  decl_expect_not_invoked "default-branch line (refs/heads/main)" "$T/decl-invoked"
+
+  rm -f "$T/decl-invoked"
+  decl_run enforce "refs/heads/master $HEAD refs/heads/master $Z"
+  decl_expect_not_invoked "default-branch line (refs/heads/master)" "$T/decl-invoked"
+
+  # Degradation (D2) — an absent predicate script N/As silently, never refuses.
+  # [REV M3] Coverage is ABSENCE-only, deliberately: an unreadable-but-present predicate (e.g.
+  # chmod 000) is NOT exercised here, because a selftest run as root (a normal CI-container
+  # default) ignores file-mode read permission entirely — such a case would false-PASS in that
+  # environment regardless of whether the D2 `[ -r ... ]` leg actually degrades correctly,
+  # which is worse than not having the case (a green that proves nothing). The absent-file path
+  # above is the portable, root-safe member of the same degradation family.
+  rm -f "$T/conformance/loop-state.sh"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "absent predicate script allows the push"
+  [ -z "$decl_out" ] && echo "PASS: absent predicate script is silent" \
+    || { echo "FAIL: absent predicate script must be silent, got: $decl_out"; fail=1; }
+
+  # ---------------------------------------------------------------------------------------------
+  # [SEC MEDIUM-1] stdin isolation — a predicate must not be able to consume subsequent
+  # push-protocol lines from the parent's stdin. Plant a stub that reads (and discards) ALL of
+  # stdin before exiting 1; feed it TWO lines: line 1 a normal feature-branch push (the one this
+  # leg grades), line 2 a push to refs/heads/main that the GUARD leg (guard_check_push, the real
+  # core — not the permissive DECL_CORE) must refuse. KIT_PUSH_DECL is left unset (observe) so the
+  # decl leg itself never forces a refusal — the only way this case can fail closed is if the
+  # guard leg actually sees and evaluates line 2. Without the </dev/null fix, the stub's `cat`
+  # swallows line 2 before the outer while-read loop can read it: the guard leg never runs on the
+  # main-push line, and the whole push is wrongly ALLOWED — fail-open past the guard leg.
+  # ---------------------------------------------------------------------------------------------
+  mkdir -p "$T/conformance"
+  {
+    echo '#!/bin/sh'
+    echo 'cat >/dev/null'
+    echo 'exit 1'
+  } > "$T/conformance/loop-state.sh"
+  chmod +x "$T/conformance/loop-state.sh"
+  stdin_leak_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/main %s refs/heads/main %s\n' \
+      "$HEAD" "$Z" "$HEAD" "$Z" \
+    | KIT_GUARD_CORE="$ROOT/.claude/hooks/guard-core.sh" sh "$SELF" 2>&1)
+  stdin_leak_rc=$?
+  if [ "$stdin_leak_rc" -ne 0 ] && printf '%s' "$stdin_leak_out" | grep -q 'pushing directly to main'; then
+    echo "PASS: a stdin-eating predicate does not swallow the guard leg's own push-to-main line"
+  else
+    echo "FAIL: stdin leak — the guard leg's verdict on the second (main-push) line did not fire (rc=$stdin_leak_rc)"
+    echo "  got: $stdin_leak_out"
+    fail=1
+  fi
+
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi
 
@@ -51,5 +353,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  override (deliberate): git push --no-verify" >&2
     status=1
   fi
+  decl_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
 done
 exit $status

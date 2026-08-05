@@ -20,7 +20,6 @@
 .kit/roster.conf
 AGENTS.md
 CLAUDE.md
-CODEOWNERS
 CODE_OF_CONDUCT.md
 CONTRIBUTING.md
 DEVELOPMENT-PROCESS.md
@@ -80,6 +79,7 @@ conformance/backlog-presence.sh
 conformance/badge-version.sh
 conformance/board-drift.sh
 conformance/branch-protection.sh
+conformance/brownfield-walk.sh
 conformance/build-output-ignored.sh
 conformance/ceremony-binding.sh
 conformance/check-links.sh
@@ -89,6 +89,7 @@ conformance/ci-selftest-coverage.sh
 conformance/claim-gate-counts.sh
 conformance/claims-registry.sh
 conformance/claims.tsv
+conformance/codeowners-export-clean.sh
 conformance/conditional-gates.sh
 conformance/container-supply-chain.sh
 conformance/containment-audit-wired.sh
@@ -258,6 +259,8 @@ conformance/runaway-killswitch-wired.sh
 conformance/runtime-floor-coherent.sh
 conformance/runtime-security.sh
 conformance/script-disclosure.sh
+conformance/secret-scan-wired.sh
+conformance/security-channel-live.sh
 conformance/security-policy.sh
 conformance/shellcheck.sh
 conformance/shim-coverage.sh
@@ -305,6 +308,7 @@ docs/enterprise/data-governance.md
 docs/enterprise/platform-safety-boundary.md
 docs/enterprise/ratification-rbac.md
 docs/enterprise/secrets-at-scale.md
+docs/governance/DECISIONS.md
 docs/governance/promotion-contract.md
 docs/governance/promotion-log.md
 docs/onboarding/first-feature-tdd.md
@@ -340,6 +344,7 @@ docs/operations/review-lane.md
 docs/operations/runaway-killswitch.md
 docs/operations/runtime-guards.md
 docs/operations/secrets-for-ai.md
+docs/operations/security-disclosure-response.md
 docs/operations/security-scanning.md
 docs/operations/separation-of-duties.md
 docs/operations/sod-gate.github.yml

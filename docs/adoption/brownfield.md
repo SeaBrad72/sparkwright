@@ -23,11 +23,13 @@ It must print `guard-wired: OK`. If it FAILs, the guard is not wired — fix the
 
 ## 1. Copy the kit in
 
-Bring these into your repo root (adapt, don't blindly overwrite):
+**Copy the entire `adopter-export.sh` output tree into your repo root, then rename the shipped `CLAUDE.md` → `ENGINEERING-PRINCIPLES.md`.** That one instruction is the durable form. The export tree is exactly what a greenfield adopter starts *from*; copying it whole cannot fall behind as the kit grows new top-level trees. An enumerated "copy these directories" list is what silently drifted out of date and dead-ended real adopters partway through Inception (missing `adapters/`, `hooks/`, `agents/`, `.kit/`, `AGENTS.md`, and the `.claude/` guard-core), so this guide names no such manifest to maintain.
 
-- Governing docs: the kit's principles doc — **the download ships it as `CLAUDE.md`; copy it in and rename it to `ENGINEERING-PRINCIPLES.md` yourself** (the rename only happens automatically in greenfield `incept`, which you don't run here) so it doesn't collide with your project's own root `CLAUDE.md` — plus `DEVELOPMENT-PROCESS.md`, `DEVELOPMENT-STANDARDS.md`, `MAINTAINING.md`.
-- `profiles/`, `conformance/`, `templates/`, `docs/`, `scripts/`.
-- `.github/workflows/ci.yml` (from your chosen `profiles/<stack>/ci.yml`) — **merge** with any existing CI; don't drop your pipeline. *(If you run `incept` in a populated repo, it now **preserves** an existing `ci.yml`/CODEOWNERS — it warns and skips rather than overwriting — but you must still merge the profile's gate-ids into your pipeline by hand.)*
+Obtain the tree with `sh scripts/adopter-export.sh <dest>` (it honors `export-ignore`, so it already excludes maintainer-only scratch), then copy `<dest>/.` into your repo root — **adapt, don't blindly overwrite** your own files. What the tree contains, for orientation only (**examples, not an exhaustive manifest**): the governing docs (`DEVELOPMENT-PROCESS.md`, `DEVELOPMENT-STANDARDS.md`, `MAINTAINING.md`, and the principles doc shipped as `CLAUDE.md`); `profiles/`, `conformance/`, `templates/`, `docs/`, `scripts/`; the runtime + orchestration trees `adapters/`, `agents/`, `hooks/`, `.kit/`, `AGENTS.md`; and `.claude/` (guard + settings + role files).
+
+- **Rename the principles doc.** The export ships it as `CLAUDE.md`; **copy it in and rename it to `ENGINEERING-PRINCIPLES.md` yourself** (the rename only happens automatically in greenfield `incept`, which you don't run here) so it doesn't collide with your project's own root `CLAUDE.md`.
+- **`.claude/` is a MERGE, never a blind overwrite** if your repo already has one — see the next section. (A repo with no `.claude/` simply receives the tree's copy, guard-core and all.)
+- **CI pipeline.** The export intentionally does **not** carry a `ci.yml` (it is maintainer-only, `export-ignore`d), so add `.github/workflows/ci.yml` from your chosen `profiles/<stack>/ci.yml` and **merge** it with any existing CI; don't drop your pipeline. *(If you run `incept` in a populated repo, it now **preserves** an existing `ci.yml`/CODEOWNERS — it warns and skips rather than overwriting — but you must still merge the profile's gate-ids into your pipeline by hand.)*
 
   **Merge the conformance aggregate step into your preserved pipeline.** Because `incept` never wrote its own pipeline over yours, your CI carries no origin marker, so `conformance/verify-enforced-wired.sh` classifies it **ADOPTER-OWNED** and returns **N/A-with-remedy** (a disclosed, unmet merge obligation — never a false failure). To actually enforce the battery, paste the profile's aggregate step — the exact YAML the N/A verdict prints — as the **first** blocking step of your CI job (it is POSIX `sh`, no toolchain, so it fails fast; `[doc]` failures exit 0 by design). On **GitHub Actions**:
 
@@ -44,7 +46,6 @@ Bring these into your repo root (adapt, don't blindly overwrite):
           needs: []
           script: [sh conformance/verify.sh --require]
   ```
-- `.claude/` — **merge, never overwrite** (next section).
 
 If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md` and bring the kit's principles in as `ENGINEERING-PRINCIPLES.md` (the name the kit uses post-Inception).
 
@@ -52,7 +53,7 @@ If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md`
 
 If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks and settings; **add** the kit's guard:
 
-1. Copy `.claude/hooks/guard.sh` into your `.claude/hooks/` (keep your existing hooks), then `chmod +x .claude/hooks/guard.sh`.
+1. Copy **both** `.claude/hooks/guard.sh` **and** `.claude/hooks/guard-core.sh` into your `.claude/hooks/` (keep your existing hooks), then `chmod +x .claude/hooks/guard.sh .claude/hooks/guard-core.sh`. **Both are required:** the runtime guard and the pre-push hook (§3) both *source* `guard-core.sh`, and the hook is **fail-closed** — an installed hook whose core is missing **refuses every push** rather than fail open (the A5 property). Copying `guard.sh` alone leaves the core dependency unmet. *(A whole-tree §1 copy into a repo with no prior `.claude/` already brought both; this step is the merge path for a repo that already has its own `.claude/` you must not overwrite.)*
 2. In your `.claude/settings.json`, **add** the kit's PreToolUse guard hook. **JSON has no duplicate keys** — how you add it depends on what's already there:
 
    **If your `settings.json` has no `hooks` key:** add the whole block.
@@ -93,17 +94,39 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
 > The kit does **not** script this merge: a merge bug could clobber exactly the hooks we're protecting. The merge is human-performed; `guard-wired.sh` verifies the result.
 
+5. **Install the pre-push git hook — a HUMAN step.** `guard-wired: OK` certifies only the `PreToolUse` `guard.sh` rung; it is **blind to the second rung**, the `.git/hooks/pre-push` git hook (tracked as `GUARD-WIRED-BLIND-TO-GIT-HOOK-RUNG` — a brownfield adopter reasonably reads `guard-wired: OK` as full protection, but it covers one of two rungs). Git hooks are **not** version-controlled, so the whole-tree §1 copy brought `hooks/pre-push` (the source) but **not** `.git/hooks/pre-push`. Install it yourself:
+
+   ```sh
+   cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+   ```
+
+   **This is human-only, by design.** An agent seat **cannot** perform it: shell copy/`chmod`/move on hook paths are guard-denied and the agent's file-write tool cannot set mode `755`, so a hook an agent installs is non-executable and **silently ignored by git** (tracked as `AGENT-CANNOT-INSTALL-AN-EXECUTABLE-HOOK`). And `core.hooksPath` will **not** satisfy the Inception gate — `inception-done.sh` hard-codes the literal `.git/hooks/pre-push` path — so redirecting hooks elsewhere leaves the gate failing. Copy the file to that exact path and set the mode.
+
 ## 3. Inception (adapted)
 
-`scripts/incept.sh` is the **greenfield** bootstrap — it renames the kit's root `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps fresh project artifacts, which assumes you started *from* the kit. In a brownfield repo you do the Inception **judgment** steps by hand (`../../START-HERE.md` steps 1–7): write the charter, record the stack as **ADR-000**, instantiate the project `CLAUDE.md` from `../../templates/PROJECT-CLAUDE-TEMPLATE.md`, start `RUNBOOK.md`, pick a backlog backend (`work-tracking/adapters.md`), assign roles.
+`scripts/incept.sh` is the **greenfield** bootstrap — it renames the kit's root `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps fresh project artifacts, which assumes you started *from* the kit. In a brownfield repo you do the Inception **judgment** steps by hand (`../../START-HERE.md` steps 1–7): write the charter, record the stack as **ADR-000**, instantiate the project `CLAUDE.md` from `../../templates/PROJECT-CLAUDE-TEMPLATE.md`, start `RUNBOOK.md`, add a `.env.example` (the gate requires one), pick a backlog backend (`work-tracking/adapters.md`), assign roles. ⚠️ **`../../START-HERE.md` steps 1–7 are the source of truth** — this inline list is orientation, not the manifest (an enumerated list is exactly what drifts, which is why §1 says copy the whole tree).
 
-Then run the gate:
+**Stamp the entry contract — greenfield `incept` does this for you; here you must.** Copy the **§1 Entry contract** section of `ENGINEERING-PRINCIPLES.md` **byte-identical** into the top of your project `CLAUDE.md` (the harness contextFile) and into `AGENTS.md`, then fill the project header fields the template carries — `**Project:**`, `**Intent owner:**`, the backlog backend, and `- **Target harness(es)** (§harness-neutrality): …`. The context-binding checks compare these byte-for-byte, so a paraphrase does not satisfy them.
+
+**Commit the baseline BEFORE running the gate.** The contextFile and the copied-in artifacts must be *tracked* for the gate to see them:
+
+```sh
+git add -A && git commit -m "adopt the kit (brownfield baseline)"
+```
+
+Then run the gate. Run the **surface** check now — it treats an as-yet-unprotected remote as an OUTSTANDING item rather than a hard failure, so you can pass Inception locally and protect `main` next:
+
+```sh
+sh conformance/inception-done.sh --surface
+```
+
+Once you have pushed to a remote and **protected `main`** (or, on a non-GitHub host, recorded the attestation — `vc-hosts.md`), run the strict gate (the default), which additionally requires verified branch protection:
 
 ```sh
 sh conformance/inception-done.sh
 ```
 
-It now checks that the **runtime guard is wired** (not just that `.claude/` exists), so you cannot pass Inception with a dead guard.
+The gate checks that the **runtime guard is wired** — the `PreToolUse` guard **and** the installed `.git/hooks/pre-push` rung from §2 (not just that `.claude/` exists) — so you cannot pass Inception with a dead guard.
 
 ## 4. Residual gaps (be honest about these)
 

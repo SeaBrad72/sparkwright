@@ -241,10 +241,10 @@ check_declaration() {   # $1 = sha
 # exists to protect.
 #
 # $1 is an OPTIONAL fixture listing, and it is reachable ONLY as a function argument from
-# selftest(). There is deliberately NO --changed command-line flag: ceremony-binding gates its
-# fixture flag behind KIT_CB_TEST=1 and honestly records that the enabling half is still
-# environment-borne. A gate that never implements the flag cannot accept an author-supplied one,
-# which closes that residual rather than inheriting it.
+# selftest(). There is deliberately NO --changed command-line flag — and since A4 removed
+# ceremony-binding's (with its env enabler KIT_CB_TEST), NEITHER merge-time gate implements an
+# author-facing fixture flag. A gate that never implements the flag cannot accept an
+# author-supplied one.
 derive_class() {   # [$1 = fixture listing path]
   _ls_out=""
   if [ -n "${1:-}" ]; then

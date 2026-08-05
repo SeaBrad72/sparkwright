@@ -18,7 +18,7 @@
 # own CI (docs/architecture/2026-07-28-waiting-gates-render-as-red-design.md §8.3, §9.3, §9.6).
 # SCOPE: this is the GATE-RUN contract. `--selftest` is NOT part of it — it returns 1 on a genuine
 # suite failure, so routing a selftest rc through the check-run colour map would render a broken test
-# suite as the friendly amber. Arg-parse errors (missing --changed/--scope value, unknown argument, a
+# suite as the friendly amber. Arg-parse errors (missing --scope value, unknown argument, a
 # --scope outside the permitted charset, a universal CB_DESIGN_GLOB) are rc 2, correctly: they are
 # anomalies, not waits.
 #
@@ -68,7 +68,6 @@
 #
 # Usage:
 #   sh conformance/ceremony-binding.sh                 (derive change-set: merge-base HEAD origin/main)
-#   sh conformance/ceremony-binding.sh --changed FILE  (fixture path list; honored ONLY under --selftest)
 #   sh conformance/ceremony-binding.sh --selftest
 #
 # What it changes: nothing — read-only. Reads the working tree, git history, and refs/notes/promotions.
@@ -127,23 +126,24 @@ derive_class() {   # args: [--changed FILE]
   esac
 }
 
-run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none)
+run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient tree); rest: --scope ID | none
+  # $1 is reachable ONLY as a function parameter: selftest() passes a listing in-process, and the
+  # dispatcher at the bottom always passes '' — no command-line flag accepts one. Same shape as
+  # loop-state's derive_class fixture parameter, and for the same reason: a gate that never
+  # implements the flag cannot accept an author-supplied one.
+  # ⚠️ `--changed` WAS that flag and is REMOVED — do not revive it under any spelling or enabling
+  # switch. It was argv-borne but enabled by env KIT_CB_TEST=1, and in production it was parsed,
+  # validated, and silently DISCARDED while the class derived from the AMBIENT tree (T0-03, measured
+  # 2026-08-04: the same command line returned rc 0 or rc 1 flipped solely by the environment).
+  # Removal per docs/architecture/2026-08-04-ceremony-binding-fixture-flag-design.md (option ii-b);
+  # argv `--changed` now falls to the unknown-arg refusal below, rc 2. The env-borne CLASS lives on
+  # in the engine's KIT_OBL_TEST, owned by the boarded OBLIGATION-TESTMODE-ENV-FLAG row.
   # `--base` was removed with the ordering predicate (design §4.4). It existed only to drive the
   # merge-base for the ancestry check; with no ordering there is no base to override.
-  _cb_changed=""; _cb_scope=""
+  _cb_changed="$1"; shift
+  _cb_scope=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      # `--changed` is a FIXTURE flag, honored only when KIT_CB_TEST=1 (set by selftest). The VALUE is
-      # argument-borne, so a caller who controls only the environment cannot redirect the gate — the
-      # fixture path must also arrive on argv, which in CI means editing the `run:` line.
-      # ⚠️ HONEST CORRECTION: the enabling half IS environment-borne, exactly like the engine's
-      # KIT_OBL_TEST. An earlier version of this comment claimed "argument-borne, not
-      # environment-borne", which review measured as false. This inherits OBLIGATION-TESTMODE-ENV-FLAG's
-      # limitation rather than escaping it; that boarded row governs both.
-      --changed)
-        [ $# -ge 2 ] || { echo "ceremony-binding: --changed needs a value" >&2; return 2; }
-        [ "${KIT_CB_TEST:-}" = "1" ] && _cb_changed="$2"
-        shift 2 ;;
       # `--scope` is a PRODUCTION argument, not a fixture flag: it is what BINDS the GO record to THIS
       # change. CI supplies the PR number. Argument-borne per the banked "arguments, not env" ruling.
       --scope)
@@ -504,7 +504,8 @@ run_ceremony_binding() {   # args: forwarded (--changed FILE | --scope ID | none
 selftest() {
   _tmp="$(mktemp -d "${TMPDIR:-/tmp}/ceremony-st.XXXXXX")"
   trap 'rm -rf "$_tmp"' EXIT INT TERM
-  export KIT_CB_TEST=1   # honor the --changed fixture flag only in-test
+  # (The `export KIT_CB_TEST=1` that lived here died with the `--changed` flag it enabled — fixtures
+  # now arrive as run_ceremony_binding's first function parameter, which has no external surface.)
   # PIN THE NOTES REF. Every fixture helper writes `git notes --ref=promotions`, but NOTES_REF is
   # resolved from PROMOTION_NOTES_REF at file scope, so a developer or adopter with that variable
   # exported got 13 red legs — and since this selftest is registered in conformance/verify.sh, a red
@@ -523,7 +524,7 @@ selftest() {
   # LEG 1 (liveness) — an ORDINARY change-set requires nothing: N-A, rc 0.
   _legs=$((_legs+1))   # leg1
   printf 'docs/x.md\n' > "$_tmp/changed-ordinary"
-  if run_ceremony_binding --changed "$_tmp/changed-ordinary" --scope PR-1 >/dev/null 2>&1; then
+  if run_ceremony_binding "$_tmp/changed-ordinary" --scope PR-1 >/dev/null 2>&1; then
     echo "PASS leg1: ordinary change-set -> N-A rc 0"
   else
     echo "FAIL leg1: ordinary change-set should be N-A rc 0"; _fails=$((_fails+1))
@@ -548,10 +549,48 @@ selftest() {
   # which is a normal stage of healthy work, not a broken build.
   _expect_fail leg2 "$_tmp/f2" "no '--gate design' record was found" "control-plane with no GO record" 1
 
+  # LEG 2b (A4 LOAD-BEARING NEGATIVE #1, T0-03) — the PRODUCTION surface must REFUSE `--changed`.
+  # The flag used to be parsed, validated, and silently DISCARDED unless env KIT_CB_TEST=1: an
+  # identical command line derived its class from the AMBIENT tree and waved a disagreeing listing
+  # through green (measured 2026-08-04). Now no code path reads the flag — argv `--changed` falls to
+  # the unknown-arg refusal, rc 2. Asserts rc AND the named refusal AND that the message advertises
+  # no bypass and no test switch: an error stream is an instruction stream.
+  _legs=$((_legs+1))   # leg2b
+  _out2b="$( sh "$0" --changed "$_tmp/changed-cp" --scope PR-1 2>&1 )" && _rc2b=0 || _rc2b=$?
+  case "$_rc2b:$_out2b" in
+    2:*"unknown arg '--changed'"*)
+      case "$_out2b" in
+        *KIT_CB_TEST*|*selftest*)
+          echo "FAIL leg2b: the refusal must advertise no bypass or test switch, got: $_out2b"
+          _fails=$((_fails+1)) ;;
+        *) echo "PASS leg2b: production --changed -> rc 2 named refusal, advertising nothing" ;;
+      esac ;;
+    *) echo "FAIL leg2b: production --changed must be REFUSED rc 2 naming the arg, got rc=$_rc2b: $_out2b"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG 2c (A4 LOAD-BEARING NEGATIVE #2) — KIT_CB_TEST in the environment is DEAD, not dormant: the
+  # SAME command line must produce the IDENTICAL verdict (rc and text) with and without it. Under
+  # the removed machinery the env var alone flipped the verdict — fixture honored versus silently
+  # discarded — which is the env-borne shape the kit has banked as the weaker one
+  # (OBLIGATION-TESTMODE-ENV-FLAG). That row still owns the engine's KIT_OBL_TEST; this leg pins
+  # ceremony-binding's own instance shut.
+  _legs=$((_legs+1))   # leg2c
+  _out2c_off="$( KIT_CB_TEST='' sh "$0" --changed "$_tmp/changed-cp" --scope PR-1 2>&1 )" \
+    && _rc2c_off=0 || _rc2c_off=$?
+  _out2c_on="$( KIT_CB_TEST=1 sh "$0" --changed "$_tmp/changed-cp" --scope PR-1 2>&1 )" \
+    && _rc2c_on=0 || _rc2c_on=$?
+  if [ "$_rc2c_off" = "$_rc2c_on" ] && [ "$_out2c_off" = "$_out2c_on" ]; then
+    echo "PASS leg2c: KIT_CB_TEST=1 changes no verdict (env var dead: rc $_rc2c_on both ways)"
+  else
+    echo "FAIL leg2c: KIT_CB_TEST=1 CHANGED the verdict (rc $_rc2c_off -> $_rc2c_on) — the env var is alive"
+    _fails=$((_fails+1))
+  fi
+
   # LEG 3 (fail-closed) — an UNDERIVABLE change-class must FAIL, never fall through to `ordinary`.
   #
   # ⚠️ THIS LEG WAS MIS-SPECIFIED ON FIRST WRITE AND THE CORRECTION IS THE POINT. The obvious fixture —
-  # `--changed <nonexistent-file>` — does NOT produce an underivable class: promotion-readiness.sh
+  # a listing path that does not exist — does NOT produce an underivable class: promotion-readiness.sh
   # fail-safes an unreadable change-set to `control-plane` (measured: rc 0, output `control-plane`).
   # So that fixture would have FAILed for LEG 2's reason (no GO record) while claiming to prove
   # fail-closed derivation — a TAUTOLOGICAL DUPLICATE of leg 2 that leaves derive_class's `return 1`
@@ -561,13 +600,13 @@ selftest() {
   _legs=$((_legs+1))   # leg3
   _nodir="$_tmp/no-authority"
   mkdir -p "$_nodir/conformance"
-  _leg3_out="$( DIR="$_nodir" run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
+  _leg3_out="$( DIR="$_nodir" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
   # ★ rc ASSERTED TOO (WAITING-GATES-RENDER-AS-RED). This is the ONE negative leg that does not route
   # through _expect_fail, so it was the ONE defect path the partition's rc default did not cover —
   # review mutated this branch 2 -> 1 and the whole suite stayed GREEN, which would have rendered an
   # UNDERIVABLE change-class (a gate that evaluated NOTHING) as the friendly waiting yellow. §8.1's
   # table rules that state RED. Text alone could not see it; text AND rc can.
-  ( DIR="$_nodir" run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+  ( DIR="$_nodir" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
     && _rc3=0 || _rc3=$?
   case "$_rc3:$_leg3_out" in
     2:*UNDERIVABLE*) echo "PASS leg3: authority unavailable -> rc 2 (anomaly), verdict names UNDERIVABLE" ;;
@@ -654,7 +693,7 @@ selftest() {
   # specific verdict text" false in CHANGELOG.md and conformance/README.md. Fifth vacuous leg in this
   # slice; the other four were caught the same way.
   _legs=$((_legs+1))   # leg13b
-  _out13b="$( run_ceremony_binding --changed "$_tmp/changed-cp" \
+  _out13b="$( run_ceremony_binding "$_tmp/changed-cp" \
                 --scope "$(printf 'PR-9\ngate: design')" 2>&1 || true )"
   case "$_out13b" in
     *"may contain only"*) echo "PASS leg13b: multi-line --scope -> refused at the boundary" ;;
@@ -670,8 +709,8 @@ selftest() {
   # has not recorded the GO yet", so an operator waits patiently for a gate that evaluated nothing.
   # Asserts rc AND verdict text together: rc alone cannot tell this refusal from any other.
   _legs=$((_legs+1))   # leg13c
-  _out13c="$( cd "$_tmp/f2" && run_ceremony_binding --changed "$_tmp/changed-cp" 2>&1 || true )"
-  ( cd "$_tmp/f2" && run_ceremony_binding --changed "$_tmp/changed-cp" ) >/dev/null 2>&1 \
+  _out13c="$( cd "$_tmp/f2" && run_ceremony_binding "$_tmp/changed-cp" 2>&1 || true )"
+  ( cd "$_tmp/f2" && run_ceremony_binding "$_tmp/changed-cp" ) >/dev/null 2>&1 \
     && _rc13c=0 || _rc13c=$?
   case "$_rc13c:$_out13c" in
     2:*"no --scope supplied"*) echo "PASS leg13c: absent --scope -> rc 2 (anomaly), naming the refusal" ;;
@@ -704,7 +743,7 @@ selftest() {
   _expect_fail leg19c "$_tmp/f19c" "must be a hex object name" "symbolic approved-sha (HEAD)"
 
   _asha_override=SHORT _mkfix "$_tmp/f19b" design "docs/architecture/d-design.md" real
-  if ( cd "$_tmp/f19b" && run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1; then
+  if ( cd "$_tmp/f19b" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1; then
     echo "PASS leg19b: abbreviated approved-sha -> PASS (normalised before comparison)"
   else
     echo "FAIL leg19b: an abbreviated approved-sha must not false-RED a compliant record"
@@ -751,7 +790,7 @@ selftest() {
   _legs=$((_legs+1))   # leg12
   printf '%s\n' 'docs/architecture/x-design.md' 'docs/plans/x-plan.md' VERSION CHANGELOG.md README.md \
     BACKLOG.md > "$_tmp/changed-ceremony"
-  if run_ceremony_binding --changed "$_tmp/changed-ceremony" --scope PR-1 >/dev/null 2>&1; then
+  if run_ceremony_binding "$_tmp/changed-ceremony" --scope PR-1 >/dev/null 2>&1; then
     echo "PASS leg12: ceremony + version-finishing only -> N-A (no deadlock, no exemption needed)"
   else
     echo "FAIL leg12: a ceremony-only change-set should be N-A"; _fails=$((_fails+1))
@@ -772,10 +811,10 @@ selftest() {
 # is how two vacuous legs got written in this very file before this helper existed.
 _expect_fail() {
   _ln="$1"; _fd="$2"; _exp="$3"; _desc="$4"; _exp_rc="${5:-2}"; _legs=$((_legs+1))
-  _out="$( cd "$_fd" && run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
+  _out="$( cd "$_fd" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
   # Capture the rc, guarded: a bare call would abort the whole selftest under `set -e`. The
   # `&& x=0 || x=$?` form is the file's existing idiom for this.
-  ( cd "$_fd" && run_ceremony_binding --changed "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+  ( cd "$_fd" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
     && _got_rc=0 || _got_rc=$?
   if [ "$_got_rc" = 0 ]; then
     echo "FAIL $_ln: $_desc should FAIL but PASSed"; _fails=$((_fails+1)); return 0
@@ -917,5 +956,7 @@ _mkfix() {
 
 case "${1:-}" in
   --selftest) selftest ;;
-  *) run_ceremony_binding "$@" ;;
+  # The literal '' is the fixture parameter: production NEVER supplies a listing — the class always
+  # derives from the ambient tree. Only selftest()'s in-process calls pass a real path.
+  *) run_ceremony_binding '' "$@" ;;
 esac

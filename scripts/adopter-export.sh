@@ -212,6 +212,35 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
     # (This awk RUNS at export time on the temp export file $_cm — never on kit source.)
     awk 'NF==0{b=1;next} {if(n++ && b) print ""; b=0; print}' "$_cm" > "$_cm.$$.ws" && mv "$_cm.$$.ws" "$_cm"
   fi
+  # --- A6: carve the kit's maintainer-only `.gitattributes` export-ignore rules out of the EXPORT ---
+  # The kit's root .gitattributes export-ignores its OWN maintainer-only files (ci.yml, ratification.yml,
+  # docs/architecture/, CHANGELOG.md, BACKLOG.md, the governance meta-control-log, ...) from `git archive`.
+  # Shipped verbatim, that file makes the ADOPTER's `git archive HEAD` silently DROP the very files incept
+  # installs (their CI workflows + ADRs) plus their own CHANGELOG / backlog / governance log — the adopter's
+  # archive loses the adopter's work. Every kit entry is `export-ignore` (no eol/text/diff attribute), so
+  # replacing the file loses ZERO mechanical function. Replace the kit-OWN file with a self-documenting stub
+  # (design 2026-08-04-gitattributes-inheritance, option B + stub). MARKER-GUARDED + idempotent: only a file
+  # whose FIRST line is the kit marker is replaced — an already-stubbed file (export-of-an-export, the
+  # block-(g) fixpoint) or an adopter's own .gitattributes is left byte-identical, so export(export(X)) holds.
+  # (A6's shipped state is a byte-identical kit file, so a whole-file replace of the kit-own file is the
+  # simplest correct carve; a brownfield adopter who CONCATENATED their lines under the kit block owns that
+  # bespoke merge — routed to ADOPTER-EXPORT-CARVES-FOREIGN-TREES, out of A6 scope.) Mutates ONLY the
+  # staging copy $_dest/.gitattributes; the kit's own file is NEVER touched.
+  _ga="$_dest/.gitattributes"
+  if [ -f "$_ga" ]; then
+    IFS= read -r _ga_first < "$_ga" || _ga_first=''
+    case "$_ga_first" in
+      '# Maintainer-only paths excluded from'*)
+        {
+          printf '# .gitattributes — an adopter distribution intentionally carries NO export-ignore rules.\n'
+          printf '# The upstream kit export-ignores its OWN maintainer-only files from `git archive`; those\n'
+          printf '# rules were carved out here (scripts/adopter-export.sh) so YOUR `git archive` KEEPS your\n'
+          printf '# work — your CI workflows, ADRs, CHANGELOG, backlog and governance log ship, not vanish.\n'
+          printf '# Add your own attributes (text / eol / linguist / merge) below as your project needs them.\n'
+        } > "$_ga.$$.a6" && mv "$_ga.$$.a6" "$_ga"
+        ;;
+    esac
+  fi
   _pruned=0
   if [ -n "$_prof" ]; then
     for _p in $(known_profiles); do
@@ -381,6 +410,64 @@ if [ "${1:-}" = "--selftest" ]; then
       echo "FAIL: the retry is wedged — a failed export blocked a later good one (atomicity broken)"; fail=1
     fi
   fi
+  # --- A6: end-to-end archive-retention lock (design 2026-08-04-gitattributes-inheritance, "The lock").
+  # The property that matters is NOT "the file has certain bytes" but "the ADOPTER's git archive keeps the
+  # ADOPTER's work". Real export -> real incept -> add adopter files -> commit -> `git archive HEAD` MUST
+  # retain all 7 collision paths: incept's own CI workflows + ADR-000 + the stamped backlog (the files the
+  # kit's .gitattributes export-ignores AND incept installs), plus adopter-added ADR-001, CHANGELOG, and
+  # the governance meta-control-log. Load-bearing negative: replanting the kit's export-ignore
+  # .gitattributes into the same tree MUST drop those paths (proves the check has teeth + that the CARVE
+  # is what retains them). This leg drives real incept/export from the kit's .git (ratification-parity
+  # precedent); it is wired into CI by scripts/adopter-export.sh --selftest (ci.yml), enforced present by
+  # conformance/ci-selftest-coverage.sh — no new claim id.
+  # HONEST CEILING: this leg is NOT reached by the non-vacuity mutation sweep — target_set() greps
+  # `conformance/*.sh` control checks only, so `non-vacuity.sh --only adopter-export` exits 2 (no match).
+  # ci-selftest-coverage proves the selftest RUNS, not that any leg is non-vacuous, so a future edit
+  # neutering the carve-match or the replant would keep CI green. Teeth here are this --selftest leg +
+  # hand mutation-testing (both legs driven RED at build) — weaker than the sweep, and named as such
+  # (same ceiling the kit records for the kit-base / .kit-manifest locks).
+  _a6_targets='.github/workflows/ci.yml .github/workflows/ratification.yml docs/architecture/ADR-000-stack.md docs/architecture/ADR-001-x.md CHANGELOG.md BACKLOG.md docs/governance/meta-control-log.md'
+  # _a6_dropped <incepted+committed tree> : echo each target path NOT in `git archive HEAD` (empty = all kept)
+  _a6_dropped() {
+    _al=$( ( cd "$1" && git archive HEAD 2>/dev/null | tar -t 2>/dev/null ) )
+    for _p in $_a6_targets; do
+      printf '%s\n' "$_al" | grep -qxF "$_p" || printf '%s\n' "$_p"
+    done
+  }
+  # _a6_build_adopter <tree> : incept the exported tree in place, add the adopter files, git-init + commit.
+  _a6_build_adopter() {
+    ( cd "$1" && sh scripts/incept.sh --name A6Retain --intent-owner probe \
+        --stack typescript-node --backlog md --ci github --noninteractive >/dev/null 2>&1 ) || return 1
+    _a6_gov="docs/governance"; _a6_mcl="$_a6_gov/meta-control-log.md"
+    ( cd "$1" \
+        && printf '# ADR-001\n' > docs/architecture/ADR-001-x.md \
+        && printf '# Changelog\n' > CHANGELOG.md \
+        && mkdir -p "$_a6_gov" && printf 'log\n' > "$_a6_mcl" \
+        && git init -q && git add -A \
+        && git -c gc.auto=0 -c user.email=t@kit -c user.name=t commit -qm adopter >/dev/null 2>&1 ) || return 1
+  }
+  _a6d=$(mktemp -d); _a6exp="$_a6d/exp"
+  if do_export "$_a6exp" typescript-node >/dev/null 2>&1 && _a6_build_adopter "$_a6exp"; then
+    _a6_miss=$(_a6_dropped "$_a6exp")
+    if [ -z "$_a6_miss" ]; then
+      echo "PASS: A6 — the adopter's git archive keeps all 7 target paths (the carve retains the adopter's work)"
+    else
+      echo "FAIL: A6 — the adopter's git archive DROPPED: $(printf '%s' "$_a6_miss" | tr '\n' ' ')"; fail=1
+    fi
+    # Load-bearing negative: replant the kit's export-ignore .gitattributes, recommit, re-archive -> the
+    # target paths MUST drop again. If they do not, the retention check is vacuous.
+    cp "$ROOT/.gitattributes" "$_a6exp/.gitattributes"
+    ( cd "$_a6exp" && git add -A && git -c gc.auto=0 -c user.email=t@kit -c user.name=t commit -qm replant >/dev/null 2>&1 ) || true
+    _a6_miss2=$(_a6_dropped "$_a6exp")
+    if [ -n "$_a6_miss2" ]; then
+      echo "PASS: A6 negative — replanting the kit's export-ignore .gitattributes drops target paths (retention check is non-vacuous)"
+    else
+      echo "FAIL: A6 negative — kit export-ignore .gitattributes dropped NO target path (retention check is vacuous)"; fail=1
+    fi
+  else
+    echo "FAIL: A6 — could not build the export/incept fixture for the archive-retention lock"; fail=1
+  fi
+  rm -rf "$_a6d"
   rm -rf "$_t"
   [ "$fail" -eq 0 ] && { echo "OK: adopter-export selftest"; exit 0; } || { echo "FAIL: adopter-export selftest"; exit 1; }
 fi

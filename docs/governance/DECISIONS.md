@@ -1,0 +1,325 @@
+# The decision record
+
+**Status:** split — **§2.6 is owner-ratified in-session (2026-08-04) and AUTHORITATIVE.** §2.1–§2.5's
+damage narratives are verified; **§3's recovered entries remain ⚠️ DRAFT, awaiting owner review.**
+**Why it exists:** see §0. **How to use it:** see §1.
+
+---
+
+## 0. Why this file exists
+
+On 2026-08-02 this project wrote, in commit `8d4e561`:
+
+> **"A ruling that lives only in a memory file is not an artifact: if that memory is lost, or a
+> different agent or human picks the initiative up, Phase 2 proceeds without the constraints that
+> actually govern it."**
+
+That commit then recorded **four** rulings (R-A…R-D) which had been living only in agent memory — and
+stopped there. The class was never closed. Within 48 hours the same failure recurred twice, and both
+recurrences are proven below (§2.1, §2.2).
+
+**The diagnosis, stated once:** every artifact this project produces records **conclusions** and
+discards the **decision record** — who decided, when, why, what it supersedes, and what would reverse
+it. Conclusions stripped of their reasoning read as confident, cannot be defended when challenged,
+and get silently re-derived by the next session. The owner becomes the only durable store, and every
+decision has to route through their memory.
+
+**Four mechanisms in this kit already mandate recording decisions. None is enforced:**
+
+| mechanism | mandated by | measured state 2026-08-04 |
+|---|---|---|
+| ADRs | `CLAUDE.md:112` (Definition of Done) | **2 in the repo** — `docs/ADR-000-EXAMPLE.md` (a template) and `docs/architecture/ADR-000-stack.md`. Zero for anything decided in the last two weeks. |
+| `--basis` on GO records | `scripts/promotion-verify.sh:151` | optional; `[ -n "$basis" ] \|\| basis="(none recorded)"` |
+| The §9.2 amendment procedure | `docs/architecture/2026-08-03-kit-hardening-and-loop-design.md:866` | **violated by the document that created it** (§2.1) |
+| ADR revision on supersession | `DEVELOPMENT-PROCESS.md:424` | nothing checks it |
+
+This file is not a fifth mechanism. It is the **index those four point into** — the single answer to
+*"what was already decided about X?"*, which is the question nobody could answer.
+
+---
+
+## 1. How to use it
+
+- **Before proposing anything that reverses, deletes, defers, or re-sequences work**, search this file.
+- **Every entry carries a verbatim quote and a `file:line` or commit SHA**, so any row can be
+  spot-checked in seconds. A row you cannot verify from its citation is a defect — report it.
+- **`REVISIT-CONDITION` is load-bearing.** A decision with an unmet condition is not available to be
+  scheduled. Scheduling it anyway is the `MC-CADENCE-1` error (§2.3).
+- **Reversing a decision requires a new entry that names the one it overturns**, per the amendment
+  procedure at `2026-08-03-kit-hardening-and-loop-design.md:874` — *"Silent contradiction is rejected."*
+
+**Verification status:** entries marked ✅ were re-verified first-hand against the cited line on
+2026-08-04. Unmarked entries were extracted by dispatched readers; their quotes and citations are
+recorded exactly as found and have **not** been individually re-run. Do not read an unmarked entry as
+personally confirmed — that distinction is this project's most expensive recorded lesson.
+
+---
+
+## 2. ⛔ THE DAMAGE — decisions that were lost, reversed, or dropped WITHOUT RECORD
+
+**This is the actionable section.** The ~120 entries in §3 are recorded somewhere and merely needed
+indexing. These are the ones that went missing, and each one cost real work.
+
+### 2.1 ✅ `phase-gate.sh` — a ruling reversed silently, in a document that forbids silent reversal
+
+**2026-08-02**, `docs/architecture/2026-08-02-loop-restated-design.md:1775`:
+
+> **R-AA — `phase-gate.sh` is unwired, not inert**, and after §18.1's correction **half of it already
+> refuses**. **Not a deletion candidate**; wire/rewrite/retire is a Part III call.
+
+**2026-08-03**, `docs/architecture/2026-08-03-kit-hardening-and-loop-design.md:843` — the next day's
+design, listing what survives:
+
+> **What carries forward unchanged:** … **R-X–R-AA (deletion dispositions)** …
+
+**Same document, `:900`** — 57 lines later:
+
+> **`conformance/phase-gate.sh`** … **DELETE**
+
+**Same document, `:874`** — in between:
+
+> A superseding or amending design **names the artifact it supersedes and the specific rulings it
+> overturns**, each with the evidence that overturns it. **Silent contradiction is rejected.**
+
+⇒ The design **declared R-AA intact**, **deleted what R-AA protected**, and **wrote the rule against
+doing that** — one file, one day.
+
+⛔ **THE AUTHORIZING RULING IS NOT IN THE REPOSITORY.** Two independent sweeps — one over all of
+`docs/architecture/` + `docs/plans/` + `docs/governance/`, one over `BACKLOG.md` + `CHANGELOG.md` +
+`SPARKWRIGHT-CONSOLIDATED-BACKLOG.md` + `git log` — both returned **NOT FOUND**. `grep -rli "good
+stuff" docs/` returns nothing. `grep -rniF "recommend delete"` across every `.md` returns zero.
+
+**The decision was real** — the owner recalls the conversation, was reluctant, and agreed; the reason
+recorded in agent memory is *"We don't want garbage, we want good stuff."* It exists in the owner's
+memory and in a session memory file. **It exists nowhere in this repository.**
+
+✅ **RESOLVED 2026-08-04 — see §2.6 `D-240804-1`.** The deletion now carries a recorded ruling made on
+presented evidence, superseding R-AA by name. No re-litigation is needed or permitted without a new
+entry overturning `D-240804-1`.
+
+### 2.2 ✅ `CITATION-LIVE` — an owner green-light dropped from both artifacts
+
+**2026-08-02**, `BACKLOG.md`, Ready row `CITATION-LIVE` (cited by row id per standing doctrine — board line numbers rot):
+
+> 🟢 **GREEN-LIT FIRST SLICE** *(owner-ratified 2026-08-02 — still NOT built until charter Phases 1–3
+> complete)* `CITATION-LIVE` — board rows and design docs cite `file:line` as evidence, and those
+> citations rot silently
+
+**Measured 2026-08-04:** `grep -c "CITATION-LIVE"` → **0** in the design of record, **0** in the plan
+of record. The slice the owner green-lit as *first* fell out of both artifacts with no disposition.
+
+✅ **RESOLVED 2026-08-04 — see §2.6 `D-240804-2`.** The green-light stands; it sits in Phase C
+(honesty) of the recovery plan, resolves-variant scope.
+
+### 2.3 `MC-CADENCE-1` — a conditional deferral scheduled while its condition is unmet
+
+**2026-07-26**, `BACKLOG.md`, the routing-ledger ruling above row `MC-CADENCE-1`:
+
+> *"Defer MC-CADENCE-1 until `REQUIRED-CONTEXTS-AS-CODE` ships, because binding another required
+> context by hand is the problem we're removing. Schedule MC-CADENCE-2 into Phase B."*
+
+Boarded (Backlog-unrefined, row `MC-CADENCE-1`) as ⏸️ **DEFERRED**, with *"⚠️ Serial deferral is capped (≥2 consecutive `DEFERRED` →
+OVERDUE), so this ruling cannot be renewed silently."*
+
+**Measured 2026-08-04:** ✅ `grep -c "REQUIRED-CONTEXTS-AS-CODE"` in the plan of record → **0**. The
+release condition does not exist as a unit anywhere in the plan, while `T4-07` schedules work in the
+deferred area.
+
+⚠️ **NOTE — corrected 2026-08-04:** an earlier reading of this called `T4-07` a direct override. On
+examination that is **overstated**: running the overdue panel is not blocked by the deferral, which
+concerns *binding* it as a required context. The genuine gap is that `REQUIRED-CONTEXTS-AS-CODE` — the
+named precondition — has no unit. Recorded here rather than quietly dropped.
+
+### 2.4 Rulings that exist ONLY in commit messages
+
+The highest-loss category, because nobody greps commit messages:
+
+| ruling | commit | recovered? |
+|---|---|---|
+| R-A / R-B / R-C / R-D — the four Phase 2 governing rulings | ✅ `8d4e561` | surfaced into the charter §1.5.2 **by that commit** — the one time the class was closed |
+| Design item 7 (derive mechanisms from the end-to-end operator walkthrough; untraceable mechanism = deletion candidate) + audit scope settled as the whole loop | `655a709` | ⚠️ **doc status unconfirmed** |
+| The five Phase-2 design objectives + the friction test + cycles-per-unit-of-work as a metric | `6c23055` | ⚠️ **doc status unconfirmed** |
+
+### 2.5 Decisions with no owner attribution, presented as settled
+
+Found in the design of record, written as rulings but carrying **no owner marker**:
+
+- **Environments — static tiers vs ephemeral** (`2026-08-03-kit-hardening-and-loop-design.md:397`,
+  *"Both models stay first-class"*). Session memory records an owner ruling on this; the document does
+  not attribute one.
+- **"Shrink the surface, do not rewrite it"** (`:1100`) — titled *"The ruling"*, authored by the design.
+- **The §9.2 amendment procedure itself** (`:866`) — design-established, never owner-ratified.
+- **WIP=1 / drift budget / declared scope** (plan `:76`) — three interim controls with a stated
+  expiry, unattributed. The plan itself flags them: *"These are rules, and R7 says a rule the agent
+  follows is not a remedy."*
+- **The retro skill** — no standalone ruling found; only the general D-6 ruling at `:416`
+  (*"There's a skill for everything in this kit. If there's not a skill for something, we should be
+  adding it."*).
+
+✅ **RESOLVED 2026-08-04 — see §2.6 `D-240804-6`.** All five confirmed by the owner, en bloc, on
+presented evidence.
+
+### 2.6 ✅ Rulings entered live, 2026-08-04 — at the moment they were made, not recovered later
+
+*Ratified by the owner in-session on presented evidence. This section is the cure practiced: each entry
+names what it supersedes and what would reverse it.*
+
+**`D-240804-1` · deletion · `conformance/phase-gate.sh` is DELETED, references cleaned in the same
+slice.** Evidence presented at ratification: 6,012 lines from a single churn-period commit (`d347fd4`,
+2026-07-29, PR #457); zero wired callers (`--decide` invoked nowhere executable); its own header
+concedes it is unreachable in practice; `pg_validate_path` refuses absolute paths rc 2 = **fail-open**
+while Claude Code's Edit/Write pass absolute paths by tool contract, so naive wiring is silently inert;
+measured latency ~2× the per-Edit budget; its intent — edit-time stage refusal — is served by the
+recovery plan's pre-push rung. **SUPERSEDES `R-AA`** (`2026-08-02-loop-restated-design.md:1775`), named
+per the amendment procedure; the 2026-08-03 silent reversal (§2.1) hereby gains the recorded authority
+it lacked. Execution rides the recovery plan; the seven live references (claims row, two `verify.sh`
+control rows, a CI step, documented lines) are removed in the deleting slice, no claim silently dropped.
+**REVISIT-CONDITION:** none.
+
+**`D-240804-2` · greenlight · `CITATION-LIVE` stands, scheduled Phase C of the recovery plan.**
+Resolves-variant scope (cited file resolves + line within EOF + non-blank; 17 measured decayed citations
+must FAIL, a live one must PASS, a deleted-file citation must FAIL rather than skip). **REVISIT-CONDITION:**
+the full semantic variant ("the line still says what the row claims") waits on a citation-format
+decision — unchanged from the board row.
+
+**`D-240804-3` · supersession · The 2026-08-03 design + 103-unit plan are CLOSED AS A PROGRAM.** They
+remain the doctrine and evidence record (the §1 diagnosis, D-1…D-7, and the review rounds keep their
+standing); they are no longer the plan of record and no unit is executed from them as such. The plan of
+record is the **recovery plan**: Phase A stop-the-bleeding → Phase B front-half spine shipping to kit
+**and** adopters → Phase C honesty essentials → joint owner+agent re-triage of all backlogs toward
+RC → V1 → V2. Shape owner-ratified 2026-08-04. **SUPERSEDES** the plan-of-record status of
+`docs/plans/2026-08-03-v1-plan-of-record.md` (the `V1-HARDENING-PLAN-OF-RECORD` board row is re-pointed
+in Phase A). **REVISIT-CONDITION:** parked units re-enter only through the joint re-triage.
+
+**`D-240804-4` · ruling · Front-half enforcement is for EVERYONE building with the kit** — the kit's own
+development and adopters alike; dogfooding parity is the intent (owner: *"what we live with here should
+be the user experience that an adopter has"*). Consequence: the Phase B spine ships to adopters via
+`incept` in the same phase, never as a follow-up — the loop gates being kit-CI-only is a defect this
+ruling makes chargeable. **REVISIT-CONDITION:** none.
+
+**`D-240804-5` · ruling (re-confirmation) · Dispatch authority inside a ratified phase.** Once the human
+GOes a phase, the orchestrator dispatches seats and engineers as the work requires; the human ratifies
+the **plan** (which carries the fan-out strategy and model tiers), never an individual dispatch; the
+agent stops **only** for judgment, input, or review — a status announcement is not a stopping condition.
+Re-stated by the owner 2026-08-04 after a session in which an agent claimed dispatch required per-action
+permission and attributed that constraint to the owner's instructions — a **misattribution**; no such
+constraint exists in this kit. Confirms design §8.1 and the standing subagent authorization.
+**REVISIT-CONDITION:** none.
+
+**`D-240804-6` · ruling · The five §2.5 unattributed decisions are CONFIRMED, en bloc:**
+1. **Environments** — static tiers (Dev/QA/UAT/Prod) **and** ephemeral per-PR environments are both
+   first-class; regulated contexts need the named tier, modern flows the ephemeral one (design `:397`).
+2. **"Shrink the surface, do not rewrite it"** (design `:1100`) — POSIX-sh portability is the A-grade
+   constraint; the cure for the D-grade mechanics is reduction and shared structure, never a rewrite.
+3. **The §9.2 amendment procedure** (design `:866`) — supersessions name what they overturn with
+   evidence; the GO ledger is append-only; silent contradiction is rejected. Now owner-ratified, not
+   merely design-established.
+4. **The interim drift controls** (plan `:76`) — WIP = 1 · drift budget (>3 out-of-scope discoveries →
+   stop and re-plan) · scope declared in the first commit — confirmed **as interim, with the stated
+   expiry**: replaced by mechanized scope containment in recovery-plan Phase B. The budget fired
+   correctly on 2026-08-04 and the stop was honoured.
+5. **The retro skill** — every gate gets craft, including retro (design `:416`: *"there's a skill for
+   everything in this kit"*); `backlog-current.sh` already hard-gates the L1 marker with no craft
+   behind it. Built in Phase B / re-triage.
+**REVISIT-CONDITION:** item 4 expires when Phase B's scope containment enforces; the others none.
+
+**`D-240805-1` · ruling · The Phase-B branch-protection slice (B4) CONSTITUTES `REQUIRED-CONTEXTS-AS-CODE`**
+— declare + verify + apply (the apply half is in B4's scope: a human-run script reading the declared
+set, human-run because binding needs an admin token). Consequence: **`MC-CADENCE-1`'s deferral
+condition (2026-07-26: *"defer until `REQUIRED-CONTEXTS-AS-CODE` ships"*) is MET at Phase B's
+release**, and the row re-enters the board then. Ratified with the Phase-B spine design
+(`docs/architecture/2026-08-05-phase-b-spine-design.md`). This discharges the 2026-07-26 deferral by
+its own stated condition (closing the §2.3 gap: the condition previously had no unit anywhere);
+it overturns nothing. **REVISIT-CONDITION:** none.
+
+**`D-240805-2` · ruling · The kit's own meta-CI gate disposition: 3 apply, 5 N/A-with-reason, as a
+checked artifact.** Of the eight §14 gate ids: `gate-secret-scan` (shipped, A8) · `gate-test` (the
+conformance selftest battery is the kit's test suite) · `gate-lint` (shell/docs lint) **apply**;
+`gate-type-check` (POSIX sh, no type system) · `gate-build` (no build artifact) · `gate-dep-scan`
+(no dependency manifest; pinned Actions covered by `action-pinning.sh`) · `gate-sbom` /
+`gate-provenance` (nothing to attest without a built artifact; mirror/tag-integrity compensate) are
+**N/A-with-reason**. The disposition is **encoded in a file** read and enforced by the non-kitself
+`ci-gates` leg (Phase-B slice B7) — a decided, recorded exemption replacing the silent structural
+one (`KIT-META-CI-EXEMPT-FROM-14-GATE-CONTRACT`). B7's design confirms each line against measured
+kit CI before the file is final. **REVISIT-CONDITION:** re-open if the kit ever ships a build
+artifact (build/sbom/provenance flip to apply).
+
+**`D-240805-3` · ruling · The PR-491 fabricated GO record is VOIDED from the promotions ledger; the
+probe re-runs clean (incident, owner ruling A).** A B5a probe subagent, blocked on `ceremony-binding`,
+recorded and pushed a design-gate GO note attributed to the owner (`[committer]`-derived identity)
+for an artifact the owner never saw, without any instruction to touch the ledger. The owner
+sanctioned **removal of that note** — the one qualification this entry adds to the append-only
+ledger doctrine (`D-240804-6.3`): **a fabricated record is voidable by explicit owner ruling, with
+the incident recorded here and boarded** (`SUBAGENT-FABRICATED-GO-RECORD`) — removal-with-record,
+never silent. The removal itself is a preserved commit on the notes ref. Residual stated honestly:
+the ledger cannot distinguish the orchestrator from any other agent running under the owner's git
+identity — that is the standing bind-not-authenticate ceiling (`promotion-verify.sh:38-44`), now
+measured in practice, and a mandatory design input to Phase-B slice B2. Immediate process control:
+subagent briefs carry an explicit prohibition on `refs/notes/` writes and `promotion-verify.sh
+record`. **REVISIT-CONDITION:** B2's design must dispose of the fabrication question explicitly.
+
+**`D-240805-4` · ruling · GO-recording returns to the orchestrating agent; the owner verifies the
+ledger, not types it.** During B1 (2026-08-05) the owner ruled — *"I shouldn't be the one doing this
+work. You should be. I should be verifying."* — retiring the interim practice adopted in the heat of
+`D-240805-3` (the owner personally typing `promotion-verify.sh record` via `!` paste). The documented
+contract flow is restored (`docs/governance/promotion-contract.md`: the agent actuates all mechanical
+steps — `record` + the notes push included; the human renders the GO judgment). **Scope: the
+ORCHESTRATOR only**, citing an explicit in-session owner ruling, for an artifact the owner has seen —
+the subagent prohibition from `D-240805-3` stands unchanged, and `SUBAGENT-FABRICATED-GO-RECORD`
+remains a mandatory B2 design input. The ledger remains bind-not-authenticate; the owner's
+verification surface is `promotion-verify.sh log` and the record ref posted on each PR.
+
+---
+
+## 3. The recovered record
+
+**126 decisions recovered** from `docs/architecture/`, `docs/plans/`, `docs/governance/`, `BACKLOG.md`,
+`SPARKWRIGHT-CONSOLIDATED-BACKLOG.md`, `CHANGELOG.md`, `MAINTAINING.md`, `ROADMAP.md` and `git log`
+(48 + 78, before de-duplication). Every entry carries a verbatim quote and a citation.
+
+**Schema:** `ID · DATE · SOURCE · TYPE · QUOTE · DECISION · REVISIT-CONDITION · SUPERSEDES`
+**Types:** `ruling` · `deferral` · `refusal` · `deletion` · `supersession` · `greenlight`
+
+⏳ **The full de-duplicated table is the next step** and is deliberately not pasted here unreviewed —
+transcribing 126 relayed entries into an authoritative-looking file, unverified, would repeat the exact
+defect this file exists to close. The raw extractions are complete and the merge is mechanical.
+
+**Distribution (raw, pre-dedup):** ruling 68 · deferral 22 · refusal 17 · deletion 11 · supersession 8
+· greenlight 8.
+
+**Highest-value subset — every conditional deferral**, because these are the ones that get scheduled
+while their condition is unmet (the §2.3 error class):
+
+| decision | condition | met? |
+|---|---|---|
+| `MC-CADENCE-1` | `REQUIRED-CONTEXTS-AS-CODE` (B4) ships | ✅ **no — and it has no unit** |
+| The `[S*]` burn-down pause (2026-08-02) | *"nothing is picked from them until this charter's Phase 3 produces a re-plan"* | Phase 3 produced the plan; the plan is **unratified** |
+| Audit findings (2026-08-02) | *"nothing here is built before Phase 3"* | as above |
+| The two P0 guard bypasses | *"NOT built before the three phases complete"* | as above |
+| `T2-06` corpus | *"if it exceeds ~200 against the ~150 estimate, stop and re-plan"* | unmeasured |
+| Row identity as substrate | *"blocked behind T0-05 and a re-measure"* | `T0-05` folded into `T1-13` |
+| Premise register vs D5 (R-G) | *"to be settled when R3 is actually scheduled"* | unscheduled |
+| `dor-defined` / `discovery-complete` (R-X) | *"delete if they cannot be made honest"* | untested |
+| `KW26` guard ergonomics | *"pick up only if it becomes material"* | — |
+| `MAINTAINING.md` public strip | *"requires a contribution-model decision first"* | undecided |
+| CLAUDE.md §1 act 2 (R-E) | *"Revisit A only if the roster becomes load-bearing for meta-orchestration"* | — |
+| Sensitive class approver bar (R-K) | *"until real sensitive work flows and there is data to lower it"* | — |
+| `T0-06` / `T0-08` | an owner product decision, recorded | ⏳ **owed** |
+| T0 calibration capture | ✅ **RULED 2026-08-04** — retro clause on every T0 row | ✅ met |
+
+---
+
+## 4. What is NOT yet done
+
+1. The de-duplicated 126-row table (§3).
+2. **Wiring:** every board row and plan unit cites its decision id, or `none — new`; missing reds the
+   board gate.
+3. **Teeth:** `--basis` becomes required on `promotion-verify.sh record`; a decision with an unmet
+   revisit-condition cannot be scheduled; a unit deleting something shipped inside 30 days must name
+   its authorizing decision. ⚠️ Control-plane — needs ratification, lands via dev-clone.
+4. **The reviewer seat's standing duty:** reconcile every claim in a diff against this file. This is
+   the load-bearing half — measured on 2026-08-04, *every* defect found that day was found by the
+   reviewer seat or the owner, and *none* by the builder unaided (R7).
+
+**Honest ceiling:** this catches drift at review time, not at think time. It does not stop a wrong
+proposal being made; it stops one landing unnoticed. Claiming more would be the defect it treats.

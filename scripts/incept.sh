@@ -65,6 +65,42 @@ curate_db_backed() {  # MODE(1|0) — 0=non-DB: strip the CI region(s) + marker 
 # Internal/testing seam: run ONLY the DB curation on the cwd, then exit (test-incept-postgres.sh drives this).
 if [ "${1:-}" = "__db-curate" ]; then curate_db_backed "${2:-1}"; exit 0; fi
 
+# --- Closing epilogue (step 6 of the main flow) — a FUNCTION so the internal `__emit-epilogue` seam
+#     below can print it standalone: inception-done.sh --selftest's epilogue leg (m) locks this text
+#     (the commit-the-baseline step + the stage-appropriate verify lines) without running a full
+#     inception. Defined up here beside the other pre-preamble seam for the same reason as
+#     strip_db_region: the seam needs none of the inception preamble. Uses the globals NAME VER
+#     STACK CI MODE TEAM PROTECT_HINT GUARD_STEP (set by the main flow, or by the seam's placeholders).
+print_epilogue() {
+cat <<EOF
+
+✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}, mode ${MODE}, governance ${TEAM}).
+Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAUDE.md is YOUR project guide (charter, config, roles).
+
+Do the judgment steps incept does NOT automate (see START-HERE.md):
+  1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
+  2. Record the real stack decision in docs/architecture/ADR-000-stack.md.
+  3. Commit the incepted baseline — the FIRST commit (see docs/adoption/inception-bootstrap.md).
+  4. ${PROTECT_HINT}
+  5. Declare per-project config in CLAUDE.md §3 (autonomy tiers, SLO, review routing, WIP).
+  6. Assign roles in CLAUDE.md §4.
+  7. ${GUARD_STEP}
+     Other runtimes: pipe proposed commands through scripts/kit-guard (docs/operations/runtime-guards.md).
+
+Verify now: sh conformance/inception-done.sh --surface
+Verify when a protected remote exists: sh conformance/inception-done.sh
+EOF
+}
+# Internal/testing seam: print ONLY the closing epilogue with placeholder values, then exit
+# (inception-done.sh --selftest's epilogue leg drives this; argument-borne, never an env var).
+if [ "${1:-}" = "__emit-epilogue" ]; then
+  NAME="<project>"; VER=$(cat VERSION 2>/dev/null || echo unknown); STACK="<stack>"; CI="<ci>"
+  MODE="<mode>"; TEAM="<governance>"
+  PROTECT_HINT="Protect main NOW — run the gh-api command in profiles/<stack>/BRANCH-PROTECTION.md; verify with: sh conformance/branch-protection.sh"
+  GUARD_STEP="(runtime-guard status — printed by a real inception run)"
+  print_epilogue; exit 0
+fi
+
 NAME="${INCEPT_NAME:-}"; OWNER="${INCEPT_INTENT_OWNER:-}"
 STACK="${INCEPT_STACK:-typescript-node}"; BACKLOG="${INCEPT_BACKLOG:-md}"; INTERACTIVE=1
 # A stack chosen via INCEPT_STACK is deliberate too — only an un-set stack is a silent default.
@@ -836,7 +872,11 @@ case "$CI" in
   gitlab)
     if [ -f "profiles/${STACK}/ci.gitlab-ci.yml" ]; then
       install_pipeline "profiles/${STACK}/ci.gitlab-ci.yml" .gitlab-ci.yml 'Sparkwright'
-      # GitLab reads CODEOWNERS from root, .gitlab/, or docs/ — .gitlab/ mirrors .github/.
+      # GitLab resolves ONE CODEOWNERS file, first found wins: root -> docs/ -> .gitlab/ (NOT a
+      # mirror of GitHub's .github/ -> root -> docs/ order). The kit ships NO root CODEOWNERS in
+      # the adopter archive (A2: a root file would win GitLab precedence and shadow this inert one;
+      # conformance/codeowners-export-clean.sh locks the archive clean), so the .gitlab/ file
+      # written here is the one GitLab actually finds.
       [ -f "profiles/${STACK}/CODEOWNERS" ] && { mkdir -p .gitlab; install_codeowners "profiles/${STACK}/CODEOWNERS" .gitlab/CODEOWNERS; }
     else
       echo "note: no profiles/${STACK}/ci.gitlab-ci.yml — add a .gitlab-ci.yml satisfying DEVELOPMENT-STANDARDS.md §14 (conformance/ci-gates.sh checks it; see docs/operations/ci-platforms.md)."
@@ -1093,19 +1133,4 @@ case "$CI" in
   github) PROTECT_HINT="Protect main NOW — run the gh-api command in profiles/${STACK}/BRANCH-PROTECTION.md; verify with: sh conformance/branch-protection.sh" ;;
   gitlab) PROTECT_HINT="Protect main NOW — in GitLab: Settings → Repository → Protected branches (require merge request + pipeline success + an approval rule). branch-protection.sh uses the GitHub API; the GitLab equivalent is adopter-owned — see docs/operations/ci-platforms.md." ;;
 esac
-cat <<EOF
-
-✅ Inception scaffolding complete for "${NAME}" (kit v${VER}, stack ${STACK}, CI ${CI}, mode ${MODE}, governance ${TEAM}).
-Note: the kit's principles doc moved to ENGINEERING-PRINCIPLES.md; this new CLAUDE.md is YOUR project guide (charter, config, roles).
-
-Do the judgment steps incept does NOT automate (see START-HERE.md):
-  1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
-  2. Record the real stack decision in docs/architecture/ADR-000-stack.md.
-  3. ${PROTECT_HINT}
-  4. Declare per-project config in CLAUDE.md §3 (autonomy tiers, SLO, review routing, WIP).
-  5. Assign roles in CLAUDE.md §4.
-  6. ${GUARD_STEP}
-     Other runtimes: pipe proposed commands through scripts/kit-guard (docs/operations/runtime-guards.md).
-
-Verify: sh conformance/inception-done.sh
-EOF
+print_epilogue

@@ -230,7 +230,7 @@ ctx_ok() {
     # --literal-pathspecs: a git pathspec is a GLOB by default, so `-- '*'` MATCHES and a bare
     # tracked-check would accept a manifest naming no document (measured on this repo).
     if ! git --literal-pathspecs ls-files --error-unmatch -- "$_c" >/dev/null 2>&1; then
-      echo "FAIL: contextFile '$_cs' is not a tracked file — a context document that appears in no diff is not a binding"
+      echo "FAIL: contextFile '$_cs' is not a tracked file — a context document that appears in no diff is not a binding; likely a partial commit — git add '$_cs' (a partially-committed incept leaves the context document out of the index)"
       return 1
     fi
     if [ "$(git --literal-pathspecs ls-files -s -- "$_c" 2>/dev/null | awk 'NR==1{print $1}')" = "120000" ]; then
@@ -491,6 +491,9 @@ selftest() {
   if [ -n "$(git ls-files -- ':/' 2>/dev/null | head -1)" ]; then
     mkconf "$base/untrackedctx" "{$hdr,\"contextFile\":\"$ctxuntracked\",\"dimensions\":{$seven}}"
     expect_why 1 "$base/untrackedctx" "contextFile exists but is UNTRACKED -> FAIL" "is not a tracked file"
+    # D(ii) (A3): the FAIL must carry its remedy — the measured way to reach this state on a real
+    # incepted tree is a PARTIAL first commit that left the context document out of the index.
+    expect_why 1 "$base/untrackedctx" "UNTRACKED FAIL names the partial-commit remedy" "likely a partial commit"
   else
     echo "selftest n/a: untracked-contextFile fixture (no populated git index in this tree)"
   fi

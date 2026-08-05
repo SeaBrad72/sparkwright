@@ -67,12 +67,12 @@ fi
 if [ "$is_repo" -eq 1 ]; then
   HOOK=.git/hooks/pre-push
   if [ ! -f "$HOOK" ]; then
-    echo "FAIL: pre-push git hook missing ($HOOK) — re-run incept (it installs the runtime guard into .git/hooks)"; fail=1
+    echo "FAIL: pre-push git hook missing ($HOOK) — install it (human step; an agent cannot set the mode): cp hooks/pre-push $HOOK && chmod +x $HOOK  (brownfield: do NOT re-run incept — see docs/adoption/brownfield.md)"; fail=1
   elif grep -q 'KIT_GUARD_CORE' "$HOOK" 2>/dev/null; then
     if [ -x "$HOOK" ]; then
       echo "PASS present: pre-push git hook installed and executable (kit runtime guard)"
     else
-      echo "FAIL: pre-push git hook present but not executable ($HOOK) — re-run incept, or: chmod +x $HOOK"; fail=1
+      echo "FAIL: pre-push git hook present but not executable ($HOOK) — set the mode (human step): chmod +x $HOOK  (brownfield: do NOT re-run incept)"; fail=1
     fi
   else
     echo "PASS (note): pre-push git hook present but not the kit's (foreign hook preserved — brownfield 'NOT overwriting' case); kit guard is not managing it"
@@ -190,9 +190,9 @@ else
           0) echo "PASS: verified protected (main, GitHub)" ;;
           1) echo "FAIL: branch protection — main is NOT protected on GitHub (required PR reviews / status checks missing)"; fail=1 ;;
           2) if [ "$MODE" = surface ]; then
-               echo "OUTSTANDING: branch protection — GitHub state unverifiable (no gh / unauthenticated); re-run authenticated or in CI"
+               echo "OUTSTANDING: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent); re-run authenticated against a live repo, or in CI"
              else
-               echo "FAIL: branch protection — GitHub state unverifiable (no gh / unauthenticated) and verification is required (strict); authenticate gh, or run --surface"; fail=1
+               echo "FAIL: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent) and verification is required (strict); authenticate gh / check the remote exists, or run --surface"; fail=1
              fi ;;
           *) echo "FAIL: branch protection — branch-protection.sh returned an unexpected status ($_bp); fail-closed"; fail=1 ;;
         esac ;;
@@ -256,6 +256,9 @@ selftest() {
   st_run "$d"
   st_has "PASS: git repository present"
   st_has "FAIL: pre-push git hook missing"
+  # A7: the remedy text IS the control surface — pin it so a regression to "re-run incept" reds.
+  st_has "cp hooks/pre-push"
+  st_has "do NOT re-run incept"
   st_has "FAIL: Inception-Done gate not satisfied"
   st_rc 1
 
@@ -341,11 +344,13 @@ selftest() {
   d=$(st_mkfix h0 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
   st_run "$d" strict;  st_has "PASS: verified protected"
 
-  # (h2) GitHub, unverifiable (bp exit 2) -> strict FAIL / surface OUTSTANDING
+  # (h2) GitHub, unverifiable (bp exit 2) -> strict FAIL / surface OUTSTANDING. Both rc-2 messages
+  # must state BOTH causes (D(i), A3): rc 2 is measured with authenticated gh + a nonexistent repo,
+  # so "(no gh / unauthenticated)" alone is a wrong remedy.
   echo "--- (h2) github unverifiable (bp exit 2) ---"
   d=$(st_mkfix h2 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 2
-  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "unverifiable"; st_rc 1
-  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_hasnt "FAIL: branch protection"
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "unverifiable"; st_has "inaccessible/nonexistent"; st_rc 1
+  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_has "inaccessible/nonexistent"; st_hasnt "FAIL: branch protection"
 
   # (h3) LIVENESS: REAL branch-protection.sh (no stub), forced no-gh -> raw exit 2 -> OUTSTANDING (surface)
   # proves the leg actually invokes the real script with --raw, not only the stub.
@@ -386,6 +391,41 @@ selftest() {
   echo "--- (l) github unknown bp exit -> fail-closed ---"
   d=$(st_mkfix l claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 3
   st_run "$d" strict;  st_has "FAIL: branch protection"; st_rc 1
+
+  # (m) A3 lock — the incept epilogue: the printed next-steps must name the FIRST-commit step
+  # (docs/adoption/inception-bootstrap.md) and the stage-appropriate verify (--surface now; the bare
+  # strict command only once a protected remote exists — strict's no-remote arm is FAIL by design and
+  # stays asserted UNCHANGED by (j)/(k) above). Load-bearing negative: an epilogue printing the bare
+  # strict command as the immediate verify ("Verify: sh conformance/inception-done.sh") is the
+  # measured cold-adopter defect and must FAIL here. Drives scripts/incept.sh's argument-borne
+  # __emit-epilogue seam — the real emitter, no full inception run.
+  echo "--- (m) incept epilogue: commit step + stage-appropriate verify ---"
+  if [ ! -f "$ROOT/scripts/incept.sh" ]; then
+    # Review Minor 2: honest fallback — an adopter tree that deleted incept post-inception has no
+    # emitter to lock; say so instead of an opaque rc-127 red. Never n/a on a tree that ships it.
+    echo "selftest n/a: (m) skipped — $ROOT/scripts/incept.sh absent (epilogue emitter not on this tree)"
+  else
+  OUT=$( sh "$ROOT/scripts/incept.sh" __emit-epilogue 2>&1 ); RC=$?
+  st_rc 0
+  st_has "Commit the incepted baseline — the FIRST commit"
+  st_has "Verify now: sh conformance/inception-done.sh --surface"
+  st_has "Verify when a protected remote exists: sh conformance/inception-done.sh"
+  st_hasnt "Verify: sh conformance/inception-done.sh"
+  # Review Minor 1: ORDER is part of the claim ("says the right things in the right ORDER") — the
+  # commit step must precede "Verify now", which must precede the strict line. Presence alone
+  # passed a mutation that relocated the commit step after the verify lines; these line-number
+  # comparisons close that.
+  _ln_commit=$(printf '%s\n' "$OUT" | grep -n "Commit the incepted baseline" | head -n 1 | cut -d: -f1)
+  _ln_snow=$(printf '%s\n' "$OUT" | grep -n "Verify now:" | head -n 1 | cut -d: -f1)
+  _ln_strict=$(printf '%s\n' "$OUT" | grep -n "Verify when a protected remote exists:" | head -n 1 | cut -d: -f1)
+  if [ -n "$_ln_commit" ] && [ -n "$_ln_snow" ] && [ -n "$_ln_strict" ] \
+     && [ "$_ln_commit" -lt "$_ln_snow" ] && [ "$_ln_snow" -lt "$_ln_strict" ]; then
+    echo "GOOD: epilogue order — commit step ($_ln_commit) < Verify now ($_ln_snow) < strict ($_ln_strict)"
+  else
+    echo "BAD : epilogue ORDER wrong — commit=$_ln_commit verify-now=$_ln_snow strict=$_ln_strict (commit step must come first, staged verify lines after, strict last)"
+    st_fail=1
+  fi
+  fi
 
   rm -rf "$WORK" 2>/dev/null || true
   if [ "$st_fail" = 0 ]; then

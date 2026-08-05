@@ -281,6 +281,21 @@ check control doc-budget-selftest       --kitself sh conformance/doc-budget.sh -
 # A --kitself row is still a `^check control` row, so non-vacuity coverage survives (verified:
 # `non-vacuity.sh --only loop-state.sh` reports KILLED).
 check control loop-state-selftest      --kitself sh conformance/loop-state.sh --selftest
+# pre-push (B1) runs loop-state.sh --head on the pushed HEAD as a local speed bump — the same
+# script path, at the same SHA CI grades (design Δ1: head-of-ref, identical to the PR head).
+# Registering only the SELFTEST here (not a live invocation) rides the same split as loop-state
+# itself: the real gate needs a pushed SHA that does not exist on an arbitrary tree. --kitself
+# because the hook's selftest (like loop-state's) grades against this repo's own throwaway
+# fixtures and self-invocation path, the same category as the doc-budget / loop-state rows above.
+# ⚠️ This row's own script path (hooks/pre-push, not conformance/*.sh) is NOT a
+# `conformance/[a-z0-9-]+\.sh` token, so non-vacuity.sh's target_set CANNOT select it — measured
+# (see docs/architecture/2026-08-05-b1-pre-push-entry-declaration-design.md §7, amended with this
+# measurement). The hook's mutation-sweepable region (decl_check_ref, above its own --selftest
+# marker) is proven by hand-run cases inside that file's own selftest, not by this sweep. Same
+# caveat as the design's own §7: the predicate's class leg still reads the ambient worktree at
+# grading time, not a pristine checkout of the graded SHA — "identical SHA" is a claim about
+# WHICH commit is graded, not a guarantee the working tree matches it byte-for-byte.
+check control pre-push-selftest        --kitself sh hooks/pre-push --selftest
 # phase-gate is the EDIT-TIME sibling of loop-state's merge-time refusal floor ([S1a-i]). BOTH modes
 # are registered, and both are base-INDEPENDENT: the default mode checks the §5 reason vocabulary,
 # the totality of the rc contract over it and the T2 ceremony allowlist's must-refuse fixtures, while
@@ -312,6 +327,18 @@ check control feedback-link-lifecycle-selftest      sh conformance/feedback-link
 check control named-adapters-selftest  sh conformance/named-adapters.sh --selftest
 check control ci-gates         --kitself sh conformance/ci-gates.sh profiles/typescript-node/ci.yml --expect-seams
 check control ci-gates-selftest sh conformance/ci-gates.sh --selftest
+# A8/T1-09 — the kit's own ci.yml must carry a real secret-scan gate. The LIVE check + its --selftest are
+# gitleaks-FREE (pure grep over the workflow + runtime fixtures), so both are portable and mutation-swept.
+# The gitleaks-DEPENDENT planted-secret liveness proof lives under --scan-selftest and runs ONLY in the
+# dedicated `secret-scan` CI job (which downloads the pinned binary) — registering it here would UNVERIFIED-
+# red the offline aggregate on any host without gitleaks. See conformance/secret-scan-wired.sh's header.
+# --kitself on the LIVE check: it asserts THE KIT'S OWN .github/workflows/ci.yml carries the secret-scan
+# gate — that file is export-ignored, so on an adopter/export tree it is absent and the check must N/A,
+# not FAIL (adopters get their own secret-scan via their profile pipeline + ci-gates.sh). Without this
+# it reds green-on-clone: the adopter's first push would be RED (measured on PR-486 CI). The --selftest
+# is tree-independent (runtime fixtures) so it stays portable and mutation-swept.
+check control secret-scan-wired --kitself sh conformance/secret-scan-wired.sh
+check control secret-scan-wired-selftest  sh conformance/secret-scan-wired.sh --selftest
 check control dep-scan-visibility           sh conformance/dep-scan-visibility.sh
 check control dep-scan-visibility-selftest   sh conformance/dep-scan-visibility.sh --selftest
 check control image-supply     sh conformance/container-supply-chain.sh
@@ -354,6 +381,19 @@ check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
 check control adopter-preflight --kitself sh conformance/adopter-preflight-wired.sh
 check control adopter-export   sh conformance/adopter-export-wired.sh
+# A7 brownfield end-to-end lock: drives a legacy fixture through the CORRECTED docs/adoption/brownfield.md
+# sequence to inception-done --surface rc 0, with a load-bearing negative (pre-push-skipped => FAIL).
+# --kitself: it produces the tree via scripts/adopter-export.sh, which needs the kit's OWN committed .git,
+# so it has no meaning on an adopter tree (N/A there; the walk also self-detects the kit repo). Its teeth
+# live in the two-arm walk (a script-selftest), so non-vacuity.sh reports it UNCOVERED=no-idiom.
+check control brownfield-walk  --kitself sh conformance/brownfield-walk.sh --selftest
+# A2 archive lock (row CODEOWNERS-ROOT-EXPORT-LEAK): offline — `git archive HEAD` runs locally, no
+# network. N/A on a non-repo or unborn-HEAD tree, so a freshly incepted adopter stays green.
+# --kitself: the invariant is the KIT's (maintainer handles must not ship in the export). On an
+# adopter tree the same scan would red their own legitimate handles (e.g. dual-forge CODEOWNERS
+# naming the identities their .github/CODEOWNERS declares) — a false-red for a policy that is not
+# theirs (review I-2). Adopter trees render N/A; the kit-side lock stays fully binding.
+check control codeowners-export-clean --kitself sh conformance/codeowners-export-clean.sh
 check control mode-blind       sh conformance/mode-enforcement-blind.sh
 check control orchestrator-loop sh conformance/orchestrator-loop-wired.sh
 check control escalation-seam    sh conformance/escalation-wired.sh --selftest
@@ -444,6 +484,18 @@ check control backlog-current-run  sh conformance/backlog-current.sh .
 # verify.sh control-check; the ci.yml `backlog-presence` job calls check_pr live. check_pr is NOT dead
 # code: selftest() drives it by argument (assert_msg), and the CI job invokes it on every gated PR.
 check control backlog-presence  sh conformance/backlog-presence.sh --selftest
+# T0-09 — pairs with the `check doc security-policy` row below: that row proves the disclosure
+# policy is RECORDED; security-channel-live.sh probes the FORGE SETTING it advertises (PVR enabled
+# on the declared `Channel repo:`). Selftest ONLY — same shape as backlog-presence above: the live
+# probe needs gh+network+auth, and adopters run `verify.sh --require` offline with no GH_TOKEN
+# (all ten profiles/*/ci.yml), so registering the live row would red every adopter's documented
+# first CI push. The LIVE probe runs as a dedicated step in the kit's own ci.yml (step-scoped
+# GH_TOKEN, beside the security-policy real-path step); adopters MAY wire the live run into their
+# own pipeline the same way (no profile ships the step yet). check_channel is NOT dead code:
+# selftest() drives it by argument, and the
+# CI step invokes it live. The load-bearing negative lives in --selftest (stubbed
+# {"enabled":false}); the live repo must never serve as the negative.
+check control security-channel-live-selftest sh conformance/security-channel-live.sh --selftest
 check doc     deployable-ready sh conformance/deployable-ready.sh
 check doc     dr-ready         sh conformance/dr-ready.sh
 check doc     resilience-ready sh conformance/resilience-ready.sh
