@@ -660,6 +660,7 @@ profiles/typescript-node/scaffold/vitest.config.ts
 scripts/adopter-export.sh
 scripts/agent-scorecard.sh
 scripts/agent-trace.sh
+scripts/branch-protection-apply.sh
 scripts/containment-audit.sh
 scripts/coverage-ratchet.sh
 scripts/doctor.sh
@@ -737,6 +738,7 @@ templates/OPPORTUNITY-BRIEF-TEMPLATE.md
 templates/POSTMORTEM-TEMPLATE.md
 templates/PRIVACY-REVIEW-TEMPLATE.md
 templates/PROJECT-CLAUDE-TEMPLATE.md
+templates/REQUIRED-CHECKS-TEMPLATE.md
 templates/REVIEW-RECORD-TEMPLATE.md
 templates/RUNBOOK-TEMPLATE.md
 templates/SECURITY-TEMPLATE.md

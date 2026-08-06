@@ -1635,9 +1635,11 @@ obl_selftest() {
   # The five templates deliberately absent (AI-ARTIFACT-LINEAGE, OPPORTUNITY-BRIEF, REVIEW-RECORD,
   # SHAPING-DOC, WAIVER-REGISTER) carry no Signal-1 token at all and read FILLED today — an existing,
   # separate gap, unchanged by this rule and not this leg's business.
+  # 2026-08-05: REQUIRED-CHECKS-TEMPLATE.md (B4, branch-protection-as-code) added as the 22nd —
+  # it ships the same `> **Template.**` banner and reads unfilled like every other shipped template.
   _cm_named='A11Y-SIGNOFF AI-POLICY AI-SYSTEM-CARD AI-TRANSPARENCY-SIGNOFF BACKLOG BIA EVAL-PLAN
 FEATURE-REQUEST FIELD-REPORT JIRA-SETUP KIT-FEEDBACK POSTMORTEM PRIVACY-REVIEW PROJECT-CLAUDE
-RUNBOOK SECURITY TASK-CONTEXT-CONTRACT TEST-PLAN THREAT-MODEL TRACKER-SETUP UAT-SIGNOFF'
+REQUIRED-CHECKS RUNBOOK SECURITY TASK-CONTEXT-CONTRACT TEST-PLAN THREAT-MODEL TRACKER-SETUP UAT-SIGNOFF'
   _cm_want=0
   for _cm_n in $_cm_named; do
     _cm_want=$((_cm_want + 1))
@@ -1682,7 +1684,7 @@ RUNBOOK SECURITY TASK-CONTEXT-CONTRACT TEST-PLAN THREAT-MODEL TRACKER-SETUP UAT-
       || { echo "OBL SELFTEST FAIL: $_rt-TEMPLATE.md is $_c non-blank lines banner-stripped — a record filled from it cannot clear the floor of $OBL_MIN_SUBSTANCE_LINES"; rc=1; }
   done
 
-  [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; exclusions before inclusions, per-path, real-view-template-still-triggers, degenerate-list-excludes-nothing, fail-safe outranks both; gate absent/placeholder/filled/none/derive-fail; derivation follows a rename (a git mv OFF a sensitive path still triggers) and every value-less two-argument flag is refused with a verdict rather than dying mid-parse; record-floor empty/one-line/floor-1/on-floor/heading-less/setext; diagnostic attribution floor/heading/template/unreadable+marker/bad-pattern, the pattern probe proven to run BEFORE every record signal; floor calibrated against the shipped templates; stub-pattern default-unchanged/custom-vocabulary/below-threshold/dash-leading/malformed-ERE-fail-closed/empty-refused/replaces-not-ors; gate-defining args first-wins AND '--'-sentinel-fenced for record/surface-globs/stub-pattern/exclude-globs/name/template-marker, each with its liveness pair, each discard announced without echoing the value; a surface defining no usable glob and an exclusion matching every path both refused rather than read as a blanket N/A; Signal 1 ignores CODE MARKUP — bare token denies, the same token in a single- and a double-backtick span and in a backtick- and a tilde-fenced block does not, blockquotes are NOT excluded so the banner still fires, the stripper falls back to the raw record when it cannot run, and all 21 shipped templates that carry a placeholder signal still read unfilled under a named-set + count lock)"
+  [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; exclusions before inclusions, per-path, real-view-template-still-triggers, degenerate-list-excludes-nothing, fail-safe outranks both; gate absent/placeholder/filled/none/derive-fail; derivation follows a rename (a git mv OFF a sensitive path still triggers) and every value-less two-argument flag is refused with a verdict rather than dying mid-parse; record-floor empty/one-line/floor-1/on-floor/heading-less/setext; diagnostic attribution floor/heading/template/unreadable+marker/bad-pattern, the pattern probe proven to run BEFORE every record signal; floor calibrated against the shipped templates; stub-pattern default-unchanged/custom-vocabulary/below-threshold/dash-leading/malformed-ERE-fail-closed/empty-refused/replaces-not-ors; gate-defining args first-wins AND '--'-sentinel-fenced for record/surface-globs/stub-pattern/exclude-globs/name/template-marker, each with its liveness pair, each discard announced without echoing the value; a surface defining no usable glob and an exclusion matching every path both refused rather than read as a blanket N/A; Signal 1 ignores CODE MARKUP — bare token denies, the same token in a single- and a double-backtick span and in a backtick- and a tilde-fenced block does not, blockquotes are NOT excluded so the banner still fires, the stripper falls back to the raw record when it cannot run, and all 22 shipped templates that carry a placeholder signal still read unfilled under a named-set + count lock)"
   return $rc
 }
 

@@ -96,7 +96,7 @@ EOF
 if [ "${1:-}" = "__emit-epilogue" ]; then
   NAME="<project>"; VER=$(cat VERSION 2>/dev/null || echo unknown); STACK="<stack>"; CI="<ci>"
   MODE="<mode>"; TEAM="<governance>"
-  PROTECT_HINT="Protect main NOW — run the gh-api command in profiles/<stack>/BRANCH-PROTECTION.md; verify with: sh conformance/branch-protection.sh"
+  PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --apply (see profiles/<stack>/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh"
   GUARD_STEP="(runtime-guard status — printed by a real inception run)"
   print_epilogue; exit 0
 fi
@@ -797,6 +797,10 @@ curate_for_mode "$MODE"
 # --- 4. RUNBOOK / BACKLOG / ADR-000 ---
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
 [ -f SECURITY.md ] || cp templates/SECURITY-TEMPLATE.md SECURITY.md
+# REQUIRED-CHECKS.md (B4) — the declared required-check contexts conformance/branch-protection.sh
+# and scripts/branch-protection-apply.sh read; same BACKLOG-pattern stamp, always written regardless
+# of backlog backend (it is not a backlog concern).
+[ -f REQUIRED-CHECKS.md ] || { cp templates/REQUIRED-CHECKS-TEMPLATE.md REQUIRED-CHECKS.md; sedi "s/\[Project Name\]/${ENAME}/g" REQUIRED-CHECKS.md; }
 # .env.example — the committed env template the DoD + RUNBOOK require (never a real .env).
 if [ ! -f .env.example ]; then
   cat > .env.example <<'ENVEOF'
@@ -1130,7 +1134,7 @@ done
 # use the GitHub API; on GitLab the protected-branches equivalent is adopter-owned (honest
 # coupling note — see docs/operations/ci-platforms.md).
 case "$CI" in
-  github) PROTECT_HINT="Protect main NOW — run the gh-api command in profiles/${STACK}/BRANCH-PROTECTION.md; verify with: sh conformance/branch-protection.sh" ;;
+  github) PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --apply (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh" ;;
   gitlab) PROTECT_HINT="Protect main NOW — in GitLab: Settings → Repository → Protected branches (require merge request + pipeline success + an approval rule). branch-protection.sh uses the GitHub API; the GitLab equivalent is adopter-owned — see docs/operations/ci-platforms.md." ;;
 esac
 print_epilogue

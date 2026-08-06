@@ -9,9 +9,12 @@
 # that those procedures were tested. See conformance/README.md "What a green run means".
 # SCOPE: this is a curated aggregate of the repo-runnable checks — NOT every conformance
 # script. Checks needing project context or live creds (e.g. inception-done, tracker-contract,
-# stack-selection, branch-protection — repo-admin creds it can't have in least-privilege CI; verified
-# at the governance gate, see its header) and conditionally-wired checks (e.g. container-supply-chain)
-# run in their own CI steps / at the adopter's gate, not here. "aggregate" means representative.
+# stack-selection — repo-admin creds it can't have in least-privilege CI; verified at the
+# governance gate, see its header) and conditionally-wired checks (e.g. container-supply-chain)
+# run in their own CI steps / at the adopter's gate, not here. branch-protection.sh is now SPLIT at
+# the credential seam (B4): its OFFLINE declaration-integrity leg (--declared-only — no gh, no
+# network) IS registered below; its LIVE forge-comparison leg still needs repo-admin gh and runs
+# operator-side, not here. "aggregate" means representative.
 #   usage: sh conformance/verify.sh [--require] | --selftest
 set -eu
 cd "$(dirname "$0")/.."
@@ -232,6 +235,10 @@ fi
 
 echo "Conformance verification (honest aggregate)"
 echo "-------------------------------------------"
+# branch-protection's OFFLINE leg only (B4) — declaration-integrity, no gh, no network; see the
+# SCOPE note above for why the LIVE leg stays out of this aggregate.
+check control branch-protection-declared    sh conformance/branch-protection.sh --declared-only
+check control branch-protection-selftest    sh conformance/branch-protection.sh --selftest
 check control agent-autonomy   sh conformance/agent-autonomy.sh
 check control agent-boundary   sh conformance/agent-boundary.sh --selftest
 check control harness-adapter  sh conformance/harness-adapter.sh adapters/claude-code

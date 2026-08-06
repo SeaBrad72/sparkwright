@@ -108,17 +108,22 @@ file contents, so no adopter data crosses into kit-owned tooling.
 5. **Obligation gates are path heuristics** — a file holding PII with no telltale name derives N/A.
    Named misses: `medical/`, `biometric`, `passport`, `iban`, `tax_id`, `nhs_number`, ALL-CAPS
    `PERSONAL-DATA/`.
-6. **The three obligation jobs are now REQUIRED contexts on this repo — with two live caveats, so this
-   is not "enforced" without qualification.** Verified against the live API 2026-07-25: `main` requires
-   **8** contexts (`conformance`, `bootstrap`, `docs-links`, `control-plane-ratification`,
-   `backlog-presence`, `threat-obligation`, `uat-obligation`, `a11y-obligation`).
-   (a) **Nothing in-repo declares them**, so silently removing one is undetectable — `branch-protection.sh`
-   only asserts that required-status-checks *exists at all*, which stays green if seven of the eight are
-   deleted. Boarded: `BRANCH-PROTECTION-DECLARATION-LOCK`.
-   (b) **`enforce_admins: false`**, and the kit's own prescribed solo route is `gh pr merge --admin`
-   (`docs/governance/promotion-contract.md`) — which **bypasses all eight**. On that route the obligation
-   gates remain effectively advisory, and the real control is the recorded GO, not the check.
-   Adopters who enable `enforce_admins` and require reviews get the stronger property.
+6. **The three obligation jobs are now REQUIRED contexts on this repo — with one live caveat, so this
+   is not "enforced" without qualification.** The exact set is declared in `REQUIRED-CHECKS.md` (the
+   source of truth `conformance/branch-protection.sh` and `scripts/branch-protection-apply.sh` read —
+   never retype the count or the names here, they drift; read the declaration).
+   (a) **CLOSED (B4), qualified:** closed on the operator-run live leg; the declaration
+   (`REQUIRED-CHECKS.md`) is ordinary-class and editable by the same actor who could remove a live
+   context; no cadence exists (the live leg runs only when a maintainer chooses to run it) — nothing
+   in-repo used to declare them, so silently removing one was undetectable —
+   `branch-protection.sh` only asserted that required-status-checks *existed at all*.
+   `REQUIRED-CHECKS.md` + `branch-protection.sh --declared-only`/its live leg now FAIL BY NAME on a
+   declared-but-unbound context. Was boarded as `BRANCH-PROTECTION-DECLARATION-LOCK`; discharged.
+   (b) **Still open: `enforce_admins: false`**, and the kit's own prescribed solo route is
+   `gh pr merge --admin` (`docs/governance/promotion-contract.md`) — which **bypasses every declared
+   context**. On that route the obligation gates remain effectively advisory, and the real control is
+   the recorded GO, not the check. Adopters who enable `enforce_admins` and require reviews get the
+   stronger property.
 
 **Explicitly not accepted:** a vacuous green. Where a check cannot prove its claim, it says so in its
 own header rather than passing quietly.
