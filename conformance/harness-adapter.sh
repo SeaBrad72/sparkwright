@@ -79,18 +79,68 @@ native_proof_ok() {
   files=$(jq -r --arg d "$d" '.dimensions[$d].proof.files[]? // empty' "$m")
   [ -n "$chk" ] || [ -n "$files" ] || return 1
   if [ -n "$chk" ]; then
-    # D2 allowlist: execute a proof.check ONLY if it is a bare conformance/*.sh path
-    # (no metacharacters, no args, no traversal) that exists. Anything else => not ok, NOT run.
+    # D2 allowlist: execute a proof.check ONLY if it is a bare conformance/*.sh path, OPTIONALLY
+    # followed by exactly one scoped flag token from a CLOSED kit-owned allowlist (currently just
+    # `--rung1-only` — see the case list below, which is the extension point), that exists.
+    # Anything else => not ok, NOT run. The proof is judged on the DIMENSION it claims, not
+    # on a wider surface the manifest never asserted (B3 r2, SEC M3) — e.g. `command-guard`'s native
+    # claim is about the PreToolUse guard rung, and a flag lets the proof stay scoped to exactly that
+    # rung instead of failing on a second rung (pre-push) the claim never made.
+    # B3 r3 MED-B: an OPEN charset (`^--[a-z0-9-]+$`) let ANY syntactically-shaped flag through,
+    # including `--selftest` — a lying-native no-op that proves nothing about the DIMENSION the
+    # manifest actually claims. The allowlist below is closed to flags the Kit itself defines as
+    # scoped rungs, never to "anything shaped like a flag". Mirrored in
+    # conformance/inception-done.sh (grep it for "closed kit-owned allowlist") — change both.
+    # Split on the FIRST space using parameter expansion only (no word-splitting, no IFS exposure —
+    # $chk is adopter-supplied and must never reach a context where IFS or globbing matters).
     case "$chk" in
+      *' '*)
+        chkpath=${chk%% *}
+        chkrest=${chk#* }
+        case "$chkrest" in
+          *' '*) return 1 ;;   # a second token => reject (one flag, never more)
+          '')    return 1 ;;   # B3 r3 LOW-B: a trailing space with an EMPTY remainder must not
+                                # silently fall through to a BARE run — the closed-charset check
+                                # below only ever fires when chkflag is non-empty (`[ -n "$chkflag" ]`),
+                                # so an empty remainder skipped it entirely and ran unflagged, despite
+                                # the comment on that check already claiming "an empty remainder after
+                                # the space" is rejected there. Reject it HERE, at the split site,
+                                # instead — code now matches the comment.
+        esac
+        chkflag=$chkrest
+        ;;
+      *)
+        chkpath=$chk
+        chkflag=""
+        ;;
+    esac
+    case "$chkpath" in
       conformance/*.sh) : ;;
       *) return 1 ;;
     esac
-    if printf '%s' "$chk" | grep -Eq '[^A-Za-z0-9._/-]' || printf '%s' "$chk" | grep -q '\.\.'; then
+    if printf '%s' "$chkpath" | grep -Eq '[^A-Za-z0-9._/-]' || printf '%s' "$chkpath" | grep -q '\.\.'; then
       return 1
     fi
-    [ -f "$chk" ] || return 1
-    if [ -L "$chk" ]; then return 1; fi   # -f follows symlinks; reject a symlinked check
-    sh "$chk" >/dev/null 2>&1 || return 1
+    if [ -n "$chkflag" ]; then
+      # CLOSED kit-owned allowlist (B3 r3 MED-B) — NOT an open charset. `^--[a-z0-9-]+$` accepted
+      # any syntactically flag-shaped token, including `--selftest`: a lying-native no-op (a
+      # script's own selftest proves the SCRIPT works, never that the ADAPTER's claimed dimension
+      # is wired) that passed as a "valid" flag and executed. Extend this case list — never a
+      # charset — when a new scoped flag is added; each new value must be one the referenced
+      # check itself defines as a scoped rung (e.g. guard-wired.sh's --rung1-only), not merely
+      # well-formed.
+      case "$chkflag" in
+        --rung1-only) : ;;   # <- extension point: add one case arm per kit-defined scoped flag
+        *) return 1 ;;
+      esac
+    fi
+    [ -f "$chkpath" ] || return 1
+    if [ -L "$chkpath" ]; then return 1; fi   # -f follows symlinks; reject a symlinked check
+    if [ -n "$chkflag" ]; then
+      sh "$chkpath" "$chkflag" >/dev/null 2>&1 || return 1
+    else
+      sh "$chkpath" >/dev/null 2>&1 || return 1
+    fi
   fi
   # proof.files is adopter-supplied: word-split it, never PATHNAME-expand it. `["*"]` otherwise
   # expands to the existing repo-root entries, every one of which satisfies `-e`, so a `native` claim
@@ -387,6 +437,53 @@ selftest() {
   if [ -e "$canary" ]; then echo "selftest FAIL: metachar proof.check EXECUTED (canary created)"; st=1; else echo "selftest PASS: metachar proof.check not executed"; fi
   mkconf "$base/escape" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"../evil.sh"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
   expect 1 "$base/escape" "proof.check outside conformance/ (lying-native)"
+
+  # B3 r2 (SEC M3, round-1 item 11): proof.check may carry ONE scoped flag token after the path (e.g.
+  # `--rung1-only`), so a native claim is judged on the DIMENSION it actually asserts rather than a
+  # wider surface the manifest never claimed. The fixture script below exits 0 ONLY when invoked WITH
+  # the flag — a regression that accepts the flag but drops it before `sh "$chkpath" "$chkflag"`
+  # reddens this fixture instead of passing vacuously (the substitution-blindness this file already
+  # guards against elsewhere). Lives under conformance/ only for the fixture's own lifetime — created
+  # and removed here, matching the repo-root `.nv-` fixture discipline above (ctxsym/ctxuntracked).
+  flagfix="conformance/.nv-hafp-rung1flag.sh"
+  # B3 r3 LOW-C: this fixture lives at a repo-relative path (not under $base, which mktemp -d
+  # already isolates), so an INTERRUPT between creation and the explicit `rm -f` below would leak
+  # it into the working tree. Trap the same glob shape non-vacuity.sh's own selftest discipline
+  # uses elsewhere in this repo; disarmed right after the explicit cleanup so it cannot mask a
+  # later, unrelated trap this script might grow.
+  trap 'rm -f conformance/.nv-hafp-*.sh' INT TERM
+  printf '#!/bin/sh\n[ "$1" = "--rung1-only" ] && exit 0\nexit 1\n' > "$flagfix"
+  mkconf "$base/flagok" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"__FLAGFIX__ --rung1-only"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  sed "s#__FLAGFIX__#$flagfix#" "$base/flagok/adapter.json" > "$base/flagok/adapter.tmp" && mv "$base/flagok/adapter.tmp" "$base/flagok/adapter.json"
+  expect 0 "$base/flagok" "proof.check '<path> --rung1-only' executes WITH the flag (native)"
+  rm -f "$flagfix"
+  trap - INT TERM
+
+  # The flag is exactly ONE token: a second token after it is REJECTED, not silently dropped.
+  mkconf "$base/flagtwo" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/agents-brief.sh --rung1-only --extra"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  expect 1 "$base/flagtwo" "proof.check with TWO tokens after the path is REJECTED (one flag, never more)"
+
+  # The flag charset is CLOSED (a case list, not `^--[a-z0-9-]+$`) — a SINGLE token (no embedded
+  # space, so the two-token rule above cannot be what catches it) carrying a metacharacter must be
+  # rejected on the allowlist check itself, before `sh "$chkpath" "$chkflag"` ever runs.
+  mkconf "$base/flagmeta" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/agents-brief.sh --flag;evil"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  expect 1 "$base/flagmeta" "proof.check flag with a metacharacter (one token, no space) is REJECTED (closed charset)"
+
+  # B3 r3 MED-B: `--selftest` is syntactically flag-shaped (matches the OLD open charset) but is
+  # NOT a kit-defined scoped rung — it is a script's own selftest, which proves the SCRIPT works,
+  # never that the ADAPTER's claimed dimension is wired. Must be rejected by the closed allowlist,
+  # rendering it a lying-native FAIL, not a "valid" flag that gets executed.
+  mkconf "$base/flagselftest" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/guard-wired.sh --selftest"}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  expect 1 "$base/flagselftest" "proof.check '<path> --selftest' is REJECTED (lying-native, not on the closed allowlist)"
+
+  # B3 r3 LOW-B: a proof.check with a TRAILING SPACE and nothing after it ('<path> ') must not
+  # silently fall through to a BARE run of <path> — reject it, matching the comment that already
+  # claimed an "empty remainder after the space" is rejected (it wasn't, because the charset check
+  # only ever ran when chkflag was non-empty). command-guard is declared native with this shape and
+  # a bare run of guard-wired.sh WOULD pass here (this repo's own tree is wired), so a regression
+  # that re-opens the bare-run path would show as this fixture flipping from FAIL to PASS.
+  mkconf "$base/flagtrailspace" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"native","proof":{"check":"conformance/guard-wired.sh "}},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"floor"}}}'
+  expect 1 "$base/flagtrailspace" "proof.check '<path> ' (trailing space, empty remainder) is REJECTED, not run bare"
 
   # model-tiering: native declared with a broken proof -> lying-native -> FAIL
   mkconf "$base/mtlie" '{"harness":"fixture","controlPlanePaths":[".claude/settings.json"],"bindingFiles":["AGENTS.md"],"contextFile":"AGENTS.md","dimensions":{"context-binding":{"level":"floor"},"command-guard":{"level":"floor"},"history-protection":{"level":"floor"},"review-roles":{"level":"floor"},"mcp-gate":{"level":"n-a"},"orchestration":{"level":"floor"},"model-tiering":{"level":"native","proof":{"check":"conformance/does-not-exist-mt.sh"}}}}'

@@ -14,7 +14,7 @@ Brownfield **inverts the kit's risk gradient.** A greenfield repo starts empty a
 sh conformance/guard-wired.sh
 ```
 
-It must print `guard-wired: OK`. If it FAILs, the guard is not wired — fix the merge below first. (The Inception gate, `conformance/inception-done.sh`, also enforces this.)
+It must print `guard-wired: OK`. If it FAILs, look at the wording: `guard-wired: FAIL — the runtime guard is NOT active; agents would run unprotected` means the merge below is genuinely broken — fix it. `guard-wired: FAIL — a guard rung is not wired` means only the SECOND rung (the installed `.git/hooks/pre-push` git hook, §2 step 5 below) is missing or stale — **expected at this point, before you've done §5**, not evidence the merge itself failed. (The Inception gate, `conformance/inception-done.sh`, also enforces this.)
 
 ## When to use this guide
 
@@ -92,9 +92,15 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
    sh conformance/guard-wired.sh
    ```
 
+   **Expected at this point in the walk:** if you have not yet done step 5 below, this will RED on
+   the SECOND rung (`guard-wired: FAIL — a guard rung is not wired`) even when the `PreToolUse`
+   merge you just did is correct — the installed `.git/hooks/pre-push` git hook doesn't exist yet.
+   That is not the merge failing; it is step 5's own gate. If instead you see `guard-wired: FAIL —
+   the runtime guard is NOT active`, the `.claude/` merge itself needs fixing before you continue.
+
 > The kit does **not** script this merge: a merge bug could clobber exactly the hooks we're protecting. The merge is human-performed; `guard-wired.sh` verifies the result.
 
-5. **Install the pre-push git hook — a HUMAN step.** `guard-wired: OK` certifies only the `PreToolUse` `guard.sh` rung; it is **blind to the second rung**, the `.git/hooks/pre-push` git hook (tracked as `GUARD-WIRED-BLIND-TO-GIT-HOOK-RUNG` — a brownfield adopter reasonably reads `guard-wired: OK` as full protection, but it covers one of two rungs). Git hooks are **not** version-controlled, so the whole-tree §1 copy brought `hooks/pre-push` (the source) but **not** `.git/hooks/pre-push`. Install it yourself:
+5. **Install the pre-push git hook — a HUMAN step.** `guard-wired.sh` now certifies **both** rungs — the `PreToolUse` `guard.sh` rung **and** the installed `.git/hooks/pre-push` git hook (present, executable, core-resolvable, and FRESH — byte-identical to `hooks/pre-push` as committed at HEAD; a foreign/chained hook without the kit marker is preserved unjudged); a stale or absent kit hook turns `guard-wired: OK` RED (closed: `GUARD-WIRED-BLIND-TO-GIT-HOOK-RUNG`, `STALE-INSTALLED-HOOK`; see `docs/architecture/2026-08-05-b3-rung-certifier-design.md`). The rung leg only runs on an incepted/kit-source tree, outside CI — on a fresh export or a CI runner it N/As, disclosed, never silently. Git hooks are **not** version-controlled, so the whole-tree §1 copy brought `hooks/pre-push` (the source) but **not** `.git/hooks/pre-push`. Install it yourself:
 
    ```sh
    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push

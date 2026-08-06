@@ -146,11 +146,53 @@ else
       native)
         _chk=$(jq -r '.dimensions."command-guard".proof.check // empty' "$_aj" 2>/dev/null || true)
         [ -n "$_chk" ] || _chk="conformance/guard-wired.sh"
-        if [ ! -f "$_chk" ]; then
-          echo "FAIL: '$_h' declares command-guard=native but its check '$_chk' is missing (fail-closed)"; fail=1
+        # B3 r3 HIGH-A: mirrored in conformance/harness-adapter.sh's native_proof_ok() (search
+        # "closed kit-owned allowlist" there) — change both. Parse: path = first token; OPTIONALLY
+        # one scoped flag token after ONE space, from the SAME closed kit-owned allowlist as
+        # harness-adapter.sh (currently just `--rung1-only`) — never an open charset. A second
+        # token, or a space with an EMPTY remainder (a bare trailing space), is rejected, not run
+        # bare. Without this mirror, a manifest whose proof.check carries a flag (e.g.
+        # `"conformance/guard-wired.sh --rung1-only"`) fails `[ -f ]` on the WHOLE string and,
+        # even if that happened to resolve, would run `sh "$_chk" .` — the flag and the tree arg
+        # collapsed into one un-split word — so every claude-code adopter's Inception gate
+        # hard-failed with a false "missing" message (measured).
+        _chkpath="$_chk"; _chkflag=""; _chkbad=0
+        case "$_chk" in
+          *' '*)
+            _chkpath=${_chk%% *}
+            _chkrest=${_chk#* }
+            case "$_chkrest" in
+              *' '*) _chkbad=1 ;;   # a second token => reject (one flag, never more)
+              '')    _chkbad=1 ;;   # trailing space, empty remainder => reject, not a bare run
+              *)     _chkflag=$_chkrest ;;
+            esac ;;
+        esac
+        if [ "$_chkbad" -eq 0 ] && [ -n "$_chkflag" ]; then
+          case "$_chkflag" in
+            --rung1-only) : ;;   # <- extension point: add one case arm per kit-defined scoped flag
+            *) _chkbad=1 ;;
+          esac
+        fi
+        if [ "$_chkbad" -eq 0 ]; then
+          case "$_chkpath" in
+            conformance/*.sh) : ;;
+            *) _chkbad=1 ;;
+          esac
+        fi
+        if [ "$_chkbad" -eq 0 ] \
+           && { printf '%s' "$_chkpath" | grep -Eq '[^A-Za-z0-9._/-]' || printf '%s' "$_chkpath" | grep -q '\.\.'; }; then
+          _chkbad=1
+        fi
+        if [ "$_chkbad" -ne 0 ] || [ ! -f "$_chkpath" ] || [ -L "$_chkpath" ]; then
+          echo "FAIL: '$_h' declares command-guard=native but its check '$_chk' is missing or invalid (fail-closed)"; fail=1
         else
           # three-state, mirroring guard-wired: 0 wired · 2 UNVERIFIED (jq) · 1 dark — fail-closed on 1/2.
-          if sh "$_chk" . >/dev/null 2>&1; then gw=0; else gw=$?; fi
+          # Flag BEFORE the tree arg (guard-wired.sh's own documented order: `--rung1-only [dir]`).
+          if [ -n "$_chkflag" ]; then
+            if sh "$_chkpath" "$_chkflag" . >/dev/null 2>&1; then gw=0; else gw=$?; fi
+          else
+            if sh "$_chkpath" . >/dev/null 2>&1; then gw=0; else gw=$?; fi
+          fi
           if [ "$gw" -eq 0 ]; then
             echo "PASS: '$_h' runtime guard wired (PreToolUse → guard.sh, matcher admits mutating tools) [native, via $_chk]"
           elif [ "$gw" -eq 2 ]; then
@@ -285,6 +327,24 @@ selftest() {
   st_has "PASS: git repository present"
   st_has "PASS present: pre-push git hook installed and executable"
   st_has "'claude-code' runtime guard wired (PreToolUse"
+
+  # (d2) B3 r3 HIGH-A: a FLAGGED proof.check ("<path> --rung1-only") must resolve and EXECUTE
+  # correctly, not fail-closed with a false "missing" message. (d) above happens to exercise this
+  # too, because the kit's OWN adapters/claude-code/adapter.json currently carries this flag — but
+  # that coupling is silent and would stop testing the mirrored parse the moment that manifest's
+  # proof.check changes shape. This fixture is self-contained: it manufactures its OWN harness
+  # ("fixtureharness") and adapter.json declaring ONLY command-guard, so the assertion never
+  # depends on what the real claude-code adapter happens to say. Also the negative half of the
+  # cross-consumer guarantee: harness-adapter.sh already asserts this exact shape (its own
+  # flagok/flagselftest/flagtrailspace fixtures) — this proves the OTHER declared consumer
+  # (inception-done.sh) parses the identical manifest shape the identical way.
+  echo "--- (d2) flagged proof.check resolves + executes (HIGH-A mirror) ---"
+  d=$(st_mkfix d2 fixtureharness); st_install_hook "$d"
+  mkdir -p "$d/adapters/fixtureharness"
+  printf '%s\n' '{"dimensions":{"command-guard":{"level":"native","proof":{"check":"conformance/guard-wired.sh --rung1-only"}}}}' > "$d/adapters/fixtureharness/adapter.json"
+  st_run "$d" surface
+  st_has "'fixtureharness' runtime guard wired (PreToolUse"
+  st_hasnt "is missing or invalid (fail-closed)"
 
   # (e) adapter.json missing -> fail-closed FAIL
   echo "--- (e) adapter.json missing ---"

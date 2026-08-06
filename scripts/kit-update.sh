@@ -618,6 +618,21 @@ sect offered   "$N_OFF" "kit changes that apply cleanly — you have not touched
 sect CONFLICT  "$N_CON" "changed BOTH upstream and by you — yours to decide, NEVER resolved silently" conflict
 sect untouched "$N_UNT" "yours; this update proposes nothing for them" untouched
 
+# HOOK REFRESH — human step, not in the patch (B3, design D5). Git hooks are NOT version-controlled,
+# so `hooks/pre-push` moving in offered/conflict is invisible where it matters: nothing this tool
+# computes ever touches `.git/hooks/pre-push`, and a stale installed copy is exactly the fail-open
+# rung guard-wired.sh's rung leg now certifies (docs/architecture/2026-08-05-b3-rung-certifier-design.md).
+if grep -qx 'hooks/pre-push' "$TMP/offered" "$TMP/conflict" 2>/dev/null; then
+  echo "== HOOK REFRESH — human step, not in the patch =="
+  echo "  hooks/pre-push changed upstream. This tool computed a delta for the TRACKED source file"
+  echo "  only; it cannot refresh the INSTALLED hook at .git/hooks/ — git hooks are not version-"
+  echo "  controlled, and no patch this tool emits ever writes there. Refresh it yourself, the same"
+  echo "  human-only way brownfield adoption does (docs/adoption/brownfield.md §5):"
+  echo "    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push"
+  echo "  sh conformance/guard-wired.sh confirms the result (present, executable, FRESH)."
+  echo ""
+fi
+
 if [ -n "$PATCH" ]; then
   echo "patch: $PATCH"
   echo "  the OFFERED changes only. Review it, then apply it with your own tools:  git apply '$PATCH'"
@@ -648,3 +663,7 @@ echo "  * EXPECT CLAUDE.md. incept STAMPS the kit version into your project doc,
 echo "    it on the kit's side EVERY release: offered while you have not touched it, a CONFLICT the moment"
 echo "    you have. That is the design working (it is YOUR doc), not a fault — usually you want only the"
 echo "    '**Kit version adopted:**' line."
+echo "  * GIT HOOKS ARE NOT IN THE PATCH. hooks/pre-push is a tracked SOURCE file like any other — the"
+echo "    delta above covers it — but the INSTALLED .git/hooks/pre-push is untracked and this tool never"
+echo "    writes there. A HOOK REFRESH section above (when it appears) names the human-run command;"
+echo "    sh conformance/guard-wired.sh is how you confirm it landed."

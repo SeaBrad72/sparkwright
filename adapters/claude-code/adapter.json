@@ -25,7 +25,7 @@
     "command-guard": {
       "level": "native",
       "proof": {
-        "check": "conformance/guard-wired.sh"
+        "check": "conformance/guard-wired.sh --rung1-only"
       }
     },
     "history-protection": {
