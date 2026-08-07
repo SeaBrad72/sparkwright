@@ -72,6 +72,16 @@ assert_wired() {  # <src-file>
   # red this design removes; ratification.yml documents the same trap at its own posting site).
   printf '%s\n' "$_wcode" | grep -qF 'if [ -n "$concl" ]; then' || { echo "FAIL: $1 has no conclusion-omission guard (no \`if [ -n \"\$concl\" ]; then\` before posting) — a WAITING check-run risks being posted with conclusion=\"\", which COMPLETES it (the red this design removes)"; _w=1; }
   printf '%s\n' "$_wcode" | grep -qF 'concl="neutral"' || { echo "FAIL: $1 does not post a 'neutral' conclusion — the Δ1 observe-mode dial (loop-state's day-one non-blocking colour) is missing"; _w=1; }
+  # B2 Δ4(ii) / reviewer I4 — THE JUDGMENT-SURFACE RENDER IS PART OF THE GATE. ceremony-binding's
+  # disposition has two halves: the gate REFUSES an unrecorded design GO, and the matched record is
+  # RENDERED at the judgment surface so a minted one walks into the reviewer's field of view before
+  # the click (D-240805-4). A source carrying only the first half ships adopters the enforcement
+  # without the visibility — the mirror-divergence class B6 paid a Critical for. Two anchors,
+  # because the SHAPE is load-bearing too: the body must go inside a GROWN FENCE, never per-field
+  # markdown (a forged field closed a code span and emitted `<br>`, rendering a second
+  # authoritative-looking approved-by line — measured, B2 sec H2). Negatives: cases 2h/2i.
+  printf '%s\n' "$_wcode" | grep -qF 'GITHUB_STEP_SUMMARY' || { echo "FAIL: $1 never writes \$GITHUB_STEP_SUMMARY — the matched GO record would not reach the judgment surface, so an adopter's reviewer gets the gate without the visibility half of the disposition (B2 Δ4(ii))"; _w=1; }
+  printf '%s\n' "$_wcode" | grep -qF 'fence="$fence"' || { echo "FAIL: $1 renders the GO record without the grown-fence guard (\`fence=\"\$fence\"\`) — ledger content is untrusted, and per-field markdown lets a forged field render a SECOND approved-by line with a stronger assurance label (measured)"; _w=1; }
   return "$_w"
 }
 
@@ -182,6 +192,12 @@ selftest() {
       printf '  gate-loop-state:\n    steps:\n'
       printf '      - run: sh conformance/loop-state.sh --head "$SHA"\n'
       printf '      - run: status="completed"; concl="neutral"\n'
+      # B2 Δ4(ii): the judgment-surface render (grown fence + step summary) is part of the wired
+      # contract, so the CLEAN fixture must carry it — otherwise this fixture asserts a gap the
+      # real shipped source does not have.
+      printf '  gate-ceremony-binding:\n    steps:\n'
+      printf '      - run: while printf %%s "$body" | grep -qF -- "$fence"; do fence="$fence"%s`%s; done\n' "'" "'"
+      printf '      - run: printf %s%%s\\n%s "$fence" "$body" "$fence" >> "$GITHUB_STEP_SUMMARY"\n' "'" "'"
     } > "$1"
   }
 
@@ -249,6 +265,19 @@ selftest() {
   mk_clean_src "$base/noneutral.yml"
   grep -v 'concl="neutral"' "$base/noneutral.yml" > "$base/noneutral.yml.tmp" && mv "$base/noneutral.yml.tmp" "$base/noneutral.yml"
   if assert_wired "$base/noneutral.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2g — a source that never posts neutral passed assert_wired"; st=1; else echo "OK: no neutral posting -> RED (Δ1 anchor is load-bearing)"; fi
+
+  # 2h/2i (B2 Δ4(ii) / reviewer I4, LOAD-BEARING NEGATIVES) — a source that gates ceremony-binding
+  # but never RENDERS the matched record to the judgment surface must be RED (2h), and so must one
+  # that renders it WITHOUT the grown-fence guard (2i) — untrusted ledger content interpolated into
+  # per-field markdown is what let a forged field render a second, stronger `approved-by` line.
+  # Without these cases either anchor could be deleted with the suite still green, which is exactly
+  # how an emitted profile comes to carry enforcement without visibility.
+  mk_clean_src "$base/norender.yml"
+  grep -v 'GITHUB_STEP_SUMMARY' "$base/norender.yml" > "$base/norender.tmp" && mv "$base/norender.tmp" "$base/norender.yml"
+  if assert_wired "$base/norender.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2h — a source that never writes \$GITHUB_STEP_SUMMARY passed assert_wired; adopters would get the gate without the judgment-surface render"; st=1; else echo "OK: source with no judgment-surface render -> RED (B2 Δ4(ii) anchor is load-bearing)"; fi
+  mk_clean_src "$base/nofence.yml"
+  grep -v 'fence="\$fence"' "$base/nofence.yml" > "$base/nofence.tmp" && mv "$base/nofence.tmp" "$base/nofence.yml"
+  if assert_wired "$base/nofence.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2i — a source rendering the GO record with no grown-fence guard passed assert_wired; a forged field could render a second approved-by line"; st=1; else echo "OK: render without the grown-fence guard -> RED (escaping anchor is load-bearing)"; fi
 
   # 3. STACK-SPECIALIZED source (plant actions/setup-node) -> assert_stack_neutral RED.
   mk_clean_src "$base/stacky.yml"
@@ -339,6 +368,99 @@ selftest() {
   [ "$(_ag_gitlab_only_adopter "$_gl")" = 1 ] || { echo "FAIL: selftest case8a — a GitLab adopter (.gitlab-ci.yml, no adopter-gates workflow) must take the platform-conditional N/A"; st=1; }
   _gh="$base/gh"; mkdir -p "$_gh/.github/workflows"; : > "$_gh/$CI_WF"
   [ "$(_ag_gitlab_only_adopter "$_gh")" = 0 ] || { echo "FAIL: selftest case8b — a GitHub adopter must NOT take the GitLab escape (its missing gates are real drift)"; st=1; }
+
+  # 9. B2 round-2, security M-new-1 — THE RENDER IS EXECUTED, not merely grepped. GitHub caps
+  #    $GITHUB_STEP_SUMMARY at 1 MiB and DROPS THE WHOLE SUMMARY past it, so an unbounded render is
+  #    a "hide the GO record" path by VOLUME: one forged field measured 1,601,670 bytes emitted
+  #    before the bound, which would have posted ceremony-binding PASS with NOTHING rendered — the
+  #    exact outcome Δ4(ii) exists to prevent, and the sentence the guard's ceiling rests on
+  #    ("the honest control is Δ4(ii)'s VISIBILITY"). Cases 2h/2i only assert the render's SHAPE by
+  #    grep; this one RUNS it against a FIXTURE ledger ref — never refs/notes/promotions
+  #    (D-240805-3) — for BOTH real sources, which also witnesses the ci.yml/profile mirror
+  #    behaviourally. Asserts: (a) a huge record renders TRUNCATED, not dropped, (b) the truncation
+  #    is ANNOUNCED (silent truncation hides the record just as effectively), (c) the record's own
+  #    head survives, (d) a normal record is NOT truncated and renders whole, (e) a backtick-run
+  #    body still gets a fence longer than the run (the one-pass fence must not regress the escape).
+  _extract_render() {  # <yml> <out-script> — lift the render step's shell out of the workflow
+    awk '
+      /- name: Render the matched GO record into the step summary/ { instep=1; next }
+      instep && /^[[:space:]]*run: \|/ { inbody=1; next }
+      inbody {
+        if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+        if ($0 !~ /^          /) { exit }
+        sub(/^          /, ""); print
+      }
+    ' "$1" > "$2"
+    [ -s "$2" ]
+  }
+  _fixture_ledger() {  # <dir> <body-file> — a throwaway repo whose FIXTURE notes ref holds the record
+    mkdir -p "$1"
+    ( cd "$1" && git init -q . \
+      && git config user.email tester@example.com && git config user.name tester \
+      && git commit -q --allow-empty -m base \
+      && git notes --ref=fixture-go add -F "$2" HEAD ) >/dev/null 2>&1
+  }
+  _render_into() {  # <script> <repo> <summary-out> — run the extracted render as CI would
+    : > "$3"
+    ( cd "$2" && PROMOTION_NOTES_REF=fixture-go PR_NUMBER=909 GATE_RC=0 \
+        GITHUB_STEP_SUMMARY="$3" sh "$1" ) >/dev/null 2>&1
+  }
+  _rbig="$base/render-big.txt"
+  { printf 'gate: design\nscope: PR-909\napproved-by: someone [assurance: declared]\n'
+    awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 1600; j++) print s }'
+  } > "$_rbig"
+  _rtick="$base/render-tick.txt"
+  { printf 'gate: design\nscope: PR-909\n'
+    awk 'BEGIN { s = ""; for (i = 0; i < 2000; i++) s = s "`"; print s }'
+  } > "$_rtick"
+  _rsmall="$base/render-small.txt"
+  printf 'gate: design\nscope: PR-909\napproved-by: owner [assurance: declared]\nbasis: docs/architecture/x-design.md\n' > "$_rsmall"
+  _rn=0
+  for _rsrc in "$SRC" "$CI_WF"; do
+    _rn=$((_rn + 1))
+    if [ ! -f "$_rsrc" ]; then echo "FAIL: selftest case9 — $_rsrc is missing; the judgment-surface render cannot be witnessed"; st=1; continue; fi
+    _rscript="$base/render$_rn.sh"
+    if ! _extract_render "$_rsrc" "$_rscript"; then
+      echo "FAIL: selftest case9 — could not extract the render step's shell from $_rsrc (the step name or its \`run: |\` indentation changed; this case would silently stop witnessing the render)"; st=1; continue
+    fi
+    # (a)(b)(c) — the 1.6 MB forged record
+    _rrepo="$base/rrepo$_rn"; _fixture_ledger "$_rrepo" "$_rbig"
+    _rout="$base/summary-big$_rn.md"
+    _render_into "$_rscript" "$_rrepo" "$_rout"
+    _rbytes=$(wc -c < "$_rout" | tr -d ' ')
+    if [ "$_rbytes" -le 65536 ]; then
+      echo "OK: $_rsrc renders a $(wc -c < "$_rbig" | tr -d ' ')-byte record in $_rbytes bytes (under GitHub's 1 MiB summary cap, so the record is not DROPPED)"
+    else
+      echo "FAIL: selftest case9a — $_rsrc emitted $_rbytes bytes for one oversized record; GitHub drops a >1 MiB step summary WHOLE, so ceremony-binding would post PASS with no record rendered"; st=1
+    fi
+    if grep -qF 'truncated at 8 KB' "$_rout"; then
+      echo "OK: $_rsrc ANNOUNCES the truncation (silent truncation hides the record just as well)"
+    else
+      echo "FAIL: selftest case9b — $_rsrc truncated (or dropped) the record with no notice; the reader cannot tell a short record from a cut one"; st=1
+    fi
+    grep -qF 'gate: design' "$_rout" \
+      && echo "OK: $_rsrc keeps the record's own head inside the truncated render" \
+      || { echo "FAIL: selftest case9c — $_rsrc rendered nothing of the record itself"; st=1; }
+    # (d) — a NORMAL record must be untouched (the bound must not truncate ordinary records)
+    _rrepo2="$base/rsmall$_rn"; _fixture_ledger "$_rrepo2" "$_rsmall"
+    _rout2="$base/summary-small$_rn.md"
+    _render_into "$_rscript" "$_rrepo2" "$_rout2"
+    if grep -qF 'basis: docs/architecture/x-design.md' "$_rout2" && ! grep -qF 'truncated at 8 KB' "$_rout2"; then
+      echo "OK: $_rsrc renders a normal record WHOLE, with no truncation notice"
+    else
+      echo "FAIL: selftest case9d — $_rsrc did not render a normal record whole/untruncated"; st=1
+    fi
+    # (e) — the escape must survive the one-pass fence computation
+    _rrepo3="$base/rtick$_rn"; _fixture_ledger "$_rrepo3" "$_rtick"
+    _rout3="$base/summary-tick$_rn.md"
+    _render_into "$_rscript" "$_rrepo3" "$_rout3"
+    _rfence=$(awk '/^`+$/ { if (length($0) > m) m = length($0) } END { print m + 0 }' "$_rout3")
+    if [ "$_rfence" -gt 2000 ]; then
+      echo "OK: $_rsrc fences a 2,000-backtick body with a $_rfence-backtick fence (no content can close it)"
+    else
+      echo "FAIL: selftest case9e — $_rsrc emitted a $_rfence-backtick fence for a 2,000-backtick body; ledger content could close the fence and render as markdown"; st=1
+    fi
+  done
 
   if [ "$st" = 0 ]; then echo "adopter-gates-parity --selftest: OK (all cases witnessed)"; else echo "adopter-gates-parity --selftest: FAIL"; fi
   return "$st"

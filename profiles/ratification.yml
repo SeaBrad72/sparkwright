@@ -190,6 +190,18 @@ jobs:
           if [ "$state" != NONE ]; then class=control-plane
           elif [ "$class" = control-plane ]; then class=sensitive
           fi
+          # B2 Δ4(ii), MIRRORED from .github/workflows/ratification.yml (reviewer I4: adopters were
+          # getting the gate without the visibility half of the disposition — the mirror-divergence
+          # class B6 paid a Critical for). The two derived lines go onto the judgment surface (the
+          # step summary) so a reviewer sees what the gate derived without opening the log.
+          # Both values are gate-derived tokens from a closed vocabulary, written with printf '%s' —
+          # never interpolated as a workflow expression — and $GITHUB_STEP_SUMMARY is a markdown file
+          # this step only appends to (no eval surface, no token use). Stack-neutral: POSIX sh only.
+          {
+            printf '%s\n' '### control-plane-ratification' ''
+            printf -- '- **ratification state**: `%s`\n' "$state"
+            printf -- '- **change-class (reconciled)**: `%s`\n' "$class"
+          } >> "$GITHUB_STEP_SUMMARY"
           # The rc -> (status, conclusion, title, summary) mapping lives in conformance/agent-boundary.sh,
           # where it is --selftest-able. Inline YAML cannot be unit-tested. rc=1 comes back as
           # status=in_progress with a DELIBERATELY EMPTY conclusion (the yellow, still-blocking state).

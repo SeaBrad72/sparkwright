@@ -114,6 +114,205 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
   return 0
 }
 
+# go_check_ref — B2: the design-GO leg. For a Sensitive/Control-plane push, runs the SAME predicate
+# CI backstops — `conformance/ceremony-binding.sh --pre-push` — against the local GO ledger.
+# Δ1′ (owner ruling D11): that predicate matches `^gate: design$` AND `scope: branch/<current>`,
+# where the branch key is derived by the predicate's OWN prepush_scope_key(). ⚠️ THIS HOOK MUST NOT
+# RE-DERIVE THE BRANCH. D11's trap warning is binding and ceremony-binding.sh already refused a
+# sixth derivation site once (its header, "CLASS IS DERIVED BY A SINGLE AUTHORITY"): two copies of
+# a key are defect-compatible only until they drift, and nothing locks them together. The hook
+# passes no key and reads no branch — it relays the predicate's verdict, whose text names the exact
+# `--scope branch/<name>` the operator must record.
+# Observe-only by default; KIT_PUSH_GO=enforce (exact string) escalates to a refusal. No ordering
+# claim, same as CI.
+# Design: docs/architecture/2026-08-07-b2-go-records-prepush-design.md (§3a Δ1′, Δ2+Δ3).
+# CEILING (bind-not-authenticate, restated where the leg lives): a git note BINDS, it does not
+# AUTHENTICATE (scripts/promotion-verify.sh:38-44) — an agent under the owner's git identity can
+# mint a front-door record and no local mechanism can distinguish it. PREVENTION IS NOT CLAIMED:
+# the full D-240805-3 disposition is the subagent-brief ledger-write prohibition (process) + the
+# guard's raw-ledger-write deny (the back door) + the record rendered VERBATIM at the CI judgment
+# surface (visibility, D-240805-4). And this leg is a SPEED BUMP, not a boundary — --no-verify, a
+# never-installed hook, or an absent predicate script all bypass it (B1's ceiling, unchanged).
+# STALENESS: this leg never fetches (offline discipline). An absent local refs/notes/promotions is
+# N/A-with-nudge (first-run-green — no default refspec fetches notes, design S4); a stale one can
+# FALSE-REFUSE (same fetch remedy) but never weaken CI, which reads the fresh ledger. The class
+# gate derives from the PUSHED sha's diff vs its origin merge-base via the same single authority
+# (promotion-readiness.sh --class); the predicate re-derives from the AMBIENT tree — the B1-A2
+# divergence is inherited and disclosed, and the measured-worst case (an empty/underivable
+# change-set deriving control-plane, S5) is removed by the empty-changeset skip below.
+# MULTI-BRANCH CEILING (disclosed, a consequence of D11's single-derivation rule): the scope key is
+# the CHECKED-OUT branch, so `git push origin a b` grades BOTH lines against the checked-out
+# branch's GO. CI keys on the PR and backstops each branch separately. The alternative — deriving a
+# key per pushed ref-line — is the second derivation site D11 forbids. Because that verdict is
+# invocation-wide, it is CONSULTED once (REV M6) and RELAYED once (round 2, reviewer Minor 3); the
+# rc is still decided per ref-line.
+
+# go_relay — the leg's ONE verdict surface (all three non-pass paths route through it): observe
+# prints and ALLOWS, enforce prints and REFUSES. Δ3 — the EXACT string "enforce" and nothing else
+# escalates; `KIT_PUSH_GO=1` is observe, which is what the selftest's dial case pins (a `[ -n "$X" ]`
+# mutant of this test survived every other leg, reviewer M4).
+go_relay() { # captured-reasons
+  # [reviewer Minor 3, round 2] ONE RELAY PER PUSH INVOCATION. REV M6 memoized the predicate's COST;
+  # the TEXT was still emitted per ref-line, so `git push origin a b` printed the identical verdict
+  # block twice. The verdict is invocation-wide by construction (it depends on the ambient tree, the
+  # local ledger and the CHECKED-OUT branch — none of which change between ref-lines), so the second
+  # copy carries no information and buries the first. The RC is unchanged: it is still decided
+  # per line, by the same exact-string dial test, so a mutant flipping the dial cannot hide on the
+  # quiet path either.
+  if [ "${_go_relayed:-0}" -eq 1 ]; then
+    [ "${KIT_PUSH_GO:-}" = "enforce" ] || return 0
+    return 1
+  fi
+  _go_relayed=1
+  if [ "${KIT_PUSH_GO:-}" = "enforce" ]; then
+    # [-n check] a predicate that fails closed with no stderr must not relay a bare prefix line.
+    if [ -n "$1" ]; then
+      printf '%s\n' "$1" | while IFS= read -r _go_line; do
+        printf 'kit pre-push: %s\n' "$_go_line" >&2
+      done
+    fi
+    printf 'kit pre-push:   remedy: record the design GO FOR THIS BRANCH through the ceremonial front\n' >&2
+    printf 'kit pre-push:            door, then publish it (the lines above name the exact key):\n' >&2
+    printf 'kit pre-push:            scripts/promotion-verify.sh record --gate design --scope branch/<name> \\\n' >&2
+    printf 'kit pre-push:              --approved-sha <design-commit> --approved-by <human> --basis <design-doc>\n' >&2
+    printf 'kit pre-push:            git push origin refs/notes/promotions\n' >&2
+    printf '  override (deliberate): git push --no-verify\n' >&2
+    return 1
+  fi
+  if [ -n "$1" ]; then
+    printf '%s\n' "$1" | while IFS= read -r _go_line; do
+      printf 'kit pre-push (observe): %s\n' "$_go_line" >&2
+    done
+  fi
+  printf 'kit pre-push (observe):   set KIT_PUSH_GO=enforce to refuse this push instead of observing.\n' >&2
+  return 0
+}
+
+go_check_ref() { # local_ref local_sha remote_ref remote_sha
+  _go_sha=$2
+  _go_ref=$3
+  # D1 — dispatch, inherited from the decl leg verbatim: skip anything this leg cannot grade.
+  case "$_go_ref" in
+    refs/heads/*) : ;;
+    *) return 0 ;;                                  # tags, notes, etc. — not a branch push
+  esac
+  case "$_go_sha" in
+    *[!0]*) : ;;
+    *) return 0 ;;                                  # all-zero local_sha — a deletion
+  esac
+  case "$_go_ref" in
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+  esac
+  # Defense-in-depth (inherited): only a hex object id may reach any argv below.
+  case "$_go_sha" in
+    *[!0-9a-fA-F]*) return 0 ;;
+  esac
+  # D2 — degradation: an absent/unreadable predicate N/As SILENTLY (first-run-green on adopter trees).
+  _go_pred="$ROOT/conformance/ceremony-binding.sh"
+  [ -f "$_go_pred" ] && [ -r "$_go_pred" ] || return 0
+  # [REV M2] VERSION SKEW — an OLDER ceremony-binding.sh answers `unknown arg '--pre-push'` on
+  # stderr and exits 2, which this leg's fail-closed rule would relay as "record a design GO": an
+  # instruction that cannot fix the real problem, on a push that is probably fine. PROBE the mode
+  # and N/A with the REAL reason instead. Guaranteed on the PR that INTRODUCES the mode (the hook
+  # is installed per-clone and can be newer than the checkout) and normal during an adopter upgrade
+  # where hooks/ and conformance/ advance out of step. Precedent: ratification.yml's
+  # `grep -q -- '--check-complete'` probe, same shape and same reasoning.
+  if ! grep -q -- '--pre-push' "$_go_pred" 2>/dev/null; then
+    printf 'kit pre-push (GO): this checkout of conformance/ceremony-binding.sh predates --pre-push, so the design-GO leg is N/A for this push (not a missing GO). Expected while the mode is being introduced, and during an adopter upgrade where hooks/ and conformance/ advance out of step.\n' >&2
+    return 0
+  fi
+  # [SEC M1] THE LEDGER REF IS NOT AN OPERATOR DIAL. Δ1′ made this leg able to REFUSE, which turns
+  # PROMOTION_NOTES_REF into a bypass CHEAPER than --no-verify: --no-verify at least announces
+  # itself in the command line, whereas an exported env var repointing the reader at a ledger the
+  # operator wrote is silent and sticky. So the hook PINS the ref to the default and passes it
+  # EXPLICITLY to the predicate (below); a non-default value in the environment is an ANOMALY,
+  # routed through this leg's own dial — loud under observe, refused under enforce.
+  _go_notes=promotions
+  if [ -n "${PROMOTION_NOTES_REF:-}" ] && [ "${PROMOTION_NOTES_REF}" != "$_go_notes" ]; then
+    go_relay "PROMOTION_NOTES_REF='$PROMOTION_NOTES_REF' repoints the GO ledger away from refs/notes/$_go_notes.
+  This leg reads the DEFAULT ledger only — an env-selected ledger would be a silent bypass of a
+  refusing gate. Unset it (the predicate's own fixtures set it in throwaway repos, never here)."
+    return $?
+  fi
+  # Δ2 — an ABSENT local ledger is N/A with ONE observe-line naming the fetch (never a refusal:
+  # a fresh clone has no refs/notes/* and that is a normal state, not a missing ceremony).
+  if ! git rev-parse -q --verify "refs/notes/$_go_notes" >/dev/null 2>&1; then
+    printf "kit pre-push (GO): no local GO ledger (refs/notes/%s) - N/A. Fetch it: git fetch origin '+refs/notes/*:refs/notes/*'\n" "$_go_notes" >&2
+    return 0
+  fi
+  # Δ3 — the class gate on the PUSHED change-set, via the single authority the kit's gates share
+  # (promotion-readiness.sh --class). Fail-safe stays HIGH everywhere except the one measured
+  # false-refusal surface: a diff that is MEASURED EMPTY vs merge-base cannot need a design GO.
+  _go_cls=""
+  _go_base=$(git merge-base "$_go_sha" refs/remotes/origin/main 2>/dev/null) \
+    || _go_base=$(git merge-base "$_go_sha" refs/remotes/origin/master 2>/dev/null) \
+    || _go_base=""
+  # [REV M1] -z, NOT bare --name-only. The newline-delimited form SPLITS a path containing a literal
+  # newline into fragments that each classify separately, and because is_control_plane_path carries
+  # SUFFIX-constrained patterns (`agents/*.agent.md`) neither fragment matches: the measured result
+  # is `ordinary` and this leg SKIPS — a DOWNGRADE, i.e. fail-OPEN, not the fail-safe the class gate
+  # claims. This mirrors the hardening applied at all five other derivation sites in v3.186.0
+  # (--no-renames + core.quotePath=false + -z + the newline detector) and reuses
+  # promotion-readiness.sh:176's exact detector idiom. A NUL stream carries a newline byte ONLY when
+  # a filename does, so: detect -> do not classify -> fall through to the fail-safe HIGH below.
+  if [ -n "$_go_base" ]; then
+    _go_z=$(mktemp 2>/dev/null) || _go_z=""
+    if [ -n "$_go_z" ]; then
+      if git -c core.quotePath=false diff --name-only -z --no-renames "$_go_base" "$_go_sha" \
+           > "$_go_z" 2>/dev/null </dev/null; then
+        if [ "$(LC_ALL=C tr -cd '\n' < "$_go_z" | wc -c | tr -d ' ')" != 0 ]; then
+          printf 'kit pre-push (GO): a changed path carries a literal NEWLINE - refusing to classify a split change-set; the leg proceeds (fail-safe HIGH).\n' >&2
+        elif [ ! -s "$_go_z" ]; then
+          printf 'kit pre-push (GO): empty change-set vs merge-base - a design GO gates changes, and there are none; skipping this leg.\n' >&2
+          rm -f "$_go_z"
+          return 0
+        else
+          _go_prs="$ROOT/conformance/promotion-readiness.sh"
+          if [ -f "$_go_prs" ] && [ -r "$_go_prs" ]; then
+            _go_lst=$(mktemp 2>/dev/null) || _go_lst=""
+            if [ -n "$_go_lst" ]; then
+              tr '\0' '\n' < "$_go_z" > "$_go_lst"
+              _go_cls=$(sh "$_go_prs" --changed "$_go_lst" --class 2>/dev/null </dev/null | tail -1) || _go_cls=""
+              rm -f "$_go_lst"
+            fi
+          fi
+        fi
+      fi
+      rm -f "$_go_z"
+    fi
+  fi
+  case "$_go_cls" in
+    ordinary) return 0 ;;                           # only sensitive/control-plane proceed
+    sensitive | control-plane) : ;;
+    *) : ;;                                         # underivable -> fail-safe HIGH: proceed
+  esac
+  # The predicate itself — the same script CI runs, keyed on the branch instead of the PR number.
+  # Stderr captured (its reasons); stdout (the OK verdict) is not this leg's business. </dev/null:
+  # stdin isolation, the SEC MEDIUM-1 property inherited from the decl leg (this runs inside the
+  # push-protocol read loop). PROMOTION_NOTES_REF is passed EXPLICITLY (SEC M1, pinned above).
+  #
+  # [REV M6] MEMOIZED for this push invocation. The predicate's answer depends only on the ambient
+  # tree, the local ledger and the checked-out branch — none of which change between the ref-lines
+  # of ONE `git push` — while the cost is linear in ledger size (measured ~1.7s per line on a
+  # 107-record ledger), so a 2-branch push paid for the same answer twice. The CLASS gate above is
+  # deliberately NOT memoized: it is derived per PUSHED SHA and genuinely differs per line.
+  if [ "${_go_memo:-0}" -eq 0 ]; then
+    if _go_memo_out=$(PROMOTION_NOTES_REF="$_go_notes" sh "$_go_pred" --pre-push 2>&1 >/dev/null </dev/null); then
+      _go_memo_rc=0
+    else
+      _go_memo_rc=1
+    fi
+    _go_memo=1
+  fi
+  if [ "$_go_memo_rc" -eq 0 ]; then
+    return 0                                        # rc 0: pass / N-A — silent
+  fi
+  # Nonzero (rc 1 WAITING and rc 2 anomaly alike — FAIL-CLOSED on could-not-evaluate, the B1-proven
+  # D3 shape): observe prints and allows; enforce prints and refuses (go_relay).
+  go_relay "$_go_memo_out"
+  return $?
+}
+
 if [ "${1:-}" = "--selftest" ]; then
   fail=0
   Z=0000000000000000000000000000000000000000
@@ -247,6 +446,15 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_expect_contains "observe relays the predicate's first reason line" "stub declaration reason" "$decl_out"
   decl_expect_contains "observe relays the predicate's second reason line" "stub remedy detail" "$decl_out"
 
+  # [REV M4] THE DIAL IS AN EXACT-STRING TEST, and this is the leg that proves it. Every case above
+  # uses either "enforce" or the empty string, so the mutant `[ "$X" = "enforce" ]` -> `[ -n "$X" ]`
+  # SURVIVED the whole suite (measured, review round 1): with it, any non-empty value escalates to a
+  # refusal — the truthy-looking `KIT_PUSH_DECL=1` an operator would plausibly type would start
+  # BLOCKING pushes that the documented dial says are observe-only. One case per leg kills it.
+  decl_run 1 "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "dial: KIT_PUSH_DECL=1 is NOT the exact string — stays observe"
+  decl_expect_contains "dial: KIT_PUSH_DECL=1 prints the observe prefix" "kit pre-push (observe):" "$decl_out"
+
   # [REV H3] rc 2 (could-not-evaluate) must fail CLOSED in enforce mode exactly like rc 1 — the
   # leg's own comment is "D3 — nonzero (rc 1 AND rc 2 ...)"; a `-eq 1`-only check would silently
   # allow rc 2 through instead and this case would go red.
@@ -338,6 +546,318 @@ if [ "${1:-}" = "--selftest" ]; then
     fail=1
   fi
 
+  # ---------------------------------------------------------------------------------------------
+  # B2 — the design-GO leg (go_check_ref). Same isolation pattern as the decl section above: the
+  # permissive DECL_CORE isolates the guard leg, and the predicate is a planted STUB
+  # conformance/ceremony-binding.sh (scripted rc), never the real script — the real predicate is
+  # proven where it lives (ceremony-binding.sh --selftest legs P1-P7).
+  # THE LEDGER REF. [SEC M1] the hook PINS the ref to `promotions` and refuses a non-default
+  # PROMOTION_NOTES_REF (G13), so these fixtures can no longer redirect it: each case writes
+  # refs/notes/promotions INSIDE ITS OWN THROWAWAY REPO ($T / $TG / $TN — a `git init` under
+  # mktemp -d), never in the repository this hook is installed in. That is the same fixture
+  # convention conformance/ceremony-binding.sh's selftest already uses (_mkfix/_mklink).
+  # ---------------------------------------------------------------------------------------------
+  rm -f "$T/conformance/loop-state.sh"   # keep the decl leg silently N/A (D2) for every GO case
+
+  go_plant_stub() { # dir rc [record-file] — a scripted conformance/ceremony-binding.sh stub
+    _gps_dir=$1; _gps_rc=$2; _gps_rec=${3:-}
+    mkdir -p "$_gps_dir/conformance"
+    {
+      echo '#!/bin/sh'
+      # The stub must ADVERTISE the mode: the leg probes for the literal `--pre-push` before
+      # invoking (the version-skew guard, G0). A stub without it would N/A every case below —
+      # vacuously green. G0 plants the stub that deliberately lacks it.
+      echo '# supports --pre-push'
+      [ -n "$_gps_rec" ] && printf 'echo called >> "%s"\n' "$_gps_rec"
+      echo 'echo "ceremony-binding: stub GO reason" >&2'
+      echo 'echo "  stub GO remedy detail" >&2'
+      printf 'exit %s\n' "$_gps_rc"
+    } > "$_gps_dir/conformance/ceremony-binding.sh"
+    chmod +x "$_gps_dir/conformance/ceremony-binding.sh"
+  }
+
+  go_run() { # dir KIT_PUSH_GO-value ref-line(s) -> sets go_out, go_rc (re-invokes $SELF)
+    go_out=$(cd "$1" && printf '%s\n' "$3" \
+      | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_GO="$2" sh "$SELF" 2>&1); go_rc=$?
+  }
+
+  # [round 3 — CI-CAUGHT, FIXTURE HERMETICITY] THE FIXTURE LEDGER IS BUILT WITH AN EXPLICIT IDENTITY,
+  # AND ITS CREATION IS ASSERTED. Measured on CI (run 31185508364, job 92888909087, conformance-core):
+  # every ledger write below was a bare `git notes --ref=promotions add ... 2>/dev/null` carrying NO
+  # `-c user.email/-c user.name`, unlike every other git command in this selftest. A GitHub runner has
+  # no configured git identity and cannot auto-detect one, so the note write FAILED, `2>/dev/null` ate
+  # the reason, the throwaway repo ended up with NO refs/notes/promotions — and all of the GO cases
+  # took the Δ2 absent-ledger N/A path. Green on the dev-clone (which HAS a global identity), red on
+  # every runner: the FIXTURE-HERMETICITY class (B4's retro — "a selftest cell reading the ambient
+  # tree's kit markers: green on dev, wrong on every export"), here reading the ambient git CONFIG.
+  # Cure, both halves: (1) pass the identity explicitly like every other fixture commit, so the write
+  # cannot depend on ambient config; (2) ASSERT the ref afterwards, so a fixture that fails to build
+  # reds HERE with its real reason instead of silently N/A-ing every case downstream into a green
+  # (before this assertion existed, a broken fixture produced 25 confusing failures and, in the
+  # absent-ledger direction, could produce none at all).
+  go_mkledger() { # dir — create refs/notes/promotions INSIDE the throwaway repo $1, hermetically
+    _gml_err=$( (cd "$1" && git -c user.email=t@kit -c user.name=kit \
+        notes --ref=promotions add -f -m "b2 selftest fixture" HEAD) 2>&1 ) || :
+    if ( cd "$1" && git rev-parse -q --verify refs/notes/promotions >/dev/null 2>&1 ); then
+      echo "PASS: fixture ledger built in the throwaway repo (no ambient identity, no ambient notes)"
+    else
+      echo "FAIL: fixture ledger was NOT built in $1 — every GO case below would vacuously N/A"
+      echo "  got: $_gml_err"; fail=1
+    fi
+  }
+
+  go_no_ledger() { # dir — assert the fixture repo has NO ledger (the deliberate absent-ledger case)
+    if ( cd "$1" && git rev-parse -q --verify refs/notes/promotions >/dev/null 2>&1 ); then
+      echo "FAIL: the absent-ledger fixture $1 HAS a ledger — the N/A case below would prove nothing"
+      fail=1
+    else
+      echo "PASS: absent-ledger fixture really has no refs/notes/promotions (precondition)"
+    fi
+  }
+
+  # G0 [REV M2] — VERSION SKEW. A conformance/ceremony-binding.sh that predates --pre-push must
+  # N/A with the REAL reason, never be relayed as "record a design GO". Without the probe the old
+  # script answers `unknown arg '--pre-push'` + rc 2, and this leg's fail-closed rule turns that
+  # into an enforce REFUSAL telling the operator to record an approval that would not help.
+  mkdir -p "$T/conformance"
+  printf '#!/bin/sh\necho "ceremony-binding: unknown arg (old copy)" >&2\nexit 2\n' \
+    > "$T/conformance/ceremony-binding.sh"
+  chmod +x "$T/conformance/ceremony-binding.sh"
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: a checkout predating --pre-push is N/A even under enforce"
+  decl_expect_contains "GO leg: version skew names the real reason" "predates --pre-push" "$go_out"
+
+  # G1 — an ABSENT local ledger is N/A (rc 0) with ONE observe-line naming the fetch command, even
+  # under enforce, and the predicate is NEVER invoked. First-run-green (design S4/Δ2): a fresh
+  # clone fetches no refs/notes/* by default, and that must nudge, not block. [MUTANT-B target: an
+  # absent-ref path that returns WAITING/refuses instead of N/A reds this case.]
+  # THIS is the one deliberate absent-ledger case, and it is the reason the fixture PRECONDITION is
+  # asserted on both sides: $T carries no notes ref until go_mkledger runs below, and if it ever did
+  # (an ambient ledger leaking in, the mirror image of the round-3 defect) this case would pass while
+  # testing the wrong path.
+  go_no_ledger "$T"
+  go_plant_stub "$T" 1 "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: absent ledger ref is N/A even under enforce"
+  decl_expect_contains "GO leg: absent-ledger N/A names the fetch remedy" "+refs/notes/*:refs/notes/*" "$go_out"
+  decl_expect_not_invoked "GO leg: absent ledger ref (predicate must not run)" "$T/go-invoked"
+
+  # The fixture ledger for every case below — inside the throwaway repo $T, never the real one.
+  go_mkledger "$T"
+
+  # G2 — positive control: ledger present, predicate rc 0 => invoked, allowed, SILENT.
+  go_plant_stub "$T" 0 "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: passing predicate allows the push"
+  [ -f "$T/go-invoked" ] && echo "PASS: GO leg invokes the predicate on a normal branch line (record control)" \
+    || { echo "FAIL: GO leg must invoke the predicate on a normal branch line (record control)"; fail=1; }
+  [ -z "$go_out" ] && echo "PASS: GO leg passing predicate is silent" \
+    || { echo "FAIL: GO leg passing predicate must be silent, got: $go_out"; fail=1; }
+
+  # G3 — enforce + rc 1 (WAITING) => REFUSED, relaying the verdict, naming the BRANCH-SCOPED record
+  # command (the hook's own fixed remedy line — MUTANT-C target) and keeping the honesty line.
+  go_plant_stub "$T" 1
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" refuse "GO leg: enforce + WAITING predicate refuses the push"
+  decl_expect_contains "GO leg enforce uses the enforce prefix" "kit pre-push:" "$go_out"
+  decl_expect_contains "GO leg enforce relays the predicate's first reason line" "stub GO reason" "$go_out"
+  decl_expect_contains "GO leg enforce relays the predicate's second reason line" "stub GO remedy detail" "$go_out"
+  decl_expect_contains "GO leg enforce names the record command" "promotion-verify.sh record" "$go_out"
+  # Δ1′: the remedy must name the BRANCH scope, not a bare `--gate design ...`. A record for the
+  # wrong key satisfies nothing, so an operator told only "record a GO" cannot clear this refusal.
+  decl_expect_contains "GO leg enforce names the branch scope in the record command" "--scope branch/" "$go_out"
+  decl_expect_contains "GO leg enforce keeps the --no-verify honesty line" "--no-verify" "$go_out"
+
+  # G4 — observe (default) + rc 1 => ALLOWED, observe prefix + the escalation hint + the relay.
+  go_run "$T" "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: observe + WAITING predicate still allows the push"
+  decl_expect_contains "GO leg observe uses the observe prefix" "kit pre-push (observe):" "$go_out"
+  decl_expect_contains "GO leg observe hints the enforce dial" "KIT_PUSH_GO=enforce" "$go_out"
+  decl_expect_contains "GO leg observe relays the predicate's reason" "stub GO reason" "$go_out"
+
+  # G4b [REV M4] — THE DIAL IS AN EXACT-STRING TEST. Every other case uses "enforce" or "", so the
+  # mutant `[ "$X" = "enforce" ]` -> `[ -n "$X" ]` SURVIVED the whole suite (measured, review round
+  # 1): under it the truthy-looking KIT_PUSH_GO=1 an operator would plausibly type starts BLOCKING
+  # pushes the documented dial calls observe-only. This case is the kill.
+  go_run "$T" 1 "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "dial: KIT_PUSH_GO=1 is NOT the exact string — stays observe"
+  decl_expect_contains "dial: KIT_PUSH_GO=1 prints the observe prefix" "kit pre-push (observe):" "$go_out"
+
+  # G5 — rc 2 (anomaly / could-not-evaluate) FAILS CLOSED under enforce, exactly like rc 1.
+  # [MUTANT-A target: deleting the fail-closed handling of rc 2 reds this case.]
+  go_plant_stub "$T" 2
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" refuse "GO leg: enforce + predicate rc 2 (anomaly) fails closed"
+  decl_expect_contains "GO leg rc-2 enforce keeps the --no-verify honesty line" "--no-verify" "$go_out"
+
+  # G6 — rc 2, observe side: allowed, LOUD (the anomaly is relayed, not swallowed).
+  go_run "$T" "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: observe + predicate rc 2 still allows the push"
+  decl_expect_contains "GO leg rc-2 observe relays the anomaly" "stub GO reason" "$go_out"
+
+  # G7 — dispatch (B1 D1 inherited): deletions, tags and the default branch never reach the predicate.
+  go_plant_stub "$T" 1 "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_run "$T" enforce "refs/heads/feature/x $Z refs/heads/feature/x $HEAD"
+  decl_expect_not_invoked "GO leg: deletion line (zero local_sha)" "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_run "$T" enforce "refs/tags/v1 $HEAD refs/tags/v1 $Z"
+  decl_expect_not_invoked "GO leg: tag line (remote_ref not refs/heads/*)" "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_run "$T" enforce "refs/heads/main $HEAD refs/heads/main $Z"
+  decl_expect_not_invoked "GO leg: default-branch line (refs/heads/main)" "$T/go-invoked"
+
+  # G13 [SEC M1] — PROMOTION_NOTES_REF IS NOT AN OPERATOR DIAL. With Δ1′ this leg can refuse, so an
+  # env var that repoints the reader at a ledger the operator wrote would be a bypass CHEAPER than
+  # --no-verify (silent, sticky, and it leaves no trace in the push command). It is an ANOMALY:
+  # refused under enforce, loud under observe. The ledger and a PASSING predicate are both present,
+  # so the only thing that can produce a refusal here is the env check itself.
+  go_plant_stub "$T" 0 "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_notes_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\n' "$HEAD" "$Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" PROMOTION_NOTES_REF=b2fix-elsewhere KIT_PUSH_GO=enforce sh "$SELF" 2>&1)
+  go_notes_rc=$?
+  decl_expect_rc "$go_notes_rc" refuse "GO leg: a non-default PROMOTION_NOTES_REF is refused under enforce"
+  decl_expect_contains "GO leg: the ledger-ref refusal names the variable" "PROMOTION_NOTES_REF" "$go_notes_out"
+  decl_expect_not_invoked "GO leg: non-default ledger ref (predicate must not run)" "$T/go-invoked"
+  go_notes_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\n' "$HEAD" "$Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" PROMOTION_NOTES_REF=b2fix-elsewhere sh "$SELF" 2>&1)
+  go_notes_rc=$?
+  decl_expect_rc "$go_notes_rc" allow "GO leg: a non-default PROMOTION_NOTES_REF is loud but allowed under observe"
+  decl_expect_contains "GO leg: the observe form is still disclosed" "kit pre-push (observe):" "$go_notes_out"
+  # The DEFAULT value, explicitly set, is NOT an anomaly — it is what the hook itself passes down.
+  go_plant_stub "$T" 0 "$T/go-invoked"
+  rm -f "$T/go-invoked"
+  go_notes_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\n' "$HEAD" "$Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" PROMOTION_NOTES_REF=promotions KIT_PUSH_GO=enforce sh "$SELF" 2>&1)
+  go_notes_rc=$?
+  decl_expect_rc "$go_notes_rc" allow "GO leg: PROMOTION_NOTES_REF=promotions (the default) is not an anomaly"
+  [ -f "$T/go-invoked" ] && echo "PASS: GO leg still runs the predicate on the default ledger ref" \
+    || { echo "FAIL: GO leg must still run the predicate on the default ledger ref"; fail=1; }
+
+  # G14 [REV M6] — MEMOIZATION. Two branch ref-lines in ONE push invocation must consult the
+  # predicate ONCE: its answer depends only on the ambient tree, the local ledger and the
+  # checked-out branch, none of which change mid-push, and it costs ~1.7s per call on a
+  # 107-record ledger. Counted through the record file (one `called` line per invocation).
+  go_plant_stub "$T" 0 "$T/go-count"
+  rm -f "$T/go-count"
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z
+refs/heads/feature/y $HEAD refs/heads/feature/y $Z"
+  _go_calls=$(wc -l < "$T/go-count" 2>/dev/null | tr -d ' '); [ -n "$_go_calls" ] || _go_calls=0
+  if [ "$_go_calls" = 1 ]; then
+    echo "PASS: GO leg consults the predicate ONCE for a 2-branch push (memoized)"
+  else
+    echo "FAIL: GO leg invoked the predicate $_go_calls time(s) for a 2-branch push (want 1)"; fail=1
+  fi
+
+  # G14b [reviewer Minor 3, round 2] — ONE RELAY PER PUSH INVOCATION. G14 memoizes the predicate's
+  # COST; the OUTPUT was still emitted per ref-line, so a 2-branch push printed the identical verdict
+  # block twice (the second copy carries no new information and buries the first). The rc must not
+  # change: every graded line still fails, so enforce still REFUSES and observe still allows.
+  go_plant_stub "$T" 1
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z
+refs/heads/feature/y $HEAD refs/heads/feature/y $Z"
+  _go_relays=$(printf '%s\n' "$go_out" | grep -c 'stub GO reason' || true)
+  decl_expect_rc "$go_rc" refuse "GO leg: a 2-branch push under enforce still refuses"
+  if [ "$_go_relays" = 1 ]; then
+    echo "PASS: GO leg relays the verdict ONCE for a 2-branch push under enforce"
+  else
+    echo "FAIL: GO leg relayed the verdict $_go_relays time(s) for a 2-branch push under enforce (want 1)"; fail=1
+  fi
+  go_run "$T" "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z
+refs/heads/feature/y $HEAD refs/heads/feature/y $Z"
+  _go_relays=$(printf '%s\n' "$go_out" | grep -c 'stub GO reason' || true)
+  decl_expect_rc "$go_rc" allow "GO leg: a 2-branch push under observe still allows"
+  if [ "$_go_relays" = 1 ]; then
+    echo "PASS: GO leg relays the verdict ONCE for a 2-branch push under observe"
+  else
+    echo "FAIL: GO leg relayed the verdict $_go_relays time(s) for a 2-branch push under observe (want 1)"; fail=1
+  fi
+
+  # G8 — the Δ3 empty-changeset skip: a push introducing NO changes vs merge-base cannot need a
+  # design GO — skipped with one disclosed line, predicate not invoked (S5's false-refusal surface).
+  go_plant_stub "$T" 1 "$T/go-invoked"
+  ( cd "$T" && git update-ref refs/remotes/origin/main "$HEAD" )
+  rm -f "$T/go-invoked"
+  go_run "$T" enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: empty change-set vs merge-base is skipped"
+  decl_expect_contains "GO leg: empty-changeset skip is disclosed" "empty change-set" "$go_out"
+  decl_expect_not_invoked "GO leg: empty change-set (predicate must not run)" "$T/go-invoked"
+  ( cd "$T" && git update-ref -d refs/remotes/origin/main )
+
+  # G9/G10 — the class gate: only sensitive/control-plane proceed. A repo with a REAL diff vs its
+  # origin ref, a fixture ledger, and a scripted promotion-readiness.sh stub (the same single
+  # authority the decl leg's predicate uses) deciding the class.
+  TG=$(mktemp -d)
+  ( cd "$TG" && git init -q \
+      && git -c user.email=t@kit -c user.name=kit add -A 2>/dev/null; cd "$TG" \
+      && printf 'one\n' > f.txt && git add f.txt \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c1 \
+      && printf 'two\n' >> f.txt \
+      && git -c user.email=t@kit -c user.name=kit commit -q -am c2 \
+      && git update-ref refs/remotes/origin/main HEAD~1 )
+  go_mkledger "$TG"
+  GHEAD=$(cd "$TG" && git rev-parse HEAD)
+  go_plant_stub "$TG" 1 "$TG/go-invoked"
+  printf '#!/bin/sh\necho ordinary\n' > "$TG/conformance/promotion-readiness.sh"
+  rm -f "$TG/go-invoked"
+  go_run "$TG" enforce "refs/heads/feature/x $GHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$go_rc" allow "GO leg: ordinary change-class skips the leg"
+  decl_expect_not_invoked "GO leg: ordinary class (predicate must not run)" "$TG/go-invoked"
+  printf '#!/bin/sh\necho control-plane\n' > "$TG/conformance/promotion-readiness.sh"
+  rm -f "$TG/go-invoked"
+  go_run "$TG" enforce "refs/heads/feature/x $GHEAD refs/heads/feature/x $Z"
+  [ -f "$TG/go-invoked" ] && echo "PASS: GO leg proceeds on a derived control-plane class" \
+    || { echo "FAIL: GO leg must proceed on a derived control-plane class"; fail=1; }
+
+  # G10b [REV M1] — A NEWLINE IN A CHANGED PATH MUST NOT DOWNGRADE THE CLASS. With the bare
+  # `--name-only` derivation the path split into fragments, each fragment classified separately,
+  # and — because is_control_plane_path carries suffix-constrained patterns — NEITHER matched: the
+  # class came back `ordinary` and this leg SKIPPED. That is fail-OPEN dressed as a fail-safe.
+  # The fixture's promotion-readiness.sh stub answers `ordinary` unconditionally, so if the -z
+  # detector is removed the leg skips and this case reds; with it, the class is never derived at
+  # all and the fail-safe HIGH path runs the predicate.
+  TN=$(mktemp -d)
+  ( cd "$TN" && git init -q \
+      && printf 'one\n' > f.txt && git add f.txt \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c1 \
+      && printf 'x\n' > "$(printf 'we\nird.txt')" && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c2 \
+      && git update-ref refs/remotes/origin/main HEAD~1 )
+  go_mkledger "$TN"
+  NHEAD=$(cd "$TN" && git rev-parse HEAD)
+  go_plant_stub "$TN" 1 "$TN/go-invoked"
+  printf '#!/bin/sh\necho ordinary\n' > "$TN/conformance/promotion-readiness.sh"
+  rm -f "$TN/go-invoked"
+  go_run "$TN" "" "refs/heads/feature/x $NHEAD refs/heads/feature/x $Z"
+  [ -f "$TN/go-invoked" ] && echo "PASS: GO leg does not let a newline-in-path downgrade the class to a skip" \
+    || { echo "FAIL: a newline in a changed path downgraded the class and skipped the leg (fail-open)"; fail=1; }
+  decl_expect_contains "GO leg: the newline fail-safe is disclosed" "literal NEWLINE" "$go_out"
+
+  # G11 — stdin isolation (the SEC MEDIUM-1 property, inherited): a stdin-eating predicate must not
+  # swallow the guard leg's own push-to-main line. Real core; observe mode so only the guard leg
+  # can refuse — the only way this fails closed is if line 2 actually reached guard_check_push.
+  {
+    echo '#!/bin/sh'
+    echo '# supports --pre-push'
+    echo 'cat >/dev/null'
+    echo 'exit 1'
+  } > "$T/conformance/ceremony-binding.sh"
+  chmod +x "$T/conformance/ceremony-binding.sh"
+  go_leak_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/main %s refs/heads/main %s\n' \
+      "$HEAD" "$Z" "$HEAD" "$Z" \
+    | KIT_GUARD_CORE="$ROOT/.claude/hooks/guard-core.sh" sh "$SELF" 2>&1)
+  go_leak_rc=$?
+  if [ "$go_leak_rc" -ne 0 ] && printf '%s' "$go_leak_out" | grep -q 'pushing directly to main'; then
+    echo "PASS: a stdin-eating GO predicate does not swallow the guard leg's own push-to-main line"
+  else
+    echo "FAIL: stdin leak — the guard leg's verdict on the second (main-push) line did not fire (rc=$go_leak_rc)"
+    echo "  got: $go_leak_out"
+    fail=1
+  fi
+
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi
 
@@ -354,5 +874,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     status=1
   fi
   decl_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
+  go_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
 done
 exit $status

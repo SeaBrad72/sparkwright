@@ -308,6 +308,80 @@ jobs:
           esac
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           echo "ceremony-binding => rc=$rc (0 pass/N-A · 1 WAITING, yellow · 2 anomaly, red)"
+      # B2 Δ4(ii) — the judgment-surface render, MIRRORED from ci.yml (reviewer I4: the gate shipped
+      # to adopters without the visibility half of the disposition, which is the mirror-divergence
+      # class B6 paid a Critical for). The GO record this merge rides on walks INTO the reviewer's
+      # field of view on the run page BEFORE the click; WAITING/anomaly render one line each.
+      # Detection at the judgment surface, not prevention — a note BINDS, it does not AUTHENTICATE.
+      # UNTRUSTED DATA: the record is ledger content (anyone with push can write notes), so the body
+      # is emitted VERBATIM inside a FENCE whose length is grown until the body cannot contain it —
+      # never as per-field markdown, which a forged field defeated by closing a code span and
+      # emitting `<br>` (measured, B2 sec H2). Nothing is `${{ }}`-interpolated into the script and
+      # the only sink is $GITHUB_STEP_SUMMARY (a markdown file; this job holds no token).
+      # Stack-neutral: POSIX sh and git only. This step never fails the build.
+      - name: Render the matched GO record into the step summary (the judgment surface)
+        if: ${{ !cancelled() }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GATE_RC: ${{ steps.gate.outputs.rc }}
+        run: |
+          NOTES_REF="${PROMOTION_NOTES_REF:-promotions}"
+          case "$GATE_RC" in
+            1) printf '%s\n' 'ceremony-binding: **WAITING** — no design-gate GO record scoped to this PR yet (yellow; a human has not approved yet).' >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+            2) printf '%s\n' 'ceremony-binding: **ANOMALY** — the gate could not evaluate, or the scoped record is defective (red; see the gate step log above).' >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+            0) : ;;
+            *) printf '%s\n' 'ceremony-binding: no usable gate rc reached the render step — nothing rendered (the check-run still carries the verdict).' >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
+          esac
+          body=''
+          if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+            for obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
+              b="$(git notes --ref="$NOTES_REF" show "$obj" 2>/dev/null || true)"
+              printf '%s\n' "$b" | grep -q '^gate: design$' || continue
+              printf '%s\n' "$b" | grep -qF -x "scope: PR-$PR_NUMBER" || continue
+              body="$b"; break
+            done
+          fi
+          if [ -z "$body" ]; then
+            printf '%s\n' 'ceremony-binding: PASS/N-A with no scoped design record (ordinary change-class) — nothing to render.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # SIZE BOUND [B2 round-2, security M-new-1] — MIRRORED from ci.yml. GitHub caps
+          # $GITHUB_STEP_SUMMARY at 1 MiB and DROPS THE WHOLE SUMMARY past it; one forged field
+          # measured 1,601,670 bytes, i.e. the gate posts PASS and the reviewer clicks with NO record
+          # rendered — the "hide the record" outcome by VOLUME. Truncate to 8 KB and ANNOUNCE the cut
+          # (silent truncation hides it just as well). awk, not `head -c`: `printf | head -c`
+          # SIGPIPEs the writer, which under `-o pipefail` would abort the render entirely.
+          truncated=0
+          if [ "$(printf '%s' "$body" | LC_ALL=C wc -c | tr -d ' ')" -gt 8192 ]; then
+            body=$(printf '%s\n' "$body" | LC_ALL=C awk -v max=8192 '
+              used < max {
+                if (used + length($0) + 1 > max) { printf "%s", substr($0, 1, max - used); exit }
+                print $0; used += length($0) + 1
+              }')
+            truncated=1
+          fi
+          # FENCE-IN-BODY GUARD, one awk pass: the fence must be LONGER than the longest backtick RUN
+          # so no ledger content can close it. The grow-and-rescan loop it replaces forked `grep` per
+          # backtick over author-controlled input (measured 9s on a 2,000-backtick body). Fail-safe:
+          # an unusable run length yields the LONGEST fence, never a short one.
+          run=$(printf '%s\n' "$body" | LC_ALL=C awk '
+            { n = 0
+              for (i = 1; i <= length($0); i++) {
+                if (substr($0, i, 1) == "`") { n++; if (n > m) m = n } else { n = 0 }
+              } }
+            END { print m + 0 }')
+          case "$run" in ''|*[!0-9]*) run=8192 ;; esac
+          fence='```'
+          while [ "${#fence}" -le "$run" ]; do fence="$fence"'`'; done
+          {
+            printf '%s\n' '## ceremony-binding — the design-gate GO record this merge rides on' ''
+            printf '%s\n' "$fence" "$body" "$fence"
+            if [ "$truncated" = 1 ]; then
+              printf '%s\n' '' "**(truncated at 8 KB — read the full record: \`git notes --ref=$NOTES_REF show <sha>\`)**"
+            fi
+            printf '%s\n' '' '_The GO record above is reproduced VERBATIM from the ledger, inside a code fence: nothing in it renders as markdown, so a field cannot forge a second one. A note **binds**, it does not **authenticate**._'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "ceremony-binding: matched record rendered into the step summary."
 
   post-ceremony-binding:
     needs: gate-ceremony-binding

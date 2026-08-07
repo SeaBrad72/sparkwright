@@ -71,5 +71,49 @@ set -e
 [ "$rc" = 7 ] || { echo "FAIL: symlinked spelling broke passthrough (got '$rc', want 7)"; exit 1; }
 echo "PASS: symlinked shim-dir spelling resolves the real binary (inode skip; no recursion)"
 
-echo "OK: shim-coverage — generated + deny + allow + passthrough + symlink-no-recursion all proven"
+# 4) THE CEREMONIAL FRONT DOOR MUST NOT DEADLOCK UNDER SHIMS [B2 security H1]. The Δ4(i) guard arm
+# denies raw `git notes` writes to refs/notes/promotions. Under install-shims EVERY git invocation
+# is routed through that arm — including scripts/promotion-verify.sh's OWN single note write — so
+# the arm blocked the exact door its own deny message points the operator at: the ledger became
+# unwritable by any route, which is not a speed bump, it is a brick. The fix is a sentinel that
+# promotion-verify.sh exports around that one write and guard-core honours (stated honestly in the
+# arm's ceiling as AGENT-FORGEABLE — Δ4(i)′'s whole posture is drift control, not prevention).
+# This case proves BOTH halves end to end: the front door records, and the raw back door through
+# the same shim is still denied. Real git resolves from the ambient PATH here (NOT $real_dir's
+# stub), so the record is a genuine one — in a throwaway repo, never this repository's ledger.
+# shellcheck disable=SC1007 # `CDPATH= cd` clears CDPATH for this one command so a user's CDPATH
+# cannot redirect it; the empty assignment is intentional, not a mistyped value (same idiom and
+# same justification as conformance/ceremony-binding.sh:82).
+pv="$(CDPATH= cd -- "$(dirname -- "$KG")" && pwd)/promotion-verify.sh"
+if [ -f "$pv" ]; then
+  repo="$work/pvrepo"; mkdir -p "$repo"
+  (
+    cd "$repo" && git init -q && git config user.email fixture@example.invalid \
+      && git config user.name Fixture && git config commit.gpgsign false \
+      && printf 'x\n' > f.txt && git add f.txt && git commit -qm c1
+  ) >/dev/null 2>&1
+  sha=$( cd "$repo" && git rev-parse HEAD )
+  set +e
+  out=$( cd "$repo" && PATH="$shim_dir:$PATH" sh "$pv" record --approved-sha "$sha" \
+           --approved-by Fixture --gate design --rung Design --class control-plane \
+           --scope branch/b2fix-shim-probe --token "GO" 2>&1 ); pvrc=$?
+  set -e
+  if [ "$pvrc" = 0 ] && ( cd "$repo" && git notes --ref=promotions show "$sha" >/dev/null 2>&1 ); then
+    echo "PASS: the ceremonial front door still records under install-shims (no guard deadlock)"
+  else
+    echo "FAIL: the front door DEADLOCKED under install-shims (rc=$pvrc): $out"; exit 1
+  fi
+  set +e
+  ( cd "$repo" && PATH="$shim_dir:$PATH" git notes --ref=promotions add -f -m forged "$sha" ) >/dev/null 2>&1
+  rawrc=$?
+  set -e
+  if [ "$rawrc" = 0 ]; then
+    echo "FAIL: a RAW ledger write was allowed through the shim — the sentinel widened the arm into a hole"; exit 1
+  fi
+  echo "PASS: the raw back door stays denied through the same shim (the sentinel is not a hole in the arm)"
+else
+  echo "N/A: scripts/promotion-verify.sh not present next to kit-guard — front-door shim case skipped"
+fi
+
+echo "OK: shim-coverage — generated + deny + allow + passthrough + symlink-no-recursion + front-door all proven"
 exit 0

@@ -187,6 +187,52 @@ selftest() {
   fi
 
   # =====================================================================================
+  # BRANCH SCOPING (owner ruling D11, 2026-07-28; B2 Δ1′) — `--scope branch/<name>` is the key
+  # conformance/ceremony-binding.sh --pre-push DERIVES, so a design GO can bind BEFORE a PR exists.
+  # Three legs: the shape is ACCEPTED and round-trips into the note VERBATIM (the gate matches it
+  # with `grep -F -x`, so a mangled or normalised value would silently satisfy nothing), and the two
+  # shapes the gate could never match are refused AT THE FRONT DOOR rather than recorded dead.
+  # =====================================================================================
+  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+        --gate design --rung "Design" --class control-plane \
+        --scope "branch/feat-b2-go" --token "GO: design at $APP" \
+        --basis "docs/architecture/x-design.md" >/dev/null 2>&1 ); then _brc=0; else _brc=$?; fi
+  _bscope="$( ( cd "$R" && git notes --ref=promotions show "$APP" 2>/dev/null \
+                 | grep -c '^scope: branch/feat-b2-go$' ) || true )"
+  if [ "$_brc" = 0 ] && [ "$_bscope" = 1 ]; then
+    echo "PASS: branch scoping: --scope branch/<name> accepted and round-trips verbatim into the note"
+  else
+    echo "FAIL: branch scoping: record rc=$_brc, exact 'scope: branch/feat-b2-go' lines in note=$_bscope"; st=1
+  fi
+  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+        --gate design --rung "Design" --class control-plane --scope "branch/" \
+        --token "GO" >/dev/null 2>&1 ); then _b2rc=0; else _b2rc=$?; fi
+  if [ "$_b2rc" = 2 ]; then
+    echo "PASS: branch scoping NEGATIVE: a bare 'branch/' names no branch -> rc 2"
+  else
+    echo "FAIL: branch scoping NEGATIVE: 'branch/' should be rc 2, got rc=$_b2rc"; st=1
+  fi
+  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+        --gate design --rung "Design" --class control-plane --scope "branch/feat+plus" \
+        --token "GO" >/dev/null 2>&1 ); then _b3rc=0; else _b3rc=$?; fi
+  if [ "$_b3rc" = 2 ]; then
+    echo "PASS: branch scoping NEGATIVE: a name outside the gate's scope charset -> rc 2 (not recorded dead)"
+  else
+    echo "FAIL: branch scoping NEGATIVE: 'branch/feat+plus' should be rc 2, got rc=$_b3rc"; st=1
+  fi
+  # REGRESSION: the NEW rule applies to the `branch/` shape ONLY. Existing scopes keep their existing
+  # hygiene — this repo's own ledger holds scopes with a space ("PR #999"), and retrofitting the
+  # charset onto every scope would refuse records the gates already accept.
+  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+        --gate design --rung "Design" --class Ordinary --scope "PR #1005" \
+        --token "GO" >/dev/null 2>&1 ); then _b4rc=0; else _b4rc=$?; fi
+  if [ "$_b4rc" = 0 ]; then
+    echo "PASS: branch scoping: a non-branch scope with a space is still accepted (no retrofit)"
+  else
+    echo "FAIL: branch scoping: 'PR #1005' must still record, got rc=$_b4rc"; st=1
+  fi
+
+  # =====================================================================================
   # INJECTION NEGATIVES (LOAD-BEARING, FIX 1/2): the note body is line-structured text, so a control
   # char in ANY free-text field, or a bracket in --approved-by, must be REJECTED (rc=2) — a forged
   # `[signed: gpg]`/`[authenticated:` line can NEVER enter the note body. Load-bearing: a stub that

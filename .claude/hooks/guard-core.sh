@@ -1044,6 +1044,86 @@ guard_check_command() {
   if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath'; then
     printf '%s' '13: git config core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
   fi
+  # --- B2 Δ4(i)′: RAW `git notes` WRITES to the promotion GO ledger (refs/notes/promotions) -----
+  # WHAT THIS IS. A DRIFT CONTROL, per owner ruling D3′ (2026-07-28): "BUILD the prevention as a
+  # drift control, with the FULL measured bypass set stated in the ceiling … the threat is a model
+  # that IGNORES the kit, not one that ATTACKS it … Denying the default route changes default
+  # behaviour, which is the goal." The default route is what the D-240805-3 incident actually took:
+  # a subagent minted an owner-attributed GO record with a bare `git notes add`. That route is now
+  # denied. NOTHING MORE IS CLAIMED.
+  #
+  # WHAT IS DENIED: the raw `git notes` WRITE verbs (add · append · copy · edit · remove · prune ·
+  # merge — copy included, it overwrites a target's note) when the command text targets the
+  # promotions ref in any spelling (--ref=promotions · --ref promotions · quoted · the full
+  # refs/notes/promotions name).
+  # WHAT IS NOT DENIED, deliberately: the ceremonial front door (scripts/promotion-verify.sh
+  # record — it DERIVES the assurance label instead of accepting one), every read (show/list),
+  # notes on any OTHER ref (fixtures, refs/notes/commits), and the ledger's own publish push
+  # (`git push origin refs/notes/promotions`, the front door's share step).
+  #
+  # ⚠️ THE COMPLETE MEASURED BYPASS SET — every one of these needs NO override and is NOT caught
+  # (measured independently by both review seats, 2026-08-07; the earlier claim that "any direct
+  # forge of the notes ref via shell is denied" was FALSE when it was ruled on, and is retracted):
+  #   1. git PLUMBING: `git hash-object` -> `git mktree` -> `git commit-tree` -> `git update-ref
+  #      refs/notes/promotions` mints a valid owner-attributed record with zero denied commands.
+  #   2. DESTRUCTION: `git update-ref -d refs/notes/promotions` and
+  #      `git push origin :refs/notes/promotions` delete the ledger outright.
+  #   3. ALIAS INDIRECTION: `git config alias.x "notes --ref=promotions add ..."` then `git x`.
+  #   4. FETCH REFSPEC: `git fetch <remote> '+<src>:refs/notes/promotions'` writes the ref.
+  #   5. ENV SPELLINGS: `GIT_NOTES_REF=refs/notes/promotions git notes add …` (the bare-ref
+  #      alternative below catches the common form; an indirect spelling does not appear in $cmd).
+  #   6. INTERPRETER WRAPPERS: python/node/ruby -c, or any script file, invoking the same git calls.
+  #   7. PUSH REFSPEC ONTO THE LEDGER: `git push origin refs/notes/<src>:refs/notes/promotions`
+  #      overwrites the ledger from any local ref — measured ALLOW (round 2, sec L-new-1). Entry 2
+  #      covers only the DELETE spelling (`:refs/notes/promotions`) and entry 4 only `git fetch`,
+  #      so the WRITE-by-push route was missing from a set that called itself COMPLETE. The FORCED
+  #      spelling (`+refs/notes/<src>:refs/notes/promotions`) is denied by the unrelated
+  #      force/mirror-push rule, not by this arm — that is not coverage, and the unforced form is
+  #      enough to overwrite a ref the remote fast-forwards or accepts outright.
+  #   8. SYMBOLIC-REF: `git symbolic-ref refs/notes/promotions refs/notes/<other>` repoints the
+  #      ledger NAME at another ref — measured ALLOW. It was named in the prose below, which is not
+  #      the SET, so it is numbered here.
+  #   9. THE SENTINEL ITSELF, under `install-shims` only — see THE SENTINEL below for the
+  #      runtime-scoped measurement.
+  # These are NOT matched ON PURPOSE. Extending the matcher to update-ref/symbolic-ref/fetch and
+  # push refspecs is the ARMS RACE vetoed by the 2026-07-28 design §4 ("no text/graph predicate over
+  # author-controlled input") and permanently dropped by [S1]; it would fail the friction test
+  # (it binds nothing the moment the model stops cooperating) while growing false denials.
+  #
+  # THE HONEST CONTROL IS NOT THIS ARM. It is Δ4(ii)'s VISIBILITY: the matched GO record is
+  # rendered at the CI judgment surface before the owner's click (D-240805-4), which binds whether
+  # or not the model cooperates. Plus the subagent-brief ledger-write prohibition (process).
+  # A note BINDS, it does not AUTHENTICATE (scripts/promotion-verify.sh:38-44) — an agent running
+  # under the owner's git identity can mint a front-door record and no local mechanism can tell.
+  # PREVENTION IS NOT CLAIMED.
+  #
+  # THE SENTINEL, and why it is honest to ship a forgeable one [B2 sec H1]. Under `kit-guard
+  # install-shims` EVERY git invocation is routed through this arm, including promotion-verify.sh's
+  # OWN single note write — so the arm blocked the very door its deny message points at, and the
+  # ledger became unwritable by any route (measured, not theorised). promotion-verify.sh exports
+  # KIT_PROMOTION_FRONT_DOOR=1 around that one write and this arm honours it. IT IS
+  # AGENT-FORGEABLE — BUT IN ONE RUNTIME ONLY, and the earlier flat claim ("an agent can prefix the
+  # same variable to a raw command") over-stated it. MEASURED BOTH WAYS (round 2, sec L-new-1):
+  #   * under `kit-guard install-shims` the shim rebuilds the command from ARGV (`c=$self; for a in
+  #     "$@"`), so the `KIT_PROMOTION_FRONT_DOOR=1` prefix never appears in the text this arm reads —
+  #     the shell EXPORTS it into the shim's, and therefore this arm's, own environment => ALLOW.
+  #   * under the Claude hook / `kit-guard cmd` runtime the prefix arrives INSIDE the command TEXT
+  #     and this arm's environment does not carry it => DENY (the raw write is still refused).
+  # So the forgeability is entry 9 in the set above, SCOPED to install-shims. Erring safe was right;
+  # stating it unscoped was not. Either way it is consistent with the posture, not a hole in a wall —
+  # the wall is Δ4(ii).
+  # Over-deny residual, accepted: a `git notes` write to a FIXTURE ref whose -m message merely
+  # MENTIONS refs/notes/promotions is denied, and so are the conformance fixtures that write
+  # `--ref=promotions` inside throwaway repos when they are run under shims (they are not, in CI).
+  # No KIT_GUARD_SELFEDIT hint on THIS rule (L2): the one rule whose purpose is to stop
+  # record-minting must not close by naming its own off-switch.
+  if ! selfedit_allowed \
+     && [ "${KIT_PROMOTION_FRONT_DOOR:-}" != "1" ] \
+     && printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+([^;&|]*[[:space:]])?notes[[:space:]]' \
+     && printf '%s' "$cmd" | grep -Eq -- "--ref[= ][\"']?(refs/notes/)?promotions[\"']?([[:space:]]|\$)|refs/notes/promotions" \
+     && printf '%s' "$cmd" | grep -Eq 'notes[[:space:]]([^;&|]*[[:space:]])?(add|append|copy|edit|remove|prune|merge)([[:space:]]|$)'; then
+    printf '%s' '13: raw `git notes` WRITE verbs (add/append/copy/edit/remove/prune/merge) on refs/notes/promotions are denied - this is the default route a drifting agent takes to mint a GO record (governance-ledger integrity, D-240805-3). Use the front door: scripts/promotion-verify.sh record, which derives the assurance label; publish with `git push origin refs/notes/promotions`. NOT covered, and not claimed to be: git plumbing (hash-object/mktree/commit-tree/update-ref), ledger DESTRUCTION (`update-ref -d`, `push origin :refs/notes/promotions`), alias indirection, fetch OR PUSH refspecs whose DESTINATION is the ref, `symbolic-ref` repointing the ref, GIT_NOTES_REF spellings, interpreter wrappers - see the ceiling at this rule. The control that binds is the record rendered at the CI judgment surface, not this deny.'; return 1
+  fi
   # CP-8b: the CO-OCCURRENCE block that used to live here matched a mutation verb and a control-plane
   # path ANYWHERE in the flat string, and never asked whether the verb's TARGET was that path — which
   # is both why `cp conformance/x /tmp/b` (copying OUT) was denied and why `git archive -o conformance/x`

@@ -11,6 +11,10 @@
 #          DERIVED assurance label ([signed: gpg] -> [committer] -> [self-asserted]) — the label
 #          is derived from the commit's own evidence, never accepted from input, and never claims
 #          more than the evidence proves.
+#          `--scope` carries EITHER a PR id (`PR-<n>` — what CI's ceremony-binding matches) OR
+#          `branch/<name>` (owner ruling D11: the key the pre-push predicate derives, so a design
+#          GO can bind BEFORE a PR exists). The `branch/` shape is charset-validated below against
+#          the same charset the gates match on; other scopes keep their existing hygiene.
 #
 #   log
 #       -> render refs/notes/promotions as a human-readable trail (a PROJECTION of the notes,
@@ -59,6 +63,7 @@ usage() {
   echo "usage:" >&2
   echo "  promotion-verify.sh record --approved-sha <sha> --approved-by <id> --gate <g> \\" >&2
   echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t>]" >&2
+  echo "        --scope takes a PR id (CI's key) or branch/<name> (the pre-push key, ruling D11)" >&2
   echo "  promotion-verify.sh log" >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
   echo "  promotion-verify.sh actuate --ref <pr|tag|merged-ref> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
@@ -140,6 +145,31 @@ do_record() {
       return 2
     fi
   done
+  # BRANCH SCOPING (owner ruling D11, 2026-07-28; B2 Δ1′). `--scope branch/<name>` is the key
+  # conformance/ceremony-binding.sh --pre-push DERIVES from the checked-out branch, which is what
+  # lets a design GO bind BEFORE a PR exists (the [S4]#7 back-fill this repo kept re-deriving).
+  # VALIDATE THE SHAPE HERE, at the front door, with the SAME charset the gates match on
+  # (ceremony-binding.sh's `_scope_charset_bad`, and its --scope boundary validator): the gate
+  # compares the key with `grep -F -x`, so a `branch/` scope it can never produce would be recorded
+  # DEAD — a record that satisfies nothing and reports no error. Reject it instead.
+  # SCOPED TO THE NEW SHAPE ONLY, deliberately: non-`branch/` scopes keep the hygiene they already
+  # had (control-chars rejected above, everything else allowed). This repo's own ledger holds legal
+  # scopes with a space ("PR #999"), so retrofitting the charset onto every scope would refuse
+  # records the gates already accept — a new charset hole is not opened, and no old one is closed
+  # by surprise.
+  case "$scope" in
+    branch/)
+      echo "record: --scope 'branch/' names no branch (expected branch/<name>) — rejected" >&2
+      return 2 ;;
+    branch/*)
+      case "${scope#branch/}" in
+        *[!A-Za-z0-9_.:/-]*)
+          echo "record: --scope branch/<name> may contain only [A-Za-z0-9_.:/-] after 'branch/' —" >&2
+          echo "        the design gate matches this key LITERALLY, so a name it cannot express" >&2
+          echo "        would record a GO that satisfies nothing. Rejected (fail closed)." >&2
+          return 2 ;;
+      esac ;;
+  esac
   # Reject '[' or ']' ANYWHERE in --approved-by (S5a review): the assurance label is DERIVED below,
   # never supplied. A trailing-only strip left a mid-string "[signed: gpg]" decoy in the body that
   # could fool a substring grep — reject brackets outright instead.
@@ -160,6 +190,13 @@ do_record() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
   # Bind the structured record to the approved commit as a note (tree-invariant). `-f` overwrites a
   # prior note on the same commit (re-record supersedes) — honest: notes are mutable (see ceiling).
+  # KIT_PROMOTION_FRONT_DOOR=1 is the FRONT-DOOR SENTINEL, scoped to this ONE command [B2 sec H1].
+  # guard-core.sh's Δ4(i)′ arm denies raw `git notes` writes to the ledger; under `kit-guard
+  # install-shims` every git invocation is routed through that arm, so without this the arm blocked
+  # the exact door its own deny message points the operator at and the ledger became unwritable by
+  # any route (measured). IT IS AGENT-FORGEABLE — an agent can prefix the same variable to a raw
+  # command — and the arm's ceiling says so: the arm is a drift control (owner ruling D3′), not a
+  # boundary; the control that binds is the record rendered at the CI judgment surface.
   if ! printf '%s\n' \
       "record: promotion GO (approve->execute->log)" \
       "approved-sha: $asha" \
@@ -171,7 +208,7 @@ do_record() {
       "approval-token: \"$token\"" \
       "basis: $basis" \
       "recorded-at: $ts" \
-      | git notes --ref="$NOTES_REF" add -f -F - "$asha" >/dev/null 2>&1; then
+      | KIT_PROMOTION_FRONT_DOOR=1 git notes --ref="$NOTES_REF" add -f -F - "$asha" >/dev/null 2>&1; then
     echo "record: failed to write note refs/notes/$NOTES_REF on $asha" >&2; return 2
   fi
   echo "OK: recorded approval for $scope (approved-sha $asha) -> note refs/notes/$NOTES_REF [$assurance]"

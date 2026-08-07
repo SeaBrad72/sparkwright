@@ -68,6 +68,9 @@
 #
 # Usage:
 #   sh conformance/ceremony-binding.sh                 (derive change-set: merge-base HEAD origin/main)
+#   sh conformance/ceremony-binding.sh --pre-push      (hook mode, B2 Δ1′: the SAME predicate, keyed on
+#                                                       the DERIVED scope `branch/<current-branch>`
+#                                                       instead of the caller-supplied `PR-<n>`)
 #   sh conformance/ceremony-binding.sh --selftest
 #
 # What it changes: nothing — read-only. Reads the working tree, git history, and refs/notes/promotions.
@@ -126,6 +129,39 @@ derive_class() {   # args: [--changed FILE]
   esac
 }
 
+# SCOPE CHARSET — ONE definition, used by the --scope boundary validator AND by the derived pre-push
+# key. Widening it here widens both, deliberately: a key the record format cannot express is not a
+# key. (promotion-verify.sh applies the same rule to the `branch/` shape at the front door.)
+_scope_charset_bad() {   # <candidate> -> 0 (true) when it is empty or holds a disallowed character
+  case "$1" in
+    ''|*[!A-Za-z0-9_.:/-]*) return 0 ;;
+  esac
+  return 1
+}
+
+# prepush_scope_key — THE derivation of the pre-push scope key (owner ruling D11, 2026-07-28:
+# "the GO record gains branch scoping — `scope: branch/<name>` alongside `scope: PR-<n>`", which is
+# what lets a design GO bind BEFORE a PR exists).
+#
+# ⚠️ D11'S OWN TRAP WARNING IS BINDING, AND THIS FUNCTION IS THE ANSWER TO IT: BOTH consumers — this
+# predicate and hooks/pre-push — must read the branch key from THIS ONE PLACE. The hook must NEVER
+# re-derive it. That is the SIXTH-DERIVATION TRAP the file header already refuses for the CHANGE-SET
+# derivation (see "CLASS IS DERIVED BY A SINGLE AUTHORITY" above, and the withdrawn ordering
+# predicate's defeat #2, where a second derivation site let `git mv` collapse a control-plane
+# change-set to ordinary). A second copy in the hook would be defect-compatible only until the two
+# spellings drift — and nothing would lock them together.
+#
+# Prints `branch/<name>` on stdout. Returns 1 = no branch (detached HEAD) · 2 = the branch name is
+# outside the scope charset, so no record could ever carry this key. Both are ANOMALIES for the
+# caller (rc 2), never the waiting yellow: the gate evaluated nothing.
+prepush_scope_key() {
+  _ppk_branch="$(git symbolic-ref -q --short HEAD 2>/dev/null)" || _ppk_branch=""
+  [ -n "$_ppk_branch" ] || return 1
+  _scope_charset_bad "$_ppk_branch" && return 2
+  printf 'branch/%s\n' "$_ppk_branch"
+  return 0
+}
+
 run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient tree); rest: --scope ID | none
   # $1 is reachable ONLY as a function parameter: selftest() passes a listing in-process, and the
   # dispatcher at the bottom always passes '' — no command-line flag accepts one. Same shape as
@@ -142,8 +178,28 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # merge-base for the ancestry check; with no ordering there is no base to override.
   _cb_changed="$1"; shift
   _cb_scope=""
+  _cb_prepush=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      # --pre-push — B2 Δ1′ (docs/architecture/2026-08-07-b2-go-records-prepush-design.md §3a): the
+      # git hook's read-only mode. IDENTICAL to the CI predicate in every leg; the ONE difference is
+      # WHICH SCOPE KEY binds the record to the change — CI passes `--scope PR-<n>`, this mode
+      # DERIVES `branch/<current-branch>` (prepush_scope_key, owner ruling D11). That is what lets a
+      # design GO bind BEFORE a PR exists (design S3: prebuild scopes are destroyed at re-record,
+      # one sha one note) while still being a predicate that CAN REFUSE.
+      # ⚠️ THE SCOPE LEG IS NOT WIDE, AND MUST NOT BE RE-WIDENED. The first build of Δ1 accepted any
+      # '^gate: design$' record; on a ledger holding one surviving design record that is PERMANENTLY
+      # GREEN (measured: B3's record satisfied a B2 push on the real 107-record ledger) — the same
+      # configuration ci.yml describes in the kit's own words, and a leg that cannot refuse fails the
+      # 2026-08-02 owner ruling. Withdrawn, with legP1b as its standing regression case.
+      # rc contract unchanged: 0 pass/N-A · 1 WAITING (no record for this key) · 2 anomaly.
+      # CEILING (bind-not-authenticate, restated where the leg lives): a git note BINDS, it does
+      # not AUTHENTICATE (scripts/promotion-verify.sh:38-44) — an agent running under the owner's
+      # git identity can mint a front-door record and no local mechanism can distinguish it.
+      # PREVENTION IS NOT CLAIMED. The full disposition is: the subagent-brief ledger-write
+      # prohibition (process) + the guard's raw-ledger-write deny (the back door) + the record
+      # rendered VERBATIM at the CI judgment surface (visibility) — D-240805-3 / D-240805-4.
+      --pre-push) _cb_prepush=1; shift ;;
       # `--scope` is a PRODUCTION argument, not a fixture flag: it is what BINDS the GO record to THIS
       # change. CI supplies the PR number. Argument-borne per the banked "arguments, not env" ruling.
       --scope)
@@ -155,17 +211,26 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
         # Not reachable from this repo's CI (a PR number is an integer), but `--scope` is a PRODUCTION
         # argument in a check adopters copy into their own CI, where it may be wired from a ticket id or
         # a PR title. Reject-by-default, the same rule promotion-verify.sh applies to the same field.
-        case "$2" in
-          ''|*[!A-Za-z0-9_.:/-]*)
-            echo "ceremony-binding: --scope must be non-empty and may contain only" >&2
-            echo "  [A-Za-z0-9_.:/-] — got a value with a disallowed character (refused)." >&2
-            return 2 ;;
-        esac
+        if _scope_charset_bad "$2"; then
+          echo "ceremony-binding: --scope must be non-empty and may contain only" >&2
+          echo "  [A-Za-z0-9_.:/-] — got a value with a disallowed character (refused)." >&2
+          return 2
+        fi
         _cb_scope="$2"
         shift 2 ;;
       *) echo "ceremony-binding: unknown arg '$1'" >&2; return 2 ;;
     esac
   done
+  # --scope and --pre-push are mutually exclusive, REFUSED rather than reconciled: the pre-push key
+  # is DERIVED (D11's single-derivation rule), so honouring a supplied scope would silently run a
+  # DIFFERENT predicate than the caller asked --pre-push for, and ignoring it would misrepresent
+  # what was checked. rc 2 — an anomaly (a broken wiring), never a wait.
+  if [ "$_cb_prepush" -eq 1 ] && [ -n "$_cb_scope" ]; then
+    echo "ceremony-binding: --scope cannot be combined with --pre-push — the pre-push scope key is" >&2
+    echo "  DERIVED (branch/<current-branch>), never supplied. Run the CI predicate with --scope," >&2
+    echo "  or --pre-push alone." >&2
+    return 2
+  fi
 
   # ---- Applicability: derive the class via the single hardened authority, fail CLOSED.
   if [ -n "$_cb_changed" ]; then
@@ -195,7 +260,9 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # ancestor of every later commit, so the ordering predicate (WITHDRAWN — see the tombstone below) went
   # vacuously true and ANY future control-plane PR passed with no design and no record of its own. The
   # scope id is what binds record to change; without it this gate stops exactly one merge — its own.
-  if [ -z "$_cb_scope" ]; then
+  # Scope is REQUIRED in CI mode only — --pre-push DERIVES its key (D11; prepush_scope_key above).
+  # Everything else without a scope stays the rc-2 anomaly it always was.
+  if [ "$_cb_prepush" -eq 0 ] && [ -z "$_cb_scope" ]; then
     echo "FAIL: ceremony-binding — no --scope supplied; refusing to match a GO record to this change" >&2
     echo "      by guesswork (fail closed). CI passes the PR number; locally pass --scope <id>." >&2
     # rc 2 (design §9.3, review finding). Left at 1 this renders as normal waiting, which is exactly
@@ -204,6 +271,27 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     # read as "the owner has not got round to the GO yet".
     return 2
   fi
+  # ---- THE SCOPE KEY (B2 Δ1′). ONE record search serves BOTH modes below — same loop, same
+  # check_design_record, same verdict partition, no fork of the predicate. The only thing the mode
+  # decides is WHICH KEY binds record to change: CI's caller-supplied `PR-<n>`, or the hook mode's
+  # DERIVED `branch/<current-branch>` (prepush_scope_key — the single derivation, D11's trap).
+  _match_scope="$_cb_scope"
+  if [ "$_cb_prepush" -eq 1 ]; then
+    _ppk_rc=0; _match_scope="$(prepush_scope_key)" || _ppk_rc=$?
+    case "$_ppk_rc" in
+      0) : ;;
+      1) echo "FAIL: ceremony-binding --pre-push — HEAD is not on a branch (detached HEAD), so there is no" >&2
+         echo "      'branch/<name>' key to match a GO record against. The gate evaluated NOTHING, which is" >&2
+         echo "      an anomaly and not a wait (fail closed). Check out the branch you are pushing." >&2
+         return 2 ;;
+      *) echo "FAIL: ceremony-binding --pre-push — the current branch name may contain only [A-Za-z0-9_.:/-]," >&2
+         echo "      and this one does not, so NO GO record could ever carry its 'branch/<name>' key. The" >&2
+         echo "      charset is the RECORD FORMAT's (promotion-verify.sh --scope), reused here rather than" >&2
+         echo "      widened — a key the ledger cannot express is not a key. Rename the branch." >&2
+         return 2 ;;
+    esac
+  fi
+
   _design_note=""; _gate_seen=0
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
@@ -211,9 +299,31 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       # BOTH conditions on the SAME record, each line-anchored.
       printf '%s\n' "$_body" | grep -q '^gate: design$' || continue
       _gate_seen=1   # a design record exists, but maybe not for THIS scope — report the near-miss
-      printf '%s\n' "$_body" | grep -qF -x "scope: $_cb_scope" || continue
+      printf '%s\n' "$_body" | grep -qF -x "scope: $_match_scope" || continue
       _design_note="$_obj"; break
     done
+  fi
+  if [ -z "$_design_note" ] && [ "$_cb_prepush" -eq 1 ]; then
+    # The hook mode's WAITING verdict (rc 1): the [S4] family — no design GO recorded for this
+    # branch. Same two diagnoses as CI, phrased for the key that actually failed to match.
+    if [ "$_gate_seen" -eq 1 ]; then
+      echo "FAIL: ceremony-binding --pre-push — a 'gate: design' record exists, but NONE is scoped to this branch" >&2
+      echo "      (expected 'scope: $_match_scope'). Another branch's GO does not satisfy this push, and neither" >&2
+      echo "      does a 'scope: PR-<n>' record — that is CI's key, not this one. A leg that accepted any design" >&2
+      echo "      record went PERMANENTLY GREEN after its own first use (measured); it was withdrawn." >&2
+    else
+      echo "FAIL: ceremony-binding --pre-push — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
+      echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
+    fi
+    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_match_scope \\" >&2
+    echo "        --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path> ..." >&2
+    echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
+    echo "      CI matches the SAME record on a DIFFERENT key ('scope: PR-<n>'), so re-record with the PR" >&2
+    echo "      scope when the PR is created (one sha, one note — the design's S3 measurement)." >&2
+    echo "      STALENESS: this reader never fetches (offline discipline); a stale or partial local" >&2
+    echo "      ledger can FALSE-REFUSE — remedy: git fetch origin '+refs/notes/*:refs/notes/*'." >&2
+    echo "      It can never weaken CI, which fetches the fresh ledger." >&2
+    return 1
   fi
   if [ -z "$_design_note" ]; then
     # Two distinct causes, reported distinctly. They share a branch but not a diagnosis, and an operator
@@ -236,6 +346,35 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     return 1
   fi
 
+  # The downstream legs are SHARED by both modes (B2 Δ1′: no fork of the predicate). rc propagates
+  # verbatim: a defective SCOPED record is the rc-2 anomaly in BOTH modes — with branch scoping the
+  # matched record is bound to THIS change, so a defect in it is broken, not patient (legP3/leg14).
+  _cdr_rc=0
+  check_design_record || _cdr_rc=$?
+  [ "$_cdr_rc" -eq 0 ] || return "$_cdr_rc"
+
+  if [ "$_cb_prepush" -eq 1 ]; then
+    echo "OK: ceremony-binding --pre-push — change-class '$_cls'; DESIGN GATE recorded (scope $_match_scope)."
+    echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
+    echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact."
+    echo "    CI matches the SAME record on a DIFFERENT key ('scope: PR-<n>') — re-record at PR creation."
+    echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
+    return 0
+  fi
+  echo "OK: ceremony-binding — change-class '$_cls'; DESIGN GATE recorded (scope $_cb_scope)."
+  echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
+  echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact."
+  echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
+  return 0
+}
+
+# check_design_record — the DOWNSTREAM legs, shared VERBATIM by both modes (B2: refactor-in-place,
+# no fork of the predicate — CI and --pre-push run these exact lines). Reads $_body, $_design_note
+# and $_cls (set by the caller's record search) plus NOTES_REF / CB_DESIGN_GLOB; on success sets
+# CB_DESIGN_DOC and $_appr for the caller's verdict text. Returns 0 = the record survives every
+# leg; 2 = the record is DEFECTIVE, reason on stderr. The rc-2-everywhere rule is inherited
+# (WAITING-GATES-RENDER-AS-RED): every refusal below is an anomaly, never a wait.
+check_design_record() {
   # THE RECORD MUST NAME AN APPROVER (amendment §4.3, security HIGH-2). Before this the check read only
   # `gate:` and `basis:`, so a hand-written note with NO approver line passed and three shipped claims
   # about "a named human's recorded GO" were false. The label is the DERIVED assurance token that
@@ -493,10 +632,6 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # and its anti-vacuity backstop, and the in-branch-vs-predates disclosure.
   # Boarded as CEREMONY-ORDERING-PROOF — a sound ordering proof needs its own design pass with the
   # five-defeat catalogue above as required input, the way CHANGESET-DERIVATION-LOCK carries its own.
-  echo "OK: ceremony-binding — change-class '$_cls'; DESIGN GATE recorded (scope $_cb_scope)."
-  echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
-  echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact."
-  echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
   return 0
 }
 
@@ -795,6 +930,147 @@ selftest() {
   else
     echo "FAIL leg12: a ceremony-only change-set should be N-A"; _fails=$((_fails+1))
   fi
+
+  # ---- B2 legs: the --pre-push mode (Δ1′ — owner ruling D11, 2026-07-28). SAME script, SAME record
+  # search, SAME downstream legs. The ONE difference is WHICH SCOPE KEY binds the record to the
+  # change: CI passes `--scope PR-<n>`; the hook mode derives `branch/<current-branch>` from
+  # prepush_scope_key(). That makes it a predicate that CAN REFUSE (the 2026-08-02 owner ruling),
+  # with no PR number and no heuristic.
+  # ⚠️ TOMBSTONE — the WITHDRAWN wide leg. Δ1 as first built accepted ANY '^gate: design$' record.
+  # On any ledger holding one surviving design record that leg is PERMANENTLY GREEN (measured on
+  # this repo's real 107-record ledger: B3's record satisfied a B2 push). legP1b is that defect's
+  # standing regression case; do not re-widen the scope leg under any spelling.
+
+  # LEG P1 (liveness) — a GO scoped to THIS branch PASSES, and the verdict names the key it matched.
+  _legs=$((_legs+1))   # legP1
+  _scope=branch/b2-pp _mkfix "$_tmp/fpp1" design "docs/architecture/d-design.md" real
+  ( cd "$_tmp/fpp1" && git checkout -q -b b2-pp )
+  _outP1="$( cd "$_tmp/fpp1" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP1=0 || _rcP1=$?
+  case "$_rcP1:$_outP1" in
+    0:*"scope branch/b2-pp"*)
+      echo "PASS legP1: --pre-push passes on a GO scoped to THIS branch, naming the key" ;;
+    *) echo "FAIL legP1: expected rc 0 naming 'scope branch/b2-pp', got rc=$_rcP1: $_outP1"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG P1b (THE REGRESSION CASE for the withdrawn wide leg) — a FULLY VALID design GO scoped to
+  # ANOTHER BRANCH must NOT satisfy this push. This exact fixture PASSED under Δ1 as first built.
+  # rc 1 (a wait: the operator must record their own GO), and the near-miss is DIAGNOSED rather
+  # than reported as "no record" — an operator who recorded a GO on the wrong branch needs to be
+  # told that. Mirrors leg13, which pins the same property on the CI key.
+  _legs=$((_legs+1))   # legP1b
+  _scope=branch/some-other-branch _mkfix "$_tmp/fpp1b" design "docs/architecture/d-design.md" real
+  ( cd "$_tmp/fpp1b" && git checkout -q -b b2-pp )
+  _outP1b="$( cd "$_tmp/fpp1b" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP1b=0 || _rcP1b=$?
+  case "$_rcP1b:$_outP1b" in
+    1:*"NONE is scoped to this branch"*)
+      echo "PASS legP1b: --pre-push REFUSES a GO scoped to another branch (the wide-leg defect dies)" ;;
+    0:*) echo "FAIL legP1b: another branch's GO SATISFIED this push — the withdrawn wide leg is back"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legP1b: expected rc 1 naming the branch near-miss, got rc=$_rcP1b: $_outP1b"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG P1c — a PR-SCOPED record alone does not satisfy pre-push. `scope: PR-<n>` is CI's key, not
+  # this one; a record back-filled at PR creation cannot retroactively vouch for a local push.
+  _legs=$((_legs+1))   # legP1c
+  _scope=PR-777 _mkfix "$_tmp/fpp1c" design "docs/architecture/d-design.md" real
+  ( cd "$_tmp/fpp1c" && git checkout -q -b b2-pp )
+  _outP1c="$( cd "$_tmp/fpp1c" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP1c=0 || _rcP1c=$?
+  case "$_rcP1c:$_outP1c" in
+    1:*"NONE is scoped to this branch"*)
+      echo "PASS legP1c: --pre-push is not satisfied by a PR-scoped record (CI's key, not ours)" ;;
+    *) echo "FAIL legP1c: expected rc 1 naming the branch near-miss, got rc=$_rcP1c: $_outP1c"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG P2 (LOAD-BEARING NEGATIVE) — NO design record at all: the WAITING verdict, rc 1, naming the
+  # record command WITH the branch scope the operator must use. This is the [S4]-family failure
+  # class the pre-push leg exists to catch.
+  _legs=$((_legs+1))   # legP2
+  _mkbare "$_tmp/fpp2"
+  ( cd "$_tmp/fpp2" && git checkout -q -b b2-pp )
+  _outP2="$( cd "$_tmp/fpp2" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP2=0 || _rcP2=$?
+  case "$_rcP2:$_outP2" in
+    1:*"--scope branch/b2-pp"*)
+      echo "PASS legP2: --pre-push with no design record -> rc 1 WAITING, naming the branch-scoped record command" ;;
+    *) echo "FAIL legP2: expected rc 1 naming '--scope branch/b2-pp', got rc=$_rcP2: $_outP2"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG P3 (the downstream legs still bite, and the verdict PARTITION holds) — a record scoped to
+  # THIS branch that is DEFECTIVE (no approver line) is the rc-2 ANOMALY, exactly as in CI mode
+  # (leg14 pins the CI half of the same property).
+  # ⚠️ THIS LEG CHANGED WITH Δ1′, deliberately. Under the withdrawn wide leg it was rc 1, on the
+  # reasoning that "an old defective record elsewhere in the ledger is not an anomaly OF THIS PUSH".
+  # With branch scoping the matched record IS bound to this change, so that reasoning is gone: a
+  # defective record for THIS branch is broken, and broken renders red (WAITING-GATES-RENDER-AS-RED).
+  _legs=$((_legs+1))   # legP3
+  _label=NONE _scope=branch/b2-pp _mkfix "$_tmp/fpp3" design "docs/architecture/d-design.md" real
+  ( cd "$_tmp/fpp3" && git checkout -q -b b2-pp )
+  _outP3="$( cd "$_tmp/fpp3" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP3=0 || _rcP3=$?
+  case "$_rcP3:$_outP3" in
+    2:*"no valid 'approved-by:"*)
+      echo "PASS legP3: --pre-push with a DEFECTIVE branch-scoped record -> rc 2 anomaly, named" ;;
+    1:*) echo "FAIL legP3: a defective record bound to THIS branch must be the anomaly (rc 2), got rc 1: $_outP3"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legP3: expected rc 2 naming the approver defect, got rc=$_rcP3: $_outP3"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG P4 — an ORDINARY change-set is N-A rc 0 in --pre-push mode too (applicability unchanged).
+  _legs=$((_legs+1))   # legP4
+  if run_ceremony_binding "$_tmp/changed-ordinary" --pre-push >/dev/null 2>&1; then
+    echo "PASS legP4: --pre-push + ordinary change-set -> N-A rc 0"
+  else
+    echo "FAIL legP4: --pre-push + ordinary change-set should be N-A rc 0"; _fails=$((_fails+1))
+  fi
+
+  # LEG P5 — --pre-push and --scope together are REFUSED (rc 2, anomaly): the pre-push key is
+  # DERIVED (D11's single-derivation rule), so honouring a supplied scope would run a different
+  # predicate than the caller asked for, and ignoring it would misrepresent what was checked.
+  _legs=$((_legs+1))   # legP5
+  _outP5="$( cd "$_tmp/fpp1" && run_ceremony_binding "$_tmp/changed-cp" --pre-push --scope PR-1 2>&1 )" \
+    && _rcP5=0 || _rcP5=$?
+  case "$_rcP5:$_outP5" in
+    2:*"--scope"*) echo "PASS legP5: --pre-push with --scope -> rc 2 refusal naming the conflict" ;;
+    *) echo "FAIL legP5: expected rc 2 naming --scope, got rc=$_rcP5: $_outP5"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG P6 — a DETACHED HEAD has no branch key to derive. FAIL CLOSED, rc 2 (the gate evaluated
+  # nothing — that is an anomaly, never the waiting yellow), naming the state.
+  _legs=$((_legs+1))   # legP6
+  ( cd "$_tmp/fpp1" && git checkout -q --detach HEAD )
+  _outP6="$( cd "$_tmp/fpp1" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP6=0 || _rcP6=$?
+  case "$_rcP6:$_outP6" in
+    2:*"detached HEAD"*) echo "PASS legP6: --pre-push on a detached HEAD -> rc 2, naming the state" ;;
+    *) echo "FAIL legP6: expected rc 2 naming 'detached HEAD', got rc=$_rcP6: $_outP6"
+       _fails=$((_fails+1)) ;;
+  esac
+  ( cd "$_tmp/fpp1" && git checkout -q b2-pp )
+
+  # LEG P7 — a branch name the RECORD FORMAT CANNOT EXPRESS is rc 2, not a silent non-match. The
+  # scope charset is promotion-verify.sh's (and CI's) — reused here rather than widened, so no new
+  # charset hole is opened by the derived key. A '+' is legal in a git refname and illegal in a
+  # scope; without this the key would simply never match and the operator would be told to record
+  # a GO they cannot record.
+  _legs=$((_legs+1))   # legP7
+  ( cd "$_tmp/fpp1" && git checkout -q -b 'feat+plus' )
+  _outP7="$( cd "$_tmp/fpp1" && run_ceremony_binding "$_tmp/changed-cp" --pre-push 2>&1 )" \
+    && _rcP7=0 || _rcP7=$?
+  case "$_rcP7:$_outP7" in
+    2:*"may contain only"*) echo "PASS legP7: an unrepresentable branch name -> rc 2 naming the charset" ;;
+    *) echo "FAIL legP7: expected rc 2 naming the charset, got rc=$_rcP7: $_outP7"
+       _fails=$((_fails+1)) ;;
+  esac
+  ( cd "$_tmp/fpp1" && git checkout -q b2-pp )
 
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran

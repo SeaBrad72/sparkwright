@@ -74,6 +74,14 @@ assert_wired() {  # <src-file>
   # ships an adopter a gate blind to truncation while parity stays green, which is the Slice-B
   # kit-tree-only regression shape. Load-bearing negative: selftest case 2e.
   printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --check-complete'  || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --check-complete' — the gate would not notice a changed-file listing TRUNCATED at the forge's API cap, and would classify (and post GREEN) on a change-set it cannot fully enumerate"; _w=1; }
+  # B2 Δ4(ii) / reviewer I4 — THE JUDGMENT-SURFACE RENDER IS PART OF THE GATE, not a kit-tree extra.
+  # The kit's own ratification.yml renders the derived state/class into the step summary so a
+  # reviewer sees what the gate decided without opening the log; an emitted profile that drops it
+  # ships adopters the ENFORCEMENT half of the disposition without the VISIBILITY half — the exact
+  # mirror-divergence class B6 paid a Critical for. Cheap to anchor, so anchored. Load-bearing
+  # negative: selftest case 2f.
+  printf '%s\n' "$_wcode" | grep -qF 'GITHUB_STEP_SUMMARY'  || { echo "FAIL: $1 never writes \$GITHUB_STEP_SUMMARY — the derived ratification state/class would not reach the judgment surface, so an adopter's reviewer gets the gate without the visibility half of the disposition (B2 Δ4(ii))"; _w=1; }
+  printf '%s\n' "$_wcode" | grep -qF 'ratification state'  || { echo "FAIL: $1 does not render the 'ratification state' line into the step summary — the two derived lines (state + reconciled class) are what make the gate's decision legible before the click"; _w=1; }
   return "$_w"
 }
 
@@ -164,6 +172,9 @@ selftest() {
       printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
       printf '      - run: sh conformance/promotion-readiness.sh --class --no-verify\n'
       printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
+      # B2 Δ4(ii): the judgment-surface render is part of the wired contract too — same reason as
+      # the two anchors above; the CLEAN fixture must carry everything the shipped workflows carry.
+      printf '      - run: printf %s- **ratification state**: `%%s`\\n%s "$state" >> "$GITHUB_STEP_SUMMARY"\n' "'" "'"
     } > "$1"
   }
 
@@ -228,6 +239,16 @@ selftest() {
     printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
   } > "$base/nocap.yml"
   if assert_wired "$base/nocap.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2e — a source with a well-shaped listing but NO --check-complete call passed assert_wired; a listing truncated at the forge's API cap would classify as complete and the gate would post GREEN on a change-set it cannot enumerate"; st=1; else echo "OK: listing with no truncation check -> RED (A4 anchor is load-bearing)"; fi
+
+  # 2f (B2 Δ4(ii) / reviewer I4, LOAD-BEARING NEGATIVE) — a source that gates but never RENDERS the
+  # derived state/class to the judgment surface must be RED. Without this case the render anchor
+  # could be deleted and the suite would stay green, which is precisely how an emitted profile comes
+  # to ship the enforcement half of a disposition without its visibility half (the mirror-divergence
+  # class B6 paid a Critical for).
+  mk_clean_src "$base/norender.yml"
+  grep -v 'GITHUB_STEP_SUMMARY' "$base/norender.yml" > "$base/norender2.yml"
+  mv "$base/norender2.yml" "$base/norender.yml"
+  if assert_wired "$base/norender.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2f — a source that never writes \$GITHUB_STEP_SUMMARY passed assert_wired; adopters would get the gate without the judgment-surface render"; st=1; else echo "OK: source with no judgment-surface render -> RED (B2 Δ4(ii) anchor is load-bearing)"; fi
 
   # 3. STACK-SPECIALIZED source (plant actions/setup-node) -> assert_stack_neutral RED.
   mk_clean_src "$base/stacky.yml"

@@ -252,4 +252,67 @@ deny  "git --output to tmp (write)"  'git diff --output=/tmp/benign.txt HEAD'
 # residual: the guard ALLOWS a plain redirect to a non-control-plane path (the workaround).
 allow "residual: git diff > tmp"     'git diff > /tmp/benign.txt'
 
+# --- B2 Δ4(i): raw writes to the promotion GO ledger (refs/notes/promotions) are DENIED — the
+# silent back door the D-240805-3 incident used. Deny the raw `git notes` WRITERS only; the
+# ceremonial front door (scripts/promotion-verify.sh record), the ledger's own publish push, all
+# reads, and fixture notes refs stay ALLOWED. Speed bump, honestly labeled: it closes the SILENT
+# back door, not the front door — a note binds, it does not authenticate.
+deny  "raw notes add to the ledger"   'git notes --ref=promotions add -f -F - HEAD'
+deny  "raw notes add, spaced ref"     'git notes --ref promotions add -m forged HEAD'
+deny  "raw notes add, quoted ref"     'git notes --ref="promotions" add -m forged HEAD'
+deny  "raw notes add, full ref name"  'git notes --ref=refs/notes/promotions add -m forged HEAD'
+deny  "raw notes edit"                'git notes --ref=promotions edit HEAD'
+deny  "raw notes remove"              'git notes --ref promotions remove HEAD'
+deny  "raw notes append"              'git notes --ref=promotions append -m more HEAD'
+deny  "raw notes prune"               'git notes --ref=promotions prune'
+allow "fixture notes ref write"       'git notes --ref=b2-selftest-x add -m t HEAD'
+allow "default-ref notes (commits)"   'git notes add -m annotation HEAD'
+allow "front door: record"            'sh scripts/promotion-verify.sh record --gate design --scope PR-1 --approved-sha abc1234 --approved-by Human --rung rc --class control-plane --token t'
+allow "ledger read: show"             'git notes --ref=promotions show HEAD'
+allow "ledger read: list"             'git notes --ref=promotions list'
+allow "ledger publish push"           'git push origin refs/notes/promotions'
+# ROUND 2 (sec L-new-1) — the two routes the ceiling's "COMPLETE MEASURED BYPASS SET" was MISSING,
+# now entries 7 and 8 there. Pinned as MEASURED-UNCOVERED so the arm and its disclosure cannot drift
+# apart in EITHER direction: if a later change makes one of these DENY, that is a coverage extension
+# and this line goes RED — re-take it together with the numbered set and the deny message rather than
+# deleting the case. (The FORCED spelling `+refs/notes/x:refs/notes/promotions` is denied by the
+# unrelated force/mirror-push rule, which is not coverage by this arm.)
+allow "push refspec onto the ledger"  'git push origin refs/notes/mine:refs/notes/promotions'
+allow "symbolic-ref repoints ledger"  'git symbolic-ref refs/notes/promotions refs/notes/mine'
+# THE SENTINEL IS RUNTIME-SCOPED (round 2, sec L-new-1): the flat claim "an agent can prefix the same
+# variable to a raw command" was over-stated. Under the hook / `kit-guard cmd` runtime the prefix
+# arrives inside the command TEXT and this arm's own environment does not carry it, so the raw write
+# is STILL DENIED. The ALLOW half — the prefix reaching the guard's ENVIRONMENT, which is what
+# `install-shims` produces — is asserted just below.
+deny  "sentinel prefix in cmd TEXT"   'KIT_PROMOTION_FRONT_DOOR=1 git notes --ref=promotions add -m forged HEAD'
+# The FRONT-DOOR SENTINEL [B2 sec H1]: promotion-verify.sh exports KIT_PROMOTION_FRONT_DOOR=1 around
+# its ONE note write, because under `kit-guard install-shims` the arm otherwise blocks the exact door
+# its deny message points at (measured deadlock; conformance/shim-coverage.sh case 4 proves it end to
+# end). Honest: the sentinel is AGENT-FORGEABLE and the arm's ceiling says so — Δ4(i)′ ships a DRIFT
+# CONTROL (owner ruling D3′), not a boundary.
+if KIT_PROMOTION_FRONT_DOOR=1 sh "$0" cmd 'git notes --ref=promotions add -f -F - HEAD' >/dev/null 2>&1; then
+  echo "PASS allow: front-door sentinel (KIT_PROMOTION_FRONT_DOOR=1) permits promotion-verify's own write"
+else
+  echo "FAIL (wanted allow): front-door sentinel must permit promotion-verify's own note write"; fail=1
+fi
+# THE DENY MESSAGE MUST BE TRUE, and must not signpost its own off-switch (L2). Three properties:
+# (a) it does NOT claim to cover DESTRUCTION — `update-ref -d` and `push origin :refs/notes/promotions`
+#     are in the measured bypass set, and the first draft said "forges or destroys";
+# (b) it names NO KIT_GUARD_SELFEDIT escape, unlike every other rule — this is the one rule whose
+#     purpose is to stop record-minting, so closing with its own bypass would defeat it;
+# (c) [round 2, sec L-new-1] it names the two routes the "COMPLETE SET" was missing — a PUSH refspec
+#     whose destination is the ref, and `symbolic-ref` repointing it. A disclosure that enumerates
+#     an incomplete set reads as coverage of everything it omits, which is the defect being fixed.
+_notes_msg=$(sh "$0" cmd 'git notes --ref=promotions add -m forged HEAD' 2>&1 >/dev/null || true)
+case "$_notes_msg" in
+  *"forges or destroys"*)
+    echo "FAIL: the notes deny message claims to stop DESTRUCTION, which it does not"; fail=1 ;;
+  *KIT_GUARD_SELFEDIT*)
+    echo "FAIL: the notes deny message signposts KIT_GUARD_SELFEDIT (L2) — the one rule that must not"; fail=1 ;;
+  *"NOT covered"*"update-ref"*"PUSH refspecs"*"symbolic-ref"*)
+    echo "PASS deny: the notes deny message states what it does NOT cover (incl. push refspecs onto the ref and symbolic-ref) and names no off-switch" ;;
+  *)
+    echo "FAIL: the notes deny message does not disclose the uncovered routes, got: $_notes_msg"; fail=1 ;;
+esac
+
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }
