@@ -121,7 +121,12 @@ row_bears_pr() {
 }
 
 # check_pr <project-dir> <pr-number> <changed-file> -> the REAL run. Emits a verdict STRING (N/A / OK /
-# FAIL) and returns rc0 on pass/N-A, rc1 on a real FAIL. Targets by ARGUMENT, never the environment.
+# FAIL) and returns a PARTITIONED rc (B5 rider BACKLOG-PRESENCE-WAITING-PARTITION):
+#   rc 0 = pass / N-A · rc 1 = the genuine no-row WAIT (a healthy stage: the poster renders it yellow)
+#   rc 2 = MISCONFIGURATION (unrecognized backend; md declared but no BACKLOG.md) — a broken gate, red.
+# Before the partition all three FAIL routes collapsed to rc 1, so a poster could not tell a waiting
+# gate from a broken one. (rc 2 is also the dispatcher's usage rc — both are red, no route conflates
+# with the wait.) Targets by ARGUMENT, never the environment.
 # The `[ -f "$_bl" ]` guard below is the load-bearing hard precondition for row_bears_pr (see its note):
 # without it a declared-md board that is absent would abort under `set -eu`; with it the absence becomes
 # the honest FAIL this dark-gate detector exists to raise.
@@ -133,16 +138,17 @@ check_pr() {
   # A fat-fingered backend (`markdow`, `TBD`) is signalled `unrecognized:<token>` by resolve_backend so
   # it does NOT fail open. FAIL on it (never collapse into the generic non-md N/A below) — this is the
   # dark-gate class the slice closes, and it mirrors backlog-current.sh:255-261 so the two gates reading
-  # one resolve_backend speak with one voice about what an unrecognized backend means.
+  # one resolve_backend speak with one voice about what an unrecognized backend means. rc 2, not 1: a
+  # misconfigured gate is BROKEN (red), never the same yellow as a healthy waiting one (B5 partition).
   case "$_tok" in
     unrecognized:*)
       _bad=${_tok#unrecognized:}
       echo "FAIL: unrecognized backlog backend '$_bad' (known: md github jira ado linear gitlab)"
-      return 1 ;;
+      return 2 ;;
   esac
   [ "$_tok" = md ] || { echo "N/A: backend '$_tok' is not BACKLOG.md"; return 0; }
   _bl="$_dir/BACKLOG.md"
-  [ -f "$_bl" ] || { echo "FAIL: declares an md backend but has no BACKLOG.md"; return 1; }
+  [ -f "$_bl" ] || { echo "FAIL: declares an md backend but has no BACKLOG.md"; return 2; }
   if is_pure_template "$_bl"; then echo "N/A: board not yet in use (pristine template)"; return 0; fi
   # The verdict STRINGS are a contract (the selftest asserts them verbatim, and humans read them in CI
   # logs). When no --branch is supplied the message is byte-for-byte what it always was — branch binding
@@ -155,10 +161,13 @@ check_pr() {
     fi
     return 0
   fi
+  # The genuine no-row WAIT: rc 1 (the poster renders it yellow). The trailing sentence is the
+  # B6-routed legibility pointer — the B6 probe itself mis-bound a row outside a `PR` column, and
+  # nothing on the rendered check-run said where the row has to live.
   if [ -n "$_br" ]; then
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class)"
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema."
   else
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class)"
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema."
   fi
   return 1
 }
@@ -268,40 +277,42 @@ selftest() {
   # an ordinary change-set listing exercises the ordinary N/A route.
   cfo="$base/cf_ord"; printf 'README.md\n' > "$cfo"
 
-  # ordinary change-class -> N/A (no board consulted at all).
+  # ordinary change-class -> N/A (no board consulted at all), rc 0.
   d="$base/cp_ordinary"; _proj_md_board "$d" '| KW6-A2 | — | #280 |'
-  assert_msg "N/A: ordinary change-class; board row not required" \
-    "cp/ordinary-class: ordinary PR -> N/A (board not required)" "$d" 280 "$cfo"
+  assert_msg "N/A: ordinary change-class; board row not required" 0 \
+    "cp/ordinary-class: ordinary PR -> N/A (board not required), rc 0" "$d" 280 "$cfo"
 
-  # gated + no backend declared -> N/A.
+  # gated + no backend declared -> N/A, rc 0.
   d="$base/cp_nobackend"; mkdir -p "$d"
-  assert_msg "N/A: no backlog backend declared" \
-    "cp/no-backend: undeclared backend -> N/A" "$d" 280 "$cfg"
+  assert_msg "N/A: no backlog backend declared" 0 \
+    "cp/no-backend: undeclared backend -> N/A, rc 0" "$d" 280 "$cfg"
 
-  # gated + a non-md backend -> N/A (this gate is md-board only).
+  # gated + a non-md backend -> N/A (this gate is md-board only), rc 0.
   d="$base/cp_github"; _proj_backend "$d" github
-  assert_msg "N/A: backend 'github' is not BACKLOG.md" \
-    "cp/non-md: github backend -> N/A" "$d" 280 "$cfg"
+  assert_msg "N/A: backend 'github' is not BACKLOG.md" 0 \
+    "cp/non-md: github backend -> N/A, rc 0" "$d" 280 "$cfg"
 
-  # gated + declares md but has NO BACKLOG.md -> FAIL (the dark-gate detector).
+  # gated + declares md but has NO BACKLOG.md -> FAIL, rc 2 (MISCONFIGURATION, red — never the same
+  # yellow as a healthy waiting gate; B5 rider BACKLOG-PRESENCE-WAITING-PARTITION).
   d="$base/cp_noboard"; _proj_backend "$d" md
-  assert_msg "FAIL: declares an md backend but has no BACKLOG.md" \
-    "cp/declared-no-board: md declared, board absent -> FAIL" "$d" 280 "$cfg"
+  assert_msg "FAIL: declares an md backend but has no BACKLOG.md" 2 \
+    "cp/declared-no-board: md declared, board absent -> FAIL, rc 2 (red)" "$d" 280 "$cfg"
 
-  # gated + md + pristine template -> N/A (board not yet in use).
+  # gated + md + pristine template -> N/A (board not yet in use), rc 0.
   d="$base/cp_template"; _proj_template "$d"
-  assert_msg "N/A: board not yet in use (pristine template)" \
-    "cp/pristine: untouched template -> N/A" "$d" 280 "$cfg"
+  assert_msg "N/A: board not yet in use (pristine template)" 0 \
+    "cp/pristine: untouched template -> N/A, rc 0" "$d" 280 "$cfg"
 
-  # gated + md + board bears the PR -> OK.
+  # gated + md + board bears the PR -> OK, rc 0.
   d="$base/cp_present"; _proj_md_board "$d" '| KW6-A2 | — | #280 |'
-  assert_msg "OK: backlog-presence — PR #280 is bound to a board row (PR column)" \
-    "cp/present: gated PR bound to a row -> OK" "$d" 280 "$cfg"
+  assert_msg "OK: backlog-presence — PR #280 is bound to a board row (PR column)" 0 \
+    "cp/present: gated PR bound to a row -> OK, rc 0" "$d" 280 "$cfg"
 
-  # gated + md + board does NOT bear the PR -> FAIL.
+  # gated + md + board does NOT bear the PR -> the genuine WAIT, rc 1 (yellow), and the verdict must
+  # carry the legibility pointer (B6-routed: the probe itself mis-bound a row outside a PR column).
   d="$base/cp_absent"; _proj_md_board "$d" '| KW6-A2 | — | #99 |'
-  assert_msg "FAIL: backlog-presence — no board row bears PR #280 in its PR cell (gated change-class)" \
-    "cp/absent: gated PR with no matching row -> FAIL" "$d" 280 "$cfg"
+  assert_msg "FAIL: backlog-presence — no board row bears PR #280 in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema." 1 \
+    "cp/absent: gated PR with no matching row -> FAIL, rc 1 (yellow wait) + PR-column pointer" "$d" 280 "$cfg"
 
   # ===== I-1 — the classifier-config environment must NOT redirect the seams (spec §7) =====
   # gate_class consults agent-boundary.sh, whose union-detection reads adapters/*/adapter.json.
@@ -324,8 +335,8 @@ selftest() {
   # fail open. check_pr must FAIL on it — mirroring backlog-current.sh:255-261 — not route it into
   # the generic non-md N/A. A real board binding no PR proves it is the TOKEN, not board-absence.
   d="$base/cp_typo"; _proj_backend "$d" markdow; _board "$d" '| KW6-A2 | — | #99 |'
-  assert_msg "FAIL: unrecognized backlog backend 'markdow' (known: md github jira ado linear gitlab)" \
-    "i2/typo-backend: 'markdow' declared + real board -> FAIL (not N/A)" "$d" 280 "$cfg"
+  assert_msg "FAIL: unrecognized backlog backend 'markdow' (known: md github jira ado linear gitlab)" 2 \
+    "i2/typo-backend: 'markdow' declared + real board -> FAIL, rc 2 (red misconfiguration, not N/A, not the wait-yellow)" "$d" 280 "$cfg"
 
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-presence --selftest: FAIL" >&2
@@ -420,14 +431,24 @@ $(printf '%s\n' "$PATH" | tr ':' '\n')
 PATH_EOF
   printf '%s\n' "$_d"
 }
-# assert_msg <expected-substring> <label> <dir> <pr> <changed-file> : drive check_pr BY ARGUMENT and
-# assert its VERDICT STRING (not a bare rc — a dead check and a live one are identical on rc alone).
+# assert_msg <expected-substring> <expected-rc> <label> <dir> <pr> <changed-file> : drive check_pr BY
+# ARGUMENT and assert its VERDICT STRING *and its rc*. The string alone is not enough — B5's rider
+# (S8) measured the three-states-collapse: misconfiguration (unrecognized backend, md-declared-but-no-
+# board) and the genuine no-row WAIT all returned rc 1, so a poster rendered a broken gate as the same
+# yellow as a healthy waiting one. The rc is part of the declared contract now, so the oracle asserts it.
 assert_msg() {
-  _out=$(check_pr "$3" "$4" "$5" 2>&1) || true
+  if _out=$(check_pr "$4" "$5" "$6" 2>&1); then _rc=0; else _rc=$?; fi
+  _ok=1
   case "$_out" in
-    *"$1"*) echo "selftest PASS: $2" ;;
-    *) echo "selftest FAIL: $2 (check_pr -> '$_out', wanted to contain '$1')"; st_fail=1 ;;
+    *"$1"*) ;;
+    *) _ok=0 ;;
   esac
+  [ "$_rc" -eq "$2" ] || _ok=0
+  if [ "$_ok" = 1 ]; then
+    echo "selftest PASS: $3"
+  else
+    echo "selftest FAIL: $3 (check_pr rc=$_rc wanted $2; out='$_out', wanted to contain '$1')"; st_fail=1
+  fi
 }
 
 # --- fixture writers --------------------------------------------------------------------

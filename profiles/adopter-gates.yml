@@ -210,13 +210,18 @@ jobs:
           case "$rc" in
             0) title="Board row bound — or not required" ;;
             1) title="Board row required — bind this PR to a backlog row (yellow, not a failure)" ;;
-            *) title="Gate error — could not evaluate board presence" ;;
+            *) title="Gate error or misconfiguration — board presence could not be adjudicated" ;;
           esac
           # PATCH-or-POST via a SERVER-SIDE ?check_name= filter (never a client-side select over an
           # unpaginated list — the ceremony-binding pair below explains why that misses on a re-run).
+          # IDENTITY, NOT JUST PAGINATION (B5 Δ3): filter the name-scoped list down to OUR OWN prior
+          # run by external_id — a same-named JOB auto-run or another workflow's poster must never be
+          # PATCHed by us (Actions-stamped runs 403 our PATCH; measured 3x on the kit's probe #500,
+          # where these very posters lost the timing race to a CI twin's job check-run). No own-run
+          # match -> POST.
           set +e
           run_id=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs?check_name=backlog-presence" \
-                     -q '.check_runs[].id' 2>/dev/null | head -1)
+                     -q '.check_runs[] | select(.external_id=="sparkwright-poster:backlog-presence") | .id' 2>/dev/null | head -1)
           if [ -n "$run_id" ]; then
             method=PATCH; endpoint="repos/${{ github.repository }}/check-runs/${run_id}"
           else
@@ -227,6 +232,7 @@ jobs:
           if [ -n "$concl" ]; then
             gh api -X "$method" "$endpoint" \
               -f name='backlog-presence' \
+              -f external_id="sparkwright-poster:backlog-presence" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f conclusion="$concl" \
@@ -235,6 +241,7 @@ jobs:
           else
             gh api -X "$method" "$endpoint" \
               -f name='backlog-presence' \
+              -f external_id="sparkwright-poster:backlog-presence" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f 'output[title]'="$title" \
@@ -360,8 +367,10 @@ jobs:
             summary="$(printf 'NOTE: the wording below is the generic ratification text — this run adjudicated from a base tree that predates per-gate wording, so ignore any instruction to seek a code approval. This is the DESIGN GATE: what it wants is a recorded design GO. The colour is correct.\n\n%s' "$summary")"
           fi
           set +e
+          # IDENTITY, NOT JUST PAGINATION (B5 Δ3): own-run lookup by external_id over the name-scoped
+          # list; a same-named JOB auto-run or another workflow's poster is never PATCHed by us.
           run_id=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs?check_name=ceremony-binding" \
-                     -q '.check_runs[].id' 2>/dev/null | head -1)
+                     -q '.check_runs[] | select(.external_id=="sparkwright-poster:ceremony-binding") | .id' 2>/dev/null | head -1)
           if [ -n "$run_id" ]; then
             method=PATCH; endpoint="repos/${{ github.repository }}/check-runs/${run_id}"
           else
@@ -372,6 +381,7 @@ jobs:
           if [ -n "$concl" ]; then
             gh api -X "$method" "$endpoint" \
               -f name='ceremony-binding' \
+              -f external_id="sparkwright-poster:ceremony-binding" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f conclusion="$concl" \
@@ -380,6 +390,7 @@ jobs:
           else
             gh api -X "$method" "$endpoint" \
               -f name='ceremony-binding' \
+              -f external_id="sparkwright-poster:ceremony-binding" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f 'output[title]'="$title" \
@@ -494,8 +505,12 @@ jobs:
             exit 1
           fi
           set +e
+          # IDENTITY, NOT JUST PAGINATION (B5 Δ3): own-run lookup by external_id over the name-scoped
+          # list. On the kit's own dev repo this poster lost the find-by-name race to ci.yml's
+          # `loop-state` JOB check-run 3x on probe #500 (Feb-2025 PATCH 403, post-loop-state red) —
+          # the external_id filter is what makes dogfooding these gates beside an internal CI possible.
           run_id=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs?check_name=loop-state" \
-                     -q '.check_runs[].id' 2>/dev/null | head -1)
+                     -q '.check_runs[] | select(.external_id=="sparkwright-poster:loop-state") | .id' 2>/dev/null | head -1)
           if [ -n "$run_id" ]; then
             method=PATCH; endpoint="repos/${{ github.repository }}/check-runs/${run_id}"
           else
@@ -506,6 +521,7 @@ jobs:
           if [ -n "$concl" ]; then
             gh api -X "$method" "$endpoint" \
               -f name='loop-state' \
+              -f external_id="sparkwright-poster:loop-state" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f conclusion="$concl" \
@@ -514,6 +530,7 @@ jobs:
           else
             gh api -X "$method" "$endpoint" \
               -f name='loop-state' \
+              -f external_id="sparkwright-poster:loop-state" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f 'output[title]'="$title" \

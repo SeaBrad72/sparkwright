@@ -233,6 +233,7 @@ conformance/otlp-backend-wired.sh
 conformance/persona-artifacts.sh
 conformance/phase-gate.sh
 conformance/pipeline-origin.sh
+conformance/poster-parity.sh
 conformance/preview-env-ready.sh
 conformance/preview-environments-readiness.md
 conformance/privacy-ready.sh

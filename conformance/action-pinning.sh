@@ -154,7 +154,7 @@ check_fleet "profiles" || rc=1
 # a `checks: write` token, so an unpinned action here is the worst place to have one.
 check_target "$REF_RATIFICATION" 1 || rc=1
 # 1c) B6: the board/loop merge-time gates ship as their own workflow too, and post via checks:write
-# in several jobs (backlog-presence, post-ceremony-binding, post-loop-state) — strict, same as 1b.
+# in several jobs (gate-backlog-presence, post-ceremony-binding, post-loop-state) — strict, same as 1b.
 check_target "$REF_ADOPTER_GATES" 1 || rc=1
 # 2) the kit's OWN workflows (broadened in H4b): every actually-run workflow pins its actions
 if [ -d "$KIT_WORKFLOWS" ]; then

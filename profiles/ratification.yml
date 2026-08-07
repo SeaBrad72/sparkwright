@@ -137,6 +137,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
+          # ⚠️ ENV-BOUND, NEVER INLINE. A fork's repo full_name is chosen by the person opening the PR;
+          # interpolated straight into a shell `[ … ]` it is a command-injection primitive. Compared as
+          # "$HEAD_REPO", it is inert data.
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
         run: |
           # CI= cleared so agent-boundary keeps its true three-state (CI would escalate 2->1):
           #   0 = ratified / no control-plane change · 1 = unratified control-plane · 2 = cannot evaluate.
@@ -212,8 +217,16 @@ jobs:
           # `in_progress` runs hanging forever — they are never completed. Branch protection reads the
           # latest, so it is not a correctness bug, but it litters the PR with permanent yellow spinners.
           set +e
-          run_id=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs" \
-                     -q '.check_runs[] | select(.name=="control-plane-ratification") | .id' 2>/dev/null | head -1)
+          # ⚠️ SERVER-SIDE FILTER, NOT A CLIENT-SIDE select(). A head sha can carry more check-runs
+          # than one unpaginated page returns (measured on the kit repo: 45 runs, page of 30, newest
+          # first) — on a re-run the previous control-plane-ratification falls off page 1, the lookup
+          # misses, and the poster POSTs a duplicate while stranding the first at in_progress forever.
+          # `?check_name=` makes the forge do the filtering, so paging cannot hide the match.
+          # IDENTITY, NOT JUST PAGINATION (B5 Δ3): filter the name-scoped list down to OUR OWN prior
+          # run by external_id — a same-named JOB auto-run or another workflow's poster must never be
+          # PATCHed by us (Actions-stamped runs 403 our PATCH). No own-run match -> POST.
+          run_id=$(gh api "repos/${{ github.repository }}/commits/${SHA}/check-runs?check_name=control-plane-ratification" \
+                     -q '.check_runs[] | select(.external_id=="sparkwright-poster:control-plane-ratification") | .id' 2>/dev/null | head -1)
           if [ -n "$run_id" ]; then
             method=PATCH; endpoint="repos/${{ github.repository }}/check-runs/${run_id}"
           else
@@ -222,6 +235,7 @@ jobs:
           if [ -n "$concl" ]; then
             gh api -X "$method" "$endpoint" \
               -f name='control-plane-ratification' \
+              -f external_id="sparkwright-poster:control-plane-ratification" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f conclusion="$concl" \
@@ -232,6 +246,7 @@ jobs:
             # would take the empty string as a conclusion and COMPLETE the check (making it red again).
             gh api -X "$method" "$endpoint" \
               -f name='control-plane-ratification' \
+              -f external_id="sparkwright-poster:control-plane-ratification" \
               -f head_sha="$SHA" \
               -f status="$status" \
               -f 'output[title]'="$title" \
@@ -239,8 +254,17 @@ jobs:
           fi
           api_rc=$?
           set -e
+          echo "control-plane-ratification => status=$status conclusion=${concl:-<none: waiting on a human>} (rc=$rc, class=$class, state=$state, api_rc=$api_rc)"
           if [ "$api_rc" -ne 0 ]; then
             echo "control-plane-ratification: the check-run could not be posted (gh api rc=$api_rc). On a fork pull_request this is EXPECTED — GITHUB_TOKEN is read-only there. The required check stays ABSENT, which BLOCKS the merge rather than allowing it (fail-closed)."
+            # B5 (Δ4): on a SAME-REPO PR the token IS writable, so a failed post/PATCH is a real defect
+            # and must be LOUD. A dismissed approval re-runs this gate to PATCH the (green) run back to
+            # yellow — if that PATCH failed silently, the stale `success` stood on the live head (the
+            # one fail-open inversion on this surface). Fork PRs keep the logged-and-tolerated path.
+            if [ "$HEAD_REPO" = "$THIS_REPO" ]; then
+              echo "control-plane-ratification: this is a SAME-REPO pull request, so the token should have been writable. Failing the job — an unreportable gate is a real defect, not a fork's read-only token (a silently-failed re-yellow PATCH would leave a stale success standing)."
+              exit 1
+            fi
           fi
-          echo "control-plane-ratification => status=$status conclusion=${concl:-<none: waiting on a human>} (rc=$rc, class=$class, state=$state, api_rc=$api_rc)"
-          # The job exits 0 regardless of the posted state — no failure email; the check-run carries it.
+          # The job exits 0 in the common case — no failure email; the check-run carries the verdict.
+          # The one exception fails on purpose: a same-repo post failure is an unreportable gate.

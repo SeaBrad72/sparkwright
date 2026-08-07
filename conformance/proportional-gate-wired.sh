@@ -344,14 +344,12 @@ selftest() {
   # and the required context is satisfied by a job that exits 0 regardless. ratification.yml avoids this
   # by construction (job key `gate-agent-boundary`, check-run `control-plane-ratification`).
   #
-  # ⚠️ KNOWN-FAILING ALLOWLIST, deliberately. `backlog-presence` collides TODAY and is a live shipped
-  # defect, boarded as DUPLICATE-CHECKRUN-NAME-MAY-BE-INERT — whose FIRST acceptance criterion is to
-  # settle by measurement whether the context is inert, then rename. Fixing it here would be a fix
-  # riding inside another slice (standing veto). The allowlist is the debt, in code, where the fix must
-  # delete it to go green — not a silent exemption. DO NOT ADD ENTRIES.
+  # NO ALLOWLIST. `backlog-presence` used to carry a deliberate known-failing allowlist entry here
+  # (boarded DUPLICATE-CHECKRUN-NAME-MAY-BE-INERT, measured WORST-WINS by the B5a probe, PR #492);
+  # B5 renamed the job to `gate-backlog-presence` and deleted the entry — this check greens ONLY
+  # because the collision is gone, which was the allowlist's designed exit. DO NOT ADD ENTRIES.
   if [ -f "$CI_WF" ]; then
     for _nm in $(grep -oE "^[[:space:]]*-f name='[a-z][a-z0-9-]*'" "$CI_WF" | grep -oE "'[a-z][a-z0-9-]*'" | tr -d "'" | sort -u); do
-      case "$_nm" in backlog-presence) continue ;; esac
       if grep -qE "^  ${_nm}:\$" "$CI_WF"; then
         echo "FAIL: $CI_WF has a JOB named '${_nm}' AND posts a check-run of the same name — two same-named check-runs on one sha, with the job's own (exit-0-regardless) run completing last. Rename the job (see ratification.yml's gate-* convention); the REQUIRED CONTEXT keeps the posted name and needs no branch-protection change"; st=1
       fi
