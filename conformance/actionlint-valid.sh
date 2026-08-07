@@ -120,6 +120,9 @@ done
 # workflow the adopter installs verbatim must be validated here — otherwise the file carrying a
 # `checks: write` token ships unlinted.
 [ -f "$ROOT/profiles/ratification.yml" ] && targets="$targets $ROOT/profiles/ratification.yml"
+# B6: the board/loop gates ship as their own single stack-neutral source too — validate it here for
+# the same reason (it carries checks:write in several jobs and must not ship unlinted).
+[ -f "$ROOT/profiles/adopter-gates.yml" ] && targets="$targets $ROOT/profiles/adopter-gates.yml"
 if [ -z "$targets" ]; then echo "actionlint-valid: no workflows found under $ROOT" >&2; exit 2; fi
 
 echo "actionlint-valid: validating shipped GHA documents (actionlint v$AL_VER, document-validity only)"

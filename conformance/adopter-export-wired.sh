@@ -357,18 +357,40 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -rf "$_e" 2>/dev/null || true
   # negative (g / KW27 non-vacuity): block (g) must have TEETH — with the PRE-FIX carve (zero-match =>
-  # loud-fail), export-of-an-export MUST fail. Export the real tree once (a mirror), reintroduce the
-  # pre-fix zero-match `return 1` into the FIXTURE's own script, commit (adopter-export archives HEAD),
-  # then re-export: it must FAIL. If it still succeeds, block (g) is vacuous — it would not catch the
-  # v3.157.0 front-door regression.
+  # loud-fail), export-of-an-export MUST fail. RE-ARMED FOR RIDER (c) (measured vacuous in CI
+  # 2026-08-07, PR #501 battery 1): the mirror is a NON-kit tree (KIT_INTERNAL_MARKERS stripped by the
+  # export), so rider (c)'s `_ae_is_kit_tree` gate now SKIPS the whole carve block there and the
+  # historical zero-match mutant became unreachable — the sed applied cleanly but its target branch was
+  # dead code on the mirror path. Fix: force the gate open in the mirror's own script (`_aekt=0` ->
+  # `_aekt=1`), then (CONTROL) the forced-gate export-of-an-export must still SUCCEED — proving every
+  # carve tolerates the already-carved state, and isolating the mutant as the only cause of the
+  # failure asserted next — then (MUTANT) + the pre-fix zero-match `return 1` must FAIL. Both seds are
+  # verified applied (a zero-match sed is a silent no-op — exactly the class this negative just fell to).
   _fpm=$(mktemp -d); _fpo=$(mktemp -d)
   if ( cd "$ROOT" && sh scripts/adopter-export.sh "$_fpm" >/dev/null 2>&1 ); then
-    sed 's/if \[ "$_cm_n" -eq 0 \]; then/if [ "$_cm_n" -eq 0 ]; then return 1;/' \
+    sed 's/_aekt=0/_aekt=1/' \
       "$_fpm/scripts/adopter-export.sh" > "$_fpm/scripts/.ae.tmp" && mv "$_fpm/scripts/.ae.tmp" "$_fpm/scripts/adopter-export.sh"
+    # >=2: the unmutated script already contains one `_aekt=1` (the marker-hit assignment), so a
+    # presence grep is vacuously satisfiable — count instead (reviewer round-4 Minor).
+    if [ "$(grep -c '_aekt=1' "$_fpm/scripts/adopter-export.sh" || true)" -lt 2 ]; then
+      echo "adopter-export-wired --selftest: FAIL (fixture mutation did not apply — the kit-tree-force sed matched nothing)"; sfail=1
+    fi
     ( cd "$_fpm" && git init -q && git add -A \
-      && git -c user.email=ci@kit -c user.name=ci commit -qm pre-fix >/dev/null 2>&1 ) || true
-    if ( cd "$_fpm" && sh scripts/adopter-export.sh "$_fpo" >/dev/null 2>&1 ); then
-      echo "adopter-export-wired --selftest: FAIL (pre-fix zero-match carve still let export-of-an-export succeed — block (g) is vacuous)"; sfail=1
+      && git -c user.email=ci@kit -c user.name=ci commit -qm forced-gate >/dev/null 2>&1 ) || true
+    if ! ( cd "$_fpm" && sh scripts/adopter-export.sh "$_fpo" >/dev/null 2>&1 ); then
+      echo "adopter-export-wired --selftest: FAIL (CONTROL broke — forced-gate export-of-an-export failed WITHOUT the mutant, so the negative below cannot isolate its cause)"; sfail=1
+    else
+      rm -rf "$_fpo" 2>/dev/null || true; _fpo=$(mktemp -d)
+      sed 's/if \[ "$_cm_n" -eq 0 \]; then/if [ "$_cm_n" -eq 0 ]; then return 1;/' \
+        "$_fpm/scripts/adopter-export.sh" > "$_fpm/scripts/.ae.tmp" && mv "$_fpm/scripts/.ae.tmp" "$_fpm/scripts/adopter-export.sh"
+      if ! grep -q 'then return 1;' "$_fpm/scripts/adopter-export.sh"; then
+        echo "adopter-export-wired --selftest: FAIL (fixture mutation did not apply — the zero-match sed matched nothing)"; sfail=1
+      fi
+      ( cd "$_fpm" && git add -A \
+        && git -c user.email=ci@kit -c user.name=ci commit -qm pre-fix >/dev/null 2>&1 ) || true
+      if ( cd "$_fpm" && sh scripts/adopter-export.sh "$_fpo" >/dev/null 2>&1 ); then
+        echo "adopter-export-wired --selftest: FAIL (pre-fix zero-match carve still let export-of-an-export succeed — block (g) is vacuous)"; sfail=1
+      fi
     fi
   else
     echo "adopter-export-wired --selftest: FAIL (could not build the export-of-export fixture)"; sfail=1

@@ -9,6 +9,9 @@ Enforces the §14 contract at the repo boundary: `main` protected, green CI to m
   control-plane-ratification
   # provenance             <- uncomment once this profile's ci.yml gates on SLSA provenance
   # image-provenance       <- uncomment once this profile builds + attests a container image
+  # backlog-presence       <- uncomment once you install profiles/adopter-gates.yml (Inception) and want gated PRs to require a bound board row before merge
+  # ceremony-binding       <- uncomment once you want a gated PR to require a recorded design GO before merge
+  # loop-state             <- uncomment ONLY after flipping LOOP_STATE_MODE to enforce in .github/workflows/adopter-gates.yml (binding it in observe mode is a silent pass-through — GitHub treats the posted `neutral` conclusion as satisfying a required check)
   # <add-your-check-here>
   ```
 - At least 1 approving review from someone other than the author.
@@ -24,6 +27,14 @@ Enforces the §14 contract at the repo boundary: `main` protected, green CI to m
 A single manual additive call (no script) looks like:
 ```bash
 gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=ci'
+```
+
+Once `profiles/adopter-gates.yml` is installed (Inception) and you want to require its checks, the same additive call per context:
+```bash
+gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=backlog-presence'
+gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=ceremony-binding'
+# loop-state: bind this ONLY after flipping LOOP_STATE_MODE to enforce — see the note above.
+gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=loop-state'
 ```
 
 > "Builder ≠ sole merger" is enforced by required reviews + CODEOWNERS. GitHub cannot strictly forbid every user from merging their own PR on all plans; on GitHub Enterprise use rulesets / required reviewers. Document the policy in the project `CLAUDE.md` regardless.

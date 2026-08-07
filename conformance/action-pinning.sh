@@ -13,6 +13,7 @@
 set -eu
 
 REF_RATIFICATION="profiles/ratification.yml"  # CP-9 §13 gate; RATIFY-PARITY: the single stack-neutral source
+REF_ADOPTER_GATES="profiles/adopter-gates.yml"  # B6 board/loop gates; the single stack-neutral source
 KIT_WORKFLOWS=".github/workflows"                         # the workflows the kit itself runs
 
 # has_uses <workflow>: 0 if the file declares at least one real `uses:` step.
@@ -152,6 +153,9 @@ check_fleet "profiles" || rc=1
 # pull_request_review). Strict: the adopter installs it verbatim, and it is the file that carries
 # a `checks: write` token, so an unpinned action here is the worst place to have one.
 check_target "$REF_RATIFICATION" 1 || rc=1
+# 1c) B6: the board/loop merge-time gates ship as their own workflow too, and post via checks:write
+# in several jobs (backlog-presence, post-ceremony-binding, post-loop-state) — strict, same as 1b.
+check_target "$REF_ADOPTER_GATES" 1 || rc=1
 # 2) the kit's OWN workflows (broadened in H4b): every actually-run workflow pins its actions
 if [ -d "$KIT_WORKFLOWS" ]; then
   for wf in "$KIT_WORKFLOWS"/*.yml "$KIT_WORKFLOWS"/*.yaml; do

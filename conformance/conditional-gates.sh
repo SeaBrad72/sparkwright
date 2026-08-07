@@ -1,9 +1,12 @@
 #!/bin/sh
 # conditional-gates.sh — assert the CONDITIONAL gates are named WITH their trigger in the process doc.
 # The honest-demote: these are first-class but conditional (trigger-bound), not universal. They live in
-# TWO homes: the §7 gate table (a11y/eval/resilience/SAST/license) AND the §13 platform-conditional
+# THREE homes: the §7 gate table (a11y/eval/resilience/SAST/license), the §13 platform-conditional
 # control-plane-ratification gate (GitHub check-runs — GitLab has no check-runs / pull_request_review,
-# so §13 is N/A-with-reason there; conformance/proportional-gate-wired.sh cites this declaration).
+# so §13 is N/A-with-reason there; conformance/proportional-gate-wired.sh cites this declaration), and
+# (B6) the board/loop gates — backlog-presence, ceremony-binding, loop-state (profiles/adopter-gates.yml)
+# — same GitHub check-runs trigger, same platform-conditional shape; conformance/adopter-gates-parity.sh
+# cites this declaration.
 # `check_doc` greps the WHOLE document, so a marker in either section matches; a future accidental row
 # removal (e.g. reverting a row) fails the guard — not just a bare-word match some prose could satisfy.
 #   sh conformance/conditional-gates.sh [--selftest]
@@ -28,6 +31,7 @@ Resilience readiness** *(deployable services)*
 SAST** *(first-party code)*
 License compliance** *(when an SBOM is produced)*
 Control-plane ratification** *(GitHub check-runs)*
+Board and loop gates** *(GitHub check-runs)*
 EOF
   return $f
 }
@@ -51,8 +55,18 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     echo "PASS: selftest — missing §13 platform-conditional declaration detected"
   fi
+  # B6 gap tree: everything but the §13 declaration present, INCLUDING §13, but the new B6
+  # board/loop-gates platform-conditional declaration MISSING -> a reverted B6 declaration must be
+  # caught too, exactly as the §13 one is above.
+  gb6=$(mktemp -d)
+  printf '# proc\n| **Accessibility** *(user-facing UI)* | x |\n| **Eval gate** *(AI features)* | x |\n| **Resilience readiness** *(deployable services)* | x |\n| **SAST** *(first-party code)* | x |\n| **License compliance** *(when an SBOM is produced)* | x |\n**Control-plane ratification** *(GitHub check-runs)*\n' > "$gb6/proc.md"
+  if check_doc "$gb6/proc.md" >/dev/null 2>&1; then
+    echo "FAIL: selftest — missing B6 board/loop-gates platform-conditional declaration not detected"; sfail=1
+  else
+    echo "PASS: selftest — missing B6 board/loop-gates platform-conditional declaration detected"
+  fi
   ok=$(mktemp -d)
-  printf '# proc\n| **Accessibility** *(user-facing UI)* | x |\n| **Eval gate** *(AI features)* | x |\n| **Resilience readiness** *(deployable services)* | x |\n| **SAST** *(first-party code)* | x |\n| **License compliance** *(when an SBOM is produced)* | x |\n**Control-plane ratification** *(GitHub check-runs)*\n' > "$ok/proc.md"
+  printf '# proc\n| **Accessibility** *(user-facing UI)* | x |\n| **Eval gate** *(AI features)* | x |\n| **Resilience readiness** *(deployable services)* | x |\n| **SAST** *(first-party code)* | x |\n| **License compliance** *(when an SBOM is produced)* | x |\n**Control-plane ratification** *(GitHub check-runs)*\n**Board and loop gates** *(GitHub check-runs)*\n' > "$ok/proc.md"
   if check_doc "$ok/proc.md" >/dev/null 2>&1; then
     echo "PASS: selftest — complete set passes"
   else
@@ -66,9 +80,9 @@ case "${1:-}" in
   *) echo "usage: conditional-gates.sh [--selftest]" >&2; exit 2 ;;
 esac
 
-echo "Conditional-gate rows (name + trigger — §7 gate table + §13 platform-conditional):"
+echo "Conditional-gate rows (name + trigger — §7 gate table + §13/B6 platform-conditional):"
 if check_doc "$GATE_DOC"; then
-  echo "OK: conditional gates named with their trigger (§7 a11y/eval/resilience/SAST/license + §13 control-plane ratification)"
+  echo "OK: conditional gates named with their trigger (§7 a11y/eval/resilience/SAST/license + §13 control-plane ratification + B6 board/loop gates)"
   exit 0
 else
   echo "FAIL: a conditional-gate row is missing from the process doc (see above)"

@@ -594,6 +594,16 @@ if [ "$CI" = "github" ] && [ ! -f profiles/ratification.yml ]; then
   echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
   exit 1
 fi
+# B6: the adopter board/loop gates (backlog-presence, ceremony-binding, loop-state) install from the
+# single stack-neutral source profiles/adopter-gates.yml, exactly like profiles/ratification.yml above
+# — refuse EARLY, before any working-tree mutation, if it is missing. Scoped to --ci github (the gate
+# is GitHub-specific); a valid kit/export always ships the source, so a real adopter never hits this.
+# The install site (github case) re-checks and fails closed too (defence-in-depth).
+if [ "$CI" = "github" ] && [ ! -f profiles/adopter-gates.yml ]; then
+  echo "error: profiles/adopter-gates.yml is MISSING — cannot install the board/loop merge-time gates." >&2
+  echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
+  exit 1
+fi
 if [ -n "$FLUENCY" ]; then
   case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
 fi
@@ -866,6 +876,17 @@ case "$CI" in
       echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
       exit 1
     fi
+    # B6: the board/loop merge-time gates (backlog-presence, ceremony-binding, loop-state — the latter
+    # ACTIVE but in observe mode, see the source file's header) install from the same single
+    # stack-neutral source pattern as ratification.yml, UNCONDITIONALLY for every stack.
+    # conformance/adopter-gates-parity.sh locks that this stays the sole, wired, stack-neutral copy.
+    if [ -f profiles/adopter-gates.yml ]; then
+      cp_kit_replace profiles/adopter-gates.yml .github/workflows/adopter-gates.yml 'COPY & ADAPT|Sparkwright'
+    else
+      echo "incept: profiles/adopter-gates.yml is MISSING — cannot install the board/loop merge-time gates." >&2
+      echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
+      exit 1
+    fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       install_pipeline "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && install_codeowners "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
@@ -963,7 +984,8 @@ fi
 # ALL stack profiles, so scanning a FOREIGN profile's scaffold (e.g. profiles/python/scaffold/tests/
 # urllib) reddens a TS adopter's very FIRST CI on code they never wrote. incept is the first point the
 # stack is known (the release is stack-neutral), so prune here — mirroring `adopter-export --profile`
-# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/_TEMPLATE.md,
+# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/adopter-gates.yml
+# (B6 — same top-level, non-stack asset shape as ratification.yml), profiles/_TEMPLATE.md,
 # profiles/.gitignore (the tree-level build-output ignore file — CP7R5-K4-IGNORE; it MUST outlive the prune)
 # (adopter-export iterates known-profile DIRS only). Prune BOTH the working tree AND KIT_BASE_STAGE:
 # capture_kit_base already staged the UNPRUNED set (before $STACK was known), so pruning both keeps

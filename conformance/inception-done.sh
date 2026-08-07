@@ -25,6 +25,12 @@
 #   are asserted globally regardless. Missing adapter.json / jq absent / unreadable level => FAIL
 #   (fail-closed — never a silent PASS).
 set -eu
+# B6 rider (a): resolve_backend is the shared, non-vacuous backend reader (conformance/backlog-lib.sh)
+# — sourced here the way its siblings (backlog-current.sh, backlog-presence.sh) already do, so this
+# gate's backlog leg reads the same declaration the board gates read, rather than a second, looser
+# literal-string grep. Resolved by $0's own dirname, BEFORE run_gate's `cd "$DIR"` below, so sourcing
+# stays caller-cwd-independent.
+. "$(dirname "$0")/backlog-lib.sh"
 
 # ── run_gate [dir] : the Inception-Done gate. All FAIL paths accumulate into `fail`; a non-zero
 #    `fail` yields a non-zero return. These accumulators are the mutation surface non-vacuity.sh
@@ -87,11 +93,28 @@ else
   echo "FAIL missing: docs/architecture/ADR-000*.md"; fail=1
 fi
 
-if [ -f BACKLOG.md ] || grep -q "Backlog backend" CLAUDE.md 2>/dev/null; then
-  echo "PASS present: backlog (BACKLOG.md or declared backend)"
-else
-  echo "FAIL missing: BACKLOG.md or a declared backlog backend"; fail=1
-fi
+# B6 rider (a): read the declaration with resolve_backend (the same reader backlog-current.sh /
+# backlog-presence.sh use), NOT a literal `grep -q "Backlog backend"` — that literal grep matched the
+# FIELD NAME even when its value is still the unfilled choice-list placeholder
+# (`Backlog backend (§...): [md/github/jira/ado/linear/gitlab]`), so an adopter who never actually
+# chose a backend passed Inception-Done and then every board gate silently N/A'd forever (the
+# measured defect; the negative fixture below is exactly this CLAUDE.md). resolve_backend treats an
+# unfilled choice-list as UNDECLARED (empty), same as a wholly absent field — so this leg now agrees
+# with what the board gates will actually see. Fail-CLOSED on `unrecognized:*` (a fat-fingered token
+# like `markdow`): that must not be silently accepted as "some backend is declared".
+_id_tok=$(resolve_backend "." 2>/dev/null || true)
+case "$_id_tok" in
+  unrecognized:*)
+    echo "FAIL: backlog backend '${_id_tok#unrecognized:}' is not a recognized token (known: md github jira ado linear gitlab) — fix CLAUDE.md's Backlog backend field"; fail=1 ;;
+  '')
+    if [ -f BACKLOG.md ]; then
+      echo "PASS present: backlog (BACKLOG.md present; no explicit backend declared in CLAUDE.md)"
+    else
+      echo "FAIL missing: BACKLOG.md or a declared backlog backend (CLAUDE.md's Backlog backend field is absent or still the unfilled choice-list placeholder)"; fail=1
+    fi ;;
+  *)
+    echo "PASS present: backlog (declared backend: $_id_tok)" ;;
+esac
 
 # project CLAUDE.md key header fields must be filled (no leftover placeholders)
 if grep -Eq '\*\*Project:\*\* \[name\]|\*\*Intent owner:\*\* \[who owns' CLAUDE.md 2>/dev/null; then
@@ -486,6 +509,42 @@ selftest() {
     st_fail=1
   fi
   fi
+
+  # (n) B6 rider (a): an UNFILLED CHOICE-LIST backend declaration — CLAUDE.md's field still reads
+  # `Backlog backend (§...): [md/github/jira/ado/linear/gitlab]` — with NO BACKLOG.md present must
+  # FAIL. This is the MEASURED defect this rider fixes: the old literal `grep -q "Backlog backend"`
+  # matched the FIELD NAME regardless of whether its value was ever actually chosen, so this exact
+  # tree passed Inception-Done and then every board gate (backlog-presence, backlog-current) silently
+  # N/A'd forever, because resolve_backend correctly reads an unfilled choice-list as UNDECLARED. A
+  # regression here means Inception-Done and the board gates disagree again about what "declared"
+  # means. Assert the SPECIFIC leg, not the whole-gate verdict (same rationale as (c)/(d)/(f) above).
+  echo "--- (n) unfilled choice-list backlog backend (measured defect, rider a negative) ---"
+  d=$(st_mkfix n claude-code); st_install_hook "$d"
+  # The fixture template is cloned from THIS repo's own tracked tree, which carries its OWN real
+  # BACKLOG.md — remove it so the fixture genuinely represents "no board, no declared backend" (the
+  # measured defect's actual precondition), not "board present" (a different, already-PASS leg).
+  rm -f "$d/BACKLOG.md"
+  printf '%s\n' '- **Backlog backend** (§6): [md/github/jira/ado/linear/gitlab]' >> "$d/CLAUDE.md"
+  st_run "$d" surface
+  st_has "FAIL missing: BACKLOG.md or a declared backlog backend"
+  st_hasnt "PASS present: backlog"
+
+  # (o) B6 rider (a): an UNRECOGNIZED/fat-fingered backend token must FAIL-CLOSED, never be read as
+  # "no backend declared" (which would silently N/A the board gates instead of naming the typo).
+  echo "--- (o) unrecognized backlog backend token (rider a fail-closed) ---"
+  d=$(st_mkfix o claude-code); st_install_hook "$d"
+  printf '%s\n' '- **Backlog backend** (§6): markdow' >> "$d/CLAUDE.md"
+  st_run "$d" surface
+  st_has "FAIL: backlog backend 'markdow' is not a recognized token"
+
+  # (p) B6 rider (a) positive: a VALID, filled backend declaration must PASS this leg even with no
+  # BACKLOG.md on disk yet (e.g. a jira/ado backend never has one) — the fix must not narrow the
+  # legitimate non-md case.
+  echo "--- (p) valid non-md backend declared (rider a positive) ---"
+  d=$(st_mkfix p claude-code); st_install_hook "$d"
+  printf '%s\n' '- **Backlog backend** (§6): jira' >> "$d/CLAUDE.md"
+  st_run "$d" surface
+  st_has "PASS present: backlog (declared backend: jira)"
 
   rm -rf "$WORK" 2>/dev/null || true
   if [ "$st_fail" = 0 ]; then

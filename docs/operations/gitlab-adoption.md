@@ -114,6 +114,49 @@ returns UNVERIFIED on GitLab rather than pretending it checked.
 
 ---
 
+## Board and loop gates (backlog-presence, ceremony-binding, loop-state)
+
+The GitHub profile installs `profiles/adopter-gates.yml` at Inception (`.github/workflows/adopter-gates.yml`,
+every stack, unconditionally) — three merge-time check-runs on a gated PR: `backlog-presence` (a bound
+board row), `ceremony-binding` (a recorded design GO), and `loop-state` (the Entry-Declaration refusal
+floor, shipped ACTIVE in **observe** mode — a non-blocking nudge; see the source file's header for the
+observe/enforce dial). GitLab has no `check-runs` API and no per-check colour states (`neutral` /
+`in_progress`-without-conclusion), so none of the three port as a GitHub-style check-run. Wire the same
+obligations manually:
+
+### 1 — Board presence: an MR-description convention
+
+Since GitLab has no equivalent of a per-context check-run to bind a PR number to a board row, adopt a
+**merge-request description convention** instead: require every gated MR's description to name the board
+row it satisfies (e.g. `Board row: KW-142`), and enforce it the same way separation-of-duties is
+enforced below — a human reviewer declines to approve an MR whose description omits it. Optionally, a
+GitLab **merge request template** (`.gitlab/merge_request_templates/Default.md`) can pre-populate a
+`Board row:` field so the convention is visible on every MR, not just remembered.
+
+### 2 — Design-GO ceremony: unchanged (the recording ceremony is git-native)
+
+`scripts/promotion-verify.sh record` writes to `refs/notes/promotions`, which is a plain git ref — it
+works identically on GitLab (or any git host). The GAP is only the merge-time **check** that refuses a
+merge lacking one; on GitLab, gate it the same way as control-plane ratification above (an MR approval
+rule + reviewer discipline), or teach a GitLab CI job to shell out to `conformance/ceremony-binding.sh`
+and fail the pipeline (not a check-run, but a red pipeline still blocks merge if required).
+
+### 3 — Entry Declaration: a commit-template convention
+
+`loop-state`'s ceiling (see `conformance/loop-state.sh`'s own header) is already "the trailers are
+present and parseable" — a structural, git-native property with no GitHub dependency. On GitLab, adopt a
+**commit message template** (`git config commit.template`) carrying the `Kit-Row` / `Kit-Stage` /
+`Kit-Class` / `Kit-Skill` scaffold, and optionally a GitLab CI job that runs
+`sh conformance/loop-state.sh --head "$CI_COMMIT_SHA"` and fails the pipeline on a missing/invalid
+declaration — the same observe-first discipline applies: land it non-blocking first, flip to blocking
+only once the team has adjusted.
+
+**Honest ceiling:** all three are adopter-wired, not kit-enforced on GitLab — there is no live-verifiable
+gate the kit can ship without a GitLab instance to test against, matching the control-plane-ratification
+ceiling above.
+
+---
+
 ## Separation of duties (author ≠ approver)
 
 GitLab has this natively — no additional CI gate or script is required. Enable both settings in
@@ -162,6 +205,9 @@ The kit is GitHub-first for *automated* governance. On GitLab:
 - **Branch protection** — adopter-owned. The kit returns **UNVERIFIED**, never a faked pass.
 - **Control-plane ratification** — adopter-owned (MR approval rule + CODEOWNERS). No kit-enforced
   gate; the `gate-agent-boundary` job has no GitLab equivalent in this kit.
+- **Board and loop gates** — adopter-owned (MR-description convention, commit-template guidance, and
+  optional CI-job equivalents; see "Board and loop gates" above). No kit-enforced check-run; GitLab has
+  no `check-runs` API to post `neutral`/waiting states to.
 - **DORA** — adopter-built from GitLab analytics. `scripts/dora.sh` prints `unavailable`.
 
 This is the same three-state honesty discipline as `conformance/verify.sh`: a control that cannot

@@ -26,4 +26,12 @@ FAILing by naming the offending line.
 
 ```
 <your-check-name>
+# backlog-presence      <- uncomment once you install profiles/adopter-gates.yml (Inception) and want
+#                           gated PRs to require a bound board row before merge
+# ceremony-binding       <- uncomment once you want a gated PR to require a recorded design GO
+#                           before merge (see scripts/promotion-verify.sh record)
+# loop-state             <- uncomment ONLY after flipping LOOP_STATE_MODE to enforce in
+#                           .github/workflows/adopter-gates.yml — binding this while still in
+#                           observe mode is a silent pass-through (GitHub treats the posted
+#                           `neutral` conclusion as satisfying a required check)
 ```

@@ -58,6 +58,7 @@ conformance/a11y-obligation.sh
 conformance/action-pinning.sh
 conformance/actionlint-valid.sh
 conformance/adopter-export-wired.sh
+conformance/adopter-gates-parity.sh
 conformance/adopter-preflight-wired.sh
 conformance/agent-autonomy.sh
 conformance/agent-boundary.sh
@@ -358,6 +359,7 @@ docs/work-tracking/adapters.md
 hooks/pre-push
 profiles/.gitignore
 profiles/_TEMPLATE.md
+profiles/adopter-gates.yml
 profiles/data-engineering.md
 profiles/data-engineering/BRANCH-PROTECTION.md
 profiles/data-engineering/CODEOWNERS

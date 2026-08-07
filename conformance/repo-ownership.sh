@@ -153,6 +153,13 @@ fi
 # The `N5 setup` assertion below is what caught this: it refuses to report a pass on a fixture that
 # never exercised its path. A fixture that quietly stops testing is the vacuity we are here to kill.
 lay_kit "$T/n5-kit"
+# B6 rider (c): the CLAUDE.md carve this fixture relies on to FAIL is now gated on the tree actually
+# LOOKING like the kit's own dev tree (>=1 KIT_INTERNAL_MARKERS present) — lay_kit strips every such
+# marker BY DESIGN (see its own header) to stay a faithful raw-export shape, which would silently skip
+# the carve here and defeat this fixture's whole point (exercising the ambiguous-carve FAILURE path,
+# not carve-gating). Plant one marker back so the carve still fires, same as the twodecl fixture in
+# scripts/adopter-export.sh's own --selftest.
+mkdir -p "$T/n5-kit/docs" && : > "$T/n5-kit/docs/ROADMAP-KIT.md"
 ( cd "$T/n5-kit" && git_q init \
   && printf '\n- **Backlog backend**: BACKLOG.md (dupA)\n- **Backlog backend**: BACKLOG.md (dupB)\n' >> CLAUDE.md \
   && git_q add -A && git_q commit -m dup )

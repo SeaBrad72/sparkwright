@@ -585,7 +585,7 @@ check_unpruned() {
   # foreign leftover in _foreign_have while it is (correctly) absent from _foreign_off, so the two
   # counts differ by one and MIGRATION-REMOVES-FOREIGN fails with a bogus "incomplete migration".
   # This enumeration is duplicated in conformance/incept-first-run-green.sh — change both together.
-  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/_TEMPLATE\.md\$|^profiles/\.gitignore\$"
+  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/adopter-gates\.yml\$|^profiles/_TEMPLATE\.md\$|^profiles/\.gitignore\$"
   _foreign_off=$(section "$_t/noop" offered | grep '^profiles/' | grep -vE "$_keptfilter" | grep -c . || :)
   _kept_off=$(section "$_t/noop" offered | grep -E "$_keptfilter" | grep -c . || :)
   _foreign_have=$(git -C "$_p" show kit-base:.kit-manifest 2>/dev/null \
@@ -602,10 +602,10 @@ check_unpruned() {
   fi
 
   # (2) KEPT-PROFILE-PRESERVED — the migration NEVER offers to delete the adopter's OWN stack profile (nor
-  #     ratification.yml / _TEMPLATE.md / .gitignore). The surgical half: an over-prune of the adopter's
-  #     stack fails here.
+  #     ratification.yml / adopter-gates.yml / _TEMPLATE.md / .gitignore). The surgical half: an
+  #     over-prune of the adopter's stack fails here.
   if [ "${_kept_off:-0}" -eq 0 ]; then
-    echo "PASS: T10 [KEPT-PROFILE-PRESERVED] — not one kept path (profiles/$STACK/, ratification.yml, _TEMPLATE.md) is offered"
+    echo "PASS: T10 [KEPT-PROFILE-PRESERVED] — not one kept path (profiles/$STACK/, ratification.yml, adopter-gates.yml, _TEMPLATE.md) is offered"
   else
     echo "FAIL: T10 [KEPT-PROFILE-PRESERVED] — $_kept_off kept profile path(s) offered — the migration over-pruned the adopter's OWN stack." >&2
     st=1
@@ -621,9 +621,10 @@ check_unpruned() {
 
   # (4) DELETES-ONLY-FOREIGN — the BOUND (dual-review hardening): the "surgical" claim above spot-checks
   #     specific paths; this bounds it. EVERY file the migration PATCH deletes must be a foreign profile —
-  #     nothing kept (profiles/$STACK/, ratification.yml, _TEMPLATE.md) and nothing OUTSIDE profiles/ (a
-  #     doc, a root file, an adopter file). Offered MODIFICATIONS (e.g. the STACK-SELECTION.md stub) are
-  #     fine — only DELETIONS are bounded, read from the patch's `deleted file mode` markers.
+  #     nothing kept (profiles/$STACK/, ratification.yml, adopter-gates.yml, _TEMPLATE.md) and nothing
+  #     OUTSIDE profiles/ (a doc, a root file, an adopter file). Offered MODIFICATIONS (e.g. the
+  #     STACK-SELECTION.md stub) are fine — only DELETIONS are bounded, read from the patch's
+  #     `deleted file mode` markers.
   _mpatch=$(sed -n 's/^patch: //p' "$_t/noop" | sed -n '1p')
   if [ -n "$_mpatch" ] && [ -f "$_mpatch" ]; then
     _deleted=$(awk '/^diff --git a\// { p=$3; sub(/^a\//,"",p) } /^deleted file mode/ { print p }' "$_mpatch")

@@ -415,8 +415,11 @@ incept_stamp_tests() {  # appends to $st (0 = all good)
 # point of it existing (per-profile scaffold ignore files die with their profile, which was the K4 defect).
 # Omitting it here counts a correctly-kept file as a foreign leftover and reddens the reconcile assertions.
 manifest_foreign_count() {  # <manifest-text> — count profiles/ lines that are NOT the kept set (expect 0)
+  # B6: profiles/adopter-gates.yml is a top-level, non-stack asset — the SAME shape as
+  # profiles/ratification.yml (Δ7: a literal-name keep-set that fails SILENTLY on omission, same
+  # class as the incept.sh prune-comment / action-pinning.sh / actionlint-valid.sh registries).
   printf '%s\n' "$1" | grep -E '^profiles/' \
-    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|_TEMPLATE\.md$|\.gitignore$)' \
+    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|adopter-gates\.yml$|_TEMPLATE\.md$|\.gitignore$)' \
     | grep -c . || true
 }
 incept_prune_tests() {  # appends to $st (0 = all good)
@@ -439,10 +442,10 @@ incept_prune_tests() {  # appends to $st (0 = all good)
     else
       echo "selftest FAIL: after incept, foreign profile dirs remain ('$_foreign') or the selected profile is missing"; st=1
     fi
-    if [ -f "$_pe/profiles/ratification.yml" ] && [ -f "$_pe/profiles/_TEMPLATE.md" ]; then
-      echo "selftest PASS: incept kept the non-stack-dir files (ratification.yml, _TEMPLATE.md)"
+    if [ -f "$_pe/profiles/ratification.yml" ] && [ -f "$_pe/profiles/adopter-gates.yml" ] && [ -f "$_pe/profiles/_TEMPLATE.md" ]; then
+      echo "selftest PASS: incept kept the non-stack-dir files (ratification.yml, adopter-gates.yml, _TEMPLATE.md)"
     else
-      echo "selftest FAIL: incept pruned a non-stack-dir file (ratification.yml / _TEMPLATE.md) it must keep"; st=1
+      echo "selftest FAIL: incept pruned a non-stack-dir file (ratification.yml / adopter-gates.yml / _TEMPLATE.md) it must keep"; st=1
     fi
     # CP7R5-K4-IGNORE — profiles/.gitignore MUST survive the prune. This is not bookkeeping: the whole
     # defect was that build-output ignore rules lived INSIDE the profiles the prune deletes. If a future

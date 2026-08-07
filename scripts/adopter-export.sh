@@ -15,6 +15,33 @@ usage() { echo "usage: adopter-export.sh <dest-dir> [--profile <stack>] [--selft
 
 known_profiles() { ls -d "$ROOT"/profiles/*/ 2>/dev/null | sed 's#.*/profiles/##; s#/$##'; }
 
+# B6 rider (c) — ADOPTER-EXPORT-CARVES-FOREIGN-TREES. Every policy carve below (claims.tsv/registry,
+# .gitignore's kit-dogfood lines, CLAUDE.md's Backlog-backend line, .gitattributes' export-ignore
+# stub) is KIT-SELF logic: it strips THIS repo's own maintainer-only declarations out of the export.
+# $ROOT is derived from `dirname "$0"` (line 12) — wherever this exact SCRIPT FILE happens to live —
+# so if adopter-export.sh is vendored into a FOREIGN tree (a downstream derivative that keeps its own
+# copy of this script) and run there, $ROOT resolves to THAT tree, and every carve below would
+# blindly strip the FOREIGN tree's own, legitimate declarations, believing them to be the kit's (the
+# A6 measured deletion class). Gate each carve on this tree actually LOOKING like the kit's own dev
+# tree: >=1 KIT_INTERNAL_MARKERS file present in $ROOT — the SAME soundness-locked set incept.sh
+# refuses on, parsed the way conformance/incept-containment.sh:18 does (the single source of truth,
+# not a second, driftable copy of the list).
+# DISCLOSED FALSE-POSITIVE BOUND (rider (c)): a brownfield tree produced by a literal `git clone` of
+# this repo (rather than `scripts/incept.sh`, which strips the markers on install) still carries every
+# KIT_INTERNAL_MARKERS file, so this gate reads it as the kit's own dev tree and carves it as such —
+# even though its maintainer-only declarations are legitimately the brownfield adopter's, not the
+# kit's. Known, not fixed here; see docs/adoption/brownfield.md for the clone-adoption path.
+_ae_kit_tree_markers() {
+  sed -n "s/^KIT_INTERNAL_MARKERS='\\(.*\\)'.*/\\1/p" "$ROOT/scripts/incept.sh" 2>/dev/null
+}
+_ae_is_kit_tree() {
+  _aekt=0
+  for _aem in $(_ae_kit_tree_markers); do
+    [ -e "$ROOT/$_aem" ] && { _aekt=1; break; }
+  done
+  [ "$_aekt" = 1 ]
+}
+
 # --- CP-4: repository ownership is a hard precondition -------------------------------------
 # `git rev-parse --is-inside-work-tree` answers "is there a repo ABOVE me?" — not "is THIS dir the
 # root of its own repo?". The two diverge only when nested, which is why every non-nested test
@@ -123,22 +150,30 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # mechanism (that incept ships the §13 gate for every stack), its real run N/As on an adopter tree, and
   # its --selftest drives real incept via `git archive` — which needs the kit's .git, absent in an export.
   # The kit still verifies ratification-parity in its own CI. The installed gate itself is unaffected.
-  _ct="$_dest/conformance/claims.tsv"; _cr="$_dest/conformance/claims-registry.sh"
-  if [ -f "$_ct" ] && [ -f "$_cr" ]; then
-    _tab=$(printf '\t')
-    for _c in drift-watch golden-path adopter-export repo-ownership feature-flags-wired containment-audit runtime-security structured-logging app-tracing metrics-endpoint otlp-backend trace-query agentops-sensor orchestrator-loop escalation-seam conflict-safe-integration skill-spine ratification-parity; do
-      grep -v "^${_c}${_tab}" "$_ct" > "$_ct.$$.s3b" && mv "$_ct.$$.s3b" "$_ct"
-      sed "s/ ${_c}\\([\"[:space:]]\\)/\\1/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
-    done
+  if _ae_is_kit_tree; then
+    _ct="$_dest/conformance/claims.tsv"; _cr="$_dest/conformance/claims-registry.sh"
+    if [ -f "$_ct" ] && [ -f "$_cr" ]; then
+      _tab=$(printf '\t')
+      for _c in drift-watch golden-path adopter-export repo-ownership feature-flags-wired containment-audit runtime-security structured-logging app-tracing metrics-endpoint otlp-backend trace-query agentops-sensor orchestrator-loop escalation-seam conflict-safe-integration skill-spine ratification-parity adopter-gates-parity; do
+        grep -v "^${_c}${_tab}" "$_ct" > "$_ct.$$.s3b" && mv "$_ct.$$.s3b" "$_ct"
+        sed "s/ ${_c}\\([\"[:space:]]\\)/\\1/" "$_cr" > "$_cr.$$.s3b" && mv "$_cr.$$.s3b" "$_cr"
+      done
+    fi
+  else
+    echo "adopter-export: S3b claims carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's claims.tsv/claims-registry.sh ship untouched"
   fi
   # R3/C2: the kit's root .gitignore ignores /src/ and /test/ (stray KIT dogfooding output); an
   # adopter puts product source there, so strip those two EXACT lines from the EXPORTED .gitignore
   # (the kit's own .gitignore is untouched). `grep -vx` matches whole lines only, so an adopter path
   # like `my/src/lib` or `/src/foo` is never clobbered. Idempotent.
-  _gi="$_dest/.gitignore"
-  if [ -f "$_gi" ]; then
-    grep -vxE '/(src|test)/' "$_gi" > "$_gi.$$.r3c2" 2>/dev/null || true
-    mv "$_gi.$$.r3c2" "$_gi"
+  if _ae_is_kit_tree; then
+    _gi="$_dest/.gitignore"
+    if [ -f "$_gi" ]; then
+      grep -vxE '/(src|test)/' "$_gi" > "$_gi.$$.r3c2" 2>/dev/null || true
+      mv "$_gi.$$.r3c2" "$_gi"
+    fi
+  else
+    echo "adopter-export: .gitignore /src//test/ carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's .gitignore ships untouched"
   fi
   # --- KW6-A2: carve the kit's `Backlog backend` declaration out of the EXPORTED CLAUDE.md ---
   # The kit's root CLAUDE.md is the PRODUCT doc; it doubles as this repo's project config only because
@@ -158,7 +193,9 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # The only loud-fail is >1 (ambiguous — refuse to blind-delete lines the reader never reads).
   _cm="$_dest/CLAUDE.md"
   _cm_anchor='^[-*[:space:]]*\**backlog backend\**[^:]*:'
-  if [ -f "$_cm" ]; then
+  if ! _ae_is_kit_tree; then
+    echo "adopter-export: 'Backlog backend' CLAUDE.md carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's declaration ships untouched"
+  elif [ -f "$_cm" ]; then
     # Assert EXACTLY ONE anchor match before stripping. The reader (backlog-lib.sh::resolve_backend,
     # :19) takes `grep … | head -1` — it treats one line, the FIRST, as "the declaration". A blind
     # `grep -Eiv` over-carves: it deletes EVERY matching line, so a real declaration plus a prose or
@@ -226,20 +263,24 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # simplest correct carve; a brownfield adopter who CONCATENATED their lines under the kit block owns that
   # bespoke merge — routed to ADOPTER-EXPORT-CARVES-FOREIGN-TREES, out of A6 scope.) Mutates ONLY the
   # staging copy $_dest/.gitattributes; the kit's own file is NEVER touched.
-  _ga="$_dest/.gitattributes"
-  if [ -f "$_ga" ]; then
-    IFS= read -r _ga_first < "$_ga" || _ga_first=''
-    case "$_ga_first" in
-      '# Maintainer-only paths excluded from'*)
-        {
-          printf '# .gitattributes — an adopter distribution intentionally carries NO export-ignore rules.\n'
-          printf '# The upstream kit export-ignores its OWN maintainer-only files from `git archive`; those\n'
-          printf '# rules were carved out here (scripts/adopter-export.sh) so YOUR `git archive` KEEPS your\n'
-          printf '# work — your CI workflows, ADRs, CHANGELOG, backlog and governance log ship, not vanish.\n'
-          printf '# Add your own attributes (text / eol / linguist / merge) below as your project needs them.\n'
-        } > "$_ga.$$.a6" && mv "$_ga.$$.a6" "$_ga"
-        ;;
-    esac
+  if ! _ae_is_kit_tree; then
+    echo "adopter-export: .gitattributes A6 stub-carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's .gitattributes ships untouched (closes the class this carve's own header names as 'out of A6 scope')"
+  else
+    _ga="$_dest/.gitattributes"
+    if [ -f "$_ga" ]; then
+      IFS= read -r _ga_first < "$_ga" || _ga_first=''
+      case "$_ga_first" in
+        '# Maintainer-only paths excluded from'*)
+          {
+            printf '# .gitattributes — an adopter distribution intentionally carries NO export-ignore rules.\n'
+            printf '# The upstream kit export-ignores its OWN maintainer-only files from `git archive`; those\n'
+            printf '# rules were carved out here (scripts/adopter-export.sh) so YOUR `git archive` KEEPS your\n'
+            printf '# work — your CI workflows, ADRs, CHANGELOG, backlog and governance log ship, not vanish.\n'
+            printf '# Add your own attributes (text / eol / linguist / merge) below as your project needs them.\n'
+          } > "$_ga.$$.a6" && mv "$_ga.$$.a6" "$_ga"
+          ;;
+      esac
+    fi
   fi
   _pruned=0
   if [ -n "$_prof" ]; then
@@ -371,8 +412,14 @@ if [ "${1:-}" = "--selftest" ]; then
   # ROOT resolves to the throwaway repo, so it archives that HEAD, exercising the real carve verbatim).
   # Mirrors _test-t3b-overcarve.sh case 3, made self-contained for the shipped --selftest.
   _self=$(CDPATH='' cd "$(dirname "$0")" && pwd)/$(basename "$0")
-  _g="$_t/twodecl"; mkdir -p "$_g/scripts"
+  _g="$_t/twodecl"; mkdir -p "$_g/scripts" "$_g/docs"
   cp "$_self" "$_g/scripts/adopter-export.sh"
+  cp "$ROOT/scripts/incept.sh" "$_g/scripts/incept.sh"   # B6 rider (c): _ae_is_kit_tree reads KIT_INTERNAL_MARKERS from here
+  # B6 rider (c): this fixture asserts KIT-TREE carve behaviour (the over-carve loud-fail), so it
+  # must actually LOOK like a kit tree — plant one KIT_INTERNAL_MARKERS file. Without it,
+  # _ae_is_kit_tree correctly reads FALSE (this throwaway repo carries none of the kit's own
+  # markers) and the carve — and this whole assertion — would be silently skipped.
+  : > "$_g/docs/ROADMAP-KIT.md"
   {
     printf '# Proj\n\n'
     printf -- '- **Backlog backend**: BACKLOG.md (repo-native)\n\n'
@@ -467,8 +514,64 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     echo "FAIL: A6 — could not build the export/incept fixture for the archive-retention lock"; fail=1
   fi
-  rm -rf "$_a6d"
-  rm -rf "$_t"
+  # Teardown must NEVER decide a verdict (P0-FU(a), the green-on-clone.sh pattern): the fixture is a
+  # git-inited tree, and a detached git gc still writing into .git races a bare rm into ENOTEMPTY
+  # under `set -eu` — reddening a PASSING selftest (measured: PR #501 battery 2, 2026-08-07).
+  rm -rf "$_a6d" 2>/dev/null || true
+
+  # --- B6 rider (c) — ADOPTER-EXPORT-CARVES-FOREIGN-TREES: a FOREIGN tree's own, legitimate policy
+  # declarations must SURVIVE being run through this script — every carve above is KIT-SELF logic and
+  # must not fire when $ROOT is not the kit's own dev tree (no KIT_INTERNAL_MARKERS present). A byte-
+  # COPY of this script is driven from a throwaway repo carrying NONE of the kit's markers, but WITH
+  # each carve's OWN trigger shape: a Backlog-backend CLAUDE.md declaration, a .gitignore /src//test/
+  # line, a .gitattributes whose first line is the EXACT A6 marker text (the brownfield-concatenation
+  # shape A6's own header names as "out of A6 scope"), and a claims.tsv/claims-registry.sh carrying
+  # one of the carved claim ids. The measured A6 deletion is the negative this proves closed.
+  echo "--- B6 rider (c): a foreign tree's declarations survive export (no KIT_INTERNAL_MARKERS) ---"
+  _fx="$_t/foreign"; mkdir -p "$_fx/scripts" "$_fx/conformance"
+  cp "$_self" "$_fx/scripts/adopter-export.sh"
+  cp "$ROOT/scripts/incept.sh" "$_fx/scripts/incept.sh"
+  printf '# Foreign Project\n\n- **Backlog backend**: BACKLOG.md (repo-native)\n' > "$_fx/CLAUDE.md"
+  printf '/src/\n/test/\nmy-own-rule\n' > "$_fx/.gitignore"
+  printf '# Maintainer-only paths excluded from THIS foreign tree'"'"'s own archive (not the kit'"'"'s)\nsome/foreign/path export-ignore\n' > "$_fx/.gitattributes"
+  _ftab=$(printf '\t')
+  printf 'drift-watch%sa foreign claim%stest -x /\n' "$_ftab" "$_ftab" > "$_fx/conformance/claims.tsv"
+  printf '#!/bin/sh\nREQUIRED_IDS="drift-watch"\n' > "$_fx/conformance/claims-registry.sh"
+  ( cd "$_fx" && git init -q && git add -A \
+      && git -c user.email=f@foreign -c user.name=foreign commit -qm foreign >/dev/null 2>&1 )
+  _fxd="$_t/foreign-exp"
+  if ( cd "$_fx" && sh scripts/adopter-export.sh "$_fxd" >/dev/null 2>&1 ); then
+    _fok=1
+    grep -q 'Backlog backend' "$_fxd/CLAUDE.md" 2>/dev/null || { echo "FAIL: rider(c) — foreign CLAUDE.md's Backlog-backend declaration did NOT survive export"; _fok=0; }
+    grep -qxE '/(src|test)/' "$_fxd/.gitignore" 2>/dev/null || { echo "FAIL: rider(c) — foreign .gitignore's /src//test/ lines did NOT survive export"; _fok=0; }
+    grep -q 'my-own-rule' "$_fxd/.gitignore" 2>/dev/null || { echo "FAIL: rider(c) — foreign .gitignore's own rule did NOT survive export"; _fok=0; }
+    head -1 "$_fxd/.gitattributes" 2>/dev/null | grep -q "excluded from THIS foreign tree" || { echo "FAIL: rider(c) — foreign .gitattributes was REPLACED by the A6 stub (over-carve of a foreign tree)"; _fok=0; }
+    grep -q '^drift-watch' "$_fxd/conformance/claims.tsv" 2>/dev/null || { echo "FAIL: rider(c) — foreign claims.tsv's drift-watch row did NOT survive export"; _fok=0; }
+    grep -q 'drift-watch' "$_fxd/conformance/claims-registry.sh" 2>/dev/null || { echo "FAIL: rider(c) — foreign claims-registry.sh's REQUIRED_IDS did NOT survive export"; _fok=0; }
+    [ "$_fok" = 1 ] && echo "PASS: rider(c) — a foreign tree's CLAUDE.md / .gitignore / .gitattributes / claims declarations all SURVIVE export (no KIT_INTERNAL_MARKERS -> every kit-self carve skipped)" || fail=1
+  else
+    echo "FAIL: rider(c) — could not export the foreign-tree fixture at all"; fail=1
+  fi
+  # Soundness leg: a CLEAN kit export (the real tree, which DOES carry the markers) must still never
+  # ship a KIT_INTERNAL_MARKERS file itself — export-ignore already guarantees this; this just proves
+  # the rider's own gate is not vacuously "always skip".
+  _cd="$_t/cleancheck"
+  if do_export "$_cd" typescript-node >/dev/null 2>&1; then
+    _leaked=""
+    for _m in $(_ae_kit_tree_markers); do
+      [ -e "$_cd/$_m" ] && _leaked="$_leaked $_m"
+    done
+    if [ -z "$_leaked" ]; then
+      echo "PASS: rider(c) soundness — a clean kit export carries NO KIT_INTERNAL_MARKERS file (the carve-gate is not vacuously permissive)"
+    else
+      echo "FAIL: rider(c) soundness — a clean kit export leaked marker(s):$_leaked"; fail=1
+    fi
+  else
+    echo "FAIL: rider(c) soundness — could not build the clean-export fixture"; fail=1
+  fi
+  rm -rf "$_fx" "$_fxd" "$_cd" 2>/dev/null || true
+
+  rm -rf "$_t" 2>/dev/null || true
   [ "$fail" -eq 0 ] && { echo "OK: adopter-export selftest"; exit 0; } || { echo "FAIL: adopter-export selftest"; exit 1; }
 fi
 
