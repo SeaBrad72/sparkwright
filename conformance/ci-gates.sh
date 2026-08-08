@@ -4,9 +4,14 @@
 # step ids. Checks contract identifiers, not stack tools, so it is stack-neutral:
 # any workflow that adopts these ids can be verified, in any language.
 #
-# Usage: sh conformance/ci-gates.sh <workflow-file> [--selftest]
+# Usage: sh conformance/ci-gates.sh <workflow-file> [--expect-seams]
+#        sh conformance/ci-gates.sh --own-tree [<root>]     (B7: judge THIS tree's OWN pipeline(s))
+#        sh conformance/ci-gates.sh --selftest
 # Exit:  0 = all gates present and every kit-owned invocation resolves · 1 = missing gate(s),
 #        a kit-owned invocation whose subcommand does not resolve, or bad usage.
+#        --own-tree: 0 = judged green / disclosed N/A (raw export, adopter-owned, or LOUD all-na)
+#        · 1 = a missing required id on an emitted/kit pipeline, an invalid disposition file, or
+#        a marked tree with no pipeline at all. See the OWN-TREE block below.
 #
 # Matching is best-effort and structural; a gate counts when it appears either as a
 # GitHub Actions step id — `id: <gate>` — OR as a GitLab CI job key — `<gate>:` at
@@ -143,6 +148,238 @@ check_kit_seams() {  # <workflow-file> <script-root> [expect-seams:0|1] -> 0 ok,
   echo "FAIL: $_wf invokes kit-owned command(s) whose subcommand does not resolve:$_bad" >&2
   echo "The emitted CI must only call interfaces the shipped script actually provides (CP-7 K9)." >&2
   return 1
+}
+
+# ══ B7 — THE OWN-TREE LEG (`--own-tree [<root>]`) — D-240805-2's reserved clause, executed. ═════════
+# Judges THE TREE'S OWN installed pipeline(s) against the 8 gate ids, minus the tree's VALIDATED
+# `na` dispositions (conformance/gate-dispositions.txt; ABSENT = all 8 required — the adopter
+# default). This is the non-kitself leg: the row adopters run on their own tree, where deleting
+# `gate-sbom` from an installed (emitted) pipeline goes RED — the spine AC, live.
+#
+# DISCOVERY PROVENANCE — copied from conformance/verify-enforced-wired.sh, NOT shelled out to
+# (different contract: that script judges `verify.sh --require` WIRING, this judges GATE IDS):
+#   * GH_WF/GL_WF file-presence selection            — verify-enforced-wired.sh:63-64
+#   * judge EVERY pipeline present + zero-found      — verify-enforced-wired.sh:836-851
+#   * three-state disposition + tree markers         — verify-enforced-wired.sh:235-285
+#     (_wf_disposition / _must_have_workflow / _kit_source, incl. the provenance axis: an
+#     ADOPTER-origin pipeline missing ids is a DISCLOSED N/A-with-remedy, never FAIL — the kit's
+#     own brownfield docs instruct adopters to merge the gate ids by hand, so failing them for
+#     not having done it yet is failing them for a state the kit's documentation created).
+#
+# HONEST CEILINGS (§8 of the B7 design, stated where they live):
+#   * ID PRESENCE IS DECLARATION, NOT EXECUTION — a `gate-sbom` id on a no-op step satisfies this
+#     leg (Leg A's ceiling, inherited). The contract is "the gate exists and is named"; gate
+#     QUALITY is each tool's own concern. Pair with the pipeline actually running.
+#   * The disposition file is a DECIDED EXEMPTION surface — it makes an exemption recorded and
+#     ratified instead of silent-structural; it cannot make an `na` reason true. Adopter-authored
+#     files are bounded by their own forge review, nothing else.
+#   * REMOVING the emitted-origin marker downgrades a missing-id FAIL to the ADOPTER-OWNED
+#     disclosed N/A — a self-assertion of ownership (verify-enforced-wired's own stated ceiling,
+#     inherited with the copied axis).
+#   * `check_kit_seams` (Leg B) does NOT run in --own-tree mode: its resolution root is the KIT
+#     tree by design (see the dispatch at the foot; ceiling bullets above). Own-tree seam-checking
+#     would be a NEW contract and is out of scope here — stated, not implied.
+
+# ONE id list for both modes (Leg A's REQUIRED= below the marker aliases this; a second literal
+# copy would be a drift pair nothing locks).
+OWN_GATE_IDS="gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom gate-provenance"
+OWN_DISP_FILE="conformance/gate-dispositions.txt"
+OWN_ORIGIN_MARKER='# kit-pipeline-origin: emitted'
+
+# read_dispositions <file> — validate the disposition artifact; print its `na` ids (one line,
+# space-led words) on stdout. RULES (each violation FAILS LOUD naming the line — the
+# hermetic-exclusions bypass-surface pattern: an invalid file never widens or narrows the
+# required set silently): every one of the 8 ids exactly once · kind is apply|na · `na` REQUIRES
+# a non-empty reason — whitespace-only counts as empty (`apply` reasons optional) · `#` comments
+# and blank lines ignored.
+# rc 0 valid · 1 invalid (violations on stderr).
+read_dispositions() {
+  _rd_f=$1
+  _rd_tab=$(printf '\t')
+  _rd_seen=" "; _rd_bad=0; _rd_ln=0; _rd_na=""
+  while IFS= read -r _rd_line || [ -n "$_rd_line" ]; do
+    _rd_ln=$((_rd_ln + 1))
+    case "$_rd_line" in ''|'#'*) continue ;; esac
+    _rd_id=${_rd_line%%"$_rd_tab"*}
+    _rd_rest=${_rd_line#*"$_rd_tab"}
+    if [ "$_rd_rest" = "$_rd_line" ]; then
+      echo "FAIL: $_rd_f line $_rd_ln is malformed — expected gate-<id><TAB>apply|na<TAB><reason>: $_rd_line" >&2
+      _rd_bad=1; continue
+    fi
+    _rd_kind=${_rd_rest%%"$_rd_tab"*}
+    _rd_reason=""
+    if [ "$_rd_rest" != "$_rd_kind" ]; then _rd_reason=${_rd_rest#*"$_rd_tab"}; fi
+    case " $OWN_GATE_IDS " in
+      (*" $_rd_id "*) : ;;
+      (*) echo "FAIL: $_rd_f line $_rd_ln names an unknown gate id '$_rd_id' (the 8: $OWN_GATE_IDS)" >&2
+          _rd_bad=1; continue ;;
+    esac
+    case "$_rd_seen" in
+      (*" $_rd_id "*)
+        echo "FAIL: $_rd_f line $_rd_ln — $_rd_id appears more than once (every id exactly once)" >&2
+        _rd_bad=1; continue ;;
+    esac
+    _rd_seen="$_rd_seen$_rd_id "
+    case "$_rd_kind" in
+      (apply) : ;;
+      (na)
+        # TRIM before the emptiness test [B7 polish, reviewer LOW-3]: `na<TAB>   ` (a reason
+        # that is only spaces/tabs) is as reasonless as an absent one — without the trim it
+        # slips the widening lock the message below names.
+        case "$_rd_reason" in
+          (*[![:space:]]*) _rd_na="$_rd_na $_rd_id" ;;
+          (*)
+            echo "FAIL: $_rd_f line $_rd_ln — 'na' REQUIRES a non-empty reason (whitespace-only counts as empty; a reasonless exemption is a silent widening): $_rd_line" >&2
+            _rd_bad=1; continue ;;
+        esac ;;
+      (*) echo "FAIL: $_rd_f line $_rd_ln — disposition must be 'apply' or 'na', got '$_rd_kind'" >&2
+          _rd_bad=1; continue ;;
+    esac
+  done < "$_rd_f"
+  for _rd_g in $OWN_GATE_IDS; do
+    case "$_rd_seen" in
+      (*" $_rd_g "*) : ;;
+      (*) echo "FAIL: $_rd_f is missing an entry for $_rd_g — every one of the 8 ids must appear exactly once (an absent line is an UNDECIDED gate, not an exemption)" >&2
+          _rd_bad=1 ;;
+    esac
+  done
+  [ "$_rd_bad" -eq 0 ] || return 1
+  printf '%s\n' "$_rd_na"
+  return 0
+}
+
+# own_gate_declared <workflow-file> <gate> -> 0 declared. MATCH SEMANTICS = Leg A's, verbatim:
+# a GitHub `id: gate-X` step OR a GitLab `gate-X:` job key, line-anchored, never a comment.
+own_gate_declared() {
+  _od_gh="^[[:space:]]*(-[[:space:]]+)?id:[[:space:]]*[\"']?${2}[\"']?[[:space:]]*(#.*)?\$"
+  _od_gl="^${2}:[[:space:]]*(#.*)?\$"
+  grep -Eq "$_od_gh" "$1" || grep -Eq "$_od_gl" "$1"
+}
+
+_own_remedies() {
+  echo "    Remedies — choose ONE, deliberately:"
+  echo "      1. RESTORE the id in the pipeline (platform shapes: docs/operations/ci-platforms.md), or"
+  echo "      2. DECLARE the gate na-with-reason in conformance/gate-dispositions.txt — a decided,"
+  echo "         reviewed exemption (control-plane; your forge review is its ratification surface;"
+  echo "         see that file's header)."
+}
+
+# _own_origin <wf> <kit-source:0|1> -> emitted|kitsource|adopter (the provenance axis, copied).
+_own_origin() {
+  if grep -qF "$OWN_ORIGIN_MARKER" "$1" 2>/dev/null; then echo emitted
+  elif [ "$2" = 1 ]; then echo kitsource
+  else echo adopter; fi
+}
+
+# _own_judge <wf> <origin> — reads $OWN_REQ (required set) / $OWN_NA_PRETTY (na set).
+_own_judge() {
+  _oj_wf=$1; _oj_or=$2
+  _oj_missing=""
+  for _oj_g in $OWN_REQ; do
+    own_gate_declared "$_oj_wf" "$_oj_g" || _oj_missing="$_oj_missing $_oj_g"
+  done
+  if [ -z "$_oj_missing" ]; then
+    if [ -z "$OWN_REQ" ]; then
+      # THE LOUD ZERO (self-review finding 5): an all-na disposition is NEVER a bare green.
+      echo "OK: $_oj_wf — all 8 gates dispositioned na — this pipeline is judged against NOTHING."
+      echo "    na set:$OWN_NA_PRETTY"
+      echo "    A green here proves ONLY that a recorded, reviewed all-na disposition exists"
+      echo "    ($OWN_DISP_FILE); no gate id was checked."
+    else
+      echo "OK: $_oj_wf declares its required CI gates ($OWN_REQ)"
+      if [ -n "$OWN_NA_PRETTY" ]; then
+        echo "    (na by disposition:$OWN_NA_PRETTY — decided exemptions, not enforcement)"
+      fi
+    fi
+    return 0
+  fi
+  case "$_oj_or" in
+    (adopter)
+      # Provenance separates DRIFT from an UNMET DOCUMENTED MERGE OBLIGATION (the copied axis).
+      echo "N/A (ADOPTER-OWNED): $_oj_wf carries no kit-pipeline-origin marker and is missing:$_oj_missing"
+      echo "    A foreign/brownfield pipeline is not FAILED for the state the kit's own adoption docs"
+      echo "    created (merge the gate ids by hand — docs/adoption/brownfield.md). Disclosed, not silent:"
+      _own_remedies
+      return 0 ;;
+    (*)
+      echo "FAIL: $_oj_wf is missing required CI gate(s):$_oj_missing"
+      if [ "$_oj_or" = kitsource ]; then
+        echo "    (the KIT'S OWN tree — self-enforcement drift on the D-240805-2 apply set)"
+      fi
+      _own_remedies
+      return 1 ;;
+  esac
+}
+
+own_tree_run() {  # [<root>]  (default .)
+  _ot_root=${1:-.}
+  if [ ! -d "$_ot_root" ]; then
+    echo "FAIL: --own-tree root '$_ot_root' is not a directory (fail-closed: a check that cannot find its subject must not report success)"
+    return 1
+  fi
+  _ot_ghwf="$_ot_root/.github/workflows/ci.yml"
+  _ot_glwf="$_ot_root/.gitlab-ci.yml"
+  # Tree markers — copied from _must_have_workflow / _kit_source (verify-enforced-wired.sh:265-285),
+  # incl. the disjointness caveat: ENGINEERING-PRINCIPLES.md marks an INCEPTED ADOPTER and must
+  # never imply kit-source (an incepted brownfield adopter has it and neither kit marker).
+  _ot_must=0
+  if [ -f "$_ot_root/ENGINEERING-PRINCIPLES.md" ] || [ -f "$_ot_root/docs/ROADMAP-KIT.md" ] \
+     || [ -f "$_ot_root/.github/workflows/golden-path.yml" ]; then _ot_must=1; fi
+  _ot_kit=0
+  if [ -f "$_ot_root/docs/ROADMAP-KIT.md" ] || [ -f "$_ot_root/.github/workflows/golden-path.yml" ]; then
+    _ot_kit=1
+  fi
+
+  OWN_REQ="$OWN_GATE_IDS"; OWN_NA_PRETTY=""
+  if [ -f "$_ot_root/$OWN_DISP_FILE" ]; then
+    if _ot_na=$(read_dispositions "$_ot_root/$OWN_DISP_FILE"); then
+      OWN_REQ=""
+      for _ot_g in $OWN_GATE_IDS; do
+        case "$_ot_na " in
+          (*" $_ot_g "*) OWN_NA_PRETTY="$OWN_NA_PRETTY $_ot_g" ;;
+          (*) OWN_REQ="$OWN_REQ $_ot_g" ;;
+        esac
+      done
+      OWN_REQ=${OWN_REQ# }
+      echo "dispositions: $_ot_root/$OWN_DISP_FILE valid — na:${OWN_NA_PRETTY:- (none)}"
+    else
+      echo "FAIL: $_ot_root/$OWN_DISP_FILE is INVALID (violations above) — an invalid disposition file"
+      echo "      never widens or narrows the required set silently. Fix it, or delete it (absent = all 8 required)."
+      return 1
+    fi
+  fi
+  # Zero-enumeration guard: an EMPTY required set is legal ONLY as a validated all-na disposition
+  # (and then it is LOUD, above); an empty CONTRACT list is a broken check, never a pass.
+  if [ -z "$OWN_REQ" ] && [ -z "$OWN_NA_PRETTY" ]; then
+    echo "FAIL: zero gate ids enumerated — refusing to pass on an empty enumeration."
+    return 1
+  fi
+
+  _ot_seen=0; _ot_rc=0
+  if [ -f "$_ot_ghwf" ]; then
+    _ot_seen=$((_ot_seen + 1))
+    _own_judge "$_ot_ghwf" "$(_own_origin "$_ot_ghwf" "$_ot_kit")" || _ot_rc=1
+  fi
+  if [ -f "$_ot_glwf" ]; then
+    _ot_seen=$((_ot_seen + 1))
+    _own_judge "$_ot_glwf" "$(_own_origin "$_ot_glwf" "$_ot_kit")" || _ot_rc=1
+  fi
+  if [ "$_ot_seen" = 0 ]; then
+    # The zero-found three-state (verify-enforced-wired.sh:845-849, copied).
+    if [ "$_ot_must" = 1 ]; then
+      echo "FAIL: a kit/incepted tree carries NO CI pipeline at all — looked for $_ot_ghwf and $_ot_glwf."
+      echo "      Fail-closed: run scripts/incept.sh --ci <github|gitlab>, or add one by hand."
+      return 1
+    fi
+    echo "N/A: ci-gates --own-tree — raw pre-incept export: no pipeline and no incepted/kit marker"
+    echo "     (incept installs a pipeline; there is nothing to judge yet)."
+    return 0
+  fi
+  if [ "$_ot_rc" = 0 ]; then
+    echo "OK: ci-gates --own-tree — $_ot_seen pipeline(s) judged on $_ot_root (id presence is a"
+    echo "    DECLARATION; execution is not attested — pair with the pipeline actually running)."
+  fi
+  return "$_ot_rc"
 }
 
 selftest() {
@@ -299,13 +536,240 @@ selftest() {
     echo "selftest FAIL: filtered token counted as judged (rc=$_r3): $_o3"; sf=1
   fi
 
+  # ── B7 legs (D-240805-2 executed): the OWN-TREE mode + the disposition artifact ─────────────────
+  # The mode judges THE TREE'S OWN installed pipeline(s) — .github/workflows/ci.yml AND
+  # .gitlab-ci.yml, every one present — against the 8 gate ids minus the tree's VALIDATED na
+  # dispositions (conformance/gate-dispositions.txt). Fixtures are PURE FILE TREES (no git): the
+  # mode reads markers + files only, so these legs are hermetic by construction (no identity, no
+  # notes ref, no ambient repository state).
+  ALLG="gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom gate-provenance"
+  _ot_gh() { # <root> <marker:1|0> [ids...] — a GitHub-shaped pipeline at the root
+    _og_r=$1; _og_m=$2; shift 2
+    mkdir -p "$_og_r/.github/workflows"
+    { if [ "$_og_m" = 1 ]; then printf '%s\n' '# kit-pipeline-origin: emitted'; fi
+      printf 'jobs:\n  ci:\n    steps:\n'
+      for _og_g in "$@"; do printf '      - id: %s\n' "$_og_g"; done
+      printf '      - run: echo toolchain\n'
+    } > "$_og_r/.github/workflows/ci.yml"
+  }
+  _ot_gl() { # <root> [ids...] — a GitLab-shaped pipeline (job keys at column 0)
+    _ol_r=$1; shift
+    { printf '%s\n' '# kit-pipeline-origin: emitted'
+      for _ol_g in "$@"; do printf '%s:\n  script: [echo ok]\n' "$_ol_g"; done
+    } > "$_ol_r/.gitlab-ci.yml"
+  }
+  _ot_case() { # <name> <root> <want-rc> <want-substr> <desc> — one own-tree run through the REAL entry point
+    _oc_n=$1; _oc_r=$2; _oc_rc=$3; _oc_s=$4; _oc_d=$5
+    if _oc_out=$(sh "$0" --own-tree "$_oc_r" 2>&1); then _oc_got=0; else _oc_got=$?; fi
+    if [ "$_oc_got" = "$_oc_rc" ] && printf '%s' "$_oc_out" | grep -qF -- "$_oc_s"; then
+      echo "selftest PASS: $_oc_n — $_oc_d"
+    else
+      echo "selftest FAIL: $_oc_n — $_oc_d (rc=$_oc_got want $_oc_rc, want text '$_oc_s'): $_oc_out"; sf=1
+    fi
+  }
+  _ot_disp_kit() { # <root> — a D-240805-2-shaped disposition file: 3 apply + 5 na-with-reason
+    mkdir -p "$1/conformance"
+    { printf 'gate-secret-scan\tapply\tshipped\n'
+      printf 'gate-test\tapply\tselftest battery\n'
+      printf 'gate-lint\tapply\tshell lint\n'
+      printf 'gate-type-check\tna\tPOSIX sh, no type system\n'
+      printf 'gate-build\tna\tno build artifact\n'
+      printf 'gate-dep-scan\tna\tno dependency manifest\n'
+      printf 'gate-sbom\tna\tnothing to attest\n'
+      printf 'gate-provenance\tna\tnothing to attest\n'
+    } > "$1/conformance/gate-dispositions.txt"
+  }
+
+  # OT1 — all 8 ids on the tree's own EMITTED pipeline (incepted-adopter marker) -> green.
+  mkdir -p "$d/ot1"; : > "$d/ot1/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086 # $ALLG is a deliberate word-list
+  _ot_gh "$d/ot1" 1 $ALLG
+  _ot_case OT1 "$d/ot1" 0 "OK: ci-gates --own-tree" "all 8 ids on the tree's own emitted pipeline -> green"
+
+  # OT2 — THE SPINE AC VERBATIM: delete gate-sbom from an EMITTED pipeline -> RED naming it,
+  # and (self-review finding 1) BOTH remedies are named AT THE POINT OF FAILURE.
+  mkdir -p "$d/ot2"; : > "$d/ot2/ENGINEERING-PRINCIPLES.md"
+  _ot_gh "$d/ot2" 1 gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-provenance
+  _ot_case OT2 "$d/ot2" 1 "gate-sbom" "emitted pipeline missing gate-sbom -> RED naming it (spine AC)"
+  if _o2=$(sh "$0" --own-tree "$d/ot2" 2>&1); then :; fi
+  if printf '%s' "$_o2" | grep -qF "RESTORE the id" && printf '%s' "$_o2" | grep -qF "gate-dispositions.txt"; then
+    echo "selftest PASS: OT2b — the FAIL names both remedies (restore the id / declare na-with-reason)"
+  else
+    echo "selftest FAIL: OT2b — the FAIL must name BOTH remedies at the point it fires (finding 1): $_o2"; sf=1
+  fi
+
+  # OT3 — a RAW pre-incept export (no marker, no pipeline) -> N/A, rc 0 (three-state zero-found).
+  mkdir -p "$d/ot3"
+  _ot_case OT3 "$d/ot3" 0 "N/A: ci-gates --own-tree" "raw export: no pipeline + no marker -> N/A"
+
+  # OT4 — a KIT/incepted-marked tree with NO pipeline at all -> FAIL (fail-closed zero-found).
+  mkdir -p "$d/ot4/docs"; : > "$d/ot4/docs/ROADMAP-KIT.md"
+  _ot_case OT4 "$d/ot4" 1 "NO CI pipeline" "kit-marker tree with no pipeline -> FAIL"
+
+  # OT5 — a GitLab-only adopter IS judged: all 8 job keys green; missing one -> RED naming it.
+  mkdir -p "$d/ot5"; : > "$d/ot5/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gl "$d/ot5" $ALLG
+  _ot_case OT5 "$d/ot5" 0 "OK: ci-gates --own-tree" "gitlab-only tree, all 8 job keys -> green"
+  mkdir -p "$d/ot5b"; : > "$d/ot5b/ENGINEERING-PRINCIPLES.md"
+  _ot_gl "$d/ot5b" gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom gate-provenance
+  _ot_case OT5b "$d/ot5b" 1 "gate-lint" "gitlab-only tree missing gate-lint -> RED (the platform IS judged)"
+
+  # OT6 — BOTH pipelines present: EVERY one is judged; one bad -> RED (judge-all, no selection).
+  mkdir -p "$d/ot6"; : > "$d/ot6/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gh "$d/ot6" 1 $ALLG
+  _ot_gl "$d/ot6" gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-provenance
+  _ot_case OT6 "$d/ot6" 1 ".gitlab-ci.yml" "both present, gitlab file missing an id -> RED (both judged)"
+
+  # OT7 — a FOREIGN (unmarked) pipeline on an adopter tree missing ids -> the ADOPTER-OWNED
+  # disclosed N/A, rc 0, with the remedies still named (the brownfield witness — the kit's own
+  # artifact-gate-brownfield job runs verify.sh --require over exactly this shape; provenance
+  # separates DRIFT from an UNMET DOCUMENTED MERGE OBLIGATION, verify-enforced-wired.sh's own axis).
+  mkdir -p "$d/ot7"; : > "$d/ot7/ENGINEERING-PRINCIPLES.md"
+  _ot_gh "$d/ot7" 0
+  _ot_case OT7 "$d/ot7" 0 "ADOPTER-OWNED" "foreign unmarked pipeline -> disclosed N/A, not FAIL"
+  if _o7=$(sh "$0" --own-tree "$d/ot7" 2>&1); then :; fi
+  if printf '%s' "$_o7" | grep -qF "gate-dispositions.txt"; then
+    echo "selftest PASS: OT7b — the disclosed N/A still names the disposition remedy"
+  else
+    echo "selftest FAIL: OT7b — the ADOPTER-OWNED N/A must still name the remedies: $_o7"; sf=1
+  fi
+
+  # OT8 — a VALID disposition file NARROWS the required set to its apply lines; deleting an APPLY
+  # id from the pipeline still REDs (the disposition never exempts an apply gate).
+  mkdir -p "$d/ot8"; : > "$d/ot8/ENGINEERING-PRINCIPLES.md"; _ot_disp_kit "$d/ot8"
+  _ot_gh "$d/ot8" 1 gate-secret-scan gate-test gate-lint
+  _ot_case OT8 "$d/ot8" 0 "OK: ci-gates --own-tree" "3-apply/5-na disposition + the 3 apply ids -> green"
+  mkdir -p "$d/ot8b"; : > "$d/ot8b/ENGINEERING-PRINCIPLES.md"; _ot_disp_kit "$d/ot8b"
+  _ot_gh "$d/ot8b" 1 gate-secret-scan gate-lint
+  _ot_case OT8b "$d/ot8b" 1 "gate-test" "disposition present, an APPLY id deleted -> RED naming it"
+
+  # OT9 — a reasonless `na` is a SILENT WIDENING and must FAIL LOUD naming the line.
+  mkdir -p "$d/ot9/conformance"; : > "$d/ot9/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gh "$d/ot9" 1 $ALLG
+  { printf 'gate-secret-scan\tapply\tshipped\n'; printf 'gate-test\tapply\tbattery\n'
+    printf 'gate-lint\tapply\tlint\n';           printf 'gate-type-check\tna\treason\n'
+    printf 'gate-build\tna\n';                   printf 'gate-dep-scan\tna\treason\n'
+    printf 'gate-sbom\tna\treason\n';            printf 'gate-provenance\tna\treason\n'
+  } > "$d/ot9/conformance/gate-dispositions.txt"
+  _ot_case OT9 "$d/ot9" 1 "non-empty reason" "reasonless na -> FAIL naming the line"
+
+  # OT9b — a WHITESPACE-ONLY `na` reason is the SAME silent widening and must FAIL naming the
+  # line (reviewer LOW-3: without the trim, `na<TAB>   ` slips the lock OT9 witnesses — the
+  # security seat's trailing-TAB-empty variant already reds via the same test; both stay green).
+  mkdir -p "$d/ot9b/conformance"; : > "$d/ot9b/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gh "$d/ot9b" 1 $ALLG
+  { printf 'gate-secret-scan\tapply\tshipped\n'; printf 'gate-test\tapply\tbattery\n'
+    printf 'gate-lint\tapply\tlint\n';           printf 'gate-type-check\tna\treason\n'
+    printf 'gate-build\tna\t   \n';              printf 'gate-dep-scan\tna\treason\n'
+    printf 'gate-sbom\tna\treason\n';            printf 'gate-provenance\tna\treason\n'
+  } > "$d/ot9b/conformance/gate-dispositions.txt"
+  _ot_case OT9b "$d/ot9b" 1 "whitespace-only counts as empty" "whitespace-only na reason -> FAIL naming the line"
+
+  # OT10 — a DUPLICATE id must FAIL naming the line (exactly-once is the contract).
+  mkdir -p "$d/ot10"; : > "$d/ot10/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gh "$d/ot10" 1 $ALLG
+  _ot_disp_kit "$d/ot10"; printf 'gate-lint\tapply\tagain\n' >> "$d/ot10/conformance/gate-dispositions.txt"
+  _ot_case OT10 "$d/ot10" 1 "more than once" "duplicate id line -> FAIL naming it"
+
+  # OT11 — a MISSING id must FAIL (an absent line is an UNDECIDED gate, not an exemption).
+  mkdir -p "$d/ot11/conformance"; : > "$d/ot11/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086
+  _ot_gh "$d/ot11" 1 $ALLG
+  grep -v '^gate-provenance' "$d/ot10/conformance/gate-dispositions.txt" | grep -v 'again' \
+    > "$d/ot11/conformance/gate-dispositions.txt"
+  _ot_case OT11 "$d/ot11" 1 "missing an entry for gate-provenance" "missing id line -> FAIL naming it"
+
+  # OT12 — THE LOUD ZERO (self-review finding 5): all 8 dispositioned na is NEVER a bare green —
+  # the OK line must say the pipeline is judged against NOTHING and list the set. A bare OK here
+  # is a leg failure.
+  mkdir -p "$d/ot12/conformance"; : > "$d/ot12/ENGINEERING-PRINCIPLES.md"
+  _ot_gh "$d/ot12" 1
+  { for _g12 in $ALLG; do printf '%s\tna\tdecided elsewhere\n' "$_g12"; done
+  } > "$d/ot12/conformance/gate-dispositions.txt"
+  _ot_case OT12 "$d/ot12" 0 "judged against NOTHING" "all-8-na disposition -> LOUD zero, never a bare green"
+
+  # OT13/OT14 — KIT-SOURCE legs (skip with a reason off-kit: the ruling lock binds the KIT's
+  # shipped file; an adopter tree has no such file — and MAY author its own, which must not red).
+  _kr="$(dirname "$0")/.."
+  if [ -f "$_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_kr/.github/workflows/golden-path.yml" ]; then
+    # OT13 — THE RULING LOCK (self-review finding 2, the claim-gate-counts literal-lock pattern):
+    # the SHIPPED kit file's apply set is EXACTLY {gate-secret-scan, gate-test, gate-lint} —
+    # D-240805-2's trio, literal. A ratified-but-sloppy edit that drifts it REDs here and must be
+    # changed IN THE SAME SLICE as this leg, citing the ruling (or its successor under the
+    # REVISIT-CONDITION: the kit ships a build artifact).
+    _rl_want="gate-lint gate-secret-scan gate-test"
+    _rl_got=$(awk -F'\t' '!/^[[:space:]]*#/ && NF>=2 && $2=="apply" {print $1}' \
+      "$_kr/conformance/gate-dispositions.txt" 2>/dev/null | sort | tr '\n' ' ')
+    _rl_got=${_rl_got% }
+    if [ "$_rl_got" = "$_rl_want" ]; then
+      echo "selftest PASS: OT13 — the shipped disposition file's apply set == the D-240805-2 trio (ruling-locked)"
+    else
+      echo "selftest FAIL: OT13 — the shipped kit disposition drifted from D-240805-2 (got '$_rl_got', want '$_rl_want')"; sf=1
+    fi
+    # OT14 — the kit-side AC: delete `id: gate-test` from a SCRATCH COPY of the real ci.yml
+    # (never the tracked file) -> RED naming gate-test under the kit's own disposition.
+    mkdir -p "$d/ot14/.github/workflows" "$d/ot14/docs" "$d/ot14/conformance"
+    : > "$d/ot14/docs/ROADMAP-KIT.md"
+    grep -v 'id: gate-test' "$_kr/.github/workflows/ci.yml" > "$d/ot14/.github/workflows/ci.yml"
+    cp "$_kr/conformance/gate-dispositions.txt" "$d/ot14/conformance/gate-dispositions.txt"
+    _ot_case OT14 "$d/ot14" 1 "gate-test" "the real ci.yml minus id: gate-test -> RED (kit-side AC)"
+    # OT15 — gate-test STAYS TERMINAL (reviewer LOW-4): reaching the id attests every selftest
+    # step above it passed ONLY while it is the LAST step of conformance-selftests — a step
+    # planted after it is NOT attested (the anchor comment at the id states exactly this).
+    # Same grep/awk discipline as OT14: line-shape parsing of the real ci.yml, never a YAML lib.
+    _ts_probe() { # <workflow-file> -> TERMINAL | NOT-TERMINAL (…)
+      awk '
+        /^  conformance-selftests:/ { injob = 1; next }
+        injob && /^  [A-Za-z0-9_"-]+:/ { injob = 0 }
+        injob && /^      - / { step++ }
+        injob && /^        id: gate-test[[:space:]]*$/ { gt = step }
+        END { if (gt > 0 && gt == step) print "TERMINAL"
+              else print "NOT-TERMINAL (gate-test at step " gt + 0 " of " step + 0 ")" }
+      ' "$1"
+    }
+    _ts_real=$(_ts_probe "$_kr/.github/workflows/ci.yml")
+    if [ "$_ts_real" = TERMINAL ]; then
+      echo "selftest PASS: OT15 — id: gate-test is the LAST step of conformance-selftests (stay-terminal pinned)"
+    else
+      echo "selftest FAIL: OT15 — id: gate-test is no longer the terminal step of conformance-selftests; a step after it is unattested by the battery id — move it back or re-anchor the id, citing D-240805-2: $_ts_real"; sf=1
+    fi
+    # The planted-step mutant, on a SCRATCH COPY (never the tracked file): a step appended after
+    # gate-test must read NOT-TERMINAL, proving the probe can red rather than always agreeing.
+    mkdir -p "$d/ot15"
+    awk '
+      { print }
+      /^        id: gate-test[[:space:]]*$/ { plant = 1 }
+      plant && /^        run: / { print "      - name: planted step (OT15 mutant)"; print "        run: echo planted"; plant = 0 }
+    ' "$_kr/.github/workflows/ci.yml" > "$d/ot15/ci.yml"
+    if [ "$(_ts_probe "$d/ot15/ci.yml")" != TERMINAL ]; then
+      echo "selftest PASS: OT15b — a step planted after gate-test reads NOT-TERMINAL (the probe has teeth)"
+    else
+      echo "selftest FAIL: OT15b — the planted-step mutant still reads TERMINAL; the stay-terminal probe is vacuous"; sf=1
+    fi
+  else
+    echo "selftest SKIP: OT13/OT14/OT15 — kit-source legs (no kit marker here; the ruling lock binds the kit's shipped file only)"
+  fi
+
   if [ "$sf" -eq 0 ]; then echo "OK: ci-gates selftest"; exit 0; else echo "FAIL: ci-gates selftest"; exit 1; fi
 }
 
 # --selftest dispatch — BEFORE the usage check below, or `--selftest` is read as a filename.
 # `exit $?` rather than relying on selftest() to exit: a refactor to `return` would otherwise fall
 # through to WORKFLOW="--selftest" and die with a misleading "workflow file not found".
-case "${1:-}" in --selftest) selftest; exit $? ;; esac
+case "${1:-}" in
+  --selftest) selftest; exit $? ;;
+  # B7: the own-tree leg. Leg B (check_kit_seams) does NOT run in this mode — its resolution root
+  # is the kit tree by design; see the OWN-TREE ceiling block above.
+  --own-tree)
+    shift
+    if [ $# -gt 1 ]; then echo "usage: ci-gates.sh --own-tree [<root>]" >&2; exit 1; fi
+    own_tree_run "${1:-.}"; exit $? ;;
+esac
 
 WORKFLOW=""; EXPECT_SEAMS=0
 for _a in "$@"; do
@@ -328,7 +792,9 @@ fi
 
 # 8 standardized step ids implementing the 7 contract gates
 # (gate 7 = supply-chain = gate-sbom + gate-provenance). 'install' is setup, not a gate.
-REQUIRED="gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom gate-provenance"
+# ALIASED to the single OWN_GATE_IDS list (B7): a second literal copy would be a drift pair
+# nothing locks — Leg A and the own-tree leg must judge the same contract.
+REQUIRED="$OWN_GATE_IDS"
 
 missing=""
 for gate in $REQUIRED; do

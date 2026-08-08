@@ -400,6 +400,18 @@ selftest() {
       && git commit -q --allow-empty -m base \
       && git notes --ref=fixture-go add -F "$2" HEAD ) >/dev/null 2>&1
   }
+  _fixture_ledger2() {  # <dir> <body1> <body2> — TWO commits, one scope-matching record EACH
+    # (B7 rider: the render must show EVERY matching record, so its witness needs a ledger that
+    # actually holds two; iteration order is annotated-SHA order, deliberately not controlled here
+    # — the assertions below are order-independent).
+    mkdir -p "$1"
+    ( cd "$1" && git init -q . \
+      && git config user.email tester@example.com && git config user.name tester \
+      && git commit -q --allow-empty -m base1 \
+      && git notes --ref=fixture-go add -F "$2" HEAD \
+      && git commit -q --allow-empty -m base2 \
+      && git notes --ref=fixture-go add -F "$3" HEAD ) >/dev/null 2>&1
+  }
   _render_into() {  # <script> <repo> <summary-out> — run the extracted render as CI would
     : > "$3"
     ( cd "$2" && PROMOTION_NOTES_REF=fixture-go PR_NUMBER=909 GATE_RC=0 \
@@ -449,6 +461,35 @@ selftest() {
       echo "OK: $_rsrc renders a normal record WHOLE, with no truncation notice"
     else
       echo "FAIL: selftest case9d — $_rsrc did not render a normal record whole/untruncated"; st=1
+    fi
+    # (f)/(g) — B7 RIDER: the render shows EVERY scope-matching record (rendering only the first
+    # would show a defective record while the gate passed on a valid sibling — a D-240805-4
+    # visibility lie), and the 8 KB bound is TOTAL ACROSS RECORDS, not per-record (self-review
+    # finding 4: B2's measured volume attack applies with interest when N records render).
+    # (f) two SMALL records -> BOTH bodies rendered, no truncation notice.
+    _rtwoA="$base/render-twoA.txt"; _rtwoB="$base/render-twoB.txt"
+    printf 'gate: design\nscope: PR-909\nmarker: RECORD-A-MARKER\n' > "$_rtwoA"
+    printf 'gate: design\nscope: PR-909\nmarker: RECORD-B-MARKER\n' > "$_rtwoB"
+    _rrepo4="$base/rtwo$_rn"; _fixture_ledger2 "$_rrepo4" "$_rtwoA" "$_rtwoB"
+    _rout4="$base/summary-two$_rn.md"
+    _render_into "$_rscript" "$_rrepo4" "$_rout4"
+    if grep -qF 'RECORD-A-MARKER' "$_rout4" && grep -qF 'RECORD-B-MARKER' "$_rout4" \
+       && ! grep -qF 'truncated at 8 KB' "$_rout4"; then
+      echo "OK: $_rsrc renders BOTH scope-matching records, untruncated (render-all witnessed)"
+    else
+      echo "FAIL: selftest case9f — $_rsrc did not render EVERY scope-matching record (a defective record could hide behind the one rendered while the gate passed on another)"; st=1
+    fi
+    # (g) two records whose COMBINED size exceeds the bound -> bounded output + ANNOUNCED cut
+    # (order-independent: whichever record iterates first, the TOTAL bound + notice must hold).
+    _rrepo5="$base/rtwobig$_rn"; _fixture_ledger2 "$_rrepo5" "$_rtwoA" "$_rbig"
+    _rout5="$base/summary-twobig$_rn.md"
+    _render_into "$_rscript" "$_rrepo5" "$_rout5"
+    _rbytes5=$(wc -c < "$_rout5" | tr -d ' ')
+    if [ "$_rbytes5" -le 65536 ] && grep -qF 'truncated at 8 KB' "$_rout5" \
+       && grep -qF 'gate: design' "$_rout5"; then
+      echo "OK: $_rsrc bounds TWO records TOTAL ($_rbytes5 bytes) and announces the cut (finding 4)"
+    else
+      echo "FAIL: selftest case9g — $_rsrc with two records emitted $_rbytes5 bytes (want <=65536 + announced truncation + a record head) — the bound must be TOTAL across records, or N records reopen B2's volume attack"; st=1
     fi
     # (e) — the escape must survive the one-pass fence computation
     _rrepo3="$base/rtick$_rn"; _fixture_ledger "$_rrepo3" "$_rtick"

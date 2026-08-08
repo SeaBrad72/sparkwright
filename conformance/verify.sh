@@ -333,6 +333,15 @@ check control feedback-link-lifecycle              sh conformance/feedback-link-
 check control feedback-link-lifecycle-selftest      sh conformance/feedback-link-lifecycle-documented.sh --selftest
 check control named-adapters-selftest  sh conformance/named-adapters.sh --selftest
 check control ci-gates         --kitself sh conformance/ci-gates.sh profiles/typescript-node/ci.yml --expect-seams
+# B7 (D-240805-2 executed) — the NON-kitself leg: THIS tree's OWN installed pipeline(s) judged
+# against the 8 gate ids minus the tree's validated na dispositions
+# (conformance/gate-dispositions.txt; absent = all 8 — the adopter default, the kit's file being
+# export-ignored). Deliberately NOT --kitself: this is the row adopters run — an adopter deleting
+# gate-sbom from their emitted pipeline goes RED on their own tree (the Phase-B spine AC). Raw
+# pre-incept export disposes N/A; an unmarked FOREIGN (brownfield) pipeline disposes
+# ADOPTER-OWNED N/A-with-remedy, never FAIL (the verify-enforced-wired provenance axis, copied).
+# On the kit tree it binds the kit's own meta-CI to the D-240805-2 3-apply set.
+check control ci-gates-own     sh conformance/ci-gates.sh --own-tree
 check control ci-gates-selftest sh conformance/ci-gates.sh --selftest
 # A8/T1-09 — the kit's own ci.yml must carry a real secret-scan gate. The LIVE check + its --selftest are
 # gitleaks-FREE (pure grep over the workflow + runtime fixtures), so both are portable and mutation-swept.

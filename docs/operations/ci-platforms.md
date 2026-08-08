@@ -21,6 +21,12 @@ Every project's CI must declare these **8 standardized gate-ids** (implementing 
 
 `conformance/ci-gates.sh <workflow>` asserts all 8 are declared. It is **structural, best-effort, zero-dependency** — it recognizes the id, it does not run the pipeline. Pair it with the pipeline actually running (the gate must *do* the work, not merely be named).
 
+`sh conformance/ci-gates.sh --own-tree` is the **non-kitself leg** (a registered `verify.sh` control row): it judges **your tree's own installed pipeline(s)** — `.github/workflows/ci.yml` and/or `.gitlab-ci.yml`, every one present — so deleting a gate id from your live pipeline goes red on your own tree, not only on the kit's reference copies. A raw pre-incept export (no pipeline, no incepted marker) is N/A; a foreign/brownfield pipeline without the kit's origin marker disposes as a **disclosed adopter-owned N/A with the remedies named**, never a silent pass and never a fail for a merge the adoption docs told you to do by hand.
+
+### Per-gate dispositions (`conformance/gate-dispositions.txt`)
+
+A tree **without** this file is held to all 8 ids — the default. A tree MAY carry one to record a **decided, reviewed exemption** per gate: `gate-<id><TAB>apply|na<TAB><reason>`, every one of the 8 ids exactly once, `na` **requires** a non-empty reason (`apply` reasons are optional prose). The own-tree leg validates it first — a malformed, duplicate, missing-id or reasonless-na line **fails loud naming the line**; an invalid file never silently widens or narrows the required set, and an **all-na file is loud, never a bare green** (the leg says the pipeline is judged against nothing). The file is control-plane: your forge review is its ratification surface. The kit's own file encodes ruling `D-240805-2` (3 apply · 5 na) and is export-ignored, so no adopter inherits the kit's exemptions. A disposition records an exemption — it cannot make the reason true.
+
 ## How each platform expresses the contract
 
 ### GitHub Actions — `id:` steps

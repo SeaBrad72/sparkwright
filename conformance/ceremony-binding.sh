@@ -26,11 +26,21 @@
 #     1  WAITING — reserved for EXACTLY ONE state: no `--gate design` GO record scoped to this change
 #        exists yet. A human has not approved yet. That is a normal stage of healthy work, and CI
 #        renders it YELLOW (status: in_progress, no conclusion) — still BLOCKING, but not a red ✗.
-#     2  ANOMALY — everything else. A scoped GO exists and is DEFECTIVE (artifact missing, untracked,
-#        stubbed, symlinked, traversing, or not a design artifact; approver line malformed or too weak;
-#        approved-sha absent, malformed, unresolvable, or not touching the artifact), OR the gate could
-#        not evaluate at all (change-class UNDERIVABLE, no --scope supplied, a universal CB_DESIGN_GLOB).
-#        Renders RED, because something is broken and a human must fix it.
+#     2  ANOMALY — everything else. EVERY scoped GO that exists is DEFECTIVE (artifact missing,
+#        untracked, stubbed, symlinked, traversing, or not a design artifact; approver line malformed
+#        or too weak; approved-sha absent, malformed, unresolvable, or not touching the artifact),
+#        OR the gate could not evaluate at all (change-class UNDERIVABLE, no --scope supplied, a
+#        universal CB_DESIGN_GLOB). Renders RED, because something is broken and a human must fix it.
+#
+# ⚠️ EXIT CONTRACT — CHANGED AGAIN (B7 rider, 2026-08-08; the B2-A1 disclosure class). The match
+# loop is now COLLECT-AND-ADJUDICATE-ALL in BOTH modes (--scope and --pre-push): every `gate:
+# design` record matching the scope key is adjudicated; rc 0 if ANY survives (the verdict names
+# the survivor's sha + the examined count); rc 2 ONLY when every matching record is defective
+# (each named with its defect). Previously the first match in annotated-SHA order was adjudicated
+# ALONE, so a defective record could SHADOW a valid same-key record by sort-order lottery
+# (measured on PR #509: `00c0…` < `924e…`). Single-record semantics are unchanged; anyone who
+# wired this script into their own CI and depended on "rc 2 = the first matching record is
+# defective" now gets "rc 2 = ALL matching records are defective".
 #
 # WHY IT CHANGED. Before this, rc 1 meant both "waiting on a human" and every one of the ~16 defects
 # above, so routing the rc through the check-run colour map would have painted a FORGED OR BROKEN GO
@@ -292,7 +302,15 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     esac
   fi
 
-  _design_note=""; _gate_seen=0
+  # ── B7 RIDER — NO-SHADOWING (the #509 wedge, measured 2026-08-08). The loop below COLLECTS
+  # every scope-matching record instead of breaking on the first: the ledger iterates in
+  # annotated-SHA order and same-key duplicates exist legitimately (`notes add -f` overwrites only
+  # same-SHA re-records; PR-433/PR-439 both carry live same-key pairs), so a first-match break made
+  # the verdict a SORT-ORDER LOTTERY — a defective record with a lower annotated sha shadowed a
+  # valid same-key record (measured: `00c0…` < `924e…` on #509). Restoring the `break` REDs legR1.
+  # NOT FIXED HERE, on purpose: the record→poster race and any new scope key are slice (b)'s job
+  # (BRANCH-SCOPE-END-TO-END, owner-ruled split 2026-08-08) — this rider changes ADJUDICATION only.
+  _design_note=""; _gate_seen=0; _match_count=0; _matches=""
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
       _body="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
@@ -300,10 +318,10 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       printf '%s\n' "$_body" | grep -q '^gate: design$' || continue
       _gate_seen=1   # a design record exists, but maybe not for THIS scope — report the near-miss
       printf '%s\n' "$_body" | grep -qF -x "scope: $_match_scope" || continue
-      _design_note="$_obj"; break
+      _matches="$_matches $_obj"; _match_count=$((_match_count + 1))
     done
   fi
-  if [ -z "$_design_note" ] && [ "$_cb_prepush" -eq 1 ]; then
+  if [ "$_match_count" -eq 0 ] && [ "$_cb_prepush" -eq 1 ]; then
     # The hook mode's WAITING verdict (rc 1): the [S4] family — no design GO recorded for this
     # branch. Same two diagnoses as CI, phrased for the key that actually failed to match.
     if [ "$_gate_seen" -eq 1 ]; then
@@ -325,7 +343,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     echo "      It can never weaken CI, which fetches the fresh ledger." >&2
     return 1
   fi
-  if [ -z "$_design_note" ]; then
+  if [ "$_match_count" -eq 0 ]; then
     # Two distinct causes, reported distinctly. They share a branch but not a diagnosis, and an operator
     # who recorded a GO for the wrong scope needs to be told that rather than "no record found".
     if [ "$_gate_seen" -eq 1 ]; then
@@ -346,15 +364,49 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     return 1
   fi
 
-  # The downstream legs are SHARED by both modes (B2 Δ1′: no fork of the predicate). rc propagates
-  # verbatim: a defective SCOPED record is the rc-2 anomaly in BOTH modes — with branch scoping the
-  # matched record is bound to THIS change, so a defect in it is broken, not patient (legP3/leg14).
-  _cdr_rc=0
-  check_design_record || _cdr_rc=$?
-  [ "$_cdr_rc" -eq 0 ] || return "$_cdr_rc"
+  # The downstream legs are SHARED by both modes (B2 Δ1′: no fork of the predicate), and — B7
+  # rider — they now run over EVERY matching record: rc 0 if ANY survives (the survivor is named,
+  # with the examined count), rc 2 only when ALL are defective (EACH named with its defect). A
+  # defective SCOPED record among only-defective matches is the rc-2 anomaly in BOTH modes —
+  # with branch scoping the matched records are bound to THIS change (legP3/leg14/legR3).
+  # Pass 1 adjudicates each record in a SUBSHELL (capturing its verdict text without letting a
+  # defect print on a passing run); pass 2 re-runs the survivor in THIS shell so
+  # CB_DESIGN_DOC/_appr are set for the verdict below — same inputs, same predicate, no fork.
+  _survivor=""; _defects=""; _examined=0; _defect_n=0
+  for _obj in $_matches; do
+    _examined=$((_examined + 1))
+    _body="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
+    _design_note="$_obj"
+    _cdr_rc=0
+    _cdr_out="$( check_design_record 2>&1 )" || _cdr_rc=$?
+    if [ "$_cdr_rc" -eq 0 ]; then
+      [ -n "$_survivor" ] || _survivor="$_obj"
+    else
+      _defect_n=$((_defect_n + 1))
+      _defects="$_defects
+record $_obj is DEFECTIVE:
+$_cdr_out"
+    fi
+  done
+  if [ -z "$_survivor" ]; then
+    printf '%s\n' "$_defects" >&2
+    echo "FAIL: ceremony-binding — ALL $_examined matching record(s) for 'scope: $_match_scope' are DEFECTIVE" >&2
+    echo "      (each named above); no surviving GO record. A defect in EVERY record bound to this" >&2
+    echo "      change is broken, not patient (WAITING-GATES-RENDER-AS-RED)." >&2
+    return 2
+  fi
+  _body="$(git notes --ref="$NOTES_REF" show "$_survivor" 2>/dev/null || true)"
+  _design_note="$_survivor"
+  if ! check_design_record >/dev/null 2>&1; then
+    echo "FAIL: ceremony-binding — the surviving record's re-adjudication DIVERGED from its first pass" >&2
+    echo "      (record $_survivor). Fail closed: a non-deterministic verdict is an anomaly." >&2
+    return 2
+  fi
 
   if [ "$_cb_prepush" -eq 1 ]; then
     echo "OK: ceremony-binding --pre-push — change-class '$_cls'; DESIGN GATE recorded (scope $_match_scope)."
+    echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
+    echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; defects render at CI)."
     echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
     echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact."
     echo "    CI matches the SAME record on a DIFFERENT key ('scope: PR-<n>') — re-record at PR creation."
@@ -362,6 +414,8 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     return 0
   fi
   echo "OK: ceremony-binding — change-class '$_cls'; DESIGN GATE recorded (scope $_cb_scope)."
+  echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
+  echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; ALL matches render at CI)."
   echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
   echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact."
   echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
@@ -1072,6 +1126,63 @@ selftest() {
   esac
   ( cd "$_tmp/fpp1" && git checkout -q b2-pp )
 
+  # ── B7 RIDER legs: NO-SHADOWING (the #509 wedge, measured). The ledger iterates in
+  # annotated-SHA order and the old match loop broke on FIRST scope-match, so a DEFECTIVE record
+  # shadowed a VALID same-key record by sort-order lottery. The rider collects and adjudicates
+  # ALL matching records: rc 0 if ANY survives, rc 2 only when EVERY one is defective.
+  # BOTH sort orders are built (defective-on-lower = the measured #509 shape, iterated FIRST; and
+  # the reverse), so a re-introduced `break` cannot hide behind a lucky ordering.
+
+  # LEG R1 — defective on the LOWER sha + valid on the higher, same scope key: rc 0, the verdict
+  # names the SURVIVOR's sha and the examined count. Under first-match-break this exact fixture
+  # was the rc-2 wedge.
+  _legs=$((_legs+1))   # legR1
+  _mkfix2 "$_tmp/fR1" lower
+  _outR1="$( cd "$_tmp/fR1" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 )" \
+    && _rcR1=0 || _rcR1=$?
+  _valR1=$(cat "$_tmp/fR1/.valid-sha" 2>/dev/null || echo MISSING)
+  case "$_rcR1:$_outR1" in
+    0:*"Survivor: record $_valR1"*)
+      case "$_outR1" in
+        (*"examined 2"*) echo "PASS legR1: defective(lower)+valid same key -> rc 0 naming survivor + examined count" ;;
+        (*) echo "FAIL legR1: survivor named but the examined count is missing: $_outR1"; _fails=$((_fails+1)) ;;
+      esac ;;
+    *) echo "FAIL legR1: expected rc 0 naming 'Survivor: record $_valR1', got rc=$_rcR1: $_outR1"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG R2 — the REVERSE sort order (defective on the HIGHER sha): same verdict. A fix that only
+  # works when the valid record happens to iterate first is the same lottery with a new winner.
+  _legs=$((_legs+1))   # legR2
+  _mkfix2 "$_tmp/fR2" higher
+  _outR2="$( cd "$_tmp/fR2" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 )" \
+    && _rcR2=0 || _rcR2=$?
+  _valR2=$(cat "$_tmp/fR2/.valid-sha" 2>/dev/null || echo MISSING)
+  case "$_rcR2:$_outR2" in
+    0:*"Survivor: record $_valR2"*)
+      echo "PASS legR2: defective(higher)+valid same key -> rc 0 naming the survivor (reverse order)" ;;
+    *) echo "FAIL legR2: expected rc 0 naming 'Survivor: record $_valR2', got rc=$_rcR2: $_outR2"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG R3 — ALL matching records defective -> rc 2, EACH named with its defect (a single
+  # anonymous FAIL would hide how many broken records carry this key).
+  _legs=$((_legs+1))   # legR3
+  _mkfix2 "$_tmp/fR3" both
+  _outR3="$( cd "$_tmp/fR3" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
+  ( cd "$_tmp/fR3" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+    && _rcR3=0 || _rcR3=$?
+  _d3a=$(sed -n 1p "$_tmp/fR3/.defective-shas" 2>/dev/null || echo MISSING)
+  _d3b=$(sed -n 2p "$_tmp/fR3/.defective-shas" 2>/dev/null || echo MISSING)
+  if [ "$_rcR3" = 2 ] && printf '%s' "$_outR3" | grep -qF "record $_d3a is DEFECTIVE" \
+     && printf '%s' "$_outR3" | grep -qF "record $_d3b is DEFECTIVE" \
+     && printf '%s' "$_outR3" | grep -qF "ALL 2 matching"; then
+    echo "PASS legR3: two defective same-key records -> rc 2 naming EACH"
+  else
+    echo "FAIL legR3: expected rc 2 naming both defective records + 'ALL 2 matching', got rc=$_rcR3: $_outR3"
+    _fails=$((_fails+1))
+  fi
+
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran
     # after the ordering legs were deleted — and a hardcoded total is a claim the file makes about
@@ -1152,6 +1263,64 @@ _mklink() {
 }
 
 
+
+# _mkfix2 <dir> <defective:lower|higher|both> — TWO commits, EACH carrying a 'gate: design' record
+# with the SAME scope key (PR-1): the #509 wedge shape. `git notes list` iterates in annotated-SHA
+# order (measured 2026-08-08, insertion-order-independent), so 'lower' plants the DEFECTIVE record
+# where the old first-match break examined it FIRST and the valid record was shadowed; 'higher' is
+# the reverse; 'both' makes every match defective. The defective shape is leg14's (no approved-by
+# line). Writes .valid-sha / .defective-sha(s) files for the legs' assertions — those are written
+# AFTER the commits, so they stay untracked and cannot disturb the fixture's diff.
+_mkfix2() {
+  _d2="$1"; _w2="$2"
+  mkdir -p "$_d2/docs/architecture"
+  (
+    cd "$_d2" || exit 1
+    git init -q 2>/dev/null
+    git config user.email fixture@example.invalid
+    git config user.name Fixture
+    # Same substance shape as _mkfix's `real` (>= 8 non-blank lines under a heading) — the valid
+    # record must clear obl_is_placeholder, or these legs silently test the floor instead.
+    printf '%s\n' \
+      '# Design — fixture' '' '## Approach' \
+      'The gate derives the change class from the single hardened authority and refuses to' \
+      'classify a change-set it cannot read. The trade-off is that a stricter refusal costs' \
+      'an operator an explicit re-record when the base is unreachable, which is the fail-safe' \
+      'direction and the one this kit takes everywhere else.' \
+      'Identification rides on the GO record rather than a registry, so the binding claim' \
+      'here is non-trivial instead of vacuously true of every document in history.' \
+      '## Honest ceiling' \
+      'Proves existence and record binding only; it does not prove the design is sound.' \
+      > docs/architecture/d-design.md
+    printf 'fixture repo\n' > README.md
+    git add -A 2>/dev/null
+    git -c user.email=fixture@example.invalid -c user.name=Fixture commit -q -m fixture >/dev/null 2>&1
+    _c1=$(git rev-parse HEAD)
+    printf 'Amended: a second commit touching the artifact.\n' >> docs/architecture/d-design.md
+    git add -A 2>/dev/null
+    git -c user.email=fixture@example.invalid -c user.name=Fixture commit -q -m fixture2 >/dev/null 2>&1
+    _c2=$(git rev-parse HEAD)
+    # POSIX-portable lexicographic order (SC3012: `\<` in [ ] is undefined in POSIX sh —
+    # CI's shellcheck flags it; a newer local one did not. LC_ALL=C pins the collation.)
+    _lo=$(printf '%s\n%s\n' "$_c1" "$_c2" | LC_ALL=C sort | head -n 1)
+    if [ "$_lo" = "$_c1" ]; then _hi="$_c2"; else _hi="$_c1"; fi
+    _note2() { # <commit> <defective:1|0> — both commits touch the basis, so approved-sha binds
+      if [ "$2" = 1 ]; then _ap2="change-class: control-plane"; else _ap2="approved-by: Fixture Human [committer]"; fi
+      printf '%s\n' "record: promotion GO (approve->execute->log)" \
+        "gate: design" "scope: PR-1" "$_ap2" "approved-sha: $1" \
+        "change-class: control-plane" "basis: docs/architecture/d-design.md" \
+        | git notes --ref=promotions add -f -F - "$1" 2>/dev/null
+    }
+    case "$_w2" in
+      (lower)  _note2 "$_lo" 1; _note2 "$_hi" 0
+               printf '%s\n' "$_lo" > .defective-sha; printf '%s\n' "$_hi" > .valid-sha ;;
+      (higher) _note2 "$_hi" 1; _note2 "$_lo" 0
+               printf '%s\n' "$_hi" > .defective-sha; printf '%s\n' "$_lo" > .valid-sha ;;
+      (both)   _note2 "$_c1" 1; _note2 "$_c2" 1
+               printf '%s\n%s\n' "$_c1" "$_c2" > .defective-shas ;;
+    esac
+  )
+}
 
 # _mkfix <dir> <gate> <basis> <doc-kind>
 #   doc-kind: real = a filled design doc . stub = an unfilled template . none = no doc at all

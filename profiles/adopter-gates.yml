@@ -332,13 +332,24 @@ jobs:
             0) : ;;
             *) printf '%s\n' 'ceremony-binding: no usable gate rc reached the render step — nothing rendered (the check-run still carries the verdict).' >> "$GITHUB_STEP_SUMMARY"; exit 0 ;;
           esac
-          body=''
+          # B7 rider — render EVERY scope-matching record (MIRRORED from ci.yml, parity case 9):
+          # the gate adjudicates all matches and passes if ANY survives, so rendering only the
+          # first could show a DEFECTIVE record while the gate passed on a valid sibling — a
+          # D-240805-4 visibility lie. One fence, per-record separators; the 8 KB bound below is
+          # TOTAL across records (finding 4).
+          nl=$(printf '\nX'); nl=${nl%X}   # a literal newline, without breaking the YAML block indent
+          body=''; matched=0
           if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
             for obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
               b="$(git notes --ref="$NOTES_REF" show "$obj" 2>/dev/null || true)"
               printf '%s\n' "$b" | grep -q '^gate: design$' || continue
               printf '%s\n' "$b" | grep -qF -x "scope: PR-$PR_NUMBER" || continue
-              body="$b"; break
+              matched=$((matched + 1))
+              if [ -z "$body" ]; then
+                body="--- record $obj ---${nl}${b}"
+              else
+                body="${body}${nl}--- record $obj ---${nl}${b}"
+              fi
             done
           fi
           if [ -z "$body" ]; then
@@ -374,14 +385,14 @@ jobs:
           fence='```'
           while [ "${#fence}" -le "$run" ]; do fence="$fence"'`'; done
           {
-            printf '%s\n' '## ceremony-binding — the design-gate GO record this merge rides on' ''
+            printf '%s\n' "## ceremony-binding — the design-gate GO record(s) this merge rides on ($matched matched, rendered up to the 8 KB total bound)" ''
             printf '%s\n' "$fence" "$body" "$fence"
             if [ "$truncated" = 1 ]; then
-              printf '%s\n' '' "**(truncated at 8 KB — read the full record: \`git notes --ref=$NOTES_REF show <sha>\`)**"
+              printf '%s\n' '' "**(truncated at 8 KB TOTAL across all $matched record(s) — read the full ledger: \`git notes --ref=$NOTES_REF show <sha>\`)**"
             fi
-            printf '%s\n' '' '_The GO record above is reproduced VERBATIM from the ledger, inside a code fence: nothing in it renders as markdown, so a field cannot forge a second one. A note **binds**, it does not **authenticate**._'
+            printf '%s\n' '' '_Every record above is reproduced VERBATIM from the ledger, inside one code fence: nothing in it renders as markdown, so a field cannot forge a second one. The gate passes if ANY matching record survives adjudication — a defective sibling is SHOWN here, not hidden behind the survivor, within the 8 KB total bound; past it, the cut is announced and the ledger command shows the rest. Record bodies can contain separator-lookalike text; the header'"'"'s matched-count is authoritative. A note **binds**, it does not **authenticate**._'
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "ceremony-binding: matched record rendered into the step summary."
+          echo "ceremony-binding: $matched matched record(s) rendered into the step summary."
 
   post-ceremony-binding:
     needs: gate-ceremony-binding
