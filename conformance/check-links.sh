@@ -11,6 +11,12 @@
 # blocks (``` / ~~~) and inline code spans (`...`) — so prose that merely *quotes* link
 # syntax (e.g. documenting the `]( )` form in backticks) is not mistaken for a real link.
 # That extractor is shared with adopter-export-wired.sh (single source of truth).
+#
+# ⚠️ HONEST CEILING (R3, PHASE-B-HYGIENE; the DOC-FRESH-1 measurement): BACKTICKED PATH REFERENCES
+# ARE NOT COVERED — a stale or nonexistent `docs/whatever.md` quoted in a code span passes this
+# check by design (the code-span skip above is deliberate and selftest-locked; measured live: two
+# false `ROADMAP-KIT.md` references returned rc 0 here). This check validates markdown LINKS only;
+# do not read its green as "every path mentioned in prose resolves".
 # Usage: sh conformance/check-links.sh [--selftest]   (run from repo root)
 set -eu
 . "$(dirname "$0")/wf-helpers.sh"   # provides wf_extract_links() — single source of truth
@@ -62,5 +68,5 @@ if [ -s "$tmp" ]; then
   cat "$tmp" >&2
   exit 1
 fi
-echo "OK: all relative Markdown links resolve"
+echo "OK: all relative Markdown links resolve (code-span/backticked path references are NOT covered — deliberate; see header)"
 exit 0

@@ -40,7 +40,11 @@ This file is not a fifth mechanism. It is the **index those four point into** �
 
 ## 1. How to use it
 
-- **Before proposing anything that reverses, deletes, defers, or re-sequences work**, search this file.
+- **Before proposing anything that reverses, deletes, defers, or re-sequences work — or that **proposes a
+  mechanism on a surface D1–D17 touches** — search this file.** *(The mechanism clause was added
+  2026-08-07 on meta-control panel #38's finding 3-H1: B2 was **proposing a new mechanism**, not
+  reversing one, so the trigger as originally written did not cover the case that actually failed —
+  `D11` and `D3′` had both already ruled on that surface and were re-derived from scratch anyway.)*
 - **Every entry carries a verbatim quote and a `file:line` or commit SHA**, so any row can be
   spot-checked in seconds. A row you cannot verify from its citation is a defect — report it.
 - **`REVISIT-CONDITION` is load-bearing.** A decision with an unmet condition is not available to be
@@ -268,6 +272,35 @@ ORCHESTRATOR only**, citing an explicit in-session owner ruling, for an artifact
 the subagent prohibition from `D-240805-3` stands unchanged, and `SUBAGENT-FABRICATED-GO-RECORD`
 remains a mandatory B2 design input. The ledger remains bind-not-authenticate; the owner's
 verification surface is `promotion-verify.sh log` and the record ref posted on each PR.
+
+**`D-240807-1` · ruling (owner, 2026-08-07, in-session) · The PHASE-B-HYGIENE design is RATIFIED AS
+AMENDED** (`docs/architecture/2026-08-07-phase-b-hygiene-design.md`, incl. its five self-review
+amendments; GO recorded at approved-sha `924eb81`, scope `branch/feat/phase-b-hygiene` per `D11`).
+The Δ rulings: **Δ1(i)** the slice carries **`MC-CADENCE-1`'s responder scoped to the measured gap**
+(ESCALATED at count > 2N refuses the tag), one slice before the "at Phase B's release" boundary
+`D-240805-1` names — an owner ratification of the timing, not an agent re-sequencing; MC-CADENCE-2
+stays whole in B9. **Δ1(ii) ENFORCE-AT-BIRTH is ratified as an explicit EXCEPTION to the
+observe-first rollout ruling** (`2026-08-04-recovery-plan.md:26`), on these grounds: an
+observe-mode responder to an ignored observe-mode signal reproduces the disease it treats (panel
+#38's measured finding — OVERDUE fired and six releases shipped over it); the blast radius is one
+script (`scripts/release-tag.sh`), remedy printed, the ruled DEFERRED escape intact
+(`docs/operations/meta-control.md:155-159` unchanged). **Δ2** H3 re-scoped to truth-fixes + the
+`conformance-selftests` headroom shard + boarding the real driver (`NON-VACUITY-SHARD2-FLOOR`) —
+the previously boarded remedy measured ~0 wall-clock seconds. **Δ3** H2 ships as a conformance
+check + rhythm conduct, explicitly NOT a hook leg (`D10`). **Δ4** riders R2/R4/R3 in, R1
+mechanism in-if-budget (its truth-fix ships regardless); cut order R1 → R3 → R2/R4 → H3-shard,
+H1+H2 never cut. **REVISIT-CONDITION:** none.
+
+> **CEILING-CORRECTION (2026-08-07, hygiene security seat F2 — appended; the ruling text above is
+> unedited):** Δ1(ii)'s grounds hold as written for the blast radius ("one script"), but the
+> **enforce-at-birth guarantee is caller-environment-conditional**: `RELEASE_TAG_CADENCE` /
+> `META_CONTROL_TAGS|N|ROOT` in the caller's environment re-point or re-scope the cadence
+> detector, so only the unmodified-env invocation carries the guarantee. Response per `D3′`
+> (loud, not impossible — no arms race): an overridden run banners itself on every invocation,
+> the vars are declared trusted-invocation-only in the script's SECURITY header, and the route is
+> recorded on the design's H1 honest-ceiling list (design §10-A3). Disclosed by the security seat
+> pre-push; the owner re-ratifies this corrected ceiling via the PR approval (listed under
+> RATIFIABLE in the PR body).
 
 ---
 

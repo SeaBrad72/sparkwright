@@ -432,6 +432,14 @@ check control a11y-obligation-selftest   sh conformance/a11y-obligation.sh --sel
 # repository and its notes ref) and belongs here; the diff-relative REAL gate lives in ci.yml's PR-context job, where
 # `origin/main` and refs/notes/promotions both resolve.
 check control ceremony-binding-selftest  sh conformance/ceremony-binding.sh --selftest
+# selftest-hermetic (PHASE-B-HYGIENE H2) — the fixture-hermeticity lane. ONLY the --selftest is
+# registered: it is base-independent and hermetic by construction (every fixture repo is built by
+# the selftest itself, identity inline), so it belongs in this offline aggregate on ANY tree — and
+# registering it is what enrols the lane in non-vacuity.sh's sweep. The REAL gate is diff-relative
+# (--touched needs a resolvable merge-base) and runs as a PR-context ci.yml step in conformance-core
+# — the same split the HITL obligations and ceremony-binding rows above use. No --kitself: nothing
+# here reads the kit's roster or budgets; an adopter tree answers identically.
+check control selftest-hermetic  sh conformance/selftest-hermetic.sh --selftest
 check control non-vacuity      sh conformance/non-vacuity.sh --selftest
 check control eval-harness      sh conformance/eval-harness-wired.sh --selftest
 check control eval-harness-runs sh conformance/eval-harness-runs.sh --selftest
@@ -488,6 +496,11 @@ check control script-disclosure  sh conformance/script-disclosure.sh --selftest
 check control script-disclosure-scan  sh conformance/script-disclosure.sh
 check control backlog-current  sh conformance/backlog-current.sh --selftest
 check control backlog-current-run  sh conformance/backlog-current.sh .
+# owner-step-markers (PHASE-B-HYGIENE R1) — stale `OWNER STEP OPEN` / "not yet bound live" markers
+# must not outlive their steps. Both rows are base-independent (git ls-files + grep; the selftest
+# builds its own fixture repos), so live + selftest register here and enter the mutation sweep.
+check control owner-step-markers          sh conformance/owner-step-markers.sh
+check control owner-step-markers-selftest  sh conformance/owner-step-markers.sh --selftest
 # KW6-A2 presence gate: selftest ONLY — no `-run` companion. Unlike backlog-current, the real run
 # needs a live PR number (--pr), which exists only in PR context, so it cannot run as an offline
 # verify.sh control-check; the ci.yml `backlog-presence` job calls check_pr live. check_pr is NOT dead

@@ -10,11 +10,17 @@
 #   release-tag.sh --dry-run   # decide + print the action; never tags/pushes
 #   release-tag.sh --selftest
 # What it changes: Creates and pushes the git tag v<VERSION> on HEAD; --dry-run decides and prints only (never tags/pushes).
-# Guardrails: Idempotent no-op when the tag already exists; refuses a non-semver VERSION and a failed coherence check (won't tag a stale/dup); RELEASE_TAG_CI_PROBE is eval'd via `sh -c` — set it only from trusted CI config, never repo/PR input.
+# Guardrails: Idempotent no-op when the tag already exists; refuses a non-semver VERSION and a failed coherence check (won't tag a stale/dup); refuses while the meta-control cadence is ESCALATED or its record is broken (cadence_gate — fail-closed, D-240807-1); RELEASE_TAG_CI_PROBE is eval'd via `sh -c` — set it only from trusted CI config, never repo/PR input.
+# SECURITY (F2, hygiene security seat 2026-08-07): RELEASE_TAG_CADENCE / META_CONTROL_TAGS|N|ROOT
+# are TRUSTED-INVOCATION-ONLY (selftest fixtures, trusted CI config) — never set them from repo/PR
+# input. Any of them re-points or re-scopes the cadence detector, so ONLY the unmodified-env
+# invocation carries the enforce-at-birth guarantee (D-240807-1, as ceiling-corrected); an
+# overridden run banners itself out loud (cadence_gate) instead of silently waiving the gate.
 set -eu
 here=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 REMOTE="${RELEASE_TAG_REMOTE:-origin}"
 COHERENCE="${RELEASE_TAG_COHERENCE:-$here/../conformance/version-tag-coherent.sh}"
+CADENCE="${RELEASE_TAG_CADENCE:-$here/../conformance/meta-control-fresh.sh}"
 
 # ── CP-10: RELEASE_SHA — the commit being released, resolved ONCE at invocation.
 # WHY. `git tag <v>` tags HEAD *implicitly, at the moment it runs* — and ci_gate below polls for up to
@@ -91,6 +97,66 @@ branch_gate() {
   esac
 }
 
+# ── H1 (PHASE-B-HYGIENE / MC-CADENCE-1): the cadence gate. A release tag must not ship over a DEAD
+# meta-control cadence. Measured third-instance failure: OVERDUE fired 2026-08-03 and six releases
+# shipped over it in four days — the only consumer was a weekly advisory job nothing reads ("the
+# signal fired and nothing consumed it", panel #38). This leg is the responder: it refuses exactly
+# the act that accumulates exposure (tagging a release) while leaving per-PR CI non-blocking intact.
+#
+# ENFORCES AT BIRTH — no observe dial — as a RATIFIED EXCEPTION to the observe-first rollout ruling
+# (docs/governance/DECISIONS.md §2.6 `D-240807-1` Δ1(ii)): an observe-mode responder to an ignored
+# observe-mode signal is a second bell nobody hears; the doctrine's purpose (don't break flows on
+# unproven mechanisms) is served instead by the fixture battery below and the narrow blast radius —
+# this one script, remedy printed, the ruled DEFERRED escape intact.
+#
+# cadence_gate -> 0 = proceed (FRESH · N/A off-kit · OVERDUE-not-escalated, the advisory grace band),
+#                 1 = REFUSE (ESCALATED, or rc!=0 with NO ^OVERDUE:/^ESCALATED: token = invalid state).
+# FAIL-CLOSED on invalid state, deliberately and stated: a cadence gate that degrades OPEN on a
+# broken cadence RECORD (marker desync, unparseable marker) is satisfiable by breaking the record —
+# the opposite posture from branch_gate/ci_gate's degrade-open, because THEIR unknowns are host
+# introspection limits while THIS unknown is the guarded artifact itself.
+cadence_gate() {
+  # F2 (hygiene security seat, 2026-08-07): the OVERRIDE BANNER. RELEASE_TAG_CADENCE and the
+  # META_CONTROL_* hooks re-point or re-scope the detector — legitimate for selftest fixtures and
+  # trusted CI config, but a caller-set var quietly de-escalates the ratified enforce-at-birth
+  # gate to a fixture verdict. Posture per D3′ (drift control, NOT an arms race): the override
+  # stays possible — env-hardening is unwinnable against a caller who owns the environment — but
+  # it is never SILENT: an overridden run says so, unmissably, on every invocation.
+  if [ -n "${RELEASE_TAG_CADENCE+x}${META_CONTROL_TAGS+x}${META_CONTROL_N+x}${META_CONTROL_ROOT+x}" ]; then
+    echo "release-tag: ⚠⚠ OVERRIDDEN ENVIRONMENT — RELEASE_TAG_CADENCE/META_CONTROL_* is set by the caller: the cadence gate is consulting a caller-chosen detector/root/tag-list, and the enforce-at-birth guarantee (D-240807-1) does NOT apply to this run. Trusted-invocation-only; see this script's SECURITY header." >&2
+  fi
+  if [ ! -f "$CADENCE" ]; then
+    echo "release-tag: cadence detector not found ($CADENCE) — REFUSING to tag (fail-closed: a missing detector must not silently waive the cadence gate; restore conformance/meta-control-fresh.sh or set RELEASE_TAG_CADENCE)" >&2
+    return 1
+  fi
+  set +e; _cout=$(sh "$CADENCE" 2>&1); _crc=$?; set -e
+  # M2 (hygiene reviewer, 2026-08-07): the TOKEN is the contract — an ^ESCALATED: verdict line
+  # refuses REGARDLESS of rc, checked BEFORE the rc-0 fast path. A detector that prints ESCALATED
+  # yet exits 0 (adversarial substitution, or an honest bug) must not be a green light (measured).
+  if printf '%s\n' "$_cout" | grep -q '^ESCALATED:'; then
+    printf '%s\n' "$_cout" >&2
+    echo "release-tag: REFUSING to tag — the meta-control cadence is ESCALATED (>2N release tags past the last addressed panel)." >&2
+    echo "release-tag: remedy — run the light 5-lens panel (docs/operations/meta-control.md) OR record a dated, human-ratified DEFERRED row; either appends a log row and advances the marker, which un-escalates by construction." >&2
+    return 1
+  fi
+  [ "$_crc" = "0" ] && return 0   # FRESH, or N/A (cadence not adopted — the detector's applicability arm)
+  if printf '%s\n' "$_cout" | grep -q '^OVERDUE:'; then
+    # Fix-round 1 (reviewer 6): the CAP-FIRED face gets its own accurate warning. When the
+    # serial-deferral cap fired, the remedy is a REAL panel run (more DEFERRED rows do not clear
+    # it) and the tag count may be 0 — so the count-band text "past 2N tags this ESCALATES" would
+    # be wrong on this face. Behavior identical on both faces (advisory: the tag proceeds).
+    if printf '%s\n' "$_cout" | grep -q 'consecutive DEFERRED'; then
+      echo "release-tag: WARNING — the meta-control cadence is OVERDUE via the serial-deferral cap (advisory: the tag proceeds; remedy is a REAL panel run — deferral is exhausted, and another DEFERRED row will not clear this)" >&2
+    else
+      echo "release-tag: WARNING — the meta-control cadence is OVERDUE (advisory grace band: the tag proceeds; past 2N tags this ESCALATES and refuses)" >&2
+    fi
+    return 0
+  fi
+  printf '%s\n' "$_cout" >&2
+  echo "release-tag: REFUSING to tag — the cadence detector failed WITHOUT an OVERDUE/ESCALATED verdict (invalid cadence state: missing/unparseable marker or marker-log desync). Fail-closed on purpose — see this gate's header. Repair docs/governance/.meta-control-last + docs/governance/meta-control-log.md per docs/operations/meta-control.md." >&2
+  return 1
+}
+
 # ci_probe -> prints "<status>\t<conclusion>" for HEAD's main CI run; empty if unknown.
 # Default: GitHub via gh. Overridable via RELEASE_TAG_CI_PROBE (a command) for tests / non-GitHub forges.
 # SECURITY: RELEASE_TAG_CI_PROBE is eval'd via 'sh -c' - set it only from trusted CI config, never repo/PR input.
@@ -160,9 +226,10 @@ run() {
   if [ "${1:-}" = "--dry-run" ]; then
     echo "release-tag: would create + push $v on $(git rev-parse --short "$RELEASE_SHA")"; return 0
   fi
-  # CP-10: is it SHIPPED? (branch_gate)  ...then: is it GREEN? (ci_gate)
-  # Ordered cheap-first on purpose: refusing an unmerged commit costs one local merge-base, so we do not
-  # spend a 10-minute CI poll only to reject the commit afterwards.
+  # H1: is the CADENCE alive? (cadence_gate)  ...CP-10: is it SHIPPED? (branch_gate)  ...is it GREEN? (ci_gate)
+  # Ordered cheap-first on purpose: cadence + branch are local reads, so we do not spend a 10-minute
+  # CI poll only to reject the commit afterwards.
+  cadence_gate || return 1
   branch_gate "$RELEASE_SHA" || return 1
   ci_gate || return 1
   # Tag the PINNED sha explicitly — never a bare `git tag "$v"`, which re-reads HEAD at this instant.
@@ -246,6 +313,38 @@ selftest() {
   }
   _bg_rc() { _x=0; ( cd "$1" && RELEASE_SHA=$(git rev-parse "$2"); branch_gate "$RELEASE_SHA" ) >/dev/null 2>&1 || _x=$?; echo $_x; }
 
+  # ===== H1 (PHASE-B-HYGIENE) — cadence fixtures: every end-to-end leg pins a HERMETIC cadence =====
+  # The cadence gate shells the real detector, and the detector's default ROOT is the surrounding
+  # repo — so an end-to-end leg WITHOUT a pinned META_CONTROL_ROOT would silently assert the KIT'S
+  # OWN live freshness verdict, which is exactly the property meta-control-fresh.sh's selftest
+  # refuses to assert (a legitimately-ESCALATED kit would red these unrelated legs). Fixtures are
+  # hermetic by construction: each leg names its own ROOT + META_CONTROL_TAGS.
+  _cadfix() { # <dir> — a kit-marked meta-control ROOT (marker 1.0.0 GO, log synced); verdict forced via META_CONTROL_TAGS
+    mkdir -p "$1/docs/governance"
+    : > "$1/docs/ROADMAP-KIT.md"
+    printf '99.99.99\n' > "$1/VERSION"
+    printf '1.0.0 GO\n' > "$1/docs/governance/.meta-control-last"
+    { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'
+      printf '|---|---|---|---|---|---|---|\n'
+      printf '| 2026-01-01 | 1.0.0 | t | light | GO | a | s |\n'
+    } > "$1/docs/governance/meta-control-log.md"
+  }
+  _cadfix "$t/cad"   # with META_CONTROL_TAGS=1.0.0: 0 newer tags => FRESH
+  # invalid-state fixture: cadence adopted (log present) but the marker file is MISSING => detector
+  # rc 1 with NO ^OVERDUE:/^ESCALATED: token — the marker-desync/broken-record face.
+  _cadfix "$t/cadbad"; rm -f "$t/cadbad/docs/governance/.meta-control-last"
+  _capfix() { # <dir> — serial-defer-capped ROOT: marker 1.0.0 DEFERRED + two trailing DEFERRED rows
+    mkdir -p "$1/docs/governance"
+    : > "$1/docs/ROADMAP-KIT.md"
+    printf '99.99.99\n' > "$1/VERSION"
+    printf '1.0.0 DEFERRED\n' > "$1/docs/governance/.meta-control-last"
+    { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'
+      printf '|---|---|---|---|---|---|---|\n'
+      printf '| 2026-01-01 | 0.9.0 | t | l | DEFERRED | a | s |\n'
+      printf '| 2026-01-02 | 1.0.0 | t | l | DEFERRED | a | s |\n'
+    } > "$1/docs/governance/meta-control-log.md"
+  }
+
   # I (TEETH — the whole point): a commit NOT on the default branch must be REFUSED, and NO TAG WRITTEN.
   #
   # ★ THIS TEST DRIVES THE REAL SCRIPT END-TO-END, NOT branch_gate DIRECTLY — and that distinction is
@@ -262,7 +361,7 @@ selftest() {
     && git -c user.email=c@k -c user.name=c add -A \
     && git -c user.email=c@k -c user.name=c commit -q -m bump ) >/dev/null 2>&1
   _irc=0
-  ( cd "$d/w" && RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _irc=$?
+  ( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _irc=$?
   _itag=$( cd "$d/w" && git tag -l v1.2.0 )
   if [ "$_irc" != "0" ] && [ -z "$_itag" ]; then
     echo "PASS: an UNMERGED commit -> REFUSED, no tag written (the v3.129.0 defect)"
@@ -272,13 +371,14 @@ selftest() {
 
   # J (LIVENESS — the anchor): a commit ON the default branch must be ACCEPTED, and the tag WRITTEN.
   # Without this, a gate that refuses EVERYTHING would pass test I and be worse than useless.
-  # Also end-to-end, for the same reason.
+  # Also end-to-end, for the same reason. DOUBLES as the cadence gate's pass-on-FRESH anchor (H1):
+  # the pinned fixture verdict is FRESH, so a cadence gate that refuses FRESH would red this leg.
   d="$t/j"; mkdir -p "$d"; _wt "$d"
   _jrc=0
-  ( cd "$d/w" && RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _jrc=$?
+  ( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _jrc=$?
   _jtag=$( cd "$d/w" && git tag -l v1.1.0 )
   if [ "$_jrc" = "0" ] && [ -n "$_jtag" ]; then
-    echo "PASS: a RELEASED commit (on origin/main) -> tagged"
+    echo "PASS: a RELEASED commit (on origin/main) + FRESH cadence -> tagged (pass-on-FRESH anchor)"
   else
     echo "FAIL: J — a released commit was refused (rc=$_jrc tag='$_jtag') — the gate refuses everything"; st=1
   fi
@@ -298,13 +398,80 @@ selftest() {
   d="$t/l"; mkdir -p "$d"; _wt "$d"
   _orig=$( cd "$d/w" && git rev-parse HEAD )
   _probe='printf "completed\tsuccess\n"; git -c user.email=c@k -c user.name=c commit -q --allow-empty -m "HEAD MOVED mid-poll" >/dev/null 2>&1'
-  ( cd "$d/w" && RELEASE_TAG_CI_PROBE="$_probe" sh "$here/release-tag.sh" ) >/dev/null 2>&1 || true
+  ( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 RELEASE_TAG_CI_PROBE="$_probe" sh "$here/release-tag.sh" ) >/dev/null 2>&1 || true
   _tagged=$( cd "$d/w" && git rev-list -n1 v1.1.0 2>/dev/null || true )
   _now=$( cd "$d/w" && git rev-parse HEAD )
   if [ "$_tagged" = "$_orig" ] && [ "$_orig" != "$_now" ]; then
     echo "PASS: HEAD moved mid-poll; the tag stayed on the PINNED sha (race closed)"
   else
     echo "FAIL: L — the tag followed a moving HEAD (tagged=$_tagged orig=$_orig head=$_now)"; st=1
+  fi
+
+  # ===== H1 (PHASE-B-HYGIENE) — the cadence gate (refuse-on-ESCALATED / refuse-on-invalid-state) ==
+  # End-to-end THROUGH run(), never cadence_gate directly — the same load-bearing distinction test I
+  # records: a direct function call proves the FUNCTION, not that run() CALLS it (deleting the call
+  # would leave a direct-call leg GREEN — the exact mutant the hand-built kill evidence exercises).
+  # M (TEETH): an ESCALATED cadence (>2N tags past the marker) -> REFUSED, and NO TAG WRITTEN.
+  d="$t/mm"; mkdir -p "$d"; _wt "$d"
+  _mrc=0
+  _mout=$( cd "$d/w" && META_CONTROL_ROOT="$t/cad" \
+      META_CONTROL_TAGS='1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6 1.0.7 1.0.8 1.0.9 1.0.10 1.0.11' \
+      RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" 2>&1 ) || _mrc=$?
+  _mtag=$( cd "$d/w" && git tag -l v1.1.0 )
+  if [ "$_mrc" != "0" ] && [ -z "$_mtag" ]; then
+    echo "PASS: ESCALATED cadence -> REFUSED, no tag written (the release-over-dead-cadence defect)"
+  else
+    echo "FAIL: M — an ESCALATED cadence was tagged over (rc=$_mrc tag='$_mtag')"; st=1
+  fi
+  # M-banner (F2): this leg runs under META_CONTROL_* overrides, so the override banner MUST have
+  # printed — a silent overridden run is the de-escalation the security seat measured.
+  if printf '%s\n' "$_mout" | grep -q 'OVERRIDDEN ENVIRONMENT'; then
+    echo "PASS: env-override run printed the OVERRIDDEN ENVIRONMENT banner (F2 loud-not-silent)"
+  else
+    echo "FAIL: M-banner — an env-overridden run stayed SILENT about the override"; st=1
+  fi
+  # O (FAIL-CLOSED): detector rc 1 with NO OVERDUE/ESCALATED token (marker missing => invalid state)
+  # -> REFUSED. A cadence gate that degrades open on a broken cadence RECORD is satisfiable by
+  # breaking the record; this leg pins the fail-closed face.
+  d="$t/o"; mkdir -p "$d"; _wt "$d"
+  _orc=0
+  ( cd "$d/w" && META_CONTROL_ROOT="$t/cadbad" META_CONTROL_TAGS=1.0.0 \
+      RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _orc=$?
+  _otag=$( cd "$d/w" && git tag -l v1.1.0 )
+  if [ "$_orc" != "0" ] && [ -z "$_otag" ]; then
+    echo "PASS: invalid cadence state (broken record) -> REFUSED, fail-closed"
+  else
+    echo "FAIL: O — a broken cadence record degraded OPEN (rc=$_orc tag='$_otag')"; st=1
+  fi
+  # P (M2 TOKEN-CONTRACT): an adversarial/broken detector that prints ^ESCALATED: but exits 0 must
+  # still be REFUSED — the token is the contract, not the rc (the reviewer's measured attack: before
+  # this check, rc 0 short-circuited past the token and the tag proceeded).
+  d="$t/p"; mkdir -p "$d"; _wt "$d"
+  printf '#!/bin/sh\necho "ESCALATED: 99 release tags since the last addressed meta-control panel (fixture)."\nexit 0\n' > "$t/esc-rc0.sh"
+  _prc=0
+  ( cd "$d/w" && RELEASE_TAG_CADENCE="$t/esc-rc0.sh" \
+      RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _prc=$?
+  _ptag=$( cd "$d/w" && git tag -l v1.1.0 )
+  if [ "$_prc" != "0" ] && [ -z "$_ptag" ]; then
+    echo "PASS: detector prints ESCALATED but exits 0 -> still REFUSED (token contract, M2)"
+  else
+    echo "FAIL: P — an ESCALATED-printing rc-0 detector was tagged over (rc=$_prc tag='$_ptag')"; st=1
+  fi
+  # Q (reviewer 6): the CAP-FIRED OVERDUE face — the tag PROCEEDS (advisory, unchanged) but the
+  # warning must name the cap's remedy (a REAL run) and must NOT print the count-band "past 2N"
+  # text, which is wrong when the count may be 0.
+  _capfix "$t/cap"
+  d="$t/qq"; mkdir -p "$d"; _wt "$d"
+  _qrc=0
+  _qout=$( cd "$d/w" && META_CONTROL_ROOT="$t/cap" META_CONTROL_TAGS=1.0.0 \
+      RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" 2>&1 ) || _qrc=$?
+  _qtag=$( cd "$d/w" && git tag -l v1.1.0 )
+  if [ "$_qrc" = "0" ] && [ -n "$_qtag" ] \
+     && printf '%s\n' "$_qout" | grep -q 'serial-deferral cap' \
+     && ! printf '%s\n' "$_qout" | grep -q 'past 2N tags this ESCALATES'; then
+    echo "PASS: cap-fired OVERDUE -> proceeds with the cap-face warning (real-run remedy, no count-band text)"
+  else
+    echo "FAIL: Q — the cap-fired OVERDUE face is wrong (rc=$_qrc tag='$_qtag')"; st=1
   fi
 
   rm -rf "$t"

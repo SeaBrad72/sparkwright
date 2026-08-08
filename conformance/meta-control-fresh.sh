@@ -20,9 +20,15 @@
 # sync), NOT the live freshness verdict — so an overdue kit never blocks unrelated PRs; it surfaces
 # weekly until a human runs the panel or logs a deferral.
 #
+# TIERS (H1, PHASE-B-HYGIENE): OVERDUE (N < count <= 2N) is the advisory grace band — weekly-loud,
+# never tag-blocking. ESCALATED (count > 2N) is the tier the release flow cannot silently pass:
+# scripts/release-tag.sh's cadence_gate refuses the tag until a panel run or a dated human-ratified
+# DEFERRED row advances the marker. Consumers key on the ^OVERDUE:/^ESCALATED: verdict-token prefix;
+# rc is 1 for both (same failure class).
+#
 #   sh conformance/meta-control-fresh.sh [--selftest]
 #   env: META_CONTROL_N (default 5) · META_CONTROL_ROOT (default .) · META_CONTROL_TAGS (test hook)
-# Exit: 0 = FRESH or N/A · 1 = OVERDUE / invalid-state / desync · 2 = usage. POSIX sh; dash-clean.
+# Exit: 0 = FRESH or N/A · 1 = OVERDUE / ESCALATED / invalid-state / desync · 2 = usage. POSIX sh; dash-clean.
 set -eu
 _here=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 . "$_here/version-helpers.sh"
@@ -160,17 +166,37 @@ trailing_deferred() {
   ' "$ROOT/$LOG" 2>/dev/null
 }
 
-# freshness — prints FRESH/OVERDUE; returns 0/1. Uses MVER (set by validate_state).
+# freshness — prints FRESH/OVERDUE/ESCALATED; returns 0/1. Uses MVER (set by validate_state).
 freshness() {
   # M2-S5: serial-deferral cap — a deferral covers ONE cadence, but >=N consecutive DEFERRED rows force
   # a real run (you cannot defer forever). Independent of the tag count.
   _defcap="${META_CONTROL_DEFER_CAP:-2}"
   _trail=$(trailing_deferred)
+  _cnt=$(count_newer "$MVER")
+  # H1 (PHASE-B-HYGIENE / MC-CADENCE-1): the ESCALATED tier. count > 2N means the advisory OVERDUE
+  # band (N < count <= 2N) was consumed with NO recorded cadence decision — the measured third-instance
+  # failure: OVERDUE fired 2026-08-03 and six releases shipped over it in four days, because the only
+  # consumer was a weekly advisory job nobody reads. ESCALATED is the tier the release flow cannot
+  # silently pass: scripts/release-tag.sh's cadence_gate refuses to tag while it holds. rc stays 1
+  # (same failure class); the TOKEN is the contract — consumers key on the ^ESCALATED:/^OVERDUE: prefix.
+  # Deliberately COUNT-keyed only, and checked BEFORE the serial-defer cap:
+  #   · the cap keeps its own OVERDUE arm and never escalates by itself (its remedy differs — a REAL
+  #     run; a cap-fired OVERDUE at count <= 2N stays in the advisory band), but
+  #   · a count past 2N escalates REGARDLESS of the cap, else the tag gate could be held advisory
+  #     forever by stale trailing deferrals whose marker never advances.
+  # Pure tag arithmetic — no new state file, no time input (the detector's native clock is tags).
+  if [ "$_cnt" -gt $((2 * N)) ]; then
+    echo "ESCALATED: $_cnt release tags since the last addressed meta-control panel ($MVER, $MVERDICT; N=$N, grace 2N=$((2 * N)) exhausted)."
+    echo "  -> The advisory OVERDUE band passed with no recorded cadence decision. Run the light 5-lens panel per"
+    echo "     docs/operations/meta-control.md, or record a dated human-ratified DEFERRED row; either appends a row to"
+    echo "     $LOG and advances $MARKER, which un-escalates by construction."
+    echo "     scripts/release-tag.sh REFUSES to tag while this state holds."
+    return 1
+  fi
   if [ "${_trail:-0}" -ge "$_defcap" ]; then
     echo "OVERDUE: $_trail consecutive DEFERRED rows (cap $_defcap) — a real meta-control panel run is now required; serial deferral is not permitted."
     return 1
   fi
-  _cnt=$(count_newer "$MVER")
   if [ "$_cnt" -gt "$N" ]; then
     echo "OVERDUE: $_cnt release tags since the last addressed meta-control panel ($MVER, $MVERDICT; N=$N)."
     echo "  -> Run the light 5-lens panel per docs/operations/meta-control.md (or log a dated DEFERRED row with a reason),"
@@ -289,6 +315,42 @@ if [ "${1:-}" = "--selftest" ]; then
   _d="$_t/p"; _mkfix "$_d" "3.48.16 GO" "3.48.16" "GO" "3.49.0"
   ( cd "$_d" && git init -q && git -c user.email=c@k -c user.name=c commit -q --allow-empty -m s ) >/dev/null 2>&1
   rc=0; ( ROOT="$_d"; run ) >/dev/null 2>&1 || rc=$?; _expect "(a) tagless leniency: non-tag marker, no tags = PASS" 0 "$rc"
+
+  # ── H1 (PHASE-B-HYGIENE): the ESCALATED tier — count-keyed, > 2N ────────────────────────────────
+  # _expect_tier asserts rc AND the verdict token, because OVERDUE and ESCALATED share rc 1 — an
+  # rc-only leg cannot tell the advisory band from the exhausted one, and the release gate keys on
+  # the token. <label> <expected-rc> <required-token-regex> <forbidden-token-regex|-> <output> <rc>
+  _expect_tier() {
+    _etok_ok=1
+    [ "$2" = "$6" ] || _etok_ok=0
+    printf '%s\n' "$5" | grep -qE "$3" || _etok_ok=0
+    if [ "$4" != "-" ] && printf '%s\n' "$5" | grep -qE "$4"; then _etok_ok=0; fi
+    if [ "$_etok_ok" = 1 ]; then echo "PASS: selftest fixture — $1"
+    else echo "meta-control-fresh --selftest: FAIL ($1: rc=$6 want $2; output tokens wrong)"; sfail=1; fi
+  }
+  # Q. 11 newer tags (> 2N=10) → ESCALATED (rc 1, verdict line starts ESCALATED:)
+  _d="$_t/q"; _mkfix "$_d" "1.0.0 GO" "1.0.0" "GO"
+  rc=0; out=$( ROOT="$_d"; META_CONTROL_TAGS="1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6 1.0.7 1.0.8 1.0.9 1.0.10 1.0.11" run 2>&1 ) || rc=$?
+  _expect_tier "11 newer (>2N) = ESCALATED" 1 '^ESCALATED:' '^OVERDUE:' "$out" "$rc"
+  # R. exactly 2N=10 newer → still the OVERDUE band, byte-compatible (boundary: ESCALATED is strictly > 2N)
+  _d="$_t/r"; _mkfix "$_d" "1.0.0 GO" "1.0.0" "GO"
+  rc=0; out=$( ROOT="$_d"; META_CONTROL_TAGS="1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6 1.0.7 1.0.8 1.0.9 1.0.10" run 2>&1 ) || rc=$?
+  _expect_tier "exactly 2N=10 newer = OVERDUE band (boundary)" 1 '^OVERDUE:' '^ESCALATED:' "$out" "$rc"
+  # S. serial-defer cap at a LOW count (0 newer) → OVERDUE, NOT ESCALATED — the cap keeps its own arm
+  #    and never escalates by itself (its remedy differs: a REAL run, not just any addressed row).
+  _d="$_t/s"; mkdir -p "$_d/docs/governance"; : > "$_d/docs/ROADMAP-KIT.md"; printf '99.99.99\n' > "$_d/VERSION"
+  printf '1.0.0 DEFERRED\n' > "$_d/docs/governance/.meta-control-last"
+  { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t | l | DEFERRED | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | l | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
+  rc=0; out=$( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run 2>&1 ) || rc=$?
+  _expect_tier "serial-defer cap, count<=2N = OVERDUE not ESCALATED (cap fires regardless of count)" 1 '^OVERDUE:' '^ESCALATED:' "$out" "$rc"
+  # T. serial-defer cap AND count > 2N → ESCALATED (escalation is COUNT-keyed and wins the overlap:
+  #    a gate that stayed advisory because stale deferrals also capped would be satisfiable by
+  #    stacking deferrals and never advancing the marker).
+  _d="$_t/u"; mkdir -p "$_d/docs/governance"; : > "$_d/docs/ROADMAP-KIT.md"; printf '99.99.99\n' > "$_d/VERSION"
+  printf '1.0.0 DEFERRED\n' > "$_d/docs/governance/.meta-control-last"
+  { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t | l | DEFERRED | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | l | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
+  rc=0; out=$( ROOT="$_d"; META_CONTROL_TAGS="1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6 1.0.7 1.0.8 1.0.9 1.0.10 1.0.11" run 2>&1 ) || rc=$?
+  _expect_tier "cap AND >2N = ESCALATED (count-keyed escalation wins the overlap)" 1 '^ESCALATED:' '^OVERDUE:' "$out" "$rc"
 
   rm -rf "$_t"
   [ "$sfail" -eq 0 ] && { echo "meta-control-fresh --selftest: OK"; exit 0; } || exit 1

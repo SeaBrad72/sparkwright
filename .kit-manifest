@@ -189,6 +189,7 @@ conformance/guard-wired.sh
 conformance/harness-adapter.sh
 conformance/harness-ceiling-disclosed.sh
 conformance/harness-decision-integrity.sh
+conformance/hermetic-exclusions.txt
 conformance/incept-containment.sh
 conformance/incept-first-run-green.sh
 conformance/incept-manifests/data-engineering.txt
@@ -230,6 +231,7 @@ conformance/onboarding-complete.sh
 conformance/operate-loop-wired.sh
 conformance/orchestrator-loop-wired.sh
 conformance/otlp-backend-wired.sh
+conformance/owner-step-markers.sh
 conformance/persona-artifacts.sh
 conformance/phase-gate.sh
 conformance/pipeline-origin.sh
@@ -264,6 +266,7 @@ conformance/script-disclosure.sh
 conformance/secret-scan-wired.sh
 conformance/security-channel-live.sh
 conformance/security-policy.sh
+conformance/selftest-hermetic.sh
 conformance/shellcheck.sh
 conformance/shim-coverage.sh
 conformance/stack-decision-integrity.sh

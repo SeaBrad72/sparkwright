@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.203.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.204.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -59,7 +59,7 @@ Three things make that team trustworthy rather than just fast:
 
 - **Separation of duties, enforced.** Builder ≠ reviewer ≠ ratifier. Control-plane changes require an independent ratifier; the merge is a recorded GO/NO-GO bound to the reviewed commit (`shipped == approved`, verified by tree equality), and the agent actuates the mechanics — *the judgment is the control, not the keystroke*.
 - **Model tiering.** Each seat runs at an abstract tier (judgment/review seats pinned to the top model, builders free to run cheaper where the task allows, high-stakes work floored to the top). You declare the tier→model map for your provider — the kit is opinionated about *structure*, neutral about *which model*.
-- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and the checks are themselves **mutation-tested** (a check that can't fail is caught and fixed). The kit is built with its own loop and held to its own Definition of Done.
+- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a registered check that can't fail is caught and fixed; checks outside that control set are surfaced as uncovered, never silently counted). The kit is built with its own loop and held to its own Definition of Done.
 
 Full detail: **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)**.
 
@@ -107,7 +107,7 @@ Every capability ships as three parts (full detail in `MAINTAINING.md`):
 
 - **Contract** — the binding, stack-neutral requirement (in the standards/process docs).
 - **Reference implementation** — a working artifact you copy and adapt (in a profile or the repo). You own it.
-- **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`), and the checks are themselves **mutation-tested** (a "non-vacuity" sweep proves each check *can* fail — a green that can't go red is caught and fixed, so the gates are real, not decorative).
+- **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`), and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a "non-vacuity" sweep proves each *registered* check *can* fail — a green that can't go red is caught and fixed, so the gates are real, not decorative; checks outside the control set are reported as uncovered rather than assumed load-bearing).
 
 So the kit **dictates the contract and offers the implementation**: rewrite the reference freely as long as the conformance check still passes. The kit is itself a versioned product built with the very loop it prescribes — improvements adopters find flow back upstream as PRs.
 

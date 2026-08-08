@@ -27,8 +27,11 @@ points at a broken commit* — and it is worth its cost:
 
 - It is **bounded and automated**: no human or agent attention is spent.
 - It **degrades open**, so a missing signal never blocks a release.
-- It is now **~3 minutes, not ~10**, because P1-CI cut CI wall-clock from ~600s to ~185s. Making CI fast
-  is what makes this gate cheap enough to keep.
+- Cost truth (measured 2026-08-07, superseding the "~3 minutes" this line once claimed): run
+  wall-clock is **10.9–12.4 min**, and its critical path is the `non-vacuity (2)` mutation shard
+  (639–725s) — the CI-cost story lives in `ci.yml`'s P1-CI header; the gate's poll is bounded at
+  10 min (`RELEASE_TAG_CI_TIMEOUT`) and degrades open at the bound, so the ceremony stays cheap
+  regardless of the run's length.
 
 *(An earlier draft of this section said "tag immediately, never wait" — full stop. That was wrong: it
 contradicted a safety gate already in `release-tag.sh` and would have traded "never tag a red commit" for

@@ -123,7 +123,7 @@ verify:                                                       # filled by the ve
 ## Routing (closing the loop)
 
 A run that routes nothing is theater. After synthesis:
-- **Ledger-2** items become `ROADMAP-KIT.md` / backlog entries (ranked).
+- **Ledger-2** items become `docs/ROADMAP-KIT.md` / backlog entries (ranked).
 - **Ledger-1** is recorded (the confidence set).
 - Any **guardrail / standards / process** change is proposed as a **human-ratified PR** — agents
   propose, humans ratify (`DEVELOPMENT-PROCESS.md`). Never silently re-plan or weaken a guardrail.
@@ -162,9 +162,10 @@ from a one-line machine marker `docs/governance/.meta-control-last` (`VERSION VE
 > `meta-control-log.md` **and** set `.meta-control-last` to the same `VERSION VERDICT`. The gate fails
 > on desync, so they cannot drift apart silently.
 
-> **M2-S5 hardening (ratification integrity).** The marker + verdict log are **control-plane** — an
-> agent cannot write them (Edit/Write *and* shell are denied; `KIT_GUARD_SELFEDIT=1` or a human commit
-> is required), so a verdict is a human-ratified act, not something the governed agent can self-issue.
+> **M2-S5 hardening (ratification integrity).** The marker + verdict log are **control-plane** —
+> agent writes are denied at the default (path-named) route: Edit/Write *and* the path-named shell
+> forms (`KIT_GUARD_SELFEDIT=1` or a human commit is required; see the defense-in-depth ceiling
+> below), so a verdict is a human-ratified act, not something the governed agent can self-issue.
 > The gate also **rejects a future-pinned marker** (a version ahead of `VERSION`) and **caps serial
 > deferral** (≥2 consecutive `DEFERRED` → OVERDUE). Together these make *"an autonomous squad cannot
 > soften the circuit-breaker"* hold mechanically, not by assertion.

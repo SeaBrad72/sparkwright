@@ -304,6 +304,21 @@ assert_deny "Edit marker"          '{"tool_name":"Edit","tool_input":{"file_path
 assert_deny "Write verdict log"    '{"tool_name":"Write","tool_input":{"file_path":"docs/governance/meta-control-log.md","content":"x"}}'
 assert_deny "shell redirect marker" '{"tool_name":"Bash","tool_input":{"command":"printf x > docs/governance/.meta-control-last"}}'
 assert_deny "shell sed verdict log" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ docs/governance/meta-control-log.md"}}'
+# --- H1 (PHASE-B-HYGIENE): the OTHER four file×form combinations. The block above
+# covered each write FORM on exactly one of the two files (Edit->marker, Write->log, redirect->marker,
+# sed -i->log), which protects the two names we happened to pair, not the surface: release-tag.sh's
+# cadence_gate now REFUSES at these files' word, recreating the D-240805-3 minting incentive (green
+# your own gate by advancing the record) at a new refusal point — so every CANONICAL form is asserted
+# on BOTH files AT FULL PATH (design self-review finding 2). NOT route completeness: the shell
+# matchers key on the dir-prefixed path, so a `cd docs/governance` + bare-basename write escapes
+# every shell form (measured 2026-08-07, hygiene security seat F3; re-measured in fix-round 1 —
+# redirect/append/sed -i/tee/cp/mv all ALLOW after the cd). Boarded: GUARD-BASENAME-AFTER-CD-BYPASS;
+# the loud-not-impossible posture (D3′) holds meanwhile — the durable control stays the
+# Edit/Write-tool deny + the human-reviewed commit.
+assert_deny "Edit verdict log"     '{"tool_name":"Edit","tool_input":{"file_path":"docs/governance/meta-control-log.md","old_string":"a","new_string":"b"}}'
+assert_deny "Write marker"         '{"tool_name":"Write","tool_input":{"file_path":"docs/governance/.meta-control-last","content":"9.9.9 GO"}}'
+assert_deny "shell redirect verdict log" '{"tool_name":"Bash","tool_input":{"command":"printf x > docs/governance/meta-control-log.md"}}'
+assert_deny "shell sed marker"     '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ docs/governance/.meta-control-last"}}'
 # --- M2-S5: must still ALLOW (reading the verdict state is fine) ---
 assert_allow "read marker"         '{"tool_name":"Read","tool_input":{"file_path":"docs/governance/.meta-control-last"}}'
 assert_allow "cat verdict log"     '{"tool_name":"Bash","tool_input":{"command":"cat docs/governance/meta-control-log.md"}}'

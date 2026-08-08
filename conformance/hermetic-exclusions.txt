@@ -1,0 +1,15 @@
+# hermetic-exclusions.txt — selftests excused from the fixture-hermeticity lane
+# (conformance/selftest-hermetic.sh). PHASE-B-HYGIENE H2.
+#
+# ⚠️ THIS FILE IS A BYPASS SURFACE, and it says so plainly: every entry here is a selftest the lane
+# will NOT hold to the two hermeticity faces (stripped env + fresh clone). An entry is a claim that
+# the selftest's ambient read is GENUINELY unavoidable collateral, not a fixture-hermeticity defect
+# — if that ever stops being true, delete the line and fix the selftest instead.
+#
+# Format: <basename><TAB><reason>. A reasonless entry FAILS the lane — an unreasoned exclusion is a
+# silent widening, the exact defect this file exists to make visible rather than commit
+# (the conformance/aggregate-exclusions.txt precedent).
+#
+# This file ships EMPTY. The first --all sweep may surface genuine collateral (the 4/163 sample
+# proves nothing about the other 159); disposition candidates land here WITH their reason, one per
+# line, reviewed like any control-plane change.

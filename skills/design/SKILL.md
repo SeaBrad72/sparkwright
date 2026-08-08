@@ -29,6 +29,7 @@ Before any feature, component, behaviour change, or new project — the moment i
 
 ## The flow (the proven spine)
 1. **Explore context first** — read the codebase, the kit's principles (`CLAUDE.md` / `DEVELOPMENT-STANDARDS.md`), recent commits, the relevant design docs. Never design from assumptions.
+   **Search the decision record — `docs/governance/DECISIONS.md` — for a prior ruling on the surface you are about to change, and cite it by row identifier before proposing a mechanism on it.** A conclusion re-derived from scratch is the disease that record exists to cure; the ruling may already answer you, or already have vetoed you.
 2. **Clarify — one question at a time** (multiple-choice where possible): purpose, constraints, success criteria. Do not batch questions.
 3. **Propose 2-3 approaches** with trade-offs; lead with a recommendation and why.
 4. **Present the design in sections** scaled to complexity; get approval per section.

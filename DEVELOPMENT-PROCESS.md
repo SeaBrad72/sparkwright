@@ -139,7 +139,7 @@ The backlog is an **abstraction** so the storage backend swaps per project witho
 **Work-item model (backend-agnostic):**
 - **States:** `Backlog → Ready → In Progress → In Review → Released → Done` (+ `Blocked`).
 - **Required fields:** title · intent (why) · acceptance criteria · size (one-flow small) · risk/complexity tag · owner (human or agent) · links (spec, PR, milestone).
-- **Claiming:** entering `In Progress` is an **atomic** ownership change — no two agents grab the same item.
+- **Claiming:** entering `In Progress` is an **atomic** ownership change — no two agents grab the same item. **Board-edit ordering (approval-preserving conduct — `D17`: ordering is conduct, not a predicate):** bind the board row by **branch name** in the slice's *first* push (the presence gate has accepted branch-name binding since v3.129.0); move it to In Review — PR cell = branch name, then number — in the `gh pr create` push itself; fold every owner-step/board edit into pushes that *precede* the review request; request approval only on the **final diff**. Rationale, measured: `dismiss_stale` voids an approval on *any* later push, so a board edit sequenced after the review request spends an owner approval on ceremony (panel #38 5-M1: 2 of 9 approvals were killed by pure board-ceremony commits).
 
 **Backend adapters — chosen per project (at Inception), declared in the project's `CLAUDE.md`:**
 
