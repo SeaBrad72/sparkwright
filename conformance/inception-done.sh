@@ -31,6 +31,15 @@ set -eu
 # literal-string grep. Resolved by $0's own dirname, BEFORE run_gate's `cd "$DIR"` below, so sourcing
 # stays caller-cwd-independent.
 . "$(dirname "$0")/backlog-lib.sh"
+# B8: wf_is_deploy() — the SAME deployable derivation deployable-ready.sh uses (single source of
+# truth), sourced BEFORE run_gate's `cd "$DIR"` below, so sourcing stays caller-cwd-independent.
+. "$(dirname "$0")/wf-helpers.sh"
+# B8 fix round 1 (reviewer Minor-3): resolve ci-gates.sh via THIS SCRIPT's own dirname — the same
+# caller-cwd-independent convention the two sourcing lines above already use — never relative to
+# the target tree run_gate `cd`s into below. A raw/partial adopter tree may have no ci-gates.sh of
+# its own; the query must always run the invoking kit's copy, exactly as the disposition FILE
+# (read from the target tree) and the QUERY SCRIPT (read from the kit) are two different subjects.
+CI_GATES_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/ci-gates.sh"
 
 # ── run_gate [dir] : the Inception-Done gate. All FAIL paths accumulate into `fail`; a non-zero
 #    `fail` yields a non-zero return. These accumulators are the mutation surface non-vacuity.sh
@@ -278,6 +287,85 @@ else
           echo "FAIL: branch protection — non-GitHub remote and no valid recorded attestation (stamp '- **Branch protection** (§branch-protection): attested: HOST and MECHANISM' in CLAUDE.md, no angle brackets, or run --surface); docs/adoption/vc-hosts.md"; fail=1
         fi ;;
     esac
+  fi
+fi
+
+# ── B8 §4.3 (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) — the
+# gate-provenance repo-class leg. MODE strict (default) | surface, same shape as the
+# branch-protection leg above. Trigger: the incepted tree DERIVES deployable (Dockerfile OR any
+# workflow wf_is_deploy — deployable-ready.sh's own derivation, reused, not re-invented) AND the
+# forge probe reports isPrivate && !isInOrganization. On a private, user-owned repo the SLSA
+# provenance/image-provenance CI job(s) never run at all (profiles/*/ci.yml's push-only+visibility
+# `if:`, provenance-precondition.sh-locked) — so nothing would ever surface the gap once Inception
+# passes. A validated `na` disposition for gate-provenance is a conscious decision, not silence,
+# and is not blocked twice.
+if [ "$is_repo" -ne 1 ]; then
+  echo "SKIP: gate-provenance repo-class leg — not a git repository (see the repo failure above)"
+else
+  _id_deployable=0
+  [ -f Dockerfile ] && _id_deployable=1
+  if [ "$_id_deployable" -eq 0 ] && [ -d .github/workflows ]; then
+    for _id_wf in .github/workflows/*.yml .github/workflows/*.yaml; do
+      [ -f "$_id_wf" ] || continue
+      if wf_is_deploy "$_id_wf"; then _id_deployable=1; break; fi
+    done
+  fi
+  if [ "$_id_deployable" -eq 0 ]; then
+    echo "N/A: gate-provenance repo-class — no deploy surface (no Dockerfile / deploy workflow); not a deployable service"
+  else
+    # Direct expansion, NOT `sh -c "$VAR"` — preflight.sh's check_repo_class's own precedent for this
+    # exact probe (`${PREFLIGHT_GH_CMD:-gh repo view ...}`). `sh -c "$VAR"` hands the string to a FRESH
+    # shell for full re-parsing, so a JSON fixture's unquoted `{...,...}` undergoes brace expansion
+    # there (measured on this box's /bin/sh, bash-as-sh) and silently mangles the stub's own JSON.
+    # Direct expansion evaluates the variable's value as an already-expanded word (split, not
+    # re-parsed), so the braces stay literal — the same reason adopter-preflight-wired.sh's identical
+    # fixture shape works.
+    # [reviewer Minor-5b + security LOW-2, fix round 1] INCEPTION_DONE_GH_CMD trust class: it is
+    # honored ONLY from the invoker's OWN environment, by direct expansion — never re-parsed from
+    # repo/PR content, and there is no code path that lets a repository's own files set it. Same
+    # tier as PREFLIGHT_GH_CMD (trusted-invocation-only; see that script's own SECURITY header).
+    _id_gh_json=""
+    if [ -n "${INCEPTION_DONE_GH_CMD:-}" ] || command -v gh >/dev/null 2>&1; then
+      _id_gh_json=$(${INCEPTION_DONE_GH_CMD:-gh repo view --json isPrivate,isInOrganization} 2>/dev/null) || _id_gh_json=""
+    fi
+    if [ -z "$_id_gh_json" ] || ! command -v jq >/dev/null 2>&1; then
+      if [ "$MODE" = surface ]; then
+        echo "OUTSTANDING: gate-provenance repo-class — GitHub repo visibility unverifiable (gh/jq missing/unauthenticated, or an unresolvable remote); re-run authenticated, or in CI"
+      else
+        echo "FAIL: gate-provenance repo-class — GitHub repo visibility unverifiable and verification is required (strict); authenticate gh + install jq, or run --surface"; fail=1
+      fi
+    else
+      _id_priv=$(printf '%s' "$_id_gh_json" | jq -r '.isPrivate' 2>/dev/null || echo "")
+      _id_org=$(printf '%s' "$_id_gh_json" | jq -r '.isInOrganization' 2>/dev/null || echo "")
+      # [security MED-1, fix round 1] a PARSE FAILURE — either field is anything other than exactly
+      # `true` or `false` (garbage JSON, a jq error swallowed above, a schema change) — is
+      # UNVERIFIABLE, never the affirmative public/org PASS below. Checked BEFORE the true/false
+      # branch, mirroring the no-gh/no-jq arm's own posture (strict FAIL / surface OUTSTANDING),
+      # never a silent green on a value this gate could not actually parse.
+      case "$_id_priv" in true|false) : ;; *) _id_priv="" ;; esac
+      case "$_id_org" in true|false) : ;; *) _id_org="" ;; esac
+      if [ -z "$_id_priv" ] || [ -z "$_id_org" ]; then
+        if [ "$MODE" = surface ]; then
+          echo "OUTSTANDING: gate-provenance repo-class — GitHub repo visibility unverifiable (malformed/unparseable gh response); re-run authenticated, or in CI"
+        else
+          echo "FAIL: gate-provenance repo-class — GitHub repo visibility unverifiable (malformed/unparseable gh response) and verification is required (strict); re-authenticate gh, or run --surface"; fail=1
+        fi
+      elif [ "$_id_priv" = "true" ] && [ "$_id_org" = "false" ]; then
+        _id_gpdisp=$(sh "$CI_GATES_SH" --disposition gate-provenance conformance/gate-dispositions.txt || echo apply)
+        if [ "$_id_gpdisp" = na ]; then
+          # [security LOW-3, fix round 1] strip control characters from the echoed reason — a
+          # disposition file's reason field is free text this gate does not own the review of.
+          _id_reason=$(awk -F'\t' '!/^[[:space:]]*#/ && $1=="gate-provenance" && NF>=3 {print $3}' conformance/gate-dispositions.txt 2>/dev/null | head -1 | tr -d '[:cntrl:]')
+          echo "N/A: gate-provenance repo-class — a private, user-owned deployable repo, but gate-provenance is validated na (${_id_reason:-reason on file}) — a conscious decision, not silence"
+        elif [ "$MODE" = surface ]; then
+          echo "OUTSTANDING: gate-provenance repo-class — a private, user-owned (non-org) deployable repo; the SLSA provenance/image-provenance CI job(s) will NEVER run here (profiles/*/ci.yml's push-only+visibility 'if:'). Make the repo public, move it to a GitHub org, or record a dated na disposition for gate-provenance in conformance/gate-dispositions.txt."
+        else
+          echo "FAIL: gate-provenance repo-class — a private, user-owned (non-org) deployable repo cannot pass Inception silently provenance-less; the SLSA provenance/image-provenance CI job(s) will NEVER run here (profiles/*/ci.yml's push-only+visibility 'if:'). Make the repo public, move it to a GitHub org, or record a dated na disposition for gate-provenance in conformance/gate-dispositions.txt."; fail=1
+        fi
+      else
+        echo "PASS: gate-provenance repo-class — repo is public or org-owned; the SLSA provenance job(s) can run"
+      fi
+    fi
   fi
 fi
 
@@ -545,6 +633,124 @@ selftest() {
   printf '%s\n' '- **Backlog backend** (§6): jira' >> "$d/CLAUDE.md"
   st_run "$d" surface
   st_has "PASS present: backlog (declared backend: jira)"
+
+  # ── B8 §4.3 (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) — the
+  # repo-class leg: a deployable, private, user-owned (non-org) repo cannot pass Inception silently
+  # provenance-less, because the SLSA provenance/image-provenance CI job(s) never run there at all
+  # (profiles/*/ci.yml's push-only+visibility `if:`). Seam-stubbed via INCEPTION_DONE_GH_CMD (the
+  # st_bpstub precedent) so fixtures never touch the network.
+  _id_mkdisp_apply() { # <dir> — an all-apply 8-id dispositions file (no na anywhere)
+    mkdir -p "$1/conformance"
+    { for _g in gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom gate-provenance; do
+        printf '%s\tapply\tfixture\n' "$_g"
+      done
+    } > "$1/conformance/gate-dispositions.txt"
+  }
+  _id_mkdisp_na() { # <dir> — 8-id file: gate-provenance na (a validated conscious decision), rest apply.
+    # Written EXPLICITLY, never inherited from the template tree: the tmpl is a clone of the ambient
+    # repo, and conformance/gate-dispositions.txt is export-ignore'd — a fixture leaning on the
+    # tmpl's copy greens on the dev tree and reds on every incepted export (measured: PR #513
+    # battery 1, all five export-context verify jobs, fixture (r)). The in-export selftest is the
+    # decisive verification for anything export-shipped — fixtures must be tree-hermetic.
+    mkdir -p "$1/conformance"
+    { for _g in gate-lint gate-type-check gate-test gate-build gate-secret-scan gate-dep-scan gate-sbom; do
+        printf '%s\tapply\tfixture\n' "$_g"
+      done
+      printf 'gate-provenance\tna\tfixture: provenance consciously dispositioned\n'
+    } > "$1/conformance/gate-dispositions.txt"
+  }
+  _priv_stub='printf {"isPrivate":true,"isInOrganization":false}'
+  _pub_stub='printf {"isPrivate":false,"isInOrganization":false}'
+
+  # (q) deployable + private + user-owned + gate-provenance UNDECIDED (apply) -> strict FAIL /
+  # surface OUTSTANDING (the spine AC, verbatim: "a private user-owned deployable repo cannot pass
+  # Inception silently provenance-less").
+  echo "--- (q) gate-provenance repo-class: deployable + private + user-owned -> FAIL/OUTSTANDING ---"
+  d=$(st_mkfix q claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"
+  _id_mkdisp_apply "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: gate-provenance repo-class"
+  st_has "cannot pass Inception silently provenance-less"
+  if [ "$RC" -ne 0 ]; then
+    echo "    ok  : rc $RC (non-zero, as a strict FAIL leg must produce)"
+  else
+    echo "    BAD : rc 0 — a strict FAIL leg must not report gate satisfied"; st_fail=1
+  fi
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=surface run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "OUTSTANDING: gate-provenance repo-class"
+  st_hasnt "FAIL: gate-provenance repo-class"
+
+  # (r) SAME fixture + a validated na disposition for gate-provenance -> N/A (an adopter who has
+  # consciously dispositioned provenance is not blocked twice). The na file is written EXPLICITLY
+  # by _id_mkdisp_na — the original draft reused the tmpl's inherited gate-dispositions.txt, which
+  # is export-ignore'd and therefore ABSENT in every incepted-export verify context (the ambient-
+  # content hermeticity face; see _id_mkdisp_na's header for the measurement).
+  # NOTE: no whole-gate st_rc assertion here (same rationale as every other claude-code fixture in
+  # this file, stated at the oracle-marker comment above: the cloned fixture tree's OWN unrelated
+  # harness-adapter leg does not always come up clean, so only THIS leg's specific lines are asserted.
+  echo "--- (r) gate-provenance repo-class: validated na disposition -> N/A, not blocked twice ---"
+  d=$(st_mkfix r claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"
+  _id_mkdisp_na "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "N/A: gate-provenance repo-class"
+  st_hasnt "FAIL: gate-provenance repo-class"
+
+  # (s) NOT deployable (no Dockerfile, no deploy workflow) -> N/A regardless of repo-class (proves
+  # the AND: deployable must be TRUE, not just private+user-owned, for this leg to fire).
+  echo "--- (s) gate-provenance repo-class: not deployable -> N/A regardless of privacy ---"
+  d=$(st_mkfix s claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  _id_mkdisp_apply "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "N/A: gate-provenance repo-class"
+  st_has "no deploy surface"
+  st_hasnt "FAIL: gate-provenance repo-class"
+
+  # (t) deployable + PUBLIC repo -> PASS (proves the AND's other operand: private must be TRUE too).
+  echo "--- (t) gate-provenance repo-class: deployable + public repo -> PASS ---"
+  d=$(st_mkfix t claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"
+  _id_mkdisp_apply "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_pub_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "PASS: gate-provenance repo-class"
+  st_hasnt "FAIL: gate-provenance repo-class"
+
+  # (u) [reviewer Minor-5b + security LOW-2, fix round 1] the UNVERIFIABLE branch (gh/jq
+  # missing/unauthenticated) -> strict FAIL / surface OUTSTANDING, never the affirmative PASS.
+  # Seam-stubbed via an empty-output INCEPTION_DONE_GH_CMD (no network, no real gh needed).
+  _empty_stub='true'
+  echo "--- (u) gate-provenance repo-class: gh/jq unverifiable -> FAIL/OUTSTANDING, never PASS ---"
+  d=$(st_mkfix u claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"
+  _id_mkdisp_apply "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_empty_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: gate-provenance repo-class"
+  st_has "unverifiable"
+  st_hasnt "PASS: gate-provenance repo-class"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_empty_stub" MODE=surface run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "OUTSTANDING: gate-provenance repo-class"
+  st_hasnt "FAIL: gate-provenance repo-class"
+  st_hasnt "PASS: gate-provenance repo-class"
+
+  # (v) [security MED-1, fix round 1] a PARSE FAILURE — the gh response is well-formed JSON but
+  # neither field is exactly `true`/`false` (a garbage/malformed value) — must be unverifiable
+  # (strict FAIL / surface OUTSTANDING), NEVER the affirmative public/org PASS. The measured defect
+  # this fixture kills: before the fix, an unparseable isPrivate fell through the `true && false`
+  # test to the `else` arm and printed a bare PASS.
+  _garbage_stub='printf {"isPrivate":"maybe","isInOrganization":false}'
+  echo "--- (v) gate-provenance repo-class: garbage/malformed gh JSON -> FAIL/OUTSTANDING, never PASS ---"
+  d=$(st_mkfix v claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  printf 'FROM scratch\n' > "$d/Dockerfile"
+  _id_mkdisp_apply "$d"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_garbage_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: gate-provenance repo-class"
+  st_has "malformed"
+  st_hasnt "PASS: gate-provenance repo-class"
+  OUT=$( ( INCEPTION_DONE_GH_CMD="$_garbage_stub" MODE=surface run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "OUTSTANDING: gate-provenance repo-class"
+  st_hasnt "FAIL: gate-provenance repo-class"
+  st_hasnt "PASS: gate-provenance repo-class"
 
   rm -rf "$WORK" 2>/dev/null || true
   if [ "$st_fail" = 0 ]; then

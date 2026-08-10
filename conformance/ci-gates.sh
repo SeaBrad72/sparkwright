@@ -248,6 +248,40 @@ read_dispositions() {
   return 0
 }
 
+# ══ B8 — `--disposition <gate-id> <file>` — the SINGLE-SOURCED query mode ═══════════════════════
+# (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE.) release-tag.sh's
+# provenance_gate consults this rather than minting a third disposition parser — the
+# BRANCH-SCOPE-END-TO-END row documents exactly how parity copies rot; this reuses
+# read_dispositions() verbatim (no second parser). See
+# docs/architecture/2026-08-08-b8-provenance-honesty-design.md §4.1.
+#
+# disposition_query <gate-id> <file> -> prints EXACTLY one of: apply | na | absent.
+#   absent = the file does not exist at all (the adopter default — ABSENT = all 8 required, apply).
+#   apply  = the file is valid and the gate id is dispositioned apply (or has no na line for it).
+#   na     = the file is valid and the gate id is validated na.
+# An UNREADABLE or INVALID file (fails read_dispositions' own violations) is NEVER silently
+# treated as `na` — it fails safe TOWARD LOUD, printing `apply` with a stderr warning (the design's
+# explicit fail-safe direction: an undecided/broken disposition must never quietly exempt a gate).
+# rc is always 0 — the query itself never fails; an unreadable/invalid input is a printed VALUE
+# (apply, with a warning), never a missing verdict a caller must additionally special-case.
+disposition_query() {
+  _dqg=$1; _dqf=$2
+  if [ ! -f "$_dqf" ]; then
+    echo absent
+    return 0
+  fi
+  if ! _dqna=$(read_dispositions "$_dqf"); then
+    echo "WARN: $_dqf is an invalid or unreadable disposition file — fail-safe: apply (see the FAIL line(s) above for the violation)" >&2
+    echo apply
+    return 0
+  fi
+  case " $_dqna " in
+    (*" $_dqg "*) echo na ;;
+    (*) echo apply ;;
+  esac
+  return 0
+}
+
 # own_gate_declared <workflow-file> <gate> -> 0 declared. MATCH SEMANTICS = Leg A's, verbatim:
 # a GitHub `id: gate-X` step OR a GitLab `gate-X:` job key, line-anchored, never a comment.
 own_gate_declared() {
@@ -693,6 +727,48 @@ selftest() {
   } > "$d/ot12/conformance/gate-dispositions.txt"
   _ot_case OT12 "$d/ot12" 0 "judged against NOTHING" "all-8-na disposition -> LOUD zero, never a bare green"
 
+  # ── B8 legs (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) ───────────
+  # `--disposition <gate-id> <file>` — single-sourced query mode reusing read_dispositions verbatim
+  # (release-tag.sh's provenance_gate calls this rather than minting a third parser; see
+  # docs/architecture/2026-08-08-b8-provenance-honesty-design.md §4.1). Prints exactly apply|na|absent.
+  _dq_case() { # <name> <gate> <file> <want-out> <desc> — drives the REAL entry point, not the function
+    _dqn=$1; _dqg=$2; _dqf=$3; _dqw=$4; _dqd=$5
+    _dqo=$(sh "$0" --disposition "$_dqg" "$_dqf" 2>/dev/null)
+    if [ "$_dqo" = "$_dqw" ]; then
+      echo "selftest PASS: $_dqn — $_dqd"
+    else
+      echo "selftest FAIL: $_dqn — $_dqd (got '$_dqo' want '$_dqw')"; sf=1
+    fi
+  }
+  mkdir -p "$d/dq1"; _ot_disp_kit "$d/dq1"
+  _dq_case DQ1 gate-secret-scan "$d/dq1/conformance/gate-dispositions.txt" apply "an apply-dispositioned gate -> prints apply"
+  _dq_case DQ2 gate-provenance "$d/dq1/conformance/gate-dispositions.txt" na "an na-dispositioned gate -> prints na"
+  _dq_case DQ3 gate-provenance "$d/does-not-exist/gate-dispositions.txt" absent "no disposition file at the path -> prints absent"
+  mkdir -p "$d/dq4/conformance"
+  printf 'gate-lint\tbogus-kind\treason\n' > "$d/dq4/conformance/gate-dispositions.txt"
+  _dq_case DQ4 gate-lint "$d/dq4/conformance/gate-dispositions.txt" apply "an INVALID disposition file -> fails safe to apply (loud, never quiet)"
+  # DQ4b: the invalid-file case must WARN on stderr — fail-safe toward LOUD, never silent.
+  if _dq4err=$(sh "$0" --disposition gate-lint "$d/dq4/conformance/gate-dispositions.txt" 2>&1 >/dev/null); then :; fi
+  if printf '%s' "$_dq4err" | grep -qi "fail-safe"; then
+    echo "selftest PASS: DQ4b — an invalid disposition file WARNS on stderr (not silently loud)"
+  else
+    echo "selftest FAIL: DQ4b — an invalid disposition file must warn on stderr: $_dq4err"; sf=1
+  fi
+  # DQ5 (mutant-kill anchor for the fail-safe direction): an invalid file must NEVER print na — that
+  # would be the fail-quiet direction the design explicitly rejects (§4.1: "defaults to apply — fail-
+  # safe toward loud"). A mutant that flips the default to `na` survives DQ4 only if DQ4's fixture
+  # gate happens to already be apply-shaped elsewhere; this leg targets the value directly.
+  # [reviewer Minor-5a, fix round 1]: asserts on its OWN freshly-captured output, not on `$_dqo`
+  # left over from DQ4's LAST `_dq_case` call — `_dqo` is a plain (non-`local`) shell variable in
+  # `_dq_case`, so it leaks across calls; a prior leg's value happening to already be non-`na`
+  # would let this leg pass vacuously without ever driving the real entry point itself.
+  _dq5o=$(sh "$0" --disposition gate-lint "$d/dq4/conformance/gate-dispositions.txt" 2>/dev/null)
+  if [ "$_dq5o" != "na" ]; then
+    echo "selftest PASS: DQ5 — invalid-file fail-safe never yields 'na' (the fail-quiet direction is closed)"
+  else
+    echo "selftest FAIL: DQ5 — invalid-file fail-safe yielded 'na' (fail-quiet, not fail-safe)"; sf=1
+  fi
+
   # OT13/OT14 — KIT-SOURCE legs (skip with a reason off-kit: the ruling lock binds the KIT's
   # shipped file; an adopter tree has no such file — and MAY author its own, which must not red).
   _kr="$(dirname "$0")/.."
@@ -769,6 +845,11 @@ case "${1:-}" in
     shift
     if [ $# -gt 1 ]; then echo "usage: ci-gates.sh --own-tree [<root>]" >&2; exit 1; fi
     own_tree_run "${1:-.}"; exit $? ;;
+  # B8: the single-sourced disposition query mode (see disposition_query's header above).
+  --disposition)
+    shift
+    if [ $# -ne 2 ]; then echo "usage: ci-gates.sh --disposition <gate-id> <file>" >&2; exit 1; fi
+    disposition_query "$1" "$2"; exit $? ;;
 esac
 
 WORKFLOW=""; EXPECT_SEAMS=0

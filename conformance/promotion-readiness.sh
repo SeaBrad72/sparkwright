@@ -295,5 +295,38 @@ echo ""
 echo "7. Demonstrable increment (taste-surface):"
 echo "   If this change has a taste-surface (UI/UX/flow/working-functionality/table), demonstrate it and record the verdict in a UAT sign-off (skills/demonstrate). Advisory — surfaced, not gated this slice."
 echo ""
+# B8 (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) — honest
+# gate-provenance surfacing. The provenance/image-provenance CI job(s) are PUSH-ONLY
+# (profiles/*/ci.yml: `if: github.event_name == 'push' && github.ref == 'refs/heads/main' && ...`),
+# so at THIS surfacing time (PR/RC) the job has structurally not run — a green PR proves nothing
+# about it. State the SHAPE, not a false reassurance. The real assertion fires at the tag rung
+# (scripts/release-tag.sh provenance_gate), dialed by RELEASE_TAG_PROVENANCE (default observe). See
+# docs/architecture/2026-08-08-b8-provenance-honesty-design.md §4.2.
+echo "8. Gate-provenance (SLSA attestation) honesty:"
+echo "   The provenance/image-provenance CI job(s) are PUSH-ONLY (run after merge, on main) — they"
+echo "   structurally cannot have run yet for this change-set. A green PR here says nothing about them."
+GATE_DISP_FILE="conformance/gate-dispositions.txt"
+_pr_gate_disp() { # <gate-id> -> a one-line rendering: apply | na (REASON) | absent-file | unreadable
+  _pgd_g=$1
+  if [ ! -f conformance/ci-gates.sh ]; then echo "unreadable (conformance/ci-gates.sh not found)"; return; fi
+  _pgd_v=$(sh conformance/ci-gates.sh --disposition "$_pgd_g" "$GATE_DISP_FILE" 2>/dev/null || echo apply)
+  case "$_pgd_v" in
+    na)
+      _pgd_r=$(awk -F'\t' -v g="$_pgd_g" '!/^[[:space:]]*#/ && $1==g && NF>=3 {print $3}' "$GATE_DISP_FILE" 2>/dev/null | head -1 | tr -d '[:cntrl:]')
+      echo "na (${_pgd_r:-no reason on file})" ;;
+    absent) echo "absent-file (no $GATE_DISP_FILE — the adopter default, held to apply)" ;;
+    *) echo apply ;;
+  esac
+}
+echo "   gate-provenance: $(_pr_gate_disp gate-provenance)"
+echo "   gate-sbom:       $(_pr_gate_disp gate-sbom)"
+if [ -n "${RELEASE_TAG_PROVENANCE:-}" ]; then
+  echo "   The real assertion fires at the tag rung (scripts/release-tag.sh provenance_gate);"
+  echo "   RELEASE_TAG_PROVENANCE=$RELEASE_TAG_PROVENANCE in this environment (default: observe)."
+else
+  echo "   The real assertion fires at the tag rung (scripts/release-tag.sh provenance_gate); dialed by"
+  echo "   RELEASE_TAG_PROVENANCE (default: observe — informs, does not refuse; see PHASE-B-DIAL-FLIP)."
+fi
+echo ""
 echo "(Advisory surfacing — informs the human GO/NO-GO. It does not gate; exit 0.)"
 exit 0
