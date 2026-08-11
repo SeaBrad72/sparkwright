@@ -302,6 +302,34 @@ H1+H2 never cut. **REVISIT-CONDITION:** none.
 > pre-push; the owner re-ratifies this corrected ceiling via the PR approval (listed under
 > RATIFIABLE in the PR body).
 
+**`D-240811-1` · ruling · `D-240804-6` item 4's stated expiry is DISCHARGED by its named condition —
+partially, and said so.** That ruling confirmed three **interim** drift controls (WIP = 1 · the drift
+budget · scope declared in the first commit) *"as interim, with the stated expiry: replaced by
+mechanized scope containment in recovery-plan Phase B"*, and set the REVISIT-CONDITION *"item 4
+expires when Phase B's scope containment enforces"*. Phase-B slice **B9** ships that containment
+(`conformance/loop-state.sh`'s `Kit-Scope` leg — an optional trailer declaring path prefixes, graded
+against the changed set measured merge-base(default branch, head)..head, observe-first with
+`KIT_SCOPE_MODE` registered as the FIFTH dial in `PHASE-B-DIAL-FLIP` at birth). The discharge is
+**partial and the residue is named, not quietly dropped**:
+1. **Scope-declared-in-the-first-commit → MECHANIZED** as declaration + diff-check. The declaration
+   moved from prose conduct to a parsed trailer that a gate reads on every push.
+2. **The drift budget → its SIGNAL is mechanized.** Every changed path outside the declared set
+   surfaces loudly at the push where it first appears, which is the out-of-scope-discovery count the
+   budget always needed and previously got only from an agent choosing to notice and confess. The
+   *budget* (>3 discoveries → stop and re-plan) remains conduct; only its input is now mechanical.
+3. **WIP = 1 → REMAINS BOARD CONDUCT.** No honest mechanization exists at that surface and none is
+   faked here.
+**Ceiling, stated because the ruling's own text would otherwise be read as stronger than what
+shipped** (B9 design §7.1): the check binds **declaration↔diff consistency at each push**, NOT
+declaration-precedes-work. The trailer is author-controlled and lives on an amendable commit, so an
+author can widen the declaration to match whatever the diff became; a frozen-first-commit variant is
+defeated by rebase. What it buys is legibility (one owner-vetoable line on the PR head, where
+widening is itself a visible diff) and drift surfacing — loud, not impossible, per `D3′`.
+**Ratified by the owner's approval of the B9 PR** (the RATIFIABLE-heading vehicle, the #508/#511/#513
+precedent); no separate ceremony. **REVISIT-CONDITION:** the release-boundary dial-flip sitting
+decides `KIT_SCOPE_MODE` together with its four siblings (`PHASE-B-DIAL-FLIP`); until that sitting,
+nothing in this discharge refuses anything.
+
 ---
 
 ## 3. The recovered record

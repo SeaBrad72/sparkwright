@@ -420,6 +420,182 @@ check_skill() {   # $1 = sha
 }
 
 # ---------------------------------------------------------------------------
+# Kit-Scope — B9 (PHASE-B-SPINE slice 9), design docs/architecture/2026-08-11-b9-process-mechanized-design.md §2.
+#
+# The OPTIONAL fifth trailer: a space-separated set of path PREFIXES declaring what this pull
+# request is allowed to touch. It joins the Kit-* family on the same head commit, is read by the
+# same parser (decl_field — never a grep), and is graded against the changed set measured
+# merge-base(default branch, head)..head — the same "THE HEAD DECLARATION DESCRIBES THE PULL
+# REQUEST" doctrine the class leg already uses (see the header note).
+#
+# HONEST CEILING — do not overclaim (design §7.1). The declaration is written by the author it
+# constrains and lives on an amendable commit, so what this binds is DECLARATION↔DIFF CONSISTENCY
+# AT EACH PUSH, never "the declaration preceded the work": an author can widen the line to match
+# whatever the diff became, or declare a scope as wide as the tree. No trailer mechanism can bind
+# declaration-precedes-work (a frozen-first-commit variant is defeated by rebase). The value is
+# (a) LEGIBILITY — one owner-vetoable line on the PR head, where widening it mid-flight is itself
+# a visible diff of the declaration — and (b) DRIFT SURFACING: an undeclared path goes loud at the
+# push where it first appears. Loud, not impossible (`D3′`: drift control, not an arms race).
+#
+# ⚠️ WHERE THE OBSERVE-MODE PRINT ACTUALLY LANDS. In observe mode this leg returns 0, and the
+# installed pre-push hook's decl leg DISCARDS a PASSING predicate's output (`hooks/pre-push:90-92`
+# captures stderr, then `return 0` without printing it). So at the PRE-PUSH surface the loud print
+# is visible only when `KIT_SCOPE_MODE=enforce` makes this leg return non-zero; in CI — the bound
+# gate that runs at the PR head on every push — the print is in the job log either way. Stated
+# rather than assumed; no hook edit is made here (design §2, "zero hook edit").
+#
+# ⚠️ `Kit-Scope` (a PATH SET) is NOT `D11`'s `scope:` key (a SLICE IDENTITY, ceremony-binding.sh).
+# Different objects; the name collision is disclosed so no reviewer conflates them. That whole
+# surface (BRANCH-SCOPE-END-TO-END) is deliberately untouched here.
+
+# The ref the scope basis is measured against. Empty = resolve it (production). The selftest pins it
+# to a fixture ref — a PLAIN SCRIPT VARIABLE, never an env route (OBLIGATION-TESTMODE-ENV-FLAG; the
+# rule LS_REPO / LS_BOARDROOT / LS_SKILLREPO already follow). Without a pinned base the fixture legs
+# would resolve the fixture repo's AMBIENT default branch (init.defaultBranch is a user setting —
+# `main` on one machine, `master` on another) and grade a base that varies per machine.
+LS_SCOPE_BASEREF=""
+
+# LS_SCOPE_STATE records what the scope leg actually DID, so the success line cannot claim a leg
+# that never ran — the LS_ROW_STATE discipline. An N/A that is silent is how a gate ends up
+# asserting more than it verified.
+LS_SCOPE_STATE="unknown"
+
+# scope_base — the merge base of the default branch and $1. Prints it; rc 1 when unresolvable.
+# LOCAL READS ONLY (no `git fetch`, no `git remote show`): a merge gate must never depend on network
+# reachability. Candidates, in order: the pinned fixture ref → origin/HEAD → origin/main →
+# origin/master → main → master. Nothing here is environment-overridable.
+scope_base() {   # $1 = sha
+  if [ -n "$LS_SCOPE_BASEREF" ]; then
+    git -C "$LS_REPO" merge-base "$LS_SCOPE_BASEREF" "$1" 2>/dev/null || return 1
+    return 0
+  fi
+  _ls_dh=$(git -C "$LS_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  for _ls_c in "$_ls_dh" origin/main origin/master main master; do
+    [ -n "$_ls_c" ] || continue
+    git -C "$LS_REPO" rev-parse --verify --quiet "$_ls_c^{commit}" >/dev/null 2>&1 || continue
+    if _ls_mb=$(git -C "$LS_REPO" merge-base "$_ls_c" "$1" 2>/dev/null); then
+      printf '%s\n' "$_ls_mb"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# scope_covers — 0 when any declared prefix is a prefix of <path>. PREFIX MATCH ONLY: the pattern
+# side is a QUOTED expansion, so the token is literal and never a glob — which is exactly why the
+# hostile-token refusal above must run first (an unrejected `*` would arrive here as a live pattern).
+scope_covers() {   # $1 = path, $2 = the declared prefixes
+  for _ls_cp in $2; do
+    case "$1" in
+      "$_ls_cp"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# scope_leg — the whole ladder. Called ONLY through check_scope, which owns the noglob window.
+scope_leg() {   # $1 = sha
+  LS_SCOPE_STATE="unknown"
+  _ls_sn=$(decl_count "$1" Kit-Scope)
+
+  # ABSENT → disclosed N/A, never red. The trailer is OPTIONAL and this is first-run-green (the B6
+  # precedent): whether absence should refuse for gated classes is a dial-flip-sitting question,
+  # deliberately not decided here.
+  # (A present-but-EMPTY value lands in this same arm — git emits an empty line and `grep -c .`
+  # counts none. That is exactly equivalent to not declaring, so nothing is weakened by it.)
+  if [ "$_ls_sn" -eq 0 ]; then
+    LS_SCOPE_STATE="N/A (no scope declared)"
+    echo "loop-state: scope check $LS_SCOPE_STATE"
+    return 0
+  fi
+  # EXACTLY ONE occurrence, the family's rule: two Kit-Scope lines with different sets yield both,
+  # and head -1 / tail -1 reach opposite verdicts. Never "take the first".
+  if [ "$_ls_sn" -ne 1 ]; then
+    echo "loop-state: $1 carries $_ls_sn occurrences of 'Kit-Scope' — exactly one is required" >&2
+    LS_SCOPE_STATE="refused (duplicate Kit-Scope)"
+    return 1
+  fi
+  _ls_scope=$(decl_field "$1" Kit-Scope | head -1)
+
+  # HOSTILE INPUT FIRST — before the value can reach any matching. Each token is interpolated into
+  # a `case` PATTERN below, where an unrejected `*` or `?` silently widens the declaration to match
+  # anything; the trailer is attacker-influenceable (anyone may open a PR with any trailer), the
+  # identical path that forced the charset refusal on Kit-Row (check_declaration above). `..` and a
+  # leading `/` are refused with them: a declared prefix is a repo-relative path, never a traversal
+  # and never absolute.
+  for _ls_p in $_ls_scope; do
+    case "$_ls_p" in
+      *'*'*|*'?'*|*'['*|*..*|/*)
+        echo "loop-state: Kit-Scope token '$(ls_safe "$_ls_p")' is not a plain path prefix — a glob metacharacter (* ? [), '..' or a leading '/' is refused at the boundary" >&2
+        LS_SCOPE_STATE="refused (hostile scope token)"
+        return 1 ;;
+    esac
+  done
+
+  # FAIL-SAFE, DISCLOSED. A shallow clone or an absent default-branch ref has no basis to measure
+  # against (the measured B2-Δ2 clone-shape class). A red here would break every healthy fresh
+  # clone — the green-on-clone failure class — and a SILENT pass would be worse.
+  if ! _ls_base=$(scope_base "$1"); then
+    LS_SCOPE_STATE="N/A (scope basis unresolvable)"
+    echo "loop-state: scope check $LS_SCOPE_STATE — no merge base against a default branch (shallow clone / absent ref)"
+    return 0
+  fi
+
+  # --no-renames ON PURPOSE: with rename detection a move OUT of a declared prefix reports only the
+  # new path, and a move INTO one hides the deletion at the old path. Both endpoints must be graded.
+  # PREFIX MATCH, not a path-component match: `docs` covers `docs-old.md` too. Declare `docs/` when
+  # you mean the directory — stated, so the semantics are not mistaken for globbing.
+  # ⚠️ The prefix match lives in scope_covers, NOT inline here: bash 3.2 (macOS /bin/sh, which runs
+  # this repo's own hooks) mis-parses a `case` ... `esac` INSIDE a `$( ... )` — "syntax error near
+  # unexpected token ';;'", measured, on one line and on several. dash parses it fine, so a
+  # linux-only test would never have seen it. Keeping `case` out of the substitution is the fix.
+  _ls_esc=$(
+    git -C "$LS_REPO" diff --name-only --no-renames "$_ls_base" "$1" 2>/dev/null |
+    while IFS= read -r _ls_f; do
+      [ -n "$_ls_f" ] || continue
+      if scope_covers "$_ls_f" "$_ls_scope"; then continue; fi
+      printf '%s\n' "$_ls_f"
+    done
+  )
+  _ls_ec=$(printf '%s' "$_ls_esc" | grep -c . || true)
+  if [ "$_ls_ec" -eq 0 ]; then
+    LS_SCOPE_STATE="PASS (every changed path is under a declared prefix)"
+    echo "loop-state: scope check $LS_SCOPE_STATE"
+    return 0
+  fi
+
+  echo "loop-state: SCOPE LOUD — $_ls_ec changed path(s) fall outside the declared Kit-Scope '$(ls_safe "$_ls_scope")':" >&2
+  printf '%s\n' "$_ls_esc" | while IFS= read -r _ls_f; do
+    [ -n "$_ls_f" ] || continue
+    echo "loop-state:   $(ls_safe "$_ls_f")" >&2
+  done
+  echo "loop-state:   remedy: widen Kit-Scope on the head commit to cover them, or take the change out of this PR." >&2
+  # THE DIAL, exact-string compared — the KIT_PUSH_DECL shape (hooks/pre-push:95): anything other
+  # than the literal `enforce` stays OBSERVE. Ships observe (no exception to the observe-first
+  # rollout is requested here); the flip is registered as the fifth dial in PHASE-B-DIAL-FLIP.
+  if [ "${KIT_SCOPE_MODE:-}" = "enforce" ]; then
+    LS_SCOPE_STATE="refused ($_ls_ec path(s) outside the declared scope — KIT_SCOPE_MODE=enforce)"
+    return 1
+  fi
+  echo "loop-state:   observe mode — rc unchanged; set KIT_SCOPE_MODE=enforce to refuse instead (tracked: PHASE-B-DIAL-FLIP)." >&2
+  LS_SCOPE_STATE="observed ($_ls_ec path(s) outside the declared scope — observe mode, rc unchanged)"
+  return 0
+}
+
+# check_scope — scope_leg inside a NOGLOB window, which is load-bearing, not stylistic.
+# `for _ls_p in $_ls_scope` word-splits AND pathname-expands, so a `docs/*` token would EXPAND
+# against the current directory before the hostile-token check ever saw it — the check would then
+# grade the expansion instead of the declaration. `set -f` closes that; `set +f` restores it for
+# every leg that follows (map_completeness globs skills/*/).
+check_scope() {   # $1 = sha
+  set -f
+  _ls_scope_rc=0
+  scope_leg "$1" || _ls_scope_rc=$?
+  set +f
+  return "$_ls_scope_rc"
+}
+
+# ---------------------------------------------------------------------------
 # Fixture repo. Tiny and trap-cleaned: heavy selftests leaking full-repo temp trees filled the
 # work machine twice (banked: conformance-disk-safety). This creates four commits in an empty
 # repo — no clone, no checkout of this tree.
@@ -617,6 +793,57 @@ ls_fx_build() {
   printf 'ctrl char in Kit-Skill\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: bad\033[2Kevil\n' \
     | git -C "$LS_FXDIR" commit -q -F -
   LS_FX_CTRL=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # --- B9 Kit-Scope fixtures --------------------------------------------------------------------
+  # The scope leg grades a DIFF, so these need a base and branches off it. The base is PINNED into
+  # LS_SCOPE_BASEREF by the legs (never auto-resolved) so nothing here depends on the fixture repo's
+  # ambient default-branch name.
+  LS_FX_SCOPEBASE=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # S1 — COVERED: the only changed path is under the single declared prefix.
+  mkdir -p "$LS_FXDIR/docs"
+  echo s1 > "$LS_FXDIR/docs/note.md"; git -C "$LS_FXDIR" add docs/note.md
+  printf 'scope covered\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: docs/\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SCOPE_IN=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # S2 — ESCAPING: branched off the base so its diff is exactly its own two paths, one of which is
+  # outside the declared prefix. ⚠️ NON-VACUITY: it also changes a path that IS covered, so a leg
+  # that merely notices "something changed" cannot pass for the wrong reason.
+  git -C "$LS_FXDIR" checkout -q -b scope-out "$LS_FX_SCOPEBASE"
+  mkdir -p "$LS_FXDIR/docs" "$LS_FXDIR/conformance"
+  echo s2 > "$LS_FXDIR/docs/note.md"
+  echo s2 > "$LS_FXDIR/conformance/stray.sh"
+  git -C "$LS_FXDIR" add docs/note.md conformance/stray.sh
+  printf 'scope escaped\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: docs/\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SCOPE_OUT=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # S3/S4/S5 — HOSTILE TOKENS, one face each. ⚠️ NON-VACUITY: every one of them ALSO declares a
+  # prefix that covers nothing in the diff, so if the hostile check were removed the leg would fall
+  # through to the escape branch and refuse for the WRONG reason — which is exactly what the
+  # reason-assertions below (with their forbidden downstream string) measure.
+  echo s3 > "$LS_FXDIR/conformance/stray.sh"; git -C "$LS_FXDIR" add conformance/stray.sh
+  printf 'scope traversal token\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: docs/../etc\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SCOPE_DOTDOT=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  echo s4 > "$LS_FXDIR/conformance/stray.sh"; git -C "$LS_FXDIR" add conformance/stray.sh
+  printf 'scope glob token\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: docs/*\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SCOPE_GLOB=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  echo s5 > "$LS_FXDIR/conformance/stray.sh"; git -C "$LS_FXDIR" add conformance/stray.sh
+  printf 'scope absolute token\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: /etc\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SCOPE_ABS=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # S6 — DUPLICATE Kit-Scope with OPPOSITE sets: `head -1` and `tail -1` reach opposite verdicts,
+  # so "take the first" is not a safe reading here either. Must FAIL on the count, before matching.
+  echo s6 > "$LS_FXDIR/conformance/stray.sh"; git -C "$LS_FXDIR" add conformance/stray.sh
+  printf 'duplicate scope key\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: docs/\nKit-Scope: conformance/\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SCOPE_DUP=$(git -C "$LS_FXDIR" rev-parse HEAD)
   return 0
 }
 
@@ -786,6 +1013,88 @@ selftest() {
 
     LS_BOARDROOT="$_st_board_saved"
 
+    # --- T7 (B9): Kit-Scope — the declared path set vs the measured changed set ----------------
+    # Every leg runs against the fixture repo with the base PINNED, so none of them can be
+    # satisfied (or falsified) by this tree's own branch topology.
+    _st_scopebase_saved="$LS_SCOPE_BASEREF"
+    LS_SCOPE_BASEREF="$LS_FX_SCOPEBASE"
+
+    # POSITIVE — every changed path under the declared prefix passes.
+    # ⚠️ rc IS NOT ENOUGH HERE, and that is measured: in observe mode (the default) an
+    # always-UNCOVERED implementation also returns 0, so an rc-only positive would stay green while
+    # the matcher never matched anything. The leg asserts the PASS DISCLOSURE, which only a real
+    # match produces. An always-FAIL implementation breaks it from the other side.
+    _st_scopeok=""
+    _st_scopeok=$(check_scope "$LS_FX_SCOPE_IN" 2>&1) \
+      || { echo "selftest FAIL: a change entirely inside the declared Kit-Scope must PASS"; st_fail=1; }
+    case "$_st_scopeok" in
+      *"PASS (every changed path is under a declared prefix)"*) ;;
+      *) echo "selftest FAIL: a covered change must report the scope PASS (got: $_st_scopeok)"; st_fail=1 ;;
+    esac
+
+    # DIAL LIVENESS — the same covered change under enforce must still pass. Without this, an
+    # enforce arm that refuses EVERYTHING would satisfy the negative below and be worse than useless.
+    ( KIT_SCOPE_MODE=enforce; check_scope "$LS_FX_SCOPE_IN" ) >/dev/null 2>&1 \
+      || { echo "selftest FAIL: a covered change must pass even under KIT_SCOPE_MODE=enforce"; st_fail=1; }
+
+    # THE LOAD-BEARING NEGATIVE — an escaping path under the enforce dial must FAIL.
+    # ⚠️ The dial is set in a SUBSHELL, never as `VAR=x check_scope ...`: a variable assignment on a
+    # FUNCTION call PERSISTS after the call in dash/POSIX sh, which would silently leak `enforce`
+    # into every leg below and invert the observe leg's meaning.
+    ( KIT_SCOPE_MODE=enforce; check_scope "$LS_FX_SCOPE_OUT" ) >/dev/null 2>&1 \
+      && { echo "selftest FAIL: an escaping path under KIT_SCOPE_MODE=enforce must FAIL"; st_fail=1; }
+
+    # OBSERVE (the shipped default) — the SAME fixture must keep rc 0 AND name the escaping path.
+    # Both halves matter: rc-only would pass for an implementation that never detected anything,
+    # and print-only would pass for one that refused. This is the leg that pins observe-first.
+    _st_scoperc=0
+    _st_scopeout=$( ( unset KIT_SCOPE_MODE; check_scope "$LS_FX_SCOPE_OUT" ) 2>&1 >/dev/null ) || _st_scoperc=$?
+    if [ "$_st_scoperc" -ne 0 ]; then
+      echo "selftest FAIL: an escaping path in OBSERVE mode must not change rc (observe-first)"; st_fail=1
+    fi
+    case "$_st_scopeout" in
+      *"conformance/stray.sh"*) ;;
+      *) echo "selftest FAIL: OBSERVE mode must NAME each escaping path (got: $_st_scopeout)"; st_fail=1 ;;
+    esac
+
+    # ABSENT trailer — N/A, never red, and the N/A is ANNOUNCED. A silent N/A is how a gate ends up
+    # asserting more than it verified.
+    _st_scopena=""
+    _st_scopena=$(check_scope "$LS_FX_OK" 2>&1) \
+      || { echo "selftest FAIL: an absent Kit-Scope must be N/A, never a RED"; st_fail=1; }
+    case "$_st_scopena" in
+      *"N/A (no scope declared)"*) ;;
+      *) echo "selftest FAIL: an absent Kit-Scope must DISCLOSE its N/A"; st_fail=1 ;;
+    esac
+
+    # UNRESOLVABLE BASIS — a base ref that does not exist yields the disclosed N/A, rc 0 (the
+    # shallow-clone / fresh-adopter shape), never a red and never a silent pass.
+    LS_SCOPE_BASEREF="refs/heads/no-such-base-ref"
+    _st_scopena=$(check_scope "$LS_FX_SCOPE_OUT" 2>&1) \
+      || { echo "selftest FAIL: an unresolvable scope basis must be N/A, never a RED"; st_fail=1; }
+    case "$_st_scopena" in
+      *"N/A (scope basis unresolvable)"*) ;;
+      *) echo "selftest FAIL: an unresolvable scope basis must DISCLOSE its N/A"; st_fail=1 ;;
+    esac
+    LS_SCOPE_BASEREF="$LS_FX_SCOPEBASE"
+
+    # HOSTILE TOKENS + the duplicate key — REASON-BOUND, not outcome-only: these must be the ONLY
+    # refusals on the boundary side of the ladder, so the forbidden string is the escape-branch
+    # message. MEASURED, so the claim is not overstated: with the hostile arm neutered these three
+    # fixtures do not merely refuse for the wrong reason, they stop refusing at all (the escape
+    # branch keeps rc 0 in observe mode) — the helper catches that as "expected a refusal, but the
+    # check PASSED". The forbidden half is the guard for the day the dial flips to enforce.
+    ls_assert_reason "scope token: traversal" "is not a plain path prefix" "fall outside the declared" \
+      check_scope "$LS_FX_SCOPE_DOTDOT" || st_fail=1
+    ls_assert_reason "scope token: glob metacharacter" "is not a plain path prefix" "fall outside the declared" \
+      check_scope "$LS_FX_SCOPE_GLOB" || st_fail=1
+    ls_assert_reason "scope token: absolute path" "is not a plain path prefix" "fall outside the declared" \
+      check_scope "$LS_FX_SCOPE_ABS" || st_fail=1
+    ls_assert_reason "scope duplicate key" "occurrences of 'Kit-Scope'" "is not a plain path prefix" \
+      check_scope "$LS_FX_SCOPE_DUP" || st_fail=1
+
+    LS_SCOPE_BASEREF="$_st_scopebase_saved"
+
     # --- MAP COMPLETENESS, drift directions (b) and (c) ---------------------------------------
     # Plan T1 step 4 required these and they were missing; review measured that gutting either
     # check left the suite GREEN. The code was right and nothing held it there.
@@ -863,7 +1172,10 @@ selftest() {
   echo "               nonexistent, traversal, tracked-symlink, untracked"
   echo "  row        — positive; negative; N/A routes: no-board, non-md backend, pristine template;"
   echo "               fail-closed on an unrecognised backend"
-  echo "  reasons    — 8 legs assert the refusal REASON (and the absence of the downstream reason),"
+  echo "  scope      — positive (covered); negatives: escaping-path under enforce, duplicate key,"
+  echo "               hostile tokens (traversal, glob metachar, absolute); observe keeps rc 0 and"
+  echo "               NAMES the escaping path; N/A routes: no declaration, unresolvable basis"
+  echo "  reasons    — 12 legs assert the refusal REASON (and the absence of the downstream reason),"
   echo "               so a leg cannot pass because a LATER check rejected the fixture"
   echo "  meta       — the reason-assertion helper is itself checked against 5 synthetic subjects,"
   echo "               because it is structurally invisible to the CI mutation sweep"
@@ -955,6 +1267,10 @@ run_gate() {   # $1 = sha
   check_class       "$1" || _ls_bad=1
   check_skill       "$1" || _ls_bad=1
   check_row         "$1" || _ls_bad=1
+  # B9: the scope leg. It runs inside the existing --head path, so the installed pre-push hook and
+  # CI's bound gate both get it with ZERO wiring edits. It cannot change the rc of any commit that
+  # carries no Kit-Scope trailer (the N/A arm), which is every PR shape that is green today.
+  check_scope       "$1" || _ls_bad=1
   if [ "$_ls_bad" -ne 0 ]; then
     echo "loop-state: FAIL — $1 does not carry a valid Entry Declaration." >&2
     echo "  The contract is CLAUDE.md section 1. Trailers must be the LAST paragraph of the commit" >&2
@@ -969,6 +1285,8 @@ run_gate() {   # $1 = sha
   echo "  stage + skill: resolved against the map · class: equals promotion-readiness --class"
   echo "                 (guard-core scope; the adapter union is enforced by ratification.yml)"
   echo "  row:           $LS_ROW_STATE"
+  echo "  scope:         $LS_SCOPE_STATE"
+  echo "                 (declaration<->diff consistency at THIS push; no ordering claim)"
   return 0
 }
 

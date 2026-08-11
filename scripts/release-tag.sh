@@ -115,6 +115,50 @@ branch_gate() {
 # broken cadence RECORD (marker desync, unparseable marker) is satisfiable by breaking the record —
 # the opposite posture from branch_gate/ci_gate's degrade-open, because THEIR unknowns are host
 # introspection limits while THIS unknown is the guarded artifact itself.
+# ── B9 (MC-CADENCE-2, Δ4b — design 2026-08-11-b9-process-mechanized §5b): PANEL-FRESHNESS
+# SURFACING at the tag rung. cadence_gate REFUSES only at ESCALATED; below that tier the panel's
+# state was visible only in a weekly CI job nobody reads — panel #38's measured finding ("the signal
+# fired and nothing consumed it"). So every tag now prints ONE line of freshness: last panel date ·
+# release tags since · current verdict. UNCONDITIONAL and NON-BLOCKING by design — it never touches
+# rc, adds no dial, and has no interaction with the RELEASE_TAG_CADENCE waiver path. The teeth stay
+# exactly where D-240807-1 put them (the ESCALATED refusal); this makes the boundary event SURFACE
+# the state while healthy, instead of only at >2N failure.
+#
+# _mc_last_date -> the Date cell of the LAST data row of the meta-control log, or `unknown`.
+# Reads the SAME root the detector reads, so the date and the verdict describe one record. The value
+# is free text from a file this script does not own the review of, so it is control-stripped before
+# it reaches an operator's terminal (the existing LOW-3 discipline, _strip_ctrl).
+_mc_last_date() {
+  _mcl="${META_CONTROL_ROOT:-.}/docs/governance/meta-control-log.md"
+  if [ ! -f "$_mcl" ]; then printf 'unknown'; return 0; fi
+  awk -F'|' '
+    /^[ \t]*\|/ {
+      t=$2; gsub(/^[ \t]+|[ \t]+$/,"",t)
+      if (t=="Date") next                       # header row
+      if ($0 ~ /^[ \t]*\|[ \t:|-]+$/) next      # separator row
+      last=t
+    }
+    END { if (last=="") print "unknown"; else print last }
+  ' "$_mcl" 2>/dev/null || printf 'unknown'
+}
+
+# panel_freshness_line <detector-output> — the one line, on stderr. Derived ENTIRELY from the
+# detector's own output (the ^FRESH:/^OVERDUE:/^ESCALATED: token contract M2 pinned) plus the log's
+# date cell: no second source of truth, no new state file, nothing this script decides for itself.
+# A cap-fired OVERDUE carries no tag count, so the count reads `n/a` rather than a fabricated 0.
+panel_freshness_line() {
+  _pf_v=$(printf '%s\n' "$1" | grep -E '^(FRESH|OVERDUE|ESCALATED):' | head -1 | cut -d: -f1)
+  if [ -z "$_pf_v" ]; then
+    case "$1" in
+      *"N/A"*) _pf_v="N/A (cadence not adopted)" ;;
+      *)       _pf_v="UNKNOWN (detector gave no verdict token)" ;;
+    esac
+  fi
+  _pf_n=$(printf '%s\n' "$1" | grep -E '^(FRESH|OVERDUE|ESCALATED): [0-9]+ release tags' | head -1 | awk '{print $2}')
+  [ -n "$_pf_n" ] || _pf_n="n/a"
+  echo "release-tag: meta-control panel freshness — last panel: $(_strip_ctrl "$(_mc_last_date)") · release tags since: $_pf_n · verdict: $_pf_v (surfacing only; the cadence gate below is what can refuse)" >&2
+}
+
 cadence_gate() {
   # F2 (hygiene security seat, 2026-08-07): the OVERRIDE BANNER. RELEASE_TAG_CADENCE and the
   # META_CONTROL_* hooks re-point or re-scope the detector — legitimate for selftest fixtures and
@@ -130,6 +174,9 @@ cadence_gate() {
     return 1
   fi
   set +e; _cout=$(sh "$CADENCE" 2>&1); _crc=$?; set -e
+  # B9 Δ4b: surface the panel state at EVERY tag, before any verdict branch, so the line prints on
+  # the refusing paths too. Non-blocking: nothing below reads its result.
+  panel_freshness_line "$_cout"
   # M2 (hygiene reviewer, 2026-08-07): the TOKEN is the contract — an ^ESCALATED: verdict line
   # refuses REGARDLESS of rc, checked BEFORE the rc-0 fast path. A detector that prints ESCALATED
   # yet exits 0 (adversarial substitution, or an honest bug) must not be a green light (measured).
@@ -684,6 +731,26 @@ selftest() {
     echo "PASS: cap-fired OVERDUE -> proceeds with the cap-face warning (real-run remedy, no count-band text)"
   else
     echo "FAIL: Q — the cap-fired OVERDUE face is wrong (rc=$_qrc tag='$_qtag')"; st=1
+  fi
+
+  # R (B9 Δ4b — MC-CADENCE-2): the panel-freshness line prints at EVERY tag and blocks nothing.
+  # End-to-end through run() (the same discipline as I/J/M): a direct call would prove the FUNCTION,
+  # not that cadence_gate calls it. All THREE fields are asserted against the pinned fixture's known
+  # values — a degenerate `unknown · n/a · UNKNOWN` line would satisfy a presence-only check while
+  # surfacing nothing, which is the whole failure this delta exists to end.
+  d="$t/r"; mkdir -p "$d"; _wt "$d"
+  _rrc=0
+  _rout=$( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 \
+      RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' sh "$here/release-tag.sh" 2>&1 ) || _rrc=$?
+  _rtag=$( cd "$d/w" && git tag -l v1.1.0 )
+  if [ "$_rrc" = "0" ] && [ -n "$_rtag" ] \
+     && printf '%s\n' "$_rout" | grep -q 'meta-control panel freshness' \
+     && printf '%s\n' "$_rout" | grep -q 'last panel: 2026-01-01' \
+     && printf '%s\n' "$_rout" | grep -q 'release tags since: 0' \
+     && printf '%s\n' "$_rout" | grep -q 'verdict: FRESH'; then
+    echo "PASS: the tag rung SURFACES panel freshness (date · tags-since · verdict) and does not block"
+  else
+    echo "FAIL: R — the panel-freshness line is missing or degenerate (rc=$_rrc tag='$_rtag' out='$_rout')"; st=1
   fi
 
   # ===== B8 (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) ============
