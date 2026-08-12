@@ -41,7 +41,7 @@ ROOT="${EXPORT_ROOT:-.}"
 #     KIT-FEEDBACK.md, scratchpad/**), and requiring equality produces 5 false FAILs on this tree.
 # The true relation is IGN ⊆ export-ignored, block (a) is what enforces it, and a separate equality
 # check here would be fully shadowed by it — dead defense-in-depth, removed rather than kept.
-IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers"
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers .kit/dials.conf"
 
 # _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
 # P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +
@@ -169,6 +169,21 @@ run() {
       echo "PASS: exported tree's claims-registry passes"
     else
       echo "FAIL: exported tree's claims-registry does NOT pass (an orphaned maintainer-only claim — carve it in adopter-export.sh)"; rc=1
+    fi
+    # DIAL-DELIVERY Δ-A — the adopter's dial state, in ONE fold: (a) the kit's own enforcement dials
+    # do not ship, and (b) BEHAVIOURAL — with no conf the exported hook OBSERVES a failing entry
+    # declaration (rc 0 + the observe prefix) instead of refusing it. (a) alone is a presence check
+    # and cannot see a substitution: a hook that read the dial from somewhere else, or defaulted to
+    # enforce, would pass it and still red an adopter's first push. The fixture head is the export
+    # commit made just above — a real commit carrying no Kit-* trailers, so the predicate genuinely
+    # fails and only the DIAL decides the rc.
+    [ -e "$_d/.kit/dials.conf" ] && { echo "FAIL: export kept .kit/dials.conf (every adopter would inherit the kit's enforce dials at their first hook re-copy)"; rc=1; }
+    _dl=0; _dlo=$( cd "$_d" && printf 'refs/heads/x %s refs/heads/x %s\n' "$(git rev-parse HEAD)" \
+      0000000000000000000000000000000000000000 | sh hooks/pre-push 2>&1 ) || _dl=$?
+    if [ "$_dl" -ne 0 ] || ! printf '%s' "$_dlo" | grep -q 'kit pre-push (observe):'; then
+      echo "FAIL: the EXPORTED hook is not observe-by-default on a failing entry declaration (rc $_dl) — an adopter's first push would be refused"; echo "  got: $_dlo"; rc=1
+    else
+      echo "PASS: export ships no dial file and the exported hook observes"
     fi
     # ── GREEN-ON-CLONE MOVED OUT (P1-CI-c) — it is NOT deleted; see conformance/green-on-clone.sh.
     #

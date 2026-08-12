@@ -44,6 +44,48 @@ case "$(command -v guard_check_push 2>/dev/null)" in
   *) refuse_no_core "guard-core.sh sourced but defines no guard_check_push function" ;;
 esac
 
+# _kit_dial "<DIAL_NAME>" — SETS `_kd_mode` to the word `enforce` or `observe` for this push, from
+# guard-core's kit_dial_mode (repo-carried $ROOT/.kit/dials.conf; env may ESCALATE, never
+# de-escalate — DIAL-DELIVERY Δ-A). Both legs below call it; the durable dial is the CONF.
+#
+# ⚠️ IT SETS A VARIABLE RATHER THAN PRINTING, AND THAT IS LOAD-BEARING (review round 1, measured).
+# The call sites used to read it as `[ "$(_kit_dial X)" = enforce ]`, which runs the resolver in a
+# SUBSHELL — so kit_dial_mode's own per-dial "already warned" memo could never propagate back, and a
+# 3-ref-line push under a de-escalation attempt printed the identical anomaly line THREE times
+# (measured: 3, then still 3 with the in-function memo alone). That is the same line-discipline
+# defect go_relay's ONE-RELAY-PER-INVOCATION rule exists to prevent. Resolving into a variable keeps
+# the resolver in THIS shell, so the per-invocation cache below actually holds. Same idiom as the GO
+# leg's REV M6 `_go_memo`: the value depends only on tree state and the environment, neither of which
+# changes between the ref-lines of one push. Timing is unchanged — a dial is still resolved lazily,
+# on FIRST consult, never on a push where no leg fires.
+# SKEW: a re-copied newer hook over an OLDER tree guard-core that predates kit_dial_mode must not
+# spray "command not found" on every push. Probe it exactly as guard_check_push is probed at :42 —
+# matching the OUTPUT, since `command -v` is also satisfied by a PATH BINARY of that name — and fall
+# back QUIETLY to the bare env read, which is the pre-Δ-A behaviour: fail-open toward observe, the
+# acceptable direction, now guarded and silent instead of noisy.
+_kit_dial_resolve() { # <DIAL_NAME> — prints enforce|observe; the skew-guarded reader
+  case "$(command -v kit_dial_mode 2>/dev/null)" in
+    kit_dial_mode) kit_dial_mode "$1" ;;
+    *)
+      # The name is interpolated into an eval, so charset-guard it here exactly as kit_dial_mode
+      # does on its own side — the fallback must not be the weaker of the two paths.
+      case "$1" in ''|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;; esac
+      _kd_env=$(eval "printf '%s' \"\${$1:-}\"")
+      if [ "$_kd_env" = "enforce" ]; then printf 'enforce\n'; else printf 'observe\n'; fi ;;
+  esac
+}
+_kit_dial() { # <DIAL_NAME> — sets _kd_mode; resolves each dial at most ONCE per push invocation
+  case "$1" in
+    KIT_PUSH_DECL)
+      [ -n "${_kd_decl:-}" ] || _kd_decl=$(_kit_dial_resolve "$1")
+      _kd_mode=$_kd_decl ;;
+    KIT_PUSH_GO)
+      [ -n "${_kd_go:-}" ] || _kd_go=$(_kit_dial_resolve "$1")
+      _kd_mode=$_kd_go ;;
+    *) _kd_mode=$(_kit_dial_resolve "$1") ;;
+  esac
+}
+
 # decl_check_ref — B1: the entry-declaration leg. Runs conformance/loop-state.sh --head against the
 # HEAD of each pushed refs/heads/* line (design Δ1: head-of-ref, not per-commit — identical SHA to
 # what CI grades as the PR head, so drift is impossible by construction). Defined ABOVE the
@@ -53,7 +95,12 @@ esac
 # is the selftest's own positive control (a normal branch line must invoke the predicate) plus the
 # discriminating negative cases (D1 skip rules, D2 degradation, D3 verdict handling) below the
 # marker — not the sweep.
-# Observe-only by default; KIT_PUSH_DECL=enforce (exact string) escalates to a refusal. A speed
+# THE DIAL IS REPO-CARRIED (DIAL-DELIVERY Δ-A): `KIT_PUSH_DECL=enforce` (exact string) in the tracked,
+# control-plane, export-ignored .kit/dials.conf refuses instead of observing; an absent file — the
+# adopter export's state — is observe. Read through _kit_dial -> guard-core's kit_dial_mode, whose
+# precedence is ASYMMETRIC: an env var of the same name may ESCALATE observe->enforce, never
+# de-escalate a conf enforce (it loses and says so). Changing the dial is a conf edit through the
+# ratified ceremony: no hook edit, NO human re-copy — this hook reads tree state live. A speed
 # bump, not a boundary — --no-verify, an absent/never-installed hook, a stale installed copy, or an
 # absent predicate script all bypass this leg
 # (docs/architecture/2026-08-05-b1-pre-push-entry-declaration-design.md §7).
@@ -88,11 +135,27 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
   # fail-open past the guard leg for every ref-line after the one being graded (measured: SEC
   # MEDIUM-1, killed by the selftest's stdin-isolation case below).
   if _decl_out=$(sh "$_decl_predicate" --head "$_decl_local_sha" 2>&1 >/dev/null </dev/null); then
-    return 0                                        # D3 — rc 0: silent pass
+    # D3 — rc 0: PASS. [A2, B9 §10-A2] This path used to capture the predicate's stderr and drop it
+    # on the floor, so a warning from a PASSING predicate was silently swallowed. Relay it and stay
+    # rc 0. Conditional on non-empty: a clean pass must not print a bare prefix line.
+    # THE PREFIX IS MODE-NEUTRAL `(note)`, NOT `(observe)` (review round 1). `(observe)` names the
+    # DIAL's state, and on an enforcing tree this path is reached with the dial set to `enforce` —
+    # so relaying a pass under `(observe)` would tell the operator the dial is off when it is on.
+    # The nonzero branch below keeps `(observe)`, where it is true and load-bearing (the adopter
+    # export's behavioural leg keys on that exact string).
+    # Measured noise cost: zero (3 real passing heads, 0 stderr lines).
+    if [ -n "$_decl_out" ]; then
+      printf '%s\n' "$_decl_out" | while IFS= read -r _decl_line; do
+        printf 'kit pre-push (note): %s\n' "$_decl_line" >&2
+      done
+    fi
+    return 0
   fi
   # D3 — nonzero (rc 1 AND rc 2, fail-closed on could-not-evaluate): observe prints and allows;
   # enforce prints and refuses. Δ3 — the exact string "enforce"; anything else stays observe.
-  if [ "${KIT_PUSH_DECL:-}" = "enforce" ]; then
+  # Δ-A: the dial is read from .kit/dials.conf via _kit_dial (env escalates only), not from bare env.
+  _kit_dial KIT_PUSH_DECL
+  if [ "$_kd_mode" = "enforce" ]; then
     # [-n check] a predicate that fails closed with no stderr (e.g. rc 2, could-not-evaluate,
     # with nothing printed) must not relay a bare "kit pre-push: " line with no reason on it.
     if [ -n "$_decl_out" ]; then
@@ -110,7 +173,9 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
       printf 'kit pre-push (observe): %s\n' "$_decl_line" >&2
     done
   fi
-  printf 'kit pre-push (observe):   set KIT_PUSH_DECL=enforce to refuse this push instead of observing.\n' >&2
+  printf 'kit pre-push (observe):   dial: the DURABLE switch is KIT_PUSH_DECL=enforce in .kit/dials.conf\n' >&2
+  printf 'kit pre-push (observe):         (tracked, control-plane, effective at merge — no hook re-copy). An env\n' >&2
+  printf 'kit pre-push (observe):         var of the same name can only ESCALATE, for this session.\n' >&2
   return 0
 }
 
@@ -123,8 +188,11 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
 # a key are defect-compatible only until they drift, and nothing locks them together. The hook
 # passes no key and reads no branch — it relays the predicate's verdict, whose text names the exact
 # `--scope branch/<name>` the operator must record.
-# Observe-only by default; KIT_PUSH_GO=enforce (exact string) escalates to a refusal. No ordering
-# claim, same as CI.
+# THE DIAL IS REPO-CARRIED, exactly as the decl leg's is (DIAL-DELIVERY Δ-A): `KIT_PUSH_GO=enforce`
+# (exact string) in the tracked, control-plane, export-ignored .kit/dials.conf refuses; an absent
+# file (the adopter export) is observe; an env var of the same name may only ESCALATE. Both of this
+# leg's dial test sites — the first relay and the memoized one — read it through _kit_dial. No
+# ordering claim, same as CI.
 # Design: docs/architecture/2026-08-07-b2-go-records-prepush-design.md (§3a Δ1′, Δ2+Δ3).
 # CEILING (bind-not-authenticate, restated where the leg lives): a git note BINDS, it does not
 # AUTHENTICATE (scripts/promotion-verify.sh:38-44) — an agent under the owner's git identity can
@@ -160,11 +228,13 @@ go_relay() { # captured-reasons
   # per line, by the same exact-string dial test, so a mutant flipping the dial cannot hide on the
   # quiet path either.
   if [ "${_go_relayed:-0}" -eq 1 ]; then
-    [ "${KIT_PUSH_GO:-}" = "enforce" ] || return 0
+    _kit_dial KIT_PUSH_GO
+    [ "$_kd_mode" = "enforce" ] || return 0
     return 1
   fi
   _go_relayed=1
-  if [ "${KIT_PUSH_GO:-}" = "enforce" ]; then
+  _kit_dial KIT_PUSH_GO
+  if [ "$_kd_mode" = "enforce" ]; then
     # [-n check] a predicate that fails closed with no stderr must not relay a bare prefix line.
     if [ -n "$1" ]; then
       printf '%s\n' "$1" | while IFS= read -r _go_line; do
@@ -184,7 +254,9 @@ go_relay() { # captured-reasons
       printf 'kit pre-push (observe): %s\n' "$_go_line" >&2
     done
   fi
-  printf 'kit pre-push (observe):   set KIT_PUSH_GO=enforce to refuse this push instead of observing.\n' >&2
+  printf 'kit pre-push (observe):   dial: the DURABLE switch is KIT_PUSH_GO=enforce in .kit/dials.conf\n' >&2
+  printf 'kit pre-push (observe):         (tracked, control-plane, effective at merge — no hook re-copy). An env\n' >&2
+  printf 'kit pre-push (observe):         var of the same name can only ESCALATE, for this session.\n' >&2
   return 0
 }
 
@@ -470,12 +542,30 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_expect_rc "$decl_rc" allow "observe + predicate rc 2 still allows the push"
   decl_expect_contains "rc-2 observe message uses the observe prefix" "kit pre-push (observe):" "$decl_out"
 
-  # enforce + rc0 -> allowed, silent.
+  # enforce + rc0 -> allowed. [A2 — B9 §10-A2, delivered by DIAL-DELIVERY Δ-A] A PASSING predicate
+  # that nevertheless wrote to stderr must not have it SWALLOWED: the leg relayed nothing at all on
+  # the rc-0 path, so a predicate's warning vanished. It is now relayed under the mode-neutral
+  # `kit pre-push (note):` prefix (the leg's line discipline — a bare relay would break it) and the
+  # push is still allowed. Measured noise cost on real passing heads: zero (3 heads, 0 stderr lines).
   decl_plant_stub 0
   decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
   decl_expect_rc "$decl_rc" allow "enforce + passing predicate allows the push"
-  [ -z "$decl_out" ] && echo "PASS: passing predicate is silent" \
-    || { echo "FAIL: passing predicate must be silent, got: $decl_out"; fail=1; }
+  decl_expect_contains "A2: rc-0 relays the predicate's first stderr line" "stub declaration reason" "$decl_out"
+  decl_expect_contains "A2: rc-0 relays the predicate's second stderr line" "stub remedy detail" "$decl_out"
+  # The prefix is the MODE-NEUTRAL `(note)`: this case runs with the dial ESCALATED to enforce, so a
+  # relay under `(observe)` would misreport the dial's state to the operator (review round 1).
+  decl_expect_contains "A2: the rc-0 relay carries the mode-neutral note prefix" "kit pre-push (note):" "$decl_out"
+  case "$decl_out" in
+    *'kit pre-push (observe):'*) echo "FAIL: the rc-0 pass-relay must NOT claim the observe mode on an enforcing dial"; fail=1 ;;
+    *) echo "PASS: the rc-0 pass-relay does not misreport the dial as observe" ;;
+  esac
+  # ...and the relay is CONDITIONAL, not unconditional noise: a predicate that passes QUIETLY stays
+  # silent (an unguarded relay would print a bare prefix line on every clean push).
+  printf '#!/bin/sh\nexit 0\n' > "$T/conformance/loop-state.sh"; chmod +x "$T/conformance/loop-state.sh"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "enforce + quiet passing predicate allows the push"
+  [ -z "$decl_out" ] && echo "PASS: a QUIETLY passing predicate is silent (A2 relay is conditional)" \
+    || { echo "FAIL: a quietly passing predicate must be silent, got: $decl_out"; fail=1; }
 
   # Skip rules (D1) — the predicate must never be invoked on these ref-line shapes. A POSITIVE
   # control comes first: without it, decl_check_ref always returning early (an always-skip mutant)
@@ -857,6 +947,122 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z"
     echo "  got: $go_leak_out"
     fail=1
   fi
+
+  # ---------------------------------------------------------------------------------------------
+  # DIAL-DELIVERY Δ-A — the REPO-CARRIED dial (.kit/dials.conf) and its ASYMMETRIC precedence.
+  # Every case above drives the dial through the ENVIRONMENT, which is the escalate-only override,
+  # not the durable mechanism. These cases drive the conf, and they are the only ones that source
+  # the REAL guard-core (kit_dial_mode lives there) instead of the permissive DECL_CORE stub — so
+  # the reader under test is the shipped one, not a fixture.
+  #
+  # FIXTURE HERMETICITY (design §3): every case here PINS its own dial state in $T. It never
+  # inherits the ambient tree's — $ROOT re-derives per invocation and the fixtures run with cwd in
+  # $T, so the kit's own enforce conf is out of reach. The cases above rely on that same property
+  # (conf ABSENT in $T ⇒ observe), which is why they still read as observe-by-default.
+  # ---------------------------------------------------------------------------------------------
+  DIAL_CORE="$T/dial-core.sh"
+  printf '#!/bin/sh\n. "%s"\nguard_check_push() { return 0; }\n' \
+    "$ROOT/.claude/hooks/guard-core.sh" > "$DIAL_CORE"
+
+  dial_plant() { # <conf-line>... | '-' to REMOVE the conf — pins $T's own dial state
+    rm -f "$T/.kit/dials.conf"
+    [ "$1" = "-" ] && return 0
+    mkdir -p "$T/.kit"
+    printf '%s\n' "$@" > "$T/.kit/dials.conf"
+  }
+  dial_run() { # env-value ref-line -> dial_out/dial_rc, with the REAL core sourced
+    dial_out=$(cd "$T" && printf '%s\n' "$2" \
+      | KIT_GUARD_CORE="$DIAL_CORE" KIT_PUSH_DECL="$1" KIT_PUSH_GO="$3" sh "$SELF" 2>&1); dial_rc=$?
+  }
+
+  decl_plant_stub 1                      # a FAILING declaration predicate for every DECL case below
+  rm -f "$T/conformance/ceremony-binding.sh"   # keep the GO leg N/A for the DECL cases
+
+  # DA1 — the conf ALONE refuses. No env var carries a VALUE (dial_run exports both names as empty
+  # strings, and empty is indistinguishable from unset to the reader's `${NAME:-}`) — which is the
+  # whole point of the slice: an env-var flip binds nothing, while repo-carried state binds without
+  # anyone remembering to export.
+  dial_plant 'KIT_PUSH_DECL=enforce'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" refuse "conf DECL=enforce refuses with NO env var set"
+  decl_expect_contains "conf-driven refusal uses the enforce prefix" "kit pre-push:" "$dial_out"
+
+  # DA2 — conf `observe` is observe (the liveness anchor's opposite: a reader that answered
+  # `enforce` for any parseable conf would pass DA1 and fail here).
+  dial_plant 'KIT_PUSH_DECL=observe'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" allow "conf DECL=observe allows"
+  decl_expect_contains "conf observe prints the observe prefix" "kit pre-push (observe):" "$dial_out"
+
+  # DA3 — ESCALATION is permitted: env `enforce` over a conf `observe` refuses.
+  dial_plant 'KIT_PUSH_DECL=observe'
+  dial_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" refuse "env enforce ESCALATES a conf observe"
+
+  # DA4 — DE-ESCALATION LOSES, LOUDLY. This is the owner-lens finding the whole precedence rule
+  # exists for: env-wins would leave the flip one silent, sticky `export KIT_PUSH_DECL=observe`
+  # from undone — a bypass cheaper than --no-verify, which at least announces itself per command.
+  dial_plant 'KIT_PUSH_DECL=enforce'
+  dial_run observe "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" refuse "env observe CANNOT de-escalate a conf enforce"
+  decl_expect_contains "the de-escalation attempt is announced" "cannot de-escalate" "$dial_out"
+  decl_expect_contains "the anomaly line names the durable dial file" ".kit/dials.conf" "$dial_out"
+
+  # DA5 — an ABSENT conf is observe (fail-safe; and the export ships no conf, so this IS the
+  # adopter's first-run face). A garbage value is observe too — the exact-string rule, conf side.
+  dial_plant -
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" allow "absent conf = observe (fail-safe; the adopter export's face)"
+  dial_plant 'KIT_PUSH_DECL=1'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" allow "conf DECL=1 is NOT the exact string — stays observe"
+  # ...and a conf line for a DIFFERENT dial must not answer this one (a `grep enforce` reader would
+  # pass every case above and refuse here).
+  dial_plant 'KIT_PUSH_GO=enforce'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" allow "a conf entry for ANOTHER dial does not enforce this one"
+
+  # DA6 — GUARD SKEW: a re-copied newer hook over an OLDER tree guard-core that lacks
+  # kit_dial_mode must fall back to the bare env read QUIETLY (fail-open toward observe, the
+  # acceptable direction) — never spray "command not found" and never refuse on the conf it
+  # cannot read. DECL_CORE is exactly that older core: it defines guard_check_push and nothing else.
+  dial_plant 'KIT_PUSH_DECL=enforce'
+  decl_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "skew: a guard-core without kit_dial_mode falls back to the env read"
+  case "$decl_out" in
+    *'not found'*) echo "FAIL: skew fallback sprayed a 'not found' diagnostic: $decl_out"; fail=1 ;;
+    *) echo "PASS: skew fallback is quiet (no 'not found' spray)" ;;
+  esac
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "skew: the env dial still works through the fallback"
+
+  # DA7 — the GO leg reads the SAME conf (both go_relay branches). The fixture ledger exists in $T,
+  # no origin ref does (deleted by G8), so the class is underivable => fail-safe HIGH => the
+  # predicate runs and fails: the only thing deciding the rc here is the dial.
+  rm -f "$T/conformance/loop-state.sh"          # decl leg N/A for the GO cases
+  go_plant_stub "$T" 1
+  dial_plant 'KIT_PUSH_GO=enforce'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" refuse "conf GO=enforce refuses with NO env var set"
+  decl_expect_contains "conf-driven GO refusal names the record command" "promotion-verify.sh record" "$dial_out"
+  dial_plant 'KIT_PUSH_GO=observe'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z" ""
+  decl_expect_rc "$dial_rc" allow "conf GO=observe allows"
+  # ...and the 2-REF-LINE SHAPE. ⚠️ READ THE CLAIM CAREFULLY (corrected, review round 1): this case
+  # does NOT discriminate the memoized branch's dial read. The push loop's `status` is STICKY (the
+  # ref-line while-loop's status accumulator is set to 1 and never cleared), so under conf enforce the FIRST relay's `return 1` has
+  # already decided the exit code before the memoized branch is reached — a mutant reverting that
+  # branch to the bare env read SURVIVES every case in this file. What the case pins is the shape:
+  # a multi-ref-line push under a conf-driven enforce still refuses, and still relays once. The
+  # memoized site's conf read is therefore DEFENCE IN DEPTH against a future de-memoisation, not a
+  # mutant-killed assertion — and since hooks/* is outside non-vacuity's sweep (target regex is
+  # `conformance/*.sh`), hand-built mutant discrimination is the only substitute control, so a claim
+  # it cannot support must not be made here. Design §10 amendment A4 records the correction.
+  dial_plant 'KIT_PUSH_GO=enforce'
+  dial_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z
+refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
+  decl_expect_rc "$dial_rc" refuse "conf GO=enforce refuses on a 2-branch push (rc decided by the FIRST relay; memoized site rc-unobservable)"
+  dial_plant -
 
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi

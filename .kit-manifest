@@ -103,6 +103,7 @@ conformance/definition-of-deployable.md
 conformance/dep-scan-visibility.sh
 conformance/deploy-decision-integrity.sh
 conformance/deployable-ready.sh
+conformance/dial-state.sh
 conformance/discovery-complete.sh
 conformance/doc-budget.sh
 conformance/doctor-wired.sh

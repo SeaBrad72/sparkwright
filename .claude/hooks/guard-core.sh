@@ -71,7 +71,10 @@ _fs_case_insensitive() {
 # ordinary PR, clearable only with `--admin` — defeating §13 rather than enforcing it. The design's
 # stated cost ("rare, and only a guard prompt") was wrong on both halves.
 #
-#   TIER 1 — kit-owned names, folded ALWAYS. `.claude/`, `.github/`, `.git/`, `.kit/`, `codeowners`,
+#   TIER 1 — kit-owned names, folded ALWAYS. `.claude/`, `.github/`, `.git/`, the ENUMERATED `.kit/`
+#   confs (budget · roster · model-tiers · model-map · dials — a FILENAME enumeration, NOT a `.kit/`
+#   directory prefix; the earlier wording claimed a prefix the patterns never implemented, which is
+#   how `.kit/dials.conf` measured ORDINARY the day before it shipped), `codeowners`,
 #   `claude.md`, `development-*.md`, the named scripts, the scanner-ignore files. Nobody names
 #   application code `CLAUDE.md`, so there is no false-positive surface and these stay closed on EVERY
 #   platform. This is the tier the real attacks used (`.Claude/hooks/guard-core.sh`, `Claude.md`).
@@ -145,6 +148,7 @@ _cpp_kitowned() {
     */.github/workflows/*|.github/workflows/*|*/.git/*|.git/*|\
     .kit/budget.conf|*/.kit/budget.conf|.kit/roster.conf|*/.kit/roster.conf|\
     .kit/model-tiers.conf|*/.kit/model-tiers.conf|.kit/model-map.conf|*/.kit/model-map.conf|\
+    .kit/dials.conf|*/.kit/dials.conf|\
     codeowners|*/codeowners|claude.md|*/claude.md|\
     development-standards.md|*/development-standards.md|\
     development-process.md|*/development-process.md|\
@@ -244,6 +248,7 @@ _cpp_match() {
     .kit/roster.conf|*/.kit/roster.conf|\
     .kit/model-tiers.conf|*/.kit/model-tiers.conf|\
     .kit/model-map.conf|*/.kit/model-map.conf|\
+    .kit/dials.conf|*/.kit/dials.conf|\
     scripts/model-tier.sh|*/scripts/model-tier.sh|\
     scripts/runaway-guard.sh|*/scripts/runaway-guard.sh|\
     scripts/orchestrator-run.sh|*/scripts/orchestrator-run.sh|\
@@ -851,7 +856,7 @@ _cp8b_redirect_hits_cp() {
 _cp8b_scan_denied() {
   _ss=$1
   _pathhit=1
-  if printf '%s' "$_ss" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
+  if printf '%s' "$_ss" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
     _pathhit=0
   else
     # bare control-plane DIRECTORY token (the D1 gap): `bash -c "mv conformance /tmp"`.
@@ -1581,4 +1586,75 @@ guard_check_skill() {
     printf 'kit prefers its own roster (skills/; see skills/using-skills/SKILL.md for the foreign->kit equivalent). To use `%s` anyway, set KIT_ROSTER_GUARD=off for this session.\n' "$_sk"
   fi
   return 0
+}
+
+# kit_dial_mode "<DIAL_NAME>": the ENFORCEMENT-DIAL reader (DIAL-DELIVERY Δ-A, ruling D-240811-2.1).
+# Prints exactly `enforce` or `observe` on stdout and ALWAYS returns 0 — the consumer (today
+# hooks/pre-push's two legs) compares the printed word, so a dial can never wedge a push by erroring.
+#
+# SOURCE: $ROOT/.kit/dials.conf — the REPO-ROOT path, never cwd-relative, so a linked worktree and a
+# fixture tree each read their own state (and the kit's own conf can never leak into a fixture, which
+# is what keeps hooks/pre-push's dial-leg selftests observe-by-default). $ROOT is the pre-push hook's
+# own derivation when set; otherwise it is derived here. PARSE, DON'T SOURCE — guard_check_skill's
+# proven idiom above (:1541-1556): a conf file must never become executable code reachable from a gate.
+#
+# FAIL-SAFE toward OBSERVE (the load-bearing invariant, matching the roster dial's fail-safe-to-off):
+# an absent/unreadable/garbage file, a missing key, a value that is not exactly `enforce`, or a dial
+# NAME outside [A-Z0-9_] all print `observe`. A dial that cannot be read must never refuse a push.
+#
+# PRECEDENCE IS ASYMMETRIC, and that asymmetry is the mechanism, not a nicety (owner-lens finding 1):
+#   * the conf value is AUTHORITATIVE;
+#   * an env var of the same name may ESCALATE observe -> enforce (a per-session tightening);
+#   * an env var may NOT de-escalate a conf `enforce`. It LOSES, and one loud anomaly line is printed
+#     (the SEC M1 shape at hooks/pre-push:224-236). Env-wins would leave every flip one silent,
+#     sticky `export` from undone — a bypass CHEAPER than --no-verify, which at least announces
+#     itself per command, and the exact "remember to export" asymmetry the ruling was written to kill.
+# An UNSET/empty env var is the normal case and is never an anomaly.
+kit_dial_mode() {
+  _kdm_name=$1
+  # A dial name is a shell identifier by construction; anything else would reach the indirection
+  # below, so reject it here and fail safe (this function is never a place to evaluate input).
+  case "$_kdm_name" in
+    ''|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;;
+  esac
+  _kdm_root="${ROOT:-}"
+  [ -n "$_kdm_root" ] || _kdm_root=$(git rev-parse --show-toplevel 2>/dev/null) || _kdm_root=""
+  [ -n "$_kdm_root" ] || _kdm_root=.
+  _kdm_conf="$_kdm_root/.kit/dials.conf"
+  _kdm_val=''
+  if [ -r "$_kdm_conf" ]; then
+    _kdm_val=$(grep -E "^[[:space:]]*${_kdm_name}[[:space:]]*=" "$_kdm_conf" 2>/dev/null | tail -n1 \
+      | sed -E "s/^[[:space:]]*${_kdm_name}[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//")
+  fi
+  # The env side, read INDIRECTLY (POSIX sh has no ${!name}); the name is charset-checked above.
+  _kdm_env=$(eval "printf '%s' \"\${$_kdm_name:-}\"")
+  if [ "$_kdm_val" = enforce ]; then
+    if [ -n "$_kdm_env" ] && [ "$_kdm_env" != enforce ]; then
+      # SANITIZE BEFORE INTERPOLATING (review round 1). The value is caller-controlled: a newline in
+      # it would FORGE an extra instruction line on stderr — the same injection class hooks/pre-push
+      # hardens `refuse_no_core` against (:17-26, where a crafted path could inject `--no-verify`
+      # into a refusal). Strip CR/LF and bound the length; the diagnostic value is the first few
+      # bytes, not an unbounded echo of whatever was exported.
+      _kdm_safe=$(printf '%s' "$_kdm_env" | tr -d '\n\r' | cut -c1-40)
+      # ONE LINE PER DIAL PER PROCESS, not per call (review round 1): decl_check_ref and go_relay each
+      # consult the dial per ref-line, so a 3-ref push printed the identical anomaly 3x — the same
+      # line-discipline defect go_relay's own ONE-RELAY-PER-INVOCATION rule exists to prevent. Keyed
+      # per NAME so DECL and GO each still get their own warning. ⚠️ CEILING, measured (review round
+      # 1): this memo binds only WITHIN ONE PROCESS. A caller that consults the dial inside a command
+      # substitution runs each call in a SUBSHELL, so the assignment below cannot propagate back —
+      # measured 3 anomaly lines on a 3-ref-line push both before and after this memo alone. The
+      # suppression that actually binds is therefore the CALLER's: hooks/pre-push's `_kit_dial`
+      # resolves each dial at most once per push invocation (3 -> 1, re-measured). This memo is kept
+      # because it is correct for any in-process consumer and costs nothing; it is NOT the control.
+      case " ${_kdm_warned:-} " in
+        *" $_kdm_name "*) : ;;
+        *)
+          printf '%s\n' "kit dial: $_kdm_name='$_kdm_safe' in the environment cannot de-escalate the repo-carried enforce in .kit/dials.conf - the conf WINS (env may only escalate observe->enforce). Change the dial through the ratified control-plane ceremony; a one-off bypass is git push --no-verify, which at least announces itself." >&2
+          _kdm_warned="${_kdm_warned:-} $_kdm_name" ;;
+      esac
+    fi
+    printf 'enforce\n'; return 0
+  fi
+  [ "$_kdm_env" = enforce ] && { printf 'enforce\n'; return 0; }
+  printf 'observe\n'; return 0
 }

@@ -108,6 +108,18 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
    **This is human-only, by design.** An agent seat **cannot** perform it: shell copy/`chmod`/move on hook paths are guard-denied and the agent's file-write tool cannot set mode `755`, so a hook an agent installs is non-executable and **silently ignored by git** (tracked as `AGENT-CANNOT-INSTALL-AN-EXECUTABLE-HOOK`). And `core.hooksPath` will **not** satisfy the Inception gate — `inception-done.sh` hard-codes the literal `.git/hooks/pre-push` path — so redirecting hooks elsewhere leaves the gate failing. Copy the file to that exact path and set the mode.
 
+6. **The hook's two enforcement dials — you ship OBSERVE, and opt in when you're ready.** The installed hook has two legs that can refuse a push: the **entry declaration** (`KIT_PUSH_DECL` — the pushed head must carry a valid `Kit-*` trailer block) and the **design GO** (`KIT_PUSH_GO` — a Sensitive/Control-plane change-set must have a branch-scoped GO record). Both **observe** on your tree: they print and allow. That is deliberate — your first push is never red, and the kit's own dial state is `export-ignore`d so it can never arrive with the copy.
+
+   To turn one on, create `.kit/dials.conf` at your repo root with the dial(s) you want:
+
+   ```sh
+   printf 'KIT_PUSH_DECL=enforce\n' > .kit/dials.conf
+   ```
+
+   Only the exact string `enforce` enforces; an absent file, a missing key, or any other value observes. Read it before you flip it: the value is **repo-carried**, so it applies to everyone who has installed the hook the moment it merges — no re-copy, because the hook reads the file live on every push. Precedence is **asymmetric**: an environment variable of the same name may *escalate* `observe` → `enforce` for one session, but it can never de-escalate an `enforce` set in the file (it loses, loudly) — otherwise one `export` would silently undo the decision. Roll a flip back the same way you made it: edit the file. And keep `.kit/dials.conf` under review like any other control-plane file — the kit's guard classifies it as control-plane, so an agent seat cannot flip your dials for you.
+
+   **Honest ceiling, unchanged by any dial:** the hook is a speed bump, not a boundary — `git push --no-verify`, a never-installed hook and a stale copy all bypass it. CI is the backstop.
+
 ## 3. Inception (adapted)
 
 `scripts/incept.sh` is the **greenfield** bootstrap — it renames the kit's root `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps fresh project artifacts, which assumes you started *from* the kit. In a brownfield repo you do the Inception **judgment** steps by hand (`../../START-HERE.md` steps 1–7): write the charter, record the stack as **ADR-000**, instantiate the project `CLAUDE.md` from `../../templates/PROJECT-CLAUDE-TEMPLATE.md`, start `RUNBOOK.md`, add a `.env.example` (the gate requires one), pick a backlog backend (`work-tracking/adapters.md`), assign roles. ⚠️ **`../../START-HERE.md` steps 1–7 are the source of truth** — this inline list is orientation, not the manifest (an enumerated list is exactly what drifts, which is why §1 says copy the whole tree).

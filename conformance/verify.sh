@@ -303,6 +303,18 @@ check control loop-state-selftest      --kitself sh conformance/loop-state.sh --
 # grading time, not a pristine checkout of the graded SHA — "identical SHA" is a claim about
 # WHICH commit is graded, not a guarantee the working tree matches it byte-for-byte.
 check control pre-push-selftest        --kitself sh hooks/pre-push --selftest
+# dial-state (DIAL-DELIVERY Δ-A) — the presence+values lock on .kit/dials.conf, the repo-carried
+# state the two rows above actually read. The LIVE check is registered (not just a selftest): it is
+# base-independent and needs no SHA, and it is the row that would red a COMMITTED disarm — the whole
+# point of moving the dial out of an env var. --kitself IS LOAD-BEARING and is the same category as
+# the three rows above: `.kit/dials.conf` is export-ignored, so an adopter tree legitimately has
+# none and reads observe by design; holding an adopter to the kit's flip would be a kit ratchet
+# charged to adopter content (the doc-budget lesson). The check ALSO scope-guards itself in-script
+# on the same un-spoofable marker set, so neither surface alone is the switch. Registering it here
+# is additionally what enrols the file in non-vacuity.sh's sweep (which selects from these
+# `^check control` rows), and its own --selftest runs as a dedicated ci.yml step (H3 pair pointer:
+# conformance-selftests, "dial-state self-test").
+check control dial-state               --kitself sh conformance/dial-state.sh
 # phase-gate is the EDIT-TIME sibling of loop-state's merge-time refusal floor ([S1a-i]). BOTH modes
 # are registered, and both are base-INDEPENDENT: the default mode checks the §5 reason vocabulary,
 # the totality of the rc contract over it and the T2 ceremony allowlist's must-refuse fixtures, while

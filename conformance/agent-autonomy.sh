@@ -364,6 +364,26 @@ assert_deny  "redirect model-map.conf" '{"tool_name":"Bash","tool_input":{"comma
 assert_deny  "sed -i model-map.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/opus/haiku/ .kit/model-map.conf"}}'
 assert_allow "read model-map.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/model-map.conf"}}'
 
+# --- DIAL-DELIVERY Δ-A: agent CANNOT disarm the enforcement dials (.kit/dials.conf is control-plane) ---
+# The file DECIDES whether `git push` is refused for a missing Entry Declaration / design GO, so it is
+# control-plane BEFORE it exists (design §2 flag 1: measured ordinary, and `rm`/redirect on it ALLOWED,
+# while the identical forms on roster.conf were denied — guard-core's `:74` comment claimed a `.kit/`
+# prefix the patterns never implemented). All three matcher sites carry it: _cpp_kitowned, _cpp_match
+# and the shell-redirect regex.
+assert_deny  "Write dials.conf"    '{"tool_name":"Write","tool_input":{"file_path":".kit/dials.conf","content":"KIT_PUSH_DECL=observe"}}'
+assert_deny  "Edit dials.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/dials.conf","old_string":"KIT_PUSH_DECL=enforce","new_string":"KIT_PUSH_DECL=observe"}}'
+assert_deny  "redirect dials.conf" '{"tool_name":"Bash","tool_input":{"command":"echo KIT_PUSH_DECL=observe > .kit/dials.conf"}}'
+assert_deny  "sed -i dials.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/enforce/observe/ .kit/dials.conf"}}'
+assert_allow "read dials.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/dials.conf"}}'
+# DISCLOSED ALLOW, not an oversight (design §4 + §9): the shell matchers key on the DIR-PREFIXED path,
+# so a `cd .kit` followed by a bare-basename write escapes every shell form. That is the measured
+# GUARD-BASENAME-AFTER-CD-BYPASS class (boarded, its own slice per D3′ drift-control) and it covers
+# EVERY dir-prefix-keyed deny in this file, not just this one. Asserted so the residual is measured
+# rather than silent; the durable controls meanwhile are the Edit/Write-tool denies above, the §5
+# presence+values lock (committed disarms) and the human-reviewed commit.
+assert_allow "cd .kit then bare-basename write (GUARD-BASENAME-AFTER-CD-BYPASS, disclosed)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x > dials.conf"}}'
+
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
 assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Dev"}}'
 assert_allow "git checkout src"     '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- src/app.ts"}}'
