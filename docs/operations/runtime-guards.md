@@ -20,7 +20,7 @@ How the kit's destructive-action deny-matrix protects **more than the Claude Cod
 | Surface | File | Covers | Cooperation |
 |---------|------|--------|-------------|
 | Claude Code | `.claude/hooks/guard.sh` (PreToolUse) | command + path + MCP-tool (`mcp__.*`) | automatic in Claude Code |
-| Any git client | `hooks/pre-push` → `.git/hooks/pre-push` | git-history (force-push, push-to-main) | none — every runtime + humans |
+| Any git client | `hooks/pre-push` → `.git/hooks/pre-push` (or the config pointing at the tracked `hooks/`) | git-history (force-push, push-to-main) | none — every runtime + humans |
 | Any other runtime | `scripts/kit-guard` CLI | full command + path matrix | runtime pipes commands through it |
 | CI (any harness) | `conformance/agent-boundary.sh` + `gate-agent-boundary` job | control-plane-diff ratification | automatic on every PR — the harness-independent floor |
 

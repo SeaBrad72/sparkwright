@@ -253,6 +253,13 @@ assert_allow "read guard.sh"        '{"tool_name":"Read","tool_input":{"file_pat
 
 # --- 9b review hardening: self-protection bypass closes (must DENY) ---
 assert_deny "core.hooksPath"        '{"tool_name":"Bash","tool_input":{"command":"git config core.hooksPath /dev/null"}}'
+# The hooks-path config key is human-gated in BOTH directions, and the READ form was unfixtured until
+# HOOK-INSTALL-RECURS-PER-SLICE. The deny is a string match on `git config … core.hooksPath`, so it
+# catches `--get` as collateral — measured, and now pinned: a future narrowing to write-verbs only
+# would leave the write assert above green while the guard's real behaviour changed underneath it.
+# That key decides WHICH hook file git executes at push time, so it stays the human's keystroke —
+# tracked-hooks mode is installed BY that keystroke and this slice leaves the deny byte-untouched.
+assert_deny "core.hooksPath (read form)" '{"tool_name":"Bash","tool_input":{"command":"git config --get core.hooksPath"}}'
 assert_deny "git checkout guard"    '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- .claude/hooks/guard.sh"}}'
 assert_deny "git restore guard"     '{"tool_name":"Bash","tool_input":{"command":"git restore .claude/hooks/guard.sh"}}'
 assert_deny "write double-slash"    '{"tool_name":"Write","tool_input":{"file_path":".claude//hooks/guard.sh","content":"x"}}'
@@ -265,6 +272,19 @@ assert_deny "install over guard"    '{"tool_name":"Bash","tool_input":{"command"
 assert_deny "Write guard-core"     '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks/guard-core.sh","content":"x"}}'
 assert_deny "Edit kit-guard"       '{"tool_name":"Edit","tool_input":{"file_path":"scripts/kit-guard","old_string":"a","new_string":"b"}}'
 assert_deny "Write pre-push"       '{"tool_name":"Write","tool_input":{"file_path":"hooks/pre-push","content":"x"}}'
+# --- DISCLOSED-OPEN residual, asserted rather than left silent: the basename-after-cd write form ----
+# MEASURED, NOT DESIRED. Control-plane classification is by PATH, so a shell write whose command text
+# names only a BASENAME after `cd`-ing into the directory is not recognized as touching hooks/ — it is
+# ALLOWED today (the GUARD-BASENAME-AFTER-CD-BYPASS class, boarded as its own cure slice). The line
+# below asserts that measured ALLOW so the hole is a fixture, not a footnote: under tracked-hooks mode
+# (HOOK-INSTALL-RECURS-PER-SLICE) the tracked hooks/pre-push IS the live hook, so this front door is
+# what stands between an agent and arbitrary code at push time — and its residual is exactly this
+# form. The standing mitigation is ceremony-time, not real-time: guard-wired.sh REDs on a dirty
+# working-tree hook — and, since review round 1, it REDs on it BEFORE testing for the kit marker, so
+# the markerless file this very write form produces cannot buy a "foreign hook, not ours to judge"
+# pass. Detection, not prevention. When the cure slice lands, THIS line flips to assert_deny and that flip is its
+# evidence. A silent hole and a fixtured hole cost the same to exploit; only one of them gets fixed.
+assert_allow "cd-basename hook write" '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x > pre-push"}}'
 assert_deny "sed -i guard-core"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/hooks/guard-core.sh"}}'
 assert_deny "rm kit-guard"         '{"tool_name":"Bash","tool_input":{"command":"rm scripts/kit-guard"}}'
 # --- 9d-b: must still ALLOW (no new over-block) ---

@@ -622,14 +622,47 @@ sect untouched "$N_UNT" "yours; this update proposes nothing for them" untouched
 # so `hooks/pre-push` moving in offered/conflict is invisible where it matters: nothing this tool
 # computes ever touches `.git/hooks/pre-push`, and a stale installed copy is exactly the fail-open
 # rung guard-wired.sh's rung leg now certifies (docs/architecture/2026-08-05-b3-rung-certifier-design.md).
+# Δ3 (HOOK-INSTALL-RECURS-PER-SLICE): WHICH install mode this repo runs decides whether there is a
+# re-copy to nag about AT ALL. Ask git rather than assume: `git rev-parse --git-path hooks/pre-push`
+# respects core.hooksPath, so when the live hook resolves inside the repo's OWN tracked hooks/ dir the
+# tracked file IS the live hook — the delta computed above over hooks/pre-push IS the update, and a
+# prescribed `cp` would be actively wrong (there is nothing to copy to). Every failure to resolve
+# answers `installed`: the copy-mode advice is the safe default, since it is what an unset config means.
+# _ku_git: the same env-scrubbing wrapper guard-wired.sh's _gw_git and inception-done.sh's _id_git use
+# (review round 1). The consequence here is milder than at a gate — the worst case is WRONG ADVICE
+# about whether a copy needs refreshing, not a forged verdict — but the fix is three lines and the
+# alternative is a third copy of the same known hole left open on purpose.
+_ku_git() {
+  ( unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE \
+          GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
+          GIT_CONFIG GIT_CONFIG_PARAMETERS; git "$@" )
+}
+hook_mode() {
+  _hm_top=$( _ku_git -C "$REPO" rev-parse --show-toplevel 2>/dev/null ) || { echo installed; return 0; }
+  _hm_live=$( _ku_git -C "$REPO" rev-parse --git-path hooks/pre-push 2>/dev/null ) || { echo installed; return 0; }
+  case "$_hm_live" in /*) : ;; *) _hm_live="$REPO/$_hm_live" ;; esac
+  _hm_livedir=$( CDPATH='' cd "$( dirname "$_hm_live" )" 2>/dev/null && pwd -P ) || { echo installed; return 0; }
+  _hm_wantdir=$( CDPATH='' cd "$_hm_top/hooks" 2>/dev/null && pwd -P ) || { echo installed; return 0; }
+  if [ "$_hm_livedir" = "$_hm_wantdir" ]; then echo tracked; else echo installed; fi
+}
+HOOK_MODE=$(hook_mode)
+
 if grep -qx 'hooks/pre-push' "$TMP/offered" "$TMP/conflict" 2>/dev/null; then
-  echo "== HOOK REFRESH — human step, not in the patch =="
-  echo "  hooks/pre-push changed upstream. This tool computed a delta for the TRACKED source file"
-  echo "  only; it cannot refresh the INSTALLED hook at .git/hooks/ — git hooks are not version-"
-  echo "  controlled, and no patch this tool emits ever writes there. Refresh it yourself, the same"
-  echo "  human-only way brownfield adoption does (docs/adoption/brownfield.md §5):"
-  echo "    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push"
-  echo "  sh conformance/guard-wired.sh confirms the result (present, executable, FRESH)."
+  if [ "$HOOK_MODE" = tracked ]; then
+    echo "== HOOK REFRESH — nothing to refresh: this repo runs TRACKED-HOOKS mode =="
+    echo "  hooks/pre-push changed upstream. core.hooksPath points at this repo's own hooks/ dir, so the"
+    echo "  TRACKED file IS the live hook: applying the delta above (or resolving its conflict) is the"
+    echo "  whole update. There is no installed copy to keep in step, and no cp to run."
+    echo "  sh conformance/guard-wired.sh confirms the result (live, executable, worktree matches HEAD)."
+  else
+    echo "== HOOK REFRESH — human step, not in the patch =="
+    echo "  hooks/pre-push changed upstream. This tool computed a delta for the TRACKED source file"
+    echo "  only; it cannot refresh the INSTALLED hook at .git/hooks/ — git hooks are not version-"
+    echo "  controlled, and no patch this tool emits ever writes there. Refresh it yourself, the same"
+    echo "  human-only way brownfield adoption does (docs/adoption/brownfield.md §2 step 5):"
+    echo "    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push"
+    echo "  sh conformance/guard-wired.sh confirms the result (present, executable, FRESH)."
+  fi
   echo ""
 fi
 
@@ -663,7 +696,15 @@ echo "  * EXPECT CLAUDE.md. incept STAMPS the kit version into your project doc,
 echo "    it on the kit's side EVERY release: offered while you have not touched it, a CONFLICT the moment"
 echo "    you have. That is the design working (it is YOUR doc), not a fault — usually you want only the"
 echo "    '**Kit version adopted:**' line."
-echo "  * GIT HOOKS ARE NOT IN THE PATCH. hooks/pre-push is a tracked SOURCE file like any other — the"
-echo "    delta above covers it — but the INSTALLED .git/hooks/pre-push is untracked and this tool never"
-echo "    writes there. A HOOK REFRESH section above (when it appears) names the human-run command;"
-echo "    sh conformance/guard-wired.sh is how you confirm it landed."
+if [ "$HOOK_MODE" = tracked ]; then
+  echo "  * GIT HOOKS: this repo runs TRACKED-HOOKS mode (core.hooksPath -> its own hooks/), so the live"
+  echo "    hook IS the tracked hooks/pre-push and the delta above covers it in full — there is no"
+  echo "    untracked copy this tool would have to leave to you. Applying the patch is the whole update;"
+  echo "    sh conformance/guard-wired.sh is how you confirm it landed."
+else
+  echo "  * GIT HOOKS ARE NOT IN THE PATCH. hooks/pre-push is a tracked SOURCE file like any other — the"
+  echo "    delta above covers it — but the INSTALLED .git/hooks/pre-push is untracked and this tool never"
+  echo "    writes there. A HOOK REFRESH section above (when it appears) names the human-run command;"
+  echo "    sh conformance/guard-wired.sh is how you confirm it landed. (The other documented install —"
+  echo "    core.hooksPath pointing at the tracked hooks/ dir — has no copy to refresh: brownfield.md §2 step 5.)"
+fi

@@ -689,6 +689,39 @@ guard_hookspath_is_noop() {  # <core.hooksPath value> -> 0 (true) iff it names t
   [ -n "$_hp_abs" ] && [ -n "$_hp_def" ] && [ "$_hp_abs" = "$_hp_def" ]
 }
 
+guard_hookspath_is_tracked_dir() {  # <core.hooksPath value> -> 0 (true) iff it names THIS worktree's own tracked hooks/
+  # HOOK-INSTALL-RECURS-PER-SLICE, review round 1 (reviewer, MEASURED): preflight is the THIRD
+  # enforcement surface, and it did not move with the ruling. `docs/adoption/brownfield.md` §2 step 5
+  # now RECOMMENDS pointing core.hooksPath at the repo's own tracked `hooks/` — after which
+  # `guard-wired.sh` certifies that file in full and `inception-done.sh` accepts it as the live hook,
+  # while this script still printed "skip pre-push guard — … this repo manages its own hooks. The kit
+  # is NOT judging hooks/pre-push. Install the guard there yourself." Three surfaces, two answers: the
+  # adopter who takes the documented advice is told by one tool that the guard is live and by another
+  # that the kit is not looking. That is the same class of contradiction Δ6 fixed at the Inception
+  # gate, one surface over.
+  # THE VALUE IS NOT FOREIGN WHEN IT NAMES THE REPO'S OWN TRACKED HOOKS DIR, so the deference the skip
+  # exists to grant has no beneficiary: no other tool owns `hooks/` — the kit's own hook is committed
+  # there. The tree is judged normally, exactly as the no-op case is (H2's reasoning, a second value).
+  # `guard_hookspath_is_noop`'s SIBLING, deliberately separate rather than a widened noop: the two
+  # answer different questions ("is this the default .git/hooks?" vs "is this the tracked hooks/?"),
+  # they print different things at the call site, and folding them would make one predicate's kill
+  # decision cover the other's.
+  # RESOLUTION RULE, same as the sibling's: a RELATIVE value resolves against the WORKTREE TOP-LEVEL
+  # (measured, git 2.48.1). No main-worktree retry is needed here and none is added: attempt 1 uses
+  # guard_resolve, which is existence-independent for the LAST component, so it resolves from a linked
+  # worktree too — and in a linked worktree `<wt>/hooks` is exactly the right answer, since that
+  # checkout has its own hooks/ and its own HEAD (the same reason guard-wired.sh judges the pair
+  # there). Locked by leg H6.
+  _ht_top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -n "$_ht_top" ] || return 1
+  _ht_want=$(guard_resolve "$_ht_top/hooks") || _ht_want=""
+  case "$1" in
+    /*) _ht_abs=$(guard_resolve "$1") || _ht_abs="" ;;
+    *)  _ht_abs=$(guard_resolve "$_ht_top/$1") || _ht_abs="" ;;
+  esac
+  [ -n "$_ht_abs" ] && [ -n "$_ht_want" ] && [ "$_ht_abs" = "$_ht_want" ]
+}
+
 check_guard_installed() {
   [ "$(guard_tree_class)" = incepted ] || return 0     # N/A: silent, no output (anti-wolf)
   # --git-path, not a hardcoded .git/hooks/ — the two diverge under a linked worktree (measured on git
@@ -780,7 +813,11 @@ check_guard_installed() {
     GUARD_STATE=hostile-path; GUARD_REFUSE=1
     return 0
   fi
-  if [ -n "$_hp" ] && ! guard_hookspath_is_noop "$_hp"; then
+  # THREE VALUES REACH HERE, NOT TWO (HOOK-INSTALL-RECURS-PER-SLICE, review round 1): the default hooks
+  # dir (a no-op — judged normally, leg H2), the repo's own TRACKED hooks/ dir (the kit's documented
+  # second install — also judged normally, leg H6, because the kit's hook is committed there and no
+  # other tool owns it), and anything else (a genuine foreign redirect — the disclosed skip, leg H1).
+  if [ -n "$_hp" ] && ! guard_hookspath_is_noop "$_hp" && ! guard_hookspath_is_tracked_dir "$_hp"; then
     # printf with the config value as an ARGUMENT to %s, never inside the format string: dash's builtin
     # `echo` expands backslash escapes, so a core.hooksPath containing a literal `\n` could synthesise
     # an extra line into a security check's verdict. Locked by leg E1 (which also records why the
@@ -1477,6 +1514,21 @@ if [ "$SELFTEST" -eq 1 ]; then
       # after that stanza had been corrected. Finding Y6.)
       hookspath)    rm -f "$_d/.git/hooks/pre-push"; mkdir -p "$_d/.husky"
                     printf '[core]\n\thooksPath = .husky\n' >> "$_d/.git/config" ;;
+      # hookspath-tracked models the kit's OWN documented second install (brownfield.md §2 step 5(a)):
+      # core.hooksPath naming the repo's own TRACKED hooks/ dir, where the kit's committed hook already
+      # is. The fixture keeps hooks/pre-push (k11_fx copies the real one there) and installs NOTHING at
+      # the default path, so "judged normally" and "skipped" print opposite things: judged reaches the
+      # ladder and reports the guard it finds, skipped prints the deferential line and says the kit is
+      # NOT judging hooks/pre-push — on a tree whose hooks/pre-push IS the live guard. Written straight
+      # into .git/config for the same reason as the arms around it: the runtime guard human-gates that
+      # config key.
+      hookspath-tracked) rm -f "$_d/.git/hooks/pre-push"
+                    printf '[core]\n\thooksPath = hooks\n' >> "$_d/.git/config" ;;
+      # hookspath-tracked-none is its load-bearing sibling: same setting, but the tracked hook is GONE,
+      # so nothing runs on push. Judged normally this MISSes and ARMS the refusal; skipped it is silent
+      # and arms nothing — the fail-open the skip becomes once the recommended install is taken.
+      hookspath-tracked-none) rm -f "$_d/.git/hooks/pre-push"; rm -f "$_d/hooks/pre-push"
+                    printf '[core]\n\thooksPath = hooks\n' >> "$_d/.git/config" ;;
       # hookspath-noop models the tooling that writes the setting that redirects NOTHING. Judged
       # normally (leg H2) — treating "the key is set" as "the key redirects" would go silent on exactly
       # the unguarded fresh clone K11 exists for, which is why this arm installs NO hook.
@@ -1846,6 +1898,32 @@ if [ "$SELFTEST" -eq 1 ]; then
     echo "FAIL: K11/H3 could not build the core.hooksPath linked-worktree fixture (git worktree add failed) — the lane is left unasserted"; fail=1
   fi
   rm -rf "$d" "$_h3wt" 2>/dev/null || true
+
+  # H6 (HOOK-INSTALL-RECURS-PER-SLICE, review round 1) — core.hooksPath naming the repo's OWN TRACKED
+  # hooks/ dir: the kit's second documented install, not a foreign redirect. Before the tracked-dir
+  # predicate this printed the deferential skip — "this repo manages its own hooks. The kit is NOT
+  # judging hooks/pre-push. Install the guard there yourself" — about a file that IS the kit's guard,
+  # on the very install brownfield.md §2 step 5 now recommends, while guard-wired.sh and
+  # inception-done.sh both certify it. Two fixtures, because the pair is what makes the leg
+  # discriminating rather than decorative:
+  #   present -> the guard IS live: judged normally, `ok`, nothing armed (the skip would have printed
+  #              the "not judging" line instead)
+  #   absent  -> nothing runs on push: MISS + refusal ARMED (the skip would have been SILENT — the
+  #              fail-open the disclosed skip becomes the moment the recommended install is taken)
+  # Kill decision: reverting the `&& ! guard_hookspath_is_tracked_dir` conjunct must turn both halves
+  # RED while H1 (a genuine .husky redirect) stays green.
+  d=$(k11_fx incepted hookspath-tracked) || d=""
+  [ -n "$d" ] || { echo "FAIL: K11/H6 fixture unbuildable (mktemp -d failed — disk full?) — its assertions are void"; fail=1; d=$K11_NOFX; }
+  out=$(k11_run "$d") || out="<k11_run aborted>"; rm -rf "$d" 2>/dev/null || true
+  case "$out" in
+    *"skip pre-push guard"*) echo "FAIL: K11/H6 core.hooksPath naming the repo's OWN tracked hooks/ was treated as a foreign redirect and skipped — the kit refuses to judge its own live guard ($out)"; fail=1;;
+    "Runtime guard:"*"ok   pre-push guard installed and executable"*) echo "PASS: K11/H6 the tracked-hooks install is judged normally — the live guard is seen, not deferred to";;
+    *) echo "FAIL: K11/H6 a tracked-hooks tree produced neither a skip nor an ok verdict ($out)"; fail=1;;
+  esac
+  d=$(k11_fx incepted hookspath-tracked-none) || d=""
+  [ -n "$d" ] || { echo "FAIL: K11/H6 sibling fixture unbuildable (mktemp -d failed — disk full?) — its assertions are void"; fail=1; d=$K11_NOFX; }
+  out=$(k11_run "$d") || out="<k11_run aborted>"; rm -rf "$d" 2>/dev/null || true
+  case "$out" in *"GUARD_REFUSE=1 GUARD_STATE=absent"*) echo "PASS: K11/H6 with the tracked hook GONE the same setting ARMS the refusal, instead of going silent";; *) echo "FAIL: K11/H6 a tracked-hooks tree with NO hook stayed silent — the skip is a fail-open on the recommended install ($out)"; fail=1;; esac
 
   # H4 (final fix-loop, finding Y1) — the NO-OP core.hooksPath when the DEFAULT HOOKS DIR DOES NOT EXIST.
   # H2 could not see this: its fixture has a `.git/hooks` (git init creates one), and the old resolution

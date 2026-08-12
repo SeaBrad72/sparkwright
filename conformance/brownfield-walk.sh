@@ -9,6 +9,10 @@
 #   • NEGATIVE (load-bearing): the SAME walk skipping ONLY the human pre-push install FAILs, and FAILs
 #     on the pre-push leg specifically — so a walk that proved nothing (e.g. a tree that passes without
 #     the hook) is caught. The negative is what makes the positive mean something.
+#   • POSITIVE (second install mode): the same walk taking §2 step 5's OTHER documented install — the one-time
+#     `core.hooksPath` keystroke that makes the TRACKED hooks/pre-push live — also reaches rc 0, with
+#     NO installed copy in the tree. §2 step 5 leads with that option, and a documented install no arm walks
+#     is prose; arm 2 is the load-bearing negative for this arm too.
 # The teeth live entirely in this walk (both arms + assertions below), NOT in a pre-oracle accumulator,
 # so non-vacuity.sh reports this check UNCOVERED=no-idiom (a script-selftest outside the mutation sweep,
 # the A6 ceiling precedent) — the intrinsic two-arm structure here is its non-vacuity, stated honestly.
@@ -60,9 +64,14 @@ adopt() {
   # §2/§3 — the HUMAN pre-push install. Git hooks are untracked, so the whole-tree copy brought
   #         hooks/pre-push (the source) but NOT .git/hooks/pre-push. An agent cannot set mode 755
   #         (AGENT-CANNOT-INSTALL-AN-EXECUTABLE-HOOK) — this is a human command.
+  #         install=tracked performs the OTHER documented install instead — the one-time
+  #         `core.hooksPath` keystroke (brownfield §2 step 5 option (a)), which makes the TRACKED
+  #         hooks/pre-push the live hook and leaves the default hooks dir empty on purpose.
   if [ "$_install" = yes ]; then
     cp "$_d/hooks/pre-push" "$_d/.git/hooks/pre-push"
     chmod +x "$_d/.git/hooks/pre-push"
+  elif [ "$_install" = tracked ]; then
+    git -C "$_d" config core.hooksPath hooks
   fi
 
   # §3 — the by-hand Inception judgment artifacts incept would stamp in greenfield.
@@ -145,8 +154,34 @@ selftest() {
     _wfail=1
   fi
 
+  # ── ARM 3 (POSITIVE / liveness for the OTHER documented install): §2 step 5 now LEADS with tracked-hooks
+  #    mode (the one-time core.hooksPath keystroke), so the walk must prove THAT path executable as
+  #    written too — a recommendation no lock exercises is prose. The tree is asserted to carry NO
+  #    installed copy, so its green can only come from the tracked hooks/pre-push being live; arm 2
+  #    (the same tree with neither install) remains the load-bearing negative for both arms.
+  echo "--- arm 3: same walk, tracked-hooks install (core.hooksPath -> the tracked hooks/ dir) ---"
+  _t="$WORK/tracked-hooks"
+  build_legacy "$_t"
+  adopt "$_t" "$EXPORT" tracked
+  if [ -e "$_t/.git/hooks/pre-push" ]; then
+    echo "FAIL: the tracked-hooks fixture has an installed copy — its green would not prove the mode"
+    _wfail=1
+  elif sh conformance/inception-done.sh --surface "$_t" >"$WORK/tracked.out" 2>&1; then
+    if grep -q 'tracked-hooks mode' "$WORK/tracked.out"; then
+      echo "PASS: tracked-hooks walk reaches inception-done --surface rc 0, naming the mode (no installed copy)"
+    else
+      echo "FAIL: tracked-hooks walk passed but the gate did not name the mode (wrong leg passed it?)"
+      sed 's/^/    | /' "$WORK/tracked.out"
+      _wfail=1
+    fi
+  else
+    echo "FAIL: tracked-hooks walk did NOT reach inception-done --surface rc 0 (see below)"
+    sed 's/^/    | /' "$WORK/tracked.out"
+    _wfail=1
+  fi
+
   if [ "$_wfail" -eq 0 ]; then
-    echo "OK: brownfield-walk — the documented brownfield path is executable end to end, and its pre-push leg is load-bearing"
+    echo "OK: brownfield-walk — the documented brownfield path is executable end to end, in BOTH documented install modes, and its pre-push leg is load-bearing"
     return 0
   fi
   echo "FAIL: brownfield-walk — the documented brownfield path is not executable as written (see above)"

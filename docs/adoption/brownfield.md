@@ -100,13 +100,41 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
 > The kit does **not** script this merge: a merge bug could clobber exactly the hooks we're protecting. The merge is human-performed; `guard-wired.sh` verifies the result.
 
-5. **Install the pre-push git hook — a HUMAN step.** `guard-wired.sh` now certifies **both** rungs — the `PreToolUse` `guard.sh` rung **and** the installed `.git/hooks/pre-push` git hook (present, executable, core-resolvable, and FRESH — byte-identical to `hooks/pre-push` as committed at HEAD; a foreign/chained hook without the kit marker is preserved unjudged); a stale or absent kit hook turns `guard-wired: OK` RED (closed: `GUARD-WIRED-BLIND-TO-GIT-HOOK-RUNG`, `STALE-INSTALLED-HOOK`; see `docs/architecture/2026-08-05-b3-rung-certifier-design.md`). The rung leg only runs on an incepted/kit-source tree, outside CI — on a fresh export or a CI runner it N/As, disclosed, never silently. Git hooks are **not** version-controlled, so the whole-tree §1 copy brought `hooks/pre-push` (the source) but **not** `.git/hooks/pre-push`. Install it yourself:
+5. **Make the pre-push git hook live — a HUMAN step.** `guard-wired.sh` certifies **both** rungs — the `PreToolUse` `guard.sh` rung **and** the live pre-push git hook (present, executable, core-resolvable, and FRESH — byte-identical to `hooks/pre-push` as committed at HEAD; a foreign/chained hook without the kit marker is preserved unjudged); a stale, dirty or absent kit hook turns `guard-wired: OK` RED (closed: `GUARD-WIRED-BLIND-TO-GIT-HOOK-RUNG`, `STALE-INSTALLED-HOOK`; see `docs/architecture/2026-08-05-b3-rung-certifier-design.md`). The rung leg only runs on an incepted/kit-source tree, outside CI — on a fresh export or a CI runner it N/As, disclosed, never silently. Git's default hooks directory is **not** version-controlled, so the whole-tree §1 copy brought `hooks/pre-push` (the source) but nothing yet runs it. Make it live yourself:
+
+   There are **two** ways to install it, and both satisfy every gate. Pick one.
+
+   **(a) Recommended where it applies — point git at the tracked `hooks/` directory. One keystroke, forever:**
+
+   ```sh
+   git config core.hooksPath hooks
+   ```
+
+   `hooks/pre-push` then **is** the live hook: no copy exists, so nothing can go stale and no future kit release makes you re-copy anything. **Only do this if BOTH are true** — check before you type it:
+
+   ```sh
+   git config --get core.hooksPath          # must print NOTHING (unset)
+   ls -d .husky .lefthook .githooks 2>/dev/null   # must find NOTHING (no hook manager owns your hooks)
+   ```
+
+   If either check finds something, **use (b)** — this setting is single-valued and repointing it would silently take your hook manager's hooks out of service.
+
+   Three things to know before you choose it:
+   - **`hooks/` is your live hooks directory now.** Any future file landing there with a git-hook name (`pre-commit`, `commit-msg`, …) goes live on the matching git operation. Treat `hooks/` as control-plane and review it like one — the kit's guard denies agent writes there **at the front door, with one measured residual** (a write naming only the basename after a `cd` into the directory is not recognised; tracked as the boarded matcher-cure row `GUARD-BASENAME-AFTER-CD-BYPASS` and asserted as a disclosed ALLOW in `conformance/agent-autonomy.sh`).
+   - **A dirty `hooks/pre-push` is live code.** In this mode `guard-wired.sh` REDs when your working-tree hook differs from `HEAD:hooks/pre-push` — **before** it looks for the kit's marker, so deleting the marker line does not buy a "foreign hook, not ours to judge" pass — because what git runs on push would then be code no PR diff shows. The remedy is `git restore -- hooks/pre-push` or a commit — never a copy. That check runs at ceremony time (adoption, `kit-update`, the gates), not on every push: it is detection, not a continuous alarm.
+   - **The live hook follows your checkout.** An old branch runs that branch's hook. That is self-consistent (the hook matches the tree it guards) but it differs from the copy model, where the installed version is pinned until you refresh it.
+
+   **(b) Otherwise — copy the hook into place (the original install; unchanged):**
 
    ```sh
    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
    ```
 
-   **This is human-only, by design.** An agent seat **cannot** perform it: shell copy/`chmod`/move on hook paths are guard-denied and the agent's file-write tool cannot set mode `755`, so a hook an agent installs is non-executable and **silently ignored by git** (tracked as `AGENT-CANNOT-INSTALL-AN-EXECUTABLE-HOOK`). And `core.hooksPath` will **not** satisfy the Inception gate — `inception-done.sh` hard-codes the literal `.git/hooks/pre-push` path — so redirecting hooks elsewhere leaves the gate failing. Copy the file to that exact path and set the mode.
+   In this mode the copy is yours to keep fresh: whenever `hooks/pre-push` moves upstream, re-run the `cp` (`kit-update.sh` prints a HOOK REFRESH reminder when the file changed).
+
+   **Either way this is human-only, by design.** An agent seat **cannot** perform it: `git config core.hooksPath` in any spelling is guard-denied, shell copy/`chmod`/move on hook paths are guard-denied, and the agent's file-write tool cannot set mode `755`, so a hook an agent installs is non-executable and **silently ignored by git** (tracked as `AGENT-CANNOT-INSTALL-AN-EXECUTABLE-HOOK`).
+
+   **Both modes satisfy the Inception gate.** `inception-done.sh` asks git which hook is *live* rather than assuming a path, so an installed copy and tracked-hooks mode both pass. A `core.hooksPath` pointing at some **other** directory is neither mode: the gate falls back to the default path and still fails there.
 
 6. **The hook's two enforcement dials — you ship OBSERVE, and opt in when you're ready.** The installed hook has two legs that can refuse a push: the **entry declaration** (`KIT_PUSH_DECL` — the pushed head must carry a valid `Kit-*` trailer block) and the **design GO** (`KIT_PUSH_GO` — a Sensitive/Control-plane change-set must have a branch-scoped GO record). Both **observe** on your tree: they print and allow. That is deliberate — your first push is never red, and the kit's own dial state is `export-ignore`d so it can never arrive with the copy.
 
