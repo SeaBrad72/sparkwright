@@ -81,8 +81,38 @@ assert_wired() {  # <src-file>
   # markdown (a forged field closed a code span and emitted `<br>`, rendering a second
   # authoritative-looking approved-by line — measured, B2 sec H2). Negatives: cases 2h/2i.
   printf '%s\n' "$_wcode" | grep -qF 'GITHUB_STEP_SUMMARY' || { echo "FAIL: $1 never writes \$GITHUB_STEP_SUMMARY — the matched GO record would not reach the judgment surface, so an adopter's reviewer gets the gate without the visibility half of the disposition (B2 Δ4(ii))"; _w=1; }
-  printf '%s\n' "$_wcode" | grep -qF 'fence="$fence"' || { echo "FAIL: $1 renders the GO record without the grown-fence guard (\`fence=\"\$fence\"\`) — ledger content is untrusted, and per-field markdown lets a forged field render a SECOND approved-by line with a stronger assurance label (measured)"; _w=1; }
+  assert_render_single_sourced "$1" || _w=1
+  # Δ1 (BRANCH-SCOPE-END-TO-END): the gate leg must pass the head branch, or an adopter ships the
+  # PR key alone — every design GO recorded before its PR exists then WAITS, and the [S4]#7
+  # re-record this slice retires comes back as an undocumented obligation for adopters only.
+  printf '%s\n' "$_wcode" | grep -qF -- '--head-branch' || { echo "FAIL: $1 never passes --head-branch to ceremony-binding.sh — the second scope key (\`scope: branch/<head-branch>\`, D11) would be dead for adopters, so a design GO recorded before the PR exists could never satisfy their gate"; _w=1; }
   return "$_w"
+}
+
+# assert_render_single_sourced <src-file> — Δ3 (BRANCH-SCOPE-END-TO-END, 2026-08-11). REPLACES the
+# grown-fence grep this lock used to carry. The fence, the all-match loop and the 8 KB total bound
+# no longer live in the workflow at all: they live ONCE in conformance/ceremony-binding.sh --render,
+# because Δ1 adds a SECOND scope key and a workflow-local copy left matching the PR key alone would
+# render NOTHING on exactly the PRs the branch key enables — the gate green, the reviewer clicking
+# with no record in view (a D-240805-4 visibility lie manufactured by the fix).
+# So this asserts BOTH directions, and both are load-bearing (cases 2h/2i):
+#   (i)  the render leg INVOKES the script — dropping the invocation removes the visibility half;
+#   (ii) the source carries NO inline copy of the match/fence — a regrown copy is the drift this
+#        single-sourcing exists to make impossible, and it would pass (i) while silently diverging.
+# Read from COMMENT-STRIPPED code, so prose describing the old shape cannot satisfy or trip it.
+assert_render_single_sourced() {  # <src-file>
+  _r=0
+  _rcode=$(grep -v '^[[:space:]]*#' "$1")
+  printf '%s\n' "$_rcode" | grep -qF 'ceremony-binding.sh --render' || { echo "FAIL: $1 does not invoke \`ceremony-binding.sh --render\` — the judgment-surface render (D-240805-4) is not wired, so an adopter gets the gate without the visibility half of its disposition"; _r=1; }
+  if printf '%s\n' "$_rcode" | grep -qF 'fence="$fence"'; then
+    echo "FAIL: $1 has REGROWN an inline copy of the GO-record render (\`fence=\"\$fence\"\`) — the render is single-sourced in conformance/ceremony-binding.sh --render, and a workflow-local copy drifts from the gate's scope keys (that drift renders NOTHING on branch-keyed PRs while the gate passes)"
+    _r=1
+  fi
+  if printf '%s\n' "$_rcode" | grep -qF 'grep -qF -x "scope: '; then
+    echo "FAIL: $1 has REGROWN an inline copy of the record MATCH (\`grep -qF -x \"scope: …\"\`) — the matcher is single-sourced in conformance/ceremony-binding.sh; a second copy is exactly the three-way drift B7 §1.8 measured"
+    _r=1
+  fi
+  return "$_r"
 }
 
 # stack-neutral: no per-stack toolchain step, read from COMMENT-STRIPPED code.
@@ -192,12 +222,13 @@ selftest() {
       printf '  gate-loop-state:\n    steps:\n'
       printf '      - run: sh conformance/loop-state.sh --head "$SHA"\n'
       printf '      - run: status="completed"; concl="neutral"\n'
-      # B2 Δ4(ii): the judgment-surface render (grown fence + step summary) is part of the wired
-      # contract, so the CLEAN fixture must carry it — otherwise this fixture asserts a gap the
-      # real shipped source does not have.
+      # B2 Δ4(ii) + Δ3: the judgment-surface render is part of the wired contract, so the CLEAN
+      # fixture must carry it — otherwise this fixture asserts a gap the real shipped source does
+      # not have. Post-Δ3 the wired shape is an INVOCATION of the single-sourced render (plus the
+      # two-key gate call), never an inline fence/match copy.
       printf '  gate-ceremony-binding:\n    steps:\n'
-      printf '      - run: while printf %%s "$body" | grep -qF -- "$fence"; do fence="$fence"%s`%s; done\n' "'" "'"
-      printf '      - run: printf %s%%s\\n%s "$fence" "$body" "$fence" >> "$GITHUB_STEP_SUMMARY"\n' "'" "'"
+      printf '      - run: sh conformance/ceremony-binding.sh --scope "PR-$PR_NUMBER" --head-branch "$HEAD_REF"\n'
+      printf '      - run: sh conformance/ceremony-binding.sh --render --scope "PR-$PR_NUMBER" --head-branch "$HEAD_REF" >> "$GITHUB_STEP_SUMMARY"\n'
     } > "$1"
   }
 
@@ -266,18 +297,25 @@ selftest() {
   grep -v 'concl="neutral"' "$base/noneutral.yml" > "$base/noneutral.yml.tmp" && mv "$base/noneutral.yml.tmp" "$base/noneutral.yml"
   if assert_wired "$base/noneutral.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2g — a source that never posts neutral passed assert_wired"; st=1; else echo "OK: no neutral posting -> RED (Δ1 anchor is load-bearing)"; fi
 
-  # 2h/2i (B2 Δ4(ii) / reviewer I4, LOAD-BEARING NEGATIVES) — a source that gates ceremony-binding
-  # but never RENDERS the matched record to the judgment surface must be RED (2h), and so must one
-  # that renders it WITHOUT the grown-fence guard (2i) — untrusted ledger content interpolated into
-  # per-field markdown is what let a forged field render a second, stronger `approved-by` line.
-  # Without these cases either anchor could be deleted with the suite still green, which is exactly
-  # how an emitted profile comes to carry enforcement without visibility.
+  # 2h/2i/2j/2k (B2 Δ4(ii) / reviewer I4 / Δ1 / Δ3, LOAD-BEARING NEGATIVES) — a source that gates
+  # ceremony-binding but never RENDERS the matched record to the judgment surface must be RED (2h);
+  # so must one that drops the render INVOCATION (2i) or REGROWS an inline copy of it (2j); and so
+  # must one that never passes the second scope key (2k). Without these cases each anchor could be
+  # deleted with the suite still green, which is exactly how an emitted profile comes to carry
+  # enforcement without visibility — or visibility that has silently drifted from what the gate matched.
   mk_clean_src "$base/norender.yml"
   grep -v 'GITHUB_STEP_SUMMARY' "$base/norender.yml" > "$base/norender.tmp" && mv "$base/norender.tmp" "$base/norender.yml"
   if assert_wired "$base/norender.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2h — a source that never writes \$GITHUB_STEP_SUMMARY passed assert_wired; adopters would get the gate without the judgment-surface render"; st=1; else echo "OK: source with no judgment-surface render -> RED (B2 Δ4(ii) anchor is load-bearing)"; fi
-  mk_clean_src "$base/nofence.yml"
-  grep -v 'fence="\$fence"' "$base/nofence.yml" > "$base/nofence.tmp" && mv "$base/nofence.tmp" "$base/nofence.yml"
-  if assert_wired "$base/nofence.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2i — a source rendering the GO record with no grown-fence guard passed assert_wired; a forged field could render a second approved-by line"; st=1; else echo "OK: render without the grown-fence guard -> RED (escaping anchor is load-bearing)"; fi
+  mk_clean_src "$base/noinvoke.yml"
+  grep -v 'ceremony-binding.sh --render' "$base/noinvoke.yml" > "$base/noinvoke.tmp" && mv "$base/noinvoke.tmp" "$base/noinvoke.yml"
+  if assert_render_single_sourced "$base/noinvoke.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2i — a source that never invokes ceremony-binding.sh --render passed assert_render_single_sourced; the visibility half of the disposition would be missing"; st=1; else echo "OK: render invocation dropped -> RED (Δ3 invocation anchor is load-bearing)"; fi
+  mk_clean_src "$base/recopy.yml"
+  printf '      - run: while printf %%s "$body" | grep -qF -- "$fence"; do fence="$fence"%s`%s; done\n' "'" "'" >> "$base/recopy.yml"
+  printf '      - run: printf %s%%s\\n%s "$b" | grep -qF -x "scope: PR-$PR_NUMBER"\n' "'" "'" >> "$base/recopy.yml"
+  if assert_render_single_sourced "$base/recopy.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2j — a source that REGREW an inline fence/match copy passed assert_render_single_sourced; a workflow-local copy drifts from the gate's scope keys and renders nothing on branch-keyed PRs"; st=1; else echo "OK: regrown inline render copy -> RED (Δ3 anti-copy anchor is load-bearing)"; fi
+  mk_clean_src "$base/nohead.yml"
+  grep -v -- '--head-branch' "$base/nohead.yml" > "$base/nohead.tmp" && mv "$base/nohead.tmp" "$base/nohead.yml"
+  if assert_wired "$base/nohead.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2k — a source that never passes --head-branch passed assert_wired; the branch scope key would be dead for adopters and every pre-PR design GO would WAIT"; st=1; else echo "OK: gate leg without --head-branch -> RED (Δ1 second-key anchor is load-bearing)"; fi
 
   # 3. STACK-SPECIALIZED source (plant actions/setup-node) -> assert_stack_neutral RED.
   mk_clean_src "$base/stacky.yml"
@@ -381,6 +419,13 @@ selftest() {
   #    is ANNOUNCED (silent truncation hides the record just as effectively), (c) the record's own
   #    head survives, (d) a normal record is NOT truncated and renders whole, (e) a backtick-run
   #    body still gets a fence longer than the run (the one-pass fence must not regress the escape).
+  # Δ3 RESHAPE (BRANCH-SCOPE-END-TO-END): the render's BEHAVIOUR is no longer in the workflows, so
+  # this case no longer EXECUTES an extracted workflow step — it (i) proves each source's render
+  # STEP is an INVOCATION of the single source (extracted from the step itself, so an invocation
+  # sitting somewhere else in the file cannot satisfy it) and (ii) executes
+  # `conformance/ceremony-binding.sh --render` ONCE for the behavioural assertions. Witnessing
+  # behaviour once is CORRECT now and was not before: there is one implementation, and a second
+  # execution of the same code would witness nothing the first did not.
   _extract_render() {  # <yml> <out-script> — lift the render step's shell out of the workflow
     awk '
       /- name: Render the matched GO record into the step summary/ { instep=1; next }
@@ -412,10 +457,15 @@ selftest() {
       && git commit -q --allow-empty -m base2 \
       && git notes --ref=fixture-go add -F "$3" HEAD ) >/dev/null 2>&1
   }
-  _render_into() {  # <script> <repo> <summary-out> — run the extracted render as CI would
+  # Run THE SINGLE SOURCE as CI now does: absolute path (so its $0-relative sourcing resolves to
+  # the kit root) with the fixture repo as cwd (so git reads the fixture's FIXTURE ledger ref, never
+  # refs/notes/promotions — D-240805-3). stdout is the summary block; stderr is the step log.
+  _kitroot=$(pwd)
+  _render_into() {  # <unused> <repo> <summary-out> [head-branch] — run the render as CI would
     : > "$3"
-    ( cd "$2" && PROMOTION_NOTES_REF=fixture-go PR_NUMBER=909 GATE_RC=0 \
-        GITHUB_STEP_SUMMARY="$3" sh "$1" ) >/dev/null 2>&1
+    ( cd "$2" && PROMOTION_NOTES_REF=fixture-go \
+        sh "$_kitroot/conformance/ceremony-binding.sh" --render --scope PR-909 \
+           --head-branch "${4:-a-branch-with-no-record}" ) > "$3" 2>/dev/null
   }
   _rbig="$base/render-big.txt"
   { printf 'gate: design\nscope: PR-909\napproved-by: someone [assurance: declared]\n'
@@ -427,6 +477,10 @@ selftest() {
   } > "$_rtick"
   _rsmall="$base/render-small.txt"
   printf 'gate: design\nscope: PR-909\napproved-by: owner [assurance: declared]\nbasis: docs/architecture/x-design.md\n' > "$_rsmall"
+  # 9-i — EACH real source's render STEP must be an INVOCATION of the single source. Extracted from
+  # the step itself, so an invocation elsewhere in the file cannot satisfy it, and a step that
+  # regrew an inline copy cannot hide behind one. This is the parity half; the behaviour is
+  # witnessed once, below, because there is now exactly one implementation of it.
   _rn=0
   for _rsrc in "$SRC" "$CI_WF"; do
     _rn=$((_rn + 1))
@@ -435,73 +489,98 @@ selftest() {
     if ! _extract_render "$_rsrc" "$_rscript"; then
       echo "FAIL: selftest case9 — could not extract the render step's shell from $_rsrc (the step name or its \`run: |\` indentation changed; this case would silently stop witnessing the render)"; st=1; continue
     fi
-    # (a)(b)(c) — the 1.6 MB forged record
-    _rrepo="$base/rrepo$_rn"; _fixture_ledger "$_rrepo" "$_rbig"
-    _rout="$base/summary-big$_rn.md"
-    _render_into "$_rscript" "$_rrepo" "$_rout"
-    _rbytes=$(wc -c < "$_rout" | tr -d ' ')
-    if [ "$_rbytes" -le 65536 ]; then
-      echo "OK: $_rsrc renders a $(wc -c < "$_rbig" | tr -d ' ')-byte record in $_rbytes bytes (under GitHub's 1 MiB summary cap, so the record is not DROPPED)"
+    if grep -qF 'ceremony-binding.sh --render' "$_rscript" \
+       && grep -qF -- '--head-branch' "$_rscript" \
+       && grep -qF 'GITHUB_STEP_SUMMARY' "$_rscript"; then
+      echo "OK: $_rsrc's render step INVOKES the single source with both scope keys, into the step summary"
     else
-      echo "FAIL: selftest case9a — $_rsrc emitted $_rbytes bytes for one oversized record; GitHub drops a >1 MiB step summary WHOLE, so ceremony-binding would post PASS with no record rendered"; st=1
-    fi
-    if grep -qF 'truncated at 8 KB' "$_rout"; then
-      echo "OK: $_rsrc ANNOUNCES the truncation (silent truncation hides the record just as well)"
-    else
-      echo "FAIL: selftest case9b — $_rsrc truncated (or dropped) the record with no notice; the reader cannot tell a short record from a cut one"; st=1
-    fi
-    grep -qF 'gate: design' "$_rout" \
-      && echo "OK: $_rsrc keeps the record's own head inside the truncated render" \
-      || { echo "FAIL: selftest case9c — $_rsrc rendered nothing of the record itself"; st=1; }
-    # (d) — a NORMAL record must be untouched (the bound must not truncate ordinary records)
-    _rrepo2="$base/rsmall$_rn"; _fixture_ledger "$_rrepo2" "$_rsmall"
-    _rout2="$base/summary-small$_rn.md"
-    _render_into "$_rscript" "$_rrepo2" "$_rout2"
-    if grep -qF 'basis: docs/architecture/x-design.md' "$_rout2" && ! grep -qF 'truncated at 8 KB' "$_rout2"; then
-      echo "OK: $_rsrc renders a normal record WHOLE, with no truncation notice"
-    else
-      echo "FAIL: selftest case9d — $_rsrc did not render a normal record whole/untruncated"; st=1
-    fi
-    # (f)/(g) — B7 RIDER: the render shows EVERY scope-matching record (rendering only the first
-    # would show a defective record while the gate passed on a valid sibling — a D-240805-4
-    # visibility lie), and the 8 KB bound is TOTAL ACROSS RECORDS, not per-record (self-review
-    # finding 4: B2's measured volume attack applies with interest when N records render).
-    # (f) two SMALL records -> BOTH bodies rendered, no truncation notice.
-    _rtwoA="$base/render-twoA.txt"; _rtwoB="$base/render-twoB.txt"
-    printf 'gate: design\nscope: PR-909\nmarker: RECORD-A-MARKER\n' > "$_rtwoA"
-    printf 'gate: design\nscope: PR-909\nmarker: RECORD-B-MARKER\n' > "$_rtwoB"
-    _rrepo4="$base/rtwo$_rn"; _fixture_ledger2 "$_rrepo4" "$_rtwoA" "$_rtwoB"
-    _rout4="$base/summary-two$_rn.md"
-    _render_into "$_rscript" "$_rrepo4" "$_rout4"
-    if grep -qF 'RECORD-A-MARKER' "$_rout4" && grep -qF 'RECORD-B-MARKER' "$_rout4" \
-       && ! grep -qF 'truncated at 8 KB' "$_rout4"; then
-      echo "OK: $_rsrc renders BOTH scope-matching records, untruncated (render-all witnessed)"
-    else
-      echo "FAIL: selftest case9f — $_rsrc did not render EVERY scope-matching record (a defective record could hide behind the one rendered while the gate passed on another)"; st=1
-    fi
-    # (g) two records whose COMBINED size exceeds the bound -> bounded output + ANNOUNCED cut
-    # (order-independent: whichever record iterates first, the TOTAL bound + notice must hold).
-    _rrepo5="$base/rtwobig$_rn"; _fixture_ledger2 "$_rrepo5" "$_rtwoA" "$_rbig"
-    _rout5="$base/summary-twobig$_rn.md"
-    _render_into "$_rscript" "$_rrepo5" "$_rout5"
-    _rbytes5=$(wc -c < "$_rout5" | tr -d ' ')
-    if [ "$_rbytes5" -le 65536 ] && grep -qF 'truncated at 8 KB' "$_rout5" \
-       && grep -qF 'gate: design' "$_rout5"; then
-      echo "OK: $_rsrc bounds TWO records TOTAL ($_rbytes5 bytes) and announces the cut (finding 4)"
-    else
-      echo "FAIL: selftest case9g — $_rsrc with two records emitted $_rbytes5 bytes (want <=65536 + announced truncation + a record head) — the bound must be TOTAL across records, or N records reopen B2's volume attack"; st=1
-    fi
-    # (e) — the escape must survive the one-pass fence computation
-    _rrepo3="$base/rtick$_rn"; _fixture_ledger "$_rrepo3" "$_rtick"
-    _rout3="$base/summary-tick$_rn.md"
-    _render_into "$_rscript" "$_rrepo3" "$_rout3"
-    _rfence=$(awk '/^`+$/ { if (length($0) > m) m = length($0) } END { print m + 0 }' "$_rout3")
-    if [ "$_rfence" -gt 2000 ]; then
-      echo "OK: $_rsrc fences a 2,000-backtick body with a $_rfence-backtick fence (no content can close it)"
-    else
-      echo "FAIL: selftest case9e — $_rsrc emitted a $_rfence-backtick fence for a 2,000-backtick body; ledger content could close the fence and render as markdown"; st=1
+      echo "FAIL: selftest case9i — $_rsrc's render STEP does not invoke \`ceremony-binding.sh --render\` with --head-branch into \$GITHUB_STEP_SUMMARY; the two sources would render from different logic (or different keys) than the gate matched on"; st=1
     fi
   done
+
+  # 9-ii — THE BEHAVIOUR, executed against the single source (never grepped). Run in a throwaway
+  # repo against a FIXTURE ledger ref, never refs/notes/promotions (D-240805-3).
+  _rsrc="conformance/ceremony-binding.sh --render"
+  # (a)(b)(c) — the 1.6 MB forged record
+  _rrepo="$base/rrepo"; _fixture_ledger "$_rrepo" "$_rbig"
+  _rout="$base/summary-big.md"
+  _render_into "" "$_rrepo" "$_rout"
+  _rbytes=$(wc -c < "$_rout" | tr -d ' ')
+  if [ "$_rbytes" -le 65536 ]; then
+    echo "OK: $_rsrc renders a $(wc -c < "$_rbig" | tr -d ' ')-byte record in $_rbytes bytes (under GitHub's 1 MiB summary cap, so the record is not DROPPED)"
+  else
+    echo "FAIL: selftest case9a — $_rsrc emitted $_rbytes bytes for one oversized record; GitHub drops a >1 MiB step summary WHOLE, so ceremony-binding would post PASS with no record rendered"; st=1
+  fi
+  if grep -qF 'truncated at 8 KB' "$_rout"; then
+    echo "OK: $_rsrc ANNOUNCES the truncation (silent truncation hides the record just as well)"
+  else
+    echo "FAIL: selftest case9b — $_rsrc truncated (or dropped) the record with no notice; the reader cannot tell a short record from a cut one"; st=1
+  fi
+  grep -qF 'gate: design' "$_rout" \
+    && echo "OK: $_rsrc keeps the record's own head inside the truncated render" \
+    || { echo "FAIL: selftest case9c — $_rsrc rendered nothing of the record itself"; st=1; }
+  # (d) — a NORMAL record must be untouched (the bound must not truncate ordinary records)
+  _rrepo2="$base/rsmall"; _fixture_ledger "$_rrepo2" "$_rsmall"
+  _rout2="$base/summary-small.md"
+  _render_into "" "$_rrepo2" "$_rout2"
+  if grep -qF 'basis: docs/architecture/x-design.md' "$_rout2" && ! grep -qF 'truncated at 8 KB' "$_rout2"; then
+    echo "OK: $_rsrc renders a normal record WHOLE, with no truncation notice"
+  else
+    echo "FAIL: selftest case9d — $_rsrc did not render a normal record whole/untruncated"; st=1
+  fi
+  # (f)/(g) — B7 RIDER: the render shows EVERY scope-matching record (rendering only the first
+  # would show a defective record while the gate passed on a valid sibling — a D-240805-4
+  # visibility lie), and the 8 KB bound is TOTAL ACROSS RECORDS, not per-record (self-review
+  # finding 4: B2's measured volume attack applies with interest when N records render).
+  # (f) two SMALL records -> BOTH bodies rendered, no truncation notice.
+  _rtwoA="$base/render-twoA.txt"; _rtwoB="$base/render-twoB.txt"
+  printf 'gate: design\nscope: PR-909\nmarker: RECORD-A-MARKER\n' > "$_rtwoA"
+  printf 'gate: design\nscope: PR-909\nmarker: RECORD-B-MARKER\n' > "$_rtwoB"
+  _rrepo4="$base/rtwo"; _fixture_ledger2 "$_rrepo4" "$_rtwoA" "$_rtwoB"
+  _rout4="$base/summary-two.md"
+  _render_into "" "$_rrepo4" "$_rout4"
+  if grep -qF 'RECORD-A-MARKER' "$_rout4" && grep -qF 'RECORD-B-MARKER' "$_rout4" \
+     && ! grep -qF 'truncated at 8 KB' "$_rout4"; then
+    echo "OK: $_rsrc renders BOTH scope-matching records, untruncated (render-all witnessed)"
+  else
+    echo "FAIL: selftest case9f — $_rsrc did not render EVERY scope-matching record (a defective record could hide behind the one rendered while the gate passed on another)"; st=1
+  fi
+  # (g) two records whose COMBINED size exceeds the bound -> bounded output + ANNOUNCED cut
+  # (order-independent: whichever record iterates first, the TOTAL bound + notice must hold).
+  _rrepo5="$base/rtwobig"; _fixture_ledger2 "$_rrepo5" "$_rtwoA" "$_rbig"
+  _rout5="$base/summary-twobig.md"
+  _render_into "" "$_rrepo5" "$_rout5"
+  _rbytes5=$(wc -c < "$_rout5" | tr -d ' ')
+  if [ "$_rbytes5" -le 65536 ] && grep -qF 'truncated at 8 KB' "$_rout5" \
+     && grep -qF 'gate: design' "$_rout5"; then
+    echo "OK: $_rsrc bounds TWO records TOTAL ($_rbytes5 bytes) and announces the cut (finding 4)"
+  else
+    echo "FAIL: selftest case9g — $_rsrc with two records emitted $_rbytes5 bytes (want <=65536 + announced truncation + a record head) — the bound must be TOTAL across records, or N records reopen B2's volume attack"; st=1
+  fi
+  # (e) — the escape must survive the one-pass fence computation
+  _rrepo3="$base/rtick"; _fixture_ledger "$_rrepo3" "$_rtick"
+  _rout3="$base/summary-tick.md"
+  _render_into "" "$_rrepo3" "$_rout3"
+  _rfence=$(awk '/^`+$/ { if (length($0) > m) m = length($0) } END { print m + 0 }' "$_rout3")
+  if [ "$_rfence" -gt 2000 ]; then
+    echo "OK: $_rsrc fences a 2,000-backtick body with a $_rfence-backtick fence (no content can close it)"
+  else
+    echo "FAIL: selftest case9e — $_rsrc emitted a $_rfence-backtick fence for a 2,000-backtick body; ledger content could close the fence and render as markdown"; st=1
+  fi
+  # (h) Δ1 — THE SECOND KEY REACHES THE RENDER. A branch-keyed record must render when the head
+  # branch is supplied, and NOT when it is not: the render's key set is the gate's, or the two
+  # drift and the owner clicks GO on a PR whose record was never shown.
+  _rbr="$base/render-branch.txt"
+  printf 'gate: design\nscope: branch/feat-x\nmarker: BRANCH-KEY-MARKER\n' > "$_rbr"
+  _rrepo6="$base/rbranch"; _fixture_ledger "$_rrepo6" "$_rbr"
+  _rout6="$base/summary-branch.md"; _rout7="$base/summary-branch-off.md"
+  _render_into "" "$_rrepo6" "$_rout6" feat-x
+  _render_into "" "$_rrepo6" "$_rout7" some-other-branch
+  if grep -qF 'BRANCH-KEY-MARKER' "$_rout6" && ! grep -qF 'BRANCH-KEY-MARKER' "$_rout7"; then
+    echo "OK: $_rsrc renders a BRANCH-keyed record for its own branch and not for another (Δ1 keys reach the render)"
+  else
+    echo "FAIL: selftest case9h — the render's scope keys do not match the gate's: a branch-keyed record rendered for the wrong branch, or not at all for its own"; st=1
+  fi
 
   if [ "$st" = 0 ]; then echo "adopter-gates-parity --selftest: OK (all cases witnessed)"; else echo "adopter-gates-parity --selftest: FAIL"; fi
   return "$st"

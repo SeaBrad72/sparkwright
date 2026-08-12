@@ -330,6 +330,67 @@ precedent); no separate ceremony. **REVISIT-CONDITION:** the release-boundary di
 decides `KIT_SCOPE_MODE` together with its four siblings (`PHASE-B-DIAL-FLIP`); until that sitting,
 nothing in this discharge refuses anything.
 
+**`D-240811-2` · ruling (owner, 2026-08-11, in-session) · The Phase-B release-boundary SITTING —
+five rulings, en bloc, each taken AS REVISED by the standing owner-lens first-principles pass**
+(which changed three of the four agent recommendations before the GO; panel
+`docs/architecture/2026-08-11-meta-control-39.md` was the input, its §5/§8 carry the adjudication
+notes):
+1. **Dial-flip policy adopted per the panel's ranking; delivery is a SLICE, not an env var.**
+   Policy: `KIT_PUSH_DECL` enforces on the kit's own tree now · `RELEASE_TAG_PROVENANCE` enforces
+   after its named pre-check (the forge-unreachable arm must degrade loud) · `KIT_SCOPE_MODE`
+   enforces after its three XS cures (B9 §10-A2/A3i/A4iv) · `KIT_PUSH_GO` enforces after
+   `BRANCH-SCOPE-END-TO-END` ships · `LOOP_STATE_MODE` stays the adopter's dial. **Mechanism
+   (the owner-lens revision):** an env-var flip binds nothing — the friction test fails on
+   "remember to export" — and flipping the shipped hook default would leak enforce to adopters at
+   hook re-copy, violating first-run-green. The flips land via the **`DIAL-DELIVERY`** slice:
+   repo-carried dial state, kit-tree enforce / adopter-export observe, each flip proven by
+   `PHASE-B-DIAL-FLIP`'s before/after AC (an actual denied push, never a read of the dial's
+   value). No dial is left in bare observe: every observe state above carries its named trigger.
+2. **`BOARD-DOR-FIELDS` is FUNDED as an XS slice now** (success-metric/hypothesis field into the
+   board template + live rows) — the owner-lens revision of the agent's proposed dated deferral:
+   deferring a third-carry item at the same sitting that adopts ruling 4's third-carry escalation
+   would be self-inconsistent, and Phase C should enter through a board that satisfies the kit's
+   own Definition of Ready. This discharges panel #39 C3 and reverses the row's prior deferral by
+   explicit ruling.
+3. **The verify.sh lane-cost disposition is a DATED DEFERRAL, decided together with
+   `NON-VACUITY-SHARD2-FLOOR` after its per-mutant substrate measurement** — the owner-lens
+   revision of the panel's exclusions-entry preference: choosing coverage reduction before the
+   measurement the panel itself demands (its §8a) is deciding ahead of the evidence. The
+   substrate measurement is funded early post-B; no further conformance-core re-shards (measured
+   ~0 wall-clock benefit).
+4. **The panel's three meta-amendments are ADOPTED** (ratified with the PR carrying this entry):
+   the two standing panel-template questions (permission re-ratification · scope-coherence lens)
+   in `docs/operations/meta-control.md` · the first-live-run-dogfood line in
+   `skills/design/SKILL.md` (a slice shipping a new mechanism records that mechanism's first live
+   run on its own slice in §10) · third-carry auto-escalation (a finding reaching its third
+   consecutive panel escalates one severity) in `docs/operations/meta-control.md`. Ruling 2 above
+   is the escalation rule's first application, made knowingly.
+5. **The publish gate: the recorded release GO IS the publish authorization** (owner-ruled earlier
+   the same day, recorded here). Historical publishes rode per-run harness prompt-clicks; the
+   auto-mode classifier's silent removal of that prompt (measured 2026-08-11: `publish-public.sh`
+   denied with no ask) exposed that the gate lived in a harness mode, not in the kit. The durable
+   gate is the ledger's release GO; the permission allowlist entry
+   (`Bash(sh scripts/publish-public.sh*)`, owner-added) is that ruling's **delivery surface**, not
+   an independent control. Third measured face of the permission-surface class →
+   `PERMISSION-SURFACE-DELIVERY-AUDIT`, promoted to Ready with this sitting.
+**REVISIT-CONDITION:** ruling 1's per-dial triggers are each self-executing (a named event, not a
+date); ruling 3 re-opens at the `NON-VACUITY-SHARD2-FLOOR` substrate measurement; the others none.
+
+**`D-240811-3` · ruling (owner, 2026-08-11, in-session at the BRANCH-SCOPE-END-TO-END design GO) ·
+Branch-scoped GO records become PERMANENT; the B2 §8 author-controlled-key ceiling is re-ratified
+AS NARROWED.** The `[S4]#7` re-record protocol is retired (tombstoned in
+`docs/governance/promotion-contract.md`), so the `-f` reaping that kept branch records transient
+disappears. The ceiling ratified: *an author-controlled key whose records persist, bounded by (a)
+the D11 charset, (b) TWO-LEG containment — the approved commit must be reachable from the graded
+head AND not already integrated into the base (leg 2 added in fix round 1 after the security seat
+measured the one-leg form satisfying unrelated same-named work at rc 0 under merge/rebase
+integration; disclosed degradation to reachable-only where no base resolves), and (c) the
+`D-240805-4` render keeping every matched record owner-visible verbatim.* The fork face is stated
+in the design §9.1: a fork can green the design gate; the owner's ratification approval remains
+the merge control. The strong cure was chosen over prose narrowing precisely so this entry is
+true as ratified. **REVISIT-CONDITION:** re-open if a base-resolution shape is found where leg 2
+silently fails to run (the disclosed-skip arms are the only sanctioned degradations).
+
 ---
 
 ## 3. The recovered record

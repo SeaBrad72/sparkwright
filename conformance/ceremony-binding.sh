@@ -42,6 +42,39 @@
 # wired this script into their own CI and depended on "rc 2 = the first matching record is
 # defective" now gets "rc 2 = ALL matching records are defective".
 #
+# ⚠️ SCOPE MATCH — TWO KEYS (BRANCH-SCOPE-END-TO-END, 2026-08-11; owner ruling D11 + D-240811-3).
+# A record MATCHES when its `scope:` equals EITHER `PR-<n>` (the caller-supplied CI key) OR
+# `branch/<head-branch>` (the key a design GO can carry BEFORE a PR exists). CI supplies the head
+# branch as `--head-branch "$HEAD_REF"` (env-bound, never interpolated into a run: script). That
+# RETIRES the [S4]#7 interim protocol — the PR-creation RE-RECORD — and with it the record->poster
+# race the re-record caused (measured: one decider rerun per gated PR, 4x). Existing `scope: PR-<n>`
+# records keep working forever; nothing is migrated. ONE matcher serves BOTH modes and the render.
+#   ⚠️ THE BRANCH KEY IS AUTHOR-CONTROLLED, AND ITS RECORDS ARE NOW PERMANENT (no reaping re-record;
+#   `promotion-verify.sh record` only overwrites a SAME-SHA note). `D-240811-3` ratifies that ceiling
+#   AS NARROWED by three bounds, all of them live in this file:
+#     (a) the D11 charset (`_scope_charset_bad`) — a key the record format cannot express is not a
+#         key. `github.head_ref` is chosen by whoever opens the PR, so a charset-out name DROPS the
+#         branch key and proceeds PR-KEY-ONLY, DISCLOSED on stderr, rc UNCHANGED (a degraded key is
+#         not an anomaly: no record could ever have carried that key, so nothing is lost);
+#     (b) CONTAINMENT, IN TWO LEGS — the record's `approved-sha` must be (1) an ANCESTOR of the
+#         graded head (reachable: the approved commit is in the history being judged) AND (2) NOT an
+#         ancestor of merge-base(graded head, base) (new: the approved commit is not already in the
+#         base history). Leg 1 alone is NOT enough and that was MEASURED: once a historic branch is
+#         MERGED OR REBASED into the base, its approved-sha sits on the MAINLINE, so a new branch
+#         reusing the name inherits it reachably — the record satisfied unrelated work, rc 0. Leg 2
+#         closes that class. Its base is `--base-ref <name-or-sha>` when CI supplies one, else the
+#         locally-resolvable default branch; when NO base resolves — or when the resolved base
+#         already CONTAINS the graded head, so it cannot tell historic work from new — leg 2 is
+#         SKIPPED with a DISCLOSED one-line degradation and the rc is unchanged (containment is then
+#         REACHABLE-ONLY, and the verdict says so). Never a red on a healthy clone shape, never a
+#         silent skip;
+#     (c) the `--render` block (D-240805-4) putting every matched record verbatim in front of the
+#         human before the click.
+#   FORK FACE, stated so a green is never over-read: a fork PR can reproduce both the branch NAME and
+#   the approved COMMIT (both public), so its design gate CAN match this repo's record. This gate is
+#   ONE required context; the merge control is the owner-only ratification approval, which still
+#   fails closed on a fork. A green design gate on a hostile fork is not a merge.
+#
 # WHY IT CHANGED. Before this, rc 1 meant both "waiting on a human" and every one of the ~16 defects
 # above, so routing the rc through the check-run colour map would have painted a FORGED OR BROKEN GO
 # RECORD as the friendly yellow "just waiting for approval". Red must survive where it belongs, and the
@@ -53,8 +86,16 @@
 #
 # HONEST CEILING (do not overclaim):
 #   * GREEN proves: a design artifact EXISTS, is tracked/non-symlink/non-placeholder, is named by a GO
-#     record SCOPED TO THIS CHANGE whose approver carries a derived assurance label, and is TOUCHED by
-#     the commit that GO approves. That is all.
+#     record SCOPED TO THIS CHANGE (either key) whose approver carries a derived assurance label, is
+#     TOUCHED by the commit that GO approves, and whose approved commit is CONTAINED in the graded
+#     head's history AND — when a base resolves — is NOT already in that base's history. That is all.
+#   * CONTAINMENT BOUNDS RECORD REUSE, NOT RECORD MINTING. It stops a historic same-name branch's
+#     record vouching for a new branch; it says nothing about who wrote the record (`D-240805-3`'s
+#     over-cooperation vector is governed by its own controls and is untouched here).
+#   * CONTAINMENT IS TWO LEGS, AND ONLY ONE OF THEM IS ALWAYS AVAILABLE. Leg 2 needs a base history;
+#     with none resolvable (shallow clone, no default-branch ref, no `--base-ref`) the run is
+#     REACHABLE-ONLY and says so on stderr and in its verdict. A green from such a run does not
+#     carry the not-already-integrated half — read the verdict's `containment:` state, not the rc.
 #   * IT PROVES NOTHING ABOUT ORDER. The design may have been written after the work.
 #   * `approved-sha` TOUCHES the artifact; it did not necessarily AUTHOR it — a zero-byte create or a
 #     whitespace edit satisfies a touch. It binds the record to the artifact, nothing more.
@@ -77,10 +118,22 @@
 # — the CP7R5-KEPTSET-LOCK failure, which is already boarded describing exactly this.
 #
 # Usage:
-#   sh conformance/ceremony-binding.sh                 (derive change-set: merge-base HEAD origin/main)
+#   sh conformance/ceremony-binding.sh --scope PR-42 [--head-branch feat/x] [--base-ref main]
+#                                                      (the CI predicate; two keys — the PR key and,
+#                                                       when a head branch is supplied, `branch/feat/x`.
+#                                                       --base-ref names the history containment leg 2
+#                                                       measures "already integrated" against; without
+#                                                       it the locally-resolvable default branch is
+#                                                       used, and with neither, leg 2 is skipped and
+#                                                       the degradation is disclosed)
 #   sh conformance/ceremony-binding.sh --pre-push      (hook mode, B2 Δ1′: the SAME predicate, keyed on
 #                                                       the DERIVED scope `branch/<current-branch>`
 #                                                       instead of the caller-supplied `PR-<n>`)
+#   sh conformance/ceremony-binding.sh --render --scope PR-42 [--head-branch feat/x]
+#                                                      (the D-240805-4 visibility block on STDOUT, for
+#                                                       $GITHUB_STEP_SUMMARY. THE SINGLE SOURCE of the
+#                                                       render: both workflow legs INVOKE this, and the
+#                                                       parity lock refuses a leg that regrows a copy.)
 #   sh conformance/ceremony-binding.sh --selftest
 #
 # What it changes: nothing — read-only. Reads the working tree, git history, and refs/notes/promotions.
@@ -172,6 +225,206 @@ prepush_scope_key() {
   return 0
 }
 
+# containment_base — the BASIS for containment LEG 2 ("the approved commit is not already in the base
+# history"). Prints merge-base(base, $1); returns 1 when there is no base to measure against, which the
+# caller turns into a DISCLOSED skip, never a refusal.
+#
+# WHY A SECOND LEG AT ALL (fix round 1, security F1 — measured). Leg 1 (ancestor-of-graded-head) alone
+# does NOT close the reused-name class the `D-240811-3` ratification claims closed: under merge/rebase
+# integration a historic record's approved-sha lands on the MAINLINE, so a new branch of the same name
+# inherits it REACHABLY and the record satisfies unrelated work (reproduced: rc 0). Leg 2 asks the
+# question leg 1 cannot: is the approved commit NEW to this change, or already part of the base?
+#
+# LOCAL READS ONLY — no `git fetch`, no `git remote show`. A merge gate that depends on network
+# reachability fails for the network's reasons, not the change's. The candidate ladder is the SHAPE
+# `conformance/loop-state.sh`'s scope_base uses (pinned/derived candidates, first resolvable wins,
+# unresolvable is a disclosed N/A) — re-derived here rather than imported: loop-state is a different
+# gate with its own contract, and a shared helper across two gates is the coupling this file already
+# refuses for the class derivation ("CLASS IS DERIVED BY A SINGLE AUTHORITY" — the same argument runs
+# the other way for a helper neither gate owns).
+containment_base() {   # $1 = graded head sha
+  # Locals take the `_cbb_` prefix, NOT `_cb_`: that prefix is the ARGUMENT-PARSE state
+  # (_cb_scope/_cb_prepush/_cb_head_branch/_cb_base_ref/_cb_render), and a helper that reused it
+  # would be one careless name away from overwriting the caller's mode.
+  _cbb_cands=""
+  if [ -n "$_cb_base_ref" ]; then
+    # AUTHOR-INFLUENCED VALUE (CI passes `github.base_ref`). Treated exactly like --head-branch: a
+    # value the record charset cannot express, or one that could be read by git as an OPTION, is not
+    # refused — it is UNUSABLE, so it yields the disclosed skip. Refusing would let the choice of base
+    # branch paint this gate red, which is a denial of service through an input we cannot use anyway.
+    case "$_cb_base_ref" in -*) return 1 ;; esac
+    _scope_charset_bad "$_cb_base_ref" && return 1
+    # A CI checkout has the base as a REMOTE ref, not a local branch, so all three spellings are
+    # tried — in caller-first order, so an explicit sha or local ref always wins.
+    _cbb_cands="$_cb_base_ref origin/$_cb_base_ref refs/remotes/origin/$_cb_base_ref"
+  else
+    # NO BASE SUPPLIED (the --pre-push route, and any adopter CI that has not wired --base-ref):
+    # derive the default branch locally. Nothing here is environment-overridable.
+    _cbb_dh=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+    _cbb_cands="$_cbb_dh origin/main origin/master main master"
+  fi
+  # shellcheck disable=SC2086 # deliberate word-split of the candidate list; every element is either a
+  # fixed literal or charset-checked above, so it cannot contain whitespace.
+  for _cbb_c in $_cbb_cands; do
+    [ -n "$_cbb_c" ] || continue
+    git rev-parse -q --verify "$_cbb_c^{commit}" >/dev/null 2>&1 || continue
+    if _cbb_mb=$(git merge-base "$_cbb_c" "$1" 2>/dev/null) && [ -n "$_cbb_mb" ]; then
+      printf '%s\n' "$_cbb_mb"
+      return 0
+    fi
+  done
+  # NO FALLBACK from a SUPPLIED base ref to the derived ladder, deliberately: judging containment
+  # against a history nobody named would be a different question answered silently. Unresolvable is
+  # the disclosed skip, which is the fail-safe direction.
+  return 1
+}
+
+# _assemble_scope_keys — THE SINGLE DERIVATION of "which scope keys bind a record to this change",
+# consumed by the gate loop, by --render, and by the operator guidance. Reads $_cb_prepush /
+# $_cb_scope / $_cb_head_branch; sets:
+#   $_scope_keys    space-separated key list (every element inside the D11 charset, so word-splitting
+#                   it is exact rather than lucky — the charset excludes space and newline)
+#   $_record_key    the key to PRINT in "record one like this" guidance — the BRANCH key when there
+#                   is one, because after Δ4 that is the key that never needs a re-record
+#   $_keys_display  the same list rendered for humans ("PR-7 or branch/feat/x")
+# Returns 0 = at least one usable key · 1 = none could be assembled (caller words the refusal) ·
+# 2 = the mode could not derive its key at all (this function already printed the diagnosis).
+_assemble_scope_keys() {
+  _scope_keys=""; _record_key=""; _keys_display=""
+  if [ "$_cb_prepush" -eq 1 ]; then
+    _ppk_rc=0; _ppk_key="$(prepush_scope_key)" || _ppk_rc=$?
+    case "$_ppk_rc" in
+      0) _scope_keys="$_ppk_key"; _record_key="$_ppk_key" ;;
+      1) echo "FAIL: ceremony-binding --pre-push — HEAD is not on a branch (detached HEAD), so there is no" >&2
+         echo "      'branch/<name>' key to match a GO record against. The gate evaluated NOTHING, which is" >&2
+         echo "      an anomaly and not a wait (fail closed). Check out the branch you are pushing." >&2
+         return 2 ;;
+      *) echo "FAIL: ceremony-binding --pre-push — the current branch name may contain only [A-Za-z0-9_.:/-]," >&2
+         echo "      and this one does not, so NO GO record could ever carry its 'branch/<name>' key. The" >&2
+         echo "      charset is the RECORD FORMAT's (promotion-verify.sh --scope), reused here rather than" >&2
+         echo "      widened — a key the ledger cannot express is not a key. Rename the branch." >&2
+         return 2 ;;
+    esac
+  else
+    if [ -n "$_cb_scope" ]; then _scope_keys="$_cb_scope"; _record_key="$_cb_scope"; fi
+    if [ -n "$_cb_head_branch" ]; then
+      if _scope_charset_bad "$_cb_head_branch"; then
+        # THE DEGRADED-KEY DISCLOSURE (Δ1). NOT an anomaly and NOT silent: the head branch is
+        # author-controlled (a fork PR names its own branch), and a name outside the D11 charset is a
+        # name NO record could ever carry — so dropping the key loses nothing, while refusing would
+        # hand any PR author an rc-2 red on this gate for free. Disclosed on STDERR (stdout in
+        # --render mode IS the step-summary block), rc unchanged.
+        echo "ceremony-binding: the supplied --head-branch is outside the record format's charset" >&2
+        echo "  ([A-Za-z0-9_.:/-]), so NO GO record could carry its 'branch/<name>' key. DROPPING the" >&2
+        echo "  branch key and proceeding on the PR key alone — degraded key, not an anomaly; rc" >&2
+        echo "  unchanged. (The charset is promotion-verify.sh's own, reused rather than widened.)" >&2
+      else
+        _scope_keys="${_scope_keys:+$_scope_keys }branch/$_cb_head_branch"
+        _record_key="branch/$_cb_head_branch"
+      fi
+    fi
+  fi
+  [ -n "$_scope_keys" ] || return 1
+  _keys_display="$(printf '%s\n' "$_scope_keys" | sed 's/ / or /g')"
+  return 0
+}
+
+# _matches_scope <record-body> — THE matcher, and the ONLY one. 0 (true) when the record carries a
+# `scope:` line equal to ANY assembled key. Line-anchored + fixed-string (`grep -qF -x`) for the same
+# reason the gate line is: a substring or multi-line pattern turns the binding into an OR that every
+# design record satisfies by construction (measured, leg13b).
+_matches_scope() {
+  # shellcheck disable=SC2086 # deliberate word-split of the key list; see _assemble_scope_keys.
+  for _msk in $_scope_keys; do
+    if printf '%s\n' "$1" | grep -qF -x "scope: $_msk"; then return 0; fi
+  done
+  return 1
+}
+
+# _matched_key <record-body> — which key this record actually matched, for an honest verdict line
+# ("matched on branch/feat/x" is a different fact from "matched on PR-7"). Prints the first hit.
+_matched_key() {
+  # shellcheck disable=SC2086 # deliberate word-split of the key list; see _assemble_scope_keys.
+  for _mkk in $_scope_keys; do
+    if printf '%s\n' "$1" | grep -qF -x "scope: $_mkk"; then printf '%s\n' "$_mkk"; return 0; fi
+  done
+  return 1
+}
+
+# render_records — Δ3, THE SINGLE SOURCE of the D-240805-4 judgment-surface render. Emits the
+# matched-record visibility block on STDOUT (the caller appends it to $GITHUB_STEP_SUMMARY); the
+# per-run log line goes to stderr so the block stays clean. Reads $_scope_keys and $NOTES_REF.
+#
+# ⚠️ THIS BEHAVIOUR USED TO EXIST THREE TIMES — here, in .github/workflows/ci.yml, and in
+# profiles/adopter-gates.yml (B7 design §1.8, measured). It is single-sourced because Δ1 adds a
+# SECOND key: a copy that kept matching on the PR key alone would render NOTHING on exactly the PRs
+# the branch key enables, i.e. the gate would pass and the owner would click GO with no record in
+# view — a D-240805-4 visibility lie manufactured by the fix. The two workflow legs now INVOKE this,
+# and conformance/adopter-gates-parity.sh refuses a leg that drops the invocation or regrows a copy.
+#
+# Every property the inline copies carried is preserved verbatim and for its original reason:
+#   * ALL matches, never the first — the gate passes if ANY match survives adjudication, so showing
+#     one record could hide a defective sibling behind the survivor (B7 rider).
+#   * VERBATIM bodies inside ONE grown fence, never per-field markdown — a record forged through the
+#     front door closed a code span with its own backtick and emitted `<br>`, rendering a SECOND,
+#     stronger-looking `approved-by` line (measured, B2 sec H2).
+#   * An 8 KB bound that is TOTAL ACROSS RECORDS, with the cut ANNOUNCED — GitHub drops a whole
+#     step summary past 1 MiB, and one forged field measured 1,601,670 bytes, so an unbounded render
+#     hides the record by VOLUME; a silent truncation hides it just as well (self-review finding 4).
+render_records() {
+  _rr_nl=$(printf '\nX'); _rr_nl=${_rr_nl%X}   # a literal newline
+  _rr_body=''; _rr_matched=0
+  if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+    for _rr_obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
+      _rr_b="$(git notes --ref="$NOTES_REF" show "$_rr_obj" 2>/dev/null || true)"
+      printf '%s\n' "$_rr_b" | grep -q '^gate: design$' || continue
+      _matches_scope "$_rr_b" || continue
+      _rr_matched=$((_rr_matched + 1))
+      if [ -z "$_rr_body" ]; then
+        _rr_body="--- record $_rr_obj ---${_rr_nl}${_rr_b}"
+      else
+        _rr_body="${_rr_body}${_rr_nl}--- record $_rr_obj ---${_rr_nl}${_rr_b}"
+      fi
+    done
+  fi
+  if [ -z "$_rr_body" ]; then
+    printf '%s\n' 'ceremony-binding: PASS/N-A with no scoped design record (ordinary change-class) — nothing to render.'
+    return 0
+  fi
+  # awk, not `head -c`: `printf | head -c` SIGPIPEs the writer, which under `-o pipefail` aborts the
+  # render and drops the record for a THIRD reason. LC_ALL=C so length() counts BYTES (a byte cap).
+  _rr_trunc=0
+  if [ "$(printf '%s' "$_rr_body" | LC_ALL=C wc -c | tr -d ' ')" -gt 8192 ]; then
+    _rr_body=$(printf '%s\n' "$_rr_body" | LC_ALL=C awk -v max=8192 '
+      used < max {
+        if (used + length($0) + 1 > max) { printf "%s", substr($0, 1, max - used); exit }
+        print $0; used += length($0) + 1
+      }')
+    _rr_trunc=1
+  fi
+  # FENCE-IN-BODY GUARD, ONE awk pass: the fence must be LONGER than the longest backtick RUN in the
+  # body, so no ledger content can close it. The grow-and-rescan loop this replaced forked `grep`
+  # once per backtick over author-controlled input (measured 9s on a 2,000-backtick body); a render
+  # nobody waits for is not visibility. Fail-safe: an unusable run length yields the LONGEST fence.
+  _rr_run=$(printf '%s\n' "$_rr_body" | LC_ALL=C awk '
+    { n = 0
+      for (i = 1; i <= length($0); i++) {
+        if (substr($0, i, 1) == "`") { n++; if (n > m) m = n } else { n = 0 }
+      } }
+    END { print m + 0 }')
+  case "$_rr_run" in ''|*[!0-9]*) _rr_run=8192 ;; esac
+  _rr_fence='```'
+  while [ "${#_rr_fence}" -le "$_rr_run" ]; do _rr_fence="$_rr_fence"'`'; done
+  printf '%s\n' "## ceremony-binding — the design-gate GO record(s) this merge rides on ($_rr_matched matched, rendered up to the 8 KB total bound)" ''
+  printf '%s\n' "$_rr_fence" "$_rr_body" "$_rr_fence"
+  if [ "$_rr_trunc" = 1 ]; then
+    printf '%s\n' '' "**(truncated at 8 KB TOTAL across all $_rr_matched record(s) — read the full ledger: \`git notes --ref=$NOTES_REF show <sha>\`)**"
+  fi
+  printf '%s\n' '' "_Matched on: $_keys_display (a design GO binds by \`scope: PR-<n>\` OR \`scope: branch/<head-branch>\`). Every record above is reproduced VERBATIM from the ledger, inside one code fence: nothing in it renders as markdown, so a field cannot forge a second one. The gate passes if ANY matching record survives adjudication — a defective sibling is SHOWN here, not hidden behind the survivor, within the 8 KB total bound; past it, the cut is announced and the ledger command shows the rest. Record bodies can contain separator-lookalike text; the header's matched-count is authoritative. A note **binds**, it does not **authenticate** — this render exists so a minted record walks into the owner's field of view before the click (\`D-240805-4\`)._"
+  echo "ceremony-binding: $_rr_matched matched record(s) rendered into the step summary." >&2
+  return 0
+}
+
 run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient tree); rest: --scope ID | none
   # $1 is reachable ONLY as a function parameter: selftest() passes a listing in-process, and the
   # dispatcher at the bottom always passes '' — no command-line flag accepts one. Same shape as
@@ -189,6 +442,12 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   _cb_changed="$1"; shift
   _cb_scope=""
   _cb_prepush=0
+  _cb_head_branch=""
+  _cb_base_ref=""
+  _cb_render=0
+  # Initialised HERE, not at first use: check_design_record reads both under `set -u`, and a path that
+  # reached it with either unset would die with no diagnostic (this file has paid that price twice).
+  _mb_base=""; _contain_state="reachable-only (leg 2 not evaluated)"
   while [ $# -gt 0 ]; do
     case "$1" in
       # --pre-push — B2 Δ1′ (docs/architecture/2026-08-07-b2-go-records-prepush-design.md §3a): the
@@ -228,6 +487,35 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
         fi
         _cb_scope="$2"
         shift 2 ;;
+      # `--head-branch` (BRANCH-SCOPE-END-TO-END Δ1) — the SECOND key's raw material, and the ONE
+      # argument on this surface whose value is chosen by whoever opens the PR (`github.head_ref`).
+      # DELIBERATELY NOT REFUSED AT THE BOUNDARY, unlike --scope: a name outside the record format's
+      # charset cannot express a key, so there is nothing to refuse — the key is DROPPED (disclosed)
+      # and the run proceeds on the PR key alone. Refusing instead would hand any fork author an rc-2
+      # red on our gate by naming a branch `feat/a b`, which is a denial-of-service through an input
+      # we already know can carry no record. The charset test itself is the SAME _scope_charset_bad
+      # --scope uses, so no new charset hole is opened by the second key.
+      --head-branch)
+        [ $# -ge 2 ] || { echo "ceremony-binding: --head-branch needs a value" >&2; return 2; }
+        _cb_head_branch="$2"
+        shift 2 ;;
+      # `--base-ref` (BRANCH-SCOPE-END-TO-END Δ2, fix round 1) — the history containment LEG 2 measures
+      # "already integrated" against. CI passes `github.base_ref` (the PR's target branch) the same way
+      # it passes the head branch: env-bound, argument-borne, never interpolated into a run: line.
+      # It selects NO records — it only names a basis — which is why, unlike --head-branch, it is NOT
+      # refused alongside --pre-push: the hook simply has a default (the locally-derived branch) and a
+      # caller may pin the same thing explicitly. Unusable values are disposed of in containment_base
+      # (disclosed skip, rc unchanged), not at this boundary, for --head-branch's reason.
+      --base-ref)
+        [ $# -ge 2 ] || { echo "ceremony-binding: --base-ref needs a value" >&2; return 2; }
+        _cb_base_ref="$2"
+        shift 2 ;;
+      # `--render` (Δ3) — NOT a gate run: it emits the matched-records visibility block on stdout for
+      # $GITHUB_STEP_SUMMARY and makes NO verdict. It exists so the D-240805-4 render has ONE
+      # implementation instead of the three copies the B7 design §1.8 measured (this matcher + two
+      # inline workflow copies) — teaching the gate a second key without single-sourcing would have
+      # made the render silently blind on exactly the PRs the second key enables.
+      --render) _cb_render=1; shift ;;
       *) echo "ceremony-binding: unknown arg '$1'" >&2; return 2 ;;
     esac
   done
@@ -240,6 +528,37 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     echo "  DERIVED (branch/<current-branch>), never supplied. Run the CI predicate with --scope," >&2
     echo "  or --pre-push alone." >&2
     return 2
+  fi
+  # SAME RULE, SAME REASON, for the two arguments Δ1/Δ3 add. --pre-push DERIVES its one key from the
+  # checked-out branch, so a supplied --head-branch would either be silently ignored (misrepresenting
+  # what was checked) or honoured (running a different predicate than --pre-push names). And --render
+  # makes no verdict, so pairing it with the hook mode would produce a run that neither renders a
+  # CI key nor gates. Both are broken wirings: rc 2, never a wait.
+  if [ "$_cb_prepush" -eq 1 ] && [ -n "$_cb_head_branch" ]; then
+    echo "ceremony-binding: --head-branch cannot be combined with --pre-push — the pre-push scope key" >&2
+    echo "  is DERIVED from the checked-out branch (D11's single-derivation rule), never supplied." >&2
+    return 2
+  fi
+  if [ "$_cb_prepush" -eq 1 ] && [ "$_cb_render" -eq 1 ]; then
+    echo "ceremony-binding: --render cannot be combined with --pre-push — the render is the CI" >&2
+    echo "  judgment-surface block (D-240805-4) and makes no verdict; --pre-push is a predicate." >&2
+    return 2
+  fi
+
+  # ---- Δ3 THE RENDER, dispatched BEFORE applicability and deliberately so: it makes no verdict, so
+  # it must not inherit the gate's N-A early return (an `ordinary` change would otherwise write
+  # "no design artifact required" into $GITHUB_STEP_SUMMARY instead of the render's own honest
+  # "nothing to render" line). Its stdout IS the summary block; every diagnostic it emits goes to
+  # stderr so the block cannot be polluted by one.
+  if [ "$_cb_render" -eq 1 ]; then
+    _ask_rc=0; _assemble_scope_keys || _ask_rc=$?
+    if [ "$_ask_rc" -ne 0 ]; then
+      echo "ceremony-binding --render: no usable scope key (pass --scope and/or an expressible" >&2
+      echo "  --head-branch). Refusing to render an unbound set of records." >&2
+      return 2
+    fi
+    render_records
+    return 0
   fi
 
   # ---- Applicability: derive the class via the single hardened authority, fail CLOSED.
@@ -272,7 +591,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # scope id is what binds record to change; without it this gate stops exactly one merge — its own.
   # Scope is REQUIRED in CI mode only — --pre-push DERIVES its key (D11; prepush_scope_key above).
   # Everything else without a scope stays the rc-2 anomaly it always was.
-  if [ "$_cb_prepush" -eq 0 ] && [ -z "$_cb_scope" ]; then
+  if [ "$_cb_prepush" -eq 0 ] && [ -z "$_cb_scope" ] && [ -z "$_cb_head_branch" ]; then
     echo "FAIL: ceremony-binding — no --scope supplied; refusing to match a GO record to this change" >&2
     echo "      by guesswork (fail closed). CI passes the PR number; locally pass --scope <id>." >&2
     # rc 2 (design §9.3, review finding). Left at 1 this renders as normal waiting, which is exactly
@@ -281,25 +600,16 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     # read as "the owner has not got round to the GO yet".
     return 2
   fi
-  # ---- THE SCOPE KEY (B2 Δ1′). ONE record search serves BOTH modes below — same loop, same
-  # check_design_record, same verdict partition, no fork of the predicate. The only thing the mode
-  # decides is WHICH KEY binds record to change: CI's caller-supplied `PR-<n>`, or the hook mode's
-  # DERIVED `branch/<current-branch>` (prepush_scope_key — the single derivation, D11's trap).
-  _match_scope="$_cb_scope"
-  if [ "$_cb_prepush" -eq 1 ]; then
-    _ppk_rc=0; _match_scope="$(prepush_scope_key)" || _ppk_rc=$?
-    case "$_ppk_rc" in
-      0) : ;;
-      1) echo "FAIL: ceremony-binding --pre-push — HEAD is not on a branch (detached HEAD), so there is no" >&2
-         echo "      'branch/<name>' key to match a GO record against. The gate evaluated NOTHING, which is" >&2
-         echo "      an anomaly and not a wait (fail closed). Check out the branch you are pushing." >&2
-         return 2 ;;
-      *) echo "FAIL: ceremony-binding --pre-push — the current branch name may contain only [A-Za-z0-9_.:/-]," >&2
-         echo "      and this one does not, so NO GO record could ever carry its 'branch/<name>' key. The" >&2
-         echo "      charset is the RECORD FORMAT's (promotion-verify.sh --scope), reused here rather than" >&2
-         echo "      widened — a key the ledger cannot express is not a key. Rename the branch." >&2
-         return 2 ;;
-    esac
+  # ---- THE SCOPE KEYS (B2 Δ1′, widened by Δ1). ONE assembler, ONE matcher, ONE record search serve
+  # BOTH modes AND the render — same loop, same check_design_record, same verdict partition, no fork
+  # of the predicate. The mode decides only WHICH KEYS bind record to change.
+  _ask_rc=0; _assemble_scope_keys || _ask_rc=$?
+  if [ "$_ask_rc" -ne 0 ]; then
+    if [ "$_ask_rc" -eq 1 ]; then
+      echo "FAIL: ceremony-binding — no --scope supplied, and the --head-branch given cannot express a" >&2
+      echo "      scope key, so there is NO key to match a GO record on (fail closed)." >&2
+    fi
+    return 2
   fi
 
   # ── B7 RIDER — NO-SHADOWING (the #509 wedge, measured 2026-08-08). The loop below COLLECTS
@@ -317,7 +627,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       # BOTH conditions on the SAME record, each line-anchored.
       printf '%s\n' "$_body" | grep -q '^gate: design$' || continue
       _gate_seen=1   # a design record exists, but maybe not for THIS scope — report the near-miss
-      printf '%s\n' "$_body" | grep -qF -x "scope: $_match_scope" || continue
+      _matches_scope "$_body" || continue
       _matches="$_matches $_obj"; _match_count=$((_match_count + 1))
     done
   fi
@@ -326,18 +636,19 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     # branch. Same two diagnoses as CI, phrased for the key that actually failed to match.
     if [ "$_gate_seen" -eq 1 ]; then
       echo "FAIL: ceremony-binding --pre-push — a 'gate: design' record exists, but NONE is scoped to this branch" >&2
-      echo "      (expected 'scope: $_match_scope'). Another branch's GO does not satisfy this push, and neither" >&2
+      echo "      (expected 'scope: $_keys_display'). Another branch's GO does not satisfy this push, and neither" >&2
       echo "      does a 'scope: PR-<n>' record — that is CI's key, not this one. A leg that accepted any design" >&2
       echo "      record went PERMANENTLY GREEN after its own first use (measured); it was withdrawn." >&2
     else
       echo "FAIL: ceremony-binding --pre-push — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
       echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
     fi
-    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_match_scope \\" >&2
+    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_record_key \\" >&2
     echo "        --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path> ..." >&2
     echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
-    echo "      CI matches the SAME record on a DIFFERENT key ('scope: PR-<n>'), so re-record with the PR" >&2
-    echo "      scope when the PR is created (one sha, one note — the design's S3 measurement)." >&2
+    echo "      THAT ONE RECORD IS ENOUGH: CI matches the SAME branch key (BRANCH-SCOPE-END-TO-END)," >&2
+    echo "      so there is NO re-record at PR creation any more — the [S4]#7 interim protocol is" >&2
+    echo "      RETIRED (2026-08-11), and with it the record->poster race it caused." >&2
     echo "      STALENESS: this reader never fetches (offline discipline); a stale or partial local" >&2
     echo "      ledger can FALSE-REFUSE — remedy: git fetch origin '+refs/notes/*:refs/notes/*'." >&2
     echo "      It can never weaken CI, which fetches the fresh ledger." >&2
@@ -348,19 +659,18 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     # who recorded a GO for the wrong scope needs to be told that rather than "no record found".
     if [ "$_gate_seen" -eq 1 ]; then
       echo "FAIL: ceremony-binding — a 'gate: design' record exists, but NONE is scoped to this change" >&2
-      echo "      (expected 'scope: $_cb_scope'). A record for another scope does NOT satisfy this gate:" >&2
+      echo "      (expected 'scope: $_keys_display'). A record for another scope does NOT satisfy this gate:" >&2
       echo "      that is what let an unrelated prior design vouch for every later change-set." >&2
     else
       echo "FAIL: ceremony-binding — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
       echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
     fi
-    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_cb_scope \\" >&2
+    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_record_key \\" >&2
     echo "        --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path> ..." >&2
     echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
-    echo "      Do BOTH BEFORE opening the PR. CI fetches the ledger seconds after the PR is created," >&2
-    echo "      so a record pushed afterwards loses the race and this gate reds on a compliant change" >&2
-    echo "      until the job re-runs. Measured on this check's own PR: run started 13:41:37Z, the" >&2
-    echo "      notes landed 13:41:48Z, and the fetch at +7s saw an empty ledger." >&2
+    echo "      Do BOTH BEFORE opening the PR — this gate reads the ledger the moment the PR exists." >&2
+    echo "      A BRANCH-scoped record is the one to write: it binds before the PR exists AND is what" >&2
+    echo "      CI matches here, so it needs no re-record (the [S4]#7 interim protocol is RETIRED)." >&2
     return 1
   fi
 
@@ -372,6 +682,42 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # Pass 1 adjudicates each record in a SUBSHELL (capturing its verdict text without letting a
   # defect print on a passing run); pass 2 re-runs the survivor in THIS shell so
   # CB_DESIGN_DOC/_appr are set for the verdict below — same inputs, same predicate, no fork.
+  # ---- Δ2 THE GRADED HEAD, resolved ONCE for the containment leg below. Deliberately AFTER the
+  # no-match returns above, so a tree with no record still gets its rc-1 WAITING rather than an
+  # rc-2 for a head that could not resolve — the containment leg only ever judges records that exist.
+  # CI mode grades the PR head (the deciding job checks it out); --pre-push grades the pushed tip.
+  # Both are HEAD in the tree the check runs in, which is why there is one resolution and not two.
+  _graded_head="$(git rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || _graded_head=""
+  if [ -z "$_graded_head" ]; then
+    echo "FAIL: ceremony-binding — HEAD does not resolve to a commit, so REACHABILITY CONTAINMENT" >&2
+    echo "      cannot be evaluated against the graded head. The gate evaluated NOTHING (fail closed)." >&2
+    return 2
+  fi
+  # ---- Δ2 LEG 2's BASIS, resolved ONCE for every record, with a DISCLOSED disposition ladder.
+  # Three outcomes, and none of them is silent:
+  #   base resolves and does NOT already contain the head -> leg 2 RUNS (full containment);
+  #   base already CONTAINS the graded head -> it cannot discriminate historic work from new (every
+  #     commit reachable from the head is in it by definition), so leg 2 would refuse EVERY record on
+  #     a healthy shape — a repo with no remote whose default branch IS the checked-out branch, which
+  #     is the shape of this file's own fixtures and of a fresh local repo. SKIPPED, disclosed. It is
+  #     not a bypass: making it true requires a head the base already contains, i.e. a change-set that
+  #     adds nothing to the base;
+  #   nothing resolves (shallow clone, no default-branch ref, no --base-ref) -> SKIPPED, disclosed.
+  # rc is UNCHANGED in the skip arms and the verdict carries the degraded state, so a green is never
+  # read as more containment than was measured (never a red on a healthy clone shape, never a silent
+  # skip — the B2-Δ2 clone-shape class and loop-state's scope-basis ladder, same disposition).
+  if _mb_try="$(containment_base "$_graded_head")" && [ -n "$_mb_try" ]; then
+    if [ "$_mb_try" = "$_graded_head" ]; then
+      _contain_state="reachable-only (leg 2 SKIPPED: the resolved base already contains this head)"
+      echo "ceremony-binding: CONTAINMENT leg 2 (not-already-integrated) SKIPPED — the resolved base already contains the graded head, so it cannot tell historic work from new; containment is REACHABLE-ONLY for this run, rc unchanged." >&2
+    else
+      _mb_base="$_mb_try"
+      _contain_state="reachable AND not already integrated (base merge-base $_mb_base)"
+    fi
+  else
+    _contain_state="reachable-only (leg 2 SKIPPED: no base history resolved)"
+    echo "ceremony-binding: CONTAINMENT leg 2 (not-already-integrated) SKIPPED — no base history resolved (no usable --base-ref, and no local default-branch ref: shallow clone or absent ref); containment is REACHABLE-ONLY for this run, rc unchanged." >&2
+  fi
   _survivor=""; _defects=""; _examined=0; _defect_n=0
   for _obj in $_matches; do
     _examined=$((_examined + 1))
@@ -390,7 +736,7 @@ $_cdr_out"
   done
   if [ -z "$_survivor" ]; then
     printf '%s\n' "$_defects" >&2
-    echo "FAIL: ceremony-binding — ALL $_examined matching record(s) for 'scope: $_match_scope' are DEFECTIVE" >&2
+    echo "FAIL: ceremony-binding — ALL $_examined matching record(s) for 'scope: $_keys_display' are DEFECTIVE" >&2
     echo "      (each named above); no surviving GO record. A defect in EVERY record bound to this" >&2
     echo "      change is broken, not patient (WAITING-GATES-RENDER-AS-RED)." >&2
     return 2
@@ -403,28 +749,33 @@ $_cdr_out"
     return 2
   fi
 
+  _survivor_key="$(_matched_key "$_body")" || _survivor_key="$_keys_display"
   if [ "$_cb_prepush" -eq 1 ]; then
-    echo "OK: ceremony-binding --pre-push — change-class '$_cls'; DESIGN GATE recorded (scope $_match_scope)."
+    echo "OK: ceremony-binding --pre-push — change-class '$_cls'; DESIGN GATE recorded (scope $_keys_display)."
     echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
     echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; defects render at CI)."
+    echo "    Matched on key: $_survivor_key."
     echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
-    echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact."
-    echo "    CI matches the SAME record on a DIFFERENT key ('scope: PR-<n>') — re-record at PR creation."
+    echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact"
+    echo "    and is CONTAINED in this head's history — containment: $_contain_state."
+    echo "    CI matches this SAME branch key — no re-record at PR creation ([S4]#7 retired 2026-08-11)."
     echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
     return 0
   fi
-  echo "OK: ceremony-binding — change-class '$_cls'; DESIGN GATE recorded (scope $_cb_scope)."
+  echo "OK: ceremony-binding — change-class '$_cls'; DESIGN GATE recorded (scope $_keys_display)."
   echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
   echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; ALL matches render at CI)."
+  echo "    Matched on key: $_survivor_key."
   echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
-  echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact."
+  echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact"
+  echo "    and is CONTAINED in this head's history — containment: $_contain_state."
   echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
   return 0
 }
 
 # check_design_record — the DOWNSTREAM legs, shared VERBATIM by both modes (B2: refactor-in-place,
 # no fork of the predicate — CI and --pre-push run these exact lines). Reads $_body, $_design_note
-# and $_cls (set by the caller's record search) plus NOTES_REF / CB_DESIGN_GLOB; on success sets
+# $_cls and $_graded_head (set by the caller's record search) plus NOTES_REF / CB_DESIGN_GLOB; on success sets
 # CB_DESIGN_DOC and $_appr for the caller's verdict text. Returns 0 = the record survives every
 # leg; 2 = the record is DEFECTIVE, reason on stderr. The rc-2-everywhere rule is inherited
 # (WAITING-GATES-RENDER-AS-RED): every refusal below is an anomaly, never a wait.
@@ -664,6 +1015,76 @@ check_design_record() {
     echo "      pass: NOTHING here binds the artifact's CONTENT to this change (only the RECORD is" >&2
     echo "      scope-bound), so that satisfies the gate with no design for the work at hand." >&2
     return 2
+  fi
+
+  # ---- Δ2 REACHABILITY CONTAINMENT (BRANCH-SCOPE-END-TO-END, 2026-08-11) — the approved commit must
+  # be an ANCESTOR of the graded head. THIS IS NOT AN ORDERING CLAIM AND MUST NEVER BE READ AS ONE
+  # (see the withdrawal tombstone below): it says the approved commit is IN THIS HISTORY, not that it
+  # came first — `git commit --amend` defeats ordering and this check is indifferent to that.
+  #
+  # WHY IT EXISTS. Retiring the re-record makes branch-scoped records PERMANENT, and branch NAMES are
+  # author-REUSABLE: without this, a record left behind by a historic `feat/x` would be inherited by
+  # any future branch named `feat/x`. Containment cures the CLASS — a historic record's approved-sha
+  # is not in the new branch's history, so the record is inert. Applied to the PR key too, for
+  # symmetry: a record's own approved commit not being in the graded head is anomalous on any key.
+  # The existing commit-touches-basis leg above is unchanged; this ADDS containment, it replaces
+  # nothing. Fail-shape is DEFECTIVE-with-a-named-reason, so the adjudicate-all rider renders it and
+  # a valid sibling still carries the gate (B7 rider semantics preserved exactly).
+  #
+  # `set -eu` DISCIPLINE: `--is-ancestor` reports its VERDICT in the exit status (1 = not an
+  # ancestor), so the rc is captured with `|| _mb_rc=$?` — a bare call would abort the whole run
+  # under `set -e` and turn a legitimate refusal into a silent death mid-adjudication.
+  _mb_rc=0
+  git merge-base --is-ancestor "$_asha" "$_graded_head" >/dev/null 2>&1 || _mb_rc=$?
+  if [ "$_mb_rc" -ne 0 ]; then
+    if [ "$_mb_rc" -eq 1 ]; then
+      echo "FAIL: ceremony-binding — CONTAINMENT: the approved commit is NOT an ancestor of the graded head," >&2
+      echo "      so this GO approves a commit that is not in the history being judged." >&2
+      echo "      approved-sha: $_asha" >&2
+      echo "      graded head:  $_graded_head" >&2
+      echo "      A branch name can be REUSED, so a record from a historic branch of the same name must" >&2
+      echo "      not vouch for this one. Record a GO for THIS change (the branch key needs no" >&2
+      echo "      re-record), or rebase so the approved commit is genuinely contained." >&2
+    else
+      echo "FAIL: ceremony-binding — CONTAINMENT could not be evaluated (git merge-base --is-ancestor" >&2
+      echo "      exited $_mb_rc for approved-sha $_asha against graded head $_graded_head). Fail closed:" >&2
+      echo "      an unevaluable containment check is an anomaly, not a pass." >&2
+    fi
+    return 2
+  fi
+
+  # ---- Δ2 CONTAINMENT, LEG 2: NOT ALREADY INTEGRATED (fix round 1, security F1).
+  # Leg 1 above proves the approved commit is IN this history. It does NOT prove the record is about
+  # THIS work, and the difference is the whole reused-name class: once a historic same-named branch is
+  # MERGED OR REBASED into the base, its approved-sha lives on the MAINLINE — so every later branch
+  # inherits it reachably and its record satisfies unrelated work. MEASURED as rc 0 on exactly that
+  # shape, which is the class `D-240811-3` was ratified believing closed. Leg 2 closes it: the approved
+  # commit must NOT be an ancestor of merge-base(graded head, base) — i.e. it must be NEW relative to
+  # the base, not already integrated into it.
+  # $_mb_base is EMPTY when no base could be resolved (or the resolved base already contains the head);
+  # the caller has already DISCLOSED that degradation and $_contain_state carries it into the verdict.
+  # Skipping here is deliberate and fail-safe: a red for a clone SHAPE would break every shallow
+  # checkout and every fresh local repo, which is the green-on-clone failure class in reverse.
+  if [ -n "$_mb_base" ]; then
+    _mb2_rc=0
+    git merge-base --is-ancestor "$_asha" "$_mb_base" >/dev/null 2>&1 || _mb2_rc=$?
+    if [ "$_mb2_rc" -eq 0 ]; then
+      echo "FAIL: ceremony-binding — CONTAINMENT: ALREADY-INTEGRATED: the approved commit is in the base" >&2
+      echo "      history — a historic record cannot approve new work; record a fresh GO." >&2
+      echo "      This also catches a GO recorded at the FORK POINT (approved-sha == the merge-base):" >&2
+      echo "      that record approves a commit the base already has, so it says nothing about this" >&2
+      echo "      branch's work — the remedy is the same, a fresh GO on a commit of this change." >&2
+      echo "      approved-sha:     $_asha" >&2
+      echo "      base merge-base:  $_mb_base" >&2
+      echo "      graded head:      $_graded_head" >&2
+      return 2
+    fi
+    if [ "$_mb2_rc" -ne 1 ]; then
+      echo "FAIL: ceremony-binding — CONTAINMENT leg 2 could not be evaluated (git merge-base" >&2
+      echo "      --is-ancestor exited $_mb2_rc for approved-sha $_asha against base merge-base" >&2
+      echo "      $_mb_base). Fail closed: an unevaluable containment check is an anomaly, not a pass." >&2
+      return 2
+    fi
   fi
 
   CB_DESIGN_DOC="$_basis"
@@ -1097,6 +1518,36 @@ selftest() {
        _fails=$((_fails+1)) ;;
   esac
 
+  # LEG P5b / P5c — THE OTHER TWO MODE CONFLICTS, pinned by legP5's shape (reviewer LOW-2: both
+  # refusals shipped with NO leg, so deleting either left the whole suite green while the run either
+  # misrepresented what it checked or made no verdict at all).
+  #   --head-branch: the pre-push key is DERIVED (D11's single-derivation rule), so honouring a
+  #     supplied one runs a DIFFERENT predicate than --pre-push names, and ignoring it misrepresents
+  #     what was checked. Deleting the refusal REDs this leg at rc 0/1, not rc 2 (demonstrated).
+  #   --render: the render makes NO verdict, so pairing it with the hook mode yields a run that
+  #     neither renders a CI key nor gates. Deleting the refusal REDs this leg at rc 0.
+  # (--base-ref is deliberately NOT in this family — it selects no records, only the containment
+  # basis, and --pre-push has a derived default for it. See its arg-parse comment.)
+  _legs=$((_legs+1))   # legP5b
+  _outP5b="$( cd "$_tmp/fpp1" && run_ceremony_binding "$_tmp/changed-cp" --pre-push --head-branch b2-pp 2>&1 )" \
+    && _rcP5b=0 || _rcP5b=$?
+  case "$_rcP5b:$_outP5b" in
+    2:*"--head-branch cannot be combined with --pre-push"*)
+      echo "PASS legP5b: --pre-push with --head-branch -> rc 2 refusal naming the conflict" ;;
+    *) echo "FAIL legP5b: expected rc 2 naming the --head-branch conflict, got rc=$_rcP5b: $_outP5b"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  _legs=$((_legs+1))   # legP5c
+  _outP5c="$( cd "$_tmp/fpp1" && run_ceremony_binding "$_tmp/changed-cp" --pre-push --render 2>&1 )" \
+    && _rcP5c=0 || _rcP5c=$?
+  case "$_rcP5c:$_outP5c" in
+    2:*"--render cannot be combined with --pre-push"*)
+      echo "PASS legP5c: --pre-push with --render -> rc 2 refusal naming the conflict" ;;
+    *) echo "FAIL legP5c: expected rc 2 naming the --render conflict, got rc=$_rcP5c: $_outP5c"
+       _fails=$((_fails+1)) ;;
+  esac
+
   # LEG P6 — a DETACHED HEAD has no branch key to derive. FAIL CLOSED, rc 2 (the gate evaluated
   # nothing — that is an anomaly, never the waiting yellow), naming the state.
   _legs=$((_legs+1))   # legP6
@@ -1182,6 +1633,222 @@ selftest() {
     echo "FAIL legR3: expected rc 2 naming both defective records + 'ALL 2 matching', got rc=$_rcR3: $_outR3"
     _fails=$((_fails+1))
   fi
+
+  # ── BRANCH-SCOPE-END-TO-END legs (Δ1 two-key match · Δ2 containment · Δ3 the render single-source).
+  # The design's §7 list, in order. Every negative below was demonstrated RED FIRST against a
+  # hand-built mutant of the production code (the standing discipline), never written green-first.
+
+  # LEG B1 (Δ1 LIVENESS, and the whole point of the slice) — a record carrying ONLY the branch key
+  # PASSES its PR. Before Δ1 this exact fixture was the rc-1 WAITING that forced the [S4]#7
+  # re-record; the verdict must NAME the key it matched, or "it passed" and "it passed for the
+  # reason we think" are indistinguishable.
+  _legs=$((_legs+1))   # legB1
+  _scope=branch/b2-pp _mkfix "$_tmp/fB1" design "docs/architecture/d-design.md" real
+  _outB1="$( cd "$_tmp/fB1" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch b2-pp 2>&1 )" && _rcB1=0 || _rcB1=$?
+  case "$_rcB1:$_outB1" in
+    0:*"Matched on key: branch/b2-pp"*)
+      echo "PASS legB1: a branch-key-only record PASSES its PR, and the verdict names the key" ;;
+    1:*) echo "FAIL legB1: a branch-key-only record still WAITS — the two-key match is not live: $_outB1"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB1: expected rc 0 naming 'Matched on key: branch/b2-pp', got rc=$_rcB1: $_outB1"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B2 (THE LOAD-BEARING NEGATIVE for Δ1) — the SAME record must REFUSE a DIFFERENT branch's PR.
+  # A second key that matched any branch would be the withdrawn wide leg with a new spelling: on a
+  # ledger holding one surviving design record it goes permanently green (measured, legP1b's
+  # tombstone). rc 1 (a genuine wait — the operator has not recorded a GO for THIS change).
+  _legs=$((_legs+1))   # legB2
+  _outB2="$( cd "$_tmp/fB1" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch some-other-branch 2>&1 )" && _rcB2=0 || _rcB2=$?
+  case "$_rcB2:$_outB2" in
+    1:*"NONE is scoped to this change"*)
+      echo "PASS legB2: the same record REFUSES a different branch's PR (the second key is not wide)" ;;
+    0:*) echo "FAIL legB2: another branch's GO SATISFIED this PR — the branch key matches anything"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB2: expected rc 1 naming the scope near-miss, got rc=$_rcB2: $_outB2"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B3 (THE LOAD-BEARING NEGATIVE for Δ2, the ratified ceiling's narrowing) — a record whose
+  # NAME key matches but whose approved-sha is NOT an ancestor of the graded head is DEFECTIVE with
+  # a NAMED containment reason. This is the permanence hazard made inert: branch names are
+  # author-reusable and branch records no longer get reaped, so without this leg a historic
+  # `feat/x` record would vouch for every future `feat/x`. rc 2 (a defect, not a wait).
+  _legs=$((_legs+1))   # legB3
+  _mkcontain "$_tmp/fB3" branch/b2-pp
+  _outB3="$( cd "$_tmp/fB3" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch b2-pp 2>&1 || true )"
+  ( cd "$_tmp/fB3" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 --head-branch b2-pp ) \
+    >/dev/null 2>&1 && _rcB3=0 || _rcB3=$?
+  case "$_rcB3:$_outB3" in
+    2:*CONTAINMENT*"NOT an ancestor"*)
+      echo "PASS legB3: a name-matching record outside the graded head's history -> rc 2, CONTAINMENT named" ;;
+    0:*) echo "FAIL legB3: a record whose approved commit is NOT in this history SATISFIED the gate — a reused branch name inherits its predecessor's GO"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB3: expected rc 2 naming CONTAINMENT, got rc=$_rcB3: $_outB3"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B4 (Δ1 REGRESSION) — an existing PR-scoped record still passes, WITH a head branch supplied
+  # that no record carries. Nothing is migrated and no adopter's ledger is invalidated: the PR key
+  # is not deprecated, it is joined. Without this leg the second key could have REPLACED the first.
+  _legs=$((_legs+1))   # legB4
+  _scope=PR-1 _mkfix "$_tmp/fB4" design "docs/architecture/d-design.md" real
+  _outB4="$( cd "$_tmp/fB4" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch a-branch-with-no-record 2>&1 )" && _rcB4=0 || _rcB4=$?
+  case "$_rcB4:$_outB4" in
+    0:*"Matched on key: PR-1"*)
+      echo "PASS legB4: a PR-scoped record still passes when a second key is in play (no migration)" ;;
+    *) echo "FAIL legB4: expected rc 0 naming 'Matched on key: PR-1', got rc=$_rcB4: $_outB4"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B5 (THE HOSTILE-INPUT DISPOSAL) — `github.head_ref` is chosen by whoever opens the PR, so a
+  # name outside the record format's charset must DROP the branch key, DISCLOSE that it did, and
+  # leave the rc alone. Two failure modes this leg pins shut, in both directions: refusing (rc 2)
+  # would hand any fork author a red on this gate for free, and dropping SILENTLY would make the
+  # verdict "PASS on the PR key" indistinguishable from "PASS on a branch key we never used".
+  # The PR-scoped record of fB4 still carries the run, so the rc is UNCHANGED at 0.
+  _legs=$((_legs+1))   # legB5
+  _outB5="$( cd "$_tmp/fB4" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch 'feat/a b;rm -rf' 2>&1 )" && _rcB5=0 || _rcB5=$?
+  case "$_rcB5:$_outB5" in
+    0:*"outside the record format's charset"*"DROPPING the"*)
+      case "$_outB5" in
+        *"Matched on key: PR-1"*)
+          echo "PASS legB5: a hostile head-branch name -> PR-key-only, disclosed, rc UNCHANGED (0)" ;;
+        *) echo "FAIL legB5: the run passed but not on the PR key — the dropped key leaked into the match: $_outB5"
+           _fails=$((_fails+1)) ;;
+      esac ;;
+    2:*) echo "FAIL legB5: a charset-out head branch REFUSED (rc 2) — an author-chosen name must not red this gate: $_outB5"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB5: expected rc 0 with a disclosed key drop, got rc=$_rcB5: $_outB5"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B6 (Δ3 — THE RENDER IS THIS SCRIPT'S, and it follows the same two keys). The D-240805-4
+  # block used to be inlined in ci.yml AND profiles/adopter-gates.yml; a copy left matching the PR
+  # key alone would render NOTHING on exactly the PRs Δ1 enables — the gate green, the owner
+  # clicking GO with no record in view. Here: the render finds a BRANCH-keyed record verbatim,
+  # inside a fence, and honestly renders nothing when no key matches. (The other half of the
+  # single-source claim — that BOTH workflow legs INVOKE this rather than carrying a copy — is
+  # conformance/adopter-gates-parity.sh's assert_render_single_sourced + cases 2h/2i/9.)
+  _legs=$((_legs+1))   # legB6
+  _outB6="$( cd "$_tmp/fB1" && run_ceremony_binding '' --render --scope PR-1 --head-branch b2-pp 2>/dev/null )" \
+    && _rcB6=0 || _rcB6=$?
+  _outB6b="$( cd "$_tmp/fB1" && run_ceremony_binding '' --render --scope PR-1 --head-branch nope 2>/dev/null )" \
+    && _rcB6b=0 || _rcB6b=$?
+  if [ "$_rcB6" = 0 ] && printf '%s\n' "$_outB6" | grep -qF 'scope: branch/b2-pp' \
+     && printf '%s\n' "$_outB6" | grep -qF '(1 matched' \
+     && printf '%s\n' "$_outB6" | grep -q '^```' \
+     && [ "$_rcB6b" = 0 ] && printf '%s\n' "$_outB6b" | grep -qF 'nothing to render'; then
+    echo "PASS legB6: --render is the single-sourced block — branch-keyed record verbatim in a fence, honest empty otherwise"
+  else
+    echo "FAIL legB6: --render did not emit the matched record block (rc=$_rcB6/$_rcB6b): $_outB6"
+    _fails=$((_fails+1))
+  fi
+
+  # LEG B7 (Δ3 BOUND) — the render's 8 KB TOTAL bound and its ANNOUNCED cut move with the code, or
+  # single-sourcing would have quietly dropped B2's measured volume defence (one forged field
+  # emitted 1,601,670 bytes; GitHub DROPS a step summary past 1 MiB, so an unbounded render hides
+  # the record by volume just as effectively as omitting it).
+  _legs=$((_legs+1))   # legB7
+  _mkbigrec "$_tmp/fB7" branch/b2-pp
+  _outB7="$( cd "$_tmp/fB7" && run_ceremony_binding '' --render --scope PR-1 --head-branch b2-pp 2>/dev/null )" \
+    && _rcB7=0 || _rcB7=$?
+  _bytesB7=$(printf '%s' "$_outB7" | LC_ALL=C wc -c | tr -d ' ')
+  if [ "$_rcB7" = 0 ] && [ "$_bytesB7" -le 65536 ] \
+     && printf '%s\n' "$_outB7" | grep -qF 'truncated at 8 KB TOTAL' \
+     && printf '%s\n' "$_outB7" | grep -qF 'gate: design'; then
+    echo "PASS legB7: --render bounds an oversized record at 8 KB TOTAL ($_bytesB7 bytes) and ANNOUNCES the cut"
+  else
+    echo "FAIL legB7: expected a bounded, announced render (rc=$_rcB7, $_bytesB7 bytes)"
+    _fails=$((_fails+1))
+  fi
+
+  # ── Δ2 CONTAINMENT LEG 2 — "not already integrated" (fix round 1, security F1). legB3 above pins
+  # leg 1; these four pin the leg that actually closes the reused-name CLASS, plus its disclosed
+  # degradation. Every negative was demonstrated RED FIRST against a hand-built mutant with leg 2
+  # removed (the standing discipline), and under that mutant legB8/legB11 return rc 0 — which IS the
+  # measured defect: a historic record satisfying unrelated work.
+
+  # LEG B8 (THE CLASS KILLER) — the shape leg 1 CANNOT see: the historic branch's approved commit was
+  # MERGED/REBASED into the base, so it sits on the MAINLINE; a NEW branch reusing the name inherits
+  # it reachably and carries NO fresh record. Under leg 1 alone this is rc 0 (measured) — the record
+  # from an unrelated, already-integrated slice vouches for this change. rc 2, ALREADY-INTEGRATED.
+  # Exercises the EXPLICIT CI route (--base-ref, the way the workflows pass $GITHUB_BASE_REF).
+  _legs=$((_legs+1))   # legB8
+  _mkbase "$_tmp/fB8" integrated branch/feat/reused
+  _outB8="$( cd "$_tmp/fB8" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch feat/reused --base-ref main 2>&1 || true )"
+  ( cd "$_tmp/fB8" && run_ceremony_binding "$_tmp/changed-cp" \
+      --scope PR-1 --head-branch feat/reused --base-ref main ) >/dev/null 2>&1 && _rcB8=0 || _rcB8=$?
+  case "$_rcB8:$_outB8" in
+    2:*ALREADY-INTEGRATED*)
+      echo "PASS legB8: an already-integrated record on a REUSED branch name -> rc 2, ALREADY-INTEGRATED named" ;;
+    0:*) echo "FAIL legB8: a record whose approved commit is ALREADY IN THE BASE satisfied a new branch of the same name — the reused-name class D-240811-3 claims closed is OPEN: $_outB8"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB8: expected rc 2 naming ALREADY-INTEGRATED, got rc=$_rcB8: $_outB8"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B9 (THE LIVENESS HALF, and the false-red guard) — OUR OWN FLOW: the design commit lives ON the
+  # branch, not in the base. BOTH legs must pass and the verdict must SAY so, or leg 2 would refuse
+  # every compliant slice in this repo. Uses the DERIVED base ladder (no --base-ref), because that is
+  # the route the pre-push hook and any un-wired adopter CI take.
+  _legs=$((_legs+1))   # legB9
+  _mkbase "$_tmp/fB9" onbranch branch/feat/new
+  _outB9="$( cd "$_tmp/fB9" && run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 --head-branch feat/new 2>&1 )" && _rcB9=0 || _rcB9=$?
+  case "$_rcB9:$_outB9" in
+    0:*"not already integrated"*)
+      echo "PASS legB9: a design commit ON the branch passes BOTH containment legs, and the verdict names the state" ;;
+    0:*) echo "FAIL legB9: the run passed but the verdict does not claim leg 2 — a skipped leg is being read as a full containment: $_outB9"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB9: our own compliant shape must PASS with both legs, got rc=$_rcB9: $_outB9"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B10 (THE DISCLOSED DEGRADATION) — with NO base resolvable (no --base-ref, no origin, no
+  # main/master), leg 2 is SKIPPED: rc UNCHANGED, the skip DISCLOSED, and the verdict downgraded to
+  # reachable-only. Two failure modes pinned in both directions — a red here would break every shallow
+  # clone and every fresh local repo (the green-on-clone class in reverse), and a SILENT skip would let
+  # a reachable-only green be read as the full containment the ratified ceiling claims.
+  _legs=$((_legs+1))   # legB10
+  _mkbase "$_tmp/fB10" nobase branch/feat/nobase
+  _outB10="$( cd "$_tmp/fB10" && run_ceremony_binding "$_tmp/changed-cp" \
+                --scope PR-1 --head-branch feat/nobase 2>&1 )" && _rcB10=0 || _rcB10=$?
+  case "$_rcB10:$_outB10" in
+    0:*"no base history resolved"*"reachable-only"*)
+      echo "PASS legB10: an unresolvable base -> leg 2 SKIPPED, disclosed, rc UNCHANGED (0), verdict downgraded" ;;
+    2:*) echo "FAIL legB10: an unresolvable base REDDENED the gate — a clone SHAPE must never be an anomaly: $_outB10"
+         _fails=$((_fails+1)) ;;
+    0:*) echo "FAIL legB10: leg 2 was skipped SILENTLY or the verdict still claims full containment: $_outB10"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB10: expected rc 0 with a disclosed degradation, got rc=$_rcB10: $_outB10"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG B11 (THE NAMED EDGE) — a GO recorded at the FORK POINT (approved-sha == merge-base) is
+  # DEFECTIVE, and deliberately so: that commit is already in the base, so the record says nothing
+  # about this branch's work. Named in the refusal's second sentence with its remedy (a fresh GO), and
+  # pinned here so the edge is a DECISION rather than an accident of the predicate. Derived base route.
+  _legs=$((_legs+1))   # legB11
+  _mkbase "$_tmp/fB11" forkpoint branch/feat/fork
+  _outB11="$( cd "$_tmp/fB11" && run_ceremony_binding "$_tmp/changed-cp" \
+                --scope PR-1 --head-branch feat/fork 2>&1 || true )"
+  ( cd "$_tmp/fB11" && run_ceremony_binding "$_tmp/changed-cp" \
+      --scope PR-1 --head-branch feat/fork ) >/dev/null 2>&1 && _rcB11=0 || _rcB11=$?
+  case "$_rcB11:$_outB11" in
+    2:*ALREADY-INTEGRATED*"FORK POINT"*)
+      echo "PASS legB11: a GO recorded at the fork point -> rc 2, ALREADY-INTEGRATED, the edge NAMED with its remedy" ;;
+    2:*) echo "FAIL legB11: refused, but the fork-point edge is not NAMED — the operator is told to record a GO without being told why this one failed: $_outB11"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legB11: expected rc 2 naming ALREADY-INTEGRATED + the fork point, got rc=$_rcB11: $_outB11"
+       _fails=$((_fails+1)) ;;
+  esac
 
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran
@@ -1319,6 +1986,145 @@ _mkfix2() {
       (both)   _note2 "$_c1" 1; _note2 "$_c2" 1
                printf '%s\n%s\n' "$_c1" "$_c2" > .defective-shas ;;
     esac
+  )
+}
+
+# _mkcontain <dir> <scope> — the Δ2 CONTAINMENT fixture: a record whose scope key MATCHES and whose
+# approved-sha TOUCHES the basis, but whose approved commit is NOT in the graded head's history.
+# Shape: c1 authors the design doc; a side branch adds c2, which also touches it; HEAD is then
+# detached back at c1 and the note is written on c2. So every other leg of check_design_record
+# passes and CONTAINMENT is the ONLY thing that can refuse — the fixture differs from the passing
+# case in exactly one respect, which is this file's own hard-won rule (leg 3 / leg 5's tautologies).
+# This is the reused-branch-name hazard in miniature: the record is real, it is simply not ours.
+_mkcontain() {
+  _dc="$1"; _scc="$2"
+  mkdir -p "$_dc/docs/architecture"
+  (
+    cd "$_dc" || exit 1
+    git init -q 2>/dev/null
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    # >= 8 non-blank lines under a heading, or obl_is_placeholder fires the FLOOR signal and this
+    # leg silently tests the substance floor instead of containment.
+    printf '%s\n' \
+      '# Design — fixture' '' '## Approach' \
+      'The gate derives the change class from the single hardened authority and refuses to' \
+      'classify a change-set it cannot read. The trade-off is that a stricter refusal costs' \
+      'an operator an explicit correction when the base is unreachable, which is the fail-safe' \
+      'direction and the one this kit takes everywhere else.' \
+      'Identification rides on the GO record rather than a registry, so the binding claim' \
+      'here is non-trivial instead of vacuously true of every document in history.' \
+      '## Honest ceiling' \
+      'Proves existence and record binding only; it does not prove the design is sound.' \
+      > docs/architecture/d-design.md
+    printf 'fixture repo\n' > README.md
+    git add -A 2>/dev/null; git commit -q -m fixture >/dev/null 2>&1
+    _cc1=$(git rev-parse HEAD)
+    printf 'A second commit on the OTHER branch, touching the artifact.\n' >> docs/architecture/d-design.md
+    git add -A 2>/dev/null; git commit -q -m fixture-elsewhere >/dev/null 2>&1
+    _cc2=$(git rev-parse HEAD)
+    printf '%s\n' "record: promotion GO (approve->execute->log)" "gate: design" \
+      "scope: $_scc" "approved-by: Fixture Human [committer]" "approved-sha: $_cc2" \
+      "change-class: control-plane" "basis: docs/architecture/d-design.md" \
+      | git notes --ref=promotions add -f -F - "$_cc2" 2>/dev/null
+    # Graded head goes BACK to c1, which does not contain c2.
+    git checkout -q --detach "$_cc1"
+  )
+}
+
+# _mkbase <dir> <shape> <scope> — the Δ2 LEG 2 fixtures ("not already integrated"). Each shape differs
+# from the PASSING one (`onbranch`) in exactly ONE respect — WHERE the approved commit sits relative to
+# the base — so a leg can only fail for the reason it names (this file's hard-won rule; see leg 3/leg 5).
+#   integrated  the historic branch was MERGED/REBASED into the base, so its approved commit is on the
+#               MAINLINE; a NEW branch REUSES the name and carries no fresh record. THE MEASURED CLASS.
+#   onbranch    our own compliant flow: the approved commit is on the branch, not in the base.
+#   forkpoint   the GO was recorded at the merge-base itself (branched, then recorded at the fork point).
+#   nobase      no base is resolvable at all: no remote, and the sole branch is named neither
+#               main nor master, so the derived ladder finds nothing.
+# ⚠️ THE DEFAULT BRANCH NAME IS SET EXPLICITLY, BEFORE THE FIRST COMMIT. `git init` honours the user's
+# init.defaultBranch, so a developer configured to `master` (or anything else) would otherwise build a
+# DIFFERENT fixture than CI does — and these legs turn on precisely whether that ref resolves. Same
+# class as the PROMOTION_NOTES_REF / CB_DESIGN_GLOB pins at the top of selftest().
+_mkbase() {
+  _dz="$1"; _shz="$2"; _scz="$3"
+  mkdir -p "$_dz/docs/architecture"
+  (
+    cd "$_dz" || exit 1
+    git init -q 2>/dev/null
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    case "$_shz" in
+      nobase) git symbolic-ref HEAD refs/heads/sole ;;
+      *)      git symbolic-ref HEAD refs/heads/main ;;
+    esac
+    # >= 8 non-blank lines under a heading, or obl_is_placeholder fires the FLOOR signal and these
+    # legs silently test the substance floor instead of containment.
+    _mkbase_doc() {
+      printf '%s\n' \
+        '# Design — fixture' '' '## Approach' \
+        'The gate derives the change class from the single hardened authority and refuses to' \
+        'classify a change-set it cannot read. The trade-off is that a stricter refusal costs' \
+        'an operator an explicit correction when the base is unreachable, which is the fail-safe' \
+        'direction and the one this kit takes everywhere else.' \
+        'Identification rides on the GO record rather than a registry, so the binding claim' \
+        'here is non-trivial instead of vacuously true of every document in history.' \
+        '## Honest ceiling' \
+        'Proves existence and record binding only; it does not prove the design is sound.' \
+        > docs/architecture/d-design.md
+    }
+    _mkbase_note() {   # <approved-sha>
+      printf '%s\n' "record: promotion GO (approve->execute->log)" "gate: design" \
+        "scope: $_scz" "approved-by: Fixture Human [committer]" "approved-sha: $1" \
+        "change-class: control-plane" "basis: docs/architecture/d-design.md" \
+        | git notes --ref=promotions add -f -F - "$1" 2>/dev/null
+    }
+    printf 'fixture repo\n' > README.md
+    case "$_shz" in
+      integrated)
+        git add -A 2>/dev/null; git commit -q -m base >/dev/null 2>&1
+        # The APPROVED commit, landing on the MAINLINE — a historic branch's design commit after its
+        # merge/rebase into the base, which is what makes it reachable from every later branch.
+        _mkbase_doc
+        git add -A 2>/dev/null; git commit -q -m "historic design, integrated into the base" >/dev/null 2>&1
+        _bz_a=$(git rev-parse HEAD)
+        git checkout -q -b feat/reused
+        printf 'unrelated new work\n' > work.txt
+        git add -A 2>/dev/null; git commit -q -m "new work on the REUSED branch name" >/dev/null 2>&1
+        _mkbase_note "$_bz_a" ;;
+      onbranch)
+        git add -A 2>/dev/null; git commit -q -m base >/dev/null 2>&1
+        git checkout -q -b feat/new
+        _mkbase_doc
+        git add -A 2>/dev/null; git commit -q -m "this slice's design, ON the branch" >/dev/null 2>&1
+        _mkbase_note "$(git rev-parse HEAD)" ;;
+      forkpoint)
+        _mkbase_doc
+        git add -A 2>/dev/null; git commit -q -m "base, touching the artifact" >/dev/null 2>&1
+        _bz_f=$(git rev-parse HEAD)
+        git checkout -q -b feat/fork
+        printf 'work after the fork\n' > work.txt
+        git add -A 2>/dev/null; git commit -q -m "work" >/dev/null 2>&1
+        _mkbase_note "$_bz_f" ;;
+      nobase)
+        git add -A 2>/dev/null; git commit -q -m base >/dev/null 2>&1
+        _mkbase_doc
+        git add -A 2>/dev/null; git commit -q -m "design on the sole branch" >/dev/null 2>&1
+        _mkbase_note "$(git rev-parse HEAD)" ;;
+    esac
+  )
+}
+
+# _mkbigrec <dir> <scope> — a single scope-matching record whose body is far past the render's 8 KB
+# total bound (B2's measured volume attack in miniature: the real one emitted 1,601,670 bytes).
+_mkbigrec() {
+  _db="$1"; _scb="$2"
+  mkdir -p "$_db"
+  (
+    cd "$_db" || exit 1
+    git init -q 2>/dev/null
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    git commit -q --allow-empty -m fixture >/dev/null 2>&1
+    { printf '%s\n' "gate: design" "scope: $_scb"
+      awk 'BEGIN { s = ""; for (i = 0; i < 1000; i++) s = s "A"; for (j = 0; j < 40; j++) print s }'
+    } | git notes --ref=promotions add -f -F - HEAD 2>/dev/null
   )
 }
 

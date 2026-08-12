@@ -89,6 +89,15 @@ equivalent agent and follow this runbook.)
 - **Two ledgers, always** — regardless of verdict (below).
 - **Retro fold-in** — the synthesis also answers: *what did the last N slices teach, and into which
   artifact does that learning route?* (the "adjust" step — the loop closes).
+- **Two standing questions, every panel** (adopted `D-240811-2.4`, panel #39): *(a)* **"which
+  shipped permission-surface allows would we not re-ratify today?"** — the enforcement surfaces a
+  ruling depends on (allowlists, guard arms, hook copies) are audited as delivered-or-not, not
+  assumed (the B8/B9-measured permission-surface class); *(b)* **scope-coherence** — does each
+  slice's declared scope, diff, and design agree, and did any mechanism's reach silently widen?
+- **Third-carry auto-escalation** (adopted `D-240811-2.4`, panel #39): a finding carried to its
+  **third consecutive panel** escalates one severity and must leave that panel with a ruling, a
+  funded unit, or a dated deferral — a carry is a signal the routing failed, not a status quo.
+  (First application: `BOARD-DOR-FIELDS`, funded at the #39 sitting.)
 
 ### Per-lens output schema
 
