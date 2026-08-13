@@ -170,14 +170,20 @@ run() {
     else
       echo "FAIL: exported tree's claims-registry does NOT pass (an orphaned maintainer-only claim — carve it in adopter-export.sh)"; rc=1
     fi
-    # DIAL-DELIVERY Δ-A — the adopter's dial state, in ONE fold: (a) the kit's own enforcement dials
-    # do not ship, and (b) BEHAVIOURAL — with no conf the exported hook OBSERVES a failing entry
-    # declaration (rc 0 + the observe prefix) instead of refusing it. (a) alone is a presence check
-    # and cannot see a substitution: a hook that read the dial from somewhere else, or defaulted to
-    # enforce, would pass it and still red an adopter's first push. The fixture head is the export
-    # commit made just above — a real commit carrying no Kit-* trailers, so the predicate genuinely
-    # fails and only the DIAL decides the rc.
-    [ -e "$_d/.kit/dials.conf" ] && { echo "FAIL: export kept .kit/dials.conf (every adopter would inherit the kit's enforce dials at their first hook re-copy)"; rc=1; }
+    # DIAL-DELIVERY Δ-A/Δ-B — the adopter's dial state, in ONE fold: (a) the kit's own enforcement
+    # dials do not ship (ALL of them — the two push dials AND the Δ-B KIT_SCOPE_MODE=enforce), and
+    # (b) BEHAVIOURAL — with no conf the exported hook OBSERVES a failing entry declaration (rc 0 +
+    # the observe prefix) instead of refusing it. (a) alone is a presence check and cannot see a
+    # substitution: a hook that read the dial from somewhere else, or defaulted to enforce, would pass
+    # it and still red an adopter's first push. The fixture head is the export commit made just above
+    # — a real commit carrying no Kit-* trailers, so the predicate genuinely fails and only the DIAL
+    # decides the rc. ⚠️ (b) proves the observe-by-absence MECHANISM through the DECL dial (a hook
+    # leg). Δ-B's KIT_SCOPE_MODE rides the SAME `.kit/dials.conf`-absent => observe mechanism, but its
+    # consumer is loop-state.sh (--head), not the hook body, and firing its scope leg needs a crafted
+    # escaping-diff + a resolvable base — heavier than this check may nest (the green-on-clone note
+    # below). Its reader-level observe-by-absence proof lives at the right layer: loop-state.sh's own
+    # T7c `dm-absent` cross-reader selftest. Here, (a) forbids the conf that would flip SCOPE at all.
+    [ -e "$_d/.kit/dials.conf" ] && { echo "FAIL: export kept .kit/dials.conf (every adopter would inherit the kit's enforce dials — the two push dials AND KIT_SCOPE_MODE=enforce — at their first hook re-copy)"; rc=1; }
     _dl=0; _dlo=$( cd "$_d" && printf 'refs/heads/x %s refs/heads/x %s\n' "$(git rev-parse HEAD)" \
       0000000000000000000000000000000000000000 | sh hooks/pre-push 2>&1 ) || _dl=$?
     if [ "$_dl" -ne 0 ] || ! printf '%s' "$_dlo" | grep -q 'kit pre-push (observe):'; then

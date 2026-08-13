@@ -36,7 +36,8 @@ CONF=".kit/dials.conf"
 # The ruled dial state, one NAME=VALUE per line. Adding a dial here without its reader would lock
 # declared-but-unread state, so Δ-B/Δ-C extend this WITH their readers (design §3).
 REQUIRED='KIT_PUSH_DECL=enforce
-KIT_PUSH_GO=enforce'
+KIT_PUSH_GO=enforce
+KIT_SCOPE_MODE=enforce'
 
 # dial_value <name> — the conf's value for <name>, or empty. PARSE, never source (the roster.conf
 # contract, mirrored by guard-core's kit_dial_mode reader this lock backstops).
@@ -82,7 +83,7 @@ run() {
   # reasons are multi-line and a count would silently mis-read.
   grep -q '^DIAL-STATE-FAIL$' "$_OUT" && rc=1
   grep -v '^DIAL-STATE-FAIL$' "$_OUT" || true
-  [ "$rc" -eq 0 ] && echo "PASS: $CONF carries the ruled dial state (KIT_PUSH_DECL=enforce, KIT_PUSH_GO=enforce) — a committed disarm reds here; a working-tree one does not (see the ceiling in this file's header)"
+  [ "$rc" -eq 0 ] && echo "PASS: $CONF carries the ruled dial state (KIT_PUSH_DECL=enforce, KIT_PUSH_GO=enforce, KIT_SCOPE_MODE=enforce) — a committed disarm reds here; a working-tree one does not (see the ceiling in this file's header)"
   return $rc
 }
 
@@ -95,17 +96,17 @@ selftest() {
   _self=$(CDPATH='' cd "$(dirname "$0")" && pwd)/$(basename "$0")
   W=$(mktemp -d)
 
-  ds_tree "$W/good" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce'
+  ds_tree "$W/good" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce'
   ds_expect "liveness anchor: the ruled conf passes" 0 "$W/good"
 
-  ds_tree "$W/gone" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce'
+  ds_tree "$W/gone" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce'
   rm -f "$W/gone/.kit/dials.conf"
   ds_expect "mutant 1: the conf DELETED reds (fail-closed on absence)" 1 "$W/gone"
 
-  ds_tree "$W/flip" 'KIT_PUSH_DECL=observe' 'KIT_PUSH_GO=enforce'
+  ds_tree "$W/flip" 'KIT_PUSH_DECL=observe' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce'
   ds_expect "mutant 2: a value flipped to observe reds" 1 "$W/flip"
 
-  ds_tree "$W/drop" 'KIT_PUSH_DECL=enforce'
+  ds_tree "$W/drop" 'KIT_PUSH_DECL=enforce' 'KIT_SCOPE_MODE=enforce'
   ds_expect "mutant 3: a required key DELETED reds" 1 "$W/drop"
 
   # ...and each mutant must be named, not merely counted — an operator who cannot see WHICH dial
@@ -117,15 +118,23 @@ selftest() {
   # mutant 5 (review round 1): a SYMLINKED conf reds. `[ -f ]`/`[ -r ]` follow links, so without the
   # explicit -L refusal a link to a ruled-looking file elsewhere passes this lock while the dial
   # state that decides pushes sits off-tree, invisible to the reviewed diff.
-  ds_tree "$W/link" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce'
+  ds_tree "$W/link" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce'
   mv "$W/link/.kit/dials.conf" "$W/link/.kit/elsewhere.conf"
   ln -s elsewhere.conf "$W/link/.kit/dials.conf"
   ds_expect "mutant 5: a SYMLINKED conf reds even though it parses clean" 1 "$W/link"
   ds_expect_says "the symlink reason says SYMLINK" 'is a SYMLINK' "$W/link"
 
   # The SECOND dial is graded too (a lock reading only the first key would pass every case above).
-  ds_tree "$W/flip2" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=observe'
+  ds_tree "$W/flip2" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=observe' 'KIT_SCOPE_MODE=enforce'
   ds_expect "mutant 4: the SECOND dial flipped to observe reds" 1 "$W/flip2"
+
+  # The THIRD dial, KIT_SCOPE_MODE (Δ-B), is graded on BOTH faces (F3): without these two legs,
+  # deleting `KIT_SCOPE_MODE=enforce` from REQUIRED leaves the whole selftest GREEN — silently
+  # unlocking the new dial, the class the file header forbids.
+  ds_tree "$W/scopeflip" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=observe'
+  ds_expect "mutant 6: KIT_SCOPE_MODE flipped to observe reds" 1 "$W/scopeflip"
+  ds_tree "$W/scopedrop" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce'
+  ds_expect "mutant 7: the KIT_SCOPE_MODE key DELETED reds" 1 "$W/scopedrop"
 
   # Scope: an adopter-shaped tree (no kit markers, no conf) is N/A — and the N/A is DISCLOSED.
   ds_natree "$W/adopter"
@@ -138,7 +147,7 @@ selftest() {
   ds_expect "one kit marker + no conf still REDs (the guard is not always-N/A)" 1 "$W/onemarker"
 
   rm -rf "$W"
-  [ "$sfail" -eq 0 ] && { echo "dial-state --selftest: OK (anchor + 5 value/presence/symlink mutants + reason-text + scope both ways)"; return 0; }
+  [ "$sfail" -eq 0 ] && { echo "dial-state --selftest: OK (anchor + 7 value/presence/symlink mutants + reason-text + scope both ways)"; return 0; }
   echo "dial-state --selftest: FAIL"; return 1
 }
 

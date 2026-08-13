@@ -95,6 +95,55 @@ conf_val() {   # $1 = key
   sed -n "s/^$1=\"\\(.*\\)\"\$/\\1/p" "$ROSTER_CONF" 2>/dev/null | head -1
 }
 
+# ls_dial_mode "<DIAL_NAME>" — the enforcement-dial reader for THIS gate. Prints exactly `enforce`
+# or `observe` and ALWAYS returns 0 (the scope consumer compares the printed word, so a dial can
+# never wedge the gate by erroring). A LOCAL copy of the kit_dial_mode precedence
+# (.claude/hooks/guard-core.sh:1861): loop-state.sh sources NOTHING and MUST NOT source the
+# ~1900-line guard (a `set -eu` gate coupling to code killable by a sparse-excluded `.claude/`), so
+# the precedence is re-expressed here — PARSE, DON'T SOURCE, the dial-state.sh:43 precedent. This is
+# a THIRD copy by design (guard-core, dial-state, here). The T7c selftest pins THIS reader against the
+# shared precedence spec; dial-state.sh's own selftest backstops the committed dial state. No check
+# invokes all three readers on one fixture — they share a spec, not a live cross-reader agreement test.
+#
+# SOURCE: $LS_REPO/.kit/dials.conf — the GRADED tree's conf, NEVER `git rev-parse`/cwd, NEVER an env
+# ROOT route (loop-state's banked OBLIGATION-TESTMODE-ENV-FLAG, :61-73). Production (the CI job, the
+# pre-push hook via --head) reads the real tree; a selftest fixture ($LS_REPO=throwaway) carries no
+# conf and reads observe-by-absence, staying green even though the kit's own tree ships enforce.
+# An absent/unreadable/garbage conf, a missing key, a dial NAME outside [A-Z0-9_], or any value that
+# is not exactly `enforce` reads OBSERVE (fail-safe toward observe — a dial that cannot be read must
+# never refuse a push).
+#
+# PRECEDENCE IS ASYMMETRIC (the load-bearing rule): the conf value is authoritative; an env var of
+# the same name may ESCALATE observe->enforce but may NEVER de-escalate a conf `enforce` — such a
+# value LOSES and one loud anomaly line is printed. Env-wins would leave every flip one sticky
+# `export` from undone (D-240811-2.1). An unset/empty/equal env var is the normal case, never warned.
+ls_dial_mode() {   # $1 = dial name
+  _ls_dn=$1
+  case "$_ls_dn" in
+    ''|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;;
+  esac
+  _ls_dconf="$LS_REPO/.kit/dials.conf"
+  _ls_dval=''
+  if [ -r "$_ls_dconf" ]; then
+    _ls_dval=$(grep -E "^[[:space:]]*${_ls_dn}[[:space:]]*=" "$_ls_dconf" 2>/dev/null | tail -n1 \
+      | sed -E "s/^[[:space:]]*${_ls_dn}[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//")
+  fi
+  # The env side, read INDIRECTLY (POSIX sh has no ${!name}); the name is charset-checked above.
+  _ls_denv=$(eval "printf '%s' \"\${$_ls_dn:-}\"")
+  if [ "$_ls_dval" = enforce ]; then
+    if [ -n "$_ls_denv" ] && [ "$_ls_denv" != enforce ]; then
+      # SANITIZE BEFORE INTERPOLATING — the value is caller-controlled; strip the full C0 range + DEL
+      # via ls_safe (the every-site rule at :90 — CR/LF alone left ESC/ANSI log corruption reachable,
+      # F6) and bound length so it cannot forge an extra instruction line on stderr (guard-core SEC M1).
+      _ls_dsafe=$(ls_safe "$_ls_denv" | cut -c1-40)
+      printf '%s\n' "loop-state: dial $_ls_dn='$_ls_dsafe' in the environment cannot de-escalate the repo-carried enforce in .kit/dials.conf - the conf WINS (env may only escalate observe->enforce). Change the dial through the ratified control-plane ceremony." >&2
+    fi
+    printf 'enforce\n'; return 0
+  fi
+  [ "$_ls_denv" = enforce ] && { printf 'enforce\n'; return 0; }
+  printf 'observe\n'; return 0
+}
+
 # map_completeness — the family-completeness lock (design section 9, Security N1).
 # Three FAIL directions, none of which may fall through to PASS:
 #   (a) a skill on disk absent from the map
@@ -464,6 +513,11 @@ LS_SCOPE_STATE="unknown"
 # LOCAL READS ONLY (no `git fetch`, no `git remote show`): a merge gate must never depend on network
 # reachability. Candidates, in order: the pinned fixture ref → origin/HEAD → origin/main →
 # origin/master → main → master. Nothing here is environment-overridable.
+# ⚠️ STALE-BASIS NOTE (A4-ii, B9 §10 reviewer-LOW): the local `main`/`master` fallbacks are last on
+# purpose — a stale local `main` gives an older merge-base, which can only OVER-report the changed
+# set (paths already merged upstream re-appear as "changed"). That grades FAIL-NOISY (the escape
+# print is loud, an author widens Kit-Scope or refreshes their base), NEVER fail-open: an outdated
+# basis cannot make an escaping path silently pass. CI reads origin/* and never hits this arm.
 scope_base() {   # $1 = sha
   if [ -n "$LS_SCOPE_BASEREF" ]; then
     git -C "$LS_REPO" merge-base "$LS_SCOPE_BASEREF" "$1" 2>/dev/null || return 1
@@ -481,13 +535,22 @@ scope_base() {   # $1 = sha
   return 1
 }
 
-# scope_covers — 0 when any declared prefix is a prefix of <path>. PREFIX MATCH ONLY: the pattern
-# side is a QUOTED expansion, so the token is literal and never a glob — which is exactly why the
-# hostile-token refusal above must run first (an unrejected `*` would arrive here as a live pattern).
-scope_covers() {   # $1 = path, $2 = the declared prefixes
+# scope_covers — 0 when any declared token COVERS <path> on a PATH-COMPONENT boundary (A4iv
+# tightening, ruling D-240811-2.1; this REVERSES the old plain-prefix contract). Pinned spec:
+#   * a token ending `/` covers ONLY paths strictly under it: `foo/` covers `foo/x`, and NEVER the
+#     bare name `foo`. This is just the literal prefix match, since the token already carries the `/`.
+#   * a token WITHOUT a trailing `/` covers EXACT (`foo` covers `foo`) or `foo/`-prefixed (`foo`
+#     covers `foo/x`), but NOT `foobar`. A normalize-`foo/`-to-exact implementation would newly
+#     cover the bare file `foo` — a widening (new escape) the spec and the negative fixture forbid.
+# The pattern side is a QUOTED expansion, so the token is literal and never a glob — which is exactly
+# why the hostile-token refusal above must run first (an unrejected `*` would arrive as a live
+# pattern). The nested `case` lives in this function, NOT inline in the diff `$( ... )` — bash 3.2
+# mis-parses `case ... esac` inside a command substitution (the :548 note); a function body is fine.
+scope_covers() {   # $1 = path, $2 = the declared tokens
   for _ls_cp in $2; do
-    case "$1" in
-      "$_ls_cp"*) return 0 ;;
+    case "$_ls_cp" in
+      */) case "$1" in "$_ls_cp"*) return 0 ;; esac ;;
+      *)  case "$1" in "$_ls_cp"|"$_ls_cp"/*) return 0 ;; esac ;;
     esac
   done
   return 1
@@ -496,11 +559,14 @@ scope_covers() {   # $1 = path, $2 = the declared prefixes
 # scope_leg — the whole ladder. Called ONLY through check_scope, which owns the noglob window.
 scope_leg() {   # $1 = sha
   LS_SCOPE_STATE="unknown"
+  LS_SCOPE_ESCAPED=""   # the escaping paths, captured for the run_gate scope-only epilogue (A3i)
   _ls_sn=$(decl_count "$1" Kit-Scope)
 
   # ABSENT → disclosed N/A, never red. The trailer is OPTIONAL and this is first-run-green (the B6
-  # precedent): whether absence should refuse for gated classes is a dial-flip-sitting question,
-  # deliberately not decided here.
+  # precedent). Whether gated/control-plane changes should be REQUIRED to declare a Kit-Scope (the
+  # absence arm's drift-control -> containment-boundary question) is the named trigger boarded as
+  # SCOPE-ABSENCE-REFUSAL-ON-GATED (ratified as a tracked residue, 2026-08-13, D-240811-2.1) — not
+  # decided here, but owned there rather than parked in this comment.
   # (A present-but-EMPTY value lands in this same arm — git emits an empty line and `grep -c .`
   # counts none. That is exactly equivalent to not declaring, so nothing is weakened by it.)
   if [ "$_ls_sn" -eq 0 ]; then
@@ -526,7 +592,7 @@ scope_leg() {   # $1 = sha
   for _ls_p in $_ls_scope; do
     case "$_ls_p" in
       *'*'*|*'?'*|*'['*|*..*|/*)
-        echo "loop-state: Kit-Scope token '$(ls_safe "$_ls_p")' is not a plain path prefix — a glob metacharacter (* ? [), '..' or a leading '/' is refused at the boundary" >&2
+        echo "loop-state: Kit-Scope token '$(ls_safe "$_ls_p")' is not a plain path token — a glob metacharacter (* ? [), '..' or a leading '/' is refused at the boundary" >&2
         LS_SCOPE_STATE="refused (hostile scope token)"
         return 1 ;;
     esac
@@ -543,9 +609,11 @@ scope_leg() {   # $1 = sha
 
   # --no-renames ON PURPOSE: with rename detection a move OUT of a declared prefix reports only the
   # new path, and a move INTO one hides the deletion at the old path. Both endpoints must be graded.
-  # PREFIX MATCH, not a path-component match: `docs` covers `docs-old.md` too. Declare `docs/` when
-  # you mean the directory — stated, so the semantics are not mistaken for globbing.
-  # ⚠️ The prefix match lives in scope_covers, NOT inline here: bash 3.2 (macOS /bin/sh, which runs
+  # COMPONENT-BOUNDARY MATCH, per the A4iv ruling (D-240811-2.1) — this REVERSED the earlier
+  # plain-prefix contract, under which `docs` wrongly covered `docs-old.md`. Now a token is matched
+  # on a path-component boundary: `docs` covers `docs` and `docs/…` but NOT `docs-old.md`, and a
+  # trailing-slash token (`docs/`) covers strictly-under only. The rule lives in scope_covers.
+  # ⚠️ The match lives in scope_covers, NOT inline here: bash 3.2 (macOS /bin/sh, which runs
   # this repo's own hooks) mis-parses a `case` ... `esac` INSIDE a `$( ... )` — "syntax error near
   # unexpected token ';;'", measured, on one line and on several. dash parses it fine, so a
   # linux-only test would never have seen it. Keeping `case` out of the substitution is the fix.
@@ -559,7 +627,11 @@ scope_leg() {   # $1 = sha
   )
   _ls_ec=$(printf '%s' "$_ls_esc" | grep -c . || true)
   if [ "$_ls_ec" -eq 0 ]; then
-    LS_SCOPE_STATE="PASS (every changed path is under a declared prefix)"
+    # A4-i (B9 §10 reviewer-LOW): STATE THE GRADED-PATH COUNT. A self-referential origin/HEAD clone
+    # shape (base == head) yields an EMPTY diff, so "every changed path is under a declared scope token"
+    # is vacuously true over ZERO paths — the count makes that visible instead of implying coverage.
+    _ls_gc=$(git -C "$LS_REPO" diff --name-only --no-renames "$_ls_base" "$1" 2>/dev/null | grep -c . || true)
+    LS_SCOPE_STATE="PASS ($_ls_gc changed path(s) graded; every changed path is under a declared scope token)"
     echo "loop-state: scope check $LS_SCOPE_STATE"
     return 0
   fi
@@ -570,14 +642,16 @@ scope_leg() {   # $1 = sha
     echo "loop-state:   $(ls_safe "$_ls_f")" >&2
   done
   echo "loop-state:   remedy: widen Kit-Scope on the head commit to cover them, or take the change out of this PR." >&2
-  # THE DIAL, exact-string compared — the KIT_PUSH_DECL shape (hooks/pre-push:95): anything other
-  # than the literal `enforce` stays OBSERVE. Ships observe (no exception to the observe-first
-  # rollout is requested here); the flip is registered as the fifth dial in PHASE-B-DIAL-FLIP.
-  if [ "${KIT_SCOPE_MODE:-}" = "enforce" ]; then
-    LS_SCOPE_STATE="refused ($_ls_ec path(s) outside the declared scope — KIT_SCOPE_MODE=enforce)"
+  # THE DIAL — read from the repo-carried .kit/dials.conf via ls_dial_mode (DIAL-DELIVERY Δ-B): the
+  # conf value is authoritative and env can only ESCALATE (never de-escalate) it. The kit's own tree
+  # SHIPS ENFORCE (KIT_SCOPE_MODE=enforce, locked by conformance/dial-state.sh); an adopter export
+  # carries no conf and reads OBSERVE. The escaping paths are captured for the run_gate epilogue.
+  LS_SCOPE_ESCAPED="$_ls_esc"
+  if [ "$(ls_dial_mode KIT_SCOPE_MODE)" = "enforce" ]; then
+    LS_SCOPE_STATE="refused ($_ls_ec path(s) outside the declared scope — SCOPE=enforce via .kit/dials.conf)"
     return 1
   fi
-  echo "loop-state:   observe mode — rc unchanged; set KIT_SCOPE_MODE=enforce to refuse instead (tracked: PHASE-B-DIAL-FLIP)." >&2
+  echo "loop-state:   observe mode — rc unchanged; set KIT_SCOPE_MODE=enforce in .kit/dials.conf to refuse instead (or export it to escalate this run only; see docs/adoption/brownfield.md)." >&2
   LS_SCOPE_STATE="observed ($_ls_ec path(s) outside the declared scope — observe mode, rc unchanged)"
   return 0
 }
@@ -593,6 +667,59 @@ check_scope() {   # $1 = sha
   scope_leg "$1" || _ls_scope_rc=$?
   set +f
   return "$_ls_scope_rc"
+}
+
+# ls_fail_epilogue — the run_gate failure epilogue, in THREE shapes (A3i, DIAL-DELIVERY Δ-B; I1/F4).
+#
+# The mode is computed by ls_scope_epilogue_mode (below) from the two facts run_gate already holds —
+# NOT from any parse of the formatted LS_SCOPE_STATE string (design-gate LOW-6a):
+#   1 = a scope path-ESCAPE was the SOLE failure. The Entry-Declaration trailers are valid and the
+#       diff escaped the declared Kit-Scope; name the escaping path(s). Reached ONLY under enforce —
+#       an escape returns rc 0 under observe (scope_leg:646-653), so "SCOPE=enforce" is TRUE whenever
+#       this mode fires (the I1 fix is precisely that mode 1 is now gated on a captured escape).
+#   2 = a scope BOUNDARY refusal (hostile token / duplicate Kit-Scope key) was the SOLE failure. The
+#       trailers are valid, so the generic "does not carry a valid Entry Declaration" text is FALSE;
+#       and NO path escaped, so the escape epilogue (and its "SCOPE=enforce") would be FALSE too — the
+#       I1 defect, doubly wrong under observe, where a hostile token is refused unconditionally at the
+#       boundary. scope_leg already printed the precise reason; this epilogue claims neither.
+#   0 = anything else — a real Entry-Declaration defect; print the trailer contract (CLAUDE.md §1).
+# The named paths go through ls_safe — a pushed filename is attacker-influenceable (the
+# every-interpolation rule at ls_safe:79-90).
+ls_fail_epilogue() {   # $1 = mode(0|1|2), $2 = sha, $3 = newline-separated escaping paths
+  if [ "$1" -eq 1 ]; then
+    echo "loop-state: FAIL — $2 declares a Kit-Scope that its own changed paths escape (SCOPE=enforce)." >&2
+    echo "  The Entry Declaration trailers are valid; this refusal is the SCOPE leg alone. Escaping path(s):" >&2
+    printf '%s\n' "$3" | while IFS= read -r _ls_ep; do
+      [ -n "$_ls_ep" ] || continue
+      echo "    $(ls_safe "$_ls_ep")" >&2
+    done
+    echo "  remedy: widen Kit-Scope on the head commit to cover them, or take them out of this change." >&2
+    return 0
+  fi
+  if [ "$1" -eq 2 ]; then
+    echo "loop-state: FAIL — $2 was refused by the SCOPE leg alone; the Entry Declaration trailers are valid." >&2
+    echo "  No path escaped the declared Kit-Scope — the Kit-Scope declaration itself was rejected at the" >&2
+    echo "  boundary (see the reason printed above). Fix the Kit-Scope trailer, not the diff." >&2
+    return 0
+  fi
+  echo "loop-state: FAIL — $2 does not carry a valid Entry Declaration." >&2
+  echo "  The contract is CLAUDE.md section 1. Trailers must be the LAST paragraph of the commit" >&2
+  echo "  message and CONTIGUOUS: a blank line before Co-Authored-By silently drops every Kit-* field." >&2
+  return 0
+}
+
+# ls_scope_epilogue_mode — the A3i/I1 discriminant, EXTRACTED from run_gate so it is directly testable
+# with controlled inputs. Driving the whole run_gate in the selftest is NOT hermetic: its check_class
+# leg derives the class from the AMBIENT working tree (derive_class runs promotion-readiness with no
+# fixture listing in the run_gate path — the deliberate "no --changed flag" at :289-293), so the
+# non-scope legs cannot be pinned green from a fixture commit. This function is the exact logic that
+# mislabelled a boundary refusal as a path escape before I1 — mode is escape(1) ONLY when a real
+# escape was captured, never merely because scope was the only failing leg.
+#   $1 = nonscope_bad (0|1) — did ANY non-scope leg fail?   $2 = captured escaping paths (maybe empty)
+ls_scope_epilogue_mode() {
+  [ "$1" -eq 0 ] || { printf 0; return 0; }   # a non-scope leg failed -> the trailer contract
+  [ -n "$2" ] && { printf 1; return 0; }       # a REAL escape was captured -> the escape epilogue
+  printf 2; return 0                            # scope-only, but NO escape -> a boundary refusal
 }
 
 # ---------------------------------------------------------------------------
@@ -1028,12 +1155,13 @@ selftest() {
     _st_scopeok=$(check_scope "$LS_FX_SCOPE_IN" 2>&1) \
       || { echo "selftest FAIL: a change entirely inside the declared Kit-Scope must PASS"; st_fail=1; }
     case "$_st_scopeok" in
-      *"PASS (every changed path is under a declared prefix)"*) ;;
-      *) echo "selftest FAIL: a covered change must report the scope PASS (got: $_st_scopeok)"; st_fail=1 ;;
+      *"changed path(s) graded; every changed path is under a declared scope token"*) ;;
+      *) echo "selftest FAIL: a covered change must report the scope PASS with a graded-path count (got: $_st_scopeok)"; st_fail=1 ;;
     esac
 
     # DIAL LIVENESS — the same covered change under enforce must still pass. Without this, an
     # enforce arm that refuses EVERYTHING would satisfy the negative below and be worse than useless.
+    # shellcheck disable=SC2034  # KIT_SCOPE_MODE is read indirectly (ls_dial_mode -> eval), so shellcheck cannot see the use
     ( KIT_SCOPE_MODE=enforce; check_scope "$LS_FX_SCOPE_IN" ) >/dev/null 2>&1 \
       || { echo "selftest FAIL: a covered change must pass even under KIT_SCOPE_MODE=enforce"; st_fail=1; }
 
@@ -1041,6 +1169,7 @@ selftest() {
     # ⚠️ The dial is set in a SUBSHELL, never as `VAR=x check_scope ...`: a variable assignment on a
     # FUNCTION call PERSISTS after the call in dash/POSIX sh, which would silently leak `enforce`
     # into every leg below and invert the observe leg's meaning.
+    # shellcheck disable=SC2034  # KIT_SCOPE_MODE is read indirectly (ls_dial_mode -> eval), so shellcheck cannot see the use
     ( KIT_SCOPE_MODE=enforce; check_scope "$LS_FX_SCOPE_OUT" ) >/dev/null 2>&1 \
       && { echo "selftest FAIL: an escaping path under KIT_SCOPE_MODE=enforce must FAIL"; st_fail=1; }
 
@@ -1084,16 +1213,134 @@ selftest() {
     # fixtures do not merely refuse for the wrong reason, they stop refusing at all (the escape
     # branch keeps rc 0 in observe mode) — the helper catches that as "expected a refusal, but the
     # check PASSED". The forbidden half is the guard for the day the dial flips to enforce.
-    ls_assert_reason "scope token: traversal" "is not a plain path prefix" "fall outside the declared" \
+    ls_assert_reason "scope token: traversal" "is not a plain path token" "fall outside the declared" \
       check_scope "$LS_FX_SCOPE_DOTDOT" || st_fail=1
-    ls_assert_reason "scope token: glob metacharacter" "is not a plain path prefix" "fall outside the declared" \
+    ls_assert_reason "scope token: glob metacharacter" "is not a plain path token" "fall outside the declared" \
       check_scope "$LS_FX_SCOPE_GLOB" || st_fail=1
-    ls_assert_reason "scope token: absolute path" "is not a plain path prefix" "fall outside the declared" \
+    ls_assert_reason "scope token: absolute path" "is not a plain path token" "fall outside the declared" \
       check_scope "$LS_FX_SCOPE_ABS" || st_fail=1
-    ls_assert_reason "scope duplicate key" "occurrences of 'Kit-Scope'" "is not a plain path prefix" \
+    ls_assert_reason "scope duplicate key" "occurrences of 'Kit-Scope'" "is not a plain path token" \
       check_scope "$LS_FX_SCOPE_DUP" || st_fail=1
 
     LS_SCOPE_BASEREF="$_st_scopebase_saved"
+
+    # --- T7b (A4iv): scope_covers component-boundary match -------------------------------------
+    # The tightening (ruling D-240811-2.1, B9 §10-A4iv): a declared token is a PATH-COMPONENT
+    # boundary, not a raw string prefix. Pinned spec (design MEDIUM-4):
+    #   * a token ending `/` covers ONLY paths strictly under it (`foo/` covers `foo/x`, NEVER the
+    #     bare name `foo` — the one new-ESCAPE risk a normalize-to-exact mutant would open);
+    #   * a token without `/` covers EXACT or `foo/`-prefixed (`foo` covers `foo` and `foo/x`) but
+    #     NOT `foobar` (the false-cover the old plain-prefix permitted).
+    # Each leg is a mutant kill: revert-to-plain-prefix re-covers `foobar`; normalize-`foo/`-to-exact
+    # re-covers bare `foo`. Called under `set -f` to match check_scope's production noglob window.
+    ( set -f; scope_covers "foo/x"  "foo/" ) || { echo "selftest FAIL: A4iv — 'foo/' must cover 'foo/x'"; st_fail=1; }
+    ( set -f; scope_covers "foo"    "foo/" ) && { echo "selftest FAIL: A4iv — 'foo/' must NOT cover bare 'foo' (new-escape guard)"; st_fail=1; }
+    ( set -f; scope_covers "foo"    "foo"  ) || { echo "selftest FAIL: A4iv — 'foo' must cover exact 'foo'"; st_fail=1; }
+    ( set -f; scope_covers "foo/x"  "foo"  ) || { echo "selftest FAIL: A4iv — 'foo' must cover 'foo/x'"; st_fail=1; }
+    ( set -f; scope_covers "foobar" "foo"  ) && { echo "selftest FAIL: A4iv — 'foo' must NOT cover 'foobar' (the tightening)"; st_fail=1; }
+
+    # --- T7c (MEDIUM-2): ls_dial_mode precedence contract --------------------------------------
+    # ls_dial_mode is a THIRD copy of the dial precedence (guard-core.sh:1861 kit_dial_mode and
+    # dial-state.sh:43 dial_value are the siblings a gate MUST NOT source). This pins THIS copy
+    # against the shared spec (it does NOT invoke the siblings — a spec-conformance test, not a live
+    # cross-reader agreement leg): the conf value under $LS_REPO/.kit/dials.conf is
+    # authoritative; env may ESCALATE observe->enforce but NEVER de-escalate a conf `enforce` (it
+    # LOSES + one loud anomaly line); absent/garbage/missing-key => observe (fail-safe).
+    # ⚠️ Every case drives the env in a SUBSHELL, never `VAR=x ls_dial_mode ...`: a var assignment
+    # on a FUNCTION call PERSISTS in POSIX sh (the :1041 note) and would leak into the legs below.
+    _st_drepo_saved="$LS_REPO"
+    mkdir -p "$LS_FXDIR/dm-enforce/.kit" "$LS_FXDIR/dm-garbage/.kit" "$LS_FXDIR/dm-absent"
+    printf 'KIT_SCOPE_MODE=enforce\n' > "$LS_FXDIR/dm-enforce/.kit/dials.conf"
+    printf 'KIT_SCOPE_MODE=banana\n'  > "$LS_FXDIR/dm-garbage/.kit/dials.conf"
+
+    LS_REPO="$LS_FXDIR/dm-enforce"
+    [ "$( unset KIT_SCOPE_MODE; ls_dial_mode KIT_SCOPE_MODE 2>/dev/null )" = enforce ] \
+      || { echo "selftest FAIL: dial — conf enforce (env unset) must read enforce"; st_fail=1; }
+    # shellcheck disable=SC2034  # KIT_SCOPE_MODE is read indirectly (ls_dial_mode -> eval), so shellcheck cannot see the use
+    [ "$( KIT_SCOPE_MODE=observe; ls_dial_mode KIT_SCOPE_MODE 2>/dev/null )" = enforce ] \
+      || { echo "selftest FAIL: dial — env observe must NOT de-escalate a conf enforce"; st_fail=1; }
+    # shellcheck disable=SC2034  # KIT_SCOPE_MODE is read indirectly (ls_dial_mode -> eval), so shellcheck cannot see the use
+    _dm_out=$( KIT_SCOPE_MODE=observe; ls_dial_mode KIT_SCOPE_MODE 2>&1 >/dev/null )
+    case "$_dm_out" in
+      *"cannot de-escalate"*) ;;
+      *) echo "selftest FAIL: dial — a de-escalation attempt must print one loud anomaly line"; st_fail=1 ;;
+    esac
+    # shellcheck disable=SC2034  # KIT_SCOPE_MODE is read indirectly (ls_dial_mode -> eval), so shellcheck cannot see the use
+    _dm_out=$( KIT_SCOPE_MODE=enforce; ls_dial_mode KIT_SCOPE_MODE 2>&1 >/dev/null )
+    case "$_dm_out" in
+      *"cannot de-escalate"*) echo "selftest FAIL: dial — an equal env value must NOT warn"; st_fail=1 ;;
+    esac
+
+    LS_REPO="$LS_FXDIR/dm-absent"
+    [ "$( unset KIT_SCOPE_MODE; ls_dial_mode KIT_SCOPE_MODE 2>/dev/null )" = observe ] \
+      || { echo "selftest FAIL: dial — an absent conf must fail-safe to observe"; st_fail=1; }
+    # shellcheck disable=SC2034  # KIT_SCOPE_MODE is read indirectly (ls_dial_mode -> eval), so shellcheck cannot see the use
+    [ "$( KIT_SCOPE_MODE=enforce; ls_dial_mode KIT_SCOPE_MODE 2>/dev/null )" = enforce ] \
+      || { echo "selftest FAIL: dial — env enforce must escalate observe->enforce"; st_fail=1; }
+
+    LS_REPO="$LS_FXDIR/dm-garbage"
+    [ "$( unset KIT_SCOPE_MODE; ls_dial_mode KIT_SCOPE_MODE 2>/dev/null )" = observe ] \
+      || { echo "selftest FAIL: dial — a garbage conf value must read observe"; st_fail=1; }
+    LS_REPO="$_st_drepo_saved"
+
+    # --- T7d (A3i; I1/F4): the run_gate failure epilogue is scope-aware ------------------------
+    # run_gate picks the epilogue via ls_scope_epilogue_mode from the two facts it already holds:
+    # whether any NON-scope leg failed, and whether check_scope captured a REAL escape. Three modes:
+    #   1 = a path ESCAPE was the sole failure  -> name the path(s), each through ls_safe;
+    #   2 = a scope BOUNDARY refusal (hostile token / dup key) was the sole failure -> the trailers
+    #       are valid AND no path escaped, so NEITHER the trailer contract NOR the escape claim (with
+    #       its "SCOPE=enforce") may print. This is the I1 defect: a hostile-token refusal used to
+    #       print "changed paths escape (SCOPE=enforce)" over an EMPTY path list, false under enforce
+    #       and doubly false under observe (where the boundary refuses unconditionally);
+    #   0 = a real Entry-Declaration defect -> the trailer contract.
+    # THE DISCRIMINANT IS TESTED DIRECTLY — driving the whole run_gate is not hermetic (its check_class
+    # leg derives class from the ambient tree; see ls_scope_epilogue_mode's note). The escape-vs-boundary
+    # legs are the I1 mutant kill: the pre-fix logic set the flag purely on "scope was the only failing
+    # leg", so it returned the escape mode for BOTH — the `0 '' -> 2` leg is RED before the fix, GREEN after.
+    [ "$( ls_scope_epilogue_mode 0 'conformance/stray.sh' )" = 1 ] \
+      || { echo "selftest FAIL: I1 — a captured escape as the sole failure must be epilogue mode 1"; st_fail=1; }
+    [ "$( ls_scope_epilogue_mode 0 '' )" = 2 ] \
+      || { echo "selftest FAIL: I1 — a scope-only refusal with NO captured escape must be mode 2, not a false escape"; st_fail=1; }
+    [ "$( ls_scope_epilogue_mode 1 'conformance/stray.sh' )" = 0 ] \
+      || { echo "selftest FAIL: I1 — a non-scope leg failure must be the trailer-contract mode 0"; st_fail=1; }
+
+    # mode 1 — names the escaping path, does NOT print the trailer contract.
+    _fe_scope=$( ls_fail_epilogue 1 deadbeef "conformance/stray.sh" 2>&1 )
+    case "$_fe_scope" in
+      *"conformance/stray.sh"*) ;;
+      *) echo "selftest FAIL: A3i — a scope escape epilogue must NAME the escaping path"; st_fail=1 ;;
+    esac
+    case "$_fe_scope" in
+      *"LAST paragraph"*) echo "selftest FAIL: A3i — a scope escape epilogue must NOT print the trailer contract"; st_fail=1 ;;
+    esac
+
+    # mode 2 — a boundary refusal: neither the false escape claim ("changed paths escape") nor its
+    # false "SCOPE=enforce", and NOT the trailer contract (the trailers are valid). This is the leg
+    # that catches the I1 mislabel end-to-end at the epilogue.
+    _fe_bnd=$( ls_fail_epilogue 2 deadbeef "" 2>&1 )
+    case "$_fe_bnd" in
+      *"changed paths escape"*) echo "selftest FAIL: I1 — a boundary refusal must NOT claim the paths escaped the scope"; st_fail=1 ;;
+    esac
+    case "$_fe_bnd" in
+      *"SCOPE=enforce"*) echo "selftest FAIL: I1 — a boundary refusal must NOT assert enforce mode (an export reads observe)"; st_fail=1 ;;
+    esac
+    case "$_fe_bnd" in
+      *"LAST paragraph"*) echo "selftest FAIL: I1 — a boundary refusal must NOT print the trailer contract (trailers are valid)"; st_fail=1 ;;
+    esac
+    case "$_fe_bnd" in
+      *"refused by the SCOPE leg"*) ;;
+      *) echo "selftest FAIL: I1 — a boundary refusal must state it is the scope leg alone"; st_fail=1 ;;
+    esac
+
+    # mode 0 — the trailer contract, and NOT the scope escape epilogue.
+    _fe_decl=$( ls_fail_epilogue 0 deadbeef "" 2>&1 )
+    case "$_fe_decl" in
+      *"LAST paragraph"*) ;;
+      *) echo "selftest FAIL: A3i — a declaration failure must print the trailer contract"; st_fail=1 ;;
+    esac
+    case "$_fe_decl" in
+      *"declares a Kit-Scope"*) echo "selftest FAIL: A3i — a declaration failure must NOT print the scope epilogue"; st_fail=1 ;;
+    esac
 
     # --- MAP COMPLETENESS, drift directions (b) and (c) ---------------------------------------
     # Plan T1 step 4 required these and they were missing; review measured that gutting either
@@ -1260,21 +1507,29 @@ ls_assert_reason_selfcheck() {
 # in one CI round rather than peeling them off one per push.
 run_gate() {   # $1 = sha
   _ls_bad=0
+  _ls_nonscope_bad=0   # tracks whether ANY leg other than scope failed (the A3i discriminant input)
   git -C "$LS_REPO" cat-file -e "$1^{commit}" 2>/dev/null || {
     echo "loop-state: '$1' is not a commit in this repository" >&2; return 2; }
-  map_completeness   || _ls_bad=1
-  check_declaration "$1" || _ls_bad=1
-  check_class       "$1" || _ls_bad=1
-  check_skill       "$1" || _ls_bad=1
-  check_row         "$1" || _ls_bad=1
+  map_completeness   || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_declaration "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_class       "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_skill       "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_row         "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
   # B9: the scope leg. It runs inside the existing --head path, so the installed pre-push hook and
   # CI's bound gate both get it with ZERO wiring edits. It cannot change the rc of any commit that
-  # carries no Kit-Scope trailer (the N/A arm), which is every PR shape that is green today.
-  check_scope       "$1" || _ls_bad=1
+  # carries no Kit-Scope trailer (the N/A arm), which is every PR shape that is green today. Runs
+  # LAST so _ls_nonscope_bad already reflects every other leg when the scope-only flag is derived.
+  _ls_scope_mode=0
+  if ! check_scope "$1"; then
+    _ls_bad=1
+    # I1/F4: the epilogue mode is scope-ESCAPE (1) ONLY when a REAL escape was captured. A boundary
+    # refusal (hostile token / duplicate Kit-Scope key) leaves LS_SCOPE_ESCAPED empty and gets mode 2
+    # — NOT the false "changed paths escape (SCOPE=enforce)" with an empty path list (doubly false
+    # under observe). Derived from the discriminant inputs, never parsed from LS_SCOPE_STATE.
+    _ls_scope_mode=$(ls_scope_epilogue_mode "$_ls_nonscope_bad" "${LS_SCOPE_ESCAPED:-}")
+  fi
   if [ "$_ls_bad" -ne 0 ]; then
-    echo "loop-state: FAIL — $1 does not carry a valid Entry Declaration." >&2
-    echo "  The contract is CLAUDE.md section 1. Trailers must be the LAST paragraph of the commit" >&2
-    echo "  message and CONTIGUOUS: a blank line before Co-Authored-By silently drops every Kit-* field." >&2
+    ls_fail_epilogue "$_ls_scope_mode" "$1" "${LS_SCOPE_ESCAPED:-}"
     return 1
   fi
   # The success line states EXACTLY what each leg established — never "all resolve". Security review
