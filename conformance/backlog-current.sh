@@ -2,7 +2,8 @@
 # backlog-current.sh — KW6-A conformance lock (T1 routing + T2 board checks).
 # Resolves a project's declared backlog backend (from its own CLAUDE.md), N/As the
 # not-applicable routes, and — for a repo-native BACKLOG.md that is in use — asserts the
-# state-table item-traceability the loop depends on: In Progress -> Links, In Review -> PR,
+# state-table item-traceability the loop depends on: Ready -> Success metric / hypothesis,
+# In Progress -> Links, In Review -> PR,
 # (only if the OPTIONAL section is present) Blocked -> Blocked on + Since, and (Done-edge, HITL-3)
 # a Done row FLAGGED [taste-surface] -> a UAT-SIGNOFF reference. It also asserts column ARITY
 # (BOARD-ROW-ARITY): every non-spacer body row carries exactly as many columns as its own section
@@ -14,10 +15,14 @@
 # Guardrails: read-only; no network, no writes; N/A-by-default routing so a not-applicable
 #   project is never a false FAIL (protects the incept first-run-green invariant).
 # HONEST CEILING: a green run proves the backend was RESOLVED, correctly ROUTED, and (for an
-#   in-use BACKLOG.md) that its In Progress / In Review / Blocked rows carry the required
+#   in-use BACKLOG.md) that its Ready / In Progress / In Review / Blocked rows carry the required
 #   traceability — NOT that those links resolve, that the board is current, that PRs actually
-#   merged, or that a blocked item's age is acceptable. Necessary, not sufficient. Gated columns
-#   are resolved BY NAME (In Progress→Links, In Review→PR, Blocked→'Blocked on'+'Since'). A gated
+#   merged, or that a blocked item's age is acceptable. Necessary, not sufficient. The Ready gate
+#   in particular proves a Success metric is POPULATED, never that it is TRUE or measurable —
+#   that judgment is the review seat's, and a prose scanner for "measurable" is not attempted.
+#   Gated columns
+#   are resolved BY NAME (Ready→'Success metric / hypothesis', In Progress→Links, In Review→PR,
+#   Blocked→'Blocked on'+'Since'). A gated
 #   section whose gated column is ABSENT (renamed) is a SCHEMA VIOLATION and FAILs — the template
 #   schema is the contract, and a renamed column must never silently disable the gate. The success
 #   line reports the column(s) it RESOLVED and the number of rows it EVALUATED per section, so
@@ -53,13 +58,29 @@ header_cols() {
       if(v!=""){s=s (s==""?"":", ") v}} print s}'
 }
 # is_bare_na <cell> : rc0 iff the cell is empty or a bare marker (a blank in a costume).
+# ONE definition of "a blank in a costume", shared by every gated cell in this file — never two
+# (BOARD-DOR-FIELDS design-gate MEDIUM-3). `?` joined the set with the Ready Success-metric gate:
+# a lone question mark is the most natural "I don't know yet" a board author types, and it is a
+# blank wearing punctuation. Widening here widens EVERY caller (Links, PR, Blocked on, Since,
+# Success metric) — deliberate: a bare `?` was never an acceptable value in any of them.
 is_bare_na() {
   _v=$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
   [ -z "$_v" ] && return 0
-  printf '%s' "$_v" | grep -Eiq '^(-|—|n/?a|tbd|none)$'
+  printf '%s' "$_v" | grep -Eiq '^(-|—|n/?a|tbd|none|[?])$'
 }
 # is_na_reason <cell> : rc0 iff the cell is the kit idiom `N/A — <reason>` (reason present).
 is_na_reason() { printf '%s' "$1" | grep -Eiq '^[[:space:]]*n/?a[[:space:]]*(—|-)[[:space:]]*[^[:space:]]'; }
+
+# _cell_diag <cell> : a board-author-controlled cell rendered safe to print in a diagnostic —
+# control bytes stripped and length-bounded. Board cells are untrusted bytes that reach a
+# terminal (and a CI log), so an ANSI/CSI sequence pasted into a cell could otherwise rewrite the
+# verdict a human reads. The security-waiver CONDITION for this slice (design §"Obligations"):
+# every new FAIL message that echoes cell content goes through here. `LC_ALL=C` on the `tr` is
+# load-bearing — bytewise deletion of 0x00-0x1F/0x7F leaves UTF-8 continuation bytes (0x80-0xBF)
+# untouched, so an em-dash or an emoji in a row title survives intact; the `cut` is left in the
+# ambient locale so it bounds CHARACTERS and cannot split a multibyte sequence.
+# Precedent: promotion-readiness.sh:344-345, branch-protection.sh:170.
+_cell_diag() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80; }
 
 # is_empty_marker <trimmed-line> : rc0 iff the line is a bare `None.` empty-section idiom,
 # WHOLE-LINE anchored (R3): a `case` exact-match, so an item literally named "None of the
@@ -201,6 +222,91 @@ EOF
   # an unbraced `$_sec→` can absorb `→`'s first byte on a byte-oriented sh under `set -u`.
   _coltrace="$_col"; [ "$_mode" = "blocked" ] && _coltrace="${_col}+${_col2}"
   BOARD_TRACE="${BOARD_TRACE:+$BOARD_TRACE, }${_sec}→${_coltrace} (${_eval} ${_rw})"
+  return 0
+}
+
+# READY_METRIC_COL — the Definition-of-Ready Success-metric column, declared HERE, OUTSIDE the
+# board it grades and NOT derived from it. Same oracle rule as the HITL-6 constants: a set built
+# out of its own subject can always be satisfied by renaming the subject.
+READY_METRIC_COL="Success metric / hypothesis"
+
+# check_ready_metric <file> : Ready-edge Definition-of-Ready enforcement (BOARD-DOR-FIELDS,
+# ruling D-240811-2.2). Every content-bearing Ready row must carry a NON-EMPTY
+# 'Success metric / hypothesis' cell — the DoR's own mandatory field, which was previously
+# graded for PRESENCE-of-the-heading only (dor-defined.sh:8, unchanged and disclosed).
+#
+# THE ACCEPT RULE IS THE IN-REVIEW ASYMMETRY, NOT THE IN-PROGRESS ONE: a real value ONLY. Both a
+# bare/empty cell (is_bare_na) AND the `N/A — <reason>` idiom (is_na_reason) FAIL. Under the
+# owner's demote-don't-fill ruling (2026-08-13) a row that cannot state how we will know it
+# worked is BY DEFINITION not Ready — it demotes to Backlog (unrefined) with a dated note. An
+# escape hatch here would rebuild the exact filler this gate exists to stop.
+#
+# COLUMN ABSENT -> FAIL when the table carries item rows, PASS when it carries none. The FAIL
+# side follows this file's own recorded gated-column contract ("a renamed/absent gated column is
+# a schema violation, not a skip"): a skip-when-absent arm would let any board disable the gate
+# by deleting one header cell. The PASS side is the false-FAIL control — a board with nothing in
+# Ready has nothing to measure, which keeps a brand-new adopter's first run green (and a pristine
+# template N/As earlier still, at is_pure_template).
+#
+# THE SPACER SKIP IS THE TRUE-SPACER TEST (every cell empty), NOT the Item-empty test the older
+# gates use. BOARD-ROW-ARITY already reproduced the Item-empty evasion once — a row that simply
+# leaves Item blank was skipped and not even counted — so this gate does not re-import it: a row
+# carrying content anywhere is graded and named by its first non-empty cell (_ra_label, which is
+# deliberately variable-free and safe to call from any namespace).
+#
+# HONEST CEILING — THIS GATES *POPULATED*, NOT *TRUE*. A determined author can type "it will be
+# better" and pass. Measurability is human judgment at review; a prose scanner for "is this
+# measurable" is the kit's standing veto and is not attempted here. The control is the column
+# plus the review seat, labelled as such (the Δ-B drift-control precedent). The exit side of the
+# metric loop (`## Released` -> did it move?) stays UNGATED and is explicitly out of scope.
+# Increments SPACER_SKIPS for true spacers; appends Ready to BOARD_TRACE. rc0 = pass.
+# FIRST-FAIL IDIOM, and the counter is honest about it: this returns on the FIRST bad row, so any
+# true spacer BELOW that row goes uncounted and `spacer-rows-skipped` under-reports on a failing
+# board. That is consistent with check_section (same shape) and harmless — the counter is a
+# non-vacuity witness for a PASSING run, not a census. Accumulate-all (K11) is honoured at the
+# SECTION level by check_dir, which still runs every other gate in the same pass.
+check_ready_metric() {
+  _rm_f="$1"
+  _rm_rows=$(section_rows "$_rm_f" "Ready")
+  [ -n "$_rm_rows" ] || return 0                  # no Ready table at all -> nothing to grade
+  _rm_hdr=$(printf '%s\n' "$_rm_rows" | head -1)
+  _rm_ci=$(col_index "$_rm_hdr" "$READY_METRIC_COL")
+  _rm_ln=0; _rm_eval=0
+  while IFS= read -r _rm_row; do
+    _rm_ln=$((_rm_ln + 1))
+    if [ "$_rm_ln" -eq 1 ]; then continue; fi     # header row
+    if is_sep_row "$_rm_row"; then continue; fi   # separator row (has a dash)
+    _rm_item=$(_ra_label "$_rm_row")
+    if [ -z "$_rm_item" ]; then
+      SPACER_SKIPS=$((SPACER_SKIPS + 1))          # TRUE spacer: every cell empty
+      continue
+    fi
+    _rm_eval=$((_rm_eval + 1))
+    if [ -z "$_rm_ci" ]; then continue; fi        # column absent: count now, report ONCE below
+    _rm_g=$(cell "$_rm_row" "$_rm_ci")
+    if is_bare_na "$_rm_g" || is_na_reason "$_rm_g"; then
+      echo "FAIL: Ready item '$(_cell_diag "$_rm_item")' — $READY_METRIC_COL is empty/placeholder (got '$(_cell_diag "$_rm_g")'); a Ready item must state how we will know it worked. A blank, a bare marker and 'N/A — reason' all mean the same thing: not Ready — demote it to Backlog (unrefined) rather than filling this cell"
+      return 1
+    fi
+  done <<EOF
+$_rm_rows
+EOF
+  if [ -z "$_rm_ci" ]; then
+    if [ "$_rm_eval" -gt 0 ]; then
+      # HEADER CELLS ARE BOARD-AUTHOR BYTES TOO. `header_cols` returns the table's own column
+      # names verbatim, so this diagnostic echoes untrusted content exactly like the per-row FAIL
+      # below does — and it was MEASURED reaching stdout with two raw ESC bytes before this call
+      # was added (an erase-line + cursor-up pasted into a header cell, which rewrites the line
+      # above the verdict). Sanitize on the SAME helper: one definition of "safe to print".
+      _rm_found=$(_cell_diag "$(header_cols "$_rm_hdr")")
+      _rm_rw=rows; [ "$_rm_eval" -eq 1 ] && _rm_rw=row
+      echo "FAIL: Ready — required column '$READY_METRIC_COL' not found (columns present: ${_rm_found:-none}) on a table carrying ${_rm_eval} item ${_rm_rw}; a renamed/absent gated column is a schema violation, not a skip. MIGRATION: add the '$READY_METRIC_COL' column to your Ready table — rows without an honest metric demote to your backlog rather than being filled in"
+      return 1
+    fi
+    return 0                                      # nothing in Ready -> nothing to measure
+  fi
+  _rm_rw=rows; [ "$_rm_eval" -eq 1 ] && _rm_rw=row
+  BOARD_TRACE="${BOARD_TRACE:+$BOARD_TRACE, }Ready→${READY_METRIC_COL} (${_rm_eval} ${_rm_rw})"
   return 0
 }
 
@@ -521,11 +627,18 @@ check_dir() {
       return 1
     fi
   done
-  # Parse the gated state tables (Ready/Released/Done are ungated — untouched).
+  # Parse the gated state tables. Ready is gated on ONE cell only — its Success metric
+  # (BOARD-DOR-FIELDS); the rest of its schema, acceptance criteria included, stays ungated.
+  # Released is ungated. Done is structurally ungated but carries two edge gates (HITL-3 UAT,
+  # HITL-6 L1 retro) below.
   SPACER_SKIPS=0; NA_ESCAPES=0; BLOCKED_NA_ESCAPES=0; DONE_UAT_FLAGGED=0; DONE_RETRO_GRADED=0; BOARD_ARITY_CHECKED=0; BOARD_TRACE=""; _agg=0
   # Accumulate-all (K11): run EVERY gated section unconditionally and collect every failure,
   # so ONE run surfaces the whole picture — never exit-on-first (fix In Review, re-run, only
   # THEN discover Blocked also failed). return non-zero iff any section failed.
+  # Ready-edge DoR enforcement (BOARD-DOR-FIELDS): every content-bearing Ready row carries a
+  # non-empty Success metric, and a Ready table with content but no metric column is a schema
+  # violation naming the migration.
+  check_ready_metric "$_bl" || _agg=1
   check_section "$_bl" "In Progress" "Links" progress || _agg=1
   check_section "$_bl" "In Review" "PR" review || _agg=1
   # Blocked is OPTIONAL (Ready/In Progress/In Review are required headings; Blocked is not) —
@@ -638,9 +751,9 @@ selftest() {
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -662,9 +775,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -686,9 +799,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -710,9 +823,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -734,9 +847,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -759,9 +872,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -780,16 +893,25 @@ EOF
 EOF
   assert_msg "$d" "spacer-rows-skipped=3" "good-spacer-rows: 3 spacer rows skipped by the Item-empty rule (not as separators)"
 
-  # good-ready-unrefined/ — a Ready row with blank acceptance criteria must PASS (Ready is
-  # ungated; we do NOT over-gate into the Definition of Ready). In Progress/In Review empty.
-  d="$base/good-ready-unrefined"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  # ===== BOARD-DOR-FIELDS — Ready -> 'Success metric / hypothesis' (the DoR entry gate) =======
+  # THE SANCTIONED REVERSAL. The fixture that stood here (`good-ready-unrefined`) asserted that a
+  # Ready row with blank acceptance criteria PASSes because "Ready is ungated; we do NOT over-gate
+  # into the Definition of Ready". Ruling `D-240811-2.2` reverses exactly that for ONE field: the
+  # DoR's mandatory Success metric. The property is SPLIT, not abandoned — acceptance-criteria
+  # content stays ungated (only the metric field is funded), and `good-ready-metric` below is the
+  # surviving half (blank AC + a populated metric -> PASS).
+
+  # good-ready-metric/ — the SURVIVING half of the deleted property: blank acceptance criteria
+  # still PASSes, because only the metric cell is gated. Also the positive liveness anchor for the
+  # new trace field (Ready is named in BOARD_TRACE with the rows it evaluated).
+  d="$base/good-ready-metric"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
   cat > "$d/BACKLOG.md" <<'EOF'
 # B
 ## Ready
 
-| Item | Intent | Acceptance | Size | Risk | Type | Owner | Links |
-|------|--------|-----------|------|------|------|-------|-------|
-| Refine me | some intent |  | M | low | feature | agent | #99 |
+| Item | Intent | Acceptance | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------|-----------|------|------|------|-------|-------|-----------------------------|
+| Refine me | some intent |  | M | low | feature | agent | #99 | first-week drop-off 38% -> under 15% |
 
 ## In Progress
 
@@ -803,7 +925,223 @@ EOF
 |------|----------|----|
 | | | |
 EOF
-  assert_ok "$d" "good-ready-unrefined: blank Ready acceptance -> PASS (Ready ungated)"
+  assert_ok "$d" "good-ready-metric: blank Ready acceptance + a populated metric -> PASS (only the metric is gated)"
+  assert_msg "$d" "Ready→Success metric / hypothesis (1 row)" \
+    "good-ready-metric: the trace names the RESOLVED metric column and the rows EVALUATED"
+
+  # bad-ready-no-metric/ — an EMPTY metric cell on a Ready row -> FAIL, naming the row. THE
+  # enforced edge: an item cannot be Ready without a measurable statement of what "worked" means.
+  d="$base/bad-ready-no-metric"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| Refine me | agent | #99 |  |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "Ready item 'Refine me'" "bad-ready-no-metric: empty metric cell -> FAIL (row named)"
+
+  # bad-ready-placeholder-metric/ — a bare `TBD` (a blank in a costume) -> FAIL. Reuses the file's
+  # OWN placeholder helper (is_bare_na), so there is ONE definition of "a blank in a costume".
+  d="$base/bad-ready-placeholder-metric"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| Refine me | agent | #99 | TBD |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "Ready item 'Refine me'" "bad-ready-placeholder-metric: bare 'TBD' metric -> FAIL"
+
+  # bad-ready-qmark-metric/ — a bare `?`. This is the leg that makes the is_bare_na EXTENSION
+  # non-vacuous: `?` was NOT in the marker set before this slice, so reverting the extension
+  # flips this fixture green while every other placeholder leg stays red.
+  d="$base/bad-ready-qmark-metric"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| Refine me | agent | #99 | ? |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "Ready item 'Refine me'" "bad-ready-qmark-metric: bare '?' metric -> FAIL (is_bare_na extension is live)"
+
+  # bad-ready-na-reason-metric/ — `N/A — <reason>` is REJECTED for this cell (the In-Review PR
+  # asymmetry, applied to the DoR). Under the demote-don't-fill ruling a row whose metric is
+  # "N/A because…" is BY DEFINITION not Ready — it demotes to Backlog (unrefined). Without this
+  # leg, adding `|| is_na_reason` to the accept path would silently reopen the escape hatch and
+  # no fixture would notice.
+  d="$base/bad-ready-na-reason-metric"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| Refine me | agent | #99 | N/A — hard to measure right now |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "Ready item 'Refine me'" "bad-ready-na-reason-metric: 'N/A — reason' metric -> FAIL (demote, do not fill)"
+
+  # bad-ready-missing-metric-column/ — the COLUMN-ABSENT semantics (design-gate HIGH-1): a Ready
+  # table carrying content rows but NO metric column FAILs, naming the migration. The
+  # skip-when-absent arm would silently reverse this file's own recorded gated-column contract
+  # ("a renamed column must never silently disable the gate"). This is the shape an EXISTING
+  # adopter board takes on kit-update, so the FAIL text carries the one-line cure.
+  d="$base/bad-ready-missing-metric-column"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Acceptance | Size | Risk | Type | Owner | Links |
+|------|--------|-----------|------|------|------|-------|-------|
+| Refine me | some intent | it works | M | low | feature | agent | #99 |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "required column 'Success metric / hypothesis' not found" \
+    "bad-ready-missing-metric-column: content rows, no metric column -> schema-violation FAIL"
+  assert_fail "$d" "rows without an honest metric demote" \
+    "bad-ready-missing-metric-column: the FAIL names the MIGRATION (the adopter's one-line cure)"
+
+  # good-ready-empty-no-column/ — the column-absent rule's FALSE-FAIL CONTROL and the
+  # first-run-green guard: a Ready table with ZERO content rows and NO metric column must still
+  # PASS. Nothing is Ready, so nothing needs a metric. Without this leg the absent-column FAIL
+  # could be tightened into an unconditional red that breaks every brand-new adopter board.
+  d="$base/good-ready-empty-no-column"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Intent | Acceptance | Size | Risk | Type | Owner | Links |
+|------|--------|-----------|------|------|------|-------|-------|
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | #12 |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_ok "$d" "good-ready-empty-no-column: zero Ready rows + no metric column -> PASS (first-run-green)"
+
+  # bad-ready-ctrl-header/ — THE SANITIZER, PROVEN ON THE PATH THAT ECHOES HEADER CELLS. The
+  # column-missing FAIL interpolates the header's own column names, which are board-author bytes
+  # reaching a terminal and a CI log. MEASURED before this leg existed: a `\033[2K\033[1A`
+  # (erase-line + cursor-up) pasted into a Ready header cell reached stdout VERBATIM — two ESC
+  # bytes — so a board could rewrite the line above its own verdict. The board is written with
+  # printf, not a quoted here-doc, because a here-doc cannot carry a raw ESC.
+  d="$base/bad-ready-ctrl-header"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner\033[2K\033[1A | Links |\n|------|-------|-------|\n| x | a | #1 |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| | | | |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "required column 'Success metric / hypothesis' not found" \
+    "bad-ready-ctrl-header: control bytes in a Ready header -> still FAILs on the missing column"
+  assert_no_ctrl "$d" \
+    "bad-ready-ctrl-header: the column-missing FAIL echoes header cells with control bytes STRIPPED"
+
+  # bad-ready-ctrl-cell/ — the sibling path: the per-row FAIL echoes the ITEM cell and the METRIC
+  # cell. Same untrusted bytes, same sanitizer, a different call site — so neither can regress
+  # while the other stays covered.
+  d="$base/bad-ready-ctrl-cell"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x\033[2K\033[1A | a | #1 | TBD |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| | | | |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "is empty/placeholder" \
+    "bad-ready-ctrl-cell: control bytes in a Ready ITEM cell -> still FAILs on the placeholder metric"
+  assert_no_ctrl "$d" \
+    "bad-ready-ctrl-cell: the per-row FAIL echoes the item cell with control bytes STRIPPED"
+
+  # bad-inprogress-qmark/ — THE WIDENING, FIXTURED ON A SECOND CALLER. Extending is_bare_na with
+  # `?` widens EVERY gated cell, not just the Ready metric, and until this leg the three older
+  # callers (Links, PR, Blocked on/Since) had no coverage of it at all. HONEST: this leg is green
+  # the moment the extension lands, so it detects no present defect — it exists so the widening's
+  # blast radius is asserted somewhere rather than merely described in a comment. Measured live:
+  # reverting the `?` flips this leg AND bad-ready-qmark-metric, which is the point.
+  d="$base/bad-inprogress-qmark"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| Add login | agent | 2026-07-01 | ? |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "In Progress item 'Add login'" \
+    "bad-inprogress-qmark: a bare '?' in Links -> FAIL (the is_bare_na widening reaches the older callers)"
 
   # bad-missing-section/ — a missing required `## In Review` heading -> FAIL.
   d="$base/bad-missing-section"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
@@ -811,9 +1149,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -831,9 +1169,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -855,9 +1193,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -882,9 +1220,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -907,9 +1245,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -937,9 +1275,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -968,9 +1306,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -999,9 +1337,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1031,9 +1369,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1062,9 +1400,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1093,9 +1431,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1123,9 +1461,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |
-|------|--------------|---------------------|------|------|------|-------|-------|
-| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] |
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] | [how we'll know it worked] |
 
 ## In Progress
 
@@ -1149,9 +1487,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |
-|------|--------------|---------------------|------|------|------|-------|-------|
-| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] |
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] | [how we'll know it worked] |
 
 ## In Progress
 
@@ -1176,9 +1514,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1214,9 +1552,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |
-|------|--------------|---------------------|------|------|------|-------|-------|
-| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] |
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] | [how we'll know it worked] |
 
 ## In Progress
 
@@ -1254,9 +1592,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1276,9 +1614,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1298,9 +1636,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1323,9 +1661,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1348,9 +1686,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1373,9 +1711,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1398,9 +1736,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1429,9 +1767,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1460,9 +1798,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1492,9 +1830,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1532,9 +1870,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1564,9 +1902,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1597,9 +1935,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1632,9 +1970,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1663,9 +2001,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1695,9 +2033,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1728,9 +2066,9 @@ EOF
 # B
 ## Ready
 
-| Item | Owner | Links |
-|------|-------|-------|
-| x | a | #1 |
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| x | a | #1 | login success rate 92% -> 98% |
 
 ## In Progress
 
@@ -1769,9 +2107,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent | Size |
-|------|--------|------|
-| A | why | S | EXTRA |
+| Item | Intent | Size | Success metric / hypothesis |
+|------|--------|------|-----------------------------|
+| A | why | S | ships | EXTRA |
 
 ## In Progress
 
@@ -1785,19 +2123,24 @@ EOF
 |------|----------|----|
 | | | |
 EOF
-  assert_fail "$d" "carries 4 columns but the section header declares 3" \
+  assert_fail "$d" "carries 5 columns but the section header declares 4" \
     "bad-arity-extra: a Ready row with an EXTRA column -> FAIL"
 
   # bad-arity-missing/ — the other direction: a row SHORT of its header. Locks the comparison
   # as an equality, not a "no more than" (a `>` would let this one through silently).
+  # NOTE THE COLUMN ORDER: the Success-metric column is deliberately NOT last here. A short row
+  # necessarily loses its TRAILING cells, so with the metric last this board would carry TWO
+  # independent defects (a shifted row AND a missing metric) and stop being a single-property
+  # fixture. Columns resolve BY NAME, so moving it left costs nothing — and it incidentally
+  # proves the metric gate is not position-dependent.
   d="$base/bad-arity-missing"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
   cat > "$d/BACKLOG.md" <<'EOF'
 # B
 ## Ready
 
-| Item | Intent | Size |
-|------|--------|------|
-| A | why |
+| Item | Success metric / hypothesis | Intent | Size |
+|------|-----------------------------|--------|------|
+| A | ships | why |
 
 ## In Progress
 
@@ -1811,7 +2154,7 @@ EOF
 |------|----------|----|
 | | | |
 EOF
-  assert_fail "$d" "carries 2 columns but the section header declares 3" \
+  assert_fail "$d" "carries 3 columns but the section header declares 4" \
     "bad-arity-missing: a Ready row with a MISSING column -> FAIL"
 
   # good-arity-exact/ — the positive liveness anchor, COUNTED: three well-formed body rows across
@@ -1822,9 +2165,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent | Size |
-|------|--------|------|
-| A | why | S |
+| Item | Intent | Size | Success metric / hypothesis |
+|------|--------|------|-----------------------------|
+| A | why | S | signups +10% |
 
 ## In Progress
 
@@ -1858,9 +2201,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent | Size |
-|------|--------|------|
-| A | guard teardown with \|\| true | S |
+| Item | Intent | Size | Success metric / hypothesis |
+|------|--------|------|-----------------------------|
+| A | guard teardown with \|\| true | S | zero orphaned temp trees |
 
 ## In Progress
 
@@ -1888,9 +2231,9 @@ EOF
 # B
 ## Ready
 
-| Item | Intent | Size |
-|------|--------|------|
-| | why | S | EXTRA | MORE |
+| Item | Intent | Size | Success metric / hypothesis |
+|------|--------|------|-----------------------------|
+| | why | S | ships | EXTRA |
 
 ## In Progress
 
@@ -1904,7 +2247,7 @@ EOF
 |------|----------|----|
 | | | |
 EOF
-  assert_fail "$d" "row 'why' carries 5 columns but the section header declares 3" \
+  assert_fail "$d" "row 'why' carries 5 columns but the section header declares 4" \
     "bad-arity-empty-item: an empty Item cell no longer buys a skip -> FAIL (named by first non-empty cell)"
 
   # bad-arity-two/ — the ACCUMULATE-ALL contract the header claims, PROVEN: two mis-shaped rows in
@@ -1916,10 +2259,10 @@ EOF
 # B
 ## Ready
 
-| Item | Intent | Size |
-|------|--------|------|
-| ALPHA | why | S | EXTRA |
-| BETA | why |
+| Item | Success metric / hypothesis | Intent | Size |
+|------|-----------------------------|--------|------|
+| ALPHA | ships | why | S | EXTRA |
+| BETA | ships | why |
 
 ## In Progress
 
@@ -1933,9 +2276,9 @@ EOF
 |------|----------|----|
 | | | |
 EOF
-  assert_fail "$d" "row 'ALPHA' carries 4 columns" \
+  assert_fail "$d" "row 'ALPHA' carries 5 columns" \
     "bad-arity-two: the FIRST mis-shaped row is named"
-  assert_fail "$d" "row 'BETA' carries 2 columns" \
+  assert_fail "$d" "row 'BETA' carries 3 columns" \
     "bad-arity-two: the SECOND mis-shaped row is named in the SAME run (accumulate-all)"
 
   # bad-arity-blind/ — the VACUOUS-GREEN FLOOR. A gate that inspects NOTHING must never report OK.
@@ -2054,6 +2397,23 @@ assert_ok() {
     echo "selftest FAIL: $2 (rc=${_r:-?}, out=<$_o>)"; st_fail=1
   fi
 }
+# assert_no_ctrl <dir> <label> : check_dir's ENTIRE output must carry no control byte (newlines
+# excepted). Board cells are untrusted bytes that reach a terminal and a CI log, so a CSI sequence
+# pasted into a cell could rewrite the verdict a human reads. `LC_ALL=C` makes `[[:cntrl:]]` the
+# same byte class the `_cell_diag` sanitizer deletes — and leaves UTF-8 continuation bytes alone,
+# so an em-dash in a row title is not mistaken for a control byte (the harness-adapter:661
+# precedent, whose comment records that exact locale trap).
+# DELIBERATELY WHOLE-OUTPUT, not one message: a future FAIL path that echoes a cell without
+# _cell_diag is caught here without anyone remembering to write a leg for it.
+assert_no_ctrl() {
+  _o=$(check_dir "$1" 2>&1) || :
+  if printf '%s' "$_o" | LC_ALL=C tr -d '\n\t' | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    echo "selftest FAIL: $2 (a control byte survived into the diagnostic; sanitized out=<$(printf '%s' "$_o" | LC_ALL=C tr -d '[:cntrl:]')>)"
+    st_fail=1
+  else
+    echo "selftest PASS: $2"
+  fi
+}
 # assert_fail <dir> <needle> <label> : check_dir must rc!=0 AND emit <needle>.
 assert_fail() {
   _o=$(check_dir "$1" 2>&1) && _r=0 || _r=$?
@@ -2077,9 +2437,9 @@ _good_board() {
 ## Ready
 > Safe to start.
 
-| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |
-|------|--------------|---------------------|------|------|------|-------|-------|
-| Add login | ship auth | user can log in | S | med | feature | agent | #12 |
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| Add login | ship auth | user can log in | S | med | feature | agent | #12 | login success rate 92% -> 98% |
 
 ## In Progress
 > WIP-limited.

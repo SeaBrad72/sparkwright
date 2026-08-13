@@ -391,6 +391,57 @@ the merge control. The strong cure was chosen over prose narrowing precisely so 
 true as ratified. **REVISIT-CONDITION:** re-open if a base-resolution shape is found where leg 2
 silently fails to run (the disclosed-skip arms are the only sanctioned degradations).
 
+**`D-240813-1` · ruling (owner, 2026-08-13, in-session at the `BOARD-DOR-FIELDS` design GO) ·
+DEMOTE, DON'T FILL — the DoR's Success-metric field is enforced AT ENTRY, and a Ready row that
+cannot carry an honest measurable metric DEMOTES rather than being filled in.** `D-240811-2.2`
+funded the field; this entry records how it is met, because the mechanical reading of "the field
+lands in live rows" was falsified by measurement at build time.
+
+**The falsifier:** the Ready table held **138** non-empty rows. Populating 138 cells would
+mass-produce exactly the populated-but-untrue filler the row's own honest ceiling warns against,
+and would leave the board's measured 50% misstatement rate intact while looking cured.
+
+**The reconciliation, and it is exact:** **12 KEEP + 12 CLOSE + 111 DEMOTE + 2 index-rows-to-prose
+= 137 triaged**, plus **`BOARD-DOR-FIELDS` itself** — which is not in the triage because its own
+claim commit had already moved it from Ready to In Progress — **= 138, the base table exactly.
+Zero rows lost.** Verified by identifier: all 137 triaged identifiers are present in the base
+Ready table and all 137 still resolve on the post-edit board, and the single base row matched by
+no triage entry is `BOARD-DOR-FIELDS`. (`WAIVER-CLOSING` is a badge prefix on the demoted
+`PHASE2-OWED-SWEEPS` row, not a row of its own.)
+
+**Ruled:** a row that cannot state how we will know it worked is **by definition not Ready**. It
+moves to *Backlog (unrefined)* under a dated ledger note keeping its identity and its reason;
+promotion back costs one line (add a metric) and the gate is the ratchet. The asymmetry is the
+argument — demotion is cheap to reverse, a manufactured metric is not, so doubt resolves toward
+DEMOTE. Correspondingly, `N/A — <reason>` is REJECTED for this cell (the In-Review PR asymmetry
+applied to the DoR): an escape hatch here would rebuild the filler the ruling exists to prevent.
+
+**The disposition was ruled at the GO** and applied at build: **KEEP 12 in Ready · CLOSE 12 as
+already discharged (one collective Done entry) · DEMOTE 111 · 2 index pseudo-rows to prose = 137
+triaged; + `BOARD-DOR-FIELDS` in flight = 138.** Both flagged P0s were KEPT against the probe's
+recommendation, each on named grounds:
+- **`GUARD-HOOKSPATH-CASE-BYPASS`** — kept as a **knowing owner re-ruling on the DEAD-PREMISE
+  ground, explicitly NOT on "the deferral condition lapsed"** (that reading is disputed: two of the
+  named three phases are complete, so if the condition means A/B/C it has not lapsed). The premise
+  is dead because since v3.210.0 `core.hooksPath` IS the live rung, so the still-reproducing
+  lowercase ALLOW lets one command silently repoint the entire pre-push spine. Its build carries
+  the security seat under the standing guard-matcher rule, independent of this slice's waiver.
+- **`ADOPTER-TOLD-LOOP-GATES-ARE-ENFORCED`** — kept **re-premised in two halves**: the XS truth-fix
+  of the shipped `CLAUDE.md:10` / `AGENTS.md:10` per-gate wording (the false enforcement claim is
+  LIVE in the adopter's most-authoritative file, and `incept` renames those files into the
+  adopter's own governing document), plus the row's never-built check.
+
+**Honest ceiling, ruled as part of the ruling:** the gate proves a metric is POPULATED, never that
+it is TRUE or measurable. Measurability is human judgment at the review seat; a prose scanner for
+"is this measurable" is the kit's standing veto and was not attempted. The exit side of the metric
+loop (`## Released` → did it move?) stays dead and out of scope — disclosed, not cured.
+
+**This entry is RATIFIABLE at the PR carrying it** (the #508 precedent, as used by `D-240811-2.4`
+and `D-240811-3`): the owner's approval of this diff ratifies both the ruling text and the
+disposition list, the design GO having ratified the scheme. **REVISIT-CONDITION:** re-open if the
+review seat finds the populated-not-true ceiling is being exploited — i.e. if demoted rows return
+to Ready carrying metrics that no one could fail.
+
 ---
 
 ## 3. The recovered record

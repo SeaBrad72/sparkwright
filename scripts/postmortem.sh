@@ -213,7 +213,7 @@ cmd_to_backlog() {
       # Emit backlog Ready row — incident_id and pmfile come from ENVIRON[] and
       # are concatenated by awk as plain string data, never interpreted as sed/awk
       # program text. No special character in either value can crash or corrupt.
-      print "| " action " | incident " incident_id " follow-up — " type " | " action " completed | S | [set] | tech-debt | " owner " | " pmfile " |"
+      print "| " action " | incident " incident_id " follow-up — " type " | " action " completed | S | [set] | tech-debt | " owner " | " pmfile " | [set: how we will know this prevents a recurrence] |"
     }
   ' "$_pmfile")"
 
@@ -224,8 +224,8 @@ cmd_to_backlog() {
 
   # Emit stubs with header comment
   echo "# Backlog stubs (review before pasting into BACKLOG.md or creating in your tracker)"
-  echo "| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |"
-  echo "|------|--------------|---------------------|------|------|------|-------|-------|"
+  echo "| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |"
+  echo "|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|"
   printf '%s\n' "$_rows"
 }
 

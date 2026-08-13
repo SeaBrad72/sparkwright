@@ -5,7 +5,7 @@
 **Created:** [date] · **Backlog backend:** BACKLOG.md (repo-native)
 
 ## How to use
-- Every item has: **intent** (why) · **acceptance criteria** · **size** (one-flow small) · **risk/complexity tag** · **owner** (human or agent) · **links** (spec/PR/milestone).
+- Every item has: **intent** (why) · **acceptance criteria** · **size** (one-flow small) · **risk/complexity tag** · **owner** (human or agent) · **links** (spec/PR/milestone) · **success metric / hypothesis** (how we'll know it worked).
 - **Order** by value × urgency ÷ effort-risk — the intent owner ranks; the lead breaks ties on risk/deps. No story points.
 - Work types share one board and are prioritized against each other: **feature · bug · tech-debt · spike · recurring**. Tech-debt gets a standing paydown share each cycle.
 - Move items down the states as they flow. Entering **In Progress** is an atomic ownership claim (no double-claims).
@@ -16,10 +16,11 @@
 
 ## Ready
 > Passed the Definition of Ready (the enumerated entry gate in `CLAUDE.md`). Safe to start.
+> **Success metric — enforced.** `backlog-current.sh` grades every Ready row: the **Success metric / hypothesis** cell must carry a real value. A blank, a bare marker (`-`, `N/A`, `TBD`, `none`, `?`) and the `N/A — <reason>` idiom all FAIL — a row that cannot say how we'll know it worked is not Ready. **Demote it, don't fill it:** move it to *Backlog (unrefined)* with a dated note and promote it back when it has a metric. The gate proves the cell is *populated*, never that the metric is *true or measurable* — that judgment is the reviewer's.
 
-| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links |
-|------|--------------|---------------------|------|------|------|-------|-------|
-| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] |
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| [title] | [why] | [testable criteria] | S | low | feature | [who] | [spec] | [how we'll know it worked] |
 
 ## In Progress
 > WIP-limited. One atomic claim per item.
