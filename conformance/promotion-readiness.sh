@@ -300,8 +300,10 @@ echo ""
 # (profiles/*/ci.yml: `if: github.event_name == 'push' && github.ref == 'refs/heads/main' && ...`),
 # so at THIS surfacing time (PR/RC) the job has structurally not run — a green PR proves nothing
 # about it. State the SHAPE, not a false reassurance. The real assertion fires at the tag rung
-# (scripts/release-tag.sh provenance_gate), dialed by RELEASE_TAG_PROVENANCE (default observe). See
-# docs/architecture/2026-08-08-b8-provenance-honesty-design.md §4.2.
+# (scripts/release-tag.sh provenance_gate), dialed by RELEASE_TAG_PROVENANCE — repo-carried in
+# `.kit/dials.conf` since Δ-C, and `enforce` on the kit's own tree (an adopter export carries no
+# conf and reads observe). See docs/architecture/2026-08-08-b8-provenance-honesty-design.md §4.2 and
+# docs/architecture/2026-08-13-dial-delivery-provenance-design.md.
 echo "8. Gate-provenance (SLSA attestation) honesty:"
 echo "   The provenance/image-provenance CI job(s) are PUSH-ONLY (run after merge, on main) — they"
 echo "   structurally cannot have run yet for this change-set. A green PR here says nothing about them."
@@ -320,13 +322,34 @@ _pr_gate_disp() { # <gate-id> -> a one-line rendering: apply | na (REASON) | abs
 }
 echo "   gate-provenance: $(_pr_gate_disp gate-provenance)"
 echo "   gate-sbom:       $(_pr_gate_disp gate-sbom)"
-if [ -n "${RELEASE_TAG_PROVENANCE:-}" ]; then
-  echo "   The real assertion fires at the tag rung (scripts/release-tag.sh provenance_gate);"
-  echo "   RELEASE_TAG_PROVENANCE=$RELEASE_TAG_PROVENANCE in this environment (default: observe)."
-else
-  echo "   The real assertion fires at the tag rung (scripts/release-tag.sh provenance_gate); dialed by"
-  echo "   RELEASE_TAG_PROVENANCE (default: observe — informs, does not refuse; see PHASE-B-DIAL-FLIP)."
-fi
+# Δ-C (D-240811-2.1): the dial is REPO-CARRIED (`.kit/dials.conf`), no longer env-only, and the kit's
+# own tree ships enforce. This is an advisory SURFACING, so it reports the two INPUTS as facts and
+# names where the decision is actually made. It deliberately does NOT re-implement the precedence —
+# rt_dial_mode in scripts/release-tag.sh is the reader, and a fifth copy here could drift into
+# confidently describing a posture the gate does not hold.
+# ROOTED AT THE REPO TOPLEVEL, not cwd [fix round 1, reviewer minor 4]: rt_dial_mode — the reader
+# this surfacing describes — roots at `git rev-parse --show-toplevel`, so a cwd-relative read here
+# could confidently report "<no key>" for a tree whose dial is in fact `enforce`, purely because the
+# operator invoked from a subdirectory. A surfacing that disagrees with the gate is worse than none.
+_pr_dial_root=$(git rev-parse --show-toplevel 2>/dev/null) || _pr_dial_root=""
+_pr_dial_conf=$(grep -E '^[[:space:]]*RELEASE_TAG_PROVENANCE[[:space:]]*=' "${_pr_dial_root:-.}/.kit/dials.conf" 2>/dev/null | tail -n1 \
+  | sed -E "s/^[[:space:]]*RELEASE_TAG_PROVENANCE[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//")
+# SANITIZE BOTH INTERPOLATIONS BEFORE THEY REACH A HUMAN'S TERMINAL [fix round 1, security BLOCKING-3].
+# Both are attacker-influencable at this render boundary: the conf value is REPO-SUPPLIED (it arrives
+# in a PR diff) and the env value is CALLER-SUPPLIED. Echoed raw, either can carry terminal escape
+# sequences that rewrite what the human GO/NO-GO reader sees — the THREAT-MODEL.md:67 closed class,
+# and the same treatment `_pr_gate_disp` above already applies to a disposition reason and
+# rt_dial_mode applies to a dial value. Strip control bytes, then bound the length so neither can
+# forge an extra line on a surface a human reads before approving a release.
+_pr_dial_conf=$(printf '%s' "$_pr_dial_conf" | tr -d '[:cntrl:]' | cut -c1-40)
+_pr_dial_env=$(printf '%s' "${RELEASE_TAG_PROVENANCE:-}" | tr -d '[:cntrl:]' | cut -c1-40)
+echo "   The real assertion fires at the tag rung (scripts/release-tag.sh provenance_gate), dialed by"
+echo "   RELEASE_TAG_PROVENANCE — .kit/dials.conf says '${_pr_dial_conf:-<no key>}', the env says '${_pr_dial_env:-<unset>}'."
+echo "   The conf is authoritative; the env may only ESCALATE observe->enforce, never de-escalate;"
+echo "   absence reads observe (an adopter export carries no conf, so a first run is never red)."
+echo "   Under enforce a FAILED provenance query REFUSES the tag. The honest-N/A arms that still"
+echo "   proceed are: gh NOT INSTALLED, or no CI run for the SHA. Note a non-GitHub tree WITH gh"
+echo "   installed is NOT one of them — the query fails there, so enforce refuses it."
 echo ""
 echo "(Advisory surfacing — informs the human GO/NO-GO. It does not gate; exit 0.)"
 exit 0

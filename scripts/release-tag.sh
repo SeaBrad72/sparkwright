@@ -6,11 +6,12 @@
 # GitLab job / generic). Coherent BY CONSTRUCTION: it tags v<VERSION> on the commit whose VERSION
 # file says that value, so a premature/incoherent tag is structurally impossible.
 # Exit: 0 = tagged or no-op · 1 = coherence/precondition fail · 2 = bad usage/env.
-#   release-tag.sh             # decide + tag + push (run in CI on main)
-#   release-tag.sh --dry-run   # decide + print the action; never tags/pushes
+#   release-tag.sh                    # decide + tag + push (run in CI on main)
+#   release-tag.sh --dry-run          # decide + print the action; never tags/pushes
+#   release-tag.sh --provenance-only  # run the provenance gate ALONE against HEAD; never tags/pushes
 #   release-tag.sh --selftest
-# What it changes: Creates and pushes the git tag v<VERSION> on HEAD; --dry-run decides and prints only (never tags/pushes).
-# Guardrails: Idempotent no-op when the tag already exists; refuses a non-semver VERSION and a failed coherence check (won't tag a stale/dup); refuses while the meta-control cadence is ESCALATED or its record is broken (cadence_gate — fail-closed, D-240807-1); RELEASE_TAG_CI_PROBE is eval'd via `sh -c` — set it only from trusted CI config, never repo/PR input.
+# What it changes: Creates and pushes the git tag v<VERSION> on HEAD; --dry-run decides and prints only (never tags/pushes); --provenance-only runs the provenance gate alone and exits its rc (never tags/pushes, no CI poll).
+# Guardrails: Idempotent no-op when the tag already exists; refuses a non-semver VERSION and a failed coherence check (won't tag a stale/dup); refuses while the meta-control cadence is ESCALATED or its record is broken (cadence_gate — fail-closed, D-240807-1); refuses when the provenance QUERY FAILED and the RELEASE_TAG_PROVENANCE dial reads enforce (provenance_gate — an unanswered provenance question is not a pass; honest N/A arms still proceed); RELEASE_TAG_CI_PROBE / RELEASE_TAG_PROV_PROBE are eval'd via `sh -c` — set them only from trusted CI config, never repo/PR input, and a run with either set banners the override.
 # SECURITY (F2, hygiene security seat 2026-08-07): RELEASE_TAG_CADENCE / META_CONTROL_TAGS|N|ROOT
 # are TRUSTED-INVOCATION-ONLY (selftest fixtures, trusted CI config) — never set them from repo/PR
 # input. Any of them re-points or re-scopes the cadence detector, so ONLY the unmodified-env
@@ -265,6 +266,10 @@ ci_gate() {
 # validated na disposition, or image-provenance absent for a Dockerfile-less tree) from the disease
 # (a declared/undecided gate that never ran). See
 # docs/architecture/2026-08-08-b8-provenance-honesty-design.md §4.1.
+# Δ-C (2026-08-13, D-240811-2.1) added the second half of that honesty: the probe now distinguishes
+# "nothing to report" from "the query FAILED", and the dial that decides what to do about it is read
+# from the repo-carried `.kit/dials.conf`, not from an env var alone. See
+# docs/architecture/2026-08-13-dial-delivery-provenance-design.md.
 CI_GATES="${RELEASE_TAG_CI_GATES:-$here/../conformance/ci-gates.sh}"
 GATE_DISP_FILE="conformance/gate-dispositions.txt"
 
@@ -274,18 +279,44 @@ GATE_DISP_FILE="conformance/gate-dispositions.txt"
 # RELEASE_TAG_PROV_PROBE (a command) for tests / non-GitHub forges.
 # SECURITY (ci_probe's exact note, copied — this seam carries the identical trust boundary):
 # RELEASE_TAG_PROV_PROBE is eval'd via `sh -c` — set it only from trusted CI config, never repo/PR input.
+#
+# ── Δ-C (DIAL-DELIVERY, ruling D-240811-2.1) — THE RC PROTOCOL. This function used to collapse every
+# outcome into "empty stdout, rc 0": `gh` absent, no run for the SHA, and a query that FAILED
+# (network down, auth expired, the forge unreachable) were one indistinguishable answer, and the gate
+# proceeded on all of them. Measured 2026-08-11: `RELEASE_TAG_PROVENANCE=enforce` against an
+# unreachable forge was a NO-OP. The ruling's named pre-check is this split, so stdout stays the DATA
+# channel and the return code becomes the HEALTH channel:
+#   rc 0 + data  -> a healthy probe; the per-job verdict machinery reads it
+#   rc 0 + empty -> HONEST N/A: the query worked and there is genuinely nothing to report (gh not
+#                   installed / no run for this SHA / a seam with nothing to say)
+#   rc 3         -> the query FAILED; the gate is LOUD (observe) or REFUSES (enforce)
+# ⚠️ "not GitHub" is NOT an N/A arm once `gh` is INSTALLED: gh errors on a tree whose remotes it
+# cannot resolve, so that lands in rc 3. Such a forge answers this gate through the seam.
+# The seam mirrors these arms exactly (`exit 7` <-> query failed, `true` <-> empty success,
+# `printf` data <-> healthy), which is what makes every arm testable without mocking gh.
+# NOTE the ordering rule: a nonzero rc is returned even when stdout carried lines. Health is never
+# inferred from data — see provenance_gate's "health outranks data" branch.
 prov_probe() {
   if [ -n "${RELEASE_TAG_PROV_PROBE:-}" ]; then
-    sh -c "$RELEASE_TAG_PROV_PROBE" 2>/dev/null || true
+    _pp_rc=0
+    _pp_out=$(sh -c "$RELEASE_TAG_PROV_PROBE" 2>/dev/null) || _pp_rc=$?
+    if [ -n "$_pp_out" ]; then printf '%s\n' "$_pp_out"; fi
+    if [ "$_pp_rc" != 0 ]; then return 3; fi
     return 0
   fi
-  command -v gh >/dev/null 2>&1 || return 0
+  command -v gh >/dev/null 2>&1 || return 0     # no gh -> honest N/A (not a failure)
   # CP-10: probe the PINNED release sha, not a fresh HEAD read (same rule as ci_probe).
   _sha=${RELEASE_SHA:-$(git rev-parse HEAD 2>/dev/null)} || return 0
-  [ -n "$_sha" ] || return 0
-  _run=$(gh run list --commit "$_sha" --workflow CI --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null) || return 0
-  [ -n "$_run" ] || return 0
-  gh run view "$_run" --json jobs --jq '.jobs[] | .name + "\t" + .conclusion' 2>/dev/null || true
+  [ -n "$_sha" ] || return 0                    # no resolvable sha -> honest N/A
+  _pp_rc=0
+  _run=$(gh run list --commit "$_sha" --workflow CI --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null) || _pp_rc=$?
+  if [ "$_pp_rc" != 0 ]; then return 3; fi      # the QUERY failed — network/auth/unreachable forge
+  [ -n "$_run" ] || return 0                    # query worked, no run for this SHA -> honest N/A
+  _pp_rc=0
+  _pp_out=$(gh run view "$_run" --json jobs --jq '.jobs[] | .name + "\t" + .conclusion' 2>/dev/null) || _pp_rc=$?
+  if [ -n "$_pp_out" ]; then printf '%s\n' "$_pp_out"; fi
+  if [ "$_pp_rc" != 0 ]; then return 3; fi
+  return 0
 }
 
 # _prov_conclusion <job-name> <probe-output> -> prints the conclusion; rc 1 if the job is absent;
@@ -363,10 +394,106 @@ _strip_ctrl() {
   printf '%s' "$1" | tr -d '[:cntrl:]'
 }
 
-# provenance_gate -> 0 = proceed (pass / observe-mode LOUD / degrade-open / na-excused) · 1 = refuse
-# (enforce LOUD). Dial: RELEASE_TAG_PROVENANCE=observe|enforce, default observe (§3 Δ2 — the
-# D-240807-1 enforce-at-birth bar is not met; this is a one-time wild measurement, not a
-# 3x-recurring kit-process failure).
+# ── Δ-C (DIAL-DELIVERY, ruling D-240811-2.1) — rt_dial_mode: the enforcement-dial reader for the
+# release rung. Prints exactly `enforce` or `observe` and ALWAYS returns 0 (the consumer compares the
+# printed word, so a dial can never wedge a release). A LOCAL, FOURTH copy of the kit_dial_mode
+# precedence (.claude/hooks/guard-core.sh · conformance/dial-state.sh · conformance/loop-state.sh's
+# ls_dial_mode are the siblings): a release rung sources NOTHING and MUST NOT source the ~1900-line
+# guard — PARSE, DON'T SOURCE (the roster.conf contract). The T7c-analog precedence battery in this
+# file's own selftest pins THIS copy against the shared spec.
+#
+# SOURCE: `git rev-parse --show-toplevel` of the CWD, and cwd IS the graded tree here — this script
+# tags cwd's repository (`git tag "$v" "$RELEASE_SHA"` acts on cwd), unlike loop-state, whose graded
+# tree can differ from cwd. Rooting at the SCRIPT's location ($here) would be the defect instead: the
+# selftest fixtures `cd` into throwaway trees and call this reader there, so $here would read the
+# KIT's own conf and every fixture would inherit the kit's enforce. Not a git dir -> no toplevel ->
+# absent -> observe. An absent/unreadable/garbage conf, a missing key, a dial NAME outside [A-Z0-9_],
+# or any value that is not exactly `enforce` reads OBSERVE (fail-safe: a dial that cannot be read
+# must never refuse a release).
+#
+# PRECEDENCE IS ASYMMETRIC (the load-bearing rule, D-240811-2.1): the conf value is authoritative; an
+# env var of the same name may ESCALATE observe->enforce but may NEVER de-escalate a conf `enforce` —
+# such a value LOSES and one loud anomaly line is printed. Env-wins would leave every flip one
+# sticky `export` from undone. An unset/empty/equal env var is the normal case, never warned.
+#
+# NAMED DIVERGENCE FROM ls_dial_mode: a GARBAGE env value WARNS BY NAME here (naming the value and
+# the accepted set) and then contributes nothing, where ls_dial_mode ignores it silently. This file
+# already pinned that contract at the gate (PG-MODE-BAD, security LOW-1: an unrecognized value must
+# never silently pick a posture), so moving the read into the reader must not lose the warning.
+# Conf-side garbage stays silent-observe (the dial file's own header rule).
+# $2 is an OPTIONAL PRE-READ conf value [fix round 2, item 4]. provenance_gate needs both the mode
+# and "was the conf key absent" for the `(default)` banner; asking twice read the file twice and
+# emitted the unreadable-conf WARNING twice (measured). Both call sites are command substitutions —
+# separate subshells — so a one-shot flag variable could not dedupe them. Passing the value in keeps
+# ONE read and ONE warning while leaving the precedence single-sourced here. Called with one
+# argument (the selftest legs, any future caller) it reads the conf itself, exactly as before.
+rt_dial_mode() {   # $1 = dial name · $2 = optional pre-read conf value
+  _rt_dn=${1:-}
+  # The charset guard runs BEFORE any read, and rejects a LEADING DIGIT as well as a stray byte
+  # [fix round 1, nit 10]: `9LIVES` passes [A-Z0-9_] but is not a valid shell identifier, so the
+  # indirect `eval` read below would be a SYNTAX ERROR, not an empty value — measured.
+  case "$_rt_dn" in
+    ''|[0-9]*|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;;
+  esac
+  if [ "$#" -ge 2 ]; then _rt_dval=$2; else _rt_dval=$(rt_dial_conf_value "$_rt_dn"); fi
+  # The env side, read INDIRECTLY (POSIX sh has no ${!name}); the name is charset-checked above.
+  _rt_denv=$(eval "printf '%s' \"\${$_rt_dn:-}\"")
+  if [ -n "$_rt_denv" ] && [ "$_rt_denv" != observe ] && [ "$_rt_denv" != enforce ]; then
+    # SANITIZE BEFORE INTERPOLATING — the value is caller-controlled; strip control characters and
+    # bound the length so it cannot forge an extra instruction line on stderr.
+    _rt_dsafe=$(_strip_ctrl "$_rt_denv" | cut -c1-40)
+    echo "release-tag: WARNING — $_rt_dn='$_rt_dsafe' is not a recognized value (accepted: observe|enforce) — it is IGNORED; the dial keeps the value .kit/dials.conf carries (or observe when it carries none)." >&2
+    _rt_denv=""
+  fi
+  if [ "$_rt_dval" = enforce ]; then
+    if [ -n "$_rt_denv" ] && [ "$_rt_denv" != enforce ]; then
+      _rt_dsafe=$(_strip_ctrl "$_rt_denv" | cut -c1-40)
+      echo "release-tag: dial $_rt_dn='$_rt_dsafe' in the environment cannot de-escalate the repo-carried enforce in .kit/dials.conf - the conf WINS (env may only escalate observe->enforce). Change the dial through the ratified control-plane ceremony." >&2
+    fi
+    printf 'enforce\n'; return 0
+  fi
+  [ "$_rt_denv" = enforce ] && { printf 'enforce\n'; return 0; }
+  printf 'observe\n'; return 0
+}
+
+# rt_dial_conf_value <NAME> -> the CONF's value for <NAME> (empty when the file/key is absent or the
+# tree has no toplevel). Split out so the `(default)` banner can ask the question the banner means —
+# "conf key absent AND env unset" — without re-deriving the precedence.
+rt_dial_conf_value() {
+  _rt_root=$(git rev-parse --show-toplevel 2>/dev/null) || _rt_root=""
+  [ -n "$_rt_root" ] || return 0
+  _rt_conf="$_rt_root/.kit/dials.conf"
+  # [security LOW-1, fix round 1] ABSENT and PRESENT-BUT-UNREADABLE both fail safe to observe, but
+  # they are not the same event: absence is the adopter's normal state, unreadability means the dial
+  # file that decides releases is BROKEN (or was chmod'd). Collapsing them silently would make a
+  # `chmod 000` the quietest disarm available at this rung — the same reasoning dial-state.sh gives
+  # for testing `[ -r ]` separately. Loud, then fail safe.
+  if [ -e "$_rt_conf" ] && [ ! -r "$_rt_conf" ]; then
+    echo "release-tag: WARNING — $_rt_conf exists but is NOT READABLE; every dial it carries reads as OBSERVE for this run (fail-safe). This is a BROKEN dial file, not an absent one — check its permissions before trusting a green release." >&2
+    return 0
+  fi
+  [ -r "$_rt_conf" ] || return 0
+  grep -E "^[[:space:]]*${1}[[:space:]]*=" "$_rt_conf" 2>/dev/null | tail -n1 \
+    | sed -E "s/^[[:space:]]*${1}[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//"
+}
+
+# provenance_gate -> 0 = proceed (pass / observe-mode LOUD / honest N/A / na-excused) · 1 = refuse
+# (enforce LOUD, or an enforce-mode FAILED QUERY). Dial: RELEASE_TAG_PROVENANCE=observe|enforce, read
+# by rt_dial_mode above — `.kit/dials.conf` is authoritative and the env may only ESCALATE. The kit's
+# own tree carries `RELEASE_TAG_PROVENANCE=enforce` (Δ-C, D-240811-2.1, after this slice shipped the
+# ruled forge-unreachable pre-check); an adopter export carries no conf and reads OBSERVE by design,
+# so a first run is never red.
+#
+# WHAT ENFORCE BINDS, STATED PLAINLY (the honest ceiling — no wording site may widen it): the FAILURE
+# arms, not the ABSENCE arms. A query that FAILS refuses the tag; `gh` absent from PATH, or a SHA
+# with no CI run, still land honest-N/A and proceed. A non-GitHub tree WITH gh installed is NOT an
+# absence arm — gh errors there, so it is a FAILED query and enforce refuses it; that forge answers
+# this gate through the RELEASE_TAG_PROV_PROBE seam.
+# Run against the friction test, a non-cooperating environment can de-escalate enforce->N/A by hiding
+# `gh` — and that collapses ci_gate simultaneously, not instead (both gates bail on `command -v gh`
+# and degrade open on the same conditions). The absence arms have NO mechanical backstop at this
+# rung: their backstop is the D-240805-2 disposition posture, the LOUD N/A naming, and human review
+# of the release ritual. This gate never authenticates forge reachability.
 #
 # VERDICT PRECEDENCE [owner-adjudicated, fix round 1]: success -> quiet pass · skipped + validated
 # na -> exactly one N/A-with-reason line, tag proceeds in BOTH modes (na excuses only NOT-RUNNING
@@ -392,22 +519,60 @@ provenance_gate() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
   fi
-  _pg_mode="${RELEASE_TAG_PROVENANCE:-observe}"
-  _pg_mode_default=1
-  if [ -n "${RELEASE_TAG_PROVENANCE+x}" ]; then
-    _pg_mode_default=0
-    case "$_pg_mode" in
-      observe|enforce) : ;;
-      *)
-        # [security LOW-1, fix round 1] an unrecognized value must never silently pick a posture —
-        # name it, name the accepted set, and stay OBSERVE (the safer of the two postures).
-        echo "release-tag: WARNING — RELEASE_TAG_PROVENANCE='$_pg_mode' is not a recognized value (accepted: observe|enforce) — behavior stays OBSERVE." >&2
-        _pg_mode=observe ;;
-    esac
+  # Δ-C: the mode comes from the DIAL READER — the repo-carried `.kit/dials.conf` is authoritative
+  # and the env may only ESCALATE (rt_dial_mode's header carries the full contract, including the
+  # [security LOW-1] garbage-value warning this line used to own). The `(default)` banner suffix
+  # means exactly: the conf carries no key AND the env is unset (PG2-default/PG2-explicit pin both
+  # faces) — a mode resolved from EITHER source is "explicit".
+  # [security INFO-3] The MODE is read LIVE from the working tree, deliberately NOT pinned to
+  # RELEASE_SHA — an asymmetry with the gate's INPUTS (_prov_disposition / _prov_dockerfile_present,
+  # which CP-10 pins to the released commit) and the right way round: the disposition and assertion
+  # set are FACTS ABOUT THE COMMIT BEING RELEASED, while the dial is the CURRENT OPERATOR'S POLICY
+  # about whether to refuse. Pinning the mode would let an old commit carry a stale `observe` past
+  # today's enforce, which is exactly the sticky de-escalation D-240811-2.1 exists to prevent.
+  # ONE conf read, in this frame, feeding BOTH answers [fix round 2, item 4] — see rt_dial_mode's $2.
+  _pg_conf_val=$(rt_dial_conf_value RELEASE_TAG_PROVENANCE)
+  _pg_mode=$(rt_dial_mode RELEASE_TAG_PROVENANCE "$_pg_conf_val")
+  _pg_mode_default=0
+  if [ -z "$_pg_conf_val" ] && [ -z "${RELEASE_TAG_PROVENANCE+x}" ]; then
+    _pg_mode_default=1
   fi
-  _pg_probe=$(prov_probe)
+  # Δ-C: capture the probe's DATA and its HEALTH separately. `set +e` bracketing is the _prov_conclusion
+  # precedent below — rc propagates out of a command substitution, but `set -e` would abort first.
+  set +e; _pg_probe=$(prov_probe); _pg_prc=$?; set -e
+  if [ "$_pg_prc" != 0 ]; then
+    # HEALTH OUTRANKS DATA. Any nonzero probe rc lands here REGARDLESS of stdout: a probe that emits
+    # lines and then dies (a forge dying mid-stream after a stale `provenance success`) must never be
+    # allowed to pass ENFORCE on partial/stale success lines. Checked BEFORE the emptiness test on
+    # purpose — the ordering IS the property.
+    # The cure menu is SHARED only where it is true of both arms: the two REPAIRS. The dial itself is
+    # a cure for the REFUSAL, never for the observe warning — offering an observe-mode operator a way
+    # to reach observe contradicts the very next sentence (measured on the AC run). The two legs pin
+    # each other: PG-QFAIL-ENF asserts the enforce arm DOES carry "ratified control-plane ceremony",
+    # PG-QFAIL-OBS-CURE asserts the observe arm does NOT. NOT in the menu at all, deliberately: a
+    # dated `na` disposition. `na` answers "did this job RUN" — a failed query never learned whether
+    # it ran, so there is no job for a disposition to excuse (PG-QFAIL-NA holds the refusal against a
+    # fully-na disposition file).
+    _pg_qcure="Cure: restore connectivity/auth to the forge and re-run; OR set RELEASE_TAG_PROV_PROBE to your forge's own query (this seam is how a non-GitHub forge answers this gate)."
+    if [ "$_pg_mode" = enforce ]; then
+      echo "release-tag: REFUSING to tag — the provenance query FAILED for ${RELEASE_SHA:-HEAD} (probe protocol rc $_pg_prc: the forge was unreachable, auth failed, this tree has no GitHub remote for gh to resolve, or the seam command failed). Under RELEASE_TAG_PROVENANCE=enforce an UNANSWERED provenance question is not a pass — this is the arm that used to proceed silently. $_pg_qcure OR return the dial to observe through the ratified control-plane ceremony (a conf edit in .kit/dials.conf, not an env var — env cannot de-escalate it)." >&2
+      return 1
+    fi
+    _pg_qsuffix=""
+    [ "$_pg_mode_default" = 1 ] && _pg_qsuffix=" (default)"
+    echo "release-tag: LOUD — the provenance query FAILED for ${RELEASE_SHA:-HEAD} (probe protocol rc $_pg_prc: the forge was unreachable, auth failed, this tree has no GitHub remote for gh to resolve, or the seam command failed). The provenance gate is OBSERVE mode$_pg_qsuffix — the tag proceeds UNVERIFIED; set RELEASE_TAG_PROVENANCE=enforce in .kit/dials.conf to refuse instead. $_pg_qcure" >&2
+    return 0
+  fi
   if [ -z "$_pg_probe" ]; then
-    echo "release-tag: provenance probe returned no data (no gh / not GitHub / no run / no seam set) — proceeding (degrade-open, unverified; see this gate's SECURITY note)" >&2
+    # rc 0 + empty: the query WORKED and there is genuinely nothing to report. This arm no longer
+    # covers the failed query above, so it is named for what it actually is. It stays rc 0 in BOTH
+    # modes — the ruling's boundary: enforce binds the FAILURE arms, never the absence arms (see this
+    # gate's honest ceiling; `ci_gate` degrades open on these same conditions, so nothing mechanical
+    # backstops them at this rung).
+    # ⚠️ "not GitHub" is NOT one of these arms, and saying so would be false: with `gh` INSTALLED, a
+    # non-GitHub tree makes the query FAIL (gh: "none of the git remotes … point to a known GitHub
+    # host") and lands in the rc-3 arm above, refusing under enforce. Only an ABSENT gh reaches here.
+    echo "release-tag: provenance probe returned no data and reported HEALTHY (gh not installed / no CI run for this SHA / a seam with nothing to report) — honest N/A: there is no provenance conclusion to read, so this gate cannot vouch for the release either way. Proceeding, unverified; see this gate's SECURITY note." >&2
     return 0
   fi
   _pg_loud=0
@@ -463,9 +628,71 @@ provenance_gate() {
     fi
     _pg_suffix=""
     [ "$_pg_mode_default" = 1 ] && _pg_suffix=" (default)"
-    echo "release-tag: provenance gate is OBSERVE mode$_pg_suffix — the tag proceeds despite the LOUD verdict above; flip RELEASE_TAG_PROVENANCE=enforce to refuse (tracked: PHASE-B-DIAL-FLIP)." >&2
+    echo "release-tag: provenance gate is OBSERVE mode$_pg_suffix — the tag proceeds despite the LOUD verdict above; set RELEASE_TAG_PROVENANCE=enforce in .kit/dials.conf to refuse instead." >&2
   fi
   return 0
+}
+
+# prov_seam_banner — the F2 override banner for the PROVENANCE seam (Δ-C, design MEDIUM-4).
+#
+# cadence_gate has banners for RELEASE_TAG_CADENCE/META_CONTROL_* since F2 (2026-08-07, hygiene
+# security seat) on the doctrine that an override stays POSSIBLE — env-hardening is unwinnable
+# against a caller who owns the environment — but is never SILENT. RELEASE_TAG_PROV_PROBE is the
+# same tier and rode silent: it substitutes the ENTIRE judgment the conf-locked dial claims to bind.
+# The conf locks the MODE against env de-escalation; it does NOT authenticate the PROBE.
+#
+# Emitted from the ROUTES (run / --provenance-only), NEVER from inside provenance_gate: the
+# direct-call selftest fixtures (PG1, PG6, PG-SHA) assert byte-exact EMPTY gate output with the seam
+# set, and they are this banner's negative face. The condition mirrors prov_probe's own
+# (`-n "${…:-}"`, not `+x`): a set-but-EMPTY seam is ignored by the probe, so nothing is overridden
+# and nothing is claimed.
+# git_tree_banner — the F2 override banner for a SPLIT GIT TREE (fix round 1, security INFO-2).
+#
+# MEASURED, not assumed. The security seat asked for a line recording that "tag repo A while reading
+# repo B's dial" is unreachable. It is REACHABLE: with cwd=B and `GIT_DIR=A/.git`,
+# `git rev-parse --show-toplevel` returns **B** — so rt_dial_conf_value reads B's `.kit/dials.conf`,
+# which may say `observe` — while `git tag` acts on **A**. Adding `GIT_WORK_TREE=B` does not change
+# it. So the dial that decides can belong to a different repository than the one that gets tagged.
+#
+# POSTURE: identical to cadence_gate's F2 and prov_seam_banner — this is an env override by a caller
+# who owns the environment, which env-hardening cannot win. It stays POSSIBLE and stops being
+# SILENT. rc is untouched. Triggered on the VARIABLES rather than on a computed divergence,
+# deliberately: a linked worktree legitimately has a git-dir outside its toplevel, and a banner that
+# cries wolf on every worktree run would be ignored exactly when it mattered.
+#
+# TRIGGER CONVENTION — NON-EMPTY (`${VAR:-}`), matching prov_seam_banner above, so the two banners in
+# this file agree on what "the caller set it" means. ⚠️ The rationale is CONSISTENCY, not git
+# semantics: it is NOT true that git treats an exported-empty GIT_DIR as unset. Measured on git
+# 2.48.1 — `GIT_DIR= git rev-parse --absolute-git-dir` is `fatal: not a git repository: ''`, and
+# `GIT_WORK_TREE=` is `fatal: The empty string is not a valid path`. So an empty value does not
+# produce a silent unsplit run; it produces a run where every git command fails loudly on its own.
+# The narrowing is therefore behaviourally inert, which is why consistency gets to decide it.
+#
+# CEILING: GIT_COMMON_DIR is NOT covered here. It can also re-point part of the object/ref store, so
+# a caller who sets it alone gets no banner from this check.
+git_tree_banner() {
+  [ -n "${GIT_DIR:-}${GIT_WORK_TREE:-}" ] || return 0
+  echo "release-tag: ⚠⚠ SPLIT GIT TREE — GIT_DIR/GIT_WORK_TREE is set by the caller, so the repository this run TAGS need not be the tree its dial was read from: the enforcement dial comes from \$(git rev-parse --show-toplevel)/.kit/dials.conf, which GIT_DIR does not move. Verify you are tagging the repository you think you are. Trusted-invocation-only; see this script's SECURITY header." >&2
+  return 0
+}
+
+prov_seam_banner() {
+  [ -n "${RELEASE_TAG_PROV_PROBE:-}" ] || return 0
+  echo "release-tag: ⚠⚠ OVERRIDDEN ENVIRONMENT — RELEASE_TAG_PROV_PROBE is set by the caller: the provenance gate is judging a CALLER-SUPPLIED answer, not this forge's own CI. RELEASE_TAG_PROVENANCE locks the gate's MODE against env de-escalation; it does not authenticate the PROBE, so this run carries no forge-verified provenance guarantee. Trusted-invocation-only; see this script's SECURITY header." >&2
+  return 0
+}
+
+# provenance_only -> the non-tagging route (Δ-C). Resolves RELEASE_SHA exactly as the tag path does,
+# runs provenance_gate ALONE, and exits with its rc — no cadence gate, no branch gate, no ~10-minute
+# ci_gate poll, no tag. Used by the flip's before/after AC, by this file's own end-to-end legs, and
+# by an operator debugging a forge who needs the gate's verdict without releasing anything.
+# It runs the REAL gate against the REAL tree; it is not a simulation.
+provenance_only() {
+  RELEASE_SHA=$(git rev-parse HEAD 2>/dev/null) || { echo "release-tag: cannot resolve HEAD" >&2; return 2; }
+  [ -n "$RELEASE_SHA" ] || { echo "release-tag: cannot resolve HEAD" >&2; return 2; }
+  git_tree_banner
+  prov_seam_banner
+  provenance_gate
 }
 
 run() {
@@ -482,6 +709,11 @@ run() {
     *) echo "release-tag: unexpected decision: $out" >&2; return 2 ;;
   esac
   if [ "${1:-}" = "--dry-run" ]; then
+    # [fix round 2, item 3] --dry-run is EXACTLY the "am I about to tag what I think I am?" route, so
+    # the split-tree banner belongs before its early return — it is rc-neutral and free, and an
+    # operator who dry-runs to check the target is the one most owed the warning. (The seam banner
+    # stays out: --dry-run never consults the provenance probe, so nothing is being overridden.)
+    git_tree_banner
     echo "release-tag: would create + push $v on $(git rev-parse --short "$RELEASE_SHA")"; return 0
   fi
   # H1: is the CADENCE alive? (cadence_gate)  ...CP-10: is it SHIPPED? (branch_gate)  ...is it GREEN? (ci_gate)
@@ -490,6 +722,8 @@ run() {
   cadence_gate || return 1
   branch_gate "$RELEASE_SHA" || return 1
   ci_gate || return 1
+  git_tree_banner
+  prov_seam_banner
   provenance_gate || return 1
   # Tag the PINNED sha explicitly — never a bare `git tag "$v"`, which re-reads HEAD at this instant.
   git tag "$v" "$RELEASE_SHA"
@@ -899,14 +1133,120 @@ selftest() {
     echo "FAIL: PG4 (rc=$_pgrc lines=$_pglines out='$_pgout')"; st=1
   fi
 
-  # PG5: empty probe (no gh / no seam data) -> degrade-open, NAMED (never a silent proceed).
+  # PG5: an empty probe that reported HEALTHY (gh not installed / no run / a seam with nothing to
+  # say) -> honest N/A, NAMED (never a silent proceed). [Δ-C, design LOW-7] Re-anchored from the old
+  # `degrade-open` wording: this arm no longer covers the failed-query face, which is now rc 3 and
+  # LOUD/refusing (PG-QFAIL-*), so the grep must follow the message that survived the split.
   d="$t/pg5"; _pg_mk "$d" 0 apply n/a apply n/a
   _pgrc=0
   _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE=true; RELEASE_TAG_PROVENANCE=observe; provenance_gate 2>&1 ) || _pgrc=$?
-  if [ "$_pgrc" = 0 ] && printf '%s' "$_pgout" | grep -q degrade-open; then
-    echo "PASS: provenance_gate — empty probe -> degrade-open, named"
+  if [ "$_pgrc" = 0 ] && printf '%s' "$_pgout" | grep -q "honest N/A"; then
+    echo "PASS: provenance_gate — an empty-but-healthy probe -> honest N/A, named"
   else
     echo "FAIL: PG5 (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+
+  # ===== Δ-C — the rc protocol: "no data because nothing to say" vs "no data because the QUERY
+  # FAILED" (ruling D-240811-2.1: the forge-unreachable arm must degrade LOUD). stdout stays the
+  # data channel; the RETURN CODE becomes the health channel (0 = healthy, 3 = query failed).
+  # Every arm is seam-drivable — the seam mirrors the gh arms exactly (`exit 7` <-> query failed,
+  # `true` <-> empty-success/N/A, `printf` data <-> a healthy probe) — so no fixture mocks gh.
+  #
+  # PG-PROBE-RC: the protocol itself, asserted directly on prov_probe.
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE='exit 7' prov_probe ) || _pprc=$?
+  if [ "$_pprc" = 3 ] && [ -z "$_ppout" ]; then
+    echo "PASS: prov_probe — a FAILING seam (unreachable forge) returns rc 3, not a silent rc 0"
+  else
+    echo "FAIL: PG-PROBE-RC-fail (rc=$_pprc out='$_ppout')"; st=1
+  fi
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE=true prov_probe ) || _pprc=$?
+  if [ "$_pprc" = 0 ] && [ -z "$_ppout" ]; then
+    echo "PASS: prov_probe — a seam that SUCCEEDS with no output returns rc 0 (honest N/A, not a failure)"
+  else
+    echo "FAIL: PG-PROBE-RC-empty (rc=$_pprc out='$_ppout')"; st=1
+  fi
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"' prov_probe ) || _pprc=$?
+  if [ "$_pprc" = 0 ] && [ "$_ppout" = "$(printf 'provenance\tsuccess')" ]; then
+    echo "PASS: prov_probe — a healthy seam returns rc 0 with its data intact"
+  else
+    echo "FAIL: PG-PROBE-RC-data (rc=$_pprc out='$_ppout')"; st=1
+  fi
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"; exit 7' prov_probe ) || _pprc=$?
+  if [ "$_pprc" = 3 ]; then
+    echo "PASS: prov_probe — a seam that emits data and THEN dies is rc 3 (health is not inferred from data)"
+  else
+    echo "FAIL: PG-PROBE-RC-partial (rc=$_pprc out='$_ppout')"; st=1
+  fi
+
+  # PG-QFAIL-OBS / PG-QFAIL-ENF (THE RULED PRE-CHECK, both faces): the measured NO-OP cured. A
+  # provenance query that FAILS is LOUD in observe (rc unchanged) and REFUSES in enforce.
+  d="$t/pgqfail"; _pg_mk "$d" 0 apply n/a apply n/a
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='exit 7'; RELEASE_TAG_PROVENANCE=observe; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 0 ] && printf '%s' "$_pgout" | grep -q LOUD && printf '%s' "$_pgout" | grep -q "FAILED"; then
+    echo "PASS: provenance_gate — a FAILED provenance query in OBSERVE -> LOUD, tag proceeds (rc 0)"
+  else
+    echo "FAIL: PG-QFAIL-OBS (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+  # ...and the OBSERVE arm must not offer the ENFORCE arm's cure. Measured on the AC run: the shared
+  # cure menu told an observe-mode operator to reach observe, one sentence after telling them to flip
+  # to enforce. A gate that contradicts itself in its own remedy teaches the operator to stop reading.
+  # ANCHORED ON THE STRING PRODUCTION ACTUALLY EMITS [fix round 1, reviewer BLOCKING-1]: the first
+  # version asserted the absence of "back to observe" — a phrase no production line has ever
+  # contained (only this leg's own comment, assertion and FAIL echo), so the green was TAUTOLOGICAL.
+  # It now negates "ratified control-plane ceremony", which the refusal DOES emit, and PG-QFAIL-ENF
+  # below asserts the positive — the two legs pin each other, so neither can drift alone.
+  # (rt_dial_mode's de-escalation anomaly line shares that phrase, but this fixture carries no
+  # .kit/dials.conf, so the conf-enforce branch that prints it is unreachable here.)
+  if ! printf '%s' "$_pgout" | grep -q "ratified control-plane ceremony"; then
+    echo "PASS: provenance_gate — the OBSERVE arm does not offer the enforce arm's dial cure (no self-contradiction)"
+  else
+    echo "FAIL: PG-QFAIL-OBS-CURE — the observe arm offered the enforce arm's ratified-ceremony cure"; st=1
+  fi
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='exit 7'; RELEASE_TAG_PROVENANCE=enforce; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 1 ] && printf '%s' "$_pgout" | grep -q REFUSING && printf '%s' "$_pgout" | grep -q "Cure:" \
+     && printf '%s' "$_pgout" | grep -q "ratified control-plane ceremony"; then
+    echo "PASS: provenance_gate — a FAILED provenance query in ENFORCE -> REFUSES (rc 1) with a cure menu incl. the dial route"
+  else
+    echo "FAIL: PG-QFAIL-ENF (rc=$_pgrc out='$_pgout')"; st=1
+  fi
+
+  # PG-QFAIL-NA (the boundary, measured — see this gate's cure-menu note): a validated `na`
+  # disposition does NOT excuse a FAILED QUERY. `na` answers "did this job run"; a failed query
+  # never learned whether it ran, so there is no job for a disposition to excuse. Without this leg
+  # the refusal could be quietly weakened into a disposition-excusable one.
+  d="$t/pgqfailna"; _pg_mk "$d" 0 na "no attestable image on a private repo" na "same"
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='exit 7'; RELEASE_TAG_PROVENANCE=enforce; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 1 ] && printf '%s' "$_pgout" | grep -q REFUSING; then
+    echo "PASS: provenance_gate — a validated na disposition does NOT excuse a FAILED QUERY (still refused)"
+  else
+    echo "FAIL: PG-QFAIL-NA (rc=$_pgrc out='$_pgout') — a failed query was excused by a disposition"; st=1
+  fi
+
+  # PG-PARTIAL (HEALTH OUTRANKS DATA — the load-bearing negative): a probe that emits verdict lines
+  # and THEN dies must land in the failed-query arm, never on the per-job verdict path. Otherwise a
+  # forge dying mid-stream after a stale `provenance success` line passes ENFORCE on partial data.
+  d="$t/pgpartial"; _pg_mk "$d" 0 apply n/a apply n/a
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"; exit 7'; RELEASE_TAG_PROVENANCE=enforce; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 1 ] && printf '%s' "$_pgout" | grep -q "FAILED"; then
+    echo "PASS: provenance_gate — partial data + a dead probe is the FAILED-QUERY arm, not a pass (health outranks data)"
+  else
+    echo "FAIL: PG-PARTIAL (rc=$_pgrc out='$_pgout') — a dying probe passed on its partial success lines"; st=1
+  fi
+
+  # PG-NA-ENF (the ruling's BOUNDARY): enforce does NOT convert an honest N/A into a refusal. The
+  # absence arms (gh not installed / no run / a seam with nothing to say) stay N/A in BOTH modes —
+  # this gate's ceiling, stated in code so a future tightening has to delete a green test.
+  d="$t/pgnaenf"; _pg_mk "$d" 0 apply n/a apply n/a
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE=true; RELEASE_TAG_PROVENANCE=enforce; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 0 ] && printf '%s' "$_pgout" | grep -q "honest N/A" && ! printf '%s' "$_pgout" | grep -q REFUSING; then
+    echo "PASS: provenance_gate — an honest N/A stays N/A under ENFORCE (the ruling's boundary, not a refusal)"
+  else
+    echo "FAIL: PG-NA-ENF (rc=$_pgrc out='$_pgout')"; st=1
   fi
 
   # PG6 (design §9.2 defect #1, killed): Dockerfile-LESS tree must NOT assert image-provenance — a
@@ -970,6 +1310,202 @@ selftest() {
     echo "FAIL: PG-CTRL (rc=$_pgrc ctrl-bytes-remaining=$_pgctrl out='$_pgout')"; st=1
   fi
 
+  # ===== Δ-C — the --provenance-only route + the seam override banner ==========================
+  # No route exercised this gate without tagging (--dry-run returns before the gate calls, and
+  # extending it would put a ~10-minute ci_gate poll inside a flag advertised as free). These legs
+  # drive the REAL script end-to-end — the same load-bearing distinction tests I/J/M record: a direct
+  # provenance_gate call proves the FUNCTION, never that a route CALLS it.
+  d="$t/pgonly"; _pg_mk "$d" 0 apply n/a apply n/a
+  mkdir -p "$d/.kit"; printf 'RELEASE_TAG_PROVENANCE=enforce\n' > "$d/.kit/dials.conf"
+  _porc=0
+  _poout=$( cd "$d" && RELEASE_TAG_PROV_PROBE='exit 7' sh "$here/release-tag.sh" --provenance-only 2>&1 ) || _porc=$?
+  _potag=$( cd "$d" && git tag -l )
+  if [ "$_porc" = 1 ] && [ -z "$_potag" ] \
+     && printf '%s\n' "$_poout" | grep -q REFUSING \
+     && ! printf '%s\n' "$_poout" | grep -q 'meta-control panel freshness' \
+     && ! printf '%s\n' "$_poout" | grep -q 'safe to tag'; then
+    echo "PASS: --provenance-only — runs the gate ALONE (no cadence/branch/CI gate, no tag) and exits its rc"
+  else
+    echo "FAIL: PGONLY (rc=$_porc tag='$_potag' out='$_poout')"; st=1
+  fi
+  # ...and the LIVENESS anchor: a healthy probe must exit 0, or the route is a refuse-everything stub.
+  _porc=0
+  _poout=$( cd "$d" && RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"' sh "$here/release-tag.sh" --provenance-only 2>&1 ) || _porc=$?
+  if [ "$_porc" = 0 ]; then
+    echo "PASS: --provenance-only — a healthy probe exits 0 (the route is not a refuse-everything stub)"
+  else
+    echo "FAIL: PGONLY-OK (rc=$_porc out='$_poout')"; st=1
+  fi
+  # PG-GITDIR-BANNER [fix round 1, security INFO-2 — the property FAILED verification]. The seat
+  # asked me to record that "tag repo A while reading repo B's dial" is unreachable. Measured, it is
+  # REACHABLE: with cwd=B and GIT_DIR=A/.git, `git rev-parse --show-toplevel` returns **B** (so the
+  # dial is read from B, which may say observe) while `git tag` acts on **A**. GIT_WORK_TREE=B does
+  # not change it. Same tier as the other env overrides, so the same ratified F2 answer: the override
+  # stays possible, but it is never SILENT.
+  d="$t/pggitdir"; _pg_mk "$d" 0 apply n/a apply n/a
+  _pg_mk "$t/pggitdir_other" 0 apply n/a apply n/a
+  _porc=0
+  _poout=$( cd "$d" && GIT_DIR="$t/pggitdir_other/.git" RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"' \
+      sh "$here/release-tag.sh" --provenance-only 2>&1 ) || _porc=$?
+  if printf '%s\n' "$_poout" | grep -q 'SPLIT GIT TREE' && printf '%s\n' "$_poout" | grep -q 'GIT_DIR'; then
+    echo "PASS: run routes — an explicit GIT_DIR/GIT_WORK_TREE split is bannered (the dial's tree may not be the tagged tree)"
+  else
+    echo "FAIL: PG-GITDIR-BANNER — a split git tree stayed SILENT (rc=$_porc out='$_poout')"; st=1
+  fi
+  # ...and the negative face: an ordinary run must NOT cry split-tree (a banner that always fires is
+  # noise, and this file's own PG1/PG6/PG-SHA legs assert byte-exact empty gate output).
+  _poout=$( cd "$d" && RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"' \
+      sh "$here/release-tag.sh" --provenance-only 2>&1 ) || true
+  if ! printf '%s\n' "$_poout" | grep -q 'SPLIT GIT TREE'; then
+    echo "PASS: run routes — an ordinary run does not false-alarm the split-tree banner"
+  else
+    echo "FAIL: PG-GITDIR-BANNER-QUIET — the split-tree banner fired on an ordinary run"; st=1
+  fi
+
+  # PG-SEAM-BANNER (design MEDIUM-4 — this file's own F2 doctrine applied to the OTHER seam): a set
+  # RELEASE_TAG_PROV_PROBE substitutes the ENTIRE judgment the conf-locked dial claims to bind, yet
+  # rode silent while cadence_gate banners its analogous overrides unmissably. Emitted from the
+  # ROUTES (run / --provenance-only), never inside provenance_gate — PG1/PG6/PG-SHA assert exact
+  # EMPTY output from a direct call with the seam set, and they are this banner's negative face.
+  if printf '%s\n' "$_poout" | grep -q 'OVERRIDDEN ENVIRONMENT' \
+     && printf '%s\n' "$_poout" | grep -q 'RELEASE_TAG_PROV_PROBE'; then
+    echo "PASS: --provenance-only — a set provenance seam banners the override by name (F2 loud-not-silent)"
+  else
+    echo "FAIL: PG-SEAM-BANNER (out='$_poout')"; st=1
+  fi
+
+  # ===== Δ-C — rt_dial_mode: the per-dial precedence contract (the T7c analog) ==================
+  # rt_dial_mode is a FOURTH copy of the dial precedence (guard-core's kit_dial_mode, dial-state's
+  # dial_value, loop-state's ls_dial_mode are the siblings a release rung MUST NOT source). These
+  # legs pin THIS copy against the shared spec — a spec-conformance battery, not a live cross-reader
+  # agreement test (loop-state.sh:104-106 makes the same disclaimer for its own copy).
+  # ⚠️ Every leg drives the env inside a SUBSHELL, never `VAR=x rt_dial_mode …`: a var assignment on
+  # a FUNCTION call PERSISTS in POSIX sh and would leak into the legs below.
+  #
+  # _rt_mk <dir> [conf-line…] — a REAL one-commit git repo (so `git rev-parse --show-toplevel`
+  # resolves), optionally carrying .kit/dials.conf. `return 0` is load-bearing under `set -eu`.
+  _rt_mk() {
+    _rtd=$1; shift
+    mkdir -p "$_rtd"
+    if [ "$#" -gt 0 ]; then mkdir -p "$_rtd/.kit"; printf '%s\n' "$@" > "$_rtd/.kit/dials.conf"; fi
+    ( cd "$_rtd" && git init -q \
+      && git -c user.email=c@k -c user.name=c commit -q --allow-empty -m s ) >/dev/null 2>&1
+    return 0
+  }
+  _rt_say() { # <label> <want> <got>
+    if [ "$3" = "$2" ]; then echo "PASS: rt_dial_mode — $1"
+    else echo "FAIL: rt_dial_mode — $1 (want '$2', got '$3')"; st=1; fi
+  }
+
+  _rt_mk "$t/rtconf" 'RELEASE_TAG_PROVENANCE=enforce'
+  _rt_mk "$t/rtabsent"
+  _rt_mk "$t/rtgarbage" 'RELEASE_TAG_PROVENANCE=banana'
+
+  # 1. conf enforce, env unset -> enforce (the conf is authoritative)
+  _rt_say "conf enforce + env unset -> enforce" enforce \
+    "$( cd "$t/rtconf"; unset RELEASE_TAG_PROVENANCE; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  # 2. env observe must NOT de-escalate a conf enforce — and must say so, once, out loud
+  _rt_say "env observe cannot de-escalate a conf enforce" enforce \
+    "$( cd "$t/rtconf"; RELEASE_TAG_PROVENANCE=observe; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  _rtout=$( cd "$t/rtconf"; RELEASE_TAG_PROVENANCE=observe; rt_dial_mode RELEASE_TAG_PROVENANCE 2>&1 >/dev/null )
+  case "$_rtout" in
+    *"cannot de-escalate"*) echo "PASS: rt_dial_mode — a de-escalation attempt prints one loud anomaly line" ;;
+    *) echo "FAIL: rt_dial_mode — a de-escalation attempt was SILENT (out='$_rtout')"; st=1 ;;
+  esac
+  # 3. an EQUAL env value is the normal case and must never warn
+  _rtout=$( cd "$t/rtconf"; RELEASE_TAG_PROVENANCE=enforce; rt_dial_mode RELEASE_TAG_PROVENANCE 2>&1 >/dev/null )
+  case "$_rtout" in
+    *"cannot de-escalate"*) echo "FAIL: rt_dial_mode — an EQUAL env value warned"; st=1 ;;
+    *) echo "PASS: rt_dial_mode — an equal env value does not warn" ;;
+  esac
+  # 4/5. absence fails safe to observe; env may ESCALATE observe->enforce
+  _rt_say "absent conf + env unset -> observe (fail-safe)" observe \
+    "$( cd "$t/rtabsent"; unset RELEASE_TAG_PROVENANCE; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  _rt_say "absent conf + env enforce -> enforce (escalation allowed)" enforce \
+    "$( cd "$t/rtabsent"; RELEASE_TAG_PROVENANCE=enforce; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  # 6. a garbage CONF value reads observe, silently (the dial file's own header rule)
+  _rt_say "garbage conf value -> observe" observe \
+    "$( cd "$t/rtgarbage"; unset RELEASE_TAG_PROVENANCE; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  # 7. a garbage ENV value WARNS BY NAME and contributes nothing (this file's pinned PG-MODE-BAD
+  # contract — a NAMED divergence from ls_dial_mode, which ignores garbage env silently).
+  _rt_say "garbage env value -> observe (non-escalating)" observe \
+    "$( cd "$t/rtabsent"; RELEASE_TAG_PROVENANCE=bogus; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  _rtout=$( cd "$t/rtabsent"; RELEASE_TAG_PROVENANCE=bogus; rt_dial_mode RELEASE_TAG_PROVENANCE 2>&1 >/dev/null )
+  if printf '%s' "$_rtout" | grep -q "not a recognized value" && printf '%s' "$_rtout" | grep -q "bogus" \
+     && printf '%s' "$_rtout" | grep -q "observe|enforce"; then
+    echo "PASS: rt_dial_mode — a garbage env value is named, with the accepted set [security LOW-1 lineage]"
+  else
+    echo "FAIL: rt_dial_mode — a garbage env value was not named with its accepted set (out='$_rtout')"; st=1
+  fi
+  # 8. a garbage ENV value must NOT de-escalate a conf enforce either
+  _rt_say "garbage env + conf enforce -> enforce" enforce \
+    "$( cd "$t/rtconf"; RELEASE_TAG_PROVENANCE=bogus; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  # 8b. [security LOW-1, fix round 1] a conf that EXISTS but is UNREADABLE is ANOMALOUS, not normal
+  # absence — both fail safe to observe, but only one of them means "someone broke the dial file".
+  # Silently collapsing them would make a chmod the quietest possible disarm at this rung.
+  # SKIPPED AS ROOT: root reads anything, so chmod 000 cannot produce the unreadable face there and
+  # the leg would assert nothing (an honest skip beats a vacuous pass).
+  _rt_mk "$t/rtunread" 'RELEASE_TAG_PROVENANCE=enforce'
+  chmod 000 "$t/rtunread/.kit/dials.conf" 2>/dev/null || true
+  if [ "$(id -u)" = 0 ] || [ -r "$t/rtunread/.kit/dials.conf" ]; then
+    echo "SKIP: rt_dial_mode — unreadable-conf leg (running as root, or chmod not honoured here)"
+  else
+    _rt_say "an UNREADABLE conf fails safe to observe" observe \
+      "$( cd "$t/rtunread"; unset RELEASE_TAG_PROVENANCE; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+    _rtout=$( cd "$t/rtunread"; unset RELEASE_TAG_PROVENANCE; rt_dial_mode RELEASE_TAG_PROVENANCE 2>&1 >/dev/null )
+    if printf '%s' "$_rtout" | grep -q "exists but is NOT READABLE"; then
+      echo "PASS: rt_dial_mode — an unreadable conf says so out loud (absence and breakage are distinguishable) [security LOW-1]"
+    else
+      echo "FAIL: rt_dial_mode — an unreadable conf was indistinguishable from absence (out='$_rtout')"; st=1
+    fi
+  fi
+  # ...and the warning must fire EXACTLY ONCE per gate run [fix round 2, item 4]. Measured before
+  # the cure: TWICE — provenance_gate read the conf once via rt_dial_mode and again for the
+  # `(default)` banner test. Both reads sit in command substitutions (subshells), so a one-shot flag
+  # variable could not have deduped them; the cure is to read ONCE in the gate's own frame and hand
+  # the value to the reader. A gate that repeats itself trains the operator to skim.
+  d="$t/pgunread"; _pg_mk "$d" 0 apply n/a apply n/a
+  mkdir -p "$d/.kit"; printf 'RELEASE_TAG_PROVENANCE=enforce\n' > "$d/.kit/dials.conf"
+  chmod 000 "$d/.kit/dials.conf" 2>/dev/null || true
+  if [ "$(id -u)" = 0 ] || [ -r "$d/.kit/dials.conf" ]; then
+    echo "SKIP: provenance_gate — unreadable-conf dedupe leg (running as root, or chmod not honoured here)"
+  else
+    _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE=true; unset RELEASE_TAG_PROVENANCE; provenance_gate 2>&1 ) || true
+    _pgn=$(printf '%s\n' "$_pgout" | grep -c "NOT READABLE" || true)
+    if [ "$_pgn" = 1 ]; then
+      echo "PASS: provenance_gate — the unreadable-conf WARNING fires EXACTLY ONCE per run (one conf read, not two)"
+    else
+      echo "FAIL: PG-UNREAD-DEDUPE — the unreadable-conf WARNING fired $_pgn time(s), want 1"; st=1
+    fi
+  fi
+  chmod 644 "$d/.kit/dials.conf" 2>/dev/null || true
+  chmod 644 "$t/rtunread/.kit/dials.conf" 2>/dev/null || true
+
+  # 9. not a git dir at all -> no toplevel -> absent -> observe (never a wedge)
+  mkdir -p "$t/rtnogit"
+  _rt_say "a non-git cwd -> observe (no toplevel, never wedges)" observe \
+    "$( cd "$t/rtnogit"; unset RELEASE_TAG_PROVENANCE; rt_dial_mode RELEASE_TAG_PROVENANCE 2>/dev/null )"
+  # 10. a dial NAME outside [A-Z0-9_] is refused to observe before any read (the ls_dial_mode rule)
+  _rt_say "a hostile dial name -> observe, unread" observe \
+    "$( cd "$t/rtconf"; rt_dial_mode 'RELEASE;rm' 2>/dev/null )"
+  # ...including a LEADING DIGIT, which passes the [A-Z0-9_] charset test but is not a valid shell
+  # identifier, so the indirect `eval` read would be a syntax error rather than an empty value.
+  _rt_say "a dial name with a leading digit -> observe, unread (eval never sees it)" observe \
+    "$( cd "$t/rtconf"; rt_dial_mode '9LIVES' 2>/dev/null )"
+
+  # PG-CONF-ENFORCE (the WIRING proof for the reader): the gate must take enforce from the
+  # REPO-CARRIED conf with the env UNSET. Without this leg the old env-only `_pg_mode` derivation
+  # passes every other mode leg in this file — the conf would be declared-but-unread state.
+  d="$t/pgconf"; _pg_mk "$d" 0 apply n/a apply n/a
+  mkdir -p "$d/.kit"; printf 'RELEASE_TAG_PROVENANCE=enforce\n' > "$d/.kit/dials.conf"
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='printf "provenance\tskipped\n"'; unset RELEASE_TAG_PROVENANCE; provenance_gate 2>&1 ) || _pgrc=$?
+  if [ "$_pgrc" = 1 ] && printf '%s' "$_pgout" | grep -q REFUSING; then
+    echo "PASS: provenance_gate — enforce read from the REPO-CARRIED .kit/dials.conf with the env unset (the reader is wired)"
+  else
+    echo "FAIL: PG-CONF-ENFORCE (rc=$_pgrc out='$_pgout') — the gate did not read the conf-carried dial"; st=1
+  fi
+
   # PGWIRE (TEETH — the same end-to-end-through-run() discipline as tests I/J/M above): a skipped
   # provenance job in ENFORCE mode must refuse THROUGH run(), and no tag is written. A direct-call
   # test proves the FUNCTION; only driving the real script proves run() actually CALLS it.
@@ -992,15 +1528,42 @@ selftest() {
   # would pass PGWIRE and be worse than useless without this.
   d="$t/pgwireobs"; mkdir -p "$d"; _wt "$d"
   _pgwrc=0
-  ( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 \
+  _pgwout=$( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 \
       RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' \
       RELEASE_TAG_PROV_PROBE='printf "provenance\tskipped\n"' \
-      sh "$here/release-tag.sh" ) >/dev/null 2>&1 || _pgwrc=$?
+      sh "$here/release-tag.sh" 2>&1 ) || _pgwrc=$?
   _pgwtag=$( cd "$d/w" && git tag -l v1.1.0 )
   if [ "$_pgwrc" = "0" ] && [ -n "$_pgwtag" ]; then
     echo "PASS: provenance_gate default OBSERVE — skipped job proceeds end-to-end (dial default doesn't refuse)"
   else
     echo "FAIL: PGWIRE-OBS — default observe mode blocked the tag (rc=$_pgwrc tag='$_pgwtag')"; st=1
+  fi
+  # PG-SEAM-BANNER-RUN (Δ-C): the override banner must print on the TAGGING route too, not only on
+  # --provenance-only. This leg's run is the ordinary one — seam set, tag written — which is exactly
+  # the run whose evidence was caller-supplied and which used to say nothing about it.
+  if printf '%s\n' "$_pgwout" | grep -q 'RELEASE_TAG_PROV_PROBE is set by the caller'; then
+    echo "PASS: run() — a set provenance seam banners the override on the tagging route too"
+  else
+    echo "FAIL: PG-SEAM-BANNER-RUN — a seam-overridden TAG run stayed silent about the override"; st=1
+  fi
+
+  # PG-GITDIR-BANNER-RUN [fix round 2, item 2]: the split-tree banner must fire on the TAGGING route,
+  # not only on --provenance-only. Both earlier legs drove --provenance-only, so deleting the
+  # git_tree_banner call from run() left the selftest GREEN — the same wiring-vs-function gap tests
+  # I/J/M exist to close, and the reason this leg drives the REAL script. The tagging route is the
+  # one that matters most here: it is the route that actually writes a tag into the OTHER repository.
+  d="$t/pggitdirrun"; mkdir -p "$d"; _wt "$d"
+  _pg_mk "$t/pggitdirrun_other" 0 apply n/a apply n/a
+  _gdrc=0
+  _gdout=$( cd "$d/w" && META_CONTROL_ROOT="$t/cad" META_CONTROL_TAGS=1.0.0 \
+      GIT_WORK_TREE="$d/w" \
+      RELEASE_TAG_CI_PROBE='printf "completed\tsuccess\n"' \
+      RELEASE_TAG_PROV_PROBE='printf "provenance\tsuccess\n"' \
+      sh "$here/release-tag.sh" 2>&1 ) || _gdrc=$?
+  if printf '%s\n' "$_gdout" | grep -q 'SPLIT GIT TREE'; then
+    echo "PASS: run() — a split git tree is bannered on the TAGGING route (not just --provenance-only)"
+  else
+    echo "FAIL: PG-GITDIR-BANNER-RUN — a split-tree TAG run stayed silent (rc=$_gdrc out='$_gdout')"; st=1
   fi
 
   rm -rf "$t"
@@ -1008,8 +1571,9 @@ selftest() {
 }
 
 case "${1:-}" in
-  --selftest) selftest; exit $? ;;
-  --dry-run)  run --dry-run; exit $? ;;
-  "")         run; exit $? ;;
-  *)          echo "usage: release-tag.sh [--dry-run|--selftest]" >&2; exit 2 ;;
+  --selftest)        selftest; exit $? ;;
+  --dry-run)         run --dry-run; exit $? ;;
+  --provenance-only) provenance_only; exit $? ;;
+  "")                run; exit $? ;;
+  *)                 echo "usage: release-tag.sh [--dry-run|--provenance-only|--selftest]" >&2; exit 2 ;;
 esac

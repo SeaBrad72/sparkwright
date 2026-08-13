@@ -9,6 +9,11 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+  # `actions: read` lets the provenance gate read this commit's own workflow-run conclusions.
+  # A `permissions:` block sets every UNLISTED scope to none, so without this line the token is
+  # present but forbidden — the query 403s and the gate reports a FAILED query (loud; and a refusal
+  # for anyone who has opted the RELEASE_TAG_PROVENANCE dial into enforce).
+  actions: read
 jobs:
   release-tag:
     runs-on: ubuntu-latest
@@ -17,4 +22,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Auto-tag v<VERSION> on the merge commit (coherent, idempotent)
+        # `gh` is INSTALLED on GitHub-hosted runners but UNAUTHENTICATED by default, so the
+        # provenance gate's query fails and warns loudly on every run unless a token is exported.
+        # Supplying the job's own token makes the gate answer honestly instead of crying wolf.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: sh scripts/release-tag.sh

@@ -63,6 +63,52 @@ This is the *foolproof* form of `git tag`:
 
 The human keeps the release decision. This is consistent with the kit's separation-of-duties and ratification posture: agents propose, humans ratify; automation assists, humans approve the cut.
 
+### The provenance gate, and what `enforce` actually binds
+
+After the CI gate, `provenance_gate` reads the **per-job** conclusions for the pinned release SHA —
+`ci_gate` sees only the workflow-level verdict, which is blind to a job that silently *skipped*.
+
+Its dial is `RELEASE_TAG_PROVENANCE`, and since **v3.213.0 the kit's own tree carries
+`RELEASE_TAG_PROVENANCE=enforce`** in `.kit/dials.conf` (ruling `D-240811-2.1`). The conf value is
+authoritative; an environment variable of the same name may only **escalate** observe→enforce, never
+de-escalate — that is what makes the flip stick instead of being one `export` from undone. `.kit/dials.conf`
+is `export-ignore`d, so **an adopter export carries no conf and reads observe**: your first run is never red.
+
+**What enforce binds — the failure arms, not the absence arms.** Read this before you rely on it:
+
+| The probe's answer | observe | enforce |
+|---|---|---|
+| jobs reported, a gate skipped/failed/ambiguous | LOUD, tag proceeds | **REFUSED** |
+| the query **FAILED** (forge unreachable, auth expired, no GitHub remote in this tree, seam command failed) | LOUD, tag proceeds | **REFUSED** |
+| honest **N/A** — `gh` **not installed**, or no CI run for this SHA | one named line, proceeds | one named line, **proceeds** |
+
+⚠️ **A non-GitHub tree with `gh` INSTALLED lands in the FAILED-QUERY arm, not the N/A arm.** `gh` exits
+non-zero there ("none of the git remotes … point to a known GitHub host"), and the gate reads a non-zero
+probe as a failed query — so under enforce it is refused, not excused. That is the intended posture: a
+non-GitHub forge answers this gate by setting `RELEASE_TAG_PROV_PROBE`, which is what the seam is for. Only
+an **absent** `gh` reaches honest N/A.
+
+Enforce is **not** a claim that the forge was reached. Removing `gh` from PATH entirely still degrades to
+N/A — and it collapses `ci_gate` at the same time, not instead, since both gates bail on the same
+`command -v gh`. The absence arms have no mechanical backstop at this rung; their backstop is the
+disposition posture, the loud N/A naming, and human review of the release ritual.
+
+**Operational consequence of the flip:** run the tag rung in a clone whose `origin` **is** the GitHub
+remote. A linked worktree or a clone made from a local path has no remote `gh` can resolve, so the query
+fails and enforce refuses (measured) where it used to degrade open. A non-GitHub forge answers this gate by
+setting `RELEASE_TAG_PROV_PROBE` to its own query — that seam is the documented route, and a run with it set
+banners the override, because a caller-supplied answer is not forge-verified provenance.
+
+**Debugging a forge without releasing anything:**
+
+```sh
+sh scripts/release-tag.sh --provenance-only
+```
+
+Resolves the release SHA exactly as the tag path does, runs the provenance gate **alone**, and exits with
+its rc — no cadence gate, no branch gate, no 10-minute CI poll, no tag. It runs the real gate against the
+real tree, so its verdict is the verdict a release would get.
+
 ## Opt-in: auto-tag-on-merge
 
 Adopters who want zero-touch tagging copy a reference binding into their CI:
