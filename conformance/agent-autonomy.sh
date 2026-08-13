@@ -272,19 +272,16 @@ assert_deny "install over guard"    '{"tool_name":"Bash","tool_input":{"command"
 assert_deny "Write guard-core"     '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks/guard-core.sh","content":"x"}}'
 assert_deny "Edit kit-guard"       '{"tool_name":"Edit","tool_input":{"file_path":"scripts/kit-guard","old_string":"a","new_string":"b"}}'
 assert_deny "Write pre-push"       '{"tool_name":"Write","tool_input":{"file_path":"hooks/pre-push","content":"x"}}'
-# --- DISCLOSED-OPEN residual, asserted rather than left silent: the basename-after-cd write form ----
-# MEASURED, NOT DESIRED. Control-plane classification is by PATH, so a shell write whose command text
-# names only a BASENAME after `cd`-ing into the directory is not recognized as touching hooks/ — it is
-# ALLOWED today (the GUARD-BASENAME-AFTER-CD-BYPASS class, boarded as its own cure slice). The line
-# below asserts that measured ALLOW so the hole is a fixture, not a footnote: under tracked-hooks mode
-# (HOOK-INSTALL-RECURS-PER-SLICE) the tracked hooks/pre-push IS the live hook, so this front door is
-# what stands between an agent and arbitrary code at push time — and its residual is exactly this
-# form. The standing mitigation is ceremony-time, not real-time: guard-wired.sh REDs on a dirty
-# working-tree hook — and, since review round 1, it REDs on it BEFORE testing for the kit marker, so
-# the markerless file this very write form produces cannot buy a "foreign hook, not ours to judge"
-# pass. Detection, not prevention. When the cure slice lands, THIS line flips to assert_deny and that flip is its
-# evidence. A silent hole and a fixtured hole cost the same to exploit; only one of them gets fixed.
-assert_allow "cd-basename hook write" '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x > pre-push"}}'
+# --- CURED (GUARD-BASENAME-AFTER-CD-BYPASS): the basename-after-cd write form now DENIES ------------
+# Control-plane classification is by PATH; the resolved-target arm (guard-core.sh's _cp8b_target_arm_
+# denied) now maintains a fail-safe cd-state accumulator, so a shell write whose command text names
+# only a BASENAME after `cd`-ing into the directory is COMPOSED (effective-dir ⊕ token) and judged as
+# touching hooks/. Under tracked-hooks mode (HOOK-INSTALL-RECURS-PER-SLICE) the tracked hooks/pre-push
+# IS the live hook, so this was the front door between an agent and arbitrary code at push time. This
+# line WAS the disclosed-open fixture (pre-authorized to flip); it is its own cure evidence. Residuals
+# that this leg stays subject to (design §6): persisted-cwd (no `cd` in the command; hook has no cwd
+# field), `$VAR`/`bash -c`/quoted-separator cd (quote-blind segmenter → unknown-state, fail-safe).
+assert_deny "cd-basename hook write (CURED)" '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x > pre-push"}}'
 assert_deny "sed -i guard-core"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/hooks/guard-core.sh"}}'
 assert_deny "rm kit-guard"         '{"tool_name":"Bash","tool_input":{"command":"rm scripts/kit-guard"}}'
 # --- 9d-b: must still ALLOW (no new over-block) ---
@@ -330,11 +327,11 @@ assert_deny "shell sed verdict log" '{"tool_name":"Bash","tool_input":{"command"
 # cadence_gate now REFUSES at these files' word, recreating the D-240805-3 minting incentive (green
 # your own gate by advancing the record) at a new refusal point — so every CANONICAL form is asserted
 # on BOTH files AT FULL PATH (design self-review finding 2). NOT route completeness: the shell
-# matchers key on the dir-prefixed path, so a `cd docs/governance` + bare-basename write escapes
-# every shell form (measured 2026-08-07, hygiene security seat F3; re-measured in fix-round 1 —
-# redirect/append/sed -i/tee/cp/mv all ALLOW after the cd). Boarded: GUARD-BASENAME-AFTER-CD-BYPASS;
-# the loud-not-impossible posture (D3′) holds meanwhile — the durable control stays the
-# Edit/Write-tool deny + the human-reviewed commit.
+# matchers USED to key on the dir-prefixed path, so a `cd docs/governance` + bare-basename write
+# escaped every shell form (measured 2026-08-07, hygiene security seat F3; redirect/append/sed -i/tee/
+# cp/mv all ALLOWED after the cd). CURED by GUARD-BASENAME-AFTER-CD-BYPASS: the resolved-target arm
+# now composes the effective dir with the bare basename and denies (see the cd-family DENY legs
+# below). The layered controls (Edit/Write-tool deny + human-reviewed commit) still stand behind it.
 assert_deny "Edit verdict log"     '{"tool_name":"Edit","tool_input":{"file_path":"docs/governance/meta-control-log.md","old_string":"a","new_string":"b"}}'
 assert_deny "Write marker"         '{"tool_name":"Write","tool_input":{"file_path":"docs/governance/.meta-control-last","content":"9.9.9 GO"}}'
 assert_deny "shell redirect verdict log" '{"tool_name":"Bash","tool_input":{"command":"printf x > docs/governance/meta-control-log.md"}}'
@@ -395,13 +392,13 @@ assert_deny  "Edit dials.conf"     '{"tool_name":"Edit","tool_input":{"file_path
 assert_deny  "redirect dials.conf" '{"tool_name":"Bash","tool_input":{"command":"echo KIT_PUSH_DECL=observe > .kit/dials.conf"}}'
 assert_deny  "sed -i dials.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/enforce/observe/ .kit/dials.conf"}}'
 assert_allow "read dials.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/dials.conf"}}'
-# DISCLOSED ALLOW, not an oversight (design §4 + §9): the shell matchers key on the DIR-PREFIXED path,
-# so a `cd .kit` followed by a bare-basename write escapes every shell form. That is the measured
-# GUARD-BASENAME-AFTER-CD-BYPASS class (boarded, its own slice per D3′ drift-control) and it covers
-# EVERY dir-prefix-keyed deny in this file, not just this one. Asserted so the residual is measured
-# rather than silent; the durable controls meanwhile are the Edit/Write-tool denies above, the §5
-# presence+values lock (committed disarms) and the human-reviewed commit.
-assert_allow "cd .kit then bare-basename write (GUARD-BASENAME-AFTER-CD-BYPASS, disclosed)" \
+# CURED (GUARD-BASENAME-AFTER-CD-BYPASS): the shell matchers used to key on the DIR-PREFIXED path, so
+# a `cd .kit` followed by a bare-basename write escaped every shell form. The resolved-target arm now
+# COMPOSES the effective dir with the bare basename (.kit ⊕ dials.conf → .kit/dials.conf) and denies.
+# The cure covers EVERY dir-prefix-keyed deny in this file, not just this one (the composed trigger is
+# path-general). The durable controls remain layered: the Edit/Write-tool denies above, the §5
+# presence+values lock (committed disarms), the human-reviewed commit — and now this real-time deny.
+assert_deny "cd .kit then bare-basename write (GUARD-BASENAME-AFTER-CD-BYPASS, CURED)" \
   '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x > dials.conf"}}'
 
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
@@ -670,6 +667,111 @@ assert_deny  "cat evil > a workflow"    '{"tool_name":"Bash","tool_input":{"comm
 assert_allow "cat a cp file > /tmp"     '{"tool_name":"Bash","tool_input":{"command":"cat conformance/verify.sh > /tmp/copy.sh"}}'
 
 # =============================================================================================
+# GUARD-BASENAME-AFTER-CD-BYPASS + GUARD-INTERPRETER-FAMILY-BYPASS — the resolved-target arm.
+# (design: docs/architecture/2026-08-13-guard-judge-resolved-target-design.md §3-§4; census oracle
+# reproduced: scratchpad out_MIN2.tsv.) The guard now judges the RESOLVED target, not the verb:
+#   Part A — a fail-safe cd-state accumulator (only a pure relative DESCENT in a quote-free cd
+#            segment updates the effective dir; climb-out/absolute/`..`/quote/$VAR → no-op keep-prefix,
+#            which only ever RETAINS denials — never relaxes below today).
+#   Part B — resolve-then-classify: a token is control-plane if the LITERAL token OR the COMPOSED path
+#            (effective-dir ⊕ token, dequoted + `flag=` stripped) classifies control-plane (UNION).
+#   Part C — the write-verb GATE is lifted: a non-read segment denies when the string-level pathhit
+#            fires OR a composed token classifies control-plane, minus five measured carve-outs
+#            (E1′ kit-exec, E2 git reads, E3 message carriers, E5 redirect-target narrowing, E6
+#            cp/install destination-binding). The old verb-arm is retained verbatim (deny = old ∨ new).
+# NOTE ON QUOTING: the guard classifies command TEXT; shell quoting is dequoted before matching, so
+# the interpreter subjects below drop shell quotes for a clean fixture — the verdict is identical to
+# the quoted oracle forms (verified against out_MIN2.tsv rows 76-79).
+
+# --- cd-family write forms after a descent (composed target) MUST DENY ---
+assert_deny "cd hooks >> pre-push"       '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x >> pre-push"}}'
+assert_deny "cd hooks tee pre-push"      '{"tool_name":"Bash","tool_input":{"command":"cd hooks && tee pre-push < /tmp/x"}}'
+assert_deny "cd hooks cp -> pre-push"    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && cp /tmp/x pre-push"}}'
+assert_deny "cd hooks mv -> pre-push"    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && mv /tmp/x pre-push"}}'
+assert_deny "cd hooks sed -i pre-push"   '{"tool_name":"Bash","tool_input":{"command":"cd hooks && sed -i s/a/b/ pre-push"}}'
+assert_deny "cd hooks dd of=pre-push"    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && dd if=/tmp/x of=pre-push"}}'
+assert_deny "cd hooks truncate pre-push" '{"tool_name":"Bash","tool_input":{"command":"cd hooks && truncate -s 0 pre-push"}}'
+assert_deny "cd hooks install pre-push"  '{"tool_name":"Bash","tool_input":{"command":"cd hooks && install /dev/null pre-push"}}'
+assert_deny "cd .kit >> dials.conf"      '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x >> dials.conf"}}'
+assert_deny "cd docs/gov > log"          '{"tool_name":"Bash","tool_input":{"command":"cd docs/governance && printf x > meta-control-log.md"}}'
+assert_deny "cd .claude/hooks tee gc"    '{"tool_name":"Bash","tool_input":{"command":"cd .claude/hooks && tee guard-core.sh < /tmp/x"}}'
+assert_deny "cd conformance cp verify"   '{"tool_name":"Bash","tool_input":{"command":"cd conformance && cp /tmp/x verify.sh"}}'
+# separator / cd-spelling variants
+assert_deny "cd hooks ; > pre-push"      '{"tool_name":"Bash","tool_input":{"command":"cd hooks ; printf x > pre-push"}}'
+assert_deny "chained cd docs governance" '{"tool_name":"Bash","tool_input":{"command":"cd docs && cd governance && printf x > meta-control-log.md"}}'
+assert_deny "cd hooks/ trailing slash"   '{"tool_name":"Bash","tool_input":{"command":"cd hooks/ && printf x > pre-push"}}'
+assert_deny "cd ./hooks dot-slash"       '{"tool_name":"Bash","tool_input":{"command":"cd ./hooks && printf x > pre-push"}}'
+assert_deny "cd hooks ./-target"         '{"tool_name":"Bash","tool_input":{"command":"cd hooks && dd if=/tmp/x of=./pre-push"}}'
+# --- FIX 1: GLUED redirect (no space, `>tok`) is one token that misses the compose loop; the
+#     composed-redirect fallback recovers the bare target. Spaced forms already denied above, which is
+#     why the battery missed this. These bind FIX 1 alongside Leg K-F. ---
+assert_deny "cd hooks glued >pre-push"   '{"tool_name":"Bash","tool_input":{"command":"cd hooks && cat >pre-push"}}'
+assert_deny "cd hooks glued >>pre-push"  '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x >>pre-push"}}'
+assert_deny "cd .kit glued >dials.conf"  '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x>dials.conf"}}'
+assert_deny "cd docs/gov glued >log"     '{"tool_name":"Bash","tool_input":{"command":"cd docs/governance && cat >meta-control-log.md"}}'
+# --- interpreter family at full path (verb gate lifted) MUST DENY ---
+assert_deny "perl -pi full path"         '{"tool_name":"Bash","tool_input":{"command":"perl -pi -e s/x/y/ .claude/hooks/guard-core.sh"}}'
+assert_deny "python3 -c open-w"          '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(.claude/hooks/guard-core.sh,w)"}}'
+assert_deny "ruby -e File.write"         '{"tool_name":"Bash","tool_input":{"command":"ruby -e File.write(hooks/pre-push,x)"}}'
+assert_deny "ed guard-core"              '{"tool_name":"Bash","tool_input":{"command":"ed .claude/hooks/guard-core.sh"}}'
+assert_deny "node -e writeFileSync"      '{"tool_name":"Bash","tool_input":{"command":"node -e require(fs).writeFileSync(hooks/pre-push,x)"}}'
+assert_deny "tar -x -C .claude/hooks"    '{"tool_name":"Bash","tool_input":{"command":"tar -x -C .claude/hooks -f /tmp/evil.tar"}}'
+assert_deny "unzip -d conformance"       '{"tool_name":"Bash","tool_input":{"command":"unzip -d conformance /tmp/evil.zip"}}'
+# --- composed interpreter (Part A ⊕ Part C): the row that unifies both defects ---
+assert_deny "cd hooks && perl pre-push"  '{"tool_name":"Bash","tool_input":{"command":"cd hooks && perl -pi -e s/x/y/ pre-push"}}'
+# --- E5: a read verb fronting a redirect whose composed target is control-plane MUST DENY ---
+assert_deny "cd hooks cat evil > pp"     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && cat /tmp/evil > pre-push"}}'
+# --- FIX 2: the kit-exec redirect bail is narrowed to E5 — a redirect whose TARGET is control-plane
+#     still denies (the exec cannot be a laundering wrapper for a CP write). Bound by Leg K-G. ---
+assert_deny "kit-exec > hooks/pre-push"  '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > hooks/pre-push"}}'
+assert_deny "cd hooks kit-exec > pp"     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && sh ../conformance/verify.sh > pre-push"}}'
+# --- C1 quote-desync (security CRITICAL): a bogus over-split cd MUST NOT relax; stays DENY ---
+assert_deny "C1 desync absolute cd"      '{"tool_name":"Bash","tool_input":{"command":"cd hooks && echo \"z || cd /tmp\" && tee pre-push"}}'
+assert_deny "C1 desync .. variant"       '{"tool_name":"Bash","tool_input":{"command":"cd hooks && echo \"z || cd ..\" && tee pre-push"}}'
+# --- adversarial: every matcher family (dir-anchored, basename-keyed, glob) via composition ---
+assert_deny "cd .claude settings.json"   '{"tool_name":"Bash","tool_input":{"command":"cd .claude && printf x > settings.json"}}'
+assert_deny "cd skills SKILL.md"         '{"tool_name":"Bash","tool_input":{"command":"cd skills/using-skills && printf x > SKILL.md"}}'
+assert_deny "cd agents reviewer.agent"   '{"tool_name":"Bash","tool_input":{"command":"cd agents && printf x > reviewer.agent.md"}}'
+assert_deny "cd .github/workflows ci"    '{"tool_name":"Bash","tool_input":{"command":"cd .github/workflows && printf x > ci.yml"}}'
+# --- basename discrimination: claude.md is control-plane even in an unrelated dir ---
+assert_deny "cd templates CLAUDE.md"     '{"tool_name":"Bash","tool_input":{"command":"cd templates && printf x > CLAUDE.md"}}'
+# --- E1′ NEGATIVE: the broad "exempt the whole segment" form fails OPEN — the narrow form re-denies ---
+assert_deny "kit-exec + cp arg (open)"   '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh .claude/hooks/guard-core.sh"}}'
+# --- negative control: a full literal control-plane target after `cd .` stays DENY ---
+assert_deny "cd . > .kit/dials.conf"     '{"tool_name":"Bash","tool_input":{"command":"cd . && printf x > .kit/dials.conf"}}'
+
+# --- the false-positive lock: these MUST stay ALLOW (one per carve-out + discrimination) ---
+# E1′ kit-script executions (the endangered class; :292/:378/:486/:492/:498 also lock this)
+assert_allow "E1' sh conformance/verify" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh"}}'
+assert_allow "E1' bash verify --quick"   '{"tool_name":"Bash","tool_input":{"command":"bash conformance/verify.sh --quick"}}'
+assert_allow "E1' ./conformance/verify"  '{"tool_name":"Bash","tool_input":{"command":"./conformance/verify.sh"}}'
+assert_allow "E1' bare conformance/ver"  '{"tool_name":"Bash","tool_input":{"command":"conformance/verify.sh"}}'
+assert_allow "E1' promotion-verify verify" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/promotion-verify.sh verify HEAD"}}'
+# FIX 2: running conformance with an fd-dup or an ordinary redirect target is the canonical way to
+# capture output — an fd-dup (2>&1) has no file target and /tmp is ordinary, so both stay kit-exec ALLOW.
+assert_allow "FIX2 verify 2>&1 | grep"   '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh 2>&1 | grep FAIL"}}'
+assert_allow "FIX2 verify > /tmp/out"    '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > /tmp/out.log"}}'
+# E2 git read-subcommands on control-plane paths (safe because the write-sub deny is retained)
+assert_allow "E2 git add cp path"        '{"tool_name":"Bash","tool_input":{"command":"git add conformance/agent-autonomy.sh"}}'
+assert_allow "E2 git diff cp path"       '{"tool_name":"Bash","tool_input":{"command":"git diff HEAD -- .claude/hooks/guard-core.sh"}}'
+assert_allow "E2 git log cp path"        '{"tool_name":"Bash","tool_input":{"command":"git log --oneline -5 -- conformance/verify.sh"}}'
+assert_allow "E2 git show cp path"       '{"tool_name":"Bash","tool_input":{"command":"git show HEAD:conformance/claims.tsv"}}'
+assert_allow "E2 git stash cp path"      '{"tool_name":"Bash","tool_input":{"command":"git stash push conformance/agent-autonomy.sh"}}'
+# E3 message carriers citing control-plane paths in the body
+assert_allow "E3 gh pr --body cp path"   '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title guardfix --body adds-legs-to-conformance/agent-autonomy.sh"}}'
+assert_allow "E3 git commit -m cp path"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m docs-note-.claude/hooks/guard-core.sh-residual"}}'
+# E6 cp/install copy-OUT (destination is ordinary; source is merely read)
+assert_allow "E6 cp kit-guard OUT"       '{"tool_name":"Bash","tool_input":{"command":"cp scripts/kit-guard /tmp/kg"}}'
+# ordinary-target writes by the newly-judged tools stay ALLOW
+assert_allow "perl -pi ordinary target"  '{"tool_name":"Bash","tool_input":{"command":"perl -pi -e s/x/y/ /tmp/scratch.txt"}}'
+assert_allow "python3 -c ordinary"       '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(/tmp/x,w)"}}'
+assert_allow "cd docs > dials.conf (ord)" '{"tool_name":"Bash","tool_input":{"command":"cd docs && printf x > dials.conf"}}'
+assert_allow "cd templates > README.md"  '{"tool_name":"Bash","tool_input":{"command":"cd templates && printf x > README.md"}}'
+assert_allow "printf > /tmp plain"       '{"tool_name":"Bash","tool_input":{"command":"printf x > /tmp/plain.txt"}}'
+# reads of a control-plane file after a cd stay ALLOW (the accumulator never denies a read)
+assert_allow "cd .kit && cat dials.conf" '{"tool_name":"Bash","tool_input":{"command":"cd .kit && cat dials.conf"}}'
+
+# =============================================================================================
 # GUARD-PATH-ALIAS-BYPASS (P0) — the guard must judge the TARGET a path reaches, not the string.
 # Legs live at TOP LEVEL on purpose: verify.sh and ci.yml invoke this script WITHOUT --selftest,
 # so anything inside selftest() would never run in CI.
@@ -927,6 +1029,40 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "rc capture discarded (_resok forced 1) -> C2" \
     's#^  _res=$(_resolve_physical "$fp") && _resok=1 || _resok=0#  _res=$(_resolve_physical "$fp") || true; _resok=1#' \
     "$(gpab_write "$GPAB_TMP/cycA")" allow
+
+  # === Leg K (GUARD-BASENAME-AFTER-CD-BYPASS + GUARD-INTERPRETER-FAMILY-BYPASS) ================
+  # The resolved-target arm (_cp8b_target_arm_denied) is a SHELL-command matcher, so these subjects are
+  # Bash commands, not Write paths. The verdict is purely TEXTUAL (no filesystem), so cwd is irrelevant
+  # and mutating the copied guard-core.sh + re-running $GPAB_G binds each part in isolation. Five design
+  # parts (§4) + the two fix-round redirect fixes = seven mutants (K-A..K-G). Each asserts verdict-flip
+  # + sed-matched-something (gpab_mutant does both).
+  gpab_mutant "K-A: cd accumulator disabled -> composed-path DENY flips" \
+    's#^_cp8b_eff_update() {#_cp8b_eff_update() { return #' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x > pre-push"}}' allow
+  gpab_mutant "K-B: union dropped (composed-instead-of-literal) -> literal-token leg flips" \
+    's#    if _cp8b_tad_literal_tok "$_seg"; then#    if false; then#' \
+    '{"tool_name":"Bash","tool_input":{"command":"unzip -d conformance /tmp/evil.zip"}}' allow
+  gpab_mutant "K-C: target arm (string-level pathhit) disabled -> interpreter DENY flips" \
+    's#    if _cp8b_tad_pathhit "$_seg"; then#    if false; then#' \
+    '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(.claude/hooks/guard-core.sh,w)"}}' allow
+  gpab_mutant "K-D: accumulator honors a bogus over-split cd -> C1 desync DENY flips (security)" \
+    's#  if _cp8b_has_quote "$1"; then return; fi#  if false; then return; fi#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && echo \"z || cd sub\" && tee pre-push"}}' allow
+  gpab_mutant "K-E: target arm denies E1' kit-script exec -> the exec ALLOW flips (C2)" \
+    's#^_cp8b_tad_is_kit_exec() {#_cp8b_tad_is_kit_exec() { return 1 #' \
+    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-guard --selftest"}}' deny
+  # K-F/K-G (fix round 1): the two OPPOSITE-direction redirect fixes each get their own mutant.
+  # K-F neuters FIX 1's composed-redirect fallback (`_cp8b_tad_redir_cp "$_cts"`, unique to
+  # _cp8b_tad_composed_tok) — the GLUED-redirect DENY (only that fallback catches it) flips to ALLOW.
+  gpab_mutant "K-F: composed-redirect fallback neutered -> glued-redirect DENY flips (FIX 1)" \
+    's#_cp8b_tad_redir_cp "$_cts"#false#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x >pre-push"}}' allow
+  # K-G reverts FIX 2's kit-exec redirect-target narrowing to the old blanket bail (range-scoped to
+  # _cp8b_tad_is_kit_exec so it does NOT touch E5's identical read-arm line) — running verify.sh with an
+  # ordinary redirect target flips ALLOW -> DENY, proving the narrowing is load-bearing, not a blanket.
+  gpab_mutant "K-G: kit-exec redirect narrowing disabled -> verify>/tmp ALLOW flips (FIX 2)" \
+    '/_cp8b_tad_is_kit_exec()/,/^}/ s#_cp8b_tad_redir_cp "$1" && return 1#return 1#' \
+    '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > /tmp/out.log"}}' deny
 fi
 
 # --- non-vacuity oracle -------------------------------------------------------------------------

@@ -420,9 +420,10 @@ check_dir() {
               # BLOCKER, both seats; security measured the composed exploit end to end). The shared
               # chain below tests the KIT_GUARD_CORE marker BEFORE the byte compare, and in this mode
               # that short-circuit was a false green: deleting the marker line from the live worktree
-              # hook — exactly what the disclosed cd-basename write (GUARD-BASENAME-AFTER-CD-BYPASS)
-              # produces — bought a "foreign hook preserved" PASS on a hook whose body is arbitrary
-              # code at push time. Here the compare runs first and a divergence from HEAD is judged
+              # hook — the shape a cd-basename write produces (GUARD-BASENAME-AFTER-CD-BYPASS now denies
+              # the single-command quote-free case in real time, but its persisted-cwd/$VAR residuals
+              # still produce this shape) — bought a "foreign hook preserved" PASS on a hook whose body
+              # is arbitrary code at push time. Here the compare runs first and a divergence from HEAD is judged
               # marker or no marker, while a file that MATCHES HEAD and carries no marker still takes
               # the foreign-preserve PASS (the adopter whose own tracked hook legitimately is not the
               # kit's — asserted as a false-positive lock).
@@ -785,8 +786,9 @@ selftest() {
   # MARKERLESS-TAMPER RED (review round 1 BLOCKER, both seats; security measured the composed exploit
   # end to end). The marker test used to SHORT-CIRCUIT ahead of the byte compare, so a worktree hook
   # whose KIT_GUARD_CORE line was DELETED took the "foreign hook preserved" PASS — rc 0 on a live hook
-  # whose body is arbitrary code. That is not a hypothetical shape: the disclosed cd-basename write
-  # (GUARD-BASENAME-AFTER-CD-BYPASS) produces exactly a markerless file. In tracked mode the compare
+  # whose body is arbitrary code. That is not a hypothetical shape: a cd-basename write produces exactly
+  # a markerless file (GUARD-BASENAME-AFTER-CD-BYPASS now denies the single-command quote-free case in
+  # real time; its persisted-cwd/$VAR residuals still produce this shape). In tracked mode the compare
   # must run FIRST: a tracked file that differs from HEAD is judged, marker or no marker. The payload
   # here is inert by construction (.invalid is RFC 2606 reserved) and shaped like the real thing.
   d="$base/rung_tracked_markerless"; mk_tracked "$d"

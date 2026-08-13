@@ -147,8 +147,10 @@ if [ "$is_repo" -eq 1 ]; then
   fi
   # COMPARE-FIRST in tracked-hooks mode (review round 1 BLOCKER, mirroring guard-wired.sh): the marker
   # test below is a short-circuit, and in this mode the live hook is the WORKING-TREE file — so a
-  # tampered hook with the KIT_GUARD_CORE line DELETED (exactly what the disclosed cd-basename write
-  # produces) took the reassuring "foreign hook preserved" PASS-with-note while running arbitrary code
+  # tampered hook with the KIT_GUARD_CORE line DELETED (the shape a cd-basename write produces —
+  # GUARD-BASENAME-AFTER-CD-BYPASS now denies the single-command quote-free case in real time, its
+  # persisted-cwd/$VAR residuals still produce it) took the reassuring "foreign hook preserved"
+  # PASS-with-note while running arbitrary code
   # on push. A tracked file that DIFFERS from HEAD is judged first, marker or no marker; a file that
   # MATCHES HEAD and carries no marker still takes the brownfield note (fixture (b6) locks that, so
   # the cure stays PRECEDENCE and never becomes "no marker => FAIL").
@@ -563,8 +565,9 @@ selftest() {
 
   # (b5) BLOCKER mirror (review round 1, both seats): in tracked-hooks mode the live hook is the
   # WORKING-TREE file, and the marker test used to short-circuit ahead of any comparison — so deleting
-  # the KIT_GUARD_CORE line (exactly what the disclosed cd-basename write produces) turned an
-  # arbitrary-code hook into the reassuring "foreign hook preserved" PASS-with-note. The compare
+  # the KIT_GUARD_CORE line (the shape a cd-basename write produces — GUARD-BASENAME-AFTER-CD-BYPASS
+  # now denies the single-command quote-free case in real time, its persisted-cwd/$VAR residuals still
+  # produce it) turned an arbitrary-code hook into the reassuring "foreign hook preserved" PASS-with-note. The compare
   # against HEAD must run FIRST in this mode. Payload inert by construction (.invalid, RFC 2606).
   echo "--- (b5) tracked-hooks mode, MARKERLESS tampered hook ---"
   d=$(st_mkfix b5 claude-code); st_tracked "$d"

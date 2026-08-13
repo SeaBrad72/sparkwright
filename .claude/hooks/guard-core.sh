@@ -853,10 +853,21 @@ _cp8b_redirect_hits_cp() {
   return 1
 }
 
+# _cp8b_pathhit "<segment>": 0 iff a control-plane path appears anywhere in the segment TEXT (the
+# string-level basis). SINGLE SOURCE OF TRUTH — called by both the old verb-arm (_cp8b_scan_denied)
+# and the new resolved-target arm (_cp8b_target_arm_denied), so the regex cannot drift between them.
+# The regex is byte-identical to the inline form _cp8b_scan_denied carried before the target-arm fold
+# (GUARD-BASENAME-AFTER-CD-BYPASS), so the old arm's verdict is unchanged. It is REQUIRED for the lifted
+# gate: the P0 case `python3 -c "open('hooks/pre-push','w')"` hides the path inside interpreter syntax
+# the token split cannot see, but this substring grep does.
+_cp8b_pathhit() {
+  printf '%s' "$1" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+}
+
 _cp8b_scan_denied() {
   _ss=$1
   _pathhit=1
-  if printf '%s' "$_ss" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'; then
+  if _cp8b_pathhit "$_ss"; then
     _pathhit=0
   else
     # bare control-plane DIRECTORY token (the D1 gap): `bash -c "mv conformance /tmp"`.
@@ -1024,6 +1035,236 @@ _cp8b_control_plane_denied() {
   return 1
 }
 
+# ============================================================================================
+# GUARD-BASENAME-AFTER-CD-BYPASS + GUARD-INTERPRETER-FAMILY-BYPASS — the resolved-target arm.
+# (design: docs/architecture/2026-08-13-guard-judge-resolved-target-design.md §3.)
+# The guard judges the RESOLVED target, not the verb. COMPOSITION PROPERTY (§3-C, §9(b)): the final
+# control-plane deny is `old-verb-arm (_cp8b_control_plane_denied) ∨ new-target-arm (below)`. The old
+# arm is retained VERBATIM — so every existing DENY fixture stays green by construction and this is a
+# monotone ADD (panel #19 shape). REALIZATION NOTE: the design's "union at four sites" is realized here
+# as one cohesive parallel arm OR'd with the retained old arm — this reproduces the census oracle
+# (scratchpad out_MIN2.tsv = today_cp ∨ newarm) exactly and touches no existing decision site, keeping
+# the blast radius to an addition. Reads/CP-script execution stay allowed; ordinary-target writes by
+# the same tools stay allowed.
+#
+# HONEST CEILING (design §6): this narrows the drift window for SINGLE-COMMAND, QUOTE-FREE writes only.
+# Persisted cwd (no `cd` in the command), `$VAR`/`bash -c`/quoted-separator cd, and `python3 -c`
+# building a path by concatenation remain disclosed residuals — the guard stays a speed bump (D3′).
+
+# _cp8b_norm "<path>": textual normalization — collapse //, ./, trailing /, and a `..` fixpoint.
+# Byte-identical to guard_check_path's :1426 sed (single source of truth for composed-path shape).
+_cp8b_norm() {
+  printf '%s' "$1" | sed -e 's#//*#/#g' -e 's#/\./#/#g' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta'
+}
+
+# _cp8b_has_quote "<segment>": 0 iff the segment carries a quote/escape byte. A quote byte means the
+# quote-blind segmenter (:568) MAY have crossed a quote, so a cd in this segment is not trustworthy
+# (security C1). This is the fail-safe that keeps the desync attack DENY (see _cp8b_eff_update).
+_cp8b_has_quote() { case "$1" in *\'*|*\"*|*\\*) return 0 ;; esac; return 1; }
+
+# _cp8b_cd_arg "<segment>": the second token of a `cd` segment.
+_cp8b_cd_arg() { printf '%s' "$1" | sed -E 's/^[[:space:]]*//' | awk '{print $2}'; }
+
+# Part A — cd-state accumulator, fail-safe against desync. $_CP8B_EFF is '' (repo-relative root) or a
+# pure relative DESCENT prefix. It updates ONLY on a pure relative descent in a QUOTE-FREE cd segment.
+# Every climb-out / relaxation direction (a quote byte, absolute arg, `..`, arg-less cd, `cd -`,
+# `cd ~`, `$VAR`/command-substitution) is a NO-OP that LEAVES the prefix unchanged. Rationale (C1): a
+# forged *descent* via quote-desync could relax (compose a deeper, ordinary path), so a quoted cd
+# segment is not trusted; a forged *climb-out* (absolute/..) is ignored, so the prior real prefix
+# survives and the real target still composes → DENY. A no-op only ever RETAINS denials (composition
+# is unioned with the literal token), so it is never worse than today — fail-closed by construction.
+# The desync attack `cd hooks && echo "z || cd /tmp" && tee pre-push`: the bogus ` cd /tmp"` segment is
+# BOTH quoted and absolute → no-op → $_CP8B_EFF stays `hooks` → `tee pre-push` composes hooks/pre-push
+# → DENY. (Leg K-D binds this; K-A binds the accumulator itself.)
+_cp8b_eff_update() {  # $1 = the cd segment ; reads/writes $_CP8B_EFF
+  if _cp8b_has_quote "$1"; then return; fi
+  _ea=$(_cp8b_cd_arg "$1")
+  case "$_ea" in
+    ''|-|'~'*|/*|*..*|*'$'*|*'`'*) return ;;
+  esac
+  if [ -z "$_CP8B_EFF" ]; then _CP8B_EFF=$(_cp8b_norm "$_ea")
+  else _CP8B_EFF=$(_cp8b_norm "$_CP8B_EFF/$_ea"); fi
+}
+
+# _cp8b_compose "<token>": composed normalized path (effective-dir ⊕ token) on stdout; rc 1 if the
+# token is not composable (no effective dir, or an absolute token). Part B reuses the :1426 fixpoint.
+_cp8b_compose() {
+  [ -n "$_CP8B_EFF" ] || return 1
+  case "$1" in /*) return 1 ;; esac
+  _cp8b_norm "$_CP8B_EFF/$1"
+}
+
+# _cp8b_composed_is_cp "<token>": 0 iff the token, dequoted and `flag=`-stripped (like _cp8b_tok_is_cp
+# :609 — defect 2: else `dd if=/tmp/x of=pre-push` composes hooks/of=pre-push and escapes), composes
+# to a control-plane path against the effective dir.
+_cp8b_composed_is_cp() {
+  _ct2=$(_cp8b_dequote "$1"); case "$_ct2" in *=*) _ct2=${_ct2#*=} ;; esac
+  _cc=$(_cp8b_compose "$_ct2") || return 1
+  [ -n "$_cc" ] && is_control_plane_target "$_cc"
+}
+
+# _cp8b_tad_redir_cp "<segment>": 0 iff a redirect TARGET (literal ∨ composed) classifies control-plane.
+_cp8b_tad_redir_cp() {
+  case "$1" in *'>'*) : ;; *) return 1 ;; esac
+  _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*/\n/g' | sed -e '1d' \
+        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+  for _r in $_rt; do
+    [ -n "$_r" ] || continue
+    is_control_plane_target "$_r" && return 0
+    _cp8b_composed_is_cp "$_r" && return 0
+  done
+  return 1
+}
+
+# Part C allow-side. _cp8b_tad_is_read "<segment>": a read-recognized segment never denies. A segment
+# carrying a REDIRECT is read-recognized only when the redirect target is NOT control-plane (E5) — this
+# is why the two mandatory flips fire: `printf`/`echo` are read verbs (:973), so without E5 narrowing
+# `cd hooks && printf x > pre-push` would relax. The read set is CP-8a's stdout-only list, REUSED and
+# PINNED (M1): awk/sed/find/sort/less/xxd/uniq stay OUT — each carries a write/exec escape and admitting
+# any fails OPEN under the lifted gate. E2 adds git READ subcommands, safe only because the old
+# scan-arm still denies `git diff --output=<cp>` (§9(b)); do not retire the old arm.
+_CP8B_READ_VERBS='grep egrep fgrep rg ls cat head tail wc diff stat file du cut tr nl od hexdump column tac comm cmp basename dirname realpath readlink echo printf which type'
+_CP8B_GIT_READ_SUBS='commit status blame describe add diff log show grep stash ls-files'
+_cp8b_in_list() { for _w in $2; do [ "$_w" = "$1" ] && return 0; done; return 1; }
+_cp8b_tad_is_read() {
+  case "$1" in *'>'*) _cp8b_tad_redir_cp "$1" && return 1 ;; esac
+  _rv=$(_cp8b_lead "$1")
+  _cp8b_in_list "$_rv" "$_CP8B_READ_VERBS" && return 0
+  if [ "$_rv" = git ]; then
+    _rgs=$(_cp8b_git_sub "$1")
+    _cp8b_in_list "$_rgs" "$_CP8B_GIT_READ_SUBS" && return 0
+  fi
+  return 1
+}
+
+# E1′ — kit-script EXECUTION exemption (NARROW). Lead sh/bash/dash/zsh/ksh + a conformance/*.sh |
+# scripts/*.sh | scripts/kit-guard | scripts/sparkwright script token (bare or ./-prefixed), NO
+# redirect, AND every OTHER token still classified. The broad "exempt the whole segment" form fails
+# OPEN (`sh conformance/verify.sh .claude/hooks/guard-core.sh` would ALLOW); the narrow form re-denies
+# it. Script ARGUMENTS stay unexamined (already the D3′ ceiling). (Leg K-E binds this — C2.)
+_cp8b_tad_is_kit_exec() {
+  # FIX 2: mirror E5's read-arm narrowing — bail (fall through to deny) ONLY when a redirect TARGET
+  # classifies control-plane. An fd-dup (`2>&1`, `>&2`, `N>&M`) and an ordinary target (`> /tmp/out`)
+  # are non-targets, so the canonical `sh conformance/verify.sh 2>&1` / `> /tmp/out.log` stay kit-exec.
+  # `_cp8b_tad_redir_cp` reuses the effective-dir compose, so `cd hooks && sh …verify.sh > pre-push`
+  # still bails and denies (target composes to hooks/pre-push). An input `<` redirect target that is
+  # control-plane is caught downstream by the literal-token walk below (a read, never a write).
+  case "$1" in *'>'*) _cp8b_tad_redir_cp "$1" && return 1 ;; esac
+  _kv=$(_cp8b_lead "$1")
+  case "$_kv" in
+    sh|bash|dash|zsh|ksh) _ksc=$(printf '%s' "$1" | sed -E 's/^[[:space:]]*//' | awk '{print $2}') ;;
+    *) _ksc=$_kv ;;
+  esac
+  _ksc=$(_cp8b_dequote "$_ksc"); _ksc=${_ksc#./}
+  case "$_ksc" in
+    conformance/*.sh|scripts/*.sh|scripts/kit-guard|scripts/sparkwright) : ;;
+    *) return 1 ;;
+  esac
+  _kpg=0; case "$-" in *f*) _kpg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ $# -gt 0 ]; do
+    _kt=$(_cp8b_dequote "$1"); _kt=${_kt#./}
+    if [ "$_kt" != "$_ksc" ] && _cp8b_tok_is_cp "$1"; then [ "$_kpg" = 1 ] || set +f; return 1; fi
+    shift
+  done
+  [ "$_kpg" = 1 ] || set +f
+  return 0
+}
+
+# E3 — message carriers: git commit/merge/tag + gh pr/issue/release with a message flag and NO
+# redirect. A control-plane hit is inside the message DATA, not a target (an injected `;` splits to its
+# own segment and is judged there). The enforcement counterpart of the advisory _cp8b_message_tip.
+_cp8b_tad_is_msg_carrier() {
+  case "$1" in
+    *"git commit"*|*"git merge"*|*"git tag"*|*"gh pr"*|*"gh issue"*|*"gh release"*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in *'>'*) return 1 ;; esac
+  printf '%s' "$1" | grep -Eq '(^|[[:space:]])(-m|-F|--message|--body|--body-file|--notes|--title)([=[:space:]]|$)'
+}
+
+# _cp8b_tad_pathhit "<segment>": trigger 1 — string-level pathhit (single source of truth).
+_cp8b_tad_pathhit() { _cp8b_pathhit "$1"; }
+
+# _cp8b_tad_literal_tok "<segment>": trigger 2 — a LITERAL token classifies control-plane (M2 union:
+# the literal arm is retained alongside the composed arm; a climb-out desync can never remove it).
+_cp8b_tad_literal_tok() {
+  _lpg=0; case "$-" in *f*) _lpg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ $# -gt 0 ]; do
+    if _cp8b_tok_is_cp "$1"; then [ "$_lpg" = 1 ] || set +f; return 0; fi
+    shift
+  done
+  [ "$_lpg" = 1 ] || set +f
+  return 1
+}
+
+# _cp8b_tad_composed_tok "<segment>": trigger 3 — a cd-COMPOSED token (or composed redirect target)
+# classifies control-plane.
+_cp8b_tad_composed_tok() {
+  [ -n "$_CP8B_EFF" ] || return 1
+  _cts=$1                                # capture BEFORE set -- consumes the positionals (FIX 1)
+  _cpg=0; case "$-" in *f*) _cpg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  while [ $# -gt 0 ]; do
+    if _cp8b_composed_is_cp "$1"; then [ "$_cpg" = 1 ] || set +f; return 0; fi
+    shift
+  done
+  [ "$_cpg" = 1 ] || set +f
+  # A GLUED redirect (`>pre-push`) is one token that composes to `hooks/>pre-push` (not CP), so the
+  # loop above misses it; the redirect-target parse recovers the bare target. Passing $1 here was DEAD
+  # CODE — the loop's `shift` empties the positionals, so the old `"$1"` was always "" (FIX 1).
+  _cp8b_tad_redir_cp "$_cts"
+}
+
+# E6 — cp/install destination-binding: judge the copy DESTINATION (literal last token, per :1004-1005,
+# OR the composed destination), not "any control-plane token" — so `cp conformance/verify.sh /tmp/b`
+# (copy-OUT) stays ALLOW while `cd conformance && cp /tmp/x verify.sh` denies. Declines to close the
+# open GUARD-CP-HARDLINK-ALIAS row (cp -l aliasing) — leaves it exactly as today, stated not claimed.
+_cp8b_tad_cp_dest_denied() {
+  _cp8b_cp_target_in last "$1" && return 0
+  _cd=$(printf '%s' "$1" | awk '{for(i=NF;i>=1;i--) if(substr($i,1,1)!="-"){print $i; exit}}')
+  _cp8b_composed_is_cp "$_cd" && return 0
+  _cp8b_tad_redir_cp "$1"
+}
+
+# _cp8b_target_reason "<segment>" "<trigger>": signpost the composition and name the cheap escape.
+_cp8b_target_reason() {
+  _trs=$(printf '%s' "$1" | cut -c1-160)
+  printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$2" "$_trs" "$(_cp8b_message_tip "${_tad_raw:-}")"
+}
+
+# _cp8b_target_arm_denied "<cmd>": PREDICATE - Parts A+B+C. Prints the reason and returns 0 to deny.
+_cp8b_target_arm_denied() {
+  _tad_raw=$1
+  _walk=$(_cp8b_segments "$1")
+  _CP8B_EFF=''
+  while _cp8b_next_seg; do
+    [ -n "$(printf '%s' "$_seg" | tr -d '[:space:]')" ] || continue
+    _lv=$(_cp8b_lead "$_seg")
+    if [ "$_lv" = cd ]; then _cp8b_eff_update "$_seg"; continue; fi
+    case "$_lv" in pushd|popd) continue ;; esac        # dir change we cannot track -> no-op (keep prefix)
+    _cp8b_tad_is_read "$_seg" && continue
+    _cp8b_tad_is_kit_exec "$_seg" && continue
+    _cp8b_tad_is_msg_carrier "$_seg" && continue
+    case "$_lv" in
+      cp|install)
+        if _cp8b_tad_cp_dest_denied "$_seg"; then _cp8b_target_reason "$_seg" cp-dest; return 0; fi
+        continue ;;
+    esac
+    if _cp8b_tad_pathhit "$_seg"; then _cp8b_target_reason "$_seg" pathhit; return 0; fi
+    if _cp8b_tad_literal_tok "$_seg"; then _cp8b_target_reason "$_seg" token; return 0; fi
+    if _cp8b_tad_composed_tok "$_seg"; then _cp8b_target_reason "$_seg" composed; return 0; fi
+  done
+  return 1
+}
+
 # _cp8b_push_main_denied "<cmd>": PREDICATE - the push-to-main rule, SCOPED to a segment.
 # The flat rule is the FLOOR (it denies); this may only ALLOW BACK when no single segment carries both
 # the push and the main/master refspec - i.e. when the flat regex only ever matched by SPANNING a shell
@@ -1143,6 +1384,13 @@ guard_check_command() {
       # _cp8b_deny_reason / _cp8b_git_write_denied, but a blank reason must NEVER reach the adapter (it
       # would surface as an empty permissionDecisionReason - a blocked agent with no guidance). Default it.
       [ -n "$_cp8b_reason" ] || _cp8b_reason='13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'
+      printf '%s' "$_cp8b_reason"; return 1
+    fi
+    # GUARD-BASENAME-AFTER-CD-BYPASS + GUARD-INTERPRETER-FAMILY-BYPASS: the resolved-target arm.
+    # UNION with the old arm above (deny = old-verb-arm ∨ new-target-arm). The old arm is retained
+    # verbatim, so this can only ever ADD a denial (monotone; panel #19 add-only shape).
+    if _cp8b_reason=$(_cp8b_target_arm_denied "$cmd"); then
+      [ -n "$_cp8b_reason" ] || _cp8b_reason='13: writes against a resolved control-plane target via shell is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'
       printf '%s' "$_cp8b_reason"; return 1
     fi
   fi
