@@ -132,7 +132,9 @@ verify:                                                       # filled by the ve
 ## Routing (closing the loop)
 
 A run that routes nothing is theater. After synthesis:
-- **Ledger-2** items become `docs/ROADMAP-KIT.md` / backlog entries (ranked).
+- **Ledger-2** items become backlog entries (ranked) — **`BACKLOG.md` is the primary routing
+  destination; `docs/ROADMAP-KIT.md` is reserved for epic-scale items** (`D-240813-4.5`, panel #40 —
+  recording four consecutive panels of actual practice).
 - **Ledger-1** is recorded (the confidence set).
 - Any **guardrail / standards / process** change is proposed as a **human-ratified PR** — agents
   propose, humans ratify (`DEVELOPMENT-PROCESS.md`). Never silently re-plan or weaken a guardrail.
@@ -145,12 +147,60 @@ Each run appends one row to the kit's verdict log (`docs/governance/meta-control
 
 This is the kit's own run history; **adopters keep their own log** (start fresh).
 
+## Recording the panel's GO (the governance lane)
+
+A panel PR is a **governance-record change**: its artifact is the sitting record itself, so it has no
+design document of its own and never will. Record its GO on the **governance gate**, not the design
+gate — `conformance/ceremony-binding.sh` accepts `gate: governance` as a first-class value and judges
+it by the same chain as a design GO, with the **basis** being the panel artifact:
+
+`--scope` takes either `branch/<the-panel-branch>` or `PR-<n>`; the branch key binds *before* the PR
+exists, so it is the one to write. Every line below ends in a continuation — no inline comments, so
+the block survives a copy-paste intact:
+
+```sh
+sh scripts/promotion-verify.sh record \
+  --gate governance \
+  --scope branch/<the-panel-branch> \
+  --approved-sha <the commit that touches the panel artifact> \
+  --approved-by "<the human who gave the GO>" \
+  --rung integration --class control-plane \
+  --basis docs/architecture/<date>-meta-control-<n>.md \
+  --token "<the owner's explicit GO, in their words>"
+```
+
+Then publish it — the gate reads the *published* ledger, so an unpublished record leaves the check
+yellow:
+
+```sh
+git push origin refs/notes/promotions
+```
+
+Two rules make this lane honest, and both are enforced, not advisory:
+
+1. **The basis must be the meta-control artifact** (`docs/architecture/*-meta-control-*.md`). Pointing
+   a governance GO at a design document is the workaround this lane replaces.
+2. **The PR must be a PURE governance-record change.** The gate derives the change-set and refuses
+   (rc 2, naming the escaping paths) anything outside: `BACKLOG.md` · the meta-control artifact ·
+   `docs/governance/DECISIONS.md` · `docs/governance/.meta-control-last` ·
+   `docs/governance/meta-control-log.md` · `docs/operations/meta-control.md` · `skills/*/SKILL.md` ·
+   `docs/architecture/*-design.md`. **Routed cures do not ride along** — the panel's own charter routes
+   findings to boarded rows, so a cure the sitting decided on becomes its own slice with its own
+   design GO. A mixed PR still needs a design basis for its payload; that is the gate being right.
+
+Do NOT record a **design** GO for a panel PR. Historically three PRs did (naming a design doc the
+commit happened to amend, disclosed in the token) — a workaround for a gate defect, retired here.
+Those records remain in the ledger, adjudicated defective, as the evidence of the gap.
+
 ## The freshness gate (M2 — the cadence circuit-breaker)
 
 `conformance/meta-control-fresh.sh` enforces the cadence so the panel can't be *designed but never
 run*. It is **DUE** once more than **N=5** release tags have landed since the last addressed run, read
 from a one-line machine marker `docs/governance/.meta-control-last` (`VERSION VERDICT`, e.g.
 `3.48.0 GO-WITH-CONDITIONS`) that the check keeps in lockstep with the log's last row.
+**During a ruled release-batching period (a `D-240813-6`-class ruling with no per-slice tags), N
+counts *merged slices*, not tags** — otherwise batching starves the clock and a long phase runs dark
+while the gate reads FRESH (panel #41 finding 2-M2; owner-ruled 2026-08-15, `D-240815-2`).
 
 - **Where it bites** — the gate runs in the weekly `drift-watch` as its own `meta-control-freshness`
   job (an OVERDUE result fails *that* job — the loud, attributable signal) and is surfaced as an

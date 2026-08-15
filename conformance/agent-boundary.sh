@@ -219,17 +219,24 @@ conclusion_map() {
   case "$_cm_gate" in
   ceremony-binding)
   case "$_rc" in
+    # ⚠️ LANE-NEUTRAL / LANE-AWARE SINCE C8. The gate has TWO arms (design, governance), and this prose
+    # is what the owner actually reads at the click. Design-lane-only wording here was measured as an
+    # ACTIVE HAZARD, not a cosmetic gap: the waiting text instructed `--gate design --basis
+    # <design-doc-path>`, which routes a governance-record PR (a meta-control panel sitting) straight
+    # back into the very workaround C8 retired — the check-run telling the operator to do the thing the
+    # gate exists to stop. rc 0's old text also asserted a `--gate design` record EXISTS, which is
+    # simply false on a governance-arm pass. Neutral where the arms agree, explicit where they differ.
     0)
-      _title="Design GATE satisfied — a scoped design GO is recorded for this change"
-      _summary="What changed: a ${_cm_class} change. A '--gate design' GO record scoped to this pull request exists in refs/notes/promotions, names an approver, and cites a substantive design artifact. No action needed. More: docs/governance/promotion-contract.md."
+      _title="GATE satisfied — a scoped, gate-appropriate GO record is recorded for this change"
+      _summary="What changed: a ${_cm_class} change. A GO record scoped to this pull request exists in refs/notes/promotions, names an approver, and cites a substantive basis artifact appropriate to its lane: a design artifact for a '--gate design' record, or a meta-control artifact for a '--gate governance' record (on that lane the change-set is additionally judged to be a PURE governance-record change — nothing outside the governance file set). No action needed. More: docs/governance/promotion-contract.md."
       ;;
     1)
-      _title="Awaiting the DESIGN GATE — a human must record the design GO before this change can merge"
-      _summary="What changed: a ${_cm_class} change, which may not enter merge without a recorded DESIGN GATE approval. This gate is WAITING, not failing — it is a governance merge-gate, NOT a build failure, and no test failed. Nothing is broken: no GO record scoped to this pull request exists yet, which is the normal state of a change that has not been approved yet. It will stay yellow (and keep blocking the merge) until a human acts. To proceed: (1) record the GO with 'sh scripts/promotion-verify.sh record --gate design --scope PR-<n> --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path>'; (2) publish it with 'git push origin refs/notes/promotions' — the gate reads the published ledger, so an unpublished record leaves this check yellow; (3) RE-RUN THIS CHECK. Steps 1 and 2 trigger no workflow on their own — recording and pushing notes does not re-run CI — so re-run the job or push a commit, or this check stays yellow forever while you wait for it. More: docs/governance/promotion-contract.md."
+      _title="Awaiting the DESIGN GATE (or the GOVERNANCE GATE, for a governance-record change) — a human must record the GO before this change can merge"
+      _summary="What changed: a ${_cm_class} change, which may not enter merge without a recorded gate approval. This gate is WAITING, not failing — it is a governance merge-gate, NOT a build failure, and no test failed. Nothing is broken: no GO record scoped to this pull request exists yet, which is the normal state of a change that has not been approved yet. It will stay yellow (and keep blocking the merge) until a human acts. To proceed: CHOOSE THE LANE THAT DESCRIBES THIS CHANGE. Feature-shaped work (the usual case) takes the DESIGN lane: (1) record the GO with 'sh scripts/promotion-verify.sh record --gate design --scope PR-<n> --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path>'. A PURE governance-record change — a meta-control panel sitting and its bookkeeping, which has no design of its own — takes the GOVERNANCE lane instead: record '--gate governance' with '--basis <the meta-control artifact>', per the copyable form in docs/operations/meta-control.md; that lane also requires the change-set to touch nothing outside the governance file set, so routed cures belong in their own slices. Do NOT point a design GO at a document this change merely amends — that is the retired workaround. Then, either lane: (2) publish it with 'git push origin refs/notes/promotions' — the gate reads the published ledger, so an unpublished record leaves this check yellow; (3) RE-RUN THIS CHECK. Steps 1 and 2 trigger no workflow on their own — recording and pushing notes does not re-run CI — so re-run the job or push a commit, or this check stays yellow forever while you wait for it. More: docs/governance/promotion-contract.md."
       ;;
     *)
-      _title="Design GATE error — the recorded GO is defective, or the gate could not evaluate"
-      _summary="This is NOT the waiting state. Either the gate could not evaluate this change at all, or a GO record exists and is defective — a missing, untracked, stubbed, or symlinked design artifact; an unauthenticated approver line; a malformed approved-sha; or a change-class that would not derive. This IS a real error and needs fixing. The gate's own verdict names which; read it in the gate job's log, linked below. More: docs/governance/promotion-contract.md."
+      _title="GATE error — the recorded GO is defective, or the gate could not evaluate"
+      _summary="This is NOT the waiting state. Either the gate could not evaluate this change at all, or a GO record exists and is defective — a missing, untracked, stubbed, or symlinked basis artifact; an unauthenticated approver line; a malformed approved-sha; or a change-class that would not derive. On the GOVERNANCE lane there are three further defect classes: a record carrying BOTH gate values (defective by disqualification), a basis that is not a meta-control artifact, and a change-set that escapes the governance file set or could not be derived at all (that one fails CLOSED). This IS a real error and needs fixing. The gate's own verdict names which; read it in the gate job's log, linked below. More: docs/governance/promotion-contract.md."
       ;;
   esac
   ;;
@@ -599,6 +606,33 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   for _a in 'Awaiting the DESIGN GATE' 'NOT a build failure' 'To proceed:' 'promotion-verify.sh record' 'git push origin refs/notes/promotions' 'RE-RUN THIS CHECK' 'promotion-contract.md'; do
     case "$_cb" in *"$_a"*) echo "selftest PASS: ceremony-binding waiting text carries '$_a'" ;;
       *) echo "selftest FAIL: ceremony-binding waiting text missing '$_a'"; st=1 ;; esac
+  done
+  # ★ C8 — THE SECOND LANE MUST BE OFFERED, AND THE RETIRED WORKAROUND MUST BE NAMED AS RETIRED.
+  # Same anchor discipline, one class further on: the earlier text was not merely incomplete, it
+  # INSTRUCTED the governance-record author to do the thing the gate now refuses. An anchor per
+  # element of that instruction, because a reworded summary that keeps 'design' and drops the
+  # governance lane is exactly the regression this leg exists to catch.
+  for _a in '--gate governance' 'meta-control artifact' 'docs/operations/meta-control.md' 'governance file set' 'retired workaround'; do
+    case "$_cb" in *"$_a"*) echo "selftest PASS: ceremony-binding waiting text offers the governance lane ('$_a')" ;;
+      *) echo "selftest FAIL: ceremony-binding waiting text missing '$_a' — a governance-record PR would be routed back into the retired design-basis workaround"; st=1 ;; esac
+  done
+  # rc=0 MUST NOT ASSERT A DESIGN RECORD. On a governance-arm pass no '--gate design' record exists,
+  # so the old wording was an overclaim the owner reads as fact at the click. Asserted from BOTH
+  # directions: the neutral phrasing is present, and the false assertion is absent.
+  _cb0=$(conclusion_map 0 NONE control-plane ceremony-binding)
+  case "$_cb0" in
+    *"A '--gate design' GO record scoped to this pull request exists"*)
+      echo "selftest FAIL: ceremony-binding rc=0 asserts a DESIGN record exists — false on a governance-arm pass"; st=1 ;;
+    *"gate-appropriate GO record"*)
+      echo "selftest PASS: ceremony-binding rc=0 states a gate-appropriate record exists (lane-neutral)" ;;
+    *) echo "selftest FAIL: ceremony-binding rc=0 wording is neither the neutral form nor the old overclaim: $_cb0"; st=1 ;;
+  esac
+  # rc=2 must ENUMERATE the governance defect classes, or the arm's three new refusals are invisible
+  # to the human reading the red.
+  _cb2=$(conclusion_map 2 NONE control-plane ceremony-binding)
+  for _a in 'BOTH gate values' 'not a meta-control artifact' 'escapes the governance file set'; do
+    case "$_cb2" in *"$_a"*) echo "selftest PASS: ceremony-binding rc=2 names the governance defect class '$_a'" ;;
+      *) echo "selftest FAIL: ceremony-binding rc=2 omits the governance defect class '$_a'"; st=1 ;; esac
   done
   # rc=2 must NOT read as the waiting state — it is the arm the re-partition fills with real defects.
   case "$(conclusion_map 2 NONE control-plane ceremony-binding)" in

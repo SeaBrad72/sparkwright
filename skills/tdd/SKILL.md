@@ -31,6 +31,8 @@ Implementing any feature, bug fix, refactor, or behaviour change. Exceptions (as
 - **Test at the right layer.** The testing pyramid — unit → integration → api/route → contract → e2e. Pick the layer that matches the behaviour under test. Mock at boundaries, never internals; test behaviour, not implementation, so tests survive refactors.
 - **AI features → evals.** For AI behaviour, the eval IS the failing-test-first: write the eval, watch it fail, make it pass. Evals gate like tests and must not regress. (Deep eval methodology is the kit's eval-driven-dev guidance.)
 - **Self-verify to the done-bar.** Before returning a slice, run its tests green with pristine output — the Engineer seat's done-bar (tests green + zero out-of-slice edits + a self-verify report). This skill is the craft; the seat def owns the done-bar.
+- **Whole-output oracles pin CLASSES; per-site legs pin instances.** When a review closes a class of defect, add the oracle over the whole output surface — one more assertion at the fixed site protects only that site (panel #40, BOARD-DOR).
+- **Anchor regression legs on text the production path actually emits.** A leg asserting the absence of a string nothing ever produces is tautologically green — verify-RED alone cannot catch it; pin the positive counterpart in the sibling leg (panel #40, Δ-C).
 
 ## When stuck
 Hard to test = hard to use — listen to the test and simplify the interface. Must mock everything = too coupled; use dependency injection. Don't know how to test = write the wished-for API or the assertion first, or ask the owner.

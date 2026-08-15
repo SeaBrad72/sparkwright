@@ -156,7 +156,7 @@ the one ref adopters actually depend on was not.
    > · Target: `refs/tags/v*` · Enforcement: **Active**
    > · Block **force pushes** (`non_fast_forward`) · Block **deletions**
 
-   Verified by `conformance/mirror-tag-protection.sh` (weekly, in `drift-watch`).
+   Verified by `conformance/mirror-tag-protection.sh` in the kit's own CI (weekly, in `drift-watch`); the script ships to you to run on demand.
 
 **Why both.** Layer 1 binds the **tool**, the accident, and the agent. It cannot bind a **human with
 push rights**, who can `git push --force` a tag by hand — no client-side check ever could. Only the

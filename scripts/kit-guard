@@ -149,6 +149,10 @@ pdeny() { if sh "$0" path "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  
 pallow(){ if sh "$0" path "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 mdeny() { if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
 mallow(){ if sh "$0" mcp "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fi; }
+# guard_check_read has no CLI verb (Read-tool-only, wired via guard.sh) — call the sourced function
+# directly, in a subshell so its working-variable assignments never leak into the selftest's own.
+rdeny()  { if (guard_check_read "$2" >/dev/null 2>&1); then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
+rallow() { if (guard_check_read "$2" >/dev/null 2>&1); then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
 
 deny  "recursive rm"      "rm -rf /tmp/x"
 deny  "force push"        "git push --force origin feature/x"
@@ -252,6 +256,31 @@ deny  "git --output to tmp (write)"  'git diff --output=/tmp/benign.txt HEAD'
 # residual: the guard ALLOWS a plain redirect to a non-control-plane path (the workaround).
 allow "residual: git diff > tmp"     'git diff > /tmp/benign.txt'
 
+# --- C4 GUARD-FP-RELIEF: three disqualification-shaped ALLOW arms, exercised through the CLI path the
+# live hook uses. FLIPs (measured DENY at boarding, now ALLOW) + must-stay DENYs (one per disqualifier).
+allow "C4 A1 shellcheck cp"          'shellcheck conformance/verify.sh'
+allow "C4 A1 jq workflow"            'jq . .github/workflows/ci.yml'
+allow "C4 A1 yamllint workflow"      'yamllint .github/workflows/ci.yml'
+allow "C4 A1 yq no-flag reader"      'yq . .github/workflows/ci.yml'
+allow "C4 A1 tree no-flag reader"    'tree conformance'
+allow "C4 A2 timeout kit-exec"       'timeout 600 sh conformance/verify.sh'
+allow "C4 A2 nice -n kit-exec"       'nice -n 10 sh conformance/verify.sh'
+allow "C4 A2 env kit-exec"           'env sh conformance/verify.sh'
+allow "C4 A2 command kit-exec"       'command sh conformance/verify.sh'
+allow "C4 A3 clone https .git"       'git clone https://github.com/SeaBrad72/sparkwright-dev.git /tmp/x'
+allow "C4 A3 clone scp-form .git"    'git clone git@github.com:SeaBrad72/sparkwright-dev.git /tmp/x'
+deny  "C4 A1 reader > cp target"     'shellcheck conformance/verify.sh > hooks/pre-push'
+deny  "C4 A1 yq -s CP-write flag"    'yq -s "hooks/pre-push" payload.yml'
+deny  "C4 A1 sort stays OUT"         'sort conformance/verify.sh'
+deny  "C4 A2 env guard-disabling"    'env KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh'
+deny  "C4 A2 env -i flag"            'env -i sh conformance/verify.sh'
+deny  "C4 A2 wrapper on non-kit"     'timeout 600 sh /tmp/evil.sh conformance/verify.sh'
+deny  "C4 A2 command rm cp"          'command rm -rf conformance'
+deny  "C4 A3 clone dest .claude"     'git clone https://github.com/SeaBrad72/sparkwright-dev.git .claude'
+deny  "C4 A3 file:// never masked"   'git clone file:///tmp/evil/.git /tmp/x'
+deny  "C4 A3 push to main floor"     'git push https://github.com/SeaBrad72/sparkwright-dev.git main'
+deny  "C4 A3 curl non-git lead"      'curl -O https://example.com/hooks/pre-push.git'
+
 # --- B2 Δ4(i): raw writes to the promotion GO ledger (refs/notes/promotions) are DENIED — the
 # silent back door the D-240805-3 incident used. Deny the raw `git notes` WRITERS only; the
 # ceremonial front door (scripts/promotion-verify.sh record), the ledger's own publish push, all
@@ -261,6 +290,15 @@ deny  "raw notes add to the ledger"   'git notes --ref=promotions add -f -F - HE
 deny  "raw notes add, spaced ref"     'git notes --ref promotions add -m forged HEAD'
 deny  "raw notes add, quoted ref"     'git notes --ref="promotions" add -m forged HEAD'
 deny  "raw notes add, full ref name"  'git notes --ref=refs/notes/promotions add -m forged HEAD'
+# GUARD-HOOKSPATH-CASE-BYPASS (Fix 1, dual-review round): the ref-name leg folds case. On macOS
+# loose refs are ordinary FILES, so `--ref=PROMOTIONS` writes the same real `.git/refs/notes/
+# promotions` governance ledger the lowercase form protects — the security seat's proven route.
+deny  "raw notes add, UPPERCASE ref"       'git notes --ref=PROMOTIONS add -m forged HEAD'
+deny  "raw notes add, full ref UPPERCASE"  'git notes --ref=refs/notes/PROMOTIONS add -m forged HEAD'
+# unrelated ref name — case-fold widens case coverage of the SAME token, never adds a NEW token: a
+# ref that is not "promotions" under any case stays allowed, confirming the fold did not widen the
+# match beyond the promotions token itself.
+allow "unrelated ref, case-varied (not promotions)" 'git notes --ref=REVIEW add -m t HEAD'
 deny  "raw notes edit"                'git notes --ref=promotions edit HEAD'
 deny  "raw notes remove"              'git notes --ref promotions remove HEAD'
 deny  "raw notes append"              'git notes --ref=promotions append -m more HEAD'
@@ -314,5 +352,80 @@ case "$_notes_msg" in
   *)
     echo "FAIL: the notes deny message does not disclose the uncovered routes, got: $_notes_msg"; fail=1 ;;
 esac
+
+# --- GUARD-HOOKSPATH-CASE-BYPASS: config-key / secret-name matchers fold case (D-240813-1) ---
+# §1: hooksPath — unconditional fold, no fork (git config keys are case-insensitive BY SPEC).
+deny  "hooksPath control (camelCase)"        'git config core.hooksPath /tmp/n'
+deny  "hooksPath lowercase"                  'git config core.hookspath /tmp/n'
+deny  "hooksPath lowercase --global"         'git config --global core.hookspath /tmp/n'
+deny  "hooksPath PascalCase"                 'git config core.HooksPath /tmp/n'
+deny  "hooksPath uppercase"                  'git config core.HOOKSPATH /tmp/n'
+allow "core.bare control (unrelated key)"    'git config core.bare false'
+
+# §2/§7 condition 2: the secret-read arm — BOTH the verb leg (:1408, seat HIGH) and the filename leg
+# (:1409) fold. `.env.example` stays ALLOW: the exclusion is by non-membership in the suffix
+# alternation ("example" is never a listed suffix), so folding case cannot add it (design §4a).
+deny  "secret read: CAT + .env (upper verb)"       'CAT .env'
+deny  "secret read: cat + .ENV (upper file)"       'cat .ENV'
+deny  "secret read: CAT + .ENV (both upper)"       'CAT .ENV'
+deny  "secret read: cat + .env (regression, lower)" 'cat .env'
+allow "secret read: cat .env.example (template)"    'cat .env.example'
+allow "secret read: cat .ENV.EXAMPLE (uppercase template, shell arm)" 'cat .ENV.EXAMPLE'
+
+# guard_check_read / guard_check_path (path-side .env/.pem/.key/... deny) — the `_under_temp`
+# folded-second-arm add-only shape: arm 1 byte-identical and first; arm 2 folds and can only ADD.
+rdeny  "Read: secret .ENV upper suffix"        "/repo/.ENV"
+rdeny  "Read: secret .PEM upper suffix"        "/repo/key.PEM"
+rdeny  "Read: secret .env lower (regression)"  "/repo/.env"
+rallow "Read: .env.example (template, allow stays byte-literal)" "/repo/.env.example"
+pdeny  "Write: secret .ENV upper suffix"       "/repo/.ENV"
+pdeny  "Write: secret .PEM upper suffix"       "/repo/key.PEM"
+pdeny  "Write: secret .env lower (regression)" "/repo/.env"
+pallow "Write: .env.example (template, allow stays byte-literal)" "/repo/.env.example"
+# `.ENV.EXAMPLE` disposition, asserted explicitly (design §4/§4a): the ALLOW list stays byte-literal
+# (never folded), so an uppercase template name is NOT recognized as a template and falls through to
+# the folded DENY glob — an accepted, stated over-deny, not a silent gap.
+pdeny  "Write: .ENV.EXAMPLE uppercase template falls to folded deny (accepted over-deny)" "/repo/.ENV.EXAMPLE"
+rdeny  "Read: .ENV.EXAMPLE uppercase template falls to folded deny (accepted over-deny)"  "/repo/.ENV.EXAMPLE"
+
+# Symlink cloak, RESOLVED-side fold: an innocuous literal name that is a symlink to a real secret
+# whose OWN name carries an uppercase suffix. Pre-fold this bypassed via the resolved-side check
+# (byte-literal `*.env`/`*.pem` never matched the uppercase resolved target); folding the resolved
+# arm closes it. Portable: pure string-matching post-resolution, independent of host FS case-folding.
+GHCB_TMP=$(mktemp -d)
+: > "$GHCB_TMP/SECRET.ENV"
+ln -s "$GHCB_TMP/SECRET.ENV" "$GHCB_TMP/innocuous.txt"
+rdeny "Read: symlink cloak -> real SECRET.ENV (folded resolved-side)" "$GHCB_TMP/innocuous.txt"
+pdeny "Write: symlink cloak -> real SECRET.ENV (folded resolved-side)" "$GHCB_TMP/innocuous.txt"
+rm -rf "$GHCB_TMP"
+
+# The MIRROR isolation: a literal uppercase secret NAME symlinked to a target that carries no secret
+# suffix at all. For a non-symlinked real path the literal and resolved strings are byte-identical
+# (case preserved through `_resolve_physical`), so a fixture built on a plain non-existent path
+# cannot tell the literal-side fold apart from the resolved-side fold — both arms agree on the same
+# string. This fixture forces them apart: only the LITERAL-side fold can deny here (the resolved
+# target has no secret-suffix at all), which is what makes it a real mutation-kill for that arm.
+GHCB_TMP2=$(mktemp -d)
+: > "$GHCB_TMP2/safe.txt"
+ln -s "$GHCB_TMP2/safe.txt" "$GHCB_TMP2/SECRET.ENV"
+rdeny "Read: literal SECRET.ENV (upper) -> non-secret target (isolates literal-side fold)"  "$GHCB_TMP2/SECRET.ENV"
+pdeny "Write: literal SECRET.ENV (upper) -> non-secret target (isolates literal-side fold)" "$GHCB_TMP2/SECRET.ENV"
+rm -rf "$GHCB_TMP2"
+
+# §2 seat MEDIUM, characterized: `_cp8b_pathhit` (:864) is the one remaining byte-literal STRING-scan
+# matcher. Folded in TWO TIERS, mirroring `is_control_plane_path`'s own established split (same file,
+# same rationale): Tier 1 (kit-owned, unambiguous names) folds UNCONDITIONALLY; Tier 2 (generic
+# directory prefixes skills/conformance/adapters, which collide with real adopter code on a
+# case-sensitive FS — measured, is_control_plane_path's own comment) folds ONLY when this filesystem
+# is case-insensitive. `.claude`/CODEOWNERS/`.git`/hooks-pre-push/etc are Tier 1; skills/conformance/
+# adapters are Tier 2. Uses an unrecognized-verb interpreter to hide the substring from the (already
+# case-folded) token-level checks, per the file's own P0 precedent comment at :860-862.
+deny "pathhit Tier1 fold: interpreter hides HOOKS/PRE-PUSH case-variant" 'python3 -c "open(\"HOOKS/PRE-PUSH\",\"w\")"'
+deny "pathhit Tier1 fold: interpreter hides .CLAUDE case-variant"       'python3 -c "open(\".CLAUDE/hooks/x\",\"w\")"'
+if _fs_case_insensitive; then
+  deny "pathhit Tier2 fold (case-insensitive FS): SKILLS/ case-variant" 'python3 -c "open(\"SKILLS/x.md\",\"w\")"'
+else
+  echo "SKIP (case-sensitive FS): pathhit Tier2 fold not exercised here — the fold is deliberately OFF"
+fi
 
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }

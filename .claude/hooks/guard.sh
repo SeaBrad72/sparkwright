@@ -34,7 +34,7 @@ tool_name_grep() {
 }
 deny_if_mutating() {
   case "$1" in
-    Bash|Write|Edit|NotebookEdit|mcp__*)
+    Bash|Write|Edit|NotebookEdit|MultiEdit|mcp__*)
       emit_deny "agent-guard: $2 (DEVELOPMENT-PROCESS.md 13). Mutating tools are denied until resolved." ;;
     *) allow ;;
   esac
@@ -51,9 +51,27 @@ case "$TOOL" in
   Bash)
     CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || printf '')
     if reason=$(guard_check_command "$CMD"); then allow; else emit_deny "$reason"; fi ;;
-  Write|Edit|NotebookEdit)
+  Write|Edit|NotebookEdit|MultiEdit)
+    # MultiEdit folded in (C5 GUARD-TOOL-COVERAGE, design §2 Part A / vet Q2): its write surface is a
+    # single .tool_input.file_path (+ an edits[] array, no multi-target), the same field Edit writes,
+    # so guard_check_path covers it completely — a DIFFERENT tool name reaching the SAME write route.
     FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || printf '')
     if reason=$(guard_check_path "$FP" "$PROTECTED_ROOT"); then allow; else emit_deny "$reason"; fi ;;
+  Grep|Glob)
+    # C5 GUARD-TOOL-COVERAGE-GREP-GLOB — the content-search family. Route the secret-TARGETING
+    # spellings through guard_check_read (the same read-half-of-exfil deny the Read arm uses): a
+    # path OR glob NAMING a secret file/pattern (.env, *.env, *.pem, …) is denied. HONEST RESIDUAL
+    # (design §4 ★): guard_check_read matches secret FILENAMES, while Grep's `path` is a search ROOT —
+    # so a directory- or cwd-rooted content Grep (no path, or path:".") is NOT backstopped here; it is
+    # a DISCLOSED residual, marked residual-family in sanctioned-commands.tsv and handed off to the
+    # platform egress/FS boundary (docs/operations/runtime-guards.md). An empty field is SKIPPED so an
+    # ordinary directory/cwd search stays ALLOW — only a NAMED secret target denies. Glob returns
+    # filenames not content, so guarding its path/glob is defense-in-depth, not a content-exfil fix.
+    RGPATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty' 2>/dev/null || printf '')
+    RGGLOB=$(printf '%s' "$INPUT" | jq -r '.tool_input.glob // empty' 2>/dev/null || printf '')
+    if [ -n "$RGPATH" ] && ! reason=$(guard_check_read "$RGPATH"); then emit_deny "$reason"; fi
+    if [ -n "$RGGLOB" ] && ! reason=$(guard_check_read "$RGGLOB"); then emit_deny "$reason"; fi
+    allow ;;
   Read)
     FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || printf '')
     if reason=$(guard_check_read "$FP"); then allow; else emit_deny "$reason"; fi ;;

@@ -6,6 +6,27 @@
 # `--gate design` GO SCOPED TO THIS CHANGE, (b) is tracked, not a symlink, and real rather than a stub,
 # and (c) is touched by the commit that GO approves. Ordinary change-sets are N-A: nothing is required.
 #
+# ⚠️ TWO ARMS SINCE 2026-08-15 (C8, GOVERNANCE-RECORD-PR-HAS-NO-DESIGN-BASIS). A PURE
+# GOVERNANCE-RECORD change — a meta-control panel sitting plus its bookkeeping — has NO design of its
+# own and never will: its artifact IS the panel record. Three shipped PRs (#508, #517, #532) answered
+# that gate defect with the same workaround — point `basis:` at a design document the commit happens
+# to amend and disclose it in the token — which is green-while-dark in slow motion, so the class is
+# closed rather than routinised. Such a change now records `--gate governance` with a
+# `CB_GOV_GLOB` (default `docs/architecture/*-meta-control-*.md`) basis, and is adjudicated by THE
+# SAME CHAIN with exactly TWO deltas: the basis GLOB, and a GOVERNANCE DIFF-SHAPE GUARD requiring the
+# change's cumulative file list to be a SUBSET of the enumerated governance set (_gov_path_in_set).
+# The pass is therefore earned by a DERIVED property of the diff, never by an author's declaration.
+#   * `scripts/promotion-verify.sh` is UNCHANGED — `--gate` is free text there (prior art: the inert
+#     `gate: design-void`), so the new value costs the record tool nothing.
+#   * A record carrying BOTH accepted values is DEFECTIVE by DISQUALIFICATION, never dispatched to
+#     one arm by matcher order.
+#   * The DESIGN arm is byte-unchanged. The live defective record `1d9f0afa` (gate: design + a
+#     meta-control basis) therefore STAYS defective — closing the gap does not retro-cure the
+#     ledger's evidence of it.
+#   * A MIXED PR (a governance record plus routed control-plane cures) still needs a design basis for
+#     its payload. That is the gate being RIGHT, not a gap: the fix is to split the cures into their
+#     own boarded slices. The narrowing was stated to the owner at the design GO.
+#
 # ⚠️ THIS GATE MAKES NO ORDERING CLAIM. It does NOT check that the design preceded the work. The
 # ordering predicate was WITHDRAWN after being defeated five times in three adversarial rounds — see
 # design §4.4 for the catalogue, and CEREMONY-ORDERING-PROOF for the boarded successor.
@@ -28,9 +49,14 @@
 #        renders it YELLOW (status: in_progress, no conclusion) — still BLOCKING, but not a red ✗.
 #     2  ANOMALY — everything else. EVERY scoped GO that exists is DEFECTIVE (artifact missing,
 #        untracked, stubbed, symlinked, traversing, or not a design artifact; approver line malformed
-#        or too weak; approved-sha absent, malformed, unresolvable, or not touching the artifact),
+#        or too weak; approved-sha absent, malformed, unresolvable, or not touching the artifact;
+#        C8: a record carrying BOTH accepted gate values, a governance record whose basis is not a
+#        governance artifact, or a governance record whose change-set ESCAPES the governance set —
+#        including the case where that set could not be DERIVED, which fails CLOSED because the
+#        diff-shape guard is the governance arm's only anti-laundering leg),
 #        OR the gate could not evaluate at all (change-class UNDERIVABLE, no --scope supplied, a
-#        universal CB_DESIGN_GLOB). Renders RED, because something is broken and a human must fix it.
+#        universal CB_DESIGN_GLOB or CB_GOV_GLOB). Renders RED, because something is broken and a
+#        human must fix it.
 #
 # ⚠️ EXIT CONTRACT — CHANGED AGAIN (B7 rider, 2026-08-08; the B2-A1 disclosure class). The match
 # loop is now COLLECT-AND-ADJUDICATE-ALL in BOTH modes (--scope and --pre-push): every `gate:
@@ -96,6 +122,36 @@
 #     with none resolvable (shallow clone, no default-branch ref, no `--base-ref`) the run is
 #     REACHABLE-ONLY and says so on stderr and in its verdict. A green from such a run does not
 #     carry the not-already-integrated half — read the verdict's `containment:` state, not the rc.
+#   * GOVERNANCE ARM (C8), what its green does and does NOT prove: it proves the change-set is a
+#     SUBSET of the enumerated governance set and that a scoped GO names a touched, tracked,
+#     substantive meta-control artifact. It does NOT bind that artifact's CONTENT to this change —
+#     the same content-binding ceiling the design arm carries, inherited unchanged; the owner's read
+#     of the artifact at the sitting is the content control (`D-240805-4`). And the governance set is
+#     an ENUMERATION: a legitimate new governance surface REDS until it is added (fail direction
+#     chosen deliberately — over-tight is loud, over-wide is green-while-dark). A governance-lane PR
+#     can still carry a WRONG panel record — bad judgment in the right shape — and the review seat
+#     plus ratification remain the semantic control, exactly as for a design basis.
+#   * ⚠️ GOVERNANCE ARM — THE BASE-LADDER ASYMMETRY, disclosed because it bounds the arm in three
+#     directions at once. The diff-shape guard's change-set comes from promotion-readiness.sh, whose
+#     base ladder is `origin/main` then `main` ONLY; containment leg 2, by contrast, honours a
+#     caller-supplied `--base-ref`. So the two legs of this gate can measure against DIFFERENT bases:
+#       (a) WRONG SET — a governance PR targeting a non-`main` base is graded against `main`, so the
+#           subset judgment is made over a change-set that is not this PR's;
+#       (b) LANE UNAVAILABLE TO SOME ADOPTERS — where the default branch is `master`/`trunk`/`develop`
+#           and no `origin/main` exists, the derivation NEVER resolves, so the guard fails CLOSED
+#           permanently and the governance lane cannot be used at all. The refusal names `fetch-depth:
+#           0`, and THAT CURE DOES NOT HELP HERE: the problem is the ladder, not the clone depth. Read
+#           the refusal as "no base resolved", not as "fetch more history";
+#       (c) A FAIL-OPEN FACE THAT ANOTHER LEG CATCHES — if the graded head is already contained in the
+#           resolved base (e.g. a reused branch merged into main), the derived set is EMPTY, an empty
+#           set is trivially a subset, and this guard PASSES. What stops that being a bypass is
+#           CONTAINMENT LEG 2 (ALREADY-INTEGRATED), which refuses the record outright. So the
+#           governance arm's anti-laundering property is NOT self-contained: it depends on leg 2 being
+#           evaluable. Where leg 2 is itself skipped (no base resolves) the guard has already failed
+#           closed by (b), which is why the two degradations do not compose into a hole — but the
+#           dependency is real and is stated here rather than discovered later.
+#     Cure boarded as GOVERNANCE-GUARD-BASE-REF-PLUMB (LOW/XS: plumb `--base-ref` through
+#     `--changed-files` so both legs measure against the same named base).
 #   * IT PROVES NOTHING ABOUT ORDER. The design may have been written after the work.
 #   * `approved-sha` TOUCHES the artifact; it did not necessarily AUTHOR it — a zero-byte create or a
 #     whitespace edit satisfies a touch. It binds the record to the artifact, nothing more.
@@ -139,8 +195,9 @@
 # What it changes: nothing — read-only. Reads the working tree, git history, and refs/notes/promotions.
 # Guardrails: fails CLOSED on an underivable change-class, an unreadable notes ref, a `basis:` path
 # that does not resolve to a tracked file, a placeholder artifact, a `basis:` that is not a design
-# artifact, or an `approved-sha:` that is not a hex object name or does not touch the artifact it
-# approves.
+# artifact (or, on the governance arm, not a governance artifact), an `approved-sha:` that is not a
+# hex object name or does not touch the artifact it approves, a record carrying BOTH accepted gate
+# values, and — governance arm — a change-set that escapes the governance set or cannot be derived.
 set -eu
 # shellcheck disable=SC1007 # `CDPATH= cd` clears CDPATH for this one command so a user's CDPATH cannot
 # redirect the cd; the empty assignment is intentional, not a mistyped value.
@@ -166,6 +223,63 @@ case "$CB_DESIGN_GLOB" in
     echo "  constraint entirely. Narrow it to your design-document convention." >&2
     exit 2 ;;
 esac
+
+# ---- THE GOVERNANCE ARM's basis shape (C8, GOVERNANCE-RECORD-PR-HAS-NO-DESIGN-BASIS).
+# A PURE governance-record change — a meta-control panel sitting and its bookkeeping — has no design
+# of its own and never will: its artifact IS the panel record. Before this arm the only honest options
+# were to skip the gate or to point `basis:` at a design document the commit happened to amend, which
+# is what three shipped PRs did (#508, #517, #532 — the third was the workaround's last sanctioned
+# use). That is a green-while-dark workaround for a gate defect, so the class is closed HERE instead:
+# such a change records `--gate governance` with a meta-control artifact as its basis, and earns the
+# pass by a DERIVED property (the diff shape, below) rather than by an author's declaration.
+CB_GOV_GLOB="${CB_GOV_GLOB:-docs/architecture/*-meta-control-*.md}"
+# ITS OWN universal-glob refusal, not a share of CB_DESIGN_GLOB's. Two globs, two refusals: a single
+# shared check would have to be written against whichever variable it names, and the OTHER one would
+# then be the unguarded off-switch — the exact shape of the defect leg5e exists for. `CB_GOV_GLOB='*'`
+# would let ANY substantive tracked file be the "panel artifact", and since the governance arm's diff
+# guard admits `skills/*/SKILL.md` and `docs/architecture/*-design.md`, that is the wider hole of the
+# two, not the narrower.
+case "$CB_GOV_GLOB" in
+  ''|'*'|'**'|'*'*'*'|'?*')
+    echo "ceremony-binding: CB_GOV_GLOB must not match every path — that disables the governance-artifact" >&2
+    echo "  constraint entirely. Narrow it to your meta-control-artifact convention." >&2
+    exit 2 ;;
+esac
+
+# THE GOVERNANCE SET — the ENUMERATED file set a `gate: governance` change may touch, and the arm's
+# ONLY anti-laundering predicate. Membership is checked against the set that
+# conformance/promotion-readiness.sh --changed-files DERIVES (never a local `git diff` — see
+# _gov_diff_shape_guard), so class and shape are computed over the SAME paths.
+#   ⚠️ IT IS AN ENUMERATION, AND THE FAIL DIRECTION IS DELIBERATE. A legitimate NEW governance surface
+#   (some future bookkeeping file) REDS until it is added here. Over-tight is loud and safe — the
+#   operator splits the change or records a design GO; over-wide is green-while-dark, which is the
+#   whole defect this arm closes. Widening it is a control-plane change with its own ratification, and
+#   the family risk is boarded as GOVERNANCE-SET-FAMILY-LOCK.
+#   ⚠️ `skills/*/SKILL.md` and `docs/architecture/*-design.md` are the SHARPEST members: they are the
+#   measured routed-cure surfaces (a sitting amends a skill; a panel appends to a design's §10 log).
+#   Both are CONTROL-PLANE by the kit's own classifier — do not read them as harmless. What makes them
+#   admissible is narrower and stated exactly: they carry no MACHINE-EXECUTABLE surface, so a change to
+#   one cannot alter what CI or the guard DOES; the control over what they say is the owner's
+#   ratification of the PR, not this gate. Both were named to the owner at the design GO.
+_gov_path_in_set() {   # <path> -> 0 (true) when the path is INSIDE the governance set
+  case "$1" in
+    BACKLOG.md|docs/governance/DECISIONS.md|docs/governance/.meta-control-last) return 0 ;;
+    docs/governance/meta-control-log.md|docs/operations/meta-control.md) return 0 ;;
+    # POSIX `case` globbing does not stop `*` at a '/', so this also admits a nested
+    # `skills/a/b/SKILL.md`. Deliberate and harmless: the member is the SKILL.md convention, not a
+    # depth rule, and nothing else in the tree is named SKILL.md.
+    skills/*/SKILL.md) return 0 ;;
+  esac
+  # ONE SPELLING for the meta-control family: the SAME glob the basis leg matches. Two spellings would
+  # let an adopter narrow the basis convention while the diff guard kept admitting the old shape (or
+  # the reverse) — a drift with nothing locking the halves together.
+  # shellcheck disable=SC2254 # UNQUOTED ON PURPOSE: these are glob patterns, expanded as such. See
+  # the identical disable at the design-artifact leg.
+  case "$1" in $CB_GOV_GLOB) return 0 ;; esac
+  # shellcheck disable=SC2254 # same reason
+  case "$1" in $CB_DESIGN_GLOB) return 0 ;; esac
+  return 1
+}
 
 # Tell the engine it is being SOURCED, so its own --selftest dispatch stays inert here: without this,
 # `sh ceremony-binding.sh --selftest` would run the LIB's selftest (the sourced lib sees $1=--selftest)
@@ -329,6 +443,70 @@ _assemble_scope_keys() {
   return 0
 }
 
+# _gov_diff_shape_guard — THE GOVERNANCE ARM's anti-laundering predicate (C8). The graded change's
+# CUMULATIVE file list must be a SUBSET of the governance set. Returns 0 = the shape is honest;
+# 2 = DEFECTIVE (reason on stderr, in the shape check_design_record's callers already render).
+#
+# ⚠️ THE FILE LIST HAS ONE DERIVATION AUTHORITY, AND IT IS NOT THIS FILE. It is read from
+# `promotion-readiness.sh --changed-files`, the mode added with this arm for exactly this consumer.
+# Re-deriving it here with a local `git diff` would be the SIXTH DERIVATION the header already refuses
+# for the change-CLASS — and it would be defeated on day one: without `--no-renames`, a
+# `git mv .github/workflows/ci.yml docs/architecture/x-meta-control-y.md` emits ONLY the destination,
+# the out-of-set SOURCE vanishes from the set, and a workflow DELETION launders through the governance
+# lane while the class derivation (which does pass --no-renames) still sees it. Class and guard are
+# computed over the SAME set by construction; that is the point of the seam.
+#
+# ⚠️ FAIL CLOSED ON AN UNDERIVABLE SET, and NOT by the containment-leg-2 precedent. Leg 2 discloses and
+# SKIPS when no base resolves, because it is one of two containment legs and the other still bites.
+# This guard has no sibling: it is the ONLY thing standing between "I recorded a governance GO" and
+# "…so my workflow edit rode along", so a skip greens precisely the property the arm exists for. The
+# cure is cheap and named in the refusal (`fetch-depth: 0`), and governance PRs exist only on a repo
+# that runs this kit's own CI, which already fetches full history for the gate's job.
+_gov_diff_shape_guard() {
+  _gds_rc=0
+  _gds_list="$( sh "$DIR/conformance/promotion-readiness.sh" --changed-files 2>/dev/null )" || _gds_rc=$?
+  if [ "$_gds_rc" -ne 0 ]; then
+    echo "FAIL: ceremony-binding — GOVERNANCE DIFF-SHAPE: the change-set could not be DERIVED" >&2
+    echo "      (conformance/promotion-readiness.sh --changed-files exited $_gds_rc), so the governance" >&2
+    echo "      arm's ONLY anti-laundering predicate could not run. FAIL CLOSED: skipping it would pass" >&2
+    echo "      exactly the property this arm exists to prove." >&2
+    echo "      CURE: give the checkout a base history — 'fetch-depth: 0' on actions/checkout (the" >&2
+    echo "      kit's own gate job already does this), or run where origin/main or main resolves." >&2
+    return 2
+  fi
+  _gds_bad=""; _gds_n=0
+  # HEREDOC, NOT A PIPE: the loop must run in THIS shell or the escaping-path list dies with the
+  # subshell and the guard reports a clean set for a dirty one (the file's own `while | read` trap).
+  while IFS= read -r _gds_p; do
+    [ -n "$_gds_p" ] || continue
+    if _gov_path_in_set "$_gds_p"; then continue; fi
+    _gds_n=$((_gds_n + 1))
+    _gds_bad="$_gds_bad
+        $_gds_p"
+  done <<GOV_SET_EOF
+$_gds_list
+GOV_SET_EOF
+  # `if`, never `[ … ] && return 0`: under `set -e` a false `&&` list is itself a non-zero command and
+  # would kill the run before the refusal below could be printed (this file has paid that price).
+  # CB_GOV_SUBSET_JUDGED is set ON THIS PATH ONLY — the one place where a real list was really walked.
+  # The verdict's "SUBSET of the governance set" line is gated on it, so a guard neutered to `return 0`
+  # cannot keep printing the claim: the sentence becomes evidence that the judgment happened, instead
+  # of an unconditional label. (Build review LOW-6: a leg must assert only what it measures.)
+  if [ "$_gds_n" -eq 0 ]; then CB_GOV_SUBSET_JUDGED=1; return 0; fi
+  echo "FAIL: ceremony-binding — GOVERNANCE DIFF-SHAPE: $_gds_n path(s) in this change are OUTSIDE the" >&2
+  echo "      governance set, so this is not a PURE governance-record change and a 'gate: governance'" >&2
+  echo "      GO cannot carry it:" >&2
+  printf '%s\n' "$_gds_bad" >&2
+  echo "      The governance set is: BACKLOG.md · $CB_GOV_GLOB · docs/governance/DECISIONS.md ·" >&2
+  echo "      docs/governance/.meta-control-last · docs/governance/meta-control-log.md ·" >&2
+  echo "      docs/operations/meta-control.md · skills/*/SKILL.md · $CB_DESIGN_GLOB" >&2
+  echo "      CURE — SPLIT YOUR CURES: route each payload change to its own boarded, designed slice," >&2
+  echo "      or record a '--gate design' GO for the payload and let the DESIGN arm judge it. Mixing" >&2
+  echo "      routed control-plane cures into a panel PR is the anti-pattern this arm refuses; the" >&2
+  echo "      steward's charter routes findings to rows, it does not apply arbitrary cures in place." >&2
+  return 2
+}
+
 # _matches_scope <record-body> — THE matcher, and the ONLY one. 0 (true) when the record carries a
 # `scope:` line equal to ANY assembled key. Line-anchored + fixed-string (`grep -qF -x`) for the same
 # reason the gate line is: a substring or multi-line pattern turns the binding into an OR that every
@@ -349,6 +527,30 @@ _matched_key() {
     if printf '%s\n' "$1" | grep -qF -x "scope: $_mkk"; then printf '%s\n' "$_mkk"; return 0; fi
   done
   return 1
+}
+
+# _record_gate_type <record-body> — THE gate-value classifier, and the ONLY one (C8). Prints
+# `design`, `governance`, or `design+governance`; returns 1 when the record carries neither accepted
+# value, which is how every consumer skips a `gate: plan` / `gate: merge` / `gate: DoD` record.
+#
+# Each value is matched LINE-ANCHORED and FIXED-STRING, for the reason the design leg already carries:
+# a substring test would accept `gate: design-review`, `gate: redesign` or `gate: governance-void`
+# (and the ledger HAS prior art for an inert value minted exactly that way — `gate: design-void`).
+#
+# ⚠️ A RECORD CARRYING BOTH IS REPORTED AS BOTH, NEVER RESOLVED HERE. Adjudication by DISQUALIFICATION
+# is the whole point: the two arms judge different things (a design basis; a governance basis plus the
+# diff-shape guard), so dispatching on whichever line a matcher happened to see first would make the
+# verdict a lottery on a hand-minted note — the same class as the #509 sort-order wedge, through a
+# different door. check_design_record turns `design+governance` into a DEFECT.
+_record_gate_type() {
+  _rgt=""
+  if printf '%s\n' "$1" | grep -qF -x 'gate: design'; then _rgt="design"; fi
+  if printf '%s\n' "$1" | grep -qF -x 'gate: governance'; then
+    if [ -n "$_rgt" ]; then _rgt="design+governance"; else _rgt="governance"; fi
+  fi
+  [ -n "$_rgt" ] || return 1
+  printf '%s\n' "$_rgt"
+  return 0
 }
 
 # render_records — Δ3, THE SINGLE SOURCE of the D-240805-4 judgment-surface render. Emits the
@@ -377,13 +579,20 @@ render_records() {
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _rr_obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
       _rr_b="$(git notes --ref="$NOTES_REF" show "$_rr_obj" 2>/dev/null || true)"
-      printf '%s\n' "$_rr_b" | grep -q '^gate: design$' || continue
+      # BOTH accepted gate values, LABELLED BY TYPE — and the label is derived HERE, inside the single
+      # source, never in a workflow (the parity lock refuses a regrown workflow-side matcher, and a
+      # copy that learned only `design` would render NOTHING on exactly the PRs the governance arm
+      # enables: the gate green, the owner clicking GO with no record in view. That is the
+      # D-240805-4 visibility lie the single-sourcing exists to prevent, and it is why the render
+      # learns the new value in the SAME change that teaches the gate).
+      _rr_type="$(_record_gate_type "$_rr_b")" || _rr_type=""
+      [ -n "$_rr_type" ] || continue
       _matches_scope "$_rr_b" || continue
       _rr_matched=$((_rr_matched + 1))
       if [ -z "$_rr_body" ]; then
-        _rr_body="--- record $_rr_obj ---${_rr_nl}${_rr_b}"
+        _rr_body="--- record $_rr_obj [$_rr_type] ---${_rr_nl}${_rr_b}"
       else
-        _rr_body="${_rr_body}${_rr_nl}--- record $_rr_obj ---${_rr_nl}${_rr_b}"
+        _rr_body="${_rr_body}${_rr_nl}--- record $_rr_obj [$_rr_type] ---${_rr_nl}${_rr_b}"
       fi
     done
   fi
@@ -415,12 +624,12 @@ render_records() {
   case "$_rr_run" in ''|*[!0-9]*) _rr_run=8192 ;; esac
   _rr_fence='```'
   while [ "${#_rr_fence}" -le "$_rr_run" ]; do _rr_fence="$_rr_fence"'`'; done
-  printf '%s\n' "## ceremony-binding — the design-gate GO record(s) this merge rides on ($_rr_matched matched, rendered up to the 8 KB total bound)" ''
+  printf '%s\n' "## ceremony-binding — the design/governance-gate GO record(s) this merge rides on ($_rr_matched matched, rendered up to the 8 KB total bound)" ''
   printf '%s\n' "$_rr_fence" "$_rr_body" "$_rr_fence"
   if [ "$_rr_trunc" = 1 ]; then
     printf '%s\n' '' "**(truncated at 8 KB TOTAL across all $_rr_matched record(s) — read the full ledger: \`git notes --ref=$NOTES_REF show <sha>\`)**"
   fi
-  printf '%s\n' '' "_Matched on: $_keys_display (a design GO binds by \`scope: PR-<n>\` OR \`scope: branch/<head-branch>\`). Every record above is reproduced VERBATIM from the ledger, inside one code fence: nothing in it renders as markdown, so a field cannot forge a second one. The gate passes if ANY matching record survives adjudication — a defective sibling is SHOWN here, not hidden behind the survivor, within the 8 KB total bound; past it, the cut is announced and the ledger command shows the rest. Record bodies can contain separator-lookalike text; the header's matched-count is authoritative. A note **binds**, it does not **authenticate** — this render exists so a minted record walks into the owner's field of view before the click (\`D-240805-4\`)._"
+  printf '%s\n' '' "_Matched on: $_keys_display (a design or governance GO binds by \`scope: PR-<n>\` OR \`scope: branch/<head-branch>\`; each record above is tagged with the gate value it carries, and a record tagged \`design+governance\` is DEFECTIVE by disqualification, never adjudicated by whichever line was read first). Every record above is reproduced VERBATIM from the ledger, inside one code fence: nothing in it renders as markdown, so a field cannot forge a second one. The gate passes if ANY matching record survives adjudication — a defective sibling is SHOWN here, not hidden behind the survivor, within the 8 KB total bound; past it, the cut is announced and the ledger command shows the rest. Record bodies can contain separator-lookalike text; the header's matched-count is authoritative. A note **binds**, it does not **authenticate** — this render exists so a minted record walks into the owner's field of view before the click (\`D-240805-4\`)._"
   echo "ceremony-binding: $_rr_matched matched record(s) rendered into the step summary." >&2
   return 0
 }
@@ -448,6 +657,9 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # Initialised HERE, not at first use: check_design_record reads both under `set -u`, and a path that
   # reached it with either unset would die with no diagnostic (this file has paid that price twice).
   _mb_base=""; _contain_state="reachable-only (leg 2 not evaluated)"
+  # Same reason, C8: the verdict reads it under `set -u`, and an unset value would kill the run with
+  # no diagnostic on the one path that is supposed to be a PASS.
+  CB_RECORD_TYPE="design"; CB_GOV_SUBSET_JUDGED=0
   while [ $# -gt 0 ]; do
     case "$1" in
       # --pre-push — B2 Δ1′ (docs/architecture/2026-08-07-b2-go-records-prepush-design.md §3a): the
@@ -620,31 +832,49 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
   # valid same-key record (measured: `00c0…` < `924e…` on #509). Restoring the `break` REDs legR1.
   # NOT FIXED HERE, on purpose: the record→poster race and any new scope key are slice (b)'s job
   # (BRANCH-SCOPE-END-TO-END, owner-ruled split 2026-08-08) — this rider changes ADJUDICATION only.
-  _design_note=""; _gate_seen=0; _match_count=0; _matches=""
+  _design_note=""; _gate_seen=0; _seen_gov=0; _seen_design=0; _match_count=0; _matches=""
   if git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     for _obj in $(git notes --ref="$NOTES_REF" list 2>/dev/null | awk '{print $2}'); do
       _body="$(git notes --ref="$NOTES_REF" show "$_obj" 2>/dev/null || true)"
-      # BOTH conditions on the SAME record, each line-anchored.
-      printf '%s\n' "$_body" | grep -q '^gate: design$' || continue
-      _gate_seen=1   # a design record exists, but maybe not for THIS scope — report the near-miss
+      # BOTH conditions on the SAME record, each line-anchored. C8: the gate half now accepts EITHER
+      # accepted value through the one classifier — a record carrying both is collected here and
+      # DISQUALIFIED downstream, never silently routed to one arm.
+      _rec_type="$(_record_gate_type "$_body")" || _rec_type=""
+      [ -n "$_rec_type" ] || continue
+      _gate_seen=1   # an accepted record exists, but maybe not for THIS scope — report the near-miss
+      case "$_rec_type" in
+        governance) _seen_gov=1 ;;
+        design) _seen_design=1 ;;
+        *) _seen_gov=1; _seen_design=1 ;;
+      esac
       _matches_scope "$_body" || continue
       _matches="$_matches $_obj"; _match_count=$((_match_count + 1))
     done
+  fi
+  # THE NEAR-MISS VOCABULARY, derived once for both modes' diagnostics (C8). An operator whose ledger
+  # holds only GOVERNANCE records must not be told to record a DESIGN GO — that instruction is how a
+  # correct governance-lane change gets "cured" back into the design-basis workaround this arm exists
+  # to retire. An error stream is an instruction stream.
+  _nm_kind="design"; _nm_gate="design"; _nm_basis="<design-doc-path>"
+  if [ "$_seen_gov" -eq 1 ] && [ "$_seen_design" -eq 0 ]; then
+    _nm_kind="governance"; _nm_gate="governance"; _nm_basis="<meta-control-artifact-path>"
   fi
   if [ "$_match_count" -eq 0 ] && [ "$_cb_prepush" -eq 1 ]; then
     # The hook mode's WAITING verdict (rc 1): the [S4] family — no design GO recorded for this
     # branch. Same two diagnoses as CI, phrased for the key that actually failed to match.
     if [ "$_gate_seen" -eq 1 ]; then
-      echo "FAIL: ceremony-binding --pre-push — a 'gate: design' record exists, but NONE is scoped to this branch" >&2
+      echo "FAIL: ceremony-binding --pre-push — a 'gate: $_nm_kind' record exists, but NONE is scoped to this branch" >&2
       echo "      (expected 'scope: $_keys_display'). Another branch's GO does not satisfy this push, and neither" >&2
       echo "      does a 'scope: PR-<n>' record — that is CI's key, not this one. A leg that accepted any design" >&2
       echo "      record went PERMANENTLY GREEN after its own first use (measured); it was withdrawn." >&2
     else
       echo "FAIL: ceremony-binding --pre-push — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
       echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
+      echo "      (A PURE governance-record change — a meta-control sitting and its bookkeeping — records" >&2
+      echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/operations/meta-control.md.)" >&2
     fi
-    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_record_key \\" >&2
-    echo "        --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path> ..." >&2
+    echo "      Record one: scripts/promotion-verify.sh record --gate $_nm_gate --scope $_record_key \\" >&2
+    echo "        --approved-sha <approved-commit> --approved-by <human> --basis $_nm_basis ..." >&2
     echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
     echo "      THAT ONE RECORD IS ENOUGH: CI matches the SAME branch key (BRANCH-SCOPE-END-TO-END)," >&2
     echo "      so there is NO re-record at PR creation any more — the [S4]#7 interim protocol is" >&2
@@ -658,15 +888,17 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
     # Two distinct causes, reported distinctly. They share a branch but not a diagnosis, and an operator
     # who recorded a GO for the wrong scope needs to be told that rather than "no record found".
     if [ "$_gate_seen" -eq 1 ]; then
-      echo "FAIL: ceremony-binding — a 'gate: design' record exists, but NONE is scoped to this change" >&2
+      echo "FAIL: ceremony-binding — a 'gate: $_nm_kind' record exists, but NONE is scoped to this change" >&2
       echo "      (expected 'scope: $_keys_display'). A record for another scope does NOT satisfy this gate:" >&2
       echo "      that is what let an unrelated prior design vouch for every later change-set." >&2
     else
       echo "FAIL: ceremony-binding — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
       echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
+      echo "      (A PURE governance-record change — a meta-control sitting and its bookkeeping — records" >&2
+      echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/operations/meta-control.md.)" >&2
     fi
-    echo "      Record one: scripts/promotion-verify.sh record --gate design --scope $_record_key \\" >&2
-    echo "        --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path> ..." >&2
+    echo "      Record one: scripts/promotion-verify.sh record --gate $_nm_gate --scope $_record_key \\" >&2
+    echo "        --approved-sha <approved-commit> --approved-by <human> --basis $_nm_basis ..." >&2
     echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
     echo "      Do BOTH BEFORE opening the PR — this gate reads the ledger the moment the PR exists." >&2
     echo "      A BRANCH-scoped record is the one to write: it binds before the PR exists AND is what" >&2
@@ -729,8 +961,12 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       [ -n "$_survivor" ] || _survivor="$_obj"
     else
       _defect_n=$((_defect_n + 1))
+      # The gate value is APPENDED, never inserted: `record <sha> is DEFECTIVE` stays an intact
+      # substring (legR3 and any adopter log-scraper match on it), while a governance defect is no
+      # longer indistinguishable from a design one in a mixed-record verdict.
+      _dfl="$(_record_gate_type "$_body")" || _dfl="unknown"
       _defects="$_defects
-record $_obj is DEFECTIVE:
+record $_obj is DEFECTIVE (gate: $_dfl):
 $_cdr_out"
     fi
   done
@@ -750,8 +986,14 @@ $_cdr_out"
   fi
 
   _survivor_key="$(_matched_key "$_body")" || _survivor_key="$_keys_display"
+  # C8 — the verdict NAMES THE ARM. "It passed" and "it passed as a governance-record change, judged
+  # by the diff-shape guard" are different facts, and the second is the one an owner reading a green
+  # on a panel PR needs (the same rule that makes the verdict name the matched KEY and the containment
+  # STATE rather than just saying PASS).
+  _gate_word="DESIGN GATE"
+  if [ "$CB_RECORD_TYPE" = "governance" ]; then _gate_word="GOVERNANCE GATE"; fi
   if [ "$_cb_prepush" -eq 1 ]; then
-    echo "OK: ceremony-binding --pre-push — change-class '$_cls'; DESIGN GATE recorded (scope $_keys_display)."
+    echo "OK: ceremony-binding --pre-push — change-class '$_cls'; $_gate_word recorded (scope $_keys_display)."
     echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
     echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; defects render at CI)."
     echo "    Matched on key: $_survivor_key."
@@ -759,27 +1001,65 @@ $_cdr_out"
     echo "    Approved by: $_appr, in a GO scoped to this branch, whose commit touches that artifact"
     echo "    and is CONTAINED in this head's history — containment: $_contain_state."
     echo "    CI matches this SAME branch key — no re-record at PR creation ([S4]#7 retired 2026-08-11)."
+    if [ "$CB_RECORD_TYPE" = "governance" ]; then
+      echo "    GOVERNANCE ARM: the change-set is a SUBSET of the governance set (derived by"
+      echo "    promotion-readiness.sh --changed-files, the same authority the class comes from)."
+    fi
     echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
     return 0
   fi
-  echo "OK: ceremony-binding — change-class '$_cls'; DESIGN GATE recorded (scope $_keys_display)."
+  echo "OK: ceremony-binding — change-class '$_cls'; $_gate_word recorded (scope $_keys_display)."
   echo "    Survivor: record $_survivor — examined $_examined matching record(s), $_defect_n defective"
   echo "    (a defective sibling cannot shadow a valid record — the #509 wedge; ALL matches render at CI)."
   echo "    Matched on key: $_survivor_key."
   echo "    Artifact: $CB_DESIGN_DOC — tracked, not a symlink, above the substance floor."
   echo "    Approved by: $_appr, in a GO scoped to this change, whose commit touches that artifact"
   echo "    and is CONTAINED in this head's history — containment: $_contain_state."
+  if [ "$CB_RECORD_TYPE" = "governance" ] && [ "$CB_GOV_SUBSET_JUDGED" = 1 ]; then
+    echo "    GOVERNANCE ARM: the change-set is a SUBSET of the governance set (derived by"
+    echo "    promotion-readiness.sh --changed-files, the same authority the class comes from)."
+    echo "    NOT CLAIMED: that the panel artifact's CONTENT is about this change — only that the"
+    echo "    record is scope-bound and the artifact is touched by the commit it approves (D-240805-4:"
+    echo "    the owner's read of the artifact at the sitting is the content control)."
+  fi
   echo "    NO ORDERING CLAIM: this gate does not check whether the design preceded the work."
   return 0
 }
 
 # check_design_record — the DOWNSTREAM legs, shared VERBATIM by both modes (B2: refactor-in-place,
 # no fork of the predicate — CI and --pre-push run these exact lines). Reads $_body, $_design_note
-# $_cls and $_graded_head (set by the caller's record search) plus NOTES_REF / CB_DESIGN_GLOB; on success sets
-# CB_DESIGN_DOC and $_appr for the caller's verdict text. Returns 0 = the record survives every
+# $_cls and $_graded_head (set by the caller's record search) plus NOTES_REF / CB_DESIGN_GLOB /
+# CB_GOV_GLOB; on success sets CB_DESIGN_DOC, CB_RECORD_TYPE and $_appr for the caller's verdict text. Returns 0 = the record survives every
 # leg; 2 = the record is DEFECTIVE, reason on stderr. The rc-2-everywhere rule is inherited
 # (WAITING-GATES-RENDER-AS-RED): every refusal below is an anomaly, never a wait.
 check_design_record() {
+  # ---- C8: WHICH ARM IS JUDGING THIS RECORD. Derived from the record itself through the ONE
+  # classifier, before any leg runs, because two legs below differ by arm (the basis GLOB, and the
+  # governance-only diff-shape guard) and everything else is shared VERBATIM — the same
+  # refactor-in-place discipline B2 applied to --pre-push, and for the same reason: a forked
+  # predicate is two predicates that drift.
+  # Reset per record: pass 2 re-adjudicates the survivor in THIS shell, so a flag left set by an
+  # earlier record would let one record's judgment vouch for another's verdict line.
+  CB_GOV_SUBSET_JUDGED=0
+  _rt="$(_record_gate_type "$_body")" || _rt=""
+  if [ "$_rt" = "design+governance" ]; then
+    echo "FAIL: ceremony-binding — the GO record carries BOTH 'gate: design' and 'gate: governance'." >&2
+    echo "      A record matching more than one accepted gate value is DEFECTIVE BY DISQUALIFICATION." >&2
+    echo "      The two arms judge DIFFERENT things — a design basis, versus a governance basis plus" >&2
+    echo "      the diff-shape guard — so dispatching on whichever line a matcher saw first would make" >&2
+    echo "      the verdict a lottery on a hand-minted note (the #509 sort-order class, new door)." >&2
+    echo "      Record ONE gate per GO: split it into two records, or drop the value that does not" >&2
+    echo "      describe this change." >&2
+    return 2
+  fi
+  if [ -z "$_rt" ]; then
+    # Unreachable from the collect loop (which skips a record carrying neither value) — asserted here
+    # anyway because check_design_record is called through TWO paths (pass 1 and the survivor's
+    # re-adjudication) and an arm that silently defaulted would be the fail-open direction.
+    echo "FAIL: ceremony-binding — the GO record carries no accepted gate value ('gate: design' or" >&2
+    echo "      'gate: governance'); it cannot be adjudicated by either arm (fail closed)." >&2
+    return 2
+  fi
   # THE RECORD MUST NAME AN APPROVER (amendment §4.3, security HIGH-2). Before this the check read only
   # `gate:` and `basis:`, so a hand-written note with NO approver line passed and three shipped claims
   # about "a named human's recorded GO" were false. The label is the DERIVED assurance token that
@@ -901,6 +1181,25 @@ check_design_record() {
   # The pattern is the kit's OWN convention (design §8, plan T1, and every design doc in this repo), so
   # this constrains the check to what the surfaces already promised rather than inventing a rule.
   # Adopters who keep designs elsewhere change CB_DESIGN_GLOB; the default is the kit convention.
+  # C8 — DELTA (i) OF TWO: the GLOB is the arm's, and ONLY the glob. The governance arm asks the same
+  # question ("is the basis the kind of artifact this gate names?") against the kind of artifact a
+  # governance GO actually rides on — the meta-control panel record. The design arm is BYTE-UNCHANGED,
+  # which is why the live defective record `1d9f0afa` (gate: design + a meta-control basis) STAYS
+  # defective: the ledger's honesty about the gap is not retro-cured by closing the gap.
+  if [ "$_rt" = "governance" ]; then
+    # shellcheck disable=SC2254 # UNQUOTED ON PURPOSE: CB_GOV_GLOB is a glob pattern — see below.
+    case "$_basis" in
+      $CB_GOV_GLOB) : ;;
+      *)
+        echo "FAIL: ceremony-binding — basis '$_basis' is not a governance artifact." >&2
+        echo "      Expected $CB_GOV_GLOB (the kit convention, e.g." >&2
+        echo "      docs/architecture/2026-08-11-meta-control-39.md)." >&2
+        echo "      A 'gate: governance' GO names the meta-control artifact of the sitting it records." >&2
+        echo "      A design document is the DESIGN arm's basis, not this one — pointing a governance" >&2
+        echo "      GO at one is the very workaround this arm exists to retire." >&2
+        return 2 ;;
+    esac
+  else
   # shellcheck disable=SC2254 # UNQUOTED ON PURPOSE: CB_DESIGN_GLOB is a glob pattern and must be
   # expanded as one. Quoting it would match the literal string `docs/architecture/*-design.md`, which no
   # real path equals — the constraint would silently never match and every basis would be refused.
@@ -913,6 +1212,7 @@ check_design_record() {
       echo "      A GO naming an arbitrary tracked file is not a recorded DESIGN decision." >&2
       return 2 ;;
   esac
+  fi
   if ! git ls-files --error-unmatch -- "$_basis" >/dev/null 2>&1; then
     echo "FAIL: ceremony-binding — the design artifact named by the GO record is not a tracked file:" >&2
     echo "      $_basis" >&2
@@ -1087,7 +1387,18 @@ check_design_record() {
     fi
   fi
 
+  # ---- C8 — DELTA (ii) OF TWO, and the arm's THESIS: the GOVERNANCE DIFF-SHAPE GUARD. Deliberately
+  # LAST, after every shared hygiene leg: a governance record that is malformed in a way BOTH arms
+  # care about should be told THAT, not handed a diff-shape lecture. Runs for the governance arm
+  # ONLY — the design arm imposes no diff constraint and gains none here (byte-unchanged behaviour).
+  if [ "$_rt" = "governance" ]; then
+    _gov_diff_shape_guard || return 2
+  fi
+
   CB_DESIGN_DOC="$_basis"
+  # The arm that judged this record, for the caller's verdict line. Set only on SUCCESS, next to
+  # CB_DESIGN_DOC and for its reason: a verdict must never name an arm for a record that did not pass.
+  CB_RECORD_TYPE="$_rt"
 
   # ---- ORDERING IS WITHDRAWN (design §4.4, owner-ratified 2026-07-26 after round 3).
   # FIVE defeats across three adversarial rounds, every one of them in the ordering predicate and
@@ -1129,6 +1440,13 @@ selftest() {
   # `CB_DESIGN_GLOB='design/*.md' … --selftest` -> rc 1 before this pin. Identical class to the
   # PROMOTION_NOTES_REF defect, found the same way.
   CB_DESIGN_GLOB='docs/architecture/*-design.md'
+  # PIN THE GOVERNANCE GLOB TOO (C8), for the identical reason: every governance fixture files its
+  # panel artifact at docs/architecture/<date>-meta-control-<n>.md, so an adopter who legitimately
+  # narrows CB_GOV_GLOB to their own convention would get a RED selftest — and this selftest is
+  # registered in conformance/verify.sh, so that is a red PRIMARY AGGREGATE for doing exactly what
+  # the check invites. Note the glob is ALSO a member of the governance set, so an unpinned value
+  # would move the diff-shape guard's set underneath the fixtures as well.
+  CB_GOV_GLOB='docs/architecture/*-meta-control-*.md'
   _fails=0; _legs=0
 
   # LEG 1 (liveness) — an ORDINARY change-set requires nothing: N-A, rc 0.
@@ -1850,6 +2168,246 @@ selftest() {
        _fails=$((_fails+1)) ;;
   esac
 
+  # ── C8 GOVERNANCE-ARM legs (GOVERNANCE-RECORD-PR-HAS-NO-DESIGN-BASIS). Every one of them asserts a
+  # GOVERNANCE-SPECIFIC string — the arm label `(gate: governance)` via _expect_fail_gov, or a message
+  # only the governance arm can print — so none can go green on a design-arm refusal. The two
+  # load-bearing negatives (legG6, legG7) run on TWO-BRANCH fixtures and exercise the REAL derivation
+  # through the real authority; a fixture-listing shortcut would have proven the fixture, not the
+  # production path.
+
+  # LEG G1 (THE POSITIVE ANCHOR) — a governance GO on a PURE governance-record change PASSES and the
+  # verdict NAMES the arm. Two properties, each measured rather than asserted:
+  #   * the fixture touches EVERY member of the governance set, so DELETING a member from
+  #     _gov_path_in_set REDs this leg (mutation-measured: dropping `skills/*/SKILL.md` -> rc 2). The
+  #     enumeration cannot rot silently.
+  #   * the "SUBSET of the governance set" sentence is emitted ONLY when the guard actually walked a
+  #     derived list (CB_GOV_SUBSET_JUDGED), so asserting it here also kills a guard neutered to
+  #     `return 0` — which, before build-review LOW-6, printed the claim unconditionally and left this
+  #     leg green while the arm's only predicate was inert.
+  _legs=$((_legs+1))   # legG1
+  _mkgov "$_tmp/fG1" conforming
+  _outG1="$( cd "$_tmp/fG1" && DIR="$_tmp/fG1" run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 2>&1 )" && _rcG1=0 || _rcG1=$?
+  case "$_rcG1:$_outG1" in
+    0:*"GOVERNANCE GATE recorded"*)
+      case "$_outG1" in
+        *"SUBSET of the governance set"*)
+          echo "PASS legG1: a pure governance-record change PASSES on a governance GO, verdict names the arm + the subset judgment" ;;
+        *) echo "FAIL legG1: passed but the verdict does not claim the diff-shape judgment — a green would be read as more than was measured: $_outG1"
+           _fails=$((_fails+1)) ;;
+      esac ;;
+    1:*) echo "FAIL legG1: a valid governance GO still WAITS — the governance gate value is not matched: $_outG1"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG1: expected rc 0 naming 'GOVERNANCE GATE recorded', got rc=$_rcG1: $_outG1"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G2 — a governance GO whose basis is an ORDINARY file. The design arm's leg5d, in the
+  # governance arm's words: without the glob, any substantive tracked file would be a "panel record".
+  _mkfix "$_tmp/fG2" governance "README.md" real
+  _expect_fail_gov legG2 "$_tmp/fG2" "not a governance artifact" "governance GO naming an ordinary file as the panel artifact"
+
+  # LEG G3 — a governance GO naming a panel artifact that does not exist. Asserts a SHARED-chain
+  # message, which is exactly why _expect_fail_gov also pins the arm: the same words would appear if
+  # this record had fallen through to the design arm.
+  _mkfix "$_tmp/fG3" governance "docs/architecture/2026-08-15-meta-control-99.md" none
+  _expect_fail_gov legG3 "$_tmp/fG3" "not a tracked file" "governance GO naming an absent panel artifact"
+
+  # LEG G4 (THE DURABLE PIN FOR THE LIVE DEFECT) — the ledger's `1d9f0afa` body, replayed
+  # byte-faithfully: `gate: design` + a meta-control basis. It must STAY defective. This is the
+  # regression that stops a future "fix" from widening CB_DESIGN_GLOB to admit panel artifacts, which
+  # would erase the design/governance distinction inside one glob (design §5, approach B — rejected).
+  _legs=$((_legs+1))   # legG4
+  _mkreplay "$_tmp/fG4"
+  _outG4="$( cd "$_tmp/fG4" && DIR="$_tmp/fG4" run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-517 2>&1 || true )"
+  ( cd "$_tmp/fG4" && DIR="$_tmp/fG4" run_ceremony_binding "$_tmp/changed-cp" --scope PR-517 ) \
+    >/dev/null 2>&1 && _rcG4=0 || _rcG4=$?
+  case "$_rcG4:$_outG4" in
+    2:*"is not a design artifact"*)
+      case "$_outG4" in
+        *"(gate: design)"*)
+          echo "PASS legG4: the replayed live record (design gate + meta-control basis) stays DEFECTIVE on the DESIGN arm" ;;
+        *) echo "FAIL legG4: refused, but the record was not adjudicated as a design record: $_outG4"
+           _fails=$((_fails+1)) ;;
+      esac ;;
+    0:*) echo "FAIL legG4: the live defective record now PASSES — the governance arm has leaked into the design arm and the ledger's evidence of the gap is retro-cured"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG4: expected rc 2 naming 'is not a design artifact', got rc=$_rcG4: $_outG4"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G5 (ADJUDICATION BY DISQUALIFICATION) — a record carrying BOTH accepted gate values is
+  # DEFECTIVE. The alternative is a dispatch lottery on a hand-minted note: whichever matcher ran
+  # first would decide whether the diff-shape guard applies at all. Same class as the #509 wedge.
+  # The gate parameter carries a literal newline, so _mkfix writes TWO `gate:` lines.
+  _mkfix "$_tmp/fG5" "$(printf 'design\ngate: governance')" "docs/architecture/d-design.md" real
+  _expect_fail legG5 "$_tmp/fG5" "BOTH 'gate: design' and 'gate: governance'" \
+    "a record carrying two accepted gate values" 2 "$_tmp/fG5"
+
+  # LEG G6 (THE SLICE'S THESIS, AND ITS LOAD-BEARING NEGATIVE) — a VALID governance record whose
+  # change-set carries a control-plane payload is DEFECTIVE, and the escaping path is NAMED. Every
+  # other leg of the chain passes on this fixture; the diff shape is the only thing that can refuse.
+  # TWO-BRANCH: the file list comes from the real authority walking the real merge-base.
+  _legs=$((_legs+1))   # legG6
+  _mkgov "$_tmp/fG6" escapes
+  _outG6="$( cd "$_tmp/fG6" && DIR="$_tmp/fG6" run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 2>&1 || true )"
+  ( cd "$_tmp/fG6" && DIR="$_tmp/fG6" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) \
+    >/dev/null 2>&1 && _rcG6=0 || _rcG6=$?
+  case "$_rcG6:$_outG6" in
+    2:*"OUTSIDE the"*"governance set"*)
+      case "$_outG6" in
+        *conformance/x.sh*)
+          case "$_outG6" in
+            *"SPLIT YOUR CURES"*)
+              echo "PASS legG6: a governance GO carrying a control-plane payload -> rc 2, the escaping path NAMED with the split-your-cures cure" ;;
+            *) echo "FAIL legG6: refused and named the path, but the operator is not told the cure: $_outG6"
+               _fails=$((_fails+1)) ;;
+          esac ;;
+        *) echo "FAIL legG6: refused without NAMING the escaping path — an operator cannot act on 'something escaped': $_outG6"
+           _fails=$((_fails+1)) ;;
+      esac ;;
+    0:*) echo "FAIL legG6: a control-plane payload RODE ALONG on a governance record — the arm's only anti-laundering predicate is inert: $_outG6"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG6: expected rc 2 naming the escaping path, got rc=$_rcG6: $_outG6"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G7 (THE RENAME LEG — vet HIGH-1) — `git mv` of an out-of-set file ONTO an in-set name. With
+  # git's default rename detection the derivation emits the DESTINATION ALONE and the workflow
+  # DELETION vanishes from the change-set; only the authority's `--no-renames` keeps the source
+  # visible. This is why the guard reads promotion-readiness.sh instead of running its own git diff.
+  _legs=$((_legs+1))   # legG7
+  _mkgov "$_tmp/fG7" rename
+  # PREMISE, ASSERTED NOT ASSUMED: the leg is meaningless unless a rename-detecting derivation really
+  # would have hidden the source. FAIL, never skip — a skipped premise is an unproven leg.
+  _g7def="$( cd "$_tmp/fG7" && git diff --name-only main...HEAD 2>/dev/null || true )"
+  if printf '%s\n' "$_g7def" | grep -qF '.github/workflows/ci.yml'; then
+    echo "FAIL legG7: premise — the DEFAULT (rename-detecting) derivation still shows the source path, so this fixture cannot demonstrate the collapse and the leg proves NOTHING"
+    _fails=$((_fails+1))
+  else
+    echo "PASS legG7-premise: the default rename-detecting derivation HIDES the moved-away source"
+  fi
+  _outG7="$( cd "$_tmp/fG7" && DIR="$_tmp/fG7" run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 2>&1 || true )"
+  ( cd "$_tmp/fG7" && DIR="$_tmp/fG7" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) \
+    >/dev/null 2>&1 && _rcG7=0 || _rcG7=$?
+  case "$_rcG7:$_outG7" in
+    2:*".github/workflows/ci.yml"*)
+      echo "PASS legG7: a git mv of a workflow ONTO an in-set name -> rc 2, the SOURCE path named (--no-renames is inherited from the single authority)" ;;
+    0:*) echo "FAIL legG7: a workflow DELETION laundered through the governance lane — the guard is deriving the change-set with rename detection on: $_outG7"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG7: expected rc 2 naming the renamed-away source, got rc=$_rcG7: $_outG7"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G8 (THE COMPOSITION LEG — vet Q4) — a defective design record and a governance record on the
+  # SAME key, over a change-set that escapes the set. The B7 adjudicate-all rider passes if ANY record
+  # survives, so this pins that two records cannot launder each other: each is defective on its own
+  # arm, and the verdict names BOTH with the arm that judged each.
+  _legs=$((_legs+1))   # legG8
+  _mkgov "$_tmp/fG8" composition
+  _outG8="$( cd "$_tmp/fG8" && DIR="$_tmp/fG8" run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 2>&1 || true )"
+  ( cd "$_tmp/fG8" && DIR="$_tmp/fG8" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) \
+    >/dev/null 2>&1 && _rcG8=0 || _rcG8=$?
+  if [ "$_rcG8" = 2 ] && printf '%s' "$_outG8" | grep -qF '(gate: governance)' \
+     && printf '%s' "$_outG8" | grep -qF '(gate: design)' \
+     && printf '%s' "$_outG8" | grep -qF 'ALL 2 matching'; then
+    echo "PASS legG8: a defective design record + a governance record over an escaping diff -> rc 2, each named with its arm (no laundering through the rider)"
+  else
+    echo "FAIL legG8: expected rc 2 naming BOTH arms and 'ALL 2 matching', got rc=$_rcG8: $_outG8"
+    _fails=$((_fails+1))
+  fi
+
+  # LEG G9 (FAIL-CLOSED — vet MED-1) — with NO base resolvable the change-set is UNDERIVABLE, and the
+  # governance arm must RED rather than skip. The containment-leg-2 disclosed-skip precedent does NOT
+  # transfer: leg 2 has a sibling that still bites, this guard is the arm's only anti-laundering leg,
+  # so a skip would green exactly the property the arm exists for. The refusal names the cure.
+  _legs=$((_legs+1))   # legG9
+  _mkgov "$_tmp/fG9" nobase
+  _outG9="$( cd "$_tmp/fG9" && DIR="$_tmp/fG9" run_ceremony_binding "$_tmp/changed-cp" \
+               --scope PR-1 2>&1 || true )"
+  ( cd "$_tmp/fG9" && DIR="$_tmp/fG9" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) \
+    >/dev/null 2>&1 && _rcG9=0 || _rcG9=$?
+  case "$_rcG9:$_outG9" in
+    2:*"could not be DERIVED"*"fetch-depth: 0"*)
+      echo "PASS legG9: an underivable change-set -> rc 2 FAIL CLOSED, naming the fetch-depth cure" ;;
+    0:*) echo "FAIL legG9: an underivable change-set PASSED — the guard skipped the only leg the governance arm has: $_outG9"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG9: expected rc 2 naming the derive failure + its cure, got rc=$_rcG9: $_outG9"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G10 (THE COLOUR LEG) — a governance-SHAPED change with NO record at all is the WAITING yellow
+  # (rc 1), not red. The diff-shape guard must never fire on a PR that has no governance record to
+  # judge: a change waiting for its GO is a normal stage of healthy work, and painting it red is how
+  # a wait comes to look like a break. The guidance also has to MENTION the governance lane, or an
+  # operator on a panel PR is instructed straight back into the design-basis workaround.
+  _legs=$((_legs+1))   # legG10
+  _mkgov "$_tmp/fG10" conforming
+  ( cd "$_tmp/fG10" && git update-ref -d refs/notes/promotions 2>/dev/null || true )
+  _outG10="$( cd "$_tmp/fG10" && DIR="$_tmp/fG10" run_ceremony_binding "$_tmp/changed-cp" \
+                --scope PR-1 2>&1 || true )"
+  ( cd "$_tmp/fG10" && DIR="$_tmp/fG10" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) \
+    >/dev/null 2>&1 && _rcG10=0 || _rcG10=$?
+  case "$_rcG10:$_outG10" in
+    1:*"--gate governance"*)
+      echo "PASS legG10: a governance-shaped change with no record -> rc 1 WAITING (yellow), and the guidance names the governance lane" ;;
+    2:*) echo "FAIL legG10: a change with NO record RED-ed — the diff-shape guard fired with nothing to judge, turning a normal wait into a break: $_outG10"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG10: expected rc 1 with governance-aware guidance, got rc=$_rcG10: $_outG10"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G11 (TYPE-AWARE NEAR-MISS — vet LOW-2) — when the ledger holds ONLY governance records and
+  # none is scoped here, the near-miss must say so and hand back the GOVERNANCE record form. Telling
+  # that operator to record a DESIGN GO is how a correct governance change gets "cured" back into the
+  # workaround. rc 1: still a wait.
+  _legs=$((_legs+1))   # legG11
+  _outG11="$( cd "$_tmp/fG1" && DIR="$_tmp/fG1" run_ceremony_binding "$_tmp/changed-cp" \
+                --scope PR-42 2>&1 || true )"
+  ( cd "$_tmp/fG1" && DIR="$_tmp/fG1" run_ceremony_binding "$_tmp/changed-cp" --scope PR-42 ) \
+    >/dev/null 2>&1 && _rcG11=0 || _rcG11=$?
+  case "$_rcG11:$_outG11" in
+    1:*"a 'gate: governance' record exists"*"--gate governance"*)
+      echo "PASS legG11: a governance-only ledger near-miss -> rc 1 naming the GOVERNANCE record form, never the design one" ;;
+    1:*) echo "FAIL legG11: rc 1, but the near-miss diagnosis or the record-one guidance still speaks of a DESIGN GO: $_outG11"
+         _fails=$((_fails+1)) ;;
+    *) echo "FAIL legG11: expected rc 1 with a governance near-miss, got rc=$_rcG11: $_outG11"
+       _fails=$((_fails+1)) ;;
+  esac
+
+  # LEG G12 (THE RENDER LEARNS THE VALUE — design §2.9, the D-240805-4 half) — a ledger with one
+  # design and one governance record on the same key renders BOTH, each TAGGED with its gate value. A
+  # render that matched `design` alone would show NOTHING on exactly the PRs this arm enables: the
+  # gate green and the owner clicking GO with no record in view — a visibility lie manufactured by
+  # the fix. (The other half of single-sourcing — that both workflow legs INVOKE this — is
+  # adopter-gates-parity.sh's job.)
+  _legs=$((_legs+1))   # legG12
+  _outG12="$( cd "$_tmp/fG8" && DIR="$_tmp/fG8" run_ceremony_binding '' --render --scope PR-1 2>/dev/null )" \
+    && _rcG12=0 || _rcG12=$?
+  if [ "$_rcG12" = 0 ] && printf '%s\n' "$_outG12" | grep -qF '[governance] ---' \
+     && printf '%s\n' "$_outG12" | grep -qF '[design] ---' \
+     && printf '%s\n' "$_outG12" | grep -qF 'gate: governance' \
+     && printf '%s\n' "$_outG12" | grep -qF '(2 matched'; then
+    echo "PASS legG12: --render shows BOTH a design and a governance record, each tagged with its gate value"
+  else
+    echo "FAIL legG12: the render did not show both records tagged by type (rc=$_rcG12): $_outG12"
+    _fails=$((_fails+1))
+  fi
+
+  # LEG G13 (SELF-ATTACK, mirroring leg5e) — a UNIVERSAL CB_GOV_GLOB must be REFUSED. It is the wider
+  # of the two off-switches: with `CB_GOV_GLOB='*'` any tracked file becomes a "panel artifact" AND
+  # the governance set's meta-control member admits every path, so the diff-shape guard dies with it.
+  _legs=$((_legs+1))   # legG13
+  if ( CB_GOV_GLOB='*' sh "$0" --selftest ) >/dev/null 2>&1; then
+    echo "FAIL legG13: a universal CB_GOV_GLOB must be refused"; _fails=$((_fails+1))
+  else
+    echo "PASS legG13: universal CB_GOV_GLOB -> refused"
+  fi
+
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran
     # after the ordering legs were deleted — and a hardcoded total is a claim the file makes about
@@ -1863,12 +2421,19 @@ selftest() {
 # The kill assertion for every negative leg: the run must FAIL *and* its verdict must contain the
 # expected text. A leg that only checks rc cannot distinguish its own failure mode from any other, which
 # is how two vacuous legs got written in this very file before this helper existed.
+# <dir-override> (6th, C8) is the fixture's own $DIR: it makes the run consult the AUTHORITY COPY
+# inside the fixture instead of the kit's, so the governance diff-shape guard derives the FIXTURE's
+# change-set. Without it a governance leg would grade the kit's own working branch — non-hermetic,
+# and green or red for reasons that have nothing to do with the fixture (the ambient-tree defect this
+# file already paid for once, leg 2). POSITIONAL, not an inherited `_var=x` prefix: a prefix
+# assignment on a FUNCTION call persists in some shells and not others, so the next leg would inherit
+# it silently. Defaults to the real $DIR, so all 51 existing call sites are byte-unchanged in effect.
 _expect_fail() {
-  _ln="$1"; _fd="$2"; _exp="$3"; _desc="$4"; _exp_rc="${5:-2}"; _legs=$((_legs+1))
-  _out="$( cd "$_fd" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
+  _ln="$1"; _fd="$2"; _exp="$3"; _desc="$4"; _exp_rc="${5:-2}"; _ef_dir="${6:-$DIR}"; _legs=$((_legs+1))
+  _out="$( cd "$_fd" && DIR="$_ef_dir" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
   # Capture the rc, guarded: a bare call would abort the whole selftest under `set -e`. The
   # `&& x=0 || x=$?` form is the file's existing idiom for this.
-  ( cd "$_fd" && run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+  ( cd "$_fd" && DIR="$_ef_dir" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
     && _got_rc=0 || _got_rc=$?
   if [ "$_got_rc" = 0 ]; then
     echo "FAIL $_ln: $_desc should FAIL but PASSed"; _fails=$((_fails+1)); return 0
@@ -1886,6 +2451,39 @@ _expect_fail() {
   case "$_out" in
     *"$_exp"*) echo "PASS $_ln: $_desc -> FAIL naming '$_exp'" ;;
     *) echo "FAIL $_ln: FAILed for the WRONG reason — expected '$_exp', got: $_out"
+       _fails=$((_fails+1)) ;;
+  esac
+}
+
+# _expect_fail_gov <leg> <fixture-dir> <expected-substring> <description> [expected-rc]
+# The C8 kill assertion for a GOVERNANCE leg. Everything _expect_fail does, plus TWO things it cannot:
+#   (1) it runs with the FIXTURE as $DIR, so the diff-shape guard derives the fixture's own change-set
+#       through the real authority (never the kit's working tree);
+#   (2) it requires the verdict to identify the record as `(gate: governance)` IN ADDITION to the
+#       expected text. Several legs below assert a SHARED-chain message ("not a tracked file"), and a
+#       shared message proves nothing about WHICH arm ran — a governance leg that silently fell
+#       through to the design arm would print exactly the same words. Pinning the arm is what stops a
+#       governance leg going green on a design-arm message (the vet's Q7 condition).
+_expect_fail_gov() {
+  _gln="$1"; _gfd="$2"; _gexp="$3"; _gdesc="$4"; _gexp_rc="${5:-2}"; _legs=$((_legs+1))
+  _gout="$( cd "$_gfd" && DIR="$_gfd" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 2>&1 || true )"
+  ( cd "$_gfd" && DIR="$_gfd" run_ceremony_binding "$_tmp/changed-cp" --scope PR-1 ) >/dev/null 2>&1 \
+    && _ggot_rc=0 || _ggot_rc=$?
+  if [ "$_ggot_rc" = 0 ]; then
+    echo "FAIL $_gln: $_gdesc should FAIL but PASSed"; _fails=$((_fails+1)); return 0
+  fi
+  if [ "$_ggot_rc" != "$_gexp_rc" ]; then
+    echo "FAIL $_gln: $_gdesc exited rc=$_ggot_rc, expected rc=$_gexp_rc (1 = WAITING/yellow, 2 = anomaly/red)"
+    _fails=$((_fails+1))
+  fi
+  case "$_gout" in
+    *"$_gexp"*)
+      case "$_gout" in
+        *"(gate: governance)"*) echo "PASS $_gln: $_gdesc -> FAIL naming '$_gexp', adjudicated by the GOVERNANCE arm" ;;
+        *) echo "FAIL $_gln: the verdict names '$_gexp' but NOT '(gate: governance)' — the leg cannot tell which arm refused, so it would pass on a design-arm message: $_gout"
+           _fails=$((_fails+1)) ;;
+      esac ;;
+    *) echo "FAIL $_gln: FAILed for the WRONG reason — expected '$_gexp', got: $_gout"
        _fails=$((_fails+1)) ;;
   esac
 }
@@ -2140,6 +2738,14 @@ _mkfix() {
   (
     cd "$_d" || exit 1
     git init -q 2>/dev/null
+    # ⚠️ PIN THE DEFAULT BRANCH BEFORE THE FIRST COMMIT (C8; _mkbase already does this, for its own
+    # reason). `git init` honours the user's init.defaultBranch, so this fixture is born on `main`
+    # locally and `master` on a stock CI runner — and promotion-readiness.sh resolves its base as
+    # `origin/main` then `main` ONLY. On `master` the base is UNRESOLVABLE, so any leg that reaches
+    # the governance diff-shape guard would red for the RUNNER's configuration instead of the
+    # fixture's shape. Behaviourally inert for the 51 pre-C8 legs (their class comes from a listing,
+    # and the containment ladder resolves `main` here exactly as it resolved `master` before).
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
     git config user.email fixture@example.invalid
     git config user.name Fixture
     # `real` must clear obl_is_placeholder's SUBSTANCE FLOOR: >= OBL_MIN_SUBSTANCE_LINES (8) non-blank
@@ -2201,6 +2807,172 @@ _mkfix() {
     printf '%s\n' "record: promotion GO (approve->execute->log)" \
       "gate: $_gate" "scope: $_sc" "$_apline" "$_ashaline" \
       "change-class: control-plane" "basis: $_basis" \
+      | git notes --ref=promotions add -f -F - HEAD 2>/dev/null
+  )
+  # THE AUTHORITY COPY (C8), written AFTER the commit so it stays UNTRACKED and therefore never
+  # appears in the fixture's own change-set. It exists so a leg may run with this fixture as $DIR —
+  # then `promotion-readiness.sh` (which cd's to its own ../) derives THIS repo rather than the kit's
+  # working tree. Copied unconditionally, defensively: a governance leg that fell through to the
+  # guard without it would silently grade the kit's branch and its verdict would be an artifact of
+  # whatever the builder happened to have staged.
+  mkdir -p "$_d/conformance" "$_d/.claude/hooks"
+  cp "$DIR/conformance/promotion-readiness.sh" "$_d/conformance/promotion-readiness.sh"
+  # `if`, never `[ … ] && cp`: a false test makes the whole && list non-zero, and under `set -e` that
+  # kills the selftest mid-list with no diagnostic (this file's third-most-expensive failure mode).
+  if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
+    cp "$DIR/.claude/hooks/guard-core.sh" "$_d/.claude/hooks/guard-core.sh"
+  fi
+  return 0
+}
+
+# ---- C8 GOVERNANCE FIXTURES ---------------------------------------------------------------------
+#
+# _mkgov <dir> <shape> — the governance-arm fixtures. TWO-BRANCH BY CONSTRUCTION (the legB11
+# fork-shape precedent), and that is the load-bearing property, not a convenience: the diff-shape
+# guard's whole claim is about the REAL derivation, so a fixture that handed the leg a listing would
+# prove the listing, not the production path (vet HIGH-2 — the C7 vacuity class aimed at this very
+# design's core leg). Each fixture therefore carries its own COMMITTED copy of the derivation
+# authority + the guard core, is born on `main`, forks to `gov`, and lets
+# `promotion-readiness.sh --changed-files` walk merge-base(main, HEAD)...HEAD for real.
+#
+# Shapes — each differs from the PASSING one in exactly ONE respect, so a leg can only fail for the
+# reason it names (this file's hard-won rule; see leg 3 / leg 5):
+#   conforming   the branch touches EVERY member of the governance set and nothing else. The positive
+#                anchor — and because it exercises all eight members, DELETING a member from
+#                _gov_path_in_set REDs it, which is what keeps the enumeration honest.
+#   escapes      conforming + `conformance/x.sh`. THE SLICE'S THESIS: a valid governance record must
+#                not carry a control-plane payload.
+#   rename       `git mv .github/workflows/ci.yml docs/operations/meta-control.md` — the destination is
+#                IN the set and the source is not. With rename detection on (pinned in the fixture's
+#                own config) the default derivation emits the destination ALONE and the workflow
+#                deletion vanishes; only the authority's `--no-renames` keeps the source visible.
+#   composition  escapes + a SECOND, defective design record on the same scope key: the B7
+#                adjudicate-all rider must not let a governance record and a design record launder
+#                each other into a pass.
+#   nobase       no `main`, no origin: the change-set is UNDERIVABLE, which must fail CLOSED.
+_mkgov() {
+  _dv="$1"; _shv="$2"
+  mkdir -p "$_dv/conformance" "$_dv/.claude/hooks" "$_dv/docs/architecture" "$_dv/docs/governance" \
+           "$_dv/docs/operations" "$_dv/skills/design" "$_dv/.github/workflows"
+  cp "$DIR/conformance/promotion-readiness.sh" "$_dv/conformance/promotion-readiness.sh"
+  if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
+    cp "$DIR/.claude/hooks/guard-core.sh" "$_dv/.claude/hooks/guard-core.sh"
+  fi
+  (
+    cd "$_dv" || exit 1
+    git init -q 2>/dev/null
+    # `nobase` is the ONE shape whose branch name matters: neither `main` nor `master` exists, and
+    # there is no remote, so promotion-readiness's base ladder finds nothing at all.
+    case "$_shv" in
+      nobase) git symbolic-ref HEAD refs/heads/sole ;;
+      *)      git symbolic-ref HEAD refs/heads/main ;;
+    esac
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    # PIN RENAME DETECTION ON in the fixture's OWN config (local outranks global), or the `rename`
+    # leg's premise evaporates on a host configured with diff.renames=false: the unfixed derivation
+    # would emit both paths anyway and the leg would pass while proving nothing. Same pin, same
+    # reason, as promotion-readiness-wired.sh's mkrepo_mv.
+    git config diff.renames true
+    _gov_art() {   # >= 8 non-blank lines under a heading, or obl_is_placeholder fires FLOOR and the
+                   # leg silently tests the substance floor instead of the arm it names
+      printf '%s\n' \
+        '# Meta-control panel 41 — the sitting record' '' '## Verdict' \
+        'GO-WITH-CONDITIONS. The panel adjudicated the cadence, the two ledgers and the routing of' \
+        'every finding to a boarded row, and recorded the rulings the owner gave in the sitting.' \
+        'Ledger 1 (verified-as-quality) and Ledger 2 (fix-forward) are both reproduced below, ranked,' \
+        'with the workstream each finding was routed to and the row that now carries it.' \
+        'The freshness marker and the verdict log are updated in the same change, which is what makes' \
+        'this a governance-record change rather than a design one.' \
+        '## Honest ceiling' \
+        'A panel record binds the sitting, not the quality of the judgments made in it.' \
+        > docs/architecture/2026-08-15-meta-control-41.md
+    }
+    printf 'fixture repo\n' > README.md
+    printf 'name: ci\non: [push]\njobs: {}\n' > .github/workflows/ci.yml
+    git add -A 2>/dev/null; git commit -q -m base >/dev/null 2>&1
+    case "$_shv" in
+      nobase) : ;;                       # stay on `sole`: there is no base to fork from
+      *)      git checkout -q -b gov ;;
+    esac
+    _gov_art
+    case "$_shv" in
+      rename)
+        # ONE escaping path and one in-set destination: the source must NOT be re-created, or the
+        # derivation would see a modify instead of the delete this leg is about.
+        git mv .github/workflows/ci.yml docs/operations/meta-control.md ;;
+      *)
+        # EVERY member of the governance set except the two globs (the artifact above is one of
+        # them), so the positive anchor proves the whole enumeration rather than one lucky member.
+        printf '%s\n' '- [x] GOVERNANCE-ROW — boarded by the panel' >> BACKLOG.md
+        printf '%s\n' '- D-240815-1 — a ruling recorded at the sitting' >> docs/governance/DECISIONS.md
+        printf '%s\n' 'v3.220.0 GO-WITH-CONDITIONS' > docs/governance/.meta-control-last
+        printf '%s\n' '2026-08-15 · v3.220.0 · cadence · full · GO-WITH-CONDITIONS · panel 41' \
+          >> docs/governance/meta-control-log.md
+        printf '%s\n' '# Meta-control' 'The panel ceremony, amended at the sitting.' \
+          > docs/operations/meta-control.md
+        printf '%s\n' '# Skill — design' 'Amended at the sitting: a governance GO names its panel artifact.' \
+          > skills/design/SKILL.md ;;
+    esac
+    case "$_shv" in
+      escapes|composition)
+        # THE PAYLOAD THAT MUST NOT RIDE: a control-plane file, outside the set.
+        printf '#!/bin/sh\necho "a routed cure that belongs in its own slice"\n' > conformance/x.sh ;;
+    esac
+    git add -A 2>/dev/null; git commit -q -m "governance sitting" >/dev/null 2>&1
+    _gv_a=$(git rev-parse HEAD)
+    printf '%s\n' "record: promotion GO (approve->execute->log)" "gate: governance" \
+      "scope: PR-1" "approved-by: Fixture Human [committer]" "approved-sha: $_gv_a" \
+      "change-class: control-plane" "basis: docs/architecture/2026-08-15-meta-control-41.md" \
+      | git notes --ref=promotions add -f -F - "$_gv_a" 2>/dev/null
+    if [ "$_shv" = composition ]; then
+      # A SECOND commit (one note per commit) touching the artifact, carrying a DEFECTIVE design
+      # record on the SAME scope key: leg14's shape (no approved-by line).
+      printf 'The sitting record, amended.\n' >> docs/architecture/2026-08-15-meta-control-41.md
+      git add -A 2>/dev/null; git commit -q -m "sitting amendment" >/dev/null 2>&1
+      _gv_b=$(git rev-parse HEAD)
+      printf '%s\n' "record: promotion GO (approve->execute->log)" "gate: design" \
+        "scope: PR-1" "change-class: control-plane" "approved-sha: $_gv_b" \
+        "basis: docs/architecture/2026-08-15-meta-control-41.md" \
+        | git notes --ref=promotions add -f -F - "$_gv_b" 2>/dev/null
+    fi
+  )
+}
+
+# _mkreplay <dir> — the DURABLE PIN for the live defect (vet MED-3). The record body below is the
+# ledger's `1d9f0afa` REPLAYED BYTE-FAITHFULLY (10 lines, 536 bytes, read from the note blob
+# 2f2f392c on refs/notes/promotions): a `gate: design` GO whose basis is a meta-control artifact —
+# the exact workaround shape this arm retires. It must STAY defective forever, which is why the
+# durable evidence is this fixture and not a one-time run against the live ledger.
+# The approved-sha is the real one and does NOT resolve here, deliberately: the basis-glob leg fires
+# BEFORE the sha is resolved, so the leg asserts the defect it names and the body stays unedited.
+_mkreplay() {
+  _dr="$1"
+  mkdir -p "$_dr/docs/architecture" "$_dr/conformance" "$_dr/.claude/hooks"
+  # The authority copy (as _mkfix and _mkgov carry): this leg runs with the fixture as $DIR, so the
+  # CLASS derivation must resolve here too — without it the run dies at "change-class is UNDERIVABLE"
+  # and the leg would assert the wrong refusal (measured on first write, exactly as leg 3 warns).
+  cp "$DIR/conformance/promotion-readiness.sh" "$_dr/conformance/promotion-readiness.sh"
+  if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
+    cp "$DIR/.claude/hooks/guard-core.sh" "$_dr/.claude/hooks/guard-core.sh"
+  fi
+  (
+    cd "$_dr" || exit 1
+    git init -q 2>/dev/null
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    git config user.email fixture@example.invalid; git config user.name Fixture
+    printf 'fixture repo\n' > README.md
+    git add -A 2>/dev/null; git commit -q -m fixture >/dev/null 2>&1
+    printf '%s\n' \
+      'record: promotion GO (approve->execute->log)' \
+      'approved-sha: 1d9f0afaf756c8d51cbf118d6f97665fbaf2be5a' \
+      'approved-by: Bradley James [committer]' \
+      'gate: design' \
+      'rung: integration' \
+      'change-class: control-plane' \
+      'scope: PR-517' \
+      'approval-token: "GO on the panel-39 sitting record — the five D-240811-2 rulings were given by the owner in-session 2026-08-11 (three as owner-lens revisions) and the owner has approved PR 517; orchestrator-recorded per D-240805-4."' \
+      'basis: docs/architecture/2026-08-11-meta-control-39.md' \
+      'recorded-at: 2026-08-11T21:48:47Z' \
       | git notes --ref=promotions add -f -F - HEAD 2>/dev/null
   )
 }

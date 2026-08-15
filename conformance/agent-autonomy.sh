@@ -473,6 +473,30 @@ assert_deny  "Edit .env.staging"   '{"tool_name":"Edit","tool_input":{"file_path
 assert_allow "Write .env.sample"   '{"tool_name":"Write","tool_input":{"file_path":".env.sample","content":"KEY="}}'
 assert_allow "Write .env.template" '{"tool_name":"Write","tool_input":{"file_path":".env.template","content":"KEY="}}'
 assert_allow "Write .env.dist"     '{"tool_name":"Write","tool_input":{"file_path":".env.dist","content":"KEY="}}'
+# --- C5 GUARD-TOOL-COVERAGE-GREP-GLOB: the content-search family (Grep/Glob) + MultiEdit -----------
+# Grep/Glob route .path AND .glob through guard_check_read: a secret-TARGETING spelling (a path or
+# glob naming .env / *.env / *.pem …) is denied — the read half of exfil, same as the Read arm. These
+# were ALLOW before C5 (measured: `Grep output_mode:content pattern:"." path:".env"` returned the
+# whole secret; substrate 2026-08-14). MultiEdit folds into the Write/Edit arm (single .file_path).
+assert_deny  "Grep path .env"        '{"tool_name":"Grep","tool_input":{"pattern":".","path":".env","output_mode":"content"}}'
+assert_deny  "Grep glob *.env"       '{"tool_name":"Grep","tool_input":{"pattern":".","glob":"*.env","path":".","output_mode":"content"}}'
+assert_deny  "Grep glob *.pem"       '{"tool_name":"Grep","tool_input":{"pattern":".","glob":"*.pem"}}'
+assert_deny  "Grep path config/.env.production" '{"tool_name":"Grep","tool_input":{"pattern":".","path":"config/.env.production"}}'
+assert_deny  "Glob path .env"        '{"tool_name":"Glob","tool_input":{"pattern":"*","path":".env"}}'
+assert_deny  "Glob path secrets/"    '{"tool_name":"Glob","tool_input":{"pattern":"*","path":"secrets/db.txt"}}'
+assert_deny  "MultiEdit guard-core"  '{"tool_name":"MultiEdit","tool_input":{"file_path":".claude/hooks/guard-core.sh","edits":[{"old_string":"a","new_string":"b"}]}}'
+assert_deny  "MultiEdit settings"    '{"tool_name":"MultiEdit","tool_input":{"file_path":".claude/settings.json","edits":[{"old_string":"a","new_string":"b"}]}}'
+assert_deny  "MultiEdit .env.staging" '{"tool_name":"MultiEdit","tool_input":{"file_path":".env.staging","edits":[{"old_string":"a","new_string":"b"}]}}'
+# --- C5 must ALLOW: the DISCLOSED residual (directory/cwd content search is NOT denied — guarding it
+# would deny the agent's primary code-search tool; the residual is handed to the platform boundary,
+# runtime-guards.md), ordinary targets, a glob FILTER, and a control-plane read (reads of CP are legit).
+assert_allow "Grep path README.md"   '{"tool_name":"Grep","tool_input":{"pattern":".","path":"README.md","output_mode":"content"}}'
+assert_allow "Grep path . (residual)" '{"tool_name":"Grep","tool_input":{"pattern":"foo","path":".","output_mode":"content"}}'
+assert_allow "Grep no path (cwd)"    '{"tool_name":"Grep","tool_input":{"pattern":"foo","output_mode":"content"}}'
+assert_allow "Grep glob *.py filter" '{"tool_name":"Grep","tool_input":{"pattern":"def","glob":"*.py"}}'
+assert_allow "Glob pattern **/*.ts (cwd)"  '{"tool_name":"Glob","tool_input":{"pattern":"**/*.ts"}}'
+assert_allow "Grep path guard-core (CP read)" '{"tool_name":"Grep","tool_input":{"pattern":".","path":".claude/hooks/guard-core.sh","output_mode":"content"}}'
+assert_allow "MultiEdit app source"  '{"tool_name":"MultiEdit","tool_input":{"file_path":"src/app.ts","edits":[{"old_string":"a","new_string":"b"}]}}'
 # --- E3a: roster FLOOR defs + the loop script are control-plane (DENY write/redirect/sed, ALLOW read/run) ---
 assert_deny "Write roster def"      '{"tool_name":"Write","tool_input":{"file_path":"agents/orchestrator.agent.md","content":"x"}}'
 assert_deny "Edit loop script"      '{"tool_name":"Edit","tool_input":{"file_path":"scripts/orchestrator-run.sh","old_string":"a","new_string":"b"}}'
@@ -772,6 +796,63 @@ assert_allow "printf > /tmp plain"       '{"tool_name":"Bash","tool_input":{"com
 assert_allow "cd .kit && cat dials.conf" '{"tool_name":"Bash","tool_input":{"command":"cd .kit && cat dials.conf"}}'
 
 # =============================================================================================
+# C4 GUARD-FP-RELIEF — three disqualification-shaped ALLOW arms (design 2026-08-14). Every FLIP was
+# measured DENY at boarding and now ALLOWs; every must-stay was measured DENY and stays DENY. All
+# changes are ALLOW-side (new read verbs, a narrower kit-exec recognition input, masked classification
+# input for git URLs); no deny pattern is edited (monotone), proven by this whole battery staying green.
+# ---- Arm 1 (face a): E4a stdout readers on a control-plane path FLIP to ALLOW ----
+assert_allow "C4-A1 shellcheck cp"      '{"tool_name":"Bash","tool_input":{"command":"shellcheck conformance/verify.sh"}}'
+assert_allow "C4-A1 jq workflow"        '{"tool_name":"Bash","tool_input":{"command":"jq . .github/workflows/ci.yml"}}'
+assert_allow "C4-A1 shasum loop-state"  '{"tool_name":"Bash","tool_input":{"command":"shasum conformance/loop-state.sh"}}'
+assert_allow "C4-A1 yamllint workflow"  '{"tool_name":"Bash","tool_input":{"command":"yamllint .github/workflows/ci.yml"}}'
+assert_allow "C4-A1 md5 cp"             '{"tool_name":"Bash","tool_input":{"command":"md5 conformance/verify.sh"}}'
+assert_allow "C4-A1 cksum cp"           '{"tool_name":"Bash","tool_input":{"command":"cksum conformance/verify.sh"}}'
+# Arm 1 tier 2 conditional (no-flag) readers FLIP; discrimination against .env (secret arm) preserved.
+assert_allow "C4-A1 yq no-flag"         '{"tool_name":"Bash","tool_input":{"command":"yq . .github/workflows/ci.yml"}}'
+assert_allow "C4-A1 tree no-flag"       '{"tool_name":"Bash","tool_input":{"command":"tree conformance"}}'
+assert_allow "C4-A1 jq OUT (discrim)"   '{"tool_name":"Bash","tool_input":{"command":"jq -r .name package.json"}}'
+# must-stay DENY: redirect to a CP target (E5), the deliberate OUT verbs, and every write-flag form.
+assert_deny "C4-A1 shellcheck > cp"     '{"tool_name":"Bash","tool_input":{"command":"shellcheck conformance/verify.sh > hooks/pre-push"}}'
+assert_deny "C4-A1 jq > cp"             '{"tool_name":"Bash","tool_input":{"command":"jq . conformance/verify.sh > hooks/pre-push"}}'
+assert_deny "C4-A1 sort OUT"            '{"tool_name":"Bash","tool_input":{"command":"sort conformance/verify.sh"}}'
+assert_deny "C4-A1 less OUT"            '{"tool_name":"Bash","tool_input":{"command":"less conformance/verify.sh"}}'
+assert_deny "C4-A1 yq -i in-place"      '{"tool_name":"Bash","tool_input":{"command":"yq -i .a=1 .github/workflows/ci.yml"}}'
+assert_deny "C4-A1 yq -s expr-write"    '{"tool_name":"Bash","tool_input":{"command":"yq -s \"hooks/pre-push\" payload.yml"}}'
+assert_deny "C4-A1 yq --split-exp"      '{"tool_name":"Bash","tool_input":{"command":"yq --split-exp \"conformance/x\" payload.yml"}}'
+assert_deny "C4-A1 yq -P (over-deny)"   '{"tool_name":"Bash","tool_input":{"command":"yq -P .github/workflows/ci.yml"}}'
+assert_deny "C4-A1 tree -o write"       '{"tool_name":"Bash","tool_input":{"command":"tree -o hooks/pre-push conformance"}}'
+assert_deny "C4-A1 tree -H (over-deny)" '{"tool_name":"Bash","tool_input":{"command":"tree -H conformance"}}'
+# ---- Arm 2 (face b): wrapper-prefix recognition for kit-exec FLIPs to ALLOW ----
+assert_allow "C4-A2 timeout kit-exec"   '{"tool_name":"Bash","tool_input":{"command":"timeout 600 sh conformance/verify.sh"}}'
+assert_allow "C4-A2 nice -n kit-exec"   '{"tool_name":"Bash","tool_input":{"command":"nice -n 10 sh conformance/verify.sh"}}'
+assert_allow "C4-A2 env kit-exec"       '{"tool_name":"Bash","tool_input":{"command":"env sh conformance/verify.sh"}}'
+assert_allow "C4-A2 command kit-exec"   '{"tool_name":"Bash","tool_input":{"command":"command sh conformance/verify.sh"}}'
+assert_allow "C4-A2 nested wrappers"    '{"tool_name":"Bash","tool_input":{"command":"nice nice timeout 5 sh conformance/verify.sh"}}'
+# must-stay DENY: env assignment/flag (guard-disabling), non-numeric timeout, non-kit script, CP redirect,
+# a non-shell lead after strip, and a real write behind a wrapper.
+assert_deny "C4-A2 env SELFEDIT="       '{"tool_name":"Bash","tool_input":{"command":"env KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh"}}'
+assert_deny "C4-A2 env PATH="           '{"tool_name":"Bash","tool_input":{"command":"env PATH=/tmp sh conformance/verify.sh"}}'
+assert_deny "C4-A2 env -i flag"         '{"tool_name":"Bash","tool_input":{"command":"env -i sh conformance/verify.sh"}}'
+assert_deny "C4-A2 timeout -s flag"     '{"tool_name":"Bash","tool_input":{"command":"timeout -s KILL sh conformance/verify.sh"}}'
+assert_deny "C4-A2 nice -n non-digit"   '{"tool_name":"Bash","tool_input":{"command":"nice -n hooks/pre-push sh conformance/verify.sh"}}'
+assert_deny "C4-A2 timeout non-kit"     '{"tool_name":"Bash","tool_input":{"command":"timeout 600 sh /tmp/evil.sh conformance/verify.sh"}}'
+assert_deny "C4-A2 wrapper > cp (ord)"  '{"tool_name":"Bash","tool_input":{"command":"timeout 600 sh conformance/verify.sh > hooks/pre-push"}}'
+assert_deny "C4-A2 timeout sed -i cp"   '{"tool_name":"Bash","tool_input":{"command":"timeout 600 sed -i s/x/y/ hooks/pre-push"}}'
+assert_deny "C4-A2 command rm cp"       '{"tool_name":"Bash","tool_input":{"command":"command rm -rf conformance"}}'
+# ---- Arm 3 (face c): remote-URL token masking for git-lead segments FLIPs to ALLOW ----
+assert_allow "C4-A3 clone https"        '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/SeaBrad72/sparkwright-dev.git /tmp/x"}}'
+assert_allow "C4-A3 fetch https"        '{"tool_name":"Bash","tool_input":{"command":"git fetch https://github.com/SeaBrad72/sparkwright-dev.git main"}}'
+assert_allow "C4-A3 clone scp-form"     '{"tool_name":"Bash","tool_input":{"command":"git clone git@github.com:SeaBrad72/sparkwright-dev.git /tmp/x"}}'
+# must-stay DENY: the raw clone-DEST arm, the token-bound-mask pin (dest not swallowed), file:// (never
+# masked), the push-to-main floor, and a non-git lead whose URL literally contains a CP path.
+assert_deny "C4-A3 clone dest .claude"  '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/SeaBrad72/sparkwright-dev.git .claude"}}'
+assert_deny "C4-A3 clone dest hooks"    '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/x/other.git hooks"}}'
+assert_deny "C4-A3 push dest hooks"     '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/x/r.git hooks"}}'
+assert_deny "C4-A3 file:// never mask"  '{"tool_name":"Bash","tool_input":{"command":"git clone file:///tmp/evil/.git /tmp/x"}}'
+assert_deny "C4-A3 push main floor"     '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/SeaBrad72/sparkwright-dev.git main"}}'
+assert_deny "C4-A3 curl non-git lead"   '{"tool_name":"Bash","tool_input":{"command":"curl -O https://example.com/hooks/pre-push.git"}}'
+
+# =============================================================================================
 # GUARD-PATH-ALIAS-BYPASS (P0) — the guard must judge the TARGET a path reaches, not the string.
 # Legs live at TOP LEVEL on purpose: verify.sh and ci.yml invoke this script WITHOUT --selftest,
 # so anything inside selftest() would never run in CI.
@@ -1039,11 +1120,14 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "K-A: cd accumulator disabled -> composed-path DENY flips" \
     's#^_cp8b_eff_update() {#_cp8b_eff_update() { return #' \
     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && printf x > pre-push"}}' allow
+  # C4: the target-arm triggers now consume the URL-masked recognition-copy `$_tad_c` (Arm 3), so the
+  # literal-token / pathhit mutant anchors moved off `$_seg`. Re-anchored to `$_tad_c` (the exact
+  # gpab_mutant hazard its own comment names — "a fix reshaped the line the expression anchored on").
   gpab_mutant "K-B: union dropped (composed-instead-of-literal) -> literal-token leg flips" \
-    's#    if _cp8b_tad_literal_tok "$_seg"; then#    if false; then#' \
+    's#    if _cp8b_tad_literal_tok "$_tad_c"; then#    if false; then#' \
     '{"tool_name":"Bash","tool_input":{"command":"unzip -d conformance /tmp/evil.zip"}}' allow
   gpab_mutant "K-C: target arm (string-level pathhit) disabled -> interpreter DENY flips" \
-    's#    if _cp8b_tad_pathhit "$_seg"; then#    if false; then#' \
+    's#    if _cp8b_tad_pathhit "$_tad_c"; then#    if false; then#' \
     '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(.claude/hooks/guard-core.sh,w)"}}' allow
   gpab_mutant "K-D: accumulator honors a bogus over-split cd -> C1 desync DENY flips (security)" \
     's#  if _cp8b_has_quote "$1"; then return; fi#  if false; then return; fi#' \
@@ -1063,6 +1147,41 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "K-G: kit-exec redirect narrowing disabled -> verify>/tmp ALLOW flips (FIX 2)" \
     '/_cp8b_tad_is_kit_exec()/,/^}/ s#_cp8b_tad_redir_cp "$1" && return 1#return 1#' \
     '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > /tmp/out.log"}}' deny
+
+  # === C4 GUARD-FP-RELIEF mutants — one per arm, each pins a disqualifier is load-bearing ==========
+  # (Names are C4-prefixed to avoid colliding with the fix-round-1 K-F/K-G above.)
+  #
+  # C4-KH (Arm 1, vet Finding 1): the conditional yq/tree reader DECLINES on any flag. Neuter the
+  # decline (`return 0` unconditionally) and the write-flag form `yq -s '"hooks/pre-push"'` (an
+  # expression-named control-plane WRITE) is wrongly read-recognized -> DENY flips to ALLOW. This is
+  # the exact hole a specific-flag denylist would leave; decline-on-any-flag closes it.
+  gpab_mutant "C4-KH: conditional reader recognizes a flagged form -> yq -s CP-write flips" \
+    's#_cp8b_seg_has_flag "$1" || return 0#return 0#' \
+    '{"tool_name":"Bash","tool_input":{"command":"yq -s \"hooks/pre-push\" payload.yml"}}' allow
+  # C4-KF / C4-KF-flag (Arm 2, constraint i / vet Finding 2): env strips BARE only. The mutation makes
+  # env honor flagged/assignment forms (neuter the bare-only disqualifier + widen the strip to consume
+  # the next token). BOTH the guard-disabling assignment leg AND the flag leg then flip DENY->ALLOW —
+  # the assignment form alone under-pins, so the flag companion is asserted too.
+  gpab_mutant "C4-KF: env strip honors an ASSIGNMENT -> env KIT_GUARD_SELFEDIT=1 flips (guard-disabling)" \
+    '/_cp8b_strip_wrappers()/,/^}/{s#case "$_sw2" in -\*|\*=\*) break ;; esac#:#;s#env\[\[:space:\]\]+//#env[[:space:]]+[^[:space:]]+[[:space:]]+//#;}' \
+    '{"tool_name":"Bash","tool_input":{"command":"env KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh"}}' allow
+  gpab_mutant "C4-KF-flag: env strip honors a FLAG -> env -i flips" \
+    '/_cp8b_strip_wrappers()/,/^}/{s#case "$_sw2" in -\*|\*=\*) break ;; esac#:#;s#env\[\[:space:\]\]+//#env[[:space:]]+[^[:space:]]+[[:space:]]+//#;}' \
+    '{"tool_name":"Bash","tool_input":{"command":"env -i sh conformance/verify.sh"}}' allow
+  # C4-KG (Arm 3, git-lead guard): masking is scoped to git-lead segments. Remove the guard (mask any
+  # lead) and a non-git URL literally containing a CP path is masked away -> `curl -O …/hooks/pre-push.git`
+  # DENY flips to ALLOW. curl derives a local write target from that URL, so it must stay denied.
+  gpab_mutant "C4-KG: URL mask applied to a non-git lead -> curl …pre-push.git flips" \
+    's#if \[ "$_lv" = git \]; then#if true; then#' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -O https://example.com/hooks/pre-push.git"}}' allow
+  # C4-KG2 (Arm 3, vet Finding 3): masking is TOKEN-BOUNDED (`[^[:space:]]*`). Make it greedy (`.*`) and
+  # the mask swallows a following control-plane DESTINATION into the URL -> `git push <url>.git hooks`
+  # DENY flips to ALLOW (the token walk that catches `hooks` never sees it). Subject is a `git push`
+  # (reaches the target arm's triggers; `git clone … hooks` is instead held by the raw clone-dest arm,
+  # which a Part-C mask cannot reach — so this pin uses push, the shape a greedy mask actually breaks).
+  gpab_mutant "C4-KG2: greedy (non-token-bounded) mask swallows the dest -> git push <url>.git hooks flips" \
+    '/_cp8b_mask_remote_urls()/,/^}/ s#\[\^\[:space:\]\]\*#.*#g' \
+    '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/x/r.git hooks"}}' allow
 fi
 
 # --- non-vacuity oracle -------------------------------------------------------------------------

@@ -73,6 +73,8 @@ A green check must *mean* something. Verification is also how you know the check
 - About to write "done", "passing", "green", "works", "ready" with no fresh command output in this turn.
 - Relaying a subagent's success without inspecting the diff or running the gate against the integrated tree.
 - "Should pass", "I believe", "it ought to" — belief is not evidence.
+- N "independent confirmations" that all inherit one measurement basis — a derivation is a claim; agreement proves nothing unless each re-measures fresh at the same basis (same commit/merge-base) (panel #40).
+- Asserting how git behaves from recall — run git on a throwaway repo instead; three different seats' plausible git assertions were each falsified by execution in one slice (panel #40).
 - A green check you have never watched fail (possibly drifted-green / vacuous).
 - A tag-reading check verified only on a tag-carrying clone.
 

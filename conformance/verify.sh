@@ -2,7 +2,10 @@
 # verify.sh — honest aggregate conformance runner. Classifies each check:
 #   [control] — verifies a live/remote/structural WORKING control
 #   [doc]     — verifies DOCUMENTATION / recorded evidence EXISTS (not that it was tested)
-# Prints PASS/FAIL/UNVERIFIED/N-A per check + an honest summary footer. Exit policy:
+# Prints PASS/FAIL/UNVERIFIED/N-A per check + an honest summary footer. THREE non-FAIL outcomes, and
+# they are NOT interchangeable: PASS = it ran and proved its claim · UNVERIFIED (rc 2) = it could not
+# run, and is a FAIL under --require/CI · N-A = it declined to verify here and SAID SO (a --kitself row
+# on an adopter tree, or a child that self-skipped on rc 0) — never blocking, never an OK. Exit policy:
 #   non-zero if any [control] check FAILS, or (under --require / CI) any check is UNVERIFIED.
 #   [doc] checks that are present-but-untested PASS — honestly labelled, not hidden.
 # A green run proves controls hold AND release/DR/resilience safety is DOCUMENTED — NOT
@@ -45,9 +48,55 @@ emit_diag() {  # <check-name> <captured-output>
   printf '      ──────────────────────────────────────────\n'
 }
 
+# ── C6 — a check that DID NOT VERIFY must not render PASS ───────────────────────────────────────────
+# THE DEFECT: check() runs the child, and on rc 0 it threw the child's own words away and printed PASS.
+# But dozens of checks are CONDITIONAL — "no Dockerfile", "no data surface", "not an AI feature", "not
+# the kit repo" — and they say so on stdout and exit 0. The aggregate rendered that self-declared
+# NON-verification with the same token as an executed proof, so a green run over-claimed by however
+# many rows had quietly skipped (MEASURED: ≥14 on the kit tree, whose Summary simultaneously reported
+# `0 n/a` — the bug's own signature; ≥39 on a raw adopter export).
+#
+# THE PREDICATE IS MEASURED, NOT INVENTED — and the measurement CORRECTED it twice. It has two
+# conjuncts, and both were forced by evidence rather than chosen.
+#
+# CONJUNCT 1 — the child declares a skip. Enumerated over every rc-0 self-skip branch reachable from
+# the `check` rows below, the shipped idiom has exactly three shapes, all printed as a WHOLE LINE:
+#   `N/A: …` / `N/A (no Dockerfile): …` / `N/A — …`        (the conditional-surface skips)
+#   `<check-name>: N/A — kit-self check (…)`                (the ~20 *-wired.sh kit-self skips)
+#   `SKIP: …`                                               (conformance/shellcheck.sh, tool absent)
+# LINE-ANCHORING IS LOAD-BEARING, not tidiness. A check that is genuinely RUNNING prints `N/A` mid-line
+# all the time — incept-first-run-green.sh renders `  [N/A]   db-postgres — …` per sub-gate and a
+# `… $NAS N/A, …` summary; selftests narrate `selftest PASS: no CLAUDE.md -> N/A`. MEASURED over a full
+# instrumented aggregate: 36 of the 135 rc-0 rows mention n/a or skip prose somewhere in their output
+# and every one of them had really run. An unanchored match would demote all 36. The anchor takes none.
+#
+# CONJUNCT 2 — and the child claims NO verdict. This one is a BUILD-TIME FALSIFICATION of the design's
+# assumed predicate (design §6.2 expected conjunct 1 alone). Measured on the same aggregate: conjunct 1
+# on its own captured `image-supply` and `runtime-floor`, which iterate the ten profiles, skip the three
+# or four that have no Dockerfile / no declared floor, and VERIFY THE REST — `image-supply` proved seven
+# real supply chains and then signed off `container-supply-chain: OK (7 profile(s) … checked; others
+# N/A)`. Calling that N-A under-claims: the run DID verify something. So a PARTIAL skip beside a real
+# verdict stays PASS, and N-A means what it says — this check verified NOTHING here. The verdict idiom
+# is uppercase `OK`/`PASS` at line start (bare or `<name>: OK`), deliberately case-SENSITIVE so ordinary
+# prose ("ok, so…") cannot suppress a real skip. Measured effect: 17 rows classified → 15, and the two
+# it drops are exactly the two that had proved something.
+#
+# FAIL DIRECTION IS SAFE BY CONSTRUCTION: this is a render-honesty change, never an authorization one.
+# A false positive under-claims (a real proof shows as N-A — visible, non-blocking, never green-when-
+# dark); a false negative is exactly today's status quo. HONEST CEILING: it is a prose heuristic. A
+# future check that self-skips in NON-conforming prose renders PASS until its idiom is added here —
+# the class is narrowed, not closed (boarded: VERIFY-SKIP-IDIOM-RESIDUAL).
+is_self_skip() {  # <captured-output> — 0 when the child DECLARED it verified nothing here
+  printf '%s\n' "$1" | grep -Eqi '^(N/A([^A-Za-z0-9]|$)|SKIP:|[A-Za-z0-9_.-]+:[[:space:]]*N/A([^A-Za-z0-9]|$))' || return 1
+  ! printf '%s\n' "$1" | grep -Eq '^(OK|PASS)([^A-Za-z0-9]|$)|^[A-Za-z0-9_.-]+:[[:space:]]*(OK|PASS)([^A-Za-z0-9]|$)'
+}
+
 # ── INCOMPLETE (K16) — an interrupted run must SAY so, in its own output ────────────────────────────
-# The aggregate is ~105 checks / ~281s — LONGER than the default foreground command cap of the agent
-# harnesses this kit is driven with. When one of those caps fires, the run is killed mid-flight.
+# The aggregate is WELL OVER A HUNDRED checks and takes MINUTES (measured 281s at v3.171.0; ~22min on a
+# loaded host). The authoritative count is the run's own `Summary:` line — no figure is repeated here,
+# because every hard-coded one in this file had gone stale by ~30 rows before C6 corrected them. That
+# runtime is LONGER than the default foreground command cap of the agent harnesses this kit is driven
+# with. When one of those caps fires, the run is killed mid-flight.
 #
 # THE EXIT CODE WAS NEVER THE GAP. A signalled run already exits non-zero (143 for TERM, 130 for INT),
 # so a caller that inspects the status is not fooled. What was missing is any STATEMENT: the output
@@ -60,9 +109,9 @@ emit_diag() {  # <check-name> <captured-output>
 # one. HONEST CEILING: cannot fire on SIGKILL, and cannot help a consumer that simply stops reading.
 _incomplete() {
   echo ""
-  printf 'RESULT: FAIL (INCOMPLETE — interrupted after %d check(s); this is NOT a pass)\n' "$((controls+docs))"
+  printf 'RESULT: FAIL (INCOMPLETE — interrupted after %d check(s); this is NOT a pass)\n' "$((controls+docs+nas))"
   echo "An interrupted run proves nothing about the checks that never ran."
-  echo "The full aggregate is ~105 checks / ~5 minutes — re-run WITHOUT a command timeout"
+  echo "The full aggregate is well over a hundred checks / several minutes — re-run WITHOUT a command timeout"
   echo "(background it, or capture output to a file). See conformance/README.md \"What a green run means\"."
   exit "${1:-1}"
 }
@@ -86,6 +135,16 @@ check() {
     fi
   fi
   if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
+  # C6 — a child that self-declared it verified NOTHING here renders N-A, not PASS. Gated on rc = 0
+  # EXACTLY, so this branch is structurally unreachable from the FAIL and rc-2/UNVERIFIED arms below:
+  # no failing or unverified check can be reclassified by prose, and --require semantics are untouched.
+  # Placed BEFORE the kind-increment so an N-A row leaves BOTH denominators — byte-consistent with the
+  # --kitself precedent above, so N-A means one thing everywhere: this check did not verify anything
+  # here, and said so. Not blocking, not OK; the reason stays in $out and is deliberately not surfaced
+  # (the token + the count IS the honesty claim; one line per check, per the selftest's own pin).
+  if [ "$rc" = "0" ] && is_self_skip "$out"; then
+    line "[$kind]" "$name" "N-A"; nas=$((nas+1)); return 0
+  fi
   case "$kind" in control) controls=$((controls+1)) ;; doc) docs=$((docs+1)) ;; esac
   if [ "$rc" = "0" ]; then
     line "[$kind]" "$name" "PASS"
@@ -127,8 +186,30 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '%s\n' "$out" | grep -q '\[control\] .* PASS' || { echo "verify --selftest: FAIL (no [control] PASS — vacuous render)"; exit 1; }
   if printf '  [control] x                FAIL\n' | grep -q '\[control\] .* PASS'; then echo "verify --selftest: FAIL (vacuous fixture wrongly matched control-PASS)"; exit 1; fi
 
+  # -- C6 COUNT leg: the Summary's `n/a` field must EQUAL the N-A rows the run actually rendered -------
+  # "Rendered AND COUNTED" is half the C6 claim, and until now NOTHING in this file asserted a count —
+  # every leg graded tokens. Reuses the aggregate already captured above (no extra run). Both directions
+  # are load-bearing: a mutant that renders N-A without `nas++` under-counts and dies here; one that
+  # increments without rendering over-counts and dies here; and the >0 floor stops the equality going
+  # vacuous on a hypothetical tree where nothing skips (the kit tree measured ≥14 at C6).
+  _c6rows=$(printf '%s\n' "$out" | grep -Ec '^  \[(control|doc)\] .* N-A$') || true
+  _c6na=$(printf '%s\n' "$out" | grep '^Summary:' | sed -n 's/.*· \([0-9][0-9]*\) n\/a ·.*/\1/p')
+  case "${_c6na:-x}" in ''|*[!0-9]*)
+    echo "verify --selftest: FAIL (the Summary line carries no parseable n/a field — the third outcome is"
+    echo "  rendered but not counted, which is the half of the C6 claim nothing used to assert)"; exit 1 ;;
+  esac
+  if [ "$_c6rows" -eq 0 ]; then
+    echo "verify --selftest: FAIL (the aggregate rendered ZERO N-A rows — either every check really executed"
+    echo "  (then this leg is vacuous and the floor must be re-measured) or the skip classifier is dead)"; exit 1
+  fi
+  if [ "$_c6na" != "$_c6rows" ]; then
+    echo "verify --selftest: FAIL (Summary says $_c6na n/a but $_c6rows N-A row(s) were rendered — the count and"
+    echo "  the render disagree, so one of them is lying about how much the run actually verified)"; exit 1
+  fi
+
   # ── INCOMPLETE leg (K16) — an INTERRUPTED run must SAY it was interrupted and exit non-zero ──────────
-  # WHY THIS EXISTS. The aggregate takes ~281s for 103 checks — longer than the default foreground
+  # WHY THIS EXISTS. The aggregate takes minutes over well over a hundred checks (see the header: the
+  # authoritative count is the run's own Summary line, never a figure copied into prose) — longer than the default foreground
   # command cap of the agent harnesses people drive this kit with. In CP-7 run 4 a wrapper stopped
   # reading at ~43s of output and the run was read as an unexplained stall; with no trap, a killed run's
   # partial output is INDISTINGUISHABLE from a run still in progress, so the consumer must notice an
@@ -228,9 +309,62 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "verify --selftest: FAIL (a --kitself check N-A'd a MIXED-marker tree -- N-A must require BOTH kit"
     echo "  markers absent; one present means run. An && -> || regression would mis-N-A here)"; exit 1; }
 
+  # -- C6 NEVER-OK leg: a check that DID NOT VERIFY must render N-A, never PASS ------------------------
+  # The row's own acceptance criterion. Fixture-driven against the REAL check() (a counter-reset subshell,
+  # mirroring the K3/--kitself legs), never a replica — a copy of the logic is the classic way a green
+  # proves nothing about the shipped path. Zero additional full aggregates.
+  _d6=$(mktemp -d) || { echo "verify --selftest: FAIL (no tmpdir for the C6 leg)"; exit 1; }
+  printf '#!/bin/sh\necho "N/A: no data surface here — skipping"\nexit 0\n' > "$_d6/skipper.sh"
+  _c6skip=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+             check control c6skip sh "$_d6/skipper.sh" 2>&1 )
+  rm -f "$_d6/skipper.sh"; rmdir "$_d6" 2>/dev/null || true
+  printf '%s\n' "$_c6skip" | grep -q 'c6skip .* N-A' || {
+    echo "verify --selftest: FAIL (a check that exited 0 saying it verified NOTHING did not render N-A —"
+    echo "  a self-declared skip is being reported with the same token as an executed proof, which is"
+    echo "  exactly how a green aggregate over-claims: it counts non-verification as verification)"; exit 1; }
+  # LOAD-BEARING NEGATIVE (the anti-vacuity pair's second half): the skipped row must not satisfy the
+  # control-PASS grep this file's own non-vacuity leg (above) relies on. Without this, a render that
+  # printed BOTH tokens, or an N-A that still read as PASS to every downstream grep, would pass silently.
+  if printf '%s\n' "$_c6skip" | grep -q '\[control\] .* PASS'; then
+    echo "verify --selftest: FAIL (a self-skipped check still matched the control-PASS grep — the N-A token"
+    echo "  must REPLACE PASS, not accompany it, or every consumer still reads the skip as a proof)"; exit 1
+  fi
+  # POSITIVE ANCHOR: an executed proof must still render PASS. Kills the opposite mutant — an
+  # always-N-A classifier, which would make the whole aggregate honest-looking and worthless.
+  _c6ran=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+            check control c6ran sh -c 'echo "OK: really verified something"; exit 0' 2>&1 )
+  printf '%s\n' "$_c6ran" | grep -q 'c6ran .* PASS' || {
+    echo "verify --selftest: FAIL (an EXECUTED, passing check no longer renders PASS — an over-broad skip"
+    echo "  classifier demotes real proofs to N-A, emptying the aggregate of every claim it makes)"; exit 1; }
+  # ANCHOR leg: the skip idiom is matched at LINE START only. A check that is genuinely RUNNING prints
+  # `N/A` mid-line as a matter of course — incept-first-run-green.sh renders `  [N/A]   <id>` per sub-gate
+  # and a `… $NAS N/A, …` summary line while proving every gate. An unanchored classifier demotes those
+  # real proofs; this fixture reproduces that exact shipped output shape and must still render PASS.
+  _c6mid=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+            check control c6midline sh -c 'echo "  [N/A]   db-postgres — stateless fixture"; echo "  summary: 12 GREEN, 1 N/A, 0 MISCONFIGURED-RED"; exit 0' 2>&1 )
+  printf '%s\n' "$_c6mid" | grep -q 'c6midline .* PASS' || {
+    echo "verify --selftest: FAIL (a RUNNING check that merely mentions N/A mid-line was demoted to N-A —"
+    echo "  the classifier lost its line anchor and now under-claims real proofs, e.g. every"
+    echo "  incept-first-run-green row, whose per-gate render legitimately prints '  [N/A]  <id>')"; exit 1; }
+  # PARTIAL-SKIP leg: a check that skips SOME items and VERIFIES the rest has verified something, so it
+  # is a PASS. This fixture reproduces the two rows that falsified the design's one-conjunct predicate
+  # at build time (image-supply and runtime-floor iterate the ten profiles, skip the few with no
+  # Dockerfile / no declared floor, prove the rest, and sign off `… OK (7 profile(s) … checked; others
+  # N/A)`). A one-conjunct mutant renders this N-A and dies here — which is the point: N-A must mean
+  # NOTHING was verified, or the count stops meaning anything.
+  _c6part=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+             check control c6partial sh -c 'echo "N/A (no Dockerfile): profiles/ml"; echo "OK profiles/go: supply chain present"; echo "container-supply-chain: OK (1 profile(s) checked; others N/A)"; exit 0' 2>&1 )
+  printf '%s\n' "$_c6part" | grep -q 'c6partial .* PASS' || {
+    echo "verify --selftest: FAIL (a check that skipped SOME items but PROVED others was rendered N-A —"
+    echo "  it verified something, so N-A under-claims its own run. N-A is for a check that verified"
+    echo "  NOTHING here; a partial skip beside a real verdict is a PASS)"; exit 1; }
+
   echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt"
   echo "                       + K3: a FAILING check surfaces its diagnostic, a PASSING one stays one line"
-  echo "                       + --kitself N-A/RUNS/mixed + VERIFY-SUMMARY: no 'docs present' over a doc-fail)"; exit 0
+  echo "                       + --kitself N-A/RUNS/mixed + VERIFY-SUMMARY: no 'docs present' over a doc-fail"
+  echo "                       + C6: a self-declared skip renders N-A not PASS, an executed proof keeps PASS,"
+  echo "                         a mid-line N/A mention and a PARTIAL skip beside a real verdict both stay"
+  echo "                         PASS, and the Summary n/a count equals the N-A rows rendered)"; exit 0
 fi
 
 echo "Conformance verification (honest aggregate)"
@@ -315,6 +449,46 @@ check control pre-push-selftest        --kitself sh hooks/pre-push --selftest
 # `^check control` rows), and its own --selftest runs as a dedicated ci.yml step (H3 pair pointer:
 # conformance-selftests, "dial-state self-test").
 check control dial-state               --kitself sh conformance/dial-state.sh
+# permission-surface-audit (C3 PERMISSION-SURFACE-DELIVERY-AUDIT) — reconciles the shipped
+# .claude/settings.json allow/ask/deny surface + the PreToolUse hook against the checked enumeration
+# conformance/sanctioned-commands.tsv, and resolves every ruling-only/deliberately-absent ruling-ref
+# against DECISIONS.md. The LIVE check is registered (base-INDEPENDENT — pure tracked-text compare, no
+# SHA/base needed) and is the row that reds a committed shipped-vs-ruling disagreement. --kitself IS
+# LOAD-BEARING and the same category as the four rows above: the enumeration is export-ignored, so an
+# adopter tree legitimately carries none and reads N/A by design (adopters populate their own). The
+# check ALSO scope-guards itself in-script on the same un-spoofable marker set, so neither surface
+# alone is the switch. Registering it here enrols the file in non-vacuity.sh's sweep (which selects
+# from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
+# (conformance-selftests, "permission-surface-audit self-test").
+check control permission-surface-audit --kitself sh conformance/permission-surface-audit.sh
+# tool-coverage (C5 GUARD-TOOL-COVERAGE-GREP-GLOB) — the content-tool FAMILY LOCK. Keys on C3's
+# sanctioned-commands.tsv guard-backstop column (corrected in C5): every tool-name allow/ask row must
+# carry a recorded backstop (full/residual-family/declared-uncovered), never a silent `none`, and each
+# claimed backstop must have a matching guard.sh case arm. Detection-not-enumeration: a newly-added
+# content tool (forced into the TSV by C3's reconcile lock) reds this unless a human wires/declares it.
+# The LIVE check is registered (base-INDEPENDENT — pure tracked-text compare of the TSV against
+# guard.sh, no SHA/base needed). --kitself IS LOAD-BEARING and the same category as the rows above: the
+# enumeration is export-ignored, so an adopter tree carries none and reads N/A (adopters populate their
+# own). The check ALSO scope-guards itself in-script on the same un-spoofable marker set, so neither
+# surface alone is the switch. Registering it here enrols the file in non-vacuity.sh's sweep (which
+# selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
+# (conformance-selftests, "tool-coverage self-test").
+check control tool-coverage            --kitself sh conformance/tool-coverage.sh
+# adopter-told (C7 ADOPTER-TOLD-LOOP-GATES-ARE-ENFORCED) — the shipped prose must not tell an adopter
+# a gate is ENFORCED when nothing in what they receive enforces it. It builds a real adopter export
+# (~0.4s), classifies every conformance check as hard-reachable / dial-reachable (observe-dialed
+# profiles/adopter-gates.yml) / unreachable, and reds a claim-verb line naming a check the adopter
+# cannot reach — unless the line discloses the dial or is narrowed to the kit's own CI and true there.
+# NO --kitself, DELIBERATELY, and this is the distinction from the four rows above: this check ARMS
+# ITSELF in-script on the same un-spoofable kit-marker pair, so the flag would be redundant on the
+# adopter side and MISLEADING on the kit side — its N/A is a self-declared skip (C6 renders it N-A),
+# not a registry-level suppression, and on an ARMED tree an export or parse failure is a FAIL rather
+# than an N/A. Registering it here also enrols it in non-vacuity.sh's sweep (which selects from these
+# `^check control` rows); its own --selftest runs as a dedicated ci.yml step (conformance-selftests,
+# "adopter-told self-test") and the LIVE check runs in `docs-links` — a required, no-`if:` job that
+# SURVIVES the docs_only skip, unlike cf-verify-enforced/cf-export, which are disarmed on exactly the
+# `.md` PRs a prose-claim check governs (measured, C7 design §2.7).
+check control adopter-told             sh conformance/adopter-told.sh
 # phase-gate is the EDIT-TIME sibling of loop-state's merge-time refusal floor ([S1a-i]). BOTH modes
 # are registered, and both are base-INDEPENDENT: the default mode checks the §5 reason vocabulary,
 # the totality of the rc contract over it and the T2 ceremony allowlist's must-refuse fixtures, while
@@ -374,6 +548,51 @@ check control shellcheck       sh conformance/shellcheck.sh
 check control "license-check(selftest)" sh scripts/license-check.sh --selftest
 check control guard-wired      sh conformance/guard-wired.sh
 check control check-links      sh conformance/check-links.sh
+# citation-live (C9 CITATION-LIVE, ruling D-240804-2) — the COMPLEMENT of the row above, and the pair
+# is the point: check-links validates Markdown LINKS and deliberately SKIPS code spans, where ~85% of
+# the kit's `path.ext:LINE` citations live (its own header discloses that ceiling). This row grades
+# exactly those, over the LIVING Markdown corpus only — the dated record (designs, plans, CHANGELOG,
+# the meta-control log) is exempt-and-REPORTED, because a dated document's citations were correct
+# against the tree of its own date. NO --kitself, for adopter-told's reason: the check ARMS ITSELF
+# in-script on the same un-spoofable kit-marker pair, so on an armed tree a failed corpus enumeration
+# or a zero-citation domain is a FAIL rather than an N/A, while an adopter tree with no citations
+# self-declares N/A (C6 renders it N-A). Registering it here also enrols the file in non-vacuity.sh's
+# sweep (which selects from these `^check control` rows); its own --selftest runs as a dedicated
+# ci.yml step (conformance-selftests, "citation-live self-test") and the LIVE check runs in
+# `docs-links` — the same required, no-`if:` job that survives the docs_only skip, chosen for the same
+# reason: a citation-decay check governs exactly the `.md`-only PRs that disarm cf-verify-enforced.
+check control citation-live    sh conformance/citation-live.sh
+# roadmap-current (C10 ROADMAP-STALE-RECONCILE) — the SIBLING of the row above and placed here for the
+# same reason: both grade whether a LIVING document still tells the truth about the tree it describes.
+# citation-live asks "does the line this doc cites still exist"; this row asks "does the roadmap still
+# call SHIPPED work pending". Measured at the C10 probe, seven ROADMAP.md items carried a pending glyph
+# while BACKLOG.md's `## Done` carried a row for each. The reconciliation was done by hand in that
+# slice; THIS ROW IS THE RATCHET that keeps the count at zero. NO --kitself, for citation-live's exact
+# reason: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an armed tree
+# a dead ROADMAP.md, an absent `## Done` section or a zero-marker stub is a FAIL rather than an N/A,
+# while an adopter tree (where roadmap and board are both export-ignored, hence absent) self-declares
+# N/A and C6 renders it N-A. Registering it here also enrols the file in non-vacuity.sh's sweep (which
+# selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
+# (conformance-selftests, "roadmap-current self-test") and the LIVE check runs in `docs-links` — the
+# same required, no-`if:` job, chosen because a roadmap-honesty check governs exactly the `.md`-only
+# PRs that disarm cf-verify-enforced.
+check control roadmap-current  sh conformance/roadmap-current.sh
+# runbook-current (C11 KIT-RUNBOOK) — the THIRD member of the living-document family above, and it sits
+# here for the family's reason: citation-live asks "does the line this doc cites still exist", roadmap-current
+# asks "does the roadmap still call SHIPPED work pending", and this row asks "does the kit's own operational
+# RUNBOOK still name the release it describes". Measured at the C11 probe, the kit had NO RUNBOOK.md at all and
+# its cold-resume path ran entirely through one agent's private memory — a friction-test failure. C11 authored
+# the file; THIS ROW IS THE RATCHET that keeps it existing and dated. NO --kitself, for the same reason the two
+# rows above carry none: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an armed
+# tree an absent RUNBOOK.md, a missing/duplicated/stale marker or a dead VERSION is a FAIL rather than an N/A,
+# while an adopter tree (where the runbook is export-ignored and the adopter's own is stamped from the template)
+# self-declares N/A and C6 renders it N-A. Registering it here also enrols the file in non-vacuity.sh's sweep
+# (which selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
+# (conformance-selftests, "runbook-current self-test") and the LIVE check runs in `docs-links` — the same
+# required, no-`if:` job, chosen because a runbook-currency check governs exactly the `.md`-only PRs that
+# disarm cf-verify-enforced. HONEST CEILING, so the row is not read as more than it is: it proves EXISTENCE +
+# VERSION-STRING CURRENCY, never that a single procedure in the file is true.
+check control runbook-current  sh conformance/runbook-current.sh
 check control whitespace-clean  sh conformance/whitespace-clean.sh
 check control build-output-ignored  sh conformance/build-output-ignored.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh

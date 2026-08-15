@@ -15,8 +15,14 @@ set -eu
 # 17 in DEVELOPMENT-PROCESS.md and 16 in DEVELOPMENT-STANDARDS.md. That defeats the signal this ratchet
 # exists to send (see the header above: it prevents drift, it "does not forbid growth"), so the breaks
 # are restored and the budget is raised deliberately instead.
-BUDGETS="CLAUDE.md:135 DEVELOPMENT-PROCESS.md:480 DEVELOPMENT-STANDARDS.md:345"
-TOTAL_BUDGET=960
+# ⚠️ GOVERNED BUMP REQUESTED AT C9 (CITATION-LIVE, 2026-08-15): DEVELOPMENT-STANDARDS.md 345 -> 350 and
+# the total 960 -> 965, both +5, to seat the ratified §11 "Citation discipline" subsection (design
+# §6.6 — the doctrine lands WITH its gate). Measured after the edit: 349/350 and 963/965, so the
+# ratchet keeps its 1-2 line bite. This is a CONSTANT edit in a reviewed PR — the mechanism this
+# header prescribes — and it is called out in the build record so the ratifier judges it explicitly
+# rather than discovering it in a diff.
+BUDGETS="CLAUDE.md:135 DEVELOPMENT-PROCESS.md:480 DEVELOPMENT-STANDARDS.md:350"
+TOTAL_BUDGET=965
 
 # check_one <path> <max>: print PASS/FAIL; return 1 if over budget or missing.
 check_one() {

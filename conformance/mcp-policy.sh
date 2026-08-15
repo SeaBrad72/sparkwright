@@ -55,11 +55,30 @@ allow "override to read"   "mcp__reports__export_csv"      "" "mcp__reports__exp
 # the gate must be WIRED, not just correct: assert a Claude PreToolUse matcher routes mcp__*.
 # Without this, classification could pass while the live hook never sees MCP calls (green-while-dark).
 # STRUCTURAL check: extract PreToolUse matchers with jq (so a mcp__ matcher mis-placed under
-# PostToolUse can't fail-open the check), then require a wildcard form (mcp__.* / mcp__* / bare
-# mcp__ at an alternation boundary) so a non-routing matcher like "mcp__nothing" doesn't satisfy it.
+# PostToolUse can't fail-open the check), then test each FUNCTIONALLY — a matcher is Claude's
+# tool-name selector applied as an anchored ERE, so the gate is wired iff some matcher MATCHES a
+# representative mcp tool name (^(matcher)$ vs mcp__server__action). This mirrors guard-wired.sh
+# rather than grepping for a literal "mcp__" substring: a broad matcher like ".*" (or ".+") routes
+# every tool — mcp included — and correctly PASSES, while a dark matcher like "Read" or the
+# non-routing "mcp__nothing" correctly FAILS (neither full-matches the probe).
 # jq-absent is honest UNVERIFIED (exit 2), never a false PASS.
 SETTINGS="${KIT_GUARD_SETTINGS:-.claude/settings.json}"
 unverified=0
+
+# Does any PreToolUse matcher, as an anchored ERE, route a representative mcp tool call?
+# set -f while word-splitting the matcher list so a matcher's own '*' (e.g. ".*", "mcp__.*")
+# is not glob-expanded against the cwd; matchers carry no spaces, so IFS splitting is safe.
+mcp_matcher_wired() {
+  _probe='mcp__server__action'
+  _rc=1
+  set -f
+  for _m in $(jq -r '.hooks.PreToolUse[]?.matcher // empty' "$1" 2>/dev/null); do
+    if printf '%s\n' "$_probe" | grep -Eq "^(${_m})$" 2>/dev/null; then _rc=0; fi
+  done
+  set +f
+  return "$_rc"
+}
+
 if [ ! -f "$SETTINGS" ]; then
   echo "FAIL (gate dark): $SETTINGS missing — cannot confirm a PreToolUse mcp__ matcher is wired"; fail=1
 elif ! command -v jq >/dev/null 2>&1; then
@@ -67,7 +86,7 @@ elif ! command -v jq >/dev/null 2>&1; then
   # while the wiring was never structurally confirmed — the honesty must live in the exit code,
   # not only in stdout. Exit 2 (UNVERIFIED), matching verify.sh's three-state contract.
   echo "UNVERIFIED wired: jq absent — cannot structurally confirm the PreToolUse mcp__ matcher ($SETTINGS); install jq"; unverified=1
-elif jq -r '.hooks.PreToolUse[]?.matcher // empty' "$SETTINGS" 2>/dev/null | grep -Eq 'mcp__(\.\*|\.\+|\*|\||$)'; then
+elif mcp_matcher_wired "$SETTINGS"; then
   echo "PASS wired: a PreToolUse matcher routes mcp__* ($SETTINGS)"
 else
   echo "FAIL (gate dark): no PreToolUse matcher routes mcp__* — classification would pass while the hook is dark ($SETTINGS)"; fail=1

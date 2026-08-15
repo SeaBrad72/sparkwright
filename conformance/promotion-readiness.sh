@@ -5,7 +5,7 @@
 # docs/governance/promotion-contract.md). Reuses the guard's is_control_plane_path as the SINGLE
 # source of control-plane detection (sourced, never duplicated).
 #
-#   conformance/promotion-readiness.sh [--changed FILE] [--rung RUNG] [--class] [--no-verify]
+#   conformance/promotion-readiness.sh [--changed FILE] [--rung RUNG] [--class] [--changed-files] [--no-verify]
 # Change-class: control-plane > sensitive > ordinary (highest present wins). FAIL-SAFE: an empty or
 # unreadable change-set, an unavailable guard core, **an unresolvable merge-base**, or **a newline byte in
 # any path name** classifies control-plane (never silently ordinary). Class is DERIVED, never
@@ -38,23 +38,57 @@
 #   --changed FILE  newline-delimited path list (default: git diff --name-only vs the merge-base)
 #   --rung RUNG     spike|integration|rc|staging|production (default rc — the meaningful go/no-go)
 #   --class         print only the aggregate class and exit (the stable seam slice 3 consumes)
+#   --changed-files print only the DERIVED CHANGE-SET (one path per line) and exit — the second stable
+#                   seam, and the reason it exists is SINGLE AUTHORITY. A consumer that needs the file
+#                   list (conformance/ceremony-binding.sh's governance diff-shape guard is the first)
+#                   must NOT re-derive it with its own `git diff`: every hardening this file carries —
+#                   `--no-renames`, `core.quotePath=false`, `-z`, the newline fail-safe, the
+#                   merge-base ladder — would have to be re-earned in the copy, and the FIRST thing a
+#                   missing `--no-renames` buys an attacker is a `git mv` that vanishes the source
+#                   path from the set (measured, PROMOTION-RENAME-CLASS-DOWNGRADE). Exporting the list
+#                   means CLASS and any consumer are computed over the SAME set, by construction.
+#     OUTPUT is NEWLINE-DELIMITED, and that is safe HERE and only here: a path carrying a literal
+#     newline is already a DERIVE FAILURE above (it can never reach this printer), so the delimiter
+#     can never be ambiguous. A NUL stream is therefore not needed by the POSIX-sh consumer this
+#     serves; do not "upgrade" the delimiter without re-reading that fail-safe.
+#     EXIT: 0 = the list was derived (it may legitimately be EMPTY — a head its base already
+#     contains has an empty change-set); 3 = DERIVE FAILURE, nothing printed, diagnosis on stderr.
+#     A consumer MUST treat any non-zero as "I do not know the change-set" and fail CLOSED — the
+#     `--class` fail-safe answers `control-plane` in that state, and a list consumer has no
+#     equivalent safe answer to invent, which is why the failure is an rc and not an empty list.
+#     ⚠️ NOT a class: this mode says nothing about control-plane-ness and is UNAFFECTED by an
+#     unavailable guard core (that degrades CLASSIFICATION, not DERIVATION).
 #   --no-verify     skip the proven-vs-attested verify.sh invocation
 # (selftest lives on conformance/promotion-readiness-wired.sh — this producer has none of its own.)
-# Exit: 0 always (advisory) · 2 = usage. POSIX sh; dash-clean.
+# Exit: 0 always (advisory) · 2 = usage · 3 = --changed-files derive failure (that mode only).
+# POSIX sh; dash-clean.
 set -eu
 cd "$(dirname "$0")/.." 2>/dev/null || true
 
 CORE=".claude/hooks/guard-core.sh"
-RUNG=rc; CLASS_ONLY=0; NO_VERIFY=0; CHANGED=""; CHANGED_READ_FAIL=0
+RUNG=rc; CLASS_ONLY=0; LIST_ONLY=0; NO_VERIFY=0; CHANGED=""; CHANGED_READ_FAIL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --changed) [ $# -ge 2 ] || { echo "usage: --changed needs a FILE" >&2; exit 2; }; CHANGED=$2; shift 2 ;;
     --rung) [ $# -ge 2 ] || { echo "usage: --rung needs a RUNG" >&2; exit 2; }; RUNG=$2; shift 2 ;;
     --class) CLASS_ONLY=1; shift ;;
+    # `--changed-files` — the list seam. NOT a spelling of `--changed`: that one CONSUMES a listing,
+    # this one PRODUCES the derived one.
+    --changed-files) LIST_ONLY=1; shift ;;
     --no-verify) NO_VERIFY=1; shift ;;
-    *) echo "usage: promotion-readiness.sh [--changed FILE] [--rung RUNG] [--class] [--no-verify]" >&2; exit 2 ;;
+    *) echo "usage: promotion-readiness.sh [--changed FILE] [--rung RUNG] [--class] [--changed-files] [--no-verify]" >&2; exit 2 ;;
   esac
 done
+# REFUSED, not reconciled (the same rule ceremony-binding applies to --scope + --pre-push): the two
+# seams have DIFFERENT exit contracts — `--class` is advisory-and-always-0 with a control-plane
+# fail-safe, `--changed-files` fails CLOSED with rc 3 — so a run asking for both would have to answer
+# one caller with the other's contract, and a consumer reading a `0` could not tell which it got.
+if [ "$CLASS_ONLY" = 1 ] && [ "$LIST_ONLY" = 1 ]; then
+  echo "usage: --class and --changed-files are mutually exclusive (different exit contracts: --class" >&2
+  echo "       is advisory and always exits 0 with a control-plane fail-safe; --changed-files fails" >&2
+  echo "       CLOSED with rc 3 when the change-set cannot be derived)" >&2
+  exit 2
+fi
 case "$RUNG" in spike|integration|rc|staging|production) ;;
   *) echo "usage: --rung must be spike|integration|rc|staging|production" >&2; exit 2 ;; esac
 
@@ -183,6 +217,35 @@ else
     fi
     rm -f "$_z"
   fi
+fi
+
+# ---- `--changed-files`: EXPORT THE DERIVED CHANGE-SET, then exit. Deliberately placed HERE — after
+# the resolution above and BEFORE the aggregation/render below — so the list is byte-for-byte the set
+# `--class` walks (one derivation, no second read of git) and so no consumer of the list ever pays for
+# the verify.sh invocation. FAIL CLOSED: the same `CHANGED_READ_FAIL` signal the class fail-safes UP on
+# is an rc 3 here, because a list consumer cannot be handed an EMPTY list on a derive failure — an
+# empty list is indistinguishable from the legitimate empty change-set (a head its base already
+# contains), and reading "no paths" as "no paths outside my allowed set" is fail-OPEN by construction.
+if [ "$LIST_ONLY" = 1 ]; then
+  if [ "$CHANGED_READ_FAIL" = 1 ]; then
+    if [ -n "${CHANGED:-}" ]; then
+      echo "promotion-readiness --changed-files: DERIVE FAILURE — the --changed listing '$CHANGED' is not a readable file." >&2
+    elif [ -z "$base" ]; then
+      echo "promotion-readiness --changed-files: DERIVE FAILURE — NO RESOLVABLE BASE (the base is resolved" >&2
+      echo "  as origin/main then main only). A shallow or base-less checkout cannot yield a change-set;" >&2
+      echo "  give the checkout its history (actions/checkout with fetch-depth: 0) or pass --changed FILE." >&2
+    else
+      echo "promotion-readiness --changed-files: DERIVE FAILURE — a path name carries a literal NEWLINE," >&2
+      echo "  which POSIX sh cannot carry through a line-delimited list without splitting it into" >&2
+      echo "  fragments. Refusing to emit a set that would be read wrong (the same fail-safe --class" >&2
+      echo "  routes to control-plane)." >&2
+    fi
+    exit 3
+  fi
+  # `[ -n ]`-filtered so the single empty line `printf` emits for an EMPTY set is not mistaken for a
+  # path named "" — an empty change-set prints NOTHING and exits 0, which is the honest rendering.
+  printf '%s\n' "$CHANGED_LIST" | while IFS= read -r _lp; do [ -n "$_lp" ] || continue; printf '%s\n' "$_lp"; done
+  exit 0
 fi
 
 # Aggregate = highest class present.

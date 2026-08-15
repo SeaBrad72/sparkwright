@@ -229,6 +229,71 @@ selftest() {
     echo "FAIL: could not build a newline-in-filename fixture — the H1 leg did not run (do NOT read this as a pass)"; st=1
   fi
 
+  # --- `--changed-files` LIST-SEAM legs (C8, GOVERNANCE-RECORD-PR-HAS-NO-DESIGN-BASIS) -----------
+  # The list mode EXPORTS the derived change-set so a consumer never re-derives it. Its whole value is
+  # that it is the SAME walk `--class` does, so these legs run on the SAME fixtures as the derivation
+  # legs above — a list proven on a `--changed` listing would prove nothing (that path bypasses git
+  # entirely, the tautology the derivation legs exist to avoid).
+  # SETS $_lv and $_lrc IN THIS SHELL — never `_lv=$(lst …)`. A command substitution is a SUBSHELL, so
+  # an rc assigned inside one is lost and the caller reads an UNBOUND variable under `set -u`
+  # (measured on first write: the whole selftest died at the first list leg).
+  lst() {  # <repo>
+    _lrc=0
+    _lv=$( ( cd "$1" && sh conformance/promotion-readiness.sh --changed-files ) 2>/dev/null ) || _lrc=$?
+  }
+  # LIVENESS — the list names the path the branch actually added, and nothing else. Reuses the
+  # ordinary-live fixture, so a green here is positive evidence the derivation genuinely ran.
+  _lr="$d/derive-ordinary-live"
+  lst "$_lr"
+  if [ "$_lrc" = 0 ] && [ "$_lv" = 'src/util/format.ts' ]; then
+    echo "PASS: --changed-files lists exactly the derived change-set (rc 0)"
+  else echo "FAIL: --changed-files rc=$_lrc list='$_lv', want rc 0 and exactly 'src/util/format.ts'"; st=1; fi
+  # THE PROPERTY ITS CONSUMER DEPENDS ON — `--no-renames` reaches the LIST, not just the class. The
+  # governance diff-shape guard in conformance/ceremony-binding.sh subsets this list against an
+  # allowed set; if a `git mv` off a control-plane path emitted the destination ALONE, the moved-away
+  # SOURCE would vanish from the set and a workflow deletion would launder through that gate. This is
+  # the leg that makes "one derivation authority" mean something rather than sounding good.
+  lst "$d/derive-rename"
+  if [ "$_lrc" = 0 ] && printf '%s\n' "$_lv" | grep -qF '.github/workflows/deploy.yml' \
+     && printf '%s\n' "$_lv" | grep -qF 'docs/deploy-notes.yml'; then
+    echo "PASS: --changed-files un-collapses a rename (BOTH source and destination reach the consumer)"
+  else echo "FAIL: --changed-files rc=$_lrc list='$_lv' — a rename collapsed to its destination, so a consumer subsetting this list cannot see the moved-away source"; st=1; fi
+  # FAIL CLOSED, BOTH DERIVE-FAILURE CAUSES. `--class` fail-safes UP to control-plane; a LIST has no
+  # equivalent safe value to invent, and an empty list would be read as "nothing outside my allowed
+  # set" — fail-OPEN by construction. So the failure is an rc (3) and the list is EMPTY.
+  lst "$d/derive-nobase"
+  if [ "$_lrc" = 3 ] && [ -z "$(printf '%s' "$_lv" | tr -d '[:space:]')" ]; then
+    echo "PASS: --changed-files with no resolvable base -> rc 3, nothing printed (fail closed)"
+  else echo "FAIL: --changed-files no-base rc=$_lrc list='$_lv', want rc 3 and an EMPTY list — a consumer reading rc 0 + no paths would conclude the change-set is clean"; st=1; fi
+  if [ -d "$d/derive-newline" ]; then
+    lst "$d/derive-newline"
+    if [ "$_lrc" = 3 ]; then
+      echo "PASS: --changed-files with a newline-bearing path -> rc 3 (refuses to emit a set that would be read wrong)"
+    else echo "FAIL: --changed-files newline rc=$_lrc, want 3 — a line-delimited list cannot carry that path, and splitting it hands the consumer fragments"; st=1; fi
+  else
+    echo "FAIL: the newline fixture is absent, so the --changed-files newline leg did not run (do NOT read this as a pass)"; st=1
+  fi
+  # THE HONEST EMPTY. A head its base already contains has an EMPTY change-set, and that is rc 0 with
+  # no output — distinct from the derive failure above. ceremony-binding's hermetic fixtures depend on
+  # this being a pass rather than a refusal.
+  _lrc=0
+  # RESTORE THE FIXTURE BRANCH (build review LOW-7). This probe moves HEAD to `main`; leaving it there
+  # would silently change what EVERY later leg reusing this fixture derives — a leg that passes only
+  # because a neighbour moved its HEAD is the shared-state class this suite avoids everywhere else.
+  _lv=$( ( cd "$d/derive-ordinary-live" && git checkout -q main \
+             && sh conformance/promotion-readiness.sh --changed-files; \
+           _r=$?; git checkout -q feat 2>/dev/null || true; exit $_r ) 2>/dev/null ) || _lrc=$?
+  if [ "$_lrc" = 0 ] && [ -z "$_lv" ]; then
+    echo "PASS: --changed-files on a head its base already contains -> rc 0, empty list (honest, not a failure)"
+  else echo "FAIL: --changed-files empty-diff rc=$_lrc list='$_lv', want rc 0 with no output"; st=1; fi
+  # THE TWO SEAMS ARE MUTUALLY EXCLUSIVE — they carry DIFFERENT exit contracts (--class is advisory
+  # and always 0; --changed-files fails closed with 3), so a run answering both would hand one caller
+  # the other's contract and a `0` would be unreadable.
+  _lrc=0
+  ( sh "$PR" --class --changed-files ) >/dev/null 2>&1 || _lrc=$?
+  if [ "$_lrc" = 2 ]; then echo "PASS: --class + --changed-files -> rc 2 usage refusal"
+  else echo "FAIL: --class + --changed-files returned $_lrc, want 2"; st=1; fi
+
   # --- A2: CASE-INSENSITIVE CLASSIFICATION -------------------------------------------------------
   # On a case-INSENSITIVE filesystem (the macOS default, and this kit's own dev platform) a case
   # variant resolves to the REAL file while a byte-literal matcher classified it `ordinary` — so the

@@ -442,6 +442,164 @@ disposition list, the design GO having ratified the scheme. **REVISIT-CONDITION:
 review seat finds the populated-not-true ceiling is being exploited — i.e. if demoted rows return
 to Ready carrying metrics that no one could fail.
 
+**`D-240813-2` · ruling (owner, 2026-08-13, ratified at PR
+[#524](https://github.com/SeaBrad72/sparkwright-dev/pull/524); TRANSCRIBED at the panel-#40 PR per
+finding 3-M3 — the ruling text below is verbatim from
+`docs/architecture/2026-08-13-guard-judge-resolved-target-design.md` §9, its ratification vehicle) ·
+THE GUARD JUDGES THE RESOLVED TARGET, NOT THE VERB.** The guard's shell-route matchers judge the
+**resolved target, not the verb**: **(a)** path classification at every shell-route decision site
+evaluates the **union** of the literal token and its composition against the command's effective
+directory — resolution may only ever ADD a denial, and any failure to resolve (climb-out,
+quote-desync, non-literal cd) falls to literal behavior, never a relaxation (extends the
+`GUARD-SYMLINK-ALIAS-BYPASS` union principle to cd-composition). **(b)** Where a target is
+classifiable, the **load-bearing deny keys on the classified target**, not on a write-verb
+enumeration. Named verb/capability deny-sets remain valid **only** where no target is classifiable
+(content-bearing writers whose target is unparseable; capability-shaped threats like `curl|sh`,
+force-push, the git-notes and hooksPath arms) and each such set carries a disclosed-incompleteness
+note. A retained verb deny-set may also stand as defense-in-depth behind target judgment (as the
+old scan-arm does, backstopping certified git read-subs) — this does **not** retire it. **(c)**
+Matcher changes remain add-only with respect to existing denials; any deny-removal is its own
+ratified change (the panel-#19 shape). **REVISIT-CONDITION:** re-open at any proposal to remove or
+relax a deny arm, or to route classification through shell-parse reconstruction (see `D-240813-3`).
+
+**`D-240813-3` · ruling (owner, following the security-seat consensus, 2026-08-13, ratified at PR
+[#524](https://github.com/SeaBrad72/sparkwright-dev/pull/524); TRANSCRIBED at the panel-#40 PR per
+finding 3-M3 — source: the same design's §10-A1) · GUARD FALSE-POSITIVE FIXES ARE
+FAIL-BY-DISQUALIFICATION, NEVER FAIL-BY-PARSE.** The three-round FP-suppression attempt was
+REVERTED (each round reopened a control-plane WRITE hole of the same class), and the
+alternation-grep FP is boarded as a disclosed fail-closed over-deny (`GUARD-QUOTED-PIPE-READ-FP`).
+Rationale, recorded so it is not re-derived: per **D3′** (loud-not-impossible; fail-safe = an extra
+denial, never a missed write) the over-deny is the *acceptable* failure direction, and accreting
+fragile shell-parsing heuristics into the guard's own security-critical path — to remove a
+fail-closed, one-retry convenience cost — is the *unsafe* trade. **Any future FP-relief attempt
+MUST be fail-by-DISQUALIFICATION (decline to suppress on backslash / any residual unquoted
+metachar), never fail-by-parse, and MUST be adversarially design-vetted by the security seat
+BEFORE build.** **REVISIT-CONDITION:** re-open at any guard-FP suppression proposal — this entry
+is the mandated search hit that proposal must find.
+
+**`D-240813-4` · sitting (owner, 2026-08-13, in-session at the panel-#40 readout — four recorded
+selections; items .5–.6 are agent-proposed and RATIFIABLE at this PR: approval adopts, a named
+veto strikes) · THE PANEL-#40 CONDITIONS RULED.**
+1. **C1 (finding 2-H1) — ADD THE ALLOW:** the `D-240811-2.5` delivery gap is cured by delivering
+   the entry — `Bash(sh scripts/publish-public.sh*)` lands in the live permission surface
+   (`.claude/settings.local.json`, owner hands, at this PR), making the ruling's "owner-added"
+   clause true as written; presence is verified before this PR merges and the PR body records the
+   verification. `PERMISSION-SURFACE-DELIVERY-AUDIT` is scheduled into the first three Phase-C
+   units with its AC amended to the union surface (`settings.json` ∪ `settings.local.json`) and
+   the prompt-click accretion mechanism (fourth measured face, panel #40 3-H1).
+2. **C2 (finding 4-H1) — SCHEDULED, NOT DEFERRED:** the `NON-VACUITY-SHARD2-FLOOR` substrate
+   measurement lands BEFORE the first Phase-C conformance lock ships (into the first three Phase-C
+   units), honoring `D-240811-2.3`'s "early post-B" funding; the third-carry escalation is
+   discharged by this scheduling.
+3. **C3 (finding 4-H2) — DATED DEFERRAL (2026-08-13):** adopter runtime parity is deferred with
+   the named trigger **external adoption imminent**; the funded
+   `ADOPTER-TOLD-LOOP-GATES-ARE-ENFORCED` truth-fix half partially overlaps and proceeds on its
+   own schedule. The third-carry escalation is discharged by this dated deferral.
+4. **C4 (finding 3-M2) — FUND THE S FIX:** `GOVERNANCE-RECORD-PR-HAS-NO-DESIGN-BASIS` is promoted
+   to Ready (funded S — an honest basis class for `Kit-Stage: Operate` records); this PR itself
+   uses the #508 re-binding workaround one final time, disclosed in its body as the defect's
+   third measurement.
+5. *(RATIFIABLE)* **Ledger-2 routing (finding 2-L1):** `BACKLOG.md` is the primary routing
+   destination for panel fix-forward items; `docs/ROADMAP-KIT.md` is reserved for epic-scale
+   items (`docs/operations/meta-control.md` amended in this PR). Discharges the
+   DOC-FRESH/ROADMAP-KIT carry by ruling.
+6. *(RATIFIABLE)* **Calibration field (finding 4-M2):** the slice-close calibration line gains a
+   `GO re-takes: N` field from the next slice close onward, making the scarcest approval resource
+   countable.
+
+**REVISIT-CONDITION:** .1 re-opens (falls back to the truth-fix arm) if the allow is absent at
+merge time; .3 re-opens at its named trigger; .2 re-opens if the first Phase-C lock is proposed
+with the measurement still unstarted; the others none.
+
+**`D-240813-5` · ruling (owner, 2026-08-13, ratified at the C3 PR) · MERGE AUTHORITY — the
+delegable-execution tiers, transcribed into the decision record so a bindable ruling ID exists.**
+The doctrine's detailed home is `docs/governance/promotion-contract.md` (the three-tier section);
+this entry gives it a citable ID (C3's permission-surface enumeration cites it for the `gh pr merge`
+rows, and its anti-laundering leg binds the citation to the command). **Tier 1** — build-phase agent
+autonomy is guard-permitted. **Tier 2** — Ordinary/Sensitive merge and tag are **delegable to the
+agent ONLY after a recorded GO** bound to the approved SHA, **never unilateral**. **Tier 3 —
+human-forever:** the GO/NO-GO judgment itself, ANY control-plane promotion, `gh pr merge --admin`
+(the server-side branch-protection bypass — the guard denies it as a speed-bump, `guard-core.sh:1589`;
+the durable control is that it is a human keystroke), push-to-main / force-push, and
+deploy/delete/rotate/spend. **REVISIT-CONDITION:** re-open only with `promotion-contract.md`'s
+three-tier section (they must agree — this is a transcription, not a new rule).
+
+**`D-240813-6` · ruling (owner, 2026-08-13, ratified at the C3 PR) · PHASE-C BATCHES ITS RELEASE.**
+No per-slice tags within Phase C; ONE release at the phase-close boundary (the charter's "C ships a
+release", singular). C1 (`GUARD-HOOKSPATH-CASE-BYPASS`) and C2 (`NON-VACUITY-SHARD2-FLOOR`
+measurement) are merged-and-untagged **intentionally**, not by omission. **REVISIT-CONDITION:**
+re-open at the Phase-C epic close (the release is cut there) or if an adopter-visible urgent fix
+needs an out-of-band tag mid-phase.
+
+**`D-240813-7` · ruling (owner, 2026-08-13, ratified at the C3 PR) · THE OPUS-ORCHESTRATOR TRIAL
+IS REVERTED — Fable orchestrates.** The session-11 trial (Opus 4.8 as main-loop orchestrator,
+begun at C2) is ended: its first slice (C2, a docs measurement) produced TWO review rounds of
+reasoned-not-verified errors (an export undercount from a partial file read; then a "fix" that
+asserted `run()` fails-early without reading its returns), tripping the "a claim needing external
+correction" tripwire. **Standing posture:** Fable = orchestrator (main loop) + seats
+(security / owner-lens / kit-steward panels); Opus 4.8 = builders + reviewers. Fable is reserved
+for orchestration and the seats (managing cost by keeping the priciest tier off the build volume);
+Opus 4.8 carries the build/review volume. **REVISIT-CONDITION:** the owner may re-trial an
+Opus/other orchestrator at a future phase boundary; the tripwires (>1-tier re-size · withdrawn
+mechanism · repeated >2 review rounds · a claim needing external correction) stand for any such
+trial.
+
+**`D-240815-1` · ruling (owner, 2026-08-15, recorded at the C10 design GO (in-session)) · STALE
+STRATEGIC BODIES ARE SUPERSEDED IN PLACE, NOT REPAIRED LINE BY LINE.** Verbatim: *"non-dated-named
+living strategic bodies are disposed by dated supersession-in-place, not line repair"*.
+**BASIS:** the C10 confirming design (`ROADMAP-STALE-RECONCILE`, 2026-08-15) §3 + §10 A1, which
+surfaced the scope fork rather than narrowing it, and the session ledger record of the GO.
+**WHY IT NEEDED ITS OWN ID:** the C9 dated-record principle does NOT reach these files —
+`docs/ROADMAP-KIT.md` is *not* dated-named and remains a living `citation-live` source, so
+"exempt because dated" was unavailable and the disposition had to be ruled explicitly.
+**DECISION:** a living strategic document whose body has decayed wholesale (here `docs/ROADMAP-KIT.md`,
+~100 releases stale, read by nothing) is honestly disposed by a **dated supersession header that
+routes to the current-truth artifacts**, leaving the body in place as a record. It is NOT repaired
+claim-by-claim: repair re-asserts ~30 stale claims at M cost and pretends a dead document is live.
+The superseded body **stops asserting**; it is not made true. Nearer precedents: `D-240813-1`
+(demote-don't-fill) and the `READY-PROSE-BULLET-TRUTH-FIX` row's own supersession AC.
+**SCOPE LIMIT (agent-proposed at the C10 review round; RATIFIED by the owner 2026-08-15, in-session
+at the C11 review round — the C10-era "owner ratifies or strikes at the GO" parenthetical is
+discharged by this transcription):** this licenses supersession of *strategic prose*, never of a
+**gate, contract or conformance surface** — an executable control is fixed or removed, never merely
+annotated.
+**REVISIT-CONDITION:** re-open if a superseded body is ever cited as live authority again, or if a
+stamping mechanism lands under `DOC-FRESH-1` (deliberately **not** closed by C10) that makes
+per-claim provenance cheap enough to repair rather than supersede.
+
+**`D-240815-2` · ruling set (owner, 2026-08-15, in-session at the R3 Phase-C-close sitting; basis =
+panel `docs/architecture/2026-08-15-meta-control-41.md` + the first-principles findings
+`docs/architecture/2026-08-15-first-principles-review-design.md`) · THE PHASE-C CLOSE RULINGS.**
+- **(a) PHASE C CLOSES — GO; the batched release is CUT** per `D-240813-6`: one tag covering the 11
+  merged-untagged slices, gated on the CHANGELOG public block being authored FIRST (panel 10-H1),
+  published via the recorded release GO. `D-240813-6`'s revisit-condition is hereby exercised.
+- **(b) GO re-takes is PRACTICED, not struck** (`D-240813-4.6` affirmed): the field appears on every
+  L1 retro from the C11 close onward, carried by the retro convention — no new mechanism.
+- **(c) Cadence clock under batching:** during a ruled release-batching period, the freshness gate's
+  N counts **merged slices**, not tags (the `meta-control.md` amendment lands with this ruling).
+- **(d) The SIXTH DIAL is ADDED:** `KIT_PUSH_CITE` (citation-live at pre-push; kit-tree enforce /
+  adopter observe) — an amendment to `D-240811-2.1` — delivered as **one slice WITH**
+  `CITATION-LIVE-MEANING-AND-HISTORY-FACES` **route (b)** (doctrine de-lines quoted-historical
+  values at write time + a lint face; the meaning-drift face is won't-fix-with-ceiling-restated).
+  The amendment carries the honesty clause: the pre-push leg is a speed-bump under the friction
+  test; the binding layer is and remains the required `docs-links` context.
+- **(e) Adopter-parity trigger** (`D-240813-4.3`): "external adoption imminent" fires **when the
+  product tree is greenlit** — parity work schedules WITH the product start, else the deferral is
+  re-dated explicitly.
+- **(f) Re-triage front-insertions:** `NON-VACUITY-SHARD2-FLOOR` cure = first funded unit
+  post-release, before the product start; `GUARD-PATH-ENUMERATION-INCOMPLETE` = first guard unit of
+  the next arc (alias family behind it); `ENTRY-DECLARATION-SEVERED-ON-MAIN` = XS substrate probe
+  only; the demoted ledger stays demoted (`D-240813-1` holds).
+- **(g) First-principles routes (findings doc §5):** `GUARD-FP-RELIEF-2` FUNDED (S, the
+  disqualification-tractable faces only, `D-240813-3` pre-build vet mandatory); the ask-tier TSV
+  truth-fix FUNDED (XS; `mode-dependence: interactive-only` on the four rows) with `npm install`
+  et al. left a **declared residual** under auto-mode; the maintainer-machine egress **posture
+  statement** FUNDED (XS, declared-tier, explicitly not a doctor advisory); the user-level
+  `~/.claude/settings.json` surface FOLDED into `PERMISSION-LOCAL-ACCRETION-SIGNAL`'s AC.
+**REVISIT-CONDITION:** (c) reverts to tag-counting when no batching ruling is live; (d)'s dial ships
+under the standard dial-delivery pattern or the decline is re-argued at the next panel; (e) is
+re-evaluated if the product start is deferred past the next panel.
+
 ---
 
 ## 3. The recovered record

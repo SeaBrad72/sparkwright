@@ -296,7 +296,8 @@ git_dir_outside() {  # <dir> -> 0 (true) iff the physical git-common-dir is NOT 
 # --- K11: the pre-push runtime guard must actually be in force -----------------------------
 # git clones neither .git/hooks/ nor .git/config, so an incepted repo's guard is ABSENT in every
 # fresh clone. That is by design (hooks/pre-push:4 — "A SPEED BUMP, not a boundary"); the defect is
-# that the absence is SILENT. Detection semantics are inception-done.sh:64-78's, verbatim.
+# that the absence is SILENT. Detection semantics are conformance/inception-done.sh's pre-push hook
+# FLOOR leg (the KIT_GUARD_CORE marker test + _id_head_matches' compare-first precedence), verbatim.
 GUARD_REFUSE=0; GUARD_STATE=""; GUARD_HOOK=""
 
 guard_tree_class() {  # -> stdout: exactly one of incepted|kit-source|bare ; always exit 0
@@ -727,8 +728,9 @@ check_guard_installed() {
   # --git-path, not a hardcoded .git/hooks/ — the two diverge under a linked worktree (measured on git
   # 2.48.1: from a linked worktree --git-path yields the SHARED <main>/.git/hooks/pre-push, because hooks
   # live in the common dir, while the worktree's own .git is a FILE — so the hardcoded form reports a
-  # FALSE MISS on a correctly guarded tree). incept.sh:951 already uses this form; inception-done.sh:68
-  # does not, and that weaker convention is not propagated here. Locked by legs W1/W2.
+  # FALSE MISS on a correctly guarded tree). incept.sh:951 already uses this form; inception-done.sh did
+  # NOT when this was written (re-checked 2026-08-15: its own hook-lookup leg now does), and that weaker
+  # convention is not propagated here. Locked by legs W1/W2.
   GUARD_HOOK=$(git rev-parse --git-path hooks/pre-push 2>/dev/null) || return 0
   [ -n "$GUARD_HOOK" ] || return 0
   # --git-path answers RELATIVE TO THE CWD (measured, git 2.48.1: from <repo>/a/b it yields
@@ -2182,8 +2184,9 @@ if [ "$SELFTEST" -eq 1 ]; then
   # THE EXPECTED FORM IS WRITTEN OUT LITERALLY, not produced by calling guard_shq: a leg that builds its
   # expectation with the function under test asserts only that the function equals itself. A mktemp path
   # contains no apostrophe, so the literal single-quoted form is exact here.
-  # `mkdir -p` is part of the expectation (finding Y7): scripts/incept.sh:964 performs it before the
-  # identical `cp … && chmod +x`, and `.git/hooks` is not guaranteed to exist.
+  # `mkdir -p` is part of the expectation (finding Y7): scripts/incept.sh's guard-install block does it
+  # (`mkdir -p "$(dirname "$HOOK_DST")"`) before the identical `cp … && chmod +x`, and `.git/hooks` is
+  # not guaranteed to exist.
   _mpfix="mkdir -p '$_mpd/.git/hooks' && cp '$_mpd/hooks/pre-push' '$_mpd/.git/hooks/pre-push' && chmod +x '$_mpd/.git/hooks/pre-push'"
   case "$out" in
     *"ERROR: this repository's pre-push runtime guard is not in force"*"$_mpfix"*)
@@ -3207,7 +3210,7 @@ if [ "$GUARD_REFUSE" -eq 1 ]; then
         echo "" >&2
         echo "  If — and only if — that IS the kit's guard, a HUMAN can run this (.git/ is control-plane," >&2
         echo "  so an agent seat is denied it):" >&2
-        # mkdir -p FIRST, matching scripts/incept.sh:964, which performs it before the identical
+        # mkdir -p FIRST, matching scripts/incept.sh's guard-install block, which performs it before the identical
         # `cp … && chmod +x`. Same edge as Y1: `.git/hooks` is not guaranteed to exist (an empty
         # --template creates a repo without it), and a fix line that fails on a legitimate repo teaches
         # the reader the tool is wrong rather than that the tree is.

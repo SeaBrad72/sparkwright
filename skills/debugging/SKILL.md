@@ -23,6 +23,7 @@ A symptom patch is failure. Before you change a single line:
 - **Read the actual error / stack trace completely.** The message often contains the answer — line numbers, file paths, error codes. Do not skim past it or paraphrase it from memory; read the real output.
 - **Find the true cause, not the surface.** State *what* is wrong and *why* it happens. "Seeing the symptom" is not "understanding the `root cause`." If you cannot explain why the bug occurs, you are not ready to fix it.
 - **Check recent changes.** What changed that could cause this — `git diff`, recent commits, new dependencies, config/env differences? Trace a bad value backward to where it originates and fix it at the source, not where it surfaces.
+- **When closing a CLASS of defect, sweep the whole TREE, not your diff.** The missed site is usually outside the files you touched — a wording sweep that greps only its own edited files re-ships the class (panel #40, Δ-C).
 
 If you have not found the root cause, you cannot propose a fix.
 

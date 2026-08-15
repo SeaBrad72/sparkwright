@@ -60,6 +60,7 @@ conformance/actionlint-valid.sh
 conformance/adopter-export-wired.sh
 conformance/adopter-gates-parity.sh
 conformance/adopter-preflight-wired.sh
+conformance/adopter-told.sh
 conformance/agent-autonomy.sh
 conformance/agent-boundary.sh
 conformance/agentic-ops-readiness.md
@@ -87,6 +88,7 @@ conformance/check-links.sh
 conformance/ci-classify-changes.sh
 conformance/ci-gates.sh
 conformance/ci-selftest-coverage.sh
+conformance/citation-live.sh
 conformance/claim-gate-counts.sh
 conformance/claims-registry.sh
 conformance/claims.tsv
@@ -233,6 +235,7 @@ conformance/operate-loop-wired.sh
 conformance/orchestrator-loop-wired.sh
 conformance/otlp-backend-wired.sh
 conformance/owner-step-markers.sh
+conformance/permission-surface-audit.sh
 conformance/persona-artifacts.sh
 conformance/phase-gate.sh
 conformance/pipeline-origin.sh
@@ -258,9 +261,11 @@ conformance/resilience-ready.sh
 conformance/responsible-ai-readiness.md
 conformance/responsible-ai-ready.sh
 conformance/review-lane.sh
+conformance/roadmap-current.sh
 conformance/roster-authority-ready.sh
 conformance/roster-guard-wired.sh
 conformance/runaway-killswitch-wired.sh
+conformance/runbook-current.sh
 conformance/runtime-floor-coherent.sh
 conformance/runtime-security.sh
 conformance/script-disclosure.sh
@@ -281,6 +286,7 @@ conformance/test-layers-ready.sh
 conformance/threat-obligation.sh
 conformance/tier-advice-wired.sh
 conformance/token-scope.sh
+conformance/tool-coverage.sh
 conformance/trace-query-wired.sh
 conformance/tracker-contract.sh
 conformance/uat-obligation.sh

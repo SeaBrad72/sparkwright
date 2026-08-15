@@ -28,6 +28,7 @@ After each task in subagent-driven development, after a feature, and always befo
 - **Confidence-based filtering — signal over nitpicks.** Report only what you are confident matters. A review buried in style Minors hides the one Critical. Bikeshedding is a failure mode, not thoroughness.
 - **The builder is never the reviewer.** Independence is the point — the builder never reviews-and-merges its own work (DEVELOPMENT-PROCESS §12). Two lenses review in parallel: the Reviewer (correctness/standards) and the security-reviewer (the §7 security gate).
 - **Review behaviour, scoped to the diff.** Assert behaviour, not implementation detail; do not expand scope beyond the change; do not re-litigate decisions the plan already made — raise them as findings and let the owner adjudicate.
+- **Grade the operator-facing prose of a gate with the gate.** Check-run text, refusal messages, and recording instructions are part of the mechanism — a gate whose prose instructs a retired workaround fails on its first live subject (meta-control #41 retro-3, from the C8 reviewer HIGH).
 - **Honest verdict — never rubber-stamp.** NEEDS-FIXES on any real Critical or Important. An APPROVE means you would stake the merge on it.
 
 ## Push back

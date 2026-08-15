@@ -118,7 +118,7 @@ Applies IF: always (floor gate; image provenance gated on repo visibility)
 Why: An SBOM is the bill of materials that turns "do we use log4j?" from a multi-day audit into
   a one-line query, and provenance proves an artifact came from your pipeline and wasn't swapped.
   Together they are how you survive a supply-chain attack instead of being its vector.
-Enforced by: conformance/provenance-precondition.sh
+Enforced by: conformance/provenance-precondition.sh (wired in the kit's own CI; ships to you to run or wire)
 Read more: DEVELOPMENT-STANDARDS.md §14
 
 ## builder-not-reviewer
@@ -126,7 +126,7 @@ Applies IF: always (floor gate, every PR)
 Why: The person who wrote a change is the worst-placed to see its blind spots — that's not a
   character flaw, it's how attention works. A second set of eyes is the cheapest, highest-yield
   defect filter there is, which is why builder ≠ reviewer is never waived.
-Enforced by: conformance/review-lane.sh
+Enforced by: conformance/review-lane.sh (wired in the kit's own CI; ships to you to run or wire)
 Read more: DEVELOPMENT-PROCESS.md §12
 
 ---

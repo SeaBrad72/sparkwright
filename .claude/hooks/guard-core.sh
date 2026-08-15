@@ -416,11 +416,33 @@ guard_check_read() {
       *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
         printf '13: reading secret material (%s) into context is the read half of exfil (-> model/logs/PR) - human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
     esac
+    # GUARD-HOOKSPATH-CASE-BYPASS: a case-folded SECOND arm, never a replacement (the `_under_temp`
+    # add-only shape at :309-328). Arm 1 above is byte-identical and returns first, so this can only
+    # ever ADD a secret-read deny — a case-variant `.ENV`/`.PEM` on a case-insensitive filesystem
+    # reaches the same inode as the byte-literal form. The template ALLOW above (:408-413) stays
+    # byte-literal (never fold an allow matcher), so a case-variant `.ENV.EXAMPLE` is not recognized
+    # as a template and falls through to THIS deny — an accepted, stated over-deny (design §3/§4a).
+    case "$fp" in *[A-Za-z]*)
+      _rdl=$(printf '%s' "$fp" | LC_ALL=C tr 'A-Z' 'a-z')
+      case "$_rdl" in
+        *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
+          printf '13: reading secret material (%s) into context is the read half of exfil (-> model/logs/PR) - human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
+      esac ;;
+    esac
     # …and the union on the RESOLVED target, so a benign name cannot front a secret file.
     if [ "$_rrok" = 1 ]; then
       case "$_rres" in
         *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
           printf '13: this path resolves to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_rres"; return 1 ;;
+      esac
+      # …the same folded second arm on the RESOLVED side (closes the symlink-cloak case: an
+      # innocuous literal name whose resolved target is a case-varied secret filename).
+      case "$_rres" in *[A-Za-z]*)
+        _rrl=$(printf '%s' "$_rres" | LC_ALL=C tr 'A-Z' 'a-z')
+        case "$_rrl" in
+          *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
+            printf '13: this path resolves to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_rres"; return 1 ;;
+        esac ;;
       esac
     fi
   fi
@@ -860,8 +882,36 @@ _cp8b_redirect_hits_cp() {
 # (GUARD-BASENAME-AFTER-CD-BYPASS), so the old arm's verdict is unchanged. It is REQUIRED for the lifted
 # gate: the P0 case `python3 -c "open('hooks/pre-push','w')"` hides the path inside interpreter syntax
 # the token split cannot see, but this substring grep does.
+# GUARD-HOOKSPATH-CASE-BYPASS (seat MEDIUM, characterized): the alternation is split into the same
+# TWO TIERS `is_control_plane_path` already established (:64-98) — reused here, not reinvented, so
+# the fold rationale cannot drift between the two matchers. TIER 1 (kit-owned, unambiguous names —
+# `.claude`, CODEOWNERS, `.git`, hooks/pre-push, the enumerated `.kit/*.conf` + named scripts, the
+# scanner-ignore files, and `agents/*.agent.md`, which is already unconditional in
+# `is_control_plane_path`'s own Tier 1) folds on EVERY platform: no adopter coincidentally names a
+# different thing `.CLAUDE` or `HOOKS/PRE-PUSH`. TIER 2 (the generic directory prefixes `skills/`,
+# `conformance/`, `adapters/`) folds ONLY when `_fs_case_insensitive` — folding it unconditionally
+# would reintroduce the EXACT false-positive `is_control_plane_path`'s own A2 fix measured and closed
+# (`src/Adapters/Repo.cs`, `Skills/Onboarding.cs` are legitimate adopter code on a case-sensitive
+# filesystem). `_fs_case_insensitive` is sound here for the SAME reason it is sound for
+# `is_control_plane_path`: these are repo-relative prefixes, always judged against the tree the guard
+# itself sits on — not an arbitrary absolute path that could live on a different mounted volume (the
+# reason a filesystem probe was REJECTED for the `.env` secret arm, design §3 resolution (B)).
+_CP8B_PATHHIT_T1='(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+_CP8B_PATHHIT_T1_LC='(\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+_CP8B_PATHHIT_T2='(skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*)'
 _cp8b_pathhit() {
-  printf '%s' "$1" | grep -Eq '(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+  printf '%s' "$1" | grep -Eq "${_CP8B_PATHHIT_T1}|${_CP8B_PATHHIT_T2}" && return 0
+  # Arm 1 above is byte-identical to the pre-fold regex and returns first (the `_under_temp`
+  # add-only shape at :309-328) — this can only ever ADD a pathhit. HOT PATH (Fix 2, dual-review
+  # round): guard on an UPPERCASE byte only (`*[A-Z]*`), mirroring `is_control_plane_path:93` — `tr
+  # 'A-Z' 'a-z'` cannot change a string that has no uppercase byte, so an all-lowercase command (the
+  # common case, on every Bash call) pays zero extra subprocess. `*[A-Za-z]*` (ANY letter) was wrong:
+  # it forked `tr`+`grep` on nearly every ordinary lowercase command, since almost every command has
+  # a letter somewhere.
+  case "$1" in *[A-Z]*) : ;; *) return 1 ;; esac
+  _phl=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
+  printf '%s' "$_phl" | grep -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
+  _fs_case_insensitive && printf '%s' "$_phl" | grep -Eq "$_CP8B_PATHHIT_T2"
 }
 
 _cp8b_scan_denied() {
@@ -1123,13 +1173,45 @@ _cp8b_tad_redir_cp() {
 # PINNED (M1): awk/sed/find/sort/less/xxd/uniq stay OUT — each carries a write/exec escape and admitting
 # any fails OPEN under the lifted gate. E2 adds git READ subcommands, safe only because the old
 # scan-arm still denies `git diff --output=<cp>` (§9(b)); do not retire the old arm.
-_CP8B_READ_VERBS='grep egrep fgrep rg ls cat head tail wc diff stat file du cut tr nl od hexdump column tac comm cmp basename dirname realpath readlink echo printf which type'
+# C4 Arm 1 (E4a, face a) tier 1 — PLAIN-LIST adds: stdout-only readers, each verified to carry NO
+# file-write flag in any form (jq writes only via shell redirect, which E5 already narrows via the
+# `>`-target bail at :1180, so `shellcheck cp.sh > hooks/pre-push` stays DENY). Sole consumer of this
+# list is _cp8b_tad_is_read (Finding 4 confirmed). `sort`/`less` stay OUT (sort -o writes, less
+# shell-escapes); awk/sed/find stay OUT (E4b rejected). `yq`/`tree` are NOT here — they carry
+# file-write flags and are handled by the decline-on-any-flag conditional arm below.
+_CP8B_READ_VERBS='grep egrep fgrep rg ls cat head tail wc diff stat file du cut tr nl od hexdump column tac comm cmp basename dirname realpath readlink echo printf which type shellcheck jq shasum md5 cksum yamllint'
 _CP8B_GIT_READ_SUBS='commit status blame describe add diff log show grep stash ls-files'
 _cp8b_in_list() { for _w in $2; do [ "$_w" = "$1" ] && return 0; done; return 1; }
+# _cp8b_seg_has_flag "<seg>": 0 iff ANY token after the leading verb begins with '-'. The
+# decline-on-ANY-flag disqualifier for the yq/tree conditional read arm (vet Finding 1): genuine
+# fail-by-disqualification, NOT a write-flag denylist (a denylist fails OPEN on the next unknown write
+# flag — exactly the `yq -s <expr>` hole the vet caught).
+_cp8b_seg_has_flag() {
+  _pgf=0; case "$-" in *f*) _pgf=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -gt 0 ] && shift               # drop the leading verb
+  while [ $# -gt 0 ]; do
+    case "$1" in -*) [ "$_pgf" = 1 ] || set +f; return 0 ;; esac
+    shift
+  done
+  [ "$_pgf" = 1 ] || set +f
+  return 1
+}
 _cp8b_tad_is_read() {
   case "$1" in *'>'*) _cp8b_tad_redir_cp "$1" && return 1 ;; esac
   _rv=$(_cp8b_lead "$1")
   _cp8b_in_list "$_rv" "$_CP8B_READ_VERBS" && return 0
+  # C4 Arm 1 tier 2 (face a) — CONDITIONAL readers `yq`/`tree`. Both carry file-write flags
+  # (`yq -i` in place; `yq -s/--split-exp <expr>` writes an expression-named file — no CP token in
+  # argv; `tree -o <file>`). DECLINE-ON-ANY-FLAG: read-recognized ONLY when the segment carries NO
+  # `-`-leading token at all (pure `yq '<expr>' <file>`, `yq . <file>`, `tree <dir>`). Any flag ->
+  # decline -> fall through to the existing deny path. Over-deny on harmless flags (`yq -P`,
+  # `tree -H`) is an accepted, disclosed FP. K-H pins this decline.
+  case "$_rv" in
+    yq|tree) _cp8b_seg_has_flag "$1" || return 0 ;;
+  esac
   if [ "$_rv" = git ]; then
     _rgs=$(_cp8b_git_sub "$1")
     _cp8b_in_list "$_rgs" "$_CP8B_GIT_READ_SUBS" && return 0
@@ -1142,6 +1224,53 @@ _cp8b_tad_is_read() {
 # redirect, AND every OTHER token still classified. The broad "exempt the whole segment" form fails
 # OPEN (`sh conformance/verify.sh .claude/hooks/guard-core.sh` would ALLOW); the narrow form re-denies
 # it. Script ARGUMENTS stay unexamined (already the D3′ ceiling). (Leg K-E binds this — C2.)
+# C4 Arm 2 (face b) — wrapper-prefix RECOGNITION strip. Produces a recognition-copy of a kit-exec
+# segment with vetted benign wrappers peeled, so `timeout 600 sh conformance/verify.sh` is recognized
+# as the kit-exec it wraps. Fail-by-disqualification: each shape strips ONLY its exact vetted form;
+# anything else (a flag, an env assignment, a non-numeric timeout value) STOPS the loop, leaving a
+# non-shell / non-kit lead -> not kit-exec -> deny (over-deny, safe). Bounded to 3 iterations; a
+# residual non-wrapper lead breaks earlier. Used ONLY inside _cp8b_tad_is_kit_exec (constraint ii:
+# the copy NEVER leaves this arm — deny reasons keep printing the original $_seg).
+#   env    : BARE only (constraint i / vet Finding 2) — any following NAME=value assignment OR any
+#            flag disqualifies (keeps `env KIT_GUARD_SELFEDIT=1 …`, `env PATH=/tmp …`, `env -i …` DENY;
+#            K-F pins both the assignment and the flag leg).
+#   timeout: `timeout <[0-9]+[smhd]?>` — a flagged/non-numeric value (`timeout -s KILL`) disqualifies.
+#   nice   : bare `nice`, or `nice -n <digits>` — any other flag, or a non-digit -n value
+#            (`nice -n hooks/pre-push`), disqualifies.
+#   command: bare `command` — `command -v/-p/-V` disqualifies.
+_cp8b_strip_wrappers() {
+  _sw=$1
+  _swi=0
+  while [ "$_swi" -lt 3 ]; do
+    _swl=$(_cp8b_lead "$_sw")
+    _sw2=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*//' | awk '{print $2}')
+    case "$_swl" in
+      timeout)
+        case "$_sw2" in [0-9]*) : ;; *) break ;; esac         # value must start with a digit
+        case "$_sw2" in *[!0-9smhd]*) break ;; esac           # ... and be a pure [0-9]+[smhd]? duration
+        _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*timeout[[:space:]]+[0-9]+[smhd]?[[:space:]]+//') ;;
+      nice)
+        case "$_sw2" in
+          -n)
+            _sw3=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*//' | awk '{print $3}')
+            case "$_sw3" in ''|*[!0-9]*) break ;; esac        # `nice -n` needs a digit value
+            _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*nice[[:space:]]+-n[[:space:]]+[0-9]+[[:space:]]+//') ;;
+          -*) break ;;                                        # any other flag disqualifies
+          *) _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*nice[[:space:]]+//') ;;   # bare nice
+        esac ;;
+      command)
+        case "$_sw2" in -*) break ;; esac                     # command -v/-p/-V disqualify
+        _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*command[[:space:]]+//') ;;
+      env)
+        [ -n "$_sw2" ] || break                               # `env` with no argument -> nothing to strip
+        case "$_sw2" in -*|*=*) break ;; esac                 # BARE env only (constraint i; K-F pins)
+        _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*env[[:space:]]+//') ;;
+      *) break ;;
+    esac
+    _swi=$((_swi + 1))
+  done
+  printf '%s' "$_sw"
+}
 _cp8b_tad_is_kit_exec() {
   # FIX 2: mirror E5's read-arm narrowing — bail (fall through to deny) ONLY when a redirect TARGET
   # classifies control-plane. An fd-dup (`2>&1`, `>&2`, `N>&M`) and an ordinary target (`> /tmp/out`)
@@ -1149,10 +1278,19 @@ _cp8b_tad_is_kit_exec() {
   # `_cp8b_tad_redir_cp` reuses the effective-dir compose, so `cd hooks && sh …verify.sh > pre-push`
   # still bails and denies (target composes to hooks/pre-push). An input `<` redirect target that is
   # control-plane is caught downstream by the literal-token walk below (a read, never a write).
+  # C4 Arm 2 constraint iii: the redirect bail runs on the RAW `$1` FIRST, BEFORE wrapper stripping.
   case "$1" in *'>'*) _cp8b_tad_redir_cp "$1" && return 1 ;; esac
-  _kv=$(_cp8b_lead "$1")
+  # C4 Arm 2: peel vetted benign wrappers into a recognition-copy (`_kx`). Consumed ONLY below —
+  # never fed to the outer trigger evaluation (:1311-1313) or the effective-dir logic (constraint ii).
+  # SAFETY IS STRUCTURAL, NOT TEST-GUARDED: `_kx` is function-local and `$_seg`/`$1` are untouched
+  # downstream, so no fixture pins this. A future refactor that assigns `_seg=$_kx` (leaking the
+  # stripped copy back to the triggers) would NOT be caught by any mutant — the strip set is all
+  # non-CP tokens, so such a leak cannot flip a verdict today, which is exactly why it is unmutatable
+  # (design §10-A3, mutant K-F2 dropped-with-rationale). Keep `_kx` read-only to this arm.
+  _kx=$(_cp8b_strip_wrappers "$1")
+  _kv=$(_cp8b_lead "$_kx")
   case "$_kv" in
-    sh|bash|dash|zsh|ksh) _ksc=$(printf '%s' "$1" | sed -E 's/^[[:space:]]*//' | awk '{print $2}') ;;
+    sh|bash|dash|zsh|ksh) _ksc=$(printf '%s' "$_kx" | sed -E 's/^[[:space:]]*//' | awk '{print $2}') ;;
     *) _ksc=$_kv ;;
   esac
   _ksc=$(_cp8b_dequote "$_ksc"); _ksc=${_ksc#./}
@@ -1163,7 +1301,7 @@ _cp8b_tad_is_kit_exec() {
   _kpg=0; case "$-" in *f*) _kpg=1 ;; esac
   set -f
   # shellcheck disable=SC2086
-  set -- $1
+  set -- $_kx
   while [ $# -gt 0 ]; do
     _kt=$(_cp8b_dequote "$1"); _kt=${_kt#./}
     if [ "$_kt" != "$_ksc" ] && _cp8b_tok_is_cp "$1"; then [ "$_kpg" = 1 ] || set +f; return 1; fi
@@ -1240,6 +1378,20 @@ _cp8b_target_reason() {
   printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$2" "$_trs" "$(_cp8b_message_tip "${_tad_raw:-}")"
 }
 
+# C4 Arm 3 (face c) — remote-URL token disqualification for git-lead segments. Replaces each WHOLE
+# url-shaped token with the placeholder `REMOTE-URL`: a remote URL is not a local write target, so its
+# `.git` suffix / any CP substring inside it must not classify. A token is url-shaped iff it is
+# SCHEME-BEARING (https|http|ssh|git ://) or SCP-FORM (user@host:path). `file://` is NEVER masked (a
+# file URL IS a filesystem path — and its `.git` write stays DENY via the raw clone-dest arm). Masking
+# is TOKEN-BOUNDED, never greedy (vet Finding 3, K-G2 pins): `[^[:space:]]*` stops at whitespace, so a
+# following CP destination (`… .git hooks`) is never swallowed. No CP path is scheme-bearing or
+# scp-shaped, so masking url-shaped tokens can never erase a real CP path token.
+_cp8b_mask_remote_urls() {
+  printf '%s' "$1" | sed -E \
+    -e 's#(^|[[:space:]])(https|http|ssh|git)://[^[:space:]]*#\1REMOTE-URL#g' \
+    -e 's#(^|[[:space:]])[A-Za-z0-9._~-]+@[A-Za-z0-9._-]+:[^[:space:]]*#\1REMOTE-URL#g'
+}
+
 # _cp8b_target_arm_denied "<cmd>": PREDICATE - Parts A+B+C. Prints the reason and returns 0 to deny.
 _cp8b_target_arm_denied() {
   _tad_raw=$1
@@ -1258,9 +1410,16 @@ _cp8b_target_arm_denied() {
         if _cp8b_tad_cp_dest_denied "$_seg"; then _cp8b_target_reason "$_seg" cp-dest; return 0; fi
         continue ;;
     esac
-    if _cp8b_tad_pathhit "$_seg"; then _cp8b_target_reason "$_seg" pathhit; return 0; fi
-    if _cp8b_tad_literal_tok "$_seg"; then _cp8b_target_reason "$_seg" token; return 0; fi
-    if _cp8b_tad_composed_tok "$_seg"; then _cp8b_target_reason "$_seg" composed; return 0; fi
+    # C4 Arm 3: for a git-lead segment, evaluate the three CP triggers on a recognition-copy in which
+    # url-shaped tokens are masked (a remote URL's `.git` suffix is not a local write target). Reasons
+    # print the ORIGINAL $_seg. The raw clone-DESTINATION arm (_cp8b_git_write_denied :806) and the
+    # push-to-main floor run on the RAW string and are untouched, so `git clone <url> .claude`,
+    # `git clone <url> hooks`, `git push <url> main` stay DENY. K-G pins the git-lead guard.
+    _tad_c=$_seg
+    if [ "$_lv" = git ]; then _tad_c=$(_cp8b_mask_remote_urls "$_seg"); fi
+    if _cp8b_tad_pathhit "$_tad_c"; then _cp8b_target_reason "$_seg" pathhit; return 0; fi
+    if _cp8b_tad_literal_tok "$_tad_c"; then _cp8b_target_reason "$_seg" token; return 0; fi
+    if _cp8b_tad_composed_tok "$_tad_c"; then _cp8b_target_reason "$_seg" composed; return 0; fi
   done
   return 1
 }
@@ -1287,7 +1446,10 @@ _cp8b_push_main_denied() {
 guard_check_command() {
   cmd=$1
   # --- control-plane shell mutation (moved from guard.sh:81-93, + new files) ---
-  if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath'; then
+  # GUARD-HOOKSPATH-CASE-BYPASS: unconditional case-fold (`-Eq` -> `-Eiq`), no fork. Git config
+  # KEYS are case-insensitive by spec on every platform, so this can only ever ADD a deny — no
+  # legitimate command sets a DIFFERENT config key that differs from core.hooksPath only by case.
+  if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath'; then
     printf '%s' '13: git config core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
   fi
   # --- B2 Δ4(i)′: RAW `git notes` WRITES to the promotion GO ledger (refs/notes/promotions) -----
@@ -1331,6 +1493,12 @@ guard_check_command() {
   #      the SET, so it is numbered here.
   #   9. THE SENTINEL ITSELF, under `install-shims` only — see THE SENTINEL below for the
   #      runtime-scoped measurement.
+  # NOT in this set, because it is now COVERED (GUARD-HOOKSPATH-CASE-BYPASS): a case-variant ref
+  # spelling — `git notes --ref=PROMOTIONS add`, `refs/notes/PROMOTIONS` — is denied the same as the
+  # lowercase form. On macOS loose refs are ordinary files, so the uppercase spelling would otherwise
+  # write the exact same `.git/refs/notes/promotions` governance ledger the lowercase form protects;
+  # the ref-match leg above folds case for that reason. This does not touch entries 1-9: those are a
+  # DIFFERENT class (plumbing/destruction/alias/refspec/interpreter/sentinel), still disclosed as-is.
   # These are NOT matched ON PURPOSE. Extending the matcher to update-ref/symbolic-ref/fetch and
   # push refspecs is the ARMS RACE vetoed by the 2026-07-28 design §4 ("no text/graph predicate over
   # author-controlled input") and permanently dropped by [S1]; it would fail the friction test
@@ -1363,10 +1531,19 @@ guard_check_command() {
   # `--ref=promotions` inside throwaway repos when they are run under shims (they are not, in CI).
   # No KIT_GUARD_SELFEDIT hint on THIS rule (L2): the one rule whose purpose is to stop
   # record-minting must not close by naming its own off-switch.
+  # GUARD-HOOKSPATH-CASE-BYPASS (Fix 1, dual-review round): the REF-NAME leg folds too — on macOS
+  # loose refs are ordinary FILES, so `git notes --ref=PROMOTIONS add` writes the same
+  # `.git/refs/notes/promotions` file as the lowercase form; this is the same case-variance class as
+  # every other fold in this slice (config keys, secret names), not the ref-name family's OTHER
+  # disclosed bypasses (plumbing/update-ref/refspecs/alias — those stay exactly as disclosed below).
+  # `-Eq` -> `-Eiq` on THIS leg only: the verb leg (next line up) and the write-verb leg (below) stay
+  # byte-literal, deliberately — folding them would not narrow the over-deny risk, only widen it for
+  # no gain, since "notes"/"add" etc are already case-invariant tokens in practice for this arm's
+  # own fixtures. Monotone: a strict superset of the match, so no DENY can become an ALLOW.
   if ! selfedit_allowed \
      && [ "${KIT_PROMOTION_FRONT_DOOR:-}" != "1" ] \
      && printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])git[[:space:]]+([^;&|]*[[:space:]])?notes[[:space:]]' \
-     && printf '%s' "$cmd" | grep -Eq -- "--ref[= ][\"']?(refs/notes/)?promotions[\"']?([[:space:]]|\$)|refs/notes/promotions" \
+     && printf '%s' "$cmd" | grep -Eiq -- "--ref[= ][\"']?(refs/notes/)?promotions[\"']?([[:space:]]|\$)|refs/notes/promotions" \
      && printf '%s' "$cmd" | grep -Eq 'notes[[:space:]]([^;&|]*[[:space:]])?(add|append|copy|edit|remove|prune|merge)([[:space:]]|$)'; then
     printf '%s' '13: raw `git notes` WRITE verbs (add/append/copy/edit/remove/prune/merge) on refs/notes/promotions are denied - this is the default route a drifting agent takes to mint a GO record (governance-ledger integrity, D-240805-3). Use the front door: scripts/promotion-verify.sh record, which derives the assurance label; publish with `git push origin refs/notes/promotions`. NOT covered, and not claimed to be: git plumbing (hash-object/mktree/commit-tree/update-ref), ledger DESTRUCTION (`update-ref -d`, `push origin :refs/notes/promotions`), alias indirection, fetch OR PUSH refspecs whose DESTINATION is the ref, `symbolic-ref` repointing the ref, GIT_NOTES_REF spellings, interpreter wrappers - see the ceiling at this rule. The control that binds is the record rendered at the CI judgment surface, not this deny.'; return 1
   fi
@@ -1404,12 +1581,19 @@ guard_check_command() {
   # path is the Read-tool deny (guard_check_read) + platform containment. Asymmetry by design: the
   # shell path enumerates common .env.<suffix> files, while the Read tool's `*.env.*` glob catches
   # any suffix (e.g. `.env.foo` / `.env.local.bak` slip the shell path but the Read equivalent denies).
+  # GUARD-HOOKSPATH-CASE-BYPASS (seat HIGH, condition 2): BOTH legs fold (`-Eq` -> `-Eiq`). The
+  # verb leg first — on a case-insensitive filesystem `/bin/CAT` resolves to `/bin/cat`, so a
+  # byte-literal verb match is the same defect as a byte-literal path match (precedent in-file:
+  # `:894-899` folds the CP-arm verbs, "same defect, one argument position to the left"). Then the
+  # filename leg. Deny-side only; `.env.example` stays ALLOW because "example" is never a listed
+  # suffix alternative — folding case cannot add it (design §4a).
   if ! selfedit_allowed \
-     && printf '%s' "$cmd" | grep -Eq '(^|[;&|]|[[:space:]])[[:space:]]*(cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.)[[:space:]]' \
-     && printf '%s' "$cmd" | grep -Eq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*]|$)|\.(pem|key)([[:space:];|&*]|$)|id_rsa|(^|[[:space:]/;|&])secrets?/'; then
+     && printf '%s' "$cmd" | grep -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*(cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.)[[:space:]]' \
+     && printf '%s' "$cmd" | grep -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*]|$)|\.(pem|key)([[:space:];|&*]|$)|id_rsa|(^|[[:space:]/;|&])secrets?/'; then
     printf '%s' '13: reading secret material into context (the read half of exfil -> model/logs/PR) is human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
   fi
-  # --- destructive matrix: moved VERBATIM from guard.sh:96-242 ---
+  # --- destructive matrix: moved VERBATIM from the PRE-SPLIT guard.sh (see git history; the line
+  #     range that stood here died with the split) ---
   # CP-8a: the leading verb decides whether the ARGUMENTS are code or data. These carry
   # identical bytes and only the verb tells them apart:
   #     bash -c "rm -rf /"          <- the argument is CODE (a weapon) -> must DENY
@@ -1660,7 +1844,8 @@ guard_check_mcp() {
 }
 
 # guard_check_path "<path>": print reason + return 1 if denied, else 0.
-# Moved from guard.sh:245-265 (drop the jq line — caller passes the path).
+# Moved from the PRE-SPLIT guard.sh (drop the jq line — caller passes the path); the line range that
+# stood here died with the split, so this cites the file and the change, not a dead offset.
 guard_check_path() {
   fp=$1
   # CP-8c: an adapter that can prove the protected repo root passes it as $2. When the target is a
@@ -1736,11 +1921,31 @@ guard_check_path() {
     *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
       printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1 ;;
   esac
+  # GUARD-HOOKSPATH-CASE-BYPASS: a case-folded SECOND arm, never a replacement (the `_under_temp`
+  # add-only shape at :309-328). Arm 1 above is byte-identical and returns first, so this can only
+  # ever ADD a secret-write deny. The template ALLOW above stays byte-literal (never fold an allow
+  # matcher), so a case-variant `.ENV.EXAMPLE` falls through to THIS deny — an accepted over-deny.
+  case "$fp" in *[A-Za-z]*)
+    _wdl=$(printf '%s' "$fp" | LC_ALL=C tr 'A-Z' 'a-z')
+    case "$_wdl" in
+      *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
+        printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1 ;;
+    esac ;;
+  esac
   # …and the same union on the RESOLVED path, so a benign name cannot front a secret target.
   if [ "$_resok" = 1 ]; then
     case "$_res" in
       *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
         printf '13: this path resolves to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_res"; return 1 ;;
+    esac
+    # …the same folded second arm on the RESOLVED side (closes the symlink-cloak case: an innocuous
+    # literal name whose resolved target is a case-varied secret filename).
+    case "$_res" in *[A-Za-z]*)
+      _wrl=$(printf '%s' "$_res" | LC_ALL=C tr 'A-Z' 'a-z')
+      case "$_wrl" in
+        *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
+          printf '13: this path resolves to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_res"; return 1 ;;
+      esac ;;
     esac
   fi
   return 0
