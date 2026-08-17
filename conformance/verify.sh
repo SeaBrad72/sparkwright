@@ -562,6 +562,38 @@ check control check-links      sh conformance/check-links.sh
 # `docs-links` — the same required, no-`if:` job that survives the docs_only skip, chosen for the same
 # reason: a citation-decay check governs exactly the `.md`-only PRs that disarm cf-verify-enforced.
 check control citation-live    sh conformance/citation-live.sh
+# citation-history (the sixth-dial slice, route (b), ruling D-240815-2d) — the row above grades whether
+# a cited line still EXISTS; this one grades the WRITING SHAPE that carries a dead value forward. The
+# two are deliberately separate files: citation-live is mode-pure and its logic is frozen by this
+# slice, so the new grammar lands beside it rather than inside its mutation region. The LIVE row is
+# registered (base-INDEPENDENT — a `git ls-files` enumeration and one awk pass, no SHA, no merge-base)
+# and it is sub-second. NO --kitself, for citation-live's exact reason: the check ARMS ITSELF in-script
+# on the same un-spoofable kit-marker pair, so on an armed tree an unreadable or unenumerable corpus is
+# a FAIL rather than an N/A, while an adopter tree self-declares the line-anchored N/A that C6 renders
+# N-A (de-lining is the kit's own writing convention; the adopter face is the doctrine, not this gate).
+# Registering it here also enrols the file in non-vacuity.sh's sweep (which selects from these
+# `^check control` rows); its own --selftest runs as a dedicated ci.yml step (conformance-selftests,
+# "citation-history self-test") and the LIVE check runs in `docs-links` — the same required, no-`if:`
+# job, chosen for the same reason: a lint over `.md` prose governs exactly the `.md`-only PRs that
+# disarm cf-verify-enforced.
+check control citation-history sh conformance/citation-history.sh
+# decision-id-live (DANGLING-DECISION-ID-CITES) — the citation-live family ONE LEVEL UP: citation-live
+# asks "does the cited LINE still exist"; this row asks "does the cited RULING still exist". A `D-*` id
+# is the kit's strongest form of authority and was unforgeable only by convention — a living doc could
+# carry an authority-shaped token to a ruling never recorded and nothing would red it. This grades every
+# `D-YYMMDD-N` cited in a LIVING `.md` for membership in DECISIONS.md's `**`D-...`` headers (folding a
+# dotted `.N` sub-id to its parent, the sanctioned-commands.tsv:54 precedent); the dated record is
+# exempt-and-REPORTED (the C9 dated principle) and a `.sh` fixture id is out of the `.md`-only domain by
+# construction. HONEST CEILING: it proves the parent ruling EXISTS, never that a sub-item number or the
+# ruling's SUBSTANCE is real (Q3). KIT-SELF, not --kitself: the ids are the kit's own governance
+# vocabulary, so the check ARMS ITSELF on the same un-spoofable kit-marker pair — on an armed tree a
+# missing/empty DECISIONS.md or a zero-citation domain is a FAIL, while an adopter tree self-declares the
+# line-anchored N/A that C6 renders N-A. Registering it here also enrols the file in non-vacuity.sh's
+# sweep (which selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml
+# step (conformance-selftests, "decision-id-live self-test") and the LIVE check runs in `docs-links` — the
+# same required, no-`if:` job, chosen because a ruling-citation check governs exactly the `.md`-only PRs
+# that disarm cf-verify-enforced.
+check control decision-id-live sh conformance/decision-id-live.sh
 # roadmap-current (C10 ROADMAP-STALE-RECONCILE) — the SIBLING of the row above and placed here for the
 # same reason: both grade whether a LIVING document still tells the truth about the tree it describes.
 # citation-live asks "does the line this doc cites still exist"; this row asks "does the roadmap still
@@ -628,6 +660,20 @@ check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
 check control adopter-preflight --kitself sh conformance/adopter-preflight-wired.sh
 check control adopter-export   sh conformance/adopter-export-wired.sh
+# adopter-export-claims (NON-VACUITY-SHARD2-FLOOR) — the exported tree's OWN claims-registry proof,
+# un-nested out of the row above. THE ROW FORM IS `--selftest`, DELIBERATELY, and the reason is the
+# whole point of the slice: the LIVE check runs two full exports and two claims-registry runs (~316s
+# measured), and this aggregate is run by cf-verify-enforced AND by every local `verify.sh --require`.
+# A live-form row here would charge both of them the cost the un-nesting just removed — reversing the
+# cure's sign. Registering the CHEAP selftest is what enrols the file in non-vacuity.sh's sweep (which
+# selects from these `^check control` rows), exactly as the loop-state and brownfield-walk rows above do.
+# The LIVE both-faces proof runs in ci.yml's `cf-export-claims` job (adjudicated by the `conformance`
+# aggregator) and weekly in drift-watch.yml. NOT --kitself: the selftest is hermetic (fixture trees with
+# canned registries, no kit file read), so it is portable and must stay green inside the export too.
+# WHAT THIS LANE GIVES UP (the coverage delta, stated): `verify.sh --require` no longer proves the
+# exported tree's own claims-registry — an orphaned maintainer-only claim now surfaces only in
+# cf-export-claims (non-docs PRs) and the weekly drift-watch, no longer in this local/enforced lane.
+check control adopter-export-claims-selftest sh conformance/adopter-export-claims.sh --selftest
 # A7 brownfield end-to-end lock: drives a legacy fixture through the CORRECTED docs/adoption/brownfield.md
 # sequence to inception-done --surface rc 0, with a load-bearing negative (pre-push-skipped => FAIL).
 # --kitself: it produces the tree via scripts/adopter-export.sh, which needs the kit's OWN committed .git,

@@ -116,6 +116,22 @@ run() {
   : > "$_B"
   while IFS="$TAB" read -r _pat _disp _surf _backstop _mode _reason _ref _tok; do
     case "$_pat" in ''|'#'*|command-pattern) continue ;; esac
+    # MODE-DEPENDENCE column (5) is now CI-ratcheted (ASK-TIER-MODE-RATCHET, 2026-08-16, reviewer I-2 of
+    # the XS honesty batch). Two monotone checks — before it, the column was unvalidated prose and a
+    # revert/typo reded nothing (the design's MED-1 ceiling). (a) VOCABULARY: the value must be one of
+    # the three the column's own header doc names; a typo (`interactive`) or empty value reds. (b) THE
+    # ASK INVARIANT: an `ask` command is an approval surface ONLY under interactive mode, so it may not
+    # be marked `none` — that is the exact false-safe the honesty batch fixed; a revert to `none` reds.
+    case "$_mode" in
+      none|interactive-only|autonomous-wall) : ;;
+      *)
+        echo "FAIL: '$_pat' carries an out-of-vocabulary mode-dependence '$_mode' — must be one of none|interactive-only|autonomous-wall (column 5; ASK-TIER-MODE-RATCHET vocabulary check)"
+        rc=1 ;;
+    esac
+    if [ "$_disp" = ask ] && [ "$_mode" = none ]; then
+      echo "FAIL: '$_pat' is disposition 'ask' but mode-dependence 'none' — an ask command is an approval surface ONLY in interactive mode; marking it 'none' is the false-safe the XS honesty batch fixed. Set mode-dependence to interactive-only (ASK-TIER-MODE-RATCHET invariant)"
+      rc=1
+    fi
     if [ "$_surf" = shipped ]; then
       printf '%s\t%s\n' "$_disp" "$_pat" >> "$_B"
     fi
@@ -244,8 +260,22 @@ selftest() {
   mkdir -p "$W/onemarker/docs"; : > "$W/onemarker/docs/ROADMAP-KIT.md"
   psa_expect "one kit marker + no enumeration still reds (the guard is not always-N/A)" 1 "$W/onemarker"
 
+  # mutant 7 (ASK-TIER-MODE-RATCHET invariant): an `ask` row marked mode-dependence `none` reds. The
+  # anchor fixture's WebFetch ask row is interactive-only; this flips it to `none` and must red.
+  psa_tree "$W/askmode"
+  sed "s/^WebFetch${TAB}ask${TAB}shipped${TAB}none${TAB}interactive-only/WebFetch${TAB}ask${TAB}shipped${TAB}none${TAB}none/" "$W/askmode/conformance/sanctioned-commands.tsv" > "$W/askmode/conformance/x" && mv "$W/askmode/conformance/x" "$W/askmode/conformance/sanctioned-commands.tsv"
+  psa_expect "mutant 7: an ask row with mode-dependence none reds (the ratchet)" 1 "$W/askmode"
+  psa_says "mutant 7 names the ask/none invariant" "'ask' but mode-dependence 'none'" "$W/askmode"
+
+  # mutant 8 (ASK-TIER-MODE-RATCHET vocabulary): an out-of-vocabulary mode-dependence value reds (the
+  # typo half of reviewer I-2's "a revert OR typo reds nothing").
+  psa_tree "$W/badmode"
+  sed "s/${TAB}interactive-only${TAB}fetch/${TAB}interactiv${TAB}fetch/" "$W/badmode/conformance/sanctioned-commands.tsv" > "$W/badmode/conformance/x" && mv "$W/badmode/conformance/x" "$W/badmode/conformance/sanctioned-commands.tsv"
+  psa_expect "mutant 8: an out-of-vocabulary mode-dependence value reds" 1 "$W/badmode"
+  psa_says "mutant 8 names the vocabulary check" 'out-of-vocabulary mode-dependence' "$W/badmode"
+
   rm -rf "$W"
-  [ "$sfail" -eq 0 ] && { echo "permission-surface-audit --selftest: OK (anchor + shipped-allow/enum-row/disposition/ruling-ref-unresolvable/ruling-ref-mis-bind(laundering)/deny/hook/symlink mutants + dropped-enum + scope both ways)"; return 0; }
+  [ "$sfail" -eq 0 ] && { echo "permission-surface-audit --selftest: OK (anchor + shipped-allow/enum-row/disposition/ruling-ref-unresolvable/ruling-ref-mis-bind(laundering)/deny/hook/symlink mutants + dropped-enum + scope both ways + mode-dependence ask-invariant/vocabulary)"; return 0; }
   echo "permission-surface-audit --selftest: FAIL"; return 1
 }
 
@@ -280,7 +310,7 @@ psa_good_enum() { # <file> — the enumeration reconciled with psa_good_settings
     printf 'command-pattern\tdisposition\tsurface\tguard-backstop\tmode-dependence\treason\truling-ref\tbind-token\n'
     printf 'Read\tallow\tshipped\tnone\tnone\tread-only\tsettings.json:allow\t-\n'
     printf 'Bash(git status:*)\tallow\tshipped\tfull\tnone\tstatus\tsettings.json:allow\t-\n'
-    printf 'WebFetch\task\tshipped\tnone\tnone\tfetch\tsettings.json:ask\t-\n'
+    printf 'WebFetch\task\tshipped\tnone\tinteractive-only\tfetch\tsettings.json:ask\t-\n'
     printf 'Bash(rm -rf:*)\tdeny\tshipped\tnone\tnone\tdestructive\tsettings.json:deny\t-\n'
     printf 'gh pr merge --admin\tdeliberately-absent\truling-only\tfull\tnone\tadmin-only\tD-FIX-1\tgh pr merge --admin\n'
   } > "$1"

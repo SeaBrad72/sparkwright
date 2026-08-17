@@ -2,24 +2,28 @@
 # adopter-export-wired.sh — regression-lock for the S3 adopter-clean obtain mechanism.
 # Asserts: the export mechanism exists, the .gitattributes export-ignore set is present, the set is
 # LINK-SAFE (no export-ignored path is a `](path)` markdown-link target from a KEPT doc; links
-# BETWEEN export-ignored docs are fine — both ends prune together), the export is CI-green: fixtures
-# ship, STACK-SELECTION is stubbed on `--profile`, no broken links, AND the exported tree's own
-# claims-registry passes (orphaned-maintainer-only-claim guard).
+# BETWEEN export-ignored docs are fine — both ends prune together), and the export is CI-green:
+# fixtures ship, STACK-SELECTION is stubbed on `--profile`, no broken links.
+# ⚠️ THE EXPORTED TREE'S OWN CLAIMS-REGISTRY IS NO LONGER PROVEN HERE. That proof (the orphaned-
+# maintainer-only-claim guard) lives in conformance/adopter-export-claims.sh as of
+# NON-VACUITY-SHARD2-FLOOR — measured at 96.7% of this check's --selftest cost, paid once per mutant.
+# Do not re-nest it; see the note in block (c).
 #   sh conformance/adopter-export-wired.sh [--selftest]
 # Exit: 0 = wired + link-safe + CI-green · 1 = regression · 2 = setup. POSIX sh; dash-clean.
 set -eu
 _here=$(CDPATH='' cd "$(dirname "$0")" && pwd)   # resolve dir BEFORE cd so sourcing is cwd-independent
 cd "$_here/.."
 . "$_here/wf-helpers.sh"   # provides wf_extract_links() (single source of truth)
-# Kill git auto-gc for this check + ALL subprocesses (the nested verify, adopter-export, and the
-# selftest fixtures): a commit's detached `git gc --auto` keeps writing to .git after it returns,
-# racing the temp `rm -rf` into ENOTEMPTY under CI load (green locally/PR, red on the loaded
-# main-push runner). Env-scoped (no global mutation), additive (only forces gc.auto=0). Root-cause
-# hygiene for every cleanup site at once; the `|| true` on each rm below is the hard guarantee.
-# The structural refactor (isolate this green-on-clone verify into its own job) is boarded: Phase 1.
-export GIT_CONFIG_COUNT=1
-export GIT_CONFIG_KEY_0=gc.auto
-export GIT_CONFIG_VALUE_0=0
+# ⚠️ THE git-auto-gc GUARD IS NOT HERE ANY MORE — it is set at BOTH dispatch sites below (the top of
+# the `--selftest` block and immediately before the tail `run`), and this note is why. Everything above
+# the `--selftest` marker is `non-vacuity.sh`'s MUTATION REGION: the guard's `GIT_CONFIG_COUNT` is a
+# `<var>=1` accumulator idiom, so every mutant ran with the anti-`git gc` race protection DISABLED —
+# a flake-fail inside a mutant reads as a KILL, i.e. as proof this check has teeth it may not have.
+# (It also inflated the mutant census with an accumulator that guards nothing.) What the guard does:
+# a commit's detached `git gc --auto` keeps writing to .git after it returns, racing the temp `rm -rf`
+# into ENOTEMPTY under CI load (green locally/PR, red on the loaded main-push runner). Env-scoped (no
+# global mutation), additive (only forces gc.auto=0); the `|| true` on each rm below is the hard
+# guarantee. Both sites are required because the `--selftest` arm exits before the tail.
 ROOT="${EXPORT_ROOT:-.}"
 
 # the export-ignore set this lock enforces (must match .gitattributes)
@@ -159,16 +163,26 @@ run() {
     done > "$_badf"
     if [ -s "$_badf" ]; then echo "FAIL: broken relative links in export:"; cat "$_badf"; rc=1; fi
     rm -f "$_badf"
-    # S3b BEHAVIOURAL: the exported tree's OWN claims-registry passes (the integrity gate the adopter's
-    # CI runs). git-init + add + COMMIT so verifiers needing a HEAD (`git archive HEAD`) or `git ls-files`
-    # (e.g. check-links) work — matching what a real adopter does. This is the "run the whole adopter CI"
-    # check: it catches ANY orphaned/maintainer-only claim.
+    # git-init + add + COMMIT the export, matching what a real adopter does on their first push. The
+    # COMMIT IS LOAD-BEARING FOR THE DIAL FIXTURE BELOW, which pushes `$(git rev-parse HEAD)` through the
+    # exported hook — it is not bookkeeping.
+    #
+    # ── THE CLAIMS-REGISTRY RUN MOVED OUT (NON-VACUITY-SHARD2-FLOOR) — it is NOT deleted; see
+    #    conformance/adopter-export-claims.sh.
+    #
+    # A full `claims-registry.sh` used to run RIGHT HERE, on the exported tree, and again (via the
+    # fixture-r path) on the raw worktree-attributes export. MEASURED on an instrumented run of this
+    # file's own --selftest: 134.0s + 181.6s of 326.6s — 96.7%. And `non-vacuity` MUTATION-TESTS this
+    # check with three selftest runs per judgment, so that pair WAS the shard-2 floor. It is the same
+    # defect the green-on-clone note below names: A PROOF NESTED INSIDE A MUTATION-TESTED CHECK IS PAID
+    # FOR ONCE PER MUTANT. The un-nested check also asserts the second face at its TRUE polarity for the
+    # first time (the raw export's registry fails BY CONSTRUCTION — the carve is skipped on an unmarked
+    # tree — and that failure used to be swallowed whole). DO NOT re-nest it here.
     if ( cd "$_d" && git init -q && git add -A \
-         && git -c gc.auto=0 -c user.email=ci@kit -c user.name=ci commit -qm export >/dev/null 2>&1 \
-         && sh conformance/claims-registry.sh >/dev/null 2>&1 ); then
-      echo "PASS: exported tree's claims-registry passes"
+         && git -c gc.auto=0 -c user.email=ci@kit -c user.name=ci commit -qm export >/dev/null 2>&1 ); then
+      echo "PASS: exported tree commits cleanly (adopter first-push shape; its claims-registry is proven in adopter-export-claims.sh)"
     else
-      echo "FAIL: exported tree's claims-registry does NOT pass (an orphaned maintainer-only claim — carve it in adopter-export.sh)"; rc=1
+      echo "FAIL: the exported tree could not be committed — the dial fixture below needs a real HEAD, so nothing downstream of this point is trustworthy"; rc=1
     fi
     # DIAL-DELIVERY Δ-A/Δ-B — the adopter's dial state, in ONE fold: (a) the kit's own enforcement
     # dials do not ship (ALL of them — the two push dials AND the Δ-B KIT_SCOPE_MODE=enforce), and
@@ -283,6 +297,11 @@ run() {
 }
 
 if [ "${1:-}" = "--selftest" ]; then
+  # git-auto-gc guard, site 1 of 2 — see the note at the top of this file. It MUST sit at or after this
+  # marker: above it, every mutant would run with the race protection off.
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=gc.auto
+  export GIT_CONFIG_VALUE_0=0
   sfail=0
   run >/dev/null 2>&1 || { echo "adopter-export-wired --selftest: FAIL (real tree not green)"; sfail=1; }
   # negative: a tree whose .gitattributes lacks the export-ignore set must FAIL the lock.
@@ -303,8 +322,21 @@ if [ "${1:-}" = "--selftest" ]; then
   ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_r" 2>/dev/null || true
   cp "$ROOT/scripts/adopter-export.sh" "$_r/scripts/adopter-export.sh" 2>/dev/null || true
   printf '\nYou get 242 files for typescript-node, down from 392.\n' >> "$_r/README.md"
-  # git-init so the tree passes every OTHER block (export needs `git archive HEAD`) — isolating the
-  # README guard as the SOLE failure cause, so this fixture is load-bearing (run() fails ONLY on (e)).
+  # git-init so the tree passes every OTHER block (export needs `git archive HEAD`).
+  # ⚠️ THE SOLE-CAUSE CLAIM THAT USED TO END THIS SENTENCE IS FALSE, AND THE MEASUREMENT IS RECORDED
+  # HERE RATHER THAN QUIETLY FIXED (NON-VACUITY-SHARD2-FLOOR, 2026-08-15). It read "isolating the README
+  # guard as the SOLE failure cause, so this fixture is load-bearing (run() fails ONLY on (e))". MEASURED
+  # by hand-reverting block (e)'s `rc=1` to `rc=0`: this selftest still reports OK. run() on this fixture
+  # fails for FIVE OTHER reasons, because the archive strips both kit markers and rider (c)'s
+  # `_ae_is_kit_tree` gate then SKIPS every carve — `claim drift-watch/golden-path/adopter-export not
+  # carved`, `exported .gitignore still ignores /src/ or /test/`, and block (g)'s `export-of-an-export
+  # resolves a live Backlog backend`. So block (e) currently has NO selftest teeth, and this leg proves
+  # only "the fixture fails somehow" — the SAME defect class the block-(g) negative below had to work
+  # around explicitly (`_aekt=0` -> `_aekt=1`), and the same one that made the nested claims-registry
+  # run proof-free. PRE-EXISTING, NOT INTRODUCED BY THE UN-NESTING: all five fail-sites are verbatim in
+  # the pre-cure file and untouched by that diff. Fixing it (arm the fixture, or drive block (e) as a
+  # pure function like `_no_eof_blank` below) is a separate row — this comment exists so the next reader
+  # measures instead of trusting the claim, which is exactly how it survived this long.
   ( cd "$_r" && git init -q && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm r >/dev/null 2>&1 ) || true
   if ( ROOT="$_r"; run ) >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (README hardcoded count not caught)"; sfail=1
@@ -428,4 +460,8 @@ if [ ! -f "$ROOT/docs/ROADMAP-KIT.md" ] && [ ! -f "$ROOT/.github/workflows/golde
   echo "adopter-export-wired: N/A — kit-self check (not applicable outside the kit repo)"; exit 0
 fi
 
+# git-auto-gc guard, site 2 of 2 — the live path (the `--selftest` arm above exits before reaching it).
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=gc.auto
+export GIT_CONFIG_VALUE_0=0
 run

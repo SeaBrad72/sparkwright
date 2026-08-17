@@ -142,10 +142,14 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # claims-registry. Strip those claims from the adopter's COPY of claims.tsv + REQUIRED_IDS (the kit's
   # own registry is untouched). The wired-check scripts stay — their --selftest in the adopter ci.yml
   # is self-contained and passes. If a new maintainer-only workflow+claim is added without carving it,
-  # conformance/adopter-export-wired.sh goes RED (it runs the adopter's full claims-registry).
+  # conformance/adopter-export-claims.sh face-0 goes RED (it runs the adopter's full claims-registry
+  # on the kit-marked export — in the cf-export-claims job per non-docs PR and weekly in drift-watch;
+  # un-nested from adopter-export-wired.sh at NON-VACUITY-SHARD2-FLOOR, 2026-08-15).
   # adopter-export is ALSO carved: it is a kit-self check (an adopter has no reason to verify the kit's
-  # OWN export mechanism), AND keeping it would recurse (claims-registry -> adopter-export-wired.sh ->
-  # claims-registry -> ...). The kit still verifies adopter-export in its own CI.
+  # OWN export mechanism). The old recursion chain (claims-registry -> adopter-export-wired.sh ->
+  # claims-registry -> ...) is broken by the un-nesting; the live recursion stop is
+  # adopter-export-claims.sh's marker-absent N/A (the check stands down on any exported tree before
+  # building anything). The kit still verifies adopter-export in its own CI.
   # ratification-parity is carved for the same kit-self reason: it verifies the kit's OWN install
   # mechanism (that incept ships the §13 gate for every stack), its real run N/As on an adopter tree, and
   # its --selftest drives real incept via `git archive` — which needs the kit's .git, absent in an export.

@@ -35,3 +35,28 @@ Adopt both. The guard reduces accidents cheaply and immediately; the platform bo
 ## Human and other-runtime coverage
 
 The guard's PreToolUse hook governs the Claude Code runtime. Its deny-matrix is **reused across runtimes** (`../operations/runtime-guards.md`): a universal git `pre-push` hook covers force-push / push-to-main for **any** git client and humans, and a `kit-guard` CLI lets any other runtime check a proposed command against the same matrix. These widen the speed bump — they are **not** a boundary: `--no-verify`, an uncooperative runtime, or a language interpreter still bypasses them, which is why the boundary must live at the platform. And a hook that was never installed in *this* working copy is not a reduced speed bump — it is none at all: `git clone` copies neither `.git/hooks/` nor `.git/config`, so every fresh clone starts in that state, and `scripts/preflight.sh` refuses on it rather than letting it pass silently. See the runtime-coverage note in [README.md](README.md) and the §13 enforcement model in `DEVELOPMENT-PROCESS.md`.
+
+## The kit's own development environment — a declared residual (2026-08-15)
+
+Control #1 scopes itself to *agent and developer environments*, and the kit's own development
+environment is the maximally open case of that scope: the maintainer's machine runs the agent with
+machine-global network allows (`curl`, web fetch/search) under an autonomous permission mode — no
+egress allowlist binds it. The kit's honesty tiers demand this be **declared**, not quiet:
+
+- **The residual:** agent-reachable outbound network on the maintainer machine is unconstrained by
+  any platform control. The guard's input-side matchers deny secret-*targeting* reads, and the
+  directory-sweep residual of its content tools is already disclosed; neither is an egress control.
+- **Compensating controls (the first owner-attested, the rest checkable):** no production
+  credentials sit within agent reach on that machine (an attestation, not an agent-checkable
+  fact); secret material is never committed — `.gitignore` carries the secret patterns (added
+  2026-08-15, when a review measured this very sentence's earlier claim as false) and the publish
+  pipeline's **fail-closed gitleaks gate** gates what actually ships (its own honest ceiling: a
+  scan, plus the non-optional human diff review — never a proof); secret-*targeting* reads
+  are guard-denied; and the blast-radius controls (#2 prod isolation, #4 scoped credentials) bind
+  at the platforms that hold real data, not on the dev box. (#3 sandboxed FS likewise does not
+  bind on the dev box; the guard's read-side matchers are its only stand-in there.)
+- **Why this is a statement and not a doctor advisory, on purpose:** the doctor cannot observe
+  network enforcement, so a permanent advisory would be a declared-tier claim wearing an
+  advisory-tier costume — and a warning that is yellow on every happy-path run is ignored within a
+  month (the doctor's own anti-wolf-crying doctrine). A declaration you can read beats an alarm you
+  learn to ignore. Ruled at `D-240815-2` (g); basis: the 2026-08-15 first-principles review.

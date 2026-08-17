@@ -2,6 +2,16 @@
 .DS_Store
 Thumbs.db
 
+# Secrets — never committed, and (per docs/operations/runtime-guards.md) ripgrep respects
+# .gitignore, so these patterns also remove gitignored secrets from the content-sweep residual.
+# Added 2026-08-15 (XS honesty batch, reviewer I-1: the boundary doc claimed this rule existed).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
 # Editor
 *.swp
 *.swo

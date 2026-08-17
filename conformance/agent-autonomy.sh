@@ -76,6 +76,44 @@ assert_deny "redirect CODEOWNERS"     '{"tool_name":"Bash","tool_input":{"comman
 assert_deny "redirect codeowners (case)" '{"tool_name":"Bash","tool_input":{"command":"echo x > codeowners"}}'
 assert_deny "redirect Conformance (case)" '{"tool_name":"Bash","tool_input":{"command":"printf a > Conformance/verify.sh"}}'
 
+# --- GUARD-CP-WRITE-ROUTES: two measured control-plane write routes closed ---------------------
+# Cure 1 (Route 1) — a redundant-syntax path spelling on an exact-literal CP target no longer evades
+# the classifier (is_control_plane_target normalizes through _cp8b_norm before matching). Every one
+# ALLOWED at the 2026-08-16 boarding probe; each must now DENY. Verbs breadth: sed/chmod/printf>/tee/rm.
+assert_deny "R1 // hooks/pre-push"        '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks//pre-push"}}'
+assert_deny "R1 /// hooks/pre-push"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks///pre-push"}}'
+assert_deny "R1 /./ hooks/pre-push"       '{"tool_name":"Bash","tool_input":{"command":"chmod +x hooks/./pre-push"}}'
+assert_deny "R1 ./h/./ hooks/pre-push"    '{"tool_name":"Bash","tool_input":{"command":"printf x > ./hooks/./pre-push"}}'
+assert_deny "R1 /././ FIXPOINT"           '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/./././pre-push"}}'
+assert_deny "R1 .. free cure"             '{"tool_name":"Bash","tool_input":{"command":"tee x/../hooks/pre-push"}}'
+assert_deny "R1 // scripts/kit-guard"     '{"tool_name":"Bash","tool_input":{"command":"chmod +x scripts//kit-guard"}}'
+assert_deny "R1 /./ scripts/dora.sh"      '{"tool_name":"Bash","tool_input":{"command":"tee scripts/./dora.sh"}}'
+assert_deny "R1 rm -f // hooks/pre-push"  '{"tool_name":"Bash","tool_input":{"command":"rm -f hooks//pre-push"}}'
+# Cure 2 (Route 2) — a redirect to an unresolvable/glob/backslash target behind a read/kit-exec lead
+# no longer launders past the classifier (the target must be a plain literal, else the bail fires).
+assert_deny "R2 kit-exec > cmdsubst"      '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > $(echo hooks/pre-push)"}}'
+assert_deny "R2 reader > cmdsubst"        '{"tool_name":"Bash","tool_input":{"command":"cat conformance/verify.sh > $(echo hooks/pre-push)"}}'
+assert_deny "R2 time-wrap > cmdsubst"     '{"tool_name":"Bash","tool_input":{"command":"time sh conformance/verify.sh > $(echo hooks/pre-push)"}}'
+assert_deny "R2 actionlint > cmdsubst"    '{"tool_name":"Bash","tool_input":{"command":"actionlint .github/workflows/ci.yml > $(echo hooks/pre-push)"}}'
+assert_deny "R2 sh -n > cmdsubst"         '{"tool_name":"Bash","tool_input":{"command":"sh -n conformance/verify.sh > $(echo hooks/pre-push)"}}'
+assert_deny "R2 kit-exec > \$OUT"         '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > $OUT"}}'
+assert_deny "R2 GLOB target *"            '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}'
+assert_deny "R2 GLOB target ?"            '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus?"}}'
+assert_deny "R2 GLOB target [p]"          '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/[p]re-push"}}'
+assert_deny "R2 BACKSLASH target"         '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks\\/pre-push"}}'
+assert_deny "R2 reader > \$OUT (disclosed over-deny)" '{"tool_name":"Bash","tool_input":{"command":"cat README.md > $OUT"}}'
+# Must-stay DENY (unchanged, incl. the refactor-regression pin) and must-stay ALLOW (no over-deny
+# beyond the disclosed one). The cd-composition catch must survive the _redir_targets refactor.
+assert_deny "MUSTDENY clean hooks/pre-push"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/pre-push"}}'
+assert_deny "MUSTDENY composed cd verify>pre-push" '{"tool_name":"Bash","tool_input":{"command":"cd hooks && sh conformance/verify.sh > pre-push"}}'
+assert_allow "MUSTALLOW ordinary a//b"    '{"tool_name":"Bash","tool_input":{"command":"printf x > a//b/c.txt"}}'
+assert_allow "MUSTALLOW ordinary a/../b"  '{"tool_name":"Bash","tool_input":{"command":"printf x > a/../b/c.txt"}}'
+assert_allow "MUSTALLOW fd-dup 2>&1"      '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh 2>&1"}}'
+assert_allow "MUSTALLOW fd-dup >&2"       '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh >&2"}}'
+assert_allow "MUSTALLOW reader > tmp"     '{"tool_name":"Bash","tool_input":{"command":"cat conformance/verify.sh > /tmp/out.txt"}}'
+assert_allow "MUSTALLOW kit-exec > logs"  '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > logs/build.txt"}}'
+assert_allow "MUSTALLOW make > \$OUT (scope: not a launder verb)" '{"tool_name":"Bash","tool_input":{"command":"make > $OUT"}}'
+
 # --- must ALLOW (safe / reversible) ---
 assert_allow "git commit"          '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\""}}'
 assert_allow "git commit --amend"  '{"tool_name":"Bash","tool_input":{"command":"git commit --amend --no-edit"}}'
@@ -853,6 +891,117 @@ assert_deny "C4-A3 push main floor"     '{"tool_name":"Bash","tool_input":{"comm
 assert_deny "C4-A3 curl non-git lead"   '{"tool_name":"Bash","tool_input":{"command":"curl -O https://example.com/hooks/pre-push.git"}}'
 
 # =============================================================================================
+# GUARD-FP-RELIEF-2 — four more disqualification-shaped ALLOW arms (design 2026-08-15, owner GO).
+# Every FLIP below was measured DENY at the 2026-08-15 boarding probe and now ALLOWs; every must-stay
+# was measured DENY and stays DENY. All four arms are ALLOW-side recognition tests (a vetted-name
+# assignment strip, two more wrapper tokens, one more conditional read verb, a shell syntax-check read
+# shape); no deny pattern is edited (monotone add-only, D-240813-2), which this whole battery staying
+# green is the proof of.
+# ---- Arm A (face 1): a VETTED-NAME assignment prefix on kit exec FLIPs to ALLOW ----
+assert_allow "F2-A SELFTEST= non-vacuity" '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=yes sh conformance/non-vacuity.sh"}}'
+assert_allow "F2-A SELFTEST= kit-guard"   '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=1 sh scripts/kit-guard --selftest"}}'
+assert_allow "F2-A LC_ALL= verify"        '{"tool_name":"Bash","tool_input":{"command":"LC_ALL=C sh conformance/verify.sh"}}'
+assert_allow "F2-A two vetted prefixes"   '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=1 LC_ALL=C sh conformance/verify.sh"}}'
+# must-stay DENY, the nine measured face-1 negatives. The allowlist is the whole enforcement: the
+# loader/exec-env family (PATH, IFS, LD_PRELOAD, DYLD_*) and the guard kill switch are not members, so
+# their DENY needs no deny-side pattern. K-I pins the membership test itself.
+assert_deny "F2-A KIT_GUARD_SELFEDIT="  '{"tool_name":"Bash","tool_input":{"command":"KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh"}}'
+assert_deny "F2-A PATH="                '{"tool_name":"Bash","tool_input":{"command":"PATH=/tmp sh conformance/verify.sh"}}'
+assert_deny "F2-A LD_PRELOAD="          '{"tool_name":"Bash","tool_input":{"command":"LD_PRELOAD=/tmp/evil.so sh conformance/verify.sh"}}'
+assert_deny "F2-A IFS="                 '{"tool_name":"Bash","tool_input":{"command":"IFS=/ sh conformance/verify.sh"}}'
+assert_deny "F2-A unvetted FOO= (FP)"   '{"tool_name":"Bash","tool_input":{"command":"FOO=bar sh conformance/verify.sh"}}'
+assert_deny "F2-A unvetted A=1 B=2 (FP)" '{"tool_name":"Bash","tool_input":{"command":"A=1 B=2 sh conformance/verify.sh"}}'
+assert_deny "F2-A FOO= non-kit script"  '{"tool_name":"Bash","tool_input":{"command":"FOO=bar sh /tmp/evil.sh conformance/verify.sh"}}'
+assert_deny "F2-A FOO= rm cp"           '{"tool_name":"Bash","tool_input":{"command":"FOO=bar rm -rf conformance"}}'
+assert_deny "F2-A FOO= sed -i cp"       '{"tool_name":"Bash","tool_input":{"command":"FOO=bar sed -i s/x/y/ hooks/pre-push"}}'
+assert_deny "F2-A FOO= subst value"     '{"tool_name":"Bash","tool_input":{"command":"FOO=$(whoami) sh conformance/verify.sh"}}'
+assert_deny "F2-A FOO= quoted space"    '{"tool_name":"Bash","tool_input":{"command":"FOO='"'"'a b'"'"' sh conformance/verify.sh"}}'
+# MED-1 (security vet): the macOS member of the loader/exec-env never-add class, previously unmeasured
+# on this repo's own platform. Not in the allowlist -> DENY, same as PATH/LD_PRELOAD.
+assert_deny "F2-A DYLD_INSERT_LIBRARIES=" '{"tool_name":"Bash","tool_input":{"command":"DYLD_INSERT_LIBRARIES=/tmp/evil.dylib sh conformance/verify.sh"}}'
+# HIGH-1 (security vet) — the DISTINGUISHING fixtures. A vetted NAME with a valid-leading-char-then-
+# metachar VALUE. The metachar-FIRST forms below decline under both a negated-class check and a
+# positive partial match, so they cannot tell a safe build from an unsafe one; these `x$(...)` /
+# backtick-tail / `;`-tail forms can. A positive `^[A-Za-z0-9._:/-]+` match would strip
+# `SELFTEST=x$(whoami)` clean and ALLOW while the substitution executes. K-I2b pins the idiom.
+assert_deny "F2-A vetted subst value"   '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=$(whoami) sh conformance/verify.sh"}}'
+assert_deny "F2-A vetted quoted space"  '{"tool_name":"Bash","tool_input":{"command":"SELFTEST='"'"'a b'"'"' sh conformance/verify.sh"}}'
+assert_deny "F2-A HIGH-1 valid+subst"   '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=x$(whoami) sh conformance/verify.sh"}}'
+assert_deny "F2-A HIGH-1 valid+backtick" '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=a`id` sh conformance/verify.sh"}}'
+assert_deny "F2-A HIGH-1 semicolon form" '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=a;rm -rf conformance"}}'
+# ---- Arm B (face 2): `time` and a bare `{` join the vetted wrapper set; kit exec FLIPs to ALLOW ----
+assert_allow "F2-B time kit-exec"       '{"tool_name":"Bash","tool_input":{"command":"time sh conformance/verify.sh"}}'
+assert_allow "F2-B brace + time"        '{"tool_name":"Bash","tool_input":{"command":"{ time sh conformance/verify.sh ; }"}}'
+# must-stay DENY: any flag on `time` (disclosed over-deny), a real write behind the wrapper, a non-kit
+# script, and the LOW-1 brace regression pair (a stripped `{` must not launder what follows).
+assert_deny "F2-B time -p flag"         '{"tool_name":"Bash","tool_input":{"command":"time -p sh conformance/verify.sh"}}'
+assert_deny "F2-B time sed -i cp"       '{"tool_name":"Bash","tool_input":{"command":"time sed -i s/x/y/ hooks/pre-push"}}'
+assert_deny "F2-B time non-kit script"  '{"tool_name":"Bash","tool_input":{"command":"time sh /tmp/evil.sh conformance/verify.sh"}}'
+assert_deny "F2-B time rm cp"           '{"tool_name":"Bash","tool_input":{"command":"time rm -rf conformance"}}'
+assert_deny "F2-B brace rm cp (LOW-1)"  '{"tool_name":"Bash","tool_input":{"command":"{ rm -rf conformance"}}'
+assert_deny "F2-B brace > cp (LOW-1)"   '{"tool_name":"Bash","tool_input":{"command":"{ sh conformance/verify.sh > hooks/pre-push"}}'
+# ---- Arm C (face 3): `actionlint` joins the decline-on-any-flag conditional read tier ----
+assert_allow "F2-C actionlint ci.yml"   '{"tool_name":"Bash","tool_input":{"command":"actionlint .github/workflows/ci.yml"}}'
+assert_allow "F2-C actionlint ratif."   '{"tool_name":"Bash","tool_input":{"command":"actionlint .github/workflows/ratification.yml"}}'
+# must-stay DENY: actionlint's EXEC-capable flags (-shellcheck=/-pyflakes= run an arbitrary program),
+# which is why it takes the conditional tier and not the plain read list; plus the E5 redirect bail.
+assert_deny "F2-C actionlint -shellcheck" '{"tool_name":"Bash","tool_input":{"command":"actionlint -shellcheck=/tmp/evil.sh .github/workflows/ci.yml"}}'
+assert_deny "F2-C actionlint -pyflakes" '{"tool_name":"Bash","tool_input":{"command":"actionlint -pyflakes=/tmp/evil .github/workflows/ci.yml"}}'
+assert_deny "F2-C actionlint > cp"      '{"tool_name":"Bash","tool_input":{"command":"actionlint .github/workflows/ci.yml > hooks/pre-push"}}'
+# ---- Arm D (face 4): `sh|bash|dash -n <file>` is a READ (syntax check, no execution) ----
+assert_allow "F2-D sh -n verify"        '{"tool_name":"Bash","tool_input":{"command":"sh -n conformance/verify.sh"}}'
+assert_allow "F2-D bash -n guard-core"  '{"tool_name":"Bash","tool_input":{"command":"bash -n .claude/hooks/guard-core.sh"}}'
+assert_allow "F2-D dash -n kit-guard"   '{"tool_name":"Bash","tool_input":{"command":"dash -n scripts/kit-guard"}}'
+assert_allow "F2-D sh -n pre-push"      '{"tool_name":"Bash","tool_input":{"command":"sh -n hooks/pre-push"}}'
+# must-stay DENY: any OTHER flag (`-x` executes), a second flag (`-n -c` executes), and the E5
+# redirect bail, which runs BEFORE this arm.
+assert_deny "F2-D sh -x executes"       '{"tool_name":"Bash","tool_input":{"command":"sh -x conformance/verify.sh"}}'
+assert_deny "F2-D sh -n -c executes"    '{"tool_name":"Bash","tool_input":{"command":"sh -n -c '"'"'rm -rf conformance'"'"'"}}'
+assert_deny "F2-D sh -n > cp target"    '{"tool_name":"Bash","tool_input":{"command":"sh -n conformance/verify.sh > hooks/pre-push"}}'
+# ---- COMPOSITION + boundary legs (measured this build, beyond the design's named flip set) ----
+# The arms compose, exactly as C4's wrappers already nest. Each composed spelling is capability-
+# equivalent to a spelling that ALLOWs without it, and each strip is individually vetted inside the
+# same ≤3-iteration bound. Pinned so a later change cannot move the composed surface silently.
+assert_allow "F2-X ArmA over ArmB"      '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=1 time sh conformance/verify.sh"}}'
+assert_allow "F2-X ArmB over C4 timeout" '{"tool_name":"Bash","tool_input":{"command":"time timeout 5 sh conformance/verify.sh"}}'
+# The remaining three disclosed composition ALLOWs, pinned (review F2 / security Finding 2): the
+# reversed prefix order, the brace-wrapped composition, and Arm D with an extra positional argument.
+assert_allow "F2-X ArmB over ArmA (rev)" '{"tool_name":"Bash","tool_input":{"command":"time SELFTEST=1 sh conformance/verify.sh"}}'
+assert_allow "F2-X brace over ArmA+ArmB" '{"tool_name":"Bash","tool_input":{"command":"{ SELFTEST=1 time sh conformance/verify.sh ; }"}}'
+assert_allow "F2-X sh -n extra positional" '{"tool_name":"Bash","tool_input":{"command":"bash -n .claude/hooks/guard-core.sh /tmp/x"}}'
+# More of the NEVER-ADD class (design §2, security vet MED-1): every one of these is held by
+# NON-MEMBERSHIP of the allowlist alone — there is no deny-side pattern for any of them, which is the
+# whole point of the membership shape. Their DENY is the standing proof that the list is the boundary.
+assert_deny "F2-X LD_LIBRARY_PATH="     '{"tool_name":"Bash","tool_input":{"command":"LD_LIBRARY_PATH=/tmp sh conformance/verify.sh"}}'
+assert_deny "F2-X BASH_ENV="            '{"tool_name":"Bash","tool_input":{"command":"BASH_ENV=/tmp/evil.sh sh conformance/verify.sh"}}'
+assert_deny "F2-X GIT_SSH_COMMAND="     '{"tool_name":"Bash","tool_input":{"command":"GIT_SSH_COMMAND=/tmp/evil sh conformance/verify.sh"}}'
+# Disclosed over-denies this slice ADDS, pinned as such: an empty value, a case-varied name (membership
+# is case-SENSITIVE, and fails closed), a harmless actionlint flag, and the `--` end-of-options token.
+assert_deny "F2-X empty value (FP)"     '{"tool_name":"Bash","tool_input":{"command":"SELFTEST= sh conformance/verify.sh"}}'
+assert_deny "F2-X case-varied name (FP)" '{"tool_name":"Bash","tool_input":{"command":"selftest=1 sh conformance/verify.sh"}}'
+assert_deny "F2-X actionlint -oneline (FP)" '{"tool_name":"Bash","tool_input":{"command":"actionlint -oneline .github/workflows/ci.yml"}}'
+assert_deny "F2-X sh -n -- (FP)"        '{"tool_name":"Bash","tool_input":{"command":"sh -n -- conformance/verify.sh"}}'
+# TIGHTEN (security vet Finding 1): a vetted name whose VALUE classifies control-plane must NOT peel —
+# the peel would hide that token from the kit-exec walk. Measured ALLOW before the tighten; the
+# two-statement spellings DENY, so the relief was never equivalence-covered here. F2-KI3/F2-KI3b pin
+# the literal and the cd-COMPOSED spellings respectively.
+assert_deny "F2-A CP value literal"     '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=hooks/pre-push sh conformance/verify.sh"}}'
+assert_deny "F2-A CP value settings"    '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=.claude/settings.json sh conformance/verify.sh"}}'
+assert_deny "F2-A CP value self-named"  '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=conformance/verify.sh sh conformance/verify.sh"}}'
+assert_deny "F2-A CP value composed"    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && SELFTEST=pre-push sh conformance/verify.sh"}}'
+assert_deny "F2-A CP value under time"  '{"tool_name":"Bash","tool_input":{"command":"time SELFTEST=hooks/pre-push sh conformance/verify.sh"}}'
+# The tighten must not catch ORDINARY values — the four flips below re-assert that here, next to it.
+assert_allow "F2-A tighten spares LC_ALL" '{"tool_name":"Bash","tool_input":{"command":"LC_ALL=C sh conformance/verify.sh"}}'
+assert_allow "F2-A tighten spares paths"  '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=/tmp/out.log sh conformance/verify.sh"}}'
+# Laundering attempts through the new tokens: a vetted prefix / a `{` must never carry an interpreter
+# -c, a `sed -i`, a non-kit script, or a cd-composed write past the triggers. The RAW segment still
+# feeds every trigger, which is why all four hold with zero deny-side code.
+assert_deny "F2-X vetted prefix + sh -c" '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=1 sh -c rm -rf conformance"}}'
+assert_deny "F2-X vetted prefix non-kit" '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=1 LC_ALL=C sh /tmp/evil.sh conformance/verify.sh"}}'
+assert_deny "F2-X brace + time sed -i"  '{"tool_name":"Bash","tool_input":{"command":"{ time sed -i s/x/y/ hooks/pre-push"}}'
+assert_deny "F2-X brace + cd-composed"  '{"tool_name":"Bash","tool_input":{"command":"{ cd hooks && printf x > pre-push"}}'
+
+# =============================================================================================
 # GUARD-PATH-ALIAS-BYPASS (P0) — the guard must judge the TARGET a path reaches, not the string.
 # Legs live at TOP LEVEL on purpose: verify.sh and ci.yml invoke this script WITHOUT --selftest,
 # so anything inside selftest() would never run in CI.
@@ -1182,6 +1331,158 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "C4-KG2: greedy (non-token-bounded) mask swallows the dest -> git push <url>.git hooks flips" \
     '/_cp8b_mask_remote_urls()/,/^}/ s#\[\^\[:space:\]\]\*#.*#g' \
     '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/x/r.git hooks"}}' allow
+
+  # === GUARD-FP-RELIEF-2 mutants — one per arm, each pins a disqualifier is load-bearing ==========
+  # (F2- prefixed; design 2026-08-15 §3. The `{`-strip carries no mutant BY RECORDED RATIONALE, the
+  # same reason C4 dropped K-F2: the raw segment still feeds every trigger, so a `{` that strips
+  # wrongly cannot flip a verdict today — an unmutatable structural property, not a silent skip.)
+  #
+  # K-I (Arm A, THE critical pin): the assignment strip honors ONLY allowlisted names. Neuter the
+  # membership test and the guard's own kill switch becomes strippable -> `KIT_GUARD_SELFEDIT=1 sh
+  # conformance/verify.sh` is recognized as plain kit exec and its DENY flips to ALLOW.
+  gpab_mutant "F2-KI: assignment strip honors an UNVETTED name -> KIT_GUARD_SELFEDIT= flips" \
+    '/_cp8b_strip_wrappers()/,/^}/ s#_cp8b_in_list "$_swn" "$_CP8B_VETTED_ASSIGN" || break#:#' \
+    '{"tool_name":"Bash","tool_input":{"command":"KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh"}}' allow
+  # K-I2 / K-I2b mutate the value check AND the peel pattern TOGETHER, because the two are redundant by
+  # construction: _cp8b_peel_lead_assign re-states the same character class, so a mutant that flips only
+  # the disqualifier SURVIVES (measured — both legs reported "verdict did not change" before the peel
+  # was made mutable). These legs therefore pin the PAIR, not either half, exactly as the C4
+  # literal-side-conjunction leg does. The pair IS the vet's hypothesised unsafe build: a positive
+  # head-anchored match plus a peel that removes whatever the first token is.
+  #
+  # K-I2 (Arm A): value-shape enforcement removed altogether -> a vetted name with a
+  # command-substitution value peels clean -> `SELFTEST=$(whoami)` DENY flips.
+  gpab_mutant "F2-KI2: value-shape enforcement removed -> SELFTEST=\$(whoami) flips" \
+    's#^_cp8b_assign_val_safe() {#_cp8b_assign_val_safe() { return 0 #; s#^_cp8b_peel_lead_assign() {#_cp8b_peel_lead_assign() { printf "%s" "$1" | sed -E "s@^[[:space:]]*[^[:space:]]+[[:space:]]+@@"; return #' \
+    '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=$(whoami) sh conformance/verify.sh"}}' allow
+  # K-I2b (Arm A, security-vet HIGH-1 — the crux pin): the value check must be the NEGATED-CLASS
+  # decline idiom, never a positive partial match. Replace it with the anchored positive match the vet
+  # proved conforming-but-wrong: `SELFTEST=x$(whoami)` then strips clean and ALLOWs while the
+  # substitution executes. Without this mutant the injection-safety crux of Arm A is unpinned.
+  gpab_mutant "F2-KI2b: value check made a POSITIVE partial match -> SELFTEST=x\$(whoami) flips" \
+    's#^_cp8b_assign_val_safe() {#_cp8b_assign_val_safe() { printf "%s" "$1" | grep -Eq "^[A-Za-z0-9._:/-]+"; return #; s#^_cp8b_peel_lead_assign() {#_cp8b_peel_lead_assign() { printf "%s" "$1" | sed -E "s@^[[:space:]]*[^[:space:]]+[[:space:]]+@@"; return #' \
+    '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=x$(whoami) sh conformance/verify.sh"}}' allow
+  # K-I2c (Arm A, review F1): the ONE input that separates the two redundant halves — the EMPTY value.
+  # _cp8b_assign_val_safe rejects '' while the peel's value pattern is `*` (zero-or-more), so mutating
+  # val_safe ALONE is killable here and nowhere else. This leg is what makes the disqualifier
+  # independently pinned rather than only pinned as half of a pair.
+  gpab_mutant "F2-KI2c: val_safe ALONE neutered -> the EMPTY-value DENY leg flips" \
+    's#^_cp8b_assign_val_safe() {#_cp8b_assign_val_safe() { return 0 #' \
+    '{"tool_name":"Bash","tool_input":{"command":"SELFTEST= sh conformance/verify.sh"}}' allow
+  # K-I3 / K-I3b (Arm A, security vet Finding 1): the CP-VALUE decline is load-bearing in BOTH
+  # spellings. Remove the literal check and `SELFTEST=hooks/pre-push sh <kit>` peels the CP token out
+  # of the recognition copy -> DENY flips. Remove the composed check and the cd-relative spelling does
+  # the same (measured: a literal-only cure left that spelling ALLOW).
+  gpab_mutant "F2-KI3: CP-value decline (literal) removed -> SELFTEST=hooks/pre-push flips" \
+    '/_cp8b_strip_wrappers()/,/^}/ s#_cp8b_tok_is_cp "$_swl" && break#:#' \
+    '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=hooks/pre-push sh conformance/verify.sh"}}' allow
+  gpab_mutant "F2-KI3b: CP-value decline (composed) removed -> cd hooks + SELFTEST=pre-push flips" \
+    '/_cp8b_strip_wrappers()/,/^}/ s#_cp8b_composed_is_cp "$_swl" && break#:#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && SELFTEST=pre-push sh conformance/verify.sh"}}' allow
+  # K-J (Arm B): `time` strips BARE only. Neuter the flag disqualifier AND widen the strip to eat the
+  # flag token. THE HALF-ONLY MUTANT SURVIVES (measured, review F4): with the disqualifier gone but the
+  # strip still `time[[:space:]]+`, the residual `-p` lead is not a shell, so the verdict does not move
+  # and the leg would prove nothing. This leg therefore pins the PAIR — disqualifier AND strip width —
+  # and says so, exactly as the K-I2 pair legs do. Result: `time -p sh conformance/verify.sh` flips.
+  gpab_mutant "F2-KJ: time strip honors a FLAGGED form -> time -p flips" \
+    "/_cp8b_strip_wrappers()/,/^}/{s#case \"\$_sw2\" in ''|-\\*) break ;; esac#:#;s#time\\[\\[:space:\\]\\]+//#time[[:space:]]+-[^[:space:]]+[[:space:]]+//#;}" \
+    '{"tool_name":"Bash","tool_input":{"command":"time -p sh conformance/verify.sh"}}' allow
+  # K-K (Arm C): actionlint sits in the DECLINE-ON-ANY-FLAG tier because -shellcheck=/-pyflakes= are
+  # exec primitives. Neuter the decline and the exec-flag form is read-recognized -> DENY flips.
+  gpab_mutant "F2-KK: actionlint arm recognizes a flagged form -> -shellcheck=<cmd> flips" \
+    's#    yq|tree|actionlint) _cp8b_seg_has_flag "$1" || return 0 ;;#    yq|tree|actionlint) return 0 ;;#' \
+    '{"tool_name":"Bash","tool_input":{"command":"actionlint -shellcheck=/tmp/evil.sh .github/workflows/ci.yml"}}' allow
+  # K-L (Arm D): the `-n` read arm recognizes EXACTLY `-n` and no other flag. Relax it to "any
+  # `-`-leading token" and `sh -x conformance/verify.sh` — which EXECUTES the file — is wrongly
+  # read-recognized, so its DENY flips.
+  gpab_mutant "F2-KL: -n arm accepts any other flag -> sh -x (executes) flips" \
+    '/_cp8b_seg_is_shell_n()/,/^}/ s%\[ "$1" = "-n" \]%[ "${1#-}" != "$1" ]%' \
+    '{"tool_name":"Bash","tool_input":{"command":"sh -x conformance/verify.sh"}}' allow
+
+  # === GUARD-CP-WRITE-ROUTES mutants — one per cure-part, each a verified verdict-flip ==============
+  # Cure 1 (Route 1 normalization). K-N1/K-N1b/K-N2 each pin one link of is_control_plane_target's
+  # normalize-then-match, on the exact-literal file target hooks/pre-push.
+  gpab_mutant "K-N1: is_control_plane_target reverts to one-shot strip (no _cp8b_norm) -> hooks//pre-push flips" \
+    's@  _ct=$(_cp8b_norm "$1")@  _ct=${1%/}; _ct=${_ct#./}@' \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks//pre-push"}}' allow
+  # K-N1b (vet Finding 2): the normalized _ct MUST feed is_control_plane_path (the file matcher), not
+  # _ctm_match alone (dirs). Drop that line -> the file target hooks//pre-push flips, while a bare-dir
+  # spelling still denies (the paired negative is the top-level MUSTDENY/relocate legs).
+  gpab_mutant "K-N1b: normalized _ct fed to _ctm_match only, not is_control_plane_path -> file hooks//pre-push flips" \
+    's@  is_control_plane_path "$_ct" && return 0@  :@' \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks//pre-push"}}' allow
+  # K-N2 (the /./ FIXPOINT): revert _cp8b_norm's /./ leg to a single non-looping pass (drop the `tb`
+  # branch, range-scoped to _cp8b_norm so the twin is untouched) -> the OVERLAPPING-run spelling
+  # hooks/./././pre-push flips, while a single hooks/./pre-push still collapses and denies (K-N2-ctl).
+  gpab_mutant "K-N2: _cp8b_norm /./ leg loses its fixpoint (tb branch removed) -> hooks/./././pre-push flips" \
+    "/_cp8b_norm()/,/^}/ s@ -e 'tb'@@" \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/./././pre-push"}}' allow
+  # K-N2 paired negative (a stay-deny, so NOT a gpab_mutant, which requires a flip): under the SAME
+  # tb-removal the single-/./ spelling must STILL deny — it collapses in one pass, so only the
+  # OVERLAPPING-run spelling needs the fixpoint. Apply the mutation to a copy and assert stay-deny.
+  sed "/_cp8b_norm()/,/^}/ s@ -e 'tb'@@" "$GPAB_GC" > "$GPAB_TMP/gc.n2ctl"; cp "$GPAB_TMP/gc.n2ctl" "$GPAB_GC"
+  if denied_at "$GPAB_G" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/./pre-push"}}'; then
+    echo "PASS mutant : K-N2-ctl: single-/./ still denies under the tb-removal (only repeated /./ needs the fixpoint)"
+  else echo "FAIL mutant : K-N2-ctl: single-/./ wrongly flipped under the tb-removal"; fail=1; fi
+  cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+  # Cure 2 (Route 2 redirect). K-R1a pins the TARGET-arm disqualifier (the rc-2 bail in _cp8b_tad_redir_cp
+  # forces the read/kit-exec recognition to DECLINE); K-R-LAUNDER pins the outright-deny closer
+  # (_cp8b_redir_launder_denied); K-R-ALLOWLIST pins that the disqualifier is a POSITIVE allowlist, not a
+  # denylist; K-R-COMPOSED pins that the cd-composition catch survives the _redir_targets refactor. The
+  # pure-glob leg (`printf x > hooks/pre-pus*`, no CP substring to fall back on) is the sharp probe for
+  # the first three; it ALLOWED at boarding and the shell would expand it onto the real hook.
+  gpab_mutant "K-R1a: target-arm disqualifier (_cp8b_tad_redir_cp rc-2 bail) removed -> glob pre-pus* flips" \
+    's@_rt=$(_redir_targets "$1") || return 0@_rt=$(_redir_targets "$1")@' \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}' allow
+  gpab_mutant "K-R-LAUNDER: the reader/kit-exec non-literal-target outright-deny neutered -> glob pre-pus* flips" \
+    's@^_cp8b_redir_launder_denied() {@_cp8b_redir_launder_denied() { return 1 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}' allow
+  gpab_mutant "K-R-ALLOWLIST: positive literal allowlist reverted to a \$-denylist -> glob pre-pus* flips" \
+    '/_redir_targets()/,/^}/ s%\*\[!A-Za-z0-9._/@:+=,-\]\*%*[$]*%' \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}' allow
+  # the backslash leg backs up K-R-ALLOWLIST: a denylist that omits `\` fails open (hooks\/pre-push
+  # writes the real hook); the positive allowlist closes it. Same denylist mutation, backslash subject.
+  gpab_mutant "K-R-ALLOWLIST-bs: the \$-denylist fails open on backslash -> hooks\\/pre-push flips" \
+    '/_redir_targets()/,/^}/ s%\*\[!A-Za-z0-9._/@:+=,-\]\*%*[$]*%' \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks\\/pre-push"}}' allow
+  gpab_mutant "K-R-COMPOSED: _cp8b_tad_redir_cp composed catch dropped -> cd hooks + verify>pre-push flips" \
+    '/_cp8b_tad_redir_cp()/,/^}/ s@_cp8b_composed_is_cp "$1"@false@' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd hooks && sh conformance/verify.sh > pre-push"}}' allow
+
+  # === K-COUPLE — byte-identity of the two composed-path seds (no other check pins it) ==============
+  # _cp8b_norm's sed and guard_check_path's twin sed are a stated single source of truth; extract both
+  # and assert byte-identical, then assert the /./ FIXPOINT collapses a repeated run. A non-vacuity
+  # proof un-fixes the twin on a COPY and asserts the check would RED (else it proves nothing).
+  _CORE=.claude/hooks/guard-core.sh
+  couple_ok() {
+    _cf=$1
+    _ns=$(grep -F "\"\$1\" | sed -e 's#//*#/#g'" "$_cf" | sed -e 's/^.*| \(sed .*\)$/\1/' -e 's/)[[:space:]]*$//')
+    _fs=$(grep -F '"$fp" | sed' "$_cf" | sed -e 's/^.*| \(sed .*\)$/\1/' -e 's/)[[:space:]]*$//')
+    [ -n "$_ns" ] && [ "$_ns" = "$_fs" ] || return 1
+    [ "$(printf '%s' 'hooks/./././pre-push' | eval "$_ns")" = 'hooks/pre-push' ] || return 1
+    [ "$(printf '%s' 'hooks/./././pre-push' | eval "$_fs")" = 'hooks/pre-push' ]
+  }
+  if couple_ok "$_CORE"; then echo "PASS couple : _cp8b_norm and guard_check_path twin seds are byte-identical and both collapse the /./ fixpoint"
+  else echo "FAIL couple : the two composed-path seds diverged or miss the /./ fixpoint"; fail=1; fi
+  sed '/fpn=/ s@ -e '"'"'tb'"'"'@@' "$_CORE" > "$GPAB_TMP/gc.couple"
+  if couple_ok "$GPAB_TMP/gc.couple"; then echo "FAIL couple-nv: byte-identity check passed a twin-unfixed core (vacuous)"; fail=1
+  else echo "PASS couple-nv: un-fixing the twin's /./ fixpoint REDs the byte-identity check (non-vacuous)"; fi
+
+  # === K-R1b — the OLD-arm redirect disqualifier, pinned FUNCTIONALLY ===============================
+  # _cp8b_redirect_hits_cp bails on a non-literal target via the shared _redir_targets. It is
+  # VERDICT-REDUNDANT with the target arm (measured: dropping it flips NO top-level verdict, because the
+  # old arm's redirect check is gated behind a pathhit=0 the target arm's pathhit also satisfies), so a
+  # verdict mutant is not constructible; it is pinned here by a DIRECT functional assertion + a
+  # non-vacuity proof, so the disqualifier and its single-source extraction cannot silently rot.
+  rhc()  { ( . ./.claude/hooks/guard-core.sh;  _cp8b_redirect_hits_cp "$1" ); }
+  if rhc 'x > $(echo hooks/pre-push)'; then echo "PASS R1b : old-arm _cp8b_redirect_hits_cp bails on a non-literal redirect target"
+  else echo "FAIL R1b : old-arm _cp8b_redirect_hits_cp did NOT bail on a non-literal target"; fail=1; fi
+  if rhc 'echo x > /tmp/ok.txt'; then echo "FAIL R1b : old-arm bailed on a plain literal non-CP target (over-deny)"; fail=1
+  else echo "PASS R1b : old-arm _cp8b_redirect_hits_cp does not bail on a plain literal non-CP target"; fi
+  sed 's@_rt=$(_redir_targets "$_rh") || return 0@_rt=$(_redir_targets "$_rh")@' "$_CORE" > "$GPAB_TMP/gc.r1b"
+  rhc2() { ( . "$GPAB_TMP/gc.r1b"; _cp8b_redirect_hits_cp "$1" ); }
+  if rhc2 'x > $(echo hooks/pre-push)'; then echo "FAIL R1b-nv: dropping the old-arm rc-2 bail still bailed (vacuous pin)"; fail=1
+  else echo "PASS R1b-nv: dropping the old-arm rc-2 bail stops the non-literal bail (non-vacuous)"; fi
 fi
 
 # --- non-vacuity oracle -------------------------------------------------------------------------

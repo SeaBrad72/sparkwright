@@ -554,7 +554,16 @@ guard_read_only_command() {
 # are `skills/*`, which a bare directory name never matches.
 is_control_plane_target() {
   is_control_plane_path "$1" && return 0
-  _ct=${1%/}; _ct=${_ct#./}
+  # GUARD-CP-WRITE-ROUTES Cure 1 (Route 1): normalize the subject through _cp8b_norm (collapse
+  # //, a /./ FIXPOINT, trailing /, leading ./, and .. traversal) before the exact-literal match,
+  # so a redundant-syntax spelling (hooks//pre-push, hooks/./pre-push, hooks/./././pre-push,
+  # x/../hooks/pre-push) can no longer evade it. The normalized value feeds is_control_plane_path
+  # AS WELL AS _ctm_match: the Route-1 exploit targets are FILES (hooks/pre-push, scripts/kit-guard,
+  # scripts/dora.sh) matched ONLY by is_control_plane_path — _ctm_match is bare-DIRECTORY names, so
+  # feeding _ctm_match alone would leave the file route open (K-N1b pins this line). Canonical-only:
+  # normalization collapses redundant syntax, it never reclassifies a genuinely-ordinary path.
+  _ct=$(_cp8b_norm "$1")
+  is_control_plane_path "$_ct" && return 0
   _ctm_match "$_ct" && return 0
   case "$_ct" in
     *[A-Z]*) _ctm_match "$(printf '%s' "$_ct" | LC_ALL=C tr 'A-Z' 'a-z')" && return 0 ;;
@@ -854,11 +863,62 @@ _cp8b_git_write_denied() {
 #
 # Targets are extracted after `>` or `>>`, with any fd digit and surrounding whitespace stripped, and
 # quotes removed so `> "conformance/x.sh"` is seen. Case folding is inherited from the classifier.
+# _redir_targets "<segment>": GUARD-CP-WRITE-ROUTES Cure 2 (Route 2) — the SHARED redirect-target
+# EXTRACTION + POSITIVE literal-path allowlist disqualifier, called by BOTH redirect bail sites
+# (_cp8b_redirect_hits_cp and _cp8b_tad_redir_cp) so the extraction and the disqualifier cannot drift.
+# Each caller keeps its OWN classification loop (composed-vs-plain); this helper only produces the
+# candidate literal targets and signals a disqualifying non-literal.
+#
+# Prints each SAFE (allowlist-clean) target on its own line. Return code:
+#   0 = clean — every extracted target is a plain literal (or an fd-dup, which is excluded);
+#   2 = a NON-LITERAL target was seen — the caller MUST bail to the deny side (fail-closed): the
+#       guard cannot prove an unresolvable $(…)/$VAR/glob/backslash target is not control-plane.
+# THE DISQUALIFIER IS A POSITIVE ALLOWLIST, not a bad-byte denylist: a target is recognized safe ONLY
+# if every byte is in `[A-Za-z0-9._/@:+=,-]`; anything else ($ backtick * ? [ { ~ \ space etc.)
+# disqualifies. A denylist lost twice here — `$`/backtick failed open on globs, an 8-byte set failed
+# open on backslash (`hooks\/pre-push`). The allowlist closes the class definitively.
+# fd-dups (`2>&1`, `>&2`, `N>&M`) extract to `&N` tokens, and an `&`-led token is EXCLUDED from the
+# scan — otherwise a naive allowlist would spuriously disqualify legitimate fd-dups (over-deny).
+# DISCLOSED RESIDUAL, not masked (security seat C1, MED): the `&`-exclusion is BROADER than true
+# fd-dups. bash's `>&<word>` combined-redirect with a NON-NUMERIC word writes a FILE, but its
+# `&<word>` token is `&`-led and so is dropped here too — meaning `_redir_targets` NEVER scans a
+# combined-redirect target. A combined-redirect to a control-plane target is therefore not caught by
+# THIS arm; it is only ever denied when another arm (the pathhit substring / token walk) independently
+# catches the literal, so a spelling that evades those would slip through as an ALLOWED CP-write. This
+# is PRE-EXISTING (the old extraction produced the same `&`-led token) and OUTSIDE the two routes this
+# slice closes; the functional cure is boarded as its own deny-side slice,
+# GUARD-REDIRECT-FD-DUP-COMBINED-BYPASS. Named here so the `&`-exclusion cannot read as complete.
+# The split runs under `set -f` (globbing off) with the caller's `-f` state restored, so a `*` target
+# is judged as raw text before any pathname expansion.
+_redir_targets() {
+  case "$1" in *'>'*) : ;; *) return 0 ;; esac
+  _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*/\n/g' | sed -e '1d' \
+        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+  [ -n "$_rt" ] || return 0
+  _rtc=0
+  _rtg=0; case "$-" in *f*) _rtg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $_rt
+  while [ $# -gt 0 ]; do
+    _rtk=$1; shift
+    [ -n "$_rtk" ] || continue
+    case "$_rtk" in
+      '&'*) continue ;;                                 # fd-dup (>&N / N>&M) — not a filesystem target
+    esac
+    case "$_rtk" in
+      *[!A-Za-z0-9._/@:+=,-]*) _rtc=2 ;;                # NOT a plain literal -> disqualify (fail-closed)
+      *) printf '%s\n' "$_rtk" ;;
+    esac
+  done
+  [ "$_rtg" = 1 ] || set +f
+  return $_rtc
+}
+
 _cp8b_redirect_hits_cp() {
   _rh=$1
   case "$_rh" in *'>'*) : ;; *) return 1 ;; esac
-  _rt=$(printf '%s' "$_rh" | tr '\n' ' ' | sed -e 's/[0-9]*>>*/\n/g' | sed -e '1d' \
-        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
+  _rt=$(_redir_targets "$_rh") || return 0   # rc 2 => a non-literal target => fail closed (K-R1b)
   [ -n "$_rt" ] || return 1
   _rg=0; case "$-" in *f*) _rg=1 ;; esac
   set -f
@@ -1101,10 +1161,14 @@ _cp8b_control_plane_denied() {
 # Persisted cwd (no `cd` in the command), `$VAR`/`bash -c`/quoted-separator cd, and `python3 -c`
 # building a path by concatenation remain disclosed residuals — the guard stays a speed bump (D3′).
 
-# _cp8b_norm "<path>": textual normalization — collapse //, ./, trailing /, and a `..` fixpoint.
-# Byte-identical to guard_check_path's :1426 sed (single source of truth for composed-path shape).
+# _cp8b_norm "<path>": textual normalization — collapse //, a /./ FIXPOINT, trailing /, and a `..`
+# fixpoint. Byte-identical to guard_check_path's twin sed (single source of truth for composed-path
+# shape) — the two are pinned equal by a byte-identity selftest leg (GUARD-CP-WRITE-ROUTES K-COUPLE).
+# The /./ leg is a labelled fixpoint (`:b … tb`) mirroring the `..` leg: a single `g` pass misses
+# OVERLAPPING /./ runs (hooks/./././pre-push -> hooks/./pre-push residual), so the loop is required to
+# fully collapse repeated /./ (K-N2 pins it).
 _cp8b_norm() {
-  printf '%s' "$1" | sed -e 's#//*#/#g' -e 's#/\./#/#g' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta'
+  printf '%s' "$1" | sed -e 's#//*#/#g' -e ':b' -e 's#/\./#/#' -e 'tb' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta'
 }
 
 # _cp8b_has_quote "<segment>": 0 iff the segment carries a quote/escape byte. A quote byte means the
@@ -1153,16 +1217,29 @@ _cp8b_composed_is_cp() {
   [ -n "$_cc" ] && is_control_plane_target "$_cc"
 }
 
-# _cp8b_tad_redir_cp "<segment>": 0 iff a redirect TARGET (literal ∨ composed) classifies control-plane.
+# _cp8b_tad_redir_cp "<segment>": 0 iff a redirect TARGET bails to the deny side — either it classifies
+# control-plane (literal ∨ composed) OR it is a NON-LITERAL target (GUARD-CP-WRITE-ROUTES Cure 2, via
+# the shared _redir_targets disqualifier). Returning 0 makes the read/kit-exec recognition DECLINE, so a
+# `sh conformance/verify.sh > $(echo hooks/pre-push)` is no longer laundered — the pathhit trigger then
+# fires on the CP substring the reader was pointed at. The classification loop (composed-vs-plain) is
+# kept per-caller so the cd-composition catch (`cd hooks && … > pre-push`) survives (K-R-COMPOSED); the
+# split adopts _cp8b_redirect_hits_cp's `set -f` discipline (R2), not the old bare `for`.
 _cp8b_tad_redir_cp() {
   case "$1" in *'>'*) : ;; *) return 1 ;; esac
-  _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*/\n/g' | sed -e '1d' \
-        -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
-  for _r in $_rt; do
-    [ -n "$_r" ] || continue
-    is_control_plane_target "$_r" && return 0
-    _cp8b_composed_is_cp "$_r" && return 0
+  _rt=$(_redir_targets "$1") || return 0   # rc 2 => a non-literal target => fail closed (K-R1a)
+  [ -n "$_rt" ] || return 1
+  _rg=0; case "$-" in *f*) _rg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $_rt
+  while [ $# -gt 0 ]; do
+    if [ -n "$1" ]; then
+      is_control_plane_target "$1" && { [ "$_rg" = 1 ] || set +f; return 0; }
+      _cp8b_composed_is_cp "$1" && { [ "$_rg" = 1 ] || set +f; return 0; }
+    fi
+    shift
   done
+  [ "$_rg" = 1 ] || set +f
   return 1
 }
 
@@ -1199,6 +1276,27 @@ _cp8b_seg_has_flag() {
   [ "$_pgf" = 1 ] || set +f
   return 1
 }
+# _cp8b_seg_is_shell_n "<seg>": 0 iff the segment is EXACTLY a shell syntax check — the second token is
+# EXACTLY `-n` and NO other token begins with `-`. Fail-by-disqualification, mirroring
+# _cp8b_seg_has_flag: `-x` executes, `-nc` executes, `-n -c '<cmd>'` executes, and any second flag is an
+# unknown, so all of them decline and fall through to the existing deny path. F2-KL pins the exact
+# match: relaxing it to "any flag" read-recognizes `sh -x <cp>`, which EXECUTES the file.
+_cp8b_seg_is_shell_n() {
+  _pnf=0; case "$-" in *f*) _pnf=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -ge 3 ] || { [ "$_pnf" = 1 ] || set +f; return 1; }   # verb + -n + at least one file
+  shift                                                      # drop the lead verb (sh|bash|dash)
+  [ "$1" = "-n" ] || { [ "$_pnf" = 1 ] || set +f; return 1; }
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in -*) [ "$_pnf" = 1 ] || set +f; return 1 ;; esac
+    shift
+  done
+  [ "$_pnf" = 1 ] || set +f
+  return 0
+}
 _cp8b_tad_is_read() {
   case "$1" in *'>'*) _cp8b_tad_redir_cp "$1" && return 1 ;; esac
   _rv=$(_cp8b_lead "$1")
@@ -1209,8 +1307,21 @@ _cp8b_tad_is_read() {
   # `-`-leading token at all (pure `yq '<expr>' <file>`, `yq . <file>`, `tree <dir>`). Any flag ->
   # decline -> fall through to the existing deny path. Over-deny on harmless flags (`yq -P`,
   # `tree -H`) is an accepted, disclosed FP. K-H pins this decline.
+  # GUARD-FP-RELIEF-2 Arm C (face 3) — `actionlint` joins this SAME conditional tier, deliberately NOT
+  # _CP8B_READ_VERBS: `-shellcheck=<cmd>` and `-pyflakes=<cmd>` make it run an arbitrary program, an
+  # exec primitive, so the plain list is unavailable. Decline-on-any-flag keeps both exec-flag forms
+  # DENY with zero enumeration; over-deny on `-oneline`/`-color` is a disclosed FP, the `yq -P` trade.
+  # Bare `actionlint` was never denied (no control-plane token in argv). F2-KK pins the decline.
   case "$_rv" in
-    yq|tree) _cp8b_seg_has_flag "$1" || return 0 ;;
+    yq|tree|actionlint) _cp8b_seg_has_flag "$1" || return 0 ;;
+  esac
+  # GUARD-FP-RELIEF-2 Arm D (face 4) — `sh|bash|dash -n <file>` is a shell SYNTAX CHECK. POSIX `-n`
+  # reads and parses without executing, so this is a READ arm, not an exec arm, and the file argument
+  # may be any path: reading a control-plane script for syntax is already granted via `cat`/`shellcheck`
+  # (capability-equivalent). zsh/ksh are excluded — unmeasured need, add on evidence. The E5 redirect
+  # bail at the top of this function runs FIRST, so `sh -n cp.sh > hooks/pre-push` stays DENY.
+  case "$_rv" in
+    sh|bash|dash) _cp8b_seg_is_shell_n "$1" && return 0 ;;
   esac
   if [ "$_rv" = git ]; then
     _rgs=$(_cp8b_git_sub "$1")
@@ -1238,6 +1349,56 @@ _cp8b_tad_is_read() {
 #   nice   : bare `nice`, or `nice -n <digits>` — any other flag, or a non-digit -n value
 #            (`nice -n hooks/pre-push`), disqualifies.
 #   command: bare `command` — `command -v/-p/-V` disqualifies.
+# GUARD-FP-RELIEF-2 Arm B (face 2) adds two more tokens in the same grammar:
+#   time   : BARE only — any flag (`time -p`) disqualifies (disclosed over-deny). F2-KJ pins it.
+#   {      : the bare `{` token of a brace group. Safe by the same recognition-copy argument: the RAW
+#            segment still feeds every trigger, so `{ rm -rf conformance` stays DENY (lead after the
+#            strip is `rm`, not a shell) and `{ sh cp.sh > hooks/pre-push` still bails on the redirect.
+#
+# GUARD-FP-RELIEF-2 Arm A (face 1) — the VETTED ASSIGNMENT-PREFIX allowlist. A leading `NAME=value`
+# token is peeled from the recognition copy ONLY when NAME is a member of this list AND the value
+# passes `_cp8b_assign_val_safe`. Membership IS the whole enforcement: it fails closed on every unknown
+# name, so all nine measured face-1 negatives keep their DENY with ZERO deny-side edits.
+#
+# ***THE NEVER-ADD CLASS — the line this list does not cross.*** This arm precedes a kit-script
+# EXECUTION, so the danger is CODE-LOADING / EXEC-ENVIRONMENT variables. Permanently excluded, and no
+# future "reasonable" widening may include them: PATH, IFS, LD_PRELOAD, LD_LIBRARY_PATH,
+# DYLD_INSERT_LIBRARIES, DYLD_LIBRARY_PATH, BASH_ENV, ENV, SHELLOPTS, and the whole GIT_* family
+# (GIT_SSH_COMMAND, GIT_EXTERNAL_DIFF, GIT_PAGER … each names a program git will run). Interpreter
+# option variables (NODE_OPTIONS, PERL5OPT, PYTHONSTARTUP, RUBYOPT) are the same class and are equally
+# excluded — they look harmless and are not. KIT_* names are never vetted either (KIT_GUARD_SELFEDIT is
+# the kill switch, KIT_PUSH_CITE a dial), but note KIT_* in command TEXT is inert — `selfedit_allowed`
+# reads the guard's OWN process env, not `$cmd` — so the exec-env family above, not KIT_*, is the
+# security-load-bearing exclusion (security vet MED-1).
+#
+# Contents are MEASURED-USAGE ONLY (owner ruling, design 2026-08-15 §8-Q1/A2): LANG/TZ are vet-confirmed
+# exec-inert and were still held out, because monotone add-only makes a token near-irreversible and
+# every token owes an evidence-backed leg. Widening costs one token plus one leg, on a measured denial.
+_CP8B_VETTED_ASSIGN='SELFTEST LC_ALL'
+# _cp8b_assign_val_safe "<value>": 0 iff the value is a plain literal with no shell-active byte.
+# ***BUILD MANDATE (security vet HIGH-1).*** This MUST be the decline-on-any-bad-char NEGATED-CLASS
+# idiom and MUST NEVER become a positive match: `grep -Eq '^[A-Za-z0-9._:/-]+'` anchors only the HEAD,
+# so `SELFTEST=x$(rm -rf conformance)` would satisfy it, strip clean, and ALLOW while the substitution
+# executes — fail-by-parse wearing a disqualification costume, the exact class D-240813-3 bans. The
+# metachar-FIRST forms (`SELFTEST=$(whoami)`) decline under BOTH builds and cannot tell them apart;
+# the valid-char-then-metachar fixtures and mutant F2-KI2b are what pin the idiom itself.
+_cp8b_assign_val_safe() {
+  case "$1" in ''|*[!A-Za-z0-9._:/-]*) return 1 ;; esac
+  return 0
+}
+# _cp8b_peel_lead_assign "<seg>": drop a leading well-formed `NAME=value` token and the whitespace
+# after it. The pattern re-states the SAME character class the disqualifier enforces, so for every
+# NON-EMPTY value a mutant that flips only _cp8b_assign_val_safe SURVIVES — this pattern rejects the
+# same value a second time. That is why F2-KI2/F2-KI2b flip BOTH halves and honestly pin the PAIR, as
+# the C4 literal-side-conjunction leg does.
+# THE REDUNDANCY IS NOT TOTAL, and the earlier "no fixture can separate them" claim was FALSE (review
+# F1, falsified by measurement): the value pattern is `*` (zero-or-more) while the disqualifier also
+# rejects the EMPTY value, so `SELFTEST= sh <kit-script>` separates the halves — a val_safe-only mutant
+# IS killable there. Mutant F2-KI2c pins that half ALONE via the empty-value leg. Keep the `*`: making
+# it `+` would re-orphan that mutant by restoring total redundancy.
+_cp8b_peel_lead_assign() {
+  printf '%s' "$1" | sed -E 's%^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9._:/-]*[[:space:]]+%%'
+}
 _cp8b_strip_wrappers() {
   _sw=$1
   _swi=0
@@ -1265,6 +1426,35 @@ _cp8b_strip_wrappers() {
         [ -n "$_sw2" ] || break                               # `env` with no argument -> nothing to strip
         case "$_sw2" in -*|*=*) break ;; esac                 # BARE env only (constraint i; K-F pins)
         _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*env[[:space:]]+//') ;;
+      time)
+        case "$_sw2" in ''|-*) break ;; esac                  # BARE time only; `time -p` disqualifies
+        _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*time[[:space:]]+//') ;;
+      '{')
+        [ -n "$_sw2" ] || break                               # a lone `{` has nothing to peel toward
+        _sw=$(printf '%s' "$_sw" | sed -E 's/^[[:space:]]*\{[[:space:]]+//') ;;
+      *=*)
+        # Arm A: vetted-NAME assignment prefix. Both tests must pass or the loop breaks (-> deny).
+        _swn=${_swl%%=*}; _swv=${_swl#*=}
+        _cp8b_in_list "$_swn" "$_CP8B_VETTED_ASSIGN" || break
+        _cp8b_assign_val_safe "$_swv" || break
+        # TIGHTEN (security vet Finding 1, owner chose the narrowing cure): decline the peel when the
+        # VALUE itself classifies control-plane. Without this the peel removes a CP-classifying token
+        # from the recognition copy BEFORE the kit-exec token walk sees it, so
+        # `SELFTEST=hooks/pre-push sh <kit-script>` would ALLOW — and it is NOT equivalence-covered,
+        # because the two-statement spellings (`SELFTEST=hooks/pre-push ; sh …`, `export SELFTEST=…`)
+        # both DENY (measured). This is ALLOW-side narrowing (a peel we decline to perform), not a deny
+        # edit. Both spellings of the target are checked, exactly as _cp8b_tad_redir_cp does:
+        #   literal  — `SELFTEST=hooks/pre-push …`                              (F2-KI3 pins)
+        #   composed — `cd hooks && SELFTEST=pre-push …`, which composes to hooks/pre-push under the
+        #              effective dir and was MEASURED ALLOW under a literal-only cure (F2-KI3b pins).
+        # Both helpers take the whole `NAME=value` token: each already dequotes and strips the `flag=`
+        # prefix, so they classify the VALUE by the same rule the token walk and composed trigger use.
+        _cp8b_tok_is_cp "$_swl" && break
+        _cp8b_composed_is_cp "$_swl" && break
+        # Shape-restricted peel: name and value were both validated above, so this matches exactly the
+        # lead token. A non-match makes no progress and the ≤3 bound then exits with a non-shell lead
+        # -> not kit-exec -> deny (over-deny, safe).
+        _sw=$(_cp8b_peel_lead_assign "$_sw") ;;
       *) break ;;
     esac
     _swi=$((_swi + 1))
@@ -1372,6 +1562,24 @@ _cp8b_tad_cp_dest_denied() {
   _cp8b_tad_redir_cp "$1"
 }
 
+# _cp8b_redir_launder_denied "<seg>": GUARD-CP-WRITE-ROUTES Cure 2 outright-deny — a READER / KIT-EXEC
+# segment whose redirect target is NON-LITERAL (glob / $VAR / $(…) / backslash — _redir_targets rc 2)
+# denies OUTRIGHT. Such a launder verb (printf/cat/`sh conformance/verify.sh`) declined recognition
+# above precisely because its target disqualified; when there is ALSO no literal control-plane substring
+# to trip the pathhit trigger (`printf x > hooks/pre-pus*` — a glob the shell would expand onto the real
+# hook), nothing else denies it. This arm is that closer, and it is the disclosed `reader > $OUT`
+# over-deny made real. SCOPED to reader/kit-exec (the disclosed ceiling, not every verb): recognition is
+# re-tested on a redirect-STRIPPED copy, so an ordinary `make > $OUT` is NOT a laundering verb and stays
+# allowed. Reuses the shared _redir_targets disqualifier (K-R1a pins this arm's disqualifier).
+_cp8b_redir_launder_denied() {
+  case "$1" in *'>'*) : ;; *) return 1 ;; esac
+  _redir_targets "$1" >/dev/null && return 1   # rc 0 => every target is a plain literal => not this arm
+  _lnr=$(printf '%s' "$1" | sed -e 's/[0-9]*>>*.*$//')   # drop from the first redirect operator onward
+  _cp8b_tad_is_read "$_lnr" && return 0
+  _cp8b_tad_is_kit_exec "$_lnr" && return 0
+  return 1
+}
+
 # _cp8b_target_reason "<segment>" "<trigger>": signpost the composition and name the cheap escape.
 _cp8b_target_reason() {
   _trs=$(printf '%s' "$1" | cut -c1-160)
@@ -1420,6 +1628,9 @@ _cp8b_target_arm_denied() {
     if _cp8b_tad_pathhit "$_tad_c"; then _cp8b_target_reason "$_seg" pathhit; return 0; fi
     if _cp8b_tad_literal_tok "$_tad_c"; then _cp8b_target_reason "$_seg" token; return 0; fi
     if _cp8b_tad_composed_tok "$_tad_c"; then _cp8b_target_reason "$_seg" composed; return 0; fi
+    # GUARD-CP-WRITE-ROUTES Cure 2: last, a reader/kit-exec laundering a non-literal redirect target
+    # (no literal CP substring above to catch it — the pure-glob route) denies outright.
+    if _cp8b_redir_launder_denied "$_seg"; then _cp8b_target_reason "$_seg" redir-nonliteral; return 0; fi
   done
   return 1
 }
@@ -1856,7 +2067,9 @@ guard_check_path() {
   _cp8c_relax=0
   _cp8c_hint=''
   if [ -n "$_cp8c_root" ] && guard_dev_clone_relaxable "$fp" "$_cp8c_root"; then _cp8c_relax=1; fi
-  fpn=$(printf '%s' "$fp" | sed -e 's#//*#/#g' -e 's#/\./#/#g' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta')
+  # BYTE-TWIN of _cp8b_norm's sed (GUARD-CP-WRITE-ROUTES K-COUPLE) — the /./ FIXPOINT edit is applied
+  # here identically; a byte-identity selftest leg pins the two seds equal so they cannot drift.
+  fpn=$(printf '%s' "$fp" | sed -e 's#//*#/#g' -e ':b' -e 's#/\./#/#' -e 'tb' -e 's#^\./##' -e 's#/*$##' -e ':a' -e 's#[^/]*/\.\./##' -e 'ta')
   base=$(basename "$fp" 2>/dev/null || printf '%s' "$fp")
   # GUARD-PATH-ALIAS-BYPASS (P0): judge the UNION — literal OR normalised OR RESOLVED. The rc is
   # CAPTURED, never discarded via `is_control_plane_path "$(_resolve_physical ...)"`: that form drops

@@ -57,6 +57,7 @@ conformance/README.md
 conformance/a11y-obligation.sh
 conformance/action-pinning.sh
 conformance/actionlint-valid.sh
+conformance/adopter-export-claims.sh
 conformance/adopter-export-wired.sh
 conformance/adopter-gates-parity.sh
 conformance/adopter-preflight-wired.sh
@@ -88,6 +89,7 @@ conformance/check-links.sh
 conformance/ci-classify-changes.sh
 conformance/ci-gates.sh
 conformance/ci-selftest-coverage.sh
+conformance/citation-history.sh
 conformance/citation-live.sh
 conformance/claim-gate-counts.sh
 conformance/claims-registry.sh
@@ -100,6 +102,7 @@ conformance/containment-readiness.md
 conformance/containment-ready.sh
 conformance/control-plane-revert-drill.sh
 conformance/cost-governance-ready.sh
+conformance/decision-id-live.sh
 conformance/decision-integrity.sh
 conformance/definition-of-deployable.md
 conformance/dep-scan-visibility.sh

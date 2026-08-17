@@ -150,13 +150,161 @@ if [ "${1:-}" = "--selftest" ]; then
   # which runs `doctor --selftest` — so a marker run against the in-tree script would recurse without end.
   # Pre-fix the seams are honored (cheap `touch` stubs run); post-fix they are ignored. Either way: fast,
   # deterministic, no recursion.
+  # HOME is redirected into the empty temp tree so the real ~/.claude/settings.json is NEVER read by this
+  # marker run (the accretion reader resolves its user-global path under $HOME; hermeticity, design §5).
   _sd=$(mktemp -d); _rd=$(mktemp -d); mkdir -p "$_rd/scripts"; cp "$0" "$_rd/scripts/doctor.sh"
-  DOCTOR_KITCURRENT_CMD="touch $_sd/kc" DOCTOR_VERIFY_CMD="touch $_sd/vf" DOCTOR_CLAIMS_CMD="touch $_sd/cl" \
+  HOME="$_rd" DOCTOR_KITCURRENT_CMD="touch $_sd/kc" DOCTOR_VERIFY_CMD="touch $_sd/vf" DOCTOR_CLAIMS_CMD="touch $_sd/cl" \
     sh "$_rd/scripts/doctor.sh" >/dev/null 2>&1 || true
   [ -e "$_sd/kc" ] && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_KITCURRENT_CMD was honored in a real run — env, not flag)"; sfail=1; } || true
   [ -e "$_sd/vf" ] && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_VERIFY_CMD was honored in a real run — env, not flag)"; sfail=1; } || true
   [ -e "$_sd/cl" ] && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_CLAIMS_CMD was honored in a real run — env, not flag)"; sfail=1; } || true
   rm -rf "$_sd" "$_rd" 2>/dev/null || true
+
+  # — permission-local-accretion legs (HERMETIC mktemp fixtures ONLY — the reader is pointed at throwaway
+  #   JSON via the DOCTOR_ACCRETION_* seams; the owner's real ~/.claude/settings.json and
+  #   .claude/settings.local.json are NEVER read here, design §5 / substrate-g FIXTURE-HERMETICITY). ————
+  accd=$(mktemp -d)
+  acctsv="$accd/tsv"
+  {
+    printf 'command-pattern\tdisposition\tsurface\n'
+    printf 'Read\tallow\tshipped\n'
+    printf 'Bash(git status:*)\tallow\tshipped\n'
+    printf 'Bash(gh pr merge:*)\tallow\truling-only\n'
+    printf 'Bash(sh scripts/publish-public.sh*)\tallow\truling-only\n'
+    printf 'Bash(rm -rf:*)\tdeny\tshipped\n'
+    printf 'Bash(npm publish:*)\tdeny\tshipped\n'
+    printf 'Write(.env)\tdeny\tshipped\n'
+    printf 'gh pr merge --admin\tdeliberately-absent\truling-only\n'
+  } > "$acctsv"
+
+  # run doctor (default posture) with LOCAL pointed at a fixture and the user-global half absent.
+  _accd_run() { # $1 = local fixture path ; echoes default-posture output
+    DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_ACCRETION_LOCAL="$1" DOCTOR_ACCRETION_USER="$accd/absent-user" \
+      DOCTOR_ACCRETION_TSV="$acctsv" DOCTOR_ACCRETION_JQ="jq" \
+      sh "$0" --selftest-e2e 2>&1 || true
+  }
+  _acc_warn() { # $1 label  $2 json — the loud class MUST fire (permissions WARN)
+    printf '%s\n' "$2" > "$accd/f.json"
+    _o=$(_accd_run "$accd/f.json")
+    printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+      || { echo "doctor --selftest: FAIL (accretion loud '$1' did NOT fire a permissions WARN)"; sfail=1; }
+  }
+  _acc_ok() {   # $1 label  $2 json — the carve-out must stay quiet (permissions OK, no WARN)
+    printf '%s\n' "$2" > "$accd/f.json"
+    _o=$(_accd_run "$accd/f.json")
+    printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+OK' \
+      || { echo "doctor --selftest: FAIL (accretion carve-out '$1' did NOT render permissions OK)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+      && { echo "doctor --selftest: FAIL (accretion carve-out '$1' wrongly fired a permissions WARN — wolf-crying)"; sfail=1; } || true
+  }
+
+  # 1. clean fixture → quiet OK, and the --full count is 0.
+  _clean='{"permissions":{"allow":["Read","Bash(git status:*)","Bash(gh pr merge:*)","Bash(sh scripts/publish-public.sh*)"]}}'
+  _acc_ok "clean" "$_clean"
+  printf '%s\n' "$_clean" > "$accd/f.json"
+  _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+       DOCTOR_DORA_CMD=true DOCTOR_SCORECARD_CMD=true DOCTOR_NONVACUITY_CMD=true DOCTOR_META_CONTROL_CMD=true \
+       DOCTOR_ACCRETION_LOCAL="$accd/f.json" \
+       DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+       sh "$0" --selftest-e2e --full 2>&1) || true
+  printf '%s\n' "$_o" | grep -q 'permission-local-accretion: 0 local' \
+    || { echo "doctor --selftest: FAIL (clean fixture did not report a 0 accretion count under --full)"; sfail=1; }
+
+  # 2. accretion planted → the --full count is >= 1 (a count, never the pattern).
+  printf '%s\n' '{"permissions":{"allow":["Bash(git status:*)","Bash(some-unsanctioned-tool:*)"]}}' > "$accd/f.json"
+  _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+       DOCTOR_DORA_CMD=true DOCTOR_SCORECARD_CMD=true DOCTOR_NONVACUITY_CMD=true DOCTOR_META_CONTROL_CMD=true \
+       DOCTOR_ACCRETION_LOCAL="$accd/f.json" \
+       DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+       sh "$0" --selftest-e2e --full 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permission-local-accretion: [1-9][0-9]* local' \
+    || { echo "doctor --selftest: FAIL (a planted accretion did not raise the count >= 1)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -q 'some-unsanctioned-tool' \
+    && { echo "doctor --selftest: FAIL (the accretion metric LEAKED a local allow string — §5 privacy: counts only)"; sfail=1; } || true
+
+  # 3. laundering — each engine-honored EVASION must fire (design §3 F1 evasion fixtures).
+  _acc_warn "double-space --admin"   '{"permissions":{"allow":["Bash(gh pr merge  --admin:*)"]}}'
+  _acc_warn "flag-reorder --admin"   '{"permissions":{"allow":["Bash(gh pr merge --squash --admin:*)"]}}'
+  _acc_warn "--admin=true"           '{"permissions":{"allow":["Bash(gh pr merge --admin=true:*)"]}}'
+  _acc_warn "rm -fr"                 '{"permissions":{"allow":["Bash(rm -fr:*)"]}}'
+  _acc_warn "rm --recursive --force" '{"permissions":{"allow":["Bash(rm --recursive --force:*)"]}}'
+  _acc_warn "rm -Rf (uppercase -R)"  '{"permissions":{"allow":["Bash(rm -Rf:*)"]}}'
+  _acc_warn "rm -R -f (split -R)"    '{"permissions":{"allow":["Bash(rm -R -f:*)"]}}'
+  _acc_warn "Bash(gh:*) superset"    '{"permissions":{"allow":["Bash(gh:*)"]}}'
+  _acc_warn "Bash(rm:*) superset"    '{"permissions":{"allow":["Bash(rm:*)"]}}'
+  _acc_warn "Write(.env.local)"      '{"permissions":{"allow":["Write(.env.local)"]}}'
+
+  # 4. laundering — the carve-outs must NOT fire.
+  _acc_ok "plain gh pr merge"   '{"permissions":{"allow":["Bash(gh pr merge:*)"]}}'
+  _acc_ok "publish-public.sh"   '{"permissions":{"allow":["Bash(sh scripts/publish-public.sh*)"]}}'
+  _acc_ok "Write(.env.example)" '{"permissions":{"allow":["Write(.env.example)"]}}'
+
+  # 5. hook-tamper / escalation — each key fires (design §3.3 F6).
+  _acc_warn "disableAllHooks true"   '{"disableAllHooks":true,"permissions":{"allow":[]}}'
+  _acc_warn "disableAllHooks \"1\""  '{"disableAllHooks":"1","permissions":{"allow":[]}}'
+  _acc_warn "env KIT_GUARD_SELFEDIT" '{"env":{"KIT_GUARD_SELFEDIT":"1"},"permissions":{"allow":[]}}'
+  _acc_warn "env NODE_OPTIONS"       '{"env":{"NODE_OPTIONS":"--require /tmp/x.js"},"permissions":{"allow":[]}}'
+  _acc_warn "env PATH"               '{"env":{"PATH":"/tmp/evil:/usr/bin"},"permissions":{"allow":[]}}'
+  _acc_ok   "env MY_APP_URL benign"  '{"env":{"MY_APP_URL":"https://example.test"},"permissions":{"allow":[]}}'
+  _acc_warn "defaultMode bypass"     '{"permissions":{"defaultMode":"bypassPermissions","allow":[]}}'
+  _acc_warn "hooks.PreToolUse"       '{"hooks":{"PreToolUse":[{"matcher":"Bash"}]},"permissions":{"allow":[]}}'
+  _acc_warn "hooks.PostToolUse"      '{"hooks":{"PostToolUse":[]},"permissions":{"allow":[]}}'
+
+  # 6. FAIL-SAFE (design §3 F4) — absent / malformed / jq-absent → N/A-with-reason, NEVER a false OK.
+  _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_ACCRETION_LOCAL="$accd/none-l" \
+       DOCTOR_ACCRETION_USER="$accd/none-u" DOCTOR_ACCRETION_TSV="$acctsv" \
+       sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+N/A' \
+    || { echo "doctor --selftest: FAIL (both files absent did not render a permissions N/A)"; sfail=1; }
+
+  printf '%s\n' '{bad json not valid,,,' > "$accd/bad.json"
+  _o=$(_accd_run "$accd/bad.json")
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+N/A' \
+    || { echo "doctor --selftest: FAIL (malformed JSON did not render a permissions N/A)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+OK' \
+    && { echo "doctor --selftest: FAIL (malformed JSON rendered a permissions OK — a FALSE all-clear on a parse failure)"; sfail=1; } || true
+
+  printf '%s\n' "$_clean" > "$accd/f.json"
+  _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_ACCRETION_LOCAL="$accd/f.json" \
+       DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+       DOCTOR_ACCRETION_JQ="$accd/no-such-jq-binary" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+N/A' \
+    || { echo "doctor --selftest: FAIL (jq-absent did not render a permissions N/A)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+OK' \
+    && { echo "doctor --selftest: FAIL (jq-absent rendered a permissions OK — a FALSE all-clear)"; sfail=1; } || true
+
+  # 7. NON-GATING, COMBINED leg (design §3 F5) — ONE invocation on a loud-firing fixture: the loud word
+  #    IS present AND doctor's exit is unchanged (0). Separate legs would let an impl fake non-gating by
+  #    suppressing the signal.
+  printf '%s\n' '{"permissions":{"allow":["Bash(rm -fr:*)"]}}' > "$accd/f.json"
+  _ng_rc=0
+  _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_ACCRETION_LOCAL="$accd/f.json" \
+       DOCTOR_ACCRETION_USER="$accd/absent-user" DOCTOR_ACCRETION_TSV="$acctsv" \
+       sh "$0" --selftest-e2e 2>&1) || _ng_rc=$?
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+    || { echo "doctor --selftest: FAIL (combined non-gating leg: the loud class did not fire)"; sfail=1; }
+  [ "$_ng_rc" = "0" ] \
+    || { echo "doctor --selftest: FAIL (combined non-gating leg: a loud-firing advisory changed doctor's exit to $_ng_rc — the metric GATED)"; sfail=1; }
+
+  # 8. FLAG-NOT-ENV pin for the file-path seams (F-5) — an ambient DOCTOR_ACCRETION_LOCAL must be IGNORED
+  #    in a REAL run (no --selftest-e2e; SEAMS=0 hardcodes the real path). Isolated tree whose real local
+  #    surface is ABSENT but whose enumeration IS present; the ambient seam points at a laundering DECOY.
+  #    Honored → the decoy would raise a permissions WARN; a faithful real run ignores it and falls to N/A
+  #    (real local + user-global both absent). HOME→empty tree so no owner file is read (privacy).
+  _fd=$(mktemp -d); _fh=$(mktemp -d)
+  mkdir -p "$_fd/scripts" "$_fd/conformance"
+  cp "$0" "$_fd/scripts/doctor.sh"
+  cp "$acctsv" "$_fd/conformance/sanctioned-commands.tsv"
+  printf '%s\n' '{"permissions":{"allow":["Bash(rm -fr:*)"]}}' > "$accd/decoy.json"
+  _o=$(HOME="$_fh" DOCTOR_ACCRETION_LOCAL="$accd/decoy.json" sh "$_fd/scripts/doctor.sh" 2>&1) || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+WARN' \
+    && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_ACCRETION_LOCAL decoy was HONORED in a real run — env, not flag)"; sfail=1; } || true
+  printf '%s\n' "$_o" | grep -qE 'permissions[[:space:]]+N/A' \
+    || { echo "doctor --selftest: FAIL (FLAG-NOT-ENV pin: real run did not fall to N/A with the real local surface absent — the seam may have leaked)"; sfail=1; }
+  rm -rf "$_fd" "$_fh" 2>/dev/null || true
+
+  rm -rf "$accd" 2>/dev/null || true
 
   [ "$sfail" -eq 0 ] && { echo "doctor --selftest: OK"; exit 0; } || exit 1
 fi
@@ -191,6 +339,15 @@ if [ "$SEAMS" -eq 1 ]; then
   DOCTOR_META_CONTROL_CMD="${DOCTOR_META_CONTROL_CMD:-}"
   DOCTOR_NONVACUITY_CMD="${DOCTOR_NONVACUITY_CMD:-}"
   DOCTOR_KITCURRENT_CMD="${DOCTOR_KITCURRENT_CMD:-}"
+  # permission-local-accretion FILE-PATH seams (honored ONLY under --selftest-e2e): the selftest points
+  # the reader at hermetic mktemp fixtures. The LOCAL/USER paths default to EMPTY (→ absent → N/A) under
+  # the seam flag on purpose — a --selftest-e2e child must NEVER read the owner's real per-machine files
+  # (privacy, design §5); only an explicit fixture override makes them readable. The real surfaces are
+  # read solely on the SEAMS=0 adopter path below.
+  DOCTOR_ACCRETION_LOCAL="${DOCTOR_ACCRETION_LOCAL:-}"
+  DOCTOR_ACCRETION_USER="${DOCTOR_ACCRETION_USER:-}"
+  DOCTOR_ACCRETION_TSV="${DOCTOR_ACCRETION_TSV:-conformance/sanctioned-commands.tsv}"
+  DOCTOR_ACCRETION_JQ="${DOCTOR_ACCRETION_JQ:-jq}"
 else
   DOCTOR_VERIFY_CMD=""
   DOCTOR_CLAIMS_CMD=""
@@ -199,10 +356,262 @@ else
   DOCTOR_META_CONTROL_CMD=""
   DOCTOR_NONVACUITY_CMD=""
   DOCTOR_KITCURRENT_CMD=""
+  # FLAG-NOT-ENV: a real adopter run FORCES the accretion reader onto the true surfaces — the ambient
+  # environment cannot redirect it at a decoy fixture (a check the environment can redirect is not a check).
+  DOCTOR_ACCRETION_LOCAL=".claude/settings.local.json"
+  DOCTOR_ACCRETION_USER="${HOME:-}/.claude/settings.json"
+  DOCTOR_ACCRETION_TSV="conformance/sanctioned-commands.tsv"
+  DOCTOR_ACCRETION_JQ="jq"
 fi
 
 gate_fail=0
 warns=0
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════
+# permission-local-accretion — the going-forward advisory for the CI-UNREADABLE local permission
+# surfaces (.claude/settings.local.json ∪ ~/.claude/settings.json). C3 shipped the CI lock over the
+# TRACKED settings.json; this reads the untracked, per-machine files that a CI checkout structurally
+# cannot see. Three informational sub-signals — an accretion COUNT (--full metric), a LOUD laundering
+# class + a LOUD hook-tamper class (default-posture WARN) — computed ONCE here and rendered below.
+# NON-GATING: nothing here ever touches gate_fail; the metric can never change doctor's exit code.
+# PRIVACY (design §5): emits COUNTS and ENUMERATION target names / config key names only — NEVER the
+# owner's local allow strings.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+# _normalize <raw> : set _NF (fam: bash|write|other) + _NN (normalized inner). Strip the Bash(/Write(
+# wrapper and the trailing :* glob; squeeze whitespace runs to one space + trim; lowercase Write targets
+# (APFS is case-insensitive). Mirrors the vet-corrected NORMALIZED TOKEN match shape (design §3 F1).
+_normalize() {
+  _ns=$1
+  case "$_ns" in
+    "Bash("*")")  _NF="bash";  _ns=${_ns#Bash(};  _ns=${_ns%)} ;;
+    "Write("*")") _NF="write"; _ns=${_ns#Write(}; _ns=${_ns%)} ;;
+    Bash)  _NF="bash";  _ns="" ;;
+    Write) _NF="write"; _ns="" ;;
+    *)     _NF="other" ;;
+  esac
+  _ns=${_ns%:\*}
+  _ns=$(printf '%s' "$_ns" | awk '{$1=$1; print}')
+  [ "$_NF" = write ] && _ns=$(printf '%s' "$_ns" | tr '[:upper:]' '[:lower:]')
+  _NN=$_ns
+}
+
+# _in_sanctioned <norm> : rc0 iff <norm> equals a normalized allow/ask row of the enumeration. Iterated
+# via a while-read here-doc (NOT $IFS re-split): here-doc bodies never pathname-expand, so the globs in
+# $_sanct (e.g. "sh conformance/*") stay literal without relying on set -f, and no global IFS is touched.
+_in_sanctioned() {
+  while IFS= read -r _s || [ -n "$_s" ]; do
+    [ -z "$_s" ] && continue
+    [ "$_s" = "$1" ] && return 0
+  done <<_ACC_SANCT_EOF
+$_sanct
+_ACC_SANCT_EOF
+  return 1
+}
+
+# _has_sub <norm> <token-run> : rc0 iff <token-run> appears as a whole-token run in the space-normalized
+# <norm> (ordered stem containment — "gh pr merge", "npm publish").
+_has_sub() { case " $1 " in *" $2 "*) return 0 ;; esac; return 1; }
+
+# _recforce <padded-tokens> : rc0 iff a recursive+force spelling is present (the closed set — design §3).
+# NB uppercase -R is recursive on macOS/BSD rm (F-1): -Rf/-fR clustered + the -R+-f split, mirroring -r+-f.
+_recforce() {
+  case "$1" in *" -rf "*|*" -fr "*|*" -Rf "*|*" -fR "*) return 0 ;; esac
+  case "$1" in *" --recursive "*) case "$1" in *" --force "*) return 0 ;; esac ;; esac
+  case "$1" in *" -r "*|*" -R "*) case "$1" in *" -f "*) return 0 ;; esac ;; esac
+  return 1
+}
+
+# _is_prefix <n> <t> : rc0 iff <n> is a token-prefix of <t> (empty <n> is a prefix of everything — the
+# bare-Bash superset). Both are single-space normalized.
+_is_prefix() {
+  [ -z "$1" ] && return 0
+  [ "$2" = "$1" ] && return 0
+  case "$2" in "$1 "*) return 0 ;; esac
+  return 1
+}
+
+# _env_target <lowercased-write-inner> : rc0 iff the Write target is .env / .env.* EXCEPT .env.example.
+_env_target() {
+  case "$1" in
+    .env.example) return 1 ;;
+    .env|.env.*|".env*") return 0 ;;
+  esac
+  return 1
+}
+
+# _tamper_add <reason> : append a tamper reason, de-duplicated.
+_tamper_add() {
+  case "
+$_tamper" in
+    *"
+$1
+"*) : ;;
+    *) _tamper="$_tamper$1
+" ;;
+  esac
+}
+
+# _acc_analyze : populate ACC_STATUS (ok|na), ACC_NA_REASON, ACC_COUNT, ACC_LOUD (newline list of
+# enumeration target names), ACC_TAMPER (newline list of reasons). FAIL-SAFE (design §3 F4): jq-absent,
+# a missing enumeration, both files absent, or malformed JSON ALL render N/A-with-reason — NEVER a false
+# OK (the `$(jq … || echo 0)` idiom is banned). Parser stderr is discarded, never emitted (F7).
+ACC_STATUS=na; ACC_NA_REASON=""; ACC_COUNT=0; ACC_LOUD=""; ACC_TAMPER=""
+_acc_analyze() {
+  set -f
+  ACC_STATUS=na; ACC_NA_REASON=""; ACC_COUNT=0; ACC_LOUD=""; ACC_TAMPER=""
+  _JQ=$DOCTOR_ACCRETION_JQ; _TSV=$DOCTOR_ACCRETION_TSV
+  _LOCAL=$DOCTOR_ACCRETION_LOCAL; _USER=$DOCTOR_ACCRETION_USER
+
+  if ! command -v "$_JQ" >/dev/null 2>&1; then
+    ACC_NA_REASON="jq not available — cannot parse the local permission surfaces"; set +f; return 0
+  fi
+  if [ ! -f "$_TSV" ]; then
+    ACC_NA_REASON="the sanctioned enumeration (sanctioned-commands.tsv) is not present"; set +f; return 0
+  fi
+
+  _files=""
+  [ -f "$_LOCAL" ] && _files="$_files$_LOCAL
+"
+  [ -f "$_USER" ] && _files="$_files$_USER
+"
+  if [ -z "$_files" ]; then
+    ACC_NA_REASON="no local permission surface present (settings.local.json and ~/.claude/settings.json both absent)"
+    set +f; return 0
+  fi
+
+  # FAIL-SAFE: a present-but-malformed file → N/A, never a false all-clear.
+  while IFS= read -r _f || [ -n "$_f" ]; do
+    [ -z "$_f" ] && continue
+    if ! "$_JQ" empty "$_f" >/dev/null 2>&1; then
+      ACC_NA_REASON="a local permission file is not valid JSON — refusing to render a possibly-false all-clear"
+      set +f; return 0
+    fi
+  done <<_ACC_FILES_EOF
+$_files
+_ACC_FILES_EOF
+
+  # enumeration → sanctioned set (allow/ask) + deny/deliberately-absent target records (fam|norm|enum).
+  # Inline `IFS="$_TAB" read` command-prefix form (scoped to the read, no global IFS reassignment).
+  _sanct=""; _deny_recs=""
+  _TAB=$(printf '\t')
+  while IFS="$_TAB" read -r _pat _disp _rest; do
+    case "$_pat" in ''|'#'*) continue ;; esac
+    _normalize "$_pat"
+    case "$_disp" in
+      allow|ask) _sanct="$_sanct$_NN
+" ;;
+      deny|deliberately-absent) _deny_recs="$_deny_recs$_NF|$_NN|$_pat
+" ;;
+    esac
+  done < "$_TSV"
+
+  # union of local allows across the present files.
+  _allows=""
+  while IFS= read -r _f || [ -n "$_f" ]; do
+    [ -z "$_f" ] && continue
+    _a=$("$_JQ" -r '.permissions.allow[]? // empty' "$_f" 2>/dev/null) || _a=""
+    [ -n "$_a" ] && _allows="$_allows$_a
+"
+  done <<_ACC_FILES2_EOF
+$_files
+_ACC_FILES2_EOF
+
+  # accretion count + laundering loud class. Nested while-read here-docs (NOT $IFS re-split): the outer
+  # feeds the union of local allows, the inner the deny/deliberately-absent target records; both run in
+  # the current shell so _count/_loud persist. Empty-line guards mirror the old `for`-loop field-skip.
+  _count=0; _loud=""
+  while IFS= read -r _al || [ -n "$_al" ]; do
+    [ -z "$_al" ] && continue
+    _normalize "$_al"; _fam=$_NF; _n=$_NN; _tok=" $_NN "
+    _in_sanctioned "$_n" || _count=$((_count+1))
+    [ "$_fam" = other ] && continue
+    while IFS= read -r _rec || [ -n "$_rec" ]; do
+      [ -z "$_rec" ] && continue
+      _tfam=${_rec%%|*}; _r2=${_rec#*|}; _tnorm=${_r2%%|*}; _tenum=${_r2#*|}
+      _fire=0
+      if [ "$_tfam" = write ]; then
+        [ "$_fam" = write ] && _env_target "$_n" && _fire=1
+      elif [ "$_fam" = bash ]; then
+        # kind-specific spelling-evasion containment
+        case "$_tnorm" in
+          *--admin*)
+            if _has_sub "$_n" "gh pr merge"; then
+              case "$_tok" in *" --admin "*|*" --admin="*) _fire=1 ;; esac
+            fi ;;
+          "rm "*|rm)
+            case "$_tok" in " rm "*) _recforce "$_tok" && _fire=1 ;; esac ;;
+          *)
+            _has_sub "$_n" "$_tnorm" && _fire=1 ;;
+        esac
+        # generic unsanctioned-superset-prefix (catches Bash(gh:*), Bash(rm:*), bare Bash)
+        if [ "$_fire" = 0 ] && _is_prefix "$_n" "$_tnorm"; then
+          _in_sanctioned "$_n" || _fire=1
+        fi
+      fi
+      if [ "$_fire" = 1 ]; then
+        case "
+$_loud" in
+          *"
+$_tenum
+"*) : ;;
+          *) _loud="$_loud$_tenum
+" ;;
+        esac
+      fi
+    done <<_ACC_DENY_EOF
+$_deny_recs
+_ACC_DENY_EOF
+  done <<_ACC_ALLOWS_EOF
+$_allows
+_ACC_ALLOWS_EOF
+  ACC_COUNT=$_count; ACC_LOUD=$_loud
+
+  # hook-tamper / escalation loud class (design §3.3, vet Finding 6). Outer files loop + two sequential
+  # inner key loops, all while-read here-docs (NOT $IFS re-split); _tamper persists in the current shell.
+  _tamper=""
+  while IFS= read -r _f || [ -n "$_f" ]; do
+    [ -z "$_f" ] && continue
+    _ek=$("$_JQ" -r '(.env // {}) | keys[]? // empty' "$_f" 2>/dev/null) || _ek=""
+    # KIT_* (guard kill-switch dials) UNION the guard's own never-add loader/exec-env set (F-2 — a
+    # settings-level env: {NODE_OPTIONS|LD_PRELOAD|…} is a code-injection channel surviving restarts).
+    # Benign keys (an adopter's env: {MY_APP_URL:…}) stay QUIET — no wolf-crying. KEY NAME only, no value.
+    while IFS= read -r _k || [ -n "$_k" ]; do
+      [ -z "$_k" ] && continue
+      case "$_k" in
+        KIT_*) _tamper_add "env-block key $_k (persistent guard kill-switch)" ;;
+        PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|NODE_OPTIONS|BASH_ENV|ENV|PERL5OPT|PYTHONSTARTUP|RUBYOPT|GIT_SSH_COMMAND)
+          _tamper_add "env-block key $_k (loader/exec-env injection channel)" ;;
+      esac
+    done <<_ACC_ENV_EOF
+$_ek
+_ACC_ENV_EOF
+    _dm=$("$_JQ" -r '.permissions.defaultMode // empty' "$_f" 2>/dev/null) || _dm=""
+    case "$_dm" in
+      bypassPermissions|acceptEdits) _tamper_add "permissions.defaultMode=$_dm (neuters the ask tier)" ;;
+    esac
+    _hk=$("$_JQ" -r '(.hooks // {}) | keys[]? // empty' "$_f" 2>/dev/null) || _hk=""
+    while IFS= read -r _k || [ -n "$_k" ]; do
+      [ -z "$_k" ] && continue
+      _tamper_add "hooks.$_k (local hook definition)"
+    done <<_ACC_HOOK_EOF
+$_hk
+_ACC_HOOK_EOF
+    _dah=$("$_JQ" -r 'if has("disableAllHooks") then (.disableAllHooks|tostring) else empty end' "$_f" 2>/dev/null) || _dah=""
+    case "$_dah" in
+      true|1) _tamper_add "disableAllHooks=$_dah (unwires all hooks)" ;;
+    esac
+  done <<_ACC_FILES3_EOF
+$_files
+_ACC_FILES3_EOF
+  ACC_TAMPER=$_tamper
+
+  ACC_STATUS=ok
+  set +f
+  return 0
+}
+
+_acc_analyze
 
 # — HEADER ——————————————————————————————————————————————————————————————————
 _branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
@@ -365,6 +774,31 @@ case "$_krc" in
   *) printf '  %-14s N/A   [%s]\n' "kit-update" "$_knote" ;;
 esac
 
+# 5. permissions [ADVISORY — WARN-only; never sets gate_fail]
+# The going-forward signal for the CI-unreadable LOCAL permission surfaces. The LOUD class — a local
+# allow re-granting a deny/deliberately-absent capability (laundering), or a hook-tamper/escalation key —
+# renders HERE in the default posture (a laundering line buried behind --full is a quiet signal; vet
+# condition D). The routine accretion COUNT stays a --full metric below. Anti-wolf-crying: absent surface
+# / jq-absent / malformed JSON → N/A-with-reason, NEVER a false OK. Non-gating: never sets gate_fail.
+#
+# RECORDED PRE-PUSH REJECTION (design Q5): the sibling pre-push carrier is REJECTED, on measured grounds —
+# a pre-push line parses these two files on EVERY push (the hot path) and jq is NOT guaranteed present
+# (the codebase already probes `command -v jq`); accretion is a slow hygiene concern whose natural cadence
+# is the on-demand doctor run, which carries zero per-push tax. Recorded here per Q5, not dropped.
+if [ "$ACC_STATUS" = "na" ]; then
+  printf '  %-14s N/A   [%s]\n' "permissions" "$ACC_NA_REASON"
+elif [ -n "$ACC_LOUD" ] || [ -n "$ACC_TAMPER" ]; then
+  warns=$((warns+1))
+  _pl=$(printf '%s' "$ACC_LOUD" | awk 'NF{a=a s $0; s=", "} END{print a}')
+  _pt=$(printf '%s' "$ACC_TAMPER" | awk 'NF{a=a s $0; s="; "} END{print a}')
+  printf '  %-14s WARN  [local permission surface — review the following]\n' "permissions"
+  [ -n "$_pl" ] && printf '  %-14s       -> laundering (a local allow re-grants a denied/deliberately-absent capability): %s\n' "" "$_pl"
+  [ -n "$_pt" ] && printf '  %-14s       -> hook-tampering / escalation key(s): %s\n' "" "$_pt"
+  printf '  %-14s       -> NB deny-beats-allow: a local allow that merely DUPLICATES a tracked deny is likely engine-ineffective, but is a real intent canary; equivalent-spelling evasions and the tamper keys ARE live. Advisory only — this never blocks you.\n' ""
+else
+  printf '  %-14s OK    [no laundering or hook-tampering in the local permission surfaces]\n' "permissions"
+fi
+
 # — VERDICT ——————————————————————————————————————————————————————————————————
 echo ""
 if [ "$gate_fail" = "1" ]; then
@@ -422,6 +856,15 @@ if [ "$FULL" = "1" ]; then
     printf '%s\n' "$_nv_out" | tail -1
   else
     echo "  non-vacuity: N/A (not present)"
+  fi
+
+  # permission-local-accretion (C3 going-forward signal; COUNT ONLY — never the list, §5 privacy).
+  # Reuses the union analysis computed once above; the LOUD laundering/tamper class renders in the
+  # default POSTURE section, not here. Informational — never affects exit.
+  if [ "$ACC_STATUS" = "na" ]; then
+    printf '  permission-local-accretion: N/A (%s)\n' "$ACC_NA_REASON"
+  else
+    printf '  permission-local-accretion: %s local allow(s) outside the sanctioned enumeration\n' "$ACC_COUNT"
   fi
 
   # meta-control freshness (M2 — advisory surfacing of the cadence circuit-breaker; NEVER gates doctor)

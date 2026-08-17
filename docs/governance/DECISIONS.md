@@ -600,6 +600,109 @@ panel `docs/architecture/2026-08-15-meta-control-41.md` + the first-principles f
 under the standard dial-delivery pattern or the decline is re-argued at the next panel; (e) is
 re-evaluated if the product start is deferred past the next panel.
 
+**`D-240815-3` · ruling (owner, 2026-08-15, in-session at the SHARD2-cure PR — closing the
+`D-240811-2.3` dated deferral on its own revisit condition) · THE VERIFY-LANE HERMETIC TAX IS
+ACCEPTED, NOT EXCLUDED.** The deferral required the fresh measurement before choosing; the cure
+slice's own battery delivered it: `conformance-core` = **16m14s on a `verify.sh`-touching PR**
+(vs ~3 min otherwise; the banked "~25 min" figure superseded), measured on PR #547 with the
+shard-2 cure landed. **DECISION:** accept-the-tax — no coverage reduction; the hermetic two-face
+proof of `verify.sh`'s own selftest keeps running per check-registering PR. The panel-#39
+preference (a scoped exclusions entry) is declined on the fresh figure: the tax fires only on the
+check-registering PR class, whose frequency drops sharply post-Phase-C, and `cf-verify-selftest`'s
+coverage overlap does not extend to the hermetic faces, so the exclusion would be a real
+reduction. **REVISIT-CONDITION:** re-open if the measured tax grows past ~20 min, or if
+check-registering PRs become the dominant PR class again (a new gate-building phase).
+
+**`D-240815-4` · ruling (owner, 2026-08-15, in-session during the GUARD-FP-RELIEF-2 build;
+transcribed at that slice's PR) · POST-C RELEASE/PUBLISH CADENCE — BATCH THROUGH THE RULED
+RECOVERY QUEUE, CUT AT THE RE-TRIAGE BOUNDARY.** `D-240813-6`'s batch shape was ruled for Phase C
+and Phase C is closed; the post-C slices (#547–#549) continued it de facto without a ruling. This
+entry supplies it: the batch **continues** through the ruled recovery queue (`GUARD-FP-RELIEF-2`,
+`ASK-TIER-MODE-RATCHET`, `DANGLING-DECISION-ID-CITES`, `PERMISSION-LOCAL-ACCRETION`) — merged
+slices stay untagged as the designed state — and **one release is cut and published to the public
+mirror at the joint re-triage boundary**, giving the mirror a single coherent recovery version
+rather than per-slice noise bumps. The mirror stands current at v3.215.0 until then.
+**REVISIT-CONDITION:** an adopter-urgent fix (the same out-of-band escape `D-240813-6` carried),
+or the re-triage sitting re-ruling the cadence for the arc that follows it.
+
+**`D-240816-1` · ruling (owner, 2026-08-16, in-session at the GUARD-FP-RELIEF-2 merge) · THE TWO
+MEASURED GUARD-CLASSIFIER WRITE ROUTES ARE FIXED FIRST, AHEAD OF THE XS CLEANUPS.** The
+FP-RELIEF-2 review chain measured two **pre-existing, live-on-`main`** control-plane WRITE routes
+past the guard's path classifier: `GUARD-CP-PATH-NORMALIZATION-BYPASS` (`hooks//pre-push` /
+`./hooks/./pre-push` evade the spelling-exact matcher — `sed -i`/`chmod`/`printf >`/`tee`/`rm` all
+write) and `GUARD-KIT-EXEC-REDIRECT-UNRESOLVED-TARGET` (`> $(echo hooks/pre-push)` allows through
+both the kit-exec bail and plain readers). Both were boarded not folded (`D-240813-2c` — deny-side
+gaps are their own slices) and neither was created or widened by FP-RELIEF-2 (measured identical at
+main/pre-fix/HEAD). **DECISION:** they are promoted to a single Ready slice `GUARD-CP-WRITE-ROUTES`
+(M — they share the classifier surface: one design, one `D-240813-3` pre-build security vet) and
+ruled **first in the queue**, ahead of the three funded XS cleanups
+(`ASK-TIER-MODE-RATCHET`/`DANGLING-DECISION-ID-CITES`/`PERMISSION-LOCAL-ACCRETION`), because both
+review seats flagged urgency and the routes are live writes to the pre-push hook. This resequences
+`D-240815-2f`'s order (FP-RELIEF-2 → cleanups → re-triage → product) to: **FP-RELIEF-2 (shipped) →
+GUARD-CP-WRITE-ROUTES → cleanups → re-triage → release+publish cut (`D-240815-4`) → product.** The
+normalization cure documents a reduction of `GUARD-PATH-ENUMERATION-INCOMPLETE`'s surface (the alias
+family it belongs to). **REVISIT-CONDITION:** if the combined slice's design finds the two routes do
+NOT share a cure surface, they split back into two slices, still both ahead of the cleanups.
+
+**`D-240816-2` · ruling (owner, 2026-08-16, at the close of the joint re-triage sitting;
+kit-steward synthesis, owner-ruled) · THE RE-TRIAGE SITTING'S THREE RESULTS: THE LEDGER BUCKETS,
+THE P1 FOLD-MAP, AND THE RULED SEQUENCE.** The joint re-triage sitting held open since the
+recovery plan ran against the full demoted ledger and the guard backlog. Three rulings:
+
+**(a) The ledger buckets — the ditch is shallower than its row count.** The demoted ledger was
+classified in-session into four buckets — **~15 dead · ~10 duplicate · ~37 real remaining · ~50
+speculative/needs-a-ruling**; of the ~37 real, ~10 fold into the P1 epic or existing batches,
+leaving **~25 genuinely independent items, mostly XS/S**. ⚠️ Three honesty notes carried with the
+ruling: (1) the per-row bucket dispositions were synthesized in-session and are recorded here at
+the **aggregate** level — the per-row application (striking the dead, collapsing the duplicates)
+is deliberately deferred to the ruled backlog re-review below, where each closure carries its
+receipt; a row is not closed by this aggregate count alone. (2) **The denominator is itself a
+session synthesis, not a board count** — the board's own dated triage header says 111 DEMOTED and
+the ledger block has accreted rows since; the re-review re-counts the population before applying
+the buckets, which is why no percentages are recorded here. (3) The ledger is **not the whole
+board**: further non-ledger adopter-surface rows sit below it (count likewise owed to the
+re-review), including the CRITICAL `ADOPTERS-INSTALL-ZERO-GOVERNANCE-CONTEXTS`, and their
+priority is a function of the product decision (a greenlight fires the `D-240815-2e`
+adopter-parity trigger).
+
+**(b) The P1 classifier-epic fold-map is ACCEPTED.** `GUARD-PATH-ENUMERATION-INCOMPLETE` becomes
+an **L epic of 2–3 slices**: **S1** (M) — guard-side control-plane membership **by derivation**
+(family property over the normalized, segment-anchored, case-folded subject — the `_cp8b_norm`
+ground `GUARD-CP-WRITE-ROUTES` laid), taking the measured-ALLOW governing paths
+ordinary→control-plane with a NEW governing file caught by derivation and zero enumeration edits;
+**S1's first act is a substrate re-probe** — the 8-path ALLOW figures predate
+`GUARD-CP-WRITE-ROUTES`, which reduced but did not close the surface, so re-measure at HEAD via
+kit-guard judge mode before designing. **S2** (S–M) — merge-side `--class` parity from the SAME
+single source plus a CI agreement lock (guard-side vs class-side divergence reds over a tree
+census). **S3** (XS–S, may fold into S2) — the reclassification ratchet. **Six folds** were ruled into the
+epic: `TIER2-AUTHORITY-RESIDUALS`, `CLASS-VS-GATE-ADAPTER-MISMATCH`, `PROFILES-ORDINARY-CLASS`,
+`LOOP-STATE-CLASS-ADAPTER-UNION` (all four previously fold-noted) plus the two new folds
+`GUARD-UNDER-TEMP-CASE` and `GUARD-CLAUDE-SIBLING-FP` (the sibling-FP rides as ALLOW-relief
+legs). *(Transcription note, measured 2026-08-16 at this cut's review: `GUARD-UNDER-TEMP-CASE`
+was found ALREADY CURED at HEAD — the case-folded second arm shipped 2026-08-01 in PR #465,
+labeled with the row's own id — so that fold is discharged-on-arrival and **five folds are
+live**; the row's open residual is the distinct classifier collation short-circuit, perf-only,
+left to the re-review.)* **Kept DISTINCT, ruled not folded:** the deny-side write-route trio
+(`GUARD-REDIRECT-FD-DUP-COMBINED-BYPASS` numeric-only fd exclusion + `GUARD-WRITE-VERB-ARG-GLOB`
++ `GUARD-SECRET-METADATA-LEAK` — ONE combined S slice, one `D-240813-3` vet) · the FS-alias
+family (`GUARD-CP-HARDLINK-ALIAS` and siblings — own sequence BEHIND the epic, which changes the
+resolver ground they build on) · the FP-RELIEF-3 read-side batch ·
+`ACCRETION-LOUD-SPELLING-COMPLETENESS-R2` (doctor advisory, not guard) ·
+`PUBLISH-DENY-PACKAGE-MANAGER-GAP` (XS TSV rider). The epic keeps the MANDATORY pre-build
+security vet per `D-240813-3`, held by the Fable security seat per the `D-240813-7` posture; two
+vet rounds are budgeted per the `GUARD-CP-WRITE-ROUTES` precedent (a budget, not a ruling).
+
+**(c) The sequence is ruled, and the release cut is GO:** **release cut → P1 epic → product test
+→ backlog re-review.** This extends and resequences `D-240816-1`'s ruled tail (release+publish
+cut → product) by inserting the P1 epic ahead of the product test and appending the backlog
+re-review as the closing step. The release cut is v3.216.0 + the mirror publish of the #547–#554 batch —
+the single release at the re-triage boundary that `D-240815-4` ruled; the sitting having run IS
+that boundary. The product test (deferred to owner presence) is the ditch-exit test: brownfield-
+adopt a real GitHub + TS/Node project and drive one small feature through the full loop.
+**REVISIT-CONDITION:** the backlog re-review (the sequence's last step) re-measures the buckets
+per-row and may re-bucket; and if S1's substrate re-probe materially changes the 8-path ALLOW
+figures, the fold-map re-sizes before S1's design.
+
 ---
 
 ## 3. The recovered record

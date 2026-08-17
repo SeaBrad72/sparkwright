@@ -281,6 +281,59 @@ deny  "C4 A3 file:// never masked"   'git clone file:///tmp/evil/.git /tmp/x'
 deny  "C4 A3 push to main floor"     'git push https://github.com/SeaBrad72/sparkwright-dev.git main'
 deny  "C4 A3 curl non-git lead"      'curl -O https://example.com/hooks/pre-push.git'
 
+# --- GUARD-FP-RELIEF-2: four more disqualification-shaped ALLOW arms, exercised through the CLI path
+# the live hook uses. FLIPs (measured DENY at the 2026-08-15 boarding probe, now ALLOW) + one must-stay
+# DENY per disqualifier. The full battery (incl. the security vet's HIGH-1 distinguishing fixtures and
+# the six mutants) lives in conformance/agent-autonomy.sh; this is the CLI-surface subset.
+allow "F2 A vetted SELFTEST= prefix" 'SELFTEST=yes sh conformance/non-vacuity.sh'
+allow "F2 A vetted LC_ALL= prefix"   'LC_ALL=C sh conformance/verify.sh'
+allow "F2 A two vetted prefixes"     'SELFTEST=1 LC_ALL=C sh conformance/verify.sh'
+allow "F2 B time kit-exec"           'time sh conformance/verify.sh'
+allow "F2 B brace-group + time"      '{ time sh conformance/verify.sh ; }'
+allow "F2 C actionlint workflow"     'actionlint .github/workflows/ci.yml'
+allow "F2 D sh -n syntax check"      'sh -n conformance/verify.sh'
+allow "F2 D bash -n the guard core"  'bash -n .claude/hooks/guard-core.sh'
+deny  "F2 A guard kill switch ="     'KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh'
+deny  "F2 A loader env PATH="        'PATH=/tmp sh conformance/verify.sh'
+deny  "F2 A loader env DYLD_INSERT_" 'DYLD_INSERT_LIBRARIES=/tmp/evil.dylib sh conformance/verify.sh'
+deny  "F2 A unvetted name (over-deny)" 'FOO=bar sh conformance/verify.sh'
+deny  "F2 A vetted name, unsafe value" 'SELFTEST=x$(whoami) sh conformance/verify.sh'
+deny  "F2 B time -p (over-deny)"     'time -p sh conformance/verify.sh'
+deny  "F2 B brace laundering rm"     '{ rm -rf conformance'
+deny  "F2 C actionlint exec flag"    'actionlint -shellcheck=/tmp/evil.sh .github/workflows/ci.yml'
+deny  "F2 D sh -x executes"          'sh -x conformance/verify.sh'
+deny  "F2 A CP-classifying value"    'SELFTEST=hooks/pre-push sh conformance/verify.sh'
+deny  "F2 A empty value (FP)"        'SELFTEST= sh conformance/verify.sh'
+
+# --- GUARD-CP-WRITE-ROUTES: two measured CP-write routes closed, exercised through the CLI path the
+# live hook uses. FLIPs (measured ALLOW at the 2026-08-16 boarding probe, now DENY) + must-stay DENY/
+# ALLOW. The full battery + the 8 mutants live in conformance/agent-autonomy.sh; this is the CLI subset.
+# Cure 1 (Route 1, normalization): redundant-syntax spellings on an exact-literal CP target now DENY.
+deny  "R1 // hooks/pre-push"         'sed -i s/x/y/ hooks//pre-push'
+deny  "R1 /./ hooks/pre-push"        'chmod +x hooks/./pre-push'
+deny  "R1 /././ fixpoint"            'sed -i s/x/y/ hooks/./././pre-push'
+deny  "R1 // scripts/kit-guard"      'tee scripts//kit-guard'
+deny  "R1 /./ scripts/dora.sh"       'printf x > scripts/./dora.sh'
+deny  "R1 .. free cure"              'sed -i s/x/y/ x/../hooks/pre-push'
+# Cure 2 (Route 2, redirect): a non-literal / glob / backslash target behind a read/kit-exec lead DENY.
+deny  "R2 kit-exec > cmd-subst"      'sh conformance/verify.sh > $(echo hooks/pre-push)'
+deny  "R2 reader > cmd-subst"        'cat conformance/verify.sh > $(echo hooks/pre-push)'
+deny  "R2 kit-exec > \$OUT"          'sh conformance/verify.sh > $OUT'
+deny  "R2 glob target *"             'printf x > hooks/pre-pus*'
+deny  "R2 glob target [p]"           'printf x > hooks/[p]re-push'
+deny  "R2 backslash target"          'printf x > hooks\/pre-push'
+deny  "R2 reader > \$OUT (over-deny)" 'cat README.md > $OUT'
+# Must-stay DENY (incl. the cd-composition refactor-regression pin) + must-stay ALLOW (no over-deny
+# beyond the disclosed one: fd-dups, literal tmp targets, ordinary redundant-syntax paths, non-launder
+# verbs to a var target all stay ALLOW).
+deny  "R1/R2 clean hooks/pre-push"   'sed -i s/x/y/ hooks/pre-push'
+deny  "R2 composed cd verify>pre-push" 'cd hooks && sh conformance/verify.sh > pre-push'
+allow "R1 ordinary a//b (no CP)"     'printf x > a//b/c.txt'
+allow "R2 fd-dup 2>&1"               'sh conformance/verify.sh 2>&1'
+allow "R2 fd-dup >&2"                'sh conformance/verify.sh >&2'
+allow "R2 reader > tmp literal"      'cat conformance/verify.sh > /tmp/out.txt'
+allow "R2 make > \$OUT (not a launder verb)" 'make > $OUT'
+
 # --- B2 Δ4(i): raw writes to the promotion GO ledger (refs/notes/promotions) are DENIED — the
 # silent back door the D-240805-3 incident used. Deny the raw `git notes` WRITERS only; the
 # ceremonial front door (scripts/promotion-verify.sh record), the ledger's own publish push, all

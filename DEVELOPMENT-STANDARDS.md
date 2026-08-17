@@ -188,7 +188,7 @@ WCAG 2.1 AA. Semantic elements (never style a `div` as a control). Full keyboard
 
 ### Citation discipline
 
-- **Living documents** (board rows, standards, runbooks, skills) cite by **row identifier, heading or symbol** — never `file:line`. A line number rots the moment anything above it moves, and *a row you cannot verify from its citation is a defect*.
+- **Living documents** (board rows, standards, runbooks, skills) cite by **row identifier, heading or symbol** — never `file:line`. A line number rots the moment anything above it moves, and *a row you cannot verify from its citation is a defect*; a superseded value is **de-lined**, never quoted — name the row or symbol.
 - **`file:line` is allowed only where a gate holds it live.** `conformance/citation-live.sh` grades every `path.ext:LINE` in the living Markdown corpus and reds a citation whose target line has vanished or gone blank. Honest ceiling, stated with the green: it detects a line that VANISHED, never one whose MEANING changed.
 - **Dated records** (`docs/architecture/`, `docs/plans/`, `CHANGELOG.md`, the meta-control log) are **historical anchors** — their citations were correct against the tree of their own date, so they are exempt from that gate and the exemption COUNT prints on every run, never silently.
 

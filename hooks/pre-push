@@ -46,7 +46,7 @@ esac
 
 # _kit_dial "<DIAL_NAME>" — SETS `_kd_mode` to the word `enforce` or `observe` for this push, from
 # guard-core's kit_dial_mode (repo-carried $ROOT/.kit/dials.conf; env may ESCALATE, never
-# de-escalate — DIAL-DELIVERY Δ-A). Both legs below call it; the durable dial is the CONF.
+# de-escalate — DIAL-DELIVERY Δ-A). All three legs below call it; the durable dial is the CONF.
 #
 # ⚠️ IT SETS A VARIABLE RATHER THAN PRINTING, AND THAT IS LOAD-BEARING (review round 1, measured).
 # The call sites used to read it as `[ "$(_kit_dial X)" = enforce ]`, which runs the resolver in a
@@ -82,6 +82,9 @@ _kit_dial() { # <DIAL_NAME> — sets _kd_mode; resolves each dial at most ONCE p
     KIT_PUSH_GO)
       [ -n "${_kd_go:-}" ] || _kd_go=$(_kit_dial_resolve "$1")
       _kd_mode=$_kd_go ;;
+    KIT_PUSH_CITE)
+      [ -n "${_kd_cite:-}" ] || _kd_cite=$(_kit_dial_resolve "$1")
+      _kd_mode=$_kd_cite ;;
     *) _kd_mode=$(_kit_dial_resolve "$1") ;;
   esac
 }
@@ -382,6 +385,130 @@ go_check_ref() { # local_ref local_sha remote_ref remote_sha
   # Nonzero (rc 1 WAITING and rc 2 anomaly alike — FAIL-CLOSED on could-not-evaluate, the B1-proven
   # D3 shape): observe prints and allows; enforce prints and refuses (go_relay).
   go_relay "$_go_memo_out"
+  return $?
+}
+
+# cite_check_ref — the sixth dial's leg (D-240815-2d). Runs the SAME predicate the required
+# `docs-links` context runs — `conformance/citation-live.sh`, with NO ARGUMENTS, over the WHOLE
+# TRACKED TREE — and relays its verdict once per push.
+# ⚠️ WHOLE-TREE IS THE DESIGN, NOT AN OVERSIGHT. Scoping this to the changed files would invert the
+# detection model: the C11 hostage was a citation that DECAYED BECAUSE OF AN EDIT IN A DIFFERENT FILE
+# — the citing document was untouched, and a changed-file scope would have graded everything except
+# the document that had rotted.
+# THE DIAL IS REPO-CARRIED, exactly as the two legs above (DIAL-DELIVERY Δ-A): `KIT_PUSH_CITE=enforce`
+# (exact string) in the tracked, control-plane, export-ignored .kit/dials.conf refuses; an absent file
+# — the adopter export's state — is observe; an env var of the same name may only ESCALATE. Read
+# through _kit_dial, whose new case arm resolves this dial at most once per invocation.
+# TWO CAPTURE CONVENTIONS ARE LOAD-BEARING HERE, and they DIFFER from the GO leg's (design vet C4):
+#   · COMBINED output (2>&1), not stderr-only. citation-live prints its verdicts — the named decayed
+#     SITES and the summary — on STDOUT. The GO leg's stderr-only idiom copied verbatim would relay a
+#     refusal with no site named on it: "your push is refused, and no, I will not say why".
+#   · stdin isolation (</dev/null), the SEC MEDIUM-1 property inherited from both legs above: this
+#     runs inside the caller's `while read` loop over the git push protocol, and a predicate that
+#     reads stdin would eat the remaining ref-lines before the guard leg ever saw them.
+# MEASURED NOISE COST, since combined capture changes it: ONE line per push on a clean tree (the
+# check's own OK summary, which is a stdout verdict). That is deliberate — the census is the useful
+# half of a passing citation gate — and it is relayed under the MODE-NEUTRAL `(note)` prefix, never
+# `(observe)`, which names the DIAL's state and would misreport an enforcing tree as switched off.
+# CEILING — A SPEED BUMP, NOT A BOUNDARY (the ruling's own clause): `git push --no-verify`, a
+# never-installed hook, a stale installed copy or an absent predicate script all bypass this leg. The
+# BINDING layer is and remains the required `docs-links` context, which grades the same predicate on
+# the merge candidate. This leg only moves the finding earlier and cheaper.
+# DIVERGENCE, DISCLOSED NOT CLOSED (the B1-A2 disclosure the GO leg already carries): the predicate
+# grades the AMBIENT TRACKED TREE, not the pushed SHA. A dirty worktree, or a push of an older commit,
+# is graded against what is on disk now. CI grades the merge candidate; this leg is the speed bump.
+cite_relay() {  # captured-combined-output — the leg's ONE verdict surface
+  # ONE RELAY PER PUSH INVOCATION (the go_relay rule, same reason): the verdict is invocation-wide by
+  # construction — it depends on the ambient tree and nothing else, and NOTHING about it changes
+  # between the ref-lines of one push — so a second copy carries no information and buries the first.
+  # The RC is still decided per ref-line, by the same exact-string dial test.
+  if [ "${_cite_relayed:-0}" -eq 1 ]; then
+    _kit_dial KIT_PUSH_CITE
+    [ "$_kd_mode" = "enforce" ] || return 0
+    return 1
+  fi
+  _cite_relayed=1
+  _kit_dial KIT_PUSH_CITE
+  if [ "$_kd_mode" = "enforce" ]; then
+    # [-n check] a predicate that fails closed with nothing printed must not relay a bare prefix line.
+    if [ -n "$1" ]; then
+      printf '%s\n' "$1" | while IFS= read -r _cite_line; do
+        printf 'kit pre-push: %s\n' "$_cite_line" >&2
+      done
+    fi
+    printf 'kit pre-push:   remedy: re-cite by row identifier — see DEVELOPMENT-STANDARDS.md section 11\n' >&2
+    printf 'kit pre-push:            ("Citation discipline"): a living document cites a row, heading or\n' >&2
+    printf 'kit pre-push:            symbol, never a line number, and a superseded value is DE-LINED.\n' >&2
+    printf 'kit pre-push:   (the named site may be OUTSIDE your diff: whole-tree grading is deliberate —\n' >&2
+    printf 'kit pre-push:    a citation decays from an edit in a different file)\n' >&2
+    printf '  override (deliberate): git push --no-verify\n' >&2
+    return 1
+  fi
+  if [ -n "$1" ]; then
+    printf '%s\n' "$1" | while IFS= read -r _cite_line; do
+      printf 'kit pre-push (observe): %s\n' "$_cite_line" >&2
+    done
+  fi
+  printf 'kit pre-push (observe):   dial: the DURABLE switch is KIT_PUSH_CITE=enforce in .kit/dials.conf\n' >&2
+  printf 'kit pre-push (observe):         (tracked, control-plane, effective at merge — no hook re-copy). An env\n' >&2
+  printf 'kit pre-push (observe):         var of the same name can only ESCALATE, for this session.\n' >&2
+  return 0
+}
+
+cite_check_ref() { # local_ref local_sha remote_ref remote_sha
+  _cite_sha=$2
+  _cite_ref=$3
+  # D1 — dispatch, inherited from the two legs above VERBATIM: skip anything this leg cannot grade.
+  case "$_cite_ref" in
+    refs/heads/*) : ;;
+    *) return 0 ;;                                  # tags, notes, etc. — not a branch push
+  esac
+  case "$_cite_sha" in
+    *[!0]*) : ;;
+    *) return 0 ;;                                  # all-zero local_sha — a deletion
+  esac
+  case "$_cite_ref" in
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+  esac
+  # Defense-in-depth (inherited shape, not an active control here: this leg passes NO argv to the
+  # predicate — the hex guard is kept for uniformity with the sibling legs, whose argv it protects).
+  case "$_cite_sha" in
+    *[!0-9a-fA-F]*) return 0 ;;
+  esac
+  # D2 — degradation: an absent/unreadable predicate N/As SILENTLY (first-run-green on adopter trees).
+  _cite_pred="$ROOT/conformance/citation-live.sh"
+  [ -f "$_cite_pred" ] && [ -r "$_cite_pred" ] || return 0
+  # MEMOIZED for this push invocation. The predicate reads the ambient tree and nothing else, so its
+  # answer cannot change between ref-lines, and it costs ~0.5s per call over the whole corpus.
+  # ⚠️ READ THE CLAIM CAREFULLY, exactly as at DA7: the memo is claimed as DEFENCE IN DEPTH, not as a
+  # mutant-killed assertion. The ref-line loop's status accumulator is STICKY, so under enforce the
+  # first relay's refusal has already decided the exit code before a second ref-line is reached — a
+  # mutant that de-memoised this call could not be caught by the rc of any case in this file. What the
+  # battery below pins is the DIAL, which the rc does observe.
+  if [ "${_cite_memo:-0}" -eq 0 ]; then
+    if _cite_memo_out=$(sh "$_cite_pred" 2>&1 </dev/null); then
+      _cite_memo_rc=0
+    else
+      _cite_memo_rc=1
+    fi
+    _cite_memo=1
+  fi
+  if [ "$_cite_memo_rc" -eq 0 ]; then
+    # rc 0: PASS. The predicate's own words are relayed rather than dropped (the A2 lesson), under the
+    # MODE-NEUTRAL `(note)` prefix, and ONCE — a per-ref-line copy would print the same census twice.
+    if [ "${_cite_noted:-0}" -eq 0 ]; then
+      _cite_noted=1
+      if [ -n "$_cite_memo_out" ]; then
+        printf '%s\n' "$_cite_memo_out" | while IFS= read -r _cite_line; do
+          printf 'kit pre-push (note): %s\n' "$_cite_line" >&2
+        done
+      fi
+    fi
+    return 0
+  fi
+  # Nonzero (rc 1 decay/unresolvable AND rc 2 bad-usage alike — FAIL-CLOSED on could-not-evaluate, the
+  # B1-proven D3 shape): observe prints and allows; enforce prints and refuses (cite_relay).
+  cite_relay "$_cite_memo_out"
   return $?
 }
 
@@ -1064,6 +1191,177 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
   decl_expect_rc "$dial_rc" refuse "conf GO=enforce refuses on a 2-branch push (rc decided by the FIRST relay; memoized site rc-unobservable)"
   dial_plant -
 
+  # ---------------------------------------------------------------------------------------------
+  # DC — the SIXTH DIAL (KIT_PUSH_CITE, ruling D-240815-2d): the citation-liveness leg. Hand-built,
+  # because hooks/pre-push is OUTSIDE non-vacuity.sh's mutation sweep (its target regex is
+  # `conformance/[a-z0-9-]+\.sh`, measured — see the row comment in conformance/verify.sh), so
+  # hand-run discrimination is the ONLY substitute control this leg gets. The battery therefore
+  # mirrors DA1-DA7 case for case, plus the two capture conventions the design vet pinned (C4).
+  # The predicate is a planted STUB conformance/citation-live.sh inside $T, never the real script —
+  # the real one is proven where it lives (citation-live.sh --selftest).
+  # ---------------------------------------------------------------------------------------------
+  rm -f "$T/conformance/ceremony-binding.sh" "$T/conformance/loop-state.sh"   # both siblings N/A here
+
+  cite_plant_stub() { # rc [record-file] — a scripted conformance/citation-live.sh stub inside $T.
+    # ⚠️ IT PRINTS ITS VERDICT ON **STDOUT**, deliberately, because the real check does: the named
+    # DECAYED sites and the summary are stdout verdicts, and only the dial hint/remedy this hook adds
+    # is stderr. A leg that copied the GO leg's stderr-only capture would relay a refusal carrying no
+    # site at all. The stub also writes one stderr line, so a capture that took stdout ALONE would be
+    # equally visible. Two needles, one for each stream.
+    mkdir -p "$T/conformance"
+    _cps_rc=$1; _cps_rec=${2:-}
+    {
+      echo '#!/bin/sh'
+      [ -n "$_cps_rec" ] && printf 'echo called >> "%s"\n' "$_cps_rec"
+      echo 'echo "DECAYED  docs/a.md:7 cites stub-target.md:99 -- stub decayed site"'
+      echo 'echo "citation-live: stub stderr line" >&2'
+      printf 'exit %s\n' "$_cps_rc"
+    } > "$T/conformance/citation-live.sh"
+    chmod +x "$T/conformance/citation-live.sh"
+  }
+  cite_run() { # KIT_PUSH_CITE-value ref-line(s) -> sets cite_out, cite_rc; the REAL core is sourced
+    cite_out=$(cd "$T" && printf '%s\n' "$2" \
+      | KIT_GUARD_CORE="$DIAL_CORE" KIT_PUSH_CITE="$1" sh "$SELF" 2>&1); cite_rc=$?
+  }
+
+  # DC0 — POSITIVE CONTROL, first: without it an always-skip mutant satisfies every negative below.
+  # A normal branch line must INVOKE the predicate, and a PASSING predicate's own words must reach the
+  # operator under the MODE-NEUTRAL `(note)` prefix — never `(observe)`, which would report the dial
+  # as off on a tree where this case has it ESCALATED to enforce.
+  cite_plant_stub 0 "$T/cite-invoked"
+  rm -f "$T/cite-invoked"
+  cite_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "CITE leg: a passing predicate allows the push"
+  [ -f "$T/cite-invoked" ] && echo "PASS: CITE leg invokes the predicate on a normal branch line (record control)" \
+    || { echo "FAIL: CITE leg must invoke the predicate on a normal branch line (record control)"; fail=1; }
+  decl_expect_contains "CITE leg: the rc-0 relay carries the mode-neutral note prefix" "kit pre-push (note):" "$cite_out"
+  case "$cite_out" in
+    *'kit pre-push (observe):'*) echo "FAIL: the CITE rc-0 pass-relay must NOT claim observe on an enforcing dial"; fail=1 ;;
+    *) echo "PASS: the CITE rc-0 pass-relay does not misreport the dial as observe" ;;
+  esac
+
+  # DC-C4a — THE CAPTURE IS **COMBINED**, and this is the case that proves it. The stub's verdict is
+  # on STDOUT (as the real check's is); the stderr-only idiom copied from the GO leg would relay a
+  # refusal with NO NAMED SITE on it. Both streams must survive the relay.
+  cite_plant_stub 1
+  cite_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" refuse "CITE leg: enforce + a decayed corpus refuses the push"
+  decl_expect_contains "CITE leg relays the predicate's STDOUT verdict (combined capture, vet C4a)" "stub decayed site" "$cite_out"
+  decl_expect_contains "CITE leg relays the predicate's stderr line too" "citation-live: stub stderr line" "$cite_out"
+  decl_expect_contains "CITE leg enforce names the re-cite remedy" "re-cite by row identifier" "$cite_out"
+  decl_expect_contains "CITE leg enforce names the doctrine's home" "DEVELOPMENT-STANDARDS.md section 11" "$cite_out"
+  decl_expect_contains "CITE leg enforce keeps the --no-verify honesty line" "--no-verify" "$cite_out"
+
+  # DC-rc2 — FAIL-CLOSED on could-not-evaluate: rc 2 refuses under enforce exactly like rc 1.
+  cite_plant_stub 2
+  cite_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" refuse "CITE leg: enforce + predicate rc 2 (could-not-evaluate) fails closed"
+  decl_expect_contains "CITE leg rc-2 enforce keeps the --no-verify honesty line" "--no-verify" "$cite_out"
+
+  # DC-observe — the env-driven observe side still prints (loud), and allows.
+  cite_plant_stub 1
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "CITE leg: observe + a decayed corpus still allows the push"
+  decl_expect_contains "CITE leg observe uses the observe prefix" "kit pre-push (observe):" "$cite_out"
+  decl_expect_contains "CITE leg observe hints the enforce dial" "KIT_PUSH_CITE=enforce" "$cite_out"
+  decl_expect_contains "CITE leg observe still relays the named site" "stub decayed site" "$cite_out"
+
+  # DC1 — THE CONF ALONE REFUSES, with NO env var carrying a value. The whole point of the repo-carried
+  # dial: nobody has to remember to export anything.
+  dial_plant 'KIT_PUSH_CITE=enforce'
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" refuse "conf CITE=enforce refuses with NO env var set"
+  decl_expect_contains "conf-driven CITE refusal uses the enforce prefix" "kit pre-push:" "$cite_out"
+  decl_expect_contains "conf-driven CITE refusal names the re-cite remedy" "re-cite by row identifier" "$cite_out"
+
+  # DC2 — conf `observe` is observe (a reader answering `enforce` for any parseable conf passes DC1
+  # and fails here).
+  dial_plant 'KIT_PUSH_CITE=observe'
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "conf CITE=observe allows"
+  decl_expect_contains "conf CITE=observe prints the observe prefix" "kit pre-push (observe):" "$cite_out"
+
+  # DC3 — ESCALATION is permitted: env `enforce` over a conf `observe` refuses.
+  dial_plant 'KIT_PUSH_CITE=observe'
+  cite_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" refuse "env enforce ESCALATES a conf observe (CITE)"
+
+  # DC4 — DE-ESCALATION LOSES, LOUDLY. Env-wins would leave the flip one silent, sticky `export` from
+  # undone — a bypass cheaper than --no-verify, which at least announces itself per command.
+  dial_plant 'KIT_PUSH_CITE=enforce'
+  cite_run observe "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" refuse "env observe CANNOT de-escalate a conf enforce (CITE)"
+  decl_expect_contains "the CITE de-escalation attempt is announced" "cannot de-escalate" "$cite_out"
+  decl_expect_contains "the CITE anomaly line names the durable dial file" ".kit/dials.conf" "$cite_out"
+
+  # DC5 — an ABSENT conf is observe (fail-safe; the export ships no conf, so this IS the adopter's
+  # first-run face for this dial).
+  dial_plant -
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "absent conf = observe for CITE (the adopter export's face)"
+
+  # DC6 — THE EXACT-STRING RULE, conf side AND env side. This is the mutant that survived the whole
+  # suite twice historically: `[ "$X" = "enforce" ]` -> `[ -n "$X" ]` turns the truthy-looking value an
+  # operator would plausibly type into a REFUSAL for a dial the docs call observe-only.
+  dial_plant 'KIT_PUSH_CITE=1'
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "conf CITE=1 is NOT the exact string — stays observe"
+  dial_plant -
+  cite_run 1 "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "dial: KIT_PUSH_CITE=1 is NOT the exact string — stays observe"
+  decl_expect_contains "dial: KIT_PUSH_CITE=1 prints the observe prefix" "kit pre-push (observe):" "$cite_out"
+
+  # DC7 — a conf entry for ANOTHER dial must not answer this one (a `grep enforce` reader would pass
+  # every case above and refuse here).
+  dial_plant 'KIT_PUSH_GO=enforce'
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "a conf entry for ANOTHER dial does not enforce CITE"
+  dial_plant 'KIT_PUSH_DECL=enforce'
+  cite_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "a conf entry for the DECL dial does not enforce CITE either"
+  dial_plant -
+
+  # DC8 — DISPATCH (D1, inherited verbatim): deletions, tags and the default branch never reach the
+  # predicate; and D2 — an absent predicate script N/As SILENTLY (first-run-green on adopter trees).
+  cite_plant_stub 1 "$T/cite-invoked"
+  rm -f "$T/cite-invoked"
+  cite_run enforce "refs/heads/feature/x $Z refs/heads/feature/x $HEAD"
+  decl_expect_not_invoked "CITE leg: deletion line (zero local_sha)" "$T/cite-invoked"
+  rm -f "$T/cite-invoked"
+  cite_run enforce "refs/tags/v1 $HEAD refs/tags/v1 $Z"
+  decl_expect_not_invoked "CITE leg: tag line (remote_ref not refs/heads/*)" "$T/cite-invoked"
+  rm -f "$T/cite-invoked"
+  cite_run enforce "refs/heads/main $HEAD refs/heads/main $Z"
+  decl_expect_not_invoked "CITE leg: default-branch line (refs/heads/main)" "$T/cite-invoked"
+  rm -f "$T/conformance/citation-live.sh"
+  cite_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$cite_rc" allow "CITE leg: an absent predicate script allows the push"
+  [ -z "$cite_out" ] && echo "PASS: CITE leg absent predicate script is silent (D2)" \
+    || { echo "FAIL: CITE leg absent predicate must be silent, got: $cite_out"; fail=1; }
+
+  # DC9 [SEC MEDIUM-1, vet C4b] — STDIN ISOLATION. A predicate that reads stdin must not swallow the
+  # push-protocol lines the guard leg still has to grade. Real core; the CITE dial left unset (observe)
+  # so this leg itself can never refuse — the ONLY way this case fails closed is if line 2 actually
+  # reached guard_check_push.
+  {
+    echo '#!/bin/sh'
+    echo 'cat >/dev/null'
+    echo 'exit 1'
+  } > "$T/conformance/citation-live.sh"
+  chmod +x "$T/conformance/citation-live.sh"
+  cite_leak_out=$(cd "$T" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/main %s refs/heads/main %s\n' \
+      "$HEAD" "$Z" "$HEAD" "$Z" \
+    | KIT_GUARD_CORE="$ROOT/.claude/hooks/guard-core.sh" sh "$SELF" 2>&1)
+  cite_leak_rc=$?
+  if [ "$cite_leak_rc" -ne 0 ] && printf '%s' "$cite_leak_out" | grep -q 'pushing directly to main'; then
+    echo "PASS: a stdin-eating CITE predicate does not swallow the guard leg's own push-to-main line"
+  else
+    echo "FAIL: stdin leak — the guard leg's verdict on the second (main-push) line did not fire (rc=$cite_leak_rc)"
+    echo "  got: $cite_leak_out"
+    fail=1
+  fi
+  rm -f "$T/conformance/citation-live.sh"
+
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi
 
@@ -1081,5 +1379,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
   decl_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   go_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
+  cite_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
 done
 exit $status

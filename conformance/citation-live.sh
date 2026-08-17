@@ -11,12 +11,25 @@
 #
 # ── HONEST CEILING, STATED FIRST (it is the whole shape of this check) ──────────────────────────────
 # THIS IS THE *RESOLVES* VARIANT: it detects a line that VANISHED, never one whose MEANING CHANGED.
-# The measured example is the row's own flagship evidence: `ci.yml:1304` was a dead pointer when the
-# row was written and is a perfectly live — and semantically wrong — line today, because the file
-# grew past it. Same class, one day old: C7's design cites a workflow line that drifted by eleven
-# lines inside 24h and stays green here. A green from this check means "the cited line still exists
-# and has content", NOT "the citation still says what its author meant". The semantic variant stays
-# behind D-240804-2's revisit condition. Do not quote this green as more than it is.
+# A green here means "the cited line still exists and has content", NOT "the citation still says what
+# its author meant". Do not quote this green as more than it is.
+# THE MEANING-DRIFT FACE IS WON'T-FIX, BY RULING (D-240815-2d) — a decision, not an omission, and the
+# ruling supersedes D-240804-2's revisit condition. The evidence is this kit's own, measured twice:
+# the row that opened this check cited a workflow line that had been a dead pointer when it was
+# written and was a perfectly live — and semantically wrong — line by the time anyone re-read it,
+# because the file had grown past it; and at C11 a board note carrying quoted historical line values
+# was re-measured with EVERY quoted number resolving to a live but unrelated line. Both are DRIFT, and
+# neither is detectable from the text: every candidate grammar tried at the design probe returned
+# roughly one false positive in two, which is a detector nobody would keep.
+# SO THE CURE IS UPSTREAM, NOT DOWNSTREAM. It has two halves, and neither is this check:
+#   · the DOCTRINE — a superseded value is DE-LINED, never quoted; name the row, heading or symbol
+#     (DEVELOPMENT-STANDARDS.md, "Citation discipline"). A value that was never written down cannot
+#     go stale.
+#   · the LINT — conformance/citation-history.sh reds the one measured WRITING SHAPE that carries a
+#     dead value forward, and reports the past-tense near-neighbour without grading it.
+# THIS PARAGRAPH APPLIES THE DOCTRINE TO ITS OWN STATEMENT: it used to quote the drifted example by
+# file and line, and that quoted value had itself gone stale — so the example is now named, not cited.
+# Nothing about this check's LOGIC changed with that ruling; the ceiling is restated, not moved.
 #
 # ── DOMAIN (principled, not convenient) ─────────────────────────────────────────────────────────────
 # SOURCES = tracked `*.md` files that are LIVING documents. EXEMPT-and-REPORTED: the dated record —
@@ -32,6 +45,12 @@
 # turn DECISIONS.md's bare-basename dated citations (7 measured) into UNRESOLVABLE FAILs on every
 # fresh adopter clone. String-first also closes the symlink-alias face without resolving anything.
 # EXEMPTIONS ARE NEVER SILENT: their counts print on EVERY run, pass or fail.
+# ⚠️ THE DATED PREDICATE (is_dated(), inside the awk program below) IS COPIED — NOT SHARED — INTO
+# conformance/citation-history.sh, which needed the same split and could not reach into this file's
+# awk program without editing it. This is the OTHER half of that pin: if you change the definition
+# here, change it there. The copy is not left on trust — citation-history.sh's --selftest carries a
+# DRIFT leg that builds one fixture carrying every dated pattern and runs BOTH checks over it, so a
+# one-sided edit reds that leg rather than silently splitting the domain in two.
 #
 # ── GRAMMAR (pinned) ────────────────────────────────────────────────────────────────────────────────
 # A citation is `<path>.<ext>:<N>` with optional range/list endpoints (`:12-15`, `:12,20`), where the

@@ -31,7 +31,13 @@ points at a broken commit* — and it is worth its cost:
   wall-clock is **10.9–12.4 min**, and its critical path is the `non-vacuity (2)` mutation shard
   (639–725s) — the CI-cost story lives in `ci.yml`'s P1-CI header; the gate's poll is bounded at
   10 min (`RELEASE_TAG_CI_TIMEOUT`) and degrades open at the bound, so the ceremony stays cheap
-  regardless of the run's length.
+  regardless of the run's length. **Measured 2026-08-15 (the SHARD2-cure probe, design §1): that
+  shard had grown to 866–899s, pushing the run PAST the 10-min bound — so the CI wait had quietly
+  become a degrade-open no-op on full runs. Whether the un-nesting cure restores the run under the
+  bound is NOT YET MEASURED: the post-cure critical path becomes cf-doctor at 492–663s, whose top
+  of range still exceeds it; the figure is recorded in the cure design's amendment log once read
+  off a real run.** The RUNBOOK's ceremony ("wait for main CI green first, then the rung passes in
+  seconds") sidesteps the bound either way and is the rehearsed route.
 
 *(An earlier draft of this section said "tag immediately, never wait" — full stop. That was wrong: it
 contradicted a safety gate already in `release-tag.sh` and would have traded "never tag a red commit" for
