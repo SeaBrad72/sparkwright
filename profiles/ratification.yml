@@ -181,26 +181,52 @@ jobs:
           fi
           state=$(CI= sh conformance/agent-boundary.sh --changed /tmp/changed.txt \
                     --ratified "${{ steps.ratify.outputs.ratified }}" --state 2>/dev/null || echo NONE)
+          # ★★★ THE TWO RECONCILIATION ARMS THAT USED TO SIT HERE ARE DELETED
+          # (GUARD-PATH-ENUMERATION-INCOMPLETE S2 M2), MIRRORING .github/workflows/ratification.yml.
+          # Recorded, not silently dropped:
+          #   ARM 1 (`state != NONE -> class=control-plane`) papered over `--class` being guard-core-only
+          #     and UNDER-DETECTING adapter-declared paths (GEMINI.md, .gemini/*, .cursor/rules/*) that
+          #     this gate itself treats as control-plane. S2 made the classifier union-aware, so both
+          #     sides now derive the same set and the arm is redundant. It only ever fixed the DISPLAY —
+          #     the check-run's colour comes from `$rc` alone — so deleting it changes no verdict.
+          #   ARM 2 (`class = control-plane -> class=sensitive`) was a FABRICATION: reachable only when
+          #     `--class` had FAIL-SAFED, it relabelled "the class could not be derived" as a specific
+          #     token nothing had derived, on the surface a human reads before approving.
+          # THE REPLACEMENT is honesty instead of reconciliation. rc semantics are untouched.
+          class_err=/tmp/class-stderr.txt
+          set +e
           class=$(sh conformance/promotion-readiness.sh --class --no-verify \
-                    --changed /tmp/changed.txt 2>/dev/null || echo control-plane)
-          # Reconcile the DISPLAYED class with the gate verdict. The gate (state) is union-aware and is
-          # the authority on control-plane-ness; the guard-core-only --class can UNDER-DETECT
-          # adapter-declared paths (e.g. AGENTS.md). `|| echo NONE` above is display-only — the VERDICT
-          # is $rc, never $state — so an unreadable state can never ratify anything.
-          if [ "$state" != NONE ]; then class=control-plane
-          elif [ "$class" = control-plane ]; then class=sensitive
+                    --changed /tmp/changed.txt 2>"$class_err")
+          class_rc=$?
+          set -e
+          failsafe=""
+          # ⚠️ VALIDATE THE TOKEN BEFORE IT IS PASSED ANYWHERE. `agent-boundary.sh --conclusion`
+          # hard-validates `--for-class` against a CLOSED token set and refuses to emit a mapping for
+          # anything else; the step below then finds an empty `status` and exits 1, the required check
+          # never posts, and every PR in that state is bricked. A disclosure string is NEVER passed as
+          # --for-class — this variable stays a token, always, and the prose lives in $failsafe.
+          case "$class" in
+            ordinary|sensitive|control-plane) ;;
+            *) failsafe="the classifier answered a token this gate does not recognise"; class=control-plane ;;
+          esac
+          if [ "$class_rc" != 0 ]; then
+            failsafe="the classifier exited $class_rc"; class=control-plane
+          elif [ -z "$failsafe" ] && grep -q 'FAIL-SAFED' "$class_err" 2>/dev/null; then
+            failsafe=$(grep -m1 'FAIL-SAFED' "$class_err" | tr -d '[:cntrl:]' | cut -c1-300)
           fi
           # B2 Δ4(ii), MIRRORED from .github/workflows/ratification.yml (reviewer I4: adopters were
           # getting the gate without the visibility half of the disposition — the mirror-divergence
-          # class B6 paid a Critical for). The two derived lines go onto the judgment surface (the
+          # class B6 paid a Critical for). The derived lines go onto the judgment surface (the
           # step summary) so a reviewer sees what the gate derived without opening the log.
-          # Both values are gate-derived tokens from a closed vocabulary, written with printf '%s' —
-          # never interpolated as a workflow expression — and $GITHUB_STEP_SUMMARY is a markdown file
-          # this step only appends to (no eval surface, no token use). Stack-neutral: POSIX sh only.
+          # `$state` and `$class` are gate-derived tokens from a closed vocabulary and `$failsafe` is
+          # control-byte-stripped and length-bounded above; all are written with printf '%s' — never
+          # interpolated as a workflow expression — and $GITHUB_STEP_SUMMARY is a markdown file this
+          # step only appends to (no eval surface, no token use). Stack-neutral: POSIX sh only.
           {
             printf '%s\n' '### control-plane-ratification' ''
             printf -- '- **ratification state**: `%s`\n' "$state"
-            printf -- '- **change-class (reconciled)**: `%s`\n' "$class"
+            printf -- '- **change-class (derived)**: `%s`\n' "$class"
+            [ -z "$failsafe" ] || printf -- '- ⚠️ **change-class FAIL-SAFED, not derived**: %s\n' "$failsafe"
           } >> "$GITHUB_STEP_SUMMARY"
           # The rc -> (status, conclusion, title, summary) mapping lives in conformance/agent-boundary.sh,
           # where it is --selftest-able. Inline YAML cannot be unit-tested. rc=1 comes back as

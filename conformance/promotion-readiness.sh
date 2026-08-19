@@ -98,10 +98,96 @@ GUARD_OK=1
 if [ -f "$CORE" ]; then . "$CORE"; else GUARD_OK=0; fi
 command -v is_control_plane_path >/dev/null 2>&1 || GUARD_OK=0
 
+# ── THE ADAPTER UNION — THE SECOND HALF OF THE MERGE-TIME CONTROL-PLANE SET
+# (GUARD-PATH-ENUMERATION-INCOMPLETE S2; design docs/architecture/2026-08-17-guard-class-parity-s2-design.md).
+#
+# WHY IT IS HERE AT ALL. `.github/workflows/ratification.yml` — the REQUIRED §13 gate — unions
+# guard-core with what each harness's adapter manifest DECLARES control-plane. This classifier saw
+# only the guard-core half, so `GEMINI.md`, `.gemini/*` and `.cursor/rules/*` derived `ordinary`
+# here and control-plane there: `loop-state` and `ceremony-binding` (which both derive through this
+# seam) PASSED a PR whose `Kit-Class: ordinary` trailer the ratification gate then contradicted, and
+# the trailer was gate-approved WRONG. The two gates now read the same set.
+#
+# ⚠️ THE GUARD IS **NOT** MADE UNION-AWARE, AND THAT ASYMMETRY IS DELIBERATE. The union is a
+# MERGE-TIME authority (adapters declare what must be ratified before merge); the guard is the
+# RUNTIME deny surface (a harness writing its own GEMINI.md must not be bricked). So `class ⊇ union`
+# while `guard ⊉ union` — read the census lock in promotion-readiness-wired.sh with that in mind.
+#
+# ⚠️ AND BOTH LAYERS ARE THE SHARED ONES. kit_path_in_union is the SAME matcher agent-boundary.sh
+# uses. Re-implementing the matching here would re-fork the semantics one layer down — `.Cursor/rules/x`
+# gating at ratification and deriving ordinary here — which is byte-for-byte the divergence this
+# change exists to close. Do not inline a `case` for it.
+UNION_LIB="${KIT_UNION_LIB:-conformance/union-lib.sh}"
+ADAPTERS_DIR="${KIT_ADAPTERS_DIR:-adapters}"
+# WAS THE SET SELECTED BY THE ENVIRONMENT? Recorded because an env-supplied union that resolves to
+# NOTHING must never be silent — see the OK-EMPTY arm below.
+ADAPTERS_DIR_FROM_ENV=0; [ -z "${KIT_ADAPTERS_DIR:-}" ] || ADAPTERS_DIR_FROM_ENV=1
+UNION_LIST=""; UNION_UNAVAIL=0; UNION_DIAG=""
+# shellcheck source=/dev/null  # a fixed kit path resolved at runtime, not statically followable
+if [ -f "$UNION_LIB" ]; then . "$UNION_LIB"; fi
+if command -v kit_union_derive >/dev/null 2>&1; then
+  # DERIVED ONCE PER RUN, into a variable (vet L-2). The per-path render walks every changed path, so
+  # a per-path derivation would spawn jq x manifests x n on the edit hot path.
+  # `strict` — DISCLOSED, and on STDERR only (vet L-1): loop-state and ceremony-binding both read
+  # this script's `--class` stdout with `tail -1`, so one line of prose there turns every degraded
+  # run into a DERIVE FAILURE at both merge gates.
+  UNION_LIST=$(kit_union_derive "$ADAPTERS_DIR" strict) && _u_rc=0 || _u_rc=$?
+  # PRE-FOLD ONCE, HERE, so the matcher's own fold is a no-op on every one of the n calls the render
+  # makes. Same reason the union is derived once (vet L-2): this runs on the edit hot path.
+  case "$UNION_LIST" in *[A-Z]*) UNION_LIST=$(printf '%s' "$UNION_LIST" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
+  case "$_u_rc" in
+    0) ;;                       # OK — manifests present, all parsed
+    3)                          # OK-EMPTY — no manifests at all. The guard-core floor alone, and
+                                # NEVER a fail-safe: an adapter-less or hand-rolled tree that
+                                # classified every PR control-plane is a ceremony DoS, and "no
+                                # adapters" is a legitimate state, not a failure.
+      # ⚠️ BUT AN **ENV-SUPPLIED** EMPTY UNION IS NEVER SILENT (review REV-I1). OK-EMPTY is
+      # legitimate when it describes the TREE; it is a downgrade when it describes an ambient
+      # variable. Measured before this disclosure existed:
+      #   KIT_ADAPTERS_DIR=<empty dir> … --class --changed <GEMINI.md>  ->  `ordinary`, rc 0, ZERO
+      #   bytes of stderr — one environment variable moved a governing path out of the
+      #   control-plane set with no trace anywhere. The class STILL degrades (that is OK-EMPTY's
+      #   contract, and fail-safing here would hand any caller a ceremony DoS by setting one
+      #   variable), but it can no longer do so unannounced. The consumers that must not be
+      #   steered at all scrub the variable instead — loop-state.sh and ceremony-binding.sh both
+      #   `env -u` it at their call sites, which is the control; this is the disclosure.
+      if [ "$ADAPTERS_DIR_FROM_ENV" = 1 ]; then
+        echo "promotion-readiness: KIT_ADAPTERS_DIR is set to '$ADAPTERS_DIR', which contains NO adapter manifest." >&2
+        echo "  The adapter-declared half of the control-plane set is therefore EMPTY and this run classifies on" >&2
+        echo "  the guard-core floor ALONE — paths declared only by a manifest (GEMINI.md, .gemini/*," >&2
+        echo "  .cursor/rules/*) will derive 'ordinary'. If that is not what you intended, unset KIT_ADAPTERS_DIR." >&2
+      fi
+      ;;
+    *) UNION_UNAVAIL=1
+       UNION_DIAG="the adapter-declared control-plane surface under '$ADAPTERS_DIR' could not be read (see stderr above)" ;;
+  esac
+else
+  # The shared library is missing. If this tree declares no adapters at all that is OK-EMPTY; if it
+  # DOES carry manifests, their declared surface is unreadable and the same fail-safe applies.
+  for _u_m in "$ADAPTERS_DIR"/*/adapter.json; do
+    [ -f "$_u_m" ] || continue
+    UNION_UNAVAIL=1
+    UNION_DIAG="conformance/union-lib.sh is missing, so the adapter-declared control-plane surface cannot be read"
+    echo "promotion-readiness: $UNION_DIAG. REMEDY: restore conformance/union-lib.sh." >&2
+    break
+  done
+fi
+# CLASSIFIER DEGRADED = either half of the merge-time set is unreadable. The AGGREGATE already
+# fail-safed on GUARD_OK=0; what did NOT was the PER-PATH RENDER, which printed `[ordinary]` for
+# governing paths directly above an aggregate line saying `control-plane` — a self-contradicting
+# surfacing on the exact artifact a human reads to render the §13 GO. classify_path answers
+# control-plane in this state so the two halves of the surfacing agree.
+CLASSIFIER_DEGRADED=0
+{ [ "$GUARD_OK" = 0 ] || [ "$UNION_UNAVAIL" = 1 ]; } && CLASSIFIER_DEGRADED=1
+
 # classify_path <path> -> ordinary|sensitive|control-plane
 classify_path() {
   _p=$1
+  # DEGRADED -> the fail-safe class, per path as well as in aggregate (see CLASSIFIER_DEGRADED above).
+  if [ "$CLASSIFIER_DEGRADED" = 1 ]; then echo control-plane; return; fi
   if [ "$GUARD_OK" = 1 ] && is_control_plane_path "$_p"; then echo control-plane; return; fi
+  # The ADAPTER-DECLARED half, through the SHARED matcher.
+  if [ -n "$UNION_LIST" ] && kit_path_in_union "$_p" "$UNION_LIST"; then echo control-plane; return; fi
   # A2 (case). The control-plane half above folds inside is_control_plane_path; the SENSITIVE tier below
   # is a second, independent matcher and was byte-literal — measured: `Auth/x`, `*.PEM` and `.ENV` all
   # fell through to `ordinary`, lowering the ceremony for exactly the reason A2 exists.
@@ -266,9 +352,32 @@ $CHANGED_LIST
 CHANGED_EOF
 
 # FAIL-SAFE: no readable change-set, or a degraded classifier -> highest class.
-if [ "$n" = 0 ] || [ "$CHANGED_READ_FAIL" = 1 ] || [ "$GUARD_OK" = 0 ]; then agg=control-plane; fi
+# `CLASSIFIER_DEGRADED` covers BOTH halves of the merge-time set: GUARD_OK=0 (guard core absent or
+# is_control_plane_path undefined) and UNION_UNAVAIL=1 (adapter manifests EXIST and could not be
+# read). It deliberately does NOT cover OK-EMPTY — a tree with no adapter manifests classifies on the
+# guard-core floor, because fail-safing there would demand control-plane ceremony on every PR in
+# every adapter-less repository.
+if [ "$n" = 0 ] || [ "$CHANGED_READ_FAIL" = 1 ] || [ "$CLASSIFIER_DEGRADED" = 1 ]; then agg=control-plane; fi
 
-if [ "$CLASS_ONLY" = 1 ]; then echo "$agg"; exit 0; fi
+if [ "$CLASS_ONLY" = 1 ]; then
+  # ── SAY SO WHEN THE ANSWER IS A FAIL-SAFE RATHER THAN A DERIVATION (S2 M2's replacement for the
+  # deleted YAML reconciliation arms). This seam COLLAPSES four states into the one token
+  # `control-plane`: a genuine control-plane change-set, an empty one, an unreadable one, and a
+  # degraded classifier. Consumers that must fail closed are right to read them the same — but the
+  # ratification workflow ALSO renders this token onto the human's judgment surface, and there
+  # "control-plane, derived" and "control-plane, because we could not tell" are not the same
+  # sentence. The signal goes on STDERR and STDERR ONLY: every consumer parses this stdout with
+  # `tail -1`, so one line of prose there would turn a degraded run into a derive failure at both
+  # merge gates. STDOUT IS UNCHANGED — exactly one class token, exactly as before.
+  if [ "$CLASSIFIER_DEGRADED" = 1 ]; then
+    echo "promotion-readiness --class: FAIL-SAFED to control-plane — the classifier is DEGRADED (${UNION_DIAG:-the guard core at $CORE is absent or does not define is_control_plane_path}). This is not a derivation." >&2
+  elif [ "$CHANGED_READ_FAIL" = 1 ]; then
+    echo "promotion-readiness --class: FAIL-SAFED to control-plane — the change-set could not be derived (unreadable listing, no resolvable base, or a newline in a path name). This is not a derivation." >&2
+  elif [ "$n" = 0 ]; then
+    echo "promotion-readiness --class: FAIL-SAFED to control-plane — the change-set is EMPTY, and an empty set is never silently ordinary. This is not a derivation." >&2
+  fi
+  echo "$agg"; exit 0
+fi
 
 # disposition <class> <rung> -> the matrix cell text (mirrors docs/governance/promotion-contract.md)
 disposition() {
@@ -327,6 +436,22 @@ _render_safe() { LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\
 # Branch the wording on WHICH cause fired: with no resolvable base the listing below is a worktree diff;
 # with a newline in a path name the listing is EMPTY. Saying "worktree diff" for both is inaccurate in one
 # of its own branches, on the surface a human reads to give the §13 GO.
+# DEGRADED-CLASSIFIER DISCLOSURE (S2). The block below branches on the CHANGE-SET's derivability; it
+# never branched on the CLASSIFIER's. So with the guard core absent — or an adapter manifest that
+# cannot be parsed — section 1 printed `[ordinary]` beside governing paths while section 2 said
+# `control-plane`, and nothing on the page said why. classify_path now answers control-plane in that
+# state, which removes the contradiction; this says WHICH half went dark, so a reader does not take a
+# page of control-plane rows as a derivation.
+if [ "$CLASSIFIER_DEGRADED" = 1 ]; then
+  echo "   (DEGRADED CLASSIFIER — the class below is FAIL-SAFED to control-plane, and every per-path"
+  if [ "$GUARD_OK" = 0 ]; then
+    echo "    label is that same fail-safe rather than a derivation: the guard core ($CORE) is absent or"
+    echo "    does not define is_control_plane_path. REMEDY: restore it.)"
+  else
+    echo "    label is that same fail-safe rather than a derivation: $UNION_DIAG."
+    echo "    REMEDY: see the diagnosis on stderr.)"
+  fi
+fi
 if [ "$CHANGED_READ_FAIL" = 1 ] && [ -z "${CHANGED:-}" ]; then
   if [ -z "$base" ]; then
     echo "   (derive failure: NO RESOLVABLE BASE — the class below is FAIL-SAFED to control-plane, and the"

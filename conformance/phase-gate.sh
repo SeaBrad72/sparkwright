@@ -84,10 +84,14 @@
 #   6. IT DOES NOT CLOSE ORDINARY-CLASS-UNGATED. An ordinary change-set has no merge-time floor
 #      (ceremony-binding.sh's ORDINARY-CLASS short-circuit — cited by behaviour, not line number)
 #      and none is added here.
-#   7. IT OVER-DETECTS AND IT UNDER-DETECTED. Any path matching the bare `*secret*` substring reads
-#      sensitive, so a prose edit to docs/enterprise/secrets-at-scale.md requires the gate; and
-#      AGENTS.md / GEMINI.md read `ordinary` to promotion-readiness.sh alone — only the union with
-#      agent-boundary.sh gates them.
+#   7. IT OVER-DETECTS, AND IT USED TO UNDER-DETECT. Any path matching the bare `*secret*` substring
+#      reads sensitive, so a prose edit to docs/enterprise/secrets-at-scale.md requires the gate.
+#      The under-detection half is CLOSED: `AGENTS.md` / `GEMINI.md` used to read `ordinary` to
+#      promotion-readiness.sh alone, so only the union with agent-boundary.sh gated them —
+#      GUARD-PATH-ENUMERATION-INCOMPLETE S1 and S2 put both halves of the merge-time control-plane
+#      set into `--class` itself (S1 the guard-core half, S2 the adapter union). Kept as history
+#      rather than deleted: the union is still a union, and the derivability canary still reds when
+#      the adapter half goes inert.
 #   8. A REFUSED PATH IS STILL A WAIVED PATH (plan §12 A1). Because this file fails OPEN, every
 #      boundary refusal in pg_validate_path is an unlogged bypass for anything that can get such a
 #      path to the tool. The residue is, in full: ANY ABSOLUTE PATH · ANY `..` SEGMENT · any control
@@ -546,9 +550,15 @@ pg_validate_path() {
 # item 7, inside the sentence that makes condition 4 load-bearing (the EXTERNAL-PREMISE-EVIDENCE
 # class, a live row on this board). Re-measured against the real guard-core.sh:
 #   docs/plans/AGENTS.md        -> ordinary        docs/architecture/GEMINI.md -> ordinary
-#   AGENTS.md (repo ROOT)       -> ordinary to promotion-readiness.sh; control-plane ONLY via
-#                                  agent-boundary.sh's adapter union     GEMINI.md -> the same
-# So those two basenames are control-plane at the repository root only, and by the union — never at
+#   AGENTS.md (repo ROOT)       -> control-plane   GEMINI.md (repo ROOT)       -> control-plane
+# ⚠️ THE SECOND LINE WAS RE-MEASURED 2026-08-17 AND ITS EARLIER FORM IS RECORDED AS STALE RATHER THAN
+# OVERWRITTEN IN SILENCE. It read: "AGENTS.md (repo ROOT) -> ordinary to promotion-readiness.sh;
+# control-plane ONLY via agent-boundary.sh's adapter union; GEMINI.md -> the same". Both halves have
+# since become false — S1 graduated `AGENTS.md` into guard-core's curated root set, and S2 made
+# `--class` consult the adapter union — so both basenames are control-plane at the ROOT through
+# `--class` itself now. The DEPTH measurements on the line above are unchanged, and they are the ones
+# this paragraph turns on.
+# So those two basenames are control-plane at the repository root only — never at
 # depth, which is the only position this allowlist can reach. The design decision is unaffected: one
 # measured control-plane basename at depth is enough to make condition 4 load-bearing, and there are
 # three of them. Measured coverage of the two shapes, RE-MEASURED after the ADR shape landed: 260 of
@@ -841,18 +851,32 @@ pg_is_ceremony_path() {
 #   src/app.ts                           ordinary                      0                   ordinary
 #   auth/login.ts                        sensitive                     0                   sensitive
 #   CLAUDE.md                            control-plane                 1                   control-plane
-#   AGENTS.md                            ORDINARY                      1                   control-plane  ★
-#   GEMINI.md                            ORDINARY                      1                   control-plane
-#   .cursor/rules/foo.md                 ORDINARY                      1                   control-plane
+#   AGENTS.md                            control-plane (was ORDINARY)  1                   control-plane
+#   GEMINI.md                            control-plane (was ORDINARY)  1                   control-plane
+#   .cursor/rules/foo.md                 control-plane (was ORDINARY)  1                   control-plane
 #   .cursor/rules                        ordinary                      0                   ordinary
 #   docs/enterprise/secrets-at-scale.md  SENSITIVE                     0                   sensitive
 #
-# ★★★ `AGENTS.md` IS THE ROW THAT JUSTIFIES THE UNION. It is the harness-binding document Slice A1
-# shipped the entry contract into, and promotion-readiness.sh --class calls it ORDINARY, because
-# guard-core.sh's hardcoded set does not carry it — only the ADAPTER MANIFEST UNION does
-# (adapters/{_TEMPLATE,codex,cursor,gemini,generic}/adapter.json each declare `AGENTS.md`). Under a
-# one-classifier gate an agent could rewrite its own governing contract ungated. legT3g is that leg,
-# and its `noboundary` mutant is the one-classifier gate made executable.
+# ★★★ NO ROW OF THIS TABLE DISCRIMINATES ANY MORE, AND THAT IS THE **CURE**, NOT A DEFECT — the ★
+# came off `GEMINI.md` on 2026-08-17 and the history is the point, so it is kept rather than tidied.
+# The union exists because `--class` and `agent-boundary` used to answer DIFFERENTLY for the same
+# path, and the discriminating row moved twice as that gap closed from both ends:
+#   * `AGENTS.md` was the row (the harness-binding document Slice A1 shipped the entry contract
+#     into): `--class` called it ORDINARY because guard-core.sh's hardcoded set did not carry it, so
+#     only the ADAPTER MANIFEST UNION did. GUARD-PATH-ENUMERATION-INCOMPLETE S1 (2026-08-16) added
+#     it to that hardcoded set — the SYSTEM got stronger and the ROW stopped discriminating, which
+#     are different things and must not be conflated. The ★ moved to `GEMINI.md`.
+#   * `GEMINI.md` and `.cursor/rules/foo.md` were the union-only rows that remained. S2 (2026-08-17)
+#     made `--class` itself union-aware — consulting the SAME manifests through the SAME matcher
+#     (conformance/union-lib.sh) — so both halves now catch them too, and the last two discriminating
+#     rows stopped discriminating. Re-measured at that change; legT3h/legT3i's mutants were
+#     re-derived from `noboundary` to `nounion` and the adjudication is recorded IN legT3h.
+# ⚠️ SO READ THE `union` COLUMN CORRECTLY: it is still the union of two classifiers, and the
+# derivability canary (legT3o/t/u) still reds when the adapter half goes inert. What no row of this
+# table shows any more is the adapter half CHANGING a class verdict `--class` would not reach alone.
+# That convergence is S2's intent, recorded here and at legT3h; whether the two halves still agree
+# over the whole tree is now the census lock's property, in
+# conformance/promotion-readiness-wired.sh.
 #
 # ⚠️ THE TRAILING SLASH IS THE WHOLE `.cursor/rules` SPLIT. adapters/cursor/adapter.json declares
 # `.cursor/rules/`, and agent-boundary.sh's path_in_union matches a trailing-slash entry as a
@@ -975,12 +999,24 @@ PG_RATIFIED_FLAG=0
 # ⚠️ WHY THIS PATH AND NOT ANOTHER, MEASURED ON THE LIVE TREE. The canary only works if the answer
 # DISCRIMINATES, i.e. if the path is control-plane via the ADAPTER MANIFEST UNION and NOT via
 # guard-core.sh's hardcoded set — otherwise the guard-core floor would answer rc 1 on its own and the
-# probe would be satisfied by a build whose adapter half was empty. Measured, both directions:
-#   AGENTS.md, adapters intact                     -> agent-boundary.sh rc 1
-#   AGENTS.md, KIT_ADAPTERS_DIR=<an empty dir>     -> agent-boundary.sh rc 0
-# and five of the six shipped manifests (_TEMPLATE, codex, cursor, gemini, generic) declare it, so it
-# is the union's most-declared row as well as the row the union exists for.
-PG_UNION_CANARY_PATH=AGENTS.md
+# probe would be satisfied by a build whose adapter half was empty.
+#
+# ⚠️ THE CANARY MOVED FROM `AGENTS.md` TO `GEMINI.md` ON 2026-08-16, AND THE REASON IS A CURE, NOT A
+# REGRESSION. GUARD-PATH-ENUMERATION-INCOMPLETE S1 added `AGENTS.md` to guard-core.sh's curated root
+# set, so the guard-core floor now answers rc 1 for it ON ITS OWN — exactly the property this constant
+# says disqualifies a canary. AGENTS.md did not get weaker; it graduated from "union-only" to "caught
+# by both halves", and a canary that no longer discriminates is a probe satisfied by a build whose
+# adapter half is empty. Re-measured on the live tree at that change, both directions, all candidates:
+#   AGENTS.md,   adapters intact -> rc 1 · KIT_ADAPTERS_DIR=<empty> -> rc 1   (NO LONGER discriminates)
+#   CLAUDE.md,   adapters intact -> rc 1 · KIT_ADAPTERS_DIR=<empty> -> rc 1   (never did)
+#   GEMINI.md,   adapters intact -> rc 1 · KIT_ADAPTERS_DIR=<empty> -> rc 0   (DISCRIMINATES)
+#   .cursor/rules/foo.md,        rc 1 ·                             -> rc 0   (DISCRIMINATES)
+# ⚠️ HONEST DOWNGRADE, STATED: AGENTS.md was the union's MOST-DECLARED row (five of six manifests);
+# GEMINI.md is declared by ONE (adapters/gemini). The canary is therefore narrower than it was — if
+# that manifest ever drops the row, this probe stops discriminating. That failure is LOUD, not silent:
+# legT3o/legT3t/legT3u each assert the premise half explicitly and go RED when it dies, which is how
+# this very move was detected. Do not replace this constant without re-running the measurement above.
+PG_UNION_CANARY_PATH=GEMINI.md
 
 # pg_agent_boundary_raw <listing-file> — THE ONE PLACE agent-boundary.sh IS SPAWNED, and the place its
 # ENTIRE INPUT SET is pinned. rc 0/1/2 exactly as the child's three-state contract, 2 for "could not
@@ -1012,6 +1048,13 @@ PG_UNION_CANARY_PATH=AGENTS.md
 # JQ_LIBRARY_PATH, KIT_PR_FILES_CAP, KIT_GUARD_SELFEDIT, KIT_ROSTER_GUARD, KIT_ROSTER_CONF) found no
 # other verdict-changing route. The list is COMPLETE as of today's agent-boundary.sh + guard-core.sh —
 # which is a dated claim, not a permanent one: re-derive it if either script grows an input.
+# ⚠️ AND THE INSTRUCTION WAS FOLLOWED, WHICH IS WHY THIS LINE EXISTS. On 2026-08-17
+# GUARD-PATH-ENUMERATION-INCOMPLETE S2 gave the OTHER child — promotion-readiness.sh — two new
+# env-borne inputs (`KIT_ADAPTERS_DIR`, `KIT_UNION_LIB`), because `--class` now consults the adapter
+# union. This list is scoped to THE agent-boundary CHILD and is unaffected; the new seam is pinned
+# where that child is spawned, in pg_class_promotion_readiness. RE-DERIVE ON INPUT GROWTH means BOTH
+# children: a list that silently covers one of two spawn sites is the presence-check-cannot-see-a-
+# substitution shape this file already refuses elsewhere.
 # ⚠️ `$( dirname "$0" )` is resolved HERE, in the parent, and handed over as a value. It is the same
 # resolution the child would make from its own `$0`, so this pins rather than relocates — but it means
 # a mutant root that symlinks conformance/ still resolves into that root, which is what keeps
@@ -1091,7 +1134,30 @@ pg_adapter_union_derivable() {
 pg_class_promotion_readiness() {
   _pc_s="$( dirname "$0" )/promotion-readiness.sh"
   [ -f "$_pc_s" ] || return 1
-  _pc_out="$( sh "$_pc_s" --changed "$1" --class 2>/dev/null )" || return 1
+  # ★ THE CHILD'S INPUTS ARE PINNED HERE TOO (GUARD-PATH-ENUMERATION-INCOMPLETE S2). This child used
+  # to read only `../.claude/hooks/guard-core.sh` from a fixed relative path, so it had no env-borne
+  # input to pin and none was passed. S2 gave it one: `promotion-readiness.sh` now consults the
+  # ADAPTER UNION and resolves it through `${KIT_ADAPTERS_DIR:-adapters}`. An input seam that is not
+  # pinned is an ambient value selecting what "control-plane" MEANS — the exact shape legT3u exists
+  # to refuse, and the one that produced a positive unlogged ALLOW on the row the union exists for
+  # when it went unpinned in the agent-boundary child. `KIT_UNION_LIB` and `KIT_GUARD_CORE` are
+  # pinned in the same breath: they are the TWO env-borne inputs this child actually reads
+  # (`${KIT_ADAPTERS_DIR:-adapters}` and `${KIT_UNION_LIB:-conformance/union-lib.sh}`). Its guard-core
+  # path is a fixed literal, NOT an env override, so there is nothing to pin there and this comment
+  # does not pretend otherwise.
+  # ⚠️⚠️ ABSOLUTE, NOT `$( dirname "$0" )/…` — AND THAT IS A REAL DIFFERENCE FROM THE agent-boundary
+  # PIN ABOVE, NOT A STYLE CHOICE. promotion-readiness.sh `cd`s to its own `../` before it reads
+  # either variable, so a RELATIVE pin would be re-rooted at the child's repository top and point
+  # somewhere else entirely (or nowhere, which reads as OK-EMPTY and silently narrows the union back
+  # to the guard-core floor — a fail-OPEN dressed as a pin). agent-boundary.sh does not cd, which is
+  # why its relative pin is correct there and would be wrong here.
+  # ⚠️ `CI`/`REQUIRE` are NOT cleared here, deliberately — unlike agent-boundary.sh this child has no
+  # CI escalation (it is advisory and always exits 0), so clearing them would model a hazard it does
+  # not have.
+  _pc_d="$( cd "$( dirname "$0" )" 2>/dev/null && pwd )" || return 1
+  _pc_out="$( KIT_ADAPTERS_DIR="$_pc_d/../adapters" \
+              KIT_UNION_LIB="$_pc_d/union-lib.sh" \
+              sh "$_pc_s" --changed "$1" --class 2>/dev/null )" || return 1
   case "$_pc_out" in
     ordinary|sensitive|control-plane) printf '%s\n' "$_pc_out"; return 0 ;;
   esac
@@ -2638,23 +2704,71 @@ PG_VOCAB
   # ---- THE UNION, ROW BY ROW. Every row of the §7 T3 table gets a leg, each asserting the reason
   # constant AND the constant that must not appear, and each with a mutant half naming WHICH half of
   # the union is holding the line. Re-measured on the live tree 2026-07-29, not inherited:
+  # ⚠️ RE-MEASURED 2026-08-17 (GUARD-PATH-ENUMERATION-INCOMPLETE S2): the `--class` column moved for
+  # two rows. `GEMINI.md` and `.cursor/rules/foo.md` used to read ORDINARY here and were caught by the
+  # adapter half alone; `--class` is union-aware now, so BOTH halves catch them and NEITHER row
+  # discriminates any more. The rows are kept, with their mutants re-derived to `nounion` — see the
+  # adjudication at legT3h below, which is where the reasoning lives.
   #   src/app.ts                          ordinary       ab rc 0  -> ordinary       ALLOW   legT3a
   #   auth/login.ts                       sensitive      ab rc 0  -> sensitive      gated   legT3e
   #   CLAUDE.md                           control-plane  ab rc 1  -> control-plane  gated   legT3f
-  #   AGENTS.md                           ORDINARY       ab rc 1  -> control-plane  gated   legT3g ★
-  #   GEMINI.md                           ORDINARY       ab rc 1  -> control-plane  gated   legT3h
-  #   .cursor/rules/foo.md                ORDINARY       ab rc 1  -> control-plane  gated   legT3i
+  #   AGENTS.md                           control-plane  ab rc 1  -> control-plane  gated   legT3g
+  #   GEMINI.md                           control-plane (was ORDINARY)  ab rc 1  -> control-plane  gated   legT3h
+  #   .cursor/rules/foo.md                control-plane (was ORDINARY)  ab rc 1  -> control-plane  gated   legT3i
   #   .cursor/rules                       ordinary       ab rc 0  -> ordinary       ALLOW   legT3d
   #   docs/enterprise/secrets-at-scale.md SENSITIVE      ab rc 0  -> sensitive      gated   legT3j
   _expect_union_gated legT3e auth/login.ts noclass
   _expect_union_gated legT3f CLAUDE.md nounion
-  # ★★★ legT3g IS THE LEG THAT JUSTIFIES THE UNION EXISTING AT ALL. AGENTS.md is the harness-binding
-  # document Slice A1 shipped the entry contract into, and promotion-readiness.sh --class calls it
-  # ORDINARY (re-measured). Its `noboundary` mutant IS the one-classifier gate, and under it AGENTS.md
-  # is ALLOWED — an agent rewriting its own governing contract, ungated.
-  _expect_union_gated legT3g AGENTS.md noboundary
-  _expect_union_gated legT3h GEMINI.md noboundary
-  _expect_union_gated legT3i .cursor/rules/foo.md noboundary
+  # legT3g — AGENTS.md. ⚠️ THIS LEG LOST ITS DISTINCTIVE VALUE ON 2026-08-16, AND THAT IS RECORDED
+  # HERE RATHER THAN PAPERED OVER. The SYSTEM got stronger: GUARD-PATH-ENUMERATION-INCOMPLETE S1 added
+  # AGENTS.md to guard-core.sh's curated root set, so the harness-binding document is now caught by
+  # BOTH halves of the union instead of by the adapter half alone. THE LEG did not get stronger — it
+  # got REDUNDANT. AGENTS.md used to be the union's discriminating row (`--class` said ORDINARY, only
+  # the adapter half caught it, so the `noboundary` mutant flipped it to a silent ALLOW); with both
+  # halves catching it, `noboundary` no longer changes the verdict and `_expect_union_gated` reports
+  # VACUOUS, which is how the change was caught rather than silently kept. The mutant is `nounion` now
+  # — which is exactly legT3f's mutant, so this leg is byte-equivalent in strength to legT3f and
+  # asserts nothing legT3f does not already assert. It is KEPT, not deleted, because AGENTS.md is a
+  # named row of the §7 T3 table and a row that vanishes from a table is harder to notice than a row
+  # that is honestly labelled redundant. Do not "restore" it to `noboundary`: it will report VACUOUS,
+  # correctly. If the table is ever pruned, this is the row to prune.
+  _expect_union_gated legT3g AGENTS.md nounion
+  # ★★★ legT3h — READ THIS BEFORE TOUCHING EITHER OF THE NEXT TWO LINES.
+  #
+  # THE PREDICTION CAME TRUE, AND IT WAS RECORDED IN ADVANCE. The note that used to sit here said:
+  # "If BOTH of these ever stop discriminating, the union has no leg proving it is load-bearing and
+  # that is a red, not a cleanup." On 2026-08-17 both stopped discriminating —
+  # GUARD-PATH-ENUMERATION-INCOMPLETE S2 made `promotion-readiness.sh --class` UNION-AWARE, so
+  # `GEMINI.md` and `.cursor/rules/foo.md` now derive control-plane from `--class` ALONE. Measured on
+  # the live tree at that change, before any leg was touched: both legs went VACUOUS-red, exactly
+  # here, with the `noboundary` mutant answering PG_OPEN_AT_BASE instead of PG_ALLOW_CLASS_ORDINARY.
+  #
+  # ⚠️ THE RED WAS **ADJUDICATED**, NOT GREENED. The forbidden move — and the one the S2 design named
+  # in advance as the failure mode to refuse — is weakening the mutant until the leg passes. That is
+  # not what happened. `noboundary` is retired here because the property it modelled (a
+  # one-classifier gate ungates a governing harness document) IS NO LONGER TRUE: with `--class`
+  # union-aware, removing agent-boundary from the union leaves the row gated, which is a CURE. The
+  # replacement mutant `nounion` is STRICTLY BROADER — it kills `pg_classify_union` outright — so no
+  # kill-set shrank at this line; what shrank is what the leg can CLAIM.
+  #
+  # ⚠️⚠️ WHAT NO PHASE-GATE LEG PROVES ANY MORE, STATED AS THE INTENT IT IS. After S2, no leg here
+  # shows the agent-boundary half of the union CHANGING A CLASS VERDICT that `--class` would not have
+  # reached on its own — because the two halves now derive the same set, which is precisely what S2
+  # was for (the fold of CLASS-VS-GATE-ADAPTER-MISMATCH and LOOP-STATE-CLASS-ADAPTER-UNION). This is
+  # a CONVERGENCE recorded as such, never a silent downgrade. What IS still proven, and by whose leg:
+  #   * the agent-boundary half is still CONSULTED and still discriminates as a BOOLEAN — legT3o/t/u
+  #     drive the real child and red when an emptied `adapters/` or a broken `jq` stops it answering
+  #     rc 1 for the canary path. The union going inert is still caught, loudly.
+  #   * that `--class` really carries the adapter-declared set is now the CENSUS LOCK's property, in
+  #     conformance/promotion-readiness-wired.sh (leg (b), with a drop-the-union-consult mutant).
+  #     That is where the row moved; it did not evaporate.
+  # So legT3h and legT3i are now byte-equivalent in strength to legT3f/legT3g and assert nothing
+  # those already assert. They are KEPT rather than deleted for the same reason legT3g was: a named
+  # row of the §7 T3 table that VANISHES is harder to notice than one honestly labelled redundant.
+  # Do not "restore" them to `noboundary` — they will report VACUOUS, correctly. If the table is ever
+  # pruned, these are the rows to prune, alongside legT3g.
+  _expect_union_gated legT3h GEMINI.md nounion
+  _expect_union_gated legT3i .cursor/rules/foo.md nounion
   _expect_union_gated legT3j docs/enterprise/secrets-at-scale.md noclass
   # legT3k — the ORDINARY rows, from the other side: PG_ALLOW_CLASS_ORDINARY must come FROM the union
   # and not from an unconditional allow arm. The `gateall` mutant is what shows the constant is
@@ -3008,6 +3122,22 @@ _expect_abort_normalised() {
 # is `set -e` acting on the trap body. Nothing outside the trap can undo it **while errexit is in
 # effect**, and this file needs errexit for the `set -u` abort semantics leg23 pins — so `|| :` at the
 # site is the defence. Do not "fix" this by disabling errexit.
+# ⚠️ THE LAST FIXTURE-SHAPED ASSERTION IS GONE TOO (2026-08-16, PHASE-GATE-LEG26-ANCESTRY-FRAGILITY).
+# The T5 note above says the hardcoded `rc 2` was removed because it was the fixture, not the
+# property. A hardcoded `rc 1 is always wrong` test survived that cleanup, running BEFORE the baseline
+# comparison — the same class of residue, one comparison earlier. It is only sound while the healthy
+# answer is not itself a deny, and a deny is a legitimate healthy answer: on a branch that is
+# design-without-plan ahead of its base, `--decide --path CLAUDE.md` correctly answers PG_DENY_NO_PLAN
+# rc 1, the shim reproduces it BYTE-IDENTICALLY, and the leg failed while printing the surviving
+# constant in its own failure message. THE LEG'S PROPERTY WAS NEVER WRONG — the comment said
+# "the decision SURVIVES ... in either direction" throughout, and it is the CODE that disagreed.
+# ⚠️ WHY THIS WAS NOT CAUGHT LOCALLY, and the shape to remember: the ambient answer depends on the
+# BASE LADDER, and the ladder's first rung is `origin/HEAD`. In a dev-clone of a feature branch git
+# points `origin/HEAD` at that branch, so base == HEAD and every row answers PG_OPEN_AT_BASE rc 2;
+# under `actions/checkout` it points at `origin/main`, so the branch is ahead and the deny appears.
+# The review's "CI masks it" reading had it backwards — the full-history lane is where it FIRES. To
+# reproduce a base-ladder face locally you must fetch `refs/remotes/origin/main` into the clone and
+# re-point `origin/HEAD`; a plain `git clone` of a feature branch cannot show you this.
 _expect_cleanup_cannot_deny() {
   _ln="$1"; _p="$2"; _legs=$((_legs+1))
   _cd_bin="$_pg_tmp/$_ln-bin"; _cd_ro="$_pg_tmp/$_ln-ro"
@@ -3037,16 +3167,28 @@ _expect_cleanup_cannot_deny() {
   printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$_cd_ro/f" > "$_cd_bin/mktemp"; chmod +x "$_cd_bin/mktemp"
   _cdout="$( PATH="$_cd_bin:$PATH" sh "$0" --decide --path "$_p" 2>/dev/null )" && _cdrc=0 || _cdrc=$?
   chmod 700 "$_cd_ro"   # restore BEFORE any early return, or the suite's own trap cannot clean up
-  if [ "$_cdrc" = 1 ]; then
-    echo "FAIL $_ln: an UNLINKABLE temp file manufactured rc 1 — the caller reads that as a DENY."
-    echo "      A cleanup must never change a verdict (plan §3: no DENY from an error or degraded"
-    echo "      state). stdout was: '${_cdout:-<empty>}'"
-    _fails=$((_fails+1)); return 0
-  fi
+  # ⚠️ THE COMPARISON IS AGAINST THE BASELINE, AND THERE IS NO SEPARATE "rc 1 IS BAD" TEST. There used
+  # to be one, running BEFORE this comparison, and it was the LAST fixture-shaped assertion in a helper
+  # whose own header announces that the fixture-shaped ones had been removed. "rc 1 is always wrong"
+  # is only true while the HEALTHY answer is not itself rc 1 — and a deny IS a legitimate healthy
+  # answer. On a branch that is design-without-plan ahead of its base, `--decide --path CLAUDE.md`
+  # correctly answers PG_DENY_NO_PLAN rc 1, the shim reproduces it BYTE-IDENTICALLY (measured), and the
+  # old test failed the leg while printing the surviving constant in its own message. The equivalence
+  # test below subsumes it in every case that matters: a shim-manufactured rc 1 against a non-deny
+  # baseline still reds here, because the rc moved. Nothing is lost; a false red is.
   if [ "$_cdout" != "$_cd_base" ] || [ "$_cdrc" != "$_cd_brc" ]; then
-    echo "FAIL $_ln: an unlinkable temp file CHANGED the decision — baseline '$_cd_base' rc $_cd_brc,"
-    echo "      under the shim '${_cdout:-<empty>}' rc $_cdrc. A cleanup must not move a verdict in"
-    echo "      any direction, not merely away from a deny."
+    if [ "$_cdrc" = 1 ] && [ "$_cd_brc" != 1 ]; then
+      # Named separately because it is the sharper defect: not merely a moved verdict, but a DENY
+      # conjured out of a failing unlink, which is what the caller acts on.
+      echo "FAIL $_ln: an UNLINKABLE temp file MANUFACTURED rc 1 — the caller reads that as a DENY."
+      echo "      Baseline was '$_cd_base' rc $_cd_brc; under the shim '${_cdout:-<empty>}' rc 1."
+      echo "      A cleanup must never change a verdict (plan §3: no DENY from an error or degraded"
+      echo "      state)."
+    else
+      echo "FAIL $_ln: an unlinkable temp file CHANGED the decision — baseline '$_cd_base' rc $_cd_brc,"
+      echo "      under the shim '${_cdout:-<empty>}' rc $_cdrc. A cleanup must not move a verdict in"
+      echo "      any direction, not merely away from a deny."
+    fi
     _fails=$((_fails+1)); return 0
   fi
 
@@ -3056,10 +3198,16 @@ _expect_cleanup_cannot_deny() {
   # ⚠️ THE ORPHAN BRANCH IS ALLOWED TO DEGRADE THE VERDICT, BUT NEVER TO DENY IT. Unlike half A, this
   # shim gives the CLASSIFIER no usable listing at all, so PG_OPEN_CLASS_UNDERIVABLE is the correct
   # answer here and equality with the baseline would be the wrong assertion.
-  if [ "$_cdrc" = 1 ]; then
+  # ⚠️ "NEVER TO DENY IT" MEANS "NEVER TO INTRODUCE A DENY THE BASELINE DID NOT HAVE." The bare
+  # `_cdrc = 1` test carried half A's latent fixture assumption: where the healthy answer is itself a
+  # deny, a deny here is the verdict SURVIVING, not the orphan branch conjuring one. This half is not
+  # what CI reds on today (measured: the directory shim answers PG_OPEN_CLASS_UNDERIVABLE rc 2 even
+  # against a PG_DENY_NO_PLAN baseline), and it is generalised anyway — the assumption is the defect,
+  # and leaving a copy of it one branch over is how this class comes back.
+  if [ "$_cdrc" = 1 ] && [ "$_cd_brc" != 1 ]; then
     echo "FAIL $_ln: the ORPHAN branch (mktemp returned a directory) manufactured rc 1"
-    echo "      ('${_cdout:-<empty>}'). A failing rm in that branch is the fail-CLOSED defect C-1;"
-    echo "      keep its \`|| :\`."
+    echo "      ('${_cdout:-<empty>}') against a baseline of '$_cd_base' rc $_cd_brc. A failing rm in"
+    echo "      that branch is the fail-CLOSED defect C-1; keep its \`|| :\`."
     _fails=$((_fails+1)); return 0
   fi
   if [ -z "$_cdout" ]; then
@@ -3083,16 +3231,41 @@ _expect_cleanup_cannot_deny() {
     echo "FAIL $_ln: the UNGUARDED-cleanup mutant was NOT built; the red half would be VACUOUS."
     _fails=$((_fails+1)); return 0
   fi
-  sh "$_cd_bad" --decide --path "$_p" >/dev/null 2>&1 && _cdbrc=0 || _cdbrc=$?
-  if [ "$_cdbrc" != 1 ]; then
-    echo "FAIL $_ln: an UNGUARDED failing cleanup returned rc=$_cdbrc, not 1 — so the green halves"
-    echo "      above are not proving anything about the \`|| :\` guard. Either the trap moved or the"
-    echo "      shell changed; re-derive the red half before trusting the green ones."
+  # ⚠️ THE RED HALF NEEDS A PROBE WHOSE HEALTHY ANSWER IS NOT rc 1, OR IT ASSERTS NOTHING. Its claim is
+  # "removing `|| :` CHANGES the rc to 1"; where the healthy rc is ALREADY 1 there is nothing to
+  # change, and the assertion passes against a build with the guard fully restored. That is not
+  # hypothetical — it is the same ambient that produced the false red above, and the rc-only assertion
+  # is vacuous in exactly the state the green halves most need an anchor. Measured on the CI-faithful
+  # ambient: the fixture CLAUDE.md answers PG_DENY_NO_PLAN rc 1 healthy AND rc 1 unguarded.
+  # THE PROBE IS THE CEREMONY ALLOWLIST PATH, which is answered BEFORE the base ladder runs, so its
+  # healthy answer is PG_ALLOW_CEREMONY_PATH rc 0 in EVERY ambient (measured: rc 0 healthy, rc 1
+  # unguarded — it reaches the trap, which is what makes it usable here). The leg's own fixture is
+  # still driven as well, but only where its healthy answer makes the claim meaningful.
+  _cd_rp='docs/architecture/2026-01-01-x-design.md'
+  _cd_rpout="$( sh "$0" --decide --path "$_cd_rp" 2>/dev/null )" && _cd_rprc=0 || _cd_rprc=$?
+  if [ "$_cd_rprc" = 1 ]; then
+    echo "FAIL $_ln: the red half's ambient-independent probe ('$_cd_rp') itself answers rc 1"
+    echo "      ('${_cd_rpout:-<empty>}') here, so \"removing the \\\`|| :\\\` yields rc 1\" cannot"
+    echo "      discriminate and the green halves are left with no non-vacuity anchor. Re-pick a probe"
+    echo "      the ceremony allowlist still answers rc 0 for; do NOT delete this check."
     _fails=$((_fails+1)); return 0
   fi
+  _cd_rpaths="$_cd_rp"
+  if [ "$_cd_brc" != 1 ]; then _cd_rpaths="$_cd_rpaths $_p"; fi
+  # shellcheck disable=SC2086  # deliberate word-split over a two-element, glob-free path list
+  for _cd_rx in $_cd_rpaths; do
+    sh "$_cd_bad" --decide --path "$_cd_rx" >/dev/null 2>&1 && _cdbrc=0 || _cdbrc=$?
+    if [ "$_cdbrc" != 1 ]; then
+      echo "FAIL $_ln: an UNGUARDED failing cleanup returned rc=$_cdbrc, not 1, for '$_cd_rx' — so the"
+      echo "      green halves above are not proving anything about the \`|| :\` guard. Either the trap"
+      echo "      moved or the shell changed; re-derive the red half before trusting the green ones."
+      _fails=$((_fails+1)); return 0
+    fi
+  done
   echo "PASS $_ln: an unlinkable temp file leaves the decision BYTE-IDENTICAL to its baseline"
-  echo "      ('$_cd_base' rc $_cd_brc) and the orphan branch degrades without denying, while the"
-  echo "      unguarded form yields rc 1 — \`|| :\` is load-bearing, not decoration"
+  echo "      ('$_cd_base' rc $_cd_brc) and the orphan branch degrades without introducing a deny,"
+  echo "      while the unguarded form yields rc 1 on a probe whose healthy answer is not rc 1"
+  echo "      ('$_cd_rp' -> '$_cd_rpout' rc $_cd_rprc) — \`|| :\` is load-bearing, not decoration"
 }
 
 # _expect_wellformed_decisions <leg> — every decision that leaves the ENTRY POINT is well-formed.
@@ -4190,15 +4363,21 @@ _expect_union_open() {
 # DEGRADATION IS SILENT. TWO HALVES, and the first is a MEASUREMENT of the premise, not a simulation.
 #   PREMISE half — drive the REAL conformance/agent-boundary.sh with KIT_ADAPTERS_DIR (its own
 #     documented knob) pointed at an EMPTY directory, which is byte-for-byte the state its
-#     `adapter_union` reaches when `jq` is absent: it returns an empty union. AGENTS.md then reads
-#     rc 0 — "no control-plane paths in the diff". So an uncomputable adapter union SILENTLY
+#     `adapter_union` reaches when `jq` is absent: it returns an empty union. The canary path then
+#     reads rc 0 — "no control-plane paths in the diff". So an uncomputable adapter union SILENTLY
 #     DECLASSIFIES the one row that justifies the union existing. Measured on the live tree with jq
 #     shadowed on PATH, the same rc 0. If agent-boundary ever gains a jq-free fallback this half reds,
 #     and the precondition in pg_adapter_union_derivable can then be relaxed deliberately.
 #   MAPPING half — the shipped response to that premise: this file refuses to classify at all when the
-#     adapter half cannot be computed. The `nojq` mutant models the uncomputable state, and AGENTS.md
-#     must then answer PG_OPEN_CLASS_UNDERIVABLE — NOT PG_ALLOW_CLASS_ORDINARY, which is what a
+#     adapter half cannot be computed. The `nojq` mutant models the uncomputable state, and the canary
+#     path must then answer PG_OPEN_CLASS_UNDERIVABLE — NOT PG_ALLOW_CLASS_ORDINARY, which is what a
 #     silent degradation would produce.
+# ⚠️ THE FIXTURE IS $PG_UNION_CANARY_PATH, NOT A HARDCODED NAME. It used to be a literal `AGENTS.md`
+# in three places here, which meant this helper's fixture and the constant documenting the property
+# that fixture must have could drift apart — and on 2026-08-16 they did: GUARD-PATH-ENUMERATION-
+# INCOMPLETE S1 made AGENTS.md control-plane in guard-core.sh's own set, so an empty adapter union no
+# longer declassifies it and the PREMISE half died. Binding to the constant means the next such move
+# is a one-line edit at the constant, with its measurement, instead of a silent premise death here.
 _expect_adapter_union_derivability() {
   _ad_ln="$1"; _legs=$((_legs+1))
   _ad_ab="$( dirname "$0" )/agent-boundary.sh"
@@ -4208,13 +4387,14 @@ _expect_adapter_union_derivability() {
     _fails=$((_fails+1)); return 0
   fi
   _ad_dir="$_pg_tmp/$_ad_ln-empty-adapters"; mkdir -p "$_ad_dir"
-  _ad_l="$_pg_tmp/$_ad_ln.listing"; printf 'AGENTS.md\n' > "$_ad_l"
+  _ad_l="$_pg_tmp/$_ad_ln.listing"; printf '%s\n' "$PG_UNION_CANARY_PATH" > "$_ad_l"
   CI='' REQUIRE='' KIT_ADAPTERS_DIR="$_ad_dir" sh "$_ad_ab" --changed "$_ad_l" --ratified 0 \
     >/dev/null 2>&1 && _ad_rc=0 || _ad_rc=$?
   if [ "$_ad_rc" != 0 ]; then
     echo "FAIL $_ad_ln: with an EMPTY adapter union, agent-boundary.sh answered rc $_ad_rc for"
-    echo "      AGENTS.md, not rc 0. The premise this file's derivability pre-check rests on no longer"
-    echo "      holds — re-derive pg_adapter_union_derivable rather than deleting this half."
+    echo "      '$PG_UNION_CANARY_PATH', not rc 0. The premise this file's derivability pre-check rests"
+    echo "      on no longer holds — re-derive pg_adapter_union_derivable (and the canary constant's"
+    echo "      measurement) rather than deleting this half."
     _fails=$((_fails+1)); return 0
   fi
   _union_build_mutant "$_ad_ln" nojq || return 0
@@ -4222,7 +4402,7 @@ _expect_adapter_union_derivability() {
   # ⚠️ CALL-SITE half, and it is here because ITS ABSENCE LET A SURVIVING MUTANT THROUGH. Measured:
   # deleting the `pg_adapter_union_derivable || return 2` CALL from pg_classify_union — i.e. keeping
   # the predicate and ignoring it — killed NOTHING in the whole family. The AGENTS.md half below
-  # cannot see it, because AGENTS.md's healthy answer and its degraded answer are the SAME constant
+  # cannot see it, because the canary's healthy answer and its degraded answer are the SAME constant
   # at T3 (gated and underivable both reach the stub). src/app.ts is the fixture that discriminates:
   # healthy it is PG_ALLOW_CLASS_ORDINARY, and with the adapter half uncomputable it must become
   # PG_OPEN_CLASS_UNDERIVABLE. If the call site is removed, it stays ORDINARY and this reds.
@@ -4235,9 +4415,9 @@ _expect_adapter_union_derivability() {
     _fails=$((_fails+1)); return 0
   fi
 
-  _ad_mout="$( sh "$_um_mut" --decide --path AGENTS.md 2>/dev/null )" && _ad_mrc=0 || _ad_mrc=$?
+  _ad_mout="$( sh "$_um_mut" --decide --path "$PG_UNION_CANARY_PATH" 2>/dev/null )" && _ad_mrc=0 || _ad_mrc=$?
   if [ "$_ad_mout" = PG_ALLOW_CLASS_ORDINARY ]; then
-    echo "FAIL $_ad_ln: with the adapter half UNCOMPUTABLE, AGENTS.md was ALLOWED as ordinary. That is"
+    echo "FAIL $_ad_ln: with the adapter half UNCOMPUTABLE, '$PG_UNION_CANARY_PATH' was ALLOWED as ordinary. That is"
     echo "      the silent degradation this pre-check exists to convert into an honest rc 2: on a"
     echo "      machine without jq the gate would ungate the harness-binding document with no signal."
     _fails=$((_fails+1)); return 0
@@ -4247,7 +4427,7 @@ _expect_adapter_union_derivability() {
     echo "      '${_ad_mout:-<empty>}' rc $_ad_mrc."
     _fails=$((_fails+1)); return 0
   fi
-  echo "PASS $_ad_ln: an EMPTY adapter union really does declassify AGENTS.md to rc 0 in the real"
+  echo "PASS $_ad_ln: an EMPTY adapter union really does declassify '$PG_UNION_CANARY_PATH' to rc 0 in the real"
   echo "      agent-boundary.sh, and this gate answers PG_OPEN_CLASS_UNDERIVABLE rather than ALLOW"
 }
 
@@ -4719,6 +4899,15 @@ _expect_broken_jq_is_underivable() {
 # ⚠️ THE LIST IS DERIVED, NOT INHERITED, AND IT IS NOT CLAIMED COMPLETE FOR ALL TIME: it is complete
 # for the variables agent-boundary.sh and guard-core.sh read TODAY. A new knob in either file is a
 # new route, and this leg is what reds when one is added to the two named below.
+# ⚠️⚠️ RE-DERIVED 2026-08-17, AND THE HONEST RESULT IS THAT **THIS LEG DID NOT COVER THE GROWTH**.
+# GUARD-PATH-ENUMERATION-INCOMPLETE S2 made `promotion-readiness.sh --class` union-aware, so the
+# OTHER child this file spawns grew two env-borne inputs (`KIT_ADAPTERS_DIR`, `KIT_UNION_LIB`) that
+# select what "control-plane" MEANS. This leg drives `agent-boundary.sh` ONLY — its premise half
+# hands the value to that binary — so it would have stayed green with the new seam unpinned. The
+# seam is pinned at the spawn site (pg_class_promotion_readiness, which resolves it ABSOLUTE because
+# that child cd's), and the gap in THIS leg's reach is recorded rather than papered over: extending
+# the premise half to a second child is a different leg shape (this one compares one child's rc), and
+# it is not claimed here. Read the PASS line accordingly — it speaks for the agent-boundary child.
 #
 # TWO HALVES PER VARIABLE, and it needs both.
 #   PREMISE half — hand the value DIRECTLY to the real agent-boundary.sh and require its rc to CHANGE.

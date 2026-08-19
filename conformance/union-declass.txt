@@ -1,0 +1,49 @@
+# union-declass.txt — the union-declassification ACKNOWLEDGMENT LEDGER.
+#
+# WHAT THIS IS. conformance/union-ratchet.sh compares the adapter-declared control-plane union
+# (kit_union_derive over adapters/*/adapter.json — the S2 union authority, conformance/union-lib.sh)
+# at a PR's base revision against the union at HEAD. Any entry present at the base and absent at
+# HEAD is a declassification — a `controlPlanePaths` line removed, or a whole adapter manifest
+# deleted — and reds the ratchet UNLESS the removal is acknowledged HERE, in the SAME PR that
+# removes it. This file is the acknowledgment: a ratified declaration that a specific removal was
+# deliberate, not an accidental narrowing of what must be ratified before merge.
+#
+# This file is control-plane by the existing conformance/* family (no guard-matcher edit needed —
+# GUARD-PATH-ENUMERATION-INCOMPLETE S3 design §3 M1), so writing an acknowledgment is itself a
+# ratified act like editing any other conformance check.
+#
+# FORMAT — one entry per non-comment, non-blank line, exactly THREE tab-separated fields:
+#
+#   <date>\t<entry>\t<reason-or-ruling-id>
+#
+#   date               ISO 8601 (YYYY-MM-DD) — the date the removal was acknowledged.
+#   entry              the EXACT union entry being declassified, byte-for-byte as it appears in
+#                       kit_union_derive's output (a raw `controlPlanePaths` value: a literal path,
+#                       a directory prefix ending in `/`, or a glob such as `conformance/*`).
+#   reason-or-ruling-id a short reason, or a `D-YYMMDD-N` ruling id if the removal was decided there.
+#
+# A line with any other field count is MALFORMED and is never treated as an acknowledgment — the
+# entry it names (if any) still reds as an unacknowledged DECLASS. This is deliberate fail-closed
+# behavior: a typo in this file must never silently launder a declassification.
+#
+# THE THREE-WAY RULE (design §3 M1, vet-amended). An entry on this ledger is graded one of three
+# ways, and matching is BYTE-EXACT string equality — never a case fold, never a glob match (union
+# entries can themselves contain a literal `*`, so glob-matching an ack line would be a standing
+# blanket amnesty):
+#
+#   1. entry is STILL in the HEAD union (still declared)      -> RED: pre-emptive acknowledgment
+#      forbidden. Acknowledging a removal before it happens severs the declaration from the removal
+#      it is supposed to accompany (a PR-1 "pre-authorize", PR-2 "now remove it, unaccountably"
+#      two-step). This arm is BASE-INDEPENDENT — it fires even when no base is resolvable.
+#   2. entry is in the BASE union AND absent from the HEAD union -> the live acknowledgment: GREEN,
+#      named. This is the intended, and only, way an entry earns a green here — the SAME diff that
+#      removes the entry also carries this line.
+#   3. entry is in NEITHER union -> an inert historical record. Prunable at any time (a CP-ratified
+#      edit to this file may remove stale lines), but never a red residue — a merged, historical
+#      acknowledgment must not haunt this file forever.
+#
+# Entries are append-natural, not append-enforced: this file may be pruned by a later ratified edit.
+# The check only ever consults it for CURRENTLY-declassified (base-only) entries.
+#
+# See docs/architecture/2026-08-18-union-ratchet-s3-design.md for the full mechanism and
+# conformance/union-ratchet.sh for the check that reads this file.

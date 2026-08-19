@@ -69,12 +69,13 @@ case "$TOOL" in
     # filenames not content, so guarding its path/glob is defense-in-depth, not a content-exfil fix.
     RGPATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.path // empty' 2>/dev/null || printf '')
     RGGLOB=$(printf '%s' "$INPUT" | jq -r '.tool_input.glob // empty' 2>/dev/null || printf '')
-    if [ -n "$RGPATH" ] && ! reason=$(guard_check_read "$RGPATH"); then emit_deny "$reason"; fi
-    if [ -n "$RGGLOB" ] && ! reason=$(guard_check_read "$RGGLOB"); then emit_deny "$reason"; fi
+    if [ -n "$RGPATH" ] && ! reason=$(guard_check_read "$RGPATH" "$PROTECTED_ROOT"); then emit_deny "$reason"; fi
+    if [ -n "$RGGLOB" ] && ! reason=$(guard_check_read "$RGGLOB" "$PROTECTED_ROOT"); then emit_deny "$reason"; fi
     allow ;;
   Read)
     FP=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || printf '')
-    if reason=$(guard_check_read "$FP"); then allow; else emit_deny "$reason"; fi ;;
+    # MEDIUM-1: pass PROTECTED_ROOT so the read-side hardlink-alias check uses the authoritative root.
+    if reason=$(guard_check_read "$FP" "$PROTECTED_ROOT"); then allow; else emit_deny "$reason"; fi ;;
   mcp__*)
     POL="$(dirname "$0")/../mcp-policy.json"
     AL=""; OV=""

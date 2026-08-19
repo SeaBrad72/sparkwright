@@ -26,11 +26,23 @@ cd "$(dirname "$0")/.."
 . conformance/backlog-lib.sh
 
 # gate_class <changed-file> -> prints `gated` for a control-plane OR sensitive change-set, else
-# `ordinary`. Two shipped seams, consulted in order (mirrors the ratification job's reconciliation,
-# ci.yml:444-449):
-#   - agent-boundary.sh --state : the UNION-AWARE authority on control-plane-ness. It catches
-#     adapter-declared paths (e.g. AGENTS.md) that the guard-core-only --class UNDER-DETECTS as ordinary.
+# `ordinary`. Two shipped seams, consulted in order:
+#   - agent-boundary.sh --state : the union-aware authority on control-plane-ness.
 #   - promotion-readiness.sh --class : supplies `sensitive` (auth/, secrets, migrations, ...).
+# ⚠️ THIS HEADER'S CLAIM WAS RE-DERIVED 2026-08-17 AND IT NO LONGER HOLDS AS WRITTEN. It used to say
+# `--state` "catches adapter-declared paths (e.g. AGENTS.md) that the guard-core-only --class
+# UNDER-DETECTS as ordinary", and it cited the ratification job's reconciliation as the thing this
+# order mirrors. Both halves have since stopped being true:
+#   * `--class` is no longer guard-core-only. GUARD-PATH-ENUMERATION-INCOMPLETE S1 graduated
+#     `AGENTS.md` into guard-core's curated set and S2 made `--class` consult the SAME adapter union
+#     `--state` does, so neither seam under-detects the other's paths any more.
+#   * the ratification job's reconciliation arms this order "mirrors" were DELETED by S2 as redundant
+#     (arm 1) and as a fabrication (arm 2) — so the thing being mirrored is gone.
+# WHY BOTH SEAMS ARE STILL CONSULTED, honestly: not because either catches paths the other misses,
+# but because they carry DIFFERENT FAIL POSTURES over the same manifests — with the union underivable
+# `--class` fail-safes UP to control-plane while `--state` degrades to the guard-core floor — and
+# because `--class` is the only seam that answers `sensitive` at all. Two seams, one of them a second
+# opinion. Do not read the pair as "one covers the other's blind spot"; that blind spot is closed.
 # FAIL-SAFE, and it must NEVER fail open: an unreadable change-set or a crashed seam routes to `gated`.
 # The ratification job writes `|| echo NONE`, which FAILS OPEN — a crashed seam then yields NONE, read as
 # "no control-plane change". That is safe THERE because that job's verdict comes from rc, not the label;
@@ -46,12 +58,17 @@ gate_class() {
   # Both seam calls SCRUB the classifier-config environment: KIT_ADAPTERS_DIR / KIT_GUARD_CORE (and CI)
   # come from arguments/constants, never the caller's env (spec §7). Otherwise a decoy pointing
   # KIT_ADAPTERS_DIR at an empty dir would empty the union and fail this control-plane check open.
+  # ⚠️ KIT_UNION_LIB ADDED 2026-08-17 (GUARD-PATH-ENUMERATION-INCOMPLETE S2, review REV-I1): the
+  # union's DERIVATION and MATCHER moved into conformance/union-lib.sh, resolved through that
+  # variable, so it is a third env-borne route to the same decoy — pointing it at a nonexistent file
+  # takes the adapter half out of BOTH seams. A scrub list that covers two of three routes reads as
+  # exhaustive and is not; extend it whenever either child grows an input.
   # --state is exit-0-by-contract; a NON-zero rc means the seam itself broke -> fail-safe gated.
-  if ! _state=$(env -u KIT_ADAPTERS_DIR -u KIT_GUARD_CORE CI= sh conformance/agent-boundary.sh --changed "$_changed" --state 2>/dev/null); then
+  if ! _state=$(env -u KIT_ADAPTERS_DIR -u KIT_GUARD_CORE -u KIT_UNION_LIB CI= sh conformance/agent-boundary.sh --changed "$_changed" --state 2>/dev/null); then
     echo gated; return 0
   fi
   if [ "$_state" != NONE ]; then echo gated; return 0; fi   # union-aware control-plane -> gated
-  if ! _cls=$(env -u KIT_ADAPTERS_DIR -u KIT_GUARD_CORE CI= sh conformance/promotion-readiness.sh --class --no-verify --changed "$_changed" 2>/dev/null); then
+  if ! _cls=$(env -u KIT_ADAPTERS_DIR -u KIT_GUARD_CORE -u KIT_UNION_LIB CI= sh conformance/promotion-readiness.sh --class --no-verify --changed "$_changed" 2>/dev/null); then
     echo gated; return 0
   fi
   case "$_cls" in ordinary) echo ordinary ;; *) echo gated ;; esac  # sensitive|unexpected -> gated
@@ -265,11 +282,26 @@ selftest() {
   # ROUTING IS LIVE, fail-safe: an unreadable/nonexistent change-set must NOT fail open.
   assert_gated "$base/cf_nonexistent" "t2/failsafe: unreadable change-set -> gated (never ordinary)"
 
-  # THE under-detection fixture: --class says `ordinary` for AGENTS.md, --state says control-plane.
-  # This fixture goes RED against a gate_class that consults only --class, and GREEN once --state is
-  # consulted. It is the proof reconciliation is live rather than decorative. NEVER weaken it.
+  # ⚠️ THE "UNDER-DETECTION" FIXTURE — RETAINED, RELABELLED REDUNDANT, AND ITS OLD CLAIM RETRACTED
+  # (GUARD-PATH-ENUMERATION-INCOMPLETE S2 fix round, review REV-I3). Same treatment as phase-gate's
+  # legT3g/legT3h/legT3i, and for the same reason.
+  # WHAT IT USED TO SAY: "--class says `ordinary` for AGENTS.md, --state says control-plane. This
+  # fixture goes RED against a gate_class that consults only --class, and GREEN once --state is
+  # consulted. It is the proof reconciliation is live rather than decorative. NEVER weaken it."
+  # WHY THAT IS NOW FALSE — measured, not reasoned: S1 graduated `AGENTS.md` into guard-core's
+  # curated set (2026-08-16) and S2 made `--class` union-aware (2026-08-17), so `--class` answers
+  # control-plane for this path on its own. A gate_class consulting ONLY `--class` would pass this
+  # fixture, so it no longer discriminates and no longer proves the two-seam order load-bearing.
+  # ⚠️ AND THE "NEVER WEAKEN IT" INSTRUCTION IS HONOURED BY NOT PRETENDING: the row is KEPT (a
+  # governing harness document must route to `gated`, and that is worth asserting on its own terms),
+  # its LABEL is corrected so a green is not over-read, and the retraction is written here rather
+  # than left for a reader to discover. Nothing was made easier to pass — the assertion is identical.
+  # WHERE THE LOST PROPERTY LIVES NOW: that `--class` really carries the adapter-declared set is the
+  # census lock's leg (b) in conformance/promotion-readiness-wired.sh, with a drop-the-union-consult
+  # mutant that reds it. If a union-only path ever exists again that `--class` misses, THAT is where
+  # it reds — not here.
   cf="$base/cf_agents"; printf 'AGENTS.md\n' > "$cf"
-  assert_gated "$cf" "t2/underdetect: --class=ordinary, --state=control-plane -> gated"
+  assert_gated "$cf" "t2/governing-doc: AGENTS.md -> gated (both seams agree since S1+S2; retained-redundant, see note)"
 
   # ===== T2 — check_pr routes, asserted by VERDICT STRING (spec §4, §5) ================
   # A gated change-set listing (control-plane) drives every non-ordinary route below.

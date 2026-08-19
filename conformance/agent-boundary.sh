@@ -62,53 +62,55 @@ CORE="${KIT_GUARD_CORE:-$(dirname "$0")/../.claude/hooks/guard-core.sh}"
 # (P1 / N5 — turns the manifest's declarative inventory into real enforcement).
 ADAPTERS_DIR="${KIT_ADAPTERS_DIR:-$(dirname "$0")/../adapters}"
 
-# adapter_union: echo the union of controlPlanePaths across adapters/*/adapter.json (sorted-unique).
-# jq-absent or no adapters/ -> empty union (the hardcoded guard-core floor still applies regardless).
-adapter_union() {
-  command -v jq >/dev/null 2>&1 || return 0
-  [ -d "$ADAPTERS_DIR" ] || return 0
-  for _m in "$ADAPTERS_DIR"/*/adapter.json; do
-    [ -f "$_m" ] || continue
-    jq -r '.controlPlanePaths[]? // empty' "$_m" 2>/dev/null
-  done | sort -u
+# ★ THE UNION AUTHORITY IS SHARED, NOT LOCAL (GUARD-PATH-ENUMERATION-INCOMPLETE S2). Both the
+# derivation and the MATCHER moved to conformance/union-lib.sh, because the OTHER merge-time gate —
+# promotion-readiness.sh's `--class`, which loop-state and ceremony-binding both derive through — now
+# consults the same union. Two copies of a matcher IS the divergence this row exists to close: a
+# re-implemented matcher there would have gated `.Cursor/rules/x` here while deriving `ordinary`
+# there. Do not re-inline either function.
+UNION_LIB="${KIT_UNION_LIB:-$(dirname "$0")/union-lib.sh}"
+# shellcheck source=/dev/null  # resolved at runtime from $0, not statically followable
+[ -f "$UNION_LIB" ] && . "$UNION_LIB"
+
+# union_lib_ok: 0 iff the SHARED union unit is loaded and defines BOTH primitives this gate needs.
+# ⚠️⚠️ THE EXTRACTION CREATED A NEW PRECONDITION AND IT MUST FAIL CLOSED — this is a REQUIRED gate.
+# MEASURED, on a tree with the manifests intact and only conformance/union-lib.sh absent: `path_in_union`
+# called `kit_path_in_union`, which does not exist, so the command-not-found went to the discarded
+# stderr, the `if` read it as "no match", and a `GEMINI.md` diff answered rc 0 / state NONE — the gate
+# announcing "no control-plane paths in the diff" for a path it is the sole enforcement of. Deleting one
+# unregistered file silently disarmed the adapter half. An earlier revision of this comment claimed the
+# posture was "unchanged by the extraction, byte-for-byte"; that was true of the DERIVATION and false of
+# the DEPENDENCY, and the honest statement is the one below.
+union_lib_ok() {
+  command -v kit_union_derive >/dev/null 2>&1 && command -v kit_path_in_union >/dev/null 2>&1
 }
 
-# path_in_union <path> <union-list>: 0 if <path> matches a union entry — exact, or a directory-prefix
-# entry ending in '/'. Union entries never contain spaces, so word-splitting the list is safe.
-# A2 (case). The adapter-declared surface is the OTHER half of this gate's control-plane set, and it
-# was byte-literal while is_control_plane_path folded — so `.Cursor/rules` stayed ordinary and the union
-# half remained evadable by one capital letter. Fold BOTH the subject and each declared entry; adapter
-# manifests are author-written, so an entry may itself carry uppercase.
+# adapter_union: echo the union of controlPlanePaths across adapters/*/adapter.json (sorted-unique).
+# jq-absent or no adapters/ -> empty union (the hardcoded guard-core floor still applies regardless).
+#
+# ⚠️ THIS GATE'S DEGRADED-MECHANISM POSTURE IS UNCHANGED BY THE EXTRACTION, DELIBERATELY, AND THE
+# SCOPE OF THAT WORD MATTERS. kit_union_derive prints what it could parse in EVERY state and reports
+# the state as its rc; this wrapper still IGNORES that rc and consumes the partial union, exactly as
+# the inline copy did. So a jq-less runner still degrades this required gate to the guard-core floor
+# SILENTLY, while `--class` fail-safes to control-plane — the two gates disagree again, inverted.
+# That asymmetry is named in the S2 design (§3, vet M-B) and is boarded as its own row: changing a
+# REQUIRED gate's fail posture is its own ruling, not a side effect of an extraction. Non-strict on
+# purpose for the same reason.
+# ⚠️ WHAT IS **NOT** INHERITED FROM THE INLINE COPY: a MISSING SHARED UNIT. The inline copy could not
+# be missing — it was in this file. Its absence is a broken installation, not a degraded input, and it
+# is refused at the call sites below rather than absorbed here.
+adapter_union() {
+  union_lib_ok || return 0
+  kit_union_derive "$ADAPTERS_DIR" 2>/dev/null || return 0
+}
+
+# path_in_union <path> <union-list>: 0 if <path> matches a union entry — exact, a glob, or a
+# directory-prefix entry ending in '/'. A THIN ALIAS onto the shared matcher (see above); the
+# semantics — glob implementation, case folding of BOTH sides, the trailing-slash prefix rule — live
+# in conformance/union-lib.sh and are documented there. Kept as a name because this file's selftest,
+# its callers and its commentary all refer to it.
 path_in_union() {
-  _pp=$1; _u=$2
-  case "$_pp" in *[A-Z]*) _pp=$(printf '%s' "$_pp" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
-  # `for _e in $_u` needs WORD splitting but must NOT get PATHNAME expansion: a manifest entry such as
-  # `conformance/*` would otherwise expand to the existing files, so a NEW file under that directory
-  # would not match the union at all. Adapter manifests are author-controlled input to an
-  # authorization predicate, so disable globbing for the loop and restore it after.
-  # Save the caller's noglob state and restore it, rather than an unconditional `set +f` — the
-  # established pattern in guard-core.sh. An unconditional restore silently clears a caller's `set -f`.
-  _piu_g=0; case "$-" in *f*) _piu_g=1 ;; esac
-  set -f
-  for _e in $_u; do
-    case "$_e" in *[A-Z]*) _e=$(printf '%s' "$_e" | LC_ALL=C tr 'A-Z' 'a-z') ;; esac
-    # IMPLEMENT the glob rather than degrading to match-all. An earlier draft treated any entry
-    # containing * ? or [ as an unsupported shape and returned MATCH, reasoning that fail-closed beats a
-    # silent no-match. Measured, that made ONE glob entry in ANY adapter manifest classify EVERY path
-    # control-plane — `README.md`, `package.json`, `totally/unrelated.txt` — turning the required gate
-    # into an always-red check with no diagnostic naming the offending entry. Over-classification is the
-    # safe direction but a blanket merge block is not a usable one.
-    # `case` patterns are NOT subject to pathname expansion, so the glob works directly and `set -f`
-    # (kept, for the unquoted word-split above) does not affect it. `docs/*` now matches
-    # `docs/CAPABILITIES.md` and NOT `src/App.tsx` — the behaviour the fail-closed branch was standing in
-    # for. Unquoted `$_e` on the pattern side is deliberate: that is what makes it a pattern.
-    # shellcheck disable=SC2254  # intentional: the union entry IS the pattern
-    case "$_pp" in $_e) [ "$_piu_g" = 1 ] || set +f; return 0 ;; esac
-    [ "$_pp" = "$_e" ] && { [ "$_piu_g" = 1 ] || set +f; return 0; }
-    case "$_e" in */) case "$_pp" in "$_e"*) [ "$_piu_g" = 1 ] || set +f; return 0 ;; esac ;; esac
-  done
-  [ "$_piu_g" = 1 ] || set +f
-  return 1
+  kit_path_in_union "$@"
 }
 
 unverifiable() {  # <reason>
@@ -368,6 +370,13 @@ run() {
   [ -f "$CORE" ] || unverifiable "deny-matrix core not found at $CORE (set KIT_GUARD_CORE)"
   # shellcheck disable=SC1090  # core path is resolved at runtime, intentionally dynamic
   . "$CORE"
+  # ★ REFUSE, NEVER DEGRADE, WHEN THE SHARED UNION UNIT IS ABSENT (see union_lib_ok). The guard-core
+  # half being unavailable is already `unverifiable` above; the adapter half deserves the same
+  # treatment, and without this line it got the opposite — a silent rc 0. `unverifiable` is the
+  # right refusal: rc 2 locally, escalated to rc 1 under CI/--require, and the ratification workflow
+  # renders rc 2 as a RED check-run, which blocks. Fail-closed by the same route every other
+  # can't-evaluate state here takes.
+  union_lib_ok || unverifiable "conformance/union-lib.sh missing or defines no kit_path_in_union — the adapter-declared half of the control-plane set cannot be evaluated (looked for '$UNION_LIB'; set KIT_UNION_LIB)"
   [ -n "$CHANGED" ] || unverifiable "no --changed listing supplied"
   [ -f "$CHANGED" ] || unverifiable "--changed listing not found: $CHANGED"
   _paths=$(cat "$CHANGED")
@@ -399,7 +408,30 @@ README.md" 0 "ordinary diff, unratified -> PASS"
   dc 1 "DEVELOPMENT-STANDARDS.md" 0 "standards doc change, unratified -> FAIL"
   dc 1 "CLAUDE.md" 0 "CLAUDE.md change, unratified -> FAIL"
   dc 1 "adapters/generic/adapter.json" 0 "adapter manifest change, unratified -> FAIL"
-  dc 0 "scripts/deploy.sh" 0 "adopter own script (not kit) -> PASS"
+  # ⚠️ FIXTURE CHANGED 2026-08-16 (GUARD-PATH-ENUMERATION-INCOMPLETE S1), and the change is disclosed
+  # in that design's consequences rather than worked around. `scripts/deploy.sh` used to prove "an
+  # adopter's own script is not kit machinery"; `scripts/` is a FAMILY now — protecting it per-file let
+  # a real governing script (scripts/branch-protection-apply.sh) sit writable and mergeable as ordinary
+  # for ten days — so every path under a `scripts/` SEGMENT is control-plane, adopter scripts included.
+  # The property this row actually guards (the boundary is not "anything that looks kit-ish") is kept
+  # by re-pointing it at a directory that merely ENDS in the family name: the family is SEGMENT-
+  # anchored, so `myscripts/` is ordinary and this row still fails if the family ever becomes a
+  # substring match. The old spelling is asserted from the other side, as a control-plane row.
+  dc 0 "myscripts/deploy.sh" 0 "adopter dir merely ENDING in a family name -> PASS"
+  dc 1 "scripts/deploy.sh" 0 "adopter script under a scripts/ SEGMENT is family control-plane -> FAIL"
+  # ⚠️ THE SECOND MERGE-SIDE FACE OF THE HOME-INSTRUMENTATION RELIEF, PINNED HERE BECAUSE A COMMENT
+  # CANNOT GO RED (GUARD-CLAUDE-HOME-INSTRUMENTATION-FP, design §4 vet M2). That relief exists to
+  # unbreak the harness's OWN `~/.claude/projects|plans/` workspace, but it is by subtree NAME rather
+  # than by location, so it relaxes TWO merge-side surfaces, not one: `promotion-readiness --class`
+  # derives `ordinary` (pinned in promotion-readiness-wired.sh) AND this gate answers "no
+  # control-plane paths" for a repo-tracked path under a relieved name — measured, and the first cut
+  # of the slice pinned only the first half. Accepted (no harness reads repo-side copies of these
+  # subtrees) and asserted, so a future slice that location-scopes the relief reds BOTH halves rather
+  # than silently leaving one behind. The paired row below is the load-bearing negative: a
+  # NON-relieved sibling inside the very same directory must still demand ratification, or this row
+  # would pass just as happily against a relief widened to the whole `.claude/` family.
+  dc 0 ".claude/projects/evil.md" 0 "relieved workspace subtree (accepted M2 face) -> PASS"
+  dc 1 ".claude/commands/evil.md" 0 "NON-relieved sibling in the same directory -> FAIL"
 
   # N5 union: a path declared ONLY in an adapter manifest's controlPlanePaths (NOT in guard-core's
   # hardcoded set) is now caught — proving the gate enforces what adapters declare, per harness.
@@ -705,6 +737,51 @@ README.md" 0 "ordinary diff, unratified -> PASS"
     echo "selftest SKIP: real adapter-union integration (jq or adapters/ absent)"
   fi
 
+  # ── ★★★ THE SHARED-UNIT PRECONDITION MUST FAIL CLOSED (S2 fix round, review REV-C2).
+  # REGRESSION LEG for a MEASURED fail-open: with conformance/union-lib.sh absent and the manifests
+  # intact, `path_in_union` called an undefined `kit_path_in_union`, the command-not-found went to
+  # discarded stderr, and a GEMINI.md diff answered rc 0 / state NONE — this REQUIRED gate reporting
+  # "no control-plane paths in the diff" for a path it is the sole enforcement of. Driven END TO END
+  # through a hermetic tree, because the defect lived in the CLI's real resolution of $0, and driven
+  # in BOTH directions so the leg cannot pass by breaking the fixture instead of the mechanism.
+  _ul=$(mktemp -d 2>/dev/null) || _ul=""
+  if [ -n "$_ul" ]; then
+    mkdir -p "$_ul/conformance" "$_ul/.claude/hooks" "$_ul/adapters/gemini"
+    cp "$0" "$_ul/conformance/agent-boundary.sh"
+    cp "$CORE" "$_ul/.claude/hooks/guard-core.sh" 2>/dev/null || :
+    # A manifest declaring a UNION-ONLY path: guard-core does not carry GEMINI.md, so only the
+    # adapter half can catch it. That is what makes this fixture able to see the hole at all.
+    printf '{"controlPlanePaths":["GEMINI.md"]}\n' > "$_ul/adapters/gemini/adapter.json"
+    printf 'GEMINI.md\n' > "$_ul/changed.txt"
+    # (a) WITH the shared unit present the union half must CATCH it -> rc 1. This is the premise: if
+    #     this half fails, the fixture proves nothing and (b) below would pass for free.
+    cp "$UNION_LIB" "$_ul/conformance/union-lib.sh" 2>/dev/null || :
+    # shellcheck disable=SC1007  # CI= / REQUIRE= intentionally CLEAR the vars for the subprocess (the
+    # three-state contract needs them empty); same idiom, same justification, as the CLI legs above.
+    ( cd "$_ul" && CI= REQUIRE=0 sh conformance/agent-boundary.sh --changed changed.txt --ratified 0 ) >/dev/null 2>&1 && _ulr=0 || _ulr=$?
+    if [ "$_ulr" = 1 ]; then echo "selftest PASS: premise — with union-lib.sh present, a union-only path is caught (rc 1)"
+    else echo "selftest FAIL: premise — with union-lib.sh present the union-only fixture answered rc $_ulr, not 1; the missing-lib leg below would prove nothing"; st=1; fi
+    # (b) REMOVE the shared unit. The gate must REFUSE (rc 2 locally), never answer rc 0.
+    rm -f "$_ul/conformance/union-lib.sh"
+    # shellcheck disable=SC1007  # as above: the empty assignments are the point.
+    ( cd "$_ul" && CI= REQUIRE=0 sh conformance/agent-boundary.sh --changed changed.txt --ratified 0 ) >/dev/null 2>&1 && _ulr=0 || _ulr=$?
+    if [ "$_ulr" = 2 ]; then echo "selftest PASS: union-lib.sh ABSENT -> rc 2 (refused), never a silent rc 0"
+    elif [ "$_ulr" = 0 ]; then echo "selftest FAIL: union-lib.sh ABSENT -> rc 0 — the gate announced 'no control-plane paths' for a union-only path; deleting one file silently disarms the adapter half"; st=1
+    else echo "selftest FAIL: union-lib.sh ABSENT -> rc $_ulr, want 2 (unverifiable/refused)"; st=1; fi
+    # …and the refusal must NAME the missing unit, or an operator cannot act on it.
+    # shellcheck disable=SC1007  # as above: the empty assignments are the point.
+    _ulo=$( cd "$_ul" && CI= REQUIRE=0 sh conformance/agent-boundary.sh --changed changed.txt --ratified 0 2>&1 || true )
+    case "$_ulo" in *union-lib.sh*) echo "selftest PASS: the refusal names conformance/union-lib.sh" ;;
+      *) echo "selftest FAIL: the refusal does not name the missing unit: $_ulo"; st=1 ;; esac
+    # …and under CI it escalates to rc 1, like every other unverifiable state here.
+    ( cd "$_ul" && CI=true sh conformance/agent-boundary.sh --changed changed.txt --ratified 0 ) >/dev/null 2>&1 && _ulr=0 || _ulr=$?
+    if [ "$_ulr" = 1 ]; then echo "selftest PASS: union-lib.sh absent + CI -> rc 1 (escalated, still fail-closed)"
+    else echo "selftest FAIL: union-lib.sh absent + CI want rc 1 got $_ulr"; st=1; fi
+    rm -rf "$_ul"
+  else
+    echo "selftest FAIL: could not mktemp for the union-lib precondition legs"; st=1
+  fi
+
   [ "$st" = "0" ] && echo "agent-boundary --selftest: OK"
   return "$st"
 }
@@ -713,6 +790,13 @@ state() {  # advisory label for the CI human-surface; CI-independent, always exi
   [ -f "$CORE" ] || { echo NONE; exit 0; }
   # shellcheck disable=SC1090
   . "$CORE"
+  # ⚠️ THIS MODE'S CONTRACT IS "A LABEL FROM A CLOSED SET, ALWAYS EXIT 0", so it cannot refuse the way
+  # run() does — and a FOURTH token is exactly the closed-vocabulary brick trap this slice already
+  # names at `--for-class`. So it discloses instead, and the ceiling is stated rather than hidden:
+  # with the shared unit absent this label reads NONE (adapter-only paths look like nothing to
+  # ratify), and what actually holds the line is run()'s refusal above — the VERDICT is that rc, never
+  # this label. The workflow discards this stderr; the disclosure is for a human running it by hand.
+  union_lib_ok || echo "agent-boundary --state: conformance/union-lib.sh is missing, so the ADAPTER half of the control-plane set was not evaluated and this label reflects the guard-core floor ALONE. The gate's verdict (rc) refuses in this state; do not read this label as the gate's answer." >&2
   { [ -n "$CHANGED" ] && [ -f "$CHANGED" ]; } || { echo NONE; exit 0; }
   ratification_state "$(cat "$CHANGED")" "$RATIFIED" "$(adapter_union)"
   exit 0

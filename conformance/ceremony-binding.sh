@@ -293,12 +293,18 @@ OBL_LIB_SOURCED=yes
 # Derive the change-class via the SINGLE hardened authority. Fails CLOSED: any non-zero exit, empty
 # output, or unrecognised token from promotion-readiness.sh is a DERIVE FAILURE, never an implicit
 # `ordinary` (which would be fail-OPEN on the decision this whole gate exists to protect).
+# ★ THE CHILD'S ENVIRONMENT IS SCRUBBED, NOT INHERITED (review REV-I1) — the `env -u` precedent
+# conformance/backlog-presence.sh already applies to this exact classifier, extended to the input
+# GUARD-PATH-ENUMERATION-INCOMPLETE S2 added. MEASURED: with `KIT_ADAPTERS_DIR` pointing at an empty
+# directory, `--class` answers `ordinary` for a `GEMINI.md`-only change-set, so an ambient variable
+# would decide whether this gate's ordinary-class short-circuit applies. `KIT_UNION_LIB` is scrubbed
+# in the same breath: it selects the matcher. Arguments, not env.
 derive_class() {   # args: [--changed FILE]
   _dc_out=""
   if [ "${1:-}" = "--changed" ] && [ -n "${2:-}" ]; then
-    _dc_out="$(sh "$DIR/conformance/promotion-readiness.sh" --changed "$2" --class 2>/dev/null | tail -1)" || _dc_out=""
+    _dc_out="$(env -u KIT_ADAPTERS_DIR -u KIT_UNION_LIB sh "$DIR/conformance/promotion-readiness.sh" --changed "$2" --class 2>/dev/null | tail -1)" || _dc_out=""
   else
-    _dc_out="$(sh "$DIR/conformance/promotion-readiness.sh" --class 2>/dev/null | tail -1)" || _dc_out=""
+    _dc_out="$(env -u KIT_ADAPTERS_DIR -u KIT_UNION_LIB sh "$DIR/conformance/promotion-readiness.sh" --class 2>/dev/null | tail -1)" || _dc_out=""
   fi
   case "$_dc_out" in
     ordinary|sensitive|control-plane) printf '%s\n' "$_dc_out"; return 0 ;;
@@ -1542,6 +1548,27 @@ selftest() {
          _fails=$((_fails+1)) ;;
     *) echo "FAIL leg3: expected rc 2 with an UNDERIVABLE verdict, got rc=$_rc3: $_leg3_out"; _fails=$((_fails+1)) ;;
   esac
+
+  # LEG 3d (GUARD-PATH-ENUMERATION-INCOMPLETE S2) — THE ADAPTER-UNION INHERITANCE.
+  # This gate derives its change-class through promotion-readiness.sh, and that classifier used to
+  # see only the GUARD-CORE half of the merge-time control-plane set. So a change-set touching only
+  # an adapter-declared path (`GEMINI.md`, `.gemini/*`, `.cursor/rules/*`) derived `ordinary`, this
+  # gate's ordinary-class short-circuit let it through, and the required ratification gate — which
+  # unions the SAME manifests — then blocked the merge. S2 made the classifier union-aware, so this
+  # gate inherits the cure with no edit of its own.
+  # ⚠️ ASSERTED, NOT INHERITED. "It flips by construction once the classifier does" is a derivation,
+  # not a measurement, and the sibling row exists precisely because a pair that was supposed to agree
+  # by construction diverged for ten days. Driven through derive_class — this file's own authority
+  # seam — so a future re-fork of that function reds here.
+  _legs=$((_legs+1))   # leg3d
+  printf 'GEMINI.md\n' > "$_tmp/changed-union"
+  _l3d="$( derive_class --changed "$_tmp/changed-union" )" || _l3d="<derive failure>"
+  if [ "$_l3d" = control-plane ]; then
+    echo "PASS leg3d: an adapter-declared-only change-set derives control-plane (adapter union inherited)"
+  else
+    echo "FAIL leg3d: an adapter-declared-only change-set derived '$_l3d', want control-plane — this gate and the required ratification gate classify the same diff differently again"
+    _fails=$((_fails+1))
+  fi
 
   # ---- T2 legs: the GO record must NAME a real, tracked, non-placeholder artifact.
   # Fixture repos are real git repos with real notes — a mocked note would prove nothing about the

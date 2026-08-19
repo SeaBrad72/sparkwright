@@ -335,10 +335,16 @@ assert_allow "run kit-guard sh"    '{"tool_name":"Bash","tool_input":{"command":
 assert_deny "Write new hook file"  '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks/entry-core.sh","content":"x"}}'
 assert_deny "Edit new hook file"   '{"tool_name":"Edit","tool_input":{"file_path":".claude/hooks/anything.sh","old_string":"a","new_string":"b"}}'
 assert_deny "sed -i new hook file" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/hooks/entry-core.sh"}}'
-# must still ALLOW: reading a hook, and a SIBLING that merely shares the `hooks` prefix (the pattern is
-# directory-anchored — `hooks-notes.md` is not inside the hook directory and must not be captured).
+# must still ALLOW: reading a hook. (The `hooks-notes.md` sibling used to be the second half of this
+# note; see the flip immediately below — it is inside `.claude/` and is a family member now.)
 assert_allow "read new hook file"  '{"tool_name":"Read","tool_input":{"file_path":".claude/hooks/entry-core.sh"}}'
-assert_allow "Write hooks-notes"   '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks-notes.md","content":"x"}}'
+# FLIPPED ALLOW -> DENY by GUARD-PATH-ENUMERATION-INCOMPLETE S1, deliberately. `.claude/hooks-notes.md`
+# used to prove the `hooks/` prefix was DIRECTORY-anchored rather than a substring; with `.claude/*` now
+# a family, a sibling of `hooks/` INSIDE `.claude/` is control-plane on its own account — every file in
+# the agent's instrumentation directory is governing. The anchoring property that leg guarded is not
+# lost: it is carried by the `my.claude/` / `src/mycompany.claude/` legs below, which are the ones that
+# actually test the anchor (a component merely ENDING in `.claude`), and they stay ALLOW.
+assert_deny "Write hooks-notes (family)" '{"tool_name":"Write","tool_input":{"file_path":".claude/hooks-notes.md","content":"x"}}'
 # The prefix must be DIRECTORY-ANCHORED. `*.claude/hooks/*` also matched any path whose component
 # merely ENDS in `.claude` — measured: `my.claude/hooks/x` and `src/mycompany.claude/hooks/z` both
 # classified control-plane. Those are ordinary adopter files, and an unnecessary control-plane
@@ -351,8 +357,10 @@ assert_allow "nested .claude-ish"  '{"tool_name":"Write","tool_input":{"file_pat
 # --- M2-S3: agent definitions are control-plane (Edit/Write tool path must DENY) ---
 assert_deny "Edit agent def"       '{"tool_name":"Edit","tool_input":{"file_path":".claude/agents/kit-steward.md","old_string":"a","new_string":"b"}}'
 assert_deny "Write agent def"      '{"tool_name":"Write","tool_input":{"file_path":".claude/agents/reviewer.md","content":"x"}}'
-# --- M2-S3: must still ALLOW (the glob matches the agents/ dir only, not a sibling) ---
-assert_allow "Write agents-notes"  '{"tool_name":"Write","tool_input":{"file_path":".claude/agents-notes.md","content":"x"}}'
+# --- M2-S3: reads still ALLOW; a SIBLING of agents/ inside .claude/ is now family control-plane ---
+# Same flip, same reason as `.claude/hooks-notes.md` above (S1's `.claude/*` family). The "not a
+# sibling" property this leg used to assert now lives on the `my.claude/agents/x.md` ALLOW leg.
+assert_deny "Write agents-notes (family)" '{"tool_name":"Write","tool_input":{"file_path":".claude/agents-notes.md","content":"x"}}'
 assert_allow "read agent def"      '{"tool_name":"Read","tool_input":{"file_path":".claude/agents/kit-steward.md"}}'
 # --- M2-S5: meta-control verdict state is control-plane (TOOL path + SHELL path must DENY) ---
 assert_deny "Edit marker"          '{"tool_name":"Edit","tool_input":{"file_path":"docs/governance/.meta-control-last","old_string":"a","new_string":"b"}}'
@@ -584,6 +592,264 @@ assert_deny "sed -i .checkov.yaml"  '{"tool_name":"Bash","tool_input":{"command"
 # must still ALLOW reading a scanner-config (reads of control-plane are permitted; no over-block)
 assert_allow "read .gitleaks.toml"  '{"tool_name":"Read","tool_input":{"file_path":".gitleaks.toml"}}'
 assert_allow "cat .semgrepignore"   '{"tool_name":"Bash","tool_input":{"command":"cat .semgrepignore"}}'
+
+# --- GUARD-PATH-ENUMERATION-INCOMPLETE S1: control-plane membership by DERIVATION ---------------
+# THE DEFECT, MEASURED at 9d29406e: `scripts/` and the `.claude/` sub-paths were protected PER FILE,
+# so a governing file born outside the hand list was guard-WRITABLE and merged as `ordinary`. Eleven
+# tracked governing paths measured ALLOW (AGENTS.md, .gitattributes, 9 scripts), and the class
+# demonstrated itself live — `scripts/branch-protection-apply.sh` entered the tree on 2026-08-06 in
+# PR #497, outside the enumeration, and sat writable for ten days with no list edit and no gate
+# noticing. The cure is a FAMILY property, not a longer list (design
+# docs/architecture/2026-08-16-guard-path-derivation-s1-design.md): `scripts/*`, `profiles/*` and
+# `.claude/*` become segment-anchored families; AGENTS.md, `.gitattributes` (at EVERY depth) and
+# REQUIRED-CHECKS.md join the curated root set.
+#
+# ⚠️ THESE ROWS MUST NOT BE SATISFIABLE BY RE-ENUMERATION. The `zz-*` names below exist in NO list
+# anywhere and in no directory that exists — they are the derivation proof. If a future change makes
+# them pass only because someone added their names to a matcher, the row has been defeated, not met.
+# One fixture PER MUTATION FORM (Write/Edit tool path · `>` redirect · `sed -i`) per the C5
+# control-plane completeness discipline.
+# scripts/ family — the two ALLOW-measured names, one per mutation form, plus a never-enumerated name.
+assert_deny "S1 Write publish-public"    '{"tool_name":"Write","tool_input":{"file_path":"scripts/publish-public.sh","content":"x"}}'
+assert_deny "S1 redirect publish-public" '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/publish-public.sh"}}'
+assert_deny "S1 sed -i publish-public"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/publish-public.sh"}}'
+assert_deny "S1 Edit branch-protection"  '{"tool_name":"Edit","tool_input":{"file_path":"scripts/branch-protection-apply.sh","old_string":"a","new_string":"b"}}'
+assert_deny "S1 redirect branch-prot"    '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/branch-protection-apply.sh"}}'
+assert_deny "S1 sed -i branch-prot"      '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/branch-protection-apply.sh"}}'
+assert_deny "S1 Write NEVER-listed script"    '{"tool_name":"Write","tool_input":{"file_path":"scripts/zz-fixture-new.sh","content":"x"}}'
+assert_deny "S1 redirect NEVER-listed script" '{"tool_name":"Bash","tool_input":{"command":"echo x > scripts/zz-fixture-new.sh"}}'
+assert_deny "S1 sed -i NEVER-listed script"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ scripts/zz-fixture-new.sh"}}'
+# profiles/ family — the enforcement-bearing files an adopter's CI actually runs. Deep arm ships
+# (design A2 NEW-COND-B: `git archive` retains 403 profiles/ paths; incept keeps profiles/<STACK>/).
+assert_deny "S1 Write adopter-gates"     '{"tool_name":"Write","tool_input":{"file_path":"profiles/adopter-gates.yml","content":"x"}}'
+assert_deny "S1 redirect adopter-gates"  '{"tool_name":"Bash","tool_input":{"command":"echo x > profiles/adopter-gates.yml"}}'
+assert_deny "S1 sed -i adopter-gates"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ profiles/adopter-gates.yml"}}'
+assert_deny "S1 Write profile ci.yml"    '{"tool_name":"Write","tool_input":{"file_path":"profiles/typescript-node/ci.yml","content":"x"}}'
+assert_deny "S1 redirect profile ci.yml" '{"tool_name":"Bash","tool_input":{"command":"echo x > profiles/typescript-node/ci.yml"}}'
+assert_deny "S1 sed -i profile ci.yml"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ profiles/typescript-node/ci.yml"}}'
+assert_deny "S1 Write NEVER-listed profile" '{"tool_name":"Write","tool_input":{"file_path":"profiles/zz-new/ci.yml","content":"x"}}'
+assert_deny "S1 redirect NEVER-listed prof" '{"tool_name":"Bash","tool_input":{"command":"echo x > profiles/zz-new/ci.yml"}}'
+assert_deny "S1 sed -i NEVER-listed prof"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ profiles/zz-new/ci.yml"}}'
+# ⚠️ THE BARE DIRECTORY IS A FOURTH MATCHER, AND THE FIRST CUT OF THIS SLICE MISSED IT. `_ctm_match`
+# holds bare control-plane DIRECTORY names for TARGET matching, because `is_control_plane_path`'s
+# patterns are `profiles/*` — which a bare `profiles` never matches. Measured before this fix:
+# `mv profiles /tmp/x` and `chmod -R 777 profiles` both ALLOWED while every file INSIDE profiles/
+# denied, i.e. the one command that relocates the entire family was the one command left open. This is
+# the identical hole the `mv conformance /tmp` note above records, reopened for a new family — a family
+# is only as protected as its LEAST protected route, and a member-file lock says nothing about the
+# directory itself. `rm -rf profiles` denied even before the fix, but by the unrelated `rm -rf` rule,
+# not by the classifier: crediting that would have hidden the gap. Case variant and deep arm included.
+assert_deny  "S1 relocate profiles dir"      '{"tool_name":"Bash","tool_input":{"command":"mv profiles /tmp/x"}}'
+assert_deny  "S1 chmod -R the profiles dir"  '{"tool_name":"Bash","tool_input":{"command":"chmod -R 777 profiles"}}'
+assert_deny  "S1 relocate Profiles (case)"   '{"tool_name":"Bash","tool_input":{"command":"mv Profiles /tmp/x"}}'
+assert_deny  "S1 relocate nested profiles"   '{"tool_name":"Bash","tool_input":{"command":"mv src/profiles /tmp/x"}}'
+assert_allow "S1 relocate myprofiles dir"    '{"tool_name":"Bash","tool_input":{"command":"mv myprofiles /tmp/x"}}'
+# Bare-directory REGRESSION CONTROLS — the five names that were already in _ctm_match must be
+# byte-for-byte unchanged by adding a sixth. An add-only edit to a `case` list cannot in principle
+# alter its siblings, but "cannot in principle" is what the pattern-list warnings in guard-core.sh
+# exist to disbelieve; these are cheap and they make the add-only claim measured rather than argued.
+assert_deny  "S1 ctm control: skills dir"      '{"tool_name":"Bash","tool_input":{"command":"mv skills /tmp/x"}}'
+assert_deny  "S1 ctm control: scripts dir"     '{"tool_name":"Bash","tool_input":{"command":"mv scripts /tmp/x"}}'
+assert_deny  "S1 ctm control: adapters dir"    '{"tool_name":"Bash","tool_input":{"command":"mv adapters /tmp/x"}}'
+assert_deny  "S1 ctm control: .claude dir"     '{"tool_name":"Bash","tool_input":{"command":"mv .claude /tmp/x"}}'
+assert_allow "S1 ctm control: myskills dir"    '{"tool_name":"Bash","tool_input":{"command":"mv myskills /tmp/x"}}'
+assert_allow "S1 ctm control: docs dir"        '{"tool_name":"Bash","tool_input":{"command":"mv docs /tmp/x"}}'
+# .claude/ family — the two prospective sub-directories the substrate measured ALLOW (neither exists
+# in the tree), so no census over tracked files could have caught them.
+assert_deny "S1 Write .claude/commands"    '{"tool_name":"Write","tool_input":{"file_path":".claude/commands/x.md","content":"x"}}'
+assert_deny "S1 redirect .claude/commands" '{"tool_name":"Bash","tool_input":{"command":"echo x > .claude/commands/x.md"}}'
+assert_deny "S1 sed -i .claude/commands"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/commands/x.md"}}'
+assert_deny "S1 Write .claude/plugins"     '{"tool_name":"Write","tool_input":{"file_path":".claude/plugins/y.json","content":"x"}}'
+assert_deny "S1 redirect .claude/plugins"  '{"tool_name":"Bash","tool_input":{"command":"echo x > .claude/plugins/y.json"}}'
+assert_deny "S1 sed -i .claude/plugins"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/plugins/y.json"}}'
+assert_deny "S1 Write NEVER-listed .claude dir"    '{"tool_name":"Write","tool_input":{"file_path":".claude/newdir/x.md","content":"x"}}'
+assert_deny "S1 redirect NEVER-listed .claude dir" '{"tool_name":"Bash","tool_input":{"command":"echo x > .claude/newdir/x.md"}}'
+assert_deny "S1 sed -i NEVER-listed .claude dir"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .claude/newdir/x.md"}}'
+# Curated root additions — AGENTS.md (the roster-authority floor incept renames into the adopter's
+# governing doc), REQUIRED-CHECKS.md (binds which CI contexts block merge), and `.gitattributes` at
+# EVERY depth (git archive honors it per-directory, so a nested one carries the same export property).
+assert_deny "S1 Write AGENTS.md"         '{"tool_name":"Write","tool_input":{"file_path":"AGENTS.md","content":"x"}}'
+assert_deny "S1 redirect AGENTS.md"      '{"tool_name":"Bash","tool_input":{"command":"echo x > AGENTS.md"}}'
+assert_deny "S1 sed -i AGENTS.md"        '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ AGENTS.md"}}'
+assert_deny "S1 Write REQUIRED-CHECKS"   '{"tool_name":"Write","tool_input":{"file_path":"REQUIRED-CHECKS.md","content":"x"}}'
+assert_deny "S1 redirect REQUIRED-CHECKS" '{"tool_name":"Bash","tool_input":{"command":"echo x > REQUIRED-CHECKS.md"}}'
+assert_deny "S1 sed -i REQUIRED-CHECKS"  '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ REQUIRED-CHECKS.md"}}'
+assert_deny "S1 Write .gitattributes"    '{"tool_name":"Write","tool_input":{"file_path":".gitattributes","content":"x"}}'
+assert_deny "S1 redirect .gitattributes" '{"tool_name":"Bash","tool_input":{"command":"echo x > .gitattributes"}}'
+assert_deny "S1 sed -i .gitattributes"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ .gitattributes"}}'
+assert_deny "S1 Write nested .gitattributes"    '{"tool_name":"Write","tool_input":{"file_path":"docs/.gitattributes","content":"x"}}'
+assert_deny "S1 redirect nested .gitattributes" '{"tool_name":"Bash","tool_input":{"command":"echo x > docs/.gitattributes"}}'
+assert_deny "S1 sed -i nested .gitattributes"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ docs/.gitattributes"}}'
+# ⚠️ `.gitattributes` IS LEFT-ANCHORED IN pathhit, NOT A BARE SUBSTRING. It shipped unanchored in the
+# first cut of this slice — copied from the `.gitleaksignore` precedent — and that produced a ROUTE
+# SPLIT, measured: `foo.gitattributes` and `docs/my.gitattributes` ALLOWED at the Write/Edit path route
+# (the globs `​.gitattributes|*/.gitattributes` are already segment-exact) while DENYING on the cmd
+# route under any unrecognized lead verb. A file is either governing or it is not; the two routes
+# disagreeing is the defect this slice exists to remove, one matcher over. The legs below pin BOTH
+# halves: the real file denies under every corner spelling, the look-alikes allow on both routes.
+# ⚠️ THE LOOK-ALIKE LEGS MUST USE AN UNRECOGNIZED LEAD VERB. `printf x > foo.gitattributes` is
+# read-recognized (its redirect target is ordinary) and returns before pathhit ever runs, so a
+# printf-led fixture passes with the leg left unanchored and proves nothing.
+assert_deny  "S1 gitattr corner: interpreter"    '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'.gitattributes'"'"','"'"'w'"'"')\""}}'
+assert_deny  "S1 gitattr corner: post-space"     '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb .gitattributes"}}'
+assert_deny  "S1 gitattr corner: post-equals"    '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb --out=.gitattributes"}}'
+assert_deny  "S1 gitattr corner: nested"         '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb docs/.gitattributes"}}'
+assert_allow "S1 gitattr look-alike path"        '{"tool_name":"Write","tool_input":{"file_path":"foo.gitattributes","content":"x"}}'
+assert_allow "S1 gitattr look-alike path nested" '{"tool_name":"Write","tool_input":{"file_path":"docs/my.gitattributes","content":"x"}}'
+assert_allow "S1 gitattr look-alike cmd"         '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb foo.gitattributes"}}'
+assert_allow "S1 gitattr look-alike cmd nested"  '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb docs/my.gitattributes"}}'
+# CORNER SPELLINGS of the re-anchored pathhit `.claude` leg (design A2 NEW-MED-A). The anchor class is
+# PINNED to `(^|[^A-Za-z0-9._-])`, NOT `(^|/)`: the path-glob phrasing "at start or after /" would drop
+# every one of these, and for the interpreter form pathhit is the ONLY arm that fires (the token walk
+# cannot see a path inside `open('…','w')`), so `(^|/)` would re-open that P0 class outright.
+assert_deny "S1 corner: interpreter form"  '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'.claude/settings.json'"'"','"'"'w'"'"')\""}}'
+assert_deny "S1 corner: double-quoted"     '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb \".claude/settings.json\""}}'
+assert_deny "S1 corner: post-space"        '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb .claude/settings.json"}}'
+assert_deny "S1 corner: post-equals"       '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb --out=.claude/settings.json"}}'
+# post-`:` — the anchor class excludes filename-tail bytes, and `:` is not one, so a `host:path` or
+# `VAR:value` spelling still denies. The A3 record claims this was measured; it now has a fixture.
+assert_deny "S1 corner: post-colon"        '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb x:.claude/settings.json"}}'
+# SIBLING-FP RELIEF (the GUARD-CLAUDE-SIBLING-FP fold, riding on the family narrowing). `<x>.claude/…`
+# is an ordinary adopter path: bare `*` crossed segment boundaries, so all four `*.claude/…` globs
+# over-matched it, and the pathhit `.claude` leg was left-UNANCHORED. Relief must hold on BOTH routes —
+# a path-only relief would green the acceptance criterion vacuously while the cmd route kept denying.
+assert_allow "S1 sibling path foo.claude"   '{"tool_name":"Write","tool_input":{"file_path":"foo.claude/settings.json","content":"x"}}'
+assert_allow "S1 sibling path v2.claude"    '{"tool_name":"Write","tool_input":{"file_path":"v2.claude/x","content":"x"}}'
+assert_allow "S1 sibling cmd foo.claude"    '{"tool_name":"Bash","tool_input":{"command":"printf x > foo.claude/settings.json"}}'
+assert_allow "S1 sibling cmd v2.claude"     '{"tool_name":"Bash","tool_input":{"command":"printf x > v2.claude/x"}}'
+assert_allow "S1 sibling cmd mcp-policy"    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ my.claude/mcp-policy.json"}}'
+# ⚠️ THESE TWO ARE THE ONES THAT ACTUALLY REACH pathhit. A read/printf lead with an ordinary redirect
+# target is recognized as a READ and returns before the pathhit trigger ever runs, so the `printf x >
+# v2.claude/x` leg above passes even with the leg left unanchored — it cannot prove the narrowing. An
+# UNRECOGNIZED lead verb has no such exit: its segment goes straight to pathhit, which is the arm the
+# anchor lives in. Keep an unrecognized lead here or this relief is asserted vacuously.
+assert_allow "S1 sibling pathhit v2.claude" '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb v2.claude/x"}}'
+assert_allow "S1 sibling pathhit foo dir"   '{"tool_name":"Bash","tool_input":{"command":"zzunknownverb foo.claude/settings.json"}}'
+assert_allow "S1 sibling cmd agents"        '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ my.claude/agents/x.md"}}'
+# LOAD-BEARING NEGATIVES — the families are SEGMENT-anchored, never substrings. `myscripts/` and
+# `myprofiles/` are ordinary adopter directories that merely END in the family name; denying them
+# would be an unnecessary ratification demand on an ordinary PR (the `my.claude/` lesson, one
+# directory over). A REAL segment (`frontend/scripts/build.js`) is control-plane, and that breadth is
+# disclosed in the design's consequences — asserted here so the two cannot be confused.
+assert_allow "S1 ordinary README"        '{"tool_name":"Write","tool_input":{"file_path":"README.md","content":"x"}}'
+assert_allow "S1 ordinary docs path"     '{"tool_name":"Write","tool_input":{"file_path":"docs/x.md","content":"x"}}'
+assert_allow "S1 myscripts path"         '{"tool_name":"Write","tool_input":{"file_path":"myscripts/x.sh","content":"x"}}'
+assert_allow "S1 myscripts cmd"          '{"tool_name":"Bash","tool_input":{"command":"printf x > myscripts/x.sh"}}'
+assert_allow "S1 myprofiles path"        '{"tool_name":"Write","tool_input":{"file_path":"myprofiles/x.yml","content":"x"}}'
+assert_allow "S1 myprofiles cmd"         '{"tool_name":"Bash","tool_input":{"command":"printf x > myprofiles/x.yml"}}'
+assert_allow "S1 read a family member"   '{"tool_name":"Read","tool_input":{"file_path":"scripts/publish-public.sh"}}'
+assert_allow "S1 run a family member"    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/publish-public.sh --dry-run"}}'
+assert_deny  "S1 REAL nested scripts seg" '{"tool_name":"Write","tool_input":{"file_path":"frontend/scripts/build.js","content":"x"}}'
+
+# --- GUARD-CLAUDE-HOME-INSTRUMENTATION-FP: relieve the agent's own workspace subtrees ------------
+# THE DEFECT, MEASURED 2026-08-17 minutes after S1 (#556) merged: the segment-anchored deep arm
+# `*/.claude/*` matches the HARNESS'S OWN HOME directory. `~/.claude/projects/<p>/memory/*.md`
+# (persistent agent memory) and `~/.claude/plans/*.md` (plan mode) became guard-DENY on the Edit and
+# Write tool routes — measured DENY on both — so the standing memory directive and plan mode were
+# broken in every session wherever the guard is wired. The pre-S1 enumerated globs
+# (`*.claude/settings.json`, `*.claude/agents/*`, `.claude/hooks/*`) never reached those subtrees;
+# the family widened correctly and caught the harness's own workspace as collateral.
+# THE CURE (design docs/architecture/2026-08-17-guard-claude-home-fp-design.md): a narrow relief arm
+# naming `projects/` and `plans/` ONLY, placed FIRST in BOTH classifier tiers, so first-match-wins
+# `case` semantics return not-control-plane before the `.claude/*` family arm runs. Both tiers
+# atomically, or the Tier-1 ⊆ Tier-2 invariant breaks (structurally locked in
+# promotion-readiness-wired.sh's synthetic block, which is the only leg that catches a ONE-SIDED
+# relief on every filesystem).
+# ⚠️ THE RELIEF IS CLASSIFIER-ONLY, BY OWNER RULING (design §3, C1 = option (b)). The pathhit
+# T1/T1_LC regex legs are BYTE-UNTOUCHED, so non-read-verb shell spellings (`sed -i`, `tee`, an
+# interpreter's `open(...)`) aimed at a RELIEVED name still DENY. That is a DISCLOSED RETAINED FALSE
+# POSITIVE, fixtured below so it reads as a decision rather than as a gap someone finds later; the
+# broken workflows use the tool route exclusively, and (b) is the narrowest relief that restores
+# function while leaving the guard's hottest deny leg alone.
+# ⚠️ ABSOLUTE PATHS ARE DELIBERATE (vet L2). The defect is an absolute-home-path defect: a
+# repo-relative fixture alone would exercise the leading `.claude/*` arm and never the deep
+# `*/.claude/*` arm the FP actually lives in. `/home/kituser` is a SYNTHETIC home root chosen because
+# it is never under a temp root — the dev-clone affordance therefore cannot relax any leg below and
+# green it for the wrong reason (the J-leg lesson, one block down).
+assert_allow "HOME-FP Write memory file"  '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/projects/p1/memory/x.md","content":"x"}}'
+assert_allow "HOME-FP Edit memory file"   '{"tool_name":"Edit","tool_input":{"file_path":"/home/kituser/.claude/projects/p1/memory/x.md","old_string":"a","new_string":"b"}}'
+assert_allow "HOME-FP Write plans file"   '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/plans/x.md","content":"x"}}'
+assert_allow "HOME-FP Edit plans file"    '{"tool_name":"Edit","tool_input":{"file_path":"/home/kituser/.claude/plans/x.md","old_string":"a","new_string":"b"}}'
+assert_allow "HOME-FP Write nested memory dir" '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/projects/-Users-x-dev/memory/MEMORY.md","content":"x"}}'
+# The relief survives the FOLD: a case variant classifies through Tier 1 (`_cpp_kitowned`, folded on
+# EVERY platform) and must land ordinary there too, or the relief would hold for the lowercase
+# spelling and not for the one a case-insensitive filesystem resolves to the same file. This leg is
+# ALSO the FS-independent kill for a relief that reaches Tier 2 but not Tier 1: once `_cpp_kitowned`
+# returns 0 the wrapper returns control-plane immediately, so the conditional Tier-2 re-check never
+# gets to paper over the gap on a case-INSENSITIVE host.
+assert_allow "HOME-FP case variant plans" '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.CLAUDE/PLANS/x.md","content":"x"}}'
+# ⚠️ ONLY A **WHOLE-SEGMENT** CASE VARIANT IS RELIEVED, AND THE MIXED-CASE SPELLING DENIES. MEASURED,
+# and the sentence above used to imply otherwise: folding happens only when `_cpp_match` on the RAW
+# string has already declined, so `…/.claude/Projects/x.md` never reaches the fold at all — the
+# literal pass hits the `*/.claude/*` family arm first and classifies control-plane on EVERY
+# filesystem. `.CLAUDE/PLANS/` and `.Claude/Plans/` are relieved (the literal pass misses `.claude`
+# too, so the folded subject reaches the relief arm); `.claude/Plans/` is not. That is an OVER-deny —
+# the fail-SAFE direction, a ratification demand rather than a missed one — and it is pinned as a
+# recorded decision so a future widening of the relief has to re-take it deliberately.
+assert_deny "HOME-FP mixed-case relieved segment (fail-safe over-deny)" '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/Projects/x.md","content":"x"}}'
+assert_deny "HOME-FP mixed-case plans segment (fail-safe over-deny)"    '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/Plans/x.md","content":"x"}}'
+# Repo-relative spellings — the same names in a tree. These ALSO record the M2 face: a repo that
+# tracked these subtrees would have them writable (and ordinary at --class; that half is pinned in
+# promotion-readiness-wired.sh). Disclosed in design §4, not discovered later.
+assert_allow "HOME-FP repo-rel projects"  '{"tool_name":"Write","tool_input":{"file_path":".claude/projects/x.md","content":"x"}}'
+assert_allow "HOME-FP repo-rel plans"     '{"tool_name":"Write","tool_input":{"file_path":".claude/plans/x.md","content":"x"}}'
+# The READ-VERB REDIRECT spelling is the one shell form option (b) DOES cure: a read-recognized lead
+# whose redirect target now classifies ordinary returns before the pathhit trigger ever runs. Kept
+# separate from the tool-route legs because it is the acceptance criterion's second half.
+assert_allow "HOME-FP redirect plans"     '{"tool_name":"Bash","tool_input":{"command":"printf x > /home/kituser/.claude/plans/x.md"}}'
+assert_allow "HOME-FP redirect memory"    '{"tool_name":"Bash","tool_input":{"command":"printf x > /home/kituser/.claude/projects/p1/memory/x.md"}}'
+# RELIEF-ARM SHADOWING, PINNED AS THE RECORDED DECISION (vet L1, design §4). The arm returns EARLY,
+# so a path carrying a family name UNDERNEATH a relieved name classifies ordinary even though a later
+# arm (`*/hooks/pre-push`) would have matched it. Inert at home (the harness writes no such file);
+# in-repo it folds into the same M2 face as the legs above. Recorded here so a future reader sees a
+# ruling, not drift — and so narrowing the arm later turns this line RED rather than passing silently.
+assert_allow "HOME-FP L1 nested-family shadow" '{"tool_name":"Write","tool_input":{"file_path":".claude/projects/x/hooks/pre-push","content":"x"}}'
+# --- THE BRIGHT LINE, RETAINED (design §2) — every other `.claude` subtree stays denied ----------
+# settings/hooks/agents/commands are real permission + instrumentation surfaces: the user-level
+# halves of exactly what PERMISSION-LOCAL-ACCRETION-SIGNAL monitors, and the categorical
+# owner-keystroke bright line. One fixture PER MUTATION FORM (Write/Edit tool · `>` redirect ·
+# `sed -i`) per the C5 completeness discipline, at HOME and in-repo.
+assert_deny "HOME-FP DENY home settings"       '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/settings.json","content":"x"}}'
+assert_deny "HOME-FP DENY home settings redir" '{"tool_name":"Bash","tool_input":{"command":"echo x > /home/kituser/.claude/settings.json"}}'
+assert_deny "HOME-FP DENY home settings sed"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ /home/kituser/.claude/settings.json"}}'
+assert_deny "HOME-FP DENY home settings.local" '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/settings.local.json","content":"x"}}'
+assert_deny "HOME-FP DENY home hooks"          '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/hooks/x","content":"x"}}'
+assert_deny "HOME-FP DENY home hooks sed"      '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ /home/kituser/.claude/hooks/x"}}'
+assert_deny "HOME-FP DENY home agents"         '{"tool_name":"Edit","tool_input":{"file_path":"/home/kituser/.claude/agents/y.md","old_string":"a","new_string":"b"}}'
+assert_deny "HOME-FP DENY home mcp-policy"     '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/mcp-policy.json","content":"x"}}'
+assert_deny "HOME-FP DENY home statusline"     '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/statusline-command.sh","content":"x"}}'
+assert_deny "HOME-FP DENY repo commands"       '{"tool_name":"Write","tool_input":{"file_path":".claude/commands/x.md","content":"x"}}'
+# ⚠️ THE CASE-VARIANT LEG IS THE vet-C2 KILL, AND IT ONLY BITES ON CASE-SENSITIVE CI. A mutant that
+# widens the relief arm in `_cpp_kitowned` ALONE is INVISIBLE to every lowercase fixture in this file
+# (lowercase subjects never reach Tier 1 at all — `is_control_plane_path` folds only when the subject
+# carries an uppercase byte). On a case-INSENSITIVE filesystem (macOS, this kit's dev platform) the
+# conditional Tier-2 re-check still denies, so the mutant SURVIVES here and dies on the Linux runner.
+# Measured, not argued — see the design's §10 A2 mutant-kill map. The platform-independent lock on
+# the same one-sided mutant is the both-tiers relief leg in promotion-readiness-wired.sh.
+assert_deny "HOME-FP DENY home .Claude case"   '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.Claude/settings.json","content":"x"}}'
+assert_deny "HOME-FP DENY home .CLAUDE hooks"  '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.CLAUDE/hooks/x","content":"x"}}'
+# THE INTERPRETER PAIR. The first is the P0 class the pathhit leg exists for. The SECOND is the
+# DISCLOSED RETAINED FALSE POSITIVE of option (b): a relieved NAME in an interpreter spelling is
+# still denied, because the pathhit leg never consults the classifier the relief lives in. Pinned so
+# the retained cost is a recorded decision — and so that if a later slice takes option (a)
+# (full-route relief), this line goes RED and is re-taken deliberately rather than drifting.
+assert_deny "HOME-FP DENY interp settings"     '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'.claude/settings.json'"'"','"'"'w'"'"')\""}}'
+assert_deny "HOME-FP retained-FP interp plans" '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('"'"'.claude/plans/x.md'"'"','"'"'w'"'"')\""}}'
+# THE `~` DISQUALIFIER IS NEVER ADMITTED TO ANY ALLOWLIST. A tilde spelling is not a path the guard
+# can resolve, so it stays denied whatever the subtree name is — relieving it would mean teaching a
+# matcher to expand `~`, which is the fail-open direction (the shell, not the guard, decides what `~`
+# means, and it can be reassigned).
+assert_deny "HOME-FP DENY tilde plans append"  '{"tool_name":"Bash","tool_input":{"command":"echo x >> ~/.claude/plans/x.md"}}'
+assert_deny "HOME-FP DENY tilde memory write"  '{"tool_name":"Bash","tool_input":{"command":"tee ~/.claude/projects/p1/memory/x.md"}}'
+# THE BARE DIRECTORY is a fourth matcher (`_ctm_match`), left untouched by this slice: relocating the
+# whole memory tree is not a memory WRITE, and a family is only as protected as its least protected
+# route (the S1 `mv profiles /tmp` lesson, one directory over).
+assert_deny "HOME-FP DENY bare-dir relocate"   '{"tool_name":"Bash","tool_input":{"command":"mv ~/.claude/projects /tmp"}}'
+# TRAVERSAL: a relieved name in the literal must not launder a family target. `is_control_plane_path`
+# is applied to the literal ∨ normalized ∨ resolved forms, so the `..` spelling still lands on
+# `.claude/hooks/x` and denies even though the LITERAL matches the relief arm.
+assert_deny "HOME-FP DENY traversal path"      '{"tool_name":"Write","tool_input":{"file_path":"/home/kituser/.claude/plans/../hooks/x","content":"x"}}'
+assert_deny "HOME-FP DENY traversal cmd"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ /home/kituser/.claude/plans/../hooks/x"}}'
 
 # =============================================================================================
 # CP-8b — bind a verb/flag to its TARGET.
@@ -1002,6 +1268,110 @@ assert_deny "F2-X brace + time sed -i"  '{"tool_name":"Bash","tool_input":{"comm
 assert_deny "F2-X brace + cd-composed"  '{"tool_name":"Bash","tool_input":{"command":"{ cd hooks && printf x > pre-push"}}'
 
 # =============================================================================================
+# GUARD-DENY-TRIO (design docs/architecture/2026-08-18-guard-deny-trio-design.md, D-240816-1/2b).
+# M1 — glob-spelled writes to a full-filename CP leaf, and the combined-redirect (>&<word>) evasion.
+# M2 — a CONTENT DIGEST of a secret is a confirmation oracle and denies (metadata verbs stay ALLOW).
+# Top-level on purpose (verify.sh/ci.yml run this WITHOUT --selftest).
+# ---- M1 positives: glob-spelled leaf, cp/write-verb route, every verb + tier -------------------
+assert_deny "DT-M1 cp hooks glob"        '{"tool_name":"Bash","tool_input":{"command":"cp x.txt hooks/pre-pus*"}}'
+assert_deny "DT-M1 tee hooks glob"       '{"tool_name":"Bash","tool_input":{"command":"tee hooks/pre-pus*"}}'
+assert_deny "DT-M1 mv AGENTS glob"       '{"tool_name":"Bash","tool_input":{"command":"mv a AGENTS.m*"}}'
+assert_deny "DT-M1 install CODEOWNER"    '{"tool_name":"Bash","tool_input":{"command":"install a CODEOWNER*"}}'
+assert_deny "DT-M1 cp REQUIRED-CHECKS"   '{"tool_name":"Bash","tool_input":{"command":"cp a REQUIRED-CHECKS.m*"}}'
+assert_deny "DT-M1 ln gitattributes"     '{"tool_name":"Bash","tool_input":{"command":"ln -s a .gitattribute*"}}'
+assert_deny "DT-M1 dd kit budget"        '{"tool_name":"Bash","tool_input":{"command":"dd if=a of=.kit/budget.con*"}}'
+assert_deny "DT-M1 chmod kit roster"     '{"tool_name":"Bash","tool_input":{"command":"chmod 700 .kit/roster.con*"}}'
+assert_deny "DT-M1 truncate kit dials"   '{"tool_name":"Bash","tool_input":{"command":"truncate -s0 .kit/dials.con*"}}'
+assert_deny "DT-M1 sed meta-log"         '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ docs/governance/meta-control-log.m*"}}'
+assert_deny "DT-M1 cp meta-last"         '{"tool_name":"Bash","tool_input":{"command":"cp a docs/governance/.meta-control-las*"}}'
+assert_deny "DT-M1 patch gitleaks toml"  '{"tool_name":"Bash","tool_input":{"command":"patch .gitleaks.tom*"}}'
+assert_deny "DT-M1 cp gitleaksignore"    '{"tool_name":"Bash","tool_input":{"command":"cp a .gitleaksignor*"}}'
+assert_deny "DT-M1 cp semgrepignore"     '{"tool_name":"Bash","tool_input":{"command":"cp a .semgrepignor*"}}'
+assert_deny "DT-M1 cp trivyignore"       '{"tool_name":"Bash","tool_input":{"command":"cp a .trivyignor*"}}'
+assert_deny "DT-M1 cp checkov yaml"      '{"tool_name":"Bash","tool_input":{"command":"cp a .checkov.yam*"}}'
+# The `agents/*.agent.md` leaf carries its OWN `*`, so a CONCRETE-name glob (not just the star-ALIGNED
+# `agents/*.agent.m*`) must deny — it expands onto the real control-plane .agent.md file (§10 A3). The
+# star-aligned form alone was vacuously green in the first build; these concrete-name forms FAILED it.
+assert_deny "DT-M1 agents reviewer.m*"   '{"tool_name":"Bash","tool_input":{"command":"cp a agents/reviewer.agent.m*"}}'
+assert_deny "DT-M1 agents x.agent.m*"    '{"tool_name":"Bash","tool_input":{"command":"cp x agents/x.agent.m*"}}'
+assert_deny "DT-M1 agents reviewer.*"    '{"tool_name":"Bash","tool_input":{"command":"tee agents/reviewer.agent.*"}}'
+assert_deny "DT-M1 agents md* form"      '{"tool_name":"Bash","tool_input":{"command":"cp a agents/reviewer.agent.md*"}}'
+assert_deny "DT-M1 agents star-aligned"  '{"tool_name":"Bash","tool_input":{"command":"cp a agents/*.agent.m*"}}'
+# Non-overshoot: `agents/` is NOT a blanket CP prefix — only the *.agent.md family is. A broad glob that
+# does not spell `.agent…`, and an ordinary agents/ file, stay ALLOW (both verified not-CP by
+# is_control_plane_path). If these red, the fix over-broadened to protect all of agents/.
+assert_allow "DT-M1 agents foo* (neg)"   '{"tool_name":"Bash","tool_input":{"command":"cp a agents/foo*"}}'
+assert_allow "DT-M1 agents notes (neg)"  '{"tool_name":"Bash","tool_input":{"command":"cp a agents/notes.txt"}}'
+# §10 A4 — a metachar in the DIRECTORY segment (`ag*/`, `agent?/`, `agen[t]s/`) must also deny: the
+# shell expands it onto the real `agents/` dir, hitting the .agent.md contract. The first A3 cut
+# anchored the leaf dir as a LITERAL and evaded on exactly these. The dir segment is matched by
+# glob-intersection now (leaf-dir as subject / token-dir as pattern), like the concrete-leaf branch.
+assert_deny "DT-M1 dir ag* x.agent.md"   '{"tool_name":"Bash","tool_input":{"command":"cp a ag*/x.agent.md"}}'
+assert_deny "DT-M1 dir agen[t]s glob"    '{"tool_name":"Bash","tool_input":{"command":"cp a agen[t]s/reviewer.agent.m*"}}'
+assert_deny "DT-M1 dir agent? glob"      '{"tool_name":"Bash","tool_input":{"command":"cp a agent?/reviewer.agent.m*"}}'
+assert_deny "DT-M1 dir ag* security"     '{"tool_name":"Bash","tool_input":{"command":"tee ag*/security.agent.md"}}'
+# Non-overshoot on the dir-metachar path: a dir glob that lands on agents/ but whose BASENAME is not the
+# .agent.md family stays ALLOW (agents/ is not a blanket CP prefix; the slash-count guard + LS[0] anchor
+# hold). If this reds, the dir-segment fix reintroduced the crossing-slash / blanket-prefix over-deny.
+assert_allow "DT-M1 dir ag* notes (neg)" '{"tool_name":"Bash","tool_input":{"command":"cp x ag*/notes.txt"}}'
+# Cure-1 normalization runs before the prefix test (vet H-2): ./ and // spellings still deny.
+assert_deny "DT-M1 tee ./hooks glob"     '{"tool_name":"Bash","tool_input":{"command":"tee ./hooks/pre-pus*"}}'
+assert_deny "DT-M1 tee hooks// glob"     '{"tool_name":"Bash","tool_input":{"command":"tee hooks//pre-pus*"}}'
+# ---- M1 positives: combined-redirect (>&<word>) — glob leaf, and the LITERAL kit-script target ---
+assert_deny "DT-M1 >& hooks glob"        '{"tool_name":"Bash","tool_input":{"command":"echo x >&hooks/pre-pus*"}}'
+assert_deny "DT-M1 >& AGENTS glob"       '{"tool_name":"Bash","tool_input":{"command":"echo x >&AGENTS.m*"}}'
+assert_deny "DT-M1 >& kit script"        '{"tool_name":"Bash","tool_input":{"command":"echo x >&conformance/verify.sh"}}'
+assert_deny "DT-M1 >& kit-guard"         '{"tool_name":"Bash","tool_input":{"command":"echo x >&scripts/kit-guard"}}'
+# ---- M1 NEGATIVES — the H-1 over-deny poles (a naive case-in-token shape reds these) ------------
+assert_allow "DT-M1 neg bare star"       '{"tool_name":"Bash","tool_input":{"command":"cp x.txt *"}}'
+assert_allow "DT-M1 neg chmod -R star"   '{"tool_name":"Bash","tool_input":{"command":"chmod -R 755 *"}}'
+assert_allow "DT-M1 neg cp ./star"       '{"tool_name":"Bash","tool_input":{"command":"cp x.txt ./*"}}'
+assert_allow "DT-M1 neg cp docs/star"    '{"tool_name":"Bash","tool_input":{"command":"cp x.txt docs/*"}}'
+assert_allow "DT-M1 neg cp build/out-*"  '{"tool_name":"Bash","tool_input":{"command":"cp x.txt build/out-*"}}'
+assert_allow "DT-M1 neg cp build/out-1"  '{"tool_name":"Bash","tool_input":{"command":"cp x.txt build/out-1.txt"}}'
+assert_allow "DT-M1 neg plain write"     '{"tool_name":"Bash","tool_input":{"command":"echo hi > notes.txt"}}'
+# ---- M1 NEGATIVES — the 14 fd-dup relief forms + an ordinary combined-redirect target ----------
+assert_allow "DT-M1 fd >&1"              '{"tool_name":"Bash","tool_input":{"command":"echo hi >&1"}}'
+assert_allow "DT-M1 fd >&2"              '{"tool_name":"Bash","tool_input":{"command":"echo hi >&2"}}'
+assert_allow "DT-M1 fd 2>&1"            '{"tool_name":"Bash","tool_input":{"command":"echo hi 2>&1"}}'
+assert_allow "DT-M1 fd 1>&2"            '{"tool_name":"Bash","tool_input":{"command":"echo hi 1>&2"}}'
+assert_allow "DT-M1 fd >&-"             '{"tool_name":"Bash","tool_input":{"command":"echo hi >&-"}}'
+assert_allow "DT-M1 fd 2>&-"            '{"tool_name":"Bash","tool_input":{"command":"echo hi 2>&-"}}'
+assert_allow "DT-M1 fd ls 2>&1"         '{"tool_name":"Bash","tool_input":{"command":"ls -la 2>&1"}}'
+assert_allow "DT-M1 fd cp 2>&1"         '{"tool_name":"Bash","tool_input":{"command":"cp a b 2>&1"}}'
+assert_allow "DT-M1 fd mv 2>&1"         '{"tool_name":"Bash","tool_input":{"command":"mv a b 2>&1"}}'
+assert_allow "DT-M1 fd tee 2>&1"        '{"tool_name":"Bash","tool_input":{"command":"tee out.txt 2>&1"}}'
+assert_allow "DT-M1 >& ordinary word"    '{"tool_name":"Bash","tool_input":{"command":"echo x >&out.txt"}}'
+# ---- M2 positives: a content digest of a secret is a confirmation oracle -> DENY ---------------
+assert_deny "DT-M2 md5 .env"             '{"tool_name":"Bash","tool_input":{"command":"md5 .env"}}'
+assert_deny "DT-M2 shasum token"         '{"tool_name":"Bash","tool_input":{"command":"shasum secrets/token.txt"}}'
+assert_deny "DT-M2 sha256sum key"        '{"tool_name":"Bash","tool_input":{"command":"sha256sum server.key"}}'
+assert_deny "DT-M2 b3sum .env"           '{"tool_name":"Bash","tool_input":{"command":"b3sum .env"}}'
+assert_deny "DT-M2 openssl dgst"         '{"tool_name":"Bash","tool_input":{"command":"openssl dgst -sha256 .env"}}'
+assert_deny "DT-M2 openssl sha256"       '{"tool_name":"Bash","tool_input":{"command":"openssl sha256 .env"}}'
+assert_deny "DT-M2 cat .env baseline"    '{"tool_name":"Bash","tool_input":{"command":"cat .env"}}'
+# ---- M2 NEGATIVES — metadata stays ALLOW (RECORDED DECISION: the accepted, disclosed trade, pinned
+#      both directions so a later reviewer does not "fix" it into churn); a non-secret digest ALLOWs;
+#      and the CONTROL-PLANE digest asymmetry (a digest of a CP config is genuinely harmless) is fixtured.
+assert_allow "DT-M2 wc -l .env (meta)"   '{"tool_name":"Bash","tool_input":{"command":"wc -l .env"}}'
+assert_allow "DT-M2 stat .env (meta)"    '{"tool_name":"Bash","tool_input":{"command":"stat .env"}}'
+assert_allow "DT-M2 md5 README"          '{"tool_name":"Bash","tool_input":{"command":"md5 README.md"}}'
+assert_allow "DT-M2 openssl rsa read"    '{"tool_name":"Bash","tool_input":{"command":"openssl rsa -in server.key -noout"}}'
+assert_allow "DT-M2 md5 CP config (asym)" '{"tool_name":"Bash","tool_input":{"command":"md5 .kit/budget.conf"}}'
+# ---- M1 SSOT bind: every _CP8B_GLOB_LEAVES entry is is_control_plane_path-classified, so the leaf
+#      list consults the SAME corpus (design §3, "the existing pathhit-T1 leaf set") and cannot drift to
+#      a non-CP name. This is the direction the cross-check can prove; the reverse (a NEW leaf missing
+#      from the list) is the fifth-site discipline named in guard-core.sh's _CP8B_GLOB_LEAVES comment.
+dt_leaves_ok() {
+  ( set -f; . ./.claude/hooks/guard-core.sh
+    for _L in $_CP8B_GLOB_LEAVES_LC; do
+      is_control_plane_path "$_L" || { echo "  drifted (non-CP) leaf: $_L" >&2; exit 1; }
+    done )
+}
+if dt_leaves_ok; then echo "PASS ssot : every _CP8B_GLOB_LEAVES entry classifies control-plane (bound to is_control_plane_path)"
+else echo "FAIL ssot : a _CP8B_GLOB_LEAVES entry is NOT control-plane — the leaf list drifted from the corpus"; fail=1; fi
+
+# =============================================================================================
 # GUARD-PATH-ALIAS-BYPASS (P0) — the guard must judge the TARGET a path reaches, not the string.
 # Legs live at TOP LEVEL on purpose: verify.sh and ci.yml invoke this script WITHOUT --selftest,
 # so anything inside selftest() would never run in CI.
@@ -1247,11 +1617,13 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "write allowlist made resolved-only -> E6-write" \
     's#^  case "$base" in$#  case "$_rbase" in#' \
     "$(gpab_write "$GPAB_TMP/e6/.env")" allow
+  # (anchors updated for GUARD-CP-HARDLINK-ALIAS §2c consolidation: the resolved-side secret arm is now
+  #  a single `_is_secret_path "$_res"`/`"$_rres"` call rather than an `if [ "$_resok" = 1 ]; then` case)
   gpab_mutant "secret-WRITE resolved disjunct removed -> E2" \
-    's#^  if \[ "$_resok" = 1 \]; then$#  if false; then#' \
+    's#  if \[ "$_resok" = 1 \] && _is_secret_path "$_res"; then#  if false; then#' \
     "$(gpab_write "$GPAB_TMP/e2/notes.txt")" allow
   gpab_mutant "secret-READ resolved disjunct removed -> E" \
-    's#^    if \[ "$_rrok" = 1 \]; then$#    if false; then#' \
+    's#    if \[ "$_rrok" = 1 \] && _is_secret_path "$_rres"; then#    if false; then#' \
     "$(gpab_read "$GPAB_TMP/e2/notes.txt")" allow
   gpab_mutant "read allowlist made literal-only -> E3-read" \
     's#^      case "$_rrbase" in#      case "$base" in#' \
@@ -1428,18 +1800,23 @@ if [ "${GPAB_G:-}" != "" ]; then
   # Cure 2 (Route 2 redirect). K-R1a pins the TARGET-arm disqualifier (the rc-2 bail in _cp8b_tad_redir_cp
   # forces the read/kit-exec recognition to DECLINE); K-R-LAUNDER pins the outright-deny closer
   # (_cp8b_redir_launder_denied); K-R-ALLOWLIST pins that the disqualifier is a POSITIVE allowlist, not a
-  # denylist; K-R-COMPOSED pins that the cd-composition catch survives the _redir_targets refactor. The
-  # pure-glob leg (`printf x > hooks/pre-pus*`, no CP substring to fall back on) is the sharp probe for
-  # the first three; it ALLOWED at boarding and the shell would expand it onto the real hook.
-  gpab_mutant "K-R1a: target-arm disqualifier (_cp8b_tad_redir_cp rc-2 bail) removed -> glob pre-pus* flips" \
+  # denylist; K-R-COMPOSED pins that the cd-composition catch survives the _redir_targets refactor.
+  # ⚠️ THE PROBE IS A NON-CP GLOB (`build/out*`), NOT `hooks/pre-pus*`, since GUARD-DENY-TRIO M1. A
+  # CP-leaf glob is now DOUBLE-locked — the M1 glob predicate (_cp8b_glob_hits_cp) denies it via the
+  # bare-token walk INDEPENDENTLY of the redirect disqualifier, so a single redirect-arm mutation on
+  # `hooks/pre-pus*` no longer flips (the leg goes vacuous). The disqualifier's UNIQUE, still-load-
+  # bearing job is fail-closing a NON-LITERAL target M1 does NOT cover (a glob/$VAR that is not a CP
+  # leaf); `build/out*` isolates exactly that — it denies ONLY via the disqualifier, so each mutation
+  # flips it cleanly. (The CP-leaf-via-redirect case is covered by the DT-M1 >&/redirect fixtures above.)
+  gpab_mutant "K-R1a: target-arm disqualifier (_cp8b_tad_redir_cp rc-2 bail) removed -> glob build/out* flips" \
     's@_rt=$(_redir_targets "$1") || return 0@_rt=$(_redir_targets "$1")@' \
-    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}' allow
-  gpab_mutant "K-R-LAUNDER: the reader/kit-exec non-literal-target outright-deny neutered -> glob pre-pus* flips" \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > build/out*"}}' allow
+  gpab_mutant "K-R-LAUNDER: the reader/kit-exec non-literal-target outright-deny neutered -> glob build/out* flips" \
     's@^_cp8b_redir_launder_denied() {@_cp8b_redir_launder_denied() { return 1 #@' \
-    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}' allow
-  gpab_mutant "K-R-ALLOWLIST: positive literal allowlist reverted to a \$-denylist -> glob pre-pus* flips" \
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > build/out*"}}' allow
+  gpab_mutant "K-R-ALLOWLIST: positive literal allowlist reverted to a \$-denylist -> glob build/out* flips" \
     '/_redir_targets()/,/^}/ s%\*\[!A-Za-z0-9._/@:+=,-\]\*%*[$]*%' \
-    '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks/pre-pus*"}}' allow
+    '{"tool_name":"Bash","tool_input":{"command":"printf x > build/out*"}}' allow
   # the backslash leg backs up K-R-ALLOWLIST: a denylist that omits `\` fails open (hooks\/pre-push
   # writes the real hook); the positive allowlist closes it. Same denylist mutation, backslash subject.
   gpab_mutant "K-R-ALLOWLIST-bs: the \$-denylist fails open on backslash -> hooks\\/pre-push flips" \
@@ -1448,6 +1825,35 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "K-R-COMPOSED: _cp8b_tad_redir_cp composed catch dropped -> cd hooks + verify>pre-push flips" \
     '/_cp8b_tad_redir_cp()/,/^}/ s@_cp8b_composed_is_cp "$1"@false@' \
     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && sh conformance/verify.sh > pre-push"}}' allow
+
+  # === GUARD-DENY-TRIO M1 mutants — the two NON-OPTIONAL poles (design §4, D-240816-1) ==============
+  # (a) removing the disqualification reds a named positive: the glob-spelled leaf write is allowed back.
+  gpab_mutant "DT-M1a: glob-write disqualification removed -> cp x.txt hooks/pre-pus* flips" \
+    's@  _cp8b_glob_hits_cp "$1" && return 0@  :@' \
+    '{"tool_name":"Bash","tool_input":{"command":"cp x.txt hooks/pre-pus*"}}' allow
+  # (b) THE H-1 REGRESSION LOCK: dropping the slash-count guard is the naive `case "<leaf>" in <token>)`
+  # shape the design REJECTED — POSIX `*` crosses `/`, so `docs/*` matches `docs/governance/…` and the
+  # broad-glob relief reds. This is what proves the fix is segment-anchored, not a byte over-deny.
+  gpab_mutant "DT-M1b (H-1 lock): slash-count guard dropped (naive case) -> cp x.txt docs/* flips" \
+    '/_cp8b_glob_scan()/,/^}/ s@\[ "$_gsn" = "$_gln" \] || continue@:@' \
+    '{"tool_name":"Bash","tool_input":{"command":"cp x.txt docs/*"}}' deny
+  # A3 lock: neuter the pattern-leaf directional test (the LS[0] anchor) and a CONCRETE-name agents glob
+  # is allowed back — the exact hole both review seats caught. Its paired non-overshoot negative is the
+  # top-level `agents/foo*` ALLOW leg (which must NOT move under any of these).
+  gpab_mutant "DT-M1c (A3): pattern-leaf directional test neutered -> agents/reviewer.agent.m* flips" \
+    '/_cp8b_glob_scan()/,/^}/ s@"$_gl0"\*)@"zZ")@' \
+    '{"tool_name":"Bash","tool_input":{"command":"cp a agents/reviewer.agent.m*"}}' allow
+  # A4 lock: revert the dir-segment GLOB-intersection to a LITERAL match (quote $_gtd) and a dir-metachar
+  # token is allowed back — the exact §10 A4 residual. Its paired non-overshoot is the top-level
+  # `cp x ag*/notes.txt` ALLOW leg; the basename A3 fixes must NOT move (dir `agents` still literal-eq).
+  gpab_mutant "DT-M1d (A4): dir-segment glob-intersection reverted to literal -> ag*/x.agent.md flips" \
+    '/_cp8b_glob_scan()/,/^}/ s@in $_gtd)@in "$_gtd")@' \
+    '{"tool_name":"Bash","tool_input":{"command":"cp a ag*/x.agent.md"}}' allow
+  # M2: removing the content-digest verbs from the secret-read arm reds a named positive — a digest of a
+  # secret is allowed back (the confirmation-oracle hole reopens).
+  gpab_mutant "DT-M2: content-digest verbs removed from the secret arm -> md5 .env flips" \
+    's@|md5|md5sum|shasum|@|@' \
+    '{"tool_name":"Bash","tool_input":{"command":"md5 .env"}}' allow
 
   # === K-COUPLE — byte-identity of the two composed-path seds (no other check pins it) ==============
   # _cp8b_norm's sed and guard_check_path's twin sed are a stated single source of truth; extract both
@@ -1483,6 +1889,581 @@ if [ "${GPAB_G:-}" != "" ]; then
   rhc2() { ( . "$GPAB_TMP/gc.r1b"; _cp8b_redirect_hits_cp "$1" ); }
   if rhc2 'x > $(echo hooks/pre-push)'; then echo "FAIL R1b-nv: dropping the old-arm rc-2 bail still bailed (vacuous pin)"; fail=1
   else echo "PASS R1b-nv: dropping the old-arm rc-2 bail stops the non-literal bail (non-vacuous)"; fi
+
+  # === GUARD-CLAUDE-HOME-INSTRUMENTATION-FP mutants — the relief arm, bound in both directions =====
+  # A relief is a DENY being relaxed, so it needs mutants on BOTH sides: one proving the arm is
+  # load-bearing (delete it and the harness's own memory write breaks again) and one proving it is
+  # NARROW (widen it and the bright line falls). The ARM'S POSITION needs no separate mutant: `case`
+  # is first-match-wins, so an arm moved below the `.claude/*` family arm is inert and every HOME-FP
+  # ALLOW leg at top level reds — the removal mutant below is that same kill in its sharpest form.
+  gpab_mutant "HOME-REL-REMOVE: the relief arm deleted from both tiers -> the memory-file ALLOW flips" \
+    '/^    \.claude\/projects\/\*/d' \
+    "$(gpab_write "/home/kituser/.claude/projects/p1/memory/x.md")" deny
+  gpab_mutant "HOME-REL-WIDEN: relief widened to the whole .claude family -> ~/.claude/settings.json DENY flips" \
+    's#\.claude/projects/\*|\*/\.claude/projects/\*|\.claude/plans/\*|\*/\.claude/plans/\*#.claude/*|*/.claude/*#g' \
+    "$(gpab_write "/home/kituser/.claude/settings.json")" allow
+  # ⚠️ THE ONE-SIDED (Tier-1-ONLY) WIDENING MUTANT IS PLATFORM-CONDITIONAL, AND THAT IS THE FINDING,
+  # NOT A CONVENIENCE (vet C2, measured). `_cpp_kitowned` is reached ONLY for subjects carrying an
+  # uppercase byte, so no lowercase fixture in this file can see a mutation confined to it; and on a
+  # case-INSENSITIVE filesystem the conditional Tier-2 re-check denies anyway, so even the CASE-VARIANT
+  # subject does not flip. The mutant therefore SURVIVES on macOS and dies only on a case-SENSITIVE
+  # runner. Running it unconditionally would red every developer's machine (gpab_mutant requires a
+  # flip), so it is gated — and the SKIP is printed rather than silent, because an invisible skip is
+  # how a platform-only lock rots. The platform-INDEPENDENT lock on this exact mutant is the
+  # BRIGHTLINE-T1 predicate in conformance/promotion-readiness-wired.sh's synthetic block, which calls
+  # `_cpp_kitowned` DIRECTLY on a bright-line name (measured: it reds on both filesystems, where
+  # every guard-route leg here reds on neither). This leg is its guard-route companion, not its
+  # substitute — the class of defect is closed structurally; this pins the route.
+  if ( . ./.claude/hooks/guard-core.sh; _fs_case_insensitive ) 2>/dev/null; then
+    echo "SKIP mutant : HOME-REL-WIDEN-T1 (case-INSENSITIVE filesystem) — a Tier-1-only widening is answered by the conditional Tier-2 re-check here and cannot flip a verdict; it is killed on the case-SENSITIVE CI runner, and on EVERY platform by promotion-readiness-wired.sh's BRIGHTLINE-T1 predicate (a direct _cpp_kitowned call on a bright-line name)"
+  else
+    gpab_mutant "HOME-REL-WIDEN-T1: Tier-1-only widening -> the .Claude case-variant DENY flips (case-sensitive FS)" \
+      '/_cpp_kitowned()/,/^}/ s#\.claude/projects/\*|\*/\.claude/projects/\*|\.claude/plans/\*|\*/\.claude/plans/\*#.claude/*|*/.claude/*#' \
+      "$(gpab_write "/home/kituser/.Claude/settings.json")" allow
+  fi
+
+  # =============================================================================================
+  # GUARD-CP-HARDLINK-ALIAS — the guard must judge the INODE a path reaches, not just its resolved
+  # STRING. A hardlink is a second directory entry for one inode, so a benign-named hardlink's
+  # resolved path IS the benign name; the resolved-inode disjunct closes it. Fixtures are hermetic
+  # (built under the GPAB roots, trap-cleaned) and drive the SHIPPED guard through $GPAB_G. For the
+  # DENY legs the file lives INSIDE the non-temp $GPAB_ROOT so the dev-clone affordance is OFF, and
+  # each DENY leg asserts it denies VIA the new check (reason contains "hardlink"), not by a side
+  # effect — otherwise the mutant would not actually kill it. (design 2026-08-18)
+  # =============================================================================================
+  hla_deny_has() {  # <guard> <label> <json> <substr>  — deny AND reason contains <substr>
+    _hlo=$(printf '%s' "$3" | sh "$1" 2>/dev/null)
+    if printf '%s' "$_hlo" | grep -q '"permissionDecision":"deny"' && printf '%s' "$_hlo" | grep -qF -- "$4"; then
+      echo "PASS deny+[$4]: $2"
+    else echo "FAIL (deny + reason has '$4'): $2"; fail=1; fi
+  }
+
+  # --- fixtures: DENY side (inside the non-temp root => affordance OFF) ---
+  mkdir -p "$GPAB_ROOT/hla/.claude/hooks" "$GPAB_ROOT/hlaf/scripts" "$GPAB_ROOT/hlag/.git" \
+           "$GPAB_ROOT/hlb" "$GPAB_ROOT/hlbp" "$GPAB_ROOT/hlc" "$GPAB_ROOT/hle" "$GPAB_ROOT/hlf" \
+           "$GPAB_ROOT/hld"
+  # A: benign.sh hardlinked to an in-root control-plane file
+  printf 'cp\n' > "$GPAB_ROOT/hla/.claude/hooks/guard-core.sh"
+  ln "$GPAB_ROOT/hla/.claude/hooks/guard-core.sh" "$GPAB_ROOT/hla/benign.sh"
+  # A': epic-family targets (.gitattributes, scripts/dora.sh) — reach rides the epic's derivation
+  printf 'x\n' > "$GPAB_ROOT/hlaf/.gitattributes"
+  ln "$GPAB_ROOT/hlaf/.gitattributes" "$GPAB_ROOT/hlaf/benign-ga.sh"
+  printf 'x\n' > "$GPAB_ROOT/hlaf/scripts/dora.sh"
+  ln "$GPAB_ROOT/hlaf/scripts/dora.sh" "$GPAB_ROOT/hlaf/benign-dora.sh"
+  # A'': .git/config — pins the find prune keeps config/hooks/refs in scope (only objects/lfs pruned)
+  printf 'x\n' > "$GPAB_ROOT/hlag/.git/config"
+  ln "$GPAB_ROOT/hlag/.git/config" "$GPAB_ROOT/hlag/benign-gitcfg.sh"
+  # B: benign.txt hardlinked to a real .env (secret arm)
+  printf 'S=1\n' > "$GPAB_ROOT/hlb/.env"
+  ln "$GPAB_ROOT/hlb/.env" "$GPAB_ROOT/hlb/benign.txt"
+  # B'/C': the CLOAK — .env.example hardlinked onto a real .env (secret-inode BEFORE the allowlist)
+  printf 'S=1\n' > "$GPAB_ROOT/hlbp/.env"
+  ln "$GPAB_ROOT/hlbp/.env" "$GPAB_ROOT/hlbp/.env.example"
+  # C: a distinct secret hardlink for the read leg
+  printf 'S=1\n' > "$GPAB_ROOT/hlc/.env"
+  ln "$GPAB_ROOT/hlc/.env" "$GPAB_ROOT/hlc/notes.txt"
+  # D: symlink -> hardlink -> control-plane (write) and symlink -> hardlink -> secret (read)
+  ln -s "$GPAB_ROOT/hla/benign.sh"  "$GPAB_ROOT/hld/sym-cp"
+  ln -s "$GPAB_ROOT/hlc/notes.txt"  "$GPAB_ROOT/hld/sym-sec"
+  # E': template NOT over-denied — a hardlinked .env.example whose only sibling is a benign notes.txt
+  printf 'T=1\n' > "$GPAB_ROOT/hle/.env.example"
+  ln "$GPAB_ROOT/hle/.env.example" "$GPAB_ROOT/hle/notes.txt"
+  # E: single-link ordinary + single-link genuine template (fast path is not an over-block). The
+  # template lives in its OWN dir so its basename is exactly `.env.example` (nlink==1, no sibling).
+  mkdir -p "$GPAB_ROOT/hle2"
+  printf 'x\n' > "$GPAB_ROOT/hle/plain.txt"
+  printf 'T=1\n' > "$GPAB_ROOT/hle2/.env.example"
+  # F: ordinary nlink>1 whose other names are ALL ordinary (the pnpm/backup shape)
+  printf 'x\n' > "$GPAB_ROOT/hlf/a.txt"
+  ln "$GPAB_ROOT/hlf/a.txt" "$GPAB_ROOT/hlf/b.txt"
+  # G: a GENUINE dev-clone control-plane hardlink (affordance ON — under temp, outside the root)
+  mkdir -p "$GPAB_TMP/clone/hlg/.claude/hooks"
+  printf 'cp\n' > "$GPAB_TMP/clone/hlg/.claude/hooks/guard-core.sh"
+  ln "$GPAB_TMP/clone/hlg/.claude/hooks/guard-core.sh" "$GPAB_TMP/clone/hlg/benign.sh"
+
+  # --- Legs ---
+  hla_deny_has "$GPAB_G" "A: write benign hardlink -> control-plane" \
+    "$(gpab_write "$GPAB_ROOT/hla/benign.sh")" "hardlink"
+  hla_deny_has "$GPAB_G" "A: reason NAMES the control-plane target" \
+    "$(gpab_write "$GPAB_ROOT/hla/benign.sh")" "guard-core.sh"
+  hla_deny_has "$GPAB_G" "A' (epic-family): write benign hardlink -> .gitattributes" \
+    "$(gpab_write "$GPAB_ROOT/hlaf/benign-ga.sh")" "hardlink"
+  hla_deny_has "$GPAB_G" "A' (epic-family): write benign hardlink -> scripts/dora.sh" \
+    "$(gpab_write "$GPAB_ROOT/hlaf/benign-dora.sh")" "hardlink"
+  hla_deny_has "$GPAB_G" "A'': write benign hardlink -> .git/config (prune keeps it in scope)" \
+    "$(gpab_write "$GPAB_ROOT/hlag/benign-gitcfg.sh")" "hardlink"
+  hla_deny_has "$GPAB_G" "B: write benign.txt hardlink -> .env (secret arm, ungated)" \
+    "$(gpab_write "$GPAB_ROOT/hlb/benign.txt")" "hardlink"
+  hla_deny_has "$GPAB_G" "B' CLOAK: write .env.example hardlink -> real .env (before allowlist)" \
+    "$(gpab_write "$GPAB_ROOT/hlbp/.env.example")" "hardlink"
+  hla_deny_has "$GPAB_G" "C: READ benign.txt hardlink -> .env (silent-exfil case)" \
+    "$(gpab_read "$GPAB_ROOT/hlc/notes.txt")" "hardlink"
+  assert_allow_at "$GPAB_G" "C: READ a control-plane hardlink stays legitimate" \
+    "$(gpab_read "$GPAB_ROOT/hla/benign.sh")"
+  hla_deny_has "$GPAB_G" "C' CLOAK: READ .env.example hardlink -> real .env (before allowlist)" \
+    "$(gpab_read "$GPAB_ROOT/hlbp/.env.example")" "hardlink"
+  hla_deny_has "$GPAB_G" "D: write symlink -> hardlink -> control-plane" \
+    "$(gpab_write "$GPAB_ROOT/hld/sym-cp")" "hardlink"
+  hla_deny_has "$GPAB_G" "D: READ symlink -> hardlink -> secret" \
+    "$(gpab_read "$GPAB_ROOT/hld/sym-sec")" "hardlink"
+  assert_allow_at "$GPAB_G" "E: nlink==1 ordinary write (fast path is not an over-block)" \
+    "$(gpab_write "$GPAB_ROOT/hle/plain.txt")"
+  assert_allow_at "$GPAB_G" "E: genuine single-link .env.example write (template allowlist unbroken)" \
+    "$(gpab_write "$GPAB_ROOT/hle2/.env.example")"
+  assert_allow_at "$GPAB_G" "E' template NOT over-denied: hardlinked .env.example + benign sibling (write)" \
+    "$(gpab_write "$GPAB_ROOT/hle/.env.example")"
+  assert_allow_at "$GPAB_G" "E' template NOT over-denied: hardlinked .env.example + benign sibling (read)" \
+    "$(gpab_read "$GPAB_ROOT/hle/.env.example")"
+  assert_allow_at "$GPAB_G" "F over-deny pin: ordinary nlink>1, all-ordinary siblings (write)" \
+    "$(gpab_write "$GPAB_ROOT/hlf/a.txt")"
+  assert_allow_at "$GPAB_G" "G: dev-clone control-plane hardlink, affordance ON -> relaxes" \
+    "$(gpab_write "$GPAB_TMP/clone/hlg/benign.sh")"
+
+  # H — fail-safe to DENY when stat/find cannot run inside the nlink>1 branch. A JSON-subject flip is
+  # not constructible (the real guard's stat/find work), so this is a DIRECT functional assertion on
+  # the engine with the tool shadowed, the same shape GPAB's resolver legs use.
+  if ( . ./.claude/hooks/guard-core.sh
+       find() { return 1; }
+       _hardlink_alias_hit "$GPAB_ROOT/hla/benign.sh" "$GPAB_ROOT" is_control_plane_path >/dev/null 2>&1 ); then
+    echo "PASS H : find-unavailable inside the nlink>1 branch fails safe to a HIT (deny)"
+  else echo "FAIL H : find-unavailable did NOT fail safe to a HIT"; fail=1; fi
+  if ( . ./.claude/hooks/guard-core.sh
+       stat() { return 1; }
+       _hardlink_alias_hit "$GPAB_ROOT/hla/benign.sh" "$GPAB_ROOT" is_control_plane_path >/dev/null 2>&1 ); then
+    echo "PASS H : stat-unavailable (no link count) fails safe to a HIT (deny)"
+  else echo "FAIL H : stat-unavailable did NOT fail safe to a HIT"; fail=1; fi
+
+  # === BUILD CONDITION B (vet round 2) — _is_secret_path's alternation is BYTE-IDENTICAL to the
+  # frozen pre-consolidation pattern (a corpus can miss an input class; the guard's precedent is
+  # byte-identity — the K-COUPLE twins). Both arms (byte-literal + case-folded) must carry it. ===
+  _SECFROZ='*.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*'
+  _seccnt=$(grep -cF "$_SECFROZ) return 0 ;;" "$_CORE")
+  if [ "$_seccnt" -eq 2 ]; then echo "PASS sec-couple : _is_secret_path carries the frozen secret alternation byte-identically in both arms"
+  else echo "FAIL sec-couple : the secret alternation drifted from the frozen pattern (found $_seccnt of 2 arms)"; fail=1; fi
+  # non-vacuity: drift ONE arm on a COPY (drop `*.key` from the first matching line) and assert the
+  # byte-identity check would RED. awk touches only the first match, so the count drops 2 -> 1.
+  awk -v needle="$_SECFROZ) return 0 ;;" '
+    !done && index($0, needle) { sub(/\*\.key\|/, "", $0); done=1 } { print }' \
+    "$_CORE" > "$GPAB_TMP/gc.seccouple"
+  _seccnt2=$(grep -cF "$_SECFROZ) return 0 ;;" "$GPAB_TMP/gc.seccouple")
+  if [ "$_seccnt2" -lt 2 ]; then echo "PASS sec-couple-nv : dropping an arm's alternation REDs the byte-identity check (non-vacuous)"
+  else echo "FAIL sec-couple-nv : the byte-identity check passed a drifted core (vacuous)"; fail=1; fi
+  # corpus cross-check (behavioural): _is_secret_path agrees with the intended verdicts, incl. the
+  # case-folded arm; the template exemption lives in _is_secret_hit, NOT here (so .env.example is a
+  # secret to _is_secret_path but exempt to _is_secret_hit).
+  hla_secp() { ( . ./.claude/hooks/guard-core.sh; _is_secret_path "$1" ); }
+  hla_sech() { ( . ./.claude/hooks/guard-core.sh; _is_secret_hit "$1" ); }
+  for _c in "x/.env:0" "a.pem:0" "id_rsa:0" "x/secrets/y:0" "x/.ENV:0" "notes.txt:1" "README.md:1" ".env.example:0"; do
+    _cp=${_c%:*}; _cw=${_c#*:}
+    if hla_secp "$_cp" >/dev/null 2>&1; then _cg=0; else _cg=1; fi
+    if [ "$_cg" = "$_cw" ]; then echo "PASS sec-corpus : _is_secret_path($_cp)=$_cg"
+    else echo "FAIL sec-corpus : _is_secret_path($_cp)=$_cg wanted $_cw"; fail=1; fi
+  done
+  # the template exemption: _is_secret_hit(.env.example)=1 (NOT a hit) while _is_secret_hit(.env)=0 (hit)
+  if hla_sech ".env.example" >/dev/null 2>&1; then echo "FAIL sec-exempt : _is_secret_hit(.env.example) counted as a hit"; fail=1
+  else echo "PASS sec-exempt : _is_secret_hit(.env.example) is exempt (not a secret hit)"; fi
+  if hla_sech "x/.env" >/dev/null 2>&1; then echo "PASS sec-exempt : _is_secret_hit(.env) IS a hit"
+  else echo "FAIL sec-exempt : _is_secret_hit(.env) not a hit"; fail=1; fi
+
+  # === Leg K — the mutant battery (i)-(vi), automated. Each mutation binds ONE property (design §3).
+  #     gpab_mutant mutates the copied $GPAB_GC, re-runs $GPAB_G, asserts the verdict FLIPS + the sed
+  #     matched something. gc.pristine was captured by the GPAB block above. ===
+  # (i) remove the find/classify step -> the CP/secret hardlink denies all flip to ALLOW.
+  gpab_mutant "K(i): classify step removed -> A (CP hardlink) flips" \
+    's#if "$_ha_cls" "$_ha_p"; then#if false; then#' \
+    "$(gpab_write "$GPAB_ROOT/hla/benign.sh")" allow
+  gpab_mutant "K(i): classify step removed -> B (secret hardlink) flips" \
+    's#if "$_ha_cls" "$_ha_p"; then#if false; then#' \
+    "$(gpab_write "$GPAB_ROOT/hlb/benign.txt")" allow
+  # (ii) neuter the secret-inode check that sits BEFORE the template allowlist -> the CLOAK flips to
+  #      ALLOW (the allowlist greens .env.example first). The HIGH-1 regression guard, write + read.
+  gpab_mutant "K(ii): secret-inode WRITE check (pre-allowlist) neutered -> B' cloak flips" \
+    's#if _hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root"); then#if false; then#' \
+    "$(gpab_write "$GPAB_ROOT/hlbp/.env.example")" allow
+  gpab_mutant "K(ii): secret-inode READ check (pre-allowlist) neutered -> C' cloak flips" \
+    's#if _hlnamed=$(_hardlink_alias_hit_secret "$_rres" "$_gcr_root"); then#if false; then#' \
+    "$(gpab_read "$GPAB_ROOT/hlbp/.env.example")" allow
+  # (iv) the secret half is UNGATED (design MEDIUM-1): a relax-gated secret check would be strictly
+  #      weaker than the direct secret arm it mirrors. With the ROUND-2 root fix the secret find is
+  #      scoped to the PASSED root, so a dev-clone-EXTERNAL secret hardlink is out of scope BY DESIGN
+  #      (dev-clones are throwaway) and relax==1 only happens for out-of-root files whose aliases are
+  #      then outside the passed-root find — so a portable BEHAVIORAL verdict-flip is not constructible.
+  #      The property is bound at the SOURCE + a non-vacuity proof (the K-R1b shape), pinning the exact
+  #      asymmetry: the SECRET-inode write check carries NO _cp8c_relax gate; the CP-inode check DOES.
+  # grep -B1 -F pulls the call line AND its immediately-preceding GUARD line: the CP site's guard
+  # carries `_cp8c_relax` (gated), the secret site's guard is a bare `[ "$_resok" = 1 ]` (ungated).
+  _secblk=$(grep -B1 -F 'if _hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root"); then' "$_CORE")
+  _cpblk=$(grep -B1 -F 'if _hlnamed=$(_hardlink_alias_hit_cp "$_res" "$_cp8c_root"); then' "$_CORE")
+  case "$_secblk" in
+    '') echo "FAIL K(iv): could not find the secret-inode WRITE check"; fail=1 ;;
+    *_cp8c_relax*) echo "FAIL K(iv): the secret-inode WRITE check is relax-gated (must be UNGATED, MEDIUM-1)"; fail=1 ;;
+    *) echo "PASS K(iv): the secret-inode WRITE check is UNGATED (no _cp8c_relax in its guard)" ;;
+  esac
+  case "$_cpblk" in
+    *_cp8c_relax*) echo "PASS K(iv): the CP-inode check IS relax-gated (the intended asymmetry / Leg G)" ;;
+    *) echo "FAIL K(iv): the CP-inode check lost its _cp8c_relax gate (Leg G would break)"; fail=1 ;;
+  esac
+  # non-vacuity: the `case *_cp8c_relax*` matcher WOULD catch a gate if one were present.
+  _iv_synth='  if [ "$_cp8c_relax" = 0 ] && _hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root"); then'
+  case "$_iv_synth" in *_cp8c_relax*) echo "PASS K(iv)-nv: the ungated assertion detects a relax gate when present (non-vacuous)" ;;
+    *) echo "FAIL K(iv)-nv: the ungated assertion is vacuous"; fail=1 ;; esac
+  # (v) remove the template exemption from the secret wrapper -> E' (hardlinked .env.example + benign
+  #     sibling) flips ALLOW -> DENY. The round-2-A over-deny guard.
+  gpab_mutant "K(v): template exemption removed from _is_secret_hit -> E' flips to DENY" \
+    '/_is_secret_hit()/,/^}/ s/\.env\.example|\.env\.sample|\.env\.template|\.env\.dist) return 1 ;;/.no_such_template_name_zz) return 1 ;;/' \
+    "$(gpab_write "$GPAB_ROOT/hle/.env.example")" deny
+  # (vi) prune ALL of .git from the find -> A'' (.git/config hardlink) flips to ALLOW. The round-2-C1
+  #      fail-open guard: only .git/objects and .git/lfs may be pruned, never config/hooks/refs.
+  gpab_mutant "K(vi): find prunes all of .git -> A'' (.git/config) flips" \
+    "s#-path '\*/.git/objects' -o -path '\*/.git/lfs'#-path '*/.git'#" \
+    "$(gpab_write "$GPAB_ROOT/hlag/benign-gitcfg.sh")" allow
+  # (iii) the nlink parse mandate — a JSON-subject flip is not constructible (the numeric `-le 1` test
+  #       is itself integer-strict, a second fail-safe), so it is bound FUNCTIONALLY + a non-vacuity
+  #       proof (the R1b shape): pristine _nlink_of DECLINES a non-digit stat output; a head-anchored
+  #       parse on a COPY WRONGLY accepts it.
+  if ( . ./.claude/hooks/guard-core.sh; stat() { echo '1x'; }; _nlink_of /x >/dev/null 2>&1 ); then
+    echo "FAIL K(iii) : _nlink_of accepted a non-digit count '1x' (decline-on-non-digit broken)"; fail=1
+  else echo "PASS K(iii) : _nlink_of declines a non-digit link count (decline-on-non-digit idiom)"; fi
+  sed "s@case \"\$_nl\" in ''|\*\[!0-9\]\*) return 1 ;; esac@case \"\$_nl\" in [0-9]*) : ;; *) return 1 ;; esac@" "$_CORE" > "$GPAB_TMP/gc.nlink"
+  if cmp -s "$_CORE" "$GPAB_TMP/gc.nlink"; then echo "FAIL K(iii)-nv : the nlink-parse mutation matched NOTHING (unbound)"; fail=1
+  elif ( . "$GPAB_TMP/gc.nlink"; stat() { echo '1x'; }; _nlink_of /x >/dev/null 2>&1 ); then
+    echo "PASS K(iii)-nv : a head-anchored parse WRONGLY accepts '1x' (the negated-class is load-bearing)"
+  else echo "FAIL K(iii)-nv : the head-anchored parse still declined '1x' (the mutant proves nothing)"; fail=1; fi
+
+  # === Legs I / I2 / I3 / I4 / J + mutants (vii)/(viii)/(ix)/(x) — the home-walk DoS family (round 3).
+  # `_hlink_repo_root` derives the NEAREST repo boundary strictly BELOW the PHYSICAL $HOME (never
+  # $HOME/`/`); the PASSED root is capped the same way (LOW-1); the find is watchdog-bounded (I1); and
+  # a benign in-repo hardlink to an OUT-OF-REPO CP/secret is a recorded ALLOW (HIGH-1). Built under a
+  # synthetic $HOME (physical + a symlink alias) carrying a `.claude`, repo nested one level down. All
+  # inputs are PHYSICAL paths (the engine's _res is _resolve_physical output), so the cap compares
+  # like-for-like. Each leg is written to have FAILED against the prior round's code. ===
+  FH=$(mktemp -d /tmp/hlfakehome.XXXXXX) || FH=''
+  if [ -n "$FH" ]; then
+    LINKD=$(mktemp -d /tmp/hlhomelink.XXXXXX) || LINKD="$FH"
+    GPAB_TRASH="$GPAB_TRASH $FH $LINKD"                            # both real mktemp dirs (no dangling-symlink-last cleanup)
+    # shellcheck disable=SC1007  # 'CDPATH= cd' clears CDPATH (an env prefix to cd), not an empty assignment
+    FHP=$(CDPATH= cd "$FH" && pwd -P)                              # PHYSICAL home (macOS /tmp->/private/tmp)
+    # ⚠️ PORTABILITY (round 4): the env-$HOME symlink lives in a SEPARATE dir, so env-$HOME
+    # ($LINKD/homelink) both DIFFERS from and is NOT a descendant of the physical home ($FHP) on BOTH
+    # platforms — the fixture creates its own divergence via `ln -s`, never relying on the macOS
+    # /tmp->/private/tmp symlink. (An earlier symlink INSIDE $FH made env-$HOME a descendant of $FHP,
+    # so on Linux — where /tmp is a real dir — the raw-env cap compare spuriously fired and mutant
+    # (viii) never returned the physical home. Measured: reproduced with a non-symlink /private/tmp base.)
+    ln -s "$FHP" "$LINKD/homelink" 2>/dev/null                     # env-$HOME symlink -> physical home
+    HSYM="$LINKD/homelink"                                         # env-$HOME the fixture asserts against; `cd "$HSYM" && pwd -P` == $FHP on any platform
+    mkdir -p "$FHP/.claude" "$FHP/proj/.claude/hooks"             # $HOME/.claude AND a nested repo
+    printf 'cp\n' > "$FHP/proj/.claude/hooks/guard-core.sh"
+    ln "$FHP/proj/.claude/hooks/guard-core.sh" "$FHP/proj/benign.sh"  # CP hardlink inside the repo
+    printf 'x\n' > "$FHP/loosefile"                               # a file directly under $HOME
+    # hla_root_home <path> <home-env> [outermost|rawenv]: echo the derived root; HOME=<home-env>;
+    # optionally via a MUTANT variant (outermost climb (vii), or raw-env $HOME compare (viii)).
+    hla_root_home() {
+      ( HOME="$2"
+        . ./.claude/hooks/guard-core.sh
+        case "${3:-}" in
+          outermost) _hlink_repo_root() { _o=$1; case "$_o" in /*) : ;; *) _o="$(pwd)/$_o" ;; esac; _od=$(dirname "$_o"); _of=''; while : ; do { [ -e "$_od/.git" ] || [ -d "$_od/.claude" ]; } && _of=$_od; [ "$_od" = / ] && break; _od=$(dirname "$_od"); done; [ -n "$_of" ] && { printf '%s' "$_of"; return 0; }; return 1; } ;;
+          rawenv)    _hl_physical_home() { printf '%s' "${HOME:-}"; } ;;   # (viii): NO physical resolve
+        esac
+        _hlink_repo_root "$1" )
+    }
+    # I(b): NO root -> derivation returns the NESTED repo, never $HOME.
+    _iderr=$(hla_root_home "$FHP/proj/benign.sh" "$FHP" 2>/dev/null) || _iderr='<rc!=0>'
+    if [ "$_iderr" = "$FHP/proj" ]; then echo "PASS I(b): derivation returns the nested repo, not \$HOME"
+    else echo "FAIL I(b): got [$_iderr] wanted $FHP/proj"; fail=1; fi
+    # I(cap): a file directly under $HOME -> derivation FAILS.
+    if hla_root_home "$FHP/loosefile" "$FHP" >/dev/null 2>&1; then echo "FAIL I(cap): a file under \$HOME derived a root"; fail=1
+    else echo "PASS I(cap): nearest boundary == \$HOME -> derivation FAILS (fail-safe deny)"; fi
+    # I(a): root PASSED -> CP-inode HITS, scoped to the passed repo (no derivation).
+    if ( . ./.claude/hooks/guard-core.sh; _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP/proj" >/dev/null 2>&1 ); then echo "PASS I(a): passed root -> CP hardlink HIT, scoped to the repo"
+    else echo "FAIL I(a): passed-root CP hardlink not a HIT"; fail=1; fi
+    # mutant (vii): outermost climb derives $HOME where the shipped nearest derives the repo.
+    _idm=$(hla_root_home "$FHP/proj/benign.sh" "$FHP" outermost 2>/dev/null) || _idm='<rc!=0>'
+    if [ "$_idm" = "$FHP" ] && [ "$_idm" != "$_iderr" ]; then echo "PASS mutant : (vii) outermost-climb derives \$HOME where nearest derives the repo — DoS defect killed"
+    else echo "FAIL mutant : (vii) got [$_idm]"; fail=1; fi
+
+    # I2 (H1): a SYMLINKED $HOME. The cap must still fire via the PHYSICAL compare.
+    if hla_root_home "$FHP/loosefile" "$HSYM" >/dev/null 2>&1; then echo "FAIL I2(H1): symlinked \$HOME slipped the cap"; fail=1
+    else echo "PASS I2(H1): symlinked \$HOME -> physical cap FIRES, derivation FAILS"; fi
+    # mutant (viii): raw-env compare -> the symlinked home does NOT prefix-match the physical candidate
+    #   -> cap misses -> derivation returns the physical home (the reopened DoS). Assert it returns home.
+    _i2m=$(hla_root_home "$FHP/loosefile" "$HSYM" rawenv 2>/dev/null) || _i2m='<rc!=0>'
+    if [ "$_i2m" = "$FHP" ]; then echo "PASS mutant : (viii) raw-env compare lets the symlinked \$HOME slip -> derivation returns physical home (H1 defect killed)"
+    else echo "FAIL mutant : (viii) got [$_i2m], expected physical home $FHP"; fail=1; fi
+
+    # I3 (LOW-1): cap the PASSED root too. root == $HOME on the write path -> fail-safe HIT (empty name),
+    #   never a home walk. (The engine echoes empty on fail-safe; non-empty only on a genuine name.)
+    _i3=$( . ./.claude/hooks/guard-core.sh; HOME="$FHP"; _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP" ) && _i3rc=0 || _i3rc=1
+    if [ "$_i3rc" = 0 ] && [ -z "$_i3" ]; then echo "PASS I3(LOW-1): passed root == \$HOME -> fail-safe HIT (empty name = distinct reason), no home walk"
+    else echo "FAIL I3(LOW-1): rc=$_i3rc name=[$_i3] (expected HIT with empty name)"; fail=1; fi
+    # mutant (ix): remove the passed-root cap -> find runs over $HOME, finds the CP sibling -> a GENUINE
+    #   hit (NON-empty name). Assert the name flips empty -> non-empty.
+    _i3m=$( . ./.claude/hooks/guard-core.sh; HOME="$FHP"; _hl_at_or_above_home() { return 1; }; _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP" )
+    if [ -n "$_i3m" ]; then echo "PASS mutant : (ix) without the passed-root cap, root==\$HOME walks home and returns a GENUINE name (LOW-1 defect killed)"
+    else echo "FAIL mutant : (ix) name still empty [$_i3m]"; fail=1; fi
+
+    # I4 (I1): the fail-safe find WATCHDOG. A find over the budget is KILLED -> fail-safe HIT.
+    # shellcheck disable=SC2034,SC1090  # KIT_HL_FIND_BUDGET is read by the sourced guard-core watchdog; the guard-core source path is fixed but non-constant to shellcheck
+    _i4=$( . ./.claude/hooks/guard-core.sh; find() { sleep 3; }; KIT_HL_FIND_BUDGET=1; _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP/proj" ) && _i4rc=0 || _i4rc=1
+    if [ "$_i4rc" = 0 ] && [ -z "$_i4" ]; then echo "PASS I4(I1): a find over the budget is KILLED -> fail-safe HIT (empty name)"
+    else echo "FAIL I4(I1): rc=$_i4rc name=[$_i4]"; fail=1; fi
+    # mutant (x): remove the watchdog (revert _hl_find_inode to an un-timed find) -> the budget-busting
+    #   find (bounded sleep 3, no hang) runs to completion, returns empty -> ALLOW. Assert the flip.
+    if ( . ./.claude/hooks/guard-core.sh
+         find() { sleep 3; }
+         _hl_find_inode() { find "$1" -xdev \( -type d \( -path '*/.git/objects' -o -path '*/.git/lfs' -o -name node_modules \) \) -prune -o -inum "$2" -print 2>/dev/null; }
+         _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP/proj" >/dev/null 2>&1 ); then
+      echo "FAIL mutant : (x) without the watchdog a budget-busting find still HIT via timeout"; fail=1
+    else echo "PASS mutant : (x) removing the watchdog lets a budget-busting find run unbounded (no timeout HIT) — I4 is load-bearing"; fi
+
+    # === Leg J (HIGH-1, GUARD-HARDLINK-OUT-OF-REPO) — a RECORDED DECISION (owner-ruled accept+disclose).
+    # A benign IN-repo hardlink whose CP/secret sibling lives OUTSIDE the repo is ALLOW (the repo-scoped
+    # find misses it); the equivalent SYMLINK to the same out-of-repo target is DENY (resolution reaches
+    # the name). This documents the §4 ceiling as a deliberate decision, not a gap. ===
+    JR="$FHP/repo"; mkdir -p "$JR/.claude" "$FHP/.ssh"
+    printf 'S\n' > "$FHP/.ssh/id_rsa"                              # a secret OUTSIDE the repo
+    printf 'C\n' > "$FHP/.claude/settings.json"                   # a CP OUTSIDE the repo (in $HOME/.claude)
+    ln "$FHP/.ssh/id_rsa" "$JR/benign-sec.txt"                    # in-repo hardlink -> out-of-repo secret
+    ln "$FHP/.claude/settings.json" "$JR/benign-cp.txt"          # in-repo hardlink -> out-of-repo CP
+    ln -s "$FHP/.ssh/id_rsa" "$JR/sym-sec"                        # in-repo SYMLINK -> same secret
+    ln -s "$FHP/.claude/settings.json" "$JR/sym-cp"              # in-repo SYMLINK -> same CP
+    jchk() { ( . ./.claude/hooks/guard-core.sh; "$@" >/dev/null 2>&1 ); }
+    if jchk guard_check_read "$JR/benign-sec.txt" "$JR"; then echo "PASS J: in-repo hardlink -> OUT-OF-REPO secret READ = ALLOW (repo-scoped find misses it; recorded ceiling)"
+    else echo "FAIL J: out-of-repo secret hardlink read was denied"; fail=1; fi
+    if jchk guard_check_path "$JR/benign-cp.txt" "$JR"; then echo "PASS J: in-repo hardlink -> OUT-OF-REPO CP WRITE = ALLOW (recorded ceiling)"
+    else echo "FAIL J: out-of-repo CP hardlink write was denied"; fail=1; fi
+    if jchk guard_check_read "$JR/sym-sec" "$JR"; then echo "FAIL J: symlink -> out-of-repo secret READ should DENY"; fail=1
+    else echo "PASS J: in-repo SYMLINK -> out-of-repo secret READ = DENY (resolution reaches the name)"; fi
+    if jchk guard_check_path "$JR/sym-cp" "$JR"; then echo "FAIL J: symlink -> out-of-repo CP WRITE should DENY"; fail=1
+    else echo "PASS J: in-repo SYMLINK -> out-of-repo CP WRITE = DENY"; fi
+  else echo "FAIL I : could not mktemp a synthetic home"; fail=1; fi
+
+  # === GUARD-HL-REVIEW-FASTFOLLOW (design §8, security vet 2026-08-19) — F1/F2/F3 + the rider. =====
+  # The three Important findings from the post-merge design-conformance review of #561: F1 a directory
+  # subject defeats the nlink>1 fast path (a HOT-PATH cost regression), F2 the fail-safe deny is
+  # unsignposted, F3 runtime-guards.md states the opposite of what ships. Each carries its own leg AND
+  # its own mutant, per the vet's six binding conditions.
+  # -------------------------------------------------------------------------------------------------
+  # F1 — a DIRECTORY subject must exit _hardlink_alias_hit BEFORE the find, and must stay ALLOW.
+  # Every directory has st_nlink >= 2 (`.` + its parent entry + one per subdir), so the §2a nlink>1
+  # fast path never fires for one, and guard.sh routes Grep/Glob `.tool_input.path` (usually a
+  # DIRECTORY) through guard_check_read — the agent's highest-frequency search tools paid mktemp + a
+  # backgrounded repo-wide find + the watchdog subshell per call (~83ms measured). The verdict does NOT
+  # change (an ordinary directory was, and stays, ALLOW), so the leg's TEETH are the OBSERVED find: a
+  # `find` shadow drops a witness file into a LEG-PRIVATE TMPDIR — a scope nothing else writes (vet
+  # condition 2) — so "no find fired" is a COUNTED ABSENCE, never a timing guess.
+  HLFF_D="$GPAB_ROOT/hlff-dir"; mkdir -p "$HLFF_D/sub"
+  printf 'x\n' > "$HLFF_D/note.md"
+  HLFF_TMP=$(mktemp -d /var/tmp/hlff-tmp.XXXXXX) || HLFF_TMP=''
+  [ -z "$HLFF_TMP" ] || GPAB_TRASH="$GPAB_TRASH $HLFF_TMP"
+  # NAMED precondition (vet condition 2): the fixture directory must REALLY carry nlink>1, or the
+  # mutant is vacuously green (btrfs reports nlink=1 for directories). Loud SKIP, never a silent pass.
+  # shellcheck disable=SC1091  # the guard core is sourced by a fixed repo-relative path
+  HLFF_DNL=$( . ./.claude/hooks/guard-core.sh; _nlink_of "$HLFF_D" ) || HLFF_DNL=0
+  if [ -z "$HLFF_TMP" ]; then
+    echo "FAIL F1 : could not mktemp a leg-private TMPDIR"; fail=1
+  elif [ "$HLFF_DNL" -le 1 ] 2>/dev/null; then
+    echo "SKIP F1 : fixture directory reports nlink=$HLFF_DNL (<=1) on this filesystem — the nlink fast path already exits for directories here, so the -d early-return cannot be shown load-bearing (the btrfs shape). Precondition NAMED and printed rather than silently assumed."
+  else
+    # hlff_run_engine <tmpdir> <core> : run the engine on the DIRECTORY subject under a leg-private
+    # TMPDIR, with `find` shadowed to leave a witness file behind whenever the engine spawns it.
+    hlff_run_engine() {
+      ( TMPDIR=$1; export TMPDIR
+        # shellcheck disable=SC1090  # the core path is a fixture variable (pristine or mutated copy)
+        . "$2"
+        find() { : > "$TMPDIR/hlff-find-fired.$$"; command find "$@"; }
+        _hardlink_alias_hit_cp "$HLFF_D" "$GPAB_ROOT" >/dev/null 2>&1 || : )
+    }
+    # counted OUTSIDE that subshell, because `find` is shadowed inside it.
+    hlff_witnesses() { find "$1" -maxdepth 1 -name 'hlff-find-fired.*' 2>/dev/null | wc -l | tr -d ' '; }
+    hlff_run_engine "$HLFF_TMP" "$PWD/$_CORE" 2>/dev/null || :
+    _f1a=$(hlff_witnesses "$HLFF_TMP") || _f1a=99
+    rm -f "$HLFF_TMP"/hlff-find-fired.*
+    if [ "${_f1a:-99}" = 0 ]; then
+      echo "PASS F1 : a directory subject exits _hardlink_alias_hit BEFORE the find (0 find spawns, counted in a leg-private TMPDIR)"
+    else echo "FAIL F1 : a directory subject still spawned the repo-wide find ($_f1a spawn(s)) — the -d early-return is missing"; fail=1; fi
+    # MUTANT (F1): delete the directory early-return from a COPY of the core; the SAME subject must
+    # then FIRE the find (witness count flips 0 -> >=1). This is what makes the cheapness assertion
+    # load-bearing rather than a timing anecdote — the review finding reproduced on demand.
+    sed '/^  \[ -d "\$_ha_res" \] && return 1$/d' "$_CORE" > "$GPAB_TMP/gc.dirfast"
+    if cmp -s "$_CORE" "$GPAB_TMP/gc.dirfast"; then
+      echo "FAIL mutant : F1 — the directory-early-return mutation matched NOTHING; the leg is unbound"; fail=1
+    else
+      hlff_run_engine "$HLFF_TMP" "$GPAB_TMP/gc.dirfast" 2>/dev/null || :
+      _f1b=$(hlff_witnesses "$HLFF_TMP") || _f1b=0
+      rm -f "$HLFF_TMP"/hlff-find-fired.*
+      if [ "${_f1b:-0}" -ge 1 ] 2>/dev/null; then
+        echo "PASS mutant : F1 — without the -d early-return a directory subject spawns the repo-wide find ($_f1b spawn(s)); the cheapness leg is load-bearing"
+      else echo "FAIL mutant : F1 — removing the -d early-return did not spawn a find ($_f1b); the leg proves nothing"; fail=1; fi
+    fi
+    # ALLOW/DENY pins through the SHIPPED adapter: the early-return must neither create a new deny nor
+    # widen ALLOW. An ordinary directory Grep stays ALLOW; a CONTROL-PLANE directory still DENIES via
+    # the string matchers (which is why skipping the INODE check for directories is safe).
+    assert_allow_at "$GPAB_G" "F1: Grep on an ordinary directory subject stays ALLOW" \
+      "$(printf '{"tool_name":"Grep","tool_input":{"path":"%s"}}' "$HLFF_D")"
+    assert_deny_at "$GPAB_G" "F1: a CONTROL-PLANE directory subject still DENIES (no ALLOW-widening)" \
+      "$(gpab_write "$GPAB_ROOT/.claude/hooks")"
+  fi
+  # -------------------------------------------------------------------------------------------------
+  # F2 — the fail-safe deny must SIGNPOST the escape. An unreadable directory anywhere under the root
+  # makes `find` exit non-zero even with stderr dropped, so the §2d.5 fail-safe turns EVERY access to
+  # an nlink>1 file into a deny that KIT_GUARD_SELFEDIT does not relax (the secret arm is deliberately
+  # UNGATED) and whose reason named no remedy — against the kit's signpost-the-escape doctrine. The
+  # DIRECTION stays fail-safe (correct); the fix is honesty, message-only, no decision-logic change.
+  # NAMED precondition (vet condition 6): root ignores mode bits, so under uid 0 a chmod 000 directory
+  # is still searchable and this branch is unreachable — loud SKIP with the reason, never a silent green.
+  if [ "$(id -u 2>/dev/null || echo 0)" = 0 ]; then
+    # NB: no backticks in this message — inside double quotes they are command substitution, not
+    # quoting. An earlier draft wrote `find` here and the SKIP path really did EXECUTE a bare find
+    # (a recursive listing of the repo root) and splice its output into the message. Measured.
+    echo "SKIP F2 : running as root (uid 0) — a chmod 000 directory is still searchable, so the find cannot be made to fail and the fail-safe branch is unreachable. Precondition NAMED and printed rather than silently assumed."
+  else
+    HLFF2=$(mktemp -d /var/tmp/hlff2.XXXXXX) || HLFF2=''
+    if [ -z "$HLFF2" ]; then echo "FAIL F2 : could not mktemp the unreadable-subdir fixture root"; fail=1; else
+    GPAB_TRASH="$GPAB_TRASH $HLFF2"
+    mkdir -p "$HLFF2/.claude/hooks" "$HLFF2/blind"
+    printf 'S=1\n' > "$HLFF2/.env"
+    ln "$HLFF2/.env" "$HLFF2/benign.txt"                     # nlink>1 => the engine reaches the find
+    printf 'cp\n' > "$HLFF2/.claude/hooks/guard-core.sh"
+    ln "$HLFF2/.claude/hooks/guard-core.sh" "$HLFF2/benign-cp.sh"
+    printf 'x\n' > "$HLFF2/single.txt"                       # nlink==1 control: must stay ALLOW
+    chmod 000 "$HLFF2/blind"                                 # -> find exits non-zero, stderr dropped
+    # hlff2_reason <core> <fn> <path> : echo the deny reason. EMPTY output == ALLOW (the deciders print
+    # a reason only on deny), so the nlink==1 control below is this oracle's load-bearing negative.
+    hlff2_reason() {
+      ( set +e
+        # shellcheck disable=SC1090  # the core path is a fixture variable (pristine or mutated copy)
+        . "$1" 2>/dev/null
+        "$2" "$3" "$HLFF2" 2>/dev/null
+        exit 0 )
+    }
+    HLFF2_REMEDY='Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget'
+    _f2read=$(hlff2_reason "$PWD/$_CORE" guard_check_read "$HLFF2/benign.txt")
+    _f2cp=$(hlff2_reason   "$PWD/$_CORE" guard_check_path "$HLFF2/benign-cp.sh")
+    _f2ok=$(hlff2_reason   "$PWD/$_CORE" guard_check_path "$HLFF2/single.txt")
+    # load-bearing negative FIRST: if an nlink==1 ordinary file also "denied", the two legs below would
+    # be measuring an unrelated deny and would prove nothing about the fail-safe branch.
+    if [ -z "$_f2ok" ]; then echo "PASS F2 : an nlink==1 ordinary file in the same fixture stays ALLOW (the unreadable dir is not a blanket deny)"
+    else echo "FAIL F2 : the nlink==1 control was denied [$_f2ok] — the fail-safe legs below would prove nothing"; fail=1; fi
+    for _f2c in "READ:$_f2read" "CP-WRITE:$_f2cp"; do
+      _f2l=${_f2c%%:*}; _f2v=${_f2c#*:}
+      case "$_f2v" in
+        *"could not verify the target"*) : ;;
+        *) echo "FAIL F2 : $_f2l — an unreadable subdir under the root did not reach the fail-safe deny [$_f2v]"; fail=1; continue ;;
+      esac
+      case "$_f2v" in
+        *"$HLFF2_REMEDY"*) : ;;
+        *) echo "FAIL F2 : $_f2l — the fail-safe deny reason carries NO remedy clause (signpost-the-escape) [$_f2v]"; fail=1; continue ;;
+      esac
+      case "$_f2v" in
+        *KIT_HL_FIND_BUDGET*) : ;;
+        *) echo "FAIL F2 : $_f2l — the remedy clause does not name the KIT_HL_FIND_BUDGET lever"; fail=1; continue ;;
+      esac
+      case "$_f2v" in
+        *KIT_GUARD_SELFEDIT*) echo "FAIL F2 : $_f2l — the fail-safe reason suggests KIT_GUARD_SELFEDIT (vet condition 3: the secret write arm is UNGATED, so implying the kill switch relaxes it is the endorsed-bypass class)"; fail=1; continue ;;
+      esac
+      echo "PASS F2 : $_f2l fail-safe deny fires on an unreadable subdir AND signposts the remedy (cause + KIT_HL_FIND_BUDGET, no kill-switch suggestion)"
+    done
+    # SECRET-WRITE site: reached by relaxing the CP-inode arm (a dev-clone target under temp, outside
+    # the passed root) so the secret arm — the UNGATED one — is the arm that fail-safes. Same class,
+    # third site, behaviourally exercised rather than only source-asserted.
+    mkdir -p "$GPAB_TMP/hlff2sec"
+    printf 'S=1\n' > "$GPAB_TMP/hlff2sec/.env"
+    ln "$GPAB_TMP/hlff2sec/.env" "$GPAB_TMP/hlff2sec/benign.txt"
+    _f2sec=$(hlff2_reason "$PWD/$_CORE" guard_check_path "$GPAB_TMP/hlff2sec/benign.txt")
+    case "$_f2sec" in
+      *"could not verify the target"*"$HLFF2_REMEDY"*)
+        echo "PASS F2 : SECRET-WRITE fail-safe deny (the UNGATED arm, relax==1) also signposts the remedy" ;;
+      *) echo "FAIL F2 : SECRET-WRITE fail-safe reason missing or unsignposted [$_f2sec]"; fail=1 ;;
+    esac
+    # MUTANT (F2): strip the remedy clause from a COPY of the core. The deny must SURVIVE (direction is
+    # unchanged — this is a message fix, not a relaxation) while the signpost disappears. That flip is
+    # what makes the assertions above load-bearing rather than tautological.
+    sed "s# $HLFF2_REMEDY##g" "$_CORE" > "$GPAB_TMP/gc.noremedy"
+    if cmp -s "$_CORE" "$GPAB_TMP/gc.noremedy"; then
+      echo "FAIL mutant : F2 — the remedy-clause mutation matched NOTHING; the leg is unbound"; fail=1
+    else
+      _f2m=$(hlff2_reason "$GPAB_TMP/gc.noremedy" guard_check_read "$HLFF2/benign.txt")
+      case "$_f2m" in
+        *"$HLFF2_REMEDY"*) echo "FAIL mutant : F2 — the clause survived its own removal; the leg proves nothing"; fail=1 ;;
+        *"could not verify the target"*) echo "PASS mutant : F2 — without the clause the fail-safe still DENIES but no longer signposts the escape (message-only fix confirmed, deny direction unchanged)" ;;
+        *) echo "FAIL mutant : F2 — removing the clause also removed the deny [$_f2m]; the mutation is not surgical"; fail=1 ;;
+      esac
+    fi
+    chmod 755 "$HLFF2/blind"                                 # restore so trap cleanup can rm -rf
+    fi
+  fi
+  # F2 CLASS ORACLE (vet condition 3) — the clause must land on ALL THREE fail-safe reason sites (read,
+  # CP-write, secret-write), the M1 genuine-vs-fail-safe distinction must survive, and NO fail-safe
+  # wording may suggest KIT_GUARD_SELFEDIT. A per-site leg protects only its site; this pins the class,
+  # including a FOURTH fail-safe site added later without a signpost.
+  _f2fs=$(grep -c "could not verify the target" "$_CORE") || _f2fs=0
+  _f2rm=$(grep -c 'Remedy: usually an unreadable directory under the repo root' "$_CORE") || _f2rm=0
+  if [ "$_f2fs" = 3 ] && [ "$_f2rm" = 3 ]; then
+    echo "PASS F2-class : all 3 fail-safe hardlink deny reasons carry the remedy clause ($_f2rm/$_f2fs)"
+  else echo "FAIL F2-class : $_f2rm of $_f2fs fail-safe hardlink deny reasons carry the remedy clause (want 3/3)"; fail=1; fi
+  _f2gen=$(grep -c 'this path is a hardlink to' "$_CORE") || _f2gen=0
+  _f2mix=$(grep -c 'this path is a hardlink to.*Remedy: usually an unreadable' "$_CORE") || _f2mix=0
+  if [ "$_f2gen" = 3 ] && [ "$_f2mix" = 0 ]; then
+    echo "PASS F2-class : the 3 GENUINE hardlink reasons stay distinct from the fail-safe ones (M1 distinction preserved)"
+  else echo "FAIL F2-class : genuine=$_f2gen, genuine-carrying-the-fail-safe-remedy=$_f2mix (want 3 and 0)"; fail=1; fi
+  _f2ks=$(grep -c 'could not verify the target.*KIT_GUARD_SELFEDIT' "$_CORE") || _f2ks=0
+  if [ "$_f2ks" = 0 ]; then echo "PASS F2-class : no fail-safe hardlink reason suggests KIT_GUARD_SELFEDIT (vet condition 3)"
+  else echo "FAIL F2-class : $_f2ks fail-safe hardlink reason(s) suggest the global kill switch"; fail=1; fi
+  # non-vacuity: drop the clause from ONE site on a COPY and assert the class oracle would RED.
+  awk '!d && index($0, "Remedy: usually an unreadable directory under the repo root") { sub(/ Remedy: usually an unreadable directory under the repo root/, "", $0); d=1 } { print }' \
+    "$_CORE" > "$GPAB_TMP/gc.f2nv"
+  _f2nv=$(grep -c 'Remedy: usually an unreadable directory under the repo root' "$GPAB_TMP/gc.f2nv") || _f2nv=0
+  if cmp -s "$_CORE" "$GPAB_TMP/gc.f2nv"; then
+    echo "FAIL F2-class-nv : the clause-removal expression matched NOTHING; the class oracle is unbound"; fail=1
+  elif [ "$_f2nv" -lt 3 ]; then echo "PASS F2-class-nv : dropping ONE site's clause REDs the class oracle ($_f2nv/3) — non-vacuous"
+  else echo "FAIL F2-class-nv : the class oracle passed a core with a clause removed (vacuous)"; fail=1; fi
+  # -------------------------------------------------------------------------------------------------
+  # F3 — runtime-guards.md must not tell adopters the OPPOSITE of what ships. The stale-prose class is
+  # closed by a WHOLE-FILE ORACLE, not a per-site fix: the retired claim must be ABSENT, the new
+  # coverage block PRESENT (the presence half keeps the absence half from going tautologically green),
+  # and — vet condition 5 — the three NEIGHBOURING true disclosures that shared the stale sentence must
+  # SURVIVE the surgical deletion. The file is newline-squashed first, so a reflow cannot hide a hit
+  # from the line-oriented grep.
+  HLFF_DOC=docs/operations/runtime-guards.md
+  if [ ! -f "$HLFF_DOC" ]; then echo "FAIL F3 : $HLFF_DOC is missing"; fail=1; else
+    HLFF_STALE='not[^.]*cover[^.]*[Hh]ardlink'
+    _f3flat=$(tr '\n' ' ' < "$HLFF_DOC")
+    # (a) the retired claim is GONE.
+    if printf '%s' "$_f3flat" | grep -Eq "$HLFF_STALE"; then
+      echo "FAIL F3 : $HLFF_DOC still tells adopters hardlinks are NOT covered (false since #561)"; fail=1
+    else echo "PASS F3 : the retired 'does not cover hardlinks' claim is absent from $HLFF_DOC"; fi
+    # (b) ...and the absence oracle is NOT tautological: the same pattern MUST match the retired
+    #     sentence, held verbatim here. Without this, a typo in the pattern reads as green forever
+    #     and verify-RED alone could never catch it (tdd skill — anchor on text that really existed).
+    _f3ret='directory entry. It does **not** cover **hardlinks** (a symlink->hardlink chain still reaches a control-plane file'
+    if printf '%s' "$_f3ret" | grep -Eq "$HLFF_STALE"; then
+      echo "PASS F3-nv : the absence pattern DOES match the retired sentence (non-vacuous)"
+    else echo "FAIL F3-nv : the absence pattern matches nothing — it would read green over any prose"; fail=1; fi
+    # (c) presence: the coverage block, the FULL §4 residual set, the knob, the boarded rows, and the
+    #     neighbours that shared the retired sentence. One row per binding item of §8 F3 + conditions 1/4/5.
+    for _f3 in \
+      'Hardlink aliases — what IS covered@@the coverage block anchor' \
+      'KIT_HL_FIND_BUDGET@@the find-budget knob (the F2 remedy lever)' \
+      'Remedy: usually an unreadable directory@@the F2 remedy clause, quoted as adopters will see it' \
+      'cp -l@@the command-route hardlink-CREATION ceiling (§4.1)' \
+      'node_modules@@the node_modules prune residual (§4.3 / vet C2)' \
+      '.git/objects@@the .git/objects prune residual (§4.3 / vet LOW-2)' \
+      '.git/lfs@@the .git/lfs prune residual' \
+      'untracked@@the detection gate is blind to the UNTRACKED secret (vet MEDIUM-2)' \
+      'HFS+@@the legacy HFS+ directory-hardlink disclosure (vet condition 1)' \
+      'GUARD-HARDLINK-OUT-OF-REPO@@boarded residual row 1' \
+      'GUARD-HL-WATCHDOG-PID-REUSE-RACE@@boarded residual row 2' \
+      'GUARD-HL-SWEEP-GITIGNORE-MITIGATED-NO-MORE@@the qualified gitignore-mitigation row (vet condition 4)' \
+      'GUARD-ALIAS-SHELL-ROUTE@@NEIGHBOUR disclosure 1 survives the deletion (vet condition 5)' \
+      'GUARD-ALIAS-PRIMITIVES@@NEIGHBOUR disclosure 2 survives the deletion (vet condition 5)' \
+      "between the guard's decision and the write@@NEIGHBOUR disclosure 3, decision-vs-write races, survives (vet condition 5)" \
+    ; do
+      _f3n=${_f3%%@@*}; _f3w=${_f3#*@@}
+      if printf '%s' "$_f3flat" | grep -qF -- "$_f3n"; then echo "PASS F3 : $HLFF_DOC carries [$_f3n] — $_f3w"
+      else echo "FAIL F3 : $HLFF_DOC is missing [$_f3n] — $_f3w"; fail=1; fi
+    done
+  fi
+  # === end GUARD-HL-REVIEW-FASTFOLLOW =============================================================
 fi
 
 # --- non-vacuity oracle -------------------------------------------------------------------------

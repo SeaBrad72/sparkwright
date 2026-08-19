@@ -375,6 +375,8 @@ check control branch-protection-declared    sh conformance/branch-protection.sh 
 check control branch-protection-selftest    sh conformance/branch-protection.sh --selftest
 check control agent-autonomy   sh conformance/agent-autonomy.sh
 check control agent-boundary   sh conformance/agent-boundary.sh --selftest
+check control hardlink-integrity          sh conformance/hardlink-integrity.sh
+check control hardlink-integrity-selftest sh conformance/hardlink-integrity.sh --selftest
 check control harness-adapter  sh conformance/harness-adapter.sh adapters/claude-code
 check control harness-generic  sh conformance/harness-adapter.sh adapters/generic
 check control harness-adapter-selftest sh conformance/harness-adapter.sh --selftest

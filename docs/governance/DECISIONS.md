@@ -519,7 +519,7 @@ rows, and its anti-laundering leg binds the citation to the command). **Tier 1**
 autonomy is guard-permitted. **Tier 2** — Ordinary/Sensitive merge and tag are **delegable to the
 agent ONLY after a recorded GO** bound to the approved SHA, **never unilateral**. **Tier 3 —
 human-forever:** the GO/NO-GO judgment itself, ANY control-plane promotion, `gh pr merge --admin`
-(the server-side branch-protection bypass — the guard denies it as a speed-bump, `guard-core.sh:1589`;
+(the server-side branch-protection bypass — the guard denies it as a speed-bump, the `gh pr merge --admin` arm in `guard-core.sh`;
 the durable control is that it is a human keystroke), push-to-main / force-push, and
 deploy/delete/rotate/spend. **REVISIT-CONDITION:** re-open only with `promotion-contract.md`'s
 three-tier section (they must agree — this is a transcription, not a new rule).

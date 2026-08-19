@@ -10,7 +10,7 @@ How the kit's destructive-action deny-matrix protects **more than the Claude Cod
 - `guard_check_path "<file>"` — secret-material + control-plane **write** protection. **As of 3.17.0, the secret-WRITE deny enumerates the same `.env.<suffix>` set as `guard_check_read`** — `.env*`, `.pem`, `.key`, `id_rsa`, `secrets/` — with the same template allow-list (`.env.example`/`.sample`/`.template`/`.dist`). This closes the read/write parity gap for secret-material enumeration (previously `guard_check_path` enumerated only `.env.local`/`.env.production`/`.env.development`). Note: the control-plane **read ⊊ write asymmetry** (H3a) is unchanged — `guard_check_read` does NOT deny control-plane reads; this parity is specifically about secret-material enumeration.
 - `guard_check_read "<file>"` — the **Read-tool** secret deny (H3a). Symmetric with the secret-write deny but **narrower: it does NOT deny control-plane reads** (reading the guard/CI to understand it is legitimate); `.env.example`/`.sample`/`.template`/`.dist` are allowed. Wired via the `Read` matcher in `settings.json`.
 - `guard_check_push <remote-ref> <local-sha> <remote-sha>` — force-push / push-to-main, from real refs.
-- **Content-search tools — `Grep`/`Glob` (C5 GUARD-TOOL-COVERAGE-GREP-GLOB).** The adapter's `Grep|Glob` `case` arm routes **both** `.tool_input.path` **and** `.tool_input.glob` through `guard_check_read`, so a **LITERAL secret-suffix** path/glob spelling is denied as `Read` is: `Grep{path:".env"}`, `Grep{glob:"*.env"}`, `Glob{path:".env"}` → **DENY**; an ordinary path/glob (`Grep{path:"README.md"}`, `Grep{glob:"*.py"}`, `Glob{pattern:"*"}`) → **ALLOW**. **`guard_check_read` matches the glob string against the literal secret patterns**, so a NON-literal glob that still targets a secret (`*.env*`, `*.{env,pem}`, `*.[ep]*`, `*env`) is **NOT** denied — it joins the disclosed residual below. Glob targeting is not exhaustively closable at this input layer (the same structural limit as the sweep), so it is handed to the boundary rather than chased with fragile pattern-matching. `MultiEdit` is folded into the `Write|Edit|NotebookEdit` arm (single `.file_path`, `guard_check_path` covers it fully). **★ Named boundary handoff — the load-bearing residual (read before trusting the coverage).** The guard is an **input-side** control: it sees the tool call (`path`/`glob`), never Grep's *output*. It therefore denies secret-*targeting* spellings but **cannot** scrub a secret line out of an **untargeted directory/cwd content-sweep** (`Grep{path:".",output_mode:"content"}`, or no `path`) **nor out of a non-literal secret-targeting glob** (`*.env*`) — at dispatch time it does not know which files the read will return. Those cases are **ALLOW by design** (blanket-denying directory content-search would deny the agent's primary code-search tool, disproportionate and inconsistent with "speed bump not boundary"; in practice ripgrep respects `.gitignore`, so a gitignored `.env` is not searched). So Grep/Glob guard-coverage is honestly **`residual-family`** in `conformance/sanctioned-commands.tsv`, **not `full`** — the targeting spellings are denied, the sweep is a **disclosed residual**. **Secret-content *exfiltration* is bounded where the kit bounds every exfil vector: the platform boundary** — `../enterprise/platform-safety-boundary.md` **control #1** (network-egress allowlist — "the only real exfiltration defense") and **control #3** (sandboxed / read-only filesystem), which the kit verifies are **declared + attested** via `conformance/egress-policy.sh` and `conformance/containment-ready.sh`. The guard denies the default-harm route cheaply; the boundary that binds a *non-cooperating* agent is platform-owned, not this hook. (`Glob` returns filenames, not content, so guarding its `path` is defense-in-depth, not a content-exfil fix.) **`Task` is not content-guarded at runtime** — it carries no file target; its content risk is the spawned subagent, guarded only if that session wires the hook. This is **declared-uncovered by absence** from `conformance/sanctioned-commands.tsv` — `Task` is not on the shipped allow surface, so C3's reconcile lock forces no row; if it were ever allow-listed, C3 forces a row and the family lock (`tool-coverage.sh`) reds it at `guard-backstop=none` until wired or declared. Not claimed away.
+- **Content-search tools — `Grep`/`Glob` (C5 GUARD-TOOL-COVERAGE-GREP-GLOB).** The adapter's `Grep|Glob` `case` arm routes **both** `.tool_input.path` **and** `.tool_input.glob` through `guard_check_read`, so a **LITERAL secret-suffix** path/glob spelling is denied as `Read` is: `Grep{path:".env"}`, `Grep{glob:"*.env"}`, `Glob{path:".env"}` → **DENY**; an ordinary path/glob (`Grep{path:"README.md"}`, `Grep{glob:"*.py"}`, `Glob{pattern:"*"}`) → **ALLOW**. **`guard_check_read` matches the glob string against the literal secret patterns**, so a NON-literal glob that still targets a secret (`*.env*`, `*.{env,pem}`, `*.[ep]*`, `*env`) is **NOT** denied — it joins the disclosed residual below. Glob targeting is not exhaustively closable at this input layer (the same structural limit as the sweep), so it is handed to the boundary rather than chased with fragile pattern-matching. `MultiEdit` is folded into the `Write|Edit|NotebookEdit` arm (single `.file_path`, `guard_check_path` covers it fully). **★ Named boundary handoff — the load-bearing residual (read before trusting the coverage).** The guard is an **input-side** control: it sees the tool call (`path`/`glob`), never Grep's *output*. It therefore denies secret-*targeting* spellings but **cannot** scrub a secret line out of an **untargeted directory/cwd content-sweep** (`Grep{path:".",output_mode:"content"}`, or no `path`) **nor out of a non-literal secret-targeting glob** (`*.env*`) — at dispatch time it does not know which files the read will return. Those cases are **ALLOW by design** (blanket-denying directory content-search would deny the agent's primary code-search tool, disproportionate and inconsistent with "speed bump not boundary"; in practice ripgrep respects `.gitignore`, so a gitignored `.env` is not searched — **but that mitigation does not survive a hardlink**: a benign-named in-repo hardlink onto a gitignored `.env` is not itself gitignored, so the sweep reads the secret's bytes while the alias is never path-checked, boarded as `GUARD-HL-SWEEP-GITIGNORE-MITIGATED-NO-MORE`, see *Hardlink aliases* below). So Grep/Glob guard-coverage is honestly **`residual-family`** in `conformance/sanctioned-commands.tsv`, **not `full`** — the targeting spellings are denied, the sweep is a **disclosed residual**. **Secret-content *exfiltration* is bounded where the kit bounds every exfil vector: the platform boundary** — `../enterprise/platform-safety-boundary.md` **control #1** (network-egress allowlist — "the only real exfiltration defense") and **control #3** (sandboxed / read-only filesystem), which the kit verifies are **declared + attested** via `conformance/egress-policy.sh` and `conformance/containment-ready.sh`. The guard denies the default-harm route cheaply; the boundary that binds a *non-cooperating* agent is platform-owned, not this hook. (`Glob` returns filenames, not content, so guarding its `path` is defense-in-depth, not a content-exfil fix.) **`Task` is not content-guarded at runtime** — it carries no file target; its content risk is the spawned subagent, guarded only if that session wires the hook. This is **declared-uncovered by absence** from `conformance/sanctioned-commands.tsv` — `Task` is not on the shipped allow surface, so C3's reconcile lock forces no row; if it were ever allow-listed, C3 forces a row and the family lock (`tool-coverage.sh`) reds it at `guard-backstop=none` until wired or declared. Not claimed away.
 - `guard_check_mcp "<tool>" "<allowlist>" "<overrides>"` — the MCP capability gate (Slice 11a): classifies an `mcp__<server>__<action>` tool by its action verb and denies un-allowlisted destructive/egress capabilities (fail-closed). Pure — the adapter loads `.claude/mcp-policy.json` and passes it in.
 
 > **Secret-in-context ceiling (H3a, honest).** The two read denies stop the agent's **default** exfil-read paths (shell `cat .env`, the Read tool) but are a speed bump, not containment: an **interpreter** (`python -c "open('.env')"`), an uncommon content-emitter not in the verb list, or an exotic `.env.<custom-suffix>` on the *shell* path can still read a secret; `jq`-absent leaves the Read tool allowed; non-Claude harnesses get the shell deny via `kit-guard cmd` (no Read tool). The real boundary is the platform egress allowlist + sandboxed FS (`../enterprise/platform-safety-boundary.md`).
@@ -139,11 +139,73 @@ tool. Four user-visible consequences:
 
 **What this does NOT close** — stated because a green here is narrower than it looks. It covers **symlink**
 aliases on the `Edit`/`Write`/`Read` route, and only where the terminal component is the target's own
-directory entry. It does **not** cover **hardlinks** (a symlink→hardlink chain still reaches a
-control-plane file — `GUARD-CP-HARDLINK-ALIAS`), the **shell write routes** (`tee`/`cp`/`mv` remain
+directory entry. Beyond that it leaves open the **shell write routes** (`tee`/`cp`/`mv` remain
 alias-blind — `GUARD-ALIAS-SHELL-ROUTE`), **alias-creation primitives** (`ln -s` at a literal
 control-plane target is denied, but interpreters and archive extractors are not —
-`GUARD-ALIAS-PRIMITIVES`), or **races** between the guard's decision and the write.
+`GUARD-ALIAS-PRIMITIVES`), and **races** between the guard's decision and the write. **Hardlink**
+aliases were a fourth item on this list until v3.217.0; they are now judged on the tool routes — the
+section immediately below states precisely what that green does, and does not, mean.
+
+#### Hardlink aliases — what IS covered (`GUARD-CP-HARDLINK-ALIAS`, v3.217.0)
+
+A **hardlink** is a second directory entry for one inode. There is no link to follow, so a benign-named
+hardlink's *resolved* path **is** the benign name, and every string matcher passes it. Since v3.217.0 the
+two tool-route deciders judge the **inode** as well as the string.
+
+**Covered.** An `Edit`/`Write` whose path is a hardlink to a **control-plane or secret** file, and a
+`Read`/`Grep`/`Glob` whose path is a hardlink to a **secret** file, are refused exactly as if they had
+named the target directly — including the cloak (an `.env.example` hardlinked onto a real `.env`), which
+is judged *before* the template allow-list. Reads of *control-plane* files stay legitimate (reading the
+guard to understand it is not exfil). Mechanism: an `nlink>1` pre-filter, then a repo-scoped,
+watchdog-bounded `find -inum`, then the **existing** classifiers over every other name sharing that inode
+— so the reach inherits the control-plane derivation and cannot drift from it. The control-plane half is
+subordinate to the dev-clone affordance above; the secret half deliberately is not, because it mirrors
+the direct secret deny.
+
+**Fail-safe behaviours — these DENY, and they now say why.** When the link count cannot be read, no repo
+root can be derived, the root sits at or above `$HOME`, or the `find` errors or exceeds its time budget,
+the guard denies rather than silently opening the alias route. The deny reason carries a remedy clause —
+*"Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget -
+make that directory searchable, or raise KIT_HL_FIND_BUDGET (seconds)"* — because the commonest real
+cause is a directory under your repo root that the guard cannot search, and an unsignposted deny is a
+dead end. **`KIT_HL_FIND_BUDGET`** (seconds, default 10) is the operator lever for the watchdog. Read
+this as an **availability ceiling**: one unreadable directory can turn every access to an `nlink>1` file
+into a deny. The global kill switch is deliberately *not* the escape here — the secret arm is ungated by
+design — so the fix is to make the directory searchable or to raise the budget.
+
+**Residuals — stated, not implied closed.**
+
+- **Out-of-repo targets are NOT reached.** The `find` is repo-scoped (that scoping is what stops a
+  home-wide walk), so a hardlink whose control-plane/secret sibling lives *outside* the repo root
+  (`~/.ssh/id_rsa`, `~/.claude/*`, a home `.env`) is allowed where the equivalent **symlink** denies.
+  Boarded as **`GUARD-HARDLINK-OUT-OF-REPO`**.
+- **Hardlink *creation* on the command route is only partly blocked.** `ln <control-plane-file> benign`
+  trips the path scan, but **`cp -l`** / `cp --link` is destination-bound and evades it, as do
+  `install`-link forms and any indirection through a shell variable or a file. Creating the link is not
+  reliably refused; *editing or reading through* it afterwards is.
+- **Pruned subtrees.** For cost, the inode scan prunes `.git/objects`, `.git/lfs` and `node_modules`. A
+  hardlink whose only control-plane/secret sibling lives inside one of those is out of scope. The rest of
+  `.git` — `config`, `hooks`, refs — stays in scope deliberately, because it is control-plane.
+- **The detection gate is blind to the untracked secret.** `conformance/hardlink-integrity.sh` reds when a
+  **tracked** control-plane or secret file has `nlink>1`, backstopping the command route on the one axis a
+  commit-time gate can see. A `.env` is normally gitignored, so it is untracked and never stat-ed there;
+  the persistent secret cloak's only defense is the runtime check above. Do not read a green gate as "no
+  secret cloak present." Submodule files are likewise outside `git ls-files` scope.
+- **The Grep/Glob content-sweep mitigation weakens here.** The disclosed sweep residual at the top of this
+  page leans on ripgrep honouring `.gitignore`; a benign-named in-repo hardlink onto a gitignored `.env`
+  is itself **not** gitignored, so an untargeted content sweep can read the secret's bytes while the alias
+  is never path-checked. Boarded as **`GUARD-HL-SWEEP-GITIGNORE-MITIGATED-NO-MORE`**.
+- **Watchdog PID reuse.** The portable watchdog disarms via a flag file before reaping, but the
+  kill-by-pid idiom retains a narrow theoretical reuse window. Boarded as
+  **`GUARD-HL-WATCHDOG-PID-REUSE-RACE`**.
+- **Directories, and legacy HFS+.** A directory subject exits the check immediately: every directory has
+  `st_nlink >= 2`, so the cheap pre-filter would never fire for one, and on the supported filesystems
+  (ext*/xfs/btrfs/APFS) `link()` on a directory is refused — a directory can never be the hardlink alias
+  of a file. **Legacy HFS+ *did* allow directory hardlinks** (Time Machine used them); on such a volume
+  that early exit is a real, disclosed gap. A directory named at a control-plane path is still denied by
+  the string matchers, which run outside this check.
+- **TOCTOU** — a link swapped between the guard's decision and the write defeats any check-time test,
+  exactly as it does for symlinks.
 
 **Why this is the right default:**
 

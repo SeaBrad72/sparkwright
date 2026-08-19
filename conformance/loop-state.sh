@@ -16,8 +16,10 @@
 #     and Kit-Skill RESOLVE against the map (a real skill, appropriate to the stage); that Kit-Row
 #     MATCHES somewhere on the board — a SUBSTRING match, which is strictly weaker than naming a
 #     row (`Kit-Row: a` passes; see BOARD-ROW-IDENTIFIER); and that Kit-Class equals the class
-#     derived by `promotion-readiness.sh --class`, whose scope is GUARD-CORE ONLY and which
-#     under-detects adapter-declared paths (see the derive_class note below).
+#     derived by `promotion-readiness.sh --class`, which since GUARD-PATH-ENUMERATION-INCOMPLETE S2
+#     covers BOTH halves of the merge-time control-plane set — guard-core AND the adapter-declared
+#     union — and so no longer under-detects adapter-declared paths (see the derive_class note
+#     below for what that does and does not bound).
 #   * IT PROVES NOTHING ABOUT ORDER, and nothing about whether the named skill was read or
 #     followed — the same un-gateable ceiling skills/using-skills already discloses.
 #   * THE ROW LEG CAN BE N/A'd BY THE CHANGE UNDER TEST. The backend field and the board are read
@@ -269,20 +271,33 @@ check_declaration() {   # $1 = sha
 # derive_class — the class comes from the same authority `ceremony-binding` uses, never re-derived
 # here.
 #
-# ⚠️ SCOPE OF THAT AUTHORITY, STATED HONESTLY (do not call it "the single authority"). §1 of the
-# contract this gate enforces says of `promotion-readiness.sh --class`: *"That classifier is
-# guard-core-only and under-detects adapter-declared paths, so run the union-aware check too:
-# agent-boundary.sh --changed <listing> --ratified 0"*. MEASURED divergence: `AGENTS.md`,
-# `GEMINI.md`, `.gemini/config.yaml` and `.cursor/rules/*` each derive `ordinary` here while
-# `agent-boundary` returns rc 1 (control-plane). So a PR touching only `AGENTS.md` can truthfully
-# declare `ordinary` and pass THIS gate.
+# ⚠️ SCOPE OF THAT AUTHORITY, STATED HONESTLY (do not call it "the single authority").
 #
-# That is NOT a bypass, and the bounding matters: the divergence is repo-wide and pre-existing
-# (`ceremony-binding.sh:93-95` uses the identical derivation), and the union-aware check runs live
-# at `.github/workflows/ratification.yml`, which still refuses the merge. What this gate must not do
-# is overstate: it verifies the declared class against the guard-core classifier, not against the
-# adapter union. Closing the gap needs a listing file, and this gate deliberately has no flag that
-# accepts one — see LOOP-STATE-CLASS-ADAPTER-UNION on the board.
+# ⚠️⚠️ THIS PARAGRAPH CARRIED TWO STALE CITATIONS AND BOTH ARE CORRECTED HERE RATHER THAN LEFT
+# STANDING (GUARD-PATH-ENUMERATION-INCOMPLETE S2 M5). What it used to say, and why each was wrong:
+#   (1) It named `AGENTS.md` as a MEASURED divergence — "derives ordinary here, rc 1 at
+#       agent-boundary". FALSE since 2026-08-16: S1 of this same row graduated `AGENTS.md` into
+#       guard-core.sh's curated root set, so both halves had caught it for a day before this comment
+#       was read again. A measured-sounding claim that has silently become false is worse than none
+#       (the EXTERNAL-PREMISE-EVIDENCE class this repo banks).
+#   (2) It cited `ceremony-binding.sh:93-95` as "the identical derivation". DRIFTED: those lines are
+#       that file's containment-leg prose, not its class derivation. Cited BY FUNCTION below —
+#       `ceremony-binding.sh`'s own `derive_class` — because a line number is a citation that rots.
+#
+# WHAT IS TRUE NOW. `promotion-readiness.sh --class` consults BOTH halves of the merge-time
+# control-plane set: guard-core's hardcoded patterns AND the adapter-declared union
+# (`conformance/union-lib.sh`, the same derivation and the same matcher `agent-boundary.sh` uses).
+# `GEMINI.md`, `.gemini/*` and `.cursor/rules/*` therefore derive `control-plane` HERE, and a PR
+# touching only one of them can no longer declare `ordinary` and pass this gate — the fold
+# `LOOP-STATE-CLASS-ADAPTER-UNION` and `CLASS-VS-GATE-ADAPTER-MISMATCH` named. `ceremony-binding.sh`
+# inherits the same cure through its own `derive_class`, which calls the same seam.
+#
+# THE BOUND THAT REMAINS, AND IT IS NOT NOTHING: this agreement holds WHEN THE UNION IS DERIVABLE.
+# With adapter manifests present but unreadable (no jq, or a manifest that does not parse) `--class`
+# fail-safes to control-plane and discloses on stderr, while `agent-boundary.sh` silently degrades to
+# the guard-core floor — so in that state the two gates disagree again, inverted. That is
+# agent-boundary's fail posture, boarded as its own row; do not restate this note as "the gates
+# always agree".
 # Re-implementing the derivation would make a SIXTH derivation site and duplicate the
 # control-plane path contract with nothing locking the two together (the CP7R5-KEPTSET-LOCK
 # failure). Fails CLOSED: any non-zero exit, empty output or unrecognised token is a DERIVE
@@ -294,12 +309,21 @@ check_declaration() {   # $1 = sha
 # ceremony-binding's (with its env enabler KIT_CB_TEST), NEITHER merge-time gate implements an
 # author-facing fixture flag. A gate that never implements the flag cannot accept an
 # author-supplied one.
+# ★ THE CHILD'S ENVIRONMENT IS SCRUBBED, NOT INHERITED (review REV-I1) — the `env -u` precedent
+# conformance/backlog-presence.sh already applies to this exact classifier, extended to the input
+# GUARD-PATH-ENUMERATION-INCOMPLETE S2 added. MEASURED: with `KIT_ADAPTERS_DIR` pointing at an empty
+# directory, `--class` answers `ordinary` for a `GEMINI.md`-only change-set — so an ambient variable
+# would move a governing path out of the control-plane set and let an under-declared `Kit-Class:
+# ordinary` trailer pass THIS gate, which is precisely the forgery check_class exists to refuse.
+# `KIT_UNION_LIB` is scrubbed in the same breath: it selects the matcher.
+# ⚠️ ARGUMENTS, NOT ENV — the same rule phase-gate applies to its own children. Do not "simplify"
+# this back to a bare `sh`.
 derive_class() {   # [$1 = fixture listing path]
   _ls_out=""
   if [ -n "${1:-}" ]; then
-    _ls_out="$(sh "$DIR/conformance/promotion-readiness.sh" --changed "$1" --class 2>/dev/null | tail -1)" || _ls_out=""
+    _ls_out="$(env -u KIT_ADAPTERS_DIR -u KIT_UNION_LIB sh "$DIR/conformance/promotion-readiness.sh" --changed "$1" --class 2>/dev/null | tail -1)" || _ls_out=""
   else
-    _ls_out="$(sh "$DIR/conformance/promotion-readiness.sh" --class 2>/dev/null | tail -1)" || _ls_out=""
+    _ls_out="$(env -u KIT_ADAPTERS_DIR -u KIT_UNION_LIB sh "$DIR/conformance/promotion-readiness.sh" --class 2>/dev/null | tail -1)" || _ls_out=""
   fi
   case "$_ls_out" in
     ordinary|sensitive|control-plane) printf '%s\n' "$_ls_out"; return 0 ;;
@@ -310,9 +334,11 @@ derive_class() {   # [$1 = fixture listing path]
 # check_class — ANTI-SELF-ASSERTION. Kit-Class must EQUAL the derived class. Not ">=": an
 # over-declaration is still a declaration that does not match what the diff says, and the design
 # closed class forgery on equality WITHIN the guard-core set. Security review could not forge a
-# class downward inside that set; it DID measure that adapter-declared paths fall outside it — see
-# the derive_class note and LOOP-STATE-CLASS-ADAPTER-UNION. Do not restate this as "class forgery
-# is closed" unqualified.
+# class downward inside that set; it DID measure that adapter-declared paths fell OUTSIDE it, which
+# GUARD-PATH-ENUMERATION-INCOMPLETE S2 closed — the derived class now spans guard-core AND the
+# adapter union, so the equality is checked against the same set the required ratification gate uses.
+# Still do not restate this as "class forgery is closed" unqualified: the agreement is bounded by the
+# union being DERIVABLE, per the derive_class note above.
 check_class() {   # $1 = sha, [$2 = fixture listing]
   _ls_declared=$(decl_field "$1" Kit-Class | head -1)
   if ! _ls_derived=$(derive_class "${2:-}"); then
@@ -1068,6 +1094,27 @@ selftest() {
     check_class "$LS_FX_SINGLE" "$_st_fxd/changed-ordinary.txt" >/dev/null 2>&1 \
       && { echo "selftest FAIL: over-declared class must FAIL (contract is equality)"; st_fail=1; }
 
+    # ── THE ADAPTER-UNION INHERITANCE LEG (GUARD-PATH-ENUMERATION-INCOMPLETE S2).
+    # This gate derives through promotion-readiness.sh, and that classifier used to see only the
+    # guard-core half of the merge-time control-plane set. So a PR touching ONLY an adapter-declared
+    # path — `GEMINI.md` here — derived `ordinary`, this gate PASSED the `Kit-Class: ordinary`
+    # trailer, and the required ratification gate (which unions the same manifests) then blocked the
+    # merge: a trailer that was gate-approved WRONG. S2 made the classifier union-aware, so this gate
+    # inherits the cure with no edit of its own — and THAT is exactly why the leg is asserted rather
+    # than reasoned. "It flips by construction once the classifier does" is a derivation, and the
+    # sibling row (GUARD-PATH-ENUMERATION-INCOMPLETE S1) exists because a guard/class pair that was
+    # supposed to agree by construction did not, for ten days.
+    _st_union_cls="$(derive_class "$_st_fxd/changed-union.txt")" || _st_union_cls="<derive failure>"
+    if [ "$_st_union_cls" = control-plane ]; then
+      echo "selftest PASS: an adapter-declared-only change-set derives control-plane here (union inherited)"
+    else
+      echo "selftest FAIL: an adapter-declared-only change-set derived '$_st_union_cls', want control-plane — this gate and the required ratification gate disagree again, and a Kit-Class: ordinary trailer would pass here and be blocked there"; st_fail=1
+    fi
+    # …and end to end through check_class, which is the surface run_gate actually calls: the fixture
+    # commit declares `ordinary`, so an adapter-declared-only change-set must now be REFUSED.
+    check_class "$LS_FX_OK" "$_st_fxd/changed-union.txt" >/dev/null 2>&1 \
+      && { echo "selftest FAIL: declared ordinary vs an adapter-declared-only change-set must FAIL"; st_fail=1; }
+
     # --- T5: Kit-Skill resolution, stage-appropriateness, path safety -------------------------
     # Legs resolved against the REAL kit tree.
     check_skill "$LS_FX_OK" >/dev/null 2>&1 \
@@ -1538,7 +1585,13 @@ run_gate() {   # $1 = sha
   # overstates its own result is the failure this whole slice exists to prevent.
   echo "OK: loop-state — $1 carries a valid Entry Declaration."
   echo "  stage + skill: resolved against the map · class: equals promotion-readiness --class"
-  echo "                 (guard-core scope; the adapter union is enforced by ratification.yml)"
+  # ⚠️ THIS LINE IS PART OF THE VERDICT AND IT WENT STALE ONCE ALREADY. It used to read
+  # "(guard-core scope; the adapter union is enforced by ratification.yml)", which stopped being true
+  # the moment GUARD-PATH-ENUMERATION-INCOMPLETE S2 made `--class` union-aware — a merge-blocking
+  # control describing its own scope wrongly, on the surface a human reads at the click. Keep it
+  # honest in BOTH directions: what the equality now covers, and the one state where it does not.
+  echo "                 (guard-core AND the adapter-declared union, when the union is derivable;"
+  echo "                  with manifests present but unreadable the class fail-safes and says so)"
   echo "  row:           $LS_ROW_STATE"
   echo "  scope:         $LS_SCOPE_STATE"
   echo "                 (declaration<->diff consistency at THIS push; no ordering claim)"

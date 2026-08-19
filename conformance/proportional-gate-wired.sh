@@ -174,9 +174,31 @@ selftest() {
   for tok in 'RATIFIED-BY-SECOND-REVIEWER' 'SOLO-ADMIN-OVERRIDE-LOGGED'; do
     grep -qF -- "$tok" "$AB" || { echo "FAIL: $AB missing the '$tok' state token"; st=1; }
   done
-  # the class/gate reconciliation guard: displayed class must not contradict the gate verdict (the
-  # gate is union-aware; guard-core-only --class can under-detect adapter-declared paths, e.g. AGENTS.md)
-  grep -qF -- 'state" != NONE' "$WF" || { echo "FAIL: $WF missing the class/gate reconciliation guard"; st=1; }
+  # ⚠️ THIS ANCHOR WAS RE-DERIVED ON 2026-08-17 (GUARD-PATH-ENUMERATION-INCOMPLETE S2 M2), AND THE
+  # REASON IS A CURE, NOT AN ACCOMMODATION. It used to require `state" != NONE` — the class/gate
+  # RECONCILIATION arm, which existed because `--class` was guard-core-only and under-detected
+  # adapter-declared paths this gate treats as control-plane. S2 made the classifier union-aware, so
+  # the two sides derive the SAME set and the arm was deleted as redundant (its sibling arm, a
+  # `control-plane -> sensitive` downgrade reachable only from fail-safe states, was deleted as a
+  # fabrication). Keeping the old anchor would have required the workflow to carry a dead arm purely
+  # to satisfy a lock. What the workflow must still prove is the property the arms were reaching for
+  # — THE DISPLAYED CLASS MUST NOT MISLEAD THE HUMAN AT THE CLICK — so the anchor now pins the
+  # replacement, in both halves:
+  #   (1) the class is VALIDATED against the closed token set before it is passed to --for-class. An
+  #       invalid token makes the poster refuse, the required check goes ABSENT, and every PR in that
+  #       state bricks; this is the guard that stops a disclosure string ever reaching that flag.
+  #   (2) a FAIL-SAFED class is DISCLOSED as such on the judgment surface, so "control-plane, derived"
+  #       and "control-plane, because we could not tell" do not render as the same sentence.
+  grep -qF -- 'ordinary|sensitive|control-plane)' "$WF" || {
+    echo "FAIL: $WF does not validate the derived class against the closed token set before passing it to --conclusion --for-class — an unvalidated token makes the poster refuse, the required check stays ABSENT and every PR in that state is bricked"; st=1; }
+  # ⚠️ ANCHORED ON THE **RENDERED LITERAL**, NOT ON THE BARE TOKEN (review REV-I2, reproduced before
+  # fixing). `grep -qF 'FAIL-SAFED'` was satisfied by the workflow's own PROSE — the comment block
+  # explaining why the deleted arms died mentions the token twice — so deleting the entire disclosure
+  # mechanism (the stderr read AND the step-summary line) left this check GREEN. Measured. A
+  # presence check that a COMMENT can satisfy is not a check on behaviour. The string below is the
+  # exact text printed onto $GITHUB_STEP_SUMMARY and appears nowhere else in the file.
+  grep -qF -- 'change-class FAIL-SAFED, not derived' "$WF" || {
+    echo "FAIL: $WF never RENDERS the 'change-class FAIL-SAFED, not derived' line onto the judgment surface — a class that was fail-safed (empty/unreadable change-set, degraded classifier) would show there as if it had been derived. NOTE: mentioning FAIL-SAFED in a comment does not satisfy this; the rendered literal is what is anchored"; st=1; }
 
   # --- CP-9 anchors. Each one pins a property whose loss is SILENT: the gate keeps posting green. ---
 

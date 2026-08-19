@@ -175,7 +175,15 @@ pdeny  "write fixtures"      "scripts/fixtures/trace/x.jsonl"
 pdeny  "write standards"     "DEVELOPMENT-STANDARDS.md"
 pdeny  "write process doc"   "DEVELOPMENT-PROCESS.md"
 pdeny  "write claude md"     "CLAUDE.md"
-pallow "adopter own script"  "scripts/deploy.sh"
+# FLIPPED ALLOW -> DENY by GUARD-PATH-ENUMERATION-INCOMPLETE S1, and disclosed in that design's
+# consequences: `scripts/` is a FAMILY now, so an adopter's own `scripts/deploy.sh` is control-plane in
+# an ENFORCING tree. That breadth is the price of the derivation (the alternative — a hand list — was
+# measured letting a real governing script sit writable for ten days). Observe mode softens the CI
+# class/loop-state route only; this guard denies unconditionally wherever it is wired. The
+# segment-anchoring negatives directly below are what keep it from being a substring match.
+pdeny  "adopter script (family)" "scripts/deploy.sh"
+pallow "myscripts near (segment-anchored)" "myscripts/x.sh"
+pallow "myprofiles near (segment-anchored)" "myprofiles/x.yml"
 pallow "conformance near"    "conformanceX/y.sh"
 pallow "claude-md near"      "CLAUDEX.md"
 pallow ".env.example"     ".env.example"
@@ -465,6 +473,32 @@ rdeny "Read: literal SECRET.ENV (upper) -> non-secret target (isolates literal-s
 pdeny "Write: literal SECRET.ENV (upper) -> non-secret target (isolates literal-side fold)" "$GHCB_TMP2/SECRET.ENV"
 rm -rf "$GHCB_TMP2"
 
+# --- GUARD-CP-HARDLINK-ALIAS: the CLI-surface subset of the hardlink deny/allow fixtures. HARDLINKS
+# (not symlinks): a benign name sharing an inode with a control-plane or secret file. The tree carries
+# a `.claude` marker so the secret half's nearest-boundary (capped below $HOME) derivation resolves; the CP half passes the
+# root as $3 (relax OFF — the root is itself under temp, so condition 3 disables the affordance). ---
+HLA_TMP=$(mktemp -d)
+mkdir -p "$HLA_TMP/.claude/hooks" "$HLA_TMP/sec" "$HLA_TMP/tpl" "$HLA_TMP/tplok" "$HLA_TMP/ord"
+printf 'cp\n'  > "$HLA_TMP/.claude/hooks/guard-core.sh"
+ln "$HLA_TMP/.claude/hooks/guard-core.sh" "$HLA_TMP/benign.sh"        # CP hardlink
+printf 'S=1\n' > "$HLA_TMP/sec/.env"
+ln "$HLA_TMP/sec/.env" "$HLA_TMP/sec/notes.txt"                        # secret hardlink
+printf 'S=1\n' > "$HLA_TMP/tpl/.env"
+ln "$HLA_TMP/tpl/.env" "$HLA_TMP/tpl/.env.example"                     # the CLOAK
+printf 'T=1\n' > "$HLA_TMP/tplok/.env.example"
+ln "$HLA_TMP/tplok/.env.example" "$HLA_TMP/tplok/keep.txt"             # template + benign sibling
+printf 'x\n'   > "$HLA_TMP/ord/a.txt"
+ln "$HLA_TMP/ord/a.txt" "$HLA_TMP/ord/b.txt"                           # ordinary nlink>1
+prdeny "Write: benign hardlink -> control-plane (names the CP file)" "$HLA_TMP/benign.sh" "$HLA_TMP"
+pdeny  "Write: benign.txt hardlink -> real .env (secret, ungated)"   "$HLA_TMP/sec/notes.txt"
+rdeny  "Read: benign.txt hardlink -> real .env (silent-exfil)"        "$HLA_TMP/sec/notes.txt"
+pdeny  "Write: .env.example hardlink -> real .env (cloak, before allowlist)" "$HLA_TMP/tpl/.env.example"
+rdeny  "Read: .env.example hardlink -> real .env (cloak, before allowlist)"  "$HLA_TMP/tpl/.env.example"
+rallow "Read: control-plane hardlink stays legitimate"               "$HLA_TMP/benign.sh"
+pallow "Write: hardlinked .env.example + benign sibling (template NOT over-denied)" "$HLA_TMP/tplok/.env.example"
+pallow "Write: ordinary nlink>1, all-ordinary siblings (no over-deny)" "$HLA_TMP/ord/a.txt"
+rm -rf "$HLA_TMP"
+
 # §2 seat MEDIUM, characterized: `_cp8b_pathhit` (:864) is the one remaining byte-literal STRING-scan
 # matcher. Folded in TWO TIERS, mirroring `is_control_plane_path`'s own established split (same file,
 # same rationale): Tier 1 (kit-owned, unambiguous names) folds UNCONDITIONALLY; Tier 2 (generic
@@ -480,5 +514,105 @@ if _fs_case_insensitive; then
 else
   echo "SKIP (case-sensitive FS): pathhit Tier2 fold not exercised here — the fold is deliberately OFF"
 fi
+
+# --- GUARD-PATH-ENUMERATION-INCOMPLETE S1: membership by DERIVATION, through the CLI surface ---
+# The CLI subset of the battery in conformance/agent-autonomy.sh. Eleven tracked governing paths
+# measured guard-ALLOW at 9d29406e (AGENTS.md, .gitattributes, 9 scripts) because `scripts/` and the
+# `.claude/` sub-paths were enumerated PER FILE. `scripts/*`, `profiles/*` and `.claude/*` are families
+# now; AGENTS.md, REQUIRED-CHECKS.md and `.gitattributes` (every depth) join the curated root set.
+# ⚠️ The `zz-*` names are in NO list and their directories do not exist — they are the derivation
+# proof, and a change that makes them pass by NAMING them has defeated this row, not met it.
+pdeny  "S1 publish-public.sh"        "scripts/publish-public.sh"
+pdeny  "S1 branch-protection-apply"  "scripts/branch-protection-apply.sh"
+pdeny  "S1 NEVER-listed new script"  "scripts/zz-fixture-new.sh"
+pdeny  "S1 nested scripts segment"   "frontend/scripts/build.js"
+pdeny  "S1 profiles adopter-gates"   "profiles/adopter-gates.yml"
+pdeny  "S1 NEVER-listed new profile" "profiles/zz-new/ci.yml"
+pdeny  "S1 .claude/commands (dir absent)" ".claude/commands/x.md"
+pdeny  "S1 .claude/plugins (dir absent)"  ".claude/plugins/y.json"
+pdeny  "S1 NEVER-listed .claude dir"      ".claude/newdir/x.md"
+pdeny  "S1 AGENTS.md"                "AGENTS.md"
+pdeny  "S1 REQUIRED-CHECKS.md"       "REQUIRED-CHECKS.md"
+pdeny  "S1 .gitattributes (root)"    ".gitattributes"
+pdeny  "S1 .gitattributes (nested)"  "docs/.gitattributes"
+deny   "S1 redirect over a new script"   'echo x > scripts/zz-fixture-new.sh'
+deny   "S1 sed -i a new profile"         'sed -i s/a/b/ profiles/zz-new/ci.yml'
+deny   "S1 redirect over AGENTS.md"      'echo x > AGENTS.md'
+deny   "S1 sed -i REQUIRED-CHECKS.md"    'sed -i s/a/b/ REQUIRED-CHECKS.md'
+deny   "S1 redirect over .gitattributes" 'echo x > .gitattributes'
+# THE BARE DIRECTORY — the fourth matcher (_ctm_match), the one the first cut of this slice missed.
+# `is_control_plane_path`'s patterns are `profiles/*`, which a bare `profiles` never matches, so
+# `mv profiles /tmp/x` ALLOWED while every file inside the family denied: the single command that
+# relocates the whole directory was the one route left open. Sibling regression control included.
+deny   "S1 relocate the profiles dir"    'mv profiles /tmp/x'
+deny   "S1 chmod -R the profiles dir"    'chmod -R 777 profiles'
+allow  "S1 relocate myprofiles (segment-anchored)" 'mv myprofiles /tmp/x'
+deny   "S1 ctm control: skills dir unchanged"      'mv skills /tmp/x'
+deny   "S1 ctm control: scripts dir unchanged"     'mv scripts /tmp/x'
+# `.gitattributes` anchoring, both routes. The look-alike legs use an UNRECOGNIZED lead verb on
+# purpose: a `printf x > foo.gitattributes` form is read-recognized and returns before pathhit runs,
+# so it passes with the leg left unanchored and proves nothing about the anchor.
+deny   "S1 gitattr corner: post-space"   'zzunknownverb .gitattributes'
+deny   "S1 gitattr corner: nested"       'zzunknownverb docs/.gitattributes'
+pallow "S1 gitattr look-alike path"      "foo.gitattributes"
+pallow "S1 gitattr look-alike nested"    "docs/my.gitattributes"
+allow  "S1 gitattr look-alike cmd"       'zzunknownverb foo.gitattributes'
+allow  "S1 gitattr look-alike cmd nested" 'zzunknownverb docs/my.gitattributes'
+# The re-anchored pathhit `.claude` leg: corner spellings must STILL deny. An UNRECOGNIZED lead verb is
+# used on purpose — a read/printf lead with an ordinary redirect target is recognized as a read and
+# returns before pathhit ever runs, so a reader-led fixture cannot test this leg at all.
+deny   "S1 corner: interpreter form"  'python3 -c "open('"'"'.claude/settings.json'"'"','"'"'w'"'"')"'
+deny   "S1 corner: double-quoted"     'zzunknownverb ".claude/settings.json"'
+deny   "S1 corner: post-space"        'zzunknownverb .claude/settings.json'
+deny   "S1 corner: post-equals"       'zzunknownverb --out=.claude/settings.json'
+# SIBLING-FP RELIEF on BOTH routes (a path-only relief would green the criterion vacuously).
+pallow "S1 sibling foo.claude"        "foo.claude/settings.json"
+pallow "S1 sibling v2.claude"         "v2.claude/x"
+allow  "S1 sibling pathhit v2.claude" 'zzunknownverb v2.claude/x'
+allow  "S1 sibling pathhit foo dir"   'zzunknownverb foo.claude/settings.json'
+# Load-bearing negatives: reads and kit-exec of a family member stay ALLOW (no new over-block).
+pallow "S1 ordinary README"           "README.md"
+pallow "S1 ordinary docs path"        "docs/x.md"
+allow  "S1 read a family member"      'cat scripts/publish-public.sh'
+allow  "S1 run a family member"       'sh scripts/publish-public.sh --dry-run'
+
+# --- GUARD-CLAUDE-HOME-INSTRUMENTATION-FP: the agent's own workspace subtrees, through the CLI ---
+# The CLI subset of the battery in conformance/agent-autonomy.sh (design
+# docs/architecture/2026-08-17-guard-claude-home-fp-design.md). S1 made `*/.claude/*` a family, which
+# also captured the HARNESS'S OWN HOME: `~/.claude/projects/<p>/memory/*.md` (agent memory) and
+# `~/.claude/plans/*.md` (plan mode) measured DENY on the Edit and Write routes 2026-08-17, breaking
+# the memory directive and plan mode in every session. The cure is a two-name relief arm placed
+# FIRST in BOTH classifier tiers. ⚠️ Classifier-ONLY by owner ruling (C1 = option (b)): the pathhit
+# regex legs are byte-untouched, so a non-read-verb shell spelling at a RELIEVED name still denies —
+# a disclosed retained FP, pinned below. `/home/kituser` is synthetic and never under a temp root, so
+# the dev-clone affordance cannot green a leg for the wrong reason.
+pallow "HOME-FP memory file"          "/home/kituser/.claude/projects/p1/memory/x.md"
+pallow "HOME-FP plans file"           "/home/kituser/.claude/plans/x.md"
+pallow "HOME-FP nested memory dir"    "/home/kituser/.claude/projects/-Users-x-dev/memory/MEMORY.md"
+pallow "HOME-FP case variant (fold)"  "/home/kituser/.CLAUDE/PLANS/x.md"
+pallow "HOME-FP repo-relative plans"  ".claude/plans/x.md"
+pallow "HOME-FP L1 nested-family shadow (recorded decision, design §4)" ".claude/projects/x/hooks/pre-push"
+allow  "HOME-FP read-verb redirect"   'printf x > /home/kituser/.claude/plans/x.md'
+# THE BRIGHT LINE, RETAINED — settings/hooks/agents/commands are permission + instrumentation
+# surfaces and stay denied at home and in-repo, one leg per mutation form.
+pdeny  "HOME-FP DENY home settings"   "/home/kituser/.claude/settings.json"
+pdeny  "HOME-FP DENY home hooks"      "/home/kituser/.claude/hooks/x"
+pdeny  "HOME-FP DENY home agents"     "/home/kituser/.claude/agents/y.md"
+pdeny  "HOME-FP DENY home mcp-policy" "/home/kituser/.claude/mcp-policy.json"
+pdeny  "HOME-FP DENY repo commands"   ".claude/commands/x.md"
+deny   "HOME-FP DENY settings redir"  'echo x > /home/kituser/.claude/settings.json'
+deny   "HOME-FP DENY settings sed -i" 'sed -i s/a/b/ /home/kituser/.claude/settings.json'
+# vet-C2: the case-variant leg only KILLS a `_cpp_kitowned`-only relief-widening mutant on a
+# case-SENSITIVE filesystem (CI). On macOS the conditional Tier-2 re-check still denies, so the
+# mutant survives here — stated so the green is not over-read. The platform-independent lock is the
+# both-tiers relief leg in conformance/promotion-readiness-wired.sh.
+pdeny  "HOME-FP DENY home .Claude case" "/home/kituser/.Claude/settings.json"
+# The retained FP, recorded: an interpreter spelling at a RELIEVED name is still denied under (b).
+deny   "HOME-FP retained-FP interp plans" 'python3 -c "open('"'"'.claude/plans/x.md'"'"','"'"'w'"'"')"'
+# `~` is never admitted to an allowlist (the shell decides what it means, not the guard), and a
+# traversal through a relieved name still lands on the family target via the normalized form.
+deny   "HOME-FP DENY tilde plans"     'echo x >> ~/.claude/plans/x.md'
+deny   "HOME-FP DENY bare-dir move"   'mv ~/.claude/projects /tmp'
+pdeny  "HOME-FP DENY traversal"       "/home/kituser/.claude/plans/../hooks/x"
 
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }

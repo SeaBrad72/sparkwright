@@ -114,37 +114,80 @@ is_control_plane_path() {
 # existing file (which warns, and whose real content wins because the lowercase path sorts later). So
 # the attacker's file becomes a live agent-instruction surface carrying kit authority.
 #
-# `.claude/hooks/` IS THE ONE DIRECTORY THAT EARNS A PREFIX. `guard.sh` and `guard-core.sh` used to be
-# enumerated by name, so every other file in the hook directory derived `ordinary` — measured:
-# `.claude/hooks/entry-core.sh` -> ordinary, with Write, Edit and `sed -i` on it all ALLOWED. That
-# directory is wired into settings.json as agent instrumentation, so a new file in it is a live
-# control-plane surface an agent could author unratified; the enumeration protected the two names we
-# happened to have, not the surface.
-# The prefix is DIRECTORY-ANCHORED (`.claude/hooks/*|*/.claude/hooks/*`), NOT `*.claude/hooks/*`: the
-# loose form also matched any component merely ENDING in `.claude` — measured, `my.claude/hooks/x` and
-# `src/mycompany.claude/hooks/z` both derived control-plane. Those are ordinary adopter files, and an
-# unnecessary control-plane classification is an unnecessary ratification demand on an ordinary PR.
-# The anchored form still captures a vendored `vendor/pkg/.claude/hooks/h.sh` and, via this tier's
-# unconditional fold, the case variant `.Claude/Hooks/Entry.sh`.
-# The former `*.claude/hooks/guard.sh|*.claude/hooks/guard-core.sh` pair is REMOVED DELIBERATELY, not
-# by oversight: the anchored prefix subsumes it for every real hook directory, and keeping it would
-# preserve precisely the `my.claude/hooks/guard.sh` false positive this narrowing exists to kill.
-# THE FOUR SIBLING `.claude/` PATTERNS KEEP THE LOOSE FORM ON PURPOSE — DO NOT "FINISH THE JOB" HERE.
-# `*.claude/settings.json` · `*.claude/settings.local.json` · `*.claude/mcp-policy.json` ·
-# `*.claude/agents/*` all carry the IDENTICAL `<x>.claude/...` false positive (measured: `my.claude/
-# settings.json`, `my.claude/settings.local.json`, `my.claude/mcp-policy.json` and `my.claude/agents/
-# x.md` each derive control-plane, while the narrowed `my.claude/hooks/x.sh` now derives ordinary).
-# They are left alone because the error is fail-SAFE (an extra ratification demand, never a missed
-# one), its blast radius in this repo is zero, and narrowing FOUR patterns on the file that decides
-# what may be edited at all is its own change: its own fixtures, its own monotonicity run, its own
-# review. It is boarded, not forgotten. Anyone who reads the anchoring rationale above and quietly
-# applies it to these four without that evidence is doing the thing this comment exists to prevent.
+# `.claude/` IS A SEGMENT-ANCHORED FAMILY (GUARD-PATH-ENUMERATION-INCOMPLETE S1). It began as
+# `guard.sh`/`guard-core.sh` by name, so every other file in the hook directory derived `ordinary` —
+# measured: `.claude/hooks/entry-core.sh` -> ordinary, with Write, Edit and `sed -i` on it all ALLOWED.
+# That was cured for `hooks/` with a directory prefix; the SAME hole then measured live one level up:
+# `.claude/commands/*` and `.claude/plugins/*` both derived ordinary at 9d29406e (neither directory
+# exists yet, which is exactly why no census over tracked files could see them). The whole directory is
+# wired into settings.json as agent instrumentation, so ANY file in it is a live control-plane surface
+# an agent could author unratified. The family is the fix the per-directory prefix was a down payment
+# on: `.claude/*|*/.claude/*` — one rule, no list, and a sub-directory invented tomorrow is covered
+# before it exists.
+# THE ANCHOR IS THE POINT. `.claude/*|*/.claude/*` matches a full `.claude` PATH SEGMENT (at the start
+# or after a `/`), NEVER `*.claude/...`: the loose form also matched any component merely ENDING in
+# `.claude` — measured, `my.claude/hooks/x` and `src/mycompany.claude/hooks/z` both derived
+# control-plane. Those are ordinary adopter files, and an unnecessary control-plane classification is
+# an unnecessary ratification demand on an ordinary PR. The anchored family still captures a vendored
+# `vendor/pkg/.claude/hooks/h.sh` and, via this tier's unconditional fold, `.Claude/Hooks/Entry.sh`.
+# THE FOUR SIBLING `*.claude/...` PATTERNS ARE NOW GONE — deliberately, WITH the evidence the comment
+# they replace demanded. `*.claude/settings.json` · `*.claude/settings.local.json` ·
+# `*.claude/mcp-policy.json` · `*.claude/agents/*` each carried the identical `<x>.claude/...` false
+# positive (measured: `my.claude/settings.json`, `my.claude/mcp-policy.json`, `my.claude/agents/x.md`
+# all derived control-plane). The old note left them alone because narrowing four patterns on the file
+# that decides what may be edited at all is its own change — "its own fixtures, its own monotonicity
+# run, its own review". This slice IS that change: the sibling-relief ALLOW fixtures on BOTH routes and
+# the corner-spelling DENY fixtures live in conformance/agent-autonomy.sh, the fold-monotonicity sweep
+# runs over synthetic never-tracked family paths in promotion-readiness-wired.sh, and the pathhit
+# `.claude` leg is re-anchored in the same commit so the relief is not route-split.
+# ⚠️ COVERAGE WIDENS ONE STEP with the family: files sitting DIRECTLY in `.claude/` (`.claude/README.md`,
+# `.claude/settings.local.json`) are control-plane now where the enumeration reached only four names.
+# That is the intended direction — everything in the agent's own instrumentation directory is governing
+# — and it is fail-SAFE (a ratification demand, never a missed one). Fixtures record it explicitly so
+# it reads as a decision, not as drift.
+# ⚠️ THE RELIEF ARM BELOW IS FIRST ON PURPOSE, AND IT IS THE ONLY HOLE IN THE `.claude/` FAMILY.
+# GUARD-CLAUDE-HOME-INSTRUMENTATION-FP (design docs/architecture/2026-08-17-guard-claude-home-fp-design.md).
+# The family above is segment-anchored, so `*/.claude/*` matches ANY absolute path carrying a
+# `/.claude/` segment — including the agent harness's OWN home directory. Measured 2026-08-17, minutes
+# after S1 shipped: `~/.claude/projects/<p>/memory/*.md` (persistent agent memory) and
+# `~/.claude/plans/*.md` (plan mode) were guard-DENY on both the Edit and Write tool routes, which
+# broke the standing memory directive and plan mode in EVERY session wherever this hook is wired.
+# Those two subtrees are the agent's WORKSPACE, not its instrumentation. Everything else under
+# `.claude/` — settings.json, settings.local.json, mcp-policy.json, hooks/, agents/, commands/,
+# plugins/, skills/, workflows/, CLAUDE.md, statusline-command.sh (which the harness EXECUTES), and
+# every name invented tomorrow — stays family-denied: those are the user-level halves of the exact
+# permission surfaces PERMISSION-LOCAL-ACCRETION-SIGNAL monitors, and the categorical owner-keystroke
+# bright line. `tasks/`/`todos/` are deliberately NOT relieved: each addition is its own ratified
+# control-plane change, which is the correct friction direction.
+# POSIX `case` is FIRST-MATCH-WINS, so this arm must precede the family arm or it is inert.
+# ⚠️ IT MUST BE ADDED TO **BOTH** TIERS ATOMICALLY. Tier 1 ⊆ Tier 2 is the fold's soundness
+# invariant: relieving only here would leave Tier 1 NARROWER (harmless) while relieving only in
+# `_cpp_match` would leave Tier 1 BROADER — manufacturing control-plane-ness on the folded spelling.
+# A one-sided WIDENING confined to `_cpp_kitowned` is caught on every filesystem only by the
+# BRIGHTLINE-T1 predicate in conformance/promotion-readiness-wired.sh; a one-sided RELIEF in either
+# direction is caught by the relief ALLOW legs, the case-variant one FS-independently.
+# WHY THE RELIEF HALF NEEDS NO STRUCTURAL LEG (measured, and an earlier draft of this comment claimed
+# otherwise): once `_cpp_kitowned` returns 0 the wrapper returns control-plane IMMEDIATELY — the
+# conditional Tier-2 re-check below it never runs — so a relief missing from Tier 1 turns the
+# case-variant subject `…/.CLAUDE/PLANS/x.md` control-plane on a case-INSENSITIVE host too, not just
+# on CI. The WIDENING half is the genuinely FS-dependent one (vet C2): a widened Tier 1 hands the
+# subject back to that same re-check, which still denies on macOS, so it dies only on CI at the
+# verdict level — which is what BRIGHTLINE-T1 exists to cover.
+# ⚠️ THE RELIEF IS CLASSIFIER-ONLY, BY OWNER RULING (design §3, C1 = option (b)). The `_CP8B_PATHHIT_*`
+# regex legs deny DIRECTLY without ever consulting this function, so a non-read-verb shell spelling
+# (`sed -i`, `tee`, an interpreter's `open(...)`) aimed at a relieved name STILL denies. That is a
+# DISCLOSED RETAINED FALSE POSITIVE, fixtured in conformance/agent-autonomy.sh — the broken workflows
+# use the tool route exclusively, and this keeps the guard's hottest deny leg byte-untouched.
+# ⚠️ TWO FACES DISCLOSED RATHER THAN DISCOVERED: (i) the arm returns EARLY, so a family name nested
+# UNDER a relieved one (`.claude/projects/x/hooks/pre-push`) classifies ordinary — pinned as a
+# recorded decision, not drift; (ii) the relief is by subtree NAME, not location, so a repo that
+# TRACKED these subtrees would derive `ordinary` at `promotion-readiness --class` and merge without
+# control-plane ratification (pinned in promotion-readiness-wired.sh). $HOME-anchored patterns were
+# rejected as the alternative: env-dependent matching is the worse failure mode.
 _cpp_kitowned() {
   case "$1" in
-    .claude/hooks/*|*/.claude/hooks/*|\
-    *.claude/settings.json|*.claude/settings.local.json|\
-    *.claude/mcp-policy.json|.claude/mcp-policy.json|\
-    *.claude/agents/*|.claude/agents/*|\
+    .claude/projects/*|*/.claude/projects/*|.claude/plans/*|*/.claude/plans/*) return 1 ;;
+    .claude/*|*/.claude/*|\
     */.github/workflows/*|.github/workflows/*|*/.git/*|.git/*|\
     .kit/budget.conf|*/.kit/budget.conf|.kit/roster.conf|*/.kit/roster.conf|\
     .kit/model-tiers.conf|*/.kit/model-tiers.conf|.kit/model-map.conf|*/.kit/model-map.conf|\
@@ -152,6 +195,9 @@ _cpp_kitowned() {
     codeowners|*/codeowners|claude.md|*/claude.md|\
     development-standards.md|*/development-standards.md|\
     development-process.md|*/development-process.md|\
+    agents.md|*/agents.md|\
+    required-checks.md|*/required-checks.md|\
+    .gitattributes|*/.gitattributes|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
     .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|\
     .semgrepignore|*/.semgrepignore|.trivyignore|*/.trivyignore|\
@@ -204,21 +250,72 @@ _cpp_kitowned() {
 # avoid, arriving through the tier that was supposed to be the safe one.
 # `conformance/invariant-fold-monotone` (promotion-readiness-wired.sh) now asserts the invariant over
 # every tracked path, because it is a PROPERTY, not an example — an anchor list cannot catch this.
+# ⚠️ THE TRACKED-FILE CENSUS IS BLIND WHERE THIS SLICE WORKS. `scripts/zz-*`, `.claude/commands/*`,
+# `profiles/zz-*` are not tracked (two of those directories do not exist at all), so a sweep over
+# `git ls-files` says nothing about them. The invariant is therefore ALSO asserted over synthetic,
+# never-tracked family paths — same check, explicit list — or the subset relation would be proven
+# only where it was never in doubt.
 
 # The pattern set, LOWERCASED. Both sides of the comparison are folded — the subject by the wrapper
 # above, the patterns here at authoring time. ⚠️ Every pattern in this list MUST stay lowercase: a
 # pattern carrying an uppercase byte can never match a folded subject, which would SILENTLY DECLASSIFY
 # it. That is not hypothetical — the first draft of this change kept `CODEOWNERS`, `CLAUDE.md`,
 # `DEVELOPMENT-STANDARDS.md` and `DEVELOPMENT-PROCESS.md` byte-identical and turned all four `ordinary`.
-# The `.claude/hooks/` prefix is the IDENTICAL directory-anchored form Tier 1 carries (see the note
-# above `_cpp_kitowned`, which records the two measurements behind it): Tier 1 must stay a strict
-# subset of this set, so the two patterns are kept byte-identical rather than merely equivalent.
+# The `.claude/*` family is the IDENTICAL segment-anchored form Tier 1 carries (see the note above
+# `_cpp_kitowned`, which records the measurements behind it): Tier 1 must stay a strict subset of this
+# set, so the two patterns are kept byte-identical rather than merely equivalent.
+#
+# GUARD-PATH-ENUMERATION-INCOMPLETE S1 — THE DIRECTORY FAMILIES LIVE HERE, AND ONLY HERE.
+# `scripts/*|*/scripts/*` and `profiles/*|*/profiles/*` join `conformance/`, `skills/` and `adapters/`
+# in TIER 2 — deliberately NOT in `_cpp_kitowned`. Tier 1 folds on EVERY platform, so a generic
+# `scripts/` prefix there would fold `src/Scripts/Deploy.cs` into control-plane on case-SENSITIVE
+# Linux and reinstate the exact false-positive class the tier split was built to close (the same
+# measurement that produced `src/Adapters/Repo.cs` and `Skills/Onboarding.cs`). Tier 1 keeps its
+# per-NAME script entries as the unambiguous-filename floor; because the family lives only here, the
+# "Tier 1 ⊆ Tier 2" invariant above stops being self-satisfied and becomes a real proof.
+# WHY A FAMILY AT ALL: `scripts/` was protected per-file (~20 names), and the class demonstrated itself
+# live — `scripts/branch-protection-apply.sh` was born 2026-08-06 outside the hand list and was
+# guard-writable and mergeable as `ordinary` for ten days. `profiles/` carries the enforcement-bearing
+# surfaces an adopter's CI actually runs (`adopter-gates.yml`, `ratification.yml`, per-stack `ci.yml`,
+# `BRANCH-PROTECTION.md`), and any curated sub-list inside it would be the same defect reborn.
+# The DEEP arm (`*/scripts/*`, `*/profiles/*`) SHIPS on measurement, not on taste: `git archive HEAD`
+# retains 403 `profiles/` paths (no export-ignore entry) and `scripts/incept.sh` §5a4 keeps
+# `profiles/<STACK>/`, `ratification.yml` and `adopter-gates.yml`, so incepted adopter trees carry a
+# real `profiles/` root; the arm also catches the 14 tracked `profiles/*/scaffold/scripts/*` files.
+# ⚠️ DISCLOSED, NOT DISCOVERED LATER: "scripts" and "profiles" are far commoner directory names in an
+# adopter app tree than conformance/skills/adapters, so `frontend/scripts/build.js` and
+# `src/profiles/user.ts` become guard-DENY in ANY adopter tree where this hook is wired (byte-literal
+# on every platform — the case-conditioning only ever protects case-VARIANT spellings). Fail-safe by
+# direction, and the price is stated rather than waved at: ~37 profiles-touching commits/month
+# measured on the kit itself, all of which become dev-clone + ratification work.
+# ⚠️ THERE IS NO "OBSERVE MODE" ON THIS ROUTE, AND AN EARLIER DRAFT OF THIS COMMENT SAID OTHERWISE.
+# `LOOP_STATE_MODE` softens the CI class/loop-state route ONLY. This file has no mode knob of any
+# kind, and `.claude/` ships in the adopter export — so wherever the PreToolUse hook is wired, these
+# denies are UNCONDITIONAL from the first tool call. "Observe-mode adopters see advisories, not
+# blocks" was false here and is the kind of softener that turns a disclosed cost into a surprise.
+# The per-name `scripts/*.sh` entries below are now SUBSUMED by the family. They are kept, not pruned:
+# they are the byte-identical mirror of Tier 1's floor, and deleting entries from the list that decides
+# what may be edited at all is a change that would need its own evidence — not a tidy-up.
+# THE CURATED ROOT ADDITIONS, with the property named. `agents.md` (the roster-authority floor; the
+# file `incept` renames into the adopter's governing doc), `required-checks.md` (binds which CI
+# contexts block merge — the same enforcement-bearing class), and `.gitattributes` AT EVERY DEPTH
+# (`git archive` honors it per-directory, so a nested `docs/.gitattributes` flipping `export-ignore`
+# carries the identical export-control property; root-only would have been incomplete). `.gitignore` is
+# deliberately EXCLUDED — untracked files never export, so the property does not cover it.
+# ⚠️ HONEST CEILING: root-level governing files are NOT structurally derivable. This stays a curated
+# list, and a NEW root governing file still needs a list edit. The compensating detection is a
+# guard-vs-class census lock (S2), which is where "the list drifted" becomes a red instead of a probe
+# finding. Do not read the families above as covering this row.
+# THE HOME-INSTRUMENTATION RELIEF ARM IS MIRRORED HERE, BYTE-IDENTICALLY, AND FIRST
+# (GUARD-CLAUDE-HOME-INSTRUMENTATION-FP — the full rationale sits above `_cpp_kitowned`, where the
+# same arm leads Tier 1). Kept byte-identical rather than merely equivalent, exactly as the
+# `.claude/*` family patterns are, because Tier 1 ⊆ Tier 2 is asserted structurally and a relief
+# present in only one tier is the failure mode that check exists to catch. `case` is
+# first-match-wins: this arm must precede the family arm below or it is inert.
 _cpp_match() {
   case "$1" in
-    .claude/hooks/*|*/.claude/hooks/*|\
-    *.claude/settings.json|*.claude/settings.local.json|\
-    *.claude/mcp-policy.json|.claude/mcp-policy.json|\
-    *.claude/agents/*|.claude/agents/*|\
+    .claude/projects/*|*/.claude/projects/*|.claude/plans/*|*/.claude/plans/*) return 1 ;;
+    .claude/*|*/.claude/*|\
     docs/governance/.meta-control-last|*/docs/governance/.meta-control-last|\
     docs/governance/meta-control-log.md|*/docs/governance/meta-control-log.md|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
@@ -228,6 +325,11 @@ _cpp_match() {
     .checkov.yaml|*/.checkov.yaml|.checkov.yml|*/.checkov.yml|\
     conformance/*|*/conformance/*|adapters/*|*/adapters/*|\
     skills/*|*/skills/*|\
+    scripts/*|*/scripts/*|\
+    profiles/*|*/profiles/*|\
+    agents.md|*/agents.md|\
+    required-checks.md|*/required-checks.md|\
+    .gitattributes|*/.gitattributes|\
     scripts/fixtures/*|*/scripts/fixtures/*|\
     scripts/incept.sh|*/scripts/incept.sh|scripts/dora.sh|*/scripts/dora.sh|\
     scripts/agent-scorecard.sh|*/scripts/agent-scorecard.sh|\
@@ -385,6 +487,230 @@ guard_dev_clone_relaxable() {
   return 1
 }
 
+# =============================================================================================
+# GUARD-CP-HARDLINK-ALIAS — the guard resolves SYMLINKS but not HARDLINKS. A hardlink is a second
+# directory entry for one inode; there is no link to follow, so a benign-named hardlink's resolved
+# path IS the benign name and every union arm (literal ∨ normalised ∨ resolved) passes it. This adds
+# a RESOLVED-INODE disjunct to the same unions: if the resolved target shares its inode with a
+# control-plane or secret file reached by a different directory entry, it writes/reads THAT file, and
+# the name it is reached by does not change what it touches. (design 2026-08-18-guard-cp-hardlink-alias)
+# =============================================================================================
+
+# _is_secret_path "<path>" — the ONE source of truth for "is this a secret filename". Reproduces the
+# two arms every direct secret site carries: the byte-literal glob AND the case-folded arm (a
+# case-variant .ENV/.PEM on a case-insensitive filesystem reaches the same inode). Consolidated here
+# (GUARD-CP-HARDLINK-ALIAS §2c) from the eight inlined copies so the pattern cannot drift; the coupling
+# selftest in agent-autonomy.sh pins the alternation string byte-identical. The TEMPLATE allowlist is
+# deliberately NOT folded in — it stays byte-literal at each call site (never fold an allow matcher).
+_is_secret_path() {
+  case "$1" in
+    *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*) return 0 ;;
+  esac
+  case "$1" in *[A-Za-z]*)
+    _isp=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
+    case "$_isp" in
+      *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*) return 0 ;;
+    esac ;;
+  esac
+  return 1
+}
+
+# _is_secret_hit "<path>" — the secret classifier the INODE check uses. Same as _is_secret_path but
+# with the TEMPLATE-NAME EXEMPTION (BUILD CONDITION A, vet round 2): the inode wrapper has no allowlist
+# in front of it, so without this a hardlinked `.env.example` whose only sibling is a benign file would
+# self-classify (its own returned name `.env.example` matches `*.env.*`) and over-deny every write/read
+# to a legitimate hardlinked template. A find-returned name that IS a template name does not count as a
+# secret hit; the cloak still denies because the REAL `.env` sibling is a non-template secret.
+_is_secret_hit() {
+  case "$(basename "$1" 2>/dev/null || printf '%s' "$1")" in
+    .env.example|.env.sample|.env.template|.env.dist) return 1 ;;
+  esac
+  _is_secret_path "$1"
+}
+
+# _nlink_of "<path>" — echo the target's hard-link count; rc 1 (echo nothing) when it cannot be a
+# number. BSD (`stat -f '%l'`, darwin) vs GNU (`stat -c '%h'`) branch: GNU form tried first because
+# BSD stat rejects `-c` (measured: "illegal option -- c"), while GNU stat's `-f` means --file-system
+# (a different datum), so the order matters. ⚠️ BUILD MANDATE (vet, HIGH): parse with the
+# DECLINE-ON-NON-DIGIT negated-class idiom — an empty/absent/non-digit count routes to fail-safe (the
+# caller treats rc 1 as "cannot count => run find / deny"), NEVER to a head-anchored positive match
+# that would let ""/"x" slip to the nlink==1 ALLOW.
+_nlink_of() {
+  _nl=$(stat -c '%h' "$1" 2>/dev/null) || _nl=$(stat -f '%l' "$1" 2>/dev/null) || _nl=''
+  case "$_nl" in ''|*[!0-9]*) return 1 ;; esac   # decline-on-non-digit (vet BUILD MANDATE)
+  printf '%s' "$_nl"
+}
+
+# _devino_of "<path>" — echo "<device> <inode>" (both decimal); rc 1 on any non-"digits SP digits".
+# Same BSD/GNU branch and the same decline-on-non-digit discipline as _nlink_of.
+_devino_of() {
+  _di=$(stat -c '%d %i' "$1" 2>/dev/null) || _di=$(stat -f '%d %i' "$1" 2>/dev/null) || _di=''
+  case "$_di" in
+    *[!0-9\ ]*|''|*' '*' '*) return 1 ;;   # exactly two space-separated digit fields
+  esac
+  case "$_di" in *' '*) : ;; *) return 1 ;; esac
+  printf '%s' "$_di"
+}
+
+# _hl_physical_home — echo the PHYSICALLY-resolved $HOME (rc 1 + empty when $HOME is unset/unreadable).
+# ⚠️ H1 (reviewer, round 3): the cap MUST compare the PHYSICAL $HOME, not the raw env string. A
+# symlinked $HOME (e.g. HOME=/tmp/homelink -> /private/tmp/fakehome) never prefix-matches a
+# physically-resolved candidate, so a raw-env compare silently misses and reopens the `find $HOME` DoS.
+_hl_physical_home() { CDPATH= cd "${HOME:-/}" 2>/dev/null && pwd -P; }
+
+# _hl_at_or_above_home "<physical-path>" — rc 0 iff <physical-path> IS $HOME or an ancestor of $HOME
+# (then "$HOME/" glob-matches "$path"/*). Used to CAP both the derived AND the passed root (LOW-1):
+# a repo rooted at/above $HOME would scope a home-or-wider find. Empty/unreadable home => rc 1 (no cap).
+_hl_at_or_above_home() {
+  _hah_home=$(_hl_physical_home) || return 1
+  [ -n "$_hah_home" ] || return 1
+  case "$_hah_home/" in "$1"/*) return 0 ;; esac
+  return 1
+}
+
+# _hlink_repo_root "<path>" — derive the NEAREST ancestor of <path> containing .git or .claude
+# (GUARD-CP-HARDLINK-ALIAS §2d). ONLY reached when no protected root was PASSED (kit-guard CLI, older
+# adapters, and — until MEDIUM-1 threaded it — the read side); when a root is passed, that
+# authoritative, unsteerable value is used directly.
+# ⚠️ NEAREST, and CAPPED STRICTLY BELOW the PHYSICAL $HOME (H1). The earlier OUTERMOST climb was a DoS:
+# `~/.claude` EXISTS on a real machine, so for a repo under `~` the outermost ancestor became $HOME and
+# `find $HOME -inum` walked the ENTIRE home directory on the highest-frequency tool path. So: return
+# the NEAREST `.git`/`.claude` ancestor, and NEVER $HOME, any ancestor at/above $HOME, or `/`. If the
+# nearest boundary IS $HOME, or the walk reaches $HOME/`/` with no repo boundary strictly below,
+# derivation FAILS (rc 1) → the engine fail-safes to a HIT (deny) for that one nlink>1 target.
+_hlink_repo_root() {
+  _hrr=$1
+  case "$_hrr" in /*) : ;; *) _hrr="$(pwd)/$_hrr" ;; esac
+  _hrhome=$(_hl_physical_home) || _hrhome=''
+  _hrd=$(dirname "$_hrr")
+  while : ; do
+    case "$_hrd" in /) return 1 ;; esac                       # reached / with no boundary => fail
+    if [ -n "$_hrhome" ]; then
+      # A candidate that IS $HOME or an ancestor of $HOME is disqualified — BEFORE the boundary test,
+      # so a repo at/above $HOME never scopes a home-or-wider find. Strictly-below or outside passes.
+      case "$_hrhome/" in "$_hrd"/*) return 1 ;; esac
+    fi
+    if [ -e "$_hrd/.git" ] || [ -d "$_hrd/.claude" ]; then printf '%s' "$_hrd"; return 0; fi
+    _hrd=$(dirname "$_hrd")
+  done
+}
+
+# _hl_find_inode "<root>" "<ino>" — echo the names sharing <ino> under <root> (standard prune),
+# guarded by a fail-safe WATCHDOG (reviewer I1, the durable class-closer). If the find exceeds
+# KIT_HL_FIND_BUDGET seconds it is KILLED and this returns rc 1 (=> the engine fail-safes to a
+# HIT/deny). `timeout(1)` is not portable (absent on macOS), so: the find runs in the background
+# writing a trap-cleaned temp file; a DISARM-FLAG watchdog kills it on expiry and can never kill a
+# REUSED pid (it checks the flag first). Any orphaned `sleep` self-terminates and finds its flag gone.
+_hl_find_inode() {
+  _hlf_root=$1; _hlf_ino=$2
+  _hlf_tmp=$(mktemp 2>/dev/null) || return 1
+  _hlf_arm="$_hlf_tmp.arm"; : > "$_hlf_arm" 2>/dev/null || { rm -f "$_hlf_tmp"; return 1; }
+  # ⚠️ Both background jobs MUST detach ALL inherited fds (</dev/null >/dev/null 2>&1). This engine is
+  # itself run inside a `$(...)` capture by the caller; a backgrounded job that inherits the capture's
+  # stdout pipe holds it open, so `$(...)` blocks for the FULL budget even when find returns instantly
+  # (measured: ~10s per check). find writes to its own temp file; the watchdog talks to no one.
+  find "$_hlf_root" -xdev \
+      \( -type d \( -path '*/.git/objects' -o -path '*/.git/lfs' -o -name node_modules \) \) -prune \
+      -o -inum "$_hlf_ino" -print > "$_hlf_tmp" 2>/dev/null </dev/null &
+  _hlf_fpid=$!
+  ( sleep "${KIT_HL_FIND_BUDGET:-10}" 2>/dev/null; [ -f "$_hlf_arm" ] && kill "$_hlf_fpid" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+  _hlf_wpid=$!
+  if wait "$_hlf_fpid" 2>/dev/null; then _hlf_rc=0; else _hlf_rc=1; fi   # non-zero (error OR kill) => fail-safe
+  rm -f "$_hlf_arm"                          # DISARM: an orphaned sleep now finds the flag gone (no PID-reuse kill)
+  kill "$_hlf_wpid" 2>/dev/null || :         # best-effort reap of the watchdog subshell
+  wait "$_hlf_wpid" 2>/dev/null || :
+  if [ "$_hlf_rc" -eq 0 ]; then cat "$_hlf_tmp" 2>/dev/null; rm -f "$_hlf_tmp"; return 0; fi
+  rm -f "$_hlf_tmp"; return 1
+}
+
+# _hardlink_alias_hit "<resolved>" "<root>" "<classifier-fn>" — the engine. Returns rc 0 in TWO cases,
+# both of which the caller treats as a HIT (deny): a GENUINE hit echoes the (sanitized) offending path;
+# a FAIL-SAFE hit echoes NOTHING (empty). rc 1 = no alias (ALLOW), echoes nothing. So the caller
+# denies on rc 0 and picks its reason by whether the echoed name is non-empty (M1 — a DISTINCT
+# fail-safe reason, true for what may be an ordinary file). Fail-safe fires on any tooling anomaly
+# (stat/find cannot run, no root derivable, device mismatch, root at/above $HOME, or the find watchdog
+# timing out) — over-denying a resolvable target rather than silently opening the alias route.
+_hardlink_alias_hit() {
+  _ha_res=$1; _ha_root=$2; _ha_cls=$3
+  # 0. A hardlink requires an EXISTING file (a new-file Write, or an unresolved leaf, has no inode and
+  #    no aliases) — so a non-existent target is NOT a hit here (the string matchers already judge its
+  #    NAME). This must precede the stat fail-safe, or every write to a new path would over-deny.
+  [ -e "$_ha_res" ] || return 1
+  # 0b. GUARD-HL-REVIEW-FASTFOLLOW F1 — a DIRECTORY subject exits HERE, before the nlink pre-filter.
+  #    Every directory has st_nlink >= 2 (`.` + its parent entry + one per subdir), so step 1's cheap
+  #    exit NEVER fires for one; and guard.sh routes Grep/Glob `.tool_input.path` (usually a directory)
+  #    through guard_check_read, so the agent's highest-frequency search tools were paying mktemp + a
+  #    backgrounded repo-wide find + the watchdog subshell per call (~83ms measured).
+  #    SOUNDNESS — scoped to the SUPPORTED filesystems (ext*/xfs/btrfs/APFS): POSIX link() on a
+  #    directory is refused there, and BOTH classifier arms (is_control_plane_path, _is_secret_hit)
+  #    only ever name FILES, so a directory can never be the hardlink alias of a CP/secret file — the
+  #    skipped inode check is provably redundant for it. Legacy HFS+ DID allow directory hardlinks;
+  #    that is disclosed in docs/operations/runtime-guards.md. A directory named at a control-plane
+  #    path is still judged by the STRING matchers, which run outside this helper. Symlinked
+  #    directories are unaffected (symlinks resolve BEFORE this helper, which takes the resolved path).
+  #    The dir-swap-between-decision-and-write TOCTOU is §4 CEILING 2's existing class, not a new one.
+  [ -d "$_ha_res" ] && return 1
+  # 1. Fast pre-filter: link count. nlink<=1 => no alias => ALLOW (the subprocess-cheap common case).
+  #    On an EXISTING target a count that cannot be parsed is anomalous and fails safe to a HIT.
+  _ha_nl=$(_nlink_of "$_ha_res") || return 0
+  [ "$_ha_nl" -le 1 ] 2>/dev/null && return 1
+  # 2. The target's own (dev,ino). Fail-safe HIT if unreadable.
+  _ha_di=$(_devino_of "$_ha_res") || return 0
+  _ha_dev=${_ha_di%% *}; _ha_ino=${_ha_di##* }
+  # 3. Root: the PASSED protected root (live hook — authoritative) else derive the NEAREST repo
+  #    boundary strictly below $HOME (§2d). No derivable root fails safe to a HIT.
+  if [ -z "$_ha_root" ]; then
+    _ha_root=$(_hlink_repo_root "$_ha_res") || return 0
+  fi
+  # 3b. Cap the FINAL root — passed OR derived — at the PHYSICAL $HOME (LOW-1). A repo rooted AT $HOME
+  #     (or above) would `find $HOME`; resolve the root physically and fail safe to a HIT there. The
+  #     physical resolution also aligns the root with _res (both physical) for the scan below.
+  _ha_root=$(CDPATH= cd "$_ha_root" 2>/dev/null && pwd -P) || return 0
+  _hl_at_or_above_home "$_ha_root" && return 0
+  # 4. Device coherence (vet C3, MEDIUM). A hardlink cannot cross devices, so any alias is on _res's
+  #    device. If the root sits on a DIFFERENT device, do NOT skip (skip = no-hit = fail-OPEN): re-root
+  #    at _res's own repo (re-capped); if that is still cross-device, fail safe to a HIT.
+  _ha_rd=$(_devino_of "$_ha_root") || return 0
+  if [ "${_ha_rd%% *}" != "$_ha_dev" ]; then
+    _ha_root=$(_hlink_repo_root "$_ha_res") || return 0
+    _ha_root=$(CDPATH= cd "$_ha_root" 2>/dev/null && pwd -P) || return 0
+    _hl_at_or_above_home "$_ha_root" && return 0
+    _ha_rd=$(_devino_of "$_ha_root") || return 0
+    [ "${_ha_rd%% *}" = "$_ha_dev" ] || return 0
+  fi
+  # 5. Enumerate the inode's other names within the repo, on the one filesystem (-xdev), under the
+  #    fail-safe find WATCHDOG (I1). PRUNE ONLY the internally-hardlinked BULK that never shares an
+  #    inode with a worktree write-target: .git/objects, .git/lfs (vet C1 — the rest of .git, incl.
+  #    config/hooks/refs, is control-plane and STAYS in scope) and node_modules (vet C2 — DISCLOSED
+  #    residual). A find that errors OR exceeds the time budget fails safe to a HIT.
+  _ha_names=$(_hl_find_inode "$_ha_root" "$_ha_ino") || return 0
+  # 6. Classify each returned name whose DEVICE equals _res's (kills the inode-number-coincidence FP
+  #    across devices). A genuine hit echoes the sanitized path (LOW-3: strip control chars, cap length
+  #    — a newline in a filename would otherwise break the deny JSON).
+  _ha_ofs=$IFS; IFS='
+'
+  for _ha_p in $_ha_names; do
+    [ -n "$_ha_p" ] || continue
+    _ha_pd=$(_devino_of "$_ha_p") || continue
+    [ "${_ha_pd%% *}" = "$_ha_dev" ] || continue
+    if "$_ha_cls" "$_ha_p"; then
+      IFS=$_ha_ofs
+      printf '%s' "$_ha_p" | tr -d '\000-\037\177' | cut -c1-200
+      return 0
+    fi
+  done
+  IFS=$_ha_ofs
+  return 1
+}
+
+# Thin wrappers over the one engine (design §2b). BOTH forward the PASSED protected root ($2) — the
+# live hook's root is authoritative and unsteerable, and using it avoids the home-walk DoS entirely
+# (the engine only DERIVES when $2 is empty). The CP wrapper classifies with is_control_plane_path;
+# the SECRET wrapper with _is_secret_hit (template exemption). When no root is passed (kit-guard CLI),
+# the engine derives the NEAREST repo boundary strictly below the PHYSICAL $HOME.
+_hardlink_alias_hit_cp()     { _hardlink_alias_hit "$1" "$2" is_control_plane_path; }
+_hardlink_alias_hit_secret() { _hardlink_alias_hit "$1" "$2" _is_secret_hit; }
+
 # guard_check_read "<file>": deny reading SECRET material into the agent's context (the read half of
 # exfil, A8 family 6) — the secret then reaches the model provider / logs / a PR. Symmetric with the
 # secret-WRITE deny in guard_check_path but NARROWER: it does NOT deny control-plane reads (reading the
@@ -393,6 +719,10 @@ guard_dev_clone_relaxable() {
 # ceilings: an interpreter (python -c open()) bypasses the shell path, and jq-absent leaves Read allowed.
 guard_check_read() {
   fp=$1
+  # MEDIUM-1 (round 3): the live hook now threads its PROTECTED_ROOT here as $2, so the read-side
+  # secret-inode check uses the AUTHORITATIVE, unsteerable root instead of always deriving (closes the
+  # live-read planted-`sub/.git` steer). Empty $2 (kit-guard CLI) keeps the nearest-derive fallback.
+  _gcr_root=${2:-}
   base=$(basename "$fp" 2>/dev/null || printf '%s' "$fp")
   # GUARD-PATH-ALIAS-BYPASS (P0): the read half was the variant proven reachable end to end — a
   # renamed symlink returned a planted secret's contents through the real Read tool. Same union
@@ -405,6 +735,23 @@ guard_check_read() {
   if ! selfedit_allowed && [ "$_rrok" = 0 ]; then
     printf '13: path (%s) could not be resolved - refusing to read a target that cannot be identified.' "$fp"; return 1
   fi
+  # GUARD-CP-HARDLINK-ALIAS (§2b): the secret-INODE check goes BEFORE the template allowlist (vet
+  # HIGH-1) — a single end-of-function placement would be dead code for the flagship cloak (a hardlink
+  # named `.env.example` onto a real `.env` satisfies the conjunctive allowlist and returns ALLOW
+  # first). Gated `! selfedit_allowed` only (there is no root on the read path; the wrapper derives it).
+  # Reads of CONTROL-PLANE files stay legitimate, so the read side denies ONLY on a secret hit — this
+  # closes the silent-exfil case a gate provably cannot catch. A non-empty name => a genuine secret
+  # hardlink; empty => the engine's fail-safe (M1: a DISTINCT, true reason, not the secret-specific one).
+  if ! selfedit_allowed && [ "$_rrok" = 1 ]; then
+    if _hlnamed=$(_hardlink_alias_hit_secret "$_rres" "$_gcr_root"); then
+      if [ -n "$_hlnamed" ]; then
+        printf '13: this path is a hardlink to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_hlnamed"
+      else
+        printf '13: could not verify the target'\''s hardlink aliases (stat/find unavailable, timed out, or an ambiguous root) - denied fail-safe (refusing to read a target whose aliases cannot be confirmed). Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget - make that directory searchable, or raise KIT_HL_FIND_BUDGET (seconds); see docs/operations/runtime-guards.md, section Hardlink aliases.'
+      fi
+      return 1
+    fi
+  fi
   case "$base" in
     .env.example|.env.sample|.env.template|.env.dist)
       case "$_rrbase" in
@@ -412,38 +759,17 @@ guard_check_read() {
       esac ;;
   esac
   if ! selfedit_allowed; then
-    case "$fp" in
-      *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-        printf '13: reading secret material (%s) into context is the read half of exfil (-> model/logs/PR) - human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
-    esac
-    # GUARD-HOOKSPATH-CASE-BYPASS: a case-folded SECOND arm, never a replacement (the `_under_temp`
-    # add-only shape at :309-328). Arm 1 above is byte-identical and returns first, so this can only
-    # ever ADD a secret-read deny — a case-variant `.ENV`/`.PEM` on a case-insensitive filesystem
-    # reaches the same inode as the byte-literal form. The template ALLOW above (:408-413) stays
-    # byte-literal (never fold an allow matcher), so a case-variant `.ENV.EXAMPLE` is not recognized
-    # as a template and falls through to THIS deny — an accepted, stated over-deny (design §3/§4a).
-    case "$fp" in *[A-Za-z]*)
-      _rdl=$(printf '%s' "$fp" | LC_ALL=C tr 'A-Z' 'a-z')
-      case "$_rdl" in
-        *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-          printf '13: reading secret material (%s) into context is the read half of exfil (-> model/logs/PR) - human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
-      esac ;;
-    esac
-    # …and the union on the RESOLVED target, so a benign name cannot front a secret file.
-    if [ "$_rrok" = 1 ]; then
-      case "$_rres" in
-        *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-          printf '13: this path resolves to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_rres"; return 1 ;;
-      esac
-      # …the same folded second arm on the RESOLVED side (closes the symlink-cloak case: an
-      # innocuous literal name whose resolved target is a case-varied secret filename).
-      case "$_rres" in *[A-Za-z]*)
-        _rrl=$(printf '%s' "$_rres" | LC_ALL=C tr 'A-Z' 'a-z')
-        case "$_rrl" in
-          *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-            printf '13: this path resolves to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_rres"; return 1 ;;
-        esac ;;
-      esac
+    # GUARD-CP-HARDLINK-ALIAS §2c: the byte-literal + case-folded secret arms are consolidated into
+    # _is_secret_path (one source of truth, byte-identity-coupled). The template ALLOW above stays
+    # byte-literal (never folded), so a case-variant `.ENV.EXAMPLE` still falls through to this deny —
+    # the existing accepted over-deny (design §3/§4a). Deny MESSAGE stays here (literal wording).
+    if _is_secret_path "$fp"; then
+      printf '13: reading secret material (%s) into context is the read half of exfil (-> model/logs/PR) - human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1
+    fi
+    # …and the union on the RESOLVED target (both arms, via the same helper), so a benign name cannot
+    # front a secret file.
+    if [ "$_rrok" = 1 ] && _is_secret_path "$_rres"; then
+      printf '13: this path resolves to secret material (%s) - reading it is the read half of exfil, human-gated. The name it is reached by does not change what it reads.' "$_rres"; return 1
     fi
   fi
   return 0
@@ -568,18 +894,150 @@ is_control_plane_target() {
   case "$_ct" in
     *[A-Z]*) _ctm_match "$(printf '%s' "$_ct" | LC_ALL=C tr 'A-Z' 'a-z')" && return 0 ;;
   esac
+  # GUARD-DENY-TRIO M1: a glob-spelled target whose literal prefix segment-intersects a protected leaf
+  # (`hooks/pre-pus*`, `AGENTS.m*`, `agents/*.agent.m*`) is a write to a governing file. Reached from the
+  # write-verb route (_cp8b_cp_target_in), the combined-redirect route (_cp8b_tad_redir_cp /
+  # _cp8b_redirect_hits_cp) and the bare-token walk (_cp8b_tok_is_cp) — one site covers all. Reads never
+  # reach here (read verbs' args are data). Fast-exits on a metachar-free target, so ordinary paths and
+  # the hot path are untouched; the broad-glob relief (`*`, `docs/*`, `build/out-*`) survives inside it.
+  _cp8b_glob_hits_cp "$1" && return 0
   return 1
 }
 
 # Bare control-plane DIRECTORY names, LOWERCASED (see the _cpp_match warning: an uppercase byte in any
 # pattern here can never match a folded subject and would silently un-protect that directory).
+#
+# ⚠️ THIS IS THE FOURTH MATCHER, AND IT IS THE ONE A NEW DIRECTORY FAMILY IS MOST LIKELY TO MISS.
+# The C5 completeness discipline names THREE matcher sites (`is_control_plane_path` + the two pathhit
+# regex tiers); this list is a fourth, and it is invisible from all three because it holds BARE
+# directory names — `is_control_plane_path`'s patterns are `profiles/*`, which a bare `profiles` never
+# matches. GUARD-PATH-ENUMERATION-INCOMPLETE S1 shipped the `profiles/` family through the three named
+# sites and left this one out; measured on the shipped build, `mv profiles /tmp/x` and
+# `chmod -R 777 profiles` both ALLOWED while every file inside `profiles/` denied. That is the exact
+# hole the `mv conformance /tmp` note above records, reopened for a new family one release later: a
+# family is only as protected as its least-protected route, and the single command that relocates the
+# whole directory is the one worth the most to an attacker. ANY future directory family must be added
+# HERE as well as to `_cpp_match` and both pathhit tiers — four sites, not three.
 _ctm_match() {
   case "$1" in
-    conformance|skills|adapters|agents|scripts|hooks|.claude|.github|.git|.kit|\
-    */conformance|*/skills|*/adapters|*/agents|*/scripts|*/hooks|*/.claude|*/.github|*/.git|*/.kit)
+    conformance|skills|adapters|agents|scripts|profiles|hooks|.claude|.github|.git|.kit|\
+    */conformance|*/skills|*/adapters|*/agents|*/scripts|*/profiles|*/hooks|*/.claude|*/.github|*/.git|*/.kit)
       return 0 ;;
   esac
   return 1
+}
+
+# GUARD-DENY-TRIO M1 — close the glob-spelled write-route evasion by LITERAL-PREFIX-ANCHORED,
+# SEGMENT-SAFE disqualification (design docs/architecture/2026-08-18-guard-deny-trio-design.md §3,
+# D-240816-1). A write-verb argument or combined-redirect target spelled as a glob (`hooks/pre-pus*`,
+# `AGENTS.m*`, `agents/*.agent.m*`) evades the exact-literal pathhit corpus: `hooks/pre-push` is a
+# full-filename leaf, so `hooks/pre-pus*` matches no exact pattern and ALLOWs. The cure denies a glob
+# token IFF, after Cure-1 normalization, its NON-EMPTY literal prefix segment-intersects a protected
+# leaf. NOT the naive `case "<leaf>" in <token>)` (design H-1, REJECTED): POSIX `case` lets `*` cross
+# `/`, so that shape denies `cp x.txt docs/*` (`docs/*` would match `docs/governance/…`). The SLASH-COUNT
+# guard in _cp8b_glob_scan is the H-1 lock — token and leaf must have equal slash counts, which makes a
+# `*` unable to consume a `/`, so the match is per-segment even though POSIX `case` is used.
+#
+# _CP8B_GLOB_LEAVES is the residual pathhit-T1 leaf set (the SAME protected NAMES is_control_plane_path
+# classifies — NOT a new enumeration of glob spellings, the D-240816-1 trap — the existing leaf NAMES
+# re-consulted prefix-wise). Directory-family members (.claude/ .github/ .git/ conformance/ skills/
+# adapters/ scripts/ profiles/) are DELIBERATELY ABSENT: a glob under them already pathhits
+# (`skills/[^space]*` matches `skills/foo*`), so they need no prefix consult. `agents/*.agent.md` is
+# the one glob-shaped leaf (agents/ is not a directory family — only `agents/*.agent.md` is protected),
+# kept as a glob and matched by _cp8b_glob_scan's DIRECTIONAL branch (§10 A3), NOT a raw `case` — a
+# raw `case "$leaf" in $token)` under-matched every CONCRETE-name glob (`agents/reviewer.agent.m*`).
+# A selftest cross-checks every entry is
+# is_control_plane_path-classified, binding this list to the authoritative corpus so it cannot drift to
+# a non-CP name. ⚠️ A NEW full-filename CP leaf OUTSIDE a directory family must be added HERE too — this
+# is the glob-write route's site, a FIFTH alongside the is_control_plane_path/_ctm_match/two-pathhit
+# sites the C5 completeness discipline already names. `_LC` mirrors _CP8B_PATHHIT_T1_LC: a lowercased
+# copy consulted on an uppercase-token miss (so `CODEOWNER*`, `AGENTS.m*`, `REQUIRED-CHECKS.m*` fold),
+# authored lowercase to match a folded subject.
+# ⚠️ ADOPTER-SAFETY CONSTRAINT (what _cp8b_glob_scan actually requires): a PATTERN leaf must be
+# single-dir-segment with the `*` in the FINAL path segment (the `dir/*.ext` shape, e.g.
+# `agents/*.agent.md`). A leaf with the glob NOT last, or a multi-segment-deep protected family, is NOT
+# covered by _cp8b_glob_scan and would silently UNDER-match — add such a family to the pathhit tiers /
+# _cpp_match instead, or extend _cp8b_glob_scan first. (The nested-depth residual is §10 A5.)
+_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md .gitattributes .gitleaks.toml .gitleaksignore .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf agents/*.agent.md'
+_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md .gitattributes .gitleaks.toml .gitleaksignore .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf agents/*.agent.md'
+
+# _cp8b_glob_scan "<token>" "<leaf-list>": 0 iff <token> (a glob pattern, already normalized/folded)
+# segment-safe intersects a leaf. Slash-count equality per leaf (pure parameter-expansion counter, no
+# fork) forbids `*` from crossing `/`. TWO leaf shapes:
+#   • CONCRETE leaf (no metachar): `case "$leaf" in $token)` — the token-glob matches the literal leaf.
+#   • PATTERN leaf (`agents/*.agent.md`, carrying its OWN `*`): the raw `case` above UNDER-matches — a
+#     literal `*` in the SUBJECT aligns only a token whose metachar sits at the same spot, so a
+#     CONCRETE-name glob like `agents/reviewer.agent.m*` (which expands onto the real `.agent.md` file)
+#     slipped (GUARD-DENY-TRIO §10 A3, both review seats). Instead do a DIRECTIONAL glob-intersection:
+#     split the leaf at its `*` into LP (`agents/`) and LS (`.agent.md`); the token DENIES iff its
+#     DIRECTORY segment glob-intersects the leaf's literal dir (leaf-dir as SUBJECT / token-dir as
+#     PATTERN, so a dir metachar like `ag*`/`agent?`/`agen[t]s` that expands onto `agents/` still
+#     commits — §10 A4) AND its BASENAME COMMITS ITS LITERAL to LS — some suffix that STARTS WITH LS's
+#     first byte glob-matches LS (`case "$LS" in <suffix>)`). The starts-with-LS[0] anchor is the
+#     non-overshoot lock: a bare trailing `*` never starts with `.`, so `agents/foo*` and
+#     `ag*/notes.txt` (broad globs that do NOT spell `.agent…`) stay ALLOW — `agents/` is NOT a blanket
+#     CP prefix; only the `*.agent.md` family is. slash-count equality keeps both single-segment (no
+#     `*` crosses `/`). The leaf word-split runs under `set -f`.
+_cp8b_glob_scan() {
+  _gsn=0; _gsr=$1; while : ; do case "$_gsr" in */*) _gsn=$((_gsn+1)); _gsr=${_gsr#*/} ;; *) break ;; esac; done
+  _gsg=0; case "$-" in *f*) _gsg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split of the leaf list; globbing disabled above
+  for _gl in $2; do
+    _gln=0; _glr=$_gl; while : ; do case "$_glr" in */*) _gln=$((_gln+1)); _glr=${_glr#*/} ;; *) break ;; esac; done
+    [ "$_gsn" = "$_gln" ] || continue
+    case "$_gl" in
+      *[*?[]*)
+        # PATTERN leaf: directional glob-intersection (see header). Split the leaf at its first metachar
+        # into LP (dir, incl trailing /) and LS (literal suffix); split the TOKEN at its LAST / into a
+        # directory segment and a basename.
+        _glp=${_gl%%[*?[]*}; _gls=${_gl#*[*?[]}
+        case "$1" in */*) _gtd=${1%/*}; _gtb=${1##*/} ;; *) continue ;; esac
+        # The token's DIRECTORY segment must glob-INTERSECT the leaf's literal dir (leaf-dir as SUBJECT,
+        # token-dir as PATTERN — the concrete-leaf branch's own shape), so a DIR-segment metachar
+        # (`ag*`, `agent?`, `agen[t]s`) that expands onto `agents/` still commits. The first A3 cut
+        # anchored LP as a LITERAL (`case "$1" in "$LP"*`) and evaded on exactly those spellings
+        # (§10 A4). slash-count equality already bounds both to a single dir segment, so POSIX `*`
+        # cannot cross a `/` here — no H-1 over-deny (`ag*/notes.txt` stays ALLOW via the LS test below).
+        # shellcheck disable=SC2254  # $_gtd is a DELIBERATE glob pattern (the token's dir segment)
+        case "${_glp%/}" in $_gtd) : ;; *) continue ;; esac
+        # …AND the token's BASENAME must COMMIT its literal to LS: some suffix that STARTS WITH LS's
+        # first byte glob-matches LS. The starts-with-LS[0] anchor is the non-overshoot lock — a bare
+        # trailing `*` never starts with `.`, so `<dir>/notes.txt` and `<dir>/foo*` stay ALLOW.
+        _gl0=${_gls%"${_gls#?}"}
+        _gss=$_gtb
+        while [ -n "$_gss" ]; do
+          case "$_gss" in
+            "$_gl0"*)
+              # shellcheck disable=SC2254  # $_gss is a DELIBERATE glob pattern (a token-basename suffix)
+              case "$_gls" in $_gss) [ "$_gsg" = 1 ] || set +f; return 0 ;; esac ;;
+          esac
+          _gss=${_gss#?}
+        done ;;
+      *)
+        # shellcheck disable=SC2254  # $1 is a DELIBERATE glob pattern (the proposed write token)
+        case "$_gl" in
+          $1) [ "$_gsg" = 1 ] || set +f; return 0 ;;
+        esac ;;
+    esac
+  done
+  [ "$_gsg" = 1 ] || set +f
+  return 1
+}
+
+# _cp8b_glob_hits_cp "<token>": 0 (DENY) iff <token> is a glob whose non-empty literal prefix segment-
+# intersects a _CP8B_GLOB_LEAVES member. Fast-exits on the common no-metachar token (one `case`), so the
+# hot path pays nothing; only a glob-bearing write/redirect target runs the scan. Cure-1 normalization
+# runs BEFORE the prefix test (design H-2), so `./hooks/pre-pus*` (leading `./` stripped) and
+# `hooks//pre-pus*` (// collapsed) deny like `hooks/pre-pus*`. An EMPTY literal prefix (bare `*`, or
+# `./*` -> `*` after norm) never denies — the broad-glob relief (`*`, `docs/*`, `cp x.txt ./*`).
+_cp8b_glob_hits_cp() {
+  case "$1" in *[*?[]*) : ;; *) return 1 ;; esac      # no glob metachar -> not this predicate
+  _gt=$(_cp8b_norm "$1")
+  case "${_gt%%[*?[]*}" in '') return 1 ;; esac        # empty literal prefix -> ALLOW (bare * / ./*)
+  _cp8b_glob_scan "$_gt" "$_CP8B_GLOB_LEAVES" && return 0
+  case "$_gt" in *[A-Z]*) : ;; *) return 1 ;; esac      # fold only on an uppercase byte (mirrors :93)
+  _cp8b_glob_scan "$(printf '%s' "$_gt" | LC_ALL=C tr 'A-Z' 'a-z')" "$_CP8B_GLOB_LEAVES_LC"
 }
 
 # _cp8b_joinlines: collapse backslash-newline CONTINUATIONS to a space. A continuation is NOT a command
@@ -596,9 +1054,23 @@ _cp8b_joinlines() {
 # turning two DENY rules into ALLOW. Nothing is rejoined here.)
 # A separator inside a quoted string over-splits into a bogus segment whose lead is unrecognized ->
 # scan-and-deny. Over-DENY, fail-closed - and identical to today's verdict.
+# GUARD-DENY-TRIO M1 (fd-dup/combined-redirect half): the `&` of a REDIRECT operator (`>&`, `&>`,
+# `2>&`, `>>&`) is NOT a command separator and must not split the command. Before this, `s/&/;/g`
+# turned `echo x >&conformance/verify.sh` into `echo x >` + `conformance/verify.sh`, orphaning the
+# redirect TARGET into a bare segment that the kit-exec recognizer then read as "running the script" and
+# ALLOWED — a combined-redirect WRITE laundered as a command. (The boarded GUARD-REDIRECT-FD-DUP-
+# COMBINED-BYPASS mechanism, absorbed here.) The design named `_redir_targets`' `&`-exclusion as the
+# fix, but the split happens HERE first, so `_redir_targets` never saw `>&word`; both must change. A
+# redirect `&` is protected via the _cp8b_soh sentinel across the `&`->`;` pass, then restored, so ONLY
+# a true separator `&` (background/`&&` already collapsed above) splits. fd-dups (`2>&1`, `>&-`) keep
+# their `&` and stay one segment — _redir_targets then classifies them (numeric/`-` => excluded).
+_cp8b_soh=$(printf '\001')
 _cp8b_segments() {
   _cp8b_joinlines "$1" \
-    | sed -e 's/&&/;/g' -e 's/||/;/g' -e 's/|/;/g' -e 's/&/;/g' \
+    | sed -e 's/&&/;/g' -e 's/||/;/g' -e 's/|/;/g' \
+          -e "s/>&/>$_cp8b_soh/g" -e "s/&>/$_cp8b_soh>/g" \
+          -e 's/&/;/g' \
+          -e "s/$_cp8b_soh/\&/g" \
     | tr ';\n' '\n\n'
 }
 
@@ -904,7 +1376,19 @@ _redir_targets() {
     _rtk=$1; shift
     [ -n "$_rtk" ] || continue
     case "$_rtk" in
-      '&'*) continue ;;                                 # fd-dup (>&N / N>&M) — not a filesystem target
+      # GUARD-DENY-TRIO M1: a post-`&` token that is ALL-DIGITS (`>&1`, `N>&M`) or `-` (`>&-`) is a
+      # true fd-dup/close — not a filesystem target — and stays excluded (the 14 relief forms). A
+      # NON-NUMERIC word (`>&conformance/verify.sh`, `>&hooks/pre-pus*`, `>&$VAR`) is bash's combined-
+      # redirect FILE write: strip the `&` and let it fall through to the literal/allowlist classifier
+      # below, so a literal CP target denies and a glob/$VAR target fails closed (rc 2). This narrows the
+      # previously-broad `&`-exclusion (disclosed residual C1) without disturbing any fd-dup form.
+      '&'*)
+        _rtd=${_rtk#&}
+        case "$_rtd" in
+          ''|-) continue ;;                             # >&-  / bare & — close/dup, never a file target
+          *[!0-9]*) _rtk=$_rtd ;;                        # >&<non-numeric word> — a combined-redirect write
+          *) continue ;;                                # >&N (all-digits) — fd-dup, never a file target
+        esac ;;
     esac
     case "$_rtk" in
       *[!A-Za-z0-9._/@:+=,-]*) _rtc=2 ;;                # NOT a plain literal -> disqualify (fail-closed)
@@ -956,9 +1440,53 @@ _cp8b_redirect_hits_cp() {
 # `is_control_plane_path`: these are repo-relative prefixes, always judged against the tree the guard
 # itself sits on — not an arbitrary absolute path that could live on a different mounted volume (the
 # reason a filesystem probe was REJECTED for the `.env` secret arm, design §3 resolution (B)).
-_CP8B_PATHHIT_T1='(\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
-_CP8B_PATHHIT_T1_LC='(\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
-_CP8B_PATHHIT_T2='(skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*)'
+# GUARD-PATH-ENUMERATION-INCOMPLETE S1 — THE `.claude` LEG IS LEFT-ANCHORED, AND THE ANCHOR CLASS IS
+# PINNED. The leg used to be `\.claude(/|…)` with NO left anchor, so it matched `foo.claude/` and
+# `v2.claude/` — the same `<x>.claude/...` false positive the path globs carried. Relieving it on the
+# path route ALONE would have been worse than leaving it: the redirect/cmd route would keep denying an
+# ordinary adopter file while the acceptance criterion greened on the path route (route-split relief).
+# ⚠️ THE ANCHOR IS `(^|[^A-Za-z0-9._-])`, NOT `(^|/)`. Do NOT transplant the path-glob phrasing "at the
+# start or after a /" into this regex: it matches COMMAND TEXT, not a path. `(^|/)` would drop the
+# quoted (`".claude/x"`), post-space (`verb .claude/x`) and post-`=` (`--out=.claude/x`) spellings out
+# of pathhit entirely — and for the interpreter form `python3 -c "open('.claude/settings.json','w')"`
+# pathhit is the ONLY arm that fires (the token walk cannot see a path inside the parentheses), so
+# `(^|/)` would re-open that P0 class outright. The class excludes every byte that can end a FILENAME
+# (letters, digits, `.`, `_`, `-`), so `foo.claude/` and `v2.claude/` relieve while start-of-string,
+# post-`/`, post-space, post-quote, post-`=`, post-`:` all still deny. Corner-spelling DENY fixtures and
+# sibling ALLOW fixtures both live in conformance/agent-autonomy.sh; this narrowing is a deny
+# RELAXATION and carries its own fixtures and its own monotonicity run, per the standing rule.
+# AGENTS.md and REQUIRED-CHECKS.md use the CODEOWNERS-style anchor `(^|[^a-zA-Z.])`: an unanchored
+# `agents\.md` would substring-match `subagents.md`.
+# ⚠️ `.gitattributes` IS LEFT-ANCHORED WITH THE PINNED CLASS, NOT LEFT BARE. It shipped as a plain
+# substring in the first cut of this slice, copied from the `.gitleaksignore` precedent — and that was
+# an UNDECLARED deviation from the design, which specifies segment-anchored membership. It produced a
+# measured ROUTE SPLIT: `foo.gitattributes` and `docs/my.gitattributes` ALLOWED at the Write/Edit path
+# route (the globs `​.gitattributes|*/.gitattributes` are already segment-exact) while DENYING here under
+# any unrecognized lead verb. The precedent did not transfer: nothing is plausibly named
+# `foo.gitleaksignore`, but `<tool>.gitattributes` is an ordinary generated-file spelling. Anchoring
+# aligns this leg with the globs it is supposed to mirror; the class is the same one the `.claude` leg
+# pins, so start-of-string, post-`/`, post-space, post-quote, post-`=` and post-`:` all still deny.
+# ⚠️ INHERITED-ANCHOR FACE, DECLARED (M3): the CODEOWNERS class `(^|[^a-zA-Z.])` admits `-`, so
+# `SUB-AGENTS.md` DENIES here while the path route ALLOWS it (the glob `agents.md|*/agents.md` is
+# segment-exact). That asymmetry is inherited from the CODEOWNERS convention this leg copies, not
+# introduced by it, and it is fail-SAFE in the direction it errs. It is stated rather than fixed
+# because narrowing the shared CODEOWNERS anchor class is a change to an existing deny with its own
+# fixtures and its own monotonicity run — not a tidy-up to ride along here.
+_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+# TIER 2 gains `scripts/` and `profiles/` — the redirect-route half of the directory families added to
+# `_cpp_match`. They land HERE and never in T1, for the identical reason: T1 folds on every platform,
+# and an unconditionally-folded `scripts/` would reinstate the measured case-sensitive FP class on the
+# cmd route one argument position to the left of where `_cpp_match` closed it.
+# ⚠️ THE TWO NEW LEGS ARE LEFT-ANCHORED; the three older ones are not. This is deliberate and it is
+# NOT a drive-by symmetry to "finish": these families are SEGMENT properties, and a bare substring
+# `scripts/` would deny `myscripts/x.sh` — an ordinary adopter directory that merely ends in the family
+# name, i.e. the `my.claude/` false positive rebuilt in a new matcher. The anchor admits `/` (so a real
+# `frontend/scripts/build.js` segment still denies, as the design's consequences disclose) and every
+# quote/space/`=` lead-in, while excluding filename-tail bytes. Anchoring the three EXISTING legs would
+# be a deny RELAXATION on skills/conformance/adapters, which needs its own fixtures and its own
+# monotonicity run — it is a separate change, not a tidy-up, and it is not made here.
+_CP8B_PATHHIT_T2='(skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:space:]]*|(^|[^A-Za-z0-9._-])scripts/[^[:space:]]*|(^|[^A-Za-z0-9._-])profiles/[^[:space:]]*)'
 _cp8b_pathhit() {
   printf '%s' "$1" | grep -Eq "${_CP8B_PATHHIT_T1}|${_CP8B_PATHHIT_T2}" && return 0
   # Arm 1 above is byte-identical to the pre-fold regex and returns first (the `_under_temp`
@@ -1798,8 +2326,20 @@ guard_check_command() {
   # `:894-899` folds the CP-arm verbs, "same defect, one argument position to the left"). Then the
   # filename leg. Deny-side only; `.env.example` stays ALLOW because "example" is never a listed
   # suffix alternative — folding case cannot add it (design §4a).
+  # GUARD-DENY-TRIO M2 (F3, D-240816-1): the verb leg now also lists CONTENT-DIGEST verbs
+  # (md5/md5sum/shasum/sha*sum/cksum/sum/b2sum/b3sum/rhash/xxhsum/crc32/gpg/digest, and `openssl` scoped
+  # to its TWO-WORD subcommand form `openssl dgst|sha256|…` — a bare `openssl` would over-match
+  # `openssl rsa -in server.key`). A digest of a secret is a CONFIRMATION ORACLE (candidate-value
+  # verification / offline brute-force of a short secret), categorically worse than metadata. METADATA
+  # verbs (wc/stat/du/ls/file) stay OFF this list — the disclosed, accepted trade, fixtured both ways.
+  # HONEST CEILING, stated not implied-closed: this list is NON-EXHAUSTIVE under the SAME interpreter/
+  # unknown-binary ceiling the content-read arm already carries — `certutil`, a scripted `openssl -in`,
+  # `python -c hashlib`, any renamed digester slips it. The oracle is NARROWED, not closed; the
+  # complete-by-disqualification fix (invert to a positive metadata allowlist) is M-sized and boarded
+  # separately. `_CP8B_READ_VERBS`' vetting of digests as harmless is UNCHANGED — a digest of a CONTROL-
+  # PLANE config is genuinely harmless, so the secret/CP asymmetry is intentional and fixtured both ways.
   if ! selfedit_allowed \
-     && printf '%s' "$cmd" | grep -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*(cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.)[[:space:]]' \
+     && printf '%s' "$cmd" | grep -Eiq '(^|[;&|]|[[:space:]])[[:space:]]*((cat|less|more|head|tail|grep|egrep|fgrep|rg|strings|xxd|od|hexdump|base64|nl|tac|diff|cmp|comm|awk|sed|sort|uniq|cut|paste|fold|jq|yq|rev|source|\.|md5|md5sum|shasum|sha1sum|sha224sum|sha256sum|sha384sum|sha512sum|cksum|sum|b2sum|b3sum|rhash|xxhsum|crc32|gpg|digest)[[:space:]]|openssl[[:space:]]+(dgst|sha1|sha224|sha256|sha384|sha512|sha3-224|sha3-256|sha3-384|sha3-512|md5|md5sum|rmd160|blake2b512|blake2s256|shake128|shake256)([[:space:]]|$))' \
      && printf '%s' "$cmd" | grep -Eiq '\.env(\.(local|production|development|staging|test|prod|dev|stage|qa|preview|ci|bak|old))?([[:space:];|&*]|$)|\.(pem|key)([[:space:];|&*]|$)|id_rsa|(^|[[:space:]/;|&])secrets?/'; then
     printf '%s' '13: reading secret material into context (the read half of exfil -> model/logs/PR) is human-gated. Use .env.example / a secrets manager / redact; KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
   fi
@@ -2093,6 +2633,19 @@ guard_check_path() {
   if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && [ "$_resok" = 1 ] && is_control_plane_path "$_res"; then
     printf '13: this path resolves to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes.' "$_res"; return 1
   fi
+  # GUARD-CP-HARDLINK-ALIAS (§2b): the CP-INODE disjunct, immediately after the resolved-CP arm and
+  # UNDER THE SAME dev-clone relax gate that arm carries (Leg G). A non-empty name => a genuine CP
+  # hardlink; empty => the engine's fail-safe (M1: a DISTINCT reason, true for an ordinary file).
+  if ! selfedit_allowed && [ "$_cp8c_relax" = 0 ] && [ "$_resok" = 1 ]; then
+    if _hlnamed=$(_hardlink_alias_hit_cp "$_res" "$_cp8c_root"); then
+      if [ -n "$_hlnamed" ]; then
+        printf '13: this path is a hardlink to a control-plane file (%s) - denied (control-plane integrity). The name it is reached by does not change what it writes.' "$_hlnamed"
+      else
+        printf '13: could not verify the target'\''s hardlink aliases (stat/find unavailable, timed out, or an ambiguous root) - denied fail-safe (control-plane integrity). Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget - make that directory searchable, or raise KIT_HL_FIND_BUDGET (seconds); see docs/operations/runtime-guards.md, section Hardlink aliases.'
+      fi
+      return 1
+    fi
+  fi
   # WS1: validate by basename when the NORMALIZED path has no real parent directory — either it is a
   # bare name, OR it still ESCAPES its root (a leading/unresolved `..` the fixpoint could not consume),
   # which cannot be trusted by directory. A path with a genuine parent dir (`.vscode/settings.json`) is
@@ -2120,6 +2673,22 @@ guard_check_path() {
       esac
     fi
   fi
+  # GUARD-CP-HARDLINK-ALIAS (§2b): the secret-INODE disjunct goes BEFORE the template allowlist (vet
+  # HIGH-1) and is UNGATED — not relax-gated, not selfedit-gated — byte-parity with the direct secret
+  # arms below (a relax-gated secret check would be strictly weaker than the direct arm it mirrors). A
+  # genuine single-link `.env.example` produces no hit and falls through to the allowlist unchanged; a
+  # hardlinked `.env.example`->`.env` produces a secret hit and denies before the allowlist greens it.
+  # (UNGATED: the guard below carries NO _cp8c_relax — K(iv) pins that asymmetry vs the CP site above.)
+  if [ "$_resok" = 1 ]; then
+    if _hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root"); then
+      if [ -n "$_hlnamed" ]; then
+        printf '13: this path is a hardlink to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_hlnamed"
+      else
+        printf '13: could not verify the target'\''s hardlink aliases (stat/find unavailable, timed out, or an ambiguous root) - denied fail-safe (refusing to write to a target whose aliases cannot be confirmed). Remedy: usually an unreadable directory under the repo root, or a find that exceeded its time budget - make that directory searchable, or raise KIT_HL_FIND_BUDGET (seconds); see docs/operations/runtime-guards.md, section Hardlink aliases.'
+      fi
+      return 1
+    fi
+  fi
   # The template allowlist is the SECOND predicate that turns denies off, so it takes the
   # CONJUNCTION: allow only when the literal AND the resolved basenames are both template names.
   # Literal-only is a cloak (an alias NAMED .env.example reaching a real .env); resolved-only is a
@@ -2130,36 +2699,16 @@ guard_check_path() {
         .env.example|.env.sample|.env.template|.env.dist) return 0 ;;
       esac ;;
   esac
-  case "$fp" in
-    *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-      printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1 ;;
-  esac
-  # GUARD-HOOKSPATH-CASE-BYPASS: a case-folded SECOND arm, never a replacement (the `_under_temp`
-  # add-only shape at :309-328). Arm 1 above is byte-identical and returns first, so this can only
-  # ever ADD a secret-write deny. The template ALLOW above stays byte-literal (never fold an allow
-  # matcher), so a case-variant `.ENV.EXAMPLE` falls through to THIS deny — an accepted over-deny.
-  case "$fp" in *[A-Za-z]*)
-    _wdl=$(printf '%s' "$fp" | LC_ALL=C tr 'A-Z' 'a-z')
-    case "$_wdl" in
-      *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-        printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1 ;;
-    esac ;;
-  esac
-  # …and the same union on the RESOLVED path, so a benign name cannot front a secret target.
-  if [ "$_resok" = 1 ]; then
-    case "$_res" in
-      *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-        printf '13: this path resolves to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_res"; return 1 ;;
-    esac
-    # …the same folded second arm on the RESOLVED side (closes the symlink-cloak case: an innocuous
-    # literal name whose resolved target is a case-varied secret filename).
-    case "$_res" in *[A-Za-z]*)
-      _wrl=$(printf '%s' "$_res" | LC_ALL=C tr 'A-Z' 'a-z')
-      case "$_wrl" in
-        *.env|*/.env|*.env.*|*.pem|*.key|*id_rsa*|*/secrets/*|*/secret/*|secrets/*|secret/*)
-          printf '13: this path resolves to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_res"; return 1 ;;
-      esac ;;
-    esac
+  # GUARD-CP-HARDLINK-ALIAS §2c: the byte-literal + case-folded secret arms are consolidated into
+  # _is_secret_path (one source of truth, byte-identity-coupled). The template ALLOW above stays
+  # byte-literal, so a case-variant `.ENV.EXAMPLE` falls through to THIS deny — an accepted over-deny.
+  if _is_secret_path "$fp"; then
+    printf '13: writing secret material (%s) - human-gated (use .env.example + a secrets manager).' "$base"; return 1
+  fi
+  # …and the same union on the RESOLVED path (both arms, via the same helper), so a benign name cannot
+  # front a secret target.
+  if [ "$_resok" = 1 ] && _is_secret_path "$_res"; then
+    printf '13: this path resolves to secret material (%s) - human-gated. The name it is reached by does not change what it writes.' "$_res"; return 1
   fi
   return 0
 }
