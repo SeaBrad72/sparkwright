@@ -811,6 +811,11 @@ curate_for_mode "$MODE"
 # and scripts/branch-protection-apply.sh read; same BACKLOG-pattern stamp, always written regardless
 # of backlog backend (it is not a backlog concern).
 [ -f REQUIRED-CHECKS.md ] || { cp templates/REQUIRED-CHECKS-TEMPLATE.md REQUIRED-CHECKS.md; sedi "s/\[Project Name\]/${ENAME}/g" REQUIRED-CHECKS.md; }
+# The decision ledger — stamped EMPTY, same absent-only guard. The entry contract sends every agent
+# into docs/governance/DECISIONS.md before it changes a surface, so the file has to exist from day
+# one; what must NOT exist is the kit's own copy, which is export-ignored for that reason.
+mkdir -p docs/governance
+[ -f docs/governance/DECISIONS.md ] || { cp templates/DECISIONS-TEMPLATE.md docs/governance/DECISIONS.md; sedi "s/\[Project Name\]/${ENAME}/g" docs/governance/DECISIONS.md; }
 # .env.example — the committed env template the DoD + RUNBOOK require (never a real .env).
 if [ ! -f .env.example ]; then
   cat > .env.example <<'ENVEOF'

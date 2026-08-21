@@ -45,7 +45,12 @@ ROOT="${EXPORT_ROOT:-.}"
 #     KIT-FEEDBACK.md, scratchpad/**), and requiring equality produces 5 false FAILs on this tree.
 # The true relation is IGN ⊆ export-ignored, block (a) is what enforces it, and a separate equality
 # check here would be fully shadowed by it — dead defense-in-depth, removed rather than kept.
-IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/governance/meta-control-log.md docs/governance/.meta-control-last BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers .kit/dials.conf"
+# docs/governance/DECISIONS.md (TRIAL-PREP-FIRST-MILE): the kit's own ruling ledger, export-ignored
+# for RUNBOOK.md's exact reason — incept.sh stamps an EMPTY one from templates/DECISIONS-TEMPLATE.md
+# only when the file is ABSENT. It MUST be listed here as well as in .gitattributes: the omission is
+# SILENT in the safe direction until the ledger gains one markdown link to another export-ignored
+# target, at which point the link scan reds on a file the real export never ships.
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers .kit/dials.conf"
 
 # _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
 # P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +

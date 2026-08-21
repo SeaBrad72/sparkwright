@@ -13,6 +13,29 @@ BRIEF="AGENTS.md"
 MAX_LINES=80
 REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 
+# ── THE §1 BYTE CAP (a GOVERNED CONSTANT — the doc-budget.sh convention) ──────────────────────────
+# Set at the post-rewrite size of the entry-contract region, rounded up to the next 10, plus ~10%
+# headroom. Raising it is a DELIBERATE, ratified change: edit the constant below in a reviewed PR,
+# exactly as conformance/doc-budget.sh prescribes for the line budgets. This prevents silent
+# re-bloat; it does not forbid growth.
+#
+# WHY BYTES, AND WHY HERE. doc-budget.sh counts LINES, and §1 is written as a handful of very long
+# ones — before the TRIAL-PREP-FIRST-MILE rewrite the region was 3,720 bytes across 12 lines, with a
+# single act over 1,400 bytes on its own. Prose can therefore double inside the region without any
+# existing gate moving: the line budget does not see it, and the byte-equality lock compares the
+# members to EACH OTHER, never to a size. This is the one measurement that does.
+#
+# 2026-08-19 (TRIAL-PREP-FIRST-MILE): region measured 1681 bytes after the rewrite -> 1690 rounded
+# up -> +170 (~10%) headroom -> 1860. The headroom is named rather than generous on purpose: the
+# design's original proposal of 2000 was rejected at the security vet as ~19% of silent regrowth
+# licensed on day one.
+# 2026-08-20 (same slice, review round): two corrections put the region at 1757 — the act-1 warning
+# now NAMES the script that owns `--state`, and the trailer warning states the mechanism git actually
+# has. The cap was deliberately NOT re-raised to restore the 10%: recomputing the headroom every time
+# the region grows is precisely the silent ratchet-slip this constant exists to refuse, and 103 bytes
+# is still real room. The next edit that needs more asks for it in a reviewed PR, which is the point.
+EC_MAX_BYTES=1860
+
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {
   bf=$1; max=$2; f=0
@@ -150,6 +173,25 @@ ec_san() { LC_ALL=C tr -d '[:cntrl:]'; }
 # ec_region_lines <file>: how many lines the file's first "## " section occupies (0 = no section).
 ec_region_lines() {
   LC_ALL=C awk '/^## /{n++} n==1{c++} n==2{exit} END{print c+0}' "$1"
+}
+
+# ec_region_bytes <file>: how many BYTES the file's first "## " section occupies, each line's newline
+# included (0 = no section). LC_ALL=C is load-bearing TWICE: it makes awk's length() count BYTES and
+# not characters (the section carries em-dashes, an arrow and an emoji, each several bytes wide), and
+# it keeps the scan byte-safe on a document that is not valid UTF-8. `wc -c < file` is deliberately
+# NOT used — BSD wc pads its count with leading blanks, which silently turns the numeric comparison
+# this feeds into a string one. CEILING: a final line with no trailing newline is counted one byte
+# high; every markdown file in the locked set ends with one, and the direction is conservative.
+ec_region_bytes() {
+  LC_ALL=C awk '/^## /{n++; if(n==2) exit} n==1{b+=length($0)+1} END{print b+0}' "$1"
+}
+
+# ec_kit_armed <root>: 0 iff <root> carries a KIT marker. The two files tested are the same pair
+# conformance/decision-id-live.sh keys its own kit-self arming on — both export-ignored, so an
+# adopter tree carries neither and the two checks stand down on exactly the same trees. Keeping the
+# pair as an OR (not a single file) is what stops one deletion from disarming a kit tree silently.
+ec_kit_armed() {
+  [ -f "$1/docs/ROADMAP-KIT.md" ] || [ -f "$1/.github/workflows/golden-path.yml" ]
 }
 
 # ec_heading <file>: the file's FIRST "^## " line, verbatim (empty when it has none).
@@ -717,6 +759,58 @@ FINAL
     echo "FAIL: the derived entry-contract set is EMPTY — nothing was compared"
     return 1
   fi
+
+  # ── (6) THE BYTE CAP — the one measurement neither doc-budget.sh nor the byte-equality lock makes.
+  # doc-budget counts LINES and this region is written as a few very long ones; the equality lock
+  # compares the members to EACH OTHER, never to a size. So prose can double inside §1 with every
+  # existing gate green. The cap is the ratchet against that, and $EC_MAX_BYTES (top of this file) is
+  # a governed constant raised only in a reviewed PR.
+  #
+  # KIT-SELF, and armed on the SAME markers as conformance/decision-id-live.sh. The value is
+  # calibrated to the KIT's own entry contract; an adopter who extends the contract for their own
+  # project is not in breach of the kit's anti-regrowth ratchet, and a portable battery that hard-REDs
+  # on an adopter's own prose is a defect class this repo has shipped before. On an unarmed tree this
+  # prints an honest N/A and grades nothing — verify.sh's is_self_skip cannot read the WHOLE check as
+  # a self-skip off it, because the lines above are `PASS:`-prefixed and that classifier requires the
+  # absence of any line-anchored OK/PASS.
+  #
+  # THE TWO UNMEASURABLE DIRECTIONS ARE NOT THE SAME STRENGTH, and saying "fail-closed in both" would
+  # over-claim on the second. A cap that cannot see its subject must not report that its subject is
+  # within it — but only one of these arms is PROVEN to do that:
+  #   * NO ELECTED REFERENCE — REACHABLE AND FIXTURED (leg N20). eccount is incremented at the top of
+  #     the compare loop, before the preamble/terminator rules, so a tree whose members ALL fail one
+  #     of those leaves eccount > 0 with ecrefp empty. It is NOT verdict-decisive — the run is already
+  #     RED off the preamble rule — so what N20 pins is the REASON PRINTED, not the exit code. That is
+  #     the load-bearing half: a gate that reds for one rule while printing a clean verdict for
+  #     another attests to neither.
+  #   * A ZERO-BYTE REGION — DISCLOSED-UNPROVEN, deliberately unfixtured (the ceiling convention
+  #     conformance/loop-state.sh uses for derive_class's own fail-closed arm). Unreachable through
+  #     this interface: resolution step (3) already refuses any member whose ec_region_lines is 0, so
+  #     every candidate reference has at least a heading line, and a "## " heading is 4 bytes before
+  #     anything is written after it. Do not invent a fixture for it — the arm stays as defense
+  #     against a future change to ec_region_bytes's contract, and it is stated rather than counted.
+  if ! ec_kit_armed "$ecroot"; then
+    echo "N/A: the entry-contract byte cap is a kit-self leg and this tree carries no kit marker — the cap is calibrated to the kit's own §1, and an adopter's longer entry contract is not a defect. Everything above still ran; this line grades nothing and is not a pass for it."
+  elif [ -z "$ecrefp" ]; then
+    echo "FAIL: the entry-contract byte cap could not be measured — no reference document was elected, so there is no region to size (fail-closed: an unmeasurable cap must never read as a cap that held)"
+    ecf=1
+  else
+    ecbytes=$(ec_region_bytes "$ecrefp" 2>/dev/null || true)
+    case "$ecbytes" in
+      ''|*[!0-9]*)
+        ecbytes=0 ;;
+    esac
+    if [ "$ecbytes" -eq 0 ]; then
+      echo "FAIL: the entry contract in '$ecref' measured ZERO bytes — the region could not be sized at all, and a cap with no subject is not a cap that held (fail-closed)"
+      ecf=1
+    elif [ "$ecbytes" -gt "$EC_MAX_BYTES" ]; then
+      echo "FAIL: the entry contract in '$ecref' is $ecbytes bytes, which exceeds the entry-contract byte cap of $EC_MAX_BYTES. §1 is the first thing an agent reads: trim it back, or raise EC_MAX_BYTES in a reviewed PR with the reason (the governed-bump pattern conformance/doc-budget.sh uses for the line budgets). Note the LINE budget cannot see this — the region's lines are long."
+      ecf=1
+    else
+      echo "PASS: the entry contract measures $ecbytes bytes (cap $EC_MAX_BYTES)"
+    fi
+  fi
+
   # THE SWEEP CLOSES SINGLE-MANIFEST COLLAPSE, NOT THE COLLAPSE CLASS. Repointing EVERY manifest at one
   # NEW document whose §1 heading differs degenerates the set to one all over again — the sweep keys on
   # the REFERENCE's heading, and the new document is the reference, so the documents that actually carry
@@ -1197,6 +1291,76 @@ if [ "${1:-}" = "--selftest" ]; then
   mkdir -p "$ecn17"; printf '# Title\n\n## Project overview\n\nbody\n\n## Later section\n\nmore\n' > "$ecn17/Z-bad.md"
   ec_adapter "$ecn17" h1 A-ok.md; ec_adapter "$ecn17" h2 Z-bad.md
   ec_expect 1 "$ecn17" "a charter whose first section is NOT the entry contract" "is not the entry contract"
+
+  # ── B6 · THE §1 BYTE CAP — a boundary PAIR, plus the arming half ─────────────────────────────────
+  # The cap bounds REGROWTH of a region whose line count is a useless proxy: §1's longest line has been
+  # over 1,400 bytes on its own, so a prose re-bloat that keeps the line count is invisible to
+  # doc-budget.sh (which counts LINES) and to the byte-equality lock (which compares members to each
+  # other, not to a size). These legs are generated FROM $EC_MAX_BYTES, so a governed retune of the
+  # constant moves the fixtures with it and neither leg can go stale against the value it pins.
+  #
+  # ec_region_of_bytes <outfile> <bytes>: a §1 region measuring EXACTLY <bytes> under ec_region_bytes.
+  # The heading line is 21 bytes ("## 1. Entry contract" + newline); one filler line takes the rest.
+  ec_region_of_bytes() {
+    ecrbo_f=$1; ecrbo_n=$2
+    { printf '## 1. Entry contract\n'
+      awk -v n="$((ecrbo_n - 22))" 'BEGIN{s=""; for(i=0;i<n;i++) s=s "x"; print s}'
+    } > "$ecrbo_f"
+  }
+  # ec_capped_tree <root> <bytes> <armed:yes|no>: two byte-identical carriers of the given region size,
+  # two manifests, and (when armed) the kit marker the cap leg keys on.
+  ec_capped_tree() {
+    ecct_r=$1
+    ec_region_of_bytes "$ecb/region-$2-$3.txt" "$2"
+    ec_doc "$ecct_r/A-ok.md" "$ecb/region-$2-$3.txt"
+    ec_doc "$ecct_r/B-ok.md" "$ecb/region-$2-$3.txt"
+    ec_adapter "$ecct_r" h1 A-ok.md; ec_adapter "$ecct_r" h2 B-ok.md
+    if [ "$3" = yes ]; then
+      mkdir -p "$ecct_r/docs"; printf 'kit marker\n' > "$ecct_r/docs/ROADMAP-KIT.md"
+    fi
+  }
+
+  # (P9) THE POSITIVE HALF — a region EXACTLY AT the cap passes, and the measured size is printed. A
+  # cap whose only proof is an over-cap fixture could be bought by a leg that reds on every tree.
+  ecn19="$ecb/t-cap-at"
+  ec_capped_tree "$ecn19" "$EC_MAX_BYTES" yes
+  ec_expect 0 "$ecn19" "a §1 EXACTLY at the byte cap passes, and the size is reported" \
+    "entry contract measures $EC_MAX_BYTES bytes (cap $EC_MAX_BYTES)"
+
+  # (N19) THE NEGATIVE HALF — ONE byte over. The pair is what makes the constant load-bearing: an
+  # off-by-one in either direction turns exactly one of these two red.
+  ecn19b="$ecb/t-cap-over"
+  ec_capped_tree "$ecn19b" "$((EC_MAX_BYTES + 1))" yes
+  ec_expect 1 "$ecn19b" "a §1 ONE BYTE over the cap is refused" "exceeds the entry-contract byte cap"
+
+  # (P10) THE ARMING HALF — this is a KIT-SELF leg (the cap is calibrated to the KIT's §1; an adopter
+  # who extends the contract for their own project is not in breach of the kit's ratchet). On a tree
+  # with NEITHER kit marker the same over-cap region must render N/A and pass. Without this leg the
+  # arming block could be deleted and every selftest above would stay green.
+  ecn19c="$ecb/t-cap-unarmed"
+  ec_capped_tree "$ecn19c" "$((EC_MAX_BYTES + 1))" no
+  ec_expect 0 "$ecn19c" "the byte cap is kit-self: an over-cap §1 on an ADOPTER tree renders N/A" \
+    "N/A: the entry-contract byte cap is a kit-self leg"
+
+  # (N20) THE NO-ELECTED-REFERENCE ARM. Review's finding was that both unmeasurable arms were
+  # NEVER VERDICT-DECISIVE and unfixtured, and asked for the whole block to be reworded down to
+  # DISCLOSED-UNPROVEN. Half of that is right and half is answered here.
+  # REACHABLE: eccount is incremented at the TOP of the compare loop, before the preamble and
+  # terminator rules run, so a tree whose members ALL fail one of those leaves eccount > 0 with no
+  # reference ever elected — this fixture is that tree.
+  # NOT VERDICT-DECISIVE, WHICH REVIEW HAD RIGHT: the run is already RED off the preamble rule, so
+  # the arm never changes rc. WHAT IT DECIDES IS THE OUTPUT, and that is worth a fixture on its own —
+  # ec_expect pins the REASON, not the exit code, so this leg holds that the cap SAYS it could not
+  # measure instead of silently reporting a size it never took. A gate that reds for one reason while
+  # printing a clean verdict for another attests to neither. The alternative on offer was to disclose
+  # the arm as unproven prose; a fixture that pins the sentence is strictly stronger, and it cost
+  # four lines.
+  ecn20="$ecb/t-cap-noref"
+  ec_doc_pre "$ecn20/A-ok.md" "$ecreg" "$ecpre1"; ec_doc_pre "$ecn20/B-ok.md" "$ecreg" "$ecpre1"
+  ec_adapter "$ecn20" h1 A-ok.md; ec_adapter "$ecn20" h2 B-ok.md
+  mkdir -p "$ecn20/docs"; printf 'kit marker\n' > "$ecn20/docs/ROADMAP-KIT.md"
+  ec_expect 1 "$ecn20" "every member fails the preamble rule: the cap says it could NOT measure" \
+    "byte cap could not be measured"
 
   # (P3) THE REAL TREE — the lock must hold on this repo, not only on fixtures.
   ec_expect 0 "." "this repo's own declared context documents" "compared across"

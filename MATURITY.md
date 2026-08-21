@@ -10,13 +10,13 @@ Sparkwright tracks maturity as a **stage**, separate from its version. This page
 pre-adoption → [release-candidate] → adopted
 ```
 
-**Current stage: `release-candidate`** — hardened, dogfooded, and ready to adopt. `v1.0.0` is cut when the kit reaches the `adopted` stage (the ratified 1.0 gate, KW17): an external team ships real software through the loop.
+**Current stage: `release-candidate`** — hardened, dogfooded, and ready to adopt. The kit reaches the `adopted` stage when an external team ships real software through the loop. The kit versions its own releases on its own cadence (currently `v3.218.0`); adoption is a maturity stage, not a version reset.
 
 | Stage | What it means |
 |-------|---------------|
 | **pre-adoption** | Built by dogfooding its own loop; not yet packaged for others. |
 | **`release-candidate`** *(now)* | Safe and ready to adopt: the adopter path is walked, the readiness gate is hardened, the machinery runs on every push, and the loop has built real software end-to-end. **Next milestone:** the first external adoption. |
-| **adopted** | An external team has shipped real software through the kit — where it earns `v1.0.0`. |
+| **adopted** | An external team has shipped real software through the kit. |
 
 ## Evidence
 

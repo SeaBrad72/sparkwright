@@ -100,7 +100,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/typescript-node/ci.yml` assert
 - **Container (service):** build the multi-stage non-root image (`profiles/typescript-node/Dockerfile`), run locally via `compose.yaml`/devcontainer (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** to Kubernetes via `deploy/k8s/` or the Helm chart in `deploy/helm/` (probes, resource limits, non-root `securityContext`). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. See `DEVELOPMENT-STANDARDS.md` §14 (container image supply-chain).
 
 ## 10. Recommended libraries
-Zod (validation) · Prisma (ORM) · bcrypt + jsonwebtoken (auth) · helmet + express-rate-limit (HTTP security) · pino/winston (logging) · Sentry (errors) · Vitest + Playwright + supertest (testing) · Anthropic SDK (`@anthropic-ai/sdk`) for AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.
+Zod (validation) · Prisma (ORM) · bcrypt + jsonwebtoken (auth) · helmet + express-rate-limit (HTTP security) · pino/winston (logging) · Sentry (errors) · Vitest + Playwright + supertest (testing) · Anthropic SDK (`@anthropic-ai/sdk`) for AI features. Model tiers (harness-neutral): route routine work to the `fast` tier and hard reasoning to the `deep` tier, each bound to a concrete model in the adopter-owned `.kit/model-map.conf` (e.g. `fast=sonnet`, `deep=opus`).
 
 ## 11. Stack-specific gotchas
 - Audit every non-null assertion (`!`) — prefer a runtime guard.

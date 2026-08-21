@@ -125,8 +125,10 @@ block), or **declared** (an attestation the kit can't observe at runtime):
 - The inline guard is a **speed bump**; the **git and CI chokepoints are the real boundary**, equal across
   harnesses — stated plainly, not hidden.
 - Model tiering is **declared, not obeyed** (§3).
-- Maturity is a **stage, not a version** (`MATURITY.md`): the kit is at `release-candidate`; `v1.0.0` is
-  earned when an external team ships real software through the loop.
+- Maturity is a **stage, not a version** (`MATURITY.md`): the kit is at `release-candidate`, reaching
+  `adopted` when an external team ships real software through the loop — adoption is a maturity stage, not a
+  version reset (the kit versions its own releases on its own cadence; the stage story is authoritative in
+  `MATURITY.md`).
 - A green conformance run proves controls hold **and that DR/resilience safety is documented** — *not that
   those procedures were tested*; the aggregate says so in its own footer.
 

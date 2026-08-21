@@ -97,7 +97,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/dotnet/ci.yml`. Note: compilat
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 
 ## 10. Recommended libraries
-ASP.NET Core · EF Core (+ Npgsql) · FluentValidation · ASP.NET Core Identity / JwtBearer · Polly (`Microsoft.Extensions.Http.Resilience`) · Serilog + OpenTelemetry + Sentry · xUnit + coverlet + Testcontainers + WebApplicationFactory · CycloneDX .NET tool · Anthropic .NET SDK for AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.
+ASP.NET Core · EF Core (+ Npgsql) · FluentValidation · ASP.NET Core Identity / JwtBearer · Polly (`Microsoft.Extensions.Http.Resilience`) · Serilog + OpenTelemetry + Sentry · xUnit + coverlet + Testcontainers + WebApplicationFactory · CycloneDX .NET tool · Anthropic .NET SDK for AI features. Model tiers (harness-neutral): route routine work to the `fast` tier and hard reasoning to the `deep` tier, each bound to a concrete model in the adopter-owned `.kit/model-map.conf` (e.g. `fast=sonnet`, `deep=opus`).
 
 ## 11. Stack-specific gotchas
 - Commit `packages.lock.json`; use `dotnet restore --locked-mode` in CI for reproducible restores.

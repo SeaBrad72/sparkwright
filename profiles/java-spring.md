@@ -98,7 +98,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/java-spring/ci.yml`. Note: Jav
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 
 ## 10. Recommended libraries
-Spring Boot starters (web, security, data-jpa, validation, actuator) · Resilience4j (resilience) · Flyway (migrations) · Micrometer + Sentry (observability) · JUnit 5 + JaCoCo + Testcontainers + REST-assured (testing) · cyclonedx-maven-plugin + dependency-check-maven (supply-chain) · Anthropic Java SDK for AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.
+Spring Boot starters (web, security, data-jpa, validation, actuator) · Resilience4j (resilience) · Flyway (migrations) · Micrometer + Sentry (observability) · JUnit 5 + JaCoCo + Testcontainers + REST-assured (testing) · cyclonedx-maven-plugin + dependency-check-maven (supply-chain) · Anthropic Java SDK for AI features. Model tiers (harness-neutral): route routine work to the `fast` tier and hard reasoning to the `deep` tier, each bound to a concrete model in the adopter-owned `.kit/model-map.conf` (e.g. `fast=sonnet`, `deep=opus`).
 
 ## 11. Stack-specific gotchas
 - Use `./mvnw` (the wrapper) everywhere for reproducible builds; commit `.mvn/wrapper`.

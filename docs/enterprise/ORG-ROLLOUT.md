@@ -1,5 +1,23 @@
 # Org Rollout Playbook
 
+> ❄️ **THE ROLLOUT PLAYBOOK IS FROZEN PRE-ADOPTION — 2026-08-19.** The **rollout playbook** — the
+> Pilot → Expand → Fleet staging and the fleet-upgrade sequence — is **frozen in place**: it stays in
+> the tree and stays readable, but it is not maintained, not extended, and carries **no shipped-value
+> claim** until real adoption evidence exists. It was written ahead of any adopter, so its entry/exit
+> criteria are reasoned, not observed. **It returns with the first adopter**: a real multi-team rollout
+> is what would tell us which stages are right.
+>
+> **SCOPE OF THE FREEZE — the Stage 1–4 maturity model below is NOT frozen.** The section
+> *"Maturity stages (1–4): tightening conformance at scale"* remains the
+> **canonical, live** definition of conformance strictness, and four living documents
+> (`../../START-HERE.md`, `../../GLOSSARY.md`, `../../DEVELOPMENT-PROCESS.md`,
+> `../operations/dora-metrics.md`) resolve their Stage references here. Keep it current; edit it as
+> the gates change. Only the rollout playbook around it is frozen.
+>
+> Frozen under the `D-240819-2` Track-1 cut program; the tombstone entry (what froze, when, and the
+> return condition) is in
+> [`../operations/retiring-conventions.md`](../operations/retiring-conventions.md) §8.
+
 How an organization adopts this kit across many teams **without big-bang risk** — start advisory on one team, tighten as evidence accumulates, then run the whole fleet at full strictness. Stack-neutral. This is also the **canonical home of the Stage 1–4 maturity model** (below); other docs link here rather than re-defining it.
 
 > **Principle — tighten with evidence, not by decree.** Gates blocking on day one across an org teaches teams to fake green. Start advisory, prove the loop on a slice, then make each gate blocking as the org earns the right to it. The waiver register (`../../templates/WAIVER-REGISTER.md`) is how you stay honest while you climb.

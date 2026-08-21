@@ -97,7 +97,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/python/ci.yml`.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 
 ## 10. Recommended libraries
-Pydantic + pydantic-settings (validation/config) · SQLAlchemy + Alembic (ORM/migrations) · FastAPI (web) · passlib[bcrypt] + pyjwt (auth) · tenacity + pybreaker (resilience) · structlog + sentry-sdk (observability) · pytest + pytest-cov + httpx + Testcontainers (testing) · Anthropic SDK (`anthropic`) for AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.
+Pydantic + pydantic-settings (validation/config) · SQLAlchemy + Alembic (ORM/migrations) · FastAPI (web) · passlib[bcrypt] + pyjwt (auth) · tenacity + pybreaker (resilience) · structlog + sentry-sdk (observability) · pytest + pytest-cov + httpx + Testcontainers (testing) · Anthropic SDK (`anthropic`) for AI features. Model tiers (harness-neutral): route routine work to the `fast` tier and hard reasoning to the `deep` tier, each bound to a concrete model in the adopter-owned `.kit/model-map.conf` (e.g. `fast=sonnet`, `deep=opus`).
 
 ## 11. Stack-specific gotchas
 - Commit `uv.lock`; use `uv sync --frozen` in CI for reproducible installs.

@@ -847,6 +847,15 @@ guard_read_only_command() {
       esac ;;
     kit-guard|*/kit-guard)
       # the guard's own read-only CLI, so a guard slice can probe the guard.
+      # ⚠️ GUARD-READONLY-FP-RELIEF structural finding S2 (2026-08-19, measured both ways, security
+      # vet L1): this clause is DEAD FOR CP-CLASSIFYING ARGUMENTS ONLY — STILL REQUIRED FOR BARE
+      # `kit-guard` PROBING. `guard_read_only_command` runs at the bottom of `guard_check_command`,
+      # AFTER the CP-8b control-plane block, so a `kit-guard path <control-plane-path>` has already
+      # been decided (and, before Arm A, denied) by the time control reaches here — which is why
+      # relief for that face is built in the CP arms (`_cp8b_tad_is_kit_query`) and NOT here.
+      # The clause is LIVE for the far more common probe whose argument is a destructive command
+      # rather than a path: `kit-guard cmd 'rm -rf /'` reaches this line and is exempted from the
+      # destructive matrix by it. Deleting it would break guard self-probing outright.
       case "$_arg1" in
         cmd|path|mcp) return 0 ;;
       esac ;;
@@ -1391,6 +1400,41 @@ _redir_targets() {
         esac ;;
     esac
     case "$_rtk" in
+      # GUARD-READONLY-FP-RELIEF Arm G(ii) — a `~`-ROOTED target is a LITERAL for this classifier.
+      # `~` was outside the allowlist, so every out-of-repo scratch append (`printf x >> ~/notes.txt`)
+      # disqualified and the Cure-2 launder arm denied it. Unlike `$VAR`, a `~` target shows every
+      # byte after the home root LITERALLY, so it is control-plane-CHECKABLE — and it is checked:
+      # `is_control_plane_target` classifies the `~/…` spelling directly (measured), so
+      # `> ~/proj/.claude/settings.json` still denies via the callers' own CP test.
+      # ***THE `$VAR` FORM IS DELIBERATELY NOT HERE*** (security vet H1): with the DIRECTORY in the
+      # variable, the visible suffix (`pre-push`, `settings.json`, `reviewer.agent.md`) does not
+      # self-classify, so relieving it would partially revert the Cure-2 closure — a deny-side
+      # weakening inside a false-positive slice. The `$SCRATCH` idiom is answered by a TIP instead.
+      # Declines (fall through to rc 2, fail-closed): a `..` byte anywhere in the suffix (it climbs
+      # out of $HOME, so the target is no longer shown literally); any non-literal byte after the `~`
+      # (a glob/backslash/substitution); and — the design's "cannot SEGMENT-MATCH a control-plane
+      # path" condition — any `~` target that trips `_cp8b_pathhit`.
+      # ⚠️ THE `_cp8b_pathhit` DISQUALIFIER IS LOAD-BEARING AND WAS FOUND BY A FLOOR REGRESSION, not
+      # by design. `is_control_plane_target` ALONE is not enough: `GUARD-CLAUDE-HOME-INSTRUMENTATION-FP`
+      # relieved `.claude/plans/*` and `.claude/projects/*` from the CLASSIFIER (a path-route relief),
+      # while agent-autonomy.sh pins `echo x >> ~/.claude/plans/x.md` DENY on the COMMAND route as a
+      # deliberate retained false positive. With only the classifier consulted, this arm would have
+      # silently flipped that pinned decision — a deny-side change belonging to that slice, not this
+      # one. `_cp8b_pathhit` is the segment matcher, it still hits the whole `.claude` family, and it
+      # keeps every one of those legs green (measured). Widening this arm past `_cp8b_pathhit` is a
+      # deny-side decision and needs its own slice.
+      # REVIEW I3 (2026-08-19): a HOME-ROOT DOTFILE (`~/.gitconfig`, `~/.config/git/config` — where
+      # core.hooksPath ALSO lives — `~/.zshrc`, `~/.ssh/authorized_keys`) moved DENY->ALLOW here,
+      # undisclosed: these are not repo control-plane so `_cp8b_pathhit` misses them, but a write to
+      # them is a real out-of-repo escalation (`~/.config/git/config` reopens exactly the guard-disable
+      # vector Arm F defends). Decline any `~/`-suffix whose FIRST byte after the home root is `.`
+      # (the `/.*` glob on the `~`-stripped suffix). The three legit relief legs (`~/notes.txt`,
+      # `~/scratch/out.txt`, `~/logs/verify.log`) do not start with `/.`, so they stay allowed.
+      '~'|'~/'*)
+        case "${_rtk#\~}" in
+          *..*|*[!A-Za-z0-9._/@:+=,-]*|/.*) _rtc=2 ;;
+          *) if _cp8b_pathhit "$_rtk"; then _rtc=2; else printf '%s\n' "$_rtk"; fi ;;
+        esac ;;
       *[!A-Za-z0-9._/@:+=,-]*) _rtc=2 ;;                # NOT a plain literal -> disqualify (fail-closed)
       *) printf '%s\n' "$_rtk" ;;
     esac
@@ -1555,25 +1599,77 @@ _cp8b_scan_denied() {
 # passes the body from a FILE and cannot execute. This is ADDITIVE to the reason text only — it changes no
 # deny/allow verdict, and it is harmless on a genuine attack (the command is still denied; the tip helps no
 # bypass). Reads $_cp8b_raw, set at the top of _cp8b_control_plane_denied (its only caller of this arm).
+# GUARD-READONLY-FP-RELIEF (the (c′) tip-loss fix + the §3 kept-denied tips). TWO ARGUMENTS now:
+#   $1 = the RAW command   — the right key for whole-command shapes (a message body, a heredoc, a
+#                            loop head, a quoted alternation) that SPAN segments
+#   $2 = the OFFENDING SEGMENT — the right key for lead-verb shapes. Keying these on the RAW was a
+#                            measured defect: `cd x && sed -n … <cp>` lost the head/tail escape hint
+#                            because the raw lead was `cd`, i.e. the tip disappeared exactly when a
+#                            compound made the deny hardest to read. Defaults to $1 for old callers.
+# Every arm here is ADDITIVE TO REASON TEXT ONLY — no verdict moves, and naming an escape helps no
+# bypass (the command is still denied). The first matching arm returns, so the arms stay exclusive.
 _cp8b_message_tip() {
-  case "$1" in
+  _mt_raw=$1; _mt_seg=${2:-$1}
+  case "$_mt_raw" in
     *"git commit"*|*"git merge"*|*"git tag"*|*"git notes"*|*"gh pr"*|*"gh issue"*|*"gh release"*)
       printf ' TIP: a multi-line commit/PR message body is scanned as data and can trip this; pass it from a FILE instead of an inline -m/--body — `git commit -F <file>` or `gh pr create --body-file <file>` (the file content is never executed).'
+      return ;;
+  esac
+  # Arm E's DECLINE cases land here: the heredoc body was NOT excluded (unquoted delimiter, `<<-`,
+  # >1 heredoc, an ambiguous terminator) so its lines were scanned as code. Name the cure.
+  case "$_mt_raw" in
+    *'<<'*)
+      printf ' TIP: a heredoc BODY is scanned as data-mistaken-for-code unless it is inert. Use a quoted heredoc delimiter (`<<'"'"'EOF'"'"'` or `<<"EOF"`, terminator on its own line, no `<<-`), or pass the content from a file — an unquoted or tab-stripped delimiter cannot be bounded safely, so it stays scanned.'
+      return ;;
+  esac
+  # §3 kept-denied, keyed on the RAW LEAD because the offending segment is a FRAGMENT of the
+  # construct (a quoted `|` over-splits; a loop BODY is its own segment).
+  _mt_rl=$(_cp8b_lead "$_mt_raw")
+  case "$_mt_rl" in
+    grep|egrep|fgrep|rg)
+      case "$_mt_raw" in
+        *'|'*)
+          printf ' TIP: a quoted alternation/pipe is scanned as a command SEPARATOR (segmentation is deliberately quote-blind — a quote-aware split fails OPEN on a real `; rm -rf`). Use one pattern per invocation, `grep -e A -e B`, or the Grep tool.'
+          return ;;
+      esac ;;
+    for|while|until)
+      printf ' TIP: a loop over control-plane paths is scanned per segment and the loop HEAD carries the whole deny (relieving it segment-locally would allow a mass-delete body). Use the Read/Grep tool, or one invocation per file.'
       return ;;
   esac
   # DRIFT-2b: a read-oriented sed/awk/… on a control-plane path is denied because these tools carry write/exec
   # escapes (`sed s///e`/`w`, `awk system()`); NAME the escape-free paths. Detect the LEAD VERB (not a
   # substring — a message body mentioning "sed" must not trigger this). Names BOTH read and edit exits, so it
   # is accurate whether the operator meant `sed -n` (read) or `sed -i` (edit) — no program sub-parse.
-  _mt_lead=$(printf '%s' "$1" | sed -E 's/^[[:space:]]*\\?[[:space:]]*//; s/[[:space:]].*$//')
+  # GUARD-READONLY-FP-RELIEF: keyed on the OFFENDING SEGMENT's lead, not the raw lead (the (c′) fix).
+  _mt_lead=$(_cp8b_lead "$_mt_seg")
   case "$_mt_lead" in
     sed|awk|sort|uniq|find|less|more|xxd)
-      printf ' TIP: %s is denied on control-plane paths (write/exec escapes). For a plain READ use head/tail/cat or the Read tool; to EDIT a control-plane file use the Edit/Write tool in a dev-clone (never via shell).' "$_mt_lead" ;;
+      printf ' TIP: %s is denied on control-plane paths (write/exec escapes). For a plain READ use head/tail/cat or the Read tool; to EDIT a control-plane file use the Edit/Write tool in a dev-clone (never via shell).' "$_mt_lead"
+      return ;;
+    python|python3|node|ruby|perl|source|.)
+      printf ' TIP: an interpreter'"'"'s arguments are treated as code, never as data, so a control-plane path inside them cannot be cleared. Use the Read tool, or run the program from a file that names no control-plane path.'
+      return ;;
+    sh|bash|dash|zsh|ksh)
+      case " $_mt_seg " in
+        *' -c '*)
+          printf ' TIP: an interpreter'"'"'s arguments are treated as code, never as data, so a control-plane path inside them cannot be cleared. Use the Read tool, or run the program from a file that names no control-plane path.'
+          return ;;
+      esac ;;
+    *=*)
+      printf ' TIP: an UNVETTED `NAME=value` prefix is not peeled before the scan (the vetted-name allowlist is deliberately closed — widening it per false positive is enumeration creep). Set the variable with `export` as a separate statement, or use a vetted name.'
+      return ;;
+  esac
+}
+# _cp8b_trigger_tip "<trigger>" "<segment>": the target-arm sites that had NO tip at all.
+_cp8b_trigger_tip() {
+  case "$1" in
+    redir-nonliteral)
+      printf ' TIP: the redirect TARGET is not a plain literal (a `$VAR`, glob, substitution or backslash), so the guard cannot tell whether it names a protected path — and it refuses to guess. Spell the redirect target literally (`> /tmp/out.txt`), use a `~/`-rooted path, or use the Write tool.' ;;
   esac
 }
 _cp8b_deny_reason() {
   _dr=$(printf '%s' "$1" | cut -c1-160)
-  printf '13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity) - offending segment: [%s].%s Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$_dr" "$(_cp8b_message_tip "${_cp8b_raw:-}")"
+  printf '13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity) - offending segment: [%s].%s Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$_dr" "$(_cp8b_message_tip "${_cp8b_raw:-}" "$1")"
 }
 
 # _cp8b_next_seg: pop the first newline-delimited segment off $_walk into $_seg, leaving the remainder in
@@ -1593,11 +1689,82 @@ _cp8b_next_seg() {
   return 0
 }
 
+# GUARD-READONLY-FP-RELIEF Arm E — QUOTED-heredoc body exclusion (cures register face N3).
+# A heredoc with a QUOTED delimiter (`<<'EOF'` / `<<"EOF"`) is INERT DATA by shell semantics: no
+# expansion, no execution. Today each body LINE becomes a segment and is scanned as code, which is
+# the false positive that bit one orchestrator session four times. This removes the body REGION from
+# the copy the two control-plane arms segment. The RAW command is untouched — every flat rule in
+# `guard_check_command` (recursive rm, push-to-main, secret reads, …) still sees every byte, and the
+# deny REASONS still print the raw/segment text.
+#
+# ***THE FAIL DIRECTION IS OVER-EXCLUSION*** (security vet M2): swallowing past a mis-found terminator
+# would let a REAL command escape the scan. So every ambiguity resolves to NOT-excluded, and each
+# decline below has a must-stay-DENY leg in agent-autonomy.sh that places a live mutator AFTER the
+# true terminator. Declines, in order:
+#   · a here-STRING (`<<<`) — different construct, not this arm
+#   · any CR byte — a CRLF terminator will not compare equal, so the whole command is ambiguous
+#   · anything other than EXACTLY ONE `<<` in the command (two heredocs = two body regions to bound;
+#     this decline is a conservative BELT — with the exact-terminator rule below, dropping it can
+#     only ever exclude the FIRST body, which is inert either way, so no fixture separates it. Stated,
+#     not claimed as coverage: the `_kx` precedent at C4 Arm 2, mutant dropped with rationale.)
+#   · `<<-` (tab-stripped terminators), an UNQUOTED delimiter, or a delimiter that is not a plain
+#     `[A-Za-z0-9_]+` word — the extraction below simply fails to match, and a failed match declines
+#   · a heredoc whose own redirect TARGET classifies control-plane or is non-literal
+#   · NO line after the start line that is EXACTLY the delimiter — never strip to the end
+#   · any earlier line that TRIMS to the delimiter but is not exactly it (whitespace ambiguity)
+# ***REVIEW C2 (2026-08-19), residual DIRECTION CORRECTED — the earlier claim was FALSIFIED.*** A
+# `<<'WORD'` sequence inside an ordinary quoted argument IS treated as a heredoc start, and the earlier
+# comment claimed "the direction of any residual error is a body that stays scanned — over-deny." That
+# was WRONG. `: "<<'X'"` followed by `sed -i s/return 1/return 0/ .claude/hooks/guard-core.sh` and a
+# line `X` made the first REAL command the heredoc body: it was stripped from the scanned copy and the
+# write to the guard's OWN source ALLOWED — an escape from ALL cp8b protection, measured ALLOW on the
+# branch, DENY on main. The failure direction is OVER-EXCLUSION, not over-deny. The in-body declines
+# (`<<-`, unquoted, whitespace-ambiguous) were never the gap; the ENTRY was. A REAL heredoc operator
+# never has a QUOTE byte before the `<<` on its start line (`cat <<'EOF'` — no quote precedes `<<`),
+# so declining when one does closes the argument-embedded shape. Disclosed OVER-DENY, the safe
+# direction: a genuine heredoc whose start line ALSO carries an earlier quoted string
+# (`echo "hi" && cat <<'EOF'`) declines too and its body stays scanned — accepted, since the fail
+# direction is over-deny and the common heredoc spelling leads with the redirect verb, unquoted.
+# Mutant M-E8 removes that line and reopens the hole.
+_cp8b_cr=$(printf '\r')
+_cp8b_strip_heredocs() {
+  case "$1" in *'<<'*) : ;; *) printf '%s' "$1"; return ;; esac
+  case "$1" in *'<<<'*) printf '%s' "$1"; return ;; esac
+  case "$1" in *"$_cp8b_cr"*) printf '%s' "$1"; return ;; esac
+  _hdc=$(printf '%s' "$1" | grep -o '<<' | wc -l | tr -d '[:space:]')
+  [ "$_hdc" = 1 ] || { printf '%s' "$1"; return; }
+  _hdl=$(printf '%s\n' "$1" | grep -n '<<' | head -1 | cut -d: -f1)
+  [ -n "$_hdl" ] || { printf '%s' "$1"; return; }
+  _hds=$(printf '%s\n' "$1" | sed -n "${_hdl}p")
+  # REVIEW C2 — ENTRY guard: a quote byte BEFORE the `<<` on the start line means the `<<` is embedded
+  # in an argument, not a heredoc operator. Decline (never strip). `${_hds%%<<*}` is the text before
+  # the first `<<`; a `'` or `"` in it is the tell.
+  case "${_hds%%<<*}" in *[\'\"]*) printf '%s' "$1"; return ;; esac
+  # The two SEMANTIC guards, deliberately kept as their own lines so each is separately mutatable
+  # (the extraction below is intentionally permissive; these decide, not the regex).
+  case "$_hds" in *'<<-'*) printf '%s' "$1"; return ;; esac              # tab-stripped terminator (M2)
+  printf '%s' "$_hds" | grep -q "<<-\{0,1\}['\"]" || { printf '%s' "$1"; return; }  # QUOTED delimiter only
+  _hdw=$(printf '%s' "$_hds" | sed -n 's/.*<<-\{0,1\}["'"'"']*\([A-Za-z0-9_][A-Za-z0-9_]*\).*/\1/p')
+  [ -n "$_hdw" ] || { printf '%s' "$1"; return; }
+  if _cp8b_tad_redir_cp "$_hds"; then printf '%s' "$1"; return; fi
+  _hdo=$(printf '%s\n' "$1" | awk -v start="$_hdl" -v w="$_hdw" '
+    NR <= start { pre = pre $0 "\n"; next }
+    !seen {
+      if ($0 == w) { seen = 1; next }
+      t = $0; gsub(/^[ \t]+/, "", t); gsub(/[ \t]+$/, "", t)
+      if (t == w) { amb = 1 }
+      next
+    }
+    { post = post $0 "\n" }
+    END { if (!seen || amb) exit 3; printf "%s%s", pre, post }') || { printf '%s' "$1"; return; }
+  printf '%s' "$_hdo"
+}
+
 # _cp8b_control_plane_denied "<cmd>": PREDICATE - the CP-8b control-plane decision. Walks the segments
 # and binds each segment's LEADING VERB to that segment's OWN arguments (design section 9.4).
 _cp8b_control_plane_denied() {
   _cp8b_raw=$1   # DRIFT-2: the whole command, for _cp8b_message_tip (the message-body escape hint).
-  _walk=$(_cp8b_segments "$1")
+  _walk=$(_cp8b_segments "$(_cp8b_strip_heredocs "$1")")
   while _cp8b_next_seg; do
     [ -n "$(printf '%s' "$_seg" | tr -d '[:space:]')" ] || continue
 
@@ -2029,6 +2196,121 @@ _cp8b_tad_is_kit_exec() {
   return 0
 }
 
+# GUARD-READONLY-FP-RELIEF Arm A — the kit-exec READ-ONLY QUERY allowlist (cures register faces
+# (f1)+(h) in ONE arm). `_cp8b_tad_is_kit_exec` above declines the WHOLE segment as soon as any
+# token OTHER than the script classifies control-plane. That disqualifier is right for an unknown
+# script (a CP path in argv may be a WRITE target — `sh conformance/verify.sh <cp>` must stay DENY),
+# and wrong for the handful of DECLARED query modes whose entire job is to be ASKED about a path:
+#   sh scripts/kit-guard path <cp>                                  — ask the guard about a path
+#   sh conformance/promotion-readiness.sh --class --changed <listing>  — the ENTRY CONTRACT's act 1
+#   sh conformance/agent-boundary.sh --changed <listing> --ratified 0  — its act-1 cross-check
+#
+# A PAIR MUST NAME A SCRIPT THAT EXISTS. The first cut of this table listed `conformance/phase-gate.sh`
+# one merge after that script was parked and deleted: the arm is a pure token match and never stats the
+# file, so the allow was unprovable and the behavioural lock below passed over a pair that could not run
+# (GUARD-ALLOWLIST-OUTLIVES-ITS-SCRIPT). The lock now asserts existence before it runs a pair, so a
+# table entry that outlives its script REDs by name instead of passing vacuously.
+#
+# THE ENFORCEMENT IS THE DECLARED TABLE, NOT A PARSE (D-240813-3: fail-by-parse cures are banned).
+# `_cp8b_kit_query_toks` is the whole allowlist: an unknown script yields the empty set and the arm
+# DECLINES, so every unlisted kit script keeps today's verdict with zero deny-side edits — the
+# `_CP8B_VETTED_ASSIGN` shape. Adding a pair costs one table line, one leg, and a green coupling lock.
+#
+# ⚠️ READ-ONLINESS IS LOCKED BEHAVIORALLY, NOT BY REVIEW MEMORY (security vet M1). Every pair in this
+# table is RUN against a fixture control-plane argument by `conformance/agent-autonomy.sh`'s Arm-A
+# coupling lock, which asserts the repo worktree is byte-unchanged afterwards. A pair that GAINS a
+# write path reds that lock. A grep-lock over this list would have been fail-by-hope.
+#
+# Decline-on-ANY (each is a disqualifier, so a bug here over-denies):
+#   · any redirect byte (`<` or `>`) in the segment — `… --path CLAUDE.md > conformance/out.txt`
+#   · any `$` / backtick — the guard reads PRE-shell-parse bytes and cannot resolve them
+#   · any `..` byte in the script token (belt; the anchored exact table match is the primary)
+#   · a script token that is not an EXACT table key after `./`-stripping (no path-alias spellings)
+#   · a FIRST post-script token outside the declared set — this is what keeps the WRITER subcommand
+#     `scripts/kit-guard install-shims` off the arm
+#   · ANY other flag-shaped token outside the declared set (vet M1: presence-matching `--class` alone
+#     would let `--class --<writer>` ride). Note the declared sets are per-script SETS, not a single
+#     flag: `--class --changed` is already two flag tokens, so a literal one-flag rule could not cure
+#     the named face. Non-flag tokens after the query token are DATA (the coupling lock is what makes
+#     that safe), which is why a quoted `kit-guard cmd "<probe>"` still recognizes.
+# The script position is POSITIONAL (token 1, or token 2 after a bare interpreter): an interpreter
+# FLAG (`sh -x …`, `sh -c …`) or an env-assignment prefix lands in the script slot, misses the table
+# and declines.
+_cp8b_kit_query_toks() {
+  case "$1" in
+    scripts/kit-guard)                  printf '%s' 'path cmd mcp' ;;
+    conformance/promotion-readiness.sh) printf '%s' '--class --changed' ;;
+    conformance/agent-boundary.sh)      printf '%s' '--changed --ratified' ;;
+  esac
+}
+_cp8b_tad_is_kit_query() {
+  case "$1" in *'>'*|*'<'*) return 1 ;; esac
+  case "$1" in *'$'*|*'`'*) return 1 ;; esac
+  _kqg=0; case "$-" in *f*) _kqg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -gt 0 ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
+  case "$1" in sh|bash|dash|zsh|ksh) shift ;; esac      # bare interpreter lead: script is next
+  [ $# -gt 0 ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
+  _kqs=$(_cp8b_dequote "$1"); _kqs=${_kqs#./}; shift
+  case "$_kqs" in *..*) [ "$_kqg" = 1 ] || set +f; return 1 ;; esac
+  _kqv=$(_cp8b_kit_query_toks "$_kqs")
+  [ -n "$_kqv" ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
+  [ $# -gt 0 ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
+  _cp8b_in_list "$1" "$_kqv" || { [ "$_kqg" = 1 ] || set +f; return 1; }
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*) _cp8b_in_list "$1" "$_kqv" || { [ "$_kqg" = 1 ] || set +f; return 1; } ;;
+    esac
+    shift
+  done
+  [ "$_kqg" = 1 ] || set +f
+  return 0
+}
+
+# GUARD-READONLY-FP-RELIEF Arm B — shell TEST EXPRESSIONS (cures register face N1). `test -f <cp>`
+# and `[ -f <cp> ]` interrogate a path's METADATA; neither builtin can mutate the path it names, so
+# a control-plane token there is DATA in the strictest sense.
+#
+# ***THE LEAD SET IS `test` AND `[` ONLY — `if`/`elif` ARE DELIBERATELY EXCLUDED*** (security vet C1,
+# substantiated live). `if`/`elif` do not introduce a test EXPRESSION; they introduce a COMMAND whose
+# exit status is tested. `if rm <cp>; then :; fi` and `if node write.js <cp>; then :; fi` both wear
+# the same "lead + operands" shape as a real test and both MUTATE. Re-adding either keyword to this
+# case arm is a write-surface widening, and mutant M-B2 in agent-autonomy.sh exists to catch exactly
+# that. An `if [ -f <cp> ]` false positive is cured only TRANSITIVELY — when the segmenter yields the
+# inner `[ …` as its own segment; otherwise it keeps today's deny plus the §3 tip.
+#
+# Decline-on-ANY (a bug here over-denies): any redirect byte; any `$`/backtick; any flag-shaped token
+# that is not EXACTLY a single-letter operator (`-exec`, `--remove`, `-pi` all decline — a long flag
+# is an unknown, and the numeric comparators `-eq`/`-lt`/… decline with them, a disclosed over-deny
+# on expressions that carry no path anyway); any token that is a known mutator verb.
+# The mutator-verb list is a BELT: `_cp8b_control_plane_denied`'s verb regex already denies every
+# member on this route, so no fixture can separate the two (stated, not claimed as coverage — the
+# `_kx` precedent at C4 Arm 2). It is kept because the two lists drift independently.
+_CP8B_TEST_MUTATORS='rm rmdir mv cp ln dd tee sed chmod chown install rsync shred truncate patch awk find sort uniq xxd git'
+_cp8b_tad_is_test_expr() {
+  case "$1" in *'>'*|*'<'*) return 1 ;; esac
+  case "$1" in *'$'*|*'`'*) return 1 ;; esac
+  _teg=0; case "$-" in *f*) _teg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -gt 0 ] || { [ "$_teg" = 1 ] || set +f; return 1; }
+  case "$1" in test|'[') shift ;; *) [ "$_teg" = 1 ] || set +f; return 1 ;; esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -[A-Za-z]) : ;;                                    # a single-letter test operator
+      -*) [ "$_teg" = 1 ] || set +f; return 1 ;;         # -exec / --remove / -pi / -eq -> unknown
+      ']'|'!'|'='|'!='|'-') : ;;                          # expression punctuation
+      *) if _cp8b_in_list "$1" "$_CP8B_TEST_MUTATORS"; then [ "$_teg" = 1 ] || set +f; return 1; fi ;;
+    esac
+    shift
+  done
+  [ "$_teg" = 1 ] || set +f
+  return 0
+}
+
 # E3 — message carriers: git commit/merge/tag + gh pr/issue/release with a message flag and NO
 # redirect. A control-plane hit is inside the message DATA, not a target (an injected `;` splits to its
 # own segment and is judged there). The enforcement counterpart of the advisory _cp8b_message_tip.
@@ -2099,19 +2381,38 @@ _cp8b_tad_cp_dest_denied() {
 # over-deny made real. SCOPED to reader/kit-exec (the disclosed ceiling, not every verb): recognition is
 # re-tested on a redirect-STRIPPED copy, so an ordinary `make > $OUT` is NOT a laundering verb and stays
 # allowed. Reuses the shared _redir_targets disqualifier (K-R1a pins this arm's disqualifier).
+#
+# GUARD-READONLY-FP-RELIEF Arm G(i) — THE CLOSE (this half DENIES MORE). Recognition ran on the
+# segment's own lead, so wrapping the laundering verb in a brace group or subshell moved the redirect
+# into a `}`/`)`-led segment this arm did not recognize, and the whole Cure-2 closure fell to two
+# bytes: `{ printf evil ; } > $VAR/pre-push` and `( printf evil ) > $VAR/pre-push` were both MEASURED
+# ALLOW at the 2026-08-19 probe. `_cp8b_strip_group` peels the group tokens and recognition is
+# re-tested on the residual; a segment that is ONLY a group CLOSE (or has no verb at all — a bare
+# `> $V/pre-push` truncate) is itself the laundering site and denies.
+# DISCLOSED OVER-DENY, fixtured both ways: this is scoped by SEGMENT SHAPE, not by what the group
+# contains — those live in a different segment. So `{ make ; } > $OUT` now denies while the bare
+# `make > $OUT` still allows (the deliberate "not a laundering verb" scope). Spell the target
+# literally, or drop the braces.
+_cp8b_strip_group() {
+  printf '%s' "$1" | sed -E 's/^[[:space:]]*[{(][[:space:]]+//; s/[[:space:]]*[})][[:space:]]*$//; s/^[[:space:]]+//; s/[[:space:]]+$//'
+}
 _cp8b_redir_launder_denied() {
   case "$1" in *'>'*) : ;; *) return 1 ;; esac
   _redir_targets "$1" >/dev/null && return 1   # rc 0 => every target is a plain literal => not this arm
   _lnr=$(printf '%s' "$1" | sed -e 's/[0-9]*>>*.*$//')   # drop from the first redirect operator onward
   _cp8b_tad_is_read "$_lnr" && return 0
   _cp8b_tad_is_kit_exec "$_lnr" && return 0
+  _lng=$(_cp8b_strip_group "$_lnr")
+  case "$_lng" in ''|'}'|')') return 0 ;; esac           # a bare group CLOSE / verbless redirect
+  _cp8b_tad_is_read "$_lng" && return 0
+  _cp8b_tad_is_kit_exec "$_lng" && return 0
   return 1
 }
 
 # _cp8b_target_reason "<segment>" "<trigger>": signpost the composition and name the cheap escape.
 _cp8b_target_reason() {
   _trs=$(printf '%s' "$1" | cut -c1-160)
-  printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$2" "$_trs" "$(_cp8b_message_tip "${_tad_raw:-}")"
+  printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s%s Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$2" "$_trs" "$(_cp8b_message_tip "${_tad_raw:-}" "$1")" "$(_cp8b_trigger_tip "$2")"
 }
 
 # C4 Arm 3 (face c) — remote-URL token disqualification for git-lead segments. Replaces each WHOLE
@@ -2131,7 +2432,7 @@ _cp8b_mask_remote_urls() {
 # _cp8b_target_arm_denied "<cmd>": PREDICATE - Parts A+B+C. Prints the reason and returns 0 to deny.
 _cp8b_target_arm_denied() {
   _tad_raw=$1
-  _walk=$(_cp8b_segments "$1")
+  _walk=$(_cp8b_segments "$(_cp8b_strip_heredocs "$1")")   # Arm E: a quoted heredoc BODY is inert data
   _CP8B_EFF=''
   while _cp8b_next_seg; do
     [ -n "$(printf '%s' "$_seg" | tr -d '[:space:]')" ] || continue
@@ -2140,6 +2441,8 @@ _cp8b_target_arm_denied() {
     case "$_lv" in pushd|popd) continue ;; esac        # dir change we cannot track -> no-op (keep prefix)
     _cp8b_tad_is_read "$_seg" && continue
     _cp8b_tad_is_kit_exec "$_seg" && continue
+    _cp8b_tad_is_kit_query "$_seg" && continue   # Arm A: a DECLARED read-only kit query (see the table)
+    _cp8b_tad_is_test_expr "$_seg" && continue   # Arm B: a `test`/`[` metadata expression
     _cp8b_tad_is_msg_carrier "$_seg" && continue
     case "$_lv" in
       cp|install)
@@ -2181,6 +2484,97 @@ _cp8b_push_main_denied() {
   return 1
 }
 
+# GUARD-READONLY-FP-RELIEF Arm F — the `git config core.hooksPath` READ/WRITE split (cures register
+# face N4; N5 rides along). ***THIS MATCHER IS THE GUARD-DISABLE CROWN JEWEL*** — the same rule that
+# over-denies `git config --get core.hooksPath` (asking what the hooks path IS, a pure read) is the
+# rule that denies `git config core.hooksPath /tmp/evil`, the primary way an agent switches the
+# guard off. So the split is built DEFAULT-DENY (security vet H2): a segment that matches the
+# hooksPath matcher DENIES unless it is POSITIVELY recognized as one of the declared query forms.
+#
+# PER-OCCURRENCE, never per-command: the decision walks segments, so
+# `--get … && git config core.hooksPath /tmp/e` (E5) is judged on the WRITE segment and stays DENY.
+#
+# THE GUARD-DISABLE VECTOR `git config core.hooksPath /tmp/evil` IS HELD BY TWO INDEPENDENT GUARDS,
+# and it takes BOTH to open it (measured — the honest claim, corrected after review I4):
+#   (1) the query-flag-required line `[ -n "$_gcq" ] || return 1` below — with no query flag the
+#       segment is not a read; and
+#   (2) the operand-count bound in the trailing `case "$_gcq"` — a `--get` with a value token exceeds
+#       the bound and denies.
+# `core.hooksPath /tmp/evil` carries no query flag AND two operands, so EACH guard denies it alone: a
+# mutant of ONE survives because the OTHER still fires (defence in depth, not redundancy claimed as
+# coverage). Only the PAIR opens it — that is why the gate-time kill is M-F6 (removes both, flips it),
+# not a single-guard mutant. M-F1 and M-F5 each show one guard alone still holds.
+#
+# NEVER RECOGNIZED AS A READ, by construction (vet H2 + L2): any segment whose second token is not
+# literally `config` — which is what keeps `-c`/`-C`/`--exec-path` carriers off this arm — and any
+# segment carrying an option outside the two declared lists. The PRE-EXISTING inline-`-c` hole
+# (`git -c core.hooksPath=/tmp/evil <subcmd>` ALLOWs today, because the flat matcher below requires
+# `git config` adjacency) is UNCHANGED here and boarded as GUARD-GIT-INLINE-C-HOOKSPATH-HOLE; this
+# arm must never be widened to "recognize" such a segment.
+# DISCLOSED RIDER (probe surprise 9): `--get-regexp` takes a PATTERN, so a key-spelling that matches
+# `core.hooks` without spelling `core.hooksPath` never reaches the flat matcher at all — pre-existing,
+# unchanged, and not claimed closed.
+_CP8B_GITCFG_QUERY='--get --get-all --get-regexp --get-urlmatch --list -l'
+# Read-side scope/output modifiers, each verified to select or format a READ and never to write.
+# `--file`/`--blob`/`--config-env`/`-c` are deliberately ABSENT: default-deny sends them to the deny.
+_CP8B_GITCFG_SCOPE='--global --local --system --worktree --null -z --name-only --show-origin --show-scope'
+_cp8b_gitcfg_is_read() {
+  case "$1" in *'>'*|*'<'*) return 1 ;; esac
+  case "$1" in *'$'*|*'`'*) return 1 ;; esac
+  _gcg=0; case "$-" in *f*) _gcg=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  if [ "${1:-}" != git ];    then [ "$_gcg" = 1 ] || set +f; return 1; fi
+  shift
+  if [ "${1:-}" != config ]; then [ "$_gcg" = 1 ] || set +f; return 1; fi
+  shift
+  _gcq=''; _gco=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*)
+        if _cp8b_in_list "$1" "$_CP8B_GITCFG_QUERY"; then
+          if [ -n "$_gcq" ]; then [ "$_gcg" = 1 ] || set +f; return 1; fi   # two query flags: unknown
+          _gcq=$1
+        elif _cp8b_in_list "$1" "$_CP8B_GITCFG_SCOPE"; then
+          :
+        else
+          [ "$_gcg" = 1 ] || set +f; return 1                               # DEFAULT-DENY on unknowns
+        fi ;;
+      *) _gco=$((_gco + 1)) ;;
+    esac
+    shift
+  done
+  if [ -z "$_gcq" ]; then [ "$_gcg" = 1 ] || set +f; return 1; fi   # <== THE CROWN-JEWEL LINE (M-F1)
+  case "$_gcq" in
+    --list|-l)      if [ "$_gco" -ne 0 ]; then [ "$_gcg" = 1 ] || set +f; return 1; fi ;;
+    --get-urlmatch) if [ "$_gco" -gt 2 ]; then [ "$_gcg" = 1 ] || set +f; return 1; fi ;;
+    *)              if [ "$_gco" -gt 1 ]; then [ "$_gcg" = 1 ] || set +f; return 1; fi ;;
+  esac
+  [ "$_gcg" = 1 ] || set +f
+  return 0
+}
+# N5 — a commit/PR MESSAGE that merely NAMES the key is data, not a config write. The exemption is
+# narrowed beyond `_cp8b_tad_is_msg_carrier` by a `$`/backtick decline: without it,
+# `git commit -m "$(git config core.hooksPath /tmp/evil)"` would wear the message costume while the
+# substitution ran the real write (measured DENY today; it must stay DENY).
+# ***REVIEW C1 (2026-08-19): the exemption MUST anchor on the LEADING token pair, not a substring.***
+# `_cp8b_tad_is_msg_carrier` is a substring match, so a trailing shell COMMENT
+# (`git config core.hooksPath /tmp/evil # git commit -m x`) put the `git commit` bytes anywhere in the
+# segment and stole the exemption while the REAL lead ran the hooksPath write — measured ALLOW on the
+# branch, DENY on main, a write-path widening this slice opened. A genuine message carrier LEADS with
+# `git commit`/`gh pr`/…, so keying on the first two whitespace-normalized tokens closes it and moves
+# no other verdict (the F3 comment-suffix battery + mutant M-F7 pin it).
+_cp8b_gitcfg_msg_data() {
+  case "$1" in *'$'*|*'`'*) return 1 ;; esac
+  _gmd=$(printf '%s' "$1" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+/ /g' | cut -d' ' -f1,2)
+  case "$_gmd" in
+    "git commit"|"git merge"|"git tag"|"git notes"|"gh pr"|"gh issue"|"gh release") : ;;
+    *) return 1 ;;
+  esac
+  _cp8b_tad_is_msg_carrier "$1"
+}
+
 # guard_check_command "<cmd>": print reason + return 1 if denied, else return 0.
 guard_check_command() {
   cmd=$1
@@ -2188,8 +2582,18 @@ guard_check_command() {
   # GUARD-HOOKSPATH-CASE-BYPASS: unconditional case-fold (`-Eq` -> `-Eiq`), no fork. Git config
   # KEYS are case-insensitive by spec on every platform, so this can only ever ADD a deny — no
   # legitimate command sets a DIFFERENT config key that differs from core.hooksPath only by case.
-  if ! selfedit_allowed && printf '%s' "$cmd" | grep -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath'; then
-    printf '%s' '13: git config core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
+  # GUARD-READONLY-FP-RELIEF Arm F: the flat matcher is UNCHANGED (same regex, same `-Eiq` fold) and
+  # is now the CANDIDATE selector, evaluated per SEGMENT; the read/write decision is the default-deny
+  # recognizer above. Segmenting also joins backslash-continuations, so `git config \<nl> core.hooksPath
+  # /tmp/evil` — measured ALLOW before this slice, a line-oriented-grep hole — now denies.
+  if ! selfedit_allowed; then
+    _walk=$(_cp8b_segments "$cmd")
+    while _cp8b_next_seg; do
+      printf '%s' "$_seg" | grep -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath' || continue
+      _cp8b_gitcfg_msg_data "$_seg" && continue
+      _cp8b_gitcfg_is_read "$_seg" && continue
+      printf '%s' '13: git config core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
+    done
   fi
   # --- B2 Δ4(i)′: RAW `git notes` WRITES to the promotion GO ledger (refs/notes/promotions) -----
   # WHAT THIS IS. A DRIFT CONTROL, per owner ruling D3′ (2026-07-28): "BUILD the prevention as a

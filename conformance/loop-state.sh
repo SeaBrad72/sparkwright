@@ -22,6 +22,13 @@
 #     below for what that does and does not bound).
 #   * IT PROVES NOTHING ABOUT ORDER, and nothing about whether the named skill was read or
 #     followed — the same un-gateable ceiling skills/using-skills already discloses.
+#   * THE RECORD IS PER-PUSH-HEAD, AND DOES NOT SURVIVE THE MERGE. Under a squash merge the commit
+#     that lands on the default branch is a NEW commit whose message is composed by the forge, so it
+#     carries no Kit-* trailers at all (MEASURED on this repo: PR head commits carry the full
+#     declaration; the squashed commits on the default branch carry zero). The attestation lives on the pull
+#     request's head commit and in the PR record, never in the merged history — so `git log` on the
+#     default branch is the wrong place to audit adherence, and a future check that reads it would be
+#     vacuously green. Say "declared at merge time", never "recorded in the history".
 #   * THE ROW LEG CAN BE N/A'd BY THE CHANGE UNDER TEST. The backend field and the board are read
 #     from the PR's own worktree, so flipping the backend or deleting the board in the same commit
 #     skips it. Announced on every N/A branch; boarded as LOOP-STATE-NA-SELF-SERVICE.

@@ -358,7 +358,19 @@ if [ "${1:-}" = "--selftest" ]; then
   # export-ignored → ABSENT. CHANGELOG.md joins this set: the full dev changelog narrates deferred
   # hardening across the whole history and stays private (the public product's release notes live on
   # GitHub Releases). README links to Releases, not to CHANGELOG.md, so the export has no dangling link.
-  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md .publish-identifiers; do
+  # docs/governance/DECISIONS.md joins this set (TRIAL-PREP-FIRST-MILE): the kit's ruling ledger is
+  # about the kit's own internals, and the entry contract sends every agent into it — so an adopter
+  # gets an EMPTY one stamped by incept.sh, never ours. The A6 leg below asserts the stamped copy
+  # SURVIVES in the adopter's own archive; this line asserts the kit's copy never arrives.
+  # ARCHIVE-SAFE-SET.txt joins it too (review round): adopter-export-wired.sh does NOT demand an IGN
+  # entry for it — its link scan reads KEPT `.md` docs, and IGN is deliberately a subset rather than
+  # an equality — so this line is the ONLY thing that proves the new export-ignore took effect.
+  # conformance/mass-acks.txt joins the set for ARCHIVE-SAFE-SET.txt's exact reason (CUT-A7): it is
+  # export-ignored, adopter-export-wired.sh does NOT demand an IGN entry for it (IGN is a subset, and
+  # its link scan reads KEPT `.md` docs), so this line is the ONLY thing that proves the attribute
+  # took effect. It also guards a live hazard: conformance/ ships wholesale, so a leaked ledger would
+  # arrive in an adopter tree as a bypass surface for a ratchet they never adopted.
+  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt .publish-identifiers; do
     [ -e "$_d/$p" ] && { echo "FAIL: export-ignored path present: $p"; fail=1; } || echo "PASS: absent $p"
   done
   # kept → PRESENT (scripts/fixtures now SHIPS — the tier-advice/agent-scorecard selftests in the
@@ -464,7 +476,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # --- A6: end-to-end archive-retention lock (design 2026-08-04-gitattributes-inheritance, "The lock").
   # The property that matters is NOT "the file has certain bytes" but "the ADOPTER's git archive keeps the
   # ADOPTER's work". Real export -> real incept -> add adopter files -> commit -> `git archive HEAD` MUST
-  # retain all 7 collision paths: incept's own CI workflows + ADR-000 + the stamped backlog (the files the
+  # retain every collision path in _a6_targets: incept's own CI workflows + ADR-000 + the stamped
+  # backlog + the stamped decision ledger (the files the
   # kit's .gitattributes export-ignores AND incept installs), plus adopter-added ADR-001, CHANGELOG, and
   # the governance meta-control-log. Load-bearing negative: replanting the kit's export-ignore
   # .gitattributes into the same tree MUST drop those paths (proves the check has teeth + that the CARVE
@@ -477,7 +490,14 @@ if [ "${1:-}" = "--selftest" ]; then
   # neutering the carve-match or the replant would keep CI green. Teeth here are this --selftest leg +
   # hand mutation-testing (both legs driven RED at build) — weaker than the sweep, and named as such
   # (same ceiling the kit records for the kit-base / .kit-manifest locks).
-  _a6_targets='.github/workflows/ci.yml .github/workflows/ratification.yml docs/architecture/ADR-000-stack.md docs/architecture/ADR-001-x.md CHANGELOG.md BACKLOG.md docs/governance/meta-control-log.md'
+  # docs/governance/DECISIONS.md is the 8th target (TRIAL-PREP-FIRST-MILE): incept stamps an EMPTY
+  # ledger, the kit export-ignores its own, and the adopter's copy must survive their `git archive`
+  # exactly like their stamped backlog does. It is the seeded-file half of the same lockstep.
+  _a6_targets='.github/workflows/ci.yml .github/workflows/ratification.yml docs/architecture/ADR-000-stack.md docs/architecture/ADR-001-x.md CHANGELOG.md BACKLOG.md docs/governance/meta-control-log.md docs/governance/DECISIONS.md'
+  # The count in the PASS line is DERIVED from the list, never transcribed: the previous hardcoded "7"
+  # was one edit away from attesting to a number the list no longer had.
+  # shellcheck disable=SC2086 # deliberate word-splitting — _a6_targets is a space-separated path list
+  _a6_n=$( set -- $_a6_targets; echo $# )
   # _a6_dropped <incepted+committed tree> : echo each target path NOT in `git archive HEAD` (empty = all kept)
   _a6_dropped() {
     _al=$( ( cd "$1" && git archive HEAD 2>/dev/null | tar -t 2>/dev/null ) )
@@ -501,7 +521,7 @@ if [ "${1:-}" = "--selftest" ]; then
   if do_export "$_a6exp" typescript-node >/dev/null 2>&1 && _a6_build_adopter "$_a6exp"; then
     _a6_miss=$(_a6_dropped "$_a6exp")
     if [ -z "$_a6_miss" ]; then
-      echo "PASS: A6 — the adopter's git archive keeps all 7 target paths (the carve retains the adopter's work)"
+      echo "PASS: A6 — the adopter's git archive keeps all $_a6_n target paths (the carve retains the adopter's work)"
     else
       echo "FAIL: A6 — the adopter's git archive DROPPED: $(printf '%s' "$_a6_miss" | tr '\n' ' ')"; fail=1
     fi

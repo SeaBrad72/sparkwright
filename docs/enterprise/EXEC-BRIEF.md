@@ -30,7 +30,7 @@ From the same directional industry benchmark data, three properties together are
 
 The runtime guard is a **speed bump, not a boundary** for shell and interpreter commands — a deny-list over a shell cannot contain a determined or compromised agent (interpreters and obfuscation defeat pattern-matching; `--no-verify` bypasses the git hook). Two honest refinements (Slices 11a–11c): the guard now **enforces** a deny-by-default **MCP capability gate** in-process (the one in-process control that is real enforcement — by tool name only), and the kit now **ships + verifies references** for the four platform controls — a network-egress allowlist (the only real exfiltration defense), separate production credentials, a sandboxed filesystem, and scoped short-lived tokens — which remain **platform-enforced** (Kit-assisted, not Kit-enforced). Adopt both — the guard prevents accidents cheaply; the platform boundary is what you certify. See [platform-safety-boundary.md](platform-safety-boundary.md).
 
-**Maturity:** the kit is at stage `release-candidate` — hardened, dogfooded, and ready to adopt. It is **built with its own loop**: its builder-facing machinery runs on its own CI on every push, and the loop has been used to build and deploy real software end-to-end, where its `builder ≠ reviewer` review caught real fail-open bugs an agent had shipped **as passing tests**. An external pilot is the next validation milestone — the point at which the kit earns `v1.0.0`. See [MATURITY.md](../../MATURITY.md).
+**Maturity:** the kit is at stage `release-candidate` — hardened, dogfooded, and ready to adopt. It is **built with its own loop**: its builder-facing machinery runs on its own CI on every push, and the loop has been used to build and deploy real software end-to-end, where its `builder ≠ reviewer` review caught real fail-open bugs an agent had shipped **as passing tests**. An external pilot is the next validation milestone — the point at which the kit reaches the `adopted` stage. See [MATURITY.md](../../MATURITY.md).
 
 ## 6. Compliance at a glance
 
@@ -48,7 +48,7 @@ Since Slices 11a–11c, the agent/runtime platform-boundary rows (egress, sandbo
 
 | You are a… | Start with |
 |------------|------------|
-| **Leader (VP-Eng / CTO)** | This brief, then [ORG-ROLLOUT.md](ORG-ROLLOUT.md) and [ROI-MODEL.md](ROI-MODEL.md) |
+| **Leader (VP-Eng / CTO)** | This brief, then [ORG-ROLLOUT.md](ORG-ROLLOUT.md) and [ROI-MODEL.md](ROI-MODEL.md) — both ❄️ **frozen pre-adoption (2026-08-19)**, readable but unmaintained until the first adopter supplies real evidence (ORG-ROLLOUT's Stage 1–4 maturity model is exempt and stays live) |
 | **Engineer** | [START-HERE.md](../../START-HERE.md) — Inception and stack selection |
 | **Auditor** | The enterprise docs in [this directory](./) — crosswalk, evidence checklist, RBAC, safety boundary |
 | **Operator** | Your project RUNBOOK (from [RUNBOOK-TEMPLATE.md](../../templates/RUNBOOK-TEMPLATE.md)) and [conformance/README.md](../../conformance/README.md) |

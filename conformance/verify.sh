@@ -405,6 +405,18 @@ check control agents-brief-selftest     sh conformance/agents-brief.sh --selftes
 # charged to adopter content. Raising the number would only postpone the same collision.
 check control doc-budget               --kitself sh conformance/doc-budget.sh
 check control doc-budget-selftest       --kitself sh conformance/doc-budget.sh --selftest
+# conformance-mass-budget (CUT-A7) is doc-budget's sibling one level up: doc-budget ratchets the core
+# governing PROSE, this ratchets the kit's own conformance MASS (lines + files + the `^check control `
+# census right here in this file). --kitself IS LOAD-BEARING on BOTH rows, and non-negotiably so: it
+# is the identical exposure doc-budget MEASURED above — a kit ratchet charged to adopter content. An
+# adopter's conformance/ holds THEIR checks; holding them to the kit's line count would red a
+# brand-new tree's first `verify.sh --require` for growth that is none of the kit's business. The
+# check ALSO stands down in-script on the same OR-of-markers detector (arming evaluated BEFORE any
+# enumeration, so an adopter never reaches its fail-closed refusal), so neither surface alone is the
+# switch. ⚠️ These two rows are themselves counted by the census this check budgets — adding them cost
+# the founding measurement, which is why GENESIS was taken on the POST-diff tree.
+check control conformance-mass-budget          --kitself sh conformance/conformance-mass-budget.sh
+check control conformance-mass-budget-selftest --kitself sh conformance/conformance-mass-budget.sh --selftest
 # loop-state is the universal refusal floor (KIT-ADHERENCE-ENFORCEMENT B1). ONLY the --selftest is
 # registered here: this file accepts BASE-INDEPENDENT checks, and the REAL gate needs the PR head SHA
 # (`--head <sha>`), which does not exist on an arbitrary tree. The real gate runs as a PR-context job
@@ -491,26 +503,13 @@ check control tool-coverage            --kitself sh conformance/tool-coverage.sh
 # SURVIVES the docs_only skip, unlike cf-verify-enforced/cf-export, which are disarmed on exactly the
 # `.md` PRs a prose-claim check governs (measured, C7 design §2.7).
 check control adopter-told             sh conformance/adopter-told.sh
-# phase-gate is the EDIT-TIME sibling of loop-state's merge-time refusal floor ([S1a-i]). BOTH modes
-# are registered, and both are base-INDEPENDENT: the default mode checks the §5 reason vocabulary,
-# the totality of the rc contract over it and the T2 ceremony allowlist's must-refuse fixtures, while
-# the selftest builds every fixture it needs (hermetic w.r.t. the ambient tree — its green was
-# re-verified in a dev-clone, a fresh clone and a base-less checkout). No --kitself: nothing here
-# grades the kit's own roster or budgets, so an adopter tree answers the same.
-# ⚠️ WHAT THIS ROW BUYS FROM THE MUTATION SWEEP — MEASURED HERE, NOT INHERITED. Registering it is what
-# enrols the file in non-vacuity.sh (the sweep selects from these `^check control` rows). But that
-# sweep builds ONE COMPOSITE mutant per file, neutering every idiom above the selftest() marker at
-# once. Re-measured on this file at the shipped tree (plan §12 A7's ACC=0 + one control-flow idiom is
-# SUPERSEDED — the file has grown): APPLIED 46, ACC 7, CTL 39, MARK 2302; of those 46 sites, 7 are
-# PHANTOMS inside pre-marker COMMENTS (4 accumulator, 3 control-flow — the inflation non-vacuity.sh's
-# own honest ceiling warns about, since mutate() has no lexer), leaving 39 real CODE sites.
-# So a `KILLED: phase-gate.sh` green proves that AT LEAST ONE of those 39 sites is observed by the
-# selftest — never that each is, and never 39 kills. The load-bearing coverage is the hand-run
-# mutation evidence recorded at the legs themselves, together with the 13 sites the file DECLARES
-# unpoliced with a measured empty kill set. Do not quote the green as more than one mutant
-# (CONFORMANCE-MUTATION-COVERAGE-GAP on the board is the row that scopes this class).
-check control phase-gate               sh conformance/phase-gate.sh
-check control phase-gate-selftest       sh conformance/phase-gate.sh --selftest
+# TOMBSTONE (2026-08-19, CUT-PHASE-GATE-PARK, `D-240819-3` amending `D-240804-1`): two `check control`
+# rows for the edit-time phase gate stood here. The gate was PARKED to the history branch
+# `history/phase-gate-s1a-i` — it had no wired caller, so it denied nothing, and its registration here
+# was buying one composite mutant per sweep run over the single largest file in the corpus. Do not
+# re-add a row without re-adding the script; the rows and the file move together (see
+# `docs/operations/retiring-conventions.md`, the tombstone there, for the history ref and what
+# re-wiring would take).
 check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
 check control pipeline-origin          sh conformance/pipeline-origin.sh

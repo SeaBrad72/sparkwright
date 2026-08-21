@@ -35,9 +35,7 @@ allowlist() {
 cat <<EOF
 BACKLOG.md${TAB}the defining OWNER-STEP-MARKER-SWEEP row + Done-row history quote the markers as records; the board's own truth-fix discipline governs it (export-ignored, kit-dev only)
 REQUIRED-CHECKS.md${TAB}carries its ✅ correction with the date on the FOLLOWING line (measured, panel #38 2-M1); file frozen this slice (H3: do not touch REQUIRED-CHECKS.md), so the ceiling is disclosed here instead
-docs/architecture/2026-08-07-meta-control-38.md${TAB}the panel record that NAMES the finding — quotes the markers as evidence, immutable record
 docs/governance/meta-control-log.md${TAB}panel verdict log — agent-write-denied record; quotes findings
-docs/architecture/2026-08-07-phase-b-hygiene-design.md${TAB}defines this mechanism's exact pattern set
 EOF
 }
 

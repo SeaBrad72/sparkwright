@@ -1,6 +1,6 @@
 # Maintaining the Kit
 
-How Sparkwright is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it has a `CHANGELOG`, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; it is not copied into adopting projects.
+How Sparkwright is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it has a `CHANGELOG`, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; `adopter-export.sh` ships it into an exported project and `incept.sh` rewrites its doc references at Inception, so it travels with the kit and is adapted to the adopting project.
 
 ---
 

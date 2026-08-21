@@ -96,6 +96,7 @@ conformance/claims-registry.sh
 conformance/claims.tsv
 conformance/codeowners-export-clean.sh
 conformance/conditional-gates.sh
+conformance/conformance-mass-budget.sh
 conformance/container-supply-chain.sh
 conformance/containment-audit-wired.sh
 conformance/containment-readiness.md
@@ -242,7 +243,6 @@ conformance/otlp-backend-wired.sh
 conformance/owner-step-markers.sh
 conformance/permission-surface-audit.sh
 conformance/persona-artifacts.sh
-conformance/phase-gate.sh
 conformance/pipeline-origin.sh
 conformance/poster-parity.sh
 conformance/preview-env-ready.sh
@@ -328,7 +328,6 @@ docs/enterprise/data-governance.md
 docs/enterprise/platform-safety-boundary.md
 docs/enterprise/ratification-rbac.md
 docs/enterprise/secrets-at-scale.md
-docs/governance/DECISIONS.md
 docs/governance/promotion-contract.md
 docs/governance/promotion-log.md
 docs/onboarding/first-feature-tdd.md
@@ -751,6 +750,7 @@ templates/AI-SYSTEM-CARD-TEMPLATE.md
 templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md
 templates/BACKLOG-TEMPLATE.md
 templates/BIA-TEMPLATE.md
+templates/DECISIONS-TEMPLATE.md
 templates/EVAL-PLAN-TEMPLATE.md
 templates/FEATURE-REQUEST-TEMPLATE.md
 templates/FIELD-REPORT-TEMPLATE.md

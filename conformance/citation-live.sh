@@ -42,8 +42,12 @@
 # historical anchor into an immutable record).
 # ⚠️ THE DATED-TARGET TEST RUNS ON THE CITATION STRING, BEFORE RESOLUTION, AND THE ORDER IS THE
 # CONTROL (design vet H-1). The dated directories are export-pruned, so a resolve-first order would
-# turn DECISIONS.md's bare-basename dated citations (7 measured) into UNRESOLVABLE FAILs on every
-# fresh adopter clone. String-first also closes the symlink-alias face without resolving anything.
+# turn a dated bare-basename citation into an UNRESOLVABLE FAIL on every fresh adopter clone. (The 7
+# measured instances were DECISIONS.md's; since TRIAL-PREP-FIRST-MILE that file is itself
+# export-ignored, so those 7 no longer reach an adopter clone at all — the ORDER still governs,
+# because the same shape occurs in every other doc that anchors into a dated record, and an ordering
+# rule justified only by the instances that motivated it is a rule waiting to be "simplified" away.)
+# String-first also closes the symlink-alias face without resolving anything.
 # EXEMPTIONS ARE NEVER SILENT: their counts print on EVERY run, pass or fail.
 # ⚠️ THE DATED PREDICATE (is_dated(), inside the awk program below) IS COPIED — NOT SHARED — INTO
 # conformance/citation-history.sh, which needed the same split and could not reach into this file's

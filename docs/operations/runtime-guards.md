@@ -64,21 +64,18 @@ Net: shims raise the floor for non-Claude runtimes on the **common direct-call m
 ### Installing the shims
 `kit-guard install-shims [--dir <d>] [--force]` writes a shim per curated binary (`rm dd truncate shred wipefs blkdiscard mkfs dropdb psql mysql mariadb sqlite3 mongosh pg_restore redis-cli git npm yarn pnpm kubectl rsync` — the single-invocation rules), prints the `export PATH="<dir>:$PATH"` line, and warns on a writable target. Each shim reconstructs its argv, runs `kit-guard cmd`, and on allow execs the **real** binary (resolved as the first PATH entry that is not the shim dir — so it never recurses). `conformance/shim-coverage.sh` proves the generated shims deny + allow + pass through (exit code/stdio) + don't recurse.
 
-## The edit-time phase gate (`conformance/phase-gate.sh`) — built, not yet wired
+## The edit-time phase gate — PARKED 2026-08-19, not shipped
 
-`guard_check_path` above answers *is this path protected?* The edit-time **phase gate** answers a different question — ***may this tool write this path right now, given what this branch has recorded?*** — and it is **not a fifth surface of the deny-matrix**: it is a separate script that consumes the two change-class classifiers (`conformance/promotion-readiness.sh --class` **union** `conformance/agent-boundary.sh --ratified 0`) and the pre-build artifacts, and it neither reads nor extends `guard-core.sh`.
+A section here used to document `conformance/phase-gate.sh`, an edit-time decision answering *may this
+tool write this path right now, given what this branch has recorded?* **It never had a caller.** The
+policy was built and tested under `[S1a-i]`; the `guard.sh` binding (`[S1a-ii]`) was never built, so the
+gate denied nothing in practice for its entire shipped life — only its own selftest ran. On 2026-08-19
+it was **parked** to the history branch `history/phase-gate-s1a-i` (`D-240819-3`, amending `D-240804-1`);
+see `docs/operations/retiring-conventions.md` for the tombstone and what re-wiring would take.
 
-```sh
-sh conformance/phase-gate.sh --decide --path docs/architecture/2026-01-01-x-design.md
-```
-
-Its rc contract, which a caller must implement exactly: **0** = allow (a `PG_ALLOW_*` constant on stdout) · **1** = deny (a `PG_DENY_*` constant on stdout, **and only then**) · **2** = undecidable → **the caller allows** · **any other rc** (missing, non-executable, aborted) → **the caller allows**. An rc 1 with empty or unrecognised stdout is the shell's own abort code, not a decision, so a conforming caller **allows** it.
-
-**Status, stated plainly: no caller is wired.** `[S1a-i]` built and tested the policy; the `.claude/hooks/guard.sh` binding is `[S1a-ii]`. Until then this gate denies nothing in practice — its default mode and its 93-leg selftest run in `conformance/verify.sh` and in CI, and that is all.
-
-**Honest ceiling — the same speed-bump ceiling as the rest of this page, plus four of its own.** It covers the **Edit/Write tool route only** (the eleven shell write routes stay ALLOW for sensitive paths, exactly as *Honesty boundary* below describes). Its **bypass floor is roughly sixteen lines of markdown** — two files under always-allowed prefixes, each a heading plus a handful of non-blank lines — so a forgery is cheap and the gate does not pretend otherwise. The unlock is **branch-scoped, not change-scoped**: one design plus one plan opens *every* sensitive and control-plane path on that branch, including unrelated subsystems. And **bypasses are unlogged** — nothing here or downstream writes a trace when a decision is routed around, so no claim that an override is captured somewhere is true. It also **makes no ordering claim and no ratification claim**; acceptance stays at merge (`docs/governance/promotion-contract.md`).
-
-**And nothing enforces this section.** `conformance/governing-docs-current.sh` — a check the kit's own CI runs over its named governing set, and which ships to you unwired — deliberately excludes this file from its named governing set, so the prose here is a reference, not a locked contract — the gate's own behaviour is locked by its selftest and by the `phase-gate` row in `conformance/claims.tsv`, and *those* are what to trust if this page and the script ever disagree.
+**Nothing replaced it, and nothing here should be read as implying otherwise.** The deny-matrix surfaces
+documented above are the whole of this page's enforcement. Acceptance stays at merge
+(`docs/governance/promotion-contract.md`).
 
 ## Honesty boundary
 Each surface is a speed bump for honest mistakes, not containment of a hostile process. It is bypassable by design and does **not** claim to block every write/exfil path. **Local git only:** the git surfaces here (`pre-push`, `guard_check_push`) act *locally*, before the network round-trip. A **server-side `gh pr merge --admin`** is a GitHub API call — a different transport entirely — and is outside the guard's reach. **The S6 `--admin` deny is a local speed-bump, not this boundary:** it makes the bypass loud in the guard's own reasons and stops the honest-mistake local invocation, but a token with admin scope can still call the API directly (or a non-Claude runtime can). **The real boundary is credential-side — never issuing the agent an admin-scoped token** (`../enterprise/platform-safety-boundary.md`); a `gh` with only normal-merge scope simply *cannot* bypass. The boundary on *who merges* is GitHub branch protection + the agent's sanctioned path — a **normal** (non-`--admin`) merge on a recorded, authenticated GO via `scripts/promotion-verify.sh actuate` (team), or preparing the PR and handing the human the `--admin` kill-switch merge (solo) — see [`review-lane.md`](./review-lane.md), **not** the guard. Known bypass classes (all within this ceiling, not regressions): `--no-verify`; an uncooperative runtime; a language interpreter (`python -c`, `node -e`); a redirect/printf that writes a file without invoking a denied verb; an upload via `curl --data @file` / interpreter; and history-application like `git am` / `git apply`. The boundary that actually contains these is platform-owned — adopt the guard **with** the network-egress allowlist, separate prod credentials, sandboxed FS, and scoped tokens (`../enterprise/platform-safety-boundary.md`).
@@ -237,6 +234,51 @@ it, remove it the moment the work lands.
 The control-plane shell-mutation check matches a control-plane path **and** a mutation verb by **substring over the whole command string** — it cannot tell *code* from *prose*. So it sometimes **over-denies** (a false positive, the guard failing *safe*): a commit message, a `gh pr create --body`, a heredoc body, or a `grep` pattern that merely *mentions* a control-plane path (`CODEOWNERS`, `.github/workflows`, `.claude/`) alongside a verb-looking word (`cp`, `sed`, `install`) is denied even though it mutates nothing. `git checkout -b <branch>` co-occurring with such a mention trips it too.
 
 This is annoying, not unsafe (over-deny ≠ bypass). **Workarounds, in order:** for a long **commit or PR message** (the most common trip — a multi-line body is segmented on its newlines and a fragment mentioning a control-plane path is scanned as data-mistaken-for-code), pass the body from a **FILE** rather than inline `-m`/`--body` — `git commit -F <file>` / `gh pr create --body-file <file>` (the file content is a message, never executed). **As of DRIFT-2 the deny message names this escape itself** when the command is a `git commit`/`git tag`/`gh` invocation, so you see it at the moment of friction. Otherwise: run the command via the **`!` user-shell escape** (it runs in your terminal, outside the PreToolUse hook); use the **Read tool** instead of a shell `cat`/`grep` (or `sed -n`) for reads; if you are actually doing **control-plane work**, use the **dev-clone** (see the section above — that is the route, and it keeps the guard armed). **Only as a last resort** set `KIT_GUARD_SELFEDIT=1` in the **launching** shell — and know that it disarms the guard **globally** (destructive-op and secret-read denies included), not just the control-plane check. (An **inline** `KIT_GUARD_SELFEDIT=1 <cmd>` prefix does **not** work — the PreToolUse hook runs in its own process *before* your command, so the inline var never reaches it; export it in the launching shell, or add an `env` block to `.claude/settings.json`. In the **VSCode extension** a launching-shell export does not reach the hook either — the extension spawns its own process — so the `env` block is the only route there.) The structural fix — per-segment command parsing (judge each `;`/`&&`/`|`-separated segment's leading verb against the paths in *that* segment) — is tracked as **G8** in `../ROADMAP-KIT.md`; it is deferred because tightening this regex risks the *unsafe* direction (a false-negative), and the real backstop for an actual control-plane change is the PR-time `gate-agent-boundary` check, which diffs the files regardless of how they were edited.
+
+### What `GUARD-READONLY-FP-RELIEF` changed (v3.218.0) — five relieved shapes, one *tightened* one
+
+Five read-only shapes that used to be denied are now allowed, each by a **declared** recognizer that
+declines on anything it does not positively recognize (so a bug in one over-denies, never over-allows):
+
+| Now allowed | Why it is safe |
+|---|---|
+| `sh scripts/kit-guard path\|cmd\|mcp <cp-path>`, `promotion-readiness.sh --class --changed <listing>`, `agent-boundary.sh --changed <listing> --ratified 0` | A **declared table** of `(script, query-token)` pairs — unknown script, unknown flag, any redirect, any `$`/backtick, or any `..` in the script token all decline. The pairs are *run* against a fixture control-plane path by `conformance/agent-autonomy.sh`, which asserts each script exists and that the worktree is unchanged, so a pair that ever gains a write path — or that outlives its script — goes RED. |
+| `test -f <cp>` · `[ -f <cp> ]` | `test`/`[` read metadata and cannot write. `if`/`elif` are **not** in the lead set — they run a *command*. |
+| a **quoted** heredoc body (`<<'EOF'`) naming a control-plane path | A quoted delimiter makes the body inert by shell semantics. Any terminator ambiguity (`<<-`, an unquoted delimiter, two heredocs, no exact terminator line) declines and the body stays scanned. |
+| `git config --get\|--get-all\|--get-regexp\|--get-urlmatch\|--list <key>` | Recognized **per occurrence** and **default-deny**: no query flag, an extra value token, an unknown option, or a `-c`/`--file` carrier all still deny. `git config core.hooksPath <value>` — the guard-disable vector — stays DENY, held by **two** independent guards (a query flag must be present **and** the operand count is bounded), so no single-guard slip opens it; `--get … && git config core.hooksPath /tmp/e` still denies on the write segment; and a trailing `# git commit …` **comment** does not steal the message-carrier exemption (that exemption anchors on the leading token pair, not a substring). |
+| a redirect to a `~/`-rooted **literal** target (`printf x >> ~/notes.txt`) | A `~` target shows every byte after the home root literally, so it is checkable — and it is checked. A `~` suffix carrying `..`, a glob, any control-plane segment, **or a home-root dotfile** (`~/.gitconfig`, `~/.config/git/config` — where `core.hooksPath` also lives — `~/.zshrc`, `~/.ssh/authorized_keys`) still denies; only non-dotfile scratch suffixes (`~/notes.txt`, `~/scratch/out.txt`, `~/logs/verify.log`) are relieved. |
+
+**`$VAR` redirect targets are still refused, deliberately.** `printf x >> $SCRATCH/notes.txt` denies:
+with the directory inside the variable, the visible suffix (`pre-push`, `settings.json`) does not
+identify itself, so the guard cannot tell a scratch append from a hook overwrite. **Spell the target
+literally**, use a `~/`-rooted path, or use the Write tool — the deny message now says so.
+
+**One thing got *stricter*.** `_cp8b_redir_launder_denied` only recognized a laundering verb when the
+verb led the segment, so a brace group or subshell moved the redirect into a `}`/`)`-led segment it
+did not recognize: `{ printf evil ; } > $VAR/pre-push` and `( printf evil ) > $VAR/pre-push` were
+**measured ALLOW** before this slice — a two-byte bypass of the `GUARD-CP-WRITE-ROUTES` Cure-2
+closure. Group tokens are now peeled and recognition re-tested, and a segment that is only a group
+*close* (or a verbless `> $VAR/x` truncate) denies. **Disclosed over-deny, priced deliberately:** the
+scope is the segment's *shape*, not what the group contains (that lives in another segment), so
+`{ make ; } > $OUT` now denies while the bare `make > $OUT` still allows. Drop the braces, or spell
+the target literally.
+
+### Kept-denied on purpose — and each one now names its escape
+
+Segmentation is deliberately **quote-blind**: a quote-aware splitter fails *open* (it can miss a real
+`; rm -rf`). These four faces are therefore not relieved; they pay their friction with a named escape
+in the deny message instead.
+
+| Denied shape | Why it stays denied | What the message now tells you |
+|---|---|---|
+| `grep -n "A\|B" <cp>` (quoted alternation) | the quoted `\|` is scanned as a separator | one pattern per invocation, `grep -e A -e B`, or the Grep tool |
+| `for f in <cp-paths>; do … ; done` | the loop **head** carries the whole deny — relieving it segment-locally would allow a mass-delete body (`do rm $f` allows as a standalone segment, measured) | the Read/Grep tool, or one invocation per file |
+| `bash -c "…"`, `python3 -c "…"`, `source` | an interpreter's arguments are code, not data | use the Read tool, or run a file that names no control-plane path |
+| `KIT_ANYTHING=1 sh <kit-script>` (unvetted prefix) | the vetted-name allowlist is closed on purpose; adding a name per false positive is enumeration creep | `export` the variable as a separate statement, or use a vetted name |
+
+A fifth ergonomic fix rides along: the escape hints used to key on the **raw** command's lead verb, so
+`cd x && sed -n … <cp>` lost its `head/tail` hint — the tip vanished exactly when a compound made the
+deny hardest to read. They now key on the **offending segment's** lead.
 
 ## See also
 - `DEVELOPMENT-PROCESS.md` §13 (autonomy matrix) · `conformance/agent-autonomy.sh` (the red-team corpus).

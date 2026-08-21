@@ -98,7 +98,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/go/ci.yml`. Note: `gate-type-c
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 
 ## 10. Recommended libraries
-chi or net/http · pgx + sqlc · go-playground/validator · golang-jwt + x/crypto/bcrypt · cenkalti/backoff + sony/gobreaker · log/slog + OpenTelemetry + Sentry · Testcontainers-go · govulncheck + cyclonedx-gomod · golang-migrate · Anthropic Go SDK for AI features. Default Claude models: `claude-sonnet-4-6` (workhorse), escalate to Opus for hard reasoning.
+chi or net/http · pgx + sqlc · go-playground/validator · golang-jwt + x/crypto/bcrypt · cenkalti/backoff + sony/gobreaker · log/slog + OpenTelemetry + Sentry · Testcontainers-go · govulncheck + cyclonedx-gomod · golang-migrate · Anthropic Go SDK for AI features. Model tiers (harness-neutral): route routine work to the `fast` tier and hard reasoning to the `deep` tier, each bound to a concrete model in the adopter-owned `.kit/model-map.conf` (e.g. `fast=sonnet`, `deep=opus`).
 
 ## 11. Stack-specific gotchas
 - Commit `go.sum`; CI uses the module cache for reproducible builds.

@@ -63,7 +63,10 @@
 #
 # ── ARMING (kit-self; the permission-surface-audit precedent) ───────────────────────────────────────
 # `D-YYMMDD-N` ruling ids are the KIT'S OWN governance vocabulary — an adopter's docs do not cite them,
-# and DECISIONS.md, though not export-ignored, carries the kit's record, not the adopter's. So this is
+# and DECISIONS.md carries the kit's record, not the adopter's. (Since TRIAL-PREP-FIRST-MILE the kit's
+# copy is export-ignored outright and an adopter is stamped an EMPTY ledger at Inception, which makes
+# the arming below not merely correct but necessary: on an adopter tree the membership set really is
+# empty, and grading citations against it would red every tree that ever quotes an id.) So this is
 # a KIT-SELF check: with NEITHER export-ignored marker present (docs/ROADMAP-KIT.md /
 # .github/workflows/golden-path.yml) it renders the honest line-anchored `N/A:` that verify.sh's C6
 # is_self_skip classifier accepts, before reading a thing. On a KIT tree it is FAIL-CLOSED: a

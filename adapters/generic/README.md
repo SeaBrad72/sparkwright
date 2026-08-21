@@ -1,28 +1,15 @@
 # adapters/generic/
 
-Floor-only adapter for any harness that reads `AGENTS.md` but provides no inline pre-exec guard — Codex, Cursor, Copilot, and similar runtimes.
+Floor-only adapter for **any harness that reads `AGENTS.md`** but provides no inline pre-exec guard and has no adapter of its own. It is the **catch-all**: use it when your runtime has no named adapter here, or scaffold a named one with `sh scripts/new-adapter.sh <harness-name>`.
 
-## What this adapter declares
+## Adopting with a generic harness
 
-Every dimension is at the Kit-enforced **floor**; `mcp-gate` is `n-a` (no MCP surface):
+Point the runtime at the repo-root `AGENTS.md` — the kit's brief routes from there to the canonical docs — and confirm it actually auto-loads that file. Because this adapter is not bound to one named runtime, it declares **no harness-specific in-repo namespace** in `controlPlanePaths`; only the kit's own floor paths are listed. If your harness *does* keep an in-repo control surface (a rules directory, a settings file), do not stretch this adapter over it: scaffold a named adapter and declare that path there, so the union covers it.
 
-| Dimension | Level | Enforced by |
-|-----------|-------|-------------|
-| context-binding | floor | `AGENTS.md` present + routes to canonical docs |
-| command-guard | floor | `hooks/pre-push` + `scripts/kit-guard` + `conformance/agent-boundary.sh` |
-| history-protection | floor | `hooks/pre-push` (force-push / push-to-main guard) |
-| review-roles | floor | `conformance/agent-boundary.sh` + `conformance/branch-protection.sh` |
-| mcp-gate | n-a | No MCP surface on this harness |
+## The honest ceiling for a generic harness
 
-## What "floor-only" means
+There is **no harness-native inline interception** here (no Claude-Code-`PreToolUse` equivalent) — that is what "generic" means. Claude is stopped at the keystroke; **a generic harness is stopped at `git push` and at the PR — not at the keystroke.** For inline coverage of its *shell* commands, install the caller-agnostic shims: `sh scripts/kit-guard install-shims` (shell commands only, **not** the harness's direct file-writes — those are caught at push/PR). Drive your harness through the floor in a real repo and confirm it blocks. **You verify this for your harness; the kit does not claim it for you.**
 
-Enforcement holds entirely through the universal governance layer — the git hook and CI backstop — without any harness-native inline interception. The `pre-push` hook and `kit-guard` CLI fire regardless of which AI runtime issued the command; the CI `agent-boundary` gate backstops any local bypass.
+## Everything else is the shared floor
 
-Inline pre-exec interception (e.g. the Claude Code `PreToolUse` hook) is simply absent here. That is an honest ceiling, not a gap: the floor is the equal-enforcement guarantee every harness must clear.
-
-## Coverage ceiling
-
-For the full matrix of what each surface covers and where the ceiling is, see:
-
-- [`docs/operations/harness-adapters.md`](../../docs/operations/harness-adapters.md) — boundary contract + dimension table
-- [`docs/operations/runtime-guards.md`](../../docs/operations/runtime-guards.md) — per-harness guard coverage matrix
+The dimension table, what "floor-only" means, the shared-control-plane / union rule, the self-verify recipe, and the coverage-ceiling links are common to every floor-only adapter and live once in [`../README.md`](../README.md) — *"The shared floor"*.

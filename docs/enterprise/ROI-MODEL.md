@@ -1,5 +1,14 @@
 # ROI Model — Sparkwright
 
+> ❄️ **FROZEN PRE-ADOPTION — 2026-08-19.** This document is **frozen in place**: it stays in the tree
+> and stays readable, but it is not maintained, not extended, and carries **no shipped-value claim**
+> until real adoption evidence exists. It was written ahead of any adopter, so every figure in it is
+> arithmetic over *your* inputs — nothing here is measured. **It returns with the first adopter**: the
+> first real rollout supplies the inputs, the measured baselines, and the worked example that would
+> make this model worth maintaining. Frozen under the `D-240819-2` Track-1 cut program; the tombstone
+> entry (what froze, when, and the return condition) is in
+> [`../operations/retiring-conventions.md`](../operations/retiring-conventions.md) §8.
+
 **This is a *planning model parameterized by your inputs* — not a measured result, a benchmark, or a guarantee. Consistent with the kit's honesty standard: it shows the logic and labels every assumption; it does not assert savings.**
 
 For the leadership framing this supports, see [EXEC-BRIEF.md](EXEC-BRIEF.md). The elevated-baseline figures below are sourced from directional industry benchmark data.

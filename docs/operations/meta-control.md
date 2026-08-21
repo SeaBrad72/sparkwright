@@ -21,21 +21,42 @@ audit (run by hand) was this panel's prototype.
 
 ## When to run it (the cadence)
 
-- **Every N slices** → the **light (5-lens)** profile. **N defaults to 5** (a review is *due* once 5
-  release tags have landed since the last logged run). (M2 enforces "due" via a staleness gate that
-  reads the verdict log; N is the gate's input.)
-- **At an epic / release / major boundary** → the **full (11-dim)** profile.
+**The panel obligation binds at boundaries, not per-slice** (`D-240819-5`, owner-ruled 2026-08-19):
+
+- **At an epic / release / major boundary** → the **full (11-dim)** profile. This is the standing
+  obligation.
 - **On demand** when a direction feels off — the cheapest place to catch drift is before the next big
   build, not after (the banked meta-lesson: *re-question the plan, don't just execute it*).
+- **When the freshness gate reads OVERDUE between boundaries** → run **the light 5-lens panel**. This is
+  the **backstop procedure the freshness gate prescribes**: `conformance/meta-control-fresh.sh`'s OVERDUE
+  cure text says *"Run the light 5-lens panel per docs/operations/meta-control.md"* verbatim, and the
+  named procedure it sends you to is [*The light 5-lens panel*](#the-light-5-lens-panel-the-5-lenses)
+  below. `scripts/release-tag.sh` prescribes the same procedure one band later, on **ESCALATED** — where
+  it *refuses to tag* until a log row lands; its OVERDUE arm only warns and lets the tag proceed. Run
+  the panel, or record a dated human-ratified `DEFERRED` row.
 
-## Two profiles (tiered by trigger — both are kept)
+> **What changed, and why.** Running the light profile *"every N slices"* used to be a standing
+> obligation in its own right, and it over-fired: panel exhaust peaked at **31 panels in one week**
+> (late June 2026) before self-correcting to roughly one a week. `D-240819-5` moved the obligation to
+> boundaries + on-demand and kept the light panel as the gate's backstop. **The enforcement constant is
+> untouched:** `conformance/meta-control-fresh.sh` still reads **N=5** (see *The freshness gate* below),
+> so the relax cannot become "never" — the gate goes OVERDUE and prescribes the light panel. What moved
+> is what the *doc obligates*, not what the *gate enforces*.
+
+## Two profiles (both are kept — one is the obligation, one is the backstop)
 
 | Trigger | Profile | What it probes |
 |---|---|---|
-| every N slices | **light = 5-lens** | *depth* on direction / proportion / honesty — the drift catcher |
-| epic / release / major | **full = 11-dim** | *breadth* release sweep (most surfaces already covered continuously by CI/conformance) |
+| **epic / release / major boundary**, + on demand | **full = 11-dim** | *breadth* release sweep (most surfaces already covered continuously by CI/conformance) — **the standing obligation** |
+| **the freshness gate reads OVERDUE** between boundaries | **light = 5-lens** | *depth* on direction / proportion / honesty — the drift catcher; **the backstop, no longer a standing per-N-slices obligation** |
 
-### The 5 lenses (light profile)
+### The light 5-lens panel (the 5 lenses)
+
+**This is the named procedure the freshness gate's OVERDUE cure text prescribes** — the exact phrase in
+`conformance/meta-control-fresh.sh` is *"Run the light 5-lens panel per docs/operations/meta-control.md"*,
+and this section is where it lands. `scripts/release-tag.sh` prescribes the same procedure on its
+**ESCALATED** branch (where it refuses to tag); its OVERDUE arm is advisory and only warns. It is a
+**backstop**, not a standing per-N-slices obligation (`D-240819-5`).
 
 Each lens is run by an **independent adversarial agent**, **default-to-critical**, under the evidence
 standard below:
@@ -198,6 +219,14 @@ Those records remain in the ledger, adjudicated defective, as the evidence of th
 run*. It is **DUE** once more than **N=5** release tags have landed since the last addressed run, read
 from a one-line machine marker `docs/governance/.meta-control-last` (`VERSION VERDICT`, e.g.
 `3.48.0 GO-WITH-CONDITIONS`) that the check keeps in lockstep with the log's last row.
+**`D-240819-5` left this gate and its N untouched, deliberately.** Once the panel obligation moved to
+boundaries, N=5 stopped being an obligation restated in code and became purely a **backstop clock**: it
+is what stops "at boundaries" from decaying into "never" when boundaries are far apart. Its cure is the
+light 5-lens panel (above) or a dated `DEFERRED` row. N stays env-overridable, and that override stays a
+**human** act: `scripts/release-tag.sh` detects a caller-set `META_CONTROL_*` / `RELEASE_TAG_CADENCE` and
+says so unmissably on **every** invocation, disclosing that the enforce-at-birth guarantee does not apply
+to that run. It **warns rather than refuses** — env-hardening is unwinnable against a caller who owns the
+environment, so the control is that an override can never be *silent* (`D-240807-1` posture D3′).
 **During a ruled release-batching period (a `D-240813-6`-class ruling with no per-slice tags), N
 counts *merged slices*, not tags** — otherwise batching starves the clock and a long phase runs dark
 while the gate reads FRESH (panel #41 finding 2-M2; owner-ruled 2026-08-15, `D-240815-2`).
@@ -249,4 +278,4 @@ assign the same remit to an equivalent agent.
 | CI / conformance / golden-path | every push | **correctness / structural** drift |
 | `sparkwright doctor` | on demand / pre-release | **mechanizable posture** (conformance, claims, git) |
 | drift-self-check | *during* a build | the agent **correcting itself** (no artifact, no gate) |
-| **meta-control (this)** | **at cadence boundaries** | **direction / proportion / over-claim** — adversarial, produces a verdict artifact, **gated by M2** |
+| **meta-control (this)** | **at epic / release / major boundaries + on demand** (`D-240819-5`); the light 5-lens panel is the backstop when M2 reads OVERDUE | **direction / proportion / over-claim** — adversarial, produces a verdict artifact, **gated by M2** |

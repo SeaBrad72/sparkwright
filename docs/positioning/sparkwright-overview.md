@@ -39,9 +39,10 @@ Adoption is one command: export a clean, CI-ready copy into a new project, open 
 run `START-HERE` — Inception then walks you through choosing your stack, scaffolds a runnable starter with a
 **green pipeline on the first run**, and wires the project, before handing you into the build loop. Brownfield
 adoption into an existing repo is supported. Maturity is a **stage, not a version**: the kit is at
-`release-candidate` today; `v1.0.0` is cut when an external team ships real software through it. The kit is
-built with its own loop and held to its own Definition of Done — it dogfoods every principle and gate it gives
-you.
+`release-candidate` today, reaching `adopted` when an external team ships real software through it. The kit
+versions its own releases on its own cadence (currently `v3.218.0`); adoption is a maturity stage, not a
+version reset. The kit is built with its own loop and held to its own Definition of Done — it dogfoods every
+principle and gate it gives you.
 
 ## 2. Who it's for — the audience spectrum
 
@@ -54,7 +55,9 @@ experience-aware front door that routes from vibe-coder to principal/architect):
 - **Product teams** — the loop, the gates, and the discovery front-end turn raw signals into shipped,
   operated software.
 - **Engineering / platform orgs** — hand it to a team and tailor it; the enterprise addendum (compliance
-  crosswalks, RBAC, secrets-at-scale, an EXEC-BRIEF and ROI model) is there when you need it.
+  crosswalks, RBAC, secrets-at-scale, an EXEC-BRIEF) is there when you need it. Its **ROI model and
+  org-rollout playbook were written ahead of any adopter and are frozen pre-adoption (2026-08-19)** —
+  read them as reasoning to adapt, not as shipped, evidenced kit value.
 
 The design pattern throughout: **define the rich model, ship a sensible default, make it per-project
 configurable, and let maturity/metrics raise the bar.** Nothing heavy is imposed before it earns its place.
@@ -328,6 +331,7 @@ orchestrator or a seat invokes, each mapped to a stage/gate of the loop — not 
   SHA**, and re-verifies *what shipped == what was approved* by **tree equality** — a stronger guarantee than a
   keystroke, which never checked the merge target was the reviewed commit.
 - **Honest labels** — solo single-party judgment with delegated mechanics is never relabeled as dual control.
+- **Role, not tier** — the separation structure (builder ≠ reviewer ≠ ratifier), the gates, and the recorded GOs bind by **role**, independent of which model tier (§20) runs any seat; a cheaper or stronger model changes cost, never who ratifies.
 
 ## 20. Model tiering & fan-out economics
 
@@ -417,7 +421,7 @@ check's failure path and proves it goes red — so a gate that *cannot fail* (a 
 caught and fixed rather than shipped (with an honest `UNCOVERED` bucket for checks that are structurally
 un-mutation-testable in place). Most tooling ships green checks nobody has proven can fail; Sparkwright treats a
 check that can't fail as a defect — this is how the principles (Part I) and gates (Part II) are kept real rather
-than decorative. The kit runs ~140 conformance checks and **dogfoods every gate it gives you.**
+than decorative. The kit runs the full conformance suite enumerated in `conformance/verify.sh` (its `Summary:` line reports the live count) and **dogfoods every gate it gives you.**
 
 ## 26. Enterprise-grade security & governance
 
@@ -429,7 +433,10 @@ the scale concerns:
 - **Compliance crosswalk** — SOC 2 · ISO 27001:2022 · NIST SSDF · SLSA.
 - **AI-governance crosswalk** — NIST AI RMF · ISO 42001 · OWASP.
 - **At scale** — secrets-at-scale, data governance + right-to-erasure, **ratification RBAC**, an audit-evidence
-  trail (SHA-bound promotion records), an **EXEC-BRIEF**, an **ROI model**, and an **org-rollout** guide.
+  trail (SHA-bound promotion records), and an **EXEC-BRIEF**. The **ROI model** and the **org-rollout**
+  guide ship too, but both are **frozen pre-adoption (2026-08-19)** — written ahead of any adopter and
+  carrying no shipped-value claim until real rollout evidence exists (ORG-ROLLOUT's Stage 1–4 maturity
+  model is exempt from the freeze and stays canonical).
 - **Operational security controls** (`docs/operations/`) — secrets-for-AI, egress control, break-glass.
 
 ## 27. The document set & templates
@@ -444,8 +451,8 @@ Sparkwright is a **document product** as much as a tooling one — the tangible 
   `SECURITY`, `EVAL-PLAN`, `AI-SYSTEM-CARD`, `AI-POLICY`, `AI-TRANSPARENCY-SIGNOFF`, `AI-ARTIFACT-LINEAGE`),
   sign-offs (`UAT-SIGNOFF`, `A11Y-SIGNOFF`), continuity/ops (`BIA`, `POSTMORTEM`, `WAIVER-REGISTER`), and setup
   (`PROJECT-CLAUDE`, `BACKLOG`, `TRACKER-SETUP`, `JIRA-SETUP`).
-- **Conformance suite** — ~140 executable checks that prove the reference implementations still satisfy their
-  contracts.
+- **Conformance suite** — the executable checks registered in `conformance/verify.sh` (its `Summary:` line
+  reports the live count) that prove the reference implementations still satisfy their contracts.
 
 ## 28. Honest ceilings & the maturity model
 
@@ -455,8 +462,10 @@ attestation it can't observe at runtime). In the kit's own words: the guard is a
 = git/CI); model tiering is declared-not-obeyed; the operate-loop-in-anger is not-yet-proven on a live
 production deploy; a green conformance run proves controls hold **and** that DR/resilience safety is
 *documented* — **not that those procedures were tested** (the aggregate's own footer says so). **Maturity is a
-stage, not a version:** `pre-adoption → release-candidate → adopted`; `v1.0.0` is earned when an external team
-ships through the loop. Named non-reference harnesses carry an honest maximum (a harness with no inline
+stage, not a version:** `pre-adoption → release-candidate → adopted`; the `adopted` stage is reached when an
+external team ships through the loop. The kit versions its own releases on its own cadence (currently
+`v3.218.0`), so adoption is a maturity stage, not a version reset. Named non-reference harnesses carry an
+honest maximum (a harness with no inline
 interception is "floor-verified," never overclaimed). A kit that tells you exactly what's enforced versus
 advisory versus declared is more trustworthy than one that claims magic.
 
