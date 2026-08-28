@@ -1,8 +1,10 @@
 # Accessibility Sign-off
 
-> **Template.** Delete this guidance line; fill the table — replace every `[replace: …]` / `[describe evidence: …]` / `[your name]` stub. The auditable evidence for the Definition-of-Done **Accessibility** item (`CLAUDE.md`). Designer (or the a11y owner) signs at Review. Keep it a structured record, not prose.
->
-> **Where it must live:** `conformance/a11y-obligation.sh` reads **`A11Y-SIGNOFF.md` at the repository root** — a change touching a user-facing UI surface requires it present **and filled**. Copy it elsewhere (`docs/sign-offs/`, the PR body) for history if you like, but the root file is the one the gate reads; filed only elsewhere, the gate reds with "absent".
+> **Template.** Delete this line; fill the table — replace every `[replace: …]` / `[describe evidence: …]` / `[your name]` stub.
+
+The auditable evidence for the Definition-of-Done **Accessibility** item (`CLAUDE.md`). Designer (or the a11y owner) signs at Review. Keep it a structured record, not prose.
+
+**Where it must live:** `conformance/a11y-obligation.sh` reads **`A11Y-SIGNOFF.md` at the repository root** — a change touching a user-facing UI surface requires it present **and filled**. Copy it elsewhere (`docs/sign-offs/`, the PR body) for history if you like, but the root file is the one the gate reads; filed only elsewhere, the gate reds with "absent".
 
 | Field | Value |
 |-------|-------|

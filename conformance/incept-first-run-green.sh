@@ -340,6 +340,93 @@ incept_date_tests() {  # appends to $st (0 = all good)
 }
 
 # ===========================================================================================
+# B3 (KIT-EVAL-2) — what incept DELIVERS must read as delivered, and `--mode` must change an artifact.
+# MEASURED at 712b9a6b, invisible to every existing check: (1) `# [Project Name] — Claude Project Guide`
+# led the first file an agent reads and the `> **Template.**` banner survived into five delivered files;
+# (2) lean and enterprise stamped RUNBOOKs differed in NOTHING. LIVE incept runs, never a template grep.
+# `[date]` is NOT swept — a live sentinel 5 checks grep for (dr/resilience/containment/cost/egress).
+_B3ART='CLAUDE.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md docs/governance/DECISIONS.md'
+# The residue verdict as a REUSABLE predicate over a tree: _res=0 clean, 1 dirty. Factored out so the
+# mutant can re-run THE CHECK ITSELF over a mutated tree (review R1: the first cut appended a banner
+# and then grepped for that banner — a tautology that would pass with the real sweep deleted).
+_b3sweep() {  # <tree> <loud|quiet> -> _res: 0 clean, 1 dirty
+  _res=0; _b3loud="$2"
+  _b3flag() { [ "$_b3loud" = loud ] && echo "selftest FAIL: $1"; _res=1; return 0; }
+  for _f in $_B3ART; do
+    [ -f "$1/$_f" ] || { _b3flag "incept did not deliver $_f"; continue; }
+    grep -q '\*\*Template\.\*\*' "$1/$_f" && _b3flag "stamped $_f still calls itself a template ('**Template.**' banner)"
+    grep -q '\[Project Name\]' "$1/$_f" && _b3flag "stamped $_f still carries the '[Project Name]' placeholder"
+    # R1 BLOCKER lock: a half-stripped banner leaves the file opening on the REMAINS of the blockquote
+    # — `> in this repo's branch protection...`. SCOPED to the first non-blank line after the `# ` title
+    # (review R2): a whole-file `^> [a-z]` sweep would false-red the day anyone hard-wraps a legitimate
+    # blockquote lower down, and the severed-banner case always surfaces exactly here.
+    case "$(awk 'NR > 1 && $0 != "" { print; exit }' "$1/$_f")" in
+      '>'*) _b3flag "stamped $_f opens on a dangling blockquote fragment right after its title" ;;
+    esac
+  done
+  grep -q '^\*\*Last Updated:\*\* \[date\]$' "$1/RUNBOOK.md" 2>/dev/null && _b3flag "stamped RUNBOOK.md says 'Last Updated: [date]' on the day it was created"
+  head -1 "$1/CLAUDE.md" 2>/dev/null | grep -q 'DateProbe' || _b3flag "stamped CLAUDE.md's TITLE lacks the project name"
+  return 0
+}
+incept_delivery_tests() {  # appends to $st (0 = all good)
+  make_pristine_export || { echo "selftest FAIL: delivery fixture setup — no pristine export tree (fail-closed)"; st=1; return 0; }
+  _b3bad() { echo "selftest FAIL: $1"; st=1; _res=1; }
+  # (a) NO TEMPLATE RESIDUE, no severed banner, + the header slots incept DOES know.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: delivery fixture (a) — no tree"; st=1; return 0; }
+  if run_incept "$_t"; then
+    _b3sweep "$_t" loud
+    if [ "$_res" = 0 ]; then echo "selftest PASS: stamped artifacts — all delivered, no banner, no '[Project Name]', no dangling blockquote, named title, stamped Last Updated"
+    else st=1; fi
+    # MUTANTS (non-vacuity) — re-run THE SWEEP over a mutated tree and require its verdict to FLIP.
+    # Two, because the sweep has two independent halves: a whole re-planted banner, and the severed
+    # CONTINUATION the R1 blocker actually produced (which the banner grep alone cannot see).
+    printf '> **Template.** replanted by the B3 mutant\n' >> "$_t/RUNBOOK.md"
+    _b3sweep "$_t" quiet
+    if [ "$_res" = 1 ]; then echo "selftest PASS: mutant 1 — a re-planted banner flips the sweep to RED (the banner grep is load-bearing)"
+    else echo "selftest FAIL: mutant 1 — the sweep stayed GREEN over a re-planted banner; it proves nothing"; st=1; fi
+    # Mutant 2 is SINGLE-CAUSE (review R2): the fragment starts with an UPPERCASE word, so the only
+    # leg that can catch it is the first-line-after-title case — not a lowercase grep as well. An
+    # over-determined fixture cannot tell you WHICH assertion is alive.
+    _b3m2=$(mktemp -d) && cp -R "$_t/." "$_b3m2/" && printf '# X — RUNBOOK\n\n> In this repo, a severed banner continuation\n' > "$_b3m2/RUNBOOK.md"
+    _b3sweep "$_b3m2" quiet
+    if [ "$_res" = 1 ]; then echo "selftest PASS: mutant 2 — a SEVERED banner continuation flips the sweep to RED (the R1 blocker cannot recur silently)"
+    else echo "selftest FAIL: mutant 2 — a file opening on a dangling '> ' fragment was scored CLEAN"; st=1; fi
+    rm -rf "$_b3m2"
+    # (A) DURABLE CONTENT SURVIVES THE STRIP (review R2). The banner strip must remove the instruction
+    # and NOTHING ELSE: the R2 regression deleted REQUIRED-CHECKS' enforcement-ceiling disclosure and
+    # every mention of what parses the file. Anchor the ceiling sentence, and hold both stamped files
+    # to template-minus-2 lines (the banner line + its trailing blank) so silent prose loss reds.
+    grep -q 'does not prevent an admin' "$_t/REQUIRED-CHECKS.md" || _b3bad "the enforcement-ceiling disclosure was stripped out of REQUIRED-CHECKS.md — the banner strip is eating durable operator content"
+    grep -q 'branch-protection' "$_t/REQUIRED-CHECKS.md" || _b3bad "stamped REQUIRED-CHECKS.md no longer says what parses it"
+    for _p in REQUIRED-CHECKS:REQUIRED-CHECKS DECISIONS:docs/governance/DECISIONS; do
+      _tpl="$REPO_ROOT/templates/$(printf '%s' "$_p" | cut -d: -f1)-TEMPLATE.md"
+      _out="$_t/$(printf '%s' "$_p" | cut -d: -f2).md"
+      _tl=$(grep -c '' "$_tpl" 2>/dev/null || echo 0); _ol=$(grep -c '' "$_out" 2>/dev/null || echo 0)
+      [ "$_ol" -eq $(( _tl - 2 )) ] || _b3bad "$_out is $_ol lines but its template is $_tl — expected $(( _tl - 2 )) (banner line + one blank). The strip removed more than the instruction."
+    done
+  else echo "selftest FAIL: delivery (a) — incept exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1; fi
+  rm -rf "$_t"
+  # (b) lean's RUNBOOK is LIGHTER; no marker leaks; enterprise still CARRIES the block (else vacuous);
+  #     and lean's TAIL survives — a range delete over an unbalanced marker runs to EOF (review R1).
+  _tl=$(fresh_export_tree) || { echo "selftest FAIL: delivery fixture (b/lean) — no tree"; st=1; return 0; }
+  _te=$(fresh_export_tree) || { echo "selftest FAIL: delivery fixture (b/ent) — no tree"; st=1; rm -rf "$_tl"; return 0; }
+  if run_incept "$_tl" --mode lean && run_incept "$_te" --mode enterprise; then
+    _res=0
+    _ll=$(grep -c '' "$_tl/RUNBOOK.md" 2>/dev/null || echo 0); _el=$(grep -c '' "$_te/RUNBOOK.md" 2>/dev/null || echo 0)
+    [ "$_ll" -lt "$_el" ] || _b3bad "lean RUNBOOK is $_ll lines, enterprise $_el — the mode changes no delivered artifact"
+    if grep -q 'mode:enterprise' "$_tl/RUNBOOK.md" || grep -q 'mode:enterprise' "$_te/RUNBOOK.md"; then
+      _b3bad "a stamped RUNBOOK leaks a 'mode:enterprise' marker — template plumbing shipped to the adopter"
+    fi
+    grep -q 'Resilience verification' "$_te/RUNBOOK.md" || _b3bad "the enterprise RUNBOOK lost the marked block — 'lean is shorter' has gone vacuous"
+    # TRUNCATION ANCHOR: the LAST section and the closing line of the template must both survive lean.
+    grep -q '^## 9\. Known issues' "$_tl/RUNBOOK.md" || _b3bad "the lean RUNBOOK lost its final section — a marker range ran to EOF (truncation, not curation)"
+    grep -q '^\*\*Resume check:\*\*' "$_tl/RUNBOOK.md" || _b3bad "the lean RUNBOOK lost its closing Resume check line — the tail was truncated"
+    [ "$_res" = 0 ] && echo "selftest PASS: lean stamps a LIGHTER RUNBOOK than enterprise ($_ll < $_el lines), no marker leaks, enterprise still CARRIES the block, lean's TAIL intact"
+  else echo "selftest FAIL: delivery (b) — a moded incept exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1; fi
+  rm -rf "$_tl" "$_te" "$INCEPT_PRISTINE"; INCEPT_PRISTINE=''
+}
+
+# ===========================================================================================
 # P1.2 (T3b) — the LAST TWO inception inputs incept never recorded: the CI PLATFORM (`--ci`) and the
 # DB ARCHETYPE (`--no-db`). Proven by LIVE incept runs, same as `--date` above.
 #
@@ -822,10 +909,36 @@ selftest() {
   #     these live incepts are orthogonal to it — running them twice would only cost CI time. ---
   if [ -z "${KW3_INNER:-}" ]; then
     incept_date_tests
+    incept_delivery_tests
     incept_stamp_tests
     incept_stack_tests
     incept_prune_tests
     codeowners_inert_tests
+  fi
+
+  # ── NON-VACUITY PROBE for the B3 delivery legs (CI non-vacuity shard 4 caught this) ────────────────
+  # WHY IT LIVES HERE, not beside the legs it guards. non-vacuity.sh neuters every `<var>=1` on lines
+  # BEFORE the `selftest()` marker; `_b3sweep` and `incept_delivery_tests` are defined above it, so ALL
+  # their accumulator writes — `_res=1` in `_b3flag`, `st=1` in `_b3bad` — are mutable. Under the sweep
+  # those legs still PRINTED their failures but could no longer FLIP the verdict, so `--selftest`
+  # exited 0 and the whole delivery block was vacuous (SURVIVED; APPLIED=85 vs the pristine 73).
+  #
+  # This probe drives the REAL predicate over a known-DIRTY tree and asserts the verdict flips. The
+  # assertion sits AFTER the marker, where the sweep cannot neuter `st=1` — so a neutered `_res=1`
+  # leaves `_res` at 0 here and this leg reddens `--selftest`, which is what KILLS the mutant. It is
+  # not a fixture-local grep: it is the same `_b3sweep` the delivery legs above depend on.
+  _b3vac=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the delivery non-vacuity probe"; st=1; }
+  if [ -n "${_b3vac:-}" ] && [ -d "$_b3vac" ]; then
+    printf '# X — RUNBOOK\n\n> In this repo, a severed banner continuation\n' > "$_b3vac/RUNBOOK.md"
+    _b3sweep "$_b3vac" quiet
+    if [ "${_res:-0}" = 1 ]; then
+      echo "selftest PASS: the delivery sweep returns DIRTY on a dirty tree — its FAIL path is live (non-vacuity)"
+    else
+      echo "selftest FAIL: the delivery sweep returned CLEAN on a tree with a missing CLAUDE.md AND a severed"
+      echo "  banner fragment — its accumulator no longer flips, so every delivery leg above is VACUOUS"
+      st=1
+    fi
+    rm -rf "$_b3vac"
   fi
 
   # --- ★ LOCK SELF-NEGATIVE (mandatory): neutralize the detector (predicate_holds -> always-true) and

@@ -1,8 +1,6 @@
 # Security Policy
 
-> **Template.** Copy to your project root as `SECURITY.md` (Inception scaffolds it).
-> Replace the `[security-contact]` placeholder with a real reporting channel before shipping.
-> Delete this blockquote once filled.
+> **Template.** Copy to your project root as `SECURITY.md` (Inception scaffolds it); replace the `[security-contact]` placeholder with a real reporting channel before shipping, then delete this line.
 
 ## Reporting a vulnerability
 

@@ -462,7 +462,13 @@ check_dir() {
               # REV M1 + SEC L1 (review round 1, item 5): freshness compares against the TRACKED
               # blob at HEAD, never the working-tree file (which can be gutted); an absent tracked
               # blob is its OWN verdict, never the STALE wording.
-              printf '%s\n' "FAIL: pre-push rung — tracked hooks/pre-push missing from HEAD — recopy the kit tree ($_gw_remedy)"; fail2=1
+              # B3: "missing from HEAD" has TWO causes needing OPPOSITE remedies. An unresolvable HEAD
+              # means no commits yet — "recopy the kit tree" there tells an adopter to overwrite a correct tree to cure a missing `git commit`.
+              if ! _gw_git -C "$dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+                printf '%s\n' "FAIL: pre-push rung — this repository has no commits yet, so there is no HEAD to compare hooks/pre-push against — commit the baseline first (git add -A && git commit -m 'chore: incept baseline'). Nothing is missing from your tree, so do not re-install or overwrite it"; fail2=1
+              else
+                printf '%s\n' "FAIL: pre-push rung — tracked hooks/pre-push missing from HEAD — recopy the kit tree ($_gw_remedy)"; fail2=1
+              fi
             else
               _gw_tracked=$(mktemp 2>/dev/null) || _gw_tracked=""
               if [ -z "$_gw_tracked" ]; then
@@ -714,6 +720,14 @@ selftest() {
     echo "selftest PASS: rung tracked-missing -> FAIL (its own verdict, not STALE)"
   else echo "selftest FAIL: rung tracked-missing should FAIL with its own verdict (rc=$rc): $out"; st=1; fi
 
+  # no-commits-RED (B3): the SAME branch has a second cause — an UNBORN HEAD on a never-committed tree,
+  # which is what an adopter hits first. Both directions asserted: the true cause NAMED and the harmful remedy ABSENT (a message saying both is still misleading).
+  d="$base/rung_nocommits"; mk_repo "$d" "$MATCHER" >/dev/null; git -C "$d" update-ref -d HEAD >/dev/null 2>&1 || true
+  if out=$(CI='' GITHUB_ACTIONS='' sh "$0" "$d" 2>&1); then rc=0; else rc=$?; fi
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'no commits yet' && ! printf '%s' "$out" | grep -q 'recopy'; then
+    echo "selftest PASS: rung on a HEAD-less tree -> FAIL naming 'no commits yet', never 'recopy'"
+  else echo "selftest FAIL: a HEAD-less tree must red with the no-commits cause and NO recopy advice (rc=$rc): $out"; st=1; fi
+
   # hooksPath-genuine-N/A (review round 1, item 8, SEC L2): core.hooksPath='.husky' on a MAIN
   # worktree is a genuine foreign redirect (nowhere near the default hooks dir) -> disclosed-skip
   # N/A, never judged — the case the linked+relative fall-through above must NOT swallow.
@@ -918,7 +932,7 @@ selftest() {
   else echo "selftest FAIL: --rung1-only on a hookless qualifying tree should exit 0 (rc=$rc): $out"; st=1; fi
 
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
-  echo "guard-wired --selftest: OK (full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
+  echo "guard-wired --selftest: OK (full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
 }
 

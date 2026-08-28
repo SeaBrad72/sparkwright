@@ -22,6 +22,8 @@
 > 1. §1 must be this document's **first** `## ` section. Only blank lines and the single `# ` title may precede it. Prose, a status line or a `### 0. …` heading above it renders *first*, and an entry contract an agent reads second is not an entry contract.
 > 2. Nothing between §1 and this heading — the region runs to here.
 > 3. **This heading must render visible text.** `## <!-- -->`, `## &nbsp;` and a zero-width-space heading are refused: they render as no heading at all, putting whatever follows flush under act 5.
+>
+> **Inception (Phase 0) is exempt from §1.** The five acts govern *loop* work — the slices that change a repo that already exists. `incept` is the one-time bootstrap that **creates** the repo and its control plane, so at that moment there is no board to claim a row on, no branch to carry trailers on, and no change class to derive. §1 binds from the **first feature branch** onward. See the "Inception exception" in `skills/design/SKILL.md` and `skills/build/SKILL.md`, and "Bootstrap order (incept-first)" in `DEVELOPMENT-PROCESS.md` §3.
 
 ---
 
@@ -89,7 +91,7 @@ This file holds only what is **specific to this project**.
 
 ### Harness neutrality
 
-> The harness (§harness-neutrality) is a concretization axis — choose it by *fit*, not by "it's the default." Record the fit reason in the `#### Harness fit rationale` field below; `conformance/harness-decision-integrity.sh` rejects bias-appeal and requires a cited fit dimension. Only `claude-code` is a **verified** harness (the kit self-hosts on it); `gemini` / `codex` / `cursor` are **experimental** — declared against the boundary contract, not exercised end-to-end (unproven), not "supported." Maturity cards + fit rubric: `docs/operations/harness-adapters.md`.
+> The harness (§harness-neutrality) is a concretization axis — choose it by *fit*, not by "it's the default." Record the fit reason in the `#### Harness fit rationale` field below; `conformance/harness-decision-integrity.sh` rejects bias-appeal and requires a cited fit dimension. Only `claude-code` is a **verified** harness (the kit self-hosts on it); `codex` is **floor-verified** (the universal-layer floor exercised end-to-end in a cold field test — no native bonus); `gemini` / `cursor` are **experimental** — declared against the boundary contract, not exercised end-to-end (unproven), not "supported." Maturity cards + fit rubric: `docs/operations/harness-adapters.md`.
 
 #### Harness fit rationale
 

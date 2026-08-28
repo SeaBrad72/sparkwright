@@ -153,9 +153,9 @@ verify:                                                       # filled by the ve
 ## Routing (closing the loop)
 
 A run that routes nothing is theater. After synthesis:
-- **Ledger-2** items become backlog entries (ranked) — **`BACKLOG.md` is the primary routing
-  destination; `docs/ROADMAP-KIT.md` is reserved for epic-scale items** (`D-240813-4.5`, panel #40 —
-  recording four consecutive panels of actual practice).
+- **Ledger-2** items become backlog entries (ranked) — **`BACKLOG.md` is the one routing
+  destination, epic-scale items included** (`D-240813-4.5`, panel #40, recording four consecutive
+  panels of actual practice; the former roadmap file was superseded in place, `D-240815-1`).
 - **Ledger-1** is recorded (the confidence set).
 - Any **guardrail / standards / process** change is proposed as a **human-ratified PR** — agents
   propose, humans ratify (`DEVELOPMENT-PROCESS.md`). Never silently re-plan or weaken a guardrail.

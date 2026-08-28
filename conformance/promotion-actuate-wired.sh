@@ -293,6 +293,127 @@ selftest() {
     printf '%s\n' 'DENY|cmd|printf x > scripts/promotion-verify.sh'
     printf '%s\n' 'DENY|path|scripts/promotion-verify.sh'
     printf '%s\n' 'ALLOW|cmd|sh scripts/promotion-verify.sh actuate --ref 260 --approved-sha abc'
+    # S6R (A1): the REST forms of the SAME bypass. `gh pr merge --admin` is IMPLEMENTED as
+    # PUT /repos/:o/:r/pulls/:n/merge, so denying only the porcelain flag left the plumbing open
+    # (reproduced live 2026-08-25: rc=0). Eight load-bearing negatives — revert the arm and all eight
+    # red. Six ALLOWs pin the read/poster/additive traffic the arm must NOT touch.
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/pulls/5/merge'
+    printf '%s\n' 'DENY|cmd|gh api --method POST repos/o/r/pulls/5/merge -f merge_method=squash'
+    printf '%s\n' 'DENY|cmd|gh api --method=put https://api.github.com/repos/o/r/pulls/5/merge'
+    printf '%s\n' 'DENY|cmd|gh api repos/o/r/pulls/5/merge -f merge_method=squash'
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/branches/main/protection --input p.json'
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r/rulesets/7'
+    printf '%s\n' 'DENY|cmd|gh api -X PATCH orgs/o/rulesets/7 -f enforcement=disabled'
+    printf '%s\n' 'ALLOW|cmd|gh api repos/o/r/pulls/5'
+    printf '%s\n' 'ALLOW|cmd|gh api -X GET repos/o/r/pulls/5/merge'
+    printf '%s\n' 'ALLOW|cmd|gh api repos/o/r/pulls/5/reviews -f event=APPROVE'
+    printf '%s\n' 'ALLOW|cmd|gh api graphql -f query=mutation{}'
+    printf '%s\n' 'ALLOW|cmd|gh api --paginate repos/o/r/rulesets'
+    # S6R round 2 — SPELLING VARIANTS OF THE SAME CALL. Round 1 matched the method with
+    # `[[:space:]=]+`, so every one of these reached the endpoint at rc=0 while the plain form denied.
+    # A deny arm that a quote or a missing space defeats is a deny arm for tidy attackers only.
+    printf '%s\n' 'DENY|cmd|gh api -XPUT repos/o/r/pulls/5/merge'
+    printf '%s\n' 'DENY|cmd|gh api -X "PUT" repos/o/r/pulls/5/merge'
+    printf '%s\n' "DENY|cmd|gh api -X 'PUT' repos/o/r/pulls/5/merge"
+    printf '%s\n' "DENY|cmd|gh api -X PUT 'repos/o/r/pulls/5/merge'"
+    printf '%s\n' 'DENY|cmd|gh api repos/o/r/pulls/5/merge?x=1 -X PUT'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/pulls/5/merge/'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o//r/pulls/5/merge'
+    # ORDER-INDEPENDENCE PIN: the method may follow the path. The scan is over the whole raw string,
+    # never a positional parse, and this cell is what stops someone "tidying" it into one.
+    printf '%s\n' 'DENY|cmd|gh api repos/o/r/pulls/5/merge --method PUT'
+    # FUSED SHORT BODY FLAG. `gh api` defaults to POST once a body is given, so this merges the PR
+    # with no method flag at all.
+    printf '%s\n' 'DENY|cmd|gh api repos/o/r/pulls/5/merge -fmerge_method=squash'
+    # --hostname (GHES) DENIES TODAY — the path is unchanged, only the host is. Pinned because round
+    # 1's comment wrongly listed it as uncovered; the cell is now the source of truth over the prose.
+    printf '%s\n' 'DENY|cmd|gh api --hostname ghe.example.com -X PUT repos/o/r/pulls/5/merge'
+    # PROTECTION IS DENY-BY-DEFAULT UNDER ANY MUTATING METHOD (round-2 inversion). Round 1 listed
+    # four weakening sub-resources and let every other sub-path through, so DELETE on
+    # required_status_checks — which removes every required context at once — was ALLOW.
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r/branches/main/protection/required_status_checks'
+    printf '%s\n' 'DENY|cmd|gh api -X PATCH repos/o/r/branches/main/protection/required_status_checks -f strict=false'
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r/branches/main/protection/required_status_checks/contexts -f contexts[]=x'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/branches/main/protection/required_status_checks/contexts'
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r/branches/main/protection/restrictions/users'
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r/branches/main/protection/enforce_admins'
+    # ...with EXACTLY ONE carve-out, and it is now genuinely load-bearing: POST (and only POST) to the
+    # additive contexts endpoint, which is `scripts/branch-protection-apply.sh --apply`'s own human-run
+    # call. Under the round-1 shape this cell passed because the whole sub-tree was unmatched; under
+    # the inversion it passes only because the carve-out exists. Flipping the method above (the PUT and
+    # DELETE cells) proves the carve-out is a method-scoped hole, not an open door.
+    printf '%s\n' 'ALLOW|cmd|gh api -X POST repos/o/r/branches/main/protection/required_status_checks/contexts -f contexts[]=x'
+    # THREE MORE TIER-3 ENDPOINT CLASSES (`D-240813-5`: force-push, privilege grant, delete).
+    # A default-branch swap moves protection off the branch everything merges to; a ref PATCH with
+    # force=true IS a force-push over the API; a collaborator PUT mints an admin.
+    printf '%s\n' 'DENY|cmd|gh api -X PATCH repos/o/r -f default_branch=evil'
+    printf '%s\n' 'DENY|cmd|gh api -X PATCH repos/o/r/git/refs/heads/main -f force=true'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/collaborators/mallory -f permission=admin'
+    # ALLOW pins for the relaxed method matcher: a QUOTED GET is still a read.
+    printf '%s\n' 'ALLOW|cmd|gh api -X "GET" repos/o/r/pulls/5/merge'
+    printf '%s\n' 'ALLOW|cmd|gh api repos/o/r/pulls/5 -X GET'
+    # ── ROUND 3 ─────────────────────────────────────────────────────────────────────────────────
+    # A QUOTE IS A JOINER, NOT A BOUNDARY. Round 2 normalized quotes to SPACES, which is exactly
+    # backwards: the shell CONCATENATES adjacent fragments, so `me''rge` runs as `merge` while the
+    # guard saw two short tokens and matched neither. Every one of these six was ALLOW at 5ada56d9
+    # and every one is a valid shell spelling of a denied call. Quotes and backslashes are now
+    # DELETED, not spaced.
+    printf '%s\n' "DENY|cmd|gh api -X PUT repos/o/r/pulls/5/me''rge"
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/pulls/5/me""rge'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT "repos/o/r/pulls/5/me"rge'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/pulls/5/mer\ge'
+    printf '%s\n' "DENY|cmd|gh api -X PUT repos/o/r/branches/ma'in'/protection"
+    printf '%s\n' "DENY|cmd|gh api -X DELETE repos/o/r/rul''esets/7"
+    # READ-SIDE FALSE POSITIVES, and they were the OWNER'S OWN A3 READ-BACK. Round 2 counted any
+    # whitespace-anchored `-f`/`-F` anywhere in the string as a request body, so `sort -f` and
+    # `grep -F` in a downstream pipe stage turned a read into a DENY. A body flag must carry a FIELD
+    # ASSIGNMENT to count. A guard that blocks the command the runbook tells you to run is a guard
+    # people learn to route around.
+    printf '%s\n' 'ALLOW|cmd|gh api repos/o/r/branches/main/protection | grep -F required_status_checks'
+    printf '%s\n' "ALLOW|cmd|gh api repos/o/r/rulesets | jq -r '.[].name' | sort -f"
+    printf '%s\n' 'ALLOW|cmd|gh api --paginate repos/o/r/rulesets > /tmp/r.json && grep -F name /tmp/r.json'
+    # THE CARVE-OUT WAS A PRESENCE TEST, NOT A POSITIONAL ONE: the contexts path appearing ANYWHERE
+    # in the string satisfied it, so a decoy in a filename opened the whole protection subtree under
+    # POST. Same class as round 1's inversion. The fix strips the contexts path and re-tests.
+    printf '%s\n' 'DENY|cmd|gh api -X POST repos/o/r/branches/main/protection --input /repos/o/r/branches/main/protection/required_status_checks/contexts'
+    # METHOD-SET WIDENING — do not rest safety on GitHub'"'"'s current routing table.
+    printf '%s\n' 'DENY|cmd|gh api -X DELETE repos/o/r/'
+    printf '%s\n' 'DENY|cmd|gh api -X PUT repos/o/r/git/refs/heads/main -f sha=x'
+    printf '%s\n' 'DENY|cmd|gh api repos/o/r/collaborators/mallory -f permission=admin'
+    # S6R SURVIVES A QUOTED WRAPPER — by luck, not design (its first probe sees the wrapped bytes).
+    # The incumbent --admin arm does NOT. Pin the property so it cannot regress silently; the general
+    # blindness is boarded as GUARD-QUOTED-WRAPPER-BLINDS-COMMAND-ARMS, not claimed closed here.
+    printf '%s\n' "DENY|cmd|sh -c 'gh api -X PUT repos/o/r/pulls/5/merge'"
+    # ── ROUND 4: THE OTHER HALF OF ROUND 3'"'"'S OWN FIX ────────────────────────────────────────────
+    # Round 3 deleted quotes/backslashes for the PATH but computed that string AFTER the method and
+    # body-flag probes, which kept reading raw $1. So the identical joiner trick walked through on the
+    # METHOD instead: every one of these was ALLOW at 670e9205, and `PUT /pulls/N/merge` takes an
+    # EMPTY BODY, so the first line is a complete admin merge with no body flag needed.
+    # The fix is not another regex — it is ONE normalisation, computed BEFORE ANY PROBE READS.
+    printf '%s\n' "DENY|cmd|gh api -X P''UT repos/o/r/pulls/5/merge"
+    printf '%s\n' 'DENY|cmd|gh api -X P""UT repos/o/r/pulls/5/merge'
+    printf '%s\n' 'DENY|cmd|gh api -X PU\T repos/o/r/pulls/5/merge'
+    printf '%s\n' "DENY|cmd|gh api --met''hod PUT repos/o/r/pulls/5/merge"
+    printf '%s\n' "DENY|cmd|gh api -X DEL''ETE repos/o/r"
+    printf '%s\n' "DENY|cmd|gh api -X P''ATCH repos/o/r/branches/main/protection"
+    # The BODY flag was split-able too (found at build, same root cause, same fix).
+    printf '%s\n' "DENY|cmd|gh api repos/o/r/pulls/5/merge -''f merge_method=squash"
+    # A quote-split GET must still SUPPRESS. Today that happens by accident — the method loop finds
+    # nothing, so the call is judged non-mutating and falls through. After the reorder it is a
+    # DELIBERATE `get` match. Pinned so the accident becomes a property.
+    printf '%s\n' "ALLOW|cmd|gh api -X G''ET repos/o/r/pulls/5/merge"
+    # Round-4 addendum (security seat), same root cause on the FLAG side. The first line is the one
+    # that matters: `-f 'merge_method=squash'` is how a HUMAN ORDINARILY QUOTES A SHELL ARGUMENT —
+    # not an evasion at all — and it was ALLOW. A deny arm that the normal spelling defeats is not a
+    # deny arm. The rest are the same joiner applied to the flag token itself.
+    printf '%s\n' "DENY|cmd|gh api -f 'merge_method=squash' repos/o/r/pulls/5/merge"
+    printf '%s\n' "DENY|cmd|gh api -f'merge_method=squash' repos/o/r/pulls/5/merge"
+    printf '%s\n' 'DENY|cmd|gh api -f"merge_method=squash" repos/o/r/pulls/5/merge'
+    printf '%s\n' 'DENY|cmd|gh api -f\merge_method=squash repos/o/r/pulls/5/merge'
+    printf '%s\n' "DENY|cmd|gh api -'X' PUT repos/o/r/pulls/5/merge"
+    printf '%s\n' 'DENY|cmd|gh api -X\ PUT repos/o/r/pulls/5/merge'
+    printf '%s\n' "DENY|cmd|gh api --'method' PUT repos/o/r/pulls/5/merge"
   } > "$CASES"
   if (
        set +e

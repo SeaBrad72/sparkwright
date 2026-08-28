@@ -99,6 +99,36 @@ _no_double_blank() {
   return 0
 }
 
+# _link_safety ROOT -> 0 iff no IGN entry is a markdown-link target from a doc the archive KEEPS.
+# Fail-closed: the archive is written to a file and its rc checked (a partial stream would otherwise
+# exempt every doc after the cut), and an empty listing is a FAIL, never a KEPT set that passes.
+# The KEPT set is HEAD's; `git grep` reads the worktree — an added-but-uncommitted kept doc is not
+# judged until it is committed (CI always runs on a commit; a local pre-push run may green early).
+# Only ever called in `||` / `if` context: under `set -e` a bare call would exit on the empty-grep
+# before the fail-closed message could print.
+_link_safety() {
+  _ls_root=$1; _ls_rc=0; _ls_kept=$(mktemp); _ls_ar=$(mktemp)
+  if ! ( cd "$_ls_root" && git archive --worktree-attributes HEAD ) > "$_ls_ar" 2>/dev/null; then
+    echo "FAIL: 'git archive HEAD' failed (no commits, or not a git repo) — the link-safety scan has no KEPT set"
+    rm -f "$_ls_kept" "$_ls_ar"; return 1
+  fi
+  tar -tf "$_ls_ar" 2>/dev/null | grep '\.md$' > "$_ls_kept"
+  if [ ! -s "$_ls_kept" ]; then
+    echo "FAIL: the archive lists no .md docs — the link-safety scan has no KEPT set"
+    rm -f "$_ls_kept" "$_ls_ar"; return 1
+  fi
+  rm -f "$_ls_ar"
+  for _ls_p in $IGN; do
+    _ls_bn=$(basename "$(printf '%s' "$_ls_p" | sed 's#/$##')")
+    # core.quotePath=false: git grep would C-quote a non-ASCII path ("docs/caf\303\251.md") while
+    # tar prints it raw, and the -Fx filter would drop a REAL kept->ignored hit (measured, review R1).
+    if ( cd "$_ls_root" && git -c core.quotePath=false grep -I -lE "\]\([^)]*${_ls_bn}" -- '*.md' 2>/dev/null ) | grep -Fxf "$_ls_kept" | grep -q .; then
+      echo "FAIL: export-ignored '$_ls_p' is a markdown-link target from a KEPT doc (would break check-links on the adopter tree)"; _ls_rc=1
+    fi
+  done
+  rm -f "$_ls_kept"; return "$_ls_rc"
+}
+
 run() {
   rc=0
   [ -f "$ROOT/.gitattributes" ] || { echo "FAIL: no .gitattributes"; return 1; }
@@ -108,33 +138,28 @@ run() {
     grep -Eq "^$(printf '%s' "$p" | sed 's/[.[\*^$/]/\\&/g')[[:space:]]+export-ignore" "$ROOT/.gitattributes" \
       || { echo "FAIL: .gitattributes missing export-ignore for $p"; rc=1; }
   done
-  # Fail-closed (M2 security review): every IGN entry must be a plain pathspec — no git-pathspec
-  # magic / regex-hostile chars — else `:(exclude)$entry` could make the block-(b) `git grep` error
-  # (rc>=2) and, because that grep's error is swallowed by `2>/dev/null | grep -q .`, the link scan
-  # would silently PASS. Reject unsafe entries up front so the exclude can never go dark.
+  # Fail-closed (M2 security review): every IGN entry must be a plain path — no regex-hostile
+  # chars — because its basename is interpolated into block (b)'s `git grep -lE` as an ERE; an
+  # invalid ERE errors (rc 2), that error is swallowed by `2>/dev/null`, the hit set is empty and
+  # the link scan would silently PASS. Reject unsafe entries up front so the scan can never go dark.
   for _i in $IGN; do
     case "$_i" in
-      *[!A-Za-z0-9/._-]*) echo "FAIL: IGN entry '$_i' has an unsafe char (breaks the link-safety :(exclude) pathspec)"; rc=1 ;;
+      *[!A-Za-z0-9/._-]*) echo "FAIL: IGN entry '$_i' has an unsafe char (would corrupt the link-safety git-grep ERE)"; rc=1 ;;
     esac
   done
   # (b) LINK-SAFETY: no export-ignored path is a `](…path…)` link target from a KEPT doc.
   # Match the BASENAME inside a markdown link `](…)` so relative forms (](../ROADMAP-KIT.md)) are
   # caught too, not just the full path. Files only (a dir basename like 'fixtures' is rarely a link
   # target and an over-match there is a safe false-positive).
-  # Scan KEPT docs ONLY: exclude the IGN set itself from the search, so a link BETWEEN two
-  # export-ignored docs (ignored→ignored, e.g. the verdict log → its run artifacts) does NOT
-  # false-fail — both ends are pruned together, so the link never reaches the adopter tree. Only a
-  # KEPT→ignored link breaks check-links there. The exclude tokens come from a variable, so the
-  # `:(exclude)` parens are literal (no shell re-parse after expansion); intentionally unquoted to
-  # word-split into one pathspec per IGN entry.
-  _ign_excl=""
-  for _i in $IGN; do _ign_excl="$_ign_excl :(exclude)$_i"; done
-  for p in $IGN; do
-    _bn=$(basename "$(printf '%s' "$p" | sed 's#/$##')")
-    if ( cd "$ROOT" && git grep -I -lE "\]\([^)]*${_bn}" -- '*.md' $_ign_excl 2>/dev/null | grep -q .); then
-      echo "FAIL: export-ignored '$p' is a markdown-link target from a KEPT doc (would break check-links on the adopter tree)"; rc=1
-    fi
-  done
+  # Scan KEPT docs ONLY, and KEPT means WHAT `git archive` SHIPS — the archive's own listing is the
+  # single truth. A link BETWEEN two export-ignored docs never reaches the adopter, so it is not a
+  # break. The previous form excluded the IGN list (21 hand-named entries) from the scan, while
+  # .gitattributes export-ignores 41 patterns: a doc under docs/governance/tier-a/ — ignored by the
+  # archive, absent from IGN — was scanned as KEPT and its link to an IGN target fired a false FAIL
+  # (#579, run 32915859644). Filtering hits by the archive listing closes the whole class: no path
+  # can be "kept" here and pruned there. (ADOPTER-EXPORT-WIRED-EXCLUDE-TRAILING-SLASH — the row's
+  # trailing-slash theory was measured false: git 2.48 honours `:(exclude)dir/`; the cause was IGN.)
+  _link_safety "$ROOT" || rc=1
   # (c) the export prunes + keeps correctly AND is CI-green (drive the real script)
   _t=$(mktemp -d); _d="$_t/exp"
   if ( cd "$ROOT" && sh scripts/adopter-export.sh "$_d" --profile typescript-node >/dev/null 2>&1 ); then
@@ -362,6 +387,37 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "adopter-export-wired --selftest: FAIL (KEPT→ignored markdown link not caught — exclusion over-broadened)"; sfail=1
   fi
   rm -rf "$_l" 2>/dev/null || true
+  # positive (the #579 shape): a directory export-ignored in .gitattributes but NOT in IGN carries a
+  # link to an IGN target. The archive prunes it, so it is NOT a kept->ignored link — must PASS.
+  # (Before this fix it FAILED: the scan's KEPT set was "everything minus IGN".) Load-bearing pair:
+  # the same tree with the link moved into a KEPT doc must FAIL, so the archive filter is proven to
+  # discriminate rather than blind.
+  _s=$(mktemp -d)
+  mkdir -p "$_s/docs" "$_s/hidden"
+  printf 'kept, clean\n' > "$_s/keep.md"
+  printf 'pruned doc linking [x](ROADMAP-KIT.md)\n' > "$_s/hidden/note.md"
+  printf '# roadmap\n' > "$_s/docs/ROADMAP-KIT.md"
+  : > "$_s/.gitattributes"
+  for _e in $IGN; do printf '%s export-ignore\n' "$_e" >> "$_s/.gitattributes"; done
+  printf 'hidden/ export-ignore\n' >> "$_s/.gitattributes"
+  ( cd "$_s" && git init -q && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm s >/dev/null 2>&1 ) || true
+  if ! _link_safety "$_s" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (a link inside an archive-pruned dir outside IGN was reported as KEPT->ignored — the #579 false FAIL)"; sfail=1
+  fi
+  printf 'kept doc linking [x](ROADMAP-KIT.md)\n' >> "$_s/keep.md"
+  ( cd "$_s" && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm s2 >/dev/null 2>&1 ) || true
+  if _link_safety "$_s" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (the archive filter blinded the scan to a real KEPT->ignored link)"; sfail=1
+  fi
+  # non-ASCII kept path (review R1): git grep C-quotes it unless core.quotePath=false; the archive
+  # listing is raw; a mismatch drops a REAL kept->ignored hit. Must FAIL.
+  printf 'kept, clean\n' > "$_s/keep.md"
+  printf 'kept doc linking [x](ROADMAP-KIT.md)\n' > "$_s/café.md"
+  ( cd "$_s" && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm s3 >/dev/null 2>&1 ) || true
+  if _link_safety "$_s" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (a KEPT->ignored link in a non-ASCII-named doc was dropped by path quoting)"; sfail=1
+  fi
+  rm -rf "$_s" 2>/dev/null || true
   # positive-blanket (item-6 teeth): a NEW, individually-unlisted docs/architecture/ doc must be
   # export-ignored by the BLANKET rule — and must LEAK if the blanket rule is stripped (load-bearing negative).
   _b=$(mktemp -d); _bx=$(mktemp -d); _bx2=$(mktemp -d)

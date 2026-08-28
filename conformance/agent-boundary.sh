@@ -32,6 +32,12 @@ RC=""
 FOR_STATE="NONE"
 FOR_CLASS="control-plane"
 FOR_GATE="control-plane-ratification"
+# --render-exit inputs. EMPTY BY DEFAULT, never 0: an omitted input must reach the error arm rather
+# than silently defaulting to the value that renders green (see render_exit's validation).
+RE_RC=""
+RE_APPROVALS=""
+RE_READABLE=""
+RE_FAILSAFE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --changed) CHANGED="${2:-}"; shift 2 ;;
@@ -51,7 +57,14 @@ while [ $# -gt 0 ]; do
     # reproduces the pre-existing ratification wording byte-for-byte, so ratification.yml and its profile
     # copy need no edit and no ratification-parity wiring token moves.
     --for-gate) FOR_GATE="${2:-control-plane-ratification}"; shift 2 ;;
-    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>] [--for-gate <gate>] | --check-complete --changed <file>" >&2; exit 2 ;;
+    # RATIFICATION-WAITING-IS-GREEN: the rc -> (exit, arm) DECISION. Deliberately its own mode with its
+    # own inputs — the workflow must not be able to reach the decision by any other spelling.
+    --render-exit) MODE="render-exit"; shift ;;
+    --rc) RE_RC="${2:-}"; shift 2 ;;
+    --approvals-seen) RE_APPROVALS="${2:-}"; shift 2 ;;
+    --reviews-readable) RE_READABLE="${2:-}"; shift 2 ;;
+    --failsafe) RE_FAILSAFE="${2:-}"; shift 2 ;;
+    *) echo "usage: agent-boundary.sh --changed <file> --ratified <0|1> [--require] | --selftest | --state | --conclusion <rc> [--for-state <label>] [--for-class <class>] [--for-gate <gate>] | --check-complete --changed <file> | --render-exit --rc <0|1|2> --approvals-seen <n> --reviews-readable <0|1> --failsafe <0|1>" >&2; exit 2 ;;
   esac
 done
 
@@ -174,6 +187,24 @@ EOF
 # The conclusion for rc=1 is EMPTY and must be OMITTED from the API call, not sent as "": a check-run
 # carrying any conclusion is `completed`, which is precisely the red we are removing.
 #
+# ⚠️ `status=` AND `conclusion=` ARE INERT SINCE 2026-08-27 (REQUIRED-CHECK-POSTED-VIA-API-NOT-MATCHED).
+# No caller posts a check-run any more — GitHub branch protection stopped MATCHING posted runs, so every
+# required context became a real JOB whose own conclusion is the verdict. The workflows now consume ONLY
+# `title=` and `summary=` from this mapping.
+#
+# ⚠️ AND THE COLOUR NOW DIFFERS BY GATE — do not read the sentence that used to sit here ("a WAITING
+# state renders RED like any other non-green job") as still covering all of them:
+#   `backlog-presence` / `ceremony-binding` — WAITING still renders RED, and this prose is the whole
+#      compensation: it is the only thing telling a human that the red means "nobody has recorded the
+#      GO yet" rather than "the build is broken".
+#   `control-plane-ratification` — WAITING renders GREEN with a notice since 2026-08-28
+#      (RATIFICATION-WAITING-IS-GREEN): the merge is blocked by branch protection's review
+#      requirement, so the check explains rather than duplicates. Its rc 1 prose below says so, and
+#      the (exit, arm) decision behind it is render_exit's, not this mapping's.
+# The two keys are
+# kept (not deleted) because they are the tested record of the colour contract and cost nothing; treat
+# them as documentation, and never re-wire a poster to them without re-reading why the last one died.
+#
 # PURE: no env, no filesystem, no network. This is the half that can be unit-tested; whether GitHub
 # honours the status it is handed is a live question, and only a live probe can answer it.
 # WAITING-GATES-RENDER-AS-RED (design §9.2). THE DECLARED GATE SET — the family-completeness source.
@@ -234,7 +265,7 @@ conclusion_map() {
       ;;
     1)
       _title="Awaiting the DESIGN GATE (or the GOVERNANCE GATE, for a governance-record change) — a human must record the GO before this change can merge"
-      _summary="What changed: a ${_cm_class} change, which may not enter merge without a recorded gate approval. This gate is WAITING, not failing — it is a governance merge-gate, NOT a build failure, and no test failed. Nothing is broken: no GO record scoped to this pull request exists yet, which is the normal state of a change that has not been approved yet. It will stay yellow (and keep blocking the merge) until a human acts. To proceed: CHOOSE THE LANE THAT DESCRIBES THIS CHANGE. Feature-shaped work (the usual case) takes the DESIGN lane: (1) record the GO with 'sh scripts/promotion-verify.sh record --gate design --scope PR-<n> --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path>'. A PURE governance-record change — a meta-control panel sitting and its bookkeeping, which has no design of its own — takes the GOVERNANCE lane instead: record '--gate governance' with '--basis <the meta-control artifact>', per the copyable form in docs/operations/meta-control.md; that lane also requires the change-set to touch nothing outside the governance file set, so routed cures belong in their own slices. Do NOT point a design GO at a document this change merely amends — that is the retired workaround. Then, either lane: (2) publish it with 'git push origin refs/notes/promotions' — the gate reads the published ledger, so an unpublished record leaves this check yellow; (3) RE-RUN THIS CHECK. Steps 1 and 2 trigger no workflow on their own — recording and pushing notes does not re-run CI — so re-run the job or push a commit, or this check stays yellow forever while you wait for it. More: docs/governance/promotion-contract.md."
+      _summary="What changed: a ${_cm_class} change, which may not enter merge without a recorded gate approval. This gate is WAITING, not failing — it is a governance merge-gate, NOT a build failure, and no test failed. Nothing is broken: no GO record scoped to this pull request exists yet, which is the normal state of a change that has not been approved yet. It shows RED (and keeps blocking the merge) until a human acts — red here means WAITING, not broken. To proceed: CHOOSE THE LANE THAT DESCRIBES THIS CHANGE. Feature-shaped work (the usual case) takes the DESIGN lane: (1) record the GO with 'sh scripts/promotion-verify.sh record --gate design --scope PR-<n> --approved-sha <design-commit> --approved-by <human> --basis <design-doc-path>'. A PURE governance-record change — a meta-control panel sitting and its bookkeeping, which has no design of its own — takes the GOVERNANCE lane instead: record '--gate governance' with '--basis <the meta-control artifact>', per the copyable form in docs/operations/meta-control.md; that lane also requires the change-set to touch nothing outside the governance file set, so routed cures belong in their own slices. Do NOT point a design GO at a document this change merely amends — that is the retired workaround. Then, either lane: (2) publish it with 'git push origin refs/notes/promotions' — the gate reads the published ledger, so an unpublished record leaves this check red; (3) RE-RUN THIS CHECK. Steps 1 and 2 trigger no workflow on their own — recording and pushing notes does not re-run CI — so re-run the job or push a commit, or this check stays red forever while you wait for it. More: docs/governance/promotion-contract.md."
       ;;
     *)
       _title="GATE error — the recorded GO is defective, or the gate could not evaluate"
@@ -255,7 +286,7 @@ conclusion_map() {
       ;;
     1)
       _title="Awaiting ratification — a human must approve before this control-plane change can merge"
-      _summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: control-plane. Why: control-plane changes must be ratified by a human before merge. This gate is WAITING, not failing — it is a §13 governance merge-gate, NOT a build failure, and no test failed. It will stay yellow (and keep blocking the merge) until a human acts. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR — this check re-runs on the approval and turns green as RATIFIED-BY-SECOND-REVIEWER; or (b) solo — merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
+      _summary="What changed: a control-plane change (the kit's own guardrails / CI / standards / governance). Change-class: control-plane. Why: control-plane changes must be ratified by a human before merge. This gate is WAITING, not failing — it is a §13 governance merge-gate, NOT a build failure, and no test failed. This check is GREEN while waiting (since 2026-08-28): what blocks the merge is the branch protection review requirement, which does not clear until a human approves; on that approval this gate re-runs and confirms the ratification as RATIFIED-BY-SECOND-REVIEWER. Current SoD state: SOLO-ADMIN-OVERRIDE-LOGGED — no non-author approval is present yet, so the only merge path is a logged solo admin-override (honestly weaker than a second reviewer). To proceed: (a) get a non-author approval on this PR; or (b) solo — merge via 'gh pr merge --squash --admin --delete-branch'; GitHub logs the override as the audit trail. More: docs/operations/review-lane.md."
       ;;
     *)
       _title="Gate error — could not evaluate the control-plane diff"
@@ -338,7 +369,9 @@ changeset_at_api_cap() {
 # Counts entries itself so a caller cannot hand in a stale figure.
 #
 # EXIT SPACE IS 0 or 2 — NEVER 1. `1` in this file means "unratified control-plane change", which
-# conclusion_map renders as YELLOW "Awaiting ratification — a human must approve" and whose summary
+# conclusion_map renders as "Awaiting ratification — a human must approve" (which the ratification job
+# shows GREEN-with-a-notice while no approval exists, and RED once an approval is present that still
+# does not ratify — RATIFICATION-WAITING-IS-GREEN, 2026-08-28) and whose summary
 # tells the human to `gh pr merge --squash --admin`. A truncated change-set is NOT ratifiable: nobody,
 # human or agent, knows what is in it. Returning 1 here would be a fail-OPEN dressed as fail-closed.
 # NOTE the name: `complete` is a bash builtin and undefined in POSIX sh, so shellcheck SC3044 flags a
@@ -382,6 +415,43 @@ run() {
   _paths=$(cat "$CHANGED")
   _union=$(adapter_union)
   if boundary_decide "$_paths" "$RATIFIED" "$_union"; then exit 0; else exit 1; fi
+}
+
+# ── render_exit: THE RATIFICATION JOB'S rc -> (exit, arm) DECISION, SINGLE-SOURCED ──────────────────
+# (RATIFICATION-WAITING-IS-GREEN, owner ruling 2026-08-28; review round 1, finding 3.)
+# WHY HERE AND NOT IN THE YAML. The first build wrote it inline in both workflows under TEXT anchors,
+# and the reviewer inverted it twice without touching one anchored literal (`_exit=1` inside the
+# waiting arm; the condition widened with `|| [ 1 = 1 ]`). A policy in un-unit-testable YAML can only
+# be locked by its spelling — so it lives in a `--selftest`-driven function that the workflows CALL.
+# THE CONTRACT (stdout, one line): `exit=<0|1> arm=<ratified|waiting|defective|error>`
+#   ratified  0 — rc 0: ratified, or no control-plane path in the diff.
+#   waiting   0 — rc 1, NO approval seen, review list READABLE. The healthy state; green because
+#                 branch protection's `required_approving_review_count >= 1` blocks server-side.
+#   defective 1 — an approval is present that does not ratify · the review list was UNREADABLE ·
+#                 the change-class FAIL-SAFED instead of being derived.
+#   error     1 — rc 2, or an input this function cannot trust.
+# ⚠️ `reviews_readable` IS SEPARATE FROM THE COUNT (round 1, BLOCKER). A failed reviews read leaves the
+# approver list EMPTY, so the count is 0 — indistinguishable from "nobody has approved yet", the GREEN
+# arm — while the forge's review requirement may ALREADY be satisfied, merging with the non-author /
+# seat property never evaluated. "No one approved" and "we could not find out" cannot share an answer.
+# ⚠️ `failsafe` REDS REGARDLESS OF rc AND COUNT (round 1, finding 4): a fail-safed class is gate
+# DEGRADATION, not a slow human, and its colour must not depend on an unrelated human act.
+render_exit() {  # <rc> <approvals_seen> <reviews_readable> <failsafe> -> prints the contract line
+  _re_rc=$1; _re_ap=$2; _re_rd=$3; _re_fs=$4
+  # VALIDATE FIRST, AND ROUTE A BAD INPUT TO `error`, NEVER TO A DEFAULT: a caller's `${VAR:-0}` would
+  # make an UNSET count read as "no approvals" — the green arm, the same fail-open one layer down.
+  case "$_re_rc" in 0|1|2) ;; *) echo "exit=1 arm=error"; return 0 ;; esac
+  case "$_re_rd" in 0|1) ;; *) echo "exit=1 arm=error"; return 0 ;; esac
+  case "$_re_fs" in 0|1) ;; *) echo "exit=1 arm=error"; return 0 ;; esac
+  # A count is a run of digits and nothing else: '', ' ', '1x', '-1' and 'x' all reach `error`.
+  case "$_re_ap" in ''|*[!0-9]*) echo "exit=1 arm=error"; return 0 ;; esac
+  [ "$_re_rc" = 2 ]  && { echo "exit=1 arm=error";     return 0; }
+  [ "$_re_fs" = 1 ]  && { echo "exit=1 arm=defective"; return 0; }
+  [ "$_re_rc" = 0 ]  && { echo "exit=0 arm=ratified";  return 0; }
+  if [ "$_re_ap" = 0 ] && [ "$_re_rd" = 1 ]; then
+    echo "exit=0 arm=waiting"; return 0
+  fi
+  echo "exit=1 arm=defective"
 }
 
 selftest() {
@@ -782,6 +852,61 @@ README.md" 0 "ordinary diff, unratified -> PASS"
     echo "selftest FAIL: could not mktemp for the union-lib precondition legs"; st=1
   fi
 
+  # ── render_exit: THE WHOLE STATE TABLE, DRIVEN (review round 1, finding 3). This is the lock that
+  # replaced text anchors on the workflows' inline chain — both reviewer mutants kept every anchored
+  # literal and inverted the behaviour. Behaviour is asserted here, in-process AND through the CLI.
+  re_chk() {  # want_exit want_arm rc approvals readable failsafe label
+    _e=$1; _a=$2; _r=$3; _p=$4; _d=$5; _f=$6; _l=$7
+    _got=$(render_exit "$_r" "$_p" "$_d" "$_f")
+    if [ "$_got" = "exit=$_e arm=$_a" ]; then
+      echo "selftest PASS: render_exit — $_l -> $_got"
+    else
+      echo "selftest FAIL: render_exit — $_l want 'exit=$_e arm=$_a' got '$_got'"; st=1
+    fi
+  }
+  #        exit arm        rc ap rd fs   label
+  re_chk    0 ratified      0  0  1  0 "rc 0 (ratified / nothing to ratify) -> green"
+  re_chk    0 ratified      0  2  1  0 "rc 0 with approvals present -> still green"
+  re_chk    0 waiting       1  0  1  0 "rc 1, no approval yet, reviews readable -> GREEN (the ruling)"
+  re_chk    1 defective     1  1  1  0 "rc 1 WITH an approval that does not ratify -> RED"
+  re_chk    1 defective     1  9  1  0 "…any approval count >= 1 reaches the same arm"
+  # ★ THE ROUND-1 BLOCKER, PINNED: an unreadable list looks like "nobody approved yet" to a count.
+  re_chk    1 defective     1  0  0  0 "rc 1, count 0 but the review list was UNREADABLE -> RED, not waiting"
+  re_chk    1 error         2  0  1  0 "rc 2 (gate could not evaluate) -> RED, error arm"
+  re_chk    1 error         2  0  0  1 "rc 2 outranks every other input"
+  # ★ A FAIL-SAFED CLASS IS GATE DEGRADATION, so it reds on its own (round 1, finding 4).
+  re_chk    1 defective     1  0  1  1 "rc 1 + FAIL-SAFED class, no approvals -> RED (not waiting)"
+  re_chk    1 defective     0  0  1  1 "rc 0 + FAIL-SAFED class -> RED (never a green 'nothing to ratify')"
+  # ★ UNTRUSTWORTHY INPUTS REACH `error`, NEVER A DEFAULT (round 1, finding 6).
+  re_chk    1 error         1 ''  1  0 "an EMPTY approvals count -> error, never 'no approvals'"
+  re_chk    1 error         1 'x' 1  0 "a non-numeric approvals count -> error"
+  re_chk    1 error         1 '-1' 1 0 "a negative approvals count -> error"
+  re_chk    1 error         1  0 ''  0 "an EMPTY reviews-readable -> error"
+  re_chk    1 error         1  0  2  0 "an out-of-range reviews-readable -> error"
+  re_chk    1 error         1  0  1 '' "an EMPTY failsafe -> error"
+  re_chk    1 error        '' 0  1  0 "an EMPTY rc -> error"
+  re_chk    1 error        '3' 0  1  0 "an rc outside the 0/1/2 contract -> error"
+  # THE CLI SURFACE, driven separately: the workflows call the FLAGS, and a mode that decides right
+  # in-process while flag parsing drops a value is the skew that would matter.
+  _recli=$(sh "$0" --render-exit --rc 1 --approvals-seen 0 --reviews-readable 1 --failsafe 0) && _recr=0 || _recr=$?
+  if [ "$_recli" = "exit=0 arm=waiting" ] && [ "$_recr" = 0 ]; then
+    echo "selftest PASS: --render-exit CLI -> 'exit=0 arm=waiting' at process exit 0"
+  else
+    echo "selftest FAIL: --render-exit CLI got '$_recli' at process exit $_recr"; st=1
+  fi
+  _recli=$(sh "$0" --render-exit --rc 1 --approvals-seen 1 --reviews-readable 1 --failsafe 0)
+  case "$_recli" in
+    "exit=1 arm=defective") echo "selftest PASS: --render-exit CLI reds an approval that does not ratify" ;;
+    *) echo "selftest FAIL: --render-exit CLI defective leg got '$_recli'"; st=1 ;;
+  esac
+  # NO INPUTS AT ALL -> the error arm, never a green. It is what a broken env binding sends, and the
+  # workflows' unrecognised-arm fallback calls the mode this way ON PURPOSE for its fail-closed answer.
+  _recli=$(sh "$0" --render-exit)
+  case "$_recli" in
+    "exit=1 arm=error") echo "selftest PASS: --render-exit with NO inputs -> error arm (never green)" ;;
+    *) echo "selftest FAIL: --render-exit with no inputs got '$_recli'"; st=1 ;;
+  esac
+
   [ "$st" = "0" ] && echo "agent-boundary --selftest: OK"
   return "$st"
 }
@@ -825,6 +950,10 @@ case "$MODE" in
   selftest) selftest; exit $? ;;
   state) state ;;
   conclusion) conclusion ;;
+  # ALWAYS EXIT 0 — the VERDICT is on stdout, not in this process's status. A non-zero here would be
+  # read by the caller's `set -e` as the gate's answer, which is the one thing this mode must not do:
+  # it decides what the CALLER's exit should be, and says so in words the caller then obeys.
+  render-exit) render_exit "$RE_RC" "$RE_APPROVALS" "$RE_READABLE" "$RE_FAILSAFE"; exit 0 ;;
   complete) check_completeness ;;
   *) run ;;
 esac

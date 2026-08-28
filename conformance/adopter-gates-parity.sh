@@ -64,14 +64,18 @@ assert_wired() {  # <src-file>
   _wcode=$(grep -v '^[[:space:]]*#' "$1")
   printf '%s\n' "$_wcode" | grep -qF 'previous_filename' || { echo "FAIL: $1 derives its changed-file listing without projecting 'previous_filename' — a rename's SOURCE path is dropped, so a renamed control-plane/board path would be invisible to backlog-presence"; _w=1; }
   printf '%s\n' "$_wcode" | grep -qF 'test("\n")' || { echo "FAIL: $1 derives its changed-file listing with no newline guard — a crafted filename could split one API entry into two lines that each classify separately"; _w=1; }
-  printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --conclusion' || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --conclusion' — the gates would not map their verdicts to a check-run"; _w=1; }
+  printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --conclusion' || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --conclusion' — the gates would carry no WAITING prose, and since the poster deletion (2026-08-27) that prose is the ONLY thing distinguishing 'a human has not approved yet' from 'the build is broken': both render as a red required check"; _w=1; }
   printf '%s\n' "$_wcode" | grep -qF 'agent-boundary.sh --check-complete' || { echo "FAIL: $1 does not invoke 'agent-boundary.sh --check-complete' — the backlog-presence gate would not notice a changed-file listing TRUNCATED at the forge's API cap"; _w=1; }
-  # CODE-based anchor, not a comment (comment-stripped code cannot see prose): the WAITING check-run
-  # must be posted through an `if [ -n "$concl" ]` guard, never unconditionally — an unconditional
-  # post risks sending conclusion="" for the waiting state, which COMPLETES the check-run (the exact
-  # red this design removes; ratification.yml documents the same trap at its own posting site).
-  printf '%s\n' "$_wcode" | grep -qF 'if [ -n "$concl" ]; then' || { echo "FAIL: $1 has no conclusion-omission guard (no \`if [ -n \"\$concl\" ]; then\` before posting) — a WAITING check-run risks being posted with conclusion=\"\", which COMPLETES it (the red this design removes)"; _w=1; }
-  printf '%s\n' "$_wcode" | grep -qF 'concl="neutral"' || { echo "FAIL: $1 does not post a 'neutral' conclusion — the Δ1 observe-mode dial (loop-state's day-one non-blocking colour) is missing"; _w=1; }
+  # CODE-based anchor, not a comment (comment-stripped code cannot see prose). REPLACED ON 2026-08-27
+  # (REQUIRED-CHECK-POSTED-VIA-API-NOT-MATCHED): this used to require an `if [ -n "$concl" ]` guard
+  # around the POST, because an unconditional post sends conclusion="" for the WAITING state and that
+  # COMPLETES the check-run, rendering it red. There is no post any more — branch protection stopped
+  # matching API-posted runs, so every gate became a real job whose OWN CONCLUSION is the verdict.
+  # What must not silently vanish now is the LAST LINE: a job that computes an rc and then exits 0
+  # regardless satisfies a required context while enforcing nothing — a green gate, which is a
+  # strictly worse failure than the red-while-waiting this design accepts.
+  printf '%s\n' "$_wcode" | grep -qF '[ "$rc" = 0 ] || exit 1' || { echo "FAIL: $1 has no job that ENDS ON THE GATE'S rc (no \`[ \"\$rc\" = 0 ] || exit 1\`) — the required contexts are job conclusions now, so a gate that computes a verdict and exits 0 anyway is green and enforces nothing"; _w=1; }
+  printf '%s\n' "$_wcode" | grep -qE 'checks:[[:space:]]+write' && { echo "FAIL: $1 grants 'checks: write' — nothing posts a check-run since 2026-08-27, and that scope lets a job post a run of ANY name on ANY sha (including control-plane-ratification) from a job that executes the PR's own scripts"; _w=1; }
   # B2 Δ4(ii) / reviewer I4 — THE JUDGMENT-SURFACE RENDER IS PART OF THE GATE. ceremony-binding's
   # disposition has two halves: the gate REFUSES an unrecorded design GO, and the matched record is
   # RENDERED at the judgment surface so a minted one walks into the reviewer's field of view before
@@ -160,7 +164,12 @@ assert_loop_state_active() {  # <src-file>
   # drifted to enforce. Comment-stripping first closes that: only a literal, live-code default counts.
   _wcode=$(grep -v '^[[:space:]]*#' "$1")
   printf '%s\n' "$_wcode" | grep -qF 'LOOP_STATE_MODE: observe' || { echo "FAIL: $1 does not default LOOP_STATE_MODE to observe — the day-one non-blocking dial is missing or mis-defaulted"; _l=1; }
-  printf '%s\n' "$_wcode" | grep -qF 'concl="neutral"' || { echo "FAIL: $1 does not post concl=\"neutral\" for the observe branch"; _l=1; }
+  # THE OBSERVE BRANCH MUST BE UNCONDITIONALLY NON-BLOCKING. It used to be expressed as a posted
+  # `conclusion: neutral` (the 2026-08-06 probe's measured colour); with the poster gone the same
+  # promise is an exit code — the job runs the gate, prints its verdict, and ALWAYS exits 0. Anchored
+  # on the escape line itself, because that is the one character-for-character difference between a
+  # nudge and a day-one permanent red on every adopter PR.
+  printf '%s\n' "$_wcode" | grep -qF '[ "$mode" = enforce ] || exit 0' || { echo "FAIL: $1 has no unconditional observe-mode pass (no \`[ \"\$mode\" = enforce ] || exit 0\`) — in observe mode loop-state must ALWAYS exit 0, or an adopter's first PR reds on a gate that is not supposed to be enforcing yet"; _l=1; }
   # The gate itself (loop-state.sh --head) must still be INVOKED (never fully commented out) — Δ1
   # ships ACTIVE, not the commented-block fallback.
   printf '%s\n' "$_wcode" | grep -qF 'loop-state.sh --head' || { echo "FAIL: $1 does not invoke loop-state.sh --head — the gate is not ACTIVE (looks like the commented-out fallback form, which is not what the 2026-08-06 probe ruled for)"; _l=1; }
@@ -214,19 +223,19 @@ selftest() {
     {
       printf '# COPY & ADAPT — reference adopter-gates workflow (Sparkwright)\n'
       printf 'env:\n  LOOP_STATE_MODE: observe\n'
-      printf 'jobs:\n  gate-backlog-presence:\n    steps:\n'
+      printf 'jobs:\n  backlog-presence:\n    steps:\n'
       printf '      - run: gh api "repos/x/pulls/1/files" -q %s[.[] | .filename, (.previous_filename // empty)] | if any(test("\\n")) then error("nl") else .[] end%s > /tmp/changed.txt\n' "'" "'"
       printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
       printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
-      printf '      - run: if [ -n "$concl" ]; then true; fi\n'
-      printf '  gate-loop-state:\n    steps:\n'
+      printf '      - run: [ "$rc" = 0 ] || exit 1\n'
+      printf '  loop-state:\n    steps:\n'
       printf '      - run: sh conformance/loop-state.sh --head "$SHA"\n'
-      printf '      - run: status="completed"; concl="neutral"\n'
+      printf '      - run: [ "$mode" = enforce ] || exit 0\n'
       # B2 Δ4(ii) + Δ3: the judgment-surface render is part of the wired contract, so the CLEAN
       # fixture must carry it — otherwise this fixture asserts a gap the real shipped source does
       # not have. Post-Δ3 the wired shape is an INVOCATION of the single-sourced render (plus the
       # two-key gate call), never an inline fence/match copy.
-      printf '  gate-ceremony-binding:\n    steps:\n'
+      printf '  ceremony-binding:\n    steps:\n'
       printf '      - run: sh conformance/ceremony-binding.sh --scope "PR-$PR_NUMBER" --head-branch "$HEAD_REF"\n'
       printf '      - run: sh conformance/ceremony-binding.sh --render --scope "PR-$PR_NUMBER" --head-branch "$HEAD_REF" >> "$GITHUB_STEP_SUMMARY"\n'
     } > "$1"
@@ -254,7 +263,7 @@ selftest() {
     printf '      - run: gh api "repos/x/pulls/1/files" -q %s[.[] | .filename, (.previous_filename // empty)] | if any(test("\\n")) then error("nl") else .[] end%s > /tmp/changed.txt\n' "'" "'"
     printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
     printf '      # - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
-    printf '      # - run: if [ -n "$concl" ]; then true; fi\n'
+    printf '      # - run: [ "$rc" = 0 ] || exit 1\n'
   } > "$base/hollow.yml"
   if assert_wired "$base/hollow.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2b — a source with COMMENTED-OUT wiring passed assert_wired (hollow gate)"; st=1; else echo "OK: commented-out wiring -> RED (assert_wired comment-strip)"; fi
 
@@ -265,8 +274,8 @@ selftest() {
     printf '      - run: gh api "repos/x/pulls/1/files" -q %s.[].filename%s > /tmp/changed.txt\n' "'" "'"
     printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
     printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
-    printf '      - run: if [ -n "$concl" ]; then true; fi\n'
-    printf '      - run: concl="neutral"\n'
+    printf '      - run: [ "$rc" = 0 ] || exit 1\n'
+    printf '      - run: [ "$mode" = enforce ] || exit 0\n'
   } > "$base/collapsing.yml"
   if assert_wired "$base/collapsing.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2c — a source deriving its listing WITHOUT previous_filename passed assert_wired"; st=1; else echo "OK: listing without previous_filename -> RED (T2 anchor is load-bearing)"; fi
 
@@ -277,8 +286,8 @@ selftest() {
     printf '      - run: gh api "repos/x/pulls/1/files" -q %s.[] | .filename, (.previous_filename // empty)%s > /tmp/changed.txt\n' "'" "'"
     printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
     printf '      - run: sh conformance/agent-boundary.sh --conclusion "$rc"\n'
-    printf '      - run: if [ -n "$concl" ]; then true; fi\n'
-    printf '      - run: concl="neutral"\n'
+    printf '      - run: [ "$rc" = 0 ] || exit 1\n'
+    printf '      - run: [ "$mode" = enforce ] || exit 0\n'
   } > "$base/noguard.yml"
   if assert_wired "$base/noguard.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2d — a source projecting previous_filename but with NO newline guard passed assert_wired"; st=1; else echo "OK: listing without a newline guard -> RED (guard anchor is load-bearing)"; fi
 
@@ -287,15 +296,25 @@ selftest() {
   grep -v 'check-complete' "$base/nocap.yml" > "$base/nocap.yml.tmp" && mv "$base/nocap.yml.tmp" "$base/nocap.yml"
   if assert_wired "$base/nocap.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2e — a source with no --check-complete call passed assert_wired"; st=1; else echo "OK: listing with no truncation check -> RED (A4 anchor is load-bearing)"; fi
 
-  # 2f. LOAD-BEARING NEGATIVE for the conclusion-omission guard.
-  mk_clean_src "$base/noomit.yml"
-  grep -v 'if \[ -n "\$concl" \]; then' "$base/noomit.yml" > "$base/noomit.yml.tmp" && mv "$base/noomit.yml.tmp" "$base/noomit.yml"
-  if assert_wired "$base/noomit.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2f — a source with no conclusion-omission guard passed assert_wired"; st=1; else echo "OK: no conclusion-omission guard -> RED"; fi
+  # 2f. LOAD-BEARING NEGATIVE for the verdict-is-the-exit anchor (2026-08-27, replacing the retired
+  #     conclusion-omission guard): a source that computes a verdict and never exits on it is a gate
+  #     that is green while enforcing nothing — the fail-open the poster's deletion could have opened.
+  mk_clean_src "$base/noexit.yml"
+  grep -v 'rc" = 0 \] || exit 1' "$base/noexit.yml" > "$base/noexit.yml.tmp" && mv "$base/noexit.yml.tmp" "$base/noexit.yml"
+  if assert_wired "$base/noexit.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2f — a source whose gates never exit on the rc passed assert_wired"; st=1; else echo "OK: no exit-on-rc -> RED (the verdict-is-the-exit anchor is load-bearing)"; fi
 
-  # 2g. LOAD-BEARING NEGATIVE for the Δ1 neutral anchor.
+  # 2f2. LOAD-BEARING NEGATIVE for the no-checks:write anchor — a re-planted scope must RED even
+  #      though nothing in the fixture posts anything. A token granted "for later" is the step that
+  #      precedes the poster's return.
+  mk_clean_src "$base/scope.yml"
+  printf '    permissions:\n      checks: write\n' >> "$base/scope.yml"
+  if assert_wired "$base/scope.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2f2 — a source granting checks: write passed assert_wired"; st=1; else echo "OK: re-planted checks:write -> RED"; fi
+
+  # 2g. LOAD-BEARING NEGATIVE for the Δ1 observe-mode dial (was: the posted `neutral` conclusion; now
+  #     the unconditional exit 0 that carries the same non-blocking promise without an API call).
   mk_clean_src "$base/noneutral.yml"
-  grep -v 'concl="neutral"' "$base/noneutral.yml" > "$base/noneutral.yml.tmp" && mv "$base/noneutral.yml.tmp" "$base/noneutral.yml"
-  if assert_wired "$base/noneutral.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2g — a source that never posts neutral passed assert_wired"; st=1; else echo "OK: no neutral posting -> RED (Δ1 anchor is load-bearing)"; fi
+  grep -v 'mode" = enforce \] || exit 0' "$base/noneutral.yml" > "$base/noneutral.yml.tmp" && mv "$base/noneutral.yml.tmp" "$base/noneutral.yml"
+  if assert_loop_state_active "$base/noneutral.yml" >/dev/null 2>&1; then echo "FAIL: selftest case2g — a source with no unconditional observe-mode pass passed assert_loop_state_active"; st=1; else echo "OK: no observe-mode exit 0 -> RED (the Δ1 dial anchor is load-bearing)"; fi
 
   # 2h/2i/2j/2k (B2 Δ4(ii) / reviewer I4 / Δ1 / Δ3, LOAD-BEARING NEGATIVES) — a source that gates
   # ceremony-binding but never RENDERS the matched record to the judgment surface must be RED (2h);
@@ -348,9 +367,13 @@ selftest() {
     printf '# COPY & ADAPT (Sparkwright)\n'
     printf '# stale header prose (never updated):    LOOP_STATE_MODE: observe   (default — a nudge)\n'
     printf 'env:\n  LOOP_STATE_MODE: enforce\n'
-    printf 'jobs:\n  gate-loop-state:\n    steps:\n'
+    printf 'jobs:\n  loop-state:\n    steps:\n'
     printf '      - run: sh conformance/loop-state.sh --head "$SHA"\n'
-    printf '      - run: status="completed"; concl="neutral"\n'
+    # SINGLE-CAUSE (review round 1, finding 7): this fixture must fail for its OWN reason — the live
+    # code default is `enforce` while only a COMMENT says `observe` — and for nothing else. Omitting
+    # the observe escape below would ALSO trip the dial anchor, so the case would pass while proving
+    # the wrong thing (the over-determined-fixture class this file already paid for once).
+    printf '      - run: [ "$mode" = enforce ] || exit 0\n'
   } > "$base/commentdup.yml"
   if assert_loop_state_active "$base/commentdup.yml" >/dev/null 2>&1; then echo "FAIL: selftest case5e — a source defaulting to enforce in CODE, with only a COMMENT duplicating 'LOOP_STATE_MODE: observe', passed assert_loop_state_active (I2 surviving mutant)"; st=1; else echo "OK: comment-only observe duplicate with enforce live in code -> RED (I2 mutant killed)"; fi
 
@@ -359,9 +382,11 @@ selftest() {
   {
     printf '# COPY & ADAPT (Sparkwright)\n'
     printf 'env:\n  LOOP_STATE_MODE: observe\n'
-    printf 'jobs:\n  gate-loop-state:\n    steps:\n'
+    printf 'jobs:\n  loop-state:\n    steps:\n'
     printf '      # - run: sh conformance/loop-state.sh --head "$SHA"\n'
-    printf '      - run: status="completed"; concl="neutral"\n'
+    # SINGLE-CAUSE (finding 7), same rule as 5e: the intended defect is the COMMENTED-OUT gate
+    # invocation, so the observe escape must be present or the case would also red on the dial anchor.
+    printf '      - run: [ "$mode" = enforce ] || exit 0\n'
   } > "$base/commentedblock.yml"
   if assert_loop_state_active "$base/commentedblock.yml" >/dev/null 2>&1; then echo "FAIL: selftest case5d — a source with loop-state.sh --head fully COMMENTED OUT (the fallback shape) passed assert_loop_state_active"; st=1; else echo "OK: commented-out-block fallback shape -> RED (Δ1 ships ACTIVE, not the fallback)"; fi
 

@@ -10,6 +10,10 @@ An agent must not ratify its own work. The contract is: **author ≠ approver �
 
 The critical constraint for agentic workflows is that the ratifying identity must be one the **building agent cannot assume**. A second token, a second bot account, or a second identity that the same agent process can mint or impersonate does not satisfy separation of duties — the agent would be self-approving with a credential it controls. The constraint is a *human-in-the-loop* or a *distinct controlled identity outside the build agent's reach* — not just a second label.
 
+**This kit's own repo does not satisfy this principle in full, and says so rather than implying otherwise.** It runs a declared **ratification seat** — a second account belonging to the same human as the author (`.kit/ratification-seats.conf`). That seat satisfies the *agentic* half of the constraint exactly: it is an identity outside the build agent's reach, so `agent ≠ ratifier` genuinely binds. It does **not** satisfy the *human* half: author and approver are one person, so **two-person review is declared ABSENT here**, not compensated for. Both halves are stated on every seat approval — the ratification check detects the seat **by login**
+(`scripts/sod-check.sh --seat-approvals`) and posts the disclosure itself as a notice, so nothing has to
+be typed into the approval box (the typed seat *sentence* was retired 2026-08-28) — and the arrangement retires the day a second human with write access joins (`D-240825-1`, revisit-condition D2). See [`review-lane.md`](review-lane.md#the-ratification-seat-solo) for the mechanics and the ceiling.
+
 ---
 
 ## Tiers

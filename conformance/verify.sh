@@ -20,8 +20,10 @@
 # operator-side, not here. "aggregate" means representative.
 #   usage: sh conformance/verify.sh [--require] | --selftest
 set -eu
+# REVIEW R1: resolve THIS script's absolute path BEFORE the cd — `cd conformance && sh ./verify.sh`
+# leaves $0 as a relative path that no longer resolves once we have moved up a directory.
+_SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
-
 
 REQUIRE=0
 [ -n "${CI:-}" ] && REQUIRE=1
@@ -177,7 +179,11 @@ result_sentence() {
 if [ "${1:-}" = "--selftest" ]; then
   # deterministic: the aggregate renders its classification + honesty footer, and a
   # control failure is surfaced. We exercise the renderer, not live infra.
-  out=$(sh "$0" 2>&1) || true
+  # $_SELF, not $0: after the top-level cd, a relative $0 no longer resolves. VERIFY_SKIP_PREFLIGHT
+  # because THIS nested run is the renderer probe — on a HEAD-less checkout the pre-flight would
+  # refuse it in a second and every leg below would grade an empty string (review R2). The pre-flight
+  # LANE stays proven: its dedicated leg further down runs a real --require WITHOUT this variable.
+  out=$(VERIFY_SKIP_PREFLIGHT=1 sh "$_SELF" 2>&1) || true
   printf '%s\n' "$out" | grep -q "control-checks" || { echo "verify --selftest: FAIL (no summary)"; exit 1; }
   printf '%s\n' "$out" | grep -q "UNVERIFIED is NOT a pass" || { echo "verify --selftest: FAIL (no honesty footer)"; exit 1; }
   printf '%s\n' "$out" | grep -Eq '\[control\]|\[doc\]' || { echo "verify --selftest: FAIL (no classification)"; exit 1; }
@@ -219,7 +225,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # BEHAVIOURAL, never a text grep for `trap` — presence is not effect. This launches a REAL run, kills
   # it mid-flight with SIGTERM, and asserts on what the process actually emitted and returned.
   _kout=$(mktemp) || { echo "verify --selftest: FAIL (no tmpdir for the INCOMPLETE leg)"; exit 1; }
-  sh "$0" > "$_kout" 2>&1 &
+  VERIFY_SKIP_PREFLIGHT=1 sh "$_SELF" > "$_kout" 2>&1 &   # same reason as the renderer probe above:
+                                                          # this leg needs a LONG run to kill mid-flight
   _kpid=$!
   sleep 2                      # let it start and clear at least one check; the trap fires regardless
   kill -TERM "$_kpid" 2>/dev/null || true
@@ -359,12 +366,43 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "  it verified something, so N-A under-claims its own run. N-A is for a check that verified"
     echo "  NOTHING here; a partial skip beside a real verdict is a PASS)"; exit 1; }
 
+  # ── PRE-FLIGHT leg (B3) — a HEAD-less tree must fail FAST and name the TRUE cause ─────────────────
+  # Behavioural: a real no-commit repo + this very script; asserts exit status, wording AND the clock.
+  # The fixture is a whole git repo, so it is trap-cleaned (review R1): the earlier inline `rmdir` left
+  # a .git behind on every run, and on an early `exit 1` it never ran at all.
+  _b3=$(mktemp -d) || { echo "verify --selftest: FAIL (no tmpdir for the pre-flight leg)"; exit 1; }
+  trap 'rm -rf "$_b3"' EXIT
+  mkdir -p "$_b3/conformance"; cp "$_SELF" "$_b3/conformance/verify.sh"
+  ( cd "$_b3" && git init -q . 2>/dev/null ) || true; _b3st=$(date +%s)
+  if _b3out=$(sh "$_b3/conformance/verify.sh" --require 2>&1); then _b3rc=0; else _b3rc=$?; fi
+  _b3el=$(( $(date +%s) - _b3st ))
+  [ "$_b3rc" = 0 ] && { echo "verify --selftest: FAIL (a repo with NO COMMITS exited 0 — an empty history cannot be evaluated, so that green is green-while-dark)"; exit 1; }
+  printf '%s\n' "$_b3out" | grep -q 'no commits yet' || { echo "verify --selftest: FAIL (a HEAD-less tree did not name the true cause — the adopter is sent to 'recopy the kit tree' when all that is missing is the first commit)"; exit 1; }
+  [ "$_b3el" -gt 10 ] && { echo "verify --selftest: FAIL (a HEAD-less tree took ${_b3el}s to fail — the pre-flight must precede the battery)"; exit 1; }
+  # Load-bearing the other way: it must NOT fire on a tree that HAS a commit (the aggregate above).
+  printf '%s\n' "$out" | grep -q 'no commits yet' && { echo "verify --selftest: FAIL (the pre-flight fired on a tree WITH history — it would block every real run)"; exit 1; } || true
+
   echo "verify --selftest: OK (renderer + honesty footer + non-vacuous control-PASS + INCOMPLETE-on-interrupt"
   echo "                       + K3: a FAILING check surfaces its diagnostic, a PASSING one stays one line"
   echo "                       + --kitself N-A/RUNS/mixed + VERIFY-SUMMARY: no 'docs present' over a doc-fail"
   echo "                       + C6: a self-declared skip renders N-A not PASS, an executed proof keeps PASS,"
   echo "                         a mid-line N/A mention and a PARTIAL skip beside a real verdict both stay"
-  echo "                         PASS, and the Summary n/a count equals the N-A rows rendered)"; exit 0
+  echo "                         PASS, and the Summary n/a count equals the N-A rows rendered)"
+  echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
+  echo "                         commit, and stays silent on a tree that has history)"; exit 0
+fi
+
+# ── PRE-FLIGHT: an EMPTY HISTORY is not a conformance failure, it is a missing first commit ─────────
+# MEASURED (B3, KIT-EVAL-2): an adopter's first act after `incept` is `verify.sh --require`; on a
+# not-yet-committed tree it ran the whole battery (384s) then said `guard-wired FAIL: tracked
+# hooks/pre-push missing from HEAD — recopy the kit tree`: both halves wrong (nothing is missing; there
+# is no HEAD). Sits immediately before the battery, AFTER the --selftest exit (review R1), so the
+# selftest stays runnable from a HEAD-less checkout. VERIFY_SKIP_PREFLIGHT is set ONLY by the
+# selftest's own renderer probe, which needs a full aggregate rather than this refusal; the dedicated
+# pre-flight leg deliberately does NOT set it, so the lane below is still proven end-to-end.
+if [ -z "${VERIFY_SKIP_PREFLIGHT:-}" ] && git rev-parse --git-dir >/dev/null 2>&1 && ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+  echo "verify: this repository has no commits yet — commit the incepted baseline first (git add -A && git commit -m \"chore: incept baseline\"), then re-run. Nothing below can be evaluated against an empty history."
+  exit 1
 fi
 
 echo "Conformance verification (honest aggregate)"
@@ -612,14 +650,18 @@ check control decision-id-live sh conformance/decision-id-live.sh
 check control roadmap-current  sh conformance/roadmap-current.sh
 # runbook-current (C11 KIT-RUNBOOK) — the THIRD member of the living-document family above, and it sits
 # here for the family's reason: citation-live asks "does the line this doc cites still exist", roadmap-current
-# asks "does the roadmap still call SHIPPED work pending", and this row asks "does the kit's own operational
-# RUNBOOK still name the release it describes". Measured at the C11 probe, the kit had NO RUNBOOK.md at all and
+# asks "does the roadmap still call SHIPPED work pending", and this row asks "do the kit's own release-pinned
+# governing records — RUNBOOK.md and THREAT-MODEL.md — still name the release they describe". The threat model
+# joined the marker table in A4 of KIT-EVAL-2-TIER-A (`D-240825-1`): it was stamped 3.185.0 (header) and 3.186.0
+# (footer) against VERSION 3.218.0, so the document defining what the guard is FOR had no ratchet while the
+# runbook had one. Extending this row's check was the cheap path; a second check would have been the expensive
+# one (CONFORMANCE-MASS-BUDGET). Measured at the C11 probe, the kit had NO RUNBOOK.md at all and
 # its cold-resume path ran entirely through one agent's private memory — a friction-test failure. C11 authored
 # the file; THIS ROW IS THE RATCHET that keeps it existing and dated. NO --kitself, for the same reason the two
 # rows above carry none: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an armed
-# tree an absent RUNBOOK.md, a missing/duplicated/stale marker or a dead VERSION is a FAIL rather than an N/A,
-# while an adopter tree (where the runbook is export-ignored and the adopter's own is stamped from the template)
-# self-declares N/A and C6 renders it N-A. Registering it here also enrols the file in non-vacuity.sh's sweep
+# tree an absent RUNBOOK.md or THREAT-MODEL.md, a missing/duplicated/stale marker or a dead VERSION is a FAIL
+# rather than an N/A, while an adopter tree (where both records are export-ignored and the adopter's own are
+# stamped from the templates) self-declares N/A and C6 renders it N-A. Registering it here also enrols the file in non-vacuity.sh's sweep
 # (which selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
 # (conformance-selftests, "runbook-current self-test") and the LIVE check runs in `docs-links` — the same
 # required, no-`if:` job, chosen because a runbook-currency check governs exactly the `.md`-only PRs that

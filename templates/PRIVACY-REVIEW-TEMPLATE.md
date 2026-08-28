@@ -1,8 +1,8 @@
 # Privacy Review (DPIA-lite)
 
-> **Template.** Copy to `PRIVACY-REVIEW.md` (or a per-feature `privacy/<feature>.md`) when a feature
-> handles **Confidential or Restricted** personal data. Replace every `[…]`. Delete this blockquote.
-> This is a lightweight Data Protection Impact Assessment — proportionate, not a legal opinion.
+> **Template.** Copy to `PRIVACY-REVIEW.md` (or a per-feature `privacy/<feature>.md`) when a feature handles **Confidential or Restricted** personal data; replace every `[…]`, then delete this line.
+
+This is a lightweight Data Protection Impact Assessment — proportionate, not a legal opinion.
 
 ## 1. Purpose & data
 - **Feature / purpose:** [what this does and why it needs the data]

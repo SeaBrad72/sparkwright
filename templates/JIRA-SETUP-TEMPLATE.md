@@ -1,8 +1,10 @@
 # [Project Name] — Jira Setup (work-item contract)
 
-> **Template.** `incept --backlog jira` wrote this. Follow it once to make a Jira project satisfy the kit's §6 work-item contract (`DEVELOPMENT-PROCESS.md` §6), then verify with `sh conformance/tracker-contract.sh`. Full mapping rationale: `docs/work-tracking/adapters.md` (Jira).
->
-> **Tier.** This is the kit's **server-enforced** claim tier (the *Only Assignee* transition condition, §3 — the strongest of the hosted set). Convention-tier backends (last-writer-wins, claim-when-empty + re-read) use `TRACKER-SETUP-TEMPLATE.md` instead. The two are deliberately distinct, not redundant.
+> **Template.** `incept --backlog jira` wrote this; follow it once, then delete this line.
+
+Follow it to make a Jira project satisfy the kit's §6 work-item contract (`DEVELOPMENT-PROCESS.md` §6), then verify with `sh conformance/tracker-contract.sh`. Full mapping rationale: `docs/work-tracking/adapters.md` (Jira).
+
+**Tier.** This is the kit's **server-enforced** claim tier (the *Only Assignee* transition condition, §3 — the strongest of the hosted set). Convention-tier backends (last-writer-wins, claim-when-empty + re-read) use `TRACKER-SETUP-TEMPLATE.md` instead. The two are deliberately distinct, not redundant.
 
 ## 1. Workflow statuses (the six §6 states + Blocked)
 Create/rename the project workflow statuses to exactly:

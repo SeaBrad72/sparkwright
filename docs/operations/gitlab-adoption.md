@@ -60,7 +60,7 @@ discipline as the three-state conformance model.
 ## Control-plane ratification
 
 **This is the keystone gap.** The GitHub profile (`profiles/typescript-node/ci.yml`) carries a
-`gate-agent-boundary` CI job that blocks merge on any PR touching control-plane paths until a
+`control-plane-ratification` CI job that blocks merge on any PR touching control-plane paths until a
 non-author has approved. GitLab has no equivalent job shipped in the kit — the `ci.gitlab-ci.yml`
 comment is honest about this.
 
@@ -75,7 +75,7 @@ In **Settings → Merge requests → Approval rules**, create a rule:
 - **Eligible approvers:** maintainers / a named security-owner group
 - **Target branch:** `main`
 
-This is the approver equivalent of the `gate-agent-boundary` merge-gate: no control-plane MR
+This is the approver equivalent of the `control-plane-ratification` merge-gate: no control-plane MR
 merges without a non-author approval.
 
 ### 2 — CODEOWNERS-scoped approval (Code Owners)
@@ -117,16 +117,19 @@ returns UNVERIFIED on GitLab rather than pretending it checked.
 ## Board and loop gates (backlog-presence, ceremony-binding, loop-state)
 
 The GitHub profile installs `profiles/adopter-gates.yml` at Inception (`.github/workflows/adopter-gates.yml`,
-every stack, unconditionally) — three merge-time check-runs on a gated PR: `backlog-presence` (a bound
-board row), `ceremony-binding` (a recorded design GO), and `loop-state` (the Entry-Declaration refusal
-floor, shipped ACTIVE in **observe** mode — a non-blocking nudge; see the source file's header for the
-observe/enforce dial). GitLab has no `check-runs` API and no per-check colour states (`neutral` /
-`in_progress`-without-conclusion), so none of the three port as a GitHub-style check-run. Wire the same
-obligations manually:
+every stack, unconditionally) — three merge-time gates on a gated PR, each a JOB keyed with its own
+required-context name: `backlog-presence` (a bound board row), `ceremony-binding` (a recorded design GO),
+and `loop-state` (the Entry-Declaration refusal floor, shipped ACTIVE in **observe** mode — the job runs
+the gate, prints the verdict and always exits 0; see the source file's header for the observe/enforce
+dial). They are ordinary jobs whose exit code is the verdict, so the port is closer than it used to be
+(GitLab has no `check-runs` API, and until 2026-08-27 these gates POSTED check-runs to render a WAITING
+state yellow — that mechanism is gone). What still does not port is the **required-context binding**:
+GitLab's approval/pipeline model is the equivalent, and a red pipeline blocks only if you require it.
+Wire the same obligations manually:
 
 ### 1 — Board presence: an MR-description convention
 
-Since GitLab has no equivalent of a per-context check-run to bind a PR number to a board row, adopt a
+Since GitLab has no equivalent of a per-context required check to bind a PR number to a board row, adopt a
 **merge-request description convention** instead: require every gated MR's description to name the board
 row it satisfies (e.g. `Board row: KW-142`), and enforce it the same way separation-of-duties is
 enforced below — a human reviewer declines to approve an MR whose description omits it. Optionally, a
@@ -204,10 +207,10 @@ The kit is GitHub-first for *automated* governance. On GitLab:
 - **Runtime guard** — fully present (`PreToolUse`, `pre-push`, `kit-guard`). No gap.
 - **Branch protection** — adopter-owned. The kit returns **UNVERIFIED**, never a faked pass.
 - **Control-plane ratification** — adopter-owned (MR approval rule + CODEOWNERS). No kit-enforced
-  gate; the `gate-agent-boundary` job has no GitLab equivalent in this kit.
+  gate; the `control-plane-ratification` job has no GitLab equivalent in this kit.
 - **Board and loop gates** — adopter-owned (MR-description convention, commit-template guidance, and
-  optional CI-job equivalents; see "Board and loop gates" above). No kit-enforced check-run; GitLab has
-  no `check-runs` API to post `neutral`/waiting states to.
+  optional CI-job equivalents; see "Board and loop gates" above). No kit-enforced gate: the kit ships
+  these as GitHub Actions jobs bound as required contexts, and GitLab has no equivalent binding.
 - **DORA** — adopter-built from GitLab analytics. `scripts/dora.sh` prints `unavailable`.
 
 This is the same three-state honesty discipline as `conformance/verify.sh`: a control that cannot

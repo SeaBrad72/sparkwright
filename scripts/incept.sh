@@ -612,6 +612,21 @@ fi
 # solo-vs-team governance is the separate enforce_admins / review-lane.md axis).
 case "$MODE" in prototype|team) echo "notice: --mode '$MODE' is deprecated; using 'lean' (ceremony only -- solo-vs-team governance is the separate enforce_admins / review-lane.md axis)" >&2; MODE="lean" ;; esac
 case " $PROCESS_MODES " in *" $MODE "*) : ;; *) echo "error: unknown --mode '$MODE' (one of: $PROCESS_MODES)" >&2; exit 2 ;; esac
+# RUNBOOK mode-marker balance — VALIDATED HERE, before the first write (review R2). A sed RANGE whose
+# closing address never matches deletes TO END OF FILE: one dropped `<!-- /mode:enterprise -->` took a
+# stamped RUNBOOK from 91 lines to 41, silently. Checking it at strip time aborted a HALF-INCEPTED tree
+# that then reported "already incepted" on the re-run, so the check belongs with the other input
+# validation: refuse before anything is written, and the operator can simply fix and re-run.
+if [ -f templates/RUNBOOK-TEMPLATE.md ]; then
+  _b3open=$(grep -c '^<!-- mode:enterprise -->$' templates/RUNBOOK-TEMPLATE.md || true)
+  _b3close=$(grep -c '^<!-- /mode:enterprise -->$' templates/RUNBOOK-TEMPLATE.md || true)
+  if [ "$_b3open" != "$_b3close" ]; then
+    echo "error: templates/RUNBOOK-TEMPLATE.md mode markers are unbalanced ($_b3open open, $_b3close close)." >&2
+    echo "  A range delete over an unclosed marker runs to END OF FILE and would silently truncate the" >&2
+    echo "  stamped RUNBOOK. Give every '<!-- mode:enterprise -->' a matching '<!-- /mode:enterprise -->'." >&2
+    exit 2
+  fi
+fi
 # --date is strictly YYYY-MM-DD. Not cosmetic: the value is interpolated into the `sedi` replacement
 # below, so an unvalidated string is a sed-expression injection surface (and a garbage stamp).
 #
@@ -650,10 +665,12 @@ fi
 echo "notice: choose your deploy target deliberately — docs/adoption/DEPLOYMENT-ENVIRONMENT.md (cards + fit rubric); record fit + maturity in RUNBOOK §4 (linted by conformance/deploy-decision-integrity.sh)." >&2
 # KW9-B: surface harness FIT + honest MATURITY — the harness is a concretization axis (instance #3).
 # Choose by fit, not by "it's the default"; and disclose that only claude-code is a VERIFIED harness
-# (the kit self-hosts on it) while gemini/codex/cursor are EXPERIMENTAL (declared, not exercised —
-# unproven, not "supported"). Always emitted → non-interactive-safe. Mirrors the KW5 deploy nudge +
+# (the kit self-hosts on it), codex is FLOOR-VERIFIED (floor exercised cold, CP-7), and
+# gemini/cursor are EXPERIMENTAL (declared, not exercised — unproven). The tiers here MUST match the
+# cards in docs/operations/harness-adapters.md — conformance/governing-docs-current.sh's harness-status
+# face reds when they drift. Always emitted → non-interactive-safe. Mirrors the KW5 deploy nudge +
 # KW4-L1's stack fit-vs-maturity disclosure. Cards + fit rubric: docs/operations/harness-adapters.md.
-echo "notice: target harness(es) = '${HARNESS}'. Confirm this is the BEST-FIT harness (fit-derived, not the default). Only 'claude-code' is a VERIFIED harness (kit self-hosts on it); 'gemini'/'codex'/'cursor' are EXPERIMENTAL (declared against the boundary contract, not exercised end-to-end — unproven, not 'supported'). Record WHY it fits (cite a fit dimension) in CLAUDE.md §harness-neutrality — linted by conformance/harness-decision-integrity.sh. Cards + fit rubric: docs/operations/harness-adapters.md." >&2
+echo "notice: target harness(es) = '${HARNESS}'. Confirm this is the BEST-FIT harness (fit-derived, not the default). Only 'claude-code' is a VERIFIED harness (kit self-hosts on it); 'codex' is FLOOR-VERIFIED (the universal-layer floor exercised end-to-end cold — no native bonus); 'gemini'/'cursor' are EXPERIMENTAL (declared against the boundary contract, not exercised end-to-end — unproven, not 'supported'). Record WHY it fits (cite a fit dimension) in CLAUDE.md §harness-neutrality — linted by conformance/harness-decision-integrity.sh. Cards + fit rubric: docs/operations/harness-adapters.md." >&2
 # K4/AC1: disclose the enforcement CEILING for hookless harnesses — a maturity label
 # ("experimental") is not a capability statement. A harness whose adapter declares
 # command-guard != "native" has NO inline PreToolUse-equivalent interception, so
@@ -860,6 +877,81 @@ case "$BACKLOG" in
 esac
 mkdir -p docs/architecture
 [ -f docs/architecture/ADR-000-stack.md ] || { cp docs/ADR-000-EXAMPLE.md docs/architecture/ADR-000-stack.md; sedi "s/\[YYYY-MM-DD\]/${DATE}/g" docs/architecture/ADR-000-stack.md; }
+
+# --- 4b. B3: finish the stamp — no TEMPLATE RESIDUE in a delivered artifact -------------------------
+# MEASURED (KIT-EVAL-2): the tree an adopter is handed still read as a blank form. CLAUDE.md opened
+# `# [Project Name] — Claude Project Guide` — the very FIRST line of the very FIRST file an agent
+# reads; the `> **Template.** Copy to a new project's ...` instruction survived into five delivered
+# files, each telling the reader to do the thing incept had ALREADY done; and RUNBOOK carried an
+# unstamped `**Last Updated:** [date]`. None of it is a cosmetic complaint: an artifact that still
+# describes itself as a template is one the reader discounts, and a stamped tree that looks unstamped
+# is indistinguishable from an incept that half-failed.
+#
+# `[date]` is NOT swept generally, and that is deliberate: it is a live sentinel that five conformance
+# checks (dr-ready, resilience-ready, containment-ready, cost-governance-ready, egress-policy) grep for
+# to tell an UNFILLED attestation from a filled one. Only the artifact-HEADER slots incept genuinely
+# knows the answer to are stamped (below); every ATTESTATION slot stays bracketed on purpose.
+# REVIEW R1 BLOCKER: the first cut deleted only the banner's FIRST line. Every banner but RUNBOOK's is
+# a multi-line blockquote RUN (REQUIRED-CHECKS 4 lines, DECISIONS 4, SECURITY 3), so stamped
+# REQUIRED-CHECKS.md and docs/governance/DECISIONS.md opened on a dangling `> in this repo's branch
+# protection...` fragment — a mid-sentence continuation with its subject deleted, which reads WORSE
+# than the banner it replaced. The unit is the blockquote run, not the line: skip while the line is
+# still part of the quote, then swallow one trailing blank so no double blank is left behind.
+strip_template_banner() {  # <file> — drop the whole `> **Template.**` blockquote run + one blank after
+  [ -f "$1" ] || return 0
+  grep -q '^> \*\*Template\.\*\*' "$1" || return 0
+  awk '
+    /^> \*\*Template\.\*\*/ { skip = 1; next }
+    skip == 1 && /^>/       { next }
+    skip == 1 && $0 == ""   { skip = 0; next }
+    { skip = 0; print }
+  ' "$1" > "$1.b3tmp" && mv "$1.b3tmp" "$1"
+}
+for _b3f in CLAUDE.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md .env.example docs/governance/DECISIONS.md; do
+  strip_template_banner "$_b3f"
+done
+# The project's own name belongs in its own title.
+sedi "s/^# \[Project Name\] — /# $(esc "$ENAME") — /" CLAUDE.md
+# The artifact-header date slots are the ones incept KNOWS the answer to — a file stamped today that
+# says it was last updated `[date]` is simply wrong. These three headers are not sentinels: no
+# conformance check greps them (the `[date]` sentinel checks all key on RUNBOOK ATTESTATION lines —
+# 'Restore verified:', 'enforced:' — which stay bracketed and unfilled on purpose).
+for _b3d in CLAUDE.md RUNBOOK.md BACKLOG.md; do
+  if [ -f "$_b3d" ]; then
+    sedi -e "s/^\*\*Last Updated:\*\* \[date\]\$/**Last Updated:** ${DATE}/" \
+         -e "s/^\*\*Created:\*\* \[date\] /**Created:** ${DATE} /" \
+         "$_b3d"
+  fi
+done
+
+# --- 4c. B3: `--mode lean` must actually STAMP a lighter RUNBOOK ------------------------------------
+# MEASURED (KIT-EVAL-2): lean and enterprise stamped RUNBOOKs differed in the PROJECT NAME and nothing
+# else. `--mode lean` is the kit's central promise that ceremony is proportionate; a mode that changes
+# no delivered artifact is a promise made only in prose.
+#
+# The mechanism is markers in templates/RUNBOOK-TEMPLATE.md, and the marker lines NEVER survive into a
+# stamped RUNBOOK in EITHER mode — enterprise keeps the content and drops the markers, lean drops both.
+# The three marked blocks are pure enterprise apparatus, chosen because every check that keys on them
+# ALREADY self-skips on a lean project's triggers (measured: resilience-ready and observability-ready
+# N/A with no deploy surface, agentops-ready N/A without `Agentic: yes`) — and because lean mode ships
+# docs/conditional-obligations.md, whose table names these same controls and says they activate the
+# moment the trigger appears. So the rows come BACK with the obligation; they are not lost.
+# This runs here, not in curate_for_mode, for the plain reason that curate_for_mode runs before
+# RUNBOOK.md exists.
+# REVIEW R1: a sed RANGE whose closing address never matches deletes TO END OF FILE. Reproduced — one
+# dropped `<!-- /mode:enterprise -->` took the stamped RUNBOOK from 91 lines to 41, silently, on the
+# one artifact an adopter is told to cold-resume from. A range delete is only safe over a balanced
+# marker set; balance is validated up in the input-validation block, BEFORE the first write, so a bad
+# template can never leave a half-incepted tree. Both matchers anchor the EXACT comment form
+# (`^<!-- /?mode:enterprise -->$`) so ordinary prose mentioning the token is never treated as a marker.
+if [ -f RUNBOOK.md ]; then
+  if [ "$MODE" = lean ]; then
+    sed '/^<!-- mode:enterprise -->$/,/^<!-- \/mode:enterprise -->$/d' RUNBOOK.md > RUNBOOK.b3tmp
+  else
+    sed '/^<!-- \/\{0,1\}mode:enterprise -->$/d' RUNBOOK.md > RUNBOOK.b3tmp
+  fi
+  mv RUNBOOK.b3tmp RUNBOOK.md
+fi
 
 # --- 5. wire CI from the chosen profile (platform-specific path/reference) ---
 # The contract is the gate-ids; the platform is open (docs/operations/ci-platforms.md).

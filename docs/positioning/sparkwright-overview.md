@@ -40,7 +40,7 @@ run `START-HERE` — Inception then walks you through choosing your stack, scaff
 **green pipeline on the first run**, and wires the project, before handing you into the build loop. Brownfield
 adoption into an existing repo is supported. Maturity is a **stage, not a version**: the kit is at
 `release-candidate` today, reaching `adopted` when an external team ships real software through it. The kit
-versions its own releases on its own cadence (currently `v3.218.0`); adoption is a maturity stage, not a
+versions its own releases on its own cadence (currently `v3.219.0`); adoption is a maturity stage, not a
 version reset. The kit is built with its own loop and held to its own Definition of Done — it dogfoods every
 principle and gate it gives you.
 
@@ -464,7 +464,7 @@ production deploy; a green conformance run proves controls hold **and** that DR/
 *documented* — **not that those procedures were tested** (the aggregate's own footer says so). **Maturity is a
 stage, not a version:** `pre-adoption → release-candidate → adopted`; the `adopted` stage is reached when an
 external team ships through the loop. The kit versions its own releases on its own cadence (currently
-`v3.218.0`), so adoption is a maturity stage, not a version reset. Named non-reference harnesses carry an
+`v3.219.0`), so adoption is a maturity stage, not a version reset. Named non-reference harnesses carry an
 honest maximum (a harness with no inline
 interception is "floor-verified," never overclaimed). A kit that tells you exactly what's enforced versus
 advisory versus declared is more trustworthy than one that claims magic.

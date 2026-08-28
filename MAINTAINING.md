@@ -21,7 +21,7 @@ Every capability the kit ships has three parts. This is the same "universal stan
 **Convention — deployable container artifacts ship for *service* profiles only.** The 7 service stacks (`typescript-node`, `go`, `rust`, `python`, `java-spring`, `kotlin`, `dotnet`) ship drop-in `Dockerfile` + `compose.yaml` + `deploy/` (k8s + Helm) and wire the conditional image gates (`gate-image-sbom` + digest-bound `gate-image-provenance`). The 3 non-service profiles (`ml`, `data-engineering`, `terraform`) deliberately ship a **reference-pointer in §9, not a generic Dockerfile**, because their deploy unit differs — a model-serving/batch image, an orchestrated job image, and "the `plan`/`apply` *is* the deploy" respectively. This asymmetry is intentional: `conformance/container-supply-chain.sh` is **conditional on a Dockerfile being present** (others are N/A, never failed), so a non-service profile without one is conformant by design — not a gap. If you add a Dockerfile to any profile, the check enforces multi-stage + non-root + the two image gates automatically.
 
 **Worked example (CI/CD):**
-- *Contract* — `DEVELOPMENT-STANDARDS.md`: "CI MUST enforce lint, type-check, test+coverage≥80%, build, and secret-scan; `main` is protected; the builder is never the sole merger."
+- *Contract* — `DEVELOPMENT-STANDARDS.md` §14: "CI MUST run the seven required gates — lint, type-check, test+coverage≥80%, build, secret scan, dependency scan, supply-chain integrity (SBOM + provenance); `main` is protected; the builder is never the sole merger."
 - *Reference* — `.github/workflows/ci.yml` in the TypeScript profile, marked "copy & adapt to your stack."
 - *Conformance* — `conformance/ci-gates.<ext>` that asserts each gate fires.
 
@@ -58,7 +58,7 @@ milestone-gated act** — you do NOT publish per slice.
 - **What a milestone is:** an owner-chosen release point — a completed feature/epic bundle, or a version-line
   you want adopters on. Publish the *cumulative* diff as one public version; the private `VERSION` keeps
   ticking per slice, the public version jumps at milestones.
-- **The current baseline is RC1 @ `v3.180.0`** — the labeled point adopters trust until the next milestone.
+- **The current baseline is the latest release on the public mirror** (GitHub Releases; the private `VERSION` runs ahead of it) — the labeled point adopters trust until the next milestone. It is deliberately not written here: a version literal in prose decays the moment the next milestone ships.
 - **How adopters learn of a new public release:** GitHub Releases + Watch (broadcast); `conformance/kit-current.sh`
   in their `scripts/doctor.sh` (advisory "you're behind" nudge — fired only by a *public* release, not by
   private per-slice dev); `kit-update.sh --from <kit>` (they pull when they choose). No telemetry, no push.
@@ -85,8 +85,8 @@ This is what makes the kit *self-iterating*: the MD files, scripts, and referenc
 
 ## 5. The kit dogfoods its own loop
 
-The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own backlog (`docs/ROADMAP-KIT.md`); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
+The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own flow board (`BACKLOG.md` — the one authoritative board, long-range planning included, per `CLAUDE.md` § Roster authority); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
 
 ---
 
-**Last Updated:** 2026-06-29
+**Last Updated:** 2026-08-27

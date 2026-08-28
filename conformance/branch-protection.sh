@@ -4,8 +4,13 @@
 # DEVELOPMENT-PROCESS.md §12). Split at the credential seam (B4):
 #   OFFLINE leg (--declared-only [FILE]): parses REQUIRED-CHECKS.md — no `gh`, no network. Registered
 #     in verify.sh and swept by non-vacuity.sh.
-#   LIVE leg (default, no flag): the three-state remote check below, now ALSO comparing the live
-#     `required_status_checks.contexts` against the declaration: a declared-but-unbound context FAILs
+#   LIVE leg (default, no flag): the three-state remote check below. It asserts the REVIEW
+#     REQUIREMENT IS REAL — `required_pull_request_reviews.required_approving_review_count >= 1`, not
+#     merely that the settings block exists (an empty block requires nothing). That number is what
+#     blocks an unratified control-plane merge, and since 2026-08-28 the `control-plane-ratification`
+#     check renders WAITING as GREEN because of it (RATIFICATION-WAITING-IS-GREEN) — so this gate and
+#     that rendering are one control, and the count is checked here or nowhere. It ALSO compares the
+#     live `required_status_checks.contexts` against the declaration: a declared-but-unbound context FAILs
 #     by name; a live-but-undeclared context is an ADVISORY (never fatal, never buries the existing
 #     code-owner ADVISORY below it); no declaration file present -> behaves exactly as before
 #     (byte-compatible rc for inception-done's --raw consumption).
@@ -237,6 +242,10 @@ declared_only() {
     exit 1
   fi
   printf '%s\n' "OK: $_dof declares $_don required-check context(s):$RD_LIST"
+  # ★ SAY WHAT THIS GREEN DOES NOT COVER (round 1, finding 2): this leg reads a FILE and cannot see the
+  # live setting that blocks a merge — and that setting is load-bearing for a SIBLING check's colour.
+  # A maintainer reading "OK" here must not conclude the requirement is in place.
+  printf '%s\n' "NOTE: declaration integrity only. required_approving_review_count (>=1) is a LIVE-LEG check — run this script with no flag (needs gh + admin) to verify the review requirement that actually blocks an unratified control-plane merge."
   exit 0
 }
 
@@ -249,6 +258,19 @@ classify() {
     # HTTP 200: this IS the live protection config — verify the required settings are present.
     ok=0
     printf '%s' "$body" | grep -q '"required_pull_request_reviews"' || { printf '%s\n' "FAIL: required PR reviews not enabled on $BRANCH"; ok=1; }
+    # ★★ THE COUNT, NOT JUST THE BLOCK (RATIFICATION-WAITING-IS-GREEN, round 1, finding 2).
+    # `required_pull_request_reviews: {}` is PRESENT and requires NOTHING, and this gate green-lit it.
+    # Since 2026-08-28 `control-plane-ratification` renders WAITING as GREEN precisely because this
+    # count blocks server-side (DEVELOPMENT-PROCESS.md §13, THREAT-MODEL.md T6, REQUIRED-CHECKS.md all
+    # name it) — a gate not checking the setting its sibling depends on is an unverified assumption.
+    # No jq (this leg must run on a bare runner): strip whitespace, take the digits.
+    _bp_rc_count=$(printf '%s' "$body" | tr -d ' \t\n' \
+      | sed -n 's/.*"required_approving_review_count":\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    if [ -z "$_bp_rc_count" ]; then
+      printf '%s\n' "FAIL: $BRANCH does not declare required_approving_review_count — the merge of an unratified control-plane PR is blocked by that count, and the control-plane-ratification check is GREEN while waiting BECAUSE of it (DEVELOPMENT-PROCESS.md §13). Absent, nothing blocks. Run: sh scripts/branch-protection-apply.sh --apply"; ok=1
+    elif [ "$_bp_rc_count" -lt 1 ]; then
+      printf '%s\n' "FAIL: $BRANCH sets required_approving_review_count=$_bp_rc_count — a review requirement of ZERO. The required_pull_request_reviews block being PRESENT means nothing on its own; with a count of 0 an unratified control-plane PR merges with a GREEN ratification check (that check explains the wait, it does not block it). Run: sh scripts/branch-protection-apply.sh --apply"; ok=1
+    fi
     printf '%s' "$body" | grep -q '"required_status_checks"' || { printf '%s\n' "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
     # advisory (non-fatal): CODEOWNER-review enforcement is recommended but not required by this gate
     # (an adopter who never fills CODEOWNERS can leave builder=reviewer paths under-covered — §12).
@@ -355,8 +377,14 @@ selftest() {
     ( REQUIRE="$req"; REPO=selftest; DECLARATION="$d"; classify "$r" "$b" ) >/dev/null 2>&1 && g=0 || g=$?
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> exit $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
-  cls 0 0 0 '{"required_pull_request_reviews":{},"required_status_checks":{}}' "200 + both settings"
+  cls 0 0 0 '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{}}' "200 + both settings + a review count of 1"
   cls 1 0 0 '{}' "200 + missing settings"
+  # ★ THE COUNT CELLS (review round 1, finding 2). A count of 0 is a review requirement that requires
+  # nothing, and the green-while-waiting ratification rendering leans on this exact number.
+  cls 1 0 0 '{"required_pull_request_reviews":{"required_approving_review_count":0},"required_status_checks":{}}' "200 + review count of ZERO -> FAIL (nothing would block an unratified CP merge)"
+  cls 1 0 0 '{"required_pull_request_reviews":{},"required_status_checks":{}}' "200 + reviews block PRESENT but no count at all -> FAIL (presence is not a requirement)"
+  cls 0 0 0 '{"required_pull_request_reviews":{"required_approving_review_count":2},"required_status_checks":{}}' "200 + a count above 1 -> PASS (the gate asserts a floor, not an exact value)"
+  cls 0 0 0 '{"required_pull_request_reviews": { "required_approving_review_count" : 1 },"required_status_checks":{}}' "the count parses through arbitrary JSON whitespace"
   cls 1 0 1 '{"message":"Branch not protected","status":"404"}' "404 not-protected"
   cls 2 0 1 '{"message":"Must have admin rights to Repository."}' "403 admin-rights -> UNVERIFIED"
   cls 1 1 1 '{"message":"Must have admin rights to Repository."}' "403 admin + CI/require -> FAIL"
@@ -392,53 +420,53 @@ selftest() {
     fi
   }
   clsd 1 "FAIL: required-check context(s) declared" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":["ci"]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["ci"]}}' \
     "$_bpdir/good.md" "declared-missing context (control-plane-ratification) -> FAIL naming it"
   clsd 1 "run: sh scripts/branch-protection-apply.sh --apply" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":["ci"]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["ci"]}}' \
     "$_bpdir/good.md" "declared-missing FAIL appends the remedy (REV L3)"
   clsd 1 "FAIL: required-check context(s) declared" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/good.md" "live contexts:[] with active declared contexts -> FAIL"
   clsd 0 "ADVISORY: live status check(s) not declared" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":["ci","control-plane-ratification","extra-check"]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["ci","control-plane-ratification","extra-check"]}}' \
     "$_bpdir/good.md" "live \\ declared -> ADVISORY, non-fatal (still exit 0)"
   clsd 0 "OK: main on selftest is protected" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":["ci","control-plane-ratification"]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":["ci","control-plane-ratification"]}}' \
     "$_bpdir/good.md" "conformant declaration + matching live -> OK"
   # SEC H-3/REV M3: skip disclosure — every skip route prints a line; malformed escalates under --require.
   clsd 0 "ADVISORY: declared-context comparison SKIPPED" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/dup.md" "malformed (duplicate) declaration, no --require -> ADVISORY disclosure, non-fatal"
   clsd 1 "FAIL: declared-context comparison SKIPPED" 1 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/dup.md" "malformed (duplicate) declaration + --require -> escalates to FAIL"
   clsd 0 "ADVISORY: declared-context comparison SKIPPED" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/mixed.md" "malformed (placeholder-mixed) declaration, no --require -> ADVISORY disclosure"
   clsd 1 "FAIL: declared-context comparison SKIPPED" 1 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/mixed.md" "malformed (placeholder-mixed) declaration + --require -> escalates to FAIL"
   clsd 1 "FAIL: declared-context comparison SKIPPED" 1 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/inject.md" "malformed (bad-charset) declaration + --require -> escalates to FAIL"
   clsd 0 "ADVISORY: declared-context comparison SKIPPED" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/pristine.md" "pristine template -> ADVISORY disclosure, NEVER escalates (not malformed)"
   clsd 0 "ADVISORY: declared-context comparison SKIPPED" 1 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/pristine.md" "pristine template + --require -> still ADVISORY, never FAIL"
   clsd 0 "ADVISORY: declared-context comparison SKIPPED" 1 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/does-not-exist-clsd.md" "absent declaration + --require -> still ADVISORY, never FAIL"
   # R-1: declared, zero placeholders, zero active contexts (empty/de-fenced block) — the sixth skip
   # route. Must disclose like every other malformed case, and escalate to FAIL under --require;
   # previously this fell through the ladder silently and read as OK (nothing to compare).
   clsd 0 "ADVISORY: declared-context comparison SKIPPED" 0 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/empty.md" "empty/de-fenced (zero active contexts) declaration, no --require -> ADVISORY disclosure (R-1)"
   clsd 1 "FAIL: declared-context comparison SKIPPED" 1 0 \
-    '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' \
     "$_bpdir/empty.md" "empty/de-fenced (zero active contexts) declaration + --require -> escalates to FAIL (R-1)"
 
   clsdo() {  # expect_rc needle file label — declared_only() direct
@@ -540,7 +568,7 @@ selftest() {
 env | grep '^GH_' | sort >> "$_ghenvlog" 2>/dev/null || true
 case "\$*" in
   *"repo view"*) echo "me/repo" ;;
-  *) printf '%s' '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":[]}}' ;;
+  *) printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":1},"required_status_checks":{"contexts":[]}}' ;;
 esac
 STUB
   chmod +x "$_ghenvdir/gh"

@@ -94,6 +94,50 @@ When the agent opens PRs under your identity, two things are true that the headl
 1. **`gh pr merge --admin` is server-side — the runtime guard never sees it.** The guard/`pre-push` hook gates only *local* git; an `--admin` merge is a GitHub API call outside its reach. So the admin-merge is an **audit-trailed convention, not a kit-enforced gate** — and the agent must **prepare the green PR and hand you the merge command**, never run it itself (see [`runtime-guards.md`](./runtime-guards.md) "Honesty boundary" and [`../../AGENTS.md`](../../AGENTS.md)). This `--admin` bypass stays human. A *normal* (non-`--admin`) merge of an Ordinary/Sensitive PR is delegable **after a recorded GO** — execution is delegable post-GO, control-plane stays human (see [`../governance/promotion-contract.md`](../governance/promotion-contract.md)).
 2. **Don't require code-owner review while solo + agent-authored.** If the sole owner is also the sole code owner, GitHub **forbids self-approval**, so a required code-owner approval is **structurally unsatisfiable** — the PR stays `BLOCKED` with green CI, and only `--admin` clears it (observed live). Rely on required status checks + the logged admin-merge instead. For a *real* approval gate, have the agent author PRs under a **separate identity** so author ≠ approver — the bot-identity pattern, **deferred to the E-series containment work (E4)**. Once a distinct ratifying identity exists (a GitHub App token, a machine user, or GitLab's native approval rules), see [`separation-of-duties.md`](separation-of-duties.md) for the full wiring.
 
+## The ratification seat (solo)
+
+This kit's own repo runs a **ratification seat**: a second GitHub account (`@ISBrad72`) belonging to
+the same human as the author (`@SeaBrad72`), declared in
+`.kit/ratification-seats.conf` (kit-internal, export-ignored — deliberately a code span, not a link:
+a kept doc must not link to a file the adopter export prunes). It is the concrete answer
+to caveat 2 above, and it is worth being exact about what it buys, because the honest version is
+narrower than a PR page suggests and wider than "it's fake".
+
+**What it enforces — and this half is real.** `agent ≠ ratifier`. The building agent cannot mint that
+approval: it has no credential for the seat, and no amount of model cooperation gets it one —
+**so long as no seat credential is present in the agent's environment (unchecked; environmental, not
+enforced)**. That survives the friction test — it still binds if the agent stops cooperating — which
+is exactly why the 2026-08-25 evaluation's proposal to *retire* the seat was rejected (`D-240825-1`).
+Retiring it would have discarded a working control to fix a labelling problem.
+
+**What it does NOT provide.** Two-person review. One human still writes and approves the change.
+On this repo two-person review is **declared absent**, not satisfied, and
+[`separation-of-duties.md`](separation-of-duties.md) is the statement of record.
+
+**The disclosure — detected, not typed.** When a declared seat is among the approvers, the
+ratification check says so itself, as a GitHub **notice** on the run:
+
+> `<login>` is a declared ratification seat — the same human as the author; this enforces
+> agent ≠ ratifier and is NOT a second-person review
+
+`scripts/sod-check.sh --seat-approvals` does the detection **by login**, wired into the ratify step of
+`.github/workflows/ratification.yml`; the workflow renders the prose. It is a notice: it never changes
+the verdict, and a seat approval is never treated as worse than any other.
+
+⚠️ **The typed seat sentence was RETIRED on 2026-08-28.** Until then a seat's approval body had to
+carry that sentence verbatim or the check parked at WAITING. It graded the approver's typing rather
+than the change — the login is what the forge vouches for, and no body text can make the disclosure
+truer — so the sentence added a way for a healthy approval to park a governance gate and nothing else.
+**There is now nothing to type into an approval box.** (`scripts/sod-check.sh --seat-bodies` survives
+as a deprecated alias of the detection mode, so an in-flight caller does not break.)
+
+**Ceiling:** this detects an identity, never that a human read the diff. Its value is that the
+disclosure is emitted beside the approval instead of living in a doc.
+
+**The flip (D2).** When a second human with write access joins: delete the seat line from
+`.kit/ratification-seats.conf`, stop declaring two-person review absent, and flip
+`enforce_admins: true` per the upgrade section above. One person, one file, one setting.
+
 ## See also
 - [`drift-self-check.md`](./drift-self-check.md) — the agent's in-loop re-check; **run it before requesting review** so the reviewer inherits less drift (the cheapest catch is the earliest one).
 - [`../../templates/REVIEW-RECORD-TEMPLATE.md`](../../templates/REVIEW-RECORD-TEMPLATE.md) — the recorded artifact.

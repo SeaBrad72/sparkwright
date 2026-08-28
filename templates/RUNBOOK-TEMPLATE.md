@@ -39,11 +39,13 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Cost governance: per-run budget + platform spend-cap ([Anthropic usage limit | harness budget]) — enforced: [date]  <!-- LLM/metered-API spend bounded by a declared budget + the platform cap; docs/operations/cost-governance.md; verified declared+attested by conformance/cost-governance-ready.sh. If no metered external/LLM spend: N/A — [reason] -->
 - **Runaway kill-switch:** ceilings in `.kit/budget.conf`; the orchestration loop calls `scripts/runaway-guard.sh step` (see `docs/operations/runaway-killswitch.md`).
 
+<!-- mode:enterprise -->
 **Container / Kubernetes deploy (if applicable):**
 - Image: built multi-stage & non-root in CI; pushed to GHCR on merge to `main` with a **digest-bound provenance attestation**.
 - Promote the **attested digest** (never a mutable tag) Dev → QA → UAT → Prod; production promotion is human-gated.
 - Apply `deploy/k8s/` (or `helm upgrade --install` with `deploy/helm/`); verify liveness/readiness probes pass.
 - Rollback: redeploy the previous digest (`kubectl rollout undo deployment/<name>` or re-apply the prior digest).
+<!-- /mode:enterprise -->
 
 #### Deploy-target fit rationale
 [why this platform fits THIS workload — cite the fit dimensions that drove the choice:
@@ -62,7 +64,7 @@ fit-vs-maturity trade-off is explicit; see docs/adoption/DEPLOYMENT-ENVIRONMENT.
 
 ## 6. Disaster recovery
 - **RPO:** [< 24h default] · **RTO:** [< 4h default] — always fill these headline targets (replace the placeholders); for multi-criticality systems also fill the per-tier table below.
-- **Per-tier targets (multi-criticality systems, from the BIA — `docs/continuity/BIA.md`):**
+- **Per-tier targets (multi-criticality systems, from the BIA — the file you create at `docs/continuity/BIA.md` from `templates/BIA-TEMPLATE.md`; it does not ship, and `conformance/dr-readiness.sh` looks for it once your project is data-backed):**
 
   | Tier | RTO | RPO |
   |------|-----|-----|
@@ -76,9 +78,13 @@ fit-vs-maturity trade-off is explicit; see docs/adoption/DEPLOYMENT-ENVIRONMENT.
 
 ## 8. Monitoring & alerting
 - Error tracking: [tool/link] · Health check: [endpoint] · Alerts: [what fires, to whom]
+<!-- mode:enterprise -->
 - **Resilience verification** *(deployable services — see `docs/operations/resilience-verification.md`)*: Load/soak tested: [date] · Fault-injection drill: [date]
+<!-- /mode:enterprise -->
 - **Observability** *(deployable services — Factor 14 / §3; verified by `conformance/observability-ready.sh`)*: SLOs: [target] · Telemetry wired: [signals]
+<!-- mode:enterprise -->
 - **Agent observability** *(agentic projects — see `docs/operations/agentic-ops.md`; verified by `conformance/agentops-ready.sh`)*: Agent-ops: [trace]
+<!-- /mode:enterprise -->
 
 ## 9. Known issues / technical debt
 - [issue] — [impact] — [tracking link]

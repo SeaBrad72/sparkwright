@@ -16,7 +16,7 @@
 
 **The authoritative guide for any team — human or agent — building with this kit.** It states the *principles* and the *Definition of Done*. The detailed flow lives in `DEVELOPMENT-PROCESS.md`; the quality bar in `DEVELOPMENT-STANDARDS.md` (+ your `profiles/<stack>.md`). When they overlap, **this file wins**.
 
-**Status:** MANDATORY — exceptions require explicit approval.
+**Status:** MANDATORY — exceptions require explicit approval. **Inception (Phase 0) is exempt from §1:** the five acts govern *loop* work, while `incept` is the one-time bootstrap that **creates** the repo and its control plane — no board, branch or change class exists yet. §1 binds from the **first feature branch** onward (the "Inception exception" in `skills/design/SKILL.md` + `skills/build/SKILL.md`; "Bootstrap order (incept-first)" in `DEVELOPMENT-PROCESS.md` §3).
 
 ## Roster authority (this repo uses its own roster)
 

@@ -71,7 +71,7 @@ TAB=$(printf '\t')
 #           disease and turn an anti-add ratchet into an anti-edit one. Files and census have no such
 #           churn — a file exists or it does not — so they carry no headroom at all.
 GENESIS_LINES=51400     # measured 51,312 lines across conformance/*.sh, rounded up to the next 100
-MAX_LINES=51400
+MAX_LINES=55100         # 55000 + 43 = 55043, rounded up to the next 100 per the genesis convention above (mass-acks.txt 2026-08-28, `lines`, the export-gate line)
 GENESIS_FILES=168       # measured exactly; no headroom by design
 MAX_FILES=168
 GENESIS_CENSUS=128      # measured exactly; `^check control ` rows in conformance/verify.sh

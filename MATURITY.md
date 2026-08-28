@@ -10,7 +10,7 @@ Sparkwright tracks maturity as a **stage**, separate from its version. This page
 pre-adoption → [release-candidate] → adopted
 ```
 
-**Current stage: `release-candidate`** — hardened, dogfooded, and ready to adopt. The kit reaches the `adopted` stage when an external team ships real software through the loop. The kit versions its own releases on its own cadence (currently `v3.218.0`); adoption is a maturity stage, not a version reset.
+**Current stage: `release-candidate`** — hardened, dogfooded, and ready to adopt. The kit reaches the `adopted` stage when an external team ships real software through the loop. The kit versions its own releases on its own cadence (currently `v3.219.0`); adoption is a maturity stage, not a version reset.
 
 | Stage | What it means |
 |-------|---------------|
@@ -23,6 +23,7 @@ pre-adoption → [release-candidate] → adopted
 - **The kit builds itself.** Its conformance harness, control-plane guard, and CI gates run on this repository on every push — the kit holds itself to the same Definition of Done it gives adopters, continuously.
 - **The loop ships real software.** It has been run end-to-end to build and deploy working software, where the `builder ≠ reviewer` review layer caught real high-severity fail-open bugs an agent had shipped as green tests — including a production path that failed open, and a gate that was green only because it had been skipped.
 - **Exercised across vehicles** — from that build through smaller service builds.
+- **Separation of duties on this repo, stated exactly: `agent ≠ ratifier` enforced; two-person review absent (declared).** The kit's own ratifying account is a *ratification seat* — the same human as the author, declared in `.kit/ratification-seats.conf` and named by the ratification check, as a notice, on every seat approval it detects. It is an identity the building agent cannot assume, so the agentic half genuinely binds; the human half does not, and this repo does not claim it. It retires when a second human with write access joins ([`docs/operations/review-lane.md`](docs/operations/review-lane.md#the-ratification-seat-solo)).
 
 ## Runtime enforcement by harness
 

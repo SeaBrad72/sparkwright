@@ -1,6 +1,7 @@
 #!/bin/sh
-# runbook-current.sh — the kit's own operational RUNBOOK.md must exist and must still name the
-# CURRENT release. C11 KIT-RUNBOOK.
+# runbook-current.sh — the kit's own release-pinned governing records (RUNBOOK.md and THREAT-MODEL.md)
+# must exist and must still name the CURRENT release. C11 KIT-RUNBOOK; the second row added by A4 of
+# KIT-EVAL-2-TIER-A (`D-240825-1`).
 #
 # WHY THIS EXISTS: measured at the C11 probe, this kit had NO RUNBOOK.md at all — its documented
 # cold-start path ran entirely through one agent's private memory file, which is a friction-test
@@ -10,7 +11,14 @@
 # release it claims to describe. So the check holds exactly that fact, and says so.
 #
 # ── HONEST CEILING, STATED FIRST ────────────────────────────────────────────────────────────────────
-# THE CHECK'S DOMAIN IS EXISTENCE + VERSION-STRING CURRENCY, AND NOTHING ELSE.
+# THE CHECK'S DOMAIN IS EXISTENCE + VERSION-CURRENCY OF THE TWO RELEASE-PINNED GOVERNING RECORDS,
+# AND NOTHING ELSE.
+#   · THE SECOND ROW IS THE THREAT MODEL, and it is here for a measured reason: THREAT-MODEL.md was
+#     stamped 3.185.0 in its header and 3.186.0 in its footer against a VERSION of 3.218.0 — the one
+#     document that says what the guard is FOR had no ratchet at all while the runbook had one. A
+#     stale threat model does not merely rot; it launders residuals that were re-accepted against a
+#     tree that no longer exists. Grading its stamp is the cheapest true thing a machine can say
+#     about it, and the same honest ceiling below applies to it word for word.
 #   · A WRONG RECOVERY STEP RENDERS GREEN. Every procedure in the RUNBOOK could be false and this
 #     check would still pass; it never reads a single instruction. Content truth is held by review and
 #     by the sibling living-doc gates (check-links, citation-live), never here. Do not quote this green
@@ -65,6 +73,12 @@ esac
 
 RB=RUNBOOK.md
 MARKER_RE='^[[:space:]]*\*\*Current release:\*\*'
+# ── THE SECOND ROW OF THE MARKER TABLE (A4). Same grammar, same rules, a different file and prefix.
+# The THREAT-MODEL marker is deliberately NOT line-anchored: it lives mid-sentence in the document's
+# header line (`**System:** … **Kit version:** v3.218.0 · **Date:** …`), and forcing it to column 0
+# would have meant reshaping the document to suit the check rather than the other way round.
+TM=THREAT-MODEL.md
+TM_MARKER_RE='\*\*Kit version:\*\*'
 
 # ── THE VERDICT ENGINE ──────────────────────────────────────────────────────────────────────────────
 # Reads RUNBOOK.md and VERSION RELATIVE TO THE CURRENT DIRECTORY — deliberately no `cd "$(dirname $0)"`,
@@ -91,45 +105,58 @@ rb_verdict() {  # <armed 0|1>
     return "$_bad"
   fi
 
-  # ── DEAD INPUT 2: the runbook itself. This is the row's whole subject.
-  if [ ! -f "$RB" ]; then
-    echo "runbook-current: FAIL -- $RB is absent on a KIT-MARKED tree (VERSION $_sep v$_ver $_sep 0 marker line(s) $_sep 0 line(s) scanned). This is a FAILURE, never an N/A: the kit's cold-resume path is a tracked file or it does not exist."
-    _bad=1
-    return "$_bad"
+  # ── DEAD INPUT 2 AND THE GRADE ITSELF, once per governed record. Both files are graded on EVERY
+  # run — no early return between them — so a green means both were read, and a run that reds on the
+  # runbook still tells you whether the threat model is stale too. `_bad` remains the single
+  # accumulator (the mutation sweep's one unambiguous fail-path token).
+  rb_file_verdict "$RB" "$MARKER_RE" "current-release" 's/^.*Current release:\*\*[[:space:]]*//' || _bad=1
+  rb_file_verdict "$TM" "$TM_MARKER_RE" "kit-version" 's/^.*Kit version:\*\*[[:space:]]*//' || _bad=1
+  return "$_bad"
+}
+
+# rb_file_verdict <file> <marker_re> <marker_label> <strip_sed> — grade ONE release-pinned record
+# against $_ver. Prints exactly one verdict line; returns 0 for OK, 1 for any failure. Reads $_ver and
+# $_sep from the caller's scope (POSIX sh has no locals, and this is only ever called from rb_verdict
+# on an armed tree that has already proved VERSION).
+rb_file_verdict() {
+  _f=$1; _mre=$2; _lbl=$3; _strip=$4
+
+  if [ ! -f "$_f" ]; then
+    echo "runbook-current: FAIL -- $_f is absent on a KIT-MARKED tree (VERSION $_sep v$_ver $_sep 0 marker line(s) $_sep 0 line(s) scanned). This is a FAILURE, never an N/A: the kit's release-pinned governing records are tracked files or they do not exist."
+    return 1
   fi
 
   _lines=0
-  _lines=$(grep -c '' "$RB") || _lines=0
+  _lines=$(grep -c '' "$_f") || _lines=0
   _n=0
-  _n=$(grep -cE "$MARKER_RE" "$RB") || _n=0
+  _n=$(grep -cE "$_mre" "$_f") || _n=0
 
   if [ "$_n" -eq 0 ]; then
-    echo "runbook-current: FAIL -- $RB carries NO current-release marker line (expected exactly one line beginning '**Current release:**'; VERSION is v$_ver $_sep 0 marker line(s) $_sep $_lines line(s) scanned). Without it nothing pins the runbook to a release."
-    _bad=1
-    return "$_bad"
+    echo "runbook-current: FAIL -- $_f carries NO $_lbl marker line (expected exactly one line carrying the $_lbl prefix; VERSION is v$_ver $_sep 0 marker line(s) $_sep $_lines line(s) scanned). Without it nothing pins $_f to a release."
+    return 1
   fi
 
   # UNIQUENESS BEFORE CURRENCY (vet MED-2). Two markers are a FAIL even when both are current: the
   # dangerous shape is a stale copy left beside a freshly-bumped one, and an any-line-match rule
   # greens on it forever. Counting first means that shape can never reach the currency test at all.
+  # THREAT-MODEL.md is the measured instance, not a hypothetical: it carried a 3.185.0 header stamp
+  # and a *different* 3.186.0 footer stamp at the same time.
   if [ "$_n" -gt 1 ]; then
-    echo "runbook-current: FAIL -- $RB carries $_n current-release marker lines, expected exactly 1 (VERSION is v$_ver $_sep $_lines line(s) scanned). A duplicate lets a stale copy hide beside a fresh one."
-    _bad=1
-    return "$_bad"
+    echo "runbook-current: FAIL -- $_f carries $_n $_lbl marker lines, expected exactly 1 (VERSION is v$_ver $_sep $_lines line(s) scanned). A duplicate lets a stale copy hide beside a fresh one."
+    return 1
   fi
 
-  _line=$(grep -E "$MARKER_RE" "$RB" | head -1)
-  _tok=$(printf '%s\n' "$_line" | sed -e 's/^.*Current release:\*\*[[:space:]]*//' -e 's/[[:space:]].*$//')
+  _line=$(grep -E "$_mre" "$_f" | head -1)
+  _tok=$(printf '%s\n' "$_line" | sed -e "$_strip" -e 's/[[:space:]].*$//')
 
   if [ "$_tok" != "v$_ver" ]; then
-    echo "runbook-current: FAIL -- $RB declares release '$_tok' but VERSION says 'v$_ver' (1 marker line $_sep $_lines line(s) scanned). Bump the runbook's current-release line in the release PR."
-    _bad=1
-    return "$_bad"
+    echo "runbook-current: FAIL -- $_f declares release '$_tok' but VERSION says 'v$_ver' (1 marker line $_sep $_lines line(s) scanned). Bump $_f's $_lbl line in the release PR."
+    return 1
   fi
 
-  printf 'runbook-current: %s -- %s declares %s %s VERSION is v%s %s %d current-release marker line(s) %s %d line(s) scanned %s existence and version-currency only: a wrong procedure still renders green\n' \
-    "OK" "$RB" "$_tok" "$_sep" "$_ver" "$_sep" "$_n" "$_sep" "$_lines" "$_sep"
-  return "$_bad"
+  printf 'runbook-current: %s -- %s declares %s %s VERSION is v%s %s %d %s marker line(s) %s %d line(s) scanned %s existence and version-currency only: wrong content still renders green\n' \
+    "OK" "$_f" "$_tok" "$_sep" "$_ver" "$_sep" "$_n" "$_lbl" "$_sep" "$_lines" "$_sep"
+  return 0
 }
 
 run() {
@@ -185,16 +212,52 @@ selftest() {
   rb_init "$W/current"
   rb_put "$W/current" "VERSION" "9.9.9\n"
   rb_put "$W/current" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9 (untagged mid-phase, by ruling)\n\nprose\n"
+  rb_put "$W/current" "THREAT-MODEL.md" "# Threat model\n\n**System:** kit **Kit version:** v9.9.9 - **Date:** 2026-08-25\n"
   rb_expect "a runbook naming the current VERSION passes" 0 "$W/current"
   rb_says  "and the declared release is PRINTED, not merely accepted" "declares v9.9.9" "$W/current"
   rb_says  "and the VERSION it was graded against is printed too" "VERSION is v9.9.9" "$W/current"
   rb_says  "and the marker count is printed" "1 current-release marker line(s)" "$W/current"
   rb_says  "and the scanned size is printed" "5 line(s) scanned" "$W/current"
+  rb_says  "and the SECOND governed record is graded and named too" "THREAT-MODEL.md declares v9.9.9" "$W/current"
   rb_denies "and the green never over-claims content truth" "FAIL" "$W/current"
+
+  # ── THE SECOND MARKER FILE (A4). The kit shipped a THREAT-MODEL.md stamped 3.185.0 against a
+  # VERSION of 3.218.0 — 33 minor releases and ~18 guard commits of drift in the one document that
+  # says what the guard is FOR. The RUNBOOK had a ratchet and the threat model did not, so the fix is
+  # to generalise this check's marker table rather than mint a second check (design §4).
+  rb_init "$W/tm-stale"
+  rb_put "$W/tm-stale" "VERSION" "9.9.9\n"
+  rb_put "$W/tm-stale" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/tm-stale" "THREAT-MODEL.md" "# Threat model\n\n**System:** kit **Kit version:** v1.0.0 - **Date:** old\n"
+  rb_expect "a STALE THREAT-MODEL stamp FAILS even when the RUNBOOK is current" 1 "$W/tm-stale"
+  rb_says  "and names the file and both figures" "THREAT-MODEL.md declares release 'v1.0.0'" "$W/tm-stale"
+
+  rb_init "$W/tm-dup"
+  rb_put "$W/tm-dup" "VERSION" "9.9.9\n"
+  rb_put "$W/tm-dup" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/tm-dup" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v9.9.9\n\nfooter\n\n**Kit version:** v1.0.0\n"
+  rb_expect "TWO kit-version markers FAIL (the header/footer double-stamp actually shipped)" 1 "$W/tm-dup"
+  rb_says  "and the count is named" "carries 2" "$W/tm-dup"
+
+  rb_init "$W/tm-none"
+  rb_put "$W/tm-none" "VERSION" "9.9.9\n"
+  rb_put "$W/tm-none" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/tm-none" "THREAT-MODEL.md" "# Threat model\n\nno stamp anywhere\n"
+  rb_expect "a THREAT-MODEL with NO kit-version marker FAILS on an armed tree" 1 "$W/tm-none"
+  rb_says  "and names the missing convention" "carries NO kit-version marker line" "$W/tm-none"
+
+  # ⚠️ EVERY ARMED FIXTURE BELOW CARRIES A CURRENT THREAT-MODEL.md, and that is not decoration.
+  # Adding the second marker file made these six legs RC-OVER-DETERMINED: each would have returned 1
+  # for its own reason AND for the missing threat model, so the rc no longer proved what the label
+  # said and a regression in the RUNBOOK half could hide behind the THREAT-MODEL half. Round-2 review
+  # caught it. Same discipline as the ADOPTER-EXPORT-WIRED-SWALLOWED-TEETH row: a negative fixture
+  # that fails for many reasons proves none of them individually. (`deadver`/`badver` return early on
+  # VERSION and are genuinely single-cause, so they are left alone.)
 
   # ── STALE MARKER -> FAIL. The row's entire reason for existing.
   rb_init "$W/stale"
   rb_put "$W/stale" "VERSION" "9.9.9\n"
+  rb_put "$W/stale" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/stale" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v1.0.0\n"
   rb_expect "a runbook naming a STALE release FAILS" 1 "$W/stale"
   rb_says  "and BOTH figures are named, never just the verdict" "declares release 'v1.0.0' but VERSION says 'v9.9.9'" "$W/stale"
@@ -204,6 +267,7 @@ selftest() {
   # live on forever.
   rb_init "$W/dup"
   rb_put "$W/dup" "VERSION" "9.9.9\n"
+  rb_put "$W/dup" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/dup" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v1.0.0\n\nlater section\n\n**Current release:** v9.9.9\n"
   rb_expect "a stale marker sitting beside a CURRENT one FAILS" 1 "$W/dup"
   rb_says  "and the count is named" "carries 2 current-release marker lines" "$W/dup"
@@ -212,6 +276,7 @@ selftest() {
   # correct copies still mean two places to forget to bump.
   rb_init "$W/dup2"
   rb_put "$W/dup2" "VERSION" "9.9.9\n"
+  rb_put "$W/dup2" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/dup2" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n\n**Current release:** v9.9.9\n"
   rb_expect "TWO CURRENT markers still FAIL (uniqueness, not staleness, is the rule)" 1 "$W/dup2"
   rb_says  "and the count is named" "carries 2 current-release marker lines" "$W/dup2"
@@ -220,6 +285,7 @@ selftest() {
   # ungradeable subject is a failure rather than a shrug.
   rb_init "$W/nomarker"
   rb_put "$W/nomarker" "VERSION" "9.9.9\n"
+  rb_put "$W/nomarker" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/nomarker" "RUNBOOK.md" "# RUNBOOK\n\nno anchor here at all\n"
   rb_expect "a runbook with NO marker line FAILS on an armed tree" 1 "$W/nomarker"
   rb_says  "and names the missing convention" "carries NO current-release marker line" "$W/nomarker"
@@ -228,8 +294,20 @@ selftest() {
   # ── ARMED + RUNBOOK.md ABSENT -> FAIL, never N/A. The C11 pre-slice state, pinned forever.
   rb_init "$W/missing"
   rb_put "$W/missing" "VERSION" "9.9.9\n"
+  rb_put "$W/missing" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
   rb_expect "a KIT-MARKED tree with NO RUNBOOK.md FAILS" 1 "$W/missing"
   rb_says  "and says so in the concealment-class language" "never an N/A" "$W/missing"
+  rb_says  "and names RUNBOOK.md as the absent file, not the other record" "RUNBOOK.md is absent" "$W/missing"
+
+  # ── ARMED + THREAT-MODEL.md ABSENT -> FAIL, never N/A. The mirror of the leg above, and the state
+  # the kit itself was in until this slice: the document defining what the guard is FOR simply not
+  # being there must be a failure, not a silent stand-down (`KIT-SELF-THREAT-MODEL`).
+  rb_init "$W/tm-missing"
+  rb_put "$W/tm-missing" "VERSION" "9.9.9\n"
+  rb_put "$W/tm-missing" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_expect "a KIT-MARKED tree with NO THREAT-MODEL.md FAILS" 1 "$W/tm-missing"
+  rb_says  "and names THE THREAT MODEL as the absent file" "THREAT-MODEL.md is absent" "$W/tm-missing"
+  rb_says  "and says so in the concealment-class language" "never an N/A" "$W/tm-missing"
 
   # ── ARMED + DEAD VERSION -> FAIL (vet MED-3, the roadmap-current dead-input precedent). A currency
   # check whose reference value vanished must not green over the hole.
@@ -248,6 +326,7 @@ selftest() {
   rm -rf "$W/token2"; mkdir -p "$W/token2/.github/workflows"
   printf 'name: golden-path\n' > "$W/token2/.github/workflows/golden-path.yml"
   rb_put "$W/token2" "VERSION" "9.9.9\n"
+  rb_put "$W/token2" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
   rb_expect "the golden-path.yml marker ALONE still arms the check (no ROADMAP-KIT.md)" 1 "$W/token2"
   rb_says  "and it fails as an armed tree, not as an adopter one" "never an N/A" "$W/token2"
 
@@ -266,6 +345,16 @@ selftest() {
   rb_put "$W/nastale" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v1.0.0\n"
   rb_expect "an adopter tree carrying a STALE marker is still N/A, never red" 0 "$W/nastale"
   rb_denies "and never renders a FAIL at an adopter" "FAIL" "$W/nastale"
+
+  # ── UNARMED + A STALE THREAT-MODEL -> STILL N/A. Adopters stamp their own threat model from
+  # templates/THREAT-MODEL-TEMPLATE.md and are not held to the kit's private marker convention. The
+  # adopter face must stay unconditional across BOTH marker files, or generalising the table would
+  # have quietly started redding adopter trees for a document the kit never shipped them.
+  rb_bare "$W/natm"
+  rb_put "$W/natm" "VERSION" "9.9.9\n"
+  rb_put "$W/natm" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v1.0.0\n"
+  rb_expect "an adopter tree with a STALE THREAT-MODEL stamp is still N/A" 0 "$W/natm"
+  rb_denies "and never renders a FAIL at an adopter's threat model" "FAIL" "$W/natm"
 
   # The predicate below is COPIED VERBATIM from verify.sh's is_self_skip (C6). If that idiom ever
   # changes, this leg is what tells us this check silently started rendering PASS instead of N-A.

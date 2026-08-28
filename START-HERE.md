@@ -13,7 +13,7 @@ Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-
 ## You do not need to read all of this
 
 Sparkwright ships a lot of files because it covers the whole lifecycle — but **you read almost none of
-it up front.** Per-task reading is small and just-in-time (`AGENTS.md` is ~24 lines, read when an agent
+it up front.** Per-task reading is small and just-in-time (`AGENTS.md` is short, read when an agent
 acts). Here is the whole map at a glance.
 
 **Your first 5 (the core path):**
@@ -62,8 +62,8 @@ This guide's numbered steps are the **engineer/lead Inception path**. If you're 
 
 ---
 
-## 0. Orient (5 min)
-Read, in order: this file → `CLAUDE.md` (principles + Definition of Done) → `DEVELOPMENT-PROCESS.md` (the loop) → skim `DEVELOPMENT-STANDARDS.md` (the universal bar — deep-dive only on a specific quality bar, per the front-door map above). Don't read profiles yet — you pick one below (it's in your "first 5" *set*, opened here at step 2).
+## 0. Orient
+Read, in order: this file → `CLAUDE.md` (principles + Definition of Done) → `DEVELOPMENT-PROCESS.md` (the loop) → skim `DEVELOPMENT-STANDARDS.md` (the universal bar — deep-dive only on a specific quality bar, per the front-door map above). Don't read profiles yet — you pick one below (it's in your "first 5" *set*, opened here at step 2). **This is not a quick step, and no honest minute-count fits it:** read end to end those four documents run to well over a thousand lines. The honest way through is the front-door map above — read this file and `CLAUDE.md` properly, then let the map tell you which section of the other two your current task actually needs. Orienting is something you finish over your first few slices, not before them.
 
 ## 1. Charter
 Write the project charter (into the project `CLAUDE.md` you'll create in step 5):
@@ -133,7 +133,7 @@ Fill each function in `DEVELOPMENT-PROCESS.md` §2 — intent owner, lead/integr
 Working alone? The kit assumes multiple people in places (builder ≠ sole reviewer, CODEOWNERS, ratification RBAC). Here is the sanctioned solo path:
 
 - **builder ≠ reviewer, solo.** Open a PR, let CI gate it, then **merge your own PR via owner admin-merge** (`gh pr merge --admin`). At solo scale set **`enforce_admins: false`** in your branch protection so the admin-merge is permitted — GitHub records the bypass, and that log *is* your audit trail of "solo maintainer self-ratified." When a second engineer joins, flip `enforce_admins` back to **`true`**: the required-review rule then enforces real review (you can no longer self-merge), with no other reconfiguration.
-- **Control-plane PRs show *"awaiting ratification"* (yellow, not red).** A PR touching the control plane (the guard, CI, `conformance/`, `adapters/`, the named `scripts/`, or the governing docs) posts a `control-plane-ratification` check held at **`status: in_progress`** — **yellow**, with no conclusion — that **blocks the merge** until a non-author approval lands, at which point the gate re-runs on the approval and turns green by itself. No red ❌ and no "CI failed" email: red is reserved for a gate that genuinely could not evaluate the diff. (Until v3.126.0 this state was posted as `action_required`, which we described as a *caution* colour — it is not; GitHub renders it with the **same red ✗ as a failure**, so a gate working exactly as designed looked like a broken build. That was CP-9.) Solo, that's expected — your logged admin-merge above **is** the ratification. Declare `control-plane-ratification` in `REQUIRED-CHECKS.md` and run `sh scripts/branch-protection-apply.sh --apply` to require it (the additive endpoint that script wraps; see `profiles/<stack>/BRANCH-PROTECTION.md`).
+- **Control-plane PRs show a GREEN `control-plane-ratification` check carrying a notice that reads *"awaiting a non-author approval"*, and that is normal — the merge is still blocked.** A PR touching the control plane (the guard, CI, `conformance/`, `adapters/`, the named `scripts/`, or the governing docs) cannot merge until a non-author approval lands; **what blocks it is your branch protection's "Require approvals ≥ 1"**, which is server-side, not this check's colour. The check *explains* the state instead of duplicating the block: waiting is green-with-a-notice, and it turns red only when something is actually wrong — an approval is present and the gate still does not ratify (the approver is the author, the review list was unreadable, the change-class fail-safed), or the gate could not evaluate the diff. ⚠️ **If you set `required_approving_review_count` to 0, this check goes green on an unratified control-plane PR and nothing stops the merge** — ship the review requirement and this gate together, never one alone. (History, in case you inherit an older copy: the waiting state was a *yellow* posted check-run until 2026-08-27 — deleted because branch protection stopped matching API-posted runs — then briefly RED, until 2026-08-28 made it green-with-a-notice.) Solo, that's expected — your logged admin-merge above **is** the ratification. Declare `control-plane-ratification` in `REQUIRED-CHECKS.md` and run `sh scripts/branch-protection-apply.sh --apply` to require it (the additive endpoint that script wraps; see `profiles/<stack>/BRANCH-PROTECTION.md`).
 - **Deferrable gates at solo / Stage-1 scale.** Coverage, dependency-scan, SBOM, provenance, and a11y can ride the waiver ramp ([templates/WAIVER-REGISTER.md](templates/WAIVER-REGISTER.md)) while you grow; **`secret-scan` and `branch-protection` stay non-negotiable.** You begin at **Stage 1** of the maturity model ([docs/enterprise/ORG-ROLLOUT.md](docs/enterprise/ORG-ROLLOUT.md)).
 - Everything else in this guide applies unchanged.
 
@@ -147,6 +147,6 @@ Working alone? The kit assumes multiple people in places (builder ≠ sole revie
 - [ ] Project `CLAUDE.md`, `RUNBOOK.md`, backlog, seed roadmap created
 - [ ] Per-project config declared
 - [ ] Roles assigned
-- [ ] *(data-handling projects)* BIA done (`docs/continuity/BIA.md`); per-tier RTO/RPO set; restore drill scheduled
+- [ ] *(data-handling projects)* BIA done — written from `templates/BIA-TEMPLATE.md` to `docs/continuity/BIA.md` (a file you create; it does not ship); per-tier RTO/RPO set; restore drill scheduled
 
 **All checked?** Delete this file (or keep for reference), and enter the loop at **Discover** (`DEVELOPMENT-PROCESS.md` §4). Welcome aboard.

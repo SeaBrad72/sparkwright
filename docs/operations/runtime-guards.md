@@ -23,7 +23,7 @@ How the kit's destructive-action deny-matrix protects **more than the Claude Cod
 | Claude Code | `.claude/hooks/guard.sh` (PreToolUse) | command + path + MCP-tool (`mcp__.*`) | automatic in Claude Code |
 | Any git client | `hooks/pre-push` → `.git/hooks/pre-push` (or the config pointing at the tracked `hooks/`) | git-history (force-push, push-to-main) | none — every runtime + humans |
 | Any other runtime | `scripts/kit-guard` CLI | full command + path matrix | runtime pipes commands through it |
-| CI (any harness) | `conformance/agent-boundary.sh` + `gate-agent-boundary` job | control-plane-diff ratification | automatic on every PR — the harness-independent floor |
+| CI (any harness) | `conformance/agent-boundary.sh` + `control-plane-ratification` job | control-plane-diff ratification | automatic on every PR — the harness-independent floor |
 
 ### Wiring a non-Claude runtime
 Pipe each proposed shell command through the CLI before running it:
@@ -233,7 +233,7 @@ it, remove it the moment the work lands.
 ## Over-deny (false-positive) ceiling — the other direction
 The control-plane shell-mutation check matches a control-plane path **and** a mutation verb by **substring over the whole command string** — it cannot tell *code* from *prose*. So it sometimes **over-denies** (a false positive, the guard failing *safe*): a commit message, a `gh pr create --body`, a heredoc body, or a `grep` pattern that merely *mentions* a control-plane path (`CODEOWNERS`, `.github/workflows`, `.claude/`) alongside a verb-looking word (`cp`, `sed`, `install`) is denied even though it mutates nothing. `git checkout -b <branch>` co-occurring with such a mention trips it too.
 
-This is annoying, not unsafe (over-deny ≠ bypass). **Workarounds, in order:** for a long **commit or PR message** (the most common trip — a multi-line body is segmented on its newlines and a fragment mentioning a control-plane path is scanned as data-mistaken-for-code), pass the body from a **FILE** rather than inline `-m`/`--body` — `git commit -F <file>` / `gh pr create --body-file <file>` (the file content is a message, never executed). **As of DRIFT-2 the deny message names this escape itself** when the command is a `git commit`/`git tag`/`gh` invocation, so you see it at the moment of friction. Otherwise: run the command via the **`!` user-shell escape** (it runs in your terminal, outside the PreToolUse hook); use the **Read tool** instead of a shell `cat`/`grep` (or `sed -n`) for reads; if you are actually doing **control-plane work**, use the **dev-clone** (see the section above — that is the route, and it keeps the guard armed). **Only as a last resort** set `KIT_GUARD_SELFEDIT=1` in the **launching** shell — and know that it disarms the guard **globally** (destructive-op and secret-read denies included), not just the control-plane check. (An **inline** `KIT_GUARD_SELFEDIT=1 <cmd>` prefix does **not** work — the PreToolUse hook runs in its own process *before* your command, so the inline var never reaches it; export it in the launching shell, or add an `env` block to `.claude/settings.json`. In the **VSCode extension** a launching-shell export does not reach the hook either — the extension spawns its own process — so the `env` block is the only route there.) The structural fix — per-segment command parsing (judge each `;`/`&&`/`|`-separated segment's leading verb against the paths in *that* segment) — is tracked as **G8** in `../ROADMAP-KIT.md`; it is deferred because tightening this regex risks the *unsafe* direction (a false-negative), and the real backstop for an actual control-plane change is the PR-time `gate-agent-boundary` check, which diffs the files regardless of how they were edited.
+This is annoying, not unsafe (over-deny ≠ bypass). **Workarounds, in order:** for a long **commit or PR message** (the most common trip — a multi-line body is segmented on its newlines and a fragment mentioning a control-plane path is scanned as data-mistaken-for-code), pass the body from a **FILE** rather than inline `-m`/`--body` — `git commit -F <file>` / `gh pr create --body-file <file>` (the file content is a message, never executed). **As of DRIFT-2 the deny message names this escape itself** when the command is a `git commit`/`git tag`/`gh` invocation, so you see it at the moment of friction. Otherwise: run the command via the **`!` user-shell escape** (it runs in your terminal, outside the PreToolUse hook); use the **Read tool** instead of a shell `cat`/`grep` (or `sed -n`) for reads; if you are actually doing **control-plane work**, use the **dev-clone** (see the section above — that is the route, and it keeps the guard armed). **Only as a last resort** set `KIT_GUARD_SELFEDIT=1` in the **launching** shell — and know that it disarms the guard **globally** (destructive-op and secret-read denies included), not just the control-plane check. (An **inline** `KIT_GUARD_SELFEDIT=1 <cmd>` prefix does **not** work — the PreToolUse hook runs in its own process *before* your command, so the inline var never reaches it; export it in the launching shell, or add an `env` block to `.claude/settings.json`. In the **VSCode extension** a launching-shell export does not reach the hook either — the extension spawns its own process — so the `env` block is the only route there.) The structural fix — per-segment command parsing (judge each `;`/`&&`/`|`-separated segment's leading verb against the paths in *that* segment) — is tracked as **G8** in `../ROADMAP-KIT.md`; it is deferred because tightening this regex risks the *unsafe* direction (a false-negative), and the real backstop for an actual control-plane change is the PR-time `control-plane-ratification` check, which diffs the files regardless of how they were edited.
 
 ### What `GUARD-READONLY-FP-RELIEF` changed (v3.218.0) — five relieved shapes, one *tightened* one
 
@@ -265,16 +265,73 @@ the target literally.
 
 ### Kept-denied on purpose — and each one now names its escape
 
-Segmentation is deliberately **quote-blind**: a quote-aware splitter fails *open* (it can miss a real
-`; rm -rf`). These four faces are therefore not relieved; they pay their friction with a named escape
-in the deny message instead.
+Segmentation is deliberately **quote-blind by default**: a quote-aware splitter fails *open* (it can
+miss a real `; rm -rf`). `GUARD-READ-LANE-2` bought back the quoted-alternation face **only** behind a
+gate that keeps the fail-open direction shut (see the read-lane table below); the three faces here are
+still not relieved, and they pay their friction with a named escape in the deny message instead.
 
 | Denied shape | Why it stays denied | What the message now tells you |
 |---|---|---|
-| `grep -n "A\|B" <cp>` (quoted alternation) | the quoted `\|` is scanned as a separator | one pattern per invocation, `grep -e A -e B`, or the Grep tool |
 | `for f in <cp-paths>; do … ; done` | the loop **head** carries the whole deny — relieving it segment-locally would allow a mass-delete body (`do rm $f` allows as a standalone segment, measured) | the Read/Grep tool, or one invocation per file |
 | `bash -c "…"`, `python3 -c "…"`, `source` | an interpreter's arguments are code, not data | use the Read tool, or run a file that names no control-plane path |
 | `KIT_ANYTHING=1 sh <kit-script>` (unvetted prefix) | the vetted-name allowlist is closed on purpose; adding a name per false positive is enumeration creep | `export` the variable as a separate statement, or use a vetted name |
+
+**Quoted alternation moved OUT of this table.** `grep -n "A\|B" <cp>` and `grep -E "a|b" <cp>` are now
+**allowed** — face F-a below. The relief is a *masking* recogniser with a declared decline set, so the
+shapes it will not read are still denied, exactly as before: a **backslash immediately before `"`, `'`
+or `\`** · a **`$`** anywhere · a **backtick** anywhere · a **`<<` heredoc operator** · a **newline or
+CR** after joining · **unbalanced quotes, or a walk that ends inside an open span** · and — the
+load-bearing one — **any segment whose lead verb is not on the gate lexicon**, which discards the mask
+and restores today's verdict for the whole command.
+
+### What `GUARD-READ-LANE-2` changed — the read lane, face by face
+
+Six read faces, each a **declared recogniser that declines** (a bug in one over-denies, never
+over-allows). The cell labels in the last column are the fixtures in `conformance/agent-autonomy.sh`
+that pin each claim; every statement here is a cell, not a description.
+
+| Face | Now allowed | Declines on (still denies) | The named escape when it declines | Cells |
+|---|---|---|---|---|
+| **F-a** — quoted-separator mask | a quoted `\|`, `&&`, `>` or `->` inside a pattern or a banner: `grep -E "a\|b" <cp>`, `grep -nE 'a b\|c' <cp>`, `echo "=== (before -> after) ==="`, a masked pattern followed by a **real** pipe into another gate verb (`git log \| grep -E "a\|b"`), and the single-quoted BRE twin `'a\\\|b'` | the decline set above; **and the gate**: every segment's *de-quoted* lead must be on `_CP8B_MASK_GATE_VERBS` (`grep egrep fgrep ls cat head tail wc stat du cut tr nl od hexdump tac comm cmp basename dirname realpath readlink echo printf which type shellcheck jq shasum md5 cksum yamllint git`, with `git` admitted only through `status blame describe diff log show ls-files`). `sh`, `xargs`, `tee`, `cp`, a kit script or an empty lead → mask discarded → today's verdict | drop the alternation, one pattern per invocation, or the Grep tool | `F-a …` (16 allow / 13 deny, incl. the `xargs rm`, `tee`, quoted-`sh` and unbalanced-quote declines) |
+| **F-b — `sed -n`** | `sed -n 1,120p <cp>` — exactly `-n`, **one** script token matching a numeric range (`N`, `N,M`, `N,$`) after stripping one matching quote pair, ≥1 non-flag path operands | `-i`, `-e`, `-f`, `-E`, `-s`, `--expression=`, a second script, a `w`/`e`/`r` command, a `/re/p` address, a redirect, a pathful `/usr/bin/sed` lead | `grep`, `head`/`tail`, or the Read tool | `F-b …` (`W6`, `W8`, `W8b` are the write cousins, pinned DENY) |
+| **F-b — `awk`** | `awk 'NR>=5' <cp>`, `awk 'NR==12' <cp>`, `awk '{print}' <cp>` — one program token matching the anchored `NR`-comparison or bare-`{print}` grammar, optional single `-F<sep>` | `-v`, `-f`, `-e`, `--source`, `system()`, `getline`, a bare `>` in the program, a second program, a program token carrying whitespace (`awk 'NR>=5 && NR<=9'`, `awk '{ print }'` — a *token*-delivery gap, see below) | drop the spaces (`NR<=9` alone, `'{print}'`), or the Read tool | `F-b …`, `F-a T6-carried …` |
+| **F-e — `find`** | `find <dir> -name '*.sh' -type f -print` — every token a path or a primary on the **declared allowlist** with its arity operand | `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, `-fprint*`, `-fls`, `-ls`, `-printf`, an unknown primary, a **quoted** primary (`'-delete'`), a primary smuggled into an arity slot, a `{a,b}` brace or a leading glob operand, a pathful `/usr/bin/find` lead | name the primary in a row on this table (a one-line ratified add), or use the Glob tool | `F-e …`, `F-e/T7r2 …` |
+| **F-g — `.claude/projects/*`, `.claude/plans/*`** | already relieved — a read of a project/plan file (`cat`, `head`, `grep -n`, and now `sed -n` via F-b) allows | unchanged: `sed -i`, `tee`, `python3 -c open(...,'w')` and any `..` traversal onto a nested `hooks/` still deny (owner ruling **C1**, classifier-only relief) | — | `F-g …` (9 cells, pinned) |
+| **F-h** — the kill-switch sentence | *(message tier, not a verdict)* a denial whose whole offending segment is **read-shaped** no longer advertises `KIT_GUARD_SELFEDIT=1`; it names the read escape instead | any redirect, a write verb or write flag in any token position, a prefixed or orphan-led write, a destructive loop body, `echo`/`printf` (emitters, never read-shaped) → the sentence stays | — | `F-h …` (57 cells, `assert_reason_lacks` / `assert_reason_has` pairs) |
+
+**F-g is "already relieved; pinned", not a new mechanism.** The design's mask for it measured as a
+no-op: a read-verb segment leaves the read arm before it can reach the pathhit, and that arm's only
+control-plane test was *already* relieved for `.claude/projects|plans` — more widely than the design's
+regex. The `sed -n` face closes through F-b's grammar instead. **Consequently the C1 ruling extension
+the design offered for ratification was never exercised: no write-side and no pathhit change shipped.**
+
+**Priced over-denies, deliberately not refunded** (each has a one-retry escape): a flagless
+`rg` / `diff` / `column` / `git grep` quoted-alternation read — those four verbs carry an exec or write
+flag (`rg --pre`, `git grep -O`, `diff --to-file=`, `column -o`) and are **off** the mask gate; retry
+with `grep -E`. Also `\;` outside quotes, `find -ls`, `file -i <cp>` (keeps the kill-switch sentence),
+a pathful `/usr/bin/sed` or `/usr/bin/find` lead, and `cat <cp> | sh -n` (retry: `sh -n <file>`).
+
+#### The deny side of the same slice
+
+| Now denied (was ALLOW) | Why | Cells |
+|---|---|---|
+| `sh -c 'gh pr merge 5 --admin'`, `bash -lc …`, `xargs -0 sh -c …`, `CMD='gh pr merge 5 --admin'; sh -c "$CMD"`, a line continuation inside `gh \`⏎`pr merge` | the rider: the porcelain arm now runs over a quote- and continuation-normalised view, and the lead token is case-folded, so a **same-command** wrapper no longer blinds it. `gh -R o/r pr merge 5 --admin` was ALLOW since the arm was written (`gh` hoists `-R`) — the arm now tests token **order**, not adjacency | `R …`, `T2R2 …`, `T2R3 …` |
+| `echo "cp e <cp>" \| sh`, `cat <<'EOF' \| sh`, `sh <<'EOF'`, `\| bash`, `\| python3`, `\| xargs sh -c`, `ls conformance \| sh` | the pipe-into-interpreter rule: if any segment's lead is an interpreter and it is **fed by a pipe**, every upstream segment is scanned **raw** — no read-verb data exemption, no F-a mask, no heredoc-body exclusion. A quoted heredoc body is excluded only when the consumer is the **whole** start line | `H …` (171 cells, incl. `/bin/sh`, `env -i sh`, `sudo sh`, `nohup sh`, versioned `bash5`/`python3.11`) |
+| `sed -n 1p {-i,<cp>}`, `awk … {-v,<cp>}`, `find … {-exec,cp}`, a leading `*` glob operand | brace expansion synthesised a flag *after* the guard had judged one inert token. An operand carrying `{ } ,` or a leading glob byte is now **never a path**, in the shared read-lane helper (`_cp8b_seg_path_ok`), so every read lane **that has a path-operand grammar** inherits it — the sed, awk and find faces, its three measured call sites. The **lexicon** lanes are NOT reached: `grep x {-r,<cp>}`, `rg x {--pre,./e.sh,<cp>}` and `git grep {-O,vim,x} <cp>` still ALLOW, exactly as their plain spellings do (boarded, `GUARD-READ-LEXICON-EXEC-FLAGS`) | `F-e/T7r2 …` |
+| `'grep' x > .claude/hooks/gu*` | a **quoted** read lead dodged the redirect-launder arm; the lead is now de-quoted before the arm looks | `F-4 …` |
+
+**Ceiling, stated plainly.** These are byte-level rules. A wrapper whose bytes are **absent** from the
+command — an exported `$VAR`, `$(cat f)`, a `gh alias set` — is still invisible, and an unrecognised
+interpreter binary name (`busybox sh`, `./sh`, a renamed shell) still walks past the pipe rule. Four
+data-lexicon verbs carry exec/write flags that reach a control-plane path today and are **ALLOW**,
+pinned as measured-uncovered cells (`F-1 …`) and boarded as `GUARD-READ-LEXICON-EXEC-FLAGS`.
+
+**Zero-widening is measured, not asserted.** `conformance/agent-autonomy.sh --delta <pristine-core>`
+replays every Bash cell against both cores and fails on any verdict change outside a declared expected
+list. At this slice's head that reads **205/0 against `4b3debc3` (247,504 b), cell-bounded** — 205
+changed, 205 expected, 0 unexpected. *Cell-bounded* is the honest qualifier: the replay covers Bash
+`assert_deny`/`assert_allow` cells only, never the reason-text helpers, the fixture-driven legs, or the
+Write/Edit/Read entry points.
 
 A fifth ergonomic fix rides along: the escape hints used to key on the **raw** command's lead verb, so
 `cd x && sed -n … <cp>` lost its `head/tail` hint — the tip vanished exactly when a compound made the

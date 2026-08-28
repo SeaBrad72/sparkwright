@@ -1,9 +1,10 @@
 # The decision record — [Project Name]
 
-> **Template.** Your project's ledger of rulings. `scripts/incept.sh` stamps it to
-> `docs/governance/DECISIONS.md`, empty, at Inception. Delete this guidance banner and start
-> recording. The entry contract (§1 of your project guide) tells every agent to search this file
-> before changing a surface — so a ruling that lives only in a chat transcript does not exist.
+> **Template.** `scripts/incept.sh` stamps this to `docs/governance/DECISIONS.md`, empty, at Inception. Delete this line and start recording.
+
+Your project's ledger of rulings. The entry contract (§1 of your project guide) tells every agent to
+search this file before changing a surface — so a ruling that lives only in a chat transcript does
+not exist.
 
 **Status:** empty — no rulings recorded yet.
 

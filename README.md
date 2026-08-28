@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.218.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.219.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -88,7 +88,7 @@ Claude Code is the default and the reference adapter, but any harness that reads
 | **`MAINTAINING.md`** | How the kit is built, versioned, and contributed back to. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
 | **`adapters/`** | Per-harness adapters: `claude-code` (reference) + `codex`/`cursor`/`gemini` + `generic` + `_TEMPLATE`/`new-adapter.sh` to BYO. |
-| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `POSTMORTEM`, `BIA`, … (~24 in all). |
+| **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `POSTMORTEM`, `BIA`, and more. |
 | **`docs/`** | `enterprise/` (compliance addendum), `work-tracking/` (backlog adapters), `adoption/` (brownfield · deploy targets), `operations/` (progressive delivery · resilience · DORA), `continuity/` (DR drill · BIA). |
 
 ## Generate your own profile (any stack)

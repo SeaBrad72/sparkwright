@@ -1,13 +1,15 @@
 # Required Status Checks — [Project Name]
 
-> **Template.** The single source of truth for which GitHub status-check **contexts** must be bound
-> in this repo's branch protection. `conformance/branch-protection.sh --declared-only` parses this
-> file offline (no `gh`, no network); its live leg compares these names against the real
-> `required_status_checks.contexts` when a maintainer runs it with admin-authenticated `gh`.
-> `scripts/branch-protection-apply.sh` reads this file and POSTs any missing context. Ceiling:
-> proves the DECLARATION is well-formed and, on the live leg, that it matches the forge — it does
-> not prevent an admin from removing a bound context (real prevention is org rulesets / Terraform's
-> `github_branch_protection`; see `scripts/branch-protection-apply.sh` and that resource).
+> **Template.** Inception stamps this to your repo root; fill the fenced block below, then delete this line.
+
+The single source of truth for which GitHub status-check **contexts** must be bound in this repo's
+branch protection. `conformance/branch-protection.sh --declared-only` parses this file offline (no
+`gh`, no network); its live leg compares these names against the real
+`required_status_checks.contexts` when a maintainer runs it with admin-authenticated `gh`.
+`scripts/branch-protection-apply.sh` reads this file and POSTs any missing context. Ceiling: it proves
+the DECLARATION is well-formed and, on the live leg, that it matches the forge, but it
+does not prevent an admin from removing a bound context — real prevention is org rulesets or
+Terraform's `github_branch_protection` (see `scripts/branch-protection-apply.sh` and that resource).
 
 One context per line, inside the single fenced block below. A `#`-prefixed line is a comment or a
 conditional you have not turned on yet, and is ignored. Duplicate lines are a declaration error.
