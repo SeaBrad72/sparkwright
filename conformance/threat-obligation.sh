@@ -1,7 +1,7 @@
 #!/bin/sh
 # Why this gate: sparkwright explain threat-model
 # threat-obligation.sh — HITL obligation: a change-set touching a sensitive/regulated-data
-# surface MUST carry a filled THREAT-MODEL record, else FAIL. Diff-level (vs privacy-ready.sh's
+# surface MUST carry a filled THREAT-MODEL record, else FAIL. Diff-level (vs readiness.sh privacy-ready's
 # project-level declaration) — they compose, not collide.
 #
 # SURFACE (HITL-1 + HITL-5): the SENSITIVE half (`*secret*`/`*auth*`/`*password*`/`*payment*`/
@@ -17,9 +17,9 @@
 #
 # SCOPE (honest ceiling): green = a THREAT-MODEL record EXISTS and is FILLED for a triggered change —
 # NOT that it is fresh-for-this-change, nor that the threat analysis is sound (review backstops).
-# N-A = the change-set touches no sensitive surface (trigger-absence), exactly like privacy-ready.sh.
+# N-A = the change-set touches no sensitive surface (trigger-absence), exactly like readiness.sh privacy-ready.
 # The regulated half adds a ceiling of its own: it is a PATH heuristic, so a file holding PII under a
-# neutral name (`src/models/user.rb`) is still N/A. privacy-ready.sh's project-level declaration and
+# neutral name (`src/models/user.rb`) is still N/A. readiness.sh privacy-ready's project-level declaration and
 # review are what cover that — this gate is diff-relative and name-based, and claims nothing more.
 #
 # Usage:
@@ -53,7 +53,7 @@ OBL_LIB_SOURCED=yes
 THREAT_LEGACY_GLOBS='*secret*|*auth*|*password*|*payment*|*migrations/*|*.env'
 
 # HITL-5 — THE REGULATED-DATA HALF. This check's title has always said "sensitive/regulated-data"; only
-# the sensitive half was enforced, and privacy-ready.sh does not close the gap because it is
+# the sensitive half was enforced, and readiness.sh privacy-ready does not close the gap because it is
 # DECLARATION-triggered (a project that never wrote a `Data classification:` line stays N/A while a PR
 # introduces PII handling). POSTURE IS FAIL-SAFE, owner-ratified: for regulated data over-triggering
 # beats under-triggering, because PHI/PII shipping unreviewed is categorically worse than one
@@ -111,7 +111,7 @@ THREAT_REGULATED_GLOBS='*[Pp][Ii][Ii]*|*[Gg][Dd][Pp][Rr]*|*[Pp][Aa][Tt][Ii][Ee][
 # HONEST CEILING of the regulated half: it is a PATH heuristic and nothing more. `src/models/user.rb`
 # holding PII with no telltale token in its name is still N/A, and anchoring `phi`/`ssn` widens that
 # recall gap deliberately in exchange for the 982 false positives above. What closes the residual is the
-# project-level declaration gate (privacy-ready.sh) and review — not this glob list.
+# project-level declaration gate (readiness.sh privacy-ready) and review — not this glob list.
 # AND THE VOCABULARY IS EXACTLY SEVEN TOKENS — pii · gdpr · patient · cardholder · phi · ssn ·
 # personal-data — so the misses are NAMED here rather than left to be inferred from the phrase "path
 # heuristic". `medical/`, `biometric`, `passport`, `iban`, `tax_id`, `nhs_number`, `dob` and `mrn` all
@@ -266,7 +266,7 @@ selftest() {
   rm -f "$_tmp/THREAT-MODEL.md"
   [ ! -f "$_tmp/THREAT-MODEL.md" ] || { echo "SELFTEST FAIL: legs 7-9 must run with the record absent"; rc=1; }
   # LEG 7 (HITL-5, THE RC-LOCK ITEM): a change-set touching REGULATED DATA — the half of this check's own
-  # title that shipped unenforced in HITL-1 — must demand a threat model. privacy-ready.sh does NOT cover
+  # title that shipped unenforced in HITL-1 — must demand a threat model. readiness.sh privacy-ready does NOT cover
   # this: that gate is DECLARATION-triggered, so a project that never wrote a `Data classification:` line
   # stays N/A even while a PR is introducing PII handling. These are the row's own acceptance examples.
   # ONE DEVIATION FROM THE BOARDED EXAMPLE LIST, measured rather than assumed: the row listed

@@ -2,21 +2,21 @@
 
 Proves **disaster recovery is real**: data classified by criticality (BIA), RTO/RPO tiered, and a restore drill actually run. **Checklist-type**, run at the **DR-readiness gate** (`DEVELOPMENT-PROCESS.md` §7), as **recurring maintenance** (§15), and as part of the **Definition of Done for data services** (`CLAUDE.md`). **Conditional:** projects with no durable data (stateless service, CLI, library) mark the whole check **N/A — no persistent data to recover**. Aligns with NIST SP 800-34 (contingency planning) and the Data Management contract (`DEVELOPMENT-STANDARDS.md` §10).
 
-> **What the Auto rows prove — and don't.** `dr-ready.sh` confirms DR is *written down* (a BIA exists, RUNBOOK RTO/RPO are set, a restore-drill date is recorded). It does **not** verify the restore *succeeded* or *met RTO/RPO* — those are the **Manual** rows, signed off by the on-call/operator with evidence. **A green script is necessary, not sufficient.**
+> **What the Auto rows prove — and don't.** `readiness.sh dr-ready` confirms DR is *written down* (a BIA exists, RUNBOOK RTO/RPO are set, a restore-drill date is recorded). It does **not** verify the restore *succeeded* or *met RTO/RPO* — those are the **Manual** rows, signed off by the on-call/operator with evidence. **A green script is necessary, not sufficient.**
 
-> **The script's `N/A` is advisory only.** Detection of a "persistent-data surface" is deliberately conservative and can miss a data project. **If this project handles durable data, this checklist applies regardless of what `dr-ready.sh` prints.** The script escalates (detect → require); it never exempts. The human-applied checklist is the gate of record.
+> **The script's `N/A` is advisory only.** Detection of a "persistent-data surface" is deliberately conservative and can miss a data project. **If this project handles durable data, this checklist applies regardless of what `readiness.sh dr-ready` prints.** The script escalates (detect → require); it never exempts. The human-applied checklist is the gate of record.
 
 ## How to use
-Copy this file into your project (or your DR record). For each item: mark **Applies? (Y / N+reason)** and give **Evidence**. Items tagged *(documented)* are auto-checkable via `sh conformance/dr-ready.sh`; items tagged *(verified)* require the on-call/operator's evidence from an actual drill. The reviewer signs off only when every applicable item has evidence.
+Copy this file into your project (or your DR record). For each item: mark **Applies? (Y / N+reason)** and give **Evidence**. Items tagged *(documented)* are auto-checkable via `sh conformance/readiness.sh dr-ready`; items tagged *(verified)* require the on-call/operator's evidence from an actual drill. The reviewer signs off only when every applicable item has evidence.
 
 ## Checklist (blank)
 
 | # | Item | Applies? | Evidence (where/how) | Check |
 |---|------|----------|----------------------|-------|
-| 1 | BIA done — data/services classified by criticality (`docs/continuity/BIA.md`) *(documented)* | | | **Auto:** `dr-ready.sh` |
-| 2 | Per-tier RTO/RPO defined from the BIA (RUNBOOK §6, not placeholder) *(documented)* | | | **Auto:** `dr-ready.sh` |
+| 1 | BIA done — data/services classified by criticality (`docs/continuity/BIA.md`) *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
+| 2 | Per-tier RTO/RPO defined from the BIA (RUNBOOK §6, not placeholder) *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
 | 3 | Automated backups configured for production data *(verified)* | | | Manual |
-| 4 | Restore drill **run** — date recorded in RUNBOOK §6 *(documented)* | | | **Auto:** `dr-ready.sh` |
+| 4 | Restore drill **run** — date recorded in RUNBOOK §6 *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
 | 5 | Restore drill **succeeded** — data actually restored, integrity verified *(verified)* | | | Manual |
 | 6 | RTO/RPO **actuals met** the tier targets in the last drill *(verified)* | | | Manual |
 | 7 | Backups stored durably + access-controlled (off-host / off-region) *(verified)* | | | Manual |
@@ -35,4 +35,4 @@ Copy this file into your project (or your DR record). For each item: mark **Appl
 | 7 | Durable + access-controlled *(verified)* | Y | backups in separate region bucket, IAM-restricted | Manual ✅ |
 | 8 | Drill scheduled | Y | quarterly recurring board item (§15) | Manual ✅ |
 
-> A stateless service, CLI, or library marks the whole check **N/A — no persistent data to recover**; `dr-ready.sh` skip-passes such a project automatically. **If your only "data" is an ephemeral cache (e.g. a cache-only `REDIS_URL`), mark N/A — there is no durable data to recover.**
+> A stateless service, CLI, or library marks the whole check **N/A — no persistent data to recover**; `readiness.sh dr-ready` skip-passes such a project automatically. **If your only "data" is an ephemeral cache (e.g. a cache-only `REDIS_URL`), mark N/A — there is no durable data to recover.**

@@ -148,11 +148,17 @@ and fail the pipeline (not a check-run, but a red pipeline still blocks merge if
 
 `loop-state`'s ceiling (see `conformance/loop-state.sh`'s own header) is already "the trailers are
 present and parseable" — a structural, git-native property with no GitHub dependency. On GitLab, adopt a
-**commit message template** (`git config commit.template`) carrying the `Kit-Row` / `Kit-Stage` /
-`Kit-Class` / `Kit-Skill` scaffold, and optionally a GitLab CI job that runs
+**commit message template** (`git config commit.template`) carrying the trailer scaffold. What the
+gate requires is **proportional to the derived change class**: an ordinary change owes `Kit-Row` +
+`Kit-Class`; a sensitive or control-plane change owes `Kit-Stage` and `Kit-Skill` as well, and any
+field you volunteer is validated either way — so a template carrying all four is a fine default.
+Optionally add a GitLab CI job that runs
 `sh conformance/loop-state.sh --head "$CI_COMMIT_SHA"` and fails the pipeline on a missing/invalid
-declaration — the same observe-first discipline applies: land it non-blocking first, flip to blocking
-only once the team has adjusted.
+declaration — observe-first still applies HERE, and the reason is specific rather than habit: on
+GitHub the kit emits `.github/workflows/adopter-gates.yml` with a `LOOP_STATE_MODE` dial, which is
+why that surface could be flipped to `enforce` by default on 2026-08-30. **The kit emits no GitLab
+pipeline, so there is no kit-shipped dial to flip here** — the job above is one you write, so you
+own its rollout: land it non-blocking first, flip to blocking once the team has adjusted.
 
 **Honest ceiling:** all three are adopter-wired, not kit-enforced on GitLab — there is no live-verifiable
 gate the kit can ship without a GitLab instance to test against, matching the control-plane-ratification

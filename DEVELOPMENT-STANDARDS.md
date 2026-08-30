@@ -146,7 +146,7 @@ For any feature whose behavior depends on a model or prompt, **evals are the tes
 - **Task quality** — outputs scored against a curated dataset + rubric (exact-match, graded criteria, or LLM-as-judge with a pinned judge + rubric).
 - **Regression** — the eval suite runs in CI on any prompt/model/parameter change; a drop below threshold **fails the build** (the Eval gate, `DEVELOPMENT-PROCESS.md` §7).
 - **Safety / red-team** — adversarial prompts, jailbreaks, harmful-output checks before shipping.
-- **Discipline** — eval set is versioned with the code and grows from production misses and retros; pin the judge; evals *complement* runtime guards; track eval scores as a quality metric (decline = tech debt). **→ profile** for the eval harness. Plan it with `templates/EVAL-PLAN-TEMPLATE.md`; readiness `conformance/eval-ready.sh`. Running the live eval is a human/CI step (policy): the agent authors and wires the evals but should not run the live provider — the guard blocks reading a live key file into context as a speed bump, not a hard boundary; see `docs/operations/secrets-for-ai.md`.
+- **Discipline** — eval set is versioned with the code and grows from production misses and retros; pin the judge; evals *complement* runtime guards; track eval scores as a quality metric (decline = tech debt). **→ profile** for the eval harness. Plan it with `templates/EVAL-PLAN-TEMPLATE.md`; readiness `conformance/readiness.sh eval-ready`. Running the live eval is a human/CI step (policy): the agent authors and wires the evals but should not run the live provider — the guard blocks reading a live key file into context as a speed bump, not a hard boundary; see `docs/operations/secrets-for-ai.md`.
 
 ---
 
@@ -230,8 +230,8 @@ The architectural contract for **deployable services**, after Hoffman's *Beyond 
 - **Dev/prod parity (Factor 9)** — all tiers (Dev/QA/UAT/Prod) use the same *types* of backing services; document any deliberate gap in the RUNBOOK. For a containerized service, the **image** is the unit of parity — local dev (devcontainer/compose) builds from the same Dockerfile that ships (§14 container image supply-chain).
 - **Stateless processes (Factor 12)** — no sticky in-process or local-disk session state; horizontal scaling and disposability depend on this.
 - **Concurrency (Factor 13)** — the scaling model is the process model; document expected concurrency and how the service scales out.
-- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs. Readiness: `conformance/observability-readiness.md` (SLOs + telemetry recorded in RUNBOOK §8; verified by `conformance/observability-ready.sh`).
-- **Agent-ops (agentic projects)** — observe the *agent's own execution* (trace: tool-calls, retries, cost, gates) feeding per-agent §13 autonomy tiers. Reference + trace contract: `docs/operations/agentic-ops.md`; readiness `conformance/agentic-ops-readiness.md` (verified by `conformance/agentops-ready.sh`).
+- **Telemetry depth (Factor 14)** — observability is metrics + traces + health, extending §3 beyond logs. Readiness: `conformance/observability-readiness.md` (SLOs + telemetry recorded in RUNBOOK §8; verified by `conformance/readiness.sh observability-ready`).
+- **Agent-ops (agentic projects)** — observe the *agent's own execution* (trace: tool-calls, retries, cost, gates) feeding per-agent §13 autonomy tiers. Reference + trace contract: `docs/operations/agentic-ops.md`; readiness `conformance/agentic-ops-readiness.md` (verified by `conformance/readiness.sh agentops-ready`).
 
 ---
 

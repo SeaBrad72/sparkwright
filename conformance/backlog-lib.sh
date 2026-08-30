@@ -15,7 +15,7 @@ resolve_backend() {
   _d="$1"; _c="$_d/CLAUDE.md"
   [ -f "$_c" ] || return 0                                   # no CLAUDE.md -> undeclared
   # Field-leading line, tolerating list/bold markers and a `(§6)`-style annotation
-  # before the colon (mirrors agentops-ready.sh's field resolution).
+  # before the colon (mirrors surface-lib.sh's is_agentic field resolution).
   _line=$(grep -Ei '^[-*[:space:]]*\**backlog backend\**[^:]*:' "$_c" 2>/dev/null | head -1) || true
   [ -n "$_line" ] || return 0                               # field absent -> undeclared
   _val=${_line#*:}                                          # value after the first colon
@@ -27,7 +27,7 @@ resolve_backend() {
   _val=$(printf '%s' "$_val" | sed 's/—.*$//; s/ (.*$//; s/^[[:space:]]*//; s/[[:space:]]*$//')
   [ -n "$_val" ] || return 0                                # empty value after the colon -> undeclared
   # Unfilled placeholder = a bracketed *choice-list*: brackets AND a `/` separator inside
-  # them. Mirrors agentops-ready.sh:28, which skips only on the choice-list shape, never on
+  # them. Mirrors surface-lib.sh's is_agentic, which skips only on the choice-list shape, never on
   # any bracket — so a bare `[link]` annotation (already cut above) never trips this.
   if printf '%s' "$_val" | grep -Eq '\[[^]]*/[^]]*\]'; then
     return 0                                                # unfilled choice-list -> undeclared

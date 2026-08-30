@@ -13,7 +13,7 @@ Query any entry from the CLI: `sparkwright explain <topic>` (or `sparkwright exp
 ---
 
 ## threat-model
-Applies IF: a change touches a sensitive OR regulated-data surface — diff-relative and DECLARATION-INDEPENDENT, so it fires whether or not you ever wrote a Data classification line. Sensitive (unchanged since HITL-1): any path containing secret, auth, password or payment, anything under migrations/, and any .env file. Regulated data (HITL-5): pii, gdpr, patient, cardholder, phi, ssn, personal-data — the acronyms and tokens are case-insensitively matched, so src/PHI_export.ts, data/PATIENT_EXPORT.csv and db/CARDHOLDER_DATA.sql all trigger; phi and ssn are SEGMENT-ANCHORED (/phi/, phi_, _phi, -phi) because a bare *phi* matched 982 paths in a 162k-file corpus. Known misses, both directions: it is a PATH heuristic, so src/models/user.rb holding PII is N/A, and an ALL-CAPS PERSONAL-DATA/ directory is N/A (personal-data is cased per word, not per letter); against that, camelCase collisions DO trigger (…OpenApiIn… contains piI) and about-philosophy.tsx matches -phi — the fail-safe posture is deliberate, because for regulated data over-triggering beats under-triggering. RENAMES ARE FOLLOWED: the change-set derivation turns git's default rename detection OFF, so a file MOVED off a sensitive path still triggers on its source path — before that, a git mv in the same PR emitted only the destination and silently derived N/A (measured: an edit to svc2/pii/export.py FAILed in place and the same edit moved to svc2/core/export.py read N/A). You ALSO owe a threat model project-wide if you declare Confidential/Restricted data (CLAUDE.md §3); that separate, declaration-triggered obligation is privacy-ready.sh and the two compose rather than collide.
+Applies IF: a change touches a sensitive OR regulated-data surface — diff-relative and DECLARATION-INDEPENDENT, so it fires whether or not you ever wrote a Data classification line. Sensitive (unchanged since HITL-1): any path containing secret, auth, password or payment, anything under migrations/, and any .env file. Regulated data (HITL-5): pii, gdpr, patient, cardholder, phi, ssn, personal-data — the acronyms and tokens are case-insensitively matched, so src/PHI_export.ts, data/PATIENT_EXPORT.csv and db/CARDHOLDER_DATA.sql all trigger; phi and ssn are SEGMENT-ANCHORED (/phi/, phi_, _phi, -phi) because a bare *phi* matched 982 paths in a 162k-file corpus. Known misses, both directions: it is a PATH heuristic, so src/models/user.rb holding PII is N/A, and an ALL-CAPS PERSONAL-DATA/ directory is N/A (personal-data is cased per word, not per letter); against that, camelCase collisions DO trigger (…OpenApiIn… contains piI) and about-philosophy.tsx matches -phi — the fail-safe posture is deliberate, because for regulated data over-triggering beats under-triggering. RENAMES ARE FOLLOWED: the change-set derivation turns git's default rename detection OFF, so a file MOVED off a sensitive path still triggers on its source path — before that, a git mv in the same PR emitted only the destination and silently derived N/A (measured: an edit to svc2/pii/export.py FAILed in place and the same edit moved to svc2/core/export.py read N/A). You ALSO owe a threat model project-wide if you declare Confidential/Restricted data (CLAUDE.md §3); that separate, declaration-triggered obligation is readiness.sh privacy-ready and the two compose rather than collide.
 Why: A threat model forces you to name what an attacker wants and how they'd reach it *before*
   you build, so your controls answer known risks instead of guessing. Discovering the same gap
   after a breach costs orders of magnitude more — and may be unrecoverable for the data involved.
@@ -22,7 +22,7 @@ Why: A threat model forces you to name what an attacker wants and how they'd rea
   sensitive or regulated surface with no filled THREAT-MODEL fails. Honest ceiling: it proves a filled
   record EXISTS for a triggered change — not that it is fresh for this change, nor that the analysis is
   sound (review backstops both).
-Enforced by: conformance/threat-obligation.sh (diff-relative, per-change) and conformance/privacy-ready.sh (project-level, declaration-triggered)
+Enforced by: conformance/threat-obligation.sh (diff-relative, per-change) and conformance/readiness.sh privacy-ready (project-level, declaration-triggered)
 Read more: DEVELOPMENT-STANDARDS.md §2, §14, templates/THREAT-MODEL-TEMPLATE.md
 
 ## privacy-review
@@ -30,7 +30,7 @@ Applies IF: you handle personal data (Confidential/Restricted; CLAUDE.md §3)
 Why: A DPIA-lite makes you state what personal data you hold, why, and how it's deletable —
   the difference between privacy-by-design and a regulatory finding. It is the data-subject's
   rights expressed as an engineering checklist.
-Enforced by: conformance/privacy-ready.sh
+Enforced by: conformance/readiness.sh privacy-ready
 Read more: DEVELOPMENT-STANDARDS.md §2
 
 ## evals
@@ -38,7 +38,7 @@ Applies IF: you add an `evals/` dir or declare an AI feature (CLAUDE.md §3)
 Why: An AI feature without a recorded regression threshold has no definition of "still works" —
   quality drifts silently with every prompt or model change. Evals are to AI what tests are to
   code: the safety net that lets you change fast without shipping regressions.
-Enforced by: conformance/eval-ready.sh
+Enforced by: conformance/readiness.sh eval-ready
 Read more: DEVELOPMENT-PROCESS.md §7
 
 ## agentops
@@ -46,7 +46,7 @@ Applies IF: you declare `Agentic: yes` (CLAUDE.md §3)
 Why: An autonomous agent that leaves no trace can't be audited, scored, or safely granted more
   autonomy. A trace posture is the precondition for ever trusting an agent with a higher tier —
   no evidence, no promotion.
-Enforced by: conformance/agentops-ready.sh
+Enforced by: conformance/readiness.sh agentops-ready
 Read more: DEVELOPMENT-PROCESS.md §13
 
 ## a11y
@@ -78,7 +78,7 @@ Applies IF: you add durable data (a database / persistent store)
 Why: Backups you've never restored are a hope, not a plan. A recorded restore drill proves you
   can actually recover within your RPO/RTO — the one time you need it is the worst time to learn
   it doesn't work.
-Enforced by: conformance/dr-ready.sh
+Enforced by: conformance/readiness.sh dr-ready
 Read more: DEVELOPMENT-PROCESS.md §7
 
 ## resilience
@@ -86,7 +86,7 @@ Applies IF: you add a deployable service
 Why: Failure is a when, not an if. Declaring how the service degrades, retries, and recovers
   turns an outage from an incident into a non-event — and forces you to find the single points
   of failure before they find you.
-Enforced by: conformance/resilience-ready.sh
+Enforced by: conformance/readiness.sh resilience-ready
 Read more: DEVELOPMENT-STANDARDS.md §14
 
 ## deployable

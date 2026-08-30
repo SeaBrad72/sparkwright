@@ -5,11 +5,12 @@
 #   kit-guard path "<file>"          -> exit 0 allow · exit 1 deny (reason on stderr)
 #   kit-guard mcp "<mcp__tool>" [pol] -> exit 0 allow · exit 1 deny (the MCP capability gate)
 #   kit-guard install-shims [--dir D] [--force]  -> PATH-shims for the dangerous binaries (off-Claude floor)
+#   kit-guard --denials [--since <ISO>|--last <n>] [--file <p>] [--json]  -> summarise the deny log
 #   kit-guard --selftest             -> run the deny battery through the CLI
 #   kit-guard --help
 # A SPEED BUMP, not a boundary (docs/enterprise/platform-safety-boundary.md).
 # Resolve the core relative to this script, or via KIT_GUARD_CORE override.
-# What it changes: Read-only for cmd/path/mcp (decides allow/deny -> exit 0/1); install-shims writes PATH-shim wrappers into --dir (default .kit-guard/shims).
+# What it changes: Read-only for cmd/path/mcp/--denials (decides allow/deny -> exit 0/1), except that a `cmd` DENY appends one NDJSON line to .kit-run/guard-denials.ndjson (local, gitignored, never exported; KIT_GUARD_LOG=0 disables); install-shims writes PATH-shim wrappers into --dir (default .kit-guard/shims).
 # Guardrails: A SPEED BUMP, not a boundary; sources guard-core.sh (KIT_GUARD_CORE override) and exits if it is absent; the deny-matrix defends control-plane paths.
 set -eu
 
@@ -20,7 +21,7 @@ CORE="${KIT_GUARD_CORE:-$SELF_DIR/../.claude/hooks/guard-core.sh}"
 # shellcheck disable=SC1090  # dynamic source path; guarded by the [ -f ] check above
 . "$CORE"
 
-usage() { sed -n '2,11p' "$0"; }
+usage() { sed -n '2,12p' "$0"; }
 
 # Curated SINGLE-INVOCATION dangerous binaries — each fronts a guard rule that fits in one argv.
 # Deliberately EXCLUDES find/xargs/sed (composition/read-only escapes), interpreters (python/node/
@@ -115,11 +116,103 @@ EOF_BODY
   echo "interpreters. The full-string check is 'kit-guard cmd' (docs/operations/runtime-guards.md)."
 }
 
+# --- GUARD-DENY-LOG: `--denials`, the summary mode over .kit-run/guard-denials.ndjson -------------
+# The READ half of the instrument. The write half (guard_log_deny, guard-core.sh) emits eight fields
+# in a FIXED order with a hand-built printf, so this reader is awk over that fixed shape and needs no
+# jq — deliberately: a summary you cannot run without installing a dependency is a summary nobody
+# runs. The parse is a per-field regex extraction, not a JSON parser; a line it cannot read is
+# COUNTED AS MALFORMED and reported, never silently dropped.
+# This mode is READ-ONLY and always exits 0 (an absent log is "0 denials", not an error): it is an
+# observation surface, and nothing in the kit may gate on it (THREAT-MODEL T5).
+denials_report() {
+  dn_file=''; dn_since=''; dn_last=''; dn_json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --file)  [ $# -ge 2 ] || { echo "usage: kit-guard --denials [--since <ISO>|--last <n>] [--file <p>] [--json]" >&2; exit 2; }; dn_file="$2"; shift 2 ;;
+      --since) [ $# -ge 2 ] || { echo "kit-guard: --since needs an ISO timestamp" >&2; exit 2; }; dn_since="$2"; shift 2 ;;
+      --last)  [ $# -ge 2 ] || { echo "kit-guard: --last needs a count" >&2; exit 2; }; dn_last="$2"; shift 2 ;;
+      --json)  dn_json=1; shift ;;
+      *) echo "kit-guard: unknown --denials arg '$1' (--since <ISO> | --last <n> | --file <p> | --json)" >&2; exit 2 ;;
+    esac
+  done
+  case "$dn_last" in ''|*[!0-9]*) [ -z "$dn_last" ] || { echo "kit-guard: --last takes a non-negative integer" >&2; exit 2; } ;; esac
+  if [ -z "$dn_file" ]; then
+    dn_root=$(git rev-parse --show-toplevel 2>/dev/null || printf '')
+    # shellcheck disable=SC1007  # CDPATH= clears CDPATH (env prefix to cd), not an empty assignment
+    [ -n "$dn_root" ] || dn_root=$(CDPATH= cd -- "$SELF_DIR/.." && pwd)
+    dn_file="$dn_root/.kit-run/guard-denials.ndjson"
+  fi
+  if [ ! -f "$dn_file" ]; then
+    echo "kit-guard --denials: no deny log at $dn_file (0 denials recorded)."
+    return 0
+  fi
+  # --since/--last are applied HERE (shell), so awk sees exactly the lines being summarised and the
+  # totals it prints can never disagree with the filter the caller asked for. --since is a LEXICAL
+  # compare, which is exactly right for the UTC ISO-8601 `ts` this log writes and nothing else.
+  # L2/L3 (review round 1): TWO real mktemp files, both trapped. The first cut derived the second
+  # path as "$dn_tmp.t" — a name mktemp never reserved, so it was predictable and unguarded.
+  dn_tmp=$(mktemp) || { echo "kit-guard: mktemp failed" >&2; exit 2; }
+  dn_tmp2=$(mktemp) || { rm -f "$dn_tmp"; echo "kit-guard: mktemp failed" >&2; exit 2; }
+  trap 'rm -f "$dn_tmp" "$dn_tmp2"' EXIT INT TERM
+  if [ -n "$dn_since" ]; then
+    LC_ALL=C awk -v s="$dn_since" 'match($0,/"ts":"[^"]*"/){t=substr($0,RSTART+6,RLENGTH-7); if(t>=s) print}' "$dn_file" > "$dn_tmp"
+  else
+    cat "$dn_file" > "$dn_tmp"
+  fi
+  [ -z "$dn_last" ] || { tail -n "$dn_last" "$dn_tmp" > "$dn_tmp2" && cat "$dn_tmp2" > "$dn_tmp"; }
+  # ⚠️ LC_ALL=C ON BOTH AWKS (MED-1, review round 2). macOS awk ABORTS with exit 2 and EMPTY stdout
+  # the moment it reads a line that is not valid UTF-8 in a UTF-8 locale — so ONE malformed byte
+  # sequence anywhere in the log voided the WHOLE harvest, silently, while the comment below
+  # promised "counted as malformed, never dropped". The writer now emits only valid UTF-8, and this
+  # is the belt to that braces: in the C locale awk treats the input as bytes and cannot abort.
+  LC_ALL=C awk -v json="$dn_json" -v src="$dn_file" '
+    # `segment` uses a SKIP-ESCAPES pattern; every other field uses the simple one. A segment can
+    # legitimately contain \" (an escaped quote from the command), and the simple `[^"]*` stopped at
+    # it, so the displayed segment was truncated at the first quote. Counts never depended on this.
+    function fld(line, name,   re) {
+      re = "\"" name "\":\"[^\"]*\"";
+      if (match(line, re)) return substr(line, RSTART + length(name) + 4, RLENGTH - length(name) - 5);
+      return "";
+    }
+    function fldesc(line, name,   re) {
+      re = "\"" name "\":\"([^\"\\\\]|\\\\.)*\"";
+      if (match(line, re)) return substr(line, RSTART + length(name) + 4, RLENGTH - length(name) - 5);
+      return "";
+    }
+    {
+      if ($0 !~ /^\{/ || fld($0,"ts") == "") { bad++; next }
+      n++;
+      arm[fld($0,"arm")]++; trg[fld($0,"trigger")]++; ses[fld($0,"session")]++; srf[fld($0,"surface")]++;
+      if ($0 ~ /"read_shaped":1/) { rs++; rseg[rs] = fldesc($0,"segment") }
+    }
+    END {
+      if (json == 1) {
+        printf "{\"total\":%d,\"malformed\":%d,\"read_shaped\":%d}\n", n+0, bad+0, rs+0;
+      } else {
+        printf "kit-guard --denials: %d denial(s) in %s", n+0, src;
+        if (bad) printf " (+%d malformed line(s) skipped)", bad;
+        printf "\n";
+        if (n == 0) exit 0;
+        print "  by arm:";     for (k in arm) printf "    %-10s %d\n", k, arm[k];
+        print "  by trigger:"; for (k in trg) printf "    %-18s %d\n", k, trg[k];
+        print "  by surface:"; for (k in srf) printf "    %-12s %d\n", k, srf[k];
+        print "  by session:"; for (k in ses) printf "    %-12s %d\n", k, ses[k];
+        printf "  read-shaped (a READ was refused; the closure metric): %d of %d\n", rs+0, n+0;
+        for (i = 1; i <= rs; i++) printf "    [%s]\n", rseg[i];
+      }
+    }' "$dn_tmp"
+  rm -f "$dn_tmp" "$dn_tmp2"; trap - EXIT INT TERM
+  return 0
+}
+
 cmd=${1:-}
 case "$cmd" in
   cmd)
     [ $# -ge 2 ] || { echo "usage: kit-guard cmd \"<command>\"" >&2; exit 2; }
-    if reason=$(guard_check_command "$2"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
+    # GUARD-DENY-LOG: the REASON IS REPORTED FIRST, then logged (C1b, review round 1 — same ordering
+    # as guard.sh's emit_deny). A logging pathology (a planted FIFO at the log path used to block the
+    # `>>` forever) must never be able to preempt the verdict reaching the caller.
+    if reason=$(guard_check_command "$2"); then exit 0; else echo "$reason" >&2; guard_log_deny kit-guard "$reason" Bash || :; exit 1; fi ;;
   path)
     [ $# -ge 2 ] || { echo "usage: kit-guard path \"<file>\" [protected-root]" >&2; exit 2; }
     if reason=$(guard_check_path "$2" "${3:-}"); then exit 0; else echo "$reason" >&2; exit 1; fi ;;
@@ -136,12 +229,23 @@ case "$cmd" in
     shift
     install_shims "$@"
     exit 0 ;;
+  --denials)
+    shift
+    denials_report "$@"
+    exit 0 ;;
   --help|-h) usage; exit 0 ;;
   --selftest) ;;  # fall through to the selftest block below
-  *) echo "kit-guard: unknown command '${cmd:-}' (cmd|path|mcp|install-shims|--selftest|--help)" >&2; exit 2 ;;
+  *) echo "kit-guard: unknown command '${cmd:-}' (cmd|path|mcp|install-shims|--denials|--selftest|--help)" >&2; exit 2 ;;
 esac
 
 # --- selftest: the adversarial corpus IS the test (runs the core through the CLI) ---
+# GUARD-DENY-LOG: the battery below fires ~100 real denials through `kit-guard cmd`, and each one
+# would now append to the developer's live .kit-run/guard-denials.ndjson — turning the closure
+# instrument's own numbers into selftest noise the moment anyone runs the selftest. So the battery
+# runs with logging OFF, and the log cells at the end turn it back on inside their OWN temp repo.
+# This also makes the battery's verdicts independent of whether the log is writable, which is the
+# fail-safe the K-LOG-* cells assert directly.
+export KIT_GUARD_LOG=0
 fail=0
 deny()  { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "FAIL (wanted deny):  $1"; fail=1; else echo "PASS deny:  $1"; fi; }
 allow() { if sh "$0" cmd "$2" >/dev/null 2>&1; then echo "PASS allow: $1"; else echo "FAIL (wanted allow): $1"; fail=1; fi; }
@@ -614,5 +718,332 @@ deny   "HOME-FP retained-FP interp plans" 'python3 -c "open('"'"'.claude/plans/x
 deny   "HOME-FP DENY tilde plans"     'echo x >> ~/.claude/plans/x.md'
 deny   "HOME-FP DENY bare-dir move"   'mv ~/.claude/projects /tmp'
 pdeny  "HOME-FP DENY traversal"       "/home/kituser/.claude/plans/../hooks/x"
+
+# --- K-LOG-*: GUARD-DENY-LOG, the closure instrument (D-240828-4 PR 4a) --------------------------
+# These live HERE rather than in conformance/agent-autonomy.sh deliberately: that file is inside the
+# conformance mass budget and this file is not, and the budget's whole point is to make the cheap
+# path cheap. Nothing is lost — the log is a property of the CLI surface, which is what this selftest
+# owns, and agent-autonomy's --delta leg is about VERDICTS, which this slice does not move at all.
+# Every cell runs in its own throwaway git repo so the developer's real .kit-run is never touched.
+KLOG_TMP=$(mktemp -d /tmp/kit-guard-log.XXXXXX) || { echo "FAIL: mktemp"; exit 1; }
+klog_cleanup() { chmod -R u+w "$KLOG_TMP" 2>/dev/null || :; rm -rf "$KLOG_TMP" 2>/dev/null || :; }
+trap klog_cleanup EXIT INT TERM
+klog_ok()   { echo "PASS log:   $1"; }
+klog_bad()  { echo "FAIL (log): $1"; fail=1; }
+klog_check(){ if [ "$2" = "$3" ]; then klog_ok "$1"; else klog_bad "$1 (wanted [$3], got [$2])"; fi; }
+# A throwaway repo: `git rev-parse --show-toplevel` from inside it is the log's root, so the cells
+# exercise the SAME root-resolution the live surface uses (PROTECTED_ROOT is empty off the hook).
+KLOG_REPO="$KLOG_TMP/repo"
+mkdir -p "$KLOG_REPO" && ( cd "$KLOG_REPO" && git init -q . 2>/dev/null ) || { echo "FAIL: git init"; exit 1; }
+KLOG_FILE="$KLOG_REPO/.kit-run/guard-denials.ndjson"
+# `|| :` INSIDE the function: a deny exits 1 and this file runs under `set -e`, so a bare call would
+# abort the selftest at the first cell (measured — it did). The cells that care about the verdict
+# assert it explicitly with `klog_verdict`.
+klog_run() { ( cd "$KLOG_REPO" && KIT_GUARD_LOG="${KLOG_LOG:-1}" KIT_SESSION_ID="${KLOG_SESS:-s-test}" sh "$KG_SELF" cmd "$1" ) >/dev/null 2>&1 || :; }
+klog_verdict() { ( cd "$KLOG_REPO" && KIT_GUARD_LOG="${KLOG_LOG:-1}" KIT_SESSION_ID="${KLOG_SESS:-s-test}" sh "$KG_SELF" cmd "$1" ) >/dev/null 2>&1; }
+# klog_stderr: the same invocation, but stderr CAPTURED (stdout dropped) — for the "no shell
+# diagnostic leaks out of the logger" cell. The guard's own reason goes to stderr too, so the cell
+# that uses this filters for the shell's `cannot create`/`Permission denied` shapes specifically.
+# shellcheck disable=SC2069  # ORDER IS DELIBERATE: `2>&1 >/dev/null` duplicates stderr onto the
+# original stdout (the capture) and THEN sends stdout to /dev/null — i.e. capture stderr ONLY, which
+# is exactly what this cell asserts on. The order SC2069 recommends would capture stdout instead.
+klog_stderr() { ( cd "$KLOG_REPO" && KIT_GUARD_LOG=1 KIT_SESSION_ID=s-test sh "$KG_SELF" cmd "$1" ) 2>&1 >/dev/null || :; }
+# klog_timeout <secs> <cmd...> — a portable timeout. ⚠️ `timeout(1)` IS NOT ON macOS (measured:
+# "command not found"), and the FIFO cell below is worthless without one: before the C1 fix that
+# invocation blocks FOREVER, so an unwrapped cell would hang the whole selftest instead of failing
+# it. Poll-and-kill in POSIX sh; returns 124 on expiry, like timeout(1).
+klog_timeout() {
+  _kt_s=$1; shift
+  ( "$@" ) >/dev/null 2>&1 & _kt_p=$!
+  _kt_n=0
+  while kill -0 "$_kt_p" 2>/dev/null; do
+    _kt_n=$((_kt_n + 1))
+    if [ "$_kt_n" -gt "$_kt_s" ]; then kill -9 "$_kt_p" 2>/dev/null || :; wait "$_kt_p" 2>/dev/null || :; return 124; fi
+    sleep 1
+  done
+  _kt_r=0
+  wait "$_kt_p" 2>/dev/null || _kt_r=$?
+  return "$_kt_r"   # the COMMAND's status, so a cell can still assert deny-vs-allow
+}
+KG_SELF="$SELF_DIR/$(basename -- "$0")"
+
+# 1. A DENY writes EXACTLY ONE well-formed line, with the fields the reason string carries.
+klog_run 'sed -i s/a/b/ .claude/hooks/guard-core.sh'
+klog_check "deny writes exactly one line" "$( (wc -l < "$KLOG_FILE" 2>/dev/null || echo 0) | tr -d ' ')" "1"
+klog_check "arm is the reason's numeric tag" "$(sed -n 's/.*"arm":"\([^"]*\)".*/\1/p' "$KLOG_FILE" 2>/dev/null)" "13"
+klog_check "surface is kit-guard"            "$(sed -n 's/.*"surface":"\([^"]*\)".*/\1/p' "$KLOG_FILE" 2>/dev/null)" "kit-guard"
+klog_check "session is KIT_SESSION_ID"       "$(sed -n 's/.*"session":"\([^"]*\)".*/\1/p' "$KLOG_FILE" 2>/dev/null)" "s-test"
+klog_check "ts is UTC ISO-8601"              "$(sed -n 's/.*"ts":"\([0-9-]*T[0-9:]*Z\)".*/ok/p' "$KLOG_FILE" 2>/dev/null)" "ok"
+# THE PRIVACY PROPERTY, load-bearing: the full command is NEVER in the file. `s/a/b/` is in the
+# offending segment legitimately; the canary below is a token-shaped argument that must not appear.
+klog_run 'echo KLOGCANARYTOKEN; sed -i s/a/b/ .claude/hooks/guard-core.sh'
+if grep -q 'KLOGCANARYTOKEN' "$KLOG_FILE" 2>/dev/null; then klog_bad "no full command in the log"; else klog_ok "no full command in the log"; fi
+# 2. read_shaped — DERIVED FROM THE REASON, not recomputed (reviewer H1/H2, round 1). All three of
+# these were WRONG in the first cut, and the middle one is the one that mattered: the bit was
+# computed on the `]`-TRUNCATED segment, so a WRITE whose segment merely contained a `]` was logged
+# as a refused read and would have inflated the very metric 4b is measured against.
+klog_rs() { sed -n 's/.*"read_shaped":\([01]\).*/\1/p' "$KLOG_FILE" 2>/dev/null; }
+: > "$KLOG_FILE"
+# R10 of the escape card: an interpreter `-c` carrying a pure read is KEPT-DENIED (the arguments of
+# an interpreter are code), and it is exactly the shape the closure metric must count as "a READ was
+# refused". A `sed -n <n>,<m>p <cp>` would NOT do here — lane 2 already relieved it, so it ALLOWs.
+klog_run "sh -c 'grep x conformance/verify.sh'"
+klog_check "R10 refused READ is read_shaped=1" "$(klog_rs)" "1"
+: > "$KLOG_FILE"
+klog_run 'rm -rf .claude/hooks/guard-core.sh'
+klog_check "a refused WRITE is read_shaped=0" "$(klog_rs)" "0"
+# THE REGRESSION THE REVIEW FOUND: a `]` inside the segment used to truncate it before the predicate
+# ran, and the stub `cat 'x` looked read-shaped. It is a REDIRECT TO A CONTROL-PLANE PATH — a write.
+: > "$KLOG_FILE"
+klog_run "cat 'x]y' > conformance/verify.sh"
+klog_check "write whose segment contains ] is read_shaped=0" "$(klog_rs)" "0"
+# The other direction: a loop head the message tier DID judge read-shaped used to log 0, because the
+# recomputation never got the raw command the tier keys that face on.
+: > "$KLOG_FILE"
+klog_run 'for p in conformance/*.sh; do wc -l "$p"; done'
+klog_check "loop-head read the tier judged read is read_shaped=1" "$(klog_rs)" "1"
+# 3. An ALLOW writes NOTHING. (If this ever fails the log stops being a deny log.)
+rm -f "$KLOG_FILE"
+klog_run 'npm test'
+if [ -s "$KLOG_FILE" ]; then klog_bad "an ALLOW writes no line"; else klog_ok "an ALLOW writes no line"; fi
+# 4. THE FAIL-SAFE, both spellings: logging can never change a verdict. An unwritable .kit-run and
+# KIT_GUARD_LOG=0 must each leave the deny/allow EXIT CODE byte-identical and write nothing.
+# ⚠️ L4 (review round 1): root IGNORES mode 000, so the chmod cell would silently assert nothing in
+# a container that runs as uid 0. Skip it loudly rather than print a green that means nothing.
+if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+  echo "SKIP log:   unwritable .kit-run cells — running as uid 0, which ignores mode 000 (cell would be vacuous)"
+else
+  rm -rf "$KLOG_REPO/.kit-run"; mkdir -p "$KLOG_REPO/.kit-run"; chmod 000 "$KLOG_REPO/.kit-run" 2>/dev/null || :
+  if klog_verdict 'rm -rf /tmp/x'; then klog_bad "unwritable .kit-run: verdict unchanged (deny)"; else klog_ok "unwritable .kit-run: verdict unchanged (deny)"; fi
+  if klog_verdict 'npm test'; then klog_ok "unwritable .kit-run: verdict unchanged (allow)"; else klog_bad "unwritable .kit-run: verdict unchanged (allow)"; fi
+  # reviewer M1: `2>/dev/null` on a simple command does NOT suppress the shell's own failed-redirect
+  # diagnostic. The guard's REASON legitimately goes to stderr; a shell "cannot create"/"Permission
+  # denied" from the logger must not.
+  KLOG_ERR=$(klog_stderr 'rm -rf /tmp/x')
+  if printf '%s' "$KLOG_ERR" | grep -Eq 'cannot create|Permission denied|No such file or directory'; then
+    klog_bad "unwritable .kit-run leaks no shell diagnostic to stderr"
+  else
+    klog_ok "unwritable .kit-run leaks no shell diagnostic to stderr"
+  fi
+  chmod 755 "$KLOG_REPO/.kit-run" 2>/dev/null || :
+fi
+rm -f "$KLOG_FILE"
+# ⚠️ M4 (review round 1): a `VAR=x func` prefix PERSISTS in POSIX sh when the command is a FUNCTION
+# (unlike an external command), so a bare `KLOG_LOG=0 klog_verdict …` silently disabled logging for
+# every cell that followed — measured, and it presented three cells later as an "escaping bug". A
+# SUBSHELL per cell scopes it properly; the manual reset it replaces was a workaround, not a fix.
+if ( KLOG_LOG=0; klog_verdict 'rm -rf /tmp/x' ); then klog_bad "KIT_GUARD_LOG=0: verdict unchanged (deny)"; else klog_ok "KIT_GUARD_LOG=0: verdict unchanged (deny)"; fi
+if [ -s "$KLOG_FILE" ]; then klog_bad "KIT_GUARD_LOG=0 writes nothing"; else klog_ok "KIT_GUARD_LOG=0 writes nothing"; fi
+
+# 4b. THE PLANTED-NODE FAMILY (security C1/C2, round 1). Each of these was a LIVE finding.
+# K-LOG-FIFO — `mkfifo` at the log path made the next deny block forever in the `>>`, so the
+# PreToolUse hook HUNG instead of denying: a DoS on the agent's own tool loop from one allowed
+# command. The timeout wrapper is the assertion: without the fix this cell never returns.
+rm -rf "$KLOG_REPO/.kit-run"; mkdir -p "$KLOG_REPO/.kit-run"
+if command -v mkfifo >/dev/null 2>&1 && mkfifo "$KLOG_FILE" 2>/dev/null; then
+  if klog_timeout 10 klog_verdict 'rm -rf /tmp/x'; then
+    klog_bad "K-LOG-FIFO: a FIFO at the log path must not hang the verdict (it returned ALLOW)"
+  else
+    # 1 = denied and returned promptly (correct); 124 = the wrapper had to kill it (the bug).
+    if [ $? = 124 ]; then klog_bad "K-LOG-FIFO: HUNG on a planted FIFO (timed out)"; else klog_ok "K-LOG-FIFO: a planted FIFO neither hangs nor changes the verdict"; fi
+  fi
+  rm -f "$KLOG_FILE"
+else
+  echo "SKIP log:   K-LOG-FIFO — mkfifo unavailable on this platform"
+fi
+# K-LOG-SYMLINK-FILE — a symlink at the log path turned the logger into an APPEND PRIMITIVE onto
+# whatever it pointed at. The victim here is a NON-control-plane file (the point is the primitive,
+# not the target's class): it must be byte-identical after a deny.
+rm -f "$KLOG_FILE"
+KLOG_VICTIM="$KLOG_TMP/victim.txt"
+printf 'victim-contents-must-not-change\n' > "$KLOG_VICTIM"
+KLOG_VICTIM_BEFORE=$(cksum < "$KLOG_VICTIM")
+if ln -s "$KLOG_VICTIM" "$KLOG_FILE" 2>/dev/null; then
+  klog_run 'rm -rf /tmp/x'
+  klog_check "K-LOG-SYMLINK-FILE: symlinked log leaves its target byte-identical" "$(cksum < "$KLOG_VICTIM")" "$KLOG_VICTIM_BEFORE"
+  rm -f "$KLOG_FILE"
+else
+  echo "SKIP log:   K-LOG-SYMLINK-FILE — cannot create a symlink here"
+fi
+# K-LOG-HARDLINK (MED-2, round 2) — the primitive that survived BOTH round-1 tests. `ln <victim>
+# .kit-run/guard-denials.ndjson` is ALLOWED for a non-CP victim, and the result is a REGULAR,
+# NON-SYMLINK file: `-f` passes, `-L` fails, and the append landed in the victim (measured live).
+# Only the link count distinguishes it.
+rm -f "$KLOG_FILE"
+KLOG_HVICTIM="$KLOG_TMP/hardvictim.txt"
+printf 'hardlink-victim-must-not-change\n' > "$KLOG_HVICTIM"
+KLOG_HBEFORE=$(cksum < "$KLOG_HVICTIM")
+if ln "$KLOG_HVICTIM" "$KLOG_FILE" 2>/dev/null; then
+  klog_run 'rm -rf /tmp/x'
+  klog_check "K-LOG-HARDLINK: hardlinked log leaves its target byte-identical" "$(cksum < "$KLOG_HVICTIM")" "$KLOG_HBEFORE"
+  rm -f "$KLOG_FILE"
+else
+  echo "SKIP log:   K-LOG-HARDLINK — cannot create a hardlink here"
+fi
+# K-LOG-MODE (HIGH-2, round 2) — a FIRST-CREATE lands 0600, not the 0644 the process umask gives.
+if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+  echo "SKIP log:   K-LOG-MODE — uid 0 (mode assertions are not meaningful)"
+else
+  rm -f "$KLOG_FILE"
+  klog_run 'rm -rf /tmp/x'
+  klog_check "K-LOG-MODE: a freshly created log is mode 600" \
+    "$(stat -c %a "$KLOG_FILE" 2>/dev/null || stat -f %Lp "$KLOG_FILE" 2>/dev/null || echo '?')" "600"
+fi
+# K-LOG-SYMLINK-DIR — the same primitive one level up: `.kit-run` itself a symlink to a directory.
+rm -rf "$KLOG_REPO/.kit-run"
+KLOG_DECOY="$KLOG_TMP/decoydir"
+mkdir -p "$KLOG_DECOY"
+if ln -s "$KLOG_DECOY" "$KLOG_REPO/.kit-run" 2>/dev/null; then
+  klog_run 'rm -rf /tmp/x'
+  if [ -e "$KLOG_DECOY/guard-denials.ndjson" ]; then klog_bad "K-LOG-SYMLINK-DIR: wrote through a symlinked .kit-run"; else klog_ok "K-LOG-SYMLINK-DIR: a symlinked .kit-run is refused"; fi
+  rm -f "$KLOG_REPO/.kit-run"
+else
+  echo "SKIP log:   K-LOG-SYMLINK-DIR — cannot create a symlink here"
+fi
+mkdir -p "$KLOG_REPO/.kit-run"
+
+# 4c. REDACTION (security H1, round 1). For a ONE-SEGMENT command the offending segment IS the
+# command, so these were all logged verbatim before the fix. One cell per shape: the raw secret must
+# be ABSENT and `<redacted>` PRESENT. Best-effort masking, never a guarantee — see the prose.
+klog_redact_cell() { # <label> <command> <secret-literal>
+  : > "$KLOG_FILE"
+  klog_run "$2"
+  if grep -q "$3" "$KLOG_FILE" 2>/dev/null; then klog_bad "redaction $1: raw secret is ABSENT from the line"
+  elif grep -q '<redacted>' "$KLOG_FILE" 2>/dev/null; then klog_ok "redaction $1: masked (<redacted> present, raw secret absent)"
+  else klog_bad "redaction $1: no <redacted> marker in the line"; fi
+}
+klog_redact_cell "NAME=VALUE prefix"  'GHTOKEN=ghp_klogsecretvalue sed -i s/a/b/ conformance/verify.sh' 'ghp_klogsecretvalue'
+klog_redact_cell "Authorization/Bearer" "curl -H 'Authorization: Bearer ghp_klogbearervalue' -o conformance/verify.sh https://x" 'ghp_klogbearervalue'  # gitleaks:allow — a CANARY the redactor must mask, not a credential
+klog_redact_cell "url userinfo"       'psql postgres://kituser:klogpwvalue@db.example/x -f conformance/verify.sh' 'klogpwvalue'
+klog_redact_cell "password="          'sed -i s/a/b/ conformance/verify.sh --password=klogpwquery' 'klogpwquery'
+klog_redact_cell "api_key="           'sed -i s/a/b/ conformance/verify.sh --api_key=klogapivalue' 'klogapivalue'
+klog_redact_cell "token="             'sed -i s/a/b/ conformance/verify.sh --token=klogtokenvalue' 'klogtokenvalue'
+# MED-3 (round 2): five more measured shapes. The first is the one that mattered — the old rule
+# masked only the FIRST assignment, so a secret in the SECOND position of a leading run leaked.
+klog_redact_cell "multi-assignment run" 'A=x SECRETTOKEN=klogrunvalue B=y sed -i s/a/b/ conformance/verify.sh' 'klogrunvalue'
+klog_redact_cell "curl -u user:pw"      "curl -u kituser:klogcurluser -o conformance/verify.sh https://x" 'klogcurluser'  # gitleaks:allow — canary
+klog_redact_cell "-p<value> (mysql)"    'mysql -pklogmysqlpw -e "x" conformance/verify.sh' 'klogmysqlpw'
+klog_redact_cell "-p <value> (psql)"    'psql -p klogpsqlpw -f conformance/verify.sh' 'klogpsqlpw'
+klog_redact_cell "x-api-key header"     "curl -H 'x-api-key: klogxapikey' -o conformance/verify.sh https://x" 'klogxapikey'  # gitleaks:allow — canary
+# ⚠️ The JSON rule is FOUR rules, one per key: BSD sed has no `\|` alternation in BRE, so the single
+# combined rule matched NOTHING on macOS while reading as correct. This cell is what catches that.
+klog_redact_cell "JSON \"token\" value" 'sed -i "s/{\"token\": \"klogjsontok\"}/x/" conformance/verify.sh' 'klogjsontok'
+# NEGATIVE: redaction must not eat ordinary flags. `-n` is not a password argument.
+: > "$KLOG_FILE"
+klog_run 'sed -i s/a/b/ -n conformance/verify.sh'
+if grep -q -- '-n conformance/verify.sh' "$KLOG_FILE" 2>/dev/null; then klog_ok "redaction leaves ordinary flags intact"; else klog_bad "redaction leaves ordinary flags intact"; fi
+# 5. ESCAPING/STRIPPING: a segment carrying `"`, `\` and a control byte must leave the line parseable
+# (one `{`…`}`, eight fields) with the control byte GONE and both metacharacters escaped.
+: > "$KLOG_FILE"
+KLOG_CTRL=$(printf 'a\002b')
+klog_run "sed -i 's/x\"y\\z${KLOG_CTRL}/q/' .claude/hooks/guard-core.sh"
+klog_check "escaped line is still one NDJSON record" "$( (wc -l < "$KLOG_FILE" 2>/dev/null || echo 0) | tr -d ' ')" "1"
+klog_check "escaped line still has 8 fields" "$(tr ',' '\n' < "$KLOG_FILE" 2>/dev/null | grep -c ':')" "8"
+if LC_ALL=C grep -q '[[:cntrl:]]' "$KLOG_FILE" 2>/dev/null; then klog_bad "control byte stripped from segment"; else klog_ok "control byte stripped from segment"; fi
+if grep -q '\\"' "$KLOG_FILE" 2>/dev/null; then klog_ok "double-quote escaped in segment"; else klog_bad "double-quote escaped in segment"; fi
+# M1 (security, round 1): the first cut's `tr -d` SPARED \011 \012 \015. A TAB or CR is not legal
+# literal JSON inside a string, and a raw NEWLINE SPLIT ONE RECORD INTO TWO — i.e. an
+# attacker-influenced segment could FORGE an extra NDJSON line. All three in one segment here.
+: > "$KLOG_FILE"
+KLOG_WS=$(printf 'a\tb\rc\nd')
+klog_run "sed -i 's/${KLOG_WS}/q/' conformance/verify.sh"
+klog_check "TAB/CR/LF in a segment still yield ONE record" "$( (wc -l < "$KLOG_FILE" 2>/dev/null || echo 0) | tr -d ' ')" "1"
+if LC_ALL=C grep -q '[[:cntrl:]]' "$KLOG_FILE" 2>/dev/null; then klog_bad "TAB/CR/LF stripped from the record"; else klog_ok "TAB/CR/LF stripped from the record"; fi
+if command -v jq >/dev/null 2>&1; then
+  if jq -e . "$KLOG_FILE" >/dev/null 2>&1; then klog_ok "record parses as JSON (jq -e .)"; else klog_bad "record parses as JSON (jq -e .)"; fi
+else
+  # jq-absent fallback: the kit's own reader must read it, and the byte check above already ran.
+  klog_check "record parses via the awk reader (jq absent)" "$(sh "$KG_SELF" --denials --file "$KLOG_FILE" 2>&1 | sed -n 's/.*(+\([0-9]*\) malformed.*/\1/p')" ""
+fi
+# M2 (security, round 1): `cut -c1-160` counts CHARACTERS. A multibyte segment produced a 448-byte
+# line against a field the docs call "≤160 bytes". LC_ALL=C at the log site makes the claim true.
+: > "$KLOG_FILE"
+# ⚠️ A THREE-BYTE CHARACTER, and that is load-bearing, not decoration. `é` is TWO bytes and the clamp
+# is 160, which divides evenly — so an `é` string ALWAYS cuts on a character boundary and the cell
+# passes whether or not the boundary trim exists. Measured against a mutant with the trim deleted:
+# the `é` line came out valid UTF-8 anyway. `→` is three bytes, 160/3 is not whole, so the raw cut
+# lands MID-CHARACTER and the trim is what makes the line valid.
+KLOG_WIDE=$(awk 'BEGIN{s="";for(i=0;i<200;i++)s=s "→";print s}')
+# ⚠️ THE `x` PAD IS ALSO LOAD-BEARING. The clamp is 160 bytes and the segment's ASCII prefix
+# (`sed -i 's/`) is 10, leaving 150 — divisible by 3, so an unpadded 3-byte-character run STILL cuts
+# on a boundary and the cell passes against a mutant with the trim deleted. Measured across pads
+# 0..3: only 1 and 2 discriminate. One byte of padding puts the cut mid-character.
+klog_run "sed -i 's/x${KLOG_WIDE}/q/' conformance/verify.sh"
+KLOG_BYTES=$( (LC_ALL=C wc -c < "$KLOG_FILE" 2>/dev/null || echo 99999) | tr -d ' ')
+if [ "$KLOG_BYTES" -le 400 ]; then klog_ok "a 200-char multibyte segment yields a byte-clamped line ($KLOG_BYTES b)"; else klog_bad "multibyte segment overran the byte clamp ($KLOG_BYTES b)"; fi
+# MED-1 (round 2): the byte clamp used to cut THROUGH a multibyte character, and macOS awk then
+# ABORTED (exit 2, empty stdout) on the whole file — one truncated `é` voided the entire harvest
+# while the reader claimed malformed lines were "counted, never dropped". Three assertions: the
+# segment field is ≤160 bytes, the line is valid UTF-8, and `--denials` still reports it.
+KLOG_SEGB=$( (sed -n 's/.*"segment":"\(.*\)","read_shaped".*/\1/p' "$KLOG_FILE" | LC_ALL=C wc -c 2>/dev/null || echo 99999) | tr -d ' ')
+if [ "$KLOG_SEGB" -le 161 ]; then klog_ok "multibyte segment field is byte-clamped to <=160 ($KLOG_SEGB b incl. newline)"; else klog_bad "multibyte segment field overran 160 bytes ($KLOG_SEGB b)"; fi
+if command -v iconv >/dev/null 2>&1; then
+  if iconv -f UTF-8 -t UTF-8 < "$KLOG_FILE" >/dev/null 2>&1; then klog_ok "truncated multibyte line is valid UTF-8 (iconv)"; else klog_bad "truncated multibyte line is NOT valid UTF-8 (iconv)"; fi
+else
+  # iconv-absent fallback: no trailing partial sequence — the last byte must not be a continuation
+  # byte, and must not be a lead byte left dangling.
+  if LC_ALL=C sed -n 's/.*"segment":"\(.*\)","read_shaped".*/\1/p' "$KLOG_FILE" | LC_ALL=C grep -q "[$(printf '\200')-$(printf '\277')]\$"; then
+    klog_bad "truncated multibyte line ends on a continuation byte (byte check)"
+  else klog_ok "truncated multibyte line ends on a character boundary (byte check)"; fi
+fi
+klog_check "--denials still reads a multibyte log (macOS awk does not abort)" \
+  "$(sh "$KG_SELF" --denials --file "$KLOG_FILE" 2>&1 | sed -n 's/^kit-guard --denials: \([0-9]*\) denial.*/\1/p')" "1"
+# 5b. THE PRETOOLUSE SURFACE (reviewer M2, round 1). Everything above drives `kit-guard cmd`; the
+# hook is the OTHER wired surface and it is the one C1b is about — the decision must reach stdout
+# even when the logger cannot write at all. Drives .claude/hooks/guard.sh with real hook JSON.
+# ⚠️ THE HOOK IS COPIED INTO THE FIXTURE REPO, and that is load-bearing rather than tidiness:
+# guard.sh derives PROTECTED_ROOT from ITS OWN path (`$0/../..`), so running the dev-clone's copy
+# would log into the DEV-CLONE's .kit-run no matter what directory the cell cd's to. Measured: the
+# first draft of these cells asserted against the fixture file, found it empty, and the
+# "unwritable" leg was passing VACUOUSLY — it had chmod'd a directory the logger never touched.
+KLOG_HOOK="$KLOG_REPO/.claude/hooks/guard.sh"
+KLOG_HOOK_IN='{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ conformance/verify.sh"}}'
+mkdir -p "$KLOG_REPO/.claude/hooks"
+cp "$SELF_DIR/../.claude/hooks/guard.sh" "$SELF_DIR/../.claude/hooks/guard-core.sh" "$KLOG_REPO/.claude/hooks/" 2>/dev/null || :
+if [ -f "$KLOG_HOOK" ] && command -v jq >/dev/null 2>&1; then
+  # (a) logger DEAD (unwritable .kit-run): exactly one line of decision JSON, and it says deny.
+  if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+    echo "SKIP log:   pretooluse unwritable-.kit-run cell — uid 0 ignores mode 000"
+  else
+    rm -rf "$KLOG_REPO/.kit-run"; mkdir -p "$KLOG_REPO/.kit-run"; chmod 000 "$KLOG_REPO/.kit-run" 2>/dev/null || :
+    KLOG_HOOK_OUT=$( cd "$KLOG_REPO" && printf '%s' "$KLOG_HOOK_IN" | KIT_GUARD_LOG=1 sh "$KLOG_HOOK" 2>/dev/null || : )
+    klog_check "pretooluse emits exactly one line with a dead logger" "$(printf '%s\n' "$KLOG_HOOK_OUT" | grep -c .)" "1"
+    klog_check "pretooluse still DENIES with a dead logger" "$(printf '%s' "$KLOG_HOOK_OUT" | jq -r '.hookSpecificOutput.permissionDecision' 2>/dev/null)" "deny"
+    chmod 755 "$KLOG_REPO/.kit-run" 2>/dev/null || :
+  fi
+  # (b) logger ALIVE: one log line, and it is attributed to the pretooluse surface.
+  rm -rf "$KLOG_REPO/.kit-run"; mkdir -p "$KLOG_REPO/.kit-run"
+  # ⚠️ KIT_GUARD_LOG=1 EXPLICITLY on both hook legs: the battery above `export`s it to 0, which the
+  # hook inherits. Without this both legs were VACUOUS — the "unwritable" one chmod'd a directory a
+  # disabled logger was never going to touch, and printed green. Measured.
+  KLOG_HOOK_OUT=$( cd "$KLOG_REPO" && printf '%s' "$KLOG_HOOK_IN" | KIT_GUARD_LOG=1 sh "$KLOG_HOOK" 2>/dev/null || : )
+  klog_check "pretooluse writes exactly one log line" "$( (wc -l < "$KLOG_FILE" 2>/dev/null || echo 0) | tr -d ' ')" "1"
+  klog_check "pretooluse line carries surface=pretooluse" "$(sed -n 's/.*"surface":"\([^"]*\)".*/\1/p' "$KLOG_FILE" 2>/dev/null)" "pretooluse"
+  klog_check "pretooluse line carries the tool name" "$(sed -n 's/.*"tool":"\([^"]*\)".*/\1/p' "$KLOG_FILE" 2>/dev/null)" "Bash"
+else
+  echo "SKIP log:   pretooluse cells — guard.sh or jq unavailable"
+fi
+
+# 6. `--denials` reports the right counts over a KNOWN 3-line fixture (2 read-shaped, 2 sessions).
+KLOG_FIX="$KLOG_TMP/fixture.ndjson"
+cat > "$KLOG_FIX" <<'KLOG_FIXTURE_EOF'
+{"ts":"2026-08-29T01:00:00Z","surface":"kit-guard","tool":"Bash","arm":"13","trigger":"pathhit","segment":"grep -n a conformance/verify.sh","read_shaped":1,"session":"s1"}
+{"ts":"2026-08-29T02:00:00Z","surface":"pretooluse","tool":"Bash","arm":"13","trigger":"-","segment":"sed -n 1,5p hooks/pre-push","read_shaped":1,"session":"s1"}
+{"ts":"2026-08-29T03:00:00Z","surface":"pretooluse","tool":"Write","arm":"13","trigger":"redir-nonliteral","segment":"rm -rf conformance","read_shaped":0,"session":"s2"}
+KLOG_FIXTURE_EOF
+KLOG_OUT=$(sh "$KG_SELF" --denials --file "$KLOG_FIX" 2>&1) || klog_bad "--denials exits 0"
+klog_check "--denials total"        "$(printf '%s' "$KLOG_OUT" | sed -n 's/^kit-guard --denials: \([0-9]*\) denial.*/\1/p')" "3"
+klog_check "--denials read-shaped"  "$(printf '%s' "$KLOG_OUT" | sed -n 's/.*read-shaped.*: \([0-9]*\) of 3/\1/p')" "2"
+klog_check "--denials lists the read-shaped segments" "$(printf '%s\n' "$KLOG_OUT" | grep -c '^    \[')" "2"
+klog_check "--denials per-trigger pathhit"  "$(printf '%s\n' "$KLOG_OUT" | sed -n 's/^    pathhit  *\([0-9]*\)$/\1/p')" "1"
+klog_check "--denials per-session s1"       "$(printf '%s\n' "$KLOG_OUT" | sed -n 's/^    s1  *\([0-9]*\)$/\1/p')" "2"
+klog_check "--denials --since filters"      "$(sh "$KG_SELF" --denials --file "$KLOG_FIX" --since 2026-08-29T02:00:00Z 2>&1 | sed -n 's/^kit-guard --denials: \([0-9]*\) denial.*/\1/p')" "2"
+klog_check "--denials --last filters"       "$(sh "$KG_SELF" --denials --file "$KLOG_FIX" --last 1 2>&1 | sed -n 's/^kit-guard --denials: \([0-9]*\) denial.*/\1/p')" "1"
+# A malformed line is REPORTED, never silently dropped (a summary that hides what it could not read
+# would let a corrupted log look like a quiet one — the exact failure the instrument exists to avoid).
+printf 'not json at all\n' >> "$KLOG_FIX"
+klog_check "--denials reports malformed lines" "$(sh "$KG_SELF" --denials --file "$KLOG_FIX" 2>&1 | sed -n 's/.*(+\([0-9]*\) malformed.*/\1/p')" "1"
+klog_check "--denials on an absent log is 0, not an error" "$(sh "$KG_SELF" --denials --file "$KLOG_TMP/nope.ndjson" 2>&1 | grep -c '0 denials recorded')" "1"
+klog_cleanup; trap - EXIT INT TERM
 
 [ "$fail" -eq 0 ] && { echo "OK: kit-guard denies the battery through the CLI"; exit 0; } || { echo "FAIL: kit-guard selftest"; exit 1; }

@@ -398,11 +398,32 @@ incept_delivery_tests() {  # appends to $st (0 = all good)
     # to template-minus-2 lines (the banner line + its trailing blank) so silent prose loss reds.
     grep -q 'does not prevent an admin' "$_t/REQUIRED-CHECKS.md" || _b3bad "the enforcement-ceiling disclosure was stripped out of REQUIRED-CHECKS.md — the banner strip is eating durable operator content"
     grep -q 'branch-protection' "$_t/REQUIRED-CHECKS.md" || _b3bad "stamped REQUIRED-CHECKS.md no longer says what parses it"
+    # (B) THE DECLARATION IS FILLED, NOT PRISTINE (V1 repair PR 2): the four gates incept installs are
+    # declared as ACTIVE lines and the placeholder is gone. loop-state JOINED THE LIVE SET on
+    # 2026-08-30 (LOOP-STATE-ADOPTER-ENFORCE): this leg used to assert the opposite — that
+    # loop-state stayed a COMMENT — because binding a context whose job always exits 0 is a silent
+    # pass-through, and adopter-gates.yml shipped `observe`. It now ships `enforce`, so the
+    # precondition that reserved the comment branch is gone and the ordering rule ("flip the mode
+    # FIRST, then bind the context") is satisfied at Inception rather than deferred to the adopter.
+    for _c in ci control-plane-ratification backlog-presence ceremony-binding loop-state; do
+      grep -qx "$_c" "$_t/REQUIRED-CHECKS.md" || _b3bad "stamped REQUIRED-CHECKS.md does not declare '$_c' — incept installed that gate and must declare it, or the adopter's protection binds none of the governance checks"
+    done
+    grep -q '^<your-check-name>$' "$_t/REQUIRED-CHECKS.md" && _b3bad "stamped REQUIRED-CHECKS.md still carries the placeholder alongside real entries (a declaration error by the parser's own rule)"
+    # THE COUPLING, HELD EXPLICITLY. Declaring loop-state is only safe while the emitted workflow
+    # default is `enforce`; under `observe` the job always exits 0 and a required context enforcing
+    # nothing is worse than none. So this leg asserts BOTH halves together — if a future edit flips
+    # the emitted default back without unbinding the context, this reds rather than shipping the
+    # silent pass-through the old comment branch existed to prevent.
+    grep -v '^[[:space:]]*#' "$_t/.github/workflows/adopter-gates.yml" 2>/dev/null \
+      | grep -qF 'LOOP_STATE_MODE: enforce' \
+      || _b3bad "stamped REQUIRED-CHECKS.md declares loop-state, but the installed adopter-gates.yml does NOT default LOOP_STATE_MODE to enforce — that is the silent pass-through (Δ1): a required context on a job that always exits 0"
     for _p in REQUIRED-CHECKS:REQUIRED-CHECKS DECISIONS:docs/governance/DECISIONS; do
       _tpl="$REPO_ROOT/templates/$(printf '%s' "$_p" | cut -d: -f1)-TEMPLATE.md"
       _out="$_t/$(printf '%s' "$_p" | cut -d: -f2).md"
       _tl=$(grep -c '' "$_tpl" 2>/dev/null || echo 0); _ol=$(grep -c '' "$_out" 2>/dev/null || echo 0)
-      [ "$_ol" -eq $(( _tl - 2 )) ] || _b3bad "$_out is $_ol lines but its template is $_tl — expected $(( _tl - 2 )) (banner line + one blank). The strip removed more than the instruction."
+      # REQUIRED-CHECKS: incept also replaces the 1-line placeholder with the 5 installed contexts (+4).
+      _adj=-2; case "$_p" in REQUIRED-CHECKS:*) _adj=2 ;; esac
+      [ "$_ol" -eq $(( _tl + _adj )) ] || _b3bad "$_out is $_ol lines but its template is $_tl — expected $(( _tl + _adj )) (banner line + one blank; REQUIRED-CHECKS +4 for the five declared contexts). The strip removed more than the instruction, or the declaration was not filled."
     done
   else echo "selftest FAIL: delivery (a) — incept exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1; fi
   rm -rf "$_t"

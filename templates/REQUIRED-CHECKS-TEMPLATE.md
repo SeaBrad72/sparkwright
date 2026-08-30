@@ -26,14 +26,22 @@ a hyphenated form (e.g. `build-and-test`) before declaring it here. Quotes, JSON
 characters (`*`, `?`, `[`), a leading `-`, and control characters are rejected the same way, each
 FAILing by naming the offending line.
 
+**Inception fills this block for you (GitHub CI):** `scripts/incept.sh` replaces the placeholder with
+the five contexts it just installed — `ci` (every profile's CI job key), `control-plane-ratification`
+(`ratification.yml`), and `backlog-presence`, `ceremony-binding` + `loop-state`
+(`adopter-gates.yml`) — so the gates the kit installs are the gates your protection requires. Bind
+them once with `sh scripts/branch-protection-apply.sh --apply` after the first CI run; until then
+`inception-done` names the unbound ones. Adding this file by hand in a brownfield GitHub repo?
+Declare the same five if you installed those workflows. On GitLab this file stays a placeholder — its
+names are GitHub check contexts; the protected-branch equivalent is adopter-owned
+(`docs/operations/ci-platforms.md`).
+
+**`loop-state` is bound because it enforces.** Since 2026-08-30 `adopter-gates.yml` ships
+`LOOP_STATE_MODE: enforce`, so the job's exit is the gate's own verdict. ⚠️ **If you opt out to
+`observe`, delete `loop-state` from this file in the same edit** — in observe mode the job always
+exits 0, and GitHub treats that as satisfying a required check, so you would be left with a required
+context that enforces nothing. Flip the mode first, then bind; unbind first, then flip back.
+
 ```
 <your-check-name>
-# backlog-presence      <- uncomment once you install profiles/adopter-gates.yml (Inception) and want
-#                           gated PRs to require a bound board row before merge
-# ceremony-binding       <- uncomment once you want a gated PR to require a recorded design GO
-#                           before merge (see scripts/promotion-verify.sh record)
-# loop-state             <- uncomment ONLY after flipping LOOP_STATE_MODE to enforce in
-#                           .github/workflows/adopter-gates.yml — binding this while still in
-#                           observe mode is a silent pass-through (GitHub treats the posted
-#                           `neutral` conclusion as satisfying a required check)
 ```

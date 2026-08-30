@@ -1,0 +1,101 @@
+# readiness.tsv — the ATTESTATION TABLE read by conformance/readiness.sh.
+#
+# Nine conditional readiness checks used to be nine files implementing one shape: detect a SURFACE
+# (data / deploy / AI / agent / sensitive data); if it is absent render N/A; if it is present require
+# a RECORD LINE in a named artifact and require its template PLACEHOLDER to be gone. The shape lives
+# in conformance/readiness.sh; the policy lives here.
+#
+# THE THREE-STATE CONTRACT IS UNCHANGED and is the whole point: N/A (no surface — the check declined
+# and said so) · OK (the record is present and filled) · FAIL (record missing, or still holding its
+# placeholder). rc is 0 for N/A and OK, 1 for FAIL, 2 only for usage. A green run proves a posture
+# was RECORDED — never that the recorded thing is true, tested, or works. Each case's own honest
+# ceiling is carried verbatim in its `ok` text.
+#
+# DIRECTIONAL SAFETY: detection ESCALATES, it never EXEMPTS. Every trigger is deliberately
+# conservative, so a MISS means "not nagged", never "exempted" — the matching conformance/*-readiness.md
+# checklist is the gate of record and a human applies it regardless.
+#
+# FORMAT — TWELVE tab-separated fields per data line; `-` means "not applicable to this row".
+# `#` comments and blank lines are skipped. `{}` in any text is substituted (see below).
+#
+#   1 case          the check name: `sh conformance/readiness.sh <case> [project-dir]`
+#   2 kind          case | file | line | absent
+#   3 id            file rows DEFINE an id; line/absent rows REFER to one. `-` on case rows.
+#   4 a             case: the trigger predicate (conformance/surface-lib.sh; `pred:arg` passes arg)
+#                   file: SPACE-separated candidate paths, first existing one wins
+#   5 b             case: the N/A text (`\n` = a further line)   line: the record-line regex
+#                                                                absent: the regex that must NOT appear
+#   6 c             case: the OK text                            line: the placeholder regex, or `-`
+#   7 d             line: a regex the record line must ALSO match, or `-`
+#   8 fail-missing  file: text when no candidate exists · line: text when the record line is absent
+#                   (`-` on a line row means this row only judges an EXISTING line)
+#   9 fail-reject   line/absent: text when the placeholder/forbidden regex matches
+#  10 fail-require  line: text when field 7 does not match
+#  11 sample-good   the --selftest fixture cell: file rows = seed content · line rows = a conforming line
+#  12 sample-bad    the --selftest mutant cell: a line that trips field 6, 7 or (absent) field 5
+#
+# `{}` SUBSTITUTION — one token, and its meaning is positional exactly as the retired checks' `$dir`
+# / `$plan` / `$card` were: on a `case` N/A text and a `file` fail text it is the PROJECT DIR; on a
+# `line`/`absent` text it is the RESOLVED FILE PATH. Texts with no `{}` are emitted verbatim.
+#
+# ALL greps are POSIX ERE and CASE-INSENSITIVE (grep -Eiq), matching every retired check's own flags.
+#
+# --selftest generates, per case: a no-surface fixture (must render N/A) · a filled fixture (must
+# render OK) · one mutant per `file` row (delete the file) · one per `line` row with a fail-missing
+# text (delete the record line) · one per row with a sample-bad (plant it). Each mutant must go RED
+# with THAT ROW'S text, so a row that cannot be killed is a row that is not really enforced.
+
+# ── agentops-ready (MP-3a) — an AGENTIC project records its agent-run trace discipline.
+agentops-ready	case	-	is_agentic	N/A: {} is not declared agentic (no 'Agentic: yes' in CLAUDE.md/RUNBOOK.md) — skipping (no agent runs to trace)	agentops-ready: OK — agent-ops posture is RECORDED (trace discipline declared). NOTE: this does NOT verify traces actually emit, are complete, or that the agent's behavior conforms (process-conformance) — those are Manual rows in agentic-ops-readiness.md requiring operator evidence.	-	-	-	-	-	-
+agentops-ready	file	rb	RUNBOOK.md	-	-	-	FAIL: {} is agentic but has no RUNBOOK.md (need the §8 Agent-ops record) — see conformance/agentic-ops-readiness.md	-	-	# RUNBOOK\n\n## 8. Monitoring & alerting	-
+agentops-ready	line	rb	-	agent-ops:	agent-ops: \[trace\]	-	FAIL: RUNBOOK has no 'Agent-ops:' record — declare the agent-run trace discipline (schema + where emitted); see docs/operations/agentic-ops.md	FAIL: 'Agent-ops:' still holds the [trace] placeholder — record the real trace posture (e.g. emitter + sink)	-	- Agent-ops: trace=OTel-GenAI subset, emitter=CC-transcript, sink=traces/	- Agent-ops: [trace]
+
+# ── dr-ready — a project that HANDLES PERSISTENT DATA has DR documented and a restore drill recorded.
+dr-ready	case	-	has_data_surface	N/A: {} has no persistent-data surface (no DB url in .env.example / migrations dir / compose db) — skipping.\n     WARNING: detection is conservative. If this project handles durable data, this N/A is WRONG —\n     apply conformance/dr-readiness.md manually. This check escalates (detect -> require); it never exempts.	dr-ready: OK — DR is DOCUMENTED and a restore drill is RECORDED. NOTE: this does NOT verify the restore succeeded or met RTO/RPO — those are Manual rows in dr-readiness.md requiring on-call/operator evidence.	-	-	-	-	-	-
+dr-ready	file	bia	docs/continuity/BIA.md	-	-	-	FAIL: data project has no BIA at docs/continuity/BIA.md (run templates/BIA-TEMPLATE.md) — see conformance/dr-readiness.md	-	-	# BIA\ncritical tier: RTO 1h / RPO 15m	-
+dr-ready	file	rb	RUNBOOK.md	-	-	-	FAIL: data project has no RUNBOOK.md (need a Disaster recovery section with RPO/RTO + a recorded drill)	-	-	# RUNBOOK	-
+dr-ready	line	rb	-	^#{1,6}[[:space:]].*disaster recovery	-	-	FAIL: RUNBOOK.md has no Disaster recovery section	-	-	## Disaster recovery	-
+dr-ready	absent	rb	-	\[< 24h default\]|\[< 4h default\]	-	-	-	FAIL: RUNBOOK RPO/RTO still hold the template placeholder ([< 24h default] / [< 4h default]) — set real targets	-	-	- RPO: [< 24h default] RTO: [< 4h default]
+dr-ready	line	rb	-	restore verified:	restore verified: \[date\]	-	FAIL: RUNBOOK has no 'Restore verified:' line — record a restore-drill date	FAIL: 'Restore verified:' still holds the [date] placeholder — run a restore drill and record the date	-	- Restore verified: 2026-06-01 (passed)	- Restore verified: [date]
+dr-ready	line	rb	-	restore verified:	restore verified:[[:space:]]*(not[[:space:]]*yet|pending|scheduled|tbd|todo|n/?a|none)	-	-	FAIL: 'Restore verified:' says the drill is not yet run (not yet / pending / scheduled / ...) — run the drill and record its date	-	- Restore verified: 2026-06-01 (passed)	- Restore verified: not yet executed — scheduled at INC-1
+dr-ready	line	rb	-	restore verified:	-	restore verified:[^0-9]*(19|20)[0-9][0-9]	-	-	FAIL: 'Restore verified:' records no date (a 4-digit year) — run the restore drill and record the date it passed	- Restore verified: 2026-06-01 (passed)	- Restore verified: verified last quarter
+
+# ── eval-ready — an AI FEATURE declares its eval discipline (threshold + harness) in an EVAL-PLAN.
+eval-ready	case	-	has_ai_surface	N/A: {} is not an AI feature (no evals/ dir, no EVAL-PLAN, no 'AI feature: yes' marker) — no eval gate to declare	eval-ready: OK — eval discipline is DECLARED (EVAL-PLAN present, threshold + harness recorded). NOTE: does NOT run the evals or prove they pass — that is the §7 Eval gate in CI; red-team/judge-independence are Manual (eval-readiness.md).	-	-	-	-	-	-
+eval-ready	file	plan	EVAL-PLAN.md docs/EVAL-PLAN.md docs/sign-offs/EVAL-PLAN.md evals/EVAL-PLAN.md	-	-	-	FAIL: {} is an AI feature but has no EVAL-PLAN.md — create one from templates/EVAL-PLAN-TEMPLATE.md	-	-	# Eval Plan	-
+eval-ready	line	plan	-	regression threshold:	regression threshold:.*\[threshold\]	-	FAIL: {} has no 'Regression threshold:' — record the §7 Eval gate bar	FAIL: 'Regression threshold:' still holds the [threshold] placeholder — record a real bar	-	- **Regression threshold:** score >= 0.85, no metric drops > 2pts	- **Regression threshold:** [threshold]
+eval-ready	line	plan	-	harness:	harness:.*\[harness\]	-	FAIL: {} has no 'Harness:' — locate the eval suite + how the gate runs it	FAIL: 'Harness:' still holds the [harness] placeholder — locate the real harness/gate	-	- **Harness:** evals/run.py, pytest-driven, run in CI on model/prompt change	- **Harness:** [harness]
+
+# ── observability-ready — a DEPLOYABLE project records its SLOs and its wired telemetry.
+observability-ready	case	-	has_deploy_surface	N/A: {} has no deploy surface (no Dockerfile / deploy workflow) — skipping (no running service to set SLOs on or emit telemetry from)	observability-ready: OK — observability posture is RECORDED (SLOs declared, telemetry located). NOTE: this does NOT verify the system is actually observable (signals emit in prod, alerts fire, SLO/error-budget tracked) — those are Manual rows in observability-readiness.md requiring operator evidence.	-	-	-	-	-	-
+observability-ready	file	rb	RUNBOOK.md	-	-	-	FAIL: {} is deployable but has no RUNBOOK.md (need §8 observability records) — see conformance/observability-readiness.md	-	-	# RUNBOOK\n\n## Monitoring & alerting	-
+observability-ready	line	rb	-	slos:	slos: \[target\]	-	FAIL: RUNBOOK has no 'SLOs:' record — declare the service-level objective (availability/latency/error budget)	FAIL: 'SLOs:' still holds the [target] placeholder — record a real SLO target	-	- SLOs: 99.9% avail, p95 < 200ms	- SLOs: [target]
+observability-ready	line	rb	-	telemetry wired:	telemetry wired: \[signals\]	-	FAIL: RUNBOOK has no 'Telemetry wired:' record — locate the metrics + traces + health signals (Factor 14)	FAIL: 'Telemetry wired:' still holds the [signals] placeholder — record the real signal set	-	- Telemetry wired: Prometheus + OTel traces + /healthz	- Telemetry wired: [signals]
+
+# ── preview-env-ready (SNP-2) — a DEPLOYABLE project records its per-PR preview approach.
+preview-env-ready	case	-	has_deploy_surface	N/A: {} has no deploy surface (no Dockerfile / deploy workflow) — no preview environments to declare	preview-env-ready: OK — preview-environment approach is RECORDED. NOTE: does NOT verify previews actually spin up / tear down / isolate / exclude prod data — those are Manual rows (preview-environments-readiness.md).	-	-	-	-	-	-
+preview-env-ready	file	rb	RUNBOOK.md	-	-	-	FAIL: {} is deployable but has no RUNBOOK.md (need a Preview-environments record) — see conformance/preview-environments-readiness.md	-	-	# RUNBOOK\n\n## 4. Deploy	-
+preview-env-ready	line	rb	-	preview environments:	preview environments:.*\[approach\]	-	FAIL: RUNBOOK has no 'Preview environments:' record — declare the per-PR approach (or 'N/A — <reason>')	FAIL: 'Preview environments:' still holds the [approach] placeholder — record a real approach	-	- **Preview environments:** namespace-per-PR via Helm, synthetic data, auto-teardown on close	- **Preview environments:** [approach] *(deployable services)*
+
+# ── privacy-ready (SP-3) — a project declaring Confidential/Restricted data carries a filled DPIA-lite.
+privacy-ready	case	-	declares_sensitive	N/A: {} declares no Confidential/Restricted data (or none classified) — skipping (no privacy review required)	privacy-ready: OK — a PRIVACY-REVIEW is recorded for the declared sensitive data. NOTE: this does NOT verify the processing is lawful/compliant or that deletion works — those are Manual rows.	-	-	-	-	-	-
+privacy-ready	file	pr	PRIVACY-REVIEW.md	-	-	-	FAIL: {} handles Confidential/Restricted data but has no PRIVACY-REVIEW.md — record a DPIA-lite (templates/PRIVACY-REVIEW-TEMPLATE.md)	-	-	# Privacy Review	-
+privacy-ready	line	pr	-	lawful basis	-	-	FAIL: PRIVACY-REVIEW.md has no 'Lawful basis' — record the basis for processing	-	-	- **Lawful basis / basis for processing:** verifiable parental consent (COPPA)	-
+privacy-ready	absent	pr	-	\[lawful basis|basis for processing:\*\* \[	-	-	-	FAIL: PRIVACY-REVIEW.md still holds the lawful-basis placeholder — fill the review	-	-	- **Lawful basis / basis for processing:** [consent / contract / legitimate interest / legal obligation]
+
+# ── resilience-ready — a DEPLOYABLE project records its load/soak test and its fault-injection drill.
+resilience-ready	case	-	has_deploy_surface	N/A: {} has no deploy surface (no Dockerfile / deploy workflow) — skipping (no dependencies to circuit-break or load to soak)	resilience-ready: OK — resilience drills are RECORDED. NOTE: this does NOT verify the system is actually resilient (breaker tripped, degraded gracefully, survived soak) — those are Manual rows in resilience-readiness.md requiring on-call/operator evidence.	-	-	-	-	-	-
+resilience-ready	file	rb	RUNBOOK.md	-	-	-	FAIL: {} is deployable but has no RUNBOOK.md (need §8 resilience records) — see conformance/resilience-readiness.md	-	-	# RUNBOOK\n\n## Monitoring & alerting	-
+resilience-ready	line	rb	-	load/soak tested:	load/soak tested: \[date\]	-	FAIL: RUNBOOK has no 'Load/soak tested:' record — run a load/soak test and record the date (docs/operations/resilience-verification.md)	FAIL: 'Load/soak tested:' still holds the [date] placeholder — run the test and record the date	-	- Load/soak tested: 2026-06-01	- Load/soak tested: [date]
+resilience-ready	line	rb	-	fault-injection drill:	fault-injection drill: \[date\]	-	FAIL: RUNBOOK has no 'Fault-injection drill:' record — run a fault-injection drill and record the date	FAIL: 'Fault-injection drill:' still holds the [date] placeholder — run the drill and record the date	-	- Fault-injection drill: 2026-06-02	- Fault-injection drill: [date]
+
+# ── responsible-ai-ready (RAI-1) — an AI FEATURE carries a classified, oversight-named AI System Card.
+responsible-ai-ready	case	-	has_ai_surface:card	N/A: {} is not an AI feature (no evals/ dir, no EVAL-PLAN, no AI-SYSTEM-CARD, no 'AI feature: yes' marker) — no AI governance to declare	responsible-ai-ready: OK — AI System Card is PRESENT, classified, and oversight-named. NOTE: does NOT verify the classification is correct, the AI is fair, or it is compliant — those are Manual rows (responsible-ai-readiness.md). Good-citizen lines are recommended, not enforced.	-	-	-	-	-	-
+responsible-ai-ready	file	card	AI-SYSTEM-CARD.md docs/AI-SYSTEM-CARD.md docs/sign-offs/AI-SYSTEM-CARD.md	-	-	-	FAIL: {} is an AI feature but has no AI-SYSTEM-CARD.md — create one from templates/AI-SYSTEM-CARD-TEMPLATE.md	-	-	# AI System Card	-
+responsible-ai-ready	line	card	-	risk classification:	risk classification:.*\[classification\]	-	FAIL: {} has no 'Risk classification:' — record the US risk classification (consequential / children's / prohibited)	FAIL: 'Risk classification:' still holds the [classification] placeholder — record a real classification	-	- **Risk classification:** low-risk — none triggered	- **Risk classification:** [classification]
+responsible-ai-ready	line	card	-	human oversight:	human oversight:.*\[mechanism\]	-	FAIL: {} has no 'Human oversight:' — name the override/halt mechanism	FAIL: 'Human oversight:' still holds the [mechanism] placeholder — name a real oversight mechanism	-	- **Human oversight:** lead engineer can halt; standard human review	- **Human oversight:** [mechanism]
+
+# ── test-data-ready (SNP-1) — a project with a DATA SURFACE records its non-prod test-data approach.
+test-data-ready	case	-	has_data_surface	N/A: {} has no persistent-data surface (no DB url in .env.example / migrations dir / compose db) — no test data to manage	test-data-ready: OK — test-data approach is RECORDED. NOTE: does NOT verify the data is actually synthetic/masked or that no prod data leaked — those are Manual rows (test-data-readiness.md).	-	-	-	-	-	-
+test-data-ready	file	rb	RUNBOOK.md	-	-	-	FAIL: {} handles data but has no RUNBOOK.md (need a Test-data record) — see conformance/test-data-readiness.md	-	-	# RUNBOOK\n\n## 2. Test / build	-
+test-data-ready	line	rb	-	test data:	test data:.*\[approach\]	-	FAIL: RUNBOOK has no 'Test data:' record — declare the non-prod data approach (synthetic / masked / never raw prod)	FAIL: 'Test data:' still holds the [approach] placeholder — record a real approach	-	- **Test data:** synthetic via faker; seeded fixtures *(never raw prod)*	- **Test data:** [approach] *(data-handling projects)*

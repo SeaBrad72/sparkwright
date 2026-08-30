@@ -5,9 +5,9 @@
 **Five acts, every slice, before the first edit / commit / PR.** The skills in `skills/` govern process work here (index: `skills/using-skills/SKILL.md`).
 
 1. **Derive the change class.** Put the changed paths in a file, one per line, and run `sh conformance/promotion-readiness.sh --class --changed <listing>`. Pass the listing file, never a path — a path argument gets its CONTENTS classified. `conformance/agent-boundary.sh --state` is not a classifier; without `--changed` it answers `NONE`. Never self-assert the class.
-2. **Read the governing skill and name it** — `skills/<name>/SKILL.md`. Design before code, evidence before "done"; search `docs/governance/DECISIONS.md` for an earlier ruling on this surface.
+2. **Read the governing skill; name it in act 4 if the class asks** — `skills/<name>/SKILL.md`. Design before code, evidence before "done"; search `docs/governance/DECISIONS.md` for a ruling on this surface.
 3. **Claim the row** this work satisfies on the board this project declared (backends: `docs/work-tracking/adapters.md`). No row, no build.
-4. **Carry the Entry Declaration as commit trailers** — `Kit-Row`, `Kit-Stage`, `Kit-Class`, `Kit-Skill` (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` checks all four on your pull request's final commit: present once each, the skill resolving, the class matching, the row on the board. New projects run in observe mode — `neutral` until you set `LOOP_STATE_MODE` to `enforce`.
+4. **Carry the Entry Declaration as commit trailers, proportional to the class** — Ordinary owes `Kit-Row` + `Kit-Class`; Sensitive/Control-plane owe `Kit-Stage` + `Kit-Skill` too (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` checks the DERIVED class's required set on your PR's final commit: present once each, row on the board, class matching; a volunteered field is validated too. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
 5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff.
 
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
@@ -89,7 +89,7 @@ The **entry gate** — an item is NOT ready to enter Build until ALL mandatory i
 - **Success metric / hypothesis** — a measurable statement of what "worked" means (§5 Discovery).
 
 **Conditional flags** *(flag the obligation now so no downstream gate is a surprise)*
-- **Threat-model / privacy review** *(if sensitive/regulated/personal data)* — flagged for the §7 security gate; threat model + a DPIA-lite when Confidential/Restricted (`templates/THREAT-MODEL-TEMPLATE.md`, `templates/PRIVACY-REVIEW-TEMPLATE.md`; verified by `conformance/privacy-ready.sh`).
+- **Threat-model / privacy review** *(if sensitive/regulated/personal data)* — flagged for the §7 security gate; threat model + a DPIA-lite when Confidential/Restricted (`templates/THREAT-MODEL-TEMPLATE.md`, `templates/PRIVACY-REVIEW-TEMPLATE.md`; verified by `conformance/readiness.sh privacy-ready`).
 - **UX/a11y obligation** *(if a user-facing surface)* — flagged; recorded later in the a11y sign-off (the Accessibility item below).
 - **Eval criteria** *(if an AI feature)* — flagged for the §7 eval gate; the feature carries an AI System Card (`templates/AI-SYSTEM-CARD-TEMPLATE.md`).
 - **Compliance obligation** *(if a regulated domain)* — flagged for the §7 compliance gate.

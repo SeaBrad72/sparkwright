@@ -19,7 +19,7 @@ Copy this file into your project (or your audit/review record). For each control
 | SAST gate ran (first-party code) | CC6.1, CC6.6 / A.8.28, A.8.26 / PW.5, PW.7 | `gate-sast` (Semgrep/CodeQL) CI run log | **Auto (conditional):** CI run log for `gate-sast` step | |
 | License policy applied | CC7.1, CC9.2 / A.5.21 / PS.2 | `scripts/license-check.sh` output (`gate-license` CI step) | **Auto (conditional):** `sh scripts/license-check.sh --selftest` | |
 | Undetermined licenses reviewed | CC7.1 / A.5.21 | operator evidence + upgrade per ladder if needed | Manual (conditional) | |
-| AI-feature eval discipline (if AI feature) | CC8.1 / A.8.29 / PW.7 | EVAL-PLAN (threshold + harness) + the §7 Eval gate run | **Auto (conditional):** `sh conformance/eval-ready.sh` (+ the CI Eval gate for execution) | |
+| AI-feature eval discipline (if AI feature) | CC8.1 / A.8.29 / PW.7 | EVAL-PLAN (threshold + harness) + the §7 Eval gate run | **Auto (conditional):** `sh conformance/readiness.sh eval-ready` (+ the CI Eval gate for execution) | |
 | Agent/runtime MCP capability gate (deny-by-default) | CC6.1, CC6.3 / A.8.2, A.5.15 / PO.5, PS.1 | un-allowlisted destructive/egress MCP tool denied in-process (by name) | **Auto:** `sh conformance/mcp-policy.sh` + `sh conformance/agent-autonomy.sh` | |
 | Network egress · default-deny allowlist (if networked) | CC6.6, CC6.7 / A.8.20–A.8.23 / PO.5 | egress reference + RUNBOOK attestation (declared + wired) | **Auto (conditional):** `sh conformance/egress-policy.sh` | |
 | Sandboxed / read-only agent filesystem (if integration surface) | CC6.1 / A.8.31 / PO.5 | read-only-mount reference + RUNBOOK attestation (declared + wired) | **Auto (conditional):** `sh conformance/containment-ready.sh` | |
@@ -42,18 +42,18 @@ Copy this file into your project (or your audit/review record). For each control
 | Observability / monitoring | CC7.2 / A.8.15, A.8.16 | dashboards, alerts | Manual | |
 | SECURITY.md present + real contact | CC6.1, CC6.6 / A.5.24 | repo `SECURITY.md` | **Auto:** `sh conformance/security-policy.sh` | |
 | Disclosure process actually works (SLAs, triage) | CC7.3, CC7.4 / A.5.24–A.5.28 | advisory response log | Manual — operator evidence | |
-| Privacy review recorded (Confidential/Restricted) | CC6.1, C1.1 / A.8.10, A.5.31 / NIST Privacy Framework | `PRIVACY-REVIEW.md` | **Auto (conditional):** `sh conformance/privacy-ready.sh` | |
+| Privacy review recorded (Confidential/Restricted) | CC6.1, C1.1 / A.8.10, A.5.31 / NIST Privacy Framework | `PRIVACY-REVIEW.md` | **Auto (conditional):** `sh conformance/readiness.sh privacy-ready` | |
 | Processing lawful + deletion works | CC6.1 / A.5.31, A.8.10 | operator/DPO evidence | Manual — DPIA sign-off + erasure test | |
 | Incident response · postmortem | CC7.3, CC7.4 / A.5.24–A.5.28 | postmortem record(s) (`templates/POSTMORTEM-TEMPLATE.md`) + action-item backlog links | Manual | |
 | Architecture decisions recorded | CC1.2, CC3.1 / A.5.4 / PW.1, PW.2 | `docs/ADR-*` files | Manual (files present) | |
 | RUNBOOK · DR / rollback | CC7.4, CC7.5 / A.5.29, A.8.13 | RUNBOOK | Manual (file present) | |
-| DR drill · backup-restore | CC7.5, A1.2 / A.5.29, A.8.13, A.8.14 | BIA (`docs/continuity/BIA.md`) + RUNBOOK §6 + recorded drill date + drill log | **Auto (conditional):** `sh conformance/dr-ready.sh` | |
-| Resilience · load/soak + fault-injection | A1.2, A1.3 / A.8.6, A.8.16 | resilience-verification records (RUNBOOK §8) + drill/load logs | **Auto (conditional):** `sh conformance/resilience-ready.sh` | |
-| Observability · SLOs + telemetry | CC7.2, A1.2 / A.8.16, A.8.15 | observability records (RUNBOOK §8 SLOs + telemetry) + live dashboards/alerts | **Auto (conditional):** `sh conformance/observability-ready.sh` (+ Manual prod evidence) | |
-| AI governance · System Card (if AI feature) | CC1.2, CC2.1 / A.5.1 / NIST AI RMF GOVERN, MAP | AI-SYSTEM-CARD + classification + sign-off (framework map: `../docs/enterprise/ai-governance-crosswalk.md`) | **Auto (conditional):** `sh conformance/responsible-ai-ready.sh` (+ Manual fairness/disclosure/compliance) | |
-| Test data · non-prod safety (if data surface) | CC6.1, C1.1 / A.8.10, A.8.11 (data masking) | RUNBOOK §2 test-data record + masking/synthetic evidence | **Auto (conditional):** `sh conformance/test-data-ready.sh` (+ Manual no-prod-data) | |
-| Preview environments · per-PR safety (if deploy surface) | CC8.1, CC6.1 / A.8.31 (env separation) | RUNBOOK §4 preview-env record + teardown/isolation evidence | **Auto (conditional):** `sh conformance/preview-env-ready.sh` (+ Manual spin-up/teardown/no-prod-data) | |
-| Agent-ops trace discipline recorded (agentic) | — | RUNBOOK §8 `Agent-ops:` record | **Auto (conditional):** `sh conformance/agentops-ready.sh` | |
+| DR drill · backup-restore | CC7.5, A1.2 / A.5.29, A.8.13, A.8.14 | BIA (`docs/continuity/BIA.md`) + RUNBOOK §6 + recorded drill date + drill log | **Auto (conditional):** `sh conformance/readiness.sh dr-ready` | |
+| Resilience · load/soak + fault-injection | A1.2, A1.3 / A.8.6, A.8.16 | resilience-verification records (RUNBOOK §8) + drill/load logs | **Auto (conditional):** `sh conformance/readiness.sh resilience-ready` | |
+| Observability · SLOs + telemetry | CC7.2, A1.2 / A.8.16, A.8.15 | observability records (RUNBOOK §8 SLOs + telemetry) + live dashboards/alerts | **Auto (conditional):** `sh conformance/readiness.sh observability-ready` (+ Manual prod evidence) | |
+| AI governance · System Card (if AI feature) | CC1.2, CC2.1 / A.5.1 / NIST AI RMF GOVERN, MAP | AI-SYSTEM-CARD + classification + sign-off (framework map: `../docs/enterprise/ai-governance-crosswalk.md`) | **Auto (conditional):** `sh conformance/readiness.sh responsible-ai-ready` (+ Manual fairness/disclosure/compliance) | |
+| Test data · non-prod safety (if data surface) | CC6.1, C1.1 / A.8.10, A.8.11 (data masking) | RUNBOOK §2 test-data record + masking/synthetic evidence | **Auto (conditional):** `sh conformance/readiness.sh test-data-ready` (+ Manual no-prod-data) | |
+| Preview environments · per-PR safety (if deploy surface) | CC8.1, CC6.1 / A.8.31 (env separation) | RUNBOOK §4 preview-env record + teardown/isolation evidence | **Auto (conditional):** `sh conformance/readiness.sh preview-env-ready` (+ Manual spin-up/teardown/no-prod-data) | |
+| Agent-ops trace discipline recorded (agentic) | — | RUNBOOK §8 `Agent-ops:` record | **Auto (conditional):** `sh conformance/readiness.sh agentops-ready` | |
 | Traces actually emit / behavior conforms (agentic) | — | real agent-run traces in the sink | Manual | |
 | Release readiness · Definition of Deployable | CC8.1 / A.8.31, A.8.32 | filled `definition-of-deployable.md` + script output | **Auto (conditional):** `sh conformance/deployable-ready.sh` | |
 | Cost governance · rate-limiting | CC7.1 / A.8.6 | config, budget alerts | Manual | |

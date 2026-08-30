@@ -373,10 +373,29 @@ else
   else
     case "$_remote" in
       *github.com*)
-        if sh conformance/branch-protection.sh --raw >/dev/null 2>&1; then _bp=0; else _bp=$?; fi
+        # OUTPUT is read, not only rc (V1 repair PR 2): since B4 the live leg names declared-but-unbound
+        # contexts on rc 1, and an incepted repo now DECLARES the four gates incept installs — "protected"
+        # with none bound is the fail-open state this leg refuses, so it is named with the remedy.
+        if _bpo=$(sh conformance/branch-protection.sh --raw 2>/dev/null); then _bp=0; else _bp=$?; fi
+        # The names are TREE-CONTROLLED text reaching the operator's display: sanitized (R-3: no control
+        # bytes, bounded), and they can only NARROW the verdict to a FAIL — nothing parsed here can produce
+        # a PASS. Producer wording is mirror-locked by selftest cell h4m so a reword cannot degrade the remedy.
+        _bpu=$(printf '%s\n' "$_bpo" | sed -n 's/^FAIL: required-check context(s) declared in .* but not live on [^:]*: \(.*\) — run: .*$/\1/p' | head -1 | tr -d '[:cntrl:]' | cut -c1-200)
+        _bpf=$(printf '%s\n' "$_bpo" | grep -c '^FAIL:')   # rc 1 is COMPOUND: the unbound arm is taken only when it is the SOLE failure
         case "$_bp" in
           0) echo "PASS: verified protected (main, GitHub)" ;;
-          1) echo "FAIL: branch protection — main is NOT protected on GitHub (required PR reviews / status checks missing)"; fail=1 ;;
+          1) if [ -n "$_bpu" ] && [ "$_bpf" = 1 ]; then
+               # surface = OUTSTANDING (a post-first-CI-run keystroke fixes it); any OTHER failure (no reviews
+               # required, protection absent) stays FAIL in both modes and is echoed below.
+               if [ "$MODE" = surface ]; then
+                 echo "OUTSTANDING: branch protection — main is protected but declared required context(s) are NOT bound: ${_bpu} — run: sh scripts/branch-protection-apply.sh --apply (after the first CI run)"
+               else
+                 echo "FAIL: branch protection — main is protected but declared required context(s) are NOT bound: ${_bpu} — the gates incept installed do not block a merge until bound; run: sh scripts/branch-protection-apply.sh --apply"; fail=1
+               fi
+             else
+               printf '%s\n' "$_bpo" | grep '^FAIL:' | tr -d '[:cntrl:]' | cut -c1-240 | sed 's/^/  /'
+               echo "FAIL: branch protection — main is NOT protected on GitHub (required PR reviews / status checks missing)"; fail=1
+             fi ;;
           2) if [ "$MODE" = surface ]; then
                echo "OUTSTANDING: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent); re-run authenticated against a live repo, or in CI"
              else
@@ -733,6 +752,26 @@ selftest() {
   d=$(st_mkfix h0 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
   st_run "$d" strict;  st_has "PASS: verified protected"
 
+  # (h4) GitHub, protected but a DECLARED context unbound (bp exit 1 naming it) -> strict FAIL / surface
+  # OUTSTANDING, naming the context and the --apply remedy — never the generic "NOT protected" text
+  # (V1 repair PR 2: an incepted repo declares the gates it installed; unbound = fail-open, refused by name).
+  echo "--- (h4) github protected, declared context unbound (bp exit 1 + FAIL line) ---"
+  d=$(st_mkfix h4 claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 1 'FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on main: backlog-presence ceremony-binding — run: sh scripts/branch-protection-apply.sh --apply'
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "NOT bound: backlog-presence ceremony-binding"; st_has "branch-protection-apply.sh --apply"; st_hasnt "NOT protected"; st_rc 1
+  st_run "$d" surface; st_has "OUTSTANDING: branch protection"; st_has "NOT bound: backlog-presence ceremony-binding"; st_hasnt "FAIL: branch protection"
+  # (h4m) MIRROR LOCK: h4 pins the parser against a hand-copied literal, so the producer could be reworded
+  # with every cell green. Assert the REAL producer still emits both anchors the parser keys on.
+  echo "--- (h4m) producer wording mirror (conformance/branch-protection.sh) ---"
+  _bpsrc="$(dirname "$CI_GATES_SH")/branch-protection.sh"   # the kit's own, resolved like ci-gates.sh — never the fixture's stub
+  if grep -q 'FAIL: required-check context(s) declared in .* but not live on .* — run: ' "$_bpsrc"; then echo "    ok  : producer anchors present (one line: prefix, on <branch>:, — run:)"; else echo "    FAIL: conformance/branch-protection.sh no longer emits the one-line 'FAIL: required-check context(s) declared in … but not live on …: … — run: …' inception-done parses — update BOTH sides"; st_fail=1; fi
+  # (h5) COMPOUND rc 1 — unbound line PLUS another FAIL (no reviews required): the friendly arm must NOT be taken in either mode.
+  echo "--- (h5) github unbound + reviews-not-required (compound rc 1) -> FAIL both modes ---"
+  d=$(st_mkfix h5 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 1 'FAIL: required PR reviews are not enabled on main
+FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on main: backlog-presence — run: sh scripts/branch-protection-apply.sh --apply'
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "NOT protected"; st_hasnt "OUTSTANDING"; st_rc 1
+  st_run "$d" surface; st_has "FAIL: branch protection"; st_hasnt "OUTSTANDING: branch protection"
+
   # (h2) GitHub, unverifiable (bp exit 2) -> strict FAIL / surface OUTSTANDING. Both rc-2 messages
   # must state BOTH causes (D(i), A3): rc 2 is measured with authenticated gh + a nonexistent repo,
   # so "(no gh / unauthenticated)" alone is a wrong remedy.
@@ -1064,7 +1103,9 @@ st_gh()     { git -C "$1" remote add origin https://github.com/fixture/repo.git 
 st_nongh()  { git -C "$1" remote add origin https://gitlab.com/fixture/repo.git 2>/dev/null || git -C "$1" remote set-url origin https://gitlab.com/fixture/repo.git; }
 st_norem()  { git -C "$1" remote remove origin 2>/dev/null || true; }
 # st_bpstub <dir> <exit>: replace branch-protection.sh in the fixture with a stub returning <exit> (for --raw and otherwise)
-st_bpstub() { printf '#!/bin/sh\nexit %s\n' "$2" > "$1/conformance/branch-protection.sh"; chmod +x "$1/conformance/branch-protection.sh"; }
+st_bpstub() {  # <fixture> <rc> [stdout-line]: the line travels via a side file, never interpolated into the stub's source
+  [ -n "${3:-}" ] && printf '%s\n' "$3" > "$1/conformance/bp-stub.msg"
+  printf '#!/bin/sh\n[ -f "$(dirname "$0")/bp-stub.msg" ] && cat "$(dirname "$0")/bp-stub.msg"\nexit %s\n' "$2" > "$1/conformance/branch-protection.sh"; chmod +x "$1/conformance/branch-protection.sh"; }
 # st_attest <dir>: append a non-GitHub attestation using the STABLE (§branch-protection) marker
 st_attest() { printf '%s\n' '- **Branch protection** (§branch-protection): attested: gitlab protected-branches' >> "$1/CLAUDE.md"; }
 

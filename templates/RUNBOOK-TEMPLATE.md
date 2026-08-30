@@ -81,9 +81,9 @@ fit-vs-maturity trade-off is explicit; see docs/adoption/DEPLOYMENT-ENVIRONMENT.
 <!-- mode:enterprise -->
 - **Resilience verification** *(deployable services — see `docs/operations/resilience-verification.md`)*: Load/soak tested: [date] · Fault-injection drill: [date]
 <!-- /mode:enterprise -->
-- **Observability** *(deployable services — Factor 14 / §3; verified by `conformance/observability-ready.sh`)*: SLOs: [target] · Telemetry wired: [signals]
+- **Observability** *(deployable services — Factor 14 / §3; verified by `conformance/readiness.sh observability-ready`)*: SLOs: [target] · Telemetry wired: [signals]
 <!-- mode:enterprise -->
-- **Agent observability** *(agentic projects — see `docs/operations/agentic-ops.md`; verified by `conformance/agentops-ready.sh`)*: Agent-ops: [trace]
+- **Agent observability** *(agentic projects — see `docs/operations/agentic-ops.md`; verified by `conformance/readiness.sh agentops-ready`)*: Agent-ops: [trace]
 <!-- /mode:enterprise -->
 
 ## 9. Known issues / technical debt

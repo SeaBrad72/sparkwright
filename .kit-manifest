@@ -112,6 +112,8 @@ conformance/deployable-ready.sh
 conformance/dial-state.sh
 conformance/discovery-complete.sh
 conformance/doc-budget.sh
+conformance/doc-markers.sh
+conformance/doc-markers.tsv
 conformance/doctor-wired.sh
 conformance/dor-defined.sh
 conformance/dr-readiness.md
@@ -258,6 +260,8 @@ conformance/promotion-verify-wired.sh
 conformance/proportional-gate-wired.sh
 conformance/provenance-precondition.sh
 conformance/ratification-parity.sh
+conformance/readiness.sh
+conformance/readiness.tsv
 conformance/release-tag-wired.sh
 conformance/release-tagged.sh
 conformance/repo-ownership.sh
@@ -284,6 +288,7 @@ conformance/stack-decision-integrity.sh
 conformance/stack-selection.sh
 conformance/structured-logging-wired.sh
 conformance/supply-chain-verify.sh
+conformance/surface-lib.sh
 conformance/template-detectors-aligned.sh
 conformance/test-data-readiness.md
 conformance/test-data-ready.sh

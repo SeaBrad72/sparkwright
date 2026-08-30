@@ -69,16 +69,16 @@ run() {
   d=$(mktemp -d)
   stamp_fixture "$d"
 
-  out=$(sh "$CONF/privacy-ready.sh" "$d" 2>&1 || true)
+  out=$(sh "$CONF/readiness.sh" privacy-ready "$d" 2>&1 || true)
   assert_not_na "privacy-ready (Confidential)" "$out" || fail=1
 
-  out=$(sh "$CONF/agentops-ready.sh" "$d" 2>&1 || true)
+  out=$(sh "$CONF/readiness.sh" agentops-ready "$d" 2>&1 || true)
   assert_not_na "agentops-ready (Agentic: yes)" "$out" || fail=1
 
-  out=$(sh "$CONF/responsible-ai-ready.sh" "$d" 2>&1 || true)
+  out=$(sh "$CONF/readiness.sh" responsible-ai-ready "$d" 2>&1 || true)
   assert_not_na "responsible-ai-ready (AI System Card @ docs/sign-offs/)" "$out" || fail=1
 
-  out=$(sh "$CONF/eval-ready.sh" "$d" 2>&1 || true)
+  out=$(sh "$CONF/readiness.sh" eval-ready "$d" 2>&1 || true)
   assert_not_na "eval-ready (EVAL-PLAN @ docs/sign-offs/)" "$out" || fail=1
 
   if [ "$fail" -eq 0 ]; then

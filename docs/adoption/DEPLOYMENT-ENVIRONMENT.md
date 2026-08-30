@@ -13,7 +13,7 @@ The kit needs six things from wherever your software runs. Each is stated as a *
 3. **Config & secrets injection** — env/config/secrets reach the running workload from a secret store, **never committed**. See `docs/operations/secrets-for-ai.md` and the Security rule "never commit secrets".
 4. **Rollback mechanism** — a declared, *tested* path back to the last-good release, named **before** you ship (`DEVELOPMENT-PROCESS.md` §10; RUNBOOK §5).
 5. **Post-deploy verification** — a smoke/health check at each promotion boundary that **stops promotion / rolls back on failure** — it gates, it does not merely log (`conformance/definition-of-deployable.md`; `docs/operations/progressive-delivery.md`).
-6. **Observability & cost hooks** — where telemetry/SLOs land and how metered/platform spend is capped (`docs/operations/cost-governance.md`; verified by `conformance/observability-ready.sh`).
+6. **Observability & cost hooks** — where telemetry/SLOs land and how metered/platform spend is capped (`docs/operations/cost-governance.md`; verified by `conformance/readiness.sh observability-ready`).
 
 If your platform provides these — under whatever names — the kit's release discipline runs unchanged.
 

@@ -40,7 +40,7 @@ run `START-HERE` — Inception then walks you through choosing your stack, scaff
 **green pipeline on the first run**, and wires the project, before handing you into the build loop. Brownfield
 adoption into an existing repo is supported. Maturity is a **stage, not a version**: the kit is at
 `release-candidate` today, reaching `adopted` when an external team ships real software through it. The kit
-versions its own releases on its own cadence (currently `v3.219.0`); adoption is a maturity stage, not a
+versions its own releases on its own cadence (currently `v3.220.0`); adoption is a maturity stage, not a
 version reset. The kit is built with its own loop and held to its own Definition of Done — it dogfoods every
 principle and gate it gives you.
 
@@ -227,8 +227,8 @@ A headline capability: the kit treats **a prompt as production logic**, held to 
 - **Discipline & artifacts** — the eval set is versioned with the code and grows from production misses and
   retros; evals *complement* runtime guards; eval scores are tracked as a quality metric (decline = tech debt).
   Planned with `EVAL-PLAN-TEMPLATE.md`; an **AI System Card**, **AI Policy**, **AI Transparency sign-off**, and
-  **AI Artifact Lineage** templates carry the governance; readiness is conformance-checked (`eval-ready.sh`,
-  `responsible-ai-ready.sh`). Governance maps to **NIST AI RMF · ISO 42001 · OWASP** (§26).
+  **AI Artifact Lineage** templates carry the governance; readiness is conformance-checked (`readiness.sh eval-ready`,
+  `readiness.sh responsible-ai-ready`). Governance maps to **NIST AI RMF · ISO 42001 · OWASP** (§26).
 - **Honest ceiling** — running the *live* eval against a provider is a human/CI step by policy: the agent
   authors and wires the evals but does not run the live provider key (the guard blocks reading a live key into
   context as a speed bump, not a hard boundary).
@@ -464,7 +464,7 @@ production deploy; a green conformance run proves controls hold **and** that DR/
 *documented* — **not that those procedures were tested** (the aggregate's own footer says so). **Maturity is a
 stage, not a version:** `pre-adoption → release-candidate → adopted`; the `adopted` stage is reached when an
 external team ships through the loop. The kit versions its own releases on its own cadence (currently
-`v3.219.0`), so adoption is a maturity stage, not a version reset. Named non-reference harnesses carry an
+`v3.220.0`), so adoption is a maturity stage, not a version reset. Named non-reference harnesses carry an
 honest maximum (a harness with no inline
 interception is "floor-verified," never overclaimed). A kit that tells you exactly what's enforced versus
 advisory versus declared is more trustworthy than one that claims magic.

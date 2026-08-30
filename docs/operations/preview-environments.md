@@ -14,4 +14,4 @@ A **per-PR throwaway environment** so reviewers exercise a change *running*, not
 - **Isolation** — one PR's preview cannot reach another's data or prod.
 
 ## What the readiness check proves — and doesn't
-`conformance/preview-env-ready.sh` confirms a deployable project **records** its preview-env approach (RUNBOOK §4). It does **not** verify envs actually spin up, tear down, isolate, or exclude prod data — those are **Manual** operator rows (`preview-environments-readiness.md`). Necessary, not sufficient. Recommended, not required — a tiny tool may mark it N/A-with-reason.
+`conformance/readiness.sh preview-env-ready` confirms a deployable project **records** its preview-env approach (RUNBOOK §4). It does **not** verify envs actually spin up, tear down, isolate, or exclude prod data — those are **Manual** operator rows (`preview-environments-readiness.md`). Necessary, not sufficient. Recommended, not required — a tiny tool may mark it N/A-with-reason.

@@ -153,17 +153,29 @@ assert_incept_universal() {  # <incept-file>
   return "$_i"
 }
 
-# Δ1 — the loop-state observe/enforce dial: mode defaults to observe (a NUDGE, never a block) and
-# posts 'neutral' in that mode. The PROBE RESULT (dev-repo PR #499, 2026-08-06) CONFIRMED neutral as
-# the correct colour, so this lock asserts the ACTIVE form — not the commented-out fallback.
+# Δ1 — the loop-state observe/enforce dial. This lock asserts the ACTIVE form (never the
+# commented-out fallback) AND the shipped default of the dial.
+#
+# ⚠️ THE ASSERTED DEFAULT FLIPPED ON 2026-08-30 (LOOP-STATE-ADOPTER-ENFORCE) AND THE FLIP IS
+# RULED, NOT DRIFT. Until then this function asserted `observe`, per `D-240811-2.1` clause 1 and
+# the 2026-08-06 probe (dev-repo PR #499). `D-240811-2.1` also held that no dial is left in bare
+# observe: each carries its named TRIGGER. loop-state's trigger was that its required trailer set
+# was agent self-attested — Kit-Stage and Kit-Skill are checked only for resolvability. That
+# trigger FIRED in the same PR that flips this: ENTRY-CONTRACT-CLASS-PROPORTIONAL cut the required
+# set to Kit-Row (board-matched) and Kit-Class (classifier-matched) for ordinary work. The clause-1
+# amendment is transcribed in docs/governance/DECISIONS.md under 2026-08-30. Do not "restore"
+# `observe` here without amending that record — the two must agree or one of them is a lie.
+# The observe BRANCH is untouched and still asserted below: opting out remains a one-line edit.
 assert_loop_state_active() {  # <src-file>
   _l=0
   # I2 (surviving mutant, reviewer): read the dial from COMMENT-STRIPPED code, same idiom as the
   # loop-state.sh --head anchor below — a raw grep over the whole file is satisfied by a prose
   # duplicate sitting in a COMMENT (e.g. stale header text) even when the live code default has
-  # drifted to enforce. Comment-stripping first closes that: only a literal, live-code default counts.
+  # drifted. Comment-stripping first closes that: only a literal, live-code default counts. And it
+  # matters MORE under the enforce default, because this file's own header now says the word
+  # `enforce` in prose several times over.
   _wcode=$(grep -v '^[[:space:]]*#' "$1")
-  printf '%s\n' "$_wcode" | grep -qF 'LOOP_STATE_MODE: observe' || { echo "FAIL: $1 does not default LOOP_STATE_MODE to observe — the day-one non-blocking dial is missing or mis-defaulted"; _l=1; }
+  printf '%s\n' "$_wcode" | grep -qF 'LOOP_STATE_MODE: enforce' || { echo "FAIL: $1 does not default LOOP_STATE_MODE to enforce — the adopter default (D-240811-2.1 as amended 2026-08-30) is missing or mis-defaulted"; _l=1; }
   # THE OBSERVE BRANCH MUST BE UNCONDITIONALLY NON-BLOCKING. It used to be expressed as a posted
   # `conclusion: neutral` (the 2026-08-06 probe's measured colour); with the poster gone the same
   # promise is an exit code — the job runs the gate, prints its verdict, and ALWAYS exits 0. Anchored
@@ -206,7 +218,7 @@ run() {
     echo "FAIL: adopter-gates-parity — the board/loop gates do not ship uniformly for every stack"
     return 1
   fi
-  echo "OK: adopter-gates-parity — single source present, marked, wired, stack-neutral, sole copy; incept installs it universally; loop-state ships ACTIVE in observe mode"
+  echo "OK: adopter-gates-parity — single source present, marked, wired, stack-neutral, sole copy; incept installs it universally; loop-state ships ACTIVE and defaults to enforce (observe is a one-line opt-out)"
   return 0
 }
 
@@ -222,7 +234,7 @@ selftest() {
     mkdir -p "$(dirname "$1")"
     {
       printf '# COPY & ADAPT — reference adopter-gates workflow (Sparkwright)\n'
-      printf 'env:\n  LOOP_STATE_MODE: observe\n'
+      printf 'env:\n  LOOP_STATE_MODE: enforce\n'
       printf 'jobs:\n  backlog-presence:\n    steps:\n'
       printf '      - run: gh api "repos/x/pulls/1/files" -q %s[.[] | .filename, (.previous_filename // empty)] | if any(test("\\n")) then error("nl") else .[] end%s > /tmp/changed.txt\n' "'" "'"
       printf '      - run: sh conformance/agent-boundary.sh --check-complete --changed /tmp/changed.txt\n'
@@ -354,19 +366,25 @@ selftest() {
   printf '%s\n' '[ -f "profiles/${STACK}/adopter-gates.yml" ] && cp_kit_replace "profiles/${STACK}/adopter-gates.yml" .github/workflows/adopter-gates.yml' > "$base/incept-bad.sh"
   if assert_incept_universal "$base/incept-bad.sh" >/dev/null 2>&1; then echo "FAIL: selftest case5b — a per-stack-gated install line passed assert_incept_universal"; st=1; else echo "OK: per-stack-gated install -> RED (assert_incept_universal)"; fi
 
-  # 5c. Δ1 LOAD-BEARING NEGATIVE: a source defaulting to enforce (not observe) must FAIL.
-  mk_clean_src "$base/enforcedefault.yml"
-  sed 's/LOOP_STATE_MODE: observe/LOOP_STATE_MODE: enforce/' "$base/enforcedefault.yml" > "$base/enforcedefault.yml.tmp" && mv "$base/enforcedefault.yml.tmp" "$base/enforcedefault.yml"
-  if assert_loop_state_active "$base/enforcedefault.yml" >/dev/null 2>&1; then echo "FAIL: selftest case5c — a source defaulting LOOP_STATE_MODE to enforce (not observe) passed assert_loop_state_active"; st=1; else echo "OK: enforce-by-default source -> RED (Δ1 day-one non-blocking default is load-bearing)"; fi
+  # 5c. Δ1 LOAD-BEARING NEGATIVE, INVERTED 2026-08-30 (LOOP-STATE-ADOPTER-ENFORCE). This case used
+  #     to assert that an `enforce` default must RED. `D-240811-2.1` clause 1 has been AMENDED (see
+  #     docs/governance/DECISIONS.md, 2026-08-30): the emitted adopter default is now `enforce`,
+  #     because the trigger that kept it in observe — a required trailer set nothing could verify —
+  #     was cured in the same PR by ENTRY-CONTRACT-CLASS-PROPORTIONAL. So the polarity flips: a
+  #     source that ships `observe` is now the defect.
+  mk_clean_src "$base/observedefault.yml"
+  sed 's/LOOP_STATE_MODE: enforce/LOOP_STATE_MODE: observe/' "$base/observedefault.yml" > "$base/observedefault.yml.tmp" && mv "$base/observedefault.yml.tmp" "$base/observedefault.yml"
+  if assert_loop_state_active "$base/observedefault.yml" >/dev/null 2>&1; then echo "FAIL: selftest case5c — a source defaulting LOOP_STATE_MODE to observe (not enforce) passed assert_loop_state_active"; st=1; else echo "OK: observe-by-default source -> RED (the adopter default is enforce since 2026-08-30)"; fi
 
-  # 5e. I2 SURVIVING MUTANT (reviewer): the live CODE default is enforce, but a COMMENT elsewhere in
-  #     the file duplicates the literal string "LOOP_STATE_MODE: observe" (stale header prose) — a
-  #     raw (non-comment-stripped) grep would be satisfied by that comment even though the real
-  #     default has drifted. Must RED.
+  # 5e. I2 SURVIVING MUTANT (reviewer; polarity flipped 2026-08-30 with the default). The live CODE
+  #     default has drifted to the WRONG value, but a COMMENT elsewhere in the file duplicates the
+  #     literal string the lock wants — a raw (non-comment-stripped) grep would be satisfied by that
+  #     comment even though the real default is wrong. Must RED. Now that the wanted default is
+  #     `enforce`, the drifted code value is `observe` and the stale comment says `enforce`.
   {
     printf '# COPY & ADAPT (Sparkwright)\n'
-    printf '# stale header prose (never updated):    LOOP_STATE_MODE: observe   (default — a nudge)\n'
-    printf 'env:\n  LOOP_STATE_MODE: enforce\n'
+    printf '# stale header prose (never updated):    LOOP_STATE_MODE: enforce   (the shipped default)\n'
+    printf 'env:\n  LOOP_STATE_MODE: observe\n'
     printf 'jobs:\n  loop-state:\n    steps:\n'
     printf '      - run: sh conformance/loop-state.sh --head "$SHA"\n'
     # SINGLE-CAUSE (review round 1, finding 7): this fixture must fail for its OWN reason — the live
@@ -375,13 +393,13 @@ selftest() {
     # the wrong thing (the over-determined-fixture class this file already paid for once).
     printf '      - run: [ "$mode" = enforce ] || exit 0\n'
   } > "$base/commentdup.yml"
-  if assert_loop_state_active "$base/commentdup.yml" >/dev/null 2>&1; then echo "FAIL: selftest case5e — a source defaulting to enforce in CODE, with only a COMMENT duplicating 'LOOP_STATE_MODE: observe', passed assert_loop_state_active (I2 surviving mutant)"; st=1; else echo "OK: comment-only observe duplicate with enforce live in code -> RED (I2 mutant killed)"; fi
+  if assert_loop_state_active "$base/commentdup.yml" >/dev/null 2>&1; then echo "FAIL: selftest case5e — a source defaulting to observe in CODE, with only a COMMENT duplicating 'LOOP_STATE_MODE: enforce', passed assert_loop_state_active (I2 surviving mutant)"; st=1; else echo "OK: comment-only enforce duplicate with observe live in code -> RED (I2 mutant killed)"; fi
 
   # 5d. Δ1 LOAD-BEARING NEGATIVE: the FALLBACK shape (loop-state.sh --head fully commented out, no
   #     invocation at all) must NOT read as ACTIVE.
   {
     printf '# COPY & ADAPT (Sparkwright)\n'
-    printf 'env:\n  LOOP_STATE_MODE: observe\n'
+    printf 'env:\n  LOOP_STATE_MODE: enforce\n'
     printf 'jobs:\n  loop-state:\n    steps:\n'
     printf '      # - run: sh conformance/loop-state.sh --head "$SHA"\n'
     # SINGLE-CAUSE (finding 7), same rule as 5e: the intended defect is the COMMENTED-OUT gate

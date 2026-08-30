@@ -10,7 +10,7 @@ The kit's own code-review skill: how to review a change well. The Reviewer seat'
 <!-- The frontmatter and discipline headings below are conformance-load-bearing:
      conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers
      (name: review, ## When to use, Confidence, adversarial, builder, NEEDS-FIXES).
-     conformance/validation-terminal-state-documented.sh additionally greps for the third
+     conformance/doc-markers.sh validation-terminal-state additionally greps for the third
      terminal state (FAITHFUL-FAILURE) + its cross-surface markers.
      Edits that drop or rename them can turn the skill-spine lock RED. -->
 

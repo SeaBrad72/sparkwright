@@ -466,7 +466,7 @@ obligation_gate() {
   if [ ! -f "$rec" ]; then
     echo "FAIL: change touches a $name surface but $rec is absent — record it ($tmpl)"; return 1
   fi
-  # present + filled: reject the unfilled template placeholder (privacy-ready.sh:21-35 idiom).
+  # present + filled: reject the unfilled template placeholder (surface-lib.sh declares_sensitive idiom).
   # The message is keyed to the SIGNAL that fired, not one text for all three. "still the unfilled
   # template — fill it" is true for Signals 1-2 and false (and unactionable) for a record the author
   # hand-wrote and considers complete: it names a template they never used and offers no route to a fix.
@@ -494,7 +494,7 @@ obligation_gate() {
 # obl_is_placeholder FILE [STUB_PATTERN]: true (returns 0) if the record is still the blank template (unfilled), or is
 # present-but-unreadable (L2 — fail CLOSED, never pass on a read error). What marks "unfilled":
 #  1. the template's self-identifying "> **Template.**" guidance banner, or a generic unfilled bracket
-#     token (fill/todo/replace/your/describe) — mirrors privacy-ready.sh's placeholder-skip idiom; or
+#     token (fill/todo/replace/your/describe) — mirrors surface-lib.sh declares_sensitive's placeholder-skip idiom; or
 #  2. (L1) a threshold (>=3) of residual TEMPLATE STUBS still present — anchored on THREAT-MODEL-TEMPLATE.md's
 #     OWN bracket vocabulary ([summary]/[threat]/[why]/[boundary N …]/[planned/done]/[data, credentials …]/
 #     [users, agents …]/[auth, MFA …]/[risk accepted …]/[tracked items …]), a stable subset that will NOT

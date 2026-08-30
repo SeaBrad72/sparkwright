@@ -1,7 +1,8 @@
 # Reference ADOPTER-GATES workflow — the board/loop merge-time gates the kit uses on itself,
 # ported for an adopted project: `backlog-presence` (a gated PR binds a board row), `ceremony-binding`
 # (a gated PR carries a recorded design GO), and `loop-state` (the Entry-Declaration refusal floor —
-# shipped ACTIVE but in OBSERVE mode; see the dial below). THE SINGLE, STACK-NEUTRAL SOURCE — like
+# shipped ACTIVE and ENFORCING since 2026-08-30; `observe` is the one-line opt-out, see the dial
+# below). THE SINGLE, STACK-NEUTRAL SOURCE — like
 # profiles/ratification.yml, this file runs no toolchain step, so it is identical for every stack and
 # lives here once (a shared, non-stack asset), NOT once per profile. scripts/incept.sh installs it for
 # EVERY stack, unconditionally; conformance/adopter-gates-parity.sh locks that it stays the sole,
@@ -43,17 +44,45 @@
 #     the recording ceremony has been adopted (`scripts/promotion-verify.sh record`); until it has, a
 #     gated PR waits (red, with the remedy in the title) and the check's own text names the record
 #     command.
-#   * loop-state (OBSERVE mode) is a nudge, not enforcement — see the dial below.
+#   * loop-state is shipped ACTIVE and ENFORCING; `observe` is the one-line opt-out — see the dial
+#     below. In enforce mode the gate's own rc is the job's exit, so a missing or invalid Entry
+#     Declaration BLOCKS the merge.
 #
-# ── THE loop-state OBSERVE/ENFORCE DIAL (Δ1, owner-ruled 2026-08-06) ──────────────────────────────
+# ── THE loop-state OBSERVE/ENFORCE DIAL (Δ1, owner-ruled 2026-08-06; DEFAULT FLIPPED 2026-08-30) ──
 # Ported as-is, loop-state is a plain red ✗ on every adopter PR forever: no adopter commit carries
 # Kit-* trailers on day one, and the declaration legs have no N/A route. A commented-out block was
 # considered and rejected — the kit's own rollout doctrine is "observe-only first, then enforcing
 # behind a flag" (the exact shape Slice B1 shipped for its own tree), and a dead comment never gets
 # adopted. So this gate ships ACTIVE, gated on the single dial below:
 #
-#     LOOP_STATE_MODE: observe   (default — a NUDGE, never a block)
-#     LOOP_STATE_MODE: enforce   (opt-in — the gate's REAL verdict; can BLOCK the merge)
+#     LOOP_STATE_MODE: enforce   (DEFAULT — the gate's REAL verdict; can BLOCK the merge)
+#     LOOP_STATE_MODE: observe   (opt-out — a NUDGE, never a block; one line, at the top of this file)
+#
+# ⚠️ THE DEFAULT WAS `observe` UNTIL 2026-08-30 AND THE FLIP HAS A NAMED REASON — do not revert it
+# as tidying. `D-240811-2.1` held that no dial is left in bare observe: every observe state carries
+# its named TRIGGER for flipping. loop-state's trigger was "the required trailer set is agent
+# self-attested" — Kit-Stage and Kit-Skill are checked only for resolvability, so an adopter was
+# being asked to block merges on fields nothing could verify. That trigger fired in the same PR
+# that flips this line: ENTRY-CONTRACT-CLASS-PROPORTIONAL cut the required set to the two fields
+# checked against an authority outside the author (Kit-Row against the board, Kit-Class against
+# the classifier). The amendment to `D-240811-2.1` is transcribed in docs/governance/DECISIONS.md
+# under 2026-08-30. What an adopter's first PR now owes is TWO trailers, and `Kit-Row` N/As on a
+# pristine board — so first-run-green survives (see scripts/incept.sh's first-green hint, which
+# prints the exact two-line block).
+# ⚠️ THE HOOK DEFAULTS ARE UNTOUCHED, and that is the other half of `D-240811-2.1`: flipping a
+# shipped HOOK default would leak enforce at every hook re-copy. This is the EMITTED WORKFLOW
+# default — one line in the adopter's own tree, which they own and can edit.
+#
+# ⚠️⚠️ AND THAT EDITABILITY IS ALSO THE CEILING — SAY IT PLAINLY RATHER THAN LET A GREEN IMPLY MORE.
+# This workflow is read from the PR's own branch, so the dial is editable ON THE BRANCH THE GATE IS
+# JUDGING: a PR may set `LOOP_STATE_MODE: observe` in the same commit that would have failed the
+# gate, and the gate then passes itself. That is the SAME SELF-SERVICE CLASS as
+# `LOOP-STATE-NA-SELF-SERVICE` (where flipping the backlog backend N/As the row leg), and it is not
+# closed here. WHAT ACTUALLY HOLDS IT is `loop-state` being bound as a REQUIRED CONTEXT — which
+# scripts/incept.sh now declares in REQUIRED-CHECKS.md — because flipping to observe while the
+# context is bound re-creates the silent pass-through (an always-exit-0 job satisfying a required
+# check), and that is a visible, reviewable diff of the declaration rather than a silent bypass.
+# Never describe this dial as "the adopter's choice, safely" without the binding half.
 #
 # In `observe` mode the job RUNS THE GATE, PRINTS ITS VERDICT to the log and the step summary, and
 # ALWAYS EXITS 0 — green, every time, whatever the gate found. That is the nudge: the finding is
@@ -62,9 +91,12 @@
 # same promise — non-blocking — reached without an API call.)
 # ⚠️ THE OBSERVE-vs-BOUND INTERPLAY — READ THIS BEFORE ADDING `loop-state` TO REQUIRED-CHECKS.md.
 # A job that always exits 0 SATISFIES a required check. So binding `loop-state` as a required context
-# while this dial still reads `observe` is a SILENT PASS-THROUGH: every PR shows green on a context
+# while this dial reads `observe` is a SILENT PASS-THROUGH: every PR shows green on a context
 # that is enforcing nothing. Flip the mode to `enforce` FIRST, then bind the context — never the other
 # way around. In `enforce` mode the gate's own rc is the job's exit (0 pass · non-zero blocks).
+# As shipped the dial reads `enforce`, so binding the context is safe out of the box — but IF YOU
+# OPT OUT to `observe`, unbind the context in the same edit, or you have re-created the silent
+# pass-through in your own tree.
 name: Adopter Gates
 
 on:
@@ -74,8 +106,9 @@ permissions:
   contents: read
 
 env:
-  # THE DIAL. Change this one line to flip loop-state from a nudge to a merge-gate. See the header.
-  LOOP_STATE_MODE: observe
+  # THE DIAL. Ships `enforce` since 2026-08-30. Change this one line to `observe` to opt out and
+  # make loop-state a nudge instead of a merge-gate. See the header for why the default flipped.
+  LOOP_STATE_MODE: enforce
 
 jobs:
   # ── backlog-presence ────────────────────────────────────────────────────────────────────────────
@@ -477,7 +510,7 @@ jobs:
           if [ "$rc" != 0 ]; then
             case "$rc" in
               1) _title='loop-state: BLOCKING — no valid Entry Declaration on the head commit'
-                 _msg='To proceed: add the Kit-Row / Kit-Stage / Kit-Class / Kit-Skill trailers as the LAST contiguous paragraph of the head commit message and push. LOOP_STATE_MODE is enforce so this blocks the merge.' ;;
+                 _msg='To proceed: add the entry trailers as the LAST contiguous paragraph of the head commit message and push. What is required depends on the change class: an ORDINARY change owes Kit-Row + Kit-Class; a SENSITIVE or CONTROL-PLANE change owes those two plus Kit-Stage + Kit-Skill. A field you volunteer is validated either way. LOOP_STATE_MODE is enforce (the shipped default) so this blocks the merge; set it to observe at the top of this workflow to opt out.' ;;
               *) _title='loop-state: GATE ERROR — could not evaluate the head commit'
                  _msg=$(printf '%s' "$summary" | tr '\n\r\t' '   ' | cut -c1-400) ;;
             esac

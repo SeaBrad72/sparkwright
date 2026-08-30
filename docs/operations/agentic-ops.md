@@ -48,9 +48,9 @@ The schema is the **portable contract**; an emitter is a **thin per-harness adap
 
 ## Declaration & conformance
 
-Record the posture in **RUNBOOK §8** (`Agent-ops:` — schema + emitter + sink) and the project `CLAUDE.md` config (alongside autonomy-tier defaults, PROCESS §73). Verified by `conformance/agentops-ready.sh` (conditional on `Agentic: yes`); the readiness checklist is `conformance/agentic-ops-readiness.md`.
+Record the posture in **RUNBOOK §8** (`Agent-ops:` — schema + emitter + sink) and the project `CLAUDE.md` config (alongside autonomy-tier defaults, PROCESS §73). Verified by `conformance/readiness.sh agentops-ready` (conditional on `Agentic: yes`); the readiness checklist is `conformance/agentic-ops-readiness.md`.
 
-> **Honesty.** A green `agentops-ready.sh` proves the posture is **declared** — not that traces emit, are complete, or that the agent behaved. Those are Manual rows. Necessary, not sufficient.
+> **Honesty.** A green `readiness.sh agentops-ready` proves the posture is **declared** — not that traces emit, are complete, or that the agent behaved. Those are Manual rows. Necessary, not sufficient.
 
 ## Behavior → autonomy-tier loop (MP-3b)
 

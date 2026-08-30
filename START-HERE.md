@@ -142,7 +142,7 @@ Working alone? The kit assumes multiple people in places (builder ≠ sole revie
 ## ✅ Inception Done — gate to enter the loop
 - [ ] Charter written, intent owner named
 - [ ] Stack chosen; profile selected or generated; **ADR-000 recorded**
-- [ ] Repo created, `main` protected, env reproducible, secrets wired
+- [ ] Repo created, `main` protected **and the four contexts `incept` declared in `REQUIRED-CHECKS.md` bound** (`sh scripts/branch-protection-apply.sh --apply` after the first CI run — `inception-done` names any still unbound), env reproducible, secrets wired
 - [ ] CI pipeline green on the empty project
 - [ ] Project `CLAUDE.md`, `RUNBOOK.md`, backlog, seed roadmap created
 - [ ] Per-project config declared

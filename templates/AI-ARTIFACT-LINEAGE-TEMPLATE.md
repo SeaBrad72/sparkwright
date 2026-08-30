@@ -5,7 +5,7 @@
 > that produced it, plus its governance links. Pair with the per-*system* `AI-SYSTEM-CARD.md`
 > and the `EVAL-PLAN.md` (which describes the tests).
 >
-> **Honest ceiling:** this record is an attestation. `conformance/artifact-lineage-ready.sh`
+> **Honest ceiling:** this record is an attestation. `conformance/doc-markers.sh artifact-lineage`
 > checks it is present and carries its six load-bearing marker phrases — it cannot verify the
 > fields are filled or the values accurate. Accuracy is the signer's responsibility (§6).
 

@@ -84,7 +84,7 @@ jobs:
       # classification is `Internal`, or absent entirely, because the whole point is that a PR can
       # INTRODUCE PII handling before anyone updates the declaration. If you hit this red without having
       # declared anything, that is the gate working — write the record, or narrow the surface knowingly.
-      # The project-level, declaration-triggered obligation is a DIFFERENT gate (conformance/privacy-ready.sh);
+      # The project-level, declaration-triggered obligation is a DIFFERENT gate (conformance/readiness.sh privacy-ready);
       # the two compose. `sparkwright explain threat-model` prints the full surface and its known misses.
       # A PR touching either half with no filled THREAT-MODEL.md FAILs the build; any other PR is N/A and passes.
       - name: Threat-model obligation (PR-context; sensitive/regulated-data surface requires a filled THREAT-MODEL)

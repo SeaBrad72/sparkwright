@@ -5,7 +5,7 @@ description: Use when building or changing ANY model/prompt-dependent behavior �
 
 # Evals — eval-driven development, the AI sibling of tdd
 
-The kit's own `eval-driven` development skill: the craft of holding any model- or prompt-dependent behavior to a measured bar the same way `skills/tdd/SKILL.md` holds code to a failing test. A prompt is production logic; an eval is its test. This is a **kit-original** — superpowers has no evals skill — so it *adds* the AI-native discipline the rest of the spine lacks; it does not replace anything. It POINTS AT the kit's existing eval infrastructure (the EVAL-PLAN template, `conformance/eval-ready.sh`, the §7 Eval gate, the AI System Card); it does not duplicate it.
+The kit's own `eval-driven` development skill: the craft of holding any model- or prompt-dependent behavior to a measured bar the same way `skills/tdd/SKILL.md` holds code to a failing test. A prompt is production logic; an eval is its test. This is a **kit-original** — superpowers has no evals skill — so it *adds* the AI-native discipline the rest of the spine lacks; it does not replace anything. It POINTS AT the kit's existing eval infrastructure (the EVAL-PLAN template, `conformance/readiness.sh eval-ready`, the §7 Eval gate, the AI System Card); it does not duplicate it.
 
 <!-- The frontmatter and the discipline phrases below are conformance-load-bearing:
      conformance/orchestrator-loop-wired.sh greps this file for kit-distinctive markers
@@ -49,7 +49,7 @@ The agent **authors and wires** the evals (dataset, rubric, `threshold`, CI hook
 
 ## Chain to the kit's own eval infra + spine
 - **Plan the evals** with `templates/EVAL-PLAN-TEMPLATE.md` (dataset, rubric, judge, `threshold`, baseline).
-- **Readiness** — `conformance/eval-ready.sh` checks the eval scaffolding is present.
+- **Readiness** — `conformance/readiness.sh eval-ready` checks the eval scaffolding is present.
 - **The §7 Eval gate** enforces the `threshold` in CI (the real enforcement of "green"; this skill is the craft, the gate is the teeth).
 - **Risk / classification** — `templates/AI-SYSTEM-CARD-TEMPLATE.md` records the SUT, judge, and risk tier.
 - **Sibling skills** — `skills/tdd/SKILL.md` (the deterministic sibling — code gets the failing test, AI gets the eval) and `skills/verification/SKILL.md` (prove the eval result is real before claiming it).

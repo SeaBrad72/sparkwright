@@ -10,9 +10,9 @@ Maps the **AI-governance controls this kit provides** to the frameworks a **US**
 
 | Kit control / artifact | Where in the kit | NIST AI RMF | ISO/IEC 42001 | US driver (state / federal) | Responsibility |
 |---|---|---|---|---|---|
-| AI System Card — risk classification + human oversight | `templates/AI-SYSTEM-CARD-TEMPLATE.md`; `conformance/responsible-ai-ready.sh` (§7 gate) | GOVERN, MAP | Clause 6 (risk + impact assessment); Annex A (impact assessment, human oversight) | CO SB 26-189 / CA ADMT (consequential-decision disclosure); NIST RMF (TX TRAIGA safe harbor) | Kit-assisted |
+| AI System Card — risk classification + human oversight | `templates/AI-SYSTEM-CARD-TEMPLATE.md`; `conformance/readiness.sh responsible-ai-ready` (§7 gate) | GOVERN, MAP | Clause 6 (risk + impact assessment); Annex A (impact assessment, human oversight) | CO SB 26-189 / CA ADMT (consequential-decision disclosure); NIST RMF (TX TRAIGA safe harbor) | Kit-assisted |
 | AI Policy | `templates/AI-POLICY-TEMPLATE.md` | GOVERN | Clause 5.2 (AI policy) | — | Kit-assisted |
-| Eval gate — quality + regression + safety/red-team | `profiles/ml.md`; `conformance/eval-ready.sh`; §7 eval gate | MEASURE, MANAGE | Annex A (AI system lifecycle, performance) | NIST RMF MEASURE | Kit-enforced (the gate) · Kit-assisted (the evals) |
+| Eval gate — quality + regression + safety/red-team | `profiles/ml.md`; `conformance/readiness.sh eval-ready`; §7 eval gate | MEASURE, MANAGE | Annex A (AI system lifecycle, performance) | NIST RMF MEASURE | Kit-enforced (the gate) · Kit-assisted (the evals) |
 | Fairness / bias eval dimension | `templates/EVAL-PLAN-TEMPLATE.md` (Fairness section) | MEASURE | Annex A (impact: fairness) | EEOC · NYC Local Law 144 · CO/CA consequential-decision | Kit-assisted (Manual) |
 | AI-output transparency sign-off | `templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md` | GOVERN, MAP | Annex A (transparency to stakeholders) | CA SB 942 / AB 2013 · FTC deception · COPPA | Kit-assisted (Manual) |
 | Human oversight — agents propose, humans ratify | `DEVELOPMENT-PROCESS.md` §13; `docs/enterprise/ratification-rbac.md` | GOVERN, MANAGE | Annex A (human oversight) | CO/CA consequential-decision | Kit-enforced (ratification) |
@@ -38,7 +38,7 @@ Honest coverage of the agentic-AI threat surface: **5 fully covered, 3 partial, 
 | ASI05 Unexpected code execution | guard deny-matrix + sandboxed FS | **Covered** |
 | ASI06 Memory / context poisoning | TCC declares per-step context (not a runtime control) | Gap — platform-owned |
 | ASI07 Insecure inter-agent comms | — | Gap — multi-agent, platform-owned |
-| ASI08 Cascading failures | resilience / circuit-breakers (`resilience-ready.sh`) | Partial |
+| ASI08 Cascading failures | resilience / circuit-breakers (`readiness.sh resilience-ready`) | Partial |
 | ASI09 Human-agent trust exploitation | agents-propose-humans-ratify + ratification RBAC | Partial |
 | ASI10 Rogue agents | autonomy tiers (`agent-autonomy.sh`) + immutable audit | **Covered** |
 

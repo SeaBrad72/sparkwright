@@ -28,17 +28,17 @@
 #   usage: sh conformance/branch-protection.sh [BRANCH] [--require] [--raw]
 #          sh conformance/branch-protection.sh --declared-only [FILE]   (offline; no gh; no network)
 #          sh conformance/branch-protection.sh --selftest
-# NOTE (T4-B1): the LIVE leg is NOT in the per-PR conformance aggregate (verify.sh) — it needs
-# repo-admin creds the least-privilege CI token can't have, so it cannot be verified in per-PR/weekly
-# CI. Real-path verification is maintainer/governance-gated (run locally with an admin-authenticated
-# gh). The OFFLINE --declared-only leg IS registered in verify.sh — declaration integrity needs no
-# creds. Config-as-code (github_branch_protection) + a least-privilege administration:read detective
-# verifier are the E9 (env/promotion governance) reference.
+# NOTE (T4-B1 -> REQUIRED-CONTEXT-SET-LOCK, 2026-08-28): the LIVE leg is NOT in verify.sh (it needs a
+# token that can read protection, which the least-privilege CI token cannot). Since 2026-08-28 it RUNS
+# ON EVERY PR AND WEEKLY in .github/workflows/branch-protection-live.yml under a fine-grained
+# Administration:read-only PAT (secret KIT_PROTECTION_READ), as required context `branch-protection-live`;
+# secret absent/expired -> rc 2 -> --require -> RED, never a pass. The OFFLINE --declared-only leg IS
+# registered in verify.sh — declaration integrity needs no creds.
 # CEILING (B4): detection, not prevention — an admin who removes a bound context can also edit the
 # declaration; real prevention is org rulesets / IaC (Terraform's github_branch_protection resource,
-# named again in scripts/branch-protection-apply.sh). Operator-triggered, not continuous — no
-# mechanism runs the live leg on a cadence; "the governance gate" is a maintainer with admin `gh`
-# until a gate is deliberately built. `enforce_admins:false`, measured live: every required context
+# named again in scripts/branch-protection-apply.sh). Continuous DETECTION since 2026-08-28: an unbound
+# or renamed context reds the next PR before it merges; nothing here can stop the unbinding itself
+# (approach C in the design is the ruleset that would). `enforce_admins:false`, measured live: every required context
 # is admin-bypassable by the kit's own prescribed solo merge path (`gh pr merge --admin`). The
 # offline leg proves declaration INTEGRITY, never forge state. The apply script binds contexts; it
 # cannot prevent later unbinding.

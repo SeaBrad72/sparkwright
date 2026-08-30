@@ -40,9 +40,9 @@ curate_db_backed() {  # MODE(1|0) — 0=non-DB: strip the CI region(s) + marker 
   strip_db_region .gitlab-ci.yml
   rm -f .db-backed
   # CP-3: a non-DB archetype must not LOOK like a data project. Two leftovers made a stateless CLI
-  # fail conformance/dr-ready.sh with "data project has no BIA / no RUNBOOK DR section":
+  # fail conformance/readiness.sh dr-ready with "data project has no BIA / no RUNBOOK DR section":
   #   1. .env.example still carried the COMMENTED `# DATABASE_URL=` / `# REDIS_URL=` backing-service
-  #      lines, and has_data_surface() (dr-ready.sh:30) greps .env.example UNANCHORED — so the
+  #      lines, and has_data_surface() (conformance/surface-lib.sh) greps .env.example UNANCHORED — so the
   #      comment ALONE raised the obligation.
   #   2. the profile scaffold's scripts/dr-drill.sh was copied into a project with no database.
   # We remove the false SIGNAL, never the detector: has_data_surface is conservative BY DESIGN
@@ -788,9 +788,9 @@ Your project starts on the floor; each below activates the moment you add its tr
 
 | Control | Applies IF | Enforced by |
 |---|---|---|
-| Threat model / privacy review | you declare Confidential/Restricted data (CLAUDE.md §3) | conformance/privacy-ready.sh |
-| Eval gate + AI System Card | you add an `evals/` dir or declare `AI feature: yes` | conformance/eval-ready.sh |
-| Agent-ops trace posture | you declare `Agentic: yes` | conformance/agentops-ready.sh |
+| Threat model / privacy review | you declare Confidential/Restricted data (CLAUDE.md §3) | conformance/readiness.sh privacy-ready |
+| Eval gate + AI System Card | you add an `evals/` dir or declare `AI feature: yes` | conformance/readiness.sh eval-ready |
+| Agent-ops trace posture | you declare `Agentic: yes` | conformance/readiness.sh agentops-ready |
 | Accessibility sign-off | you ship a user-facing UI | a11y gate (DEVELOPMENT-STANDARDS §14) |
 | Deployable / resilience / DR | you add a Dockerfile or deploy workflow / durable data | deployable-ready, resilience-ready, dr-ready |
 | Container supply-chain (image SBOM + provenance) | you add a Dockerfile | conformance/container-supply-chain.sh |
@@ -828,6 +828,46 @@ curate_for_mode "$MODE"
 # and scripts/branch-protection-apply.sh read; same BACKLOG-pattern stamp, always written regardless
 # of backlog backend (it is not a backlog concern).
 [ -f REQUIRED-CHECKS.md ] || { cp templates/REQUIRED-CHECKS-TEMPLATE.md REQUIRED-CHECKS.md; sedi "s/\[Project Name\]/${ENAME}/g" REQUIRED-CHECKS.md; }
+# DECLARE WHAT WAS JUST INSTALLED (V1 repair PR 2, ADOPTERS-INSTALL-ZERO-GOVERNANCE-CONTEXTS). Until
+# 2026-08-29 the stamp left the placeholder, so a fresh adopter declared ZERO governance contexts,
+# branch-protection-apply.sh had nothing to bind, and inception-done said "verified protected" with
+# none of the gates this script installs actually required — the fail-closed argument the four
+# workflows print inverted to fail-open on the control-plane class. Now the placeholder becomes the
+# five contexts incept knows the names of: `ci` (every profile's CI job key), control-plane-ratification
+# (ratification.yml), backlog-presence + ceremony-binding + loop-state (adopter-gates.yml).
+# ⚠️ loop-state WAS RESERVED AS A COMMENT until 2026-08-30, because binding a context whose job
+# always exits 0 is a silent pass-through (Δ1) and adopter-gates.yml shipped `observe`. It now ships
+# `enforce` (LOOP-STATE-ADOPTER-ENFORCE), so the ordering rule that reserved the comment — flip the
+# mode FIRST, then bind the context — is satisfied here at Inception instead of being deferred to an
+# adopter who was never going to come back and do it. The coupling is held by
+# conformance/incept-first-run-green.sh, which asserts the installed workflow really does default to
+# enforce whenever loop-state is declared: flip one back without the other and it reds.
+# Only the PRISTINE placeholder is replaced (a brownfield file with real entries is never touched);
+# GitHub CI only — the names are GitHub check contexts. Binding stays the adopter's keystroke.
+if [ "$CI" = github ] && grep -q '^<your-check-name>$' REQUIRED-CHECKS.md; then
+  # `ci` only when a CI workflow is actually installed (custom stacks may ship none — binding a context
+  # that never posts would make every PR permanently unmergeable, the kit's own doctrine turned footgun).
+  _ci_line='ci'; [ -f "profiles/${STACK}/ci.yml" ] || _ci_line='# ci                     <- uncomment once you add a CI workflow whose job key is ci'
+  awk -v ci="$_ci_line" '$0=="<your-check-name>"{print ci; print "control-plane-ratification"; print "backlog-presence"; print "ceremony-binding"; print "loop-state"; next}1' REQUIRED-CHECKS.md > REQUIRED-CHECKS.md.tmp && mv REQUIRED-CHECKS.md.tmp REQUIRED-CHECKS.md \
+    || { rm -f REQUIRED-CHECKS.md.tmp; echo "incept: could not fill REQUIRED-CHECKS.md — declare ci, control-plane-ratification, backlog-presence, ceremony-binding, loop-state by hand (inception-done will name them)" >&2; }
+  # FIRST-RUN TRUTH, PRINTED RATHER THAN ASSUMED. loop-state is now a live required context and it
+  # ENFORCES, so the adopter's very first PR must carry an Entry Declaration or it will not merge.
+  # There is no incept commit on their branch to carry one for them (this script writes a kit-base
+  # snapshot, not a branch commit), so the exact block they need is printed here — two lines, not
+  # four: since 2026-08-30 an ordinary change owes only the row and the class, and on a pristine
+  # board the row leg N/As, so this block is green on day one.
+  echo "note: loop-state is now a required context and it ENFORCES. Your first PR's FINAL commit must"
+  echo "      end with this block as its LAST contiguous paragraph (a blank line inside it truncates it):"
+  echo ""
+  echo "        Kit-Row: <the row on your board this work satisfies>"
+  echo "        Kit-Class: ordinary"
+  echo ""
+  echo "      Ordinary work owes those two. A sensitive or control-plane change owes Kit-Stage and"
+  echo "      Kit-Skill as well — see CLAUDE.md section 1. To opt out entirely, set LOOP_STATE_MODE to"
+  echo "      observe in .github/workflows/adopter-gates.yml AND delete loop-state from REQUIRED-CHECKS.md."
+elif [ "$CI" != github ]; then
+  echo "note: REQUIRED-CHECKS.md left as the placeholder — its contexts are GitHub check names; on ${CI} the protected-branch equivalent is adopter-owned (docs/operations/ci-platforms.md), and inception-done cannot name unbound contexts there."
+fi
 # The decision ledger — stamped EMPTY, same absent-only guard. The entry contract sends every agent
 # into docs/governance/DECISIONS.md before it changes a surface, so the file has to exist from day
 # one; what must NOT exist is the kit's own copy, which is export-ignored for that reason.
@@ -865,6 +905,15 @@ fi
 if [ ! -f .gitignore ] || ! grep -qE '^\.env' .gitignore 2>/dev/null; then
   printf '\n# Local env files — never commit real secrets (.env.example IS the committed template)\n.env\n.env.*\n!.env.example\n' >> .gitignore
   echo "ensured .env is gitignored (real secrets stay out of git)"
+fi
+# GUARD-DENY-LOG L2: `.kit-run/` is the local run directory — the runaway killswitch's step/token
+# tally AND the guard's deny log both live there. Neither is ever committed: the deny log can carry
+# redacted-but-not-guaranteed-clean command segments, and the tally is per-run noise. The kit's own
+# .gitignore has carried this line since the killswitch shipped; an INCEPTED tree did not, so an
+# adopter's first `git add -A` would have committed both. Idempotent, same shape as the .env rule.
+if [ ! -f .gitignore ] || ! grep -qxF '.kit-run/' .gitignore 2>/dev/null; then
+  printf '\n# Local run directory — runaway tally + guard deny log; never committed (docs/operations/runtime-guards.md)\n.kit-run/\n' >> .gitignore
+  echo "ensured .kit-run/ is gitignored (guard deny log + runaway tally stay out of git)"
 fi
 case "$BACKLOG" in
   md) [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;

@@ -3,7 +3,7 @@
 #
 # Trigger: a governed repo (a CLAUDE.md is present) MUST ship a SECURITY.md with a real
 # security contact (not the [security-contact] template placeholder). A bare scratch dir
-# (no CLAUDE.md) is N/A — nothing to disclose against. Mirrors observability-ready.sh.
+# (no CLAUDE.md) is N/A — nothing to disclose against. Mirrors readiness.sh observability-ready.
 #
 # SCOPE: a green run proves a disclosure policy is RECORDED with a real contact — NOT that the
 # process actually works (acknowledgement SLAs met, triage happens). Those are operator rows.

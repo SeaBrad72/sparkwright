@@ -235,6 +235,119 @@ The control-plane shell-mutation check matches a control-plane path **and** a mu
 
 This is annoying, not unsafe (over-deny ≠ bypass). **Workarounds, in order:** for a long **commit or PR message** (the most common trip — a multi-line body is segmented on its newlines and a fragment mentioning a control-plane path is scanned as data-mistaken-for-code), pass the body from a **FILE** rather than inline `-m`/`--body` — `git commit -F <file>` / `gh pr create --body-file <file>` (the file content is a message, never executed). **As of DRIFT-2 the deny message names this escape itself** when the command is a `git commit`/`git tag`/`gh` invocation, so you see it at the moment of friction. Otherwise: run the command via the **`!` user-shell escape** (it runs in your terminal, outside the PreToolUse hook); use the **Read tool** instead of a shell `cat`/`grep` (or `sed -n`) for reads; if you are actually doing **control-plane work**, use the **dev-clone** (see the section above — that is the route, and it keeps the guard armed). **Only as a last resort** set `KIT_GUARD_SELFEDIT=1` in the **launching** shell — and know that it disarms the guard **globally** (destructive-op and secret-read denies included), not just the control-plane check. (An **inline** `KIT_GUARD_SELFEDIT=1 <cmd>` prefix does **not** work — the PreToolUse hook runs in its own process *before* your command, so the inline var never reaches it; export it in the launching shell, or add an `env` block to `.claude/settings.json`. In the **VSCode extension** a launching-shell export does not reach the hook either — the extension spawns its own process — so the `env` block is the only route there.) The structural fix — per-segment command parsing (judge each `;`/`&&`/`|`-separated segment's leading verb against the paths in *that* segment) — is tracked as **G8** in `../ROADMAP-KIT.md`; it is deferred because tightening this regex risks the *unsafe* direction (a false-negative), and the real backstop for an actual control-plane change is the PR-time `control-plane-ratification` check, which diffs the files regardless of how they were edited.
 
+### The escape card — the six shapes the guard will always refuse, and the one retry for each
+
+**Read this once instead of re-discovering it every session.** Six read-shaped commands are
+**kept-denied by standing ruling**, not by accident and not pending a fix. They were re-measured
+across one week of orchestrator, seat and engineer sessions (`GUARD-DENY-LOG` design §2) and each was
+re-affirmed. Every one has a **one-retry escape**. The deny messages point here.
+
+| # | The shape that gets refused | Why it stays denied (the ruling) | The escape (one retry) |
+|---|---|---|---|
+| **R1** | An alternation `\|`/`|` inside a quoted pattern, in one of the three spellings that still bite: `rg -n 'a\|b' <cp>` · `git grep -n 'a\|b' -- <cp>` · **any** `grep`/`egrep` alternation inside a **compound**, e.g. `cd x && grep -n 'a\|b' <cp>`. ⚠️ **Plain `grep -n 'a\|b' <cp>` and `egrep 'a\|b' <cp>` as the sole command are ALLOWED** — lane 2 relieved them (re-measured 2026-08-29; an earlier draft of this card wrongly listed them as denied). | Segmentation is deliberately **quote-blind**: a quote-aware split fails *open* on a real `; rm -rf`. So the `\|` splits the command, and in the compound case the fragment that carries the control-plane path no longer leads with a read verb — the read lane never gets to look at it. `rg`/`git grep` are outside the relieved lexicon lane. `D-240813-3` binds. Reopening this is an owner call at the harvest, on the log's numbers. | `grep -e A -e B <path>` — **verified ALLOW in all three failing forms**, compound and piped included — or the **Grep tool** |
+| **R2** | `sed -n "${n},$((n+14))p" <cp file>` — a non-literal address | The `$` means the address is not visible to the guard, and `sed` carries write/exec escapes (`w`, `s///e`). `D-240813-2`: judge the **resolved target**, and an unresolved one cannot be judged. | literal line numbers (`sed -n 40,54p <path>`), or the **Read tool** |
+| **R4** | `printf … > $SCRATCH/out` — a redirect whose target is `$`-rooted | K-R1b: with the directory inside the variable, the visible suffix does not identify itself — a scratch append and a hook overwrite look identical. The guard refuses to guess. | a literal path (`> /private/tmp/out`), a `~/`-rooted literal, or the **Write tool** |
+| **R5** | `for p in profiles/*/BRANCH-PROTECTION.md; do md5 -q "$p"; done` — a loop head over a control-plane glob, read-only body | F-f: the **head** carries the deny for the whole construct. Relieving it segment-locally would allow a mass-delete body under a read-looking head. | one invocation per file, or the **Read/Grep tool** |
+| **R8** | `rm /abs/path/under/scratch` — `rm` with an absolute path | The destructive matrix: an absolute `rm` is the shape with no blast radius the guard can bound, and it is irreversible. | a **relative** path from the repo root |
+| **R10** | `sh -c 'grep … <cp path>'` — a control-plane path inside an interpreter's arguments | An interpreter's arguments are **code, never data**, so a control-plane path inside them can never be cleared. This is the pipe-into-interpreter class lane 2 closed. | run the program from a **file** that names no control-plane path, or use the **Read tool** |
+
+**These are the *acceptable* failure direction.** `D-240813-3` (three reverted parser rounds, each
+one reopening a real write hole) settled that an over-deny with a named escape beats a cleverer
+parser. What this card fixes is the *cost* of that choice: it was paid once per session, by every new
+agent, because the escapes were scattered across tip strings.
+
+**Relieved in lane 3 — no escape needed any more.** The corpus these six came from had ten shapes;
+three were judged *relievable* rather than kept-denied, and `GUARD-READ-LANE-3` relieved them. They
+are recorded here so nobody reaches for a workaround that is no longer needed:
+
+- **R3** — `find <cp root> … -exec <read verb> {} +` now **ALLOWs** for the read verbs on
+  `_CP8B_FIND_EXEC_READ_VERBS` (`cat head tail wc nl od cksum md5 md5sum shasum sha1sum sha256sum
+  stat grep`). Every other `-exec` verb, `-execdir`, `-ok`, `-delete` and `-fprint*` still deny.
+  ⚠️ **The verb may carry GLUED SHORT FLAGS ONLY, and no operand of its own.** After the verb the
+  grammar accepts `-`-led flag tokens and exactly one `{}`, then `+` — nothing else. So, measured:
+  `-exec grep -efoo {} +` **ALLOWs** (the pattern is glued to the flag), while `-exec grep foo {} +`
+  (bare operand), `-exec grep -e foo {} +` (**spaced** value — the value is a bare operand),
+  `-exec grep --regexp=foo {} +` (any `=`-joined flag is refused outright), a second `{}`, and
+  `\;` instead of `+` all still **deny**. The `\;` refusal is the `D-240813-3` decline set being
+  absolute on the backslash byte; use `+`, which is also the faster spelling.
+- **R6** — `sh conformance/branch-protection.sh --declared-only <cp path>` now **ALLOWs**: the kit's
+  own read-only verification, invoked as documented, no longer refuses to read its own tree. This is
+  a **declared table** (`_cp8b_kit_query_toks`), not a general rule — an unlisted check with a
+  control-plane argument still denies, and each listed pair is *run* by `agent-autonomy.sh`'s Arm-A
+  coupling lock and proved not to mutate the worktree.
+  ⚠️ **The relief is ARGUMENT-UNCONSTRAINED, and that is deliberate.** `--declared-only <any path>`
+  ALLOWs — `.claude/hooks/guard-core.sh` and `conformance/verify.sh` as readily as the `profiles/`
+  one — because the check is offline and read-only *whatever* it is pointed at, so the argument is
+  data. Read the lock's guarantee precisely: **it proves the SCRIPT, not the argument.** It runs the
+  pair and asserts the worktree did not move; it says nothing about which paths are safe to name. If
+  a listed script ever gained an argument-dependent write, the census and the lock would both stay
+  green — which is why membership is a ratified deny-removal and not a convenience. Adding a pair costs one table line, one lock
+  line and a green census leg. The **launcher is not constrained** either: `sh`, `bash`, `dash`,
+  `zsh`, `ksh`, `./conformance/branch-protection.sh` and the bare path all ALLOW. That is the arm's
+  pre-existing shape, shared by all four declared pairs — the launcher does not change what the
+  script does, and the lock's guarantee is about the script.
+- **R7** — a **quoted** heredoc (`<<'EOF'`) whose consumer is one of those declared kit queries now
+  has its body ruled **inert**, so the entry contract's own act 1
+  (`promotion-readiness.sh --class --changed /dev/stdin <<'EOF' … EOF`) runs. An *unquoted*
+  delimiter, `<<-`, a shell or interpreter consumer (`sh <<'EOF'`, `python3 - <<'EOF'`), a
+  control-plane redirect target, and a separator *after* the `<<` all keep today's scan —
+  ⚠️ **and so does a separator ANYWHERE BEFORE the `<<`: the kit query must BE the consumer.**
+  `<kit query> ; python3 /dev/stdin <<'EOF'` is refused, because the command that reads the body is
+  the one after the separator, not the harmless one in front of it. (An earlier draft of this card
+  said only that a shell or interpreter consumer keeps the scan; that was false as written — it read
+  as though putting a recognised query in front were enough, which is exactly the shape the security
+  seat found. The same rule now also refuses `cat x; python3 /dev/stdin <<'EOF'`, which was ALLOW
+  before this slice.)
+
+Everything else in the ten-shape corpus is either one of the six above or a **correct** deny
+(`git reset --hard`, `git push --force-with-lease`, `git notes merge`).
+
+### Reading the deny log
+
+Since `GUARD-DENY-LOG` the guard **records** its denials, so "are the read lanes getting better" is a
+number rather than a chat tally.
+
+- **The file:** `<repo-root>/.kit-run/guard-denials.ndjson` — one JSON object per line. It is
+  **local**: already in `.gitignore`, never committed, never exported to adopters, never pushed. It
+  lives in the same run directory as the runaway killswitch's tally (`runaway-killswitch.md`).
+- **The fields**, in order: `ts` (UTC ISO-8601) · `surface` (`pretooluse` | `kit-guard`) · `tool`
+  (`Bash`/`Write`/… or `-`) · `arm` (the reason's numeric tag, e.g. `13`) · `trigger` (e.g. `pathhit`,
+  `redir-nonliteral`, or `-`) · `segment` (the guard's own offending segment, ≤160 bytes, control
+  bytes stripped) · `read_shaped` (`1` when the refused thing was a **read** — the closure metric) ·
+  `session`.
+- **The summary:** `sh scripts/kit-guard --denials [--since <ISO>] [--last <n>] [--file <p>] [--json]`
+  — totals by arm, trigger, surface and session, plus the count and the segments of the read-shaped
+  denials. No `jq` required.
+- **What is recorded, stated precisely.** The `segment` field holds **the offending segment, ≤160
+  bytes, redacted for common secret shapes — NOT a guarantee that no secret can appear; the offending
+  segment of a one-segment command IS the command.** Redaction masks **every** assignment in the
+  leading `NAME=VALUE` run, `Authorization:`/`Bearer `/`Basic `, `x-api-key:`/`api-key:` headers,
+  `token=`, `api_key=`, `password=`, `secret=`, `curl -u user:pw`, a `-p`/`-p <value>` password
+  argument (mysql/psql style), JSON `"token"`/`"password"`/`"secret"`/`"api_key"` values (escaped
+  quotes included), and URL userinfo (`://user:pw@`). An unrecognised secret shape still lands in
+  the file.
+  Treat `.kit-run/` as you would any local scratch: not for sharing, not for pasting into an issue.
+- **Turn it off:** `KIT_GUARD_LOG=0` in the launching shell. The log write is failure-swallowed and
+  always succeeds from the caller's point of view, so **logging can never change a verdict** — a full
+  disk, a read-only `.kit-run`, or a planted FIFO/symlink at the log path cannot turn a deny into an
+  allow, and cannot delay one either (the decision is printed before the log is touched).
+- **The number is a FLOOR, not a census.** The instrument is cooperative — `KIT_GUARD_LOG=0` disables
+  it — so a count read off this file is a lower bound on what actually happened. Sanctioned uses of
+  the off switch are the selftest battery (which would otherwise flood the log with ~100 synthetic
+  denials per run) and a deliberate operator opt-out. Nothing detects a third use.
+- **No rotation, deliberately.** The file is append-only and unbounded; nothing truncates or rolls it.
+  **Delete the file to reset a measurement window** — that is the intended workflow for a harvest.
+- **Planted nodes are refused.** The logger writes only when `.kit-run` is a real directory and the
+  log path is absent, or a regular non-symlink file **with a link count of 1**. A FIFO there used to
+  hang the hook; a symlink there used to make the logger an append primitive onto the link's target;
+  a **hardlink** did the same while passing both of those tests (it is a regular, non-symlink file —
+  only the link count gives it away). All three now decline silently. The file is created `0600`.
+  The check is TOCTOU-imperfect by construction — it stops a planted node, not a race — and when the
+  link count cannot be read at all it defaults to writing, because losing the harvest on a platform
+  without `stat` would be a worse failure than the narrow primitive it guards.
+- **It is an observation, never a control.** The file is agent-writable and unauthenticated; nothing
+  in the kit gates on it, and nothing should (`THREAT-MODEL.md`, T5).
+
 ### What `GUARD-READONLY-FP-RELIEF` changed (v3.218.0) — five relieved shapes, one *tightened* one
 
 Five read-only shapes that used to be denied are now allowed, each by a **declared** recognizer that

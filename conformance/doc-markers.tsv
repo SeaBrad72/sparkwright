@@ -1,0 +1,71 @@
+# doc-markers.tsv — the MARKER TABLE read by conformance/doc-markers.sh.
+#
+# Each data line is ONE load-bearing marker: a tracked document must carry a phrase, and the check
+# names that marker when it goes missing. The table is the check's whole subject — the script has no
+# per-case knowledge at all — so adding a marker is a table row, never a new conformance/*.sh.
+#
+# FORMAT — one row per marker, exactly FIVE tab-separated fields. `#` comments and blank lines skipped.
+#
+#     <case>\t<file>\t<regex>\t<label>\t<scope>
+#
+#   case   the check name a verify.sh row and CI step invoke: `sh conformance/doc-markers.sh <case>`.
+#   file   repo-root-relative path of the document that must carry the marker.
+#   regex  POSIX ERE, CASE-SENSITIVE (grep -Eq). Escape ERE metacharacters you mean literally.
+#   label  the human name of the marker. It is the FAIL text (`FAIL: <label> (missing in <file>)`)
+#          AND the string --selftest requires the mutant to die by, so a label is load-bearing
+#          identity, not decoration: two rows must never share one.
+#   scope  `kit` — the document is the kit's OWN, so the case renders N/A on an adopter tree (no
+#                  docs/ROADMAP-KIT.md and none of the case's files present).
+#          `any` — the document is expected wherever the check runs; absence is a FAIL.
+#
+# --selftest generates, for EVERY row, a mutant that strips the matching lines from a fixture copy
+# and requires RED WITH THAT ROW'S LABEL. So a row that cannot be killed is a row that is not really
+# checked, and the sweep says which one.
+#
+# ── artifact-lineage (E11) — templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md still carries its six
+#    load-bearing fields: the chain tying a produced AI artifact back to the model + prompt + inputs
+#    + eval that made it. HONEST CEILING: the phrases are matched, so this proves the FIELDS are
+#    present, never that they are FILLED, nor that a real artifact's stated lineage is accurate
+#    (that is the signer's responsibility).
+artifact-lineage	templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md	Artifact version	artifact-lineage: 'Artifact version' field	kit
+artifact-lineage	templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md	Model ID \+ version	artifact-lineage: 'Model ID + version' field	kit
+artifact-lineage	templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md	Prompt/template version	artifact-lineage: 'Prompt/template version' field	kit
+artifact-lineage	templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md	Input dataset version	artifact-lineage: 'Input dataset version' field	kit
+artifact-lineage	templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md	Eval score	artifact-lineage: 'Eval score' field	kit
+artifact-lineage	templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md	Human sign-off	artifact-lineage: 'Human sign-off' field	kit
+#
+# ── gate-eval-secrets (E6-d / C5) — docs/operations/secrets-for-ai.md documents how the eval CI job
+#    obtains its live credential SAFELY (a short-lived OIDC-minted token, never an embedded key) and
+#    points at the non-waivable secret-scan gate. HONEST CEILING: the REFERENCE is proven present +
+#    load-bearing; no adopter's live OIDC/secrets-manager setup is verified, and nothing here scans
+#    for secrets (the required `secret-scan` gate does that).
+gate-eval-secrets	docs/operations/secrets-for-ai.md	gate-eval secret handling	gate-eval-secrets: 'gate-eval secret handling' section	kit
+gate-eval-secrets	docs/operations/secrets-for-ai.md	OIDC	gate-eval-secrets: OIDC-minted credential	kit
+gate-eval-secrets	docs/operations/secrets-for-ai.md	short-lived	gate-eval-secrets: short-lived credential	kit
+gate-eval-secrets	docs/operations/secrets-for-ai.md	never embedded	gate-eval-secrets: never-embedded rule	kit
+gate-eval-secrets	docs/operations/secrets-for-ai.md	secret-scan	gate-eval-secrets: secret-scan enforcement pointer	kit
+#
+# ── feedback-link-lifecycle (CP-7 Slice 8 / K13) — the KIT-FEEDBACK live-log link lifecycle is
+#    documented UPSTREAM so operators never author a link check-links.sh must reject: the log stays
+#    live-but-untracked until the synthesis commit, so cite findings by plain K-id until then.
+#    HONEST CEILING: proves the doctrine is documented, not that an operator obeys it live
+#    (un-gateable) — check-links.sh remains the runtime backstop.
+feedback-link-lifecycle	templates/KIT-FEEDBACK-TEMPLATE.md	untracked until the end-of-run synthesis commit	feedback: log untracked-until-synthesis-commit marker	any
+feedback-link-lifecycle	templates/KIT-FEEDBACK-TEMPLATE.md	cite it by its K-id as plain text, never a Markdown link	feedback: cite-by-K-id-not-a-link marker	any
+feedback-link-lifecycle	templates/BACKLOG-TEMPLATE.md	cite the finding by its plain K-id until the synthesis commit tracks	backlog: cite-plain-K-id-until-synthesis marker	any
+#
+# ── validation-terminal-state (CP-7 Slice 6 / K6) — the review loop documents the FAITHFUL-FAILURE
+#    third terminal state, and the two load-bearing surfaces stay CROSS-SURFACE COHERENT: the
+#    reviewing craft (skills/review/SKILL.md) and the declared-class structural input
+#    (templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md). Rows 5 and 7 share a phrase on purpose — the
+#    coherence claim IS that both surfaces carry it, so each has its own row and its own mutant.
+#    HONEST CEILING: proves the doctrine is documented + coherent, not that a live reviewer applies
+#    FAITHFUL-FAILURE correctly (un-gateable).
+validation-terminal-state	skills/review/SKILL.md	terminal state — FAITHFUL-FAILURE	review: FAITHFUL-FAILURE terminal state	any
+validation-terminal-state	skills/review/SKILL.md	subject-under-test	review: anti-contamination clause	any
+validation-terminal-state	skills/review/SKILL.md	originating backlog	review: route-to-originating-backlog	any
+validation-terminal-state	skills/review/SKILL.md	faithful methodology is the precondition	review: faithful-methodology precondition	any
+validation-terminal-state	skills/review/SKILL.md	validation / field-test	review: gated on declared TCC class	any
+validation-terminal-state	skills/review/SKILL.md	Task Context Contract	review: names the TCC as the class source	any
+validation-terminal-state	templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md	validation / field-test	tcc: validation class declared	any
+validation-terminal-state	templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md	subject-under-test	tcc: subject-under-test prohibition	any

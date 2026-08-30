@@ -52,13 +52,13 @@ selftest() {
 ## threat-model
 Applies IF: you declare Confidential/Restricted data
 Why: naming the attacker's goal before you build is cheaper than finding it in prod.
-Enforced by: conformance/privacy-ready.sh
+Enforced by: conformance/readiness.sh privacy-ready
 Read more: DEVELOPMENT-STANDARDS.md §2
 
 ## evals
 Applies IF: you add an evals/ dir or declare an AI feature
 Why: without a regression threshold, model quality silently drifts.
-Enforced by: conformance/eval-ready.sh
+Enforced by: conformance/readiness.sh eval-ready
 Read more: DEVELOPMENT-PROCESS.md §7
 FX
   export EXPLAIN_DOC="$_fx"
@@ -68,7 +68,7 @@ FX
   for _lbl in "Applies IF:" "Why:" "Enforced by:" "Read more:"; do
     printf '%s\n' "$out" | grep -Fq "$_lbl" || { echo "explain --selftest: FAIL (missing label: $_lbl)"; sfail=1; }
   done
-  printf '%s\n' "$out" | grep -Fq "privacy-ready.sh" || { echo "explain --selftest: FAIL (enforcer not rendered)"; sfail=1; }
+  printf '%s\n' "$out" | grep -Fq "readiness.sh privacy-ready" || { echo "explain --selftest: FAIL (enforcer not rendered)"; sfail=1; }
 
   # --list enumerates both fixture slugs
   lst=$(sh "$0" --list) || { echo "explain --selftest: FAIL (--list non-zero)"; sfail=1; lst=""; }

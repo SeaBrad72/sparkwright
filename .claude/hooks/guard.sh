@@ -19,7 +19,15 @@ INPUT=$(cat)
 # escape for a JSON double-quoted value (backslash + quote; reasons have no control chars)
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 emit_deny() {
+  # ⚠️⚠️ ORDER IS A SECURITY PROPERTY (C1b, review round 1) — THE DECISION IS PRINTED FIRST.
+  # The first cut logged BEFORE this printf, which meant a logging pathology could preempt the
+  # verdict entirely: with a FIFO planted at the log path the `>>` blocked forever and the deny JSON
+  # was NEVER EMITTED — the hook hung instead of denying. Logging is an observation and must never
+  # sit on the critical path of a decision, so it runs after the verdict is on stdout and before the
+  # exit. `guard_log_deny` swallows every failure and always returns 0. $TOOL is unset only on the
+  # jq-absent / non-JSON paths that run before it is assigned — `${TOOL:--}` logs those as tool `-`.
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$(json_escape "$1")"
+  guard_log_deny pretooluse "$1" "${TOOL:--}" || :
   exit 0
 }
 emit_ask() {

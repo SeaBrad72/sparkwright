@@ -20,4 +20,4 @@ How to give non-prod environments **realistic data without the privacy risk of r
 - Raw prod dump in a shared dev DB · masking *after* the copy lands in non-prod · a "temporary" prod snapshot that becomes permanent · children's data in a preview environment.
 
 ## What the readiness check proves — and doesn't
-`conformance/test-data-ready.sh` confirms a data-handling project **records** its test-data approach (RUNBOOK). It does **not** verify the data is *actually* synthetic/masked or that no prod data leaked — that is a **Manual** row (`test-data-readiness.md`). Necessary, not sufficient.
+`conformance/readiness.sh test-data-ready` confirms a data-handling project **records** its test-data approach (RUNBOOK). It does **not** verify the data is *actually* synthetic/masked or that no prod data leaked — that is a **Manual** row (`test-data-readiness.md`). Necessary, not sufficient.

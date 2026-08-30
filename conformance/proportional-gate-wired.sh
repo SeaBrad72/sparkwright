@@ -518,6 +518,13 @@ selftest() {
         *) echo "FAIL: REQUIRED-CHECKS.md declares '$_ctx' and $CI_WF has a job of that key, but proportional-gate-wired's job-level-if table does not cover it — its skip condition is unlocked"; st=1 ;;
       esac
     done
+    # `branch-protection-live` (REQUIRED-CONTEXT-SET-LOCK, 2026-08-28) is a required context supplied by its
+    # OWN workflow file, so the $CI_WF legs above skip it ("supplied by another workflow"); same NO_IF
+    # invariant, locked here by presence + no job-level `if:`. A rename does NOT red anything — the
+    # context simply never reports and the PR hangs at 'Expected' — so the key itself is pinned too.
+    _bpl=".github/workflows/branch-protection-live.yml"
+    _has_job_key "$_bpl" branch-protection-live || { echo "FAIL: $_bpl has no job keyed 'branch-protection-live' — REQUIRED-CHECKS.md declares that context, and a renamed or missing key never reports (a hung PR, not a red)"; st=1; }
+    [ -z "$(_job_if "$_bpl" branch-protection-live)" ] || { echo "FAIL: $_bpl's branch-protection-live job has GROWN a job-level \`if:\` — a required context with nothing to condition on; any false condition reports 'skipped'"; st=1; }
   fi
   if [ -f "docs/ROADMAP-KIT.md" ]; then
     # THE MIRROR GETS THE SAME FOUR ANCHORS, not the rc one: adopters must inherit the same rendering,

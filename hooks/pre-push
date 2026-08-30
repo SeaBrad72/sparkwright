@@ -166,8 +166,11 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
         printf 'kit pre-push: %s\n' "$_decl_line" >&2
       done
     fi
-    printf 'kit pre-push:   remedy: fix the trailer block on the pushed head (Kit-Row, Kit-Stage,\n' >&2
-    printf 'kit pre-push:            Kit-Class, Kit-Skill) — git commit --amend, then push again.\n' >&2
+    printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
+    printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
+    printf 'kit pre-push:            sensitive/control-plane -> those two plus Kit-Stage + Kit-Skill.\n' >&2
+    printf 'kit pre-push:            A field you volunteer is still validated. git commit --amend,\n' >&2
+    printf 'kit pre-push:            then push again.\n' >&2
     printf '  override (deliberate): git push --no-verify\n' >&2
     return 1
   fi

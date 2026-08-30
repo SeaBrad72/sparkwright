@@ -153,7 +153,10 @@ selftest() {
   # reason: without these two legs, deleting `KIT_PUSH_CITE=enforce` from REQUIRED leaves the whole
   # selftest GREEN — silently unlocking the new dial, the class this file's header forbids. It is the
   # FIFTH KEY and the SIXTH DIAL: the sitting decided five conf-carried dials plus LOOP_STATE_MODE,
-  # which is the ADOPTER's by ruling and deliberately never appears in this file.
+  # which is the ADOPTER's by ruling and deliberately never appears in this file — it lives in the
+  # emitted adopter workflow, where it has defaulted to `enforce` since 2026-08-30. That flip
+  # changes nothing here: the dial is still not conf-carried, and no key for it belongs in
+  # .kit/dials.conf.
   ds_tree "$W/citeflip" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=observe'
   ds_expect "mutant 10: KIT_PUSH_CITE flipped to observe reds" 1 "$W/citeflip"
   ds_expect_says "the flipped-cite reason names the dial and both values" 'KIT_PUSH_CITE=observe' "$W/citeflip"

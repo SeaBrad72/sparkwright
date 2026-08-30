@@ -24,7 +24,13 @@
 #                        row in the export's conformance/verify.sh (a `check` row that is neither
 #                        `--kitself` nor `--selftest`-only).
 #        DIAL-REACHABLE  reached ONLY by a run-line in profiles/adopter-gates.yml — the
-#                        Inception-installed workflow whose LOOP_STATE_MODE defaults to `observe`.
+#                        Inception-installed workflow — AND only while that workflow's emitted
+#                        LOOP_STATE_MODE reads `observe`. Since 2026-08-30 it ships `enforce`
+#                        (LOOP-STATE-ADOPTER-ENFORCE), so those run-lines are HARD-reachable and
+#                        the dial set is normally EMPTY. The axis is not dead: it is read from the
+#                        emitted default (at_emitted_mode), so an adopter who opts back out to
+#                        `observe` re-arms the qualifier demand automatically, and an absent or
+#                        unparseable default fail-safes to `observe` (the demanding answer).
 #        UNREACHABLE     neither.
 #   3. Greps the export's `.md` corpus for CLAIM LINES — a claim verb (`gate-checked`, `locked by`,
 #      `enforced by`, `verified by`, `gated by`, case-insensitive) on a line that also names a
@@ -32,7 +38,10 @@
 #        UNREACHABLE     -> RED, unless the line carries the kit-tree token (below).
 #        DIAL-REACHABLE  -> RED unless the line also carries a DELIVERY qualifier (`observe` or
 #                        `LOOP_STATE_MODE`, same line). An enforcement claim over a gate whose only
-#                        adopter reach is observe-dialed must disclose the dial.
+#                        adopter reach is observe-dialed must disclose the dial. Under the shipped
+#                        `enforce` default nothing is dial-reachable, so the claim is simply true
+#                        and the qualifier is not demanded — disclosing a dial that is not deciding
+#                        anything would be its own kind of false statement.
 #        HARD-REACHABLE  -> green.
 #      THE KIT-TREE TOKEN DOES NOT EXEMPT. The literal phrase `the kit's own CI` switches that
 #      line's judged set to the KIT-REACHABLE set (the kit's .github/workflows/*.yml run-lines + the
@@ -133,6 +142,24 @@ at_live_rows() {
     | grep -oE 'conformance/[A-Za-z0-9_.-]+\.sh' || true
 }
 
+# at_emitted_mode <adopter-gates.yml> — the LOOP_STATE_MODE the adopter's workflow SHIPS.
+#
+# Prints exactly `enforce` or `observe` and always returns 0. FAIL-SAFE DIRECTION IS `observe`:
+# a missing file, a missing env block, or a value this reader does not recognise all answer
+# `observe`, which is the DEMANDING answer for the claim corpus — an unreadable dial must never be
+# read as "the gate is enforcing, so the prose need not disclose anything". COMMENT-STRIPPED for
+# the same reason adopter-gates-parity strips: this workflow's header discusses both words at
+# length, and a raw grep would be satisfied by prose.
+at_emitted_mode() {  # <adopter-gates.yml>
+  [ -f "$1" ] || { printf 'observe\n'; return 0; }
+  _em=$(grep -v '^[[:space:]]*#' "$1" 2>/dev/null \
+        | grep -oE 'LOOP_STATE_MODE:[[:space:]]*[A-Za-z]+' | head -1)
+  case "$_em" in
+    *enforce) printf 'enforce\n' ;;
+    *)        printf 'observe\n' ;;
+  esac
+}
+
 # at_reach_sets <export-dir> <kit-dir> <workdir> — writes hard/dial/kit reach sets. rc 1 on a floor
 # violation, which is a FAIL and never a quiet pass: an empty reach set would green every claim.
 at_reach_sets() {
@@ -142,7 +169,21 @@ at_reach_sets() {
     at_invoked "$_f" >> "$_w/hard"
   done
   at_live_rows "$_ex/conformance/verify.sh" >> "$_w/hard"
-  at_invoked "$_ex/profiles/adopter-gates.yml" >> "$_w/dial"
+  # THE DIALED WORKFLOW'S RUN-LINES LAND IN HARD OR IN DIAL DEPENDING ON WHAT IT SHIPS. Since
+  # 2026-08-30 the emitted default is `enforce` (LOOP-STATE-ADOPTER-ENFORCE), so those run-lines
+  # are HARD reach and an enforcement claim over them is simply true — demanding a dial qualifier
+  # would force the corpus to disclose a dial that is not deciding anything. Under `observe` the
+  # old demand is exactly right. Reading the default rather than hardcoding either answer is what
+  # makes a future flip in EITHER direction move this check automatically.
+  # `$_w/agates` is kept separately because the axis-alive anchor below must see the run-line
+  # wherever it was routed — otherwise flipping to enforce would silently kill that anchor.
+  at_invoked "$_ex/profiles/adopter-gates.yml" > "$_w/agates"
+  AT_EMITTED_MODE=$(at_emitted_mode "$_ex/profiles/adopter-gates.yml")
+  if [ "$AT_EMITTED_MODE" = enforce ]; then
+    cat "$_w/agates" >> "$_w/hard"
+  else
+    cat "$_w/agates" >> "$_w/dial"
+  fi
   for _f in "$_kt"/.github/workflows/*.yml; do
     at_invoked "$_f" >> "$_w/kit"
   done
@@ -161,8 +202,14 @@ at_reach_sets() {
     echo "FAIL: the export's conformance/verify.sh carries $_rows 'check' row(s), under the floor of $ROW_FLOOR — the reachable set is derived from that registry, so an unparseable or gutted one would green every claim in the corpus. Refusing to judge over it."
     return 1
   fi
-  if ! grep -qxF 'conformance/loop-state.sh' "$_w/dial"; then
-    echo "FAIL: the reach computation found no conformance/loop-state.sh run-line in profiles/adopter-gates.yml — that anchor is the one gate this check is known to classify dial-reachable. Its absence means the workflow moved, was renamed, or no longer parses, and the dial axis is silently dead."
+  # AXIS-ALIVE ANCHOR. Re-based 2026-08-30: it used to assert that loop-state was in the DIAL set,
+  # which stopped being true the moment the emitted default flipped to enforce (the run-line is
+  # now HARD reach). What it actually needs to prove is that the run-line is still FOUND — if the
+  # workflow moved, was renamed, or no longer parses, both the dial axis and the enforce routing
+  # above go silently dead and every claim over this gate greens for the wrong reason. So the
+  # anchor now reads the pre-routing set.
+  if ! grep -qxF 'conformance/loop-state.sh' "$_w/agates"; then
+    echo "FAIL: the reach computation found no conformance/loop-state.sh run-line in profiles/adopter-gates.yml — that anchor is what keeps the emitted-default axis alive. Its absence means the workflow moved, was renamed, or no longer parses, and every claim over that gate would be judged against an empty set."
     return 1
   fi
   return 0
@@ -276,6 +323,30 @@ selftest() {
   at_claim "$W/mode" "docs/a.md" '**Gate-checked** by `conformance/loop-state.sh` — observe-mode until the adopter flips `LOOP_STATE_MODE`.'
   at_expect "the same claim WITH the delivery qualifier greens" 0 "$W/mode"
 
+  # EMITTED-DEFAULT AXIS (LOOP-STATE-ADOPTER-ENFORCE, 2026-08-30). Whether a gate is DIAL-reachable
+  # is a property of what the adopter's workflow SHIPS, not of which file the run-line lives in.
+  # With the emitted default at `enforce`, a run-line in profiles/adopter-gates.yml is HARD reach —
+  # the claim "gate-checked by loop-state.sh" is simply TRUE for that adopter, and demanding a dial
+  # qualifier would force the corpus to disclose a dial that is not deciding anything. With the
+  # default at `observe` the old demand is exactly right. So the axis reads the default rather than
+  # hardcoding either answer, and a future flip in EITHER direction moves this check with it.
+  at_fix "$W/emitted"
+  at_set_mode "$W/emitted" enforce
+  at_claim "$W/emitted" "docs/a.md" '**Gate-checked** on the PR head commit by `conformance/loop-state.sh`.'
+  at_expect "emitted default enforce: an UNQUALIFIED loop-state claim is true and greens" 0 "$W/emitted"
+
+  # THE INVERSE, ON THE SAME FIXTURE — this pair is the discriminant. A mutant that simply deleted
+  # the mode axis would pass the leg above and fail this one; a mutant that ignored the emitted
+  # default would fail the leg above and pass this one. Neither passes both.
+  at_set_mode "$W/emitted" observe
+  at_expect "flipping the emitted default back to observe RE-ARMS the qualifier demand" 1 "$W/emitted"
+  at_says "the re-armed demand is the mode axis" 'FAIL[mode]' "$W/emitted"
+
+  # FAIL-SAFE DIRECTION: no env block at all (an adopter deleted the line) must read as `observe`,
+  # i.e. the DEMANDING answer. An unreadable dial must never be taken as "enforcing".
+  at_set_mode "$W/emitted" none
+  at_expect "an ABSENT emitted default is read as observe (demanding), never as enforce" 1 "$W/emitted"
+
   # DELIVERY TOKEN IS WORD-ANCHORED (security LOW-2). A sentence that merely REPORTS an observation
   # ("observed", "observer") is not a dial disclosure and must not green the claim; the bare word,
   # alone and without LOOP_STATE_MODE, must.
@@ -361,7 +432,7 @@ selftest() {
   fi
 
   rm -rf "$W"
-  [ "$sfail" -eq 0 ] && { echo "adopter-told --selftest: OK (anchor + seeded-false-claim reds and its removal greens + mode axis both ways + word-anchored delivery token (observed vs observe) + comments-excluded oracle + kit-token narrowing both ways + three branch-isolated floors + empty-domain + arming both directions)"; return 0; }
+  [ "$sfail" -eq 0 ] && { echo "adopter-told --selftest: OK (anchor + seeded-false-claim reds and its removal greens + mode axis both ways + the emitted-default axis (enforce greens an unqualified claim, observe re-arms the demand, absent fail-safes to observe) + word-anchored delivery token (observed vs observe) + comments-excluded oracle + kit-token narrowing both ways + three branch-isolated floors + empty-domain + arming both directions)"; return 0; }
   echo "adopter-told --selftest: FAIL"; return 1
 }
 
@@ -395,6 +466,18 @@ at_fix() {  # <dir> — a minimal EXPORT-shaped tree plus a kit-shaped tree besi
   printf 'check control hardgate sh conformance/hardgate.sh\n' > "$_d/kit/conformance/verify.sh"
   printf 'jobs:\n  k:\n    steps:\n      - run: sh conformance/kitonly.sh\n      - run: sh conformance/loop-state.sh\n' \
     > "$_d/kit/.github/workflows/ci.yml"
+}
+
+at_set_mode() {  # <dir> <enforce|observe|none> — rewrite the fixture's emitted LOOP_STATE_MODE
+  # `none` omits the env block entirely, which is what an adopter who deleted the line leaves
+  # behind. The reader must treat that as `observe` — the DEMANDING direction.
+  if [ "$2" = none ]; then
+    printf 'jobs:\n  g:\n    steps:\n      - run: sh conformance/loop-state.sh --head "$SHA"\n' \
+      > "$1/export/profiles/adopter-gates.yml"
+  else
+    printf 'env:\n  LOOP_STATE_MODE: %s\njobs:\n  g:\n    steps:\n      - run: sh conformance/loop-state.sh --head "$SHA"\n' \
+      "$2" > "$1/export/profiles/adopter-gates.yml"
+  fi
 }
 
 at_claim() {  # <dir> <relative-md-path> <line> — plant a claim line in the fixture corpus

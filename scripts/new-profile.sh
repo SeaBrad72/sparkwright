@@ -147,17 +147,20 @@ cat > "profiles/${STACK}/BRANCH-PROTECTION.md" <<'EOF'
 Enforces the §14 contract at the repo boundary: `main` protected, green CI to merge, builder ≠ sole merger. COPY & ADAPT — replace `OWNER/REPO` and team handles. `REQUIRED-CHECKS.md` (stamped from `templates/REQUIRED-CHECKS-TEMPLATE.md` at incept), not this file, is the source of truth `conformance/branch-protection.sh` and `scripts/branch-protection-apply.sh` read — declare your required contexts there.
 
 ## What to require
-- The status-check contexts declared in `REQUIRED-CHECKS.md` — at minimum the CI status check (`ci`); add `control-plane-ratification` once you require it:
+- The status-check contexts declared in `REQUIRED-CHECKS.md`. **Inception declares the five it installs** — `ci`, `control-plane-ratification`, `backlog-presence`, `ceremony-binding`, `loop-state` — so the gates the kit installs become the gates your protection requires **once you bind them** (`--apply`); `inception-done` names any still unbound until then. The block below is paste-ready; opt-ins you add by hand:
   ```
   ci
   control-plane-ratification
+  backlog-presence
+  ceremony-binding
+  loop-state
+  # ^ the five above are what incept declares: ci = every profile's CI job key; ratification.yml; adopter-gates.yml x3
   # provenance             <- uncomment once this profile's ci.yml gates on SLSA provenance
   # image-provenance       <- uncomment once this profile builds + attests a container image
-  # backlog-presence       <- uncomment once you install profiles/adopter-gates.yml (Inception) and want gated PRs to require a bound board row before merge
-  # ceremony-binding       <- uncomment once you want a gated PR to require a recorded design GO before merge
-  # loop-state             <- uncomment ONLY after flipping LOOP_STATE_MODE to enforce in .github/workflows/adopter-gates.yml (binding it in observe mode is a silent pass-through — GitHub treats the posted `neutral` conclusion as satisfying a required check)
   # <add-your-check-here>
   ```
+  ⚠️ `loop-state` is bound because it **enforces**: `.github/workflows/adopter-gates.yml` ships `LOOP_STATE_MODE: enforce` (since 2026-08-30). If you opt out to `observe`, **unbind this context in the same edit** — in observe mode the job always exits 0 and GitHub treats that as satisfying a required check, so you would be left requiring a gate that enforces nothing.
+- Optional, continuous detection (fork-neutral): a cron + `workflow_dispatch`-only workflow running `sh conformance/branch-protection.sh --require` under a fine-grained `Administration: read` PAT secret reds when a declared context is unbound. **No `pull_request` trigger** — fork PRs get no secret and would red forever, and a PR head could print the token. Detection, not prevention; rulesets are the preventing shape.
 - At least 1 approving review from someone other than the author.
 - Stale approvals dismissed on new commits.
 - Branch up to date before merge.
@@ -177,7 +180,7 @@ Once `profiles/adopter-gates.yml` is installed (Inception) and you want to requi
 ```bash
 gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=backlog-presence'
 gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=ceremony-binding'
-# loop-state: bind this ONLY after flipping LOOP_STATE_MODE to enforce — see the note above.
+# loop-state enforces as shipped; unbind it if you ever set LOOP_STATE_MODE back to observe.
 gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_checks/contexts -f 'contexts[]=loop-state'
 ```
 

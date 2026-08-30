@@ -1,6 +1,6 @@
 # Threat Model
 
-**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.219.0 · **Date:** 2026-08-28
+**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.220.0 · **Date:** 2026-08-30
 **Owner:** Bradley James · **Data classification:** Internal (the kit holds no customer data)
 
 <!-- The bolded "Kit version" token on the line above is the SINGLE marker
@@ -32,6 +32,8 @@
 | **The conformance green** | A vacuous PASS is worse than a FAIL: it is false assurance an adopter acts on | all of `conformance/` |
 | **The published mirror** | It is what adopters install; a poisoned publish reaches every downstream tree | `scripts/publish-public.sh` |
 | **CI credentials** | `GITHUB_TOKEN`, the release/publish path | `.github/workflows/*` |
+| **The deny log** (added 2026-08-29, `GUARD-DENY-LOG`) — **an OBSERVATION, never a control.** One NDJSON line per guard refusal: `ts · surface · tool · arm · trigger · segment · read_shaped · session`. It exists so "are the read lanes getting better" is a measured number instead of a chat tally | **It can hold secret material, and the first cut of this row overclaimed otherwise.** `segment` is **the offending segment, ≤160 bytes, redacted for common secret shapes — NOT a guarantee that no secret can appear; the offending segment of a one-segment command IS the command** (measured: `TOKEN=… sed -i …`, `curl -H 'Authorization: Bearer …'`, `psql postgres://user:pw@…`). Masked: leading `NAME=VALUE`, `Authorization:`/`Bearer`/`Basic`, `token=`, `api_key=`, `password=`, `secret=`, URL userinfo. Unrecognised shapes survive. The other abuse is the reverse direction: an agent **forging or truncating** the file to make its own denials vanish from a harvest | `<repo-root>/.kit-run/guard-denials.ndjson` — **local**, already `.gitignore`d, never committed, never exported to adopters, never pushed. **Append-only and unbounded (no rotation)**; delete it to reset a window. `KIT_GUARD_LOG=0` disables it, so **any count is a FLOOR, not a census** — sanctioned off-switch uses are the selftest battery and a deliberate operator opt-out. ⚠️ **It is agent-writable and unauthenticated, and NOTHING IN THE KIT GATES ON IT** — that is the point: it is evidence for a human reading a harvest, and neither a forged line nor a write pathology may change a verdict. Enforced three ways: the decision is emitted BEFORE the log is touched (a planted FIFO used to hang the hook — T5 in this table, reached from one *allowed* `mkfifo`); the logger refuses a symlink, a **hardlink** (link count > 1 — a hardlink is a regular non-symlink file and passed the first two tests) or any non-regular node at the path, each of which was an append primitive onto any writable file; and every write failure is swallowed. Created `0600`. Masked shapes are enumerated in `docs/operations/runtime-guards.md` |
+| **`KIT_PROTECTION_READ`** (added 2026-08-28, `REQUIRED-CONTEXT-SET-LOCK`) — a fine-grained PAT, this repo only, `Administration: read`, 90-day expiry; the first non-`GITHUB_TOKEN` credential in this CI | Reconnaissance: it reads branch protection, rulesets and bypass actors — the map of which contexts bind and where `enforce_admins:false` leaves the `--admin` path. It cannot merge, push or change protection. **Exposure route, accepted and disclosed:** `on: pull_request` runs the PR head's copy of `branch-protection-live.yml` and `conformance/branch-protection.sh` with the secret in env, so any push-capable actor — a collaborator, or an agent with the branch push the kit grants — can print it in a same-repo PR. Closing shapes: an Environment-scoped secret with a required reviewer (gates every PR on a human), or a `main` ruleset (design approach C). Rotation and the fail-closed expiry behaviour: `RUNBOOK.md` §5 | repo Actions secret; consumed only by `.github/workflows/branch-protection-live.yml` |
 
 **Not assets:** the kit stores no customer data, no PII, no payment data, and holds no production
 credentials. Its value to an attacker is **leverage over downstream repos**, not data at rest.
@@ -64,7 +66,7 @@ credentials. Its value to an attacker is **leverage over downstream repos**, not
 
 The kit processes **no personal data**. It stores contributor handles in commit metadata and
 promotion notes (`refs/notes/promotions`) — GitHub identities already public in the repo history.
-No DPIA required; `privacy-ready.sh` correctly derives N/A for this project.
+No DPIA required; `readiness.sh privacy-ready` correctly derives N/A for this project.
 
 **One caveat:** adopter trees may hold PII. The kit's obligation gates read **path names only**, never
 file contents, so no adopter data crosses into kit-owned tooling.

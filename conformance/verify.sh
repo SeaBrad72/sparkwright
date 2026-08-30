@@ -552,10 +552,17 @@ check control harness-ceiling          sh conformance/harness-ceiling-disclosed.
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
 check control pipeline-origin          sh conformance/pipeline-origin.sh
 check control pipeline-origin-selftest  sh conformance/pipeline-origin.sh --selftest
-check control validation-terminal-state           sh conformance/validation-terminal-state-documented.sh
-check control validation-terminal-state-selftest   sh conformance/validation-terminal-state-documented.sh --selftest
-check control feedback-link-lifecycle              sh conformance/feedback-link-lifecycle-documented.sh
-check control feedback-link-lifecycle-selftest      sh conformance/feedback-link-lifecycle-documented.sh --selftest
+# CONFORMANCE-DOC-FAMILIES-MERGE (D-240828-4): these four rows used to name two single-purpose
+# scripts. Both folded into the table-driven conformance/doc-markers.sh (subject:
+# conformance/doc-markers.tsv) with their marker labels preserved verbatim — the mutants those
+# selftests killed are now GENERATED per table row, one per marker, and still die by label. The rows
+# stay FOUR AND DISTINCT on purpose: `^check control ` is both the census the mass budget ratchets
+# and the target set non-vacuity.sh sweeps, so collapsing them would silently drop two rows of
+# mutation coverage while the budget read it as a saving.
+check control validation-terminal-state           sh conformance/doc-markers.sh validation-terminal-state
+check control validation-terminal-state-selftest   sh conformance/doc-markers.sh validation-terminal-state --selftest
+check control feedback-link-lifecycle              sh conformance/doc-markers.sh feedback-link-lifecycle
+check control feedback-link-lifecycle-selftest      sh conformance/doc-markers.sh feedback-link-lifecycle --selftest
 check control named-adapters-selftest  sh conformance/named-adapters.sh --selftest
 check control ci-gates         --kitself sh conformance/ci-gates.sh profiles/typescript-node/ci.yml --expect-seams
 # B7 (D-240805-2 executed) — the NON-kitself leg: THIS tree's OWN installed pipeline(s) judged
@@ -847,23 +854,29 @@ check control backlog-presence  sh conformance/backlog-presence.sh --selftest
 # CI step invokes it live. The load-bearing negative lives in --selftest (stubbed
 # {"enabled":false}); the live repo must never serve as the negative.
 check control security-channel-live-selftest sh conformance/security-channel-live.sh --selftest
+# CONFORMANCE-DOC-FAMILIES-MERGE (D-240828-4): the nine conditional readiness rows now dispatch into
+# conformance/readiness.sh (subject: conformance/readiness.tsv) and the two kit-doc marker rows into
+# conformance/doc-markers.sh (subject: conformance/doc-markers.tsv). SAME ROW NAMES, same three-state
+# contract, same per-case wording — the row name is what a reader and the summary see, and it did not
+# move. deployable-ready / test-layers-ready / feature-flags-ready / roster-authority / security-policy
+# are NOT part of the fold (structural detectors and mixed checks); they still name their own scripts.
 check doc     deployable-ready sh conformance/deployable-ready.sh
-check doc     dr-ready         sh conformance/dr-ready.sh
-check doc     resilience-ready sh conformance/resilience-ready.sh
-check doc     eval-ready       sh conformance/eval-ready.sh
-check doc     eval-ready-ml    sh conformance/eval-ready.sh profiles/ml
-check doc     observability-ready sh conformance/observability-ready.sh
-check doc     responsible-ai-ready sh conformance/responsible-ai-ready.sh
-check doc     responsible-ai-ready-ml sh conformance/responsible-ai-ready.sh profiles/ml
-check doc     test-data-ready  sh conformance/test-data-ready.sh
+check doc     dr-ready         sh conformance/readiness.sh dr-ready
+check doc     resilience-ready sh conformance/readiness.sh resilience-ready
+check doc     eval-ready       sh conformance/readiness.sh eval-ready
+check doc     eval-ready-ml    --kitself sh conformance/readiness.sh eval-ready profiles/ml
+check doc     observability-ready sh conformance/readiness.sh observability-ready
+check doc     responsible-ai-ready sh conformance/readiness.sh responsible-ai-ready
+check doc     responsible-ai-ready-ml --kitself sh conformance/readiness.sh responsible-ai-ready profiles/ml
+check doc     test-data-ready  sh conformance/readiness.sh test-data-ready
 check doc     test-layers-ready sh conformance/test-layers-ready.sh
-check doc     preview-env-ready sh conformance/preview-env-ready.sh
-check doc     agentops-ready  sh conformance/agentops-ready.sh
+check doc     preview-env-ready sh conformance/readiness.sh preview-env-ready
+check doc     agentops-ready  sh conformance/readiness.sh agentops-ready
 check doc     security-policy sh conformance/security-policy.sh
-check doc     privacy-ready   sh conformance/privacy-ready.sh
+check doc     privacy-ready   sh conformance/readiness.sh privacy-ready
 check doc     feature-flags-ready sh conformance/feature-flags-ready.sh
-check doc     gate-eval-secrets sh conformance/gate-eval-secrets-ready.sh
-check doc     artifact-lineage sh conformance/artifact-lineage-ready.sh
+check doc     gate-eval-secrets sh conformance/doc-markers.sh gate-eval-secrets
+check doc     artifact-lineage sh conformance/doc-markers.sh artifact-lineage
 check doc     roster-authority sh conformance/roster-authority-ready.sh
 
 echo ""

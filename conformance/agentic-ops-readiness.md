@@ -2,16 +2,16 @@
 
 Proves an **agentic** project has its **agent-run observability** discipline in place: a trace schema is adopted, traces are emitted to a sink, and (for the MP-3b behavior loop, when present) the process-conformance window + autonomy-tier linkage are recorded. **Checklist-type**, run at the **Review / agent-ops readiness gate** (`DEVELOPMENT-PROCESS.md` §7/§13) and as **recurring maintenance** (§15). **Conditional:** non-agentic projects mark the whole check **N/A — no agent runs to trace**. Implements the trace contract in `docs/operations/agentic-ops.md`; anchored on OpenTelemetry GenAI semantic conventions.
 
-> **What the Auto row proves — and doesn't.** `agentops-ready.sh` confirms the posture is *recorded* (an `Agent-ops:` trace record in RUNBOOK §8). It does **not** verify that traces *actually* emit, that they are *complete* (all required-core fields populated), or that the agent's *behavior conforms* over time. Those are the **Manual** rows, signed off with operator evidence. **A green script is necessary, not sufficient.**
+> **What the Auto row proves — and doesn't.** `readiness.sh agentops-ready` confirms the posture is *recorded* (an `Agent-ops:` trace record in RUNBOOK §8). It does **not** verify that traces *actually* emit, that they are *complete* (all required-core fields populated), or that the agent's *behavior conforms* over time. Those are the **Manual** rows, signed off with operator evidence. **A green script is necessary, not sufficient.**
 
 ## How to use
-Copy this file into your project (or your reliability record). For each item: mark **Applies? (Y / N+reason)** and give **Evidence**. Items tagged *(documented)* are auto-checkable via `sh conformance/agentops-ready.sh`; items tagged *(verified)* require operator evidence from real agent runs. The reviewer signs off only when every applicable item has evidence.
+Copy this file into your project (or your reliability record). For each item: mark **Applies? (Y / N+reason)** and give **Evidence**. Items tagged *(documented)* are auto-checkable via `sh conformance/readiness.sh agentops-ready`; items tagged *(verified)* require operator evidence from real agent runs. The reviewer signs off only when every applicable item has evidence.
 
 ## Checklist (blank)
 
 | # | Item | Applies? | Evidence (where/how) | Check |
 |---|------|----------|----------------------|-------|
-| 1 | Trace discipline recorded — `Agent-ops:` in RUNBOOK §8 (schema + emitter + sink) *(documented)* | | | **Auto:** `agentops-ready.sh` |
+| 1 | Trace discipline recorded — `Agent-ops:` in RUNBOOK §8 (schema + emitter + sink) *(documented)* | | | **Auto:** `readiness.sh agentops-ready` |
 | 2 | Required-core fields present in a real trace — identity keys, timing, cost, outcome, gates, tool-steps *(verified)* | | | Manual |
 | 3 | Traces actually emit per agent-run — a real run's trace is viewable in the sink *(verified)* | | | Manual |
 | 4 | Multi-agent keying holds — concurrent runs have distinct `(agent.id, run.id)`; `parent.run.id` builds the spawn tree *(verified)* | | | Manual |
@@ -31,4 +31,4 @@ Copy this file into your project (or your reliability record). For each item: ma
 | 6a | Behavior-scorecard discipline declared *(documented)* | Y | scorecard run in CI weekly over `traces/` (`scripts/agent-scorecard.sh`); discipline noted in RUNBOOK §8 | Manual ✅ |
 | 6b | Tier directives actually drive moves *(verified)* | Y | a regressed agent's tier was lowered via the platform policy after receiving an auto-downgrade directive | Manual ✅ |
 
-> A non-agentic project (a plain library/CLI with no agent actor) marks the whole check **N/A — no agent runs to trace**; `agentops-ready.sh` skip-passes it automatically.
+> A non-agentic project (a plain library/CLI with no agent actor) marks the whole check **N/A — no agent runs to trace**; `readiness.sh agentops-ready` skip-passes it automatically.

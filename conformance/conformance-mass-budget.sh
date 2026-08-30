@@ -71,9 +71,9 @@ TAB=$(printf '\t')
 #           disease and turn an anti-add ratchet into an anti-edit one. Files and census have no such
 #           churn — a file exists or it does not — so they carry no headroom at all.
 GENESIS_LINES=51400     # measured 51,312 lines across conformance/*.sh, rounded up to the next 100
-MAX_LINES=55100         # 55000 + 43 = 55043, rounded up to the next 100 per the genesis convention above (mass-acks.txt 2026-08-28, `lines`, the export-gate line)
+MAX_LINES=55500         # ENTRY-CONTRACT-CLASS-PROPORTIONAL + LOOP-STATE-ADOPTER-ENFORCE: measured 55404 (54785 + 463 build + 146 for the two review seats' fixes — H-1's shared-tree dedup fixture, M-3's CI shape-lock, L-2's kit-row control-char arm, M1's present-implies-validated mutant kill, M2's empty-window leg — + 10 for the kit-marker latch green-on-clone forced on M-3's lock), ALL inside existing checks, rounded up to the next 100 per the genesis convention above (mass-acks.txt 2026-08-30, `lines`, +700)
 GENESIS_FILES=168       # measured exactly; no headroom by design
-MAX_FILES=168
+MAX_FILES=171           # the three new files of the doc-families fold; the thirteen folded paths survive as exec shims because the guard denies deletion, so this surface moved UP (mass-acks.txt 2026-08-29, `files`, +3 — that line names what closes it)
 GENESIS_CENSUS=128      # measured exactly; `^check control ` rows in conformance/verify.sh
 MAX_CENSUS=128
 

@@ -14,8 +14,10 @@ KIT_EXPLAIN_DOC="${KIT_EXPLAIN_DOC:-docs/why-gates.md}"
 KIT_EXPLAIN_INCEPT="${KIT_EXPLAIN_INCEPT:-scripts/incept.sh}"
 
 # The S1 conditional-obligations enforcers that MUST be taught. Single list, used by both the
-# teaching-completeness check and its selftest fixtures.
-CHECKLIST_ENFORCERS="conformance/privacy-ready.sh conformance/eval-ready.sh conformance/agentops-ready.sh conformance/dr-ready.sh conformance/resilience-ready.sh conformance/deployable-ready.sh conformance/container-supply-chain.sh"
+# teaching-completeness check and its selftest fixtures. `path|case` names a TABLE-DRIVEN checker
+# (conformance/readiness.sh): the case is the stable per-topic identifier, so the binding stays
+# one-topic-to-one-block after the doc-families fold instead of collapsing to one shared path.
+CHECKLIST_ENFORCERS="conformance/readiness.sh|privacy-ready conformance/readiness.sh|eval-ready conformance/readiness.sh|agentops-ready conformance/readiness.sh|dr-ready conformance/readiness.sh|resilience-ready conformance/deployable-ready.sh conformance/container-supply-chain.sh"
 
 # Floor/always-on topics taught in why-gates.md that have NO S1-checklist enforcer binding
 # (their gate is a §14 floor gate, not a conditional obligation), so they are not covered by the
@@ -51,17 +53,17 @@ check() {  # $1=scriptsdir $2=doc $3=inceptfile
   [ "$_orphan" = "0" ] || _fail=1
 
   # (3) teaching-completeness: each checklist enforcer is in BOTH incept's heredoc AND the doc.
-  # The incept checklist may name a gate by full path (conformance/eval-ready.sh) OR by bare
-  # basename (the combined "deployable-ready, resilience-ready, dr-ready" row), so the incept
-  # side matches on basename-sans-extension — the stable identifier present in both formats —
-  # while the doc side stays strict (full path, the format why-gates.md uses).
+  # The incept checklist may name a gate by full path or by bare basename, so the incept side
+  # matches on the stable identifier (the table case, else basename-sans-extension) while the doc
+  # side stays strict on the exact 'Enforced by:' form why-gates.md uses — `<path> <case>` for a
+  # table-driven checker, so one topic still binds to one block.
   for _e in $CHECKLIST_ENFORCERS; do
-    _eb=$(basename "$_e" .sh)
+    _ep=${_e%%|*}; _eb=${_e#*|}
+    if [ "$_eb" = "$_e" ]; then _eb=$(basename "$_ep" .sh); _er=$_ep; else _er="$_ep $_eb"; fi
     if grep -Fq "$_eb" "$_inc"; then :
     else echo "FAIL: checklist obligation dropped from incept.sh heredoc: $_eb"; _fail=1; fi
-    # Match the structured 'Enforced by:' line, not a stray mention anywhere in the doc.
-    if grep -Fq "Enforced by: $_e" "$_doc"; then echo "PASS: taught: $_e"
-    else echo "FAIL: untaught gate — no why-gates.md block for $_e"; _fail=1; fi
+    if grep -Fq "Enforced by: $_er" "$_doc"; then echo "PASS: taught: $_er"
+    else echo "FAIL: untaught gate — no why-gates.md block for $_er"; _fail=1; fi
   done
 
   # (3b) floor topics: each advertised floor topic still has a block, so the doc's topic set
@@ -108,7 +110,7 @@ SW
   _mk_scripts "$tmp/ok"
   _docok="$tmp/ok/why.md"
   { for _e in $CHECKLIST_ENFORCERS; do
-      printf '## t-%s\nApplies IF: x\nWhy: y\nEnforced by: %s\nRead more: z\n\n' "$(basename "$_e" .sh)" "$_e"
+      printf '## t-%s\nApplies IF: x\nWhy: y\nEnforced by: %s\nRead more: z\n\n' "${_e#*|}" "$(printf '%s' "$_e" | tr '|' ' ')"
     done
     for _t in $FLOOR_TOPICS; do
       printf '## %s\nApplies IF: x\nWhy: y\nEnforced by: DEVELOPMENT-STANDARDS.md §14\nRead more: z\n\n' "$_t"

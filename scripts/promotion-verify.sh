@@ -16,9 +16,24 @@
 #          GO can bind BEFORE a PR exists). The `branch/` shape is charset-validated below against
 #          the same charset the gates match on; other scopes keep their existing hygiene.
 #
+#          `record` also PROJECTS the approved commit's `Kit-Row` trailer into the note as
+#          `kit-row:` (derived through git's own trailer parser, never a flag; `(none)` when the
+#          commit carries none, never invented). That projection is what makes `trace` possible.
+#
 #   log
 #       -> render refs/notes/promotions as a human-readable trail (a PROJECTION of the notes,
 #          not a second synced surface — replaces the retired docs/governance/promotion-log.md).
+#
+#   trace   --ref <sha> | --recent <n> [--from <trunk-ref>]
+#       -> RECOVER the board row for a commit that ALREADY LANDED. Under a squash merge the trunk
+#          commit is composed by the forge and carries no Kit-* trailer (MEASURED on this repo:
+#          0/60), so `git log` on the default branch is the wrong place to audit adherence. This
+#          matches a trunk commit to its GO note BY TREE — the same fingerprint `check` uses, and
+#          the one thing a squash preserves where ancestry does not — and prints the recorded row.
+#          `--recent <n>` walks the trunk (origin/main, else main) and REDS if any commit in the
+#          window has no recoverable row: that is the recordless-merge alarm. Read-only.
+#          MEASURED 2026-08-30 on this repo: 28/30 recoverable; both misses were board chores
+#          merged with no GO record at all, which is exactly what the red is for.
 #
 #   check   --ref <merged-ref|tag> [--approved-sha <sha>]
 #       -> assert the SHIPPED content EQUALS the APPROVED content (shipped == approved),
@@ -46,6 +61,35 @@
 #     never overclaims — an unsigned commit can never be [signed: gpg]. Authenticated team approval
 #     (forge PR/MR review -> [authenticated: <forge>-review]) is a SEAM in docs/adoption/vc-hosts.md,
 #     wired when a team consumer exists — NOT wired here (no solo consumer).
+#   * `trace` green means A NOTE EXISTS whose approved tree equals the trunk commit's tree and
+#     which names a row. It does NOT mean the row was the RIGHT row, nor that the Entry Declaration
+#     it came from was true. It inherits the GO record's assurance exactly and no more — the same
+#     bind-not-authenticate ceiling as everything else here (D-240805-3). Say "the row is
+#     RECOVERABLE", never "the row is verified".
+#   * ⚠️ A LEGACY NOTE'S RECOVERY DEPENDS ON OBJECT REACHABILITY; FROM 2026-08-30 THE TREE RIDES IN
+#     THE NOTE. `trace` matches by tree. Until 2026-08-30 it obtained the approved tree by resolving
+#     `approved-sha^{tree}` at trace time, which silently assumed the approved COMMIT OBJECT was
+#     still fetchable. In a developer clone it is; in a CI checkout it is NOT — `fetch-depth: 0`
+#     fetches heads and tags, and every approved-sha on this repo is a PR-branch head deleted after
+#     its squash. MEASURED on the first live run (CI, PR #601): 10/10 trunk commits reported
+#     unrecoverable, while the identical command scored 10/10 on the developer machine.
+#     `record` now writes `approved-tree:` into the note, so a note written from 2026-08-30 is
+#     self-contained. A note written BEFORE that still needs its approved commit object, and where
+#     that object is unreachable the commit is reported `unresolvable (approved commit object not
+#     reachable from this checkout)` and counted as NOT recoverable — deliberately distinct from
+#     "recordless merge", because the remedy is a fetch, not a governance repair.
+#   * ⚠️ THE TREE->NOTE PAIRING IS MANY-TO-ONE, AND ONLY PART OF THAT IS CLOSED. Trees are not
+#     unique to commits: an EMPTY commit, or a revert-and-reapply pair, reproduces an earlier
+#     commit's tree and would borrow its note — being credited with a GO nobody gave it.
+#     WHAT IS CLOSED: within a `--recent` window each annotated sha may be claimed ONCE, oldest
+#     commit first, so a later commit reproducing an earlier tree REDS as `[shared-tree with <sha>]`
+#     instead of passing (security H-1).
+#     WHAT IS NOT CLOSED, AND IS DISCLOSED RATHER THAN PAPERED OVER: a stale pairing whose partner
+#     lies OUTSIDE the window. A revert that restores a tree approved twenty commits ago still
+#     matches that older note and is credited to it, because the dedup only sees the commits it
+#     walked. Widening the window narrows the hole; it does not remove it. Do not describe this leg
+#     as "every trunk commit has its own GO" — describe it as "no commit in this window borrowed
+#     another's, and each is bound to some recorded GO".
 #   * `never-infer` — that the agent WAITED for an explicit recorded per-gate human GO — is FLOOR
 #     discipline, NOT enforced by this tool. A green `check` proves what shipped carries the approved
 #     SHA; it does NOT prove the agent's judgment or that it refused to infer.
@@ -53,8 +97,8 @@
 #
 # POSIX sh; dash-clean (no `local`, no bashisms). Operates on the current working tree's git repo.
 # The notes ref name is overridable with PROMOTION_NOTES_REF (default: promotions) for testing.
-# What it changes: `record` binds a GO record as a git NOTE under refs/notes/promotions (tree-invariant — the commit's tree/SHA is unchanged); `actuate` performs a real control-plane PR merge (default `gh pr merge --squash`, swappable via --merge-cmd) bound to the approved SHA; `log` and `check` are read-only.
-# Guardrails: `check` asserts shipped==approved by TREE equality (exit 1 on MISMATCH); the approved-by assurance label is DERIVED from the commit's own evidence (never from input) — a note BINDS, it does not AUTHENTICATE. `actuate` fails CLOSED unless a SHA-bound [authenticated: <forge>-review] GO exists and approver != author, rejects `$ref` metacharacters, NEVER emits `--admin`, and re-verifies shipped==approved after the merge.
+# What it changes: `record` binds a GO record as a git NOTE under refs/notes/promotions (tree-invariant — the commit's tree/SHA is unchanged); `actuate` performs a real control-plane PR merge (default `gh pr merge --squash`, swappable via --merge-cmd) bound to the approved SHA; `log`, `check` and `trace` are read-only.
+# Guardrails: `check` asserts shipped==approved by TREE equality (exit 1 on MISMATCH); the approved-by assurance label is DERIVED from the commit's own evidence (never from input) — a note BINDS, it does not AUTHENTICATE. `actuate` fails CLOSED unless a SHA-bound [authenticated: <forge>-review] GO exists and approver != author, rejects `$ref` metacharacters, NEVER emits `--admin`, and re-verifies shipped==approved after the merge. `record` derives `kit-row:` from the approved commit's own trailer (never a flag), records `(none)` rather than inventing one, and sanitises it with every other free-text field; `trace` matches a trunk commit to its note by TREE (never ancestry, which a squash breaks), reds on any recordless commit in a `--recent` window, and fails closed on an empty window.
 set -eu
 
 NOTES_REF="${PROMOTION_NOTES_REF:-promotions}"
@@ -65,6 +109,8 @@ usage() {
   echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t>]" >&2
   echo "        --scope takes a PR id (CI's key) or branch/<name> (the pre-push key, ruling D11)" >&2
   echo "  promotion-verify.sh log" >&2
+  echo "  promotion-verify.sh trace --ref <sha> | --recent <n> [--from <trunk-ref>]" >&2
+  echo "        recover the board row for a commit that already landed (squash loses the trailer)" >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
   echo "  promotion-verify.sh actuate --ref <pr|tag|merged-ref> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
 }
@@ -179,10 +225,57 @@ do_record() {
       return 2 ;;
   esac
   [ -n "$basis" ] || basis="(none recorded)"
+  # KIT-ROW PROJECTION (ENTRY-DECLARATION-SEVERED-ON-MAIN, 2026-08-30). The board row is DERIVED
+  # from the approved commit through git's own trailer parser — never a --flag, because a
+  # caller-supplied row would be a second self-assertion and this record is the one place the row
+  # can be recovered from later. MEASURED: 0/60 of this repo's main commits carry a parseable
+  # Kit-Row (the forge composes the squash message), while 28/30 were recoverable through these
+  # notes. `head -1` because a commit with two Kit-Row lines is already refused by loop-state; here
+  # we record ONE value rather than injecting a second line into a line-structured body.
+  #
+  # ⚠️ NEVER INVENTED. A commit with no Kit-Row records the literal `(none)`, which is not the same
+  # as omitting the field: an omitted field is indistinguishable from a note written before this
+  # projection existed, and `trace` would have to guess which. `(none)` is a positive statement
+  # that the approved commit carried no row.
+  #
+  # SANITISED BY ITS OWN CONTROL-CHAR ARM BELOW, *NOT* by the shared loop above — because kit-row is
+  # DERIVED after that loop has already run. (This comment previously claimed "kit-row is in it",
+  # which was false and would have sent a reader looking for coverage that was not there.) The check
+  # is the same rule for the same reason: a trailer value is PR-controlled text and the note body is
+  # line-structured, so an embedded newline here would forge a note line exactly as one in --token
+  # would. Fail CLOSED (rc 2, no note written) rather than stripping — a GO whose row is mangled
+  # must be re-recorded cleanly.
+  kitrow="$(git log -1 --format='%(trailers:key=Kit-Row,valueonly)' "$asha" 2>/dev/null | head -1)"
+  [ -n "$kitrow" ] || kitrow="(none)"
+  if [ "$(printf '%s' "$kitrow" | LC_ALL=C tr -d '[:cntrl:]')" != "$kitrow" ]; then
+    echo "record: the approved commit's Kit-Row trailer contains a control character — rejected (fail closed)" >&2
+    return 2
+  fi
   # the approved-sha must resolve to a real commit before we bind a note to it.
   if ! git rev-parse -q --verify "${asha}^{commit}" >/dev/null 2>&1; then
     echo "record: approved-sha '$asha' is not a resolvable commit in this repo" >&2; return 2
   fi
+  # THE NOTE CARRIES THE TREE, NOT ONLY A POINTER TO IT (first live run of the recordless-merge leg,
+  # CI PR #601 — see the ceiling note in the header).
+  #
+  # WHY. `trace` matches a trunk commit to its GO by TREE equality, and it used to obtain the
+  # approved tree by resolving `approved-sha^{tree}` at trace time. That silently assumed the
+  # approved COMMIT OBJECT is still reachable — true in a developer clone that fetched the PR
+  # branch, FALSE in a CI checkout: `fetch-depth: 0` fetches heads and tags, and every approved-sha
+  # here is a PR-branch head deleted after its squash merge. Measured: 10/10 trunk commits
+  # "unrecoverable" in CI while the identical command scored 10/10 locally. A pointer to an object
+  # nobody can fetch is not a record.
+  #
+  # Derived HERE, at record time, where the object is guaranteed present (the check above just
+  # resolved it). A 40-hex tree id needs no control-char sanitising — it cannot contain one — but it
+  # IS validated as 40 hex, because writing a malformed value into a line-structured body is the
+  # same class of defect whether or not the source is attacker-controlled.
+  atree="$(git rev-parse -q --verify "${asha}^{tree}" 2>/dev/null || true)"
+  case "$atree" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "record: could not derive a 40-hex approved-tree from '$asha' (got '$atree') — refusing to write a record that cannot be traced" >&2
+       return 2 ;;
+  esac
   # The assurance label is DERIVED (below), never accepted from input. Brackets in --approved-by were
   # rejected above, so the id is the caller string verbatim — input can't manufacture assurance.
   aby_id="$aby"
@@ -200,10 +293,12 @@ do_record() {
   if ! printf '%s\n' \
       "record: promotion GO (approve->execute->log)" \
       "approved-sha: $asha" \
+      "approved-tree: $atree" \
       "approved-by: $aby_id [$assurance]" \
       "gate: $gate" \
       "rung: $rung" \
       "change-class: $cls" \
+      "kit-row: $kitrow" \
       "scope: $scope" \
       "approval-token: \"$token\"" \
       "basis: $basis" \
@@ -214,6 +309,194 @@ do_record() {
   echo "OK: recorded approval for $scope (approved-sha $asha) -> note refs/notes/$NOTES_REF [$assurance]"
   echo "     share it: git push origin refs/notes/$NOTES_REF"
   return 0
+}
+
+# do_trace — RECOVER the board row (and the GO) for a commit that already landed on the trunk.
+#
+# THE PROBLEM. `loop-state.sh` refuses a PR head that carries no Entry Declaration, but the commit
+# that LANDS is composed by the forge under a squash merge and carries no Kit-* trailer at all
+# (measured on this repo: 0/60). So the trunk history is the wrong place to audit adherence, and a
+# check that read it would be vacuously green. The record path is where the row survives:
+# `record` projects Kit-Row into the note, and this mode reads it back.
+#
+# HOW A TRUNK COMMIT IS MATCHED TO ITS NOTE: BY TREE, never by ancestry and never by message.
+# Ancestry is exactly what a squash breaks — the approved feature tip is not an ancestor of the
+# squashed trunk commit. The TREE is invariant across the squash, which is the same fingerprint
+# `check` already uses for shipped==approved. So the pairing is: note on X pairs with trunk commit
+# C iff X^{tree} == C^{tree}.
+#
+# HONEST CEILING: green means A NOTE EXISTS whose approved tree equals this commit's tree and which
+# names a row. It does NOT mean the row was the RIGHT row, or that the declaration was true — this
+# inherits the GO record's assurance exactly and no more (notes BIND, they do not AUTHENTICATE;
+# D-240805-3). A forged note is as forgeable here as anywhere else in this file.
+#
+# READ-ONLY: writes nothing, moves no ref.
+do_trace() {
+  ref=""; recent=""; from=""
+  # ⚠️ `[ $# -ge 2 ]` BEFORE EVERY `shift 2` (review L-3). Without it, a trailing `--ref` with no
+  # value takes the `${2:-}` empty default and then `shift 2` on a one-element list — which in dash
+  # is an error the `set -eu` script exits on, and in other shells silently empties the list. Either
+  # way the flag is swallowed instead of refused. rc 2 is the usage answer.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ref)    [ $# -ge 2 ] || { echo "trace: --ref needs a value" >&2; return 2; }
+                ref="$2";    shift 2 ;;
+      --recent) [ $# -ge 2 ] || { echo "trace: --recent needs a value" >&2; return 2; }
+                recent="$2"; shift 2 ;;
+      --from)   [ $# -ge 2 ] || { echo "trace: --from needs a value" >&2; return 2; }
+                from="$2";   shift 2 ;;
+      *) echo "trace: unknown arg '$1'" >&2; usage; return 2 ;;
+    esac
+  done
+  if [ -z "$ref" ] && [ -z "$recent" ]; then
+    echo "trace: need --ref <sha> or --recent <n>" >&2; usage; return 2
+  fi
+  # PER-ARGUMENT, NOT CONCATENATED (review L-4). `case "$ref$recent$from"` only ever saw the FIRST
+  # character of the joined string, so `--ref abc --from -x` passed: the leading `-` was in the
+  # middle of the concatenation and matched nothing. Each value is checked on its own.
+  for _tr_arg in "$ref" "$recent" "$from"; do
+    case "$_tr_arg" in -*)
+      echo "trace: arguments must not start with '-' (got '$_tr_arg')" >&2; return 2 ;;
+    esac
+  done
+  case "$recent" in ''|*[!0-9]*) [ -z "$recent" ] || { echo "trace: --recent takes a positive integer" >&2; return 2; } ;; esac
+  if ! git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+    echo "trace: no refs/notes/$NOTES_REF in this repository — nothing to trace against." >&2
+    echo "       fetch it first: git fetch origin refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" >&2
+    return 1
+  fi
+
+  # Build the tree -> annotated-commit index ONCE. `git notes list` prints "<note-obj> <annotated>".
+  # An annotated sha that is no longer in the object store is SKIPPED, not fatal: the note points at
+  # the row-bearing commit, it does not carry it, and a pruned feature branch is ordinary (measured:
+  # 4 / 233 on this repo). Those simply cannot be recovered, and the caller is told so by name.
+  # TWO SOURCES FOR THE APPROVED TREE, IN THIS ORDER, AND THE ORDER IS THE FIX:
+  #   1. the note's own `approved-tree:` line — self-contained, needs no object beyond the note;
+  #   2. `approved-sha^{tree}` — the LEGACY path, which works only while that commit object is
+  #      reachable from this checkout.
+  # Every note written before 2026-08-30 has only (2), and in a CI checkout (2) resolves for none of
+  # them: the approved-shas are PR-branch heads deleted after squash. Such a note is recorded in the
+  # index as UNRESOLVABLE rather than silently dropped, so the commit it belongs to reds by name
+  # instead of being reported as a recordless merge — a different fault with a different remedy.
+  _tr_idx="$(git notes --ref="$NOTES_REF" list 2>/dev/null)" || _tr_idx=""
+  _tr_map=""
+  _tr_unres=""
+  for _tr_a in $(printf '%s\n' "$_tr_idx" | awk '{print $2}'); do
+    _tr_body="$(git notes --ref="$NOTES_REF" show "$_tr_a" 2>/dev/null)" || _tr_body=""
+    _tr_t="$(printf '%s\n' "$_tr_body" | sed -n 's/^approved-tree: //p' | head -1)"
+    if [ -z "$_tr_t" ]; then
+      # LEGACY FALLBACK. ⚠️ Resolve the tree of the sha the NOTE RECORDS, not of the object the note
+      # is ATTACHED to. In practice `record` attaches the note to the approved-sha, so the two
+      # coincide and the distinction never shows — which is exactly why it was wrong here and went
+      # unnoticed until a fixture attached a legacy note to a different object. Reading the
+      # annotated object's tree would have made every legacy note "resolvable" by pointing at
+      # whatever it happened to hang on, silently matching the wrong commit.
+      _tr_asha="$(printf '%s\n' "$_tr_body" | sed -n 's/^approved-sha: //p' | head -1)"
+      [ -n "$_tr_asha" ] || _tr_asha="$_tr_a"
+      _tr_t="$(git rev-parse -q --verify "$_tr_asha^{tree}" 2>/dev/null)" || _tr_t=""
+      if [ -z "$_tr_t" ]; then
+        _tr_unres="$_tr_unres $_tr_a"
+        continue
+      fi
+    fi
+    _tr_map="$_tr_map$_tr_t $_tr_a
+"
+  done
+
+  # CLAIMED-NOTE LEDGER (security H-1 / review L2). THE TREE->NOTE PAIRING IS MANY-TO-ONE, and that
+  # is not a corner case: an EMPTY commit, or a revert-and-reapply pair, produces a trunk commit
+  # whose tree equals an already-recorded commit's tree. It would silently BORROW that commit's note
+  # and be credited with a GO nobody gave it — which is precisely the recordless merge this leg
+  # exists to catch, wearing the costume of the merge before it. Within a `--recent` window we can
+  # refuse it: each annotated sha may be claimed ONCE, and a second claimant reds by name.
+  _tr_claimed=""
+  # trace_one <commit> — print the recovered record, or rc 1 with a reason naming the commit.
+  trace_one() {
+    _tc="$(git rev-parse -q --verify "$1^{commit}" 2>/dev/null)" || {
+      echo "trace: '$1' is not a commit in this repository" >&2; return 2; }
+    _tt="$(git rev-parse "$_tc^{tree}")"
+    _ta="$(printf '%s' "$_tr_map" | awk -v t="$_tt" '$1 == t {print $2; exit}')"
+    if [ -z "$_ta" ]; then
+      # TWO DIFFERENT FAULTS, AND CONFLATING THEM SENDS THE READER TO THE WRONG REMEDY. A genuine
+      # recordless merge means nobody recorded a GO. An unresolvable legacy note means a GO WAS
+      # recorded but its approved commit object is not reachable from this checkout, so its tree
+      # cannot be computed here — a fetch problem, not a governance one.
+      if [ -n "$_tr_unres" ]; then
+        echo "trace: $_tc unresolvable (approved commit object not reachable from this checkout — fetch refs/pull/*/head)." >&2
+        echo "       $(printf '%s' "$_tr_unres" | wc -w | tr -d ' ') note(s) in the ledger carry no 'approved-tree:' line AND their approved-sha is absent here," >&2
+        echo "       so this commit cannot be matched. Notes written from 2026-08-30 carry the tree and do not need the object." >&2
+      else
+        echo "trace: $_tc has no promotion note — no recorded GO whose approved tree equals this commit's tree." >&2
+        echo "       This is a RECORDLESS MERGE: the board row that authorised it is not recoverable." >&2
+      fi
+      return 1
+    fi
+    # THE DEDUP. Only meaningful across a window, so it is scoped to the `--recent` walk by
+    # `_tr_claimed` being empty on a single `--ref` call — a lone commit has nothing to collide with.
+    case " $_tr_claimed " in
+      *" $_ta "*)
+        echo "trace: $_tc [shared-tree with $_ta] — recordless (an empty commit / revert-and-reapply borrows another commit's note)." >&2
+        echo "       Its tree equals an EARLIER commit's in this window, so the only note that matches is one already claimed." >&2
+        return 1 ;;
+    esac
+    _tr_claimed="$_tr_claimed $_ta"
+    _tn="$(git notes --ref="$NOTES_REF" show "$_ta" 2>/dev/null)" || _tn=""
+    _trow="$(printf '%s\n' "$_tn" | sed -n 's/^kit-row: //p' | head -1)"
+    # A note written BEFORE the projection existed carries no kit-row line. Say that, rather than
+    # printing an empty value that reads as "no row was declared".
+    # ⚠️ AND COUNT IT SEPARATELY. Every note on this repo's main today predates the projection, so
+    # a verdict that said "10/10 carry a recoverable board row" over ten `(not recorded)` lines
+    # would be the overstatement this repo bans on sight. What such a commit has is a recoverable
+    # GO; the ROW is not recoverable for it, and the summary says both numbers.
+    if [ -z "$_trow" ]; then
+      _trow="(not recorded — note predates the kit-row projection)"
+      _tr_pre=$((${_tr_pre:-0} + 1))
+    fi
+    _tgate="$(printf '%s\n' "$_tn" | sed -n 's/^gate: //p' | head -1)"
+    _tscope="$(printf '%s\n' "$_tn" | sed -n 's/^scope: //p' | head -1)"
+    printf '%s  kit-row: %s  approved-sha: %s  gate: %s  scope: %s\n' \
+      "$(printf '%s' "$_tc" | cut -c1-12)" "$_trow" "$(printf '%s' "$_ta" | cut -c1-12)" \
+      "${_tgate:-(none)}" "${_tscope:-(none)}"
+    return 0
+  }
+
+  if [ -n "$ref" ]; then
+    trace_one "$ref"; return $?
+  fi
+
+  # --recent N: the RECORDLESS-MERGE leg. Walks the trunk and REDS if ANY commit in the window has
+  # no recoverable row. `--from` exists for the fixture; production resolves origin/main, then main.
+  if [ -z "$from" ]; then
+    if git rev-parse -q --verify origin/main >/dev/null 2>&1; then from=origin/main
+    elif git rev-parse -q --verify main >/dev/null 2>&1; then from=main
+    else echo "trace: neither origin/main nor main resolves — pass --from <ref>" >&2; return 2; fi
+  fi
+  git rev-parse -q --verify "$from^{commit}" >/dev/null 2>&1 || {
+    echo "trace: --from '$from' is not a commit in this repository" >&2; return 2; }
+  _tr_rc=0; _tr_n=0; _tr_miss=0; _tr_pre=0
+  # OLDEST-FIRST, AND THE ORDER IS LOAD-BEARING FOR THE DEDUP ABOVE. `git rev-list` yields
+  # newest-first; walking that way would let the EMPTY commit (the newer one) claim the note and red
+  # the genuine commit that produced the tree — naming the victim instead of the borrower. Reversed,
+  # the first commit to produce a tree claims its note and any later commit that merely reproduces
+  # that tree is the one that reds. (`tac`/`tail -r` are not portable; awk is.)
+  for _tr_c in $(git rev-list -n "$recent" "$from" | awk '{a[NR]=$0} END{for(i=NR;i>0;i--) print a[i]}'); do
+    _tr_n=$((_tr_n + 1))
+    trace_one "$_tr_c" || { _tr_rc=1; _tr_miss=$((_tr_miss + 1)); }
+  done
+  # NON-VACUITY: an empty window is a FAIL, never a quiet pass. A green over zero commits would be
+  # the exact shape this leg exists to prevent someone shipping.
+  if [ "$_tr_n" -eq 0 ]; then
+    echo "trace: walked ZERO commits from '$from' — a green over an empty window asserts nothing." >&2
+    return 1
+  fi
+  if [ "$_tr_rc" = 0 ]; then
+    echo "OK: trace — $_tr_n/$_tr_n of the last $recent commit(s) on $from are bound to a promotion note."
+    echo "    of those, $((_tr_n - _tr_pre)) carry a projected board row; $_tr_pre predate the kit-row projection"
+    echo "    (bound and recoverable, NOT verified-correct: this inherits the GO record's assurance exactly.)"
+  else
+    echo "FAIL: trace — $_tr_miss of $_tr_n commit(s) on $from have no recoverable board row (see above)." >&2
+  fi
+  return "$_tr_rc"
 }
 
 do_log() {
@@ -236,8 +519,12 @@ do_check() {
   ref=""; asha=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --ref)          ref="${2:-}";  shift 2 ;;
-      --approved-sha) asha="${2:-}"; shift 2 ;;
+      # SAME BUG SHAPE AS trace's (review L-3), fixed in the same breath rather than left as the
+      # one surviving instance of a class this PR closed next door.
+      --ref)          [ $# -ge 2 ] || { echo "check: --ref needs a value" >&2; return 2; }
+                      ref="$2";  shift 2 ;;
+      --approved-sha) [ $# -ge 2 ] || { echo "check: --approved-sha needs a value" >&2; return 2; }
+                      asha="$2"; shift 2 ;;
       *) echo "check: unknown arg '$1'" >&2; usage; return 2 ;;
     esac
   done
@@ -398,6 +685,7 @@ cmd="${1:-}"
 case "$cmd" in
   record)  if do_record  "$@"; then rc=0; else rc=$?; fi ;;
   log)     if do_log     "$@"; then rc=0; else rc=$?; fi ;;
+  trace)   if do_trace   "$@"; then rc=0; else rc=$?; fi ;;
   check)   if do_check   "$@"; then rc=0; else rc=$?; fi ;;
   actuate) if do_actuate "$@"; then rc=0; else rc=$?; fi ;;
   -h|--help) usage; rc=2 ;;

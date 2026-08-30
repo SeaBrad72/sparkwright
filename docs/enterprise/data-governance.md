@@ -27,9 +27,9 @@ Declare the **highest tier a project handles** in the project `CLAUDE.md` §3
 When a feature handles **Confidential/Restricted** data, fill `templates/PRIVACY-REVIEW-TEMPLATE.md`
 (purpose · data + classification · lawful basis/consent · minimization · retention · sharing · residual
 risk · sign-off). Flagged at the **Definition of Ready** (alongside the threat-model flag) and verified
-by `conformance/privacy-ready.sh`. For per-feature rigor, keep one review per feature touching personal data.
+by `conformance/readiness.sh privacy-ready`. For per-feature rigor, keep one review per feature touching personal data.
 
 ## Honesty boundary
-`privacy-ready.sh` green proves a privacy review is **recorded** for the declared sensitive data — never
+`readiness.sh privacy-ready` green proves a privacy review is **recorded** for the declared sensitive data — never
 that the processing is lawful, that consent is valid, or that deletion works. Those are Manual rows
 (operator/DPO evidence). Necessary, not sufficient.

@@ -2,10 +2,29 @@
 # Why this gate: docs/architecture/2026-07-26-kit-adherence-entry-binding-design.md section 3
 # loop-state.sh — KIT-ADHERENCE-ENFORCEMENT Slice B1: the universal refusal floor.
 #
-# A change must carry an Entry Declaration on the PR HEAD commit: board row, loop stage, change
-# class, governing skill. The gate-checked set is Kit-Row, Kit-Stage, Kit-Class, Kit-Skill;
-# Kit-Intent, Kit-Ceremony and Kit-Stop are ADVISORY and are deliberately NOT enforced here — an
-# agent authoring its own empty Kit-Stop would otherwise be a self-issued autonomy grant.
+# A change must carry an Entry Declaration on the PR HEAD commit. THE REQUIRED SET IS
+# PROPORTIONAL TO THE DERIVED CHANGE CLASS (ENTRY-CONTRACT-CLASS-PROPORTIONAL, 2026-08-30):
+#
+#     ordinary                     ->  Kit-Row, Kit-Class
+#     sensitive / control-plane    ->  Kit-Row, Kit-Class, Kit-Stage, Kit-Skill
+#     classifier degraded          ->  all four (fail-safe: degradation ESCALATES, never relaxes)
+#
+# A trailer that is PRESENT is validated regardless of class — exactly-one, charset, stage
+# resolution, skill resolution — so the reduced set opens no silent-typo hole. ⚠️ "PRESENT" HERE
+# MEANS THE KEY OCCURS, AND THE CHARSET LEG SEPARATELY REQUIRES A NON-EMPTY VALUE: `Kit-Skill:` with
+# nothing after it is not "absent", it is a present key with an empty value, and it is REFUSED. The
+# verdict line therefore says "neither field carried a value", never "neither was volunteered". Kit-Intent,
+# Kit-Ceremony and Kit-Stop stay ADVISORY and are deliberately NOT enforced here — an agent
+# authoring its own empty Kit-Stop would otherwise be a self-issued autonomy grant.
+#
+# WHY THE CUT (do not "restore" the four unconditionally without re-reading this). `D-240805-3`:
+# the ledger binds, it does not authenticate. Kit-Row is matched against the board and Kit-Class
+# against the classifier — each checked against an authority outside the author. Kit-Stage and
+# Kit-Skill are only checked for RESOLVABILITY: nothing establishes that the named stage is the
+# real stage or that the named skill was read. Charging ordinary work for a field that returns no
+# assurance is ceremony without a control; for sensitive and control-plane work the ceremony is
+# the point, so there it is still owed. THE CEILING FOR ORDINARY IS THEREFORE LOWER, AND STATED:
+# on an ordinary head this gate no longer asks anything about stage or skill.
 #
 # THIS GATE MAKES NO ORDERING CLAIM. The declaration may be --amend'ed onto the head commit after
 # all the work is done. The ordering predicate was WITHDRAWN after five defeats in three
@@ -13,7 +32,8 @@
 #
 # HONEST CEILING (do not overclaim):
 #   * GREEN proves a declaration is PRESENT and git-PARSEABLE on the named commit; that Kit-Stage
-#     and Kit-Skill RESOLVE against the map (a real skill, appropriate to the stage); that Kit-Row
+#     and Kit-Skill RESOLVE against the map (a real skill, appropriate to the stage) WHEN THEY ARE
+#     PRESENT — required for sensitive/control-plane, volunteered for ordinary; that Kit-Row
 #     MATCHES somewhere on the board — a SUBSTRING match, which is strictly weaker than naming a
 #     row (`Kit-Row: a` passes; see BOARD-ROW-IDENTIFIER); and that Kit-Class equals the class
 #     derived by `promotion-readiness.sh --class`, which since GUARD-PATH-ENUMERATION-INCOMPLETE S2
@@ -29,14 +49,21 @@
 #     request's head commit and in the PR record, never in the merged history — so `git log` on the
 #     default branch is the wrong place to audit adherence, and a future check that reads it would be
 #     vacuously green. Say "declared at merge time", never "recorded in the history".
+#     ↳ WHERE THE ROW DOES SURVIVE (2026-08-30): `scripts/promotion-verify.sh record` now projects
+#       the approved commit's Kit-Row into the promotion note, and `promotion-verify.sh trace`
+#       recovers it for a trunk commit by matching the note's approved-sha TREE against the trunk
+#       commit's tree. That is the audit path — not `git log`. It inherits the GO record's
+#       assurance exactly and no more (bind-not-authenticate, `D-240805-3`): a forged note is as
+#       forgeable as it ever was. MEASURED 2026-08-30: 0/60 recoverable as a trailer, 28/30
+#       recoverable through the note (the 2 misses were merged with no GO record at all).
 #   * THE ROW LEG CAN BE N/A'd BY THE CHANGE UNDER TEST. The backend field and the board are read
 #     from the PR's own worktree, so flipping the backend or deleting the board in the same commit
 #     skips it. Announced on every N/A branch; boarded as LOOP-STATE-NA-SELF-SERVICE.
-#   * THIS GATE CAN BE SILENTLY UNBOUND. Nothing in the kit asserts WHICH contexts are in
-#     required_status_checks (branch-protection.sh:57-58 checks only that the feature is
-#     enabled), so removing this context leaves every kit check green. That is true of every
-#     required context today and is boarded as BRANCH-PROTECTION-DECLARATION-LOCK. Never
-#     describe this gate as unbypassable without that sentence attached.
+#   * THIS GATE'S BINDING IS DETECTED, NOT PREVENTED. Which contexts sit in required_status_checks
+#     is compared (declared ⊆ live) against REQUIRED-CHECKS.md by branch-protection.sh's live leg on
+#     every PR + weekly since 2026-08-28 (required context `branch-protection-live`), so an unbound or
+#     renamed context reds the next PR — but an admin can still unbind it (enforce_admins is false), and
+#     shrinking the declaration greens it. Never call this gate unbypassable without those two clauses.
 #
 # ⚠️ THE HEAD DECLARATION DESCRIBES THE PULL REQUEST, NOT JUST THE LAST COMMIT. Kit-Class is
 # compared against the class derived from the WHOLE change-set (merge-base HEAD origin/main), so on
@@ -82,8 +109,62 @@ ROSTER_CONF="$DIR/.kit/roster.conf"
 LS_REPO="$DIR"
 
 # The gate-checked fields (design section 3). Kit-Intent / Kit-Ceremony / Kit-Stop are ADVISORY
-# and are deliberately absent from this list.
+# and are deliberately absent from this list. This is the FULL set — what a sensitive or
+# control-plane head owes. What an ORDINARY head owes is the reduced set ls_required_keys prints.
 LS_REQUIRED_KEYS="Kit-Row Kit-Stage Kit-Class Kit-Skill"
+
+# ls_required_keys — THE REQUIRED SET IS PROPORTIONAL TO THE DERIVED CLASS
+# (ENTRY-CONTRACT-CLASS-PROPORTIONAL, design 2026-08-30 section 4.1a; amends nothing about what a
+# green MEANS for the keys that ARE checked).
+#
+# WHY THE CUT IS Kit-Stage / Kit-Skill AND NOT SOMETHING ELSE. `D-240805-3`: the ledger binds, it
+# does not authenticate — an agent-typed value is not a record. Kit-Row is matched against the
+# board and Kit-Class against the classifier, so both are checked against an authority OUTSIDE the
+# author. Kit-Stage and Kit-Skill are checked only for RESOLVABILITY against a map: nothing
+# anywhere establishes that the named stage is the stage the work is in, or that the named skill
+# was read. For ordinary work that is ceremony an author pays with no assurance returned, so the
+# gate no longer asks for it. It still VALIDATES it when volunteered (see check_declaration) — a
+# key that is present is held to its contract regardless of class, so the cut opens no
+# silent-typo hole.
+#
+# ⚠️ ONE DIRECTION ONLY. Anything that is not exactly `ordinary` — sensitive, control-plane, and
+# every degraded/unrecognised answer — gets the FULL set. Degradation ESCALATES the requirement;
+# it must never be a route to the cheaper contract.
+ls_required_keys() {   # $1 = derived class (or a degradation marker)
+  case "${1:-}" in
+    ordinary) printf 'Kit-Row Kit-Class\n' ;;
+    *)        printf '%s\n' "$LS_REQUIRED_KEYS" ;;
+  esac
+}
+
+# The classifier this gate asks for the class. A plain script variable, NOT an env route (the
+# banked OBLIGATION-TESTMODE-ENV-FLAG rule, :61-73): selftest() points it at a stub in-process so
+# the degradation arm can be fixtured, and nothing outside this file can reach it.
+LS_CLASS_FN="derive_class"
+
+# ls_class_for_required — the class, or the FAIL-SAFED marker, and ALWAYS rc 0.
+#
+# It always succeeds because its consumer is a required-set SELECTOR, not a verdict: a classifier
+# that has broken must still produce a required set, and that set must be the strict one. The
+# verdict on a broken classifier is check_class's, which fails closed on the same condition — so a
+# degraded run reds there while the declaration leg simultaneously demands all four. Two
+# independent refusals, neither depending on the other.
+# TAKES NO ARGUMENT, DELIBERATELY. It used to accept an optional fixture listing and forward it to
+# the classifier, but nothing ever passed one — run_gate calls it bare and so does the selftest —
+# so the parameter was dead code that Linux shellcheck correctly flagged (SC2120). The fixture
+# route into the classifier is `derive_class <listing>`, which check_class still uses directly; the
+# selftest reaches THIS function's degraded arm by pointing LS_CLASS_FN at a stub instead.
+# ⚠️ Do not "restore" the parameter to silence a future warning — a disable comment here would have
+# hidden a real dead-argument defect rather than removed it.
+ls_class_for_required() {
+  if _ls_cfr=$("$LS_CLASS_FN"); then
+    printf '%s\n' "$_ls_cfr"
+    return 0
+  fi
+  echo "loop-state: change-class derivation FAILED — fail-safe: control-plane, all four required" >&2
+  printf 'FAIL-SAFED\n'
+  return 0
+}
 
 # ls_safe — strip control characters from any PR-controlled value before it reaches a log.
 #
@@ -234,9 +315,12 @@ valid_stage() {   # $1 = stage
 # Base-independent by construction: it reads the SHA it is given and NEVER walks to a parent. A
 # declaration present only on an ancestor must FAIL, which is the negative that makes head-only
 # scope safe (design section 3.1; the any-ancestor-satisfies defect ceremony-binding closed).
-check_declaration() {   # $1 = sha
+check_declaration() {   # $1 = sha, [$2 = derived class; DEFAULTS TO control-plane = the full set]
   _ls_rc=0
-  for _ls_k in $LS_REQUIRED_KEYS; do
+  # THE DEFAULT IS THE STRICT SET, NOT THE CHEAP ONE. A caller that forgets to pass a class gets
+  # all four — the omission fails safe. run_gate always passes one.
+  _ls_req=$(ls_required_keys "${2:-control-plane}")
+  for _ls_k in $_ls_req; do
     # EXACTLY ONE occurrence. More than one is a FAIL, never "take the first" — a commit carrying
     # both `Kit-Class: control-plane` and `Kit-Class: ordinary` yields both lines, and head -1 /
     # tail -1 reach opposite verdicts (design section 3.2, measured decoy).
@@ -266,12 +350,42 @@ check_declaration() {   # $1 = sha
         _ls_rc=1 ;;
     esac
   done
+
+  # PRESENT ⇒ VALIDATED, REGARDLESS OF CLASS. Every key in the full set that the reduced set did
+  # not demand is still held to exactly-one + charset when the author volunteered it. Without this
+  # loop, cutting a key from the required set would silently ignore a wrong value — the ordinary
+  # head declaring `Kit-Skill: skills/tpd` would read as "the skill was named" to a human and as
+  # nothing at all to the gate. Absent is N/A; present is checked.
+  for _ls_k in $LS_REQUIRED_KEYS; do
+    case " $_ls_req " in *" $_ls_k "*) continue ;; esac
+    _ls_n=$(decl_count "$1" "$_ls_k")
+    if [ "$_ls_n" -eq 0 ]; then
+      continue
+    fi
+    if [ "$_ls_n" -ne 1 ]; then
+      echo "loop-state: $1 carries $_ls_n occurrences of '$_ls_k' — exactly one is required" >&2
+      _ls_rc=1
+      continue
+    fi
+    case "$(decl_field "$1" "$_ls_k")" in
+      ''|*[!A-Za-z0-9_.:/#-]*)
+        echo "loop-state: '$_ls_k' must be non-empty and may contain only [A-Za-z0-9_.:/#-]" >&2
+        echo "  — got a value with a disallowed character (refused at the boundary)." >&2
+        _ls_rc=1 ;;
+    esac
+  done
   [ "$_ls_rc" -eq 0 ] || return 1
 
-  _ls_stage=$(decl_field "$1" Kit-Stage | head -1)
-  valid_stage "$_ls_stage" || {
-    echo "loop-state: Kit-Stage '$_ls_stage' is not a stage in the map ($ROSTER_CONF)" >&2
-    return 1; }
+  # STAGE RESOLUTION runs WHEN Kit-Stage IS PRESENT — required for sensitive/control-plane, and
+  # volunteered for ordinary. An absent Kit-Stage on an ordinary head has already been accepted by
+  # the required-set loop above; running valid_stage on the resulting empty string would refuse it
+  # for a reason that is no longer the contract.
+  if [ "$(decl_count "$1" Kit-Stage)" -gt 0 ]; then
+    _ls_stage=$(decl_field "$1" Kit-Stage | head -1)
+    valid_stage "$_ls_stage" || {
+      echo "loop-state: Kit-Stage '$_ls_stage' is not a stage in the map ($ROSTER_CONF)" >&2
+      return 1; }
+  fi
   return 0
 }
 
@@ -346,9 +460,23 @@ derive_class() {   # [$1 = fixture listing path]
 # adapter union, so the equality is checked against the same set the required ratification gate uses.
 # Still do not restate this as "class forgery is closed" unqualified: the agreement is bounded by the
 # union being DERIVABLE, per the derive_class note above.
-check_class() {   # $1 = sha, [$2 = fixture listing]
+check_class() {   # $1 = sha, [$2 = fixture listing], [$3 = ALREADY-derived class]
   _ls_declared=$(decl_field "$1" Kit-Class | head -1)
-  if ! _ls_derived=$(derive_class "${2:-}"); then
+  # $3 EXISTS ONLY TO AVOID A SECOND CLASSIFIER SPAWN (review L5). run_gate has already derived the
+  # class to pick the required set; re-deriving here runs promotion-readiness.sh (and its git diff
+  # against the trunk) a second time for an answer we hold. The selftest still calls this with a
+  # fixture listing and no $3, so the live derivation path keeps its own coverage.
+  if [ -n "${3:-}" ]; then
+    _ls_derived="$3"
+    # FAIL-SAFED is not a class — it is ls_class_for_required's marker that the classifier broke,
+    # and it must reach the SAME fail-closed refusal a live derivation failure does. Without this
+    # arm the shortcut would compare a trailer against the literal string and refuse for the wrong
+    # reason, or worse, pass a commit that declared it.
+    if [ "$_ls_derived" = FAIL-SAFED ]; then
+      echo "loop-state: change-class derivation FAILED — refusing to assume a class (fail-closed)" >&2
+      return 1
+    fi
+  elif ! _ls_derived=$(derive_class "${2:-}"); then
     echo "loop-state: change-class derivation FAILED — refusing to assume a class (fail-closed)" >&2
     return 1
   fi
@@ -499,6 +627,31 @@ check_skill() {   # $1 = sha
     *) echo "loop-state: skills/$_ls_name does not govern stage '$_ls_stage' (allowed: $_ls_allowed)" >&2
        return 1 ;;
   esac
+}
+
+# check_skill_if_present — the run_gate-level conditional, extracted so it can be held by a test.
+#
+# Under the class-proportional set (ls_required_keys) Kit-Skill is only REQUIRED for
+# sensitive/control-plane, but it is VALIDATED whenever it appears. Absence is N/A here rather
+# than in check_skill itself, because check_skill's own refusals (form, traversal, symlink,
+# untracked) must keep their teeth for every commit that does carry the key — and an "empty means
+# pass" arm buried inside check_skill would have been reachable by an empty trailer value too.
+# The charset leg in check_declaration already refuses an empty value, so this predicate keys off
+# OCCURRENCE COUNT, not the string.
+check_skill_if_present() {   # $1 = sha
+  if [ "$(decl_count "$1" Kit-Skill)" -eq 0 ]; then
+    return 0
+  fi
+  # A VOLUNTEERED SKILL WITH NO STAGE IS REFUSED BY ITS OWN NAME (security M-2). check_skill grades
+  # stage-appropriateness, so with Kit-Stage absent it used to reach the map lookup with an empty
+  # stage and refuse with "stage '' has no skill set in the map" — a true refusal reported as a map
+  # defect, sending the author to .kit/roster.conf to fix a trailer they simply did not write. The
+  # pair is what carries meaning: a skill is only ever validated AGAINST a stage.
+  if [ "$(decl_count "$1" Kit-Stage)" -eq 0 ]; then
+    echo "loop-state: Kit-Skill was volunteered without Kit-Stage — a volunteered skill is validated against the stage; declare both or neither" >&2
+    return 1
+  fi
+  check_skill "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -1004,6 +1157,62 @@ ls_fx_build() {
   printf 'duplicate scope key\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\nKit-Scope: docs/\nKit-Scope: conformance/\n' \
     | git -C "$LS_FXDIR" commit -q -F -
   LS_FX_SCOPE_DUP=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P1/P2/P3 — CLASS-PROPORTIONAL fixtures (ENTRY-CONTRACT-CLASS-PROPORTIONAL, 2026-08-30).
+  # Reduced trailer sets, which is exactly what every fixture above deliberately is NOT: each of
+  # them carries all four, so none of them can tell a class-conditional required set from an
+  # unconditional one. These three are the discriminant.
+  #
+  # P1 — ORDINARY, TWO TRAILERS ONLY. The head an ordinary slice now owes.
+  echo p1 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'ordinary two-trailer head\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: ordinary\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ORD2=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P2 — CONTROL-PLANE, THREE TRAILERS: Kit-Stage is the one missing. ⚠️ NON-VACUITY: it carries
+  # Kit-Skill, so a leg that merely counted trailers, or that checked only the two universal keys,
+  # would pass it. Only a class-conditional required set refuses it, and it must NAME Kit-Stage.
+  echo p2 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'control-plane head missing a stage\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: control-plane\nKit-Skill: skills/tdd\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_CP3=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P3 — ORDINARY + a VOLUNTEERED, BOGUS Kit-Skill. Present ⇒ validated: dropping a key from the
+  # required set must not create a silent-typo hole where a wrong value is simply ignored.
+  echo p3 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'ordinary head volunteering a bogus skill\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: ordinary\nKit-Skill: skills/nope\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ORD_BADSKILL=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P4 — ORDINARY + a volunteered Kit-Stage OUTSIDE the map. Same hole, the stage face.
+  echo p4 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'ordinary head volunteering a bogus stage\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: ordinary\nKit-Stage: Yolo\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ORD_BADSTAGE=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P5 — ORDINARY + a DUPLICATED optional key. The exactly-one rule must survive the demotion from
+  # required to optional: two Kit-Skill lines with opposite values are the same head -1/tail -1
+  # decoy the required keys already refuse, and dropping a key from the required set must not drop
+  # its arity check with it (review M1).
+  echo p5 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'ordinary head with two skills\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: ordinary\nKit-Stage: Build\nKit-Skill: skills/tdd\nKit-Skill: skills/build\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ORD_DUPSKILL=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P6 — ORDINARY + an optional key whose value breaks the CHARSET. `;` is the shell-metacharacter
+  # face: the value flows to a filesystem path and a map lookup, so the boundary refusal must apply
+  # to a volunteered field exactly as it does to a required one (review M1).
+  echo p6 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'ordinary head with a metachar skill\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: ordinary\nKit-Stage: Build\nKit-Skill: skills/tdd;rm\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ORD_METASKILL=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # P7 — ORDINARY + Kit-Skill but NO Kit-Stage. The pair is what carries meaning; refusing this with
+  # "stage '' has no skill set in the map" blamed the roster for a missing trailer (security M-2).
+  echo p7 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'ordinary head with a skill and no stage\n\nbody\n\nKit-Row: DEMO-ROW\nKit-Class: ordinary\nKit-Skill: skills/tdd\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ORD_SKILL_NOSTAGE=$(git -C "$LS_FXDIR" rev-parse HEAD)
   return 0
 }
 
@@ -1082,6 +1291,82 @@ selftest() {
     # ever reaches a board grep.
     check_declaration "$LS_FX_META" >/dev/null 2>&1 \
       && { echo "selftest FAIL: a metacharacter Kit-Row must be refused at the boundary"; st_fail=1; }
+
+    # A classifier that answers with a token derive_class does not recognise. Defined here, inside
+    # selftest(), so no production path can reach it.
+    # shellcheck disable=SC2329 # invoked indirectly through $LS_CLASS_FN
+    _st_garbage_class() { printf 'garbage\n'; return 1; }
+
+    # --- T3b: THE REQUIRED SET IS CLASS-PROPORTIONAL ------------------------------------------
+    # ENTRY-CONTRACT-CLASS-PROPORTIONAL (design 2026-08-30 section 4.1a). Ordinary pays Kit-Row +
+    # Kit-Class; sensitive / control-plane pay all four. Every fixture above carries all four, so
+    # these four legs are the only ones that can tell the two required sets apart.
+
+    # ORDINARY + TWO — the head an ordinary slice now owes, and nothing more. Under the old
+    # unconditional set this REDS on the missing Kit-Stage; that is the point of the slice.
+    check_declaration "$LS_FX_ORD2" ordinary >/dev/null 2>&1 \
+      || { echo "selftest FAIL: an ordinary head carrying Kit-Row + Kit-Class must PASS"; st_fail=1; }
+
+    # CONTROL-PLANE MINUS Kit-Stage — must FAIL, and must NAME the key it is missing. The
+    # forbidden string pins that it is not refused for some other reason (it carries Kit-Skill).
+    ls_assert_reason "class-proportional/cp-missing-stage" \
+      "carries no parseable 'Kit-Stage' trailer" "Kit-Skill" \
+      check_declaration "$LS_FX_CP3" control-plane || st_fail=1
+
+    # SENSITIVE pays the same four as control-plane — only `ordinary` is reduced.
+    check_declaration "$LS_FX_ORD2" sensitive >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a sensitive head must still owe all four"; st_fail=1; }
+
+    # PRESENT ⇒ VALIDATED (stage face) — an ordinary head that VOLUNTEERS a stage outside the map
+    # must still FAIL. Dropping a key from the required set must not make a wrong value inert.
+    check_declaration "$LS_FX_ORD_BADSTAGE" ordinary >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a volunteered Kit-Stage outside the map must FAIL even for ordinary"; st_fail=1; }
+
+    # PRESENT ⇒ VALIDATED (skill face) — the run_gate-level predicate, tested directly.
+    check_skill_if_present "$LS_FX_ORD2" >/dev/null 2>&1 \
+      || { echo "selftest FAIL: an absent Kit-Skill must be N/A for an ordinary head"; st_fail=1; }
+    check_skill_if_present "$LS_FX_ORD_BADSKILL" >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a volunteered but bogus Kit-Skill must be validated, not ignored"; st_fail=1; }
+
+    # ── THE PRESENT⇒VALIDATED LOOP ITSELF (review M1). The two legs above are graded by check_skill,
+    # NOT by the optional-key loop in check_declaration — so with that loop deleted they both still
+    # pass and the arity/charset half of "present ⇒ validated" was untested. These two are the
+    # loop's own oracle: each names an OPTIONAL key (Kit-Skill, absent from the ordinary required
+    # set) and breaks a rule only that loop enforces.
+    ls_assert_reason "optional/arity" \
+      "carries 2 occurrences of 'Kit-Skill' — exactly one is required" "-" \
+      check_declaration "$LS_FX_ORD_DUPSKILL" ordinary || st_fail=1
+    ls_assert_reason "optional/charset" \
+      "'Kit-Skill' must be non-empty and may contain only" "-" \
+      check_declaration "$LS_FX_ORD_METASKILL" ordinary || st_fail=1
+
+    # A VOLUNTEERED SKILL WITH NO STAGE names ITS OWN defect, not the roster's (security M-2). The
+    # forbidden string is the old, misleading refusal: if it reappears the message has regressed.
+    ls_assert_reason "optional/skill-without-stage" \
+      "Kit-Skill was volunteered without Kit-Stage" "has no skill set in the map" \
+      check_skill_if_present "$LS_FX_ORD_SKILL_NOSTAGE" || st_fail=1
+
+    # CLASSIFIER DEGRADATION ESCALATES, NEVER RELAXES. A classifier that returns a non-token must
+    # fail-safe to control-plane and demand all four — the arm that keeps a broken classifier from
+    # becoming a free pass to the reduced set.
+    _st_clsfn_saved="$LS_CLASS_FN"
+    LS_CLASS_FN=_st_garbage_class
+    _st_cls="$(ls_class_for_required 2>/dev/null)"
+    [ "$_st_cls" = FAIL-SAFED ] \
+      || { echo "selftest FAIL: a degraded classifier must yield FAIL-SAFED, got '$_st_cls'"; st_fail=1; }
+    ls_class_for_required 2>&1 >/dev/null | grep -Fq 'fail-safe: control-plane, all four required' \
+      || { echo "selftest FAIL: the degraded arm must SAY it fail-safed to control-plane"; st_fail=1; }
+    [ "$(ls_required_keys "$_st_cls")" = "$LS_REQUIRED_KEYS" ] \
+      || { echo "selftest FAIL: a degraded classifier must require all four keys"; st_fail=1; }
+    check_declaration "$LS_FX_ORD2" "$_st_cls" >/dev/null 2>&1 \
+      && { echo "selftest FAIL: under a degraded classifier a two-trailer head must FAIL"; st_fail=1; }
+    LS_CLASS_FN="$_st_clsfn_saved"
+
+    # …and the healthy path still routes through the same seam.
+    [ "$(ls_required_keys ordinary)" = "Kit-Row Kit-Class" ] \
+      || { echo "selftest FAIL: ordinary must require exactly Kit-Row + Kit-Class"; st_fail=1; }
+    [ "$(ls_required_keys control-plane)" = "$LS_REQUIRED_KEYS" ] \
+      || { echo "selftest FAIL: control-plane must require all four"; st_fail=1; }
 
     # --- T4: Kit-Class must EQUAL the derived class -------------------------------------------
     _st_fxd="$DIR/conformance/fixtures/loop-state"
@@ -1565,9 +1850,14 @@ run_gate() {   # $1 = sha
   git -C "$LS_REPO" cat-file -e "$1^{commit}" 2>/dev/null || {
     echo "loop-state: '$1' is not a commit in this repository" >&2; return 2; }
   map_completeness   || { _ls_bad=1; _ls_nonscope_bad=1; }
-  check_declaration "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
-  check_class       "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
-  check_skill       "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  # THE CLASSIFIER RUNS FIRST — it needs no trailers, so it can be hoisted ahead of the
+  # declaration leg, and the declaration leg needs its answer to know what to require. A
+  # derivation failure yields FAIL-SAFED, which ls_required_keys maps to the FULL set; check_class
+  # independently reds on the same condition (fail-closed), so degradation never buys anything.
+  _ls_class=$(ls_class_for_required)
+  check_declaration "$1" "$_ls_class" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_class       "$1" "" "$_ls_class" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_skill_if_present "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
   check_row         "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
   # B9: the scope leg. It runs inside the existing --head path, so the installed pre-push hook and
   # CI's bound gate both get it with ZERO wiring edits. It cannot change the rc of any commit that
@@ -1591,7 +1881,16 @@ run_gate() {   # $1 = sha
   # row was a single letter, or whose row leg never ran at all. A merge-blocking control that
   # overstates its own result is the failure this whole slice exists to prevent.
   echo "OK: loop-state — $1 carries a valid Entry Declaration."
-  echo "  stage + skill: resolved against the map · class: equals promotion-readiness --class"
+  # THE REQUIRED SET IS PART OF THE VERDICT. An ordinary head is not asked for stage or skill, so
+  # printing "stage + skill: resolved against the map" on one would claim a leg that never ran —
+  # the exact overstatement security review blocked for the row leg (see below).
+  echo "  class:         $_ls_class · required set: $(ls_required_keys "$_ls_class")"
+  if [ "$(decl_count "$1" Kit-Stage)" -gt 0 ] || [ "$(decl_count "$1" Kit-Skill)" -gt 0 ]; then
+    echo "  stage + skill: resolved against the map (for the fields present on this commit)"
+  else
+    echo "  stage + skill: NOT ASKED — ordinary class, and neither field carried a value"
+  fi
+  echo "  class check:   equals promotion-readiness --class"
   # ⚠️ THIS LINE IS PART OF THE VERDICT AND IT WENT STALE ONCE ALREADY. It used to read
   # "(guard-core scope; the adapter union is enforced by ratification.yml)", which stopped being true
   # the moment GUARD-PATH-ENUMERATION-INCOMPLETE S2 made `--class` union-aware — a merge-blocking
