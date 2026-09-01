@@ -59,8 +59,13 @@
 #   * Assurance is LABELED, not proven-strong: [committer] is honest-but-weak (user.name is
 #     self-set), [self-asserted] is weaker still. The label states HOW identity was established and
 #     never overclaims — an unsigned commit can never be [signed: gpg]. Authenticated team approval
-#     (forge PR/MR review -> [authenticated: <forge>-review]) is a SEAM in docs/adoption/vc-hosts.md,
-#     wired when a team consumer exists — NOT wired here (no solo consumer).
+#     (forge PR/MR review -> [authenticated: <forge>-review]) IS WIRED, for GitHub, since PR 11:
+#     `record` reads the PR's reviews and upgrades the label when a non-author, non-Bot APPROVED
+#     review by the claimed approver is bound to the approved sha. Other forges remain the seam in
+#     docs/adoption/vc-hosts.md; github is now that seam's reference adapter. THE UPGRADE DOES NOT
+#     CHANGE THE CEILING ABOVE: the note is still self-authorable and the label is a DRIFT CONTROL at
+#     the note's own trust tier — it records that the forge answered YES when asked, over the local
+#     `gh` credential. What BINDS is still server-side branch protection + required review.
 #   * `trace` green means A NOTE EXISTS whose approved tree equals the trunk commit's tree and
 #     which names a row. It does NOT mean the row was the RIGHT row, nor that the Entry Declaration
 #     it came from was true. It inherits the GO record's assurance exactly and no more — the same
@@ -93,7 +98,10 @@
 #   * `never-infer` — that the agent WAITED for an explicit recorded per-gate human GO — is FLOOR
 #     discipline, NOT enforced by this tool. A green `check` proves what shipped carries the approved
 #     SHA; it does NOT prove the agent's judgment or that it refused to infer.
-# Control-plane stays human-actuated (bootstrap); this tool wires NON-control-plane promotions only.
+# `actuate` wires ORDINARY and SENSITIVE promotions: on an authenticated, SHA-bound recorded GO it
+# performs the merge. CONTROL-PLANE is REFUSED by `actuate` pending the open
+# TIER-3-CP-MERGE-ACTUATION-RULING sitting (step 2b) — control-plane merges take the direct path
+# instead. That refusal is a DRIFT CONTROL, not a boundary: the class is caller-recorded.
 #
 # POSIX sh; dash-clean (no `local`, no bashisms). Operates on the current working tree's git repo.
 # The notes ref name is overridable with PROMOTION_NOTES_REF (default: promotions) for testing.
@@ -108,6 +116,11 @@ usage() {
   echo "  promotion-verify.sh record --approved-sha <sha> --approved-by <id> --gate <g> \\" >&2
   echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t>]" >&2
   echo "        --scope takes a PR id (CI's key) or branch/<name> (the pre-push key, ruling D11)" >&2
+  echo "        --approved-by must be the reviewer's FORGE LOGIN, verbatim (e.g. 'ISBrad72', not" >&2
+  echo "                      'Bradley James'): the [authenticated: <forge>-review] upgrade requires a" >&2
+  echo "                      BYTE-EQUAL match to the review's user.login, so a display name records a" >&2
+  echo "                      weaker label and says why on stderr rather than failing." >&2
+  echo "        --class must be one of: ordinary | sensitive | control-plane (case-insensitive)" >&2
   echo "  promotion-verify.sh log" >&2
   echo "  promotion-verify.sh trace --ref <sha> | --recent <n> [--from <trunk-ref>]" >&2
   echo "        recover the board row for a commit that already landed (squash loses the trailer)" >&2
@@ -141,6 +154,151 @@ derive_assurance() {
     echo "committer"; return 0
   fi
   echo "self-asserted"
+}
+
+# ── THE FORGE-REVIEW DERIVATION (ACTUATE-FORGE-REVIEW-DERIVATION-UNWIRED, PR 11) ──────────────────
+#
+# WHY IT EXISTS. Until this slice derive_assurance could emit only [signed: gpg] / [committer] /
+# [self-asserted], and `actuate` hard-requires [authenticated: <forge>-review]. Nothing anywhere
+# produced that label, so `actuate` was closed for EVERY class by construction and the kit's Tier-2
+# promise — the agent merges ordinary/sensitive PRs on a recorded GO — did not hold through this tool.
+# MEASURED TWICE on this repo: #582 (the boarding) and #605, where a real APPROVED review sat on the
+# exact head and `record` never looked, recording [committer].
+#
+# WHAT IT DOES, AND WHAT IT DELIBERATELY DOES NOT. It CORROBORATES the caller's claim against forge
+# evidence — the same philosophy as [committer], where the id EQUALS a git-attested field and so earns
+# a stronger label. It NEVER substitutes an identity: the recorded id stays the already-sanitised
+# caller string, and the label is a FIXED LITERAL. NO BYTE OF API OUTPUT IS EVER WRITTEN INTO THE
+# NOTE, so this opens no new injection surface into a line-structured body (the S5a class stays closed
+# by construction, not by escaping).
+#
+# FAIL DIRECTION. It can only ever UPGRADE. Any gap — no PR scope, no gh, an API error, no qualifying
+# review, an unresolvable author — keeps the git-native label and prints a notice naming the reason
+# from a FIXED ENUMERATION (no API byte in the notice either). It never blocks and never fails a
+# record: a governance record must not become unwritable because a network call did.
+#
+# HONEST CEILING. This authenticates against the forge's ANSWER AT RECORD TIME, over the local `gh`
+# binary and its ambient credential — an agent that controls PATH can feed it fabricated reviews. That
+# is no NEW capability (the note was already self-authorable), and the label's tier is stated plainly:
+# a DRIFT CONTROL at the note's own trust tier. The control that BINDS remains server-side branch
+# protection + required review. It also proves only that a qualifying review existed WHEN ASKED —
+# a later dismissal is not re-checked here (the forge re-judges at merge time; layered, not doubled).
+#
+# _fr_fallback <reason> <label> — print the fixed-enumeration notice, echo the unchanged label.
+_fr_fallback() {
+  echo "forge-review derivation: $1 — recording [$2]" >&2
+  printf '%s\n' "$2"
+}
+
+# forge_review_upgrade <scope> <approved-sha> <approved-by> <fallback-label> -> the label to record.
+forge_review_upgrade() {
+  _fr_scope="$1"; _fr_sha="$2"; _fr_by="$3"; _fr_lab="$4"; _fr_n=""
+  # 1. TRIGGER — a PR number, DIGITS-ANCHORED. The number is interpolated into an API path, so the
+  #    remainder after a recognised prefix must be ALL digits or the scope is simply not a PR scope.
+  #    `branch/<name>` skips outright: the design-GO path binds BEFORE a PR exists and must not be
+  #    perturbed. Anything that is not exactly one of these four shapes is `no-pr-scope`, never a
+  #    best-effort digit scrape — scraping `release-v3.220.0` down to `3` would probe a REAL, unrelated
+  #    PR 3 and judge this record against someone else's reviews.
+  case "$_fr_scope" in
+    branch/*) _fr_n="" ;;
+    'PR #'*)  _fr_n="${_fr_scope#PR #}" ;;
+    'PR-'*)   _fr_n="${_fr_scope#PR-}" ;;
+    '#'*)     _fr_n="${_fr_scope#\#}" ;;
+    *)        _fr_n="$_fr_scope" ;;
+  esac
+  case "$_fr_n" in ''|*[!0-9]*) _fr_n="" ;; esac
+  [ -n "$_fr_n" ] || { _fr_fallback no-pr-scope "$_fr_lab"; return 0; }
+  command -v gh >/dev/null 2>&1 || { _fr_fallback gh-unavailable "$_fr_lab"; return 0; }
+  # 2. RESOLVE THE APPROVED SHA IN FULL before comparing. 27 of this repo's own records carry an
+  #    ABBREVIATED sha; comparing the raw caller string against the API's 40-hex commit_id would make
+  #    every one of them silently never-upgrade — a permanent false negative wearing a green.
+  _fr_full="$(git rev-parse -q --verify "${_fr_sha}^{commit}" 2>/dev/null || true)"
+  [ -n "$_fr_full" ] || { _fr_fallback sha-unresolvable "$_fr_lab"; return 0; }
+  # 3. PROBE. `gh api` (REST) is the transport, MEASURED at build time against both candidates: it is
+  #    the only one that exposes `user.type` (the Bot belt below), and it exposes `commit_id`, `state`
+  #    and `user.login` in submission order. `gh pr view --json reviews` DOES also carry the commit
+  #    binding (as `commit.oid` — the design's assumption that it did not was re-measured and is
+  #    false), but it carries no account type, so it cannot serve the belt.
+  #    EXTRACTION IS STRUCTURAL (`--jq`), never a substring grep of raw JSON: a grep for APPROVED
+  #    matches inside a review BODY, which is attacker-supplied prose. `@tsv` also escapes any tab or
+  #    newline a hostile login carries, so one review is always one line here.
+  #    Under `set -eu` the substitution is guarded so a probe failure FALLS BACK rather than aborting.
+  #    ⚠️ NO TIMEOUT IS SET, AND THAT IS A REAL LIMIT, NOT AN OVERSIGHT (security review F4). A gh call
+  #    that FAILS falls back within milliseconds; a gh call that HANGS stalls `record` for as long as
+  #    the network does, and the operator sees a wedged command rather than a notice. There is no
+  #    portable POSIX timeout (`timeout(1)` is GNU/coreutils, absent on stock macOS), so wrapping this
+  #    would trade a rare hang for a new portability failure on the commonest developer platform. The
+  #    fail-SAFE direction is preserved either way — a hang never produces a wrong label, only no label.
+  if _fr_rows="$(gh api "repos/{owner}/{repo}/pulls/$_fr_n/reviews" --paginate \
+        --jq '.[]|[(.state//""),(.commit_id//""),(.user.login//""),(.user.type//"")]|@tsv' 2>/dev/null)"; then
+    :
+  else
+    _fr_fallback api-error "$_fr_lab"; return 0
+  fi
+  # 4. LATEST REVIEW PER REVIEWER, not any match over the history. An APPROVED that the same reviewer
+  #    later replaced with CHANGES_REQUESTED is still in the list and always will be; an any-match read
+  #    would authenticate on a WITHDRAWN approval. Take the LAST row for this login (REST returns
+  #    submission order) and judge only that one. The login is passed through the ENVIRONMENT, never
+  #    `awk -v` (which would interpret backslash escapes in the value) and never interpolated.
+  #    ⚠️ ONLY STATE-CHANGING REVIEWS ARE CONSIDERED (review I2, and this is GitHub's OWN semantics,
+  #    not a convenience). A review row may be APPROVED, CHANGES_REQUESTED, DISMISSED, COMMENTED or
+  #    PENDING. Only the first three change a PR's review STATE; a COMMENTED review is a note, and it
+  #    is what a reviewer leaves when they answer a question AFTER approving. Taking the plain latest
+  #    row would let that comment silently cancel a standing approval — the derivation would refuse a
+  #    GO the forge itself still considers approved, and the operator would have no idea why. So
+  #    COMMENTED and PENDING rows are filtered out BEFORE the latest-per-reviewer selection, and the
+  #    withdrawal semantics REC-N7 pins (APPROVED then CHANGES_REQUESTED) are untouched: those are
+  #    state-changing and still win by recency.
+  _fr_row="$(printf '%s\n' "$_fr_rows" \
+      | FR_WHO="$_fr_by" LC_ALL=C awk -F'\t' \
+          '$3 == ENVIRON["FR_WHO"] && ($1 == "APPROVED" || $1 == "CHANGES_REQUESTED" || $1 == "DISMISSED") { last = $0 } END { if (last != "") print last }')"
+  [ -n "$_fr_row" ] || { _fr_fallback reviewer-not-in-reviews "$_fr_lab"; return 0; }
+  _fr_state="$(printf '%s' "$_fr_row" | cut -f1)"
+  _fr_cid="$(printf '%s' "$_fr_row" | cut -f2)"
+  _fr_login="$(printf '%s' "$_fr_row" | cut -f3)"
+  _fr_type="$(printf '%s' "$_fr_row" | cut -f4)"
+  # 5. EXACT state. Not a prefix, not a `case` glob, not a substring: DISMISSED is the forge saying an
+  #    approval no longer counts, and a loose matcher reads it as an approval.
+  [ "$_fr_state" = "APPROVED" ] || { _fr_fallback review-not-approved "$_fr_lab"; return 0; }
+  # 6. Bound to THIS content (resolved, full). A review of an earlier commit is not a review of this one.
+  [ "$_fr_cid" = "$_fr_full" ] || { _fr_fallback review-sha-mismatch "$_fr_lab"; return 0; }
+  # 7. The reviewer IS the id this GO claims — byte-equal, narrow and fail-closed. (Redundant with the
+  #    awk select above, kept because a corroboration gate should not depend on one selector's shape.)
+  [ "$_fr_login" = "$_fr_by" ] || { _fr_fallback reviewer-not-in-reviews "$_fr_lab"; return 0; }
+  # 8. Bot belt. A `…[bot]` App login is already unusable as --approved-by (brackets are rejected at
+  #    :222-226 — that rejection does double duty, do not "fix" it later); this covers a machine
+  #    identity whose login carries none. A machine USER account with a plain login stays
+  #    indistinguishable from a human: an honest ceiling, not a mechanism.
+  [ "$_fr_type" != "Bot" ] || { _fr_fallback reviewer-is-bot "$_fr_lab"; return 0; }
+  # 9. FORGE-SIDE SoD: the reviewer is not the PR's author. CASE-INSENSITIVE rejection, because forge
+  #    logins are case-insensitive and a capital letter must not buy a self-approval; BROAD and
+  #    fail-closed, the opposite direction from the byte-equal acceptance above.
+  #    AND THE AUTHOR MUST RESOLVE. An empty author would make the inequality VACUOUSLY TRUE and hand
+  #    out the strongest label the kit has on the strength of a FAILED LOOKUP — the same empty-operand
+  #    refusal do_actuate already makes at :651.
+  if _fr_author="$(gh api "repos/{owner}/{repo}/pulls/$_fr_n" --jq '.user.login // ""' 2>/dev/null)"; then
+    :
+  else
+    _fr_fallback api-error "$_fr_lab"; return 0
+  fi
+  [ -n "$_fr_author" ] || { _fr_fallback author-unresolvable "$_fr_lab"; return 0; }
+  # CHARSET-ANCHOR THE AUTHOR BEFORE COMPARING (security review F3). A GitHub login is
+  # [A-Za-z0-9-] and nothing else. This value is the ONLY API-derived string that decides an upgrade
+  # by INEQUALITY, and an inequality is satisfied by anything unexpected — so a malformed, truncated
+  # or surprising answer would read as "different from the reviewer" and PASS the SoD test. Requiring
+  # the shape first converts that whole class from a silent pass into a stated refusal.
+  # ⚠️ DISCLOSED CONSEQUENCE, deliberately accepted: an App-opened PR has an author login of the form
+  # `dependabot[bot]`, whose brackets are outside this charset — so a review on a bot-opened PR will
+  # never upgrade and will say `author-unresolvable`. That is the fail-CLOSED direction (no label is
+  # weaker than a wrong label), and it is stated here rather than discovered.
+  case "$_fr_author" in
+    *[!A-Za-z0-9-]*) _fr_fallback author-unresolvable "$_fr_lab"; return 0 ;;
+  esac
+  _fr_l1="$(printf '%s' "$_fr_login"  | LC_ALL=C tr 'A-Z' 'a-z')"
+  _fr_l2="$(printf '%s' "$_fr_author" | LC_ALL=C tr 'A-Z' 'a-z')"
+  [ "$_fr_l1" != "$_fr_l2" ] || { _fr_fallback reviewer-is-pr-author "$_fr_lab"; return 0; }
+  # THE LABEL IS A FIXED LITERAL — assembled from nothing the API said.
+  printf '%s\n' "authenticated: github-review"
 }
 
 # Latest approved-sha bound by a note, in RECORD ORDER (newest first). Walks the notes-ref commit
@@ -224,6 +382,22 @@ do_record() {
       echo "record: --approved-by must not contain '[' or ']' (assurance label is derived, not supplied) — rejected" >&2
       return 2 ;;
   esac
+  # CHANGE-CLASS VOCABULARY (review M1 / security F2 — the two ends of one hardening; the other end is
+  # do_actuate's allowlist). `change-class:` is now a DECIDING field: actuate proceeds only for
+  # ordinary/sensitive and refuses control-plane. A free-text class was therefore a way to record a
+  # note that no consumer can classify — a typo (`contol-plane`, `Control Plane`) would sail past
+  # record and then be refused at actuate with a confusing message, or worse, be read as neither.
+  # Validate at the FRONT DOOR, fail closed at rc 2, so the defect is caught where it is cheap.
+  # Placed here deliberately: AFTER the control-char and bracket rejections (nothing may precede
+  # those), and before the note is composed.
+  case "$(printf '%s' "$cls" | LC_ALL=C tr 'A-Z' 'a-z')" in
+    ordinary|sensitive|control-plane) ;;
+    *)
+      echo "record: invalid --class '$cls' — must be one of: ordinary | sensitive | control-plane" >&2
+      echo "        (case-insensitive). The class DECIDES whether \`actuate\` may merge, so an" >&2
+      echo "        unrecognised value would record a GO no consumer can classify. Rejected (fail closed)." >&2
+      return 2 ;;
+  esac
   [ -n "$basis" ] || basis="(none recorded)"
   # KIT-ROW PROJECTION (ENTRY-DECLARATION-SEVERED-ON-MAIN, 2026-08-30). The board row is DERIVED
   # from the approved commit through git's own trailer parser — never a --flag, because a
@@ -280,6 +454,12 @@ do_record() {
   # rejected above, so the id is the caller string verbatim — input can't manufacture assurance.
   aby_id="$aby"
   assurance="$(derive_assurance "$asha" "$aby_id")"
+  # FORGE-REVIEW UPGRADE — STRICTLY AFTER every rc-2 sanitizer arm above, and that ordering is
+  # load-bearing, not incidental: it runs on an ALREADY-VALIDATED $aby_id (no brackets, no control
+  # characters, a resolvable approved-sha), so nothing it compares can itself be an injection. Moving
+  # it above any of those arms would hand unvalidated bytes to the comparison. It can only upgrade the
+  # label; it never changes aby_id, never blocks, never fails the record.
+  assurance="$(forge_review_upgrade "$scope" "$asha" "$aby_id" "$assurance")"
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
   # Bind the structured record to the approved commit as a note (tree-invariant). `-f` overwrites a
   # prior note on the same commit (re-record supersedes) — honest: notes are mutable (see ceiling).
@@ -586,10 +766,17 @@ do_check() {
 #   Fail-safe direction: ANY parse/lookup gap in steps 1-3 -> refuse before touching anything; a gap
 #   in step 5 (post-merge) -> loud SHIPPED != APPROVED (an incident, not a warning).
 #
-#   HONEST CEILING (T1): the merge is a swappable stub in tests; the real `gh pr merge` (default) and
-#   the forge-review -> [authenticated: <forge>-review] derivation (the vc-hosts seam) are UNWIRED
-#   solo — a solo maintainer can never produce an [authenticated] label, so the gate stays closed and
-#   `--admin` remains the human's only path, by construction. Steps 1-3 + 5 are fully fixture-proven.
+#   HONEST CEILING (rewritten at PR 11, when the sentence it replaced stopped being true): the
+#   forge-review -> [authenticated: github-review] derivation IS NOW WIRED in `record`, so this gate
+#   is reachable by a production path and `actuate` opens for ORDINARY and SENSITIVE changes on an
+#   authenticated recorded GO. CONTROL-PLANE is refused here (step 2b) pending the open
+#   TIER-3-CP-MERGE-ACTUATION-RULING sitting; those merges use the direct path.
+#   WHAT IS STILL NOT PROVEN HERE: the live `gh pr merge` remains a swappable stub in tests, and the
+#   PR-number -> merge-commit-sha resolution for step 5 is still the forge-adapter seam. AND THE LABEL
+#   BAR IS NOT AUTHENTICATION: a note is self-authorable and the derivation trusts the local `gh`
+#   binary and its ambient credential, so both the bar and the class refusal are DRIFT CONTROLS at the
+#   note's own trust tier. The control that binds a human with push rights is server-side branch
+#   protection + required review; `--admin` stays denied to the agent regardless (:676-678).
 do_actuate() {
   ref=""; asha=""; merge_cmd=""
   while [ $# -gt 0 ]; do
@@ -635,6 +822,52 @@ do_actuate() {
     echo "ACTUATE REFUSED: assurance '$label' does not meet the control-plane bar ([authenticated: <forge>-review] required)" >&2
     return 1
   fi
+
+  # 2b. CONTROL-PLANE REFUSAL — the arm the forge-review derivation MADE NECESSARY (PR 11, design
+  #     §4.7 arm (a)). Before that derivation existed, "control-plane stays human-actuated through
+  #     this tool" was enforced BY CONSTRUCTION: no path could produce an [authenticated:] label, so
+  #     step 2 closed the gate for every class. Wiring the derivation opens step 2 for every class at
+  #     once — including control-plane, while TIER-3-CP-MERGE-ACTUATION-RULING is an OPEN SITTING.
+  #     Fail closed until that sitting rules, rather than let this slice render its ruling by side
+  #     effect (a lean is not a ruling).
+  #     This does NOT contradict the promotion contract's "the agent may actuate on a recorded GO,
+  #     control-plane included": that allowance is exercised today by the direct working path
+  #     (`gh pr merge --squash --match-head-commit <sha>` after `record`), which stays available. Only
+  #     this subcommand stays conservative.
+  #     HONEST TIER: `change-class:` is CALLER-RECORDED, so this is a DRIFT CONTROL at the note's own
+  #     trust tier — exactly like the label bar above it — never a boundary. Removable by the ruling.
+  #     Read LINE-ANCHORED from the `change-class:` line only (never a body scan — the S5a decoy
+  #     lesson), and matched EXACTLY after case-folding: a substring test would refuse a legitimate
+  #     class merely containing the word.
+  cls_line="$(printf '%s\n' "$note" | grep '^change-class:' | head -1 || true)"
+  cls_val="${cls_line#change-class:}"
+  cls_val="$(printf '%s' "$cls_val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  cls_lc="$(printf '%s' "$cls_val" | LC_ALL=C tr 'A-Z' 'a-z')"
+  # AN ALLOWLIST, NOT A DENYLIST (security review F2). A denylist on "control-plane" fails OPEN on
+  # everything it does not recognise: a note with NO `change-class:` line at all, or a typo'd value,
+  # or a class this vocabulary gains later, would all sail through the refusal and be merged. Since
+  # the note is caller-recorded, that is a one-character evasion. Proceed ONLY for the two classes
+  # this subcommand is wired for; everything else — missing, empty, unrecognised — refuses with its
+  # own reason. `record` validates the same vocabulary at the front door, so a note reaching here with
+  # an unrecognised class was written by something other than `record`, which is worth saying out loud.
+  case "$cls_lc" in
+    ordinary|sensitive) ;;
+    control-plane)
+      echo "ACTUATE REFUSED: change-class '$cls_val' — control-plane actuation through this subcommand is" >&2
+      echo "                 held closed pending the open TIER-3-CP-MERGE-ACTUATION-RULING sitting." >&2
+      echo "                 Ordinary/Sensitive actuate here on an authenticated recorded GO. This is a" >&2
+      echo "                 DRIFT CONTROL (the class is caller-recorded, at the note's own trust tier)," >&2
+      echo "                 and it is removable by that ruling. Control-plane merges use the direct" >&2
+      echo "                 path: gh pr merge --squash --match-head-commit <approved-sha>." >&2
+      return 1 ;;
+    *)
+      echo "ACTUATE REFUSED: unrecognised or missing change-class '$cls_val' — this gate proceeds only" >&2
+      echo "                 for an explicitly recorded 'ordinary' or 'sensitive' class (allowlist)." >&2
+      echo "                 A note with no class, or one this vocabulary does not know, cannot be" >&2
+      echo "                 judged, and an unjudgeable class is never a permission. Re-record the GO" >&2
+      echo "                 with \`record --class <ordinary|sensitive|control-plane>\`." >&2
+      return 1 ;;
+  esac
 
   # 3. approver != author (builder != ratifier — real SoD teeth). The approver id is the text BEFORE
   #    the trailing ' [label]'. Strip from the SAME last '[' the label read used (not a

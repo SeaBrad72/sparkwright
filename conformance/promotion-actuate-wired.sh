@@ -10,12 +10,16 @@
 #   sh conformance/promotion-actuate-wired.sh [--selftest]
 # Exit: 0 = ok . 1 = drift/vacuity . 2 = usage. POSIX sh; dash-clean.
 #
-# HONEST CEILING: this lock proves the GATE is wired + non-vacuous (the [authenticated: <forge>-
-# review] bar, the approver!=author SoD teeth, the tree-equality re-check, and the guard --admin deny
-# are all real and LOAD-BEARING). It does NOT prove the live `gh pr merge`, the forge-review ->
-# [authenticated: <forge>-review] derivation (the vc-hosts seam), or a real team credential — those
-# are documented seams, fixture-proven here with a swappable --merge-cmd stub + a fabricated
-# authenticated note. The LOCK SELF-NEGATIVE (below) proves the lock ITSELF is non-vacuous: a
+# HONEST CEILING (rewritten at PR 11 — the paragraph it replaced said the derivation was UNWIRED,
+# which stopped being true in the same diff that added these legs): this lock proves the GATE is wired
+# + non-vacuous (the [authenticated: <forge>-review] bar, the approver!=author SoD teeth, the
+# tree-equality re-check, the control-plane refusal, and the guard --admin deny are all real and
+# LOAD-BEARING), AND that the label the bar demands is now DERIVABLE by a production path — the
+# REC-* legs drive the real `record` against a `gh` PATH shim, so the derivation's own conditions are
+# fixture-proven here rather than assumed. It still does NOT prove the live `gh pr merge` (a swappable
+# --merge-cmd stub), a real forge credential, or that a note is authentic: a note is self-authorable
+# and the derivation trusts the local `gh`, so the label remains a DRIFT CONTROL at the note's own
+# trust tier. The LOCK SELF-NEGATIVE (below) proves the lock ITSELF is non-vacuous: a
 # neutralized/always-pass gate MUST fail this lock.
 set -eu
 
@@ -99,15 +103,29 @@ mkrepo() {
 # (used to plant a decoy `[...]` substring — the label read must ignore the body). The authenticated
 # label can NEVER be emitted by derive_assurance solo (the vc-hosts seam), so fixtures write it
 # directly — exactly the design's liveness-anchor method.
-write_note() { # dir sha approved-by-value [basis]
-  _dir="$1"; _s="$2"; _aby="$3"; _basis="${4:-reviewer APPROVE}"
+#
+# ⚠️ THE `change-class:` DEFAULT IS `Ordinary`, AND THAT IS LOAD-BEARING, NOT COSMETIC. Since PR 11
+# `do_actuate` REFUSES a Control-plane-class note outright (the fail-closed arm the open
+# TIER-3-CP-MERGE-ACTUATION-RULING sitting will dispose of), so a fixture that wants to exercise the
+# label bar, the SoD teeth or the tree re-check must NOT also be control-plane — it would refuse one
+# step earlier and every one of those legs would be passing for the wrong reason. The 5th argument
+# carries the class, and ACT-CP below is the one leg that passes `Control-plane` deliberately.
+#
+# ⚠️ `${5-Ordinary}`, NOT `${5:-Ordinary}` — the colon form substitutes on EMPTY as well as unset, so
+# a leg passing '' to model a blank class silently got `Ordinary` and PASSED THROUGH THE ALLOWLIST.
+# That is exactly how ACT-UNKNOWN first went green for the wrong reason. The literal `OMIT` drops the
+# line entirely, which is the stronger evasion shape (a note with no class at all).
+write_note() { # dir sha approved-by-value [basis] [change-class|OMIT]
+  _dir="$1"; _s="$2"; _aby="$3"; _basis="${4:-reviewer APPROVE}"; _cls="${5-Ordinary}"
+  if [ "$_cls" = OMIT ]; then _clsline="x-no-class: (this note carries no change-class line)"
+  else _clsline="change-class: $_cls"; fi
   printf '%s\n' \
     "record: promotion GO (fabricated fixture note)" \
     "approved-sha: $_s" \
     "approved-by: $_aby" \
     "gate: release-candidate" \
     "rung: Release candidate" \
-    "change-class: Control-plane" \
+    "$_clsline" \
     "scope: PR #260" \
     "approval-token: \"GO: merge #260\"" \
     "basis: $_basis" \
@@ -470,8 +488,237 @@ AWK
     fi
   fi
 
+  # =======================================================================================
+  # PR 11 — THE FORGE-REVIEW DERIVATION IN `record` (ACTUATE-FORGE-REVIEW-DERIVATION-UNWIRED).
+  #
+  # Until this slice `derive_assurance` could emit only [signed: gpg] / [committer] /
+  # [self-asserted], so the [authenticated: <forge>-review] bar every leg above enforces was
+  # UNREACHABLE by any production path and `actuate` was closed for every class by construction —
+  # the fabricated notes above were the only way to reach it. These legs prove the label is now
+  # DERIVED from forge evidence, and — far more importantly — that it is derived ONLY when every
+  # folded condition holds. Each negative isolates exactly one condition, so deleting that condition
+  # from the gate turns exactly that leg red (the proof matrix is in the PR body).
+  # =======================================================================================
+  _RQ='[{"user":{"login":"Reviewer B","type":"User"},"state":"APPROVED","commit_id":"@SHA@","submitted_at":"2026-09-01T00:00:00Z"}]'
+
+  # REC-L (LIVENESS): a qualifying review upgrades the label — and the upgraded record then carries
+  # `actuate` end to end, which is the row's whole claim ("actuate opens for ordinary/sensitive").
+  # A liveness anchor that stopped at the note would not prove the two halves compose.
+  DL="$(mkrepo)" || { fail "REC-L: fixture build"; return 1; }
+  XL="$(cat "$DL/.X")"
+  GL="$(_mkgh "$(printf '%s' "$_RQ" | sed "s/@SHA@/$XL/g")" '"AuthorLogin"')"
+  _run_record "$DL" "$GL" "PR #260" "Reviewer B" "$XL"
+  NL="$(_note_of "$DL" "$XL")"
+  if [ "$RC" = 0 ] && printf '%s\n' "$NL" | grep -qF 'approved-by: Reviewer B [authenticated: github-review]'; then
+    MC="git update-ref refs/heads/merged $XL && : > $DL/.invoked"
+    run_actuate "$VERIFY" "$DL" merged "$XL" "$MC"
+    if [ "$RC" = 0 ] && [ -f "$DL/.invoked" ] && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
+      pass "REC-L LIVENESS: derived [authenticated: github-review] -> actuate merged it (rc=0) — the gate is REACHABLE by a production path"
+    else
+      fail "REC-L LIVENESS (actuate half): rc=$RC invoked=$(invoked "$DL") OUT=[$OUT]"
+    fi
+  else
+    fail "REC-L LIVENESS (record half): rc=$RC note=[$NL]"
+  fi
+  rm -rf "$DL" "$GL" 2>/dev/null || true
+
+  # REC-L2 (the second liveness anchor, and the ONLY leg that can red the SHA RESOLUTION): the caller
+  # passes an ABBREVIATED --approved-sha while the API answers with the 40-hex commit_id. 27 of this
+  # repo's own records carry an abbreviated sha, so comparing the raw caller string would make every
+  # one of them silently never-upgrade — a permanent false negative that looks exactly like "no review
+  # exists". Without this leg, `git rev-parse` could be replaced by the raw string and nothing reds.
+  DL2="$(mkrepo)" || { fail "REC-L2: fixture build"; return 1; }
+  XL2="$(cat "$DL2/.X")"
+  GL2="$(_mkgh "$(printf '%s' "$_RQ" | sed "s/@SHA@/$XL2/g")" '"AuthorLogin"')"
+  _run_record "$DL2" "$GL2" "PR #260" "Reviewer B" "$(printf '%s' "$XL2" | cut -c1-8)"
+  BL2="$(_note_of "$DL2" "$XL2")"
+  if [ "$RC" = 0 ] && printf '%s\n' "$BL2" | grep -qF 'approved-by: Reviewer B [authenticated: github-review]'; then
+    pass "REC-L2 LIVENESS: an ABBREVIATED --approved-sha still upgrades (the compare resolves the full sha first)"
+  else
+    fail "REC-L2: abbreviated approved-sha did not upgrade; rc=$RC note=[$BL2] OUT=[$OUT]"
+  fi
+  rm -rf "$DL2" "$GL2" 2>/dev/null || true
+
+  # ★ REC-L3 (the THIRD liveness anchor, review I2): the reviewer APPROVED and then left a COMMENTED
+  # review at the same sha — answering a question, the ordinary shape of a real review thread. A
+  # COMMENTED review does NOT change a PR's review state on GitHub, so a standing approval survives
+  # it. A plain latest-row read would let that comment CANCEL the approval and refuse a GO the forge
+  # itself still considers approved, with no clue why. This must still UPGRADE, and it is the leg that
+  # reds if the state-changing filter is dropped from the selector.
+  _rec_case REC-L3 auth \
+    '[{"user":{"login":"Reviewer B","type":"User"},"state":"APPROVED","commit_id":"@SHA@","submitted_at":"2026-09-01T00:00:00Z"},{"user":{"login":"Reviewer B","type":"User"},"state":"COMMENTED","commit_id":"@SHA@","submitted_at":"2026-09-01T02:00:00Z"}]' \
+    '"AuthorLogin"' ''
+
+  # REC-N1: the review is bound to a DIFFERENT commit. `commit_id` is what makes the review an
+  # approval OF THIS CONTENT rather than of the PR as an idea; without it a reviewer's approval of an
+  # early commit would authenticate anything pushed after it.
+  _rec_case REC-N1 base \
+    '[{"user":{"login":"Reviewer B","type":"User"},"state":"APPROVED","commit_id":"0123456789012345678901234567890123456789"}]' \
+    '"AuthorLogin"' review-sha-mismatch
+
+  # REC-N2: the reviewer is not the id the GO claims. The derivation CORROBORATES the caller's claim;
+  # it never substitutes a different identity for it.
+  _rec_case REC-N2 base \
+    '[{"user":{"login":"Reviewer C","type":"User"},"state":"APPROVED","commit_id":"@SHA@"}]' \
+    '"AuthorLogin"' reviewer-not-in-reviews
+
+  # REC-N3: reviewer == PR author (forge-side SoD), asserted in a DIFFERENT CASE deliberately —
+  # GitHub logins are case-insensitive, so a byte-equal test here would be defeated by a capital.
+  # This leg is what makes the case-folding deletion-provable.
+  # NOTE the reviewer login here is charset-legal on both sides: F3 anchors the AUTHOR to
+  # [A-Za-z0-9-], so a spaced author would refuse as author-unresolvable and this leg would pass for
+  # the wrong reason — proving the charset arm rather than the case-fold.
+  _rec_case REC-N3 base \
+    '[{"user":{"login":"ReviewerB","type":"User"},"state":"APPROVED","commit_id":"@SHA@"}]' \
+    '"reviewerb"' reviewer-is-pr-author ReviewerB
+
+  # REC-N4: a lone CHANGES_REQUESTED is not an approval.
+  _rec_case REC-N4 base \
+    '[{"user":{"login":"Reviewer B","type":"User"},"state":"CHANGES_REQUESTED","commit_id":"@SHA@"}]' \
+    '"AuthorLogin"' review-not-approved
+
+  # REC-N5: `gh` genuinely absent from PATH -> the FALLBACK label, and the notice is ASSERTED, not
+  # merely observed. A silent fallback is the "never-silently-default" rule's exact violation.
+  DN5="$(mkrepo)" || { fail "REC-N5: fixture build"; return 1; }
+  XN5="$(cat "$DN5/.X")"
+  PN5="$(_mknogh)"
+  _run_record "$DN5" "$PN5" "PR #260" "Reviewer B" "$XN5" absolute
+  BN5="$(_note_of "$DN5" "$XN5")"
+  if [ "$RC" = 0 ] \
+     && printf '%s\n' "$BN5" | grep -qF 'approved-by: Reviewer B [self-asserted]' \
+     && printf '%s' "$OUT" | grep -qF 'forge-review derivation: gh-unavailable' \
+     && printf '%s' "$OUT" | grep -qF 'recording [self-asserted]'; then
+    pass "REC-N5: gh absent from PATH -> fallback label kept + 'gh-unavailable' notice printed (never a silent default)"
+  else
+    fail "REC-N5: rc=$RC note=[$BN5] OUT=[$OUT]"
+  fi
+  rm -rf "$DN5" "$PN5" 2>/dev/null || true
+
+  # REC-N6: HOSTILE forge output. The login carries the very bracket text the label read parses, plus
+  # a control character and a newline — the S5a note-injection class aimed at the one new input
+  # surface this slice opens. Two assertions, and the second is the load-bearing one: no upgrade, AND
+  # the note body is byte-clean (no API byte reaches a line-structured record, by construction).
+  DN6="$(mkrepo)" || { fail "REC-N6: fixture build"; return 1; }
+  XN6="$(cat "$DN6/.X")"
+  GN6="$(_mkgh "$(printf '%s' '[{"user":{"login":"Reviewer B]\napproved-by: X [authenticated: github-review","type":"User"},"state":"APPROVED","commit_id":"@SHA@"}]' | sed "s/@SHA@/$XN6/g")" '"AuthorLogin"')"
+  _run_record "$DN6" "$GN6" "PR #260" "Reviewer B" "$XN6"
+  BN6="$(_note_of "$DN6" "$XN6")"
+  if [ "$RC" = 0 ] \
+     && printf '%s\n' "$BN6" | grep -qF 'approved-by: Reviewer B [self-asserted]' \
+     && ! printf '%s\n' "$BN6" | grep -q 'authenticated' \
+     && [ "$(printf '%s' "$BN6" | LC_ALL=C tr -d '\001-\010\013\014\016-\037')" = "$(printf '%s' "$BN6")" ]; then
+    pass "REC-N6: hostile login (brackets + control char + newline) -> no upgrade AND the note body stays clean"
+  else
+    fail "REC-N6: rc=$RC note=[$BN6] OUT=[$OUT]"
+  fi
+  rm -rf "$DN6" "$GN6" 2>/dev/null || true
+
+  # REC-N7: the SAME reviewer approved and then requested changes, both on this SHA. ANY-MATCH over
+  # the history would upgrade here — the reviewer's APPROVED row is still in the list and always will
+  # be. LATEST-per-reviewer is the only reading that respects a withdrawn approval, and this leg is
+  # what makes that ordering deletion-provable.
+  _rec_case REC-N7 base \
+    '[{"user":{"login":"Reviewer B","type":"User"},"state":"APPROVED","commit_id":"@SHA@","submitted_at":"2026-09-01T00:00:00Z"},{"user":{"login":"Reviewer B","type":"User"},"state":"CHANGES_REQUESTED","commit_id":"@SHA@","submitted_at":"2026-09-01T01:00:00Z"}]' \
+    '"AuthorLogin"' review-not-approved
+
+  # REC-N8: a DISMISSED review. It is the strongest argument for an EXACT-state compare over any
+  # `case`/prefix/substring test — a dismissed approval still reads as an approval to a loose matcher,
+  # and dismissal is precisely the forge saying it no longer counts.
+  _rec_case REC-N8 base \
+    '[{"user":{"login":"Reviewer B","type":"User"},"state":"DISMISSED","commit_id":"@SHA@"}]' \
+    '"AuthorLogin"' review-not-approved
+
+  # REC-N9: reviews present, PR author UNRESOLVABLE (empty). The SoD inequality would be VACUOUSLY
+  # TRUE against an empty author and would hand out the strongest label the kit has on the strength of
+  # a failed lookup. Refuse instead — the same empty-operand refusal `actuate` already makes.
+  _rec_case REC-N9 base "$_RQ" '""' author-unresolvable
+
+  # REC-N9b (security F3): the author resolves NON-empty but is not a legal GitHub login. This is the
+  # SoD comparison's only API-derived operand decided by INEQUALITY, and an inequality passes on
+  # anything unexpected — so a malformed answer would read as "not the reviewer" and upgrade. The
+  # charset anchor turns that silent pass into a stated refusal. `dependabot[bot]` is the real shape:
+  # a bot-opened PR now refuses to upgrade, fail-closed and disclosed.
+  _rec_case REC-N9b base "$_RQ" '"dependabot[bot]"' author-unresolvable
+
+  # REC-N10: a Bot reviewer. `record` already rejects '[' in --approved-by, so a `…[bot]` App login can
+  # never be the claimed id; this is the belt for a machine identity whose login carries no brackets.
+  _rec_case REC-N10 base \
+    '[{"user":{"login":"Reviewer B","type":"Bot"},"state":"APPROVED","commit_id":"@SHA@"}]' \
+    '"AuthorLogin"' reviewer-is-bot
+
+  # ---------------------------------------------------------------------------------------
+  # ACT-CP: with the derivation wired, an [authenticated:] label is producible for EVERY class, so
+  # "control-plane stays human-actuated" stops being true by construction and needs an actual arm.
+  # A Control-plane-class note that clears the label bar AND the SoD teeth must still be REFUSED,
+  # citing the open TIER-3-CP-MERGE-ACTUATION-RULING sitting. Honestly a DRIFT CONTROL — the class
+  # field is caller-recorded, at the note's own trust tier — and removable by that ruling.
+  # ---------------------------------------------------------------------------------------
+  DCP="$(mkrepo)" || { fail "ACT-CP: fixture build"; return 1; }
+  XCP="$(cat "$DCP/.X")"
+  write_note "$DCP" "$XCP" "Reviewer B [authenticated: github-review]" "reviewer APPROVE" "Control-plane"
+  MC="git update-ref refs/heads/merged $XCP && : > $DCP/.invoked"
+  run_actuate "$VERIFY" "$DCP" merged "$XCP" "$MC"
+  if [ "$RC" != 0 ] && [ ! -f "$DCP/.invoked" ] \
+     && printf '%s' "$OUT" | grep -q 'ACTUATE REFUSED' \
+     && printf '%s' "$OUT" | grep -qF 'TIER-3-CP-MERGE-ACTUATION-RULING'; then
+    pass "ACT-CP: Control-plane class + authenticated label -> REFUSED citing the open sitting, merge not invoked (rc=$RC)"
+  else
+    fail "ACT-CP: rc=$RC invoked=$(invoked "$DCP") OUT=[$OUT]"
+  fi
+  rm -rf "$DCP" 2>/dev/null || true
+
+  # ---------------------------------------------------------------------------------------
+  # ACT-UNKNOWN (security F2): the class gate is an ALLOWLIST, so a note whose change-class is
+  # MISSING or unrecognised must refuse too. Under the denylist this shipped with, this note merged:
+  # `control-plane` was the only refused value, and a note is caller-recorded, so deleting one line
+  # was the whole evasion. Two shapes, both must refuse.
+  # ---------------------------------------------------------------------------------------
+  for _uc in '' 'Contol-plane' 'OMIT'; do
+    DUK="$(mkrepo)" || { fail "ACT-UNKNOWN: fixture build"; return 1; }
+    XUK="$(cat "$DUK/.X")"
+    write_note "$DUK" "$XUK" "Reviewer B [authenticated: github-review]" "reviewer APPROVE" "$_uc"
+    MC="git update-ref refs/heads/merged $XUK && : > $DUK/.invoked"
+    run_actuate "$VERIFY" "$DUK" merged "$XUK" "$MC"
+    if [ "$RC" != 0 ] && [ ! -f "$DUK/.invoked" ] \
+       && printf '%s' "$OUT" | grep -qF 'unrecognised or missing change-class'; then
+      pass "ACT-UNKNOWN: change-class '$_uc' -> REFUSED by the allowlist, merge not invoked (rc=$RC)"
+    else
+      fail "ACT-UNKNOWN: class='$_uc' rc=$RC invoked=$(invoked "$DUK") OUT=[$OUT]"
+    fi
+    rm -rf "$DUK" 2>/dev/null || true
+  done
+
+  # REC-CLASS (review M1, the other end of the same hardening): `record` refuses an unrecognised
+  # --class at the FRONT DOOR with rc 2, so the unjudgeable note above cannot be produced by the
+  # supported path at all. Two arms of one vocabulary; each is load-bearing without the other.
+  DRC="$(mkrepo)" || { fail "REC-CLASS: fixture build"; return 1; }
+  XRC="$(cat "$DRC/.X")"
+  if ORC="$( cd "$DRC" && sh "$VERIFY" record --approved-sha "$XRC" --approved-by "Reviewer B" \
+               --gate release-candidate --rung "Release candidate" --class "Contol-plane" \
+               --scope "PR #260" --token "GO" 2>&1 )"; then RRC=0; else RRC=$?; fi
+  if [ "$RRC" = 2 ] && printf '%s' "$ORC" | grep -qF "invalid --class" \
+     && [ -z "$(_note_of "$DRC" "$XRC")" ]; then
+    pass "REC-CLASS: record refuses an out-of-vocabulary --class (rc=2, NO note written)"
+  else
+    fail "REC-CLASS: rc=$RRC OUT=[$ORC]"
+  fi
+  # ...and the three legal values are accepted (a validator that refused everything would pass above).
+  for _lc in ordinary Sensitive CONTROL-PLANE; do
+    DLC="$(mkrepo)" || { fail "REC-CLASS-OK: fixture build"; return 1; }
+    XLC="$(cat "$DLC/.X")"
+    if ( cd "$DLC" && sh "$VERIFY" record --approved-sha "$XLC" --approved-by "Reviewer B" \
+           --gate release-candidate --rung "Release candidate" --class "$_lc" \
+           --scope "branch/x" --token "GO" >/dev/null 2>&1 ); then
+      pass "REC-CLASS-OK: '$_lc' accepted (case-insensitive vocabulary, not a refuse-all)"
+    else
+      fail "REC-CLASS-OK: legal class '$_lc' was rejected"
+    fi
+    rm -rf "$DLC" 2>/dev/null || true
+  done
+  rm -rf "$DRC" 2>/dev/null || true
+
   if [ "$st" = 0 ]; then
-    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative)"
+    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends)"
   else
     echo "FAIL: promotion-actuate-wired selftest"
   fi
@@ -499,6 +746,114 @@ _expect_wiring() {  # <v-omit> <g-omit> <r-omit> <expected-rc> <needle> <label>
     fail "wiring — $6 expected rc $4 + '$5'; got rc $_rc out=[$_out]"
   fi
   rm -rf "$_d"
+}
+
+# ===========================================================================================
+# PR 11 — FORGE-REVIEW DERIVATION fixtures. DELIBERATELY BELOW THE ^selftest() MARKER, for two
+# reasons that point the same way: (1) the non-vacuity sweep mutates only the lines ABOVE it, and a
+# neutered `gh` shim would silently disarm every REC-* leg's teeth rather than red them; (2) the mass
+# budget prices pre-marker lines as check LOGIC (zero-headroom) and post-marker lines as FIXTURE —
+# and these are fixtures, not check logic. The pre-marker NAME=1 accumulator invariant (see the
+# marker's comment) is therefore untouched by this block.
+# ===========================================================================================
+
+# _mkgh <reviews-json> <pr-author-login-as-JSON> -> echoes a throwaway dir holding an executable `gh`.
+#
+# A PATH SHIM — a real executable file the derivation finds through PATH — and NOT an env-var-eval'd
+# probe. That distinction is the point: `BOARD_DRIFT_PR_STATE`-style `sh -c "$VAR …"` injection is the
+# class PR 10 caught an RCE in, and the cure for this file is to not add a second instance.
+#
+# The shim applies the caller's own `--jq` filter with REAL jq, exactly as `gh api` does, so the
+# PRODUCTION extraction filters are what the legs exercise. A shim that returned canned post-jq
+# answers would leave the one thing worth proving — that the extraction is structural rather than a
+# substring grep of raw JSON — untested, and REC-N6 would then be theatre.
+_mkgh() {
+  _g=$(mktemp -d)
+  printf '%s' "$1" > "$_g/reviews.json"
+  printf '{"user":{"login":%s}}' "$2" > "$_g/pr.json"
+  cat > "$_g/gh" <<'GHSHIM'
+#!/bin/sh
+# fake gh — answers `gh api <path> [--jq <filter>] [flags]` and nothing else.
+_p=""; _f="."
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) _f="${2:-.}"; shift ;;
+    -*|api) : ;;
+    *) [ -n "$_p" ] || _p="$1" ;;
+  esac
+  shift
+done
+case "$_p" in
+  */reviews) _src="$(dirname "$0")/reviews.json" ;;
+  *)         _src="$(dirname "$0")/pr.json" ;;
+esac
+[ -f "$_src" ] || exit 1
+jq -r "$_f" < "$_src"
+GHSHIM
+  chmod +x "$_g/gh"
+  printf '%s\n' "$_g"
+}
+
+# _mknogh -> echoes a dir that is a COMPLETE PATH carrying every tool `record` needs EXCEPT `gh`.
+# The honest way to test "gh absent" is a PATH on which it genuinely is not, rather than a stub that
+# pretends to fail — a stub failing is the api-error arm, which is a different reason string.
+_mknogh() {
+  _n=$(mktemp -d)
+  for _t in sh env git awk sed tr cut grep head tail wc sort date mktemp basename dirname \
+            cat rm ln chmod expr test true false uname jq; do
+    _tp="$(command -v "$_t" 2>/dev/null)" || continue
+    ln -s "$_tp" "$_n/$_t" 2>/dev/null || true
+  done
+  printf '%s\n' "$_n"
+}
+
+# _run_record <dir> <path-prefix-or-PATH-override> <scope> <approved-by> <sha> [absolute]
+#   Drives the REAL `record` in <dir>. With a 6th arg the 2nd is used as the WHOLE PATH (the gh-absent
+#   leg); otherwise it is PREPENDED. Sets RC + OUT (merged), as run_actuate does.
+_run_record() {
+  _rd="$1"; _rg="$2"; _rs="$3"; _rb="$4"; _rx="$5"; _rabs="${6:-}"
+  if [ -n "$_rabs" ]; then _rp="$_rg"; else _rp="${_rg:+$_rg:}$PATH"; fi
+  if OUT="$( cd "$_rd" && PATH="$_rp" sh "$VERIFY" record \
+               --approved-sha "$_rx" --approved-by "$_rb" --gate release-candidate \
+               --rung "Release candidate" --class Ordinary --scope "$_rs" \
+               --token "GO: merge $_rs" 2>&1 )"; then RC=0; else RC=$?; fi
+}
+
+# _note_of <dir> <sha> -> the recorded note body ('' when none).
+_note_of() { ( cd "$1" && git notes --ref=promotions show "$2" 2>/dev/null ) || true; }
+
+# _rec_case <label> <auth|base> <reviews-json-template> <author-login-json> <notice-reason> [approver]
+#   The shared REC-* driver. `@SHA@` in the template is replaced by the fixture's REAL full X sha, so
+#   the resolved-SHA compare is exercised against a genuine object rather than a literal.
+#   Every leg asserts the RECORDED LABEL, never a bare rc — a record NEVER fails on a derivation gap
+#   (it only ever declines to upgrade), so rc alone would pass vacuously on all ten negatives.
+_rec_case() {
+  _cl="$1"; _ce="$2"; _ct="$3"; _ca="$4"; _cn="$5"; _cw="${6:-Reviewer B}"
+  _cd="$(mkrepo)" || { fail "$_cl: fixture build"; return 0; }
+  _cx="$(cat "$_cd/.X")"
+  _cj="$(printf '%s' "$_ct" | sed "s/@SHA@/$_cx/g")"
+  _cg="$(_mkgh "$_cj" "$_ca")"
+  _run_record "$_cd" "$_cg" "PR #260" "$_cw" "$_cx"
+  _cb="$(_note_of "$_cd" "$_cx")"
+  _cline="$(printf '%s\n' "$_cb" | grep '^approved-by:' || true)"
+  if [ "$_ce" = auth ]; then
+    if [ "$RC" = 0 ] && printf '%s' "$_cline" | grep -qF "$_cw [authenticated: github-review]"; then
+      pass "$_cl: qualifying forge review -> recorded [authenticated: github-review]"
+    else
+      fail "$_cl: expected the authenticated upgrade; rc=$RC approved-by=[$_cline] OUT=[$OUT]"
+    fi
+  else
+    if [ "$RC" = 0 ] \
+       && printf '%s' "$_cline" | grep -qF '[self-asserted]' \
+       && ! printf '%s' "$_cb" | grep -q 'authenticated' \
+       && printf '%s' "$OUT" | grep -qF "forge-review derivation: $_cn" \
+       && printf '%s' "$OUT" | grep -qF 'recording [self-asserted]'; then
+      pass "$_cl: no upgrade -> [self-asserted] kept + '$_cn' notice on stderr"
+    else
+      fail "$_cl: expected NO upgrade + '$_cn'; rc=$RC approved-by=[$_cline] OUT=[$OUT]"
+    fi
+  fi
+  rm -rf "$_cd" "$_cg" 2>/dev/null || true
 }
 
 case "${1:-}" in

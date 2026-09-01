@@ -71,7 +71,7 @@ tool write this path right now, given what this branch has recorded?* **It never
 policy was built and tested under `[S1a-i]`; the `guard.sh` binding (`[S1a-ii]`) was never built, so the
 gate denied nothing in practice for its entire shipped life — only its own selftest ran. On 2026-08-19
 it was **parked** to the history branch `history/phase-gate-s1a-i` (`D-240819-3`, amending `D-240804-1`);
-see `docs/operations/retiring-conventions.md` for the tombstone and what re-wiring would take.
+the tombstone and what re-wiring would take are recorded in the kit maintainers' `docs/kit-internals/retiring-conventions.md` (not in the adopter export).
 
 **Nothing replaced it, and nothing here should be read as implying otherwise.** The deny-matrix surfaces
 documented above are the whole of this page's enforcement. Acceptance stays at merge

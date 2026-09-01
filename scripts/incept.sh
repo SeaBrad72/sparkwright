@@ -119,6 +119,8 @@ HARNESS="${INCEPT_HARNESS:-claude-code}"        # default keeps today's experien
 FLUENCY="${INCEPT_OPERATOR_FLUENCY:-}"          # empty = undeclared (nudge); else stamped
 OPERATOR_FLUENCIES="novice adjacent practitioner"
 MODE="${INCEPT_PROCESS_MODE:-}"
+# A mode chosen via INCEPT_PROCESS_MODE is deliberate too — only an un-set mode is a silent default.
+[ -n "${INCEPT_PROCESS_MODE:-}" ] && MODE_EXPLICIT=1 || MODE_EXPLICIT=0
 PROCESS_MODES="lean enterprise"
 # KW3: the ts-node default archetype is DB-backed (=1). --no-db (or INCEPT_DB_BACKED=0) strips the
 # profile's kit:db-backed CI region + the scaffold/.db-backed marker for a non-DB archetype.
@@ -159,7 +161,7 @@ while [ $# -gt 0 ]; do
     --ci) reqval $# --ci; CI="$2"; shift 2 ;;
     --harness) reqval $# --harness; HARNESS="$2"; shift 2 ;;
     --operator-fluency) reqval $# --operator-fluency; FLUENCY="$2"; shift 2 ;;
-    --mode) reqval $# --mode; MODE="$2"; shift 2 ;;
+    --mode) reqval $# --mode; MODE="$2"; [ -n "$2" ] && MODE_EXPLICIT=1 || MODE_EXPLICIT=0; shift 2 ;;
     # `reqval` checks ARITY, not EMPTINESS: `--date ""` satisfies it, and an empty DATE_PIN skips the
     # `[ -n "$DATE_PIN" ]` validation below and falls open to TODAY with rc=0. That is a fail-open in the
     # exact seam that exists to PREVENT a false alarm: kit-update passes the adoption date it parsed out
@@ -489,8 +491,6 @@ if [ "$INTERACTIVE" -eq 1 ]; then
   printf 'Backlog backend (md/github/jira/ado/linear/gitlab) [%s]: ' "$BACKLOG"; read -r _b || true; [ -n "${_b:-}" ] && BACKLOG="$_b"
   printf 'CI platform (github/gitlab) [%s]: ' "$CI"; read -r _c || true; [ -n "${_c:-}" ] && CI="$_c"
   printf 'Harness(es), comma-separated, of: %s [%s]: ' "$HARNESS_ADAPTERS" "$HARNESS"; read -r _h || true; [ -n "${_h:-}" ] && HARNESS="$_h"
-  printf 'Operator fluency (novice/adjacent/practitioner) [skip to decide later]: '; read -r _f || true; [ -n "${_f:-}" ] && FLUENCY="$_f"
-  printf 'Process mode (lean/enterprise) [lean]: '; read -r _m || true; [ -n "${_m:-}" ] && MODE="$_m"
   printf 'Governance (solo/team) [%s] (docs/operations/review-lane.md): ' "$TEAM"; read -r _tm || true; [ -n "${_tm:-}" ] && { TEAM="$_tm"; TEAM_EXPLICIT=1; }
 fi
 [ -n "$NAME" ]  || { echo "error: --name required" >&2; exit 2; }
@@ -682,7 +682,10 @@ for _h in $HARNESS_LIST; do
   [ "$_lvl" = "native" ] || _ceiling_harnesses="${_ceiling_harnesses:+$_ceiling_harnesses, }${_h}"
 done
 [ -z "$_ceiling_harnesses" ] || echo "notice: enforcement ceiling — harness(es) '${_ceiling_harnesses}' have NO inline PreToolUse-equivalent interception (no pre-exec deny). Control-plane enforcement is limited to the local pre-push hook + the CI agent-boundary gate (post-hoc, not pre-exec). See docs/operations/harness-adapters.md (the ceiling, stated plainly)." >&2
-[ -n "$FLUENCY" ] || echo "notice: operator fluency not declared. New to enterprise SDLC? read ONBOARDING.md. Already fluent? pass --operator-fluency practitioner. Leaving the field for you to fill in CLAUDE.md." >&2
+# A1/M-2: never SILENTLY default the process mode either — after the interactive prompt drop the
+# mode is flag-only, so an un-declared mode gets the same announcement as stack/team/harness/fluency.
+[ "$MODE_EXPLICIT" -eq 1 ] || echo "notice: process mode defaulted to lean — pass --mode enterprise for the enterprise scaffold, or see docs/enterprise/README.md." >&2
+[ -n "$FLUENCY" ] || echo "notice: operator fluency not declared. New to enterprise SDLC? read the section of that name in START-HERE.md. Already fluent? pass --operator-fluency practitioner. Leaving the field for you to fill in CLAUDE.md." >&2
 
 DATE=$(esc "${DATE_PIN:-$(date +%Y-%m-%d)}")
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
@@ -709,8 +712,10 @@ sedi -e 's/and `CLAUDE.md` (authoritative principles + Definition of Done)/and `
      -e 's/When they overlap, `CLAUDE.md` is authoritative/When they overlap, `ENGINEERING-PRINCIPLES.md` is authoritative/' \
      DEVELOPMENT-PROCESS.md
 sedi 's/| \*\*`CLAUDE.md`\*\* | Principles + Definition of Done. Authoritative. |/| **`ENGINEERING-PRINCIPLES.md`** | Principles + Definition of Done. Authoritative. |/' README.md
-sedi 's/`CLAUDE.md` (principles + Definition of Done)/`ENGINEERING-PRINCIPLES.md` (principles + Definition of Done)/' START-HERE.md
-sedi 's/the principles (`CLAUDE.md`)/the principles (`ENGINEERING-PRINCIPLES.md`)/' ONBOARDING.md
+# The second expression MOVED here from the retired ONBOARDING.md (FRONT-DOOR-ONE-ROUTER): the
+# Practitioner lane it rewrites folded into START-HERE.md, carrying the phrase verbatim on one line.
+sedi -e 's/`CLAUDE.md` (principles + Definition of Done)/`ENGINEERING-PRINCIPLES.md` (principles + Definition of Done)/' \
+     -e 's/the principles (`CLAUDE.md`)/the principles (`ENGINEERING-PRINCIPLES.md`)/' START-HERE.md
 sedi 's#`DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `CLAUDE.md`#`DEVELOPMENT-STANDARDS.md` / `DEVELOPMENT-PROCESS.md` / `ENGINEERING-PRINCIPLES.md`#' MAINTAINING.md
 sedi 's/\*\*Principles + Definition of Done:\*\* `CLAUDE.md`/**Principles + Definition of Done:** `ENGINEERING-PRINCIPLES.md`/' templates/PROJECT-CLAUDE-TEMPLATE.md
 

@@ -1,0 +1,110 @@
+# nv-coverage.tsv — the RATIFIED mutation-coverage census of the kit control set (PR 10,
+# CONFORMANCE-MUTATION-COVERAGE-GAP). One row per control script that non-vacuity.sh targets or
+# excludes: <file><TAB>KILLED|UNCOVERED|EXCLUDED<TAB><reason>.
+#   KILLED    = a composite mutant of the FAIL path made its own --selftest fail (load-bearing).
+#   UNCOVERED = the sweep could not reach a CERTAIN verdict; the reason is the sweep's own text.
+#   EXCLUDED  = no --selftest substring at all, so there is no oracle to mutate. Membership-only:
+#               these appear in no tally and are never verdict-compared.
+# MEMBERSHIP is re-derived and diffed on every verify run (non-vacuity.sh --coverage-census,
+# grep-class, zero mutants). VERDICT CELLS are diffed against the sweep's own tally whenever a sweep
+# runs (shard-scoped), so a hand-flipped cell reds on the PR that flips it.
+# HONEST CEILING: one COMPOSITE mutant per file — a KILLED proves at least one mutable site is
+# observed, not all of them, and it names no site.
+# CAPTURE ENVIRONMENT (the verdicts at :242 run-location and :228 region-ambiguity are
+# environment-sensitive, so this baseline is PROVISIONAL until the introducing PR's own CI sweep
+# confirms it — that sweep tally-diffs these cells and reds on any disagreement):
+#   host-os: Darwin 25.6.0 (arm64) · date: 2026-08-31 · head: 130979d4a1c7ed6a151219d73561507376fd3412
+#   method: sh conformance/non-vacuity.sh --shard i/8 for i in 1..8 (a true partition of the
+#           unsharded target set, asserted by the F5b selftest leg); union = 86 targeted scripts,
+#           78 KILLED · 0 SURVIVED · 8 UNCOVERED · 0 ERROR, plus the 5 EXCLUDED below.
+conformance/a11y-obligation.sh	UNCOVERED	no-idiom
+conformance/adopter-export-claims.sh	KILLED	-
+conformance/adopter-export-wired.sh	KILLED	-
+conformance/adopter-gates-parity.sh	KILLED	-
+conformance/adopter-preflight-wired.sh	KILLED	-
+conformance/adopter-told.sh	KILLED	-
+conformance/agent-autonomy.sh	KILLED	-
+conformance/agent-boundary.sh	KILLED	-
+conformance/agentops-sensor-wired.sh	KILLED	-
+conformance/agents-brief.sh	KILLED	-
+conformance/app-tracing-wired.sh	KILLED	-
+conformance/assurance-tiers.sh	KILLED	-
+conformance/author-not-approver-wired.sh	KILLED	-
+conformance/backlog-adapters.sh	EXCLUDED	no --selftest substring — no oracle to mutate
+conformance/backlog-current.sh	KILLED	-
+conformance/backlog-presence.sh	KILLED	-
+conformance/branch-protection.sh	KILLED	-
+conformance/brownfield-walk.sh	UNCOVERED	no-idiom
+conformance/build-output-ignored.sh	KILLED	-
+conformance/ceremony-binding.sh	KILLED	-
+conformance/check-links.sh	UNCOVERED	no-idiom
+conformance/ci-classify-changes.sh	UNCOVERED	no-idiom
+conformance/ci-gates.sh	KILLED	-
+conformance/ci-selftest-coverage.sh	KILLED	-
+conformance/citation-history.sh	KILLED	-
+conformance/citation-live.sh	KILLED	-
+conformance/codeowners-export-clean.sh	KILLED	-
+conformance/conformance-mass-budget.sh	KILLED	-
+conformance/container-supply-chain.sh	EXCLUDED	no --selftest substring — no oracle to mutate
+conformance/containment-audit-wired.sh	KILLED	-
+conformance/control-plane-revert-drill.sh	KILLED	-
+conformance/decision-id-live.sh	KILLED	-
+conformance/dep-scan-visibility.sh	KILLED	-
+conformance/deploy-decision-integrity.sh	EXCLUDED	no --selftest substring — no oracle to mutate
+conformance/dial-state.sh	KILLED	-
+conformance/discovery-complete.sh	KILLED	-
+conformance/doc-budget.sh	KILLED	-
+conformance/doc-markers.sh	KILLED	-
+conformance/escalation-wired.sh	KILLED	-
+conformance/eval-harness-runs.sh	KILLED	-
+conformance/eval-harness-wired.sh	KILLED	-
+conformance/feature-flags-wired.sh	KILLED	-
+conformance/guard-wired.sh	KILLED	-
+conformance/hardlink-integrity.sh	KILLED	-
+conformance/harness-adapter.sh	KILLED	-
+conformance/harness-ceiling-disclosed.sh	KILLED	-
+conformance/harness-decision-integrity.sh	EXCLUDED	no --selftest substring — no oracle to mutate
+conformance/incept-first-run-green.sh	KILLED	-
+conformance/inception-bootstrap-documented.sh	KILLED	-
+conformance/inception-done.sh	KILLED	-
+conformance/loop-state.sh	KILLED	-
+conformance/metrics-endpoint-wired.sh	KILLED	-
+conformance/mode-enforcement-blind.sh	UNCOVERED	context/run-location
+conformance/named-adapters.sh	KILLED	-
+conformance/non-vacuity.sh	KILLED	-
+conformance/obligation-lib.sh	KILLED	-
+conformance/onboarding-complete.sh	KILLED	-
+conformance/orchestrator-loop-wired.sh	KILLED	-
+conformance/otlp-backend-wired.sh	KILLED	-
+conformance/owner-step-markers.sh	KILLED	-
+conformance/permission-surface-audit.sh	KILLED	-
+conformance/pipeline-origin.sh	KILLED	-
+conformance/poster-parity.sh	KILLED	-
+conformance/profile-parity.sh	KILLED	-
+conformance/promotion-actuate-wired.sh	KILLED	-
+conformance/promotion-contract-documented.sh	KILLED	-
+conformance/promotion-verify-wired.sh	UNCOVERED	CTL-only — selftest may not observe the check's exit code; manual review
+conformance/proportional-gate-wired.sh	KILLED	-
+conformance/ratification-parity.sh	KILLED	-
+conformance/release-tag-wired.sh	KILLED	-
+conformance/roadmap-current.sh	KILLED	-
+conformance/roster-guard-wired.sh	KILLED	-
+conformance/runaway-killswitch-wired.sh	KILLED	-
+conformance/runbook-current.sh	KILLED	-
+conformance/runtime-floor-coherent.sh	KILLED	-
+conformance/runtime-security.sh	KILLED	-
+conformance/script-disclosure.sh	KILLED	-
+conformance/secret-scan-wired.sh	KILLED	-
+conformance/security-channel-live.sh	KILLED	-
+conformance/selftest-hermetic.sh	KILLED	-
+conformance/shellcheck.sh	KILLED	-
+conformance/stack-decision-integrity.sh	EXCLUDED	no --selftest substring — no oracle to mutate
+conformance/structured-logging-wired.sh	KILLED	-
+conformance/threat-obligation.sh	UNCOVERED	no-idiom
+conformance/token-scope.sh	KILLED	-
+conformance/tool-coverage.sh	KILLED	-
+conformance/trace-query-wired.sh	KILLED	-
+conformance/uat-obligation.sh	UNCOVERED	no-idiom
+conformance/verify-enforced-wired.sh	KILLED	-
+conformance/version-tag-coherent.sh	KILLED	-
+conformance/whitespace-clean.sh	KILLED	-

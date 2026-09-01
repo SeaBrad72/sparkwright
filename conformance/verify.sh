@@ -8,6 +8,14 @@
 # on an adopter tree, or a child that self-skipped on rc 0) — never blocking, never an OK. Exit policy:
 #   non-zero if any [control] check FAILS, or (under --require / CI) any check is UNVERIFIED.
 #   [doc] checks that are present-but-untested PASS — honestly labelled, not hidden.
+# MISCONFIGURED splits rc 2: a row whose child answers with `usage: <that child's basename>` was
+# INVOKED WRONG by this file's own registry — a wiring bug, not an environment one — so it FAILS
+# ALWAYS, not only under --require (VERIFY-RC2-USAGE-OVERLOAD). ⚠️ SAFETY DIRECTION IS INVERTED HERE,
+# and it is the first prose heuristic in this file that BLOCKS: everywhere else a false hit under-
+# claims (a real proof renders N-A — visible, never green-while-dark), but a false hit HERE reds a
+# legitimate row. The child-basename anchor is what carries that risk down: a bare `^usage:` key would
+# also match a NESTED child's usage bubbling up through a wrapper (measured at ci-gates.sh:457). A
+# check that prints its usage text in some other shape stays UNVERIFIED — the marker is a convention.
 # A green run proves controls hold AND release/DR/resilience safety is DOCUMENTED — NOT
 # that those procedures were tested. See conformance/README.md "What a green run means".
 # SCOPE: this is a curated aggregate of the repo-runnable checks — NOT every conformance
@@ -29,7 +37,7 @@ REQUIRE=0
 [ -n "${CI:-}" ] && REQUIRE=1
 [ "${1:-}" = "--require" ] && REQUIRE=1
 
-ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0; nas=0
+ctrl_fail=0; unverified=0; controls=0; docs=0; failed=0; nas=0; misconfigured=0
 line() { printf '  %-9s %-18s %s\n' "$1" "$2" "$3"; }
 
 # ── K3 — a failing gate must not hide WHY ───────────────────────────────────────────────────────────
@@ -90,7 +98,34 @@ emit_diag() {  # <check-name> <captured-output>
 # the class is narrowed, not closed (boarded: VERIFY-SKIP-IDIOM-RESIDUAL).
 is_self_skip() {  # <captured-output> — 0 when the child DECLARED it verified nothing here
   printf '%s\n' "$1" | grep -Eqi '^(N/A([^A-Za-z0-9]|$)|SKIP:|[A-Za-z0-9_.-]+:[[:space:]]*N/A([^A-Za-z0-9]|$))' || return 1
-  ! printf '%s\n' "$1" | grep -Eq '^(OK|PASS)([^A-Za-z0-9]|$)|^[A-Za-z0-9_.-]+:[[:space:]]*(OK|PASS)([^A-Za-z0-9]|$)'
+  # ZERO-COUNT REFINEMENT (VERIFY-SKIP-IDIOM-RESIDUAL, face ii): a verdict line that SELF-REPORTS zero
+  # verified items suppresses nothing — `OK (0 profile(s) … checked)` is a skip wearing a verdict, and
+  # C6's own rule ("N-A means this check verified NOTHING here") says so. Dropped BEFORE the verdict
+  # test, so a run with a zero-count line AND a real one still passes on the real one.
+  # THE KEY IS THE WHOLE SENTENCE SHAPE, not a bare `(0 `: MEASURED, conformance/*.sh emits `(0 ` on 37
+  # lines — `(0 rows)`, `(0 find spawns…)`, `(0 foreign lines…)`, `(0 files)`, `(0 occurrence(s))` — and
+  # a loose key would demote every row that prints one. ZERO of the 37 match this key. That tightness is
+  # also what protects mechanism 3: a false N-A here would inflate the very `na` the CI walks' floor reads.
+  ! printf '%s\n' "$1" | grep -Ev '\(0 [A-Za-z-]+\(s\)[^)]*checked' \
+    | grep -Eq '^(OK|PASS)([^A-Za-z0-9]|$)|^[A-Za-z0-9_.-]+:[[:space:]]*(OK|PASS)([^A-Za-z0-9]|$)'
+}
+
+# is_usage_marked <captured-output> <child-basename> — 0 when a line STARTS with `usage: <basename>`
+#
+# ⚠️ LITERAL MATCH, DELIBERATELY NOT A REGEX. The first draft interpolated the basename into a BRE
+# (`grep -q "^usage: $_base"`), where `foo.sh`'s `.` matches ANY character — so `usage: foo-sh …` was
+# blamed on a row invoking `foo.sh`. Elsewhere in this file a false hit under-claims; HERE the safety
+# direction is inverted (see the header) and it BLOCKS a legitimate row. The quoted `case` pattern is
+# exact. The `while` reads a heredoc, not a pipe, so the assignment survives the loop.
+is_usage_marked() {
+  [ -n "$2" ] || return 1
+  _um=1
+  while IFS= read -r _uml; do
+    case "$_uml" in "usage: $2"*) _um=0; break ;; esac
+  done <<EOF
+$1
+EOF
+  return "$_um"
 }
 
 # ── INCOMPLETE (K16) — an interrupted run must SAY so, in its own output ────────────────────────────
@@ -136,6 +171,8 @@ check() {
       line "[$kind]" "$name" "N-A"; nas=$((nas+1)); return 0
     fi
   fi
+  # The child's own basename, for the MISCONFIGURED key below. Taken from the ROW, not from $out.
+  _base=""; for _a in "$@"; do case "$_a" in conformance/*.sh) _base=${_a##*/}; break ;; esac; done
   if out=$("$@" 2>&1); then rc=0; else rc=$?; fi
   # C6 — a child that self-declared it verified NOTHING here renders N-A, not PASS. Gated on rc = 0
   # EXACTLY, so this branch is structurally unreachable from the FAIL and rc-2/UNVERIFIED arms below:
@@ -150,6 +187,14 @@ check() {
   case "$kind" in control) controls=$((controls+1)) ;; doc) docs=$((docs+1)) ;; esac
   if [ "$rc" = "0" ]; then
     line "[$kind]" "$name" "PASS"
+  elif [ "$rc" = "2" ] && is_usage_marked "$out" "$_base"; then
+    # The registry invoked this child WRONG. Blocking without --require, on purpose: a broken row is
+    # invisible to a local run otherwise, and a row that never runs proves nothing while looking green.
+    # Its OWN counter, and it does NOT touch $failed (the doc-check advisory tally): borrowing that
+    # gave the class two blocking paths, one of which no leg could kill (a mutant dropping the
+    # $failed increment survived the whole battery).
+    line "[$kind]" "$name" "MISCONFIGURED"; misconfigured=$((misconfigured+1))
+    emit_diag "$name" "$out"
   elif [ "$rc" = "2" ]; then
     line "[$kind]" "$name" "UNVERIFIED"; unverified=$((unverified+1))
     # Under --require/CI an UNVERIFIED IS a failure, so it earns its diagnostic too — otherwise the
@@ -164,12 +209,20 @@ check() {
 
 # CP7R5-VERIFY-SUMMARY — the RESULT sentence must not claim "docs present" over FAILING doc-checks.
 # Emitted via a function so --selftest drives it with synthetic counters (non-vacuous, no full aggregate).
-# Reads globals $ctrl_fail/$unverified/$failed/$REQUIRE; echoes the RESULT line; returns 1 on FAIL, 0 on OK.
+# Reads globals $ctrl_fail/$unverified/$misconfigured/$failed/$REQUIRE; echoes RESULT; 1 on FAIL, 0 on OK.
 # When this is reached with $failed != 0, ctrl_fail is 0 and (under --require) unverified is 0, so every
 # remaining failure is a doc-check — hence "$failed doc-check(s)" is exact, not an over-count.
 result_sentence() {
   if [ "$ctrl_fail" != "0" ]; then echo "RESULT: FAIL (a control check failed)"; return 1; fi
   if [ "$REQUIRE" = "1" ] && [ "$unverified" != "0" ]; then echo "RESULT: FAIL (unverified under --require/CI)"; return 1; fi
+  # BEFORE the $failed branch, and that ORDER is the whole mechanism. ⚠️ NOT because MISCONFIGURED
+  # increments $failed — it does NOT. The reason is CO-OCCURRENCE: with a MISCONFIGURED row AND any
+  # failing doc-check, a $failed-first ordering prints "advisory, non-blocking" and returns 0 — a
+  # FAIL-always class downgraded by an unrelated advisory failure. The selftest drives exactly that
+  # pair (misconfigured=1, failed=1); a failed=0 fixture cannot tell the two orderings apart.
+  if [ "$misconfigured" != "0" ]; then
+    echo "RESULT: FAIL ($misconfigured check row(s) MISCONFIGURED — a child answered with its own usage text, so verify.sh's registry invoked it wrong. The row proved nothing; fix the row.)"; return 1
+  fi
   if [ "$failed" != "0" ]; then
     echo "RESULT: OK (controls verified; $failed doc-check(s) FAILED, shown above — advisory, non-blocking)"; return 0
   fi
@@ -212,6 +265,23 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "verify --selftest: FAIL (Summary says $_c6na n/a but $_c6rows N-A row(s) were rendered — the count and"
     echo "  the render disagree, so one of them is lying about how much the run actually verified)"; exit 1
   fi
+
+  # -- SIBLING-LINE leg (PR 10, VERIFY-HEADLINE-TRUTH): the census reconciliation-of-record ------------
+  # The `Summary:` scalar is parsed by the C6 leg above AND by three ci.yml walk steps, verify.sh:255 and
+  # promotion-readiness.sh:407 — every one of them anchors `^Summary:` and reads the match as ONE line.
+  # So the census sibling must NOT begin with that token: a second `^Summary:` match turns those scalars
+  # multi-line and their sed reads garbage. BOTH halves are pinned, and both were watched RED: exactly
+  # one `^Summary:` line exists, and the `Scripts:` sibling is present with all four populations.
+  _sibn=$(printf '%s\n' "$out" | grep -c '^Summary:') || true
+  if [ "$_sibn" != 1 ]; then
+    echo "verify --selftest: FAIL (the run emitted $_sibn line(s) beginning 'Summary:', want exactly 1 —"
+    echo "  every consumer of that scalar anchors ^Summary: and reads one line; a second match makes"
+    echo "  their sed parse a multi-line string, which is how the n/a walk goes silently wrong)"; exit 1
+  fi
+  printf '%s\n' "$out" | grep -qE '^Scripts: [0-9]+ unique conformance scripts across [0-9]+ rows \([0-9]+ conformance/\*\.sh on disk; [0-9]+ registered by no row' || {
+    echo "verify --selftest: FAIL (no 'Scripts:' census sibling line — the run states how many ROWS it"
+    echo "  holds but not how many SCRIPTS they invoke, which is the unreconciled count verify.sh:579"
+    echo "  used to answer with 'three methods, three answers')"; exit 1; }
 
   # ── INCOMPLETE leg (K16) — an INTERRUPTED run must SAY it was interrupted and exit non-zero ──────────
   # WHY THIS EXISTS. The aggregate takes minutes over well over a hundred checks (see the header: the
@@ -365,6 +435,94 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "verify --selftest: FAIL (a check that skipped SOME items but PROVED others was rendered N-A —"
     echo "  it verified something, so N-A under-claims its own run. N-A is for a check that verified"
     echo "  NOTHING here; a partial skip beside a real verdict is a PASS)"; exit 1; }
+  # AMENDED (VERIFY-SKIP-IDIOM-RESIDUAL, face ii) — the leg above pins "a partial skip beside a REAL
+  # verdict stays PASS"; its unstated other half is that a ZERO-checked verdict is not a real one.
+  # Same fixture, count 0: it must render N-A. Without the pair the ruling reads "any OK suppresses".
+  _c6zero=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+             check control c6zero sh -c 'echo "N/A (no Dockerfile): profiles/ml"; echo "container-supply-chain: OK (0 profile(s) with a Dockerfile checked; others N/A)"; exit 0' 2>&1 )
+  printf '%s\n' "$_c6zero" | grep -q 'c6zero .* N-A' || {
+    echo "verify --selftest: FAIL (a verdict line self-reporting ZERO checked items still suppressed the"
+    echo "  skip — 0-checked is being rendered with the same token as N-checked, so a check that iterated"
+    echo "  an empty set signs off as a proof. That is face (ii) of VERIFY-SKIP-IDIOM-RESIDUAL)"; exit 1; }
+  # THE KEY'S LOAD-BEARING NEGATIVE: `(0 ` appears on 37 conformance/*.sh lines that are NOT zero-count
+  # verdicts. A loose key demotes each, and inflates the `na` the CI floor reads. Measured shapes, PASS.
+  _c6col=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+            check control c6collide sh -c 'echo "N/A: one sub-surface skipped"; echo "OK: reconciled (0 foreign lines, 12 kept); In Review→PR (0 rows, empty); 0 SUPERSEDED-CITATION site(s) (0 occurrence(s))"; exit 0' 2>&1 )
+  printf '%s\n' "$_c6col" | grep -q 'c6collide .* PASS' || {
+    echo "verify --selftest: FAIL (a REAL verdict that merely contains '(0 ' was demoted to N-A — the"
+    echo "  zero-count key lost its sentence shape and now under-claims every row reporting a zero of"
+    echo "  something else, which also silently inflates the n/a the CI walks' floor is derived from)"; exit 1; }
+  # THE SHIPPED IDIOMS, PINNED (canaries): a narrowed classifier reds here, not in the wild.
+  for _idm in 'N/A: no data surface' 'N/A (no Dockerfile): profiles/ml' 'doc-markers: N/A — kit-self check (no marker)' 'SKIP: shellcheck not installed'; do
+    _c6i=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+            check control c6idiom sh -c "echo \"$_idm\"; exit 0" 2>&1 )
+    printf '%s\n' "$_c6i" | grep -q 'c6idiom .* N-A' || {
+      echo "verify --selftest: FAIL (the shipped skip idiom \"$_idm\" no longer renders N-A — the"
+      echo "  classifier narrowed, and every check using that idiom now signs off as an executed proof)"; exit 1; }
+  done
+  # AND THE DISCLOSED MISS, PINNED AS A MISS (conjunct 1's `^` anchor). An INDENTED skip renders PASS.
+  # The anchor is load-bearing (36 rc-0 rows mention n/a mid-line and every one had really run), so
+  # this is a CEILING, not a bug to widen — pinned so a future loosening is a deliberate, reviewed act.
+  # The cure is the authoring rule in conformance/README.md, "Writing a check that skips".
+  _c6ind=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+            check control c6indent sh -c 'echo "   N/A: indented skip — outside the column-0 idiom"; exit 0' 2>&1 )
+  printf '%s\n' "$_c6ind" | grep -q 'c6indent .* PASS' || {
+    echo "verify --selftest: FAIL (an INDENTED skip was classified — the line anchor was loosened. That"
+    echo "  anchor keeps 36 genuinely-running rows from being demoted; widening it here is a decision"
+    echo "  for a design gate, not a regex tweak. Authoring rule: conformance/README.md)"; exit 1; }
+
+  # ── MISCONFIGURED legs (VERIFY-RC2-USAGE-OVERLOAD) — a wrong INVOCATION is not a missing CREDENTIAL —
+  # Both fixtures exit 2. Only the one answering with ITS OWN basename's usage text is a registry bug,
+  # and it must block WITHOUT --require; the other is the protected UNVERIFIED lane (the 15 genuine
+  # cannot-verify paths), which must keep failing ONLY under --require. Run in $_d6's parent-style tmp
+  # so the row names a real `conformance/<name>.sh` path — the key is taken from the ROW, not from $out.
+  _dm=$(mktemp -d) || { echo "verify --selftest: FAIL (no tmpdir for the MISCONFIGURED legs)"; exit 1; }
+  mkdir -p "$_dm/conformance"
+  printf '#!/bin/sh\necho "usage: mcchild.sh [--flag]" >&2\nexit 2\n' > "$_dm/conformance/mcchild.sh"
+  printf '#!/bin/sh\necho "cannot verify: no gh credentials here" >&2\nexit 2\n' > "$_dm/conformance/cvchild.sh"
+  # THE ANCHOR'S LOAD-BEARING NEGATIVE: a row that correctly invokes ITS child, whose child in turn
+  # shells out to a helper it mis-calls, BUBBLES the helper's usage text up. The registry row is fine;
+  # a bare `^usage:` key would red it. Measured shape: ci-gates.sh:457.
+  printf '#!/bin/sh\necho "usage: helper.sh <arg>" >&2\necho "nestchild: could not verify" >&2\nexit 2\n' > "$_dm/conformance/nestchild.sh"
+  _mcu=$( cd "$_dm" || exit 1; controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0; misconfigured=0; REQUIRE=0
+          check control mcusage sh conformance/mcchild.sh 2>&1; result_sentence || true )
+  _mccv=$( cd "$_dm" || exit 1; controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0; misconfigured=0; REQUIRE=0
+           check control mccv sh conformance/cvchild.sh 2>&1; result_sentence || true )
+  _mcnest=$( cd "$_dm" || exit 1; controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0; misconfigured=0; REQUIRE=0
+             check control mcnest sh conformance/nestchild.sh 2>&1 )
+  rm -rf "$_dm"
+  printf '%s\n' "$_mcnest" | grep -q 'mcnest .* UNVERIFIED' || {
+    echo "verify --selftest: FAIL (a NESTED child's usage text, bubbled up through a correctly-invoked"
+    echo "  row, was blamed on the row — the key lost its child-basename anchor and now reds honest rows)"; exit 1; }
+  printf '%s\n' "$_mcu" | grep -q 'mcusage .* MISCONFIGURED' || {
+    echo "verify --selftest: FAIL (a child answering with its OWN usage text rendered as an ordinary"
+    echo "  UNVERIFIED — a row this file INVOKED WRONG is indistinguishable from one that could not run)"; exit 1; }
+  printf '%s\n' "$_mcu" | grep -q 'RESULT: FAIL (1 check row(s) MISCONFIGURED' || {
+    echo "verify --selftest: FAIL (a MISCONFIGURED row did not FAIL the run WITHOUT --require — the"
+    echo "  result_sentence branch must sit BEFORE the \$failed one, or a FAIL-always class renders"
+    echo "  'advisory, non-blocking' and returns 0, which is a broken row wearing a green)"; exit 1; }
+  printf '%s\n' "$_mccv" | grep -q 'mccv .* UNVERIFIED' || {
+    echo "verify --selftest: FAIL (a GENUINE cannot-verify rc-2 was reclassified — the usage key must be"
+    echo "  anchored to the child's own basename, or the 15 credential-blocked rows all turn into FAILs)"; exit 1; }
+  printf '%s\n' "$_mccv" | grep -q 'RESULT: OK' || {
+    echo "verify --selftest: FAIL (an UNVERIFIED row blocked WITHOUT --require — the rc-2 lane's"
+    echo "  --require-only semantics are the regression pin here, and they moved)"; exit 1; }
+  # ── THE ORDERING LEG, and it needs failed >= 1 to mean anything ────────────────────────────────
+  # The $_mcu fixture leaves failed=0, so both orderings agree on it and a reorder mutant SURVIVES
+  # (measured, by both review seats). The discriminating input is the co-occurrence: one MISCONFIGURED
+  # row beside one failing doc-check, which a $failed-first ordering renders "advisory, non-blocking"
+  # at rc 0. Real result_sentence, synthetic counters; both the wording AND the rc are asserted.
+  _mcord=$( ctrl_fail=0; unverified=0; failed=1; misconfigured=1; REQUIRE=0; result_sentence || true )
+  ( ctrl_fail=0; unverified=0; failed=1; misconfigured=1; REQUIRE=0; result_sentence >/dev/null ) && _mcordrc=0 || _mcordrc=$?
+  printf '%s\n' "$_mcord" | grep -q 'RESULT: FAIL (1 check row(s) MISCONFIGURED' || {
+    echo "verify --selftest: FAIL (a MISCONFIGURED row BESIDE a failing doc-check did not FAIL — the"
+    echo "  \$failed branch ran first and rendered 'advisory, non-blocking'. A FAIL-always class must"
+    echo "  not be downgradable by an unrelated advisory failure; the MISCONFIGURED branch has to sit"
+    echo "  BEFORE the \$failed one, and only a failed>=1 fixture can tell the two orderings apart)"; exit 1; }
+  [ "$_mcordrc" = 1 ] || {
+    echo "verify --selftest: FAIL (a MISCONFIGURED row beside a failing doc-check returned rc"
+    echo "  $_mcordrc, not 1 — the wording said FAIL while the exit status said pass, which is the"
+    echo "  worst of both: a run that reads red and grades green)"; exit 1; }
 
   # ── PRE-FLIGHT leg (B3) — a HEAD-less tree must fail FAST and name the TRUE cause ─────────────────
   # Behavioural: a real no-commit repo + this very script; asserts exit status, wording AND the clock.
@@ -388,6 +546,12 @@ if [ "${1:-}" = "--selftest" ]; then
   echo "                       + C6: a self-declared skip renders N-A not PASS, an executed proof keeps PASS,"
   echo "                         a mid-line N/A mention and a PARTIAL skip beside a real verdict both stay"
   echo "                         PASS, and the Summary n/a count equals the N-A rows rendered)"
+  echo "                       + ZERO-COUNT: a verdict reporting 0 checked items renders N-A, while a real"
+  echo "                         verdict merely containing '(0 ' stays PASS; the three shipped skip idioms"
+  echo "                         are pinned as canaries and the INDENTED-skip miss is pinned as a ceiling"
+  echo "                       + MISCONFIGURED: a child answering with its OWN basename's usage text is a"
+  echo "                         registry wiring bug and FAILS without --require, while a genuine"
+  echo "                         cannot-verify rc 2 stays UNVERIFIED and blocks only under --require"
   echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
   echo "                         commit, and stays silent on a tree that has history)"; exit 0
 fi
@@ -429,9 +593,11 @@ check control agents-brief-selftest     sh conformance/agents-brief.sh --selftes
 # row here, and the sweep selects only from these rows — so `non-vacuity.sh --only doc-budget.sh`
 # matched no targeted check. The ratchet that keeps the core governing docs from re-bloating had no
 # proof it can still fail. (It is one of a set of workflow-invoked conformance checks that are not
-# registered here — the COUNT IS UNRECONCILED: three methods have given three answers, so no number is
-# asserted anywhere in this slice. Scoping and closing the set is CONFORMANCE-MUTATION-COVERAGE-GAP in
-# BACKLOG.md, whose first task is to establish the number with a method that is itself tested.)
+# registered here. THE RECONCILIATION-OF-RECORD IS THE RUN'S OWN `Scripts:` LINE, printed beside the
+# Summary at the foot of this file (PR 10): rows · unique scripts · files on disk · files no row
+# invokes, computed at runtime. "Three methods, three answers" was true because the three methods count
+# three DIFFERENT populations; that line names all of them. Which unregistered files SHOULD be
+# registered stays CONFORMANCE-MUTATION-COVERAGE-GAP's question — the count is no longer part of it.)
 #
 # --kitself IS LOAD-BEARING, and it is a CATEGORY distinction, not a convenience. doc-budget budgets
 # CLAUDE.md / DEVELOPMENT-PROCESS.md / DEVELOPMENT-STANDARDS.md — the KIT's own core-3 governing docs,
@@ -546,7 +712,7 @@ check control adopter-told             sh conformance/adopter-told.sh
 # `history/phase-gate-s1a-i` — it had no wired caller, so it denied nothing, and its registration here
 # was buying one composite mutant per sweep run over the single largest file in the corpus. Do not
 # re-add a row without re-adding the script; the rows and the file move together (see
-# `docs/operations/retiring-conventions.md`, the tombstone there, for the history ref and what
+# `docs/kit-internals/retiring-conventions.md`, the tombstone there, for the history ref and what
 # re-wiring would take).
 check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
 check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
@@ -777,17 +943,25 @@ check control ceremony-binding-selftest  sh conformance/ceremony-binding.sh --se
 # here reads the kit's roster or budgets; an adopter tree answers identically.
 check control selftest-hermetic  sh conformance/selftest-hermetic.sh --selftest
 check control non-vacuity      sh conformance/non-vacuity.sh --selftest
+# coverage-census (PR 10): the STATIC half of the mutation-coverage census — re-derive which control
+# scripts are mutation-targeted vs excluded and diff against the ratified conformance/nv-coverage.tsv.
+# Grep-class, ZERO mutants, so no measurable CI time (D-240815-3). --kitself for the doc-budget reason:
+# the census records the KIT's control set; an adopter's own checks are their business.
+check control coverage-census  --kitself sh conformance/non-vacuity.sh --coverage-census
 check control eval-harness      sh conformance/eval-harness-wired.sh --selftest
 check control eval-harness-runs sh conformance/eval-harness-runs.sh --selftest
 check control roster-guard      sh conformance/roster-guard-wired.sh --selftest
-check control conflict-safe-integration sh conformance/orchestrator-loop-wired.sh
+# TRIPLE COLLAPSED (PR 10): `conflict-safe-integration` and `skill-spine` sat here as two MORE rows
+# invoking orchestrator-loop-wired.sh with IDENTICAL arguments — one script run three times per aggregate
+# for zero extra evidence. Both CLAIM IDS ARE UNTOUCHED (claims.tsv, REQUIRED_IDS, the S3b carve;
+# DECISIONS:179 — dropping a verify row and dropping a claim are separate acts). HONEST NOTE: the claims
+# job still runs each id's verifier, so the three identical runs remain THERE.
 # NOT REGISTERED HERE (deliberate): conformance/incept-containment.sh. It is KIT-ONLY — its fixtures build an
 # UN-INCEPTED export via `git archive HEAD`, which needs a committed kit SOURCE. The incepted adopter artifact
 # (artifact-gate) has no such HEAD, and a real adopter never re-incepts (incept refuses an already-incepted
 # tree), so the check cannot and should not run there. Same class as kit-base.sh / kit-manifest.sh. Its teeth
 # run as a dedicated ci.yml step on the kit source (which satisfies ci-selftest-coverage) plus the standing
 # self-negative inside --selftest; non-vacuity sweeps conformance/*.sh directly, so it is covered regardless.
-check control skill-spine sh conformance/orchestrator-loop-wired.sh
 check control release-tag       sh conformance/release-tag-wired.sh
 check control feature-flags-wired sh conformance/feature-flags-wired.sh
 check control profile-parity   sh conformance/profile-parity.sh
@@ -877,10 +1051,32 @@ check doc     privacy-ready   sh conformance/readiness.sh privacy-ready
 check doc     feature-flags-ready sh conformance/feature-flags-ready.sh
 check doc     gate-eval-secrets sh conformance/doc-markers.sh gate-eval-secrets
 check doc     artifact-lineage sh conformance/doc-markers.sh artifact-lineage
+check doc     dod-precedence  sh conformance/doc-markers.sh dod-precedence
+check doc     collected-not-gated sh conformance/doc-markers.sh collected-not-gated
 check doc     roster-authority sh conformance/roster-authority-ready.sh
 
 echo ""
-printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d n/a · %d failed\n' "$controls" "$docs" "$unverified" "$nas" "$failed"
+# `misconfigured` is APPENDED AFTER `failed`, never inserted: three ci.yml walk steps parse this line
+# with `sed -n 's/.*· \([0-9]*\) n\/a ·.*/\1/p'`, which needs the `· ` that follows `n/a` to survive.
+printf 'Summary: %d control-checks · %d doc-checks · %d unverified · %d n/a · %d failed · %d misconfigured\n' "$controls" "$docs" "$unverified" "$nas" "$failed" "$misconfigured"
+# ── THE CENSUS RECONCILIATION-OF-RECORD (PR 10, VERIFY-HEADLINE-TRUTH). A SIBLING line, never an edit to
+# the format string above, and it deliberately does NOT begin with the token `Summary` — that scalar is
+# read as ONE line by this file's own C6 leg, three ci.yml walk steps and promotion-readiness.sh:407, so
+# a second `^Summary:` match would make every one of those seds parse a multi-line string.
+# THREE REAL POPULATIONS, NOT ONE NUMBER: registered ROWS, the unique SCRIPTS they invoke, and the FILES
+# on disk. All three are true, none is the others, and the fourth field (files no row invokes: libs,
+# ci-only, kit-self) is the gap that made the mismatch look like an error. Computed at RUNTIME — every
+# hard-coded count in this file had gone stale by C6.
+_sc_reg=$(grep -E '^check ' "$_SELF" 2>/dev/null | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u) || _sc_reg=""
+_sc_uniq=$(printf '%s\n' "$_sc_reg" | grep -c 'conformance/') || _sc_uniq=0
+_sc_rows=$(grep -c '^check ' "$_SELF" 2>/dev/null) || _sc_rows=0
+_sc_disk=0; _sc_norow=0
+for _scf in conformance/*.sh; do
+  [ -f "$_scf" ] || continue
+  _sc_disk=$((_sc_disk + 1))
+  printf '%s\n' "$_sc_reg" | grep -Fxq "$_scf" || _sc_norow=$((_sc_norow + 1))
+done
+printf 'Scripts: %d unique conformance scripts across %d rows (%d conformance/*.sh on disk; %d registered by no row: libs, ci-only, kit-self)\n' "$_sc_uniq" "$_sc_rows" "$_sc_disk" "$_sc_norow"
 echo "A green run proves controls hold AND release/DR/resilience safety is DOCUMENTED —"
 echo "it does NOT prove those procedures were tested. doc-checks verify records exist."
 echo "UNVERIFIED is NOT a pass. See conformance/README.md \"What a green run means\"."

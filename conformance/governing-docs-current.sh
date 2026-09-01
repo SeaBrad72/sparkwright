@@ -42,6 +42,10 @@ cd "$(dirname "$0")/.."
 # NAMED — and a named member that is MISSING is a FAIL, not a skip (a rename would otherwise retire a
 # file from the scan in silence). The `skills/*` and `agents/*` FAMILIES are additionally guarded by
 # check_set_complete() below, so a NEW skill/agent cannot be born outside the fence.
+# SET SIZE 31 -> 30 (FRONT-DOOR-ONE-ROUTER): ONBOARDING.md was RETIRED, its content folded into
+# START-HERE.md, which stays in the set. That is the ONLY member removed. The set has no cardinality
+# lock, so this comment plus a one-line diff is what distinguishes a deliberate retirement from a
+# silent shrink — a reviewer diffs the heredoc below and must see exactly one line gone.
 governing_set() {
   cat <<'SET'
 skills/build/SKILL.md
@@ -64,14 +68,13 @@ agents/security.agent.md
 CLAUDE.md
 AGENTS.md
 START-HERE.md
-ONBOARDING.md
 MAINTAINING.md
 MATURITY.md
 DEVELOPMENT-PROCESS.md
 DEVELOPMENT-STANDARDS.md
 docs/governance/promotion-contract.md
 docs/operations/harness-adapters.md
-docs/operations/meta-control.md
+docs/kit-internals/meta-control.md
 docs/operations/release-tag.md
 templates/PROJECT-CLAUDE-TEMPLATE.md
 templates/KIT-FEEDBACK-TEMPLATE.md
@@ -94,7 +97,7 @@ SIGNATURE='apply\.py|AMBER'
 #
 # The cost is accepted and small: a governing doc may not NAME the retired convention, even to warn
 # someone off it. It doesn't need to — the explainer docs that carry the history
-# (docs/operations/retiring-conventions.md, docs/operations/runtime-guards.md) sit deliberately
+# (docs/kit-internals/retiring-conventions.md, docs/operations/runtime-guards.md) sit deliberately
 # OUTSIDE the governing set. Governing docs teach the CURRENT route and point at those for the why.
 #
 # This latch exists because a fix DIDN'T STICK (CP-8c/CP-10 fixed instances; the drift recurred).

@@ -264,7 +264,7 @@ esac
 _gov_path_in_set() {   # <path> -> 0 (true) when the path is INSIDE the governance set
   case "$1" in
     BACKLOG.md|docs/governance/DECISIONS.md|docs/governance/.meta-control-last) return 0 ;;
-    docs/governance/meta-control-log.md|docs/operations/meta-control.md) return 0 ;;
+    docs/governance/meta-control-log.md|docs/kit-internals/meta-control.md) return 0 ;;
     # POSIX `case` globbing does not stop `*` at a '/', so this also admits a nested
     # `skills/a/b/SKILL.md`. Deliberate and harmless: the member is the SKILL.md convention, not a
     # depth rule, and nothing else in the tree is named SKILL.md.
@@ -505,7 +505,7 @@ GOV_SET_EOF
   printf '%s\n' "$_gds_bad" >&2
   echo "      The governance set is: BACKLOG.md · $CB_GOV_GLOB · docs/governance/DECISIONS.md ·" >&2
   echo "      docs/governance/.meta-control-last · docs/governance/meta-control-log.md ·" >&2
-  echo "      docs/operations/meta-control.md · skills/*/SKILL.md · $CB_DESIGN_GLOB" >&2
+  echo "      docs/kit-internals/meta-control.md · skills/*/SKILL.md · $CB_DESIGN_GLOB" >&2
   echo "      CURE — SPLIT YOUR CURES: route each payload change to its own boarded, designed slice," >&2
   echo "      or record a '--gate design' GO for the payload and let the DESIGN arm judge it. Mixing" >&2
   echo "      routed control-plane cures into a panel PR is the anti-pattern this arm refuses; the" >&2
@@ -877,7 +877,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       echo "FAIL: ceremony-binding --pre-push — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
       echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
       echo "      (A PURE governance-record change — a meta-control sitting and its bookkeeping — records" >&2
-      echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/operations/meta-control.md.)" >&2
+      echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/enterprise/meta-control.md.)" >&2
     fi
     echo "      Record one: scripts/promotion-verify.sh record --gate $_nm_gate --scope $_record_key \\" >&2
     echo "        --approved-sha <approved-commit> --approved-by <human> --basis $_nm_basis ..." >&2
@@ -901,7 +901,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       echo "FAIL: ceremony-binding — change-class '$_cls' requires a recorded DESIGN GATE approval," >&2
       echo "      and no '--gate design' record was found in refs/notes/$NOTES_REF." >&2
       echo "      (A PURE governance-record change — a meta-control sitting and its bookkeeping — records" >&2
-      echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/operations/meta-control.md.)" >&2
+      echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/enterprise/meta-control.md.)" >&2
     fi
     echo "      Record one: scripts/promotion-verify.sh record --gate $_nm_gate --scope $_record_key \\" >&2
     echo "        --approved-sha <approved-commit> --approved-by <human> --basis $_nm_basis ..." >&2
@@ -2869,7 +2869,7 @@ _mkfix() {
 #                _gov_path_in_set REDs it, which is what keeps the enumeration honest.
 #   escapes      conforming + `conformance/x.sh`. THE SLICE'S THESIS: a valid governance record must
 #                not carry a control-plane payload.
-#   rename       `git mv .github/workflows/ci.yml docs/operations/meta-control.md` — the destination is
+#   rename       `git mv .github/workflows/ci.yml docs/kit-internals/meta-control.md` — the destination is
 #                IN the set and the source is not. With rename detection on (pinned in the fixture's
 #                own config) the default derivation emits the destination ALONE and the workflow
 #                deletion vanishes; only the authority's `--no-renames` keeps the source visible.
@@ -2880,7 +2880,7 @@ _mkfix() {
 _mkgov() {
   _dv="$1"; _shv="$2"
   mkdir -p "$_dv/conformance" "$_dv/.claude/hooks" "$_dv/docs/architecture" "$_dv/docs/governance" \
-           "$_dv/docs/operations" "$_dv/skills/design" "$_dv/.github/workflows"
+           "$_dv/docs/kit-internals" "$_dv/skills/design" "$_dv/.github/workflows"
   cp "$DIR/conformance/promotion-readiness.sh" "$_dv/conformance/promotion-readiness.sh"
   if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
     cp "$DIR/.claude/hooks/guard-core.sh" "$_dv/.claude/hooks/guard-core.sh"
@@ -2926,7 +2926,7 @@ _mkgov() {
       rename)
         # ONE escaping path and one in-set destination: the source must NOT be re-created, or the
         # derivation would see a modify instead of the delete this leg is about.
-        git mv .github/workflows/ci.yml docs/operations/meta-control.md ;;
+        git mv .github/workflows/ci.yml docs/kit-internals/meta-control.md ;;
       *)
         # EVERY member of the governance set except the two globs (the artifact above is one of
         # them), so the positive anchor proves the whole enumeration rather than one lucky member.
@@ -2936,7 +2936,7 @@ _mkgov() {
         printf '%s\n' '2026-08-15 · v3.220.0 · cadence · full · GO-WITH-CONDITIONS · panel 41' \
           >> docs/governance/meta-control-log.md
         printf '%s\n' '# Meta-control' 'The panel ceremony, amended at the sitting.' \
-          > docs/operations/meta-control.md
+          > docs/kit-internals/meta-control.md
         printf '%s\n' '# Skill — design' 'Amended at the sitting: a governance GO names its panel artifact.' \
           > skills/design/SKILL.md ;;
     esac

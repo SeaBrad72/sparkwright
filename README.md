@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.220.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.221.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -29,11 +29,9 @@ Now **open your new project in your AI coding tool** (Claude Code, or any `AGENT
 
 From there the kit **guides you through Inception**: it helps you **choose your stack**, scaffolds a runnable starter with a **green pipeline on the first run** (so you build on working software, not an empty repo), and sets your project up. Then you enter the build loop. Your stack, environment, and deploy target are all decisions the kit walks you through — **nothing is pre-selected.**
 
-> **New to this, or not a terminal person?** Start at **[ONBOARDING.md](ONBOARDING.md)** — it meets you at your experience level and routes you back here.
-> **Evaluating as an engineering leader?** → **[EXEC-BRIEF](docs/enterprise/EXEC-BRIEF.md)** — what it is, why now, risk posture, ROI.
-> **Adopting into an existing codebase?** → **[brownfield adoption](docs/adoption/brownfield.md)** — merge into a repo you already have.
+Whichever way you go, **`START-HERE.md` is the one next document** — it places you by experience and by role (new to enterprise SDLC · engineering leader · brownfield adoption · every other function), then walks you through Inception. There is nothing else to read first.
 
-*(Why `adopter-export.sh` instead of a plain `git clone` or `cp`: it makes a clean, CI-ready copy of the kit — pruning its own scratch files, test fixtures, and maintainer-internal surface — so your project starts tidy. It keeps every stack profile, so your stack stays an Inception decision. New to the terms here? See [GLOSSARY.md](GLOSSARY.md).)*
+*(Why `adopter-export.sh` instead of a plain `git clone` or `cp`: it makes a clean, CI-ready copy of the kit — pruning its own scratch files, test fixtures, and maintainer-internal surface — so your project starts tidy. It keeps every stack profile, so your stack stays an Inception decision.)*
 
 ## Who it's for
 
@@ -59,7 +57,7 @@ Three things make that team trustworthy rather than just fast:
 
 - **Separation of duties, enforced.** Builder ≠ reviewer ≠ ratifier. Control-plane changes require an independent ratifier; the merge is a recorded GO/NO-GO bound to the reviewed commit (`shipped == approved`, verified by tree equality), and the agent actuates the mechanics — *the judgment is the control, not the keystroke*.
 - **Model tiering.** Each seat runs at an abstract tier (judgment/review seats pinned to the top model, builders free to run cheaper where the task allows, high-stakes work floored to the top). You declare the tier→model map for your provider — the kit is opinionated about *structure*, neutral about *which model*.
-- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a registered check that can't fail is caught and fixed; checks outside that control set are surfaced as uncovered, never silently counted). The kit is built with its own loop and held to its own Definition of Done.
+- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a registered check that can't fail is caught and fixed; checks outside that control set are surfaced as uncovered, never silently counted). **Honest coverage ceiling:** the sweep builds *one composite mutant per file*, so a `KILLED` green proves *at least one* mutable site is observed — not all of them, and it names no site. The kit's headline claims are themselves a registry (`conformance/claims.tsv`): 72 rows, each with an executable verifier, 59 of them listed in a `REQUIRED_IDS` set so a claim cannot be silently dropped. 28 of the 72 are proven by a check's own `--selftest` and the other 44 by a verifier that reads the live tree — a split the registry now discloses in its own `proof` column. The kit is built with its own loop and held to its own Definition of Done.
 
 Full detail: **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)**.
 
@@ -80,11 +78,9 @@ Claude Code is the default and the reference adapter, but any harness that reads
 | File | What it is |
 |------|-----------|
 | **`START-HERE.md`** | Run first — walks you through Inception, including choosing your stack. |
-| **`ONBOARDING.md`** | The experience-aware front door — meets developers from vibe-coder to principal/architect, then hands to START-HERE. |
 | **`CLAUDE.md`** | Principles + Definition of Done. Authoritative. |
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
-| **`WALKTHROUGH.md`** | A narrative of the kit in motion — one feature from idea to operating software. |
 | **`MAINTAINING.md`** | How the kit is built, versioned, and contributed back to. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
 | **`adapters/`** | Per-harness adapters: `claude-code` (reference) + `codex`/`cursor`/`gemini` + `generic` + `_TEMPLATE`/`new-adapter.sh` to BYO. |
@@ -107,7 +103,7 @@ Every capability ships as three parts (full detail in `MAINTAINING.md`):
 
 - **Contract** — the binding, stack-neutral requirement (in the standards/process docs).
 - **Reference implementation** — a working artifact you copy and adapt (in a profile or the repo). You own it.
-- **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`), and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a "non-vacuity" sweep proves each *registered* check *can* fail — a green that can't go red is caught and fixed, so the gates are real, not decorative; checks outside the control set are reported as uncovered rather than assumed load-bearing).
+- **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`), and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a "non-vacuity" sweep proves each *registered* check *can* fail — a green that can't go red is caught and fixed, so the gates are real, not decorative; checks outside the control set are reported as uncovered rather than assumed load-bearing). **Honest coverage ceiling:** the sweep builds *one composite mutant per file*, so a `KILLED` green proves *at least one* mutable site is observed — not every site, and it names none of them.
 
 So the kit **dictates the contract and offers the implementation**: rewrite the reference freely as long as the conformance check still passes. The kit is itself a versioned product built with the very loop it prescribes — improvements adopters find flow back upstream as PRs.
 

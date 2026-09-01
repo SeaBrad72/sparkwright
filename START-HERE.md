@@ -41,11 +41,54 @@ docs are discovered the same way. Nothing here is optional-to-*skip*; it is opti
 
 ---
 
+## New to enterprise SDLC?
+
+**Coding is the task. Software engineering is everything that has to go *around* the code for an
+enterprise** — tests, environments, security, governance, observability, release safety. Vibe coding
+gets you working code; it does not get you software an enterprise can trust, operate, and not be
+harmed by. **This kit is that "everything around it."** This section places you by *experience*; the
+next one places you by *role*. Two minutes here saves you hours later.
+
+Pick the lane that sounds like you. Non-punitive — feels too basic? Jump up a lane.
+
+- **Novice / Coding-first** — *"I can make code work (often with AI), but tests, environments,
+  security, and governance are new to me."* → skim the pillars below, then take the Inception steps.
+- **Adjacent** — *"I've worked in or around software delivery (product, PM, BA) — I know these
+  practices exist but haven't done them myself."* → the pillars below (skip what you know), then Inception.
+- **Practitioner** — *"I've shipped enterprise software; route me to the contract."* →
+  the principles (`CLAUDE.md`), then straight to §0 Orient. Skip the pillars.
+  *Senior / principal / architect:* your home is the architecture lens at the §7 review gate (ADRs,
+  15-factor), the autonomy-tier model (`DEVELOPMENT-PROCESS.md` §13), and the enterprise layer
+  ([docs/enterprise/](docs/enterprise/)) — `MAINTAINING.md` if you'll extend the kit itself.
+
+> **Don't have the product or design figured out yet?** Most of this kit assumes you arrive with a
+> *Ready* backlog. If you're upstream of that — raw idea, no validated problem yet — start with the
+> optional **[discovery loop](docs/discovery/discovery-loop.md)** (FRAME → SHAPE → Ready), then come back.
+
+**The pillars (Novice + Adjacent).** You don't need to learn all of this before you start — you need
+to know it *exists* and *why*, then learn each piece as you hit it: **why an enterprise needs it →
+learn it for real → where the kit applies it.**
+
+| Pillar | Why an enterprise needs it | Learn it (canonical) | Where the kit applies it |
+|--------|----------------------------|----------------------|--------------------------|
+| **Test-Driven Development** | Change without fear; tests are the safety net that lets agents move fast | [Martin Fowler — TDD](https://martinfowler.com/bliki/TestDrivenDevelopment.html) + the worked demo: [docs/onboarding/first-feature-tdd.md](docs/onboarding/first-feature-tdd.md) | `DEVELOPMENT-STANDARDS.md` §7 + your `profiles/<stack>.md` |
+| **15-Factor architecture** | Apps that run the same everywhere, scale, and don't lose data | [12factor.net](https://12factor.net) (+ the 3 modern factors) | `DEVELOPMENT-STANDARDS.md` §13 + `conformance/15-factor-checklist.md` |
+| **Security & privacy** | Enterprises hold real user data; a breach is existential | [OWASP Top 10](https://owasp.org/www-project-top-ten/) | `DEVELOPMENT-STANDARDS.md` §2 + `SECURITY.md` + `docs/enterprise/data-governance.md` |
+| **Governance & autonomy** | Agents (and humans) must not be able to cause irreversible harm | *kit-defined — learn it in the kit doc →* | `DEVELOPMENT-PROCESS.md` §12–13 + `.claude/` guard |
+| **Environments & scale** | Prod is not your laptop; promotion is gated; production is human-gated | [12factor.net](https://12factor.net) (dev/prod parity) | `DEVELOPMENT-PROCESS.md` "Environments & promotion" |
+| **Observability** | If you can't see it in prod, you can't operate it | [the three pillars](https://opentelemetry.io/docs/concepts/observability-primer/) | `DEVELOPMENT-STANDARDS.md` Factor 14 + `docs/operations/` |
+
+> **You can't break things by reading the wrong lane.** The kit's runtime guard is a **best-effort
+> speed bump, not a security boundary** (it raises friction on many irreversible actions but does not
+> stop a determined bypass — see [`docs/operations/runtime-guards.md`](docs/operations/runtime-guards.md));
+> the real safety net is the platform controls your org owns. CI gates run on every project regardless
+> of what you read. This section makes you *educated*; the guardrails *reduce* risk — they don't remove it.
+
+---
+
 ## Who are you? Start here
 
-This guide's numbered steps are the **engineer/lead Inception path**. If you're a different role, start at your row — you generally won't need the numbered engineer steps below.
-
-> **Not sure you're ready for Inception?** If enterprise SDLC practices are new to you, start at [ONBOARDING.md](ONBOARDING.md) first — it routes by *experience*; this page routes by *role*.
+This guide's numbered steps are the **engineer/lead Inception path**. If you're a different role, start at your row — you generally won't need the numbered engineer steps below. The lane above is about *how much SDLC you know*; this is about *which function you hold* — the two are independent, and the authoritative function map is [`DEVELOPMENT-PROCESS.md` §2](DEVELOPMENT-PROCESS.md).
 
 | If you are… | Start with | Then |
 |-------------|-----------|------|
@@ -53,8 +96,16 @@ This guide's numbered steps are the **engineer/lead Inception path**. If you're 
 | **Designer** | the UX & accessibility lens in Discovery (`DEVELOPMENT-PROCESS.md` §5) + the a11y items in the Definition of Done (`CLAUDE.md`) | attach assets to the spec; sign the a11y check (`templates/A11Y-SIGNOFF-TEMPLATE.md`) at Review |
 | **QA Engineer** | the testing standards (`DEVELOPMENT-STANDARDS.md` §7) + the UAT acceptance gate (`DEVELOPMENT-PROCESS.md` §9) | own the test plan (`templates/TEST-PLAN-TEMPLATE.md`) and the UAT sign-off (`templates/UAT-SIGNOFF-TEMPLATE.md`) |
 | **DevOps / SRE** | the environment model (`DEVELOPMENT-PROCESS.md` §9) + `RUNBOOK.md` + CI (`DEVELOPMENT-STANDARDS.md` §14) | own promotion & operate |
+| **Security Owner** | the §7 security gate + ratification (`DEVELOPMENT-PROCESS.md` §12–13) | own the threat model (`templates/THREAT-MODEL-TEMPLATE.md`) and the privacy review where the data classification demands it |
+| **Engineering leader / evaluator** | `docs/enterprise/EXEC-BRIEF.md` (the case, the ROI frame, the rollout shape) | come back here when a team is ready to run Inception |
 | **Engineer / Lead — new project** | **run `sh scripts/incept.sh`** (it `git init`s the repo for you if you're not already in one, then installs the runtime guard), then work the judgment steps below | full Inception (steps 1–7); use `--harness <list>` (default `claude-code`; pick `generic` for any AGENTS.md-reading harness; comma-separate for several — see `docs/operations/harness-adapters.md`) |
 | **Engineer — existing repo (brownfield)** | **`docs/adoption/brownfield.md`** (copy-in + `.claude/` merge + guard verify) | then the Inception judgment steps below; if your environment carries a foreign process-skill library (e.g. superpowers), see **`docs/adoption/skill-rosters.md`** |
+
+> **Non-builders: the rigor is carried, not waived.** You don't hand-craft tests or 15-factor config.
+> When your intent becomes code, the agent builds it test-first and the CI gates enforce 15-factor,
+> observability, and security on **every** PR — regardless of who filed it. Your own artifact has its
+> own bar (testable acceptance criteria, an a11y sign-off); the code that realizes it gets the full
+> standard. Routing by role changes *which doc you open*, never *which gate applies*.
 
 (Note: `incept` renames the kit's principles `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps a new project `CLAUDE.md` — your project guide. The glossary and START-HERE references to the *principles* file mean `ENGINEERING-PRINCIPLES.md` after Inception.)
 

@@ -50,7 +50,7 @@ ROOT="${EXPORT_ROOT:-.}"
 # only when the file is ABSENT. It MUST be listed here as well as in .gitattributes: the omission is
 # SILENT in the safe direction until the ledger gains one markdown link to another export-ignored
 # target, at which point the link scan reds on a file the real export never ships.
-IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md .publish-identifiers .kit/dials.conf"
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/kit-internals/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md WALKTHROUGH.md .publish-identifiers .kit/dials.conf"
 
 # _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
 # P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +
@@ -94,6 +94,24 @@ _no_double_blank() {
   [ -f "$1" ] || { echo "FAIL: $1 missing (cannot check for a double blank line)"; return 1; }
   if [ "$(awk 'NF==0{c++;next} {if(c>1) n++; c=0} END{print n+0}' "$1")" != "0" ]; then
     echo "FAIL: exported $(basename "$1") orphans a DOUBLE BLANK line (KW6-A2 carve — collapse blank runs after the carve in adopter-export.sh)"
+    return 1
+  fi
+  return 0
+}
+
+# _no_readme_count <readme> -> 0 = the README defers to the export script's runtime count · 1 = it
+# hardcodes a drifting count (and NAMES the fix). This is block (e) of run(), lifted out as a pure
+# function on the `_no_eof_blank` precedent above — as inline code it was UNTESTABLE IN ISOLATION and
+# therefore untested (see the corrected note in the `--selftest` arm, and the (e1)/(e2) legs that
+# close it). A missing README is not this check's business: block (e) was `[ -f ]`-guarded and this
+# function keeps that exact semantic (return 0), so the lift is behaviour-preserving.
+_no_readme_count() {
+  [ -f "$1" ] || return 0
+  # catch the "down from N" / "~N" phrasing AND any bare 3+-digit "NNN files" count (the export
+  # is always a few hundred files); a 1–2-digit count near "files" is plausibly legit prose, so it
+  # is deliberately not matched (zero false-positive on the current README).
+  if grep -Eq 'down from [~]?[0-9]|[0-9]{3,}[[:space:]]+files' "$1"; then
+    echo "FAIL: README hardcodes a drifting export file-count — say the export script prints the exact count instead (design B / F1)"
     return 1
   fi
   return 0
@@ -280,14 +298,9 @@ run() {
   # (e) DESIGN B / F1: the README must NOT hardcode the export file-count — it drifts silently
   # (this lock now prevents the 242/392 -> 277/416 drift). The export script prints the exact count
   # at run time; the README defers to it. Guard the two stale phrasings so a count can't creep back.
-  if [ -f "$ROOT/README.md" ]; then
-    # catch the "down from N" / "~N" phrasing AND any bare 3+-digit "NNN files" count (the export
-    # is always a few hundred files); a 1–2-digit count near "files" is plausibly legit prose, so it
-    # is deliberately not matched (zero false-positive on the current README).
-    if grep -Eq 'down from [~]?[0-9]|[0-9]{3,}[[:space:]]+files' "$ROOT/README.md"; then
-      echo "FAIL: README hardcodes a drifting export file-count — say the export script prints the exact count instead (design B / F1)"; rc=1
-    fi
-  fi
+  # Driven as a pure function (see `_no_readme_count`) so the selftest can isolate it; the (e2) leg
+  # additionally pins THIS line — a `rc=1` -> `rc=0` hand-revert here reds the armed fixture.
+  _no_readme_count "$ROOT/README.md" || rc=1
   # (g) FIXPOINT / public-mirror front door. The public repo is produced BY adopter-export
   # (publish-public.sh:[1/5] runs it), so the published mirror IS an export output. The README then has
   # the adopter run adopter-export ON that mirror — export-of-an-export. That second run MUST succeed and
@@ -353,25 +366,103 @@ if [ "${1:-}" = "--selftest" ]; then
   cp "$ROOT/scripts/adopter-export.sh" "$_r/scripts/adopter-export.sh" 2>/dev/null || true
   printf '\nYou get 242 files for typescript-node, down from 392.\n' >> "$_r/README.md"
   # git-init so the tree passes every OTHER block (export needs `git archive HEAD`).
-  # ⚠️ THE SOLE-CAUSE CLAIM THAT USED TO END THIS SENTENCE IS FALSE, AND THE MEASUREMENT IS RECORDED
-  # HERE RATHER THAN QUIETLY FIXED (NON-VACUITY-SHARD2-FLOOR, 2026-08-15). It read "isolating the README
-  # guard as the SOLE failure cause, so this fixture is load-bearing (run() fails ONLY on (e))". MEASURED
-  # by hand-reverting block (e)'s `rc=1` to `rc=0`: this selftest still reports OK. run() on this fixture
-  # fails for FIVE OTHER reasons, because the archive strips both kit markers and rider (c)'s
-  # `_ae_is_kit_tree` gate then SKIPS every carve — `claim drift-watch/golden-path/adopter-export not
-  # carved`, `exported .gitignore still ignores /src/ or /test/`, and block (g)'s `export-of-an-export
-  # resolves a live Backlog backend`. So block (e) currently has NO selftest teeth, and this leg proves
-  # only "the fixture fails somehow" — the SAME defect class the block-(g) negative below had to work
-  # around explicitly (`_aekt=0` -> `_aekt=1`), and the same one that made the nested claims-registry
-  # run proof-free. PRE-EXISTING, NOT INTRODUCED BY THE UN-NESTING: all five fail-sites are verbatim in
-  # the pre-cure file and untouched by that diff. Fixing it (arm the fixture, or drive block (e) as a
-  # pure function like `_no_eof_blank` below) is a separate row — this comment exists so the next reader
-  # measures instead of trusting the claim, which is exactly how it survived this long.
+  # ⚠️ THIS LEG IS COMPOSITE, NOT ISOLATING — AND THAT IS NOW RECORDED TRUTHFULLY. The claim that once
+  # ended this sentence ("isolating the README guard as the SOLE failure cause … run() fails ONLY on
+  # (e)") was FALSE, measured 2026-08-15 (NON-VACUITY-SHARD2-FLOOR): a hand-revert of block (e)'s
+  # `rc=1` to `rc=0` left this selftest reporting OK. ROOT CAUSE, measured again 2026-08-31: a bare
+  # `git archive HEAD` strips every KIT_INTERNAL_MARKERS file (all six are export-ignored), so rider
+  # (c)'s `_ae_is_kit_tree` gate SKIPS every carve and run() fails here for FIVE other reasons —
+  # `claim drift-watch/golden-path/adopter-export not carved` (×3), `exported .gitignore still ignores
+  # /src/ or /test/`, and block (g)'s `export-of-an-export resolves a live Backlog backend`.
+  # WHAT CHANGED (ADOPTER-EXPORT-WIRED-SWALLOWED-TEETH, 2026-08-31): block (e) now HAS teeth — but they
+  # are the (e1)/(e2) legs added below, NOT this one. This leg is KEPT DELIBERATELY AND UNCHANGED
+  # (additive isolation, never replacement): it is still a real assertion that a count-carrying tree
+  # cannot pass run(), and it is still honestly labelled as proving only "the fixture fails somehow".
+  # Do not re-word this into a sole-cause claim; the armed fixture in (e2) is where that claim lives,
+  # and it earns it with a CONTROL. Both mutants were re-measured against the new legs on 2026-08-31:
+  # the call-site `|| rc=1` -> `|| rc=0` revert and a `return 1` -> `return 0` revert inside
+  # `_no_readme_count` each turn the selftest RED, while this leg stays silent for both.
   ( cd "$_r" && git init -q && git add -A && git -c user.email=ci@kit -c user.name=ci commit -qm r >/dev/null 2>&1 ) || true
   if ( ROOT="$_r"; run ) >/dev/null 2>&1; then
     echo "adopter-export-wired --selftest: FAIL (README hardcoded count not caught)"; sfail=1
   fi
   rm -rf "$_r" 2>/dev/null || true
+  # ── ADOPTER-EXPORT-WIRED-SWALLOWED-TEETH: block (e) gets its OWN teeth, in TWO layers, because the
+  # two mutation targets are different lines. (e1) drives the FUNCTION directly (the `_no_eof_blank`
+  # precedent above) and kills any mutation of its grep or its `return 1`. (e2) drives the CALL SITE
+  # through `run()` on an ARMED fixture and kills a mutation of `|| rc=1`. The composite `_r` leg
+  # above is kept unchanged and green — this is additive, not a replacement.
+  # (e1) the function, driven directly. Four faces: both guarded phrasings must FAIL, a deferring
+  # README must PASS, and the deliberate 1–2-digit non-match must stay a non-match (so a "tighten the
+  # regex" mutation that starts flagging legit prose is caught too).
+  _q=$(mktemp -d)
+  printf 'The export script prints the exact file count when it runs.\n' > "$_q/clean.md"
+  _no_readme_count "$_q/clean.md" >/dev/null 2>&1 \
+    || { echo "adopter-export-wired --selftest: FAIL (a deferring README was wrongly flagged as hardcoding a count)"; sfail=1; }
+  printf 'You get 242 files for typescript-node, down from 392.\n' > "$_q/downfrom.md"
+  if _no_readme_count "$_q/downfrom.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (a 'down from N' README count was NOT flagged — block (e) is vacuous)"; sfail=1
+  fi
+  printf 'The adopter tree ships 416 files after the export.\n' > "$_q/bare.md"
+  if _no_readme_count "$_q/bare.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (a bare 'NNN files' README count was NOT flagged — block (e) is vacuous)"; sfail=1
+  fi
+  printf 'It ships 12 files of fixtures.\n' > "$_q/small.md"
+  _no_readme_count "$_q/small.md" >/dev/null 2>&1 \
+    || { echo "adopter-export-wired --selftest: FAIL (a 1-2-digit count near 'files' was flagged — the deliberate non-match regressed)"; sfail=1; }
+  rm -rf "$_q" 2>/dev/null || true
+  # (e2) the CALL SITE, through run() on an ARMED fixture — the layer `_r` above cannot supply.
+  # ROOT CAUSE of `_r`'s blindness (measured, see its corrected note): a bare `git archive HEAD`
+  # strips every KIT_INTERNAL_MARKERS file (all six are export-ignored), so adopter-export.sh's
+  # `_ae_is_kit_tree` gate SKIPS every carve and run() then fails for five unrelated reasons.
+  # PLANTING ONE MARKER (docs/ROADMAP-KIT.md) arms the gate. MEASURED on this tree: the armed
+  # fixture's run() is fully clean (the CONTROL below, rc 0) and the appended count line is then its
+  # SOLE failure cause (rc 1, the only FAIL line being block (e)'s). Control-then-mutant on ONE tree:
+  # a second archive extraction is ~5s, and this file is mutation-tested (paid once per mutant).
+  _a=$(mktemp -d)
+  ( cd "$ROOT" && git archive --worktree-attributes HEAD ) | tar -x -C "$_a" 2>/dev/null || true
+  cp "$ROOT/scripts/adopter-export.sh" "$_a/scripts/adopter-export.sh" 2>/dev/null || true
+  mkdir -p "$_a/docs"
+  printf '# roadmap (a KIT_INTERNAL_MARKERS file — arms adopter-export.sh carve gate)\n' > "$_a/docs/ROADMAP-KIT.md"
+  ( cd "$_a" && git init -q && git add -A \
+    && git -c user.email=ci@kit -c user.name=ci commit -qm armed >/dev/null 2>&1 ) || true
+  if ! ( ROOT="$_a"; run ) >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (CONTROL broke — the ARMED fixture is not clean WITHOUT the README count, so the negative below cannot isolate block (e))"; sfail=1
+  fi
+  printf '\nYou get 242 files for typescript-node, down from 392.\n' >> "$_a/README.md"
+  ( cd "$_a" && git add -A \
+    && git -c user.email=ci@kit -c user.name=ci commit -qm counted >/dev/null 2>&1 ) || true
+  if ( ROOT="$_a"; run ) >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (block (e) has no teeth in run() — the armed fixture's ONLY defect is the hardcoded README count and run() still PASSED)"; sfail=1
+  fi
+  rm -rf "$_a" 2>/dev/null || true
+  # ── HONEST CEILING: WHAT THIS ROW DID *NOT* FIX. The row bought block (e) isolation; it did not
+  # buy it for the other blocks, and the census below exists so no future reader infers otherwise
+  # from (e)'s new legs. run() carries 24 `rc=1` sites (census: `grep -c 'rc=1' | minus comments`,
+  # re-measured 2026-08-31). Their coverage, honestly:
+  #
+  #   ISOLATED AT THE FUNCTION LAYER (5) — a pure function with its own directly-driven positive +
+  #   negative legs, so a mutation INSIDE the function is killed:
+  #     `_link_safety` · `_no_shipped_workflows` · `_no_eof_blank` · `_no_double_blank` ·
+  #     `_no_readme_count` (this row).
+  #
+  #   ISOLATED AT THE CALL-SITE LAYER (1) — the `|| rc=1` line itself pinned by a control+mutant
+  #   fixture whose SOLE failure cause is that block:
+  #     `_no_readme_count` (the (e2) leg above). ONLY THIS ONE. The other four functions are
+  #     isolated but their `|| rc=1` call sites are composite-only: a hand-revert to `|| rc=0`
+  #     there is currently swallowed exactly as (e)'s was. Arming a fixture per block is the
+  #     remaining work; the marker-planting recipe in (e2) is the template for doing it.
+  #
+  #   COMPOSITE-ONLY (19 = 24 − the 5 above) — reached only through a whole-run() leg (`_n`, `_r`, `_l`) where two or
+  #   more causes fire together, so "the fixture fails" does not prove WHICH site fired:
+  #     block (a) missing export-ignore (1) · the IGN unsafe-char guard (1) · the five export
+  #     prune/keep assertions (5) · scorecard fixtures (1) · STACK-SELECTION stubbing (1) · broken
+  #     relative links (1) · exported-tree-commits (1) · `.kit/dials.conf` (1) · the exported-hook
+  #     observe leg (1) · the claim-carve assertion inside the `_cc` loop (1) · the exported
+  #     `.gitignore` assertion (1) · `adopter-export.sh errored` (1) · block (g)'s backend-resolve,
+  #     fixpoint-diff and export-of-an-export sites (3).
+  #   (Block (g)'s `_fpm` leg below IS control+mutant isolated — but it asserts on the export
+  #   SCRIPT's rc, never on run()'s, so the three `rc=1` lines in block (g) stay composite-only.)
   # negative (link-safety / M2): the block-(b) exclude must NOT blind the check to a real KEPT→ignored
   # link. Build a tiny tree where a KEPT doc links an export-ignored doc; the lock MUST still FAIL.
   # (Guards against the M2 fix over-broadening the exclusion and silently passing real breakage.)

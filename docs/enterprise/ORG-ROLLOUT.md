@@ -15,8 +15,7 @@
 > the gates change. Only the rollout playbook around it is frozen.
 >
 > Frozen under the `D-240819-2` Track-1 cut program; the tombstone entry (what froze, when, and the
-> return condition) is in
-> [`../operations/retiring-conventions.md`](../operations/retiring-conventions.md) §8.
+> return condition) is kept with the kit maintainers' retiring-conventions record, §8 Tombstones.
 
 How an organization adopts this kit across many teams **without big-bang risk** — start advisory on one team, tighten as evidence accumulates, then run the whole fleet at full strictness. Stack-neutral. This is also the **canonical home of the Stage 1–4 maturity model** (below); other docs link here rather than re-defining it.
 

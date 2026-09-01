@@ -14,6 +14,7 @@
 #   sh scripts/dora.sh [--window DAYS]   (default 30)
 #   sh scripts/dora.sh --selftest        (deterministic degradation self-test; no network)
 # What it changes: Read-only — prints the GitHub-derivable DORA subset; mutates nothing.
+# collected-not-gated: this instrument is exercised by selftests; no CI gate consumes its output — run it deliberately.
 # Guardrails: A report, not a gate — degrades gracefully on any gh/network failure and ALWAYS exits 0 (never fails a pipeline).
 set -eu
 

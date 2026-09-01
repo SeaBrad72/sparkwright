@@ -5,7 +5,7 @@
 
 Closes what is reachable to exfiltrate at the source (platform-safety-boundary controls #2/#3/#4). The kit cannot make a host FS read-only, expire a token, or broker prod access — so it verifies the **posture is declared + attested**, never that it is enforced. A green run is **necessary, not sufficient**.
 
-## Auto (proven by `containment-ready.sh`, per aspect)
+## Auto (run `sh conformance/containment-ready.sh` yourself, per aspect — no shipped pipeline runs it)
 - [ ] **Sandbox FS** — declared (a read-only-mount compose/devcontainer config, or a RUNBOOK `Sandbox FS:` mechanism line) + attested `enforced: <date>`.
 - [ ] **Scoped tokens** — RUNBOOK `Scoped tokens:` line names a mechanism (OIDC→role / short TTL / least-privilege) + attested.
 - [ ] **Prod credentials** — RUNBOOK `Prod credentials:` line names a mechanism (separate / break-glass / SoD) + attested.

@@ -17,8 +17,9 @@
 # record and a human applies it regardless. A false negative is a missed prompt, never an exemption.
 
 # has_data_surface <dir>: does <dir> handle persistent data? Conservative; a MISS escalates, never
-# exempts. Copied verbatim from conformance/dr-ready.sh (test-data-ready.sh carried the same body
-# and said so in its comment: "same signals as dr-ready.sh").
+# exempts. Copied verbatim from the RETIRED dr-ready check (test-data-ready carried the same body and
+# said so in its comment: "same signals"). Both are now readiness.tsv cases; the retired files were
+# deleted by CONFORMANCE-FAMILIES-SHIM-DELETION and their bodies are in the CHANGELOG.
 has_data_surface() {
   _d="$1"
   if [ -f "$_d/.env.example" ] && grep -Eiq 'DATABASE_URL|DB_URL|POSTGRES|MYSQL|MARIADB|MONGO|REDIS_URL|CONNECTION_STRING' "$_d/.env.example"; then
@@ -36,8 +37,8 @@ has_data_surface() {
 
 # has_deploy_surface <dir>: does <dir> deploy a running service? A Dockerfile, or a workflow whose
 # STRUCTURE says deploy (wf_is_deploy — a GitHub `environment:` key or a deploy-ish job KEY, never a
-# free-text step name). Copied verbatim from conformance/observability-ready.sh, which carried the
-# same body as preview-env-ready.sh and resilience-ready.sh.
+# free-text step name). Copied verbatim from the RETIRED observability-ready check, which carried the
+# same body as preview-env-ready and resilience-ready (all three now readiness.tsv cases).
 has_deploy_surface() {
   _d="$1"
   if [ -f "$_d/Dockerfile" ]; then return 0; fi
@@ -55,9 +56,9 @@ has_deploy_surface() {
 # service surface; one implementation answers both so the names cannot drift apart.
 has_service_surface() { has_deploy_surface "$1"; }
 
-# has_ai_surface <dir> [card]: is <dir> an AI feature? Copied verbatim from
-# conformance/responsible-ai-ready.sh (the stronger of the two shipped bodies) with the ONE
-# difference between it and conformance/eval-ready.sh's promoted to an explicit argument rather than
+# has_ai_surface <dir> [card]: is <dir> an AI feature? Copied verbatim from the RETIRED
+# responsible-ai-ready check (the stronger of the two shipped bodies) with the ONE
+# difference between it and the retired eval-ready check's promoted to an explicit argument rather than
 # silently merged: responsible-ai also treats a bare AI-SYSTEM-CARD as evidence of an AI feature,
 # eval-ready does not. Passing `card` selects the wider set. Merging them would have WIDENED
 # eval-ready (a card-only project would newly owe an EVAL-PLAN) — a real behaviour change, and this
@@ -80,8 +81,8 @@ has_ai_surface() {
   return 1
 }
 
-# is_agentic <dir>: does <dir> declare that it runs autonomous agents? Copied verbatim from
-# conformance/agentops-ready.sh — the structured 'Agentic:' field, field-leading, tolerating
+# is_agentic <dir>: does <dir> declare that it runs autonomous agents? Copied verbatim from the
+# RETIRED agentops-ready check — the structured 'Agentic:' field, field-leading, tolerating
 # list/bold markers, a bold-wrapped key with the colon outside the bold, and an italic annotation
 # before the colon. The unfilled [yes / no] placeholder is skipped; only 'yes' triggers.
 is_agentic() {
@@ -98,7 +99,7 @@ is_agentic() {
 
 # declares_sensitive <dir>: does a Data-classification line name Confidential/Restricted with a REAL
 # value (not the [Public / Internal / Confidential / Restricted] template placeholder)? Copied
-# verbatim from conformance/privacy-ready.sh. A real value with an unrelated bracket annotation
+# verbatim from the RETIRED privacy-ready check. A real value with an unrelated bracket annotation
 # (e.g. "restricted [phi/hipaa]") must NOT be skipped — that would fail-open and drop a sensitive
 # project out of the gate.
 declares_sensitive() {

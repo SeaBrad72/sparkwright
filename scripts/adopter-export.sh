@@ -370,12 +370,16 @@ if [ "${1:-}" = "--selftest" ]; then
   # its link scan reads KEPT `.md` docs), so this line is the ONLY thing that proves the attribute
   # took effect. It also guards a live hazard: conformance/ ships wholesale, so a leaked ledger would
   # arrive in an adopter tree as a bypass surface for a ratchet they never adopted.
-  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt .publish-identifiers; do
+  # WALKTHROUGH.md joins the set (FRONT-DOOR-ONE-ROUTER): it MOVED from the kept list below into this
+  # absence list when the one-router front door retired it. It is a KEPT-list veteran, so the move is
+  # the only thing that proves the new export-ignore attribute actually took effect — a deletion from
+  # the kept list alone would have shipped a botched .gitattributes entry green.
+  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt WALKTHROUGH.md .publish-identifiers; do
     [ -e "$_d/$p" ] && { echo "FAIL: export-ignored path present: $p"; fail=1; } || echo "PASS: absent $p"
   done
   # kept → PRESENT (scripts/fixtures now SHIPS — the tier-advice/agent-scorecard selftests in the
   # adopter ci.yml depend on scripts/fixtures/scorecard/)
-  for p in MAINTAINING.md WALKTHROUGH.md conformance templates profiles/_TEMPLATE.md profiles/typescript-node scripts/fixtures/scorecard; do
+  for p in MAINTAINING.md conformance templates profiles/_TEMPLATE.md profiles/typescript-node scripts/fixtures/scorecard; do
     [ -e "$_d/$p" ] && echo "PASS: present $p" || { echo "FAIL: kept path missing: $p"; fail=1; }
   done
   # STACK-SELECTION stubbed on --profile: exists + no link to a pruned profile (e.g. go)
@@ -559,7 +563,7 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '/src/\n/test/\nmy-own-rule\n' > "$_fx/.gitignore"
   printf '# Maintainer-only paths excluded from THIS foreign tree'"'"'s own archive (not the kit'"'"'s)\nsome/foreign/path export-ignore\n' > "$_fx/.gitattributes"
   _ftab=$(printf '\t')
-  printf 'drift-watch%sa foreign claim%stest -x /\n' "$_ftab" "$_ftab" > "$_fx/conformance/claims.tsv"
+  printf 'drift-watch%sa foreign claim%stest -x /%stree\n' "$_ftab" "$_ftab" "$_ftab" > "$_fx/conformance/claims.tsv"
   printf '#!/bin/sh\nREQUIRED_IDS="drift-watch"\n' > "$_fx/conformance/claims-registry.sh"
   ( cd "$_fx" && git init -q && git add -A \
       && git -c user.email=f@foreign -c user.name=foreign commit -qm foreign >/dev/null 2>&1 )

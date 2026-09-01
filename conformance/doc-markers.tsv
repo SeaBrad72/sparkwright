@@ -69,3 +69,37 @@ validation-terminal-state	skills/review/SKILL.md	validation / field-test	review:
 validation-terminal-state	skills/review/SKILL.md	Task Context Contract	review: names the TCC as the class source	any
 validation-terminal-state	templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md	validation / field-test	tcc: validation class declared	any
 validation-terminal-state	templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md	subject-under-test	tcc: subject-under-test prohibition	any
+#
+# ── dod-precedence (DOD-SINGLE-SOURCE, PR 9 / D-240828-4) — DEVELOPMENT-STANDARDS.md §12 is the ONE
+#    drift-capable restatement of the Definition of Done in the shipped tree (it lists category
+#    names, not items) and it opens by DEFERRING to CLAUDE.md. This row pins that deferral in its
+#    exact bold-backticked form, so deleting or REWORDING it — turning the restatement back into an
+#    apparently-authoritative second source — reds CI with this row's label. The regex escapes `**`
+#    and the `.` deliberately: the unescaped form matches a bold-stripped or reworded line too, and
+#    the generated mutant battery cannot tell the weak regex from the strong one (both kill the
+#    deletion mutant), so the build carries a bold-stripped negative fixture beyond the battery.
+#    Scope `any`: `git archive HEAD` measured both documents SHIPPING to adopter trees (2026-08-31),
+#    where the precedence rule is exactly as load-bearing.
+#    HONEST CEILING: this pins PRECEDENCE, not content agreement. If CLAUDE.md adds or renames a DoD
+#    category, §12's category prose can drift silently — the deferral is what makes that drift
+#    harmless, because the restatement permanently declares itself subordinate.
+dod-precedence	DEVELOPMENT-STANDARDS.md	The authoritative checklist is in \*\*`CLAUDE\.md`\*\*	dod-precedence: standards §12 defers to the authoritative checklist	any
+#
+# ── collected-not-gated (PREFLIGHT-DOCTOR-MERGE disposition, PR 9 / D-240828-4) — the three
+#    measurement instruments each carry a header disclosure stating plainly that they are exercised
+#    by selftests (agent-scorecard.sh: plus one golden-path run), that NO CI gate consumes their
+#    output, and that they are run deliberately. Removing a disclosure reds CI with that
+#    instrument's label, so the honesty is ENFORCED rather than merely declared. Scope `any`:
+#    `git archive HEAD` measured all three scripts SHIPPING to adopter trees (2026-08-31).
+#    The pattern is ANCHORED to `^# collected-not-gated:` — the bare token was satisfiable by ANY
+#    occurrence in the file (a mention in prose, a variable name), so the anchor is what makes the
+#    row assert the DISCLOSURE LINE rather than the word.
+#    HONEST CEILING: proves the disclosure LINE is present, never that it is TRUE — whether the
+#    instruments stay ungated is a property of ci.yml/verify.sh that no marker can see.
+#    SCOPE CONSEQUENCE (`any`, owner-ratified trade): an adopter who LEGITIMATELY deletes one of these
+#    instruments (dora.sh on a non-GitHub host, say) gets a hard RED from a disclosure check that has
+#    no waiver arm. Deliberate: the alternative — latching to N/A on absence — is a check that fails
+#    open exactly when a file goes missing.
+collected-not-gated	scripts/tier-value.sh	^# collected-not-gated:	collected-not-gated: tier-value.sh disclosure line	any
+collected-not-gated	scripts/agent-scorecard.sh	^# collected-not-gated:	collected-not-gated: agent-scorecard.sh disclosure line	any
+collected-not-gated	scripts/dora.sh	^# collected-not-gated:	collected-not-gated: dora.sh disclosure line	any

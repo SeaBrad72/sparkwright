@@ -79,4 +79,11 @@ if [ "$fail" -ne 0 ]; then
   echo "container-supply-chain: FAIL" >&2
   exit 1
 fi
+# ZERO CHECKED IS NOT A VERDICT. `OK (0 profile(s) … checked)` is the shape that read as a proof to
+# every consumer, verify.sh's skip classifier included: the N/A lines above were suppressed by an `OK`
+# that had verified nothing (VERIFY-SKIP-IDIOM-RESIDUAL, face ii). Say N/A instead, in the shipped idiom.
+if [ "$checked" -eq 0 ]; then
+  echo "N/A: container-supply-chain — no profile under '$ROOT' carries a Dockerfile, so 0 profile(s) were checked. Nothing was verified here; this is not a pass."
+  exit 0
+fi
 echo "container-supply-chain: OK ($checked profile(s) with a Dockerfile checked; others N/A)"

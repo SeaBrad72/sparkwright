@@ -26,7 +26,7 @@ If your host provides these — under whatever names — the kit runs unchanged.
 - **Protect** branches + **MR approval rules**: Settings → Repository → Protected branches; Settings → Merge requests → Approvals. See `docs/operations/gitlab-adoption.md`.
 - **Proposal:** Merge Request. **Checks:** the `.gitlab-ci.yml` gate-IDs. **Tag:** `release-tag.gitlab-ci.yml`.
 
-## Forge-adapter seam — authenticated `approved-by` *(seam, not wired)*
+## Forge-adapter seam — authenticated `approved-by` *(GitHub wired; other forges remain the seam)*
 
 The promotion record (`scripts/promotion-verify.sh record`, KW1 · S5a) binds a GO to the approved
 commit as a git note and labels **how** the approver's identity was established — the honest-ceiling
@@ -39,12 +39,23 @@ principle applied to identity, so a label never claims more than the evidence:
 | git committer identity | `[committer]` | fallback (weak — `user.name` is self-set) |
 | typed string | `[self-asserted]` | last resort (today's solo default) |
 
-S5a builds the **git-native** sources (`[signed: gpg]` → `[committer]` → `[self-asserted]`) in
-`scripts/promotion-verify.sh` and **defines this forge-review seam** — it does **not** wire it. The
-reason is `defer-build-ahead`: solo has **no** forge review (no second reviewer exists), so a
-forge-review reader has no consumer yet. The seam is wired when a **team** consumer exists (T2 /
-enterprise — it pairs with the S6 control-plane actuation grant), where a forge approval by an
-identity *other than the author* becomes the load-bearing SoD signal.
+S5a built the **git-native** sources (`[signed: gpg]` → `[committer]` → `[self-asserted]`) in
+`scripts/promotion-verify.sh` and **defined this forge-review seam** without wiring it, on a
+`defer-build-ahead` reason: solo has no forge review, so a forge-review reader had no consumer.
+
+**That reason expired, and PR 11 wired GitHub as this seam's reference adapter.** What falsified it
+was measurement, not argument: on this repo a real `APPROVED` review by a second identity sat on the
+exact approved head of #605 and `record` never looked, recording `[committer]` — the review existed,
+so "no second reviewer exists" was simply false, and `actuate` stayed closed for every class while
+the kit's Tier-2 promise said otherwise. `record` now reads the PR's reviews through `gh api` and
+emits `[authenticated: github-review]` when — and only when — the **latest** review by the claimed
+approver is exactly `APPROVED`, is bound to the **resolved** approved sha, comes from a non-`Bot`
+login byte-equal to `--approved-by`, and that login differs (case-insensitively) from a PR author
+that itself resolved. Any gap keeps the git-native label and says why on stderr; the derivation only
+ever upgrades, and never blocks a record.
+
+**Other forges remain the seam.** GitLab MR approvals and the rest still need an adapter answering
+the contract below; nothing here is GitHub-only by design, only by what has been built and measured.
 
 **The adapter contract (per host).** To wire it, a host adapter answers one question about a merge
 proposal: *"which distinct identity (not the author) formally approved it, and can that be read
@@ -64,15 +75,26 @@ labels (record it honestly; never fake the stronger label) — the same three-st
 control-plane actuation gate consumes as its **bar**: `actuate` fails closed unless the recorded GO's
 derived `approved-by:` label is `[authenticated: <forge>-review]` **and** that approver identity ≠
 the commit author (`builder ≠ ratifier`). `[self-asserted]` / `[committer]` / `[signed: gpg]`-alone
-all fall below the bar — so an adapter emitting this label is what turns a team's second-reviewer
-approval into a *normal, non-`--admin`* control-plane merge the agent may actuate. Wired only when a
-**team** consumer exists (T2 / enterprise); solo, no authenticated label is producible, so the bar is
-unmeetable and the `--admin` kill-switch stays the human's one act — consistent by construction.
+all fall below the bar — so an adapter emitting this label is what turns a second-reviewer approval
+into a *normal, non-`--admin`* merge the agent may actuate. **Since PR 11 that bar is reachable on
+GitHub**, and `actuate` therefore opens for **Ordinary and Sensitive** changes on an authenticated
+recorded GO. **Control-plane is refused by `actuate`** pending the open
+`TIER-3-CP-MERGE-ACTUATION-RULING` sitting; control-plane merges take the direct
+`gh pr merge --squash --match-head-commit <sha>` path, and `--admin` stays denied to the agent.
 
-**Honest ceiling:** authenticated approval is the *strongest* identity signal the kit can carry, but
-it is only as strong as the forge's own authentication, and it is **team-only** — solo genuinely
-cannot have a second-identity approval, and the label says so (`[self-asserted]` / `[signed: gpg]`),
-never a faked `[authenticated: …]`.
+**Honest ceiling — and it did *not* improve when the seam was wired.** Authenticated approval is the
+strongest identity signal the kit can carry, but it is only as strong as the forge's own
+authentication, and the *derivation* is only as strong as the local `gh` binary and its ambient
+credential: an agent that controls `PATH` can feed it fabricated reviews. That is no **new**
+capability — a git note was always self-authorable, and `refs/notes/*` sits outside branch protection
+— but it fixes the tier: **`[authenticated: github-review]` is a drift control at the note's own
+trust tier, never proof.** What actually binds a human with push rights is server-side branch
+protection + required review. The label also attests only that a qualifying review existed **when
+asked**; a later dismissal is not re-checked at actuate time (the forge re-judges at merge time —
+layered, not doubled). And the forge's SoD is reviewer ≠ **PR opener**, not reviewer ≠ commit pusher:
+on a teammate-opened PR a builder can approve commits they authored. GitHub's own "require approval
+from someone other than the most recent pusher" setting is the answer to that; the two SoD layers
+here are **independent** and do not compose to close it.
 
 ## Bring your own host *(Bitbucket, Gitea, self-managed, Gerrit, …)*
 

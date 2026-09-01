@@ -10,7 +10,7 @@ Sparkwright tracks maturity as a **stage**, separate from its version. This page
 pre-adoption → [release-candidate] → adopted
 ```
 
-**Current stage: `release-candidate`** — hardened, dogfooded, and ready to adopt. The kit reaches the `adopted` stage when an external team ships real software through the loop. The kit versions its own releases on its own cadence (currently `v3.220.0`); adoption is a maturity stage, not a version reset.
+**Current stage: `release-candidate`** — hardened, dogfooded, and ready to adopt. The kit reaches the `adopted` stage when an external team ships real software through the loop. The kit versions its own releases on its own cadence (currently `v3.221.0`); adoption is a maturity stage, not a version reset.
 
 | Stage | What it means |
 |-------|---------------|

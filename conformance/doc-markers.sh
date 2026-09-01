@@ -29,7 +29,7 @@ TAB=$(printf '\t')
 # used to change only how many mutants the sweep reported — a number nobody reads. Pinned here, it
 # changes the VERDICT instead. A case absent from this list is itself a FAIL, so a new case cannot
 # land without its count.
-DM_EXPECT='artifact-lineage:6 gate-eval-secrets:5 feedback-link-lifecycle:3 validation-terminal-state:8'
+DM_EXPECT='artifact-lineage:6 gate-eval-secrets:5 feedback-link-lifecycle:3 validation-terminal-state:8 dod-precedence:1 collected-not-gated:3'
 
 # dm_lint: the table is well-formed, or the check FAILS LOUDLY. A parser that skips what it cannot
 # understand turns a malformed row into an unchecked marker and reports nothing — the one place this

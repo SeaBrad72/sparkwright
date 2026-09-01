@@ -25,7 +25,7 @@ set -eu
 
 HERE=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 # Absolutise the project-dir arg against THE CALLER'S cwd, BEFORE the cd below: the retired checks
-# never cd'd, so `dr-ready.sh ../other-repo` resolved where the operator stood, and re-resolving it
+# never cd'd, so `readiness.sh dr-ready ../other-repo` resolves where the operator stood, and re-resolving it
 # after the cd would silently point elsewhere. A nonexistent dir is USAGE (rc 2), never an N/A — a
 # typo must not read as "no surface here". `.` stays literal, so existing call sites' wording holds.
 RD_DIR=.

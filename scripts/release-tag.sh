@@ -17,6 +17,13 @@
 # input. Any of them re-points or re-scopes the cadence detector, so ONLY the unmodified-env
 # invocation carries the enforce-at-birth guarantee (D-240807-1, as ceiling-corrected); an
 # overridden run banners itself out loud (cadence_gate) instead of silently waiving the gate.
+# SEAM CONTRACT (RELEASE_TAG_PROV_PROBE, part of this script's PUBLIC interface — a non-GitHub forge
+# answers the provenance gate through it): THE PROBE MAY BE INVOKED UP TO 3 TIMES PER QUERY, AND IT
+# MUST THEREFORE BE IDEMPOTENT. Since GH-RUN-QUERY-NO-RETRY the gate retries a FAILING query (nonzero
+# rc only — a successful-but-empty answer is an honest N/A and is never retried), so a seam command
+# with side effects, a consuming read, or a per-invocation cost is now called up to three times where
+# it used to be called once. Write the seam as a pure query. This is a contract change for anyone who
+# already set the variable, which is why it is stated here rather than left to be discovered.
 set -eu
 here=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 REMOTE="${RELEASE_TAG_REMOTE:-origin}"
@@ -184,7 +191,7 @@ cadence_gate() {
   if printf '%s\n' "$_cout" | grep -q '^ESCALATED:'; then
     printf '%s\n' "$_cout" >&2
     echo "release-tag: REFUSING to tag — the meta-control cadence is ESCALATED (>2N release tags past the last addressed panel)." >&2
-    echo "release-tag: remedy — run the light 5-lens panel (docs/operations/meta-control.md) OR record a dated, human-ratified DEFERRED row; either appends a log row and advances the marker, which un-escalates by construction." >&2
+    echo "release-tag: remedy — run the light 5-lens panel (docs/enterprise/meta-control.md) OR record a dated, human-ratified DEFERRED row; either appends a log row and advances the marker, which un-escalates by construction." >&2
     return 1
   fi
   [ "$_crc" = "0" ] && return 0   # FRESH, or N/A (cadence not adopted — the detector's applicability arm)
@@ -201,7 +208,7 @@ cadence_gate() {
     return 0
   fi
   printf '%s\n' "$_cout" >&2
-  echo "release-tag: REFUSING to tag — the cadence detector failed WITHOUT an OVERDUE/ESCALATED verdict (invalid cadence state: missing/unparseable marker or marker-log desync). Fail-closed on purpose — see this gate's header. Repair docs/governance/.meta-control-last + docs/governance/meta-control-log.md per docs/operations/meta-control.md." >&2
+  echo "release-tag: REFUSING to tag — the cadence detector failed WITHOUT an OVERDUE/ESCALATED verdict (invalid cadence state: missing/unparseable marker or marker-log desync). Fail-closed on purpose — see this gate's header. Repair docs/governance/.meta-control-last + docs/governance/meta-control-log.md per docs/enterprise/meta-control.md." >&2
   return 1
 }
 
@@ -296,10 +303,74 @@ GATE_DISP_FILE="conformance/gate-dispositions.txt"
 # `printf` data <-> healthy), which is what makes every arm testable without mocking gh.
 # NOTE the ordering rule: a nonzero rc is returned even when stdout carried lines. Health is never
 # inferred from data — see provenance_gate's "health outranks data" branch.
+#
+# ── GH-RUN-QUERY-NO-RETRY (2026-08-31). Every query below is retried, and the GRANULARITY is the
+# whole design — it is pinned per-invocation for reasons that are not stylistic:
+#   PER INVOCATION, NEVER THE BLOCK. This function prints its data BEFORE it checks the rc, so a
+#     retry wrapped around the block could print job lines, fail, re-enter, and print them AGAIN —
+#     and `_prov_conclusion` reds a duplicated job name as ambiguity (rc 2). A block retry would
+#     convert a RECOVERED transient into a hard gate failure. (Leg: PG-PROBE-RETRY-dup.)
+#   PRINT ONLY AFTER THE FINAL ATTEMPT. `_prov_gh_retry` captures each attempt's stdout and emits
+#     only the last one, so partial output from a dying attempt never reaches the verdict machinery.
+#   NEVER ON rc 0. The `[ -n "$_run" ] || return 0` arm is an HONEST N/A: the query WORKED and there
+#     is nothing to report. Retrying it would convert a deterministic N/A into a nondeterministic
+#     answer, which is a protocol change wearing a reliability costume. (Leg: -neverzero.)
+#   BOUNDED, AND rc 3 STILL MEANS rc 3. Three attempts, one second apart; exhaustion returns 3
+#     exactly as a one-shot failure did. Retry buys tolerance for a transient, never forgiveness for
+#     a dead forge — the ruled pre-check is untouched. (Leg: -persist.)
+#   OBSERVABLE. Any retry announces its attempt count on stderr and the rc-3 cure text names it:
+#     "3 attempts failed" and "one-shot failed" are different operational facts.
+# The bound is a CONSTANT, not an env var: this is a control-plane script and a caller-tunable retry
+# bound would be a new environment surface on a gate whose whole point is that the environment cannot
+# soften it. The seam is retried too, because it mirrors the gh arms exactly — that is what lets every
+# arm be tested without mocking gh, and it does not widen the seam's trust boundary (the same single
+# `sh -c` of the same trusted-invocation-only string, just re-run).
+_PP_ATTEMPTS=3
+_PP_BACKOFF=1
+_PP_TRIES=1
+# ⚠️ _PP_TRIES CANNOT REACH THE CURE TEXT BY ASSIGNMENT, AND THE FIRST VERSION OF THIS CODE TRIED TO.
+# `provenance_gate` consumes the probe as `_pg_probe=$(prov_probe)` — a COMMAND SUBSTITUTION, i.e. a
+# subshell — so `_PP_TRIES=$_pgr_i` below is written into a child that exits one line later, and the
+# parent's copy stays at its initial 1. MEASURED on the shipped code before this fix: three real
+# attempts, and the enforce refusal still read "attempted 1 attempt(s)". The count therefore travels
+# through the FILESYSTEM, which is the only channel that crosses that boundary: _prov_gh_retry writes
+# it to a run-scoped file whose path provenance_gate allocates and reads back. _PP_TRIES is KEPT as
+# the in-frame value (it is correct for a direct, non-substituted call) and the file is what the
+# gate actually trusts. When _PP_TRIES_FILE is empty — a bare direct call with no gate around it —
+# the write is simply skipped and nothing depends on it.
+_PP_TRIES_FILE=""
+# _prov_gh_retry <cmd> [args...] : run the command up to _PP_ATTEMPTS times, stopping at the first
+# rc 0. Echoes ONLY the final attempt's stdout; returns the final attempt's rc; records the attempts
+# used in _PP_TRIES *and*, when the caller allocated one, in $_PP_TRIES_FILE (the channel the rc-3
+# cure text actually reads — see above). stderr of the command is discarded exactly as the one-shot
+# form discarded it; the retry's OWN announcement goes to stderr.
+# When prov_probe makes TWO queries, the LAST write wins — which is the query whose rc decided the
+# verdict, so the count the operator is shown is the count that produced the refusal.
+_prov_gh_retry() {
+  _pgr_i=0; _pgr_rc=0; _pgr_out=""
+  while :; do
+    _pgr_i=$((_pgr_i + 1))
+    _pgr_rc=0
+    _pgr_out=$("$@" 2>/dev/null) || _pgr_rc=$?
+    [ "$_pgr_rc" = 0 ] && break
+    [ "$_pgr_i" -ge "$_PP_ATTEMPTS" ] && break
+    sleep "$_PP_BACKOFF"
+  done
+  _PP_TRIES=$_pgr_i
+  if [ -n "${_PP_TRIES_FILE:-}" ]; then
+    printf '%s\n' "$_pgr_i" > "$_PP_TRIES_FILE" 2>/dev/null || true
+  fi
+  if [ "$_pgr_i" -gt 1 ]; then
+    echo "release-tag: the provenance query was retried — $_pgr_i attempt(s), final rc $_pgr_rc" >&2
+  fi
+  if [ -n "$_pgr_out" ]; then printf '%s\n' "$_pgr_out"; fi
+  return "$_pgr_rc"
+}
+
 prov_probe() {
   if [ -n "${RELEASE_TAG_PROV_PROBE:-}" ]; then
     _pp_rc=0
-    _pp_out=$(sh -c "$RELEASE_TAG_PROV_PROBE" 2>/dev/null) || _pp_rc=$?
+    _pp_out=$(_prov_gh_retry sh -c "$RELEASE_TAG_PROV_PROBE") || _pp_rc=$?
     if [ -n "$_pp_out" ]; then printf '%s\n' "$_pp_out"; fi
     if [ "$_pp_rc" != 0 ]; then return 3; fi
     return 0
@@ -309,11 +380,11 @@ prov_probe() {
   _sha=${RELEASE_SHA:-$(git rev-parse HEAD 2>/dev/null)} || return 0
   [ -n "$_sha" ] || return 0                    # no resolvable sha -> honest N/A
   _pp_rc=0
-  _run=$(gh run list --commit "$_sha" --workflow CI --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null) || _pp_rc=$?
+  _run=$(_prov_gh_retry gh run list --commit "$_sha" --workflow CI --json databaseId --jq '.[0].databaseId // empty') || _pp_rc=$?
   if [ "$_pp_rc" != 0 ]; then return 3; fi      # the QUERY failed — network/auth/unreachable forge
-  [ -n "$_run" ] || return 0                    # query worked, no run for this SHA -> honest N/A
+  [ -n "$_run" ] || return 0                    # query worked, no run for this SHA -> honest N/A (NEVER retried)
   _pp_rc=0
-  _pp_out=$(gh run view "$_run" --json jobs --jq '.jobs[] | .name + "\t" + .conclusion' 2>/dev/null) || _pp_rc=$?
+  _pp_out=$(_prov_gh_retry gh run view "$_run" --json jobs --jq '.jobs[] | .name + "\t" + .conclusion') || _pp_rc=$?
   if [ -n "$_pp_out" ]; then printf '%s\n' "$_pp_out"; fi
   if [ "$_pp_rc" != 0 ]; then return 3; fi
   return 0
@@ -500,6 +571,135 @@ rt_dial_conf_value() {
 # states, never a job that ran and did not conclude success) · skipped + apply/no-disposition ->
 # LOUD · ANY OTHER CONCLUSION (failure, empty, an ambiguous/duplicate match) -> LOUD REGARDLESS OF
 # DISPOSITION [security MED-2 + the owner's sharpening].
+# ── RELEASE-TAG-PG-FUNC-LENGTH: provenance_gate's ARMS, lifted out. The gate had grown to 136 lines
+# — one function carrying mode resolution, three whole-probe outcome arms, a per-job verdict machine
+# and the LOUD/mode epilogue, so no reader could hold it and no arm could be read without reading all
+# of them. Each arm below is a straight LIFT: the bodies and every comment move verbatim, nothing is
+# re-worded and no behaviour changes. The proof of that claim is mechanical rather than asserted —
+# the FULL `--selftest` verdict set was captured before the extraction and diffed after, and it is
+# byte-identical (~55 assertions, including all the PG-* provenance legs).
+# Contract shared by these arms: they are plain functions, so they run in provenance_gate's OWN frame
+# (no subshell) and assignments propagate exactly as they did inline. The two that can end the gate
+# return 1 for REFUSE and 0 for PROCEED; the caller re-raises that rc under `set +e` bracketing, which
+# is this file's existing precedent (see the `_prov_conclusion` capture below).
+
+# _pg_resolve_mode : resolve the dial ONCE into _pg_conf_val / _pg_mode / _pg_mode_default.
+_pg_resolve_mode() {
+  # Δ-C: the mode comes from the DIAL READER — the repo-carried `.kit/dials.conf` is authoritative
+  # and the env may only ESCALATE (rt_dial_mode's header carries the full contract, including the
+  # [security LOW-1] garbage-value warning this line used to own). The `(default)` banner suffix
+  # means exactly: the conf carries no key AND the env is unset (PG2-default/PG2-explicit pin both
+  # faces) — a mode resolved from EITHER source is "explicit".
+  # [security INFO-3] The MODE is read LIVE from the working tree, deliberately NOT pinned to
+  # RELEASE_SHA — an asymmetry with the gate's INPUTS (_prov_disposition / _prov_dockerfile_present,
+  # which CP-10 pins to the released commit) and the right way round: the disposition and assertion
+  # set are FACTS ABOUT THE COMMIT BEING RELEASED, while the dial is the CURRENT OPERATOR'S POLICY
+  # about whether to refuse. Pinning the mode would let an old commit carry a stale `observe` past
+  # today's enforce, which is exactly the sticky de-escalation D-240811-2.1 exists to prevent.
+  # ONE conf read, in this frame, feeding BOTH answers [fix round 2, item 4] — see rt_dial_mode's $2.
+  _pg_conf_val=$(rt_dial_conf_value RELEASE_TAG_PROVENANCE)
+  _pg_mode=$(rt_dial_mode RELEASE_TAG_PROVENANCE "$_pg_conf_val")
+  _pg_mode_default=0
+  if [ -z "$_pg_conf_val" ] && [ -z "${RELEASE_TAG_PROVENANCE+x}" ]; then
+    _pg_mode_default=1
+  fi
+}
+
+# _pg_query_failed_arm : the probe reported a nonzero rc. -> 1 = REFUSE (enforce) · 0 = LOUD, proceed.
+_pg_query_failed_arm() {
+  # HEALTH OUTRANKS DATA. Any nonzero probe rc lands here REGARDLESS of stdout: a probe that emits
+  # lines and then dies (a forge dying mid-stream after a stale `provenance success`) must never be
+  # allowed to pass ENFORCE on partial/stale success lines. Checked BEFORE the emptiness test on
+  # purpose — the ordering IS the property.
+  # The cure menu is SHARED only where it is true of both arms: the two REPAIRS. The dial itself is
+  # a cure for the REFUSAL, never for the observe warning — offering an observe-mode operator a way
+  # to reach observe contradicts the very next sentence (measured on the AC run). The two legs pin
+  # each other: PG-QFAIL-ENF asserts the enforce arm DOES carry "ratified control-plane ceremony",
+  # PG-QFAIL-OBS-CURE asserts the observe arm does NOT. NOT in the menu at all, deliberately: a
+  # dated `na` disposition. `na` answers "did this job RUN" — a failed query never learned whether
+  # it ran, so there is no job for a disposition to excuse (PG-QFAIL-NA holds the refusal against a
+  # fully-na disposition file).
+  # The attempt count is part of the finding, not decoration: after GH-RUN-QUERY-NO-RETRY the query
+  # is retried up to 3 times, so "the forge did not answer" now means it did not answer N times.
+  # An operator reading this refusal must be able to tell a bounded-retry exhaustion from the
+  # one-shot failure it used to be, without going to the source to find out whether we tried twice.
+  _pg_qcure="The query was attempted ${_PP_TRIES} attempt(s) before this verdict. Cure: restore connectivity/auth to the forge and re-run; OR set RELEASE_TAG_PROV_PROBE to your forge's own query (this seam is how a non-GitHub forge answers this gate)."
+  if [ "$_pg_mode" = enforce ]; then
+    echo "release-tag: REFUSING to tag — the provenance query FAILED for ${RELEASE_SHA:-HEAD} (probe protocol rc $_pg_prc: the forge was unreachable, auth failed, this tree has no GitHub remote for gh to resolve, or the seam command failed). Under RELEASE_TAG_PROVENANCE=enforce an UNANSWERED provenance question is not a pass — this is the arm that used to proceed silently. $_pg_qcure OR return the dial to observe through the ratified control-plane ceremony (a conf edit in .kit/dials.conf, not an env var — env cannot de-escalate it)." >&2
+    return 1
+  fi
+  _pg_qsuffix=""
+  [ "$_pg_mode_default" = 1 ] && _pg_qsuffix=" (default)"
+  echo "release-tag: LOUD — the provenance query FAILED for ${RELEASE_SHA:-HEAD} (probe protocol rc $_pg_prc: the forge was unreachable, auth failed, this tree has no GitHub remote for gh to resolve, or the seam command failed). The provenance gate is OBSERVE mode$_pg_qsuffix — the tag proceeds UNVERIFIED; set RELEASE_TAG_PROVENANCE=enforce in .kit/dials.conf to refuse instead. $_pg_qcure" >&2
+  return 0
+}
+
+# _pg_empty_probe_arm : rc 0 + empty stdout. Always proceeds (rc 0), in BOTH modes.
+_pg_empty_probe_arm() {
+  # rc 0 + empty: the query WORKED and there is genuinely nothing to report. This arm no longer
+  # covers the failed query above, so it is named for what it actually is. It stays rc 0 in BOTH
+  # modes — the ruling's boundary: enforce binds the FAILURE arms, never the absence arms (see this
+  # gate's honest ceiling; `ci_gate` degrades open on these same conditions, so nothing mechanical
+  # backstops them at this rung).
+  # ⚠️ "not GitHub" is NOT one of these arms, and saying so would be false: with `gh` INSTALLED, a
+  # non-GitHub tree makes the query FAIL (gh: "none of the git remotes … point to a known GitHub
+  # host") and lands in the rc-3 arm above, refusing under enforce. Only an ABSENT gh reaches here.
+  echo "release-tag: provenance probe returned no data and reported HEALTHY (gh not installed / no CI run for this SHA / a seam with nothing to report) — honest N/A: there is no provenance conclusion to read, so this gate cannot vouch for the release either way. Proceeding, unverified; see this gate's SECURITY note." >&2
+  return 0
+}
+
+# _pg_job_verdict <job-name> <gate-id> : judge ONE asserted job against the probe output.
+#   -> 0 = quiet pass or a validated N/A · 1 = LOUD (the caller raises _pg_loud).
+_pg_job_verdict() {
+  _pg_job=$1; _pg_gid=$2
+  set +e; _pg_concl=$(_prov_conclusion "$_pg_job" "$_pg_probe"); _pg_crc=$?; set -e
+  case "$_pg_crc" in
+    0)
+      case "$_pg_concl" in
+        success) return 0 ;;   # quiet pass
+        skipped)
+          _pg_disp=$(_prov_disposition "$_pg_gid")
+          if [ "$_pg_disp" = na ]; then
+            _pg_reason=$(_strip_ctrl "$(_prov_reason "$_pg_gid")")
+            echo "release-tag: N/A ($_pg_gid) — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} and $_pg_gid is validated na (${_pg_reason:-reason on file}). Revisit if the repo becomes public/org-owned." >&2
+            return 0
+          fi
+          echo "release-tag: LOUD — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} (disposition $_pg_gid: $_pg_disp). A provenance/image-provenance gate that never ran must not pass silently. Cure: make the repo public / move it to a GitHub org, OR record a dated na disposition in $GATE_DISP_FILE, OR set RELEASE_TAG_PROV_PROBE for your forge." >&2
+          return 1 ;;
+        *)
+          # [owner adjudication + security MED-2, fix round 1] any OTHER conclusion (failure,
+          # empty, or an ambiguous value that slipped past rc 2 below) is LOUD regardless of
+          # disposition — na excuses only a job that did NOT run, never one that ran and did not
+          # conclude success.
+          echo "release-tag: LOUD — CI job '$_pg_job' concluded '${_pg_concl:-<empty>}' for ${RELEASE_SHA:-HEAD} — not success, not skipped. A gate whose job RAN and did not conclude success is never excused by a disposition. Cure: fix the pipeline / re-run CI for this SHA." >&2
+          return 1 ;;
+      esac ;;
+    2)
+      echo "release-tag: LOUD — CI job '$_pg_job' appears MORE THAN ONCE in the provenance probe for ${RELEASE_SHA:-HEAD} (ambiguous conclusion) — LOUD regardless of disposition. Cure: fix the probe/seam to report each job exactly once." >&2
+      return 1 ;;
+    *)
+      # job absent from the run entirely
+      _pg_disp=$(_prov_disposition "$_pg_gid")
+      case "$_pg_disp" in
+        na) echo "release-tag: N/A ($_pg_gid) — '$_pg_job' is not in this run and $_pg_gid is validated na in $GATE_DISP_FILE." >&2; return 0 ;;
+      esac
+      echo "release-tag: LOUD — CI job '$_pg_job' is ABSENT from the run for ${RELEASE_SHA:-HEAD} and $_pg_gid has no na disposition (got: $_pg_disp). Cure: restore the job, OR record a dated na disposition in $GATE_DISP_FILE." >&2
+      return 1 ;;
+  esac
+}
+
+# _pg_loud_arm : the epilogue when at least one job went LOUD. -> 1 = REFUSE (enforce) · 0 = proceed.
+_pg_loud_arm() {
+  if [ "$_pg_mode" = enforce ]; then
+    echo "release-tag: REFUSING to tag — provenance gate LOUD under RELEASE_TAG_PROVENANCE=enforce." >&2
+    return 1
+  fi
+  _pg_suffix=""
+  [ "$_pg_mode_default" = 1 ] && _pg_suffix=" (default)"
+  echo "release-tag: provenance gate is OBSERVE mode$_pg_suffix — the tag proceeds despite the LOUD verdict above; set RELEASE_TAG_PROVENANCE=enforce in .kit/dials.conf to refuse instead." >&2
+  return 0
+}
+
 provenance_gate() {
   # _PG_DISP_DIR is created HERE, once, in provenance_gate's OWN execution frame — never inside
   # _prov_disp_file itself. [root cause, fix round 1 debugging] _prov_disp_file is reached only via
@@ -519,116 +719,51 @@ provenance_gate() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
   fi
-  # Δ-C: the mode comes from the DIAL READER — the repo-carried `.kit/dials.conf` is authoritative
-  # and the env may only ESCALATE (rt_dial_mode's header carries the full contract, including the
-  # [security LOW-1] garbage-value warning this line used to own). The `(default)` banner suffix
-  # means exactly: the conf carries no key AND the env is unset (PG2-default/PG2-explicit pin both
-  # faces) — a mode resolved from EITHER source is "explicit".
-  # [security INFO-3] The MODE is read LIVE from the working tree, deliberately NOT pinned to
-  # RELEASE_SHA — an asymmetry with the gate's INPUTS (_prov_disposition / _prov_dockerfile_present,
-  # which CP-10 pins to the released commit) and the right way round: the disposition and assertion
-  # set are FACTS ABOUT THE COMMIT BEING RELEASED, while the dial is the CURRENT OPERATOR'S POLICY
-  # about whether to refuse. Pinning the mode would let an old commit carry a stale `observe` past
-  # today's enforce, which is exactly the sticky de-escalation D-240811-2.1 exists to prevent.
-  # ONE conf read, in this frame, feeding BOTH answers [fix round 2, item 4] — see rt_dial_mode's $2.
-  _pg_conf_val=$(rt_dial_conf_value RELEASE_TAG_PROVENANCE)
-  _pg_mode=$(rt_dial_mode RELEASE_TAG_PROVENANCE "$_pg_conf_val")
-  _pg_mode_default=0
-  if [ -z "$_pg_conf_val" ] && [ -z "${RELEASE_TAG_PROVENANCE+x}" ]; then
-    _pg_mode_default=1
+  _pg_resolve_mode
+  # Allocate the channel the attempt count crosses the subshell on (see _PP_TRIES_FILE's note). When
+  # the disposition dir exists it lives INSIDE it, so the EXIT trap registered above already cleans
+  # it and no second trap is introduced (a second `trap ... EXIT` would REPLACE the first, which is
+  # exactly the class of bug the dir's own comment above records). On the unpinned direct-call path
+  # there is no dir, so a standalone temp file is used and removed immediately after the read-back —
+  # there is no `return` between the two points, so no trap is needed to guarantee it.
+  if [ -n "$_PG_DISP_DIR" ]; then
+    _PP_TRIES_FILE="$_PG_DISP_DIR/prov-attempts"
+  else
+    _PP_TRIES_FILE=$(mktemp) || _PP_TRIES_FILE=""
   fi
+  _PP_TRIES=1
   # Δ-C: capture the probe's DATA and its HEALTH separately. `set +e` bracketing is the _prov_conclusion
   # precedent below — rc propagates out of a command substitution, but `set -e` would abort first.
   set +e; _pg_probe=$(prov_probe); _pg_prc=$?; set -e
+  # READ THE COUNT BACK ACROSS THE SUBSHELL BOUNDARY the line above just closed.
+  if [ -n "$_PP_TRIES_FILE" ] && [ -s "$_PP_TRIES_FILE" ]; then
+    _PP_TRIES=$(cat "$_PP_TRIES_FILE" 2>/dev/null) || _PP_TRIES=1
+  fi
+  [ -n "$_PP_TRIES_FILE" ] && rm -f "$_PP_TRIES_FILE" 2>/dev/null
+  _PP_TRIES_FILE=""
   if [ "$_pg_prc" != 0 ]; then
-    # HEALTH OUTRANKS DATA. Any nonzero probe rc lands here REGARDLESS of stdout: a probe that emits
-    # lines and then dies (a forge dying mid-stream after a stale `provenance success`) must never be
-    # allowed to pass ENFORCE on partial/stale success lines. Checked BEFORE the emptiness test on
-    # purpose — the ordering IS the property.
-    # The cure menu is SHARED only where it is true of both arms: the two REPAIRS. The dial itself is
-    # a cure for the REFUSAL, never for the observe warning — offering an observe-mode operator a way
-    # to reach observe contradicts the very next sentence (measured on the AC run). The two legs pin
-    # each other: PG-QFAIL-ENF asserts the enforce arm DOES carry "ratified control-plane ceremony",
-    # PG-QFAIL-OBS-CURE asserts the observe arm does NOT. NOT in the menu at all, deliberately: a
-    # dated `na` disposition. `na` answers "did this job RUN" — a failed query never learned whether
-    # it ran, so there is no job for a disposition to excuse (PG-QFAIL-NA holds the refusal against a
-    # fully-na disposition file).
-    _pg_qcure="Cure: restore connectivity/auth to the forge and re-run; OR set RELEASE_TAG_PROV_PROBE to your forge's own query (this seam is how a non-GitHub forge answers this gate)."
-    if [ "$_pg_mode" = enforce ]; then
-      echo "release-tag: REFUSING to tag — the provenance query FAILED for ${RELEASE_SHA:-HEAD} (probe protocol rc $_pg_prc: the forge was unreachable, auth failed, this tree has no GitHub remote for gh to resolve, or the seam command failed). Under RELEASE_TAG_PROVENANCE=enforce an UNANSWERED provenance question is not a pass — this is the arm that used to proceed silently. $_pg_qcure OR return the dial to observe through the ratified control-plane ceremony (a conf edit in .kit/dials.conf, not an env var — env cannot de-escalate it)." >&2
-      return 1
-    fi
-    _pg_qsuffix=""
-    [ "$_pg_mode_default" = 1 ] && _pg_qsuffix=" (default)"
-    echo "release-tag: LOUD — the provenance query FAILED for ${RELEASE_SHA:-HEAD} (probe protocol rc $_pg_prc: the forge was unreachable, auth failed, this tree has no GitHub remote for gh to resolve, or the seam command failed). The provenance gate is OBSERVE mode$_pg_qsuffix — the tag proceeds UNVERIFIED; set RELEASE_TAG_PROVENANCE=enforce in .kit/dials.conf to refuse instead. $_pg_qcure" >&2
-    return 0
+    set +e; _pg_query_failed_arm; _pg_arc=$?; set -e
+    return "$_pg_arc"
   fi
   if [ -z "$_pg_probe" ]; then
-    # rc 0 + empty: the query WORKED and there is genuinely nothing to report. This arm no longer
-    # covers the failed query above, so it is named for what it actually is. It stays rc 0 in BOTH
-    # modes — the ruling's boundary: enforce binds the FAILURE arms, never the absence arms (see this
-    # gate's honest ceiling; `ci_gate` degrades open on these same conditions, so nothing mechanical
-    # backstops them at this rung).
-    # ⚠️ "not GitHub" is NOT one of these arms, and saying so would be false: with `gh` INSTALLED, a
-    # non-GitHub tree makes the query FAIL (gh: "none of the git remotes … point to a known GitHub
-    # host") and lands in the rc-3 arm above, refusing under enforce. Only an ABSENT gh reaches here.
-    echo "release-tag: provenance probe returned no data and reported HEALTHY (gh not installed / no CI run for this SHA / a seam with nothing to report) — honest N/A: there is no provenance conclusion to read, so this gate cannot vouch for the release either way. Proceeding, unverified; see this gate's SECURITY note." >&2
+    _pg_empty_probe_arm
     return 0
   fi
   _pg_loud=0
   _pg_assert="provenance"
   _prov_dockerfile_present && _pg_assert="$_pg_assert image-provenance"
 
-  for _pg_job in $_pg_assert; do
-    case "$_pg_job" in
-      provenance) _pg_gid=gate-provenance ;;
-      image-provenance) _pg_gid=gate-sbom ;;
+  for _pg_j in $_pg_assert; do
+    case "$_pg_j" in
+      provenance) _pg_g=gate-provenance ;;
+      image-provenance) _pg_g=gate-sbom ;;
     esac
-    set +e; _pg_concl=$(_prov_conclusion "$_pg_job" "$_pg_probe"); _pg_crc=$?; set -e
-    case "$_pg_crc" in
-      0)
-        case "$_pg_concl" in
-          success) : ;;   # quiet pass
-          skipped)
-            _pg_disp=$(_prov_disposition "$_pg_gid")
-            if [ "$_pg_disp" = na ]; then
-              _pg_reason=$(_strip_ctrl "$(_prov_reason "$_pg_gid")")
-              echo "release-tag: N/A ($_pg_gid) — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} and $_pg_gid is validated na (${_pg_reason:-reason on file}). Revisit if the repo becomes public/org-owned." >&2
-            else
-              echo "release-tag: LOUD — CI job '$_pg_job' concluded skipped for ${RELEASE_SHA:-HEAD} (disposition $_pg_gid: $_pg_disp). A provenance/image-provenance gate that never ran must not pass silently. Cure: make the repo public / move it to a GitHub org, OR record a dated na disposition in $GATE_DISP_FILE, OR set RELEASE_TAG_PROV_PROBE for your forge." >&2
-              _pg_loud=1
-            fi ;;
-          *)
-            # [owner adjudication + security MED-2, fix round 1] any OTHER conclusion (failure,
-            # empty, or an ambiguous value that slipped past rc 2 below) is LOUD regardless of
-            # disposition — na excuses only a job that did NOT run, never one that ran and did not
-            # conclude success.
-            echo "release-tag: LOUD — CI job '$_pg_job' concluded '${_pg_concl:-<empty>}' for ${RELEASE_SHA:-HEAD} — not success, not skipped. A gate whose job RAN and did not conclude success is never excused by a disposition. Cure: fix the pipeline / re-run CI for this SHA." >&2
-            _pg_loud=1 ;;
-        esac ;;
-      2)
-        echo "release-tag: LOUD — CI job '$_pg_job' appears MORE THAN ONCE in the provenance probe for ${RELEASE_SHA:-HEAD} (ambiguous conclusion) — LOUD regardless of disposition. Cure: fix the probe/seam to report each job exactly once." >&2
-        _pg_loud=1 ;;
-      *)
-        # job absent from the run entirely
-        _pg_disp=$(_prov_disposition "$_pg_gid")
-        case "$_pg_disp" in
-          na) echo "release-tag: N/A ($_pg_gid) — '$_pg_job' is not in this run and $_pg_gid is validated na in $GATE_DISP_FILE." >&2 ;;
-          *)
-            echo "release-tag: LOUD — CI job '$_pg_job' is ABSENT from the run for ${RELEASE_SHA:-HEAD} and $_pg_gid has no na disposition (got: $_pg_disp). Cure: restore the job, OR record a dated na disposition in $GATE_DISP_FILE." >&2
-            _pg_loud=1 ;;
-        esac ;;
-    esac
+    _pg_job_verdict "$_pg_j" "$_pg_g" || _pg_loud=1
   done
 
   if [ "$_pg_loud" = 1 ]; then
-    if [ "$_pg_mode" = enforce ]; then
-      echo "release-tag: REFUSING to tag — provenance gate LOUD under RELEASE_TAG_PROVENANCE=enforce." >&2
-      return 1
-    fi
-    _pg_suffix=""
-    [ "$_pg_mode_default" = 1 ] && _pg_suffix=" (default)"
-    echo "release-tag: provenance gate is OBSERVE mode$_pg_suffix — the tag proceeds despite the LOUD verdict above; set RELEASE_TAG_PROVENANCE=enforce in .kit/dials.conf to refuse instead." >&2
+    set +e; _pg_loud_arm; _pg_lrc=$?; set -e
+    return "$_pg_lrc"
   fi
   return 0
 }
@@ -1178,6 +1313,86 @@ selftest() {
     echo "FAIL: PG-PROBE-RC-partial (rc=$_pprc out='$_ppout')"; st=1
   fi
 
+  # ── PG-PROBE-RETRY (GH-RUN-QUERY-NO-RETRY): a TRANSIENT query failure must not spend a release.
+  # Every fixture drives the RELEASE_TAG_PROV_PROBE seam, which mirrors the gh arms exactly, and each
+  # counts its own invocations in a file (each attempt is a fresh `sh -c`, so state cannot live in a
+  # variable). The invocation COUNT is the assertion that matters: it is the only way to tell a real
+  # retry from a lucky rc.
+  _rt=$(mktemp -d)
+  # (1) TRANSIENT: fails twice, succeeds on the third — must complete at rc 0 WITHIN the bound.
+  _rtcmd='n=$(cat '"$_rt"'/a 2>/dev/null || echo 0); n=$((n+1)); printf %s "$n" > '"$_rt"'/a; [ "$n" -lt 3 ] && exit 7; printf "provenance\tsuccess\n"'
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE="$_rtcmd" prov_probe 2>/dev/null ) || _pprc=$?
+  if [ "$_pprc" = 0 ] && [ "$_ppout" = "$(printf 'provenance\tsuccess')" ] && [ "$(cat "$_rt/a")" = 3 ]; then
+    echo "PASS: prov_probe — a transient query failure clearing within the bound completes at rc 0 (3 attempts)"
+  else
+    echo "FAIL: PG-PROBE-RETRY-transient (rc=$_pprc attempts=$(cat "$_rt/a" 2>/dev/null) out='$_ppout')"; st=1
+  fi
+  # (2) NO DUPLICATE LINES: the same transient sequence must emit the successful attempt's output
+  # ONCE. This is the partial-emission hazard that pins the retry to the INVOCATION and forbids it at
+  # the block: release-tag.sh's probe prints before it checks the rc, so a block-level retry after a
+  # partial emission would print the job lines twice — and `_prov_conclusion` reds a duplicated job
+  # name as ambiguity (rc 2), turning a recovered transient into a hard gate failure.
+  _rtcmd2='n=$(cat '"$_rt"'/b 2>/dev/null || echo 0); n=$((n+1)); printf %s "$n" > '"$_rt"'/b; printf "provenance\tsuccess\n"; [ "$n" -lt 3 ] && exit 7; true'
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE="$_rtcmd2" prov_probe 2>/dev/null ) || _pprc=$?
+  _rtlines=$(printf '%s\n' "$_ppout" | grep -c 'provenance' || true)
+  if [ "$_pprc" = 0 ] && [ "$_rtlines" = 1 ]; then
+    echo "PASS: prov_probe — a fails-then-succeeds sequence emits the job line ONCE (no partial-emission duplicate)"
+  else
+    echo "FAIL: PG-PROBE-RETRY-dup (rc=$_pprc lines=$_rtlines out='$_ppout') — a duplicated job line reds _prov_conclusion as false ambiguity"; st=1
+  fi
+  # (3) BOUNDED + still rc 3: a PERSISTENT failure exhausts exactly the bound and the protocol is
+  # unchanged — retry buys tolerance for transients, never forgiveness for a dead forge.
+  _rtcmd3='n=$(cat '"$_rt"'/c 2>/dev/null || echo 0); n=$((n+1)); printf %s "$n" > '"$_rt"'/c; exit 7'
+  _pprc=0; _pperr=$( RELEASE_TAG_PROV_PROBE="$_rtcmd3" prov_probe 2>&1 >/dev/null ) || _pprc=$?
+  if [ "$_pprc" = 3 ] && [ "$(cat "$_rt/c")" = 3 ]; then
+    echo "PASS: prov_probe — a persistent query failure still returns rc 3, after exactly 3 bounded attempts"
+  else
+    echo "FAIL: PG-PROBE-RETRY-persist (rc=$_pprc attempts=$(cat "$_rt/c" 2>/dev/null)) — want rc 3 after 3 attempts"; st=1
+  fi
+  # (4) OBSERVABLE: any retry announces its attempt count on stderr. "3 attempts failed" and "one-shot
+  # failed" are different operational facts and must not read the same.
+  case "$_pperr" in
+    *"3 attempt"*) echo "PASS: prov_probe — a retried query reports its attempt count on stderr" ;;
+    *) echo "FAIL: PG-PROBE-RETRY-observable — no attempt count on stderr (got: $_pperr)"; st=1 ;;
+  esac
+  # (5) NEVER ON rc 0. `[ -n "$_run" ] || return 0` is an HONEST N/A — the query worked and there is
+  # nothing to report. Retrying a deterministic N/A converts a stable answer into a nondeterministic
+  # one, so an empty SUCCESS must be invoked EXACTLY ONCE. This is the leg that keeps the retry from
+  # widening the protocol.
+  _rtcmd4='n=$(cat '"$_rt"'/d 2>/dev/null || echo 0); n=$((n+1)); printf %s "$n" > '"$_rt"'/d; true'
+  _pprc=0; _ppout=$( RELEASE_TAG_PROV_PROBE="$_rtcmd4" prov_probe 2>/dev/null ) || _pprc=$?
+  if [ "$_pprc" = 0 ] && [ -z "$_ppout" ] && [ "$(cat "$_rt/d")" = 1 ]; then
+    echo "PASS: prov_probe — an empty SUCCESS (honest N/A) is invoked ONCE, never retried"
+  else
+    echo "FAIL: PG-PROBE-RETRY-neverzero (rc=$_pprc attempts=$(cat "$_rt/d" 2>/dev/null) out='$_ppout') — the retry fired on an honest N/A"; st=1
+  fi
+  # (6) the rc-3 CURE TEXT names the attempts, so an operator reading the refusal knows the forge was
+  # asked more than once before the release was refused.
+  # ⚠️ ANCHORED ON THE CURE SENTENCE, NOT ON A BARE "3 attempt" SUBSTRING, and that is the whole point
+  # of this leg. The first version matched "3 attempt" over the MERGED 2>&1 stream — but
+  # `_prov_gh_retry`'s OWN stderr line ("the provenance query was retried — 3 attempt(s)") fires under
+  # the IDENTICAL condition, so the leg was satisfied by the retry's chatter and stayed GREEN while the
+  # cure clause it was supposed to pin was deleted outright. It was, in other words, vacuous in exactly
+  # the way this repo's non-vacuity law exists to catch. It now asserts the cure sentence's own words
+  # AND the number, so a deleted clause reds and a wrong count reds.
+  _pgrc=0
+  _pgout=$( cd "$d"; RELEASE_SHA=$(git rev-parse HEAD); RELEASE_TAG_PROV_PROBE='exit 7'; RELEASE_TAG_PROVENANCE=enforce; provenance_gate 2>&1 ) || _pgrc=$?
+  case "$_pgout" in
+    *"attempted 3 attempt(s) before this verdict"*) echo "PASS: the rc-3 refusal's CURE SENTENCE names the true attempt count (a bounded retry, not a one-shot)" ;;
+    *) echo "FAIL: PG-PROBE-RETRY-cure — the rc-3 refusal's cure sentence does not carry 'attempted 3 attempt(s) before this verdict' (out='$_pgout')"; st=1 ;;
+  esac
+  # (7) ENV-DETECTION CONTROL — the standing D-240838-class behaviour must be BYTE-IDENTICAL across
+  # this change. The override banner is the env-detection surface; assert its exact text, so a retry
+  # that quietly re-worded or re-fired it is caught. Anchored on what the production path emits.
+  _pbout=$( RELEASE_TAG_PROV_PROBE=true prov_seam_banner 2>&1 >/dev/null ) || true
+  _pbwant="release-tag: ⚠⚠ OVERRIDDEN ENVIRONMENT — RELEASE_TAG_PROV_PROBE is set by the caller: the provenance gate is judging a CALLER-SUPPLIED answer, not this forge's own CI. RELEASE_TAG_PROVENANCE locks the gate's MODE against env de-escalation; it does not authenticate the PROBE, so this run carries no forge-verified provenance guarantee. Trusted-invocation-only; see this script's SECURITY header."
+  if [ "$_pbout" = "$_pbwant" ]; then
+    echo "PASS: env-detection override banner is byte-identical (the retry did not touch the control)"
+  else
+    echo "FAIL: PG-PROBE-RETRY-envcontrol — the override banner changed:"; printf '  got:  %s\n  want: %s\n' "$_pbout" "$_pbwant"; st=1
+  fi
+  rm -rf "$_rt" 2>/dev/null || true
+
   # PG-QFAIL-OBS / PG-QFAIL-ENF (THE RULED PRE-CHECK, both faces): the measured NO-OP cured. A
   # provenance query that FAILS is LOUD in observe (rc unchanged) and REFUSES in enforce.
   d="$t/pgqfail"; _pg_mk "$d" 0 apply n/a apply n/a
@@ -1564,6 +1779,22 @@ selftest() {
     echo "PASS: run() — a split git tree is bannered on the TAGGING route (not just --provenance-only)"
   else
     echo "FAIL: PG-GITDIR-BANNER-RUN — a split-tree TAG run stayed silent (rc=$_gdrc out='$_gdout')"; st=1
+  fi
+
+  # PG-GITDIR-BANNER-DRYRUN (RELEASE-TAG-PG-FUNC-LENGTH, the banner half): the THIRD route. The two
+  # legs above cover --provenance-only and the tagging route; --dry-run had its own `git_tree_banner`
+  # call and NO leg, so deleting that one call left the selftest fully GREEN. That is the exact
+  # wiring-vs-function gap the leg above was written for, one route over — and --dry-run is the route
+  # that most owes the warning, since it is precisely the "am I about to tag what I think I am?"
+  # question an operator asks before tagging the WRONG repository. Verified load-bearing by removing
+  # the --dry-run arm's git_tree_banner call in a scratch copy: this leg reds, and only this leg.
+  d="$t/pggitdirdry"; mkdir -p "$d"; _wt "$d"
+  _ddrc=0
+  _ddout=$( cd "$d/w" && GIT_WORK_TREE="$d/w" sh "$here/release-tag.sh" --dry-run 2>&1 ) || _ddrc=$?
+  if printf '%s\n' "$_ddout" | grep -q 'SPLIT GIT TREE'; then
+    echo "PASS: --dry-run — a split git tree is bannered on the dry-run route too"
+  else
+    echo "FAIL: PG-GITDIR-BANNER-DRYRUN — a split-tree --dry-run stayed silent (rc=$_ddrc out='$_ddout')"; st=1
   fi
 
   rm -rf "$t"

@@ -4,6 +4,8 @@ Governance, compliance, and privacy guidance for organizations adopting this kit
 
 **Pull-not-push:** this addendum is **not** part of the first-5 core path. Reach it when a regulated / audited / at-scale context makes its controls apply — the front-door map in [`../../START-HERE.md`](../../START-HERE.md) routes you here on trigger. Adopting nothing here weakens the kit's floor; it adds the depth a heavier compliance posture needs.
 
+**Enterprise is a deliberate later flip, not an inception question:** pass `incept --mode enterprise` at inception, or set the `**Process mode**` (§ ceremony) field in the project `CLAUDE.md` §3 to `enterprise` and let `kit-update` replay it — it is no longer prompted interactively.
+
 ## Contents
 
 | Doc | Purpose |

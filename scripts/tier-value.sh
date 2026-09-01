@@ -20,6 +20,7 @@
 # the decomposed pieces (builder tier-discount, reassembly tax) plus a clearly-labeled CRUDE within-trace
 # combination. Relative units only; the only economics input is the static WEIGHT_* config.
 # What it changes: read-only — analyses a trace file and prints a report (or --json) to stdout; mutates nothing.
+# collected-not-gated: no CI gate consumes this instrument's output as a verdict about YOUR repo; its output contract is exercised over fixtures by conformance/model-tiering-value.sh --selftest — run it deliberately.
 # Guardrails: read-only; no network, no writes; weights read from agent-immutable .kit/budget.conf via the
 #   KEY=VALUE cfg() pattern; graceful degradation (absent weights -> 1.0 advisory; absent tokens -> 0, cost advisory).
 #   The headline is the DECOMPOSED builder tier-discount + reassembly tax (never a single "net savings" that

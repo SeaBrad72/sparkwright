@@ -1,6 +1,6 @@
 # Waiver Register
 
-**Governed exceptions to the CI gates — for brownfield adoption only.** A waiver is the honest alternative to faking green: instead of disabling a gate, you record a **tracked, time-boxed, owned, ratified** exception with a remediation plan. Operationalizes the governed-exception process (`docs/enterprise/ratification-rbac.md`); validated by `conformance/waivers-valid.sh`.
+**Governed exceptions to the CI gates — for brownfield adoption only.** A waiver is the honest alternative to faking green: instead of disabling a gate, you record a **tracked, time-boxed, owned, ratified** exception with a remediation plan. Operationalizes the governed-exception process (`docs/enterprise/ratification-rbac.md`); validate this file with `sh conformance/waivers-valid.sh` — wire it into your own pipeline if you want it enforced, because nothing you receive runs it for you.
 
 > **Non-negotiable gates — NEVER waivable, even at adoption:**
 > - **`secret-scan`** — a repo must never ship secrets. If your secret-scan can't run day one, that is a hard blocker (fix it), not a waiver.

@@ -6,8 +6,8 @@
 > arithmetic over *your* inputs — nothing here is measured. **It returns with the first adopter**: the
 > first real rollout supplies the inputs, the measured baselines, and the worked example that would
 > make this model worth maintaining. Frozen under the `D-240819-2` Track-1 cut program; the tombstone
-> entry (what froze, when, and the return condition) is in
-> [`../operations/retiring-conventions.md`](../operations/retiring-conventions.md) §8.
+> entry (what froze, when, and the return condition) is kept with the kit maintainers'
+> retiring-conventions record, §8 Tombstones.
 
 **This is a *planning model parameterized by your inputs* — not a measured result, a benchmark, or a guarantee. Consistent with the kit's honesty standard: it shows the logic and labels every assumption; it does not assert savings.**
 

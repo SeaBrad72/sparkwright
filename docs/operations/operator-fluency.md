@@ -2,13 +2,15 @@
 
 The project `CLAUDE.md` declares `Operator fluency: Novice | Adjacent | Practitioner` (§3). The
 agent reads it and adapts **how it communicates** — never **what it is permitted to do** (the §13
-autonomy tiers and CI gates are unchanged; adaptation is style, not permission).
+autonomy tiers and CI gates are unchanged; adaptation is style, not permission). Fluency is **not
+prompted at inception** — declare it with `incept --operator-fluency <level>` or fill the `CLAUDE.md`
+field later; observation is the default seed.
 
 ## Adaptation by level
 
 - **Novice / Adjacent** — explain the *why* before the *how*; surface what is about to happen before
   doing it; **confirm before irreversible or destructive steps**; teach as you go; link to
-  `ONBOARDING.md` and the relevant standard when introducing a new concept. **Explain or derive** routine
+  the "New to enterprise SDLC?" section of `START-HERE.md` and the relevant standard when introducing a new concept. **Explain or derive** routine
   inception vocabulary (intent owner, representative real change) from the charter rather than surfacing it
   as a blocker — see `docs/adoption/inception-bootstrap.md` ("Inception vocabulary — derive, don't block").
 - **Practitioner** — be terse; assume competence; skip the explanations and the hand-holding;

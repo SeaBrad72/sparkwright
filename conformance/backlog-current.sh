@@ -80,7 +80,56 @@ is_na_reason() { printf '%s' "$1" | grep -Eiq '^[[:space:]]*n/?a[[:space:]]*(—
 # untouched, so an em-dash or an emoji in a row title survives intact; the `cut` is left in the
 # ambient locale so it bounds CHARACTERS and cannot split a multibyte sequence.
 # Precedent: promotion-readiness.sh:344-345, branch-protection.sh:170.
-_cell_diag() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80; }
+# THE BOUND ANNOUNCES ITSELF (CHECK-SECTION-RAW-ECHOES). A silent 80-character cut is a second
+# falsification surface on top of the one this function closes: a crafted 500-character cell whose
+# first 80 characters read as a DIFFERENT, entirely plausible row id renders indistinguishable from
+# a complete value, and the operator acts on the wrong row. So the cut appends a marker. The marker
+# describes the CUT ONLY — stripping control bytes never sets it (a stripped cell is still the whole
+# cell), which is why the comparison is made AFTER the strip and not against the raw input.
+_cell_diag() {
+  _cd_s=$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]')
+  _cd_c=$(printf '%s' "$_cd_s" | cut -c1-80)
+  # ⚠️ BRACES ARE LOAD-BEARING: `$_cd_c…` makes the shell read the multibyte `…` as part of the
+  # NAME and dies with "unbound variable" under `set -u` (measured here, not theorised).
+  [ "$_cd_c" = "$_cd_s" ] || _cd_c="${_cd_c}…[truncated]"
+  printf '%s' "$_cd_c"
+}
+
+# _header_cols_diag <header-row> : header_cols, but with the sanitizer's bound applied PER COLUMN
+# NAME rather than to the JOINED list. Bounding the join is the wrong bound and was a real defect:
+# a board with many SHORT columns had its diagnostic cut after the third or fourth name, so the
+# operator was told "columns present: A, B, C…[truncated]" and never learned which column they had
+# actually misspelled — while the hostile input the bound exists for (ONE enormous cell) is exactly
+# what it should still be cutting. The hostile unit is the CELL, so the bound belongs on the cell.
+# BUT THE LIST NEEDS A BOUND OF ITS OWN, ON COUNT RATHER THAN LENGTH. Moving the character bound onto
+# the cell removed every limit on the NUMBER of names, and a 300-column probe row produced a single
+# 4,939-byte FAIL line — unreadable, and a log-flooding surface a board author controls. So the list
+# is capped at the first 20 names and then SAYS how many it withheld: an operator scanning for their
+# misspelled column still sees the realistic cases (no honest board has 20 columns), and the count
+# tells them the diagnostic is partial instead of letting them assume it is complete — the same
+# announce-the-cut rule `_cell_diag` follows one level down.
+# ⚠️ HONEST CEILING — THIS CAP AND ITS ANNOUNCEMENT ARE UNCOVERED BY THE SELFTEST. Measured, both
+# faces: deleting the `...(+N more)` announcement AND deleting the cap test itself each leave the
+# whole battery GREEN (rc 0, zero FAILs). So the two lines below are asserted by nothing — exactly
+# the drifted-green shape the rest of this file exists to prevent, and it is disclosed rather than
+# left for the next reader to discover. WHY: the cap landed in a review fix round with the fixture
+# budget at 4 free lines, and an honest leg (a wide-header fixture plus positive/negative faces)
+# costs ~6-8 fixture lines — i.e. a fresh owner ack, which a residual of this size does not justify
+# spending mid-review. Follow-up row `HEADER-CAP-ANNOUNCE-LEG` is boarded. Until it lands, treat
+# this block as unproven: if you change it, re-measure the 300-column probe by hand.
+_HEADER_COLS_MAX=20
+_header_cols_diag() {
+  printf '%s' "$1" \
+    | awk -F'|' '{for(i=2;i<=NF;i++){v=$i; gsub(/^[ \t]+|[ \t]+$/,"",v); if(v!="") print v}}' \
+    | { _hc_out=""; _hc_n=0; _hc_extra=0
+        while IFS= read -r _hc; do
+          _hc_n=$((_hc_n + 1))
+          if [ "$_hc_n" -gt "$_HEADER_COLS_MAX" ]; then _hc_extra=$((_hc_extra + 1)); continue; fi
+          _hc_out="${_hc_out:+$_hc_out, }$(_cell_diag "$_hc")"
+        done
+        if [ "$_hc_extra" -gt 0 ]; then _hc_out="${_hc_out} ...(+${_hc_extra} more)"; fi
+        printf '%s' "$_hc_out"; }
+}
 
 # is_empty_marker <trimmed-line> : rc0 iff the line is a bare `None.` empty-section idiom,
 # WHOLE-LINE anchored (R3): a `case` exact-match, so an item literally named "None of the
@@ -149,7 +198,7 @@ check_section() {
       echo "FAIL: $_sec — expected a schema table with the '$_col' column (zero rows is fine, or write 'None.' if the section is empty); found content but no table"
       return 1
     fi
-    _found=$(header_cols "$_hdr")                  # a table exists but the gated column is renamed/absent
+    _found=$(_header_cols_diag "$_hdr")                  # a table exists but the gated column is renamed/absent
     echo "FAIL: $_sec — required column '$_col' not found (columns present: ${_found:-none}); a renamed/absent gated column is a schema violation, not a skip"
     return 1
   fi
@@ -159,7 +208,7 @@ check_section() {
   if [ "$_mode" = "blocked" ]; then
     [ -n "$_rows" ] && _ci2=$(col_index "$_hdr" "$_col2")
     if [ -z "$_ci2" ]; then
-      _found=$(header_cols "$_hdr")
+      _found=$(_header_cols_diag "$_hdr")
       echo "FAIL: $_sec — required column '$_col2' not found (columns present: ${_found:-none}); a renamed/absent gated column is a schema violation, not a skip"
       return 1
     fi
@@ -180,7 +229,7 @@ check_section() {
       # (you cannot be in review without a PR).
       _g=$(cell "$_row" "$_ci")
       if is_bare_na "$_g" || is_na_reason "$_g"; then
-        echo "FAIL: $_sec item '$_item' — $_col must be a real PR link (got '${_g}'); a blank or 'N/A — reason' is not review-ready"
+        echo "FAIL: $_sec item '$(_cell_diag "$_item")' — $_col must be a real PR link (got '$(_cell_diag "$_g")'); a blank or 'N/A — reason' is not review-ready"
         return 1
       fi
     elif [ "$_mode" = "blocked" ]; then
@@ -191,13 +240,13 @@ check_section() {
       # arithmetic: staleness is surfaced, never adjudicated (a Go/No-Go policy call).
       _g=$(cell "$_row" "$_ci")                    # 'Blocked on'
       if is_bare_na "$_g"; then
-        echo "FAIL: $_sec item '$_item' — $_col is empty/bare ('${_g}'); name the blocker or use the 'N/A — <reason>' idiom"
+        echo "FAIL: $_sec item '$(_cell_diag "$_item")' — $_col is empty/bare ('$(_cell_diag "$_g")'); name the blocker or use the 'N/A — <reason>' idiom"
         return 1
       fi
       if is_na_reason "$_g"; then BLOCKED_NA_ESCAPES=$((BLOCKED_NA_ESCAPES + 1)); fi
       _s=$(cell "$_row" "$_ci2")                   # 'Since'
       if is_bare_na "$_s"; then
-        echo "FAIL: $_sec item '$_item' — $_col2 is empty/bare ('${_s}'); record when it blocked so staleness is visible, or use the 'N/A — <reason>' idiom"
+        echo "FAIL: $_sec item '$(_cell_diag "$_item")' — $_col2 is empty/bare ('$(_cell_diag "$_s")'); record when it blocked so staleness is visible, or use the 'N/A — <reason>' idiom"
         return 1
       fi
       if is_na_reason "$_s"; then BLOCKED_NA_ESCAPES=$((BLOCKED_NA_ESCAPES + 1)); fi
@@ -205,7 +254,7 @@ check_section() {
       # In Progress -> Links: a real value OR an `N/A — reason`. Bare/empty FAILs.
       _g=$(cell "$_row" "$_ci")
       if is_bare_na "$_g"; then
-        echo "FAIL: $_sec item '$_item' — $_col is empty/bare ('${_g}'); use a real link or the 'N/A — <reason>' idiom"
+        echo "FAIL: $_sec item '$(_cell_diag "$_item")' — $_col is empty/bare ('$(_cell_diag "$_g")'); use a real link or the 'N/A — <reason>' idiom"
         return 1
       fi
       if is_na_reason "$_g"; then
@@ -298,7 +347,7 @@ EOF
       # below does — and it was MEASURED reaching stdout with two raw ESC bytes before this call
       # was added (an erase-line + cursor-up pasted into a header cell, which rewrites the line
       # above the verdict). Sanitize on the SAME helper: one definition of "safe to print".
-      _rm_found=$(_cell_diag "$(header_cols "$_rm_hdr")")
+      _rm_found=$(_header_cols_diag "$_rm_hdr")   # bound PER COLUMN, not on the join (see the helper)
       _rm_rw=rows; [ "$_rm_eval" -eq 1 ] && _rm_rw=row
       echo "FAIL: Ready — required column '$READY_METRIC_COL' not found (columns present: ${_rm_found:-none}) on a table carrying ${_rm_eval} item ${_rm_rw}; a renamed/absent gated column is a schema violation, not a skip. MIGRATION: add the '$READY_METRIC_COL' column to your Ready table — rows without an honest metric demote to your backlog rather than being filled in"
       return 1
@@ -344,7 +393,7 @@ check_done_uat() {
     case "$_row" in
       *UAT-SIGNOFF*) ;;
       *)
-        echo "FAIL: Done item '$_item' — flagged [taste-surface] but carries no UAT-SIGNOFF reference; a taste-surface reaching Done must record a UAT sign-off (a link or path to a UAT-SIGNOFF)"
+        echo "FAIL: Done item '$(_cell_diag "$_item")' — flagged [taste-surface] but carries no UAT-SIGNOFF reference; a taste-surface reaching Done must record a UAT sign-off (a link or path to a UAT-SIGNOFF)"
         return 1
         ;;
     esac
@@ -416,7 +465,12 @@ check_done_retro() {
   _ci_c=$(col_index "$_hdr" "Closed")
   _ci_r=$(col_index "$_hdr" "Retro/outcome")
   if [ -z "$_ci_c" ] || [ -z "$_ci_r" ]; then
-    echo "FAIL: Done table lacks a 'Closed' and/or 'Retro/outcome' column (found: $(header_cols "$_hdr")); HITL-6 cannot grade an L1 retro without both"
+    # One of FOUR FURTHER SITES beyond the six the row named (the others are the three Done-item
+    # echoes below), found by sweeping the whole file rather than the diff. Re-derived at review:
+    # the baseline b43d05a9 carried TEN raw sites, not the nine first claimed here — the Ready
+    # column-missing echo was miscounted as raw when it was in fact already sanitized (its defect
+    # was the joined-vs-per-cell bound, not rawness). Census: 10 -> 0.
+    echo "FAIL: Done table lacks a 'Closed' and/or 'Retro/outcome' column (found: $(_header_cols_diag "$_hdr")); HITL-6 cannot grade an L1 retro without both"
     return 1
   fi
   _epoch_n=$(printf '%s' "$HITL6_RETRO_EPOCH" | tr -d '-')
@@ -433,7 +487,7 @@ check_done_retro() {
     # leg 1 — substance floor, EVERY row regardless of date.
     _len=${#_retro}
     if [ "$_len" -lt "$HITL6_MIN_RETRO_CHARS" ]; then
-      echo "FAIL: Done item '$_item' — Retro/outcome cell is too thin ($_len chars, floor $HITL6_MIN_RETRO_CHARS); a Done row must record what shipped and what was learned"
+      echo "FAIL: Done item '$(_cell_diag "$_item")' — Retro/outcome cell is too thin ($_len chars, floor $HITL6_MIN_RETRO_CHARS); a Done row must record what shipped and what was learned"
       return 1
     fi
     # leg 2 — explicit marker for rows Closed on/after the epoch. A date this cannot parse falls
@@ -446,7 +500,7 @@ check_done_retro() {
     case "$_retro" in
       *"L1 retro"*) ;;
       *)
-        echo "FAIL: Done item '$_item' — closed '$_closed' (on/after $HITL6_RETRO_EPOCH, or undated) but carries no 'L1 retro' marker; a Done item must record an L1 retro"
+        echo "FAIL: Done item '$(_cell_diag "$_item")' — closed '$(_cell_diag "$_closed")' (on/after $HITL6_RETRO_EPOCH, or undated) but carries no 'L1 retro' marker; a Done item must record an L1 retro"
         return 1
         ;;
     esac
@@ -1112,6 +1166,113 @@ EOF
     "bad-ready-ctrl-cell: control bytes in a Ready ITEM cell -> still FAILs on the placeholder metric"
   assert_no_ctrl "$d" \
     "bad-ready-ctrl-cell: the per-row FAIL echoes the item cell with control bytes STRIPPED"
+
+  # ===== CHECK-SECTION-RAW-ECHOES — the sanitizer's OTHER SIX call sites ====================
+  # The two legs above cover the READY gate. `check_section` — which grades In Progress, In Review
+  # and Blocked — echoed board cells RAW at six sites, in direct violation of the security-waiver
+  # CONDITION recorded at this file's `_cell_diag` header ("every new FAIL message that echoes cell
+  # content goes through here"). Those are untrusted bytes reaching a terminal and a CI log, and the
+  # ANSI verdict-rewrite `_cell_diag` exists to prevent was reachable through every gated section
+  # except the one that had legs. One fixture face PER SECTION and PER SITE, so no site can regress
+  # while another stays covered — and `assert_no_ctrl` is whole-output, so it also catches a site
+  # nobody remembered to write a leg for.
+
+  # (i) _cell_diag's own truncation MARKER. A bound that silently drops bytes is a second
+  # falsification surface: a crafted 500-char cell whose first 80 characters read as a DIFFERENT,
+  # plausible row id would render indistinguishable from a complete value, and the operator would
+  # act on the wrong row. Driven directly — four faces, so neither the bound nor the marker can be
+  # neutered without a leg noticing.
+  _cdlong=$(printf 'x%.0s' $(seq 1 200))
+  _cdout=$(_cell_diag "$_cdlong")
+  case "$_cdout" in
+    *'[truncated]') echo "selftest PASS: _cell_diag marks a truncated cell as truncated" ;;
+    *) echo "selftest FAIL: _cell_diag truncated a 200-char cell SILENTLY (out=<$_cdout>) — a crafted prefix would read as a complete, different row id"; st_fail=1 ;;
+  esac
+  _cdout=$(_cell_diag "short cell")
+  if [ "$_cdout" = "short cell" ]; then
+    echo "selftest PASS: _cell_diag leaves an unbounded cell byte-exact (no spurious marker)"
+  else
+    echo "selftest FAIL: _cell_diag altered a short cell (out=<$_cdout>)"; st_fail=1
+  fi
+  _cdout=$(_cell_diag "$(printf 'a\033[2Kb')")
+  case "$_cdout" in
+    *'[truncated]') echo "selftest FAIL: _cell_diag marked a SHORT cell as truncated after stripping control bytes — the marker must describe the cut, not the strip"; st_fail=1 ;;
+    *) echo "selftest PASS: _cell_diag's marker describes the CUT, not the control-byte strip" ;;
+  esac
+  _cdout=$(_cell_diag "$_cdlong")
+  if printf '%s' "$_cdout" | LC_ALL=C grep -q '[[:cntrl:]]'; then
+    echo "selftest FAIL: _cell_diag's truncation marker introduced a control byte"; st_fail=1
+  else
+    echo "selftest PASS: _cell_diag's marker carries no control byte of its own"
+  fi
+
+  # (ii) the JOINED-HEADER BOUND, applied per CELL and not to the join. `header_cols` returns a
+  # comma-joined list, and bounding the JOIN at 80 characters is the wrong bound: a board with many
+  # SHORT columns has its diagnostic cut after the third or fourth name, so the operator is told
+  # "columns present: A, B, C…[truncated]" and never learns which column they actually misspelled —
+  # while the hostile input the bound exists for (ONE enormous cell) is what it should be cutting.
+  # The bound belongs on the cell. Assert the LAST column name survives a long-but-many-short header.
+  _hdrmany='| Item | Owner | Started | Assignee | Reviewer | Milestone | Estimate | Priority | Zebra |'
+  _hcout=$(_header_cols_diag "$_hdrmany")
+  case "$_hcout" in
+    *Zebra*) echo "selftest PASS: the header diagnostic bounds each COLUMN, so a many-column board still names its last column" ;;
+    *) echo "selftest FAIL: the header diagnostic bounded the JOINED list — the last column was cut away (out=<$_hcout>)"; st_fail=1 ;;
+  esac
+  _hcout=$(_header_cols_diag "| Item | $(printf 'y%.0s' $(seq 1 200)) |")
+  case "$_hcout" in
+    *'[truncated]') echo "selftest PASS: the header diagnostic still bounds a single ENORMOUS column name" ;;
+    *) echo "selftest FAIL: an enormous column name was printed unbounded (len=$(printf '%s' "$_hcout" | wc -c))"; st_fail=1 ;;
+  esac
+
+  # (iii) bad-progress-ctrl-cell/ — site: the In Progress 'Links' per-row FAIL (echoes item + cell).
+  d="$base/bad-progress-ctrl-cell"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x | a | #1 | m |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| p\033[2K\033[1A | a | 2026-07-01 |  |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "is empty/bare" \
+    "bad-progress-ctrl-cell: control bytes in an In Progress ITEM cell -> still FAILs on the empty Links"
+  assert_no_ctrl "$d" \
+    "bad-progress-ctrl-cell: the In Progress per-row FAIL echoes the cells with control bytes STRIPPED"
+
+  # (iv) bad-review-ctrl-cell/ — site: the In Review 'PR' per-row FAIL.
+  d="$base/bad-review-ctrl-cell"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x | a | #1 | m |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| | | | |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| r\033[2K\033[1A | a |  |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "must be a real PR link" \
+    "bad-review-ctrl-cell: control bytes in an In Review ITEM cell -> still FAILs on the missing PR"
+  assert_no_ctrl "$d" \
+    "bad-review-ctrl-cell: the In Review per-row FAIL echoes the cells with control bytes STRIPPED"
+
+  # (v) bad-blocked-ctrl-cell/ — site: the Blocked 'Blocked on' per-row FAIL.
+  d="$base/bad-blocked-ctrl-cell"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x | a | #1 | m |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| | | | |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n\n## Blocked\n\n| Item | Blocked on | Since | Event-retro link |\n|------|-----------|-------|------------------|\n| b\033[2K\033[1A |  | 2026-07-02 | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "Blocked on is empty/bare" \
+    "bad-blocked-ctrl-cell: control bytes in a Blocked ITEM cell -> still FAILs on the empty blocker"
+  assert_no_ctrl "$d" \
+    "bad-blocked-ctrl-cell: the Blocked 'Blocked on' FAIL echoes the cells with control bytes STRIPPED"
+
+  # (vi) bad-since-ctrl-cell/ — site: the Blocked 'Since' per-row FAIL (a DIFFERENT echo from (v)).
+  d="$base/bad-since-ctrl-cell"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x | a | #1 | m |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| | | | |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n\n## Blocked\n\n| Item | Blocked on | Since | Event-retro link |\n|------|-----------|-------|------------------|\n| s\033[2K\033[1A | waiting on legal |  | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "Since is empty/bare" \
+    "bad-since-ctrl-cell: control bytes in a Blocked ITEM cell -> still FAILs on the empty Since"
+  assert_no_ctrl "$d" \
+    "bad-since-ctrl-cell: the Blocked 'Since' FAIL echoes the cells with control bytes STRIPPED"
+
+  # (vii) bad-progress-ctrl-hdr/ — site: the 'required column not found' FAIL, which echoes the
+  # HEADER cells (`columns present: …`). A different echo from every per-row site above.
+  d="$base/bad-progress-ctrl-hdr"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x | a | #1 | m |\n\n## In Progress\n\n| Item | Owner\033[2K\033[1A | Started | Hyperlinks |\n|------|-------|---------|-------|\n| p | a | 2026-07-01 | #1 |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "required column 'Links' not found" \
+    "bad-progress-ctrl-hdr: control bytes in an In Progress HEADER -> still FAILs on the renamed column"
+  assert_no_ctrl "$d" \
+    "bad-progress-ctrl-hdr: the column-missing FAIL echoes header cells with control bytes STRIPPED"
+
+  # (viii) bad-since-ctrl-hdr/ — site: the SECOND 'required column not found' FAIL, the one guarding
+  # the Blocked gate's second column. It is a separate echo of `_found` and had no coverage at all.
+  d="$base/bad-since-ctrl-hdr"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  printf '# B\n## Ready\n\n| Item | Owner | Links | Success metric / hypothesis |\n|------|-------|-------|-----------------------------|\n| x | a | #1 | m |\n\n## In Progress\n\n| Item | Owner | Started | Links |\n|------|-------|---------|-------|\n| | | | |\n\n## In Review\n\n| Item | Reviewer | PR |\n|------|----------|----|\n| | | |\n\n## Blocked\n\n| Item | Blocked on | When\033[2K\033[1A | Event-retro link |\n|------|-----------|-------|------------------|\n| b | waiting | 2026-07-02 | |\n' > "$d/BACKLOG.md"
+  assert_fail "$d" "required column 'Since' not found" \
+    "bad-since-ctrl-hdr: control bytes in a Blocked HEADER -> still FAILs on the renamed 'Since'"
+  assert_no_ctrl "$d" \
+    "bad-since-ctrl-hdr: the second column-missing FAIL echoes header cells with control bytes STRIPPED"
 
   # bad-inprogress-qmark/ — THE WIDENING, FIXTURED ON A SECOND CALLER. Extending is_bare_na with
   # `?` widens EVERY gated cell, not just the Ready metric, and until this leg the three older

@@ -1,7 +1,8 @@
 #!/bin/sh
 # meta-control-fresh.sh — M2 freshness gate: the cadenced meta-control circuit-breaker.
 #
-# The meta-control panel (docs/operations/meta-control.md) is the kit's institutional, adversarial
+# The meta-control panel (docs/kit-internals/meta-control.md; the shipped operator procedure is
+# docs/enterprise/meta-control.md) is the kit's institutional, adversarial
 # go/no-go — the control that catches direction / proportion / over-claim drift. M1 productized it;
 # M2 ENFORCES its cadence so it can't be "designed but never run". This check answers, mechanically:
 # "is a meta-control panel OVERDUE?" — DUE once more than N release tags have landed since the last
@@ -98,7 +99,7 @@ norm_verdict() { printf '%s' "$1" | tr '[:lower:]' '[:upper:]'; }
 # reason; returns 0/1. Sets MVER, MVERDICT. (Structural / time-invariant — safe for per-PR selftest.)
 validate_state() {
   if [ ! -f "$ROOT/$MARKER" ]; then
-    echo "FAIL: meta-control cadence is active but the state marker is missing ($MARKER). Run the panel (docs/operations/meta-control.md) or log a dated DEFERRED row, then write the marker."
+    echo "FAIL: meta-control cadence is active but the state marker is missing ($MARKER). Run the panel (docs/enterprise/meta-control.md) or log a dated DEFERRED row, then write the marker."
     return 1
   fi
   if [ ! -f "$ROOT/$LOG" ]; then
@@ -118,7 +119,7 @@ validate_state() {
     return 1
   fi
   # (a, trimmed) Two checks, both DEFENSE-IN-DEPTH only — the real guarantee is the marker's
-  # control-plane status (the guard denies agent writes; see docs/operations/meta-control.md).
+  # control-plane status (the guard denies agent writes; see docs/kit-internals/meta-control.md).
   #  i. marker must not be AHEAD of VERSION (rejects a fabricated 99.0.0 future-pin).
   # ii. marker must correspond to a real release point: an existing semver tag OR exactly == VERSION
   #     (the unreleased ship-seam). Rejects a plausible-but-fabricated in-between marker that (i) alone
@@ -188,7 +189,7 @@ freshness() {
   if [ "$_cnt" -gt $((2 * N)) ]; then
     echo "ESCALATED: $_cnt release tags since the last addressed meta-control panel ($MVER, $MVERDICT; N=$N, grace 2N=$((2 * N)) exhausted)."
     echo "  -> The advisory OVERDUE band passed with no recorded cadence decision. Run the light 5-lens panel per"
-    echo "     docs/operations/meta-control.md, or record a dated human-ratified DEFERRED row; either appends a row to"
+    echo "     docs/enterprise/meta-control.md, or record a dated human-ratified DEFERRED row; either appends a row to"
     echo "     $LOG and advances $MARKER, which un-escalates by construction."
     echo "     scripts/release-tag.sh REFUSES to tag while this state holds."
     return 1
@@ -199,7 +200,7 @@ freshness() {
   fi
   if [ "$_cnt" -gt "$N" ]; then
     echo "OVERDUE: $_cnt release tags since the last addressed meta-control panel ($MVER, $MVERDICT; N=$N)."
-    echo "  -> Run the light 5-lens panel per docs/operations/meta-control.md (or log a dated DEFERRED row with a reason),"
+    echo "  -> Run the light 5-lens panel per docs/enterprise/meta-control.md (or log a dated DEFERRED row with a reason),"
     echo "     append a row to $LOG, and set $MARKER to the current version. Greens once within $N tags of HEAD."
     return 1
   fi

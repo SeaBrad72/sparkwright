@@ -3,7 +3,7 @@
 This page goes one level deeper than the README on *how* Sparkwright runs work: who the agents are, how the
 loop is governed, how models are tiered, and why the gates are trustworthy. It is deliberately **honest about
 what is enforced versus advisory versus declared** — that candor is the point. For the full narrative (with
-the CI/CD, ephemeral-environment, and enterprise-governance surface) see `docs/positioning/`.
+the CI/CD, ephemeral-environment, and enterprise-governance surface) see `docs/enterprise/`.
 
 ---
 
@@ -28,8 +28,8 @@ exists to carry out a disciplined lifecycle, not to replace it. The foundation l
   backlog, or doc).
 
 Everything that follows — the agent team, separation of duties, model tiering, the conformance rigor — is
-*how* that methodology is executed and enforced. See `docs/positioning/sparkwright-overview.md` for the full
-foundation-first account.
+*how* that methodology is executed and enforced. The full foundation-first account is a maintainer-side
+positioning note, not part of the distribution.
 
 ## 1. The agent team & their hats
 

@@ -6,6 +6,7 @@
 # discipline). Author-INDEPENDENT: no per-check declared kills.
 #   sh conformance/non-vacuity.sh                    # live sweep over the verify.sh control set; exit 1 on a survivor
 #   sh conformance/non-vacuity.sh --selftest         # self-teeth (mechanism): load-bearing killed, vacuous survives
+#   sh conformance/non-vacuity.sh --coverage-census  # STATIC (grep-class): re-derive target/excluded MEMBERSHIP, diff vs nv-coverage.tsv
 #   sh conformance/non-vacuity.sh --only <check.sh>  # DEV-ONLY: sweep a SINGLE control check (basename) in seconds
 #     instead of the full ~6-min set. CI ALWAYS runs the full sweep (no --only); --only can never narrow what CI
 #     enforces. A --only that matches no targeted check exits 2 (a targeted sweep evaluating nothing is never a pass).
@@ -42,6 +43,7 @@ set -eu
 cd "$(dirname "$0")/.." 2>/dev/null || true
 ONLY=""              # single check to judge (basename); set ONLY via --only <name> on argv, NEVER from
                      # the environment — the bare/CI path can never be narrowed. Empty = the whole set.
+CENSUS="conformance/nv-coverage.tsv"   # the ratified mutation-coverage census (see census_diff)
 SHARD_I=""           # CI shard coordinates; set ONLY via --shard <i>/<n> on argv, NEVER from the
 SHARD_N=""           # environment. LITERAL assignments on purpose: they overwrite any inherited env var
                      # of the same name, so a decoy `SHARD_N=99` in the environment cannot narrow what CI
@@ -58,6 +60,9 @@ SHARD_N=""           # environment. LITERAL assignments on purpose: they overwri
 #    arg-parse mode-setter or the tail dispatch, not the oracle body). Prints 0 if no marker at all.
 #    LC_ALL=C: byte-safe (some checks carry multibyte chars in comments; awk char scanning must not
 #    choke on them).
+#    ⚠️ CROSS-CITE — IF YOU CHANGE THIS RULE, CHANGE ITS COPY: conformance-mass-budget.sh's
+#    mb_first_marker is a VERBATIM duplicate of this function and prices the logic/fixture budget with
+#    it; a refinement here that is not carried across silently misprices that budget (design 2).
 first_marker() {
   LC_ALL=C awk '
     /^[[:space:]]*selftest[[:space:]]*\(\)/ { if (fn==0) fn=NR }
@@ -190,8 +195,29 @@ judge() {
   _jrc=$?
   set -e
   # verdict-agnostic cleanup — runs no matter which branch _judge_core returned from.
-  _cleanup "$_jmut" "$_jmut.meta" "$_jctl"
+  # GUARDED on a non-empty _jmut: the three early paths added by the fail-path disambiguation clean up
+  # and then BLANK these variables, so an unguarded call would evaluate `rm -f ""` and `rm -f ".meta"`
+  # — the second of which is a real relative path, not a harmless no-op. Nothing has ever created a
+  # file called `.meta` next to a check, but a cleanup routine that can be steered into deleting a
+  # path derived from a blank is not a shape this file should carry.
+  # (`if`, not `[ … ] && …`: judge restores `set -e` on the line above, so a false AND-list here would
+  # abort the function before it could return the verdict it just computed.)
+  if [ -n "$_jmut" ]; then _cleanup "$_jmut" "$_jmut.meta"; fi
+  if [ -n "$_jctl" ]; then _cleanup "$_jctl"; fi
   return "$_jrc"
+}
+
+# ── _pre_broken <base> <check.sh> : the IN-PLACE sanity run, lifted out of _judge_core's old step 1 so
+#    it can be called LAZILY on the failure path (fail-path disambiguation). Returns 0 — and EMITS the
+#    ERROR verdict line — when the check's own --selftest FAILS in its own directory; returns 1 when it
+#    passes. Reads as `_pre_broken "$_base" "$_chk" && return 3` at every call site.
+#    The polarity is deliberately "0 = yes, pre-broken", matching the sentence at the call site rather
+#    than shell-success convention; the verdict text is emitted here so all four call sites word the
+#    ERROR identically (it used to exist at exactly one site and must not fork now that there are four).
+_pre_broken() {
+  sh "$2" --selftest >/dev/null 2>&1 && return 1
+  echo "ERROR: $1 — its own --selftest FAILS unmutated (pre-broken; cannot mutation-test)"
+  return 0
 }
 
 # ── _judge_core <check.sh> : the actual verdict logic. Sets the outer _jmut / _jctl (so judge's
@@ -200,14 +226,47 @@ _judge_core() {
   _chk=$1
   _base=$(basename "$_chk")
   _dir=$(dirname "$_chk")
-  # 1. sanity — the UNMUTATED check's --selftest must pass in its OWN directory, else it is pre-broken.
-  if ! sh "$_chk" --selftest >/dev/null 2>&1; then
-    echo "ERROR: $_base — its own --selftest FAILS unmutated (pre-broken; cannot mutation-test)"
-    return 3
-  fi
-  # 2. locate the oracle region marker. mark==0 => no recognisable selftest region => UNCOVERED.
+  # ── FAIL-PATH DISAMBIGUATION (NON-VACUITY-JUDGE-RUN-MERGE). The in-place sanity (step 1) and the
+  # ctl-copy-at-the-mutant-location certainty guard (step 2c) are NOT redundant, and neither may be
+  # deleted in favour of the other — the security vet measured both wrong merges against this tree:
+  #
+  #        ctl copy @ mutant location │ check's own --selftest IN PLACE │ TRUE verdict
+  #        ───────────────────────────┼────────────────────────────────┼──────────────────────────
+  #        PASSES                     │ (passes, by construction)      │ run the mutant
+  #        FAILS                      │ FAILS                          │ 3 ERROR pre-broken
+  #        FAILS                      │ PASSES                         │ 2 UNCOVERED context/run-loc
+  #        PASSES                     │ FAILS                          │ unreachable (see below)
+  #
+  # Keeping ONLY the in-place run FABRICATES A KILL on the location-sensitive class (the mutant fails
+  # for a context reason and is scored as caught) — fail-open in the one forbidden direction. Keeping
+  # ONLY the mutant-location run misreports a genuinely pre-broken check as UNCOVERED. So both runs are
+  # kept and both verdicts are preserved; what changes is WHEN the in-place run is paid. It is now
+  # DEFERRED to the failure path: the ctl copy runs first, and on the common path (it passes) the
+  # in-place run is skipped entirely — one selftest run per judged check instead of two.
+  # HONEST CEILING: this is a REORDER, not a redundancy removal, and its measured payoff is ~5 min off
+  # the SHARDED sweep job, which is not the critical path (the 32-min fixture-hermeticity lane never
+  # calls _judge_core). The verdict set is asserted UNCHANGED against the ratified census, which is the
+  # only claim that matters here.
+  # The fourth row is unreachable BY CONSTRUCTION, not by assumption: the ctl copy is a byte copy of
+  # the check, run in the check's OWN directory, so reaching that row would require the check to pass
+  # under a different NAME while failing under its own — i.e. to key on its own filename. It would NOT
+  # be reached by the far commoner directory-content sensitivity (a check that greps or counts its own
+  # directory, the mode-enforcement-blind class): our temp files are present for BOTH the copy and the
+  # in-place run at that point, so such a check fails BOTH and lands in row three, not row four. That
+  # is the honest statement of the ceiling — filename-keying is the only shape that reaches row four,
+  # and it is a shape no check in this repo has. Should one ever exist it takes the TOP row and is
+  # mutated, the same treatment it gets today, so this reorder does not change its verdict either.
+  # A mktemp failure now precedes the pre-broken check rather than following it: the verdict is rc 3
+  # either way, but the REASON TEXT differs ("mktemp failed for the mutant" instead of "pre-broken"),
+  # which is the more accurate of the two — we never learned whether the check was broken.
+  #
+  # 1. locate the oracle region marker. mark==0 => no recognisable selftest region => UNCOVERED.
+  #    (This moved ABOVE the sanity run. The three early UNCOVERED returns below therefore ask
+  #    `_pre_broken` explicitly, so a check that is BOTH pre-broken and un-mutatable still reports
+  #    ERROR — the old unconditional-sanity precedence is preserved exactly, not quietly dropped.)
   _mark=$(first_marker "$_chk"); [ -n "$_mark" ] || _mark=0
   if [ "$_mark" = 0 ]; then
+    _pre_broken "$_base" "$_chk" && return 3
     echo "UNCOVERED: $_base — no recognisable --selftest region (reason: no-selftest-region)"
     return 2
   fi
@@ -216,19 +275,24 @@ _judge_core() {
   _sent=$(mutate "$_chk" "$_jmut" "$_jmut.meta" "$_mark")
   case "$_sent" in
     APPLIED=0*)
+      _cleanup "$_jmut" "$_jmut.meta"; _jmut=""
+      _pre_broken "$_base" "$_chk" && return 3
       echo "UNCOVERED: $_base — no mutable FAIL-path idiom before the oracle; this check's teeth live in its --selftest region or a sibling helper, so mutating this file cannot fail its selftest (reason: no-idiom)"
       return 2 ;;
   esac
   _acc=$(printf '%s' "$_sent" | sed -n 's/.*;ACC=\([0-9]*\).*/\1/p'); [ -n "$_acc" ] || _acc=0
   # 2b. region invariant — a mutation must NEVER land at/after the first selftest marker (oracle guard).
   if ! region_intact "$_chk" "$_jmut" "$_mark"; then
+    _cleanup "$_jmut" "$_jmut.meta"; _jmut=""
+    _pre_broken "$_base" "$_chk" && return 3
     echo "UNCOVERED: $_base — a mutation would land in the oracle region (reason: region-ambiguous)"
     return 2
   fi
   # 2c. certainty guard — run an UNMUTATED copy AT THE MUTANT'S RUN LOCATION. If it does not pass there,
   #     the mutant would crash for a context reason (sibling sourcing / $0-relative / a self-scanning
-  #     check that sees our own temp file) and any "kill" would be a FALSE kill. Report UNCOVERED
-  #     (context/run-location), never KILLED.
+  #     check that sees our own temp file) and any "kill" would be a FALSE kill. This is now the FIRST
+  #     run of the judgment (see the 2x2 above): when it PASSES, the check is neither pre-broken nor
+  #     context-bound and the in-place sanity is skipped.
   _jctl=$(_mktemp_in "$_dir" ".nv-ctl-") || { echo "ERROR: $_base — mktemp failed for the ctl copy"; return 3; }
   cp "$_chk" "$_jctl"
   set +e
@@ -236,6 +300,16 @@ _judge_core() {
   _ctlrc=$?
   set -e
   if [ "$_ctlrc" != 0 ]; then
+    # DISAMBIGUATE: the ctl copy failed, so it is one of two very different findings. Ask the check
+    # IN ITS OWN DIRECTORY. Fails there too => genuinely pre-broken (ERROR 3). Passes there => the
+    # check is fine and only our run location broke it (UNCOVERED 2, context/run-location).
+    # OUR OWN TEMP FILES ARE REMOVED FIRST, and that is load-bearing, not tidiness: the whole class
+    # this branch serves is SELF-SCANNING checks (mode-enforcement-blind greps its own directory), and
+    # leaving .nv-mut-*/.nv-ctl-* beside the check would poison the very sanity run meant to exonerate
+    # it — turning its honest UNCOVERED into a fabricated ERROR. The mutant is never run on either
+    # branch, so discarding it here costs nothing. judge()'s cleanup stays idempotent over this.
+    _cleanup "$_jmut" "$_jmut.meta" "$_jctl"; _jmut=""; _jctl=""
+    _pre_broken "$_base" "$_chk" && return 3
     echo "UNCOVERED: $_base — an unmutated copy does not pass at the mutant run location (reason: context/run-location)"
     return 2
   fi
@@ -293,6 +367,7 @@ target_set() {
 # ── nonbearing_set : control checks whose file contains the --selftest substring but expose NO dispatch
 #    region (first_marker==0). These are NOT mutation-testable (no selftest oracle to prove vacuous); the
 #    sweep prints them as SKIPPED so the exclusion is visible (no silent cap), never counted UNCOVERED.
+#    The OTHER exclusion — no --selftest substring at all — is enumerated by excluded_set below.
 nonbearing_set() {
   grep -E '^check control' conformance/verify.sh 2>/dev/null \
     | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u \
@@ -302,6 +377,90 @@ nonbearing_set() {
         grep -q -- '--selftest' "$_f" 2>/dev/null || continue
         has_selftest_dispatch "$_f" || printf '%s\n' "$_f"
       done
+}
+
+# ── excluded_set : control-set scripts with NO `--selftest` SUBSTRING at all. Both set-builders drop them
+#    with a bare `continue`, which made 5 real scripts (backlog-adapters, container-supply-chain,
+#    deploy-/harness-/stack-decision-integrity) invisible and the "no silent cap" claim false; this makes
+#    it true. It cannot live in the builders — their stdout IS the target list.
+# ── nv_is_kit_tree : the census machinery's ARMING TEST, and it is the SAME OR-of-markers detector
+#    conformance-mass-budget.sh:486 arms on (docs/ROADMAP-KIT.md OR .github/workflows/golden-path.yml,
+#    both export-ignored) — REUSED, never re-invented, so the two cannot drift apart. WHY IT EXISTS: the
+#    census records the KIT's OWN control set and ships in the export, so on an adopter tree every one of
+#    its ~90 rows would red against a tree it was never about. Consulted by BOTH the --coverage-census
+#    mode AND the sweep's tally_diff, because either one alone leaves the other lying.
+nv_is_kit_tree() { [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; }
+
+excluded_set() {
+  grep -E '^check control' conformance/verify.sh 2>/dev/null \
+    | grep -oE 'conformance/[a-z0-9-]+\.sh' | sort -u \
+    | while IFS= read -r _f; do
+        [ -f "$_f" ] || continue; grep -q -- '--selftest' "$_f" 2>/dev/null || printf '%s\n' "$_f"
+      done
+}
+
+# ── census_membership : `<file><TAB>targeted|excluded`. GREP-CLASS — zero mutants, ~0 CI cost, so nothing
+#    is bought back by cutting coverage (D-240815-3). ONLY/SHARD reset: membership is a property of the
+#    TREE, never of a leg. The SKIPPED set (substring, no dispatch) is deliberately uncensused.
+# ── census_diff <tsv> : re-derive that membership; red when a script APPEARS, DISAPPEARS or CHANGES CLASS
+#    against the ratified <tsv>. Verdict cells are NOT graded here — tally_diff pins those on any sweep.
+census_membership() {
+  ( ONLY=""; SHARD_I=""; SHARD_N=""
+    target_set   | while IFS= read -r _m; do printf '%s\ttargeted\n' "$_m"; done
+    excluded_set | while IFS= read -r _m; do printf '%s\texcluded\n' "$_m"; done ) | sort
+}
+# ── THE LATCH IS A WRAPPER, THE TEETH ARE THE CORE, and that split is a MEASURED lesson rather than a
+#    style choice: with the arming test inline, this harness's own negative legs went GREEN-BY-N/A on the
+#    export (green-on-clone RED, five negatives "accepted") — a latch that also disarms the fixtures is
+#    the dark-gate failure this repo has hit before. The selftest drives census_core / tally_core, so the
+#    negatives keep their teeth on ANY tree, and the latch itself is pinned from BOTH faces by fixture
+#    trees that carry (and lack) a kit marker.
+census_diff() {
+  nv_is_kit_tree || { echo "N/A: coverage census — no kit marker present (an adopter tree). This census records the KIT's OWN control set; it does not describe your tree. Nothing to grade here and no remedy to offer; this is not a pass."; return 0; }
+  census_core "$1"
+}
+census_core() {
+  _cf=$1
+  [ -f "$_cf" ] || { echo "FAIL: coverage census '$_cf' is MISSING from this KIT tree — here the ratified baseline IS the artifact, and without it this mode would grade nothing and report success."; return 1; }
+  set +e
+  census_membership | LC_ALL=C awk -F'\t' -v tsv="$_cf" '
+    function san(s) { gsub(/[[:cntrl:]]/, "", s); return s }
+    BEGIN { while ((getline _l < tsv) > 0) { if (_l ~ /^#/ || _l == "") continue
+              if (split(_l, p, "\t") != 3 || p[2] !~ /^(KILLED|UNCOVERED|EXCLUDED)$/) {
+                print "FAIL: malformed census row (want <file>TAB KILLED|UNCOVERED|EXCLUDED TAB<reason>): " san(_l); bad = 1; continue }
+              t[p[1]] = (p[2] == "EXCLUDED") ? "excluded" : "targeted" } }
+    { seen[$1] = 1; n++
+      if (!($1 in t)) { print "FAIL: " san($1) " is " san($2) " in the control set but has NO census row — a newly covered (or newly excluded) check must be RECORDED, never absorbed silently."; bad = 1 }
+      else if (t[$1] != $2) { print "FAIL: " san($1) " is " san($2) " in the control set but the census records it " san(t[$1]) " — the exclusion class changed under the ratified baseline."; bad = 1 } }
+    END { for (f in t) if (!(f in seen)) { print "FAIL: the census carries a row for " san(f) ", which the control set no longer targets or excludes — a stale row makes the coverage number a lie."; bad = 1 }
+          if (!bad) print "OK: coverage census membership matches the control set (" n " script(s)). Verdict cells are pinned by the sweep itself, not here."
+          exit bad }'
+  _crc=$?; set -e; return "$_crc"
+}
+
+# ── tally_diff <tsv> <verdicts-file> : the DYNAMIC half — the sweep's own per-file measurement (always
+#    computed, until now discarded) diffed against the census's verdict cells. Two pinned properties:
+#    SHARD-SCOPED (it compares ONLY the files THIS run judged; the shard map is unstable by construction,
+#    so grading the whole tsv would red every leg on rows it never ran) and EXCLUDED-IS-MEMBERSHIP-ONLY
+#    (they appear in no tally, so the diff keys on {KILLED, UNCOVERED}; judged-but-recorded-EXCLUDED is
+#    still a red). SURVIVED/ERROR are not compared — the sweep already FAILS on them.
+tally_diff() {
+  nv_is_kit_tree || { echo "  census: N/A — no kit marker present (an adopter tree); this census records the KIT's own control set, not yours"; return 0; }
+  tally_core "$1" "$2"
+}
+tally_core() {
+  _tf=$1; _vf=$2
+  [ -f "$_tf" ] || { echo "  census: NOT COMPARED — $_tf is absent (the coverage-census check reds on that separately)"; return 0; }
+  set +e
+  LC_ALL=C awk -F'\t' -v tsv="$_tf" '
+    function san(s) { gsub(/[[:cntrl:]]/, "", s); return s }
+    BEGIN { while ((getline _l < tsv) > 0) { if (split(_l, p, "\t") == 3) c[p[1]] = p[2] } }
+    $2 != "KILLED" && $2 != "UNCOVERED" { next }
+    !($1 in c) { print "  census MISMATCH: " san($1) " was judged " san($2) " but has NO row in " tsv; bad = 1; next }
+    c[$1] == "EXCLUDED" { print "  census MISMATCH: " san($1) " is recorded EXCLUDED but this run judged it " san($2); bad = 1; next }
+    c[$1] != $2 { print "  census MISMATCH: " san($1) " — the census says " san(c[$1]) ", this run measured " san($2); bad = 1 }
+    END { exit bad }' "$_vf"
+  _trc=$?; set -e; return "$_trc"
 }
 
 # ── sweep_clean : remove EVERY harness artifact (.nv-mut-* / .nv-ctl-* [+ .meta]) from each targeted
@@ -338,6 +497,13 @@ sweep() {
   for _s in $(nonbearing_set); do
     printf '  SKIPPED: %s — not selftest-bearing (--selftest present only as a fixture payload; no dispatch region)\n' "$(basename "$_s")"
   done
+  for _x in $(excluded_set); do   # ENUMERATED (PR 10): these used to appear NOWHERE
+    printf '  EXCLUDED: %s (no --selftest substring) — not mutation-testable; recorded in %s\n' "$_x" "$CENSUS"
+  done
+  # The tally file is TRAPPED, not merely rm'd on each exit path — the same guarantee sweep_clean gives
+  # the mutants: an interrupted sweep must leave nothing behind (this file's own leaked-artifact lesson).
+  _vfile=$(mktemp) || { echo "FAIL: non-vacuity sweep could not allocate its tally file" >&2; return 2; }
+  trap 'rm -f "$_vfile"' EXIT HUP INT TERM
   for _c in $(target_set); do
     _total=$((_total + 1))
     set +e
@@ -345,14 +511,16 @@ sweep() {
     set -e
     printf '  %s\n' "$_line"
     case "$_v" in
-      0) _killed=$((_killed + 1)) ;;
-      1) _survived=$((_survived + 1)) ;;
-      2) _uncovered=$((_uncovered + 1)) ;;
-      *) _error=$((_error + 1)) ;;
+      0) _killed=$((_killed + 1));    _vw=KILLED ;;
+      1) _survived=$((_survived + 1)); _vw=SURVIVED ;;
+      2) _uncovered=$((_uncovered + 1)); _vw=UNCOVERED ;;
+      *) _error=$((_error + 1));      _vw=ERROR ;;
     esac
+    printf '%s\t%s\n' "$_c" "$_vw" >> "$_vfile"
   done
   # A sweep that evaluated NOTHING must never report success — the very law this tool enforces.
   if [ "$_total" = 0 ]; then
+    rm -f "$_vfile"
     if [ -n "$ONLY" ]; then
       echo "FAIL: --only '$ONLY' matched no targeted check (a targeted sweep that evaluates nothing must never report success)" >&2
       return 2
@@ -375,12 +543,22 @@ sweep() {
     "$_killed" "$_survived" "$_uncovered" "$_error" "$_total"
   echo "HONEST CEILING: KILLED only when CERTAIN; every ambiguity (region / run-context / CTL-only)"
   echo "is surfaced as an enumerated UNCOVERED, never a silent skip and never a false KILL."
+  # The measurement was already made and thrown away: diff this run's verdicts against the census.
+  set +e; tally_diff "$CENSUS" "$_vfile"; _tdrc=$?; set -e
+  rm -f "$_vfile"
+  # ORDER IS DELIBERATE (reviewer M-1): the census red is reported LAST. A survivor is the finding this
+  # tool exists for, and a run carrying both must still print the SURVIVOR headline — a census mismatch
+  # announced first would bury a vacuous check behind a bookkeeping disagreement.
   if [ "$_survived" != 0 ]; then
     echo "RESULT: FAIL — a surviving mutant means a VACUOUS check (its --selftest is not load-bearing). Fix that selftest."
     return 1
   fi
   if [ "$_error" != 0 ]; then
     echo "RESULT: FAIL — a targeted check's own --selftest is already broken (see ERROR above)."
+    return 1
+  fi
+  if [ "$_tdrc" != 0 ]; then
+    echo "RESULT: FAIL — the ratified coverage census disagrees with this run's OWN measurement (above). Correct $CENSUS to what the sweep measured, or fix what changed underneath it."
     return 1
   fi
   echo "RESULT: OK — every targeted check is load-bearing (mutant KILLED) or honestly UNCOVERED."
@@ -527,6 +705,76 @@ EOF
   set -e
   if [ "$c" = 0 ]; then echo "PASS: sibling-sourcing check (sibling present) -> KILLED at run location"; else echo "FAIL: sibling-sourcing check mis-verdicted (got $c, want 0=KILLED)"; st=1; fi
 
+  # ── NON-VACUITY-JUDGE-RUN-MERGE, the two FAIL-PATH DISAMBIGUATION fixtures. _judge_core no longer
+  # runs the in-place sanity unconditionally: the ctl copy runs at the mutant location FIRST and the
+  # in-place sanity is paid ONLY when it fails, to say WHICH of the two failures happened. That makes
+  # these two verdicts the load-bearing pair, and each one is refuted by a DIFFERENT wrong merge:
+  #
+  #   PRE-BROKEN (rc 3) dies under a "keep only the mutant-location run" merge — the check fails
+  #   everywhere, the ctl copy fails, and with no in-place run to disambiguate it is misreported
+  #   UNCOVERED(context/run-location): a broken selftest silently reclassified as un-testable.
+  #
+  #   LOCATION-SENSITIVE (rc 2) dies under a "keep only the in-place run" merge — the check passes in
+  #   place, so the mutant is run and fails FOR A CONTEXT REASON, and the harness reports a FALSE KILL:
+  #   fail-open in the one direction this tool must never fail open, and worse than the ERROR->UNCOVERED
+  #   trap the row was opened for. `mode-enforcement-blind.sh` is exactly this class and is LIVE in the
+  #   ratified census as UNCOVERED/context — a false KILL there would have shipped green.
+  #
+  # PRE-BROKEN fixture: its selftest asserts a PASS on a token-less file, so it fails unmutated — in
+  # place AND anywhere else. Must be ERROR(3), never UNCOVERED.
+  cat > "$d/prebroken.sh" <<'EOF'
+#!/bin/sh
+set -eu
+check_x() { fail=0; grep -q TOKEN "$1" || fail=1; [ "$fail" = 0 ] && echo PASS || { echo FAIL; return 1; }; }
+selftest() {
+  st=0; t=$(mktemp -d); : > "$t/n"
+  check_x "$t/n" >/dev/null || { echo "pos (DELIBERATELY WRONG: expects a PASS on a token-less file)"; st=1; }
+  [ "$st" = 0 ] && echo "prebroken --selftest: OK" || { echo "prebroken --selftest: FAIL" >&2; return 1; }
+}
+case "${1:-}" in --selftest) selftest; exit $? ;; *) check_x "$2"; exit $? ;; esac
+EOF
+  set +e
+  _pbo=$( judge "$d/prebroken.sh" 2>/dev/null ); _pb=$?
+  set -e
+  if [ "$_pb" = 3 ]; then echo "PASS: pre-broken check -> ERROR (the in-place sanity still disambiguates)"; else echo "FAIL: pre-broken check mis-verdicted (got $_pb, want 3=ERROR) — the in-place sanity was dropped, not deferred"; st=1; fi
+  case "$_pbo" in *"pre-broken"*) : ;; *) echo "FAIL: pre-broken verdict line lost its reason (got: $_pbo)"; st=1 ;; esac
+
+  # LOCATION-SENSITIVE fixture: the mode-enforcement-blind shape — the check SCANS ITS OWN DIRECTORY,
+  # so the harness's own temp files change the very thing it measures. In its own (pristine) dir it
+  # passes; as a ctl copy sitting beside the mutant + .meta it does not. Must be UNCOVERED(2) with the
+  # context/run-location reason — NEVER a KILL, and never ERROR (it is not broken, it is context-bound).
+  mkdir -p "$d/loc"
+  cat > "$d/loc/locchk.sh" <<'EOF'
+#!/bin/sh
+set -eu
+_ld=$(CDPATH='' cd "$(dirname "$0")" && pwd)
+check_x() {
+  fail=0
+  grep -q TOKEN "$1" || fail=1
+  [ "$(find "$_ld" -type f | wc -l | tr -d ' ')" = 1 ] || fail=1
+  [ "$fail" = 0 ] && echo PASS || { echo FAIL; return 1; }
+}
+selftest() {
+  st=0; t=$(mktemp -d); printf 'TOKEN\n' > "$t/y"; : > "$t/n"
+  check_x "$t/y" >/dev/null || { echo pos; st=1; }
+  check_x "$t/n" >/dev/null && { echo neg; st=1; }
+  [ "$st" = 0 ] && echo "loc --selftest: OK" || { echo "loc --selftest: FAIL" >&2; return 1; }
+}
+case "${1:-}" in --selftest) selftest; exit $? ;; *) check_x "$2"; exit $? ;; esac
+EOF
+  # CONTROL first: the fixture must genuinely pass IN PLACE, else the leg below would be satisfied by a
+  # merely-broken fixture and would not discriminate a false KILL from an honest one.
+  if sh "$d/loc/locchk.sh" --selftest >/dev/null 2>&1; then
+    echo "PASS: location-sensitive fixture passes in its own directory (the leg below can discriminate)"
+  else
+    echo "FAIL: location-sensitive fixture does not pass in place — it is merely broken, so the UNCOVERED leg below proves nothing"; st=1
+  fi
+  set +e
+  _lco=$( judge "$d/loc/locchk.sh" 2>/dev/null ); _lc=$?
+  set -e
+  if [ "$_lc" = 2 ]; then echo "PASS: location-sensitive check -> UNCOVERED, never a false KILL"; else echo "FAIL: location-sensitive check mis-verdicted (got $_lc, want 2=UNCOVERED) — 0 would be a FABRICATED KILL"; st=1; fi
+  case "$_lco" in *context/run-location*) : ;; *) echo "FAIL: location-sensitive verdict lost the context/run-location reason (got: $_lco)"; st=1 ;; esac
+
   # INVOCATION-VS-DISPATCH fixture (fix ②) — a check whose body contains a spurious
   #   `if ! sh "$prog" --selftest ...` INVOCATION line (no $1/${1) placed BEFORE its real selftest(), with
   #   a load-bearing `fail=1` accumulator between them. Under the OLD marker rule the invocation line wins
@@ -640,12 +888,101 @@ EOF
   _bs=$( SHARD_I=1; SHARD_N=99; sweep() { printf 'SHARD=[%s/%s]\n' "$SHARD_I" "$SHARD_N"; }; bare_sweep )
   if [ "$_bs" = "SHARD=[/]" ]; then echo "PASS: bare/CI dispatch ignores inherited SHARD coords (cannot be narrowed by the environment)"; else echo "FAIL: bare/CI dispatch honored an inherited SHARD ($_bs) -- CI can be silently narrowed"; st=1; fi
 
+  # ── COVERAGE CENSUS (PR 10, CONFORMANCE-MUTATION-COVERAGE-GAP). The census is a RATIFIED artifact
+  # (conformance/nv-coverage.tsv): membership is re-derived and diffed on every verify run (grep-class,
+  # zero mutants), verdict cells are diffed against the sweep's OWN tally whenever a sweep runs. These
+  # legs drive the real functions against fixture censuses built from the real membership.
+  _cm=$(census_membership)
+  _cnt=$(printf '%s\n' "$_cm" | grep -c . || true)
+  if [ "$_cnt" -gt 0 ]; then echo "PASS: census membership is non-empty ($_cnt script(s)) — a census over nothing would grade nothing"; else echo "FAIL: census membership came back EMPTY"; st=1; fi
+  # a census that MATCHES the tree passes...
+  printf '%s\n' "$_cm" | while IFS= read -r _r; do
+    case "$_r" in *excluded) printf '%s\tEXCLUDED\tno --selftest substring\n' "${_r%%	*}" ;; *) printf '%s\tUNCOVERED\t-\n' "${_r%%	*}" ;; esac
+  done > "$d/census-ok.tsv"
+  if census_core "$d/census-ok.tsv" >/dev/null 2>&1; then echo "PASS: a census matching the tree's membership passes"; else echo "FAIL: a matching census was wrongly rejected"; st=1; fi
+  # ...a DISAPPEARED script reds (row for a file the control set no longer targets)...
+  cp "$d/census-ok.tsv" "$d/census-app.tsv"; printf 'conformance/not-a-real-check.sh\tKILLED\t-\n' >> "$d/census-app.tsv"
+  if census_core "$d/census-app.tsv" >/dev/null 2>&1; then echo "FAIL: a census row for a file no row targets was accepted"; st=1; else echo "PASS: a stale census row (script gone from the control set) reds"; fi
+  # ...a MISSING row reds (a newly targeted script must not slip in uncensused)...
+  grep -v "$(printf '%s\n' "$_cm" | head -1 | cut -f1)" "$d/census-ok.tsv" > "$d/census-miss.tsv" || true
+  if census_core "$d/census-miss.tsv" >/dev/null 2>&1; then echo "FAIL: a targeted script with NO census row was accepted"; st=1; else echo "PASS: a script missing from the census reds"; fi
+  # ...and a CLASS CHANGE reds (targeted recorded as EXCLUDED).
+  _cfirst=$(printf '%s\n' "$_cm" | grep 'targeted$' | head -1 | cut -f1)
+  grep -v "^$_cfirst	" "$d/census-ok.tsv" > "$d/census-cls.tsv"; printf '%s\tEXCLUDED\tclaimed excluded\n' "$_cfirst" >> "$d/census-cls.tsv"
+  if census_core "$d/census-cls.tsv" >/dev/null 2>&1; then echo "FAIL: a targeted script recorded EXCLUDED was accepted"; st=1; else echo "PASS: a census class change reds"; fi
+  # ── TALLY DIFF — the verdict cells, pinned by the sweep's own measurement. THE TWO TRAPS (design A2):
+  # (i) SHARD-SCOPED — a leg judges a SUBSET, so rows it never visited must NOT red (the shard map is
+  # unstable by construction); (ii) EXCLUDED rows appear in no tally and are membership-only.
+  printf 'conformance/a.sh\tKILLED\t-\nconformance/b.sh\tUNCOVERED\t-\nconformance/c.sh\tEXCLUDED\tno --selftest substring\n' > "$d/tally.tsv"
+  printf 'conformance/a.sh\tKILLED\n' > "$d/v-subset"
+  if tally_core "$d/tally.tsv" "$d/v-subset" >/dev/null 2>&1; then echo "PASS: a shard that judged a SUBSET does not red on rows it never ran"; else echo "FAIL: a shard-subset run redded on unvisited census rows"; st=1; fi
+  printf 'conformance/a.sh\tKILLED\nconformance/b.sh\tUNCOVERED\n' > "$d/v-nofalse"
+  if tally_core "$d/tally.tsv" "$d/v-nofalse" >/dev/null 2>&1; then echo "PASS: an EXCLUDED census row is membership-only (it reds no tally)"; else echo "FAIL: an EXCLUDED row was verdict-compared"; st=1; fi
+  printf 'conformance/b.sh\tKILLED\n' > "$d/v-flip"
+  if tally_core "$d/tally.tsv" "$d/v-flip" >/dev/null 2>&1; then echo "FAIL: a flipped verdict cell (UNCOVERED recorded, KILLED measured) was accepted"; st=1; else echo "PASS: a verdict cell contradicting the sweep's own tally reds"; fi
+  printf 'conformance/zz.sh\tKILLED\n' > "$d/v-new"
+  if tally_core "$d/tally.tsv" "$d/v-new" >/dev/null 2>&1; then echo "FAIL: a judged file with NO census row was accepted"; st=1; else echo "PASS: a judged file absent from the census reds"; fi
+  # ── ADOPTER LATCH (reviewer I-2 + security cond 2). The census records the KIT's control set and SHIPS
+  # in the export, so on an adopter tree every one of its ~90 rows would red against a tree it was never
+  # about. BOTH consumers latch on the kit marker, and both are driven here against a REAL non-kit tree
+  # (no ROADMAP-KIT.md, no golden-path.yml) carrying its own verify.sh, its own control check and a copy
+  # of this harness — never a stubbed predicate.
+  mkdir -p "$d/nk/conformance"
+  cp "$0" "$d/nk/conformance/non-vacuity.sh"; cp "$d/good.sh" "$d/nk/conformance/adopter-own.sh"
+  printf '#!/bin/sh\ncheck control adopter-own sh conformance/adopter-own.sh --selftest\n' > "$d/nk/conformance/verify.sh"
+  printf 'conformance/kit-only.sh\tKILLED\t-\n' > "$d/nk/conformance/nv-coverage.tsv"
+  set +e
+  _nkc=$( cd "$d/nk" && sh conformance/non-vacuity.sh --coverage-census 2>&1 ); _nkcrc=$?
+  _nks=$( cd "$d/nk" && NV_IN_SWEEP='' sh conformance/non-vacuity.sh 2>&1 ); _nksrc=$?
+  set -e
+  if [ "$_nkcrc" = 0 ] && printf '%s\n' "$_nkc" | grep -q '^N/A: coverage census'; then
+    echo "PASS: --coverage-census N/As on a non-kit tree (the kit's census never grades an adopter's checks)"
+  else echo "FAIL: --coverage-census on a non-kit tree returned rc $_nkcrc / $_nkc"; st=1; fi
+  if [ "$_nksrc" = 0 ] && printf '%s\n' "$_nks" | grep -q 'census: N/A'; then
+    echo "PASS: a sweep on a non-kit tree N/As its tally diff (an adopter's green sweep is not held to the kit's census)"
+  else echo "FAIL: a sweep on a non-kit tree returned rc $_nksrc without an N/A census line"; st=1; fi
+  printf '%s\n' "$_nks" | grep -q 'census MISMATCH' && { echo "FAIL: the kit census was compared against an adopter tree's own verdicts"; st=1; } || true
+  # ...and the OTHER FACE, which is what stops the latch from being a dark gate: the SAME fixture tree
+  # WITH a kit marker must ARM and red on a census that does not match it. Without this leg an
+  # always-N/A latch would satisfy every assertion above (and this suite runs on the export, where the
+  # ambient tree carries no marker, so the armed face has to be fixture-built or it is never proven).
+  mkdir -p "$d/nk/docs"; : > "$d/nk/docs/ROADMAP-KIT.md"
+  set +e; _ktc=$( cd "$d/nk" && sh conformance/non-vacuity.sh --coverage-census 2>&1 ); _ktcrc=$?; set -e
+  if [ "$_ktcrc" != 0 ] && printf '%s\n' "$_ktc" | grep -q '^FAIL:'; then
+    echo "PASS: the same tree WITH a kit marker ARMS and reds on a mismatched census (the latch is not a dark gate)"
+  else echo "FAIL: a kit-marked tree did not arm the census (rc $_ktcrc) — the latch N/As unconditionally"; st=1; fi
+  # ...and the SAME armed-face proof for the SWEEP's tally, which is the other consumer and needs its own
+  # leg: a `tally_diff() { return 0; }` mutant would satisfy every N/A assertion above. On the marked tree
+  # the census records adopter-own.sh as UNCOVERED while the sweep measures KILLED — the flip must red.
+  printf 'conformance/adopter-own.sh\tUNCOVERED\t-\n' > "$d/nk/conformance/nv-coverage.tsv"
+  set +e; _kts=$( cd "$d/nk" && NV_IN_SWEEP='' sh conformance/non-vacuity.sh 2>&1 ); _ktsrc=$?; set -e
+  if [ "$_ktsrc" != 0 ] && printf '%s\n' "$_kts" | grep -q 'census MISMATCH'; then
+    echo "PASS: on a kit-marked tree the sweep's tally ARMS and reds on a flipped verdict cell"
+  else echo "FAIL: a kit-marked sweep did not arm its tally diff (rc $_ktsrc) — an always-N/A tally would pass every other leg"; st=1; fi
+
+  # ── SANITIZER (security cond 1). A census row is UNRATIFIED text that this check PRINTS: an ANSI escape
+  # inside it could erase the line and impersonate the success verdict. The oracle is the BYTE, read back
+  # with od -c — not the rendered string, which is exactly what such a payload is designed to fool.
+  printf 'conformance/a.sh\tKILLED\t-\n\033[2K\rOK: coverage census membership matches\tKILLED\t-\n' > "$d/esc.tsv"
+  set +e; _escout=$(census_core "$d/esc.tsv" 2>&1); set -e
+  # `od -An` — WITHOUT it the address column itself carries octal offsets like 0000330, and the oracle
+  # matches its own byte counter instead of the payload (measured: this leg failed green-side first).
+  if printf '%s' "$_escout" | od -An -c | grep -q '033'; then
+    echo "FAIL: an ESC byte from a census row reached the output — a row can impersonate this check's verdict"; st=1
+  else echo "PASS: control bytes from a census row are stripped before printing (od -c oracle)"; fi
+
+  # EXCLUDED VISIBILITY — the 5 no-substring scripts are ENUMERATED, not silently continue'd (:298).
+  _xn=$(excluded_set | grep -c . || true)
+  if [ "$_xn" -gt 0 ]; then echo "PASS: excluded_set enumerates $_xn control script(s) with no --selftest substring — the cap is no longer silent"; else echo "FAIL: excluded_set enumerated nothing (the silent cap is back, or the control set changed)"; st=1; fi
+
   [ "$st" = 0 ] && echo "non-vacuity --selftest: OK" || { echo "non-vacuity --selftest: FAIL" >&2; return 1; }
   return "$st"
 }
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
+  --coverage-census)  # STATIC membership diff. Grep-class, ZERO mutants, no CI wall-clock (D-240815-3).
+              census_diff "$CENSUS"; exit $? ;;
   --only)     ONLY="${2:-}"
               [ -n "$ONLY" ] || { echo "usage: non-vacuity.sh --only <check.sh>" >&2; exit 2; }
               sweep; exit $? ;;
@@ -661,5 +998,5 @@ case "${1:-}" in
   "")         # bare/CI dispatch: the FULL sweep. bare_sweep resets ONLY so an inherited environment ONLY
               # can never narrow what CI enforces. No env var can short-circuit this arm — it always sweeps.
               bare_sweep; exit $? ;;
-  *) echo "usage: non-vacuity.sh [--selftest | --only <check.sh> | --shard <i>/<n>]" >&2; exit 2 ;;
+  *) echo "usage: non-vacuity.sh [--selftest | --only <check.sh> | --shard <i>/<n> | --coverage-census]" >&2; exit 2 ;;
 esac

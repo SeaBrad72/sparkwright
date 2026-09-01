@@ -17,6 +17,7 @@
 #       [--margin F] [--cost-margin F] [--out DIR] [--stdout]
 #   scripts/agent-scorecard.sh --selftest
 # What it changes: Writes per-agent scorecard files to --out DIR (default scorecards/), or stdout with --stdout; reads traces only.
+# collected-not-gated: no CI gate consumes this instrument's output as a verdict about YOUR repo; its output contract is exercised over fixtures by selftests plus one golden-path non-vacuity assertion — run it deliberately.
 # Guardrails: Emits tier directives but NEVER actuates (never touches .claude/, the guard, or any tier store); thin/unknown data fails safe to "steady"; not a gate.
 set -eu
 

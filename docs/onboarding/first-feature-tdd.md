@@ -1,6 +1,6 @@
 # Your First Feature — the TDD rhythm (worked)
 
-This zooms into the **Build** step of [WALKTHROUGH.md](../../WALKTHROUGH.md) and shows the
+This zooms into the **Build** step of the loop and shows the
 red-green-refactor rhythm with real code. **Illustrative — shown in the reference stack
 (TypeScript/Node); your `profiles/<stack>.md` has the exact commands for yours.**
 
@@ -53,7 +53,7 @@ non-negotiable rather than optional.
 
 ## What just happened (the enterprise part)
 
-That rhythm is one beat inside the larger loop in [WALKTHROUGH.md](../../WALKTHROUGH.md): your tests
+That rhythm is one beat inside the larger loop ([DEVELOPMENT-PROCESS.md](../../DEVELOPMENT-PROCESS.md)): your tests
 become the CI gate, the gate guards every future change, and the agent can move at machine speed
 between the human checkpoints *because* the tests exist. Coding was the task; the test, the gate,
 and the loop around it are the engineering.

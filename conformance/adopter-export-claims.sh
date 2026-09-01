@@ -276,14 +276,14 @@ selftest() {
     _fd=$1; _fb=$2; shift 2
     rm -rf "$_fd"; mkdir -p "$_fd/conformance"
     : > "$_fd/conformance/claims.tsv"
-    for _fi in "$@"; do printf '%s%sa claim%strue\n' "$_fi" "$TAB" "$TAB" >> "$_fd/conformance/claims.tsv"; done
+    for _fi in "$@"; do printf '%s%sa claim%strue%stree\n' "$_fi" "$TAB" "$TAB" "$TAB" >> "$_fd/conformance/claims.tsv"; done
     printf '#!/bin/sh\n%s\n' "$_fb" > "$_fd/conformance/claims-registry.sh"
   }
   ae_kit() {  # <file> <claim-id>... — a stand-in for the kit's OWN claims.tsv (the carve derivation's
               # left-hand side)
     _kf=$1; shift
     : > "$_kf"
-    for _ki in "$@"; do printf '%s%sa claim%strue\n' "$_ki" "$TAB" "$TAB" >> "$_kf"; done
+    for _ki in "$@"; do printf '%s%sa claim%strue%stree\n' "$_ki" "$TAB" "$TAB" "$TAB" >> "$_kf"; done
   }
   ae_out() { ae_verdict "$1" "$2" "$3" "$4" 2>&1; }
   ae_expect() {  # <label> <want-rc> <armed> <kit-tsv> <face-0> <face-r>

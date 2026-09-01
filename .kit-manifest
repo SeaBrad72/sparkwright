@@ -28,13 +28,11 @@ GLOSSARY.md
 LICENSE
 MAINTAINING.md
 MATURITY.md
-ONBOARDING.md
 README.md
 SECURITY.md
 START-HERE.md
 THREAT-MODEL.md
 VERSION
-WALKTHROUGH.md
 adapters/README.md
 adapters/_TEMPLATE/README.md
 adapters/_TEMPLATE/adapter.json
@@ -65,13 +63,11 @@ conformance/adopter-told.sh
 conformance/agent-autonomy.sh
 conformance/agent-boundary.sh
 conformance/agentic-ops-readiness.md
-conformance/agentops-ready.sh
 conformance/agentops-sensor-wired.sh
 conformance/agents-brief.sh
 conformance/aggregate-coverage.sh
 conformance/aggregate-exclusions.txt
 conformance/app-tracing-wired.sh
-conformance/artifact-lineage-ready.sh
 conformance/assurance-tiers.sh
 conformance/audit-evidence-checklist.md
 conformance/author-not-approver-wired.sh
@@ -117,7 +113,6 @@ conformance/doc-markers.tsv
 conformance/doctor-wired.sh
 conformance/dor-defined.sh
 conformance/dr-readiness.md
-conformance/dr-ready.sh
 conformance/drift-watch-wired.sh
 conformance/egress-policy.sh
 conformance/egress-readiness.md
@@ -125,11 +120,9 @@ conformance/escalation-wired.sh
 conformance/eval-harness-runs.sh
 conformance/eval-harness-wired.sh
 conformance/eval-readiness.md
-conformance/eval-ready.sh
 conformance/explain-wired.sh
 conformance/feature-flags-ready.sh
 conformance/feature-flags-wired.sh
-conformance/feedback-link-lifecycle-documented.sh
 conformance/fixtures/.gitignore
 conformance/fixtures/bad-agent-trace/ci.yml
 conformance/fixtures/bad-agent-trace/scaffold/.db-backed
@@ -188,7 +181,6 @@ conformance/fixtures/stack-decision-integrity/good-adr.md
 conformance/fixtures/stack-decision-integrity/missing-rationale-adr.md
 conformance/fixtures/stack-decision-integrity/placeholder-adr.md
 conformance/fixtures/stack-decision-integrity/substring-bias-adr.md
-conformance/gate-eval-secrets-ready.sh
 conformance/gitlab-adoption-complete.sh
 conformance/golden-path-filter-parity.sh
 conformance/golden-path-wired.sh
@@ -235,9 +227,9 @@ conformance/model-tiering.sh
 conformance/named-adapters.sh
 conformance/non-vacuity-wired.sh
 conformance/non-vacuity.sh
+conformance/nv-coverage.tsv
 conformance/obligation-lib.sh
 conformance/observability-readiness.md
-conformance/observability-ready.sh
 conformance/onboarding-complete.sh
 conformance/operate-loop-wired.sh
 conformance/orchestrator-loop-wired.sh
@@ -247,9 +239,7 @@ conformance/permission-surface-audit.sh
 conformance/persona-artifacts.sh
 conformance/pipeline-origin.sh
 conformance/poster-parity.sh
-conformance/preview-env-ready.sh
 conformance/preview-environments-readiness.md
-conformance/privacy-ready.sh
 conformance/profile-completeness.sh
 conformance/profile-parity.sh
 conformance/promotion-actuate-wired.sh
@@ -266,9 +256,7 @@ conformance/release-tag-wired.sh
 conformance/release-tagged.sh
 conformance/repo-ownership.sh
 conformance/resilience-readiness.md
-conformance/resilience-ready.sh
 conformance/responsible-ai-readiness.md
-conformance/responsible-ai-ready.sh
 conformance/review-lane.sh
 conformance/roadmap-current.sh
 conformance/roster-authority-ready.sh
@@ -291,7 +279,6 @@ conformance/supply-chain-verify.sh
 conformance/surface-lib.sh
 conformance/template-detectors-aligned.sh
 conformance/test-data-readiness.md
-conformance/test-data-ready.sh
 conformance/test-layers-ready.sh
 conformance/threat-obligation.sh
 conformance/tier-advice-wired.sh
@@ -303,7 +290,6 @@ conformance/uat-obligation.sh
 conformance/union-declass.txt
 conformance/union-lib.sh
 conformance/union-ratchet.sh
-conformance/validation-terminal-state-documented.sh
 conformance/verify-enforced-wired.sh
 conformance/verify.sh
 conformance/version-helpers.sh
@@ -330,6 +316,7 @@ docs/enterprise/ROI-MODEL.md
 docs/enterprise/ai-governance-crosswalk.md
 docs/enterprise/compliance-crosswalk.md
 docs/enterprise/data-governance.md
+docs/enterprise/meta-control.md
 docs/enterprise/platform-safety-boundary.md
 docs/enterprise/ratification-rbac.md
 docs/enterprise/secrets-at-scale.md
@@ -353,7 +340,6 @@ docs/operations/harness-adapters.md
 docs/operations/harness-enforcement-evidence.md
 docs/operations/kit-base.md
 docs/operations/kit-update.md
-docs/operations/meta-control.md
 docs/operations/model-tiering-economics.md
 docs/operations/operate-loop.md
 docs/operations/operator-fluency.md
@@ -364,7 +350,6 @@ docs/operations/release-tag.github.yml
 docs/operations/release-tag.gitlab-ci.yml
 docs/operations/release-tag.md
 docs/operations/resilience-verification.md
-docs/operations/retiring-conventions.md
 docs/operations/review-lane.md
 docs/operations/runaway-killswitch.md
 docs/operations/runtime-guards.md
@@ -377,7 +362,6 @@ docs/operations/test-data-management.md
 docs/operations/test-layers.md
 docs/operations/test-quality.md
 docs/operations/tool-supply-chain.md
-docs/positioning/sparkwright-overview.md
 docs/why-gates.md
 docs/work-tracking/adapters.md
 hooks/pre-push
@@ -765,6 +749,7 @@ templates/OPPORTUNITY-BRIEF-TEMPLATE.md
 templates/POSTMORTEM-TEMPLATE.md
 templates/PRIVACY-REVIEW-TEMPLATE.md
 templates/PROJECT-CLAUDE-TEMPLATE.md
+templates/README.md
 templates/REQUIRED-CHECKS-TEMPLATE.md
 templates/REVIEW-RECORD-TEMPLATE.md
 templates/RUNBOOK-TEMPLATE.md
