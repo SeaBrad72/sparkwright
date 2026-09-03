@@ -92,7 +92,16 @@ need ENGINEERING-PRINCIPLES.md
 need CLAUDE.md
 need RUNBOOK.md
 need .env.example
-need .claude
+# .claude is required on EVERY harness, not only claude-code: the neutral guard core physically lives at
+# .claude/hooks/guard-core.sh and every harness's pre-push FLOOR (hooks/pre-push via scripts/kit-guard)
+# sources it from there. Dropping this requirement for a floor-only harness would pass Inception with
+# no working guard. Relocating the core to a neutral home is boarded (GUARD-CORE-NEUTRAL-HOME, folded
+# into the G8 per-segment guard slice); until then the message says WHY rather than hiding it.
+if [ -e .claude ]; then
+  echo "PASS present: .claude (guard-core home — sourced by every harness's pre-push floor)"
+else
+  echo "FAIL missing: .claude — required on every harness (not Claude-Code-only): the pre-push floor sources .claude/hooks/guard-core.sh from it (relocation boarded: GUARD-CORE-NEUTRAL-HOME)"; fail=1
+fi
 
 # CI pipeline — platform-aware: accept the GitHub OR GitLab path (incept writes one per --ci),
 # so a GitLab adopter doesn't dead-end at this gate (it hard-required the GitHub path before).
@@ -500,6 +509,38 @@ else
       fi
     fi
   fi
+fi
+
+# ── Decided-not-present legs (INCEPTION-DONE-DECIDED-NOT-PRESENT, 2026-09-01). STRICT ONLY: --surface
+#    is "what incept scaffolded", and incept stamps the charter and ADR-000 PLACEHOLDERS by design
+#    (its epilogue steps 1-2 are human judgment), so surface stays green right after incept and strict
+#    reds until both decisions are recorded. Measured defect (ten-lens eval, 2026-09-01): strict
+#    returned OK with §1 Overview still `[what problem this solves, for whom]` and ADR-000 still the
+#    unfilled example — the exit gate proved presence, not decision.
+#    Honest ceiling: what is detected is the TEMPLATE placeholder. A deleted section or a one-word
+#    charter passes; whether the decision is GOOD stays the owner's Go/No-Go. The ADR leg reuses the
+#    decision-integrity engine's own verdict: its unfilled-example N/A (correct for a lint that runs
+#    all loop long) is a FAIL at THIS gate, and so is an absent ADR. Fail-closed if the engine is absent.
+if [ "$MODE" = strict ]; then
+  _id_ph=$(grep -c -F -e '[what problem this solves, for whom]' -e "[how we know it's working]" -e "[what's explicitly in / out]" CLAUDE.md 2>/dev/null || true)
+  if [ "${_id_ph:-0}" -gt 0 ]; then
+    echo "FAIL: charter undecided — CLAUDE.md §1 Overview still carries $_id_ph template placeholder line(s) (Problem / Vision / Scope); write the charter prose (incept epilogue step 1)"; fail=1
+  else
+    echo "PASS: charter decided — no §1 Overview template placeholder remains in CLAUDE.md"
+  fi
+  _id_adr=docs/architecture/ADR-000-stack.md
+  if [ ! -f "$_id_adr" ]; then
+    echo "FAIL: stack decision unrecorded — $_id_adr absent; record the real stack decision (incept epilogue step 2)"; fail=1
+  else
+    _id_dv=$(sh conformance/decision-integrity.sh stack "$_id_adr" 2>&1 || true)
+    case "$_id_dv" in
+      *"PASS:"*) echo "PASS: stack decision recorded — ADR-000 fit rationale cites a fit dimension" ;;
+      *"unfilled example"*) echo "FAIL: stack decision unrecorded — $_id_adr fit rationale is still the unfilled example (incept epilogue step 2)"; fail=1 ;;
+      *) echo "FAIL: stack decision — decision-integrity verdict: ${_id_dv:-UNVERIFIED (conformance/decision-integrity.sh not runnable)}"; fail=1 ;;
+    esac
+  fi
+else
+  echo "surface: charter + ADR-000 decision legs deferred to strict (incept epilogue steps 1-2 are judgment, not scaffold)"
 fi
 
 if [ "$fail" -ne 0 ]; then echo "FAIL: Inception-Done gate not satisfied in '$DIR'"; return 1; fi
@@ -1009,6 +1050,42 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_hasnt "FAIL: gate-provenance repo-class"
   st_hasnt "PASS: gate-provenance repo-class"
 
+  # (n1)-(n3) decided-not-present legs (INCEPTION-DONE-DECIDED-NOT-PRESENT). Load-bearing negatives:
+  # the §1 Overview template placeholder and the unfilled example ADR-000 must each red STRICT; an
+  # absent ADR reds too; (n3) proves surface stays green on both (incept's own post-scaffold verify
+  # must not red on the judgment steps it tells the adopter are still theirs).
+  echo "--- (n1) strict: charter placeholder present -> FAIL ---"
+  d=$(st_mkfix n1 claude-code); st_install_hook "$d"
+  printf '%s\n' '**Problem:** [what problem this solves, for whom]' >> "$d/CLAUDE.md"
+  st_run "$d"
+  st_has "FAIL: charter undecided"
+  st_hasnt "PASS: charter decided"
+  st_rc 1
+  echo "--- (n2) strict: ADR-000 still the unfilled example -> FAIL; absent -> FAIL ---"
+  d=$(st_mkfix n2 claude-code); st_install_hook "$d"
+  st_run "$d"
+  st_has "PASS: charter decided"
+  st_has "PASS: stack decision recorded"
+  st_undecided_adr "$d"
+  st_run "$d"
+  st_has "FAIL: stack decision unrecorded"
+  st_has "unfilled example"
+  st_hasnt "PASS: stack decision recorded"
+  st_rc 1
+  rm -f "$d/docs/architecture/ADR-000-stack.md"
+  st_run "$d"
+  st_has "FAIL: stack decision unrecorded"
+  st_has "absent"
+  st_rc 1
+  echo "--- (n3) surface: both undecided -> these legs defer, no FAIL from them ---"
+  d=$(st_mkfix n3 claude-code); st_install_hook "$d"
+  printf '%s\n' '**Problem:** [what problem this solves, for whom]' >> "$d/CLAUDE.md"
+  st_undecided_adr "$d"
+  st_run "$d" surface
+  st_hasnt "FAIL: charter undecided"
+  st_hasnt "FAIL: stack decision"
+  st_has "deferred to strict"
+
   rm -rf "$WORK" 2>/dev/null || true
   if [ "$st_fail" = 0 ]; then
     echo "inception-done --selftest: OK"; return 0
@@ -1089,8 +1166,14 @@ st_mkfix() {
     echo "**Intent owner:** the fixture owner"
     echo "- **Target harness(es)** (§harness-neutrality): $2"
   } > "$_d/CLAUDE.md"
+  # decided-not-present legs: the template clone carries the kit's UNFILLED example ADR-000, which the
+  # strict gate reds by design — give every fixture a decided one; (n1)/(n2)/(n3) undo this deliberately.
+  mkdir -p "$_d/docs/architecture"
+  printf '# ADR-000\n\n## Fit rationale\nteam skills and ecosystem fit for this workload.\n' > "$_d/docs/architecture/ADR-000-stack.md"
   printf '%s' "$_d"
 }
+# st_undecided_adr <dir>: put the UNFILLED example back (bracketed body carrying the engine's sentinel)
+st_undecided_adr() { printf '# ADR-000\n\n## Fit rationale\n[why this stack fits THIS problem — cite the fit dimensions]\n' > "$1/docs/architecture/ADR-000-stack.md"; }
 st_install_hook() { cp "$1/hooks/pre-push" "$1/.git/hooks/pre-push"; chmod +x "$1/.git/hooks/pre-push"; }
 # st_tracked <dir>: switch the fixture to TRACKED-HOOKS mode (Δ6) — remove any installed copy (this
 #   mode's green must come from the tracked file alone) and point core.hooksPath at the tree's own

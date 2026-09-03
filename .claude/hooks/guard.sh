@@ -58,7 +58,12 @@ fi
 case "$TOOL" in
   Bash)
     CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || printf '')
-    if reason=$(guard_check_command "$CMD"); then allow; else emit_deny "$reason"; fi ;;
+    # GUARD-CWD-CONFIDENCE-UNKNOWN Face C. `cwd` is a TOP-LEVEL PreToolUse field (a sibling of
+    # `tool_name`), not part of `tool_input` — which is the whole reason it is trustworthy here: the
+    # model authors `tool_input` and the harness authors this. Still no deny logic in the adapter:
+    # it forwards a string and the core decides. Absent ⇒ empty ⇒ the core's pre-slice behaviour.
+    CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty' 2>/dev/null || printf '')
+    if reason=$(guard_check_command "$CMD" "$CWD"); then allow; else emit_deny "$reason"; fi ;;
   Write|Edit|NotebookEdit|MultiEdit)
     # MultiEdit folded in (C5 GUARD-TOOL-COVERAGE, design §2 Part A / vet Q2): its write surface is a
     # single .tool_input.file_path (+ an edits[] array, no multi-target), the same field Edit writes,

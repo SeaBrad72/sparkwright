@@ -1,6 +1,6 @@
 # Threat Model
 
-**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.221.0 · **Date:** 2026-09-01
+**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.222.1 · **Date:** 2026-09-02
 **Owner:** Bradley James · **Data classification:** Internal (the kit holds no customer data)
 
 <!-- The bolded "Kit version" token on the line above is the SINGLE marker

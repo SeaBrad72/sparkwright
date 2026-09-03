@@ -172,6 +172,9 @@
 # (--no-renames + core.quotePath=false + -z + the newline fail-safe). Re-implementing it here would make
 # a SIXTH derivation and duplicate the control-plane path contract with nothing locking the two together
 # — the CP7R5-KEPTSET-LOCK failure, which is already boarded describing exactly this.
+# THE SAME SINGLE-AUTHORITY RULE GOVERNS THE PRE-PUSH SCOPE KEY (prepush_scope_key, D11), and
+# `--print-scope-key` is its ONE SANCTIONED CONSUMER PATH: a read-only print of that function's
+# answer for hooks/pre-push, which must never re-derive a branch key of its own.
 #
 # Usage:
 #   sh conformance/ceremony-binding.sh --scope PR-42 [--head-branch feat/x] [--base-ref main]
@@ -190,6 +193,12 @@
 #                                                       $GITHUB_STEP_SUMMARY. THE SINGLE SOURCE of the
 #                                                       render: both workflow legs INVOKE this, and the
 #                                                       parity lock refuses a leg that regrows a copy.)
+#   sh conformance/ceremony-binding.sh --print-scope-key
+#                                                      (prints the DERIVED pre-push key
+#                                                       `branch/<name>` and grades nothing; rc 1
+#                                                       detached HEAD, rc 2 charset-out branch,
+#                                                       rc 3 bad usage. hooks/pre-push's only
+#                                                       sanctioned way to learn the branch key.)
 #   sh conformance/ceremony-binding.sh --selftest
 #
 # What it changes: nothing — read-only. Reads the working tree, git history, and refs/notes/promotions.
@@ -343,6 +352,37 @@ prepush_scope_key() {
   _scope_charset_bad "$_ppk_branch" && return 2
   printf 'branch/%s\n' "$_ppk_branch"
   return 0
+}
+
+# print_scope_key_mode — the BODY of the `--print-scope-key` dispatch arm (design §3.1; hoisted here
+# by reviewer R3). It lives ABOVE the selftest() marker on purpose: the non-vacuity sweep mutates
+# only pre-marker lines, so a mode whose logic sat in the dispatch case at the foot of the file was
+# invisible to it — legs P8a-d would have passed against an unmutatable body. Here the rc partition
+# is a mutation target like any other check logic.
+#
+# It EVALUATES NOTHING and grades NOTHING: it relays prepush_scope_key's answer so hooks/pre-push's
+# board-presence leg can name the branch without deriving a second key (D11's single-derivation
+# rule — see that function's own trap warning). The rc partition IS the contract:
+#   0 = `branch/<name>` on stdout · 1 = detached HEAD (NOTHING printed, on either stream) ·
+#   2 = the branch name is outside the scope charset (nothing on stdout, one stderr reason) ·
+#   3 = bad usage.
+# rc 3 rather than this file's usual usage rc 2 is load-bearing: a consumer that cannot tell
+# "evaluated: unrepresentable" from "could not evaluate: you called me wrong" would silently N/A a
+# broken invocation and stop grading (the presence design's A1-1 HIGH). And the rc-1 path must stay
+# SILENT: the hook keys its detached-HEAD N/A on "rc 1 AND no stderr" precisely because a `set -eu`
+# preamble failure in this file also exits non-zero, but never quietly (that leg's S1).
+print_scope_key_mode() {
+  if [ "$#" -ne 1 ]; then
+    echo "usage: ceremony-binding.sh --print-scope-key   (takes no other argument)" >&2
+    return 3
+  fi
+  _psk_rc=0; _psk_key="$(prepush_scope_key)" || _psk_rc=$?
+  case "$_psk_rc" in
+    0) printf '%s\n' "$_psk_key"; return 0 ;;
+    1) return 1 ;;
+    *) echo "ceremony-binding: the checked-out branch name is outside the scope charset (A-Za-z0-9_.:/-), so no record could ever carry its key" >&2
+       return 2 ;;
+  esac
 }
 
 # containment_base — the BASIS for containment LEG 2 ("the approved commit is not already in the base
@@ -1922,6 +1962,73 @@ selftest() {
   esac
   ( cd "$_tmp/fpp1" && git checkout -q b2-pp )
 
+  # ── LEGS P8a-d: `--print-scope-key`, the ONE sanctioned exit of prepush_scope_key to another
+  # process (PRE-PUSH-RUNS-BACKLOG-PRESENCE design §3.1). hooks/pre-push's presence leg needs the
+  # branch key and D11 forbids it deriving one, so this mode relays THIS function's answer and
+  # nothing else. The rc partition is the contract the hook reads, and it must be UNAMBIGUOUS:
+  # rc 0 + `branch/<name>` on stdout · rc 1 detached (the hook's ONLY N/A) · rc 2 charset · rc 3
+  # BAD USAGE. Sharing rc 2 between "evaluated: unrepresentable" and "could not evaluate: bad
+  # usage" is the A1-1 HIGH — the hook would N/A a broken invocation and the leg would silently
+  # stop grading. Each leg re-invokes the script as a CHILD PROCESS (not the in-process function),
+  # because the process boundary IS the thing under test.
+  case "$0" in /*) _psk_self="$0" ;; *) _psk_self="$PWD/$0" ;; esac
+  _legs=$((_legs+1))   # legP8a
+  _outP8a="$( cd "$_tmp/fpp1" && sh "$_psk_self" --print-scope-key 2>/dev/null )" \
+    && _rcP8a=0 || _rcP8a=$?
+  if [ "$_rcP8a" = 0 ] && [ "$_outP8a" = "branch/b2-pp" ]; then
+    echo "PASS legP8a: --print-scope-key prints 'branch/b2-pp' rc 0"
+  else
+    echo "FAIL legP8a: expected rc 0 + 'branch/b2-pp', got rc=$_rcP8a: '$_outP8a'"; _fails=$((_fails+1))
+  fi
+
+  # legP8b — detached HEAD: rc 1 with NOTHING on EITHER stream. The empty STDERR is as load-bearing
+  # as the rc (security S1): hooks/pre-push treats "rc 1 and silent" as its only N/A, because this
+  # file is `set -eu` and a preamble or source failure ALSO exits non-zero — with a reason. If this
+  # path ever gained a diagnostic, the hook would start refusing legitimate detached pushes; if the
+  # hook keyed on the rc alone, a broken predicate would be waved through as "detached". One of the
+  # two must pin the stderr, and this is the cheaper side.
+  _legs=$((_legs+1))   # legP8b
+  ( cd "$_tmp/fpp1" && git checkout -q --detach HEAD )
+  _errP8b="$_tmp/p8b.err"
+  _outP8b="$( cd "$_tmp/fpp1" && sh "$_psk_self" --print-scope-key 2>"$_errP8b" )" \
+    && _rcP8b=0 || _rcP8b=$?
+  if [ "$_rcP8b" = 1 ] && [ -z "$_outP8b" ] && [ ! -s "$_errP8b" ]; then
+    echo "PASS legP8b: --print-scope-key on a detached HEAD -> rc 1, silent on BOTH streams"
+  else
+    echo "FAIL legP8b: expected rc 1 + empty stdout + EMPTY stderr, got rc=$_rcP8b: '$_outP8b' err='$(cat "$_errP8b" 2>/dev/null)'"
+    _fails=$((_fails+1))
+  fi
+  ( cd "$_tmp/fpp1" && git checkout -q b2-pp )
+
+  _legs=$((_legs+1))   # legP8c
+  # -B, not -b: legP7 above already created this branch in the same fixture, and under `set -e` a
+  # second `-b` would abort the whole selftest rather than fail a leg (measured on first write).
+  ( cd "$_tmp/fpp1" && git checkout -q -B 'feat+plus' )
+  _errP8c="$_tmp/p8c.err"
+  _outP8c="$( cd "$_tmp/fpp1" && sh "$_psk_self" --print-scope-key 2>"$_errP8c" )" \
+    && _rcP8c=0 || _rcP8c=$?
+  if [ "$_rcP8c" = 2 ] && [ -z "$_outP8c" ] && [ -s "$_errP8c" ]; then
+    echo "PASS legP8c: a charset-out branch -> rc 2, empty stdout, one stderr reason"
+  else
+    echo "FAIL legP8c: expected rc 2 + empty stdout + a stderr reason, got rc=$_rcP8c: '$_outP8c' err='$(cat "$_errP8c" 2>/dev/null)'"
+    _fails=$((_fails+1))
+  fi
+  ( cd "$_tmp/fpp1" && git checkout -q b2-pp )
+
+  # legP8d — BAD USAGE IS ITS OWN RC (A1-1). Folding it into rc 2 would make the hook read a
+  # broken invocation as an evaluated charset answer; folding it into rc 1 would make the hook
+  # N/A the leg entirely. Deleting the `[ $# -ne 1 ]` refusal reds this leg at rc 0.
+  _legs=$((_legs+1))   # legP8d
+  _errP8d="$_tmp/p8d.err"
+  _outP8d="$( cd "$_tmp/fpp1" && sh "$_psk_self" --print-scope-key --scope PR-1 2>"$_errP8d" )" \
+    && _rcP8d=0 || _rcP8d=$?
+  if [ "$_rcP8d" = 3 ] && [ -z "$_outP8d" ] && grep -q 'usage' "$_errP8d" 2>/dev/null; then
+    echo "PASS legP8d: --print-scope-key with an extra argument -> rc 3 + usage on stderr"
+  else
+    echo "FAIL legP8d: expected rc 3 + usage on stderr, got rc=$_rcP8d: '$_outP8d' err='$(cat "$_errP8d" 2>/dev/null)'"
+    _fails=$((_fails+1))
+  fi
+
   # ── B7 RIDER legs: NO-SHADOWING (the #509 wedge, measured). The ledger iterates in
   # annotated-SHA order and the old match loop broke on FIRST scope-match, so a DEFECTIVE record
   # shadowed a VALID same-key record by sort-order lottery. The rider collects and adjudicates
@@ -3006,6 +3113,17 @@ _mkreplay() {
 
 case "${1:-}" in
   --selftest) selftest ;;
+  # --print-scope-key — the ONE sanctioned exit of prepush_scope_key to another process (design
+  # docs/architecture/2026-09-02-prepush-presence-design.md §3.1). It EVALUATES NOTHING and grades
+  # NOTHING: it relays this file's derivation so hooks/pre-push's board-presence leg can name the
+  # branch without deriving a second key (D11's single-derivation rule — see prepush_scope_key's
+  # own trap warning). The rc partition IS the contract, and bad usage gets its OWN rc:
+  #   0 = `branch/<name>` on stdout · 1 = detached HEAD (nothing printed) · 2 = the branch name is
+  #   outside the scope charset (nothing printed, one stderr reason) · 3 = bad usage.
+  # rc 3 rather than the file's usual usage rc 2 is load-bearing: a consumer that cannot tell
+  # "evaluated: unrepresentable" from "could not evaluate: you called me wrong" would silently N/A
+  # a broken invocation and stop grading (the presence design's A1-1 HIGH).
+  --print-scope-key) print_scope_key_mode "$@"; exit $? ;;
   # The literal '' is the fixture parameter: production NEVER supplies a listing — the class always
   # derives from the ambient tree. Only selftest()'s in-process calls pass a real path.
   *) run_ceremony_binding '' "$@" ;;

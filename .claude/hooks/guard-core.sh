@@ -1411,7 +1411,16 @@ _cp8b_mask_bs="\\\\[$_cp8b_mask_bsset]"
 # Bare `grep`/`egrep`/`fgrep` STAY: they carry no exec or write flag. The price is priced and celled —
 # a flagless `rg`/`diff`/`column`/`git grep` quoted-alternation read of a CP file is DENY again, one
 # retry away from `grep -E`. Removal is fail-closed; adding a verb back requires its own measurement.
-_CP8B_MASK_GATE_VERBS='grep egrep fgrep ls cat head tail wc stat du cut tr nl od hexdump tac comm cmp basename dirname realpath readlink echo printf which type shellcheck jq shasum md5 cksum yamllint git'
+# GUARD-READ-PATTERN-RELIEF Face 1 — `cd` JOINS THE GATE, and only `cd`. It is added on its own
+# MEASUREMENT (design §3 Face 1, lane-2 §10-A1's per-lead rule, never inheritance): `cd` reads no
+# stdin, executes no argument and writes no file, so it cannot be the pipe-fed interpreter this gate
+# exists to keep upstream data away from; its one effect on a later segment is the cwd, which
+# `_cp8b_eff_update` already follows (`cd conformance && sed -i s/a/b/ verify.sh` is celled DENY).
+# `pwd true false test [ export unset` were cleared on the same grounds but have ZERO measured
+# denials, so they are NOT here. The gate buys the MASK, nothing else: the pipe rule, the redirect
+# arm and every mutation arm still run on the unmasked bytes.
+# ⚠️ `cd` IS APPENDED, not prepended: M-A1-rg's mutation expression anchors on `='grep`.
+_CP8B_MASK_GATE_VERBS='grep egrep fgrep ls cat head tail wc stat du cut tr nl od hexdump tac comm cmp basename dirname realpath readlink echo printf which type shellcheck jq shasum md5 cksum yamllint git cd'
 _CP8B_MASK_GATE_GIT_SUBS='status blame describe diff log show ls-files'
 # _cp8b_unmask_quoted "<s>": the sentinels back to their bytes. Total and exact — one byte per byte.
 _cp8b_unmask_quoted() {
@@ -1462,6 +1471,22 @@ _cp8b_mask_gate_ok() {
     [ -n "$(printf '%s' "$_mgs" | tr -d '[:space:]')" ] || continue
     _mgp=$(_cp8b_strip_wrappers "$_mgs")
     _mgl=$(_cp8b_dequote "$(_cp8b_lead "$_mgp")")
+    # GUARD-READ-PATTERN-RELIEF Face 2 — a `sed`/`awk` segment is a gate lead ONLY IF THE STRICT READ
+    # GRAMMAR F-b ALREADY TRUSTS ACCEPTS IT. Neither verb goes on the lexicon: `sed -i`, a `w`/`e`/`s`
+    # script, a second script, an extra flag, a flag-shaped operand or a redirect all decline here and
+    # keep discarding the mask, exactly as today. Fail-by-disqualification, no new parser.
+    # ⚠️ THE UNMASK IS LOAD-BEARING (vet C3), NOT STYLE. The grammar is called on
+    # `_cp8b_unmask_quoted "$_mgs"` — the IDENTICAL bytes the arm judges at :3077/:4150 — never on the
+    # masked copy. Hand it the masked copy and a sentinel inside a path token stops looking like the
+    # separator it is: `_cp8b_seg_path_ok` refuses `"x;y.txt"` on the `;` and passes the sentinel, so
+    # the gate and the arm would see different tokens and a quoted separator would survive into a
+    # kept mask. M-RPR2 mutates exactly this argument and its anchor flips DENY -> ALLOW.
+    case "$_mgl" in
+      sed) _cp8b_seg_sed_n_strict "$(_cp8b_unmask_quoted "$_mgs")" && continue
+           return 1 ;;
+      awk) _cp8b_seg_awk_range_strict "$(_cp8b_unmask_quoted "$_mgs")" && continue
+           return 1 ;;
+    esac
     _cp8b_in_list "$_mgl" "$_CP8B_MASK_GATE_VERBS" || return 1
     if [ "$_mgl" = git ]; then
       _mgb=$(_cp8b_dequote "$(_cp8b_git_sub "$_mgp")")
@@ -3217,12 +3242,78 @@ _cp8b_cd_arg() { printf '%s' "$1" | sed -E 's/^[[:space:]]*//' | awk '{print $2}
 # The desync attack `cd hooks && echo "z || cd /tmp" && tee pre-push`: the bogus ` cd /tmp"` segment is
 # BOTH quoted and absolute → no-op → $_CP8B_EFF stays `hooks` → `tee pre-push` composes hooks/pre-push
 # → DENY. (Leg K-D binds this; K-A binds the accumulator itself.)
+# GUARD-CWD-CONFIDENCE-UNKNOWN, Face C — THE SEED. `_cp8b_seed_from_cwd "<cwd>"` sets the two seed
+# globals the target arm starts its walk from. The seed lives HERE, in the core, and not in guard.sh,
+# for three reasons the vet made conditions (H3): (1) `guard.sh:3-5` forbids deny logic in the
+# adapter; (2) the delta leg replays CORES ONLY (`aa_delta_adjudicate`), so a seed in the adapter
+# could never be ratcheted; (3) the two JSON-less entrypoints COULD pass their own cwd through the
+# same door, with no further change here.
+# ⚠️ CEILING, CORRECTED (reviewer I3) — AN EARLIER DRAFT OF THIS COMMENT SAID THEY GET IT "FOR FREE",
+# AND THAT WAS FALSE. Measured: `scripts/kit-guard:215` calls guard_check_command with ONE argument,
+# and `hooks/pre-push` never calls it at all (it calls guard_check_push). So TODAY the CLI floor is
+# judged AT THE ROOT — `rm verify.sh` run from `conformance/` via kit-guard does NOT get the cwd
+# treatment. Behaviour is deliberately unchanged in this slice; the door is open and unused.
+#
+# ABSENT OR EMPTY ⇒ TODAY'S BEHAVIOUR, byte for byte: prefix '' (the repo root), confidence intact.
+# That is what keeps every pre-existing cell, every older harness with no `cwd` field, and every
+# internal caller that passes one argument exactly as they are.
+_CP8B_SEED_EFF=''
+_CP8B_SEED_UNKNOWN=0
+# Face A's confidence flag. Initialised at file scope as well as per-walk so that no caller under
+# `set -u` can trip over it, and so a core sourced bare (the delta leg does exactly that) is sane.
+_CP8B_EFF_UNKNOWN=0
+_cp8b_seed_from_cwd() {
+  _CP8B_SEED_EFF=''; _CP8B_SEED_UNKNOWN=0
+  [ -n "${1:-}" ] || return 0
+  # A DELETED / UNREACHABLE cwd is UNKNOWN, not root: the agent is standing somewhere the guard
+  # cannot name, which is the exact condition Face B prices. `pwd -P` matches PROTECTED_ROOT's own
+  # physical resolution (guard.sh:15), so a symlinked cwd compares correctly instead of falling out.
+  _scr=$( CDPATH='' cd -- "$1" 2>/dev/null && pwd -P ) || _scr=''
+  if [ -z "$_scr" ]; then _CP8B_SEED_UNKNOWN=1; return 0; fi
+  case "${PROTECTED_ROOT:-}" in '') _CP8B_SEED_UNKNOWN=1; return 0 ;; esac
+  if [ "$_scr" = "${PROTECTED_ROOT:-}" ]; then return 0; fi
+  case "$_scr" in
+    "${PROTECTED_ROOT:-}"/*) _CP8B_SEED_EFF=$(_cp8b_norm "${_scr#"${PROTECTED_ROOT:-}"/}"); return 0 ;;
+  esac
+  # ⚠️ STRIKABLE HALF C-outside (design §3-C, owner's call at ratification). A cwd OUTSIDE the
+  # protected root is UNKNOWN — the fail-closed reading. Striking is THIS ONE LINE: delete it (leaving
+  # `return 0`) and an outside cwd falls back to '' (root), i.e. today's behaviour for dev-clones, at
+  # the price of the D1/D2 asymmetry staying open. The `K-CWD-outside ` cells are its own.
+  _CP8B_SEED_UNKNOWN=1
+  return 0
+}
+
+# _cp8b_glob_byte_in "<operand>": 0 iff the operand carries a glob/brace byte, i.e. the shell will
+# expand it against a filesystem the guard cannot see. Vet H2: `conf*/verify.sh` intersects no
+# control-plane family, so composing the literal `conf*` was a silent miss, not a conservative one.
+_cp8b_glob_byte_in() { case "$1" in *'*'*|*'?'*|*'['*|*'{'*) return 0 ;; esac; return 1; }
+
 _cp8b_eff_update() {  # $1 = the cd segment ; reads/writes $_CP8B_EFF
-  if _cp8b_has_quote "$1"; then return; fi
+  # GUARD-CWD-CONFIDENCE-UNKNOWN Face A — every branch that returns SILENTLY below now RECORDS that
+  # it could not follow. Nothing else changes: the prefix is still left exactly as it was, so every
+  # composition this function ever produced is byte-identical. The flag is a second, additive fact —
+  # "and by the way, I am no longer sure where we are" — which Face B, and only Face B, charges for.
+  if _cp8b_has_quote "$1"; then _CP8B_EFF_UNKNOWN=1; return; fi
   _ea=$(_cp8b_cd_arg "$1")
   case "$_ea" in
-    ''|-|'~'*|/*|*..*|*'$'*|*'`'*) return ;;
+    ''|-|'~'*|/*|*..*|*'$'*|*'`'*) _CP8B_EFF_UNKNOWN=1; return ;;
   esac
+  # A `-`-PREFIXED OPERAND IS A DECLINE, NOT A PARSE. `_cp8b_cd_arg` is awk's `$2`, so today
+  # `cd -P conformance` yields the operand `-P` and COMPOSES a directory literally named `-P`: the
+  # tracker does not fail to follow, it follows somewhere that cannot exist, and the real descent
+  # into `conformance` is lost while confidence is retained. Declining every `-`-led operand (`-`,
+  # `--`, `-P`, `-L`, `-e`, `-@`, anything future) replaces a silent mis-track with a refusal, which
+  # is `D-240813-3`'s fail-by-disqualification. This is deliberately NOT a flag table: a table is the
+  # `D-240816-1` enumeration trap, and the operand-shape test cannot rot. (M-CWD2 pins it.)
+  case "$_ea" in -*) _CP8B_EFF_UNKNOWN=1; return ;; esac
+  # GLOB / BRACE BYTES (vet H2). `cd conf*` is not composable — the shell expands it against the real
+  # filesystem and the guard cannot know the result — yet it is not declined by any clause above, so
+  # today it composes the LITERAL `conf*` and `conf*/verify.sh` intersects no control-plane family
+  # (directory families are outside _cp8b_glob_hits_cp). Same treatment: decline, do not resolve.
+  # (M-CWD2b pins it.)
+  # (Kept as a named predicate rather than inline, so the M-CWD2b mutant has an anchor that does not
+  # consist entirely of glob metacharacters — a sed expression over `*'['*` is its own hazard.)
+  if _cp8b_glob_byte_in "$_ea"; then _CP8B_EFF_UNKNOWN=1; return; fi
   if [ -z "$_CP8B_EFF" ]; then _CP8B_EFF=$(_cp8b_norm "$_ea")
   else _CP8B_EFF=$(_cp8b_norm "$_CP8B_EFF/$_ea"); fi
 }
@@ -3345,6 +3436,17 @@ _cp8b_seg_is_shell_n() {
 # ways — `sed -n '/re/p' <cp>` DENIES, and its denial does not advertise the kill switch.
 _CP8B_SED_SCRIPT_RO='^[0-9]+(,([0-9]+|\$))?p$'
 _CP8B_SED_SCRIPT_ADDR='^/[^/\\]*/p$'
+# GUARD-READ-PATTERN-RELIEF Face 4 — THE RANGE ADDRESS FORMS, MESSAGE TIER ONLY. `/a/,/b/p`,
+# `/re/,5p` and `5,/re/p` are the spellings an operator reaches for right after the TIP sends them to
+# the `sed -n` grammar, and they were denying WITH "Set KIT_GUARD_SELFEDIT=1" — the guard telling a
+# reader to disarm it globally in order to read. This regex is consulted ONLY on the `msg` tier, so
+# THE VERDICT DOES NOT MOVE (the deny anchors beside every Face 4 cell assert that); design §8's
+# pricing keeping addressed sed out of the ALLOW tier stands, and Face 3 was struck at the GO.
+# ⚠️ `/` AND `\` ARE REFUSED INSIDE THE DELIMITERS, and that is the whole safety argument: a
+# `/`-permissive regex reads `/a/,/b/w .claude/hooks/guard-core.sh/p` as addr2 + `p` while sed
+# executes a `w` — a real write to the guard, celled as keeping the sentence. `$` cannot appear here
+# at all (`_cp8b_unparseable` denies upstream of the sed arm). `p` is the only command admitted.
+_CP8B_SED_SCRIPT_ADDR2='^(/[^/\\]*/|[0-9]+),(/[^/\\]*/|[0-9]+)p$'
 # _cp8b_seg_sed_script_ro "<script>" [msg]: 0 iff the (already quote-stripped) sed script is read-only.
 # The SOLE grammar site for both tiers. `w`, `e`, `r`, `s///w`, a second command, an unanchored suffix
 # — all decline here, which is why the trailing `p$` anchor is load-bearing (M-B1 pins it: a `w` admitted
@@ -3352,7 +3454,8 @@ _CP8B_SED_SCRIPT_ADDR='^/[^/\\]*/p$'
 _cp8b_seg_sed_script_ro() {
   printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_RO" && return 0
   [ "${2:-}" = msg ] || return 1
-  printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_ADDR"
+  printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_ADDR" && return 0
+  printf '%s' "$1" | grep -Eq "$_CP8B_SED_SCRIPT_ADDR2"
 }
 # _cp8b_seg_qstrip "<token>": the token with EXACTLY ONE matching surrounding quote pair removed (both
 # `'` or both `"`, or none). Prints the stripped token; rc 0 = it was unquoted, 2 = single-quoted,
@@ -4117,6 +4220,84 @@ _cp8b_redir_launder_denied() {
 }
 
 # _cp8b_target_reason "<segment>" "<trigger>": signpost the composition and name the cheap escape.
+# === GUARD-CWD-CONFIDENCE-UNKNOWN Face B — the disqualifier ====================================
+# _cp8b_rel_operand_in "<seg>": 0 iff the segment carries at least one RELATIVE, NON-FLAG operand
+# after its lead token. This is not target parsing and it must never become target parsing: it asks
+# only "does this write name something whose meaning depends on where we are standing?". An absolute
+# operand is fully determined wherever the shell is, so it is not disqualifying; a flag is not a
+# path. Globbing is disabled around the word-split so a `*` operand cannot expand against the real
+# filesystem (the same discipline _cp8b_cp_target_in uses).
+_cp8b_rel_operand_in() {
+  _rog=0; case "$-" in *f*) _rog=1 ;; esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -gt 0 ] && shift        # drop the lead verb
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*|/*|'') : ;;
+      *) [ "$_rog" = 1 ] || set +f; return 0 ;;
+    esac
+    shift
+  done
+  [ "$_rog" = 1 ] || set +f
+  return 1
+}
+
+# _cp8b_group_peel "<seg>": the segment with any leading `(`, `{`, `;` and whitespace stripped.
+# S-H1 (security seat, HIGH). `_cp8b_lead` reports the first token verbatim, so `(sed -i … verify.sh)`
+# leads with `(sed` and `{ sed …; }` leads with `{` — neither is `sed`, and the Face-B dispatch never
+# fired for either. THIS IS A PEEL, NOT A PARSE, and the distinction is the whole of D-240813-3: it
+# removes bytes that can only ever be group punctuation and asks the SAME question of what remains.
+# It cannot resolve anything, cannot fail open, and is the identical shape as the wrapper peels the
+# guard already performs. Nothing downstream sees the peeled copy — it is used ONLY to ADD denies.
+_cp8b_group_peel() { printf '%s' "$1" | sed -E 's/^([[:space:]]*[({;]+[[:space:]]*)+//'; }
+
+# _cp8b_cwd_redir_in "<seg>": 0 iff the segment carries a redirect whose target is RELATIVE, or one
+# whose target cannot be read at all. Reuses the SHARED _redir_targets extractor rather than a second
+# `>`-scan, so the two can never drift: rc 2 is its "non-literal target" answer (a redirect exists and
+# cannot be resolved — fail closed), and its output is the literal targets.
+# AN ABSOLUTE TARGET IS NOT DISQUALIFYING, and that is deliberate rather than an oversight: `> /tmp/x`
+# names the same file wherever the shell is standing, so a lost cwd tells you nothing about it and
+# denying it would be friction bought for nothing.
+_cp8b_cwd_redir_in() {
+  _cri=$(_redir_targets "$1"); _crc=$?
+  [ "$_crc" = 2 ] && return 0
+  [ -n "$_cri" ] || return 1
+  # Globbing off around the word-split (the discipline every operand walk in this file uses), and a
+  # split on whitespace: a target containing a space splits into fragments that are EACH tested, and
+  # a relative fragment denies — the fail-closed direction.
+  _crg=0; case "$-" in *f*) _crg=1 ;; esac
+  set -f
+  _crh=1
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  for _crt in $_cri; do
+    case "$_crt" in /*) : ;; *) _crh=0; break ;; esac
+  done
+  [ "$_crg" = 1 ] || set +f
+  return $_crh
+}
+
+# The reason. `trigger=cwd-unknown` is a NEW trigger word, and it is the only new lexicon in this
+# face — every verb, every git subcommand and the redirect extractor are the sets the guard already
+# had. The remedy is spelled out because this deny is, by construction, the one an honest operator
+# hits most: it fires on ORDINARY files whenever the tracker is lost.
+# ⚠️ THE REMEDY SENTENCE WAS FALSE IN ITS FIRST FORM AND WAS GRADED WITH THE GATE (reviewer I1 /
+# security M1). It advised "spell the target repo-root-relative or absolute" — and `_cp8b_rel_operand_in`
+# counts ANY non-flag token, so BOTH of those still deny while lost. Measured:
+#   `cd $DIR && sed -i s/a/b/ /abs/notes.txt`   DENY   (`s/a/b/` is itself an operand)
+#   `cd $DIR && chmod 644 /abs/notes.txt`       DENY   (`644` is itself an operand)
+#   `cd $DIR && sed -i s/a/b/ docs/notes.txt`   DENY
+# The predicate is deliberately NOT narrowed: narrowing means asking which operand of which verb is
+# the target, i.e. a per-verb operand table, which is the `D-240816-1` enumeration trap. THE
+# ALTERNATIVE — a per-verb target-position table — IS THE OWNER'S CALL, not this seat's, and it is
+# named here so the choice is visible at the code rather than only in a design document.
+# What is left is the two escapes that were MEASURED to work, and they are what the message now says.
+_cp8b_cwd_unknown_reason() {
+  _cus=$(printf '%s' "$1" | cut -c1-160)
+  printf '13: a relative write after a directory change the guard could not follow (`cd -`, a bare `cd`, `pushd`/`popd`, a quoted / flagged / glob-bearing / variable / absolute / `~`-rooted `cd`, or a cwd inherited from a PRIOR tool call) cannot be proven to land outside the control plane - denied (fail-closed; trigger=cwd-unknown). Offending segment: [%s]. TIP: while the cwd is unknown EVERY operand is disqualifying, absolute ones included - so use the Edit/Write tool, or put the write in a call whose `cd` the guard CAN follow (one literal relative `cd` from the repo root: no flags, no quotes, no globs, no variables, no `..`). escape card: docs/operations/runtime-guards.md §Over-deny Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$_cus"
+}
+
 _cp8b_target_reason() {
   _trs=$(printf '%s' "$1" | cut -c1-160)
   printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s%s%s' "$2" "$_trs" "$(_cp8b_message_tip "${_tad_raw:-}" "$1")" "$(_cp8b_trigger_tip "$2")" "$(_cp8b_selfedit_hint "$1" "${_tad_raw:-}")"
@@ -4143,14 +4324,61 @@ _cp8b_target_arm_denied() {
   if _cp8b_piped_interp_hit "$1"; then _cp8b_target_reason "$_cp8b_pi_seg" pathhit; _cp8b_pi_note; return 0; fi
   # Arm E: a quoted heredoc BODY is inert data. F-a (T8): and a quoted separator is not a separator.
   _walk=$(_cp8b_segments "$(_cp8b_mask_quoted "$(_cp8b_strip_heredocs "$1")")")
-  _CP8B_EFF=''
+  # GUARD-CWD-CONFIDENCE-UNKNOWN — the walk starts from the SEED, not from a bare root. With no
+  # `cwd` the seed is '' / confident, which is the pre-slice initialisation byte for byte.
+  _CP8B_EFF=$_CP8B_SEED_EFF
+  _CP8B_EFF_UNKNOWN=$_CP8B_SEED_UNKNOWN
   while _cp8b_next_seg; do
     [ -n "$(printf '%s' "$_seg" | tr -d '[:space:]')" ] || continue
     _segm=$_seg                                        # F-a: see the two-views note in the old arm
     case "$_seg" in *["$_cp8b_mk_all"]*) _seg=$(_cp8b_unmask_quoted "$_seg") ;; esac
     _lv=$(_cp8b_lead "$_seg")
     if [ "$_lv" = cd ]; then _cp8b_eff_update "$_seg"; continue; fi
-    case "$_lv" in pushd|popd) continue ;; esac        # dir change we cannot track -> no-op (keep prefix)
+    # `pushd`/`popd` are a directory change this tracker has never modelled — it keeps the prefix and
+    # walks on, which is why `pushd conformance && sed -i s/a/b/ verify.sh` ALLOWED. Keeping the
+    # prefix is still right (a no-op only ever RETAINS denials); what was missing is the admission.
+    case "$_lv" in pushd|popd) _CP8B_EFF_UNKNOWN=1; continue ;; esac
+    # S-H1 — the PEELED lead, used ONLY to add denies. `_lv` still drives every pre-existing arm
+    # exactly as before; `_lvp` is a second, narrower reading consulted by Face B alone.
+    _lvp=$(_cp8b_lead "$(_cp8b_group_peel "$_seg")")
+    # A `cd`/`pushd`/`popd` hiding behind a group opener is a directory change this walk cannot
+    # follow, so it ADMITS and FALLS THROUGH — it must NOT `continue` the way the bare forms above
+    # do. Continuing would skip the pathhit/literal/composed triggers that judge this very segment
+    # today (`(cd conformance` denies on its `conformance` substring right now), turning a widening
+    # into a DENY->ALLOW regression. Admit, then let every existing arm run unchanged: monotone.
+    case "$_lv" in
+      cd|pushd|popd) : ;;
+      *) case "$_lvp" in cd|pushd|popd) _CP8B_EFF_UNKNOWN=1 ;; esac ;;
+    esac
+    # S-H2 — THE REDIRECT CLAUSE RUNS FIRST, ahead of the read / message-carrier declines below.
+    # `echo`, `printf` and `cat` are recognised as readers/message carriers and DECLINED there, so
+    # `cd -; echo x >> guard-core.sh` never reached Face B's late redirect test at all — measured
+    # ALLOW (security seat, HIGH). A REDIRECT-BEARING ECHO IS NOT A READ: it is the cheapest write
+    # primitive on the box. Reads without a redirect are untouched, which is what keeps the relief
+    # slice's refunds intact — `cd -; echo x` and `cd -; cat notes.txt` still allow.
+    #
+    # ⚠️ TWO CEILINGS, BOTH MEASURED, NEITHER CLOSED HERE — and the second corrects what an earlier
+    # draft of this comment implied about the mask.
+    # (1) THE `>|` CLOBBER OPERATOR IS INVISIBLE to `_redir_targets`, so `echo x >| verify.sh` is
+    #     ALLOW while lost — and `echo x >| conformance/verify.sh` is ALLOW from the ROOT too, on
+    #     main and here alike. That is a hole in the SHARED extractor every redirect arm in this file
+    #     consumes, so widening it is its own change with its own vet, not a rider on this slice.
+    #     Boarded as `GUARD-CLOBBER-REDIRECT-INVISIBLE`; pinned by the `K-CWD ceiling ` cell so the
+    #     delta enumerates the day it flips.
+    # (2) THE MASK DOES NOT REFUND A QUOTED `>` HERE. `_redir_targets` on `$_segm` still reports a
+    #     redirect for a `>` inside a quoted message, so while lost these DENY (measured):
+    #       `cd -; git commit -m "fix -> thing"` · `cd -; git commit -m "a > b"`
+    #       `cd -; gh pr create --body "a > b"`
+    #     The same commands with NO lost cd are ALLOW, so this is this face's cost, not a
+    #     pre-existing message-carrier defect. Unchanged this round; the standing remedy is the one
+    #     the guard advertises everywhere else — pass the body from a FILE (`-F` / `--body-file`).
+    #     THE OPTIONAL CURE IS THE OWNER'S CALL: exempt a segment that `_cp8b_tad_is_msg_carrier`
+    #     recognises when its ONLY `>` lies inside the mask. It is deliberately not taken here
+    #     because it re-admits the message-carrier recogniser ahead of a write test, which is the
+    #     precise ordering S-H2 had to undo.
+    if [ "${_CP8B_EFF_UNKNOWN:-0}" = 1 ] && _cp8b_cwd_redir_in "$_segm"; then
+      _cp8b_cwd_unknown_reason "$_seg"; return 0
+    fi
     _cp8b_tad_is_read "$_seg" "$_segm" && continue
     # DELIBERATE ASYMMETRY, fail-closed: `_cp8b_tad_is_read` above gets BOTH views ($_seg and the masked
     # $_segm) because the mask is what refunds a quoted separator INSIDE a read; kit-exec gets the
@@ -4160,6 +4388,43 @@ _cp8b_target_arm_denied() {
     _cp8b_tad_is_kit_query "$_seg" && continue   # Arm A: a DECLARED read-only kit query (see the table)
     _cp8b_tad_is_test_expr "$_seg" && continue   # Arm B: a `test`/`[` metadata expression
     _cp8b_tad_is_msg_carrier "$_seg" && continue
+    # === GUARD-CWD-CONFIDENCE-UNKNOWN Face B ===================================================
+    # POSITION IS LOAD-BEARING: this sits AFTER every read / kit-exec / kit-query / test-expr /
+    # message-carrier decline above, so `cd - && cat notes.txt`, `cd - && sh conformance/verify.sh`
+    # and every read the relief slice refunded are untouched. Reads were never the failure direction
+    # and this face must not make them one. It sits BEFORE the literal/composed triggers because
+    # while confidence is lost there is nothing trustworthy to compose against — that is the point.
+    if [ "${_CP8B_EFF_UNKNOWN:-0}" = 1 ] && _cp8b_rel_operand_in "$(_cp8b_group_peel "$_seg")"; then
+      case "$_lvp" in
+        # The mutation-verb set the guard ALREADY dispatches on (:1586-1588's contract, spelled at
+        # the target-arm's own `case`). Not a new list — the same names, consulted under a new
+        # precondition. M-CWD4 mutates this pattern to `*)` and the over-deny it produces is the
+        # measure of how much work this gate is doing.
+        mv|rsync|ln|rm|rmdir|shred|truncate|chmod|chown|tee|patch|dd|sed|cp|install)
+          _cp8b_cwd_unknown_reason "$_seg"; return 0 ;;
+      esac
+      # ⚠️ STRIKABLE HALF B-git (design §3-B). ITS OWN `case` ARM, so the owner's strike is the
+      # deletion of this arm and the re-kinding of the `K-CWD-git ` cells — one edit, nothing else
+      # moves. The subcommand set is `_cp8b_git_write_denied`'s OWN write set, read through the same
+      # `_cp8b_git_sub` helper: no new git lexicon.
+      # ⚠️ DISCLOSED, NOT CLAIMED: `git apply` is NOT in that set (it never was — the design's §3-B
+      # cell named it), so `cd - && git apply p.diff` stays as it is today. Adding `apply` here would
+      # be exactly the second-enumeration the vet's H1 rejected; it is boarded, not smuggled.
+      case "$_lvp" in
+        git)
+          case "$(_cp8b_git_sub "$(_cp8b_group_peel "$_seg")")" in
+            archive|bundle|worktree|init|clone|checkout|restore)
+              _cp8b_cwd_unknown_reason "$_seg"; return 0 ;;
+          esac ;;
+      esac
+      # NO REDIRECT CLAUSE HERE ANY MORE, and its removal is a finding rather than a tidy-up. The
+      # first build tested redirects at THIS point; S-H2 moved that test ABOVE the read/message-carrier
+      # declines (a redirecting `echo` is not a read). The two tests then had the identical predicate
+      # on the identical value, with one strictly earlier — so the late one became unreachable, and
+      # its mutant (M-CWD5) reported `verdict did not change (deny before and after); the leg proves
+      # nothing`. An unreachable branch no mutant can kill is precisely what this file's non-vacuity
+      # discipline refuses to ship, so it is deleted, not kept "for safety". M-CWD7 pins the survivor.
+    fi
     case "$_lv" in
       cp|install)
         if _cp8b_tad_cp_dest_denied "$_seg"; then _cp8b_target_reason "$_seg" cp-dest; return 0; fi
@@ -4746,9 +5011,13 @@ guard_log_deny() {
   return 0
 }
 
-# guard_check_command "<cmd>": print reason + return 1 if denied, else return 0.
+# guard_check_command "<cmd>" ["<cwd>"]: print reason + return 1 if denied, else return 0.
+# GUARD-CWD-CONFIDENCE-UNKNOWN Face C: the OPTIONAL second argument is the directory the command will
+# run in — the harness's truth, not the model's (the model authors `tool_input`; `cwd` is a sibling of
+# `tool_name` on PreToolUse stdin). Omitted or empty ⇒ the repo root, i.e. exactly today.
 guard_check_command() {
   cmd=$1
+  _cp8b_seed_from_cwd "${2:-}"
   # --- control-plane shell mutation (moved from guard.sh:81-93, + new files) ---
   # GUARD-HOOKSPATH-CASE-BYPASS: unconditional case-fold (`-Eq` -> `-Eiq`), no fork. Git config
   # KEYS are case-insensitive by spec on every platform, so this can only ever ADD a deny — no

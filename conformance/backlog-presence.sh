@@ -124,7 +124,12 @@ row_bears_pr() {
       is_sep_row "$_row" && continue
       _c=$(cell "$_row" "$_idx")
       # whole-token match: kills the #28 substring AND the #2800 superstring collision.
-      if printf '%s' "$_c" | grep -Eq "(^|[^0-9])#${_pr}([^0-9]|$)"; then
+      # ⚠️ `--pr 0` IS NOT A PR NUMBER (security S3). The pre-push caller passes 0 to mean "no PR
+      # exists yet"; there is no PR #0 on any forge. Matching it would let a row whose cell literally
+      # bears `#0` — a placeholder, a typo, a dash-and-zero — satisfy the gate for EVERY branch at
+      # once, which is the one binding this gate must never accept. With 0 the branch is the only
+      # key, and if no branch was supplied there is nothing left to match.
+      if [ "$_pr" != 0 ] && printf '%s' "$_c" | grep -Eq "(^|[^0-9])#${_pr}([^0-9]|$)"; then
         rm -f "$_rows_f"; return 0
       fi
       # ...OR the BRANCH NAME as a whole token. Same boundary discipline as the number: `fix/p1-ci` must
@@ -135,6 +140,43 @@ row_bears_pr() {
     done < "$_rows_f"
   done
   rm -f "$_rows_f"; return 1
+}
+
+# ── THE STRANGER'S REFUSAL (PRE-PUSH-RUNS-BACKLOG-PRESENCE design §3.4) ────────────────────────
+# hooks/pre-push runs this gate LOCALLY, before a PR exists, with `--pr 0`. Two consequences the
+# wording has to carry: a literal "PR #0" names nothing and must never be printed, and the reader is
+# an operator mid-push with no board context — so the refusal states which row is probably theirs and
+# the exact edit that clears it. It is still a READ: this gate never writes the board (a hook that
+# edited control-plane state on a push would cross the propose/ratify line).
+#
+# inprogress_hints <board> — print the backticked identifier of each row sitting In Progress, one per
+# line. Uses the SAME parser sequence as row_bears_pr (section_rows -> skip header row 1 -> skip
+# separators -> cell), so the two cannot drift over what a row is.
+# ⚠️ A BOARD CELL IS UNTRUSTED TEXT AND A TERMINAL IS A SINK. Every identifier is passed through
+# `tr -cd '[:print:]'` (control/escape bytes stripped — a cell carrying an ANSI sequence must not be
+# able to repaint the operator's terminal) and emitted with `printf '%s\n'` as an ARGUMENT, never as
+# a format string. The board is not attacker-controlled in the ordinary case; it is text of unbounded
+# provenance in every other one.
+inprogress_hints() {
+  _ih_f=$(mktemp)
+  section_rows "$1" "In Progress" > "$_ih_f" 2>/dev/null || :
+  if [ -s "$_ih_f" ]; then
+    _ih_n=0
+    while IFS= read -r _ih_row; do
+      _ih_n=$((_ih_n + 1))
+      [ "$_ih_n" -eq 1 ] && continue          # row 1 is the section header, not data
+      is_sep_row "$_ih_row" && continue
+      _ih_c=$(cell "$_ih_row" 1)
+      case "$_ih_c" in
+        *'`'*) _ih_id=${_ih_c#*\`}; _ih_id=${_ih_id%%\`*} ;;
+        *) continue ;;                        # no backticked identifier -> nothing quotable to hint
+      esac
+      _ih_id=$(printf '%s' "$_ih_id" | tr -cd '[:print:]')
+      [ -n "$_ih_id" ] || continue
+      printf '%s\n' "$_ih_id"
+    done < "$_ih_f"
+  fi
+  rm -f "$_ih_f"
 }
 
 # check_pr <project-dir> <pr-number> <changed-file> -> the REAL run. Emits a verdict STRING (N/A / OK /
@@ -171,7 +213,10 @@ check_pr() {
   # logs). When no --branch is supplied the message is byte-for-byte what it always was — branch binding
   # is ADDITIVE and must not perturb the existing surface. The branch is named only when it is in play.
   if row_bears_pr "$_bl" "$_pr" "$_br"; then
-    if [ -n "$_br" ]; then
+    if [ -n "$_br" ] && [ "$_pr" = 0 ]; then
+      # The pre-push form: there is no PR yet, so the verdict names the only binding that exists.
+      echo "OK: backlog-presence — branch '$_br' is bound to a board row (PR column)"
+    elif [ -n "$_br" ]; then
       echo "OK: backlog-presence — PR #$_pr (or branch '$_br') is bound to a board row (PR column)"
     else
       echo "OK: backlog-presence — PR #$_pr is bound to a board row (PR column)"
@@ -181,10 +226,37 @@ check_pr() {
   # The genuine no-row WAIT: rc 1 (the poster renders it yellow). The trailing sentence is the
   # B6-routed legibility pointer — the B6 probe itself mis-bound a row outside a `PR` column, and
   # nothing on the rendered check-run said where the row has to live.
-  if [ -n "$_br" ]; then
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema."
+  # A1-10 — WHEN jq IS ABSENT, SAY SO. gate_class fail-safes EVERY change-set to `gated` without jq
+  # (its documented posture), so on a jq-less machine an enforcing pre-push dial can refuse an
+  # ordinary change. A refusal that does not name that cause sends the operator to edit a board row
+  # when the fix is to install jq. The probe lives here rather than in gate_class deliberately: that
+  # function's output is an exact token four selftest legs pin, and it runs in a command substitution
+  # whose variables cannot come back (measured — see design amendment A2).
+  _jqnote=""
+  command -v jq >/dev/null 2>&1 \
+    || _jqnote=" NOTE: jq is not installed, so the change-class was fail-safed to gated — this may not be a gated change at all; install jq for full resolution."
+  if [ -n "$_br" ] && [ "$_pr" = 0 ]; then
+    echo "FAIL: backlog-presence — no board row bears branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_jqnote"
+  elif [ -n "$_br" ]; then
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_jqnote"
   else
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema."
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_jqnote"
+  fi
+  # The hint + remedy block, only when a branch is in play (the CI form's reader has the PR page in
+  # front of them; the pre-push form's reader has a terminal). At most three rows are named — a
+  # refusal that pastes the whole section is the annoyance this replaces, not the teaching one.
+  if [ -n "$_br" ]; then
+    _hints=$(inprogress_hints "$_bl")
+    _hn=0
+    [ -n "$_hints" ] && _hn=$(printf '%s\n' "$_hints" | wc -l | tr -d ' ')
+    if [ "$_hn" -gt 3 ]; then
+      printf '  likely yours: %s rows are sitting in In Progress — move the one that is yours\n' "$_hn"
+    elif [ "$_hn" -gt 0 ]; then
+      printf '%s\n' "$_hints" | while IFS= read -r _h; do
+        printf '  likely yours: `%s` (sitting in In Progress)\n' "$_h"
+      done
+    fi
+    printf "  remedy: move your row to In Review and put \`%s\` in its PR cell; commit BACKLOG.md; push again.\n" "$_br"
   fi
   return 1
 }
@@ -370,6 +442,62 @@ selftest() {
   assert_msg "FAIL: unrecognized backlog backend 'markdow' (known: md github jira ado linear gitlab)" 2 \
     "i2/typo-backend: 'markdow' declared + real board -> FAIL, rc 2 (red misconfiguration, not N/A, not the wait-yellow)" "$d" 280 "$cfg"
 
+  # ===== T3 — THE STRANGER'S REFUSAL (PRE-PUSH-RUNS-BACKLOG-PRESENCE design §3.4, Δ2) ==========
+  # hooks/pre-push runs this gate locally with `--pr 0` (no PR exists yet at push time), so the
+  # verdict is read by an operator with no board context, in a terminal, mid-push. Three properties:
+  # the branch-only wording (a literal "PR #0" is noise that names nothing), a `likely yours:` hint
+  # drawn from the rows already sitting In Progress, and a `remedy:` naming the exact edit.
+
+  # b1 — one In Progress row: branch-only wording, the hint names THAT row, the remedy is present,
+  # and "PR #0" appears nowhere. The hint is the leg a hint-loop mutant reds.
+  d="$base/t3_one"; _proj_ip_board "$d" 1
+  br_run "$d" 0 "$cfg" feat/prepush-presence
+  br_expect_rc 1 "t3/one: --pr 0 with no bound row -> rc 1 (the genuine wait)"
+  br_has "t3/one: the FAIL line names the BRANCH" "no board row bears branch 'feat/prepush-presence'"
+  br_hasnt "t3/one: the --pr 0 form never prints a meaningless 'PR #0'" "PR #0"
+  br_has "t3/one: the hint names the row sitting In Progress" "likely yours: \`ROW-1\` (sitting in In Progress)"
+  br_has "t3/one: the remedy names the exact edit" "remedy: move your row to In Review"
+  br_has "t3/one: the remedy names the branch to write into the PR cell" "feat/prepush-presence"
+  # ...and with jq PRESENT the verdict must NOT mention jq: the jq sentence is a fail-safe
+  # DISCLOSURE, and a disclosure that prints unconditionally tells the reader nothing (b4's pair).
+  br_hasnt "t3/one: with jq present the verdict does not mention jq" "jq"
+
+  # b2 — FOUR In Progress rows: the count form, not four hint lines. A refusal that pastes the whole
+  # section is the annoyance this design replaced, not the teaching one.
+  d="$base/t3_many"; _proj_ip_board "$d" 4
+  br_run "$d" 0 "$cfg" feat/prepush-presence
+  br_expect_rc 1 "t3/many: four In Progress rows -> still rc 1"
+  br_has "t3/many: the count form replaces the per-row listing" "4 rows are sitting in In Progress"
+  br_hasnt "t3/many: no per-row hint line survives the count form" "likely yours: \`ROW-1\`"
+
+  # b3 — the PASS side of the same surface: a row whose PR cell bears the BRANCH satisfies `--pr 0`,
+  # and the OK line is branch-only too (a green saying "PR #0 is bound" would be a lie in the log).
+  d="$base/t3_bound"; _proj_md_board "$d" '| `PRE-PUSH` | — | feat/prepush-presence |'
+  br_run "$d" 0 "$cfg" feat/prepush-presence
+  br_expect_rc 0 "t3/bound: a PR cell bearing the branch satisfies --pr 0 -> rc 0"
+  br_has "t3/bound: the OK line names the branch" "branch 'feat/prepush-presence' is bound"
+  br_hasnt "t3/bound: the OK line carries no 'PR #0' either" "PR #0"
+
+  # b3b (security S3) — A LITERAL `#0` CELL MUST NOT BIND. `--pr 0` means "no PR exists yet", not
+  # "PR number zero"; a row whose PR cell bears `#0` would otherwise satisfy the gate for every
+  # branch on the board at once. The board here carries `#0` and the branch is NOT in any cell.
+  d="$base/t3_hash_zero"; _proj_md_board "$d" '| `PRE-PUSH` | — | #0 |'
+  br_run "$d" 0 "$cfg" feat/prepush-presence
+  br_expect_rc 1 "t3/hash-zero: a literal '#0' PR cell must NOT satisfy --pr 0 -> rc 1"
+  # ...while a real PR number still binds, so the guard above narrowed nothing else.
+  d="$base/t3_number_ok"; _proj_md_board "$d" '| `PRE-PUSH` | — | #280 |'
+  br_run "$d" 280 "$cfg" feat/prepush-presence
+  br_expect_rc 0 "t3/number-still-binds: a real PR number is unaffected by the --pr 0 guard"
+
+  # b4 (A1-10) — jq ABSENT. gate_class fail-safes every change-set to `gated` without jq, so under an
+  # enforcing push dial this gate can REFUSE an ordinary change on a jq-less machine. The refusal must
+  # NAME THAT CAUSE; otherwise the operator is told to fix a board row when the real fix is `brew
+  # install jq`. Paired with b1's negative, so the sentence cannot be unconditional boilerplate.
+  d="$base/t3_nojq"; _proj_ip_board "$d" 1
+  br_run_nojq "$d" 0 "$cfo" feat/prepush-presence
+  br_expect_rc 1 "t3/no-jq: an ORDINARY change-set is fail-safed to gated without jq -> rc 1"
+  br_has "t3/no-jq: the refusal names jq as the cause of the fail-safe" "jq"
+
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-presence --selftest: FAIL" >&2
     return 1
@@ -483,6 +611,36 @@ assert_msg() {
   fi
 }
 
+# br_run <dir> <pr> <changed-file> <branch> : drive check_pr BY ARGUMENT with a branch and keep BOTH
+# the verdict text and the rc for the assertions below. The T3 legs assert several properties of ONE
+# verdict (wording present, wording ABSENT, rc), which assert_msg's single-substring shape cannot
+# express — a refusal written for a stranger is graded on what it does NOT say as much as what it does.
+br_run() {
+  if br_out=$(check_pr "$1" "$2" "$3" "$4" 2>&1); then br_rc=0; else br_rc=$?; fi
+}
+# br_run_nojq <dir> <pr> <changed-file> <branch> : the same, under a PATH holding every binary EXCEPT
+# jq (the symlink farm assert_gated_nojq already uses), so the fail-safe route is the one under test.
+br_run_nojq() {
+  _farm=$(_jqless_path)
+  if br_out=$( PATH="$_farm"; export PATH; check_pr "$1" "$2" "$3" "$4" 2>&1 ); then br_rc=0; else br_rc=$?; fi
+}
+br_expect_rc() { # <want-rc> <label>
+  if [ "$br_rc" -eq "$1" ]; then echo "selftest PASS: $2"
+  else echo "selftest FAIL: $2 (check_pr rc=$br_rc, wanted $1); out='$br_out'"; st_fail=1; fi
+}
+br_has() { # <label> <needle>
+  case "$br_out" in
+    *"$2"*) echo "selftest PASS: $1" ;;
+    *) echo "selftest FAIL: $1 (verdict does not carry '$2'); out='$br_out'"; st_fail=1 ;;
+  esac
+}
+br_hasnt() { # <label> <needle>
+  case "$br_out" in
+    *"$2"*) echo "selftest FAIL: $1 (verdict wrongly carries '$2'); out='$br_out'"; st_fail=1 ;;
+    *) echo "selftest PASS: $1" ;;
+  esac
+}
+
 # --- fixture writers --------------------------------------------------------------------
 # _board <dir> <in-review-row> : write a valid in-use board whose In Review section carries the
 # given `| Item | Reviewer | PR |` row. Only In Review carries a PR column (shipped schema).
@@ -526,6 +684,32 @@ EOF
 _proj_md_board() {
   _proj_backend "$1" md
   _board "$1" "$2"
+}
+# _proj_ip_board <dir> <n> : a project dir declaring md, whose board carries N In Progress rows
+# (each a backticked identifier in the Item column, the shipped board's shape) and an In Review
+# section bound to an UNRELATED PR — so the presence check genuinely fails while In Progress rows
+# exist to be hinted at.
+_proj_ip_board() {
+  _proj_backend "$1" md
+  {
+    echo '# Proj — Backlog'
+    echo
+    echo '## In Progress'
+    echo
+    echo '| Item | Owner | Started | Links |'
+    echo '|------|-------|---------|-------|'
+    _ipn=0
+    while [ "$_ipn" -lt "$2" ]; do
+      _ipn=$((_ipn + 1))
+      printf '| `ROW-%s` — some claimed work | agent | 2026-09-02 | — |\n' "$_ipn"
+    done
+    echo
+    echo '## In Review'
+    echo
+    echo '| Item | Reviewer | PR |'
+    echo '|------|----------|----|'
+    echo '| `OTHER-ROW` | — | #99 |'
+  } > "$1/BACKLOG.md"
 }
 # _proj_template <dir> : a project dir declaring an md backend whose board is the PRISTINE template
 # (carries the `| [title] |` example row and no other real data row) -> is_pure_template rc0 -> N/A.

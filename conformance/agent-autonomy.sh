@@ -44,7 +44,12 @@ assert_deny_reason() {  # deny AND a non-empty reason
 #   • every `*_at` / fixture-driven leg, which judges a path or a filesystem state rather than a
 #     command string;
 #   • every NON-Bash entry point — Write / Edit / Read / NotebookEdit cells, whose subject is a path
-#     judged by a different core function than `guard_check_command`.
+#     judged by a different core function than `guard_check_command`;
+#   • every cell carrying a top-level `cwd` (GUARD-CWD-CONFIDENCE-UNKNOWN's leg K-CWD). The recorder
+#     SKIPS them on purpose: this replay calls `guard_check_command` with ONE argument, so a recorded
+#     cwd cell would be judged with NO cwd at both ends, agree with itself, and be counted in the
+#     "replayed" total as evidence of a seeded path that was never seeded. They are asserted live and
+#     ratcheted by the M-CWD3 mutant (which re-runs the whole file), and by nothing in this mode.
 # "0 unexpected" therefore means "no Bash-command verdict moved unexpectedly", never "the guard did
 # not change". Widen the collector before widening the claim.
 AA_DELTA=0
@@ -92,6 +97,13 @@ fi
 # editor can drift: it is the assertion the cell already makes, recorded at the call site.
 aa_cell_record() {
   [ "$AA_DELTA" = 1 ] || return 0
+  # GUARD-CWD-CONFIDENCE-UNKNOWN: a cell carrying a top-level `cwd` is SKIPPED, not recorded. The
+  # replay calls `guard_check_command "$cmd"` with ONE argument, so recording such a cell would
+  # replay it with NO cwd at both ends — the verdict pair would agree, the delta would print `0
+  # changed` for it, and a reader would take that as evidence the seeded path did not move when in
+  # fact it was never judged. Skipping states the ceiling instead of faking coverage; the cwd cells
+  # are asserted live (leg K-CWD) and ratcheted by the M-CWD3 mutant, which replays the whole file.
+  case "$(printf '%s' "$2" | jq -r 'has("cwd")' 2>/dev/null)" in true) return 0 ;; esac
   _acb=$(printf '%s' "$2" | jq -r 'select(.tool_name=="Bash") | (.tool_input.command // "") | @base64' 2>/dev/null) || _acb=''
   [ -n "$_acb" ] || return 0
   printf '%s\t%s\t%s\n' "$1" "$_acb" "$3" >> "$AA_CELLS"
@@ -113,6 +125,48 @@ aa_verdicts() {
       if ( guard_check_command "$_vc" >/dev/null 2>&1 ) </dev/null; then echo ALLOW; else echo DENY; fi
     done < "$2"
   )
+}
+
+# aa_ks <core> <cells> — the MESSAGE half of the replay, in cell order: PRESENT / ABSENT / N-A per
+# cell, where the observable is the kill-switch sentence in the deny reason. It exists because
+# aa_verdicts is verdict-only, and a slice that moves a MESSAGE (Face 4) is invisible to it — the
+# guard could stop advertising the kill switch on a real WRITE and the delta would print `0 changed`.
+# N-A is for a cell that ALLOWED: there is no reason text to classify, and calling that "absent" would
+# score every refund as a message improvement.
+aa_ks() {
+  # shellcheck disable=SC1090  # naming the core to source is the point of this mode, as in aa_verdicts
+  ( . "$1" >/dev/null 2>&1 || exit 9
+    command -v guard_check_command >/dev/null 2>&1 \
+      || { echo "delta-ks: $1 defines no guard_check_command" >&2; exit 8; }
+    while IFS="$(printf '\t')" read -r _kl _kb _kk; do
+      _kc=$(printf '%s' "$_kb" | jq -rR '@base64d' 2>/dev/null) || _kc=''
+      if _kr=$( ( guard_check_command "$_kc" 2>/dev/null ) </dev/null ); then echo N-A; continue; fi
+      case "$_kr" in *KIT_GUARD_SELFEDIT*) echo PRESENT ;; *) echo ABSENT ;; esac
+    done < "$2"
+  )
+}
+
+# EXPECTED_KS_DELTA — the same shape as EXPECTED_DELTA, for the MESSAGE observable, and deliberately
+# a SEPARATE list: the verdict list is full of refund prefixes that have no business moving a message,
+# and reusing it would let any past refund silently drop a kill-switch line. Face 4 is the only face
+# in this slice that moves a message, and every one of its cells is `F-h Face4 `-labelled — the
+# prefix is kept THAT tight (reviewer re-review, minor 1): the bare `F-h ` prefix covered 102
+# pre-existing read-shaped cells, exactly where a future silent kill-switch drop would hide.
+# There is no kind-direction rule here — a cell's kind says nothing about its message — so this list
+# is the whole control, and it is kept to the one prefix.
+AA_EXPECTED_KS_DELTA=$(cat <<'AA_EXPECTED_KS_EOF'
+[F-h Face4 ]
+AA_EXPECTED_KS_EOF
+)
+aa_ks_expected() {
+  while IFS= read -r _axl; do
+    case "$_axl" in ''|'#'*) continue ;; esac
+    _axp=${_axl#[}; _axp=${_axp%]}
+    case "$1" in "$_axp"*) return 0 ;; esac
+  done <<AA_KS_EXPECTED_IN
+$AA_EXPECTED_KS_DELTA
+AA_KS_EXPECTED_IN
+  return 1
 }
 
 # EXPECTED_DELTA — label PREFIXES that this slice is permitted to have MOVED AT ALL. There is
@@ -146,8 +200,17 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [F-h ]
 [F-i ]
 [F-j ]
+[K-CWD ]
+[K-CWD-git ]
 AA_EXPECTED_DELTA_EOF
 )
+# `[K-CWD ]` / `[K-CWD-git ]` (GUARD-CWD-CONFIDENCE-UNKNOWN) — a WIDENING entry, and the only one in
+# this list that is. Its cells are `deny` cells, so the kind-direction rule permits ALLOW->DENY and
+# NOTHING ELSE: a K-CWD cell that ended ALLOW would be reported UNEXPECTED on its own prefix. The
+# `-git` prefix is written out separately, though `[K-CWD ]` does NOT subsume it (the space), because
+# it is the STRIKABLE half B-git: the owner's strike re-kinds exactly the cells this entry names.
+# `[K-CWD FaceA ` and `[K-CWD-outside ` are deliberately ABSENT: those legs assert a flag and a
+# fixture-root verdict respectively, and neither records a replayable cell.
 # `[F-1 ]` `[F-2 ]` `[F-4 ]` (T8 review round 1) — subsumed by `[F-]`, written out as statements of
 # scope like their siblings, and NOT pure refunds: F-1 is the only entry in this list that is mostly a
 # NARROWING (deny cells ending DENY where pristine allowed), F-4 closes a live write, and F-2 is a
@@ -256,8 +319,42 @@ aa_delta_adjudicate() {
   done < "$_adc.joined"
   printf 'delta: %d cells replayed, %d changed, %d expected, %d unexpected, %d kind-direction agreed\n' \
     "$_adn" "$_adm" "$_adk" "$_adu" "$_add"
-  rm -f "$_adc.before" "$_adc.after" "$_adc.joined"
-  [ "$_adu" = 0 ] || return 1
+  # ---- THE MESSAGE HALF (reviewer I1) -------------------------------------------------------------
+  # Same cells, same two cores, different observable. Run as a second pass rather than folded into the
+  # first: the verdict figure is the one every past round quotes, and burying a second number inside
+  # its summary line would silently change what `<n>/<m> against <sha>` means in the record.
+  aa_ks "$2" "$_adc" > "$_adc.ksb" || { echo "delta-ks: FAILED to replay the PRISTINE core ($2)"; return 2; }
+  aa_ks "$3" "$_adc" > "$_adc.ksa" || { echo "delta-ks: FAILED to replay the BUILT core ($3)"; return 2; }
+  _kdb=$(wc -l < "$_adc.ksb" | tr -d ' '); _kda=$(wc -l < "$_adc.ksa" | tr -d ' ')
+  if [ "$_adn" != "$_kdb" ] || [ "$_adn" != "$_kda" ]; then
+    echo "delta-ks: replay produced $_kdb/$_kda states for $_adn cells — the ks replay is not aligned"
+    return 2
+  fi
+  _kdm=0; _kdk=0; _kdu=0; _kdr=0
+  # ⚠️ A CELL WHOSE VERDICT MOVED IS NOT JUDGED HERE, and that is a scoping decision, not a let-off.
+  # A DENY->ALLOW refund necessarily takes its message from ABSENT (or PRESENT) to N-A — there is no
+  # reason text on an ALLOW — so counting it as a message change re-reports the verdict half's own
+  # refunds as message findings. Measured: the first run of this leg reported 16 changed / 11
+  # unexpected, and all 11 were exactly the enumerated verdict refunds. The verdict half already
+  # adjudicates those, by kind-direction AND by prefix. What is LEFT for this half is the thing
+  # nothing else can see: a cell that DENIES AT BOTH ENDS and whose advertisement moved.
+  paste "$_adc" "$_adc.before" "$_adc.after" "$_adc.ksb" "$_adc.ksa" > "$_adc.ksjoined"
+  while IFS="$(printf '\t')" read -r _kdl _kdz _kdki _kvb _kva _kdbv _kdav; do
+    if [ "$_kvb" != "$_kva" ]; then _kdr=$((_kdr + 1)); continue; fi
+    [ "$_kdbv" = "$_kdav" ] && continue
+    _kdm=$((_kdm + 1))
+    printf 'KS %s\t%s\t%s\n' "$_kdl" "$_kdbv" "$_kdav"
+    if aa_ks_expected "$_kdl"; then _kdk=$((_kdk + 1))
+    else
+      _kdu=$((_kdu + 1))
+      printf 'UNEXPECTED-KS: [%s] kill-switch presence moved %s->%s and is on no EXPECTED_KS_DELTA entry\n' \
+        "$_kdl" "$_kdbv" "$_kdav"
+    fi
+  done < "$_adc.ksjoined"
+  printf 'delta-ks: %d cells replayed, %d changed, %d expected, %d unexpected (%d skipped: verdict moved, adjudicated by the verdict half)\n' \
+    "$_adn" "$_kdm" "$_kdk" "$_kdu" "$_kdr"
+  rm -f "$_adc.before" "$_adc.after" "$_adc.joined" "$_adc.ksb" "$_adc.ksa" "$_adc.ksjoined"
+  [ "$_adu" = 0 ] && [ "$_kdu" = 0 ] || return 1
   return 0
 }
 
@@ -1761,6 +1858,163 @@ if dt_leaves_ok; then echo "PASS ssot : every _CP8B_GLOB_LEAVES entry classifies
 else echo "FAIL ssot : a _CP8B_GLOB_LEAVES entry is NOT control-plane — the leaf list drifted from the corpus"; fail=1; fi
 
 # =============================================================================================
+# GUARD-CWD-CONFIDENCE-UNKNOWN Face B — while LOST, a relative WRITE pays for the lost confidence.
+#
+# Face A records that the tracker could not follow; on its own that changes no verdict. These cells
+# are the charge. Every one of them was measured ALLOW before this slice on the real hook, and each
+# is a control-plane write reached by a `cd` spelling the accumulator declines.
+#
+# THE FORM IS BROAD ON PURPOSE, and the vet made that a condition (H1). The first draft denied only a
+# "control-plane-SHAPED basename", and it was UNBUILDABLE: is_control_plane_path is a case of
+# DIRECTORY-family patterns, no leaf table holds `verify.sh`/`guard-core.sh`, and building one would
+# be a second enumeration — the D-240816-1 trap the corpus exists to avoid. So while confidence is
+# lost, ANY relative write operand denies, and the price is paid in the open below.
+_CWD_W='sed -i s/a/b/ verify.sh'
+cwd_cell() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"; }
+assert_deny  "K-CWD A1: cd - then a relative control-plane write" "$(cwd_cell "cd -; $_CWD_W")"
+assert_deny  "K-CWD cd -- -P (the composed phantom directory)"   "$(cwd_cell "cd -- -P; $_CWD_W")"
+assert_deny  "K-CWD cd -- conformance"                           "$(cwd_cell "cd -- conformance; $_CWD_W")"
+assert_deny  "K-CWD cd -P conformance"                           "$(cwd_cell "cd -P conformance; $_CWD_W")"
+assert_deny  "K-CWD cd conf* (glob, vet H2)"                     "$(cwd_cell "cd conf*; $_CWD_W")"
+assert_deny  "K-CWD cd {conformance,x} (brace, vet H2)"          "$(cwd_cell "cd {conformance,x}; $_CWD_W")"
+assert_deny  "K-CWD pushd conformance (never modelled at all)"   "$(cwd_cell "pushd conformance; $_CWD_W")"
+assert_deny  "K-CWD cd \$DIR"                                    "$(cwd_cell "cd \$DIR; $_CWD_W")"
+assert_deny  "K-CWD cd conformance/../conformance"               "$(cwd_cell "cd conformance/../conformance; $_CWD_W")"
+assert_deny  "K-CWD cd ~/proj/conformance"                       "$(cwd_cell "cd ~/proj/conformance; $_CWD_W")"
+assert_deny  "K-CWD bare cd (home) then a relative write"        "$(cwd_cell "cd; $_CWD_W")"
+# D2 — the asymmetry this slice closes. D1 (`cd <clone> && sed -i ... conformance/verify.sh`, the
+# LITERAL arm) has always denied; D2 is the same write reached by descending first, and it allowed.
+assert_deny  "K-CWD D2: cd /var/tmp/clone/conformance then a bare relative write" \
+  "$(cwd_cell "cd /var/tmp/clone/conformance && $_CWD_W")"
+# ⚠️ THE PRICE, PINNED AS A CELL RATHER THAN AS A SENTENCE IN A DESIGN DOC. This is an ORDINARY file
+# in an ordinary directory, and the broad form denies it. If a reviewer or the owner is unwilling to
+# pay this, the finding is here, in the battery, where striking it is a visible edit — not buried in
+# §5 of a document. (Re-kinded from the ALLOW it would otherwise be.)
+assert_deny  "K-CWD price: cd \$DIR && sed -i on an ORDINARY file (the broad form's cost)" \
+  "$(cwd_cell 'cd $DIR && sed -i s/a/b/ notes.txt')"
+# ⚠️ STRIKABLE HALF B-git (design §3-B, owner's call at ratification). Striking the one `git)` case
+# arm in guard-core.sh re-kinds exactly these two cells and nothing else.
+assert_deny  "K-CWD-git cd \$DIR && git checkout -- a relative path (worktree OVERWRITE)" \
+  "$(cwd_cell 'cd $DIR && git checkout -- notes.txt')"
+assert_deny  "K-CWD-git cd \$DIR && git restore a relative path" \
+  "$(cwd_cell 'cd $DIR && git restore notes.txt')"
+# THE NEGATIVES — the whole discrimination claim. Without them "denies a relative write while lost"
+# and "denies everything while lost" are the same green.
+assert_allow "K-CWD cd \$DIR && npm test (not a write verb, no redirect)" \
+  "$(cwd_cell 'cd $DIR && npm test')"
+assert_allow "K-CWD cd \$DIR && cat notes.txt (reads are UNTOUCHED by this face)" \
+  "$(cwd_cell 'cd $DIR && cat notes.txt')"
+assert_allow "K-CWD cd conformance && cat verify.sh (confident + read)" \
+  "$(cwd_cell 'cd conformance && cat verify.sh')"
+assert_allow "K-CWD-git cd \$DIR && git add BACKLOG.md (add is not a write primitive here)" \
+  "$(cwd_cell 'cd $DIR && git add BACKLOG.md')"
+assert_allow "K-CWD-git cd \$DIR && git commit -F msg.txt (the builder's own workflow)" \
+  "$(cwd_cell 'cd $DIR && git commit -F msg.txt')"
+# THE REDIRECT CLAUSE. A redirect is a write whatever the lead verb is, so it is tested separately
+# from the verb list. The lead here is deliberately an UNRECOGNISED tool: a read verb or a message
+# carrier (`printf`, `cat`, `echo`) is DECLINED further up the arm, before Face B is reached.
+# ⚠️ MEASURED CEILING, DISCLOSED: that decline means `cd - && printf x > notes.txt` stays ALLOW —
+# a launder verb with a LITERAL ordinary target is refunded upstream by the read/message-carrier
+# recognisers, and Face B deliberately does not reach behind them (reads are not the failure
+# direction). `printf x > guard.sh` from a SEEDED cwd still denies, by composition, not by this face.
+assert_deny  "K-CWD cd \$DIR && an unrecognised tool REDIRECTING to a relative path" \
+  "$(cwd_cell 'cd $DIR && mytool --emit > notes.txt')"
+assert_allow "K-CWD the same redirect with NO lost cd is unchanged (ALLOW)" \
+  "$(cwd_cell 'mytool --emit > notes.txt')"
+# --- S-H1: A GROUP DEFEATS THE FACE-B DISPATCH (security seat, HIGH) -------------------------------
+# `_cp8b_lead` reports the segment's first token verbatim, so a segment that OPENS a subshell or a
+# brace group leads with `(`, `{` or `;` — never with `sed` — and the Face-B `case` never fires. All
+# three spellings were measured ALLOW while lost. The cure is a PEEL, not a parse: strip leading
+# `(`, `{`, `;` and whitespace and ask the SAME question of what remains, exactly as the existing
+# wrapper peels do. A stripped `cd`/`pushd`/`popd` is then treated as the directory change it is.
+assert_deny "K-CWD paren cd \$DIR && (sed -i s/a/b/ verify.sh) — subshell group" \
+  "$(cwd_cell 'cd $DIR && (sed -i s/a/b/ verify.sh)')"
+assert_deny "K-CWD paren cd - then a BRACE group" \
+  "$(cwd_cell 'cd -; { sed -i s/a/b/ verify.sh; }')"
+assert_deny "K-CWD paren the cd is INSIDE the subshell — (cd \$DIR; W)" \
+  "$(cwd_cell '(cd $DIR; sed -i s/a/b/ verify.sh)')"
+# --- S-H2: REDIRECT WRITERS REFUNDED UPSTREAM (security seat, HIGH) --------------------------------
+# `echo`/`printf`/`cat` are recognised as reads / message carriers and DECLINE before Face B is
+# reached, so `cd -; echo x >> guard-core.sh` never met the redirect clause at all. A redirect-bearing
+# echo is not a read: while confidence is lost the redirect clause is evaluated FIRST, on the masked
+# view, ahead of those declines. Reads WITHOUT a redirect are untouched — the last cell is the proof.
+assert_deny "K-CWD redir cd - then echo APPEND onto guard-core.sh" \
+  "$(cwd_cell 'cd -; echo x >> guard-core.sh')"
+assert_deny "K-CWD redir cd - then printf onto verify.sh" \
+  "$(cwd_cell 'cd -; printf x > verify.sh')"
+assert_deny "K-CWD redir pushd conformance then echo onto verify.sh" \
+  "$(cwd_cell 'pushd conformance && echo x > verify.sh')"
+assert_deny "K-CWD redir cd -P conformance then echo onto verify.sh" \
+  "$(cwd_cell 'cd -P conformance && echo x > verify.sh')"
+assert_allow "K-CWD redir cd - then a bare echo (NO redirect) is still a read" \
+  "$(cwd_cell 'cd -; echo x')"
+# An ABSOLUTE redirect target names the same file wherever the shell is standing, so a lost cwd tells
+# you nothing about it and denying it would be friction bought for nothing. Celled so that stays true.
+assert_allow "K-CWD redir cd - then a redirect to an ABSOLUTE path stays allowed" \
+  "$(cwd_cell 'cd -; echo x > /tmp/out.log')"
+# ⚠️ K-CWD ceiling — THE `>|` CLOBBER OPERATOR IS INVISIBLE TO `_redir_targets`, so this is ALLOW
+# both on main and here, and it is ALLOW from the repo root too (`echo x >| conformance/verify.sh`).
+# That is a PRE-EXISTING hole in the guard's SHARED redirect extractor, not something this slice
+# introduced or can responsibly close: every redirect arm in the file consumes that extractor, so
+# widening it needs its own security vet. Boarded as `GUARD-CLOBBER-REDIRECT-INVISIBLE`.
+# The cell pins the CURRENT verdict so the delta ENUMERATES the day it flips — a disclosed ceiling
+# with a cell is a countdown; a disclosed ceiling without one is a sentence nobody re-reads.
+assert_allow "K-CWD ceiling cd - then a >| CLOBBER redirect — DISCLOSED HOLE, pinned at ALLOW" \
+  "$(cwd_cell 'cd -; echo x >| verify.sh')"
+# --- MEDIUM over-deny: a quoted `>` in a MESSAGE denies while lost (disclosed, not changed) -------
+# `_redir_targets` on the masked segment still reports a redirect for a `>` that lives inside a
+# quoted commit/PR message, so while confidence is lost these three DENY. Behaviour is deliberately
+# unchanged this round — the cure touches the shared extractor's callers, which is a separate vet —
+# and the remedy is the one the guard already advertises everywhere else: pass the body from a FILE.
+# ⚠️ THE QUOTES HERE ARE JSON-ESCAPED BY HAND (`\"`), and that is not cosmetic. `cwd_cell` does no
+# escaping, so an inner `"` produces INVALID JSON — which this guard denies FAIL-CLOSED. The first
+# draft of these three cells was unescaped: all three reported PASS deny, and every one of them was
+# passing because the cell was malformed, not because a quoted `>` denies. The load-bearing negative
+# below is what exposed it (it wanted ALLOW and got the same fail-closed deny). A deny cell whose
+# subject the guard cannot parse proves nothing at all.
+assert_deny  "K-CWD msg cd - then git commit -m with an arrow in the message" \
+  "$(cwd_cell 'cd -; git commit -m \"fix -> thing\"')"
+assert_deny  "K-CWD msg cd - then git commit -m with a bare > in the message" \
+  "$(cwd_cell 'cd -; git commit -m \"a > b\"')"
+assert_deny  "K-CWD msg cd - then gh pr create --body with a bare > in the body" \
+  "$(cwd_cell 'cd -; gh pr create --body \"a > b\"')"
+# THE LOAD-BEARING NEGATIVE: the same message with NO lost cd is ALLOW, so this is the cwd face's
+# cost and not a pre-existing message-carrier defect being mis-attributed to it.
+assert_allow "K-CWD msg the same commit message with NO lost cd is unchanged (ALLOW)" \
+  "$(cwd_cell 'git commit -m \"a > b\"')"
+# --- R-I1 / S-M1: THE PRICE OF THE UNNARROWED OPERAND PREDICATE, PINNED ----------------------------
+# `_cp8b_rel_operand_in` counts ANY non-flag, non-absolute token, so an ABSOLUTE target still denies
+# (the flag-shaped `-i` is skipped and `s/a/b/` is itself counted) and a REPO-ROOT-RELATIVE target
+# denies too. These are not bugs to be quietly narrowed — narrowing means a per-verb operand table,
+# which is the enumeration trap. They are the price, and they are celled so the owner sees them.
+assert_deny  "K-CWD price cd \$DIR && chmod 644 /ABSOLUTE/notes.txt still denies" \
+  "$(cwd_cell 'cd $DIR && chmod 644 /abs/notes.txt')"
+assert_deny  "K-CWD price cd \$DIR && sed -i on an ABSOLUTE path still denies" \
+  "$(cwd_cell 'cd $DIR && sed -i s/a/b/ /abs/notes.txt')"
+assert_deny  "K-CWD price cd \$DIR && sed -i on a REPO-ROOT-RELATIVE path still denies" \
+  "$(cwd_cell 'cd $DIR && sed -i s/a/b/ docs/notes.txt')"
+# THE WORKING ESCAPE, celled so the remedy text cannot drift from the gate: a cd the guard CAN follow.
+assert_allow "K-CWD price cd docs && sed -i notes.txt — a TRACKED cd is the escape that works" \
+  "$(cwd_cell 'cd docs && sed -i s/a/b/ notes.txt')"
+# --- R-I2: THE B-git ARM'S UNDISCLOSED PRICE, PINNED AT ITS CURRENT VERDICT ------------------------
+# ⚠️ These are BRANCH operations, not writes to a path, and the arm denies them anyway — because
+# telling a branch name from a pathspec is a PARSE, and this design does not parse. Pinned at their
+# measured verdict so the owner's strike decision on B-git is made with them in view.
+assert_deny "K-CWD-git price cd \$DIR && git checkout main (a BRANCH, not a path)" \
+  "$(cwd_cell 'cd $DIR && git checkout main')"
+assert_deny "K-CWD-git price cd \$DIR && git checkout -b feature/x (branch CREATION)" \
+  "$(cwd_cell 'cd $DIR && git checkout -b feature/x')"
+assert_deny "K-CWD-git price cd \$DIR && git worktree list (a pure READ — measured, not assumed)" \
+  "$(cwd_cell 'cd $DIR && git worktree list')"
+# REGRESSION PINS — these denied before the slice and must deny after, by the OLD route (the literal
+# and composed arms). A cell that only ever denied cannot tell you which arm denied it, so they are
+# labelled as pins and their job is to stay put.
+assert_deny  "K-CWD pin A2: cd conformance (TRACKED) then the write still denies" \
+  "$(cwd_cell "cd conformance && $_CWD_W")"
+assert_deny  "K-CWD pin D1: the literal arm (absolute cd, repo-relative target)" \
+  "$(cwd_cell 'cd /var/tmp/clone && sed -i s/a/b/ conformance/verify.sh')"
+
+# =============================================================================================
 # GUARD-PATH-ALIAS-BYPASS (P0) — the guard must judge the TARGET a path reaches, not the string.
 # Legs live at TOP LEVEL on purpose: verify.sh and ci.yml invoke this script WITHOUT --selftest,
 # so anything inside selftest() would never run in CI.
@@ -1786,7 +2040,12 @@ gpab_setup() {
   GPAB_ROOT=$(mktemp -d /var/tmp/gpab-root.XXXXXX) || return 1
   [ -d "$GPAB_ROOT" ] && [ ! -L "$GPAB_ROOT" ] || return 1
   set -- $GPAB_TRASH "$GPAB_TMP" "$GPAB_ROOT"; GPAB_TRASH="$*"
-  mkdir -p "$GPAB_ROOT/.claude/hooks" "$GPAB_TMP/clone/.claude/hooks" "$GPAB_TMP/dir/.claude/hooks"
+  # GUARD-CWD-CONFIDENCE-UNKNOWN (vet L1): `$GPAB_ROOT/conformance` must EXIST, because the Face-C
+  # seed resolves the cell's `cwd` with a real `cd -- "$cwd" && pwd -P`. A cwd that does not exist is
+  # UNKNOWN by design, so without this mkdir the cross-call cells would pass for the WRONG REASON
+  # (unknown-disqualifier instead of the seeded prefix) and the seed itself would go unproven.
+  mkdir -p "$GPAB_ROOT/.claude/hooks" "$GPAB_ROOT/conformance" \
+    "$GPAB_TMP/clone/.claude/hooks" "$GPAB_TMP/dir/.claude/hooks"
   # guard.sh sources $(dirname $0)/guard-core.sh, so a copy of the pair is self-contained and its
   # PROTECTED_ROOT ($0-derived) becomes GPAB_ROOT.
   cp "$GUARD" .claude/hooks/guard-core.sh "$GPAB_ROOT/.claude/hooks/" || return 1
@@ -1954,6 +2213,98 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_temp_is "F3c: all-lowercase near-miss is NOT widened"        "/var/folders/aa/bb/t/x" not
   gpab_temp_is "     /var/tmp is not a temp root"                   "/var/tmp/x"             not
 
+  # === Leg K-CWD Face A — the tracker must ADMIT when it is lost ================================
+  # `_cp8b_eff_update` is the cd accumulator. Today every spelling it cannot follow returns SILENTLY
+  # and leaves the prefix as it was, which reads to the rest of the guard as "still at the root" —
+  # confident, and wrong. That silence is the whole hole: `cd -`, `cd -- conformance`, `cd "conf..."`,
+  # `cd $DIR`, `cd conf*` all ALLOWED a following control-plane write.
+  #
+  # These legs assert the FLAG, not a verdict, and that is deliberate. Face A's only job is to record
+  # lost confidence; the price is charged by Face B. Asserting the flag here means each spelling is
+  # pinned individually — a verdict cell would pass for whichever of the two faces happened to fire,
+  # and a later narrowing of Face B would silently un-pin all eleven spellings at once.
+  #
+  # THE `-`-PREFIXED CLASS IS WORSE THAN A NO-OP TODAY, which is why it is listed spelling by
+  # spelling: `_cp8b_cd_arg` takes awk's `$2`, so `cd -P conformance` composes a directory literally
+  # named `-P` — the tracker does not fail to follow, it follows somewhere that does not exist.
+  gpab_eff_unknown_is() {  # <label> <cd-segment> <expected: 1 lost | 0 confident>
+    _gue=$( . ./.claude/hooks/guard-core.sh
+            _CP8B_EFF=''; _CP8B_EFF_UNKNOWN=0
+            _cp8b_eff_update "$2"
+            printf '%s' "${_CP8B_EFF_UNKNOWN:-MISSING}" ) 2>/dev/null
+    if [ "$_gue" = "$3" ]; then echo "PASS effunknown: $1"
+    else echo "FAIL effunknown: $1 — got [$_gue] wanted [$3]"; fail=1; fi
+  }
+  gpab_eff_unknown_is "K-CWD FaceA A1: cd - (the deferred spelling the relief slice disclosed)" \
+    'cd -' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd -- -P (a dir literally named -P is COMPOSED today)" \
+    'cd -- -P' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd -- conformance" 'cd -- conformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd -P conformance (any flag, not a named list)" \
+    'cd -P conformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd -L conformance" 'cd -L conformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd \"conformance\" (quote byte -> segmenter may have desynced)" \
+    'cd "conformance"' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd conf* (glob byte, vet H2)"        'cd conf*' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd conformanc? (glob byte, vet H2)"  'cd conformanc?' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd {conformance,x} (brace byte, vet H2)" 'cd {conformance,x}' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd [cd]onformance (bracket byte, vet H2)" 'cd [cd]onformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd \$DIR"                     'cd $DIR' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd ~/x/conformance"           'cd ~/x/conformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd /abs/conformance"          'cd /abs/conformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: cd conformance/../conformance" 'cd conformance/../conformance' 1
+  gpab_eff_unknown_is "K-CWD FaceA: bare cd (home)"               'cd' 1
+  # THE LOAD-BEARING NEGATIVES. Without these, "sets the flag on everything" passes every leg above
+  # and the tracker is destroyed rather than made honest: a guard that is permanently lost prices
+  # every relative write in the repo.
+  gpab_eff_unknown_is "K-CWD FaceA: cd conformance stays CONFIDENT (the tracker still tracks)" \
+    'cd conformance' 0
+  gpab_eff_unknown_is "K-CWD FaceA: cd docs/adoption stays CONFIDENT" 'cd docs/adoption' 0
+  gpab_eff_unknown_is "K-CWD FaceA: cd ./conformance stays CONFIDENT" 'cd ./conformance' 0
+
+  # === Leg K-CWD — GUARD-CWD-CONFIDENCE-UNKNOWN, Face C (the CROSS-CALL seed) ==================
+  # THE HOLE THESE CELLS OPEN THE FILE TO. Every one of the 62 pre-existing `cd`-led composition
+  # cells carries its `cd` INSIDE the judged command string; leg K's own comment says "cwd is
+  # irrelevant". That was true of the fixture, never of the harness: Claude Code's Bash tool keeps
+  # the main agent's cwd ACROSS calls, so `cd conformance` in call 1 and `sed -i s/a/b/ verify.sh`
+  # in call 2 was a control-plane write the guard never saw a `cd` for. `denied()` could not even
+  # express the subject — the cell JSON had no place to put a starting directory.
+  #
+  # The cell shape is therefore extended with a TOP-LEVEL `"cwd"` key, which is where Claude Code's
+  # PreToolUse stdin carries it (a sibling of `tool_name`, not a member of `tool_input`). That
+  # placement is load-bearing twice over: it is the harness's real contract, and it is the reason
+  # the field is not model-authored — the model writes `tool_input`, the harness writes `cwd`.
+  gpab_cwd() {  # <cwd> <command> — a cell JSON with a starting directory. Commands must be quote-free.
+    printf '{"cwd":"%s","tool_name":"Bash","tool_input":{"command":"%s"}}' "$1" "$2"
+  }
+  assert_deny_at "$GPAB_G" "K-CWD cross-call: cwd=conformance, relative sed -i on verify.sh" \
+    "$(gpab_cwd "$GPAB_ROOT/conformance" "sed -i s/a/b/ verify.sh")"
+  assert_deny_at "$GPAB_G" "K-CWD cross-call: cwd=.claude/hooks, redirect onto guard.sh" \
+    "$(gpab_cwd "$GPAB_ROOT/.claude/hooks" "printf x > guard.sh")"
+  # THE LOAD-BEARING NEGATIVE for the whole face: the seed must not turn the cwd into a read denial.
+  # Without this cell "seeded" and "over-denies everything under conformance/" are indistinguishable.
+  assert_allow_at "$GPAB_G" "K-CWD cross-call: cwd=conformance, a READ of verify.sh stays allowed" \
+    "$(gpab_cwd "$GPAB_ROOT/conformance" "cat verify.sh")"
+  # A DELETED / UNREACHABLE cwd is UNKNOWN, not root (vet M3). The subject is an ORDINARY file, so
+  # nothing but the unknown-disqualifier can be denying it — that is what makes this leg specific.
+  assert_deny_at "$GPAB_G" "K-CWD deleted cwd: a cwd that cannot be entered is UNKNOWN, not root" \
+    "$(gpab_cwd "$GPAB_ROOT/gone" "sed -i s/a/b/ README.md")"
+  # ⚠️ STRIKABLE HALF C-outside (design §3-C, owner's call at ratification). A cwd OUTSIDE the
+  # protected root is UNKNOWN. This is the fail-closed reading and it has a real, measured cost: the
+  # builder of this very slice works in a dev-clone under /private/tmp, and the Bash route has NO
+  # dev-clone relaxation (vet M1), so every relative Bash write from such a clone denies and must be
+  # respelled with the Edit tool or an absolute path. Striking is ONE LINE in _cp8b_seed_from_cwd,
+  # which re-kinds exactly this cell.
+  assert_deny_at "$GPAB_G" "K-CWD-outside: a cwd outside the protected root is UNKNOWN" \
+    "$(gpab_cwd "/tmp" "sed -i s/a/b/ README.md")"
+  # THE NEGATIVE for both of the above: the ROOT itself is confident, and an ordinary relative write
+  # from it still allows. Without this, "outside is unknown" and "any cwd is unknown" look identical.
+  assert_allow_at "$GPAB_G" "K-CWD: cwd = the protected root itself stays CONFIDENT (ordinary write allows)" \
+    "$(gpab_cwd "$GPAB_ROOT" "sed -i s/a/b/ README.md")"
+  # And the ABSENT-cwd contract: a cell with no `cwd` key is judged exactly as it is today (root).
+  assert_allow_at "$GPAB_G" "K-CWD absent cwd: relative write with no cwd key is unchanged (root)" \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ notes.txt"}}'
+
   # === Leg K — SUBJECT MUTATION ==============================================================
   # The non-vacuity sweep mutates the CHECK, never the subject, so nothing else can prove these
   # legs are load-bearing. Mutate a COPY of guard-core.sh inside the synthetic root, re-run the
@@ -2047,7 +2398,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     's#    if _cp8b_tad_pathhit "$_tad_c"; then#    if false; then#' \
     '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(.claude/hooks/guard-core.sh,w)"}}' allow
   gpab_mutant "K-D: accumulator honors a bogus over-split cd -> C1 desync DENY flips (security)" \
-    's#  if _cp8b_has_quote "$1"; then return; fi#  if false; then return; fi#' \
+    's#  if _cp8b_has_quote "$1"; then _CP8B_EFF_UNKNOWN=1; return; fi#  if false; then return; fi#' \
     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && echo \"z || cd sub\" && tee pre-push"}}' allow
   gpab_mutant "K-E: target arm denies E1' kit-script exec -> the exec ALLOW flips (C2)" \
     's#^_cp8b_tad_is_kit_exec() {#_cp8b_tad_is_kit_exec() { return 1 #' \
@@ -2064,6 +2415,59 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "K-G: kit-exec redirect narrowing disabled -> verify>/tmp ALLOW flips (FIX 2)" \
     '/_cp8b_tad_is_kit_exec()/,/^}/ s#_cp8b_tad_redir_cp "${2:-$1}" && return 1#return 1#' \
     '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh > /tmp/out.log"}}' deny
+
+  # === Leg K-CWD mutants (GUARD-CWD-CONFIDENCE-UNKNOWN) ==========================================
+  # M-CWD3 — the CORE SEED. Neutered by forcing the pre-slice initialisation ('' / confident) at the
+  # top of the seed function, which is exactly what the code did before this slice. The cross-call
+  # cell must flip DENY->ALLOW: with no seed there is no `cd` anywhere in the judged string, so the
+  # composed-token trigger has nothing to compose against and the write reads as a bare basename.
+  # M-CWD1 — Face A ENTIRE. If the tracker never admits it is lost, every spelling in the leg above
+  # is inert and the whole slice is a no-op. Neutered at the flag rather than at the function, so the
+  # accumulator still runs and only the ADMISSION is removed — the narrowest possible kill.
+  gpab_mutant "M-CWD1: the unknown flag is never set -> A1 (cd -) DENY flips" \
+    's#_CP8B_EFF_UNKNOWN=1; return ;;#return ;;#g; s#_CP8B_EFF_UNKNOWN=1; return; fi#return; fi#g; s#_CP8B_EFF_UNKNOWN=1; continue ;;#continue ;;#g' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd -; sed -i s/a/b/ verify.sh"}}' allow
+  # M-CWD2 — the `-`-prefixed DECLINE alone. Everything else in Face A survives, so a flip here is
+  # attributable to this one clause and to nothing else.
+  gpab_mutant "M-CWD2: the -prefixed operand decline removed -> cd -- conformance DENY flips" \
+    's#^  case "$_ea" in -\*) _CP8B_EFF_UNKNOWN=1; return ;; esac#  :#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd -- conformance; sed -i s/a/b/ verify.sh"}}' allow
+  # M-CWD2b — the glob/brace DECLINE alone (vet H2). Same isolation, different clause.
+  gpab_mutant "M-CWD2b: the glob/brace operand decline removed -> cd conf* DENY flips" \
+    's#  if _cp8b_glob_byte_in "$_ea"; then _CP8B_EFF_UNKNOWN=1; return; fi#  if false; then :; fi#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd conf*; sed -i s/a/b/ verify.sh"}}' allow
+  # M-CWD4 — THE WRITE-VERB GATE, and the direction of this mutant is the opposite of every other
+  # one in this file: removing the gate does not open a hole, it OVER-DENIES. Widening the verb
+  # `case` to `*)` makes any relative operand deny while confidence is lost, and `npm test` — an
+  # ordinary command naming no path at all — flips ALLOW -> DENY. That flip is the measure of how
+  # much this face is deliberately NOT doing.
+  gpab_mutant "M-CWD4: write-verb gate widened to * -> npm test ALLOW flips (an OVER-deny flip)" \
+    's#      mv|rsync|ln|rm|rmdir|shred|truncate|chmod|chown|tee|patch|dd|sed|cp|install)#      *)#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd $DIR && npm test"}}' deny
+  # M-CWD5 — the REDIRECT clause of Face B, alone. Without this the clause would be unproven: no
+  # other cell reaches it (the verb list catches the write verbs, and the launder verbs are declined
+  # further up the arm), so a silent deletion would ship green.
+  # M-CWD6 — the GROUP PEEL (security seat S-H1). Without it the Face-B dispatch reads `(sed` and
+  # `{` as the lead verb and never fires. Neutered by making the peel the identity function.
+  gpab_mutant "M-CWD6: the group peel removed -> the subshell-group write DENY flips" \
+    's#^_cp8b_group_peel() {#_cp8b_group_peel() { printf "%s" "$1"; return 0; #' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd $DIR && (sed -i s/a/b/ verify.sh)"}}' allow
+  # M-CWD7 — the EARLY redirect check (security seat S-H2), the one that runs AHEAD of the read and
+  # message-carrier declines. Distinct from M-CWD5, which kills the LATE clause: a redirecting `echo`
+  # only ever meets the early one, because the read recognisers decline it before the late one.
+  gpab_mutant "M-CWD7: the early (pre-read-decline) redirect check removed -> echo >> guard-core.sh flips" \
+    's#    if \[ "${_CP8B_EFF_UNKNOWN:-0}" = 1 \] && _cp8b_cwd_redir_in "$_segm"; then#    if false; then#' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd -; echo x >> guard-core.sh"}}' allow
+  # M-CWD5 IS RETIRED, and the reason is kept here rather than deleted with it. It pinned a LATE
+  # redirect clause that sat after the read/message-carrier declines. S-H2 moved the redirect test
+  # ABOVE those declines; the two then had the same predicate on the same value with one strictly
+  # earlier, so the late clause became unreachable and this mutant reported `verdict did not change
+  # (deny before and after); the leg proves nothing`. The clause was deleted rather than kept, and
+  # M-CWD7 (the early check) is its successor. The cells M-CWD5 protected are unchanged and still
+  # green — they are simply denied one step sooner.
+  gpab_mutant "M-CWD3: core cwd seed removed -> cross-call composed DENY flips" \
+    's#^_cp8b_seed_from_cwd() {#_cp8b_seed_from_cwd() { _CP8B_SEED_EFF=""; _CP8B_SEED_UNKNOWN=0; return 0; #' \
+    "$(gpab_cwd "$GPAB_ROOT/conformance" "sed -i s/a/b/ verify.sh")" allow
 
   # === C4 GUARD-FP-RELIEF mutants — one per arm, each pins a disqualifier is load-bearing ==========
   # (Names are C4-prefixed to avoid colliding with the fix-round-1 K-F/K-G above.)
@@ -2500,6 +2904,73 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "M-A1-rg: rg re-admitted to the mask gate lexicon -> rg --pre + quoted alternation flips" \
     "s@^_CP8B_MASK_GATE_VERBS='grep@_CP8B_MASK_GATE_VERBS='rg grep@" \
     '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil \"a|b\" .claude/hooks/guard-core.sh"}}' allow
+  # M-R1 (GUARD-READ-PATTERN-RELIEF Face 1) — THE GATE LEXICON IS LIVE. Add `sh` to the list and a
+  # quoted-alternation read chained with `sh <script>` stops splitting and flips ALLOW.
+  # ⚠️ HONEST LABEL (design §3 Face 1, vet C5): this flips a READ, not a write. Face 1's gate CANNOT
+  # protect a write by construction — a masked byte is a quoted byte the shell never executes — so no
+  # write mutant exists for it. What this leg proves is that the lexicon is consulted and load-bearing:
+  # membership decides whether the mask survives, which is exactly the claim Face 1 makes.
+  gpab_mutant "M-RPR1: sh added to the mask gate lexicon -> a read chained with sh <script> flips (read-flip, see label)" \
+    "s@ yamllint git cd'@ yamllint git cd sh'@" \
+    '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" conformance/verify.sh; sh scripts/model-tier.sh --selftest"}}' allow
+  # gpab_mutant_ks — the same discipline as gpab_mutant, but the observable is KILL-SWITCH PRESENCE
+  # in the deny reason rather than the verdict (vet C5: Face 4 moves a MESSAGE, and a verdict-only
+  # mutant runner cannot see it, so a message change would ship with no leg at all). It asserts the
+  # same three things: that the expression matched something, that the observable CHANGED, and that it
+  # changed in the wanted direction.
+  # ⚠️ THE DENY MATCH IS REQUIRED, NOT BELT-AND-BRACES (reviewer M3 / vet Low). Grepping for the
+  # sentence ALONE reads a crashed hook, an empty output or an ALLOW as "absent" — i.e. as the very
+  # improvement Face 4 claims — so a mutant that BROKE the hook would score as killing the leg.
+  # Presence is only classifiable over an output that actually denied.
+  # ⚠️ THE `|| :` AND THE `&&`/`||` FORMS ARE LOAD-BEARING UNDER THIS FILE'S `set -eu` (:6). A bare
+  # `_kso=$(… | sh …)` takes the pipeline's status, and the hook exits non-zero on a deny — the
+  # normal case here — so the plain spelling ABORTED THE WHOLE SELFTEST at the first ks mutant.
+  # Measured: the run stopped after M-RPR1 and printed neither M-RPR4a nor M-RPR2.
+  gpab_ks_at() {
+    _kso=$(printf '%s' "$2" | sh "$1" 2>/dev/null) || :
+    printf '%s' "$_kso" | grep -qF '"permissionDecision":"deny"' || return 2
+    printf '%s' "$_kso" | grep -qF KIT_GUARD_SELFEDIT
+  }
+  # A THREE-STATE observable, because "no deny to read" is not "the sentence is absent": rc 2 from
+  # gpab_ks_at is reported as `no-deny` and can never satisfy a `want`, so a mutant that stopped the
+  # hook denying is a loud FAIL rather than a quiet PASS.
+  gpab_ks_state() { gpab_ks_at "$1" "$2" && _kss=0 || _kss=$?
+                    case $_kss in 0) echo present ;; 1) echo absent ;; *) echo no-deny ;; esac; }
+  gpab_mutant_ks() {  # <label> <sed-expr> <json> <want-after-mutation: present|absent>
+    _kp=$(gpab_ks_state "$GPAB_G" "$3")
+    sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
+    if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      echo "FAIL mutant : $1 — the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
+    fi
+    _km=$(gpab_ks_state "$GPAB_G" "$3")
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+    if [ "$_kp" = "$_km" ]; then
+      echo "FAIL mutant : $1 — kill-switch presence did not change ($_kp before and after); the leg proves nothing"; fail=1
+    elif [ "$_km" = "$4" ]; then echo "PASS mutant : $1 ($_kp -> $_km, killed the leg as required)"
+    else echo "FAIL mutant : $1 — got $_km, wanted $4"; fail=1; fi
+  }
+  # M-RPR4a (Face 4) — the range-address disjunct is what drops the sentence. Remove it and
+  # `sed -n '/a/,/b/p' <cp>` advertises the kill switch again.
+  gpab_mutant_ks "M-RPR4a: the Face 4 range-address disjunct removed -> /a/,/b/p re-advertises the kill switch" \
+    's@^  printf .%s. "\$1" | grep -Eq "\$_CP8B_SED_SCRIPT_ADDR2"@  false@' \
+    '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/^a/,/^}/p'\'' conformance/verify.sh"}}' present
+  # ⚠️ M-RPR4b WAS WRITTEN, MEASURED VACUOUS, AND DELETED — the note stays because the next author
+  # will have the same idea. The design asked for a mutant making `read_shaped` return 0 for `sed -i`,
+  # so that V20's sentence would disappear. There is no single-line expression that does it: `sed -i`
+  # is held TWICE over, independently. Dropping `-i` from `_CP8B_FH_WRITE_FLAGS` leaves the message
+  # tier's own flag allowlist (`_cp8b_fh_flags_ok "$1" '-n'`) refusing `-i`, so presence measured
+  # `present before and after` and the runner correctly reported the leg as proving nothing. Rather
+  # than mutate two lines at once to manufacture a green, the honest statement is: the `sed -i` KEEP
+  # is pinned BEHAVIOURALLY (the F-h Face4 KEEP cells above), and the leg that binds THIS SLICE'S new
+  # code is M-RPR4a, which mutates the one line Face 4 adds.
+  # M-RPR2 (Face 2, vet C3) — THE GATE MUST JUDGE THE BYTES THE ARM JUDGES. Hand the strict sed
+  # grammar the MASKED segment instead of `_cp8b_unmask_quoted "$_mgs"` and a path operand carrying a
+  # QUOTED `;` stops being refused by `_cp8b_seg_path_ok`: the gate holds, the mask survives, and the
+  # whole flips ALLOW. This is the leg that makes Face 2's unmask load-bearing rather than decorative.
+  gpab_mutant "M-RPR2: the Face 2 gate grammar called on the MASKED bytes -> a quoted ; in a path operand flips" \
+    's@_cp8b_seg_sed_n_strict "$(_cp8b_unmask_quoted "$_mgs")"@_cp8b_seg_sed_n_strict "$_mgs"@' \
+    '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" conformance/verify.sh; sed -n 1,5p \"x;y.txt\""}}' allow
   # M-A4 — THE OPEN-SPAN DECLINE (F-2). `_cp8b_mask_walk` reports `q != ""` as a non-zero exit and
   # `_cp8b_mask_quoted` declines on it. Ignore that end state — keep the mask whatever the walk ended
   # in — and the cross-kind parity string masks a REAL `;`, merging a `cp` onto the guard into grep's
@@ -4793,6 +5264,68 @@ assert_deny         "F-h sed -n read (deny anchor)" \
   '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/re/p'\'' conformance/verify.sh"}}'
 assert_reason_lacks "F-h sed -n read drops the sentence" \
   '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/re/p'\'' conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+# ---- GUARD-READ-PATTERN-RELIEF Face 4: the RANGE address forms drop the sentence too --------------
+# Design §3 Face 4. The single address `/re/p` already dropped it (the cell above). The RANGE forms —
+# `/a/,/b/p`, `/re/,5p`, `5,/re/p` — did NOT: measured DENY WITH the sentence against the live
+# pristine hook, which is the guard telling an operator to disarm itself globally in order to READ.
+# The cure is a MESSAGE-TIER regex only (`_CP8B_SED_SCRIPT_ADDR2`): the verdict stays DENY at every
+# one of these cells (the deny anchors below assert exactly that), the allow tier is untouched, and
+# the August pricing that keeps addressed sed out of the allow tier stands (Face 3 was STRUCK).
+assert_deny         "F-h Face4 sed -n /a/,/b/p (deny anchor — the verdict does NOT move)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/^a/,/^}/p'\'' conformance/verify.sh"}}'
+assert_reason_lacks "F-h Face4 sed -n /a/,/b/p drops the sentence" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/^a/,/^}/p'\'' conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+assert_deny         "F-h Face4 sed -n /re/,5p (deny anchor)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/re/,5p'\'' conformance/verify.sh"}}'
+assert_reason_lacks "F-h Face4 sed -n /re/,5p drops the sentence (regex,number)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/re/,5p'\'' conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+assert_deny         "F-h Face4 sed -n 5,/re/p (deny anchor)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''5,/re/p'\'' conformance/verify.sh"}}'
+assert_reason_lacks "F-h Face4 sed -n 5,/re/p drops the sentence (number,regex)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''5,/re/p'\'' conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+# The relieved message must still CARRY the exact-grammar tip and the escape card — dropping the kill
+# switch is worthless if it drops the cure with it.
+assert_reason_has   "F-h Face4 the relieved message still carries the exact-grammar TIP" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/^a/,/^}/p'\'' conformance/verify.sh"}}' "sed -n"
+# KEPT — every WRITE form keeps the sentence. `-i`/`w`/`e`/`s` are not addresses, and a `>` byte is a
+# redirect whatever else the segment looks like (vet C4: `2>` onto guard-core TRUNCATES it).
+# THE LOOP-ARM REACH, FOUND BY THE REVIEWER, NOT BY THIS BUILD. Face 4's classifier is reached
+# through `_cp8b_fh_strip_prefix` as well as directly, so a `do sed -n '<range-addr>' $f` sub-segment
+# of a loop over a control-plane glob also drops the sentence. Both subjects below were measured DENY
+# at pristine AND DENY here — the F-f ruling that a loop head carries the whole deny is untouched —
+# with the sentence PRESENT at pristine and ABSENT now.
+# JUDGED CORRECT, and celled rather than narrowed. The body is a grammar-shaped `sed -n` READ over
+# the loop variable; `_cp8b_fh_write_escape` runs over the whole segment first, so a write body keeps
+# the line (the two KEEP cells below). Telling an operator to disarm the guard globally in order to
+# read a directory file-by-file is precisely the mis-training F-h exists to stop, and the retry the
+# message still names (`grep`, the Read tool) is the same one. Narrowing the classifier to refuse a
+# stripped prefix would ALSO put the sentence back on `do sed -n 1,5p $f` — a numeric read that has
+# dropped it since T4 — so the narrowing would be a regression, not a fix.
+assert_deny         "F-h Face4 loop over a CP glob, sed range-address body (deny anchor — F-f is untouched)" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in .claude/hooks/*; do sed -n \"/a/,/b/p\" $f; done"}}'
+assert_reason_lacks "F-h Face4 loop over a CP glob, sed range-address body drops the sentence" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in .claude/hooks/*; do sed -n \"/a/,/b/p\" $f; done"}}' "KIT_GUARD_SELFEDIT"
+assert_deny         "F-h Face4 loop over conformance/*, number,regex body (deny anchor)" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in conformance/*; do sed -n \"5,/re/p\" $f; done"}}'
+assert_reason_lacks "F-h Face4 loop over conformance/*, number,regex body drops the sentence" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in conformance/*; do sed -n \"5,/re/p\" $f; done"}}' "KIT_GUARD_SELFEDIT"
+assert_reason_has   "F-h Face4 KEEP: the same loop with a sed -i BODY keeps the sentence" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in .claude/hooks/*; do sed -i s/a/b/ $f; done"}}' "KIT_GUARD_SELFEDIT"
+assert_reason_has   "F-h Face4 KEEP: the same loop with a w-command BODY keeps the sentence" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in .claude/hooks/*; do sed -n \"/a/,/b/w out\" $f; done"}}' "KIT_GUARD_SELFEDIT"
+assert_reason_has   "F-h Face4 KEEP: sed -i keeps the sentence (held twice: write-escape AND the -n allowlist)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+assert_reason_has   "F-h Face4 KEEP: sed -n /re/w keeps it (an address with a w COMMAND writes)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/re/w out'\'' conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+assert_reason_has   "F-h Face4 KEEP: sed -n s///p keeps it (a substitution is not an address)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''s/a/b/p'\'' conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
+assert_reason_has   "F-h Face4 KEEP: 2><guard-core> keeps it — a > byte is a write (vet C4)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n 1,12p conformance/verify.sh 2>.claude/hooks/guard-core.sh"}}' "KIT_GUARD_SELFEDIT"
+# A range address whose regex carries a `/` or a `\` stays UNRECOGNISED and keeps the sentence: the
+# W04 shape (`/a/,/b/w <guard-core>/p`) is a real write that a `/`-permissive regex would misread as
+# addr2 + `p`. The regex refuses `/` and `\` inside the delimiters for exactly that reason.
+assert_reason_has   "F-h Face4 KEEP: W04 /a/,/b/w <guard-core>/p keeps it (the / refusal is why)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''/a/,/b/w .claude/hooks/guard-core.sh/p'\'' y"}}' "KIT_GUARD_SELFEDIT"
 assert_reason_has   "F-h sed script with a `w` command KEEPS it (sed writes)" \
   '{"tool_name":"Bash","tool_input":{"command":"sed -n '\''s/x/y/w .claude/hooks/guard-core.sh'\'' /tmp/a"}}' "KIT_GUARD_SELFEDIT"
 assert_deny         "F-h awk range read (deny anchor)" \
@@ -5435,6 +5968,92 @@ assert_allow "F-a a heredoc operator declines the mask (ALLOW at pristine, uncha
 # reverted rounds forbid. Reported to the seat; not closed unilaterally here.
 assert_deny "F-a T6-carried: awk quoted-&& range still splits on the SPACE (design shortfall)" \
   '{"tool_name":"Bash","tool_input":{"command":"awk '\''NR>=5 && NR<=9'\'' .claude/hooks/guard-core.sh"}}'
+# ---- GUARD-READ-PATTERN-RELIEF Face 1: `cd` joins the mask gate ---------------------------------
+# Design §3 Face 1. Every cell below was measured against the LIVE pristine hook before the lexicon
+# token was added (all six ALLOW cells read DENY).
+# HONEST LABEL (design §8, vet C5): Face 1 cannot be proven to guard a WRITE — a masked byte is a
+# quoted byte the shell never executes — so M-RPR1's anchor flips a READ. It proves the recogniser is
+# live, nothing more.
+assert_allow "F-a Face1 cd <dir> && grep -E quoted-alternation on a CP path (the dominant shape)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd /private/tmp/x && grep -E \"a|b\" conformance/verify.sh"}}'
+assert_allow "F-a Face1 cd <dir> && grep -n -i with a quoted alternation" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd /private/tmp/x && grep -n -i \"charter|ADR\" conformance/verify.sh"}}'
+assert_allow "F-a Face1 cd <dir>; grep (semicolon join, not &&)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd /private/tmp/x; grep \"a|b\" conformance/verify.sh"}}'
+assert_allow "F-a Face1 grep <cp>; cd <dir> (cd as the TRAILING segment)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" conformance/verify.sh; cd /private/tmp/x"}}'
+assert_allow "F-a Face1 cd <relative-cp-dir> && grep a RELATIVE CP file (composition resolves it)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd conformance && grep -E \"a|b\" verify.sh"}}'
+assert_allow "F-a Face1 cd <dir> && grep -c <cp> | head (a pipe into a gate verb)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd /private/tmp/x && grep -c \"a|b\" conformance/verify.sh | head"}}'
+# KEPT-DENY. `cd` on the gate must buy the READ and nothing else: the composition tracker, the pipe
+# rule, the redirect arm and the mutation arms all still run on the unmasked bytes.
+assert_deny "F-a Face1 KEEP: cd x && cp onto guard-core (a write after a cd)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd x && cp e .claude/hooks/guard-core.sh"}}'
+assert_deny "F-a Face1 KEEP: cd x; grep | xargs rm (the pipe-into-executor rule runs on the RAW string)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd x; grep \"a|b\" y | xargs rm"}}'
+assert_deny "F-a Face1 KEEP: cd x; grep > .claude/out (an UNQUOTED > is never masked)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd x; grep \"a|b\" y > .claude/out"}}'
+assert_deny "F-a Face1 KEEP: cd x && grep <cp> | sh (a CP read piped into an interpreter)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd x && grep \"a|b\" conformance/verify.sh | sh"}}'
+assert_deny "F-a Face1 KEEP: cd x && grep <cp> > .claude/out (read masked, redirect still denied)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd x && grep \"a|b\" conformance/verify.sh > .claude/out"}}'
+assert_deny "F-a Face1 KEEP: cd conformance && sed -i (composition resolves the relative CP write)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd conformance && sed -i s/a/b/ verify.sh"}}'
+# `cd -` — the design predicted this cell stays DENY (vet V56). ⚠️ IT DOES NOT: measured DENY at
+# pristine, ALLOW under Face 1. Celled at the verdict it HAS, with the three companions below
+# bounding the move — the blind spot buys the READ and no write.
+assert_allow "F-a Face1 cd -; grep <cp> (cd - joins the relief; the design predicted DENY — measured ALLOW)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd -; grep \"a|b\" conformance/verify.sh"}}'
+assert_deny "F-a Face1 KEEP: cd -; cp onto guard-core (the blind spot buys no absolute write)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd -; cp e .claude/hooks/guard-core.sh"}}'
+assert_deny "F-a Face1 KEEP: cd -; grep > .claude/out (the blind spot buys no redirect)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd -; grep \"a|b\" x > .claude/out"}}'
+assert_deny "F-a Face1 KEEP: cd -; grep <cp> | sh (the blind spot buys no interpreter feed)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd -; grep \"a|b\" conformance/verify.sh | sh"}}'
+# ⚠️ THE FIRST DRAFT OF THIS PAIR CLAIMED `cd -` WAS THE REASON, AND THAT WAS FALSE (reviewer M1).
+# The bare command with no `cd` at all is ALLOW too: `verify.sh` relative to the REPO ROOT is not a
+# control-plane path — `conformance/verify.sh` is. The ALLOW is about the PATH, not about `cd -`.
+# Both spellings are celled so the claim cannot drift back.
+assert_allow "F-a Face1 bare sed -i verify.sh is ALLOW: root-relative verify.sh is NOT a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ verify.sh"}}'
+# ⚠️ SUPERSEDED BY GUARD-CWD-CONFIDENCE-UNKNOWN, AND RE-KINDED IN PLACE RATHER THAN DELETED. The
+# sentence above remains true OF ITS OWN SLICE and false of this tree: at the relief slice `cd -` was
+# a no-op, so this cell and its bare sibling agreed, and that agreement was the whole point of
+# celling both. Face A now makes `cd -` an ADMISSION of lost confidence, and Face B charges a
+# relative write for it — so the two spellings must now DISAGREE, and their disagreement is the
+# clearest single statement of what this slice does. The bare sibling directly above is UNMOVED and
+# is the load-bearing negative: the change is about lost confidence, not about the path.
+# The label is re-prefixed to `K-CWD ` so the delta attributes the movement to the slice that caused
+# it; `[F-a ]` is documented as a pure REFUND prefix and must not quietly acquire a widening.
+assert_deny "K-CWD (was F-a Face1): cd - then sed -i verify.sh — SUPERSEDES the relief-slice ALLOW" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd -; sed -i s/a/b/ verify.sh"}}'
+# M-R1's anchor, celled at pristine so the mutant has something measured to flip.
+assert_deny "F-a Face1 M-RPR1 anchor: grep <cp>; sh <script> (sh is NOT on the gate)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" conformance/verify.sh; sh scripts/model-tier.sh --selftest"}}'
+# ---- GUARD-READ-PATTERN-RELIEF Face 2: a grammar-recognised sed/awk segment counts as a gate lead --
+# Design §3 Face 2 (the mechanism and the C3 unmask rationale live at the code, not restated here).
+# HONEST LABEL: like Face 1, Face 2's gate cannot be proven to guard a write; M-RPR2 proves the
+# UNMASK is load-bearing, which is the one property the vet demanded a cell for.
+assert_allow "F-a Face2 sed -n numeric read; grep quoted-alternation | head (matrix BB)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n 100,135p conformance/inception-done.sh; grep -n -i \"charter|ADR-000|EXAMPLE\" conformance/inception-done.sh | head -12"}}'
+assert_allow "F-a Face2 grep quoted-alternation <cp>; sed -n numeric read (matrix BC)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -E \"a|b\" conformance/verify.sh; sed -n 1,5p README.md"}}'
+assert_allow "F-a Face2 the same with TWO path operands (the grammar walks them all)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -E \"a|b\" conformance/verify.sh; sed -n 1,5p README.md CHANGELOG.md"}}'
+assert_allow "F-a Face2 an awk RANGE program is a gate lead on the same terms" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -E \"a|b\" conformance/verify.sh; awk '\''NR<=5'\'' README.md"}}'
+# KEPT-DENY. A sed/awk segment that FAILS the grammar keeps discarding the mask, exactly as today.
+assert_deny "F-a Face2 KEEP: sed -i after a masked read (an in-place flag fails the grammar)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x; sed -i s/a/b/ conformance/verify.sh"}}'
+assert_deny "F-a Face2 KEEP: a sed w-command after a masked read" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x; sed -n '\''/re/w out'\'' conformance/verify.sh"}}'
+assert_deny "F-a Face2 KEEP: a sed ADDRESS script is out of the ALLOW tier (design §8 pricing stands)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a;b\" x; sed -n '\''/a;b/p'\'' conformance/verify.sh"}}'
+assert_deny "F-a Face2 KEEP: awk print-redirect onto a CP path after a masked read" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x; awk '\''{print > \".claude/hooks/guard-core.sh\"}'\'' y"}}'
+assert_deny "F-a Face2 M-RPR2 anchor: sed -n 1,5p \"x;y.txt\" after a masked read (path holds a quoted ;)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" conformance/verify.sh; sed -n 1,5p \"x;y.txt\""}}'
 # ---- T8 REVIEW ROUND 1: the seat's findings F-1, F-2, F-4 ---------------------------------------
 # F-1 (HIGH) — THE GATE LEXICON OVERCLAIMED. The paragraph above `_CP8B_MASK_GATE_VERBS` said the
 # mutation arms are "UNREACHABLE by construction" once the gate holds. MEASURED FALSE: four verbs on

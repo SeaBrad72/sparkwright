@@ -85,6 +85,9 @@ _kit_dial() { # <DIAL_NAME> — sets _kd_mode; resolves each dial at most ONCE p
     KIT_PUSH_CITE)
       [ -n "${_kd_cite:-}" ] || _kd_cite=$(_kit_dial_resolve "$1")
       _kd_mode=$_kd_cite ;;
+    KIT_PUSH_PRESENCE)
+      [ -n "${_kd_pres:-}" ] || _kd_pres=$(_kit_dial_resolve "$1")
+      _kd_mode=$_kd_pres ;;
     *) _kd_mode=$(_kit_dial_resolve "$1") ;;
   esac
 }
@@ -221,6 +224,60 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
 # invocation-wide, it is CONSULTED once (REV M6) and RELAYED once (round 2, reviewer Minor 3); the
 # rc is still decided per ref-line.
 
+# _push_class_listing <sha> — THE SHARED change-set derivation, used by the GO leg and by the
+# board-presence leg below it. Both need the same two facts about a pushed sha (its change-class,
+# and a newline-delimited listing of its changed paths), derived through the SAME single authority
+# (promotion-readiness.sh --class) with the SAME hardening the five other derivation sites carry
+# (--no-renames + core.quotePath=false + -z + the literal-newline fail-safe, v3.186.0).
+#
+# ⚠️ IT EMITS NOTHING, AND THAT IS THE POINT (presence design A1-4). Two legs grade the same push
+# line; a helper that printed its own prose would print it twice, and would have to choose one leg's
+# prefix for both. So it returns a STATUS WORD and the callers narrate:
+#   _pc_status = newline      a changed path holds a literal newline — do NOT classify (fail-safe HIGH)
+#              = empty        the change-set vs merge-base is measurably EMPTY
+#              = classified   _pc_cls holds ordinary|sensitive|control-plane, _pc_lst the listing path
+#              = underivable  no merge-base, no mktemp, no authority, or an unusable answer (HIGH)
+# THE CALLER OWNS `_pc_lst` AND MUST rm IT ON EVERY RETURN PATH — the temp-file leg in the selftest
+# counts what is left under the fixture's TMPDIR after a full run and reds if anything is.
+_push_class_listing() {
+  _pc_status=underivable; _pc_cls=""; _pc_lst=""
+  _pcl_sha=$1
+  _pcl_base=$(git merge-base "$_pcl_sha" refs/remotes/origin/main 2>/dev/null) \
+    || _pcl_base=$(git merge-base "$_pcl_sha" refs/remotes/origin/master 2>/dev/null) \
+    || _pcl_base=""
+  [ -n "$_pcl_base" ] || return 0
+  _pcl_z=$(mktemp 2>/dev/null) || _pcl_z=""
+  [ -n "$_pcl_z" ] || return 0
+  if git -c core.quotePath=false diff --name-only -z --no-renames "$_pcl_base" "$_pcl_sha" \
+       > "$_pcl_z" 2>/dev/null </dev/null; then
+    # A NUL stream carries a newline byte ONLY when a filename does: detect -> do not classify ->
+    # leave the caller on its fail-safe HIGH path. The newline-delimited form would SPLIT such a path
+    # into fragments that each classify as `ordinary` (measured), i.e. fail-OPEN dressed as fail-safe.
+    if [ "$(LC_ALL=C tr -cd '\n' < "$_pcl_z" | wc -c | tr -d ' ')" != 0 ]; then
+      _pc_status=newline
+    elif [ ! -s "$_pcl_z" ]; then
+      _pc_status=empty
+    else
+      _pcl_prs="$ROOT/conformance/promotion-readiness.sh"
+      if [ -f "$_pcl_prs" ] && [ -r "$_pcl_prs" ]; then
+        _pcl_lst=$(mktemp 2>/dev/null) || _pcl_lst=""
+        if [ -n "$_pcl_lst" ]; then
+          tr '\0' '\n' < "$_pcl_z" > "$_pcl_lst"
+          _pcl_cls=$(sh "$_pcl_prs" --changed "$_pcl_lst" --class 2>/dev/null </dev/null | tail -1) \
+            || _pcl_cls=""
+          if [ -n "$_pcl_cls" ]; then
+            _pc_status=classified; _pc_cls=$_pcl_cls; _pc_lst=$_pcl_lst
+          else
+            rm -f "$_pcl_lst"
+          fi
+        fi
+      fi
+    fi
+  fi
+  rm -f "$_pcl_z"
+  return 0
+}
+
 # go_relay — the leg's ONE verdict surface (all three non-pass paths route through it): observe
 # prints and ALLOWS, enforce prints and REFUSES. Δ3 — the EXACT string "enforce" and nothing else
 # escalates; `KIT_PUSH_GO=1` is observe, which is what the selftest's dial case pins (a `[ -n "$X" ]`
@@ -321,44 +378,19 @@ go_check_ref() { # local_ref local_sha remote_ref remote_sha
   # Δ3 — the class gate on the PUSHED change-set, via the single authority the kit's gates share
   # (promotion-readiness.sh --class). Fail-safe stays HIGH everywhere except the one measured
   # false-refusal surface: a diff that is MEASURED EMPTY vs merge-base cannot need a design GO.
-  _go_cls=""
-  _go_base=$(git merge-base "$_go_sha" refs/remotes/origin/main 2>/dev/null) \
-    || _go_base=$(git merge-base "$_go_sha" refs/remotes/origin/master 2>/dev/null) \
-    || _go_base=""
-  # [REV M1] -z, NOT bare --name-only. The newline-delimited form SPLITS a path containing a literal
-  # newline into fragments that each classify separately, and because is_control_plane_path carries
-  # SUFFIX-constrained patterns (`agents/*.agent.md`) neither fragment matches: the measured result
-  # is `ordinary` and this leg SKIPS — a DOWNGRADE, i.e. fail-OPEN, not the fail-safe the class gate
-  # claims. This mirrors the hardening applied at all five other derivation sites in v3.186.0
-  # (--no-renames + core.quotePath=false + -z + the newline detector) and reuses
-  # promotion-readiness.sh:176's exact detector idiom. A NUL stream carries a newline byte ONLY when
-  # a filename does, so: detect -> do not classify -> fall through to the fail-safe HIGH below.
-  if [ -n "$_go_base" ]; then
-    _go_z=$(mktemp 2>/dev/null) || _go_z=""
-    if [ -n "$_go_z" ]; then
-      if git -c core.quotePath=false diff --name-only -z --no-renames "$_go_base" "$_go_sha" \
-           > "$_go_z" 2>/dev/null </dev/null; then
-        if [ "$(LC_ALL=C tr -cd '\n' < "$_go_z" | wc -c | tr -d ' ')" != 0 ]; then
-          printf 'kit pre-push (GO): a changed path carries a literal NEWLINE - refusing to classify a split change-set; the leg proceeds (fail-safe HIGH).\n' >&2
-        elif [ ! -s "$_go_z" ]; then
-          printf 'kit pre-push (GO): empty change-set vs merge-base - a design GO gates changes, and there are none; skipping this leg.\n' >&2
-          rm -f "$_go_z"
-          return 0
-        else
-          _go_prs="$ROOT/conformance/promotion-readiness.sh"
-          if [ -f "$_go_prs" ] && [ -r "$_go_prs" ]; then
-            _go_lst=$(mktemp 2>/dev/null) || _go_lst=""
-            if [ -n "$_go_lst" ]; then
-              tr '\0' '\n' < "$_go_z" > "$_go_lst"
-              _go_cls=$(sh "$_go_prs" --changed "$_go_lst" --class 2>/dev/null </dev/null | tail -1) || _go_cls=""
-              rm -f "$_go_lst"
-            fi
-          fi
-        fi
-      fi
-      rm -f "$_go_z"
-    fi
-  fi
+  # [REV M1 lives in _push_class_listing now — the derivation is SHARED with the presence leg, and
+  # this leg narrates the two disclosed states with its own `(GO)` prefix. The battery G0-G10 is the
+  # regression oracle for that lift: it ran byte-identical, with no assertion edited.]
+  _push_class_listing "$_go_sha"
+  _go_cls=$_pc_cls
+  if [ -n "$_pc_lst" ]; then rm -f "$_pc_lst"; _pc_lst=""; fi   # this leg needs the class, not the listing
+  case "$_pc_status" in
+    newline)
+      printf 'kit pre-push (GO): a changed path carries a literal NEWLINE - refusing to classify a split change-set; the leg proceeds (fail-safe HIGH).\n' >&2 ;;
+    empty)
+      printf 'kit pre-push (GO): empty change-set vs merge-base - a design GO gates changes, and there are none; skipping this leg.\n' >&2
+      return 0 ;;
+  esac
   case "$_go_cls" in
     ordinary) return 0 ;;                           # only sensitive/control-plane proceed
     sensitive | control-plane) : ;;
@@ -513,6 +545,291 @@ cite_check_ref() { # local_ref local_sha remote_ref remote_sha
   # B1-proven D3 shape): observe prints and allows; enforce prints and refuses (cite_relay).
   cite_relay "$_cite_memo_out"
   return $?
+}
+
+# presence_check_ref — the BOARD-PRESENCE leg (design
+# docs/architecture/2026-09-02-prepush-presence-design.md). It runs the SAME predicate the required
+# `backlog-presence` context runs — `conformance/backlog-presence.sh` — keyed on the BRANCH instead
+# of a PR number, because at push time no PR exists yet.
+# WHY IT EXISTS: on two consecutive control-plane slices the board row was still In Progress at push
+# time and the FIRST CI run reddened on exactly that — a full 11-41 minute run spent learning what a
+# local predicate answers in a second. The operator's rule ("row to In Review naming the branch
+# before the push") was prose, and prose gets relearned.
+# Δ1 — THE BOARD IS GRADED AT THE PUSHED SHA, not in the working tree. That is the decl leg's
+# founding principle (grade the identical SHA CI grades, so drift is impossible by construction) and
+# it is also the only way to catch the miss that is actually made: board edited, NOT COMMITTED,
+# pushed — green locally, red in CI. The extracted board is read by the predicate and nothing else.
+# ⚠️ THE BRANCH KEY IS NOT DERIVED HERE. D11 forbids a second derivation site, so the key comes from
+# `ceremony-binding.sh --print-scope-key` — a read-only print of prepush_scope_key, the single
+# authority. The selftest's PP9 leg greps this file and REDS if a branch derivation ever appears.
+# CEILING (Δ3, restated where the leg lives): A SPEED BUMP, NOT A BOUNDARY. `git push --no-verify`,
+# a never-installed hook, a stale installed copy, an absent predicate — and a DETACHED-HEAD push
+# (`git push origin HEAD:refs/heads/x`, N/A here by construction: no branch, no row key) — all bypass
+# this leg. The binding layer is and remains the required `backlog-presence` CI context, which grades
+# the merge candidate. This leg adds no authority; it moves the finding earlier and cheaper.
+# FAIL POSTURE, disclosed: an underivable class proceeds (HIGH); an absent predicate is a silent N/A
+# (first-run-green); and with jq absent the predicate itself fail-safes every change-set to `gated`,
+# so under enforce it can refuse an ordinary push on a jq-less machine — the gate's verdict names jq
+# as the cause, and installing jq is the remedy.
+# NO BOARD WRITES, EVER. Auto-moving the row was considered and rejected: a hook that edits
+# control-plane state during a push crosses the agents-propose / humans-ratify line.
+presence_relay() {  # captured-combined-output — the leg's ONE verdict surface
+  # ONE RELAY PER PUSH INVOCATION (the go_relay/cite_relay rule). The rc is still decided per
+  # ref-line by the same exact-string dial test, so a dial mutant cannot hide on the quiet path.
+  if [ "${_pres_relayed:-0}" -eq 1 ]; then
+    _kit_dial KIT_PUSH_PRESENCE
+    [ "$_kd_mode" = "enforce" ] || return 0
+    return 1
+  fi
+  _pres_relayed=1
+  _kit_dial KIT_PUSH_PRESENCE
+  if [ "$_kd_mode" = "enforce" ]; then
+    if [ -n "$1" ]; then
+      printf '%s\n' "$1" | while IFS= read -r _pres_line; do
+        printf 'kit pre-push: %s\n' "$_pres_line" >&2
+      done
+    fi
+    # NO REMEDY LINES ARE ADDED HERE. Unlike the sibling legs, this leg's predicate already prints a
+    # stranger-readable remedy (which row is probably yours, the exact board edit) and that prose is
+    # graded where it lives, with the gate. A second remedy invented here would be the copy that
+    # drifts.
+    printf '  override (deliberate): git push --no-verify\n' >&2
+    return 1
+  fi
+  if [ -n "$1" ]; then
+    printf '%s\n' "$1" | while IFS= read -r _pres_line; do
+      printf 'kit pre-push (observe): %s\n' "$_pres_line" >&2
+    done
+  fi
+  printf 'kit pre-push (observe):   dial: the DURABLE switch is KIT_PUSH_PRESENCE=enforce in .kit/dials.conf\n' >&2
+  printf 'kit pre-push (observe):         (tracked, control-plane, effective at merge — no hook re-copy). An env\n' >&2
+  printf 'kit pre-push (observe):         var of the same name can only ESCALATE, for this session.\n' >&2
+  return 0
+}
+
+presence_check_ref() { # local_ref local_sha remote_ref remote_sha
+  _pr_sha=$2
+  _pr_ref=$3
+  # D1 — dispatch, inherited from the three legs above VERBATIM.
+  case "$_pr_ref" in
+    refs/heads/*) : ;;
+    *) return 0 ;;                                  # tags, notes, etc. — not a branch push
+  esac
+  case "$_pr_sha" in
+    *[!0]*) : ;;
+    *) return 0 ;;                                  # all-zero local_sha — a deletion
+  esac
+  case "$_pr_ref" in
+    refs/heads/main | refs/heads/master) return 0 ;; # trunk merges are graded at the PR, not here
+  esac
+  case "$_pr_sha" in
+    *[!0-9a-fA-F]*) return 0 ;;                     # defense-in-depth: only a hex id reaches argv
+  esac
+  # D2 — degradation. An absent/unreadable predicate N/As SILENTLY (first-run-green on adopter trees).
+  _pr_pred="$ROOT/conformance/backlog-presence.sh"
+  [ -f "$_pr_pred" ] && [ -r "$_pr_pred" ] || return 0
+  _pr_keyer="$ROOT/conformance/ceremony-binding.sh"
+  [ -f "$_pr_keyer" ] && [ -r "$_pr_keyer" ] || return 0
+  # VERSION SKEW, probed on BOTH predicates the GO leg's way (REV M2). The probe keys on the DISPATCH
+  # ARM TOKEN `--print-scope-key)`, not the bare flag: this file's own header names the flag in prose,
+  # so a bare-flag grep would be tautologically true on the real script and the probe would never
+  # fire (design A1-1). Guaranteed to matter on the PR that introduces the mode (the hook is
+  # installed per-clone and can be newer than the checkout) and during an adopter upgrade.
+  if ! grep -q -- '--print-scope-key)' "$_pr_keyer" 2>/dev/null; then
+    printf 'kit pre-push (presence): this checkout of conformance/ceremony-binding.sh predates --print-scope-key, so the board-presence leg is N/A for this push (version skew, not an unbound row).\n' >&2
+    return 0
+  fi
+  # ...and the same for the gate's own branch mode: an older copy answers usage rc 2, which this
+  # leg's fail-closed rule would relay as "your board row is missing" (A1-2).
+  if ! grep -q -- '--branch)' "$_pr_pred" 2>/dev/null; then
+    printf 'kit pre-push (presence): this checkout of conformance/backlog-presence.sh predates --branch, so the board-presence leg is N/A for this push (version skew, not an unbound row).\n' >&2
+    return 0
+  fi
+  # MEMOIZED ON THE PUSHED SHA (design §3.2(6); reviewer R1). Everything below — the class gate, the
+  # scope key, the board extraction and the predicate — depends ONLY on the pushed sha and the
+  # ambient tree, so `git push origin a b` pointing both refs at ONE sha must pay for it ONCE, while
+  # two DIFFERENT shas are two genuinely different questions. The rc is still decided per ref-line
+  # (below), and the TEXT is relayed once per invocation by presence_relay.
+  if [ "${_pres_sha:-}" != "$_pr_sha" ]; then
+    _presence_evaluate "$_pr_sha"
+    _pres_sha=$_pr_sha
+  fi
+  [ "${_pres_rc:-0}" -eq 0 ] && return 0
+  presence_relay "$_pres_out"
+  return $?
+}
+
+# _presence_evaluate <pushed-sha> — the leg's whole judgment for ONE sha. Sets `_pres_rc` (0 = allow
+# silently: passed, or an N/A whose one-line note it has already printed) and `_pres_out` (the text
+# to relay when _pres_rc is 1). It never relays and never decides the push's exit code: that stays
+# with presence_check_ref, per ref-line.
+# DISCLOSED COST (security LOW-4): `_push_class_listing` is NOT shared between the GO leg and this
+# one — each calls it, so a single-line push derives the change-set twice (two `git diff` +
+# `promotion-readiness.sh` runs). Accepted rather than cured: a cross-leg memo would couple two legs'
+# lifecycles for a fraction of one diff, and the legs must stay independently deletable.
+_presence_evaluate() {
+  _pr_sha=$1
+  _pres_rc=0; _pres_out=""
+  # CLASS GATE — the SHARED derivation (see _push_class_listing). Ordinary changes need no board row;
+  # everything else proceeds, including an underivable class (fail-safe HIGH, the GO leg's posture).
+  _push_class_listing "$_pr_sha"
+  _pr_cls=$_pc_cls
+  _pr_lst=$_pc_lst
+  _pc_lst=""                                        # ownership moves to this leg; it removes it below
+  case "$_pc_status" in
+    newline)
+      printf 'kit pre-push (presence): a changed path carries a literal NEWLINE - refusing to classify a split change-set; the leg proceeds (fail-safe HIGH).\n' >&2 ;;
+    empty)
+      printf 'kit pre-push (presence): empty change-set vs merge-base - a board row binds changes, and there are none; skipping this leg.\n' >&2
+      return 0 ;;
+  esac
+  # THE UNDERIVABLE NOTE (security S2). A class this leg could not derive is graded as if it were
+  # gated — the fail-safe — and the refusal that follows would otherwise blame the operator's BOARD
+  # for what is really a missing merge-base. Whatever is relayed below carries this line with it.
+  _pr_undernote=""
+  case "$_pc_status" in
+    classified) : ;;
+    *) _pr_undernote="  note: the change-class could not be derived locally (no merge-base with origin/main?) and was graded gated as a fail-safe — this may not be a gated change at all." ;;
+  esac
+  case "$_pr_cls" in
+    ordinary) if [ -n "$_pr_lst" ]; then rm -f "$_pr_lst"; fi; return 0 ;;
+    *) : ;;                                         # sensitive / control-plane / underivable proceed
+  esac
+  # SCOPE KEY — the ONE sanctioned consumer path (§3.1). The ONLY N/A is rc 1 WITH NOTHING ON STDERR:
+  # a detached push carries no branch, so no row could be keyed to it, and CI keys on the PR instead.
+  # ⚠️ rc 1 ALONE IS NOT ENOUGH (security S1). `ceremony-binding.sh` is `set -eu` and sources a
+  # library: a preamble failure, an unreadable obligation-lib, a refused `CB_DESIGN_GLOB` — all exit
+  # NON-ZERO with a REASON on stderr, and rc 1 among them. Keying the N/A on the rc alone would print
+  # "detached HEAD" at an operator who is not detached and wave the push through on a broken
+  # predicate. The DERIVATION's own rc-1 path prints nothing (it is a `return 1` with no output), so
+  # "rc 1 and silent" is the signature of a genuine detached HEAD and nothing else.
+  # EVERY other non-(rc 0 + key) outcome — rc 1 with a reason, rc 2 charset, rc 3 bad usage, any
+  # other rc, empty stdout — is a COULD-NOT-EVALUATE anomaly routed through the dial (A1-1).
+  _pr_kerr=$(mktemp 2>/dev/null) || _pr_kerr=""
+  if [ -n "$_pr_kerr" ]; then
+    _pr_key=$(sh "$_pr_keyer" --print-scope-key 2>"$_pr_kerr" </dev/null); _pr_krc=$?
+    _pr_kmsg=$(cat "$_pr_kerr" 2>/dev/null)
+    rm -f "$_pr_kerr"
+  else
+    _pr_key=$(sh "$_pr_keyer" --print-scope-key 2>/dev/null </dev/null); _pr_krc=$?
+    _pr_kmsg=""
+  fi
+  if [ "$_pr_krc" -eq 1 ] && [ -z "$_pr_kmsg" ]; then
+    printf 'kit pre-push (presence): detached HEAD - no branch to bind a board row to; N/A (CI keys the row on the PR).\n' >&2
+    if [ -n "$_pr_lst" ]; then rm -f "$_pr_lst"; fi
+    return 0
+  fi
+  case "$_pr_key" in
+    branch/?*) : ;;
+    *) _pr_key="" ;;
+  esac
+  if [ "$_pr_krc" -ne 0 ] || [ -z "$_pr_key" ]; then
+    if [ -n "$_pr_lst" ]; then rm -f "$_pr_lst"; fi
+    # R7 — say WHICH failure it was. "exited 0 but printed no key" and "exited 2" send the reader to
+    # different places, and the second is not an inference the message should leave them to make.
+    if [ "$_pr_krc" -eq 0 ]; then
+      _pr_kwhy="it exited 0 but printed no key"
+    else
+      _pr_kwhy="it exited $_pr_krc"
+    fi
+    _pres_out="the branch key could not be derived (ceremony-binding.sh --print-scope-key: $_pr_kwhy):
+$_pr_kmsg
+  This leg cannot grade a board row without the key, and a gate that cannot evaluate must not
+  pretend it did."
+    _presence_add_note
+    _pres_rc=1
+    return 0
+  fi
+  _pr_branch=${_pr_key#branch/}
+  # Δ1 — EXTRACT THE BOARD AT THE PUSHED SHA into a temp dir the predicate is pointed at.
+  _pr_tmp=$(mktemp -d 2>/dev/null) || _pr_tmp=""
+  if [ -z "$_pr_tmp" ]; then
+    if [ -n "$_pr_lst" ]; then rm -f "$_pr_lst"; fi
+    _pres_out="could not create a temporary directory to extract the pushed commit's board; the board-presence leg could not evaluate."
+    _presence_add_note
+    _pres_rc=1
+    return 0
+  fi
+  for _pr_f in BACKLOG.md CLAUDE.md; do
+    _pr_entry=$(git ls-tree "$_pr_sha" -- "$_pr_f" 2>/dev/null) || _pr_entry=""
+    # ABSENT is not an error: the predicate's own semantics then apply (no CLAUDE.md => "no backlog
+    # backend declared" => N/A), which is the right answer for a tree that carries no board.
+    [ -n "$_pr_entry" ] || continue
+    case "$_pr_entry" in
+      120000\ *)
+        # A SYMLINK at the pushed sha (A1-6): `git show` hands back the LINK TEXT, and the predicate
+        # would grade a one-line file that is not a board. N/A, disclosed; CI grades it.
+        printf 'kit pre-push (presence): %s is a symlink at the pushed commit - the board is graded by CI only; N/A here.\n' "$_pr_f" >&2
+        rm -rf "$_pr_tmp"
+        if [ -n "$_pr_lst" ]; then rm -f "$_pr_lst"; fi
+        return 0 ;;
+    esac
+    if ! git show "$_pr_sha:$_pr_f" > "$_pr_tmp/$_pr_f" 2>/dev/null; then
+      rm -rf "$_pr_tmp"
+      if [ -n "$_pr_lst" ]; then rm -f "$_pr_lst"; fi
+      _pres_out="could not read $_pr_f at the pushed commit $_pr_sha, although the tree lists it; the board-presence leg could not evaluate."
+      _presence_add_note
+      _pres_rc=1
+      return 0
+    fi
+  done
+  # Is the working-tree board DIFFERENT from the graded one? That is the likeliest cause of a
+  # surprising refusal (edited, not committed), so the note names it. rc > 1 means the comparison
+  # itself failed — said plainly, and never a block on its own.
+  _pr_dirty=""
+  if git diff --quiet "$_pr_sha" -- BACKLOG.md 2>/dev/null; then
+    :
+  else
+    case $? in
+      1) _pr_dirty="  note: the board was graded AT THE PUSHED COMMIT - your working-tree BACKLOG.md differs from it (an uncommitted edit?)." ;;
+      *) _pr_dirty="  note: the board was graded AT THE PUSHED COMMIT; the comparison with your working tree could not be made." ;;
+    esac
+  fi
+  # THE PREDICATE. `--pr 0`: no PR exists at push time, and the gate's branch binding is what makes a
+  # row bindable before one does. COMBINED capture (2>&1), like the citation leg and unlike the GO
+  # leg: this gate prints its verdict, its hint and its remedy on STDOUT, so a stderr-only capture
+  # would relay a refusal carrying no verdict at all. </dev/null: stdin isolation (SEC MEDIUM-1) —
+  # this runs inside the caller's read loop over the push protocol.
+  # RUN FROM $ROOT (reviewer R6). The gate invokes its two classifier seams by RELATIVE path, so it
+  # must be entered from the repository root and not from whatever directory git happened to hand
+  # this hook. An absent listing (underivable class) is passed deliberately: the gate fail-safes an
+  # unreadable change-set to `gated`, which is the HIGH posture this path wants.
+  [ -n "$_pr_lst" ] || _pr_lst="$_pr_tmp/no-derivable-listing"
+  _pr_out=$( cd "$ROOT" && sh "$_pr_pred" --dir "$_pr_tmp" --pr 0 --changed "$_pr_lst" --branch "$_pr_branch" 2>&1 </dev/null )
+  _pr_rc=$?
+  case "$_pr_lst" in
+    "$_pr_tmp"/*) : ;;                              # goes with the temp dir below
+    *) rm -f "$_pr_lst" ;;
+  esac
+  rm -rf "$_pr_tmp"
+  if [ "$_pr_rc" -eq 0 ]; then
+    return 0                                        # bound (or N/A) — silent
+  fi
+  # Nonzero: rc 1 (the genuine unbound-row wait) and rc 2 (a misconfigured board) alike — fail-closed
+  # on could-not-evaluate, the D3 shape every sibling leg uses.
+  # S4 — A REFUSAL MUST NEVER BE MUTE. If the gate exits non-zero having printed nothing (a crash, a
+  # `set -e` abort), the relay would otherwise emit the honesty line alone: "your push is refused,
+  # and no, there is no reason". Name what happened instead.
+  if [ -z "$_pr_out" ]; then
+    _pr_out="backlog-presence exited rc $_pr_rc with no verdict - the gate could not be evaluated (a crash or an aborted run, not a judgment about your board)."
+  fi
+  if [ -n "$_pr_dirty" ]; then
+    _pr_out="$_pr_out
+$_pr_dirty"
+  fi
+  _pres_out=$_pr_out
+  _presence_add_note
+  _pres_rc=1
+  return 0
+}
+
+# _presence_add_note — append the underivable-class disclosure (S2) to whatever is about to be
+# relayed. One helper, so every anomaly path carries it and none can quietly forget to.
+_presence_add_note() {
+  [ -n "$_pr_undernote" ] || return 0
+  _pres_out="$_pres_out
+$_pr_undernote"
+  return 0
 }
 
 if [ "${1:-}" = "--selftest" ]; then
@@ -1365,6 +1682,395 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
   fi
   rm -f "$T/conformance/citation-live.sh"
 
+  # ---------------------------------------------------------------------------------------------
+  # PP — the BOARD-PRESENCE leg (presence_check_ref), the fourth dial KIT_PUSH_PRESENCE.
+  # Same isolation pattern as every leg above: the permissive DECL_CORE (or DIAL_CORE for the conf
+  # cases) isolates the guard leg, and BOTH predicates are planted STUBS inside the fixture — the
+  # real ones are proven where they live (backlog-presence.sh --selftest, ceremony-binding.sh legs
+  # P8a-d). What is under test here is the LEG: its dispatch, its skew probes, its class gate, its
+  # Δ1 read of the board AT THE PUSHED SHA, its rc-partition handling of the scope-key surface, and
+  # its dial.
+  # ---------------------------------------------------------------------------------------------
+  TP=$(mktemp -d)
+  # c0 = the merge-base (origin/main). c1 carries board v1 — it is the sha the PP7 fixture PUSHES.
+  # c2 (HEAD) carries board v2, and the working tree carries v3: three distinct boards, so a leg
+  # reading HEAD or the worktree instead of the pushed sha is DISCRIMINATED rather than assumed.
+  ( cd "$TP" && git init -q \
+      && printf 'seed\n' > README.md && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c0 \
+      && git update-ref refs/remotes/origin/main HEAD \
+      && printf 'board v1\n' > BACKLOG.md \
+      && printf '%s\n' '- **Backlog backend**: md' > CLAUDE.md \
+      && printf 'one\n' > f.txt && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c1 \
+      && printf 'board v2\n' > BACKLOG.md && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c2 \
+      && printf 'board v3\n' > BACKLOG.md )
+  PHEAD=$(cd "$TP" && git rev-parse HEAD)
+  PONE=$(cd "$TP" && git rev-parse HEAD~1)
+  go_mkledger "$TP"     # so the GO leg is quiet (it passes on the stub) rather than nudging a fetch
+
+  # ⚠️ ONE STUB SERVES TWO LEGS, AND THAT IS WHY IT DISPATCHES ON ARGV. conformance/ceremony-binding.sh
+  # is ALSO the GO leg's predicate, so a stub that answered unconditionally would make every case
+  # below carry the GO leg's prose (measured on first write: PP2's silence assertion reddened on the
+  # GO leg's version-skew note) or, worse, let a scripted rc meant for the scope key decide the GO
+  # leg's verdict too. `--pre-push` therefore always passes silently here; only `--print-scope-key`
+  # carries the scripted behaviour. A fixture ledger is created alongside, so the GO leg does not
+  # print its absent-ledger nudge either.
+  pp_plant_key() { # dir [--no-arm] — the ceremony-binding stub answering the scope key.
+    # It advertises the dispatch ARM TOKEN (`--print-scope-key)`), because the leg's skew probe keys
+    # on the arm, not the bare flag: the real file's HEADER names the flag in prose, so a bare-flag
+    # grep would be tautologically true there and the probe would never fire (design A1-1).
+    mkdir -p "$1/conformance"
+    {
+      echo '#!/bin/sh'
+      echo 'case "$1" in --pre-push) exit 0 ;; esac'
+      [ "${2:-}" = "--no-arm" ] \
+        || echo 'case "$1" in --print-scope-key) printf "branch/feature/x\n"; exit 0 ;; esac'
+      echo 'echo "ceremony-binding: unknown arg" >&2; exit 2'
+    } > "$1/conformance/ceremony-binding.sh"
+    chmod +x "$1/conformance/ceremony-binding.sh"
+  }
+  pp_plant_key_rc() { # dir rc [stderr-line] — a scope-key stub with a scripted rc
+    mkdir -p "$1/conformance"
+    {
+      echo '#!/bin/sh'
+      echo 'case "$1" in --pre-push) exit 0 ;; esac'
+      echo 'case "$1" in --print-scope-key)'
+      [ -n "${3:-}" ] && printf '  echo "%s" >&2\n' "$3"
+      printf '  exit %s ;;\n' "$2"
+      echo 'esac'
+      echo 'echo "ceremony-binding: unknown arg" >&2; exit 2'
+    } > "$1/conformance/ceremony-binding.sh"
+    chmod +x "$1/conformance/ceremony-binding.sh"
+  }
+  pp_plant_pred() { # dir rc [record-file] [dir-record-file] [--no-arm]
+    mkdir -p "$1/conformance"
+    _ppp_rc=$2; _ppp_rec=${3:-}; _ppp_dr=${4:-}; _ppp_arm=${5:-}
+    {
+      echo '#!/bin/sh'
+      [ "$_ppp_arm" = "--no-arm" ] || echo '#   --branch)'
+      [ -n "$_ppp_rec" ] && printf 'echo called >> "%s"\n' "$_ppp_rec"
+      # $2 is the --dir VALUE (argv is `--dir <d> --pr 0 --changed <l> --branch <b>`). The stub
+      # records the board's CONTENT, not the directory: the leg removes its temp dir before
+      # returning (as it must), so a recorded PATH is unreadable by the time the leg asserts on it
+      # — measured on first write, PP7 read '' and could not tell a wrong board from a cleaned one.
+      [ -n "$_ppp_dr" ] && printf 'cat "$2/BACKLOG.md" >> "%s" 2>/dev/null\n' "$_ppp_dr"
+      # STDOUT, as the real gate prints its verdict — a stderr-only capture would relay a refusal
+      # with no verdict line on it.
+      echo 'echo "FAIL: backlog-presence — no board row bears branch (stub verdict)"'
+      echo 'echo "  remedy: move your row to In Review and put the branch in its PR cell (stub)"'
+      printf 'exit %s\n' "$_ppp_rc"
+    } > "$1/conformance/backlog-presence.sh"
+    chmod +x "$1/conformance/backlog-presence.sh"
+  }
+  pp_plant_class() { # dir class-word
+    mkdir -p "$1/conformance"
+    printf '#!/bin/sh\necho %s\n' "$2" > "$1/conformance/promotion-readiness.sh"
+    chmod +x "$1/conformance/promotion-readiness.sh"
+  }
+  pp_run() { # dir KIT_PUSH_PRESENCE-value ref-line(s) -> pp_out, pp_rc
+    pp_out=$(cd "$1" && printf '%s\n' "$3" \
+      | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_PRESENCE="$2" sh "$SELF" 2>&1); pp_rc=$?
+  }
+
+  # PP2 (POSITIVE CONTROL, first — without it every negative below passes vacuously against an
+  # always-skip leg): a gated class + a PASSING predicate is allowed, SILENT, and the predicate was
+  # actually INVOKED.
+  pp_plant_key "$TP"; pp_plant_class "$TP" control-plane
+  pp_plant_pred "$TP" 0 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP2: enforce + a passing presence predicate allows the push"
+  [ -f "$TP/pp-invoked" ] && echo "PASS: PP2 the presence predicate was invoked (record control)" \
+    || { echo "FAIL: PP2 the presence predicate must be invoked on a gated branch line"; fail=1; }
+  [ -z "$pp_out" ] && echo "PASS: PP2 a passing presence predicate is silent" \
+    || { echo "FAIL: PP2 a passing presence predicate must be silent, got: $pp_out"; fail=1; }
+
+  # PP1 — enforce + rc 1 REFUSES, relaying the gate's own STDOUT verdict and its remedy, and keeping
+  # the honesty line. The remedy text is the GATE's (it is graded where it lives); the hook adds only
+  # the prefix and the --no-verify disclosure.
+  pp_plant_pred "$TP" 1
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP1: enforce + an unbound board row refuses the push"
+  decl_expect_contains "PP1 uses the enforce prefix" "kit pre-push:" "$pp_out"
+  decl_expect_contains "PP1 relays the gate's STDOUT verdict" "no board row bears branch (stub verdict)" "$pp_out"
+  decl_expect_contains "PP1 relays the gate's remedy line" "remedy:" "$pp_out"
+  decl_expect_contains "PP1 keeps the --no-verify honesty line" "--no-verify" "$pp_out"
+
+  # PP3 — observe + rc 1: allowed, loud, with the dial hint.
+  pp_run "$TP" "" "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP3: observe + an unbound board row still allows the push"
+  decl_expect_contains "PP3 uses the observe prefix" "kit pre-push (observe):" "$pp_out"
+  decl_expect_contains "PP3 hints the enforce dial" "KIT_PUSH_PRESENCE=enforce" "$pp_out"
+  decl_expect_contains "PP3 still relays the verdict" "no board row bears branch (stub verdict)" "$pp_out"
+  # ...and the dial is an EXACT-STRING test, the mutant that has survived three other legs' batteries.
+  pp_run "$TP" 1 "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP3b: KIT_PUSH_PRESENCE=1 is NOT the exact string — stays observe"
+
+  # PP4 — an ORDINARY change-class never reaches the predicate.
+  pp_plant_class "$TP" ordinary
+  pp_plant_pred "$TP" 1 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP4: an ordinary change-class allows the push"
+  decl_expect_not_invoked "PP4: ordinary class (presence predicate must not run)" "$TP/pp-invoked"
+  pp_plant_class "$TP" control-plane
+
+  # PP5 — DETACHED HEAD is the leg's ONLY N/A among the scope-key outcomes: a detached push carries
+  # no branch, so no board row could be keyed to it, and CI keys on the PR instead.
+  pp_plant_key_rc "$TP" 1
+  pp_plant_pred "$TP" 1 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP5: a detached HEAD is N/A even under enforce"
+  decl_expect_contains "PP5 names the detached state" "detached" "$pp_out"
+  decl_expect_not_invoked "PP5: detached HEAD (presence predicate must not run)" "$TP/pp-invoked"
+
+  # PP5b (A1-1, the HIGH) — rc 2 is NOT an N/A. It is a COULD-NOT-EVALUATE anomaly routed through the
+  # dial: refused under enforce with the reason relayed, allowed-and-loud under observe. A leg that
+  # collapsed rc 2 into the detached N/A would stop grading silently on every charset-out branch and,
+  # worse, on every bad invocation (which shares rc 2 in the file's other modes).
+  pp_plant_key_rc "$TP" 2 "ceremony-binding: the branch name is outside the scope charset"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP5b: a scope-key rc 2 is an anomaly, REFUSED under enforce"
+  decl_expect_contains "PP5b relays the anomaly's reason" "outside the scope charset" "$pp_out"
+  pp_run "$TP" "" "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP5b: the same anomaly is loud but allowed under observe"
+  decl_expect_contains "PP5b observe still names the reason" "outside the scope charset" "$pp_out"
+
+  # PP5c — rc 0 with EMPTY stdout is the same anomaly (a key that is not a key evaluates nothing),
+  # and the relayed text must SAY which of the two it was (R7): "exited 2" and "exited 0 but printed
+  # no key" send the reader to different places.
+  pp_plant_key_rc "$TP" 0
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP5c: rc 0 with no key printed is an anomaly, REFUSED under enforce"
+  decl_expect_contains "PP5c names the empty-key failure precisely" "it exited 0 but printed no key" "$pp_out"
+
+  # PP5d (security S1) — rc 1 WITH A REASON ON STDERR IS NOT A DETACHED HEAD. ceremony-binding.sh is
+  # `set -eu` and sources a library, so a preamble failure exits non-zero WITH a reason, rc 1 among
+  # them; the derivation's own detached path prints NOTHING. A leg keyed on the rc alone would print
+  # "detached HEAD" at an operator who is not detached and allow the push on a broken predicate.
+  pp_plant_key_rc "$TP" 1 "ceremony-binding: obligation-lib.sh: not found"
+  pp_plant_pred "$TP" 1 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP5d: rc 1 WITH stderr is an anomaly, REFUSED under enforce (not a detached N/A)"
+  decl_expect_contains "PP5d relays the real reason" "obligation-lib.sh: not found" "$pp_out"
+  case "$pp_out" in
+    *detached*) echo "FAIL: PP5d a broken predicate must not be reported as a detached HEAD"; fail=1 ;;
+    *) echo "PASS: PP5d a broken predicate is not misreported as a detached HEAD" ;;
+  esac
+  pp_run "$TP" "" "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP5d: the same anomaly is loud but allowed under observe"
+  decl_expect_contains "PP5d observe still names the reason" "obligation-lib.sh: not found" "$pp_out"
+
+  # PP6 / PP6b — VERSION SKEW on EITHER predicate is an N/A naming the skew, never a refusal. An
+  # older ceremony-binding.sh answers `unknown arg` rc 2 (which PP5b just made a refusal), and an
+  # older backlog-presence.sh answers usage rc 2 for `--branch` — both would be relayed as "your
+  # board row is missing", an instruction that cannot fix the real problem.
+  pp_plant_key "$TP" --no-arm
+  pp_plant_pred "$TP" 1 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP6: a checkout predating --print-scope-key is N/A even under enforce"
+  decl_expect_contains "PP6 names the real reason" "predates --print-scope-key" "$pp_out"
+  decl_expect_not_invoked "PP6: scope-key skew (presence predicate must not run)" "$TP/pp-invoked"
+  pp_plant_key "$TP"
+  pp_plant_pred "$TP" 1 "$TP/pp-invoked" "" --no-arm
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP6b: a backlog-presence.sh predating --branch is N/A under enforce"
+  decl_expect_contains "PP6b names the real reason" "predates --branch" "$pp_out"
+
+  # PP7 (Δ1 + A1-3) — THE BOARD IS READ AT THE PUSHED SHA. The pushed line names c1 (board v1) while
+  # HEAD is c2 (board v2) and the working tree holds v3. The gate must be pointed at a directory
+  # whose BACKLOG.md is v1 — not HEAD's, not the tree's — and the divergence from the working tree
+  # must be disclosed, because "board edited, not committed, pushed" is precisely the miss this leg
+  # exists to catch and the operator needs to be told which board was graded.
+  pp_plant_pred "$TP" 1 "" "$TP/pp-dir"
+  rm -f "$TP/pp-dir"
+  pp_run "$TP" enforce "refs/heads/feature/x $PONE refs/heads/feature/x $Z"
+  _pp_board=$(head -1 "$TP/pp-dir" 2>/dev/null)
+  if [ "$_pp_board" = "board v1" ]; then
+    echo "PASS: PP7 the gate graded the board AT THE PUSHED SHA (v1), not HEAD's (v2) or the tree's (v3)"
+  else
+    echo "FAIL: PP7 the gate was pointed at a board reading '$_pp_board' (want 'board v1')"; fail=1
+  fi
+  decl_expect_contains "PP7 discloses that the working-tree board differs" "PUSHED COMMIT" "$pp_out"
+
+  # PP7b (A1-6) — a SYMLINKED board at the pushed sha is N/A. `git show` would hand back the link
+  # TEXT, and the gate would grade a one-line file that is not a board at all.
+  TPL=$(mktemp -d)
+  ( cd "$TPL" && git init -q \
+      && printf 'seed\n' > README.md && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c0 \
+      && git update-ref refs/remotes/origin/main HEAD \
+      && ln -s elsewhere.md BACKLOG.md \
+      && printf '%s\n' '- **Backlog backend**: md' > CLAUDE.md \
+      && printf 'one\n' > f.txt && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c1 )
+  LHEAD=$(cd "$TPL" && git rev-parse HEAD)
+  go_mkledger "$TPL"
+  pp_plant_key "$TPL"; pp_plant_class "$TPL" control-plane
+  pp_plant_pred "$TPL" 1 "$TPL/pp-invoked"
+  rm -f "$TPL/pp-invoked"
+  pp_run "$TPL" enforce "refs/heads/feature/x $LHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP7b: a symlinked board at the pushed sha is N/A"
+  decl_expect_contains "PP7b names the symlink" "symlink" "$pp_out"
+  decl_expect_not_invoked "PP7b: symlinked board (presence predicate must not run)" "$TPL/pp-invoked"
+
+  # PP7c (A1-5) — mktemp FAILING is a could-not-evaluate anomaly, not a silent skip: without a temp
+  # dir the board cannot be extracted at the pushed sha, and a leg that quietly returned 0 there
+  # would stop grading on exactly the machines where something is already wrong.
+  # ⚠️ THE FIXTURE IS A PATH SHIM, NOT AN UNWRITABLE TMPDIR. Measured on macOS: `TMPDIR=<missing>
+  # mktemp -d` IGNORES the variable and succeeds in /var/folders (rc 0), while glibc's fails — a
+  # TMPDIR fixture would therefore assert one thing on the dev machine and another on CI, the
+  # fixture-hermeticity class this file has been bitten by before. A `mktemp` that exits 1, first on
+  # PATH, fails identically everywhere.
+  mkdir -p "$TP/nomktemp"
+  printf '#!/bin/sh\nexit 1\n' > "$TP/nomktemp/mktemp"
+  chmod +x "$TP/nomktemp/mktemp"
+  pp_plant_pred "$TP" 0 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_out=$(cd "$TP" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\n' "$PHEAD" "$Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_PRESENCE=enforce PATH="$TP/nomktemp:$PATH" sh "$SELF" 2>&1)
+  pp_rc=$?
+  decl_expect_rc "$pp_rc" refuse "PP7c: a temp-dir failure is an anomaly, REFUSED under enforce"
+  decl_expect_contains "PP7c names the temp-dir failure" "temporary directory" "$pp_out"
+
+  # PP-S2 — AN UNDERIVABLE CLASS MUST NOT BLAME THE BOARD. With no origin ref there is no merge-base,
+  # so the class cannot be derived and the change is graded gated as a fail-safe. The refusal that
+  # follows says "no board row bears branch …", which is TRUE and MISLEADING on its own: the row may
+  # be entirely beside the point. The disclosure travels with the verdict.
+  TPU=$(mktemp -d)
+  ( cd "$TPU" && git init -q \
+      && printf 'seed\n' > README.md \
+      && printf 'board\n' > BACKLOG.md \
+      && printf '%s\n' '- **Backlog backend**: md' > CLAUDE.md \
+      && git add -A \
+      && git -c user.email=t@kit -c user.name=kit commit -q -m c0 )
+  UHEAD=$(cd "$TPU" && git rev-parse HEAD)
+  go_mkledger "$TPU"
+  pp_plant_key "$TPU"; pp_plant_class "$TPU" control-plane
+  pp_plant_pred "$TPU" 1
+  pp_run "$TPU" enforce "refs/heads/feature/x $UHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP-S2: an underivable class still refuses under enforce (fail-safe HIGH)"
+  decl_expect_contains "PP-S2 discloses that the class could not be derived" "the change-class could not be derived locally" "$pp_out"
+
+  # PP-S4 — A REFUSAL IS NEVER MUTE. A predicate that exits non-zero having printed nothing must not
+  # produce a bare honesty line with no reason above it.
+  mkdir -p "$TP/conformance"
+  {
+    echo '#!/bin/sh'
+    echo '#   --branch)'
+    echo 'exit 2'
+  } > "$TP/conformance/backlog-presence.sh"
+  chmod +x "$TP/conformance/backlog-presence.sh"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP-S4: a silent non-zero predicate still refuses under enforce"
+  decl_expect_contains "PP-S4 names the mute failure instead of refusing wordlessly" "with no verdict" "$pp_out"
+
+  # PP8 — TWO ref-lines at the SAME sha: the predicate is consulted ONCE (design §3.2(6) — the whole
+  # judgment depends only on the pushed sha and the ambient tree, and extracting a board plus running
+  # the gate twice for one answer is pure cost), the verdict block appears ONCE (a second copy
+  # carries no information and buries the first), and NOTHING is left behind under the fixture's
+  # TMPDIR (A1-4: the shared listing and the extracted board are removed on every return path).
+  mkdir -p "$TP/tmpcount"
+  pp_plant_pred "$TP" 1 "$TP/pp-count"
+  rm -f "$TP/pp-count"
+  pp_out=$(cd "$TP" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/feature/y %s refs/heads/feature/y %s\n' \
+      "$PHEAD" "$Z" "$PHEAD" "$Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_PRESENCE=enforce TMPDIR="$TP/tmpcount" sh "$SELF" 2>&1)
+  pp_rc=$?
+  _pp_calls=$(wc -l < "$TP/pp-count" 2>/dev/null | tr -d ' '); [ -n "$_pp_calls" ] || _pp_calls=0
+  if [ "$_pp_calls" = 1 ]; then
+    echo "PASS: PP8 the presence predicate is consulted ONCE for two ref-lines at the same sha"
+  else
+    echo "FAIL: PP8 the presence predicate ran $_pp_calls time(s) for two ref-lines at one sha (want 1)"; fail=1
+  fi
+  _pp_relays=$(printf '%s\n' "$pp_out" | grep -c 'stub verdict' || true)
+  decl_expect_rc "$pp_rc" refuse "PP8: a 2-branch push under enforce still refuses"
+  if [ "$_pp_relays" = 1 ]; then
+    echo "PASS: PP8 the presence verdict is relayed ONCE for a 2-branch push"
+  else
+    echo "FAIL: PP8 the presence verdict was relayed $_pp_relays time(s) for a 2-branch push (want 1)"; fail=1
+  fi
+  _pp_left=$(find "$TP/tmpcount" -mindepth 1 | wc -l | tr -d ' ')
+  if [ "$_pp_left" = 0 ]; then
+    echo "PASS: PP8 no temp file or directory is left behind after a full run"
+  else
+    echo "FAIL: PP8 $_pp_left temp entr(ies) left behind under the fixture TMPDIR"; fail=1
+  fi
+
+  # PP8b — THE MEMO IS KEYED ON THE SHA, NOT ON "already ran once". Two ref-lines at DIFFERENT shas
+  # are two different questions (different boards, possibly different classes), and a memo that
+  # answered the second from the first's cache would grade a commit nobody looked at. Without this
+  # leg, an unconditional `[ "${_pres_done:-0}" -eq 1 ]` memo passes PP8 and silently under-grades.
+  pp_plant_pred "$TP" 1 "$TP/pp-count2"
+  rm -f "$TP/pp-count2"
+  pp_out=$(cd "$TP" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\nrefs/heads/feature/y %s refs/heads/feature/y %s\n' \
+      "$PHEAD" "$Z" "$PONE" "$Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_PRESENCE=enforce sh "$SELF" 2>&1)
+  _pp_calls2=$(wc -l < "$TP/pp-count2" 2>/dev/null | tr -d ' '); [ -n "$_pp_calls2" ] || _pp_calls2=0
+  if [ "$_pp_calls2" = 2 ]; then
+    echo "PASS: PP8b two ref-lines at DIFFERENT shas are graded separately (2 consultations)"
+  else
+    echo "FAIL: PP8b the presence predicate ran $_pp_calls2 time(s) for two DIFFERENT shas (want 2)"; fail=1
+  fi
+
+  # PP9 (A1-9) — THE SINGLE-DERIVATION RULE, BOUND BY A CHECK RATHER THAN BY A COMMENT. D11 forbids
+  # this hook deriving a branch key of its own; the GO leg's header says so in prose, and prose is
+  # what gets edited away. This grep is the lock.
+  # The needles are SPLIT so this lock cannot match itself (measured: the first write reddened on
+  # its own grep line — a self-matching self-grep proves nothing and cries wolf forever).
+  # The needle SET is the point (S5/R5): git offers several spellings of "what branch am I on?", and
+  # a lock naming only one of them teaches the next author which synonym to reach for. All six are
+  # listed below, and NONE may be written out in prose anywhere in this file — a comment quoting a
+  # needle makes the lock match itself (measured twice: first the grep line, then this comment).
+  _pp9_a='symbolic''-ref'; _pp9_b='rev-parse --abbrev''-ref'
+  _pp9_c='--show''-current'; _pp9_d='branch --''format'
+  _pp9_e='for-each''-ref'; _pp9_f='.git/''HEAD'
+  if grep -q -e "$_pp9_a" -e "$_pp9_b" -e "$_pp9_c" -e "$_pp9_d" -e "$_pp9_e" -e "$_pp9_f" "$SELF"; then
+    echo "FAIL: PP9 hooks/pre-push derives a branch name itself — D11 forbids a second derivation site"
+    fail=1
+  else
+    echo "PASS: PP9 the hook derives no branch key of its own (single-derivation lock)"
+  fi
+
+  # PP-conf — the DURABLE dial: the conf alone refuses, with NO env var carrying a value, and a conf
+  # entry for another dial does not answer this one. The REAL core is sourced here (kit_dial_mode
+  # lives there), exactly as the DA/DC batteries do.
+  pp_plant_pred "$TP" 1
+  mkdir -p "$TP/.kit"
+  printf 'KIT_PUSH_PRESENCE=enforce\n' > "$TP/.kit/dials.conf"
+  pp_conf_out=$(cd "$TP" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\n' "$PHEAD" "$Z" \
+    | KIT_GUARD_CORE="$DIAL_CORE" sh "$SELF" 2>&1); pp_conf_rc=$?
+  decl_expect_rc "$pp_conf_rc" refuse "conf KIT_PUSH_PRESENCE=enforce refuses with NO env var set"
+  decl_expect_contains "the conf-driven refusal uses the enforce prefix" "kit pre-push:" "$pp_conf_out"
+  printf 'KIT_PUSH_GO=enforce\n' > "$TP/.kit/dials.conf"
+  pp_conf_out=$(cd "$TP" && printf 'refs/heads/feature/x %s refs/heads/feature/x %s\n' "$PHEAD" "$Z" \
+    | KIT_GUARD_CORE="$DIAL_CORE" sh "$SELF" 2>&1); pp_conf_rc=$?
+  decl_expect_rc "$pp_conf_rc" allow "a conf entry for ANOTHER dial does not enforce PRESENCE"
+  rm -f "$TP/.kit/dials.conf"
+
+  # PP-D1/D2 — dispatch and degradation, inherited verbatim from the three legs above.
+  pp_plant_pred "$TP" 1 "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/feature/x $Z refs/heads/feature/x $PHEAD"
+  decl_expect_not_invoked "PP: deletion line (zero local_sha)" "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/tags/v1 $PHEAD refs/tags/v1 $Z"
+  decl_expect_not_invoked "PP: tag line (remote_ref not refs/heads/*)" "$TP/pp-invoked"
+  rm -f "$TP/pp-invoked"
+  pp_run "$TP" enforce "refs/heads/main $PHEAD refs/heads/main $Z"
+  decl_expect_not_invoked "PP: default-branch line (refs/heads/main)" "$TP/pp-invoked"
+  rm -f "$TP/conformance/backlog-presence.sh"
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP: an absent presence predicate allows the push"
+  [ -z "$pp_out" ] && echo "PASS: PP an absent presence predicate is silent (D2, first-run-green)" \
+    || { echo "FAIL: PP an absent presence predicate must be silent, got: $pp_out"; fail=1; }
+
   [ "$fail" -eq 0 ] && { echo "OK: pre-push selftest"; exit 0; } || { echo "FAIL: pre-push selftest"; exit 1; }
 fi
 
@@ -1383,5 +2089,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   decl_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   go_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
   cite_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
+  presence_check_ref "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" || status=1
 done
 exit $status

@@ -247,7 +247,7 @@ Automated quality gates are the contract's teeth: *if it isn't automated, it isn
 | 2 | **Type-check** | Static type analysis passes (where the stack has types). |
 | 3 | **Test + coverage** | Test suite passes; line coverage ≥ 80% (100% on critical paths, per §7). |
 | 4 | **Build** | A production build/compile succeeds and is reproducible. |
-| 5 | **Secret scan** | The diff/history is scanned for committed secrets; any finding fails the build. |
+| 5 | **Secret scan** | The working tree at HEAD is scanned for committed secrets on every push (`gitleaks dir`); any finding fails the build. History is NOT scanned: a secret committed and removed before a push is caught only by the push that carried it. |
 | 6 | **Dependency scan** | Dependencies are scanned for known vulnerabilities; a high/critical finding in production/runtime dependencies fails the build. Dev/build-time advisories are additionally surfaced (npm/pnpm profiles, via a report-only full audit) or enforced in-gate by toolchains that scan the full tree. |
 | 7 | **Supply-chain integrity** | An **SBOM** is generated for the build, and **build provenance** is attested for released artifacts. |
 

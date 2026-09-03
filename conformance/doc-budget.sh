@@ -49,6 +49,13 @@ if [ "${1:-}" = "--selftest" ]; then
   d=$(mktemp -d); printf 'a\nb\nc\n' > "$d/doc.md"   # 3 lines
   if check_one "$d/doc.md" 2 >/dev/null 2>&1; then echo "FAIL: selftest — over-budget not detected"; sfail=1; else echo "PASS: selftest — over-budget detected"; fi
   if check_one "$d/doc.md" 5 >/dev/null 2>&1; then echo "PASS: selftest — within-budget passes"; else echo "FAIL: selftest — within-budget wrongly rejected"; sfail=1; fi
+  # Live-entry legs (ten-lens eval, 2026-09-01): the composite mutant proved check_one is observed, but
+  # run_budgets' own two f=1 sites — the per-doc propagation and the core-3 TOTAL — were UNOBSERVED by
+  # a selftest that only ever called the leaf. Both are driven here on fixture globals, in a subshell.
+  printf 'a\nb\n' > "$d/two.md"   # 2 lines
+  if ( BUDGETS="$d/doc.md:5 $d/two.md:5"; TOTAL_BUDGET=4; run_budgets >/dev/null 2>&1 ); then echo "FAIL: selftest — core-3 total over budget not detected"; sfail=1; else echo "PASS: selftest — core-3 total over budget detected"; fi
+  if ( BUDGETS="$d/doc.md:2 $d/two.md:5"; TOTAL_BUDGET=99; run_budgets >/dev/null 2>&1 ); then echo "FAIL: selftest — per-doc over budget not propagated by run_budgets"; sfail=1; else echo "PASS: selftest — per-doc over budget propagated by run_budgets"; fi
+  if ( BUDGETS="$d/doc.md:5 $d/two.md:5"; TOTAL_BUDGET=99; run_budgets >/dev/null 2>&1 ); then echo "PASS: selftest — run_budgets within budget passes"; else echo "FAIL: selftest — run_budgets wrongly rejected a within-budget set"; sfail=1; fi
   [ "$sfail" -eq 0 ] && { echo "OK: doc-budget selftest"; exit 0; } || { echo "FAIL: doc-budget selftest"; exit 1; }
 fi
 

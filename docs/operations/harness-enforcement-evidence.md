@@ -109,6 +109,42 @@ sh scripts/kit-guard --selftest >/dev/null 2>&1 \
 
 ---
 
+## The harness `cwd` contract — what was measured, and what was NOT (2026-09-02)
+
+`GUARD-CWD-CONFIDENCE-UNKNOWN` Face C makes the guard read a **top-level `cwd`** field from
+PreToolUse stdin (a sibling of `tool_name`, not a member of `tool_input` — which is precisely why it
+is trustworthy: the model authors `tool_input`, the harness authors `cwd`). Two things follow, and
+they are recorded separately because only one of them is measured.
+
+**MEASURED, in a sub-agent thread, 2026-09-02.** Two consecutive Bash tool calls:
+
+```
+call 1:  cd /private/tmp/kit-s38c/conformance && pwd   ->  /private/tmp/kit-s38c/conformance
+call 2:  pwd                                           ->  <repo-root>
+```
+
+In a **sub-agent thread the cwd is reset between calls**. The cross-call hole Face C closes is
+therefore a **main-agent** property, and a sub-agent seat cannot exhibit it. That matches the
+design's own statement (§3-C, "sub-agent threads reset cwd per call") and is stated here as a
+measurement rather than inherited as an assumption.
+
+**NOT MEASURED, and named rather than assumed.** Whether the harness's `cwd` field *tracks the main
+agent's persisted Bash cwd* — as opposed to reporting the session root on every call — was **not**
+established. Doing so requires capturing PreToolUse stdin from the **live** hook, which is a
+control-plane edit to the running repository and outside the scope any build seat may take. Until
+that capture is made by an operator, the honest statement is:
+
+- If the field tracks the persisted cwd, Face C closes the cross-call route.
+- If it always reports the session root, Face C is **inert** on that route and costs nothing — the
+  absent/root case is today's behaviour byte for byte — while Faces A and B (the in-string `cd`
+  spellings) are unaffected either way and are what the fixture battery proves.
+
+**The measurement an operator should make**, once, and record here: install a stdin-tee alongside the
+PreToolUse hook, issue `cd conformance` in one call and `pwd` in the next, and read the `cwd` value
+on the *second* call's captured stdin.
+
+---
+
 ## Honest ceiling
 
 This evidence proves the surfaces deny regardless of caller. It does not prove:
