@@ -110,18 +110,113 @@
 set -eu
 
 NOTES_REF="${PROMOTION_NOTES_REF:-promotions}"
+# VALIDATE THE REF NAME AT THE FRONT DOOR (security review SEC-M2). `PROMOTION_NOTES_REF` is a
+# fixture affordance, but since RECORD-FETCHES-AND-PUSHES-LEDGER it also selects what gets FETCHED
+# from and PUSHED to `origin` — so an unvalidated value now reaches a refspec, not just a local
+# `git notes --ref`. A `/` would let it escape `refs/notes/`, a leading `.` is not a legal ref
+# component, and glob/whitespace bytes have no business in a ref name at all. Fail closed, before
+# any mode runs: nothing here is worth a partially-composed refspec.
+case "$NOTES_REF" in
+  ''|*[!A-Za-z0-9._-]*|.*)
+    echo "promotion-verify: invalid PROMOTION_NOTES_REF '$NOTES_REF' (charset A-Za-z0-9._- ; no '/', no leading '.')" >&2
+    exit 2 ;;
+esac
+
+# The SCRATCH ref the remote ledger is fetched into when we need to compare the two chains
+# (divergence count, `log --unpushed`). It is a throwaway under refs/kit/, never the ledger itself,
+# so fetching it FORCED is correct and cannot discard anything: the guard's force rule matches
+# `push`, and nothing reads this ref between invocations.
+#
+# PID-SCOPED (security review SEC-M1): a fixed name is a shared mutable ref. Two concurrent
+# invocations — the exact concurrency this slice exists to handle — would fetch into and delete each
+# other's scratch, and the trap would delete a ref this process never created. `$$` makes the ref
+# this process's own, and the trap deletes only that one.
+NOTES_SCRATCH="refs/kit/notes-remote-$$"
+_pv_drop_scratch() { git update-ref -d "$NOTES_SCRATCH" >/dev/null 2>&1 || true; }
+trap '_pv_drop_scratch' EXIT INT TERM
+
+# _pv_sync_in — STEP 1 of the record transaction: make the local ledger CURRENT, or refuse.
+#
+# WHY A PROBE AND NOT THE FETCH'S rc (security vet H2, MEASURED): `git fetch` exits 128 BOTH when
+# the remote has no such ref (the first record this repo ever makes) AND when the remote is
+# unreachable (offline, bad URL, no origin) — same rc, same "fatal: couldn't find remote ref". The
+# rc alone therefore cannot split "proceed, publish will create it" from "refuse, you are blind".
+# `git ls-remote --exit-code` CAN: 0 = present, 2 = the remote answered and does not have it,
+# anything else = the remote did not answer. Recording blind is exactly the race this transaction
+# exists to end, so the unreachable case REFUSES rather than recording locally.
+# Returns 0 = proceed, 2 = refuse (message already printed).
+_pv_sync_in() {
+  if git ls-remote --exit-code origin "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+    _si_probe=0
+  else
+    _si_probe=$?
+  fi
+  case "$_si_probe" in
+    0) ;;
+    2) echo "record: origin has no refs/notes/$NOTES_REF yet — recording the first entry; publish will create it." >&2
+       return 0 ;;
+    *) echo "record: cannot reach the ledger remote — 'git ls-remote origin refs/notes/$NOTES_REF' exited $_si_probe." >&2
+       echo "        A record written against a ledger this process cannot read is the race this" >&2
+       echo "        transaction exists to end, so recording offline is REFUSED. Fix the remote and" >&2
+       echo "        re-run, or use --no-push for explicitly offline maintenance (it says UNPUBLISHED)." >&2
+       return 2 ;;
+  esac
+  # NO leading '+': a forced refspec would silently DISCARD a local unpublished record, which is the
+  # dangling-note failure this row forbids, merely moved earlier.
+  if git fetch --no-tags origin "refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+    return 0
+  fi
+  # The fetch refused. Split "diverged" (the case with a real remedy) from everything else by
+  # MEASURING the two chains against each other, locally — never by trusting the remote's answer.
+  if ! git fetch --no-tags -f origin "refs/notes/$NOTES_REF:$NOTES_SCRATCH" >/dev/null 2>&1; then
+    echo "record: fetching refs/notes/$NOTES_REF from origin failed and the reason could not be" >&2
+    echo "        determined (the ref is present but unfetchable). Refusing to record." >&2
+    return 2
+  fi
+  _si_n="$(git rev-list "refs/notes/$NOTES_REF" ^"$NOTES_SCRATCH" --count 2>/dev/null || echo 0)"
+  _pv_drop_scratch
+  if [ "${_si_n:-0}" -gt 0 ] 2>/dev/null; then
+    echo "record: ledger diverged: the local refs/notes/$NOTES_REF carries $_si_n record(s) the remote" >&2
+    echo "        does not; publish them first (git push origin refs/notes/$NOTES_REF) or, if they are" >&2
+    echo "        not yours, inspect them with promotion-verify.sh log --unpushed. Refusing to record." >&2
+    return 2
+  fi
+  echo "record: refs/notes/$NOTES_REF could not be fast-forwarded from origin. Refusing to record." >&2
+  return 2
+}
+
+# _pv_unwind <pre> <post> — STEP 4: put the ledger ref back exactly where this invocation found it.
+# COMPARE-AND-SWAP (security vet H1): the OLD-VALUE operand is what makes this safe. If anything
+# moved the ref since our write, git refuses (rc 128, "cannot lock ref") and the ref is left ALONE —
+# so an unwind can only ever remove the exact commit this invocation created, never someone else's.
+# That is what makes "a published record is never rewritten" a postcondition rather than a promise.
+_pv_unwind() {
+  if [ -n "$1" ]; then
+    git update-ref "refs/notes/$NOTES_REF" "$1" "$2" >/dev/null 2>&1
+  else
+    git update-ref -d "refs/notes/$NOTES_REF" "$2" >/dev/null 2>&1
+  fi
+}
 
 usage() {
   echo "usage:" >&2
   echo "  promotion-verify.sh record --approved-sha <sha> --approved-by <id> --gate <g> \\" >&2
   echo "                             --rung <r> --class <c> --scope <pr> --token <str> [--basis <t>]" >&2
+  echo "                             [--no-push]" >&2
+  echo "        record is a TRANSACTION: it fetches refs/notes/<ref> from origin first, refuses if" >&2
+  echo "        the local ledger has diverged, writes the note, PUBLISHES it, and unwinds its own" >&2
+  echo "        unpublished note if the push is rejected (retrying once on a non-fast-forward)." >&2
+  echo "        --no-push skips BOTH the fetch and the publish (fixtures / explicitly offline" >&2
+  echo "                  maintenance); its OK line ends UNPUBLISHED." >&2
   echo "        --scope takes a PR id (CI's key) or branch/<name> (the pre-push key, ruling D11)" >&2
   echo "        --approved-by must be the reviewer's FORGE LOGIN, verbatim (e.g. 'ISBrad72', not" >&2
   echo "                      'Bradley James'): the [authenticated: <forge>-review] upgrade requires a" >&2
   echo "                      BYTE-EQUAL match to the review's user.login, so a display name records a" >&2
   echo "                      weaker label and says why on stderr rather than failing." >&2
   echo "        --class must be one of: ordinary | sensitive | control-plane (case-insensitive)" >&2
-  echo "  promotion-verify.sh log" >&2
+  echo "  promotion-verify.sh log [--unpushed]" >&2
+  echo "        --unpushed lists only the records the remote ledger does not have; it fails CLOSED" >&2
+  echo "                   (UNKNOWN, rc 2) when the remote cannot be read — never a silent '0'." >&2
   echo "  promotion-verify.sh trace --ref <sha> | --recent <n> [--from <trunk-ref>]" >&2
   echo "        recover the board row for a commit that already landed (squash loses the trailer)" >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
@@ -315,9 +410,12 @@ resolve_latest_sha() {
 }
 
 do_record() {
-  asha=""; aby=""; gate=""; rung=""; cls=""; scope=""; token=""; basis=""
+  asha=""; aby=""; gate=""; rung=""; cls=""; scope=""; token=""; basis=""; nopush=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      # ARGUMENT ONLY, never an env var (security vet T3): the offline escape must be visible in the
+      # command the operator ran and in the shell history, not settable by ambient state.
+      --no-push)      nopush=1; shift ;;
       --approved-sha) asha="${2:-}"; shift 2 ;;
       --approved-by)  aby="${2:-}";  shift 2 ;;
       --gate)         gate="${2:-}"; shift 2 ;;
@@ -470,7 +568,19 @@ do_record() {
   # any route (measured). IT IS AGENT-FORGEABLE — an agent can prefix the same variable to a raw
   # command — and the arm's ceiling says so: the arm is a drift control (owner ruling D3′), not a
   # boundary; the control that binds is the record rendered at the CI judgment surface.
-  if ! printf '%s\n' \
+  # STEP 0 (security vet M1). A SYMBOLIC ledger ref is a repointing — measured: a fetch and a plain
+  # `update-ref` both write THROUGH a symref, while `--no-deref` clobbers the symref itself. Either
+  # way the operator's ledger is not where they think it is, so the guard's bypass #8 becomes a loud
+  # FRONT-DOOR refusal here rather than a silent mis-write. Before anything is composed or written.
+  if git symbolic-ref -q "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+    echo "record: ledger ref refs/notes/$NOTES_REF is symbolic — repointed; refusing to record." >&2
+    echo "        Restore it (git symbolic-ref --delete refs/notes/$NOTES_REF) before recording." >&2
+    return 2
+  fi
+  # STEP 0 (security vet M3): COMPOSE THE BODY ONCE, before the transaction. The assurance label can
+  # involve a network call (the forge-review upgrade), so recomposing it on the retry below could
+  # write DIFFERENT bytes for the same GO. The same bytes are written on both attempts.
+  nbody="$(printf '%s\n' \
       "record: promotion GO (approve->execute->log)" \
       "approved-sha: $asha" \
       "approved-tree: $atree" \
@@ -482,13 +592,74 @@ do_record() {
       "scope: $scope" \
       "approval-token: \"$token\"" \
       "basis: $basis" \
-      "recorded-at: $ts" \
-      | KIT_PROMOTION_FRONT_DOOR=1 git notes --ref="$NOTES_REF" add -f -F - "$asha" >/dev/null 2>&1; then
-    echo "record: failed to write note refs/notes/$NOTES_REF on $asha" >&2; return 2
-  fi
-  echo "OK: recorded approval for $scope (approved-sha $asha) -> note refs/notes/$NOTES_REF [$assurance]"
-  echo "     share it: git push origin refs/notes/$NOTES_REF"
-  return 0
+      "recorded-at: $ts")"
+
+  # THE TRANSACTION: sync-in -> write -> publish -> unwind. At most two attempts; the second only
+  # ever happens on a NON-FAST-FORWARD rejection, which is the one failure a fresh sync-in can fix.
+  attempt=1
+  while : ; do
+    if [ "$nopush" = 0 ]; then
+      _pv_sync_in || return 2
+    fi
+    # _pre is captured AFTER every sync-in (security vet T1): unwinding to a value captured before
+    # the fetch would move the ref BACKWARDS past records the fetch legitimately brought in.
+    _pre="$(git rev-parse -q --verify "refs/notes/$NOTES_REF" 2>/dev/null || true)"
+    if ! printf '%s\n' "$nbody" \
+        | KIT_PROMOTION_FRONT_DOOR=1 git notes --ref="$NOTES_REF" add -f -F - "$asha" >/dev/null 2>&1; then
+      echo "record: failed to write note refs/notes/$NOTES_REF on $asha" >&2; return 2
+    fi
+    _post="$(git rev-parse "refs/notes/$NOTES_REF" 2>/dev/null || true)"
+    # BELT (security review SEC-L2): every unwind below uses $_post as the compare-and-swap's NEW
+    # value. An empty one would turn the CAS into an unconditional write — the single most dangerous
+    # thing in this file — so refuse here rather than carry an unusable old-value operand forward.
+    [ -n "$_post" ] || { echo "record: could not read the ledger ref after the write" >&2; return 2; }
+    if [ "$nopush" = 1 ]; then
+      echo "OK: recorded approval for $scope (approved-sha $asha) -> note refs/notes/$NOTES_REF [$assurance] — UNPUBLISHED (--no-push)"
+      return 0
+    fi
+    if pout="$(git push origin "refs/notes/$NOTES_REF" 2>&1)"; then
+      echo "OK: recorded approval for $scope (approved-sha $asha) -> note refs/notes/$NOTES_REF [$assurance] — published"
+      return 0
+    fi
+    # WHICH REJECTIONS ROUTE HERE (security vet M2, CORRECTED BY MEASUREMENT at build time). The vet
+    # expected the kit's own pre-push hook to refuse a non-ff ledger push first. MEASURED: it does
+    # not — git's client-side fast-forward check rejects a NON-FORCED non-ff push before any hook
+    # runs, so what `record` actually sees is always git's own "(non-fast-forward)" / "(fetch
+    # first)". The hook's "13: non-fast-forward (force) push..." text is matched by the same arm
+    # anyway (it contains the same token), which keeps the classification right for any wrapper hook
+    # that does reach it, and costs nothing. Pinned in promotion-verify-wired.sh's hookrace leg. A
+    # `[remote rejected] ... (pre-receive hook declined)` is NOT one of them — it is the auth/
+    # protected-ref shape, which no amount of re-syncing fixes, so it must never be retried.
+    case "$pout" in
+      *non-fast-forward*|*'fetch first'*) nonff=1 ;;
+      *) nonff=0 ;;
+    esac
+    # RELAYED VERBATIM, MINUS THE CONTROL BYTES (security review SEC-L1). git's stderr here contains
+    # remote-controlled text (a receive hook's message), and this file's own rule is that what lands
+    # in a line-structured surface — an operator's terminal included — may not carry escapes that
+    # forge lines or repaint the screen. Newline is kept: it is the message's own structure.
+    pout="$(printf '%s' "$pout" | LC_ALL=C tr -d '\000-\011\013-\037\177')"
+    if ! _pv_unwind "$_pre" "$_post"; then
+      echo "record: the push was rejected AND the ledger moved under this record — refs/notes/$NOTES_REF" >&2
+      echo "        is NOT unwound (the compare-and-swap refused rather than clobber someone else's" >&2
+      echo "        commit). Inspect with promotion-verify.sh log --unpushed before recording again." >&2
+      printf '%s\n' "$pout" >&2
+      return 2
+    fi
+    if [ "$nonff" = 1 ] && [ "$attempt" = 1 ]; then
+      attempt=2
+      continue
+    fi
+    if [ "$nonff" = 1 ]; then
+      echo "record: NOT published and NOT retained locally: the remote ledger moved twice during this" >&2
+      echo "        record. Nothing was left dangling — re-run the same command." >&2
+      return 2
+    fi
+    echo "record: publishing refs/notes/$NOTES_REF to origin failed for a reason a re-sync cannot fix;" >&2
+    echo "        the unpublished note was unwound (nothing dangling). git said:" >&2
+    printf '%s\n' "$pout" >&2
+    return 2
+  done
 }
 
 # do_trace — RECOVER the board row (and the GO) for a commit that already landed on the trunk.
@@ -680,6 +851,73 @@ do_trace() {
 }
 
 do_log() {
+  _unpushed=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --unpushed) _unpushed=1; shift ;;
+      *) echo "log: unknown arg '$1'" >&2; usage; return 2 ;;
+    esac
+  done
+  # --unpushed — the target of `record`'s divergence remedy: which records does the remote NOT have?
+  # FAIL CLOSED (security vet M4): if the remote cannot be read we print UNKNOWN and exit 2. The
+  # tempting "0 unpushed" would be read as "everything is published" — the most dangerous possible
+  # answer here, and the one an operator would act on by force-pushing or deleting the local ref.
+  if [ "$_unpushed" = 1 ]; then
+    echo "# Unpublished promotion records (refs/notes/$NOTES_REF not on origin)"
+    if ! git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+      echo "(no local refs/notes/$NOTES_REF — nothing can be unpublished)"
+      return 0
+    fi
+    # Split the three remote states with the same probe `record` uses, so "the remote has no ledger
+    # at all" reports the truth (everything local is unpublished) instead of the alarming UNKNOWN.
+    if git ls-remote --exit-code origin "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
+      _up_probe=0
+    else
+      _up_probe=$?
+    fi
+    case "$_up_probe" in
+      0) if ! git fetch --no-tags -f origin "+refs/notes/$NOTES_REF:$NOTES_SCRATCH" >/dev/null 2>&1; then
+           echo "UNKNOWN (remote unreachable): cannot read origin's refs/notes/$NOTES_REF, so which local" >&2
+           echo "        records are unpublished cannot be determined. This is NOT '0 unpushed'." >&2
+           return 2
+         fi
+         # CAPTURE BEFORE ITERATING (security review SEC-M1). A `for x in $(git rev-list …)` swallows
+         # the exit status: if the scratch ref were deleted or repointed between the fetch and this
+         # walk, rev-list would fail and the loop would simply not execute — rendering as a clean,
+         # confident "nothing unpublished". That is the one answer this mode must never give by
+         # accident, so the status is checked before a single line is printed.
+         _ul="$(git rev-list "refs/notes/$NOTES_REF" "^$NOTES_SCRATCH" 2>/dev/null)" || {
+           echo "UNKNOWN (rev-list failed): the local ledger could not be compared with the fetched" >&2
+           echo "        remote chain. This is NOT '0 unpushed'." >&2
+           return 2
+         } ;;
+      2) # The remote answered and has no ledger ref at all: every local record is unpublished.
+         echo "(origin has no refs/notes/$NOTES_REF — every local record below is unpublished)"
+         _ul="$(git rev-list "refs/notes/$NOTES_REF" 2>/dev/null)" || {
+           echo "UNKNOWN (rev-list failed): the local ledger could not be walked. NOT '0 unpushed'." >&2
+           return 2
+         } ;;
+      *) echo "UNKNOWN (remote unreachable): cannot read origin's refs/notes/$NOTES_REF, so which local" >&2
+         echo "        records are unpublished cannot be determined. This is NOT '0 unpushed'." >&2
+         return 2 ;;
+    esac
+    for _uc in $_ul; do
+      for _up in $(git diff-tree -r --root --no-commit-id --name-only "$_uc" 2>/dev/null); do
+        _uo="$(printf '%s' "$_up" | tr -d '/')"
+        # A notes tree path is the annotated object id, fanned out; anything else is not ours to
+        # print or to hand to `git notes show` (security review SEC-L3). `--` ends option parsing.
+        case "$_uo" in
+          [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+          *) continue ;;
+        esac
+        echo ""
+        echo "## $_uo (unpublished)"
+        git notes --ref="$NOTES_REF" show -- "$_uo" 2>/dev/null || true
+      done
+    done
+    _pv_drop_scratch
+    return 0
+  fi
   if ! git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     echo "# Promotion records (refs/notes/$NOTES_REF)"
     echo "(no promotion records yet — record one with: promotion-verify.sh record ...)"
@@ -905,6 +1143,38 @@ do_actuate() {
   #    merged ref precisely because this is the contract the live team path must honour.
   if do_check --ref "$ref" --approved-sha "$asha"; then crc=0; else crc=$?; fi
   if [ "$crc" -ne 0 ]; then return "$crc"; fi
+
+  # 6. RELEASE THE BOARD CLAIM (BOARD-CLAIM-MECHANISM design §3.5). The merge is the end of the
+  #    slice, so the row's claim ref (refs/claims/<kit-row>) has done its job and must not linger:
+  #    a stale claim blocks the next session from taking the row and shows up in `check --all` as
+  #    work nobody is doing. The row comes from the note's OWN `kit-row:` projection — derived from
+  #    the approved commit's trailer by `record`, never a flag here.
+  #    `--stale` IS REQUIRED AND IS NOT A SHORTCUT: the merger is routinely not the claimant (builder
+  #    != ratifier is the point), so the holder check would refuse every real merge. The release names
+  #    the holder it removes either way, which is the audit line.
+  #    ⚠️ FAILURE HERE IS A **WARN**, NEVER A MERGE FAILURE. The merge ALREADY HAPPENED at step 4 —
+  #    returning non-zero now would report a successful, verified promotion as failed, and no rc can
+  #    un-merge it. What is printed is the exact command to run by hand.
+  kr_line="$(printf '%s\n' "$note" | grep '^kit-row:' | head -1 || true)"
+  kr="${kr_line#kit-row:}"
+  # ⚠️ CONTROL BYTES OUT FIRST (security S-L6). `kr` comes from a GIT NOTE — self-authorable text —
+  # and it is printed straight into an operator's terminal by the WARN lines below. An ANSI escape in
+  # a `kit-row:` projection could repaint or forge those lines, which are the audit record of a merge.
+  # Stripped once, here, so every consumer downstream (the prints AND the argument handed to
+  # board-claim.sh) sees the sanitised value; board-claim's own row grammar is the second gate.
+  kr="$(printf '%s' "$kr" | tr -d '[:cntrl:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  bc_sh="$(dirname -- "$0")/board-claim.sh"
+  if [ -z "$kr" ] || [ "$kr" = '(none)' ]; then
+    echo "actuate: no kit-row on the GO note — no board claim to release (nothing invented)."
+  elif [ ! -f "$bc_sh" ]; then
+    echo "actuate: WARN — board-claim.sh not found beside this script; claim on '$kr' NOT released." >&2
+  elif sh "$bc_sh" release "$kr" --stale; then
+    echo "actuate: board claim on '$kr' released (refs/claims/$kr deleted on origin)."
+  else
+    echo "actuate: WARN — could not release the board claim on '$kr' (refs/claims/$kr may still exist)." >&2
+    echo "               The merge SUCCEEDED and is verified; release by hand:" >&2
+    echo "               sh scripts/board-claim.sh release $kr --stale" >&2
+  fi
 
   # Honest success line: the note is RECORDED, not necessarily AUTHENTICATED — a git note is
   # self-authorable (the label bar is audit + defense-in-depth over it; the real solo control is

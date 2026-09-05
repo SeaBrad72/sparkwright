@@ -154,6 +154,8 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
 `scripts/incept.sh` is the **greenfield** bootstrap — it renames the kit's root `CLAUDE.md` to `ENGINEERING-PRINCIPLES.md` and stamps fresh project artifacts, which assumes you started *from* the kit. In a brownfield repo you do the Inception **judgment** steps by hand (`../../START-HERE.md` steps 1–7): write the charter, record the stack as **ADR-000**, instantiate the project `CLAUDE.md` from `../../templates/PROJECT-CLAUDE-TEMPLATE.md`, start `RUNBOOK.md`, add a `.env.example` (the gate requires one), pick a backlog backend (`work-tracking/adapters.md`), assign roles. ⚠️ **`../../START-HERE.md` steps 1–7 are the source of truth** — this inline list is orientation, not the manifest (an enumerated list is exactly what drifts, which is why §1 says copy the whole tree).
 
+⚠️ **The backlog-backend choice has a governance cost today, and you should know it before you make it.** Choosing a hosted tracker (`github`/`jira`/`ado`/`linear`/`gitlab`) turns the kit's three board-bound gates — `backlog-presence`, `backlog-current`, `loop-state`'s row check — **red with a NOT ENFORCED verdict**, because the kit reads `BACKLOG.md` and has no seam that can read your tracker. Nothing in a pull request clears it: adopt `TRACKER-BACKED-GOVERNANCE` when it ships, keep the board in `BACKLOG.md`, or ratify a **`board-governance` waiver** in `WAIVER-REGISTER.md` (which renders them green *with the notice still printed on every run*). Greenfield `incept` stamps that waiver row for you with `[owner]`/`[security-owner]` placeholders; in a brownfield repo you add it yourself, and a human fills both cells — a placeholder does not satisfy `sh conformance/waivers-valid.sh --active board-governance`. See `../work-tracking/adapters.md` §Which gates bind.
+
 **Stamp the entry contract — greenfield `incept` does this for you; here you must.** Copy the **§1 Entry contract** section of `ENGINEERING-PRINCIPLES.md` **byte-identical** into the top of your project `CLAUDE.md` (the harness contextFile) and into `AGENTS.md`, then fill the project header fields the template carries — `**Project:**`, `**Intent owner:**`, the backlog backend, and `- **Target harness(es)** (§harness-neutrality): …`. The context-binding checks compare these byte-for-byte, so a paraphrase does not satisfy them.
 
 **Commit the baseline BEFORE running the gate.** The contextFile and the copied-in artifacts must be *tracked* for the gate to see them:
@@ -194,7 +196,7 @@ A real legacy repo arrives **below 80% coverage, with vulnerable deps, no SBOM, 
 |------|-------|---------|
 | **Non-negotiable (never waivable)** | `secret-scan`, `branch-protection` | Must pass on day one. A repo never ships secrets, and segregation-of-duties is not optional. If secret-scan can't run, that is a blocker to fix, not a waiver. |
 | **Day-one quick wins** | lint · type-check · build | Usually green or near-green; fix these first (hours, not sprints). |
-| **Deferrable (time-boxed waiver)** | coverage · SBOM · provenance · dependency-vuln · a11y · container-image | Open a waiver with an owner, expiry (≤ 90 days), and remediation plan; tighten on a schedule. |
+| **Deferrable (time-boxed waiver)** | coverage · SBOM · provenance · dependency-vuln · a11y · container-image · board-governance | Open a waiver with an owner, expiry (≤ 90 days), and remediation plan; tighten on a schedule. |
 
 ### The ramp
 

@@ -81,10 +81,15 @@ fix-hint: `uvx pip-audit`
 id: sbom-cyclonedx
 precondition: present gate-sbom
 when-absent: skip
-assert: present cyclonedx-py environment
+# K10 (parity with python.txt — the assertion was instance-level and this twin carried none).
+# The `.venv` target is asserted: targetless `environment` inventories the uvx tool venv, not the
+# project. The dot is ESCAPED — this matcher is `grep -Eq`, where a bare `.` matches any character.
+assert: present cyclonedx-py environment \.venv
+assert: present --from cyclonedx-bom==7.3.1
+assert: present --of JSON
 assert: present sbom.json
 skip-reason: no SBOM gate — nothing to activate
-fix-hint: `uvx cyclonedx-py environment --output-format JSON --outfile sbom.json`
+fix-hint: `uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment .venv --of JSON -o sbom.json`
 
 id: provenance-gated
 precondition: present attest-build-provenance

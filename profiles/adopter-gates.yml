@@ -109,6 +109,27 @@ env:
   # THE DIAL. Ships `enforce` since 2026-08-30. Change this one line to `observe` to opt out and
   # make loop-state a nudge instead of a merge-gate. See the header for why the default flipped.
   LOOP_STATE_MODE: enforce
+  # ── THE review-lane DIAL (LOOP-STAGE-ARTIFACT-GATE, 2026-09-04). Ships `observe`, with its EXIT
+  # CONDITION NAMED — the `D-240811-2.1` shape, which forbids leaving a dial in bare observe:
+  #
+  #   EXIT CONDITION: flip to `enforce` when your record discipline is real — when every code PR in
+  #   this repo carries a Kit-Plan and a Kit-Review trailer naming a graded plan and review record.
+  #
+  # ⚠️ THE EXIT CONDITION CHANGED ON 2026-09-05 (`REVIEW-LANE-WAITING-IS-GREEN`). It used to be "a
+  # SECOND FORGE IDENTITY exists on this repository", because the gate's last leg was an attestation
+  # by a non-author approver and a solo adopter with one account could not produce one — the half was
+  # UNAVAILABLE, not merely weaker. That leg is deleted: the forge-side attestation is branch
+  # protection's own review requirement now, so what is left here is STRUCTURAL and a solo adopter can
+  # satisfy all of it. What they still cannot satisfy on day one is the artifacts themselves — a fresh
+  # export's first code PR has no plan file and no review record — so the dial stays, with the
+  # first-run-green rule this file already documents for loop-state, and the condition now names the
+  # thing the adopter actually has to build.
+  # In `observe` the job RUNS THE GATE, prints its verdict to the log and the step summary, and ALWAYS
+  # EXITS 0. THE KIT'S OWN REPO RUNS `enforce` (see REQUIRED-CHECKS.md).
+  # ⚠️ SAME OBSERVE-vs-BOUND INTERPLAY as loop-state: an always-exit-0 job SATISFIES a required
+  # context, so binding `review-lane` in REQUIRED-CHECKS.md while this reads `observe` is a silent
+  # pass-through. Flip the mode FIRST, then bind the context — never the other way around.
+  REVIEW_LANE_MODE: observe
 
 jobs:
   # ── backlog-presence ────────────────────────────────────────────────────────────────────────────
@@ -169,9 +190,22 @@ jobs:
           # The `raw+json` media type returns the file's raw bytes directly (no base64 decode), and
           # it does not hit the Contents API's >1MB base64 field going silently empty — a second,
           # independent route to the same false "absent" this fix also closes.
+          # WAIVER-REGISTER.md IS FETCHED TOO, and it is not optional (security S-H1). The gate
+          # reads `<dir>/WAIVER-REGISTER.md` to decide whether a ratified `board-governance` waiver
+          # renders a hosted-tracker NOT ENFORCED verdict green-with-notice. Without the file in
+          # /tmp/board, `--active` was rc 1 on EVERY adopter run, while this same job's summary and
+          # annotation told them to ratify a waiver that could never clear it — a remedy the gate
+          # was structurally unable to honour. A 404 leaves the file absent, which the validator
+          # already reads as "no waiver": the fail-closed posture is unchanged.
+          # ⚠️ NOTE WHAT THE PATHS THEN ARE, because it is STRONGER than it looks: the register is
+          # fetched from the PR HEAD (self-service, like the board), but `conformance/waivers-valid.sh`
+          # — the validator that grades it — is the BASE CHECKOUT's copy, so a PR cannot both write
+          # itself a waiver and rewrite the rules that judge it in the same commit. The remaining
+          # self-ratification ceiling (author == owner == ratifier, in one commit) is the register's
+          # own, stated in docs/work-tracking/adapters.md, not introduced here.
           mkdir -p /tmp/board
           : > /tmp/board.err
-          for f in BACKLOG.md CLAUDE.md; do
+          for f in BACKLOG.md CLAUDE.md WAIVER-REGISTER.md; do
             err=$(gh api "repos/${REPO}/contents/${f}?ref=${SHA}" \
                     -H "Accept: application/vnd.github.raw+json" \
                     2>&1 >"/tmp/board/$f")
@@ -209,7 +243,7 @@ jobs:
             # diff (rc 2) rather than letting backlog-presence.sh read a missing file as N/A.
             echo "backlog-presence: the board/backend fetch hit a non-404 failure — cannot trust the N/A ladder. Escalating."
             rc=2
-            out="$(printf 'backlog-presence: gate error — fetching BACKLOG.md/CLAUDE.md from the PR head failed (non-404). Fetch error(s):\n%s' "$(cat /tmp/board.err)")"
+            out="$(printf 'backlog-presence: gate error — fetching BACKLOG.md/CLAUDE.md/WAIVER-REGISTER.md from the PR head failed (non-404). Fetch error(s):\n%s' "$(cat /tmp/board.err)")"
           else
             # VERSION SKEW: this job checks out the BASE tree, so the workflow can call a conformance
             # mode the checked-out script does not have yet — guaranteed on the PR introducing it, and
@@ -231,7 +265,11 @@ jobs:
           fi
           set -e
           case "$rc" in
-            0|1|2) ;;
+            # rc 3 = NOT ENFORCED — you declared a hosted-tracker backlog backend and this kit reads
+            # BACKLOG.md only, so board-bound governance is NOT verified on this tree. Red by ruling
+            # (governance may never switch off silently); enumerated here so it is not reported as a
+            # gate ERROR, which would send you looking for a break that does not exist.
+            0|1|2|3) ;;
             *) echo "backlog-presence: unexpected rc=$rc from the gate; reporting 2 (anomaly)."; rc=2 ;;
           esac
           # The WAITING/error PROSE comes from agent-boundary.sh's single-sourced, --selftest-able
@@ -248,6 +286,7 @@ jobs:
           case "$rc" in
             0) head="backlog-presence: PASS — board row bound, or not required." ;;
             1) head="backlog-presence: WAITING — NOT a build failure, and no test failed. To proceed: add or update a BACKLOG.md row whose PR cell names this pull request (or its branch), then push." ;;
+            3) head="backlog-presence: NOT ENFORCED — your repo declares a hosted-tracker backlog backend and the kit reads BACKLOG.md only, so board-bound governance is NOT verified on this tree. No edit to this PR clears it: adopt TRACKER-BACKED-GOVERNANCE when it ships, move the board to BACKLOG.md, or ratify a board-governance waiver (WAIVER-REGISTER.md — incept stamped the row for you; a human fills Owner and Ratified-by)." ;;
             *) head="backlog-presence: GATE ERROR or misconfiguration — board presence could not be adjudicated. This one IS a real error and needs fixing." ;;
           esac
           # ONE body, written to BOTH surfaces: the log and the step summary (what a reviewer reads
@@ -270,6 +309,8 @@ jobs:
             case "$rc" in
               1) _title='backlog-presence: WAITING — NOT a build failure'
                  _msg='To proceed: add or update a BACKLOG.md row whose PR cell names this pull request (or its branch) then push. No test failed and nothing is broken.' ;;
+              3) _title='backlog-presence: NOT ENFORCED — a hosted-tracker backend is not board-governed'
+                 _msg='Your repo declares a non-BACKLOG.md backlog backend. The kit reads BACKLOG.md only so board-bound governance is NOT verified here. No edit to this PR clears it: adopt TRACKER-BACKED-GOVERNANCE move the board to BACKLOG.md or ratify a board-governance waiver in WAIVER-REGISTER.md.' ;;
               *) _title='backlog-presence: GATE ERROR — board presence could not be adjudicated'
                  _msg=$(printf '%s' "$out" | tr '\n\r\t' '   ' | cut -c1-400) ;;
             esac
@@ -515,6 +556,158 @@ jobs:
                  _msg=$(printf '%s' "$summary" | tr '\n\r\t' '   ' | cut -c1-400) ;;
             esac
             printf '::error title=%s::%s\n' "$_title" "$_msg"
+          fi
+          # THE EXIT STAYS ON ITS OWN LINE — the kit's parity locks anchor this exact literal per job.
+          [ "$rc" = 0 ] || exit 1
+
+  # ── review-lane ─────────────────────────────────────────────────────────────────────────────────
+  # LOOP-STAGE-ARTIFACT-GATE: a sensitive/control-plane PR (and any non-docs-only ordinary one) must
+  # name a plan file and a review record on its head commit, both graded.
+  #
+  # ⚠️ STRUCTURAL ONLY since `REVIEW-LANE-WAITING-IS-GREEN` (2026-09-05). This job used to end on a leg
+  # that read the forge's review list and returned WAITING — a value a job cannot render as anything
+  # but RED, cleared only by a manual re-run after the Approve. It is deleted. The forge-side
+  # attestation is branch protection's own review requirement (`required_approving_review_count >= 1` +
+  # `dismiss_stale_reviews` + `require_last_push_approval`), which `conformance/branch-protection.sh`
+  # asserts live. This job runs once per push and never waits on a human.
+  #
+  # SHIPS `observe` (REVIEW_LANE_MODE at the top of this file) with its exit condition named there: a
+  # fresh export's first code PR has no plan file and no review record, so enforce would red PR #1 for
+  # a reason nobody has had a chance to fix. In observe the gate RUNS and REPORTS and the job always
+  # exits 0.
+  #
+  # THE GRADER RUNS FROM THE BASE TREE and reads head artifacts as OBJECTS — PR code never executes in
+  # this job. The head objects are fetched because the containment legs need them; nothing about the PR
+  # is read from the forge.
+  review-lane:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      # `contents: read` only — `pull-requests: read` went with the leg that called `gh pr view`.
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+      - name: Fetch the PR head as OBJECTS (never a checkout), then drop the credential
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}/head"
+          fetched=$(git rev-parse "refs/remotes/pull/${PR_NUMBER}/head")
+          if [ "$fetched" != "$HEAD_SHA" ]; then
+            echo "review-lane: refs/pull/${PR_NUMBER}/head resolved to $fetched but the event reports $HEAD_SHA — refusing to grade an object the forge and the event disagree about."
+            exit 1
+          fi
+          git config --local --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true
+      - name: STAGE ARTIFACTS (the plan file and the review record the head names, graded)
+        id: gate
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.base_ref }}
+          # (`GH_TOKEN` was here for the attestation leg's `gh pr view`. Deleted with the leg — an env
+          # credential no command reads is a standing exposure that buys nothing.)
+        run: |
+          # THE VERSION-SKEW PROBES — TWO OF THEM (same arms as the kit's own ci.yml; design §4.3). A
+          # `pull_request` run pairs THIS PR's workflow file with the BASE tree's grader, and those two
+          # can disagree in either direction. Each disagreement would red the very PR that installs or
+          # upgrades the gate, which an adopter reads as "the review gate is broken". rc 0 with a loud
+          # N/A notice instead; the change is ungraded HERE and the notice says so rather than implying
+          # a review happened.
+          #   PROBE 1 — the base copy has no `--pr` mode and would exit 2 on its usage arm.
+          #   PROBE 2 — the base copy still calls `gh pr view` (a grader older than
+          #   REVIEW-LANE-WAITING-IS-GREEN, 2026-09-05) and would fail with RL-FORGE-UNREADABLE, because
+          #   this job no longer exports a token for the leg that PR deletes. MEASURED on the kit's own
+          #   PR #647. The grep SKIPS COMMENT LINES and that is load-bearing: the new grader mentions
+          #   `gh pr view` in a selftest comment, so a comment-blind grep would match it too and N/A
+          #   this check forever — a permanent silent bypass.
+          # BOTH SELF-RETIRE: a base carrying the new grader has `--pr` and no executable `gh pr view`.
+          if ! grep -q -- '--pr)' conformance/review-lane.sh; then
+            echo "::notice title=review-lane N/A (base predates the grader)::The BASE tree's conformance/review-lane.sh has no --pr mode, so nothing was graded on this PR. Expected on the PR that introduces or upgrades the grader; the next PR is graded normally."
+            echo "review-lane => rc=0 (RL-BASE-PREDATES — N/A, not a pass)"
+            echo "rc=0" >> "$GITHUB_OUTPUT"
+            echo "skew=RL-BASE-PREDATES" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -v '^[[:space:]]*#' conformance/review-lane.sh | grep -q 'gh pr view'; then
+            echo "::notice title=review-lane N/A (base grader still reads the forge)::The BASE tree's conformance/review-lane.sh predates REVIEW-LANE-WAITING-IS-GREEN: it still calls gh pr view to read the review list, which needs a GH_TOKEN this job no longer carries because the upgrade removes that leg. Nothing was graded on this PR. Expected on the PR that upgrades the grader; the next PR is graded normally."
+            echo "review-lane => rc=0 (RL-BASE-READS-FORGE — N/A, not a pass)"
+            echo "rc=0" >> "$GITHUB_OUTPUT"
+            echo "skew=RL-BASE-READS-FORGE" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          set +e
+          sh conformance/review-lane.sh --pr "$PR_NUMBER" --head "$HEAD_SHA" --base-ref "$BASE_REF"
+          rc=$?
+          set -e
+          # rc 1 is still accepted as a VALUE: the grader that runs is the BASE tree's, which on a PR
+          # opened against an older base still carries the retired WAITING arm. It maps to a refusal
+          # below rather than crashing this step on an rc it never expected.
+          case "$rc" in
+            0|1|2) ;;
+            *) echo "review-lane: unexpected rc=$rc from the gate; reporting 2 (anomaly)."; rc=2 ;;
+          esac
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "review-lane => rc=$rc (0 pass/N-A · 1 the base tree's retired WAITING arm, treated as a refusal · 2 anomaly/refusal)"
+      - name: Verdict — observe reports and passes, enforce exits on the gate's rc
+        if: ${{ !cancelled() }}
+        env:
+          GATE_RC: ${{ steps.gate.outputs.rc }}
+          GATE_SKEW: ${{ steps.gate.outputs.skew }}
+        run: |
+          case "$GATE_RC" in
+            0|1|2) rc=$GATE_RC ;;
+            *) echo "review-lane: the gate produced no usable rc ('$GATE_RC'); reporting 2."; rc=2 ;;
+          esac
+          # A skew N/A is rc 0 in the same green as a real pass, so the WORDS are the only thing that
+          # separates them. Say "nothing was graded" rather than let a green imply a review.
+          if [ -n "${GATE_SKEW:-}" ]; then
+            # THE TITLE NAMES WHICH PROBE FIRED — two different skews reach this branch, with different
+            # causes. No comma in the title (workflow-command properties are comma-separated).
+            case "$GATE_SKEW" in
+              RL-BASE-READS-FORGE) _skewwhy='that copy still calls gh pr view and this job carries no token for it' ;;
+              *)                   _skewwhy='that copy has no --pr mode' ;;
+            esac
+            title="review-lane: N/A — nothing was graded ($GATE_SKEW)"
+            summary="This job runs the BASE tree grader and $_skewwhy, so NOTHING was graded on this PR. Expected on the PR that introduces or upgrades the grader; the next PR is graded normally. Do not read this green as \"reviewed\"."
+            {
+              printf '%s\n' "$title"
+              printf '%s\n' "$summary"
+            } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+            exit 0
+          fi
+          case "$rc" in
+            0) reason="the stage artifacts are present and graded; approval is branch protection's." ;;
+            # rc 1 cannot come from the current grader — it is the BASE tree's retired WAITING arm, on
+            # a PR opened against a base older than REVIEW-LANE-WAITING-IS-GREEN. Reported as a refusal
+            # (in enforce mode this job still exits non-zero) with words that name the real blocker.
+            1) reason="the base tree's grader predates REVIEW-LANE-WAITING-IS-GREEN and its retired WAITING arm fired — the stage artifacts are fine, and the merge is blocked by branch protection's review requirement, not by this check. On the introducing PR only: re-run this single job after the non-author Approve." ;;
+            *) reason="a stage artifact is missing, malformed, or self-reviewed (see the gate step log)." ;;
+          esac
+          mode="${REVIEW_LANE_MODE:-observe}"
+          case "$mode" in
+            enforce)
+              title="review-lane: ENFORCE mode"
+              summary="$(printf 'ENFORCE mode (REVIEW_LANE_MODE: enforce): %s The gate rc is this job'"'"'s exit, so a missing, malformed or self-reviewed record BLOCKS the merge. This check says nothing about WHO APPROVED: the forge-side attestation is branch protection'"'"'s review requirement (required_approving_review_count >= 1 + dismiss_stale_reviews + require_last_push_approval), asserted live by conformance/branch-protection.sh. This job runs once per push and never waits on a human.' "$reason")"
+              ;;
+            *)
+              title="review-lane: observe mode — not enforcing yet"
+              summary="$(printf 'OBSERVE mode: %s Enforcement is OFF — this job ALWAYS exits 0. The forge-side attestation is branch protection'"'"'s review requirement; flip to enforce when your record discipline is real — when every code PR here carries a Kit-Plan and a Kit-Review trailer naming a graded plan and review record. IN THIS ORDER: (1) flip REVIEW_LANE_MODE to enforce at the top of this workflow; (2) THEN declare review-lane as a required context in REQUIRED-CHECKS.md; (3) re-run this check.' "$reason")"
+              ;;
+          esac
+          {
+            printf '%s\n' "$title"
+            printf '%s\n' "$summary"
+          } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          echo "review-lane => mode=$mode rc=$rc"
+          # NO ANNOTATION IN OBSERVE MODE, deliberately: an `::error` on a job that exits 0 makes a
+          # nudge look like a failure — the cry-wolf this dial exists to avoid.
+          [ "$mode" = enforce ] || exit 0
+          if [ "$rc" != 0 ]; then
+            printf '::error title=%s::%s\n' "$title" "$(printf '%s' "$summary" | tr '\n\r\t' '   ' | cut -c1-400)"
           fi
           # THE EXIT STAYS ON ITS OWN LINE — the kit's parity locks anchor this exact literal per job.
           [ "$rc" = 0 ] || exit 1

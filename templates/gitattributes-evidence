@@ -1,0 +1,13 @@
+# Verbatim evidence — APPEND these two lines to your own .gitattributes (K11).
+#
+# Captured command output is evidence: its bytes ARE the claim. Two of git's normal, helpful
+# behaviours corrupt it silently.
+#   -whitespace  the pre-commit whitespace rule (and `git apply --whitespace=fix`) rewrites
+#                trailing spaces and tab/space runs — real characters of a captured terminal.
+#   -text        disables CRLF/LF normalisation, which mangles output captured on another
+#                platform and changes the file's hash without changing what you ran.
+# Without both, an artifact you cite as "here is exactly what the command printed" is not
+# exactly what the command printed, and nothing tells you.
+#
+# Adjust the path to wherever your evidence lives; the attributes are the load-bearing part.
+docs/evidence/**   -whitespace -text

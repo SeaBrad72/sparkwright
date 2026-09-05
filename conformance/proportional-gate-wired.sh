@@ -174,6 +174,13 @@ _reads_no_seat_body() { ! code_only "$1" | grep -qiE 'seat-bodies|seat sentence'
 # not an anchor (review round 2, nit 2).
 _job_if() { _job_block "$1" "$2" | grep -E '^    if[[:space:]]*:'; }
 
+# _job_if_canon <file> <job-key> -> that job's `if:` in CANONICAL form: a TRAILING COMMENT stripped,
+# then all whitespace removed. Every conditioned job in ci.yml carries a trailing `# why` comment, so
+# a correctly copied clause arrives with one; comparing raw text would red on the comment and teach
+# the next author to delete it — the inversion this file's `code_only` note already warns about. The
+# comment is stripped, never read: it cannot make a wrong clause compare equal.
+_job_if_canon() { _job_if "$1" "$2" | sed 's/[[:space:]]*#.*$//' | tr -d '[:space:]'; }
+
 # THE ALLOWED JOB-LEVEL `if:` PER REQUIRED CONTEXT — the table anchor (5) below reads.
 # ⚠️ SOURCE OF TRUTH IS REQUIRED-CHECKS.md; this table says what each of those contexts is ALLOWED to
 # condition itself on, which that file does not record. Both drift directions are asserted below, so
@@ -187,10 +194,19 @@ _job_if() { _job_block "$1" "$2" | grep -E '^    if[[:space:]]*:'; }
 #                 job is SKIPPED when a dependency fails, which would turn every genuine RED into a
 #                 hung PR. That invariant is stated at the top of ci.yml and is load-bearing.
 #   NO_IF       — nothing to condition on; these run on every event the workflow triggers on.
-CI_IF_PR_GUARDED="backlog-presence threat-obligation uat-obligation a11y-obligation ceremony-binding loop-state"
+CI_IF_PR_GUARDED="backlog-presence threat-obligation uat-obligation a11y-obligation ceremony-binding loop-state review-lane"
 CI_IF_ALWAYS="conformance"
 CI_IF_NONE="bootstrap secret-scan docs-links"
 CI_IF_CANONICAL="if:github.event_name=='pull_request'"
+#   PUSH_GRADED_ONLY — `conformance-docs`, the ALWAYS-RUN doc job (CONFORMANCE-DOCS-SKIPS-ON-PUSH-
+#                 GRADED, D-240903-3). It is NOT a required status context, so it is absent from
+#                 REQUIRED-CHECKS.md and from both drift loops below on purpose; what it needs is the
+#                 opposite lock — the ONE clause it may carry, and no other. It may skip on a push
+#                 whose tree the merged PR already graded (that PR's run ran this very job, which the
+#                 push-graded predicate requires), and it may NOT carry the docs-only clause: on a
+#                 docs-only PR it is the only job grading the change.
+CI_IF_PUSH_GRADED_ONLY="conformance-docs"
+CI_IF_PUSH_GRADED_CANONICAL="if:needs.changes.outputs.push_graded!='true'"
 
 _posts_nothing() {
   # `[[:space:]]+`, NOT `*`: a YAML permissions entry is always `checks: write`, and the zero-space
@@ -504,6 +520,18 @@ selftest() {
       [ -z "$(_job_if "$CI_WF" "$_ctx")" ] || {
         echo "FAIL: $CI_WF's $_ctx job has GROWN a job-level \`if:\` — it is a required status context with nothing to condition on, and any condition that can be false is an event on which the required check reports 'skipped'"; st=1; }
     done
+    # (5b) THE ALWAYS-RUN DOC JOB'S ONE PERMITTED CLAUSE (CONFORMANCE-DOCS-SKIPS-ON-PUSH-GRADED).
+    # Kit-tree only, and deliberately OUTSIDE both drift loops below: `conformance-docs` is not a
+    # required status context (it is adjudicated through the `conformance` aggregator's `needs:`),
+    # so REQUIRED-CHECKS.md neither declares it nor should. The lock pins the exact SHAPE, so
+    # REMOVING the clause reds too — not only adding a forbidden one.
+    for _ctx in $CI_IF_PUSH_GRADED_ONLY; do
+      _has_job_key "$CI_WF" "$_ctx" || {
+        echo "FAIL: $CI_WF has no job keyed exactly '$_ctx' — the always-run doc job is where every doc-sensitive check now lives, and a renamed key leaves this lock pointed at nothing while the docs-only and push-graded skips keep standing on it"; st=1; continue; }
+      _cif=$(_job_if_canon "$CI_WF" "$_ctx")
+      [ "$_cif" = "$CI_IF_PUSH_GRADED_CANONICAL" ] || {
+        echo "FAIL: $CI_WF's $_ctx job-level \`if:\` is '$_cif', not exactly \`if: needs.changes.outputs.push_graded != 'true'\`. That is the ONE clause it may carry: the push-graded skip is sound because the graded PR's own run ran this very job. THE DOCS-ONLY CLAUSE IS FORBIDDEN HERE — on a docs-only PR this job is the only one grading the change (every check that can read a .md was moved into it), so skipping it there would leave that lane graded by nothing and would falsify the push-graded induction's premise. Removing the \`if:\` entirely reds too: the job would re-run on every push over a tree the PR already graded"; st=1; }
+    done
     # BOTH DRIFT DIRECTIONS between the table and REQUIRED-CHECKS.md — the reason this is a table and
     # not six hardcoded greps. Without these, a context added to the declaration would be silently
     # unconditioned, and a name that stopped being required would keep a lock pointed at nothing.
@@ -668,6 +696,38 @@ selftest() {
   # mutant 7d: a no-`if:` required job that GROWS one -> the NO_IF arm must see it.
   printf 'jobs:\n  bootstrap:\n    if: github.ref == %srefs/heads/main%s\n    steps:\n      - run: echo x\n' "'" "'" > "$_mx/grewif.yml"
   [ -n "$(_job_if "$_mx/grewif.yml" bootstrap)" ] || { echo "FAIL: mutant — a required job that grew a job-level if must be detected"; st=1; }
+
+  # ── mutants for the PUSH-GRADED-ONLY arm (CONFORMANCE-DOCS-SKIPS-ON-PUSH-GRADED, D-240903-3) ────
+  # The positive control is the LIVE ci.yml, asserted inside the kit-tree guard above; these are the
+  # negatives, as printf'd fragments (this file's idiom — an anchor only ever run against a passing
+  # file has not been shown to fail).
+  printf 'jobs:\n  conformance-docs:\n    needs: changes\n    if: needs.changes.outputs.push_graded != %strue%s\n    steps:\n      - run: echo x\n' "'" "'" > "$_mx/pg-ok.yml"
+  [ "$(_job_if_canon "$_mx/pg-ok.yml" conformance-docs)" = "$CI_IF_PUSH_GRADED_CANONICAL" ] \
+    || { echo "FAIL: mutant — the canonical push-graded-only \`if:\` must read back as the canonical form"; st=1; }
+  # the TRAILING-COMMENT shape: every other `if:` in ci.yml carries one, so a copy-paste will too.
+  # It must still compare equal — a lock that reds on a comment teaches people to delete comments.
+  printf 'jobs:\n  conformance-docs:\n    if: needs.changes.outputs.push_graded != %strue%s   # skip on a push whose tree the merged PR graded\n    steps:\n      - run: echo x\n' "'" "'" > "$_mx/pg-comment.yml"
+  [ "$(_job_if_canon "$_mx/pg-comment.yml" conformance-docs)" = "$CI_IF_PUSH_GRADED_CANONICAL" ] \
+    || { echo "FAIL: mutant — a TRAILING COMMENT on the push-graded \`if:\` must still compare equal to the canonical form"; st=1; }
+  # mutant PG-1 (load-bearing): the docs-only clause added -> the doc-sensitive checks would stop
+  # running on the one lane where nothing else grades a `.md`.
+  printf 'jobs:\n  conformance-docs:\n    if: needs.changes.outputs.docs_only != %strue%s && needs.changes.outputs.push_graded != %strue%s\n    steps:\n      - run: echo x\n' "'" "'" "'" "'" > "$_mx/pg-docsonly.yml"
+  [ "$(_job_if_canon "$_mx/pg-docsonly.yml" conformance-docs)" = "$CI_IF_PUSH_GRADED_CANONICAL" ] \
+    && { echo "FAIL: mutant PG-1 — the docs-only clause added to conformance-docs must NOT read as the canonical push-graded-only if:"; st=1; }
+  # mutant PG-2: the `if:` removed -> the job runs on every push again (the cost this slice removed);
+  # the lock pins the exact SHAPE, not merely "no forbidden clause".
+  printf 'jobs:\n  conformance-docs:\n    needs: changes\n    steps:\n      - run: echo x\n' > "$_mx/pg-noif.yml"
+  [ "$(_job_if_canon "$_mx/pg-noif.yml" conformance-docs)" = "$CI_IF_PUSH_GRADED_CANONICAL" ] \
+    && { echo "FAIL: mutant PG-2 — a conformance-docs job with NO job-level if: must NOT satisfy the push-graded-only anchor"; st=1; }
+  # mutant PG-3: the job key renamed -> the anchor addresses nothing and must say so.
+  printf 'jobs:\n  conformance-docs-v2:\n    if: needs.changes.outputs.push_graded != %strue%s\n    steps:\n      - run: echo x\n' "'" "'" > "$_mx/pg-renamed.yml"
+  _has_job_key "$_mx/pg-renamed.yml" conformance-docs \
+    && { echo "FAIL: mutant PG-3 — a renamed conformance-docs job key must NOT satisfy the anchor"; st=1; }
+  # mutant PG-4: the clause planted at STEP level (8 spaces) — it conditions one step, not the job,
+  # so the job still runs; a reader skimming for the string would call it locked.
+  printf 'jobs:\n  conformance-docs:\n    steps:\n      - run: echo x\n        if: needs.changes.outputs.push_graded != %strue%s\n' "'" "'" > "$_mx/pg-steplevel.yml"
+  [ "$(_job_if_canon "$_mx/pg-steplevel.yml" conformance-docs)" = "$CI_IF_PUSH_GRADED_CANONICAL" ] \
+    && { echo "FAIL: mutant PG-4 — a STEP-level if: must NOT read as the job-level push-graded guard"; st=1; }
 
   # ── mutants for the RENDERING anchors (RATIFICATION-WAITING-IS-GREEN, 2026-08-28; rebuilt after
   # review round 1, finding 3 — see the note above the helpers). The CLEAN fixture is the obedient

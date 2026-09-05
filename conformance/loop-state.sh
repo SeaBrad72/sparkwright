@@ -80,6 +80,7 @@
 # Usage:
 #   sh conformance/loop-state.sh --head <sha>     (the PR head SHA — NEVER defaults to HEAD)
 #   sh conformance/loop-state.sh --selftest
+#   sh conformance/loop-state.sh --help           (usage + the roster's stage->skill map; K20)
 #
 # What it changes: nothing — read-only. Reads git history, .kit/roster.conf and skills/.
 # Guardrails: fails CLOSED on a missing or unreadable map, on an empty KIT_STAGES, on a map
@@ -112,6 +113,33 @@ LS_REPO="$DIR"
 # and are deliberately absent from this list. This is the FULL set — what a sensitive or
 # control-plane head owes. What an ORDINARY head owes is the reduced set ls_required_keys prints.
 LS_REQUIRED_KEYS="Kit-Row Kit-Stage Kit-Class Kit-Skill"
+
+# ── THE STAGE-ARTIFACT KEYS (LOOP-STAGE-ARTIFACT-GATE, design 4.2 rule 2) ──────────────────────────
+# `Kit-Plan` and `Kit-Review` name the plan file and the review record a PR's head commit is bound to.
+# They are ADVISORY HERE, and the split is the whole point: `conformance/review-lane.sh` GRADES them —
+# artifact tracked, non-stub, rounds contained, findings disposed, controls resolved, approver
+# attestation — and it is a required context of its own. This gate asks ONE question about them:
+# is the value SHAPED like a path this repo could carry (charset + prefix + `.md` + no traversal)?
+#
+# WHY DECLARE THEM HERE AT ALL, rather than let review-lane own them alone. The two gates must not
+# DISAGREE ON PARSING (D11's one-derivation rule). review-lane reads these trailers with this file's
+# `%(trailers:key=...,valueonly)` idiom precisely because `grep '^Kit-'` matches a line anywhere in a
+# message — the severed-block defect this file's own fixture pins. Declaring the keys in the map is
+# what makes "the same parser" a fact about the map rather than a claim in a comment. It also closes
+# the silent-typo hole the PRESENT-implies-VALIDATED loop closes for the required set: a head carrying
+# `Kit-Review: notes/x.txt` would otherwise read as "a record was named" to a human and as nothing at
+# all to both gates.
+#
+# THE CEILING, STATED: shape is not existence. This gate never opens the file; a head naming
+# `docs/reviews/does-not-exist.md` passes HERE and is refused by review-lane. Do not describe a
+# loop-state green as evidence that a review happened.
+LS_ARTIFACT_KEYS="Kit-Plan Kit-Review"
+# shellcheck disable=SC2034 # read INDIRECTLY (POSIX sh has no ${!name}) by check_declaration, which
+# builds the variable name from the key with `-` mapped to `_`. The keys are a fixed literal list, so
+# the indirection cannot reach a name an author chose. shellcheck cannot see through the eval.
+LS_ARTIFACT_PREFIX_Kit_Plan="docs/plans/"
+# shellcheck disable=SC2034 # same indirection — see the note on LS_ARTIFACT_PREFIX_Kit_Plan.
+LS_ARTIFACT_PREFIX_Kit_Review="docs/reviews/"
 
 # ls_required_keys — THE REQUIRED SET IS PROPORTIONAL TO THE DERIVED CLASS
 # (ENTRY-CONTRACT-CLASS-PROPORTIONAL, design 2026-08-30 section 4.1a; amends nothing about what a
@@ -183,6 +211,22 @@ ls_safe() { LC_ALL=C printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
 # file executable code reachable from a gate.
 conf_val() {   # $1 = key
   sed -n "s/^$1=\"\\(.*\\)\"\$/\\1/p" "$ROSTER_CONF" 2>/dev/null | head -1
+}
+
+# ls_print_stage_map — the REMEDY SURFACE for every refusal about a stage or a skill (K20).
+# A refusal that names neither the stages that exist nor the skills each admits sends the adopter
+# hunting for `.kit/roster.conf`, and the plan doc that explains the map is export-ignore'd. This
+# prints the map the gate ITSELF just read — one reader, no restated table, so it cannot go stale.
+# It is a REMEDY, NOT A CHECK: it reads the conf the gate already trusts and asserts nothing.
+# EVERY LINE GOES THROUGH ls_safe. The roster is repo text and a PR may change it, so a stage name
+# beginning with a newline would put attacker text at the start of an Actions-log line — the same
+# workflow-command surface map_completeness sanitises at :296-305, and the reason leg (k) exists.
+# Writes to STDERR, beside the refusal it explains.
+ls_print_stage_map() {
+  echo "  the stage → skill map (${ROSTER_CONF}):" >&2
+  for _ls_pm in $(conf_val KIT_STAGES); do
+    echo "    $(ls_safe "$_ls_pm"): $(ls_safe "$(conf_val "STAGE_SKILLS_$_ls_pm")")" >&2
+  done
 }
 
 # ls_dial_mode "<DIAL_NAME>" — the enforcement-dial reader for THIS gate. Prints exactly `enforce`
@@ -327,6 +371,12 @@ check_declaration() {   # $1 = sha, [$2 = derived class; DEFAULTS TO control-pla
     _ls_n=$(decl_count "$1" "$_ls_k")
     if [ "$_ls_n" -eq 0 ]; then
       echo "loop-state: $1 carries no parseable '$_ls_k' trailer" >&2
+      # K20 — a MISSING Kit-Stage or Kit-Skill is the one refusal where the author cannot write the
+      # value without knowing the map. Print it beside the refusal (the stage/skill pair is what
+      # carries meaning; a skill is only ever validated AGAINST a stage).
+      case "$_ls_k" in
+        Kit-Stage|Kit-Skill) ls_print_stage_map ;;
+      esac
       _ls_rc=1
       continue
     fi
@@ -336,13 +386,20 @@ check_declaration() {   # $1 = sha, [$2 = derived class; DEFAULTS TO control-pla
       continue
     fi
     # CHARSET, REJECT BY DEFAULT, PER FIELD. Trailer values are attacker-influenceable (anyone
-    # may open a PR with any trailer) and Kit-Row flows into a board grep — the identical path
-    # that forced the refusal at ceremony-binding.sh:124-136, where a newline in the pattern
-    # turned grep -F into an unconditional OR.
-    # `#` is included deliberately: it is the canonical row id for the `github` backend that
-    # check_row explicitly N/As, and it is what backlog-presence.sh already matches. Without it an
-    # adopter on GitHub Issues cannot declare their row in its native form (`#123`) — measured as a
-    # day-one break by review. It is inert for `grep -F`, which is the only sink this value reaches.
+    # may open a PR with any trailer). This is the OUTER, per-key charset shared by every Kit-*
+    # field; it is deliberately wider than any one field's own grammar, because `Kit-Skill:
+    # skills/build` and `Kit-Class: control-plane` must pass it too.
+    # ⚠️ THIS COMMENT USED TO SAY `Kit-Row` "flows into a board grep". IT NO LONGER DOES
+    # (BOARD-ROW-IDENTIFIER): `check_row` holds the value to `row_id_ok` — the [A-Z0-9][A-Z0-9-]*
+    # row-id grammar, one definition in backlog-lib.sh — and then LOOKS IT UP by string equality on
+    # a parsed Item cell (`row_count`). No pattern is built from the value anywhere on that path, so
+    # the ceremony-binding.sh:124-136 class (a newline turning `grep -F` into an unconditional OR)
+    # is unreachable from here by construction rather than by filtering.
+    # `#` is included deliberately: it is the canonical row id for the `github` backend, and it is
+    # what backlog-presence.sh already matches. Without it an adopter on GitHub Issues cannot
+    # declare their row in its native form (`#123`) — measured as a day-one break by review. Note
+    # what that buys TODAY, and no more: on a hosted backend `check_row` no longer N/As, it reports
+    # NOT ENFORCED (rc-3 arm below), so `#123` is accepted by this charset and then never looked up.
     case "$(decl_field "$1" "$_ls_k")" in
       ''|*[!A-Za-z0-9_.:/#-]*)
         echo "loop-state: '$_ls_k' must be non-empty and may contain only [A-Za-z0-9_.:/#-]" >&2
@@ -374,6 +431,48 @@ check_declaration() {   # $1 = sha, [$2 = derived class; DEFAULTS TO control-pla
         _ls_rc=1 ;;
     esac
   done
+  # THE STAGE-ARTIFACT KEYS — present implies validated, absent is N/A, on EVERY class. Resolvability
+  # is PATH SHAPE ONLY (see LS_ARTIFACT_KEYS): charset, the literal prefix, a `.md` suffix and no `..`
+  # segment. `Kit-Review` may carry a COMMA-SEPARATED set when a consolidated PR absorbs several
+  # slices, and each element is checked independently — a set is only as well-formed as its worst
+  # member.
+  for _ls_k in $LS_ARTIFACT_KEYS; do
+    _ls_n=$(decl_count "$1" "$_ls_k")
+    [ "$_ls_n" -eq 0 ] && continue
+    if [ "$_ls_n" -ne 1 ]; then
+      echo "loop-state: $1 carries $_ls_n occurrences of '$_ls_k' — exactly one is required (a consolidated PR lists several records in ONE comma-separated value)" >&2
+      _ls_rc=1; continue
+    fi
+    _ls_pfx=$(eval "printf '%s' \"\${LS_ARTIFACT_PREFIX_$(printf '%s' "$_ls_k" | tr - _)}\"")
+    # ⚠️ THE COMMA SPLIT NEVER TOUCHES $IFS, and that is a blocking-gate constraint, not a style
+    # preference: the exported artifact is scanned by semgrep and `bash.lang.security.ifs-tampering`
+    # refuses an `IFS=<value>` assignment (it flagged the previous `IFS=','` form four times on PR
+    # #644). `IFS= read` is the read builtin's OWN idiom — a per-command prefix that clears splitting
+    # for that one read — and the rule does not flag it; aggregate-coverage.sh's census loop is the
+    # in-repo precedent for this exact shape and documents it.
+    # THE HEREDOC IS LOAD-BEARING: `printf | while` would run the body in a SUBSHELL and every
+    # `_ls_rc=1` below would be discarded, so the gate would report zero findings and pass vacuously.
+    # A heredoc redirection spawns no subshell, so the assignments persist.
+    # AN EMPTY ELEMENT NOW REDS rather than being skipped. The old `for` word-split dropped empties
+    # silently, so `Kit-Review: a.md,,b.md` — and even a bare `,` — lost them; here every element
+    # reaches the `''` arm of the case below, which is the arm that always intended to refuse it.
+    _ls_vals=$(decl_field "$1" "$_ls_k" | head -1 | tr ',' '\n')
+    while IFS= read -r _ls_pv; do
+      _ls_pv=$(printf '%s' "$_ls_pv" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+      case "$_ls_pv" in
+        ''|*[!A-Za-z0-9_./-]*|*..*)
+          echo "loop-state: '$_ls_k' value '$(ls_safe "$_ls_pv")' is not a usable path (charset [A-Za-z0-9_./-], no '..' segment)" >&2
+          _ls_rc=1 ;;
+        "$_ls_pfx"*.md) ;;
+        *)
+          echo "loop-state: '$_ls_k' must name a '$_ls_pfx...md' path — got '$(ls_safe "$_ls_pv")'. The artifact itself is graded by conformance/review-lane.sh; this gate only refuses a value no record could ever live at." >&2
+          _ls_rc=1 ;;
+      esac
+    done <<EOF
+$_ls_vals
+EOF
+  done
+
   [ "$_ls_rc" -eq 0 ] || return 1
 
   # STAGE RESOLUTION runs WHEN Kit-Stage IS PRESENT — required for sensitive/control-plane, and
@@ -526,9 +625,36 @@ check_row() {   # $1 = sha
       LS_ROW_STATE="refused"
       return 1 ;;
     github|jira|ado|linear|gitlab)
-      LS_ROW_STATE="N/A (backend '$_ls_backend' — the row lives in an external tracker)"
-      echo "loop-state: row check $LS_ROW_STATE"
-      return 0 ;;
+      # NOT AN N/A ANY MORE (NON-MD-BACKEND-NEVER-SILENT, D-240903-1 §3). This branch used to say
+      # "the row lives in an external tracker" and return 0 — but the kit cannot READ that tracker,
+      # so what it actually said was "not checked", in the voice of "checked and fine". The row
+      # leg now refuses, with the sentence backlog-lib.sh::not_enforced_notice gives all three
+      # board-bound gates, unless a ratified board-governance waiver renders it green WITH the
+      # notice. Enforce-vs-observe stays the adopter's LOOP_STATE_MODE dial at the job level; no
+      # third knob is added here.
+      _ls_ne=0
+      # NO `2>&1` (reviewer r3): not_enforced_notice's stderr is its FAIL-CLOSED note — "the
+      # validator is not present, treating the waiver as absent". Folding that into the captured
+      # stdout would splice a diagnostic into the verdict line the summary prints, and the note
+      # belongs on stderr where a reader can tell the two apart.
+      _ls_neout=$(not_enforced_notice "$_ls_backend" "$LS_BOARDROOT" "$DIR/conformance/waivers-valid.sh") || _ls_ne=$?
+      # STREAM FOLLOWS VERDICT (security S-L3). A waived run is a PASS and its notice is a verdict —
+      # stdout. An unwaived run is a REFUSAL and its sentence is the reason — stderr, like every
+      # other refusal in this function. That is not cosmetic: hooks/pre-push captures this
+      # predicate's STDERR ONLY (`2>&1 >/dev/null`), so with the sentence on stdout the hook refused
+      # with "fix the trailer block on the pushed head" — a remedy for a defect the author does not
+      # have and cannot fix, on a tree where the trailers are perfect.
+      if [ "$_ls_ne" -eq 0 ]; then
+        echo "loop-state: row check $_ls_neout"
+      else
+        echo "loop-state: row check $_ls_neout" >&2
+      fi
+      if [ "$_ls_ne" -eq 0 ]; then
+        LS_ROW_STATE="NOT ENFORCED (backend '$(ls_safe "$_ls_backend")' — waived)"
+        return 0
+      fi
+      LS_ROW_STATE="NOT ENFORCED (backend '$(ls_safe "$_ls_backend")')"
+      return 1 ;;
   esac
 
   # md, or undeclared. Undeclared plus a real in-use board still gets checked — an adopter must
@@ -545,24 +671,56 @@ check_row() {   # $1 = sha
     return 0
   fi
 
-  # -F: the value is a literal, never a pattern. T3's charset already refuses metacharacters;
-  # this is the second half of the same defense.
-  # ⚠️ THIS IS A WHOLE-FILE SUBSTRING MATCH, NOT A ROW LOOKUP — and that is a KNOWN WEAKNESS, not
-  # an oversight. Any byte sequence occurring anywhere in the board satisfies it: `Kit-Row: a`
-  # passes, as does a filename that appears only in a Links cell (both reproduced by security
-  # review). The board carries no machine-resolvable row identifier, so a stricter binding was
-  # tried and REFUTED twice: whole-cell equality on the Item column rejects every real row (the
-  # cells are prose titles), and Item-column binding plus a word boundary still accepts single
-  # letters. Fixing it properly needs a stable row-ID column on the board — an owner decision,
-  # boarded as BOARD-ROW-IDENTIFIER.
-  # Because of that, this leg is reported as `matched` and NEVER as `resolved`: it establishes that
-  # the value occurs on the board, which is weaker than establishing that it names a row.
-  if ! grep -Fq -- "$_ls_row" "$_ls_board"; then
-    echo "loop-state: Kit-Row '$_ls_row' matches no row in $_ls_board" >&2
+  # A ROW LOOKUP, NOT A SUBSTRING MATCH (BOARD-ROW-IDENTIFIER). What stood here was
+  # `grep -Fq -- "$_ls_row" "$_ls_board"` over the WHOLE FILE: any byte sequence occurring anywhere
+  # in the board satisfied it — `Kit-Row: a` passed, as did a token occurring only in a Links cell
+  # (both reproduced by security review, both now legs d and e). The comment that replaced this one
+  # said the fix "needs a stable row-ID column on the board". It did not: the board ALREADY carries
+  # one, as the FIRST backticked token of the Item cell, and three mechanisms already resolved it
+  # (backlog-current's Disposition clause, backlog-presence's inprogress_hints, board-claim's ref
+  # name). This was the fourth mechanism, and the only one that disagreed.
+  # `row_count` is called, never `row_exists`: EXISTENCE is not enough. A duplicated id means two
+  # rows answer to one `Kit-Row`, and a gate that picked either would bind the commit to a row
+  # nobody chose.
+  # NO REGEX IS BUILT FROM THE VALUE — row_count is string equality on a parsed cell (backlog-lib).
+  # `_ls_row` is echoed through ls_safe: it is attacker-influenceable trailer text on its way to a
+  # CI log (the C0/DEL lesson at :296-305).
+  # THE GRAMMAR IS CHECKED AT THE FRONT DOOR, not merely quoted in a refusal (security S-M2). Until
+  # this call existed, a lower-case id on BOTH sides — `| \`kw6-a2\` — … |` on the board and
+  # `Kit-Row: kw6-a2` on the commit — RESOLVED, while the refusal below told the reader the grammar
+  # was `[A-Z0-9][A-Z0-9-]*`. That is a gate whose message and behaviour disagree, and it also
+  # admitted an id `scripts/board-claim.sh` refuses at ITS front door (it becomes a ref name), so
+  # the pair could never have been claimed. `row_id_ok` is the ONE definition, in backlog-lib.sh.
+  # It is a DISTINCT refusal from "names no row": telling an author their id is malformed sends
+  # them to a different edit than telling them their board is missing a row.
+  if ! row_id_ok "$_ls_row"; then
+    echo "loop-state: Kit-Row '$(ls_safe "$_ls_row")' is not a well-formed row id — it must match [A-Z0-9][A-Z0-9-]* (upper-case letters, digits and hyphens; it becomes a ref name for sh scripts/board-claim.sh claim). Lead your row's Item cell with that backticked id (CLAUDE.md §1 act 3)." >&2
     LS_ROW_STATE="refused"
     return 1
   fi
-  LS_ROW_STATE="matched (substring — see BOARD-ROW-IDENTIFIER for the ceiling)"
+  _ls_n=$(row_count "$_ls_board" "$_ls_row") || _ls_n=""
+  case "$_ls_n" in
+    ''|*[!0-9]*)
+      # FAIL-CLOSED. A counter that did not run is never `resolved`.
+      echo "loop-state: the row lookup for Kit-Row '$(ls_safe "$_ls_row")' could not be evaluated on $_ls_board — refusing" >&2
+      LS_ROW_STATE="refused"
+      return 1 ;;
+  esac
+  if [ "$_ls_n" -eq 0 ]; then
+    echo "loop-state: Kit-Row '$(ls_safe "$_ls_row")' names no row on $_ls_board — the id is the first backticked token of a row's Item cell ([A-Z0-9][A-Z0-9-]*); lead your row's Item cell with the backticked id (CLAUDE.md §1 act 3)." >&2
+    LS_ROW_STATE="refused"
+    return 1
+  fi
+  if [ "$_ls_n" -gt 1 ]; then
+    echo "loop-state: Kit-Row '$(ls_safe "$_ls_row")' is AMBIGUOUS — $_ls_n rows carry it; a row id must be unique across the board." >&2
+    LS_ROW_STATE="refused"
+    return 1
+  fi
+  # RESOLVED — and the word is load-bearing. It means the id names EXACTLY ONE row, which is what
+  # `matched` never meant. What it still does NOT mean (design §5): that the row is the one the
+  # change is ABOUT (a row boarded and closed in the same PR resolves), that the id is unique
+  # anywhere but this board, or that the trailer's author is anyone in particular.
+  LS_ROW_STATE="resolved"
   return 0
 }
 
@@ -624,7 +782,8 @@ check_skill() {   # $1 = sha
     echo "loop-state: stage '$_ls_stage' has no skill set in the map — refused" >&2; return 1; }
   case " $_ls_allowed " in
     *" $_ls_name "*) return 0 ;;
-    *) echo "loop-state: skills/$_ls_name does not govern stage '$_ls_stage' (allowed: $_ls_allowed)" >&2
+    *) echo "loop-state: skills/$(ls_safe "$_ls_name") does not govern stage '$(ls_safe "$_ls_stage")' (allowed: $(ls_safe "$_ls_allowed"))" >&2
+       ls_print_stage_map                                   # K20 — the whole map, not just this row
        return 1 ;;
   esac
 }
@@ -977,6 +1136,35 @@ ls_fx_build() {
     | git -C "$LS_FXDIR" commit -q -F -
   LS_FX_SINGLE=$(git -C "$LS_FXDIR" rev-parse HEAD)
 
+  # H2 — THE STAGE-ARTIFACT KEYS, WELL-FORMED (LOOP-STAGE-ARTIFACT-GATE). Kit-Review carries a
+  # consolidated two-record set, so the comma split is exercised by the POSITIVE as well as by H3.
+  echo h2 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'stage artifacts named\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\nKit-Plan: docs/plans/2026-09-04-demo.md\nKit-Review: docs/reviews/2026-09-04-demo.md,docs/reviews/2026-09-04-second.md\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ARTIFACT=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # H3 — Kit-Review OUTSIDE its prefix. The silent-typo hole: `notes/x.md` reads to a human as "a
+  # record was named" and to both gates as nothing at all.
+  echo h3 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'artifact key outside its prefix\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\nKit-Review: notes/2026-09-04-demo.md\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ARTIFACT_PFX=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # H3b — an EMPTY ELEMENT in the consolidated set (`a.md,,b.md`). The old IFS word-split dropped
+  # empties silently; the heredoc/`IFS= read` split that replaced it (semgrep ifs-tampering) delivers
+  # every element to the case, so the `''` arm now refuses it. Without this leg the split could regress
+  # to a form that skips empties and nothing would notice.
+  echo h3b > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'empty element in the set\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\nKit-Review: docs/reviews/2026-09-04-demo.md,,docs/reviews/2026-09-04-second.md\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ARTIFACT_EMPTY=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # H4 — a TRAVERSING Kit-Plan. Refused at the boundary, before any consumer resolves it.
+  echo h4 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'traversing artifact key\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\nKit-Plan: docs/plans/../../etc/passwd.md\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_ARTIFACT_TRAV=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
   # I — STAGE-INAPPROPRIATE: skills/tdd is real, but does not govern Plan.
   echo i > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
   printf 'stage-inappropriate skill\n\nKit-Row: DEMO-ROW\nKit-Stage: Plan\nKit-Class: ordinary\nKit-Skill: skills/tdd\n' \
@@ -1039,19 +1227,65 @@ ls_fx_build() {
   # The board lives in $LS_FXDIR/board/ and NOT in $LS_FXDIR itself — putting it at the fixture-repo
   # root would give $LS_FXDIR a BACKLOG.md and silently break the "no board present must be N/A"
   # leg, which is how the reviewer's first attempt at this failed.
+  # BOARD-ROW-IDENTIFIER: the Item cell now LEADS with the backticked row id, because that is the
+  # grammar CLAUDE.md §1 act 3 tells an adopter to write and the one `row_count` resolves. The
+  # second row exists so a token can occur in a NON-Item cell (leg e) — the Links/Intent-cell
+  # match that the old whole-file `grep -Fq` accepted.
   mkdir -p "$LS_FXDIR/board"
-  printf '# Fixture board\n\n## Ready\n\n| Item | Intent |\n|---|---|\n| FIXTURE-ROW-ALPHA — a fixture row | why |\n' \
+  printf '# Fixture board\n\n## Ready\n\n| Item | Intent |\n|---|---|\n| `FIXTURE-ROW-ALPHA` — a fixture row | why |\n| `OTHER-ROW` — another row | see LINKS-ONLY-ROW |\n' \
     > "$LS_FXDIR/board/BACKLOG.md"
 
-  # N/A route 2: a declared non-md backend. resolve_backend reads only <dir>/CLAUDE.md.
+  # TITLE-ONLY board (leg f): the row is there in prose but carries no backticked id, so it names
+  # no row. This is the shape every pre-convention board has, and the refusal must hand the
+  # adopter the act-3 remedy rather than "your row does not exist".
+  mkdir -p "$LS_FXDIR/board-titleonly"
+  printf '# Fixture board\n\n## Ready\n\n| Item | Intent |\n|---|---|\n| FIXTURE-ROW-ALPHA — a fixture row | why |\n' \
+    > "$LS_FXDIR/board-titleonly/BACKLOG.md"
+
+  # DUPLICATE board (leg g): one id on two rows. The load-bearing negative for row_count — a
+  # `row_exists` implementation cannot tell this board from the good one.
+  # LOWERCASE board (security S-M2): a board whose Item cell leads with `kw6-a2` and a commit whose
+  # Kit-Row is `kw6-a2` AGREE with each other — and before the grammar was checked at the front
+  # door, that pair RESOLVED, while the refusal text three lines below told everyone the grammar was
+  # `[A-Z0-9][A-Z0-9-]*`. A gate whose message and behaviour disagree is worse than either.
+  mkdir -p "$LS_FXDIR/board-lower"
+  printf '# Fixture board\n\n## Ready\n\n| Item | Intent |\n|---|---|\n| `kw6-a2` — a lower-case id | why |\n' \
+    > "$LS_FXDIR/board-lower/BACKLOG.md"
+
+  mkdir -p "$LS_FXDIR/board-dup"
+  printf '# Fixture board\n\n## Ready\n\n| Item | Intent |\n|---|---|\n| `FIXTURE-ROW-ALPHA` — a fixture row | why |\n\n## In Progress\n\n| Item | Owner |\n|---|---|\n| `FIXTURE-ROW-ALPHA` — the same id again | agent |\n' \
+    > "$LS_FXDIR/board-dup/BACKLOG.md"
+
+  # NOT ENFORCED route: a declared non-md backend. resolve_backend reads only <dir>/CLAUDE.md.
   # ⚠️ THIS DIR MUST ALSO CARRY A BOARD, or the leg is VACUOUS — measured: without a BACKLOG.md the
   # no-board branch satisfies it, so deleting the entire backend branch left the suite green. The
   # board's row deliberately does NOT contain the fixture's Kit-Row, so only the backend branch can
-  # produce the N/A.
+  # produce the verdict.
+  # ⚠️ THIS COMMENT USED TO SAY "N/A route 2". IT IS NO LONGER AN N/A (NON-MD-BACKEND-NEVER-SILENT):
+  # the branch reports NOT ENFORCED and REFUSES, and the two sibling fixtures below carry the
+  # ratified waiver and the unfilled incept stamp that separate green-with-notice from red.
   mkdir -p "$LS_FXDIR/backend-github"
   printf '# Fixture charter\n\n- **Backlog backend**: GitHub Issues\n' > "$LS_FXDIR/backend-github/CLAUDE.md"
   printf '# Fixture board\n\n## Ready\n\n| Item | Intent |\n|---|---|\n| OTHER-ROW-PRESENT — not the declared row | why |\n' \
     > "$LS_FXDIR/backend-github/BACKLOG.md"
+
+  # The same tree, plus a RATIFIED board-governance waiver (the §3.5a bridge) and, separately, the
+  # UNFILLED stamp `incept` writes — which must buy nothing.
+  mkdir -p "$LS_FXDIR/backend-github-waived"
+  cp "$LS_FXDIR/backend-github/CLAUDE.md" "$LS_FXDIR/backend-github-waived/CLAUDE.md"
+  cp "$LS_FXDIR/backend-github/BACKLOG.md" "$LS_FXDIR/backend-github-waived/BACKLOG.md"
+  # TODAY-RELATIVE dates (security S-M1): a future `Opened` is refused, because it makes the 90-day
+  # maximum nominal — so the 2099 dates this fixture used to carry would assert the opposite of the
+  # rule. LS_FX_WV_EXP is re-read by the waived leg, so the assertion cannot drift from the fixture.
+  LS_FX_WV_D0=$(date -u -d "+0 days" +%Y-%m-%d 2>/dev/null || date -u -v+0d +%Y-%m-%d)
+  LS_FX_WV_EXP=$(date -u -d "+60 days" +%Y-%m-%d 2>/dev/null || date -u -v+60d +%Y-%m-%d)
+  printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| board-governance | the kit reads BACKLOG.md only | @jdoe | %s | %s | adopt TRACKER-BACKED-GOVERNANCE | @sec |\n' "$LS_FX_WV_D0" "$LS_FX_WV_EXP" \
+    > "$LS_FXDIR/backend-github-waived/WAIVER-REGISTER.md"
+  mkdir -p "$LS_FXDIR/backend-github-stamp"
+  cp "$LS_FXDIR/backend-github/CLAUDE.md" "$LS_FXDIR/backend-github-stamp/CLAUDE.md"
+  cp "$LS_FXDIR/backend-github/BACKLOG.md" "$LS_FXDIR/backend-github-stamp/BACKLOG.md"
+  printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| board-governance | x | [owner] | %s | %s | y | [security-owner] |\n' "$LS_FX_WV_D0" "$LS_FX_WV_EXP" \
+    > "$LS_FXDIR/backend-github-stamp/WAIVER-REGISTER.md"
 
   # N/A route 3: a pristine-template board. is_pure_template wants the `| [title] |` example row
   # AND no other real data row.
@@ -1082,6 +1316,45 @@ ls_fx_build() {
   printf 'real board row\n\nKit-Row: FIXTURE-ROW-ALPHA\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\n' \
     | git -C "$LS_FXDIR" commit -q -F -
   LS_FX_REALROW=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # O1b — a GATED head with Kit-Stage but NO Kit-Skill (leg c). The refusal an adopter meets when
+  # they learn the entry contract; it is the surface that must hand them the map.
+  echo o1b > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'no skill trailer\n\nKit-Row: DEMO-ROW\nKit-Stage: Build\nKit-Class: control-plane\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_NOSKILLKEY=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # A roster whose STAGE NAME carries a C0 byte. The conf is repo text and a PR can change it, so
+  # the map print is an injection surface exactly as the skill name at :296-305 was (leg k).
+  printf 'KIT_STAGES="Build Rev%siew"\nSTAGE_SKILLS_Build="build tdd"\n' "$(printf '\001')" \
+    > "$LS_FXDIR/roster-ctrl-stage.conf"
+
+  # O2 — SUBSTRING: `Kit-Row: A` (leg d). The design wrote this leg as `Kit-Row: a`; the value is
+  # UPPER-CASE here for a reason worth stating, because it is the difference between this leg
+  # testing what it claims and testing something else. Since security S-M2, a lower-case id is
+  # refused by `row_id_ok` at the front door — so `a` would red on the GRAMMAR and never reach the
+  # lookup, leaving the names-no-row path uncovered. `A` is a well-formed id that occurs in the
+  # fixture board's TEXT (inside `FIXTURE-ROW-ALPHA`) and names no row, which is exactly the
+  # substring the whole-file `grep -Fq` this slice replaces used to accept. The lower-case case has
+  # its own leg (board-lower / LS_FX_LOWERROW).
+  echo o2 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'single-letter row\n\nKit-Row: A\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_SUBSTR=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # O3 — NON-ITEM CELL: the token appears only in another row's Intent/Links cell (leg e). Also
+  # accepted by the old whole-file grep; it is not an Item-cell id, so it names no row.
+  echo o3 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'links-cell row\n\nKit-Row: LINKS-ONLY-ROW\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_LINKSONLY=$(git -C "$LS_FXDIR" rev-parse HEAD)
+
+  # O4 — a LOWER-CASE Kit-Row (security S-M2). The board-lower fixture carries the matching row, so
+  # nothing but the grammar check can refuse this pair.
+  echo o4 > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+  printf 'lower-case row id\n\nKit-Row: kw6-a2\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/tdd\n' \
+    | git -C "$LS_FXDIR" commit -q -F -
+  LS_FX_LOWERROW=$(git -C "$LS_FXDIR" rev-parse HEAD)
 
   # P — FORM: a Kit-Skill with no `skills/` prefix. Needed to exercise the form rule in isolation;
   # review measured that gutting it left the suite green because the single-component rule caught
@@ -1216,6 +1489,35 @@ ls_fx_build() {
   return 0
 }
 
+# K20 — `--help`. The stage->skill map lived ONLY in .kit/roster.conf, and the one moment an agent
+# needs it is while writing the very trailers this gate grades — so the gate answers the question
+# itself. The map is READ from conf_val, never restated: a hard-coded table here would be a second
+# copy of the authority and would drift from it silently. Until now a bare invocation printed the
+# "--head required" line and this arm did not exist.
+print_help() {
+  echo "usage: sh conformance/loop-state.sh --head <sha>   grade the Entry Declaration on that commit"
+  echo "       sh conformance/loop-state.sh --selftest     run this check's own fixtures"
+  echo "       sh conformance/loop-state.sh --help         this text, plus the roster's stage->skill map"
+  echo
+  echo "The Entry Declaration (CLAUDE.md S1, act 4) is a block of trailers that must be the LAST"
+  echo "paragraph of the commit message, and contiguous — a blank line inside it truncates the block,"
+  echo "and every field above the blank line is lost."
+  echo "  Ordinary                  Kit-Row, Kit-Class"
+  echo "  Sensitive / Control-plane Kit-Row, Kit-Class, Kit-Stage, Kit-Skill"
+  echo "  also graded when present  Kit-Intent, Kit-Ceremony, Kit-Stop, Kit-Plan, Kit-Review"
+  echo
+  echo "Stage -> skill map (read live from $ROSTER_CONF — this is the authority, not a copy):"
+  _lsh_stages=$(conf_val KIT_STAGES)
+  if [ -z "$_lsh_stages" ]; then
+    echo "  (none — KIT_STAGES is missing or empty in $ROSTER_CONF)"
+    return 0
+  fi
+  for _lsh_s in $_lsh_stages; do
+    printf '  %-10s %s\n' "$_lsh_s" "$(conf_val "STAGE_SKILLS_$_lsh_s")"
+  done
+  return 0
+}
+
 selftest() {
   st_fail=0
   # FIRST: check the checker. Eight legs below depend on ls_assert_reason, and it is structurally
@@ -1286,6 +1588,26 @@ selftest() {
     # first". An off-by-one cannot satisfy both this and the single-key positive above.
     check_declaration "$LS_FX_DUP" >/dev/null 2>&1 \
       && { echo "selftest FAIL: a duplicate Kit-Class must FAIL, never take-the-first"; st_fail=1; }
+
+    # --- STAGE-ARTIFACT KEYS (LOOP-STAGE-ARTIFACT-GATE) --------------------------------------
+    # POSITIVE — well-formed Kit-Plan + a consolidated two-record Kit-Review must PASS. An
+    # over-strict implementation (one that refuses the comma set) breaks THIS leg.
+    check_declaration "$LS_FX_ARTIFACT" ordinary >/dev/null 2>&1 \
+      || { echo "selftest FAIL: well-formed Kit-Plan/Kit-Review (incl. a comma-separated set) must PASS"; st_fail=1; }
+
+    # NEGATIVE — a Kit-Review outside `docs/reviews/` must FAIL. An always-PASS implementation, and
+    # an absent-is-N/A one that forgot PRESENT-implies-VALIDATED, both break THIS leg.
+    check_declaration "$LS_FX_ARTIFACT_PFX" ordinary >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a Kit-Review outside 'docs/reviews/' must FAIL, not read as 'a record was named'"; st_fail=1; }
+
+    # NEGATIVE — an EMPTY element inside the comma set must FAIL. A split that silently drops empties
+    # (the IFS word-split this file used before semgrep refused it) passes THIS leg only by accident.
+    check_declaration "$LS_FX_ARTIFACT_EMPTY" ordinary >/dev/null 2>&1 \
+      && { echo "selftest FAIL: an empty element in a comma-separated Kit-Review set must FAIL, not be skipped"; st_fail=1; }
+
+    # NEGATIVE — a traversing Kit-Plan must FAIL at the boundary.
+    check_declaration "$LS_FX_ARTIFACT_TRAV" ordinary >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a traversing Kit-Plan value must FAIL"; st_fail=1; }
 
     # CHARSET NEGATIVE — a regex-metacharacter Kit-Row must be refused at the boundary before it
     # ever reaches a board grep.
@@ -1434,13 +1756,76 @@ selftest() {
     _st_board_saved="$LS_BOARDROOT"
     LS_BOARDROOT="$LS_FXDIR/board"
 
-    # POSITIVE — a row present on the board matches.
+    # POSITIVE (leg a) — an id leading exactly one Item cell RESOLVES, and the state word is
+    # `resolved`. The word is asserted, not just the rc: `matched` was the honest label for a
+    # substring test and the run line must stop saying it.
     check_row "$LS_FX_REALROW" >/dev/null 2>&1 \
-      || { echo "selftest FAIL: a Kit-Row present on the board must match"; st_fail=1; }
+      || { echo "selftest FAIL: a Kit-Row leading an Item cell must RESOLVE"; st_fail=1; }
+    [ "$LS_ROW_STATE" = "resolved" ] \
+      || { echo "selftest FAIL: the row leg must report 'resolved', got '$LS_ROW_STATE'"; st_fail=1; }
 
     # NEGATIVE — a row that appears nowhere on the board must FAIL.
     check_row "$LS_FX_OK" >/dev/null 2>&1 \
       && { echo "selftest FAIL: Kit-Row 'DEMO-ROW' appears nowhere on the board and must FAIL"; st_fail=1; }
+
+    # (d) SUBSTRING — `Kit-Row: a` occurs in the board's TEXT and names no row. The mutant is the
+    # code this replaces (`grep -Fq -- "$_ls_row" "$_ls_board"`), which accepts it.
+    _st_ro=$(check_row "$LS_FX_SUBSTR" 2>&1) && _st_rr=0 || _st_rr=$?
+    [ "$_st_rr" -ne 0 ] \
+      || { echo "selftest FAIL: Kit-Row 'A' is a substring of the board, not a row — must be REFUSED"; st_fail=1; }
+    case "$_st_ro" in
+      *"names no row"*) : ;;
+      *) echo "selftest FAIL: the substring refusal must say 'names no row', got <$_st_ro>"; st_fail=1 ;;
+    esac
+
+    # (e) NON-ITEM CELL — the token occurs only in another row's Intent/Links cell. Same mutant.
+    check_row "$LS_FX_LINKSONLY" >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a token present only in a non-Item cell must be REFUSED"; st_fail=1; }
+
+    # (f) TITLE-ONLY ROW — the row is on the board in prose but carries no backticked id. The
+    # refusal is the adopter's ONLY remedy surface, so it must name act 3 and the grammar.
+    LS_BOARDROOT="$LS_FXDIR/board-titleonly"
+    _st_ro=$(check_row "$LS_FX_REALROW" 2>&1) && _st_rr=0 || _st_rr=$?
+    [ "$_st_rr" -ne 0 ] \
+      || { echo "selftest FAIL: a title-only row carries no id and must be REFUSED"; st_fail=1; }
+    case "$_st_ro" in
+      *"act 3"*) : ;;
+      *) echo "selftest FAIL: the names-no-row refusal must cite CLAUDE.md act 3, got <$_st_ro>"; st_fail=1 ;;
+    esac
+    case "$_st_ro" in
+      *'[A-Z0-9][A-Z0-9-]*'*) : ;;
+      *) echo "selftest FAIL: the names-no-row refusal must state the id grammar, got <$_st_ro>"; st_fail=1 ;;
+    esac
+
+    # (S-M2) THE GRAMMAR IS CHECKED, NOT MERELY QUOTED. A lower-case id on BOTH sides — the board
+    # row and the trailer — used to RESOLVE, while the names-no-row refusal three lines away told
+    # the reader the grammar was `[A-Z0-9][A-Z0-9-]*`. `board-claim.sh` refuses such an id at its
+    # front door (it becomes a ref name), so the pair could never have been claimed either.
+    LS_BOARDROOT="$LS_FXDIR/board-lower"
+    _st_ro=$(check_row "$LS_FX_LOWERROW" 2>&1) && _st_rr=0 || _st_rr=$?
+    [ "$_st_rr" -ne 0 ] \
+      || { echo "selftest FAIL: a lower-case Kit-Row must be REFUSED even when the board agrees with it"; st_fail=1; }
+    case "$_st_ro" in
+      *'[A-Z0-9][A-Z0-9-]*'*) : ;;
+      *) echo "selftest FAIL: the grammar refusal must state the charset, got <$_st_ro>"; st_fail=1 ;;
+    esac
+    case "$_st_ro" in
+      *"is not a well-formed row id"*) : ;;
+      *) echo "selftest FAIL: the grammar refusal must say the id is ill-formed (not 'names no row'), got <$_st_ro>"; st_fail=1 ;;
+    esac
+    LS_BOARDROOT="$LS_FXDIR/board"
+
+    # (g) AMBIGUOUS — one id on two rows. THE load-bearing negative for row_count: swap it for
+    # row_exists and this board is indistinguishable from the good one.
+    LS_BOARDROOT="$LS_FXDIR/board-dup"
+    _st_ro=$(check_row "$LS_FX_REALROW" 2>&1) && _st_rr=0 || _st_rr=$?
+    [ "$_st_rr" -ne 0 ] \
+      || { echo "selftest FAIL: an id carried by TWO rows must be REFUSED, never resolved"; st_fail=1; }
+    case "$_st_ro" in
+      *"AMBIGUOUS"*"2 rows"*) : ;;
+      *) echo "selftest FAIL: the duplicate refusal must say AMBIGUOUS and count the rows, got <$_st_ro>"; st_fail=1 ;;
+    esac
+    LS_BOARDROOT="$LS_FXDIR/board"
 
     # N/A ROUTE 1 — no board at all: exactly a fresh adopter export (BACKLOG.md is export-ignore'd).
     # Must be N/A, never RED. This is the green-on-clone failure class.
@@ -1448,11 +1833,53 @@ selftest() {
     check_row "$LS_FX_OK" >/dev/null 2>&1 \
       || { echo "selftest FAIL: no board present must be N/A, not a RED first PR"; st_fail=1; }
 
-    # N/A ROUTE 2 — a non-BACKLOG.md backend (design §10.2 / §11.3). Required by plan T6.2 and
-    # previously unfixtured: only the no-board route was covered.
+    # NOT ENFORCED (was N/A ROUTE 2) — a non-BACKLOG.md backend. This leg used to assert that a
+    # github backend N/A'd the row leg and returned 0: governance switched off, silently, on a
+    # tree the PR itself could declare. Now it REFUSES with the shared sentence
+    # (NON-MD-BACKEND-NEVER-SILENT, D-240903-1 §3); observe-vs-enforce is the job's dial, not a
+    # third knob here.
     LS_BOARDROOT="$LS_FXDIR/backend-github"
+    _st_ro=$(check_row "$LS_FX_OK" 2>&1) && _st_rr=0 || _st_rr=$?
+    [ "$_st_rr" -ne 0 ] \
+      || { echo "selftest FAIL: a hosted-tracker backend must be NOT ENFORCED (refused), never a silent N/A"; st_fail=1; }
+    case "$_st_ro" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: the non-md refusal must carry the NOT ENFORCED sentence, got <$_st_ro>"; st_fail=1 ;;
+    esac
+    # LS_ROW_STATE is what the run's summary line prints, so it must ALSO stop saying N/A. Assert
+    # it from a call that is NOT inside a command substitution — a subshell's assignment never
+    # reaches this shell, and reading it after the capture above would grade the PREVIOUS leg.
+    check_row "$LS_FX_OK" >/dev/null 2>&1 || true
+    case "$LS_ROW_STATE" in
+      "NOT ENFORCED"*) : ;;
+      *) echo "selftest FAIL: LS_ROW_STATE must record NOT ENFORCED, got '$LS_ROW_STATE'"; st_fail=1 ;;
+    esac
+
+    # STREAM, not just content (security S-L3). hooks/pre-push captures this predicate's STDERR
+    # ONLY (`2>&1 >/dev/null`), and it keys its remedy on the sentence. With the unwaived verdict on
+    # STDOUT the hook saw nothing, fell through to the generic branch, and told an author whose
+    # trailers were perfect to "fix the trailer block ... git commit --amend". Every other leg here
+    # captures 2>&1 and is structurally blind to which stream this is, so it needs its own leg.
+    _st_ro=$(check_row "$LS_FX_OK" 2>&1 >/dev/null) || true
+    case "$_st_ro" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: an UNWAIVED NOT ENFORCED verdict must reach STDERR (hooks/pre-push reads only that), got <$_st_ro>"; st_fail=1 ;;
+    esac
+
+    # …and a RATIFIED, filled, unexpired board-governance waiver renders it green WITH the notice.
+    LS_BOARDROOT="$LS_FXDIR/backend-github-waived"
+    _st_ro=$(check_row "$LS_FX_OK" 2>&1) && _st_rr=0 || _st_rr=$?
+    [ "$_st_rr" -eq 0 ] \
+      || { echo "selftest FAIL: a ratified board-governance waiver must render the row leg rc 0"; st_fail=1; }
+    case "$_st_ro" in
+      *"NOT ENFORCED: backend 'github' — waived until $LS_FX_WV_EXP by @jdoe"*) : ;;
+      *) echo "selftest FAIL: the waived verdict must still print NOT ENFORCED with owner+expiry, got <$_st_ro>"; st_fail=1 ;;
+    esac
+
+    # …and the UNFILLED incept stamp buys nothing.
+    LS_BOARDROOT="$LS_FXDIR/backend-github-stamp"
     check_row "$LS_FX_OK" >/dev/null 2>&1 \
-      || { echo "selftest FAIL: a github backend must N/A the row leg"; st_fail=1; }
+      && { echo "selftest FAIL: an unfilled [placeholder] waiver row must NOT render the gate green"; st_fail=1; }
 
     # N/A ROUTE 3 — a pristine-template board (§11.3, plan T6.2). Also previously unfixtured.
     LS_BOARDROOT="$LS_FXDIR/board-pristine"
@@ -1737,6 +2164,37 @@ selftest() {
       map_completeness || st_fail=1
     ROSTER_CONF="$_st_conf_saved2"
 
+    # --- K20: THE CONTROL-PLANE REFUSAL PRINTS THE STAGE->SKILL MAP ---------------------------
+    # (c) A gated head missing Kit-Skill is refused. The refusal is the adopter's whole remedy
+    # surface: without the map they must find .kit/roster.conf themselves, and the plan doc that
+    # explains it is export-ignore'd. Assert EVERY stage name in KIT_STAGES reaches stderr — an
+    # oracle over the whole map, not one sampled stage (a per-site leg would survive a truncation).
+    _st_cpo=$(check_declaration "$LS_FX_NOSKILLKEY" control-plane 2>&1) && _st_cpr=0 || _st_cpr=$?
+    [ "$_st_cpr" -ne 0 ] \
+      || { echo "selftest FAIL: a control-plane head with no Kit-Skill must be REFUSED"; st_fail=1; }
+    for _st_stg in $(conf_val KIT_STAGES); do
+      case "$_st_cpo" in
+        *"$_st_stg"*) : ;;
+        *) echo "selftest FAIL: the missing-key refusal must print stage '$_st_stg' from the map"; st_fail=1 ;;
+      esac
+    done
+
+    # (k) SANITISED. A roster stage name carrying a C0 byte must not put that byte on stderr —
+    # stderr is the Actions log, where a line-start is a workflow command. Mutant: print without
+    # ls_safe and this leg reds.
+    _st_conf_saved3="$ROSTER_CONF"
+    ROSTER_CONF="$LS_FXDIR/roster-ctrl-stage.conf"
+    _st_cpo=$(check_declaration "$LS_FX_NOSKILLKEY" control-plane 2>&1) && _st_cpr=0 || _st_cpr=$?
+    case "$_st_cpo" in
+      *"Rev$(printf '\001')iew"*)
+        echo "selftest FAIL: the stage-map print leaked a C0 byte from the roster to stderr"; st_fail=1 ;;
+    esac
+    case "$_st_cpo" in
+      *"Review"*) : ;;                # `Rev\001iew` with the byte stripped — still readable
+      *) echo "selftest FAIL: the stage-map print dropped the C0-bearing stage entirely"; st_fail=1 ;;
+    esac
+    ROSTER_CONF="$_st_conf_saved3"
+
     # --- CONTROL-PLANE POSITIVE ----------------------------------------------------------------
     # declared == derived == control-plane must PASS. This is the class where a false-RED is most
     # expensive and the only one of the three with no positive leg until now.
@@ -1745,6 +2203,33 @@ selftest() {
 
     LS_REPO="$_st_repo_saved"
     ls_fx_cleanup
+  fi
+
+  # --- K20: --help prints the stage->skill map, and a bare invocation still refuses ---------------
+  # POSITIVE: every token of the LIVE KIT_STAGES appears in the --help output and rc is 0 — keyed
+  # on conf_val, so a --help that stopped reading the roster (or restated a stale copy) reds here.
+  # NEGATIVE (load-bearing): no arguments must still exit 2 with the existing line, or adding a
+  # help arm would have quietly turned "never defaults to HEAD" into a default.
+  if _st_help=$(sh "$0" --help 2>&1); then _st_hrc=0; else _st_hrc=$?; fi
+  _st_hmiss=""
+  for _st_hs in $(conf_val KIT_STAGES); do
+    printf '%s\n' "$_st_help" | grep -qF -- "$_st_hs" || _st_hmiss="$_st_hmiss $_st_hs"
+  done
+  if [ "$_st_hrc" -eq 0 ] && [ -z "$_st_hmiss" ] \
+     && printf '%s\n' "$_st_help" | grep -qF -- "Stage -> skill map"; then
+    echo "selftest PASS: --help prints the stage->skill map (every KIT_STAGES token present), rc 0"
+  else
+    echo "selftest FAIL: --help rc=$_st_hrc, stage(s) missing from the map output:${_st_hmiss:- none}"; st_fail=1
+  fi
+  if sh "$0" >/dev/null 2>&1; then
+    echo "selftest FAIL: a bare invocation must exit 2, never default to HEAD"; st_fail=1
+  else
+    _st_brc=$?
+    if [ "$_st_brc" -eq 2 ]; then
+      echo "selftest PASS: a bare invocation still exits 2 (never defaults to HEAD)"
+    else
+      echo "selftest FAIL: a bare invocation exited $_st_brc, expected 2"; st_fail=1
+    fi
   fi
 
   if [ "$st_fail" -ne 0 ]; then echo "loop-state --selftest: FAIL" >&2; return 1; fi
@@ -1907,12 +2392,15 @@ run_gate() {   # $1 = sha
 # --- dispatch ---
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
+  # K20: --help answers the stage->skill question where the trailers are written. It is placed
+  # BEFORE --head's requirement and changes nothing about it: a BARE invocation still exits 2.
+  -h|--help)  print_help; exit 0 ;;
   # NEVER defaults to HEAD. On pull_request, actions/checkout checks out refs/pull/N/merge —
   # GitHub's ephemeral merge commit, whose message carries NO trailers. A gate built on HEAD would
   # either false-RED every PR or get "fixed" into walking back until a trailer is found, at which
   # point ANY ancestor satisfies it (design section 3.1, Security C2 — CRITICAL).
   --head)     [ $# -ge 2 ] || { echo "loop-state: --head needs a SHA" >&2; exit 2; }
               run_gate "$2"; exit $? ;;
-  *)          echo "loop-state: --head <sha> or --selftest required (never defaults to HEAD)" >&2
+  *)          echo "loop-state: --head <sha> or --selftest required (never defaults to HEAD); --help prints the stage->skill map" >&2
               exit 2 ;;
 esac

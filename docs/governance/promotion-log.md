@@ -14,8 +14,10 @@ are now bound to the approved commit as **git notes** under `refs/notes/promotio
 - **Viewed with** `scripts/promotion-verify.sh log` (a human-readable **projection** of the notes —
   one source of truth, rendered on demand; not a second synced surface).
 - **Read by** `scripts/promotion-verify.sh check` to verify `shipped == approved`.
-- **Shared with** `git push origin refs/notes/promotions` (notes need an explicit push — the record
-  script prints this guidance; a forgotten push means the record isn't shared).
+- **Published by `record` itself** — notes still need an explicit push, but it is no longer a
+  memory note: `record` fetches the ledger first, refuses if the local one has diverged, and pushes
+  the record it just wrote (unwinding that note if the push is rejected). `--no-push` is the
+  labelled fixture escape; `promotion-verify.sh log --unpushed` names anything not yet published.
 
 > **What the record proves — and does not.** It is auditable evidence that an explicit, per-gate human
 > GO existed, bound to a specific commit, *before* the agent actuated a merge/tag. The `approved-by`

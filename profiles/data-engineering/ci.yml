@@ -114,7 +114,11 @@ jobs:
 
       - name: Generate SBOM (CycloneDX)
         id: gate-sbom
-        run: uvx cyclonedx-py environment --output-format JSON --outfile sbom.json
+        # K10: `uvx cyclonedx-py` resolves a PyPI shim with no `--outfile`; `--from
+        # cyclonedx-bom==7.3.1` names the real (pinned) distribution and `--of`/`-o` its real flags.
+        # `.venv` is LOAD-BEARING: with no target, `environment` inventories the uvx TOOL venv —
+        # cyclonedx-bom's own dependencies, not your app. Measured on an incepted tree.
+        run: uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment .venv --of JSON -o sbom.json
 
       - name: Upload SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4

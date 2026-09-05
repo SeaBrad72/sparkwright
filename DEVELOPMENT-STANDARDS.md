@@ -185,6 +185,7 @@ WCAG 2.1 AA. Semantic elements (never style a `div` as a control). Full keyboard
 - **RUNBOOK** — setup, deploy, troubleshoot, rollback, RPO/RTO, test accounts, known issues. Must enable a **cold resume** by another engineer or agent.
 - **ADRs** (`docs/architecture/`) — record significant decisions with context, alternatives, consequences. **ADR-000 records the stack choice.**
 - **CHANGELOG** — every user-facing change (Keep a Changelog + semver).
+- **Verbatim evidence** — captured command output is evidence only if its bytes survive: append `templates/gitattributes-evidence` to your `.gitattributes`, or the pre-commit whitespace rule and CRLF normalisation silently rewrite the very output you are citing as proof.
 
 ### Citation discipline
 

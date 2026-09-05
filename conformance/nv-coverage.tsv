@@ -38,7 +38,7 @@ conformance/brownfield-walk.sh	UNCOVERED	no-idiom
 conformance/build-output-ignored.sh	KILLED	-
 conformance/ceremony-binding.sh	KILLED	-
 conformance/check-links.sh	UNCOVERED	no-idiom
-conformance/ci-classify-changes.sh	UNCOVERED	no-idiom
+conformance/ci-classify-changes.sh	KILLED	selftest caught the neutered FAIL path (CI-LANE-BY-CHANGE-CLASS: the --push-graded predicate gives this file a mutable FAIL idiom it did not have)
 conformance/ci-gates.sh	KILLED	-
 conformance/ci-selftest-coverage.sh	KILLED	-
 conformance/citation-history.sh	KILLED	-

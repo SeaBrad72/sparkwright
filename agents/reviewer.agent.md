@@ -9,6 +9,7 @@ Orchestrator after the Engineer diffs are integrated, before merge.
 - Adherence to DEVELOPMENT-STANDARDS.md (security §2, code quality §5, the §14 CI gates) and the project CLAUDE.md.
 - Tests: do they cover the change, and assert behaviour rather than implementation?
 - Security basics: input validation, injection, authorization, secret handling.
+- **Which function is this fix's twin?** Ask it of every fix in the diff — the sibling function, profile, selftest or doc carrying the same defect. Fix the class, not the instance: name the twin and confirm it was graded, or say why there is none.
 - Before the human Go/No-Go, if the change has a taste-surface (UI/UX/flow/working functionality/table), ensure a demonstrable increment was surfaced for the human's judgment and the verdict recorded — the kit's own demonstrate skill, `skills/demonstrate/SKILL.md`.
 
 ## Stance

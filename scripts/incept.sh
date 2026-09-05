@@ -157,7 +157,18 @@ while [ $# -gt 0 ]; do
     --intent-owner) reqval $# --intent-owner; OWNER="$2"; shift 2 ;;
     --stack) reqval $# --stack; STACK="$2"; STACK_EXPLICIT=1; shift 2 ;;
     --team) reqval $# --team; TEAM="$2"; TEAM_EXPLICIT=1; shift 2 ;;
-    --backlog) reqval $# --backlog; BACKLOG="$2"; shift 2 ;;
+    # VALIDATED AT THE FRONT DOOR against the six canonical tokens (security S-L4). The value is
+    # stamped into CLAUDE.md AND, on a non-md choice, interpolated into a markdown table row in
+    # WAIVER-REGISTER.md, so an unconstrained string is a text-injection surface in two files at
+    # once. It is also the value every downstream gate resolves: an unrecognised token used to be
+    # discovered later, by resolve_backend, on the adopter's first CI run. Refuse it here, naming
+    # the set — a one-time bootstrap must not stamp a value the whole kit will then reject.
+    --backlog) reqval $# --backlog
+      case " $BACKLOG_BACKENDS " in
+        *" $2 "*) : ;;
+        *) echo "incept: --backlog '$2' is not a known backend (known: $BACKLOG_BACKENDS)" >&2; exit 2 ;;
+      esac
+      BACKLOG="$2"; shift 2 ;;
     --ci) reqval $# --ci; CI="$2"; shift 2 ;;
     --harness) reqval $# --harness; HARNESS="$2"; shift 2 ;;
     --operator-fluency) reqval $# --operator-fluency; FLUENCY="$2"; shift 2 ;;
@@ -920,14 +931,65 @@ if [ ! -f .gitignore ] || ! grep -qxF '.kit-run/' .gitignore 2>/dev/null; then
   printf '\n# Local run directory — runaway tally + guard deny log; never committed (docs/operations/runtime-guards.md)\n.kit-run/\n' >> .gitignore
   echo "ensured .kit-run/ is gitignored (guard deny log + runaway tally stay out of git)"
 fi
+# NON-MD BACKENDS MEET THE GAP ON DAY ZERO (NON-MD-BACKEND-NEVER-SILENT §3.5a). The kit's three
+# board-bound gates read BACKLOG.md only, so on a hosted tracker they report NOT ENFORCED and go
+# red. Learning that on your first PR — from a red nothing in the PR can clear — is friction with no
+# ladder, so incept says it HERE and stamps the waiver row that IS the ladder. The two bracketed
+# cells are placeholders on purpose: `waivers-valid.sh --active board-governance` refuses them, so
+# the first PR is still red, with a sentence naming the exact row a human must ratify. A stamp is
+# not a ratification, and this function is careful not to become one.
+stamp_board_governance_waiver() {   # $1 = the chosen backend token
+  [ -f WAIVER-REGISTER.md ] || cp templates/WAIVER-REGISTER.md WAIVER-REGISTER.md
+  grep -q '^| board-governance |' WAIVER-REGISTER.md && return 0    # idempotent
+  # +90 days: GNU then BSD. If NEITHER parses (a date(1) with neither dialect), stamp the opening
+  # date — a same-day expiry is still refused for its placeholders, so the fallback cannot
+  # accidentally widen anything; it only makes the row shorter-lived.
+  _sbw_exp=$(date -u -d "$DATE +90 days" +%Y-%m-%d 2>/dev/null \
+    || date -u -j -v+90d -f %Y-%m-%d "$DATE" +%Y-%m-%d 2>/dev/null) || _sbw_exp="$DATE"
+  [ -n "$_sbw_exp" ] || _sbw_exp="$DATE"
+  # NO `|` IN AN INTERPOLATED VALUE (security S-L4). The row IS a markdown table row, so a pipe in
+  # $1 would forge extra columns and shift Owner/Opened/Expires into cells the validator then reads
+  # as something else. $1 is already constrained to the six tokens by the --backlog parse check, so
+  # this is defence in depth against a future caller, and it REFUSES rather than sanitising: a
+  # backend token that needs escaping is not a backend token.
+  case "$1" in
+    *'|'*) echo "incept: refusing to stamp a board-governance waiver for a backend token containing '|' — add the row by hand (templates/WAIVER-REGISTER.md)." >&2; return 0 ;;
+  esac
+  # printf, NOT `awk -v` (security S-L4). `awk -v row=...` runs ESCAPE PROCESSING over the assigned
+  # value, so a `\t`, a `\n` or a lone `\` in the text becomes something else inside the program —
+  # a data-into-program path for a value the program then prints verbatim. Build the line with
+  # printf, and hand awk only the FILE it is reading.
+  _sbw_row=$(printf '| board-governance | The kit reads BACKLOG.md only; board-bound gates cannot read '"'"'%s'"'"' | [owner] | %s | %s | Adopt TRACKER-BACKED-GOVERNANCE when released, or move the board to BACKLOG.md | [security-owner] |' "$1" "$DATE" "$_sbw_exp")
+  # Insert directly after the Active table's separator row — awk to a temp file, then move, because
+  # `sedi` is a substitution helper and this is an insertion. The row reaches awk through the
+  # ENVIRONMENT (ENVIRON), which is not escape-processed.
+  SBW_ROW="$_sbw_row" awk '
+    { print }
+    /^##[[:space:]]+Active waivers/ { insec=1; next }
+    insec && !done && /^\|[-|: ]*\|[[:space:]]*$/ { print ENVIRON["SBW_ROW"]; done=1; insec=0 }
+  ' WAIVER-REGISTER.md > WAIVER-REGISTER.md.tmp && mv WAIVER-REGISTER.md.tmp WAIVER-REGISTER.md
+  # VERIFY THE STAMP LANDED, and say so honestly when it did not (reviewer R4). The insertion is
+  # anchored on a `## Active waivers` section AND a separator row; a register that carries neither —
+  # an adopter's own file, a future template edit — silently keeps every line and stamps nothing,
+  # and the success sentence below would then be a false claim in the one place an adopter is being
+  # told the gap is now visible. Fail LOUD and hand them the manual step.
+  if ! grep -q '^| board-governance |' WAIVER-REGISTER.md; then
+    echo "incept: could not stamp the board-governance row into WAIVER-REGISTER.md (no '## Active waivers' table found) — add it by hand from templates/WAIVER-REGISTER.md before your first PR." >&2
+    return 0
+  fi
+  echo "NOT ENFORCED: backend '$1' — board-bound governance is not verified on this tree (the kit reads BACKLOG.md only; see docs/work-tracking/adapters.md §Which gates bind). Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver (templates/WAIVER-REGISTER.md)."
+  echo "note: WAIVER-REGISTER.md now carries a pre-filled 'board-governance' row with [owner] and [security-owner] PLACEHOLDERS. Until a human fills both, your board-bound CI gates stay red — that is the point: the gap is real and it is now visible."
+}
 case "$BACKLOG" in
   md) [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;
   jira)
     [ -f JIRA-SETUP.md ] || { cp templates/JIRA-SETUP-TEMPLATE.md JIRA-SETUP.md; sedi "s/\[Project Name\]/${ENAME}/g" JIRA-SETUP.md; }
-    echo "note: backlog backend 'jira' selected — JIRA-SETUP.md written; configure it, then verify with 'sh conformance/tracker-contract.sh'. Declare the backend in CLAUDE.md §3." ;;
+    echo "note: backlog backend 'jira' selected — JIRA-SETUP.md written; configure it, then verify with 'sh conformance/tracker-contract.sh'. Declare the backend in CLAUDE.md §3."
+    stamp_board_governance_waiver jira ;;
   *)
     [ -f TRACKER-SETUP.md ] || { cp templates/TRACKER-SETUP-TEMPLATE.md TRACKER-SETUP.md; sedi "s/\[Project Name\]/${ENAME}/g; s/\[BACKEND\]/${BACKLOG}/g" TRACKER-SETUP.md; }
-    echo "note: backlog backend '$BACKLOG' selected (convention-tier) — TRACKER-SETUP.md written; map it via docs/work-tracking/adapters.md. Declare it in CLAUDE.md §3." ;;
+    echo "note: backlog backend '$BACKLOG' selected (convention-tier) — TRACKER-SETUP.md written; map it via docs/work-tracking/adapters.md. Declare it in CLAUDE.md §3."
+    stamp_board_governance_waiver "$BACKLOG" ;;
 esac
 mkdir -p docs/architecture
 [ -f docs/architecture/ADR-000-stack.md ] || { cp docs/ADR-000-EXAMPLE.md docs/architecture/ADR-000-stack.md; sedi "s/\[YYYY-MM-DD\]/${DATE}/g" docs/architecture/ADR-000-stack.md; }

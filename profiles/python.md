@@ -41,7 +41,7 @@ dev:           uv run uvicorn <package>.api:app --reload
 test:          uv run pytest
 test:coverage: uv run pytest --cov --cov-fail-under=80
 lint:          uv run ruff check .
-type-check:    uv run mypy .
+type-check:    uv run mypy          # no path arg — scope lives in [tool.mypy] files
 build:         uv build
 start:         uv run uvicorn <package>.api:app
 ```

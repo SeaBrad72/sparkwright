@@ -21,8 +21,25 @@ set -eu
 # ratchet keeps its 1-2 line bite. This is a CONSTANT edit in a reviewed PR — the mechanism this
 # header prescribes — and it is called out in the build record so the ratifier judges it explicitly
 # rather than discovering it in a diff.
-BUDGETS="CLAUDE.md:135 DEVELOPMENT-PROCESS.md:480 DEVELOPMENT-STANDARDS.md:350"
-TOTAL_BUDGET=965
+# ⚠️ GOVERNED BUMP AT LOOP-STAGE-ARTIFACT-GATE (2026-09-04): DEVELOPMENT-PROCESS.md 480 -> 485 and the
+# total 965 -> 970, both +5, for the TWO §15 artifact rows the design requires (the plan file and the
+# review record — an artifact table that omits the two artifacts a required context refuses without is
+# the drift this ratchet exists to catch, pointed the wrong way). The §12 rewrite that lands in the
+# same slice was fitted at ZERO net lines by folding three paragraphs into the existing bullet, so the
+# +5 buys table rows and nothing else. RE-DERIVED AT THE FIX ROUND (the false-count class — the first figure was 967, off by two): 482/485 and 965/970 — the ratchet keeps
+# its 3-line bite, and the core-3 total lands at 965/970 (the other two docs are each 1 under). A
+# CONSTANT edit in a reviewed PR, the mechanism this header prescribes, called out
+# in the build record so the ratifier judges it explicitly rather than discovering it in a diff.
+# ⚠️ GOVERNED BUMP AT T1-DOCS-SWEEP (2026-09-05): CLAUDE.md 135 -> 136, +1, for K19's one-line
+# escape-card pointer inside §1 (and its blank line). The core-3 TOTAL is NOT raised and does not
+# need to be: RE-DERIVED AT THE FIX ROUND with this gate's own `awk 'END{print NR}'` (the first
+# figure, 967, was measured BEFORE the same slice added K11's line to DEVELOPMENT-STANDARDS.md and
+# was never re-taken — the false-count class again) — CLAUDE.md 136 + DEVELOPMENT-PROCESS.md 482 +
+# DEVELOPMENT-STANDARDS.md 350 = 968/970, so the total ratchet keeps a 2-line bite, not 3. A
+# CONSTANT edit in a reviewed PR, the mechanism this header prescribes, called out in the build
+# record so the ratifier judges it explicitly rather than discovering it in a diff.
+BUDGETS="CLAUDE.md:136 DEVELOPMENT-PROCESS.md:485 DEVELOPMENT-STANDARDS.md:350"
+TOTAL_BUDGET=970
 
 # check_one <path> <max>: print PASS/FAIL; return 1 if over budget or missing.
 check_one() {

@@ -22,6 +22,8 @@ One **standing** Orchestrator; the specialists are **ephemeral** subagents — d
 | **Reviewer** | code-review, §14 gates | after integration | on verdict |
 | **Security** | threat-model (early, if sensitive) **+** security-review (Ship) | per hat | on verdict |
 
+**Claiming the row is the Orchestrator's first act on a slice, and it is a forge operation, not a note to self.** Before an Engineer is dispatched, the Orchestrator runs `sh scripts/board-claim.sh claim <ROW-ID> --branch <slice-branch>` (`BOARD-CLAIM-MECHANISM`): it pushes `refs/claims/<ROW-ID>` to origin without a `+`, so a *second* Orchestrator — another session, another team — is refused **at claim time** and told who holds the row, on which branch, since when, instead of discovering the collision at the second squash-merge with both slices already built. The same verb moves the row Ready → In Progress, so fan-out never begins on a row the board and the forge disagree about. `check --all` is the standing view of who holds what; the merge releases the claim (`promotion-verify.sh actuate`), and a claim left behind by an abandoned run is released by hand with `release <ROW-ID> --stale`. The honest ceiling is in `docs/work-tracking/adapters.md`: this stops accidental double-work, not an actor with push rights who deletes the ref.
+
 `builder ≠ reviewer` is enforced by the spin model — Reviewer/Security are spun *fresh*, never a reused Engineer. The fix-loop (NEEDS-FIXES) re-spins a fresh Engineer with the findings in its TCC — no state carried (which is why ephemeral subagents suffice; persistent agent-memory is a later slice).
 
 ## How to invoke

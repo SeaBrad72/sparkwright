@@ -76,16 +76,33 @@ owns_itself() {  # <dir> -> 0 iff <dir> is its own repo root, or is in no repo a
 # worktrees, so it must NOT refuse those (spec §3b). See CP-11 / conformance/repo-ownership.sh (E3, P3).
 git_env_redirected() { [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; }
 
+# K1: `mkdir adopter && cd adopter && git init` and THEN export is the natural adopter order — and
+# the emptiness test above refused it, because a `.git`-only directory is not empty. A destination
+# whose SINGLE entry is a real `.git` DIRECTORY is accepted; anything else is not. Deliberately
+# exact-match on the entry name and deliberately not a symlink: `.git` plus a README is a populated
+# tree (still refused), and a symlinked `.git` would let the staged tree be written through a link
+# to a path the adopter never named. The repo itself is not inspected — a `.git` with history is
+# accepted too; the adopter asked for that.
+dest_only_holds_git() {  # <dest> -> 0 when the ONLY entry is a real, non-symlink .git dir
+  _dg=$1
+  [ "$(ls -A "$_dg" 2>/dev/null)" = ".git" ] || return 1
+  [ -d "$_dg/.git" ] && [ ! -L "$_dg/.git" ]
+}
+
 # CP-4: do_export is now ATOMIC. It stages into a sibling temp dir, verifies, and only then renames
 # into place. Previously it extracted into <dest> BEFORE the carve could fail — so a failed export
 # left a non-empty <dest>, and the retry hit "refusing to clobber". The adopter was WEDGED, and the
 # selftest ASSERTED that wedge ("should extract before refusing"). The design was wrong; this is it
 # corrected. A failed export now leaves NO destination.
 do_export() {  # <dest> <profile-or-empty>  — atomic: stage -> verify -> rename
-  _final=$1; _prof=${2:-}
+  _final=$1; _prof=${2:-}; _keep_git=0
   [ -n "$_final" ] || { echo "adopter-export: missing dest" >&2; return 2; }
   if [ -e "$_final" ] && [ -n "$(ls -A "$_final" 2>/dev/null)" ]; then
-    echo "adopter-export: dest '$_final' exists and is not empty — refusing to clobber" >&2; return 1
+    if dest_only_holds_git "$_final"; then
+      _keep_git=1
+    else
+      echo "adopter-export: dest '$_final' exists and is not empty — refusing to clobber" >&2; return 1
+    fi
   fi
   if [ -n "$_prof" ] && ! known_profiles | grep -qxF -- "$_prof"; then
     echo "adopter-export: unknown profile '$_prof' (known: $(known_profiles | tr '\n' ' '))" >&2; return 1
@@ -115,6 +132,28 @@ do_export() {  # <dest> <profile-or-empty>  — atomic: stage -> verify -> renam
   _stage=$(mktemp -d "$_parent_dir/.adopter-export.XXXXXX") || {
     echo "adopter-export: could not create a staging dir under '$_parent_dir'" >&2; return 1; }
   if _export_into "$_stage" "$_prof"; then
+    if [ "$_keep_git" = 1 ]; then
+      # K1: `.git` lives IN <dest>, so `rmdir` can never clear it and the atomic rename is not
+      # available. Move the staged CONTENTS in instead, one same-filesystem `mv` per top-level
+      # entry (dotfiles included; `git archive` never carries a `.git`, so nothing collides with
+      # the adopter's repo). HONEST CEILING: this one path is NOT atomic — a mid-move failure
+      # leaves <dest> partially populated, and the message below says so rather than pretending.
+      _final_abs=$(cd "$_final" && pwd) || { rm -rf "$_stage"; return 1; }
+      if ! ( cd "$_stage" && find . -mindepth 1 -maxdepth 1 -exec mv -- {} "$_final_abs/" \; ); then
+        # DELIBERATELY NOT `rm -rf "$_stage"`. On every OTHER failure path the staged tree is
+        # discarded because <dest> was never touched; here it WAS, so the stage holds whatever did
+        # not make it across. Deleting it would destroy the only copy of the un-moved remainder and
+        # leave the operator with a half-populated destination and nothing to complete it from.
+        echo "adopter-export: could not move the staged export into '$_final' — it is now" >&2
+        echo "  PARTIALLY POPULATED. The staged tree is DELIBERATELY LEFT IN PLACE at:" >&2
+        echo "    $_stage" >&2
+        echo "  Inspect it, complete the move by hand, or remove everything in '$_final' except" >&2
+        echo "  .git and re-run; delete the staging dir yourself when you are done with it." >&2
+        return 1
+      fi
+      rm -rf "$_stage"
+      return 0
+    fi
     [ -d "$_final" ] && { rmdir "$_final" 2>/dev/null || { rm -rf "$_stage"; \
       echo "adopter-export: dest '$_final' is not an empty dir — refusing" >&2; return 1; }; }
     mv "$_stage" "$_final" || { rm -rf "$_stage"; return 1; }
@@ -164,7 +203,7 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
       done
     fi
   else
-    echo "adopter-export: S3b claims carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's claims.tsv/claims-registry.sh ship untouched"
+    echo "adopter-export: S3b claims carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present) — expected when exporting from a public clone or the published mirror (an export of an export); nothing is wrong; a foreign tree's claims.tsv/claims-registry.sh ship untouched"
   fi
   # R3/C2: the kit's root .gitignore ignores /src/ and /test/ (stray KIT dogfooding output); an
   # adopter puts product source there, so strip those two EXACT lines from the EXPORTED .gitignore
@@ -177,7 +216,7 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
       mv "$_gi.$$.r3c2" "$_gi"
     fi
   else
-    echo "adopter-export: .gitignore /src//test/ carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's .gitignore ships untouched"
+    echo "adopter-export: .gitignore /src//test/ carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present) — expected when exporting from a public clone or the published mirror (an export of an export); nothing is wrong; a foreign tree's .gitignore ships untouched"
   fi
   # --- KW6-A2: carve the kit's `Backlog backend` declaration out of the EXPORTED CLAUDE.md ---
   # The kit's root CLAUDE.md is the PRODUCT doc; it doubles as this repo's project config only because
@@ -198,7 +237,7 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   _cm="$_dest/CLAUDE.md"
   _cm_anchor='^[-*[:space:]]*\**backlog backend\**[^:]*:'
   if ! _ae_is_kit_tree; then
-    echo "adopter-export: 'Backlog backend' CLAUDE.md carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's declaration ships untouched"
+    echo "adopter-export: 'Backlog backend' CLAUDE.md carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present) — expected when exporting from a public clone or the published mirror (an export of an export); nothing is wrong; a foreign tree's declaration ships untouched"
   elif [ -f "$_cm" ]; then
     # Assert EXACTLY ONE anchor match before stripping. The reader (backlog-lib.sh::resolve_backend,
     # :19) takes `grep … | head -1` — it treats one line, the FIRST, as "the declaration". A blind
@@ -268,7 +307,7 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # bespoke merge — routed to ADOPTER-EXPORT-CARVES-FOREIGN-TREES, out of A6 scope.) Mutates ONLY the
   # staging copy $_dest/.gitattributes; the kit's own file is NEVER touched.
   if ! _ae_is_kit_tree; then
-    echo "adopter-export: .gitattributes A6 stub-carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present); a foreign tree's .gitattributes ships untouched (closes the class this carve's own header names as 'out of A6 scope')"
+    echo "adopter-export: .gitattributes A6 stub-carve SKIPPED — '$ROOT' does not look like the kit's own dev tree (no KIT_INTERNAL_MARKERS present) — expected when exporting from a public clone or the published mirror (an export of an export); nothing is wrong; a foreign tree's .gitattributes ships untouched (closes the class this carve's own header names as 'out of A6 scope')"
   else
     _ga="$_dest/.gitattributes"
     if [ -f "$_ga" ]; then
@@ -597,7 +636,61 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     echo "FAIL: rider(c) soundness — could not build the clean-export fixture"; fail=1
   fi
+  # --- K2 — every `carve SKIPPED` notice the exporter actually PRINTS must say it is expected.
+  # They are the loudest thing the quickstart prints from a public clone and they read like four
+  # failures. ASSERTED ON CAPTURED STDOUT of a REAL export, re-using the marker-less foreign fixture
+  # built above (no KIT_INTERNAL_MARKERS -> every carve skips -> every notice fires). An earlier
+  # draft grepped this script's own SOURCE, which is not the same claim: source text proves the
+  # string exists, not that the run emits it — and the naive source grep also counted its own two
+  # patterns (measured 7 against 4 real notices).
+  echo "--- K2: every carve-SKIPPED notice the exporter PRINTS tells the reader nothing is wrong ---"
+  _k2d="$_t/k2-exp"
+  _k2out=$( ( cd "$_fx" && sh scripts/adopter-export.sh "$_k2d" ) 2>&1 ) || true
+  # `grep -c` exits 1 on zero matches, which under `set -e` would abort a PASSING selftest silently
+  # instead of printing the named FAIL below — the count is the assertion, so never let rc escape.
+  _k2_all=$(printf '%s\n' "$_k2out" | grep -c 'carve SKIPPED') || true
+  _k2_ok=$(printf '%s\n' "$_k2out" | grep -c 'carve SKIPPED.*nothing is wrong') || true
+  _k2_all=${_k2_all:-0}; _k2_ok=${_k2_ok:-0}
+  if [ "$_k2_all" -ge 4 ] && [ "$_k2_all" -eq "$_k2_ok" ]; then
+    echo "PASS: K2 — the exporter PRINTED $_k2_all carve-SKIPPED notice(s), every one carrying the 'nothing is wrong' tail"
+  else
+    echo "FAIL: K2 — the exporter printed $_k2_all carve-SKIPPED notice(s) and only $_k2_ok carried the reassurance tail"; fail=1
+  fi
+  rm -rf "$_k2d" 2>/dev/null || true
+
   rm -rf "$_fx" "$_fxd" "$_cd" 2>/dev/null || true
+
+  # --- K1 — a `git init`'d destination is accepted; anything else in it is still refused.
+  # The adopter's natural order is `mkdir proj && cd proj && git init` and THEN export; the
+  # emptiness test refused exactly that (T1 cold trial). POSITIVE: `.git`-only -> export lands and
+  # `.git` SURVIVES. NEGATIVES (load-bearing — without them the fix would be "accept any dest"):
+  # `.git` + one file -> refused with the file untouched; a SYMLINKED `.git` -> refused.
+  echo "--- K1: a .git-only destination is accepted, and only that ---"
+  _gd="$_t/gitonly"; mkdir -p "$_gd" && ( cd "$_gd" && git init -q )
+  if do_export "$_gd" typescript-node >/dev/null 2>&1; then
+    if [ -d "$_gd/.git" ] && [ -f "$_gd/MAINTAINING.md" ]; then
+      echo "PASS: K1 — .git-only dest -> OK with .git intact and the export landed"
+    else
+      echo "FAIL: K1 — .git-only dest exported but .git or the export content is missing"; fail=1
+    fi
+  else
+    echo "FAIL: K1 — .git-only dest was refused (the defect this fixes)"; fail=1
+  fi
+  _gp="$_t/gitplus"; mkdir -p "$_gp" && ( cd "$_gp" && git init -q ) && echo hi > "$_gp/README.md"
+  if do_export "$_gp" typescript-node >/dev/null 2>&1; then
+    echo "FAIL: K1 — .git plus a file was ACCEPTED (a populated tree must still be refused)"; fail=1
+  else
+    [ "$(cat "$_gp/README.md" 2>/dev/null)" = hi ] \
+      && echo "PASS: K1 — .git plus file -> refused, the adopter's file untouched" \
+      || { echo "FAIL: K1 — refused but the adopter's file was disturbed"; fail=1; }
+  fi
+  _gl="$_t/gitlink"; _gr="$_t/gitreal"; mkdir -p "$_gl" "$_gr" && ln -s "$_gr" "$_gl/.git"
+  if do_export "$_gl" typescript-node >/dev/null 2>&1; then
+    echo "FAIL: K1 — a SYMLINKED .git was accepted (the staged tree could be written through a link)"; fail=1
+  else
+    echo "PASS: K1 — symlinked .git -> refused"
+  fi
+  rm -rf "$_gd" "$_gp" "$_gl" "$_gr" 2>/dev/null || true
 
   rm -rf "$_t" 2>/dev/null || true
   [ "$fail" -eq 0 ] && { echo "OK: adopter-export selftest"; exit 0; } || { echo "FAIL: adopter-export selftest"; exit 1; }

@@ -36,7 +36,7 @@ After that, the standard profile commands apply (`profiles/python.md` §3):
 ```sh
 uv sync --frozen                       # gate-install
 uv run ruff check .                    # gate-lint
-uv run mypy .                          # gate-type-check
+uv run mypy                            # gate-type-check (no path arg — see [tool.mypy] files)
 uv run pytest --cov --cov-fail-under=80  # gate-test
 uv build                               # gate-build
 ```

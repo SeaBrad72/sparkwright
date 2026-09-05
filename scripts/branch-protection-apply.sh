@@ -17,8 +17,12 @@
 # required check via the additive endpoint, never remove branch protection or merge anything (the
 # promotion-contract deny stands). --replace is NOT additive — it is a weakening path that RESETS
 # every non-context protection setting to the solo-owner profile: enforce_admins:false ·
-# required_approving_review_count:1 · require_code_owner_reviews:false (named again at the
-# confirmation prompt and in profiles/<stack>/BRANCH-PROTECTION.md).
+# required_approving_review_count:1 · dismiss_stale_reviews:true · require_last_push_approval:true ·
+# require_code_owner_reviews:false (named again at the confirmation prompt and in
+# profiles/<stack>/BRANCH-PROTECTION.md). The two review flags are not cosmetic defaults: since
+# REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) they carry the properties review-lane's deleted
+# attestation leg used to read out of the forge, and conformance/branch-protection.sh FAILs without
+# them.
 #
 # CEILING: it binds contexts; it cannot prevent later unbinding (an admin can still remove one by
 # hand, or edit the declaration to match a weakened forge state — see branch-protection.sh's own
@@ -156,6 +160,29 @@ print_parsed() {
 
 # extract_contexts <body> — one live required-status-check context per line (rc always 0; empty
 # stdout = none/unparsable). jq optional fast path; POSIX sed/tr is the load-bearing path (Δ7).
+# K8 — fetch_live_protection <repo> <branch>: the live GET, with THREE outcomes instead of two.
+# Until now every non-zero `gh api` collapsed to UNVERIFIED rc 2 — including the forge's 404
+# "Branch not protected", which is exactly the state `--replace` exists to leave. The bootstrap
+# profiles/<stack>/BRANCH-PROTECTION.md promises was therefore unreachable on a fresh repo.
+#   0 = protection exists (body on stdout)
+#   4 = the branch is NOT PROTECTED
+#   2 = anything else (403, rate limit, network)
+# The 4 is matched on the forge's RESPONSE TEXT, never on rc alone: a 403 or a transient must
+# never be read as "unprotected" and let a full-object PUT through. If GitHub rewords the message
+# this degrades to 2 (UNVERIFIED) — fail-closed by construction, never to a false bootstrap.
+fetch_live_protection() {
+  _flp_err=$(mktemp) || return 2
+  if _flp_body=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api "repos/$1/branches/$2/protection" 2>"$_flp_err"); then
+    rm -f "$_flp_err"; printf '%s' "$_flp_body"; return 0
+  fi
+  _flp_msg=$(cat "$_flp_err" 2>/dev/null) || _flp_msg=""
+  rm -f "$_flp_err"
+  case "$_flp_body$_flp_msg" in
+    *"Branch not protected"*) return 4 ;;
+    *) return 2 ;;
+  esac
+}
+
 extract_contexts() {
   if command -v jq >/dev/null 2>&1; then
     if _ecj=$(printf '%s' "$1" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null); then
@@ -195,10 +222,10 @@ build_replace_payload() {
   done
   if command -v jq >/dev/null 2>&1; then
     _brp_json=$(printf '%s\n' $_brp_list | grep -v '^$' | jq -R . | jq -s -c \
-      '{required_status_checks:{strict:true,contexts:.},enforce_admins:false,required_pull_request_reviews:{required_approving_review_count:1,dismiss_stale_reviews:true,require_code_owner_reviews:false},restrictions:null}' 2>/dev/null) || _brp_json=""
+      '{required_status_checks:{strict:true,contexts:.},enforce_admins:false,required_pull_request_reviews:{required_approving_review_count:1,dismiss_stale_reviews:true,require_last_push_approval:true,require_code_owner_reviews:false},restrictions:null}' 2>/dev/null) || _brp_json=""
     if [ -n "$_brp_json" ]; then printf '%s' "$_brp_json"; return 0; fi
   fi
-  printf '{"required_status_checks":{"strict":true,"contexts":[%s]},"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_code_owner_reviews":false},"restrictions":null}' "$(json_list "$_brp_list")"
+  printf '{"required_status_checks":{"strict":true,"contexts":[%s]},"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true,"require_code_owner_reviews":false},"restrictions":null}' "$(json_list "$_brp_list")"
 }
 
 confirm() {  # <prompt> -> 0 on y/yes (case-insensitive), 1 otherwise. Reads stdin (pipeable).
@@ -216,7 +243,10 @@ confirm_replace() {
   printf '%s\n' "WARNING: --replace performs a full PUT that OVERWRITES every branch-protection setting on" >&2
   printf '%s\n' "  $BRANCH (review requirements, enforce_admins, restrictions) — not just status-check" >&2
   printf '%s\n' "  contexts. The reset values are the solo-owner defaults: enforce_admins:false ·" >&2
-  printf '%s\n' "  required_approving_review_count:1 · require_code_owner_reviews:false." >&2
+  printf '%s\n' "  required_approving_review_count:1 · dismiss_stale_reviews:true ·" >&2
+  printf '%s\n' "  require_last_push_approval:true · require_code_owner_reviews:false." >&2
+  printf '%s\n' "  The last two are what carry review-lane's retired attestation leg since" >&2
+  printf '%s\n' "  REVIEW-LANE-WAITING-IS-GREEN (2026-09-05); conformance/branch-protection.sh FAILs without them." >&2
   printf '%s\n' "  Prefer --apply (additive) unless you mean this." >&2
   if ! exec 3<>/dev/tty 2>/dev/null; then
     printf '%s\n' "ABORT: --replace requires an interactive terminal (/dev/tty) for its confirmation — refusing to proceed non-interactively (piping input, e.g. 'yes REPLACE |', can never drive this by design)." >&2
@@ -260,8 +290,19 @@ main() {
   if [ -z "$REPO" ]; then REPO=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true); fi
   [ -n "$REPO" ] || { printf '%s\n' "UNVERIFIED: no GitHub repo context (pass --repo=OWNER/REPO or run inside a GitHub remote)"; exit 2; }
 
-  if BODY=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api "repos/$REPO/branches/$BRANCH/protection" 2>/dev/null); then :; else
-    printf '%s\n' "UNVERIFIED: could not fetch live branch protection for $REPO:$BRANCH (no admin rights, no protection configured yet, or a transient error) — three-state, not a pass; if no protection exists on the branch yet, --replace establishes it (see profiles/<stack>/BRANCH-PROTECTION.md)"
+  if BODY=$(fetch_live_protection "$REPO" "$BRANCH"); then LIVE_RC=0; else LIVE_RC=$?; fi
+  if [ "$LIVE_RC" = 4 ]; then
+    # K8: ONLY --replace consumes the not-protected outcome. --apply is additive and has nothing to
+    # add TO, and the dry-run has nothing to read — both keep UNVERIFIED rc 2, naming the remedy.
+    if [ "$MODE" = replace ]; then
+      BODY=""
+      printf '%s\n' "NOT PROTECTED: $REPO:$BRANCH carries no branch protection yet — --replace will ESTABLISH it from the declaration below. The typed confirmation still applies."
+    else
+      printf '%s\n' "UNVERIFIED: $REPO:$BRANCH is not protected yet, so there is nothing live to read and the additive path has nothing to add to — three-state, not a pass. Re-run with --replace to ESTABLISH protection from the declaration (see profiles/<stack>/BRANCH-PROTECTION.md)"
+      exit 2
+    fi
+  elif [ "$LIVE_RC" != 0 ]; then
+    printf '%s\n' "UNVERIFIED: could not fetch live branch protection for $REPO:$BRANCH (no admin rights, or a transient error) — three-state, not a pass; if no protection exists on the branch yet, --replace establishes it (see profiles/<stack>/BRANCH-PROTECTION.md)"
     exit 2
   fi
   LIVE=$(extract_contexts "$BODY")
@@ -408,6 +449,70 @@ STUB
     echo "selftest PASS: piping the literal word REPLACE with no tty still aborts (tty-gating is load-bearing, not the word itself)"
   fi
 
+  # 5b/5c/5d (K8). The forge's NOT-PROTECTED 404 used to collapse into UNVERIFIED rc 2 alongside
+  # every other failure, so --replace could never bootstrap a fresh repo — the exact thing
+  # profiles/<stack>/BRANCH-PROTECTION.md tells the adopter to do at step 4 of inception.
+  # POSITIVE: 404 + --replace reaches the bootstrap disclosure AND confirm_replace's warning (the
+  # tty gate above still blocks the PUT — this harness has no tty, and the fixture never types
+  # REPLACE). NEGATIVES, both load-bearing: a 403 must NOT be read as "unprotected" (or a transient
+  # forge error would open a full-object PUT path), and --apply on a 404 must stay UNVERIFIED and
+  # name --replace as the remedy.
+  _np=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the not-protected gh stub"; exit 1; }
+  _nplog="$_np/log"; : > "$_nplog"
+  cat > "$_np/gh" <<STUBNP
+#!/bin/sh
+printf '%s\n' "\$*" >> "$_nplog"
+case "\$*" in
+  *"-X POST"*|*"-X PUT"*) exit 0 ;;
+  *) printf '%s\n' "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
+esac
+STUBNP
+  chmod +x "$_np/gh"
+  _fb=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the forbidden gh stub"; exit 1; }
+  _fblog="$_fb/log"; : > "$_fblog"
+  cat > "$_fb/gh" <<STUBFB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$_fblog"
+case "\$*" in
+  *"-X POST"*|*"-X PUT"*) exit 0 ;;
+  *) printf '%s\n' "gh: HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
+esac
+STUBFB
+  chmod +x "$_fb/gh"
+
+  : > "$_nplog"
+  _npout=$(printf 'y\n' | { PATH="$_np:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --replace; } 2>&1) || true
+  if printf '%s\n' "$_npout" | grep -qF "NOT PROTECTED:" \
+     && printf '%s\n' "$_npout" | grep -qF "WARNING: --replace performs a full PUT" \
+     && ! grep -q -- '-X PUT' "$_nplog"; then
+    echo "selftest PASS: K8 — not-protected + --replace reaches the bootstrap disclosure (and the tty gate still blocks the PUT)"
+  else
+    echo "selftest FAIL: K8 — not-protected + --replace did not reach the disclosure, or it mutated (out: $_npout)"; st=1
+  fi
+
+  : > "$_fblog"
+  if _fbout=$(printf 'y\n' | { PATH="$_fb:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --replace; } 2>&1); then _fbrc=0; else _fbrc=$?; fi
+  if [ "$_fbrc" = 2 ] \
+     && printf '%s\n' "$_fbout" | grep -qF "UNVERIFIED:" \
+     && ! printf '%s\n' "$_fbout" | grep -qF "NOT PROTECTED:" \
+     && ! grep -q -- '-X PUT' "$_fblog"; then
+    echo "selftest PASS: K8 — a 403 stays UNVERIFIED rc 2; the replace arm is never reached (fail-closed on rc alone)"
+  else
+    echo "selftest FAIL: K8 — a 403 was not treated as UNVERIFIED (rc=$_fbrc, out: $_fbout)"; st=1
+  fi
+
+  : > "$_nplog"
+  if _apout=$(printf 'y\n' | { PATH="$_np:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --apply; } 2>&1); then _aprc=0; else _aprc=$?; fi
+  if [ "$_aprc" = 2 ] \
+     && printf '%s\n' "$_apout" | grep -qF "UNVERIFIED:" \
+     && printf '%s\n' "$_apout" | grep -qF -- "--replace" \
+     && ! grep -q -- '-X POST' "$_nplog"; then
+    echo "selftest PASS: K8 — not-protected + --apply stays UNVERIFIED rc 2 and names --replace as the remedy"
+  else
+    echo "selftest FAIL: K8 — not-protected + --apply did not stay UNVERIFIED naming --replace (rc=$_aprc, out: $_apout)"; st=1
+  fi
+  rm -rf "$_np" "$_fb" 2>/dev/null || true
+
   # 7. never emits --admin, in any mode exercised above (accumulated log — see below).
 
   # Live-extra relabeling + payload-values display (SEC M-2/REV H2): a stub gh reporting an
@@ -439,6 +544,8 @@ STUBX
   fi
   if printf '%s\n' "$_out" | grep -qF -- "enforce_admins:false" \
      && printf '%s\n' "$_out" | grep -qF -- "required_approving_review_count:1" \
+     && printf '%s\n' "$_out" | grep -qF -- "dismiss_stale_reviews:true" \
+     && printf '%s\n' "$_out" | grep -qF -- "require_last_push_approval:true" \
      && printf '%s\n' "$_out" | grep -qF -- "require_code_owner_reviews:false"; then
     echo "selftest PASS: --replace confirmation displays the concrete solo-default payload values"
   else

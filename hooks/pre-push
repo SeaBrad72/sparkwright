@@ -169,11 +169,32 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
         printf 'kit pre-push: %s\n' "$_decl_line" >&2
       done
     fi
-    printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
-    printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
-    printf 'kit pre-push:            sensitive/control-plane -> those two plus Kit-Stage + Kit-Skill.\n' >&2
-    printf 'kit pre-push:            A field you volunteer is still validated. git commit --amend,\n' >&2
-    printf 'kit pre-push:            then push again.\n' >&2
+    # THE REMEDY MUST MATCH THE REFUSAL (security S-L3). A NOT ENFORCED row leg — a hosted-tracker
+    # backend the kit cannot read — refuses on a head whose trailers are typically PERFECT, and
+    # "fix the trailer block ... git commit --amend" sends that author to edit something that is
+    # not wrong, for a condition NO commit can clear. Keyed on the predicate's own sentence, which
+    # is why loop-state prints an unwaived NOT ENFORCED verdict to STDERR (this capture is
+    # stderr-only); a waived one is a pass and never reaches here.
+    # NOT FORGEABLE FROM A TRAILER (security NEW-L-2): the phrase contains a SPACE, and every value
+    # loop-state echoes back from a Kit-* trailer has already passed its `[A-Za-z0-9_.:/#-]`
+    # charset, which admits none — so no trailer an author writes can put "NOT ENFORCED" on that
+    # stderr. The only writer of the phrase is the gate itself. And the stakes are small by
+    # construction anyway: this branch changes only which REMEDY is printed, never the refusal.
+    case "$_decl_out" in
+      *"NOT ENFORCED"*)
+        printf 'kit pre-push:   remedy: this is NOT a trailer problem and no commit fixes it. This repo\n' >&2
+        printf 'kit pre-push:            declares a hosted-tracker backlog backend, and the kit reads\n' >&2
+        printf 'kit pre-push:            BACKLOG.md only, so the row check is NOT ENFORCED. Adopt\n' >&2
+        printf 'kit pre-push:            TRACKER-BACKED-GOVERNANCE when it ships, move the board to\n' >&2
+        printf 'kit pre-push:            BACKLOG.md, or ratify a board-governance waiver in\n' >&2
+        printf 'kit pre-push:            WAIVER-REGISTER.md (a human fills Owner and Ratified-by).\n' >&2 ;;
+      *)
+        printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
+        printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
+        printf 'kit pre-push:            sensitive/control-plane -> those two plus Kit-Stage + Kit-Skill.\n' >&2
+        printf 'kit pre-push:            A field you volunteer is still validated. git commit --amend,\n' >&2
+        printf 'kit pre-push:            then push again.\n' >&2 ;;
+    esac
     printf '  override (deliberate): git push --no-verify\n' >&2
     return 1
   fi
@@ -817,6 +838,30 @@ $_pr_kmsg
     _pr_out="$_pr_out
 $_pr_dirty"
   fi
+  # rc 3 — NOT ENFORCED (the gate's hosted-tracker partition, NON-MD-BACKEND-NEVER-SILENT). THE ONE
+  # PLACE IN THE KIT THAT MAPS rc 3 TO ALLOW, and the reason is specific rather than general: nobody
+  # can clear a NOT ENFORCED verdict by changing anything in the push in front of them — the ladder
+  # is a ratified `board-governance` waiver or the TRACKER-BACKED-GOVERNANCE seam. Under `enforce`
+  # the dial below would otherwise refuse EVERY push a tracker adopter ever makes, which is exactly
+  # how a hook earns a permanent `--no-verify` and takes the other four legs down with it.
+  # THIS IS A SPEED-BUMP CEILING, NOT A BYPASS: the required CI context reds on the same rc 3
+  # (`.github/workflows/ci.yml`, `profiles/adopter-gates.yml`), and this hook was never a boundary
+  # (see the honesty line it prints). The verdict is RELAYED, so the operator learns it here first.
+  if [ "$_pr_rc" -eq 3 ]; then
+    printf 'kit pre-push (presence): %s\n' "$_pr_out" >&2
+    # ⚠️ SAY WHAT THIS RELAY CANNOT SEE (reviewer r6 / security S-H1). Δ1 above extracts only
+    # BACKLOG.md and CLAUDE.md from the pushed commit into $_pr_tmp, so the gate ran with NO
+    # WAIVER-REGISTER.md in front of it and its waiver read was "absent" by construction. A repo
+    # that HAS a ratified board-governance waiver therefore still sees this sentence locally while
+    # CI - which fetches the register - reports it waived. Both allow the push, so the relay's
+    # verdict is never worse than CI's; but an operator must not read this line as "your waiver was
+    # rejected". Extracting a third file here would buy nothing (the arm allows either way) and
+    # would widen a push-time hook's read surface for a decision it does not make.
+    printf 'kit pre-push (presence): NOTE - this local check did not read WAIVER-REGISTER.md, so it cannot see a ratified board-governance waiver; CI reads the register and will say if one applies.\n' >&2
+    printf 'kit pre-push (presence): the push is ALLOWED - this is not something you can fix in this push, and the required CI check still reds on it.\n' >&2
+    _pres_rc=0
+    return 0
+  fi
   _pres_out=$_pr_out
   _presence_add_note
   _pres_rc=1
@@ -955,6 +1000,39 @@ if [ "${1:-}" = "--selftest" ]; then
   # remedy/hint lines) passes every assertion above but fails these two.
   decl_expect_contains "enforce relays the predicate's first reason line" "stub declaration reason" "$decl_out"
   decl_expect_contains "enforce relays the predicate's second reason line" "stub remedy detail" "$decl_out"
+
+  # S-L3 — A NOT ENFORCED REFUSAL MUST NOT BE GIVEN THE TRAILER REMEDY. loop-state refuses the row
+  # leg on a hosted-tracker backend, and the trailers on such a head are typically PERFECT: telling
+  # that author to "fix the trailer block ... git commit --amend" sends them to edit something that
+  # is not wrong, for a condition no commit can clear. The remedy is the waiver or the tracker seam.
+  # The stub emits the real sentence on STDERR, which is the stream this leg captures — and that is
+  # itself the S-L3 fix in loop-state.sh (an unwaived NOT ENFORCED verdict is a refusal reason, so
+  # it goes to stderr; the waived one stays a stdout verdict).
+  decl_plant_stub_notenforced() {
+    mkdir -p "$T/conformance"
+    {
+      echo '#!/bin/sh'
+      echo 'echo "loop-state: row check NOT ENFORCED: backend '"'"'jira'"'"' - board-bound governance is not verified on this tree" >&2'
+      echo 'exit 1'
+    } > "$T/conformance/loop-state.sh"
+    chmod +x "$T/conformance/loop-state.sh"
+  }
+  decl_plant_stub_notenforced
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "S-L3: enforce + a NOT ENFORCED row leg still refuses"
+  decl_expect_contains "S-L3 the remedy names NOT ENFORCED" "NOT ENFORCED" "$decl_out"
+  decl_expect_contains "S-L3 the remedy names the waiver ladder" "board-governance waiver" "$decl_out"
+  decl_expect_contains "S-L3 the remedy names the tracker seam" "TRACKER-BACKED-GOVERNANCE" "$decl_out"
+  if printf '%s' "$decl_out" | grep -qF -- "fix the trailer block"; then
+    echo "FAIL: S-L3 a NOT ENFORCED refusal must NOT hand the author the trailer remedy"; fail=1
+  else
+    echo "PASS: S-L3 a NOT ENFORCED refusal does not hand the author the trailer remedy"
+  fi
+  # …and the ORDINARY declaration failure still gets the trailer remedy (the positive control that
+  # keeps the branch above from swallowing every refusal).
+  decl_plant_stub 1
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_contains "S-L3 control: an ordinary declaration failure still names the trailer remedy" "fix the trailer block" "$decl_out"
 
   # observe (default) + rc1 -> ALLOWED, with the observe prefix and the escalation hint.
   decl_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
@@ -1797,6 +1875,23 @@ refs/heads/feature/y $HEAD refs/heads/feature/y $Z" ""
   decl_expect_contains "PP1 relays the gate's STDOUT verdict" "no board row bears branch (stub verdict)" "$pp_out"
   decl_expect_contains "PP1 relays the gate's remedy line" "remedy:" "$pp_out"
   decl_expect_contains "PP1 keeps the --no-verify honesty line" "--no-verify" "$pp_out"
+
+  # PP1b — rc 3 (NOT ENFORCED: a hosted-tracker backend) ALLOWS the push under ENFORCE, with the
+  # gate's sentence relayed. This is the ONE consumer that maps rc 3 to allow, and the reason is
+  # stated where the arm lives: nobody can clear a NOT ENFORCED verdict by editing this push, so
+  # refusing every push a tracker adopter ever makes is how a hook earns a permanent --no-verify.
+  # The required CI context still reds. Mutant: drop the arm and the dial refuses this push.
+  pp_plant_pred "$TP" 3
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" allow "PP1b: enforce + rc 3 (NOT ENFORCED) ALLOWS the push — the speed bump is not the place to learn the kit has no tracker seam"
+  decl_expect_contains "PP1b relays the gate's verdict rather than swallowing it" "stub verdict" "$pp_out"
+  # …and rc 1 STILL refuses under enforce (reviewer r2: this sentence used to claim a leg that did
+  # not exist — it only re-planted the stub and let PP3's OBSERVE run stand in for it, which proves
+  # nothing about the partition). The run is here now: rc 3 allows, rc 1 refuses, same dial, same
+  # mode, one line apart, so "rc 3 is a partition and not a blanket softening" is a measured claim.
+  pp_plant_pred "$TP" 1
+  pp_run "$TP" enforce "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$pp_rc" refuse "PP1c: enforce + rc 1 STILL refuses — the rc-3 arm is a partition, not a softening"
 
   # PP3 — observe + rc 1: allowed, loud, with the dial hint.
   pp_run "$TP" "" "refs/heads/feature/x $PHEAD refs/heads/feature/x $Z"

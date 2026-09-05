@@ -932,6 +932,12 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_run "$d" surface
   st_has "PASS present: backlog (declared backend: jira)"
 
+  # NON-MD-BACKEND-NEVER-SILENT §3.5a's incept leg (the `board-governance` waiver stamp) is NOT
+  # here, and the plan that put it here was wrong on contact: `scripts/incept.sh` refuses any tree
+  # carrying kit-internal files, and this gate's fixtures are CLONES OF THE KIT. It lives in
+  # conformance/incept-first-run-green.sh, which already builds a real adopter export and runs a
+  # live incept inside it — the only fixture shape incept will accept.
+
   # ── B8 §4.3 (GATE-PROVENANCE-SELF-DISABLES-AND-NEVER-GATES-THE-MERGE, PHASE-B-SPINE) — the
   # repo-class leg: a deployable, private, user-owned (non-org) repo cannot pass Inception silently
   # provenance-less, because the SLSA provenance/image-provenance CI job(s) never run there at all

@@ -41,7 +41,8 @@ set -eu
 
 TAB=$(printf '\t')
 
-# ── THE CONSTANTS. Two per surface, and they mean different things.
+# ── THE CONSTANTS. ONE per surface — a frozen ORIGIN. The ceiling is not a second constant beside it;
+# it is DERIVED from the ledger on every run and printed with its derivation.
 #
 # GENESIS_* is the founding measurement: the mass of the tree that shipped this gate, measured in its
 # own PR (the gate's first real subject is the change that introduces it). ⚠️ GENESIS IS SET ONCE AND
@@ -54,11 +55,25 @@ TAB=$(printf '\t')
 # paths against `--ratified 0`). The honest ceiling: that makes the edit VISIBLE and reviewable, not
 # impossible — a ratifier who waves it through still waves it through.
 #
-# MAX_* is the CURRENT ceiling, and it is not free-standing: this check enforces, on every run,
-#       MAX_x == GENESIS_x + Σ(deltas of mass-acks.txt lines scoped to x)
-# in BOTH directions and with no slack. An ack no raise consumes is a pre-emptive acknowledgment and
-# reds; a raise no ack accounts for is silent growth and reds. So the ceiling is a pure function of a
-# reviewable ledger, every movement is a permanent line item, and none of it depends on a diff.
+# THE CEILING IS WRITTEN DOWN NOWHERE (MASS-CEILING-ADDITIVE, 2026-09-04, ruling D-240903-1). It is
+# COMPUTED on every run as
+#       MAX_x = GENESIS_x + Σ(deltas of mass-acks.txt lines scoped to x)
+# and printed with that derivation beside it. Until this change the same value was ALSO carried as a
+# `MAX_x=` literal here and checked against the sum in both directions; the literal was a CACHE of a
+# number this script recomputes anyway, and it was the one line every control-plane slice had to edit
+# — so of two branches in flight the second to merge always hit a textual conflict on it and rewrote
+# the ceiling by hand. Deleting the cache removes the conflict AND the two states the old invariant
+# graded: a pre-emptive ack (an ack no raise consumes) and an unacked raise are no longer
+# CONSTRUCTIBLE, because there is nothing left that can disagree with the ledger. What replaces the
+# invariant is mb_no_literal_max, which reds if a `MAX_<surface>=<digits>` literal is ever written
+# back into this file. So the ceiling is a pure function of a reviewable ledger, every movement is a
+# permanent line item, and none of it depends on a diff.
+# ⚠️ THE HONEST CEILING OF THAT: the ledger is now the ONLY place a ceiling lives — the single source
+# of truth, and equally a single point of trust. What holds it is not this comment: mass-acks.txt is a
+# control-plane path (the guard refuses the edit outside a dev-clone, agent-boundary.sh reds it as an
+# unratified control-plane change), GENESIS stays frozen here, and every consumed row is printed BY
+# NAME on every run, green or red. The gate still cannot judge whether an ack is HONEST; the reason
+# cell is the ratifier's reading, exactly as before.
 #
 # ── TWO POPULATIONS, TWO PRICES (MASS-BUDGET-LOGIC-FIXTURE-SPLIT, 2026-08-31). Until this split the
 # budget priced a new check PREDICATE and a selftest FIXTURE CELL identically, and it was measured
@@ -99,35 +114,32 @@ TAB=$(printf '\t')
 #   files : the measured count, EXACTLY, with ZERO headroom, and that is deliberate. Slack in this
 #           surface is a silent budget an adder can spend without an ack, which defeats
 #           merge-don't-add precisely where it is supposed to bind. Every new conformance/*.sh
-#           therefore costs a ratified raise plus its ack line. Same reasoning for census.
+#           therefore costs ONE ratified ack line in conformance/mass-acks.txt. Same for census.
 #   logic /
 #   fixture : the measured total ROUNDED UP to the next 100 (the doc-budget.sh convention), with the
-#           exact measured figure AND THE VERBATIM MEASUREMENT COMMAND AND HEAD SHA recorded beside
-#           each constant below (A1/C5) so a reviewer can re-derive the number independently instead
-#           of accepting the builder's. Line count churns whenever anyone adds a comment or a leg to
+#           exact measured figure AND THE VERBATIM MEASUREMENT COMMAND AND HEAD SHA recorded in the
+#           REASON CELL of the ack that moves it (A1/C5) so a reviewer can re-derive the number
+#           independently instead of accepting the builder's. Line count churns whenever anyone adds a comment or a leg to
 #           an EXISTING check, which is the behaviour this gate exists to ENCOURAGE, so neither line
 #           surface is exact-measured the way files and census are — a file exists or it does not.
 #
-# ── THE `lines` SURFACE IS RETIRED (2026-08-31) BUT ITS HISTORY IS VERIFIED FOREVER. GENESIS_LINES
-# and MAX_LINES are FROZEN: mb_invariant still enforces MAX_LINES == GENESIS_LINES + Σ(lines acks) on
-# every run, so the ten historical rows keep being checked; only the MEASUREMENT comparison moved to
-# logic/fixture. Retirement itself is enforced by HISTORICAL_LINES_ACKS, a ROW-COUNT PIN — not by a
+# ── THE `lines` SURFACE IS RETIRED (2026-08-31) BUT ITS HISTORY IS VERIFIED FOREVER. GENESIS_LINES is
+# FROZEN and the retired ceiling is still DERIVED as GENESIS_LINES + Σ(lines acks) and printed with
+# its rows on every run, so the ten historical rows keep being read out; only the MEASUREMENT
+# comparison moved to logic/fixture. Retirement itself is enforced by HISTORICAL_LINES_ACKS, a ROW-COUNT PIN — not by a
 # date (author-supplied and trivially backdated) and not by the grammar (see mb_ledger_check). The
 # count pin is also the only thing that can see a ZERO-SUM PAIR: a +N and a -N `lines` row with
 # distinct reasons leaves the arithmetic green while inventing two rulings in the provenance output.
 # ⚠️ HONEST CEILING OF THE PIN — it counts ROWS, so its scope is APPEND and ZERO-SUM PAIR, and no more.
 # EDITING AN EXISTING historical row is invisible to it: rewrite a reason cell into a different ruling
-# and the count is unchanged, the deltas are unchanged, and the invariant is unchanged, so the gate
+# and the count is unchanged, the deltas are unchanged, and the derived ceiling is unchanged, so the gate
 # stays green while the provenance narrative a ratifier reads has been forged in place. Nothing here
 # detects that; the detectors are the diff and the reviewer, exactly as for any other control-plane
 # text. Claiming otherwise would be the vacuous-green defect this file exists to refuse.
 GENESIS_LINES=51400     # RETIRED 2026-08-31, FROZEN: measured 51,312 lines across conformance/*.sh, rounded up to the next 100. Kept so the ten historical `lines` acks stay arithmetically verified forever.
-MAX_LINES=55700         # RETIRED 2026-08-31, FROZEN at the last pre-split ceiling. Do not move it: MAX_LINES == GENESIS_LINES + Σ(lines acks) is still enforced, and an eleventh `lines` row now reds on the count pin below.
 HISTORICAL_LINES_ACKS=10   # measured at the reviewed head, VERBATIM: grep -v '^#' conformance/mass-acks.txt | grep -c "$(printf '\t')lines$(printf '\t')"   -> 10 at 8c090a2b. A `lines` row count other than this is a FAIL naming the retired surface.
 GENESIS_FILES=168       # measured exactly; no headroom by design
-MAX_FILES=158           # CONFORMANCE-FAMILIES-SHIM-DELETION: the owner deleted the thirteen folded shims, so the doc-families cut is now fully taken — measured 158 EXACTLY, zero headroom per the DERIVATION above, and the next new check pays its own +1 ack (mass-acks.txt 2026-08-29 `files` +3, then 2026-08-30 `files` -13; net -10 against genesis)
 GENESIS_CENSUS=128      # measured exactly; `^check control ` rows in conformance/verify.sh
-MAX_CENSUS=127          # PR 10 (VERIFY-HEADLINE-TRUTH): the orchestrator triple collapsed -2 and the coverage-census row added +1 (mass-acks.txt 2026-08-31 `census` -1, the surface's first-ever ack and its first negative delta). Measured 127 EXACTLY, zero headroom.
 
 # ── THE SPLIT'S OWN GENESIS. Measured on the post-diff tree of THIS PR — the split's first subject is
 # the change that introduces it — with the VERBATIM command and the head SHA recorded per A1/C5, so
@@ -139,10 +151,7 @@ MAX_CENSUS=127          # PR 10 (VERIFY-HEADLINE-TRUTH): the orchestrator triple
 # Baseline before this diff, at 60e2cd22: logic 30915 · fixture 24785 · total 55700 (the split sums to
 # the pre-split gate's own count, which is how the boundary rule was cross-checked in the first place).
 GENESIS_LOGIC=31200     # measured 31141 by the VERBATIM command above at HEAD b067d8c5 (the post-diff tree of this PR, this slice's own new gate logic included), rounded up to the next 100 per the genesis convention. ZERO acks: MAX_LOGIC == GENESIS_LOGIC, so every future logic line costs a ratified ack.
-MAX_LOGIC=32300         # + the SIXTH `logic` ack (mass-acks.txt 2026-09-02, +150 — PRE-PUSH-RUNS-BACKLOG-PRESENCE; NO forecast on record, the design refused to forecast: measured 32223 at 5d955dac after the build, 32259 at 5781ba15 after the two seats' thirteen-item fix round; 32259 rounded up to the next 100 = 32300, 41 free after this raise — the orchestrator wrote this from the builder's measurement, and the owner ratifies or strikes it with the PR approval). The prior note follows. + the FIFTH `logic` ack (mass-acks.txt 2026-09-02, +300 — raised from +250 at the seats' fix round — GUARD-CWD-CONFIDENCE-UNKNOWN; NO forecast on record, measured 32040 at e505208e then 32115 at b1b88b44; 35 free after this raise). The prior note follows. + the FOURTH `logic` ack (mass-acks.txt 2026-09-01, +300 — raised from +200 at the fix round when the reviewer's message-presence delta half landed: measured 31806 at 56492146, 31808 after the re-review minors, 42 free after this raise — GUARD-READ-PATTERN-RELIEF; forecast +25-40, MEASURED DELTA +176 against the base (31526 at b2877222 -> 31702 at 0ada3c92), of which +152 was the overrun past the then-ceiling 31550 — the orchestrator's forecast wrong by ~5x; 48 free after the raise. ⚠️ RE-DERIVED AT THE FIX ROUND: 31806, i.e. +280 against the base and 56 OVER this raise, once the review's blocking I1 message-delta leg landed; the builder stopped there rather than trimming cells, and the next raise is the orchestrator's act). The prior note follows. + the THIRD `logic` ack (mass-acks.txt 2026-09-01, +50 — INCEPTION-DONE-DECIDED-NOT-PRESENT, the post-eval fix slice; NOT forecast: measured 31526 at that head, +26 over the prior 31500, so 24 free after the raise; the fix round must re-derive these three numbers). The prior note follows. GENESIS_LOGIC + the first `logic` ack (+200, PR 10) + the second (mass-acks.txt 2026-08-31, `logic`, +100 — PR 13's six-row bundle, the design's STRIKABLE forecast contingency fired: forecast ~40-60 net, MEASURED +137 against base 31330 at b43d05a9, i.e. the forecast was wrong by more than 2x). Measured 31467 by the VERBATIM command above at this head; the 33-line residual is disclosed in the ack line rather than consumed or trimmed away. Re-derived at the converged review, which caught this note's first figures (31424/+94/76) as off by one apiece — the false-count class, in the very PR that ships a check against it. The prior note follows.
-                        # GENESIS_LOGIC + the first `logic` ack (mass-acks.txt 2026-08-31, `logic`, +200 — PR 10, amended in-flight at the converged pre-push review to fund the fix round's logic: the adopter-tree kit-marker latch, the census/tally sanitizers, the tally-red reordering, cr_san on the claim id, the trapped tally file). Measured 31330 by the VERBATIM command above at this head; the 70-line residual is disclosed in the ack line rather than consumed or trimmed away.
 GENESIS_FIXTURE=25000   # measured 24969 by the VERBATIM command above at HEAD b067d8c5, rounded up to the next 100. ⚠️ RE-DERIVE, DO NOT ACCEPT, AND NOTE THAT THE TREE MOVED UNDER THESE CONSTANTS: logic·fixture measured 31141·24969 at b067d8c5 (the genesis-setting head), 31174·25052 at beeabb55 (the pre-push fix round), and 31186·25069 at the PR head (this commit, which adds comment and selftest-leg lines the *.sh glob does count); all three fit the ratified ceilings, so genesis is deliberately NOT re-based — re-basing to fit a diff is a silent re-ratification, and the shrinking logic residual is the signal the zero-headroom surface exists to give.
-MAX_FIXTURE=26700       # GENESIS_FIXTURE + the inaugural band (mass-acks.txt 2026-08-31, `fixture`, +500) + PR 11's band raise (mass-acks.txt 2026-09-01, `fixture`, +700) + the EPOCH-2 TOP-UP at the v3.221.0 publish boundary (mass-acks.txt 2026-09-01, `fixture`, +500 — this band's own rule at :78: topped back to measured+500 at each PUBLISH BOUNDARY; measured 26169 at the release head, and 26169+500=26669 rounds to 26700 on the ledger's 100-line convention, leaving 531 free for the epoch; ruled `D-240901-1`, ratified or struck at the release PR's forge review). PRIOR-STATE RECORD kept verbatim below — MEASURED 26169 by the VERBATIM command above at this head, against 25496 at the base 4a397972 — a delta of +673, of which promotion-actuate-wired.sh carries ~380 (the derivation's three liveness anchors, eleven negatives, the class allowlist at both ends, plus the `gh` PATH shim and its drivers) and aggregate-coverage.sh ~280 (the exported-orphan census, its count pin and its ten legs). ⚠️ THE DESIGN FORECAST ~+200 AND WAS WRONG BY MORE THAN 3x — recorded here rather than smoothed over, the same disclosure PR 13's logic ack owed. THE ACK WAS AMENDED IN FLIGHT, +600 -> +700, when the converged review round's own fixes (REC-L3, REC-N9b, ACT-UNKNOWN x3, REC-CLASS/-OK x4, cen_pin x2) added 136 further fixture lines and overran the first raise by 59 — amending a PRE-RATIFICATION ack is the PR 10 precedent, and it is disclosed rather than split into a second row. TWO MEASUREMENT NOTES A READER WILL OTHERWISE RE-DERIVE THE HARD WAY: (1) aggregate-coverage.sh's marker is its `--selftest)` ARGUMENT-LOOP CASE at :48, not a selftest() function, so almost the whole file — classify, _scan, the new census — prices as FIXTURE, not logic; that is the gate's own definition and it is what the verbatim command returns. (2) the 31-line residual is DISCLOSED, not consumed. Genesis stays frozen.
 
 # ── THE GLIDE SEAM (A1/C7b), the D-240828-4 ratchet-never-cut counter: present, and never
 # agent-actuated. EMPTY means no target and the report says so. Setting it to a number prints an
@@ -403,41 +412,86 @@ mb_ledger_rows() {
   done < "$_led"
 }
 
-# mb_invariant <label> <genesis> <max> <sum>: MAX must EQUAL GENESIS + Σ(scoped ack deltas) — exact
-# consumption, no >= slack in either direction. An ack with no matching raise is pre-emptive; a raise
-# with no ack is unaccounted. Returns 1 on either.
-mb_invariant() {
-  _lab=$1; _gen=$2; _mx=$3; _sm=$4; _ibad=0
-  _exp=$((_gen + _sm))
-  [ "$_mx" -eq "$_exp" ] && return 0
-  if [ "$_mx" -lt "$_exp" ]; then
-    echo "conformance-mass-budget: FAIL -- MAX_$_lab is $_mx but the ledger says $_gen + ($_sm) = $_exp. An ack that no raise consumes is a PRE-EMPTIVE acknowledgment: it severs the declaration from the growth it is meant to accompany. Raise MAX_$_lab to $_exp in this diff, or drop the ack line."
-  else
-    # THE PRINTED REMEDY MUST ITSELF BE GRAMMATICAL. It was not: the label is carried UPPERCASE for
-    # the MAX_ constant, but the ledger's surface field is lowercase, and the delta was emitted
-    # UNSIGNED — so an operator pasting this line got one mb_ledger_check rejects on both counts, and
-    # the fix for a red was a second red. `_mx > _exp` holds in this branch, so the `+` is always
-    # right. leg xxvi round-trips this exact string back through mb_ledger_check so the prose and the
-    # grammar cannot drift apart again.
-    _rsurf=$(printf '%s' "$_lab" | LC_ALL=C tr 'A-Z' 'a-z')
-    echo "conformance-mass-budget: FAIL -- MAX_$_lab is $_mx but the ledger says $_gen + ($_sm) = $_exp. A raise with no matching ack line is unaccounted growth. Add the ack line (<date>${TAB}${_rsurf}${TAB}+$((_mx - _exp))${TAB}<reason>) to conformance/mass-acks.txt in this diff, or put MAX_$_lab back to $_exp."
+# ── mb_invariant IS RETIRED (MASS-CEILING-ADDITIVE, 2026-09-04). It graded `MAX_x == GENESIS_x + Σ`
+# in both directions; with the MAX_x literals deleted the ceiling IS that sum, so neither of its two
+# states — a pre-emptive ack, an unacked raise — can be constructed any more. Its printed remedy was
+# the line an operator pasted into the ledger, and that remedy now lives in mb_surface alone (which
+# says "append ONE ack line", because there is no constant left to raise). What replaces the
+# invariant as a TEETH-bearing check is mb_no_literal_max below.
+
+# mb_no_literal_max <script-path>: THE SOURCE LOCK. Reds, NAMING the line, if this script (or any
+# script handed to it) carries a `MAX_<surface>=<digits>` assignment again. Deleting a cache is only
+# durable if putting it back is a FAIL: without this, the next slice that wants a constant beside the
+# ledger simply writes one, and the two can disagree again.
+# ⚠️ HONEST CEILING: this is a regex over TEXT, so its catch set is exactly the DIRECT literal forms —
+# bare (`MAX_LOGIC=33500`), quoted (`MAX_LOGIC="33500"`, `'33500'`), signed (`=+33500`, `=-1`), and any
+# of those behind a `readonly`/`export`/`declare`/`local`/`typeset` prefix (one alternation branch;
+# leg d-i fixtures the bare, both quoted, signed, `readonly`, `export`, `local` and `typeset` forms).
+# It is EVADED by an arithmetic or indirect
+# assignment — `MAX_LOGIC=$((33500))`, `=$VAR`, `=$(cat …)`, `${X:=…}`. That evasion is inert rather
+# than merely undetected: no code path in this script reads `$MAX_LINES`/`$MAX_FILES`/`$MAX_CENSUS`/
+# `$MAX_LOGIC`/`$MAX_FIXTURE` any more, so an assignment in any form changes no verdict; the lock's job
+# is to stop a CACHE re-appearing beside the ledger and drifting from it. The second detector is the
+# derivation mb_provenance prints on every run, which an evaded literal would contradict on screen.
+mb_no_literal_max() {
+  _nlm=$1; _nbad=0
+  if [ ! -r "$_nlm" ]; then
+    echo "conformance-mass-budget: FAIL -- the source lock cannot read [$(printf '%s' "$_nlm" | mb_san)]. An unreadable subject is a printed FAIL, never a silent pass: a lock that cannot see its subject has no teeth."
+    return 1
   fi
-  _ibad=1
-  return "$_ibad"
+  _nhits=$(LC_ALL=C grep -nE '^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+|local[[:space:]]+|typeset[[:space:]]+|declare[[:space:]]+-?[a-z]*[[:space:]]+)?MAX_(LINES|FILES|CENSUS|LOGIC|FIXTURE)=[[:space:]]*["'"'"']?[+-]?[0-9]' "$_nlm" || :)
+  if [ -n "$_nhits" ]; then
+    printf '%s\n' "$_nhits" | while IFS= read -r _nh; do
+      echo "conformance-mass-budget: FAIL -- a MAX_ LITERAL IS BACK in $(printf '%s' "${_nlm##*/}" | mb_san), at line $(printf '%s' "$_nh" | mb_san). The ceiling is DERIVED from conformance/mass-acks.txt on every run (GENESIS + the scoped deltas); a constant beside it is a cache that two branches in flight both have to edit, which is the defect MASS-CEILING-ADDITIVE removed. Delete the line and append an ack instead."
+    done
+    _nbad=1
+  fi
+  return "$_nbad"
 }
 
-# mb_provenance <LABEL> <genesis> <max> <ledger> <surface>: disclose where this ceiling CAME FROM —
-# the genesis figure, how many times it has been raised, and the date of the last raise — then print
-# every consumed ack BY NAME. Called on green and on red alike.
+# mb_union_attr_ok <root>: the ledger must carry `merge=union` in <root>/.gitattributes. KIT-SELF, and
+# it lives HERE rather than in adopter-export-wired.sh (which also reads .gitattributes) because that
+# check's subject is the EXPORT CARVE and it runs on adopter trees, where this attribute is none of
+# its business. Why it is a gate at all: the ledger is now the only place a ceiling lives, so two
+# ratified branches that each append an ack must MERGE, not conflict — without the attribute the
+# second to land re-writes the ceiling by hand, which is exactly what this slice removed from the
+# script. Union merge cures APPEND conflicts only; two branches editing the SAME row still conflict,
+# and should. On two branches appending the BYTE-IDENTICAL line, git resolves the identical change
+# once before any merge driver runs, so the line lands once and the ceiling rises once (measured, leg
+# d-v); mb_ledger_check's exact-duplicate arm is the detector for a duplicate arriving any other way.
+# ⚠️ WHAT IS GRADED IS THE EFFECTIVE ATTRIBUTE, not a line. gitattributes is last-match-wins AND
+# pattern-matched, so the value git actually applies is the only honest subject: when git is on PATH
+# and <root> is a work tree this asks `git check-attr merge -- conformance/mass-acks.txt` and requires
+# the value `union`. The awk below is the FALLBACK for a non-git tree only, and it is BLIND to a GLOB
+# row: it keys on `$1 == the path`, so a later `conformance/* -merge` (which never names the ledger)
+# leaves it green while the effective attribute is `unset`. Measured, and pinned by leg d-iv's glob arm.
+mb_union_attr_ok() {
+  _ua="$1/.gitattributes"; _uv=
+  if [ -n "$(command -v git 2>/dev/null || :)" ] && git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    _uv=$(git -C "$1" check-attr merge -- conformance/mass-acks.txt 2>/dev/null | sed 's/^.*: //')
+    [ "$_uv" = union ] && return 0
+  elif [ -f "$_ua" ] && LC_ALL=C awk '$1 == "conformance/mass-acks.txt" { if (/merge=union/) f = 1; else if (/(^|[[:space:]])-merge/ || /merge=/) f = 0 } END { exit f ? 0 : 1 }' "$_ua"; then
+    return 0
+  fi
+  echo "conformance-mass-budget: FAIL -- the effective merge attribute of conformance/mass-acks.txt is [${_uv:-not union}], not \`union\` (it is set in .gitattributes). The ledger is the ONLY place a ceiling lives now, so two ratified branches that each APPEND an ack must merge rather than conflict; without the attribute the second one to land rewrites the ceiling by hand. Add the line \`conformance/mass-acks.txt merge=union\` (never at line 1, which is the export-carve anchor). If a union line IS present, check for a LATER line for the same path that OVERRIDES it -- gitattributes is last-match-wins and PATTERN-matched, so a subsequent \`-merge\`/\`merge=<other>\` row, or a GLOB row such as \`conformance/* -merge\` that matches the path WITHOUT naming it, turns union off."
+  return 1
+}
+
+# mb_provenance <LABEL> <genesis> <max> <ledger> <surface> <sum>: disclose where this ceiling CAME
+# FROM. Since MASS-CEILING-ADDITIVE the ceiling is not written down anywhere, so this line PRINTS THE
+# ARITHMETIC — genesis, the signed sum, the number of acks and the last date — and then every consumed
+# ack BY NAME. A reader must be able to re-add the number from the line itself; a bare ceiling would be
+# a constant again, just one whose source nobody can see. Called on green and on red alike.
 mb_provenance() {
-  _lab=$1; _gen=$2; _mx=$3; _led=$4; _surf=$5
+  _lab=$1; _gen=$2; _mx=$3; _led=$4; _surf=$5; _psum=$6
   _rows=$(mb_ledger_rows "$_led" "$_surf")
   _k=0; _last=none
   if [ -n "$_rows" ]; then
     _k=$(printf '%s\n' "$_rows" | grep -c '')
     _last=$(printf '%s\n' "$_rows" | cut -d' ' -f1 | sort | tail -1)
   fi
-  echo "conformance-mass-budget: MAX_$_lab=$_mx (genesis $_gen, raised ${_k}x, last $_last)"
+  case "$_psum" in -*) _psgn=$_psum ;; *) _psgn="+$_psum" ;; esac
+  echo "conformance-mass-budget: MAX_$_lab=$_mx = genesis $_gen + ($_psgn) over $_k ack(s), last $_last"
   if [ -n "$_rows" ]; then
     printf '%s\n' "$_rows" | while IFS= read -r _row; do
       echo "conformance-mass-budget:   ack consumed -- $_row"
@@ -461,11 +515,13 @@ mb_pct() {
 mb_surface() {
   _lab=$1; _m=$2; _mx=$3; _unit=$4; _sbad=0
   if [ "$_m" -gt "$_mx" ]; then
-    # The label is the LEDGER's lowercase surface name; the constant it names is uppercase. Print the
-    # real constant, so "raise MAX_logic" can never send a reader looking for an identifier that does
-    # not exist in this file (the mirror of the mb_invariant defect above).
-    _mconst=$(printf '%s' "$_lab" | LC_ALL=C tr 'a-z' 'A-Z')
-    echo "conformance-mass-budget: FAIL -- $_lab $_m/$_mx, over by $((_m - _mx)) $_unit(s). TWO CURES, both deliberate: extend an existing check instead of adding one, or raise MAX_$_mconst with a matching ack line in conformance/mass-acks.txt in THIS diff."
+    # ⚠️ THE PRINTED REMEDY MUST ITSELF BE GRAMMATICAL, and this is now the ONLY place the gate prints
+    # one (mb_invariant, which used to print the other, is retired with the MAX_ literals). The
+    # inherited defect is worth restating because it cost a red to fix a red: the surface token must be
+    # LOWERCASE (the allowlist rejects `LOGIC`) and the delta must be EXPLICITLY SIGNED (mb_delta_ok
+    # rejects an unsigned one). `_m > _mx` holds in this branch, so the `+` is always right. leg xxvi
+    # round-trips this exact string back through mb_ledger_check so prose and grammar cannot drift.
+    echo "conformance-mass-budget: FAIL -- $_lab $_m/$_mx, over by $((_m - _mx)) $_unit(s). TWO CURES, both deliberate: extend an existing check instead of adding one, or append ONE ack line (<date>${TAB}${_lab}${TAB}+$((_m - _mx))${TAB}<reason>) to conformance/mass-acks.txt in THIS diff. There is NO constant to raise: the ceiling IS this ledger (genesis + the scoped deltas), so one appended line is the whole act."
     _sbad=1
     return "$_sbad"
   fi
@@ -473,13 +529,15 @@ mb_surface() {
   return "$_sbad"
 }
 
-# mb_verdict <root> <lines_gen> <lines_max> <files_gen> <files_max> <cen_gen> <cen_max> \
-#            <logic_gen> <logic_max> <fixture_gen> <fixture_max> <historical_lines_acks>
-# The `lines` pair is still passed, and still invariant-checked, purely so the retired surface's
-# history keeps being verified; nothing is MEASURED against it any more.
+# mb_verdict <root> <lines_gen> <files_gen> <cen_gen> <logic_gen> <fixture_gen> <historical_lines_acks>
+# ⚠️ SEVEN ARGUMENTS SINCE MASS-CEILING-ADDITIVE (2026-09-04), down from twelve: the five <max>
+# parameters are GONE because there is no ceiling to pass in. Each one is DERIVED below as
+# GENESIS + mb_ledger_sum, after mb_ledger_check has graded the grammar — so a caller can no longer
+# assert a ceiling the ledger does not support, which is what the retired mb_invariant existed to
+# catch. `lines_gen` is still passed so the retired surface's history keeps being read out and
+# row-count-pinned; nothing is MEASURED against it any more.
 mb_verdict() {
-  _root=$1; _lgen=$2; _lmax=$3; _fgen=$4; _fmax=$5; _cgen=$6; _cmax=$7
-  _ggen=${8}; _gmax=${9}; _xgen=${10}; _xmax=${11}; _lpin=${12}
+  _root=$1; _lgen=$2; _fgen=$3; _cgen=$4; _ggen=$5; _xgen=$6; _lpin=$7
   _bad=0
 
   # ── ARMING FIRST, before any enumeration (vet A1.3). An adopter tree carries neither kit marker;
@@ -488,6 +546,10 @@ mb_verdict() {
     echo "N/A: conformance-mass-budget -- no kit marker present (an adopter tree). This budget ratchets the KIT's own conformance/ mass; an adopter's checks are the adopter's business. Nothing to grade, no remedy to offer; this is not a pass."
     return "$_bad"
   fi
+
+  # ── THE UNION-MERGE LOCK, kit-self and inside the armed path for exactly that reason: the attribute
+  # protects the KIT's ledger, and an adopter tree neither has one nor should be held to it.
+  mb_union_attr_ok "$_root" || _bad=1
 
   _lines=$(mb_count_lines "$_root")
   _files=$(mb_count_files "$_root")
@@ -509,18 +571,21 @@ mb_verdict() {
   fi
   mb_ledger_check "$_led" || _bad=1
 
-  # ── THE INVARIANT, per surface, BEFORE the measurement compare: a ceiling nobody accounted for is
-  # not a ceiling. Both directions red — an unconsumed ack is pre-emptive, an unacked raise is silent.
+  # ── THE DERIVATION, per surface, BEFORE the measurement compare. The ceiling is not asserted
+  # anywhere and is not passed in: it is computed here, from a ledger whose GRAMMAR has just been
+  # graded (an ungrammatical line contributes nothing, so a typo can never launder growth). This is
+  # what replaced the old two-directional invariant — the two states it graded are unconstructible
+  # once there is no second number to disagree with the sum.
   _lsum=$(mb_ledger_sum "$_led" lines)
   _fsum=$(mb_ledger_sum "$_led" files)
   _csum=$(mb_ledger_sum "$_led" census)
   _gsum=$(mb_ledger_sum "$_led" logic)
   _xsum=$(mb_ledger_sum "$_led" fixture)
-  mb_invariant LINES   "$_lgen" "$_lmax" "$_lsum" || _bad=1
-  mb_invariant FILES   "$_fgen" "$_fmax" "$_fsum" || _bad=1
-  mb_invariant CENSUS  "$_cgen" "$_cmax" "$_csum" || _bad=1
-  mb_invariant LOGIC   "$_ggen" "$_gmax" "$_gsum" || _bad=1
-  mb_invariant FIXTURE "$_xgen" "$_xmax" "$_xsum" || _bad=1
+  _lmax=$((_lgen + _lsum))
+  _fmax=$((_fgen + _fsum))
+  _cmax=$((_cgen + _csum))
+  _gmax=$((_ggen + _gsum))
+  _xmax=$((_xgen + _xsum))
 
   # ── THE RETIREMENT PIN (A1/C3). `lines` is retired, so its ledger population is CLOSED: exactly the
   # historical rows, forever. A count pin rather than a date, because the date field is author-supplied
@@ -590,12 +655,12 @@ mb_verdict() {
 
   # ── PROVENANCE + the consumed acks BY NAME. A green must never leave an amnesty unread. LINES is
   # printed last and flagged RETIRED: its rows are history that stays verified, not a live ceiling.
-  mb_provenance LOGIC   "$_ggen" "$_gmax" "$_led" logic
-  mb_provenance FIXTURE "$_xgen" "$_xmax" "$_led" fixture
-  mb_provenance FILES   "$_fgen" "$_fmax" "$_led" files
-  mb_provenance CENSUS  "$_cgen" "$_cmax" "$_led" census
-  echo "conformance-mass-budget: MAX_LINES=$_lmax is RETIRED (2026-08-31) — frozen, still invariant-checked against its $_lpin closed historical row(s), and measured against nothing. The rows below are history:"
-  mb_provenance LINES   "$_lgen" "$_lmax" "$_led" lines
+  mb_provenance LOGIC   "$_ggen" "$_gmax" "$_led" logic   "$_gsum"
+  mb_provenance FIXTURE "$_xgen" "$_xmax" "$_led" fixture "$_xsum"
+  mb_provenance FILES   "$_fgen" "$_fmax" "$_led" files   "$_fsum"
+  mb_provenance CENSUS  "$_cgen" "$_cmax" "$_led" census  "$_csum"
+  echo "conformance-mass-budget: the \`lines\` ceiling is RETIRED (2026-08-31) — its genesis is frozen, its ceiling is still DERIVED from its $_lpin closed historical row(s), and it is measured against nothing. The rows below are history:"
+  mb_provenance LINES   "$_lgen" "$_lmax" "$_led" lines   "$_lsum"
 
   if [ "$_bad" -eq 0 ]; then
     echo "conformance-mass-budget: OK -- kit conformance mass within its ratified ceiling. SCOPE CEILING: non-recursive conformance/*.sh only. The .md checklists, conformance/ subdirectories, scripts/, hooks/ and guard-core are OUTSIDE this budget."
@@ -610,9 +675,20 @@ selftest() {
   W=$(mktemp -d)
   trap 'rm -rf "$W"' EXIT INT TERM
 
+  # ⚠️ THE NUMBERING GAP IS DELIBERATE: legs iv and v ARE RETIRED (MASS-CEILING-ADDITIVE, 2026-09-04).
+  # They graded a PRE-EMPTIVE ACK (an ack no raise consumes) and an UNACKNOWLEDGED RAISE. Both states
+  # required a MAX_ literal that could disagree with the ledger; the literals are gone and the ceiling
+  # IS the sum, so neither state is constructible and a leg asserting it would be vacuous. What stands
+  # in their place is the d-series below: the source lock, order independence, the printed derivation,
+  # the merge attribute, and the two-branch merge itself.
+  # ⚠️ EVERY mb_verdict CALL BELOW TAKES SEVEN ARGUMENTS, NOT TWELVE, and the five it lost were the
+  # <max> values. A leg that used to name a ceiling now names a GENESIS, and the ceiling it exercises
+  # is whatever this fixture's own ledger derives from it.
+
   mb_fixture() {   # <dir> <nfiles> <lines-per-file>
     rm -rf "$1"; mkdir -p "$1/conformance" "$1/docs"
     printf 'kit marker\n' > "$1/docs/ROADMAP-KIT.md"
+    printf 'conformance/mass-acks.txt merge=union\n' > "$1/.gitattributes"
     printf '# fixture ledger\n' > "$1/conformance/mass-acks.txt"
     _i=1
     while [ "$_i" -le "$2" ]; do
@@ -627,40 +703,28 @@ selftest() {
   }
 
   mb_fixture "$W/ok" 4 10          # 4 files x 10 lines = 40 lines
-  if mb_verdict "$W/ok" 0 0 4 4 0 0 40 40 0 0 0 >/dev/null 2>&1; then
+  if mb_verdict "$W/ok" 0 4 0 40 0 0 >/dev/null 2>&1; then
     echo "PASS: selftest -- leg i within-budget tree passes"
   else echo "FAIL: selftest -- leg i within-budget tree wrongly red"; sfail=1; fi
 
   mb_fixture "$W/grow" 4 11        # +10% lines, no ack, no raise
-  if mb_verdict "$W/grow" 0 0 4 4 0 0 40 40 0 0 0 >/dev/null 2>&1; then
+  if mb_verdict "$W/grow" 0 4 0 40 0 0 >/dev/null 2>&1; then
     echo "FAIL: selftest -- leg ii undeclared growth wrongly green"; sfail=1
   else echo "PASS: selftest -- leg ii undeclared growth reds"; fi
 
   # leg iii -- the SAME growth, declared by a matching ack AND the matching raise, passes and NAMES it.
   mb_fixture "$W/ack" 4 11
   mb_ack "$W/ack" "2026-08-20\tlogic\t+4\tleg-iii-declared-growth"
-  if _o=$(mb_verdict "$W/ack" 0 0 4 4 0 0 40 44 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/ack" 0 4 0 40 0 0 2>&1); then
     if printf '%s\n' "$_o" | grep -Fq 'leg-iii-declared-growth'; then
       echo "PASS: selftest -- leg iii declared growth passes and names the consumed ack"
     else echo "FAIL: selftest -- leg iii passed SILENTLY: the consumed ack was not named in the output"; sfail=1; fi
   else echo "FAIL: selftest -- leg iii declared growth wrongly red"; sfail=1; fi
 
-  # leg iv -- an ack line WITHOUT the matching raise is PRE-EMPTIVE and reds.
-  mb_fixture "$W/preempt" 4 10
-  mb_ack "$W/preempt" "2026-08-20\tlogic\t+4\tleg-iv-preemptive-ack"
-  if _o=$(mb_verdict "$W/preempt" 0 0 4 4 0 0 40 40 0 0 0 2>&1); then
-    echo "FAIL: selftest -- leg iv pre-emptive ack (no matching raise) wrongly green"; sfail=1
-  else
-    if printf '%s\n' "$_o" | grep -Fq 'leg-iv-preemptive-ack'; then
-      echo "PASS: selftest -- leg iv pre-emptive ack reds and names the line"
-    else echo "FAIL: selftest -- leg iv redded but did not name the offending ack"; sfail=1; fi
-  fi
-
-  # leg v -- a RAISE without an ack reds: MAX is a pure function of GENESIS + the ledger.
-  mb_fixture "$W/raise" 4 11
-  if mb_verdict "$W/raise" 0 0 4 4 0 0 40 44 0 0 0 >/dev/null 2>&1; then
-    echo "FAIL: selftest -- leg v unacknowledged MAX raise wrongly green"; sfail=1
-  else echo "PASS: selftest -- leg v unacknowledged MAX raise reds"; fi
+  # legs iv and v -- RETIRED 2026-09-04 (MASS-CEILING-ADDITIVE); see the numbering-gap note above.
+  # iv graded a PRE-EMPTIVE ack and v an UNACKNOWLEDGED RAISE. Both needed a MAX_ literal that could
+  # disagree with the ledger. There is no literal, so there is no disagreement to construct, and a leg
+  # that cannot fail is not a leg. The d-series below is what took the teeth over.
 
   # leg vi -- A CUT. The gate must not punish removal: mass DOWN, MAX down with it, ledger reconciled.
   # Both sanctioned re-tighten shapes run here, because both are what CUT-AI-GOV-TEMPLATE-THIN owes:
@@ -668,7 +732,7 @@ selftest() {
   # (MAX drops BELOW genesis). Fixture: 3 files x 8 lines = 24 lines, down from the leg-iii tree.
   mb_fixture "$W/cut" 3 8
   mb_ack "$W/cut" "2026-08-21\tfiles\t-1\tleg-vi-cut-removed-a-check"
-  if _o=$(mb_verdict "$W/cut" 0 0 4 3 0 0 40 40 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/cut" 0 4 0 40 0 0 2>&1); then
     if printf '%s\n' "$_o" | grep -Fq 'leg-vi-cut-removed-a-check'; then
       echo "PASS: selftest -- leg vi a cut (pruned raise + negative ack) passes and names the ack"
     else echo "FAIL: selftest -- leg vi passed but did not name the negative ack"; sfail=1; fi
@@ -677,7 +741,7 @@ selftest() {
   # leg vii -- a MALFORMED ack (wrong field count) is never an acknowledgment, and it is NAMED.
   mb_fixture "$W/malformed" 4 11
   mb_ack "$W/malformed" "2026-08-20\tlogic\tleg-vii-malformed-three-fields"
-  if _o=$(mb_verdict "$W/malformed" 0 0 4 4 0 0 40 44 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/malformed" 0 4 0 40 0 0 2>&1); then
     echo "FAIL: selftest -- leg vii malformed ack wrongly laundered the raise"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'leg-vii-malformed-three-fields'; then
@@ -688,7 +752,7 @@ selftest() {
   # leg viii -- a REASONLESS ack (4 fields, empty reason) FAILS: an unreasoned amnesty is the defect.
   mb_fixture "$W/reasonless" 4 11
   mb_ack "$W/reasonless" "2026-08-20\tlogic\t+4\t"
-  if _o=$(mb_verdict "$W/reasonless" 0 0 4 4 0 0 40 44 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/reasonless" 0 4 0 40 0 0 2>&1); then
     echo "FAIL: selftest -- leg viii reasonless ack wrongly accepted"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'reasonless'; then
@@ -704,7 +768,7 @@ selftest() {
   for _lz in '+010' '+09' '-007' '+00'; do
     mb_fixture "$W/lz" 4 11
     mb_ack "$W/lz" "2026-08-20\tlogic\t$_lz\tleg-xii-leading-zero"
-    if _o=$(mb_verdict "$W/lz" 0 0 4 4 0 0 40 48 0 0 0 2>&1); then
+    if _o=$(mb_verdict "$W/lz" 0 4 0 40 0 0 2>&1); then
       echo "FAIL: selftest -- leg xii delta [$_lz] wrongly accepted (green)"; sfail=1
     else
       if printf '%s\n' "$_o" | grep -Fq 'malformed delta' && printf '%s\n' "$_o" | grep -Fq -- "$_lz"; then
@@ -719,7 +783,7 @@ selftest() {
   mb_fixture "$W/dup" 4 11
   mb_ack "$W/dup" "2026-08-20\tlogic\t+4\tleg-xiii-duplicate-ruling"
   mb_ack "$W/dup" "2026-08-20\tlogic\t+4\tleg-xiii-duplicate-ruling"
-  if _o=$(mb_verdict "$W/dup" 0 0 4 4 0 0 40 48 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/dup" 0 4 0 40 0 0 2>&1); then
     echo "FAIL: selftest -- leg xiii a byte-identical duplicate ack was consumed twice (green)"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'EXACT DUPLICATE' && printf '%s\n' "$_o" | grep -Fq 'leg-xiii-duplicate-ruling'; then
@@ -731,14 +795,14 @@ selftest() {
   # compared RAW and printed SANITIZED, so no control byte can erase the line and forge a verdict.
   mb_fixture "$W/ctrl" 4 11
   mb_ack "$W/ctrl" "2026-08-20\tlogic\t+4\tleg-xi-\033[2Kforged PASS: all green"
-  _o=$(mb_verdict "$W/ctrl" 0 0 4 4 0 0 40 44 0 0 0 2>&1) || :
+  _o=$(mb_verdict "$W/ctrl" 0 4 0 40 0 0 2>&1) || :
   if printf '%s\n' "$_o" | grep -Fq 'leg-xi-' && ! printf '%s\n' "$_o" | LC_ALL=C grep -q "$(printf '\033')"; then
     echo "PASS: selftest -- leg xi control bytes in an ack reason are stripped before printing"
   else echo "FAIL: selftest -- leg xi a raw control byte reached the output (or the ack was not printed)"; sfail=1; fi
 
   # leg ix -- an UNARMED (adopter-shaped) tree renders N/A rc 0 even when it is wildly over budget.
   mb_fixture "$W/na" 4 99; rm -f "$W/na/docs/ROADMAP-KIT.md"
-  if _o=$(mb_verdict "$W/na" 0 0 4 4 0 0 40 40 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/na" 0 4 0 40 0 0 2>&1); then
     if printf '%s\n' "$_o" | grep -Eqi '^(N/A([^A-Za-z0-9]|$)|SKIP:|[A-Za-z0-9_.-]+:[[:space:]]*N/A([^A-Za-z0-9]|$))' &&
        ! printf '%s\n' "$_o" | grep -Eq '^(OK|PASS)([^A-Za-z0-9]|$)|^[A-Za-z0-9_.-]+:[[:space:]]*(OK|PASS)([^A-Za-z0-9]|$)'; then
       echo "PASS: selftest -- leg ix unarmed over-budget tree renders N-A under verify.sh's C6 classifier"
@@ -748,7 +812,8 @@ selftest() {
   # leg x -- an ARMED tree whose enumeration is EMPTY is a FAIL, never a vacuous 0-line pass.
   rm -rf "$W/empty"; mkdir -p "$W/empty/conformance" "$W/empty/docs"
   printf 'kit marker\n' > "$W/empty/docs/ROADMAP-KIT.md"
-  if mb_verdict "$W/empty" 0 0 4 4 0 0 40 40 0 0 0 >/dev/null 2>&1; then
+  printf 'conformance/mass-acks.txt merge=union\n' > "$W/empty/.gitattributes"   # so the red below is the EMPTY ENUMERATION, not the union lock
+  if mb_verdict "$W/empty" 0 4 0 40 0 0 >/dev/null 2>&1; then
     echo "FAIL: selftest -- leg x empty enumeration wrongly passes (vacuous 0-line green)"; sfail=1
   else echo "PASS: selftest -- leg x empty enumeration on an armed tree reds"; fi
 
@@ -758,6 +823,7 @@ selftest() {
   mb_fixture_mk() { # <dir> <nfiles> <pre-marker-lines> <post-marker-lines-incl-marker> <style>
     rm -rf "$1"; mkdir -p "$1/conformance" "$1/docs"
     printf 'kit marker\n' > "$1/docs/ROADMAP-KIT.md"
+    printf 'conformance/mass-acks.txt merge=union\n' > "$1/.gitattributes"
     printf '# fixture ledger\n' > "$1/conformance/mass-acks.txt"
     _i=1
     while [ "$_i" -le "$2" ]; do
@@ -781,24 +847,27 @@ selftest() {
   # goes red, because a single number cannot answer differently to the same delta.
   mb_fixture_mk "$W/base" 2 10 10 fn                      # logic 20, fixture 20
   mb_ack "$W/base" "2026-08-31\tfixture\t+10\tleg-xiv-inaugural-band"
-  if mb_verdict "$W/base" 0 0 2 2 0 0 20 20 20 30 0 >/dev/null 2>&1; then
+  if mb_verdict "$W/base" 0 2 0 20 20 0 >/dev/null 2>&1; then
     echo "PASS: selftest -- leg xiv split baseline (logic 20/20, fixture 20/30) passes"
   else echo "FAIL: selftest -- leg xiv split baseline wrongly red"; sfail=1; fi
 
   mb_fixture_mk "$W/glogic" 2 13 10 fn                    # logic 26 > 20; fixture unchanged
   mb_ack "$W/glogic" "2026-08-31\tfixture\t+10\tleg-xiv-inaugural-band"
-  if _o=$(mb_verdict "$W/glogic" 0 0 2 2 0 0 20 20 20 30 0 2>&1); then
+  if _o=$(mb_verdict "$W/glogic" 0 2 0 20 20 0 2>&1); then
     echo "FAIL: selftest -- leg xiv logic growth past MAX_LOGIC wrongly green"; sfail=1
   else
-    if printf '%s\n' "$_o" | grep -Fq 'logic 26/20' && printf '%s\n' "$_o" | grep -Fq 'raise MAX_LOGIC' &&
+    # ⚠️ THE REMEDY TOKEN MOVED 2026-09-04: the cure used to be "raise MAX_LOGIC with a matching ack
+    # line"; there is no constant to raise, so the printed cure is ONE appended ack line scoped to the
+    # LOWERCASE surface. The leg asserts the new token, and still asserts that fixture is not blamed.
+    if printf '%s\n' "$_o" | grep -Fq 'logic 26/20' && printf '%s\n' "$_o" | grep -Fq 'append ONE ack line' &&
        ! printf '%s\n' "$_o" | grep -Fq 'FAIL -- fixture'; then
-      echo "PASS: selftest -- leg xiv logic growth reds NAMING logic and the REAL constant MAX_LOGIC (and does not blame fixture)"
+      echo "PASS: selftest -- leg xiv logic growth reds NAMING logic and offering the one-appended-ack cure (and does not blame fixture)"
     else echo "FAIL: selftest -- leg xiv logic growth redded, but not as a named logic overrun"; sfail=1; fi
   fi
 
   mb_fixture_mk "$W/gfix" 2 10 13 fn                      # the SAME +6, on fixture, inside the band
   mb_ack "$W/gfix" "2026-08-31\tfixture\t+10\tleg-xiv-inaugural-band"
-  if mb_verdict "$W/gfix" 0 0 2 2 0 0 20 20 20 30 0 >/dev/null 2>&1; then
+  if mb_verdict "$W/gfix" 0 2 0 20 20 0 >/dev/null 2>&1; then
     echo "PASS: selftest -- leg xiv the same growth on FIXTURE passes inside the band"
   else echo "FAIL: selftest -- leg xiv fixture growth inside the band wrongly red"; sfail=1; fi
 
@@ -806,7 +875,7 @@ selftest() {
   # and names fixture: the per-epoch re-ratification is the price of the per-slice ack it replaces.
   mb_fixture_mk "$W/gfix2" 2 10 25 fn                     # fixture 50 > 30
   mb_ack "$W/gfix2" "2026-08-31\tfixture\t+10\tleg-xv-band-exhausted"
-  if _o=$(mb_verdict "$W/gfix2" 0 0 2 2 0 0 20 20 20 30 0 2>&1); then
+  if _o=$(mb_verdict "$W/gfix2" 0 2 0 20 20 0 2>&1); then
     echo "FAIL: selftest -- leg xv fixture growth past MAX_FIXTURE wrongly green"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'fixture 50/30'; then
@@ -818,7 +887,7 @@ selftest() {
   # 17 of the kit's own checks carry no marker; if they ever priced as fixture they would land in the
   # banded surface and grow ack-free, which is the exact laundering the split must not create.
   mb_fixture "$W/nomark" 2 11                              # 22 marker-less lines
-  if _o=$(mb_verdict "$W/nomark" 0 0 2 2 0 0 20 20 0 0 0 2>&1); then
+  if _o=$(mb_verdict "$W/nomark" 0 2 0 20 0 0 2>&1); then
     echo "FAIL: selftest -- leg xvi marker-less growth wrongly green"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'logic 22/20' && printf '%s\n' "$_o" | grep -Fq 'fixture 0/0'; then
@@ -831,7 +900,7 @@ selftest() {
   # change to the copy moves one of these numbers and reds here.
   for _st in fn ifb arm none; do
     mb_fixture_mk "$W/bnd" 1 5 5 "$_st"
-    _o=$(mb_verdict "$W/bnd" 0 0 1 1 0 0 100 100 100 100 0 2>&1) || :
+    _o=$(mb_verdict "$W/bnd" 0 1 0 100 100 0 2>&1) || :
     case "$_st" in
       none) _wantf='fixture 0/100' ;;
       *)    _wantf='fixture 5/100' ;;
@@ -845,7 +914,7 @@ selftest() {
   mb_fixture_mk "$W/prec" 1 5 5 fn
   _pf="$W/prec/conformance/f1.sh"
   { printf '  --selftest)\n'; cat "$_pf"; } > "$_pf.new" && mv "$_pf.new" "$_pf"   # arm at line 1, fn at line 7
-  _o=$(mb_verdict "$W/prec" 0 0 1 1 0 0 100 100 100 100 0 2>&1) || :
+  _o=$(mb_verdict "$W/prec" 0 1 0 100 100 0 2>&1) || :
   if printf '%s\n' "$_o" | grep -Fq 'logic 6/100' && printf '%s\n' "$_o" | grep -Fq 'fixture 5/100'; then
     echo "PASS: selftest -- leg xvii a real selftest() beats an earlier bare case arm (arm is fallback only)"
   else echo "FAIL: selftest -- leg xvii the bare case arm wrongly won over a real selftest()"; sfail=1; fi
@@ -856,7 +925,7 @@ selftest() {
   # asserts the message, not merely the rc, because an invariant red here would be the wrong reason.
   mb_fixture_mk "$W/retired" 2 10 10 fn
   mb_ack "$W/retired" "2026-08-31\tlines\t+5\tleg-xviii-appended-lines-ack"
-  if _o=$(mb_verdict "$W/retired" 0 5 2 2 0 0 20 20 20 20 0 2>&1); then
+  if _o=$(mb_verdict "$W/retired" 0 2 0 20 20 0 2>&1); then
     echo "FAIL: selftest -- leg xviii an appended lines ack wrongly green"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'RETIRED' &&
@@ -872,7 +941,7 @@ selftest() {
   mb_fixture_mk "$W/zerosum" 2 10 10 fn
   mb_ack "$W/zerosum" "2026-08-31\tlines\t+5\tleg-xix-zero-sum-first-half"
   mb_ack "$W/zerosum" "2026-08-31\tlines\t-5\tleg-xix-zero-sum-second-half"
-  if _o=$(mb_verdict "$W/zerosum" 0 0 2 2 0 0 20 20 20 20 0 2>&1); then
+  if _o=$(mb_verdict "$W/zerosum" 0 2 0 20 20 0 2>&1); then
     echo "FAIL: selftest -- leg xix a zero-sum lines pair wrongly green (arithmetic alone passes it)"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'RETIRED' && ! printf '%s\n' "$_o" | grep -Fq 'MAX_LINES is'; then
@@ -902,7 +971,7 @@ selftest() {
   if [ -r "$W/unread/conformance/f2.sh" ]; then
     echo "SKIP: selftest -- leg xxi unreadable arm NOT EXERCISED (this uid reads mode-000 files). A skip is reported as a SKIP: a skip wearing a PASS token is the measured defect PR 12 closed elsewhere in this suite, and it would read here as an unreadable-file guarantee nothing ran to earn."
   else
-    if _o=$(mb_verdict "$W/unread" 0 0 2 2 0 0 20 20 20 20 0 2>&1); then
+    if _o=$(mb_verdict "$W/unread" 0 2 0 20 20 0 2>&1); then
       echo "FAIL: selftest -- leg xxi an UNREADABLE conformance file wrongly priced (green)"; sfail=1
     else
       if printf '%s\n' "$_o" | grep -Fq 'f2.sh' && printf '%s\n' "$_o" | grep -Fq 'cannot be MEASURED'; then
@@ -914,7 +983,7 @@ selftest() {
 
   mb_fixture_mk "$W/zeroline" 2 10 10 fn
   : > "$W/zeroline/conformance/f3.sh"
-  if _o=$(mb_verdict "$W/zeroline" 0 0 3 3 0 0 20 20 20 20 0 2>&1); then
+  if _o=$(mb_verdict "$W/zeroline" 0 3 0 20 20 0 2>&1); then
     echo "FAIL: selftest -- leg xxi a ZERO-LINE conformance file wrongly priced (green)"; sfail=1
   else
     if printf '%s\n' "$_o" | grep -Fq 'f3.sh' && printf '%s\n' "$_o" | grep -Fq 'cannot be MEASURED'; then
@@ -948,7 +1017,7 @@ selftest() {
   mb_fixture_mk "$W/wire" 2 10 10 fn                      # real tree: 40 lines, logic 20, fixture 20
   if (
        mb_split_rows() { printf '20 11 10 10 f1.sh\n'; return 0; }
-       _wo=$(mb_verdict "$W/wire" 0 0 2 2 0 0 20 20 20 20 0 2>&1) && exit 1
+       _wo=$(mb_verdict "$W/wire" 0 2 0 20 20 0 2>&1) && exit 1
        printf '%s\n' "$_wo" | grep -Fq 'SPLIT IDENTITY broken'
      ); then
     echo "PASS: selftest -- leg xxiii the runtime identity is WIRED INTO mb_verdict (a shadowed measurement reds)"
@@ -957,7 +1026,7 @@ selftest() {
   # leg xxiv -- THE COMPOSITION REPORT IS WIRED, and prints a REAL row rather than only a header. A
   # marker-heavy tree makes one file's fixture share predictable, and the leg names it.
   mb_fixture_mk "$W/comp" 1 5 15 fn                        # f1.sh: 20 lines, logic 5, fixture 15
-  _o=$(mb_verdict "$W/comp" 0 0 1 1 0 0 100 100 100 100 0 2>&1) || :
+  _o=$(mb_verdict "$W/comp" 0 1 0 100 100 0 2>&1) || :
   if printf '%s\n' "$_o" | grep -Fq 'composition --' &&
      printf '%s\n' "$_o" | grep -Fq 'f1.sh -- 15/20 fixture, marker at line 6'; then
     echo "PASS: selftest -- leg xxiv the composition report is wired and prints a real per-file row"
@@ -971,14 +1040,14 @@ selftest() {
   mb_fixture_mk "$W/glide" 2 10 10 fn
   if (
        LOGIC_GLIDE_TARGET=abc
-       _go=$(mb_verdict "$W/glide" 0 0 2 2 0 0 20 20 20 20 0 2>&1) && exit 1
+       _go=$(mb_verdict "$W/glide" 0 2 0 20 20 0 2>&1) && exit 1
        printf '%s\n' "$_go" | grep -Fq 'LOGIC_GLIDE_TARGET is set to [abc]'
      ); then
     echo "PASS: selftest -- leg xxv an ungradeable glide target reds and names the bad value"
   else echo "FAIL: selftest -- leg xxv an ungradeable glide target was silently ignored (or unnamed)"; sfail=1; fi
   if (
        LOGIC_GLIDE_TARGET=10
-       _go=$(mb_verdict "$W/glide" 0 0 2 2 0 0 20 20 20 20 0 2>&1) || exit 1
+       _go=$(mb_verdict "$W/glide" 0 2 0 20 20 0 2>&1) || exit 1
        printf '%s\n' "$_go" | grep -Fq 'ADVISORY ONLY'
      ); then
     echo "PASS: selftest -- leg xxv a SET glide target stays ADVISORY (rc 0) — advisory is the ceiling"
@@ -989,10 +1058,13 @@ selftest() {
   # UPPERCASE surface token the allowlist rejects and an UNSIGNED delta mb_delta_ok rejects — so the
   # published fix for a red produced a second red. Prose and grammar can only be kept in step by a
   # leg that runs one through the other; a comment coupling them is what shipped the octal defect.
+  # ⚠️ RE-POINTED 2026-09-04: it used to round-trip mb_invariant's remedy, which is retired with the
+  # MAX_ literals. mb_surface now prints the only remedy this gate offers, so the leg drives a real
+  # LOGIC OVERRUN (genesis 15 against a measured 20) and feeds THAT line back through the grammar.
   mb_fixture_mk "$W/remedy" 2 10 10 fn
-  _o=$(mb_verdict "$W/remedy" 0 0 2 2 0 0 20 20 20 30 0 2>&1) || :
-  _rl=$(printf '%s\n' "$_o" | grep -F 'Add the ack line (' | head -1 |
-        sed -e 's/^.*Add the ack line (//' -e 's/) to conformance.*$//' \
+  _o=$(mb_verdict "$W/remedy" 0 2 0 15 20 0 2>&1) || :
+  _rl=$(printf '%s\n' "$_o" | grep -F 'append ONE ack line (' | head -1 |
+        sed -e 's/^.*append ONE ack line (//' -e 's/) to conformance.*$//' \
             -e 's/<date>/2026-08-31/' -e 's/<reason>/leg-xxvi-round-trip/')
   printf '%s\n' "$_rl" > "$W/remedy-ledger.txt"
   if [ -n "$_rl" ] && mb_ledger_check "$W/remedy-ledger.txt" >/dev/null 2>&1; then
@@ -1035,14 +1107,200 @@ selftest() {
     echo "SKIP: selftest -- leg xxvii newline-bearing basename NOT EXERCISED (this filesystem refused to create the name)"
   fi
 
+  # ══ THE DERIVED-CEILING LEGS (MASS-CEILING-ADDITIVE, 2026-09-04). The five MAX_* literals are gone
+  # and the ceiling is GENESIS + Σ(ledger) computed on every run, so the states legs iv and v graded
+  # (a pre-emptive ack, an unacked raise) are no longer constructible. What replaces them is a lock
+  # against the literal coming back, a proof that the ledger's ORDER cannot change the answer, the
+  # printed derivation itself, and the merge attribute that makes two branches' acks combine.
+
+  # leg d-i -- THE SOURCE LOCK. A reintroduced `MAX_<surface>=<digits>` assignment reds, NAMING the
+  # line, and a literal-free script passes (the lock is load-bearing in both directions).
+  _lit="$W/lit.sh"
+  { printf '#!/bin/sh\n'; printf 'GENESIS_LOGIC=100\n'; printf 'MAX_'; printf 'LOGIC=33500\n'; } > "$_lit"
+  if _o=$(mb_no_literal_max "$_lit" 2>&1); then
+    echo "FAIL: selftest -- leg d-i a planted MAX_LOGIC literal was not refused by the source lock"; sfail=1
+  else
+    if printf '%s\n' "$_o" | grep -Fq 'MAX_LOGIC=33500' && printf '%s\n' "$_o" | grep -Fq 'line 3'; then
+      echo "PASS: selftest -- leg d-i a reintroduced MAX_ literal reds and names the line"
+    else echo "FAIL: selftest -- leg d-i redded, but did not name the offending line: [$_o]"; sfail=1; fi
+  fi
+  # ...and the other DIRECT forms: a lock seeing only the bare one lets `readonly MAX_LOGIC="33500"` in.
+  for _lf in 'MAX_LOGIC="33500"' "MAX_LOGIC='33500'" 'readonly MAX_LOGIC=33500' 'export MAX_FIXTURE=+70' 'local MAX_LOGIC=33500' 'typeset MAX_CENSUS=1' '  MAX_LINES=-1'; do
+    _lit2="$W/lit2.sh"
+    { printf '#!/bin/sh\n'; printf '%s\n' "$_lf"; } > "$_lit2"
+    if mb_no_literal_max "$_lit2" >/dev/null 2>&1; then
+      echo "FAIL: selftest -- leg d-i the source lock MISSED a direct literal form [$_lf]"; sfail=1
+    else echo "PASS: selftest -- leg d-i the source lock catches the direct literal form [$_lf]"; fi
+  done
+  # ...and the DISCLOSED evasions stay evasions, so the header's catch set cannot silently go wrong.
+  for _le in 'MAX_LOGIC=$((33500))' 'MAX_LOGIC=$CACHED' 'MAX_LOGIC=$(cat ceiling)'; do
+    _lit3="$W/lit3.sh"
+    { printf '#!/bin/sh\n'; printf '%s\n' "$_le"; } > "$_lit3"
+    if mb_no_literal_max "$_lit3" >/dev/null 2>&1; then
+      echo "PASS: selftest -- leg d-i the DISCLOSED evasion [$_le] passes, as the header says (inert: no code path reads \$MAX_*)"
+    else echo "FAIL: selftest -- leg d-i an evasion the header discloses as uncaught was caught -- update the disclosure: [$_le]"; sfail=1; fi
+  done
+  _cln="$W/clean.sh"
+  { printf '#!/bin/sh\n'; printf 'GENESIS_LOGIC=100\n'; printf '# the MAX_LOGIC literal used to live here\n'; } > "$_cln"
+  if mb_no_literal_max "$_cln" >/dev/null 2>&1; then
+    echo "PASS: selftest -- leg d-i a literal-free script passes the source lock"
+  else echo "FAIL: selftest -- leg d-i the source lock reds a literal-free script (vacuously red)"; sfail=1; fi
+
+  # leg d-ii -- ORDER INDEPENDENCE (the row's acceptance criterion). Two acks appended A-then-B and
+  # B-then-A are the two trees a union merge can produce; the printed ceiling must be byte-identical.
+  mb_fixture_mk "$W/ordA" 2 10 10 fn
+  mb_ack "$W/ordA" "2026-09-04\tlogic\t+5\tleg-d-ii-ack-A"
+  mb_ack "$W/ordA" "2026-09-04\tlogic\t+7\tleg-d-ii-ack-B"
+  mb_fixture_mk "$W/ordB" 2 10 10 fn
+  mb_ack "$W/ordB" "2026-09-04\tlogic\t+7\tleg-d-ii-ack-B"
+  mb_ack "$W/ordB" "2026-09-04\tlogic\t+5\tleg-d-ii-ack-A"
+  _oa=$(mb_verdict "$W/ordA" 0 2 0 20 20 0 2>&1 | grep -F 'MAX_LOGIC=' | head -1) || :
+  _ob=$(mb_verdict "$W/ordB" 0 2 0 20 20 0 2>&1 | grep -F 'MAX_LOGIC=' | head -1) || :
+  if [ -n "$_oa" ] && [ "$_oa" = "$_ob" ] && printf '%s\n' "$_oa" | grep -Fq 'MAX_LOGIC=32 '; then
+    echo "PASS: selftest -- leg d-ii two acks in either order derive the SAME ceiling (MAX_LOGIC=32)"
+  else echo "FAIL: selftest -- leg d-ii the ceiling depends on ledger ORDER, or was not derived: A=[$_oa] B=[$_ob]"; sfail=1; fi
+
+  # leg d-iii -- THE DERIVATION IS PRINTED. A reader must be able to re-add the numbers from the line
+  # itself; a bare ceiling would be a constant again, just one nobody can see the source of.
+  if printf '%s\n' "$_oa" | grep -Fq '= genesis 20 + (+12) over 2 ack(s), last 2026-09-04'; then
+    echo "PASS: selftest -- leg d-iii the provenance line prints the full derivation"
+  else echo "FAIL: selftest -- leg d-iii the provenance line does not print the derivation genesis + (sum) over N ack(s): [$_oa]"; sfail=1; fi
+
+  # leg d-iv -- THE UNION ATTRIBUTE IS A KIT-SELF LOCK. The ledger is now the ONLY place a ceiling
+  # lives, so an armed tree whose .gitattributes does not give it merge=union reds: without the
+  # attribute two ratified branches' acks conflict textually and the second one to land rewrites the
+  # ceiling by hand, which is the defect this slice exists to close.
+  mb_fixture_mk "$W/noattr" 2 10 10 fn
+  rm -f "$W/noattr/.gitattributes"
+  if _o=$(mb_verdict "$W/noattr" 0 2 0 20 20 0 2>&1); then
+    echo "FAIL: selftest -- leg d-iv a tree without the merge=union attribute wrongly passed"; sfail=1
+  else
+    if printf '%s\n' "$_o" | grep -Fq 'merge=union' && printf '%s\n' "$_o" | grep -Fq '.gitattributes'; then
+      echo "PASS: selftest -- leg d-iv a missing merge=union attribute reds and names .gitattributes"
+    else echo "FAIL: selftest -- leg d-iv redded, but not on the missing merge attribute"; sfail=1; fi
+  fi
+  mb_fixture_mk "$W/withattr" 2 10 10 fn
+  if mb_verdict "$W/withattr" 0 2 0 20 20 0 >/dev/null 2>&1; then
+    echo "PASS: selftest -- leg d-iv the same tree WITH the attribute passes"
+  else echo "FAIL: selftest -- leg d-iv a tree carrying the attribute was still refused"; sfail=1; fi
+  # ...and the OVERRIDE. gitattributes is last-match-wins, so a later `-merge`/`merge=text` row for the
+  # same path leaves the ledger WITHOUT union while a present-anywhere lock still reads green.
+  for _ov in '-merge' 'merge=text'; do
+    mb_fixture_mk "$W/override" 2 10 10 fn
+    printf 'conformance/mass-acks.txt %s\n' "$_ov" >> "$W/override/.gitattributes"
+    if _o=$(mb_verdict "$W/override" 0 2 0 20 20 0 2>&1); then
+      echo "FAIL: selftest -- leg d-iv a LATER [$_ov] row disabled union and the tree still passed"; sfail=1
+    else
+      if printf '%s\n' "$_o" | grep -Fq 'last-match-wins'; then
+        echo "PASS: selftest -- leg d-iv a later [$_ov] row overrides union and reds, naming the override"
+      else echo "FAIL: selftest -- leg d-iv redded on the [$_ov] override, but not naming it: [$_o]"; sfail=1; fi
+    fi
+  done
+
+  # leg d-v -- THE ROW'S OWN PROOF, on real git. Two branches each APPEND an ack; both merge orders
+  # must exit 0, leave no conflict marker in the ledger, and derive the same ceiling. And union's
+  # known failure mode — both sides appending the BYTE-IDENTICAL line — must still be caught, by the
+  # ledger's exact-duplicate grammar rather than by the merge. Hermetic: no global/system git config,
+  # HOME inside the workdir, the initial branch pinned rather than inherited from the user's default.
+  mb_union_merge() {   # <dir> <ack-line-A> <ack-line-B> <first-branch> — merges the OTHER branch in
+    _gd=$1; _gla=$2; _glb=$3; _gfirst=$4
+    rm -rf "$_gd"; mkdir -p "$_gd/home"
+    (
+      GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null; GIT_CONFIG_NOSYSTEM=1
+      HOME="$_gd/home"; XDG_CONFIG_HOME="$_gd/home"
+      export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM HOME XDG_CONFIG_HOME
+      mb_fixture_mk "$_gd/repo" 2 10 10 fn
+      cd "$_gd/repo" || exit 9
+      git init -q . >/dev/null 2>&1 || exit 9
+      git symbolic-ref HEAD refs/heads/base >/dev/null 2>&1 || exit 9
+      git config user.name mass-budget-selftest >/dev/null 2>&1 || exit 9
+      git config user.email mb@example.invalid >/dev/null 2>&1 || exit 9
+      git add -A >/dev/null 2>&1 || exit 9
+      git commit -q -m base >/dev/null 2>&1 || exit 9
+      git checkout -q -b brA >/dev/null 2>&1 || exit 9
+      printf '%b\n' "$_gla" >> conformance/mass-acks.txt
+      git commit -q -am ackA >/dev/null 2>&1 || exit 9
+      git checkout -q base >/dev/null 2>&1 || exit 9
+      git checkout -q -b brB >/dev/null 2>&1 || exit 9
+      printf '%b\n' "$_glb" >> conformance/mass-acks.txt
+      git commit -q -am ackB >/dev/null 2>&1 || exit 9
+      case "$_gfirst" in
+        brA) _gother=brB ;;
+        *)   _gother=brA ;;
+      esac
+      git checkout -q "$_gfirst" >/dev/null 2>&1 || exit 9
+      # `cmd; rc=$?` would ABORT the whole suite under `set -e` on a failing merge: no named FAIL, and
+      # every later leg silently never runs. A condition context REPORTS the failure instead (the
+      # arms below assert on it). Same reason for the trailing `|| :` here and on the calls.
+      if git merge -q --no-edit "$_gother" >/dev/null 2>&1; then _mrc=0; else _mrc=$?; fi
+      echo "MBMERGE_RC=$_mrc"
+      if grep -Fq '<<<<<<<' conformance/mass-acks.txt; then echo "MBCONFLICT=yes"; else echo "MBCONFLICT=no"; fi
+      _vo=$(mb_verdict "$_gd/repo" 0 2 0 20 20 0 2>&1) && echo "MBGATE_RC=0" || echo "MBGATE_RC=1"
+      printf '%s\n' "$_vo" | grep -F 'MAX_LOGIC=' | head -1 || :
+    )
+  }
+  if [ -z "$(command -v git 2>/dev/null || :)" ]; then
+    echo "SKIP: selftest -- leg d-v NOT EXERCISED (git is not on PATH). A skip is reported as a SKIP: a skip wearing a PASS token would read here as a union-merge guarantee nothing ran to earn."
+  else
+    _mA=$(mb_union_merge "$W/gitAB" "2026-09-04\tlogic\t+5\tleg-d-v-ack-A" "2026-09-04\tlogic\t+7\tleg-d-v-ack-B" brA) || :
+    _mB=$(mb_union_merge "$W/gitBA" "2026-09-04\tlogic\t+5\tleg-d-v-ack-A" "2026-09-04\tlogic\t+7\tleg-d-v-ack-B" brB) || :
+    _cA=$(printf '%s\n' "$_mA" | grep -F 'MAX_LOGIC=' | head -1)
+    _cB=$(printf '%s\n' "$_mB" | grep -F 'MAX_LOGIC=' | head -1)
+    if printf '%s\n' "$_mA" | grep -Fq 'MBMERGE_RC=0' && printf '%s\n' "$_mB" | grep -Fq 'MBMERGE_RC=0' &&
+       printf '%s\n' "$_mA" | grep -Fq 'MBCONFLICT=no' && printf '%s\n' "$_mB" | grep -Fq 'MBCONFLICT=no'; then
+      echo "PASS: selftest -- leg d-v two appended acks merge in BOTH orders with no conflict marker"
+    else echo "FAIL: selftest -- leg d-v an appended-ack merge conflicted or failed: A=[$_mA] B=[$_mB]"; sfail=1; fi
+    if [ -n "$_cA" ] && [ "$_cA" = "$_cB" ] && printf '%s\n' "$_cA" | grep -Fq 'MAX_LOGIC=32 ' &&
+       printf '%s\n' "$_mA" | grep -Fq 'MBGATE_RC=0'; then
+      echo "PASS: selftest -- leg d-v both merge orders derive the SAME ceiling on the merged tree"
+    else echo "FAIL: selftest -- leg d-v the merged trees disagree on the ceiling, or the gate redded: A=[$_cA] B=[$_cB]"; sfail=1; fi
+    # leg d-iv (glob arm) -- THE OVERRIDE ONLY GIT CAN SEE, which is why the lock grades the EFFECTIVE
+    # attribute. A later `conformance/* -merge` row never NAMES the ledger, so the path-keyed awk
+    # fallback reads it as absent and stays green while git's applied value is `unset`. Needs a real
+    # work tree, so it reuses the repo the merge helper just built (hermetic env re-applied).
+    printf 'conformance/* -merge\n' >> "$W/gitAB/repo/.gitattributes"
+    if _o=$( ( GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null; GIT_CONFIG_NOSYSTEM=1
+               HOME="$W/gitAB/home"; XDG_CONFIG_HOME="$W/gitAB/home"
+               export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM HOME XDG_CONFIG_HOME
+               mb_verdict "$W/gitAB/repo" 0 2 0 20 20 0 ) 2>&1 ); then
+      echo "FAIL: selftest -- leg d-iv a later GLOB \`conformance/* -merge\` row turned union off and the tree still passed"; sfail=1
+    else
+      if printf '%s\n' "$_o" | grep -Fq 'effective merge attribute' && printf '%s\n' "$_o" | grep -Fq '[unset]'; then
+        echo "PASS: selftest -- leg d-iv a GLOB override reds on the EFFECTIVE attribute, naming its value [unset] (the path-keyed fallback is blind to it)"
+      else echo "FAIL: selftest -- leg d-iv redded on the glob override, but not on the effective attribute with its value: [$_o]"; sfail=1; fi
+    fi
+
+    # ...and union's SUSPECTED failure mode, MEASURED RATHER THAN ASSUMED — the measurement REFUTED the
+    # design (§3.1/§4 predicted "the doubled identical line reds on the exact-duplicate grammar").
+    # It never gets that far: when BOTH sides make the byte-identical
+    # change, git resolves it as ONE change before any merge driver is consulted, so the merged ledger
+    # carries the line ONCE and the ceiling is raised ONCE. That is the safe direction, but it is not
+    # what the design said, so the leg pins the BEHAVIOUR rather than the prediction: rc 0, gate GREEN,
+    # and the derived ceiling 25 (genesis 20 + 5) — NOT 30. If union ever did double the line the
+    # ceiling would read 30 and this leg reds; if the grammar caught it instead the gate rc would be 1
+    # and this leg reds. The grammar is still the detector for a duplicate arriving any OTHER way (xiii).
+    _mD=$(mb_union_merge "$W/gitdup" "2026-09-04\tlogic\t+5\tleg-d-v-identical" "2026-09-04\tlogic\t+5\tleg-d-v-identical" brA) || :
+    if printf '%s\n' "$_mD" | grep -Fq 'MBMERGE_RC=0' && printf '%s\n' "$_mD" | grep -Fq 'MBGATE_RC=0' &&
+       printf '%s\n' "$_mD" | grep -Fq 'MAX_LOGIC=25 ' && ! printf '%s\n' "$_mD" | grep -Fq 'MAX_LOGIC=30 '; then
+      echo "PASS: selftest -- leg d-v a byte-identical ack on both branches lands ONCE (ceiling 25, not 30): git collapses identical changes before the union driver"
+    else echo "FAIL: selftest -- leg d-v the identical ack on both branches did not land exactly once: [$_mD]"; sfail=1; fi
+  fi
+
   [ "$sfail" -eq 0 ] && { echo "OK: conformance-mass-budget selftest"; exit 0; } || { echo "FAIL: conformance-mass-budget selftest"; exit 1; }
 }
 
 # ---------------------------------------------------------------------------- dispatch
 run() {
+  # THE SOURCE LOCK RUNS FIRST, on this script's OWN path, resolved BEFORE the cd (a bare `$0` would
+  # be relative to the old cwd and the lock would then grade nothing — a lock that cannot see its
+  # subject is worse than no lock, so mb_no_literal_max reds on an unreadable path rather than passing).
+  _self=$(cd "$(dirname "$0")" && pwd)/${0##*/}
   cd "$(dirname "$0")/.."
-  mb_verdict . "$GENESIS_LINES" "$MAX_LINES" "$GENESIS_FILES" "$MAX_FILES" "$GENESIS_CENSUS" "$MAX_CENSUS" \
-               "$GENESIS_LOGIC" "$MAX_LOGIC" "$GENESIS_FIXTURE" "$MAX_FIXTURE" "$HISTORICAL_LINES_ACKS"
+  _rrc=0
+  mb_no_literal_max "$_self" || _rrc=1
+  mb_verdict . "$GENESIS_LINES" "$GENESIS_FILES" "$GENESIS_CENSUS" \
+               "$GENESIS_LOGIC" "$GENESIS_FIXTURE" "$HISTORICAL_LINES_ACKS" || _rrc=1
+  return "$_rrc"
 }
 
 case "${1:-}" in

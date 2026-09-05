@@ -93,8 +93,14 @@ if [ -f "$pv" ]; then
       && printf 'x\n' > f.txt && git add f.txt && git commit -qm c1
   ) >/dev/null 2>&1
   sha=$( cd "$repo" && git rev-parse HEAD )
+  # `--no-push` (RECORD-FETCHES-AND-PUSHES-LEDGER): `record` is now a fetch→write→publish transaction
+  # that REFUSES to record against a ledger it cannot reach, and this throwaway repo has no remote.
+  # The refusal is rc 2 with "cannot reach the ledger remote" — which this leg would otherwise read
+  # as a guard DEADLOCK (measured on PR #643's first CI run). `--no-push` is the labelled fixture
+  # escape; what this leg proves — the sentinel lets the ONE note write through the shim — is
+  # unchanged, because the write path is identical with or without the publish step.
   set +e
-  out=$( cd "$repo" && PATH="$shim_dir:$PATH" sh "$pv" record --approved-sha "$sha" \
+  out=$( cd "$repo" && PATH="$shim_dir:$PATH" sh "$pv" record --no-push --approved-sha "$sha" \
            --approved-by Fixture --gate design --rung Design --class control-plane \
            --scope branch/b2fix-shim-probe --token "GO" 2>&1 ); pvrc=$?
   set -e

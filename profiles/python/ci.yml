@@ -82,7 +82,11 @@ jobs:
 
       - name: Type-check
         id: gate-type-check
-        run: uv run mypy .
+        # NO path argument (K9). `mypy .` re-discovers every `src/app` on disk — including the
+        # kit's own `profiles/python/scaffold/src/app` that ships beside your code — and dies with
+        # `Duplicate module named "app"` before checking anything. Bare `mypy` honours
+        # `[tool.mypy] files` in pyproject.toml, which is where the scope belongs.
+        run: uv run mypy
 
       - name: Test + coverage (>=80%)
         id: gate-test
@@ -121,7 +125,17 @@ jobs:
 
       - name: Generate SBOM (CycloneDX)
         id: gate-sbom
-        run: uvx cyclonedx-py environment --output-format JSON --outfile sbom.json
+        # K10: `uvx cyclonedx-py` resolves a PyPI SHIM, not the tool — and the shim has no
+        # `--outfile`, so this step failed with `unrecognized arguments: --outfile` every time it
+        # ran. `--from cyclonedx-bom==7.3.1` names the real (pinned) distribution; `--of`/`-o` are
+        # its actual flags.
+        # THE `.venv` TARGET IS LOAD-BEARING (measured on an incepted tree after `uv sync --frozen`):
+        # `cyclonedx-py environment` with NO target inventories the environment it is RUNNING in —
+        # which under uvx is the TOOL's own venv, yielding 32 components that are all cyclonedx-bom's
+        # dependencies and NOT ONE LINE OF YOUR APP. An SBOM of the SBOM generator passes every
+        # "file is non-empty" check and is worthless as supply-chain evidence. Naming `.venv` (the
+        # environment `uv sync` just built) is what makes it your project's inventory.
+        run: uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment .venv --of JSON -o sbom.json
 
       - name: Upload SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4

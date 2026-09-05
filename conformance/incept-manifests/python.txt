@@ -35,7 +35,7 @@ precondition: present gate-type-check
 when-absent: skip
 assert: present mypy
 skip-reason: no type-check gate in this profile — nothing to activate
-fix-hint: type-check with `uv run mypy .`
+fix-hint: type-check with `uv run mypy` (no path arg — this profile SHIPS a scaffold, so `mypy .` finds two `src/app` and dies with `Duplicate module`; scope lives in [tool.mypy] files)
 
 id: test-coverage
 precondition: present gate-test
@@ -88,11 +88,20 @@ id: sbom-cyclonedx
 precondition: present gate-sbom
 when-absent: skip
 # CycloneDX SBOM of the environment, uploaded as a build artifact (SSDF/SLSA evidence).
-assert: present cyclonedx-py environment
-assert: present --output-format JSON
+# K10: `uvx cyclonedx-py` resolves a PyPI SHIM that has no --outfile, so the step could never run.
+# The pinned real distribution is the load-bearing token — assert it, not just the format flag.
+# And the TARGET is load-bearing too: `environment` with no target inventories the uvx TOOL venv
+# (measured: 32 components, every one a cyclonedx-bom dependency, zero lines of the app), which
+# is an SBOM of the SBOM generator. `environment .venv` is asserted so a targetless invocation
+# FAILS rather than shipping a file that is non-empty and worthless. The dot is ESCAPED: this
+# matcher is `grep -Eq`, so a bare `.venv` matches ANY character before `venv` and would accept
+# `Xvenv` — a regex metacharacter is not a literal just because it was meant as one.
+assert: present cyclonedx-py environment \.venv
+assert: present --from cyclonedx-bom==7.3.1
+assert: present --of JSON
 assert: present sbom.json
 skip-reason: no SBOM gate in this profile — nothing to activate
-fix-hint: generate a CycloneDX SBOM with `uvx cyclonedx-py environment --output-format JSON --outfile sbom.json` and upload it
+fix-hint: generate a CycloneDX SBOM of YOUR environment with `uvx --from cyclonedx-bom==7.3.1 cyclonedx-py environment .venv --of JSON -o sbom.json` and upload it
 
 id: provenance-gated
 precondition: present attest-build-provenance

@@ -40,6 +40,10 @@ max-complexity = 10
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+# The kit ships this scaffold at profiles/python/scaffold/ AND copies it to the repo root, so a
+# by-hand `mypy .` sees two `src/app` packages and dies with `Duplicate module named "app"` (K9).
+# CI runs bare `uv run mypy` (which honours `files` above); this keeps `mypy .` honest too.
+exclude = ["^profiles/"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=app --cov-report=term-missing"

@@ -6,13 +6,17 @@
 # a decoy redirect a control-plane check). Surfaces:
 #   sh conformance/backlog-presence.sh --selftest                     # fixtures (the non-vacuity oracle)
 #   sh conformance/backlog-presence.sh --dir <d> --pr <n> --changed <listing>   # the CI real run
+#   ... [--branch <name>] [--claims]   # --claims adds the BOARD-CLAIM-MECHANISM arm (CI PR job only)
 # check_pr is NOT dead code: selftest() drives it BY ARGUMENT (KW27's root cause was a selftest that
 # could reach only the leaf beneath the real function) and the ci.yml PR-time job calls it live. There
 # is no `backlog-presence-run` verify.sh companion — the real run needs a PR number, which exists only
 # in PR context, so the tagless-clone dry-run structurally cannot exercise it (spec §5).
 # What it changes: read-only — inspects a project's BACKLOG.md + two shipped classifier seams; mutates
 #   nothing.
-# Guardrails: read-only; no network, no writes; targets by argument, never env — the two classifier
+# Guardrails: read-only; no writes. NO NETWORK **EXCEPT** under the opt-in `--claims` arm, which
+#   reads `refs/claims/*` from origin through scripts/board-claim.sh (BOARD-CLAIM-MECHANISM §3.2) —
+#   that qualifier is stated here rather than left for a reader to discover, and the arm is off unless
+#   the flag is passed (the CI PR job passes it; hooks/pre-push does not). Targets by argument, never env — the two classifier
 #   seams are invoked with KIT_ADAPTERS_DIR / KIT_GUARD_CORE / CI SCRUBBED so a decoy env cannot
 #   redirect a control-plane check onto empty adapters (spec §7). jq (agent-boundary's union tool) is
 #   a fail-CLOSED dependency: absent jq -> every change-set gated. The CI runner ships jq, so the gate
@@ -20,7 +24,14 @@
 #   CEILING: a green run proves a `PR` cell bears this number as a whole token — NOT that the row
 #   describes the work, that its state is accurate, or that a human put it there. The reviewer reading
 #   the board diff is the adversary with standing to say no; the gate only makes the binding a legible
-#   diff.
+#   diff. SINCE SLICE-CLOSES-IN-ONE-PR a DONE row's `Retro/outcome` cell can carry that token too, and
+#   the two bindings do NOT age alike: a PR NUMBER never decays (numbers are unique, so a stale row
+#   citing #627 binds only the already-merged #627), while a BRANCH NAME CAN — branch names recur, so
+#   a Done row citing `feat/x` will satisfy a LATER `--pr 0 --branch feat/x` pre-push run for
+#   unrelated work. That fail-open is reachable ONLY from the local pre-push speed bump (which
+#   `--no-verify` already bypasses); the REQUIRED CI context runs with `--pr N` and does not decay.
+#   Boarded as `PRESENCE-DONE-ARM-BRANCH-DECAY`; the fix bounds the arm to rows NEW in the pushed
+#   change-set and touches hooks/pre-push.
 set -eu
 cd "$(dirname "$0")/.."
 . conformance/backlog-lib.sh
@@ -116,13 +127,52 @@ row_bears_pr() {
     [ -s "$_rows_f" ] || continue
     _hdr=$(head -1 "$_rows_f")                 # the section's header row (same use as check_section)
     _idx=$(col_index "$_hdr" "PR")             # 1-based index of the `PR` column, resolved BY NAME
-    [ -n "$_idx" ] || continue                 # section has no `PR` column -> skip it
+    # ── THE DONE ARM (SLICE-CLOSES-IN-ONE-PR §4.2) ────────────────────────────────────────────
+    # A slice now closes in ONE PR: the row moves to Done on the push that is expected to merge,
+    # so for a section with NO `PR` column but a `Retro/outcome` one (Done in the shipped schema)
+    # the SAME whole-token matcher reads the RETRO cell instead. The schema is NOT changed — adding
+    # a `PR` column to Done would shift the arity of every shipped row.
+    # SCOPE IS EPOCH-BOUND (security vet H1) and that is load-bearing: the live Done table carries
+    # 281 `#N` tokens and 96 rows naming two or more branches/ids, because retros routinely cite
+    # prior work. An arm over ALL Done rows would let a STALE row satisfy presence for a slice it
+    # never described. Only rows Closed on/after HITL6_DISPO_EPOCH are read; an unparseable or
+    # absent Closed date is CONSIDERED (fail-closed, leg-2's posture).
+    # ⚠️ THE TWO BINDINGS DECAY DIFFERENTLY, AND ONLY ONE OF THEM DECAYS (review M1):
+    #   • PR NUMBER never decays. Numbers are unique per repo and monotonic, so a Done row citing
+    #     #627 can satisfy exactly one PR — #627, which is already merged. Age is irrelevant.
+    #   • BRANCH NAME CAN decay. Branch names RECUR (`feat/fix-board`, `chore/release` are reused
+    #     freely), so a Done row closed under this rule citing `feat/x` will satisfy a LATER
+    #     `--pr 0 --branch feat/x` pre-push run for unrelated work. That is a FAIL-OPEN, and it is
+    #     disclosed rather than defended here.
+    # WHAT IT IS AND IS NOT: the branch form is reachable only from the PRE-PUSH SPEED BUMP, which
+    # `--no-verify` and an uninstalled hook already bypass. The REQUIRED CI CONTEXT runs with
+    # `--pr N` (a number exists by then) and is unaffected — the binding that gates the merge does
+    # not decay. The epoch bounds the population but cannot bound it to THIS push, and a
+    # clock-relative window was rejected: a gate whose verdict depends on when it runs is not a
+    # gate. The real fix bounds the arm to rows NEW in the pushed change-set (the base board is
+    # available to the hook) — boarded as `PRESENCE-DONE-ARM-BRANCH-DECAY`, and it touches
+    # hooks/pre-push, which this slice does not.
+    _ridx=""; _cidx=""
+    if [ -z "$_idx" ]; then
+      _ridx=$(col_index "$_hdr" "Retro/outcome")
+      [ -n "$_ridx" ] || continue              # neither a `PR` nor a `Retro/outcome` column -> skip
+      _cidx=$(col_index "$_hdr" "Closed")
+      [ -n "$_cidx" ] || continue              # no `Closed` column -> the epoch scope is underivable
+    fi
     _n=0
     while IFS= read -r _row; do
       _n=$((_n + 1))
       [ "$_n" -eq 1 ] && continue              # row 1 is the section header, not data (parity w/ check_section)
       is_sep_row "$_row" && continue
-      _c=$(cell "$_row" "$_idx")
+      if [ -n "$_idx" ]; then
+        _c=$(cell "$_row" "$_idx")
+      else
+        # out of the one-PR rule's scope -> this row's retro binds nothing (H1).
+        # gfm_cell, NOT cell: an escaped pipe left of this column shifts a raw split, and the epoch
+        # test fail-closes on an unparseable date — the `B8` shape measured live on this board.
+        closed_pre_epoch "$(gfm_cell "$_row" "$_cidx")" "$HITL6_DISPO_EPOCH" && continue
+        _c=$(retro_cell "$_row" "$_hdr" "$_ridx")
+      fi
       # whole-token match: kills the #28 substring AND the #2800 superstring collision.
       # ⚠️ `--pr 0` IS NOT A PR NUMBER (security S3). The pre-push caller passes 0 to mean "no PR
       # exists yet"; there is no PR #0 on any forge. Matching it would let a row whose cell literally
@@ -179,10 +229,83 @@ inprogress_hints() {
   rm -f "$_ih_f"
 }
 
+# ── THE CLAIMS ARM (BOARD-CLAIM-MECHANISM design §3.2) ─────────────────────────────────────────
+# Entering In Progress is supposed to be an ATOMIC ownership claim. For the BACKLOG.md backend the
+# mechanism behind that sentence was merge-time serialization: two branches each move a row, and git
+# only notices at the SECOND squash-merge, days after both sessions started. scripts/board-claim.sh
+# makes the claim a forge ref (refs/claims/<ROW-ID>) — this arm is what makes the board and the refs
+# agree at CI time: every row the PUSHED board carries In Progress must have a LIVE claim ref, and
+# that claim must name THIS PR's head branch.
+#
+# ⚠️ THIS ARM IS THE ONE PART OF THIS GATE THAT USES THE NETWORK, and the header's "no network"
+# guardrail is qualified accordingly. It runs ONLY when `--claims` is passed, which ONLY the CI PR job
+# does; the pre-push run stays offline (hooks/pre-push never passes it) because a push-time gate that
+# needs the forge is a gate that fails on a plane. The local speed bump is `board-claim.sh check`.
+#
+# WHY IT DELEGATES rather than re-implementing the ref read: board-claim.sh already owns the
+# absent-vs-unreachable probe (`ls-remote --exit-code`), the scratch-ref fetch, the untrusted-CLAIM
+# parse and the control-byte scrub. A second implementation of that transaction would drift, and the
+# drift would be invisible to both files' tests — the same reason backlog-lib.sh exists for the board
+# parser. The contract consumed here is the three `claim-*:` lines board-claim.sh's `check` prints.
+#
+# rc: 0 every In Progress row is claimed by this branch (or there are none) · 1 WAITING (a row with
+# no claim — the healthy first-run state, naming the remedy) · 2 REFUSED (a row claimed by ANOTHER
+# branch, or a claim that could not be adjudicated at all). REFUSED dominates WAITING.
+BP_CLAIM_SH="scripts/board-claim.sh"
+
+check_claims() {
+  _cc_dir="$1"; _cc_br="$2"
+  _cc_board="$_cc_dir/BACKLOG.md"
+  _cc_sh="$(pwd)/$BP_CLAIM_SH"
+  [ -f "$_cc_sh" ] || { echo "FAIL: backlog-presence --claims — $BP_CLAIM_SH is missing; the claim arm cannot be adjudicated"; return 2; }
+  _cc_f=$(mktemp); _cc_rc=0
+  inprogress_hints "$_cc_board" > "$_cc_f"
+  while IFS= read -r _cc_row; do
+    [ -n "$_cc_row" ] || continue
+    if _cc_out=$( cd "$_cc_dir" && sh "$_cc_sh" check "$_cc_row" 2>&1 ); then _cc_r=0; else _cc_r=$?; fi
+    if [ "$_cc_r" = 1 ]; then
+      echo "FAIL: backlog-presence --claims — row \`$_cc_row\` sits In Progress but NO claim ref exists on origin (refs/claims/$_cc_row). Entering In Progress is a claim; remedy: sh $BP_CLAIM_SH claim $_cc_row --branch '$_cc_br'"
+      [ "$_cc_rc" = 2 ] || _cc_rc=1
+      continue
+    fi
+    if [ "$_cc_r" != 0 ]; then
+      echo "FAIL: backlog-presence --claims — the claim on row \`$_cc_row\` could not be adjudicated (board-claim.sh check exited $_cc_r; an unreachable remote is rc 2 and is NEVER read as 'no claim')."
+      _cc_rc=2
+      continue
+    fi
+    # The claim exists. It must name THIS branch — a live claim held by someone else's branch is the
+    # double-claim this whole mechanism exists to refuse, and it is a REFUSAL (rc 2), never a wait.
+    _cc_hb=$(printf '%s\n' "$_cc_out" | grep '^claim-branch: ' | head -1)
+    _cc_hb=${_cc_hb#claim-branch: }
+    # An UNREADABLE / MALFORMED CLAIM yields no `claim-branch:` line at all, and an empty branch is
+    # not a branch (reviewer R-12): reporting it as "CLAIMED by '' at  on branch ''" dresses three
+    # missing facts as findings. Same refusal rc, named for what it is.
+    if [ -z "$_cc_hb" ]; then
+      echo "REFUSED: backlog-presence --claims — row \`$_cc_row\` has a claim ref on origin whose CLAIM is unreadable or malformed (no holder, branch or time could be read), so it cannot be shown to belong to this PR's branch '$_cc_br'."
+      _cc_rc=2
+      continue
+    fi
+    if [ "$_cc_hb" != "$_cc_br" ]; then
+      _cc_ho=$(printf '%s\n' "$_cc_out" | grep '^claim-holder: ' | head -1); _cc_ho=${_cc_ho#claim-holder: }
+      _cc_at=$(printf '%s\n' "$_cc_out" | grep '^claim-at: '     | head -1); _cc_at=${_cc_at#claim-at: }
+      echo "REFUSED: backlog-presence --claims — row \`$_cc_row\` is CLAIMED by '$_cc_ho' at $_cc_at on branch '$_cc_hb', not by this PR's branch '$_cc_br'. Two branches are working one row."
+      _cc_rc=2
+      continue
+    fi
+    echo "OK: backlog-presence --claims — row \`$_cc_row\` is claimed on origin by this branch '$_cc_br'"
+  done < "$_cc_f"
+  rm -f "$_cc_f"
+  return "$_cc_rc"
+}
+
 # check_pr <project-dir> <pr-number> <changed-file> -> the REAL run. Emits a verdict STRING (N/A / OK /
 # FAIL) and returns a PARTITIONED rc (B5 rider BACKLOG-PRESENCE-WAITING-PARTITION):
 #   rc 0 = pass / N-A · rc 1 = the genuine no-row WAIT (a healthy stage: the poster renders it yellow)
 #   rc 2 = MISCONFIGURATION (unrecognized backend; md declared but no BACKLOG.md) — a broken gate, red.
+#   rc 3 = NOT ENFORCED (a hosted-tracker backend: this gate reads BACKLOG.md only) — red, and NOT
+#     clearable by any edit to this repo's code; the ladder is a ratified `board-governance` waiver
+#     or `TRACKER-BACKED-GOVERNANCE`. It is a PARTITION, never a bypass: only hooks/pre-push maps it
+#     to allow, and it relays the sentence when it does (NON-MD-BACKEND-NEVER-SILENT, D-240903-1 §3).
 # Before the partition all three FAIL routes collapsed to rc 1, so a poster could not tell a waiting
 # gate from a broken one. (rc 2 is also the dispatcher's usage rc — both are red, no route conflates
 # with the wait.) Targets by ARGUMENT, never the environment.
@@ -190,8 +313,26 @@ inprogress_hints() {
 # without it a declared-md board that is absent would abort under `set -eu`; with it the absence becomes
 # the honest FAIL this dark-gate detector exists to raise.
 check_pr() {
-  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"
-  [ "$(gate_class "$_cf")" = gated ] || { echo "N/A: ordinary change-class; board row not required"; return 0; }
+  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"; _claims="${5:-0}"
+  # ── ORDINARY CHANGE-CLASS: PRESENCE IS N/A, A CLAIM IS NOT (reviewer R-6) ──────────────────────
+  # As first built the claims arm sat behind BOTH this gate-class return AND the presence pass below,
+  # so an ORDINARY PR — a docs tweak, a README fix — never reached it. That is precisely the shape the
+  # mechanism has to cover: a row is claimed by ROW ID, and the second session's PR being ordinary
+  # says nothing at all about whether two branches are working one row. The arm now runs whenever the
+  # PUSHED BOARD CARRIES AT LEAST ONE In Progress ROW, independent of class. For GATED PRs the
+  # ordering below is unchanged (presence first — a PR with no bound row is already waiting on an edit
+  # to the very table the claims arm reads, and two refusals at once fix neither faster).
+  if [ "$(gate_class "$_cf")" != gated ]; then
+    echo "N/A: ordinary change-class; board row not required"
+    [ "$_claims" = 1 ] || return 0
+    _otok=$(resolve_backend "$_dir")
+    [ "$_otok" = md ] || return 0
+    _obl="$_dir/BACKLOG.md"
+    [ -f "$_obl" ] || return 0
+    if is_pure_template "$_obl"; then return 0; fi
+    [ -n "$(inprogress_hints "$_obl")" ] || return 0
+    if check_claims "$_dir" "$_br"; then return 0; else return $?; fi
+  fi
   _tok=$(resolve_backend "$_dir")
   [ -n "$_tok" ] || { echo "N/A: no backlog backend declared"; return 0; }
   # A fat-fingered backend (`markdow`, `TBD`) is signalled `unrecognized:<token>` by resolve_backend so
@@ -205,7 +346,22 @@ check_pr() {
       echo "FAIL: unrecognized backlog backend '$_bad' (known: md github jira ado linear gitlab)"
       return 2 ;;
   esac
-  [ "$_tok" = md ] || { echo "N/A: backend '$_tok' is not BACKLOG.md"; return 0; }
+  # A NON-MD BACKEND IS NOT AN N/A (NON-MD-BACKEND-NEVER-SILENT). It used to print
+  # `N/A: backend '<x>' is not BACKLOG.md` and return 0 — a green light over unverified governance.
+  # rc 3 is the NOT ENFORCED partition (see backlog-lib.sh::not_enforced_notice for what it means
+  # and what clears it); the CI job enumerates it as red, and hooks/pre-push allows the push with
+  # the sentence relayed, because a push-time speed bump is not where a tracker adopter should
+  # learn the kit has no seam.
+  if [ "$_tok" != md ]; then
+    _bp_ne=0
+    # $0-RELATIVE, never cwd-relative (security S-L5). This script `cd`s to the repo root at :36 so
+    # the bare path happened to work today, but the validator's location is a property of where THIS
+    # file lives, not of where the process happens to stand — and a caller that changes directory
+    # (or a future edit that drops the cd) would silently read "validator absent" and treat every
+    # waiver as missing. backlog-current.sh already resolved it this way; now both do.
+    not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" || _bp_ne=$?
+    return "$_bp_ne"
+  fi
   _bl="$_dir/BACKLOG.md"
   [ -f "$_bl" ] || { echo "FAIL: declares an md backend but has no BACKLOG.md"; return 2; }
   if is_pure_template "$_bl"; then echo "N/A: board not yet in use (pristine template)"; return 0; fi
@@ -221,6 +377,12 @@ check_pr() {
     else
       echo "OK: backlog-presence — PR #$_pr is bound to a board row (PR column)"
     fi
+    # The claims arm runs ONLY after the presence verdict has PASSED, and only under --claims. A PR
+    # with no bound row is already waiting on an edit to the very table the claims arm reads; adding a
+    # second refusal there would tell the operator two things at once and fix neither faster.
+    if [ "$_claims" = 1 ]; then
+      if check_claims "$_dir" "$_br"; then return 0; else return $?; fi
+    fi
     return 0
   fi
   # The genuine no-row WAIT: rc 1 (the poster renders it yellow). The trailing sentence is the
@@ -232,15 +394,20 @@ check_pr() {
   # when the fix is to install jq. The probe lives here rather than in gate_class deliberately: that
   # function's output is an exact token four selftest legs pin, and it runs in a command substitution
   # whose variables cannot come back (measured — see design amendment A2).
+  # ⚠️ THE REFUSAL MUST NAME BOTH BINDINGS (SLICE-CLOSES-IN-ONE-PR §4.4, security vet L1). Under
+  # the one-PR close a slice's row goes straight to DONE on the push that is expected to merge, so
+  # an operator told only "move your row to In Review" is being sent to the flow this slice
+  # replaced. Text only — the matcher above is what actually decides.
+  _doneform=" Under the one-PR close the row may instead sit in Done, Closed on/after $HITL6_DISPO_EPOCH, with the token in its Retro/outcome cell."
   _jqnote=""
   command -v jq >/dev/null 2>&1 \
     || _jqnote=" NOTE: jq is not installed, so the change-class was fail-safed to gated — this may not be a gated change at all; install jq for full resolution."
   if [ -n "$_br" ] && [ "$_pr" = 0 ]; then
-    echo "FAIL: backlog-presence — no board row bears branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_jqnote"
+    echo "FAIL: backlog-presence — no board row bears branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote"
   elif [ -n "$_br" ]; then
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_jqnote"
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote"
   else
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_jqnote"
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote"
   fi
   # The hint + remedy block, only when a branch is in play (the CI form's reader has the PR page in
   # front of them; the pre-push form's reader has a terminal). At most three rows are named — a
@@ -256,7 +423,7 @@ check_pr() {
         printf '  likely yours: `%s` (sitting in In Progress)\n' "$_h"
       done
     fi
-    printf "  remedy: move your row to In Review and put \`%s\` in its PR cell; commit BACKLOG.md; push again.\n" "$_br"
+    printf "  remedy: move your row to In Review and put \`%s\` in its PR cell — or, under the one-PR close, move it to Done (Closed today) with \`%s\` named in its Retro/outcome cell; commit BACKLOG.md; push again.\n" "$_br" "$_br"
   fi
   return 1
 }
@@ -336,6 +503,63 @@ selftest() {
   _board "$d" '| P1-CI | — | #280 |'
   assert_absent "$d" 999 "t1b/metachar: a branch of '.*' must not wildcard-match any PR cell" '.*'
 
+  # ===== T1c — THE DONE ARM (SLICE-CLOSES-IN-ONE-PR §4.2) ==============================
+  # A slice now closes in ONE PR: the row moves to Done on the push that is expected to merge,
+  # so the binding token lives in the Done row's Retro/outcome cell, not in a `PR` column (Done
+  # has none, and adding one would shift 228 shipped rows). The SAME whole-token matcher is
+  # applied there, read through retro_cell semantics (escaped-pipe-robust).
+  # SCOPE IS EPOCH-BOUND (security vet H1): only rows whose `Closed` cell is on/after
+  # HITL6_DISPO_EPOCH are considered. The live Done table carries 281 `#N` tokens and 96 rows
+  # naming two or more branches/ids in their retros; an arm over all of them would let a STALE
+  # row satisfy presence for work it never described. An unparseable/absent Closed date is
+  # CONSIDERED (fail-closed, leg-2's posture).
+
+  # a post-epoch Done row whose retro bears #42 -> PRESENT. The positive liveness anchor.
+  d="$base/t1c_done_present"
+  _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Merged PR #42, all gates green on the first run. |'
+  assert_present "$d" 42 "t1c/done-present: post-epoch Done retro bears #42 -> rc0 (present)"
+
+  # ...the same board asked for a DIFFERENT number -> ABSENT. Without this the arm could be a
+  # "some Done row exists" check rather than a token match.
+  assert_absent "$d" 43 "t1c/done-wrong-number: the same Done retro must not satisfy #43 -> rc1"
+
+  # superstring collision inside a retro cell: #420 must not satisfy #42.
+  d="$base/t1c_done_superstring"
+  _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Merged PR #420, all gates green on the first run. |'
+  assert_absent "$d" 42 "t1c/done-superstring: #420 in a Done retro must not satisfy #42 -> rc1"
+
+  # BRANCH binding in a Done retro — the form the pre-push run (`--pr 0`) actually uses.
+  d="$base/t1c_done_branch"
+  _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Shipped from feat/slice-closes on a green first run. |'
+  assert_present "$d" 0 "t1c/done-branch: a branch token in a post-epoch Done retro -> rc0" "feat/slice-closes"
+
+  # ...and the branch boundary discipline holds inside the retro cell too.
+  assert_absent "$d" 0 "t1c/done-branch-superstring: 'feat/slice-close' must not match 'feat/slice-closes'" "feat/slice-close"
+
+  # `--pr 0` MUST NOT bind to a literal `#0` in a Done retro either (security S3 carried into the
+  # new arm): 0 means "no PR exists yet", and a `#0` cell would otherwise satisfy every branch.
+  d="$base/t1c_done_hash_zero"
+  _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. A stray #0 placeholder sits in this cell and binds nothing at all. |'
+  assert_absent "$d" 0 "t1c/done-hash-zero: a literal '#0' in a Done retro must not satisfy --pr 0" "feat/unbound"
+
+  # H1 SCOPE, LIVE: the SAME row, Closed one day BEFORE the epoch -> ABSENT. This is the leg that
+  # reds a Done arm with no epoch test, and the only one that does.
+  d="$base/t1c_done_preepoch"
+  _done_board "$d" '| `OLD-ROW` | 2026-09-02 | L1 retro. Merged PR #42 long before this arm existed. |'
+  assert_absent "$d" 42 "t1c/done-pre-epoch: a PRE-epoch Done row bearing #42 must NOT satisfy -> rc1"
+
+  # an unparseable Closed cell is CONSIDERED (fail-closed), never skipped.
+  d="$base/t1c_done_baddate"
+  _done_board "$d" '| `SLICE` | someday | L1 retro. Merged PR #42 with an unparseable Closed cell. |'
+  assert_present "$d" 42 "t1c/done-bad-date: an unparseable Closed date is CONSIDERED (fail-closed) -> rc0"
+
+  # ESCAPED PIPE: a GFM-correct `\|` inside the retro shifts a plain cell() parse, so the token
+  # after it is invisible to cell() and visible to retro_cell. Derived from the shipped
+  # good-done-escaped-pipe fixture in backlog-current.sh, not invented.
+  d="$base/t1c_done_escaped"
+  _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Shipped the `triggered\|none\|uncertain` detector; merged PR #42. |'
+  assert_present "$d" 42 "t1c/done-escaped-pipe: a token AFTER an escaped pipe is still found -> rc0"
+
   # ===== T2 — change-class reconciliation: gate_class (spec §4, §7) ====================
   # gate_class takes a CHANGE-SET LISTING file (newline-delimited paths), by argument.
 
@@ -391,10 +615,41 @@ selftest() {
   assert_msg "N/A: no backlog backend declared" 0 \
     "cp/no-backend: undeclared backend -> N/A, rc 0" "$d" 280 "$cfg"
 
-  # gated + a non-md backend -> N/A (this gate is md-board only), rc 0.
-  d="$base/cp_github"; _proj_backend "$d" github
-  assert_msg "N/A: backend 'github' is not BACKLOG.md" 0 \
-    "cp/non-md: github backend -> N/A, rc 0" "$d" 280 "$cfg"
+  # gated + a non-md backend -> NOT ENFORCED, rc 3 (NON-MD-BACKEND-NEVER-SILENT, ruling D-240903-1
+  # §3: "governance may never switch off silently"). This USED TO BE `N/A ... rc 0` — three green
+  # lights and no governance at all. All FIVE hosted tokens are exercised: the arm is a `case` and
+  # a leg on one token cannot see a token dropped from the list.
+  for _st_tok in github jira ado linear gitlab; do
+    d="$base/cp_nonmd_$_st_tok"; _proj_backend "$d" "$_st_tok"
+    assert_msg "NOT ENFORCED: backend '$_st_tok' — board-bound governance is not verified on this tree" 3 \
+      "cp/non-md-$_st_tok: $_st_tok backend -> NOT ENFORCED, rc 3 (red), never a silent N/A" "$d" 280 "$cfg"
+  done
+  # …and the verdict must carry the CURE, or it is a red with no ladder.
+  d="$base/cp_nonmd_jira"
+  assert_msg "Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver" 3 \
+    "cp/non-md-cure: the NOT ENFORCED verdict names both cures" "$d" 280 "$cfg"
+
+  # gated + a non-md backend + a RATIFIED, filled, unexpired board-governance waiver -> rc 0, and
+  # the notice still says NOT ENFORCED (the exception is never invisible; §3.5a).
+  d="$base/cp_nonmd_waived"; _proj_backend "$d" jira
+  # TODAY-RELATIVE dates (security S-M1): a future `Opened` is now refused, because it makes the
+  # 90-day maximum nominal — so the 2099 dates this fixture used to carry would make the leg assert
+  # the opposite of the rule. GNU then BSD, matching waivers-valid.sh's own dialect pair.
+  _bp_d0=$(date -u -d "+0 days" +%Y-%m-%d 2>/dev/null || date -u -v+0d +%Y-%m-%d)
+  _bp_d60=$(date -u -d "+60 days" +%Y-%m-%d 2>/dev/null || date -u -v+60d +%Y-%m-%d)
+  printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| board-governance | the kit reads BACKLOG.md only | @jdoe | %s | %s | adopt TRACKER-BACKED-GOVERNANCE | @sec |\n' "$_bp_d0" "$_bp_d60" \
+    > "$d/WAIVER-REGISTER.md"
+  assert_msg "NOT ENFORCED: backend 'jira' — waived until $_bp_d60 by @jdoe" 0 \
+    "cp/non-md-waived: a ratified board-governance waiver -> rc 0 WITH the notice" "$d" 280 "$cfg"
+
+  # …and an UNFILLED stamp (what incept writes) buys nothing. This is the load-bearing negative for
+  # the whole bridge: if a placeholder greened the gate, `incept --backlog jira` would silently
+  # waive its own governance.
+  d="$base/cp_nonmd_stamp"; _proj_backend "$d" jira
+  printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| board-governance | the kit reads BACKLOG.md only | [owner] | %s | %s | adopt TRACKER-BACKED-GOVERNANCE | [security-owner] |\n' "$_bp_d0" "$_bp_d60" \
+    > "$d/WAIVER-REGISTER.md"
+  assert_msg "NOT ENFORCED: backend 'jira' — board-bound governance is not verified on this tree" 3 \
+    "cp/non-md-stamp: the UNFILLED incept stamp -> still rc 3 (a stamp is not a ratification)" "$d" 280 "$cfg"
 
   # gated + declares md but has NO BACKLOG.md -> FAIL, rc 2 (MISCONFIGURATION, red — never the same
   # yellow as a healthy waiting gate; B5 rider BACKLOG-PRESENCE-WAITING-PARTITION).
@@ -458,6 +713,10 @@ selftest() {
   br_has "t3/one: the hint names the row sitting In Progress" "likely yours: \`ROW-1\` (sitting in In Progress)"
   br_has "t3/one: the remedy names the exact edit" "remedy: move your row to In Review"
   br_has "t3/one: the remedy names the branch to write into the PR cell" "feat/prepush-presence"
+  # vet L1 — the refusal must ALSO name the Done form, or an operator working under the one-PR
+  # close is sent to the flow this slice replaced. Two legs: the diagnostic sentence and the remedy.
+  br_has "t3/one: the refusal names the Done-retro binding too (vet L1)" "the row may instead sit in Done, Closed on/after"
+  br_has "t3/one: the remedy names the Done-retro edit too (vet L1)" "named in its Retro/outcome cell"
   # ...and with jq PRESENT the verdict must NOT mention jq: the jq sentence is a fail-safe
   # DISCLOSURE, and a disclosure that prints unconditionally tells the reader nothing (b4's pair).
   br_hasnt "t3/one: with jq present the verdict does not mention jq" "jq"
@@ -497,6 +756,63 @@ selftest() {
   br_run_nojq "$d" 0 "$cfo" feat/prepush-presence
   br_expect_rc 1 "t3/no-jq: an ORDINARY change-set is fail-safed to gated without jq -> rc 1"
   br_has "t3/no-jq: the refusal names jq as the cause of the fail-safe" "jq"
+
+  # ===== T4 — THE CLAIMS ARM, legs (g) (BOARD-CLAIM-MECHANISM design §3.4 leg g) ================
+  # A real bare remote and a real clone, real refs — no simulation. The board carries `ROW-1` In
+  # Progress and an In Review row bound to the branch, so PRESENCE passes in every leg below and the
+  # only thing under test is the claim.
+
+  # g1 — In Progress with NO claim ref -> rc 1 WAITING, naming the row AND the remedy verb.
+  d=$(_claims_fixture "" )
+  br_run_claims "$d" 0 "$cfg" feat/claims
+  br_expect_rc 1 "t4/g1-missing: an In Progress row with no claim ref -> rc 1 (WAITING)"
+  br_has "t4/g1-missing: the refusal names the ROW" "row \`ROW-1\` sits In Progress but NO claim ref exists"
+  br_has "t4/g1-missing: the refusal names the REMEDY verb" "scripts/board-claim.sh claim ROW-1"
+
+  # ...and WITHOUT --claims the SAME fixture passes. The regression lock: the arm must be reachable
+  # only through the flag, or the pre-push run (which never passes it) starts needing the network.
+  br_run "$d" 0 "$cfg" feat/claims
+  br_expect_rc 0 "t4/g1-off: the same board with NO --claims -> rc 0 (the arm is opt-in, not ambient)"
+  br_hasnt "t4/g1-off: without --claims nothing about claims is printed" "claim ref"
+
+  # g2 — the claim ref exists but names ANOTHER branch -> rc 2 REFUSED, naming holder, branch, time.
+  d=$(_claims_fixture "other/branch")
+  br_run_claims "$d" 0 "$cfg" feat/claims
+  br_expect_rc 2 "t4/g2-other-branch: a claim held by another branch -> rc 2 (REFUSED, not a wait)"
+  br_has "t4/g2-other-branch: the refusal names the HOLDER" "CLAIMED by 'Other Session <other@example.com>'"
+  br_has "t4/g2-other-branch: the refusal names the holding BRANCH" "on branch 'other/branch'"
+  br_has "t4/g2-other-branch: the refusal carries the claim TIME" "at 2026-09-04T00:00:00Z"
+  br_has "t4/g2-other-branch: the refusal says plainly what is wrong" "Two branches are working one row"
+
+  # g3 — the claim ref names THIS branch -> rc 0. The positive liveness anchor: without it every leg
+  # above could pass on a gate that simply always refuses.
+  d=$(_claims_fixture "feat/claims")
+  br_run_claims "$d" 0 "$cfg" feat/claims
+  br_expect_rc 0 "t4/g3-this-branch: a claim held by THIS branch -> rc 0"
+  br_has "t4/g3-this-branch: the OK line names the row and the branch" "row \`ROW-1\` is claimed on origin by this branch 'feat/claims'"
+
+  # g4 (reviewer R-6) — AN ORDINARY-CLASS PR WITH In Progress ROWS MUST STILL REACH THE ARM. Presence
+  # is genuinely N/A for an ordinary change; the claim is not, because a row is claimed by ROW ID and
+  # the class of the second session's diff says nothing about whether two branches hold one row. The
+  # verdict must carry BOTH sentences: the N/A for presence and the WAITING for the claim.
+  d=$(_claims_fixture "")
+  br_run_claims "$d" 0 "$cfo" feat/claims
+  br_expect_rc 1 "t4/g4-ordinary: an ORDINARY-class PR with an unclaimed In Progress row -> rc 1 (WAITING)"
+  br_has "t4/g4-ordinary: presence is still N/A for an ordinary change" "N/A: ordinary change-class"
+  br_has "t4/g4-ordinary: and the claims arm still names the row" "row \`ROW-1\` sits In Progress but NO claim ref exists"
+
+  # …and the ordinary path keeps its opt-in lock too: no --claims, no network, byte-identical N/A.
+  br_run "$d" 0 "$cfo" feat/claims
+  br_expect_rc 0 "t4/g4-ordinary-off: the same ordinary PR with NO --claims -> rc 0"
+  br_hasnt "t4/g4-ordinary-off: without --claims nothing about claims is printed" "claim ref"
+
+  # …and an ordinary PR whose board carries NO In Progress row must not reach the arm at all — the
+  # trigger is the board's contents, not the flag alone. Without this leg the arm could be running on
+  # every ordinary PR in the fleet and every assertion above would still pass.
+  d="$base/t4_ord_empty"; _proj_md_board "$d" '| `X` | — | #280 |'
+  br_run_claims "$d" 0 "$cfo" feat/claims
+  br_expect_rc 0 "t4/g4-no-rows: an ordinary PR whose board has NO In Progress row -> rc 0"
+  br_hasnt "t4/g4-no-rows: the arm did not run (nothing claim-shaped is printed)" "backlog-presence --claims"
 
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-presence --selftest: FAIL" >&2
@@ -634,6 +950,50 @@ br_has() { # <label> <needle>
     *) echo "selftest FAIL: $1 (verdict does not carry '$2'); out='$br_out'"; st_fail=1 ;;
   esac
 }
+br_run_claims() { # <dir> <pr> <changed-file> <branch> : the same as br_run, with the --claims arm ON.
+  if br_out=$(check_pr "$1" "$2" "$3" "$4" 1 2>&1); then br_rc=0; else br_rc=$?; fi
+}
+# _claims_fixture <claim-branch|""> -> echo a project dir that is a real git clone of a real bare
+# remote, declaring an md backend, whose board carries `ROW-1` In Progress and an In Review row bound
+# to `feat/claims` (so PRESENCE always passes and only the claim is under test). When <claim-branch>
+# is non-empty a REAL claim ref is pushed to that remote for `ROW-1`, held by "Other Session" at a
+# FIXED time — built with the same plumbing shape board-claim.sh uses (hash-object -> mktree ->
+# commit-tree -> push), deliberately written out here rather than driven through the verb, so this
+# oracle does not depend on the verb it is grading.
+_claims_fixture() {
+  _cx=$(mktemp -d)
+  git init -q --bare "$_cx/remote.git"
+  git clone -q "$_cx/remote.git" "$_cx/proj" 2>/dev/null
+  ( cd "$_cx/proj"
+    git config user.name  'This Session'
+    git config user.email 'this@example.com'
+    git config commit.gpgsign false ) >/dev/null 2>&1
+  _proj_backend "$_cx/proj" md
+  {
+    echo '# Fixture — Backlog'
+    echo
+    echo '## In Progress'
+    echo
+    echo '| Item | Owner | Started | Links |'
+    echo '|------|-------|---------|-------|'
+    echo '| `ROW-1` — the claimed work | agent | 2026-09-04 | — |'
+    echo
+    echo '## In Review'
+    echo
+    echo '| Item | Reviewer | PR |'
+    echo '|------|----------|----|'
+    echo '| `ROW-1` | — | feat/claims |'
+  } > "$_cx/proj/BACKLOG.md"
+  if [ -n "$1" ]; then
+    ( cd "$_cx/proj"
+      _b=$(printf 'row: ROW-1\nclaimant: Other Session <other@example.com>\nbranch: %s\nclaimed-at: 2026-09-04T00:00:00Z\n' "$1" | git hash-object -w --stdin)
+      _t=$(printf '100644 blob %s\tCLAIM\n' "$_b" | git mktree)
+      _c=$(printf 'claim ROW-1\n' | GIT_AUTHOR_NAME='Other Session' GIT_AUTHOR_EMAIL='other@example.com' \
+            GIT_COMMITTER_NAME='Other Session' GIT_COMMITTER_EMAIL='other@example.com' git commit-tree "$_t")
+      git push origin "$_c:refs/claims/ROW-1" ) >/dev/null 2>&1
+  fi
+  printf '%s\n' "$_cx/proj"
+}
 br_hasnt() { # <label> <needle>
   case "$br_out" in
     *"$2"*) echo "selftest FAIL: $1 (verdict wrongly carries '$2'); out='$br_out'"; st_fail=1 ;;
@@ -653,6 +1013,21 @@ _board() {
 
 | Item | Reviewer | PR |
 |------|----------|----|
+$2
+EOF
+}
+# _done_board <dir> <done-row> : a board whose only in-use table is Done, in the shipped schema
+# `| Item | Closed | Retro/outcome |` — no `PR` column anywhere, which is exactly the shape the
+# Done arm must read (SLICE-CLOSES-IN-ONE-PR §4.2).
+_done_board() {
+  mkdir -p "$1"
+  cat > "$1/BACKLOG.md" <<EOF
+# Proj — Backlog
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
 $2
 EOF
 }
@@ -730,26 +1105,30 @@ case "${1:-}" in
   --selftest)
     selftest; exit $?
     ;;
-  --dir|--pr|--changed|--branch)
+  --dir|--pr|--changed|--branch|--claims)
     # --branch is OPTIONAL and, like every other target here, comes BY ARGUMENT — never the environment.
     # (An env-supplied target lets a decoy redirect a control-plane check; that pattern was rejected once
     # already and is not coming back.) Absent --branch, the gate behaves exactly as before: PR-number only.
-    _dir=""; _pr=""; _cf=""; _br=""
+    # --claims is a FLAG (no value) and is OFF unless passed: it is the only arm here that touches the
+    # network, so it must be opted into by the caller that has one — the CI PR job — and never by the
+    # pre-push hook, which runs on a plane as often as not.
+    _dir=""; _pr=""; _cf=""; _br=""; _cl=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --dir)     [ $# -ge 2 ] || { echo "usage: --dir needs a value" >&2; exit 2; }; _dir=$2; shift 2 ;;
         --pr)      [ $# -ge 2 ] || { echo "usage: --pr needs a value" >&2; exit 2; }; _pr=$2; shift 2 ;;
         --changed) [ $# -ge 2 ] || { echo "usage: --changed needs a value" >&2; exit 2; }; _cf=$2; shift 2 ;;
         --branch)  [ $# -ge 2 ] || { echo "usage: --branch needs a value" >&2; exit 2; }; _br=$2; shift 2 ;;
-        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>]" >&2; exit 2 ;;
+        --claims)  _cl=1; shift ;;
+        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--claims]" >&2; exit 2 ;;
       esac
     done
     { [ -n "$_dir" ] && [ -n "$_pr" ] && [ -n "$_cf" ]; } || {
-      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>]" >&2; exit 2; }
-    check_pr "$_dir" "$_pr" "$_cf" "$_br"; exit $?
+      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--claims]" >&2; exit 2; }
+    check_pr "$_dir" "$_pr" "$_cf" "$_br" "$_cl"; exit $?
     ;;
   *)
-    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>]" >&2
+    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>] [--claims]" >&2
     exit 2
     ;;
 esac

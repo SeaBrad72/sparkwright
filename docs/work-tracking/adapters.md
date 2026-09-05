@@ -12,7 +12,8 @@ How to make a work-tracker satisfy the kit's **backlog contract** (`../../DEVELO
 
 **Claim strength is not equal across trackers — be honest about which tier you're on:**
 - **Structural (server-enforced):** a server-side guard makes a double-claim *impossible*. Only **Jira** offers this among the hosted set, and only once you configure the transition condition (below).
-- **Git-serialized:** **`BACKLOG.md`** — concurrent claims to the same row are serialized by git's non-fast-forward push + same-row merge conflict (stronger than last-writer-wins), but not absolute.
+- **Forge-serialized at claim time:** **`BACKLOG.md`** with `scripts/board-claim.sh` — the claim is a ref on the forge (`refs/claims/<ROW-ID>`), created by a push with no `+`, so the forge's non-fast-forward rule refuses the second claimant **at claim time** and names the first. A claim ref stops *accidental* double-work between cooperating sessions; it does **not** stop an actor with push rights who force-pushes or deletes the ref. One tier above git-serialized, below structural.
+- **Git-serialized:** **`BACKLOG.md`** with no claim verb — concurrent claims to the same row are serialized by git's non-fast-forward push + same-row merge conflict (stronger than last-writer-wins), but **at merge time, not claim time**: both sessions have already built by the time git notices.
 - **Convention (assignee-empty + re-read):** **GitHub · Azure DevOps · Linear · GitLab** — assignment is last-writer-wins, so the claim is *narrowed*, not closed: claim only when the owner field is empty, then **re-read after writing to detect a lost race**. Two agents that both read "empty" can both write; the re-read is how the loser finds out.
 
 Each tracker is mapped against the same four headings: **State map · Field map · Atomic claim · Fit notes**.
@@ -24,8 +25,11 @@ Each tracker is mapped against the same four headings: **State map · Field map 
 The repo-native backend (`../../templates/BACKLOG-TEMPLATE.md`). Every other adapter is measured against it.
 
 - **State map** — the six states are `##` section headings; an item is a table row under its current state's heading. Moving the row to a new section = a state change.
+- **Row identity** — a row's id is the **first backticked token of its Item cell**, matching `[A-Z0-9][A-Z0-9-]*`; decoration before it (`✅`, `⏸`, `**`) is allowed, so `` | ✅ **`KW6-A2`** — extract the parser | `` resolves to `KW6-A2`. One grammar, four consumers: it is the `Kit-Row` trailer value, the ref name `board-claim.sh` pushes, the id `backlog-current.sh`'s Disposition clause resolves, and what `loop-state.sh`'s row check reports as `resolved`. **It must be unique across the board** — two rows carrying one id are refused as AMBIGUOUS rather than silently binding to whichever came first. A row with only a prose title resolves to nothing. What `resolved` proves: the id names exactly one row on THIS board. What it does not prove: that the row describes the change (a row boarded and closed in the same PR resolves), or that anyone but the commit's own author typed it.
 - **Field map** — table columns map 1:1: Item→title · Intent→intent · Acceptance criteria→acceptance · Size · Risk · Type · Owner · Links.
-- **Atomic claim** — *git-serialized* (see tiers above). Moving a row into **In Progress** is a git commit; two agents claiming the same row are serialized by the non-fast-forward push rejection + a same-row merge conflict, so the loser is forced to reconcile and sees the winning claim — stronger than last-writer-wins. Not absolute: a clean auto-merge of the read-edit-push window can still lose a claim, so **pull before editing and re-read after pushing**. The claim is durable and auditable in history.
+- **Atomic claim** — *forge-serialized at claim time* (see tiers above). `sh scripts/board-claim.sh claim <ROW-ID>` pushes an orphan commit to `refs/claims/<ROW-ID>` on origin **without** a `+`, so the forge's non-fast-forward rule is a server-side compare-and-swap: the second claimant is refused **immediately** and told who holds the row, on which branch, since when. The same verb moves the row Ready → In Progress, so the claim and the row move are one act rather than two that can diverge. `release` deletes the ref under a compare-and-swap old value; `check [<ROW>|--all]` lists live claims; the CI presence gate's `--claims` arm reds any In Progress row without a live claim for this branch, and `promotion-verify.sh actuate` releases the claim at merge.
+  **Honest ceiling, stated plainly:** this stops *accidental* double-work between cooperating sessions (it is a coordination lock, not an access control). It does **not** stop an actor with push rights, and — measured, not assumed — such an actor needs no `--force` to take the row: a claim commit that is a *child* of the existing one is a fast-forward, so a plain push replaces the holder. **A cooperating client refuses (`fetch first`); an actor with push rights overwrites with or without `--force`,** and can delete the ref outright. **Whether that leaves a trace is forge-dependent:** on an organisation with git-event audit logging the pusher is recorded; on a **personal repository** there is no git-event audit log and branch activity covers `refs/heads/*` only, so a deleted claim ref leaves **no trace**. The claimant is the commit's committer — recorded, not authenticated. Without the verb the backend falls back to the *git-serialized* tier, where the two claims collide only at the second merge.
+  **Scope today, so nobody assumes a gate they do not have:** adopters get `scripts/board-claim.sh` in the export, but the CI claims arm is **kit-CI only** — an adopter enables it by adding `--claims` to `backlog-presence.sh` in its own presence job, which needs `origin` reachable from that job (the pre-push hook deliberately never passes it, so a push-time gate never needs the forge).
 - **Fit notes** — zero setup, agent-readable, travels with the repo. Weak for large orgs, cross-repo portfolios, notifications, or dashboards — graduate to a hosted tracker when those matter.
 
 ## GitHub (Issues + Projects)
@@ -65,6 +69,27 @@ The repo-native backend (`../../templates/BACKLOG-TEMPLATE.md`). Every other ada
 - **Fit notes** — scoped labels keep state unambiguous (never two `workflow::` labels at once); native MR linkage; **self-hostable** (key for regulated / air-gapped enterprises). Board state lives in labels rather than a first-class field. The claim itself is convention-enforced, not stronger than GitHub.
 
 ---
+
+## Which gates bind
+
+The kit's board-bound gates read `BACKLOG.md`, and **only** `BACKLOG.md`. On any hosted backend they say so, out loud, rather than passing quietly — a green light over governance nobody verified is worse than a red (`D-240903-1` §3).
+
+| Gate | `md` | `github` · `jira` · `ado` · `linear` · `gitlab` |
+|---|---|---|
+| `backlog-presence` (PR-cell binding + `--claims`) | binds | **NOT ENFORCED** — rc 3, red; green-with-notice under a ratified `board-governance` waiver |
+| `backlog-current` (state-appropriate evidence) | binds | **NOT ENFORCED** — rc 3, red; same waiver rule |
+| `loop-state` row check (`Kit-Row` resolves) | binds (reports `resolved`) | **NOT ENFORCED** — refused under `enforce`; same waiver rule |
+| `board-claim.sh` | binds | refuses (it writes `refs/claims/<ROW-ID>` for an `md` board only) |
+| `tracker-contract.sh` | — | states/fields verified, claim condition attested |
+
+**What NOT ENFORCED means, and what it does not.** It is a colour, not a control: the kit has no seam that can read your tracker, so it declines to claim it checked one. Nothing you change in a pull request clears it. Two ladders exist:
+
+1. **`TRACKER-BACKED-GOVERNANCE`** — the tracker read seam. Until it ships, this gap is real.
+2. **A ratified `board-governance` waiver** in `WAIVER-REGISTER.md` — a human-signed, dated, ≤90-day row with an owner, a ratifier and a remediation plan. It renders the three gates green **and the NOT ENFORCED notice still prints on every run**, so the exception is never invisible. `incept` stamps the row for you on a non-`md` choice, with `[owner]` and `[security-owner]` placeholders that a human must fill — a stamp is not a ratification, and `sh conformance/waivers-valid.sh --active board-governance` refuses it until both cells are real.
+
+**Who can sign it, stated rather than implied.** The register is read from the pull request's **own tree**, so the author, the `Owner` and the `Ratified-by` of a `board-governance` row may all be the same person, in one commit — this is the register's standing self-ratification ceiling (every waiver in it has it), narrowed here by nothing. What *is* separated in adopter CI: the register comes from the PR head, but `conformance/waivers-valid.sh` — the validator that grades it — is the **base checkout's** copy, so a PR cannot write itself a waiver and rewrite the rules that judge it in the same commit. Segregation of duties over the row itself is the forge's job (a CODEOWNER review on `WAIVER-REGISTER.md`), not this gate's.
+
+The local `pre-push` hook is the one consumer that lets rc 3 through: it relays the sentence and allows the push, because a push-time speed bump is not where you should first learn the kit has no tracker seam. The required CI context still reds.
 
 ## Bring your own tracker
 

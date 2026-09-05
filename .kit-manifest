@@ -670,6 +670,7 @@ profiles/typescript-node/scaffold/vitest.config.ts
 scripts/adopter-export.sh
 scripts/agent-scorecard.sh
 scripts/agent-trace.sh
+scripts/board-claim.sh
 scripts/branch-protection-apply.sh
 scripts/containment-audit.sh
 scripts/coverage-ratchet.sh
@@ -746,6 +747,7 @@ templates/FIELD-REPORT-TEMPLATE.md
 templates/JIRA-SETUP-TEMPLATE.md
 templates/KIT-FEEDBACK-TEMPLATE.md
 templates/OPPORTUNITY-BRIEF-TEMPLATE.md
+templates/PLAN-RECORD-TEMPLATE.md
 templates/POSTMORTEM-TEMPLATE.md
 templates/PRIVACY-REVIEW-TEMPLATE.md
 templates/PROJECT-CLAUDE-TEMPLATE.md
@@ -761,3 +763,4 @@ templates/THREAT-MODEL-TEMPLATE.md
 templates/TRACKER-SETUP-TEMPLATE.md
 templates/UAT-SIGNOFF-TEMPLATE.md
 templates/WAIVER-REGISTER.md
+templates/gitattributes-evidence

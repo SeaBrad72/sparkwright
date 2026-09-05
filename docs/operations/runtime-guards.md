@@ -37,6 +37,8 @@ kit-guard cmd "$PROPOSED_COMMAND" || { echo "blocked by kit guard"; exit 1; }
 ### Git pre-push
 Installed by `incept.sh` by default (brownfield-safe; never clobbers an existing hook). Blocks force-push and push-to-main locally, before the network round-trip — complementing remote branch protection, and covering remotes that have none. Deliberate override: `git push --no-verify`.
 
+**Verify the push landed — read the ref back, never the output.** The hook writes to stderr and so does git's own progress, so a refused push and a successful one look alike in a captured transcript, and a harness that swallows stderr shows you nothing at all. The only proof is the forge's ref: `git ls-remote --heads origin <branch>` must print the SHA that `git rev-parse HEAD` prints. If it prints a different SHA, an older one, or nothing, the push did not land — whatever the output said.
+
 ## Windows
 The hooks are POSIX `sh`. On Windows, run them under **WSL or Git-Bash**, where they work unchanged. The matrix is **not** ported to PowerShell/cmd — a second implementation would fork the single source of truth and double the red-team burden.
 

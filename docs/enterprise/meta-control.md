@@ -124,8 +124,10 @@ document and never will. Record its GO on the **governance** gate, not the desig
 ```sh
 sh scripts/promotion-verify.sh record --gate governance --scope PR-<n> \
    --approved-sha <commit> --approved-by <human> --basis <the meta-control artifact>
-git push origin refs/notes/promotions
 ```
+
+`record` fetches the ledger before it writes and publishes the record itself — there is no separate
+push step (`--no-push` is the labelled fixture escape, and it says `UNPUBLISHED`).
 
 That lane also requires the change-set to touch **nothing outside the governance file set**, so a routed
 cure belongs in its own slice. Never point a design GO at a document the change merely amends.

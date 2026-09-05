@@ -5,11 +5,45 @@ human.** This is the operational detail behind the one-line clause in `../../DEV
 §12. It is **not a new gate**; it is *which review evidence is recorded at which risk*, and how that
 evidence converts to real two-human segregation of duties the moment a teammate joins.
 
-> **Read this first (honest ceiling).** The high-risk self-review below is **process discipline, not a
-> fail-closed gate**: a solo human *can* skip writing the record (mechanically blocking it requires a
-> second actor the solo case lacks). What the kit does is make the record the path of least resistance,
-> audit-visible, and — for control-plane changes — backstopped by the `agent-boundary` CI gate, which
-> forces ratification on those diffs regardless of whether a record was written.
+> **⚠️ AMENDED 2026-09-04 (`LOOP-STAGE-ARTIFACT-GATE`) — the record is now GRADED, and this paragraph
+> used to say it was not.** Until that date this read: "process discipline, not a fail-closed gate — a
+> solo human *can* skip writing the record". That is **no longer true where a second identity exists**.
+> `conformance/review-lane.sh` is a required status context (`review-lane`) that refuses a
+> sensitive/control-plane PR — and any non-docs-only ordinary one — whose head commit does not carry
+> `Kit-Plan:` and `Kit-Review:` trailers naming a tracked plan file and a graded review record.
+> See *The graded record* below. The
+> **approval** is enforced beside it by branch protection, not by this check (amended 2026-09-05).
+>
+> **What is still true.** The gate proves **shape, not truth**: it cannot prove the reviewer read the
+> diff, and since 2026-09-05 it proves nothing at all about **who approved** — that is the forge's,
+> and the three settings the Attested-by row names are what carry it. **Solo with one account the
+> approval half is unavailable**, not merely weaker: there is no non-author identity to click Approve.
+> Adopters receive the lane on an `observe` dial (`REVIEW_LANE_MODE` in
+> `.github/workflows/adopter-gates.yml`) whose exit condition is now *record discipline is real* —
+> every code PR carrying a `Kit-Plan` and a `Kit-Review` trailer — because that, not a second identity,
+> is what the check itself grades. Under that dial the old sentence still applies, and the
+> compensating-control section below is what carries the weight.
+
+## The graded record
+
+Since 2026-09-04 the review stage leaves a file, and a gate refuses without it.
+
+| | |
+|---|---|
+| **Plan artifact** | `docs/plans/<date>-<row-slug>.md` from [`PLAN-RECORD-TEMPLATE`](../../templates/PLAN-RECORD-TEMPLATE.md) · trailer `Kit-Plan:` |
+| **Review artifact** | `docs/reviews/<date>-<row-slug>.md` from [`REVIEW-RECORD-TEMPLATE`](../../templates/REVIEW-RECORD-TEMPLATE.md) · trailer `Kit-Review:` (comma-separated for a consolidated PR) |
+| **Graded for** | Builder ≠ Reviewer · rounds citing commits inside the PR, closing on APPROVE · every finding disposed (`fixed <sha>` \| `accepted — <reason>` \| `waived — WAIVER-<id>`) · every design-promised control resolving to an executable `path::test-name` · a security-review verdict, or a waiver carrying all four `D-240904-1` criteria |
+| **Attested by** | **branch protection, not this check** (amended 2026-09-05, `REVIEW-LANE-WAITING-IS-GREEN`). The approver types **nothing** and clicks **Approve**; three server-side settings carry it — `required_approving_review_count >= 1` (a non-author approval exists), `dismiss_stale_reviews` (a push dismisses every prior approval, so an approval carried across a fix push does not count), `require_last_push_approval` (whoever pushed the head cannot approve their own push). `conformance/branch-protection.sh` FAILs when any of the three is false or absent, and that leg is the required context `branch-protection-live`. *(The gate itself read the forge's review list until 2026-09-05 and returned WAITING while none existed — which a job renders RED, cleared only by a manual re-run. Deleted: the forge enforces the same properties on every merge attempt, with no run to wait on. And `D-240904-2`, 2026-09-04, had already struck the typed attestation line — author-controlled text proved only that someone could copy a string a command printed for them.)* |
+| **Scope cut** | an **ordinary AND docs-only** change-set is N-A. That is the classifier's cut, not the gate's judgment. |
+| **Verdicts** | `0` pass/N-A · `2` refusal — a missing, malformed or self-reviewed **record**, or a change-set the gate could not derive. Two values, and no third: the check runs **once per push** and is green or red like every other gate. *(`1` meant WAITING and is retired, not recycled — see the Attested-by row.)* |
+
+**What makes "never reviewed" RED is the record, not the keystroke.** The T1 defect — 24 of 24
+approvals over work with no review record at all — is refused by the record grading above, which is
+where it belongs. The approval proves a second identity looked at *this tree*; it has never proved
+they read anything, and the kit does not claim it does.
+
+Run `sh conformance/review-lane.sh --pre-push` before pushing: it grades everything CI will except the
+approval, which no local run can see.
 
 ## The two tiers
 

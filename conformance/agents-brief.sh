@@ -34,7 +34,31 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # has. The cap was deliberately NOT re-raised to restore the 10%: recomputing the headroom every time
 # the region grows is precisely the silent ratchet-slip this constant exists to refuse, and 103 bytes
 # is still real room. The next edit that needs more asks for it in a reviewed PR, which is the point.
-EC_MAX_BYTES=1860
+# MERGED 2026-09-05 (second merger, session B): both in-flight §1 PRs bumped this constant
+# (A: 2085 for act 4 + the escape-card line; B: 1926 for act 3). The merged region was RE-MEASURED
+# with this script's own method and the constant set to the merged need + the 3-byte bite; neither
+# PR's number survives on its own. The two governed-bump notes are kept below as the record.
+# ⚠️ GOVERNED BUMP AT FIRST-PUSH-GREEN-PYTHON / T1-DOCS-SWEEP (2026-09-05): 1860 -> 2085, for the two
+# T1 sentences the design ratifies into §1 — K20's act-4 pointer at the stage->skill map
+# (`loop-state.sh --help`, the answer to the question act 4 itself poses) and K19's one-line pointer
+# at the guard's escape card, the thing a fresh session hits in its first ten minutes with nowhere
+# to look. Both were trimmed to their shortest honest form first: the escape-card line lost its
+# second sentence, which is what took the request from ~2145 to a measured 2082. The bump is +225
+# for content, NOT recomputed headroom — the cap keeps a 3-byte bite, so the next edit that needs
+# room asks for it in a reviewed PR, which is the point of this constant.
+# 2026-09-05 (BOARD-ROW-IDENTIFIER): 1860 -> 1926, a GOVERNED BUMP of exactly the measured need,
+# asked for in a reviewed PR as the paragraph above prescribes. WHAT BOUGHT IT: act 3 said "claim
+# the row" and act 4 said carry `Kit-Row`, and the two contradicted — the row TITLE act 3 invited an
+# adopter to name is refused by the row check, which is why every Entry Declaration in the T1 trial
+# repo's history was invalid (harvest K14). Act 3 now states the id GRAMMAR and the verb that claims
+# it, which is **66** bytes of contract the region did not previously carry (1926 − 1860; the first
+# draft of this note said 67 and was wrong — reviewer r5).
+# ⚠️ THAT BUMP LEFT 0 FREE BYTES, DELIBERATELY, because two PRs were in flight against §1 at once
+# (this one owned act 3, its sibling #648 owned act 4 + the escape-card line) and any headroom set
+# then would have been a guess. #648 merged first; THIS branch, the second merger, re-measured the
+# MERGED region with this script (2150 bytes) and set the constant to that + the 3-byte bite. That
+# is the same governed-bump act, done once on a real number instead of twice on two guesses.
+EC_MAX_BYTES=2153
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {

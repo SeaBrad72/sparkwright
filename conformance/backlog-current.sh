@@ -411,30 +411,137 @@ EOF
 HITL6_RETRO_EPOCH="2026-07-24"    # rows Closed on/after this date owe an explicit 'L1 retro' marker
 HITL6_MIN_RETRO_CHARS=120         # substance floor. Measured 2026-07-24 across this kit's own 77
                                   # Done rows: min 200, median 1462 — a FLOOR, not a fit to the corpus.
+HITL6_DISPO_MIN_REASON=20         # leg 3's `none — <reason>` floor, in NON-WHITESPACE characters —
+                                  # counting raw length would let twenty spaces clear it (vet M2).
+                                  # HITL6_DISPO_EPOCH itself lives in backlog-lib.sh: backlog-presence.sh
+                                  # scopes its Done arm to the SAME population, and one constant read by
+                                  # two gates cannot drift. Still declared externally, never derived
+                                  # from the board (the HITL-4 rule).
 
-# retro_cell <row> <header-row> <col-index> : the Retro/outcome cell, ROBUST to escaped pipes.
-# WHY THIS EXISTS: GFM treats `\|` as a literal pipe inside a table cell, but backlog-lib's cell()
-# splits on every raw '|' via awk -F'|', so a row using the CORRECT markdown escape has its trailing
-# columns shifted. MEASURED on BACKLOG.md:133 (HITL-1's Done row): it carries
-# `triggered\|none\|uncertain`, giving NF=7 where every other Done row has NF=5, which parks the
-# 'L1 retro' marker in field 6 instead of field 4. Plain cell() would read a TRUNCATED retro and
-# could both trip the substance floor and lose the marker on a perfectly valid row.
-# Retro/outcome is the LAST column of the shipped Done schema, so every extra split belongs to it:
-# rejoin fields (i+1)..NF, dropping the trailing empty the closing pipe produces. GUARD: if any
-# NAMED column follows Retro/outcome, joining would over-capture (a fail-OPEN), so fall back to
-# cell() in that case. The shared-parser gap itself is boarded, not fixed here — fixing cell() means
-# re-proving check_section, check_done_uat and backlog-presence, which is its own slice.
-retro_cell() {
-  _rc_after=$(printf '%s' "$2" | awk -F'|' -v i="$3" \
-    '{for(j=i+2;j<=NF;j++){v=$j; gsub(/^[ \t]+|[ \t]+$/,"",v); if(v!=""){print "y"; exit}}}')
-  if [ -n "$_rc_after" ]; then cell "$1" "$3"; return 0; fi
-  printf '%s' "$1" | awk -F'|' -v i="$3" '{
-    s=""; for(j=i+1;j<=NF;j++){ if(j==NF && $j ~ /^[[:space:]]*$/) continue
-      s = s (s==""?"":"|") $j }
-    gsub(/^[ \t]+|[ \t]+$/,"",s); print s}'
+# retro_cell (the escaped-pipe-robust Retro/outcome extractor) MOVED to backlog-lib.sh at
+# SLICE-CLOSES-IN-ONE-PR, byte-unchanged, because backlog-presence.sh's Done arm now reads the
+# SAME cell this gate grades. Its full rationale travelled with it; the library is sourced above.
+
+# ── LEG 3 RESOLVERS (SLICE-CLOSES-IN-ONE-PR §4.3) ─────────────────────────────────────────────
+# Both are STRING-EQUALITY / PREFIX matchers. NOTHING here interpolates a board-supplied id into a
+# regex: a row id and a `D-` id are attacker-influenceable text (anyone can open a PR), and a
+# `.*` id in an ERE would resolve against every object at once (threat T4). The only regexes are
+# CONSTANT well-formedness patterns applied TO an id, never built FROM one.
+
+# backtick_id and row_exists MOVED to backlog-lib.sh at BOARD-ROW-IDENTIFIER, together with the
+# new `row_id_ok` (the grammar) and `row_count` (the counting form loop-state's `check_row` needs
+# to tell "resolved" from "AMBIGUOUS"). They moved because a FOURTH mechanism now resolves a row
+# through them, and a second copy under conformance/ would drift invisibly to both gates' tests —
+# the same reason the rest of the board parser lives there. The library is sourced above; their
+# full rationale travelled with them.
+
+# ruling_recorded <DECISIONS.md path> <D-id> : rc0 iff a line STARTS with the entry-header form
+# **`D-YYMMDD-N`. A CROSS-REFERENCE DOES NOT RESOLVE (vet H2) — measured on this repo's file:
+# 44 entry headers against 108 backticked mentions, so "the id appears somewhere" would resolve
+# against a sentence that merely cites a ruling. The needle is a shell PREFIX pattern in `case`,
+# which is anchored at the line start and involves no regex at all.
+# ⚠️ ORDERING IS LOAD-BEARING (review m4): the id is interpolated into a `case` GLOB, and a glob is
+# not inert — an id of `*` would match EVERY line and resolve against any file. That is safe ONLY
+# because the caller validates the id against `^D-[0-9]{6}-[0-9]+$` BEFORE calling, so no glob
+# metacharacter can reach here. Moving this call above that validation re-opens the hole silently.
+# Any future caller owes the same validation first.
+ruling_recorded() {
+  _rr_needle="**\`$2\`"
+  while IFS= read -r _rr_line || [ -n "$_rr_line" ]; do
+    case "$_rr_line" in "$_rr_needle"*) return 0 ;; esac
+  done < "$1"
+  return 1
 }
 
-# check_done_retro <file> : Done-edge L1-retro enforcement (HITL-6). "The loop closes" is a stated
+# check_dispo <retro> <own-id> <board-file> <project-dir> <item-label> : leg 3 for ONE row. Emits
+# the FAIL text (naming the row, the clause, and the remedy) and returns 1, or returns 0.
+# GRAMMAR:  Disposition: row `ID` [, row `ID` …] | ruling `D-YYMMDD-N` [, …] | none — <reason>
+# At least one clause is required and EVERY clause present must RESOLVE — "at least one" is a floor
+# on COUNT, never a disjunction on TRUTH (vet H3), or an unresolved citation could ride along with
+# a valid one. The LAST `Disposition:` occurring AFTER the 'L1 retro' marker is the one parsed: the
+# word already appears in retro prose on the live board (1 hit), so an unanchored parse would grade
+# the wrong text. A cell is one line under GFM, so the clause list runs to the end of the cell.
+# ⚠️ DISCLOSED LIMIT — `none —` IS TERMINAL (review m2). Its reason runs to the end of the cell, so
+# (a) any clause written AFTER a `none —` is not scanned and therefore not resolved, and (b) retro
+# PROSE that happens to contain the literal "none — " after a valid clause is read as the reason and
+# graded against the length floor, which can FALSE-RED an otherwise-good retro. (b) is the
+# fail-CLOSED direction and its remedy — put the `Disposition:` line last, which the grammar wants
+# anyway — is what the failure text says. Neither case lets an unresolved clause pass.
+check_dispo() {
+  _dp_retro="$1"; _dp_own="$2"; _dp_bl="$3"; _dp_dir="$4"; _dp_lab="$5"
+  _dp_rem="remedy: board the row, record the ruling, or write \`none — <reason>\`"
+  case "$_dp_retro" in *"L1 retro"*) _dp_after=${_dp_retro#*L1 retro} ;; *) _dp_after="" ;; esac
+  case "$_dp_after" in
+    *"Disposition:"*) _dp_txt=${_dp_after##*Disposition:} ;;
+    *)
+      echo "FAIL: Done item '$_dp_lab' — closed on/after $HITL6_DISPO_EPOCH but its retro carries no 'Disposition:' clause after the 'L1 retro' marker; a retro must say where its lessons went ($_dp_rem)"
+      return 1 ;;
+  esac
+  _dp_n=0
+  # The `none — <reason>` clause is TERMINAL (its reason runs to the end of the cell), so it is
+  # split off FIRST and only the text before it is scanned for backticked clauses — otherwise a
+  # backtick inside the reason would be read as a clause id.
+  _dp_scan=$_dp_txt
+  case "$_dp_txt" in
+    *"none — "*)
+      _dp_scan=${_dp_txt%%none — *}
+      _dp_nw=$(printf '%s' "${_dp_txt##*none — }" | tr -d '[:space:]')
+      if [ "${#_dp_nw}" -lt "$HITL6_DISPO_MIN_REASON" ]; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition's 'none —' reason is too thin (${#_dp_nw} non-whitespace chars, floor $HITL6_DISPO_MIN_REASON); say why this retro boards nothing and changes no rule"
+        return 1
+      fi
+      _dp_n=$((_dp_n + 1)) ;;
+  esac
+  _dp_rest=$_dp_scan
+  while :; do
+    case "$_dp_rest" in *'`'*) ;; *) break ;; esac
+    _dp_before=${_dp_rest%%\`*}; _dp_rest=${_dp_rest#*\`}
+    case "$_dp_rest" in *'`'*) ;; *) break ;; esac      # an unterminated backtick ends the scan
+    _dp_id=${_dp_rest%%\`*}; _dp_rest=${_dp_rest#*\`}
+    _dp_kw=$(printf '%s' "$_dp_before" | sed 's/[[:space:]]*$//')
+    case "$_dp_kw" in
+      row|*[!A-Za-z]row) _dp_kind=row ;;
+      ruling|*[!A-Za-z]ruling) _dp_kind=ruling ;;
+      *) continue ;;                                    # a backticked token that is not a clause
+    esac
+    _dp_n=$((_dp_n + 1))
+    if [ "$_dp_kind" = row ]; then
+      if ! printf '%s' "$_dp_id" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition clause row \`$(_cell_diag "$_dp_id")\` is not a well-formed row id (want a backticked board identifier); $_dp_rem"
+        return 1
+      fi
+      if [ -n "$_dp_own" ] && [ "$_dp_id" = "$_dp_own" ]; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition names its OWN row \`$(_cell_diag "$_dp_id")\`; a lesson has to go somewhere other than the row it closes ($_dp_rem)"
+        return 1
+      fi
+      if ! row_exists "$_dp_bl" "$_dp_id"; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition names row \`$(_cell_diag "$_dp_id")\`, which is on no section of the board; $_dp_rem"
+        return 1
+      fi
+    else
+      if ! printf '%s' "$_dp_id" | grep -Eq '^D-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9]*$'; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition clause ruling \`$(_cell_diag "$_dp_id")\` is not a well-formed ruling id (want D-YYMMDD-N); $_dp_rem"
+        return 1
+      fi
+      _dp_dec="$_dp_dir/docs/governance/DECISIONS.md"
+      if [ ! -f "$_dp_dec" ]; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition cites ruling \`$(_cell_diag "$_dp_id")\` but $_dp_dec does not exist; stamp one from templates/DECISIONS-TEMPLATE.md and record the ruling"
+        return 1
+      fi
+      if ! ruling_recorded "$_dp_dec" "$_dp_id"; then
+        echo "FAIL: Done item '$_dp_lab' — its Disposition cites ruling \`$(_cell_diag "$_dp_id")\`, which is not recorded as an entry header in $_dp_dec (a cross-reference is a mention, not a ruling); $_dp_rem"
+        return 1
+      fi
+    fi
+  done
+  if [ "$_dp_n" -eq 0 ]; then
+    echo "FAIL: Done item '$_dp_lab' — its 'Disposition:' carries no recognisable clause; $_dp_rem"
+    return 1
+  fi
+  return 0
+}
+
+# check_done_retro <file> [<project-dir>] : Done-edge L1-retro enforcement (HITL-6). "The loop closes" is a stated
 # principle and the Done section's own header already declares "L1 retro written" — this makes that
 # declaration ENFORCED rather than discipline. TWO legs with DIFFERENT scopes:
 #   leg 1 — every Done row's Retro/outcome cell must clear HITL6_MIN_RETRO_CHARS. Without it a stub
@@ -459,6 +566,10 @@ retro_cell() {
 # Increments DONE_RETRO_GRADED (rows that reached leg 1). rc0 = pass.
 check_done_retro() {
   _f="$1"
+  # The project dir is what leg 3's ruling resolver reads DECISIONS.md relative to — BY ARGUMENT,
+  # the same by-argument dir check_dir already takes, never an env var (threat T3). It defaults to
+  # the board's own directory so the function stays callable with one argument.
+  _dr_dir="${2:-$(dirname "$_f")}"
   _rows=$(section_rows "$_f" "Done")
   [ -n "$_rows" ] || return 0                     # no Done table at all -> nothing to enforce
   _hdr=$(printf '%s\n' "$_rows" | head -1)
@@ -473,15 +584,22 @@ check_done_retro() {
     echo "FAIL: Done table lacks a 'Closed' and/or 'Retro/outcome' column (found: $(_header_cols_diag "$_hdr")); HITL-6 cannot grade an L1 retro without both"
     return 1
   fi
-  _epoch_n=$(printf '%s' "$HITL6_RETRO_EPOCH" | tr -d '-')
   _ln=0
   while IFS= read -r _row; do
     _ln=$((_ln + 1))
     if [ "$_ln" -eq 1 ]; then continue; fi        # header row
     if is_sep_row "$_row"; then continue; fi      # separator row (has a dash)
-    _item=$(cell "$_row" 1)
+    # gfm_cell, NOT cell (review m6): the Item cell feeds both the diagnostic AND backtick_id, which
+    # supplies leg 3's own-id test. A raw split truncates an item at its first escaped pipe, so the
+    # id read is only accidentally right (the backticks happen to sit left of the escape on today's
+    # board). Reading every graded cell of this row by ONE rule removes the accident.
+    _item=$(gfm_cell "$_row" 1)
     if [ -z "$_item" ]; then continue; fi         # template 'no items' spacer row
-    _closed=$(cell "$_row" "$_ci_c")
+    # gfm_cell, NOT cell: an escaped pipe anywhere left of this column shifts a raw split, and both
+    # date legs below fail CLOSED on an unparseable value — so a GFM-correct row would go red for a
+    # parser bug (measured live on the `B8` row). The diagnostic Item cell keeps cell(); it is
+    # truncated there, not misread, and _cell_diag already bounds it.
+    _closed=$(gfm_cell "$_row" "$_ci_c")
     _retro=$(retro_cell "$_row" "$_hdr" "$_ci_r")
     DONE_RETRO_GRADED=$((DONE_RETRO_GRADED + 1))
     # leg 1 — substance floor, EVERY row regardless of date.
@@ -491,12 +609,10 @@ check_done_retro() {
       return 1
     fi
     # leg 2 — explicit marker for rows Closed on/after the epoch. A date this cannot parse falls
-    # THROUGH to the marker requirement (fail closed); it is never skipped.
-    case "$_closed" in
-      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
-        _cn=$(printf '%s' "$_closed" | tr -d '-')
-        if [ "$_cn" -lt "$_epoch_n" ]; then continue; fi ;;   # pre-epoch -> N/A for the marker
-    esac
+    # THROUGH to the marker requirement (fail closed); it is never skipped. The date test is
+    # closed_pre_epoch (backlog-lib.sh), the same helper leg 3 and backlog-presence.sh's Done arm
+    # use — one parse of "is this row in scope", not three.
+    if closed_pre_epoch "$_closed" "$HITL6_RETRO_EPOCH"; then continue; fi   # pre-epoch -> N/A
     case "$_retro" in
       *"L1 retro"*) ;;
       *)
@@ -504,6 +620,14 @@ check_done_retro() {
         return 1
         ;;
     esac
+    # leg 3 — a DISPOSITION that resolves, for rows Closed on/after HITL6_DISPO_EPOCH. It runs
+    # AFTER leg 2 deliberately: a retro with no marker is a leg-2 failure and should be reported
+    # as one. Leg 2's pre-epoch `continue` above cannot hide a leg-3 obligation, because its epoch
+    # (2026-07-24) is EARLIER than leg 3's (2026-09-03) — a row it skips is out of leg 3's scope
+    # by construction. If those two dates ever cross, this ordering stops being safe.
+    if ! closed_pre_epoch "$_closed" "$HITL6_DISPO_EPOCH"; then
+      check_dispo "$_retro" "$(backtick_id "$_item")" "$_f" "$_dr_dir" "$(_cell_diag "$_item")" || return 1
+    fi
   done <<EOF
 $_rows
 EOF
@@ -661,9 +785,16 @@ check_dir() {
       return 1
       ;;
   esac
+  # A NON-MD BACKEND IS NOT AN N/A (NON-MD-BACKEND-NEVER-SILENT, D-240903-1 §3). It printed
+  # `N/A … repo-native board checks skip` and returned 0 — a green light over governance nobody
+  # verified. rc 3 is the NOT ENFORCED partition; `verify.sh`'s `-run` companion reads non-zero as
+  # fail, which is correct. See backlog-lib.sh::not_enforced_notice for the sentence and the ladder.
+  # (`conformance/backlog-adapters.sh` still owns backend-NAME agreement; that is a different claim
+  # from board-bound governance and it was never what this route attested.)
   if [ "$_tok" != "md" ]; then
-    echo "N/A: $_dir — backend '$_tok' is not BACKLOG.md (repo-native board checks skip; conformance/backlog-adapters.sh owns backend-name agreement) — skipping"
-    return 0
+    _bc_ne=0
+    not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" || _bc_ne=$?
+    return "$_bc_ne"
   fi
   _bl="$_dir/BACKLOG.md"
   if [ ! -f "$_bl" ]; then
@@ -708,7 +839,7 @@ check_dir() {
   # Done-edge L1-retro enforcement (HITL-6): every Done row clears a substance floor, and a row
   # closed on/after HITL6_RETRO_EPOCH also carries an 'L1 retro' marker. Same accumulate-all (K11)
   # contract as the gate above — collect its failure in the SAME pass rather than short-circuiting.
-  check_done_retro "$_bl" || _agg=1
+  check_done_retro "$_bl" "$_dir" || _agg=1
   # Column-arity (BOARD-ROW-ARITY): every non-spacer body row's column count matches its section
   # header's. Same accumulate-all (K11) contract — a shifted row is reported in the SAME pass.
   check_row_arity "$_bl" || _agg=1
@@ -767,28 +898,59 @@ selftest() {
   _good_board "$d/BACKLOG.md"
   assert_ok "$d" "t0/md-link: '[the board](./BACKLOG.md)' -> GATED (resolves md)"
 
-  # filled Jira (annotated) -> N/A via the not-BACKLOG.md route, naming 'jira'.
+  # ===== NON-MD-BACKEND-NEVER-SILENT — a hosted tracker is NOT ENFORCED (rc 3), never an N/A ====
+  # Every one of the five tokens, because the route is shared and a single-token leg cannot see a
+  # token that stops resolving. These four legs used to assert `N/A ... rc 0`, below.
+  for _st_tok in github jira ado linear gitlab; do
+    d="$base/t_nonmd_$_st_tok"; mkdir -p "$d"
+    _claude_md "$_st_tok" "$d/CLAUDE.md"
+    assert_msg_rc "$d" "NOT ENFORCED: backend '$_st_tok' — board-bound governance is not verified on this tree" 3 \
+      "nonmd/$_st_tok: -> NOT ENFORCED, rc 3 (red), never a silent N/A"
+  done
+  d="$base/t_nonmd_jira"
+  assert_msg_rc "$d" "Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver" 3 \
+    "nonmd/cure: the verdict names both ladders"
+  # A ratified, filled, unexpired waiver -> rc 0, notice still printed.
+  # TODAY-RELATIVE dates (security S-M1): a future `Opened` is now refused — it makes the 90-day
+  # maximum nominal — so the 2099 dates this fixture used to carry would assert the opposite of the
+  # rule. GNU then BSD, matching waivers-valid.sh's own dialect pair.
+  _bc_d0=$(date -u -d "+0 days" +%Y-%m-%d 2>/dev/null || date -u -v+0d +%Y-%m-%d)
+  _bc_d60=$(date -u -d "+60 days" +%Y-%m-%d 2>/dev/null || date -u -v+60d +%Y-%m-%d)
+  d="$base/t_nonmd_waived"; mkdir -p "$d"; _claude_md 'jira' "$d/CLAUDE.md"
+  printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| board-governance | the kit reads BACKLOG.md only | @jdoe | %s | %s | adopt TRACKER-BACKED-GOVERNANCE | @sec |\n' "$_bc_d0" "$_bc_d60" \
+    > "$d/WAIVER-REGISTER.md"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'jira' — waived until $_bc_d60 by @jdoe" 0 \
+    "nonmd/waived: a ratified board-governance waiver -> rc 0 WITH the notice"
+  # The UNFILLED incept stamp buys nothing (the bridge's load-bearing negative).
+  d="$base/t_nonmd_stamp"; mkdir -p "$d"; _claude_md 'jira' "$d/CLAUDE.md"
+  printf '## Active waivers\n\n| Gate | Reason | Owner | Opened | Expires | Remediation plan | Ratified-by |\n|--|--|--|--|--|--|--|\n| board-governance | x | [owner] | %s | %s | y | [security-owner] |\n' "$_bc_d0" "$_bc_d60" \
+    > "$d/WAIVER-REGISTER.md"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'jira' — board-bound governance is not verified on this tree" 3 \
+    "nonmd/stamp: the UNFILLED incept stamp -> still rc 3"
+
+  # The ANNOTATED forms still RESOLVE to the right token — the property these legs were always
+  # about — and now land on the NOT ENFORCED verdict rather than an N/A.
   d="$base/t0_jira"; mkdir -p "$d"
   _claude_md 'Jira — [link] (mapping: `docs/work-tracking/adapters.md`)' "$d/CLAUDE.md"
-  assert_msg "$d" "backend 'jira' is not BACKLOG.md" "t0/jira: Jira -> N/A (names 'jira', not 'undeclared')"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'jira'" 3 "t0/jira: Jira -> NOT ENFORCED (names 'jira', not 'undeclared')"
 
-  # Azure DevOps -> N/A naming 'ado' (alias), NOT 'undeclared'.
+  # Azure DevOps -> naming 'ado' (alias), NOT 'undeclared'.
   d="$base/t0_ado"; mkdir -p "$d"
   _claude_md 'Azure DevOps — [link]' "$d/CLAUDE.md"
-  assert_msg "$d" "backend 'ado' is not BACKLOG.md" "t0/ado: 'Azure DevOps' -> N/A (aliases to 'ado')"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'ado'" 3 "t0/ado: 'Azure DevOps' -> NOT ENFORCED (aliases to 'ado')"
 
-  # one fixture per remaining backend -> N/A (not-BACKLOG.md route).
+  # one fixture per remaining backend.
   d="$base/t0_github"; mkdir -p "$d"
   _claude_md 'GitHub — [link] (mapping: `docs/work-tracking/adapters.md`)' "$d/CLAUDE.md"
-  assert_msg "$d" "backend 'github' is not BACKLOG.md" "t0/github: GitHub -> N/A (names 'github')"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'github'" 3 "t0/github: GitHub -> NOT ENFORCED (names 'github')"
 
   d="$base/t0_linear"; mkdir -p "$d"
   _claude_md 'Linear — [link] (mapping: `docs/work-tracking/adapters.md`)' "$d/CLAUDE.md"
-  assert_msg "$d" "backend 'linear' is not BACKLOG.md" "t0/linear: Linear -> N/A (names 'linear')"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'linear'" 3 "t0/linear: Linear -> NOT ENFORCED (names 'linear')"
 
   d="$base/t0_gitlab"; mkdir -p "$d"
   _claude_md 'GitLab — [link] (mapping: `docs/work-tracking/adapters.md`)' "$d/CLAUDE.md"
-  assert_msg "$d" "backend 'gitlab' is not BACKLOG.md" "t0/gitlab: GitLab -> N/A (names 'gitlab')"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'gitlab'" 3 "t0/gitlab: GitLab -> NOT ENFORCED (names 'gitlab')"
 
   # ===== T2.1 — in-use board: In Progress -> Links, In Review -> PR =====================
   _MD='BACKLOG.md — [link] (mapping: `docs/work-tracking/adapters.md`)'
@@ -2253,6 +2415,119 @@ EOF
   # SUBSTITUTION, which silently ate the label text on the first version of this line.
   assert_ok "$d" 'good-done-escaped-pipe: GFM escaped pipe in retro cell -> parsed whole (PASS)'
 
+  # ===== HITL-6 leg 3 — EVERY POST-EPOCH RETRO CARRIES A DISPOSITION THAT RESOLVES ============
+  # (SLICE-CLOSES-IN-ONE-PR §4.3.) Legs 1-2 prove a retro cell is not a stub and carries a marker —
+  # never that a finding went anywhere. Measured 2026-09-03 across this board's 228 Done rows: 62
+  # cite a `D-` ruling, 42 say "boarded", ZERO say "no follow-up". A retro that names a lesson and
+  # boards nothing was green. Leg 3 requires a `Disposition:` line whose every clause RESOLVES to a
+  # real object: a board row, a recorded ruling, or an explicit `none — <reason>`.
+  # Scope: rows Closed on/after HITL6_DISPO_EPOCH (backlog-lib.sh), fail-closed on an unparseable date.
+  _DR='L1 retro. Shipped on a green first run; the escaped-pipe parse and the epoch boundary were both re-measured against the live board before the push, and nothing needed backfill. '
+
+  # D+ row-clause resolving to a DIFFERENT row that is really on the board -> PASS.
+  d="$base/dispo-row-ok"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`OTHER-ROW\`"
+  assert_ok "$d" "dispo/row-resolves: a row clause naming a real board row -> PASS"
+
+  # D− the clause names a row that is on NO section of the board -> FAIL. The whole point: a
+  # disposition is only worth anything if the object it cites exists.
+  d="$base/dispo-row-absent"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`NO-SUCH-ROW\`"
+  assert_fail "$d" "is on no section of the board" "dispo/row-absent: an unboarded row id -> FAIL"
+
+  # D− the clause names the GRADING ROW'S OWN id (security vet H3) -> FAIL. Self-citation is the
+  # cheapest way to satisfy a resolver while sending the lesson nowhere.
+  d="$base/dispo-row-self"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`THE-ROW\`"
+  assert_fail "$d" "names its OWN row" "dispo/row-self: a row clause citing its own id -> FAIL"
+
+  # D− an EMPTY backticked id -> FAIL (never treated as "no clause", which would silently pass).
+  d="$base/dispo-row-empty"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`\`"
+  assert_fail "$d" "is not a well-formed row id" "dispo/row-empty: an empty backticked id -> FAIL"
+
+  # D+ a ruling clause whose id appears as an ENTRY HEADER in the project's own DECISIONS.md -> PASS.
+  # The path is <project-dir>-relative — BY ARGUMENT, never an env var (threat T3).
+  d="$base/dispo-ruling-ok"
+  _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: ruling \`D-240903-9\`" \
+    '**`D-240903-9` · ruling (owner, 2026-09-03) · THE RULE.**'
+  assert_ok "$d" "dispo/ruling-resolves: an entry header in DECISIONS.md -> PASS"
+
+  # D− the same id present ONLY as a cross-reference (measured on the live file: 44 entry headers
+  # against 108 backticked mentions) -> FAIL. Mentioning a ruling is not recording one.
+  d="$base/dispo-ruling-xref"
+  _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: ruling \`D-240903-9\`" \
+    'Basis: this supersedes `D-240903-9`, which said otherwise.'
+  assert_fail "$d" "is not recorded as an entry header" "dispo/ruling-xref: a cross-reference must not resolve -> FAIL"
+
+  # D− DECISIONS.md absent + a ruling clause -> FAIL NAMING THE PATH (vet H2), never a skip.
+  # Adopters stamp their own from templates/DECISIONS-TEMPLATE.md; a missing file is a broken
+  # citation, not a not-applicable.
+  d="$base/dispo-ruling-nofile"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: ruling \`D-240903-9\`"
+  assert_fail "$d" "docs/governance/DECISIONS.md" "dispo/ruling-no-file: absent DECISIONS.md -> FAIL naming the path"
+
+  # D+ `none — <reason>` with a reason clearing the non-whitespace floor -> PASS. A stub-detector,
+  # not a judgment: whether the reason is honest is the reviewer's, and §5 says so.
+  d="$base/dispo-none-ok"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: none — a one-line typo fix in a comment; nothing to board and no rule to change."
+  assert_ok "$d" "dispo/none-reasoned: 'none —' with a substantive reason -> PASS"
+
+  # D− a reason that is only PADDING -> FAIL. The floor counts NON-WHITESPACE characters precisely
+  # so twenty spaces cannot clear it (vet M2).
+  d="$base/dispo-none-pad"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: none —          x"
+  assert_fail "$d" "reason is too thin" "dispo/none-padded: a whitespace-padded reason -> FAIL"
+
+  # D− TWO clauses, one resolving and one not -> FAIL (vet H3). "At least one clause" is a floor on
+  # COUNT, never a disjunction on TRUTH: a green here would let any unresolved citation ride along
+  # with a valid one.
+  d="$base/dispo-mixed"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`OTHER-ROW\`, row \`NO-SUCH-ROW\`"
+  assert_fail "$d" "is on no section of the board" "dispo/mixed: one resolved + one unresolved -> FAIL"
+
+  # D− a post-epoch row with NO Disposition at all -> FAIL. This is the leg that makes leg 3 more
+  # than a syntax check on rows that already carry one.
+  d="$base/dispo-absent"; _dispo_proj "$d" 2026-09-03 "$_DR"
+  assert_fail "$d" "carries no 'Disposition:'" "dispo/absent: post-epoch row with no Disposition -> FAIL"
+
+  # D− a `Disposition:` that appears only BEFORE the 'L1 retro' marker -> FAIL. The word already
+  # occurs in retro prose on the live board, so the parse is anchored after the marker; without
+  # this leg an anchorless parse would pass and the anchor would be unfalsifiable.
+  d="$base/dispo-before-marker"
+  _dispo_proj "$d" 2026-09-03 "Disposition: row \`OTHER-ROW\` was the plan before review. $_DR"
+  assert_fail "$d" "carries no 'Disposition:'" "dispo/before-marker: a Disposition before the marker does not count -> FAIL"
+
+  # D+ TWO `Disposition:` occurrences after the marker, the EARLIER one unresolvable and the LATER
+  # one valid -> PASS. The header says the LAST occurrence is parsed; without this leg that sentence
+  # is unfalsifiable, because `${_dp_after##*Disposition:}` (last) and `${_dp_after#*Disposition:}`
+  # (first) agree on every other fixture. Under the `#` mutant this board grades `NO-SUCH-ROW` and
+  # reds. Not a licence to leave a bad clause on a row — a superseded draft is diff-visible.
+  d="$base/dispo-last-wins"
+  _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`NO-SUCH-ROW\` was the draft before review. Disposition: row \`OTHER-ROW\`"
+  assert_ok "$d" "dispo/last-wins: the LAST Disposition after the marker is the one graded -> PASS"
+
+  # D− an UNPARSEABLE Closed cell + no Disposition -> FAIL CLOSED (in scope, never skipped), the
+  # same posture leg 2 takes.
+  d="$base/dispo-baddate"; _dispo_proj "$d" someday "$_DR"
+  assert_fail "$d" "carries no 'Disposition:'" "dispo/bad-date: an unparseable Closed date is IN scope -> FAIL"
+
+  # D+ a GFM-correct escaped pipe before the Disposition -> PASS. Without retro_cell the clause
+  # lands in a shifted field and a valid row reds.
+  d="$base/dispo-escaped"
+  _dispo_proj "$d" 2026-09-03 "${_DR}Shipped the \`triggered\\|none\\|uncertain\` detector. Disposition: row \`OTHER-ROW\`"
+  assert_ok "$d" "dispo/escaped-pipe: a Disposition after an escaped pipe is still parsed -> PASS"
+
+  # D0 an ESCAPED PIPE IN THE **ITEM** CELL of a PRE-epoch row -> PASS. FOUND ON THE LIVE BOARD
+  # (the `B8` row, whose item carries `RELEASE_TAG_PROVENANCE=observe\|enforce`): plain cell() splits
+  # on raw pipes, so the Closed column read `enforce\` dial registered…`, the date was unparseable,
+  # the fail-closed posture pulled a 2026-08-09 row into leg 3's scope, and a GFM-CORRECT row went
+  # red. retro_cell already exists in this family for exactly this class; the Closed read needed the
+  # same treatment (gfm_cell). Fail-closed is right — but only for rows that are genuinely unreadable.
+  d="$base/dispo-escaped-item"
+  _DISPO_ITEM=' registered the `X=observe\|enforce` dial'
+  _dispo_proj "$d" 2026-09-02 "$_DR"
+  _DISPO_ITEM=''
+  assert_ok "$d" "dispo/escaped-item-pipe: an escaped pipe BEFORE the Closed column must not shift the date -> PASS"
+
+  # D0 a PRE-epoch row with no Disposition -> PASS. The epoch boundary, live: without it the 228
+  # historical rows would demand 228 dispositions manufactured after the fact — the attestation
+  # theatre this gate family exists to prevent.
+  d="$base/dispo-preepoch"; _dispo_proj "$d" 2026-09-02 "$_DR"
+  assert_ok "$d" "dispo/pre-epoch: a pre-epoch row owes no Disposition -> PASS"
+
   # ===== BOARD-ROW-ARITY — a body row's column count must match its section header's ======
   # Fixtures live under $base so the ONE trap installed at the top of selftest() cleans them
   # (a second mktemp -d + trap here would REPLACE that trap and leak the whole $base tree —
@@ -2527,6 +2802,60 @@ EOF
     st_fail=1
   fi
 
+  # ===== T-RID — the ROW-ID GRAMMAR and the COUNTING seam (BOARD-ROW-IDENTIFIER) ==========
+  # row_id_ok and row_count live in backlog-lib.sh (sourced, never run, and therefore never
+  # mutated by non-vacuity.sh — see that file's own MUTATION COVERAGE disclosure). They are
+  # graded HERE, behaviourally, by the gate that used to own backtick_id/row_exists, because
+  # this is the selftest surface that already sources the library. Watched red against the
+  # mutants named in the design §6 before the code existed.
+  assert_rid_ok  "KW6-A2"           "rid/accept-alnum-dash: KW6-A2 is a well-formed row id"
+  assert_rid_ok  "X"                "rid/accept-single-upper: a one-character id is well-formed"
+  assert_rid_bad "kw6"              "rid/refuse-lowercase: kw6 is refused (the grammar is upper-case)"
+  assert_rid_bad "A/B"              "rid/refuse-slash: A/B is refused (it would escape a ref name)"
+  assert_rid_bad "-A"               "rid/refuse-leading-dash: -A is refused (option injection)"
+  assert_rid_bad ""                 "rid/refuse-empty: the empty token is refused"
+
+  # THE TWIN IS GATED (reviewer R3). `scripts/board-claim.sh::bc_row_ok` is a deliberate SECOND
+  # implementation of this grammar — that script cannot source a conformance/ library, because its
+  # own selftest drives it inside throwaway clones that carry a BACKLOG.md and nothing else — and
+  # the round-1 review's question was exactly right: a disclosure comment saying "nothing greps
+  # these two against each other" is a confession, not a control. This leg is the control. It
+  # extracts the `case` BODY of each function and compares them byte for byte, so a change to
+  # either arm reds here, in the gate that owns the grammar, on the same run that proves it.
+  # It compares BODIES, not whole functions: the names differ by design (one is namespaced to the
+  # script that must stay standalone), and pinning the names would make the leg fail for a
+  # difference that carries no meaning.
+  _rid_body() {  # <file> <function-name> -> the case arms, whitespace-normalised
+    awk -v fn="$2" '
+      $0 ~ "^" fn "\\(\\) \\{" { inf=1; next }
+      inf && /^\}/ { exit }
+      inf { gsub(/^[ \t]+|[ \t]+$/,""); if ($0 != "") print }
+    ' "$1"
+  }
+  _rid_lib=$(_rid_body "$(dirname "$0")/backlog-lib.sh" "row_id_ok")
+  _rid_bc=$(_rid_body "$(dirname "$0")/../scripts/board-claim.sh" "bc_row_ok")
+  if [ -z "$_rid_lib" ] || [ -z "$_rid_bc" ]; then
+    echo "selftest FAIL: rid/twin: could not extract one of the two row-id grammars (lib=$(printf '%s' "$_rid_lib" | wc -l) bc=$(printf '%s' "$_rid_bc" | wc -l)) — the leg cannot pass vacuously"; st_fail=1
+  elif [ "$_rid_lib" = "$_rid_bc" ]; then
+    echo "selftest PASS: rid/twin: backlog-lib.sh::row_id_ok and scripts/board-claim.sh::bc_row_ok are byte-identical"
+  else
+    echo "selftest FAIL: rid/twin: the two row-id grammars have DRIFTED — an id one accepts the other may refuse, and a claim that cannot be made for a row that resolves is the worst of both"; st_fail=1
+    echo "  backlog-lib.sh::row_id_ok:  <$(printf '%s' "$_rid_lib" | tr '\n' ';')>"
+    echo "  board-claim.sh::bc_row_ok:  <$(printf '%s' "$_rid_bc" | tr '\n' ';')>"
+  fi
+
+  # row_count over three fixture boards: absent (0), unique (1), duplicated (2).
+  d="$base/t_rid_boards"; mkdir -p "$d"
+  _good_board "$d/one.md"
+  sed 's/| Add login | ship auth |/| `ONE-ROW` — Add login | ship auth |/' "$d/one.md" > "$d/uniq.md"
+  sed 's/| Add login | agent | 2026-07-01 |/| `ONE-ROW` — Add login | agent | 2026-07-01 |/' "$d/uniq.md" > "$d/dup.md"
+  assert_rowcount "$d/uniq.md" "ONE-ROW" 1 "rid/count-one: an id in exactly one Item cell counts 1"
+  assert_rowcount "$d/dup.md"  "ONE-ROW" 2 "rid/count-two: the same id on two rows counts 2 (the AMBIGUOUS subject)"
+  assert_rowcount "$d/uniq.md" "NO-SUCH-ROW" 0 "rid/count-zero: an id on no row counts 0"
+  # THE LOAD-BEARING NEGATIVE for the whole slice's premise: a token that occurs in the board's
+  # TEXT but is not a row's Item-cell id counts 0. `a` is a substring of `Add login`.
+  assert_rowcount "$d/uniq.md" "a" 0 "rid/count-substring: a bare substring of the board counts 0 rows"
+
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-current --selftest: FAIL" >&2
     return 1
@@ -2539,6 +2868,34 @@ EOF
 # These live in the ORACLE region so the non-vacuity mutation harness (which mutates only
 # lines BEFORE the first ^selftest() marker) cannot neuter the oracle's own failure
 # accumulator (st_fail=1). The CHECK logic above the marker stays mutable, as it must.
+# assert_msg_rc <dir> <needle> <want-rc> <label> : check_dir must emit <needle> AND return exactly
+# <want-rc>. assert_msg above hardcodes rc 0, which cannot express the rc-3 NOT ENFORCED partition
+# — and asserting the sentence without the rc would pass on a gate that printed the red and
+# returned green.
+assert_msg_rc() {
+  _o=$(check_dir "$1" 2>&1) && _r=0 || _r=$?
+  if [ "${_r:-0}" = "$3" ] && printf '%s\n' "$_o" | grep -Fq "$2"; then
+    echo "selftest PASS: $4"
+  else
+    echo "selftest FAIL: $4 (rc=${_r:-?} want=$3, out=<$_o>)"; st_fail=1
+  fi
+}
+# assert_rid_ok <token> <label> : row_id_ok must accept the token.
+assert_rid_ok() {
+  if row_id_ok "$1"; then echo "selftest PASS: $2"
+  else echo "selftest FAIL: $2 (row_id_ok refused '$1')"; st_fail=1; fi
+}
+# assert_rid_bad <token> <label> : row_id_ok must refuse the token.
+assert_rid_bad() {
+  if row_id_ok "$1"; then echo "selftest FAIL: $2 (row_id_ok accepted '$1')"; st_fail=1
+  else echo "selftest PASS: $2"; fi
+}
+# assert_rowcount <board> <id> <want> <label> : row_count must print exactly <want>.
+assert_rowcount() {
+  _arc=$(row_count "$1" "$2")
+  if [ "$_arc" = "$3" ]; then echo "selftest PASS: $4"
+  else echo "selftest FAIL: $4 (row_count='$_arc' want='$3')"; st_fail=1; fi
+}
 # assert_msg <dir> <needle> <label> : check_dir must rc0 AND emit <needle>.
 assert_msg() {
   _o=$(check_dir "$1" 2>&1) && _r=0 || _r=$?
@@ -2588,6 +2945,50 @@ assert_fail() {
 # --- fixture writers --------------------------------------------------------------------
 # _claude_md <backend-value> <dest-CLAUDE.md> : write a CLAUDE.md declaring the backend.
 _claude_md() { printf '# CLAUDE\n\n- **Backlog backend** (§6): %s\n' "$1" > "$2"; }
+
+# _dispo_proj <dir> <closed> <retro> [<decisions-body>] : a project dir declaring an md backend
+# with a valid in-use board whose ONLY Done row is `| `THE-ROW` | <closed> | <retro> |`, and whose
+# Ready section carries `OTHER-ROW` so a Disposition can resolve to a real but DIFFERENT row. A
+# fourth argument writes <dir>/docs/governance/DECISIONS.md with that body; omitted, the file does
+# not exist (which is itself one of the graded routes). One writer for fifteen legs — the fixture
+# surface is budgeted, and fifteen inline boards would cost ~350 lines of it.
+_dispo_proj() {
+  mkdir -p "$1"; _claude_md "$_MD" "$1/CLAUDE.md"
+  {
+    echo '# B'
+    echo '## Ready'
+    echo
+    echo '| Item | Owner | Links | Success metric / hypothesis |'
+    echo '|------|-------|-------|-----------------------------|'
+    echo '| `OTHER-ROW` | a | #1 | login success rate 92% -> 98% |'
+    echo
+    echo '## In Progress'
+    echo
+    echo '| Item | Owner | Started | Links |'
+    echo '|------|-------|---------|-------|'
+    echo '| | | | |'
+    echo
+    echo '## In Review'
+    echo
+    echo '| Item | Reviewer | PR |'
+    echo '|------|----------|----|'
+    echo '| | | |'
+    echo
+    echo '## Done'
+    echo
+    echo '| Item | Closed | Retro/outcome |'
+    echo '|------|--------|---------------|'
+    # _DISPO_ITEM (optional, caller-set) appends text to the Done row's ITEM cell — how the live
+    # `B8` shape (an escaped pipe LEFT of the Closed column) is reproduced. Passed through printf,
+    # never sed: a sed REPLACEMENT eats the backslash in `\|`, which silently destroys the very
+    # byte the fixture is about (watched happen while writing this leg).
+    printf '| `THE-ROW`%s | %s | %s |\n' "${_DISPO_ITEM:-}" "$2" "$3"
+  } > "$1/BACKLOG.md"
+  if [ $# -ge 4 ]; then
+    mkdir -p "$1/docs/governance"
+    printf '%s\n' "$4" > "$1/docs/governance/DECISIONS.md"
+  fi
+}
 
 # _good_board <dest-BACKLOG.md> : a valid, in-use board (real In Progress+In Review rows,
 # one In Progress spacer row). Passes every T2.1 check.

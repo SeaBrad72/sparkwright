@@ -19,13 +19,14 @@ Enforces the §14 contract at the repo boundary: `main` protected, green CI to m
 - Optional, continuous detection (fork-neutral): a cron + `workflow_dispatch`-only workflow running `sh conformance/branch-protection.sh --require` under a fine-grained `Administration: read` PAT secret reds when a declared context is unbound. **No `pull_request` trigger** — fork PRs get no secret and would red forever, and a PR head could print the token. Detection, not prevention; rulesets are the preventing shape.
 - At least 1 approving review from someone other than the author.
 - Stale approvals dismissed on new commits.
+- Approval of the most recent push must come from someone other than the person who pushed it (`require_last_push_approval`).
 - Branch up to date before merge.
 - (Org/plan-dependent) CODEOWNERS review required; self-merge disallowed.
 
 ## Apply it
 `sh scripts/branch-protection-apply.sh` reads `REQUIRED-CHECKS.md` and shows the diff by default (no mutation). Run it **after** the CI workflow has run at least once (so its check names are registered):
 - **`--apply`** POSTs only the missing contexts via GitHub's ADDITIVE `.../protection/required_status_checks/contexts` endpoint — every other protection setting is left untouched.
-- **`--replace`** performs the one-time full-object PUT that ESTABLISHES protection on a brand-new repo (reviews + `enforce_admins` + the declared contexts together) — it OVERWRITES every existing setting, resetting the non-context settings to the solo-owner defaults `enforce_admins:false` · `required_approving_review_count:1` · `require_code_owner_reviews:false` (see the note below), so it sits behind its own typed, tty-gated confirmation (piped input, e.g. `yes REPLACE |`, can never drive it). Use it once at setup; prefer `--apply` afterwards.
+- **`--replace`** performs the one-time full-object PUT that ESTABLISHES protection on a brand-new repo (reviews + `enforce_admins` + the declared contexts together) — it OVERWRITES every existing setting, resetting the non-context settings to the solo-owner defaults `enforce_admins:false` · `required_approving_review_count:1` · `dismiss_stale_reviews:true` · `require_last_push_approval:true` · `require_code_owner_reviews:false` (see the note below), so it sits behind its own typed, tty-gated confirmation (piped input, e.g. `yes REPLACE |`, can never drive it). Use it once at setup; prefer `--apply` afterwards.
 
 A single manual additive call (no script) looks like:
 ```bash

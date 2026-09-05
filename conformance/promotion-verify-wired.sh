@@ -85,6 +85,12 @@ build_fixture() {
   )
 }
 
+# ⚠️ EVERY `record` BELOW THAT IS NOT A LEDGER-SYNC LEG PASSES `--no-push`, and that is not
+# decoration. Since RECORD-FETCHES-AND-PUSHES-LEDGER, `record` is a transaction that fetches the
+# ledger from `origin` first and REFUSES when it cannot read it — and this $R fixture is a bare
+# `git init` with no remote at all, which is precisely the unreachable case. `--no-push` is the
+# labelled offline escape those legs are entitled to: they are testing the note's CONTENT (shape,
+# sanitising, projections), not its publication, which the ledger-sync legs at the end own.
 selftest() {
   st=0
   D="$(mktemp -d)"; R="$D/repo"
@@ -138,7 +144,7 @@ selftest() {
   #     OUTSIDE the tree. Load-bearing: a record that writes into the tree dirties the work-tree
   #     and/or changes the approved tree, and this block FAILs. ---
   APP_TREE_BEFORE="$( ( cd "$R" && git rev-parse "$APP^{tree}" ) )"
-  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+  if ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate release-candidate --rung "Release candidate" --class Ordinary \
         --scope "PR #999" --token "GO: merge #999 at $APP" --basis "reviewer APPROVE" >/dev/null 2>&1 ); then
     _rec=0; else _rec=$?; fi
@@ -160,7 +166,7 @@ selftest() {
   fi
   assert 0 "note round-trip: check resolves latest approved-sha (APP) from the note" --ref "$SQ"
   # a LATER record binding the divergent SIDE -> resolve must now pick SIDE and FAIL.
-  ( cd "$R" && sh "$VERIFY" record --approved-sha "$SIDE" --approved-by "solo maintainer" \
+  ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$SIDE" --approved-by "solo maintainer" \
       --gate release-candidate --rung "Release candidate" --class Ordinary \
       --scope "PR #1000" --token "GO: merge #1000 at $SIDE" >/dev/null 2>&1 ) \
     || { echo "FAIL: second record (SIDE) failed"; st=1; }
@@ -171,7 +177,7 @@ selftest() {
   #     committer, the label MUST be [self-asserted] — never [signed: gpg]. (A smuggled bracket claim
   #     is now rejected outright at input — see the injection negatives below — so here we feed a
   #     CLEAN id and assert the derivation itself cannot overclaim.) ---
-  ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "attacker" \
+  ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "attacker" \
       --gate release-candidate --rung "Release candidate" --class Ordinary \
       --scope "PR #1001" --token "GO clean" >/dev/null 2>&1 ) \
     || { echo "FAIL: label-can't-lie record failed"; st=1; }
@@ -193,7 +199,7 @@ selftest() {
   # with `grep -F -x`, so a mangled or normalised value would silently satisfy nothing), and the two
   # shapes the gate could never match are refused AT THE FRONT DOOR rather than recorded dead.
   # =====================================================================================
-  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+  if ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class control-plane \
         --scope "branch/feat-b2-go" --token "GO: design at $APP" \
         --basis "docs/architecture/x-design.md" >/dev/null 2>&1 ); then _brc=0; else _brc=$?; fi
@@ -204,7 +210,7 @@ selftest() {
   else
     echo "FAIL: branch scoping: record rc=$_brc, exact 'scope: branch/feat-b2-go' lines in note=$_bscope"; st=1
   fi
-  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+  if ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class control-plane --scope "branch/" \
         --token "GO" >/dev/null 2>&1 ); then _b2rc=0; else _b2rc=$?; fi
   if [ "$_b2rc" = 2 ]; then
@@ -212,7 +218,7 @@ selftest() {
   else
     echo "FAIL: branch scoping NEGATIVE: 'branch/' should be rc 2, got rc=$_b2rc"; st=1
   fi
-  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+  if ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class control-plane --scope "branch/feat+plus" \
         --token "GO" >/dev/null 2>&1 ); then _b3rc=0; else _b3rc=$?; fi
   if [ "$_b3rc" = 2 ]; then
@@ -223,7 +229,7 @@ selftest() {
   # REGRESSION: the NEW rule applies to the `branch/` shape ONLY. Existing scopes keep their existing
   # hygiene — this repo's own ledger holds scopes with a space ("PR #999"), and retrofitting the
   # charset onto every scope would refuse records the gates already accept.
-  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$APP" --approved-by "solo maintainer" \
+  if ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$APP" --approved-by "solo maintainer" \
         --gate design --rung "Design" --class Ordinary --scope "PR #1005" \
         --token "GO" >/dev/null 2>&1 ); then _b4rc=0; else _b4rc=$?; fi
   if [ "$_b4rc" = 0 ]; then
@@ -265,7 +271,7 @@ selftest() {
     echo "FAIL: fixture is vacuous — the squashed commit carries a parseable Kit-Row trailer"; st=1
   fi
 
-  ( cd "$R" && sh "$VERIFY" record --approved-sha "$ROWC" --approved-by "solo maintainer" \
+  ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" \
       --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1010" \
       --token "GO: merge #1010 at $ROWC" >/dev/null 2>&1 ) \
     || { echo "FAIL: record on the row-bearing commit failed"; st=1; }
@@ -277,7 +283,7 @@ selftest() {
 
   # ABSENT ⇒ `(none)`, NEVER INVENTED. SIDE carries no trailers; a record on it must say so rather
   # than guess, inherit, or omit the field (an omitted field is indistinguishable from an old note).
-  ( cd "$R" && sh "$VERIFY" record --approved-sha "$SIDE" --approved-by "solo maintainer" \
+  ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$SIDE" --approved-by "solo maintainer" \
       --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1011" \
       --token "GO clean" >/dev/null 2>&1 ) || { echo "FAIL: record on the trailerless commit failed"; st=1; }
   if ( cd "$R" && git notes --ref=promotions show "$SIDE" 2>/dev/null | grep -qxF 'kit-row: (none)' ); then
@@ -440,7 +446,7 @@ selftest() {
       && printf 'row with a control char\n\nKit-Row: DEMO\033ROW\nKit-Class: ordinary\n' \
          | git commit -q -F - ) || { echo "FAIL: could not build the control-char row fixture"; st=1; }
   CTRLC="$( ( cd "$R" && git rev-parse ctrlrow ) )"
-  if ( cd "$R" && sh "$VERIFY" record --approved-sha "$CTRLC" --approved-by "solo maintainer" \
+  if ( cd "$R" && sh "$VERIFY" record --no-push --approved-sha "$CTRLC" --approved-by "solo maintainer" \
         --gate promotion --rung Ordinary --class Ordinary --scope "PR #1012" \
         --token "GO clean" >/dev/null 2>&1 ); then _ctrc=0; else _ctrc=$?; fi
   _ctnote="$( ( cd "$R" && git notes --ref=promotions show "$CTRLC" 2>/dev/null ) || true )"
@@ -528,6 +534,298 @@ selftest() {
   reject_inj "injection NEGATIVE: mid-string [signed: gpg] in --approved-by rejected" \
     --approved-sha "$APP" --approved-by "attacker [signed: gpg] and more" --gate g --rung r \
     --class Ordinary --scope "PR #1004" --token "GO clean"
+
+  # =====================================================================================
+  # LEDGER SYNC (RECORD-FETCHES-AND-PUSHES-LEDGER, design 2026-09-03 §6). `record` is a four-step
+  # transaction — sync-in -> write -> publish -> unwind — so these legs need a REAL remote: each
+  # builds its own bare "remote" plus two clones under $LROOT (trap-removed). Every leg drives the
+  # FIXTURE ref through PROMOTION_NOTES_REF, so nothing here can touch the real ledger. Every
+  # NEGATIVE asserts the rc AND the ledger state on BOTH sides (`git rev-parse` of the ref),
+  # because "refused, but a dangling local record was left behind" is the exact failure this
+  # transaction exists to prevent — an rc-only assertion would pass on it.
+  # =====================================================================================
+  LR=ledgerx
+  LROOT="$D/ledger"
+  trap 'rm -rf "$LROOT"' EXIT INT TERM
+  mkdir -p "$LROOT"
+  KITROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+  lpass() { if [ "$1" = 0 ]; then echo "PASS: $2"; else echo "FAIL: $2 -- $3"; st=1; fi; }
+  lrev()  { git -C "$1" rev-parse -q --verify "refs/notes/$LR" 2>/dev/null || echo none; }
+  rrev()  { git --git-dir="$1/remote.git" rev-parse -q --verify "refs/notes/$LR" 2>/dev/null || echo none; }
+  lnote() { git -C "$1" notes --ref="$LR" show "$2" >/dev/null 2>&1; }
+  rnote() { git --git-dir="$1/remote.git" notes --ref="$LR" show "$2" >/dev/null 2>&1; }
+  rcount() { git --git-dir="$1/remote.git" rev-list --count "refs/notes/$LR" 2>/dev/null || echo 0; }
+
+  # mkledger <name> -> $LF (fixture dir: remote.git + clones A and B). B carries its own unpushed
+  # commit so the two sides record on DIFFERENT approved shas and the chain order is observable.
+  mkledger() {
+    LF="$LROOT/$1"
+    mkdir -p "$LF"
+    git init -q --bare "$LF/remote.git"
+    ( set -e
+      cd "$LF"
+      git clone -q remote.git A 2>/dev/null
+      cd A
+      git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      printf 'a\n' > f.txt; git add f.txt; git commit -qm base
+      git push -q origin HEAD:refs/heads/main
+      cd "$LF"
+      git clone -q remote.git B 2>/dev/null
+      cd B
+      git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      git commit -q --allow-empty -m b-side )
+    ASHA="$(git -C "$LF/A" rev-parse HEAD)"
+    BSHA="$(git -C "$LF/B" rev-parse HEAD)"
+  }
+  # lrec <clone-dir> <approved-sha> <scope> [extra record args...] -> sets LRC and LOUT.
+  lrec() {
+    _cd="$1"; _cs="$2"; _cp="$3"; shift 3
+    if LOUT="$( cd "$_cd" && PROMOTION_NOTES_REF="$LR" sh "$VERIFY" record \
+          --approved-sha "$_cs" --approved-by "solo maintainer" --gate design --rung Design \
+          --class control-plane --scope "$_cp" --token "GO: $_cp" "$@" 2>&1 )"; then
+      LRC=0; else LRC=$?; fi
+  }
+  # llog <clone-dir> [args...] -> sets LRC and LOUT
+  llog() {
+    _cd="$1"; shift
+    if LOUT="$( cd "$_cd" && PROMOTION_NOTES_REF="$LR" sh "$VERIFY" log "$@" 2>&1 )"; then
+      LRC=0; else LRC=$?; fi
+  }
+  # lracer <once|always> — writes A's `reference-transaction` hook: clone B records and PUBLISHES
+  # (a real `record`, so it is the real race) the moment A's own ledger ref moves, i.e. in the
+  # window between A's sync-in and A's push. THE HOOK CHOICE IS LOAD-BEARING (measured): a pre-push
+  # hook fires AFTER git has already listed the remote's refs, so a race staged there produces the
+  # server-side `cannot lock ref` variant instead of the non-fast-forward this design retries on.
+  # reference-transaction fires before that listing, which is the window the row describes.
+  lracer() {
+    mkdir -p "$LF/hooks"
+    { printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\ngrep -q "refs/notes/%s" || exit 0\n' "$LR"
+      if [ "$1" = once ]; then printf '[ -e "%s/.raced" ] && exit 0\n: > "%s/.raced"\n' "$LF" "$LF"; fi
+      printf 'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n'
+      printf '( cd "%s/B" && PROMOTION_NOTES_REF=%s sh "%s" record --approved-sha %s \\\n' \
+             "$LF" "$LR" "$VERIFY" "$BSHA"
+      printf '  --approved-by racer --gate design --rung Design --class control-plane \\\n'
+      printf '  --scope branch/racer-$$ --token "GO: racer" ) >/dev/null 2>&1\nexit 0\n'
+    } > "$LF/hooks/reference-transaction"
+    chmod +x "$LF/hooks/reference-transaction"
+    git -C "$LF/A" config core.hooksPath "$LF/hooks"
+  }
+
+  # --- (+) FIRST-EVER RECORD: the remote has NO notes ref. The `ls-remote --exit-code` probe (rc 2
+  #     = absent) is what distinguishes this from "unreachable" — both FETCH rc 128 — so this leg
+  #     and the unreachable leg below are the two halves of that split. Publish creates the ref. ---
+  mkledger first
+  lrec "$LF/A" "$ASHA" "branch/first"
+  if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q 'published' && rnote "$LF" "$ASHA" \
+     && [ "$(lrev "$LF/A")" = "$(rrev "$LF")" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (+): first-ever record — absent remote ref, record creates and publishes it" "rc=$LRC out=$LOUT"
+
+  # --- (+) FRESH RECORD onto a ledger that already exists: clone B has NO local notes ref, so the
+  #     record can only land on top of A's if sync-in actually fetched. Chain must be 2, not 1. ---
+  lrec "$LF/B" "$BSHA" "branch/second"
+  if [ "$LRC" = 0 ] && rnote "$LF" "$BSHA" && rnote "$LF" "$ASHA" && [ "$(rcount "$LF")" = 2 ] \
+     && [ "$(lrev "$LF/B")" = "$(rrev "$LF")" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (+): second clone fetches the remote chain and appends (chain=2, both records survive)" "rc=$LRC out=$LOUT"
+
+  # --- (−) DIVERGED: A holds an unpublished record while the remote moved on. The non-forced fetch
+  #     cannot fast-forward, so record REFUSES rc 2 and names the remedy — and neither side moves.
+  #     (A forced `+` refspec here would silently DISCARD the local record: approach 1, struck.) ---
+  _rpre="$(rrev "$LF")"
+  lrec "$LF/A" "$ASHA" "branch/local-only" --no-push
+  _adiv="$(lrev "$LF/A")"
+  lrec "$LF/A" "$ASHA" "branch/blocked"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'diverged' \
+     && printf '%s' "$LOUT" | grep -q -- '--unpushed' \
+     && [ "$(lrev "$LF/A")" = "$_adiv" ] && [ "$(rrev "$LF")" = "$_rpre" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): local diverged -> rc 2 naming log --unpushed, BOTH refs untouched" "rc=$LRC out=$LOUT"
+
+  # --- (+) `log --unpushed` is the remedy the refusal names, so it must actually list the
+  #     unpublished record and only that one. ---
+  llog "$LF/A" --unpushed
+  if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q "$ASHA" \
+     && printf '%s' "$LOUT" | grep -qi 'unpublished' \
+     && ! printf '%s' "$LOUT" | grep -q "$BSHA"; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (+): log --unpushed lists the unpublished record and not the published one" "rc=$LRC out=$LOUT"
+
+  # --- (+) `--no-push`: the LABELLED escape (argument only, never env, never the default). Local
+  #     note written, OK line says UNPUBLISHED, remote never touched. ---
+  mkledger nopush
+  lrec "$LF/A" "$ASHA" "branch/np" --no-push
+  if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q 'UNPUBLISHED' && lnote "$LF/A" "$ASHA" \
+     && [ "$(rrev "$LF")" = none ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (+): --no-push records locally, says UNPUBLISHED, leaves the remote alone" "rc=$LRC out=$LOUT"
+
+  # --- (−) UNREACHABLE remote (the other half of the rc-128 split): refuse rc 2 naming the cause,
+  #     and write NOTHING — an offline record is the race this row exists to end. ---
+  _npre="$(lrev "$LF/A")"
+  git -C "$LF/A" remote set-url origin "$LF/does-not-exist.git"
+  git -C "$LF/A" commit -q --allow-empty -m a2
+  _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+  lrec "$LF/A" "$_asha2" "branch/offline"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -qi 'reach' && ! lnote "$LF/A" "$_asha2" \
+     && [ "$(lrev "$LF/A")" = "$_npre" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): unreachable remote -> rc 2 naming the cause, NO local note written" "rc=$LRC out=$LOUT"
+
+  # --- (−) `log --unpushed` FAILS CLOSED when the remote is unreachable: UNKNOWN + rc 2, never the
+  #     dangerous "0 unpushed" that would read as "everything is published". ---
+  llog "$LF/A" --unpushed
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'UNKNOWN'; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): log --unpushed with an unreachable remote -> UNKNOWN, rc 2, never 0" "rc=$LRC out=$LOUT"
+
+  # --- (−) SYMREF: a repointed ledger ref is refused BEFORE anything is written (guard bypass #8
+  #     becomes a loud front-door refusal; fetch and plain update-ref write THROUGH a symref). ---
+  mkledger symref
+  git -C "$LF/A" update-ref refs/notes/decoy "$ASHA"
+  git -C "$LF/A" symbolic-ref "refs/notes/$LR" refs/notes/decoy
+  lrec "$LF/A" "$ASHA" "branch/sym"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'symbolic' \
+     && [ "$(git -C "$LF/A" rev-parse refs/notes/decoy)" = "$ASHA" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): symbolic ledger ref -> rc 2 before any write, decoy target untouched" "rc=$LRC out=$LOUT"
+
+  # --- (−) THE RACE, retried once: clone B records and publishes between A's fetch and A's push
+  #     (a real `record` fired from A's own pre-push hook — the exact window). A must unwind, sync
+  #     in again, re-write the SAME body and publish: chain = seed, racer, A. ---
+  mkledger race
+  lrec "$LF/A" "$ASHA" "branch/seed"
+  git -C "$LF/A" commit -q --allow-empty -m a2
+  _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+  lracer once
+  lrec "$LF/A" "$_asha2" "branch/retry"
+  if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q 'published' && rnote "$LF" "$_asha2" \
+     && rnote "$LF" "$BSHA" && [ "$(rcount "$LF")" = 3 ] \
+     && [ "$(lrev "$LF/A")" = "$(rrev "$LF")" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): remote moved mid-record -> unwind, re-sync, retry ONCE, published (chain=3)" "rc=$LRC out=$LOUT"
+
+  # --- (−) THE HOOK-REJECTION RACE, AS MEASURED. The design expected this repo's own pre-push hook
+  #     to be the FIRST refuser of a non-ff ledger push. It is not, and the correction is pinned
+  #     here rather than left as prose: git's client-side fast-forward check rejects a NON-FORCED
+  #     non-ff push BEFORE any pre-push hook runs (measured: the hook prints nothing), so the
+  #     rejection `record` sees is always the plain `(non-fast-forward)` one. The hook's own
+  #     `13: non-fast-forward` refusal is reachable only on a FORCED push, which `record` never
+  #     issues. What this leg therefore proves is the property that actually matters: with the kit
+  #     hook live in the pushing repo, the raced record still unwinds, re-syncs and publishes — the
+  #     guard does not deadlock the ledger's own publish (design §4.3, vet L1) — plus both halves of
+  #     the measurement above, so a future git or guard change that reverses either goes RED. ---
+  mkledger hookrace
+  if [ -f "$KITROOT/hooks/pre-push" ] && [ -f "$KITROOT/.claude/hooks/guard-core.sh" ]; then
+    lrec "$LF/A" "$ASHA" "branch/seed"
+    git -C "$LF/A" commit -q --allow-empty -m a2
+    _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+    lracer once
+    mkdir -p "$LF/A/.claude/hooks"
+    cp "$KITROOT/hooks/pre-push" "$LF/hooks/pre-push"
+    cp "$KITROOT/.claude/hooks/guard-core.sh" "$LF/A/.claude/hooks/guard-core.sh"
+    lrec "$LF/A" "$_asha2" "branch/hookretry"
+    # NON-VACUITY PROBES: the hook must be LIVE in this clone (else the green above only re-proves
+    # the remote-rejection leg), and the two rejection routes must stay where they were measured.
+    _hplain="$( cd "$LF/A" && git push origin \
+        "$(git rev-parse "refs/notes/$LR^"):refs/notes/$LR" 2>&1 || true )"
+    _hforce="$( cd "$LF/A" && git push -f origin \
+        "$(git rev-parse "refs/notes/$LR^"):refs/notes/$LR" 2>&1 || true )"
+    if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q 'published' && rnote "$LF" "$_asha2" \
+       && [ "$(rcount "$LF")" = 3 ] \
+       && printf '%s' "$_hplain" | grep -q 'non-fast-forward' \
+       && ! printf '%s' "$_hplain" | grep -q 'kit guard' \
+       && printf '%s' "$_hforce" | grep -q '13: non-fast-forward'; then _lc=0; else _lc=1; fi
+    lpass "$_lc" "ledger sync (−): with the kit pre-push hook live the raced record still publishes; the hook's non-ff refusal is FORCED-push-only (git rejects a plain non-ff first)" "rc=$LRC out=$LOUT plain=$_hplain"
+  else
+    echo "FAIL: ledger sync: kit hooks/pre-push + guard-core.sh not found under $KITROOT (leg cannot run)"; st=1
+  fi
+
+  # --- (−) THE DOUBLE RACE: the remote moves on EVERY attempt. After the second rejection the
+  #     record is unwound and REFUSED loudly — never retained locally, never published. ---
+  mkledger race2
+  lrec "$LF/A" "$ASHA" "branch/seed"
+  git -C "$LF/A" commit -q --allow-empty -m a2
+  _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+  lracer always
+  lrec "$LF/A" "$_asha2" "branch/doomed"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'twice' && ! lnote "$LF/A" "$_asha2" \
+     && ! rnote "$LF" "$_asha2"; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): remote moved TWICE -> rc 2, no dangling local note, nothing published" "rc=$LRC out=$LOUT"
+
+  # --- (−) A NON-NON-FF push failure (here: the remote declines the receive — the auth/protected-ref
+  #     shape) must NOT retry: unwind once, refuse rc 2, and relay git's own stderr. ---
+  mkledger authfail
+  lrec "$LF/A" "$ASHA" "branch/seed"
+  _rpre="$(lrev "$LF/A")"
+  printf '#!/bin/sh\necho "FIXTURE-DENIED: ledger is read-only" >&2\nexit 1\n' > "$LF/remote.git/hooks/pre-receive"
+  chmod +x "$LF/remote.git/hooks/pre-receive"
+  git -C "$LF/A" commit -q --allow-empty -m a2
+  _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+  lrec "$LF/A" "$_asha2" "branch/denied"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'FIXTURE-DENIED' \
+     && ! printf '%s' "$LOUT" | grep -q 'twice' && ! lnote "$LF/A" "$_asha2" \
+     && [ "$(lrev "$LF/A")" = "$_rpre" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): non-ff-UNRELATED push failure -> unwind, rc 2, git's stderr relayed, no retry" "rc=$LRC out=$LOUT"
+
+  # --- (−) CAS REFUSAL: something moved the local ledger between the write and the unwind. The
+  #     old-value operand makes update-ref a compare-and-swap, so the unwind REFUSES rather than
+  #     clobbering the interloper — and `record` says so instead of claiming a clean rollback. ---
+  mkledger casfail
+  lrec "$LF/A" "$ASHA" "branch/seed"
+  git -C "$LF/A" commit -q --allow-empty -m a2
+  _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+  mkdir -p "$LF/hooks"
+  { printf '#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n'
+    printf 'cd "%s/A" && git notes --ref=%s add -f -m sidecar %s >/dev/null 2>&1\nexit 1\n' \
+           "$LF" "$LR" "$ASHA"
+  } > "$LF/hooks/pre-push"
+  chmod +x "$LF/hooks/pre-push"
+  git -C "$LF/A" config core.hooksPath "$LF/hooks"
+  lrec "$LF/A" "$_asha2" "branch/cas"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'NOT unwound' && lnote "$LF/A" "$_asha2"; then
+    _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): the ledger moved under the record -> CAS refuses, rc 2 says NOT unwound" "rc=$LRC out=$LOUT"
+
+  # --- (−) THE SCRATCH REF IS NOT TRUSTED EITHER (security review SEC-M1). `log --unpushed` answers
+  #     by comparing the local ledger against a scratch ref it just fetched. If that ref is deleted
+  #     or repointed between the fetch and the walk, `git rev-list` FAILS — and a `for x in $(…)`
+  #     loop would swallow that failure and render it as a confident, empty "nothing unpublished",
+  #     which is the one answer this mode must never produce by accident. Here a reference-transaction
+  #     hook deletes the scratch the moment it appears, and the mode must say UNKNOWN, rc 2. ---
+  mkledger scratch
+  lrec "$LF/A" "$ASHA" "branch/seed"
+  git -C "$LF/A" commit -q --allow-empty -m a2
+  _asha2="$(git -C "$LF/A" rev-parse HEAD)"
+  lrec "$LF/A" "$_asha2" "branch/np" --no-push
+  mkdir -p "$LF/hooks"
+  { printf '#!/bin/sh\n[ "$1" = committed ] || exit 0\n[ -e "%s/.dropped" ] && exit 0\n' "$LF"
+    printf 'while read -r _o _n _r; do case "$_r" in refs/kit/notes-remote-*)\n'
+    printf '  : > "%s/.dropped"; unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX\n' "$LF"
+    printf '  cd "%s/A" && git update-ref -d "$_r" >/dev/null 2>&1 ;; esac; done\nexit 0\n' "$LF"
+  } > "$LF/hooks/reference-transaction"
+  chmod +x "$LF/hooks/reference-transaction"
+  git -C "$LF/A" config core.hooksPath "$LF/hooks"
+  llog "$LF/A" --unpushed
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'UNKNOWN' \
+     && ! printf '%s' "$LOUT" | grep -q "## $_asha2"; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): the scratch ref vanishing mid-walk -> UNKNOWN, rc 2, never an empty '0 unpushed'" "rc=$LRC out=$LOUT"
+
+  # --- (−) THE LEDGER REF NAME IS INPUT (security review SEC-M2). `PROMOTION_NOTES_REF` was a local
+  #     `git notes --ref` selector; since this slice it also composes a FETCH and a PUSH refspec, so
+  #     it is validated at the front door. The leg asserts rc 2 AND that the remote's ref list is
+  #     byte-identical afterwards: refusing loudly but having already fetched or pushed something
+  #     first would satisfy an rc-only assertion. ---
+  _rrefs="$(git --git-dir="$LF/remote.git" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null || echo none)"
+  if LOUT="$( cd "$LF/A" && PROMOTION_NOTES_REF='*' sh "$VERIFY" record --approved-sha "$ASHA" \
+        --approved-by x --gate design --rung Design --class control-plane --scope branch/x \
+        --token GO 2>&1 )"; then LRC=0; else LRC=$?; fi
+  _rrefs2="$(git --git-dir="$LF/remote.git" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null || echo none)"
+  if [ "$LRC" = 2 ] && printf '%s' "$LOUT" | grep -q 'invalid PROMOTION_NOTES_REF' \
+     && [ "$_rrefs" = "$_rrefs2" ]; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (−): a ref name outside [A-Za-z0-9._-] -> rc 2 before any fetch or push (remote ref list unchanged)" "rc=$LRC out=$LOUT"
+
+  # --- (+) A REACHABLE REMOTE WITH NO LEDGER AT ALL is not UNKNOWN — it is the strongest possible
+  #     "unpublished": everything local is. Reported as such rather than as an alarm. ---
+  mkledger nolist
+  lrec "$LF/A" "$ASHA" "branch/np" --no-push
+  llog "$LF/A" --unpushed
+  if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q 'every local record' \
+     && printf '%s' "$LOUT" | grep -q "$ASHA" \
+     && ! printf '%s' "$LOUT" | grep -q 'UNKNOWN'; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "ledger sync (+): reachable remote with no ledger ref -> every local record listed as unpublished, rc 0" "rc=$LRC out=$LOUT"
 
   if [ "$st" = 0 ]; then
     echo "OK: promotion-verify-wired selftest (fixture left in $D)"

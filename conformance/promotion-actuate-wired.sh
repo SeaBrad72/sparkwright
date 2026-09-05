@@ -297,6 +297,65 @@ selftest() {
   fi
 
   # ---------------------------------------------------------------------------------------
+  # BOARD-CLAIM RELEASE (BOARD-CLAIM-MECHANISM design §3.5). The merge is the end of the slice, so
+  # actuate must RELEASE the merged row's claim ref — a claim nobody releases blocks the next session
+  # from taking the row. Three properties, and the third is the load-bearing one:
+  #   (1) it is called, with the note's OWN kit-row and with --stale (the merger is routinely not the
+  #       claimant — builder != ratifier — so without --stale it would refuse every real merge);
+  #   (2) a note with no kit-row releases NOTHING and says so (never an invented row);
+  #   (3) a FAILING release is a WARN, not a merge failure. The merge already happened; no rc can
+  #       un-merge it, and reporting a verified promotion as failed would be a lie in the log.
+  # The stub is resolved the way the real one is — beside the gate — so the fixture copies the gate
+  # into its own dir and puts board-claim.sh next to it. Same shape as the `gh` PATH shim below.
+  _mk_release_fixture() {  # <dir> <stub-exit>
+    cp "$VERIFY" "$1/promotion-verify.sh"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/.released"\necho "release: stub"\nexit %s\n' "$1" "$2" > "$1/board-claim.sh"
+    chmod +x "$1/board-claim.sh"
+  }
+  D="$(mkrepo)" || { fail "fixture build (claim-release)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 0
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && [ -f "$D/.released" ] \
+     && grep -q 'release ROW-X --stale' "$D/.released" \
+     && printf '%s' "$OUT" | grep -q "board claim on 'ROW-X' released"; then
+    pass "CLAIM-RELEASE: actuate releases the merged row's claim as 'release ROW-X --stale' and says so"
+  else
+    fail "CLAIM-RELEASE: rc=$RC released=[$(cat "$D/.released" 2>/dev/null)] OUT=[$OUT]"
+  fi
+
+  D="$(mkrepo)" || { fail "fixture build (claim-release/no-row)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _mk_release_fixture "$D" 0
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && [ ! -f "$D/.released" ] \
+     && printf '%s' "$OUT" | grep -q 'no kit-row on the GO note'; then
+    pass "CLAIM-RELEASE-NOROW: a note with no kit-row releases NOTHING and says so (no row invented)"
+  else
+    fail "CLAIM-RELEASE-NOROW: rc=$RC released=[$(cat "$D/.released" 2>/dev/null)] OUT=[$OUT]"
+  fi
+
+  D="$(mkrepo)" || { fail "fixture build (claim-release/warn)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 1
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] \
+     && printf '%s' "$OUT" | grep -q 'WARN — could not release the board claim' \
+     && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
+    pass "CLAIM-RELEASE-WARN: a FAILING release is a WARN — the verified merge still reports rc 0"
+  else
+    fail "CLAIM-RELEASE-WARN: rc=$RC OUT=[$OUT]"
+  fi
+
+  # ---------------------------------------------------------------------------------------
   # GUARD fixtures: the --admin bypass stays DENIED; the gate is immutable-but-runnable; normal merge
   # allowed. Control-plane path strings live in a DATA FILE (never on a command line) so the real
   # PreToolUse guard cannot block us. Source the guard in a subshell WITHOUT set -e (its functions
@@ -706,7 +765,7 @@ AWK
   for _lc in ordinary Sensitive CONTROL-PLANE; do
     DLC="$(mkrepo)" || { fail "REC-CLASS-OK: fixture build"; return 1; }
     XLC="$(cat "$DLC/.X")"
-    if ( cd "$DLC" && sh "$VERIFY" record --approved-sha "$XLC" --approved-by "Reviewer B" \
+    if ( cd "$DLC" && sh "$VERIFY" record --no-push --approved-sha "$XLC" --approved-by "Reviewer B" \
            --gate release-candidate --rung "Release candidate" --class "$_lc" \
            --scope "branch/x" --token "GO" >/dev/null 2>&1 ); then
       pass "REC-CLASS-OK: '$_lc' accepted (case-insensitive vocabulary, not a refuse-all)"
@@ -813,7 +872,10 @@ _mknogh() {
 _run_record() {
   _rd="$1"; _rg="$2"; _rs="$3"; _rb="$4"; _rx="$5"; _rabs="${6:-}"
   if [ -n "$_rabs" ]; then _rp="$_rg"; else _rp="${_rg:+$_rg:}$PATH"; fi
-  if OUT="$( cd "$_rd" && PATH="$_rp" sh "$VERIFY" record \
+  # --no-push: since RECORD-FETCHES-AND-PUSHES-LEDGER, `record` fetches the ledger from `origin`
+  # first and refuses when it cannot read it. These fixtures are remote-less `git init` repos and
+  # they test the ASSURANCE LABEL, not publication, so they take the labelled offline escape.
+  if OUT="$( cd "$_rd" && PATH="$_rp" sh "$VERIFY" record --no-push \
                --approved-sha "$_rx" --approved-by "$_rb" --gate release-candidate \
                --rung "Release candidate" --class Ordinary --scope "$_rs" \
                --token "GO: merge $_rs" 2>&1 )"; then RC=0; else RC=$?; fi

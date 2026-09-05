@@ -6,11 +6,13 @@
 
 1. **Derive the change class.** Put the changed paths in a file, one per line, and run `sh conformance/promotion-readiness.sh --class --changed <listing>`. Pass the listing file, never a path — a path argument gets its CONTENTS classified. `conformance/agent-boundary.sh --state` is not a classifier; without `--changed` it answers `NONE`. Never self-assert the class.
 2. **Read the governing skill; name it in act 4 if the class asks** — `skills/<name>/SKILL.md`. Design before code, evidence before "done"; search `docs/governance/DECISIONS.md` for a ruling on this surface.
-3. **Claim the row** this work satisfies on the board this project declared (backends: `docs/work-tracking/adapters.md`). No row, no build.
-4. **Carry the Entry Declaration as commit trailers, proportional to the class** — Ordinary owes `Kit-Row` + `Kit-Class`; Sensitive/Control-plane owe `Kit-Stage` + `Kit-Skill` too (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` checks the DERIVED class's required set on your PR's final commit: present once each, row on the board, class matching; a volunteered field is validated too. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
+3. **Claim the row by its id** — the backticked `ROW-ID` that leads its Item cell (`[A-Z0-9][A-Z0-9-]*`), with `sh scripts/board-claim.sh claim <ROW-ID>`; that id is your `Kit-Row` value. No row, no build.
+4. **Carry the Entry Declaration as commit trailers, proportional to the class** — Ordinary owes `Kit-Row` + `Kit-Class`; Sensitive/Control-plane owe `Kit-Stage` + `Kit-Skill` too (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` (stage→skill map: `sh conformance/loop-state.sh --help`) checks the DERIVED class's required set on your PR's final commit: present once each, row on the board, class matching; a volunteered field is validated too. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
 5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff.
 
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
+
+> **Guard refused a read-only command?** `docs/operations/runtime-guards.md` §*The escape card* names the six shapes it always refuses and the one retry for each.
 
 ## What this file is
 

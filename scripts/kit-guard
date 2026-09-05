@@ -482,6 +482,20 @@ allow "ledger publish push"           'git push origin refs/notes/promotions'
 # unrelated force/mirror-push rule, which is not coverage by this arm.)
 allow "push refspec onto the ledger"  'git push origin refs/notes/mine:refs/notes/promotions'
 allow "symbolic-ref repoints ledger"  'git symbolic-ref refs/notes/promotions refs/notes/mine'
+# RECORD-FETCHES-AND-PUSHES-LEDGER (2026-09-03): `record` is now a transaction — it FETCHES the
+# ledger before writing and UNWINDS its own unpublished note with a compare-and-swap `update-ref`
+# when the publish is rejected. Both shapes are ALLOW today (the notes deny arm needs the `notes`
+# verb; `update-ref` on this ref is disclosed as uncovered plumbing at guard-core.sh:5131), and
+# both are pinned here as MEASURED-UNCOVERED for the same reason as the two entries above: under
+# `install-shims` every child `git` is graded, so a later coverage extension that made either DENY
+# would DEADLOCK the ledger's own front door — silently, at the worst possible moment. This line
+# goes RED first instead, and is re-taken together with the arm and its disclosure.
+allow "ledger sync-in fetch"          'git fetch --no-tags origin refs/notes/promotions:refs/notes/promotions'
+allow "ledger CAS unwind"             'git update-ref refs/notes/promotions abc1234 def5678'
+# The third shape the transaction uses: the ledger fetched FORCED into a PID-scoped SCRATCH ref, to
+# compare the two chains (divergence count, `log --unpushed`). The `+` is on the DESTINATION side of
+# a throwaway ref under refs/kit/, never the ledger — the force rule this could trip matches `push`.
+allow "ledger scratch force-fetch"    'git fetch --no-tags -f origin +refs/notes/promotions:refs/kit/notes-remote-1234'
 # THE SENTINEL IS RUNTIME-SCOPED (round 2, sec L-new-1): the flat claim "an agent can prefix the same
 # variable to a raw command" was over-stated. Under the hook / `kit-guard cmd` runtime the prefix
 # arrives inside the command TEXT and this arm's own environment does not carry it, so the raw write

@@ -50,7 +50,7 @@ ROOT="${EXPORT_ROOT:-.}"
 # only when the file is ABSENT. It MUST be listed here as well as in .gitattributes: the omission is
 # SILENT in the safe direction until the ledger gains one markdown link to another export-ignored
 # target, at which point the link scan reds on a file the real export never ships.
-IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/kit-internals/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md WALKTHROUGH.md .publish-identifiers .kit/dials.conf"
+IGN="docs/ROADMAP-KIT.md .github/workflows/ci.yml .github/workflows/ratification.yml .github/workflows/release-coherence.yml .github/workflows/drift-watch.yml .github/workflows/golden-path.yml docs/superpowers/ .superpowers/ .github/CODEOWNERS docs/architecture/ docs/plans/ docs/reviews/ docs/kit-internals/ docs/governance/meta-control-log.md docs/governance/.meta-control-last docs/governance/DECISIONS.md BACKLOG.md RUNBOOK.md REQUIRED-CHECKS.md SPARKWRIGHT-CONSOLIDATED-BACKLOG.md CHANGELOG.md WALKTHROUGH.md .publish-identifiers .kit/dials.conf"
 
 # _no_shipped_workflows <exported-tree> -> 0 = clean · 1 = a workflow shipped (and NAMES it)
 # P0-FU: an adopter export ships ZERO GitHub workflows — incept installs the profile's ci.yml +

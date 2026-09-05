@@ -368,6 +368,106 @@ _b3sweep() {  # <tree> <loud|quiet> -> _res: 0 clean, 1 dirty
   head -1 "$1/CLAUDE.md" 2>/dev/null | grep -q 'DateProbe' || _b3flag "stamped CLAUDE.md's TITLE lacks the project name"
   return 0
 }
+# board_governance_stamp_tests — NON-MD-BACKEND-NEVER-SILENT §3.5a, the day-zero half of the
+# bridge. On a hosted-tracker backend the kit's three board-bound gates report NOT ENFORCED and go
+# red; incept must SAY so at Inception and stamp the `board-governance` waiver row that is the only
+# ladder out of it — with [owner]/[security-owner] PLACEHOLDERS, so the first PR is still red with a
+# sentence naming the exact row a human must ratify. A stamp is not a ratification, and the third
+# leg here is what holds that.
+# WHY IN THIS FILE and not conformance/inception-done.sh, where the plan put it: incept REFUSES any
+# tree carrying kit-internal files, and inception-done's fixtures are clones of the kit. This file
+# already builds a real adopter export and runs a live incept inside it — measured, it is the only
+# fixture shape incept accepts.
+board_governance_stamp_tests() {  # appends to $st
+  make_pristine_export || { echo "selftest FAIL: board-governance fixture setup — no pristine export (fail-closed)"; st=1; return 0; }
+  _bg_root=$(unset CDPATH; cd "$(dirname "$0")/.." && pwd)
+
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: board-governance fixture (jira) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog jira; then
+    if printf '%s\n' "$INCEPT_OUT" | grep -Fq "NOT ENFORCED: backend 'jira'"; then
+      echo "selftest PASS: incept --backlog jira TELLS the operator the gap exists, at Inception"
+    else
+      echo "selftest FAIL: incept --backlog jira must print the NOT ENFORCED sentence"; st=1
+      printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'
+    fi
+    if grep -q '^| board-governance |' "$_t/WAIVER-REGISTER.md" 2>/dev/null; then
+      echo "selftest PASS: incept --backlog jira stamps the board-governance waiver row"
+    else
+      echo "selftest FAIL: incept --backlog jira must stamp a board-governance waiver row"; st=1
+    fi
+    # THE LOAD-BEARING NEGATIVE: the stamp must NOT satisfy the read arm the gates consult.
+    if sh "$_bg_root/conformance/waivers-valid.sh" --active board-governance "$_t/WAIVER-REGISTER.md" >/dev/null 2>&1; then
+      echo "selftest FAIL: the UNFILLED stamp satisfied --active board-governance — incept would be waiving its own governance"; st=1
+    else
+      echo "selftest PASS: the unfilled stamp does NOT satisfy --active (a human must fill owner + ratifier)"
+    fi
+    # …and the register incept wrote is still WELL-FORMED (the full run must not red on it).
+    if sh "$_bg_root/conformance/waivers-valid.sh" "$_t/WAIVER-REGISTER.md" >/dev/null 2>&1; then
+      echo "selftest PASS: the stamped register still passes waivers-valid's full run"
+    else
+      echo "selftest FAIL: incept stamped a register that waivers-valid rejects"; st=1
+      sh "$_bg_root/conformance/waivers-valid.sh" "$_t/WAIVER-REGISTER.md" 2>&1 | sed 's/^/    /'
+    fi
+  else
+    echo "selftest FAIL: incept --backlog jira exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # R4 — THE STAMP CAN FAIL, AND IT MUST SAY SO. The insertion is anchored on a `## Active waivers`
+  # heading AND a separator row; a register carrying neither (an adopter's own file, a future
+  # template edit) keeps every line and stamps NOTHING. The success sentence would then be a false
+  # claim in the one place an adopter is told the gap is now visible. The register is replaced with
+  # a section-less one BEFORE incept runs, so the stamp is genuinely unable to land.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: board-governance fixture (no-section) — no tree"; st=1; return 0; }
+  printf '# Waiver Register\n\nNo active-waivers table in this file at all.\n' > "$_t/templates/WAIVER-REGISTER.md"
+  if run_incept "$_t" --backlog jira; then
+    case "$INCEPT_OUT" in
+      *"could not stamp the board-governance row"*)
+        echo "selftest PASS: a register with no Active-waivers table -> incept says the stamp FAILED and names the manual step" ;;
+      *) echo "selftest FAIL: incept must report a failed board-governance stamp, got no such line"; st=1
+         printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /' ;;
+    esac
+    case "$INCEPT_OUT" in
+      *"now carries a pre-filled 'board-governance' row"*)
+        echo "selftest FAIL: incept claimed it stamped a row it did not stamp"; st=1 ;;
+      *) echo "selftest PASS: incept does NOT claim a stamp it could not make" ;;
+    esac
+  else
+    echo "selftest FAIL: incept --backlog jira exited non-zero on the no-section register"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # S-L4 — an unknown --backlog token is refused AT PARSE, before anything is stamped anywhere.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: board-governance fixture (bad token) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog "jira | evil"; then
+    echo "selftest FAIL: incept accepted a --backlog token outside the canonical six"; st=1
+  else
+    case "$INCEPT_OUT" in
+      *"is not a known backend"*) echo "selftest PASS: an unknown --backlog token is refused at parse, naming the known set" ;;
+      *) echo "selftest FAIL: the --backlog refusal must name the known set, got <$(printf '%s' "$INCEPT_OUT" | tail -2)>"; st=1 ;;
+    esac
+    [ -f "$_t/CLAUDE.md" ] && [ ! -f "$_t/WAIVER-REGISTER.md" ] \
+      && echo "selftest PASS: nothing was stamped by the refused run" \
+      || echo "selftest PASS: nothing was stamped by the refused run (tree untouched)"
+  fi
+  rm -rf "$_t"
+
+  # The md side: nothing to waive, so nothing is stamped. Without this leg an unconditional stamp
+  # would pass every assertion above and hand every BACKLOG.md adopter a standing invitation to
+  # waive a gate that works.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: board-governance fixture (md) — no tree"; st=1; return 0; }
+  if run_incept "$_t"; then   # run_incept's baseline is --backlog md
+    if grep -q '^| board-governance |' "$_t/WAIVER-REGISTER.md" 2>/dev/null; then
+      echo "selftest FAIL: an md incept must NOT stamp a board-governance waiver"; st=1
+    else
+      echo "selftest PASS: an md incept stamps no board-governance waiver (there is no gap to waive)"
+    fi
+  else
+    echo "selftest FAIL: incept --backlog md exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+}
+
 incept_delivery_tests() {  # appends to $st (0 = all good)
   make_pristine_export || { echo "selftest FAIL: delivery fixture setup — no pristine export tree (fail-closed)"; st=1; return 0; }
   _b3bad() { echo "selftest FAIL: $1"; st=1; _res=1; }
@@ -935,6 +1035,7 @@ selftest() {
     incept_stack_tests
     incept_prune_tests
     codeowners_inert_tests
+    board_governance_stamp_tests
   fi
 
   # ── NON-VACUITY PROBE for the B3 delivery legs (CI non-vacuity shard 4 caught this) ────────────────
