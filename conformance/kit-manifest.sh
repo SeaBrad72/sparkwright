@@ -78,6 +78,40 @@ manifest_matches_tree() {
   return $_rc
 }
 
+# digests_cover_manifest <dir> : does <dir>/.kit-digests record a well-formed sha256 for exactly the
+# paths the manifest states? (ADOPTER-TREE-IDENTITY.) The manifest says WHAT shipped; only the digests
+# say WHICH BYTES, which is what lets incept replace the kit's own SECURITY.md/README.md and never an
+# adopter's. Only the EXPORTER can record it (the `kit-base` incept vendors is staged FROM the adopter's
+# own tree — measured, refuted). SELF-EXCLUSION, stated not assumed: no line for `.kit-digests` itself,
+# since a file cannot contain its own digest; every OTHER path is covered, `.kit-manifest` included.
+digests_cover_manifest() {
+  _d=$1
+  if [ ! -s "$_d/.kit-digests" ]; then
+    echo "FAIL: kit-manifest — .kit-digests absent or EMPTY: the tree states WHAT it shipped but not WHICH BYTES, so incept cannot tell the kit's own SECURITY.md/README.md from the adopter's" >&2
+    return 1
+  fi
+  # Every line is `<64-hex>  <path>`. Malformed is a refusal, not a warning: incept reads this by fixed
+  # field, and a digest it cannot parse must never be able to authorize a replacement.
+  if grep -qvE '^[0-9a-f]{64}  ' "$_d/.kit-digests"; then
+    echo "FAIL: kit-manifest — .kit-digests has a line that is not '<64-hex>  <path>':" >&2
+    grep -vE '^[0-9a-f]{64}  ' "$_d/.kit-digests" | head -5 >&2
+    return 1
+  fi
+  _want=$(mktemp) || return 1
+  _have=$(mktemp) || { rm -f "$_want"; return 1; }
+  grep -v '^\.kit-digests$' "$_d/.kit-manifest" 2>/dev/null | LC_ALL=C sort > "$_want"
+  sed 's/^[0-9a-f]*  //' "$_d/.kit-digests" | LC_ALL=C sort > "$_have"
+  _rc=0
+  if ! diff -u "$_want" "$_have" > /dev/null 2>&1; then
+    _rc=1
+    echo "FAIL: kit-manifest — .kit-digests does not cover exactly the manifest's paths." >&2
+    echo "  '-' = stated in the manifest but UNRECORDED · '+' = recorded but not shipped:" >&2
+    diff -u "$_want" "$_have" | grep -E '^[+-][^+-]' | head -20 >&2
+  fi
+  rm -f "$_want" "$_have"
+  return $_rc
+}
+
 check() {
   _t=$(mktemp -d) || { echo "kit-manifest: cannot mktemp" >&2; return 2; }
   # shellcheck disable=SC2064  # intentional: expand $_t now, at trap-set time
@@ -89,6 +123,7 @@ check() {
     return 1
   fi
   manifest_matches_tree "$_t/full" || return 1
+  digests_cover_manifest "$_t/full" || return 1
 
   # (2) PROFILE-CORRECTNESS — the wrinkle that makes "the tree at version X" non-unique.
   # `--profile go` PRUNES profiles/*; publish-public.sh ships the un-pruned tree. The manifest must
@@ -96,6 +131,7 @@ check() {
   # delta against a base that never existed on their disk.
   if sh "$ROOT/scripts/adopter-export.sh" "$_t/go" --profile go >/dev/null 2>&1; then
     manifest_matches_tree "$_t/go" || return 1
+    digests_cover_manifest "$_t/go" || return 1
     if grep -qE '^profiles/typescript-node/' "$_t/go/.kit-manifest" 2>/dev/null; then
       echo "FAIL: kit-manifest — a --profile go export's manifest still lists profiles/typescript-node/" >&2
       echo "       The manifest must describe the PRUNED tree the adopter actually received." >&2
@@ -154,6 +190,46 @@ selftest() {
   # equal, so a naive implementation would call an empty manifest on an empty-looking tree a PASS.
   mkdir -p "$t/empty"; : > "$t/empty/a.txt"; : > "$t/empty/.kit-manifest"
   _case "empty manifest -> RED (vacuity trap)" 1 "$t/empty"
+
+  # ── .kit-digests (ADOPTER-TREE-IDENTITY) — the same seam-driven shape as above. ──
+  _dcase() {  # <label> <expected-rc> <dir>
+    digests_cover_manifest "$3" >/dev/null 2>&1 && _got=0 || _got=$?
+    if [ "$_got" -eq "$2" ]; then echo "PASS: selftest — $1 (rc $_got)"; else echo "FAIL: selftest — $1 expected $2 got $_got"; st=1; fi
+  }
+  _h64='0000000000000000000000000000000000000000000000000000000000000000'
+  # LIVENESS ANCHOR: digests covering exactly the manifest minus its self-exclusion pass.
+  mkdir -p "$t/dok"
+  printf '.kit-digests\n.kit-manifest\na.txt\n' > "$t/dok/.kit-manifest"
+  printf '%s  .kit-manifest\n%s  a.txt\n' "$_h64" "$_h64" > "$t/dok/.kit-digests"
+  _dcase "digests cover exactly the manifest (liveness anchor)" 0 "$t/dok"
+
+  # NEGATIVE 1 — a shipped file with NO recorded digest. This is the one that matters: incept can only
+  # replace what the exporter vouched for, so an unrecorded SECURITY.md silently keeps the kit's.
+  mkdir -p "$t/dgap"
+  printf '.kit-digests\n.kit-manifest\na.txt\n' > "$t/dgap/.kit-manifest"
+  printf '%s  .kit-manifest\n' "$_h64" > "$t/dgap/.kit-digests"
+  _dcase "manifest path with no recorded digest -> RED" 1 "$t/dgap"
+
+  # NEGATIVE 2 — a digest for a path the export does not ship (a record incept could match against
+  # nothing, or worse, against a file the adopter later creates at that path).
+  mkdir -p "$t/dghost"
+  printf '.kit-digests\n.kit-manifest\n' > "$t/dghost/.kit-manifest"
+  printf '%s  .kit-manifest\n%s  ghost.txt\n' "$_h64" "$_h64" > "$t/dghost/.kit-digests"
+  _dcase "digest for an unshipped path -> RED" 1 "$t/dghost"
+
+  # NEGATIVE 3 — a malformed digest line. incept reads this by fixed field; a line it cannot parse must
+  # never be able to authorize a replacement, so the artifact is refused whole.
+  mkdir -p "$t/dbad"
+  printf '.kit-digests\n.kit-manifest\n' > "$t/dbad/.kit-manifest"
+  printf 'notahash  .kit-manifest\n' > "$t/dbad/.kit-digests"
+  _dcase "malformed digest line -> RED" 1 "$t/dbad"
+
+  # NEGATIVE 4 — absent, and NEGATIVE 5 — empty. A missing record is not a passing one (and an empty
+  # digests file against an empty-ish manifest is the vacuity trap the manifest legs already teach).
+  mkdir -p "$t/dnone"; printf '.kit-digests\n' > "$t/dnone/.kit-manifest"
+  _dcase "absent .kit-digests -> RED" 1 "$t/dnone"
+  mkdir -p "$t/dempty"; printf '.kit-digests\n' > "$t/dempty/.kit-manifest"; : > "$t/dempty/.kit-digests"
+  _dcase "empty .kit-digests -> RED (vacuity trap)" 1 "$t/dempty"
 
   _cleanup "$t"
   [ "$st" -eq 0 ] && echo "kit-manifest --selftest: OK" || echo "kit-manifest --selftest: FAIL"

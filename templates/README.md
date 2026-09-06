@@ -25,6 +25,7 @@ Reach for these whenever the work calls for them — no gate has to fire first.
 | Template | Stamped as | Proven by |
 |---|---|---|
 | `PROJECT-CLAUDE-TEMPLATE.md` | your project `CLAUDE.md` | `conformance/onboarding-complete.sh` |
+| `PROJECT-README-TEMPLATE.md` | `README.md` — replacing the kit's own, which every export ships | `conformance/incept-first-run-green.sh` |
 | `RUNBOOK-TEMPLATE.md` | `RUNBOOK.md` | `conformance/runbook-current.sh` |
 | `SECURITY-TEMPLATE.md` | `SECURITY.md` | `conformance/security-policy.sh` |
 | `REQUIRED-CHECKS-TEMPLATE.md` | `REQUIRED-CHECKS.md` | `conformance/branch-protection.sh` |

@@ -13,6 +13,7 @@
 .github/ISSUE_TEMPLATE/feedback.md
 .github/PULL_REQUEST_TEMPLATE.md
 .gitignore
+.kit-digests
 .kit-manifest
 .kit/budget.conf
 .kit/model-map.conf
@@ -751,6 +752,7 @@ templates/PLAN-RECORD-TEMPLATE.md
 templates/POSTMORTEM-TEMPLATE.md
 templates/PRIVACY-REVIEW-TEMPLATE.md
 templates/PROJECT-CLAUDE-TEMPLATE.md
+templates/PROJECT-README-TEMPLATE.md
 templates/README.md
 templates/REQUIRED-CHECKS-TEMPLATE.md
 templates/REVIEW-RECORD-TEMPLATE.md

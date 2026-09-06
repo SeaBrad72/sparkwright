@@ -9,7 +9,7 @@
 - **Order** by value × urgency ÷ effort-risk — the intent owner ranks; the lead breaks ties on risk/deps. No story points.
 - Work types share one board and are prioritized against each other: **feature · bug · tech-debt · spike · recurring**. Tech-debt gets a standing paydown share each cycle.
 - **Every row has an id, and it is the FIRST backticked token of its Item cell** — `` | `ROW-ID` — a short title | … ``, matching `[A-Z0-9][A-Z0-9-]*` (decoration such as `✅` or `**` before it is fine). That id is what `Kit-Row` names, what `sh scripts/board-claim.sh claim <ROW-ID>` claims, and what the CI row check resolves — it must be **unique across the board**, or the check refuses it as AMBIGUOUS. A row with only a prose title resolves to nothing and reds the gate.
-- Move items down the states as they flow. Entering **In Progress** is an atomic ownership claim (no double-claims).
+- Move items down the states as they flow. Entering **In Progress** is an atomic ownership claim — it stops accidental double-work between cooperating sessions, not an actor with push rights who force-pushes the claim ref (`DEVELOPMENT-PROCESS.md` §6).
 - **Empty section?** Keep its header table with zero rows (the canonical form shown below), **or** write a bare `None.` — `backlog-current.sh` accepts either as an empty state. A section with any *content* always needs its schema table (so no item is ever tracked without its traceability column).
 - A failure/blocked item referencing a finding in the `KIT-FEEDBACK.md` you copy from `templates/KIT-FEEDBACK-TEMPLATE.md` at adoption must `cite the finding by its plain K-id until the synthesis commit tracks` the log; a Markdown link is safe only after that commit (`check-links` resolves against `git ls-files`).
 

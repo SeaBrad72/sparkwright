@@ -16,7 +16,7 @@
 # It frees the root Claude-Code memory slot (CLAUDE.md = kit principles) by renaming the
 # principles doc to ENGINEERING-PRINCIPLES.md and rewriting the principles-sense references,
 # then stamps the PROJECT's CLAUDE.md/RUNBOOK.md/BACKLOG.md/ADR-000 and wires the profile CI.
-# What it changes: Rewrites the cloned kit IN PLACE — renames CLAUDE.md -> ENGINEERING-PRINCIPLES.md, stamps the project CLAUDE.md/RUNBOOK.md/BACKLOG.md/ADR-000, wires the profile CI, and (non-DB) strips the kit:db-backed CI region + .db-backed marker.
+# What it changes: Rewrites the cloned kit IN PLACE — renames CLAUDE.md -> ENGINEERING-PRINCIPLES.md, stamps the project CLAUDE.md/RUNBOOK.md/BACKLOG.md/ADR-000, wires the profile CI, replaces the KIT's own SECURITY.md/README.md with the project's when (and only when) they match the digest the export recorded, and (non-DB) strips the kit:db-backed CI region + .db-backed marker.
 # Guardrails: Run on a fresh clone; interactive by default (--noninteractive for CI); the DB-region strip refuses an open-ended range (both markers required) so it can never wipe gates to EOF.
 set -eu
 
@@ -702,6 +702,86 @@ DATE=$(esc "${DATE_PIN:-$(date +%Y-%m-%d)}")
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
 ENAME=$(esc "$NAME"); EOWNER=$(esc "$OWNER")
 
+# --- ADOPTER-TREE-IDENTITY: replace the KIT's own SECURITY.md / README.md, never the adopter's ------
+# MEASURED: `.gitattributes` cannot carve these two (the public mirror IS an export; security-channel-
+# live.sh probes its SECURITY.md and eight kept docs link its README.md), so every export ships the
+# KIT's copies. incept's old `[ -f SECURITY.md ] ||` guard was therefore DEAD — the file always exists —
+# and every adopter's disclosure policy routed vulnerability reports to the kit author's repo.
+#
+# THE PREDICATE IS THE EXPORTER'S RECORD, and it has to be. Comparing against the `kit-base` this script
+# vendors was refuted by measurement before it was written: capture_kit_base (above) stages kit-base
+# FROM THIS TREE, so a brownfield adopter's own SECURITY.md would become its own "pristine twin" and be
+# clobbered. `.kit-digests` is written by adopter-export.sh from the kit's own tree, before this tree
+# existed — the one fact here that the adopter's file cannot accidentally satisfy.
+#
+# FAIL SAFE, ALWAYS TOWARD THE ADOPTER: no digests file, no record for the path, a malformed record, or
+# a digest that does not match => LEAVE THE FILE and say so in the closing message. Only an exact match
+# authorizes a replacement. RKO_REPLACED / RKO_LEFT carry that truth to the epilogue so the summary can
+# never claim a replacement that did not happen (the GUARD_STEP discipline).
+RKO_REPLACED=''; RKO_LEFT=''; RKO_NOTEMPLATE=''
+_rko_sha256() {  # <file> -> its sha256, or empty when no hasher is available
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 -- "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1
+  fi
+}
+_rko_recorded() {  # <path> -> the digest the exporter recorded for it, or empty
+  # UNTRUSTED TEXT, read by fixed field with a fixed-length hex charset check. A line this cannot parse
+  # is "no record", which means "leave the file" — a malformed digests file can never authorize a write.
+  [ -f .kit-digests ] || return 0
+  _rkod=$(awk -v p="$1" '$2 == p { print $1; exit }' .kit-digests 2>/dev/null || true)
+  case "$_rkod" in
+    ''|*[!0-9a-f]*) return 0 ;;
+  esac
+  [ "${#_rkod}" -eq 64 ] || return 0
+  printf '%s\n' "$_rkod"
+}
+replace_kit_own() {  # <file> <template> -> 0 if the file is now the adopter's (stamped), 1 if left as-is
+  _rkof=$1; _rkot=$2
+  # A MISSING TEMPLATE is a different fact from "this file is not the kit's", and the closing message
+  # must not blame the adopter's file for a gap in the export.
+  [ -f "$_rkot" ] || { RKO_NOTEMPLATE="$RKO_NOTEMPLATE $_rkof"; return 1; }
+  if [ ! -f "$_rkof" ]; then                      # absent -> stamp (the greenfield path)
+    cp "$_rkot" "$_rkof"; RKO_REPLACED="$RKO_REPLACED $_rkof"; return 0
+  fi
+  _rkorec=$(_rko_recorded "$_rkof")
+  if [ -z "$_rkorec" ]; then RKO_LEFT="$RKO_LEFT $_rkof"; return 1; fi
+  _rkogot=$(_rko_sha256 "$_rkof")
+  if [ -n "$_rkogot" ] && [ "$_rkogot" = "$_rkorec" ]; then
+    cp "$_rkot" "$_rkof"; RKO_REPLACED="$RKO_REPLACED $_rkof"; return 0
+  fi
+  RKO_LEFT="$RKO_LEFT $_rkof"; return 1
+}
+
+# The adopter's own `<owner>/<repo>`, for the SECURITY.md disclosure channel. The template's contact is
+# GITHUB private vulnerability reporting, so the stamp is only meaningful for a GITHUB origin — an
+# earlier, host-blind "last two path segments" parse turned `gitlab.com/grp/sub/widget` into
+# `sub/widget` and `/Users/me/proj` into `me/proj`: a plausible-looking channel repo that receives
+# nothing. HOST-GATED first, on EXACTLY the URL shapes conformance/security-channel-live.sh's
+# `_github_repo` accepts and no more — two parsers for one fact must not diverge, since what this one
+# stamps is what that one later probes. Then CHARSET-BOUNDED before it reaches sed and esc()'d at the
+# stamp, because an origin URL is adopter-controlled input. Anything else keeps the explicit
+# `[owner/repo]` placeholder and is named in the closing message — a wrong channel is worse than a blank.
+CHANNEL_REPO=''; CHANNEL_WHY=''
+_rko_origin=$(git remote get-url origin 2>/dev/null || true)
+if [ -z "$_rko_origin" ]; then
+  CHANNEL_WHY='no-origin'
+else
+  CHANNEL_WHY='not-github'
+  case "$_rko_origin" in
+    https://github.com/*|http://github.com/*|git@github.com:*|ssh://git@github.com/*)
+      # `:` here is the scp-style separator (`git@github.com:owner/repo`). The ssh PORT form is NOT
+      # accepted, because the probe does not accept it either; it falls safe to the placeholder.
+      _rko_r=${_rko_origin#*github.com}
+      _rko_r=${_rko_r#:}; _rko_r=${_rko_r#/}; _rko_r=${_rko_r%/}; _rko_r=${_rko_r%.git}
+      _rko_r=$(printf '%s\n' "$_rko_r" | grep -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' || true)
+      # `.` and `..` pass that charset and are not repo names.
+      case "$_rko_r" in
+        ''|.*/*|*/.|*/..) : ;;
+        *) CHANNEL_REPO="$_rko_r"; CHANNEL_WHY='' ;;
+      esac ;;
+  esac
+fi
+
 # --- 1. free the root memory slot ---
 # Use `git mv` only when CLAUDE.md is actually TRACKED. In the literal quickstart (copy the
 # kit into a fresh `git init` repo, run incept before committing), CLAUDE.md is untracked and
@@ -722,6 +802,17 @@ sedi -e 's/and `CLAUDE.md` (principles + Definition of Done)/and `ENGINEERING-PR
 sedi -e 's/and `CLAUDE.md` (authoritative principles + Definition of Done)/and `ENGINEERING-PRINCIPLES.md` (authoritative principles + Definition of Done)/' \
      -e 's/When they overlap, `CLAUDE.md` is authoritative/When they overlap, `ENGINEERING-PRINCIPLES.md` is authoritative/' \
      DEVELOPMENT-PROCESS.md
+# The adopter's front door is the ADOPTER'S. This runs BEFORE the row-swap below, on purpose: the swap
+# would change the file's bytes and so destroy the very digest the replacement decision is made on.
+if replace_kit_own README.md templates/PROJECT-README-TEMPLATE.md; then
+  sedi -e "s/^# \[Project Name\]\$/# ${ENAME}/" \
+       -e "s/\*\*Intent owner:\*\* \[who owns the why\]/**Intent owner:** ${EOWNER}/" \
+       -e "s/\*\*Created:\*\* \[date\]/**Created:** ${DATE}/" \
+       -e "s/\[vX\.Y\.Z\]/v${VER}/g" \
+       README.md
+fi
+# KEPT for the case above where the kit's README was NOT replaced (a brownfield tree, or an export with
+# no digests record): the doc-table row still has to name the file the principles actually moved to.
 sedi 's/| \*\*`CLAUDE.md`\*\* | Principles + Definition of Done. Authoritative. |/| **`ENGINEERING-PRINCIPLES.md`** | Principles + Definition of Done. Authoritative. |/' README.md
 # The second expression MOVED here from the retired ONBOARDING.md (FRONT-DOOR-ONE-ROUTER): the
 # Practitioner lane it rewrites folded into START-HERE.md, carrying the phrase verbatim on one line.
@@ -839,7 +930,13 @@ curate_for_mode "$MODE"
 
 # --- 4. RUNBOOK / BACKLOG / ADR-000 ---
 [ -f RUNBOOK.md ] || { cp templates/RUNBOOK-TEMPLATE.md RUNBOOK.md; sedi "s/\[Project Name\]/${ENAME}/g" RUNBOOK.md; }
-[ -f SECURITY.md ] || cp templates/SECURITY-TEMPLATE.md SECURITY.md
+# SECURITY.md — the kit's own copy ships in every export, so "does the file exist?" was never the
+# question; "whose file is it?" is. See replace_kit_own above.
+if replace_kit_own SECURITY.md templates/SECURITY-TEMPLATE.md; then
+  if [ -n "$CHANNEL_REPO" ]; then
+    sedi "s#\*\*Channel repo:\*\* \`\[owner/repo\]\`#**Channel repo:** \`$(esc "$CHANNEL_REPO")\`#" SECURITY.md
+  fi
+fi
 # REQUIRED-CHECKS.md (B4) — the declared required-check contexts conformance/branch-protection.sh
 # and scripts/branch-protection-apply.sh read; same BACKLOG-pattern stamp, always written regardless
 # of backlog backend (it is not a backlog concern).
@@ -1023,7 +1120,7 @@ strip_template_banner() {  # <file> — drop the whole `> **Template.**` blockqu
     { skip = 0; print }
   ' "$1" > "$1.b3tmp" && mv "$1.b3tmp" "$1"
 }
-for _b3f in CLAUDE.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md .env.example docs/governance/DECISIONS.md; do
+for _b3f in CLAUDE.md README.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md .env.example docs/governance/DECISIONS.md; do
   strip_template_banner "$_b3f"
 done
 # The project's own name belongs in its own title.
@@ -1368,6 +1465,42 @@ done
 # Branch-protection guidance is platform-specific: branch-protection.sh / BRANCH-PROTECTION.md
 # use the GitHub API; on GitLab the protected-branches equivalent is adopter-owned (honest
 # coupling note — see docs/operations/ci-platforms.md).
+# --- ADOPTER-TREE-IDENTITY: say what was replaced, what was LEFT, and what is still owed ------------
+# Never a silent no-op: "incept did nothing to your SECURITY.md" is indistinguishable from a bug unless
+# incept says which of the three reasons applied.
+if [ -n "$RKO_REPLACED" ]; then
+  echo "replaced the kit's own${RKO_REPLACED} with your project's (they matched the digest the export recorded for the kit's copies)"
+  case "$RKO_REPLACED" in
+    *SECURITY.md*)
+      case "$CHANNEL_WHY" in
+        '')  echo "  SECURITY.md declares Channel repo: ${CHANNEL_REPO} (from your 'origin'). It is only LIVE once you"
+             echo "  enable private vulnerability reporting on that repo (Settings -> Code security)." ;;
+        no-origin)
+             echo "  ⚠ SECURITY.md still carries the [owner/repo] placeholder — this repo has no 'origin' remote yet."
+             echo "    Fill it in, and enable private vulnerability reporting on that repo." ;;
+        *)   echo "  ⚠ SECURITY.md still carries the [owner/repo] placeholder — your 'origin' is not GitHub, so the"
+             echo "    template's GitHub private-reporting channel needs a real contact instead: a security mailbox,"
+             echo "    or your forge's own private vulnerability reporting. Edit the 'Security contact:' line too." ;;
+      esac
+      [ -n "$CHANNEL_WHY" ] && echo "    Until you do, conformance/security-policy.sh FAILS on the unresolved placeholder — deliberately: a"
+      [ -n "$CHANNEL_WHY" ] && echo "    policy advertising private reporting with no reachable repo points a reporter nowhere." ;;
+  esac
+fi
+if [ -n "$RKO_LEFT" ]; then
+  echo "note: LEFT ALONE (treated as yours, never overwritten):${RKO_LEFT}"
+  if [ -f .kit-digests ]; then
+    echo "      Their contents do not match what this export recorded, so incept cannot prove they are the kit's."
+  else
+    echo "      This export carries no .kit-digests record, so incept cannot tell the kit's copies from yours."
+    echo "      Re-export with a current kit to get one. Until then, check them by hand: a SECURITY.md that"
+    echo "      still names the KIT's repo would route YOUR vulnerability reports to the kit author."
+  fi
+fi
+if [ -n "$RKO_NOTEMPLATE" ]; then
+  echo "warning: LEFT ALONE for a different reason —${RKO_NOTEMPLATE}: this export is MISSING the template incept" >&2
+  echo "         stamps them from. That is a gap in the export, not a judgement about your files. Re-export." >&2
+fi
+
 case "$CI" in
   github) PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --apply (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh" ;;
   gitlab) PROTECT_HINT="Protect main NOW — in GitLab: Settings → Repository → Protected branches (require merge request + pipeline success + an approval rule). branch-protection.sh uses the GitHub API; the GitLab equivalent is adopter-owned — see docs/operations/ci-platforms.md." ;;

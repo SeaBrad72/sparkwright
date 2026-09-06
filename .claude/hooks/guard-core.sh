@@ -960,8 +960,10 @@ _ctm_match() {
 # A selftest cross-checks every entry is
 # is_control_plane_path-classified, binding this list to the authoritative corpus so it cannot drift to
 # a non-CP name. ⚠️ A NEW full-filename CP leaf OUTSIDE a directory family must be added HERE too — this
-# is the glob-write route's site, a FIFTH alongside the is_control_plane_path/_ctm_match/two-pathhit
-# sites the C5 completeness discipline already names. `_LC` mirrors _CP8B_PATHHIT_T1_LC: a lowercased
+# is the glob-write route's site, and for a `.kit/*.conf` it is one of the SIX the corpus block below
+# enumerates and `dt_corpus_ok` grades (CP-MATCHER-CORPUS-DERIVED; the older "a FIFTH alongside the
+# is_control_plane_path/_ctm_match/two-pathhit sites" wording undercounted, and the seats conf shipped
+# into the gap that undercount left). `_LC` mirrors _CP8B_PATHHIT_T1_LC: a lowercased
 # copy consulted on an uppercase-token miss (so `CODEOWNER*`, `AGENTS.m*`, `REQUIRED-CHECKS.m*` fold),
 # authored lowercase to match a folded subject.
 # ⚠️ ADOPTER-SAFETY CONSTRAINT (what _cp8b_glob_scan actually requires): a PATTERN leaf must be
@@ -969,6 +971,27 @@ _ctm_match() {
 # `agents/*.agent.md`). A leaf with the glob NOT last, or a multi-segment-deep protected family, is NOT
 # covered by _cp8b_glob_scan and would silently UNDER-match — add such a family to the pathhit tiers /
 # _cpp_match instead, or extend _cp8b_glob_scan first. (The nested-depth residual is §10 A5.)
+# === CP-MATCHER-CORPUS-DERIVED — THE `.kit/` CONF CORPUS, DECLARED ONCE ==========================
+# ⚠️ THE C5 COMPLETENESS DISCIPLINE NAMES SIX SITES FOR A `.kit/*.conf`, NOT THREE, and the count is
+# the defect this declaration answers. `.kit/ratification-seats.conf` shipped in three of them
+# (`_cpp_kitowned`, `_cpp_match`, the glob leaves) and its own header said "all three matchers carry
+# it" — TRUE under that count. guard-core's C5 comment counts a DIFFERENT three
+# (`is_control_plane_path` + the two pathhit tiers), and the file was in NEITHER tier, so every
+# interpreter-form write to it (`python3 -c open(…,w)`, `perl -e`, `node -e`) measured ALLOW while the
+# identical forms on `.kit/dials.conf` denied. Two honest enumerations; the gap lived between them.
+# THE SIX SITES a `.kit/<name>.conf` must appear in:
+#   1. `_cpp_kitowned`   (case)      4. `_CP8B_GLOB_LEAVES_LC`  (lowercased copy)
+#   2. `_cpp_match`      (case)      5. `_CP8B_PATHHIT_T1`      (regex)
+#   3. `_CP8B_GLOB_LEAVES`           6. `_CP8B_PATHHIT_T1_LC`   (lowercased regex)
+# THIS LIST IS AN ORACLE, NOT A GENERATOR, and that is deliberate (D-240816-1's enumeration trap read
+# the other way round). Two of the six sites are POSIX `case` patterns, and a `case` cannot take its
+# alternation from a variable — so a runtime derivation would cover four sites and leave two
+# hand-maintained, which is precisely the drift it would claim to close. The sites stay literal; the
+# list is what `dt_corpus_ok` in conformance/agent-autonomy.sh grades them against, in BOTH directions
+# (a listed name missing from any site FAILS; a `.kit/*.conf` at any site missing from the list FAILS,
+# so a site cannot quietly grow past the list either), plus an on-disk leg over `git ls-files .kit/*.conf`.
+# It lives HERE, in the control plane, so no agent can widen the corpus silently.
+_KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats'
 _CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md .gitattributes .gitleaks.toml .gitleaksignore .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf agents/*.agent.md'
 _CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md .gitattributes .gitleaks.toml .gitleaksignore .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf agents/*.agent.md'
 
@@ -1279,13 +1302,26 @@ _s6_dequote() {
 # redirect `&` is protected via the _cp8b_soh sentinel across the `&`->`;` pass, then restored, so ONLY
 # a true separator `&` (background/`&&` already collapsed above) splits. fd-dups (`2>&1`, `>&-`) keep
 # their `&` and stay one segment — _redir_targets then classifies them (numeric/`-` => excluded).
+# GUARD-CLOBBER-REDIRECT-INVISIBLE (the `>|` half of the same class): the `|` of the CLOBBER operator
+# `>|` (and `N>|`) is NOT a command separator either, and it was laundering CP writes exactly as the
+# redirect `&` did before M1 — `echo x >| conformance/verify.sh` split into `echo x >` (an empty
+# redirect target) and a bare, verbless ` conformance/verify.sh`, and BOTH halves allowed. The row
+# text named `_redir_targets` as the fix site; that was measured WRONG, for the same reason M1 records
+# above: the split happens HERE first, so the extractor never saw a `>|`. It is protected with its own
+# sentinel `_cp8b_etx` (0x03) across the `|`->`;` passes and restored after — a FRESH byte, distinct
+# from `_cp8b_soh` (0x01, the `>&` protector) and `_cp8b_stx` (0x02, _cp8b_pipe_segments' pipe-fed
+# marker) and from F-a's five mask bytes, because a shared byte would let one mechanism's bookkeeping
+# forge the other's. K-MASK-SENTINELS counts all eight.
 _cp8b_soh=$(printf '\001')
+_cp8b_etx=$(printf '\003')
 _cp8b_segments() {
   _cp8b_joinlines "$1" \
-    | sed -e 's/&&/;/g' -e 's/||/;/g' -e 's/|/;/g' \
+    | sed -e "s/>|/>$_cp8b_etx/g" \
+          -e 's/&&/;/g' -e 's/||/;/g' -e 's/|/;/g' \
           -e "s/>&/>$_cp8b_soh/g" -e "s/&>/$_cp8b_soh>/g" \
           -e 's/&/;/g' \
           -e "s/$_cp8b_soh/\&/g" \
+          -e "s/$_cp8b_etx/|/g" \
     | tr ';\n' '\n\n'
 }
 
@@ -1373,8 +1409,9 @@ _cp8b_segments() {
 # consulted, so a pipe into an interpreter is judged raw whatever the quoting looks like.
 #
 # SENTINEL DISCIPLINE (seat finding 7). FIVE DISTINCT bytes, all different from the `>&` sentinel
-# `_cp8b_soh` (0x01) used by `_cp8b_segments` above and from `_cp8b_stx` (0x02) used by
-# `_cp8b_pipe_segments` — a shared byte would let one mechanism's bookkeeping forge the other's.
+# `_cp8b_soh` (0x01) used by `_cp8b_segments` above, from `_cp8b_stx` (0x02) used by
+# `_cp8b_pipe_segments`, and from `_cp8b_etx` (0x03), the `>|` CLOBBER protector both segmenters use
+# — a shared byte would let one mechanism's bookkeeping forge the other's.
 # One byte per separator so the restore is exact and total.
 _cp8b_mk_pipe=$(printf '\016')
 _cp8b_mk_semi=$(printf '\017')
@@ -1800,7 +1837,11 @@ _cp8b_git_write_denied() {
 # control-plane at the gate. Adding names closed nine and left nine — "a named set with no
 # family-completeness lock rots by construction". Deriving the answer cannot drift.
 #
-# Targets are extracted after `>` or `>>`, with any fd digit and surrounding whitespace stripped, and
+# Targets are extracted after `>`, `>>` or the CLOBBER `>|` (GUARD-CLOBBER-REDIRECT-INVISIBLE — the
+# operator's `|` byte is consumed WITH it by the `|\{0,1\}` in the extraction, so the target is the
+# token AFTER it; without this half the token would be a bare `|`, which fails the positive allowlist
+# and rc-2s EVERY `>|`, absolute and `~`-rooted targets included — an over-deny the `K-CLOB allow `
+# cells pin against and the M-CLOB2 mutant kills). Any fd digit and surrounding whitespace stripped, and
 # quotes removed so `> "conformance/x.sh"` is seen. Case folding is inherited from the classifier.
 # _redir_targets "<segment>": GUARD-CP-WRITE-ROUTES Cure 2 (Route 2) — the SHARED redirect-target
 # EXTRACTION + POSITIVE literal-path allowlist disqualifier, called by BOTH redirect bail sites
@@ -1831,7 +1872,7 @@ _cp8b_git_write_denied() {
 # is judged as raw text before any pathname expansion.
 _redir_targets() {
   case "$1" in *'>'*) : ;; *) return 0 ;; esac
-  _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*/\n/g' | sed -e '1d' \
+  _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*|\{0,1\}/\n/g' | sed -e '1d' \
         -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
   [ -n "$_rt" ] || return 0
   _rtc=0
@@ -1974,8 +2015,8 @@ _cp8b_redirect_hits_cp() {
 # introduced by it, and it is fail-SAFE in the direction it errs. It is stated rather than fixed
 # because narrowing the shared CODEOWNERS anchor class is a change to an existing deny with its own
 # fixtures and its own monotonicity run — not a tidy-up to ride along here.
-_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
-_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
+_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml)'
 # TIER 2 gains `scripts/` and `profiles/` — the redirect-route half of the directory families added to
 # `_cpp_match`. They land HERE and never in T1, for the identical reason: T1 folds on every platform,
 # and an unconditionally-folded `scripts/` would reinstate the measured case-sensitive FP class on the
@@ -2623,15 +2664,35 @@ _cp8b_hd_consumer() {
 # _cp8b_pipe_segments "<cmd>": _cp8b_segments, byte-for-byte, EXCEPT that a segment introduced by a
 # `|` is prefixed with a sentinel so the caller can tell a PIPE-FED segment from a `;`/`&&`/`&`-fed
 # one. Kept as a near-copy on purpose: it must consider exactly the same bytes to be separators
-# (including the `>&`/`&>` redirect protection from GUARD-DENY-TRIO M1), or a redirect operator would
-# read as a pipe here and not there. Nothing is ever rejoined (the CP-8a rule).
+# (including the `>&`/`&>` redirect protection from GUARD-DENY-TRIO M1, and the `>|` clobber
+# protection via `_cp8b_etx` (0x03) from GUARD-CLOBBER-REDIRECT-INVISIBLE), or a redirect operator
+# would read as a pipe here and not there. Nothing is ever rejoined (the CP-8a rule).
+# THE `>|` PROTECTION HERE HAD TO BE TAKEN IN BOTH: `f4-couple` locks this function byte-identical to
+# `_cp8b_segments` outside the masked `|` arm, so `>|` could not be taught to one alone.
+# ⚠️ THE DESIGN PRICED A RELAXATION HERE, AND IT IS REAL — FOUR OF THEM, EACH ENUMERATED. The first
+# build reported it as never spent; that report was wrong, and the correction is recorded rather than
+# quietly dropped. The design's subject was `echo x >| sh`, which is ALLOW on BOTH cores and always
+# was: the piped-interpreter deny is armed by a control-plane pathhit or a fetcher lead, and a bare
+# `echo` has neither, so the cell could not have shown a relaxation whether or not one existed.
+# WITH a control-plane token the price is plain. On the pristine core `>|` is not an operator, so the
+# `|`->`;` pass splits there and the bytes after it become a PIPE-FED segment — a pipe the user never
+# wrote. `cat conformance/verify.sh >| sh` therefore read as "a control-plane file piped into an
+# interpreter" and DENIED; teaching both segmenters `>|` withdraws the forgery and it ALLOWs, which is
+# what bash does (a clobber into a file named `sh`). The same forgery inside a search pattern is why
+# `grep a>|b <cp>` and `git log --grep="a>|b" -- <cp>` also move. All four are correct verdicts: no
+# control-plane file is written, nothing is executed, and the two greps only read. The boundary holds —
+# add a REAL pipe (`cat <cp> >| sh | sh`) and the deny is still there, on both cores.
+# "16 movers, zero allow-ward" was a CELL-BOUNDED statement about the cells that existed, not a
+# statement about the guard. The four movers are cells now, each with its own EXPECTED_DELTA entry.
 _cp8b_stx=$(printf '\002')
 _cp8b_pipe_segments() {
   _cp8b_joinlines "$1" \
-    | sed -e 's/&&/;/g' -e 's/||/;/g' -e "s/|/;$_cp8b_stx/g" \
+    | sed -e "s/>|/>$_cp8b_etx/g" \
+          -e 's/&&/;/g' -e 's/||/;/g' -e "s/|/;$_cp8b_stx/g" \
           -e "s/>&/>$_cp8b_soh/g" -e "s/&>/$_cp8b_soh>/g" \
           -e 's/&/;/g' \
           -e "s/$_cp8b_soh/\&/g" \
+          -e "s/$_cp8b_etx/|/g" \
     | tr ';\n' '\n\n'
 }
 
@@ -4357,14 +4418,14 @@ _cp8b_target_arm_denied() {
     # primitive on the box. Reads without a redirect are untouched, which is what keeps the relief
     # slice's refunds intact — `cd -; echo x` and `cd -; cat notes.txt` still allow.
     #
-    # ⚠️ TWO CEILINGS, BOTH MEASURED, NEITHER CLOSED HERE — and the second corrects what an earlier
-    # draft of this comment implied about the mask.
-    # (1) THE `>|` CLOBBER OPERATOR IS INVISIBLE to `_redir_targets`, so `echo x >| verify.sh` is
-    #     ALLOW while lost — and `echo x >| conformance/verify.sh` is ALLOW from the ROOT too, on
-    #     main and here alike. That is a hole in the SHARED extractor every redirect arm in this file
-    #     consumes, so widening it is its own change with its own vet, not a rider on this slice.
-    #     Boarded as `GUARD-CLOBBER-REDIRECT-INVISIBLE`; pinned by the `K-CWD ceiling ` cell so the
-    #     delta enumerates the day it flips.
+    # ⚠️ TWO CEILINGS AS SHIPPED; THE FIRST IS NOW CLOSED, the second stands.
+    # (1) CLOSED by `GUARD-CLOBBER-REDIRECT-INVISIBLE`: the `>|` CLOBBER operator used to be invisible
+    #     — not to `_redir_targets`, as this comment first said, but to `_cp8b_segments`, which split
+    #     at the `|` before any redirect arm ran. Both segmenters now protect `>|` with `_cp8b_etx`
+    #     and the extractor consumes the `|` with the operator, so `>|` is judged EXACTLY as `>`:
+    #     `cd -; echo x >| verify.sh` denies `trigger=cwd-unknown` and `echo x >| conformance/verify.sh`
+    #     denies from the root. The `K-CWD ceiling ` cell that pinned the hole was re-kinded into
+    #     `K-CLOB cd - then a >| clobber` — the countdown ran out and the delta enumerated the flip.
     # (2) THE MASK DOES NOT REFUND A QUOTED `>` HERE. `_redir_targets` on `$_segm` still reports a
     #     redirect for a `>` inside a quoted message, so while lost these DENY (measured):
     #       `cd -; git commit -m "fix -> thing"` · `cd -; git commit -m "a > b"`

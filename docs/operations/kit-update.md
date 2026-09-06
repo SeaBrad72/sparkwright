@@ -10,6 +10,11 @@ over *your* project doc, at the same path, and call it a merge.
 
 It **presents a delta**. It does not apply one.
 
+**Ceiling.** This path is proven on fixture trees by `conformance/kit-update-identity.sh` and
+`conformance/kit-update-merge.sh` — it has never yet been run by an external adopter against a real,
+divergently-edited project, and it carries no row in `conformance/claims.tsv` (tracked, unrefined, as
+`KIT-UPDATE-CLAIM-ROW`). Treat the tool's output as a delta to review, not a merge you can trust blind.
+
 ```sh
 sh scripts/kit-update.sh --from https://github.com/SeaBrad72/sparkwright     # the update: report + patch
 sh scripts/kit-update.sh --reconstruct-base /tmp/base                        # just the merge base

@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.223.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.224.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
 
 Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -26,6 +26,8 @@ Now **open your new project in your AI coding tool** (Claude Code, or any `AGENT
 > *"Walk me through START-HERE."*
 
 — or open **[`START-HERE.md`](START-HERE.md)** and follow it yourself.
+
+Hit friction with the kit itself? `templates/KIT-FEEDBACK-TEMPLATE.md` or a `.github/ISSUE_TEMPLATE/` issue is the route back to the maintainer.
 
 From there the kit **guides you through Inception**: it helps you **choose your stack**, scaffolds a runnable starter with a **green pipeline on the first run** (so you build on working software, not an empty repo), and sets your project up. Then you enter the build loop. Your stack, environment, and deploy target are all decisions the kit walks you through — **nothing is pre-selected.**
 
@@ -71,7 +73,7 @@ Sparkwright is at the **`release-candidate`** stage — hardened, dogfooded, and
 
 ## Harness-neutral
 
-Claude Code is the default and the reference adapter, but any harness that reads `AGENTS.md` (Codex, Cursor, Copilot…) is supported via the `generic` adapter, and you can bring your own with `sh scripts/new-adapter.sh <harness>`. Named `codex`, `cursor`, and `gemini` adapters ship as curated, conformance-locked starting points — and `codex` is **floor-verified**: its universal-layer floor passed all five CP-7 acceptance criteria cold on a real vehicle ([field-test evidence](docs/operations/harness-enforcement-evidence.md)), the honest maximum for a harness with no inline `PreToolUse`-equivalent interception (`cursor`/`gemini` stay experimental). The enforcement floor — the `kit-guard` CLI, the `pre-push` hook, and the `agent-boundary` CI gate — is **maintainer-verified to block destructive and control-plane actions regardless of harness** ([evidence](docs/operations/harness-enforcement-evidence.md)), and every adapter is held to the [boundary contract](docs/operations/harness-adapters.md).
+Claude Code is the default and the reference adapter, but any harness that reads `AGENTS.md` (Codex, Cursor, Copilot…) is supported via the `generic` adapter, and you can bring your own with `sh scripts/new-adapter.sh <harness>`. Named `codex`, `cursor`, and `gemini` adapters ship as curated, conformance-locked-in-shape starting points — `claude-code` and `codex` are **measured**, `cursor` and `gemini` are **declared** (see `docs/operations/harness-adapters.md`) — and `codex` is **floor-verified**: its universal-layer floor passed all five CP-7 acceptance criteria cold on a real vehicle ([field-test evidence](docs/operations/harness-enforcement-evidence.md)), the honest maximum for a harness with no inline `PreToolUse`-equivalent interception (`cursor`/`gemini` stay experimental). The enforcement floor — the `kit-guard` CLI, the `pre-push` hook, and the `agent-boundary` CI gate — is **maintainer-verified to block destructive and control-plane actions regardless of harness** ([evidence](docs/operations/harness-enforcement-evidence.md)), and every adapter is held to the [boundary contract](docs/operations/harness-adapters.md).
 
 ## What's inside
 

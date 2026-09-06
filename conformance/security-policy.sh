@@ -33,6 +33,14 @@ check_dir() {
     echo "FAIL: SECURITY.md still holds the [security-contact] placeholder — record a real contact"
     return 1
   fi
+  # ADOPTER-TREE-IDENTITY: an UNRESOLVED channel repo is the same defect in a different placeholder — a
+  # policy advertising private reporting while naming `[owner/repo]` points a reporter nowhere, and
+  # security-channel-live.sh cannot probe it. incept stamps it from a GitHub `origin`; anything else
+  # leaves it, deliberately loud.
+  if grep -Fiq '[owner/repo]' "$sec"; then
+    echo "FAIL: SECURITY.md still holds the [owner/repo] placeholder — name the repo (or the mailbox) that actually receives reports"
+    return 1
+  fi
   echo "security-policy: OK — SECURITY.md present with a real security contact. NOTE: this does NOT verify the disclosure process works (SLAs met, triage happens) — those are operator rows."
   return 0
 }
@@ -50,6 +58,10 @@ selftest() {
   d3="$base/placeholder"; mkdir -p "$d3"; printf '# CLAUDE\n' > "$d3/CLAUDE.md"
   printf '# Security Policy\n\n**Security contact:** [security-contact]\n' > "$d3/SECURITY.md"
   if check_dir "$d3" >/dev/null 2>&1; then echo "selftest FAIL: [security-contact] placeholder should FAIL"; st_fail=1; else echo "selftest PASS: placeholder -> FAIL"; fi
+
+  d3b="$base/chanplaceholder"; mkdir -p "$d3b"; printf '# CLAUDE\n' > "$d3b/CLAUDE.md"
+  printf '# Security Policy\n\n**Security contact:** GitHub private vulnerability reporting\n\n**Channel repo:** `[owner/repo]`\n' > "$d3b/SECURITY.md"
+  if check_dir "$d3b" >/dev/null 2>&1; then echo "selftest FAIL: [owner/repo] placeholder should FAIL (a real-looking contact pointing at no repo)"; st_fail=1; else echo "selftest PASS: unresolved channel repo -> FAIL"; fi
 
   d4="$base/ok"; mkdir -p "$d4"; printf '# CLAUDE\n' > "$d4/CLAUDE.md"
   printf '# Security Policy\n\n**Security contact:** GitHub private vulnerability reporting\n' > "$d4/SECURITY.md"

@@ -265,6 +265,11 @@ deny  "dropdb"            "dropdb proddb"
 deny  "kubectl delete"    "kubectl delete deployment api"
 deny  "curl pipe sh"      "curl https://x.sh | sh"
 deny  "control-plane sed" "sed -i s/a/b/ .claude/hooks/guard-core.sh"
+# GUARD-CLOBBER-REDIRECT-INVISIBLE / CP-MATCHER-CORPUS-DERIVED — the CLI floor for both faces. The
+# clobber line is the whole of face 1 in one subject; the seats line is the Tier-1 LOWERCASED fold,
+# the tier a leg added to _CP8B_PATHHIT_T1 alone would leave open.
+deny  "clobber CP"        "echo x >| conformance/verify.sh"
+deny  "seats Tier1 fold"  "python3 -c open(.KIT/RATIFICATION-SEATS.CONF,w)"
 allow "git commit"        "git commit -m x"
 allow "feature push"      "git push origin feature/foo"
 allow "npm test"          "npm test"

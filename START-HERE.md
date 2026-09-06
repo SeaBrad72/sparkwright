@@ -12,9 +12,11 @@ Leaders / evaluators: read [docs/enterprise/EXEC-BRIEF.md](docs/enterprise/EXEC-
 
 ## You do not need to read all of this
 
-Sparkwright ships a lot of files because it covers the whole lifecycle — but **you read almost none of
-it up front.** Per-task reading is small and just-in-time (`AGENTS.md` is short, read when an agent
-acts). Here is the whole map at a glance.
+Sparkwright ships a lot of files because it covers the whole lifecycle — but **you read four documents
+in your first sitting** — this one, the principles (`CLAUDE.md`), the process (`DEVELOPMENT-PROCESS.md`),
+and a skim of the standards (`DEVELOPMENT-STANDARDS.md`) — and pull everything else when a trigger
+fires. Per-task reading is small and just-in-time (`AGENTS.md` is short, read when an agent acts). Here
+is the whole map at a glance.
 
 **Your first 5 (the core path):**
 1. **`START-HERE.md`** (this file) — Inception.
@@ -35,6 +37,7 @@ acts). Here is the whole map at a glance.
 | Building an AI feature — handling its API key + the eval boundary | `docs/operations/secrets-for-ai.md` |
 | Data service — backup/restore, DR | `docs/continuity/` |
 | You need an artifact (spec, RUNBOOK, threat model, review record) | `templates/` — pull the one you need |
+| Something got in your way — kit friction, a confusing doc, a broken gate | `templates/KIT-FEEDBACK-TEMPLATE.md` (copy to `KIT-FEEDBACK.md` at adoption, keep it through the build) or open an issue from `.github/ISSUE_TEMPLATE/bug_report.md` / `feedback.md` — the route back to the maintainer |
 
 The conditional **gates** already work this way — each activates only when its trigger applies. The
 docs are discovered the same way. Nothing here is optional-to-*skip*; it is optional-to-*read-now*.
@@ -82,7 +85,9 @@ learn it for real → where the kit applies it.**
 > speed bump, not a security boundary** (it raises friction on many irreversible actions but does not
 > stop a determined bypass — see [`docs/operations/runtime-guards.md`](docs/operations/runtime-guards.md));
 > the real safety net is the platform controls your org owns. CI gates run on every project regardless
-> of what you read. This section makes you *educated*; the guardrails *reduce* risk — they don't remove it.
+> of what you read — on a brownfield adoption the aggregate CI step is merged into your existing
+> pipeline by hand, and reads N/A until it is (`docs/adoption/brownfield.md` §1). This section makes
+> you *educated*; the guardrails *reduce* risk — they don't remove it.
 
 ---
 
@@ -199,5 +204,6 @@ Working alone? The kit assumes multiple people in places (builder ≠ sole revie
 - [ ] Per-project config declared
 - [ ] Roles assigned
 - [ ] *(data-handling projects)* BIA done — written from `templates/BIA-TEMPLATE.md` to `docs/continuity/BIA.md` (a file you create; it does not ship); per-tier RTO/RPO set; restore drill scheduled
+- [ ] Feedback route known — `templates/KIT-FEEDBACK-TEMPLATE.md` copied to `KIT-FEEDBACK.md`, and `.github/ISSUE_TEMPLATE/bug_report.md` / `feedback.md` are the way to report kit friction upstream
 
 **All checked?** Delete this file (or keep for reference), and enter the loop at **Discover** (`DEVELOPMENT-PROCESS.md` §4). Welcome aboard.

@@ -345,7 +345,7 @@ incept_date_tests() {  # appends to $st (0 = all good)
 # led the first file an agent reads and the `> **Template.**` banner survived into five delivered files;
 # (2) lean and enterprise stamped RUNBOOKs differed in NOTHING. LIVE incept runs, never a template grep.
 # `[date]` is NOT swept — a live sentinel 5 checks grep for (dr/resilience/containment/cost/egress).
-_B3ART='CLAUDE.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md docs/governance/DECISIONS.md'
+_B3ART='CLAUDE.md README.md RUNBOOK.md BACKLOG.md REQUIRED-CHECKS.md SECURITY.md docs/governance/DECISIONS.md'
 # The residue verdict as a REUSABLE predicate over a tree: _res=0 clean, 1 dirty. Factored out so the
 # mutant can re-run THE CHECK ITSELF over a mutated tree (review R1: the first cut appended a banner
 # and then grepped for that banner — a tautology that would pass with the real sweep deleted).
@@ -545,6 +545,176 @@ incept_delivery_tests() {  # appends to $st (0 = all good)
     [ "$_res" = 0 ] && echo "selftest PASS: lean stamps a LIGHTER RUNBOOK than enterprise ($_ll < $_el lines), no marker leaks, enterprise still CARRIES the block, lean's TAIL intact"
   else echo "selftest FAIL: delivery (b) — a moded incept exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1; fi
   rm -rf "$_tl" "$_te" "$INCEPT_PRISTINE"; INCEPT_PRISTINE=''
+}
+
+# ===========================================================================================
+# ADOPTER-TREE-IDENTITY — the adopter's SECURITY.md and README.md are the ADOPTER'S. Neither can be
+# export-carved (the mirror IS an export), so every export ships the KIT's copies and incept's old
+# `[ -f SECURITY.md ] ||` guard was DEAD; incept now REPLACES them on the digest adopter-export.sh
+# recorded. Not the `kit-base` it vendors: that is staged FROM the tree being incepted, so a brownfield
+# adopter's file is its own "pristine twin" (measured). Why: docs/kit-internals/export-boundary.md.
+# THESE LEGS BUILD THEIR OWN FIXTURE — make_pristine_export's `git archive` ships neither .kit-manifest
+# nor .kit-digests (measured), so over that tree they could only ever exercise the fallback.
+# ===========================================================================================
+IDENT_EXPORT=''
+# The TEST's own sha256, never incept's helper: a broken hasher must not be able to agree with itself.
+_id_digest() {  # <file> -> sha256, or empty when no hasher exists
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 -- "$1" 2>/dev/null | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1
+  fi
+}
+_id_recorded() {  # <tree> <path> -> the digest the EXPORTER recorded, or empty
+  [ -f "$1/.kit-digests" ] || return 0
+  awk -v p="$2" '$2 == p { print $1; exit }' "$1/.kit-digests" 2>/dev/null || true
+}
+_id_origin() {  # <tree> <url> — incept would `git init` anyway; this is what picks the origin URL
+  ( cd "$1" && git init -q . >/dev/null 2>&1 && git remote add origin "$2" >/dev/null 2>&1 ) || return 1
+}
+make_export_artifact() {  # build ONCE: the tree an adopter REALLY receives (manifest + digests)
+  IDENT_EXPORT=$(mktemp -d) || return 1
+  sh "$REPO_ROOT/scripts/adopter-export.sh" "$IDENT_EXPORT/kit" >/dev/null 2>&1 || return 1
+  # Same worktree overlay as make_pristine_export, same reason: adopter-export archives HEAD, so
+  # without it these legs would exercise the COMMITTED incept.sh, not the one under change. This slice
+  # does not modify SECURITY.md/README.md, so their recorded digests stay truthful.
+  _idmods=$( cd "$REPO_ROOT" && git diff --name-only HEAD ) || return 1
+  for _idmf in $_idmods; do
+    [ -f "$IDENT_EXPORT/kit/$_idmf" ] || continue
+    cp "$REPO_ROOT/$_idmf" "$IDENT_EXPORT/kit/$_idmf" || return 1
+  done
+  [ -f "$IDENT_EXPORT/kit/scripts/incept.sh" ] || return 1
+  [ -f "$IDENT_EXPORT/kit/SECURITY.md" ] && [ -f "$IDENT_EXPORT/kit/README.md" ] || return 1
+  return 0
+}
+fresh_artifact_tree() {  # echo a fresh, un-incepted copy of the export artifact
+  [ -n "$IDENT_EXPORT" ] && [ -d "$IDENT_EXPORT/kit/scripts" ] || return 1
+  _at=$(mktemp -d) || return 1
+  cp -R "$IDENT_EXPORT/kit/." "$_at/" || return 1
+  printf '%s\n' "$_at"
+}
+
+# The identity verdict as a REUSABLE predicate (_idres: 0 clean, 1 dirty) — the _b3sweep shape, and for
+# its reason: the mutant re-runs THIS function over a tree where the replacement was undone and requires
+# the verdict to flip, which a fixture-local grep pair could not do.
+_id_assert() {  # <tree> <loud|quiet> [expect-channel-repo]
+  _idres=0; _idloud="$2"; _idt="$1"
+  _idflag() { [ "$_idloud" = loud ] && echo "selftest FAIL: $1"; _idres=1; return 0; }
+  for _idf in SECURITY.md README.md; do
+    _idrec=$(_id_recorded "$_idt" "$_idf")
+    if [ -z "$_idrec" ]; then
+      _idflag "the export recorded no .kit-digests entry for $_idf — incept has no fact to tell the kit's file from the adopter's"
+    elif [ "$(_id_digest "$_idt/$_idf")" = "$_idrec" ]; then
+      _idflag "the adopter's $_idf still matches the digest the exporter recorded for the KIT's copy — incept shipped the kit's own $_idf as the adopter's"
+    fi
+  done
+  # The kit-repo grep is SCOPED TO SECURITY.md: that is the disclosure-channel defect. The README
+  # carries one attribution link to the kit BY DESIGN, so the same grep there would fail on the
+  # feature; its negatives are its title and the kit's front-door tagline.
+  grep -Fq 'SeaBrad72/sparkwright' "$_idt/SECURITY.md" 2>/dev/null && _idflag "the adopter's SECURITY.md names the KIT's repo — a reporter on their product is routed to the kit author"
+  head -1 "$_idt/README.md" 2>/dev/null | grep -q 'DateProbe' || _idflag "the adopter's README.md title is not the project name (their front door is still the kit's)"
+  grep -Fq 'The agentic SDLC kit' "$_idt/README.md" 2>/dev/null && _idflag "the adopter's README.md still carries the KIT's front-door tagline — they were handed the kit's README"
+  # The POSITIVE counterpart of leg (d) — an absence-only assertion there would be tautological.
+  [ -z "${3:-}" ] || grep -Fq "$3" "$_idt/SECURITY.md" 2>/dev/null || _idflag "SECURITY.md does not declare the adopter's own 'Channel repo:' ($3) parsed from origin"
+  return 0
+}
+
+incept_identity_tests() {  # appends to $st (0 = all good)
+  make_export_artifact || { echo "selftest FAIL: identity fixture setup — adopter-export.sh produced no usable artifact (fail-closed)"; st=1; return 0; }
+  _idbad() { echo "selftest FAIL: $1"; st=1; _idres=1; }
+  _idsetup() {  # <label> [origin-url] -> the tree in $_t, or 1 (already reported)
+    _idres=0; _t=$(fresh_artifact_tree) || { echo "selftest FAIL: identity fixture ($1) — no tree"; st=1; return 1; }
+    [ -z "${2:-}" ] || _id_origin "$_t" "$2" || { echo "selftest FAIL: identity fixture ($1) — no origin"; st=1; rm -rf "$_t"; return 1; }
+  }
+  _idran() {  # <label> — run incept, reporting a non-zero exit as this leg's failure
+    run_incept "$_t" && return 0
+    echo "selftest FAIL: identity ($1) — incept exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1; return 1
+  }
+
+  # (a) IDENTITY (positive anchor): a live incept on the real export artifact hands the adopter THEIR
+  # SECURITY.md and THEIR README.md, with the channel repo parsed from their own origin.
+  if _idsetup a 'https://github.com/acme/widget.git' && _idran a; then
+    _id_assert "$_t" loud 'acme/widget'
+    [ "$_idres" = 0 ] || st=1
+    # The REPLACED files must clear the delivery bar too: until this slice _B3ART graded files incept
+    # never touched, so the banner/placeholder sweep had nothing to say about them.
+    _idkeep=$_idres; _b3sweep "$_t" loud
+    [ "$_res" = 0 ] || { st=1; _idkeep=1; }
+    # FIRST RUN GREEN, EXECUTED RATHER THAN ASSERTED (the board_governance_stamp_tests precedent): the
+    # gate an adopter's own CI runs must pass on the tree incept just produced.
+    if sh "$REPO_ROOT/conformance/security-policy.sh" "$_t" >/dev/null 2>&1; then :; else
+      echo "selftest FAIL: security-policy.sh REDS on the freshly incepted tree — the adopter's first run is not green"
+      sh "$REPO_ROOT/conformance/security-policy.sh" "$_t" 2>&1 | tail -3 | sed 's/^/    /'; st=1; _idkeep=1
+    fi
+    [ "$_idkeep" = 0 ] && echo "selftest PASS: identity — a fresh incept's SECURITY.md and README.md are the ADOPTER'S (neither matches the exporter's recorded digest, no kit channel repo, the README titled with the project name, the channel repo the adopter's own), they pass the delivery sweep, and security-policy.sh is GREEN on the tree"
+
+    # IDENTITY-MUTANT (non-vacuity): put the KIT's SECURITY.md back, re-run the SAME predicate, require
+    # the verdict to flip. If it does not, an incept that skipped the replacement would pass.
+    _idmut=$(mktemp -d) && cp -R "$_t/." "$_idmut/" && cp "$IDENT_EXPORT/kit/SECURITY.md" "$_idmut/SECURITY.md"
+    _id_assert "$_idmut" quiet 'acme/widget'
+    if [ "$_idres" = 1 ]; then echo "selftest PASS: identity-mutant — restoring the KIT's SECURITY.md flips the identity verdict to RED (the digest and channel assertions are load-bearing)"
+    else echo "selftest FAIL: identity-mutant — the identity predicate scored the KIT's own SECURITY.md as the adopter's; it proves nothing"; st=1; fi
+    rm -rf "$_idmut"
+  fi
+  rm -rf "$_t"
+
+  # (b) BROWNFIELD-KEEP — the load-bearing negative the refuted predicate got backwards: an adopter's
+  # own SECURITY.md (a digest the exporter never recorded) survives BYTE-IDENTICAL. This is the leg
+  # that reds if the replacement is ever made unconditional.
+  if _idsetup b; then
+    printf '# Acme Security Policy\n\n**Security contact:** security@acme.example\n' > "$_t/SECURITY.md"
+    _idbefore=$(_id_digest "$_t/SECURITY.md")
+    if _idran b; then
+      [ "$(_id_digest "$_t/SECURITY.md")" = "$_idbefore" ] \
+        && echo "selftest PASS: brownfield-keep — an adopter's own SECURITY.md survives incept BYTE-IDENTICAL" \
+        || _idbad "incept CLOBBERED an adopter's own SECURITY.md — their disclosure policy was overwritten by the kit's template"
+    fi
+  fi
+  rm -rf "$_t"
+
+  # (c) NO-DIGESTS-LEAVE — an export older than this slice carries no record, so incept replaces
+  # NOTHING and SAYS so. README's digest moves either way (the row-swap runs regardless), so its TITLE
+  # is what says whether it was replaced.
+  if _idsetup c; then
+    rm -f "$_t/.kit-digests"
+    _idsec=$(_id_digest "$_t/SECURITY.md")
+    if _idran c; then
+      [ "$(_id_digest "$_t/SECURITY.md")" = "$_idsec" ] || _idbad "no .kit-digests, yet incept REPLACED SECURITY.md — it cannot know whose file that was"
+      head -1 "$_t/README.md" 2>/dev/null | grep -q 'DateProbe' && _idbad "no .kit-digests, yet incept REPLACED README.md — it cannot know whose file that was"
+      case "$INCEPT_OUT" in
+        *.kit-digests*) : ;;
+        *) _idbad "incept left both files unreplaced and did NOT say why — a silent no-op is indistinguishable from a bug" ;;
+      esac
+      [ "$_idres" = 0 ] && echo "selftest PASS: no-digests-leave — an export with no .kit-digests leaves both files alone AND names the missing record"
+    fi
+  fi
+  rm -rf "$_t"
+
+  # (d) CHANNEL-REPO-PARSE (security): an out-of-charset origin never reaches sed — the explicit
+  # placeholder stays, and the closing message tells the adopter to fill it.
+  if _idsetup d 'https://example.com/ow;ner/re&po`id`.git' && _idran d; then
+    grep -Fq 'ow;ner' "$_t/SECURITY.md" 2>/dev/null && _idbad "an out-of-charset origin URL reached the SECURITY.md stamp — the parse is not bounded"
+    grep -Fq '[owner/repo]' "$_t/SECURITY.md" || _idbad "an unparseable origin must LEAVE the explicit [owner/repo] placeholder, not a blank or a guess"
+    [ "$_idres" = 0 ] && echo "selftest PASS: channel-repo-parse — an out-of-charset origin yields the explicit placeholder and never reaches the stamp"
+  fi
+  rm -rf "$_t"
+
+  # (e) HOST-GATED PARSE (security, fix round 1): the template's contact is GITHUB private reporting, so
+  # a non-GitHub origin must NOT be stamped. MEASURED against the host-blind parse this replaced: a
+  # GitLab SUBGROUP became `sub/widget` and a local path `me/proj` — a plausible channel receiving
+  # nothing, which security-channel-live.sh would then attest against the wrong repo.
+  for _idorigin in 'https://gitlab.com/grp/sub/widget.git' '/Users/me/proj'; do
+    _idsetup e "$_idorigin" || continue
+    if _idran e; then
+      _idres=0
+      grep -Fq '[owner/repo]' "$_t/SECURITY.md" || _idbad "origin '$_idorigin' is not GitHub, yet the channel repo was stamped from it"
+      case "$INCEPT_OUT" in
+        *'not GitHub'*) : ;;
+        *) _idbad "origin '$_idorigin' left the placeholder but incept did not tell the adopter their forge needs a real contact" ;;
+      esac
+      [ "$_idres" = 0 ] && echo "selftest PASS: host-gated parse — origin '$_idorigin' leaves the explicit placeholder and says why"
+    fi
+    rm -rf "$_t"
+  done
+  rm -rf "$IDENT_EXPORT"; IDENT_EXPORT=''
 }
 
 # ===========================================================================================
@@ -1031,6 +1201,7 @@ selftest() {
   if [ -z "${KW3_INNER:-}" ]; then
     incept_date_tests
     incept_delivery_tests
+    incept_identity_tests
     incept_stamp_tests
     incept_stack_tests
     incept_prune_tests

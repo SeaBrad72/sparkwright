@@ -5,7 +5,7 @@
 #   sh scripts/adopter-export.sh <dest-dir> [--profile <stack>] [--selftest]
 # Operates on committed HEAD. NEVER writes inside the kit repo. Exit: 0 ok · 1 runtime · 2 usage.
 # POSIX sh; dash-clean.
-# What it changes: Writes the exported kit distribution into <dest-dir> (creates it); never writes inside the kit repo.
+# What it changes: Writes the exported kit distribution into <dest-dir> (creates it), including the .kit-manifest and .kit-digests records of what and which bytes it shipped; never writes inside the kit repo.
 # Guardrails: Operates on committed HEAD via `git archive`; refuses a non-empty <dest-dir> (no clobber); rejects an unknown --profile; never mutates the kit repo.
 set -eu
 
@@ -369,12 +369,56 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
   # #318 S1). The kit ships zero symlinks, so this drops nothing; conformance/kit-manifest.sh's own scan
   # DOES include -type l, so a symlink appearing on disk but absent from the manifest turns it RED.
   _mf=$(mktemp) || { echo "adopter-export: mktemp failed (manifest)" >&2; return 1; }
-  { ( cd "$_dest" && find . -type f | sed 's|^\./||' ); echo '.kit-manifest'; } \
+  { ( cd "$_dest" && find . -type f | sed 's|^\./||' ); echo '.kit-manifest'; echo '.kit-digests'; } \
     | LC_ALL=C sort -u > "$_mf" || { rm -f "$_mf"; echo "adopter-export: manifest build failed" >&2; return 1; }
   if [ ! -s "$_mf" ]; then
     rm -f "$_mf"; echo "adopter-export: refusing to write an EMPTY .kit-manifest" >&2; return 1
   fi
   mv "$_mf" "$_dest/.kit-manifest" && chmod 644 "$_dest/.kit-manifest"
+
+  # --- ADOPTER-TREE-IDENTITY: the export states WHICH BYTES it shipped (.kit-digests) ----------------
+  # The manifest says what shipped; it cannot say whether the SECURITY.md now sitting in an adopter's
+  # tree is the one this export put there or one the adopter wrote. incept must know, because it
+  # replaces the kit's own SECURITY.md/README.md (which cannot be export-ignored — the public mirror IS
+  # an export and security-channel-live.sh probes its policy) and must never touch the adopter's.
+  #
+  # THE EXPORTER IS THE ONLY ACTOR THAT CAN RECORD THIS, for the same reason it is the only one that can
+  # write the manifest: it is holding the kit's own tree, before an adopter's tree exists. The obvious
+  # alternative — incept comparing against the `kit-base` it vendors — was REFUTED by measurement:
+  # capture_kit_base stages kit-base FROM THE TREE BEING INCEPTED, so a brownfield adopter's own file
+  # becomes its own "pristine twin" and would be clobbered.
+  #
+  # SELF-EXCLUSION: no line for `.kit-digests` itself — a file cannot contain its own digest. Written
+  # AFTER .kit-manifest so the manifest's own digest is recorded. Locked by conformance/kit-manifest.sh.
+  # NO HASHER = NO FILE, said out loud: incept's fallback on a digest-less export is to leave both files
+  # alone, which is the safe direction. A silent empty/partial record would be the unsafe one.
+  _hasher=''
+  if command -v shasum >/dev/null 2>&1; then _hasher='shasum -a 256'
+  elif command -v sha256sum >/dev/null 2>&1; then _hasher='sha256sum'
+  fi
+  if [ -z "$_hasher" ]; then
+    echo "adopter-export: WARNING — no shasum/sha256sum on this machine, so NO .kit-digests was written." >&2
+    echo "  This export is still usable; incept will leave SECURITY.md and README.md as the kit's and say so." >&2
+  else
+    _df=$(mktemp) || { echo "adopter-export: mktemp failed (digests)" >&2; return 1; }
+    # Batch through xargs — one hasher process per few hundred paths, not per file. `grep -v` drops the
+    # self-entry. Paths come from `find -type f` (the kit ships none with spaces or newlines), and the
+    # NUL delimiter keeps that true even if one ever appeared with a space.
+    # TWO STEPS, on purpose: piping the hasher straight into `sort` would test SORT's rc and discard the
+    # hasher's, so an unreadable file would land as a short-but-sorted record and the manifest-coverage
+    # leg would be the only thing left standing between that and a silent wrong replacement.
+    if ! ( cd "$_dest" && grep -v '^\.kit-digests$' .kit-manifest | tr '\n' '\0' | xargs -0 $_hasher ) > "$_df.raw"; then
+      rm -f "$_df" "$_df.raw"; echo "adopter-export: digest build failed (hasher returned non-zero)" >&2; return 1
+    fi
+    if ! LC_ALL=C sort -k2 "$_df.raw" > "$_df"; then
+      rm -f "$_df" "$_df.raw"; echo "adopter-export: digest sort failed" >&2; return 1
+    fi
+    rm -f "$_df.raw"
+    if [ ! -s "$_df" ]; then
+      rm -f "$_df"; echo "adopter-export: refusing to write an EMPTY .kit-digests" >&2; return 1
+    fi
+    mv "$_df" "$_dest/.kit-digests" && chmod 644 "$_dest/.kit-digests"
+  fi
 
   _src_n=$( ( cd "$ROOT" && git ls-files | wc -l ) | tr -d ' ' )
   _out_n=$(find "$_dest" -type f | wc -l | tr -d ' ')
