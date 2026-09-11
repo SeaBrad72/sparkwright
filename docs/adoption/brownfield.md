@@ -4,17 +4,19 @@ Greenfield adoption (starting a new repo *from* the kit) is covered by `../../ST
 
 ## ⚠️ Read this first — the risk
 
-The kit's runtime safety is the **`.claude/` PreToolUse guard** (`.claude/hooks/guard.sh`, registered in `.claude/settings.json`). It blocks destructive/irreversible agent actions (`../../DEVELOPMENT-PROCESS.md` §13).
+The kit's runtime **guard floor** — enforced on **every** harness — is the **`pre-push` hook + the `kit-guard` CLI + the `agent-boundary` gate** (the `command-guard` *floor* in `../operations/harness-adapters.md`). On **Claude Code** (the reference harness) that floor is augmented by an inline **`PreToolUse` guard** (`.claude/hooks/guard.sh`, registered in `.claude/settings.json`) that intercepts destructive/irreversible actions *before* they run (`../../DEVELOPMENT-PROCESS.md` §13). **The inline `PreToolUse` interception is a Claude-native *bonus*, not the floor** — other `AGENTS.md`-aware harnesses get the floor (pre-push + `kit-guard` CLI + `agent-boundary`), not the inline guard (`../operations/harness-enforcement-evidence.md`).
 
-Brownfield **inverts the kit's risk gradient.** A greenfield repo starts empty and safe; a legacy repo already has `.env` files, cloud credentials, and kube contexts wired up. If you adopt the kit's *process* but skip the `.claude/` **merge** — so the guard isn't actually registered — you get **agents operating on a live system with real production reach and no runtime protection**, while believing you have the kit's safety. That is worse than not adopting the kit.
+Brownfield **inverts the kit's risk gradient.** A greenfield repo starts empty and safe; a legacy repo already has `.env` files, cloud credentials, and kube contexts wired up. If you adopt the kit's *process* but skip wiring your harness's guard floor — the `pre-push` hook on any harness, plus the `.claude/` **merge** that registers the `PreToolUse` guard on Claude Code — you get **agents operating on a live system with real production reach and no runtime protection**, while believing you have the kit's safety. That is worse than not adopting the kit.
 
-**Before any agent runs in this repo, verify the guard is live:**
+**Before any agent runs in this repo, verify your harness's guard floor is live.** On **Claude Code**, certify the `PreToolUse` guard (and the `pre-push` rung):
 
 ```sh
 sh conformance/guard-wired.sh
 ```
 
 It must print `guard-wired: OK`. If it FAILs, look at the wording: `guard-wired: FAIL — the runtime guard is NOT active; agents would run unprotected` means the merge below is genuinely broken — fix it. `guard-wired: FAIL — a guard rung is not wired` means only the SECOND rung (the installed `.git/hooks/pre-push` git hook, §2 step 5 below) is missing or stale — **expected at this point, before you've done §5**, not evidence the merge itself failed. (The Inception gate, `conformance/inception-done.sh`, also enforces this.)
+
+**On any other `AGENTS.md`-aware harness** the inline `PreToolUse` bonus does not exist — wire and verify the **floor** instead: the `.git/hooks/pre-push` hook (§2 step 5), the shipped `kit-guard` CLI, and the caller-agnostic `agent-boundary` gate (server-side at merge). See `../operations/harness-adapters.md` (the `command-guard` dimension) for the per-harness floor and its verifiers, and `../operations/harness-enforcement-evidence.md` for what has been exercised end-to-end (e.g. the floor-verified `codex` adapter, whose emitted `pre-push` hook refused a real push-to-main with no Claude assistance).
 
 ## When to use this guide
 

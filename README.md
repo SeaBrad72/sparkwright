@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.228.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
+`v3.229.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
 
 Sparkwright brings a **guided, agent-driven lifecycle** to your software — whether you're starting a new project or layering it onto a repo you already have. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It's opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -27,7 +27,7 @@ cd my-app
 
 **Adopting into an existing repo (brownfield).** Layer the kit **in** rather than starting from it: generate the kit tree (`adopter-export.sh`), copy it into your repo root (**adapt, don't blind-overwrite** your own files), rename the shipped `CLAUDE.md` → `ENGINEERING-PRINCIPLES.md`, and **merge** `.claude/` rather than replacing yours.
 
-> ⚠️ **Before any agent runs, verify the guard is live** — `sh conformance/guard-wired.sh` must print `guard-wired: OK`. A legacy repo already has real credentials and production reach; adopting the *process* without wiring the guard means agents run unprotected on a live system — worse than not adopting at all. Full step-by-step: **[docs/adoption/brownfield.md](docs/adoption/brownfield.md)**.
+> ⚠️ **Before any agent runs, wire and verify your harness's guard floor** — the `pre-push` hook + `kit-guard` CLI + `agent-boundary` gate on *every* harness, plus (on Claude Code, the reference harness) the inline `PreToolUse` guard, which `sh conformance/guard-wired.sh` certifies (`guard-wired: OK`). A legacy repo already has real credentials and production reach; adopting the *process* without the guard floor means agents run unprotected on a live system — worse than not adopting at all. Full step-by-step + the per-harness floor: **[docs/adoption/brownfield.md](docs/adoption/brownfield.md)**.
 
 Now **open your project in your AI coding tool** (Claude Code, or any `AGENTS.md`-aware agent) and tell it:
 
