@@ -64,7 +64,7 @@ fit-vs-maturity trade-off is explicit; see docs/adoption/DEPLOYMENT-ENVIRONMENT.
 
 ## 6. Disaster recovery
 - **RPO:** [< 24h default] · **RTO:** [< 4h default] — always fill these headline targets (replace the placeholders); for multi-criticality systems also fill the per-tier table below.
-- **Per-tier targets (multi-criticality systems, from the BIA — the file you create at `docs/continuity/BIA.md` from `templates/BIA-TEMPLATE.md`; it does not ship, and `conformance/dr-readiness.sh` looks for it once your project is data-backed):**
+- **Per-tier targets (multi-criticality systems, from the BIA — the file you create at `docs/continuity/BIA.md` from `templates/BIA-TEMPLATE.md`; it does not ship, and `sh conformance/readiness.sh dr-ready` looks for it once your project is data-backed):**
 
   | Tier | RTO | RPO |
   |------|-----|-----|

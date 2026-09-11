@@ -89,4 +89,4 @@ The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature bra
 
 ---
 
-**Last Updated:** 2026-08-27
+**Last Updated:** 2026-09-11

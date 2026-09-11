@@ -1,6 +1,6 @@
 # Orchestration — the thin 4-seat loop (E3a)
 
-**Status:** E3a reference capability — the *thin* slice of the kit's agent-orchestration epic. It ships the **Orchestrator + Engineer×N + Reviewer + Security** loop as fresh-authored, harness-neutral, conformance-held capability. Wider roster + hardened containment land in later E3 slices (see `docs/architecture/2026-06-22-e3-agentic-orchestration-design.md` and `…-2026-06-26-e3a-orchestrator-loop-design.md`).
+**Status:** E3a reference capability — the *thin* slice of the kit's agent-orchestration epic. It ships the **Orchestrator + Engineer×N + Reviewer + Security** loop as fresh-authored, harness-neutral, conformance-held capability. Wider roster + hardened containment land in later E3 slices.
 
 ## What it is
 

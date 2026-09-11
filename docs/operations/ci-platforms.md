@@ -70,7 +70,7 @@ Declare the 8 ids however the platform names units of work (job, stage, step, ta
 |--------|----------------|-----------------|
 | `conformance/branch-protection.sh` | Reads `repos/.../branches/main/protection` via `gh api` | The equivalent is **adopter-owned**: GitLab *protected branches* (require MR + pipeline success + approval rule), ADO *branch policies* (require PR + build validation + reviewers). Wire it on your platform; the check returns **UNVERIFIED** (exit 2) off GitHub rather than a false pass. |
 | `scripts/dora.sh` | Derives the DORA subset from GitHub APIs | Re-derive from GitLab (MR/pipeline analytics) or ADO (Pipelines/Boards analytics). It already prints **"unavailable"** per metric on any `gh` failure — it never fabricates a number. |
-| `scripts/board-drift.sh` | `gh pr view --json state` to reconcile board state against a PR | Adopter-owned: re-derive from the platform's own MR/PR state API. |
+| `conformance/board-drift.sh` | `gh pr view --json state` to reconcile board state against a PR | Adopter-owned: re-derive from the platform's own MR/PR state API. |
 | `conformance/mirror-tag-protection.sh` | `gh api repos/.../rulesets` to read tag-protection rulesets | Adopter-owned: GitLab protected tags, ADO tag/branch policies. |
 | `conformance/security-channel-live.sh` | Probes with `gh api` by default (`--probe-cmd` swaps the probe) | Adopter-owned: point `--probe-cmd` at a platform-appropriate live probe. |
 | `scripts/agent-trace.sh` | `gh pr view --json number,url,reviews,state` to trace a PR's review record | Adopter-owned: re-derive from the platform's MR/PR review API. |
