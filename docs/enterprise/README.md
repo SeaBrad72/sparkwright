@@ -10,6 +10,7 @@ Governance, compliance, and privacy guidance for organizations adopting this kit
 
 | Doc | Purpose |
 |-----|---------|
+| [KIT-THREAT-MODEL.md](KIT-THREAT-MODEL.md) | Sparkwright's **own** threat model, published as a reference for teams evaluating the kit's security posture — not a template for your own system. |
 | [EXEC-BRIEF.md](EXEC-BRIEF.md) | Leadership entry point — what / why / assurance / honest boundaries / compliance-at-a-glance. |
 | [ORG-ROLLOUT.md](ORG-ROLLOUT.md) | Pilot→expand→fleet adoption, the canonical Stage 1–4 maturity model, fleet upgrade. **The rollout playbook is ❄️ frozen pre-adoption (2026-08-19)** — it returns with the first adopter; the **Stage 1–4 maturity model in it stays canonical and live**. |
 | [ROI-MODEL.md](ROI-MODEL.md) | Parameterized ROI worksheet + a labeled worked example. **❄️ Frozen pre-adoption (2026-08-19)** — returns with the first adopter. |

@@ -79,6 +79,14 @@ MARKER_RE='^[[:space:]]*\*\*Current release:\*\*'
 # would have meant reshaping the document to suit the check rather than the other way round.
 TM=THREAT-MODEL.md
 TM_MARKER_RE='\*\*Kit version:\*\*'
+# ── THE THIRD ROW OF THE MARKER TABLE (PUBLIC-DEIDENTIFICATION, workstream C). The shipped, de-identified
+# REFERENCE copy of the threat model (`docs/enterprise/KIT-THREAT-MODEL.md`, NOT export-ignored — it ships
+# to adopters). Same grammar, same marker prefix, a different file: without this row a release could bump
+# VERSION and root THREAT-MODEL.md's marker while the shipped reference silently kept quoting an old one.
+# The drift ceiling is disclosed at the file's own header: only the version marker is ratcheted here, not
+# a byte-for-byte content sync with the root copy.
+KE=docs/enterprise/KIT-THREAT-MODEL.md
+KE_MARKER_RE='\*\*Kit version:\*\*'
 
 # ── THE VERDICT ENGINE ──────────────────────────────────────────────────────────────────────────────
 # Reads RUNBOOK.md and VERSION RELATIVE TO THE CURRENT DIRECTORY — deliberately no `cd "$(dirname $0)"`,
@@ -111,6 +119,7 @@ rb_verdict() {  # <armed 0|1>
   # accumulator (the mutation sweep's one unambiguous fail-path token).
   rb_file_verdict "$RB" "$MARKER_RE" "current-release" 's/^.*Current release:\*\*[[:space:]]*//' || _bad=1
   rb_file_verdict "$TM" "$TM_MARKER_RE" "kit-version" 's/^.*Kit version:\*\*[[:space:]]*//' || _bad=1
+  rb_file_verdict "$KE" "$KE_MARKER_RE" "kit-version" 's/^.*Kit version:\*\*[[:space:]]*//' || _bad=1
   return "$_bad"
 }
 
@@ -213,12 +222,14 @@ selftest() {
   rb_put "$W/current" "VERSION" "9.9.9\n"
   rb_put "$W/current" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9 (untagged mid-phase, by ruling)\n\nprose\n"
   rb_put "$W/current" "THREAT-MODEL.md" "# Threat model\n\n**System:** kit **Kit version:** v9.9.9 - **Date:** 2026-08-25\n"
+  rb_put "$W/current" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9 - **Date:** 2026-08-25\n"
   rb_expect "a runbook naming the current VERSION passes" 0 "$W/current"
   rb_says  "and the declared release is PRINTED, not merely accepted" "declares v9.9.9" "$W/current"
   rb_says  "and the VERSION it was graded against is printed too" "VERSION is v9.9.9" "$W/current"
   rb_says  "and the marker count is printed" "1 current-release marker line(s)" "$W/current"
   rb_says  "and the scanned size is printed" "5 line(s) scanned" "$W/current"
   rb_says  "and the SECOND governed record is graded and named too" "THREAT-MODEL.md declares v9.9.9" "$W/current"
+  rb_says  "and the THIRD governed record (the shipped reference) is graded and named too" "docs/enterprise/KIT-THREAT-MODEL.md declares v9.9.9" "$W/current"
   rb_denies "and the green never over-claims content truth" "FAIL" "$W/current"
 
   # ── THE SECOND MARKER FILE (A4). The kit shipped a THREAT-MODEL.md stamped 3.185.0 against a
@@ -229,6 +240,7 @@ selftest() {
   rb_put "$W/tm-stale" "VERSION" "9.9.9\n"
   rb_put "$W/tm-stale" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
   rb_put "$W/tm-stale" "THREAT-MODEL.md" "# Threat model\n\n**System:** kit **Kit version:** v1.0.0 - **Date:** old\n"
+  rb_put "$W/tm-stale" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_expect "a STALE THREAT-MODEL stamp FAILS even when the RUNBOOK is current" 1 "$W/tm-stale"
   rb_says  "and names the file and both figures" "THREAT-MODEL.md declares release 'v1.0.0'" "$W/tm-stale"
 
@@ -236,6 +248,7 @@ selftest() {
   rb_put "$W/tm-dup" "VERSION" "9.9.9\n"
   rb_put "$W/tm-dup" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
   rb_put "$W/tm-dup" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v9.9.9\n\nfooter\n\n**Kit version:** v1.0.0\n"
+  rb_put "$W/tm-dup" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_expect "TWO kit-version markers FAIL (the header/footer double-stamp actually shipped)" 1 "$W/tm-dup"
   rb_says  "and the count is named" "carries 2" "$W/tm-dup"
 
@@ -243,8 +256,46 @@ selftest() {
   rb_put "$W/tm-none" "VERSION" "9.9.9\n"
   rb_put "$W/tm-none" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
   rb_put "$W/tm-none" "THREAT-MODEL.md" "# Threat model\n\nno stamp anywhere\n"
+  rb_put "$W/tm-none" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_expect "a THREAT-MODEL with NO kit-version marker FAILS on an armed tree" 1 "$W/tm-none"
   rb_says  "and names the missing convention" "carries NO kit-version marker line" "$W/tm-none"
+
+  # ── THE THIRD MARKER FILE (PUBLIC-DEIDENTIFICATION workstream C). The shipped, de-identified
+  # reference copy. Same three failure shapes as the dev-tree THREAT-MODEL.md above, proven separately
+  # because it is a DIFFERENT file this check must independently notice going stale, duplicated, or
+  # unmarked — a currency check that only ever reads two of its three governed files is silently blind
+  # to the third.
+  rb_init "$W/ke-stale"
+  rb_put "$W/ke-stale" "VERSION" "9.9.9\n"
+  rb_put "$W/ke-stale" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/ke-stale" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/ke-stale" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v1.0.0\n"
+  rb_expect "a STALE shipped-reference stamp FAILS even when RUNBOOK + dev THREAT-MODEL are current" 1 "$W/ke-stale"
+  rb_says  "and names the file and both figures" "docs/enterprise/KIT-THREAT-MODEL.md declares release 'v1.0.0'" "$W/ke-stale"
+
+  rb_init "$W/ke-dup"
+  rb_put "$W/ke-dup" "VERSION" "9.9.9\n"
+  rb_put "$W/ke-dup" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/ke-dup" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/ke-dup" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n\nfooter\n\n**Kit version:** v1.0.0\n"
+  rb_expect "TWO kit-version markers on the shipped reference FAIL" 1 "$W/ke-dup"
+  rb_says  "and the count is named" "docs/enterprise/KIT-THREAT-MODEL.md carries 2" "$W/ke-dup"
+
+  rb_init "$W/ke-none"
+  rb_put "$W/ke-none" "VERSION" "9.9.9\n"
+  rb_put "$W/ke-none" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/ke-none" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/ke-none" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\nno stamp anywhere\n"
+  rb_expect "the shipped reference with NO kit-version marker FAILS on an armed tree" 1 "$W/ke-none"
+  rb_says  "and names the missing convention" "docs/enterprise/KIT-THREAT-MODEL.md carries NO kit-version marker line" "$W/ke-none"
+
+  rb_init "$W/ke-missing"
+  rb_put "$W/ke-missing" "VERSION" "9.9.9\n"
+  rb_put "$W/ke-missing" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/ke-missing" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v9.9.9\n"
+  rb_expect "a KIT-MARKED tree with NO shipped KIT-THREAT-MODEL.md FAILS" 1 "$W/ke-missing"
+  rb_says  "and names the shipped reference as the absent file" "docs/enterprise/KIT-THREAT-MODEL.md is absent" "$W/ke-missing"
+  rb_says  "and says so in the concealment-class language" "never an N/A" "$W/ke-missing"
 
   # ⚠️ EVERY ARMED FIXTURE BELOW CARRIES A CURRENT THREAT-MODEL.md, and that is not decoration.
   # Adding the second marker file made these six legs RC-OVER-DETERMINED: each would have returned 1
@@ -258,6 +309,7 @@ selftest() {
   rb_init "$W/stale"
   rb_put "$W/stale" "VERSION" "9.9.9\n"
   rb_put "$W/stale" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/stale" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/stale" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v1.0.0\n"
   rb_expect "a runbook naming a STALE release FAILS" 1 "$W/stale"
   rb_says  "and BOTH figures are named, never just the verdict" "declares release 'v1.0.0' but VERSION says 'v9.9.9'" "$W/stale"
@@ -268,6 +320,7 @@ selftest() {
   rb_init "$W/dup"
   rb_put "$W/dup" "VERSION" "9.9.9\n"
   rb_put "$W/dup" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/dup" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/dup" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v1.0.0\n\nlater section\n\n**Current release:** v9.9.9\n"
   rb_expect "a stale marker sitting beside a CURRENT one FAILS" 1 "$W/dup"
   rb_says  "and the count is named" "carries 2 current-release marker lines" "$W/dup"
@@ -277,6 +330,7 @@ selftest() {
   rb_init "$W/dup2"
   rb_put "$W/dup2" "VERSION" "9.9.9\n"
   rb_put "$W/dup2" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/dup2" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/dup2" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n\n**Current release:** v9.9.9\n"
   rb_expect "TWO CURRENT markers still FAIL (uniqueness, not staleness, is the rule)" 1 "$W/dup2"
   rb_says  "and the count is named" "carries 2 current-release marker lines" "$W/dup2"
@@ -286,6 +340,7 @@ selftest() {
   rb_init "$W/nomarker"
   rb_put "$W/nomarker" "VERSION" "9.9.9\n"
   rb_put "$W/nomarker" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/nomarker" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_put "$W/nomarker" "RUNBOOK.md" "# RUNBOOK\n\nno anchor here at all\n"
   rb_expect "a runbook with NO marker line FAILS on an armed tree" 1 "$W/nomarker"
   rb_says  "and names the missing convention" "carries NO current-release marker line" "$W/nomarker"
@@ -295,6 +350,7 @@ selftest() {
   rb_init "$W/missing"
   rb_put "$W/missing" "VERSION" "9.9.9\n"
   rb_put "$W/missing" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/missing" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_expect "a KIT-MARKED tree with NO RUNBOOK.md FAILS" 1 "$W/missing"
   rb_says  "and says so in the concealment-class language" "never an N/A" "$W/missing"
   rb_says  "and names RUNBOOK.md as the absent file, not the other record" "RUNBOOK.md is absent" "$W/missing"
@@ -305,6 +361,7 @@ selftest() {
   rb_init "$W/tm-missing"
   rb_put "$W/tm-missing" "VERSION" "9.9.9\n"
   rb_put "$W/tm-missing" "RUNBOOK.md" "# RUNBOOK\n\n**Current release:** v9.9.9\n"
+  rb_put "$W/tm-missing" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_expect "a KIT-MARKED tree with NO THREAT-MODEL.md FAILS" 1 "$W/tm-missing"
   rb_says  "and names THE THREAT MODEL as the absent file" "THREAT-MODEL.md is absent" "$W/tm-missing"
   rb_says  "and says so in the concealment-class language" "never an N/A" "$W/tm-missing"
@@ -327,6 +384,7 @@ selftest() {
   printf 'name: golden-path\n' > "$W/token2/.github/workflows/golden-path.yml"
   rb_put "$W/token2" "VERSION" "9.9.9\n"
   rb_put "$W/token2" "THREAT-MODEL.md" "# TM\n\n**Kit version:** v9.9.9\n"
+  rb_put "$W/token2" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v9.9.9\n"
   rb_expect "the golden-path.yml marker ALONE still arms the check (no ROADMAP-KIT.md)" 1 "$W/token2"
   rb_says  "and it fails as an armed tree, not as an adopter one" "never an N/A" "$W/token2"
 
@@ -355,6 +413,16 @@ selftest() {
   rb_put "$W/natm" "THREAT-MODEL.md" "# Threat model\n\n**Kit version:** v1.0.0\n"
   rb_expect "an adopter tree with a STALE THREAT-MODEL stamp is still N/A" 0 "$W/natm"
   rb_denies "and never renders a FAIL at an adopter's threat model" "FAIL" "$W/natm"
+
+  # ── UNARMED + A STALE shipped reference -> STILL N/A. `docs/enterprise/KIT-THREAT-MODEL.md` DOES
+  # ship to adopters (it is not export-ignored — that is the whole point of workstream C), so this leg
+  # is the one that proves the adopter face stays unconditional even though the file itself reaches
+  # every adopter tree, not just the kit's own.
+  rb_bare "$W/nake"
+  rb_put "$W/nake" "VERSION" "9.9.9\n"
+  rb_put "$W/nake" "docs/enterprise/KIT-THREAT-MODEL.md" "# Kit threat model (reference)\n\n**Kit version:** v1.0.0\n"
+  rb_expect "an adopter tree with a STALE shipped-reference stamp is still N/A" 0 "$W/nake"
+  rb_denies "and never renders a FAIL at an adopter's copy of the shipped reference" "FAIL" "$W/nake"
 
   # The predicate below is COPIED VERBATIM from verify.sh's is_self_skip (C6). If that idiom ever
   # changes, this leg is what tells us this check silently started rendering PASS instead of N-A.

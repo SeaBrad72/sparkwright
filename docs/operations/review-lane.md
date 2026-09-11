@@ -130,7 +130,7 @@ When the agent opens PRs under your identity, two things are true that the headl
 
 ## The ratification seat (solo)
 
-This kit's own repo runs a **ratification seat**: a second GitHub account (`@ISBrad72`) belonging to
+This kit's own repo runs a **ratification seat**: a second GitHub account (`@ratifier`) belonging to
 the same human as the author (`@SeaBrad72`), declared in
 `.kit/ratification-seats.conf` (kit-internal, export-ignored — deliberately a code span, not a link:
 a kept doc must not link to a file the adopter export prunes). It is the concrete answer

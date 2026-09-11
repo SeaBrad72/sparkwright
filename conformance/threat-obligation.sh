@@ -464,6 +464,21 @@ selftest() {
   else
     echo "SELFTEST NOTE: leg 11b skipped — no real THREAT-MODEL.md on this tree (expected on the pruned adopter export; the hermetic legs above do not depend on it)"
   fi
+  # LEG 11c (drift detection, SKIP-SAFE, PUBLIC-DEIDENTIFICATION fix round) — the SHIPPED reference
+  # copy, docs/enterprise/KIT-THREAT-MODEL.md, is a K4 copy-denial concern too: threat-obligation.sh
+  # itself only ever reads the ROOT file (verified by K4's own design — a docs/enterprise/ copy can
+  # never satisfy an adopter's own obligation), but nothing previously asserted the shipped reference
+  # kept carrying the fingerprint verbatim, so a benign reword there could silently drift the two
+  # copies apart with no check noticing. Same skip-safe shape as leg 11b: absent on a tree that does
+  # not carry it is a SKIP, not a FAIL.
+  _kefile="$DIR/docs/enterprise/KIT-THREAT-MODEL.md"
+  if [ -f "$_kefile" ] && [ -s "$_kefile" ]; then
+    if ! grep -qF -e "$OBL_KIT_FINGERPRINT_1" "$_kefile"; then
+      echo "SELFTEST FAIL: docs/enterprise/KIT-THREAT-MODEL.md no longer carries the kit-fingerprint constant — a reword of its own header silently dropped the K4 drift marker"; rc=1
+    fi
+  else
+    echo "SELFTEST NOTE: leg 11c skipped — no docs/enterprise/KIT-THREAT-MODEL.md on this tree"
+  fi
   # LEG 12 (K4 stays-green / no-false-positive) — a GENUINE adopter threat model (no kit fingerprint,
   # filled) must still PASS. This is LEG 5's own fixture re-asserted under this name so the class this
   # slice adds (kitself) is proven not to regress the class LEG 5 already proves (L1 false-positive) —

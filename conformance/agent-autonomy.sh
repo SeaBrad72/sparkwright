@@ -1419,9 +1419,9 @@ assert_allow "read dials.conf"     '{"tool_name":"Read","tool_input":{"file_path
 # It is now named at all SIX sites of the `.kit/` matcher corpus and the agreement is gated
 # (`dt_corpus_ok`). Asserted per mutation FORM, because a per-form gap is how both of them hid.
 assert_deny  "Write seats.conf"    '{"tool_name":"Write","tool_input":{"file_path":".kit/ratification-seats.conf","content":"x"}}'
-assert_deny  "Edit seats.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/ratification-seats.conf","old_string":"SEAT=isbrad72","new_string":"SEAT="}}'
+assert_deny  "Edit seats.conf"     '{"tool_name":"Edit","tool_input":{"file_path":".kit/ratification-seats.conf","old_string":"SEAT=octocat","new_string":"SEAT="}}'
 assert_deny  "redirect seats.conf" '{"tool_name":"Bash","tool_input":{"command":"printf x > .kit/ratification-seats.conf"}}'
-assert_deny  "sed -i seats.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/isbrad72// .kit/ratification-seats.conf"}}'
+assert_deny  "sed -i seats.conf"   '{"tool_name":"Bash","tool_input":{"command":"sed -i s/octocat// .kit/ratification-seats.conf"}}'
 assert_deny  "rm seats.conf"       '{"tool_name":"Bash","tool_input":{"command":"rm .kit/ratification-seats.conf"}}'
 assert_allow "read seats.conf"     '{"tool_name":"Read","tool_input":{"file_path":".kit/ratification-seats.conf"}}'
 # --- CP-MATCHER-CORPUS-DERIVED: the INTERPRETER route, the form the "all three matchers" count missed
@@ -2241,16 +2241,16 @@ assert_deny "C4-A2 wrapper > cp (ord)"  '{"tool_name":"Bash","tool_input":{"comm
 assert_deny "C4-A2 timeout sed -i cp"   '{"tool_name":"Bash","tool_input":{"command":"timeout 600 sed -i s/x/y/ hooks/pre-push"}}'
 assert_deny "C4-A2 command rm cp"       '{"tool_name":"Bash","tool_input":{"command":"command rm -rf conformance"}}'
 # ---- Arm 3 (face c): remote-URL token masking for git-lead segments FLIPs to ALLOW ----
-assert_allow "C4-A3 clone https"        '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/SeaBrad72/sparkwright-dev.git /tmp/x"}}'
-assert_allow "C4-A3 fetch https"        '{"tool_name":"Bash","tool_input":{"command":"git fetch https://github.com/SeaBrad72/sparkwright-dev.git main"}}'
-assert_allow "C4-A3 clone scp-form"     '{"tool_name":"Bash","tool_input":{"command":"git clone git@github.com:SeaBrad72/sparkwright-dev.git /tmp/x"}}'
+assert_allow "C4-A3 clone https"        '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/example-org/private-dev.git /tmp/x"}}'
+assert_allow "C4-A3 fetch https"        '{"tool_name":"Bash","tool_input":{"command":"git fetch https://github.com/example-org/private-dev.git main"}}'
+assert_allow "C4-A3 clone scp-form"     '{"tool_name":"Bash","tool_input":{"command":"git clone git@github.com:example-org/private-dev.git /tmp/x"}}'
 # must-stay DENY: the raw clone-DEST arm, the token-bound-mask pin (dest not swallowed), file:// (never
 # masked), the push-to-main floor, and a non-git lead whose URL literally contains a CP path.
-assert_deny "C4-A3 clone dest .claude"  '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/SeaBrad72/sparkwright-dev.git .claude"}}'
+assert_deny "C4-A3 clone dest .claude"  '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/example-org/private-dev.git .claude"}}'
 assert_deny "C4-A3 clone dest hooks"    '{"tool_name":"Bash","tool_input":{"command":"git clone https://github.com/x/other.git hooks"}}'
 assert_deny "C4-A3 push dest hooks"     '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/x/r.git hooks"}}'
 assert_deny "C4-A3 file:// never mask"  '{"tool_name":"Bash","tool_input":{"command":"git clone file:///tmp/evil/.git /tmp/x"}}'
-assert_deny "C4-A3 push main floor"     '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/SeaBrad72/sparkwright-dev.git main"}}'
+assert_deny "C4-A3 push main floor"     '{"tool_name":"Bash","tool_input":{"command":"git push https://github.com/example-org/private-dev.git main"}}'
 assert_deny "C4-A3 curl non-git lead"   '{"tool_name":"Bash","tool_input":{"command":"curl -O https://example.com/hooks/pre-push.git"}}'
 
 # =============================================================================================

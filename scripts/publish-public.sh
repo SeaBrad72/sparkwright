@@ -181,11 +181,13 @@ sensitive_hits() {
     \) -print 2>>"$_errf" | sed "s|^$_tree/||"
 
   # (2) owner identifiers in CONTENT, from the export-ignored config (identity-neutral by construction;
-  #     absent => this dimension is N/A). -F: fixed strings, no regex surprises; -a: scan binaries too.
+  #     absent => this dimension is N/A). -F: fixed strings, no regex surprises; -a: scan binaries too;
+  #     -i: case-INSENSITIVE — a cased variant of a denylisted token (e.g. a login capitalised in
+  #     prose) must not slip past a case-sensitive match (PUBLIC-DEIDENTIFICATION fix round).
   if [ -f "$PUBLISH_ID_FILE" ]; then
     while IFS= read -r _id || [ -n "$_id" ]; do
       case "$_id" in ''|\#*) continue ;; esac
-      grep -rlaF -e "$_id" "$_tree" 2>>"$_errf" | sed "s|^$_tree/||"
+      grep -rlaiF -e "$_id" "$_tree" 2>>"$_errf" | sed "s|^$_tree/||"
     done < "$PUBLISH_ID_FILE"
   fi
 
@@ -209,7 +211,7 @@ selftest() {
   # isolate the identifier config: a controlled token no source file contains, so the scan is exercised
   # without depending on (or embedding) the real owner identifiers.
   PUBLISH_ID_FILE=$(mktemp "${TMPDIR:-/tmp}/sw-pub-ids.XXXXXX") || die "mktemp failed"
-  printf '# test identifiers\nACME-OWNER-TOKEN-42\nowner@example.test\n' > "$PUBLISH_ID_FILE"
+  printf '# test identifiers\nACME-OWNER-TOKEN-42\nowner@example.test\nprivate-fork-dev\nOwner Human\nownerlogin\n' > "$PUBLISH_ID_FILE"
   # anchored: the offending path must appear as a WHOLE line, so no fixture can satisfy another's assertion.
   _hit()  { if sensitive_hits "$_t" | grep -qxF "$1"; then echo "  ok   RED   $2"; else echo "  FAIL missed   $2  ($1)"; _fail=$((_fail+1)); fi; }
   _pass() { if sensitive_hits "$_t" | grep -qxF "$1"; then echo "  FAIL false-pos $2  ($1)"; _fail=$((_fail+1)); else echo "  ok   PASS  $2"; fi; }
@@ -231,6 +233,18 @@ selftest() {
   printf 'owner path noted as ACME-OWNER-TOKEN-42 here\n'  > "$_t/docs/leaky.md"
   printf 'contact owner@example.test\n'                    > "$_t/docs/leaky-email.md"
   printf 'deny-case fixture: /home/u/.ssh/id_rsa\n'        > "$_t/docs/legit-example.md"
+  # PUBLIC-DEIDENTIFICATION: private-repo name + owner name/login leaking into a shipped file body
+  # (the class the scan missed — it caught secrets + home-paths only, not identity literals buried
+  # in a test/script body). Driven by the SAME generic PUBLISH_ID_FILE mechanism as the owner
+  # name/email above — no new code path, just a maintained denylist.
+  printf 'git clone https://github.com/example-org/private-fork-dev.git\n' > "$_t/docs/leaky-repo.md"
+  printf 'approved-by: Owner Human [committer]\n'          > "$_t/docs/leaky-name.md"
+  printf 'seat: ownerlogin\n'                               > "$_t/docs/leaky-login.md"
+  printf 'see https://github.com/example-org/product for the public repo\n' > "$_t/docs/legit-public-org.md"
+  # a CASED variant of a lowercase denylist token (real regression: a case-sensitive match let
+  # "Bradley James" past a lowercase "bradley" entry) — the config carries 'ownerlogin' lowercase,
+  # this fixture carries it capitalised, proving the -i match catches it.
+  printf 'ratification seat: OwnerLogin\n'                  > "$_t/docs/leaky-login-cased.md"
   # GREEN — shipped machinery / product vocabulary that must NOT trip the gate.
   : > "$_t/templates/FIELD-REPORT-TEMPLATE.md"      # blank form, not a report
   : > "$_t/templates/POSTMORTEM-TEMPLATE.md"        # blank form
@@ -253,6 +267,11 @@ selftest() {
   _hit  docs/2026-07-11-a-postmortem.md     "postmortem"
   _hit  docs/leaky.md                       "owner identifier in content (from config)"
   _hit  docs/leaky-email.md                 "owner email in content (from config)"
+  _hit  docs/leaky-repo.md                  "private-repo name leaked into a shipped file (PUBLIC-DEIDENTIFICATION)"
+  _hit  docs/leaky-name.md                  "owner display name leaked into a shipped file (PUBLIC-DEIDENTIFICATION)"
+  _hit  docs/leaky-login.md                 "owner login leaked into a shipped file (PUBLIC-DEIDENTIFICATION)"
+  _hit  docs/leaky-login-cased.md           "a CASED variant of a lowercase denylist token is caught (-i, PUBLIC-DEIDENTIFICATION fix round)"
+  _pass docs/legit-public-org.md            "the PUBLIC org/repo URL is NOT in the denylist and must not false-positive"
   _pass docs/legit-example.md               "generic /home/u example is NOT a false-positive"
   _pass templates/FIELD-REPORT-TEMPLATE.md  "blank template is shipped machinery"
   _pass templates/POSTMORTEM-TEMPLATE.md    "blank template is shipped machinery"

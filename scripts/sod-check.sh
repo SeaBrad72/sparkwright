@@ -164,30 +164,30 @@ selftest() {
     if [ "$g" = "$e" ]; then echo "selftest PASS: $lbl -> exit $g"; else echo "selftest FAIL: $lbl want $e got $g"; st=1; fi
   }
   _TAB=$(printf '\t')
-  seat_chk 0 'isbrad72' "isbrad72${_TAB}Ratification seat — same human as the author." \
+  seat_chk 0 'octocat' "octocat${_TAB}Ratification seat — same human as the author." \
     "seat approval WITH the old sentence -> still DETECTED (the alias case)"
   # ★ THE RETIREMENT, ASSERTED. Under the old rule this exact input was the FAIL leg. It is now the
   # ordinary, expected shape of a seat approval: GitHub's approve button submits an empty body.
-  seat_chk 0 'isbrad72' "isbrad72${_TAB}" \
+  seat_chk 0 'octocat' "octocat${_TAB}" \
     "seat approval with an EMPTY body -> DETECTED (the sentence rule is retired)"
-  seat_chk 0 'isbrad72' "isbrad72" \
+  seat_chk 0 'octocat' "octocat" \
     "…and with NO tab at all (a bare login line) -> DETECTED"
-  seat_chk 1 'isbrad72' "alice${_TAB}" \
+  seat_chk 1 'octocat' "alice${_TAB}" \
     "NON-seat approval -> NOT a seat (exit 1: the caller prints nothing)"
-  seat_chk 1 'isbrad72' "" \
+  seat_chk 1 'octocat' "" \
     "no approvals at all -> no seat detected"
-  seat_chk 1 '' "isbrad72${_TAB}lgtm" \
+  seat_chk 1 '' "octocat${_TAB}lgtm" \
     "no seats DECLARED -> nothing can be a seat (an adopter with no seats file)"
-  seat_chk 0 'ISBrad72' "isbrad72${_TAB}lgtm" \
+  seat_chk 0 'Octocat' "octocat${_TAB}lgtm" \
     "seat login is case-folded, so a cased declaration still binds"
-  seat_chk 1 'isbrad72' "isbrad7${_TAB}lgtm" \
+  seat_chk 1 'octocat' "octoca${_TAB}lgtm" \
     "a login that merely PREFIXES a seat is not that seat (whole-line -xF match)"
-  ( SOD_SEATS='isbrad72'; SOD_APPROVALS="isbrad72${_TAB}"; seat_approvals ) 2>/dev/null \
-    | grep -qxF "isbrad72" \
+  ( SOD_SEATS='octocat'; SOD_APPROVALS="octocat${_TAB}"; seat_approvals ) 2>/dev/null \
+    | grep -qxF "octocat" \
     && echo "selftest PASS: the detected seat LOGIN is printed bare, for the caller's disclosure" \
     || { echo "selftest FAIL: seat_approvals did not print the detected login"; st=1; }
   # THE BODY IS NOT READ, ASSERTED: a body that is itself a rival seat login must not be detected.
-  ( SOD_SEATS='isbrad72'; SOD_APPROVALS="alice${_TAB}isbrad72"; seat_approvals ) >/dev/null 2>&1 \
+  ( SOD_SEATS='octocat'; SOD_APPROVALS="alice${_TAB}octocat"; seat_approvals ) >/dev/null 2>&1 \
     && { echo "selftest FAIL: a seat login appearing in the BODY was treated as a seat approval"; st=1; } \
     || echo "selftest PASS: the approval BODY is not read (a seat login in the body is not a seat approval)"
 

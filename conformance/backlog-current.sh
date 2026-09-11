@@ -981,7 +981,7 @@ selftest() {
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_fail "$d" "In Progress item 'Add login'" "bad-unlinked-inprogress: empty Links -> FAIL"
 
@@ -1005,7 +1005,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 |  |
+| Add login | Octocat |  |
 EOF
   assert_fail "$d" "In Review item 'Add login'" "bad-unlinked-inreview: empty PR -> FAIL"
 
@@ -1029,7 +1029,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_fail "$d" "In Progress item 'Add login'" "bad-bare-na: bare 'N/A' Links -> FAIL"
 
@@ -1053,7 +1053,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_msg "$d" "in-progress N/A-escapes=1" "good-na-with-reason: 'N/A — reason' Links -> PASS (escape counted)"
 
@@ -1077,7 +1077,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | N/A — not opened yet |
+| Add login | Octocat | N/A — not opened yet |
 EOF
   assert_fail "$d" "In Review item 'Add login'" "bad-na-in-inreview: 'N/A — reason' PR -> FAIL (asymmetry)"
 
@@ -1104,7 +1104,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 | | | |
 EOF
   assert_msg "$d" "spacer-rows-skipped=3" "good-spacer-rows: 3 spacer rows skipped by the Item-empty rule (not as separators)"
@@ -1506,7 +1506,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_fail "$d" "In Progress — required column 'Links' not found" "bad-renamed-inprogress-col: 'Links' renamed -> schema-violation FAIL (not silent pass)"
 
@@ -1530,7 +1530,7 @@ EOF
 
 | Item | Reviewer | Merge |
 |------|----------|-------|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_fail "$d" "In Review — required column 'PR' not found" "bad-renamed-inreview-col: 'PR' renamed -> schema-violation FAIL"
 
@@ -1582,7 +1582,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Blocked
 
@@ -1612,7 +1612,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Blocked
 
@@ -1643,7 +1643,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Blocked
 
@@ -1674,7 +1674,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Blocked
 
@@ -1706,7 +1706,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Blocked
 
@@ -1737,7 +1737,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Blocked
 
@@ -1768,7 +1768,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_ok "$d" "good-no-blocked-section: board omits '## Blocked' -> PASS (Blocked is optional)"
 
@@ -1824,7 +1824,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 |  |
+| Add login | Octocat |  |
 | | | |
 EOF
   assert_fail "$d" "In Review item 'Add login'" "bad-real-inreview-above-spacer: real unlinked In Review row above the shipped spacer -> FAIL"
@@ -1851,7 +1851,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Notes
 > An example board for contributors (illustrative, not live):
@@ -2023,7 +2023,7 @@ EOF
 
 | Item | Reviewer | Pull |
 |------|----------|------|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_fail "$d" "required column 'PR' not found" "s7/n2-renamed: 'PR' renamed 'Pull' (table present) -> schema-violation FAIL (not 'empty')"
 
@@ -2048,7 +2048,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 |  |
+| Add login | Octocat |  |
 EOF
   assert_fail "$d" "must be a real PR link" "s7/n3-missing: empty PR cell on a real row -> FAIL"
 
@@ -2104,7 +2104,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2135,7 +2135,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2167,7 +2167,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2207,7 +2207,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2239,7 +2239,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2272,7 +2272,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2307,7 +2307,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2338,7 +2338,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2370,7 +2370,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2403,7 +2403,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Done
 
@@ -2616,7 +2616,7 @@ EOF
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 EOF
   assert_msg "$d" "board-arity-checked=3" \
     "good-arity-exact: 3 well-formed rows counted, spacer not counted -> PASS"
@@ -3016,7 +3016,7 @@ _good_board() {
 
 | Item | Reviewer | PR |
 |------|----------|----|
-| Add login | ISBrad72 | #34 |
+| Add login | Octocat | #34 |
 
 ## Released
 

@@ -3073,8 +3073,10 @@ _mkgov() {
 }
 
 # _mkreplay <dir> — the DURABLE PIN for the live defect (vet MED-3). The record body below is the
-# ledger's `1d9f0afa` REPLAYED BYTE-FAITHFULLY (10 lines, 536 bytes, read from the note blob
-# 2f2f392c on refs/notes/promotions): a `gate: design` GO whose basis is a meta-control artifact —
+# ledger's `1d9f0afa` REPLAYED byte-for-byte at 10 lines (the `approved-by` identity was later
+# de-identified for PUBLIC-DEIDENTIFICATION, so the exact byte count has drifted from the original
+# 536 read off the note blob 2f2f392c on refs/notes/promotions — nothing in this selftest asserts a
+# byte count, only the shape below): a `gate: design` GO whose basis is a meta-control artifact —
 # the exact workaround shape this arm retires. It must STAY defective forever, which is why the
 # durable evidence is this fixture and not a one-time run against the live ledger.
 # The approved-sha is the real one and does NOT resolve here, deliberately: the basis-glob leg fires
@@ -3099,7 +3101,7 @@ _mkreplay() {
     printf '%s\n' \
       'record: promotion GO (approve->execute->log)' \
       'approved-sha: 1d9f0afaf756c8d51cbf118d6f97665fbaf2be5a' \
-      'approved-by: Bradley James [committer]' \
+      'approved-by: Octo Cat [committer]' \
       'gate: design' \
       'rung: integration' \
       'change-class: control-plane' \
