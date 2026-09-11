@@ -66,16 +66,16 @@ fix-hint: build the distributable with `uv build` (feeds the provenance attestat
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-# The REAL protection: a FULL working-tree scan (`gitleaks dir . --redact`, fetch-depth: 0)
-# via a pinned+checksum-verified binary. `gitleaks dir` respects .gitignore, so build
+# The REAL protection: a FULL working-tree scan (`gitleaks git . --redact`, fetch-depth: 0)
+# via a pinned+checksum-verified binary. `gitleaks git` respects .gitignore, so build
 # output (dist/, .coverage) is out of scope with NO allowlist file needed.
-assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 assert: scaffoldfile .gitignore ^/?dist/?$
 assert: scaffoldfile .gitignore ^\.coverage$
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (dist/, .coverage) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (dist/, .coverage) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 id: dep-scan
 precondition: present gate-dep-scan

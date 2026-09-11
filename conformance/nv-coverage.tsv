@@ -87,6 +87,7 @@ conformance/promotion-verify-wired.sh	UNCOVERED	CTL-only — selftest may not ob
 conformance/proportional-gate-wired.sh	KILLED	-
 conformance/ratification-parity.sh	KILLED	-
 conformance/release-tag-wired.sh	KILLED	-
+conformance/review-lane.sh	KILLED	-
 conformance/roadmap-current.sh	KILLED	-
 conformance/roster-guard-wired.sh	KILLED	-
 conformance/runaway-killswitch-wired.sh	KILLED	-
@@ -100,6 +101,7 @@ conformance/selftest-hermetic.sh	KILLED	-
 conformance/shellcheck.sh	KILLED	-
 conformance/stack-decision-integrity.sh	EXCLUDED	no --selftest substring — no oracle to mutate
 conformance/structured-logging-wired.sh	KILLED	-
+conformance/surface-lib-wired.sh	UNCOVERED	CTL-only — selftest may not observe the check's exit code; manual review
 conformance/threat-obligation.sh	UNCOVERED	no-idiom
 conformance/token-scope.sh	KILLED	-
 conformance/tool-coverage.sh	KILLED	-

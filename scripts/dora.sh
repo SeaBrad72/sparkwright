@@ -38,11 +38,20 @@ report() {
     echo "  - Review latency: unavailable (needs gh)"
   else
     # Release cadence (deployment-frequency proxy): releases published within the window.
-    if rc="$(gh api "repos/{owner}/{repo}/releases?per_page=100" \
-              --jq "[.[] | select(((.published_at // .created_at)|fromdateiso8601) > (now - ${WINDOW}*86400))] | length" 2>/dev/null)"; then
-      echo "  - Release cadence: ${rc} release(s) in last ${WINDOW}d (deployment-frequency proxy; true deploy-freq adopter-wired)"
+    # DORA_FAKE_RELEASES lets --selftest force a deterministic rc with no network (mirrors
+    # DORA_FORCE_NO_GH) so the zero-releases branch is exercised without a live gh call.
+    if [ -n "${DORA_FAKE_RELEASES:-}" ]; then
+      rc="$DORA_FAKE_RELEASES"
     else
+      rc="$(gh api "repos/{owner}/{repo}/releases?per_page=100" \
+              --jq "[.[] | select(((.published_at // .created_at)|fromdateiso8601) > (now - ${WINDOW}*86400))] | length" 2>/dev/null)" || rc=""
+    fi
+    if [ -z "$rc" ]; then
       echo "  - Release cadence: unavailable (needs gh auth + contents:read)"
+    elif [ "$rc" = "0" ]; then
+      echo "  - Release cadence: no releases in last ${WINDOW}d (unavailable as a deploy-frequency proxy — this repo may not cut GitHub Releases)"
+    else
+      echo "  - Release cadence: ${rc} release(s) in last ${WINDOW}d (deployment-frequency proxy; true deploy-freq adopter-wired)"
     fi
 
     # PR lead time (lead-time proxy): avg created->merged hours for PRs merged in the window.
@@ -82,7 +91,22 @@ selftest() {
   out="$(DORA_FORCE_NO_GH=1 sh "$0" 2>/dev/null)" || { echo "dora --selftest: FAIL (non-zero exit on no-gh path)" >&2; return 1; }
   printf '%s\n' "$out" | grep -q "gh not available" || { echo "dora --selftest: FAIL (missing degradation message)" >&2; return 1; }
   printf '%s\n' "$out" | grep -q "Adopter-wired" || { echo "dora --selftest: FAIL (missing adopter-wired block)" >&2; return 1; }
-  echo "dora --selftest: OK (no-gh path degrades cleanly and exits 0)"
+  # Zero-releases leg: gh succeeds but the repo has zero releases in the window. A bare "0
+  # release(s)" reads as a measured deploy-frequency-of-zero — indistinguishable from a repo
+  # that deploys by tag/PaaS and just never cuts GitHub Releases. Must say "unavailable", not 0.
+  out0="$(DORA_FAKE_RELEASES=0 sh "$0" 2>/dev/null)" || { echo "dora --selftest: FAIL (non-zero exit on zero-releases path)" >&2; return 1; }
+  if printf '%s\n' "$out0" | grep -q "0 release(s)"; then
+    echo "dora --selftest: FAIL (zero releases prints a bare '0 release(s)' — reads as a real measurement)" >&2; return 1
+  fi
+  printf '%s\n' "$out0" | grep -qi "no releases" || { echo "dora --selftest: FAIL (zero-releases path missing 'no releases' wording)" >&2; return 1; }
+  printf '%s\n' "$out0" | grep -qi "unavailable" || { echo "dora --selftest: FAIL (zero-releases path missing 'unavailable' wording)" >&2; return 1; }
+
+  # STAYS-GREEN: a genuine non-zero count still prints a bare numeric (no over-correction into
+  # "unavailable" for a real measurement).
+  out3="$(DORA_FAKE_RELEASES=3 sh "$0" 2>/dev/null)" || { echo "dora --selftest: FAIL (non-zero exit on non-zero-releases path)" >&2; return 1; }
+  printf '%s\n' "$out3" | grep -q "3 release(s)" || { echo "dora --selftest: FAIL (a real release count of 3 did not print a bare '3 release(s)')" >&2; return 1; }
+
+  echo "dora --selftest: OK (no-gh path degrades cleanly, zero-releases reports unavailable not 0, a real count still prints a bare numeric)"
   return 0
 }
 

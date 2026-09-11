@@ -1,6 +1,6 @@
 # Maintaining the Kit
 
-How Sparkwright is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it has a `CHANGELOG`, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; `adopter-export.sh` ships it into an exported project and `incept.sh` rewrites its doc references at Inception, so it travels with the kit and is adapted to the adopting project.
+How Sparkwright is **built, versioned, and evolved**. The kit is an internal platform product: it is released with semver, it keeps its own changelog, and — critically — **it is built with the same loop it prescribes**. This file governs the kit itself; `adopter-export.sh` ships it into an exported project and `incept.sh` rewrites its doc references at Inception, so it travels with the kit and is adapted to the adopting project.
 
 ---
 
@@ -33,7 +33,7 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
 
 ## 2. Versioning
 
-- The canonical version lives in `VERSION` (single line) and is mirrored by the top entry of `CHANGELOG.md`.
+- The canonical version lives in `VERSION` (single line) and is mirrored by the top entry of the project's changelog (`CHANGELOG.md` in this repo; each project keeps its own).
 - **Semantic versioning** applied to *governance impact*, not lines of prose:
   - **MAJOR** — a change to a binding contract that existing adopters must act on (a new required gate, a removed guarantee).
   - **MINOR** — additive: a new reference implementation, a new profile, a new optional capability.
@@ -85,7 +85,7 @@ This is what makes the kit *self-iterating*: the MD files, scripts, and referenc
 
 ## 5. The kit dogfoods its own loop
 
-The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own flow board (`BACKLOG.md` — the one authoritative board, long-range planning included, per `CLAUDE.md` § Roster authority); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
+The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own flow board (`BACKLOG.md` — the one authoritative board, long-range planning included); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
 
 ---
 

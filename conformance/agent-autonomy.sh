@@ -153,9 +153,18 @@ aa_ks() {
 # prefix is kept THAT tight (reviewer re-review, minor 1): the bare `F-h ` prefix covered 102
 # pre-existing read-shaped cells, exactly where a future silent kill-switch drop would hide.
 # There is no kind-direction rule here — a cell's kind says nothing about its message — so this list
-# is the whole control, and it is kept to the one prefix.
+# is the whole control, and it is kept as tight as the observable allows.
+# GOVERNANCE-SOURCE-FILES adds ONE more message-mover that the verdict half cannot see: `rm -rf
+# templates` DENIES AT BOTH ENDS (pre-slice it was already refused as a recursive delete over tracked
+# content, WITHOUT the kill-switch line), and the control-plane dir arm now denies it AS control-plane,
+# which advertises the KIT_GUARD_SELFEDIT escape hatch — an ABSENT->PRESENT improvement, not a drop.
+# Its sibling GOV-DIR cells (mv/chmod) MOVE VERDICT (ALLOW->DENY) and are adjudicated by the verdict
+# half, so they never reach here. The entry is the FULL label, not a `[GOV-DIR ]` prefix: a bare prefix
+# would cover any future GOV-DIR deny-at-both-ends cell, exactly where a silent kill-switch DROP would
+# hide — the same tightness rule the Face4 note states.
 AA_EXPECTED_KS_DELTA=$(cat <<'AA_EXPECTED_KS_EOF'
 [F-h Face4 ]
+[GOV-DIR rm -rf templates dir]
 AA_EXPECTED_KS_EOF
 )
 aa_ks_expected() {
@@ -208,6 +217,11 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [K-CLOB-RELAX git log --grep with a quoted a>|b over a CP path]
 [K-CLOB-RELAX unquoted a>|b as a grep pattern over a CP path]
 [CORPUS ]
+[GOV ]
+[GOV-DIR ]
+[K-3a-]
+[K-3b ]
+[K-3b-R ]
 AA_EXPECTED_DELTA_EOF
 )
 # ⚠️ A WIDENING PREFIX MUST NOT COVER ITS OWN FALSE-POSITIVE PINS, and the three entries below are
@@ -266,6 +280,24 @@ AA_EXPECTED_DELTA_EOF
 # `F-` is a FORWARD entry: no label in this file carries it today (it matches nothing at f8e4d5c3).
 # It is here for the T4–T8 read-lane slices, whose refund cells will be `F-`-prefixed. Until one
 # lands it is inert — and inert is the correct state for an entry that permits movement.
+
+# `[K-3b ]` / `[K-3b-R ]` (GUARD-ADMIN-ARMS) — written out as STATEMENTS OF SCOPE, like `[F-a ]`, and
+# they are two entries rather than one because they permit OPPOSITE movements and must be readable as
+# such. `[K-3b ]` is the WIDENING: its `deny` cells may move ALLOW->DENY (the four faces' new refusals,
+# plus the re-kinded ceiling-(i) alias-creation cell) and nothing else. `[K-3b-R ]` is a pure REFUND:
+# its `allow` cells may move DENY->ALLOW and NOTHING ELSE MAY MOVE AT ALL. ⚠️ ITS SCOPE STATEMENT IS
+# KEPT CURRENT DELIBERATELY (reviewer round 2, N-3): it read "face D's five" while the prefix had grown
+# to cover the fix round's refunds too, and a scope sentence that lags what the entry PERMITS is worse
+# than no sentence — it invites a reader to believe a narrower claim than the matcher makes. What it
+# covers today: face D's five positional-read refunds (`D1`-`D4`, `D4b`), where an admin path in a
+# header value, a body field or an `--input` filename stops being read as the endpoint; `F4-1`-`F4-4`,
+# where a capital or a `%20` in an owner, repo or label segment is normalised instead of refused;
+# `F4-5`, the case-variant contexts POST that folds onto the carve-out; and `F5-1`, where `strict`
+# stopped firing on a hoisted flag's value.
+# The kind-direction rule enforces both, and it is why this slice's false-positive and ceiling pins
+# carry `K-3b-PIN `, which NO entry in this list matches: a pin that moves in ANY direction is
+# UNEXPECTED, including the five disclosed-ceiling cells whose whole job is to red if a later round
+# closes one silently.
 
 # aa_delta_expected <label> <before> <after> <kind> — 0 iff this change is permitted. TWO independent
 # conditions, and the KIND one is checked FIRST because no prefix may ever excuse it: a change that
@@ -828,6 +860,438 @@ assert_deny  "S6R quoted --method"    "{\"tool_name\":\"Bash\",\"tool_input\":{\
 # the call reads as non-mutating and falls through); after the hoist it is a deliberate `get` match.
 # Pinned so the accident becomes a property that can regress loudly.
 assert_allow "S6R split GET suppress" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh api -X G''ET repos/o/r/pulls/5/merge\"}}"
+# === GUARD-ADMIN-ARMS (K-3b) 3-0 — THE JUDGE EXTRACTED, SIX MORE TIER-3 FAMILIES, CLUSTER PROBES ===
+# The family table left `_s6_gh_api_admin_scan` and became `_s6_admin_path_verdict`, which four faces
+# now DERIVE from instead of each carrying its own list of clients. In `substring` mode its anchors
+# expand to the bytes the incumbent chain already spelled, so every S6R cell above is the regression
+# proof of the extraction itself: if one of them moves, the extraction was a rewrite.
+# The families added here are the ones the owner folded on 2026-09-09 (design §9 decisions 4 and 9),
+# each measured ALLOW at 7a5255c3 and each Tier 3 in `D-240813-5`'s own words.
+assert_deny "K-3b user/keys POST is an ACCOUNT credential mint"        '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST user/keys -f key=x -f title=y"}}'
+assert_deny "K-3b user/gpg_keys POST is an ACCOUNT credential mint"    '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST user/gpg_keys -f armored_public_key=x"}}'
+assert_deny "K-3b user/ssh_signing_keys POST"                          '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST user/ssh_signing_keys -f key=x"}}'
+assert_deny "K-3b repo deploy KEY mint (the collaborators class)"      '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/keys -f key=x -f read_only=false"}}'
+assert_deny "K-3b repo TRANSFER is repo loss (the delete class)"       '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/transfer -f new_owner=mallory"}}'
+assert_deny "K-3b org MEMBERSHIP grant"                                '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT orgs/o/memberships/mallory -f role=admin"}}'
+assert_deny "K-3b org TEAM repo permission grant"                      '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT orgs/o/teams/t/repos/o/r -f permission=admin"}}'
+assert_deny "K-3b branch RENAME is the default-branch swap by another name" '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/branches/main/rename -f new_name=x"}}'
+# The PUSH TWINS (decision 4) — the REST spelling of `git push origin main`, which is already denied
+# locally as a speed bump. `contents/*` with no `branch` field commits to the DEFAULT branch.
+assert_deny "K-3b push twin: POST .../merges"                          '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/merges -f base=main -f head=x"}}'
+assert_deny "K-3b push twin: PUT .../contents/README.md"               '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=x"}}'
+# FORGED GREEN CHECKS (decision 9d) — a required context posted from a session is the merge gate
+# satisfied by fiction, and this kit already retired every API-posted context to a real job.
+assert_deny "K-3b forged status POST"                                  '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/statuses/abc123 -f state=success -f context=ci"}}'
+assert_deny "K-3b forged check-run POST"                               '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/check-runs -f name=ci -f head_sha=abc -f conclusion=success"}}'
+# CLUSTER TOLERANCE (vet S-2). `-iXPUT` contains no `-X`, so both of these were a complete admin merge
+# at 7a5255c3. `X` is `gh api`'s only short letter that takes a method, so the widening only adds denies.
+assert_deny "K-3b cluster method -iXPUT"                               '{"tool_name":"Bash","tool_input":{"command":"gh api -iXPUT repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b cluster method -iX PUT"                              '{"tool_name":"Bash","tool_input":{"command":"gh api -iX PUT repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b cluster body -sfmerge_method"                        '{"tool_name":"Bash","tool_input":{"command":"gh api -sfmerge_method=squash repos/o/r/pulls/5/merge"}}'
+# KEPT-ALLOW PINS. `-PIN ` is on no `AA_EXPECTED_DELTA` entry, so any movement of these is UNEXPECTED —
+# the widenings above may not be paid for out of the read lane.
+assert_allow "K-3b-PIN a GET of a status is an ordinary read"          '{"tool_name":"Bash","tool_input":{"command":"gh api -X GET repos/o/r/statuses/abc123"}}'
+assert_allow "K-3b-PIN a jobs read with a jq filter"                   '{"tool_name":"Bash","tool_input":{"command":"gh api repos/o/r/actions/runs/123/jobs --jq \".jobs[].conclusion\""}}'
+assert_allow "K-3b-PIN a comment body from a FILE (-F body=@note.md)"  '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/issues/1/comments -F body=@note.md"}}'
+assert_allow "K-3b-PIN update-branch is not a merge bypass"            '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/update-branch"}}'
+# === K-3b FACE A — the gh PORCELAIN verbs that ARE a repo-root PATCH/DELETE or a credential mint ====
+# Every one of these ALLOWed at 7a5255c3 while its own REST spelling denied, which is the whole defect:
+# an arm that names CLIENTS protects only the clients we happened to have. The verb set is DERIVED from
+# the judge (see `_s6_gh_porcelain_admin`'s header), so nothing here is a second, divergent rule.
+assert_deny "K-3b A1 gh repo edit --default-branch"                    '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --default-branch evil"}}'
+assert_deny "K-3b A2 gh repo edit with an explicit repo operand"       '{"tool_name":"Bash","tool_input":{"command":"gh repo edit o/r --default-branch evil"}}'
+assert_deny "K-3b A3 the fused --default-branch=value spelling"        '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --default-branch=evil"}}'
+assert_deny "K-3b A4 a hoisted -R global in front of the verb"         '{"tool_name":"Bash","tool_input":{"command":"gh repo edit -R o/r --default-branch main"}}'
+assert_deny "K-3b A5 gh repo edit --visibility (disclosure)"           '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --visibility public --accept-visibility-change-consequences"}}'
+# ⚠️ A7-A9 ARE THE DERIVATION BEING HONEST. The judge denies the repo ROOT under PATCH for ANY field,
+# so a porcelain arm that denied only --default-branch would claim a rule it does not implement. The
+# price is priced (M1) and celled, not hidden.
+assert_deny "K-3b A7 gh repo edit --description (priced M1, the root PATCH rule)" '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --description x"}}'
+assert_deny "K-3b A8 gh repo edit --enable-auto-merge"                 '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --enable-auto-merge"}}'
+assert_deny "K-3b A9 gh repo edit --add-topic"                         '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --add-topic kit"}}'
+assert_deny "K-3b A10 gh repo delete o/r --yes"                        '{"tool_name":"Bash","tool_input":{"command":"gh repo delete o/r --yes"}}'
+assert_deny "K-3b A11 gh repo delete --yes"                            '{"tool_name":"Bash","tool_input":{"command":"gh repo delete --yes"}}'
+assert_deny "K-3b A12 a bare gh repo delete"                           '{"tool_name":"Bash","tool_input":{"command":"gh repo delete"}}'
+assert_deny "K-3b A13 gh repo archive"                                 '{"tool_name":"Bash","tool_input":{"command":"gh repo archive o/r -y"}}'
+assert_deny "K-3b A14 gh repo unarchive"                               '{"tool_name":"Bash","tool_input":{"command":"gh repo unarchive o/r"}}'
+assert_deny "K-3b A15 gh repo rename"                                  '{"tool_name":"Bash","tool_input":{"command":"gh repo rename newname --yes"}}'
+assert_deny "K-3b A16 gh repo deploy-key add --allow-write (a WRITE credential)" '{"tool_name":"Bash","tool_input":{"command":"gh repo deploy-key add key.pub --allow-write"}}'
+assert_deny "K-3b A17 gh repo deploy-key delete"                       '{"tool_name":"Bash","tool_input":{"command":"gh repo deploy-key delete 1"}}'
+# THE JOINER SPELLINGS, closed for free because the face reads the four views the S6 arm already builds.
+assert_deny "K-3b A18 a CAPITALISED lead (GH repo edit)"               '{"tool_name":"Bash","tool_input":{"command":"GH repo edit --default-branch evil"}}'
+assert_deny "K-3b A19 a quote JOINER inside the sub (gh re''po edit)"  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh re''po edit --default-branch evil\"}}"
+assert_deny "K-3b A20 a quote joiner inside a flag (--default-br\"\"anch)" '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --default-br\"\"anch evil"}}'
+# Decision 9a's porcelain: the ACCOUNT credential mints.
+assert_deny "K-3b A21 gh ssh-key add"                                  '{"tool_name":"Bash","tool_input":{"command":"gh ssh-key add key.pub"}}'
+assert_deny "K-3b A22 gh gpg-key add"                                  '{"tool_name":"Bash","tool_input":{"command":"gh gpg-key add key.asc"}}'
+assert_deny "K-3b A23 gh ssh-key delete"                               '{"tool_name":"Bash","tool_input":{"command":"gh ssh-key delete 1 -y"}}'
+# Vet additions: an env-assignment prefix, `env`, a URL operand, an unreadable sub-verb, a wrapper.
+assert_deny "K-3b A24 GH_REPO= assignment prefix"                      '{"tool_name":"Bash","tool_input":{"command":"GH_REPO=o/r gh repo delete --yes"}}'
+assert_deny "K-3b A25 env GH_REPO= in front of the lead"               '{"tool_name":"Bash","tool_input":{"command":"env GH_REPO=o/r gh repo delete --yes"}}'
+assert_deny "K-3b A26 a full URL as the repo operand"                  '{"tool_name":"Bash","tool_input":{"command":"gh repo edit https://github.com/o/r --default-branch x"}}'
+# THE DISQUALIFIER: an expansion byte in the SUB-VERB position is not certified. Fail-closed, and
+# narrowed to the one position where it costs nothing — an unreadable sub-verb is never a read.
+assert_deny "K-3b A27 an unreadable sub-verb (gh repo ed\$Xit) is NOT certified" '{"tool_name":"Bash","tool_input":{"command":"gh repo ed$Xit --default-branch x"}}'
+assert_deny "K-3b A28 the sh -c wrapper spelling"                      '{"tool_name":"Bash","tool_input":{"command":"sh -c \"gh repo edit --default-branch x\""}}'
+# KEPT-ALLOW CONTROLS for face A. Reads, forks, a new repo, a fork sync and the autolink writes touch
+# no protection, and `gh ruleset` has NO delete subcommand at gh 2.96.0 (measured, not arm'd).
+assert_allow "K-3b-PIN A-C2 gh repo view"                              '{"tool_name":"Bash","tool_input":{"command":"gh repo view o/r"}}'
+assert_allow "K-3b-PIN A-C3 gh repo create"                            '{"tool_name":"Bash","tool_input":{"command":"gh repo create x --private"}}'
+assert_allow "K-3b-PIN A-C4 gh repo set-default"                       '{"tool_name":"Bash","tool_input":{"command":"gh repo set-default o/r"}}'
+assert_allow "K-3b-PIN A-C5 gh repo deploy-key LIST is a read"         '{"tool_name":"Bash","tool_input":{"command":"gh repo deploy-key list"}}'
+assert_allow "K-3b-PIN A-C6 gh repo autolink create (no protection moved)" '{"tool_name":"Bash","tool_input":{"command":"gh repo autolink create x y"}}'
+assert_allow "K-3b-PIN A-C7 gh repo sync (a fork sync, not a protection move)" '{"tool_name":"Bash","tool_input":{"command":"gh repo sync o/r"}}'
+assert_allow "K-3b-PIN A-C8 gh ruleset list/view are reads"            '{"tool_name":"Bash","tool_input":{"command":"gh ruleset list"}}'
+assert_allow "K-3b-PIN A-C9 gh ssh-key LIST is a read"                 '{"tool_name":"Bash","tool_input":{"command":"gh ssh-key list"}}'
+assert_reason_has "K-3b A-reason names its own trigger"                '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --default-branch x"}}' 'trigger=gh-admin-verb'
+assert_reason_lacks "K-3b A-reason does NOT advertise the kill switch" '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --default-branch x"}}' 'KIT_GUARD_SELFEDIT'
+# === K-3b FACE B — gh's OWN PERSISTENT STATE: the bytes that decide a LATER command =================
+# `T2R3 CEILING (i)`'s first half retires here (see the re-kinded cell further down): the CREATION of
+# an alias is visible in a command string and is now gated; the USE of one (`gh mm 5`) is not, and its
+# ALLOW cell stays verbatim as the ceiling that remains.
+assert_deny "K-3b B1 gh alias set (the ceiling-(i) subject itself)"    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh alias set mm 'pr merge --admin'\"}}"
+assert_deny "K-3b B2 the double-quoted alias body"                     '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm \"pr merge --admin\""}}'
+assert_deny "K-3b B3 --clobber before the name"                        "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh alias set --clobber mm 'pr merge --admin'\"}}"
+assert_deny "K-3b B3b --clobber after the name (vet)"                  '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm --clobber \"pr merge --admin\""}}'
+assert_deny "K-3b B3c a QUOTED alias name (vet)"                       '{"tool_name":"Bash","tool_input":{"command":"gh alias set \"mm\" \"pr merge --admin\""}}'
+assert_deny "K-3b B4 a positional \$1 in the alias body"               "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh alias set mm 'pr merge \$1 --admin'\"}}"
+assert_deny "K-3b B5 a hoisted --repo global in front of the sub"      '{"tool_name":"Bash","tool_input":{"command":"gh --repo o/r alias set mm \"pr merge --admin\""}}'
+assert_deny "K-3b B7 a SHELL alias whose body is a curl admin call"    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh alias set --shell mm 'curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge'\"}}"
+assert_deny "K-3b B8 a SHELL alias that runs an arbitrary program"     '{"tool_name":"Bash","tool_input":{"command":"gh alias set -s x \"!/tmp/evil.sh\""}}'
+assert_deny "K-3b B9 gh alias import (the bodies are OUTSIDE the command)" '{"tool_name":"Bash","tool_input":{"command":"gh alias import aliases.yml"}}'
+assert_deny "K-3b B10 gh alias import - (from stdin)"                  '{"tool_name":"Bash","tool_input":{"command":"gh alias import -"}}'
+assert_deny "K-3b B11 gh config set pager NAMES A PROGRAM"             '{"tool_name":"Bash","tool_input":{"command":"gh config set pager /tmp/evil.sh"}}'
+assert_deny "K-3b B12 gh config set editor"                            '{"tool_name":"Bash","tool_input":{"command":"gh config set editor /tmp/evil.sh"}}'
+assert_deny "K-3b B13 gh config set browser"                           '{"tool_name":"Bash","tool_input":{"command":"gh config set browser /tmp/evil.sh"}}'
+assert_deny "K-3b B13b gh config set with a -h host (vet)"             '{"tool_name":"Bash","tool_input":{"command":"gh config set -h github.com pager /tmp/evil.sh"}}'
+# ⚠️ THE PRICED CASUALTIES OF THE WIDTH (owner decision 3, M2). They are celled as DENY rather than
+# left to prose, so the price is visible and a future narrowing has to move a cell to happen.
+assert_deny "K-3b B14 gh alias set co 'pr checkout' (priced M2)"       "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh alias set co 'pr checkout'\"}}"
+assert_deny "K-3b B15 gh config set git_protocol ssh (priced M2)"      '{"tool_name":"Bash","tool_input":{"command":"gh config set git_protocol ssh"}}'
+# Decision 8 (vet S-5): the CREDENTIAL is the persistence primitive that decides every later command.
+assert_deny "K-3b B16 gh auth refresh -s delete_repo WIDENS the token" '{"tool_name":"Bash","tool_input":{"command":"gh auth refresh -s delete_repo"}}'
+assert_deny "K-3b B17 gh auth login --with-token"                      '{"tool_name":"Bash","tool_input":{"command":"gh auth login --with-token < tok.txt"}}'
+assert_deny "K-3b B18 gh auth switch swaps the identity"               '{"tool_name":"Bash","tool_input":{"command":"gh auth switch -u mallory"}}'
+# KEPT-ALLOW CONTROLS for face B: reads and removals move no bytes out of the command line.
+assert_allow "K-3b-PIN B-C7 gh alias list"                             '{"tool_name":"Bash","tool_input":{"command":"gh alias list"}}'
+assert_allow "K-3b-PIN B-C8 gh alias delete"                           '{"tool_name":"Bash","tool_input":{"command":"gh alias delete mm"}}'
+assert_allow "K-3b-PIN B-C9 gh config get / list"                      '{"tool_name":"Bash","tool_input":{"command":"gh config get pager"}}'
+assert_allow "K-3b-PIN B-C10 gh auth status"                           '{"tool_name":"Bash","tool_input":{"command":"gh auth status"}}'
+assert_allow "K-3b-PIN B-C11 gh auth setup-git stays ALLOW (disclosed ceiling)" '{"tool_name":"Bash","tool_input":{"command":"gh auth setup-git"}}'
+assert_allow "K-3b-PIN B-C12 gh auth logout stays ALLOW"               '{"tool_name":"Bash","tool_input":{"command":"gh auth logout"}}'
+# THE READ LANE MAY NOT PAY FOR THIS SLICE. Four ordinary porcelain reads and the sanctioned merge.
+assert_allow "K-3b-PIN read lane: gh pr view"                          '{"tool_name":"Bash","tool_input":{"command":"gh pr view 5"}}'
+assert_allow "K-3b-PIN read lane: gh pr checks --watch"                '{"tool_name":"Bash","tool_input":{"command":"gh pr checks 5 --watch"}}'
+assert_allow "K-3b-PIN read lane: gh pr create --body-file"            '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title x --body-file b.md"}}'
+assert_allow "K-3b-PIN the SANCTIONED merge still allows"              '{"tool_name":"Bash","tool_input":{"command":"gh pr merge 5 --squash --match-head-commit abc123 --delete-branch"}}'
+assert_reason_has "K-3b B-reason names its own trigger"                '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm x"}}' 'trigger=gh-persist'
+assert_reason_lacks "K-3b B-reason does NOT advertise the kill switch" '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm x"}}' 'KIT_GUARD_SELFEDIT'
+# === K-3b FACE C — THE REQUEST, NOT THE CLIENT (per segment) ========================================
+# Thirty-three spellings of the same four admin endpoints, every one ALLOW at 7a5255c3. The face asks
+# nothing about the lead: `/usr/bin/curl`, `command curl`, `wget`, `http`, `xh`, `--url`, `--next` and a
+# renamed binary all deny, because the arm asks what is being REQUESTED.
+assert_deny "K-3b C1 curl -X PUT the merge bypass"                     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C2 the FUSED -XPUT spelling"                         '{"tool_name":"Bash","tool_input":{"command":"curl -XPUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C3 --request PUT"                                    '{"tool_name":"Bash","tool_input":{"command":"curl --request PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C4 --request=PUT"                                    '{"tool_name":"Bash","tool_input":{"command":"curl --request=PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C5 a QUOTED method value"                            "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X 'PUT' https://api.github.com/repos/o/r/pulls/5/merge\"}}"
+assert_deny "K-3b C6 a quoted URL"                                     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT \"https://api.github.com/repos/o/r/pulls/5/merge\""}}'
+assert_deny "K-3b C7 a quote JOINER inside the route (me\"\"rge)"      '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/me\"\"rge"}}'
+assert_deny "K-3b C8 a SCHEME-LESS host"                               '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C9 a GHES api/v3 path"                               '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://ghe.example.com/api/v3/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C10 curl -X DELETE the repo root"                    '{"tool_name":"Bash","tool_input":{"command":"curl -X DELETE https://api.github.com/repos/o/r"}}'
+assert_deny "K-3b C11 the repo root with a trailing slash"             '{"tool_name":"Bash","tool_input":{"command":"curl -X DELETE https://api.github.com/repos/o/r/"}}'
+assert_deny "K-3b C12 PATCH the root with a default_branch body"       '{"tool_name":"Bash","tool_input":{"command":"curl -X PATCH https://api.github.com/repos/o/r -d '"'"'{\"default_branch\":\"evil\"}'"'"'"}}'
+assert_deny "K-3b C13 PUT branch protection from a file"               '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/branches/main/protection -d @p.json"}}'
+assert_deny "K-3b C14 DELETE branch protection"                        '{"tool_name":"Bash","tool_input":{"command":"curl -X DELETE https://api.github.com/repos/o/r/branches/main/protection"}}'
+assert_deny "K-3b C15 DELETE a repo ruleset"                           '{"tool_name":"Bash","tool_input":{"command":"curl -X DELETE https://api.github.com/repos/o/r/rulesets/7"}}'
+assert_deny "K-3b C16 PATCH an ORG ruleset"                            '{"tool_name":"Bash","tool_input":{"command":"curl -X PATCH https://api.github.com/orgs/o/rulesets/7 -d \"{}\""}}'
+assert_deny "K-3b C17 PUT a collaborator (a privilege grant)"          '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/collaborators/mallory"}}'
+assert_deny "K-3b C17b PATCH git/refs with force=true"                 '{"tool_name":"Bash","tool_input":{"command":"curl -X PATCH https://api.github.com/repos/o/r/git/refs/heads/main -d '"'"'{\"force\":true}'"'"'"}}'
+# A BODY WITH NO METHOD IS A POST — curl's rule, and `gh api`'s, and the judge's.
+assert_deny "K-3b C18 -d with NO method at all is a POST"              '{"tool_name":"Bash","tool_input":{"command":"curl -d '"'"'{\"merge_method\":\"squash\"}'"'"' https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C19 --data-raw with no method"                       '{"tool_name":"Bash","tool_input":{"command":"curl --data-raw \"{}\" https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C20 --json with no method"                           '{"tool_name":"Bash","tool_input":{"command":"curl --json \"{}\" https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C21 an Authorization header before the method"       '{"tool_name":"Bash","tool_input":{"command":"curl -H \"Authorization: Bearer x\" -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C23 -sS -o /dev/null -w with a DELETE"               '{"tool_name":"Bash","tool_input":{"command":"curl -sS -o /dev/null -w \"%{http_code}\" -X DELETE https://api.github.com/repos/o/r/rulesets/7"}}'
+assert_deny "K-3b C24 wget --method=PUT"                               '{"tool_name":"Bash","tool_input":{"command":"wget --method=PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C25 wget --method PUT (spaced)"                      '{"tool_name":"Bash","tool_input":{"command":"wget --method PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C26 wget --post-data"                                '{"tool_name":"Bash","tool_input":{"command":"wget --post-data=\"{}\" https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C27 httpie's POSITIONAL method"                      '{"tool_name":"Bash","tool_input":{"command":"http PUT api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C27b xh's positional method"                         '{"tool_name":"Bash","tool_input":{"command":"xh PUT api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C27c http DELETE the repo root"                      '{"tool_name":"Bash","tool_input":{"command":"http DELETE api.github.com/repos/o/r"}}'
+assert_deny "K-3b C28 an ABSOLUTE path to the client"                  '{"tool_name":"Bash","tool_input":{"command":"/usr/bin/curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C29 `command curl`"                                  '{"tool_name":"Bash","tool_input":{"command":"command curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C31 a second statement after the request"            '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge; echo done"}}'
+assert_deny "K-3b C33 a query string on the route"                     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge?x=1"}}'
+# ⚠️ PRICED M4 AND CELLED AS SUCH. The judge is HOST-AGNOSTIC on purpose (a GHES install is a different
+# host and the same act), so a non-GitHub host carrying a GitHub-shaped path denies. It is not a real
+# call, so the retry is "none needed" — but the price is pinned rather than left to prose.
+assert_deny "K-3b C-K7 a NON-GitHub host with a GitHub-shaped path (priced M4)" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://example.com/repos/o/r/pulls/5/merge"}}'
+# --- vet additions: short clusters, dot segments, exotic hosts, the other clients -------------------
+assert_deny "K-3b C-V1 a short cluster hides -X (-sXPUT)"              '{"tool_name":"Bash","tool_input":{"command":"curl -sXPUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V2 -sX PUT (cluster, spaced value)"                '{"tool_name":"Bash","tool_input":{"command":"curl -sX PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V3 -fsSLX DELETE"                                  '{"tool_name":"Bash","tool_input":{"command":"curl -fsSLX DELETE https://api.github.com/repos/o/r"}}'
+assert_deny "K-3b C-V4 -sd is a clustered BODY flag"                   '{"tool_name":"Bash","tool_input":{"command":"curl -sd \"{}\" https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V5 -sSd @file onto branch protection"              '{"tool_name":"Bash","tool_input":{"command":"curl -sSd @p.json https://api.github.com/repos/o/r/branches/main/protection"}}'
+assert_deny "K-3b C-V6 a .. segment is NOT CERTIFIED (curl collapses it)" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/x/../pulls/5/merge"}}'
+assert_deny "K-3b C-V7 a /./ segment normalises away"                  '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/./merge"}}'
+assert_deny "K-3b C-V8 USERINFO in the host"                           '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://u:p@api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V9 an IPv6 literal host"                           '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT \"https://[2606:50c0:8000::153]/repos/o/r/pulls/5/merge\""}}'
+assert_deny "K-3b C-V10 an explicit :443 port"                         '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT api.github.com:443/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V11 the --url spelling"                            '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT --url https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V12 a SECOND request behind --next"                '{"tool_name":"Bash","tool_input":{"command":"curl https://x/ --next -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V13 httpie's :/path shorthand"                     '{"tool_name":"Bash","tool_input":{"command":"http PUT :/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V14 a LOWERCASE positional method"                 '{"tool_name":"Bash","tool_input":{"command":"http put api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V15 xh delete"                                     '{"tool_name":"Bash","tool_input":{"command":"xh delete api.github.com/repos/o/r"}}'
+assert_deny "K-3b C-V16 wget --method=put (lowercase)"                 '{"tool_name":"Bash","tool_input":{"command":"wget --method=put https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V17 wget --body-data"                              '{"tool_name":"Bash","tool_input":{"command":"wget --body-data=\"{}\" https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C-V18 curl POST to the ACCOUNT key mint"             '{"tool_name":"Bash","tool_input":{"command":"curl -X POST https://api.github.com/user/keys -d \"{}\""}}'
+# --- KEPT-ALLOW CONTROLS: the read lane may not pay for this face ----------------------------------
+# K1-K6 are the design's own controls, and K6 is LOAD-BEARING: it is `branch-protection-apply.sh
+# --apply`'s own human-run ADDITIVE call through curl instead of gh, and it survives only because the
+# method handed to the judge is the INDICATED one (`K-3b-M9` pins that).
+assert_allow "K-3b-PIN C-K1 a plain GET of the merge resource"         '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_allow "K-3b-PIN C-K2 curl -s of branch protection (a read)"     '{"tool_name":"Bash","tool_input":{"command":"curl -s https://api.github.com/repos/o/r/branches/main/protection"}}'
+assert_allow "K-3b-PIN C-K3 an EXPLICIT -X GET suppresses"             '{"tool_name":"Bash","tool_input":{"command":"curl -X GET https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_allow "K-3b-PIN C-K4 curl -I (HEAD) of the repo root"           '{"tool_name":"Bash","tool_input":{"command":"curl -I https://api.github.com/repos/o/r"}}'
+assert_allow "K-3b-PIN C-K5 POST an issue comment (not an admin path)" '{"tool_name":"Bash","tool_input":{"command":"curl -X POST https://api.github.com/repos/o/r/issues/1/comments -d \"{\\\"body\\\":\\\"hi\\\"}\""}}'
+assert_allow "K-3b-PIN C-K6 the apply script's ADDITIVE contexts POST through curl" '{"tool_name":"Bash","tool_input":{"command":"curl -X POST https://api.github.com/repos/o/r/branches/main/protection/required_status_checks/contexts -d \"[\\\"x\\\"]\""}}'
+# The PIPED READS. Each is a real adopter spelling, and each is why face C is per-segment (vet S-1).
+assert_allow "K-3b-PIN C-P1 an admin-path read piped into grep -F (the A3 read-back)" '{"tool_name":"Bash","tool_input":{"command":"curl -s https://api.github.com/repos/o/r/branches/main/protection | grep -F required_status_checks"}}'
+assert_allow "K-3b-PIN C-P2 a rulesets read piped into column -t -s," '{"tool_name":"Bash","tool_input":{"command":"curl -s https://api.github.com/repos/o/r/rulesets | column -t -s,"}}'
+# ⚠️ C-P3 IS THE M18 CONTROL. A plain `$TOKEN` must NOT decline the span walk — a parameter expansion's
+# RESULT is never re-read for quotes or separators, so it cannot move a boundary in the TEXT. This is
+# the commonest authenticated-read spelling there is, and the lens pass added it for that reason.
+assert_allow "K-3b-PIN C-P3 an authenticated read with a plain \$TOKEN, piped" '{"tool_name":"Bash","tool_input":{"command":"curl -s -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/o/r/branches/main/protection | grep -F x"}}'
+assert_allow "K-3b-PIN C-P4 the same read UNPIPED"                     '{"tool_name":"Bash","tool_input":{"command":"curl -s -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/o/r/branches/main/protection"}}'
+assert_allow "K-3b-PIN C-P5 -u \"user:\$TOKEN\" basic auth read"       '{"tool_name":"Bash","tool_input":{"command":"curl -s -u \"user:$TOKEN\" https://api.github.com/repos/o/r/branches/main/protection"}}'
+assert_allow "K-3b-PIN C-P6 a gh-led segment is faces A/B/D's domain, not C's" '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/issues/1/comments -f body=\"try DELETE repos/o/r\""}}'
+assert_allow "K-3b-PIN C-P7 git log --grep=DELETE over a repos/ pathspec" '{"tool_name":"Bash","tool_input":{"command":"git log --grep=DELETE -- repos/o/r"}}'
+# --- DISCLOSED RESIDUALS, pinned as ALLOW so a later round cannot close one silently ---------------
+# A ceiling stated only in prose is a ceiling nobody notices moving. If a later slice closes one of
+# these, THIS CELL GOES RED and forces the ceiling text to be corrected with it.
+assert_allow "K-3b-PIN C-R1 CEILING: a PERCENT-ENCODED route word (%6Derge) is not decoded" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/%6Derge"}}'
+assert_allow "K-3b-PIN C-R2 CEILING: face C does not CASE-FOLD the route (GitHub 404s it)" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/PULLS/5/MERGE"}}'
+assert_allow "K-3b-PIN C-R3 CEILING: a curl CONFIG FILE carries the method outside the command" '{"tool_name":"Bash","tool_input":{"command":"curl -K cfg https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_allow "K-3b-PIN C-R4 CEILING: ABSENT bytes — the method is a variable" '{"tool_name":"Bash","tool_input":{"command":"curl -X $M https://api.github.com/repos/o/r/pulls/5/merge"}}'
+# ⚠️ C-R5 IS A DESIGN PREDICTION THAT DID NOT HOLD, recorded as the ceiling it actually is rather than
+# quietly dropped. Design §4 lists `http api.github.com/repos/o/r/merges base=main head=x` among the
+# deny cells, but the indicator grammar the design SPECIFIES (appendix C) has no entry for httpie's
+# bare `field=value` request items — and adding one would mean reading ANY `k=v` token as a body, which
+# is the over-match the row exists to avoid. The httpie forms that carry a METHOD (C27, C-V13, C-V14)
+# and every `-d`/`--data` spelling deny; a methodless httpie body does not.
+assert_allow "K-3b-PIN C-R5 CEILING: httpie's bare field=value body carries no named indicator" '{"tool_name":"Bash","tool_input":{"command":"http api.github.com/repos/o/r/merges base=main head=x"}}'
+assert_reason_has "K-3b C-reason names its own trigger"                '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}' 'trigger=http-admin'
+assert_reason_lacks "K-3b C-reason does NOT advertise the kill switch" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}' 'KIT_GUARD_SELFEDIT'
+# === K-3b FACE D — THE POSITIONAL READ OF `gh api`'s ONE OPERAND ====================================
+# The only face in this slice that REFUNDS, and it closes an under-deny in the same stroke. D6-D9 were
+# complete admin merges at 7a5255c3: a fragment, a dot-segment, a case variant and a percent-encoding
+# each spell a path the SUBSTRING scan does not want, while GitHub routes every one of them to the
+# merge endpoint. Under the positional read the endpoint is one token, so it can be disqualified.
+assert_deny "K-3b D6 a FRAGMENT on a mutating endpoint"                '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge#frag"}}'
+assert_deny "K-3b D7 a DOT-SEGMENT the server resolves and the guard does not" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/../r/pulls/5/merge"}}'
+assert_deny "K-3b D8 an UPPERCASE route (PULLS/5/MERGE)"               '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/PULLS/5/MERGE"}}'
+assert_deny "K-3b D8b a capitalised first segment (Repos/...)"         '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT Repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b D9 a PERCENT-ENCODED route word (%6Derge IS merge)"  '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%6Derge"}}'
+assert_deny "K-3b D9b a percent-encoded CONTENTS write (priced M6)"    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/contents/my%20file -f message=x"}}'
+# --- THE REFUNDS. `K-3b-R ` is its own delta entry: `allow` cells that may move DENY->ALLOW and
+# NOTHING ELSE. A path in a HEADER value, a BODY field or an `--input` FILENAME is not an endpoint.
+assert_allow "K-3b-R D1 an admin path quoted inside a COMMENT BODY"    '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/issues/1/comments -f body=\"see repos/o/r/branches/main/protection\""}}'
+assert_allow "K-3b-R D2 an admin path inside a HEADER value"           '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r/issues/comments/1 -H \"X-Note: repos/o/r/rulesets/7\""}}'
+assert_allow "K-3b-R D3 two headers, one carrying the merge path"      '{"tool_name":"Bash","tool_input":{"command":"gh api -H \"Accept: x\" -H \"X: repos/o/r/pulls/5/merge\" repos/o/r/issues -X POST -f title=y"}}'
+assert_allow "K-3b-R D4 an admin path as the --input FILENAME"         '{"tool_name":"Bash","tool_input":{"command":"gh api --input /repos/o/r/pulls/5/merge repos/o/r/issues"}}'
+# A FIFTH refund of the same class, measured on the way and NOT in the design's D1-D4 list — recorded
+# here rather than left to appear as an unexplained mover on the delta.
+assert_allow "K-3b-R D4b an issue LOCK with a rulesets path in a header" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/issues/1/lock -H \"X: repos/o/r/rulesets/7\""}}'
+# --- CONTROLS. The DECOY keeps its deny WITHOUT the subtraction trick; the DECLINE keeps today's.
+assert_deny "K-3b-PIN D5 the decoy: the endpoint is the merge, the contexts path is a flag VALUE" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge --input /repos/o/r/branches/main/protection/required_status_checks/contexts"}}'
+assert_deny "K-3b-PIN D10 an UNKNOWN flag DECLINES; today's substring verdict stands" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT --bogus-flag repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b-PIN D11 a SECOND operand declines; today's verdict stands" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge extra"}}'
+assert_deny "K-3b-PIN D-redirect a trailing redirect is a second operand -> decline -> DENY" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge >/dev/null 2>&1"}}'
+assert_deny "K-3b-PIN D-vet --input - (stdin) is a flag VALUE, not the endpoint" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge --input -"}}'
+assert_deny "K-3b-PIN D-vet -F key=@file is a body, the endpoint follows it" '{"tool_name":"Bash","tool_input":{"command":"gh api -F key=@file repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b-PIN D-vet -- ends the flags, the endpoint follows"   '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT -- repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b-PIN D-vet a trailing quoted SPACE in the operand"    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT \"repos/o/r/pulls/5/merge \""}}'
+# ⚠️ RE-KINDED IN FIX ROUND 1, and the re-kind is a CONSEQUENCE OF F4 that the fix spec did not name —
+# recorded here rather than absorbed silently. This cell asserted "a CASE-VARIANT contexts path is not
+# the carve-out" and DENIED, but that verdict was an artefact of the old rule (any capital byte
+# disqualified the endpoint), not a rule anyone ratified. F4 replaced disqualification with
+# NORMALISATION on the ground that GitHub case-folds route words — and if that is true for
+# `PULLS/5/MERGE` (which still denies, `F4-C3`) it is equally true here, where the folded endpoint IS
+# `branch-protection-apply.sh --apply`'s own additive call and the carve-out is exactly what it should
+# take. Denying it was the over-deny. `allow` cells may only move DENY->ALLOW, so the label moves to
+# `K-3b-R ` rather than the entry being widened to excuse a `-PIN ` moving.
+assert_allow "K-3b-R F4-5 a CASE-VARIANT contexts POST folds onto the carve-out" '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/branches/main/protection/REQUIRED_STATUS_CHECKS/CONTEXTS -f contexts[]=x"}}'
+assert_deny "K-3b-PIN D-vet a leading ./ is a dot-segment"             '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT ./repos/o/r/pulls/5/merge"}}'
+# ⚠️ K8 IS THE CARVE-OUT UNDER `exact` MODE. It stops being a subtraction ("strip the contexts path and
+# ask what survives") and becomes the EQUALITY it always meant. `K-3b-M11` pins that the anchoring is
+# what refunds D1 and `K-3b-M16` that a SUB-TREE still anchors `^<prefix>(/.*)?$`.
+assert_allow "K-3b-PIN D-K8 the contexts POST carve-out survives exact mode" '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/branches/main/protection/required_status_checks/contexts -f contexts[]=x"}}'
+assert_allow "K-3b-PIN D-K9 an explicit GET is suppressed in the CALLER, before the read" '{"tool_name":"Bash","tool_input":{"command":"gh api -X GET repos/o/r/pulls/5/merge"}}'
+assert_allow "K-3b-PIN D-K10 a substitution in a read flag DECLINES and stays ALLOW" '{"tool_name":"Bash","tool_input":{"command":"gh api repos/o/r/pulls/5/merge --jq \"$(cat q)\""}}'
+assert_allow "K-3b-PIN D12 CEILING: an endpoint wholly in a variable is ABSENT bytes" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT $P"}}'
+assert_allow "K-3b-PIN D-vet a QUERY STRING on a non-admin endpoint is truncated, not disqualifying" '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/issues/1/comments?x=1 -f body=x"}}'
+assert_deny "K-3b-PIN D-vet a query string on the MERGE endpoint still denies" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge?x=1"}}'
+# ⚠️ THIS CELL IS A POST-BUILD REGRESSION PIN. `exact` mode anchors `^repos/…`, and a SCHEME-LESS host
+# has no `https?://` for the normaliser to strip — so this DENIED at 7a5255c3 and briefly ALLOWED once
+# face D landed. An anchoring change is a NARROWING, and a narrowing must be measured against the
+# denies it used to make. Found by an out-of-battery probe, not by any cell that existed; now it is a
+# cell, and `K-3b-M19` is the mutant.
+assert_deny "K-3b-PIN D-vet a SCHEME-LESS host in the operand still denies" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT api.github.com/repos/o/r/pulls/5/merge"}}'
+# === K-3b FIX ROUND 1 ===============================================================================
+# ⚠️ A NOTE ON LABELS, because the delta leg caught this and it is worth stating once. A cell that is a
+# CONTROL for a fix is not automatically a `-PIN `: `-PIN ` means "this may not move IN ANY DIRECTION",
+# and seven of the controls below are ALLOW at the pristine core and DENY here, because the arm they
+# control did not exist before this slice. They carry the plain `K-3b ` prefix, which permits exactly
+# their ALLOW->DENY direction; only the cells that are ALLOW on BOTH cores keep `-PIN `. The first cut
+# had them all as `-PIN ` and the delta reported seven UNEXPECTED movers, which is the leg doing its
+# job — the labels, not the verdicts, were wrong.
+# --- F1 (reviewer R-1 = security S-1, HIGH): face C's PRECHECK read the RAW command ----------------
+# A quote or a backslash inside the ROUTE ROOT is a joiner the shell removes, so the bytes `repos/`
+# were not in the raw string while the request still reached `/repos/…`. ★ A PRECHECK IS PART OF THE
+# MATCHER: read the same bytes the matcher reads, or it is a second, weaker matcher in front of the
+# real one. All eleven ALLOWED at 9de9ed91, measured.
+assert_deny "K-3b F1-1 a single-quote joiner in the route root (re''pos)" "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X PUT https://api.github.com/re''pos/o/r/pulls/5/merge\"}}"
+assert_deny "K-3b F1-2 a double-quote joiner in the route root"          '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/re\"\"pos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b F1-3 the whole root quoted ('"'"'repos'"'"')"                  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X PUT https://api.github.com/'repos'/o/r/pulls/5/merge\"}}"
+assert_deny "K-3b F1-4 a BACKSLASH before the separator (repos\\\\/o)"     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos\\/o/r/pulls/5/merge"}}'
+assert_deny "K-3b F1-5 a backslash INSIDE the root (rep\\\\os)"            '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/rep\\os/o/r/pulls/5/merge"}}'
+assert_deny "K-3b F1-6 the scheme+root quoted, the rest bare"            '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT \"https://api.github.com/repos\"/o/r/pulls/5/merge"}}'
+assert_deny "K-3b F1-7 the same joiner on the repo ROOT delete"          "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X DELETE https://api.github.com/re''pos/o/r\"}}"
+assert_deny "K-3b F1-8 the joiner on ORGS (or''gs/o/rulesets)"           "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X PATCH https://api.github.com/or''gs/o/rulesets/7 -d '{}'\"}}"
+assert_deny "K-3b F1-9 the joiner on USER (us''er/keys)"                 "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X POST https://api.github.com/us''er/keys -d '{}'\"}}"
+assert_deny "K-3b F1-10 the joiner through wget"                         "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"wget --method=PUT https://api.github.com/re''pos/o/r/pulls/5/merge\"}}"
+assert_deny "K-3b F1-11 the joiner through httpie"                       "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"http PUT api.github.com/re''pos/o/r/pulls/5/merge\"}}"
+# --- F2 (R-3 = S-2, HIGH): the GET/HEAD suppressor was an unanchored SUBSTRING ---------------------
+# A suppressor is ALLOW-side, so a decoy that satisfies it is a bypass. Six of these ALLOWED at
+# 9de9ed91; `-o get` already denied and is kept as the control that the new BARE-word rule must not
+# turn into an allow.
+assert_deny "K-3b F2-1 -X GET inside a USER-AGENT value"                 '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -A \"-X GET\""}}'
+assert_deny "K-3b F2-2 -X GET inside a BODY field"                       '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge --data-urlencode \"x=-X GET\""}}'
+assert_deny "K-3b F2-3 --method=head inside a HEADER value"              '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -H \"X: --method=head\""}}'
+assert_deny "K-3b F2-4 TWO methods present (curl takes the last; the guard does not guess)" '{"tool_name":"Bash","tool_input":{"command":"curl --request PUT --request GET https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b F2-5 a bare 'get' as an -o VALUE does not suppress"    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -o get"}}'
+assert_deny "K-3b F2-6 -x is curl's PROXY flag, not the method flag"     '{"tool_name":"Bash","tool_input":{"command":"curl -x get.proxy.example:8080 -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b F2-7 the same lowercase x inside a CLUSTER"            '{"tool_name":"Bash","tool_input":{"command":"curl -sSLx get.proxy.example:8080 -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_allow "K-3b-PIN F2-C1 a REAL -X GET still suppresses"             '{"tool_name":"Bash","tool_input":{"command":"curl -X GET https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_allow "K-3b-PIN F2-C2 curl -I (no indicator at all)"              '{"tool_name":"Bash","tool_input":{"command":"curl -I https://api.github.com/repos/o/r"}}'
+assert_allow "K-3b-PIN F2-C3 a REAL --request GET read, piped"           '{"tool_name":"Bash","tool_input":{"command":"curl --request GET https://api.github.com/repos/o/r/branches/main/protection | grep -F x"}}'
+# --- F3 (R-2 = S-3, HIGH): the WHOLE-VIEW fallback honoured a LATER stage's GET --------------------
+# When the span walk declines there is no "this segment" for a GET to belong to, so a GET anywhere in
+# the view meant nothing and suppressed an earlier admin write. The fallback is the deny-ward
+# direction by construction and now provably so.
+assert_deny "K-3b F3-1 a decoy GET in a later PIPE stage (walk declines on \$( )" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -d \"$(cat b.json)\" | grep -X GET x"}}'
+assert_deny "K-3b F3-2 a decoy GET after && (walk declines on an odd quote)" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge && echo \"don'"'"'t\" && curl -X GET https://api.github.com/repos/o/r"}}'
+assert_deny "K-3b F3-3 a decoy GET after ; with a substitution"          '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge; curl $(echo -s) --request GET https://api.github.com/repos/o/r"}}'
+assert_deny "K-3b F3-C1 the SETTLED twin denies through its own segmentation" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge; curl -X GET https://api.github.com/repos/o/r"}}'
+# --- F4 (S-4, MED): face D DISQUALIFIED where it could NORMALISE -----------------------------------
+# ★ A disqualifier is the right shape only where the guard cannot know the answer. GitHub case-folds
+# route words and percent-decodes the path, so the guard can do both and then ask the ordinary
+# question. These four were denied — under the MERGE-BYPASS reason — for carrying a capital in an
+# owner name or a `%20` in a label. This repo's own owner is `SeaBrad72`.
+assert_allow "K-3b-R F4-1 a capital in the OWNER segment (SeaBrad72)"    '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/SeaBrad72/sparkwright/issues/1/comments -f body=hi"}}'
+assert_allow "K-3b-R F4-2 a capital in an org and repo name"            '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/MyOrg/my-repo/issues -f title=x"}}'
+assert_allow "K-3b-R F4-3 a capitalised LABEL segment"                  '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r/issues/1/labels/Bug"}}'
+assert_allow "K-3b-R F4-4 a %20 in a label name"                        '{"tool_name":"Bash","tool_input":{"command":"gh api -X PATCH repos/o/r/labels/bug%20fix -f color=fff"}}'
+# THE CLOSURE MUST SURVIVE THE REFUND: each of these normalises ONTO an admin family and still denies.
+assert_deny "K-3b F4-C1 %6Derge decodes to merge and denies" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%6Derge"}}'
+assert_deny "K-3b F4-C2 the DOUBLE-encoded %256Derge needs the fixpoint" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%256Derge"}}'
+assert_deny "K-3b F4-C3 PULLS/5/MERGE folds onto the merge family" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/PULLS/5/MERGE"}}'
+assert_deny "K-3b F4-C4 a % that does NOT decode stays disqualified" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%zzerge"}}'
+assert_deny "K-3b F4-C5 the dot-segment disqualifier is kept" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/../r/pulls/5/merge"}}'
+# THE REASON MUST NAME THE RIGHT ACT. A disqualified endpoint is not a merge bypass, and telling an
+# adopter it is teaches the wrong retry.
+assert_reason_has "K-3b F4-reason a disqualified endpoint names its own trigger" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%zzerge"}}' 'trigger=api-endpoint'
+assert_reason_lacks "K-3b F4-reason it does NOT advertise the kill switch" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%zzerge"}}' 'KIT_GUARD_SELFEDIT'
+# --- F5 (R-4, LOW-MED): `strict` fired on a hoisted flag's VALUE ------------------------------------
+# The rule was only ever about the SUB-VERB position. Firing above the flag/value skips denied
+# `gh repo -R $REPO view` — an ordinary READ, and the spelling `gh` itself documents — while the
+# equivalent `gh repo view -R $REPO` allowed: same command, two spellings, two verdicts.
+assert_allow "K-3b-R F5-1 a hoisted -R with a \$VAR value before the verb" '{"tool_name":"Bash","tool_input":{"command":"gh repo -R $REPO view"}}'
+assert_allow "K-3b-PIN F5-C1 the trailing-flag spelling was always ALLOW" '{"tool_name":"Bash","tool_input":{"command":"gh repo view -R $REPO"}}'
+# === K-3b FIX ROUND 2 ==============================================================================
+# ⚠️ "ALREADY DENIED" IS A CLAIM ABOUT A CORE, AND THE DELTA'S CORE IS THE PRISTINE ONE. Three of the
+# controls below were written as `-PIN ` because they denied on the FIX-ROUND-1 head — but the delta
+# replays against `7a5255c3`, where face C and the statuses family do not exist, so all three are
+# ALLOW->DENY movers and `-PIN ` (which permits no movement) reported them UNEXPECTED. They carry the
+# plain `K-3b ` prefix. This is the SECOND time this slice made that mistake in the same way; the rule
+# to carry forward is that a control's prefix follows its verdict AT THE PRISTINE CORE, never at the
+# head the fix was written against.
+# --- C-1 (security round 2, HIGH): face C read only the SPACE-joined view -------------------------
+# A backslash-newline INSIDE a token is not a separator — the shell removes both bytes and the
+# fragments concatenate — so the space-join made `re\<nl>pos` into `re pos` and matched nothing while
+# curl received `repos`. The same lesson the S6 arm learnt at T2 round 2, arriving late at a face
+# written after it; the control below is what made that plain (the `gh api` half already denied,
+# because it has read an EMPTY-joined twin since that round — `M-R9`'s own subject).
+assert_deny "K-3b C1-1 a continuation inside the ROUTE ROOT (re\\<nl>pos)"     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/re\\\npos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C1-2 a continuation inside the route WORD (me\\<nl>rge)"     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/me\\\nrge"}}'
+assert_deny "K-3b C1-3 a continuation inside an inner segment (pu\\<nl>lls)"   '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pu\\\nlls/5/merge"}}'
+assert_deny "K-3b C1-4 a continuation inside the METHOD (-X PU\\<nl>T)"        '{"tool_name":"Bash","tool_input":{"command":"curl -X PU\\\nT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C1-5 a continuation inside a wget LONG FLAG (--meth\\<nl>od)" '{"tool_name":"Bash","tool_input":{"command":"wget --meth\\\nod=PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C1-6 a continuation inside rule\\<nl>sets"                   '{"tool_name":"Bash","tool_input":{"command":"curl -X DELETE https://api.github.com/repos/o/r/rule\\\nsets/7"}}'
+assert_deny "K-3b C1-7 a continuation inside prot\\<nl>ection, body-only"      '{"tool_name":"Bash","tool_input":{"command":"curl -d @p https://api.github.com/repos/o/r/branches/main/prot\\\nection"}}'
+assert_deny "K-3b-PIN C1-C1 the gh api half already denied and still does"     '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/me\\\nrge"}}'
+# ⚠️ C1-C2 IS ALLOW, AND THE FIX BRIEF EXPECTED DENY — recorded as a disagreement rather than forced.
+# `curl -X \<nl>GET …/merge` is `curl -X GET …/merge` once the shell joins it, and the empty-joined
+# twin spells `-XGET`, which the suppressor reads as the same fused GET. Both views agree it is a READ,
+# so both allow, which is what curl actually sends. Denying it would be an over-deny on a read.
+assert_allow "K-3b-PIN C1-C2 a continuation before GET is still a READ"        '{"tool_name":"Bash","tool_input":{"command":"curl -X \\\nGET https://api.github.com/repos/o/r/pulls/5/merge"}}'
+# --- C-2 (security round 2, HIGH): a BACKSLASH-ESCAPED separator splits the walker ----------------
+# `\;` `\|` `\&` are exactly as escaped as `\"` is: the shell hands curl a literal `;` ARGUMENT while
+# `_cp8b_segments` reads a command separator and cuts the request in half, so the URL and the indicator
+# land in different "segments". The fourth escaped pair joins the decline set — F-a's own reasoning,
+# applied to the bytes a SEPARATOR walk cares about.
+assert_deny "K-3b C2-1 an escaped ; between the URL and the method"     '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge \\; -X PUT"}}'
+assert_deny "K-3b C2-2 the method-first spelling"                       '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT \\; https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C2-3 an escaped |"                                    '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge \\| -X PUT"}}'
+assert_deny "K-3b C2-4 an escaped &"                                    '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge \\& -X PUT"}}'
+assert_deny "K-3b C2-5 an escaped &&"                                   '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge \\&\\& -X PUT"}}'
+assert_deny "K-3b C2-6 an escaped ||"                                   '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge \\|\\| -X PUT"}}'
+assert_deny "K-3b C2-7 a body flag and TWO urls across an escaped ;"     '{"tool_name":"Bash","tool_input":{"command":"curl -d @body.json https://x/ \\; https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C2-C1 the leading escaped ; denies too" '{"tool_name":"Bash","tool_input":{"command":"curl \\; -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}'
+assert_deny "K-3b C2-C2 a quoted header beside an escaped ; denies too" '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -H '"'"'X: y'"'"' \\; true"}}'
+# --- C-3 (security round 2, MED): face D FOLDED BEFORE IT DECODED --------------------------------
+# ★ A normalisation PIPELINE has an order, and the order is a rule. `%4D` is not an uppercase `M` until
+# it is decoded, so folding first folded bytes that were not yet route words and the hex-encoded route
+# walked. Six spellings ALLOWED at 626103a7.
+assert_deny "K-3b C3-1 a fully hex-encoded route word (%4D%45%52%47%45)" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%4D%45%52%47%45"}}'
+assert_deny "K-3b C3-2 the lowercase-hex twin"                          '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%4d%45%52%47%45"}}'
+assert_deny "K-3b C3-3 a PARTIALLY encoded route word (M%45RGE)"        '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/M%45RGE"}}'
+assert_deny "K-3b C3-4 an encoded capital in an EARLIER segment (%50ULLS)" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/%50ULLS/5/merge"}}'
+assert_deny "K-3b C3-5 the DOUBLE-encoded hex route word"               '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%254D%2545%2552%2547%2545"}}'
+assert_deny "K-3b C3-6 an encoded capital on the forged-status family"  '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/%53TATUSES/abc -f state=success"}}'
+# --- C-5 (security round 3, MED): the DECODE OUTPUT was never re-normalised ----------------------
+# ★ A NORMALISATION THAT RUNS ONLY BEFORE A DECODE PROTECTS ONLY THE BYTES THAT WERE ALREADY THERE.
+# The normalising tail ran once, ahead of the decode fixpoint, and nothing ran after it — so a decode
+# that PRODUCED a `/`, a `?`, a `#` or whitespace produced bytes no rule had seen. `%2F` is `/`.
+# ⚠️ THE FIRST CELL IS THE ONE THAT MATTERS AND IT IS A `-PIN `: `repos/o/r%2F%2F` decodes to
+# `repos/o/r//`, which the incumbent substring scan DENIES at the pristine core — so this face let
+# through something the guard already refused, i.e. an ALLOW-WARD MOVER against pristine, the one
+# direction this slice may not have. It is DENY on both cores again, so it may not move at all.
+assert_deny "K-3b-PIN C5-1 an encoded // on the repo ROOT (DENY at pristine too)" '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r%2F%2F"}}'
+assert_deny "K-3b C5-2 an encoded TRAILING slash (merge%2F)"            '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge%2F"}}'
+assert_deny "K-3b C5-3 an encoded QUERY marker (merge%3F)"              '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge%3F"}}'
+# The literal twins each of those encodes, DENY on both cores — the pair is what makes "the encoded
+# spelling and the plain spelling get the same answer" a property rather than a hope.
+assert_deny "K-3b-PIN C5-C1 the literal repos/o/r// denies on both cores" '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r//"}}'
+assert_deny "K-3b-PIN C5-C2 the literal trailing slash denies on both cores" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge/"}}'
+assert_allow "K-3b-PIN C5-C3 an encoded SPACE in a label is still ordinary" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PATCH repos/o/r/labels/bug%20fix -f color=fff"}}'
+# --- C-6 (security round 4, LOW-MED): a MIXED whitespace/slash tail survived ----------------------
+# ★ WHEN A STRIP CAN REVEAL ANOTHER STRIP'S SUBJECT, ORDERED SINGLE PASSES ARE A FIXPOINT PROBLEM
+# WEARING A DISGUISE. The tail trimmed whitespace and THEN stripped one `/`, so `repos/o/r /` lost the
+# slash and kept the space; two calls bought two levels and `merge / / ` needed three. Stripping the
+# RUN `[[:space:]/]+` at each end settles every interleaving in one pass, with no loop to bound.
+# ⚠️ THE FIRST TWO ARE `-PIN `: both DENY at the pristine core (the incumbent substring scan's family
+# terminator is `([[:space:]/]|$)`, so a space or a slash after the path is a terminator to it), and
+# they had become ALLOW here — allow-ward movers against pristine, the one direction this slice may
+# not have. They are DENY on both cores again and may move in neither.
+assert_deny "K-3b-PIN C6-1 an encoded SPACE-SLASH tail on the repo root (DENY at pristine)" '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r%20%2F"}}'
+assert_deny "K-3b-PIN C6-2 a LITERAL ' / / ' tail needs three levels (DENY at pristine)" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT \"repos/o/r/pulls/5/merge / / \""}}'
+assert_deny "K-3b C6-3 an encoded space-slash tail on the merge endpoint" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge%20%2F"}}'
+assert_deny "K-3b C6-C1 the TAB spelling of the same tail" '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge%09%2F"}}'
+assert_deny "K-3b C3-C1 the plain spelling of the same call denies too" '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/statuses/abc -f state=success"}}'
+assert_deny "K-3b F5-C2 an unreadable SUB-VERB is still not certified" '{"tool_name":"Bash","tool_input":{"command":"gh repo ed$Xit --default-branch x"}}'
 # --- .claude/hooks/ is control-plane by PREFIX, not by filename ---------------------------------
 # `guard.sh` and `guard-core.sh` were enumerated INDIVIDUALLY, so every OTHER file in the hook
 # directory classified `ordinary` — measured: `.claude/hooks/entry-core.sh` -> ordinary, and all three
@@ -1001,6 +1465,78 @@ assert_allow "CORPUS-PIN interpreter to an ordinary /tmp path stays allowed" \
 # presence+values lock (committed disarms), the human-reviewed commit — and now this real-time deny.
 assert_deny "cd .kit then bare-basename write (GUARD-BASENAME-AFTER-CD-BYPASS, CURED)" \
   '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x > dials.conf"}}'
+
+# === GOVERNANCE-SOURCE-FILES (CONTROL-PLANE-COVERAGE slice 3c) ====================================
+# ⚠️ gov_subject_deny_per_form (plan's Design-promised controls row 1). The kit's OWN governing SOURCE
+# files — the templates `incept`/`postmortem` stamp into an adopter's charter, the templates a LIVE gate
+# reads by path, and the three named governance artifacts — derived ORDINARY before this slice, so an
+# agent could rewrite `templates/PROJECT-CLAUDE-TEMPLATE.md` or `docs/governance/DECISIONS.md` in a PR
+# `control-plane-ratification` reported had "nothing to ratify". The subject is the kit's SOURCE
+# `templates/X` — never the adopter's stamped instance (`docs/governance/THREAT-MODEL.md` stays ordinary
+# at its own path; `app/templates/*` stays ordinary — the ALLOW block below).
+# Asserted PER MUTATION FORM, exactly as the seats-conf block above: a per-form gap is how the same class
+# hid twice before. Six matcher sites cover these forms — the tool route (_cpp_kitowned/_cpp_match via
+# is_control_plane_path), the shell-redirect glob leaves, and the two pathhit tiers (the interpreter/verb
+# route that never consults is_control_plane_path). CEILING (attestation, not comprehension): the guard
+# denies path-bearing shell/tool MUTATION and forces ratification; a content-blind, path-LESS op
+# (`git checkout <ref> -- .`, `git reset --hard`, `git apply`) carries no token for any matcher and is a
+# pre-existing ceiling for EVERY control-plane file, not introduced here.
+assert_deny  "GOV Write PROJECT-CLAUDE-TEMPLATE"  '{"tool_name":"Write","tool_input":{"file_path":"templates/PROJECT-CLAUDE-TEMPLATE.md","content":"x"}}'
+assert_deny  "GOV Edit DECISIONS-TEMPLATE"        '{"tool_name":"Edit","tool_input":{"file_path":"templates/DECISIONS-TEMPLATE.md","old_string":"a","new_string":"b"}}'
+assert_deny  "GOV redirect promotion-contract"    '{"tool_name":"Bash","tool_input":{"command":"printf x > docs/governance/promotion-contract.md"}}'
+assert_deny  "GOV sed -i DECISIONS-TEMPLATE"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ templates/DECISIONS-TEMPLATE.md"}}'
+assert_deny  "GOV --target-directory BACKLOG-TEMPLATE" '{"tool_name":"Bash","tool_input":{"command":"mv --target-directory=/tmp templates/BACKLOG-TEMPLATE.md"}}'
+# The INTERPRETER route: _cp8b_pathhit is the ONLY arm that fires (the token walk cannot see inside
+# open(...)), so a pathhit-tier omission is the whole deny/allow difference — the seats-conf lesson.
+assert_deny  "GOV interpreter python3 -c open() DECISIONS.md" \
+  '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(docs/governance/DECISIONS.md,w)"}}'
+assert_deny  "GOV interpreter perl -e RUNBOOK-TEMPLATE" \
+  '{"tool_name":"Bash","tool_input":{"command":"perl -e open(F,x,templates/RUNBOOK-TEMPLATE.md)"}}'
+assert_deny  "GOV interpreter node -e SECURITY-TEMPLATE" \
+  '{"tool_name":"Bash","tool_input":{"command":"node -e fs.writeFileSync(templates/SECURITY-TEMPLATE.md)"}}'
+# The FOLD leg (_CP8B_PATHHIT_T1_LC): an uppercase-token spelling only denies if the leg is in the
+# lowercased copy too — its own cell, because a leg in T1 alone leaves this ALLOW while every other
+# cell here passes (the seats M-CORP3 lesson).
+assert_deny  "GOV interpreter UPPERCASE fold DECISIONS-TEMPLATE" \
+  '{"tool_name":"Bash","tool_input":{"command":"python3 -c open(TEMPLATES/DECISIONS-TEMPLATE.MD,w)"}}'
+# The glob-spelled write route (_CP8B_GLOB_LEAVES) — a full-filename CP leaf spelled as a glob.
+assert_deny  "GOV glob-spelled cp PROJECT-CLAUDE-TEMPLAT*" \
+  '{"tool_name":"Bash","tool_input":{"command":"cp evil templates/PROJECT-CLAUDE-TEMPLAT*"}}'
+# git write primitives — checkout <ref> -- <path> and git mv feed a bare path token to the classifier.
+assert_deny  "GOV git checkout -- PLAN-RECORD-TEMPLATE" \
+  '{"tool_name":"Bash","tool_input":{"command":"git checkout HEAD -- templates/PLAN-RECORD-TEMPLATE.md"}}'
+assert_deny  "GOV git mv WAIVER-REGISTER" \
+  '{"tool_name":"Bash","tool_input":{"command":"git mv templates/WAIVER-REGISTER.md x"}}'
+# Enterprise-loop and runtime-read subjects, one deny each, to pin the derivation's two harder halves.
+assert_deny  "GOV Write THREAT-MODEL-TEMPLATE (enterprise loop)"  '{"tool_name":"Write","tool_input":{"file_path":"templates/THREAT-MODEL-TEMPLATE.md","content":"x"}}'
+assert_deny  "GOV Write REVIEW-RECORD-TEMPLATE (runtime-read)"    '{"tool_name":"Write","tool_input":{"file_path":"templates/REVIEW-RECORD-TEMPLATE.md","content":"x"}}'
+assert_deny  "GOV Write DECISIONS.md (named artifact)"            '{"tool_name":"Write","tool_input":{"file_path":"docs/governance/DECISIONS.md","content":"x"}}'
+assert_deny  "GOV Write .kit/tracker.conf (prospective, rides .kit corpus)" '{"tool_name":"Write","tool_input":{"file_path":".kit/tracker.conf","content":"x"}}'
+# DERIVED set-3 additions (owner ruling: DERIVE the gate-read templates). The five templates surfaced by
+# doc-markers.tsv + obligation-lib _cm_named that were previously uncovered now deny across forms.
+assert_deny  "GOV Write AI-ARTIFACT-LINEAGE-TEMPLATE (derived)"  '{"tool_name":"Write","tool_input":{"file_path":"templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md","content":"x"}}'
+assert_deny  "GOV Write EVAL-PLAN-TEMPLATE (derived)"            '{"tool_name":"Write","tool_input":{"file_path":"templates/EVAL-PLAN-TEMPLATE.md","content":"x"}}'
+assert_deny  "GOV Edit TEST-PLAN-TEMPLATE (derived)"             '{"tool_name":"Edit","tool_input":{"file_path":"templates/TEST-PLAN-TEMPLATE.md","old_string":"a","new_string":"b"}}'
+assert_deny  "GOV sed -i FIELD-REPORT-TEMPLATE (derived, shell route)"  '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ templates/FIELD-REPORT-TEMPLATE.md"}}'
+assert_deny  "GOV redirect RESTORE-DRILL-TEMPLATE (derived, shell route)" '{"tool_name":"Bash","tool_input":{"command":"printf x > templates/RESTORE-DRILL-TEMPLATE.md"}}'
+# LIVENESS + PASS fixtures: the arm must NOT be a bare `templates/*`/`governance/*`. An adopter's own
+# templates dir, a docs templates dir, a helm-chart templates dir, and non-subject files UNDER templates/
+# stay ORDINARY (editable). Without these anchors the denies above could be a blanket over-block.
+assert_allow "GOV-PIN app/templates/index.html stays ordinary"   '{"tool_name":"Write","tool_input":{"file_path":"app/templates/index.html","content":"x"}}'
+assert_allow "GOV-PIN docs/templates/x.md stays ordinary"        '{"tool_name":"Write","tool_input":{"file_path":"docs/templates/x.md","content":"x"}}'
+assert_allow "GOV-PIN chart/templates/deployment.yaml stays ordinary" '{"tool_name":"Write","tool_input":{"file_path":"chart/templates/deployment.yaml","content":"x"}}'
+assert_allow "GOV-PIN templates/README.md stays ordinary"        '{"tool_name":"Write","tool_input":{"file_path":"templates/README.md","content":"x"}}'
+assert_allow "GOV-PIN templates/not-a-subject.md stays ordinary" '{"tool_name":"Write","tool_input":{"file_path":"templates/not-a-subject.md","content":"x"}}'
+# gov_dir_relocation_deny (plan's Design-promised controls row 2). _ctm_match gains templates|governance
+# bare-directory arms (owner Q4=yes): relocating/removing the whole dir is the single command worth most
+# to an attacker (the `mv conformance /tmp` hole reborn). DISCLOSED cost: a bare relocation of an
+# adopter's `app/templates` DIRECTORY becomes DENY; edits INSIDE it (the ALLOW block above) stay ordinary
+# — _ctm_match is target-only.
+assert_deny  "GOV-DIR mv templates dir"           '{"tool_name":"Bash","tool_input":{"command":"mv templates /tmp/x"}}'
+assert_deny  "GOV-DIR rm -rf templates dir"       '{"tool_name":"Bash","tool_input":{"command":"rm -rf templates"}}'
+assert_deny  "GOV-DIR chmod -R governance dir"    '{"tool_name":"Bash","tool_input":{"command":"chmod -R 777 docs/governance"}}'
+assert_deny  "GOV-DIR mv adopter app/templates dir (disclosed fail-safe)" '{"tool_name":"Bash","tool_input":{"command":"mv app/templates /tmp/x"}}'
+assert_allow "GOV-DIR mv a FILE inside app/templates stays ordinary" '{"tool_name":"Bash","tool_input":{"command":"mv app/templates/index.html /tmp/x"}}'
 
 # --- 9b review hardening: must still ALLOW (no new over-block) ---
 assert_allow "git config user"      '{"tool_name":"Bash","tool_input":{"command":"git config user.name Dev"}}'
@@ -1641,7 +2177,11 @@ assert_allow "E2 git add cp path"        '{"tool_name":"Bash","tool_input":{"com
 assert_allow "E2 git diff cp path"       '{"tool_name":"Bash","tool_input":{"command":"git diff HEAD -- .claude/hooks/guard-core.sh"}}'
 assert_allow "E2 git log cp path"        '{"tool_name":"Bash","tool_input":{"command":"git log --oneline -5 -- conformance/verify.sh"}}'
 assert_allow "E2 git show cp path"       '{"tool_name":"Bash","tool_input":{"command":"git show HEAD:conformance/claims.tsv"}}'
-assert_allow "E2 git stash cp path"      '{"tool_name":"Bash","tool_input":{"command":"git stash push conformance/agent-autonomy.sh"}}'
+# ⚠️ RE-KINDED BY K-3a face 3: `stash` left `_CP8B_GIT_READ_SUBS` because `git stash push -- <cp>`
+# REVERTS the control-plane file's working copy. E2's own claim (git READ subs are exempt) is intact
+# for `log`/`show`/`diff`/`status`; this one subject was never a read.
+assert_deny "K-3a-A13d (was E2 git stash cp path): stash push <cp> is a WRITE, not a read" \
+  '{"tool_name":"Bash","tool_input":{"command":"git stash push conformance/agent-autonomy.sh"}}'
 # E3 message carriers citing control-plane paths in the body
 assert_allow "E3 gh pr --body cp path"   '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title guardfix --body adds-legs-to-conformance/agent-autonomy.sh"}}'
 assert_allow "E3 git commit -m cp path"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m docs-note-.claude/hooks/guard-core.sh-residual"}}'
@@ -2868,7 +3408,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # `awk` is single-locked — it falls to the verb arm's `*)` scan, which no mutation verb triggers — so
   # it is the honest probe for "a lexicon entry fails OPEN", and the escape it hands back is exec.
   gpab_mutant "D1-M1: awk added to the READ lexicon -> a system( program on a CP path flips (fails OPEN)" \
-    "s#^_CP8B_READ_VERBS='grep#_CP8B_READ_VERBS='awk grep#" \
+    "s#^_CP8B_READ_VERBS='ls#_CP8B_READ_VERBS='awk ls#" \
     '{"tool_name":"Bash","tool_input":{"command":"awk '\''{system(cmd)}'\'' conformance/verify.sh"}}' allow
   # M-B1 — the SHARED sed script grammar is what excludes sed's writing commands. Neuter it (accept any
   # script) and `sed -n 1,5w<cp> <file>` — the `w` COMMAND with a glued filename, a real WRITE that the
@@ -3127,9 +3667,16 @@ if [ "${GPAB_G:-}" != "" ]; then
   # WRITES `<path>.mgc` — the seat's vet finding 4, which falsified the first draft's "complete by
   # inheritance". Put `file` back on the gate and the mask is kept for a `file -C -m` whole, its quoted
   # `|` stops splitting, and the write onto the guard's own directory flips ALLOW.
-  gpab_mutant "M-A1: file re-admitted to the mask gate lexicon -> file -C -m <cp> flips" \
+  # ⚠️ RE-AIMED BY GUARD-READ-EXEC-LANE (K-3a). The original subject was `file -C -m "a|b" <cp>`, and
+  # after K-3a's face 1 `file` sits in the DECLINE-ON-ANY-FLAG tier, so that spelling now DENIES AT
+  # BOTH ENDS and the leg reported "verdict did not change; the leg proves nothing" (measured). It is
+  # exactly D1-M1's `sed` situation one function over: the subject became DOUBLE-locked, so the honest
+  # probe is the FLAGLESS one, which is single-locked on the gate alone. The CLAIM this leg makes is
+  # unchanged — "the gate lexicon is not the read lexicon, and re-admitting a verb to it authorises
+  # re-segmentation" — only the write half of the old subject moved to K-3a-A9, where it is celled.
+  gpab_mutant "M-A1: file re-admitted to the mask gate lexicon -> a masked file read of <cp> flips" \
     "s@^_CP8B_MASK_GATE_VERBS='grep@_CP8B_MASK_GATE_VERBS='file grep@" \
-    '{"tool_name":"Bash","tool_input":{"command":"file -C -m \"a|b\" .claude/hooks/guard-core.sh"}}' allow
+    '{"tool_name":"Bash","tool_input":{"command":"file \"a|b\" .claude/hooks/guard-core.sh"}}' allow
   # M-A1-git — the same claim for the git half, and the design named this one. `_CP8B_GIT_READ_SUBS`
   # carries `add`, `commit` and `stash`, every one of which MUTATES (index, history, worktree —
   # `git stash push -- <cp>` discards guard edits): seat vet finding 5. Widen the gate's sub list back
@@ -3185,9 +3732,13 @@ if [ "${GPAB_G:-}" != "" ]; then
   # and the mask is kept for an `rg`-led whole, its quoted `|` stops splitting, and the EXEC-flagged
   # read of the guard flips ALLOW. (The bare `rg --pre … pat <cp>` spelling is ALLOW at both ends — a
   # pre-existing data-lexicon hole — so it could NOT anchor this leg; the masked spelling can.)
-  gpab_mutant "M-A1-rg: rg re-admitted to the mask gate lexicon -> rg --pre + quoted alternation flips" \
+  # ⚠️ RE-AIMED BY GUARD-READ-EXEC-LANE (K-3a), for the same reason and with the same claim as M-A1
+  # directly above: `rg --pre` now denies at BOTH ends (face 1 declines the unvetted flag), so the leg
+  # measured "verdict did not change". The flagless masked spelling is single-locked on the gate and
+  # restores the flip; the EXEC half of the old subject is celled at K-3a-A1.
+  gpab_mutant "M-A1-rg: rg re-admitted to the mask gate lexicon -> a masked rg read of <cp> flips" \
     "s@^_CP8B_MASK_GATE_VERBS='grep@_CP8B_MASK_GATE_VERBS='rg grep@" \
-    '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil \"a|b\" .claude/hooks/guard-core.sh"}}' allow
+    '{"tool_name":"Bash","tool_input":{"command":"rg \"a|b\" .claude/hooks/guard-core.sh"}}' allow
   # M-R1 (GUARD-READ-PATTERN-RELIEF Face 1) — THE GATE LEXICON IS LIVE. Add `sh` to the list and a
   # quoted-alternation read chained with `sh <script>` stops splitting and flips ALLOW.
   # ⚠️ HONEST LABEL (design §3 Face 1, vet C5): this flips a READ, not a write. Face 1's gate CANNOT
@@ -3391,6 +3942,129 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "M-I3 (review I3): ~/-dotfile decline dropped -> printf evil > ~/.config/git/config flips" \
     's#|/\.\*) _rtc=2#) _rtc=2#' \
     '{"tool_name":"Bash","tool_input":{"command":"printf evil > ~/.config/git/config"}}' allow
+
+  # === GUARD-READ-EXEC-LANE (K-3a) mutants — one per load-bearing clause, each must flip a DENY ====
+  # K-3a-M1 — THE FAIL-CLOSED PROPERTY ITSELF. Neuter the unknown-flag decline in
+  # `_cp8b_seg_flags_vetted` and the walk simply shifts past whatever it does not recognise, so
+  # `rg --pre <exec>` is read-recognised again and A1 flips ALLOW. If this mutant survives, tier 2 is
+  # a decoration.
+  gpab_mutant "K-3a-M1: the unknown-flag decline neutered -> A1 (rg --pre <exec>) flips" \
+    's@^               _sfvr=1; break@               :@' \
+    '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh -n x .claude/hooks/guard-core.sh"}}' allow
+  # K-3a-M1b — THE CLUSTER RULE JUDGES EVERY LETTER. Stop the cluster walk after its FIRST letter and
+  # `git grep -nO<exec>` — whose first letter IS vetted — is admitted with its exec flag glued on.
+  # This is the exact shape the vet added A14 for.
+  gpab_mutant "K-3a-M1b: cluster judged on its FIRST letter only -> A14 (-nO<exec>) flips" \
+    "s@_ftb=\\\${_ftb#?}@_ftb=''@" \
+    '{"tool_name":"Bash","tool_input":{"command":"git grep -nO/tmp/evil.sh x -- .claude/hooks/guard-core.sh"}}' allow
+  # K-3a-M4 — THE TIER-1 LIST IS PINNED BEHAVIOURALLY, not by a source oracle. Put `rg` back on
+  # `_CP8B_READ_VERBS` and the plain-list lookup (which runs FIRST, by design) short-circuits the whole
+  # grammar: A1 flips. This is what makes "re-admission needs its own measurement" enforceable.
+  gpab_mutant "K-3a-M4: rg re-admitted to _CP8B_READ_VERBS -> A1 flips (tier-1 membership is a grant)" \
+    "s@^_CP8B_READ_VERBS='ls@_CP8B_READ_VERBS='rg ls@" \
+    '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh -n x .claude/hooks/guard-core.sh"}}' allow
+
+  # === K-3a FIX ROUND 2 mutants ===================================================================
+  # K-3a-M12 (security F8) — THE BACKSLASH STRIP in `_cp8b_word_real`. Drop it and an escaped dash is
+  # a word whose first byte is `\`, so the walk calls it data and the shell calls it a flag.
+  # ⚠️ RE-ANCHORED BY GUARD-ADMIN-ARMS (K-3b), and this is slice 3a's own carried LOW being paid off.
+  # The expression `-e 's/\\//g'` matches TWO lines — `_cp8b_dequote` and `_cp8b_word_real` — so the
+  # mutant was reverting BOTH helpers and its kill could not be attributed to the one it names. That is
+  # the K-3a-M12 anchor tidy 3a's retro handed to this slice. It now carries a sed ADDRESS
+  # (`/_wrw" | sed/`) so exactly the `_cp8b_word_real` line is mutated; measured "matched 2 lines"
+  # before, "matched 1 line" after, and it still kills.
+  gpab_mutant "K-3a-M12: the backslash strip dropped -> rg \\-\\-pre <exec> x <cp> flips" \
+    "/_wrw\" | sed/s@-e 's/\\\\\\\\//g'@@" \
+    '{"tool_name":"Bash","tool_input":{"command":"rg \\-\\-pre /tmp/evil.sh x conformance/verify.sh"}}' allow
+  # K-3a-M13 (security F9) — THE RAW LEG of the decline-on-any-flag disjunction. Drop it and a
+  # dash-leading fragment inside a quoted operand stops declining, which is the ALLOW-WARD relaxation
+  # the round-1 word-join introduced.
+  gpab_mutant "K-3a-M13: the raw view dropped from _cp8b_seg_has_flag -> yq \"a -b\" <cp> flips" \
+    's@^  _cp8b_seg_has_flag_view "$1" raw && { \[ "$_pgf" = 1 \] || set +f; return 0; }@  :@' \
+    '{"tool_name":"Bash","tool_input":{"command":"yq \"a -b\" conformance/x.yml"}}' allow
+
+  # === K-3a FIX ROUND 1 mutants ===================================================================
+  # K-3a-M8 (security F1) — THE LAUNDER ARM'S PRE-TIER QUESTION. Drop it and the arm is back to asking
+  # the recogniser faces 1/3 narrowed, so the first of the ten measured movers flips ALLOW again. This
+  # is the leg that pins "a deny-side consumer must not inherit an allow-side narrowing".
+  gpab_mutant "K-3a-M8: the launder arm's pre-tier lexicon dropped -> rg --pre ... > \$V/pre-push flips" \
+    's@_cp8b_launder_lead "$_ln@false "$_ln@g' \
+    '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh x /tmp/y > $V/pre-push"}}' allow
+  # K-3a-M9 (reviewer C1 / security F4) — THE WORD IS DEQUOTED, NOT BLANKED. Judge the joined bytes
+  # instead of the dequoted word (i.e. re-create the first cut's redaction by stripping the word back
+  # to its quotes) and a quoted exec flag is data again.
+  gpab_mutant "K-3a-M9: the flag word judged on its RAW bytes, not dequoted -> a quoted --pre flips" \
+    's@^_cp8b_word_real() {@_cp8b_word_real() { printf "%s" "_"; return #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"rg -n \"--pre=/tmp/e\" x conformance/verify.sh"}}' allow
+  # K-3a-M10 (security F2) — the operand-taking git globals. Drop the `shift 2` and `-C`'s VALUE is
+  # read as the subcommand, so the `-c` behind it is never reached.
+  gpab_mutant "K-3a-M10: the git operand-global shift-2 dropped -> git -C . -c diff.external flips" \
+    's@^      -C|--git-dir|--work-tree|--namespace)@      -C-DISABLED)@' \
+    '{"tool_name":"Bash","tool_input":{"command":"git -C . -c diff.external=/tmp/evil.sh diff conformance/verify.sh"}}' allow
+  # K-3a-M11 (security F3) — the strip-assigns RE-JUDGE. Drop it and an assignment prefix in front of
+  # the poisoning verb hides it again.
+  gpab_mutant "K-3a-M11: the assignment-prefix re-judge dropped -> X=1 export PATH; cat <cp> flips" \
+    's@^                    _psa=$(_cp8b_strip_assigns "$_psr")@                    _psa=$_psr@' \
+    '{"tool_name":"Bash","tool_input":{"command":"X=1 export PATH=/tmp; cat conformance/verify.sh"}}' allow
+  # K-3a-M4b (security F7) — the tier-1 list is a GRANT for every verb on it, not only for `rg`.
+  # Re-admit `grep` and the ugrep `--filter=<cmd>` exec form (A5) is read-recognised again.
+  gpab_mutant "K-3a-M4b: grep re-admitted to _CP8B_READ_VERBS -> A5 (grep --filter=<cmd>) flips" \
+    "s@^_CP8B_READ_VERBS='ls@_CP8B_READ_VERBS='grep ls@" \
+    '{"tool_name":"Bash","tool_input":{"command":"grep --filter='"'"'sh:/tmp/evil.sh %'"'"' x conformance/verify.sh"}}' allow
+
+  # K-3a-M2 — FACE 2 ENTIRE. If the flag is never set, every B cell is inert and the face is a no-op.
+  # Neutered at the SET rather than at the predicate, so `_cp8b_seg_poisons` still runs and only the
+  # admission is removed — the narrowest possible kill (the M-CWD1 shape).
+  gpab_mutant "K-3a-M2: the poison flag is never set -> B1 (export PATH; head <cp>) flips" \
+    's@then _CP8B_RES_POISON=1; fi@then :; fi@' \
+    '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp:$PATH; head -1 conformance/verify.sh"}}' allow
+  # K-3a-M2b — THE PEEL. Judge the RAW lead instead of the peeled one and every B14-B21 spelling hides
+  # again behind its group opener. Anchored on the peel call inside `_cp8b_seg_poisons`.
+  gpab_mutant "K-3a-M2b: the group peel dropped -> B14 ( export PATH=/tmp; cat <cp> ) flips" \
+    's@^  _psr=$(_cp8b_group_peel "$1")@  _psr=$1@' \
+    '{"tool_name":"Bash","tool_input":{"command":"( export PATH=/tmp; cat conformance/verify.sh )"}}' allow
+  # K-3a-M6 — THE WHOLE ALLOW SIDE, not reads alone. Narrow the skip to `_cp8b_tad_is_read` (revert the
+  # other four guards to bare `continue`) and a kit script run under a poisoned PATH — which executes
+  # the kit script's internals from `/tmp` — flips ALLOW. This is the leg behind design decision 3.
+  gpab_mutant "K-3a-M6: the poison skip narrowed to reads alone -> export PATH; sh <kit> flips" \
+    's@    if _cp8b_tad_is_kit_exec "$_seg"; then@    _cp8b_tad_is_kit_exec "$_seg" \&\& continue\n    if false; then@' \
+    '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; sh conformance/verify.sh"}}' allow
+  # K-3a-M7 — THE SITE, and this is the leg the security vet's HIGH finding exists for. Consult the
+  # poison flag INSIDE `_cp8b_tad_is_read` — the "obvious" place — and the recogniser starts answering
+  # "not a read" on the DENY side too: the launder arm, which denies BECAUSE `cat` is read-recognised,
+  # stops denying and the laundering read flips ALLOW. A global consulted inside a recogniser is not
+  # the same mechanism as a check at the walk.
+  # ⚠️ RE-AIMED IN FIX ROUND 1, and the re-aim is itself a measurement. The original subject was the
+  # `cat` spelling; security F1's cure gave the launder arm its own PRE-TIER lexicon, which now holds
+  # `cat` independently of the recogniser — so that subject went DENY-at-both-ends and the leg reported
+  # "verdict did not change". The recogniser is still the arm's SOLE authority for the GRAMMAR tiers
+  # (`sed -n`, `awk`, `find`, `sh -n`), which are deliberately not in any lexicon, so the leg moves
+  # there. Measured under the mutation: the `sed -n`, `awk`, `find` and `sh -n` spellings all flip
+  # ALLOW; the `cat` one does not.
+  gpab_mutant "K-3a-M7: the poison flag consulted INSIDE _cp8b_tad_is_read -> the sed-n launder control flips" \
+    's@^_cp8b_tad_is_read() {@_cp8b_tad_is_read() { [ "${_CP8B_RES_POISON:-0}" = 1 ] \&\& return 1 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; sed -n 1,5p /tmp/x > $V/pre-push"}}' allow
+  # K-3a-M3 — THE SITE, and this is the leg the security vet's CRIT finding exists for. Put the `-c`
+  # decline where the design's FIRST DRAFT put it — inside `_cp8b_git_sub`, which returns the sub for
+  # FIVE callers including the WRITE arm and Face B-git — and the sub stops being found at all.
+  # ⚠️ WHICH CONTROL BINDS THIS LEG WAS MEASURED, NOT ASSUMED, and the measurement corrected the
+  # design. The design named four kept-DENY controls and predicted the ROOT-relative ones would flip.
+  # They do NOT: at this head `git -c x=y archive -o conformance/x.tar HEAD`,
+  # `git -c x=y checkout -- conformance/verify.sh` and `git -c x=y worktree add -b br conformance/wt`
+  # all DENY under the mutation too — the CP token in argv is caught by the pathhit trigger, which is
+  # a second lock the write arm never needs. (Same for `bundle create` / `restore` / `clone` on a CP
+  # path; all measured.) The CRIT the vet found is REAL, and it reproduces through FACE B-git (the
+  # cwd-unknown arm, which consults `_cp8b_git_sub` with a CD-RELATIVE operand that no path trigger
+  # can see): `cd -; git -c x=y checkout -- verify.sh` — control `K-3a-C-cd-checkout` — flips DENY to
+  # ALLOW, and so do its worktree/archive/restore/clone siblings. That is the leg.
+  gpab_mutant "K-3a-M3: the -c decline moved INTO _cp8b_git_sub -> the cd-relative checkout control flips" \
+    's@^_cp8b_git_sub() {@_cp8b_git_sub() { case " $1 " in *" -c "*) return ;; esac; @' \
+    '{"tool_name":"Bash","tool_input":{"command":"cd -; git -c x=y checkout -- verify.sh"}}' allow
+  # K-3a-M5 — `stash` re-admitted to the read subs and A13 flips. The list is a GRANT, so membership
+  # has to be pinned behaviourally exactly as `_CP8B_READ_VERBS` is by K-3a-M4.
+  gpab_mutant "K-3a-M5: stash re-admitted to _CP8B_GIT_READ_SUBS -> A13 (stash push -- <cp>) flips" \
+    "s@^_CP8B_GIT_READ_SUBS='commit@_CP8B_GIT_READ_SUBS='stash commit@" \
+    '{"tool_name":"Bash","tool_input":{"command":"git stash push -- conformance/verify.sh"}}' allow
 
   # === GUARD-READ-LANE-2 T1 — the pipe-into-interpreter rule (design §5), three separate lines ======
   # M-H1: drop the heredoc CONSUMER gate -> `sh <<'"'"'EOF'"'"'` + `cp /tmp/e <guard-core>` (W11) flips back
@@ -3711,6 +4385,261 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "M-J1: _cp8b_joinlines made a pass-through -> git push \\<nl>--force origin main flips" \
     's@^_cp8b_joinlines() {@_cp8b_joinlines() { printf "%s" "$1"; return 0 #@' \
     '{"tool_name":"Bash","tool_input":{"command":"git push \\\n--force origin main"}}' allow
+
+  # === GUARD-ADMIN-ARMS (K-3b) mutants — one per load-bearing clause of the extracted judge =========
+  # K-3b-M14 (vet S-2) — THE CLUSTER TOLERANCE of the caller's method probe. Revert the third
+  # alternative and `-iXPUT` is a method the guard cannot see again: it contains no `-X`, so the probe
+  # finds nothing, the call reads as non-mutating and a complete admin merge ALLOWs. The mutation is
+  # written to leave the incumbent two spellings intact, which is what makes the flip attributable.
+  gpab_mutant "K-3b-M14: cluster tolerance dropped from the method probe -> gh api -iXPUT .../merge flips" \
+    's@|(^|\[\[:space:\]\])-\[A-Za-z\]\*X|--method@|--method@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -iXPUT repos/o/r/pulls/5/merge"}}' allow
+  # K-3b-M0a/b/c — ONE PER OWNER-FOLDED FAMILY. The three folds of design §9 (decisions 9a, 4 and 9d)
+  # are three independent additions to the judge's table, and a single mutant over "the new families"
+  # would let any one of them cover for the others. Each expression breaks only its own family's regex.
+  gpab_mutant "K-3b-M0a: the ACCOUNT key-mint family dropped -> gh api -X POST user/keys flips" \
+    's@user/(keys|ssh_signing_keys|gpg_keys)@user/ZZNOMATCH@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST user/keys -f key=x -f title=y"}}' allow
+  gpab_mutant "K-3b-M0b: the PUSH-TWIN family dropped -> gh api -X POST repos/o/r/merges flips" \
+    's@merges\${_ape}|contents/@ZZNOMATCHA|ZZNOMATCHB/@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/merges -f base=main -f head=x"}}' allow
+  gpab_mutant "K-3b-M0c: the FORGED-CHECK family dropped -> gh api -X POST .../statuses/abc flips" \
+    's@statuses/\[^\[:space:\]\]\${_aps}|check-runs@ZZNOMATCHA|ZZNOMATCHB@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/statuses/abc123 -f state=success -f context=ci"}}' allow
+
+  # --- K-3b FACES A AND B ---------------------------------------------------------------------------
+  # K-3b-M1 — THE VERB SET of face A's first pair. Empty it and `gh repo edit --default-branch evil` —
+  # the row's own headline subject — is back to ALLOW while its REST spelling still denies, which is
+  # precisely the divergence the face exists to close.
+  gpab_mutant "K-3b-M1: face A's repo verb set emptied -> A1 (gh repo edit --default-branch) flips" \
+    "s@'edit delete archive unarchive rename'@''@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh repo edit --default-branch evil"}}' allow
+  # K-3b-M2 — THE EXPANSION DISQUALIFIER in the sub-verb position. Drop it and `gh repo ed$Xit` walks:
+  # the token is not in the verb set, the walk resets, and a verb the guard could not READ is treated
+  # as if it had been read. This is the leg that makes "an unreadable sub-verb is not certified" a
+  # property rather than a sentence.
+  gpab_mutant "K-3b-M2: the sub-verb expansion disqualifier dropped -> gh repo ed\$Xit flips" \
+    's@case "\$_go_t" in \*.\$.\*|\*.`.\*) _go_r=0; break ;; esac@:@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh repo ed$Xit --default-branch x"}}' allow
+  # K-3b-M3 — the `repo deploy-key` PAIR, pinned separately from the repo-root pair because a
+  # credential MINT is a different family in the judge (`keys`, the collaborators class) and one
+  # mutant over "face A" would let the root pair cover for it.
+  gpab_mutant "K-3b-M3: the deploy-key pair dropped -> A16 (gh repo deploy-key add --allow-write) flips" \
+    "s@'repo deploy-key' 'add delete'@'repo ZZNOMATCH' 'add delete'@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh repo deploy-key add key.pub --allow-write"}}' allow
+  # K-3b-M4 — FACE B ENTIRE, neutered at the function so both call sites go at once (the M-R13 shape).
+  # Subject is ceiling (i)'s own former ALLOW cell, so the mutant flips exactly the sentence this
+  # slice retired.
+  gpab_mutant "K-3b-M4: the persistence face neutered -> B1 (gh alias set mm 'pr merge --admin') flips" \
+    's@^_s6_gh_persist_denied() {@_s6_gh_persist_denied() { return 1 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm '"'"'pr merge --admin'"'"'"}}' allow
+  # K-3b-M5 — the `import` VERB alone. `gh alias import` is the shape whose bodies are outside the
+  # command entirely, so it is the one face-B verb no body inspection could ever have covered; pinning
+  # it separately from `set` is what stops `set` from covering for it.
+  gpab_mutant "K-3b-M5: 'import' dropped from the alias verbs -> B9 (gh alias import aliases.yml) flips" \
+    "s@'alias' 'set import'@'alias' 'set'@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh alias import aliases.yml"}}' allow
+
+  # --- K-3b FACE C ----------------------------------------------------------------------------------
+  # K-3b-M6 — FACE C ENTIRE, neutered at the per-segment judge so both the loop and its caller go at
+  # once (the M-R13 shape: a mutant that reverted one call site would leave the other holding).
+  gpab_mutant "K-3b-M6: face C neutered -> C1 (curl -X PUT .../pulls/5/merge) flips" \
+    's@^_s6_http_seg_admin() {@_s6_http_seg_admin() { return 1 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge"}}' allow
+  # K-3b-M7 — BODY-FLAG-AS-POST. Drop the promotion and `curl -d '{...}' .../merge` has no method at
+  # all, so the face declines — even though curl sends a POST. This is the rule the judge already
+  # applies to `gh api -f`, and this is the leg that says so out loud.
+  # ⚠️ RE-ANCHORED IN FIX ROUND 1 (the "a fix reshaped the line the expression anchored on" case the
+  # gate exists to catch): F2 moved the body test above the suppressor and the promotion became a
+  # guarded assignment, so the old `^      _hm=post$` anchor matched NOTHING and would have reported
+  # the leg unbound. Same subject, same claim, new anchor.
+  gpab_mutant "K-3b-M7: body-flag-as-POST dropped -> C18 (curl -d ... .../merge) flips" \
+    's@^  if \[ -z "\$_hm" \] && \[ "\$_hb" = 1 \]; then _hm=post; fi$@  :@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -d '"'"'{\"merge_method\":\"squash\"}'"'"' https://api.github.com/repos/o/r/pulls/5/merge"}}' allow
+  # ⚠️ K-3b-M8 IS NOT HERE, AND ITS ABSENCE IS A MEASUREMENT rather than an oversight — the same call
+  # M-R3/M-R6's retirement made above, made again rather than papered over. The design predicted that
+  # dropping face C's `api/v3/` strip would flip a GHES curl. MEASURED, IT DOES NOT: in `substring`
+  # mode every family regex is prefixed `(^|[[:space:]]|/)`, so `api/v3/repos/o/r` matches on the `/`
+  # in front of `repos` exactly as `repos/o/r` matches at a word boundary, and the verdict does not
+  # change (`verdict did not change (deny before and after)`, measured on the built core). The strip
+  # has NO discriminating subject in face C. Keeping the mutant green by choosing a subject some other
+  # mechanism holds is precisely the vacuity this harness exists to catch, so the CLAIM is retired
+  # here. The strip's code stays, because `exact` mode anchors `^repos/…` and there the strip IS the
+  # only holder — it is pinned as `K-3b-M8` in the face D block, with a face D subject.
+  # K-3b-M9 — THE METHOD HANDED TO THE JUDGE IS THE INDICATED ONE, and this mutant is an allow -> DENY
+  # kill because what it locks is a REFUND. Force it to `put` and K6 — the apply script's own ADDITIVE
+  # contexts POST, spelled through curl — loses the carve-out and re-denies.
+  gpab_mutant "K-3b-M9: the indicated method forced to put -> the contexts POST via curl re-denies" \
+    's@_s6_admin_path_verdict "$_hm" "$_hp" substring@_s6_admin_path_verdict put "$_hp" substring@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X POST https://api.github.com/repos/o/r/branches/main/protection/required_status_checks/contexts -d \"[\\\"x\\\"]\""}}' deny
+  # K-3b-M15 (vet S-1) — THE PER-SEGMENT SCOPE, also an allow -> DENY kill. Collapse the segmentation
+  # to the whole view and the round-3 read FP comes straight back: `grep -F x` in a LATER pipe stage
+  # supplies a body flag to a read whose URL is an admin path. Subject carries no `$`, so the decline
+  # set (M18) cannot cover for this leg.
+  gpab_mutant "K-3b-M15: per-segment scope collapsed to the whole view -> the piped protection READ re-denies" \
+    's@^_s6_http_segments() {@_s6_http_segments() { printf "%s\\n" "$1"; return 0 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -s https://api.github.com/repos/o/r/branches/main/protection | grep -F required_status_checks"}}' deny
+  # K-3b-M17 (vet S-4) — the `..` DISQUALIFIER. curl collapses `x/../pulls/5/merge` before it sends and
+  # a substring match cannot, so without the disqualifier the normalised string spells no admin path.
+  # ⚠️ RE-ANCHORED IN FIX ROUND 1: F2 added `_hb` to this line's `unset` list, so the old expression
+  # matched nothing and the gate reported the leg UNBOUND — which is the gate doing its job.
+  gpab_mutant "K-3b-M17: the .. disqualifier dropped -> curl -X PUT .../x/../pulls/5/merge flips" \
+    "s@if printf '%s' \"\$_hn\" | grep -q '\\\\.\\\\.'; then unset _hl _hn _hm _hx _hb; return 0; fi@:@" \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/x/../pulls/5/merge"}}' allow
+  # K-3b-M18 (lens pass) — THE NARROWED DECLINE SET, an allow -> DENY kill for the same reason M9 is.
+  # Widen it back to "any `$`" and the commonest authenticated read there is — a plain `$TOKEN` in an
+  # Authorization header, piped into grep — declines the walk, falls back to the whole view, and
+  # re-denies. A parameter expansion's RESULT is never re-read for quotes or separators; that is the
+  # whole argument, and this is the cell that prices it.
+  gpab_mutant "K-3b-M18: the decline set widened back to any \$ -> the \$TOKEN authenticated read re-denies" \
+    "s@\\*'\\\$('\\*|\\*'\\\${'\\*@*'\$'*@" \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -s -H \"Authorization: Bearer $TOKEN\" https://api.github.com/repos/o/r/branches/main/protection | grep -F x"}}' deny
+
+  # --- K-3b FACE D and the JUDGE's exact-mode anchoring ---------------------------------------------
+  # K-3b-M8 — the `api/v3/` STRIP, re-pinned with a FACE D subject after it was measured to have no
+  # subject in face C (see the retirement note above). In `exact` mode the judge anchors `^repos/…`, so
+  # a GHES endpoint that still spells `api/v3/repos/…` matches NOTHING and the merge bypass walks.
+  # Here the strip is the only holder, and the mutant kills.
+  gpab_mutant "K-3b-M8: the api/v3 strip dropped -> gh api -X PUT <ghes>/api/v3/.../merge flips" \
+    "s@-e 's#api/v3/##g'@@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT http://ghe.example.com/api/v3/repos/o/r/pulls/5/merge"}}' allow
+  # K-3b-M10 — THE DECLINE-TO-SUBSTRING FALLBACK, which is the property that makes this face unable to
+  # LOSE a deny. Make a decline mean "allow" instead of "run today's scan" and `gh api -X PUT
+  # --bogus-flag …/merge` — an argv the walk cannot read — flips straight to ALLOW.
+  gpab_mutant "K-3b-M10: the positional decline no longer falls back -> D10 (--bogus-flag) flips" \
+    's@    if _s6_admin_path_verdict "$_sgmj" "$_sga" substring; then _sgr=0; else _sgr=1; fi@    _sgr=1@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT --bogus-flag repos/o/r/pulls/5/merge"}}' allow
+  # ⚠️ K-3b-M11 IS NOT HERE, and its absence is the SECOND measurement in this slice that corrected a
+  # design prediction rather than being papered over (the first is K-3b-M8's face-C retirement above).
+  # Design §4 predicted "exact anchoring relaxed to substring -> D1 re-denies". MEASURED, IT DOES NOT:
+  # `verdict did not change (allow before and after)`. The reason is worth writing down, because it
+  # says which mechanism actually earns the refund. In `exact` mode the VIEW handed to the judge is the
+  # ONE endpoint token, not the command string — so the comment body that used to cause D1's over-deny
+  # is not in the view at ALL, whatever the anchors are. THE REFUND'S HOLDER IS THE POSITIONAL READ,
+  # and `K-3b-M10` is the mutant that pins it. The anchoring's real load-bearing half is the SUB-TREE
+  # SUFFIX, and `K-3b-M16` below kills that. A mutant with no subject is not a lock; keeping this one
+  # green by choosing a subject some other mechanism holds is the vacuity this harness exists to catch.
+  # K-3b-M12 — the DOT-SEGMENT disqualifier. ⚠️ RE-ANCHORED IN FIX ROUND 1, and the reason is the
+  # "second holder" trap again: the test now runs TWICE (before and after percent-decoding, because
+  # `%2E` is a dot), so a mutant that broke one call site would leave the other denying and prove
+  # nothing. Both sites call ONE helper and the mutant neuters the helper — the M-R13 shape.
+  gpab_mutant "K-3b-M12: the dot-segment helper neutered -> D7 (a .. in the endpoint) flips" \
+    's@^_s6_api_dotseg() {@_s6_api_dotseg() { return 1 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/../r/pulls/5/merge"}}' allow
+  # K-3b-M13 — the ENDPOINT CASE-FOLD. ⚠️ RE-ANCHORED IN FIX ROUND 1: it used to be a COMPARISON that
+  # disqualified a case variant, and it is now a NORMALISATION that folds the endpoint before judging
+  # (S-4 — a capital in an owner name is not an evasion, and `SeaBrad72` is this repo's own owner).
+  # The subject is unchanged and still the right one: fold nothing and `PULLS/5/MERGE` spells no family.
+  gpab_mutant "K-3b-M13: the endpoint case-fold dropped -> D8 (PULLS/5/MERGE) flips" \
+    "s@^  _aeep=\\\$(printf '%s' \"\\\$_aeep\" | tr 'A-Z' 'a-z')\$@  :@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/PULLS/5/MERGE"}}' allow
+  # ⚠️ K-3b-M20 IS NOT HERE, and its absence is the THIRD measurement in this slice to retire a planned
+  # mutant rather than pad it. The plan was "cap the decode loop at one pass -> the double-encoded
+  # `%256Derge` flips". MEASURED: `verdict did not change (deny before and after)`. The reason is worth
+  # keeping, because it says something true about the design: after ONE pass `%256derge` is `%6derge`,
+  # which STILL CARRIES A `%`, and a surviving `%` is a disqualifier — so the fixpoint can never turn a
+  # deny into an allow, only change WHICH deny it is (a real merge bypass rather than "not certified").
+  # ★ The `%`-survivor disqualifier is a SECOND HOLDER of every subject the fixpoint could have had.
+  # The loop stays, because the REASON it produces is the correct one and a wrong reason teaches the
+  # wrong retry — but a mutant cannot see a reason, so the claim is retired instead of faked.
+  # `K-3b-PIN F4-C2` and `F4-C4` pin the two verdicts behaviourally.
+  # --- K-3b FIX ROUND 1: one mutant per cure -------------------------------------------------------
+  # K-3b-M21 (R-1 = S-1) — face C's PRECHECK reverted to the RAW command. A quote inside the route
+  # root is a joiner the shell removes, so the precheck sees no `repos/` and skips the whole arm.
+  # ⚠️ RE-ANCHORED IN FIX ROUND 2: C-1 rewrote the precheck to read BOTH joined views, so the old
+  # expression matched nothing and the gate reported the leg UNBOUND — the gate doing its job for the
+  # second time in this slice. Same claim, same subject, new anchor.
+  gpab_mutant "K-3b-M21: the face C precheck reverted to the RAW view -> re''pos/o/r/.../merge flips" \
+    's@^  _hapre=\$(_s6_dequote.*@  _hapre=$1@' \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X PUT https://api.github.com/re''pos/o/r/pulls/5/merge\"}}" allow
+  # K-3b-M22 (R-3 = S-2) — THE SUPPRESSOR REVERTED TO ITS ROUND-0 SHAPE. ⚠️ TWO EXPRESSIONS, and the
+  # count is a MEASUREMENT, not a style: the cure has two halves — the suppressor is read as WORDS, and
+  # it is SUBORDINATE (it may not speak when a mutating method or a body is present) — and reverting
+  # either alone leaves the other holding, so a single-expression mutant SURVIVED while proving nothing
+  # (measured, first run of this fix round). Exactly the M-R16a shape. The subject is the user-agent
+  # decoy, which round 0 allowed: the substring test found "-X GET" inside a quoted value and returned
+  # before the method was ever consulted.
+  gpab_mutant "K-3b-M22: the suppressor reverted to round 0 (substring AND outranking the method) -> -A \"-X GET\" flips" \
+    's@^_s6_http_get_words() {@_s6_http_get_words() { _S6H_DECL=0; _S6H_GETANY=0; _S6H_GETFLAG=0; if printf "%s" "$1" | grep -Eiq "(-[A-Za-z]*X|--request|--method)[[:space:]=]*(get|head)"; then _S6H_GETFLAG=1; fi; return 0 #@; s@\[ "\$_S6H_DECL" = 0 \] && \[ "\$_S6H_GETFLAG" = 1 \] && \[ -z "\$_hm" \] && \[ "\$_hb" = 0 \]@[ "$_S6H_GETFLAG" = 1 ]@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -A \"-X GET\""}}' allow
+  # K-3b-M23 (R-2 = S-3) — THE WHOLE-VIEW FALLBACK'S `nosuppress`, and it is pinned as the DELTA over
+  # M22: the same two reverts, PLUS dropping the mode argument at the call site. M22's expressions
+  # alone leave this subject DENYING (the fallback never consults the suppressor at all), so the third
+  # expression is what this leg proves — a later stage's GET may not speak for a request it is not part
+  # of, in the one mode where "a segment" does not exist.
+  gpab_mutant "K-3b-M23: the fallback honours the suppressor again -> the piped decoy GET flips" \
+    's@^_s6_http_get_words() {@_s6_http_get_words() { _S6H_DECL=0; _S6H_GETANY=0; _S6H_GETFLAG=0; if printf "%s" "$1" | grep -Eiq "(-[A-Za-z]*X|--request|--method)[[:space:]=]*(get|head)"; then _S6H_GETFLAG=1; fi; return 0 #@; s@\[ "\$_S6H_DECL" = 0 \] && \[ "\$_S6H_GETFLAG" = 1 \] && \[ -z "\$_hm" \] && \[ "\$_hb" = 0 \]@[ "$_S6H_GETFLAG" = 1 ]@; s@_s6_http_seg_admin "\$_has" "\$_hamode"@_s6_http_seg_admin "$_has"@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge -d \"$(cat b.json)\" | grep -X GET x"}}' allow
+  # K-3b-M24 (fix round 1) — the SHELL-SEPARATOR normalisation in face C. The judge's family
+  # terminator is `([[:space:]/]|$)`, which a `;` is not, so in the fallback `…/merge; curl …` spelled
+  # the merge endpoint and matched nothing even with the suppressor correctly disarmed.
+  gpab_mutant "K-3b-M24: the ;&| -> space normalisation dropped -> the ';' fallback form flips" \
+    "s@             -e 's/\\[;&|\\]/ /g' \\\\@@" \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge; curl $(echo -s) --request GET https://api.github.com/repos/o/r"}}' allow
+  # K-3b-M25 (R-4) — THE FLAG-VALUE SKIP, which is what puts `$REPO` out of the sub-verb position.
+  # Direction is allow -> DENY, because what it locks is a REFUND.
+  # ⚠️ RE-ANCHORED IN FIX ROUND 1, and the first attempt is the lesson: it mutated the `_go_rem` guard
+  # on the strict test and SURVIVED, because the over-deny never came from that guard — it came from
+  # the test's POSITION above the skips. `$REPO` is skipped as a flag's value before any strict test
+  # can see it, so the skip is the holder and the skip is what this mutant removes.
+  gpab_mutant "K-3b-M25: the flag-VALUE skip removed -> gh repo -R \$REPO view re-denies" \
+    's@^    case "\$_go_prev" in -\*) _go_prev=..; continue ;; esac@    :@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh repo -R $REPO view"}}' deny
+  # K-3b-M16 (vet S-3) — THE SUB-TREE SUFFIX, and it is the mutant that proves the vet's HIGH finding
+  # was real. Anchor a sub-tree family on its PREFIX ALONE and `DELETE …/protection/
+  # required_status_checks` — a call that drops every required context at once, and an EXISTING deny
+  # with its own S6R cell — flips to ALLOW the moment face D certifies the endpoint. `^<prefix>(/.*)?$`
+  # is what stops that, and this is the leg that says so.
+  gpab_mutant "K-3b-M16: exact mode's sub-tree suffix dropped -> DELETE .../protection/required_status_checks flips" \
+    "s@_apt='(/.\\*)?\$'@_apt='\$'@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r/branches/main/protection/required_status_checks"}}' allow
+
+  # K-3b-M19 — THE SCHEME-LESS HOST STRIP in face D's normalisation, and it pins a defect this slice
+  # INTRODUCED and then found: `exact` mode anchors `^repos/…`, so an operand written
+  # `api.github.com/repos/o/r/pulls/5/merge` — no scheme for the `https?://` strip to match — spelled no
+  # family at all and the merge bypass walked, after DENYING at 7a5255c3. Drop the strip and it walks
+  # again.
+  gpab_mutant "K-3b-M19: the scheme-less host strip dropped -> gh api -X PUT api.github.com/.../merge flips" \
+    "s@-e 's#\\^\\[\\^/\\[:space:\\]\\]+\\\\.\\[\\^/\\[:space:\\]\\]\\*/##'@@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT api.github.com/repos/o/r/pulls/5/merge"}}' allow
+
+  # --- K-3b FIX ROUND 2 ----------------------------------------------------------------------------
+  # K-3b-M26 (C-1) — THE EMPTY-JOINED TWIN in face C. Drop it and the space-join is the only view
+  # again, so an intra-token continuation reads as two short fragments and matches nothing while the
+  # shell hands curl one word. The subject hides the ROUTE ROOT, which no other mechanism in this face
+  # can recover.
+  gpab_mutant "K-3b-M26: face C's empty-join twin dropped -> curl .../re\\<nl>pos/.../merge flips" \
+    's@for _hajv in "\$(_cp8b_joinlines "\$1")" "\$(_cp8b_joinlines_empty "\$1")"; do@for _hajv in "$(_cp8b_joinlines "$1")"; do@' \
+    '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/re\\\npos/o/r/pulls/5/merge"}}' allow
+  # K-3b-M27 (C-2) — THE ESCAPED-SEPARATOR DECLINE. Without it the walker splits where the shell does
+  # not, the URL and the method land in different "segments", and neither is a mutating request to an
+  # admin endpoint on its own.
+  gpab_mutant "K-3b-M27: the escaped-separator decline dropped -> .../merge \\; -X PUT flips" \
+    "s@  if \\[ \"\\\$_hqok\" = 1 \\] && printf '%s' \"\\\$_hqi\" | LC_ALL=C grep -q '\\\\\\\\\\[;|&\\]'; then _hqok=0; fi@  :@" \
+    '{"tool_name":"Bash","tool_input":{"command":"curl https://api.github.com/repos/o/r/pulls/5/merge \\; -X PUT"}}' allow
+  # K-3b-M28 (C-3) — THE ORDER of fold and decode. Move the fold back ABOVE the decode loop and it
+  # folds bytes that are not yet route words: `%4D` is not an `M` until it is decoded, so the
+  # hex-encoded route word is judged as the literal `%4d…` and matches no family.
+  # ⚠️ IT IS ITS OWN MUTANT, NOT A WIDENING OF `K-3b-M13`. M13's subject (`PULLS/5/MERGE`) is folded
+  # correctly at EITHER position, so it cannot see this ordering at all — the two legs lock the fold's
+  # EXISTENCE and its PLACE, which are different claims.
+  # ⚠️ THE SECOND EXPRESSION ANCHORS ON `_aei=0`, NOT ON THE DOT-SEGMENT CALL, and the first attempt is
+  # the lesson: `_s6_api_dotseg "$_aeep" && return 2` appears TWICE (before and after the decode), so an
+  # un-addressed sed inserted the fold at BOTH sites — and the second insertion put it back after the
+  # decode, i.e. restored the correct behaviour, and the mutant survived. `_aei=0` is the unique line
+  # immediately ahead of the decode loop.
+  gpab_mutant "K-3b-M28: the fold moved back BEFORE the decode -> %4D%45%52%47%45 flips" \
+    "s@^  _aeep=\\\$(printf '%s' \"\\\$_aeep\" | tr 'A-Z' 'a-z')\$@  :@; s@^  _aei=0\$@  _aeep=\$(printf '%s' \"\$_aeep\" | tr 'A-Z' 'a-z'); _aei=0@" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/%4D%45%52%47%45"}}' allow
+
+  # K-3b-M29 (fix round 3, C-5) — THE POST-DECODE RE-NORMALISATION. Neuter the shared helper and BOTH
+  # call sites go at once, which is why it is a helper: the tail has to hold of the operand as written
+  # AND of whatever the decode produced, and two inline spellings would be two rules that drift. The
+  # subject is the one that was an allow-ward mover against the pristine core — `repos/o/r%2F%2F`
+  # decodes to `repos/o/r//`, which the incumbent substring scan has always denied.
+  gpab_mutant "K-3b-M29: the normalising tail neutered -> repos/o/r%2F%2F (an encoded //) flips" \
+    's@^_s6_api_norm_tail() {@_s6_api_norm_tail() { printf "%s" "$1"; return 0 #@' \
+    '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r%2F%2F"}}' allow
 
   # === K-COUPLE — byte-identity of the two composed-path seds (no other check pins it) ==============
   # _cp8b_norm's sed and guard_check_path's twin sed are a stated single source of truth; extract both
@@ -5227,7 +6156,13 @@ assert_deny 'T2R3 API indicator present, number hidden by glue: gh api -X PUT re
 # later round closes one of these, THIS CELL GOES RED and forces the prose to be corrected with it.
 # They are boarded, not claimed closed.
 assert_allow 'T2R3 CEILING (i) a gh ALIAS the guard cannot resolve: gh mymerge 5' '{"tool_name":"Bash","tool_input":{"command":"gh mymerge 5"}}'
-assert_allow 'T2R3 CEILING (i) alias CREATION is visible but not yet gated: gh alias set mm (pr merge --admin)' '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm '"'"'pr merge --admin'"'"'"}}'
+# ⚠️ RE-KINDED BY GUARD-ADMIN-ARMS (K-3b), and the RE-KIND is the honest move rather than an edit in
+# place. This cell said "alias CREATION is visible but not yet gated" and asserted ALLOW; face B gates
+# it, so the ceiling's FIRST HALF is retired and the assertion has to change direction. An `allow` cell
+# may never end DENY under any delta prefix (the kind-direction rule), so the label moves to `K-3b `
+# — exactly as 3a re-prefixed F-1 — rather than the entry being widened to excuse it. The SECOND half
+# (`gh mymerge 5`, the USE of an alias) is untouched above and stays the ceiling that remains.
+assert_deny 'K-3b CEILING (i) FIRST HALF RETIRED: alias CREATION is now gated: gh alias set mm (pr merge --admin)' '{"tool_name":"Bash","tool_input":{"command":"gh alias set mm '"'"'pr merge --admin'"'"'"}}'
 assert_allow 'T2R3 CEILING (ii) the merge bytes live in a FILE the command only names: sh ./merge.sh' '{"tool_name":"Bash","tool_input":{"command":"sh ./merge.sh"}}'
 
 # ---- T2 round 4: AN EXPANSION IS ITSELF A MUTATION INDICATOR (round 3 REGRESSED, this re-denies) ---
@@ -5552,8 +6487,10 @@ assert_reason_has  "T6 python3 -c too" \
   '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('\''conformance/verify.sh'\'')\""}}' "treated as code"
 # T7 — kept-denied: an UNVETTED env-assignment prefix. The vetted-name allowlist is deliberately
 #      closed; adding a name per false positive is the enumeration creep the kit refuses.
-assert_reason_has  "T7 unvetted env prefix names the export escape" \
-  '{"tool_name":"Bash","tool_input":{"command":"KIT_C6_DUMP=1 sh conformance/verify.sh"}}' "as a separate statement"
+# ⚠️ THE ESCAPE TEXT WAS REWRITTEN BY K-3a face 2: the old half ("`export` as a separate statement")
+# recommended precisely the shape face 2 now denies (B13). A guard must never teach a shape it refuses.
+assert_reason_has  "T7 unvetted env prefix names the own-tool-call escape (K-3a rewrite)" \
+  '{"tool_name":"Bash","tool_input":{"command":"KIT_C6_DUMP=1 sh conformance/verify.sh"}}' "in its own tool call"
 # T8 — NO TIP NOISE. Each new tip must stay off unrelated denials (the DRIFT-2 (iii) discipline: an
 # unconditional tip turns these RED). Their deny-ANCHORS are the byte-identical assert_deny legs above.
 assert_reason_lacks "T8 rm deny carries no heredoc tip" \
@@ -5596,8 +6533,8 @@ assert_deny         "F-h R7 unvetted env prefix on a read (deny anchor)" \
   '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}'
 assert_reason_lacks "F-h R7 unvetted env prefix drops the kill-switch sentence" \
   '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}' "KIT_GUARD_SELFEDIT"
-assert_reason_has   "F-h R7 keeps its own escape (export first)" \
-  '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}' "as a separate statement"
+assert_reason_has   "F-h R7 keeps its own escape (own tool call; K-3a rewrite)" \
+  '{"tool_name":"Bash","tool_input":{"command":"FOO=1 cat conformance/verify.sh"}}' "in its own tool call"
 # R3's offending segment is the QUOTE-ORPHANED tail of the over-split (`READONLY" <cp>`), which is the
 # shape the fragment rule recognises; these three legs assert that its MESSAGE is honest (no kill-switch
 # advertisement on a read-shaped denial, and its own escape named).
@@ -6332,11 +7269,19 @@ assert_deny 'F-a CONTROL: an UNQUOTED ; splits regardless — `\|` in the patter
 # gate), so F-a leaves each exactly as it found it. They are the seat's vet findings 4 and 5 with
 # their own boarded rows (`GUARD-READ-LEXICON-FILE-C-WRITES`, `GUARD-GIT-READ-SUBS-CARRY-MUTATORS`),
 # and they are celled HERE so the day one of them closes is visible in the delta.
-assert_allow "F-a HOLE: git stash push -- <cp> after a read is ALLOW today (git-read-subs, boarded)" \
+# ⚠️ RE-KINDED BY GUARD-READ-EXEC-LANE (K-3a) face 3: `stash` is OFF `_CP8B_GIT_READ_SUBS`, so the
+# boarded hole `GUARD-GIT-READ-SUBS-CARRY-MUTATORS` is HALF discharged — `stash` closed here
+# (K-3a-A13), `add`/`commit` disclosed and deliberately kept (index/object writes only).
+assert_deny "K-3a-A13c (was F-a HOLE): git stash push -- <cp> after a read — CLOSED" \
   '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x; git stash push -- .claude/hooks/guard-core.sh"}}'
 assert_allow "F-a HOLE: git add <cp> after a read is ALLOW today (git-read-subs, boarded)" \
   '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x; git add .claude/hooks/guard-core.sh"}}'
-assert_allow "F-a HOLE: | file -C -m <path> is ALLOW today (file WRITES <path>.mgc, boarded)" \
+# ⚠️ RE-KINDED BY GUARD-READ-EXEC-LANE (K-3a): this hole is CLOSED. `file` joined the
+# decline-on-any-flag tier, so `-C -m` — which COMPILES `<path>.mgc` beside a control-plane file — is
+# no longer read-recognised in ANY position, the piped one included. The boarded row
+# `GUARD-READ-LEXICON-FILE-C-WRITES` is discharged by K-3a-A9; the cell stays here, at its NEW verdict,
+# so the closure is visible in the delta rather than merely deleted.
+assert_deny "K-3a-A9b (was F-a HOLE): | file -C -m <path> — CLOSED by the tier-3 decline" \
   '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x | file -C -m conformance/verify.sh"}}'
 # A literal NEWLINE and a HEREDOC both decline the mask; both were ALREADY ALLOW at pristine (the
 # newline case orphans a bare CP path into a kit-exec-recognised segment; the heredoc case has no CP
@@ -6462,13 +7407,18 @@ assert_deny "F-a Face2 M-RPR2 anchor: sed -n 1,5p \"x;y.txt\" after a masked rea
 # `rg`, `diff` and `column` come OFF `_CP8B_MASK_GATE_VERBS` and `grep` comes OFF
 # `_CP8B_MASK_GATE_GIT_SUBS` (bare `grep` stays a gate verb — it carries no exec/write flag).
 # The four spellings below are celled at their MEASURED verdict, ALLOW, with the hole named.
-assert_allow "F-1 MEASURED-UNCOVERED: rg --pre <exec> pat <cp> (EXEC flag; ALLOW at pristine, boarded)" \
+# ⚠️ RE-KINDED BY GUARD-READ-EXEC-LANE (K-3a): these four are the "MEASURED-UNCOVERED" data-lexicon
+# holes F-1 named and deliberately left open ("narrowing the data lexicon is a different row"). K-3a IS
+# that row, and all four are now CLOSED — `rg`/`diff` by the tier-2 flag grammar, `git grep` by the
+# same sets, `column` by the tier-3 decline. Kept at this site, at their NEW verdict, so the delta
+# enumerates the closure instead of it vanishing with the cells.
+assert_deny "F-1 CLOSED by K-3a: rg --pre <exec> pat <cp> (EXEC flag; was ALLOW at pristine)" \
   '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil pat .claude/hooks/guard-core.sh"}}'
-assert_allow "F-1 MEASURED-UNCOVERED: git grep -O vi pat <cp> (EXEC flag; ALLOW at pristine, boarded)" \
+assert_deny "F-1 CLOSED by K-3a: git grep -O vi pat <cp> (EXEC flag; was ALLOW at pristine)" \
   '{"tool_name":"Bash","tool_input":{"command":"git grep -O vi pat .claude/hooks/guard-core.sh"}}'
-assert_allow "F-1 MEASURED-UNCOVERED: diff --to-file=<cp> a (WRITE flag; ALLOW at pristine, boarded)" \
+assert_deny "F-1 CLOSED by K-3a: diff --to-file=<cp> a (WRITE flag; was ALLOW at pristine)" \
   '{"tool_name":"Bash","tool_input":{"command":"diff --to-file=.claude/hooks/guard-core.sh a"}}'
-assert_allow "F-1 MEASURED-UNCOVERED: column -o <cp> f (WRITE flag; ALLOW at pristine, boarded)" \
+assert_deny "F-1 CLOSED by K-3a: column -o <cp> f (WRITE flag; was ALLOW at pristine)" \
   '{"tool_name":"Bash","tool_input":{"command":"column -o .claude/hooks/guard-core.sh f"}}'
 # The MASKED forms — the spellings the gate was routing to those four verbs. With the verbs off the
 # gate the mask is DISCARDED and today's over-split stands. MEASURED, and it is NOT uniform, so each is
@@ -6483,9 +7433,12 @@ assert_deny "F-1 rg --pre + a quoted alternation on <cp> (rg OFF the gate -> the
   '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil \"a|b\" .claude/hooks/guard-core.sh"}}'
 assert_deny "F-1 git grep -O + a quoted alternation on <cp> (git grep OFF the gate subs -> withdrawn)" \
   '{"tool_name":"Bash","tool_input":{"command":"git grep -O vi \"a|b\" .claude/hooks/guard-core.sh"}}'
-assert_allow "F-1 MEASURED-UNCOVERED: diff --to-file=<cp> + quoted alternation (DATA lexicon, boarded)" \
+# ⚠️ RE-KINDED BY K-3a, same closure as the four above: the masked spellings were the proof that the
+# hole lived in the DATA lexicon rather than in the mask gate. With the data lexicon narrowed they deny
+# on the flag, mask or no mask — which is the point F-1 was making, now discharged.
+assert_deny "F-1 CLOSED by K-3a: diff --to-file=<cp> + quoted alternation (DATA lexicon narrowed)" \
   '{"tool_name":"Bash","tool_input":{"command":"diff --to-file=.claude/hooks/guard-core.sh \"a|b\""}}'
-assert_allow "F-1 MEASURED-UNCOVERED: column -o <cp> + quoted alternation (DATA lexicon, boarded)" \
+assert_deny "F-1 CLOSED by K-3a: column -o <cp> + quoted alternation (DATA lexicon narrowed)" \
   '{"tool_name":"Bash","tool_input":{"command":"column -o .claude/hooks/guard-core.sh \"a|b\""}}'
 # ---- THE PRICE OF F-1, PINNED AS DENY CELLS ------------------------------------------------------
 # These four are HONEST REFUNDS T8 delivered and this narrowing WITHDRAWS. Each is a plain, flagless
@@ -6502,6 +7455,445 @@ assert_deny "F-1 PRICE: column quoted-alternation on <cp> (refund withheld; retr
   '{"tool_name":"Bash","tool_input":{"command":"column \"a|b\" .claude/hooks/guard-core.sh"}}'
 assert_deny "F-1 PRICE: git grep quoted-alternation on <cp> (refund withheld; retry with grep -E)" \
   '{"tool_name":"Bash","tool_input":{"command":"git grep \"a|b\" .claude/hooks/guard-core.sh"}}'
+
+# ==================================================================================================
+# GUARD-READ-EXEC-LANE (K-3a) — the read lexicon stops granting exec/write flags, and a poisoned line
+# stops being a read. Design: docs/architecture/2026-09-08-guard-read-exec-lane-design.md.
+# THREE FACES, all add-only on the deny side except the seven priced movers M1-M7:
+#   face 1 (A1-A14) — `grep|egrep|fgrep`, `rg`, `diff` and `git grep` leave the plain read lexicon for
+#     a VETTED POSITIVE FLAG SET (fail-closed on the unknown flag); `column`/`file` join the
+#     decline-on-any-flag tier. Every exec/write flag is absent from the sets, so it declines with
+#     ZERO enumeration of dangerous flags — and so does the NEXT unknown one.
+#   face 3 (A10-A14) — git's global options `-c`/`--exec-path`/`--config-env` DECLINE read
+#     recognition (they can name a program), and `stash` leaves the read subs (it writes the worktree).
+#   face 2 (B1-B25) — an earlier segment on the same line that can change what a later verb RESOLVES
+#     to (export/assignment/alias/function/source/eval/...) closes the read lane for the rest of it.
+# Every cell below was MEASURED ALLOW on the pristine core at 19eac5be (design §1) unless its label
+# says CONTROL. The `--delta` leg is what proves the movement; these cells are what name it.
+# --- face 1, Shape A: an exec or write flag inside a read-lexicon verb ---------------------------
+assert_deny "K-3a-A1 rg --pre <exec> (a per-file preprocessor: EXEC) on a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh -n x .claude/hooks/guard-core.sh"}}'
+assert_deny "K-3a-A2 rg --pre=<exec> (the joined spelling: EXEC) on a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre=/tmp/evil.sh x .claude/hooks/guard-core.sh"}}'
+assert_deny "K-3a-A3 git grep -O<exec> (open-files-in-pager: EXEC) on a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep -O/tmp/evil.sh x -- .claude/hooks/guard-core.sh"}}'
+assert_deny "K-3a-A4 git grep --open-files-in-pager=<exec> (EXEC) on a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep --open-files-in-pager=/tmp/evil.sh x -- .claude/hooks/guard-core.sh"}}'
+assert_deny 'K-3a-A5 grep --filter=<cmd> (ugrep IS `grep` on this box: EXEC) on a CP path' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep --filter='\''sh:/tmp/evil.sh %'\'' x conformance/verify.sh"}}'
+assert_deny "K-3a-A6 grep --save-config=<cp> (ugrep WRITES the named file: WRITE of a CP file)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep --save-config=conformance/verify.sh"}}'
+assert_deny "K-3a-A7 diff --to-file=<cp> (not read-only on every dialect; decline is free)" \
+  '{"tool_name":"Bash","tool_input":{"command":"diff --to-file=conformance/verify.sh /tmp/a"}}'
+assert_deny "K-3a-A8 column -o <cp> (tier 3: decline-on-any-flag; -o is a file in one dialect)" \
+  '{"tool_name":"Bash","tool_input":{"command":"column -o conformance/verify.sh /tmp/a"}}'
+assert_deny "K-3a-A9 file -C -m <cp> (COMPILES a magic file BESIDE the CP path: WRITE)" \
+  '{"tool_name":"Bash","tool_input":{"command":"file -C -m hooks/pre-push"}}'
+assert_deny "K-3a-A14 git grep -nO<exec> — a CLUSTER whose FIRST letter is safe (the cluster rule)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep -nO/tmp/evil.sh x -- .claude/hooks/guard-core.sh"}}'
+# ==================================================================================================
+# K-3a FIX ROUND 1 — the reviewer's and the security seat's findings on the built diff. Every cell
+# below was MEASURED on the round-1 build before the fix (the verdict in each label is the one the
+# built core gave, not the pristine one), which is what makes them regression pins rather than
+# restatements of the design.
+# --- F1 (CRITICAL, security): TEN ALLOW-WARD MOVERS THROUGH THE LAUNDER ARM ----------------------
+# `_cp8b_redir_launder_denied` is a DENY-SIDE consumer of the read recogniser: it denies BECAUSE the
+# lead is read-recognised. Faces 1 and 3 taught that recogniser to answer "not a read" for an unvetted
+# flag, a `git -c` and `git stash` — and the arm went silent on exactly those, so a NARROWING opened a
+# write route. Each of these was built=ALLOW / pristine=DENY. The arm now asks the PRE-TIER question.
+assert_deny "K-3a-C-launder2 CONTROL: rg --pre <exec> ... > \$V/pre-push stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh x /tmp/y > $V/pre-push"}}'
+assert_deny "K-3a-C-launder3 CONTROL: grep --filter=<cmd> ... > \$V/pre-push stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep --filter=sh:/tmp/e x /tmp/y > $V/pre-push"}}'
+assert_deny "K-3a-C-launder4 CONTROL: diff --to-file=<f> ... > \$V/pre-push stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"diff --to-file=/tmp/a /tmp/b > $V/pre-push"}}'
+assert_deny "K-3a-C-launder5 CONTROL: column -t /tmp/a > \$V/pre-push stays DENY (tier 3)" \
+  '{"tool_name":"Bash","tool_input":{"command":"column -t /tmp/a > $V/pre-push"}}'
+assert_deny "K-3a-C-launder6 CONTROL: file -b /tmp/a > \$V/pre-push stays DENY (tier 3)" \
+  '{"tool_name":"Bash","tool_input":{"command":"file -b /tmp/a > $V/pre-push"}}'
+assert_deny "K-3a-C-launder7 CONTROL: git -c x=y log -1 > \$V/pre-push stays DENY (face 3)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c x=y log -1 > $V/pre-push"}}'
+assert_deny "K-3a-C-launder8 CONTROL: git stash list > \$V/pre-push stays DENY (stash off the subs)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git stash list > $V/pre-push"}}'
+assert_deny "K-3a-C-launder9 CONTROL: grep -rne foo /tmp/a > \$V/pre-push stays DENY (cluster decline)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rne foo /tmp/a > $V/pre-push"}}'
+assert_deny "K-3a-C-launder10 CONTROL: the \$(…) redirect-target spelling stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh x /tmp/y > $(echo hooks)/pre-push"}}'
+assert_deny "K-3a-C-launder11 CONTROL: the quoted \"\$V\"/ redirect-target spelling stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep --filter=sh:/tmp/e x /tmp/y > \"$V\"/pre-push"}}'
+# The LIVENESS controls for the same arm — unflagged readers, which never left the lexicon.
+assert_deny "K-3a-C-launder-live1 cat /tmp/x > \$V/pre-push (the arm's original subject)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/x > $V/pre-push"}}'
+assert_deny "K-3a-C-launder-live2 grep -n foo /tmp/x > \$V/pre-push (a VETTED flag, still a launderer)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -n foo /tmp/x > $V/pre-push"}}'
+assert_deny "K-3a-C-launder-live3 git log -1 > \$V/pre-push" \
+  '{"tool_name":"Bash","tool_input":{"command":"git log -1 > $V/pre-push"}}'
+# --- C1 / F4 (CRITICAL): A QUOTED UNVETTED FLAG REACHED THE PROGRAM -----------------------------
+# The first cut BLANKED a quoted span's contents, so `rg -n "--pre=/tmp/e" x <cp>` looked like data
+# while the shell handed `--pre=/tmp/e` straight to ripgrep. Quoting now decides WORD BOUNDARIES only;
+# the word itself is DEQUOTED and its real first byte judged.
+assert_deny 'K-3a-Q1 rg -n "--pre=<exec>" x <cp> — a double-quoted exec flag' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -n \"--pre=/tmp/e\" x conformance/verify.sh"}}'
+assert_deny "K-3a-Q2 rg -n '--pre=<exec>' x <cp> — the single-quoted spelling" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -n '\''--pre=/tmp/e'\'' x conformance/verify.sh"}}'
+assert_deny 'K-3a-Q3 rg -n "--pre" <exec> x <cp> — the quoted SPACE-separated spelling' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -n \"--pre\" /tmp/e x conformance/verify.sh"}}'
+assert_deny 'K-3a-Q4 rg "--pre" <exec> -n x <cp> — quoted flag in first position' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg \"--pre\" /tmp/evil.sh -n x conformance/verify.sh"}}'
+assert_deny 'K-3a-Q5 git grep -n "-O<exec>" x -- <cp> — a quoted joined cluster' \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep -n \"-O/tmp/e\" x -- conformance/verify.sh"}}'
+assert_deny 'K-3a-Q6 grep -n "--filter=<cmd> %" x <cp> — a quoted flag WITH inner whitespace' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -n \"--filter=sh:/tmp/e %\" x conformance/verify.sh"}}'
+assert_deny 'K-3a-Q7 grep "--save-config=<cp>" — the whole flag quoted' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"--save-config=conformance/verify.sh\""}}'
+assert_deny 'K-3a-Q8 diff "--to-file=<cp>" /tmp/a' \
+  '{"tool_name":"Bash","tool_input":{"command":"diff \"--to-file=conformance/verify.sh\" /tmp/a"}}'
+assert_deny 'K-3a-Q9 column "-o" <cp> /tmp/a — the tier-3 helper reads the DEQUOTED word too' \
+  '{"tool_name":"Bash","tool_input":{"command":"column \"-o\" conformance/verify.sh /tmp/a"}}'
+assert_deny 'K-3a-Q10 yq "-i" . <cp> — the same fix reaches the yq/tree/actionlint tier' \
+  '{"tool_name":"Bash","tool_input":{"command":"yq \"-i\" . conformance/x.yml"}}'
+# --- H1 (HIGH, reviewer): the wrapper-peel cap FAILED OPEN --------------------------------------
+assert_deny "K-3a-B18b four command wrappers no longer outrun the peel cap (decline at the cap)" \
+  '{"tool_name":"Bash","tool_input":{"command":"command command command command export PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B20b the same for four ! wrappers" \
+  '{"tool_name":"Bash","tool_input":{"command":"! ! ! ! export PATH=/tmp; cat conformance/verify.sh"}}'
+# --- F2 (HIGH, security): git globals that take an OPERAND hid the -c behind them ----------------
+assert_deny "K-3a-c04 git -C . -c diff.external=<exec> diff <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -C . -c diff.external=/tmp/evil.sh diff conformance/verify.sh"}}'
+assert_deny "K-3a-c05 git -C /tmp/x -c diff.external=<exec> diff <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x -c diff.external=/tmp/e diff conformance/verify.sh"}}'
+assert_deny "K-3a-c06 git -C conformance -c diff.external=<exec> diff verify.sh" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -C conformance -c diff.external=/tmp/e diff verify.sh"}}'
+assert_deny "K-3a-c07 the --git-dir / --work-tree / --namespace siblings (joined spelling)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git --work-tree=/tmp/w -c core.pager=/tmp/e log -1 -- conformance/verify.sh"}}'
+# --- F3 (HIGH, security): a poison lead behind an assignment PREFIX or a loop/case head ----------
+assert_deny "K-3a-B26 X=1 export PATH=/tmp; cat <cp> — an assignment PREFIX hid the export" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 export PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B27 X=1 source <exec>; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 source /tmp/e; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B28 X=1 eval \"\$Q\"; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 eval \"$Q\"; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B29 X=1 . <exec>; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 . /tmp/e; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B30 X=1 declare -x PATH=/tmp; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 declare -x PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B31 X=1 alias cat=<exec>; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 alias cat=/tmp/e; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B32 X=1 hash -p <exec> cat; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"X=1 hash -p /tmp/e cat; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B33 IFS=: read PATH <<< /tmp; cat <cp> — the prefix AND the builtin together" \
+  '{"tool_name":"Bash","tool_input":{"command":"IFS=: read PATH <<< /tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B34 until export PATH=/tmp; do :; done; cat <cp> — a LOOP head" \
+  '{"tool_name":"Bash","tool_input":{"command":"until export PATH=/tmp; do :; done; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B35 while export PATH=/tmp; do :; done; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"while export PATH=/tmp; do :; done; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B36 if export PATH=/tmp; then :; fi; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"if export PATH=/tmp; then :; fi; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B37 case x in x) export PATH=/tmp;; esac; cat <cp> — a case head poisons OUTRIGHT" \
+  '{"tool_name":"Bash","tool_input":{"command":"case x in x) export PATH=/tmp;; esac; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B38 let PATH=1; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"let PATH=1; cat conformance/verify.sh"}}'
+# --- F5 (MED, security): a variable-name typo dropped the accumulated output under set +u, and
+# ABORTED the hook under the live `set -eu`. The walk no longer has that branch at all (a backslash
+# now routes to the raw-token fallback), so the exec-flag spelling denies and the plain read is clean.
+assert_deny 'K-3a-F5a rg --pre <exec> -n "a\ b" x <cp> — an escaped space no longer hides the flag' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh -n \"a\\ b\" x conformance/verify.sh"}}'
+assert_allow 'K-3a-F5b grep -n "a\ b" <cp> — the same shape as a plain read stays ALLOW' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -n \"a\\ b\" conformance/verify.sh"}}'
+# --- M1 (MED, reviewer): a bare `-` is STDIN, an operand, and names no program -------------------
+assert_allow "K-3a-M1b-dash diff - <cp> — a bare dash operand is not a flag" \
+  '{"tool_name":"Bash","tool_input":{"command":"diff - conformance/verify.sh"}}'
+# --- F6 (LOW, security): the kill switch is not an answer to a read-lane refusal ------------------
+assert_reason_lacks 'K-3a-R5 a read-flag deny does NOT end with the kill-switch sentence' \
+  '{"tool_name":"Bash","tool_input":{"command":"file -C \"-m\" conformance/x"}}' \
+  'KIT_GUARD_SELFEDIT'
+assert_reason_lacks 'K-3a-R5b nor does the git-global spelling' \
+  '{"tool_name":"Bash","tool_input":{"command":"git --exec-path=/tmp/e log -- conformance/verify.sh"}}' \
+  'KIT_GUARD_SELFEDIT'
+assert_reason_has 'K-3a-R5c LIVENESS: an ordinary control-plane WRITE still names the kill switch' \
+  '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e conformance/verify.sh"}}' \
+  'KIT_GUARD_SELFEDIT'
+# === K-3a FIX ROUND 2 — the security seat's re-hunt on the round-1 diff =========================
+# --- F8 (HIGH): A BACKSLASH-ESCAPED DASH HID AN EXEC FLAG, and it is a ROUND-1 REGRESSION ---------
+# Round 0 denied these; round 1 allowed them. `_cp8b_word_join` declines on any `\` (an escaped quote
+# desynchronises the span walk), so the caller falls back to the RAW tokens — and `_cp8b_word_real`
+# stripped quotes but not backslashes, so `\-\-pre` read as a word whose first byte is `\`, i.e. "not
+# a flag", while the shell hands the program `--pre`. Each cell below was MEASURED ALLOW on the
+# round-1 head. (A regression the first fix round introduced is exactly what a second seat pass is
+# for; it is celled at the spelling, not at the helper, so it cannot come back by another route.)
+assert_deny 'K-3a-E1 rg \-\-pre <exec> x <cp> — each dash escaped' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg \\-\\-pre /tmp/evil.sh x conformance/verify.sh"}}'
+assert_deny 'K-3a-E2 rg \--pre <exec> x <cp> — only the first dash escaped' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg \\--pre /tmp/evil.sh x conformance/verify.sh"}}'
+assert_deny 'K-3a-E3 grep \--filter=<cmd> x <cp>' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \\--filter=sh:/tmp/e x conformance/verify.sh"}}'
+assert_deny 'K-3a-E4 git grep \-O<exec> x -- <cp>' \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep \\-O/tmp/evil.sh x -- conformance/verify.sh"}}'
+assert_deny 'K-3a-E5 column \-o <cp> /tmp/a — the tier-3 helper shares the fix' \
+  '{"tool_name":"Bash","tool_input":{"command":"column \\-o conformance/verify.sh /tmp/a"}}'
+assert_deny 'K-3a-E6 rg -n \-\-pre=<exec> x <cp> — the joined spelling' \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -n \\-\\-pre=/tmp/e x conformance/verify.sh"}}'
+assert_deny 'K-3a-E7 diff \--to-file=<cp> /tmp/a' \
+  '{"tool_name":"Bash","tool_input":{"command":"diff \\--to-file=conformance/verify.sh /tmp/a"}}'
+assert_deny 'K-3a-E8 yq \-i . <cp>' \
+  '{"tool_name":"Bash","tool_input":{"command":"yq \\-i . conformance/x.yml"}}'
+# The frontier controls for the same fix — a backslash in a PATTERN is still data.
+assert_allow 'K-3a-E-live1 grep -n "a\|b" <cp> stays ALLOW (a backslash in the pattern)' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -n \"a|b\" conformance/verify.sh"}}'
+assert_allow 'K-3a-E-live2 grep -rn "rm -rf" scripts/ stays ALLOW' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rn \"rm -rf\" scripts/"}}'
+# --- F9 (MED): the word-join RELAXED the decline-on-any-flag tier -------------------------------
+# A `-`-leading FRAGMENT inside a quoted operand used to decline on the raw token (`-b"`), and stopped
+# once the span became one word. All five were DENY at pristine, so the relaxation is an ALLOW-WARD
+# move this slice does not claim. `_cp8b_seg_has_flag` now declines when EITHER view sees a flag.
+assert_deny 'K-3a-G1 yq "a -b" <cp> — a dash-leading fragment inside a quoted operand' \
+  '{"tool_name":"Bash","tool_input":{"command":"yq \"a -b\" conformance/x.yml"}}'
+assert_deny 'K-3a-G2 yq ". -i" <cp>' \
+  '{"tool_name":"Bash","tool_input":{"command":"yq \". -i\" conformance/x.yml"}}'
+assert_deny 'K-3a-G3 tree "a -o" <dir>' \
+  '{"tool_name":"Bash","tool_input":{"command":"tree \"a -o\" conformance"}}'
+assert_deny 'K-3a-G4 actionlint "a -shellcheck=x" <workflow>' \
+  '{"tool_name":"Bash","tool_input":{"command":"actionlint \"a -shellcheck=x\" .github/workflows/ci.yml"}}'
+assert_deny "K-3a-G5 yq 'a -b' <cp> — the single-quoted spelling" \
+  '{"tool_name":"Bash","tool_input":{"command":"yq '\''a -b'\'' conformance/x.yml"}}'
+assert_deny 'K-3a-G6 CONTROL: tree "-o x" <dir> stays DENY (the quoted-flag half must not regress)' \
+  '{"tool_name":"Bash","tool_input":{"command":"tree \"-o x\" conformance"}}'
+assert_deny 'K-3a-G7 CONTROL: yq -i "a -b" <cp> stays DENY' \
+  '{"tool_name":"Bash","tool_input":{"command":"yq -i \"a -b\" conformance/verify.sh"}}'
+# --- face 2, Shape B: RESOLUTION POISON — an earlier segment changes what a later verb runs --------
+assert_deny "K-3a-B1 export PATH=/tmp:\$PATH; head -1 <cp> (the form reproduced twice on 2026-09-06)" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp:$PATH; head -1 conformance/verify.sh"}}'
+assert_deny "K-3a-B2 PATH=/tmp:\$PATH; head -1 <cp> (the bare assignment statement)" \
+  '{"tool_name":"Bash","tool_input":{"command":"PATH=/tmp:$PATH; head -1 conformance/verify.sh"}}'
+assert_deny "K-3a-B3 export LD_PRELOAD=<so>; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"export LD_PRELOAD=/tmp/evil.so; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B4 alias cat=<exec>; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"alias cat=/tmp/evil.sh; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B5 a FUNCTION DEFINITION redefines the verb; cat <cp> (spaced spelling)" \
+  '{"tool_name":"Bash","tool_input":{"command":"cat() { /tmp/evil.sh \"$@\"; }; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B5b the NO-SPACE function spelling cat(){ ... }; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"cat(){ /tmp/evil.sh \"$@\"; }; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B6 hash -p <exec> cat; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"hash -p /tmp/evil.sh cat; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B7 . <exec>; cat <cp> (the dot spelling of source)" \
+  '{"tool_name":"Bash","tool_input":{"command":". /tmp/evil.sh; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B8 source <exec> && cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"source /tmp/evil.sh && cat conformance/verify.sh"}}'
+assert_deny "K-3a-B9 eval \"\$X\"; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"eval \"$X\"; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B10 export RIPGREP_CONFIG_PATH=<file>; rg <cp> (an rg config can set --pre)" \
+  '{"tool_name":"Bash","tool_input":{"command":"export RIPGREP_CONFIG_PATH=/tmp/rc; rg -n x conformance/verify.sh"}}'
+assert_deny "K-3a-B11 export GIT_EXTERNAL_DIFF=<exec>; git diff <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"export GIT_EXTERNAL_DIFF=/tmp/evil.sh; git diff conformance/verify.sh"}}'
+assert_deny "K-3a-B12 declare -x PATH=/tmp; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"declare -x PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B13 the && spelling: export PATH=/tmp:\$PATH && cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp:$PATH && cat conformance/verify.sh"}}'
+# B14-B21 — THE HIDDEN LEADS. Each one hides the poisoning verb behind a group opener, a reserved
+# word, a wrapper or a quote, and every one of them ALLOWed before this row (security vet, HIGH).
+assert_deny "K-3a-B14 ( export PATH=/tmp; cat <cp> ) — a subshell opener" \
+  '{"tool_name":"Bash","tool_input":{"command":"( export PATH=/tmp; cat conformance/verify.sh )"}}'
+assert_deny "K-3a-B15 { export PATH=/tmp; cat <cp>; } — a brace group" \
+  '{"tool_name":"Bash","tool_input":{"command":"{ export PATH=/tmp; cat conformance/verify.sh; }"}}'
+assert_deny "K-3a-B16 if true; then export PATH=/tmp; fi; cat <cp> — behind a then keyword" \
+  '{"tool_name":"Bash","tool_input":{"command":"if true; then export PATH=/tmp; fi; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B17 for f in x; do export PATH=/tmp; cat <cp>; done — behind a do keyword" \
+  '{"tool_name":"Bash","tool_input":{"command":"for f in x; do export PATH=/tmp; cat conformance/verify.sh; done"}}'
+assert_deny "K-3a-B18 command export PATH=/tmp; cat <cp> — behind a wrapper" \
+  '{"tool_name":"Bash","tool_input":{"command":"command export PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B19 time export PATH=/tmp; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"time export PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B20 ! export PATH=/tmp; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"! export PATH=/tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B21 'export' PATH=/tmp; cat <cp> — a QUOTED lead (the lead is judged de-quoted)" \
+  '{"tool_name":"Bash","tool_input":{"command":"'\''export'\'' PATH=/tmp; cat conformance/verify.sh"}}'
+# B22-B25 — assignment through a BUILTIN that is not spelled `NAME=value`.
+assert_deny "K-3a-B22 printf -v PATH /tmp; cat <cp> (printf stays tier 1; -v is an ASSIGNMENT)" \
+  '{"tool_name":"Bash","tool_input":{"command":"printf -v PATH /tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B23 read PATH <<< /tmp; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"read PATH <<< /tmp; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B24 read -r PATH < /tmp/p; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"read -r PATH < /tmp/p; cat conformance/verify.sh"}}'
+assert_deny "K-3a-B25 mapfile -t PATH < /tmp/p; cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"mapfile -t PATH < /tmp/p; cat conformance/verify.sh"}}'
+# --- face 2, THE PRICED MOVERS M2-M7 (design §5.7). Each is ONE retry away, and each is celled so a
+# future relief has to RE-PRICE it rather than quietly refund it.
+assert_deny "K-3a-M2-mover PRICED: FOO=1; cat <cp> (retry: the read as its own tool call)" \
+  '{"tool_name":"Bash","tool_input":{"command":"FOO=1; cat conformance/verify.sh"}}'
+assert_deny "K-3a-M3-mover PRICED: export FOO=bar && cat <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"export FOO=bar && cat conformance/verify.sh"}}'
+assert_deny "K-3a-M4-mover PRICED: export LOOP_STATE_MODE=observe; sh conformance/loop-state.sh --head" \
+  '{"tool_name":"Bash","tool_input":{"command":"export LOOP_STATE_MODE=observe; sh conformance/loop-state.sh --head"}}'
+assert_deny "K-3a-M5-mover PRICED: source .venv/bin/activate && sh <kit> (retry: interpreter by path)" \
+  '{"tool_name":"Bash","tool_input":{"command":"source .venv/bin/activate && sh conformance/verify.sh"}}'
+assert_deny "K-3a-M6-mover PRICED: export PAGER=cat; git log -1 -- <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PAGER=cat; git log -1 -- conformance/verify.sh"}}'
+assert_deny "K-3a-M7-mover PRICED: export FOO=bar | cat <cp> — a pipe STAGE cannot poison its parent, but the walk cannot tell a | from a ; here (disclosed)" \
+  '{"tool_name":"Bash","tool_input":{"command":"export FOO=bar | cat conformance/verify.sh"}}'
+# --- face 2, THE FRONTIER THAT MUST NOT MOVE (the `set`/`exec` measurement is why they are off the set)
+assert_allow 'K-3a-F24 set -e; sh <kit> — `set` cannot re-route resolution and is OFF the set' \
+  '{"tool_name":"Bash","tool_input":{"command":"set -e; sh conformance/verify.sh"}}'
+assert_allow "K-3a-F25 set -euo pipefail; sh <kit> --head" \
+  '{"tool_name":"Bash","tool_input":{"command":"set -euo pipefail; sh conformance/loop-state.sh --head"}}'
+assert_allow 'K-3a-F26 exec 2>/dev/null; cat <cp> — `exec` replaces the shell, so no LATER segment runs' \
+  '{"tool_name":"Bash","tool_input":{"command":"exec 2>/dev/null; cat conformance/verify.sh"}}'
+assert_allow "K-3a-F27 mkdir -p /tmp/x && cat <cp> — an ordinary command is not a poison lead" \
+  '{"tool_name":"Bash","tool_input":{"command":"mkdir -p /tmp/x && cat conformance/verify.sh"}}'
+assert_allow "K-3a-F28 cd conformance && cat verify.sh — a followed cd is not poison" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd conformance && cat verify.sh"}}'
+assert_allow "K-3a-F29 sh <kit> && cat <cp> — a kit exec is not a poison lead" \
+  '{"tool_name":"Bash","tool_input":{"command":"sh conformance/verify.sh && cat conformance/verify.sh"}}'
+# --- face 2, THE LAUNDER CONTROL (security vet, HIGH). It denies through the launder arm, which calls
+# the read recogniser on the DENY side. It must stay DENY *and* keep its exact reason: the poison tip
+# is keyed on the HIT, not on the flag, so nothing is appended here. K-3a-M7 flips it.
+assert_deny "K-3a-C-launder CONTROL: export PATH=/tmp; cat /tmp/x > \$V/pre-push stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; cat /tmp/x > $V/pre-push"}}'
+assert_reason_has "K-3a-R4 the launder control keeps its own trigger" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; cat /tmp/x > $V/pre-push"}}' \
+  'trigger=redir-nonliteral'
+assert_reason_lacks "K-3a-R4b the launder control gains NO poison noise (the reason is unchanged)" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; cat /tmp/x > $V/pre-push"}}' \
+  'trigger=line-poison'
+# K-3a-M7's own anchor after the fix-round-1 re-aim (see the mutant): the GRAMMAR tiers are the arm's
+# remaining sole dependency on the read recogniser, so this is where the site is provable.
+assert_deny "K-3a-C-launder12 CONTROL: export PATH=/tmp; sed -n 1,5p /tmp/x > \$V/pre-push stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; sed -n 1,5p /tmp/x > $V/pre-push"}}'
+# --- face 2, THE REASONS (R2 names the peeled lead; R3 is the rewritten unvetted-prefix tip) --------
+assert_reason_has "K-3a-R2 a poisoned deny carries the new trigger token" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp:$PATH; head -1 conformance/verify.sh"}}' \
+  'trigger=line-poison'
+assert_reason_has "K-3a-R2b a poisoned deny NAMES the peeled lead that closed the lane" \
+  '{"tool_name":"Bash","tool_input":{"command":"command export PATH=/tmp; cat conformance/verify.sh"}}' \
+  '(`export`)'
+assert_reason_has "K-3a-R3 the unvetted-prefix tip now recommends the OWN-TOOL-CALL escape" \
+  '{"tool_name":"Bash","tool_input":{"command":"NOTAVETTEDNAME=1 sh conformance/verify.sh"}}' \
+  'set the variable in its own tool call'
+assert_reason_lacks "K-3a-R3b the unvetted-prefix tip no longer teaches the shape face 2 denies" \
+  '{"tool_name":"Bash","tool_input":{"command":"NOTAVETTEDNAME=1 sh conformance/verify.sh"}}' \
+  'as a separate statement'
+# --- face 3, Shape A: git's global options can NAME A PROGRAM, so they decline READ recognition ----
+assert_deny "K-3a-A10 git -c diff.external=<exec> diff <cp> (a config that names a program: EXEC)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c diff.external=/tmp/evil.sh diff conformance/verify.sh"}}'
+assert_deny "K-3a-A11 git -c core.hooksPath=<dir> commit -- <cp> (hooks from an attacker dir: EXEC)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c core.hooksPath=/tmp/h commit -m x -- conformance/verify.sh"}}'
+assert_deny "K-3a-A12 git -c core.pager=<exec> -p log -- <cp> (EXEC)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c core.pager=/tmp/evil.sh -p log -1 -- conformance/verify.sh"}}'
+assert_deny "K-3a-A13 git stash push -- <cp> — stash REVERTS the working copy (WRITE), off the subs" \
+  '{"tool_name":"Bash","tool_input":{"command":"git stash push -- conformance/verify.sh"}}'
+assert_deny "K-3a-A13b git --exec-path=<dir> log -- <cp> (git runs its own binaries from <dir>: EXEC)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git --exec-path=/tmp/e log -- conformance/verify.sh"}}'
+# --- face 3, THE KEPT-DENY CONTROLS the security vet added (the write routes the FIRST DRAFT opened)
+# These are the whole reason the `-c` decline lives in `_cp8b_tad_is_read`'s git branch and NOT in
+# `_cp8b_git_sub`. They are DENY at BOTH ends — they are not movers — and K-3a-M3 flips them by making
+# exactly the mistake the vet caught.
+assert_deny "K-3a-C-archive CONTROL: git -c x=y archive -o <cp-dir>/x.tar HEAD stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c x=y archive -o conformance/x.tar HEAD"}}'
+assert_deny "K-3a-C-checkout CONTROL: git -c x=y checkout -- <cp> stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c x=y checkout -- conformance/verify.sh"}}'
+assert_deny "K-3a-C-worktree CONTROL: git -c x=y worktree add -b br <cp-dir> stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c x=y worktree add -b br conformance/wt"}}'
+assert_deny "K-3a-C-cd-checkout CONTROL: cd - then git -c x=y checkout -- verify.sh stays DENY" \
+  '{"tool_name":"Bash","tool_input":{"command":"cd -; git -c x=y checkout -- verify.sh"}}'
+# --- face 3, the PRICED MOVER (design §1 M1): no key allowlist, so a harmless -c declines too -------
+assert_deny "K-3a-M1-mover PRICED: git -c color.ui=never log -- <cp> (no key allowlist; retry: drop -c)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -c color.ui=never log -1 -- conformance/verify.sh"}}'
+assert_allow "K-3a-F21 git -C <dir> log is NOT a decline (only -c/--exec-path/--config-env are)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x log -1"}}'
+assert_allow "K-3a-F22 git log --oneline -3 -- <cp> (a plain read sub, untouched)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git log --oneline -3 -- conformance/verify.sh"}}'
+assert_allow "K-3a-F23 git add <cp> stays ALLOW (index-only; disclosed, not folded into this row)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep \"a|b\" x; git add .claude/hooks/guard-core.sh"}}'
+# --- face 1, THE FRONTIER: every grammar arm of `_cp8b_flag_tok_ok`, celled ALLOW ------------------
+assert_allow "K-3a-F1 grep cluster + joined numeric operand + --name=value (-rn -A2 --include=)" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rn -A2 --include='\''*.sh'\'' foo conformance"}}'
+assert_allow "K-3a-F2 grep repeated bare operand flags (-e A -e B) on a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -e foo -e bar conformance/verify.sh"}}'
+assert_allow "K-3a-F3 rg bare + operand-with-value (-n -g <glob>)" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -n -g '\''!*.md'\'' foo conformance"}}'
+assert_allow "K-3a-F4 rg joined numeric operand (-A3) on a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -A3 foo conformance/verify.sh"}}'
+assert_allow "K-3a-F5 rg joined ALPHA operand value (-tsh = --type sh) — the leading-operand rule" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -tsh foo conformance"}}'
+assert_allow "K-3a-F6 rg -f <pattern-file> on a CP path (operand consumed blind)" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -f /tmp/pats conformance/verify.sh"}}'
+assert_allow "K-3a-F7 diff -u -U3 on a CP path (bare + joined numeric operand)" \
+  '{"tool_name":"Bash","tool_input":{"command":"diff -u -U3 conformance/verify.sh /tmp/x"}}'
+assert_allow "K-3a-F8 git grep -n -e foo -- <cp> (grep's sets; a bare -- ends flag judgment)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep -n -e foo -- conformance/verify.sh"}}'
+assert_allow "K-3a-F9 git grep --cached -p -- <cp> (the git-grep-only additions)" \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep --cached -p foo -- conformance/verify.sh"}}'
+assert_allow "K-3a-F10 Shape C: grep -n <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -n foo conformance/verify.sh"}}'
+assert_allow "K-3a-F11 Shape C: rg -n <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg -n foo conformance/verify.sh"}}'
+assert_allow "K-3a-F12 Shape C: diff -u <cp> /tmp/x" \
+  '{"tool_name":"Bash","tool_input":{"command":"diff -u conformance/verify.sh /tmp/x"}}'
+assert_allow "K-3a-F13 Shape C: git grep -n -- <cp>" \
+  '{"tool_name":"Bash","tool_input":{"command":"git grep -n foo -- conformance/verify.sh"}}'
+assert_allow "K-3a-F14 Shape C: wc -l <cp> (tier 1, untouched)" \
+  '{"tool_name":"Bash","tool_input":{"command":"wc -l conformance/verify.sh"}}'
+assert_allow "K-3a-F15 Shape C: head -20 <cp> (tier 1, untouched)" \
+  '{"tool_name":"Bash","tool_input":{"command":"head -20 conformance/verify.sh"}}'
+assert_allow "K-3a-F16 Shape C: ls -la .claude/hooks (tier 1, untouched)" \
+  '{"tool_name":"Bash","tool_input":{"command":"ls -la .claude/hooks"}}'
+assert_allow "K-3a-F17 Shape C: sed -n 1,5p <cp> (the F-b grammar, untouched)" \
+  '{"tool_name":"Bash","tool_input":{"command":"sed -n 1,5p conformance/verify.sh"}}'
+# K-3a-F-QUOTE — THE FRONTIER DEFECT THE FIRST BUILD SHIPPED, pinned. A quoted PATTERN may begin with
+# a dash: `grep -rn "rm -rf" scripts/` word-splits so that `-rf"` lands in a flag position, and the
+# first cut of the flag walk declined it — a plain, correct read, and `scripts/kit-guard --selftest`'s
+# own ALLOW cell. The walk now judges a QUOTE-BLANKED copy, so quoted data is never read as a flag.
+assert_allow 'K-3a-F-QUOTE a quoted pattern that BEGINS WITH A DASH is data, not a flag' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rn \"rm -rf\" scripts/"}}'
+# K-3a-F-QUOTE2/3 — the OPEN-SPAN fallback, pinned in BOTH directions. A blanking walk that ends with
+# an unterminated span falls back to judging the RAW segment, which sees at least as many `-`-leading
+# tokens as the blanked one: an ordinary open-span read keeps today's ALLOW, and an open span carrying
+# an unvetted exec flag still DENIES. (An outright decline here was measured to double-lock the mask
+# walk's M-A2c subject, which is why the fallback is a fallback and not a refusal.)
+assert_allow 'K-3a-F-QUOTE2 an UNTERMINATED span keeps today ALLOW (raw-token fallback)' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -n \"unterminated conformance/verify.sh"}}'
+assert_deny 'K-3a-F-QUOTE3 an UNTERMINATED span carrying an exec flag still DENIES' \
+  '{"tool_name":"Bash","tool_input":{"command":"grep --filter=sh:/tmp/e \"unterminated conformance/verify.sh"}}'
+assert_allow "K-3a-F18 poison flag alone never denies: a poisoned line naming NO control-plane path" \
+  '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; cat /tmp/x > /tmp/y"}}'
+# --- face 1, THE PRICED OVER-DENIES of the grammar (each one retry away) --------------------------
+assert_deny "K-3a-F19 PRICED: grep -rne foo <cp> — a cluster ENDING in an operand letter declines" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -rne foo conformance/verify.sh"}}'
+assert_deny "K-3a-F20 PRICED: column -t <cp> — tier 3 is decline-on-any-flag (escape: cat)" \
+  '{"tool_name":"Bash","tool_input":{"command":"column -t conformance/verify.sh"}}'
+# --- face 1, A CELL PER SHIPPED FLAG-SET MEMBER (the demonstrated-need rule, made measurable) ------
+# The sets are not declared true — every member below is asserted ALLOW on a control-plane path, so a
+# member that was mistyped, or that the grammar cannot actually walk, reds here rather than silently
+# over-denying in a session. (The T0 measurement that SIZED the sets is in the build report; this is
+# what keeps them honest afterwards.)
+for _k3f in -E -F -I -a -c -i -l -n -o -q -r -v -w -x --count; do
+  assert_allow "K-3a-S grep bare member [$_k3f] reads a CP path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep $_k3f foo conformance/verify.sh\"}}"
+done
+assert_allow "K-3a-S grep bare member [-<digits>] reads a CP path" \
+  '{"tool_name":"Bash","tool_input":{"command":"grep -3 foo conformance/verify.sh"}}'
+for _k3f in -e -f -m -A -B --include --regexp; do
+  assert_allow "K-3a-S grep operand member [$_k3f] reads a CP path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep $_k3f foo conformance/verify.sh\"}}"
+done
+for _k3f in --cached -p; do
+  assert_allow "K-3a-S git grep extra member [$_k3f] reads a CP path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git grep $_k3f foo -- conformance/verify.sh\"}}"
+done
+for _k3f in -n -A -e -f -g -t; do
+  assert_allow "K-3a-S rg member [$_k3f] reads a CP path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rg $_k3f foo conformance/verify.sh\"}}"
+done
+for _k3f in -q -r -u -U --exclude; do
+  assert_allow "K-3a-S diff member [$_k3f] reads a CP path" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"diff $_k3f conformance/verify.sh /tmp/x\"}}"
+done
+# --- face 1, THE REASON (R1): the deny NAMES the flag that closed the lane, and its retry ---------
+assert_reason_has "K-3a-R1 the A1 deny reason carries the new trigger token" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh -n x .claude/hooks/guard-core.sh"}}' \
+  'trigger=read-flag'
+assert_reason_has "K-3a-R1b the A1 deny reason NAMES the offending flag itself" \
+  '{"tool_name":"Bash","tool_input":{"command":"rg --pre /tmp/evil.sh -n x .claude/hooks/guard-core.sh"}}' \
+  '--pre'
 # F-2 (MED) — THE OPEN SPAN. `grep 'a"b' x " ; cp e <cp>` was DENY at pristine and ALLOW at 41d4278e:
 # a REGRESSION the mask opened. CROSS-KIND PARITY defeats the two even-count prechecks — there are two
 # `'` and two `"`, so both pass — but one `"` is INSIDE the single-quoted span and the other opens a

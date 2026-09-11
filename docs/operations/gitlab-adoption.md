@@ -13,7 +13,7 @@ adopter-owned on GitLab; this guide consolidates the wiring.
 
 ## What GitLab already has
 
-**All 8 required CI gates** are present and verified on GitLab with zero adoption work:
+**GitLab is a declared reference for `typescript-node` only — 1 of 10 stacks ships a GitLab pipeline.** For that one stack, the 8 required CI gates are present and verified with zero adoption work; the other 9 stacks refuse GitLab at `incept.sh`, and parity across the full stack matrix is neither claimed nor scheduled (`D-240906-1`):
 - `profiles/typescript-node/ci.gitlab-ci.yml` expresses the gate-id contract as GitLab **job
   keys** (`gate-lint:`, `gate-type-check:`, …). Drop it in as `.gitlab-ci.yml` at the repo root
   (`incept.sh --ci gitlab` does this).

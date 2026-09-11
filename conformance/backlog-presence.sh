@@ -27,11 +27,12 @@
 #   diff. SINCE SLICE-CLOSES-IN-ONE-PR a DONE row's `Retro/outcome` cell can carry that token too, and
 #   the two bindings do NOT age alike: a PR NUMBER never decays (numbers are unique, so a stale row
 #   citing #627 binds only the already-merged #627), while a BRANCH NAME CAN — branch names recur, so
-#   a Done row citing `feat/x` will satisfy a LATER `--pr 0 --branch feat/x` pre-push run for
-#   unrelated work. That fail-open is reachable ONLY from the local pre-push speed bump (which
-#   `--no-verify` already bypasses); the REQUIRED CI context runs with `--pr N` and does not decay.
-#   Boarded as `PRESENCE-DONE-ARM-BRANCH-DECAY`; the fix bounds the arm to rows NEW in the pushed
-#   change-set and touches hooks/pre-push.
+#   a Done row citing `feat/x` could otherwise satisfy a LATER `--pr 0 --branch feat/x` pre-push run
+#   for unrelated work. FIXED (TIER0-LOCKS-OWED a): the branch form now binds ONLY for a Done row
+#   ABSENT from the BASE board's Done section (the board at `--base-board`, hooks/pre-push extracts
+#   origin/main's BACKLOG.md there) — i.e. a row genuinely NEW to this push's change-set, keyed on
+#   the row-id token. An unreadable/absent base board never binds by branch (fail-safe); PR-NUMBER
+#   binding is unconditional and was never affected. See row_bears_pr for the mechanism.
 set -eu
 cd "$(dirname "$0")/.."
 . conformance/backlog-lib.sh
@@ -116,9 +117,68 @@ esc_ere() { printf '%s' "$1" | sed 's/[][\.^$*+?(){}|\\/]/\\&/g'; }
 # be a NON-boundary, or `fix/p1-ci` would spuriously match a cell bearing `fix/p1-ci-path-scope`.
 BRANCH_CHARS='A-Za-z0-9._/-'
 
+# gov_row_id <row> -> the row's column-1 backticked identifier (the same extraction inprogress_hints
+# uses), or empty if the cell carries none. Used to key "is this row new to the change-set".
+gov_row_id() {
+  _gri_c=$(cell "$1" 1)
+  case "$_gri_c" in
+    *'`'*) _gri_id=${_gri_c#*\`}; _gri_id=${_gri_id%%\`*}; printf '%s' "$_gri_id" ;;
+    *) printf '' ;;
+  esac
+}
+
+# base_row_in_done <base-board> <row-id> -> rc0 iff <row-id> appears as a column-1 backticked
+# identifier in the BASE board's Done section (i.e. the row was ALREADY Done before this push —
+# not new to the change-set). Scoped to Done only: a row that just MOVED to Done this push (present
+# elsewhere in the base board, e.g. In Progress) is still new-to-Done and must bind.
+base_row_in_done() {
+  # COLUMN-1 SCOPED (first-live-run, CONTROL-PLANE-COVERAGE 2026-09-10): compare against each base
+  # Done row's COLUMN-1 backticked identifier via gov_row_id — NOT a `grep` for the id anywhere in
+  # the section. A `grep` over the whole Done section false-positives on a row-id merely CITED in a
+  # prior row's Retro/outcome (every `**Disposition:** row \`X\`` names the next slice), so a
+  # genuinely new row whose id was named in an earlier disposition would read as "already Done" and
+  # its branch form would never bind. Measured on this slice's own row: `CONTROL-PLANE-COVERAGE`
+  # appears in slice 3b's disposition on main, so the whole-section grep returned true for a row
+  # that was Ready, not Done, on the base. Read from a temp file — a `| while` runs the body in a
+  # POSIX subshell, so a `break`/return inside it cannot set this function's result.
+  _brid_target="$2"
+  _brid_f=$(mktemp)
+  section_rows "$1" "Done" > "$_brid_f" 2>/dev/null || { rm -f "$_brid_f"; return 1; }
+  _brid_hit=1
+  while IFS= read -r _brid_row; do
+    _brid_id=$(gov_row_id "$_brid_row")
+    if [ -n "$_brid_id" ] && [ "$_brid_id" = "$_brid_target" ]; then _brid_hit=0; break; fi
+  done < "$_brid_f"
+  rm -f "$_brid_f"
+  return "$_brid_hit"
+}
+
 row_bears_pr() {
-  _bl="$1"; _pr="$2"; _br="${3:-}"; _rows_f=$(mktemp)
+  _bl="$1"; _pr="$2"; _br="${3:-}"; _basebl="${4:-}"; _rows_f=$(mktemp)
   [ -n "$_br" ] && _bre=$(esc_ere "$_br") || _bre=""
+  # S-6 RELAY (security review, 2026-09-10): set whenever a Done row's branch token LITERALLY
+  # MATCHED but the match was suppressed because the base board was unreadable (_base_ok != 1 below)
+  # — never on a genuine no-match. The caller (check_pr) reads this AFTER the call to distinguish
+  # "no candidate row" from "a candidate existed but binding was never evaluated", so its refusal can
+  # say so instead of implying the Done form was checked and failed. Not reset by the caller between
+  # sections/rows within this one call — it is a whole-call "did suppression happen at all" flag.
+  _rbp_base_suppressed=0
+  # ── TIER0-LOCKS-OWED (a): DONE-ARM BRANCH BINDING BOUNDED TO CHANGE-SET-NEW ROWS ─────────────
+  # The branch form decays (a Done row citing `feat/x` binds a LATER unrelated push reusing that
+  # name). Bound it: a Done row's branch token binds ONLY when that row is ABSENT from the BASE
+  # board's Done section (i.e. it is new to this push's change-set) — keyed on the row-id token
+  # (column 1's backticked identifier), not on the retro text. PR-NUMBER binding is UNAFFECTED
+  # (unconditional, as before) — numbers never decay.
+  # FAIL DIRECTION: an unreadable/absent base board (no arg, missing file, or no Done section —
+  # e.g. an unfetched ref) means the branch form does NOT bind for ANY Done row: mirrors the
+  # underivable-class fail-safe posture at hooks/pre-push (the "could not evaluate" route never
+  # widens what passes). The caller (hooks/pre-push) relays "base board unreadable, branch
+  # binding not evaluated" when this is why a genuine new row failed to bind.
+  _base_ok=0
+  if [ -n "$_basebl" ] && [ -f "$_basebl" ]; then
+    _base_done_probe=$(section_rows "$_basebl" "Done" 2>/dev/null) || _base_done_probe=""
+    [ -n "$_base_done_probe" ] && _base_ok=1
+  fi
   for _sec in "Ready" "In Progress" "In Review" "Blocked" "Released" "Done"; do
     # NO `section_rows … | while read` — POSIX runs a pipeline's while-body in a SUBSHELL, so a
     # success-return inside it would exit only the subshell and this function would fall through to
@@ -137,23 +197,22 @@ row_bears_pr() {
     # prior work. An arm over ALL Done rows would let a STALE row satisfy presence for a slice it
     # never described. Only rows Closed on/after HITL6_DISPO_EPOCH are read; an unparseable or
     # absent Closed date is CONSIDERED (fail-closed, leg-2's posture).
-    # ⚠️ THE TWO BINDINGS DECAY DIFFERENTLY, AND ONLY ONE OF THEM DECAYS (review M1):
+    # ⚠️ THE TWO BINDINGS DECAY DIFFERENTLY, AND ONLY ONE OF THEM DID (review M1):
     #   • PR NUMBER never decays. Numbers are unique per repo and monotonic, so a Done row citing
     #     #627 can satisfy exactly one PR — #627, which is already merged. Age is irrelevant.
-    #   • BRANCH NAME CAN decay. Branch names RECUR (`feat/fix-board`, `chore/release` are reused
-    #     freely), so a Done row closed under this rule citing `feat/x` will satisfy a LATER
-    #     `--pr 0 --branch feat/x` pre-push run for unrelated work. That is a FAIL-OPEN, and it is
-    #     disclosed rather than defended here.
+    #   • BRANCH NAME COULD decay. Branch names RECUR (`feat/fix-board`, `chore/release` are reused
+    #     freely), so a Done row closed under this rule citing `feat/x` could satisfy a LATER
+    #     `--pr 0 --branch feat/x` pre-push run for unrelated work. FIXED (TIER0-LOCKS-OWED a): the
+    #     branch form below is bounded to rows ABSENT from the base board's Done section — see the
+    #     `_base_ok` / `_is_done_retro` gating above and in the match block below.
     # WHAT IT IS AND IS NOT: the branch form is reachable only from the PRE-PUSH SPEED BUMP, which
     # `--no-verify` and an uninstalled hook already bypass. The REQUIRED CI CONTEXT runs with
-    # `--pr N` (a number exists by then) and is unaffected — the binding that gates the merge does
-    # not decay. The epoch bounds the population but cannot bound it to THIS push, and a
-    # clock-relative window was rejected: a gate whose verdict depends on when it runs is not a
-    # gate. The real fix bounds the arm to rows NEW in the pushed change-set (the base board is
-    # available to the hook) — boarded as `PRESENCE-DONE-ARM-BRANCH-DECAY`, and it touches
-    # hooks/pre-push, which this slice does not.
-    _ridx=""; _cidx=""
+    # `--pr N` (a number exists by then) and is unaffected — the binding that gates the merge never
+    # decayed. The epoch bounds the population but cannot bound it to THIS push; the real fix bounds
+    # the arm to rows NEW in the pushed change-set, via the base board hooks/pre-push now supplies.
+    _ridx=""; _cidx=""; _is_done_retro=0
     if [ -z "$_idx" ]; then
+      _is_done_retro=1
       _ridx=$(col_index "$_hdr" "Retro/outcome")
       [ -n "$_ridx" ] || continue              # neither a `PR` nor a `Retro/outcome` column -> skip
       _cidx=$(col_index "$_hdr" "Closed")
@@ -185,7 +244,30 @@ row_bears_pr() {
       # ...OR the BRANCH NAME as a whole token. Same boundary discipline as the number: `fix/p1-ci` must
       # NOT match a cell bearing `fix/p1-ci-path-scope`, so every char legal in a git ref is a non-boundary.
       if [ -n "$_bre" ] && printf '%s' "$_c" | grep -Eq "(^|[^${BRANCH_CHARS}])${_bre}([^${BRANCH_CHARS}]|\$)"; then
-        rm -f "$_rows_f"; return 0
+        # TIER0-LOCKS-OWED (a): in the Done arm, the branch form binds ONLY for a row absent from
+        # the base board's Done section (change-set-new), keyed on the row-id token. An unreadable
+        # base board (_base_ok=0) never binds — fail-safe.
+        if [ "$_is_done_retro" = 1 ]; then
+          if [ "$_base_ok" != 1 ]; then
+            _rbp_base_suppressed=1  # base board unreadable -> this row's branch form does not bind; keep scanning.
+          else
+            _rid=$(gov_row_id "$_row")
+            # security review, 2026-09-10: an ID-LESS Done row must NOT bind by branch. The staleness
+            # check is KEYED ON THE ROW-ID (base_row_in_done "$_basebl" "$_rid"); with no id there is
+            # nothing to look up, so `[ -n "$_rid" ] && base_row_in_done ...` was simply FALSE and fell
+            # through to the `else` (bind) arm — fail-OPEN on the one shape it could not verify. An
+            # unverifiable row is treated the same as an unreadable base board: does not bind.
+            if [ -z "$_rid" ]; then
+              : # no row-id token -> change-set-new status cannot be verified; does not bind by branch.
+            elif base_row_in_done "$_basebl" "$_rid"; then
+              : # row already Done in the base board -> stale/carried, does not bind by branch.
+            else
+              rm -f "$_rows_f"; return 0
+            fi
+          fi
+        else
+          rm -f "$_rows_f"; return 0
+        fi
       fi
     done < "$_rows_f"
   done
@@ -313,7 +395,7 @@ check_claims() {
 # without it a declared-md board that is absent would abort under `set -eu`; with it the absence becomes
 # the honest FAIL this dark-gate detector exists to raise.
 check_pr() {
-  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"; _claims="${5:-0}"
+  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"; _claims="${5:-0}"; _basebl="${6:-}"
   # ── ORDINARY CHANGE-CLASS: PRESENCE IS N/A, A CLAIM IS NOT (reviewer R-6) ──────────────────────
   # As first built the claims arm sat behind BOTH this gate-class return AND the presence pass below,
   # so an ORDINARY PR — a docs tweak, a README fix — never reached it. That is precisely the shape the
@@ -368,7 +450,7 @@ check_pr() {
   # The verdict STRINGS are a contract (the selftest asserts them verbatim, and humans read them in CI
   # logs). When no --branch is supplied the message is byte-for-byte what it always was — branch binding
   # is ADDITIVE and must not perturb the existing surface. The branch is named only when it is in play.
-  if row_bears_pr "$_bl" "$_pr" "$_br"; then
+  if row_bears_pr "$_bl" "$_pr" "$_br" "$_basebl"; then
     if [ -n "$_br" ] && [ "$_pr" = 0 ]; then
       # The pre-push form: there is no PR yet, so the verdict names the only binding that exists.
       echo "OK: backlog-presence — branch '$_br' is bound to a board row (PR column)"
@@ -402,12 +484,19 @@ check_pr() {
   _jqnote=""
   command -v jq >/dev/null 2>&1 \
     || _jqnote=" NOTE: jq is not installed, so the change-class was fail-safed to gated — this may not be a gated change at all; install jq for full resolution."
+  # S-6 RELAY (security review, 2026-09-10): the sentence above (_doneform) names Done as a valid
+  # alternative form, but if row_bears_pr suppressed a Done-row branch match because the base board
+  # was unreadable, that alternative was never actually evaluated — saying only "$_doneform" would
+  # read as "we checked Done and it doesn't bind" when the truth is "we could not check". Name the
+  # cause and the remedy instead (the promise at row_bears_pr's TIER0-LOCKS-OWED-a comment).
+  _basenote=""
+  [ "${_rbp_base_suppressed:-0}" = 1 ] && _basenote=" NOTE: the base board (origin/main's BACKLOG.md) was unreadable locally, so the Done-form branch binding was NOT evaluated for a candidate row — run 'git fetch origin main' and push again to have it checked."
   if [ -n "$_br" ] && [ "$_pr" = 0 ]; then
-    echo "FAIL: backlog-presence — no board row bears branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote"
+    echo "FAIL: backlog-presence — no board row bears branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote$_basenote"
   elif [ -n "$_br" ]; then
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote"
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr or branch '$_br' in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote$_basenote"
   else
-    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote"
+    echo "FAIL: backlog-presence — no board row bears PR #$_pr in its PR cell (gated change-class). The row must sit in a section with a \`PR\` column — In Review in the shipped schema.$_doneform$_jqnote$_basenote"
   fi
   # The hint + remedy block, only when a branch is in play (the CI form's reader has the PR page in
   # front of them; the pre-push form's reader has a terminal). At most three rows are named — a
@@ -528,19 +617,23 @@ selftest() {
   _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Merged PR #420, all gates green on the first run. |'
   assert_absent "$d" 42 "t1c/done-superstring: #420 in a Done retro must not satisfy #42 -> rc1"
 
-  # BRANCH binding in a Done retro — the form the pre-push run (`--pr 0`) actually uses.
+  # BRANCH binding in a Done retro — the form the pre-push run (`--pr 0`) actually uses. Row-id is
+  # new to the base board's Done section (a fixture-only base with an unrelated row), so it binds
+  # under TIER0-LOCKS-OWED (a).
   d="$base/t1c_done_branch"
   _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Shipped from feat/slice-closes on a green first run. |'
-  assert_present "$d" 0 "t1c/done-branch: a branch token in a post-epoch Done retro -> rc0" "feat/slice-closes"
+  based="$base/t1c_done_branch_base"
+  _done_board "$based" '| `UNRELATED` | 2026-09-01 | Some other prior work. |'
+  assert_present "$d" 0 "t1c/done-branch: a branch token in a post-epoch Done retro -> rc0" "feat/slice-closes" "$based/BACKLOG.md"
 
   # ...and the branch boundary discipline holds inside the retro cell too.
-  assert_absent "$d" 0 "t1c/done-branch-superstring: 'feat/slice-close' must not match 'feat/slice-closes'" "feat/slice-close"
+  assert_absent "$d" 0 "t1c/done-branch-superstring: 'feat/slice-close' must not match 'feat/slice-closes'" "feat/slice-close" "$based/BACKLOG.md"
 
   # `--pr 0` MUST NOT bind to a literal `#0` in a Done retro either (security S3 carried into the
   # new arm): 0 means "no PR exists yet", and a `#0` cell would otherwise satisfy every branch.
   d="$base/t1c_done_hash_zero"
   _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. A stray #0 placeholder sits in this cell and binds nothing at all. |'
-  assert_absent "$d" 0 "t1c/done-hash-zero: a literal '#0' in a Done retro must not satisfy --pr 0" "feat/unbound"
+  assert_absent "$d" 0 "t1c/done-hash-zero: a literal '#0' in a Done retro must not satisfy --pr 0" "feat/unbound" "$based/BACKLOG.md"
 
   # H1 SCOPE, LIVE: the SAME row, Closed one day BEFORE the epoch -> ABSENT. This is the leg that
   # reds a Done arm with no epoch test, and the only one that does.
@@ -559,6 +652,107 @@ selftest() {
   d="$base/t1c_done_escaped"
   _done_board "$d" '| `SLICE` | 2026-09-03 | L1 retro. Shipped the `triggered\|none\|uncertain` detector; merged PR #42. |'
   assert_present "$d" 42 "t1c/done-escaped-pipe: a token AFTER an escaped pipe is still found -> rc0"
+
+  # ===== T1d — TIER0-LOCKS-OWED (a): DONE-ARM BRANCH BINDING BOUNDED TO CHANGE-SET-NEW ROWS ====
+  # The Done arm's BRANCH form (not the number form) decays: a stale Done row citing a reused
+  # branch would satisfy a later, unrelated push. Bound it to rows ABSENT from the BASE board's
+  # Done section (change-set-new), keyed on the row-id token.
+
+  # liveness: a row that is NEW to this push's Done section (absent from the base board entirely)
+  # -> branch form binds.
+  d="$base/t1d_new"
+  _done_board "$d" '| `NEW-ROW` | 2026-09-09 | L1 retro. Shipped from feat/new-row, first push. |'
+  based="$base/t1d_new_base"
+  _done_board "$based" '| `OTHER-ROW` | 2026-09-08 | Unrelated prior work. |'
+  assert_present "$d" 0 "t1d/new: a Done row absent from the base board's Done section binds by branch -> rc0" "feat/new-row" "$based/BACKLOG.md"
+
+  # negative (the decay this closes): a STALE Done row already present in the base board's Done
+  # section, citing a branch NOW reused for unrelated work -> does NOT bind.
+  d="$base/t1d_stale"
+  _done_board "$d" '| `OLD-ROW` | 2026-08-01 | L1 retro. Shipped from feat/reused-name months ago. |'
+  based="$base/t1d_stale_base"
+  _done_board "$based" '| `OLD-ROW` | 2026-08-01 | L1 retro. Shipped from feat/reused-name months ago. |'
+  assert_absent "$d" 0 "t1d/stale: a Done row already present in the base board's Done section must NOT bind by branch -> rc1" "feat/reused-name" "$based/BACKLOG.md"
+
+  # base-present, retro EDITED to add the branch (same row-id, different retro text) -> still does
+  # NOT bind: the key is the row-id's presence in base Done, not the retro cell's content.
+  d="$base/t1d_edited"
+  _done_board "$d" '| `OLD-ROW` | 2026-08-01 | L1 retro, amended to also mention feat/reused-name. |'
+  based="$base/t1d_edited_base"
+  _done_board "$based" '| `OLD-ROW` | 2026-08-01 | L1 retro, original wording, no branch mentioned. |'
+  assert_absent "$d" 0 "t1d/edited-retro: a base-present row-id does not bind even after its retro cell is edited to add the branch -> rc1" "feat/reused-name" "$based/BACKLOG.md"
+
+  # a row that MOVED to Done this push (present in base board elsewhere, e.g. In Progress, but NOT
+  # in base's Done section) is still new-to-Done -> binds.
+  d="$base/t1d_moved"
+  _done_board "$d" '| `MOVED-ROW` | 2026-09-09 | L1 retro. Shipped from feat/moved-row, a green first run. |'
+  based="$base/t1d_moved_base"
+  mkdir -p "$based"
+  cat > "$based/BACKLOG.md" <<'MOVED_EOF'
+# Proj — Backlog
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| `MOVED-ROW` | agent | 2026-09-08 | — |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| `UNRELATED` | 2026-09-01 | Some other prior work. |
+MOVED_EOF
+  assert_present "$d" 0 "t1d/moved: a row absent from base's DONE section (present elsewhere) is new-to-Done -> rc0" "feat/moved-row" "$based/BACKLOG.md"
+
+  # FAIL DIRECTION: base board unreadable/absent -> branch form NEVER binds, even for a genuinely
+  # new row. Number binding is unaffected (PR-number is unconditional).
+  d="$base/t1d_base_unreadable"
+  _done_board "$d" '| `NEW-ROW-2` | 2026-09-09 | L1 retro. Shipped from feat/base-missing. |'
+  assert_absent "$d" 0 "t1d/base-unreadable-noarg: no --base-board at all -> branch does not bind -> rc1" "feat/base-missing"
+  assert_absent "$d" 0 "t1d/base-unreadable-missingfile: a --base-board pointing at a nonexistent file -> branch does not bind -> rc1" "feat/base-missing" "$base/t1d_no_such_file/BACKLOG.md"
+  # PR-NUMBER binding is unconditional even with no base board supplied at all.
+  d2="$base/t1d_base_unreadable_num"
+  _done_board "$d2" '| `NEW-ROW-3` | 2026-09-09 | L1 retro. Merged PR #999, no base board supplied. |'
+  assert_present "$d2" 999 "t1d/base-unreadable-number: a PR-number token binds with no --base-board at all -> rc0"
+
+  # base board present but with NO Done section at all (e.g. a fresh/empty board) -> unreadable
+  # posture -> branch does not bind.
+  d="$base/t1d_base_nodone"
+  _done_board "$d" '| `NEW-ROW-4` | 2026-09-09 | L1 retro. Shipped from feat/no-done-section. |'
+  based="$base/t1d_base_nodone_base"
+  mkdir -p "$based"
+  cat > "$based/BACKLOG.md" <<'NODONE_EOF'
+# Proj — Backlog
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| `X` | agent | 2026-09-01 | — |
+NODONE_EOF
+  assert_absent "$d" 0 "t1d/base-no-done-section: a base board with no Done section -> branch does not bind -> rc1" "feat/no-done-section" "$based/BACKLOG.md"
+
+  # t1e (security review, 2026-09-10): an ID-LESS Done row (no backticked identifier in column 1)
+  # must NOT bind by branch, even with a READABLE base board (_base_ok=1). base_row_in_done is keyed
+  # on the row-id; with no id there is nothing to verify change-set-new status against, and the
+  # unverifiable shape must fail the SAME direction as an unreadable base board — never bind.
+  d="$base/t1e_no_row_id"
+  _done_board "$d" '| No id here | 2026-09-09 | L1 retro. Shipped from feat/no-id-row, a clean run. |'
+  based="$base/t1e_no_row_id_base"
+  _done_board "$based" '| `UNRELATED` | 2026-09-01 | Unrelated prior work. |'
+  assert_absent "$d" 0 "t1e/no-row-id: an id-less Done row does NOT bind by branch, even with a readable base board -> rc1" "feat/no-id-row" "$based/BACKLOG.md"
+
+  # t1f (first-live-run, CONTROL-PLANE-COVERAGE 2026-09-10): a NEW row whose id is merely CITED in a
+  # PRIOR base Done row's Retro/outcome (a `**Disposition:** row \`X\`` naming the next slice — the
+  # universal shape) but is NOT a column-1 id in base Done -> IS change-set-new -> BINDS by branch.
+  # The whole-section grep this replaced returned true here (the id appears in the section text),
+  # falsely reading the new row as already-Done. Measured on this slice's own row.
+  d="$base/t1f_cited"
+  _done_board "$d" '| `NEW-SLICE` | 2026-09-10 | L1 retro. Shipped from feat/new-slice, first push. |'
+  based="$base/t1f_cited_base"
+  _done_board "$based" '| `PRIOR-SLICE` | 2026-09-08 | L1 retro. Shipped from feat/prior. **Disposition:** row `NEW-SLICE`. |'
+  assert_present "$d" 0 "t1f/cited-in-prior-disposition: a new row-id merely cited in a base Done retro still binds by branch -> rc0" "feat/new-slice" "$based/BACKLOG.md"
 
   # ===== T2 — change-class reconciliation: gate_class (spec §4, §7) ====================
   # gate_class takes a CHANGE-SET LISTING file (newline-delimited paths), by argument.
@@ -720,6 +914,34 @@ selftest() {
   # ...and with jq PRESENT the verdict must NOT mention jq: the jq sentence is a fail-safe
   # DISCLOSURE, and a disclosure that prints unconditionally tells the reader nothing (b4's pair).
   br_hasnt "t3/one: with jq present the verdict does not mention jq" "jq"
+  # control: no Done-row branch candidate existed at all here, so nothing was suppressed — the S-6
+  # NOTE must not fire on the ordinary no-row wait (no false positive).
+  br_hasnt "t3/one: no base-board suppression occurred -> the S-6 NOTE is absent" "base board (origin/main's BACKLOG.md) was unreadable"
+
+  # b1b — S-6 RELAY (security review, 2026-09-10): a Done row's branch token LITERALLY MATCHES, but
+  # no --base-board was supplied (unreadable/absent) -> row_bears_pr suppresses the bind (fail-safe,
+  # unchanged) AND check_pr's refusal must now NAME the cause + remedy, not merely repeat "$_doneform"
+  # as if Done had been checked and found wanting.
+  d="$base/t3_base_suppressed"; _done_board "$d" '| `NEW-ROW-S6` | 2026-09-09 | L1 retro. Shipped from feat/s6-relay, a green first run. |'
+  _proj_backend "$d" md
+  br_run "$d" 0 "$cfg" feat/s6-relay
+  br_expect_rc 1 "t3/base-suppressed: a Done-row branch candidate exists but no base board was supplied -> rc 1"
+  br_has "t3/base-suppressed: the refusal names the cause (base board unreadable)" "the base board (origin/main's BACKLOG.md) was unreadable locally"
+  br_has "t3/base-suppressed: the refusal names the remedy (git fetch origin main)" "git fetch origin main"
+
+  # b1c — control: the SAME candidate row, but a REAL, readable base board is supplied and the row is
+  # genuinely new to it (binds) -> rc 0, and (since nothing was suppressed) the S-6 NOTE never fires.
+  based="$base/t3_base_suppressed_base"; _done_board "$based" '| `OTHER-ROW` | 2026-09-01 | Unrelated prior work. |'
+  br_run_base "$d" 0 "$cfg" feat/s6-relay "$based/BACKLOG.md"
+  br_expect_rc 0 "t3/base-readable-binds: the same row with a READABLE base board -> binds normally -> rc 0"
+
+  # b1d — control: a readable base board that DOES carry the row (genuinely stale, TIER0-LOCKS-OWED a)
+  # -> still rc 1 (correctly declined, not suppressed), and the S-6 NOTE must NOT fire — this refusal
+  # is a real "no" from an evaluated base board, not an unevaluated one.
+  based2="$base/t3_base_stale_base"; _done_board "$based2" '| `NEW-ROW-S6` | 2026-09-01 | L1 retro. Shipped from feat/s6-relay months ago. |'
+  br_run_base "$d" 0 "$cfg" feat/s6-relay "$based2/BACKLOG.md"
+  br_expect_rc 1 "t3/base-readable-stale: a readable base board that already carries the row -> correctly declines -> rc 1"
+  br_hasnt "t3/base-readable-stale: a REAL evaluated 'no' must not carry the unevaluated NOTE" "was unreadable locally"
 
   # b2 — FOUR In Progress rows: the count form, not four hint lines. A refusal that pastes the whole
   # section is the annoyance this design replaced, not the teaching one.
@@ -828,16 +1050,17 @@ selftest() {
 # (st_fail flip). The CHECK logic above the marker stays mutable, as it must.
 # assert_present <dir> <pr> <label> : row_bears_pr on <dir>/BACKLOG.md must rc0.
 assert_present() {
-  if row_bears_pr "$1/BACKLOG.md" "$2" "${4:-}" >/dev/null 2>&1; then _r=0; else _r=$?; fi
+  if row_bears_pr "$1/BACKLOG.md" "$2" "${4:-}" "${5:-}" >/dev/null 2>&1; then _r=0; else _r=$?; fi
   if [ "$_r" -eq 0 ]; then
     echo "selftest PASS: $3"
   else
     echo "selftest FAIL: $3 (row_bears_pr rc=$_r, wanted 0/present)"; st_fail=1
   fi
 }
-# assert_absent <dir> <pr> <label> : row_bears_pr on <dir>/BACKLOG.md must rc!=0.
+# assert_absent <dir> <pr> <label> [<branch>] [<base-board-path>] : row_bears_pr on <dir>/BACKLOG.md
+# must rc!=0.
 assert_absent() {
-  if row_bears_pr "$1/BACKLOG.md" "$2" "${4:-}" >/dev/null 2>&1; then _r=0; else _r=$?; fi
+  if row_bears_pr "$1/BACKLOG.md" "$2" "${4:-}" "${5:-}" >/dev/null 2>&1; then _r=0; else _r=$?; fi
   if [ "$_r" -ne 0 ]; then
     echo "selftest PASS: $3"
   else
@@ -933,6 +1156,12 @@ assert_msg() {
 # express — a refusal written for a stranger is graded on what it does NOT say as much as what it does.
 br_run() {
   if br_out=$(check_pr "$1" "$2" "$3" "$4" 2>&1); then br_rc=0; else br_rc=$?; fi
+}
+# br_run_base <dir> <pr> <changed-file> <branch> <base-board-path> : the same as br_run, but also
+# passes check_pr's 6th positional arg (base-board) — needed to drive the S-6 relay's check_pr-level
+# assertions (claims stays off/0, the 5th positional).
+br_run_base() {
+  if br_out=$(check_pr "$1" "$2" "$3" "$4" 0 "$5" 2>&1); then br_rc=0; else br_rc=$?; fi
 }
 # br_run_nojq <dir> <pr> <changed-file> <branch> : the same, under a PATH holding every binary EXCEPT
 # jq (the symlink farm assert_gated_nojq already uses), so the fail-safe route is the one under test.
@@ -1105,30 +1334,35 @@ case "${1:-}" in
   --selftest)
     selftest; exit $?
     ;;
-  --dir|--pr|--changed|--branch|--claims)
+  --dir|--pr|--changed|--branch|--claims|--base-board)
     # --branch is OPTIONAL and, like every other target here, comes BY ARGUMENT — never the environment.
     # (An env-supplied target lets a decoy redirect a control-plane check; that pattern was rejected once
     # already and is not coming back.) Absent --branch, the gate behaves exactly as before: PR-number only.
     # --claims is a FLAG (no value) and is OFF unless passed: it is the only arm here that touches the
     # network, so it must be opted into by the caller that has one — the CI PR job — and never by the
     # pre-push hook, which runs on a plane as often as not.
-    _dir=""; _pr=""; _cf=""; _br=""; _cl=0
+    # --base-board is OPTIONAL (TIER0-LOCKS-OWED a): the path to the BASE board (origin/main's
+    # BACKLOG.md at the merge-base) — BY ARGUMENT, never the environment. Absent it, the Done arm's
+    # branch form never binds (fail-safe; see row_bears_pr). Only the pre-push caller supplies it
+    # today; the CI PR job binds by number and does not need it.
+    _dir=""; _pr=""; _cf=""; _br=""; _cl=0; _bb=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --dir)     [ $# -ge 2 ] || { echo "usage: --dir needs a value" >&2; exit 2; }; _dir=$2; shift 2 ;;
-        --pr)      [ $# -ge 2 ] || { echo "usage: --pr needs a value" >&2; exit 2; }; _pr=$2; shift 2 ;;
-        --changed) [ $# -ge 2 ] || { echo "usage: --changed needs a value" >&2; exit 2; }; _cf=$2; shift 2 ;;
-        --branch)  [ $# -ge 2 ] || { echo "usage: --branch needs a value" >&2; exit 2; }; _br=$2; shift 2 ;;
+        --dir)        [ $# -ge 2 ] || { echo "usage: --dir needs a value" >&2; exit 2; }; _dir=$2; shift 2 ;;
+        --pr)         [ $# -ge 2 ] || { echo "usage: --pr needs a value" >&2; exit 2; }; _pr=$2; shift 2 ;;
+        --changed)    [ $# -ge 2 ] || { echo "usage: --changed needs a value" >&2; exit 2; }; _cf=$2; shift 2 ;;
+        --branch)     [ $# -ge 2 ] || { echo "usage: --branch needs a value" >&2; exit 2; }; _br=$2; shift 2 ;;
+        --base-board) [ $# -ge 2 ] || { echo "usage: --base-board needs a value" >&2; exit 2; }; _bb=$2; shift 2 ;;
         --claims)  _cl=1; shift ;;
-        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--claims]" >&2; exit 2 ;;
+        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--claims]" >&2; exit 2 ;;
       esac
     done
     { [ -n "$_dir" ] && [ -n "$_pr" ] && [ -n "$_cf" ]; } || {
-      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--claims]" >&2; exit 2; }
-    check_pr "$_dir" "$_pr" "$_cf" "$_br" "$_cl"; exit $?
+      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--claims]" >&2; exit 2; }
+    check_pr "$_dir" "$_pr" "$_cf" "$_br" "$_cl" "$_bb"; exit $?
     ;;
   *)
-    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>] [--claims]" >&2
+    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--claims]" >&2
     exit 2
     ;;
 esac

@@ -23,6 +23,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      # Surfaces gate-build's own presence check to the (different-job) provenance gate below —
+      # hashFiles() is NOT a valid job-level `if:` expression (actionlint: only steps.* contexts
+      # allow it), so a step output is the correct plumbing, not a job-level hashFiles() call.
+      has_build: ${{ steps.gate-build.outputs.has_build }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
@@ -46,35 +51,70 @@ jobs:
 
       - name: Install dependencies
         id: gate-install
-        run: uv sync --frozen
+        run: |
+          if [ -f pyproject.toml ]; then
+            uv sync --frozen
+          else
+            echo "gate-install: N/A — no pyproject.toml yet (DEVELOPMENT-STANDARDS.md §14 install gate); skipping"
+          fi
 
       - name: Lint
         id: gate-lint
         run: |
-          uv run ruff check --extend-select S .
-          uv run nbqa ruff notebooks/
+          if [ -f pyproject.toml ]; then
+            uv run ruff check --extend-select S .
+          else
+            echo "gate-lint: N/A — no pyproject.toml yet (DEVELOPMENT-STANDARDS.md §14 lint gate); skipping ruff"
+          fi
+          if [ -d notebooks ]; then
+            uv run nbqa ruff notebooks/
+          else
+            echo "gate-lint: N/A — no notebooks/ yet (DEVELOPMENT-STANDARDS.md §14 lint gate); skipping nbqa"
+          fi
 
       - name: Type-check
         id: gate-type-check
-        run: uv run mypy .
+        run: |
+          if [ -f pyproject.toml ]; then
+            uv run mypy .
+          else
+            echo "gate-type-check: N/A — no pyproject.toml yet (DEVELOPMENT-STANDARDS.md §14 type-check gate); skipping"
+          fi
 
       - name: Test + coverage (>=80%)
         id: gate-test
-        run: uv run pytest --cov --cov-fail-under=80   # includes pandera data-validation + nbmake notebook smoke
+        run: |
+          if [ -f pyproject.toml ] && [ -d tests ]; then
+            uv run pytest --cov --cov-fail-under=80   # includes pandera data-validation + nbmake notebook smoke
+          else
+            echo "gate-test: N/A — no pyproject.toml/tests/ yet (DEVELOPMENT-STANDARDS.md §14 test gate); skipping"
+          fi
 
       - name: Evaluate model/prompt quality (eval gate, §7)
         id: gate-eval
-        run: uv run python -m evals.run --threshold 0.8   # fails the build below the eval threshold
+        run: |
+          if [ -f pyproject.toml ] && [ -d evals ]; then
+            uv run python -m evals.run --threshold 0.8   # fails the build below the eval threshold
+          else
+            echo "gate-eval: N/A — no pyproject.toml/evals/ yet (DEVELOPMENT-STANDARDS.md §14 eval gate); skipping"
+          fi
 
       - name: Build
         id: gate-build
-        run: uv build
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "has_build=true" >> "$GITHUB_OUTPUT"
+            uv build
+          else
+            echo "has_build=false" >> "$GITHUB_OUTPUT"
+            echo "gate-build: N/A — no pyproject.toml build target yet (DEVELOPMENT-STANDARDS.md §14 build gate); skipping"
+          fi
 
       - name: Secret scan
         id: gate-secret-scan
         # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
         # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
-        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks git` makes
         # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
         # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
         run: |
@@ -82,7 +122,7 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-          /tmp/gitleaks dir . --no-banner --redact
+          /tmp/gitleaks git . --no-banner --redact
 
       - name: Dependency vulnerability scan
         id: gate-dep-scan
@@ -103,7 +143,10 @@ jobs:
           path: sbom.json
 
       - name: Upload build artifact (for provenance)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Guarded on the same input gate-build needs (pyproject.toml, via its own step output) —
+        # an empty scaffoldless incept has no build target yet, so gate-build skips and dist/**
+        # never exists; without this guard, if-no-files-found: error would hard-fail every push.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gate-build.outputs.has_build == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: build-artifact
@@ -112,7 +155,9 @@ jobs:
 
   provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    # needs.ci.outputs.has_build mirrors the Upload-build-artifact guard above — no build target,
+    # no artifact was uploaded, so this job would fail downloading a nonexistent 'build-artifact'.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_build == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
     runs-on: ubuntu-latest
     permissions:
       contents: read

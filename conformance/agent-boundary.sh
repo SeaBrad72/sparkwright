@@ -807,6 +807,43 @@ README.md" 0 "ordinary diff, unratified -> PASS"
     echo "selftest SKIP: real adapter-union integration (jq or adapters/ absent)"
   fi
 
+  # ── F4 — THIS REQUIRED GATE CONSUMES `.kit/control-plane.conf` (fix round, defense-in-depth). ──────
+  # The K15 union lives in the SHARED union-lib.sh, so BOTH merge gates read the adopter's declared
+  # surface. promotion-readiness-wired.sh's K15 legs prove it at the `--class` seam; THIS leg proves
+  # the OTHER gate — the required §13 ratification gate — actually treats a `.kit/`-declared NON-default
+  # path as control-plane, so the "both gates" property is tested end-to-end, not merely assumed
+  # structural. Driven through a hermetic tree so ROOT resolves to the fixture (not a git repo -> `.`),
+  # and in BOTH directions (unratified FAIL / ratified PASS). bin/release.sh is chosen because it is NOT
+  # a guard-core-default control-plane path — the premise leg proves that, so the union is the ONLY
+  # reason the ratified/unratified legs fire (a vacuous leg would pass on a kit-default path too).
+  _kb=$(mktemp -d 2>/dev/null) || _kb=""
+  if [ -n "$_kb" ]; then
+    mkdir -p "$_kb/conformance" "$_kb/.claude/hooks" "$_kb/.kit"
+    cp "$0" "$_kb/conformance/agent-boundary.sh"
+    cp "$CORE" "$_kb/.claude/hooks/guard-core.sh" 2>/dev/null || :
+    cp "$UNION_LIB" "$_kb/conformance/union-lib.sh" 2>/dev/null || :
+    printf 'bin/release.sh\n' > "$_kb/changed.txt"
+    # PREMISE — with NO .kit/ declaration, bin/release.sh is ordinary (guard-core does not carry it),
+    # so the gate answers rc 0. If this fails the path is kit-default and the legs below are vacuous.
+    # shellcheck disable=SC1007  # CI= / REQUIRE= intentionally CLEAR the vars for the subprocess
+    ( cd "$_kb" && CI= REQUIRE=0 sh conformance/agent-boundary.sh --changed changed.txt --ratified 0 ) >/dev/null 2>&1 && _kbr=0 || _kbr=$?
+    if [ "$_kbr" = 0 ]; then echo "selftest PASS: F4 premise — bin/release.sh with no .kit/ declaration is ordinary (rc 0)"
+    else echo "selftest FAIL: F4 premise — bin/release.sh answered rc $_kbr with no declaration; it is not a non-default path, so the F4 legs would be vacuous"; st=1; fi
+    # DECLARE it in .kit/control-plane.conf. The gate must now treat it as control-plane.
+    printf 'bin/release.sh\n' > "$_kb/.kit/control-plane.conf"
+    # shellcheck disable=SC1007  # as above
+    ( cd "$_kb" && CI= REQUIRE=0 sh conformance/agent-boundary.sh --changed changed.txt --ratified 0 ) >/dev/null 2>&1 && _kbr=0 || _kbr=$?
+    if [ "$_kbr" = 1 ]; then echo "selftest PASS: F4 — a .kit/control-plane.conf-declared path is control-plane at the REQUIRED ratification gate, unratified -> rc 1 (the gate consumes the adopter's declaration)"
+    else echo "selftest FAIL: F4 — .kit/-declared bin/release.sh answered rc $_kbr unratified, want 1; agent-boundary is NOT consuming the .kit/control-plane.conf declaration"; st=1; fi
+    # shellcheck disable=SC1007  # as above
+    ( cd "$_kb" && CI= REQUIRE=0 sh conformance/agent-boundary.sh --changed changed.txt --ratified 1 ) >/dev/null 2>&1 && _kbr=0 || _kbr=$?
+    if [ "$_kbr" = 0 ]; then echo "selftest PASS: F4 — the same .kit/-declared path, RATIFIED -> rc 0 (ceremony satisfied)"
+    else echo "selftest FAIL: F4 — .kit/-declared bin/release.sh ratified answered rc $_kbr, want 0"; st=1; fi
+    rm -rf "$_kb"
+  else
+    echo "selftest FAIL: could not mktemp for the F4 .kit/control-plane.conf consumption legs"; st=1
+  fi
+
   # ── ★★★ THE SHARED-UNIT PRECONDITION MUST FAIL CLOSED (S2 fix round, review REV-C2).
   # REGRESSION LEG for a MEASURED fail-open: with conformance/union-lib.sh absent and the manifests
   # intact, `path_in_union` called an undefined `kit_path_in_union`, the command-not-found went to

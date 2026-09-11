@@ -206,7 +206,6 @@ promotion-readiness.sh
 provenance-precondition.sh
 release-tagged.sh
 repo-ownership.sh
-review-lane.sh
 shim-coverage.sh
 template-detectors-aligned.sh
 tier-advice-wired.sh

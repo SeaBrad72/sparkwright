@@ -34,18 +34,18 @@ skip-reason: Kotlin SAST is detekt, run in the gate-lint step (see lint-detekt) 
 fix-hint: keep detekt enabled (scaffold detekt.yml, build.maxIssues: 0); a separate semgrep step is not expected for Kotlin
 
 # --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
-#     (`gitleaks dir . --redact`, fetch-depth: 0). `gitleaks dir` respects .gitignore, so
+#     (`gitleaks git . --redact`, fetch-depth: 0). `gitleaks git` respects .gitignore, so
 #     Kotlin's build output (.gradle/, build/) falls out of scope with NO allowlist file. ---
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
 assert: present gitleaks.*--redact
 assert: present fetch-depth:[[:space:]]*0
 assert: scaffoldfile .gitignore ^/?\.gradle/?$
 assert: scaffoldfile .gitignore ^/?build/?$
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks dir . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (.gradle/, build/) so generated artifacts fall out of scope — gitleaks dir respects .gitignore; no allowlist file needed
+fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (.gradle/, build/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 # --- Lint / static-analysis (gate-lint): `./gradlew ktlintCheck detekt`. ktlintCheck is the
 #     format gate; detekt IS the Kotlin SAST layer (backed by scaffold detekt.yml with

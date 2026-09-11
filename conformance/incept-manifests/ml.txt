@@ -8,16 +8,24 @@ id: deps-install
 precondition: present gate-install
 when-absent: skip
 assert: present uv sync --frozen
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: ml ships no pyproject.toml on a fresh incept — guard
+# gate-install so it skips legibly (matched by its unique N/A echo, not the shared pyproject.toml
+# condition token, so this assertion RED-before/GREEN-afters independently of the other guards).
+assert: present gate-install: N/A
 skip-reason: no install gate — nothing to activate
-fix-hint: `uv sync --frozen`
+fix-hint: `uv sync --frozen`, guarded on `if [ -f pyproject.toml ]`
 
 id: lint-ruff-nbqa
 precondition: present gate-lint
 when-absent: skip
 assert: present ruff check
 assert: present nbqa ruff notebooks
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: neither pyproject.toml nor notebooks/ ship on a fresh
+# incept — guard both halves of gate-lint (each with its own unique N/A echo).
+assert: present gate-lint: N/A.*pyproject.toml
+assert: present gate-lint: N/A.*notebooks
 skip-reason: no lint gate — nothing to activate
-fix-hint: `uv run ruff check .` + `uv run nbqa ruff notebooks/`
+fix-hint: `uv run ruff check .` + `uv run nbqa ruff notebooks/`, each guarded on its input
 
 id: sast-ruff-bandit
 precondition: present gate-lint
@@ -31,16 +39,21 @@ id: type-check-mypy
 precondition: present gate-type-check
 when-absent: skip
 assert: present mypy
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: no pyproject.toml on a fresh incept — guard gate-type-check.
+assert: present gate-type-check: N/A
 skip-reason: no type-check gate — nothing to activate
-fix-hint: `uv run mypy .`
+fix-hint: `uv run mypy .`, guarded on `if [ -f pyproject.toml ]`
 
 id: test-coverage
 precondition: present gate-test
 when-absent: skip
 assert: present pytest --cov
 assert: present --cov-fail-under=80
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: an empty incept has neither pyproject.toml nor tests/,
+# so the coverage floor must be presence-guarded on BOTH (skip legibly) rather than red.
+assert: present if \[ -f pyproject.toml \] && \[ -d tests \]
 skip-reason: no test gate — nothing to activate
-fix-hint: `uv run pytest --cov --cov-fail-under=80` (incl. pandera + nbmake)
+fix-hint: `uv run pytest --cov --cov-fail-under=80` (incl. pandera + nbmake), guarded on `if [ -f pyproject.toml ] && [ -d tests ]`
 
 id: eval-gate
 precondition: present gate-eval
@@ -52,24 +65,43 @@ assert: present --threshold 0.8
 assert: file evals/run.py
 assert: file evals/golden.jsonl
 assert: file evals/red-team.jsonl
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: a fresh incept has no pyproject.toml, so even though
+# evals/ itself DOES ship (ground-truth incept probe), `uv run` cannot execute without it —
+# guard on BOTH so the eval gate skips legibly instead of failing on the missing venv.
+assert: present if \[ -f pyproject.toml \] && \[ -d evals \]
 skip-reason: no eval gate — no AI-eval layer to activate
-fix-hint: wire `python -m evals.run --threshold 0.8` (fails below 0.8) with an evals/ harness (run.py, golden.jsonl, red-team.jsonl)
+fix-hint: wire `python -m evals.run --threshold 0.8` (fails below 0.8) with an evals/ harness (run.py, golden.jsonl, red-team.jsonl), guarded on `if [ -f pyproject.toml ] && [ -d evals ]`
 
 id: build
 precondition: present gate-build
 when-absent: skip
 assert: present uv build
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: ml ships no scaffold/, so a fresh incept has no
+# pyproject.toml build target yet — guard so the build gate skips legibly instead of
+# failing with "no pyproject.toml found". Unique echo token — NOT the bare `if [ -f
+# pyproject.toml ]` condition, which install/lint/type-check ALSO carry as their sole
+# guard and would make this assertion vacuously GREEN if gate-build's own guard were
+# stripped (measured: this exact collision was caught on data-engineering's twin).
+assert: present gate-build: N/A
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN (correctness fix): dist/** never exists while gate-build
+# skips, so the Upload-build-artifact step's if-no-files-found: error would hard-fail every push
+# to main — guard the upload on the same input. hashFiles() at job-if scope is INVALID GHA
+# (actionlint: only steps.* if/env/run/with allow it; measured — it failed CI-document
+# validation) and the provenance job has no checkout so hashFiles would misread anyway; the
+# fix is a step OUTPUT (gate-build's own presence check), consumed via steps.*/needs.ci.outputs.
+assert: present has_build=true
+assert: present steps.gate-build.outputs.has_build
 skip-reason: no build gate — nothing to activate
-fix-hint: `uv build`
+fix-hint: `uv build`, guarded on `if [ -f pyproject.toml ]`; set a `has_build` step output and gate the artifact upload (`steps.gate-build.outputs.has_build`) + the ci job's `outputs:` + the provenance job's `if:` (`needs.ci.outputs.has_build == 'true'`) on it
 
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 skip-reason: no gitleaks step — nothing to scan
-fix-hint: `gitleaks dir . --no-banner --redact`
+fix-hint: `gitleaks git . --no-banner --redact`
 
 id: dep-scan
 precondition: present gate-dep-scan
@@ -96,8 +128,13 @@ precondition: present attest-build-provenance
 when-absent: na
 assert: present repository.private == false
 assert: present owner.type == 'Organization'
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN (correctness fix): also gate on the build input, so this
+# job does not attempt to download a 'build-artifact' that the Upload step never uploaded.
+# needs.ci.outputs.has_build, NOT hashFiles() — the provenance job has no checkout step, and
+# hashFiles() is not a valid job-level `if:` expression regardless (measured, actionlint-caught).
+assert: present needs.ci.outputs.has_build == 'true'
 skip-reason: no provenance job in this profile
-fix-hint: gate the provenance job-if on repo visibility
+fix-hint: gate the provenance job-if on repo visibility AND needs.ci.outputs.has_build == 'true'
 
 id: db-postgres
 precondition: present ^[[:space:]]+postgres:

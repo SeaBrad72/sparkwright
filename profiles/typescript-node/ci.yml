@@ -165,12 +165,12 @@ jobs:
         id: gate-secret-scan
         # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
         # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
-        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks git` makes
         # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
         # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
         # SECRET-GATE SCOPE: this is a FULL-history, full-tree scan (fetch-depth: 0 above). The only
         # thing out of scope is generated build output (dist/, coverage/) — and it is out of scope
-        # because it is `.gitignore`d (see scaffold/.gitignore), which `gitleaks dir` respects. No
+        # because it is `.gitignore`d (see scaffold/.gitignore), which `gitleaks git` respects. No
         # allowlist file is used or needed: gitleaks' `.gitleaksignore` holds finding FINGERPRINTS
         # (commit:file:rule:line), NOT path globs, so a path-glob allowlist would be inert (rejected
         # with a warning). Source, env files, and configs are never excluded — they stay fully in scope.
@@ -179,7 +179,7 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-          /tmp/gitleaks dir . --no-banner --redact
+          /tmp/gitleaks git . --no-banner --redact
 
       - name: Dependency vulnerability scan
         id: gate-dep-scan
@@ -335,7 +335,7 @@ jobs:
       - name: Compute lowercase image name
         id: image
         # GHCR stores image paths lowercase; github.repository may be mixed-case
-        # (e.g. SeaBrad72/App). A mixed-case subject-name breaks attestation verification.
+        # (e.g. your-org/App). A mixed-case subject-name breaks attestation verification.
         run: echo "name=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
       - name: Build and push image
         id: build-push

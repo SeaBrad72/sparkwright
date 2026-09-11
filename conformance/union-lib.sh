@@ -22,20 +22,26 @@
 # POSIX sh; dash-clean. No `set -eu` here: a sourced library must not change its caller's shell flags.
 
 # kit_union_derive <adapters-dir> [strict] — print the union of `controlPlanePaths` across
-# <adapters-dir>/*/adapter.json, one entry per line, sorted-unique.
+# <adapters-dir>/*/adapter.json PLUS the adopter-declared lines in `<root>/.kit/control-plane.conf`
+# (K15, GATE-SUBJECT-IS-THE-ADOPTERS-SYSTEM), one entry per line, sorted-unique.
 #
 # THREE STATES, and conflating the last two is the defect this contract exists to prevent:
-#   rc 0 — OK.        Manifests exist and every one of them parsed.
-#   rc 3 — OK-EMPTY.  NO manifest file exists at all. A LEGITIMATE tree (an adopter who ships no
-#                     adapter manifests, or a hand-rolled minimal repo), NOT a failure: the caller
+#   rc 0 — OK.        Manifests exist and every one of them parsed, OR no manifests exist but
+#                     `.kit/control-plane.conf` declares at least one entry (the K15 source alone is
+#                     enough for OK — its lines are plain text and cannot fail to parse).
+#   rc 3 — OK-EMPTY.  NO manifest file exists AND `.kit/control-plane.conf` is absent or declares
+#                     nothing. A LEGITIMATE tree (an adopter who ships no adapter manifests and no
+#                     `.kit/` declarations, or a hand-rolled minimal repo), NOT a failure: the caller
 #                     must fall back to the guard-core floor and MUST NOT fail-safe. A tree that
-#                     classified every PR control-plane because it declared no adapters would be a
-#                     ceremony DoS, and "no adapters" is a state we expect adopters to be in.
+#                     classified every PR control-plane because it declared nothing would be a
+#                     ceremony DoS, and "declares nothing" is a state we expect adopters to be in.
 #   rc 1 — UNAVAILABLE. Manifests EXIST and the mechanism is broken: jq is unavailable, or at least
 #                     one manifest failed to parse. The union is therefore NARROWER THAN DECLARED
 #                     and nothing on stdout can say so — which is precisely how a corrupt manifest
 #                     silently shrinks a control-plane set. A caller deciding an authorization
-#                     question must fail-safe here.
+#                     question must fail-safe here. `.kit/control-plane.conf` lines are still added to
+#                     stdout in this state (see STDOUT note below) — a broken adapter.json half must
+#                     not also hide an otherwise-readable `.kit/` declaration.
 #
 # STDOUT IS ALWAYS WHAT WAS ACTUALLY PARSED, in every state — including rc 1. That is deliberate and
 # it is what lets `agent-boundary.sh` keep its existing posture byte-for-byte (it ignores the rc and
@@ -52,14 +58,56 @@
 # ⚠️ NEVER PRINT A DIAGNOSIS ON STDOUT. Both callers capture this function's stdout as DATA (one of
 # them with `tail -1` two levels up), so a line of prose there is read as a union entry, or as a
 # change-class.
+#
+# ── K15 — `.kit/control-plane.conf`: the ADOPTER'S OWN declared control-plane surface ────────────
+# Plain text, mirrors `.kit/dials.conf`'s convention: `#`-comment lines and blanks ignored, one
+# path/glob/dir-prefix per remaining trimmed line, PARSED never sourced (a conf file never becomes
+# executable code reachable from a gate — the roster.conf/dials.conf contract). jq-free by
+# construction: a path list, not JSON, so this source can never enter the jq-UNAVAILABLE state above.
+# Resolved at repo ROOT (mirror dials.conf's `$ROOT/.kit/…` resolution), never cwd-relative, so a
+# linked worktree or a fixture tree each read their own: `${ROOT:-}` if the caller already exports it
+# (the convention kit_dial_mode uses), else `git rev-parse --show-toplevel`, else `.`.
+#
+# ESCALATE-ONLY, STRUCTURALLY. The lines here are UNIONED into the same accumulator as the
+# adapter.json entries — there is no "exempt" verb, no second list that subtracts. A `.kit/` line
+# naming a path that is ALREADY control-plane by kit default (e.g. `conformance/verify.sh`) is a
+# harmless no-op: `classify_path`/`is_control_plane_path` check the kit-default set FIRST and
+# INDEPENDENTLY of this union, so nothing this file parses can ever downgrade a kit-default path —
+# there is no code path that reads a `.kit/` entry to mean "not control-plane".
 kit_union_derive() {
   _kud_dir=${1:-}
   _kud_strict=${2:-}
   _kud_seen=0
   _kud_bad=0
+  _kud_acc=""
 
-  [ -n "$_kud_dir" ] || return 3
-  [ -d "$_kud_dir" ] || return 3
+  # ── K15 SOURCE — read FIRST, so its lines are in the accumulator regardless of the adapter.json
+  # half's state below (present-but-broken manifests must not also hide a readable `.kit/` file).
+  # ⚠️ SEC-2 (LOW, disclosed): both merge gates require a RESOLVABLE repo root to find this file. In a
+  # non-git run from a non-root cwd (no `ROOT` exported, `git rev-parse` unavailable) the root falls to
+  # `.` and a `.kit/control-plane.conf` above the cwd is MISSED — the same root-resolution limitation
+  # `.kit/dials.conf` carries. Both merge gates run at repo root in CI, where this does not arise.
+  _kud_root="${ROOT:-}"
+  if [ -z "$_kud_root" ]; then
+    _kud_root=$(git rev-parse --show-toplevel 2>/dev/null) || true
+  fi
+  [ -n "$_kud_root" ] || _kud_root=.
+  _kud_conf="$_kud_root/.kit/control-plane.conf"
+  if [ -f "$_kud_conf" ]; then
+    while IFS= read -r _kud_line || [ -n "$_kud_line" ]; do
+      _kud_trim=$(printf '%s' "$_kud_line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+      case "$_kud_trim" in
+        ''|'#'*) continue ;;
+      esac
+      _kud_acc="$_kud_acc$_kud_trim
+"
+    done < "$_kud_conf"
+  fi
+
+  if [ -z "$_kud_dir" ] || [ ! -d "$_kud_dir" ]; then
+    if [ -n "$_kud_acc" ]; then printf '%s' "$_kud_acc" | sort -u; return 0; fi
+    return 3
+  fi
 
   # PASS 1 — does ANY manifest exist? This decides OK-EMPTY vs UNAVAILABLE and must be answered
   # WITHOUT jq, because "jq is missing" is one of the states it discriminates.
@@ -67,7 +115,10 @@ kit_union_derive() {
     [ -f "$_kud_m" ] || continue
     _kud_seen=1
   done
-  [ "$_kud_seen" = 1 ] || return 3
+  if [ "$_kud_seen" != 1 ]; then
+    if [ -n "$_kud_acc" ]; then printf '%s' "$_kud_acc" | sort -u; return 0; fi
+    return 3
+  fi
 
   # jq is the parser. Absent, with manifests present, the declared surface is UNREADABLE — not empty.
   if ! command -v jq >/dev/null 2>&1; then
@@ -76,6 +127,7 @@ kit_union_derive() {
       echo "  The adapter-declared control-plane surface cannot be read, so the union is NARROWER" >&2
       echo "  than what the manifests declare. REMEDY: install jq (the manifests are JSON)." >&2
     fi
+    [ -z "$_kud_acc" ] || printf '%s' "$_kud_acc" | sort -u
     return 1
   fi
 
@@ -87,7 +139,6 @@ kit_union_derive() {
   # in a SUBSHELL, so `_kud_bad` set inside it is discarded and every corrupt manifest reads as
   # rc 0 — the extraction would have re-introduced the silent-narrowing defect it exists to remove.
   # (Caught by this function's own broken-manifest leg on first write.)
-  _kud_acc=""
   for _kud_m in "$_kud_dir"/*/adapter.json; do
     [ -f "$_kud_m" ] || continue
     if _kud_one=$(jq -r '.controlPlanePaths[]? // empty' "$_kud_m" 2>/dev/null); then

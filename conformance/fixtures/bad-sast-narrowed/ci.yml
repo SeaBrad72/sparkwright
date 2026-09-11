@@ -28,7 +28,7 @@ jobs:
         run: pipx run semgrep --config p/default --error src   # NEGATIVE: narrowed to a single subdir (silent coverage loss) — must RED under exclusion-scoping
       - name: Secret scan
         id: gate-secret-scan
-        run: /tmp/gitleaks dir . --no-banner --redact
+        run: /tmp/gitleaks git . --no-banner --redact
       - name: Emit agent-ops trace
         id: gate-agent-trace
         run: sh scripts/otel-trace.sh --emit

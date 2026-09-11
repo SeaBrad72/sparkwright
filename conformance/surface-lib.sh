@@ -35,19 +35,54 @@ has_data_surface() {
   return 1
 }
 
-# has_deploy_surface <dir>: does <dir> deploy a running service? A Dockerfile, or a workflow whose
-# STRUCTURE says deploy (wf_is_deploy — a GitHub `environment:` key or a deploy-ish job KEY, never a
-# free-text step name). Copied verbatim from the RETIRED observability-ready check, which carried the
-# same body as preview-env-ready and resilience-ready (all three now readiness.tsv cases).
+# has_deploy_surface <dir>: does <dir> deploy a running service? A Dockerfile, a repo-root PaaS
+# descriptor, a workflow whose STRUCTURE says deploy (wf_is_deploy — a GitHub `environment:` key or a
+# deploy-ish job KEY, never a free-text step name), or a RUNBOOK/CLAUDE declaration of a live service.
+# The Dockerfile + workflow arms were copied verbatim from the RETIRED observability-ready check,
+# which carried the same body as preview-env-ready and resilience-ready (all three now readiness.tsv
+# cases). GATE-SUBJECT-IS-THE-ADOPTERS-SYSTEM (K13) added the two arms below: a PaaS-deployed service
+# (Railway/Fly/Render/…) carries none of the three original signals and read N/A — a live service
+# graded "not a service." Both new arms are ESCALATE-ONLY, the same directional-safety doctrine as
+# the rest of this file (see header): a MISS still leaves the *-ready.md checklist as the gate of
+# record, never an exemption.
 has_deploy_surface() {
   _d="$1"
   if [ -f "$_d/Dockerfile" ]; then return 0; fi
+  # PaaS-manifest arm (K13) — a repo-root descriptor naming a managed deploy platform. A fixed,
+  # conservative filename set (not claimed exhaustive — see the declaration arm below for the
+  # portable escape on an unlisted vendor, so this predicate does not merely re-fork on the next PaaS).
+  # ⚠️ app.json is DELIBERATELY EXCLUDED (fix round, F1): it is the entire Expo/React-Native
+  # ecosystem's app config, not a deploy manifest — a low-precision signal that would fire on every RN
+  # project. Heroku's real signal is the Procfile (kept above); an unlisted-vendor adopter still has
+  # the declaration arm below as the portable escape.
+  for _paas in railway.toml railway.json Procfile fly.toml render.yaml render.yml nixpacks.toml vercel.json netlify.toml; do
+    [ -f "$_d/$_paas" ] && return 0
+  done
+  [ -d "$_d/.platform" ] && return 0
   if [ -d "$_d/.github/workflows" ]; then
     for _wfx in "$_d"/.github/workflows/*.yml "$_d"/.github/workflows/*.yaml; do
       [ -f "$_wfx" ] || continue
       if wf_is_deploy "$_wfx"; then return 0; fi
     done
   fi
+  # Live-URL / deploy-target declaration arm (K13) — the PORTABLE ESCAPE, so an adopter on an
+  # unlisted PaaS is never stranded. Reuses this file's own declaration idiom (declares_sensitive /
+  # is_agentic below): a field-leading RUNBOOK.md/CLAUDE.md line ('Live URL:' / 'Deploy target:' /
+  # 'Deployed at:', tolerant of list/bold markers, the colon binding the field) whose value is a real
+  # `https?://…` URL or a named PaaS token — never the unfilled `[...]` template placeholder.
+  for _dmf in "$_d/RUNBOOK.md" "$_d/CLAUDE.md"; do
+    [ -f "$_dmf" ] || continue
+    _dline=$(grep -Ei '^[-*[:space:]]*(live url|deploy target|deployed at)[^:]*:' "$_dmf" 2>/dev/null | head -1) || true
+    [ -n "$_dline" ] || continue
+    _dval=${_dline#*:}
+    # strip leading list/bold/italic markup + surrounding whitespace so the placeholder test below
+    # sees the TRUE value, not '** [...]' — mirrors is_agentic's tolerance of a bold-wrapped key.
+    _dval=$(printf '%s' "$_dval" | sed -E 's/^[[:space:]*_-]+//; s/[[:space:]]+$//')
+    case "$_dval" in
+      \[*\]) continue ;;   # unfilled '[...]' template placeholder — not a declaration
+    esac
+    printf '%s' "$_dval" | grep -Eiq 'https?://|railway|render\.com|fly\.io|vercel|netlify|heroku|nixpacks|platform\.sh' && return 0
+  done
   return 1
 }
 

@@ -15,7 +15,7 @@ How to **prove** disaster recovery works by actually restoring a backup. Stack-n
 4. **Verify integrity** — row counts vs. expectation, checksums/hashes, a smoke query on critical tables, referential integrity.
 5. **Measure the actuals** — **RTO actual** = wall-clock from "start restore" to "service usable"; **RPO actual** = gap between the backup timestamp and the incident point.
 6. **Compare to the tier targets** — actuals must be within the BIA's RTO/RPO for that tier.
-7. **Record** — write the date and result in RUNBOOK §6 ("Restore verified: YYYY-MM-DD (passed/failed, RTO/RPO actuals)") and close the recurring board item (§15).
+7. **Record** — write the date and result in RUNBOOK §6 ("Restore verified: YYYY-MM-DD (passed/failed, RTO/RPO actuals)") **and** in a dated evidence entry at `docs/continuity/RESTORE-DRILL.md` (`templates/RESTORE-DRILL-TEMPLATE.md`) — the RUNBOOK line alone is not enough (`conformance/dr-readiness.md` / K18: a bare date sentence with no distinct evidence record does not satisfy `readiness.sh dr-ready`). Close the recurring board item (§15).
 
 ## What "passed" means
 - Data restored **and** integrity verified **and** RTO/RPO actuals within the tier targets.

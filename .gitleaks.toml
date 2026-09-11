@@ -1,0 +1,34 @@
+# .gitleaks.toml — sparkwright's own secret-scan config.
+#
+# [extend] useDefault = true is MANDATORY. Without it, gitleaks REPLACES the entire default
+# ruleset with whatever is defined here (which is nothing but an allowlist) — every parity site
+# would green on ZERO rules. conformance/secret-scan-wired.sh --live asserts this file keeps the
+# [extend] stanza and reds if it is ever dropped.
+#
+# The allowlist below masks ONLY the promotion-note `approval-token: "…"` free-text field that
+# scripts/promotion-verify.sh:593 emits into docs/governance/promotion-log.md (measured 2026-09-01:
+# gitleaks git . over 2,684 commits finds exactly 3 hits, all this field — no real leak). It is a
+# LINE-TARGETED regex (regexTarget = "line"), never a `paths` allowlist on the log file itself (an
+# agent-written log is exactly where a real secret would be pasted) and never a `commits` list.
+#
+# ANCHORED, not a bare substring match (security review, 2026-09-10): `regexTarget = "line"` checks
+# the regex against the WHOLE line, so an unanchored `approval-token: "[^"]*"` matches if that text
+# appears ANYWHERE on the line — including a real secret on the SAME line with unrelated trailing
+# text appended after it (measured: a PEM private key with ` # approval-token: ""` appended on the
+# same line wrongly passed under the unanchored form). Anchoring to a well-formed note line (the
+# `(- )?` allows the bullet form the promotion-log uses) closes that: the mask fires ONLY when the
+# entire line IS the note field, never when it merely CONTAINS the grammar.
+#
+# Ceiling: a secret inside the quotes of a well-formed note line is masked by design
+# (docs/architecture/2026-09-09-control-plane-coverage-design.md §7, R-5).
+title = "sparkwright secret-scan config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "promotion-note approval-token free-text field (scripts/promotion-verify.sh:593)"
+regexTarget = "line"
+regexes = [
+  '''^[[:space:]]*(- )?approval-token: "[^"]*"[[:space:]]*$''',
+]

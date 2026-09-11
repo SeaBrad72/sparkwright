@@ -16,7 +16,7 @@ Copy this file into your project (or your DR record). For each item: mark **Appl
 | 1 | BIA done — data/services classified by criticality (`docs/continuity/BIA.md`) *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
 | 2 | Per-tier RTO/RPO defined from the BIA (RUNBOOK §6, not placeholder) *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
 | 3 | Automated backups configured for production data *(verified)* | | | Manual |
-| 4 | Restore drill **run** — date recorded in RUNBOOK §6 *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
+| 4 | Restore drill **run** — date recorded in RUNBOOK §6 **and** a dated evidence record at `docs/continuity/RESTORE-DRILL.md` (`templates/RESTORE-DRILL-TEMPLATE.md`) *(documented)* | | | **Auto:** `readiness.sh dr-ready` |
 | 5 | Restore drill **succeeded** — data actually restored, integrity verified *(verified)* | | | Manual |
 | 6 | RTO/RPO **actuals met** the tier targets in the last drill *(verified)* | | | Manual |
 | 7 | Backups stored durably + access-controlled (off-host / off-region) *(verified)* | | | Manual |
@@ -29,7 +29,7 @@ Copy this file into your project (or your DR record). For each item: mark **Appl
 | 1 | BIA done *(documented)* | Y | `docs/continuity/BIA.md` — 3 tiers, customer data = Critical | Auto ✅ |
 | 2 | Per-tier RTO/RPO *(documented)* | Y | RUNBOOK §6: Critical RTO 1h/RPO 15m; Standard RTO 4h/RPO 24h | Auto ✅ |
 | 3 | Automated backups *(verified)* | Y | managed Postgres PITR + nightly snapshot (infra console) | Manual ✅ |
-| 4 | Drill run — date recorded *(documented)* | Y | RUNBOOK §6 "Restore verified: 2026-06-01" | Auto ✅ |
+| 4 | Drill run — date recorded *(documented)* | Y | RUNBOOK §6 "Restore verified: 2026-06-01" + `docs/continuity/RESTORE-DRILL.md` dated 2026-06-01 | Auto ✅ |
 | 5 | Drill succeeded *(verified)* | Y | restored to isolated env; row-count + checksum match (drill log) | Manual ✅ |
 | 6 | RTO/RPO actuals met *(verified)* | Y | restore took 38m (< 1h target); data loss 4m (< 15m) | Manual ✅ |
 | 7 | Durable + access-controlled *(verified)* | Y | backups in separate region bucket, IAM-restricted | Manual ✅ |

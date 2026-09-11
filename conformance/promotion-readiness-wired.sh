@@ -48,6 +48,102 @@ EOF
   return 0
 }
 
+# === GOVERNANCE-SOURCE-FILES corpus oracle (CONTROL-PLANE-COVERAGE slice 3c) =====================
+# gov_corpus_ok <guard-core> <incept.sh>: 0 iff every _GOV_SUBJECT_CORPUS subject is REACHABLE at all
+# SIX matcher sites (both directions) AND the corpus RE-DERIVES the incept stamp sources — the "check,
+# not a one-time grep" the design (S-4 / R-2) requires. Modelled on agent-autonomy.sh's dt_corpus_ok,
+# one subject-shape wider (full relative paths, not just .kit/*.conf). The four case/glob sites are
+# graded from the SOURCED matchers/vars (a later reassignment or a second return-1 arm flips them); the
+# two pathhit tiers are graded BEHAVIOURALLY via _cp8b_pathhit — the real spelling exercises T1, an
+# UPPERCASED spelling exercises the _LC fold, so a leg present in T1 but absent from _LC reds.
+# RE-DERIVATION coverage: set 1 (the incept loop + direct cp/replace_kit_own sources) AND set 3 (the
+# runtime gate-read templates) are re-derived at gate time, not trusted as a hand list. Set 3 is
+# derived from its two tracked sources — every templates/* named in a NON-COMMENT row of
+# conformance/doc-markers.tsv (column 2) UNION obligation-lib.sh's `_cm_named` family expanded to
+# templates/<name>-TEMPLATE.md — and the corpus must be a SUPERSET (every derived member present). A
+# phantom row/name appended to either source reds this leg, proving the sources are READ. Only set 2
+# (the postmortem enumeration) remains a fixed list; direction-2 over the glob sites is the safety net
+# there. Direction-2 is graded over the two glob-leaf sites (full-path tokens); the pathhit tiers carry
+# the subjects in a `templates/(A|B|…)\.md` ALTERNATION, whose per-name extraction is not a clean token
+# walk — stated, and covered forward by the fact that any new pathhit leg is a guard-core (control-plane,
+# ratified) edit that direction-1 immediately requires in the corpus too.
+gov_corpus_ok() {
+  ( set -f
+    _gc=$1; _gi=$2; _dm=${3:-conformance/doc-markers.tsv}; _ol=${4:-conformance/obligation-lib.sh}
+    # shellcheck disable=SC1090  # naming the core is the point: the mutants run this against a copy.
+    . "$_gc" >/dev/null 2>&1 || { echo "  cannot source the core: $_gc" >&2; exit 1; }
+    _gl=${_GOV_SUBJECT_CORPUS:-}
+    [ -n "$_gl" ] || { echo "  $_gc declares no _GOV_SUBJECT_CORPUS — the oracle is absent, every direction below would pass over an empty set" >&2; exit 1; }
+    _grc=0
+    # DIRECTION 1 — every listed subject reachable at all six sites.
+    for _p in $_gl; do
+      _lc=$(printf '%s' "$_p" | LC_ALL=C tr 'A-Z' 'a-z')
+      _uc=$(printf '%s' "$_p" | LC_ALL=C tr 'a-z' 'A-Z')
+      _esc=$(printf '%s' "$_p"  | sed 's/[.]/\\./g')
+      _lesc=$(printf '%s' "$_lc" | sed 's/[.]/\\./g')
+      _cpp_kitowned "$_lc"      || { echo "  MISSING [kitowned]: $_p" >&2; _grc=1; }
+      _cpp_kitowned "sub/$_lc"  || { echo "  MISSING [kitowned */]: $_p" >&2; _grc=1; }
+      _cpp_match "$_lc"         || { echo "  MISSING [match]: $_p" >&2; _grc=1; }
+      _cpp_match "sub/$_lc"     || { echo "  MISSING [match */]: $_p" >&2; _grc=1; }
+      printf '%s' "$_CP8B_GLOB_LEAVES"    | grep -Eq "(^|[[:space:]])${_esc}([[:space:]]|\$)"  || { echo "  MISSING [globleaves]: $_p" >&2; _grc=1; }
+      printf '%s' "$_CP8B_GLOB_LEAVES_LC" | grep -Eq "(^|[[:space:]])${_lesc}([[:space:]]|\$)" || { echo "  MISSING [globleaves_lc]: $_p" >&2; _grc=1; }
+      _cp8b_pathhit "z $_p"  || { echo "  MISSING [pathhit_t1]: $_p" >&2; _grc=1; }
+      _cp8b_pathhit "z $_uc" || { echo "  MISSING [pathhit_t1_lc]: $_p (the _LC fold leg)" >&2; _grc=1; }
+    done
+    # DIRECTION 2 — the list is the SSOT: a glob-leaf site may not carry a governance subject the list
+    # omits (the two pre-existing docs/governance meta-control leaves are not governance SOURCE files).
+    for _site in "$_CP8B_GLOB_LEAVES" "$_CP8B_GLOB_LEAVES_LC"; do
+      for _tok in $(printf '%s\n' "$_site" | tr ' ' '\n' | grep -E '^(templates/|docs/governance/)' | grep -vE '^docs/governance/(meta-control-log\.md|\.meta-control-last)$'); do
+        _tlc=$(printf '%s' "$_tok" | LC_ALL=C tr 'A-Z' 'a-z'); _hit=0
+        for _p in $_gl; do
+          [ "$(printf '%s' "$_p" | LC_ALL=C tr 'A-Z' 'a-z')" = "$_tlc" ] && { _hit=1; break; }
+        done
+        [ "$_hit" = 1 ] || { echo "  UNLISTED: a glob-leaf site carries $_tok, which _GOV_SUBJECT_CORPUS does not declare" >&2; _grc=1; }
+      done
+    done
+    # RE-DERIVATION (S-4 set 1 / R-2) — resolve the incept `for _t in …` loop LIST (not the ${_t}
+    # variable) and the direct `cp templates/…` / `replace_kit_own … templates/…` stamp sources; FAIL if
+    # a stamped source is absent from the corpus. A phantom name appended to the loop reds this leg,
+    # proving the loop is READ — a three-spelling grep would yield the variable, not the eight names.
+    if [ -f "$_gi" ]; then
+      _loop=$(grep -E 'for _t in ' "$_gi" | head -1 | sed -e 's/.*for _t in //' -e 's/;.*//')
+      [ -n "$_loop" ] || { echo "  RE-DERIVE: the incept enterprise loop 'for _t in …' was not found — the re-derivation is vacuous" >&2; _grc=1; }
+      for _t in $_loop; do
+        _c1="templates/${_t}-TEMPLATE.md"; _c2="templates/${_t}.md"
+        case " $_gl " in *" $_c1 "*) ;; *) case " $_gl " in *" $_c2 "*) ;; *) echo "  RE-DERIVE: incept loop name '$_t' -> neither $_c1 nor $_c2 is in _GOV_SUBJECT_CORPUS" >&2; _grc=1 ;; esac ;; esac
+      done
+      for _s in $(grep -oE '(cp|replace_kit_own [A-Za-z0-9._-]+) templates/[A-Za-z0-9._-]+' "$_gi" | grep -oE 'templates/[A-Za-z0-9._-]+' | sort -u); do
+        case " $_gl " in *" $_s "*) ;; *) echo "  RE-DERIVE: incept stamps $_s but it is not in _GOV_SUBJECT_CORPUS" >&2; _grc=1 ;; esac
+      done
+    else
+      echo "  SKIP re-derivation: incept not found at $_gi — set 1 was not re-derived" >&2; _grc=1
+    fi
+    # RE-DERIVATION (set 3 / owner ruling: DERIVE the gate-read templates) — set 3 is the UNION of the
+    # two tracked sources, re-derived here rather than hand-enumerated. FAIL if any derived member is
+    # absent from the corpus (superset check). A phantom row appended to doc-markers.tsv, or a phantom
+    # name appended to _cm_named, reds this leg — proving the sources are READ, not grepped once.
+    if [ -f "$_dm" ]; then
+      # every templates/* in column 2 of a NON-COMMENT, non-blank row.
+      for _dt in $(grep -v '^[[:space:]]*#' "$_dm" | awk -F'\t' 'NF>=2 && $2 ~ /^templates\// {print $2}' | sort -u); do
+        case " $_gl " in *" $_dt "*) ;; *) echo "  RE-DERIVE set-3: doc-markers.tsv names $_dt but it is not in _GOV_SUBJECT_CORPUS" >&2; _grc=1 ;; esac
+      done
+    else
+      echo "  SKIP set-3 re-derivation: doc-markers.tsv not found at $_dm" >&2; _grc=1
+    fi
+    if [ -f "$_ol" ]; then
+      # the (possibly multi-line) _cm_named family: everything between the opening quote and the close.
+      _cmn=$(sed -n "/_cm_named='/,/'/p" "$_ol" | sed -e "s/.*_cm_named='//" -e "s/'.*//")
+      [ -n "$_cmn" ] || { echo "  RE-DERIVE set-3: obligation-lib.sh _cm_named family not found — the re-derivation is vacuous" >&2; _grc=1; }
+      for _cn in $_cmn; do
+        _ct="templates/${_cn}-TEMPLATE.md"
+        case " $_gl " in *" $_ct "*) ;; *) echo "  RE-DERIVE set-3: _cm_named names $_cn -> $_ct is not in _GOV_SUBJECT_CORPUS" >&2; _grc=1 ;; esac
+      done
+    else
+      echo "  SKIP set-3 re-derivation: obligation-lib.sh not found at $_ol — set 3 was not re-derived" >&2; _grc=1
+    fi
+    exit $_grc )
+}
+
 selftest() {
   st=0; d=$(mktemp -d)
   # Trap-clean: the derivation legs below create real git repos under $d. Leaking mktemp trees from
@@ -328,6 +424,34 @@ selftest() {
     else echo "FAIL: folded form '$_cv' want control-plane got $_got — the matching pattern still carries an uppercase byte, so it can only ever match its own exact casing and every variant of this governing document is UNPROTECTED"; st=1; fi
   done
 
+  # ── GOVERNANCE-SOURCE-FILES: a mutation to a governing SOURCE file derives control-plane, so the
+  # merge REDS ratification with no ratifier (CONTROL-PLANE-COVERAGE slice 3c; plan Design-promised
+  # controls row "A governance-subject mutation reds ratification with no ratifier"). Before this slice
+  # these all derived `ordinary`, so control-plane-ratification posted GREEN "nothing to ratify". Real
+  # spelling asserted on WHATEVER filesystem CI provides (the pattern is exact-case-independent — the
+  # tool route folds via _cpp_kitowned). The subject is the kit's SOURCE template; the adopter's stamped
+  # instance at docs/governance/THREAT-MODEL.md stays ordinary (a DIFFERENT path — the ORDINARY leg below).
+  for _cv in "templates/PROJECT-CLAUDE-TEMPLATE.md" "templates/DECISIONS-TEMPLATE.md" \
+             "templates/THREAT-MODEL-TEMPLATE.md" "templates/REVIEW-RECORD-TEMPLATE.md" \
+             "templates/WAIVER-REGISTER.md" "templates/POSTMORTEM-TEMPLATE.md" \
+             "docs/governance/DECISIONS.md" "docs/governance/promotion-contract.md" \
+             "docs/governance/promotion-log.md" ".kit/tracker.conf"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = control-plane ]; then echo "PASS: governance source '$_cv' -> control-plane (ratification required)"
+    else echo "FAIL: governance source '$_cv' want control-plane got $_got — a governing SOURCE file derives ordinary, so a PR rewriting it reports 'nothing to ratify' and merges under an ordinary review"; st=1; fi
+  done
+  # The DISCLOSED ORDINARY siblings: the arm is per-file, NEVER a bare templates/*, so an adopter's own
+  # templates dir and non-subject files under templates/ stay ordinary (no merge-block on ordinary PRs).
+  # The adopter's FILLED governance instance stays ordinary too (it is filled per feature at its own path).
+  for _cv in "app/templates/index.html" "docs/templates/x.md" "chart/templates/deployment.yaml" \
+             "templates/README.md" "templates/not-a-subject.md" "docs/governance/THREAT-MODEL.md"; do
+    printf '%s\n' "$_cv" > "$_casef"
+    _got=$( sh "$PR" --class --no-verify --changed "$_casef" 2>/dev/null | tail -1 )
+    if [ "$_got" = ordinary ]; then echo "PASS: non-subject '$_cv' -> ordinary (the governance arm is per-file, not a bare templates/*)"
+    else echo "FAIL: non-subject '$_cv' want ordinary got $_got — the governance arm has broadened to a bare templates/* and would merge-block ordinary adopter PRs"; st=1; fi
+  done
+
   # ⚠️ I2 — THE FOLD MUST NOT CAPTURE ORDINARY APPLICATION CODE. Folding every pattern
   # unconditionally was measured to make `src/Adapters/Repo.cs`, `Adapters/Http/StripeAdapter.cs` and
   # `Skills/Onboarding.cs` derive control-plane. PascalCase directories are the language convention in
@@ -463,7 +587,10 @@ $_inv_body" 2>/dev/null ) || true
                vendor/pkg/.claude/commands/x.md scripts/zz-nonexistent.sh \
                scripts/zz-new/deep.sh profiles/zz-fake/ci.yml \
                profiles/zz-fake/scaffold/scripts/build.sh AGENTS.md REQUIRED-CHECKS.md \
-               .gitattributes docs/.gitattributes; do
+               .gitattributes docs/.gitattributes \
+               templates/PROJECT-CLAUDE-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md \
+               templates/WAIVER-REGISTER.md docs/governance/DECISIONS.md \
+               docs/governance/promotion-contract.md .kit/tracker.conf; do
         if ! is_control_plane_path "$p"; then printf "DEAD %s\n" "$p"; fi
         if _cpp_kitowned "$p"; then
           if ! _cpp_match "$p"; then printf "SUBSET %s\n" "$p"; fi
@@ -474,7 +601,9 @@ $_inv_body" 2>/dev/null ) || true
           if ! is_control_plane_path "$l"; then printf "MONOTONE %s\n" "$u"; fi
         fi
       done
-      for n in myscripts/x.sh myprofiles/x.yml foo.claude/settings.json v2.claude/x subagents.md; do
+      for n in myscripts/x.sh myprofiles/x.yml foo.claude/settings.json v2.claude/x subagents.md \
+               app/templates/index.html docs/templates/x.md templates/README.md \
+               templates/not-a-subject.md docs/governance/THREAT-MODEL.md; do
         if is_control_plane_path "$n"; then printf "OVERMATCH %s\n" "$n"; fi
       done
       # ★ THE RELIEVED SUBTREES, ORDINARY IN **BOTH TIERS** (GUARD-CLAUDE-HOME-INSTRUMENTATION-FP).
@@ -1070,6 +1199,172 @@ PATH_EOF
     echo "FAIL: an emitter with ZERO control-plane dispositions passed (vacuous)"; st=1
   else
     echo "PASS: zero control-plane dispositions -> FAIL (no vacuous green)"
+  fi
+
+  # ── K15 — `.kit/control-plane.conf` (GATE-SUBJECT-IS-THE-ADOPTERS-SYSTEM, Slice 1) --------------
+  # The adopter's OWN declared control-plane surface, read through kit_union_derive's second source
+  # and matched by the SAME kit_path_in_union both merge gates already share. union-lib.sh ships with
+  # NO --selftest of its own by design (aggregate-exclusions.txt: "graded through both consumers'
+  # selftests and by the census lock in promotion-readiness-wired.sh") — this IS that lock for K15,
+  # end-to-end through THIS gate's --class seam, exactly as an adopter's own PR would exercise it.
+  _k15_tree() {  # <dir> — a fresh minimal tree: promotion-readiness.sh + union-lib.sh + guard-core.sh
+    mkdir -p "$1/conformance" "$1/.claude/hooks"
+    cp "$PR" "$1/conformance/promotion-readiness.sh"
+    cp "$(dirname "$PR")/union-lib.sh" "$1/conformance/union-lib.sh"
+    cp "$_inv_core" "$1/.claude/hooks/guard-core.sh"
+  }
+
+  # RED-before (captured in the build report on the unmodified union-lib.sh): a repo declaring
+  # `bin/release.sh` and `deploy/` in `.kit/control-plane.conf`, no adapter.json anywhere, must
+  # derive control-plane for both — today the union derives ONLY from adapter.json, so an
+  # adapter-less tree answers ordinary for a path only the ADOPTER declared. Neither `bin/` nor
+  # `deploy/` is a kit-default control-plane prefix (unlike `scripts/*`, which the guard-core Tier 2
+  # set ALREADY covers — using it here would make this leg pass vacuously, true regardless of K15).
+  _k15a="$d/k15-declared"
+  _k15_tree "$_k15a"
+  mkdir -p "$_k15a/.kit"
+  printf 'bin/release.sh\ndeploy/\n' > "$_k15a/.kit/control-plane.conf"
+  printf 'bin/release.sh\ndeploy/prod.yml\nREADME.md\n' > "$_k15a/changed.txt"
+  _k15aout=$( ( cd "$_k15a" && sh conformance/promotion-readiness.sh --class --no-verify --changed changed.txt ) 2>/dev/null | tail -1 ) || true
+  if [ "$_k15aout" = control-plane ]; then
+    echo "PASS: K15 — a .kit/control-plane.conf-declared path (no adapter.json anywhere) derives control-plane at --class"
+  else
+    echo "FAIL: K15 — .kit/control-plane.conf declared bin/release.sh + deploy/, aggregate over {bin/release.sh, deploy/prod.yml, README.md} answered '$_k15aout', want control-plane"; st=1
+  fi
+  # per-path: the declared FILE and the declared DIR-PREFIX both classify control-plane; the
+  # undeclared README.md must NOT (proves the union only ADDS the declared entries, nothing wider).
+  _k15aper=$( ( cd "$_k15a" && sh conformance/promotion-readiness.sh --no-verify --changed changed.txt ) 2>/dev/null ) || true
+  case "$_k15aper" in
+    *'[control-plane] bin/release.sh'*) : ;;
+    *) echo "FAIL: K15 — declared file bin/release.sh did not render [control-plane]: $_k15aper"; st=1 ;;
+  esac
+  case "$_k15aper" in
+    *'[control-plane] deploy/prod.yml'*) : ;;
+    *) echo "FAIL: K15 — declared dir-prefix deploy/ did not classify deploy/prod.yml [control-plane]: $_k15aper"; st=1 ;;
+  esac
+  case "$_k15aper" in
+    *'[ordinary] README.md'*) echo "PASS: K15 — an UNDECLARED path (README.md) stays ordinary; the .kit/ union only ADDS its own entries" ;;
+    *) echo "FAIL: K15 — README.md (not declared anywhere) did not render [ordinary]: $_k15aper"; st=1 ;;
+  esac
+
+  # ESCALATE-ONLY / DOWNGRADE-IMPOSSIBLE — a .kit/ entry naming a KIT-DEFAULT control-plane path is a
+  # harmless no-op: is_control_plane_path is checked FIRST and INDEPENDENTLY of the union (structural,
+  # not this test's doing), so nothing a .kit/ file can say ever LOWERS a kit-default path's class.
+  _k15b="$d/k15-noop"
+  _k15_tree "$_k15b"
+  mkdir -p "$_k15b/.kit"
+  printf 'conformance/verify.sh\n' > "$_k15b/.kit/control-plane.conf"
+  printf 'conformance/verify.sh\n' > "$_k15b/changed.txt"
+  _k15bout=$( ( cd "$_k15b" && sh conformance/promotion-readiness.sh --class --no-verify --changed changed.txt ) 2>/dev/null | tail -1 ) || true
+  if [ "$_k15bout" = control-plane ]; then
+    echo "PASS: K15 — a .kit/ line naming a kit-default control-plane path (conformance/verify.sh) is a harmless no-op, still control-plane"
+  else
+    echo "FAIL: K15 — conformance/verify.sh named in .kit/control-plane.conf answered '$_k15bout', want control-plane (a .kit/ entry must never be readable as a downgrade)"; st=1
+  fi
+  # Adversarial NO-SUBTRACT — a negation-shaped line (some conf formats use '!' to exempt) must be
+  # INERT. ⚠️ STRENGTHENED (fix round, F3): the earlier form named a KIT-DEFAULT path
+  # (conformance/verify.sh), so it classified control-plane whether or not '!' were an exempt verb —
+  # is_control_plane_path answers CP for it independently of the union, so the leg passed VACUOUSLY.
+  # This form union-declares a GENUINELY NON-DEFAULT path (bin/release.sh — not a kit-default CP
+  # prefix), so the ONLY thing making it control-plane is the `.kit/` declaration. A sibling
+  # `!bin/release.sh` line is added: if the mechanism parsed '!' as an exempt/subtract verb it would
+  # REMOVE the declaration and bin/release.sh would fall back to `ordinary`. Asserting it STAYS
+  # control-plane genuinely tests the no-subtract property (the union only ever ADDS).
+  _k15c="$d/k15-negation"
+  _k15_tree "$_k15c"
+  mkdir -p "$_k15c/.kit"
+  printf 'bin/release.sh\n!bin/release.sh\n' > "$_k15c/.kit/control-plane.conf"
+  printf 'bin/release.sh\n' > "$_k15c/changed.txt"
+  _k15cout=$( ( cd "$_k15c" && sh conformance/promotion-readiness.sh --class --no-verify --changed changed.txt ) 2>/dev/null | tail -1 ) || true
+  if [ "$_k15cout" = control-plane ]; then
+    echo "PASS: K15/F3 — a '!bin/release.sh' sibling cannot subtract a .kit/-declared NON-default path (no exempt verb; the union only ADDS)"
+  else
+    echo "FAIL: K15/F3 — declaring bin/release.sh then '!bin/release.sh' downgraded it to '$_k15cout' — the mechanism parsed a negation/exempt shape and subtracted a declared control-plane path"; st=1
+  fi
+
+  # OK-EMPTY — an ABSENT .kit/control-plane.conf with NO adapters is the kit-default floor alone,
+  # never a fail-safe DoS: an ordinary path must still classify ordinary, and silently (no adopter who
+  # declares nothing should see a warning on every run).
+  _k15d="$d/k15-absent"
+  _k15_tree "$_k15d"
+  printf 'README.md\n' > "$_k15d/changed.txt"
+  _k15dout=$( ( cd "$_k15d" && sh conformance/promotion-readiness.sh --class --no-verify --changed changed.txt ) 2>"$d/k15d.err" | tail -1 ) || true
+  _k15derr=$( cat "$d/k15d.err" 2>/dev/null || true )
+  if [ "$_k15dout" = ordinary ] && [ -z "$_k15derr" ]; then
+    echo "PASS: K15 — absent .kit/control-plane.conf + no adapters = OK-EMPTY, kit defaults only (no fail-safe DoS), silent"
+  else
+    echo "FAIL: K15 — absent .kit/control-plane.conf + no adapters answered '$_k15dout' (stderr: '$_k15derr'), want ordinary + silent"; st=1
+  fi
+
+  # ── SEC-1 — THE CONF FILE IS ITSELF GOVERNANCE-PROTECTED (fix round, security FAIL SEC-1). ─────
+  # `.kit/control-plane.conf` is a NEW authorization input BOTH merge gates read through union-lib.sh,
+  # so the FILE ITSELF must classify control-plane — exactly as its peers .kit/dials.conf and
+  # .kit/ratification-seats.conf do — or a PR REMOVING a declared line classifies `ordinary` and
+  # downgrades the adopter's declared surface with no ratification (the ratification-seats.conf bug
+  # re-opened). This is registered at all SIX guard-core CP-matcher sites; agent-autonomy.sh's
+  # dt_corpus_ok / dt_leaves_ok bind that structurally (the corpus ⇔ six-sites cross-check + the
+  # is_control_plane_path leaf bind). This leg is the EXPLICIT end-to-end assertion, homed HERE beside
+  # the K15 union legs it protects: it sources the REAL guard-core and asserts the conf is CP, peer-to-
+  # peer with ratification-seats.conf. The on-disk corpus oracle (git ls-files .kit/*.conf) CANNOT see
+  # this in-kit — the file is export-ignored and the kit ships none — so an explicit leg is REQUIRED.
+  if [ -f "$_inv_core" ]; then
+    # shellcheck disable=SC1090  # sourced from a runtime-resolved $_inv_core, exactly as the fold-monotonicity sweep above does
+    _sec1=$( . "$_inv_core" 2>/dev/null
+             for _p in .kit/control-plane.conf .kit/ratification-seats.conf sub/.kit/control-plane.conf; do
+               if is_control_plane_path "$_p"; then printf '%s=control-plane\n' "$_p"; else printf '%s=ordinary\n' "$_p"; fi
+             done )
+    _sec1cp=$(printf '%s\n' "$_sec1"     | grep '^\.kit/control-plane\.conf=' | cut -d= -f2)
+    _sec1sub=$(printf '%s\n' "$_sec1"    | grep '^sub/\.kit/control-plane\.conf=' | cut -d= -f2)
+    _sec1peer=$(printf '%s\n' "$_sec1"   | grep '^\.kit/ratification-seats\.conf=' | cut -d= -f2)
+    if [ "$_sec1cp" = control-plane ] && [ "$_sec1sub" = control-plane ] && [ "$_sec1peer" = control-plane ]; then
+      echo "PASS: SEC-1 — .kit/control-plane.conf (and its */-prefixed spelling) classifies control-plane, peer-to-peer with .kit/ratification-seats.conf; a PR removing a declared line cannot downgrade it as ordinary"
+    else
+      echo "FAIL: SEC-1 — the conf is not itself governance-protected (control-plane.conf='$_sec1cp', sub='$_sec1sub', peer ratification-seats='$_sec1peer') — a declared control-plane path could be silently downgraded by editing the conf"; st=1
+    fi
+  else
+    echo "FAIL: SEC-1 — could not locate guard-core at '$_inv_core' to assert the conf is governance-protected"; st=1
+  fi
+
+  # ── GOVERNANCE-SOURCE-FILES corpus oracle (plan Design-promised controls rows gov_subject_corpus_ok
+  # + gov_corpus_rederives_incept_loop). The clean core+incept PASS, then mutants each RED — a green
+  # attests the six sites and the incept loop AGREE; the load-bearing negatives are the mutants.
+  _gov_incept="scripts/incept.sh"
+  _gov_dm="conformance/doc-markers.tsv"
+  _gov_ol="conformance/obligation-lib.sh"
+  if [ -f "$_inv_core" ]; then
+    if gov_corpus_ok "$_inv_core" "$_gov_incept" "$_gov_dm" "$_gov_ol" 2>"$d/gov.err"; then
+      echo "PASS: gov corpus — every _GOV_SUBJECT_CORPUS subject is named at all SIX matcher sites (both directions), the corpus re-derives the incept stamp sources, and it is a superset of the derived set-3 (doc-markers.tsv + _cm_named)"
+    else
+      echo "FAIL: gov corpus — the governance subject corpus and its six matcher sites (or the incept/set-3 re-derivation) DISAGREE:"; sed 's/^/         /' "$d/gov.err"; st=1
+    fi
+    # _gov_mut <label> <target: core|incept|docmarkers|obllib> <sed-expr> — the mutated copy must make
+    # gov_corpus_ok RED. Each target mutates a COPY of its source and reruns the oracle against it.
+    _gov_mut() {
+      _gmc="$_inv_core"; _gmi="$_gov_incept"; _gmd="$_gov_dm"; _gmo="$_gov_ol"; _gmsrc=""; _gmmut=""
+      case "$2" in
+        core)       _gmsrc="$_inv_core";   cp "$_inv_core" "$d/gc.mut";   sed "$3" "$d/gc.mut" > "$d/gc.mut2" && mv "$d/gc.mut2" "$d/gc.mut";   _gmc="$d/gc.mut";  _gmmut="$_gmc" ;;
+        incept)     _gmsrc="$_gov_incept"; cp "$_gov_incept" "$d/inc.mut"; sed "$3" "$d/inc.mut" > "$d/inc.mut2" && mv "$d/inc.mut2" "$d/inc.mut"; _gmi="$d/inc.mut"; _gmmut="$_gmi" ;;
+        docmarkers) _gmsrc="$_gov_dm";     cp "$_gov_dm" "$d/dm.mut";     sed "$3" "$d/dm.mut" > "$d/dm.mut2" && mv "$d/dm.mut2" "$d/dm.mut";     _gmd="$d/dm.mut";  _gmmut="$_gmd" ;;
+        obllib)     _gmsrc="$_gov_ol";     cp "$_gov_ol" "$d/ol.mut";     sed "$3" "$d/ol.mut" > "$d/ol.mut2" && mv "$d/ol.mut2" "$d/ol.mut";     _gmo="$d/ol.mut";  _gmmut="$_gmo" ;;
+      esac
+      # vacuity guard: the mutation MUST have changed the file, or the mutant proves nothing.
+      if cmp -s "$_gmsrc" "$_gmmut"; then echo "FAIL: gov-mutant [$1] — the mutation matched NOTHING (leg unbound)"; st=1; return; fi
+      if gov_corpus_ok "$_gmc" "$_gmi" "$_gmd" "$_gmo" >/dev/null 2>&1; then echo "FAIL: gov-mutant [$1] — the oracle stayed GREEN under the mutation"; st=1
+      else echo "PASS: gov-mutant [$1] — the oracle REDs, as required"; fi
+    }
+    _gov_mut "GOV-M1: a subject's glob leaf removed from _CP8B_GLOB_LEAVES" core '/^_CP8B_GLOB_LEAVES=/ s@ templates/DECISIONS-TEMPLATE\.md@@'
+    _gov_mut "GOV-M2: the _LC pathhit leg for a subject removed (the fold direction)" core '/^_CP8B_PATHHIT_T1_LC=/ s@decisions-template|@@'
+    _gov_mut "GOV-M3: a phantom subject appended to _GOV_SUBJECT_CORPUS that no site carries" core "/^_GOV_SUBJECT_CORPUS=/ s@'\$@ templates/PHANTOM-TEMPLATE.md'@"
+    _gov_mut "GOV-M4: a phantom name appended to the incept 'for _t in …' loop -> re-derivation REDs" incept '/for _t in / s@ WAIVER-REGISTER;@ WAIVER-REGISTER PHANTOM-GOV;@'
+    _gov_mut "GOV-M5: a subject's tool-route arm removed from _cpp_kitowned" core '/^    templates\/decisions-template\.md|\*\/templates\/decisions-template\.md|\\$/d'
+    # Set-3 derivation mutants: prove the oracle READS its two sources. A phantom templates/* row on a
+    # COPY of doc-markers.tsv (M6) and a phantom name on a COPY of _cm_named (M7) each derive a member
+    # the corpus does not carry -> superset check REDs. Uses the same COPY-and-rerun harness.
+    _gov_mut "GOV-M6: a phantom templates/* row appended to doc-markers.tsv -> set-3 re-derivation REDs" docmarkers '$a\
+phantom	templates/PHANTOM-DERIVED-TEMPLATE.md	x	phantom: derived member absent from corpus	kit'
+    _gov_mut "GOV-M7: a phantom name appended to obligation-lib _cm_named -> set-3 re-derivation REDs" obllib "s@UAT-SIGNOFF'@UAT-SIGNOFF PHANTOMDERIVED'@"
+  else
+    echo "FAIL: gov corpus — could not locate guard-core at '$_inv_core'"; st=1
   fi
 
   if [ "$st" = 0 ]; then echo "OK: promotion-readiness-wired selftest"; else echo "FAIL: promotion-readiness-wired selftest"; fi

@@ -13,6 +13,7 @@
 .github/ISSUE_TEMPLATE/feedback.md
 .github/PULL_REQUEST_TEMPLATE.md
 .gitignore
+.gitleaks.toml
 .kit-digests
 .kit-manifest
 .kit/budget.conf
@@ -32,7 +33,6 @@ MATURITY.md
 README.md
 SECURITY.md
 START-HERE.md
-THREAT-MODEL.md
 VERSION
 adapters/README.md
 adapters/_TEMPLATE/README.md
@@ -277,6 +277,7 @@ conformance/stack-decision-integrity.sh
 conformance/stack-selection.sh
 conformance/structured-logging-wired.sh
 conformance/supply-chain-verify.sh
+conformance/surface-lib-wired.sh
 conformance/surface-lib.sh
 conformance/template-detectors-aligned.sh
 conformance/test-data-readiness.md
@@ -755,6 +756,7 @@ templates/PROJECT-CLAUDE-TEMPLATE.md
 templates/PROJECT-README-TEMPLATE.md
 templates/README.md
 templates/REQUIRED-CHECKS-TEMPLATE.md
+templates/RESTORE-DRILL-TEMPLATE.md
 templates/REVIEW-RECORD-TEMPLATE.md
 templates/RUNBOOK-TEMPLATE.md
 templates/SECURITY-TEMPLATE.md

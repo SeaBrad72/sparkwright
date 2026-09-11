@@ -536,6 +536,435 @@ selftest() {
     --class Ordinary --scope "PR #1004" --token "GO clean"
 
   # =====================================================================================
+  # LAND — the one transactional actuation verb (SESSION-SURFACE slice 3d F3, Option A; design
+  # 2026-09-10 §3 F3). `land` RECORDS the GO, CONFIRMS the note reached ORIGIN, then MERGES, then
+  # leaves the branch intact — so a merge cannot be actuated on the direct/control-plane path
+  # without a SHARED (on-origin) recoverable note being written first: the honest-but-forgetful
+  # #658 failure (a forgotten second `gh pr merge`, AND a note that never left the local clone).
+  #
+  # ⚠️ VERB-SCOPED, NOT A HARD GATE (design A1). Every assertion here is scoped to the verb: `land`
+  # refuses a recordless merge ONLY on its own path; the universal net is the CI recordless-merge
+  # backstop. These legs run against a REAL bare-repo origin (mkorigin, mirroring the ledger-sync
+  # harness below) so land's step-2 on-origin confirm actually executes — the old bare-$R fixture
+  # had no remote and only exercised a LOCAL `git notes show`, which is the exact #658 state. A STUB
+  # `--merge-cmd` records that it ran (the live `gh pr merge` is out of a selftest's scope, as
+  # `actuate`'s is). LOAD-BEARING: liveness (a valid record + stub merge writes the note ON ORIGIN
+  # and runs the merge) is the discriminant partner of negative(i). Since this slice's fix, `land`
+  # REFUSES `--no-push` (a landing merge must publish) and its delete/--admin matcher is TOKENIZED
+  # on IFS, so tab-separated and bundled-short-cluster forms are covered too.
+  # =====================================================================================
+  LR2=landx
+  LAND_MARK="$D/.land-merged"
+  # A STANDALONE one-word merge-cmd stub: it touches the marker and does NOTHING else — no shell
+  # operator. Since this slice's step-3b declines the guard's whole word-shape set (; & | { } , * ? [
+  # and $ backtick < > \), the old `<cmd> && touch MARK` / `; touch MARK` chaining would itself trip the
+  # metachar arm and MISATTRIBUTE every leg's refusal (vacuous: land would refuse for the `&&`, not the
+  # leg's intended reason). Instead each leg passes `"$LAND_STUB" <dangerous-token>` — the stub is the
+  # command, the flag a separate ARG — so each leg still asserts its OWN reason. "Merge ran" == marker
+  # present; land refuses before eval => marker absent.
+  LAND_STUB="$D/land-stub"
+  printf '#!/bin/sh\ntouch %s\n' "'$LAND_MARK'" > "$LAND_STUB"
+  chmod +x "$LAND_STUB"
+  # mkorigin <name> -> a bare remote.git + clone A carrying one commit pushed to origin/main. Sets
+  # $LO (fixture root), $LOA (clone dir), $LOSHA (its head), $LOTRUNK (its branch). onote <sha> ->
+  # true iff a note under refs/notes/$LR2 is bound to <sha> on the ORIGIN copy (never the local one).
+  mkorigin() {
+    LO="$D/land-$1"; rm -rf "$LO"; mkdir -p "$LO"
+    git init -q --bare "$LO/remote.git"
+    ( set -e; cd "$LO"
+      git clone -q remote.git A 2>/dev/null
+      cd A
+      git config user.email t@example.com; git config user.name t; git config commit.gpgsign false
+      printf 'a\n' > f.txt; git add f.txt; git commit -qm base
+      git push -q origin HEAD:refs/heads/main )
+    LOA="$LO/A"; LOSHA="$(git -C "$LOA" rev-parse HEAD)"
+    LOTRUNK="$(git -C "$LOA" rev-parse --abbrev-ref HEAD)"
+  }
+  onote() { git --git-dir="$LO/remote.git" notes --ref="$LR2" show "$1" >/dev/null 2>&1; }
+  # lland <merge-cmd> <approved-sha> <class> <scope> [extra land args...] -> sets _ldc and _ld_out.
+  # Runs in $LOA with PROMOTION_NOTES_REF=$LR2 so nothing here can touch the real ledger.
+  lland() {
+    _lmc="$1"; _lasha="$2"; _lcls="$3"; _lscope="$4"; shift 4
+    if _ld_out="$( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" sh "$VERIFY" land \
+          --ref v1.0.0 --merge-cmd "$_lmc" --approved-sha "$_lasha" --approved-by "solo maintainer" \
+          --gate release-candidate --rung "Release candidate" --class "$_lcls" \
+          --scope "$_lscope" --token "GO: land at $_lasha" "$@" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+  }
+
+  # (+) LIVENESS: a valid record + a stub merge -> rc 0, the stub ran, AND the GO note is ON ORIGIN
+  #     (not merely local — the property #658 was missing). This exercises step-2's on-origin confirm.
+  mkorigin live
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/land-live"
+  if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && onote "$LOSHA"; then
+    echo "PASS: land liveness: a valid record + stub merge bound the GO note ON ORIGIN and ran the merge"
+  else
+    echo "FAIL: land liveness: want rc=0 + merge + note-on-origin, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) onorigin=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−no-push) --no-push is REFUSED: a landing merge must PUBLISH the GO record so it reaches origin;
+  #     landing on a local-only note would reopen #658. rc != 0, the stub must NOT run, reason names
+  #     --no-push. (Finding 1: the old land passed --no-push through to record and merged on a note
+  #     that never left the clone.)
+  mkorigin nopush
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/land-np" --no-push
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'no-push'; then
+    echo "PASS: land NEGATIVE(--no-push): a landing --no-push is refused, the merge did NOT run (closes #658)"
+  else
+    echo "FAIL: land NEGATIVE(--no-push): want rc!=0 + no merge + 'no-push', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−i) RECORD FAILS -> NO merge. An UNRESOLVABLE --approved-sha reds `record` (rc 2) BEFORE any note
+  #      is written, so the stub merge must NOT run and the reason is verb-scoped. The class is
+  #      control-plane so land's OWN class gate (F3-2) passes and the failure is genuinely record's,
+  #      not land's class refusal. (Discriminant partner of the liveness leg above; the bad-class case
+  #      is now caught by land's class gate — see NEGATIVE(unknown-class) below.)
+  mkorigin badsha
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" deadbeefdeadbeefdeadbeefdeadbeefdeadbeef control-plane "branch/land-badsha"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'will not merge'; then
+    echo "PASS: land NEGATIVE(i): a record failure -> land refuses (verb-scoped), the merge did NOT run"
+  else
+    echo "FAIL: land NEGATIVE(i): want rc!=0 + no merge + 'will not merge', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−ii) A SPACE-separated --delete-branch is REFUSED and the merge does NOT run. `land` NEVER
+  #       deletes a branch (D-240819-4) — the branch object holds the commit the GO note binds. The
+  #       merge-cmd is `<stub> --delete-branch`: land refuses at the step-4 delete arm before eval, so
+  #       the stub never runs and a missing marker proves the refusal.
+  mkorigin delspace
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --delete-branch" "$LOSHA" control-plane "branch/land-del"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'deletes a branch'; then
+    echo "PASS: land NEGATIVE(ii): a space-separated --delete-branch is refused, the merge did NOT run"
+  else
+    echo "FAIL: land NEGATIVE(ii): want rc!=0 + no merge + 'deletes a branch', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−iii) A TAB-separated --delete-branch is REFUSED (the space-anchored glob missed this — Finding
+  #        2). Tokenizing on IFS (which includes TAB) makes --delete-branch its own token regardless
+  #        of the surrounding whitespace.
+  mkorigin deltab
+  rm -f "$LAND_MARK"
+  _land_tabtok="$(printf '%s\t--delete-branch' "$LAND_STUB")"
+  lland "$_land_tabtok" "$LOSHA" control-plane "branch/land-deltab"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'deletes a branch'; then
+    echo "PASS: land NEGATIVE(iii): a TAB-separated --delete-branch is refused (IFS tokenization)"
+  else
+    echo "FAIL: land NEGATIVE(iii): want rc!=0 + no merge + 'deletes a branch', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−iv) A BUNDLED SHORT CLUSTER -sd (= --squash --delete-branch) is REFUSED (the space-anchored
+  #       ' -d ' glob missed a bundled cluster — Finding 2). A single-dash token containing 'd' denies.
+  mkorigin delcluster
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB -sd" "$LOSHA" control-plane "branch/land-sd"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'deletes a branch'; then
+    echo "PASS: land NEGATIVE(iv): a bundled short cluster -sd is refused (single-dash token containing d)"
+  else
+    echo "FAIL: land NEGATIVE(iv): want rc!=0 + no merge + 'deletes a branch', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−v) --admin is REFUSED and the merge does NOT run (Finding 3: the --admin arm had no leg). Fed
+  #      TAB-separated so it ALSO regresses the tokenization gap on the --admin arm (the old space
+  #      glob would have missed this exact form). Approval authorizes promotion, never a bypass.
+  mkorigin admin
+  rm -f "$LAND_MARK"
+  _land_admtok="$(printf '%s\t--admin' "$LAND_STUB")"
+  lland "$_land_admtok" "$LOSHA" control-plane "branch/land-admin"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q -- '--admin'; then
+    echo "PASS: land NEGATIVE(v): a TAB-separated --admin is refused, the merge did NOT run (deny arm has teeth)"
+  else
+    echo "FAIL: land NEGATIVE(v): want rc!=0 + no merge + '--admin', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−vii) --admin=VALUE is REFUSED (F3-1): the old EXACT-match --admin arm let the =value spelling
+  #        through — --admin=true never exact-matched --admin, so a bypass rode in on a value suffix.
+  #        A landing merge never needs --admin in ANY form, so --admin=* is refused as a class (the
+  #        over-refusal of the cosmetic --admin=false is the correct, disclosed trade). Fed
+  #        TAB-separated so it also covers the tokenization on the =value arm.
+  mkorigin adminval
+  rm -f "$LAND_MARK"
+  _land_admvaltok="$(printf '%s\t--admin=true' "$LAND_STUB")"
+  lland "$_land_admvaltok" "$LOSHA" control-plane "branch/land-adminval"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q -- '--admin'; then
+    echo "PASS: land NEGATIVE(vii): --admin=true (=value spelling) is refused, the merge did NOT run"
+  else
+    echo "FAIL: land NEGATIVE(vii): want rc!=0 + no merge + '--admin', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−viii) A DOUBLE-QUOTED "--admin" is REFUSED (F3-1): the merge-cmd is one string, so a caller who
+  #         quotes the flag leaves the quote bytes on the token here (this is a tokenize, not a shell
+  #         re-lex). Stripping ' and " from each token before the case normalizes "--admin" -> --admin.
+  mkorigin adminq
+  rm -f "$LAND_MARK"
+  _land_admqtok="$(printf '%s "--admin"' "$LAND_STUB")"
+  lland "$_land_admqtok" "$LOSHA" control-plane "branch/land-adminq"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q -- '--admin'; then
+    echo "PASS: land NEGATIVE(viii): a double-quoted \"--admin\" is refused (quote-strip before match)"
+  else
+    echo "FAIL: land NEGATIVE(viii): want rc!=0 + no merge + '--admin', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−ix) A SINGLE-QUOTED '--delete-branch' is REFUSED (F3-1): same quote-strip, so a quoted deletion
+  #        flag cannot smuggle past the matcher.
+  mkorigin delq
+  rm -f "$LAND_MARK"
+  _land_delqtok="$(printf "%s '--delete-branch'" "$LAND_STUB")"
+  lland "$_land_delqtok" "$LOSHA" control-plane "branch/land-delq"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'deletes a branch'; then
+    echo "PASS: land NEGATIVE(ix): a single-quoted '--delete-branch' is refused (quote-strip before match)"
+  else
+    echo "FAIL: land NEGATIVE(ix): want rc!=0 + no merge + 'deletes a branch', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−x) A SPLIT-QUOTE --del''ete-branch is REFUSED (F3-1): adjacent empty quotes inside a token
+  #       survive word-splitting as the literal bytes --del''ete-branch; quote-strip reassembles
+  #       --delete-branch before the case, so the split spelling cannot evade the delete arm.
+  mkorigin delsplit
+  rm -f "$LAND_MARK"
+  _land_delsplittok="$(printf "%s --del''ete-branch" "$LAND_STUB")"
+  lland "$_land_delsplittok" "$LOSHA" control-plane "branch/land-delsplit"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'deletes a branch'; then
+    echo "PASS: land NEGATIVE(x): a split-quote --del''ete-branch is refused (quote-strip reassembles)"
+  else
+    echo "FAIL: land NEGATIVE(x): want rc!=0 + no merge + 'deletes a branch', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xi) --admin=false is now ALSO refused (F3-1, the disclosed over-refusal trade): a landing merge
+  #        never needs --admin in ANY form, so the whole --admin=* class is refused rather than
+  #        exact-matching only bare --admin (which had opened --admin=true). This INVERTS the old
+  #        POSITIVE(exact-match) leg — the correct trade, owner-ruled: over-refusing a cosmetic no-op
+  #        beats leaving a =value bypass open.
+  mkorigin adminfalse
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --admin=false" "$LOSHA" control-plane "branch/land-adminfalse"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q -- '--admin'; then
+    echo "PASS: land NEGATIVE(xi): --admin=false is refused too (--admin=* class; disclosed over-refusal)"
+  else
+    echo "FAIL: land NEGATIVE(xi): want rc!=0 + no merge + '--admin' for --admin=false, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xii/N1) A BACKSLASH-ESCAPED \--admin is REFUSED by the shell-metachar-decline arm. The token
+  #        quote-strip removes only ' and ", NOT the backslash — so \--admin survives word-splitting as
+  #        the literal bytes \--admin, matches NO deny arm (\--admin is not --admin, not --*, not -*d*),
+  #        and the eval'd shell strips the backslash so `gh` sees the bare --admin and MERGES. The
+  #        metachar-decline arm refuses ANY --merge-cmd carrying a word-shape metacharacter before the
+  #        token scan (the default merge-cmd needs none). merge-cmd = `<stub> \--admin`: the flag is a
+  #        separate ARG so the leg asserts the backslash reason ONLY (no `;` chaining, which the widened
+  #        set would itself trip); a missing marker proves land refused before eval.
+  mkorigin bslashadmin
+  rm -f "$LAND_MARK"
+  _mc_bsl="$(printf '%s \\--admin' "$LAND_STUB")"
+  lland "$_mc_bsl" "$LOSHA" control-plane "branch/land-bslashadmin"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xii): a backslash-escaped \\--admin merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xii): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xiii/N1) A COMMAND-SUBSTITUTION --$(echo admin) is REFUSED by the metachar-decline arm ($). Without
+  #        it the eval'd shell would expand $(echo admin) to `admin`, forming --admin at merge time — a
+  #        spelling the static token scan cannot see. merge-cmd = `<stub> --$(echo admin)`; a missing
+  #        marker proves refusal.
+  mkorigin dolladmin
+  rm -f "$LAND_MARK"
+  _mc_dol="$(printf '%s --$(echo admin)' "$LAND_STUB")"
+  lland "$_mc_dol" "$LOSHA" control-plane "branch/land-dolladmin"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xiii): a --\$(echo admin) command-substitution merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xiii): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xiv/N1) A BACKSLASH-SPLIT --del\ete-branch is REFUSED by the metachar-decline arm (backslash).
+  #        --del\ete-branch is not --delete* (the backslash breaks the literal 'delete' prefix) and the
+  #        eval'd shell strips the backslash so `gh` sees --delete-branch. merge-cmd = `<stub>
+  #        --del\ete-branch`; a missing marker proves refusal.
+  mkorigin bsldel
+  rm -f "$LAND_MARK"
+  _mc_bsldel="$(printf '%s --del\\ete-branch' "$LAND_STUB")"
+  lland "$_mc_bsldel" "$LOSHA" control-plane "branch/land-bsldel"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xiv): a backslash-split --del\\ete-branch merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xiv): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xv/N3) A BRACE-EXPANSION --{admin,} is REFUSED by the metachar-decline arm ({ } ,). THIS IS THE
+  #        REAL N3 GAP: the token scan's `--*` arm swallowed --{admin,} as an inert flag (not --admin,
+  #        not --delete*), and the guard tier ALSO allowed it — yet the eval'd shell expands --{admin,}
+  #        to the two words `--admin` and `--` (bash) / a set -f-inert single word land never lexes, so
+  #        `gh` receives --admin. Widening step-3b to the guard's word-shape set ({ } , * ? [ …) closes
+  #        it. merge-cmd = `<stub> --{admin,}`; a missing marker proves refusal before eval.
+  mkorigin brace1
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --{admin,}" "$LOSHA" control-plane "branch/land-brace1"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xv): a brace-expansion --{admin,} merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xv): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xvi/N3) An INNER brace --ad{m,}in is REFUSED too ({ } ,): bash expands it to `--admin --adin`, so
+  #        --admin rides in. Same word-shape decline; merge-cmd = `<stub> --ad{m,}in`.
+  mkorigin brace2
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --ad{m,}in" "$LOSHA" control-plane "branch/land-brace2"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xvi): an inner-brace --ad{m,}in merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xvi): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xvii/N3) A GLOB --admi[n] is REFUSED ([). If a file named `--admin` exists in cwd the eval'd shell
+  #        expands --admi[n] to it; the bracket also makes the token unmatchable to a literal scan.
+  #        Refused ANYWHERE (not only leading) — the merge-cmd is one eval'd string. merge-cmd =
+  #        `<stub> --admi[n]`.
+  mkorigin glob1
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --admi[n]" "$LOSHA" control-plane "branch/land-glob1"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xvii): a glob --admi[n] merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xvii): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xviii/N3) A GLUED SEPARATOR --admin; is REFUSED (;): the token scan sees the single token
+  #        `--admin;` (; is not IFS), which `--*` swallows as inert, but the eval'd shell treats `;` as a
+  #        command terminator so `gh … --admin` runs as its own command. merge-cmd = `<stub> --admin;`.
+  mkorigin semi1
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --admin;" "$LOSHA" control-plane "branch/land-semi1"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xviii): a glued-separator --admin; merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xviii): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xix/N3) A GLUED PIPE --admin|x is REFUSED (|): same inert-token blindness, but the shell pipes
+  #        `gh … --admin` into `x`. merge-cmd = `<stub> --admin|x`.
+  mkorigin pipe1
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --admin|x" "$LOSHA" control-plane "branch/land-pipe1"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xix): a glued-pipe --admin|x merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xix): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−xx/N3) A GLUED REDIRECT --admin>x is REFUSED (>): the shell strips `>x` as a redirection so `gh …
+  #        --admin` runs. merge-cmd = `<stub> --admin>x`.
+  mkorigin redir1
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB --admin>x" "$LOSHA" control-plane "branch/land-redir1"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'shell metacharacter'; then
+    echo "PASS: land NEGATIVE(xx): a glued-redirect --admin>x merge-cmd is refused (metachar-decline), no merge"
+  else
+    echo "FAIL: land NEGATIVE(xx): want rc!=0 + no merge + 'shell metacharacter', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # =====================================================================================
+  # F3-2 — land is the CP/direct-path verb + inherits do_actuate's SoD (owner-ruled 2026-09-10).
+  #   * land REFUSES --class ordinary|sensitive (→ actuate, which carries the forge-review label bar
+  #     + SoD for those classes); proceeds ONLY for control-plane; refuses unknown/missing (allowlist).
+  #   * land inherits do_actuate's SoD drift-control for its CP path: after the on-origin note confirm
+  #     and before the merge, refuse if the approver is empty OR equals the author of --approved-sha.
+  #   The liveness leg above already proves the POSITIVE — land PROCEEDS for control-plane when the
+  #   approver ('solo maintainer') != the author ('t') — so it is not repeated here.
+  # =====================================================================================
+
+  # (−ord) land refuses --class ordinary → actuate. Refused BEFORE record runs, so no note is written
+  #        and the stub merge must NOT run.
+  mkorigin ord
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" ordinary "branch/land-ord"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'actuate'; then
+    echo "PASS: land NEGATIVE(ord): --class ordinary is refused (-> actuate), no record, no merge"
+  else
+    echo "FAIL: land NEGATIVE(ord): want rc!=0 + no merge + no note + 'actuate', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) note=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−sens) land refuses --class sensitive → actuate too (same non-CP class family).
+  mkorigin sens
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" sensitive "branch/land-sens"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'actuate'; then
+    echo "PASS: land NEGATIVE(sens): --class sensitive is refused (-> actuate), no record, no merge"
+  else
+    echo "FAIL: land NEGATIVE(sens): want rc!=0 + no merge + no note + 'actuate', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) note=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−unknown-class) an unrecognised class ('bogus') is refused ALLOWLIST-style — land proceeds only
+  #        for control-plane; an unjudgeable class is never a permission. Refused BEFORE record, no
+  #        note, no merge. (Land's class gate now intercepts a bad class that record used to red.)
+  mkorigin ucls
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" bogus "branch/land-ucls"
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'allowlist'; then
+    echo "PASS: land NEGATIVE(unknown-class): an unrecognised class is refused (allowlist), no record, no merge"
+  else
+    echo "FAIL: land NEGATIVE(unknown-class): want rc!=0 + no merge + no note + 'allowlist', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) note=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−sod) SoD: approver == author of the approved commit is REFUSED (builder != ratifier), BEFORE
+  #        record runs — so a self-approval NEVER publishes a GO note on origin (N2: the check used to
+  #        sit AFTER record+the on-origin confirm, so every SoD refusal left a PUBLISHED self-approved
+  #        note the recordless-merge backstop trusts). The mkorigin base commit is authored by 't'; a
+  #        trailing --approved-by t makes approver == author (last-wins in both land's peek and record).
+  #        Assert NO note reached origin (! onote) AND the stub merge did NOT run.
+  mkorigin sod
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/land-sod" --approved-by t
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'builder != ratifier'; then
+    echo "PASS: land NEGATIVE(sod): approver == author is refused (SoD) BEFORE record — no note on origin, no merge"
+  else
+    echo "FAIL: land NEGATIVE(sod): want rc!=0 + no merge + no note + 'builder != ratifier', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) note=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−sod-pad) SoD normalizes the approver like do_actuate: a padded --approved-by 't ' (trailing
+  #        whitespace) is stripped to 't', which equals the author, so it is REFUSED (N2: land used to
+  #        compare the RAW approver, so 't ' slipped past land's SoD though actuate — which strips
+  #        whitespace before comparing — would refuse the note it writes). Refused BEFORE record too:
+  #        no note, no merge.
+  mkorigin sodpad
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/land-sodpad" --approved-by "t "
+  if [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && ! onote "$LOSHA" && printf '%s' "$_ld_out" | grep -q 'builder != ratifier'; then
+    echo "PASS: land NEGATIVE(sod-pad): a padded approver 't ' normalizes to the author and is refused (SoD) — no note, no merge"
+  else
+    echo "FAIL: land NEGATIVE(sod-pad): want rc!=0 + no merge + no note + 'builder != ratifier', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) note=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
+  fi
+
+  # (−vi/+) POST-RUN RECOVERY: after a successful land whose stub actually squash-merges the feature
+  #         into the trunk, `trace --recent 1` reads the trunk head bound to the GO note land wrote —
+  #         the AC's proof that a merge actuated by this verb is recoverable, done POSITIVELY, over a
+  #         real origin.
+  mkorigin landtrace
+  ( cd "$LOA" && git checkout -q -b landfeat \
+      && printf 'land\n' > landfile.txt && git add landfile.txt \
+      && printf 'land-verb head\n\nKit-Row: LAND-ROW-9\nKit-Class: control-plane\n' | git commit -q -F - ) \
+    || { echo "FAIL: could not build the land feature fixture"; st=1; }
+  LANDC="$( ( cd "$LOA" && git rev-parse landfeat ) )"
+  # The merge itself needs `&&` and a `>` redirect, which the widened step-3b would refuse in a
+  # merge-cmd string. Bake the real squash-merge into a STANDALONE stub and pass its path as the
+  # one-word merge-cmd — the operators live INSIDE the script the shell runs, not in the eval'd string.
+  LAND_TRACE_STUB="$D/land-trace-stub"
+  printf '#!/bin/sh\ncd %s && git checkout -q %s && git merge --squash landfeat >/dev/null 2>&1 && git commit -qm %s\n' \
+    "'$LOA'" "$LOTRUNK" "'squash-merge landfeat (land verb)'" > "$LAND_TRACE_STUB"
+  chmod +x "$LAND_TRACE_STUB"
+  lland "$LAND_TRACE_STUB" "$LANDC" control-plane "branch/landfeat"
+  LANDTIP="$( ( cd "$LOA" && git rev-parse HEAD ) )"
+  if [ "$_ldc" = 0 ] \
+     && ( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" sh "$VERIFY" trace --recent 1 --from "$LANDTIP" >/dev/null 2>&1 ); then
+    echo "PASS: land + trace: a merge landed by land is recoverable — trace --recent binds the trunk head"
+  else
+    echo "FAIL: land + trace: rc=$_ldc, trace --recent 1 did not bind the trunk head $LANDTIP; out=$_ld_out"; st=1
+  fi
+  rm -rf "$D"/land-*
+
+  # =====================================================================================
   # LEDGER SYNC (RECORD-FETCHES-AND-PUSHES-LEDGER, design 2026-09-03 §6). `record` is a four-step
   # transaction — sync-in -> write -> publish -> unwind — so these legs need a REAL remote: each
   # builds its own bare "remote" plus two clones under $LROOT (trap-removed). Every leg drives the

@@ -806,6 +806,20 @@ $_pr_kmsg
       *) _pr_dirty="  note: the board was graded AT THE PUSHED COMMIT; the comparison with your working tree could not be made." ;;
     esac
   fi
+  # TIER0-LOCKS-OWED (a) — THE BASE BOARD. origin/main's BACKLOG.md, extracted BEST-EFFORT into the
+  # same temp dir, so the predicate's Done arm can bind the BRANCH form only to rows NEW to this
+  # push's change-set (a stale Done row citing a reused branch must not bind). Absent origin/main
+  # locally (unfetched ref), an unreadable BACKLOG.md there, or a predicate that predates
+  # `--base-board` (version skew) all degrade the SAME way: the flag is simply omitted, and the
+  # gate's own fail-safe (never bind by branch with no base board) applies — mirroring the
+  # underivable-class posture above rather than duplicating its message here. PR-NUMBER binding,
+  # and CI's own binding (which keys on --pr, never --branch), are unaffected either way.
+  _pr_basearg=""
+  if grep -q -- '--base-board)' "$_pr_pred" 2>/dev/null; then
+    if git show origin/main:BACKLOG.md > "$_pr_tmp/base-BACKLOG.md" 2>/dev/null; then
+      _pr_basearg="$_pr_tmp/base-BACKLOG.md"
+    fi
+  fi
   # THE PREDICATE. `--pr 0`: no PR exists at push time, and the gate's branch binding is what makes a
   # row bindable before one does. COMBINED capture (2>&1), like the citation leg and unlike the GO
   # leg: this gate prints its verdict, its hint and its remedy on STDOUT, so a stderr-only capture
@@ -816,7 +830,11 @@ $_pr_kmsg
   # this hook. An absent listing (underivable class) is passed deliberately: the gate fail-safes an
   # unreadable change-set to `gated`, which is the HIGH posture this path wants.
   [ -n "$_pr_lst" ] || _pr_lst="$_pr_tmp/no-derivable-listing"
-  _pr_out=$( cd "$ROOT" && sh "$_pr_pred" --dir "$_pr_tmp" --pr 0 --changed "$_pr_lst" --branch "$_pr_branch" 2>&1 </dev/null )
+  if [ -n "$_pr_basearg" ]; then
+    _pr_out=$( cd "$ROOT" && sh "$_pr_pred" --dir "$_pr_tmp" --pr 0 --changed "$_pr_lst" --branch "$_pr_branch" --base-board "$_pr_basearg" 2>&1 </dev/null )
+  else
+    _pr_out=$( cd "$ROOT" && sh "$_pr_pred" --dir "$_pr_tmp" --pr 0 --changed "$_pr_lst" --branch "$_pr_branch" 2>&1 </dev/null )
+  fi
   _pr_rc=$?
   case "$_pr_lst" in
     "$_pr_tmp"/*) : ;;                              # goes with the temp dir below

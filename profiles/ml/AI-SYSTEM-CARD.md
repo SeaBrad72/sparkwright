@@ -36,6 +36,6 @@
 | Field | Value |
 |-------|-------|
 | Decision | **pass** |
-| Security / compliance owner (role) | Bradley James (security/compliance owner) |
+| Security / compliance owner (role) | <compliance owner> |
 | Date | 2026-07-08 |
 | Conditions / follow-ups | Live-judge egress (`--judge claude`) requires adopter consent basis before enabling on real review data. |

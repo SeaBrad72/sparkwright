@@ -416,6 +416,183 @@ own_tree_run() {  # [<root>]  (default .)
   return "$_ot_rc"
 }
 
+# ══ TIER0-LOCKS-OWED (b) — THE AGGREGATOR needs: / CLASSIFIER DRIFT-LOCK ═══════════════════════
+# Discharges the boarded `AGGREGATOR-NEEDS-LOCK` disclosure (design §4b): the `conformance`
+# aggregator's `needs:` list (ci.yml) and the classifier's `PG_NEEDED` constant
+# (ci-classify-changes.sh) are hand-maintained mirrors of "every job that feeds the required
+# `conformance` context", and a job added to one without the other runs, reds, and the required
+# context stays green (or the reverse: a job the classifier still waits on but the aggregator
+# forgot). Two legs, both structural (this file does not parse YAML — same ceiling as the rest of
+# it):
+#   (1) every job whose `if:` carries the docs-only/push-graded skip predicate (`push_graded` —
+#       the superset; every such job also skips on docs-only except `conformance-docs`, which
+#       skips on push-graded alone) is EITHER a member of the aggregator's `needs:` array OR
+#       carries the literal per-job exemption marker on that SAME `if:` line. The marker is not a
+#       hand list living in this file (that would carry the very drift this lock discharges) — it
+#       is a string search on ci.yml itself, so the four deliberately-exempt jobs
+#       (non-vacuity/artifact-gate/artifact-gate-gitlab/artifact-gate-brownfield — none a required
+#       check, each a "a job-level skip is safe") stay exempt only as long as THEIR OWN if: line
+#       says so.
+#   (2) `PG_NEEDED` (∪ `conformance-docs`, − the literal `conformance` self-reference, which names
+#       the aggregator job itself and is not a member of its own `needs:`) equals the aggregator's
+#       `needs:` array, as SETS.
+# A per-job step-count PIN on `conformance-core` (the job most churned) reds an unclassified step
+# added there without updating this lock's constant — deliberately high-friction: the pin is meant
+# to force a human look at the new step's `if:`, not to be silently bumped by a future edit.
+_AGG_CC_STEP_PIN=28
+_agg_marker='not a required check -> a job-level skip is safe'
+
+# _agg_job_step_count <yml> <job> -> the count of top-level (6-space `- `) step entries under
+# <job>, from its header line to the next 2-space-indented job header (or EOF).
+_agg_job_step_count() {
+  _ajs_yml="$1"; _ajs_job="$2"
+  _ajs_start=$(grep -n "^  ${_ajs_job}:\$" "$_ajs_yml" | head -1 | cut -d: -f1)
+  [ -n "$_ajs_start" ] || { echo -1; return; }
+  _ajs_end=$(awk -v s="$_ajs_start" 'NR>s && /^  [A-Za-z0-9_-]+:$/{print NR; exit}' "$_ajs_yml")
+  if [ -n "$_ajs_end" ]; then
+    sed -n "${_ajs_start},$((_ajs_end - 1))p" "$_ajs_yml" | grep -c '^      - '
+  else
+    sed -n "${_ajs_start},\$p" "$_ajs_yml" | grep -c '^      - '
+  fi
+}
+
+# aggregator_needs_lock <ci-yml> <ci-classify-changes.sh> -> rc0 iff both legs above hold.
+aggregator_needs_lock() {
+  _al_yml="$1"; _al_cls="$2"; _al_pin="${3:-$_AGG_CC_STEP_PIN}"
+  { [ -f "$_al_yml" ] && [ -r "$_al_yml" ]; } || { echo "FAIL: aggregator-needs-lock — cannot read $_al_yml"; return 1; }
+  { [ -f "$_al_cls" ] && [ -r "$_al_cls" ]; } || { echo "FAIL: aggregator-needs-lock — cannot read $_al_cls"; return 1; }
+
+  # the ONE bracketed `needs: [...]` line — the conformance aggregator's, and the only job in this
+  # file whose needs: is an array rather than a bare job name.
+  _al_needs_n=$(grep -Ec '^ *needs: \[.*\]$' "$_al_yml")
+  if [ "$_al_needs_n" -ne 1 ]; then
+    echo "FAIL: aggregator-needs-lock — expected exactly one bracketed 'needs: [...]' line (the conformance aggregator's) in $_al_yml, found $_al_needs_n"
+    return 1
+  fi
+  _al_needs_line=$(grep -E '^ *needs: \[.*\]$' "$_al_yml")
+  _al_needs_raw=${_al_needs_line#*\[}; _al_needs_raw=${_al_needs_raw%%\]*}
+  _al_needs_set=$(printf '%s' "$_al_needs_raw" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u)
+
+  # PG_NEEDED, minus the aggregator's own name (it is not a member of its own needs:), plus
+  # conformance-docs (the CI-LANE-BY-CHANGE-CLASS shard the classifier does not itself gate).
+  _al_pg_raw=$(grep -E "^PG_NEEDED='" "$_al_cls" | sed "s/^PG_NEEDED='//; s/'\$//")
+  [ -n "$_al_pg_raw" ] || { echo "FAIL: aggregator-needs-lock — could not read PG_NEEDED from $_al_cls"; return 1; }
+  _al_pg_set=$(printf '%s\n' $_al_pg_raw | grep -v '^conformance$')
+  _al_pg_set=$(printf '%s\nconformance-docs\n' "$_al_pg_set" | grep -v '^$' | sort -u)
+
+  _al_bad=0
+  if [ "$_al_pg_set" != "$_al_needs_set" ]; then
+    echo "FAIL: aggregator-needs-lock — PG_NEEDED (- conformance, + conformance-docs) != the aggregator's needs::"
+    echo "  derived from PG_NEEDED: $(printf '%s' "$_al_pg_set" | tr '\n' ' ')"
+    echo "  aggregator needs:       $(printf '%s' "$_al_needs_set" | tr '\n' ' ')"
+    _al_bad=1
+  fi
+
+  # every job carrying the push-graded `if:` skip is in needs: or marked exempt on that same line.
+  # AWK, not shell case-parsing (a job header can carry a trailing `# ...` comment on the SAME
+  # line — `cf-doctor:            # 492s...` — which a plain `case '  '*:)` glob does not survive):
+  # for each line containing `if:` and `push_graded`, print `<nearest-preceding-2-space-job>\t<line>`.
+  _al_needs_sp=" $(printf '%s' "$_al_needs_set" | tr '\n' ' ') "
+  _al_ifjobs_f=$(mktemp)
+  awk '
+    /^  [A-Za-z0-9_-]+:/ { j = $0; sub(/^  /, "", j); sub(/:.*/, "", j) }
+    /if:/ && /push_graded/ { print j "\t" $0 }
+  ' "$_al_yml" > "$_al_ifjobs_f"
+  while IFS="$(printf '\t')" read -r _al_job _al_line; do
+    [ -n "$_al_job" ] || continue
+    case "$_al_needs_sp" in
+      *" $_al_job "*) continue ;;                               # in needs: -> accounted for
+    esac
+    case "$_al_line" in
+      *"$_agg_marker"*) continue ;;                             # marked exempt -> accounted for
+    esac
+    echo "FAIL: aggregator-needs-lock — job '$_al_job' carries the push-graded if: skip but is neither in the aggregator's needs: nor marked exempt ('$_agg_marker')"
+    _al_bad=1
+  done < "$_al_ifjobs_f"
+  rm -f "$_al_ifjobs_f"
+
+  # the step-count pin on conformance-core.
+  _al_cc=$(_agg_job_step_count "$_al_yml" conformance-core)
+  if [ "$_al_cc" != "$_al_pin" ]; then
+    echo "FAIL: aggregator-needs-lock — conformance-core carries $_al_cc top-level steps, pinned at $_al_pin; a step was added or removed without updating this lock's constant (and, before that, without confirming the new step's if: is accounted for)"
+    _al_bad=1
+  fi
+
+  [ "$_al_bad" = 0 ] || return 1
+  echo "OK: aggregator-needs-lock — needs:/PG_NEEDED match, every push-graded job is accounted for, conformance-core step count pinned at $_al_pin"
+  return 0
+}
+
+# ── SESSION-SURFACE T3/F1+F4 — two structural ordering/argument legs ──────────────────────────
+# Neither is wired into the main gate-id enforcement path above (this file's normal invocation
+# grades an EMITTED adopter pipeline, never the kit's own .github/workflows/ci.yml — see
+# verify.sh's `check control ci-gates` lines). Both are exercised ONLY through --selftest, where
+# they are run once against synthetic fixtures (the load-bearing negatives) and once against the
+# kit's own live ci.yml (the regression backstop: RED here would mean the fix in ci.yml regressed).
+# No new registered check name: same `ci-gates-selftest` entry in verify.sh covers both.
+
+extract_job_block() {  # <workflow-file> <job-name> -> the job's line + every line until the next
+  # top-level (2-space-indented) job key, on stdout. Best-effort/line-anchored, matching this
+  # file's existing style (Leg A's gate-id match, K9's dispatch-shape scan) — not a YAML parser.
+  awk -v _job="  ${2}:" '
+    $0 == _job { infound=1; print; next }
+    infound && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { exit }
+    infound { print }
+  ' "$1"
+}
+
+check_loop_state_credential_order() {  # <workflow-file> -> 0 ok, 1 drop absent/misordered
+  # F1: the `loop-state` job runs PR-controlled code — `conformance/loop-state.sh --head` AND
+  # `scripts/promotion-verify.sh trace` (the recordless-merge leg) — with a checkout token that must
+  # already be gone from .git/config, the sibling idiom the ceremony-binding and review-lane jobs use.
+  # This asserts the credential-drop line PRECEDES the job's first PR-TREE invocation, counting BOTH
+  # conformance/ AND scripts/ (F1-2: the loop-state job's `promotion-verify.sh trace` lives under
+  # scripts/ and is PR-tree code too — an earlier fix counted only conformance/, so a drop landing
+  # after a scripts/ call but before the first conformance/ call would have false-passed). No PR-tree
+  # invocation in the block at all -> nothing to order -> vacuous pass (a job by this name with a
+  # different shape is not this leg's concern).
+  _clo_block=$(extract_job_block "$1" loop-state)
+  if [ -z "$_clo_block" ]; then
+    echo "FAIL: loop-state job not found in $1" >&2
+    return 1
+  fi
+  # Comments stripped first (this file's existing convention — check_kit_seams does the same):
+  # a `#` reference to `conformance/` or `scripts/` in a prose comment (as this very job's own
+  # comments carry) must not count as the invocation the ordering protects.
+  _clo_stripped=$(printf '%s\n' "$_clo_block" | sed 's/#.*//')
+  _clo_conf=$(printf '%s\n' "$_clo_stripped" | grep -nE 'conformance/|scripts/' | head -1 | cut -d: -f1)
+  [ -n "$_clo_conf" ] || return 0
+  _clo_drop=$(printf '%s\n' "$_clo_stripped" | grep -n "unset-all 'http.https://github.com/.extraheader'" | head -1 | cut -d: -f1)
+  if [ -z "$_clo_drop" ]; then
+    echo "FAIL: loop-state job has no checkout-credential drop before its first PR-tree (conformance/ or scripts/) invocation" >&2
+    return 1
+  fi
+  if [ "$_clo_drop" -ge "$_clo_conf" ]; then
+    echo "FAIL: loop-state job's credential drop (block line $_clo_drop) does not precede its first PR-tree (conformance/ or scripts/) invocation (block line $_clo_conf)" >&2
+    return 1
+  fi
+  return 0
+}
+
+check_backlog_presence_base_board() {  # <workflow-file> -> 0 ok, 1 --base-board missing entirely
+  # F4: the `backlog-presence` job's gate invocation must be ABLE to pass --base-board (extracted
+  # from origin/main:BACKLOG.md), or the branch form's change-set-new Done arm fail-safes to
+  # no-bind on every CI run, forcing a second push. At least one invocation line in the block
+  # naming both backlog-presence.sh and --base-board is required (a conditional fallback line for
+  # an unreadable base board, mirroring hooks/pre-push's own fail-safe, is legitimate and does not
+  # need to repeat the flag).
+  _cbp_block=$(extract_job_block "$1" backlog-presence)
+  if [ -z "$_cbp_block" ]; then
+    echo "FAIL: backlog-presence job not found in $1" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$_cbp_block" | grep -q 'backlog-presence\.sh.*--base-board'; then
+    echo "FAIL: backlog-presence job's gate invocation never carries --base-board" >&2
+    return 1
+  fi
+  return 0
+}
+
 selftest() {
   sf=0; d=$(mktemp -d); trap 'rm -rf "$d"' EXIT INT TERM
   mkdir -p "$d/scripts"
@@ -831,6 +1008,188 @@ selftest() {
     echo "selftest SKIP: OT13/OT14/OT15 — kit-source legs (no kit marker here; the ruling lock binds the kit's shipped file only)"
   fi
 
+  # ── TIER0-LOCKS-OWED (b): THE AGGREGATOR needs:/CLASSIFIER DRIFT-LOCK ────────────────────────
+  # A minimal but STRUCTURALLY REAL fixture pair (a tiny ci.yml + a tiny ci-classify-changes.sh),
+  # not the kit's own 1900-line files — so a mutant is a ONE-LINE edit and the leg the mutant
+  # targets is unambiguous.
+  mkdir -p "$d/agg"
+  _agg_write_yml() { # <path> <needs-line>
+    cat > "$1" <<AGGYML
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+  conformance-core:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.push_graded != 'true'
+    steps:
+      - uses: actions/checkout@x
+      - name: one
+        run: echo 1
+      - name: two
+        run: echo 2
+  conformance-docs:
+    needs: changes
+    if: needs.changes.outputs.push_graded != 'true'
+    steps:
+      - uses: actions/checkout@x
+  side-job:
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && needs.changes.outputs.push_graded != 'true'   # not a required check -> a job-level skip is safe
+    steps:
+      - uses: actions/checkout@x
+  conformance:
+    $2
+    if: always()
+    steps:
+      - run: echo done
+AGGYML
+  }
+  _agg_write_cls() { # <path> <pg-needed-value>
+    cat > "$1" <<AGGCLS
+#!/bin/sh
+PG_NEEDED='$2'
+AGGCLS
+  }
+
+  # liveness: a matched pair -> OK, rc0.
+  _agg_write_yml "$d/agg/ci-ok.yml" "needs: [changes, conformance-core, conformance-docs]"
+  _agg_write_cls "$d/agg/cls-ok.sh" "changes conformance-core conformance"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-ok.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
+  case "$_agg_out" in
+    *"OK: aggregator-needs-lock"*) [ "$_agg_rc" -eq 0 ] && echo "selftest PASS: AGG1 — matched needs:/PG_NEEDED pair -> OK, rc0" \
+      || { echo "selftest FAIL: AGG1 — matched pair printed OK but rc=$_agg_rc"; sf=1; } ;;
+    *) echo "selftest FAIL: AGG1 — matched pair did not read OK; out='$_agg_out'"; sf=1 ;;
+  esac
+
+  # negative — job dropped from needs: (still carries the push-graded if:, no exemption marker):
+  # a job present in the pipeline but ABSENT from the aggregator's needs: must red.
+  _agg_write_yml "$d/agg/ci-dropped.yml" "needs: [changes, conformance-docs]"        # conformance-core dropped
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-dropped.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
+  case "$_agg_out" in
+    *"job 'conformance-core' carries the push-graded if:"*) [ "$_agg_rc" -ne 0 ] && echo "selftest PASS: AGG2 — a job dropped from needs: (no marker) -> reds, naming the job" \
+      || { echo "selftest FAIL: AGG2 — named the dropped job but rc=0"; sf=1; } ;;
+    *) echo "selftest FAIL: AGG2 — dropping a job from needs: did not red / did not name it; out='$_agg_out'"; sf=1 ;;
+  esac
+
+  # negative — marker-delete mutant: side-job's exemption marker is removed (still absent from
+  # needs:) -> must red, naming side-job.
+  _agg_write_yml "$d/agg/ci-nomarker.yml" "needs: [changes, conformance-core, conformance-docs]"
+  sed 's/   # not a required check -> a job-level skip is safe//' "$d/agg/ci-nomarker.yml" > "$d/agg/ci-nomarker2.yml"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-nomarker2.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
+  case "$_agg_out" in
+    *"job 'side-job' carries the push-graded if:"*) [ "$_agg_rc" -ne 0 ] && echo "selftest PASS: AGG3 — deleting the exemption marker on a not-needed job -> reds, naming the job" \
+      || { echo "selftest FAIL: AGG3 — named side-job but rc=0"; sf=1; } ;;
+    *) echo "selftest FAIL: AGG3 — the marker-delete mutant did not red / did not name side-job; out='$_agg_out'"; sf=1 ;;
+  esac
+  # ...and the SAME pipeline WITH its marker intact must NOT red on side-job (the marker is load-bearing, not decorative).
+  if _agg_out2=$(sh "$0" --aggregator-lock "$d/agg/ci-nomarker.yml" "$d/agg/cls-ok.sh" 3 2>&1); then _agg_rc2=0; else _agg_rc2=$?; fi
+  case "$_agg_out2" in
+    *"side-job"*) echo "selftest FAIL: AGG3b — side-job flagged even WITH its marker intact; out='$_agg_out2'"; sf=1 ;;
+    *) echo "selftest PASS: AGG3b — the same pipeline WITH the marker intact does not flag side-job" ;;
+  esac
+
+  # negative — PG_NEEDED drift: a phantom name appended to PG_NEEDED with no matching needs: entry
+  # -> the set-equality leg reds.
+  _agg_write_cls "$d/agg/cls-phantom.sh" "changes conformance-core conformance phantom-shard"
+  if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/ci-ok.yml" "$d/agg/cls-phantom.sh" 3 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
+  case "$_agg_out" in
+    *"PG_NEEDED"*) [ "$_agg_rc" -ne 0 ] && echo "selftest PASS: AGG4 — a phantom PG_NEEDED entry with no needs: match -> reds" \
+      || { echo "selftest FAIL: AGG4 — flagged PG_NEEDED mismatch but rc=0"; sf=1; } ;;
+    *) echo "selftest FAIL: AGG4 — a phantom PG_NEEDED entry did not red; out='$_agg_out'"; sf=1 ;;
+  esac
+
+  # negative — the step-count pin: this file's OWN conformance-core step count must still equal
+  # $_AGG_CC_STEP_PIN (proves the pin is wired to the real file, not a fixture-only constant), and a
+  # planted extra step on a SCRATCH COPY of the real file must red it.
+  _agg_kr="$(dirname "$0")/.."
+  # KIT-SELF (artifact-gate first-live-run, CONTROL-PLANE-COVERAGE 2026-09-10): AGG5/AGG6 verify the
+  # KIT's OWN ci.yml/classify-changes pair, so they run only on a kit tree. An INCEPTED adopter tree
+  # HAS a .github/workflows/ci.yml (stamped from its chosen profile), which is NOT the kit's and has
+  # no aggregator-needs structure — running AGG5/AGG6 against it FAILs "out=''" and reds every
+  # adopter's artifact-gate. Gate on a kit marker present too (the twin-marker discriminator,
+  # adopter-census.sh:170): a kit tree keeps docs/ROADMAP-KIT.md or golden-path.yml (both
+  # export-ignored), an adopter export/incept has neither.
+  if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
+    if _agg_out=$(sh "$0" --aggregator-lock 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
+    case "$_agg_out" in
+      *"top-level steps, pinned at"*) echo "selftest FAIL: AGG5 — the kit's OWN ci.yml reds the step-count pin (bump _AGG_CC_STEP_PIN); out='$_agg_out'"; sf=1 ;;
+      *"OK: aggregator-needs-lock"*) echo "selftest PASS: AGG5 — the kit's own ci.yml/classify-changes pair is locked green today" ;;
+      *) echo "selftest FAIL: AGG5 — the kit's own pair did not read OK; out='$_agg_out'"; sf=1 ;;
+    esac
+    mkdir -p "$d/agg/real"
+    sed '/^  conformance-core:/,/^  [A-Za-z0-9_-]*:/{ /^      - uses: actions\/checkout/a\
+      - name: PLANTED MUTANT STEP (AGG6)\
+        run: echo mutant
+    }' "$_agg_kr/.github/workflows/ci.yml" > "$d/agg/real/ci.yml"
+    if _agg_out=$(sh "$0" --aggregator-lock "$d/agg/real/ci.yml" "$_agg_kr/conformance/ci-classify-changes.sh" 2>&1); then _agg_rc=0; else _agg_rc=$?; fi
+    case "$_agg_out" in
+      *"top-level steps, pinned at"*) [ "$_agg_rc" -ne 0 ] && echo "selftest PASS: AGG6 — a step planted into the real conformance-core reds the step-count pin" \
+        || { echo "selftest FAIL: AGG6 — named the pin mismatch but rc=0"; sf=1; } ;;
+      *) echo "selftest FAIL: AGG6 — a planted step in conformance-core did not red the pin; out='$_agg_out'"; sf=1 ;;
+    esac
+  else
+    echo "selftest SKIP: AGG5/AGG6 — not a kit tree (no kit-source ci.yml, or an adopter export/incept where the kit markers are pruned); these legs verify the kit's OWN ci.yml pair"
+  fi
+
+  # ── SESSION-SURFACE T3/F1 — loop-state credential-drop ordering ────────────────────────────
+  mkdir -p "$d/ls"
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n          sh conformance/loop-state.sh --head X\n' > "$d/ls/good.yml"
+  if check_loop_state_credential_order "$d/ls/good.yml" >/dev/null 2>&1; then
+    echo "selftest PASS: LS1 — credential drop before the first conformance/ invocation -> PASS"
+  else echo "selftest FAIL: LS1 — good fixture wrongly failed"; sf=1; fi
+
+  # negative — the drop line absent entirely
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: sh conformance/loop-state.sh --head X\n' > "$d/ls/nodrop.yml"
+  if check_loop_state_credential_order "$d/ls/nodrop.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: LS2 — a missing credential drop was NOT caught"; sf=1
+  else echo "selftest PASS: LS2 — missing credential drop -> FAIL"; fi
+
+  # negative — the drop line present but AFTER the conformance/ invocation
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          sh conformance/loop-state.sh --head X\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n' > "$d/ls/misordered.yml"
+  if check_loop_state_credential_order "$d/ls/misordered.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: LS3 — a credential drop AFTER the conformance/ invocation was NOT caught"; sf=1
+  else echo "selftest PASS: LS3 — drop ordered after the conformance/ call -> FAIL"; fi
+
+  # regression backstop — the kit's OWN live ci.yml must pass this leg today (the SESSION-SURFACE
+  # T3/F1 fix). Gated on the same kit-tree marker AGG5/AGG6 use, so an adopter export is unjudged.
+  if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
+    if check_loop_state_credential_order "$_agg_kr/.github/workflows/ci.yml" >/dev/null 2>&1; then
+      echo "selftest PASS: LS4 — the kit's own ci.yml drops the loop-state credential before its first conformance/ invocation"
+    else echo "selftest FAIL: LS4 — the kit's own ci.yml regressed the loop-state credential-drop ordering"; sf=1; fi
+  else
+    echo "selftest SKIP: LS4 — not a kit tree"
+  fi
+
+  # negative (F1-2) — a scripts/ invocation is PR-tree code too (the loop-state job's
+  # `promotion-verify.sh trace`), so a credential drop AFTER a scripts/ call, but before the first
+  # conformance/ call, must FAIL: the token is still readable when the scripts/ PR-code runs.
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          sh scripts/promotion-verify.sh trace --recent 1\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n          sh conformance/loop-state.sh --head X\n' > "$d/ls/scriptsfirst.yml"
+  if check_loop_state_credential_order "$d/ls/scriptsfirst.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: LS5 — a credential drop AFTER a scripts/ PR-code invocation was NOT caught"; sf=1
+  else echo "selftest PASS: LS5 — drop ordered after a scripts/ PR-code call -> FAIL"; fi
+
+  # ── SESSION-SURFACE T3/F4 — backlog-presence carries --base-board ──────────────────────────
+  mkdir -p "$d/bp"
+  printf 'jobs:\n  backlog-presence:\n    steps:\n      - run: |\n          out=$(sh conformance/backlog-presence.sh --dir . --pr "$PR" --changed /tmp/c.txt --branch "$H" --base-board /tmp/base-BACKLOG.md --claims 2>&1); rc=$?\n' > "$d/bp/good.yml"
+  if check_backlog_presence_base_board "$d/bp/good.yml" >/dev/null 2>&1; then
+    echo "selftest PASS: BP1 — --base-board present on the gate invocation -> PASS"
+  else echo "selftest FAIL: BP1 — good fixture wrongly failed"; sf=1; fi
+
+  # negative — --base-board dropped entirely
+  printf 'jobs:\n  backlog-presence:\n    steps:\n      - run: |\n          out=$(sh conformance/backlog-presence.sh --dir . --pr "$PR" --changed /tmp/c.txt --branch "$H" --claims 2>&1); rc=$?\n' > "$d/bp/nodrop.yml"
+  if check_backlog_presence_base_board "$d/bp/nodrop.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: BP2 — a gate invocation with NO --base-board was NOT caught"; sf=1
+  else echo "selftest PASS: BP2 — --base-board missing -> FAIL"; fi
+
+  # regression backstop — the kit's OWN live ci.yml.
+  if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
+    if check_backlog_presence_base_board "$_agg_kr/.github/workflows/ci.yml" >/dev/null 2>&1; then
+      echo "selftest PASS: BP3 — the kit's own ci.yml passes --base-board to backlog-presence.sh"
+    else echo "selftest FAIL: BP3 — the kit's own ci.yml regressed the --base-board argument"; sf=1; fi
+  else
+    echo "selftest SKIP: BP3 — not a kit tree"
+  fi
+
   if [ "$sf" -eq 0 ]; then echo "OK: ci-gates selftest"; exit 0; else echo "FAIL: ci-gates selftest"; exit 1; fi
 }
 
@@ -850,6 +1209,14 @@ case "${1:-}" in
     shift
     if [ $# -ne 2 ]; then echo "usage: ci-gates.sh --disposition <gate-id> <file>" >&2; exit 1; fi
     disposition_query "$1" "$2"; exit $? ;;
+  # TIER0-LOCKS-OWED (b): the aggregator needs:/classifier drift-lock. Defaults to this kit's own
+  # ci.yml + ci-classify-changes.sh; a selftest fixture passes both explicitly.
+  --aggregator-lock)
+    shift
+    _al_root="$(dirname "$0")/.."
+    _al_y="${1:-$_al_root/.github/workflows/ci.yml}"
+    _al_c="${2:-$_al_root/conformance/ci-classify-changes.sh}"
+    aggregator_needs_lock "$_al_y" "$_al_c" "${3:-}"; exit $? ;;
 esac
 
 WORKFLOW=""; EXPECT_SEAMS=0

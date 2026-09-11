@@ -6,16 +6,23 @@ id: deps-install
 precondition: present gate-install
 when-absent: skip
 assert: present uv sync --frozen
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: data-engineering ships no pyproject.toml on a fresh
+# incept either — guard gate-install (unique N/A echo, independent of the other guards).
+assert: present gate-install: N/A
 skip-reason: no install gate — nothing to activate
-fix-hint: `uv sync --frozen`
+fix-hint: `uv sync --frozen`, guarded on `if [ -f pyproject.toml ]`
 
 id: lint-sqlfluff-ruff
 precondition: present gate-lint
 when-absent: skip
 assert: present sqlfluff lint
 assert: present ruff check
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: no models/ and no pyproject.toml on a fresh incept —
+# guard both halves of gate-lint (each with its own unique N/A echo).
+assert: present gate-lint: N/A.*models
+assert: present gate-lint: N/A.*pyproject.toml
 skip-reason: no lint gate — nothing to activate
-fix-hint: `uv run sqlfluff lint models/` and `uv run ruff check .`
+fix-hint: `uv run sqlfluff lint models/` and `uv run ruff check .`, each guarded on its input
 
 id: sast-ruff-bandit
 precondition: present gate-lint
@@ -31,40 +38,61 @@ precondition: present gate-type-check
 when-absent: skip
 assert: present dbt parse
 assert: present mypy
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: no dbt_project.yml and no pyproject.toml on a fresh
+# incept — guard both halves of gate-type-check.
+assert: present gate-type-check: N/A.*dbt_project.yml
+assert: present gate-type-check: N/A.*pyproject.toml
 skip-reason: no type-check gate — nothing to activate
-fix-hint: `uv run dbt parse` and `uv run mypy .`
+fix-hint: `uv run dbt parse` and `uv run mypy .`, each guarded on its input
 
 id: test-coverage
 precondition: present gate-test
 when-absent: skip
 assert: present pytest --cov
 assert: present --cov-fail-under=80
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: matches ml's gate-test guard exactly (class, not
+# instance) — no pyproject.toml and no tests/ on a fresh incept.
+assert: present if \[ -f pyproject.toml \] && \[ -d tests \]
 skip-reason: no test gate — nothing to activate
-fix-hint: `uv run pytest --cov --cov-fail-under=80`
+fix-hint: `uv run pytest --cov --cov-fail-under=80`, guarded on `if [ -f pyproject.toml ] && [ -d tests ]`
 
 id: build-dbt-compile
 precondition: present gate-build
 when-absent: skip
 assert: present dbt compile
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: no dbt_project.yml on a fresh incept — guard gate-build.
+# Unique echo token — the bare `if [ -f dbt_project.yml ]` condition also appears verbatim in
+# gate-type-check's dbt-parse guard, so asserting it here was MEASURED VACUOUS: stripping
+# gate-build's own guard left this assertion falsely GREEN (the type-check occurrence still
+# satisfied it). The unique "gate-build: N/A" echo cannot be satisfied by a different gate's step.
+assert: present gate-build: N/A
+# correctness fix: guard the artifact upload + provenance job on the same input. hashFiles() at
+# job-if scope is INVALID GHA (actionlint-caught) and the provenance job has no checkout, so the
+# fix is a step OUTPUT (gate-build's own presence check) instead.
+assert: present has_build=true
+assert: present steps.gate-build.outputs.has_build
 skip-reason: no build gate — nothing to activate
-fix-hint: `uv run dbt compile`
+fix-hint: `uv run dbt compile`, guarded on `if [ -f dbt_project.yml ]`; set a `has_build` step output and gate the artifact upload (`steps.gate-build.outputs.has_build`) + the ci job's `outputs:` + the provenance job's `if:` (`needs.ci.outputs.has_build == 'true'`) on it
 
 id: data-quality
 precondition: present gate-data-quality
 when-absent: skip
 assert: present dbt build
 assert: present great_expectations checkpoint run
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: a fresh incept has no dbt project (dbt_project.yml/
+# models/) yet — guard so the data-quality gate skips legibly instead of failing.
+assert: present if \[ -f dbt_project.yml \] && \[ -d models \]
 skip-reason: no data-quality gate — nothing to activate
-fix-hint: `uv run dbt build` + `uv run great_expectations checkpoint run main`
+fix-hint: `uv run dbt build` + `uv run great_expectations checkpoint run main`, guarded on `if [ -f dbt_project.yml ] && [ -d models ]`
 
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 skip-reason: no gitleaks step — nothing to scan
-fix-hint: `gitleaks dir . --no-banner --redact` (full-tree, fetch-depth: 0)
+fix-hint: `gitleaks git . --no-banner --redact` (full-tree, fetch-depth: 0)
 
 id: dep-scan
 precondition: present gate-dep-scan
@@ -91,8 +119,12 @@ precondition: present attest-build-provenance
 when-absent: na
 assert: present repository.private == false
 assert: present owner.type == 'Organization'
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN (correctness fix): also gate on the build input, so this
+# job does not attempt to download a 'build-artifact' that the Upload step never uploaded.
+# needs.ci.outputs.has_build, NOT hashFiles() — invalid at job-if scope, and no checkout here.
+assert: present needs.ci.outputs.has_build == 'true'
 skip-reason: no provenance job in this profile
-fix-hint: gate the provenance job-if on repo visibility
+fix-hint: gate the provenance job-if on repo visibility AND needs.ci.outputs.has_build == 'true'
 
 id: db-postgres
 precondition: present ^[[:space:]]+postgres:

@@ -24,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      # Surfaces gate-build's own presence check to the (different-job) provenance gate below —
+      # hashFiles() is NOT a valid job-level `if:` expression (actionlint: only steps.* contexts
+      # allow it), so a step output is the correct plumbing, not a job-level hashFiles() call.
+      has_build: ${{ steps.gate-build.outputs.has_build }}
     services:
       postgres:
         image: postgres:16
@@ -66,39 +71,76 @@ jobs:
 
       - name: Install dependencies
         id: gate-install
-        run: uv sync --frozen
+        run: |
+          if [ -f pyproject.toml ]; then
+            uv sync --frozen
+          else
+            echo "gate-install: N/A — no pyproject.toml yet (DEVELOPMENT-STANDARDS.md §14 install gate); skipping"
+          fi
 
       - name: Lint
         id: gate-lint
         run: |
-          uv run sqlfluff lint models/
-          uv run ruff check --extend-select S .
+          if [ -d models ]; then
+            uv run sqlfluff lint models/
+          else
+            echo "gate-lint: N/A — no models/ yet (DEVELOPMENT-STANDARDS.md §14 lint gate); skipping sqlfluff"
+          fi
+          if [ -f pyproject.toml ]; then
+            uv run ruff check --extend-select S .
+          else
+            echo "gate-lint: N/A — no pyproject.toml yet (DEVELOPMENT-STANDARDS.md §14 lint gate); skipping ruff"
+          fi
 
       - name: Type-check / validate
         id: gate-type-check
         run: |
-          uv run dbt parse
-          uv run mypy .
+          if [ -f dbt_project.yml ]; then
+            uv run dbt parse
+          else
+            echo "gate-type-check: N/A — no dbt_project.yml yet (DEVELOPMENT-STANDARDS.md §14 type-check gate); skipping dbt parse"
+          fi
+          if [ -f pyproject.toml ]; then
+            uv run mypy .
+          else
+            echo "gate-type-check: N/A — no pyproject.toml yet (DEVELOPMENT-STANDARDS.md §14 type-check gate); skipping mypy"
+          fi
 
       - name: Test + coverage (>=80%)
         id: gate-test
-        run: uv run pytest --cov --cov-fail-under=80
+        run: |
+          if [ -f pyproject.toml ] && [ -d tests ]; then
+            uv run pytest --cov --cov-fail-under=80
+          else
+            echo "gate-test: N/A — no pyproject.toml/tests/ yet (DEVELOPMENT-STANDARDS.md §14 test gate); skipping"
+          fi
 
       - name: Build (dbt compile)
         id: gate-build
-        run: uv run dbt compile
+        run: |
+          if [ -f dbt_project.yml ]; then
+            echo "has_build=true" >> "$GITHUB_OUTPUT"
+            uv run dbt compile
+          else
+            echo "has_build=false" >> "$GITHUB_OUTPUT"
+            echo "gate-build: N/A — no dbt_project.yml yet (DEVELOPMENT-STANDARDS.md §14 build gate); skipping"
+          fi
 
       - name: Data quality (dbt build + Great Expectations)
         id: gate-data-quality
         run: |
-          uv run dbt build
-          uv run great_expectations checkpoint run main
+          if [ -f dbt_project.yml ] && [ -d models ]; then
+            uv run dbt build
+            uv run great_expectations checkpoint run main
+          else
+            echo "gate-data-quality: N/A — no dbt_project.yml/models/ yet (DEVELOPMENT-STANDARDS.md §14 data-quality gate); skipping"
+          fi
 
       - name: Secret scan
         id: gate-secret-scan
         # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
         # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
-        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks git` makes
         # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
         # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
         run: |
@@ -106,7 +148,7 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-          /tmp/gitleaks dir . --no-banner --redact
+          /tmp/gitleaks git . --no-banner --redact
 
       - name: Dependency vulnerability scan
         id: gate-dep-scan
@@ -127,7 +169,11 @@ jobs:
           path: sbom.json
 
       - name: Upload build artifact (for provenance)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Guarded on the same input gate-build needs (dbt_project.yml, via its own step output) —
+        # an empty scaffoldless incept has no dbt project yet, so gate-build skips and
+        # target/manifest.json never exists; without this guard, if-no-files-found: error would
+        # hard-fail every push.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gate-build.outputs.has_build == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: build-artifact
@@ -136,7 +182,9 @@ jobs:
 
   provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    # needs.ci.outputs.has_build mirrors the Upload-build-artifact guard above — no dbt project,
+    # no artifact was uploaded, so this job would fail downloading a nonexistent 'build-artifact'.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_build == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
     runs-on: ubuntu-latest
     permissions:
       contents: read

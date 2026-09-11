@@ -13,10 +13,40 @@ WF="${GOLDEN_PATH_WF:-$ROOT/.github/workflows/golden-path.yml}"
 # server.ts must emit a structured request log: mint/honor a request id + log latency via JSON.stringify.
 SERVER_TOKENS="randomUUID requestId latencyMs JSON.stringify"
 
-check_server() {  # <server.ts> — emits a structured request log line
+# _strip_js_comments FILE -> stdout with // line comments and /* */ (incl. multi-line) block
+# comments removed. A token that appears only inside a comment (a call `//`-commented out) must
+# NOT satisfy the lock — the wiring must be LIVE (mirrors agentops-sensor-wired's #-strip, but for
+# JS/TS). Heuristic, not a real parser (no string-literal awareness) — sufficient for a content lock
+# over the kit's own reference scaffold.
+_strip_js_comments() {
+  awk '
+    {
+      line = $0
+      if (in_block) {
+        idx = index(line, "*/")
+        if (idx == 0) { next }
+        line = substr(line, idx + 2)
+        in_block = 0
+      }
+      sub(/\/\/.*/, "", line)
+      while (match(line, /\/\*.*\*\//)) {
+        line = substr(line, 1, RSTART - 1) substr(line, RSTART + RLENGTH)
+      }
+      idx2 = index(line, "/*")
+      if (idx2 > 0) {
+        line = substr(line, 1, idx2 - 1)
+        in_block = 1
+      }
+      print line
+    }
+  ' "$1"
+}
+
+check_server() {  # <server.ts> — emits a structured request log line (LIVE, not commented out)
   f=$1; miss=0
+  code=$(_strip_js_comments "$f")
   for t in $SERVER_TOKENS; do
-    grep -qF -- "$t" "$f" || { echo "FAIL: $f missing structured-logging token: $t"; miss=1; }
+    printf '%s\n' "$code" | grep -qF -- "$t" || { echo "FAIL: $f missing structured-logging token (live call, not a comment): $t"; miss=1; }
   done
   return $miss
 }
@@ -33,10 +63,12 @@ if [ "${1:-}" = "--selftest" ]; then
   d=$(mktemp -d); sf=0
   printf 'randomUUID requestId latencyMs JSON.stringify\n' > "$d/server_ok.ts"
   printf 'randomUUID requestId JSON.stringify\n' > "$d/server_bad.ts"   # missing latencyMs
+  printf '// randomUUID requestId latencyMs JSON.stringify\n' > "$d/server_commented.ts"   # call commented OUT
   printf 'structured-logging: OK\n"requestId"\nlatencyMs\n' > "$d/wf_ok.yml"
   printf 'some other step\n' > "$d/wf_bad.yml"
   if check_server "$d/server_ok.ts" >/dev/null 2>&1; then echo "selftest PASS: server all tokens -> PASS"; else echo "selftest FAIL: server_ok wrongly failed"; sf=1; fi
   if check_server "$d/server_bad.ts" >/dev/null 2>&1; then echo "selftest FAIL: missing token NOT caught"; sf=1; else echo "selftest PASS: missing token -> FAIL"; fi
+  if check_server "$d/server_commented.ts" >/dev/null 2>&1; then echo "selftest FAIL: //-commented-out call NOT caught (a dead call should not satisfy the lock)"; sf=1; else echo "selftest PASS: //-commented-out call -> FAIL"; fi
   if check_wf "$d/wf_ok.yml" >/dev/null 2>&1; then echo "selftest PASS: wf asserts -> PASS"; else echo "selftest FAIL: wf_ok wrongly failed"; sf=1; fi
   if check_wf "$d/wf_bad.yml" >/dev/null 2>&1; then echo "selftest FAIL: wf missing assertion NOT caught"; sf=1; else echo "selftest PASS: wf missing assertion -> FAIL"; fi
   [ "$sf" -eq 0 ] && { echo "OK: structured-logging selftest"; exit 0; } || { echo "FAIL: structured-logging selftest"; exit 1; }

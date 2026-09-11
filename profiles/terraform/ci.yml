@@ -27,6 +27,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      # Surfaces gate-build's own presence check to the (different-job) provenance gate below —
+      # hashFiles() is NOT a valid job-level `if:` expression (actionlint: only steps.* contexts
+      # allow it), so a step output is the correct plumbing, not a job-level hashFiles() call.
+      has_build: ${{ steps.gate-build.outputs.has_build }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
@@ -69,21 +74,34 @@ jobs:
         id: gate-build
         # The plan is the IaC build artifact. Needs provider creds — wire read-only/plan
         # credentials in your repo (e.g. OIDC to the cloud). -backend=false for pure validation.
-        run: terraform plan -out=tfplan -input=false
+        # `find` (not a shallow `ls *.tf`) so a config nested in a subdir, or a *.tf.json config,
+        # is not missed — a shallow root-only glob would false-green-skip on either shape.
+        run: |
+          if find . -name '*.tf' -o -name '*.tf.json' | grep -q .; then
+            echo "has_build=true" >> "$GITHUB_OUTPUT"
+            terraform plan -out=tfplan -input=false
+          else
+            echo "has_build=false" >> "$GITHUB_OUTPUT"
+            echo "gate-build: N/A — no *.tf/*.tf.json config yet (DEVELOPMENT-STANDARDS.md §14 build gate); skipping"
+          fi
 
       - name: Policy-as-code (Checkov + OPA/conftest)
         id: gate-policy
         run: |
-          pipx run --spec 'checkov==3.2.533' checkov -d . --quiet --compact
-          CONFTEST_VERSION=0.56.0
-          curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar -xz conftest
-          ./conftest test .
+          if find . -name '*.tf' -o -name '*.tf.json' | grep -q .; then
+            pipx run --spec 'checkov==3.2.533' checkov -d . --quiet --compact
+            CONFTEST_VERSION=0.56.0
+            curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar -xz conftest
+            ./conftest test .
+          else
+            echo "gate-policy: N/A — no *.tf/*.tf.json config yet (DEVELOPMENT-STANDARDS.md §14 SAST/policy gate); skipping"
+          fi
 
       - name: Secret scan
         id: gate-secret-scan
         # Range-independent full-tree scan via the pinned gitleaks binary (checksum-verified; H4b
         # supply-chain pattern). Replaces gitleaks-action's commit-range mode, which failed on PR
-        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks dir` makes
+        # merge-refs ("Invalid revision range") and needed pull-requests:read; `gitleaks git` makes
         # no API call (least-privilege: contents:read suffices) and scans the full committed tree,
         # respecting .gitignore. Pinned v8.24.3 + sha256 (gitleaks_8.24.3_checksums.txt).
         run: |
@@ -91,7 +109,7 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-          /tmp/gitleaks dir . --no-banner --redact
+          /tmp/gitleaks git . --no-banner --redact
 
       - name: Dependency / misconfig scan (Trivy config)
         id: gate-dep-scan
@@ -118,7 +136,10 @@ jobs:
           path: sbom.json
 
       - name: Upload build artifact (for provenance)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Guarded on the same input gate-build needs (*.tf/*.tf.json, via its own step output) —
+        # an empty scaffoldless incept has no IaC config yet, so gate-build skips and tfplan
+        # never exists; without this guard, if-no-files-found: error would hard-fail every push.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.gate-build.outputs.has_build == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: build-artifact
@@ -127,7 +148,9 @@ jobs:
 
   provenance:
     needs: ci
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
+    # needs.ci.outputs.has_build mirrors the Upload-build-artifact guard above — no IaC config,
+    # no artifact was uploaded, so this job would fail downloading a nonexistent 'build-artifact'.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_build == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
     runs-on: ubuntu-latest
     permissions:
       contents: read

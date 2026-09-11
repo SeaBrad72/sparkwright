@@ -155,7 +155,7 @@ _incomplete() {
 trap '_incomplete 130' INT
 trap '_incomplete 143' TERM
 
-# check KIND NAME COMMAND...
+# check KIND NAME [--kitself | --adopter] COMMAND...
 check() {
   kind=$1; name=$2; shift 2
   # CP7R5-VERIFY-NONTS — a --kitself check validates the kit's OWN internals (a reference profile, a
@@ -165,11 +165,30 @@ check() {
   # docs/ROADMAP-KIT.md (export-ignored) AND .github/workflows/golden-path.yml (control-plane +
   # export-ignored), so their joint absence == an adopter tree. Same set incept-first-run-green.sh keys on.
   # Paths are repo-root-relative (this script cd's to the root at startup).
+  #
+  # ADOPTER-GATES-INERT (A3) — --adopter is the SIBLING classification, METADATA-ONLY: it never skips
+  # the command (unlike --kitself, which short-circuits before invocation). It exists purely so
+  # conformance/adopter-census.sh can read the classification off this REGISTRY LINE — the census's
+  # single source of truth — for a row whose subject is the ADOPTER'S OWN artifact (their ci.yml, ADR,
+  # RUNBOOK, VERSION tag, board): such a row correctly N/As on a pre-inception export (nothing authored
+  # yet) and ARMS once the adopter incepts/authors, so silencing it with --kitself would be a lie — the
+  # exact error A3 found and corrected (see verify.sh's registry rows below for the 9 --adopter cases).
+  # The two flags are mutually exclusive: a row is either a KIT fact or an ADOPTER fact, never both.
+  if [ "${1:-}" = "--kitself" ] && [ "${2:-}" = "--adopter" ]; then
+    echo "verify.sh: registry error — check '$name' declares BOTH --kitself and --adopter (mutually exclusive)" >&2
+    exit 2
+  fi
+  if [ "${1:-}" = "--adopter" ] && [ "${2:-}" = "--kitself" ]; then
+    echo "verify.sh: registry error — check '$name' declares BOTH --adopter and --kitself (mutually exclusive)" >&2
+    exit 2
+  fi
   if [ "${1:-}" = "--kitself" ]; then
     shift
     if [ ! -f docs/ROADMAP-KIT.md ] && [ ! -f .github/workflows/golden-path.yml ]; then
       line "[$kind]" "$name" "N-A"; nas=$((nas+1)); return 0
     fi
+  elif [ "${1:-}" = "--adopter" ]; then
+    shift   # metadata-only: fall through and run the command like any unflagged row
   fi
   # The child's own basename, for the MISCONFIGURED key below. Taken from the ROW, not from $out.
   _base=""; for _a in "$@"; do case "$_a" in conformance/*.sh) _base=${_a##*/}; break ;; esac; done
@@ -360,6 +379,37 @@ if [ "${1:-}" = "--selftest" ]; then
   printf '%s\n' "$_krun" | grep -q 'kitdemo .* FAIL' || {
     echo "verify --selftest: FAIL (a --kitself check did not RUN on the kit tree -- an always-N-A guard would"
     echo "  mask a genuinely-broken kit-self reference; markers present must mean the check executes)"; exit 1; }
+
+  # -- ADOPTER-GATES-INERT (A3) leg: --adopter is METADATA-ONLY -- it RUNS the command, never skips it,
+  # even on a marker-less (adopter) tree, and it is mutually exclusive with --kitself ------------------
+  # The whole point of the new flag is that a row whose SUBJECT is the adopter's own artifact must keep
+  # RUNNING post-inception -- --kitself's registry-level skip would silence it forever, which is exactly
+  # the A3 defect (roadmap-current et al.). So the load-bearing assertion is the NEGATIVE: on a
+  # marker-less cwd, --kitself would render N-A without invoking the command at all; --adopter must NOT.
+  _adna=$( cd "$(mktemp -d)" || exit 1       # a marker-less cwd == an adopter export
+           controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+           check control addemo --adopter false 2>&1 )
+  printf '%s\n' "$_adna" | grep -q 'addemo .* FAIL' || {
+    echo "verify --selftest: FAIL (a --adopter check did NOT run its command on a marker-less (adopter) tree --"
+    echo "  --adopter must be metadata-only, never a --kitself-style skip, or a real adopter-subject gate goes"
+    echo "  permanently silent)"; exit 1; }
+  # And it must run in the kit repo too (no accidental new skip path on the kit tree either).
+  _adkit=$( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+            check control addemo2 --adopter true 2>&1 )
+  printf '%s\n' "$_adkit" | grep -q 'addemo2 .* PASS' || {
+    echo "verify --selftest: FAIL (a --adopter check did not run+PASS on the kit tree)"; exit 1; }
+  # MUTUAL EXCLUSION: a row declaring BOTH flags is a registry error, either order, and must not silently
+  # pick one.
+  if ( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+       check control admix --kitself --adopter true ) >/dev/null 2>&1; then
+    echo "verify --selftest: FAIL (a check registering BOTH --kitself and --adopter did not error -- they"
+    echo "  must be mutually exclusive)"; exit 1
+  fi
+  if ( controls=0; docs=0; failed=0; unverified=0; ctrl_fail=0; nas=0
+       check control admix2 --adopter --kitself true ) >/dev/null 2>&1; then
+    echo "verify --selftest: FAIL (a check registering --adopter then --kitself did not error -- the"
+    echo "  mutual-exclusion check must not depend on flag order)"; exit 1
+  fi
 
   # -- CP7R5-VERIFY-SUMMARY leg: the RESULT sentence must be honest about failing doc-checks -----------
   # A run with a failing doc-check must NOT print "docs present"; a fully-green run must keep it. Drives
@@ -573,7 +623,10 @@ echo "Conformance verification (honest aggregate)"
 echo "-------------------------------------------"
 # branch-protection's OFFLINE leg only (B4) — declaration-integrity, no gh, no network; see the
 # SCOPE note above for why the LIVE leg stays out of this aggregate.
-check control branch-protection-declared    sh conformance/branch-protection.sh --declared-only
+# --adopter (ADOPTER-GATES-INERT A3): the subject is the ADOPTER'S OWN declared required-checks file —
+# it correctly N/As on a pre-inception export (nothing declared yet) and ARMS once the adopter authors
+# their own declaration; --kitself would silence a real adopter gate forever.
+check control branch-protection-declared    --adopter sh conformance/branch-protection.sh --declared-only
 check control branch-protection-selftest    sh conformance/branch-protection.sh --selftest
 check control agent-autonomy   sh conformance/agent-autonomy.sh
 check control agent-boundary   sh conformance/agent-boundary.sh --selftest
@@ -697,16 +750,20 @@ check control tool-coverage            --kitself sh conformance/tool-coverage.sh
 # (~0.4s), classifies every conformance check as hard-reachable / dial-reachable (observe-dialed
 # profiles/adopter-gates.yml) / unreachable, and reds a claim-verb line naming a check the adopter
 # cannot reach — unless the line discloses the dial or is narrowed to the kit's own CI and true there.
-# NO --kitself, DELIBERATELY, and this is the distinction from the four rows above: this check ARMS
-# ITSELF in-script on the same un-spoofable kit-marker pair, so the flag would be redundant on the
-# adopter side and MISLEADING on the kit side — its N/A is a self-declared skip (C6 renders it N-A),
-# not a registry-level suppression, and on an ARMED tree an export or parse failure is a FAIL rather
-# than an N/A. Registering it here also enrols it in non-vacuity.sh's sweep (which selects from these
-# `^check control` rows); its own --selftest runs as a dedicated ci.yml step (conformance-selftests,
-# "adopter-told self-test") and the LIVE check runs in `docs-links` — a required, no-`if:` job that
-# SURVIVES the docs_only skip, unlike cf-verify-enforced/cf-export, which are disarmed on exactly the
-# `.md` PRs a prose-claim check governs (measured, C7 design §2.7).
-check control adopter-told             sh conformance/adopter-told.sh
+# STILL NO --kitself IN THE FIRST-INVOCATION SENSE, and this is the distinction from the four rows
+# above: this check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so a registry-level
+# skip would be redundant on the adopter side — its N/A is a self-declared skip (C6 renders it N-A), not
+# a registry-level suppression, and on an ARMED tree an export or parse failure is a FAIL rather than an
+# N/A. --kitself (ADOPTER-GATES-INERT A3): the SUBJECT graded is the KIT'S OWN shipped prose (does the
+# kit's own documentation overclaim what an adopter's export enforces) — a genuine kit fact, never the
+# adopter's artifact, so the registry flag is added purely for the census's benefit; the self-arming
+# logic above is unchanged and is what actually governs behaviour. Registering it here also enrols it in
+# non-vacuity.sh's sweep (which selects from these `^check control` rows); its own --selftest runs as a
+# dedicated ci.yml step (conformance-selftests, "adopter-told self-test") and the LIVE check runs in
+# `docs-links` — a required, no-`if:` job that SURVIVES the docs_only skip, unlike
+# cf-verify-enforced/cf-export, which are disarmed on exactly the `.md` PRs a prose-claim check governs
+# (measured, C7 design §2.7).
+check control adopter-told             --kitself sh conformance/adopter-told.sh
 # TOMBSTONE (2026-08-19, CUT-PHASE-GATE-PARK, `D-240819-3` amending `D-240804-1`): two `check control`
 # rows for the edit-time phase gate stood here. The gate was PARKED to the history branch
 # `history/phase-gate-s1a-i` — it had no wired caller, so it denied nothing, and its registration here
@@ -714,10 +771,15 @@ check control adopter-told             sh conformance/adopter-told.sh
 # re-add a row without re-adding the script; the rows and the file move together (see
 # `docs/kit-internals/retiring-conventions.md`, the tombstone there, for the history ref and what
 # re-wiring would take).
-check control harness-ceiling          sh conformance/harness-ceiling-disclosed.sh
-check control harness-ceiling-selftest  sh conformance/harness-ceiling-disclosed.sh --selftest
-check control pipeline-origin          sh conformance/pipeline-origin.sh
-check control pipeline-origin-selftest  sh conformance/pipeline-origin.sh --selftest
+# --kitself (ADOPTER-GATES-INERT A3): both rows drive a REAL `incept` run as their OWN fixture (to
+# prove the KIT'S OWN incept mechanism discloses the harness ceiling correctly) — a kit fact about the
+# kit's tooling, never a specific adopter's already-incepted tree.
+check control harness-ceiling          --kitself sh conformance/harness-ceiling-disclosed.sh
+check control harness-ceiling-selftest  --kitself sh conformance/harness-ceiling-disclosed.sh --selftest
+# --kitself (ADOPTER-GATES-INERT A3): proves the KIT'S OWN incept mechanism stamps a non-colliding
+# pipeline-origin marker — a kit fact about incept's own emission, never a specific adopter's tree.
+check control pipeline-origin          --kitself sh conformance/pipeline-origin.sh
+check control pipeline-origin-selftest  --kitself sh conformance/pipeline-origin.sh --selftest
 # CONFORMANCE-DOC-FAMILIES-MERGE (D-240828-4): these four rows used to name two single-purpose
 # scripts. Both folded into the table-driven conformance/doc-markers.sh (subject:
 # conformance/doc-markers.tsv) with their marker labels preserved verbatim — the mutants those
@@ -739,8 +801,22 @@ check control ci-gates         --kitself sh conformance/ci-gates.sh profiles/typ
 # pre-incept export disposes N/A; an unmarked FOREIGN (brownfield) pipeline disposes
 # ADOPTER-OWNED N/A-with-remedy, never FAIL (the verify-enforced-wired provenance axis, copied).
 # On the kit tree it binds the kit's own meta-CI to the D-240805-2 3-apply set.
-check control ci-gates-own     sh conformance/ci-gates.sh --own-tree
+# --adopter, NOT --kitself (ADOPTER-GATES-INERT A3 STOP-AND-FLAG): the census-reconciliation input to
+# this build listed ci-gates-own under the --kitself group, but the paragraph immediately above and the
+# script's own "raw pre-incept export: no pipeline and no incepted/kit marker" N/A message (ci-gates.sh)
+# say the opposite — the subject is THE TREE'S OWN INSTALLED PIPELINE, it correctly N/As pre-inception
+# (no pipeline exists yet) and ARMS the moment incept emits one, exactly the pattern the other 8
+# --adopter rows share. `--kitself` here would have PERMANENTLY SILENCED the exact adopter-facing
+# enforcement the paragraph above says this row exists for. Re-classified during T4's mandatory re-triage
+# pass; flagged in the build's self-verify report for reviewer attention.
+check control ci-gates-own     --adopter sh conformance/ci-gates.sh --own-tree
 check control ci-gates-selftest sh conformance/ci-gates.sh --selftest
+# TIER0-LOCKS-OWED (b) — the aggregator needs:/classifier drift-lock, live on the KIT's OWN
+# .github/workflows/ci.yml + conformance/ci-classify-changes.sh (the shape this lock judges — a
+# many-shard `conformance` aggregator with a hand-maintained PG_NEEDED mirror — is this repo's own
+# meta-CI, not an adopter's emitted single-pipeline profile). --kitself: an adopter export carries
+# neither this ci.yml's aggregator shape nor this exact classifier constant.
+check control ci-gates-aggregator-lock --kitself sh conformance/ci-gates.sh --aggregator-lock
 # A8/T1-09 — the kit's own ci.yml must carry a real secret-scan gate. The LIVE check + its --selftest are
 # gitleaks-FREE (pure grep over the workflow + runtime fixtures), so both are portable and mutation-swept.
 # The gitleaks-DEPENDENT planted-secret liveness proof lives under --scan-selftest and runs ONLY in the
@@ -765,30 +841,34 @@ check control check-links      sh conformance/check-links.sh
 # the kit's `path.ext:LINE` citations live (its own header discloses that ceiling). This row grades
 # exactly those, over the LIVING Markdown corpus only — the dated record (designs, plans, CHANGELOG,
 # the meta-control log) is exempt-and-REPORTED, because a dated document's citations were correct
-# against the tree of its own date. NO --kitself, for adopter-told's reason: the check ARMS ITSELF
+# against the tree of its own date. STILL SELF-ARMING, for adopter-told's reason: the check ARMS ITSELF
 # in-script on the same un-spoofable kit-marker pair, so on an armed tree a failed corpus enumeration
 # or a zero-citation domain is a FAIL rather than an N/A, while an adopter tree with no citations
-# self-declares N/A (C6 renders it N-A). Registering it here also enrols the file in non-vacuity.sh's
-# sweep (which selects from these `^check control` rows); its own --selftest runs as a dedicated
-# ci.yml step (conformance-selftests, "citation-live self-test") and the LIVE check runs in
-# `docs-links` — the same required, no-`if:` job that survives the docs_only skip, chosen for the same
-# reason: a citation-decay check governs exactly the `.md`-only PRs that disarm cf-verify-enforced.
-check control citation-live    sh conformance/citation-live.sh
+# self-declares N/A (C6 renders it N-A). --kitself (ADOPTER-GATES-INERT A3): the SUBJECT is "the kit's
+# LIVING Markdown"/"the kit's governance record" (its own header) — a genuine kit fact; the flag is
+# added purely for the census, the self-arming logic above still governs actual behaviour. Registering
+# it here also enrols the file in non-vacuity.sh's sweep (which selects from these `^check control`
+# rows); its own --selftest runs as a dedicated ci.yml step (conformance-selftests, "citation-live
+# self-test") and the LIVE check runs in `docs-links` — the same required, no-`if:` job that survives
+# the docs_only skip, chosen for the same reason: a citation-decay check governs exactly the `.md`-only
+# PRs that disarm cf-verify-enforced.
+check control citation-live    --kitself sh conformance/citation-live.sh
 # citation-history (the sixth-dial slice, route (b), ruling D-240815-2d) — the row above grades whether
 # a cited line still EXISTS; this one grades the WRITING SHAPE that carries a dead value forward. The
 # two are deliberately separate files: citation-live is mode-pure and its logic is frozen by this
 # slice, so the new grammar lands beside it rather than inside its mutation region. The LIVE row is
 # registered (base-INDEPENDENT — a `git ls-files` enumeration and one awk pass, no SHA, no merge-base)
-# and it is sub-second. NO --kitself, for citation-live's exact reason: the check ARMS ITSELF in-script
-# on the same un-spoofable kit-marker pair, so on an armed tree an unreadable or unenumerable corpus is
-# a FAIL rather than an N/A, while an adopter tree self-declares the line-anchored N/A that C6 renders
-# N-A (de-lining is the kit's own writing convention; the adopter face is the doctrine, not this gate).
-# Registering it here also enrols the file in non-vacuity.sh's sweep (which selects from these
-# `^check control` rows); its own --selftest runs as a dedicated ci.yml step (conformance-selftests,
-# "citation-history self-test") and the LIVE check runs in `docs-links` — the same required, no-`if:`
-# job, chosen for the same reason: a lint over `.md` prose governs exactly the `.md`-only PRs that
-# disarm cf-verify-enforced.
-check control citation-history sh conformance/citation-history.sh
+# and it is sub-second. STILL SELF-ARMING, for citation-live's exact reason: the check ARMS ITSELF
+# in-script on the same un-spoofable kit-marker pair, so on an armed tree an unreadable or unenumerable
+# corpus is a FAIL rather than an N/A, while an adopter tree self-declares the line-anchored N/A that C6
+# renders N-A (de-lining is the kit's own writing convention; the adopter face is the doctrine, not this
+# gate). --kitself (ADOPTER-GATES-INERT A3): the subject is the kit's own writing convention over its
+# own docs corpus, purely for the census; the self-arming logic still governs behaviour. Registering it
+# here also enrols the file in non-vacuity.sh's sweep (which selects from these `^check control` rows);
+# its own --selftest runs as a dedicated ci.yml step (conformance-selftests, "citation-history
+# self-test") and the LIVE check runs in `docs-links` — the same required, no-`if:` job, chosen for the
+# same reason: a lint over `.md` prose governs exactly the `.md`-only PRs that disarm cf-verify-enforced.
+check control citation-history --kitself sh conformance/citation-history.sh
 # decision-id-live (DANGLING-DECISION-ID-CITES) — the citation-live family ONE LEVEL UP: citation-live
 # asks "does the cited LINE still exist"; this row asks "does the cited RULING still exist". A `D-*` id
 # is the kit's strongest form of authority and was unforgeable only by convention — a living doc could
@@ -797,30 +877,34 @@ check control citation-history sh conformance/citation-history.sh
 # dotted `.N` sub-id to its parent, the sanctioned-commands.tsv:54 precedent); the dated record is
 # exempt-and-REPORTED (the C9 dated principle) and a `.sh` fixture id is out of the `.md`-only domain by
 # construction. HONEST CEILING: it proves the parent ruling EXISTS, never that a sub-item number or the
-# ruling's SUBSTANCE is real (Q3). KIT-SELF, not --kitself: the ids are the kit's own governance
-# vocabulary, so the check ARMS ITSELF on the same un-spoofable kit-marker pair — on an armed tree a
-# missing/empty DECISIONS.md or a zero-citation domain is a FAIL, while an adopter tree self-declares the
-# line-anchored N/A that C6 renders N-A. Registering it here also enrols the file in non-vacuity.sh's
-# sweep (which selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml
-# step (conformance-selftests, "decision-id-live self-test") and the LIVE check runs in `docs-links` — the
-# same required, no-`if:` job, chosen because a ruling-citation check governs exactly the `.md`-only PRs
-# that disarm cf-verify-enforced.
-check control decision-id-live sh conformance/decision-id-live.sh
+# ruling's SUBSTANCE is real (Q3). KIT-SELF, and now --kitself (ADOPTER-GATES-INERT A3): the ids are the
+# kit's own governance vocabulary, so the check ARMS ITSELF on the same un-spoofable kit-marker pair —
+# on an armed tree a missing/empty DECISIONS.md or a zero-citation domain is a FAIL, while an adopter
+# tree self-declares the line-anchored N/A that C6 renders N-A; the registry flag is added purely for
+# the census, the self-arming logic still governs behaviour. Registering it here also enrols the file in
+# non-vacuity.sh's sweep (which selects from these `^check control` rows); its own --selftest runs as a
+# dedicated ci.yml step (conformance-selftests, "decision-id-live self-test") and the LIVE check runs in
+# `docs-links` — the same required, no-`if:` job, chosen because a ruling-citation check governs exactly
+# the `.md`-only PRs that disarm cf-verify-enforced.
+check control decision-id-live --kitself sh conformance/decision-id-live.sh
 # roadmap-current (C10 ROADMAP-STALE-RECONCILE) — the SIBLING of the row above and placed here for the
 # same reason: both grade whether a LIVING document still tells the truth about the tree it describes.
 # citation-live asks "does the line this doc cites still exist"; this row asks "does the roadmap still
 # call SHIPPED work pending". Measured at the C10 probe, seven ROADMAP.md items carried a pending glyph
 # while BACKLOG.md's `## Done` carried a row for each. The reconciliation was done by hand in that
-# slice; THIS ROW IS THE RATCHET that keeps the count at zero. NO --kitself, for citation-live's exact
-# reason: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an armed tree
-# a dead ROADMAP.md, an absent `## Done` section or a zero-marker stub is a FAIL rather than an N/A,
-# while an adopter tree (where roadmap and board are both export-ignored, hence absent) self-declares
-# N/A and C6 renders it N-A. Registering it here also enrols the file in non-vacuity.sh's sweep (which
-# selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
-# (conformance-selftests, "roadmap-current self-test") and the LIVE check runs in `docs-links` — the
-# same required, no-`if:` job, chosen because a roadmap-honesty check governs exactly the `.md`-only
-# PRs that disarm cf-verify-enforced.
-check control roadmap-current  sh conformance/roadmap-current.sh
+# slice; THIS ROW IS THE RATCHET that keeps the count at zero. STILL NO --kitself, for citation-live's
+# exact reason: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an armed
+# tree a dead ROADMAP.md, an absent `## Done` section or a zero-marker stub is a FAIL rather than an N/A.
+# --adopter (ADOPTER-GATES-INERT A3, correcting an earlier --kitself estimate): the check's own header
+# says "An adopter who KEEPS a ROADMAP.md and a BACKLOG.md with a Done section is graded normally" — the
+# subject is the ADOPTER'S OWN roadmap<->board coherence, self-arming and borderline, but adopter-subject
+# nonetheless. `--kitself` would have permanently silenced a real gate the moment an adopter authors
+# either file; `--adopter` keeps it census-visible without that lie. Registering it here also enrols the
+# file in non-vacuity.sh's sweep (which selects from these `^check control` rows); its own --selftest
+# runs as a dedicated ci.yml step (conformance-selftests, "roadmap-current self-test") and the LIVE check
+# runs in `docs-links` — the same required, no-`if:` job, chosen because a roadmap-honesty check governs
+# exactly the `.md`-only PRs that disarm cf-verify-enforced.
+check control roadmap-current  --adopter sh conformance/roadmap-current.sh
 # runbook-current (C11 KIT-RUNBOOK) — the THIRD member of the living-document family above, and it sits
 # here for the family's reason: citation-live asks "does the line this doc cites still exist", roadmap-current
 # asks "does the roadmap still call SHIPPED work pending", and this row asks "do the kit's own release-pinned
@@ -830,24 +914,30 @@ check control roadmap-current  sh conformance/roadmap-current.sh
 # runbook had one. Extending this row's check was the cheap path; a second check would have been the expensive
 # one (CONFORMANCE-MASS-BUDGET). Measured at the C11 probe, the kit had NO RUNBOOK.md at all and
 # its cold-resume path ran entirely through one agent's private memory — a friction-test failure. C11 authored
-# the file; THIS ROW IS THE RATCHET that keeps it existing and dated. NO --kitself, for the same reason the two
-# rows above carry none: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an armed
-# tree an absent RUNBOOK.md or THREAT-MODEL.md, a missing/duplicated/stale marker or a dead VERSION is a FAIL
-# rather than an N/A, while an adopter tree (where both records are export-ignored and the adopter's own are
-# stamped from the templates) self-declares N/A and C6 renders it N-A. Registering it here also enrols the file in non-vacuity.sh's sweep
+# the file; THIS ROW IS THE RATCHET that keeps it existing and dated. STILL SELF-ARMING, for the same reason
+# the two rows above carry: the check ARMS ITSELF in-script on the same un-spoofable kit-marker pair, so on an
+# armed tree an absent RUNBOOK.md or THREAT-MODEL.md, a missing/duplicated/stale marker or a dead VERSION is a
+# FAIL rather than an N/A, while an adopter tree (where both records are export-ignored and the adopter's own
+# are stamped from the templates) self-declares N/A and C6 renders it N-A. --kitself (ADOPTER-GATES-INERT A3):
+# the subject is explicitly "the KIT'S OWN release-pinned governing records" (this comment's own words) — a
+# genuine kit fact; the registry flag is added purely for the census, the self-arming logic above still
+# governs behaviour. Registering it here also enrols the file in non-vacuity.sh's sweep
 # (which selects from these `^check control` rows); its own --selftest runs as a dedicated ci.yml step
 # (conformance-selftests, "runbook-current self-test") and the LIVE check runs in `docs-links` — the same
 # required, no-`if:` job, chosen because a runbook-currency check governs exactly the `.md`-only PRs that
 # disarm cf-verify-enforced. HONEST CEILING, so the row is not read as more than it is: it proves EXISTENCE +
 # VERSION-STRING CURRENCY, never that a single procedure in the file is true.
-check control runbook-current  sh conformance/runbook-current.sh
+check control runbook-current  --kitself sh conformance/runbook-current.sh
 check control whitespace-clean  sh conformance/whitespace-clean.sh
 check control build-output-ignored  sh conformance/build-output-ignored.sh
 check control assurance-tiers   sh conformance/assurance-tiers.sh
 check control promotion-contract  sh conformance/promotion-contract-documented.sh
 check control inception-bootstrap  sh conformance/inception-bootstrap-documented.sh
 check control backlog-adapters sh conformance/backlog-adapters.sh
-check control ci-selftest-cov  sh conformance/ci-selftest-coverage.sh
+# --kitself (ADOPTER-GATES-INERT A3): scans "the kit's own checks" (conformance/*.sh, scripts/*.sh,
+# hooks/pre-push, its own header) for --selftest wiring into the KIT's own ci.yml — a kit fact, and
+# meaningless once an adopter's export prunes those very files/that workflow.
+check control ci-selftest-cov  --kitself sh conformance/ci-selftest-coverage.sh
 check control runtime-floor   sh conformance/runtime-floor-coherent.sh
 # Registered here (unlike non-vacuity-wired below) BECAUSE IT IS PORTABLE: a pure classifier over a file
 # listing, with no dependency on the kit's own ci.yml, so it behaves identically on an adopter artifact.
@@ -871,11 +961,17 @@ check control ci-classify      sh conformance/ci-classify-changes.sh --selftest
 # export→incept before this line was written, not reasoned. So it is registered below, and an adopter
 # who deletes the step goes RED: that is the enforcement, not a regression. Its --fleet mode stays
 # kit-only (an adopter's tree is pruned to one profile) and is enforced as a ci.yml step instead.
-check control verify-enforced  sh conformance/verify-enforced-wired.sh
+# --adopter (ADOPTER-GATES-INERT A3): the subject is the ADOPTER'S OWN ci.yml running `verify --require`
+# — it correctly N/As pre-inception (no emitted pipeline yet) and ARMS the moment incept emits one;
+# --kitself would silence exactly the enforcement this row exists for.
+check control verify-enforced  --adopter sh conformance/verify-enforced-wired.sh
 check control onboarding       sh conformance/onboarding-complete.sh
 check control discovery        sh conformance/discovery-complete.sh
 check control adopter-preflight --kitself sh conformance/adopter-preflight-wired.sh
-check control adopter-export   sh conformance/adopter-export-wired.sh
+# --kitself (ADOPTER-GATES-INERT A3): "regression-lock for the S3 adopter-clean obtain MECHANISM"
+# (its own header) — proves the KIT'S OWN exporter (scripts/adopter-export.sh) works, never a specific
+# adopter's already-exported tree, and it needs the kit's own committed HEAD to run at all.
+check control adopter-export   --kitself sh conformance/adopter-export-wired.sh
 # adopter-export-claims (NON-VACUITY-SHARD2-FLOOR) — the exported tree's OWN claims-registry proof,
 # un-nested out of the row above. THE ROW FORM IS `--selftest`, DELIBERATELY, and the reason is the
 # whole point of the slice: the LIVE check runs two full exports and two claims-registry runs (~316s
@@ -904,7 +1000,13 @@ check control brownfield-walk  --kitself sh conformance/brownfield-walk.sh --sel
 # theirs (review I-2). Adopter trees render N/A; the kit-side lock stays fully binding.
 check control codeowners-export-clean --kitself sh conformance/codeowners-export-clean.sh
 check control mode-blind       sh conformance/mode-enforcement-blind.sh
-check control orchestrator-loop sh conformance/orchestrator-loop-wired.sh
+# --kitself (ADOPTER-GATES-INERT A3, design §2 bucket (b)): the E4/E5 reference-lock family below
+# (orchestrator-loop, feature-flags-wired, containment-audit, runtime-security, structured-logging,
+# app-tracing, metrics-endpoint, otlp-backend, trace-query, agentops-sensor) — each script's own header
+# already states "kit-self lock; NOT that an adopter's app does": today they instrument the KIT's OWN
+# reference app, keyed on golden-path.yml + the kit scaffold. The adopter-facing successor (grading the
+# adopter's OWN deployed app) is the boarded ADOPTER-OPERATIONAL-CONFORMANCE row, not this slice.
+check control orchestrator-loop --kitself sh conformance/orchestrator-loop-wired.sh
 check control escalation-seam    sh conformance/escalation-wired.sh --selftest
 check control proportional-gate sh conformance/proportional-gate-wired.sh --selftest
 # HITL obligation engine (HITL-1/2/4/5 — HITL-5's regulated-data surface rides threat-obligation.sh's own
@@ -951,6 +1053,11 @@ check control coverage-census  --kitself sh conformance/non-vacuity.sh --coverag
 check control eval-harness      sh conformance/eval-harness-wired.sh --selftest
 check control eval-harness-runs sh conformance/eval-harness-runs.sh --selftest
 check control roster-guard      sh conformance/roster-guard-wired.sh --selftest
+# GATE-SUBJECT-IS-THE-ADOPTERS-SYSTEM (K13): the regression-lock for the two arms added to
+# has_deploy_surface (conformance/surface-lib.sh) — surface-lib.sh itself has no --selftest of its own
+# by design (aggregate-exclusions.txt); this is its wired companion. Portable (mktemp fixtures only,
+# not kit-self), so registered plainly like roster-guard above.
+check control surface-lib-wired sh conformance/surface-lib-wired.sh --selftest
 # TRIPLE COLLAPSED (PR 10): `conflict-safe-integration` and `skill-spine` sat here as two MORE rows
 # invoking orchestrator-loop-wired.sh with IDENTICAL arguments — one script run three times per aggregate
 # for zero extra evidence. Both CLAIM IDS ARE UNTOUCHED (claims.tsv, REQUIRED_IDS, the S3b carve;
@@ -963,49 +1070,81 @@ check control roster-guard      sh conformance/roster-guard-wired.sh --selftest
 # run as a dedicated ci.yml step on the kit source (which satisfies ci-selftest-coverage) plus the standing
 # self-negative inside --selftest; non-vacuity sweeps conformance/*.sh directly, so it is covered regardless.
 check control release-tag       sh conformance/release-tag-wired.sh
-check control feature-flags-wired sh conformance/feature-flags-wired.sh
-check control profile-parity   sh conformance/profile-parity.sh
-check control ratification-parity sh conformance/ratification-parity.sh
-check control adopter-gates-parity sh conformance/adopter-gates-parity.sh
-check control poster-parity       sh conformance/poster-parity.sh
-check control containment-audit   sh conformance/containment-audit-wired.sh
+# --kitself (ADOPTER-GATES-INERT A3): feature-flags-wired is "regression-lock for the E2 feature-flag
+# REFERENCE" (its own header) — the kit's own reference wiring, not a specific adopter's app.
+check control feature-flags-wired --kitself sh conformance/feature-flags-wired.sh
+# --kitself: "PARITY across the app-stack PROFILES" (its own header) — grades the KIT's own template
+# set (all ten profiles), meaningless on an adopter tree pruned to the ONE profile they chose.
+check control profile-parity   --kitself sh conformance/profile-parity.sh
+# --kitself: "ships for EVERY stack" (its own header) — grades the KIT's own template set across all
+# profiles, same reason as profile-parity above.
+check control ratification-parity --kitself sh conformance/ratification-parity.sh
+# --kitself: same reason as ratification-parity — "ship for EVERY stack" (its own header), the kit's
+# own template set.
+check control adopter-gates-parity --kitself sh conformance/adopter-gates-parity.sh
+# --kitself: locks that a retired KIT mechanism (check-run posters) stays retired across the kit's own
+# workflows — a kit fact, not an adopter artifact.
+check control poster-parity       --kitself sh conformance/poster-parity.sh
+# --kitself (design §2 bucket (b), E4/E5 family): see the note above orchestrator-loop.
+check control containment-audit   --kitself sh conformance/containment-audit-wired.sh
 check control token-scope         sh conformance/token-scope.sh
-check control runtime-security    sh conformance/runtime-security.sh
-check control structured-logging  sh conformance/structured-logging-wired.sh
-check control app-tracing         sh conformance/app-tracing-wired.sh
-check control metrics-endpoint    sh conformance/metrics-endpoint-wired.sh
-check control otlp-backend        sh conformance/otlp-backend-wired.sh
-check control trace-query         sh conformance/trace-query-wired.sh
-check control agentops-sensor    sh conformance/agentops-sensor-wired.sh
+# --kitself (E4/E5 family, design §2 bucket (b) — see the note above orchestrator-loop): each script's
+# own header states "kit-self lock; NOT that an adopter's app does" — proves the KIT's reference app is
+# instrumented, not that an adopter's arbitrary app is. The adopter-facing successor is the boarded
+# ADOPTER-OPERATIONAL-CONFORMANCE row.
+check control runtime-security    --kitself sh conformance/runtime-security.sh
+check control structured-logging  --kitself sh conformance/structured-logging-wired.sh
+check control app-tracing         --kitself sh conformance/app-tracing-wired.sh
+check control metrics-endpoint    --kitself sh conformance/metrics-endpoint-wired.sh
+check control otlp-backend        --kitself sh conformance/otlp-backend-wired.sh
+check control trace-query         --kitself sh conformance/trace-query-wired.sh
+check control agentops-sensor    --kitself sh conformance/agentops-sensor-wired.sh
 check control author-not-approver sh conformance/author-not-approver-wired.sh
 check control runaway-killswitch sh conformance/runaway-killswitch-wired.sh --selftest
-check control version-tag-coherent sh conformance/version-tag-coherent.sh
+# --adopter (ADOPTER-GATES-INERT A3): the subject is the ADOPTER'S OWN VERSION file vs THEIR OWN git
+# tags — it correctly N/As pre-inception (no tags cut yet) and ARMS once the adopter releases; --kitself
+# would silence a real adopter gate forever.
+check control version-tag-coherent --adopter sh conformance/version-tag-coherent.sh
 check control promotion-verify  sh conformance/promotion-verify-wired.sh --selftest
 check control control-plane-revert-drill  sh conformance/control-plane-revert-drill.sh --selftest
 check control promotion-actuate  sh conformance/promotion-actuate-wired.sh --selftest
 check control promotion-actuate-run  sh conformance/promotion-actuate-wired.sh
-check control incept-first-run-green  sh conformance/incept-first-run-green.sh --selftest
+# --kitself (ADOPTER-GATES-INERT A3): every leg below drives a REAL `incept` against the KIT's OWN
+# `profiles/<x>` reference scaffold (needs the kit's committed HEAD + its own profiles/ directory,
+# neither of which ships in an adopter export, which is pruned to the ONE profile the adopter chose).
+# A kit fact about the kit's ten reference stacks, never a specific adopter's tree.
+check control incept-first-run-green  --kitself sh conformance/incept-first-run-green.sh --selftest
 check control inception-done-surface  sh conformance/inception-done.sh --selftest
-check control incept-first-run-green-profile  sh conformance/incept-first-run-green.sh profiles/typescript-node
-check control incept-first-run-green-go  sh conformance/incept-first-run-green.sh profiles/go
-check control incept-first-run-green-python  sh conformance/incept-first-run-green.sh profiles/python
-check control incept-first-run-green-rust  sh conformance/incept-first-run-green.sh profiles/rust
-check control incept-first-run-green-java-spring  sh conformance/incept-first-run-green.sh profiles/java-spring
-check control incept-first-run-green-kotlin  sh conformance/incept-first-run-green.sh profiles/kotlin
-check control incept-first-run-green-dotnet  sh conformance/incept-first-run-green.sh profiles/dotnet
-check control incept-first-run-green-terraform  sh conformance/incept-first-run-green.sh profiles/terraform
-check control incept-first-run-green-data-engineering  sh conformance/incept-first-run-green.sh profiles/data-engineering
-check control incept-first-run-green-ml  sh conformance/incept-first-run-green.sh profiles/ml
+check control incept-first-run-green-profile  --kitself sh conformance/incept-first-run-green.sh profiles/typescript-node
+check control incept-first-run-green-go  --kitself sh conformance/incept-first-run-green.sh profiles/go
+check control incept-first-run-green-python  --kitself sh conformance/incept-first-run-green.sh profiles/python
+check control incept-first-run-green-rust  --kitself sh conformance/incept-first-run-green.sh profiles/rust
+check control incept-first-run-green-java-spring  --kitself sh conformance/incept-first-run-green.sh profiles/java-spring
+check control incept-first-run-green-kotlin  --kitself sh conformance/incept-first-run-green.sh profiles/kotlin
+check control incept-first-run-green-dotnet  --kitself sh conformance/incept-first-run-green.sh profiles/dotnet
+check control incept-first-run-green-terraform  --kitself sh conformance/incept-first-run-green.sh profiles/terraform
+check control incept-first-run-green-data-engineering  --kitself sh conformance/incept-first-run-green.sh profiles/data-engineering
+check control incept-first-run-green-ml  --kitself sh conformance/incept-first-run-green.sh profiles/ml
 check control stack-decision-integrity  sh conformance/stack-decision-integrity.sh --selftest
-check control stack-decision-integrity-adr  sh conformance/stack-decision-integrity.sh
+# --adopter (ADOPTER-GATES-INERT A3): the LIVE leg's subject is the ADOPTER'S OWN stack-choice ADR
+# rationale — it correctly N/As pre-inception (no ADR authored yet) and ARMS once the adopter writes
+# one; --kitself would silence a real adopter gate forever. The --selftest sibling above is hermetic
+# (fixture-driven) and stays unflagged.
+check control stack-decision-integrity-adr  --adopter sh conformance/stack-decision-integrity.sh
 check control deploy-decision-integrity  sh conformance/deploy-decision-integrity.sh --selftest
-check control deploy-decision-integrity-run  sh conformance/deploy-decision-integrity.sh
+# --adopter, same reason as stack-decision-integrity-adr above: the subject is the adopter's OWN
+# deploy-target rationale.
+check control deploy-decision-integrity-run  --adopter sh conformance/deploy-decision-integrity.sh
 check control harness-decision-integrity  sh conformance/harness-decision-integrity.sh --selftest
-check control harness-decision-integrity-run  sh conformance/harness-decision-integrity.sh
+# --adopter, same reason again: the subject is the adopter's OWN harness-fit rationale.
+check control harness-decision-integrity-run  --adopter sh conformance/harness-decision-integrity.sh
 check control script-disclosure  sh conformance/script-disclosure.sh --selftest
 check control script-disclosure-scan  sh conformance/script-disclosure.sh
 check control backlog-current  sh conformance/backlog-current.sh --selftest
-check control backlog-current-run  sh conformance/backlog-current.sh .
+# --adopter (ADOPTER-GATES-INERT A3): the subject is the ADOPTER'S OWN BACKLOG.md board hygiene — it
+# correctly N/As pre-inception (no board authored yet) and ARMS once the adopter starts one; --kitself
+# would silence a real adopter gate forever.
+check control backlog-current-run  --adopter sh conformance/backlog-current.sh .
 # owner-step-markers (PHASE-B-HYGIENE R1) — stale `OWNER STEP OPEN` / "not yet bound live" markers
 # must not outlive their steps. Both rows are base-independent (git ls-files + grep; the selftest
 # builds its own fixture repos), so live + selftest register here and enter the mutation sweep.
@@ -1028,6 +1167,14 @@ check control backlog-presence  sh conformance/backlog-presence.sh --selftest
 # CI step invokes it live. The load-bearing negative lives in --selftest (stubbed
 # {"enabled":false}); the live repo must never serve as the negative.
 check control security-channel-live-selftest sh conformance/security-channel-live.sh --selftest
+# TIER0-LOCKS-OWED (c): review-lane.sh was wired ONLY in ci.yml, so `non-vacuity.sh --only
+# review-lane.sh` matched no targeted check and the mutation sweep never covered the kit's newest
+# control-plane gate (the review-record grammar). Selftest-only, same shape as backlog-presence and
+# security-channel-live above: the live `review-lane.sh --pre-push` / `--pr` runs need a real git
+# history / forge context that a hermetic offline sweep does not carry; those live paths run in
+# ci.yml and at the pre-push speed bump, not here. review-lane.sh is NOT dead code registered only
+# for the sweep's sake: its --selftest oracle drives the same functions the live callers invoke.
+check control review-lane      sh conformance/review-lane.sh --selftest
 # CONFORMANCE-DOC-FAMILIES-MERGE (D-240828-4): the nine conditional readiness rows now dispatch into
 # conformance/readiness.sh (subject: conformance/readiness.tsv) and the two kit-doc marker rows into
 # conformance/doc-markers.sh (subject: conformance/doc-markers.tsv). SAME ROW NAMES, same three-state

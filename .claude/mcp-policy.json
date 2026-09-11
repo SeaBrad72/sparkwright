@@ -1,5 +1,7 @@
 {
-  "_comment": "MCP capability gate policy (Slice 11a). guard_check_mcp denies un-allowlisted destructive/egress MCP tools by default. Add the tools this project needs. Prefer exact 'mcp__server__action' entries over 'mcp__server__*' wildcards: a wildcard admits EVERY tool on that server (including destructive ones), bypassing classification. classOverride reclassifies a single tool (e.g. {\"mcp__x__export_report\": \"read\"}). Control-plane: edit only via human maintenance.",
-  "allow": [],
+  "_comment": "MCP capability gate policy (Slice 11a; action-anchored key added 3d F2). guard_check_mcp denies un-allowlisted destructive/egress MCP tools by default. Add the tools this project needs. Two honored allow shapes: an exact 'mcp__server__action' entry, or an action-anchored, server-agnostic 'mcp__*__action' key that admits that action on ANY server (server-rename-proof — the connected GitHub MCP server has been seen as both 'github' and 'claude_ai_Github_MCP'). A full-server wildcard 'mcp__server__*' (and 'mcp__*__*') is REJECTED — it would admit every tool on a server, so it no longer permits anything; prefer exact or action-anchored keys. classOverride reclassifies a single tool (e.g. {\"mcp__x__export_report\": \"read\"}). The action-anchored key is a per-action trust decision, not authentication of the tool; real egress is the platform boundary's job. Control-plane: edit only via human maintenance.",
+  "allow": [
+    "mcp__*__create_pull_request"
+  ],
   "classOverride": {}
 }

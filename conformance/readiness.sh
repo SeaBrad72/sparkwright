@@ -45,7 +45,7 @@ RD_LINT_FAIL=0
 # EXPECTED ROW COUNT PER CASE (see doc-markers.sh's DM_EXPECT for the reasoning): a row silently
 # lost used to change only a log number; pinned here it changes the VERDICT. A case absent from this
 # list is itself a FAIL, so a new case cannot land without its count.
-RD_EXPECT='agentops-ready:3 dr-ready:8 eval-ready:4 observability-ready:4 preview-env-ready:3 privacy-ready:4 resilience-ready:4 responsible-ai-ready:4 test-data-ready:3'
+RD_EXPECT='agentops-ready:3 dr-ready:10 eval-ready:4 observability-ready:4 preview-env-ready:3 privacy-ready:4 resilience-ready:4 responsible-ai-ready:4 test-data-ready:3'
 
 # rd_lint: the table is well-formed, or the check FAILS LOUDLY. A parser that skips what it cannot
 # understand turns a malformed row into an UNENFORCED attestation and reports nothing. Four rules:

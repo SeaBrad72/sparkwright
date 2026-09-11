@@ -73,7 +73,7 @@ real requests and inspects responses for misconfigurations, missing protections,
 **The proven floor — runtime-security headers (shipped + gated).** The reference app sets four
 security headers on every response (`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
 `Content-Security-Policy: default-src 'none'`, `Referrer-Policy: no-referrer`), and the `golden-path`
-workflow **asserts them on the booted container** (locked by `conformance/runtime-security.sh`). This
+workflow **asserts them on the booted container** (locked by `conformance/runtime-security.sh` — the kit's own CI; a kit-self reference-lock on the kit's reference app, not your deployed app, whose adopter-facing successor is boarded as `ADOPTER-OPERATIONAL-CONFORMANCE`). This
 is a real, deterministic runtime-security check — not a pentest.
 
 **Full DAST — the reference pattern (opt-in).** For a real web attack surface (routes, forms, auth,

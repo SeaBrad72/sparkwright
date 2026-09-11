@@ -99,6 +99,55 @@ _no_double_blank() {
   return 0
 }
 
+# _GH_COUPLING_ALLOWLIST — ADOPTER-CLAIMS-HONEST / D-240906 (see docs/architecture/2026-09-07-
+# adopter-claims-honest-design.md). The 10 adopter-facing helper scripts that (a) SHIP in the
+# export and (b) make a real `gh`/GitHub-API call in a core path — the true coupling surface
+# docs/operations/ci-platforms.md's "Honest coupling note" names, corrected from a refuted "two".
+# CURATED, NOT DERIVED (the check's own honest ceiling, stated once here rather than re-typed at
+# every call site): whether a `gh` token is a real call, a comment, a `printf`'d fixture line, or a
+# DENY|/ALLOW| guard-corpus row is not soundly grep-decidable (the false-count class this slice's
+# design names) — so a human curated this list, and the non-vacuity FLOOR this check buys is
+# ship-presence + gh-token-presence + count-parity with the doc, never exhaustive discovery of a
+# new coupling. `_gh_coupling_check`'s WARN branch is the detection SIBLING for that gap: loud, not
+# a hard fail, because a false-positive there (a `gh` mention in a comment/fixture) must not redden
+# CI on an unrelated PR.
+_GH_COUPLING_ALLOWLIST="conformance/branch-protection.sh conformance/board-drift.sh conformance/mirror-tag-protection.sh conformance/security-channel-live.sh scripts/agent-trace.sh scripts/branch-protection-apply.sh scripts/dora.sh scripts/preflight.sh scripts/promotion-verify.sh scripts/release-tag.sh"
+
+# _gh_coupling_check <exported-tree> <ci-platforms-doc> -> 0 = every allowlisted script ships and
+# still carries a real `gh` token, AND the doc's stated count matches the allowlist length · 1 = a
+# regression in either. Also prints (non-fatal) WARN lines for any OTHER shipped .sh file carrying
+# an un-commented `gh` token — a candidate new coupling for human review, never a hard fail (see the
+# ceiling note above the allowlist).
+_gh_coupling_check() {
+  _gc_tree=$1; _gc_doc=$2; _gc_rc=0
+  _gc_want=$(printf '%s\n' "$_GH_COUPLING_ALLOWLIST" | wc -w | tr -d ' ')
+  for _gc_p in $_GH_COUPLING_ALLOWLIST; do
+    if [ ! -f "$_gc_tree/$_gc_p" ]; then
+      echo "FAIL: gh-coupling — allowlisted script missing from the export ($_gc_p)"; _gc_rc=1
+    elif ! grep -Eq 'gh (api|pr|run|repo|auth|workflow)' "$_gc_tree/$_gc_p"; then
+      echo "FAIL: gh-coupling — allowlisted script no longer carries a real gh token ($_gc_p)"; _gc_rc=1
+    fi
+  done
+  if [ -f "$_gc_doc" ]; then
+    if grep -Eq "(^|[^0-9])${_gc_want} helper scripts($|[^0-9])" "$_gc_doc"; then
+      : # PASS — doc's stated count matches the allowlist
+    else
+      echo "FAIL: gh-coupling — $_gc_doc does not state the allowlist count ($_gc_want helper scripts)"; _gc_rc=1
+    fi
+  else
+    echo "FAIL: gh-coupling — $_gc_doc missing"; _gc_rc=1
+  fi
+  # WARN sibling — advisory only, never flips _gc_rc.
+  find "$_gc_tree" -name '*.sh' -type f 2>/dev/null | while IFS= read -r _gc_f; do
+    _gc_rel=${_gc_f#"$_gc_tree/"}
+    case " $_GH_COUPLING_ALLOWLIST " in *" $_gc_rel "*) continue ;; esac
+    if grep -Ev '^[[:space:]]*#' "$_gc_f" 2>/dev/null | grep -Eq 'gh (api|pr|run|repo|auth|workflow)'; then
+      echo "WARN: gh-coupling — $_gc_rel carries an un-commented gh token and is NOT on the allowlist (candidate new coupling — review docs/operations/ci-platforms.md)"
+    fi
+  done
+  return "$_gc_rc"
+}
+
 # _no_readme_count <readme> -> 0 = the README defers to the export script's runtime count · 1 = it
 # hardcodes a drifting count (and NAMES the fix). This is block (e) of run(), lifted out as a pure
 # function on the `_no_eof_blank` precedent above — as inline code it was UNTESTABLE IN ISOLATION and
@@ -287,6 +336,8 @@ run() {
     # ENGINEERING-PRINCIPLES.md (a `git diff --check` "new blank line at EOF" on the adopter's first commit).
     _no_eof_blank "$_d/CLAUDE.md" || rc=1
     _no_double_blank "$_d/CLAUDE.md" || rc=1
+    # (j) ADOPTER-CLAIMS-HONEST: the disclosed-enumeration leg — see _gh_coupling_check above.
+    _gh_coupling_check "$_d" "$ROOT/docs/operations/ci-platforms.md" || rc=1
   else
     echo "FAIL: adopter-export.sh errored"; rc=1
   fi
@@ -436,6 +487,56 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "adopter-export-wired --selftest: FAIL (block (e) has no teeth in run() — the armed fixture's ONLY defect is the hardcoded README count and run() still PASSED)"; sfail=1
   fi
   rm -rf "$_a" 2>/dev/null || true
+  # ── ADOPTER-CLAIMS-HONEST review round 1: `_gh_coupling_check` had no load-bearing negative —
+  # the only selftest touching it asserted the real tree PASSES, so a dead body (`_gc_rc=0; return
+  # 0`) would have passed its own selftest too (the exact vacuity class this slice exists to close).
+  # Driven DIRECTLY (the `_no_readme_count` (e1) precedent above), NOT through `run()` — isolating
+  # the function from every other leg in the check. A CONTROL fixture (all 10 allowlisted scripts
+  # present with a real gh token, doc states the matching count) must PASS; each of the three
+  # mutants below flips exactly one fact and must fail (or, for the advisory face, WARN without
+  # flipping rc).
+  _gh=$(mktemp -d)
+  for _ghp in $_GH_COUPLING_ALLOWLIST; do
+    mkdir -p "$(dirname "$_gh/$_ghp")"
+    printf '#!/bin/sh\ngh api "repos/x/y" >/dev/null\n' > "$_gh/$_ghp"
+  done
+  printf 'This kit names 10 helper scripts that call gh directly.\n' > "$_gh/doc.md"
+  if _gh_coupling_check "$_gh" "$_gh/doc.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: PASS (gh-coupling CONTROL — complete allowlist + matching doc count is clean)"
+  else
+    echo "adopter-export-wired --selftest: FAIL (gh-coupling CONTROL broke — a clean fixture should PASS; the negatives below cannot isolate their cause)"; sfail=1
+  fi
+  # mutant 1 — an allowlisted script goes missing from the export -> RED.
+  _ghmiss=$(printf '%s\n' "$_GH_COUPLING_ALLOWLIST" | awk '{print $1}')
+  mv "$_gh/$_ghmiss" "$_gh/$_ghmiss.bak"
+  if _gh_coupling_check "$_gh" "$_gh/doc.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (gh-coupling did NOT flag a missing allowlisted script — vacuous)"; sfail=1
+  else
+    echo "adopter-export-wired --selftest: PASS (gh-coupling mutant 1 — a missing allowlisted script -> RED)"
+  fi
+  mv "$_gh/$_ghmiss.bak" "$_gh/$_ghmiss"
+  # mutant 2 — the doc's stated count no longer matches the allowlist length (10) -> RED.
+  printf 'This kit names 9 helper scripts that call gh directly.\n' > "$_gh/doc-wrong-count.md"
+  if _gh_coupling_check "$_gh" "$_gh/doc-wrong-count.md" >/dev/null 2>&1; then
+    echo "adopter-export-wired --selftest: FAIL (gh-coupling did NOT flag a doc/allowlist count mismatch — vacuous)"; sfail=1
+  else
+    echo "adopter-export-wired --selftest: PASS (gh-coupling mutant 2 — doc count 9 != allowlist length 10 -> RED)"
+  fi
+  # mutant 3 (advisory) — a shipped, un-listed script carries a real gh token -> WARN, rc NOT flipped
+  # (the CONTROL fixture is otherwise unchanged, so a flipped rc here would prove the WARN branch
+  # wrongly hardened into a FAIL — the opposite defect from mutants 1/2).
+  mkdir -p "$_gh/scripts"
+  printf '#!/bin/sh\ngh pr view --json state\n' > "$_gh/scripts/unlisted-probe.sh"
+  _ghw=$(_gh_coupling_check "$_gh" "$_gh/doc.md" 2>&1)
+  _ghwrc=$?
+  if [ "$_ghwrc" -ne 0 ]; then
+    echo "adopter-export-wired --selftest: FAIL (gh-coupling advisory face wrongly turned a new un-listed coupling into a hard FAIL — should WARN only)"; sfail=1
+  elif ! printf '%s' "$_ghw" | grep -q "WARN: gh-coupling — scripts/unlisted-probe.sh"; then
+    echo "adopter-export-wired --selftest: FAIL (gh-coupling did NOT WARN on a new un-listed gh coupling — the detection sibling is vacuous)"; sfail=1
+  else
+    echo "adopter-export-wired --selftest: PASS (gh-coupling mutant 3 — an un-listed script with a real gh token WARNs without flipping rc)"
+  fi
+  rm -rf "$_gh" 2>/dev/null || true
   # ── HONEST CEILING: WHAT THIS ROW DID *NOT* FIX. The row bought block (e) isolation; it did not
   # buy it for the other blocks, and the census below exists so no future reader infers otherwise
   # from (e)'s new legs. run() carries 24 `rc=1` sites (census: `grep -c 'rc=1' | minus comments`,

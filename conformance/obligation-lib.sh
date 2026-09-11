@@ -56,6 +56,36 @@ OBL_MIN_SUBSTANCE_LINES=8
 # --stub-pattern; obl_selftest's (a) leg is the regression lock that the default still governs.
 OBL_DEFAULT_STUB_PATTERN='\[(summary|threat|why|boundary [0-9]|planned/done|data, credentials|users, agents|auth, MFA|risk accepted|tracked items)'
 
+# THE KIT-SELF FINGERPRINT (K4 — GATE-SUBJECT-CONTENT-FACES). Two LITERAL fixed strings, matched with
+# `grep -qF` — never a regex, never a quality judgment. THREAT-MODEL-TEMPLATE.md:3 is explicit that "a
+# script cannot tell a real threat model from a box-ticked one", so this catches exactly one narrow,
+# honest thing: the record is (still) the KIT'S OWN example, verbatim, not a judgment on anyone's
+# quality. Both strings are copied from Sparkwright's own root THREAT-MODEL.md and are
+# ADOPTER-IMPOSSIBLE — no genuine record, written by an adopter about THEIR OWN system, would ever
+# contain either by construction (neither appears anywhere in templates/THREAT-MODEL-TEMPLATE.md,
+# measured):
+#  1. "Sparkwright — an agentic SDLC kit" — the kit's own product name + tagline, from the System line.
+#     An adopter's threat model documents their system, never this kit's.
+#  2. "adopter writes their own from `templates/THREAT-MODEL-TEMPLATE.md`" — the kit's own
+#     self-referential instruction, telling THE READER to go write their own record. By definition it
+#     cannot appear inside a record that IS someone's own (they would be quoting an instruction to do
+#     the very thing they have already done).
+# (2) IS THE CLOSEST SINGLE-LINE VERBATIM SUBSTRING, not the design's originally-drafted wording, and
+# that is a measured correction, not a stylistic choice. In THREAT-MODEL.md the full sentence wraps
+# across a markdown blockquote's two lines ("…built with it — an" / "adopter writes their own from
+# `…`."), and `grep -qF` matches PER LINE with no cross-line join — so the two-line form can never be
+# found as one literal. Line 23 alone (backticks included; `grep -F` treats them as ordinary bytes, not
+# markup) is what is actually, provably present on a single line.
+# CHECKED AGAINST THE RAW RECORD, deliberately NOT the code-markup-stripped text Signal 1 uses below
+# (_obl_strip_code_markup would DELETE the whole backtick-fenced template path in string 2, along with
+# its backticks — measured: an inline code span's CONTENT is dropped entirely, not just its markup).
+# This is safe because — unlike Signal 1's ordinary-English vocabulary (`fill`, `todo`, `describe `) —
+# these two strings name the kit and its own template path outright: there is no "discussion of the
+# kit while writing about something else" false-positive class to guard against here, only the
+# residual-copy true positive this signal exists to catch.
+OBL_KIT_FINGERPRINT_1='Sparkwright — an agentic SDLC kit'
+OBL_KIT_FINGERPRINT_2='adopter writes their own from `templates/THREAT-MODEL-TEMPLATE.md`'
+
 # obl_changeset [--changed FILE]: newline-delimited changed paths. Modelled on promotion-readiness.sh's
 # derivation. The two derivations have now CONVERGED — do not re-introduce a divergence without reading
 # both notes:
@@ -478,6 +508,11 @@ obligation_gate() {
         echo "FAIL: $rec exists but is not readable — a record that cannot be read cannot count as filled (fail-closed) ($tmpl)" ;;
       floor)
         echo "FAIL: $rec ${OBL_PLACEHOLDER_DETAIL:-is below the substance floor} — a record needs >=$OBL_MIN_SUBSTANCE_LINES non-blank lines under at least one markdown heading ('# …' or a setext underline) ($tmpl)" ;;
+      kitself)
+        # K4 (GATE-SUBJECT-CONTENT-FACES): the fingerprint fired and this is NOT the kit's own tree
+        # (obl_is_placeholder's carve-out already excluded that case) — so this record is a residual
+        # copy of the kit's own THREAT-MODEL.md on someone else's tree.
+        echo "FAIL: $rec is still the kit's own threat model — write your own from templates/THREAT-MODEL-TEMPLATE.md ($tmpl)" ;;
       pattern)
         # A FOURTH cause, and a CONFIGURATION fault rather than a record fault — so it gets its own text
         # and is checked BEFORE the record signals, which would otherwise mask it and blame the author for
@@ -624,6 +659,52 @@ obl_is_placeholder() {
   OBL_PLACEHOLDER_REASON=template; OBL_PLACEHOLDER_DETAIL=""
   # L2: an existing-but-unreadable record must NOT pass — treat as unfilled (fail-closed).
   if [ ! -r "$_rec" ]; then OBL_PLACEHOLDER_REASON=unreadable; return 0; fi
+  # Signal 0 (K4 — kitself, GATE-SUBJECT-CONTENT-FACES): checked BEFORE every other signal, including
+  # the pattern-compile probe right below, because a copy of the kit's OWN filled record is not
+  # "unfilled" in any of Signals 1-3's sense — it clears the banner/stub/floor tests exactly as any
+  # genuine record does. See OBL_KIT_FINGERPRINT_1/_2 above for the strings and why they cannot
+  # false-positive on a genuine adopter THREAT-MODEL record.
+  # SCOPED TO A THREAT-MODEL.md RECORD ONLY (fix round — a real defect the push-blocker caught, not a
+  # hardening). obl_is_placeholder is the SHARED engine: ceremony-binding.sh calls it on a design/plan/
+  # review DOC to grade the ceremony record, and a11y-/uat-obligation.sh call it on their own sign-off
+  # basenames — none of them are THREAT-MODEL.md. An unscoped Signal 0 fires on ANY artifact containing
+  # the fingerprint strings, so this slice's OWN design doc — which legitimately QUOTES both strings to
+  # DESCRIBE the fix — was denied as "still the kit's own threat model", failing ceremony-binding and
+  # blocking the push. MEASURED: `sh conformance/ceremony-binding.sh` FAILed exactly that way on this
+  # branch before the scope guard existed. The basename test is on `$_rec` itself (the caller's `$root/
+  # $record` path, e.g. `./THREAT-MODEL.md` or a fixture's `.../THREAT-MODEL.md`), never on the file's
+  # CONTENT, so it cannot be defeated by prose inside a document — only by naming the record something
+  # other than THREAT-MODEL.md, which is exactly the record threat-obligation.sh hardcodes (`--record
+  # THREAT-MODEL.md`, never caller-suppliable — see obligation_gate's gate-defining-argument sentinel).
+  # `_obl_kf_scope` is reset on EVERY call (never left over from a prior one — obl_is_placeholder is
+  # called repeatedly in a single process, e.g. once per shipped template in the family-lock leg below,
+  # and a stale value here would silently skip or wrongly fire Signal 0 on an UNRELATED later call).
+  _obl_kf_scope=0
+  case "$_rec" in
+    THREAT-MODEL.md|*/THREAT-MODEL.md) _obl_kf_scope=1 ;;
+  esac
+  if [ "$_obl_kf_scope" = 1 ] \
+     && grep -qF -e "$OBL_KIT_FINGERPRINT_1" -e "$OBL_KIT_FINGERPRINT_2" "$_rec" 2>/dev/null; then
+    # KIT-SELF CARVE-OUT — NOT part of the original design brief; added because without it this signal
+    # PERMANENTLY BREAKS THE KIT'S OWN CI. threat-obligation.sh runs as a real dedicated PR job on THIS
+    # repo (.github/workflows/ci.yml `threat-obligation`, diff-relative against THIS repo's own
+    # THREAT-MODEL.md), and that record legitimately carries both fingerprint strings forever — it
+    # documents Sparkwright itself, by design. MEASURED before this carve-out existed: a *secret*/
+    # *auth*-named change on this tree (e.g. a file like conformance/mcp-secret-read-classifier.sh,
+    # HITL-1's own surface) triggers this gate today and PASSES against the kit's own genuine record;
+    # an unguarded kitself signal would FAIL every such PR forever with a message written for an
+    # ADOPTER ("write your own") that is simply false on the kit's own tree — it already has its own.
+    # Guarded on the SAME marker every sibling kit-self check in this file's *-wired.sh neighbours uses
+    # (docs/ROADMAP-KIT.md — export-ignored, so it is ABSENT on every adopter tree by construction): if
+    # that marker sits beside this record's own root, this IS the kit's own tree and the fingerprint is
+    # the genuine article, not a residual copy — do not deny. On an adopter tree the marker is pruned,
+    # so a copied THREAT-MODEL.md is denied exactly as designed.
+    _kd="$(dirname -- "$_rec")"
+    if [ ! -f "$_kd/docs/ROADMAP-KIT.md" ]; then
+      OBL_PLACEHOLDER_REASON=kitself
+      return 0
+    fi
+  fi
   # MALFORMED PATTERN -> fail CLOSED. This is the SECOND route into Signal 2's swallowed `2>/dev/null`, and
   # the likelier of the two: a malformed ERE exits 2 exactly as an unknown option does, so the redirect eats
   # the diagnostic, `_n` is 0 and Signal 2 is SILENTLY OFF. The trigger is not an attacker but the next
@@ -824,6 +905,68 @@ obl_selftest() {
   if ! obligation_gate --name t --surface-globs '*auth*' --record R.md --template-marker T \
        --changed "$_t/none" --root "$_t" >/dev/null 2>&1; then
     echo "OBL SELFTEST FAIL: non-triggering change did not PASS (N/A)"; rc=1
+  fi
+
+  # SIGNAL 0 (K4 — kitself, GATE-SUBJECT-CONTENT-FACES): a record carrying the kit's OWN fingerprint
+  # strings, on a triggering surface, with NO docs/ROADMAP-KIT.md beside the record's root (an ADOPTER
+  # tree shape) -> FAIL, reason kitself. Kills obl_is_placeholder's Signal-0 `return 0` (neutered to
+  # `return 1`, this leg would see a wrong PASS) and the fingerprint `grep -qF` itself (neutered to
+  # never match, same wrong PASS).
+  # The fixture deliberately clears the substance floor and has NO Signal-2 stub tokens (>= 8 non-blank
+  # lines under a heading, plain prose) — proving the kitself denial fires on its OWN signal, not as a
+  # side effect of some OTHER signal a mutant could be neutering instead.
+  # RECORD NAME IS THREAT-MODEL.md, DELIBERATELY (fix round) — Signal 0 is now SCOPED to a
+  # THREAT-MODEL.md basename (see the guard above), so a fixture named anything else (the R.md this leg
+  # used to write) would silently stop exercising it at all; using the SAME basename
+  # threat-obligation.sh hardcodes is what keeps this leg honest about what it proves.
+  mkdir -p "$_t/kitself_adopter"
+  { echo '# Threat Model'
+    echo
+    echo '**System:** Sparkwright — an agentic SDLC kit. Some analysis prose.'
+    echo 'More filler prose line one, discussing spoofing mitigations.'
+    echo 'More filler prose line two, discussing tampering mitigations.'
+    echo 'More filler prose line three, discussing disclosure risks.'
+    echo 'More filler prose line four, discussing denial-of-service risks.'
+    echo 'More filler prose line five, discussing elevation-of-privilege risks.'
+    echo 'An adopter writes their own from `templates/THREAT-MODEL-TEMPLATE.md`.'
+  } > "$_t/kitself_adopter/THREAT-MODEL.md"
+  if obligation_gate --name t --surface-globs '*auth*' --record THREAT-MODEL.md --template-marker T \
+       --changed "$_t/changed" --root "$_t/kitself_adopter" >/dev/null 2>&1; then
+    echo "OBL SELFTEST FAIL: a record carrying the kit's OWN fingerprint on an adopter-shaped tree (no docs/ROADMAP-KIT.md) PASSed — the kitself signal did not fire"; rc=1
+  fi
+  _ksmsg="$(obligation_gate --name t --surface-globs '*auth*' --record THREAT-MODEL.md --template-marker T \
+       --changed "$_t/changed" --root "$_t/kitself_adopter" 2>&1)" || true
+  case "$_ksmsg" in
+    *"still the kit's own threat model"*"templates/THREAT-MODEL-TEMPLATE.md"*) ;;
+    *) echo "OBL SELFTEST FAIL: the kitself denial did not render its own message — it said: $_ksmsg"; rc=1 ;;
+  esac
+
+  # …and the KIT-SELF CARVE-OUT: the SAME fingerprinted record, but with docs/ROADMAP-KIT.md sitting
+  # beside the record's own root (the kit's OWN tree shape) -> PASS, not denied. Kills a mutant that
+  # deletes the carve-out guard outright (which would otherwise permanently break the kit's own CI —
+  # see the guard's own comment above obl_is_placeholder for the measured reason).
+  mkdir -p "$_t/kitself_kit/docs"
+  cp "$_t/kitself_adopter/THREAT-MODEL.md" "$_t/kitself_kit/THREAT-MODEL.md"
+  printf '# roadmap\n' > "$_t/kitself_kit/docs/ROADMAP-KIT.md"
+  if ! obligation_gate --name t --surface-globs '*auth*' --record THREAT-MODEL.md --template-marker T \
+       --changed "$_t/changed" --root "$_t/kitself_kit" >/dev/null 2>&1; then
+    echo "OBL SELFTEST FAIL: a record carrying the kit's OWN fingerprint on the KIT'S OWN tree (docs/ROADMAP-KIT.md present) was wrongly denied — this would permanently break the kit's own CI"; rc=1
+  fi
+  # REGRESSION LEG (fix round — the push-blocker's own defect): the IDENTICAL fingerprinted content, on
+  # a NON-THREAT-MODEL record path (a design-doc-shaped basename — this is exactly ceremony-binding.sh's
+  # shape, which calls `obl_is_placeholder "$_basis"` on a `docs/architecture/*.md` GO artifact that may
+  # legitimately QUOTE the fingerprint strings to DESCRIBE this very fix), on an adopter-shaped tree (no
+  # docs/ROADMAP-KIT.md — the carve-out must not be why this passes) -> must be judged NOT a placeholder
+  # (obl_is_placeholder returns 1) and obligation_gate must PASS. Kills a mutant that widens Signal 0's
+  # scope guard back to "any record" — MEASURED RED against the pre-fix code: the identical fixture
+  # under a non-THREAT-MODEL record name was wrongly denied with the kitself message before this leg's
+  # own fix landed (this is the exact shape that failed `sh conformance/ceremony-binding.sh` on this
+  # branch's own design doc and blocked the push).
+  mkdir -p "$_t/kitself_nonthreat"
+  cp "$_t/kitself_adopter/THREAT-MODEL.md" "$_t/kitself_nonthreat/design-doc.md"
+  if ! obligation_gate --name t --surface-globs '*auth*' --record design-doc.md --template-marker T \
+       --changed "$_t/changed" --root "$_t/kitself_nonthreat" >/dev/null 2>&1; then
+    echo "OBL SELFTEST FAIL: a NON-THREAT-MODEL record (design-doc.md) quoting both kit-fingerprint strings was wrongly denied — Signal 0's scope guard is not confined to THREAT-MODEL.md, which is exactly what failed ceremony-binding.sh on this slice's own design doc"; rc=1
   fi
   # REAL derive-failure (no resolvable base) -> uncertain -> require the record -> FAIL. Kills
   # obl_changeset's `OBL_DERIVE_FAIL=1` (neutered to =0, failure collapses into an empty change-set ->
@@ -1642,10 +1785,12 @@ obl_selftest() {
   # it carries the same banner, so it reads unfilled and belongs in the count like the rest.
   # 2026-09-05: PROJECT-README-TEMPLATE.md (ADOPTER-TREE-IDENTITY) added as the 24th — stamped as the
   # adopter's README at Inception, replacing the kit's own; same banner, reads unfilled.
+  # 2026-09-08: RESTORE-DRILL-TEMPLATE.md (K18, GATE-SUBJECT-CONTENT-FACES) added as the 25th — a
+  # dated per-drill evidence record for `readiness.sh dr-ready`; same banner, reads unfilled.
   _cm_named='A11Y-SIGNOFF AI-POLICY AI-SYSTEM-CARD AI-TRANSPARENCY-SIGNOFF BACKLOG BIA DECISIONS
 EVAL-PLAN FEATURE-REQUEST FIELD-REPORT JIRA-SETUP KIT-FEEDBACK POSTMORTEM PRIVACY-REVIEW
-PROJECT-CLAUDE PROJECT-README REQUIRED-CHECKS RUNBOOK SECURITY TASK-CONTEXT-CONTRACT TEST-PLAN
-THREAT-MODEL TRACKER-SETUP UAT-SIGNOFF'
+PROJECT-CLAUDE PROJECT-README REQUIRED-CHECKS RESTORE-DRILL RUNBOOK SECURITY TASK-CONTEXT-CONTRACT
+TEST-PLAN THREAT-MODEL TRACKER-SETUP UAT-SIGNOFF'
   _cm_want=0
   for _cm_n in $_cm_named; do
     _cm_want=$((_cm_want + 1))
@@ -1690,7 +1835,7 @@ THREAT-MODEL TRACKER-SETUP UAT-SIGNOFF'
       || { echo "OBL SELFTEST FAIL: $_rt-TEMPLATE.md is $_c non-blank lines banner-stripped — a record filled from it cannot clear the floor of $OBL_MIN_SUBSTANCE_LINES"; rc=1; }
   done
 
-  [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; exclusions before inclusions, per-path, real-view-template-still-triggers, degenerate-list-excludes-nothing, fail-safe outranks both; gate absent/placeholder/filled/none/derive-fail; derivation follows a rename (a git mv OFF a sensitive path still triggers) and every value-less two-argument flag is refused with a verdict rather than dying mid-parse; record-floor empty/one-line/floor-1/on-floor/heading-less/setext; diagnostic attribution floor/heading/template/unreadable+marker/bad-pattern, the pattern probe proven to run BEFORE every record signal; floor calibrated against the shipped templates; stub-pattern default-unchanged/custom-vocabulary/below-threshold/dash-leading/malformed-ERE-fail-closed/empty-refused/replaces-not-ors; gate-defining args first-wins AND '--'-sentinel-fenced for record/surface-globs/stub-pattern/exclude-globs/name/template-marker, each with its liveness pair, each discard announced without echoing the value; a surface defining no usable glob and an exclusion matching every path both refused rather than read as a blanket N/A; Signal 1 ignores CODE MARKUP — bare token denies, the same token in a single- and a double-backtick span and in a backtick- and a tilde-fenced block does not, blockquotes are NOT excluded so the banner still fires, the stripper falls back to the raw record when it cannot run, and all 24 shipped templates that carry a placeholder signal still read unfilled under a named-set + count lock)"
+  [ "$rc" = 0 ] && echo "OK (obligation-lib engine: detect none/triggered/uncertain; exclusions before inclusions, per-path, real-view-template-still-triggers, degenerate-list-excludes-nothing, fail-safe outranks both; gate absent/placeholder/filled/none/derive-fail; derivation follows a rename (a git mv OFF a sensitive path still triggers) and every value-less two-argument flag is refused with a verdict rather than dying mid-parse; record-floor empty/one-line/floor-1/on-floor/heading-less/setext; diagnostic attribution floor/heading/template/unreadable+marker/bad-pattern, the pattern probe proven to run BEFORE every record signal; floor calibrated against the shipped templates; stub-pattern default-unchanged/custom-vocabulary/below-threshold/dash-leading/malformed-ERE-fail-closed/empty-refused/replaces-not-ors; gate-defining args first-wins AND '--'-sentinel-fenced for record/surface-globs/stub-pattern/exclude-globs/name/template-marker, each with its liveness pair, each discard announced without echoing the value; a surface defining no usable glob and an exclusion matching every path both refused rather than read as a blanket N/A; Signal 1 ignores CODE MARKUP — bare token denies, the same token in a single- and a double-backtick span and in a backtick- and a tilde-fenced block does not, blockquotes are NOT excluded so the banner still fires, the stripper falls back to the raw record when it cannot run, and all 25 shipped templates that carry a placeholder signal still read unfilled under a named-set + count lock)"
   return $rc
 }
 

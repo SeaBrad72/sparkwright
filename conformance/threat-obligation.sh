@@ -404,9 +404,75 @@ selftest() {
        --template-marker T --changed "$_tmp/changed" --root "$_tmp" >/dev/null 2>&1; then
     echo "SELFTEST FAIL: a regulated path already RED-ed on the pre-HITL-5 surface — leg 7 proves nothing about the regulated globs"; rc=1
   fi
+  # LEG 10 (K4, GATE-SUBJECT-CONTENT-FACES): a HERMETIC fixture THREAT-MODEL.md carrying the fingerprint
+  # strings VERBATIM (the exact $OBL_KIT_FINGERPRINT_1/_2 the sourced engine matches on — obligation-lib.sh
+  # is sourced above, so these are live variables here, not restated literals), padded to clear the
+  # substance floor, on an ADOPTER-shaped tree (no docs/ROADMAP-KIT.md beside it), on a sensitive surface
+  # -> FAIL, naming the residual copy. This is the exact real-world defect K4 closes: an adopter who kept
+  # the kit's own file (it was not export-ignored before this slice) ships Sparkwright's threat model and
+  # this gate used to PASS on it.
+  # HERMETIC RATHER THAN READING THE REAL $DIR/THREAT-MODEL.md (fix round, GATE-SUBJECT-CONTENT-FACES):
+  # the real file is NOW export-ignored (this slice's own Part 1), so it is ABSENT on the pruned adopter
+  # export green-on-clone builds — a selftest that reads it reds there with no defect in the logic it is
+  # meant to prove. MEASURED: green-on-clone caught exactly this ("the kit's own root THREAT-MODEL.md is
+  # missing or empty — LEG 10/11 cannot run"). A fixture built from the SAME constants the engine matches
+  # on is a STRONGER coupling than copying the real file anyway — it fails the instant either fingerprint
+  # constant drifts from what this leg builds, not only when the real file's prose around it changes.
+  printf 'src/auth/login.js\n' > "$_tmp/changed"
+  mkdir -p "$_tmp/kitself_adopter"
+  { echo '# Threat Model'
+    echo
+    echo "**System:** $OBL_KIT_FINGERPRINT_1. Some analysis prose."
+    echo 'More filler prose line one, discussing spoofing mitigations.'
+    echo 'More filler prose line two, discussing tampering mitigations.'
+    echo 'More filler prose line three, discussing disclosure risks.'
+    echo 'More filler prose line four, discussing denial-of-service risks.'
+    echo 'More filler prose line five, discussing elevation-of-privilege risks.'
+    echo "An $OBL_KIT_FINGERPRINT_2."
+  } > "$_tmp/kitself_adopter/THREAT-MODEL.md"
+  if run_threat_obligation --changed "$_tmp/changed" --root "$_tmp/kitself_adopter" >/dev/null 2>&1; then
+    echo "SELFTEST FAIL: a fixture THREAT-MODEL.md carrying the kit's own fingerprint, on an adopter-shaped tree, PASSed — a residual copy of the kit's own file is not caught"; rc=1
+  fi
+  _ksmsg10="$(run_threat_obligation --changed "$_tmp/changed" --root "$_tmp/kitself_adopter" 2>&1)" || true
+  case "$_ksmsg10" in
+    *"still the kit's own threat model"*"templates/THREAT-MODEL-TEMPLATE.md"*) ;;
+    *) echo "SELFTEST FAIL: leg 10 went RED but without the kitself message — it said: $_ksmsg10"; rc=1 ;;
+  esac
+  # LEG 11 — THE KIT-SELF CARVE-OUT: the IDENTICAL fixture, on a KIT-shaped tree (docs/ROADMAP-KIT.md
+  # present beside it — the marker every sibling kit-self check in this file's neighbours uses) -> PASS,
+  # not denied. Without this leg the fix above would permanently break the kit's OWN CI: this exact job
+  # (`.github/workflows/ci.yml` `threat-obligation`) runs diff-relative against THIS repo's real
+  # THREAT-MODEL.md on every PR that touches a *secret*/*auth*/… path, and that record legitimately
+  # carries the fingerprint forever (it documents Sparkwright itself). Tested via `--root` alone (both
+  # directions), which is MORE direct than the retired real-file leg: it proves the carve-out is keyed on
+  # the marker's PRESENCE, not on some incidental property of the real file.
+  mkdir -p "$_tmp/kitself_kit/docs"
+  cp "$_tmp/kitself_adopter/THREAT-MODEL.md" "$_tmp/kitself_kit/THREAT-MODEL.md"
+  printf '# roadmap\n' > "$_tmp/kitself_kit/docs/ROADMAP-KIT.md"
+  if ! run_threat_obligation --changed "$_tmp/changed" --root "$_tmp/kitself_kit" >/dev/null 2>&1; then
+    echo "SELFTEST FAIL: the fingerprinted fixture on a KIT-shaped tree (docs/ROADMAP-KIT.md present) was denied — this would permanently break the kit's own CI on every future sensitive-surface PR"; rc=1
+  fi
+  # LEG 11b (drift detection, SKIP-SAFE) — the REAL $DIR/THREAT-MODEL.md, when it exists (the kit's own
+  # tree; ABSENT on the pruned adopter export, where this leg must not red), still carries both fingerprint
+  # constants verbatim. This is the only place the real file is read at all, and its absence is a SKIP, not
+  # a FAIL — the hermetic legs above already prove the mechanism works with no dependency on it.
+  _kmroot="$DIR/THREAT-MODEL.md"
+  if [ -f "$_kmroot" ] && [ -s "$_kmroot" ]; then
+    if ! grep -qF -e "$OBL_KIT_FINGERPRINT_1" -e "$OBL_KIT_FINGERPRINT_2" "$_kmroot"; then
+      echo "SELFTEST FAIL: the kit's own root THREAT-MODEL.md no longer carries either kit-fingerprint constant — K4's own drift detector would go silently blind"; rc=1
+    fi
+  else
+    echo "SELFTEST NOTE: leg 11b skipped — no real THREAT-MODEL.md on this tree (expected on the pruned adopter export; the hermetic legs above do not depend on it)"
+  fi
+  # LEG 12 (K4 stays-green / no-false-positive) — a GENUINE adopter threat model (no kit fingerprint,
+  # filled) must still PASS. This is LEG 5's own fixture re-asserted under this name so the class this
+  # slice adds (kitself) is proven not to regress the class LEG 5 already proves (L1 false-positive) —
+  # LEG 5 itself is unchanged above and already covers it; this is the explicit cross-reference the
+  # K4 design's non-vacuity section calls for, not a new fixture.
+  # (LEG 5's assertion already ran above in this same selftest(); nothing further to build here.)
   unset KIT_OBL_TEST   # defence in depth: if this file is ever SOURCED rather than run, the fixture-flag
                        # escape hatch must not survive into the caller's environment.
-  [ "$rc" = 0 ] && printf 'OK (threat-obligation: 9 legs; all %s surface globs probed both through the wrapper and alone, the regulated-data half proved absent from the pre-HITL-5 surface, and the four measured phi/ssn decoys held N/A)\n' \
+  [ "$rc" = 0 ] && printf 'OK (threat-obligation: 11 legs (+1 skip-safe drift check); all %s surface globs probed both through the wrapper and alone, the regulated-data half proved absent from the pre-HITL-5 surface, the four measured phi/ssn decoys held N/A, a fingerprinted fixture is denied on an adopter-shaped tree and still passes on a kit-shaped one)\n' \
     "$THREAT_SURFACE_GLOB_COUNT"
   return $rc
 }

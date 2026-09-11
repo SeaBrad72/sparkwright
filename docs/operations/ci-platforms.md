@@ -64,14 +64,22 @@ Declare the 8 ids however the platform names units of work (job, stage, step, ta
 
 ## Honest coupling note — what is *not* yet platform-neutral
 
-Two helper scripts call the **GitHub API** (`gh`) directly. They are honest about it and degrade rather than pretend:
+**10 helper scripts** ship to the adopter and call the **GitHub API** (`gh`) directly in a core path: `branch-protection.sh`, `board-drift.sh`, `mirror-tag-protection.sh`, `security-channel-live.sh`, `agent-trace.sh`, `branch-protection-apply.sh`, `dora.sh`, `preflight.sh`, `promotion-verify.sh`, `release-tag.sh`. They are honest about it and degrade rather than pretend:
 
 | Script | GitHub binding | On GitLab / ADO |
 |--------|----------------|-----------------|
 | `conformance/branch-protection.sh` | Reads `repos/.../branches/main/protection` via `gh api` | The equivalent is **adopter-owned**: GitLab *protected branches* (require MR + pipeline success + approval rule), ADO *branch policies* (require PR + build validation + reviewers). Wire it on your platform; the check returns **UNVERIFIED** (exit 2) off GitHub rather than a false pass. |
 | `scripts/dora.sh` | Derives the DORA subset from GitHub APIs | Re-derive from GitLab (MR/pipeline analytics) or ADO (Pipelines/Boards analytics). It already prints **"unavailable"** per metric on any `gh` failure — it never fabricates a number. |
+| `scripts/board-drift.sh` | `gh pr view --json state` to reconcile board state against a PR | Adopter-owned: re-derive from the platform's own MR/PR state API. |
+| `conformance/mirror-tag-protection.sh` | `gh api repos/.../rulesets` to read tag-protection rulesets | Adopter-owned: GitLab protected tags, ADO tag/branch policies. |
+| `conformance/security-channel-live.sh` | Probes with `gh api` by default (`--probe-cmd` swaps the probe) | Adopter-owned: point `--probe-cmd` at a platform-appropriate live probe. |
+| `scripts/agent-trace.sh` | `gh pr view --json number,url,reviews,state` to trace a PR's review record | Adopter-owned: re-derive from the platform's MR/PR review API. |
+| `scripts/branch-protection-apply.sh` | `gh api` (read + apply) and `gh repo view` against branch protection | Adopter-owned: apply the equivalent protected-branch/MR-approval rule on your platform. |
+| `scripts/preflight.sh` | `gh repo view` and `gh auth status` to check repo class + auth | Adopter-owned: skips this leg off GitHub rather than fabricating a result. |
+| `scripts/promotion-verify.sh` | `gh api` / `gh pr view` for the review-and-actuate flow, `gh pr merge` by default on `actuate` | Adopter-owned: swap the merge command via `--merge-cmd`; the read legs are GitHub-only. |
+| `scripts/release-tag.sh` | `gh run list` / `gh run view` to confirm CI status before tagging | Adopter-owned: re-derive from the platform's own pipeline-status API. |
 
-This is the same honesty discipline as the three-state conformance model (`conformance/verify.sh`): **green ≠ verified** — an unverifiable control reports UNVERIFIED, never a silent pass. Porting these two scripts to GitLab/ADO APIs is deliberately out of scope (adopter-owned, named here) rather than faked.
+This is the same honesty discipline as the three-state conformance model (`conformance/verify.sh`): **green ≠ verified** — an unverifiable control reports UNVERIFIED, never a silent pass. Porting these 10 scripts to GitLab/ADO APIs is deliberately out of scope (adopter-owned, named here) rather than faked.
 
 For the full GitLab adopter guide — branch protection wiring, control-plane ratification (the
 keystone gap: the `control-plane-ratification` merge-gate has no kit-shipped GitLab equivalent), and

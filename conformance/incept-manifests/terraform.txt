@@ -41,8 +41,21 @@ id: build-plan
 precondition: present gate-build
 when-absent: skip
 assert: present terraform plan -out=tfplan
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: a fresh incept has no *.tf/*.tf.json config yet — guard
+# so the plan gate skips legibly. `find` (not a shallow `ls *.tf`) — the security review's Low
+# note: a root-only glob false-greens on a *.tf nested in a subdir or a *.tf.json config.
+# Unique echo token — the bare `find . -name '*.tf' -o -name '*.tf.json'` probe text is ALSO
+# used verbatim by gate-policy's guard, so asserting the probe text itself was MEASURED
+# VACUOUS: stripping gate-build's own guard left this assertion falsely GREEN (the
+# gate-policy occurrence still satisfied it).
+assert: present gate-build: N/A
+# correctness fix: guard the artifact upload + provenance job on the same (deep) input.
+# hashFiles() at job-if scope is INVALID GHA (actionlint-caught) and the provenance job has no
+# checkout, so the fix is a step OUTPUT (gate-build's own presence check) instead.
+assert: present has_build=true
+assert: present steps.gate-build.outputs.has_build
 skip-reason: no build gate in this profile — no plan artifact
-fix-hint: produce the IaC artifact with `terraform plan -out=tfplan -input=false`
+fix-hint: produce the IaC artifact with `terraform plan -out=tfplan -input=false`, guarded on a deep `find . -name '*.tf' -o -name '*.tf.json'` probe; set a `has_build` step output and gate the artifact upload (`steps.gate-build.outputs.has_build`) + the ci job's `outputs:` + the provenance job's `if:` (`needs.ci.outputs.has_build == 'true'`) on it
 
 id: policy-as-code
 precondition: present gate-policy
@@ -55,8 +68,13 @@ assert: present conftest test
 # HONEST CEILING: this closes the *documented* `--soft-fail` flag vector only. A broader
 # `|| true` shell append is a general gate-neutering pattern, not cleanly assertable per-gate.
 assert: absent [-]-soft-fail
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN: a fresh incept has no *.tf/*.tf.json config yet — guard
+# so the policy gate skips legibly instead of scanning (and failing on) an empty tree. Deep
+# `find` probe, matching build-plan's fix for the same shallow-`ls` false-green.
+# Unique echo token — see build-plan's note above for why the shared probe text is vacuous here.
+assert: present gate-policy: N/A
 skip-reason: no policy gate in this profile — no IaC SAST layer to activate
-fix-hint: run Checkov (`checkov -d .`) and OPA/conftest (`conftest test .`)
+fix-hint: run Checkov (`checkov -d .`) and OPA/conftest (`conftest test .`), guarded on a deep `find . -name '*.tf' -o -name '*.tf.json'` probe
 
 id: dep-scan-trivy
 precondition: present gate-dep-scan
@@ -78,19 +96,23 @@ fix-hint: generate a CycloneDX SBOM with trivy scan-type: fs, format: cyclonedx
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-assert: present gitleaks dir[[:space:]]+\.([[:space:]]|$)
+assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks dir . --no-banner --redact` (full-tree, fetch-depth: 0)
+fix-hint: run `gitleaks git . --no-banner --redact` (full-tree, fetch-depth: 0)
 
 id: provenance-gated
 precondition: present attest-build-provenance
 when-absent: na
 assert: present repository.private == false
 assert: present owner.type == 'Organization'
+# SCAFFOLDLESS-STACKS-FIRST-RUN-GREEN (correctness fix): also gate on the build input, so this
+# job does not attempt to download a 'build-artifact' that the Upload step never uploaded.
+# needs.ci.outputs.has_build, NOT hashFiles() — invalid at job-if scope, and no checkout here.
+assert: present needs.ci.outputs.has_build == 'true'
 skip-reason: no provenance job in this profile
-fix-hint: gate the provenance job-if on repo visibility (private == false OR owner.type == 'Organization')
+fix-hint: gate the provenance job-if on repo visibility (private == false OR owner.type == 'Organization') AND needs.ci.outputs.has_build == 'true'
 
 id: db-postgres
 precondition: present ^[[:space:]]+postgres:

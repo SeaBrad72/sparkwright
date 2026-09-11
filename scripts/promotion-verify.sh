@@ -209,8 +209,8 @@ usage() {
   echo "        --no-push skips BOTH the fetch and the publish (fixtures / explicitly offline" >&2
   echo "                  maintenance); its OK line ends UNPUBLISHED." >&2
   echo "        --scope takes a PR id (CI's key) or branch/<name> (the pre-push key, ruling D11)" >&2
-  echo "        --approved-by must be the reviewer's FORGE LOGIN, verbatim (e.g. 'ISBrad72', not" >&2
-  echo "                      'Bradley James'): the [authenticated: <forge>-review] upgrade requires a" >&2
+  echo "        --approved-by must be the reviewer's FORGE LOGIN, verbatim (e.g. 'octocat', not a" >&2
+  echo "                      display name): the [authenticated: <forge>-review] upgrade requires a" >&2
   echo "                      BYTE-EQUAL match to the review's user.login, so a display name records a" >&2
   echo "                      weaker label and says why on stderr rather than failing." >&2
   echo "        --class must be one of: ordinary | sensitive | control-plane (case-insensitive)" >&2
@@ -221,6 +221,17 @@ usage() {
   echo "        recover the board row for a commit that already landed (squash loses the trailer)" >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
   echo "  promotion-verify.sh actuate --ref <pr|tag|merged-ref> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
+  echo "  promotion-verify.sh land --ref <pr|tag|merged-ref> --merge-cmd \"<cmd>\" \\" >&2
+  echo "                           --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> \\" >&2
+  echo "                           --class <c> --scope <s> --token <str> [--basis <t>]" >&2
+  echo "        land is ONE transactional verb for the direct/control-plane path: it RECORDS the GO" >&2
+  echo "        (record's own args + transaction), CONFIRMS the note reached origin, then MERGES then" >&2
+  echo "        leaves the branch INTACT. If the record does not complete or the note is not on" >&2
+  echo "        origin, land does NOT merge. --no-push is REFUSED (a landing merge must publish the" >&2
+  echo "        GO so it reaches origin — landing on a local-only note would reopen #658). Default" >&2
+  echo "        merge: gh pr merge <ref> --squash --match-head-commit <sha> — NEVER --admin, NEVER --delete-branch." >&2
+  echo "        Verb-scoped: land refuses a recordless merge on its OWN path; the universal net for a" >&2
+  echo "        recordless merge is the CI recordless-merge backstop (promotion-verify.sh trace --recent)." >&2
 }
 
 # Derive the assurance label for `approved-by`, HONESTLY, from the commit's own evidence.
@@ -1183,6 +1194,308 @@ do_actuate() {
   return 0
 }
 
+# do_land — ONE transactional actuation verb for the DIRECT / control-plane path (SESSION-SURFACE
+# slice 3d F3, design 2026-09-10 §3 F3, Option A; owner GO 2026-09-10).
+#
+# THE HOLE IT CLOSES. Landing a merge on the direct/CP path is two UNBOUND commands —
+# `promotion-verify.sh record` then `gh pr merge` — with nothing tying them. At PR #658 the merge was
+# actuated and the record forgotten, so a commit sat on `main` with no recoverable board row (and
+# `--delete-branch` compounded it: the branch object holding that commit was gone). `land` makes it
+# ONE verb: it RECORDS the GO first (record's own self-unwinding transaction, inherited whole) and
+# only then MERGES — the record cannot be forgotten because the SAME verb writes it before the merge.
+# It NEVER deletes the branch (deletion is a separate human act, D-240819-4) and NEVER emits `--admin`.
+#
+# WHY A NEW SUBCOMMAND, NOT `actuate`. `actuate` refuses control-plane (step 2b) to protect the open
+# TIER-3-CP-MERGE-ACTUATION-RULING sitting; extending it to cover CP would delete that refusal and
+# render the sitting by side effect. `land` changes NO boundary: the guard still denies `--admin` and
+# CP Write/Edit, branch protection is unchanged, the human still renders the GO and directs the merge.
+#
+# ⚠️ HONEST CEILING — VERB-SCOPED, NOT A HARD GATE (design A1, BUILD-BINDING). By the friction test —
+# would it bind if the model stopped cooperating? — `land` does NOT: a raw `gh pr merge` still exists
+# and an uncooperative agent runs where this local tool is absent. `land` refuses a recordless merge
+# ONLY ON ITS OWN PATH. The friction-test hard gate for a recordless merge is the CI recordless-merge
+# backstop (`promotion-verify.sh trace --recent`, server-side) plus branch protection; NO
+# prevent-at-merge gate is possible for a self-authorable git note. So every string below is
+# VERB-SCOPED — it never says a recordless merge is "impossible" unqualified, only that THIS VERB
+# refuses one and names the universal net. `land` is an ergonomic / discipline control layered on that
+# hard gate, not the wall.
+do_land() {
+  ref=""; merge_cmd=""; asha=""; land_cls=""; land_aby=""
+  # Strip land's OWN two flags (--ref, --merge-cmd) and PEEK --approved-sha / --class / --approved-by
+  # (shared with record: record binds the note to the sha, the merge pins --match-head-commit to it;
+  # land derives its CP-path decision from --class and its SoD check from --approved-by), then pass
+  # EVERYTHING ELSE through to do_record verbatim — spaces intact — via the rotate-the-positional-
+  # parameters idiom (no arrays in POSIX sh). $_argc counts ORIGINAL args only; re-appended pass-through
+  # args pile at the BACK, so a value read guarded by `_argc -ge 2` can only ever read a still-
+  # unprocessed original at the front, never a re-appended one (which would let a trailing `--ref`
+  # swallow a pass-through value). --class / --approved-by are LAST-WINS here exactly as they are in
+  # do_record's own loop, so land and record agree on the value each judges.
+  _argc=$#
+  while [ "$_argc" -gt 0 ]; do
+    case "$1" in
+      --ref)
+        [ "$_argc" -ge 2 ] || { echo "land: --ref needs a value" >&2; usage; return 2; }
+        ref="$2"; shift 2; _argc=$((_argc-2)) ;;
+      --merge-cmd)
+        [ "$_argc" -ge 2 ] || { echo "land: --merge-cmd needs a value" >&2; usage; return 2; }
+        merge_cmd="$2"; shift 2; _argc=$((_argc-2)) ;;
+      --approved-sha)
+        [ "$_argc" -ge 2 ] || { echo "land: --approved-sha needs a value" >&2; usage; return 2; }
+        asha="$2"; set -- "$@" "$1" "$2"; shift 2; _argc=$((_argc-2)) ;;
+      --class)
+        [ "$_argc" -ge 2 ] || { echo "land: --class needs a value" >&2; usage; return 2; }
+        land_cls="$2"; set -- "$@" "$1" "$2"; shift 2; _argc=$((_argc-2)) ;;
+      --approved-by)
+        [ "$_argc" -ge 2 ] || { echo "land: --approved-by needs a value" >&2; usage; return 2; }
+        land_aby="$2"; set -- "$@" "$1" "$2"; shift 2; _argc=$((_argc-2)) ;;
+      --no-push)
+        # REFUSE --no-push in land (do NOT pass it through). A landing merge MUST publish the GO
+        # record so it reaches origin; --no-push is record's offline-maintenance escape, never
+        # landing's. Landing on a local-only note is the exact #658 hole — a note that never reaches
+        # origin is not recoverable by CI's recordless-merge backstop.
+        echo "land: --no-push is REFUSED — a landing merge must PUBLISH the GO record so it reaches" >&2
+        echo "      origin. --no-push is record's offline escape, never landing's; a note that never" >&2
+        echo "      reaches origin is not recoverable by CI's recordless-merge backstop (this would" >&2
+        echo "      reopen the #658 hole). Re-run without --no-push." >&2
+        return 2 ;;
+      *)
+        set -- "$@" "$1"; shift; _argc=$((_argc-1)) ;;
+    esac
+  done
+  if [ -z "$ref" ];  then echo "land: --ref required" >&2; usage; return 2; fi
+  if [ -z "$asha" ]; then echo "land: --approved-sha required" >&2; usage; return 2; fi
+  # Reuse actuate's option-like + charset validation: $ref and $asha are interpolated into the merge
+  # command eval'd below, so a metacharacter must never reach the shell — even though the caller is
+  # already the agent, this verb must never be a shell-injection primitive. Real refs/SHAs never
+  # start with '-' and contain only [A-Za-z0-9._/-].
+  case "$ref"  in -*) echo "land: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;; esac
+  case "$asha" in -*) echo "land: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;; esac
+  case "$ref"  in *[!A-Za-z0-9._/-]*) echo "land: invalid --ref '$ref' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
+  case "$asha" in *[!A-Za-z0-9._/-]*) echo "land: invalid --approved-sha '$asha' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
+
+  # 0. CP-PATH VERB (F3-2, owner-adjudicated 2026-09-10). `land` is the direct/control-plane verb the
+  #    design describes; ordinary and sensitive promotions actuate through `actuate`, which carries the
+  #    forge-review label bar AND the SoD for those classes. Read the class from the SAME --class arg
+  #    land passes to do_record, and refuse BEFORE record runs (no note is written on a refusal).
+  #    ALLOWLIST-STYLE, like do_actuate's step 2b: proceed ONLY for an explicit control-plane class;
+  #    ordinary/sensitive point at `actuate`; unknown or missing refuses too — an unjudgeable class is
+  #    never a permission. Case-folded, matched exactly (never a substring). This makes land strictly
+  #    the CP/direct path and closes the non-CP control regression, without touching do_actuate.
+  _land_cls_lc="$(printf '%s' "$land_cls" | LC_ALL=C tr 'A-Z' 'a-z')"
+  case "$_land_cls_lc" in
+    control-plane) ;;
+    ordinary|sensitive)
+      echo "LAND REFUSED: --class '$land_cls' — land is the control-plane/direct-path verb. Ordinary" >&2
+      echo "              and sensitive promotions actuate through \`promotion-verify.sh actuate\`," >&2
+      echo "              which carries the forge-review label bar and the SoD for those classes. Use" >&2
+      echo "              \`actuate\` for this class (land never had their label bar; the CP/direct path" >&2
+      echo "              does not)." >&2
+      return 2 ;;
+    *)
+      echo "LAND REFUSED: unrecognised or missing --class '$land_cls' — land proceeds ONLY for an" >&2
+      echo "              explicitly recorded 'control-plane' class (allowlist). An unjudgeable class is" >&2
+      echo "              never a permission. Re-run with --class control-plane, or use \`actuate\` for" >&2
+      echo "              an ordinary/sensitive promotion." >&2
+      return 2 ;;
+  esac
+
+  # 0b. SoD (builder != ratifier) — RUN BEFORE do_record (N2). It sits beside the class gate, which
+  #     already runs pre-record with $asha/$land_aby in hand, so a self-approval NEVER publishes a GO
+  #     note on origin: the old placement (after record + the on-origin confirm) meant every SoD refusal
+  #     left a PUBLISHED self-approved note, and the recordless-merge backstop reads binding only, not
+  #     approver — so the drift artifact the system trusts was created before this control spoke.
+  #     The author of $asha is resolvable locally with `git show -s --format='%an'/'%ae'` exactly as
+  #     do_actuate's step 3 resolves it. NORMALIZE the approver with the SAME whitespace strip do_actuate
+  #     applies to its note-read approver id (leading at :1065, trailing at :1130) — copied, not
+  #     reinvented — so a padded `--approved-by "t "` cannot slip land's SoD though actuate would refuse
+  #     the note it writes. Refuse an empty/whitespace-only approver too (it can never satisfy SoD).
+  #     ⚠️ HONEST TIER: this is a DRIFT CONTROL at the GO note's own trust tier, NOT authentication. The
+  #     real boundary is server-side branch protection + required review; a git note is self-authorable
+  #     and this check rides on the caller-supplied approver. It catches the honest self-approval, not a
+  #     determined one.
+  _land_aby_norm="$(printf '%s' "$land_aby" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  if [ -z "$_land_aby_norm" ]; then
+    echo "LAND REFUSED: empty approver (--approved-by) — cannot satisfy builder != ratifier (SoD). This" >&2
+    echo "              is a drift control at the GO note's own tier (branch protection is the real" >&2
+    echo "              boundary), not authentication. Re-run with a non-author --approved-by." >&2
+    return 1
+  fi
+  _land_an="$(git show -s --format='%an' "$asha" 2>/dev/null || true)"
+  _land_ae="$(git show -s --format='%ae' "$asha" 2>/dev/null || true)"
+  if [ "$_land_aby_norm" = "$_land_an" ] || [ "$_land_aby_norm" = "$_land_ae" ]; then
+    echo "LAND REFUSED: approver ('$_land_aby_norm') equals the author of the approved commit (builder != ratifier, SoD)." >&2
+    echo "              This is a drift control at the GO note's own tier (branch protection is the real" >&2
+    echo "              boundary), not authentication; a different person must approve than authored the change." >&2
+    return 1
+  fi
+
+  # 1. RECORD FIRST — the whole point of the verb. do_record is a self-unwinding transaction (fetch,
+  #    refuse on divergence, write, publish, unwind its own unpublished note on push reject); land
+  #    inherits it whole and passes record's args through untouched. If record does not complete,
+  #    REFUSE to merge and propagate its code — a merge without a recoverable GO note is refused BY
+  #    THIS VERB (verb-scoped honesty: never "impossible", only "land will not merge").
+  if do_record "$@"; then _lrc=0; else _lrc=$?; fi
+  if [ "$_lrc" -ne 0 ]; then
+    echo "LAND REFUSED: the GO record did not complete (rc $_lrc) — land will not merge without a" >&2
+    echo "              recoverable GO note. This verb refuses a recordless merge on its OWN path;" >&2
+    echo "              the universal net for a recordless merge is the CI recordless-merge backstop." >&2
+    return "$_lrc"
+  fi
+
+  # 2. CONFIRM THE NOTE IS ON ORIGIN — not merely local — before merging; fail CLOSED otherwise.
+  #    This is the belt on #658: a note that lives only in this clone is NOT recoverable by CI's
+  #    recordless-merge backstop, so a local `git notes show` would PASS on the exact state the hole
+  #    is made of. `land` refuses --no-push above, so record HAS published; here we re-read ORIGIN's
+  #    own copy and require the bind to exist THERE. Fetch origin's ledger into a throwaway,
+  #    PID-scoped notes ref and check the bind on that copy (never trusting the local ref).
+  _land_confirm="kit-land-confirm-$$"
+  if ! git fetch --no-tags -f origin "refs/notes/$NOTES_REF:refs/notes/$_land_confirm" >/dev/null 2>&1; then
+    git update-ref -d "refs/notes/$_land_confirm" >/dev/null 2>&1 || true
+    echo "LAND REFUSED: record reported success but origin's refs/notes/$NOTES_REF could not be" >&2
+    echo "              fetched back — land will not merge without confirming the GO note reached" >&2
+    echo "              origin (fail closed). This verb refuses on its OWN path; the universal net" >&2
+    echo "              is the CI recordless-merge backstop." >&2
+    return 1
+  fi
+  if ! git notes --ref="$_land_confirm" show "$asha" >/dev/null 2>&1; then
+    git update-ref -d "refs/notes/$_land_confirm" >/dev/null 2>&1 || true
+    echo "LAND REFUSED: record reported success but no GO note is bound to $asha ON ORIGIN — land" >&2
+    echo "              will not merge without a note that reached origin (fail closed). A note that" >&2
+    echo "              never reaches origin is not recoverable by CI's recordless-merge backstop." >&2
+    return 1
+  fi
+  git update-ref -d "refs/notes/$_land_confirm" >/dev/null 2>&1 || true
+
+  # 3. Default merge = the CP-safe direct path, PINNED to the approved sha; never --admin, never
+  #    --delete-branch. Swappable via --merge-cmd (tests pass a stub). --match-head-commit binds the
+  #    merge to the exact reviewed head, so a race that advanced the PR branch is rejected server-side.
+  [ -n "$merge_cmd" ] || merge_cmd="gh pr merge \"$ref\" --squash --match-head-commit \"$asha\""
+
+  # 3b. REFUSE any --merge-cmd carrying a shell metacharacter ANYWHERE. The eval'd shell (step 5) can
+  #     rebuild a --admin or --delete-branch flag from characters the step-4 token scan cannot see: it
+  #     sees only the PRE-eval bytes and strips only quotes/backslash, but the shell expands/word-splits.
+  #     The DECLINED SET IS PARITY with the guard's own word-shape vet for a plain command operand —
+  #     `_cp8b_seg_word_shape_ok` (.claude/hooks/guard-core.sh) refuses `{ } , * ? [`, and its sibling
+  #     `_cp8b_seg_path_ok` refuses `$ ` backtick ` < > ; & |` — plus `\` (which land already had and the
+  #     guard handles via its own backslash treatment). land and the guard therefore agree BY
+  #     CONSTRUCTION: a merge-cmd character land refuses is a character the guard refuses in an operand.
+  #     Every one is a rebuild vector at eval:
+  #       $ / backtick  — command/parameter substitution   (--$(echo admin), --`echo admin`)
+  #       \             — quoting that the token scan strips only its own copy of (\--admin, --del\ete-…)
+  #       ; & |         — command separators/operators glued to a flag   (--admin; , --admin|x, --admin&&:)
+  #       < >           — redirections glued to a flag   (--admin>x)
+  #       { } ,         — brace expansion   (--{admin,} , --ad{m,}in) — THE gap that evaded both land AND
+  #                       the guard tier: the token scan's `--*` arm swallowed it as an inert flag
+  #       * ? [         — globbing   (--admi[n]); refused ANYWHERE here (the guard gates the glob only
+  #                       when LEADING a token because it splits per-token, but the merge-cmd is ONE
+  #                       eval'd string, so a non-leading glob token is still a rebuild vector).
+  #     No guard word-shape character is omitted. The default merge-cmd
+  #     (gh pr merge "<ref>" --squash --match-head-commit "<sha>") carries NONE of these — only letters,
+  #     digits, spaces, quotes, `/`, `.`, `-`, `:`; $ref and $asha are interpolated and charset-validated
+  #     ([A-Za-z0-9._/-]) above — so no legitimate landing merge is refused. Refused as a CLASS here,
+  #     BEFORE the step-4 delete/--admin token scan; that scan then handles the quoted/=value/tab
+  #     spellings that carry NO metacharacter.
+  case "$merge_cmd" in
+    *'$'* | *'`'* | *'\'* | *'<'* | *'>'* | *';'* | *'&'* | *'|'* | *'{'* | *'}'* | *','* | *'*'* | *'?'* | *'['*)
+      echo "LAND REFUSED: --merge-cmd carries a shell metacharacter — the merge command is eval'd and the" >&2
+      echo "              default needs none. The refused set is parity with the guard's word-shape vet:" >&2
+      echo "              \$ backtick \\ < > ; & | { } , * ? [. Such a spelling (e.g. \\--admin," >&2
+      echo "              --\$(echo admin), --{admin,}, --admi[n], --admin;) can smuggle a --admin or a" >&2
+      echo "              --delete-branch past the token scan, which strips only quotes, because the" >&2
+      echo "              eval'd shell rebuilds the flag. Re-run with a merge command free of those." >&2
+      return 1 ;;
+  esac
+
+  # 4. REFUSE a branch deletion or an --admin bypass in the merge command. TOKENIZE the merge-cmd on
+  #    IFS (space/tab/newline) and inspect each token. TRUE SCOPE, no overclaim: the merge-cmd is the
+  #    AGENT'S OWN string — same trust model as `actuate` — so this is an ergonomic foot-gun guard,
+  #    not an adversarial parser; it is tokenized (not shell-lexed) and defeatable by an uncooperative
+  #    caller (the friction-test net stays the CI backstop). It exists because the old space-anchored
+  #    globs (`*' --delete-branch'*` etc.) missed a TAB-separated flag and a bundled short cluster
+  #    (`-sd`/`-ds` = --squash --delete-branch). It refuses: any --delete-branch/--delete* long flag;
+  #    any SHORT cluster (single '-', not '--', containing 'd', so -d/-sd/-ds/-dq); and ANY --admin
+  #    form — bare --admin OR --admin=<value> (F3-1: the old EXACT --admin arm let --admin=true ride
+  #    in on a value suffix; a landing merge never needs --admin in ANY form, so the whole --admin=*
+  #    class is refused — over-refusing the cosmetic --admin=false is the correct, disclosed trade).
+  #    QUOTE-STRIP each token first (F3-1): the merge-cmd is one string, so a caller who QUOTES a flag
+  #    ('--delete-branch', "--admin") or SPLITS it across adjacent quotes (--del''ete-branch) leaves
+  #    the quote bytes on the token here — this is a tokenize, not a shell re-lex. Deleting every ', "
+  #    and \ normalizes the quoted/split spelling to its bare form before the case. SCOPE OF "no evade"
+  #    (N1/N3, corrected): this token scan defeats the QUOTED / =value / TAB-separated spellings that
+  #    carry NO shell metacharacter; every metacharacter spelling — backslash (\--admin), substitution
+  #    (--$(echo admin)), brace (--{admin,}, --ad{m,}in), glob (--admi[n]) and glued operator/redirect
+  #    (--admin;, --admin|x, --admin>x) — is refused UPSTREAM by the step-3b metachar-decline arm (parity
+  #    with the guard's word-shape vet), before this loop. The two arms together are what make "none
+  #    evade" true — this scan alone did NOT catch the metacharacter spellings (their tokens are not
+  #    --admin/--delete* here — the brace/glob tokens fall through the `--*` arm as inert flags — but the
+  #    eval'd shell rebuilds them). The \ added to the tr set below is belt-and-suspenders: step-3b
+  #    already refused any token bearing one.
+  #    land NEVER deletes a branch (D-240819-4 — the branch object holds the commit the GO note binds)
+  #    and NEVER emits a bypass.
+  #    ⚠️ SCOPE — the GUARD does NOT cover branch deletion via `git push`: `git push origin --delete
+  #    <b>` and `git push origin :<b>` are guard-ALLOW (uncovered, disclosed; D-240819-6 is about
+  #    Claude's SETTINGS allow-rules — a prompt — not the guard tier). This matcher scans the
+  #    merge-cmd precisely because that push form is not covered elsewhere; `land` itself never deletes
+  #    and refuses a `--merge-cmd` that would. ⚠️ Likewise a `git push origin :<b>` colon-refspec
+  #    deletion INSIDE a --merge-cmd is out of THIS token scan's scope (disclosed at the guard tier): a
+  #    bare `:branch` token carries no shell metacharacter, so the step-3b metachar-decline arm does not
+  #    catch it either — the friction-test net for it stays the CI backstop + branch protection.
+  _land_deny=""
+  _land_oifs=${IFS-__unset__}
+  _land_tab="$(printf '\t')"
+  _land_nl='
+'
+  IFS=" $_land_tab$_land_nl"
+  set -f
+  for _land_tok in $merge_cmd; do
+    # Strip every ', " and \ from the token before matching (F3-1 + N1 belt). tr's set is the two
+    # quote bytes plus backslash (a token bearing \ was already refused upstream by step-3b).
+    _land_norm="$(printf '%s' "$_land_tok" | tr -d "\"'\\\\")"
+    case "$_land_norm" in
+      --delete-branch|--delete*) _land_deny='delete' ;;
+      --admin|--admin=*)         _land_deny='admin' ;;
+      --*)                       : ;;
+      -*d*)                      _land_deny='delete' ;;
+    esac
+    if [ -n "$_land_deny" ]; then break; fi
+  done
+  set +f
+  if [ "$_land_oifs" = __unset__ ]; then unset IFS; else IFS=$_land_oifs; fi
+  if [ "$_land_deny" = delete ]; then
+    echo "LAND REFUSED: --merge-cmd carries a branch-deletion flag (--delete-branch/--delete or a" >&2
+    echo "              short cluster like -d/-sd/-ds) — land NEVER deletes a branch. Deletion is a" >&2
+    echo "              separate human act (D-240819-4); the branch object holds the commit the GO" >&2
+    echo "              note binds. Re-run without the deletion flag." >&2
+    return 1
+  fi
+  if [ "$_land_deny" = admin ]; then
+    echo "LAND REFUSED: --merge-cmd carries an --admin token — land NEVER emits a branch-protection" >&2
+    echo "              bypass. Approval authorizes promotion, never a bypass (the bypass is the" >&2
+    echo "              human's solo kill-switch, denied to the agent by the guard). Re-run without" >&2
+    echo "              --admin." >&2
+    return 1
+  fi
+
+  # 5. MERGE. Non-zero -> loud failure and propagate; the GO note IS already recorded and recoverable,
+  #    so only the merge did not complete.
+  if eval "$merge_cmd"; then _mrc=0; else _mrc=$?; fi
+  if [ "$_mrc" -ne 0 ]; then
+    echo "LAND FAILED: merge command exited $_mrc (the GO note IS recorded and recoverable; only the" >&2
+    echo "             merge did not complete). Re-run the merge, or land again — record supersedes." >&2
+    return "$_mrc"
+  fi
+
+  # Honest success line, VERB-SCOPED: the record was written BEFORE the merge, so THIS merge is
+  # recoverable by this verb — not that recordless merges are impossible (they are detected later by
+  # the CI backstop, which stays the friction-test gate).
+  echo "OK: land recorded the GO note on $asha, CONFIRMED it on origin, and merged $ref — the record"
+  echo "    was published BEFORE the merge and verified on origin, so this merge is recoverable (the"
+  echo "    shared GO note reached origin, not merely this clone). land is an ergonomic control on its"
+  echo "    own path, not a hard gate; the friction-test net for a recordless merge is the CI"
+  echo "    recordless-merge backstop."
+  return 0
+}
+
 cmd="${1:-}"
 [ $# -gt 0 ] && shift || true
 case "$cmd" in
@@ -1191,6 +1504,7 @@ case "$cmd" in
   trace)   if do_trace   "$@"; then rc=0; else rc=$?; fi ;;
   check)   if do_check   "$@"; then rc=0; else rc=$?; fi ;;
   actuate) if do_actuate "$@"; then rc=0; else rc=$?; fi ;;
+  land)    if do_land    "$@"; then rc=0; else rc=$?; fi ;;
   -h|--help) usage; rc=2 ;;
   *) usage; rc=2 ;;
 esac

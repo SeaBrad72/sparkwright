@@ -1,21 +1,16 @@
 # Org Rollout Playbook
 
-> ❄️ **THE ROLLOUT PLAYBOOK IS FROZEN PRE-ADOPTION — 2026-08-19.** The **rollout playbook** — the
-> Pilot → Expand → Fleet staging and the fleet-upgrade sequence — is **frozen in place**: it stays in
-> the tree and stays readable, but it is not maintained, not extended, and carries **no shipped-value
-> claim** until real adoption evidence exists. It was written ahead of any adopter, so its entry/exit
-> criteria are reasoned, not observed. **It returns with the first adopter**: a real multi-team rollout
-> is what would tell us which stages are right.
+> **The rollout playbook is a pre-adoption plan.** The Pilot → Expand → Fleet staging and the
+> fleet-upgrade sequence below were reasoned ahead of any adopter, not observed. A real multi-team
+> rollout is what will tell us which stages are right; treat the playbook as a starting shape, not a
+> measured result.
 >
-> **SCOPE OF THE FREEZE — the Stage 1–4 maturity model below is NOT frozen.** The section
+> **SCOPE — the Stage 1–4 maturity model below is live, not provisional.** The section
 > *"Maturity stages (1–4): tightening conformance at scale"* remains the
 > **canonical, live** definition of conformance strictness, and four living documents
 > (`../../START-HERE.md`, `../../GLOSSARY.md`, `../../DEVELOPMENT-PROCESS.md`,
 > `../operations/dora-metrics.md`) resolve their Stage references here. Keep it current; edit it as
-> the gates change. Only the rollout playbook around it is frozen.
->
-> Frozen under the `D-240819-2` Track-1 cut program; the tombstone entry (what froze, when, and the
-> return condition) is kept with the kit maintainers' retiring-conventions record, §8 Tombstones.
+> the gates change. Only the rollout playbook around it is provisional.
 
 How an organization adopts this kit across many teams **without big-bang risk** — start advisory on one team, tighten as evidence accumulates, then run the whole fleet at full strictness. Stack-neutral. This is also the **canonical home of the Stage 1–4 maturity model** (below); other docs link here rather than re-defining it.
 

@@ -362,6 +362,23 @@ deny  "redirect defeats read-lead"   'echo -n > /tmp/cp8a-scratch'
 deny  "awk system() escape"          'awk "BEGIN{system(\"rm -rf /tmp/q\")}"'
 deny  "find -exec rm escape"         'find . -exec rm -rf {} ;'
 deny  "env-assignment prefix"        'FOO=bar rm -rf /tmp/x'
+# --- GUARD-READ-EXEC-LANE (K-3a): the NON-CLAUDE surface carries the class too -------------------
+# One line per face, so the CLI proves the same three properties `conformance/agent-autonomy.sh`
+# proves for the hook. A read verb with an exec flag, a poisoned line, and a git global option that
+# names a program are all read-recognised BEFORE this row and denied after it.
+deny  "K-3a read verb exec flag"     'rg --pre /tmp/evil.sh -n x .claude/hooks/guard-core.sh'
+deny  "K-3a line poison"             'export PATH=/tmp:$PATH; head -1 conformance/verify.sh'
+deny  "K-3a git -c names a program"  'git -c diff.external=/tmp/evil.sh diff conformance/verify.sh'
+# --- GUARD-ADMIN-ARMS (K-3b): the NON-CLAUDE surface carries the class too -----------------------
+# One line per face, so the CLI proves the same properties `conformance/agent-autonomy.sh` proves for
+# the hook: a gh porcelain verb that IS a repo-root PATCH, a gh persistence primitive, and the same
+# admin endpoint reached through a client the guard was never taught. The ALLOW is the one that makes
+# the set honest — a GET of the very same URL is a read and must stay one, so a future arm that starts
+# denying reads reds HERE and not only in the hook's battery.
+deny  "K-3b gh porcelain admin verb" 'gh repo edit --default-branch x'
+deny  "K-3b gh persistence primitive" "gh alias set mm 'pr checkout'"
+deny  "K-3b admin endpoint via curl" 'curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge'
+allow "K-3b a GET of the same URL is a read" 'curl https://api.github.com/repos/o/r/pulls/5/merge'
 # --- CP-8a security fix: git --output=<file> is a file WRITE via the diff machinery ---
 deny  "git --output to cp"           'git diff --output=.github/workflows/ci.yml HEAD'
 deny  "git --output double-quoted"   'git diff --output=".github/workflows/ci.yml" HEAD'

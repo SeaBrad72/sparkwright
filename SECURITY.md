@@ -6,7 +6,7 @@
 
 **Channel repo:** `SeaBrad72/sparkwright` — verified live by `conformance/security-channel-live.sh`.
 
-**Fallback (if private reporting isn't enabled):** open a public issue titled `security: request private contact` with **no vulnerability details**, and a maintainer will reply with a private channel within 2 business days. (Maintainers: enable GitHub Private Vulnerability Reporting on the repo before publishing so the primary channel is live.)
+**Fallback (if private reporting isn't enabled):** open a public issue titled `security: request private contact` with **no vulnerability details**, and a maintainer will reply with a private channel within 2 business days.
 
 Please report privately; do not open a public issue with details for a suspected vulnerability.
 

@@ -103,3 +103,14 @@ dod-precedence	DEVELOPMENT-STANDARDS.md	The authoritative checklist is in \*\*`C
 collected-not-gated	scripts/tier-value.sh	^# collected-not-gated:	collected-not-gated: tier-value.sh disclosure line	any
 collected-not-gated	scripts/agent-scorecard.sh	^# collected-not-gated:	collected-not-gated: agent-scorecard.sh disclosure line	any
 collected-not-gated	scripts/dora.sh	^# collected-not-gated:	collected-not-gated: dora.sh disclosure line	any
+#
+# ── adopter-claims-honest (ADOPTER-CLAIMS-HONEST) — three of the five false adopter-facing claims
+#    corrected 2026-09-07 are pinned by exact-sentence presence here (the other two — #2 GitLab
+#    coverage, #3 the ci-platforms.md coupling count — are DERIVED pins in
+#    conformance/gitlab-adoption-complete.sh and conformance/adopter-export-wired.sh, since a
+#    presence marker cannot catch those two claims silently drifting true-to-false again).
+#    HONEST CEILING: these rows prove the CORRECTED WORDS are present, not that the surrounding
+#    prose stays true — a NEW falsehood elsewhere in the same doc would not be caught here.
+adopter-claims-honest	docs/enterprise/compliance-crosswalk.md	Least-privilege OIDC in CI \(push-only provenance job\).*Kit-assisted \|	adopter-claims-honest: OIDC row relabeled Kit-assisted	any
+adopter-claims-honest	docs/operations/harness-adapters.md	already inside the guard-core set	adopter-claims-honest: AGENTS.md is inside guard-core, not outside it	any
+adopter-claims-honest	DEVELOPMENT-PROCESS.md	re-sync procedure for genuinely overlapping parallel work was proposed and	adopter-claims-honest: re-sync procedure named as rejected by its design sitting, not promised	any

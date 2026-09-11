@@ -84,7 +84,7 @@ invisible to it and fail-closes tagging):
 ```
 | Date | Version | Trigger | Profile | Verdict | Artifact | Summary |
 |------|---------|---------|---------|---------|----------|---------|
-| 2026-08-30 | 3.220.0 | release-boundary | light | GO-WITH-CONDITIONS | docs/architecture/panel.md | 2 highs routed |
+| 2026-08-30 | 3.220.0 | release-boundary | light | GO-WITH-CONDITIONS | <link to the panel write-up> | 2 highs routed |
 ```
 
 **Update both files together** — append the row *and* set `.meta-control-last` to the same
