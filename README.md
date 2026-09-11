@@ -2,13 +2,17 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.227.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases)
+`v3.228.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
 
-Sparkwright turns a new repo into a project that ships production-grade software through a **guided, agent-driven lifecycle**. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It is opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
+Sparkwright brings a **guided, agent-driven lifecycle** to your software — whether you're starting a new project or layering it onto a repo you already have. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It's opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
+
+**The lifecycle:** **Inception → Discover → Plan → Build → Review → Release → Operate ↺** — you sit on the gates (approve the design, make the release go/no-go, accept the increment); the agents do the work between them.
 
 ## Get started
 
-You'll create a new project *from* the kit, then let the kit guide you through setting it up.
+**Two ways in — both land at the same next document, `START-HERE.md`.**
+
+**Starting fresh (the simplest start).** Create a new project *from* the kit:
 
 ```sh
 # 1 · Download the kit (a throwaway copy — used only to create your project)
@@ -21,7 +25,11 @@ sh /tmp/sparkwright/scripts/adopter-export.sh ./my-app
 cd my-app
 ```
 
-Now **open your new project in your AI coding tool** (Claude Code, or any `AGENTS.md`-aware agent) and tell it:
+**Adopting into an existing repo (brownfield).** Layer the kit **in** rather than starting from it: generate the kit tree (`adopter-export.sh`), copy it into your repo root (**adapt, don't blind-overwrite** your own files), rename the shipped `CLAUDE.md` → `ENGINEERING-PRINCIPLES.md`, and **merge** `.claude/` rather than replacing yours.
+
+> ⚠️ **Before any agent runs, verify the guard is live** — `sh conformance/guard-wired.sh` must print `guard-wired: OK`. A legacy repo already has real credentials and production reach; adopting the *process* without wiring the guard means agents run unprotected on a live system — worse than not adopting at all. Full step-by-step: **[docs/adoption/brownfield.md](docs/adoption/brownfield.md)**.
+
+Now **open your project in your AI coding tool** (Claude Code, or any `AGENTS.md`-aware agent) and tell it:
 
 > *"Walk me through START-HERE."*
 
@@ -31,13 +39,23 @@ Hit friction with the kit itself? `templates/KIT-FEEDBACK-TEMPLATE.md` or a `.gi
 
 From there the kit **guides you through Inception**: it helps you **choose your stack**, scaffolds a runnable starter with a **green pipeline on the first run** (so you build on working software, not an empty repo), and sets your project up. Then you enter the build loop. Your stack, environment, and deploy target are all decisions the kit walks you through — **nothing is pre-selected.**
 
-Whichever way you go, **`START-HERE.md` is the one next document** — it places you by experience and by role (new to enterprise SDLC · engineering leader · brownfield adoption · every other function), then walks you through Inception. There is nothing else to read first.
+Whichever way you go, **`START-HERE.md` is the one next document** — it places you by experience and role, then walks you through Inception. If you'd rather jump by role first:
+
+- **Evaluating as an engineering leader?** → **[EXEC-BRIEF](docs/enterprise/EXEC-BRIEF.md)** — what it is, why now, risk posture, ROI.
+- **Adopting into an existing codebase?** → **[brownfield adoption](docs/adoption/brownfield.md)** — merge into a repo you already have.
+- **Want the full capability map?** → **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)**.
+
+**Requirements:** an `AGENTS.md`-aware coding agent (Claude Code is the reference; any such agent works), `git` + a forge with branch protection for the full ratification flow, and POSIX `sh`. No other toolchain — your stack's tools are installed at Inception.
 
 *(Why `adopter-export.sh` instead of a plain `git clone` or `cp`: it makes a clean, CI-ready copy of the kit — pruning its own scratch files, test fixtures, and maintainer-internal surface — so your project starts tidy. It keeps every stack profile, so your stack stays an Inception decision.)*
 
 ## Who it's for
 
-Any team — humans, agents, or both — starting a new project who wants production-grade discipline without inventing a process from scratch. Adopt it as-is, or hand it to a team and tailor it.
+Any team — humans, agents, or both — that wants production-grade discipline without inventing a process from scratch, **whether the repo is brand-new or years old.** Adopt it as-is, or hand it to a team and tailor it.
+
+## What makes it different (honestly)
+
+Three separations are **enforced, not suggested** — builder ≠ reviewer ≠ ratifier. Every capability is labeled by how far it actually goes — **enforced** (a gate fails the build), **advisory** (it warns), or **declared** (you attest) — so nothing is sold as guaranteed when it isn't. And the guardrails are built to one test: *would this still bind if the model stopped cooperating?* That's why the control-plane guard, the promotion record, and the conformance gates hold even when an agent doesn't.
 
 ## What you get
 
@@ -59,7 +77,7 @@ Three things make that team trustworthy rather than just fast:
 
 - **Separation of duties, enforced.** Builder ≠ reviewer ≠ ratifier. Control-plane changes require an independent ratifier; the merge is a recorded GO/NO-GO bound to the reviewed commit (`shipped == approved`, verified by tree equality), and the agent actuates the mechanics — *the judgment is the control, not the keystroke*.
 - **Model tiering.** Each seat runs at an abstract tier (judgment/review seats pinned to the top model, builders free to run cheaper where the task allows, high-stakes work floored to the top). You declare the tier→model map for your provider — the kit is opinionated about *structure*, neutral about *which model*.
-- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a registered check that can't fail is caught and fixed; checks outside that control set are surfaced as uncovered, never silently counted). **Honest coverage ceiling:** the sweep builds *one composite mutant per file*, so a `KILLED` green proves *at least one* mutable site is observed — not all of them, and it names no site. The kit's headline claims are themselves a registry (`conformance/claims.tsv`): 72 rows, each with an executable verifier, 59 of them listed in a `REQUIRED_IDS` set so a claim cannot be silently dropped. 28 of the 72 are proven by a check's own `--selftest` and the other 44 by a verifier that reads the live tree — a split the registry now discloses in its own `proof` column. The kit is built with its own loop and held to its own Definition of Done.
+- **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a registered check that can't fail is caught and fixed; checks outside that control set are surfaced as uncovered, never silently counted). **Honest coverage ceiling:** the sweep builds *one composite mutant per file*, so a `KILLED` green proves *at least one* mutable site is observed — not all of them, and it names no site. The kit's headline claims are themselves a registry (`conformance/claims.tsv`): **every row carries an executable verifier**, and a `REQUIRED_IDS` set pins the ones that cannot be silently dropped. Each row's `proof` column discloses how it is verified — by the check's own `--selftest`, or by a verifier that reads the live tree. The kit is built with its own loop and held to its own Definition of Done.
 
 Full detail: **[docs/CAPABILITIES.md](docs/CAPABILITIES.md)**.
 
