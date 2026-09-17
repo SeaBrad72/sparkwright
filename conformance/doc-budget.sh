@@ -38,8 +38,16 @@ set -eu
 # DEVELOPMENT-STANDARDS.md 350 = 968/970, so the total ratchet keeps a 2-line bite, not 3. A
 # CONSTANT edit in a reviewed PR, the mechanism this header prescribes, called out in the build
 # record so the ratifier judges it explicitly rather than discovering it in a diff.
-BUDGETS="CLAUDE.md:136 DEVELOPMENT-PROCESS.md:485 DEVELOPMENT-STANDARDS.md:350"
-TOTAL_BUDGET=970
+# ⚠️ GOVERNED BUMP AT SPARKWRIGHT-START-VERB (2026-09-16): CLAUDE.md 136 -> 138, +2, for the ONE §1
+# sentence documenting the `sparkwright start <ROW-ID>` one-command form (the loop entry) and its
+# blank line — the same sentence the agents-brief.sh §1 byte cap bump accounts for. RE-DERIVED with
+# this gate's own `awk 'END{print NR}'`: CLAUDE.md 138 + DEVELOPMENT-PROCESS.md 482 +
+# DEVELOPMENT-STANDARDS.md 350 = 970. The +2 consumed the T1 note's 2-line total bite (968 -> 970),
+# so TOTAL_BUDGET is raised 970 -> 972 to restore that 2-line bite rather than leave the total at a
+# knife's edge for the next doc edit. Both are CONSTANT edits in a reviewed PR, called out here so the
+# ratifier judges them explicitly.
+BUDGETS="CLAUDE.md:138 DEVELOPMENT-PROCESS.md:485 DEVELOPMENT-STANDARDS.md:350"
+TOTAL_BUDGET=972
 
 # check_one <path> <max>: print PASS/FAIL; return 1 if over budget or missing.
 check_one() {

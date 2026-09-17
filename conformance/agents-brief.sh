@@ -58,7 +58,15 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # then would have been a guess. #648 merged first; THIS branch, the second merger, re-measured the
 # MERGED region with this script (2150 bytes) and set the constant to that + the 3-byte bite. That
 # is the same governed-bump act, done once on a real number instead of twice on two guesses.
-EC_MAX_BYTES=2153
+# ⚠️ GOVERNED BUMP AT SPARKWRIGHT-START-VERB (2026-09-16): 2153 -> 2332, for the ONE §1 sentence the
+# design ratifies — the `sparkwright start <ROW-ID>` one-command form (acts 1 and 3 + the trailer
+# block), H9's highest-leverage adoptability line. Trimmed to its shortest honest form FIRST: it names
+# that the printed class is provisional and that the gate re-derives it (D4), so it does NOT imply the
+# printed class is authoritative and preserves §1's "Never self-assert the class". Measured merged
+# region 2329 bytes with this script's own ec_region_bytes; set to 2329 + the 3-byte bite = 2332, so
+# the next edit that needs room asks for it in a reviewed PR — the point of this constant. The bump is
+# +179 for content, NOT recomputed headroom.
+EC_MAX_BYTES=2332
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {

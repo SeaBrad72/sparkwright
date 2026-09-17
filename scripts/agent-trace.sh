@@ -76,6 +76,47 @@ extract_steps() {
   rm -f "$_map" 2>/dev/null || true
 }
 
+# --- session.id (B2-SESSION-IDENTITY-LEDGER decision 8): ADDITIVE-OPTIONAL on the MP-3a core ---
+# The conductor session that holds the work item's claim, read from `<toplevel>/.kit-run/session.id`
+# — the file `board-claim.sh claim` mints. DECLARED, NEVER AUTHENTICATED: nothing reads it as an
+# authorization input, here or anywhere. This emitter NEVER MINTS one (minting is the claim verb's
+# job alone) and degrades to "unknown" — the schema's own sentinel — whenever it cannot derive one.
+# The read hygiene is board-claim.sh's, re-derived rather than sourced because this is a standalone
+# reference adapter: a symlinked file is refused, a FIFO is refused (`mkfifo .kit-run/session.id`
+# would otherwise HANG this emitter forever), a file this uid does not own or whose LINK COUNT is
+# not 1 is refused, the read is bounded by `head -c 256`, the value must be ONE line of
+# [A-Za-z0-9._-]{1,64}, and anything else is `unknown` rather than a sanitized half-value.
+# ⚠️ THE OWNER AND LINK-COUNT TESTS ARE FIX-ROUND ADDITIONS (M5), AND THIS COMMENT USED TO CLAIM
+# PARITY IT DID NOT HAVE: the first build said the hygiene was board-claim.sh's while checking only
+# `-L` and `-f`. It is the four-test predicate now. The one DELIBERATE difference from the write
+# verb, which is the rule for the read-only twins: `claim` REFUSES rc 2 on a bad state file because
+# it is about to act on it; a REPORTER degrades to the schema's `unknown` sentinel and keeps going. `run.id` keeps its own meaning
+# (the transcript's own id) and is untouched.
+read_session_id() {
+  _top=$(git rev-parse --show-toplevel 2>/dev/null) || { printf 'unknown'; return 0; }
+  [ -n "$_top" ] || { printf 'unknown'; return 0; }
+  _sf="$_top/.kit-run/session.id"
+  [ -L "$_top/.kit-run" ] && { printf 'unknown'; return 0; }
+  [ -L "$_sf" ] && { printf 'unknown'; return 0; }
+  [ -p "$_sf" ] && { printf 'unknown'; return 0; }
+  [ -f "$_sf" ] || { printf 'unknown'; return 0; }
+  # shellcheck disable=SC3067  # `-O` is outside POSIX test and measured present on every shell this
+  # runs under; a shell lacking it makes `[` fail, which lands on `unknown` — the fail-safe direction.
+  [ -O "$_sf" ] || { printf 'unknown'; return 0; }
+  _sln=$(ls -ld -- "$_sf" 2>/dev/null | awk '{print $2}')
+  [ "$_sln" = 1 ] || { printf 'unknown'; return 0; }
+  _sv=$(head -c 256 -- "$_sf" 2>/dev/null || true)
+  _snl='
+'
+  case "$_sv" in *"$_snl"*) printf 'unknown'; return 0 ;; esac
+  case "$_sv" in
+    '')                printf 'unknown'; return 0 ;;
+    *[!A-Za-z0-9._-]*) printf 'unknown'; return 0 ;;
+  esac
+  [ "${#_sv}" -le 64 ] || { printf 'unknown'; return 0; }
+  printf '%s' "$_sv"
+}
+
 compute_cost() {  # $1=in $2=out ; cost only when --price "IN,OUT" (per-Mtok) is given.
   # No built-in model->price table: prices drift and baking them into the kit is
   # maintenance debt. Tokens are always emitted (the objective fact); cost is
@@ -121,9 +162,11 @@ emit() {
     --argjson tin "$_in" --argjson tout "$_out" --argjson tcache "$_cache" \
     --arg cost "$_cost" \
     --arg pr "$_pr" --arg reviews "$_reviews" --arg outcome "$_outcome" \
+    --arg session "$(read_session_id)" \
     --argjson steps "$_steps" '
     {
       "agent.id": $agent, "run.id": $run, "work_item.id": $wi,
+      "session.id": $session,
       "parent.run.id": (if $parent == "null" then null else $parent end),
       start: $start, end: $end,
       tokens: {in: $tin, out: $tout, cache_read: $tcache},
@@ -152,6 +195,54 @@ selftest() {
   [ "$(printf '%s' "$out" | jq -r '.steps[2].outcome')" = "error" ]  || { printf 'selftest FAIL: error step\n'; st_fail=1; }
   [ "$(printf '%s' "$out" | jq -r '.steps[3].outcome')" = "denied" ] || { printf 'selftest FAIL: denied step\n'; st_fail=1; }
   [ "$(printf '%s' "$out" | jq -r '.["run.id"]')" = "sess-FIXTURE-001" ] || { printf 'selftest FAIL: run.id\n'; st_fail=1; }
+  # --- leg session.id (B2 decision 8) — ADDITIVE-OPTIONAL, emitted or `unknown`, NEVER minted. ---
+  # Four faces in one hermetic tmpdir: a well-formed file is emitted verbatim; a SYMLINKED file, a
+  # two-line file and an out-of-grammar file each read `unknown` (never a sanitized half-value, and
+  # never a read THROUGH the link); and the field is PRESENT either way, because an optional field
+  # that disappears is a schema change rather than a degradation.
+  [ "$(printf '%s' "$out" | jq -e 'has("session.id")' 2>/dev/null)" = "true" ] \
+    || { printf 'selftest FAIL: session.id missing from the emitted trace\n'; st_fail=1; }
+  st_sd=$(mktemp -d)
+  ( set -e; cd "$st_sd"; git init -q .; mkdir -p .kit-run ) >/dev/null 2>&1
+  st_probe() { # <label> <want>
+    st_got=$( cd "$st_sd" && read_session_id )
+    [ "$st_got" = "$2" ] || { printf 'selftest FAIL: session.id %s — wanted %s, got %s\n' "$1" "$2" "$st_got"; st_fail=1; }
+  }
+  printf 's-20260916-deadbeef\n' > "$st_sd/.kit-run/session.id"
+  st_probe "well-formed file is emitted verbatim" "s-20260916-deadbeef"
+  rm -f "$st_sd/.kit-run/session.id"
+  printf 'target\n' > "$st_sd/victim"
+  ln -s "$st_sd/victim" "$st_sd/.kit-run/session.id"
+  st_probe "a SYMLINKED file reads unknown (never read through)" "unknown"
+  rm -f "$st_sd/.kit-run/session.id"
+  printf 's-20260916-deadbeef\nsecond\n' > "$st_sd/.kit-run/session.id"
+  st_probe "a two-line file reads unknown" "unknown"
+  printf 'evil; rm -rf /\n' > "$st_sd/.kit-run/session.id"
+  st_probe "an out-of-grammar file reads unknown" "unknown"
+  # [fix round 1, M5] The two tests this emitter was MISSING while its comment claimed parity with
+  # board-claim.sh's predicate — a HARD-LINKED state file, and a FIFO (which hangs the read rather
+  # than failing it). Both degrade to the schema's own `unknown` sentinel; a reporter never refuses.
+  rm -f "$st_sd/.kit-run/session.id"
+  printf 's-20260916-deadbeef\n' > "$st_sd/linktarget"
+  if ln "$st_sd/linktarget" "$st_sd/.kit-run/session.id" 2>/dev/null; then
+    st_probe "a HARD-LINKED file (link count 2) reads unknown" "unknown"
+  else
+    printf 'selftest FAIL: session.id — could not build the hard-link fixture\n'; st_fail=1
+  fi
+  rm -f "$st_sd/.kit-run/session.id"
+  if mkfifo "$st_sd/.kit-run/session.id" 2>/dev/null; then
+    # If this ever regresses the selftest HANGS here rather than failing, which is itself the signal.
+    st_probe "a FIFO reads unknown and does not HANG the emitter" "unknown"
+    rm -f "$st_sd/.kit-run/session.id"
+  else
+    printf 'selftest FAIL: session.id — could not build the FIFO fixture\n'; st_fail=1
+  fi
+  printf 'evil; rm -rf /\n' > "$st_sd/.kit-run/session.id"
+  rm -f "$st_sd/.kit-run/session.id"
+  st_probe "an ABSENT file reads unknown — and nothing is minted" "unknown"
+  [ -e "$st_sd/.kit-run/session.id" ] \
+    && { printf 'selftest FAIL: session.id — the emitter MINTED a file (only `claim` may)\n'; st_fail=1; }
+  rm -rf "$st_sd"
   if [ "$st_fail" -ne 0 ]; then printf 'agent-trace --selftest: FAIL\n' >&2; return 1; fi
   printf 'agent-trace --selftest: OK (tokens/steps/outcomes/run.id all match the fixture)\n'
   return 0

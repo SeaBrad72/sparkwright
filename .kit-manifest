@@ -273,6 +273,7 @@ conformance/security-policy.sh
 conformance/selftest-hermetic.sh
 conformance/shellcheck.sh
 conformance/shim-coverage.sh
+conformance/sparkwright-verbs.sh
 conformance/stack-decision-integrity.sh
 conformance/stack-selection.sh
 conformance/structured-logging-wired.sh
@@ -719,8 +720,10 @@ scripts/promotion-verify.sh
 scripts/publish-public.sh
 scripts/release-tag.sh
 scripts/runaway-guard.sh
+scripts/slice-resume.sh
 scripts/sod-check.sh
 scripts/sparkwright
+scripts/start.sh
 scripts/tier-advice.sh
 scripts/tier-value.sh
 skills/build/SKILL.md

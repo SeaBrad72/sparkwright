@@ -602,6 +602,77 @@ selftest() {
     echo "FAIL: land liveness: want rc=0 + merge + note-on-origin, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) onorigin=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
   fi
 
+  # (+claim) LAND RELEASES THE ROW'S OWN CLAIM [B2-SESSION-IDENTITY-LEDGER, design decision 6].
+  #     `do_actuate` has released the claim since BOARD-CLAIM-MECHANISM §3.5; `do_land` ended at the
+  #     merge with nothing. THE EIGHT STALE CLAIM REFS OF 2026-09-15 ARE THAT GAP — eight shipped
+  #     slices whose close never released the row, and with B4's WIP ceiling live the next `claim`
+  #     would have refused. Both verbs now call ONE shared helper after their verification.
+  #     The fixture commit carries a `Kit-Row:` trailer, so `record`'s own projection (never a flag)
+  #     is what names the row; the claim's branch does not exist on origin, so the release is
+  #     P1-provable and needs no dial.
+  mkorigin claimrel
+  rm -f "$LAND_MARK"
+  # ⚠️ THE FIXTURE IS P3, NOT P1, SINCE FIX ROUND 1 (H2). It used to give the claim a branch that was
+  # absent from origin and lean on that as the proof. "Branch absent" is no longer a proof — under
+  # one-push-per-PR it is the normal state of a healthy in-build slice — so the fixture now models
+  # what a real land actually produces: the row sitting in `## Done` on the DEFAULT BRANCH's board,
+  # which is exactly the state the merge creates and is why a land release is P3-provable by
+  # construction. The claim's branch is `feat/land-live` and it EXISTS on origin, so nothing here
+  # can pass on the withdrawn proof by accident.
+  ( set -e; cd "$LOA"
+    printf 'b\n' >> f.txt; git add f.txt
+    printf '%s\n' '# Fixture — Backlog' '' '## Done' '' \
+      '| Item | Closed | Retro/outcome |' '|------|--------|---------------|' \
+      '| `ROW-LAND` — landed by the fixture | 2026-09-16 | L1 retro. Disposition: none — fixture. |' \
+      > BACKLOG.md
+    git add BACKLOG.md
+    git commit -qm "land claim fixture
+
+Kit-Row: ROW-LAND"
+    git push -q origin HEAD:refs/heads/main
+    git push -q origin HEAD:refs/heads/feat/land-live ) >/dev/null 2>&1
+  git --git-dir="$LO/remote.git" symbolic-ref HEAD refs/heads/main
+  LOSHA2="$(git -C "$LOA" rev-parse HEAD)"
+  _cl_blob=$(printf 'row: ROW-LAND\nclaimant: Builder <b@example.com>\nbranch: feat/land-live\nclaimed-at: 2026-09-01T00:00:00Z\nsession: s-20260901-aaaabbbb (declared)\n' | git -C "$LOA" hash-object -w --stdin)
+  _cl_tree=$(printf '100644 blob %s\tCLAIM\n' "$_cl_blob" | git -C "$LOA" mktree)
+  _cl_commit=$(printf 'claim ROW-LAND\n' | git -C "$LOA" commit-tree "$_cl_tree")
+  git -C "$LOA" push -q origin "$_cl_commit:refs/claims/ROW-LAND"
+  if git --git-dir="$LO/remote.git" rev-parse --verify -q refs/claims/ROW-LAND >/dev/null; then
+    echo "PASS: land releases the claim — the fixture claim ref EXISTS on origin before the land"
+  else
+    echo "FAIL: land releases the claim — the fixture claim ref was never created (the leg would be vacuous)"; st=1
+  fi
+  lland "$LAND_STUB" "$LOSHA2" control-plane "branch/land-claimrel"
+  if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] \
+     && ! git --git-dir="$LO/remote.git" rev-parse --verify -q refs/claims/ROW-LAND >/dev/null \
+     && git --git-dir="$LO/remote.git" rev-parse --verify -q refs/claims-log/ROW-LAND >/dev/null; then
+    echo "PASS: land releases the claim — after a verified merge the claim ref is GONE and a refs/claims-log entry exists"
+  else
+    echo "FAIL: land releases the claim: want rc=0 + merge + claim gone + a claims-log entry, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) claim=$( git --git-dir="$LO/remote.git" rev-parse --verify -q refs/claims/ROW-LAND >/dev/null && echo present || echo gone ); out=$_ld_out"; st=1
+  fi
+  # …AND A FAILING RELEASE IS A WARN, NEVER A MERGE FAILURE. The merge ALREADY HAPPENED; returning
+  #     non-zero would report a successful, verified promotion as failed, and no rc can un-merge it.
+  #     The failure is made honestly: the claim verbs are pointed at a remote that does not exist.
+  mkorigin claimwarn
+  rm -f "$LAND_MARK"
+  ( set -e; cd "$LOA"
+    printf 'c\n' >> f.txt; git add f.txt
+    git commit -qm "land claim warn fixture
+
+Kit-Row: ROW-LANDWARN"
+    git push -q origin HEAD:refs/heads/main ) >/dev/null 2>&1
+  LOSHA3="$(git -C "$LOA" rev-parse HEAD)"
+  if _ld_out="$( cd "$LOA" && PROMOTION_NOTES_REF="$LR2" BOARD_CLAIM_REMOTE="$LO/no-such-remote.git" \
+        sh "$VERIFY" land --ref v1.0.0 --merge-cmd "$LAND_STUB" --approved-sha "$LOSHA3" \
+        --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" \
+        --class control-plane --scope "branch/land-claimwarn" --token "GO: land at $LOSHA3" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+  if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -q 'WARN' \
+     && printf '%s' "$_ld_out" | grep -q 'board-claim.sh release ROW-LANDWARN --stale'; then
+    echo "PASS: land releases the claim — a FAILING release is a WARN carrying the by-hand command, and land still returns 0"
+  else
+    echo "FAIL: land releases the claim (warn path): want rc=0 + merge + WARN + the by-hand command, got rc=$_ldc; out=$_ld_out"; st=1
+  fi
+
   # (−no-push) --no-push is REFUSED: a landing merge must PUBLISH the GO record so it reaches origin;
   #     landing on a local-only note would reopen #658. rc != 0, the stub must NOT run, reason names
   #     --no-push. (Finding 1: the old land passed --no-push through to record and merged on a note

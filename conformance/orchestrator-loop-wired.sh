@@ -327,6 +327,53 @@ if [ "${1:-}" = "--selftest" ]; then
   printf 'Terminal state: a plan (`docs/superpowers/plans/2026-01-01-x.md`), handed on.\n' >> "$d/fx/skills/plan/SKILL.md"
   st_expect "plan skill recommends a gitignored location -> exit 1" 1
 
+  # -- B4-CROSS-SESSION-BUDGET: the SANDBOX banner must reach an operator THROUGH the loop --------
+  # The guard refuses a redirected tally/config unless KIT_RUNAWAY_SANDBOX vouches for it, and
+  # banners every such run on stderr. That banner is worthless if the loop swallows it: this script
+  # locks the WIRING statically, so here — and only here — the REAL loop is run once, in a throwaway
+  # repo under a throwaway $HOME, and its stderr is read. Behavioural, deliberately: a grep for
+  # `2>/dev/null` in the source could not tell a swallowed banner from a printed one.
+  b4_loop=$(cd "$(dirname "$LOOP_SCRIPT")" 2>/dev/null && pwd)/$(basename "$LOOP_SCRIPT")
+  # ⚠️ THE BANNER ASSERTION HAS NO jq DEPENDENCY (R1/M3). It used to sit behind `command -v jq`, so on
+  # a runner without jq the leg SELF-DECLARED PASS and the control went unmeasured — a skip wearing a
+  # green. The banner is plain stderr text; only the span-count liveness anchor needs jq, and that one
+  # degrades to a stated N/A instead of taking the assertion down with it.
+  if [ -f "$b4_loop" ] && [ -f "$(dirname "$b4_loop")/runaway-guard.sh" ]; then
+    b4_s="$d/b4sand"; mkdir -p "$b4_s/repo"
+    printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\nWARN_PCT=0\nCOST_PER_1K_USD=0\n' > "$b4_s/conf"
+    : > "$b4_s/tally"
+    b4_err=$( cd "$b4_s/repo" \
+      && git init -q . && git config user.email e@x && git config user.name e \
+      && echo seed > seed.txt && git add seed.txt && git commit -q -m seed \
+      && HOME="$b4_s" KIT_RUNAWAY_SANDBOX="$b4_s" RUNAWAY_BUDGET_CONFIG="$b4_s/conf" \
+         RUNAWAY_TALLY="$b4_s/tally" OTEL_TRACE_FILE="$b4_s/trace" \
+         sh "$b4_loop" alpha 2>&1 >/dev/null ) || true
+    case "$b4_err" in
+      *"SANDBOX override active"*)
+        echo "selftest PASS: sandbox banner surfaces on the loop's stderr" ;;
+      *)
+        echo "selftest FAIL: sandbox banner surfaces on the loop's stderr (stderr=[$b4_err])"
+        echo x >> "$d/sf.fail" ;;
+    esac
+    # …and the loop still RAN (the banner must not be the only thing that happened): one engineer span.
+    # ⚠️ ONLY THE ANCHOR IS jq-CONDITIONAL, AND ITS N/A IS EARNED, NOT ASSUMED: the loop's own OTel
+    # writer (scripts/otel-trace.sh) needs jq, so on a jq-less runner there is no trace to count and
+    # the anchor is genuinely unavailable — MEASURED here, not guessed. The banner assertion above
+    # has already run either way, which is the whole point of the R1/M3 change.
+    if command -v jq >/dev/null 2>&1; then
+      if [ -f "$b4_s/trace" ] && [ "$(jq -s '[.[]|select(.attributes["agent.id"]=="engineer")]|length' "$b4_s/trace")" = "1" ]; then
+        echo "selftest PASS: the bannered loop still drove its slice (liveness anchor)"
+      else
+        echo "selftest FAIL: the bannered loop did not drive its slice — the banner leg would pass on a dead loop"
+        echo x >> "$d/sf.fail"
+      fi
+    else
+      echo "selftest PASS: liveness anchor N/A (jq absent: the loop's own trace writer needs it) — the banner assertion above still ran"
+    fi
+  else
+    echo "selftest PASS: sandbox banner leg N/A (no real loop script beside this fixture)"
+  fi
+
   if [ -f "$d/sf.fail" ]; then
     echo "FAIL: orchestrator-loop-wired selftest"; exit 1
   fi

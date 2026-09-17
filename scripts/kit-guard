@@ -554,6 +554,75 @@ case "$_notes_msg" in
     echo "FAIL: the notes deny message does not disclose the uncovered routes, got: $_notes_msg"; fail=1 ;;
 esac
 
+# --- B2-SESSION-IDENTITY-LEDGER: raw writes AND DELETES of refs/claims/* + refs/claims-log/* ---
+# MEASURED 2026-09-16 before the arm existed: every line below except the `+`-forced one was ALLOW,
+# so board-claim.sh refusing to release an unprovably-stale claim was one raw push away from
+# theatre. Unlike the notes arm above, this one DOES claim to cover destruction — a deleted claim
+# IS a released claim, which makes destruction the bypass rather than a side door.
+# ⚠️ THE QUOTED SPELLINGS ARE HERE BECAUSE THE FIRST BUILD OF THIS ARM ALLOWED THEM (fix round 1,
+# both review seats measured it): every alternative was anchored on WHITESPACE, so an ordinary
+# quoted refspec — the way a shell user types one by habit — walked past the whole arm. The arm now
+# strips quotes before it matches, and these cells are what keeps that true.
+deny  "claim delete, quoted \" ref"   'git push origin --delete "refs/claims/ROW-X"'
+deny  "claim delete, quoted ' ref"    "git push origin -d 'refs/claims/ROW-X'"
+deny  "claim delete, quoted colon"    'git push origin :"refs/claims/ROW-X"'
+deny  "claim bare-ref write, quoted"  'git push origin "refs/claims/ROW-X"'
+deny  "claim bare-ref write, plain"   'git push origin refs/claims/ROW-X'
+deny  "claim delete, quoted + git -C" 'git -C /tmp/x push origin --delete "refs/claims/ROW-X"'
+deny  "claim delete, extra whitespace" 'git push    origin     --delete    "refs/claims/ROW-X"'
+deny  "claim delete, trailing comment" 'git push origin --delete refs/claims/ROW-X # housekeeping'
+deny  "claims-log delete, quoted"     'git push origin --delete "refs/claims-log/ROW-X"'
+# ⚠️ ROUND 2 OF THE SAME DEFECT: the first repair stripped `"` and `'` and called that "the quoting
+# class". POSIX has a THIRD mechanism — the backslash — and bash adds ANSI-C `$'…'`; all four
+# spellings below were measured ALLOW after that repair. A backslash before a `/` is something a
+# shell user types without thinking. Naming a class and enumerating two thirds of it is the same
+# defect one level up, which is why these are pinned rather than fixed quietly.
+deny  "claim delete, backslash lead"  'git push origin --delete \refs/claims/ROW-X'
+deny  "claim delete, backslash mid"   'git push origin --delete refs\/claims/ROW-X'
+deny  "claim delete, backslash late"  'git push origin --delete refs/claims\/ROW-X'
+deny  "claim delete, ANSI-C \$'…'"    "git push origin --delete \$'refs/claims/ROW-X'"
+deny  "claim colon, backslash lead"   'git push origin :\refs/claims/ROW-X'
+deny  "claim colon, ANSI-C \$'…'"     "git push origin :\$'refs/claims/ROW-X'"
+deny  "claim bare-ref, backslash"     'git push origin \refs/claims/ROW-X'
+deny  "claim write, backslash in ref" 'git push origin abc1234:refs\/claims/ROW-X'
+deny  "claims-log delete, backslash"  'git push origin --delete \refs/claims-log/ROW-X'
+deny  "claim write, quoted refspec"   'git push origin "abc1234:refs/claims/ROW-X"'
+deny  "claim ref delete, colon form"  'git push origin :refs/claims/ROW-X'
+deny  "claim ref delete, --delete"    'git push origin --delete refs/claims/ROW-X'
+deny  "claim ref delete, -d"          'git push origin -d refs/claims/ROW-X'
+deny  "claims-log delete, colon form" 'git push origin :refs/claims-log/ROW-X'
+deny  "claim ref bare write"          'git push origin abc1234:refs/claims/ROW-X'
+deny  "claim ref, second refspec"     'git push origin HEAD:refs/heads/x abc1234:refs/claims/ROW-X'
+deny  "claim ref via send-pack"       'git send-pack origin abc1234:refs/claims/ROW-X'
+deny  "claim ref via --prune pattern" 'git push --prune origin refs/kit/*:refs/claims/*'
+deny  "claim ref via -c remote.push"  'git -c remote.origin.push=abc1234:refs/claims/ROW-X push origin'
+deny  "claim ref via config remote.push" 'git config remote.origin.push abc1234:refs/claims/ROW-X'
+deny  "claim ref, URL remote form"    'git push git@github.com:SeaBrad72/sparkwright.git abc1234:refs/claims/ROW-X'
+# THE SENTINEL IS RUNTIME-SCOPED, exactly as it is for the promotion ledger: in the command TEXT the
+# prefix is refused (this runtime's own environment does not carry it); in the guard's ENVIRONMENT
+# — which is what `install-shims` produces — it allows, and that ALLOW half is asserted just below.
+deny  "claim sentinel in cmd TEXT"    'KIT_CLAIM_FRONT_DOOR=1 git push origin abc1234:refs/claims/ROW-X'
+# Must-stay ALLOW: the front door itself, and every READ a claim reader makes.
+allow "front door: board-claim.sh"    'sh scripts/board-claim.sh release ROW-X --stale'
+allow "claim read: ls-remote glob"    "git ls-remote origin 'refs/claims/*'"
+allow "claim read: scratch fetch"     'git fetch --no-tags --depth=1 origin refs/claims/ROW-X:refs/kit/claim-scratch-1234'
+allow "claims-log read: scratch fetch" 'git fetch --no-tags --depth=1 origin refs/claims-log/ROW-X:refs/kit/claim-log-1234'
+allow "unrelated ref push (not claims)" 'git push origin abc1234:refs/heads/feature/x'
+if KIT_CLAIM_FRONT_DOOR=1 sh "$0" cmd 'git push origin abc1234:refs/claims/ROW-X' >/dev/null 2>&1; then
+  echo "PASS allow: front-door sentinel (KIT_CLAIM_FRONT_DOOR=1) permits board-claim.sh's own push"
+else
+  echo "FAIL (wanted allow): the front-door sentinel must permit board-claim.sh's own claim push"; fail=1
+fi
+# The deny message must be TRUE about what it covers AND about what it does not (L2 discipline):
+# it DOES claim destruction here, and it must still disclose the routes it leaves open.
+_claims_msg=$(sh "$0" cmd 'git push origin :refs/claims/ROW-X' 2>&1 >/dev/null || true)
+case "$_claims_msg" in
+  *"DELETES INCLUDED"*"NOT covered"*"update-ref"*"export KIT_CLAIM_FRONT_DOOR=1"*"plain terminal"*)
+    echo "PASS deny: the claim-ref deny message claims destruction AND discloses the routes it leaves open" ;;
+  *)
+    echo "FAIL: the claim-ref deny message does not state its coverage and its ceiling, got: $_claims_msg"; fail=1 ;;
+esac
+
 # --- GUARD-HOOKSPATH-CASE-BYPASS: config-key / secret-name matchers fold case (D-240813-1) ---
 # §1: hooksPath — unconditional fold, no fork (git config keys are case-insensitive BY SPEC).
 deny  "hooksPath control (camelCase)"        'git config core.hooksPath /tmp/n'

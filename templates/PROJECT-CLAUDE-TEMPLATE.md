@@ -10,6 +10,8 @@
 4. **Carry the Entry Declaration as commit trailers, proportional to the class** — Ordinary owes `Kit-Row` + `Kit-Class`; Sensitive/Control-plane owe `Kit-Stage` + `Kit-Skill` too (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` (stage→skill map: `sh conformance/loop-state.sh --help`) checks the DERIVED class's required set on your PR's final commit: present once each, row on the board, class matching; a volunteered field is validated too. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
 5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff.
 
+**One command:** `sparkwright start <ROW-ID> [--changed <listing>]` runs acts 1 and 3 and prints this trailer block; the printed class is provisional — the gate re-derives it.
+
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
 
 > **Guard refused a read-only command?** `docs/operations/runtime-guards.md` §*The escape card* names the six shapes it always refuses and the one retry for each.

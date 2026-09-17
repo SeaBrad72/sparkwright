@@ -6670,6 +6670,70 @@ guard_check_command() {
      && printf '%s' "$cmd" | grep -Eq 'notes[[:space:]]([^;&|]*[[:space:]])?(add|append|copy|edit|remove|prune|merge)([[:space:]]|$)'; then
     printf '%s' '13: raw `git notes` WRITE verbs (add/append/copy/edit/remove/prune/merge) on refs/notes/promotions are denied - this is the default route a drifting agent takes to mint a GO record (governance-ledger integrity, D-240805-3). Use the front door: scripts/promotion-verify.sh record, which derives the assurance label; publish with `git push origin refs/notes/promotions`. NOT covered, and not claimed to be: git plumbing (hash-object/mktree/commit-tree/update-ref), ledger DESTRUCTION (`update-ref -d`, `push origin :refs/notes/promotions`), alias indirection, fetch OR PUSH refspecs whose DESTINATION is the ref, `symbolic-ref` repointing the ref, GIT_NOTES_REF spellings, interpreter wrappers - see the ceiling at this rule. The control that binds is the record rendered at the CI judgment surface, not this deny.'; return 1
   fi
+  # --- B2-SESSION-IDENTITY-LEDGER: RAW WRITES AND DELETES OF THE CLAIM REFS ARE DENIED ----------
+  # `refs/claims/<ROW>` on origin is the kit's work-in-progress truth: B4 counts the WIP ceiling
+  # from it, and `board-claim.sh` serializes "entering In Progress" on the forge's own
+  # non-fast-forward rule. `refs/claims-log/<ROW>` is the durable record of every non-holder
+  # release. MEASURED 2026-09-16, before this arm existed: `git push origin :refs/claims/X` and
+  # `git push origin --delete refs/claims/X` were both ALLOWED, so the script's refusal to release
+  # an unprovably-stale claim was one raw push away from theatre. (The FORCED refspec
+  # `+sha:refs/claims/X` was already denied by the unrelated force rule — that is not coverage by
+  # this arm.) The shape mirrors the `refs/notes/promotions` arm above.
+  #
+  # UNLIKE THE NOTES ARM, THIS ONE *DOES* CLAIM TO COVER DESTRUCTION, because destruction is the
+  # bypass here: a deleted claim is a released claim. Covered, each measured as a fixture in
+  # conformance/agent-autonomy.sh (B2-A … B2-G): the delete forms (`:refs/claims/`, `--delete`,
+  # `-d`), the bare write (`<sha>:refs/claims/`), the two-refspec form, `git send-pack`, `--prune`
+  # with a destination pattern into the namespace, and the configured routes
+  # (`git -c remote.*.push=…:refs/claims/…`, `git config remote.*.push …`), in any remote spelling
+  # including a full URL. READS STAY ALLOWED — `git ls-remote origin 'refs/claims/*'` and the
+  # `--depth=1` scratch fetch every reader uses.
+  #
+  # THE FRONT DOOR IS THE SENTINEL, AND IT IS PROCESS-ENV ONLY (the KIT_PROMOTION_FRONT_DOOR shape
+  # above, for the same measured reason): under `kit-guard install-shims` every child `git` is
+  # graded, so `board-claim.sh`'s own pushes would be denied by their own arm — it exports
+  # KIT_CLAIM_FRONT_DOOR=1 into the guard's ENVIRONMENT. Arriving in the command TEXT it is refused
+  # by the unvetted-prefix rule and by this arm's own reading of its process env, so an agent cannot
+  # type its way past this line. HONEST: like every sentinel here it is forgeable by an actor who
+  # can set the guard's environment; it is a DRIFT CONTROL, not a boundary.
+  #
+  # NOT COVERED, and not claimed to be: git plumbing that writes a LOCAL ref (`update-ref`),
+  # `symbolic-ref` repointing, alias indirection, interpreter wrappers, and an actor with push
+  # rights at a plain terminal (no harness, no shims). The control that binds a human is the forge
+  # ruleset on `refs/claims/**` + `refs/claims-log/**`, which is an owner keystroke and is named
+  # not done.
+  # ⚠️ QUOTE-STRIPPED BEFORE THE MATCH, AND THAT IS A FIX-ROUND REPAIR, NOT A FLOURISH. The first
+  # build anchored every alternative on WHITESPACE, and both review seats measured the bypass: an
+  # ORDINARY QUOTED REFSPEC walked straight past it — `git push origin --delete "refs/claims/X"`,
+  # `-d 'refs/claims/X'`, `:"refs/claims/X"` and the bare `"refs/claims/X"` were all ALLOW while the
+  # unquoted spellings denied. Nobody has to know they are evading anything to type those; a shell
+  # user quotes a refspec by habit. This is the session-57 lesson applied again — a deny matcher
+  # must decline the CLASS, and quoting is a class, not a spelling. Stripping `'` and `"` from the
+  # text this arm reads makes every alternative quote-tolerant at once, which is why the repair is
+  # here rather than `["']?` sprinkled through the pattern (the sprinkle covers the quotes someone
+  # thought of; the strip covers quoting). Monotone: a strict superset of the old match — stripping
+  # characters can only ADD hits, so no DENY can become an ALLOW. The residual over-deny is stated:
+  # a command whose quoted *prose* happens to contain `refs/claims/` beside a push verb denies.
+  #
+  # ⚠️ AND THE STRIP COVERS **ALL THREE** QUOTING MECHANISMS, WHICH TOOK A SECOND ROUND TO GET RIGHT.
+  # The first repair stripped only `"` and `'` — and POSIX has a third, the BACKSLASH, plus bash's
+  # ANSI-C `$'…'`. Both seats measured the residue: `--delete \refs/claims/X`, `--delete
+  # refs\/claims/X`, `--delete refs/claims\/X` and `--delete $'refs/claims/X'` all ALLOWED, and a
+  # backslash before a `/` is something a shell user types without thinking about it at all. Naming
+  # a class and then enumerating two thirds of it is the same defect one level up, so the strip now
+  # removes `"`, `'`, `\` and `$`, and every alternative ALSO tolerates a run of non-alphanumerics
+  # between its anchor and `refs/claims` — belt and braces, because these two cover different
+  # residues (the strip handles characters INSIDE the token, the run handles anything glued in front
+  # of it). Still monotone in both halves.
+  _b2_claims_cmd=$(printf '%s' "$cmd" | tr -d '"$\\'"'")
+  if ! selfedit_allowed \
+     && [ "${KIT_CLAIM_FRONT_DOOR:-}" != "1" ] \
+     && printf '%s' "$_b2_claims_cmd" | grep -Eq '(^|[^[:alnum:]_])git([[:space:]]|$)' \
+     && printf '%s' "$_b2_claims_cmd" | grep -Eq '(^|[^[:alnum:]_])(push|send-pack|config)([[:space:]]|=|$)' \
+     && printf '%s' "$_b2_claims_cmd" | grep -Eiq -- ':[^[:alnum:]]*refs/claims(-log)?/|(--delete|-d)[[:space:]]+[^[:alnum:]]*refs/claims(-log)?/|(push|send-pack)[[:space:]]+([^;&|]*[[:space:]])?[^[:alnum:]]*refs/claims(-log)?/|remote\.[^[:space:]=]*\.push[[:space:]=][^;&|]*refs/claims(-log)?/'; then
+    printf '%s' '13: raw pushes whose refspec DESTINATION is refs/claims/ or refs/claims-log/ are denied, DELETES INCLUDED (`:refs/claims/X`, `--delete`, `-d`, `<sha>:refs/claims/X`, two-refspec, send-pack, --prune, and the `remote.*.push` configured routes, in any remote spelling). These refs are the work-in-progress truth (B4 counts the WIP ceiling from them) and the release record; a raw delete IS a release, and would make board-claim.sh refusing an unprovably-stale release into theatre. Use the front door: scripts/board-claim.sh claim | release [--stale] | status, which proves staleness, logs every non-holder release and passes its own pushes with KIT_CLAIM_FRONT_DOOR=1 in its process environment. Reads are allowed (`git ls-remote origin refs/claims/*`, the --depth=1 scratch fetch). NOT covered, and not claimed to be: local `update-ref`, `symbolic-ref` repointing, alias indirection, interpreter wrappers, `export KIT_CLAIM_FRONT_DOOR=1` as its own call (the sentinel reaches this arm from the process environment wherever the tool shell persists env - measured ALLOW, pinned as a fixture, and the same class the force dial discloses), and an actor with push rights at a plain terminal - the forge ruleset on refs/claims/** is the control that would bind those, and it is an owner keystroke, named not done.'; return 1
+  fi
+
   # CP-8b: the CO-OCCURRENCE block that used to live here matched a mutation verb and a control-plane
   # path ANYWHERE in the flat string, and never asked whether the verb's TARGET was that path — which
   # is both why `cp conformance/x /tmp/b` (copying OUT) was denied and why `git archive -o conformance/x`

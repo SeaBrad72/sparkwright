@@ -33,6 +33,14 @@ Anchored on **OpenTelemetry GenAI semantic conventions** (`gen_ai.*`) as a neutr
 | `gates.hit[]` · `gates.skipped[]` · `tests.written` | The process-conformance signals MP-3b scores |
 | tool-step list: `tool.name` · `tool.outcome` (ok / error / **denied**) · `retries` | The execution trace; `denied` captures §13-guard blocks (a safety signal) |
 
+### Additive-optional
+
+| Field | Meaning |
+|---|---|
+| `session.id` | The conductor session that holds the work item's claim (`B2-SESSION-IDENTITY-LEDGER`). **Declared, never authenticated** — nothing reads it as an authorization input, and it is an input to no gate. `unknown` when not derivable. It is **not** the same as `run.id`, which is the transcript's own id: one session typically spans several runs. The reference emitter (`scripts/agent-trace.sh`) reads it from `<toplevel>/.kit-run/session.id`, the file `board-claim.sh claim` mints, and **never mints one itself**. |
+
+No new required field and no new gate: an emitter that does not carry it is fully conformant.
+
 ### Recommended (not required)
 
 Per-step `latency`, `decision`/rationale notes, `task.intent` / `acceptance_ref`, `model` id. Ship the core; let these earn their place per project.

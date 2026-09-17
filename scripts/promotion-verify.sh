@@ -1026,6 +1026,58 @@ do_check() {
 #   binary and its ambient credential, so both the bar and the class refusal are DRIFT CONTROLS at the
 #   note's own trust tier. The control that binds a human with push rights is server-side branch
 #   protection + required review; `--admin` stays denied to the agent regardless (:676-678).
+# pv_release_claim <note-text> <verb-label> — RELEASE THE ROW'S OWN BOARD CLAIM AFTER A VERIFIED
+# MERGE (BOARD-CLAIM-MECHANISM §3.5, extended to `land` by B2-SESSION-IDENTITY-LEDGER decision 6).
+# The merge is the end of the slice, so the row's claim ref has done its job and must not linger: a
+# stale claim blocks the next session from taking the row, shows up in `status` as work nobody is
+# doing, and — since B4 — consumes a slot in the machine's WIP ceiling. THE EIGHT STALE REFS OF
+# 2026-09-15 ARE EXACTLY THIS GAP: `actuate` had this block, `do_land` did not, and every slice that
+# landed left its claim behind.
+#
+# The row comes from the note's OWN `kit-row:` projection — derived by `record` from the approved
+# commit's trailer, never a flag here.
+# `--stale` IS REQUIRED AND IS NOT A SHORTCUT: the merger is routinely not the claimant (builder !=
+# ratifier is the point), so the holder check would refuse every real merge. Since B2 that flag also
+# means the release must PROVE staleness — and a `land`/`actuate` release is P3-provable by
+# construction, because the merge just moved the row into `## Done` on the default branch. A forged
+# `kit-row:` naming a LIVE row fails that proof and releases nothing, which makes this call strictly
+# safer than the unconditional `--stale` it replaces.
+# ⚠️ THAT SENTENCE IS TRUE ONLY UNDER THE PROOFS THAT REMAIN, and it was NOT true as first written
+# (re-graded at fix round 1, H2). While "branch absent from origin" counted as a proof, a forged
+# `kit-row:` naming a live, NOT-YET-PUSHED slice satisfied it — and under one-push-per-PR that is
+# every slice before its final push. P1 is withdrawn; the proofs are P2 (a merged same-repo PR from
+# that row's branch) and P3 (that row Done on the default-branch board), neither of which a forged
+# row id can conjure. The safety argument for calling `--stale` from an automated verb rests
+# entirely on this, which is why it is spelled out rather than assumed.
+#
+# ⚠️ FAILURE HERE IS A **WARN**, NEVER A MERGE FAILURE. The merge ALREADY HAPPENED — returning
+# non-zero now would report a successful, verified promotion as failed, and no rc can un-merge it.
+# What is printed is the exact command to run by hand.
+pv_release_claim() {
+  _pvnote="$1"; _pvverb="$2"
+  _pvkr_line="$(printf '%s\n' "$_pvnote" | grep '^kit-row:' | head -1 || true)"
+  _pvkr="${_pvkr_line#kit-row:}"
+  # ⚠️ CONTROL BYTES OUT FIRST (security S-L6). It comes from a GIT NOTE — self-authorable text —
+  # and it is printed straight into an operator's terminal by the WARN lines below. An ANSI escape in
+  # a `kit-row:` projection could repaint or forge those lines, which are the audit record of a
+  # merge. Stripped once, here, so every consumer downstream (the prints AND the argument handed to
+  # board-claim.sh) sees the sanitised value; board-claim's own row grammar is the second gate.
+  _pvkr="$(printf '%s' "$_pvkr" | tr -d '[:cntrl:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  _pvbc="$(dirname -- "$0")/board-claim.sh"
+  if [ -z "$_pvkr" ] || [ "$_pvkr" = '(none)' ]; then
+    echo "$_pvverb: no kit-row on the GO note — no board claim to release (nothing invented)."
+  elif [ ! -f "$_pvbc" ]; then
+    echo "$_pvverb: WARN — board-claim.sh not found beside this script; claim on '$_pvkr' NOT released." >&2
+  elif sh "$_pvbc" release "$_pvkr" --stale; then
+    echo "$_pvverb: board claim on '$_pvkr' released (refs/claims/$_pvkr deleted on origin)."
+  else
+    echo "$_pvverb: WARN — could not release the board claim on '$_pvkr' (refs/claims/$_pvkr may still exist)." >&2
+    echo "        The merge SUCCEEDED and is verified; release by hand:" >&2
+    echo "        sh scripts/board-claim.sh release $_pvkr --stale" >&2
+  fi
+  return 0
+}
+
 do_actuate() {
   ref=""; asha=""; merge_cmd=""
   while [ $# -gt 0 ]; do
@@ -1166,26 +1218,7 @@ do_actuate() {
   #    ⚠️ FAILURE HERE IS A **WARN**, NEVER A MERGE FAILURE. The merge ALREADY HAPPENED at step 4 —
   #    returning non-zero now would report a successful, verified promotion as failed, and no rc can
   #    un-merge it. What is printed is the exact command to run by hand.
-  kr_line="$(printf '%s\n' "$note" | grep '^kit-row:' | head -1 || true)"
-  kr="${kr_line#kit-row:}"
-  # ⚠️ CONTROL BYTES OUT FIRST (security S-L6). `kr` comes from a GIT NOTE — self-authorable text —
-  # and it is printed straight into an operator's terminal by the WARN lines below. An ANSI escape in
-  # a `kit-row:` projection could repaint or forge those lines, which are the audit record of a merge.
-  # Stripped once, here, so every consumer downstream (the prints AND the argument handed to
-  # board-claim.sh) sees the sanitised value; board-claim's own row grammar is the second gate.
-  kr="$(printf '%s' "$kr" | tr -d '[:cntrl:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  bc_sh="$(dirname -- "$0")/board-claim.sh"
-  if [ -z "$kr" ] || [ "$kr" = '(none)' ]; then
-    echo "actuate: no kit-row on the GO note — no board claim to release (nothing invented)."
-  elif [ ! -f "$bc_sh" ]; then
-    echo "actuate: WARN — board-claim.sh not found beside this script; claim on '$kr' NOT released." >&2
-  elif sh "$bc_sh" release "$kr" --stale; then
-    echo "actuate: board claim on '$kr' released (refs/claims/$kr deleted on origin)."
-  else
-    echo "actuate: WARN — could not release the board claim on '$kr' (refs/claims/$kr may still exist)." >&2
-    echo "               The merge SUCCEEDED and is verified; release by hand:" >&2
-    echo "               sh scripts/board-claim.sh release $kr --stale" >&2
-  fi
+  pv_release_claim "$note" actuate
 
   # Honest success line: the note is RECORDED, not necessarily AUTHENTICATED — a git note is
   # self-authorable (the label bar is audit + defense-in-depth over it; the real solo control is
@@ -1484,6 +1517,13 @@ do_land() {
     echo "             merge did not complete). Re-run the merge, or land again — record supersedes." >&2
     return "$_mrc"
   fi
+
+  # 6. RELEASE THE ROW'S OWN BOARD CLAIM — the same shared helper `actuate` calls, and the gap that
+  #    left eight stale claim refs behind on 2026-09-15 (B2-SESSION-IDENTITY-LEDGER decision 6). It
+  #    runs AFTER the merge and can only WARN. The note text is read back from the ref `record` just
+  #    wrote and confirmed on origin, so the `kit-row:` projection is the note's own, never a flag.
+  _land_note="$(git notes --ref="$NOTES_REF" show "$asha" 2>/dev/null || true)"
+  pv_release_claim "$_land_note" land
 
   # Honest success line, VERB-SCOPED: the record was written BEFORE the merge, so THIS merge is
   # recoverable by this verb — not that recordless merges are impossible (they are detected later by

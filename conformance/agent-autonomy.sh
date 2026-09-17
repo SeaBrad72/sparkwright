@@ -222,6 +222,9 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [K-3a-]
 [K-3b ]
 [K-3b-R ]
+[B2-A ]
+[B2-B ]
+[B2-C ]
 AA_EXPECTED_DELTA_EOF
 )
 # ⚠️ A WIDENING PREFIX MUST NOT COVER ITS OWN FALSE-POSITIVE PINS, and the three entries below are
@@ -2270,6 +2273,12 @@ assert_allow "F2-A two vetted prefixes"   '{"tool_name":"Bash","tool_input":{"co
 # their DENY needs no deny-side pattern. K-I pins the membership test itself.
 assert_deny "F2-A KIT_GUARD_SELFEDIT="  '{"tool_name":"Bash","tool_input":{"command":"KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh"}}'
 assert_deny "F2-A PATH="                '{"tool_name":"Bash","tool_input":{"command":"PATH=/tmp sh conformance/verify.sh"}}'
+# B4-CROSS-SESSION-BUDGET: the runaway guard's human sandbox dial is NOT an agent affordance. Pinned
+# here as a CONSTITUENT of that slice (measured, no guard-core edit): KIT_RUNAWAY_SANDBOX is not on
+# the vetted-prefix allowlist, so redirecting the per-machine tally out of an agent's Bash call is
+# already denied by the unvetted-prefix rule. The harness-neutral layer — the banner and the script's
+# own refusal — is what an adopter on another harness gets.
+assert_deny "F2-A KIT_RUNAWAY_SANDBOX=" '{"tool_name":"Bash","tool_input":{"command":"KIT_RUNAWAY_SANDBOX=/tmp/x sh scripts/runaway-guard.sh step --tokens 1 --agents 0"}}'
 assert_deny "F2-A LD_PRELOAD="          '{"tool_name":"Bash","tool_input":{"command":"LD_PRELOAD=/tmp/evil.so sh conformance/verify.sh"}}'
 assert_deny "F2-A IFS="                 '{"tool_name":"Bash","tool_input":{"command":"IFS=/ sh conformance/verify.sh"}}'
 assert_deny "F2-A unvetted FOO= (FP)"   '{"tool_name":"Bash","tool_input":{"command":"FOO=bar sh conformance/verify.sh"}}'
@@ -8248,6 +8257,91 @@ selftest() {
   [ "$_st" = 0 ] && echo "OK: agent-autonomy selftest — all five accumulators are live; Arm-A absent-script leg: $_fla"
   return $_st
 }
+# =============================================================================================
+# B2-SESSION-IDENTITY-LEDGER — the claim-ref arm, four views day one (design decision 5).
+# `refs/claims/<ROW>` is the kit's WIP truth (B4 counts the ceiling from it) and `refs/claims-log/
+# <ROW>` is the durable record of every non-holder release. MEASURED 2026-09-16, BEFORE the arm:
+# every write and delete spelling below was ALLOW, so `board-claim.sh`'s refusal to release an
+# unprovably-stale claim was one raw push away from theatre.
+# ---- B2-A: DESTRUCTION. Unlike the notes arm, this one claims to cover it — a deleted claim IS a
+# released claim, which makes destruction the bypass rather than a side door.
+assert_deny "B2-A claim delete colon"      '{"tool_name":"Bash","tool_input":{"command":"git push origin :refs/claims/ROW-X"}}'
+assert_deny "B2-A claim delete --delete"   '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete refs/claims/ROW-X"}}'
+assert_deny "B2-A claim delete -d"         '{"tool_name":"Bash","tool_input":{"command":"git push origin -d refs/claims/ROW-X"}}'
+assert_deny "B2-A claims-log delete colon" '{"tool_name":"Bash","tool_input":{"command":"git push origin :refs/claims-log/ROW-X"}}'
+# ⚠️ THE QUOTED SPELLINGS — ALL OF THEM MEASURED **ALLOW** AGAINST THE FIRST BUILD OF THIS ARM (fix
+# round 1; both review seats found it independently). Every alternative was anchored on whitespace,
+# so an ordinary quoted refspec — how a shell user types one by habit, with no intent to evade —
+# bypassed the entire arm. The cure is a quote STRIP before the match (the class), not `["']?`
+# sprinkled through the pattern (the spellings someone thought of). These cells are the lock.
+assert_deny "B2-A claim delete quoted dq"  '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete \"refs/claims/ROW-X\""}}'
+assert_deny "B2-A claim delete quoted sq"  '{"tool_name":"Bash","tool_input":{"command":"git push origin -d '"'"'refs/claims/ROW-X'"'"'"}}'
+assert_deny "B2-A claim delete quoted colon" '{"tool_name":"Bash","tool_input":{"command":"git push origin :\"refs/claims/ROW-X\""}}'
+assert_deny "B2-A claim delete quoted + git -C" '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x push origin --delete \"refs/claims/ROW-X\""}}'
+assert_deny "B2-A claim delete extra whitespace" '{"tool_name":"Bash","tool_input":{"command":"git push    origin     --delete    \"refs/claims/ROW-X\""}}'
+assert_deny "B2-A claim delete trailing comment" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete refs/claims/ROW-X # housekeeping"}}'
+assert_deny "B2-A claims-log delete quoted" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete \"refs/claims-log/ROW-X\""}}'
+# ⚠️ ROUND 2 OF THE SAME DEFECT, and the reason these cells exist rather than a silent fix: the
+# first repair stripped `"` and `'` and called that "the quoting class". POSIX has a THIRD quoting
+# mechanism — the BACKSLASH — and bash adds ANSI-C `$'…'`. All of these measured ALLOW after that
+# repair. A backslash before a `/` is something a shell user types without thinking about it.
+assert_deny "B2-A claim delete backslash lead" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete \\refs/claims/ROW-X"}}'
+assert_deny "B2-A claim delete backslash mid"  '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete refs\\/claims/ROW-X"}}'
+assert_deny "B2-A claim delete backslash late" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete refs/claims\\/ROW-X"}}'
+assert_deny "B2-A claim delete ANSI-C quoting" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete $'"'"'refs/claims/ROW-X'"'"'"}}'
+assert_deny "B2-A claim colon backslash"       '{"tool_name":"Bash","tool_input":{"command":"git push origin :\\refs/claims/ROW-X"}}'
+assert_deny "B2-A claim colon ANSI-C quoting"  '{"tool_name":"Bash","tool_input":{"command":"git push origin :$'"'"'refs/claims/ROW-X'"'"'"}}'
+assert_deny "B2-A claims-log delete backslash" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete \\refs/claims-log/ROW-X"}}'
+# ---- B2-B: WRITES, in every enumerated spelling.
+assert_deny "B2-B claim bare write"        '{"tool_name":"Bash","tool_input":{"command":"git push origin abc1234:refs/claims/ROW-X"}}'
+assert_deny "B2-B claim second refspec"    '{"tool_name":"Bash","tool_input":{"command":"git push origin HEAD:refs/heads/x abc1234:refs/claims/ROW-X"}}'
+assert_deny "B2-B claim send-pack"         '{"tool_name":"Bash","tool_input":{"command":"git send-pack origin abc1234:refs/claims/ROW-X"}}'
+assert_deny "B2-B claim --prune pattern"   '{"tool_name":"Bash","tool_input":{"command":"git push --prune origin refs/kit/*:refs/claims/*"}}'
+assert_deny "B2-B claim -c remote.push"    '{"tool_name":"Bash","tool_input":{"command":"git -c remote.origin.push=abc1234:refs/claims/ROW-X push origin"}}'
+assert_deny "B2-B claim config remote.push" '{"tool_name":"Bash","tool_input":{"command":"git config remote.origin.push abc1234:refs/claims/ROW-X"}}'
+assert_deny "B2-B claim URL remote form"   '{"tool_name":"Bash","tool_input":{"command":"git push git@github.com:SeaBrad72/sparkwright.git abc1234:refs/claims/ROW-X"}}'
+assert_deny "B2-B claims-log bare write"   '{"tool_name":"Bash","tool_input":{"command":"git push origin abc1234:refs/claims-log/ROW-X"}}'
+# The BARE-REF write (source == destination, no colon at all) and its quoted twin — the second face
+# the whitespace anchoring got wrong: unquoted it denied, quoted it did not.
+assert_deny "B2-B claim bare-ref write"    '{"tool_name":"Bash","tool_input":{"command":"git push origin refs/claims/ROW-X"}}'
+assert_deny "B2-B claim bare-ref quoted"   '{"tool_name":"Bash","tool_input":{"command":"git push origin \"refs/claims/ROW-X\""}}'
+assert_deny "B2-B claim write quoted refspec" '{"tool_name":"Bash","tool_input":{"command":"git push origin \"abc1234:refs/claims/ROW-X\""}}'
+assert_deny "B2-B claim bare-ref backslash"  '{"tool_name":"Bash","tool_input":{"command":"git push origin \\refs/claims/ROW-X"}}'
+assert_deny "B2-B claim write backslash ref" '{"tool_name":"Bash","tool_input":{"command":"git push origin abc1234:refs\\/claims/ROW-X"}}'
+# ---- B2-C: THE FRONT DOOR. The script itself stays ALLOW; the sentinel in the command TEXT does
+# not (this runtime's environment does not carry it — the ALLOW half is the process-env route,
+# proven end to end by conformance/shim-coverage.sh).
+assert_allow "B2-C front door board-claim"  '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board-claim.sh release ROW-X --stale"}}'
+assert_allow "B2-C front door status"       '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board-claim.sh status"}}'
+assert_deny  "B2-C sentinel in cmd TEXT"    '{"tool_name":"Bash","tool_input":{"command":"KIT_CLAIM_FRONT_DOOR=1 git push origin abc1234:refs/claims/ROW-X"}}'
+# ---- B2-D: READS STAY ALLOWED. `status`, `check` and `resume` are all reads; an arm that broke
+# them would make the front door unusable and push every user back to raw plumbing.
+assert_allow "B2-D claim ls-remote glob"   '{"tool_name":"Bash","tool_input":{"command":"git ls-remote origin refs/claims/*"}}'
+assert_allow "B2-D claim scratch fetch"    '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags --depth=1 origin refs/claims/ROW-X:refs/kit/claim-scratch-1234"}}'
+assert_allow "B2-D claims-log scratch fetch" '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags --depth=1 origin refs/claims-log/ROW-X:refs/kit/claim-log-1234"}}'
+assert_allow "B2-D unrelated ref push"     '{"tool_name":"Bash","tool_input":{"command":"git push origin abc1234:refs/heads/feature/x"}}'
+# ---- B2-E: the human dial's IN-LINE spelling is denied to an agent (the unvetted-prefix rule,
+# exactly as B4's KIT_RUNAWAY_SANDBOX is).
+assert_deny "B2-E KIT_CLAIM_FORCE_RELEASE=" '{"tool_name":"Bash","tool_input":{"command":"KIT_CLAIM_FORCE_RELEASE=\"the holder is gone\" sh scripts/board-claim.sh release ROW-X --stale"}}'
+# ---- B2-F: MEASURED-UNCOVERED, pinned beside the deny so the arm and its disclosure cannot drift
+# apart in EITHER direction (the notes arm's convention). These three routes reach the dial wherever
+# the tool shell persists environment between calls — the same class B4 disclosed. If a later change
+# makes one of them DENY, that is a coverage EXTENSION and this line goes RED first: re-take it
+# together with the header's ceiling and the deny message, never delete it.
+assert_allow "B2-F MEASURED-UNCOVERED export as its own call" '{"tool_name":"Bash","tool_input":{"command":"export KIT_CLAIM_FORCE_RELEASE=\"the holder is gone\""}}'
+assert_allow "B2-F MEASURED-UNCOVERED make wrapper"           '{"tool_name":"Bash","tool_input":{"command":"make release-claim"}}'
+assert_allow "B2-F MEASURED-UNCOVERED copied script"          '{"tool_name":"Bash","tool_input":{"command":"sh /tmp/copy-of-board-claim.sh release ROW-X --stale"}}'
+# …and the FRONT-DOOR SENTINEL by the same route (fix round 1, L5). The arm reads
+# KIT_CLAIM_FRONT_DOOR from its PROCESS environment, so `export` as its own call reaches it wherever
+# the tool shell persists env between calls. Measured ALLOW, named in the deny message's NOT-covered
+# list, and pinned here — the sentence "an agent cannot turn the arm off" is NOT made.
+assert_allow "B2-F MEASURED-UNCOVERED export sentinel"        '{"tool_name":"Bash","tool_input":{"command":"export KIT_CLAIM_FRONT_DOOR=1"}}'
+# ---- B2-G: the `gh api` write routes onto the ref namespace were BELIEVED covered by the existing
+# R17 judge. Confirmed by a fixture, not by reading — which is the whole point of this entry.
+assert_deny "B2-G gh api PATCH git/refs"  '{"tool_name":"Bash","tool_input":{"command":"gh api -X PATCH repos/o/r/git/refs/claims/ROW-X -f sha=abc1234"}}'
+assert_deny "B2-G gh api DELETE git/refs" '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r/git/refs/claims/ROW-X"}}'
+assert_deny "B2-G gh api POST git/refs"   '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/git/refs -f ref=refs/claims/ROW-X -f sha=abc1234"}}'
+
 case "${1:-}" in --selftest) selftest; exit $? ;; esac
 
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi

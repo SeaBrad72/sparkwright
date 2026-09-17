@@ -200,6 +200,74 @@ push_graded() {
   return 0
 }
 
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# export_ignored_only — the THIRD predicate (CI-ARTIFACT-GATE-PATHFILTER). `git archive
+# --worktree-attributes HEAD` (scripts/adopter-export.sh) is what produces the adopter artifact the
+# artifact-gate* jobs incept and grade. A path that is export-ignored is DEFINITIONALLY absent from
+# that archive, so it can never influence what artifact-gate grades. When every changed path is
+# export-ignored, the three artifact-gate* jobs are skippable — a time saving, never a coverage loss
+# (D-240815-3): nothing export-ignored is ever added back to the exported tree.
+#
+# THE ORACLE IS `git check-attr` WITH AN ANCESTOR-DIRECTORY WALK, NOT A FILE-PATH QUERY ALONE.
+# Measured 2026-09-14: `git check-attr export-ignore -- docs/architecture/x.md` -> `unspecified`,
+# but `git check-attr export-ignore -- docs/architecture/` (trailing slash) -> `set`, and
+# `git archive` DOES prune that subtree. A file-path query does not inherit a directory pattern; a
+# trailing-slash directory query does. So a path is treated as export-ignored iff the path itself,
+# OR any ancestor directory (queried with a trailing slash), resolves `set`.
+#
+# This is a PATTERN oracle, not a tree-presence oracle — correct for deletions and renames. A
+# deleted EXPORTED file still pattern-matches as NOT ignored (the artifact loses that file — a real
+# change; the gate must run). A deleted MAINTAINER file still pattern-matches as ignored via its
+# ancestor (no artifact effect; skippable). A tree-presence check ("is this path in `git archive
+# HEAD`") would get the deletion case backwards — a coverage loss this predicate must never make.
+#
+# Same fail-safe doctrine as classify(): unreadable/absent/empty listing, no git, or not a work
+# tree -> false (unknown => run). `true` is earned only when every single line resolves ignored.
+_eio_ignored() { # _eio_ignored <path> : true (rc 0) iff PATH or an ancestor dir is export-ignore=set
+  _ep=$1
+
+  _ev=$(git check-attr export-ignore -- "$_ep" 2>/dev/null) || _ev=''
+  _ev=${_ev##*: }
+  [ "$_ev" = set ] && return 0
+
+  _ed=$_ep
+  while :; do
+    case "$_ed" in
+      */*) _ed=${_ed%/*} ;;
+      *)   return 1 ;;
+    esac
+    _ev=$(git check-attr export-ignore -- "$_ed/" 2>/dev/null) || _ev=''
+    _ev=${_ev##*: }
+    [ "$_ev" = set ] && return 0
+  done
+}
+
+export_ignored_only() {
+  _ef=${1:-}
+
+  # Unreadable / absent / empty -> unknown -> run (same contract as classify()).
+  if [ -z "$_ef" ] || [ ! -r "$_ef" ] || [ ! -s "$_ef" ]; then
+    echo "export_ignored_only=false"
+    return 0
+  fi
+
+  # No git, or not inside a work tree -> fail-safe -> run.
+  command -v git >/dev/null 2>&1 || { echo "export_ignored_only=false"; return 0; }
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "export_ignored_only=false"; return 0; }
+
+  while IFS= read -r _ep || [ -n "$_ep" ]; do
+    [ -n "$_ep" ] || continue
+    if ! _eio_ignored "$_ep"; then
+      echo "export_ignored_only=false"
+      return 0
+    fi
+  done < "$_ef"
+
+  # THE ONLY PATH THAT EMITS true. Reached only when every single line resolved export-ignored.
+  echo "export_ignored_only=true"
+  return 0
+}
+
 # ── selftest : the classifier's teeth. Every fixture below is a real mis-classification we must not make.
 #    The `false` cases matter far more than the `true` case: a wrong `false` costs CI minutes; a wrong
 #    `true` SKIPS THE GATES.
@@ -262,6 +330,7 @@ selftest() {
 
   rm -rf "$d"
   selftest_pg || st=1
+  selftest_eio || st=1
   [ "$st" = 0 ] && echo "ci-classify-changes --selftest: OK" || { echo "ci-classify-changes --selftest: FAIL" >&2; return 1; }
   return "$st"
 }
@@ -398,9 +467,83 @@ selftest_pg() {
   return "$pst"
 }
 
+# ── selftest_eio : export_ignored_only()'s teeth. A wrong `false` costs artifact-gate minutes;
+#    a wrong `true` SKIPS THE GATE on a change that CAN reach the artifact. Hermetic: this builds
+#    its own temp git repo with a representative .gitattributes so it is independent of the
+#    surrounding tree — it must pass under green-on-clone on the adopter export, whose
+#    .gitattributes is neutered.
+selftest_eio() {
+  est=0; e=$(mktemp -d)
+  ( cd "$e" && git init -q ) >/dev/null 2>&1
+  cat > "$e/.gitattributes" <<'EOF'
+BACKLOG.md export-ignore
+docs/architecture/ export-ignore
+docs/plans/ export-ignore
+EOF
+
+  _ewant() { # _ewant <name> <expected> <lines...>
+    _en=$1; _eexp=$2; shift 2
+    printf '%s\n' "$@" > "$e/$_en.listing"
+    _egot=$(cd "$e" && export_ignored_only "$e/$_en.listing")
+    if [ "$_egot" = "export_ignored_only=$_eexp" ]; then
+      printf 'PASS: %-34s -> %s\n' "$_en" "$_egot"
+    else
+      printf 'FAIL: %-34s -> %s (want export_ignored_only=%s)\n' "$_en" "$_egot" "$_eexp"; est=1
+    fi
+  }
+
+  # --- the ONE case that may be true ---
+  _ewant all-export-ignored          true  'BACKLOG.md' 'docs/architecture/x.md'
+
+  # --- THE load-bearing negative: one survivor among ignored files disqualifies the set ---
+  _ewant one-exported-among-ignored  false 'BACKLOG.md' 'profiles/typescript-node/scaffold/a.ts'
+
+  _ewant exported-only               false 'README.md'
+  _ewant nested-under-ignored-dir    true  'docs/plans/deep/a.md'
+  # Proves the PATTERN oracle, not tree presence: this path does not exist in the temp repo at all.
+  _ewant deletion-of-exported        false 'profiles/typescript-node/scaffold/gone.ts'
+
+  : > "$e/empty.listing"
+  _egot=$(cd "$e" && export_ignored_only "$e/empty.listing")
+  if [ "$_egot" = "export_ignored_only=false" ]; then echo "PASS: EMPTY listing                    -> export_ignored_only=false"
+  else echo "FAIL: an EMPTY listing classified as $_egot"; est=1; fi
+
+  _egot=$(cd "$e" && export_ignored_only "$e/does-not-exist.listing")
+  if [ "$_egot" = "export_ignored_only=false" ]; then echo "PASS: UNREADABLE listing               -> export_ignored_only=false"
+  else echo "FAIL: an UNREADABLE listing classified as $_egot"; est=1; fi
+
+  # --- fail-safe: not a work tree at all ---
+  _enwd=$(mktemp -d)
+  printf '%s\n' 'BACKLOG.md' > "$_enwd/l.listing"
+  _egot=$(cd "$_enwd" && export_ignored_only "$_enwd/l.listing")
+  if [ "$_egot" = "export_ignored_only=false" ]; then echo "PASS: not-a-work-tree                  -> export_ignored_only=false"
+  else echo "FAIL: not-a-work-tree classified as $_egot"; est=1; fi
+  rm -rf "$_enwd"
+
+  # --- THE LOAD-BEARING NEGATIVE: an exported (non-ignored) code path must NEVER be classified
+  #     export_ignored_only=true. This is the assertion the non-vacuity sweep will mutate.
+  printf '%s\n' 'profiles/typescript-node/scaffold/a.ts' > "$e/code.listing"
+  _egot=$(cd "$e" && export_ignored_only "$e/code.listing")
+  if [ "$_egot" = "export_ignored_only=true" ]; then
+    echo "FAIL: an EXPORTED code path was classified export-ignored-only — this silently skips artifact-gate"; est=1
+  else
+    echo "PASS: an exported code path can never be classified export-ignored-only (the one direction that must never happen)"
+  fi
+
+  rm -rf "$e"
+  [ "$est" = 0 ] && echo "ci-classify-changes --export-ignored-only selftest: OK" || { echo "ci-classify-changes --export-ignored-only selftest: FAIL" >&2; return 1; }
+  return "$est"
+}
+
+# DISPATCH. The BARE `<listing-file>` invocation prints EXACTLY `docs_only=true|false` — a
+# single-line contract consumers depend on (conformance/review-lane.sh:211 reads it via `tail -1`).
+# The third predicate is reached ONLY through its own flag, never bolted onto the bare output, so
+# adding it cannot change what an existing caller reads. ci.yml's `changes` job calls the classifier
+# once bare (docs_only) and once with --export-ignored-only, appending both key=value lines.
 case "${1:-}" in
-  --selftest)    selftest; exit $? ;;
-  --push-graded) shift; push_graded "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}"; exit 0 ;;
-  "")            echo "usage: ci-classify-changes.sh <listing-file> | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> | --selftest" >&2; exit 2 ;;
-  *)             classify "$1"; exit 0 ;;
+  --selftest)            selftest; exit $? ;;
+  --push-graded)         shift; push_graded "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}"; exit 0 ;;
+  --export-ignored-only) shift; export_ignored_only "${1:-}"; exit 0 ;;
+  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> | --selftest" >&2; exit 2 ;;
+  *)                     classify "$1"; exit 0 ;;
 esac

@@ -30,7 +30,10 @@ span() { sh "$here/otel-trace.sh" span "$@"; }
 run() {
   OUT="${OTEL_TRACE_FILE:-$(mktemp)}"; printf '' > "$OUT"; export OTEL_TRACE_FILE="$OUT"
   wtbase=$(mktemp -d)
-  sh "$here/runaway-guard.sh" reset >/dev/null 2>&1 || true
+  # ⚠️ STDOUT IS DISCARDED, STDERR IS NOT (B4-CROSS-SESSION-BUDGET). All three guard call sites used
+  # to swallow stderr, which would have hidden the guard's SANDBOX-override banner — and a banner an
+  # operator never sees is not a control. WARN/STOP lines surface here for the same reason.
+  sh "$here/runaway-guard.sh" reset >/dev/null || true
   tid="${OTEL_TRACE_ID:-$(sh "$here/otel-trace.sh" new-trace)}"
   r_start=$(now)
   root=$(span --trace "$tid" --name orchestrator-run --status OK --start "$r_start" --end "$r_start" --attr "agent.id=orchestrator")
@@ -47,7 +50,7 @@ run() {
     # KIT_ESCALATION_DIR, KIT_RUN_DIR) — else it could pre-write its OWN verdict and self-ratify a breach.
     env -u OTEL_TRACE_FILE -u OTEL_TRACE_ID -u KIT_ESCALATION_DIR -u KIT_RUN_DIR "$ROLE_RUNNER" "$slice" "$wt" >/dev/null
     e_end=$(now)
-    rc=0; sh "$here/runaway-guard.sh" step --tokens "${STEP_TOKENS:-1000}" --agents 1 >/dev/null 2>&1 || rc=$?
+    rc=0; sh "$here/runaway-guard.sh" step --tokens "${STEP_TOKENS:-1000}" --agents 1 >/dev/null || rc=$?
     # Legibility (Slice 3): resolve this builder's MODEL tier fail-safe (any error -> deep, the safe
     # high floor) and stamp it on the span so otel-to-scorecard.sh -> the scorecard can render it.
     # tokens seeds the value-analysis cost axis in the demo; a real Workflow run overwrites with actuals.
@@ -72,7 +75,7 @@ run() {
                span --trace "$tid" --parent "$root" --name "gate:guard" --status OK \
                     --start "$e_start" --end "$(now)" --attr "agent.id=engineer" --attr "slice=$slice" \
                     --attr "kit.escalated=true" --attr "kit.verdict=raise-ceiling" --attr "kit.ratifier=$rat" >/dev/null
-               sh "$here/runaway-guard.sh" reset >/dev/null 2>&1 || true
+               sh "$here/runaway-guard.sh" reset >/dev/null || true
                built="$built $slice" ;;
              abort|amend) # human declined: halt, denial recorded WITH the human verdict
                span --trace "$tid" --parent "$root" --name "gate:guard" --status ERROR \
@@ -154,17 +157,23 @@ run() {
 # _isolated BUDGET_KV... -- SLICE...  : run the loop in a throwaway git repo so demo/selftest
 # never touch the host repo. Trace OUT is a mktemp OUTSIDE the temp repo (persists after cleanup).
 _isolated() {
+  # ⚠️ THE SANDBOX DIAL IS DECLARED HERE (B4-CROSS-SESSION-BUDGET). The guard REFUSES a redirected
+  # config/tally unless KIT_RUNAWAY_SANDBOX vouches for it — a second tally is a second ceiling — so
+  # a fixture that wants its own throwaway budget must say so out loud, and every such run banners.
+  # conf + tally therefore live INSIDE the sandbox root, not at loose mktemp paths.
   budget=""; while [ "$1" != "--" ]; do budget="$budget$1\n"; shift; done; shift
-  tmp=$(mktemp -d); ext=$(mktemp); conf=$(mktemp); tally=$(mktemp)
+  sand=$(mktemp -d); tmp="$sand/repo"; mkdir -p "$tmp"
+  ext=$(mktemp); conf="$sand/budget.conf"; tally="$sand/tally"
   printf '%b' "$budget" > "$conf"; printf '' > "$tally"
   (
     cd "$tmp"
     git init -q; git config user.email e@x; git config user.name e
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed
-    OTEL_TRACE_FILE="$ext" RUNAWAY_BUDGET_CONFIG="$conf" RUNAWAY_TALLY="$tally" \
+    HOME="$sand" KIT_RUNAWAY_SANDBOX="$sand" \
+      OTEL_TRACE_FILE="$ext" RUNAWAY_BUDGET_CONFIG="$conf" RUNAWAY_TALLY="$tally" \
       "$here/orchestrator-run.sh" "$@" >/dev/null
   )
-  rm -rf "$tmp" "$conf" "$tally"
+  rm -rf "$sand"
   printf '%s\n' "$ext"
 }
 
@@ -172,8 +181,14 @@ demo() { _isolated "MAX_TOKENS=0" "MAX_STEPS=2" "MAX_AGENTS=0" -- demoA demoB de
 
 selftest() {
   fail=0
+  # ⚠️ THE SANDBOX BANNER IS SILENCED AT THE ASSERTING CALL SITES ONLY, NEVER INSIDE `_isolated`
+  # (R1/M2). Every fixture declares the dial, so each run legitimately banners three times; muffling
+  # it inside the helper would also muffle the guard's REFUSALS and WARNs — i.e. the thing this slice
+  # exists to surface — for the demo path and any future caller. `_iso_q` is the selftest's own noise
+  # gate: stdout (the trace path each assertion reads) is untouched.
+  _iso_q() { _isolated "$@" 2>/dev/null; }
   # clean run: 2 disjoint slices, no ceiling -> root + 2 engineer children, both artifacts integrated
-  clean=$(_isolated "MAX_TOKENS=0" "MAX_STEPS=0" "MAX_AGENTS=0" -- alpha beta)
+  clean=$(_iso_q "MAX_TOKENS=0" "MAX_STEPS=0" "MAX_AGENTS=0" -- alpha beta)
   n=$(wc -l < "$clean" | tr -d ' ')
   [ "$n" -ge 3 ] || { echo "FAIL: clean run expected >=3 spans, got $n"; fail=1; }
   [ "$(jq -s '[.[]|select(.parent_span_id==null)]|length' "$clean")" = "1" ] || { echo "FAIL: not exactly 1 root"; fail=1; }
@@ -181,7 +196,7 @@ selftest() {
   [ "$(jq -s '[.[]|select(.attributes["kit.denied"]=="true")]|length' "$clean")" = "0" ] || { echo "FAIL: clean run has a denied span"; fail=1; }
   rm -f "$clean"
   # breach run: 3 slices, MAX_STEPS=2 -> engineer#1 OK, engineer#2 DENIED + halt (engineer#3 never runs)
-  br=$(_isolated "MAX_TOKENS=0" "MAX_STEPS=2" "MAX_AGENTS=0" -- one two three)
+  br=$(_iso_q "MAX_TOKENS=0" "MAX_STEPS=2" "MAX_AGENTS=0" -- one two three)
   [ "$(jq -s '[.[]|select(.attributes["kit.denied"]=="true")]|length' "$br")" = "1" ] || { echo "FAIL: breach run not exactly 1 denied span"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["agent.id"]=="engineer")]|length' "$br")" = "2" ] || { echo "FAIL: breach run expected 2 child spans (1 ok engineer + 1 denied), halt not honored"; fail=1; }
   # the denied span feeds the scorecard adapter to a denied step
@@ -191,7 +206,7 @@ selftest() {
   # gate span carries kit.escalated=pending + kit.denied; engineer#3 does NOT run. The resume
   # positive is the next case; this is the load-bearing NEGATIVE (a dead loop -> 0 spans, an
   # always-proceed loop -> 3 engineer spans; both fail). No verdict is pre-placed.
-  br2=$(_isolated "MAX_TOKENS=0" "MAX_STEPS=2" "MAX_AGENTS=0" -- one two three)
+  br2=$(_iso_q "MAX_TOKENS=0" "MAX_STEPS=2" "MAX_AGENTS=0" -- one two three)
   [ "$(jq -s '[.[]|select(.attributes["kit.escalated"]=="pending")]|length' "$br2")" = "1" ] \
     || { echo "FAIL: breach without a verdict did not record kit.escalated=pending (fail-closed pause)"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["agent.id"]=="engineer")]|length' "$br2")" = "2" ] \
@@ -204,11 +219,13 @@ selftest() {
   rdir=$(mktemp -d); rtid="esc-resume-$$"
   printf '{"option":"raise-ceiling","note":"selftest","ratifier_id":"selftest@kit"}' \
     > "$rdir/$(printf '%s' "$rtid.two" | tr -c 'A-Za-z0-9._-' '_').verdict"
-  rtmp=$(mktemp -d); rout=$(mktemp); rconf=$(mktemp); rtally=$(mktemp)
+  rsand=$(mktemp -d); rtmp="$rsand/repo"; mkdir -p "$rtmp"
+  rout=$(mktemp); rconf="$rsand/budget.conf"; rtally="$rsand/tally"
   printf 'MAX_TOKENS=0\nMAX_STEPS=2\nMAX_AGENTS=0\n' > "$rconf"
   ( cd "$rtmp"; git init -q; git config user.email e@x; git config user.name e
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed
-    OTEL_TRACE_ID="$rtid" KIT_ESCALATION_DIR="$rdir" OTEL_TRACE_FILE="$rout" \
+    HOME="$rsand" KIT_RUNAWAY_SANDBOX="$rsand" \
+      OTEL_TRACE_ID="$rtid" KIT_ESCALATION_DIR="$rdir" OTEL_TRACE_FILE="$rout" \
       RUNAWAY_BUDGET_CONFIG="$rconf" RUNAWAY_TALLY="$rtally" \
       "$here/orchestrator-run.sh" one two three >/dev/null 2>&1 )
   [ "$(jq -s '[.[]|select(.attributes["kit.escalated"]=="true")]|length' "$rout")" = "1" ] \
@@ -219,7 +236,7 @@ selftest() {
     || { echo "FAIL: raise-ceiling did not continue past the breach (expected 3 engineer spans)"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["kit.denied"]=="true")]|length' "$rout")" = "0" ] \
     || { echo "FAIL: raise-ceiling resume wrongly recorded a denial"; fail=1; }
-  rm -rf "$rdir" "$rtmp"; rm -f "$rout" "$rconf" "$rtally"
+  rm -rf "$rdir" "$rsand"; rm -f "$rout"
   # E3-escalation (anti-spoof): the engineer role-runner MUST NOT inherit OTEL_TRACE_ID /
   # KIT_ESCALATION_DIR / KIT_RUN_DIR -- else it could compute the deterministic escalation id and
   # pre-write its OWN verdict file to self-ratify a breach. Probe the role-runner's actual env.
@@ -231,36 +248,40 @@ selftest() {
   echo "KIT_RUN_DIR=[${KIT_RUN_DIR:-UNSET}]"; } >> "$E3_ENVPROBE"
 PROBE
   chmod +x "$erun"
-  etmp=$(mktemp -d); eout=$(mktemp); econf=$(mktemp); etally=$(mktemp)
+  esand=$(mktemp -d); etmp="$esand/repo"; mkdir -p "$etmp"
+  eout=$(mktemp); econf="$esand/budget.conf"; etally="$esand/tally"
   printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$econf"
   ( cd "$etmp"; git init -q; git config user.email e@x; git config user.name e
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed
-    OTEL_TRACE_ID="leak-probe" KIT_ESCALATION_DIR="/tmp/leak-esc" KIT_RUN_DIR="/tmp/leak-run" \
+    HOME="$esand" KIT_RUNAWAY_SANDBOX="$esand" \
+      OTEL_TRACE_ID="leak-probe" KIT_ESCALATION_DIR="/tmp/leak-esc" KIT_RUN_DIR="/tmp/leak-run" \
       OTEL_TRACE_FILE="$eout" RUNAWAY_BUDGET_CONFIG="$econf" RUNAWAY_TALLY="$etally" \
       ROLE_RUNNER="$erun" "$here/orchestrator-run.sh" alpha >/dev/null 2>&1 )
   unset E3_ENVPROBE
   grep -q 'OTEL_TRACE_ID=\[UNSET\]' "$eprobe"      || { echo "FAIL: role-runner LEAKED OTEL_TRACE_ID (anti-spoof: engineer can forge a verdict)"; fail=1; }
   grep -q 'KIT_ESCALATION_DIR=\[UNSET\]' "$eprobe" || { echo "FAIL: role-runner LEAKED KIT_ESCALATION_DIR (anti-spoof: engineer can locate the verdict channel)"; fail=1; }
   grep -q 'KIT_RUN_DIR=\[UNSET\]' "$eprobe"        || { echo "FAIL: role-runner LEAKED KIT_RUN_DIR"; fail=1; }
-  rm -rf "$etmp"; rm -f "$eprobe" "$erun" "$eout" "$econf" "$etally"
+  rm -rf "$esand"; rm -f "$eprobe" "$erun" "$eout"
   # E3b conflict-safe: two slices write the SAME file (conflicting fixture) -> overlap DETECTED, the run
   # REFUSES integration (exits nonzero), emits a kit.conflict span, does NOT merge (no silent corruption).
-  ctmp=$(mktemp -d); cout=$(mktemp); cconf=$(mktemp); ctally=$(mktemp)
+  csand=$(mktemp -d); ctmp="$csand/repo"; mkdir -p "$ctmp"
+  cout=$(mktemp); cconf="$csand/budget.conf"; ctally="$csand/tally"
   printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$cconf"
   crc=0
   ( cd "$ctmp"; git init -q; git config user.email e@x; git config user.name e
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed
-    FIXTURE_CONFLICT_FILE=shared.txt OTEL_TRACE_FILE="$cout" \
+    HOME="$csand" KIT_RUNAWAY_SANDBOX="$csand" \
+      FIXTURE_CONFLICT_FILE=shared.txt OTEL_TRACE_FILE="$cout" \
       RUNAWAY_BUDGET_CONFIG="$cconf" RUNAWAY_TALLY="$ctally" \
       "$here/orchestrator-run.sh" ca cb >/dev/null 2>&1 ) || crc=$?
   [ "$crc" -ne 0 ] || { echo "FAIL: overlapping slices did not refuse integration (expected nonzero exit)"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$cout")" = "1" ] \
     || { echo "FAIL: no kit.conflict span emitted on overlap (detect-by-inspection missing)"; fail=1; }
   [ ! -f "$ctmp/shared.txt" ] || { echo "FAIL: overlap silently integrated shared.txt (corruption not prevented)"; fail=1; }
-  rm -rf "$ctmp"; rm -f "$cout" "$cconf" "$ctally"
+  rm -rf "$csand"; rm -f "$cout"
   # POSITIVE complement: disjoint slices still integrate cleanly (the existing clean-run assertion already
   # covers this, but re-confirm no kit.conflict on a disjoint run):
-  dj=$(_isolated "MAX_TOKENS=0" "MAX_STEPS=0" "MAX_AGENTS=0" -- da db)
+  dj=$(_iso_q "MAX_TOKENS=0" "MAX_STEPS=0" "MAX_AGENTS=0" -- da db)
   [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$dj")" = "0" ] \
     || { echo "FAIL: disjoint run wrongly flagged a conflict"; fail=1; }
   rm -f "$dj"
@@ -268,20 +289,22 @@ PROBE
   # source file to DIFFERENT targets. --no-renames surfaces the deleted source in both diffs, so the
   # overlap on the source is detected (a plain --name-only with rename detection would see disjoint
   # {A} vs {B} and MISS it). Asserts kit.conflict fires (evasion closed) + the run refuses.
-  rtmp=$(mktemp -d); rout=$(mktemp); rconf=$(mktemp); rtally=$(mktemp)
+  rsand=$(mktemp -d); rtmp="$rsand/repo"; mkdir -p "$rtmp"
+  rout=$(mktemp); rconf="$rsand/budget.conf"; rtally="$rsand/tally"
   printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$rconf"
   rrc=0
   ( cd "$rtmp"; git init -q; git config user.email e@x; git config user.name e
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed
     echo orig > F.txt; git add F.txt; git commit -q -m "add F"
-    FIXTURE_RENAME_SRC=F.txt OTEL_TRACE_FILE="$rout" \
+    HOME="$rsand" KIT_RUNAWAY_SANDBOX="$rsand" \
+      FIXTURE_RENAME_SRC=F.txt OTEL_TRACE_FILE="$rout" \
       RUNAWAY_BUDGET_CONFIG="$rconf" RUNAWAY_TALLY="$rtally" \
       "$here/orchestrator-run.sh" rra rrb >/dev/null 2>&1 ) || rrc=$?
   [ "$rrc" -ne 0 ] || { echo "FAIL: dueling-rename did not refuse integration"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$rout")" -ge 1 ] \
     || { echo "FAIL: dueling-rename EVADED detection (no kit.conflict span) — rename-divergence not closed"; fail=1; }
   [ ! -f "$rtmp/renamed-by-rra.txt" ] || { echo "FAIL: dueling-rename silently integrated a side (tree not clean)"; fail=1; }
-  rm -rf "$rtmp"; rm -f "$rout" "$rconf" "$rtally"
+  rm -rf "$rsand"; rm -f "$rout"
   # E3-merge-atomicity (load-bearing NEGATIVE): two slices with DISJOINT changed-file sets that still
   # collide at the merge FLOOR. clashF creates path 'clash' as a FILE; clashD creates 'clash/child' (a
   # file under dir 'clash'). Name-only sets {clash} vs {clash/child} are disjoint so DETECTION passes; the
@@ -289,7 +312,8 @@ PROBE
   # file) -> floor trips. WITHOUT the atomic reset, clashF stays committed (partial-integration residual);
   # WITH it, HEAD resets to the cut-point base. Asserts refuse + kit.conflict(merge:clashD) + HEAD==base
   # + no residual 'clash'. This is the case the unfixed code FAILS (HEAD advanced) and the fix makes pass.
-  mtmp=$(mktemp -d); mout=$(mktemp); mconf=$(mktemp); mtally=$(mktemp); mrun=$(mktemp)
+  msand=$(mktemp -d); mtmp="$msand/repo"; mkdir -p "$mtmp"
+  mout=$(mktemp); mconf="$msand/budget.conf"; mtally="$msand/tally"; mrun=$(mktemp)
   printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$mconf"
   cat > "$mrun" <<'DIRFILE'
 #!/bin/sh
@@ -304,7 +328,8 @@ DIRFILE
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed )
   mbase=$(git -C "$mtmp" rev-parse HEAD); mrc=0
   ( cd "$mtmp"
-    ROLE_RUNNER="$mrun" OTEL_TRACE_FILE="$mout" \
+    HOME="$msand" KIT_RUNAWAY_SANDBOX="$msand" \
+      ROLE_RUNNER="$mrun" OTEL_TRACE_FILE="$mout" \
       RUNAWAY_BUDGET_CONFIG="$mconf" RUNAWAY_TALLY="$mtally" \
       "$here/orchestrator-run.sh" clashF clashD >/dev/null 2>&1 ) || mrc=$?
   [ "$mrc" -ne 0 ] || { echo "FAIL: merge-floor clash did not refuse integration (expected nonzero exit)"; fail=1; }
@@ -314,17 +339,19 @@ DIRFILE
     || { echo "FAIL: merge-floor trip left a partial-integration residual (HEAD != base) — integration not atomic"; fail=1; }
   [ ! -e "$mtmp/clash" ] \
     || { echo "FAIL: merge-floor trip left residual artifact 'clash' (integration not atomic)"; fail=1; }
-  rm -rf "$mtmp"; rm -f "$mout" "$mconf" "$mtally" "$mrun"
+  rm -rf "$msand"; rm -f "$mout" "$mrun"
   # E3-merge-atomicity (POSITIVE liveness anchor): a disjoint clean run still INTEGRATES — HEAD advances
   # past base and both artifacts are present. Guards against a regression where the atomic reset fires
   # spuriously on the success path (an always-reset bug integrates nothing and fails here).
-  ptmp=$(mktemp -d); pout=$(mktemp); pconf=$(mktemp); ptally=$(mktemp)
+  psand=$(mktemp -d); ptmp="$psand/repo"; mkdir -p "$ptmp"
+  pout=$(mktemp); pconf="$psand/budget.conf"; ptally="$psand/tally"
   printf 'MAX_TOKENS=0\nMAX_STEPS=0\nMAX_AGENTS=0\n' > "$pconf"
   ( cd "$ptmp"; git init -q; git config user.email e@x; git config user.name e
     echo seed > seed.txt; git add seed.txt; git commit -q -m seed )
   pbase=$(git -C "$ptmp" rev-parse HEAD); prc=0
   ( cd "$ptmp"
-    OTEL_TRACE_FILE="$pout" RUNAWAY_BUDGET_CONFIG="$pconf" RUNAWAY_TALLY="$ptally" \
+    HOME="$psand" KIT_RUNAWAY_SANDBOX="$psand" \
+      OTEL_TRACE_FILE="$pout" RUNAWAY_BUDGET_CONFIG="$pconf" RUNAWAY_TALLY="$ptally" \
       "$here/orchestrator-run.sh" pa pb >/dev/null 2>&1 ) || prc=$?
   [ "$prc" -eq 0 ] || { echo "FAIL: disjoint clean run did not exit 0 (prc=$prc)"; fail=1; }
   [ "$(git -C "$ptmp" rev-parse HEAD)" != "$pbase" ] \
@@ -333,7 +360,7 @@ DIRFILE
     || { echo "FAIL: disjoint clean run missing integrated artifacts"; fail=1; }
   [ "$(jq -s '[.[]|select(.attributes["kit.conflict"]=="true")]|length' "$pout")" = "0" ] \
     || { echo "FAIL: disjoint clean run wrongly flagged a conflict"; fail=1; }
-  rm -rf "$ptmp"; rm -f "$pout" "$pconf" "$ptally"
+  rm -rf "$psand"; rm -f "$pout"
   [ "$fail" -eq 0 ] || { echo "orchestrator-run --selftest: FAIL" >&2; return 1; }
   echo "orchestrator-run --selftest: OK (clean fan-out+integrate, breach halt+denied, scorecard maps denied, escalation pause+resume, role-runner env scrubbed, conflict-safe detect+refuse incl. dueling-rename, integration atomic on floor-trip)"; return 0
 }

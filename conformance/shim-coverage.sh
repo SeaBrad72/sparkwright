@@ -121,5 +121,83 @@ else
   echo "N/A: scripts/promotion-verify.sh not present next to kit-guard — front-door shim case skipped"
 fi
 
-echo "OK: shim-coverage — generated + deny + allow + passthrough + symlink-no-recursion + front-door all proven"
+# 5) claim front door under shims [B2-SESSION-IDENTITY-LEDGER, design decision 5]. Same class as
+# case 4 and the same cure: the new arm denies any push whose refspec DESTINATION is
+# `refs/claims/` or `refs/claims-log/`, and under install-shims EVERY child `git` is graded —
+# including board-claim.sh's OWN claim, resume and release pushes. The sentinel is
+# KIT_CLAIM_FRONT_DOOR=1, honoured ONLY from the guard's process environment. Both halves are
+# proven here against a REAL bare remote in a throwaway tree, never this repository's refs:
+#   (a) the script's own push passes through the shim'd git;
+#   (b) the same sentinel typed into the COMMAND TEXT is still denied.
+# ⚠️ AND THE RELEASE PUSH IS MEASURED AND DISCLOSED EITHER WAY: it carries `--force-with-lease`,
+# which the guard's unrelated force-push rule may refuse under shims. Whatever the verdict is, this
+# case prints it, so nobody has to guess whether the release path works in a shimmed runtime.
+# shellcheck disable=SC1007 # `CDPATH= cd` clears CDPATH for this one command so a user's CDPATH
+# cannot redirect it; the empty assignment is intentional (same idiom and justification as the `pv`
+# resolution in case 4 above).
+bc="$(CDPATH= cd -- "$(dirname -- "$KG")" && pwd)/board-claim.sh"
+if [ -f "$bc" ]; then
+  cremote="$work/claims.git"; cwork="$work/claimwork"
+  git init -q --bare "$cremote"
+  git clone -q "$cremote" "$cwork" 2>/dev/null
+  (
+    cd "$cwork" && git config user.email fixture@example.invalid && git config user.name Fixture \
+      && git config commit.gpgsign false
+  ) >/dev/null 2>&1
+  cat > "$cwork/BACKLOG.md" <<'SHIM_BOARD_EOF'
+# Fixture — Backlog
+
+## Ready
+
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| `ROW-SHIM` — the claimable row | because | it is claimed | S | low | feature | agent | — | a claim serializes |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+SHIM_BOARD_EOF
+  set +e
+  cout=$( cd "$cwork" && PATH="$shim_dir:$PATH" sh "$bc" claim ROW-SHIM --branch feat/shim 2>&1 ); crc=$?
+  set -e
+  if [ "$crc" = 0 ] && git --git-dir="$cremote" rev-parse --verify -q refs/claims/ROW-SHIM >/dev/null; then
+    echo "PASS: the claim front door still pushes under install-shims (the process-env sentinel is honoured)"
+  else
+    echo "FAIL: board-claim.sh DEADLOCKED under install-shims (rc=$crc): $cout"; exit 1
+  fi
+  # ⚠️ NOT PROBED HERE: prefixing the sentinel to a raw shell command in THIS process exports it into
+  # the shim's environment, so it allows — which is the arm's own stated ceiling ("forgeable by an
+  # actor who can set the guard's environment"), not a finding. (It is also destructive: the first
+  # draft of this case deleted the fixture's own claim that way and made the release measurement
+  # below read REFUSED for the wrong reason.) What must NOT be possible is typing the sentinel as
+  # command TEXT, which is the thing an agent can actually do, and `kit-guard cmd` grades it:
+  set +e
+  ( PATH="$shim_dir:$PATH" sh "$KG" cmd 'KIT_CLAIM_FRONT_DOOR=1 git push origin :refs/claims/ROW-SHIM' ) >/dev/null 2>&1
+  ctextrc=$?
+  set -e
+  if [ "$ctextrc" = 0 ]; then
+    echo "FAIL: the sentinel typed in the COMMAND TEXT was honoured — an agent can type past the arm"; exit 1
+  fi
+  echo "PASS: the same sentinel in the command TEXT is denied (env-only, exactly like the ledger's)"
+  # the disclosure half: the release push's --force-with-lease under shims, measured not assumed.
+  set +e
+  relout=$( cd "$cwork" && PATH="$shim_dir:$PATH" \
+              KIT_CLAIM_FORCE_RELEASE='shim coverage measurement' sh "$bc" release ROW-SHIM --stale 2>&1 ); relrc=$?
+  set -e
+  if [ "$relrc" = 0 ]; then
+    echo "MEASURED: the release push (--force-with-lease) PASSES under install-shims"
+  else
+    # MEASURED 2026-09-16: the refusal is the PRE-EXISTING force/mirror-push rule ("force/mirror
+    # push rewrites or deletes published history - human-gated"), NOT the new claim-ref arm — the
+    # sentinel is honoured, and the lease flag is what trips. Disclosed, not fixed here: under the
+    # Claude hook the release works (the guard grades `sh scripts/board-claim.sh …`, not its child
+    # git), and under shims the delete stays a human act, which is the direction this kit errs in.
+    echo "MEASURED: the release push (--force-with-lease) is REFUSED under install-shims (rc=$relrc), by the FORCE-PUSH rule rather than the claim arm — disclosed, not fixed here: the claim ref's delete stays a human act in a shimmed runtime. [$(printf '%s' "$relout" | tr '\n' ' ' | cut -c1-120)]"
+  fi
+else
+  echo "N/A: scripts/board-claim.sh not present next to kit-guard — claim front-door shim case skipped"
+fi
+
+echo "OK: shim-coverage — generated + deny + allow + passthrough + symlink-no-recursion + front-door + claim front door under shims all proven"
 exit 0

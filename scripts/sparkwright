@@ -1,6 +1,9 @@
 #!/bin/sh
 # What it changes: nothing directly — a pure router that dispatches (via exec) to the named
-# subcommand's script (doctor/postmortem/tier-advice/explain); every effect belongs to that subcommand.
+# subcommand's script (doctor/postmortem/tier-advice/explain/status/resume/start); every effect
+# belongs to that subcommand. `status` is board-claim.sh's read-only who-holds-what view; `resume` is
+# slice-resume.sh, which is read-only by contract; `start` is start.sh, the one-command loop entry
+# (classify · claim · print the trailer block) — its only writes are board-claim.sh's own.
 # Guardrails: no privileges of its own; empty/-h/--help prints usage and exits 2; an unknown subcommand
 # exits 2 without dispatching; all behavior is delegated to the subcommand it execs.
 set -eu
@@ -10,6 +13,9 @@ case "${1:-}" in
   postmortem) shift; exec sh "$here/postmortem.sh" "$@" ;;
   tier-advice) shift; exec sh "$here/tier-advice.sh" "$@" ;;
   explain) shift; exec sh "$here/explain.sh" "$@" ;;
-  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain" >&2; exit 2 ;;
-  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain" >&2; exit 2 ;;
+  status) shift; exec sh "$here/board-claim.sh" status "$@" ;;
+  resume) shift; exec sh "$here/slice-resume.sh" "$@" ;;
+  start) shift; exec sh "$here/start.sh" "$@" ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain, status, resume, start" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain, status, resume, start" >&2; exit 2 ;;
 esac
