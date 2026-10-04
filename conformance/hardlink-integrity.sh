@@ -40,6 +40,50 @@ CORE="${KIT_HLI_CORE:-.claude/hooks/guard-core.sh}"
 # shellcheck disable=SC1090  # $CORE is the guard core (fixed default; KIT_HLI_CORE override for the selftest mutant) — non-constant to shellcheck, existence-checked above
 case "$CORE" in /*) . "$CORE" ;; *) . "./$CORE" ;; esac
 
+# _hli_marker_pin_ok <file>: T3 (SEMGREP-BASH-PARSE-KIT-WIDE close fix 2) — a CLOSED-WORLD pin,
+# replacing the former _hli_nosemgrep_count_ok/_hli_bare_ok pair (which enumerated spellings and so
+# could never be complete: each new marker form needed its own leg). Instead this pins the EXACT
+# byte-for-byte record of every `nosem`-bearing line and its immediately governed next line — any
+# addition, removal, widening, case change, or homoglyph substitution touching those lines changes
+# the record and reds. `-A1` includes the governed next line because a scoped marker's rule id can
+# sit on the line it precedes (this codebase's convention); the caller asserts the pin on the whole
+# 2-line group, not the marker line alone.
+#
+# Case-folding gap: semgrep's own marker regex is caseless, but it ALSO folds U+017F LATIN SMALL
+# LETTER LONG S (ſ) to `s` — a spelling `grep -i` does not fold. `-e "$_hmp_ls"` (built via printf,
+# never a literal, so the byte survives editor/locale mangling) closes that one gap explicitly;
+# `-e 'nosem'` catches every ASCII-case spelling via `-i`. Never route grep's output through
+# `$(...)` — that drops embedded NULs a hostile marker line could carry; always `cmp` files/pipes.
+#
+# The record is embedded as a quoted heredoc (no parameter/command expansion) below and written to an
+# hli_mktempd file before comparison. REGEN one-liner (run from the repo root, after `.` sourcing this
+# file so $CORE is set, or point it at any guard core):
+#   LC_ALL=C grep -a -i -A1 -e 'nosem' -e "$(printf 'no\305\277em')" .claude/hooks/guard-core.sh
+# A legitimate marker change (adding/removing/relocating a nosemgrep suppression in the guard core)
+# edits the heredoc below in the SAME PR, by design — this pin cannot be satisfied by an unreviewed
+# drift.
+_hli_marker_pin_ok() { # <core> <record> -> rc0 iff every nosem-bearing line + its governed next line equals the record, byte for byte
+  _hmp_ls=$(printf 'no\305\277em')   # U+017F LONG S: semgrep's caseless regex folds it to `s`; grep -i cannot
+  LC_ALL=C grep -a -i -A1 -e 'nosem' -e "$_hmp_ls" "$1" | cmp -s - "$2"
+}
+
+# _hli_write_marker_record <outfile>: materializes the recorded 8 lines (3 nosem-bearing markers +
+# their governed next line each, grep-separator `--` included) via a QUOTED heredoc — no
+# parameter/command expansion, so the literal `$IFS`/`$_ha_ofs` text below is never evaluated. Callers
+# write this into an hli_mktempd file (never a dev-clone/tracked path) before comparing.
+_hli_write_marker_record() {
+  cat > "$1" <<'HLI_MARKER_RECORD_EOF'
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  _ha_ofs=$IFS; IFS='
+--
+      # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+      IFS=$_ha_ofs
+--
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  IFS=$_ha_ofs
+HLI_MARKER_RECORD_EOF
+}
+
 # scan_repo <dir> : rc0 = clean; rc1 = at least one tracked control-plane/secret file with nlink>1
 # (each printed verbatim to stderr with its aliases). The _rc=1 accumulator is the load-bearing FAIL
 # idiom the --selftest mutant neuters (remove the nlink test -> a hardlinked CP file passes -> RED).
@@ -67,11 +111,22 @@ scan_repo() {
 }
 
 run() {
+  _rc=0
   if scan_repo .; then
     echo "OK: no tracked control-plane or secret file is hardlink-aliased (all nlink==1)"
-    return 0
+  else
+    _rc=1
   fi
-  return 1
+  _hli_rdir=$(hli_mktempd); _hli_rrec="$_hli_rdir/record"
+  _hli_write_marker_record "$_hli_rrec"
+  if _hli_marker_pin_ok "$CORE" "$_hli_rrec"; then
+    echo "OK: the guard core's nosemgrep-family marker lines match the recorded closed-world pin"
+  else
+    echo "FAIL: the guard core's nosemgrep-family marker lines drifted from the recorded pin (regen: see conformance/hardlink-integrity.sh comment above _hli_write_marker_record)" >&2
+    _rc=1
+  fi
+  rm -rf "$_hli_rdir"
+  return $_rc
 }
 
 # hli_mktempd — a fixture temp dir that HONOURS $TMPDIR. ⚠️ Measured on darwin: a bare `mktemp -d`
@@ -186,8 +241,151 @@ selftest() {
     fi
   fi
 
+  # T3 (SEMGREP-BASH-PARSE-KIT-WIDE close fix 2): the closed-world marker pin, via the SAME
+  # _hli_marker_pin_ok/_hli_write_marker_record the real scan (run()) asserts — so every anchor below
+  # is load-bearing against the real check, not a duplicated inline comparison.
+  _hli_pdir=$(hli_mktempd); hli_keep "$_hli_pdir"; _hli_prec="$_hli_pdir/record"
+  _hli_write_marker_record "$_hli_prec"
+  if _hli_marker_pin_ok "$CORE" "$_hli_prec"; then
+    echo "selftest PASS: the guard core's nosemgrep-family marker lines match the recorded closed-world pin"
+  else
+    echo "selftest FAIL: the guard core's nosemgrep-family marker lines drifted from the recorded pin"; st=1
+  fi
+
+  # Locate the FIRST rule-scoped marker line BY CONTENT (never a hard-coded line number — the file
+  # moves). This is the line the 8 negative anchors below mutate.
+  _hli_mline=$(grep -n 'nosemgrep: bash\.lang\.security\.ifs-tampering\.ifs-tampering' "$CORE" | head -1 | cut -d: -f1)
+  if [ -z "$_hli_mline" ]; then
+    echo "selftest FAIL: could not locate the rule-scoped marker line by content — the 8 anchors below are unbound"; st=1
+  else
+    _hli_mcontent=$(sed -n "${_hli_mline}p" "$CORE")
+    _hli_adir=$(hli_mktempd); hli_keep "$_hli_adir"
+
+    # Anchor 1: an appended bare `# nosemgrep`.
+    _hli_a1="$_hli_adir/a1-appended-bare.sh"; cp "$CORE" "$_hli_a1"; printf '%s\n' '# nosemgrep' >> "$_hli_a1"
+    # Anchor 2: the marker line -> `  # nosemgrep # nosemgrep: other.rule`.
+    _hli_a2="$_hli_adir/a2-doubled.sh"; sed "${_hli_mline}s/.*/  # nosemgrep # nosemgrep: other.rule/" "$CORE" > "$_hli_a2"
+    # Anchor 3: the marker line -> `  # nosemgrep: other.rule` (rule id swapped).
+    _hli_a3="$_hli_adir/a3-swapped-rule.sh"; sed "${_hli_mline}s/.*/  # nosemgrep: other.rule/" "$CORE" > "$_hli_a3"
+    # Anchor 4: the marker line removed.
+    _hli_a4="$_hli_adir/a4-removed.sh"; sed "${_hli_mline}d" "$CORE" > "$_hli_a4"
+    # Anchor 5: the marker line -> `  # NOSEMGREP: <the real rule id>` (case-widened, same rule id).
+    _hli_a5="$_hli_adir/a5-uppercased.sh"; sed "${_hli_mline}s/.*/  # NOSEMGREP: bash.lang.security.ifs-tampering.ifs-tampering/" "$CORE" > "$_hli_a5"
+    # Anchor 6: an appended `  # noſemgrep` — the U+017F LONG S byte built via printf, never a literal.
+    _hli_ls=$(printf 'no\305\277em')
+    _hli_a6="$_hli_adir/a6-longs.sh"; cp "$CORE" "$_hli_a6"; printf '  # %sgrep\n' "$_hli_ls" >> "$_hli_a6"
+    # Anchor 7: the marker line dropped from its governed spot and the IDENTICAL line re-inserted
+    # elsewhere (top of file) — same byte content, wrong position, so its governed next line differs.
+    _hli_a7="$_hli_adir/a7-relocated.sh"
+    { printf '%s\n' "$_hli_mcontent"; sed "${_hli_mline}d" "$CORE"; } > "$_hli_a7"
+    # Anchor 8: an APPENDED `  # NOSEMGREP` (uppercase, no removal/substitution of the original
+    # marker). Anchors 4/5 both drop the original lowercase line, so a pin that reds only because a
+    # line vanished (never because `-i` actually matched the added uppercase text) would still pass
+    # this anchor if `-i` were silently dropped. This anchor keeps the original 3 marker blocks intact
+    # and adds a 4th uppercase-only match, so it is load-bearing specifically for `-i`.
+    _hli_a8="$_hli_adir/a8-appended-upper.sh"; cp "$CORE" "$_hli_a8"; printf '  # NOSEMGREP\n' >> "$_hli_a8"
+
+    _hli_aok=1
+    for _hli_apair in \
+      "$_hli_a1:appended bare # nosemgrep" \
+      "$_hli_a2:doubled marker (# nosemgrep # nosemgrep: other.rule)" \
+      "$_hli_a3:rule id swapped to other.rule" \
+      "$_hli_a4:marker line removed" \
+      "$_hli_a5:case-widened to # NOSEMGREP: <real rule id>" \
+      "$_hli_a6:appended long-s noſemgrep" \
+      "$_hli_a7:marker relocated (dropped + re-inserted elsewhere)" \
+      "$_hli_a8:appended uppercase # NOSEMGREP (no removal — anchors -i itself)" \
+    ; do
+      _hli_af=${_hli_apair%%:*}; _hli_alabel=${_hli_apair#*:}
+      if cmp -s "$CORE" "$_hli_af"; then
+        echo "selftest FAIL: anchor [$_hli_alabel] expression matched NOTHING — the anchor is unbound"; st=1; _hli_aok=0
+      elif _hli_marker_pin_ok "$_hli_af" "$_hli_prec"; then
+        echo "selftest FAIL: the marker pin failed to notice anchor [$_hli_alabel]"; st=1; _hli_aok=0
+      else
+        echo "selftest PASS: the marker pin would flag anchor [$_hli_alabel] (negative anchor)"
+      fi
+    done
+    [ "$_hli_aok" = 1 ] || st=1
+
+    # Non-vacuity: neutering the pin's comparator (cmp -s -> true) must make a mutated anchor WRONGLY
+    # pass — proving `cmp -s` is the load-bearing comparator, not merely present. Defined as a
+    # separate, deliberately-neutered function (never edits the real _hli_marker_pin_ok) so this probe
+    # cannot itself mask a real regression.
+    _hli_marker_pin_neutered() {
+      _hmpn_ls=$(printf 'no\305\277em')
+      LC_ALL=C grep -a -i -A1 -e 'nosem' -e "$_hmpn_ls" "$1" | { cmp -s - "$2" || true; }
+    }
+    if _hli_marker_pin_neutered "$_hli_a4" "$_hli_prec"; then
+      echo "selftest PASS: neutering the pin's cmp makes a dropped-marker anchor wrongly pass (non-vacuity confirmed — cmp -s is load-bearing)"
+    else
+      echo "selftest FAIL: neutering the pin's cmp did not make the anchor wrongly pass — the non-vacuity probe proves nothing"; st=1
+    fi
+  fi
+
+  # T3 glob-named hardlink case (SEMGREP-BASH-PARSE-KIT-WIDE slice 1 §"hardening"). The REAL mechanism
+  # this leg pins: `_hardlink_alias_hit`'s enumeration loop runs under `set -f`, so a hardlink alias
+  # whose NAME carries glob metacharacters (`pr[o]jects`, `.env.exampl[e]`) is classified by its OWN
+  # literal path. Without `set -f`, an unquoted pathname expansion of that literal can land on a
+  # DIFFERENT, real sibling file and be classified in the literal's place — and that substitution can
+  # land on a classifier's NEGATIVE arm (the `.claude/projects` / `.claude/plans` relief arm, or the
+  # `.env.example` template exemption) or on an earlier `continue` gate (a device mismatch on `stat`),
+  # discarding the literal alias entirely. That turns a real hardlink alias to a control-plane/secret
+  # file into a false ALLOW — not merely a misattributed deny reason. This leg proves the guard is
+  # load-bearing by miss/hit: the HEAD core must HIT both constructions (literal name echoed); a
+  # scratch copy with `set -f` neutered (the seat's sed, guarded by `cmp` so an unbound mutant reds,
+  # plus an `sh -n` parse gate) must MISS both (rc 1).
+  #   - C3 (secret template exemption): `.env.exampl[e]` hardlinked; a REAL `.env.example` sits beside
+  #     it. An unguarded expansion of the literal resolves to `.env.example`, which _is_secret_hit's
+  #     template exemption allows.
+  #   - C2 (CP relief arm): `.claude/pr[o]jects/x` hardlinked; a REAL `.claude/projects/x` sits beside
+  #     it. An unguarded expansion resolves to `.claude/projects/x`, which is_control_plane_path's
+  #     relief arm allows.
+  _hli_msd=$(hli_mktempd); hli_keep "$_hli_msd"; _hli_mscore="$_hli_msd/core-noglobstripped.sh"
+  sed '/^_hardlink_alias_hit() {$/,/^}$/s/^  set -f$/  :/' "$CORE" > "$_hli_mscore"
+  if cmp -s "$CORE" "$_hli_mscore"; then
+    echo "selftest FAIL: the set -f mutant expression matched NOTHING — the glob-guard leg is unbound"; st=1
+  elif ! sh -n "$_hli_mscore" >/dev/null 2>&1; then
+    echo "selftest FAIL: the set -f mutant copy of the guard core fails to parse (sh -n)"; st=1
+  else
+    _hli_c3=$(hli_mktempd); hli_keep "$_hli_c3"
+    printf 'SECRET=1\n' > "$_hli_c3/.env.exampl[e]"
+    ln "$_hli_c3/.env.exampl[e]" "$_hli_c3/outer.txt"
+    printf 'KEY=\n' > "$_hli_c3/.env.example"
+
+    _hli_c2=$(hli_mktempd); hli_keep "$_hli_c2"
+    mkdir -p "$_hli_c2/.claude/pr[o]jects" "$_hli_c2/.claude/projects"
+    printf 'x\n' > "$_hli_c2/.claude/pr[o]jects/x"
+    ln "$_hli_c2/.claude/pr[o]jects/x" "$_hli_c2/outer.txt"
+    printf 'memory\n' > "$_hli_c2/.claude/projects/x"
+
+    # shellcheck disable=SC1090  # sourcing the core (or its set -f mutant) is the point of this leg
+    _hli_hc3=$( ( . "$CORE"; _hardlink_alias_hit_secret "$_hli_c3/outer.txt" "$_hli_c3" ) ) && _hli_hc3_rc=0 || _hli_hc3_rc=$?
+    # shellcheck disable=SC1090  # sourcing the core (or its set -f mutant) is the point of this leg
+    _hli_hc2=$( ( . "$CORE"; _hardlink_alias_hit_cp "$_hli_c2/outer.txt" "$_hli_c2" ) ) && _hli_hc2_rc=0 || _hli_hc2_rc=$?
+    # shellcheck disable=SC1090  # sourcing the core (or its set -f mutant) is the point of this leg
+    _hli_mc3=$( ( . "$_hli_mscore"; _hardlink_alias_hit_secret "$_hli_c3/outer.txt" "$_hli_c3" ) ) && _hli_mc3_rc=0 || _hli_mc3_rc=$?
+    # shellcheck disable=SC1090  # sourcing the core (or its set -f mutant) is the point of this leg
+    _hli_mc2=$( ( . "$_hli_mscore"; _hardlink_alias_hit_cp "$_hli_c2/outer.txt" "$_hli_c2" ) ) && _hli_mc2_rc=0 || _hli_mc2_rc=$?
+
+    _hli_head_ok=1
+    [ "$_hli_hc3_rc" = 0 ] || _hli_head_ok=0
+    [ "$_hli_hc2_rc" = 0 ] || _hli_head_ok=0
+    case "$_hli_hc3" in *'.env.exampl[e]') ;; *) _hli_head_ok=0 ;; esac
+    case "$_hli_hc2" in *'.claude/pr[o]jects/x') ;; *) _hli_head_ok=0 ;; esac
+    if [ "$_hli_head_ok" = 1 ]; then
+      echo "selftest PASS: head core HITS both glob-named constructions (C3 secret-template, C2 cp-relief-arm) with the literal alias name"
+    else
+      echo "selftest FAIL: head core did not hit both glob-named constructions as expected: c3 rc=$_hli_hc3_rc out=[$_hli_hc3] c2 rc=$_hli_hc2_rc out=[$_hli_hc2]"; st=1
+    fi
+    if [ "$_hli_mc3_rc" != 0 ] && [ "$_hli_mc2_rc" != 0 ]; then
+      echo "selftest PASS: the set -f mutant MISSES both constructions (rc 1, false ALLOW) — the glob guard is load-bearing"
+    else
+      echo "selftest FAIL: the set -f mutant unexpectedly hit: c3 rc=$_hli_mc3_rc out=[$_hli_mc3] c2 rc=$_hli_mc2_rc out=[$_hli_mc2]"; st=1
+    fi
+  fi
+
   if [ "$st" = 0 ]; then
-    echo "OK: hardlink-integrity selftest — clean passes, a hardlinked tracked CP file is caught, an ordinary hardlink is not over-red, the nlink test is load-bearing, and the fixture temp dirs are trap-reclaimed"
+    echo "OK: hardlink-integrity selftest — clean passes, a hardlinked tracked CP file is caught, an ordinary hardlink is not over-red, the nlink test is load-bearing, the fixture temp dirs are trap-reclaimed, the nosemgrep-family marker lines are pinned closed-world against 8 negative anchors, and the glob-named miss/hit split holds"
     return 0
   fi
   echo "FAIL: hardlink-integrity selftest"

@@ -110,7 +110,7 @@ DISCOVER → PLAN →│spec│→ BUILD → REVIEW →│merge│→ RELEASE �
 | **Build** | TDD per `DEVELOPMENT-STANDARDS.md`. L0 reflection-in-action runs continuously. Fast inner loop (`docs/operations/dev-inner-loop.md`). | Self-verified, tests green |
 | **Review** | "Did we build it *right*?" — code + adversarial/multi-lens + **security lens** + **code-quality lens** (`templates/REVIEW-RECORD-TEMPLATE.md` quality-lens rubric), routed per ownership. | Merge gate (human) |
 | **Release** | "Done → Live": deploy, feature flags, staged rollout, smoke test, CHANGELOG, rollback ready — see **Safe Change Delivery (§10)**; verified against `conformance/definition-of-deployable.md`. Breaking changes need explicit approval. | Live in production |
-| **Done** | **Acceptance** ("right thing?"), Definition of Done met, **L1 retro** written. | Closed |
+| **Done** | **Acceptance** ("right thing?"), Definition of Done met, **L1 retro** written (advisory: a missing one WARNs). | Closed |
 | **Operate** | Monitor, triage, resolve; **feed signals back to Discover** (§9). | Continuous |
 
 **Milestones** are the planning/retro horizon, not the execution cadence.
@@ -325,7 +325,7 @@ Tag releases with **semantic versioning**; the CHANGELOG (§15) records what eac
 
 These mechanics work for a single agent spawning sub-agents today and scale to many parallel agents.
 
-- **Shared board = work-distribution queue.** The single source of work-truth that humans and agents read and claim from. Replaces the standup: state is queryable, not verbally synced.
+- **Shared board = work-distribution queue.** The single source of work-truth that humans and agents read and claim from. Replaces the standup: state is queryable, not verbally synced. **Context hygiene (advisory):** because the board carries the state, a long-running orchestrating session can be recycled at a slice boundary well before the runtime's context limit (adopter-tuned; this kit's own sessions use ~400K tokens) — either start a fresh session (the board, the claim ref and the session's memory carry it) or compact the session in place and continue; a heuristic, not a gate.
 - **Atomic work-claiming.** Entering `In Progress` is an atomic ownership transition; no double-claims. The `BACKLOG.md` backend implements it as a **forge ref** — `scripts/board-claim.sh claim` pushes `refs/claims/<ROW-ID>` and the forge's non-fast-forward rule refuses the second claimant, naming the first (`BOARD-CLAIM-MECHANISM`). It stops accidental double-work between cooperating sessions; it is **not** an actor with push rights, who overwrites or deletes the ref with or without `--force` (`docs/work-tracking/adapters.md`).
 - **Worktree / branch isolation.** Parallel agents work in isolated git worktrees / short-lived branches.
 - **Integration cadence.** Trunk-based with frequent, small integrations — avoid big-bang merges across streams.
@@ -432,7 +432,7 @@ Artifacts are created **and maintained**, not written once. Each has a producing
 | `.env.example` | Inception / Build | any new env var | building agent |
 | `RUNBOOK.md` | Inception, then Release | deploy or ops change | shipping agent |
 | CHANGELOG | Release | every user-facing change | shipping agent |
-| L1 retro note — carries a `Disposition:` (row / ruling / `none — <reason>`), every clause resolving | Build (final push of the slice PR; the merge is the close) | per increment | building agent |
+| L1 retro note — carries a `Disposition:` (row / ruling / `none — <reason>`; form advisory, a named row/ruling must resolve) | Build (final push of the slice PR; the merge is the close) | per increment | building agent |
 | Postmortem (`templates/POSTMORTEM-TEMPLATE.md`) | Incident (P0/P1) | — | responder + human |
 | Pattern library | L2 / L3 retro | new reusable pattern found | lead |
 

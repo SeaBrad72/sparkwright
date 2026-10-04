@@ -1,0 +1,7 @@
+{
+  "issues": [
+    {"id": "11101", "key": "AB-101", "fields": {"labels": ["size:S"]}}
+  ],
+  "isLast": true,
+  "nextPageToken": null
+}

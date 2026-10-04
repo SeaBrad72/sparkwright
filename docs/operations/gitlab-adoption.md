@@ -219,6 +219,12 @@ The kit is GitHub-first for *automated* governance. On GitLab:
   these as GitHub Actions jobs bound as required contexts, and GitLab has no equivalent binding.
 - **DORA** — adopter-built from GitLab analytics. `scripts/dora.sh` prints `unavailable`.
 
+**Jira behind a network restriction.** The kit ships no GitLab tracker job (the tracker gates are GitHub
+Actions). If your Jira allows only addresses inside your network, run your own tracker job on a runner
+inside it, selected with `tags:`. The Jira preflight's `reach-ci` advice maps to that: the card cannot
+measure reachability from your runner, so run `sh conformance/tracker-contract.sh --preflight --as ci`
+inside that job instead of the GitHub click path (`KIT_TRACKER_RUNNER` is a GitHub Actions knob).
+
 This is the same three-state honesty discipline as `conformance/verify.sh`: a control that cannot
 be verified is reported as UNVERIFIED, not silently passed. Porting the GitHub-bound scripts to
 the GitLab API is deliberately out of scope (adopter-owned) rather than faked.

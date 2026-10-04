@@ -1,6 +1,6 @@
 # Work-Tracking Adapter Guide
 
-How to make a work-tracker satisfy the kit's **backlog contract** (`../../DEVELOPMENT-PROCESS.md` §6). This is **guidance, not integration code** — the kit ships no API client; it ships the mapping you apply once when you adopt a tracker.
+How to make a work-tracker satisfy the kit's **backlog contract** (`../../DEVELOPMENT-PROCESS.md` §6). This is **guidance, not integration code** for most backends — the kit ships a Jira reader + write verbs (`scripts/tracker-jira.sh`, `scripts/tracker-read.sh`) as its one shipped adapter; for every other declared tracker it ships the mapping you apply once when you adopt it, with no adapter behind it.
 
 ## The contract every adapter must satisfy
 
@@ -51,7 +51,7 @@ The repo-native backend (`../../templates/BACKLOG-TEMPLATE.md`). Every other ada
 - **Field map** — Summary→title · Description→intent + acceptance (or a dedicated Acceptance Criteria field) · a **Size** select custom field · a **Risk** custom field · Assignee→owner · the development panel auto-links branches/commits/PRs. Do **not** map Size to Story Points used for velocity — the kit forbids estimation-as-forecast (`DEVELOPMENT-PROCESS.md` §1).
 - **Atomic claim** — *structural tier, once configured* (see tiers above). A workflow **transition** to In Progress is processed server-side; add an **"Only Assignee" (or equivalent) transition condition** so only the current assignee can perform it — then the transition is a genuine server-enforced single-owner claim, the strongest of the hosted set. **This condition is opt-in: default Jira workflows do not restrict the In-Progress transition, so without it you are back on the convention tier.**
 - **Fit notes** — strongest workflow modeling and enterprise governance; a real server-enforced claim *when the transition condition is configured*. Heavyweight; resist the Story-Points-as-size trap.
-- **Bootstrap & verify** — `incept --backlog jira` writes a project-stamped `JIRA-SETUP.md` (statuses · Size/Risk fields · the Only-Assignee condition); `sh conformance/tracker-contract.sh` verifies the live instance (states/fields verified; the transition condition attested).
+- **Bootstrap & verify** — `incept --backlog jira` writes a project-stamped `JIRA-SETUP.md` (statuses · Size/Risk fields · the Only-Assignee condition); verify in this order: `sh conformance/tracker-contract.sh --preflight` (reach, credential, permissions, tier card; read-only) → `--fields` (the required create fields and the conf lines to paste) → no flag (states and fields verified live) → `--deep` (the Only-Assignee condition on every transition into In Progress, a Jira-admin once-off).
 
 ## Azure DevOps (Boards)
 
@@ -78,24 +78,44 @@ The repo-native backend (`../../templates/BACKLOG-TEMPLATE.md`). Every other ada
 
 ## Which gates bind
 
-The kit's board-bound gates read `BACKLOG.md`, and **only** `BACKLOG.md`. On any hosted backend they say so, out loud, rather than passing quietly — a green light over governance nobody verified is worse than a red (`D-240903-1` §3).
+This is the **one place** this is stated — every other section, and every other doc (`RUNBOOK.md`, `JIRA-SETUP-TEMPLATE.md`), links here rather than repeating it. `jira` is the kit's **one shipped adapter** (`TRACKER-BACKED-GOVERNANCE`); a **declared tracker with no adapter** — `github` · `linear` · `ado` · `gitlab` — has no seam that can read it, so it is named **UNBOUND** below rather than left to be inferred.
 
-| Gate | `md` | `github` · `jira` · `ado` · `linear` · `gitlab` |
-|---|---|---|
-| `backlog-presence` (PR-cell binding + `--claims`) | binds | **NOT ENFORCED** — rc 3, red; green-with-notice under a ratified `board-governance` waiver |
-| `backlog-current` (state-appropriate evidence) | binds | **NOT ENFORCED** — rc 3, red; same waiver rule |
-| `loop-state` row check (`Kit-Row` resolves) | binds (reports `resolved`) | **NOT ENFORCED** — refused under `enforce`; same waiver rule |
-| `board-claim.sh` | binds | refuses (it writes `refs/claims/<ROW-ID>` for an `md` board only) |
-| `tracker-contract.sh` | — | states/fields verified, claim condition attested |
+| gate | `md` | `jira` (the one shipped adapter) | declared tracker, no adapter (`github`/`linear`/`ado`/`gitlab`) |
+|---|---|---|---|
+| `loop-state` (row check, `Kit-Row` resolves) | **binds** — PR-tree, required context | the trusted job binds the row leg through its own tracker record; the **PR-tree job's own row leg** **stands aside (base requires `tracker-board-gates`)** once the base declares the tracker, the base's `.kit/tracker.conf` passes the base's own validator, and the base branch's LIVE protection requires `tracker-board-gates` — otherwise **red (rc 1) — its refusal names the bind cure**. On a **private** repo, reading the base's protection is unmeasured (LS-D4): if it returns nothing, the step-aside stays off, red, curable by a waiver | **red (rc 1) — its refusal sentence reads NOT ENFORCED** |
+| `backlog-presence` (PR-cell binding + `--claims`) | **binds** — PR-tree, required context | the trusted job (`tracker-board-gates`, required) binds it; the PR-tree job **stands aside (base requires tracker-board-gates)** only when the base's LIVE branch protection requires that context — otherwise **NOT ENFORCED (rc 3)**, red, with its cure | **NOT ENFORCED (rc 3)** — the same cures the list below gives (move to `md`, a ratified waiver, or a future adapter) |
+| `backlog-current` (state-appropriate evidence) | **not run** as a merge gate — the kit self-tests the check instead | **binds** — inside `tracker-board-gates` only | **not run** at all |
+| `board-drift` | **not run** — not scheduled | **runs (detector — never blocks)** — the scheduled `tracker-board-drift` job | **not run** — not shipped; `incept` stamps no conf for it |
+| `ceremony-binding` | **binds** — backend-independent | **binds** | **binds** |
 
-**What NOT ENFORCED means, and what it does not.** It is a colour, not a control: the kit has no seam that can read your tracker, so it declines to claim it checked one. Nothing you change in a pull request clears it. Two ladders exist:
+**What you do, per non-binding outcome:**
+- **`loop-state`'s row leg and `backlog-presence`, both NOT ENFORCED (adapterless tracker)** — no adapter exists to cure either short of: move the backlog to `md`, or carry a ratified `board-governance` waiver (below), or (future) build/ship an adapter. There is no equivalent of `tracker-board-gates` for these trackers today, so "bind `tracker-board-gates`" is not an available cure here.
+- **`loop-state`'s PR-tree row leg on `jira`** — one bind act now clears BOTH gates: add `tracker-board-gates` to `REQUIRED-CHECKS.md`, then **HUMAN ACT (repo admin) — an agent stops and asks:** run `sh scripts/branch-protection-apply.sh --apply` so the base's LIVE branch protection requires it; only then does the PR-tree row leg stand aside for `loop-state` too. Until that bind is live, the row leg stays red unless a ratified `board-governance` waiver covers it (below — `templates/WAIVER-REGISTER.md`).
+- **`backlog-presence` on `jira`, before your first PR** — add `tracker-board-gates` to `REQUIRED-CHECKS.md`, then **HUMAN ACT (repo admin) — an agent stops and asks:** run `sh scripts/branch-protection-apply.sh --apply` (it needs an admin-authenticated `gh`) so your base's LIVE branch protection requires it; only then does the PR-tree job stand aside. Success signal: a read-only run of the same script (no `--apply`) reports `Dry-run: nothing to add — every declared context is already bound live.` Skip this and every PR is **NOT ENFORCED (rc 3)** with the cure named in the red.
+- **`backlog-current` not run (jira, outside `tracker-board-gates`)** — nothing to do; it only ever runs there.
+- **`backlog-current` / `board-drift` not run at all (adapterless tracker)** — same cure as above: move to `md`, build/ship an adapter, or accept the gap named honestly.
 
-1. **`TRACKER-BACKED-GOVERNANCE`** — the tracker read seam. Until it ships, this gap is real.
-2. **A ratified `board-governance` waiver** in `WAIVER-REGISTER.md` — a human-signed, dated, ≤90-day row with an owner, a ratifier and a remediation plan. It renders the three gates green **and the NOT ENFORCED notice still prints on every run**, so the exception is never invisible. `incept` stamps the row for you on a non-`md` choice, with `[owner]` and `[security-owner]` placeholders that a human must fill — a stamp is not a ratification, and `sh conformance/waivers-valid.sh --active board-governance` refuses it until both cells are real.
+**Say it plainly:** a declared tracker with **no adapter** — `github`, `linear`, `ado`, `gitlab` — is **UNBOUND** for every gate above except `ceremony-binding` (which is backend-independent by construction). Nothing you do inside a pull request changes that; only the cures above do.
+
+**How we know (proof per "binds" cell, named legs — read them yourself; this doc is timeless, not a build-day snapshot):**
+- `loop-state` (`md` row leg; the jira row leg binds only inside the trusted job's own tracker record; the PR-tree row leg's step-aside): `conformance/loop-state.sh::selftest` — the row-resolution legs (e.g. "a Kit-Row leading an Item cell must RESOLVE") for `md`; the trusted-job row binding is proven by the treeless-positive checks against `seam_row_state`/`seam_row_flag` on a good tracker record; the step-aside itself is legs `delegate/delegated`, `delegate/not-live`, `delegate/record-wins` and `delegate/other-legs-bind`; the workflow wiring behind it is pinned by the kit's own CI (`conformance/adopter-gates-parity.sh::assert_t2_base_checkout_loop_state` and `assert_t2_live_contexts_loop_state`).
+- `backlog-presence` (`md`, `jira`, and the base-decided step-aside): `conformance/backlog-presence.sh::selftest` — legs `delegate/delegated` and `delegate/not-live` exercise the step-aside predicate the trusted-job wiring depends on.
+- `backlog-current` (`jira`): `conformance/backlog-current.sh::selftest` — leg `T9/L0`.
+- `board-drift` (`jira`): `conformance/board-drift.sh::selftest` — legs `J` and `K`, the tracker-arm §4.5 inversion pair (~:498-515).
+- `ceremony-binding` (all three columns): `conformance/ceremony-binding.sh::selftest` — backend-independent by construction.
+
+**What NOT ENFORCED means, and what it does not.** It is a colour, not a control: for a tracker with no adapter, the kit has no seam that can read it, so it declines to claim it checked one. Nothing you change in a pull request clears it. Two ladders exist:
+
+1. **Build or adopt an adapter** — `jira` is the one shipped today (`TRACKER-BACKED-GOVERNANCE`); `github`/`linear`/`ado`/`gitlab` have none yet.
+2. **A ratified `board-governance` waiver** in `WAIVER-REGISTER.md` — a human-signed, dated, ≤90-day row with an owner, a ratifier and a remediation plan. It renders the affected gates green **and the NOT ENFORCED notice still prints on every run**, so the exception is never invisible. `incept` stamps the row for you on a non-`md` choice, with `[owner]` and `[security-owner]` placeholders that a human must fill — a stamp is not a ratification, and `sh conformance/waivers-valid.sh --active board-governance` refuses it until both cells are real.
 
 **Who can sign it, stated rather than implied.** The register is read from the pull request's **own tree**, so the author, the `Owner` and the `Ratified-by` of a `board-governance` row may all be the same person, in one commit — this is the register's standing self-ratification ceiling (every waiver in it has it), narrowed here by nothing. What *is* separated in adopter CI: the register comes from the PR head, but `conformance/waivers-valid.sh` — the validator that grades it — is the **base checkout's** copy, so a PR cannot write itself a waiver and rewrite the rules that judge it in the same commit. Segregation of duties over the row itself is the forge's job (a CODEOWNER review on `WAIVER-REGISTER.md`), not this gate's.
 
-The local `pre-push` hook is the one consumer that lets rc 3 through: it relays the sentence and allows the push, because a push-time speed bump is not where you should first learn the kit has no tracker seam. The required CI context still reds.
+The local `pre-push` hook relays `backlog-presence`'s rc 3 (NOT ENFORCED) and allows the push; `loop-state`'s row-leg refusal on an adapterless tracker follows the `KIT_PUSH_DECL` dial — allowed under `observe`, refused under `enforce` unless a waiver covers it. Separately, on `jira` (a tracker WITH an adapter), when under `KIT_PUSH_DECL=enforce` (set in `.kit/dials.conf`) the verdict is a genuine NOT ENFORCED that the *local* reader could not verify, the hook downgrades to allow and prints a note that CI is the backstop, rather than blocking every local push on a condition no local commit can fix (`hooks/pre-push:308-334`). "Could not verify" has two distinct sources: the reader's own rc 1 (a refusal, including an S-2 pin mismatch) and rc 2 (unverified — no token, or unreachable), both marked at `hooks/pre-push:212-217`; and the hook's own stop when `origin/main` and `origin/master` carry no `.kit/tracker.conf` — it never calls the reader and sends no token (`hooks/pre-push:171-178`). The required CI context still reds.
+
+Other gates, briefly:
+- `board-claim.sh` — binds on `md` only; refuses elsewhere (it writes `refs/claims/<ROW-ID>` for an `md` board only).
+- `tracker-contract.sh` — not a per-PR gate; verifies a live `jira` instance's states/fields and attests the claim condition.
 
 ## Bring your own tracker
 

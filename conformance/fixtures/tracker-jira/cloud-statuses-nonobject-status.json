@@ -1,0 +1,6 @@
+[
+  { "id": "10000", "name": "Task", "statuses": [
+      { "id": "3", "name": "In Progress" },
+      "not-an-object"
+  ]}
+]

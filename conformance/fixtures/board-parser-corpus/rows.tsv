@@ -1,0 +1,19 @@
+# board-parser-corpus/rows.tsv — committed corpus for the bc_cell<->cell() behavioural drift
+# gate (BOARD-PIPE-ESCAPE T6). Each non-comment, non-blank line is one BOARD ROW under test,
+# tab-separated as: <class-id>\t<row>
+# The <row> field is the LITERAL board-row text (starts with `|`), byte-identical on every
+# platform — no runtime generation, no interpolation. Classes per design §6.5:
+#   C1  a lone escaped pipe `\|` inside a cell (odd run -> not a delimiter)
+#   C2  an escaped backslash then a real delimiter `\\|` (even run -> IS a delimiter)
+#   C3  `\\\|` (odd run of 3 -> not a delimiter, the final `\` escapes the `|`)
+#   C4  a cell whose content ends in a bare trailing `\` (last cell, nothing after it)
+#   C5  `\|` in the LAST cell
+#   C6  `\|` in a HEADER cell
+#   C7  `\|` in the Item cell AHEAD of a backtick row id
+C1	| `ROW-A` | has a \| pipe here | note | metric |
+C2	| `ROW-B` | ends in backslash-backslash\\| then more | note | metric |
+C3	| `ROW-C` | triple backslash then pipe\\\| stays joined | note | metric |
+C4	| `ROW-D` | trailing backslash at cell end\ |
+C5	| `ROW-E` | ordinary item | note | has a \| pipe in the last cell |
+C6	| Item \| Weird Header | Links | Metric |
+C7	item text with a \| pipe before the id `ROW-F` | Links | Metric |

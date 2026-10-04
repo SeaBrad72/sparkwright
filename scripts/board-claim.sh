@@ -23,7 +23,25 @@
 #   sh scripts/board-claim.sh release <ROW-ID> [--stale]
 #   sh scripts/board-claim.sh check   [<ROW-ID> | --all]
 #   sh scripts/board-claim.sh status
+#   sh scripts/board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>]
+#   sh scripts/board-claim.sh release-ref <ROW-ID> [--stale] [--then <shell-command>]
 #   sh scripts/board-claim.sh --selftest
+#
+# claim-ref / release-ref (TBG-SEAM-CONSUMERS-DERIVED T4, §6a S-5) — BACKEND-AGNOSTIC ref-only
+# primitives: the git ref IS the lock on every backend, so unlike `claim`/`release` they never read
+# or write a board of any kind. Lane 2's `board.sh` CALLS these (it does not edit this file) to
+# sequence a tracker-side write around the ref: `claim-ref ROW --then '<tracker write>'` takes the
+# ref FIRST (the non-fast-forward rejection is the atomic lock) and, if `--then`'s command fails,
+# COMPENSATES by deleting the ref it just pushed (under `--force-with-lease` on the sha it pushed)
+# before exiting non-zero — so a tracker-write failure never leaves an orphaned claim behind.
+# `release-ref ROW --then '<tracker write>'` runs the REVERSE order: `--then` runs FIRST (the
+# tracker-side release), and the ref is deleted only once it succeeds; if `--then` fails the ref is
+# left untouched (nothing to compensate — the release never started) AND NOTHING IS LOGGED; if
+# `--then` SUCCEEDS but the ref-delete then fails, that is a FAILED COMPENSATION and it exits non-zero
+# NAMING the recovery verb (`release-ref ROW` again, with no `--then`, to retry just the delete) —
+# never a silent half-state. With `--stale`, the release record (`refs/claims-log/<ROW>`) is written
+# AFTER `--then` succeeds and BEFORE the delete — never before `--then`, so a failed tracker-side step
+# never leaves a log entry asserting a release that did not happen (security fix round, M-2).
 #
 # EXIT CODES (a silent 0 is never an answer here):
 #   claim   : 0 claimed / resumed · 2 usage / bad row id / bad branch / session-state refusal /
@@ -33,6 +51,15 @@
 #             release record that could not be written
 #   check   : 0 a claim exists · 1 no claim · 2 usage / REMOTE UNREACHABLE
 #   status  : 0 rendered · 1 no claims · 2 usage / REMOTE UNREACHABLE
+#   claim-ref   : 0 claimed (and, with --then, the following step succeeded) · 1 --then failed and
+#                 was compensated (ref deleted), OR --then failed AND the compensation itself failed
+#                 (named, non-zero) · 2 usage / bad row id / bad branch / REMOTE UNREACHABLE ·
+#                 3 ALREADY CLAIMED
+#   release-ref : 0 released (and, with --then, the following step succeeded first) · 1 --then failed
+#                 (ref untouched) / no claim to release / not the holder (without --stale) / --stale
+#                 with no proof · 2 usage / REMOTE UNREACHABLE / a short force reason / a release
+#                 record that could not be written · non-zero, NAMING `release-ref` as the recovery
+#                 verb, when --then succeeded but the compensating ref-delete then failed
 #
 # HONEST CEILING — read this before quoting the word "atomic" anywhere:
 #   * The claim stops ACCIDENTAL double-work between cooperating sessions. An actor with push rights
@@ -79,11 +106,14 @@
 #     the sentence saying so, and it decides nothing.
 #   * A DEAD SESSION WHOSE WORK NEVER REACHED ORIGIN HAS NO AUTOMATIC PROOF, and that is deliberate:
 #     it is the human dial's case (`KIT_CLAIM_FORCE_RELEASE`), logged to `refs/claims-log/<ROW>`.
-#   * P2/P3 ARE THE FORGE PR AND THE **md BOARD**. On a project declaring a hosted tracker there is
-#     no claim primitive to reclaim — `claim` REFUSES to run at all on a declared non-md backend
-#     (S-L5), so no claim refs exist there and `land` cannot leave one behind. The tracker seam
-#     (Milestone B, `TRACKER-BACKED-GOVERNANCE`) owes its own Done-proof before a hosted backend
-#     gets a claim primitive; no fourth proof is invented here to cover a case that cannot occur.
+#   * P2/P3 ARE THE FORGE PR AND THE **md BOARD**. ⚠️ RETIRED (TBG-SEAM-CONSUMERS-DERIVED T3, F5):
+#     `claim` used to REFUSE to run at all on a declared non-md backend (S-L5, `bc_backend`), on the
+#     theory that "no claim primitive to reclaim" there. `claim-ref`/`release-ref` below are the
+#     backend-agnostic ref-only primitives that theory was blocking — the git ref is the lock on
+#     EVERY backend, so the claim path no longer resolves a backend to refuse non-md. P3 (the md
+#     board) stays an md-SPECIFIC proof `release --stale`/`status` may print when a board exists
+#     (`bc_ev_row` degrades to `unknown` when one does not); it is no longer gated on a backend
+#     declaration, only on whether a `BACKLOG.md` blob is actually there to read.
 #   * READS NEVER SHALLOW-POISON THE CALLER'S CLONE. Every read bounds its fetch with `--depth`, and
 #     a `--depth` fetch writes `.git/shallow` into the repo it fetches into; a repo carrying
 #     `.git/shallow` has its next push REJECTED by a remote that enforces `receive.shallowUpdate`
@@ -138,8 +168,9 @@
 #   every non-holder release to `refs/claims-log/<ROW-ID>` BEFORE it deletes anything; the scratch ref every read
 #   fetches into is PID-scoped, fetched `--depth=1`, and dropped by an EXIT trap; the CLAIM blob is
 #   read through `head -c 4096` and a blob carrying no `claimant:` field inside that bound is REFUSED
-#   as malformed rather than parsed into a holder sentence; and `claim` REFUSES to touch BACKLOG.md
-#   at all when the project's `CLAUDE.md` declares a non-md backlog backend (S-L5).
+#   as malformed rather than parsed into a holder sentence; `claim` refuses when no BACKLOG.md is
+#   present at all (regardless of any declared backend — RETIRED S-L5/`bc_backend`, T3); and
+#   `claim-ref`/`release-ref` are backend-agnostic ref-only primitives that never touch a board.
 set -eu
 
 BC_REMOTE="${BOARD_CLAIM_REMOTE:-origin}"
@@ -225,6 +256,8 @@ bc_usage() {
   echo "  board-claim.sh release <ROW-ID> [--stale]" >&2
   echo "  board-claim.sh check   [<ROW-ID> | --all]" >&2
   echo "  board-claim.sh status" >&2
+  echo "  board-claim.sh claim-ref   <ROW-ID> [--branch <name>] [--then <shell-command>]" >&2
+  echo "  board-claim.sh release-ref <ROW-ID> [--stale] [--then <shell-command>]" >&2
   echo "  board-claim.sh --selftest" >&2
 }
 
@@ -517,7 +550,11 @@ bc_row_section() {
 
 # bc_row_line <board> <section> <ROW-ID> -> the 1-based FILE line number of that row, or empty.
 # Same section/fence semantics as backlog-lib.sh's section_rows (fenced examples are documentation,
-# not live rows), extended only with the line number the edit needs.
+# not live rows), extended only with the line number the edit needs. The Item cell (field 1) is read
+# with the SAME odd-backslash-run join rule as bc_cell/bc_col_index (BOARD-PIPE-ESCAPE T4), so an
+# escaped pipe ahead of the row's id inside the Item cell does not truncate it against a naive `$2`.
+# A row whose escaping is malformed enough to still hide its id from this join is fail-CLOSED — claim
+# refuses rather than acting on a row it cannot see — which is acceptable (design §6.5).
 bc_row_line() {
   awk -F'|' -v sec="$2" -v want="$3" '
     /^[[:space:]]*```/ { infence = !infence; next }
@@ -525,7 +562,15 @@ bc_row_line() {
     $0 ~ "^## " sec "[[:space:]]*$" { inseg = 1; next }
     inseg && /^## / { inseg = 0 }
     inseg && /^[[:space:]]*\|/ {
-      c = $2; gsub(/^[ \t]+|[ \t]+$/, "", c)
+      c = ""
+      for (j = 2; j <= NF; j++) {
+        c = (c == "") ? $j : c "|" $j
+        t = c; run = 0
+        while ((L = length(t)) > 0 && substr(t, L, 1) == "\\") { run++; t = substr(t, 1, L - 1) }
+        if (run % 2 == 1) continue
+        break
+      }
+      gsub(/^[ \t]+|[ \t]+$/, "", c)
       if (match(c, /`[^`]+`/)) {
         id = substr(c, RSTART + 1, RLENGTH - 2)
         if (id == want) { print NR; exit }
@@ -547,67 +592,85 @@ bc_section_bounds() {
 }
 
 # bc_cell <row> <1-based index> — backlog-lib.sh's cell(), inlined so this script stays runnable from
-# any cwd without sourcing a library that expects the repo root. Same awk, same trim.
-bc_cell() { printf '%s' "$1" | awk -F'|' -v i="$2" '{v=$(i+1); gsub(/^[ \t]+|[ \t]+$/,"",v); print v}'; }
+# any cwd without sourcing a library that expects the repo root (see the block comment above). Same
+# GFM-exact odd-backslash-run join rule as the library's cell() (BOARD-PIPE-ESCAPE T4): a `|` delimits
+# a cell iff it is NOT preceded by an odd-length run of `\` — so `\|` keeps joining (an escaped pipe)
+# while `\\|` (an even run — a literal trailing backslash, THEN a real delimiter) does not. RAW value
+# returned, backslashes preserved (§6.7 of the design).
+bc_cell() {
+  printf '%s' "$1" | awk -F'|' -v i="$2" '
+    {
+      n=0; s=""
+      for (j=2; j<=NF; j++) {
+        s = (s=="") ? $j : s "|" $j
+        t=s; run=0
+        while ((L=length(t)) > 0 && substr(t,L,1)=="\\") { run++; t=substr(t,1,L-1) }
+        if (run % 2 == 1) continue                        # odd backslash run -> the pipe was escaped, keep joining
+        if (j==NF && s ~ /^[ \t]*$/) break                 # the trailing artifact after a closing "|" is not a column
+        n++
+        if (n==i) { v=s; gsub(/^[ \t]+|[ \t]+$/,"",v); print v; exit }
+        s=""
+      }
+    }'
+}
 
 # bc_col_index <header-row> <column-name> -> the 1-based column index, or EMPTY when the table has no
-# such column. backlog-lib.sh's col_index, inlined for the reason stated at the top of this block.
+# such column. backlog-lib.sh's col_index, inlined for the reason stated at the top of this block, and
+# reconciled to the SAME odd-backslash-run rule as bc_cell (BOARD-PIPE-ESCAPE T4): an escaped pipe in
+# a header cell must not shift every later column's resolved index by one.
 # This exists so nothing here ever greps a WHOLE ROW LINE for a value that belongs to one cell: an
 # Item cell that happens to mention a branch name is not a Links cell that names it (reviewer R-2).
 bc_col_index() {
   printf '%s' "$1" | awk -F'|' -v want="$2" '
     {
-      for (i = 2; i <= NF; i++) {
-        h = $i; gsub(/^[ \t]+|[ \t]+$/, "", h)
-        if (h == want) { print i - 1; exit }
+      n=0; s=""
+      for (j=2; j<=NF; j++) {
+        s = (s=="") ? $j : s "|" $j
+        t=s; run=0
+        while ((L=length(t)) > 0 && substr(t,L,1)=="\\") { run++; t=substr(t,1,L-1) }
+        if (run % 2 == 1) continue
+        if (j==NF && s ~ /^[ \t]*$/) break
+        n++
+        v=s; gsub(/^[ \t]+|[ \t]+$/,"",v)
+        if (v==want) { print n; exit }
+        s=""
       }
     }'
 }
 
-# ── THE DECLARED BACKEND — `claim` EDITS BACKLOG.md, SO IT MUST NOT EDIT SOMEBODY ELSE'S BOARD ───
-# S-L5. `claim`'s second half REWRITES BACKLOG.md in place. On a project whose CLAUDE.md declares
-# `jira` (or any other hosted backend) a BACKLOG.md left in the tree is a STRAY — a template stub, an
-# archived board, a merge leftover — and silently editing it would move a row on a board nobody reads
-# while the real tracker says nothing. Refuse instead, and name what was declared.
-# Same resolution SHAPE as conformance/backlog-lib.sh's `resolve_backend` (field-leading line, cut the
-# annotation, lowercase, canonical token) — and it is a THIRD parse site, disclosed for the same
-# reason and with the same ungated-drift caveat as the board parser above. It is not a call because
-# this verb's own selftest runs it inside throwaway clones that carry no `conformance/` tree at all.
-# UNDECLARED IS PERMISSIVE: no CLAUDE.md, no field, or an unfilled placeholder -> proceed. Only a
-# RECOGNIZED non-md backend refuses; the gate's job is to catch a declared mismatch, not to require a
-# declaration this verb never needed before.
-bc_backend() { # <dir> -> md|github|jira|ado|linear|gitlab, or empty (undeclared)
-  _bkc="$1/CLAUDE.md"
-  [ -f "$_bkc" ] || return 0
-  _bkl=$(grep -Ei '^[-*[:space:]]*\**backlog backend\**[^:]*:' "$_bkc" 2>/dev/null | head -1) || true
-  [ -n "$_bkl" ] || return 0
-  _bkv=${_bkl#*:}
-  _bkv=$(printf '%s' "$_bkv" | sed 's/—.*$//; s/ (.*$//; s/^[[:space:]]*//; s/[[:space:]]*$//' \
-           | tr '[:upper:]' '[:lower:]')
-  case "$_bkv" in
-    '')                 return 0 ;;
-    *'['*'/'*']'*)      return 0 ;;   # unfilled choice-list placeholder -> undeclared
-    md|markdown)        printf 'md\n'; return 0 ;;
-    *backlog.md*)       printf 'md\n'; return 0 ;;
-  esac
-  printf '%s' "$_bkv" | grep -Eo 'github|jira|ado|linear|gitlab' | head -1 || true
-  return 0
-}
+# ── THE DECLARED BACKEND — RETIRED (TBG-SEAM-CONSUMERS-DERIVED T3, F5) ────────────────────────────
+# `bc_backend` used to be a THIRD parse site duplicating conformance/backlog-lib.sh's `resolve_backend`
+# (field-leading line, cut the annotation, lowercase, canonical token), so `claim` could refuse on a
+# declared non-md backend (S-L5: a stray BACKLOG.md beside a `jira` declaration was a leftover nobody
+# reads). It is retired: `claim-ref`/`release-ref` below are backend-agnostic (the git ref is the lock
+# on EVERY backend), so the claim path no longer resolves a backend to refuse non-md at all. `claim`'s
+# own board-move half still refuses when NO `BACKLOG.md` is present (`[ -f "$BC_BOARD" ]`, unchanged) —
+# that is a real-file check, not a backend parse, so a stray board on a hosted-tracker project is no
+# longer caught by a declaration read here. This is a disclosed behavioural narrowing, not an
+# oversight: the row's own text names it ("the claim path no longer resolves a backend to refuse
+# non-md"), and it trades a rare stray-file edge case for one fewer duplicated backend parser.
 
 # bc_new_row <target-header-row> <item-cell> <owner> <started> <links> — compose the In Progress row
 # BY COLUMN NAME from the target table's own header, never by hardcoded position: a board whose
 # schema gains a column must not silently shift every value one cell to the left.
+# BOARD-PIPE-ESCAPE T5 (C1): the four cell-derived values are passed via ENVIRON, NEVER `awk -v`.
+# `-v` runs awk's OWN escape-sequence processing on the assigned string, so a source `\|` (an escaped
+# pipe under the GFM-exact rule bc_cell/bc_col_index implement) is silently rewritten to a bare `|`
+# before it ever reaches the `out` string — a byte the caller never asked to change, and one that adds
+# a phantom column to the board the moment it is written. `ENVIRON[...]` reads the process environment
+# verbatim; no escape processing happens on the way in.
 bc_new_row() {
-  printf '%s' "$1" | awk -F'|' -v item="$2" -v owner="$3" -v started="$4" -v links="$5" '
+  printf '%s' "$1" | env BC_NR_ITEM="$2" BC_NR_OWNER="$3" BC_NR_STARTED="$4" BC_NR_LINKS="$5" \
+    awk -F'|' '
     {
       out = "|"
       for (i = 2; i < NF; i++) {
         h = $i; gsub(/^[ \t]+|[ \t]+$/, "", h)
         v = "—"
-        if (h == "Item")    v = item
-        if (h == "Owner")   v = owner
-        if (h == "Started") v = started
-        if (h == "Links")   v = links
+        if (h == "Item")    v = ENVIRON["BC_NR_ITEM"]
+        if (h == "Owner")   v = ENVIRON["BC_NR_OWNER"]
+        if (h == "Started") v = ENVIRON["BC_NR_STARTED"]
+        if (h == "Links")   v = ENVIRON["BC_NR_LINKS"]
         out = out " " v " |"
       }
       print out
@@ -649,19 +712,13 @@ do_claim() {
   # exact branch. It exists because this mechanism's own first live claim is made from a branch whose
   # design commit moved the row before the verb existed to do it.
   if [ ! -f "$BC_BOARD" ]; then
-    echo "claim: no board at $BC_BOARD (run from the project root, or set BOARD_CLAIM_BOARD)." >&2
+    echo "claim: no board at $BC_BOARD (run from the project root, or set BOARD_CLAIM_BOARD;" >&2
+    echo "       or, on a hosted tracker, use \`claim-ref\` / \`sparkwright board claim\`)." >&2
     return 2
   fi
-  # S-L5 — the declared backend gates the edit, and it gates it BEFORE the network for the same
-  # reason the row grammar does: a refusal that has already pushed a ref is not a refusal.
-  _bkdir=$(dirname -- "$BC_BOARD")
-  _bktok=$(bc_backend "$_bkdir")
-  if [ -n "$_bktok" ] && [ "$_bktok" != md ]; then
-    echo "claim: this project declares backlog backend '$_bktok', not BACKLOG.md — REFUSED." >&2
-    echo "       \`claim\` rewrites $BC_BOARD in place, and a BACKLOG.md sitting beside a '$_bktok'" >&2
-    echo "       tracker is a stray file, not the board anyone reads. Claim the item in '$_bktok'." >&2
-    return 2
-  fi
+  # RETIRED (T3, F5): the declared-backend refusal (S-L5, `bc_backend`) used to sit here. A real
+  # BACKLOG.md at $BC_BOARD is now the only precondition, regardless of any declared backend — see
+  # the retirement note above `bc_backend`'s old definition.
   _sec=$(bc_row_section "$BC_BOARD" "$_row")
   if [ "$_moved" = 1 ]; then
     if [ "$_sec" != "In Progress" ]; then
@@ -691,7 +748,7 @@ do_claim() {
     case "$_iplinks" in
       *'branch `'"$_branch"'`'*) ;;
       *)
-        echo "claim: --board-already-moved was given but the In Progress \`Links\` cell for \`$_row\` does not name branch \`$_branch\` in the canonical form (branch \`<name>\`) (Links = [$_iplinks])." >&2
+        echo "claim: --board-already-moved was given but the In Progress \`Links\` cell for \`$_row\` does not name branch \`$_branch\` in the canonical form (branch \`<name>\`) (Links = [$(printf '%s' "$_iplinks" | tr -d '[:cntrl:]' | cut -c1-200)])." >&2
         echo "       Only the Links cell counts: a branch named in the Item cell is prose, not a binding." >&2
         return 2 ;;
     esac
@@ -888,15 +945,21 @@ do_claim() {
   _new=$(bc_new_row "$_hdrtxt" "$_item" "$_name" "$(date -u +%Y-%m-%d)" "$_links")
 
   _tmp="$BC_BOARD.board-claim.$$"
-  awk -v del="$_rline" -v ins="$_iplast" -v newrow="$_new" '
+  # BOARD-PIPE-ESCAPE T5 (C1): `del`/`ins` are line NUMBERS (safe through `-v`); `newrow` is the
+  # COMPOSED ROW TEXT and goes through `ENVIRON` instead, for the same byte-preservation reason as
+  # `bc_new_row` above — `-v` would re-run awk's escape processing on the row and turn a source `\|`
+  # into a raw `|`, adding a phantom column to the board on every write.
+  env BC_NEWROW="$_new" awk -v del="$_rline" -v ins="$_iplast" '
     NR == del { next }
     { print }
-    NR == ins { print newrow }
+    NR == ins { print ENVIRON["BC_NEWROW"] }
   ' "$BC_BOARD" > "$_tmp" && mv "$_tmp" "$BC_BOARD"
 
+  # C3 (§6.3): sanitize what is ECHOED here, never what was WRITTEN above — `_rowtxt`/`_new` already
+  # reached the board with their exact bytes; this is display only.
   echo "claim: board edited (UNCOMMITTED — the slice's first commit carries it):"
-  echo "-$_rowtxt"
-  echo "+$_new"
+  echo "-$(printf '%s' "$_rowtxt" | tr -d '[:cntrl:]' | cut -c1-200)"
+  echo "+$(printf '%s' "$_new" | tr -d '[:cntrl:]' | cut -c1-200)"
   return 0
 }
 
@@ -986,12 +1049,13 @@ bc_ev_pr() { # <branch> -> "<display> <p2:yes|no>"
   printf 'CLOSED no\n'
 }
 
-# EVIDENCE 3 — the row's section on the DEFAULT BRANCH's board. A non-md backlog backend reads
-# `unknown` (there is no board on the branch to read). The board blob is fetched into a PID-scoped
-# scratch ref, `--depth=1 --no-tags`, and read through a byte bound like every other untrusted blob.
+# EVIDENCE 3 — the row's section on the DEFAULT BRANCH's board. RETIRED the `bc_backend` early-out
+# (T3, F5): a project with no real board blob on the default branch already reads `unknown` via the
+# `cat-file -s` miss below (the fetch/read degrades naturally), so the backend parse was an
+# optimization, never a behavioural requirement — removing it costs one extra fetch on a genuinely
+# board-less tree and nothing else. The board blob is fetched into a PID-scoped scratch ref,
+# `--depth=1 --no-tags`, and read through a byte bound like every other untrusted blob.
 bc_ev_row() { # <row> -> Ready|In Progress|In Review|Blocked|Released|Done|absent|unknown
-  _evtok=$(bc_backend "$(dirname -- "$BC_BOARD")")
-  if [ -n "$_evtok" ] && [ "$_evtok" != md ]; then printf 'unknown\n'; return 0; fi
   _evdb=$(bc_default_branch) || { printf 'unknown\n'; return 0; }
   [ -n "$_evdb" ] || { printf 'unknown\n'; return 0; }
   bc_branch_ok "$_evdb" || { printf 'unknown\n'; return 0; }
@@ -1384,9 +1448,296 @@ do_status() {
   return 0
 }
 
+# ── claim-ref ───────────────────────────────────────────────────────────────────────────────────
+# Backend-agnostic ref-only claim (T4, §6a S-5): takes `refs/claims/<ROW-ID>` and NEVER reads or
+# writes a board — no BC_BOARD check, no row-section precondition, no board-move. The non-fast-
+# forward rejection on the push IS the atomic lock, on every backend, because a git ref is the one
+# thing every backend equally has none of an opinion about. Deliberately SIMPLER than `claim`'s own
+# probe: it does not distinguish a self-resume from a foreign hold — ANY existing ref refuses here
+# (rc 3), even one this identity already holds. A resume is `claim`'s concern (the board-bound verb,
+# which a human/agent still uses directly on `md`); `claim-ref`'s contract is "the ref is the lock,
+# full stop" and re-claiming is `release-ref` then `claim-ref` again.
+do_claim_ref() {
+  _row=""; _branch=""; _then=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --branch) [ $# -ge 2 ] || { echo "claim-ref: --branch needs a value" >&2; return 2; }; _branch=$2; shift 2 ;;
+      --then)   [ $# -ge 2 ] || { echo "claim-ref: --then needs a value" >&2; return 2; }; _then=$2; shift 2 ;;
+      -*)       echo "claim-ref: unknown option '$1'" >&2; bc_usage; return 2 ;;
+      *)        [ -z "$_row" ] || { echo "claim-ref: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
+    esac
+  done
+  bc_require_row "$_row" || return 2
+  _ref="refs/claims/$_row"
+
+  [ -n "$_branch" ] || _branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "(detached)")
+  bc_require_branch "$_branch" "claim-ref --branch" || return 2
+
+  if _session=$(bc_session_id --mint); then :; else return 2; fi
+
+  _name=$(git config user.name  2>/dev/null || true)
+  _email=$(git config user.email 2>/dev/null || true)
+  if [ -z "$_name" ] || [ -z "$_email" ]; then
+    echo "claim-ref: no git identity (user.name / user.email) — the claim's committer IS the claimant." >&2
+    return 2
+  fi
+  _when=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+  # THE FORGE PROBE (same else-branch rc capture as bc_probe's own R-1 note — see that function).
+  if _held=$(bc_probe "$_ref"); then
+    _txt=$(bc_read_claim "$_ref" || true)
+    if [ -n "$_txt" ]; then
+      echo "claim-ref: $(bc_holder_line "$_txt")" >&2
+    else
+      echo "claim-ref: $_ref exists on $BC_REMOTE at $_held but its CLAIM could not be read." >&2
+    fi
+    echo "           Row \`$_row\` is ALREADY CLAIMED (ref-only). Release it (\`release-ref $_row --stale\`) or take another row." >&2
+    return 3
+  else
+    _prc=$?
+    if [ "$_prc" != 2 ]; then bc_unreachable "$_ref"; return 2; fi
+  fi
+
+  _blob=$(printf 'row: %s\nclaimant: %s <%s>\nbranch: %s\nclaimed-at: %s\nsession: %s (declared)\n' \
+            "$_row" "$_name" "$_email" "$_branch" "$_when" "$_session" | git hash-object -w --stdin)
+  _tree=$(printf '100644 blob %s\tCLAIM\n' "$_blob" | git mktree)
+  _commit=$(printf 'claim-ref %s\n' "$_row" | git commit-tree "$_tree")
+
+  if ! KIT_CLAIM_FRONT_DOOR=1 git push "$BC_REMOTE" "$_commit:$_ref" >/dev/null 2>&1; then
+    _txt=$(bc_read_claim "$_ref" || true)
+    if [ -n "$_txt" ]; then
+      echo "claim-ref: $(bc_holder_line "$_txt")" >&2
+      echo "           The push was REJECTED (non-fast-forward): row \`$_row\` was claimed between this" >&2
+      echo "           process's probe and its push. That rejection is the mechanism working." >&2
+      return 3
+    fi
+    echo "claim-ref: pushing $_ref to $BC_REMOTE failed and no claim could be read back. Nothing was moved." >&2
+    return 2
+  fi
+  echo "claim-ref: OK — \`$_row\` claimed on $BC_REMOTE as $_ref ($_commit)"
+  echo "           claimant '$_name <$_email>' · branch '$_branch' · at $_when"
+
+  [ -n "$_then" ] || return 0
+
+  # ── ORDER + COMPENSATION (§6a S-5): the ref is taken FIRST; a FAILURE of the FOLLOWING step
+  # (the tracker-side write lane 2's `board.sh` runs) is compensated by deleting the ref we just
+  # pushed, under a lease on the EXACT sha we pushed, so a failed tracker write never leaves an
+  # orphaned claim ref behind that nothing else will ever clean up.
+  # SECURITY: `--then`'s value is `sh -c`'d, exactly like board-drift.sh's `BOARD_DRIFT_PR_STATE`
+  # probe and release-tag.sh's `RELEASE_TAG_CI_PROBE` — set it only from a trusted CALLER (lane 2's
+  # `board.sh`, a script, not board/PR-sourced text), never from repo/PR input.
+  if sh -c "$_then"; then
+    echo "claim-ref: OK — the following step succeeded; \`$_row\` stays claimed."
+    return 0
+  else
+    _then_rc=$?
+  fi
+  echo "claim-ref: the following step FAILED (rc=$_then_rc) — compensating by deleting $_ref." >&2
+  if KIT_CLAIM_FRONT_DOOR=1 git push "$BC_REMOTE" --force-with-lease="$_ref:$_commit" ":$_ref" >/dev/null 2>&1; then
+    echo "claim-ref: compensated — $_ref deleted (was $_commit). The claim is fully undone." >&2
+    return 1
+  fi
+  echo "claim-ref: FAILED — the following step failed AND the compensating delete of $_ref also failed." >&2
+  echo "           The claim ref is LEFT IN PLACE at $_commit. Run \`board-claim.sh release-ref $_row\` by" >&2
+  echo "           hand to finish the compensation." >&2
+  return 1
+}
+
+# ── release-ref ─────────────────────────────────────────────────────────────────────────────────
+# Backend-agnostic ref-only release (T4, §6a S-5): the reverse of claim-ref, and reversed ORDER too
+# when `--then` is given — see the header note. Reuses `release`'s holder-check and `--stale`
+# machinery verbatim in shape, but its PROOF SET is narrower than `release --stale`'s: P2 (a merged,
+# non-cross-repo, non-open PR) only. `release --stale`'s P3 (the md board's Done section) is
+# deliberately NOT reused here — it is an md-specific fact, and this verb's whole contract is
+# backend-agnosticism; leaning on a board read here would smuggle an md assumption back into the one
+# primitive that is supposed to have none.
+do_release_ref() {
+  _row=""; _stale=0; _then=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stale) _stale=1; shift ;;
+      --then)  [ $# -ge 2 ] || { echo "release-ref: --then needs a value" >&2; return 2; }; _then=$2; shift 2 ;;
+      -*)      echo "release-ref: unknown option '$1'" >&2; bc_usage; return 2 ;;
+      *)       [ -z "$_row" ] || { echo "release-ref: one row id, not two" >&2; return 2; }; _row=$1; shift ;;
+    esac
+  done
+  bc_require_row "$_row" || return 2
+  _ref="refs/claims/$_row"
+
+  if _sha=$(bc_probe "$_ref"); then
+    :
+  else
+    _prc=$?
+    if [ "$_prc" = 2 ]; then
+      echo "release-ref: no claim on \`$_row\` at $BC_REMOTE ($_ref does not exist) — nothing to release." >&2
+      return 1
+    fi
+    bc_unreachable "$_ref"; return 2
+  fi
+
+  _txt=$(bc_read_claim "$_ref" || true)
+  _holder=$(bc_field "$_txt" claimant)
+  _name=$(git config user.name 2>/dev/null || true)
+  _email=$(git config user.email 2>/dev/null || true)
+  _me="$_name <$_email>"
+  if [ -n "$_txt" ]; then
+    echo "release-ref: $(bc_holder_line "$_txt")"
+    if [ "$_holder" != "$_me" ] && [ "$_stale" != 1 ]; then
+      echo "release-ref: REFUSED — \`$_row\` is held by '$_holder', not by you ('$_me')." >&2
+      echo "             Releasing another session's live claim is a deliberate act: pass --stale, and say why." >&2
+      return 1
+    fi
+  else
+    echo "release-ref: $_ref exists on $BC_REMOTE at $_sha but its CLAIM is unreadable or malformed."
+    if [ "$_stale" != 1 ]; then
+      echo "release-ref: REFUSED — \`$_row\` carries a claim whose holder cannot be read, so it cannot be" >&2
+      echo "             shown to be yours ('$_me'). Deleting it is a deliberate act: pass --stale, and say why." >&2
+      return 1
+    fi
+  fi
+
+  # ⚠️ PROOF IS EVALUATED HERE (a pure read, no side effect), BUT NOT YET LOGGED (security fix round,
+  # M-2). Logging used to happen in THIS block, before `--then` ran below — so a `--then` failure
+  # (the tracker-side step) still returned refused, but `refs/claims-log/<ROW>` already carried an
+  # entry ASSERTING a release that never happened, with no `-FAILED` compensation (the exact class
+  # `bc_log_release`'s own header exists to prevent, just reached via a NEW ordering bug). The write
+  # is moved to AFTER `--then` succeeds, below; refusing here (no proof, or a too-short force reason)
+  # still happens BEFORE `--then` ever runs, so a doomed release never touches the tracker either.
+  _proof=""
+  if [ "$_stale" = 1 ]; then
+    _sbranch=$(bc_field "$_txt" branch)
+    _evb=$(bc_ev_branch "$_sbranch")
+    _evp=$(bc_ev_pr "$_sbranch"); _evpdisp=${_evp% *}; _evp2=${_evp##* }
+    echo "release-ref: evidence for \`$_row\` (branch '$_sbranch'):"
+    echo "             branch on origin: $_evb"
+    echo "             pr: $_evpdisp"
+    if [ "$_evp2" = yes ]; then _proof=P2; fi
+    if [ "$_evb" = no ]; then
+      echo "             (an absent branch is NOT a proof — evidence, not a verdict, same as \`release --stale\`.)"
+    fi
+    _force="${KIT_CLAIM_FORCE_RELEASE:-}"
+    if [ -z "$_proof" ] && [ -n "$_force" ]; then
+      if [ "${#_force}" -lt 10 ]; then
+        echo "release-ref: REFUSED — KIT_CLAIM_FORCE_RELEASE must carry a reason of at least 10 characters." >&2
+        echo "             The reason is written to $BC_LOG_NS/$_row and read by a human later; 'x' is not one." >&2
+        return 2
+      fi
+      _proof=FORCED
+    fi
+    if [ -z "$_proof" ]; then
+      echo "release-ref: REFUSED — nothing here PROVES \`$_row\` is stale (the ref-only proof set is P2 only)." >&2
+      echo "             If you know the holder is gone, say so and it is recorded:" >&2
+      echo "               KIT_CLAIM_FORCE_RELEASE=\"<reason, 10+ chars>\" sh scripts/board-claim.sh release-ref $_row --stale" >&2
+      return 1
+    fi
+    if [ "$_proof" = FORCED ]; then
+      echo "release-ref: ⚠️  FORCED — released with NO proof of staleness, on the stated reason:"
+      echo "             \"$(printf '%s' "$_force" | tr -d '[:cntrl:]' | cut -c1-200)\""
+    else
+      echo "release-ref: proof $_proof — proceeding."
+    fi
+  fi
+
+  # ── ORDER + COMPENSATION, REVERSED (§6a S-5): unlike claim-ref, the FOLLOWING step here (the
+  # tracker-side release lane 2's `board.sh` runs) goes FIRST — this ref is the LOCK and must only be
+  # dropped once that release has actually happened. A `--then` failure leaves the ref UNTOUCHED
+  # (nothing was released yet, so nothing to compensate, and NOTHING IS LOGGED -- M-2); a `--then`
+  # SUCCESS followed by a FAILED ref-delete is a failed compensation and exits non-zero naming the
+  # recovery verb.
+  if [ -n "$_then" ]; then
+    if sh -c "$_then"; then
+      :
+    else
+      _then_rc=$?
+      echo "release-ref: the following (tracker-side) step FAILED (rc=$_then_rc) — $_ref is left UNTOUCHED (nothing was released, nothing was logged)." >&2
+      return 1
+    fi
+  fi
+
+  # THE LOG IS WRITTEN HERE, ONLY NOW (M-2): AFTER any `--then` step has already succeeded, and
+  # BEFORE the delete below -- the "log precedes the delete" invariant `bc_log_release`'s own header
+  # states still holds; what moved is "log precedes a `--then` that might still fail", which is gone.
+  if [ "$_stale" = 1 ]; then
+    if bc_log_release "$_row" "$_proof" "${_force:-stale claim released on proof $_proof}" "$_sha"; then
+      echo "release-ref: logged to $BC_LOG_NS/$_row (proof $_proof)."
+    else
+      echo "release-ref: REFUSED — could not write the release record to $BC_LOG_NS/$_row, so the claim is" >&2
+      echo "             left alone." >&2
+      return 2
+    fi
+  fi
+
+  if KIT_CLAIM_FRONT_DOOR=1 git push "$BC_REMOTE" --force-with-lease="$_ref:$_sha" ":$_ref" >/dev/null 2>&1; then
+    echo "release-ref: OK — $_ref deleted on $BC_REMOTE (was $_sha)"
+    return 0
+  fi
+  if [ -n "$_then" ]; then
+    echo "release-ref: FAILED — the tracker-side step SUCCEEDED but deleting $_ref then failed (the lease" >&2
+    echo "             on $_sha did not hold, or the push was refused). This is a FAILED COMPENSATION:" >&2
+    echo "             the tracker already shows the release; run \`board-claim.sh release-ref $_row\` by" >&2
+    echo "             hand (no --then) to retry just the ref delete." >&2
+    return 1
+  fi
+  if [ "$_stale" = 1 ] && [ -n "${_proof:-}" ]; then
+    if bc_log_release "$_row" "$_proof-FAILED" "delete refused after the record was written: $_ref left in place" "(not deleted)"; then
+      echo "release-ref: a compensating $_proof-FAILED entry was appended to $BC_LOG_NS/$_row." >&2
+    else
+      echo "release-ref: ⚠️  AND the compensating record could not be written either — $BC_LOG_NS/$_row" >&2
+      echo "             still claims a release that did NOT happen. Correct it by hand." >&2
+    fi
+  fi
+  echo "release-ref: FAILED — could not delete $_ref at $BC_REMOTE (the lease on $_sha did not hold, or the push was refused)." >&2
+  return 1
+}
+
 # ── ORACLE MARKER: selftest() and everything below is the non-vacuity oracle region. ─────────────
 selftest() {
   bc_st_fail=0
+
+  # ---- leg (parser): bc_cell/bc_col_index/bc_row_line are GFM-exact on the odd-backslash-run rule
+  # (BOARD-PIPE-ESCAPE T4) — no fixture clone needed, these are pure text functions. Expected values
+  # are hand-derived from the SAME rule backlog-lib.sh's cell()/col_index() implement (GFM spec: a `|`
+  # delimits a cell iff it is NOT preceded by an odd-length run of `\`); the behavioural bc_cell≡cell()
+  # drift gate is a separate task (T6) — this leg only proves bc_cell is correct in isolation.
+  if [ "$(bc_cell '| x | a\|b | y |' 2)" = 'a\|b' ]; then
+    bc_pass "leg parser/bc_cell: a single escaped pipe (odd run) keeps joining the cell"
+  else
+    bc_fail "leg parser/bc_cell: a single escaped pipe wrongly split the cell — got [$(bc_cell '| x | a\|b | y |' 2)]"
+  fi
+  if [ "$(bc_cell '| x | a\\|b | y |' 2)" = 'a\\' ] && [ "$(bc_cell '| x | a\\|b | y |' 3)" = 'b' ]; then
+    bc_pass "leg parser/bc_cell: a doubled backslash (even run) before a pipe is a REAL delimiter"
+  else
+    bc_fail "leg parser/bc_cell: a doubled backslash before a pipe was wrongly treated as escaping the pipe"
+  fi
+  if [ "$(bc_cell '| x | a\\\|b | y |' 2)" = 'a\\\|b' ]; then
+    bc_pass "leg parser/bc_cell: a triple backslash (odd run) before a pipe escapes it again"
+  else
+    bc_fail "leg parser/bc_cell: a triple backslash run was not recognized as escaping the pipe — got [$(bc_cell '| x | a\\\|b | y |' 2)]"
+  fi
+  if [ "$(bc_cell '| x | y\\ |' 2)" = 'y\\' ]; then
+    bc_pass "leg parser/bc_cell: a trailing backslash at the end of the LAST cell is preserved, not dropped"
+  else
+    bc_fail "leg parser/bc_cell: a trailing backslash in the last cell was mishandled — got [$(bc_cell '| x | y\\ |' 2)]"
+  fi
+  if [ "$(bc_cell '| x | y\|z |' 2)" = 'y\|z' ]; then
+    bc_pass "leg parser/bc_cell: an escaped pipe inside the LAST cell does not spill into a phantom column"
+  else
+    bc_fail "leg parser/bc_cell: an escaped pipe in the last cell was mis-split — got [$(bc_cell '| x | y\|z |' 2)]"
+  fi
+  if [ "$(bc_col_index '| Item | A\|B | Owner |' Owner)" = 3 ]; then
+    bc_pass "leg parser/bc_col_index: an escaped pipe in a HEADER cell does not shift a later column's index"
+  else
+    bc_fail "leg parser/bc_col_index: header escaping shifted the resolved index — got [$(bc_col_index '| Item | A\|B | Owner |' Owner)] (want 3)"
+  fi
+  bc_ptmp=$(mktemp -d)
+  printf '## Ready\n| Item | Owner |\n|---|---|\n| \\|early`ROW-9`text | — |\n' > "$bc_ptmp/BACKLOG.md"
+  if [ "$(bc_row_line "$bc_ptmp/BACKLOG.md" Ready ROW-9)" = 4 ]; then
+    bc_pass "leg parser/bc_row_line: an escaped pipe ahead of the id in the Item cell does not hide the row"
+  else
+    bc_fail "leg parser/bc_row_line: a row with an escaped pipe before its id was not found (fail-closed miss) — got [$(bc_row_line "$bc_ptmp/BACKLOG.md" Ready ROW-9)]"
+  fi
+  rm -rf "$bc_ptmp"
+
   bc_base=$(mktemp -d)
   # HERMETIC BY CONSTRUCTION (conformance/selftest-hermetic.sh face (a)): no global/system git config
   # is read, HOME is inside the workdir, and every identity is set locally per clone. Real pushes to a
@@ -1643,29 +1994,17 @@ selftest() {
   bc_run "$bc_base/B" release ROW-MOVED
   bc_expect_rc 0 "leg i/cleanup: the holder releases ROW-MOVED"
 
-  # ---- leg (j): the verb REFUSES to edit BACKLOG.md when it is not the declared backend (S-L5) ---
-  # A hosted-tracker project with a stray BACKLOG.md in the tree: editing it would move a row on a
-  # board nobody reads while the real tracker says nothing. The refusal is OFFLINE and BEFORE the push.
+  # ---- leg (j): RETIRED S-L5 (TBG-SEAM-CONSUMERS-DERIVED T3, F5) — `claim` no longer resolves a
+  # backend to refuse non-md. This used to assert the OPPOSITE (a foreign-backend refusal); it now
+  # proves the retirement directly: a project declaring `jira`, with a real BACKLOG.md present and
+  # the row sitting in Ready, is accepted exactly like an md-declared project. `--dry-run` so it
+  # never mutates the board this fixture needs clean for leg (k).
   bc_fixture_board "$bc_base/B/BACKLOG.md"
   printf '# Fixture project\n\n- **Backlog backend**: Jira (project KIT)\n' > "$bc_base/B/CLAUDE.md"
-  bc_run "$bc_base/B" claim ROW-1 --branch feat/b
-  bc_expect_rc 2 "leg j/foreign-backend: CLAUDE.md declares jira + a stray BACKLOG.md -> rc 2"
-  bc_has "leg j/foreign-backend: the refusal names the DECLARED backend" "declares backlog backend 'jira'"
-  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-1 >/dev/null; then
-    bc_fail "leg j/no-push: a backend-refused claim PUSHED a ref anyway (the refusal must precede the network)"
-  else
-    bc_pass "leg j/no-push: the backend refusal is OFFLINE — nothing was pushed"
-  fi
-  if awk '/^## Ready/{s=1;next} s&&/^## /{exit} s&&/`ROW-1`/{f=1} END{exit !f}' "$bc_base/B/BACKLOG.md"; then
-    bc_pass "leg j/no-edit: \`ROW-1\` is still in Ready — the stray board was NOT edited"
-  else
-    bc_fail "leg j/no-edit: the stray board was edited despite the backend refusal"
-  fi
-  # …and the md declaration that the kit itself carries must NOT refuse (the vacuity guard: without
-  # this leg the refusal above could be unconditional and every assertion would still pass).
-  printf '# Fixture project\n\n- **Backlog backend**: BACKLOG.md (repo-native)\n' > "$bc_base/B/CLAUDE.md"
   bc_run "$bc_base/B" claim ROW-1 --branch feat/b --dry-run
-  bc_expect_rc 0 "leg j/md-backend: the same board with an md declaration is accepted -> rc 0 (dry run)"
+  bc_expect_rc 0 "leg j/backend-retired: a declared jira backend no longer refuses claim -> rc 0 (dry run)"
+  bc_hasnt "leg j/backend-retired: no backend-declaration refusal is printed" "declares backlog backend"
+  rm -f "$bc_base/B/CLAUDE.md"
 
   # ---- leg (k): THE SELF-CLAIM DISCRIMINATION, REACHED AT THE PROBE (reviewer R-9) ---------------
   # The self-claim resume has TWO halves — same claimant AND same branch — and until this leg the
@@ -2362,6 +2701,216 @@ claimed-at: 2026-09-01T00:00:00Z'
   bc_run_badremote "$bc_base/B" status
   bc_expect_rc 2 "leg u/status: status against an unreachable remote -> rc 2, never 'no claims'"
 
+  # ---- leg (v): BOARD-PIPE-ESCAPE T5 — the WRITE path preserves cell bytes byte-for-byte ---------
+  # C1 (§5/§6.3 of the design): `bc_new_row`/the compose-write `awk` used to pass cell-derived text
+  # through `awk -v`, which processes ITS OWN escape grammar on the assigned value — a source `\|`
+  # is written back as a raw `|` (platform-dependently). A Ready row's Item cell carrying an escaped
+  # pipe therefore came out of `claim` with an EXTRA column, corrupting the board and misaligning
+  # every later column-by-name read (including the presence gate's Links read). This leg claims three
+  # Ready rows whose Item cells carry `\|`, `\\|` and `\\\|`, and asserts the In-Progress Item cell is
+  # BYTE-EQUAL to the original and the written row's column count matches the header's.
+  bc_vboard() {
+    cat > "$1" <<'V_BOARD_EOF'
+# Fixture — Backlog
+
+## Ready
+
+| Item | Intent (why) | Acceptance criteria | Size | Risk | Type | Owner | Links | Success metric / hypothesis |
+|------|--------------|---------------------|------|------|------|-------|-------|-----------------------------|
+| `ROW-V1` — has a\|b escaped pipe | because | it is claimed | S | low | feature | agent | — | ok |
+| `ROW-V2` — has a\\|b doubled backslash | because | it is claimed | S | low | feature | agent | — | ok |
+| `ROW-V3` — has a\\\|b tripled backslash | because | it is claimed | S | low | feature | agent | — | ok |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+V_BOARD_EOF
+  }
+  bc_mkclone V "Session V" v@example.com
+  bc_vboard "$bc_base/V/BACKLOG.md"
+  for bc_vrow in ROW-V1 ROW-V2 ROW-V3; do
+    bc_vrline=$(bc_row_line "$bc_base/V/BACKLOG.md" Ready "$bc_vrow")
+    bc_vrawrow=$(awk -v n="$bc_vrline" 'NR==n' "$bc_base/V/BACKLOG.md")
+    bc_vbefore=$(bc_cell "$bc_vrawrow" 1)
+    # the reference column count is the IN PROGRESS header's (the table the row is written INTO —
+    # `bc_new_row` composes by that header's own columns), not the Ready table's.
+    bc_vipbounds=$(bc_section_bounds "$bc_base/V/BACKLOG.md" "In Progress")
+    bc_vhdrline=${bc_vipbounds% *}
+    bc_vhdrtxt=$(awk -v n="$bc_vhdrline" 'NR==n' "$bc_base/V/BACKLOG.md")
+    bc_vhdrn=$(bc_v_ncols "$bc_vhdrtxt")
+    bc_run "$bc_base/V" claim "$bc_vrow" --branch "feat/$bc_vrow"
+    bc_vip_line=$(bc_row_line "$bc_base/V/BACKLOG.md" "In Progress" "$bc_vrow")
+    bc_vip_raw=$(awk -v n="$bc_vip_line" 'NR==n' "$bc_base/V/BACKLOG.md")
+    bc_vafter=$(bc_cell "$bc_vip_raw" 1)
+    bc_vafter_n=$(bc_v_ncols "$bc_vip_raw")
+    if [ "$bc_vbefore" = "$bc_vafter" ]; then
+      bc_pass "leg v/$bc_vrow: the In-Progress Item cell is BYTE-EQUAL to the original Ready Item cell"
+    else
+      bc_fail "leg v/$bc_vrow: byte mismatch — before=[$bc_vbefore] after=[$bc_vafter]"
+    fi
+    if [ "$bc_vafter_n" = "$bc_vhdrn" ]; then
+      bc_pass "leg v/$bc_vrow: the written In-Progress row's column count equals the header's ($bc_vhdrn)"
+    else
+      bc_fail "leg v/$bc_vrow: the written row has $bc_vafter_n columns, not the header's $bc_vhdrn — row=[$bc_vip_raw]"
+    fi
+    # release immediately — MAX_WIP is 2, and three rows are claimed on the SAME clone in this loop.
+    bc_run "$bc_base/V" release "$bc_vrow"
+  done
+
+  # ---- legs (w)-(z2): claim-ref / release-ref (T4, §6a S-5) --------------------------------------
+  # bc_mk_race_script <out-file> <ref> — writes a small script that, when run, pushes a CHILD commit
+  # onto <ref> (a genuine fast-forward, no lease needed) using clone R's own git. Used to force a
+  # REAL lease mismatch between claim-ref's/release-ref's own push and its later compensating
+  # delete — a stand-in for a real concurrent update landing in that narrow window, not a simulation
+  # of the lease check itself (the delete below is the SAME --force-with-lease call the verb makes).
+  bc_mk_race_script() {
+    cat > "$1" <<RACE_EOF
+#!/bin/sh
+set -e
+git -C "$bc_base/R" fetch -q "$bc_remote_dir" "$2:refs/kit/race-parent" || exit 1
+_zp=\$(git -C "$bc_base/R" rev-parse refs/kit/race-parent)
+_zt=\$(git -C "$bc_base/R" mktree </dev/null)
+_zc=\$(printf 'racing child\n' | git -C "$bc_base/R" commit-tree "\$_zt" -p "\$_zp")
+git -C "$bc_base/R" push -q "$bc_remote_dir" "\$_zc:$2"
+git -C "$bc_base/R" update-ref -d refs/kit/race-parent >/dev/null 2>&1 || true
+RACE_EOF
+  }
+
+  bc_mkclone R "Session R" r@example.com
+
+  # leg (w): the basics — claim-ref never touches a board; the ref is real; a second claimant is
+  # refused (no self-resume discrimination); the holder's own release-ref deletes the ref.
+  bc_run "$bc_base/R" claim-ref ROW-CR1 --branch feat/cr1
+  bc_expect_rc 0 "leg w/claim-ref: claim-ref on a fresh row -> rc 0"
+  bc_has "leg w/claim-ref: the OK line names the ref" "refs/claims/ROW-CR1"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR1 >/dev/null; then
+    bc_pass "leg w/claim-ref: refs/claims/ROW-CR1 EXISTS on the bare remote (a real push)"
+  else
+    bc_fail "leg w/claim-ref: refs/claims/ROW-CR1 absent from the remote after a claimed rc 0"
+  fi
+  if awk '/^## In Progress/{s=1;next} s&&/^## /{exit} s&&/ROW-CR1/{f=1} END{exit !f}' "$bc_base/R/BACKLOG.md"; then
+    bc_fail "leg w/no-board: claim-ref edited the board — it must never read or write one"
+  else
+    bc_pass "leg w/no-board: claim-ref never touches a board"
+  fi
+  bc_run "$bc_base/R" claim-ref ROW-CR1 --branch feat/other
+  bc_expect_rc 3 "leg w/second-claimant: claim-ref on an already-claimed row -> rc 3"
+  bc_has "leg w/second-claimant: the refusal names the holder" "Session R <r@example.com>"
+  bc_run "$bc_base/R" release-ref ROW-CR1
+  bc_expect_rc 0 "leg w/release-ref: the holder releases -> rc 0"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR1 >/dev/null; then
+    bc_fail "leg w/release-ref-deleted: refs/claims/ROW-CR1 survived release-ref"
+  else
+    bc_pass "leg w/release-ref-deleted: refs/claims/ROW-CR1 is GONE from the remote"
+  fi
+
+  # leg (x): release-ref's holder check and its narrower (P2-only) --stale proof set + the human dial.
+  bc_run "$bc_base/R" claim-ref ROW-CR2 --branch feat/cr2
+  bc_expect_rc 0 "leg x/setup: R claims ROW-CR2 via claim-ref"
+  bc_mkclone S "Session S" s@example.com
+  bc_run "$bc_base/S" release-ref ROW-CR2
+  bc_expect_rc 1 "leg x/non-holder: S releases R's ref without --stale -> rc 1"
+  bc_has "leg x/non-holder: the refusal names the holder" "Session R <r@example.com>"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR2 >/dev/null; then
+    bc_pass "leg x/non-holder-noop: the refused release-ref did NOT delete the ref"
+  else
+    bc_fail "leg x/non-holder-noop: the refused release-ref deleted the ref anyway"
+  fi
+  bc_run "$bc_base/S" release-ref ROW-CR2 --stale
+  bc_expect_rc 1 "leg x/stale-no-proof: no P2 proof and no force -> rc 1 (the ref-only proof set is P2 only)"
+  bc_run_force "$bc_base/S" 'fixture teardown for claim-ref legs' release-ref ROW-CR2 --stale
+  bc_expect_rc 0 "leg x/forced: the human dial releases the same ref -> rc 0"
+  bc_has "leg x/forced: the forced release names the holder it removed" "Session R <r@example.com>"
+
+  # leg (y): claim-ref --then, both directions — a succeeding step leaves the claim; a failing step
+  # is COMPENSATED (the just-pushed ref is deleted) and the verb exits non-zero.
+  bc_run "$bc_base/R" claim-ref ROW-CR3 --branch feat/cr3 --then "true"
+  bc_expect_rc 0 "leg y/then-ok: claim-ref --then a succeeding step -> rc 0"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR3 >/dev/null; then
+    bc_pass "leg y/then-ok: the ref survives a successful --then step"
+  else
+    bc_fail "leg y/then-ok: the ref vanished despite --then succeeding"
+  fi
+  bc_run "$bc_base/R" release-ref ROW-CR3
+  bc_expect_rc 0 "leg y/then-ok-cleanup: release the row"
+  bc_run "$bc_base/R" claim-ref ROW-CR4 --branch feat/cr4 --then "false"
+  bc_expect_rc 1 "leg y/then-fail: claim-ref --then a FAILING step -> rc 1 (compensated)"
+  bc_has "leg y/then-fail: the output says it compensated" "compensated"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR4 >/dev/null; then
+    bc_fail "leg y/then-fail: the ref SURVIVED a failed --then step — compensation did not run"
+  else
+    bc_pass "leg y/then-fail: the ref was deleted (compensated) after --then failed"
+  fi
+
+  # leg (z): a FAILED COMPENSATION on claim-ref — the --then step (which also fails, forcing
+  # compensation) first races a REAL child commit onto the same ref, so the lease claim-ref captured
+  # from its OWN push no longer matches by the time it tries to delete. The compensating delete must
+  # then fail loudly, name release-ref as the recovery verb, and leave the (now-raced) ref in place —
+  # never silently drop the caller's problem.
+  bc_mk_race_script "$bc_base/z-race.sh" refs/claims/ROW-CR5
+  bc_run "$bc_base/R" claim-ref ROW-CR5 --branch feat/cr5 --then "sh $bc_base/z-race.sh && exit 1"
+  bc_expect_rc 1 "leg z/failed-compensation: --then fails after racing the ref -> rc 1"
+  bc_has "leg z/failed-compensation: the output NAMES the recovery verb" "release-ref ROW-CR5"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR5 >/dev/null; then
+    bc_pass "leg z/failed-compensation: the ref (now the racing child) is STILL there — the compensation really failed"
+  else
+    bc_fail "leg z/failed-compensation: the ref vanished despite the compensating delete supposedly failing"
+  fi
+  git --git-dir="$bc_remote_dir" update-ref -d refs/claims/ROW-CR5 >/dev/null 2>&1 || true
+
+  # leg (z2): a FAILED COMPENSATION on release-ref — the reverse shape. `--then` (standing in for the
+  # caller's tracker-side release) SUCCEEDS, but the ref it races out from under release-ref means the
+  # compensating delete (the actual ref release) then fails; release-ref must exit non-zero naming
+  # itself as the recovery verb, and the ref must SURVIVE.
+  bc_run "$bc_base/R" claim-ref ROW-CR6 --branch feat/cr6
+  bc_expect_rc 0 "leg z2/setup: claim ROW-CR6 via claim-ref"
+  bc_mk_race_script "$bc_base/z2-race.sh" refs/claims/ROW-CR6
+  bc_run "$bc_base/R" release-ref ROW-CR6 --then "sh $bc_base/z2-race.sh"
+  bc_expect_rc 1 "leg z2/failed-compensation: --then succeeds but the delete then fails -> rc 1"
+  bc_has "leg z2/failed-compensation: the output NAMES release-ref as the recovery verb" "release-ref ROW-CR6"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR6 >/dev/null; then
+    bc_pass "leg z2/failed-compensation: the ref (now the racing child) SURVIVES — nothing silently dropped"
+  else
+    bc_fail "leg z2/failed-compensation: the ref vanished despite the delete supposedly failing"
+  fi
+  git --git-dir="$bc_remote_dir" update-ref -d refs/claims/ROW-CR6 >/dev/null 2>&1 || true
+
+  # leg (z3), M-2 (security fix round): `release-ref --stale --then false`, forced. Before the fix the
+  # release record was written BEFORE `--then` ran, so a `--then` failure still left
+  # `refs/claims-log/ROW-CR7` asserting a release that never happened, with no `-FAILED` compensation
+  # (there was nothing TO compensate — the log write itself was the premature act). Now: the ref
+  # SURVIVES (R still holds it) and the log carries NO entry at all for this row.
+  bc_run "$bc_base/R" claim-ref ROW-CR7 --branch feat/cr7
+  bc_expect_rc 0 "leg z3/setup: R claims ROW-CR7 via claim-ref"
+  bc_run_force "$bc_base/S" 'fixture leg z3 — proving the log no longer precedes a failing --then' release-ref ROW-CR7 --stale --then false
+  bc_expect_rc 1 "leg z3/then-fails-before-log: release-ref --stale --then false, forced -> rc 1"
+  bc_has "leg z3/then-fails-before-log: the refusal says nothing was logged" "nothing was logged"
+  if git --git-dir="$bc_remote_dir" rev-parse --verify -q refs/claims/ROW-CR7 >/dev/null; then
+    bc_pass "leg z3/then-fails-before-log: the ref SURVIVES — release-ref never reached the delete"
+  else
+    bc_fail "leg z3/then-fails-before-log: the ref vanished despite --then having failed"
+  fi
+  _z3log=$(
+    _ll_gd2=$(bc_iso_dir) || true
+    if [ -n "${_ll_gd2:-}" ] && git -C "$_ll_gd2" fetch --no-tags --depth=1 "$bc_remote_dir" "$BC_LOG_NS/ROW-CR7:refs/scratch" >/dev/null 2>&1; then
+      git -C "$_ll_gd2" show refs/scratch:LOG 2>/dev/null
+    fi
+    [ -n "${_ll_gd2:-}" ] && rm -rf "$_ll_gd2"
+  )
+  if [ -z "$_z3log" ]; then
+    bc_pass "leg z3/then-fails-before-log: refs/claims-log/ROW-CR7 carries NO entry (M-2 — the log never preceded the failing --then)"
+  else
+    bc_fail "leg z3/then-fails-before-log: a log entry exists for ROW-CR7 despite --then having failed first; entry=[$_z3log]"
+  fi
+  bc_run "$bc_base/R" release-ref ROW-CR7
+  bc_expect_rc 0 "leg z3/cleanup: R releases ROW-CR7"
+
   if [ "$bc_st_fail" -ne 0 ]; then
     echo "board-claim --selftest: FAIL" >&2
     return 1
@@ -2373,6 +2922,25 @@ claimed-at: 2026-09-01T00:00:00Z'
 # --- selftest-only helpers, BELOW the marker so the mutation harness cannot neuter the oracle ----
 bc_pass() { echo "selftest PASS: $1"; }
 bc_fail() { echo "selftest FAIL: $1"; bc_st_fail=1; }
+# bc_v_ncols <row-line> -> the number of columns a GFM-exact split (SAME odd-backslash-run rule as
+# bc_cell/bc_col_index) produces for that raw row line. Test-only: leg (v) uses it to prove the
+# WRITE path never changes a row's column count (BOARD-PIPE-ESCAPE T5, §6.1 leg 5).
+bc_v_ncols() {
+  printf '%s' "$1" | awk -F'|' '
+    {
+      n=0; s=""
+      for (j=2; j<=NF; j++) {
+        s = (s=="") ? $j : s "|" $j
+        t=s; run=0
+        while ((L=length(t)) > 0 && substr(t,L,1)=="\\") { run++; t=substr(t,1,L-1) }
+        if (run % 2 == 1) continue
+        if (j==NF && s ~ /^[ \t]*$/) break
+        n++
+        s=""
+      }
+      print n
+    }'
+}
 
 # bc_mkclone <name> <user.name> <user.email> — a clone of the bare remote with a fixture board.
 bc_mkclone() {
@@ -2540,11 +3108,13 @@ BC_GUARD=$(dirname -- "$BC_SELF")/runaway-guard.sh
 bc_cmd="${1:-}"
 [ $# -gt 0 ] && shift || true
 case "$bc_cmd" in
-  claim)     if do_claim   "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
-  release)   if do_release "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
-  check)     if do_check   "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
-  status)    if do_status  "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
-  --selftest) if selftest;       then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  claim)       if do_claim       "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  release)     if do_release     "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  check)       if do_check       "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  status)      if do_status      "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  claim-ref)   if do_claim_ref   "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  release-ref) if do_release_ref "$@"; then bc_rc_main=0; else bc_rc_main=$?; fi ;;
+  --selftest)  if selftest;            then bc_rc_main=0; else bc_rc_main=$?; fi ;;
   -h|--help) bc_usage; bc_rc_main=2 ;;
   *)         bc_usage; bc_rc_main=2 ;;
 esac

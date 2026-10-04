@@ -1,0 +1,6 @@
+{"maxResults":50,"startAt":0,"total":5,"isLast":true,"values":[
+{"required":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10200},"name":"Size","operations":["set"],"allowedValues":[{"value":"S","id":"10300"},{"value":"M","id":"10301"}],"fieldId":"customfield_10200"},
+{"required":false,"schema":{"type":"string","system":"description"},"name":"Description","operations":["set"],"fieldId":"description"},
+{"required":false,"schema":{"type":"array","items":"string","system":"labels"},"name":"Labels","operations":["add","set","remove"],"fieldId":"labels"},
+{"required":true,"schema":{"type":"string","system":"summary"},"name":"Summary","operations":["set"],"fieldId":"summary"},
+{"required":false,"schema":{"type":"any","custom":"com.pyxis.greenhopper.jira:gh-epic-link","customId":10100},"name":"Epic Link","operations":["set"],"fieldId":"customfield_10100"}]}

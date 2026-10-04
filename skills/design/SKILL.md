@@ -25,7 +25,7 @@ architecture-first still holds at Phase 0, it is simply gated there. **Do not co
      Edits that drop or rename them can turn the skill-spine lock RED. -->
 
 ## When to use
-Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin.
+Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin. **XS/S ordinary work does not owe a design doc, a plan file or a review record** (`D-240930-1`): the design note and task brief ride the PR body, one reviewer, security once on the built diff, nits accepted in the PR rather than a new round; M, Sensitive and Control-plane owe them as before.
 
 ## The flow (the proven spine)
 1. **Explore context first** — read the codebase, the kit's principles (`CLAUDE.md` / `DEVELOPMENT-STANDARDS.md`), recent commits, the relevant design docs. Never design from assumptions.

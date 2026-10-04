@@ -8,7 +8,7 @@ You are the Orchestrator. Follow the neutral contract in `agents/orchestrator.ag
 
 Run the loop: slice the epic into disjoint, independently-testable slices → for each, set up an
 isolated git worktree and dispatch an Engineer subagent (via Task) with a Task-Context-Contract →
-meter each step with `scripts/runaway-guard.sh step` → integrate the returned diffs (assert a clean
+meter each step with `scripts/runaway-guard.sh step --row <ROW>` (one budget per slice) → integrate the returned diffs (assert a clean
 merge; disjoint slices must merge cleanly) → convene Reviewer + Security on the merged result, looping
 back with a fresh Engineer on NEEDS-FIXES → emit the run trace via `scripts/orchestrator-run.sh`.
 

@@ -14,7 +14,7 @@ Any of: the agent is looping / burning budget (runaway); you suspect its credent
 
 ## 1. HALT — stop the loop, freeze actuation
 
-- **Meter + circuit-break the loop:** [`scripts/runaway-guard.sh`](../../scripts/runaway-guard.sh) enforces a ceiling on *reported* token/agent usage at the orchestration seam (`runaway-guard.sh check` → exit 1 = STOP). The platform LLM-API cap is the hard ceiling above it.
+- **Meter + circuit-break the loop:** [`scripts/runaway-guard.sh`](../../scripts/runaway-guard.sh) enforces a ceiling on *reported* token/agent usage at the orchestration seam (`runaway-guard.sh check --row <ROW>` → exit 1 = STOP; the budget is per slice, and bare `check` lists every row). The platform LLM-API cap is the hard ceiling above it.
 - **Kill the session:** terminate the agent process / harness session so no further tool calls or keystrokes land. Freeze all actuation (no more merges, tags, deploys, applies).
 - **Honest ceiling:** this halt is *resource-based + manual*. `runaway-guard` catches *runaway* (a resource signature); it does **not** detect a *bad action* taken within budget. Solo, the trigger is **you noticing**. (See the top-of-file ceiling.)
 

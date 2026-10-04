@@ -1,0 +1,1 @@
+[{"id":"summary","name":"Summary","custom":false,"schema":{"type":"string","system":"summary"}},{"id":"parent","name":"Parent","custom":false,"schema":{"type":"issuelink","system":"parent"}}]

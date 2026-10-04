@@ -282,27 +282,25 @@ row_bears_pr() {
 # edited control-plane state on a push would cross the propose/ratify line).
 #
 # inprogress_hints <board> — print the backticked identifier of each row sitting In Progress, one per
-# line. Uses the SAME parser sequence as row_bears_pr (section_rows -> skip header row 1 -> skip
-# separators -> cell), so the two cannot drift over what a row is.
+# line. TBG-SEAM-MD-ARM T-WAVE1B: routed through `seam_rows_in_state in-progress` — a pure state-list
+# read, which IS tracker-portable (a tracker lists its In-Progress rows the same way), unlike
+# row_bears_pr's PR-number/branch inverse search (left on the shared primitives — no tracker
+# analogue, §4.2's pr-bound note: a tracker answers pr-bound from the Kit-Row trailer, never a board
+# search). SEAM_ROOT is derived from the board path's directory — every call site here passes
+# "$dir/BACKLOG.md", so dirname($1) is exactly the project root the seam is configured with
+# elsewhere in this file (mirrors check_pr's own `SEAM_ROOT="$_dir"`).
 # ⚠️ A BOARD CELL IS UNTRUSTED TEXT AND A TERMINAL IS A SINK. Every identifier is passed through
 # `tr -cd '[:print:]'` (control/escape bytes stripped — a cell carrying an ANSI sequence must not be
 # able to repaint the operator's terminal) and emitted with `printf '%s\n'` as an ARGUMENT, never as
 # a format string. The board is not attacker-controlled in the ordinary case; it is text of unbounded
-# provenance in every other one.
+# provenance in every other one. seam_rows_in_state's own extraction (backtick_id) is byte-identical
+# to the case statement this replaced, so this filter is still the only behavioural change site.
 inprogress_hints() {
+  SEAM_ROOT=$(dirname "$1")
   _ih_f=$(mktemp)
-  section_rows "$1" "In Progress" > "$_ih_f" 2>/dev/null || :
+  seam_rows_in_state in-progress > "$_ih_f" 2>/dev/null || :
   if [ -s "$_ih_f" ]; then
-    _ih_n=0
-    while IFS= read -r _ih_row; do
-      _ih_n=$((_ih_n + 1))
-      [ "$_ih_n" -eq 1 ] && continue          # row 1 is the section header, not data
-      is_sep_row "$_ih_row" && continue
-      _ih_c=$(cell "$_ih_row" 1)
-      case "$_ih_c" in
-        *'`'*) _ih_id=${_ih_c#*\`}; _ih_id=${_ih_id%%\`*} ;;
-        *) continue ;;                        # no backticked identifier -> nothing quotable to hint
-      esac
+    while IFS= read -r _ih_id; do
       _ih_id=$(printf '%s' "$_ih_id" | tr -cd '[:print:]')
       [ -n "$_ih_id" ] || continue
       printf '%s\n' "$_ih_id"
@@ -380,6 +378,91 @@ check_claims() {
   return "$_cc_rc"
 }
 
+# bp_tracker_presence <head-sha> -> F-1's TRACKER ARM of check_pr's gated/non-md branch (design §3e).
+# The Kit-Row trailer on $1 (git's own `valueonly` idiom, mirroring loop-state.sh's decl_field —
+# NEVER a grep, which a squash-merge's trailing Co-authored-by line would demote to prose) names
+# the ONE row graded — never taken from the record's own `requested` line (a record proves only
+# what it read, never which row THIS head is about; seam_row_state's own requested==caller-id check
+# enforces that a second time). $SEAM_ROOT already equals the project dir this head's commit lives
+# in (check_pr sets it before calling — mirrors loop-state.sh's LS_REPO/LS_BOARDROOT sharing one
+# value). Sentences carry only the row id and closed-vocabulary tokens (§4.1/§4.2), never record text.
+# rc: 0 bound, In Progress/In Review, claimed (F-1) · 1 the healthy WAIT (absent/malformed trailer,
+# wrong state, claimed=no) · 2 the tracker record does not bind this row for this head — UNVERIFIED.
+# _btp_valid_head <head> -> rc0 iff a well-formed 40- or 64-hex sha (B3: aligned with the reader's
+# and the seam's own tr_valid_head/40|64 grammar) names a real commit in $SEAM_ROOT. Extracted so
+# bp_tracker_presence stays under the line ceiling. fix1 Q2 (injection): refuse the grammar BEFORE
+# any git call ever reads the value positionally (`--output=<p>` WRITES a file; `--help` mis-execs)
+# — spelled-out hex class, no bracket-range locale surprise. Sets _BTP_HEAD_ERR to `grammar` or
+# `exists` (B3) so the caller can name the right cause instead of one merged sentence.
+_btp_valid_head() {
+  _BTP_HEAD_ERR=grammar
+  _btp_l=${#1}
+  [ "$_btp_l" -eq 40 ] || [ "$_btp_l" -eq 64 ] || return 1
+  case "$1" in *[!0123456789abcdef]*) return 1 ;; esac
+  _BTP_HEAD_ERR=exists
+  git -C "$SEAM_ROOT" cat-file -e "$1^{commit}" 2>/dev/null || return 1
+  # WB-FIX-2 item 3: cat-file -e alone can resolve a 64-hex STRING AS A REF NAME in a SHA-1 repo (no
+  # SHA-1 object can BE 64 hex chars, so git falls back to a ref lookup) — pin that the value
+  # self-resolves to ITSELF, never to some other commit a same-named branch happens to point at.
+  [ "$(git -C "$SEAM_ROOT" rev-parse --verify --quiet "$1^{commit}" 2>/dev/null)" = "$1" ]
+}
+
+# _btp_seam_call <fn> <args...> -> sets _BTP_VAL to <fn>'s stdout, returns its rc. fix1 Q3: PLAIN
+# (no `$( … )` subshell — mirrors inprogress_hints' :301 idiom) so the T89s parse-memo survives
+# between bp_tracker_presence's two seam calls; a subshell drops it, forcing a second full parse.
+_btp_seam_call() {
+  _bsc_f=$(mktemp)
+  if "$@" >"$_bsc_f" 2>/dev/null; then _bsc_rc=0; else _bsc_rc=$?; fi
+  _BTP_VAL=$(cat "$_bsc_f"); rm -f "$_bsc_f"
+  return "$_bsc_rc"
+}
+
+bp_tracker_presence() {
+  _btp_head="$1"
+  _btp_valid_head "$_btp_head" || {
+    if [ "$_BTP_HEAD_ERR" = exists ]; then
+      echo "FAIL: backlog-presence — the PR head is not a well-formed, existing commit sha (well-formed hex, but names no commit in this repo); refusing (gated change-class, tracker backend)."
+    else
+      echo "FAIL: backlog-presence — the PR head is not a well-formed, existing commit sha (not 40 or 64 lowercase hex); refusing (gated change-class, tracker backend)."
+    fi
+    return 2
+  }
+  _btp_row=$(git -C "$SEAM_ROOT" log -1 --format="%(trailers:key=Kit-Row,valueonly)" "$_btp_head" 2>/dev/null)
+  # `grep -c .` rc's 1 on zero matches (an absent trailer) — `|| true` so THAT is never confused
+  # with a script bug under set -e (mirrors loop-state.sh's decl_count, same reason).
+  _btp_n=$(printf '%s\n' "$_btp_row" | grep -c . || true)
+  if [ "$_btp_n" -eq 0 ]; then
+    echo "FAIL: backlog-presence — $_btp_head carries no parseable 'Kit-Row' trailer (gated change-class, tracker backend)."
+    return 1
+  fi
+  # fix1 Q4: a SECOND trailer is a distinct defect from a missing one.
+  [ "$_btp_n" -eq 1 ] \
+    || { echo "FAIL: backlog-presence — $_btp_head must carry exactly one 'Kit-Row' trailer, not $_btp_n (gated change-class, tracker backend)."; return 1; }
+  row_id_ok "$_btp_row" \
+    || { echo "FAIL: backlog-presence — Kit-Row '$_btp_row' is not a well-formed row id ([A-Z0-9][A-Z0-9-]*)."; return 1; }
+  SEAM_HEAD="$_btp_head"
+  _btp_seam_call seam_row_state "$_btp_row" \
+    || { echo "FAIL: backlog-presence — the tracker record does not bind row \`$_btp_row\` for this head — UNVERIFIED."; return 2; }
+  _btp_state="$_BTP_VAL"
+  case "$_btp_state" in
+    in-progress|in-review) ;;
+    *) echo "FAIL: backlog-presence — row \`$_btp_row\` sits '$_btp_state' on the tracker, not In Progress/In Review (gated change-class)."; return 1 ;;
+  esac
+  _btp_seam_call seam_row_flag "$_btp_row" claimed \
+    || { echo "FAIL: backlog-presence — the tracker record carries no 'claimed' flag for row \`$_btp_row\` — UNVERIFIED."; return 2; }
+  _btp_claimed="$_BTP_VAL"
+  # fix1 Q4: `n/a` (never real for `claimed`; only reachable if mis-wired onto e.g. `pr-bound`)
+  # gets its own sentence — "board claim" is the wrong remedy for it.
+  [ "$_btp_claimed" != n/a ] \
+    || { echo "FAIL: backlog-presence — row \`$_btp_row\` carries no 'claimed' answer on the tracker (n/a) — UNVERIFIED."; return 2; }
+  if [ "$_btp_claimed" != yes ]; then
+    echo "FAIL: backlog-presence — row \`$_btp_row\` is not claimed; remedy: sparkwright board claim $_btp_row"
+    return 1
+  fi
+  echo "OK: backlog-presence — row \`$_btp_row\` is claimed and $_btp_state on the tracker"
+  return 0
+}
+
 # check_pr <project-dir> <pr-number> <changed-file> -> the REAL run. Emits a verdict STRING (N/A / OK /
 # FAIL) and returns a PARTITIONED rc (B5 rider BACKLOG-PRESENCE-WAITING-PARTITION):
 #   rc 0 = pass / N-A · rc 1 = the genuine no-row WAIT (a healthy stage: the poster renders it yellow)
@@ -395,7 +478,10 @@ check_claims() {
 # without it a declared-md board that is absent would abort under `set -eu`; with it the absence becomes
 # the honest FAIL this dark-gate detector exists to raise.
 check_pr() {
-  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"; _claims="${5:-0}"; _basebl="${6:-}"
+  _dir="$1"; _pr="$2"; _cf="$3"; _br="${4:-}"; _claims="${5:-0}"; _basebl="${6:-}"; _head="${7:-}"
+  # TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1: the base checkout + the live required-contexts file,
+  # BY ARGUMENT (never the environment) — see bp_tracker_delegated below.
+  _bd="${8:-}"; _lc="${9:-}"
   # ── ORDINARY CHANGE-CLASS: PRESENCE IS N/A, A CLAIM IS NOT (reviewer R-6) ──────────────────────
   # As first built the claims arm sat behind BOTH this gate-class return AND the presence pass below,
   # so an ORDINARY PR — a docs tweak, a README fix — never reached it. That is precisely the shape the
@@ -407,7 +493,8 @@ check_pr() {
   if [ "$(gate_class "$_cf")" != gated ]; then
     echo "N/A: ordinary change-class; board row not required"
     [ "$_claims" = 1 ] || return 0
-    _otok=$(resolve_backend "$_dir")
+    SEAM_ROOT="$_dir"
+    _otok=$(seam_backend)
     [ "$_otok" = md ] || return 0
     _obl="$_dir/BACKLOG.md"
     [ -f "$_obl" ] || return 0
@@ -415,7 +502,13 @@ check_pr() {
     [ -n "$(inprogress_hints "$_obl")" ] || return 0
     if check_claims "$_dir" "$_br"; then return 0; else return $?; fi
   fi
-  _tok=$(resolve_backend "$_dir")
+  SEAM_ROOT="$_dir"
+  # TBG-READER-FLAGS-LIST T8 (design §3e, H-4): the ONE site, mirroring loop-state.sh's run_gate —
+  # backlog-lib.sh's tracker arm never reads ${KIT_TRACKER_RECORD} itself, only $SEAM_RECORD, set
+  # once, here. An unset KIT_TRACKER_RECORD leaves SEAM_RECORD empty, so seam_tracker_record_set
+  # below stays false and every byte of today's non-md path (through not_enforced_notice) is unchanged.
+  SEAM_RECORD="${KIT_TRACKER_RECORD:-}"
+  _tok=$(seam_backend)
   [ -n "$_tok" ] || { echo "N/A: no backlog backend declared"; return 0; }
   # A fat-fingered backend (`markdow`, `TBD`) is signalled `unrecognized:<token>` by resolve_backend so
   # it does NOT fail open. FAIL on it (never collapse into the generic non-md N/A below) — this is the
@@ -435,13 +528,30 @@ check_pr() {
   # the sentence relayed, because a push-time speed bump is not where a tracker adopter should
   # learn the kit has no seam.
   if [ "$_tok" != md ]; then
+    # TBG-READER-FLAGS-LIST T8 (design §3e/§8a "Twins"): a SET SEAM_RECORD switches to the tracker
+    # arm — bind (rc0) or refuse per F-1 (rc1/rc2), NEVER waivable, NEVER falling through to
+    # not_enforced_notice below (H-4: an UNSET SEAM_RECORD keeps this branch byte-identical to before).
+    if seam_tracker_record_set; then
+      bp_tracker_presence "$_head"; return $?
+    fi
+    # TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1 (design §2b, RD-2): the step-aside is checked ONLY
+    # HERE, strictly AFTER the seam_tracker_record_set branch above has already returned — the
+    # trusted job (which sets SEAM_RECORD) is never itself excused by its own required-context
+    # wiring (no self-delegation). bp_tracker_delegated reads ONLY $_bd (--base-dir), never $_dir
+    # (the head's --dir, attacker-writable on pull_request) — RD-1/L3/L7's load-bearing negative.
+    if bp_tracker_delegated "$_bd" "$_lc"; then
+      tracker_delegated_notice
+      return 0
+    fi
     _bp_ne=0
     # $0-RELATIVE, never cwd-relative (security S-L5). This script `cd`s to the repo root at :36 so
     # the bare path happened to work today, but the validator's location is a property of where THIS
     # file lives, not of where the process happens to stand — and a caller that changes directory
     # (or a future edit that drops the cd) would silently read "validator absent" and treat every
     # waiver as missing. backlog-current.sh already resolved it this way; now both do.
-    not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" || _bp_ne=$?
+    not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" \
+      "$(tracker_delegated_cure)" \
+      || _bp_ne=$?
     return "$_bp_ne"
   fi
   _bl="$_dir/BACKLOG.md"
@@ -818,10 +928,13 @@ NODONE_EOF
     assert_msg "NOT ENFORCED: backend '$_st_tok' — board-bound governance is not verified on this tree" 3 \
       "cp/non-md-$_st_tok: $_st_tok backend -> NOT ENFORCED, rc 3 (red), never a silent N/A" "$d" 280 "$cfg"
   done
-  # …and the verdict must carry the CURE, or it is a red with no ladder.
+  # …and the verdict must carry the CURE, or it is a red with no ladder. TRACKER-TRUSTED-JOB-
+  # REQUIRED-CONTEXT T1: the stale "adopt TRACKER-BACKED-GOVERNANCE when it ships" (it has shipped)
+  # is replaced by the real cure — bind the trusted job as a required context — alongside the two
+  # cures that were always there (move the board to BACKLOG.md; ratify a waiver).
   d="$base/cp_nonmd_jira"
-  assert_msg "Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver" 3 \
-    "cp/non-md-cure: the NOT ENFORCED verdict names both cures" "$d" 280 "$cfg"
+  assert_msg "Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --apply — or move the board to BACKLOG.md, or ratify a board-governance waiver" 3 \
+    "cp/non-md-cure: the NOT ENFORCED verdict names the real cure (bind tracker-board-gates), plus the other two" "$d" 280 "$cfg"
 
   # gated + a non-md backend + a RATIFIED, filled, unexpired board-governance waiver -> rc 0, and
   # the notice still says NOT ENFORCED (the exception is never invisible; §3.5a).
@@ -844,6 +957,122 @@ NODONE_EOF
     > "$d/WAIVER-REGISTER.md"
   assert_msg "NOT ENFORCED: backend 'jira' — board-bound governance is not verified on this tree" 3 \
     "cp/non-md-stamp: the UNFILLED incept stamp -> still rc 3 (a stamp is not a ratification)" "$d" 280 "$cfg"
+
+  # ===== T1 (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT, design §2b + amendment A1 RD-1 arm (a)/RD-2/RD-3)
+  # bp_tracker_delegated wiring: the step-aside fires ONLY from the BASE, verified LIVE, and ONLY on
+  # the record-unset path. =========================================================================
+  _btb="$base/t1_base"; _proj_tracker_base "$_btb"
+  _btlive="$base/t1_live.txt"; printf 'ci\ntracker-board-gates\nbacklog-presence\n' > "$_btlive"
+
+  # (a) delegated: base tracker + valid conf + live-contexts lists the context -> rc 0, the delegated N/A.
+  d="$base/t1_delegated"; _proj_backend "$d" jira
+  assert_msg_ctx "N/A: board governance is delegated to the required context 'tracker-board-gates' (live on the base branch)" 0 \
+    "delegate/delegated: base tracker+conf+live-listed -> rc 0, the delegated N/A" "$d" 280 "$cfg" "$_btb" "$_btlive"
+
+  # (b) S-5 (class sweep) — relabelled: THE BACKEND-ONLY NEGATIVE. The HEAD (--dir) declares tracker,
+  # the BASE declares md -> still rc 3. This leg alone CANNOT red under a `$_dir` mutant (a predicate
+  # that read $_dir's backend instead of $_bd's would ALSO see 'jira' here and still delegate,
+  # because the head's declared backend happens to be a tracker too) — it only pins that the base's
+  # OWN backend decides over the head's declared token. (c) below (delegate/bypass-head-conf) is the
+  # leg that actually kills a `$_dir` swap, because there the head's `.kit/tracker.conf` differs from
+  # the base's md declaration.
+  _btb_md="$base/t1_base_md"; _proj_backend "$_btb_md" md
+  d="$base/t1_head_tracker"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/bypass-head-tracker: backend-only negative (base decides its OWN backend over the head's) — cannot alone red under a \$_dir mutant" "$d" 280 "$cfg" "$_btb_md" "$_btlive"
+
+  # (c) a head that ALSO plants a valid .kit/tracker.conf on its OWN (--dir) checkout, base still md
+  # -> still rc 3 — the predicate never reads $_dir's `.kit/` at all, only $_bd's. THIS is the leg
+  # that reds under a `$_dir` mutant (a predicate reading the head's checkout would find a valid
+  # tracker.conf here and delegate).
+  d="$base/t1_head_conf"; _proj_tracker_base "$d"
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/bypass-head-conf: head plants its own tracker.conf on an md base -> rc 3 (reds under a \$_dir mutant)" "$d" 280 "$cfg" "$_btb_md" "$_btlive"
+
+  # (d) base tracker+conf, live-contexts file WITHOUT the line -> rc 3, and the message names the
+  # real cure (bind the trusted job), not the stale "when it ships" remedy.
+  _btlive_missing="$base/t1_live_missing.txt"; printf 'ci\nbacklog-presence\n' > "$_btlive_missing"
+  d="$base/t1_not_live"; _proj_backend "$d" jira
+  assert_msg_ctx "Cure: bind the trusted job as a required context" 3 \
+    "delegate/not-live: tracker-board-gates absent from the live-contexts file -> rc 3, cure names the bind" "$d" 280 "$cfg" "$_btb" "$_btlive_missing"
+
+  # (e) --live-contexts points at an absent file -> rc 3.
+  d="$base/t1_no_live_file"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/no-live-file: --live-contexts names a file that does not exist -> rc 3 (fail-closed)" "$d" 280 "$cfg" "$_btb" "$base/t1_no_such_file.txt"
+
+  # (f) S-6 (class sweep) — relabelled: DEFENCE IN DEPTH, not independently killed. --base-dir absent
+  # (empty) -> rc 3. `[ -n "$_btd_base" ] && [ -d "$_btd_base" ]` is the first guard the predicate
+  # runs; an empty _bd also fails `[ -d "" ]` under condition (i)'s own resolve_backend call and
+  # under the conf-file existence checks, so removing THIS guard alone would still rc 3 via those
+  # later checks — this leg is not the sole witness of any one guard, it is belt-and-suspenders.
+  d="$base/t1_no_base_dir"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/no-base-dir: --base-dir absent -> rc 3 (defence in depth — not independently killed)" "$d" 280 "$cfg" "" "$_btlive"
+
+  # (g) the base declares tracker but its OWN tracker.conf is malformed (http://, not https://) and
+  # is refused by that base's own tracker-conf.sh -> rc 3.
+  _btb_bad="$base/t1_base_badconf"; _proj_tracker_base "$_btb_bad"
+  printf 'version=1\nbackend=jira\nbase_url=http://ex.atlassian.net\nflavour=cloud\nauth=basic\nproject=AB\n' > "$_btb_bad/.kit/tracker.conf"
+  d="$base/t1_badconf"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/malformed-conf: base's own tracker-conf.sh refuses its .kit/tracker.conf -> rc 3" "$d" 280 "$cfg" "$_btb_bad" "$_btlive"
+
+  # (g2) S-4 [SEC] twin: the base's OWN tracker.conf is one the REAL validator accepts, but the
+  # base's OWN scripts/tracker-conf.sh is a STUB that unconditionally exit 1s -> rc 3. Pins that
+  # bp_tracker_delegated runs the BASE's copy of tracker-conf.sh (`sh "$_btd_base/scripts/tracker-
+  # conf.sh" "$_btd_conf"`), never this repo's/cwd's own copy — a predicate that shelled out to the
+  # kit's/cwd's validator instead would see a VALID conf and wrongly delegate (rc 0) here, because
+  # the conf itself is one the real validator accepts. RED with the predicate calling the kit's/cwd's
+  # validator instead of the base's own (scratch tree only; not shipped here).
+  _btb_stubconf="$base/t1_base_stubconf"; _proj_tracker_base "$_btb_stubconf"
+  printf '#!/bin/sh\nexit 1\n' > "$_btb_stubconf/scripts/tracker-conf.sh"
+  d="$base/t1_stubconf"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/stub-conf-validator: base's OWN tracker-conf.sh is a stub that exit 1s beside a conf the real validator accepts -> rc 3 (pins the BASE's validator is the one run)" "$d" 280 "$cfg" "$_btb_stubconf" "$_btlive"
+
+  # (h) RT1-Q1 [SEC]: a live-contexts file holding ONLY 'tracker-board-gates (pull_request_target)'
+  # (a SUBSTRING match dropping the exact-line requirement would false-delegate on the event-suffixed
+  # spelling forges sometimes report) -> rc 3, never the delegated N/A. Pins bp_tracker_delegated's
+  # `grep -Fxq` (exact line), not `-Fq` (substring) — verified RED with -x removed in a scratch tree
+  # (build-time check, not shipped here).
+  _btlive_suffix="$base/t1_live_suffix.txt"; printf 'ci\ntracker-board-gates (pull_request_target)\nbacklog-presence\n' > "$_btlive_suffix"
+  d="$base/t1_suffix"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/live-suffix: live-contexts holding only the event-suffixed spelling must not satisfy -> rc 3 (kills a dropped -x)" "$d" 280 "$cfg" "$_btb" "$_btlive_suffix"
+
+  # (h2) RT1-Q1 [SEC] continued: a live-contexts file holding ONLY 'tracker-board-gates-shadow' (a
+  # SUPERSTRING with a trailing suffix) -> rc 3, same -x pin from the other direction.
+  _btlive_shadow="$base/t1_live_shadow.txt"; printf 'ci\ntracker-board-gates-shadow\nbacklog-presence\n' > "$_btlive_shadow"
+  d="$base/t1_shadow"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/live-shadow: live-contexts holding only a suffixed superstring must not satisfy -> rc 3 (kills a dropped -x)" "$d" 280 "$cfg" "$_btb" "$_btlive_shadow"
+
+  # (i) RT1-Q2: an EMPTY live-contexts file (present, zero bytes, never missing) -> rc 3.
+  _btlive_empty="$base/t1_live_empty.txt"; : > "$_btlive_empty"
+  d="$base/t1_empty_live"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/empty-live: an EMPTY --live-contexts file -> rc 3 (fail-closed)" "$d" 280 "$cfg" "$_btb" "$_btlive_empty"
+
+  # (j) S-3 [SEC]: bp_tracker_delegated's condition (i) — the BASE's OWN backend declaration must be
+  # a hosted tracker, never md/undeclared/unrecognized — pinned from THIS caller, not just the
+  # function's own scratch-tree witness (S-3, class sweep). Two legs: the base carries a VALID
+  # tracker.conf + its own scripts/tracker-conf.sh (a live-contexts file listing tracker-board-gates
+  # is present too), but its CLAUDE.md declares md (j1) or declares no backend at all (j2). Since
+  # condition (i) fails first, the malformed/absent conf never matters — both must still rc 3, never
+  # the delegated N/A. RED with condition (i)'s `case "$_btd_tok" in ''|md|unrecognized:*) return 1
+  # ;; esac` deleted from a scratch copy of bp_tracker_delegated (scratch tree only; not shipped
+  # here — backlog-lib.sh's production logic is untouched by this fix round).
+  _btb_basemd="$base/t1_base_declares_md"; _proj_tracker_base "$_btb_basemd"; _proj_backend "$_btb_basemd" md
+  d="$base/t1_base_declares_md_head"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/base-declares-md: base carries a valid tracker conf but its OWN backend declaration is md -> rc 3 (condition (i))" "$d" 280 "$cfg" "$_btb_basemd" "$_btlive"
+
+  _btb_basenone="$base/t1_base_no_backend"; _proj_tracker_base "$_btb_basenone"
+  printf '# Proj\n' > "$_btb_basenone/CLAUDE.md"
+  d="$base/t1_base_no_backend_head"; _proj_backend "$d" jira
+  assert_msg_ctx "NOT ENFORCED: backend 'jira'" 3 \
+    "delegate/base-no-backend: base carries a valid tracker conf but declares NO backend at all -> rc 3 (condition (i))" "$d" 280 "$cfg" "$_btb_basenone" "$_btlive"
 
   # gated + declares md but has NO BACKLOG.md -> FAIL, rc 2 (MISCONFIGURATION, red — never the same
   # yellow as a healthy waiting gate; B5 rider BACKLOG-PRESENCE-WAITING-PARTITION).
@@ -1036,6 +1265,432 @@ NODONE_EOF
   br_expect_rc 0 "t4/g4-no-rows: an ordinary PR whose board has NO In Progress row -> rc 0"
   br_hasnt "t4/g4-no-rows: the arm did not run (nothing claim-shaped is printed)" "backlog-presence --claims"
 
+  # ===== SEAM — TBG-SEAM-MD-ARM T1 non-vacuity (`seam_row_state` / `seam_rows_in_state` /
+  # `seam_row_flag`, the three seam functions this gate does not route in production this wave —
+  # `seam_backend` is already exercised live, through check_pr, above). Each leg sets SEAM_ROOT to
+  # a fixture project dir and calls the seam function directly, exactly as a future routed call
+  # site would, proving behaviour independent of check_pr/check_claims's own control flow.
+
+  # seam_row_state — positive anchor: the row `X` sits in In Review -> `in-review`.
+  d="$base/seam_state_present"; _proj_md_board "$d" '| `X` | — | #280 |'
+  SEAM_ROOT="$d"
+  _seam_v=$(seam_row_state X) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 0 ] && [ "$_seam_v" = "in-review" ]; then :; else
+    echo "selftest FAIL: seam/row-state-present: seam_row_state X -> rc=$_seam_rc v='$_seam_v', wanted rc0 'in-review'"; st_fail=1
+  fi
+  # ...load-bearing negative: an id absent from the board -> refused (rc 1), never a guessed state.
+  _seam_v=$(seam_row_state NOPE 2>/dev/null) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 1 ]; then :; else
+    echo "selftest FAIL: seam/row-state-absent: seam_row_state NOPE -> rc=$_seam_rc, wanted rc1 (refused)"; st_fail=1
+  fi
+  # ...a SECOND load-bearing negative, mutant-shaped: the id sits on TWO rows (AMBIGUOUS) -> refused
+  # (rc 1), never a guessed state from whichever section the scan reaches first. This is the leg that
+  # specifically exercises the `row_count ... = 1` guard — the id-absent leg above falls through to
+  # the same rc 1 via the loop's own exhaustion and would not catch that guard being dropped.
+  d="$base/seam_state_ambiguous"
+  mkdir -p "$d"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# Proj — Backlog
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| `DUP` | — | #1 |
+
+## Blocked
+
+| Item | Reason |
+|------|--------|
+| `DUP` | duplicate on purpose |
+EOF
+  SEAM_ROOT="$d"
+  _seam_v=$(seam_row_state DUP 2>/dev/null) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 1 ]; then :; else
+    echo "selftest FAIL: seam/row-state-ambiguous: seam_row_state DUP (on two rows) -> rc=$_seam_rc v='$_seam_v', wanted rc1 (refused)"; st_fail=1
+  fi
+  SEAM_ROOT="$base/seam_state_present"
+
+  # seam_rows_in_state — positive anchor: the same board's `in-review` list carries exactly `X`.
+  _seam_v=$(seam_rows_in_state in-review) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 0 ] && [ "$_seam_v" = "X" ]; then :; else
+    echo "selftest FAIL: seam/rows-in-state-present: seam_rows_in_state in-review -> rc=$_seam_rc v='$_seam_v', wanted rc0 'X'"; st_fail=1
+  fi
+  # ...load-bearing negative: a state this board has no rows in -> LEGAL empty (rc 0), the one
+  # carve-out — proves the function does not silently fall back to some OTHER section's rows.
+  _seam_v=$(seam_rows_in_state blocked) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 0 ] && [ -z "$_seam_v" ]; then :; else
+    echo "selftest FAIL: seam/rows-in-state-empty: seam_rows_in_state blocked -> rc=$_seam_rc v='$_seam_v', wanted rc0 ''"; st_fail=1
+  fi
+
+  # seam_row_flag pr-bound — positive anchor: row `X`'s PR cell bears `#280` -> yes.
+  _seam_v=$(seam_row_flag X pr-bound) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 0 ] && [ "$_seam_v" = "yes" ]; then :; else
+    echo "selftest FAIL: seam/row-flag-yes: seam_row_flag X pr-bound -> rc=$_seam_rc v='$_seam_v', wanted rc0 'yes'"; st_fail=1
+  fi
+  # ...load-bearing negative: an EMPTY PR cell -> no, never yes (proves the check reads the cell's
+  # content, not merely the column's presence).
+  d="$base/seam_flag_empty"; _proj_md_board "$d" '| `Y` | — | |'
+  SEAM_ROOT="$d"
+  _seam_v=$(seam_row_flag Y pr-bound) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 0 ] && [ "$_seam_v" = "no" ]; then :; else
+    echo "selftest FAIL: seam/row-flag-no: seam_row_flag Y pr-bound -> rc=$_seam_rc v='$_seam_v', wanted rc0 'no'"; st_fail=1
+  fi
+  # ...an unimplemented flag on the md arm -> refused (rc 1), never a guessed answer.
+  _seam_v=$(seam_row_flag Y dor-acceptance 2>/dev/null) && _seam_rc=0 || _seam_rc=$?
+  if [ "$_seam_rc" = 1 ]; then :; else
+    echo "selftest FAIL: seam/row-flag-unimplemented: seam_row_flag Y dor-acceptance -> rc=$_seam_rc, wanted rc1 (refused)"; st_fail=1
+  fi
+
+  # SEAM_ROOT FAIL-CLOSED (TBG-SEAM-MD-ARM WAVE 3) — an UNSET SEAM_ROOT is a caller bug (every
+  # routed gate sets it before calling), never a legitimate "board at cwd" default. Every seam_*
+  # function must refuse (rc 2, UNVERIFIED) rather than silently resolve an empty root. Load-bearing:
+  # exercises the guard against every one of the five functions, on stdout AND rc, with the
+  # one-line refusal on stderr.
+  unset SEAM_ROOT
+  for _seam_fn in seam_backend "seam_row_count X" "seam_row_state X" "seam_rows_in_state ready" "seam_row_flag X pr-bound"; do
+    _seam_err=$(eval "$_seam_fn" 2>&1 >/dev/null) && _seam_rc=0 || _seam_rc=$?
+    case "$_seam_err" in
+      *"SEAM_ROOT is unset"*) _seam_msg_ok=1 ;;
+      *)                      _seam_msg_ok=0 ;;
+    esac
+    if [ "$_seam_rc" = 2 ] && [ "$_seam_msg_ok" = 1 ]; then :; else
+      echo "selftest FAIL: seam/root-unset: '$_seam_fn' with SEAM_ROOT unset -> rc=$_seam_rc err='$_seam_err', wanted rc2 + the refusal"; st_fail=1
+    fi
+  done
+  SEAM_ROOT="$base/seam_state_present"   # restore, so nothing later in this function inherits unset
+
+  # seam/backend-grep-fault (SEAM-BACKEND-DECL-GREP-FOLD, T4) — a CLAUDE.md that EXISTS but a grep
+  # EXEC FAULT (unreadable file, rc>=2) prevents reading it must NOT collapse to the same empty
+  # answer as a genuinely absent field ("undeclared"). Root ignores mode bits (a chmod 000 file is
+  # still readable as uid 0), so this leg is a NAMED SKIP under root rather than a false pass.
+  if [ "$(id -u 2>/dev/null)" = 0 ]; then
+    echo "SKIP seam/backend-grep-fault: running as root (uid 0) — chmod 000 does not block root's own read, so the exec fault this leg forces is unreachable. Precondition NAMED and printed rather than silently assumed."
+  else
+    d="$base/seam_grep_fault"; mkdir -p "$d"
+    printf '# Proj\n\n- **Backlog backend** (%s6): md\n' '§' > "$d/CLAUDE.md"
+    chmod 000 "$d/CLAUDE.md"
+    SEAM_ROOT="$d"
+    _seam_v=$(seam_backend) && _seam_rc=0 || _seam_rc=$?
+    chmod 644 "$d/CLAUDE.md"   # restore before any later fixture/cleanup touches this tree
+    # FIXED TOKEN, EXACT MATCH (security fix-round 2, L-2): the path/value used to be interpolated
+    # into the token (repo text reaching a gate's prose) — it no longer is, so the leg now asserts
+    # equality, not a prefix.
+    case "$_seam_v" in
+      unrecognized:evalerror) _seam_msg_ok=1 ;;
+      *)                      _seam_msg_ok=0 ;;
+    esac
+    if [ "$_seam_rc" = 0 ] && [ -n "$_seam_v" ] && [ "$_seam_msg_ok" = 1 ]; then
+      echo "selftest PASS: seam/backend-grep-fault: an unreadable CLAUDE.md is signalled diagnosably AND fail-closed (unrecognized:evalerror, exact), never as undeclared"
+    else
+      echo "selftest FAIL: seam/backend-grep-fault: seam_backend on an unreadable CLAUDE.md -> rc=$_seam_rc v='$_seam_v', wanted the exact 'unrecognized:evalerror' token (fail-closed, NOT empty/undeclared)"; st_fail=1
+    fi
+    SEAM_ROOT="$base/seam_state_present"
+  fi
+
+  # ===== TBG-READER-FLAGS-LIST T8 — the tracker arm round trip (design §3e/§3h, F-1) ===========
+  # COPIES of the real reader + conf parser, a fake adapter that `cat`s the SAME
+  # conformance/fixtures/tracker-jira/ops/*.out files T2/T3/T5 proved (drift lock — never an
+  # inline printf for the shapes those files carry), driven through the reader's PUBLIC CLI onto a
+  # THROWAWAY git repo (never this clone's own history — hard rule) whose head commit carries the
+  # Kit-Row trailer the gate reads. ADAPTED from the plan's placeholder subject `AB-7`/`AB-9`: the
+  # only tracked `list-in-states` fixture with TWO ids is `list-cloud-inprogress.out` (AB-1, AB-4),
+  # and the subject must be a member of its OWN state's list (§3b bijection "iff") — AB-7 never
+  # appears in any tracked list fixture (only in the get-issue-assigned/unassigned pair, which no
+  # list op references), so AB-1/AB-4 is the pair the ops files actually make possible.
+  _t8_repo=$(pwd)
+  _t8_ops="$_t8_repo/conformance/fixtures/tracker-jira/ops"
+  # fix1 Q1: the SHARED fixture stays byte-identical — every leg reads its OWN conf copy (built by
+  # _t8_mkconf, defined with the other T8 helpers below), never a line appended to the tracked file.
+  _t8_conf_src="$_t8_repo/conformance/fixtures/tbg-record-gates-bind/tracker-jira/.kit/tracker.conf"
+  _t8_claude="$_t8_repo/conformance/fixtures/tbg-record-gates-bind/tracker-jira/CLAUDE.md"
+  _t8_rr="$base/t8_reader_root"; mkdir -p "$_t8_rr/scripts"
+  cp "$_t8_repo/scripts/tracker-read.sh" "$_t8_rr/scripts/tracker-read.sh"
+  cp "$_t8_repo/scripts/tracker-conf.sh" "$_t8_rr/scripts/tracker-conf.sh"
+  # a dummy credential — the reader's credential PROBE dispatches to the fake adapter's own
+  # `permissions` op (always `ok` here); no real network, no real secret, never asserted on.
+  export KIT_TRACKER_USER="t8user" KIT_TRACKER_TOKEN="t8token"
+  _t8_conf=$(_t8_mkconf)                                # base + list_cap=200 (Q1) — legs 1,2,3,5,6,7,9
+  _t8_conf_ready=$(_t8_mkconf "state.ready=Selected")   # leg 4 only, its own private copy
+
+  # leg 1 (F-1 positive): subject AB-1 claimed + in-progress, AB-4 unclaimed + in-progress -> rc0.
+  _t8_adapter 3 "In Progress" true
+  t8_gr1=$(_t8_gitrepo "Kit-Row: AB-1" leg1); t8_dir1=${t8_gr1% *}; t8_head1=${t8_gr1#* }
+  t8_rec1="$base/t8_rec_pos.txt"; : > "$t8_rec1"
+  if sh "$_t8_rr/scripts/tracker-read.sh" "$_t8_conf" - "$t8_rec1" AB-1 "$t8_head1" in-progress >/dev/null 2>&1; then t8_r1rc=0; else t8_r1rc=$?; fi
+  # fix1 Q1: ASSERT the reader's rc AND the record's actual list content BEFORE grading — never
+  # `|| :` on the reader. Without a genuine `list_cap`, this record would hold only the subject row
+  # (R5), and a mutant grading EVERY in-progress row would survive vacuously (rc0 either way).
+  if [ "$t8_r1rc" -eq 0 ] && grep -qxF 'list in-progress AB-1 AB-4' "$t8_rec1" && grep -qxF 'row AB-4 state=in-progress' "$t8_rec1"; then
+    echo "selftest PASS: t8/f1-positive-record: reader rc0, record carries the AB-4 in-progress row (Q1 non-vacuity)"
+  else
+    echo "selftest FAIL: t8/f1-positive-record: reader rc=$t8_r1rc, record: $(tr '\n' ';' < "$t8_rec1" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$t8_rec1"
+  t8_run "$t8_dir1" "$t8_head1"
+  if [ "$t8_rc" -eq 0 ]; then echo "selftest PASS: t8/f1-positive: claimed subject + an unclaimed in-progress row -> rc0"
+  else echo "selftest FAIL: t8/f1-positive: wanted rc0, got rc=$t8_rc out='$t8_out'"; st_fail=1; fi
+
+  # (h) TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1, RD-2 (no self-delegation): SEAM_RECORD set + all
+  # three bp_tracker_delegated conditions true -> the record-set path still returns the TRACKER ARM's
+  # own verdict, NEVER the "delegated" N/A line — the trusted job (which sets SEAM_RECORD) is never
+  # excused by its own required-context wiring. $_btb/$_btlive are T1's base-tracker fixtures above.
+  if t1h_out=$(check_pr "$t8_dir1" 0 "$cfg" "" 0 "" "$t8_head1" "$_btb" "$_btlive" 2>&1); then t1h_rc=0; else t1h_rc=$?; fi
+  if [ "$t1h_rc" -eq 0 ]; then echo "selftest PASS: delegate/no-self-delegation-rc: record set + delegation-eligible base+live -> still rc0 (the tracker arm's own verdict)"
+  else echo "selftest FAIL: delegate/no-self-delegation-rc: wanted rc0, got rc=$t1h_rc out='$t1h_out'"; st_fail=1; fi
+  case "$t1h_out" in
+    *"delegated to the required context"*)
+      echo "selftest FAIL: delegate/no-self-delegation-verdict: the record-set path printed the delegated N/A line — self-delegation bypass; out='$t1h_out'"; st_fail=1 ;;
+    *) echo "selftest PASS: delegate/no-self-delegation-verdict: the record-set path never prints the delegated N/A line" ;;
+  esac
+
+  # leg 2: subject claimed=no -> rc1, remedy names 'sparkwright board claim AB-1'.
+  _t8_adapter 3 "In Progress" false
+  t8_gr2=$(_t8_gitrepo "Kit-Row: AB-1" leg2); t8_dir2=${t8_gr2% *}; t8_head2=${t8_gr2#* }
+  t8_rec2="$base/t8_rec_no.txt"; : > "$t8_rec2"
+  # T10-harden-A P1: capture (never discard via `|| :`) the reader's own rc — a mutant reader that
+  # fails for the wrong reason must not hide behind a coincidentally-matching downstream gate rc.
+  if sh "$_t8_rr/scripts/tracker-read.sh" "$_t8_conf" - "$t8_rec2" AB-1 "$t8_head2" >/dev/null 2>&1; then t8_r2rc=0; else t8_r2rc=$?; fi
+  KIT_TRACKER_RECORD="$t8_rec2"
+  t8_run "$t8_dir2" "$t8_head2"
+  case "$t8_out" in
+    *"sparkwright board claim AB-1"*) [ "$t8_rc" -eq 1 ] && _t8_ok=1 || _t8_ok=0 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ] && [ "$t8_r2rc" -eq 0 ]; then echo "selftest PASS: t8/claimed-no: claimed=no -> rc1 naming the remedy (reader rc0)"
+  else echo "selftest FAIL: t8/claimed-no: wanted rc1 + remedy + reader rc0, got rc=$t8_rc reader-rc=$t8_r2rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 3 (required mutant fixture): claimed ABSENT (no assignee-present field at all, never "no")
+  # -> rc2 UNVERIFIED (M-5: an absent flag is never silently 'yes').
+  _t8_adapter 3 "In Progress" ""
+  t8_gr3=$(_t8_gitrepo "Kit-Row: AB-1" leg3); t8_dir3=${t8_gr3% *}; t8_head3=${t8_gr3#* }
+  t8_rec3="$base/t8_rec_absent.txt"; : > "$t8_rec3"
+  # T10-harden-A P1: capture the reader's own rc (never discard via `|| :`).
+  if sh "$_t8_rr/scripts/tracker-read.sh" "$_t8_conf" - "$t8_rec3" AB-1 "$t8_head3" >/dev/null 2>&1; then t8_r3rc=0; else t8_r3rc=$?; fi
+  KIT_TRACKER_RECORD="$t8_rec3"
+  t8_run "$t8_dir3" "$t8_head3"
+  if [ "$t8_rc" -eq 2 ] && [ "$t8_r3rc" -eq 0 ]; then echo "selftest PASS: t8/claimed-absent: no assignee-present field -> rc2 (never defaulted to yes) (reader rc0)"
+  else echo "selftest FAIL: t8/claimed-absent: wanted rc2 + reader rc0, got rc=$t8_rc reader-rc=$t8_r3rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 4: subject resolves to 'ready' -> rc1 (not In Progress/In Review). Its own conf copy carries
+  # `state.ready=Selected` (fix1 Q1: never the shared fixture — legs 1,2,3,5,6,7,9 never need it).
+  _t8_adapter 10001 "Selected" true
+  t8_gr4=$(_t8_gitrepo "Kit-Row: AB-1" leg4 "$_t8_conf_ready"); t8_dir4=${t8_gr4% *}; t8_head4=${t8_gr4#* }
+  t8_rec4="$base/t8_rec_ready.txt"; : > "$t8_rec4"
+  # T10-harden-A P1: capture the reader's own rc (never discard via `|| :`).
+  if sh "$_t8_rr/scripts/tracker-read.sh" "$_t8_conf_ready" - "$t8_rec4" AB-1 "$t8_head4" >/dev/null 2>&1; then t8_r4rc=0; else t8_r4rc=$?; fi
+  KIT_TRACKER_RECORD="$t8_rec4"
+  t8_run "$t8_dir4" "$t8_head4"
+  if [ "$t8_rc" -eq 1 ] && [ "$t8_r4rc" -eq 0 ]; then echo "selftest PASS: t8/ready: a Ready subject -> rc1, not the F-1 states (reader rc0)"
+  else echo "selftest FAIL: t8/ready: wanted rc1 + reader rc0, got rc=$t8_rc reader-rc=$t8_r4rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 5: the record is for ANOTHER head (H-2) -> rc2. Reuses leg 1's bound record but grades a
+  # DIFFERENT real commit (same trailer, different sha -> the record's own 'head' field disagrees).
+  t8_gr5=$(_t8_gitrepo "Kit-Row: AB-1" leg5); t8_dir5=${t8_gr5% *}; t8_head5=${t8_gr5#* }
+  KIT_TRACKER_RECORD="$t8_rec1"
+  t8_run "$t8_dir5" "$t8_head5"
+  if [ "$t8_rc" -eq 2 ]; then echo "selftest PASS: t8/wrong-head: a record for a DIFFERENT head -> rc2 (H-2)"
+  else echo "selftest FAIL: t8/wrong-head: wanted rc2, got rc=$t8_rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 6: the trailer names AB-2 but the record's own 'requested' is AB-1 (the record never names
+  # its own subject) -> rc2. The record's head field must equal THIS leg's grading head (H-2 holds).
+  _t8_adapter 3 "In Progress" true
+  t8_gr6=$(_t8_gitrepo "Kit-Row: AB-2" leg6); t8_dir6=${t8_gr6% *}; t8_head6=${t8_gr6#* }
+  t8_rec6="$base/t8_rec_mismatch.txt"; : > "$t8_rec6"
+  # T10-harden-A P1: capture the reader's own rc (never discard via `|| :`).
+  if sh "$_t8_rr/scripts/tracker-read.sh" "$_t8_conf" - "$t8_rec6" AB-1 "$t8_head6" >/dev/null 2>&1; then t8_r6rc=0; else t8_r6rc=$?; fi
+  KIT_TRACKER_RECORD="$t8_rec6"
+  t8_run "$t8_dir6" "$t8_head6"
+  if [ "$t8_rc" -eq 2 ] && [ "$t8_r6rc" -eq 0 ]; then echo "selftest PASS: t8/trailer-ne-requested: Kit-Row AB-2 vs record requested AB-1 -> rc2 (reader rc0)"
+  else echo "selftest FAIL: t8/trailer-ne-requested: wanted rc2 + reader rc0, got rc=$t8_rc reader-rc=$t8_r6rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 7: no Kit-Row trailer at all -> rc1, naming the trailer.
+  t8_gr7=$(_t8_gitrepo "" leg7); t8_dir7=${t8_gr7% *}; t8_head7=${t8_gr7#* }
+  KIT_TRACKER_RECORD="$t8_rec1"
+  t8_run "$t8_dir7" "$t8_head7"
+  case "$t8_out" in
+    *"Kit-Row"*) [ "$t8_rc" -eq 1 ] && _t8_ok=1 || _t8_ok=0 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ]; then echo "selftest PASS: t8/no-trailer: a head with no Kit-Row trailer -> rc1 naming it"
+  else echo "selftest FAIL: t8/no-trailer: wanted rc1 naming Kit-Row, got rc=$t8_rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 9 (fix1 Q4): TWO Kit-Row trailers -> rc1, the sentence says 'exactly one' (not 'no parseable').
+  t8_gr9=$(_t8_gitrepo "Kit-Row: AB-1
+Kit-Row: AB-4" leg9); t8_dir9=${t8_gr9% *}; t8_head9=${t8_gr9#* }
+  KIT_TRACKER_RECORD="$t8_rec1"
+  t8_run "$t8_dir9" "$t8_head9"
+  case "$t8_out" in
+    *"exactly one"*) [ "$t8_rc" -eq 1 ] && _t8_ok=1 || _t8_ok=0 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ]; then echo "selftest PASS: t8/two-trailers: two Kit-Row trailers -> rc1 naming 'exactly one'"
+  else echo "selftest FAIL: t8/two-trailers: wanted rc1 + 'exactly one', got rc=$t8_rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 11 (B2, quality F3 — pin the 'in-review' arm): the `in-progress|in-review)` case survives a
+  # mutant that drops the `|in-review` alternative; leg 1 alone never catches it. Subject state=
+  # in-review (a real round trip: state.in-review mapped to the fake adapter's status name) +
+  # claimed=yes -> rc0.
+  _t8_adapter 10001 "Selected" true
+  _t8_conf_inreview=$(_t8_mkconf "state.in-review=Selected")
+  t8_gr11=$(_t8_gitrepo "Kit-Row: AB-1" leg11 "$_t8_conf_inreview"); t8_dir11=${t8_gr11% *}; t8_head11=${t8_gr11#* }
+  t8_rec11="$base/t8_rec_inreview.txt"; : > "$t8_rec11"
+  if sh "$_t8_rr/scripts/tracker-read.sh" "$_t8_conf_inreview" - "$t8_rec11" AB-1 "$t8_head11" >/dev/null 2>&1; then t8_r11rc=0; else t8_r11rc=$?; fi
+  if [ "$t8_r11rc" -ne 0 ] || ! grep -q '^row AB-1 state=in-review' "$t8_rec11"; then
+    echo "selftest FAIL: t8/f1-inreview setup: reader rc=$t8_r11rc, record: $(tr '\n' ';' < "$t8_rec11" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$t8_rec11"
+  t8_run "$t8_dir11" "$t8_head11"
+  if [ "$t8_rc" -eq 0 ]; then echo "selftest PASS: t8/f1-inreview: subject state=in-review + claimed=yes -> rc0 (B2)"
+  else echo "selftest FAIL: t8/f1-inreview: wanted rc0, got rc=$t8_rc out='$t8_out'"; st_fail=1; fi
+
+  # leg 10 (fix1 Q3): bp_tracker_presence's two seam calls share ONE record parse (T89s memo) — a
+  # PLAIN call in THIS shell (no `$( … )` subshell) so the memo globals survive between them.
+  # T10-harden-A P2 (STOPPED, reported rather than fixed): SEAM_TEST_LOAD_COUNT is a plain shell-
+  # variable increment (conformance/backlog-lib.sh's `_seam_record_load`) — inherently subshell-
+  # blind. If a future regression wraps ONE of seam_row_state/seam_row_flag's OWN internal seam-load
+  # calls in `$( … )` (inside backlog-lib.sh, not this file), that increment happens in a subshell
+  # and never reaches this leg's counter — the leg would stay green even though a second real parse
+  # had crept in. Fixing this needs the counter itself to be subshell-observable (e.g. a scratch-file
+  # append per parse) INSIDE backlog-lib.sh, which is outside this task's declared writes — left as
+  # is per the brief's own escape valve; boarded for the owner (backlog-lib.sh is out of scope here).
+  SEAM_TEST_LOAD_COUNT=0
+  SEAM_ROOT="$t8_dir1"; SEAM_RECORD="$t8_rec1"
+  bp_tracker_presence "$t8_head1" >/dev/null 2>&1 || :
+  if [ "$SEAM_TEST_LOAD_COUNT" -eq 1 ]; then
+    echo "selftest PASS: t8/one-parse: bp_tracker_presence's two seam calls share ONE record parse"
+  else
+    echo "selftest FAIL: t8/one-parse: wanted SEAM_TEST_LOAD_COUNT=1, got $SEAM_TEST_LOAD_COUNT"; st_fail=1
+  fi
+  unset SEAM_RECORD
+
+  # legs 11-15 (fix1 Q2): --head through the REAL command line (t8h_run/t8h_assert, defined with
+  # the other T8 helpers below) — an unvalidated value reaching `git log`/`cat-file` as a positional
+  # could be read as a FLAG, never a revision.
+  t8h_run
+  t8h_assert "t8/head-omitted: --head never passed -> rc2, the one fixed sentence" 2
+  t8h_run --head 0000000000000000000000000000000000000000
+  t8h_assert "t8/head-allzero: 40 zeros is well-formed hex but names no commit -> rc2" 2
+  t8h_run --head 1234567890abcdef1234567890abcdef12345678
+  t8h_assert "t8/head-unknown: well-formed hex, no such commit -> rc2" 2
+  t8_injected="$base/t8_injected_marker"
+  t8h_run --head "--output=$t8_injected"
+  t8h_assert "t8/head-output-injection: an option-shaped value is refused, never reaches git" 2
+  if [ -e "$t8_injected" ]; then
+    echo "selftest FAIL: t8/head-output-injection-nofile: the injected file WAS created"; st_fail=1
+  else
+    echo "selftest PASS: t8/head-output-injection-nofile: no file was created"
+  fi
+  t8h_run --head --help
+  t8h_assert "t8/head-help: an option-shaped value is refused, never reaches git --help" 2
+
+  # legs 16-19 (B3, security L-1 / quality F8): the head grammar aligned with the reader's and the
+  # seam's own 40|64 acceptance (tracker-read.sh::tr_valid_head). A 64-hex head passes the GRAMMAR
+  # then fails cat-file -e (this is a SHA-1 repo) -> the EXISTENCE sentence, never the grammar one.
+  # 63/65-hex and uppercase are refused by the GRAMMAR itself (never reaching git).
+  t8h_run --head 1111111111111111111111111111111111111111111111111111111111111111
+  case "$t8h_out" in
+    *"well-formed hex, but names no commit"*) _t8_ok=1 ;;
+    *) _t8_ok=0 ;;
+  esac
+  case "$t8h_out" in *"(not 40 or 64 lowercase hex)"*) _t8_ok=0 ;; esac
+  if [ "$_t8_ok" = 1 ] && [ "$t8h_rc" -eq 2 ]; then
+    echo "selftest PASS: t8/head-64hex: a 64-hex head passes the grammar, fails cat-file -e -> rc2, the EXISTENCE sentence, not the grammar one"
+  else
+    echo "selftest FAIL: t8/head-64hex: wanted rc2 + the existence sentence, got rc=$t8h_rc out='$t8h_out'"; st_fail=1
+  fi
+
+  # WB-FIX-2 item 3 (security R3): a 64-hex string can resolve as a REF NAME, not just as a raw
+  # object id — no SHA-1 object can BE 64 hex chars, so `cat-file -e` falls back to a ref lookup and
+  # a same-named branch resolves. Create a branch in t8_dir1 whose NAME is a 64-hex string pointing
+  # at a REAL commit, then pass that same string as --head: it must still refuse (rc2, the existence
+  # sentence), never silently accept a ref-name resolution as if it were the head sha itself.
+  _t8_refhead=2222222222222222222222222222222222222222222222222222222222222222
+  git -C "$t8_dir1" branch "$_t8_refhead" "$t8_head1" >/dev/null 2>&1
+  if ! git -C "$t8_dir1" rev-parse --verify --quiet "refs/heads/$_t8_refhead" >/dev/null; then
+    echo "selftest FAIL: t8/head-64hex-refname setup — the 64-hex branch was not created"; st_fail=1
+  fi
+  t8h_run --head "$_t8_refhead"
+  case "$t8h_out" in
+    *"well-formed hex, but names no commit"*) _t8_ok=1 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ] && [ "$t8h_rc" -eq 2 ]; then
+    echo "selftest PASS: t8/head-64hex-refname: a 64-hex head that ALSO names a real branch -> rc2, the existence sentence — never a silent ref-name resolution (WB-FIX-2 item 3)"
+  else
+    echo "selftest FAIL: t8/head-64hex-refname: wanted rc2 + the existence sentence, got rc=$t8h_rc out='$t8h_out'"; st_fail=1
+  fi
+  git -C "$t8_dir1" branch -D "$_t8_refhead" >/dev/null 2>&1
+
+  t8h_run --head 111111111111111111111111111111111111111111111111111111111111111
+  case "$t8h_out" in
+    *"(not 40 or 64 lowercase hex)"*) _t8_ok=1 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ] && [ "$t8h_rc" -eq 2 ]; then
+    echo "selftest PASS: t8/head-63hex: a 63-hex head is refused by the GRAMMAR (never the existence sentence)"
+  else
+    echo "selftest FAIL: t8/head-63hex: wanted rc2 + the grammar sentence, got rc=$t8h_rc out='$t8h_out'"; st_fail=1
+  fi
+
+  t8h_run --head 11111111111111111111111111111111111111111111111111111111111111111
+  case "$t8h_out" in
+    *"(not 40 or 64 lowercase hex)"*) _t8_ok=1 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ] && [ "$t8h_rc" -eq 2 ]; then
+    echo "selftest PASS: t8/head-65hex: a 65-hex head is refused by the GRAMMAR (never the existence sentence)"
+  else
+    echo "selftest FAIL: t8/head-65hex: wanted rc2 + the grammar sentence, got rc=$t8h_rc out='$t8h_out'"; st_fail=1
+  fi
+
+  t8h_run --head A111111111111111111111111111111111111111
+  case "$t8h_out" in
+    *"(not 40 or 64 lowercase hex)"*) _t8_ok=1 ;;
+    *) _t8_ok=0 ;;
+  esac
+  if [ "$_t8_ok" = 1 ] && [ "$t8h_rc" -eq 2 ]; then
+    echo "selftest PASS: t8/head-uppercase: a 40-char head with an uppercase hex digit is refused by the GRAMMAR"
+  else
+    echo "selftest FAIL: t8/head-uppercase: wanted rc2 + the grammar sentence, got rc=$t8h_rc out='$t8h_out'"; st_fail=1
+  fi
+
+  # === T10-harden-A P1: _t8h_pick_shell picks the CURRENT interpreter (BASH_VERSION/ZSH_VERSION),
+  # never a hardcoded 'sh' — pinned directly (a real bash/zsh re-invocation isn't reachable from a
+  # dash/sh selftest run without those interpreters present as $0's own shell).
+  _p1_savebash=${BASH_VERSION:-}; _p1_savezsh=${ZSH_VERSION:-}
+  BASH_VERSION="5.0"; ZSH_VERSION=""
+  _p1_bash=$(_t8h_pick_shell)
+  BASH_VERSION=""; ZSH_VERSION="5.9"
+  _p1_zsh=$(_t8h_pick_shell)
+  BASH_VERSION=""; ZSH_VERSION=""
+  _p1_sh=$(_t8h_pick_shell)
+  BASH_VERSION=$_p1_savebash; ZSH_VERSION=$_p1_savezsh
+  if [ "$_p1_bash" = bash ] && [ "$_p1_zsh" = zsh ] && [ "$_p1_sh" = sh ]; then
+    echo "selftest PASS: t8/p1-shell-selector: t8h_run's shell selector tracks BASH_VERSION/ZSH_VERSION, never a hardcoded 'sh'"
+  else
+    echo "selftest FAIL: t8/p1-shell-selector: wanted bash/zsh/sh, got '$_p1_bash'/'$_p1_zsh'/'$_p1_sh'"; st_fail=1
+  fi
+
+  # leg 16 (H-4): KIT_TRACKER_RECORD unset -> today's rc3 NOT ENFORCED path, byte-identical (same
+  # fixture + same string as the pre-existing cp/non-md-jira leg above — the byte-identical proof).
+  unset KIT_TRACKER_RECORD
+  d="$base/t8_h4_unset"; _proj_backend "$d" jira
+  assert_msg "NOT ENFORCED: backend 'jira' — board-bound governance is not verified on this tree" 3 \
+    "t8/h4-unset: KIT_TRACKER_RECORD unset stays today's rc3 NOT ENFORCED path, byte-identical (H-4)" "$d" 280 "$cfg"
+  unset KIT_TRACKER_USER KIT_TRACKER_TOKEN   # hygiene: nothing later in this function inherits them
+
+  # fix1 Q4 (hygiene): throwaway git repos carry no diagnostic value on FAIL (unlike the board-style
+  # fixtures elsewhere in $base, deliberately left for inspection) — remove them explicitly.
+  for _t8_d in "$t8_dir1" "$t8_dir2" "$t8_dir3" "$t8_dir4" "$t8_dir5" "$t8_dir6" "$t8_dir7" "$t8_dir9"; do
+    [ -n "$_t8_d" ] && [ -d "$_t8_d" ] && rm -rf "$_t8_d"
+  done
+  # T10-harden-A P1: _t8_mkconf's own copies live OUTSIDE $base (mktemp) — clean them explicitly,
+  # the same hygiene convention as the throwaway git repos just above.
+  for _t8_mc in ${_t8_mkconf_files:-}; do
+    [ -n "$_t8_mc" ] && [ -f "$_t8_mc" ] && rm -f "$_t8_mc"
+  done
+
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-presence --selftest: FAIL" >&2
     return 1
@@ -1147,6 +1802,24 @@ assert_msg() {
     echo "selftest PASS: $3"
   else
     echo "selftest FAIL: $3 (check_pr rc=$_rc wanted $2; out='$_out', wanted to contain '$1')"; st_fail=1
+  fi
+}
+# assert_msg_ctx <expected-substring> <expected-rc> <label> <dir> <pr> <changed-file> <base-dir>
+# <live-contexts-file> : the same oracle as assert_msg, but also drives check_pr's 8th/9th positional
+# arguments (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1's --base-dir / --live-contexts) — needed for
+# every bp_tracker_delegated leg, which assert_msg's fixed 3-argument call cannot reach.
+assert_msg_ctx() {
+  if _octx_out=$(check_pr "$4" "$5" "$6" "" 0 "" "" "$7" "$8" 2>&1); then _octx_rc=0; else _octx_rc=$?; fi
+  _octx_ok=1
+  case "$_octx_out" in
+    *"$1"*) ;;
+    *) _octx_ok=0 ;;
+  esac
+  [ "$_octx_rc" -eq "$2" ] || _octx_ok=0
+  if [ "$_octx_ok" = 1 ]; then
+    echo "selftest PASS: $3"
+  else
+    echo "selftest FAIL: $3 (check_pr rc=$_octx_rc wanted $2; out='$_octx_out', wanted to contain '$1')"; st_fail=1
   fi
 }
 
@@ -1283,6 +1956,30 @@ _proj_backend() {
 - **Backlog backend** (§6): $2
 EOF
 }
+# _proj_tracker_base <dir> : a BASE checkout bp_tracker_delegated can accept — declares jira, ships
+# its OWN copy of the real scripts/tracker-conf.sh (never this process's cwd's copy at call time —
+# the predicate reads <base-dir>/scripts/tracker-conf.sh, so the fixture must carry one), and a
+# `.kit/tracker.conf` that validator accepts (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1).
+_proj_tracker_base() {
+  mkdir -p "$1/scripts" "$1/.kit"
+  cp "$(pwd)/scripts/tracker-conf.sh" "$1/scripts/tracker-conf.sh"
+  _proj_backend "$1" jira
+  cat > "$1/.kit/tracker.conf" <<EOF
+version=1
+backend=jira
+base_url=https://ex.atlassian.net
+flavour=cloud
+auth=basic
+project=AB
+list_cap=200
+state.ready=Selected
+state.in-progress=In Progress
+field.acceptance=description
+field.metric=label:metric
+field.size=label:size
+field.risk=customfield_10088
+EOF
+}
 # _proj_md_board <dir> <in-review-row> : a project dir declaring an md backend AND carrying a real
 # in-use board with the given In Review row.
 _proj_md_board() {
@@ -1330,11 +2027,109 @@ _proj_template() {
 EOF
 }
 
+# --- TBG-READER-FLAGS-LIST T8 selftest-only helpers (also live AFTER the marker on purpose) ------
+# _t8_adapter <status-id> <status-name> <assignee-present: true|false|""> : (re)writes the fake
+# tracker-jira.sh a COPY of the real reader dispatches to (T8's $_t8_rr). Every op EXCEPT get-issue
+# `cat`s the SAME tracked conformance/fixtures/tracker-jira/ops/*.out files T2/T3/T5 proved (drift
+# lock); get-issue's plain key/status fields are inline here, matching tracker-read.sh's OWN
+# selftest convention for scenarios that are not exercising the assignee-present drift itself
+# (T5b1's dedicated get-issue-assigned/unassigned.out pair is reserved for THAT drift, and cannot
+# also supply the second in-progress id F-1 needs — see the leg-1 comment above).
+_t8_adapter() {
+  case "$3" in
+    true|false) _t8a_extra='assignee-present\t'"$3"'\n' ;;
+    *)          _t8a_extra='' ;;
+  esac
+  cat > "$_t8_rr/scripts/tracker-jira.sh" <<EOF
+#!/bin/sh
+case "\$1" in
+  permissions) echo ok; exit 0 ;;
+  status-ids) cat "$_t8_ops/status-ids-cloud.out"; exit 0 ;;
+  get-issue) printf 'key\tAB-1\nstatus-id\t$1\nstatus-name\t$2\n$_t8a_extra'; exit 0 ;;
+  list-in-states) cat "$_t8_ops/list-cloud-inprogress.out"; exit 0 ;;
+esac
+EOF
+  chmod +x "$_t8_rr/scripts/tracker-jira.sh"
+}
+# _t8_mkconf [<extra-conf-line>] : a PRIVATE copy of the shared fixture's base conf (fix1 Q1 —
+# NEVER the tracked file itself) + `list_cap=200` (so a requested list genuinely reaches the record,
+# never the R5 "list_cap absent" omission) + one optional extra line (leg 4's `state.ready=Selected`).
+# Prints the new file's path. T10-harden-A P1: unlike $base (deliberately left for inspection), each
+# copy lands OUTSIDE $base via `mktemp` — tracked in $_t8_mkconf_files so it can be cleaned explicitly
+# (fix1 Q4's own hygiene convention, one line down from here) rather than littering the system tmpdir.
+_t8_mkconf() {
+  _t8mc_f=$(mktemp)
+  _t8_mkconf_files="${_t8_mkconf_files:-} $_t8mc_f"
+  cat "$_t8_conf_src" > "$_t8mc_f"
+  printf 'list_cap=200\n' >> "$_t8mc_f"
+  [ -n "${1:-}" ] && printf '%s\n' "$1" >> "$_t8mc_f"
+  printf '%s' "$_t8mc_f"
+}
+# _t8_gitrepo <trailer-line-or-""> <nonce> [<conf-path>] : a THROWAWAY git repo (never this clone's
+# own history — hard rule), seeded with a COPY of <conf-path> (default $_t8_conf — fix1 Q1: a leg
+# passes its OWN conf copy so the repo's .kit/tracker.conf pins to whatever conf its record was
+# actually read against) + CLAUDE.md, one commit whose message carries <trailer-line> as its own
+# final paragraph (or none, when ""). <nonce> (a distinct literal per call site) lands in a
+# `.t8-nonce` file so two calls with the SAME trailer text never produce the SAME tree+message+
+# timestamp — and so the SAME commit sha (measured live: two such calls one second apart are
+# otherwise byte-identical git objects). Prints "<dir> <sha>" on ONE line — never a global (a caller
+# capturing $(...) runs this in a SUBSHELL; a global set inside it is invisible back in the parent
+# under set -u, measured live) — callers split on the LAST space (neither a mktemp path nor a hex
+# sha ever carries one).
+_t8_gitrepo() {
+  _t8g_dir=$(mktemp -d)
+  git -C "$_t8g_dir" init -q
+  mkdir -p "$_t8g_dir/.kit"
+  cp "${3:-$_t8_conf}" "$_t8g_dir/.kit/tracker.conf"
+  cp "$_t8_claude" "$_t8g_dir/CLAUDE.md"
+  printf '%s\n' "$2" > "$_t8g_dir/.t8-nonce"
+  git -C "$_t8g_dir" add -A
+  if [ -n "$1" ]; then
+    git -C "$_t8g_dir" -c user.email=t8@example.com -c user.name=T8 commit -q -m "t8 fixture" -m "$1"
+  else
+    git -C "$_t8g_dir" -c user.email=t8@example.com -c user.name=T8 commit -q -m "t8 fixture, no trailer"
+  fi
+  _t8g_sha=$(git -C "$_t8g_dir" rev-parse HEAD)
+  printf '%s %s\n' "$_t8g_dir" "$_t8g_sha"
+}
+# t8_run <dir> <head> : drive check_pr's tracker arm BY ARGUMENT (KIT_TRACKER_RECORD already set by
+# the caller), keeping both the verdict text and the rc — wrapped in `if` per this file's own
+# set -e discipline (mirrors br_run/assert_msg above).
+t8_run() {
+  if t8_out=$(check_pr "$1" 0 "$cfg" "" 0 "" "$2" 2>&1); then t8_rc=0; else t8_rc=$?; fi
+}
+# _t8h_pick_shell : T10-harden-A P1 — the interpreter t8h_run re-invokes THIS script under is the
+# one the selftest itself is running under (BASH_VERSION/ZSH_VERSION), never a hardcoded 'sh' that
+# would silently switch interpreter mid-test when the selftest was launched under a different shell.
+_t8h_pick_shell() {
+  if [ -n "${BASH_VERSION:-}" ]; then printf 'bash'
+  elif [ -n "${ZSH_VERSION:-}" ]; then printf 'zsh'
+  else printf 'sh'
+  fi
+}
+# t8h_run [<extra CLI args>...] : fix1 Q2 — invoke THIS SCRIPT'S OWN CLI as a subprocess (not
+# check_pr directly), so --head's real argv-parsing path is exercised end to end (t8_dir1/t8_rec1,
+# the F-1 positive fixture, already built by leg 1).
+t8h_run() {
+  _t8h_shell=$(_t8h_pick_shell)
+  if t8h_out=$(KIT_TRACKER_RECORD="$t8_rec1" "$_t8h_shell" conformance/backlog-presence.sh --dir "$t8_dir1" --pr 0 --changed "$cfg" "$@" 2>&1); then t8h_rc=0; else t8h_rc=$?; fi
+}
+# t8h_assert <label> <expected-rc> : t8h_run's rc AND the one fixed head-refusal sentence.
+t8h_assert() {
+  case "$t8h_out" in
+    *"is not a well-formed, existing commit sha"*) _t8h_ok=1 ;;
+    *) _t8h_ok=0 ;;
+  esac
+  [ "$t8h_rc" -eq "$2" ] || _t8h_ok=0
+  if [ "$_t8h_ok" = 1 ]; then echo "selftest PASS: $1"
+  else echo "selftest FAIL: $1 (rc=$t8h_rc out='$t8h_out')"; st_fail=1; fi
+}
+
 case "${1:-}" in
   --selftest)
     selftest; exit $?
     ;;
-  --dir|--pr|--changed|--branch|--claims|--base-board)
+  --dir|--pr|--changed|--branch|--claims|--base-board|--head|--base-dir|--live-contexts)
     # --branch is OPTIONAL and, like every other target here, comes BY ARGUMENT — never the environment.
     # (An env-supplied target lets a decoy redirect a control-plane check; that pattern was rejected once
     # already and is not coming back.) Absent --branch, the gate behaves exactly as before: PR-number only.
@@ -1345,7 +2140,14 @@ case "${1:-}" in
     # BACKLOG.md at the merge-base) — BY ARGUMENT, never the environment. Absent it, the Done arm's
     # branch form never binds (fail-safe; see row_bears_pr). Only the pre-push caller supplies it
     # today; the CI PR job binds by number and does not need it.
-    _dir=""; _pr=""; _cf=""; _br=""; _cl=0; _bb=""
+    # --head is OPTIONAL (TBG-READER-FLAGS-LIST T8): the PR head SHA the tracker arm reads its
+    # Kit-Row trailer from — BY ARGUMENT, mirroring loop-state.sh's own --head. Only meaningful when
+    # KIT_TRACKER_RECORD is also set (bp_tracker_presence); absent it, today's non-md path is unchanged.
+    # --base-dir / --live-contexts are OPTIONAL (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1): the base
+    # checkout + the live required-contexts file bp_tracker_delegated reads — BY ARGUMENT, never the
+    # environment. Absent either, the predicate is false (fail-closed) and today's non-md behaviour
+    # is unchanged.
+    _dir=""; _pr=""; _cf=""; _br=""; _cl=0; _bb=""; _hd=""; _bd=""; _lc=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --dir)        [ $# -ge 2 ] || { echo "usage: --dir needs a value" >&2; exit 2; }; _dir=$2; shift 2 ;;
@@ -1353,16 +2155,19 @@ case "${1:-}" in
         --changed)    [ $# -ge 2 ] || { echo "usage: --changed needs a value" >&2; exit 2; }; _cf=$2; shift 2 ;;
         --branch)     [ $# -ge 2 ] || { echo "usage: --branch needs a value" >&2; exit 2; }; _br=$2; shift 2 ;;
         --base-board) [ $# -ge 2 ] || { echo "usage: --base-board needs a value" >&2; exit 2; }; _bb=$2; shift 2 ;;
+        --head)       [ $# -ge 2 ] || { echo "usage: --head needs a value" >&2; exit 2; }; _hd=$2; shift 2 ;;
+        --base-dir)      [ $# -ge 2 ] || { echo "usage: --base-dir needs a value" >&2; exit 2; }; _bd=$2; shift 2 ;;
+        --live-contexts) [ $# -ge 2 ] || { echo "usage: --live-contexts needs a value" >&2; exit 2; }; _lc=$2; shift 2 ;;
         --claims)  _cl=1; shift ;;
-        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--claims]" >&2; exit 2 ;;
+        *) echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--head <sha>] [--base-dir <dir>] [--live-contexts <file>] [--claims]" >&2; exit 2 ;;
       esac
     done
     { [ -n "$_dir" ] && [ -n "$_pr" ] && [ -n "$_cf" ]; } || {
-      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--claims]" >&2; exit 2; }
-    check_pr "$_dir" "$_pr" "$_cf" "$_br" "$_cl" "$_bb"; exit $?
+      echo "usage: backlog-presence.sh --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--head <sha>] [--base-dir <dir>] [--live-contexts <file>] [--claims]" >&2; exit 2; }
+    check_pr "$_dir" "$_pr" "$_cf" "$_br" "$_cl" "$_bb" "$_hd" "$_bd" "$_lc"; exit $?
     ;;
   *)
-    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--claims]" >&2
+    echo "usage: backlog-presence.sh --selftest | --dir <d> --pr <n> --changed <listing> [--branch <name>] [--base-board <path>] [--head <sha>] [--base-dir <dir>] [--live-contexts <file>] [--claims]" >&2
     exit 2
     ;;
 esac

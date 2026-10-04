@@ -1,0 +1,18 @@
+issuetype	Size	Risk
+Epic	customfield_10049	customfield_10050
+Task	customfield_10046	customfield_10047
+Story	customfield_10043	customfield_10044
+paste into .kit/tracker.conf for create.issuetype=Task:
+field.size=customfield_10046
+field.risk=customfield_10047
+REQUIRED (create screen of 'Task'):
+id	kind	name	allowed	required-by
+customfield_10046	option	Size	XS|S|M|L|XL	create
+customfield_10070	option	Team	ZQALLOWED1|ZQALLOWED2	create
+customfield_10071	string	Reviewer note		create
+resolution	unsupported	Resolution		transition-to-Done
+customfield_10080	string	Review note		transition-to-In Review
+paste for the unmapped required fields (the value is your team's: read the project CLAUDE.md, and if it is silent ask the owner; use prompt for a per-card value):
+create.customfield_10070=<value>
+create.customfield_10071=<value>
+NOTE: workflow validators are not visible to the screen read; board move diagnoses a refused transition when Jira refuses it

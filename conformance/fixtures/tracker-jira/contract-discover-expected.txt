@@ -1,0 +1,8 @@
+id	name
+10000	Backlog
+10001	Ready
+10002	In Progress
+10003	In Review
+10004	Released
+10005	Done
+10006	Blocked

@@ -585,7 +585,7 @@ check_unpruned() {
   # foreign leftover in _foreign_have while it is (correctly) absent from _foreign_off, so the two
   # counts differ by one and MIGRATION-REMOVES-FOREIGN fails with a bogus "incomplete migration".
   # This enumeration is duplicated in conformance/incept-first-run-green.sh — change both together.
-  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/adopter-gates\.yml\$|^profiles/_TEMPLATE\.md\$|^profiles/\.gitignore\$"
+  _keptfilter="^profiles/$STACK/|^profiles/$STACK\.md\$|^profiles/ratification\.yml\$|^profiles/adopter-gates\.yml\$|^profiles/adopter-tracker-gates\.yml\$|^profiles/_TEMPLATE\.md\$|^profiles/\.gitignore\$"
   _foreign_off=$(section "$_t/noop" offered | grep '^profiles/' | grep -vE "$_keptfilter" | grep -c . || :)
   _kept_off=$(section "$_t/noop" offered | grep -E "$_keptfilter" | grep -c . || :)
   _foreign_have=$(git -C "$_p" show kit-base:.kit-manifest 2>/dev/null \

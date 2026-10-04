@@ -112,7 +112,7 @@ gate it gives you.
 
 The orchestrator fans engineers into **isolated git worktrees** (no cross-slice file contention), runs each
 under an independent review, integrates through a serial merge queue, and **meters the whole run with a
-runaway kill-switch** (token/step/agent ceilings; raising one is a ratified act). It emits an OTel run trace
+runaway kill-switch** (token/agent ceilings per slice, steps off by default; raising one is a ratified act). It emits an OTel run trace
 that the value-analysis and agent-ops tooling read. *Scaling this further — parallel epics, a worker pool, a
 merge queue at scale — is the roadmap's V2/Axis-B work; today's orchestration is proven at task-level fan-out,
 and the conductor (the serial review/integrate tail) is the measured bottleneck it will attack.*

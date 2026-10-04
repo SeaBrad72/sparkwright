@@ -52,24 +52,28 @@ set -eu
 
 # header_cols <header-row> : the non-empty column names, comma-joined, for a diagnostic that
 # names what WAS found when a required column is absent (never a bare "not found").
+# BOARD-PIPE-ESCAPE T2 — routed through the shared GFM-exact parser (gfm_nf + cell), NOT an
+# independent `awk -F'|'` split: an escaped pipe in a header cell used to shift every later
+# column name (L-7). gfm_nf's column count is already GFM-exact-index-aligned with cell(), so
+# walking 1..N and reading each column by index is the same rule cell()/col_index() use.
 header_cols() {
-  printf '%s' "$1" | awk -F'|' '
-    {s=""; for(i=2;i<=NF;i++){v=$i; gsub(/^[ \t]+|[ \t]+$/,"",v);
-      if(v!=""){s=s (s==""?"":", ") v}} print s}'
+  _hc_n=$(gfm_nf "$1")
+  _hc_out=""
+  _hc_i=1
+  while [ "$_hc_i" -le "$_hc_n" ]; do
+    _hc_v=$(cell "$1" "$_hc_i")
+    [ -n "$_hc_v" ] && _hc_out="${_hc_out:+$_hc_out, }$_hc_v"
+    _hc_i=$((_hc_i + 1))
+  done
+  printf '%s' "$_hc_out"
 }
-# is_bare_na <cell> : rc0 iff the cell is empty or a bare marker (a blank in a costume).
-# ONE definition of "a blank in a costume", shared by every gated cell in this file — never two
-# (BOARD-DOR-FIELDS design-gate MEDIUM-3). `?` joined the set with the Ready Success-metric gate:
-# a lone question mark is the most natural "I don't know yet" a board author types, and it is a
-# blank wearing punctuation. Widening here widens EVERY caller (Links, PR, Blocked on, Since,
-# Success metric) — deliberate: a bare `?` was never an acceptable value in any of them.
-is_bare_na() {
-  _v=$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-  [ -z "$_v" ] && return 0
-  printf '%s' "$_v" | grep -Eiq '^(-|—|n/?a|tbd|none|[?])$'
-}
-# is_na_reason <cell> : rc0 iff the cell is the kit idiom `N/A — <reason>` (reason present).
-is_na_reason() { printf '%s' "$1" | grep -Eiq '^[[:space:]]*n/?a[[:space:]]*(—|-)[[:space:]]*[^[:space:]]'; }
+# is_bare_na / is_na_reason — TBG-SEAM-MD-ARM WAVE 3: MOVED to backlog-lib.sh, byte-unchanged
+# apart from that file's header, for the SAME reason retro_cell/row_count/backtick_id moved there
+# (KW6-A2 T1.1 / BOARD-ROW-IDENTIFIER): seam_row_flag's `dor-metric` arm now grades the Ready
+# Success-metric cell with the SAME predicate this file's other gated cells use — a second copy of
+# that LOGIC (as opposed to a constant like READY_METRIC_COL) is exactly the drift backlog-lib.sh
+# exists to prevent. Both names are called below exactly as before; they now resolve from the
+# sourced library at :51.
 
 # _cell_diag <cell> : a board-author-controlled cell rendered safe to print in a diagnostic —
 # control bytes stripped and length-bounded. Board cells are untrusted bytes that reach a
@@ -117,18 +121,30 @@ _cell_diag() {
 # costs ~6-8 fixture lines — i.e. a fresh owner ack, which a residual of this size does not justify
 # spending mid-review. Follow-up row `HEADER-CAP-ANNOUNCE-LEG` is boarded. Until it lands, treat
 # this block as unproven: if you change it, re-measure the 300-column probe by hand.
+# BOARD-PIPE-ESCAPE T2 — routed through the shared GFM-exact parser (gfm_nf + cell), same rule
+# as header_cols above, but sanitizing PER COLUMN NAME (_cell_diag) and capping the COUNT
+# (_HEADER_COLS_MAX) rather than the joined string — see the header comment on the cap's honest
+# ceiling. Variable names are `_hcd_`-prefixed (distinct from header_cols' `_hc_`) — this file is
+# POSIX sh with no `local`, and the two functions must never be able to clobber each other's state.
 _HEADER_COLS_MAX=20
 _header_cols_diag() {
-  printf '%s' "$1" \
-    | awk -F'|' '{for(i=2;i<=NF;i++){v=$i; gsub(/^[ \t]+|[ \t]+$/,"",v); if(v!="") print v}}' \
-    | { _hc_out=""; _hc_n=0; _hc_extra=0
-        while IFS= read -r _hc; do
-          _hc_n=$((_hc_n + 1))
-          if [ "$_hc_n" -gt "$_HEADER_COLS_MAX" ]; then _hc_extra=$((_hc_extra + 1)); continue; fi
-          _hc_out="${_hc_out:+$_hc_out, }$(_cell_diag "$_hc")"
-        done
-        if [ "$_hc_extra" -gt 0 ]; then _hc_out="${_hc_out} ...(+${_hc_extra} more)"; fi
-        printf '%s' "$_hc_out"; }
+  _hcd_n=$(gfm_nf "$1")
+  _hcd_out=""; _hcd_seen=0; _hcd_extra=0
+  _hcd_i=1
+  while [ "$_hcd_i" -le "$_hcd_n" ]; do
+    _hcd_v=$(cell "$1" "$_hcd_i")
+    if [ -n "$_hcd_v" ]; then
+      _hcd_seen=$((_hcd_seen + 1))
+      if [ "$_hcd_seen" -gt "$_HEADER_COLS_MAX" ]; then
+        _hcd_extra=$((_hcd_extra + 1))
+      else
+        _hcd_out="${_hcd_out:+$_hcd_out, }$(_cell_diag "$_hcd_v")"
+      fi
+    fi
+    _hcd_i=$((_hcd_i + 1))
+  done
+  if [ "$_hcd_extra" -gt 0 ]; then _hcd_out="${_hcd_out} ...(+${_hcd_extra} more)"; fi
+  printf '%s' "$_hcd_out"
 }
 
 # is_empty_marker <trimmed-line> : rc0 iff the line is a bare `None.` empty-section idiom,
@@ -320,6 +336,9 @@ check_ready_metric() {
   [ -n "$_rm_rows" ] || return 0                  # no Ready table at all -> nothing to grade
   _rm_hdr=$(printf '%s\n' "$_rm_rows" | head -1)
   _rm_ci=$(col_index "$_rm_hdr" "$READY_METRIC_COL")
+  # TBG-SEAM-MD-ARM WAVE 2: SEAM_ROOT tracks this board's project dir (the same dirname convention
+  # every other routed call site in this repo uses) so seam_row_flag below resolves the SAME board.
+  SEAM_ROOT=$(dirname "$_rm_f")
   _rm_ln=0; _rm_eval=0
   while IFS= read -r _rm_row; do
     _rm_ln=$((_rm_ln + 1))
@@ -333,7 +352,42 @@ check_ready_metric() {
     _rm_eval=$((_rm_eval + 1))
     if [ -z "$_rm_ci" ]; then continue; fi        # column absent: count now, report ONCE below
     _rm_g=$(cell "$_rm_row" "$_rm_ci")
-    if is_bare_na "$_rm_g" || is_na_reason "$_rm_g"; then
+    # THE GATING DECISION routes through seam_row_flag's dor-metric arm (§4.2) — the ONE flag this
+    # gate reads on md, and the seam's md arm reads the SAME column by name via the SAME
+    # is_bare_na/is_na_reason predicate (WAVE 3: moved into backlog-lib.sh — ONE definition, called
+    # from both here and the seam, not a duplicate).
+    #
+    # THE DUAL PATH, AND WHY IT EXISTS: this works ONLY for a row that resolves to exactly one
+    # backticked id (§4.2's row identity). On THIS repo's real board, and under the shipped
+    # convention (CLAUDE.md §1 act 3, "lead your row's Item cell with the backticked id"), that is
+    # EVERY Ready row — so the seam is the PRODUCTION path today. A row that does NOT resolve — no
+    # backtick in its Item cell, or the id collides with another row on the SAME board — falls back
+    # to the DIRECT check below, UNCHANGED: a fail-safe for a malformed/legacy `md` row, never a
+    # bypass, and it is exactly today's coverage for that row (the seam cannot identify a row the
+    # board itself does not uniquely identify). NO SUCH FALLBACK EXISTS, OR IS NEEDED, ON A
+    # TRACKER ARM: every tracker row has a key BY CONSTRUCTION (it is how the tracker addresses the
+    # row at all), so the "no resolvable id" case this fallback covers is an `md`-only possibility,
+    # born of the format having a schema-optional identifier rather than a mandatory one.
+    _rm_id=$(backtick_id "$(cell "$_rm_row" 1)")
+    _rm_bad=0
+    # WAVE 4 (perf): no separate row_count pre-check here — seam_row_flag's own single-pass scan
+    # ALREADY establishes uniqueness (its rc is 1 for absent-or-ambiguous, exactly what a
+    # standalone `row_count == 1` guard would have gated on), so calling it twice per row was pure
+    # waste, not a correctness need. Only the cheap, non-scanning `-n "$_rm_id"` check stays as a
+    # front-door skip (never call the seam with an empty id).
+    if [ -n "$_rm_id" ]; then
+      _rm_flag=$(seam_row_flag "$_rm_id" dor-metric 2>/dev/null) && _rm_sfrc=0 || _rm_sfrc=$?
+    else
+      _rm_sfrc=1
+    fi
+    if [ "$_rm_sfrc" = 0 ] && { [ "$_rm_flag" = "yes" ] || [ "$_rm_flag" = "no" ]; }; then
+      [ "$_rm_flag" = "no" ] && _rm_bad=1
+    else
+      # fail-safe: no resolvable id, or the seam refused/could not answer -> the direct read,
+      # byte-identical to this gate's behaviour before the seam existed.
+      { is_bare_na "$_rm_g" || is_na_reason "$_rm_g"; } && _rm_bad=1
+    fi
+    if [ "$_rm_bad" = 1 ]; then
       echo "FAIL: Ready item '$(_cell_diag "$_rm_item")' — $READY_METRIC_COL is empty/placeholder (got '$(_cell_diag "$_rm_g")'); a Ready item must state how we will know it worked. A blank, a bare marker and 'N/A — reason' all mean the same thing: not Ready — demote it to Backlog (unrefined) rather than filling this cell"
       return 1
     fi
@@ -453,6 +507,38 @@ ruling_recorded() {
   return 1
 }
 
+# bc_warn <check-id> <text> : an ADVISORY finding — `WARN: <check-id>: <text>` on stderr (the kit's
+# ci-gates.sh shape), never a failure: the caller returns 0 / does not touch the failure accumulator.
+# Under GitHub Actions the same line is ALSO a `::warning::` annotation (stdout) so it shows on the PR
+# where the approver looks — a stderr line in a green job is one nobody reads. <text> carries the
+# pre-demotion wording and ends `— fix: <one line>`, so a grep for the old phrase still finds it.
+# printf '%s\n', NEVER echo: CI's sh is dash, whose echo expands backslash escapes, so board text
+# carrying a literal `\n::error::…` would become a REAL workflow command (security L-1). The
+# annotation payload is also encoded per the workflow-command rules (% -> %25, CR -> %0D, LF -> %0A).
+bc_warn() {
+  printf '%s\n' "WARN: $1: $2" >&2
+  [ "${GITHUB_ACTIONS-}" = true ] || return 0
+  _bw_enc=$(printf '%s\n' "$2" | awk '{ gsub(/%/, "%25"); gsub(/\r/, "%0D"); s = s (NR > 1 ? "%0A" : "") $0 } END { print s }')
+  printf '%s\n' "::warning::WARN: $1: $_bw_enc"
+}
+
+# _dispo_row_exists <board-file> <id> : row_exists's answer, from a one-pass id index (PREPUSH-CORE-DEFAULT).
+# row_exists re-parses the whole board per call; the Done pass asks it once per Disposition `row`
+# clause (~135x on the live board, ~5 min). The index (backlog-lib.sh::row_id_index) is built ONCE
+# per board and held in a shell variable — no temp file, nothing written anywhere, nothing to clean.
+# STALENESS: the cache key is the board PATH plus its `cksum` (content), so a different board, or the
+# same path rewritten between calls (selftest fixtures do this), rebuilds; an unreadable board
+# (empty cksum) is never cached, so it rebuilds each time exactly as row_exists would re-read it.
+# Inside a $(...) the cache dies with the subshell — slower, never wrong.
+_dispo_row_exists() {
+  _dx_sig=$(cksum < "$1" 2>/dev/null) || _dx_sig=""
+  if [ -z "$_dx_sig" ] || [ "${_dx_key-}" != "$1|$_dx_sig" ]; then
+    _dx_idx=$(row_id_index "$1")
+    _dx_key="$1|$_dx_sig"
+  fi
+  row_in_index "$_dx_idx" "$2"
+}
+
 # check_dispo <retro> <own-id> <board-file> <project-dir> <item-label> : leg 3 for ONE row. Emits
 # the FAIL text (naming the row, the clause, and the remedy) and returns 1, or returns 0.
 # GRAMMAR:  Disposition: row `ID` [, row `ID` …] | ruling `D-YYMMDD-N` [, …] | none — <reason>
@@ -469,13 +555,17 @@ ruling_recorded() {
 # anyway — is what the failure text says. Neither case lets an unresolved clause pass.
 check_dispo() {
   _dp_retro="$1"; _dp_own="$2"; _dp_bl="$3"; _dp_dir="$4"; _dp_lab="$5"
+  # $6 = "quiet": suppress the FORM warnings (the caller already WARNed about the missing marker)
+  # while every SUBSTANCE failure below still FAILs — a dangling pointer is never excused by form.
+  _dp_q="${6-}"
   _dp_rem="remedy: board the row, record the ruling, or write \`none — <reason>\`"
   case "$_dp_retro" in *"L1 retro"*) _dp_after=${_dp_retro#*L1 retro} ;; *) _dp_after="" ;; esac
   case "$_dp_after" in
     *"Disposition:"*) _dp_txt=${_dp_after##*Disposition:} ;;
     *)
-      echo "FAIL: Done item '$_dp_lab' — closed on/after $HITL6_DISPO_EPOCH but its retro carries no 'Disposition:' clause after the 'L1 retro' marker; a retro must say where its lessons went ($_dp_rem)"
-      return 1 ;;
+      # FORM, not substance (RECORD-GRAMMAR-ESSENTIALS, owner GO): a missing clause is advisory.
+      [ -n "$_dp_q" ] || bc_warn HITL-6-DISPO "Done item '$_dp_lab' — closed on/after $HITL6_DISPO_EPOCH but its retro carries no 'Disposition:' clause after the 'L1 retro' marker; a retro should say where its lessons went — fix: $_dp_rem"
+      return 0 ;;
   esac
   _dp_n=0
   # The `none — <reason>` clause is TERMINAL (its reason runs to the end of the cell), so it is
@@ -487,8 +577,9 @@ check_dispo() {
       _dp_scan=${_dp_txt%%none — *}
       _dp_nw=$(printf '%s' "${_dp_txt##*none — }" | tr -d '[:space:]')
       if [ "${#_dp_nw}" -lt "$HITL6_DISPO_MIN_REASON" ]; then
-        echo "FAIL: Done item '$_dp_lab' — its Disposition's 'none —' reason is too thin (${#_dp_nw} non-whitespace chars, floor $HITL6_DISPO_MIN_REASON); say why this retro boards nothing and changes no rule"
-        return 1
+        [ -n "$_dp_q" ] || bc_warn HITL-6-DISPO "Done item '$_dp_lab' — its Disposition's 'none —' reason is too thin (${#_dp_nw} non-whitespace chars, floor $HITL6_DISPO_MIN_REASON) — fix: say why this retro boards nothing and changes no rule"
+        # No return: a thin reason is form, but any clause BEFORE the `none —` must still resolve —
+        # returning here would let a dangling pointer ride past the scan below.
       fi
       _dp_n=$((_dp_n + 1)) ;;
   esac
@@ -498,7 +589,9 @@ check_dispo() {
     _dp_before=${_dp_rest%%\`*}; _dp_rest=${_dp_rest#*\`}
     case "$_dp_rest" in *'`'*) ;; *) break ;; esac      # an unterminated backtick ends the scan
     _dp_id=${_dp_rest%%\`*}; _dp_rest=${_dp_rest#*\`}
-    _dp_kw=$(printf '%s' "$_dp_before" | sed 's/[[:space:]]*$//')
+    # trailing-whitespace strip by parameter expansion (was a `printf | sed` fork per backtick pair —
+    # the retros carry many); byte-identical for a one-line cell.
+    _dp_kw=${_dp_before%"${_dp_before##*[![:space:]]}"}
     case "$_dp_kw" in
       row|*[!A-Za-z]row) _dp_kind=row ;;
       ruling|*[!A-Za-z]ruling) _dp_kind=ruling ;;
@@ -514,7 +607,7 @@ check_dispo() {
         echo "FAIL: Done item '$_dp_lab' — its Disposition names its OWN row \`$(_cell_diag "$_dp_id")\`; a lesson has to go somewhere other than the row it closes ($_dp_rem)"
         return 1
       fi
-      if ! row_exists "$_dp_bl" "$_dp_id"; then
+      if ! _dispo_row_exists "$_dp_bl" "$_dp_id"; then
         echo "FAIL: Done item '$_dp_lab' — its Disposition names row \`$(_cell_diag "$_dp_id")\`, which is on no section of the board; $_dp_rem"
         return 1
       fi
@@ -535,8 +628,8 @@ check_dispo() {
     fi
   done
   if [ "$_dp_n" -eq 0 ]; then
-    echo "FAIL: Done item '$_dp_lab' — its 'Disposition:' carries no recognisable clause; $_dp_rem"
-    return 1
+    [ -n "$_dp_q" ] || bc_warn HITL-6-DISPO "Done item '$_dp_lab' — its 'Disposition:' carries no recognisable clause — fix: $_dp_rem"
+    return 0
   fi
   return 0
 }
@@ -616,8 +709,19 @@ check_done_retro() {
     case "$_retro" in
       *"L1 retro"*) ;;
       *)
-        echo "FAIL: Done item '$(_cell_diag "$_item")' — closed '$(_cell_diag "$_closed")' (on/after $HITL6_RETRO_EPOCH, or undated) but carries no 'L1 retro' marker; a Done item must record an L1 retro"
-        return 1
+        # Demoted FAIL -> WARN (RECORD-GRAMMAR-ESSENTIALS): the marker is form. But a `Disposition:`
+        # clause that names a row/ruling which does not exist is SUBSTANCE (D-240930-1 Q2) and must
+        # still FAIL without the marker, so such a row is resolved by check_dispo under a synthetic
+        # marker prefix, in quiet mode (form WARNs suppressed; this WARN already covers the marker).
+        # A row with no `Disposition:` at all only repeats as a "no Disposition" WARN, so it is skipped.
+        bc_warn HITL-6-RETRO "Done item '$(_cell_diag "$_item")' — closed '$(_cell_diag "$_closed")' (on/after $HITL6_RETRO_EPOCH, or undated) but carries no 'L1 retro' marker; a Done item should record an L1 retro — fix: add an 'L1 retro' marker to the Retro/outcome cell"
+        case "$_retro" in
+          *"Disposition:"*)
+            if ! closed_pre_epoch "$_closed" "$HITL6_DISPO_EPOCH"; then
+              check_dispo "L1 retro $_retro" "$(backtick_id "$_item")" "$_f" "$_dr_dir" "$(_cell_diag "$_item")" quiet || return 1
+            fi ;;
+        esac
+        continue
         ;;
     esac
     # leg 3 — a DISPOSITION that resolves, for rows Closed on/after HITL6_DISPO_EPOCH. It runs
@@ -634,12 +738,13 @@ EOF
   return 0
 }
 
-# _arity_nf <row> : the row's FIELD count under GFM delimiter rules — `awk -F'|' NF` AFTER removing
-# every ESCAPED pipe (`\|`), which GFM renders as a literal and which therefore does NOT delimit a
-# column. NOTE the units: on a pipe-BOUNDED row (the canonical GFM form the template ships) NF
-# counts the two EMPTY boundary fields as well, so a 3-column row returns 5. The comparison below
-# is NF-to-NF so the units cancel; the FAIL MESSAGE subtracts them, because a board author counts
-# columns, not awk fields.
+# _arity_nf <row> : the row's COLUMN count under GFM delimiter rules, via gfm_nf (backlog-lib.sh) —
+# an escaped pipe (`\|`, an odd backslash run) is a literal and does NOT delimit; `\\|` (even run)
+# DOES. It returns a BARE column count (a 3-column row returns 3): no +2 boundary-field offset, so
+# neither the NF-to-NF comparison nor the FAIL MESSAGE below subtracts anything — a board author
+# counts columns, and gfm_nf already reports columns. (Pre-BOARD-PIPE-ESCAPE this was a raw
+# `awk -F'|' NF` that also counted the two empty pipe-boundary fields and the FAIL message
+# subtracted 2; that idiom is gone — do NOT reintroduce the offset. See the T2 note below.)
 # Counting raw pipes instead of GFM delimiters would false-FAIL every correctly-escaped row.
 # MEASURED on this kit's own board as this commit leaves it (2026-07-24), by comparing each row's
 # raw NF against its escape-aware NF: EIGHT rows carry `\|` legitimately — the BOARD-ROW-ARITY and
@@ -650,16 +755,37 @@ EOF
 # also contradict an already-shipped contract. Rows are named, NOT cited by line number: a line
 # citation goes stale on the next board edit, and an earlier draft of this comment cited a line
 # that was in fact the Done table's SEPARATOR row.
-# This is NOT a fix for BOARD-PIPE-ESCAPE (the shared cell() splitting on raw pipes, boarded
-# separately): it only makes THIS check count what a GFM renderer counts.
-_arity_nf() { printf '%s' "$1" | sed 's/\\|//g' | awk -F'|' '{print NF}'; }
+# BOARD-PIPE-ESCAPE T2 (H-2/C2) — the `sed 's/\\|//g'` idiom above is DELETED. It CONTRADICTS the
+# even-run rule this file otherwise honours: the pattern is a literal two-byte `\|`, so it strips
+# the trailing `\|` out of a genuine `\\|` (an even backslash run — a REAL delimiter under GFM) as
+# if it were an escaped `\|` (odd run — NOT a delimiter). A row carrying `\\|` therefore had its
+# real extra column silently deleted before counting, so its NF matched the header's and the arity
+# gate passed a row that was actually malformed — re-creating the exact H3 vacuity this file
+# otherwise closes (the metric gate then reads the WRONG cell of that malformed row). `gfm_nf`
+# (backlog-lib.sh) counts columns by the same backslash-run parse `cell()`/`col_index()` use, so
+# this file now has ONE column-counting rule instead of two, and they cannot drift apart again.
+# Units are unchanged: this is a bare column count (no +2 boundary-field offset — gfm_nf does not
+# count the two empty artifacts the raw `awk -F'|' NF` idiom used to), so the arithmetic below
+# updates from _ra_got/_ra_want to a bare NF-to-NF comparison; see _arity_one_section.
+_arity_nf() { gfm_nf "$1"; }
 
 # _ra_label <row> : the row's FIRST non-empty cell — the name a diagnostic calls the row by. Empty
 # output means EVERY cell is empty, which is also the TRUE-spacer test (see _arity_one_section).
-# Deliberately variable-free (a pure pipeline) so it cannot collide with any caller's namespace.
+# Uses `_ral_`-prefixed locals; every call site is a command substitution, so the disjoint prefix
+# cannot collide with any caller's namespace.
+# BOARD-PIPE-ESCAPE T2 — routed through the shared GFM-exact parser (gfm_nf + cell): an
+# independent raw split used to mislabel a row whose Item cell carries an escaped pipe left of
+# real content (e.g. `Refine\| me` raw-split into `Refine\` — non-empty, so the true-spacer test
+# still worked, but every diagnostic that named the row by this label named it WRONG). Called by
+# check_ready_metric's spacer test AND its FAIL-message row name (design row 8).
 _ra_label() {
-  printf '%s' "$1" | awk -F'|' '{for(i=2;i<=NF;i++){v=$i; gsub(/^[ \t]+|[ \t]+$/,"",v);
-    if(v!=""){print v; exit}}}'
+  _ral_n=$(gfm_nf "$1")
+  _ral_i=1
+  while [ "$_ral_i" -le "$_ral_n" ]; do
+    _ral_v=$(cell "$1" "$_ral_i")
+    if [ -n "$_ral_v" ]; then printf '%s' "$_ral_v"; return 0; fi
+    _ral_i=$((_ral_i + 1))
+  done
 }
 
 # _ra_body_rows <file> : a crude, whole-file count of CONTENT-BEARING table body rows — a row that
@@ -717,11 +843,10 @@ _arity_one_section() {
     _ra_got=$(_arity_nf "$_ra_row")
     BOARD_ARITY_CHECKED=$((BOARD_ARITY_CHECKED + 1))
     if [ "$_ra_got" != "$_ra_want" ]; then
-      # Report COLUMNS, not awk fields: NF counts the two empty boundary fields of a pipe-bounded
-      # row, so the raw numbers read one table wider than the one the author is looking at (the
-      # live board printed "19 against 10" for an 8-column table). A message a board author cannot
-      # count against is a message that sends them to the wrong cell.
-      echo "FAIL: '$_ra_sec' row '$_ra_item' carries $((_ra_got - 2)) columns but the section header declares $((_ra_want - 2)) — an unescaped '|' inside a cell shifts every later column and silently corrupts this row's metadata (escape it as '\\|')"
+      # BOARD-PIPE-ESCAPE T2: _arity_nf is now gfm_nf, which already counts COLUMNS (no pipe-bounded
+      # boundary-field offset to subtract — unlike the old raw `awk -F'|' NF` idiom this replaced),
+      # so the FAIL message reports $_ra_got/$_ra_want directly.
+      echo "FAIL: '$_ra_sec' row '$_ra_item' carries $_ra_got columns but the section header declares $_ra_want — an unescaped '|' inside a cell shifts every later column and silently corrupts this row's metadata (escape it as '\\|')"
       _ra_bad=1
     fi
   done <<EOF
@@ -767,11 +892,82 @@ check_row_arity() {
   return $_ra_agg
 }
 
+# _bctr_sig <signame> -> fix2 (security BLOCKER + MEDIUM). Called ONLY from the ONE top-level trap
+# installed near the dispatch `case` below — never inside bc_tracker_ready itself, so there is no
+# caller's trap here to clobber (that was the MEDIUM bug: a trap saved/restored INSIDE the library
+# function broke under bash, whose `trap` listing spells `SIGINT`/`SIGTERM`, not `INT`/`TERM`).
+# Removes bc_tracker_ready's temp files (if any exist yet) then RE-RAISES so the process actually
+# TERMINATES (128+signal) — the BLOCKER this closes: a handler that only removed files and returned
+# let `done < list` silently read nothing and print "OK ... graded=0" at rc0 after a real TERM.
+_bctr_sig() {
+  rm -f "${_bctr_lf:-}" "${_bctr_vf:-}" 2>/dev/null
+  trap - INT TERM
+  kill -"$1" "$$"
+}
+
+# _bctr_cleanup -> removes bc_tracker_ready's two mktemp files on the way out (the normal-return
+# path; the signal path is _bctr_sig above).
+_bctr_cleanup() {
+  rm -f "$_bctr_lf" "$_bctr_vf"
+}
+
+# bc_tracker_ready <head> -> the TRACKER ARM of the Ready-edge DoR gate (design §3e/§3f, P-4).
+# Reads seam_rows_in_state ready then the four dor-* flags per id WITHOUT $( ) (T9 carry, T7 seat
+# M-1: a $( ) call forks, so the seam's parse memo never survives across it) — SEAM_ROOT is already
+# set by check_dir's caller. rc0 OK (every flag 'yes'), rc1 FAIL (a bound 'no'/'n/a' dor-* value),
+# rc2 UNVERIFIED (the Ready list or a flag is absent) — worst rc across every row wins (2 over 1).
+# This gate's own vocabulary (OK/FAIL), never 'WAITING' (P-4 correction to the inherited design).
+# fix1 R3 (F-9): grades ONLY the four Ready-edge dor-* flags — `outcome-recorded` is a Done-edge
+# flag and is never graded here.
+# fix2 (security BLOCKER, independent of the top-level trap near the dispatch `case`): fail CLOSED
+# if the Ready list ever vanishes or shrinks between the write below and the read — never let a
+# missing/short list read as a clean 0. `[ -r ]`, never a bare `exec <`: a bare exec's redirection
+# failure is shell-FATAL on some shells (dash) even guarded by `||` — a compound command's own
+# `< file` (the while loop below) fails as an ordinary, recoverable nonzero status, portably.
+bc_tracker_ready() {
+  SEAM_HEAD="$1"
+  _bctr_lf=$(mktemp); _bctr_vf=$(mktemp)
+  _bctr_lrc=0; seam_rows_in_state ready > "$_bctr_lf" 2>"$_bctr_vf" || _bctr_lrc=$?
+  if [ "$_bctr_lrc" -ne 0 ]; then
+    # fix1 R2 (L-1): relay the seam's own fixed-text refusal above the generic line — never the record's own bytes.
+    [ -s "$_bctr_vf" ] && cat "$_bctr_vf" >&2
+    echo "UNVERIFIED: backlog-current (tracker) — the Ready list is absent or truncated on the tracker record — cannot grade Definition-of-Ready" >&2
+    _bctr_cleanup; return 2
+  fi
+  _bctr_want=$(wc -l < "$_bctr_lf" 2>/dev/null) || _bctr_want=-1
+  if [ ! -r "$_bctr_lf" ]; then echo "UNVERIFIED: backlog-current (tracker) — the Ready list vanished before it could be read — cannot grade Definition-of-Ready" >&2; _bctr_cleanup; return 2; fi
+  _bctr_worst=0; _bctr_n=0
+  while IFS= read -r _bctr_id; do
+    [ -n "$_bctr_id" ] || continue
+    _bctr_n=$((_bctr_n + 1))
+    for _bctr_flag in dor-acceptance dor-metric dor-size dor-risk; do
+      _bctr_frc=0
+      seam_row_flag "$_bctr_id" "$_bctr_flag" > "$_bctr_vf" 2>/dev/null || _bctr_frc=$?
+      if [ "$_bctr_frc" -ne 0 ]; then
+        echo "UNVERIFIED: backlog-current (tracker) — row '$_bctr_id' — $_bctr_flag is not carried on the tracker record (conf key field.${_bctr_flag#dor-}) — cannot grade Definition-of-Ready" >&2
+        [ "$_bctr_worst" -lt 2 ] && _bctr_worst=2
+        continue
+      fi
+      IFS= read -r _bctr_v < "$_bctr_vf" || _bctr_v=""
+      if [ "$_bctr_v" != "yes" ]; then
+        echo "FAIL: backlog-current (tracker) — row '$_bctr_id' — $_bctr_flag is '$_bctr_v', not 'yes' — not Ready" >&2
+        [ "$_bctr_worst" -lt 1 ] && _bctr_worst=1
+      fi
+    done
+  done < "$_bctr_lf"
+  if [ "$_bctr_n" -ne "$_bctr_want" ]; then echo "UNVERIFIED: backlog-current (tracker) — graded $_bctr_n of $_bctr_want Ready rows — the list was cut short — cannot grade Definition-of-Ready" >&2; _bctr_worst=2; fi
+  _bctr_cleanup
+  [ "$_bctr_worst" -eq 0 ] && echo "OK: backlog-current (tracker) — Ready rows graded=$_bctr_n; every dor-* flag is 'yes'"
+  return "$_bctr_worst"
+}
+
 # check_dir <project-dir> -> routes the three N/A cases; for an in-use BACKLOG.md, parses the
 # state tables. N/A is always a pass (never a false FAIL). OK/FAIL reflect the board.
 check_dir() {
   _dir="$1"
-  _tok=$(resolve_backend "$_dir")
+  # shellcheck disable=SC2034  # SEAM_ROOT is read by the sourced seam_* functions (backlog-lib.sh) — shellcheck cannot trace a global consumed across a sourced-function boundary.
+  SEAM_ROOT="$_dir"
+  _tok=$(seam_backend)
   if [ -z "$_tok" ]; then
     echo "N/A: $_dir — no backlog backend declared (CLAUDE.md has no filled 'Backlog backend' field) — skipping"
     return 0
@@ -792,6 +988,17 @@ check_dir() {
   # (`conformance/backlog-adapters.sh` still owns backend-NAME agreement; that is a different claim
   # from board-bound governance and it was never what this route attested.)
   if [ "$_tok" != "md" ]; then
+    # TBG-READER-FLAGS-LIST T9 (design §3e/§3f, P-4, the H-4 switch): a SET SEAM_RECORD (mapped
+    # from $KIT_TRACKER_RECORD below) routes through the tracker arm — bound (rc0/rc1 on this
+    # gate's own OK/FAIL vocabulary) or UNVERIFIED (rc2), NEVER waivable, NEVER falling through to
+    # not_enforced_notice. UNSET SEAM_RECORD keeps today's behaviour byte-identical (rc3 NOT
+    # ENFORCED, waiver ladder preserved) — mirrors loop-state.sh::check_row's own H-4 branch.
+    SEAM_RECORD="${KIT_TRACKER_RECORD:-}"
+    if seam_tracker_record_set; then
+      _bc_trc=0
+      bc_tracker_ready "${_BC_HEAD:-}" || _bc_trc=$?
+      return "$_bc_trc"
+    fi
     _bc_ne=0
     not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" || _bc_ne=$?
     return "$_bc_ne"
@@ -856,6 +1063,33 @@ selftest() {
   # earlier this slice, and honours this project's documented history of leaked conformance mktemp
   # trees filling the dev machine. `[ -n ]` guards the empty-var case so this can never widen.
   trap '[ -n "${base:-}" ] && rm -rf "$base"; :' EXIT INT TERM
+
+  # ===== BOARD-PIPE-ESCAPE T1 — backlog-lib.sh's shared parser, proven BEHAVIOURALLY here ====
+  # backlog-lib.sh is sourced-only and sits in conformance/aggregate-exclusions.txt (never
+  # mutation-swept) — see its own header comment. This is its one behavioural harness: cell(),
+  # gfm_cell() (now a thin alias) and gfm_nf() proven against the GFM backslash-run rule (a `|`
+  # is a delimiter iff preceded by an EVEN-length run of `\`), RAW (not unescaped) per L-8.
+  _pp_row1='| a\|b | c |'                      # one backslash before the pipe -> escaped (odd run)
+  assert_eq_str "$(cell "$_pp_row1" 1)" 'a\|b' "parser/escaped-pipe: cell(row,1) rejoins across a single \\ before |"
+  assert_eq_str "$(cell "$_pp_row1" 2)" 'c' "parser/escaped-pipe: cell(row,2) reads the column AFTER the escaped pipe"
+  assert_eq_str "$(gfm_nf "$_pp_row1")" 2 "parser/escaped-pipe: gfm_nf counts 2 GFM columns (the escaped pipe is not a delimiter)"
+
+  _pp_row2='| a\\|b | c |'                     # two backslashes before the pipe -> NOT escaped (even run)
+  assert_eq_str "$(cell "$_pp_row2" 1)" 'a\\' "parser/escaped-backslash-pipe: cell(row,1) stops at the real delimiter after an even run of \\"
+  assert_eq_str "$(cell "$_pp_row2" 2)" 'b' "parser/escaped-backslash-pipe: cell(row,2) reads the column the real delimiter opened"
+  assert_eq_str "$(gfm_nf "$_pp_row2")" 3 "parser/escaped-backslash-pipe: gfm_nf counts 3 GFM columns (\\\\| IS a delimiter)"
+
+  _pp_row3='| foo\ | bar |'                    # a trailing backslash in CONTENT, then a real (space-padded) delimiter
+  assert_eq_str "$(cell "$_pp_row3" 1)" 'foo\' "parser/trailing-backslash: cell(row,1) keeps a content-ending backslash and still closes at the next real pipe"
+  assert_eq_str "$(cell "$_pp_row3" 2)" 'bar' "parser/trailing-backslash: cell(row,2) reads the column after it"
+
+  # gfm_cell is now a thin alias of cell() (T1 fold) — same three assertions must hold through it.
+  assert_eq_str "$(gfm_cell "$_pp_row1" 1)" 'a\|b' "parser/gfm_cell-alias: gfm_cell(row,1) matches cell() on the escaped-pipe row"
+  assert_eq_str "$(gfm_cell "$_pp_row2" 1)" 'a\\' "parser/gfm_cell-alias: gfm_cell(row,1) matches cell() on the escaped-backslash-pipe row"
+
+  # retro_cell re-expressed on the shared parser (T1 fold) — same escaped-pipe row, last column.
+  _pp_hdr='| Item | Retro |'
+  assert_eq_str "$(retro_cell "$_pp_row1" "$_pp_hdr" 1)" 'a\|b' "parser/retro_cell-shared: retro_cell(row,hdr,1) matches cell() on the escaped-pipe row"
 
   # ===== T2.0 — backend resolution / routing (annotated template forms) ================
 
@@ -1248,6 +1482,100 @@ EOF
 | | | |
 EOF
   assert_fail "$d" "Ready item 'Refine me'" "bad-ready-na-reason-metric: 'N/A — reason' metric -> FAIL (demote, do not fill)"
+
+  # bad-ready-escaped-item-pipe-metric/ — BOARD-PIPE-ESCAPE leg 1 (design §6.1 leg 1 / H3). A Ready
+  # row whose ITEM cell carries an escaped pipe LEFT of the metric column, with an EMPTY metric cell.
+  # This fixture exercises BOTH halves of the defect, against the PRE-SLICE (main) raw parser:
+  #   (H3 metric-misread) the old raw `cell()` splits `Refine\| me` into `Refine\` + ` me`, shifting
+  #   every later column one right, so `cell(row, metric-col)` reads `#99` (non-empty) and the row
+  #   PASSES the Ready-metric gate VACUOUSLY — the exact H3 vacuity (measured on main: metric reads
+  #   `#99`, not empty). T1's GFM-exact `cell()`/`col_index()` fix this: the metric column now reads
+  #   the true (empty) cell and the row FAILs.
+  #   (_ra_label mislabel, design row 8) T2's conversion of `_ra_label` additionally fixes the row's
+  #   NAME in every diagnostic: the pre-T2 independent raw split labelled it `Refine\` (truncated but
+  #   non-empty, so the true-spacer test still passed and the row was still evaluated) instead of the
+  #   real GFM cell `Refine\| me`.
+  # The assertion below (`assert_fail ... "Ready item 'Refine\| me'"`) is non-vacuous against the
+  # unconverted code on BOTH counts: vs main the row would not FAIL at all (vacuous metric pass, no
+  # message); vs T1-without-T2 it FAILs but the message names it `Refine\'` (no "me"). Post-conversion
+  # it FAILs AND names the true GFM item cell verbatim (RAW convention — `\|` preserved, not unescaped).
+  d="$base/bad-ready-escaped-item-pipe-metric"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| Refine\| me | agent | #99 |  |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "Ready item 'Refine\| me'" \
+    "bad-ready-escaped-item-pipe-metric: empty metric on a row with an escaped pipe left of it -> FAIL, naming the TRUE (GFM) item label"
+
+  # good-ready-metric-seam-routed/ & bad-ready-metric-seam-routed/ (TBG-SEAM-MD-ARM WAVE 2,
+  # non-vacuity) — every fixture ABOVE uses a bare 'Refine me' Item cell (no backticked id), so
+  # check_ready_metric's dor-metric gating decision falls back to its pre-seam direct read for
+  # every leg above: byte-identical, but none of them actually EXERCISE seam_row_flag's dor-metric
+  # arm. These two legs use a properly backticked Item id (the shipped board convention, CLAUDE.md
+  # §1 act 3) so the seam path — not the fallback — is what runs, giving the new arm a real,
+  # production-routed positive AND a load-bearing negative.
+  d="$base/good-ready-metric-seam-routed"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| `SEAM-RM-1` | agent | #99 | first-week drop-off 38% -> under 15% |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_ok "$d" "good-ready-metric-seam-routed: a backticked-id row with a populated metric -> PASS, through the seam"
+
+  d="$base/bad-ready-metric-seam-routed"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| `SEAM-RM-2` | agent | #99 |  |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "Ready item '\`SEAM-RM-2\`'" \
+    "bad-ready-metric-seam-routed: a backticked-id row with an empty metric -> FAIL, through the seam (load-bearing negative)"
 
   # bad-ready-missing-metric-column/ — the COLUMN-ABSENT semantics (design-gate HIGH-1): a Ready
   # table carrying content rows but NO metric column FAILs, naming the migration. The
@@ -2247,7 +2575,10 @@ EOF
 |------|--------|---------------|
 | Add login | 2026-07-25 | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
 EOF
-  assert_fail "$d" "carries no 'L1 retro' marker" "bad-done-postepoch-no-marker: post-epoch, no marker -> FAIL"
+  assert_warn "$d" "HITL-6-RETRO" "carries no 'L1 retro' marker" "bad-done-postepoch-no-marker: post-epoch, no marker -> WARN, rc 0 (form, demoted)"
+  # The annotation leg (design §2): under GITHUB_ACTIONS=true the same WARN is ALSO a ::warning::.
+  assert_warn_annot "$d" "HITL-6-RETRO" on "warn-annot/on: GITHUB_ACTIONS=true -> the WARN is also emitted as ::warning::"
+  assert_warn_annot "$d" "HITL-6-RETRO" off "warn-annot/off: GITHUB_ACTIONS unset -> stderr WARN only, no ::warning::"
 
   # good-done-preepoch-no-marker/ — the SAME row, Closed one day BEFORE the epoch -> PASS. Guards
   # against over-gating the historical rows. HONEST: this leg is green before AND after the gate
@@ -2315,7 +2646,7 @@ EOF
 |------|--------|---------------|
 | Add login | 2026-07-24 | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
 EOF
-  assert_fail "$d" "carries no 'L1 retro' marker" "bad-done-onepoch-no-marker: ON the epoch, no marker -> FAIL (locks >= inclusivity)"
+  assert_warn "$d" "HITL-6-RETRO" "carries no 'L1 retro' marker" "bad-done-onepoch-no-marker: ON the epoch, no marker -> WARN (locks >= inclusivity)"
 
   # bad-done-malformed-date/ — an unparseable Closed cell must FAIL CLOSED (treated as post-epoch),
   # never skipped. Also the BOARD-ROW-ARITY mitigation: a stray '|' shifting columns lands here.
@@ -2346,7 +2677,7 @@ EOF
 |------|--------|---------------|
 | Add login | someday | shipped to production on the Friday and ramped without incident; the session store moved to Redis and p95 login latency dropped from 410ms to 120ms. |
 EOF
-  assert_fail "$d" "carries no 'L1 retro' marker" "bad-done-malformed-date: unparseable Closed -> FAIL CLOSED"
+  assert_warn "$d" "HITL-6-RETRO" "carries no 'L1 retro' marker" "bad-done-malformed-date: unparseable Closed -> still IN scope, WARN (never skipped)"
 
   # bad-done-missing-column/ — a Done table whose header renames 'Closed' to 'Shipped' -> FAIL. Locks
   # the defensive branch that fails when either graded column is absent (HITL-6 cannot grade a retro
@@ -2470,7 +2801,7 @@ EOF
   # D− a reason that is only PADDING -> FAIL. The floor counts NON-WHITESPACE characters precisely
   # so twenty spaces cannot clear it (vet M2).
   d="$base/dispo-none-pad"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: none —          x"
-  assert_fail "$d" "reason is too thin" "dispo/none-padded: a whitespace-padded reason -> FAIL"
+  assert_warn "$d" "HITL-6-DISPO" "reason is too thin" "dispo/none-padded: a whitespace-padded reason -> WARN, rc 0 (form, demoted)"
 
   # D− TWO clauses, one resolving and one not -> FAIL (vet H3). "At least one clause" is a floor on
   # COUNT, never a disjunction on TRUTH: a green here would let any unresolved citation ride along
@@ -2481,14 +2812,19 @@ EOF
   # D− a post-epoch row with NO Disposition at all -> FAIL. This is the leg that makes leg 3 more
   # than a syntax check on rows that already carry one.
   d="$base/dispo-absent"; _dispo_proj "$d" 2026-09-03 "$_DR"
-  assert_fail "$d" "carries no 'Disposition:'" "dispo/absent: post-epoch row with no Disposition -> FAIL"
+  assert_warn "$d" "HITL-6-DISPO" "carries no 'Disposition:'" "dispo/absent: post-epoch row with no Disposition -> WARN, rc 0 (form, demoted)"
+  assert_warn_annot "$d" "HITL-6-DISPO" on "warn-annot/dispo-on: GITHUB_ACTIONS=true -> the Disposition WARN is also a ::warning::"
+
+  # D0 a `Disposition:` whose text holds NO recognisable clause -> WARN (form), rc 0.
+  d="$base/dispo-noclause"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: see the review record"
+  assert_warn "$d" "HITL-6-DISPO" "carries no recognisable clause" "dispo/no-clause: a Disposition with no row/ruling/none clause -> WARN, rc 0 (form, demoted)"
 
   # D− a `Disposition:` that appears only BEFORE the 'L1 retro' marker -> FAIL. The word already
   # occurs in retro prose on the live board, so the parse is anchored after the marker; without
   # this leg an anchorless parse would pass and the anchor would be unfalsifiable.
   d="$base/dispo-before-marker"
   _dispo_proj "$d" 2026-09-03 "Disposition: row \`OTHER-ROW\` was the plan before review. $_DR"
-  assert_fail "$d" "carries no 'Disposition:'" "dispo/before-marker: a Disposition before the marker does not count -> FAIL"
+  assert_warn "$d" "HITL-6-DISPO" "carries no 'Disposition:'" "dispo/before-marker: a Disposition before the marker does not count -> WARN (anchor still live)"
 
   # D+ TWO `Disposition:` occurrences after the marker, the EARLIER one unresolvable and the LATER
   # one valid -> PASS. The header says the LAST occurrence is parsed; without this leg that sentence
@@ -2502,7 +2838,26 @@ EOF
   # D− an UNPARSEABLE Closed cell + no Disposition -> FAIL CLOSED (in scope, never skipped), the
   # same posture leg 2 takes.
   d="$base/dispo-baddate"; _dispo_proj "$d" someday "$_DR"
-  assert_fail "$d" "carries no 'Disposition:'" "dispo/bad-date: an unparseable Closed date is IN scope -> FAIL"
+  assert_warn "$d" "HITL-6-DISPO" "carries no 'Disposition:'" "dispo/bad-date: an unparseable Closed date is IN scope -> WARN"
+
+  # D− NO 'L1 retro' marker but a `Disposition:` naming a row on NO section -> FAIL (substance is never
+  # excused by the missing marker: D-240930-1 Q2). The marker WARN may fire; the rc must still be 1.
+  _NM='Shipped on a green first run; the escaped-pipe parse and the epoch boundary were both re-measured against the live board before the push, and nothing needed backfill. '
+  d="$base/dispo-nomarker-dangling"; _dispo_proj "$d" 2026-09-03 "${_NM}Disposition: row \`NOPE\`"
+  assert_fail "$d" "is on no section of the board" "dispo/nomarker-dangling: no marker + a dangling row pointer -> still FAIL"
+
+  # D− a THIN `none —` AFTER a dangling row clause -> FAIL: the thin reason is form, but the scan must
+  # keep going and resolve the clause before it (an early return would let the pointer ride past).
+  d="$base/dispo-thin-none-dangling"; _dispo_proj "$d" 2026-09-03 "${_DR}Disposition: row \`NOPE\`, none — x"
+  assert_fail "$d" "is on no section of the board" "dispo/thin-none-dangling: a thin none must not end the scan -> FAIL"
+
+  # WARN-injection hardening (security L-1). A board cell carrying a LITERAL backslash-n then a workflow
+  # command must never yield a line that STARTS with `::error::` (dash's echo would expand the `\n`).
+  d="$base/warn-inject"; _DISPO_ITEM=' x\n::error::boom'; _dispo_proj "$d" 2026-09-03 "$_DR"; _DISPO_ITEM=''
+  assert_warn_no_cmd "$d" "warn-inject: a literal \\n::error:: in a board cell never becomes a workflow command line"
+  # The annotation payload is encoded per the workflow-command rules: a `%` in the text is `%25`.
+  d="$base/warn-percent"; _DISPO_ITEM=' 100% done'; _dispo_proj "$d" 2026-09-03 "$_DR"; _DISPO_ITEM=''
+  assert_warn_annot_has "$d" "100%25 done" "warn-encode: a % in the WARN text appears as %25 in the ::warning:: line"
 
   # D+ a GFM-correct escaped pipe before the Disposition -> PASS. Without retro_cell the clause
   # lands in a shifted field and a valid row reds.
@@ -2592,6 +2947,41 @@ EOF
 EOF
   assert_fail "$d" "carries 3 columns but the section header declares 4" \
     "bad-arity-missing: a Ready row with a MISSING column -> FAIL"
+
+  # bad-arity-double-backslash-pipe/ — BOARD-PIPE-ESCAPE T2, leg 3 (design §6.1 leg 3 / H-2/C2).
+  # A Ready row carrying `\\|` (an EVEN backslash run — a REAL GFM delimiter, not an escape) in its
+  # Item cell, against a 4-column header. The row is genuinely malformed: `\\|` really does split
+  # the cell, so it carries 5 GFM columns against the header's 4 — exactly the metadata-shift arity
+  # exists to catch. The pre-T2 `_arity_nf` (`sed 's/\\|//g' | awk NF`) CONTRADICTS the even-run
+  # rule: its sed pattern deletes the trailing two bytes of `\\|` as if they were an escaped `\|`,
+  # silently removing the real delimiter before counting — so old and new field counts both land on
+  # the header's count and the row passes arity vacuously (H3 re-created: the metric gate then reads
+  # the WRONG cell of this malformed row — its real column 4 is `#99`, not the metric text). Measured
+  # pre-fix: `check_dir` returns rc0/OK on this exact board. This assertion REDS against the
+  # unconverted sed idiom (rc0, no FAIL text) and GREENs once `_arity_nf` is `gfm_nf`.
+  d="$base/bad-arity-double-backslash-pipe"; mkdir -p "$d"; _claude_md "$_MD" "$d/CLAUDE.md"
+  cat > "$d/BACKLOG.md" <<'EOF'
+# B
+## Ready
+
+| Item | Owner | Links | Success metric / hypothesis |
+|------|-------|-------|-----------------------------|
+| foo\\|bar | agent | #99 | m |
+
+## In Progress
+
+| Item | Owner | Started | Links |
+|------|-------|---------|-------|
+| | | | |
+
+## In Review
+
+| Item | Reviewer | PR |
+|------|----------|----|
+| | | |
+EOF
+  assert_fail "$d" "carries 5 columns but the section header declares 4" \
+    "bad-arity-double-backslash-pipe: a real \\\\| delimiter inside a cell -> FAIL, not a vacuous PASS"
 
   # good-arity-exact/ — the positive liveness anchor, COUNTED: three well-formed body rows across
   # three sections, plus a spacer row that must NOT be counted. `board-arity-checked=3` is the
@@ -2856,6 +3246,572 @@ EOF
   # TEXT but is not a row's Item-cell id counts 0. `a` is a substring of `Add login`.
   assert_rowcount "$d/uniq.md" "a" 0 "rid/count-substring: a bare substring of the board counts 0 rows"
 
+  # ===== PREPUSH-CORE-DEFAULT — the one-pass id index must answer exactly as row_exists =========
+  # row_in_index(row_id_index B) is a faster route to row_exists's answer and MUST NOT diverge from
+  # it. Every id is graded against BOTH and against a hand-stated <want>, so a pair of equally wrong
+  # answers (both always-true, both always-false) cannot pass. RED shapes: an index that is always
+  # true fails every absent/near-miss leg; always false (or an empty index) fails every present leg;
+  # a substring/regex match fails the near-miss and the `.`-metacharacter legs.
+  d="$base/t_rid_index"; mkdir -p "$d"
+  # NB: the last heading is `## Backlog unrefined` ON PURPOSE: row_count passes "Backlog (unrefined)" to
+  # section_rows, whose awk treats the parens as an ERE GROUP, so the live heading "(unrefined)" never
+  # matches and that section is invisible to row_exists today. The index mirrors that quirk; the fixture
+  # uses the spelling the pattern really matches so all seven walked sections are exercised.
+  cat > "$d/multi.md" <<'EOF'
+# Proj — Backlog
+
+## Ready
+
+| Item | Owner |
+|------|-------|
+| `ALPHA-1` — first | agent |
+
+## In Progress
+
+| Item | Owner |
+|------|-------|
+| `BETA-2` — second | agent |
+| | |
+
+## In Review
+
+| Item | Reviewer |
+|------|----------|
+| `GAMMA-3` — third | me |
+
+## Blocked
+
+| Item | Blocked on |
+|------|------------|
+| `DELTA-4` — fourth | dep |
+
+## Released
+
+| Item | Released |
+|------|----------|
+| `EPS-5` — fifth | 2026-07-01 |
+
+## Done
+
+| Item | Closed | Retro/outcome |
+|------|--------|---------------|
+| `ZETA.6` — sixth | 2026-07-01 | done |
+
+## Backlog unrefined
+
+| Item | Notes |
+|------|-------|
+| `ETA-7` — seventh | idea |
+EOF
+  # a second board: ALPHA-1 gone, OMEGA-9 new, the rest identical
+  sed -e '/ALPHA-1/d' -e 's/| `ETA-7` — seventh | idea |/| `ETA-7` — seventh | idea |\
+| `OMEGA-9` — new | idea |/' "$d/multi.md" > "$d/other.md"
+  assert_idx() {   # <board> <id> <want 0|1> <label>
+    if row_exists "$1" "$2"; then _ix_re=1; else _ix_re=0; fi
+    _ix_idx=$(row_id_index "$1")
+    if row_in_index "$_ix_idx" "$2"; then _ix_ri=1; else _ix_ri=0; fi
+    if [ "$_ix_re" = "$3" ] && [ "$_ix_ri" = "$3" ]; then echo "selftest PASS: $4"
+    else echo "selftest FAIL: $4 (row_exists=$_ix_re row_in_index=$_ix_ri want=$3)"; st_fail=1; fi
+  }
+  for _ix_id in ALPHA-1 BETA-2 GAMMA-3 DELTA-4 EPS-5 ZETA.6 ETA-7; do
+    assert_idx "$d/multi.md" "$_ix_id" 1 "rid/index-parity: $_ix_id (one section each, all seven) resolves through the index as through row_exists"
+  done
+  for _ix_id in NO-SUCH-ROW OMEGA-9 ALPH ALPHA-1X LPHA-1 ZETAX6 A; do
+    assert_idx "$d/multi.md" "$_ix_id" 0 "rid/index-parity-absent: '$_ix_id' (absent, prefix/suffix/near-miss or regex-lookalike) is absent through the index as through row_exists"
+  done
+  assert_idx "$base/t_rid_boards/uniq.md" "ONE-ROW" 1 "rid/index-parity: the uniq fixture's id resolves through the index"
+  assert_idx "$base/t_rid_boards/dup.md"  "ONE-ROW" 1 "rid/index-parity: a duplicated id still EXISTS through the index (existence, never uniqueness)"
+  assert_idx "$base/t_rid_boards/one.md"  "ONE-ROW" 0 "rid/index-parity: a board with no backticked ids resolves nothing"
+  # Stale-index guard: _dispo_row_exists (the cached lookup check_dispo uses) called on DIFFERENT
+  # boards in sequence in THIS shell must answer for the board it is given. RED: a cache keyed on
+  # nothing (or on a constant) answers the second board from the first board's index.
+  assert_cached() {   # <board> <id> <want 0|1> <label>
+    if _dispo_row_exists "$1" "$2"; then _ix_c=1; else _ix_c=0; fi
+    if [ "$_ix_c" = "$3" ]; then echo "selftest PASS: $4"
+    else echo "selftest FAIL: $4 (cached lookup=$_ix_c want=$3)"; st_fail=1; fi
+  }
+  assert_cached "$d/multi.md" ALPHA-1 1 "rid/index-stale-1: first board answers its own row"
+  assert_cached "$d/other.md" ALPHA-1 0 "rid/index-stale-2: the SECOND board does not inherit the first board's index"
+  assert_cached "$d/other.md" OMEGA-9 1 "rid/index-stale-3: the second board's own new row resolves"
+  assert_cached "$d/multi.md" OMEGA-9 0 "rid/index-stale-4: switching back drops the second board's row"
+  # Same PATH, new CONTENT (a fixture rewritten in place): the key carries a content checksum.
+  cp "$d/other.md" "$d/rewrite.md"
+  assert_cached "$d/rewrite.md" ALPHA-1 0 "rid/index-stale-5: a board path read before the rewrite"
+  cp "$d/multi.md" "$d/rewrite.md"
+  assert_cached "$d/rewrite.md" ALPHA-1 1 "rid/index-stale-6: the SAME path rewritten with new content is re-indexed"
+
+  # ===== TBG-READER-FLAGS-LIST T9 — the `backlog-current` tracker arm (design §3e/§3f, P-4) =====
+  # H-1: every record below is produced by the REAL, unmodified tracker-read.sh/tracker-conf.sh
+  # (never a hand-authored fixture) through a throwaway root this leg builds at test time — mirrors
+  # loop-state.sh's own H-1 round-trip idiom (~:2523). The fake tracker-jira.sh is ONE script whose
+  # per-case behaviour is driven entirely by env vars (never a different inline printf shape per
+  # case). Every conf below sets its OWN list_cap — the T9 orchestrator note: the SHARED
+  # conformance/fixtures/tracker-jira/ conf carries none and would omit every list; never reused.
+  # T10-harden-B D2: the reader (T5d) now maps field.risk for real (customfield_N/description ->
+  # field-empty; label:<p> -> label-counts, the same closed dispatch every other dor-* flag uses) —
+  # every leg below gets dor-risk from a REAL round trip (field.risk=customfield_10088 on the fake
+  # adapter's field-empty answer), never a backfilled copy. The former HONEST GAP no longer applies.
+  _t9dir=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+  _t9head="24ceb345e6d66bb5c4702c947a9de7a862e65a74"   # this task's own throwaway git commit (T9)
+  _t9_ops="$_t9dir/conformance/fixtures/tracker-jira/ops"   # B4 drift lock
+
+  # B4 drift lock: status-ids and the present-empty list case now `cat` the SAME adapter-proven
+  # ops/*.out files T2/T3/T5/T8 prove against the real adapter (never an inline printf for a shape
+  # a tracked file already covers). get-issue also carries assignee-present now (the real adapter's
+  # shape). The other per-leg shapes below (a single subject id's list/field-empty/label-counts)
+  # have NO tracked .out fixture — every tracked fixture here is a multi-id shape (field-empty.out:
+  # AB-2+AB-3; label-counts.out: AB-1..AB-4; list-cloud*.out: 2-5 ids) — so they stay inline printfs,
+  # named per branch below (the exception the brief allows; boarded for the owner).
+  cat > "$base/t9-adapter.sh" <<'EOF9ADAPTER'
+#!/bin/sh
+case "$1" in
+  get-issue) printf 'key\t%s\n' "$T9_KEY"; printf 'status-id\t%s\n' "$T9_STATUSID"; printf 'status-name\t%s\n' "$T9_STATUSNAME"; printf 'assignee-present\ttrue\n' ;;
+  permissions) echo ok ;;
+  status-ids) cat "$T9_OPS/status-ids-cloud.out" ;;
+  list-in-states)
+    if [ -n "${T9_LISTRC:-}" ]; then exit "$T9_LISTRC"; fi
+    if [ -z "${T9_LIST:-}" ]; then cat "$T9_OPS/list-cloud-empty.out"; exit 0; fi
+    # B4 exception: every non-empty case here is a single-subject id — no tracked .out fixture
+    # is a single-id list (list-cloud-ready.out is AB-2+AB-3) — stays an inline printf.
+    printf '%s\n' "$T9_LIST"
+    ;;
+  field-empty)
+    # B4 exception: no tracked field-empty .out fixture matches this task's single-subject
+    # empty/non-empty shapes (field-empty.out is the two-id AB-2/AB-3 shape) — stays inline.
+    case "$5" in
+      description) if [ -n "${T9_ACC:-}" ]; then printf '%s\n' "$T9_ACC"; fi ;;
+      customfield_10077) if [ -n "${T9_MET:-}" ]; then printf '%s\n' "$T9_MET"; fi ;;
+      customfield_10088) if [ -n "${T9_RISK:-}" ]; then printf '%s\n' "$T9_RISK"; fi ;;
+    esac
+    ;;
+  # B4 exception: no tracked label-counts .out fixture matches this task's single-subject shape
+  # (label-counts.out lists four ids AB-1..AB-4) — stays inline.
+  label-counts) if [ -n "${T9_SIZE:-}" ]; then printf '%s\n' "$T9_SIZE"; fi ;;
+esac
+exit 0
+EOF9ADAPTER
+
+  # _t9_round <name> <statusid> <statusname> <list> <listrc> <acc> <met> <size> <field.metric-val>
+  #   <risk> -> builds a throwaway root, runs the REAL reader (its own public CLI), sets
+  #   $_t9_root/$_t9_rec. <risk> is the field-empty "empty" id list for field.risk=customfield_10088
+  #   (D2: a real dor-risk round trip, never a backfill) — "" means dor-risk=yes for AB-2.
+  _t9_round() {
+    _t9n=$1; _t9sid=$2; _t9sname=$3; _t9list=$4; _t9lrc=$5; _t9acc=$6; _t9met=$7; _t9size=$8; _t9metconf=$9
+    shift 9; _t9risk=$1
+    _t9_root="$base/t9_$_t9n"; mkdir -p "$_t9_root/scripts" "$_t9_root/.kit"
+    cp "$_t9dir/scripts/tracker-read.sh" "$_t9_root/scripts/tracker-read.sh"
+    cp "$_t9dir/scripts/tracker-conf.sh" "$_t9_root/scripts/tracker-conf.sh"
+    cp "$base/t9-adapter.sh" "$_t9_root/scripts/tracker-jira.sh"
+    printf -- '- **Backlog backend**: Jira\n' > "$_t9_root/CLAUDE.md"
+    cat > "$_t9_root/.kit/tracker.conf" <<EOF9CONF
+version=1
+backend=jira
+base_url=https://ex.atlassian.net
+flavour=cloud
+auth=basic
+project=AB
+list_cap=200
+state.ready=Selected
+state.in-progress=In Progress
+field.acceptance=description
+field.metric=$_t9metconf
+field.size=label:size
+field.risk=customfield_10088
+EOF9CONF
+    _t9_rec="$_t9_root/record.txt"
+    _t9_rc=0
+    T9_KEY=AB-2 T9_STATUSID="$_t9sid" T9_STATUSNAME="$_t9sname" T9_LIST="$_t9list" T9_LISTRC="$_t9lrc" \
+      T9_ACC="$_t9acc" T9_MET="$_t9met" T9_SIZE="$_t9size" T9_RISK="$_t9risk" T9_OPS="$_t9_ops" \
+      KIT_TRACKER_USER="user@example.com" KIT_TRACKER_TOKEN="s3cr3t" \
+      sh "$_t9_root/scripts/tracker-read.sh" "$_t9_root/.kit/tracker.conf" - "$_t9_rec" AB-2 "$_t9head" ready \
+      >"$_t9_rec.out" 2>"$_t9_rec.err" || _t9_rc=$?
+  }
+
+  # --- L1 (F-7): field.metric=none -> the reader omits dor-metric entirely (never n/a); the
+  # tracker arm reads UNVERIFIED, naming the conf key field.metric.
+  _t9_round metricnone 10001 Selected AB-2 "" "" "" "$(printf 'AB-2\t1')" none ""
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L1 setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if grep -q 'dor-metric=' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L1 setup — field.metric=none must omit dor-metric entirely, got: $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate.out" 2>"$_t9_root/gate.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 2 ] && grep -q 'field.metric' "$_t9_root/gate.err"; then
+    echo "selftest PASS: T9/L1: field.metric=none -> rc2 UNVERIFIED naming the conf key field.metric (F-7)"
+  else
+    echo "selftest FAIL: T9/L1: field.metric=none -> want rc2 naming field.metric, got rc=$_t9grc err=$(cat "$_t9_root/gate.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L2 (H-3): the Ready list query fails -> the reader omits the `list ready` line entirely
+  # (never present-empty); the subject's own dor-* flags still bind (they are independent queries)
+  # but the tracker arm still reads UNVERIFIED — an absent list can never be read as empty.
+  _t9_round listfail 10001 Selected "" 1 "" "" "$(printf 'AB-2\t1')" customfield_10077 ""
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L2 setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if grep -q '^list ready' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L2 setup — expected NO 'list ready' line (the adapter was made to fail): $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  if ! grep -q '^row AB-2 state=ready claimed=yes dor-acceptance=yes dor-metric=yes dor-size=yes dor-risk=yes$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L2 setup — expected the subject's own dor-* flags still bound despite the list failure: $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate.out" 2>"$_t9_root/gate.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 2 ] && grep -q 'Ready list' "$_t9_root/gate.err"; then
+    echo "selftest PASS: T9/L2: an absent (query-failed) Ready list -> rc2 UNVERIFIED, even though every row flag on the subject is bound (H-3)"
+  else
+    echo "selftest FAIL: T9/L2: want rc2 naming the Ready list, got rc=$_t9grc err=$(cat "$_t9_root/gate.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L3: no Ready rows at all (a present-empty `list ready` line, the subject itself not ready)
+  # -> rc0 OK, the graded count stated as zero (never vacuously silent).
+  _t9_round empty 3 "In Progress" "" "" "" "" "" customfield_10077 ""
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L3 setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if ! grep -q '^list ready$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L3 setup — expected a PRESENT empty 'list ready' line: $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate.out" 2>"$_t9_root/gate.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 0 ] && grep -q 'graded=0' "$_t9_root/gate.out"; then
+    echo "selftest PASS: T9/L3: no Ready rows (present-empty) -> rc0 OK, the graded count stated as zero"
+  else
+    echo "selftest FAIL: T9/L3: want rc0 graded=0, got rc=$_t9grc out=$(cat "$_t9_root/gate.out" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- D2: the base round trip for L5 — a real record where all four dor-* flags round-trip
+  # 'yes', dor-risk included (field.risk=customfield_10088, T5d) — no backfill, no copy-and-sed.
+  _t9_round happy 10001 Selected AB-2 "" "" "" "$(printf 'AB-2\t1')" customfield_10077 ""
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L5 setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if ! grep -q '^row AB-2 state=ready claimed=yes dor-acceptance=yes dor-metric=yes dor-size=yes dor-risk=yes$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L5 setup — expected all four dor-* flags 'yes' (a real field.risk round trip): $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  _t9_okroot="$_t9_root"; _t9_ok="$_t9_rec"
+
+  # --- L5: every Ready row's dor-*=yes, dor-risk from a real round trip -> rc0 OK.
+  KIT_TRACKER_RECORD="$_t9_ok"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_okroot" >"$_t9_okroot/gate-ok.out" 2>"$_t9_okroot/gate-ok.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 0 ] && grep -q 'graded=1' "$_t9_okroot/gate-ok.out"; then
+    echo "selftest PASS: T9/L5: every Ready row's dor-*=yes (dor-risk via a real field.risk round trip, D2) -> rc0 OK"
+  else
+    echo "selftest FAIL: T9/L5: want rc0 graded=1, got rc=$_t9grc out=$(cat "$_t9_okroot/gate-ok.out" 2>/dev/null) err=$(cat "$_t9_okroot/gate-ok.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L4: a real round trip mapping AB-2 into field.metric's 'empty' set -> dor-metric=no, every
+  # other flag 'yes' -> rc1 FAIL naming the row id and the flag.
+  _t9_round fail 10001 Selected AB-2 "" "" AB-2 "$(printf 'AB-2\t1')" customfield_10077 ""
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L4 setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if ! grep -q '^row AB-2 state=ready claimed=yes dor-acceptance=yes dor-metric=no dor-size=yes dor-risk=yes$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L4 setup — expected only dor-metric='no': $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate-fail.out" 2>"$_t9_root/gate-fail.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 1 ] && grep -q 'AB-2' "$_t9_root/gate-fail.err" && grep -q 'dor-metric' "$_t9_root/gate-fail.err"; then
+    echo "selftest PASS: T9/L4: a Ready row's dor-metric=no (a real round trip) -> rc1 FAIL naming the row id and dor-metric"
+  else
+    echo "selftest FAIL: T9/L4: want rc1 naming AB-2/dor-metric, got rc=$_t9grc err=$(cat "$_t9_root/gate-fail.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L4b (mutant anchor, "skip dor-size"): a real round trip where field.size's label count is 0
+  # -> dor-size=no, every other flag 'yes' -> rc1 FAIL naming dor-size. The ONLY leg that isolates
+  # dor-size as the sole bad flag — required so the "skip dor-size" mutant (below) actually reds
+  # something (L4/L5 alone do not depend on dor-size being checked at all).
+  _t9_round failsize 10001 Selected AB-2 "" "" "" "$(printf 'AB-2\t0')" customfield_10077 ""
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L4b setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if ! grep -q '^row AB-2 state=ready claimed=yes dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L4b setup — expected only dor-size='no': $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate-failsize.out" 2>"$_t9_root/gate-failsize.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 1 ] && grep -q 'dor-size' "$_t9_root/gate-failsize.err"; then
+    echo "selftest PASS: T9/L4b: a Ready row's dor-size=no (a real round trip, every other flag 'yes') -> rc1 FAIL naming dor-size"
+  else
+    echo "selftest FAIL: T9/L4b: want rc1 naming dor-size, got rc=$_t9grc err=$(cat "$_t9_root/gate-failsize.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L6 (F-7, D2 replaces the n/a backfill with a real field.risk mapping): AB-2 in the risk
+  # field's 'empty' set -> dor-risk=no, every other flag 'yes' -> rc1 FAIL naming dor-risk — a
+  # bound 'no' answer is a real FAIL, never UNVERIFIED, never a fictional n/a.
+  _t9_round riskno 10001 Selected AB-2 "" "" "" "$(printf 'AB-2\t1')" customfield_10077 AB-2
+  if [ "$_t9_rc" -ne 0 ] || ! grep -q '^verdict bound$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L6 setup — the real round trip did not bind (rc=$_t9_rc, err=$(cat "$_t9_rec.err" 2>/dev/null))"; st_fail=1
+  fi
+  if ! grep -q '^row AB-2 state=ready claimed=yes dor-acceptance=yes dor-metric=yes dor-size=yes dor-risk=no$' "$_t9_rec"; then
+    echo "selftest FAIL: T9 L6 setup — expected only dor-risk='no': $(cat "$_t9_rec" 2>/dev/null)"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate-na.out" 2>"$_t9_root/gate-na.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 1 ] && grep -q 'dor-risk' "$_t9_root/gate-na.err"; then
+    echo "selftest PASS: T9/L6 (D2): a real field.risk round trip answering 'no' -> rc1 FAIL naming dor-risk (never n/a, F-7)"
+  else
+    echo "selftest FAIL: T9/L6: want rc1 naming dor-risk, got rc=$_t9grc out=$(cat "$_t9_root/gate-na.out" 2>/dev/null) err=$(cat "$_t9_root/gate-na.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L6c (F-7 control, re-pin the literal 'n/a'): the real reader never emits dor-risk=n/a
+  # (D2's real round trip only produces yes/no) — but a sed-mutated COPY of the L5 record with a
+  # literal dor-risk=n/a must still FAIL, never silently pass, so a stray n/a on a record (any
+  # source) can't sneak a Ready row past the gate. Assert the copy differs from its source first.
+  _t9_narec="$_t9_okroot/record-na.txt"
+  sed 's/dor-risk=yes/dor-risk=n\/a/' "$_t9_ok" > "$_t9_narec"
+  if cmp -s "$_t9_ok" "$_t9_narec"; then
+    echo "selftest FAIL: T9 L6c setup — the sed-mutated dor-risk=n/a copy did not differ from its source record"; st_fail=1
+  fi
+  KIT_TRACKER_RECORD="$_t9_narec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_okroot" >"$_t9_okroot/gate-narec.out" 2>"$_t9_okroot/gate-narec.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 1 ] && grep -q 'dor-risk' "$_t9_okroot/gate-narec.err"; then
+    echo "selftest PASS: T9/L6c: a literal dor-risk=n/a on the record -> rc1 FAIL naming dor-risk (F-7 control, re-pinned)"
+  else
+    echo "selftest FAIL: T9/L6c: want rc1 naming dor-risk, got rc=$_t9grc out=$(cat "$_t9_okroot/gate-narec.out" 2>/dev/null) err=$(cat "$_t9_okroot/gate-narec.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- H1 (fix1, BOTH seats — the head is env-steerable): an exported _BC_HEAD with NO --head
+  # flag must never reach bc_tracker_ready. Spawns the script FRESH (never in-process) since the
+  # bug is in the file-scope reset that only runs once, at process start.
+  _t9_h1out=$(cd "$_t9_root" && _BC_HEAD="$_t9head" KIT_TRACKER_RECORD="$_t9_ok" sh "$_t9dir/conformance/backlog-current.sh" . 2>&1) && _t9_h1rc=0 || _t9_h1rc=$?
+  if [ "$_t9_h1rc" -eq 2 ]; then
+    echo "selftest PASS: T9/H1 (fix1): an exported _BC_HEAD with no --head flag never reaches bc_tracker_ready (file-scope reset) -> rc2, never rc0"
+  else
+    echo "selftest FAIL: T9/H1: want rc2 (head ignored, refused), got rc=$_t9_h1rc out=$_t9_h1out"; st_fail=1
+  fi
+
+  # --- R2 (fix1, both seats' Low — the diagnosis): a head mismatch must surface the seam's own
+  # fixed-text refusal (L-1: line+key+reason, never the value) ABOVE the generic 'Ready list is
+  # absent' line, not be silently discarded — else a head mismatch misreports as a missing list.
+  KIT_TRACKER_RECORD="$_t9_ok"; _BC_HEAD="0000000000000000000000000000000000000000"
+  _t9grc=0
+  check_dir "$_t9_root" >"$_t9_root/gate-headmismatch.out" 2>"$_t9_root/gate-headmismatch.err" || _t9grc=$?
+  _t9_r2_seamline=$(grep -n 'record head does not match' "$_t9_root/gate-headmismatch.err" | head -1 | cut -d: -f1)
+  _t9_r2_genline=$(grep -n 'the Ready list is absent' "$_t9_root/gate-headmismatch.err" | head -1 | cut -d: -f1)
+  if [ "$_t9grc" -eq 2 ] && [ -n "$_t9_r2_seamline" ] && [ -n "$_t9_r2_genline" ] && [ "$_t9_r2_seamline" -lt "$_t9_r2_genline" ]; then
+    echo "selftest PASS: T9/R2 (fix1): a head mismatch relays the seam's own fixed-text refusal ABOVE the generic 'Ready list is absent' line"
+  else
+    echo "selftest FAIL: T9/R2: want the seam's own refusal line BEFORE the generic UNVERIFIED line, got rc=$_t9grc err=$(cat "$_t9_root/gate-headmismatch.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- L0 (step 0, T7 seat M-1 carry): bc_tracker_ready calls seam_rows_in_state/seam_row_flag
+  # WITHOUT $( ) so the seam's parse memo survives — over N>=5 Ready ids, exactly ONE record load.
+  # A hand-built record (never the reader — this leg pins the GATE's own call pattern, not the
+  # reader) with a real pin (this run's own tracker.conf digest) and today's read-day.
+  _t9_l0root="$base/t9_l0"; mkdir -p "$_t9_l0root/.kit"
+  printf -- '- **Backlog backend**: Jira\n' > "$_t9_l0root/CLAUDE.md"
+  cat > "$_t9_l0root/.kit/tracker.conf" <<'EOF9L0'
+version=1
+backend=jira
+base_url=https://ex.atlassian.net
+flavour=cloud
+auth=basic
+project=AB
+list_cap=200
+state.ready=Selected
+EOF9L0
+  _t9_l0pin=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } < "$_t9_l0root/.kit/tracker.conf" | awk '{print $1}')
+  _t9_l0day=$(date -u +%Y-%m-%d)
+  _t9_l0rec="$_t9_l0root/record.txt"
+  {
+    echo "kit-tracker-read 1"
+    echo "backend jira"
+    echo "pin sha256:$_t9_l0pin"
+    echo "head $_t9head"
+    echo "requested AB-10"
+    echo "read-day $_t9_l0day"
+    echo "credential ok"
+    echo "verdict bound"
+    for _t9i in 10 11 12 13 14; do
+      echo "row AB-$_t9i state=ready dor-acceptance=yes dor-metric=yes dor-size=yes dor-risk=yes"
+    done
+    echo "list ready AB-10 AB-11 AB-12 AB-13 AB-14"
+  } > "$_t9_l0rec"
+  # fix1 R1 (quality 6 + the carry): route through check_dir — the gate's REAL entry (never
+  # bc_tracker_ready called directly) — and assert the graded COUNT, not just rc0, while still
+  # pinning the load count at 1 (the carry this leg exists for).
+  KIT_TRACKER_RECORD="$_t9_l0rec"; _BC_HEAD="$_t9head"
+  SEAM_TEST_LOAD_COUNT=0
+  _t9_l0rc=0
+  check_dir "$_t9_l0root" >"$_t9_l0root/gate.out" 2>"$_t9_l0root/gate.err" || _t9_l0rc=$?
+  if [ "$_t9_l0rc" -eq 0 ] && [ "$SEAM_TEST_LOAD_COUNT" = "1" ] && grep -q 'graded=5' "$_t9_l0root/gate.out"; then
+    echo "selftest PASS: T9/L0 (step 0, T7 seat M-1 carry; fix1 R1): through check_dir's real entry, over 5 Ready ids, bc_tracker_ready's plain (non-\$( )) seam calls cost exactly ONE record load, graded=5"
+  else
+    echo "selftest FAIL: T9/L0: want rc0, SEAM_TEST_LOAD_COUNT=1, graded=5, got rc=$_t9_l0rc count=${SEAM_TEST_LOAD_COUNT:-unset} out=$(cat "$_t9_l0root/gate.out" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- W1 (fix1, quality blocking 2 — worst rc wins / accumulate-all unpinned): one Ready row
+  # missing a flag entirely (dor-risk absent -> UNVERIFIED) AND another with dor-metric=no
+  # (-> FAIL) in ONE record -> rc2 (worst wins over rc1), naming BOTH rows.
+  _t9_w1rec="$_t9_l0root/record-w1.txt"
+  {
+    echo "kit-tracker-read 1"
+    echo "backend jira"
+    echo "pin sha256:$_t9_l0pin"
+    echo "head $_t9head"
+    echo "requested AB-10"
+    echo "read-day $_t9_l0day"
+    echo "credential ok"
+    echo "verdict bound"
+    echo "row AB-10 state=ready dor-acceptance=yes dor-metric=no dor-size=yes dor-risk=yes"
+    echo "row AB-11 state=ready dor-acceptance=yes dor-metric=yes dor-size=yes"
+    # fix2 W2 (the quality seat's "-lt 1 -> unconditional" mutant was vacuous with FAIL-then-
+    # UNVERIFIED order — UNVERIFIED, processed LAST, always ratchets to 2 regardless of the FAIL
+    # line's own guard). UNVERIFIED row FIRST so a broken guard can OVERWRITE 2 back down to 1.
+    echo "list ready AB-11 AB-10"
+  } > "$_t9_w1rec"
+  KIT_TRACKER_RECORD="$_t9_w1rec"; _BC_HEAD="$_t9head"
+  _t9grc=0
+  check_dir "$_t9_l0root" >"$_t9_l0root/gate-w1.out" 2>"$_t9_l0root/gate-w1.err" || _t9grc=$?
+  if [ "$_t9grc" -eq 2 ] && grep -q 'AB-10' "$_t9_l0root/gate-w1.err" && grep -q 'AB-11' "$_t9_l0root/gate-w1.err"; then
+    echo "selftest PASS: T9/W1 (fix1): a FAIL row (AB-10 dor-metric=no) AND an UNVERIFIED row (AB-11 missing dor-risk) in one record -> rc2 (worst wins), both rows named"
+  else
+    echo "selftest FAIL: T9/W1: want rc2 naming AB-10 and AB-11, got rc=$_t9grc err=$(cat "$_t9_l0root/gate-w1.err" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- fix2 G1/HIGH (security — the env-read test hook was itself a defect): the removed
+  # _BCTR_TEST_SELFTERM hook has NO effect at all on the production CLI any more — an exported
+  # value writes nothing and never changes the verdict (the quality seat's own probe: the variable
+  # exported on the production CLI, no --head-armed hook needed to demonstrate its old truncation).
+  _t9_g1victim="$base/t9-g1-victim.txt"; rm -f "$_t9_g1victim"
+  _t9_g1out=$(_BCTR_TEST_SELFTERM="$_t9_g1victim" KIT_TRACKER_RECORD="$_t9_l0rec" sh "$_t9dir/conformance/backlog-current.sh" --head "$_t9head" "$_t9_l0root" 2>&1) && _t9_g1rc=0 || _t9_g1rc=$?
+  if [ ! -e "$_t9_g1victim" ] && [ "$_t9_g1rc" -eq 0 ] && printf '%s' "$_t9_g1out" | grep -q 'graded=5'; then
+    echo "selftest PASS: T9/G1 (fix2): an exported _BCTR_TEST_SELFTERM on the production CLI writes nothing and never changes the verdict — the hook is gone"
+  else
+    echo "selftest FAIL: T9/G1: want no victim file and rc0 graded=5, got rc=$_t9_g1rc victim=$([ -e "$_t9_g1victim" ] && echo PRESENT || echo absent) out=$_t9_g1out"; st_fail=1
+  fi
+
+  # --- fix2 BLOCKER 1a (security) + G2, hardened by T10-harden-B D1 (a CI flake): an EXTERNAL TERM
+  # mid-run (never a hook) must terminate the process (rc143) and must NEVER print a silent
+  # "graded=0" on a non-empty Ready list; both mktemp files must be gone. D1: a 5-row record can
+  # finish before the delay on a fast runner, so the kill misses and a fast pass misreports as a
+  # FAIL — sized up to 480 Ready rows so the run reliably outlives the delay, and `kill`'s own exit
+  # status is asserted as a PRECONDITION: if the process already exited before the signal could be
+  # delivered, the leg reports "not exercised — SKIP", never a FAIL and never a silent PASS. TMPDIR
+  # isolated under $base so the leftover count is unambiguous.
+  _t9_termtmp="$base/t9-term-tmp"; mkdir -p "$_t9_termtmp"
+  _t9_termout="$base/t9-term.out"
+  _t9_termrec="$_t9_l0root/record-term.txt"
+  {
+    echo "kit-tracker-read 1"
+    echo "backend jira"
+    echo "pin sha256:$_t9_l0pin"
+    echo "head $_t9head"
+    echo "requested AB-9000"
+    echo "read-day $_t9_l0day"
+    echo "credential ok"
+    echo "verdict bound"
+    _t9_termi=9000
+    while [ "$_t9_termi" -lt 9480 ]; do
+      echo "row AB-$_t9_termi state=ready dor-acceptance=yes dor-metric=yes dor-size=yes dor-risk=yes"
+      _t9_termi=$((_t9_termi + 1))
+    done
+    _t9_termlist="list ready"
+    _t9_termi=9000
+    while [ "$_t9_termi" -lt 9480 ]; do
+      _t9_termlist="$_t9_termlist AB-$_t9_termi"
+      _t9_termi=$((_t9_termi + 1))
+    done
+    printf '%s\n' "$_t9_termlist"
+  } > "$_t9_termrec"
+  TMPDIR="$_t9_termtmp" KIT_TRACKER_RECORD="$_t9_termrec" sh "$_t9dir/conformance/backlog-current.sh" --head "$_t9head" "$_t9_l0root" >"$_t9_termout" 2>&1 &
+  _t9_termpid=$!
+  sleep 0.08
+  # WB-FIX-2 item 1 (both seats): snapshot the output file IMMEDIATELY BEFORE sending TERM — a
+  # handler that swallows TERM (mutant M6c) also finishes the run and prints the same OK/graded
+  # line, so the OLD post-hoc grep could not tell an ignored TERM from a genuine finished-first
+  # race. The presnap fixes the ambiguity: OK already present before the kill -> a real race
+  # (SKIP); OK appears only AFTER the kill -> TERM was delivered but ignored (FAIL).
+  _t9_term_presnap=0
+  grep -q 'OK: backlog-current (tracker) — Ready rows graded=' "$_t9_termout" 2>/dev/null && _t9_term_presnap=1
+  _t9_termkillrc=0
+  kill -TERM "$_t9_termpid" 2>/dev/null || _t9_termkillrc=$?
+  _t9_termrc=0
+  wait "$_t9_termpid" || _t9_termrc=$?
+  _t9_termleftover=$(find "$_t9_termtmp" -type f 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$_t9_termkillrc" -ne 0 ]; then
+    echo "selftest SKIP: T9/BLOCKER-term: not exercised — the process already exited before the TERM could be delivered"
+  elif [ "$_t9_term_presnap" -eq 1 ]; then
+    # B5 (security L-3, signal leg): the run finishing normally BEFORE the TERM landed is the same
+    # race as an already-exited pid — an honest SKIP, never a silent PASS or a misleading FAIL.
+    echo "selftest SKIP: T9/BLOCKER-term: not exercised — the run completed (an OK/graded line) before the TERM could take effect"
+  elif grep -q 'OK: backlog-current (tracker) — Ready rows graded=' "$_t9_termout"; then
+    echo "selftest FAIL: T9/BLOCKER-term: TERM delivered but ignored — the run produced an OK/graded line only AFTER the kill (a handler that swallows the signal instead of terminating)"; st_fail=1
+  elif [ "$_t9_termrc" -eq 143 ] && ! grep -q 'graded=0' "$_t9_termout" && [ "$_t9_termleftover" -eq 0 ]; then
+    echo "selftest PASS: T9/BLOCKER-term (D1): a real external TERM, delivered mid-run (kill itself succeeded) over a 480-row fixture, kills the process (rc143), never prints a silent graded=0, and leaves no temp files behind"
+  else
+    echo "selftest FAIL: T9/BLOCKER-term: want rc143, no graded=0, 0 leftover temps; got rc=$_t9_termrc leftover=$_t9_termleftover out=$(cat "$_t9_termout" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- fix2 BLOCKER 1b (security, independent of the trap above): the Ready list vanishing AFTER
+  # the write but BEFORE the read -> rc2, never a silent graded=0. Test-side only: shadow
+  # seam_rows_in_state for ONE direct bc_tracker_ready call (a fixture — unlinking an already-open
+  # fd's target is inert on the write already in flight, but the shell's later
+  # `< "$_bctr_lf"` (the while loop's own redirection) then cannot reopen it), then restore the
+  # real definition by re-sourcing backlog-lib.sh.
+  seam_rows_in_state() { _seam_tracker_rows_in_state "$1"; _t9v_rc=$?; rm -f "$_bctr_lf"; return "$_t9v_rc"; }
+  # shellcheck disable=SC2034  # SEAM_ROOT is read by the sourced seam_* functions (backlog-lib.sh)
+  SEAM_ROOT="$_t9_l0root"
+  # shellcheck disable=SC2034
+  SEAM_RECORD="$_t9_l0rec"
+  # shellcheck disable=SC2034
+  SEAM_HEAD="$_t9head"
+  _t9_vanish_out="$base/t9-vanish.out"
+  _t9_vgrc=0
+  bc_tracker_ready "$_t9head" >"$_t9_vanish_out" 2>&1 || _t9_vgrc=$?
+  . "$_t9dir/conformance/backlog-lib.sh"
+  if [ "$_t9_vgrc" -eq 2 ] && grep -q 'vanished before it could be read' "$_t9_vanish_out"; then
+    echo "selftest PASS: T9/BLOCKER-vanish (fix2): the Ready list vanishing between the write and the read -> rc2, never a silent graded=0"
+  else
+    echo "selftest FAIL: T9/BLOCKER-vanish: want rc2 naming 'vanished before it could be read', got rc=$_t9_vgrc out=$(cat "$_t9_vanish_out" 2>/dev/null)"; st_fail=1
+  fi
+
+  # --- fix2 BLOCKER 1b's sibling defence: the independent row-count assertion. A PATH-shimmed `wc`
+  # inflates the counted want-total by 1 for THIS one subprocess only (a fixture, never a hook) ->
+  # the loop's real 5-row count no longer matches -> rc2, never a silent rc0. Passthrough for every
+  # OTHER `wc` call so nothing else in the run is affected.
+  mkdir -p "$base/t9-wcshim"
+  cat > "$base/t9-wcshim/wc" <<'EOF9WC'
+#!/bin/sh
+case "$1" in
+  -l) r=$(command -p wc -l); printf '%s\n' "$((r + 1))" ;;
+  *) command -p wc "$@" ;;
+esac
+EOF9WC
+  chmod +x "$base/t9-wcshim/wc"
+  _t9_wcout=$(PATH="$base/t9-wcshim:$PATH" KIT_TRACKER_RECORD="$_t9_l0rec" sh "$_t9dir/conformance/backlog-current.sh" --head "$_t9head" "$_t9_l0root" 2>&1) && _t9_wcrc=0 || _t9_wcrc=$?
+  if [ "$_t9_wcrc" -eq 2 ] && printf '%s' "$_t9_wcout" | grep -q 'graded 5 of 6'; then
+    echo "selftest PASS: T9/BLOCKER-count (fix2): a wc-shimmed inflated want-count vs the real 5 graded rows -> rc2, never a silent rc0 (the independent fail-closed count check)"
+  else
+    echo "selftest FAIL: T9/BLOCKER-count: want rc2 naming 'graded 5 of 6', got rc=$_t9_wcrc out=$_t9_wcout"; st_fail=1
+  fi
+
+  # --- L7 (H-4, fix1 R5 — quality 8): KIT_TRACKER_RECORD unset -> today's rc3 NOT ENFORCED path,
+  # BYTES compared (cmp) against a direct not_enforced_notice call — a substring cannot see stray
+  # extra bytes on either side.
+  unset KIT_TRACKER_RECORD
+  _BC_HEAD=""
+  _t9grc=0
+  check_dir "$_t9_l0root" >"$_t9_l0root/gate-unset.out" 2>"$_t9_l0root/gate-unset.err" || _t9grc=$?
+  _t9_l7drc=0
+  not_enforced_notice jira "$_t9_l0root" "$(dirname "$0")/waivers-valid.sh" >"$_t9_l0root/gate-unset-direct.out" 2>&1 || _t9_l7drc=$?
+  if [ "$_t9grc" -eq 3 ] && [ "$_t9_l7drc" -eq 3 ] && cmp -s "$_t9_l0root/gate-unset.out" "$_t9_l0root/gate-unset-direct.out"; then
+    echo "selftest PASS: T9/L7 (H-4, fix1 R5): KIT_TRACKER_RECORD unset -> today's rc3 NOT ENFORCED sentence, byte-identical (cmp) to a direct not_enforced_notice call"
+  else
+    echo "selftest FAIL: T9/L7: want rc3 byte-identical to the direct call, got rc=$_t9grc direct_rc=$_t9_l7drc out=$(cat "$_t9_l0root/gate-unset.out" 2>/dev/null) direct=$(cat "$_t9_l0root/gate-unset-direct.out" 2>/dev/null)"; st_fail=1
+  fi
+
   if [ "$st_fail" -ne 0 ]; then
     echo "backlog-current --selftest: FAIL" >&2
     return 1
@@ -2889,6 +3845,13 @@ assert_rid_ok() {
 assert_rid_bad() {
   if row_id_ok "$1"; then echo "selftest FAIL: $2 (row_id_ok accepted '$1')"; st_fail=1
   else echo "selftest PASS: $2"; fi
+}
+# assert_eq_str <got> <want> <label> : the two already-computed strings must be byte-equal.
+# BOARD-PIPE-ESCAPE T1 — the parser harness compares cell()/gfm_cell()/gfm_nf()/retro_cell()
+# output directly (no check_dir round-trip), so it needs a bare string-equality assertion.
+assert_eq_str() {
+  if [ "$1" = "$2" ]; then echo "selftest PASS: $3"
+  else echo "selftest FAIL: $3 (got=<$1> want=<$2>)"; st_fail=1; fi
 }
 # assert_rowcount <board> <id> <want> <label> : row_count must print exactly <want>.
 assert_rowcount() {
@@ -2936,6 +3899,54 @@ assert_no_ctrl() {
 assert_fail() {
   _o=$(check_dir "$1" 2>&1) && _r=0 || _r=$?
   if [ "${_r:-0}" -ne 0 ] && printf '%s\n' "$_o" | grep -Fq "$2"; then
+    echo "selftest PASS: $3"
+  else
+    echo "selftest FAIL: $3 (rc=${_r:-?}, out=<$_o>)"; st_fail=1
+  fi
+}
+# assert_warn <dir> <check-id> <phrase> <label> : a DEMOTED (form) check — check_dir must rc0 AND emit
+# a `WARN: <check-id>:` line that still carries the pre-demotion <phrase> (so a grep for the old
+# wording still finds it). GITHUB_ACTIONS is unset in the subshell so the stderr-only shape is what
+# is graded. The vacuity guard is the rc: every leg using this returned rc 1 before the demotion.
+assert_warn() {
+  _o=$( unset GITHUB_ACTIONS; check_dir "$1" 2>&1 ) && _r=0 || _r=$?
+  if [ "${_r:-0}" -eq 0 ] && printf '%s\n' "$_o" | grep -F "WARN: $2:" | grep -Fq "$3"; then
+    echo "selftest PASS: $4"
+  else
+    echo "selftest FAIL: $4 (rc=${_r:-?}, out=<$_o>)"; st_fail=1
+  fi
+}
+# assert_warn_annot <dir> <check-id> <on|off> <label> : under GITHUB_ACTIONS=true the same WARN is also
+# emitted as a `::warning::` annotation (on); with it unset there is NO annotation (off). rc0 both ways.
+assert_warn_annot() {
+  if [ "$3" = on ]; then
+    _o=$( GITHUB_ACTIONS=true; export GITHUB_ACTIONS; check_dir "$1" 2>&1 ) && _r=0 || _r=$?
+    _want=0; printf '%s\n' "$_o" | grep -Fq "::warning::WARN: $2:" && _want=1
+  else
+    _o=$( unset GITHUB_ACTIONS; check_dir "$1" 2>&1 ) && _r=0 || _r=$?
+    _want=1; printf '%s\n' "$_o" | grep -Fq "::warning::" && _want=0
+  fi
+  if [ "${_r:-0}" = "0" ] && [ "$_want" -eq 1 ] && printf '%s\n' "$_o" | grep -Fq "WARN: $2:"; then
+    echo "selftest PASS: $4"
+  else
+    echo "selftest FAIL: $4 (rc=${_r:-?}, out=<$_o>)"; st_fail=1
+  fi
+}
+# assert_warn_no_cmd <dir> <label> : under GITHUB_ACTIONS=true, NO output line may START with `::error::`
+# (a workflow command smuggled through board text), and the row's WARN must still have fired (non-vacuity).
+assert_warn_no_cmd() {
+  _o=$( GITHUB_ACTIONS=true; export GITHUB_ACTIONS; check_dir "$1" 2>&1 ) && _r=0 || _r=$?
+  if [ "${_r:-0}" -eq 0 ] && printf '%s\n' "$_o" | grep -Fq "WARN: HITL-6-DISPO:" \
+     && ! printf '%s\n' "$_o" | grep -q '^::error::'; then
+    echo "selftest PASS: $2"
+  else
+    echo "selftest FAIL: $2 (rc=${_r:-?}, out=<$_o>)"; st_fail=1
+  fi
+}
+# assert_warn_annot_has <dir> <needle> <label> : under GITHUB_ACTIONS=true a `::warning::` line carries <needle>.
+assert_warn_annot_has() {
+  _o=$( GITHUB_ACTIONS=true; export GITHUB_ACTIONS; check_dir "$1" 2>&1 ) && _r=0 || _r=$?
+  if [ "${_r:-0}" -eq 0 ] && printf '%s\n' "$_o" | grep -F '::warning::' | grep -Fq "$2"; then
     echo "selftest PASS: $3"
   else
     echo "selftest FAIL: $3 (rc=${_r:-?}, out=<$_o>)"; st_fail=1
@@ -3048,8 +4059,29 @@ _find_template() {
   return 1
 }
 
+# fix1 H1 (both seats — the head is env-steerable): reset at FILE SCOPE, before the dispatch
+# below, so an already-exported _BC_HEAD (a poisoned shell profile, a decoy env var) can never
+# reach bc_tracker_ready without the explicit --head flag. Only the --head branch below may set it.
+_BC_HEAD=""
+
+# fix2 (security BLOCKER + MEDIUM): the ONE trap for bc_tracker_ready's temp files, installed here
+# at the top of the CLI's own execution — no caller sits above this script's own top level, so
+# there is nothing here to clobber (see _bctr_sig's own header comment).
+trap '_bctr_sig TERM' TERM
+trap '_bctr_sig INT' INT
+
 case "${1:-}" in
   --selftest) selftest ;;
+  # TBG-READER-FLAGS-LIST T9 (P-3): --head is the tracker arm's ONLY new input, BY ARGUMENT (never
+  # an env var — the same rule loop-state.sh/backlog-presence.sh's own --head carries) so a decoy
+  # cannot redirect a control-plane check. Ignored entirely on the md path (bc_tracker_ready is
+  # never reached there).
+  --head)
+    [ $# -ge 2 ] || { echo "usage: backlog-current.sh --head <sha> [project-dir]" >&2; exit 2; }
+    # shellcheck disable=SC2034  # read by bc_tracker_ready via check_dir's non-md branch
+    _BC_HEAD="$2"
+    check_dir "${3:-.}"
+    ;;
   *)          check_dir "${1:-.}" ;;
 esac
 exit $?

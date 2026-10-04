@@ -194,6 +194,22 @@ check_parity() {
   return 1
 }
 
+# _kit_rule_block_ok <toml> -> 0 if ONE [[rules]] block (from its header to the next table that is
+# not [[rules.allowlists]]) carries all three: id = "kit-tracker-token", the keywords line, and a
+# `regex =` line naming kit_tracker_token. Three greps over the whole file would be satisfied by the
+# parts spread across different rules, or by a gutted regex.
+_kit_rule_block_ok() {
+  awk '
+    function flush() { if (inb && hid && hkw && hre) ok = 1; inb = 0; hid = 0; hkw = 0; hre = 0 }
+    /^\[\[rules\]\]/ { flush(); inb = 1; next }
+    /^\[/ { if ($0 !~ /^\[\[rules\.allowlists\]\]/) flush(); next }
+    inb && /^id[ \t]*=[ \t]*"kit-tracker-token"/ { hid = 1 }
+    inb && /^keywords[ \t]*=[ \t]*\["kit_tracker_token"\]/ { hkw = 1 }
+    inb && /^regex[ \t]*=.*kit_tracker_token/ { hre = 1 }
+    END { flush(); exit (ok ? 0 : 1) }
+  ' "$1"
+}
+
 # check_gitleaks_toml -> 0 if the shipped .gitleaks.toml carries the mandatory [extend] useDefault
 # stanza (without it, gitleaks REPLACES the default ruleset with nothing but the allowlist, and every
 # parity site greens on zero rules — design §3 S-5a), else 1.
@@ -210,7 +226,11 @@ check_gitleaks_toml() {
     echo "FAIL: $GL_TOML carries a paths-based allowlist — must be a line-targeted regex, never a path exclusion"
     return 1
   fi
-  echo "OK: $GL_TOML carries [extend] useDefault = true"
+  if ! _kit_rule_block_ok "$GL_TOML"; then
+    echo "FAIL: $GL_TOML is missing the kit rule — ONE [[rules]] block must carry id = \"kit-tracker-token\", keywords = [\"kit_tracker_token\"] and a regex line naming kit_tracker_token; a credential committed under KIT_TRACKER_TOKEN would be caught only probabilistically by the default generic rule"
+    return 1
+  fi
+  echo "OK: $GL_TOML carries [extend] useDefault = true and the kit-tracker-token rule"
   return 0
 }
 
@@ -229,6 +249,45 @@ _mk_repo() {
   git -C "$1" init -q
   git -C "$1" config user.email "conformance@localhost"
   git -C "$1" config user.name "conformance"
+}
+
+# --- helpers for the kit-rule legs in live() (they use live()'s $d, $_gl, $_gltoml_abs and $sf) ---
+# _kit_plant <name> <line> — a one-file repo at "$d/<name>" whose only commit holds <line>.
+_kit_plant() {
+  mkdir -p "$d/$1"
+  _mk_repo "$d/$1"
+  printf '%s\n' "$2" > "$d/$1/fixture.txt"
+  git -C "$d/$1" add -A
+  git -C "$d/$1" commit -q -m "plant $1"
+}
+
+# _kit_scan <name> [config] — history-mode scan of "$d/<name>" writing a JSON report to
+# "$d/<name>.json"; sets $_ks_rc. `-f json -r <file>` is identical on gitleaks 8.24.3 and 8.30.x.
+_kit_scan() {
+  set +e
+  "$_gl" git "$d/$1" --config "${2:-$_gltoml_abs}" --no-banner --redact -f json -r "$d/$1.json" >/dev/null 2>&1
+  _ks_rc=$?
+  set -e
+}
+
+# _kit_expect_red <name> <label> — rc != 0 AND the report names RuleID kit-tracker-token.
+_kit_expect_red() {
+  _kit_scan "$1"
+  if [ ! -s "$d/$1.json" ]; then
+    echo "live FAIL: $2 -> the scan wrote no report (rc=$_ks_rc) — a missing report cannot prove a finding"; sf=1
+  elif [ "$_ks_rc" -ne 0 ] && grep -q '"RuleID": "kit-tracker-token"' "$d/$1.json"; then
+    echo "live PASS: $2 -> reds with RuleID kit-tracker-token (rc=$_ks_rc)"
+  else echo "live FAIL: $2 -> expected a kit-tracker-token finding (rc=$_ks_rc, RuleIDs: $(grep -o '"RuleID": "[^"]*"' "$d/$1.json" | sort -u | tr '\n' ' '))"; sf=1; fi
+}
+
+# _kit_expect_clean <name> <label> — rc 0 AND the report holds no finding from any rule.
+_kit_expect_clean() {
+  _kit_scan "$1"
+  if [ ! -s "$d/$1.json" ]; then
+    echo "live FAIL: $2 -> the scan wrote no report (rc=$_ks_rc) — a missing report cannot prove a clean scan"; sf=1
+  elif [ "$_ks_rc" -eq 0 ] && ! grep -q '"RuleID"' "$d/$1.json"; then
+    echo "live PASS: $2 -> no finding from any rule (rc 0)"
+  else echo "live FAIL: $2 -> expected no finding (rc=$_ks_rc, RuleIDs: $(grep -o '"RuleID": "[^"]*"' "$d/$1.json" | sort -u | tr '\n' ' '))"; sf=1; fi
 }
 
 selftest() {
@@ -353,20 +412,60 @@ selftest() {
 
   # --- check_gitleaks_toml fixtures ---
   {
-    printf 'title = "t"\n\n[extend]\nuseDefault = true\n\n[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
+    printf 'title = "t"\n\n[extend]\nuseDefault = true\n\n'
+    printf '[[rules]]\nid = "kit-tracker-token"\nregex = \x27\x27\x27(?i)kit_tracker_token=(x)\x27\x27\x27\nkeywords = ["kit_tracker_token"]\n\n'
+    printf '[[rules.allowlists]]\nregexes = [\x27y\x27]\n\n'
+    printf '[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
   } > "$d/good.toml"
   GL_TOML="$d/good.toml"
   if check_gitleaks_toml >/dev/null 2>&1; then
-    echo "selftest PASS: .gitleaks.toml with [extend] useDefault -> PASS"
+    echo "selftest PASS: .gitleaks.toml with [extend] useDefault + the kit rule -> PASS"
   else echo "selftest FAIL: valid .gitleaks.toml wrongly failed"; sf=1; fi
 
+  # The same valid config WITHOUT the kit rule -> FAIL, naming the rule (isolates the new assertion:
+  # [extend] is present, so only the missing rule can red it).
   {
-    printf 'title = "t"\n\n[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
+    printf 'title = "t"\n\n[extend]\nuseDefault = true\n\n[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
+  } > "$d/norule.toml"
+  GL_TOML="$d/norule.toml"
+  if _on=$(check_gitleaks_toml 2>&1); then _rn=0; else _rn=$?; fi
+  if [ "$_rn" -ne 0 ] && printf '%s' "$_on" | grep -qF 'kit-tracker-token'; then
+    echo "selftest PASS: .gitleaks.toml missing the kit rule -> FAIL (names the gap)"
+  else echo "selftest FAIL: .gitleaks.toml missing the kit rule not caught (rc=$_rn): $_on"; sf=1; fi
+
+  {
+    printf 'title = "t"\n\n[[rules]]\nid = "kit-tracker-token"\nregex = \x27\x27\x27(?i)kit_tracker_token=(x)\x27\x27\x27\nkeywords = ["kit_tracker_token"]\n\n'
+    printf '[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
   } > "$d/noextend.toml"
   GL_TOML="$d/noextend.toml"
   if check_gitleaks_toml >/dev/null 2>&1; then
     echo "selftest FAIL: .gitleaks.toml missing [extend] wrongly passed"; sf=1
   else echo "selftest PASS: .gitleaks.toml missing [extend] -> FAIL (names the gap)"; fi
+
+  # The id and the keywords are present but the rule's regex line is gutted (no kit_tracker_token):
+  # the rule would never match, so this must FAIL.
+  {
+    printf 'title = "t"\n\n[extend]\nuseDefault = true\n\n'
+    printf '[[rules]]\nid = "kit-tracker-token"\nregex = \x27\x27\x27(?i)nothing=(x)\x27\x27\x27\nkeywords = ["kit_tracker_token"]\n\n'
+    printf '[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
+  } > "$d/gutted.toml"
+  GL_TOML="$d/gutted.toml"
+  if check_gitleaks_toml >/dev/null 2>&1; then
+    echo "selftest FAIL: .gitleaks.toml with a gutted kit-rule regex wrongly passed"; sf=1
+  else echo "selftest PASS: .gitleaks.toml with the id + keywords but a gutted regex -> FAIL (block-scoped)"; fi
+
+  # The parts are all present in the FILE but split across two [[rules]] blocks (the id + regex in
+  # one, the keywords in another): whole-file greps would pass, the block-scoped check must FAIL.
+  {
+    printf 'title = "t"\n\n[extend]\nuseDefault = true\n\n'
+    printf '[[rules]]\nid = "kit-tracker-token"\nregex = \x27\x27\x27(?i)kit_tracker_token=(x)\x27\x27\x27\n\n'
+    printf '[[rules]]\nid = "other"\nregex = \x27\x27\x27other\x27\x27\x27\nkeywords = ["kit_tracker_token"]\n\n'
+    printf '[allowlist]\nregexTarget = "line"\nregexes = [\x27x\x27]\n'
+  } > "$d/split.toml"
+  GL_TOML="$d/split.toml"
+  if check_gitleaks_toml >/dev/null 2>&1; then
+    echo "selftest FAIL: .gitleaks.toml with the keywords in a DIFFERENT rule block wrongly passed"; sf=1
+  else echo "selftest PASS: .gitleaks.toml with the keywords in a different [[rules]] block -> FAIL (block-scoped)"; fi
   GL_TOML="${KIT_GITLEAKS_TOML:-.gitleaks.toml}"
 
   if [ "$sf" -eq 0 ]; then echo "OK: secret-scan-wired selftest (wiring checker is load-bearing)"; exit 0
@@ -555,6 +654,97 @@ live() {
   if [ "$_r_sameline" -ne 0 ]; then
     echo "live PASS: a secret with approval-token appended on the SAME line still reds (rc=$_r_sameline) — the allowlist is line-anchored, not a bare substring match"
   else echo "live FAIL: the allowlist masked a secret sharing its line with the note grammar (rc 0) — the allowlist regex is not anchored"; sf=1; fi
+
+  # --- 6) KIT RULE `kit-tracker-token` (TRACKER-TOKEN-SECRET-SCAN-RULE). DETERMINISTIC legs: fixed
+  # planted values, never /dev/urandom (the leg-3 random-plant flake lesson). Every leg reads the
+  # `-f json` report and asserts on RuleID, because when two rules match one secret gitleaks reports
+  # only one finding, so an rc alone cannot say WHICH rule caught it. The planted values are
+  # ASSEMBLED at runtime from two halves so the whole credential shape never appears in this source
+  # (the kit's own full-history scan must stay green). Both contain the substring `admin`, a
+  # stopword of the DEFAULT generic rule: that rule DROPS them, so only the kit rule can catch them
+  # (the ~2.7% gap this rule closes; M1 below proves it). ---
+  _kv_dc=$(printf '%s%s' 'Qx7adminC3J27' 'XDCG2LmlZGEONYlk')
+  _kv_legacy=$(printf '%s%s' 'Zk3adminQ9w7' 'Lp2Xv5Rt8Ny')
+
+  # L1 — a fixed DC-shaped value (stopword-bearing) under KIT_TRACKER_TOKEN reds with the kit rule id.
+  _kit_plant l1 "$(printf 'KIT_TRACKER_TOKEN=%s' "$_kv_dc")"
+  _kit_expect_red l1 "L1 fixed stopword-bearing DC-shaped value under KIT_TRACKER_TOKEN"
+
+  # L2 — a fixed legacy 24-character value, quoted.
+  _kit_plant l2 "$(printf 'KIT_TRACKER_TOKEN="%s"' "$_kv_legacy")"
+  _kit_expect_red l2 "L2 fixed legacy 24-char value (quoted)"
+
+  # L3 — the other assignment forms each red with the kit rule id.
+  _kit_plant l3a "$(printf 'export KIT_TRACKER_TOKEN=%s' "$_kv_dc")"
+  _kit_expect_red l3a "L3 export form"
+  _kit_plant l3b "$(printf 'KIT_TRACKER_TOKEN: %s' "$_kv_dc")"
+  _kit_expect_red l3b "L3 YAML ': v' form"
+  _kit_plant l3c "$(printf 'KIT_TRACKER_TOKEN = %s' "$_kv_dc")"
+  _kit_expect_red l3c "L3 spaced ' = ' form"
+  _kit_plant l3d "$(printf '{"KIT_TRACKER_TOKEN": "%s"}' "$_kv_dc")"
+  _kit_expect_red l3d "L3 JSON form"
+
+  # L4 — a value with `YOUR` MID-STRING and the generic stopword `admin` (so the default set cannot
+  # mask the result). The old substring stopword `your` dropped this real-shaped token; the anchored
+  # whole-value placeholder allowlist must not (it has digits and mixed case, so it is not ENTIRELY
+  # placeholder text).
+  _kv_your=$(printf '%s%s' 'Qx7YOURadminC3J27' 'XDCG2LmlZGEONYlk')
+  _kit_plant l4 "$(printf 'KIT_TRACKER_TOKEN=%s' "$_kv_your")"
+  _kit_expect_red l4 "L4 real-shaped value with YOUR mid-string (whole-value placeholder allowlist)"
+
+  # L5 — the Make `:=` and `?=` forms, the Ruby hash `=>` form, and the shell `:=` default (which
+  # commits a literal, so it reds) each red with the kit rule id.
+  _kit_plant l5a "$(printf 'KIT_TRACKER_TOKEN := %s' "$_kv_dc")"
+  _kit_expect_red l5a "L5 Make ':=' form"
+  _kit_plant l5b "$(printf 'KIT_TRACKER_TOKEN ?= %s' "$_kv_dc")"
+  _kit_expect_red l5b "L5 Make '?=' form"
+  _kit_plant l5c "$(printf '"KIT_TRACKER_TOKEN" => "%s"' "$_kv_dc")"
+  _kit_expect_red l5c "L5 Ruby '=>' form"
+  _kit_plant l5d "$(printf 'X=${KIT_TRACKER_TOKEN:=%s}' "$_kv_dc")"
+  _kit_expect_red l5d "L5 shell \${KIT_TRACKER_TOKEN:=<literal>} form"
+
+  # N1-N5 — the legitimate shapes produce NO finding from any rule.
+  _kit_plant n1 '# KIT_TRACKER_TOKEN=replace-me'
+  _kit_expect_clean n1 "N1 .env.example placeholder line"
+  _kit_plant n2 'token: ${{ secrets.KIT_TRACKER_TOKEN }}'
+  _kit_expect_clean n2 "N2 workflow secrets reference"
+  _kit_plant n3 'KIT_TRACKER_TOKEN=your-jira-api-token-goes-here'
+  _kit_expect_clean n3 "N3 long placeholder value"
+  # N4: the value of a shell default starts with `-` (`:-`); the rule's value class cannot START
+  # with `-`, so `${KIT_TRACKER_TOKEN:-<long literal>}` does not fire.
+  _kit_plant n4 "$(printf 'T="${KIT_TRACKER_TOKEN:-%s}"' "$_kv_dc")"
+  _kit_expect_clean n4 "N4 shell default \${KIT_TRACKER_TOKEN:-<long literal>}"
+  # N5: code that READS the variable from the environment/settings is not a committed credential.
+  _kit_plant n5a 'const KIT_TRACKER_TOKEN = process.env.KIT_TRACKER_TOKEN;'
+  _kit_expect_clean n5a "N5 process.env lookup"
+  _kit_plant n5b 'KIT_TRACKER_TOKEN = settings.KIT_TRACKER_TOKEN_VALUE'
+  _kit_expect_clean n5b "N5 settings lookup"
+  # N6: a FUNCTION CALL that returns the token is not a committed credential either. The value is
+  # followed by `(`, which the rule's trailing group refuses (CI's history scan caught the design
+  # doc's own example of this shape). The JS line is assembled from two halves, like the planted
+  # values above, so the whole shape never appears in this source.
+  _kit_plant n6a "$(printf '%s%s' 'const KIT_TRACKER_TOKEN = getTrackerToken' 'FromKeychain();')"
+  _kit_expect_clean n6a "N6 JS function-call value"
+  _kit_plant n6b "$(printf '%s%s' 'KIT_TRACKER_TOKEN = load_tracker_token' '_from_vault()')"
+  _kit_expect_clean n6b "N6 Python function-call value"
+
+  # R1 — the anchored approval-token note line still passes with the kit rule present (the global
+  # allowlist is not shadowed), even when the quoted free text itself carries the kit variable.
+  _kit_plant r1 "$(printf 'approval-token: "KIT_TRACKER_TOKEN=%s"' "$_kv_dc")"
+  _kit_expect_clean r1 "R1 anchored approval-token note line (kit rule present)"
+
+  # M1 — MUTANT: the config with the kit rule's whole [[rules]] + [[rules.allowlists]] block removed
+  # must let L1's plant wrongly PASS: the default set does not catch it, so L1 is load-bearing.
+  sed '/^\[\[rules\]\]/,/^\[allowlist\]/{/^\[allowlist\]/!d;}' "$_gltoml_abs" > "$d/mutant-nokit.toml"
+  # The mutant must really lack the kit rule and keep the default ruleset, or M1 proves nothing.
+  if grep -Eq '^id[[:space:]]*=[[:space:]]*"kit-tracker-token"' "$d/mutant-nokit.toml" || ! grep -Eq 'useDefault[[:space:]]*=[[:space:]]*true' "$d/mutant-nokit.toml"; then
+    echo "live FAIL: M1 the mutant config is malformed (it must lack kit-tracker-token AND keep useDefault = true) — M1 would prove nothing"; sf=1
+  else
+  _kit_scan l1 "$d/mutant-nokit.toml"
+  if [ "$_ks_rc" -eq 0 ]; then
+    echo "live PASS: M1 dropping the kit rule makes L1's plant wrongly PASS (rc 0) — proves the kit rule, not the default set, catches it"
+  else echo "live FAIL: M1 the kit-rule-drop mutant still caught L1's plant (rc=$_ks_rc) — L1 is not load-bearing"; sf=1; fi
+  fi
 
   if [ "$sf" -eq 0 ]; then echo "OK: secret-scan-wired live (history coverage proven)"; exit 0
   else echo "FAIL: secret-scan-wired live"; exit 1; fi

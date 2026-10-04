@@ -113,13 +113,22 @@ _gw_hostile() {
 # GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=<anywhere>` injects a fake `core.hooksPath`
 # into every `git config --get` this leg runs (measured: it mutes a genuinely STALE tree into the
 # disclosed "core.hooksPath redirects hooks to ..." N/A instead of the STALE verdict) — the header's
-# "ambient env cannot reroute the check" claim did not yet cover it. The `unset` runs inside a
-# subshell — POSIX-clean (no `env -u`, which is not POSIX) — and is LOCAL to that subshell; it never
-# touches the caller's environment, so the CI/GITHUB_ACTIONS N/A route above is unaffected.
+# "ambient env cannot reroute the check" claim did not yet cover it. Everything below runs inside a
+# subshell and is LOCAL to it; it never touches the caller's environment, so the CI/GITHUB_ACTIONS
+# N/A route above is unaffected.
+# ⚠️ `env -u`, NOT `unset` (whole-branch review I-1 / security L1, 2026-09-18): in bash-as-/bin/sh,
+# `unset` of a var that carried a TEMPORARY PREFIX assignment over an ALREADY-EXPORTED one RESTORES
+# the exported value instead of removing it — measured on the locator family too, where a forged
+# `GIT_DIR=<donor>/.git GIT_WORK_TREE=<tree>` survived and the donor's config was read. `env -u`
+# removes the name from the CHILD environment whatever the shell's unset semantics are. It is not in
+# POSIX, but it is in GNU coreutils, the BSDs (macOS included) and BusyBox — the same portability
+# floor the kit already assumes. COUNT=0/PARAMETERS='' stay ASSIGNMENTS on purpose: git needs them
+# INERT, not absent, and a repo-local key must still be readable.
 _gw_git() {
-  ( unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE \
-          GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
-          GIT_CONFIG GIT_CONFIG_PARAMETERS; git "$@" )
+  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
+    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+    env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CONFIG_GLOBAL \
+        -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG -u GIT_CEILING_DIRECTORIES -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@" )
 }
 
 # _gw_resolve <path> -> its physical form, resolving the PARENT only; rc 1 when unresolvable. Ported
@@ -931,9 +940,56 @@ selftest() {
     echo "selftest PASS: --rung1-only on a hookless qualifying tree -> rc 0, second rung not evaluated"
   else echo "selftest FAIL: --rung1-only on a hookless qualifying tree should exit 0 (rc=$rc): $out"; st=1; fi
 
+  # SANITIZER-UNSET-RESTORES-EXPORTED: the bash-as-/bin/sh lock on _gw_git (see the function's header
+  # below; it is the twin of inception-done.sh's (b10) leg and of scripts/kit-update.sh's).
+  selftest_sanitizer_bash_unset
+
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
   echo "guard-wired --selftest: OK (full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
+}
+
+# ── selftest_sanitizer_bash_unset : the BASH-AS-/bin/sh regression lock for _gw_git
+# (SANITIZER-UNSET-RESTORES-EXPORTED). It extracts the SHIPPED sanitizer from this very file (so it
+# grades the deployed text, not a copy) and runs it under `bash` with the hermetic lane's face-(a)
+# triad EXPORTED and a forged `core.hooksPath` applied as a TEMPORARY PREFIX on a function call. In
+# bash-as-/bin/sh, `unset` of a variable that carried a prefix assignment over an ALREADY-EXPORTED one
+# RESTORES the exported value instead of removing it, so an `unset`-based sanitizer lets the forged
+# GIT_CONFIG_KEY_0 through and the probe prints `hooks` — the exact vector this file's own header
+# calls the SEC HIGH-1 class.
+# ⚠️ Under `dash` this leg is TAUTOLOGICAL (dash's unset removes the variable outright); it is kept and
+# run under `bash` EXPLICITLY because macOS /bin/sh IS bash 3.2 and CI's per-PR hermetic face runs
+# these selftests under the face-(a) environment. HOME/XDG_CONFIG_HOME point at the throwaway dir
+# because the sanitizer deliberately does NOT strip them (see _gw_git's header).
+selftest_sanitizer_bash_unset() {
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "selftest SKIP: sanitizer bash-as-sh leg (no bash on PATH — the regression it locks is bash-only)"
+    return 0
+  fi
+  _sbu_d=$(mktemp -d) || { echo "selftest FAIL: sanitizer bash-as-sh leg — no tmpdir"; st=1; return 1; }
+  git -C "$_sbu_d" init -q >/dev/null 2>&1 || true
+  # Anchored on the OPENING (security L2; `/^_gw_git/` starts at any column-0 line with that prefix).
+  # TWO VECTORS (review I-1): the config-injection triad AND the LOCATOR pair — GIT_DIR/GIT_WORK_TREE
+  # at a DONOR repo whose own config carries core.hooksPath — each ambient-exported and re-applied as the temporary prefix that `unset` restores. Either leak prints a value; a clean run prints nothing.
+  _sbu_src=$(awk '/^_gw_git\(\) \{/,/^}$/' "$0")
+  _sbu_dn=$_sbu_d/donor; { git init -q "$_sbu_dn" && git -C "$_sbu_dn" config core.hooksPath DONOR; } >/dev/null 2>&1 || true
+  # `|| true`: a sanitized `git config --get` of an ABSENT key exits 1 — which is the PASSING case
+  # here — and this file runs under `set -e`, so the assignment must not be the script's last act.
+  _sbu_out=$( cd "$_sbu_d" && HOME="$_sbu_d" XDG_CONFIG_HOME="$_sbu_d" \
+      GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true \
+      GIT_DIR="$_sbu_dn/.git" GIT_WORK_TREE="$_sbu_dn" \
+      bash -c "$_sbu_src
+_sbu_probe() { _gw_git config --get core.hooksPath; }
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=hooks _sbu_probe
+GIT_DIR='$_sbu_dn/.git' GIT_WORK_TREE='$_sbu_dn' _sbu_probe" 2>&1 ) || true
+  rm -rf "$_sbu_d" 2>/dev/null || true
+  if [ -z "$_sbu_out" ]; then
+    echo "selftest PASS: _gw_git neutralizes a forged prefix-over-exported GIT_CONFIG triad AND GIT_DIR/GIT_WORK_TREE locator pair (bash-as-/bin/sh; tautological under dash)"
+    return 0
+  fi
+  echo "selftest FAIL: _gw_git let a forged core.hooksPath through under bash-as-/bin/sh -> [$_sbu_out]"
+  st=1
+  return 1
 }
 
 mode=full

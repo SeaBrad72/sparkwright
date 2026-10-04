@@ -1,0 +1,25 @@
+[
+  {
+    "self": "https://ex.atlassian.net/rest/api/3/issuetype/10000",
+    "id": "10000",
+    "name": "Task",
+    "subtask": false,
+    "statuses": [
+      { "self": "https://ex.atlassian.net/rest/api/3/status/10001", "description": "", "iconUrl": "", "name": "Selected", "id": "10001", "statusCategory": { "id": 2, "key": "new", "colorName": "blue-gray" } },
+      { "self": "https://ex.atlassian.net/rest/api/3/status/3", "description": "", "iconUrl": "", "name": "In Progress", "id": "3", "statusCategory": { "id": 4, "key": "indeterminate", "colorName": "yellow" } },
+      { "self": "https://ex.atlassian.net/rest/api/3/status/10002", "description": "", "iconUrl": "", "name": "In Dev", "id": "10002", "statusCategory": { "id": 4, "key": "indeterminate", "colorName": "yellow" } },
+      { "self": "https://ex.atlassian.net/rest/api/3/status/10003", "description": "", "iconUrl": "", "name": "In Review", "id": "10003", "statusCategory": { "id": 4, "key": "indeterminate", "colorName": "yellow" } },
+      { "self": "https://ex.atlassian.net/rest/api/3/status/10004", "description": "", "iconUrl": "", "name": "Done", "id": "10004", "statusCategory": { "id": 3, "key": "done", "colorName": "green" } }
+    ]
+  },
+  {
+    "self": "https://ex.atlassian.net/rest/api/3/issuetype/10001",
+    "id": "10001",
+    "name": "Bug",
+    "subtask": false,
+    "statuses": [
+      { "self": "https://ex.atlassian.net/rest/api/3/status/10001", "description": "", "iconUrl": "", "name": "Selected", "id": "10001", "statusCategory": { "id": 2, "key": "new", "colorName": "blue-gray" } },
+      { "self": "https://ex.atlassian.net/rest/api/3/status/3", "description": "", "iconUrl": "", "name": "In Progress", "id": "3", "statusCategory": { "id": 4, "key": "indeterminate", "colorName": "yellow" } }
+    ]
+  }
+]

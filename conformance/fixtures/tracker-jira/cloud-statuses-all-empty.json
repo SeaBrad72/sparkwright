@@ -1,0 +1,16 @@
+[
+  {
+    "self": "https://ex.atlassian.net/rest/api/3/issuetype/10000",
+    "id": "10000",
+    "name": "Task",
+    "subtask": false,
+    "statuses": []
+  },
+  {
+    "self": "https://ex.atlassian.net/rest/api/3/issuetype/10001",
+    "id": "10001",
+    "name": "Bug",
+    "subtask": false,
+    "statuses": []
+  }
+]

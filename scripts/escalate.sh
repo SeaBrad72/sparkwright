@@ -8,6 +8,7 @@
 #   escalate.sh raise   <id> <trigger> <ratifier_role> <summary>  -> writes pending record; prints path
 #   escalate.sh await   <id>                                      -> rc 0 if a verdict file exists, else 1
 #   escalate.sh resolve <id>                                      -> prints option (rc 0) | fail-closed (rc 1)
+#                          (raise-ceiling = a RAISE <ROW> line for the row in the budget config, then resume; never a tally wipe)
 #   escalate.sh --selftest                                        -> self-isolating assertions
 #
 # Record + verdict live under $KIT_ESCALATION_DIR (default .kit-run/escalations).
@@ -21,6 +22,8 @@ now() { _n=$(date +%s%N 2>/dev/null); case "$_n" in *N|"") printf '%s000000000' 
 slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 
 # Allowed verdict options per trigger. The only WIRED trigger is runaway-breach.
+# `raise-ceiling` means: a `RAISE <ROW>` line for the row in the budget config, then resume; never a
+# tally wipe (the loop re-checks the row and halts if no RAISE is in effect).
 # B-ready: a future trigger (e.g. tier-exceeded) adds a case here with its own option set.
 _options_for() {
   case "$1" in

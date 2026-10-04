@@ -1,0 +1,17 @@
+Epic	customfield_10049	option	Size	XS|S|M|L|XL
+Epic	customfield_10050	option	Risk	Low|Medium|High
+Epic	description	string	Description
+Epic	labels	array	Labels
+Epic	parent	issuelink	Parent
+Task	customfield_10016	number	Story point estimate
+Task	customfield_10046	option	Size	XS|S|M|L|XL
+Task	customfield_10047	option	Risk	Low|Medium|High
+Task	description	string	Description
+Task	labels	array	Labels
+Task	parent	issuelink	Parent
+Story	customfield_10016	number	Story point estimate
+Story	customfield_10043	option	Size	XS|S|M|L|XL
+Story	customfield_10044	option	Risk	Low|Medium|High
+Story	description	string	Description
+Story	labels	array	Labels
+Story	parent	issuelink	Parent

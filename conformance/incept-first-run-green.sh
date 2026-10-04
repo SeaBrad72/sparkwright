@@ -468,6 +468,280 @@ board_governance_stamp_tests() {  # appends to $st
   rm -rf "$_t"
 }
 
+# tracker_conf_stamp_tests — TBG-TRACKER-CONF T3 (reviewer I-2: this behaviour had no committed
+# conformance test). Live incept runs (the board_governance_stamp_tests precedent) proving:
+# `--backlog jira` stamps a `.kit/tracker.conf` that scripts/tracker-conf.sh accepts (rc 0);
+# `--backlog jira --existing` stamps an EMPTY state map; `--backlog github --existing` is
+# accepted with a brownfield note and no per-backend logic (F1); `--backlog md --existing` is
+# refused naming the cure; `--help` documents `--existing`.
+tracker_conf_stamp_tests() {  # appends to $st
+  make_pristine_export || { echo "selftest FAIL: tracker-conf fixture setup — no pristine export (fail-closed)"; st=1; return 0; }
+  _tc_root=$(unset CDPATH; cd "$(dirname "$0")/.." && pwd)
+
+  # (1) greenfield jira: the stamped conf parses, and carries a non-empty state map.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-conf fixture (jira greenfield) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog jira; then
+    if [ -f "$_t/.kit/tracker.conf" ] && (cd "$_t" && sh "$_tc_root/scripts/tracker-conf.sh" .kit/tracker.conf) >/dev/null 2>&1; then
+      echo "selftest PASS: incept --backlog jira stamps a .kit/tracker.conf that scripts/tracker-conf.sh accepts"
+    else
+      echo "selftest FAIL: incept --backlog jira did not stamp a conf tracker-conf.sh accepts"; st=1
+    fi
+    if grep -q '^state\.' "$_t/.kit/tracker.conf" 2>/dev/null; then
+      echo "selftest PASS: the greenfield stamp carries a non-empty state map"
+    else
+      echo "selftest FAIL: the greenfield stamp must carry a state map"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept --backlog jira exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (2) jira --existing: the stamped conf STILL parses, but carries an EMPTY state map + the
+  # --discover instruction (F1's jira arm).
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-conf fixture (jira --existing) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog jira --existing; then
+    if [ -f "$_t/.kit/tracker.conf" ] && (cd "$_t" && sh "$_tc_root/scripts/tracker-conf.sh" .kit/tracker.conf) >/dev/null 2>&1; then
+      echo "selftest PASS: incept --backlog jira --existing stamps a conf tracker-conf.sh still accepts"
+    else
+      echo "selftest FAIL: incept --backlog jira --existing did not stamp an accepted conf"; st=1
+    fi
+    if grep -q '^state\.' "$_t/.kit/tracker.conf" 2>/dev/null; then
+      echo "selftest FAIL: --existing must stamp an EMPTY state map, found one"; st=1
+    else
+      echo "selftest PASS: --existing stamps an EMPTY state map"
+    fi
+    if grep -q -- '--discover' "$_t/.kit/tracker.conf" 2>/dev/null; then
+      echo "selftest PASS: --existing's conf names the --discover instruction"
+    else
+      echo "selftest FAIL: --existing's conf must name the --discover instruction"; st=1
+    fi
+  else
+    echo "selftest FAIL: incept --backlog jira --existing exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (3) F1: --existing is backend-neutral — github --existing is ACCEPTED with a brownfield note,
+  # never a per-backend gate.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-conf fixture (github --existing) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog github --existing; then
+    case "$INCEPT_OUT" in
+      *"--existing acknowledged for backend 'github'"*)
+        echo "selftest PASS: --backlog github --existing is accepted with a brownfield note (F1, backend-neutral)" ;;
+      *) echo "selftest FAIL: --backlog github --existing must print the brownfield note"; st=1
+         printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /' ;;
+    esac
+  else
+    echo "selftest FAIL: incept --backlog github --existing exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (4) md --existing is REFUSED, before any mutation, naming the cure.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-conf fixture (md --existing) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog md --existing; then
+    echo "selftest FAIL: incept --backlog md --existing must be REFUSED (md has no external tracker)"; st=1
+  else
+    case "$INCEPT_OUT" in
+      *"docs/adoption/brownfield.md"*)
+        echo "selftest PASS: --backlog md --existing is refused, naming the brownfield-adoption cure" ;;
+      *) echo "selftest FAIL: the --backlog md --existing refusal must name the cure"; st=1
+         printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /' ;;
+    esac
+    [ -f "$_t/BACKLOG.md" ] || echo "selftest PASS: nothing was stamped by the refused run (fail-fast, before any mutation — security L-5)"
+    [ ! -f "$_t/BACKLOG.md" ] || { echo "selftest FAIL: the md/--existing refusal must fire BEFORE the scaffold is written (L-5) — BACKLOG.md exists"; st=1; }
+  fi
+  rm -rf "$_t"
+
+  # (5) --help documents --existing.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-conf fixture (--help) — no tree"; st=1; return 0; }
+  if _tc_help=$(cd "$_t" && sh scripts/incept.sh --help 2>&1) && printf '%s' "$_tc_help" | grep -q -- '--existing'; then
+    echo "selftest PASS: incept --help documents --existing"
+  else
+    echo "selftest FAIL: incept --help must document --existing"; st=1
+  fi
+  rm -rf "$_t"
+}
+
+# T3 (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT): on a tracker backend, REQUIRED-CHECKS.md's pristine-
+# placeholder fill gains a SIXTH context (tracker-board-gates, last) and incept prints two first-PR
+# preconditions; on the md face the fill and both notes are byte-identical to today (Δ1 shape — a
+# mutant that adds the context unconditionally must RED this leg on the md fixture).
+required_checks_tracker_face_tests() {  # appends to $st
+  make_pristine_export || { echo "selftest FAIL: tracker-face fixture setup — no pristine export (fail-closed)"; st=1; return 0; }
+
+  # (1) tracker face (--backlog jira): the line-count lock is exactly SIX, tracker-board-gates LAST.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-face fixture (jira) — no tree"; st=1; return 0; }
+  if run_incept "$_t" --backlog jira; then
+    if awk '/^loop-state$/{getline; if ($0=="tracker-board-gates") f=1} END{exit !f}' "$_t/REQUIRED-CHECKS.md"; then
+      echo "selftest PASS: --backlog jira declares tracker-board-gates immediately after loop-state (sixth, last)"
+    else
+      echo "selftest FAIL: --backlog jira must declare tracker-board-gates immediately after loop-state"; st=1
+    fi
+    _tpl="$REPO_ROOT/templates/REQUIRED-CHECKS-TEMPLATE.md"
+    _tl=$(grep -c '' "$_tpl" 2>/dev/null || echo 0); _ol=$(grep -c '' "$_t/REQUIRED-CHECKS.md" 2>/dev/null || echo 0)
+    [ "$_ol" -eq $(( _tl + 3 )) ] || { echo "selftest FAIL: tracker face REQUIRED-CHECKS.md is $_ol lines, template is $_tl — expected $(( _tl + 3 )) (six declared contexts replacing the one placeholder)"; st=1; }
+    # RT3-Q4 (T3 fix round 1): check each note ON ITS OWN LINE — a whole-output glob (the old
+    # `case "$INCEPT_OUT" in *a*b*`) is satisfied by two DIFFERENT lines carrying the two fragments in
+    # order, which is not the same claim as "one line carries the whole sentence".
+    if printf '%s\n' "$INCEPT_OUT" | grep '^note: tracker-board-gates is a required context on this tracker-backed repo' | grep -q 'bind branch protection BEFORE your first PR: sh scripts/branch-protection-apply.sh --apply'; then
+      echo "selftest PASS: tracker face prints the bind-before-first-PR note, on one line"
+    else
+      echo "selftest FAIL: tracker face must print the bind-before-first-PR note on one line"; st=1
+      printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'
+    fi
+    if printf '%s\n' "$INCEPT_OUT" | grep '^note: the trusted board job' | grep -q 'add KIT_TRACKER_TOKEN and KIT_TRACKER_USER.*before your first PR, or it will report the missing secret by name\.'; then
+      echo "selftest PASS: tracker face names both KIT_TRACKER_TOKEN and KIT_TRACKER_USER on one line (auth defaults to basic)"
+    else
+      echo "selftest FAIL: tracker face must name KIT_TRACKER_TOKEN and KIT_TRACKER_USER on one line (auth basic/absent)"; st=1
+      printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'
+    fi
+    if printf '%s\n' "$INCEPT_OUT" | grep '^note:.*KIT_TRACKER' | grep -q '='; then
+      echo "selftest FAIL: the credential note must name variables only, never a value (no '=' on a note line)"; st=1
+    else
+      echo "selftest PASS: the credential note lines carry no '=' — names only, no value"
+    fi
+  else
+    echo "selftest FAIL: incept --backlog jira exited non-zero (tracker face)"; printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (2) md face is BYTE-IDENTICAL to today: exactly five lines, no tracker-board-gates, neither note
+  # (the Δ1 always-green shape — a mutant that adds the context unconditionally reds THIS leg).
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-face fixture (md) — no tree"; st=1; return 0; }
+  if run_incept "$_t"; then
+    if grep -qx 'tracker-board-gates' "$_t/REQUIRED-CHECKS.md"; then
+      echo "selftest FAIL: --backlog md must NOT declare tracker-board-gates"; st=1
+    else
+      echo "selftest PASS: --backlog md does not declare tracker-board-gates"
+    fi
+    _tpl="$REPO_ROOT/templates/REQUIRED-CHECKS-TEMPLATE.md"
+    _tl=$(grep -c '' "$_tpl" 2>/dev/null || echo 0); _ol=$(grep -c '' "$_t/REQUIRED-CHECKS.md" 2>/dev/null || echo 0)
+    [ "$_ol" -eq $(( _tl + 2 )) ] || { echo "selftest FAIL: md face REQUIRED-CHECKS.md is $_ol lines, template is $_tl — expected $(( _tl + 2 )) (unchanged, five declared contexts replacing the one placeholder)"; st=1; }
+    case "$INCEPT_OUT" in
+      *"tracker-board-gates is a required context"*|*"KIT_TRACKER_TOKEN"*)
+        echo "selftest FAIL: --backlog md must not print either tracker-face note"; st=1
+        printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /' ;;
+      *) echo "selftest PASS: --backlog md prints neither tracker-face note" ;;
+    esac
+  else
+    echo "selftest FAIL: incept (md) exited non-zero (tracker face)"; printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (3) RT3-Q1 fix: a NON-JIRA TRACKER backend (linear, and github as the second) gets the MD FACE —
+  # five lines, no tracker-board-gates, neither note — because incept stamps no .kit/tracker.conf for
+  # it and no trusted job can read one that doesn't exist. Before the fix, the sixth line was keyed on
+  # `backlog != md`, which wrongly bound tracker-board-gates on every non-md backend, including these.
+  for _rt3_be in linear github; do
+    _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-face fixture ($_rt3_be) — no tree"; st=1; continue; }
+    if run_incept "$_t" --backlog "$_rt3_be"; then
+      if grep -qx 'tracker-board-gates' "$_t/REQUIRED-CHECKS.md"; then
+        echo "selftest FAIL: --backlog $_rt3_be must NOT declare tracker-board-gates (no trusted job can read it)"; st=1
+      else
+        echo "selftest PASS: --backlog $_rt3_be does not declare tracker-board-gates"
+      fi
+      _tpl="$REPO_ROOT/templates/REQUIRED-CHECKS-TEMPLATE.md"
+      _tl=$(grep -c '' "$_tpl" 2>/dev/null || echo 0); _ol=$(grep -c '' "$_t/REQUIRED-CHECKS.md" 2>/dev/null || echo 0)
+      [ "$_ol" -eq $(( _tl + 2 )) ] || { echo "selftest FAIL: $_rt3_be face REQUIRED-CHECKS.md is $_ol lines, template is $_tl — expected $(( _tl + 2 )) (md-face shape, five declared contexts)"; st=1; }
+      case "$INCEPT_OUT" in
+        *"tracker-board-gates is a required context"*|*"KIT_TRACKER_TOKEN"*)
+          echo "selftest FAIL: --backlog $_rt3_be must not print either tracker-face note"; st=1
+          printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /' ;;
+        *) echo "selftest PASS: --backlog $_rt3_be prints neither tracker-face note (md behaviour)" ;;
+      esac
+    else
+      echo "selftest FAIL: incept --backlog $_rt3_be exited non-zero (tracker face)"; printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'; st=1
+    fi
+    rm -rf "$_t"
+  done
+
+  # RT3-Q1 MUTANT: restore the OLD, wrong predicate (`backlog != md`) in a scratch copy of incept.sh
+  # and prove the linear leg above FLIPS to red under it — the fixed predicate is load-bearing, not
+  # coincidentally passing.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: RT3-Q1 mutant — no tree"; st=1; }
+  if [ -n "${_t:-}" ] && [ -d "$_t" ]; then
+      sed 's/\[ "\$_TBG_CONF_STAMPED" -eq 1 \] && _tbg_line=.tracker-board-gates./[ "$BACKLOG" != md ] \&\& _tbg_line='"'"'tracker-board-gates'"'"'/' \
+        "$_t/scripts/incept.sh" > "$_t/scripts/incept.sh.mut" \
+        && grep -q '\[ "\$BACKLOG" != md \]' "$_t/scripts/incept.sh.mut" \
+        && mv "$_t/scripts/incept.sh.mut" "$_t/scripts/incept.sh"
+      if grep -q '\[ "\$BACKLOG" != md \]' "$_t/scripts/incept.sh"; then
+        if INCEPT_OUT=$( cd "$_t" && sh scripts/incept.sh --name DateProbe --intent-owner probe \
+             --stack typescript-node --backlog linear --ci github --noninteractive 2>&1 ); then
+          if grep -qx 'tracker-board-gates' "$_t/REQUIRED-CHECKS.md"; then
+            echo "selftest PASS: RT3-Q1 mutant — the OLD 'backlog != md' predicate wrongly binds tracker-board-gates on --backlog linear (RED under the mutant; the fix is load-bearing)"
+          else
+            echo "selftest FAIL: RT3-Q1 mutant — restoring the old predicate did NOT flip the linear leg; it proves nothing"; st=1
+          fi
+        else
+          echo "selftest FAIL: RT3-Q1 mutant — mutated incept.sh exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'; st=1
+        fi
+      else
+        echo "selftest FAIL: RT3-Q1 mutant setup — could not plant the old predicate in the scratch copy"; st=1
+      fi
+      rm -rf "$_t"
+  fi
+
+  # (4) RT3-Q2 fix: a BROWNFIELD tree with a pre-existing .kit/tracker.conf carrying `auth=bearer`
+  # (valid per scripts/tracker-conf.sh) is read BEFORE incept's own stamp — the credential note must
+  # name KIT_TRACKER_TOKEN and must NOT name KIT_TRACKER_USER (bearer auth has no user).
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-face fixture (brownfield bearer) — no tree"; st=1; return 0; }
+  mkdir -p "$_t/.kit"
+  cat > "$_t/.kit/tracker.conf" <<'RT3Q2EOF'
+version=1
+backend=jira
+base_url=https://acme.example.atlassian.net
+flavour=cloud
+auth=bearer
+project=PROJ
+state.backlog=Backlog
+list_cap=200
+RT3Q2EOF
+  if run_incept "$_t" --backlog jira --existing; then
+    if printf '%s\n' "$INCEPT_OUT" | grep '^note: the trusted board job' | grep -q 'KIT_TRACKER_TOKEN' \
+      && ! printf '%s\n' "$INCEPT_OUT" | grep '^note: the trusted board job' | grep -q 'KIT_TRACKER_USER'; then
+      echo "selftest PASS: brownfield bearer-auth conf -> tracker face names KIT_TRACKER_TOKEN and NOT KIT_TRACKER_USER"
+    else
+      echo "selftest FAIL: brownfield bearer-auth conf must name KIT_TRACKER_TOKEN only (RT3-Q2 — the branch is reachable, not unconditionally absent)"; st=1
+      printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'
+    fi
+  else
+    echo "selftest FAIL: incept --backlog jira --existing (brownfield bearer conf) exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (5) RT3-Q3 [SEC]: the tracker face never leaks a live credential VALUE into stdout — only the
+  # variable NAMES. Set canary values for both env vars incept reads and assert neither canary string,
+  # nor the literal word "value", reaches the output.
+  _t=$(fresh_export_tree) || { echo "selftest FAIL: tracker-face fixture (canary secrets) — no tree"; st=1; return 0; }
+  _rt3_canary_token='CANARY-TOKEN-9f3c7a1b'
+  _rt3_canary_user='CANARY-USER-4d2e8f60'
+  if INCEPT_OUT=$( cd "$_t" && KIT_TRACKER_TOKEN="$_rt3_canary_token" KIT_TRACKER_USER="$_rt3_canary_user" \
+       sh scripts/incept.sh --name DateProbe --intent-owner probe \
+       --stack typescript-node --backlog jira --ci github --noninteractive 2>&1 ); then
+    if printf '%s\n' "$INCEPT_OUT" | grep -qF "$_rt3_canary_token"; then
+      echo "selftest FAIL: incept leaked the KIT_TRACKER_TOKEN canary value into its output"; st=1
+    elif printf '%s\n' "$INCEPT_OUT" | grep -qF "$_rt3_canary_user"; then
+      echo "selftest FAIL: incept leaked the KIT_TRACKER_USER canary value into its output"; st=1
+    elif printf '%s\n' "$INCEPT_OUT" | grep '^note:.*KIT_TRACKER' | grep -q 'value'; then
+      echo "selftest FAIL: incept's credential note carries the word 'value' — it should name variables only, never describe a value"; st=1
+    else
+      echo "selftest PASS: [SEC] incept with live KIT_TRACKER_TOKEN/KIT_TRACKER_USER canaries in env leaks neither canary nor the word 'value'"
+    fi
+  else
+    echo "selftest FAIL: incept with canary env vars exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -8 | sed 's/^/    /'; st=1
+  fi
+  rm -rf "$_t"
+
+  # (6) RT3F-Q1: the stamp site must read the SAME predicate as the binding site — the source text of
+  # scripts/incept.sh shows `_TBG_CONF_STAMPED` guarding the `stamp_tracker_conf` call in the
+  # `case "$BACKLOG"` block, so the stamp and the binding cannot diverge. A mutant that removes the
+  # guard (calling stamp_tracker_conf unconditionally) must flip this leg to red.
+  if grep -q '\[ "\$_TBG_CONF_STAMPED" -eq 1 \] && stamp_tracker_conf "\$EXISTING"' "$REPO_ROOT/scripts/incept.sh"; then
+    echo "selftest PASS: RT3F-Q1 — the stamp_tracker_conf call is guarded by _TBG_CONF_STAMPED"
+  else
+    echo "selftest FAIL: RT3F-Q1 — the stamp_tracker_conf call must be guarded by _TBG_CONF_STAMPED (stamp and binding must read the same predicate)"; st=1
+  fi
+}
+
 incept_delivery_tests() {  # appends to $st (0 = all good)
   make_pristine_export || { echo "selftest FAIL: delivery fixture setup — no pristine export tree (fail-closed)"; st=1; return 0; }
   _b3bad() { echo "selftest FAIL: $1"; st=1; _res=1; }
@@ -797,7 +1071,7 @@ manifest_foreign_count() {  # <manifest-text> — count profiles/ lines that are
   # profiles/ratification.yml (Δ7: a literal-name keep-set that fails SILENTLY on omission, same
   # class as the incept.sh prune-comment / action-pinning.sh / actionlint-valid.sh registries).
   printf '%s\n' "$1" | grep -E '^profiles/' \
-    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|adopter-gates\.yml$|_TEMPLATE\.md$|\.gitignore$)' \
+    | grep -vE '^profiles/(typescript-node/|typescript-node\.md$|ratification\.yml$|adopter-gates\.yml$|adopter-tracker-gates\.yml$|_TEMPLATE\.md$|\.gitignore$)' \
     | grep -c . || true
 }
 incept_prune_tests() {  # appends to $st (0 = all good)
@@ -820,10 +1094,10 @@ incept_prune_tests() {  # appends to $st (0 = all good)
     else
       echo "selftest FAIL: after incept, foreign profile dirs remain ('$_foreign') or the selected profile is missing"; st=1
     fi
-    if [ -f "$_pe/profiles/ratification.yml" ] && [ -f "$_pe/profiles/adopter-gates.yml" ] && [ -f "$_pe/profiles/_TEMPLATE.md" ]; then
-      echo "selftest PASS: incept kept the non-stack-dir files (ratification.yml, adopter-gates.yml, _TEMPLATE.md)"
+    if [ -f "$_pe/profiles/ratification.yml" ] && [ -f "$_pe/profiles/adopter-gates.yml" ] && [ -f "$_pe/profiles/adopter-tracker-gates.yml" ] && [ -f "$_pe/profiles/_TEMPLATE.md" ]; then
+      echo "selftest PASS: incept kept the non-stack-dir files (ratification.yml, adopter-gates.yml, adopter-tracker-gates.yml, _TEMPLATE.md)"
     else
-      echo "selftest FAIL: incept pruned a non-stack-dir file (ratification.yml / adopter-gates.yml / _TEMPLATE.md) it must keep"; st=1
+      echo "selftest FAIL: incept pruned a non-stack-dir file (ratification.yml / adopter-gates.yml / adopter-tracker-gates.yml / _TEMPLATE.md) it must keep"; st=1
     fi
     # CP7R5-K4-IGNORE — profiles/.gitignore MUST survive the prune. This is not bookkeeping: the whole
     # defect was that build-output ignore rules lived INSIDE the profiles the prune deletes. If a future
@@ -1207,6 +1481,8 @@ selftest() {
     incept_prune_tests
     codeowners_inert_tests
     board_governance_stamp_tests
+    tracker_conf_stamp_tests
+    required_checks_tracker_face_tests
   fi
 
   # ── NON-VACUITY PROBE for the B3 delivery legs (CI non-vacuity shard 4 caught this) ────────────────

@@ -1,0 +1,433 @@
+# Adopter TRACKER-BACKED board gate — the trusted job (TBG-TRUSTED-JOB, Milestone B · JOIN).
+# Design of record: docs/architecture/2026-09-22-tbg-trusted-job-design.md, confirming
+# docs/architecture/2026-09-19-tracker-backed-governance-design.md §4.2/§4.3, §6a S-1/S-10/S-14,
+# §6b R1(a/b/c), §8.3. Ruling D-240919-2(3): `pull_request_target` is admitted for this job ONLY
+# under three conditions that travel together — read-only `permissions: contents: read` +
+# `pull-requests: read` (amended by D-241001-1), NO head-tree code,
+# and the pairing conformance leg (conformance/proportional-gate-wired.sh). Do not weaken any one
+# of the three without re-opening that ruling.
+#
+# WHAT THIS IS. On a hosted-tracker backlog backend, `adopter-gates.yml`'s backlog-presence job reads
+# BACKLOG.md only and returns rc 3 NOT ENFORCED — a real, named gap, not a silent one. This workflow
+# is the cure: a BASE-DEFINED job (`pull_request_target`, so it always runs the version a human
+# already ratified, never the PR's own edit) that executes NO head-tree code. It checks out base
+# only, reads the PR head's commit message and changed-file listing via the GitHub API (DATA, never
+# code — fixes the private/enterprise hard-fail a `git fetch` of an anonymous remote would hit,
+# fix-round M-4), reads the head commit's `Kit-Row` trailer under the row grammar, runs the TRUSTED
+# READER (scripts/tracker-read.sh) from base against the BASE conf (L-4 pin) to write a §4.3 record
+# to a FIXED path (S-10 — never from env), then runs the seam-consuming board gate(s) from base with
+# SEAM_ROOT pinned to the base checkout, SEAM_HEAD = the PR head sha, SEAM_RECORD = that fixed path
+# (N-3 — this job is the ONLY setter of SEAM_RECORD; conformance/proportional-gate-wired.sh's N-3
+# scan refuses a second one), and the base..head changed-file listing (fix-round H-2) so class
+# derivation sees the REAL diff rather than the empty one a base-only checkout would otherwise
+# produce (which fails OPEN to `ordinary`, not FAIL-SAFED).
+#
+# SKIPS ENTIRELY ON `md` (R1a) — zero new cost for the common case: a repo with no `.kit/tracker.conf`
+# never runs the reader or the gates; the resolve step exits before any read of PR data. A PRESENT
+# but MALFORMED conf is a real misconfiguration, never silently skipped (fix-round M-5,
+# NON-MD-BACKEND-NEVER-SILENT D-240903-1) — only "absent" or "backend=md" take the skip.
+#
+# THE ONE CROSS-LANE DEPENDENCY (§6 of the design doc) — RESOLVED. The trusted reader
+# (scripts/tracker-read.sh) now takes <head-sha> as its pinned 5th positional argument
+# (TBG-READER-FLAGS-LIST landed); the step below still PROBES the live `--help` usage line for the capability (never a hardcoded flag) and FAILS CLOSED (fix-round H-2(i)) if it is ever missing again.
+#
+# WHY A SEPARATE FILE, NOT A JOB FOLDED INTO adopter-gates.yml (design §10). Mixing a
+# `pull_request_target` job with `pull_request` jobs in one workflow file is exactly the S-1
+# footgun this design exists to avoid — separation is a security-isolation property, not a style
+# preference. conformance/adopter-gates-parity.sh covers the fleet list this file joins.
+#
+# HONEST CEILING. This file runs two jobs. `tracker-board-gates` (on `pull_request_target`) binds
+# three board gates from base on a tracker record: `loop-state` (Entry Declaration),
+# `backlog-presence` (the PR's row is claimed and in flight) and `backlog-current` (every Ready row
+# meets Definition-of-Ready). It is a CONTROL only once `tracker-board-gates` is a REQUIRED status
+# check — incept declares it in REQUIRED-CHECKS.md when it stamps a tracker conf, but the adopter
+# still binds it live with `sh scripts/branch-protection-apply.sh --apply` (a human repo-admin act)
+# before the first PR (RUNBOOK). `tracker-board-drift` runs
+# daily (`schedule:`) and on `workflow_dispatch`, from the default branch (`workflow_dispatch --ref`
+# runs the chosen ref's definition, a write-access act; design §7), running board-drift.sh's
+# tracker arm (design §2/§4.5): a merged PR whose `Kit-Row` key is still in-progress/in-review on the
+# tracker reds, naming the row. It reads with the trusted reader on an ANCHOR subject — a merged
+# in-project key, not the PR that triggered the run (there is none) — because the verdict comes from
+# the reader's project-wide lists, not the anchor itself. It is a DETECTOR, not a merge gate: nothing
+# blocks on it. The tracker secret is scoped to ONE step in that job as HYGIENE, not isolation — S-1
+# already holds that any step in a job can reach a job secret via runner memory or `GITHUB_ENV`; what
+# actually protects this job is that it runs base-defined code only (the S-1 control) plus the
+# pairing leg (`conformance/proportional-gate-wired.sh`). GitHub disables `schedule:` triggers after
+# 60 days without repository activity (public repos) — the detector then stops silently; re-enable it
+# from the Actions tab. A scheduled run's failure mail goes to whoever last edited the cron line, not
+# to a team — an adopter must route it (RUNBOOK names the options). A green run proves the three
+# gates bound on the record the trusted reader wrote for this head; it proves nothing about Jira
+# content beyond that record's shape.
+
+name: Adopter Tracker Gates
+
+on:
+  pull_request_target:
+  schedule:
+    - cron: '17 6 * * *'          # daily; board-drift's 7-day window is >= 6x this cadence
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  tracker-board-gates:
+    if: github.event_name == 'pull_request_target'
+    # RUNNER KNOB (TRACKER-PREFLIGHT-TIER-CARD): a Jira behind an IP allowlist or VPN is unreachable
+    # from GitHub-hosted runners; set the repository VARIABLE KIT_TRACKER_RUNNER (not a secret: a
+    # label is not sensitive) to a self-hosted runner label inside the network. Unset = unchanged.
+    # TWO RISKS: (1) an unmatched label queues forever, and because this job is a REQUIRED check
+    # every PR waits — unset the variable or bring the runner online; (2) a self-hosted runner for
+    # a `pull_request_target` job belongs ONLY on a private repo or an ephemeral runner (this job
+    # parses fork head objects beside the tracker credential).
+    runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}
+    steps:
+      # ── base checkout ONLY. No PR-tree code runs in this job (S-1). ────────────────────────────
+      # nosemgrep justification: base-only checkout (ref: base.sha), NOT the PR head; no head-tree
+      # code executes — S-1 / D-240919-2. The head is fetched as objects only and the seam-consuming
+      # gates run from base. Enforced by conformance/proportional-gate-wired.sh's S-1 pairing leg +
+      # the control-plane ratification. Security-seat verified (three rounds).
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3 # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      # ── R1a / fix-round M-5: skip on ABSENT or backend=md only. A conf that EXISTS but fails to
+      # validate is a real misconfiguration and must ERROR, never silently skip (a hosted-tracker
+      # adopter with a broken conf must not read as "no tracker declared"). ──────────────────────
+      - name: Resolve backend from the base .kit/tracker.conf (skip-on-md, error on malformed)
+        id: resolve
+        run: |
+          if [ ! -f .kit/tracker.conf ]; then
+            echo "::notice title=tracker-board-gates: skipped::No .kit/tracker.conf on base — this repo has no hosted-tracker backend declared. Nothing to bind."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! backend=$(sh scripts/tracker-conf.sh get backend .kit/tracker.conf 2>&1); then
+            echo "::error title=tracker-board-gates: malformed .kit/tracker.conf::A .kit/tracker.conf exists on base but did not validate — this is a real misconfiguration, NOT a reason to skip board governance (D-240903-1, non-md backend never silent). Fix the conf (conformance/tracker-conf-wired.sh covers the grammar): ${backend}"
+            exit 1
+          fi
+          if [ "$backend" = "md" ]; then
+            echo "::notice title=tracker-board-gates: skipped::backend=md — the board lives in BACKLOG.md; adopter-gates.yml already covers it. Nothing for the tracker trusted job to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+
+      # ── fix-round M-4: read the PR head's commit message + the base..head changed-file listing
+      # via the GitHub API — DATA ONLY (metadata never executed). The PR files + PR APIs need
+      # `pull-requests: read` on a PRIVATE repo (a 403, measured on the cold test); `contents: read`
+      # alone hid that on public repos. ────
+      - name: Read the PR head's commit message + changed-file listing via the API (metadata only)
+        id: meta
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${REPO}/git/commits/${HEAD_SHA}" -q '.message' > /tmp/tbg-head-msg.txt
+          # fix-round H-B: NOT the compare API — `repos/{r}/compare/{base}...{head}` caps at 300
+          # files, alphabetical, and pagination does NOT extend it (measured). An attacker can add
+          # 300 filler files sorting before `conformance/` so a real control-plane path silently
+          # drops off the listing, under-deriving the class to `ordinary` and under-requiring the
+          # trailer set — the exact fail-open H-2(ii) exists to close. The PR files API (3000 cap,
+          # same source `adopter-gates.yml`'s own listing step already trusts) + the PR's own
+          # `changed_files` COUNT, cross-checked, is the only listing source proven not to silently
+          # truncate: a mismatch or a listing at/over the cap REFUSES rather than deriving on a
+          # partial view. Newline-guarded exactly like adopter-gates.yml's own listing step.
+          # fix-round C-1: TWO listings from the SAME API call — one for the COUNT CROSS-CHECK
+          # (filenames ONLY, so a rename counts once, matching the PR's own `changed_files` count
+          # exactly as the forge computes it) and one for the CLASSIFIER (filename +
+          # previous_filename, so a control-plane path that was renamED AWAY is still visible to
+          # `loop-state --changed` — collapsing a rename to just its destination is the exact
+          # under-derivation bug H-2(ii) exists to close). Conflating the two — counting BOTH
+          # projections against a count the forge computes once per file — made the cross-check
+          # fail-close on EVERY PR containing a rename (measured; this kit renames routinely).
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate -q '[.[] | .filename] | if any(test("\n")) then error("changed path contains a newline byte — refusing to emit a splittable listing") else .[] end' > /tmp/tbg-filenames.txt
+          gh api "repos/${REPO}/pulls/${PR}/files" --paginate -q '[.[] | .filename, (.previous_filename // empty)] | if any(test("\n")) then error("changed path contains a newline byte — refusing to emit a splittable listing") else .[] end' > /tmp/tbg-changed.txt
+          _tbg_lines=$(wc -l < /tmp/tbg-filenames.txt | tr -d '[:space:]')
+          _tbg_changed_files=$(gh api "repos/${REPO}/pulls/${PR}" -q '.changed_files')
+          if [ "$_tbg_lines" -ge 3000 ]; then
+            echo "::error title=tracker-board-gates: changed-file listing at or over the 3000-file API cap::A capped listing cannot be trusted to be complete — refusing to classify on a partial change-set."
+            exit 1
+          fi
+          if [ "$_tbg_lines" != "$_tbg_changed_files" ]; then
+            echo "::error title=tracker-board-gates: changed-file listing (${_tbg_lines} files) does not match the PR's own changed_files count (${_tbg_changed_files})::Cannot trust an inconsistent listing to classify the change — refusing."
+            exit 1
+          fi
+
+      # ── fix-round H-A: an AUTHENTICATED, OBJECTS-ONLY fetch of the head sha. Removing this in an
+      # earlier round (in favour of the API-only reads above, M-4) was a REGRESSION: `loop-state.sh`
+      # itself still does `git cat-file -e "$sha^{commit}"` and `git log -1 <sha>` to read the
+      # Entry-Declaration trailers off the actual commit object, and a base-only checkout has no such
+      # object — every PR reds (rc 2), measured. The API reads above remain (Kit-Row + the changed
+      # listing never depend on the object), but the object must still be present for loop-state's
+      # OWN reads. `git fetch` is not a checkout (S-1's pairing leg does not flag it — only an actual
+      # checkout/ref of the head, or head-controlled code execution, pairs with a secret); the head is
+      # never made the working tree. Authenticated (the default anonymous `git fetch origin` hard-
+      # fails on a private/enterprise repo, M-4's original motivation) via an extraheader carrying
+      # the job's read-only token — no PAT, no elevated scope.
+      - name: Fetch the PR head as an object only (authenticated, never checked out)
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="AUTHORIZATION: basic $AUTH" fetch --no-tags --no-recurse-submodules origin "$HEAD_SHA"
+
+      # ── read the head commit's Kit-Row trailer from the fetched message (metadata only, never
+      # executed) and grammar-check it (`^[A-Z0-9][A-Z0-9-]*$`, CLAUDE.md §1 act 3). fix-round L-2:
+      # the grep|sed pipeline is guarded so a NO-MATCH (no such trailer) never aborts under
+      # `set -e`/`-o pipefail`; L-1: the raw offending value is never echoed into an ::error
+      # annotation (log-injection — a crafted trailer value could forge Checks-list text).
+      # security L-1 (close fix round 1, whole-branch review): the GATES read the Entry Declaration
+      # from the TRAILER BLOCK (CLAUDE.md §1 act 4: "carried as commit trailers"), never the first
+      # `^Kit-Row: ` line anywhere in the message body — a PR-authored body line ahead of the real
+      # trailer block could otherwise satisfy this step while the gates read a different value (or
+      # none). `git interpret-trailers --parse` is a pure TEXT parse of the already-fetched message
+      # (stdin only — no repo/commit-object read, no `$` in the git command line itself), so it reads
+      # the SAME trailer block the gates parse, one source of truth for both. Two or more `Kit-Row`
+      # trailers is now a distinct, named error (never silently take the first) — the same
+      # withheld-value shape as the malformed-trailer error below. ─────────────────────────────────
+      - name: Read the PR head's Kit-Row trailer (metadata only)
+        id: row
+        if: steps.resolve.outputs.skip != 'true'
+        run: |
+          trailers=$(git interpret-trailers --parse < /tmp/tbg-head-msg.txt)
+          row_count=$(printf '%s\n' "$trailers" | grep -c -i -E '^kit-row: ' || true)
+          if [ "$row_count" = 0 ]; then
+            echo "::error title=tracker-board-gates: no Kit-Row trailer::The PR head commit carries no Kit-Row trailer — the trusted reader has no id to request. See CLAUDE.md section 1 act 3."
+            exit 1
+          fi
+          if [ "$row_count" != 1 ]; then
+            echo "::error title=tracker-board-gates: multiple Kit-Row trailers::The PR head commit's trailer block carries more than one Kit-Row trailer — refusing to guess which one governs this PR. (Values withheld from this log — untrusted PR-authored text.)"
+            exit 1
+          fi
+          row=$(printf '%s\n' "$trailers" | grep -m1 -i -E '^kit-row: ' | sed 's/^[Kk][Ii][Tt]-[Rr][Oo][Ww]: //')
+          if ! printf '%s' "$row" | grep -qE '^[A-Z0-9][A-Z0-9-]*$'; then
+            echo "::error title=tracker-board-gates: malformed Kit-Row trailer::The PR head commit's Kit-Row trailer does not match the row grammar ^[A-Z0-9][A-Z0-9-]*\$ — refusing to pass it to the trusted reader. (Value withheld from this log — untrusted PR-authored text.)"
+            exit 1
+          fi
+          echo "row=$row" >> "$GITHUB_OUTPUT"
+
+      # ── PRE-CHECK: verify the named tracker-credential secrets are actually configured before
+      # the trusted reader runs. Mirrors the reader's own resolution (scripts/tracker-read.sh's
+      # tr_resolve_user/tr_resolve_token + its `auth` read via tracker-conf.sh) — token is ALWAYS
+      # required, user is required ONLY when `auth=basic` — reading `auth` from the BASE conf
+      # (`.kit/tracker.conf`, L-4 pin: the base tree, never anything head-controlled) via the base's
+      # OWN `scripts/tracker-conf.sh get auth`, defaulting to `basic` when the key/file is absent,
+      # exactly as the reader step below does. RD-5 / D-240919-2(3): the failure names the missing
+      # variable's NAME ONLY (never its value, length, or host/project) and says where the secret
+      # belongs — a repository Actions secret; this workflow declares no `environment:` key, so
+      # there is no environment secret to point at instead. Presence-only tests (`[ -n … ]`) — the
+      # variables are never echoed, printed, hashed, or otherwise surfaced.
+      - name: Verify tracker credentials are configured (names only)
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          KIT_TRACKER_USER: ${{ secrets.KIT_TRACKER_USER }}
+          KIT_TRACKER_TOKEN: ${{ secrets.KIT_TRACKER_TOKEN }}
+        run: |
+          _auth=$(sh scripts/tracker-conf.sh get auth .kit/tracker.conf 2>/dev/null || echo basic)
+          _missing=""
+          if [ -z "$KIT_TRACKER_TOKEN" ]; then
+            _missing="KIT_TRACKER_TOKEN"
+          fi
+          if [ "$_auth" = "basic" ] && [ -z "$KIT_TRACKER_USER" ]; then
+            _missing="${_missing:+$_missing and }KIT_TRACKER_USER"
+          fi
+          if [ -n "$_missing" ]; then
+            echo "::error title=tracker-board-gates: tracker credentials not configured::add the repository Actions secret $_missing"
+            exit 1
+          fi
+
+      # ── run the TRUSTED READER from base, against the BASE conf (L-4 pin), to a FIXED path
+      # (S-10 — never from env). This and the credential pre-check above are the only steps in this
+      # job that touch a tracker credential.
+      # fix-round H-2(i): the head-sha-argument CAPABILITY is PROBED live — a grep of the reader's
+      # own live `--help` usage line for the literal `<head-sha>` token below, never a hardcoded
+      # assumption — its ABSENCE is a HARD FAILURE, not a silent degrade to a
+      # guaranteed rc-2 refusal (defends against a future regression/rollback of the reader). ────
+      - name: Run the trusted reader from base (base conf, fixed record path)
+        id: read
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          KIT_TRACKER_USER: ${{ secrets.KIT_TRACKER_USER }}
+          KIT_TRACKER_TOKEN: ${{ secrets.KIT_TRACKER_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ROW: ${{ steps.row.outputs.row }}
+        run: |
+          # THE RECORD PATH IS FIXED, in the job, never from env (S-10).
+          RECORD_PATH="$RUNNER_TEMP/tbg-record.json"
+          _help=$(sh scripts/tracker-read.sh --help 2>&1 || true)
+          if printf '%s' "$_help" | grep -q -- '<head-sha>'; then
+            sh scripts/tracker-read.sh .kit/tracker.conf - "$RECORD_PATH" "$ROW" "$HEAD_SHA" in-progress in-review ready
+          else
+            echo "::error title=tracker-board-gates: reader lacks the head-sha argument::scripts/tracker-read.sh does not support the pinned head-sha positional in this tree — refusing rather than proceeding to a degraded read."
+            exit 1
+          fi
+          echo "record_path=$RECORD_PATH" >> "$GITHUB_OUTPUT"
+
+      # ── run the seam-consuming board gates from base: loop-state (Entry Declaration),
+      # backlog-presence (the PR's row is claimed and in flight) and backlog-current (every Ready
+      # row meets Definition-of-Ready). SEAM_ROOT pinned to THIS base checkout; SEAM_HEAD is the
+      # true PR head sha; SEAM_RECORD is the fixed path the reader just wrote — this job is the ONLY
+      # setter (N-3; conformance/proportional-gate-wired.sh's scan refuses a second one anywhere else
+      # in the tree). KIT_TRACKER_RECORD is ALSO set: loop-state.sh's own run_gate maps that variable
+      # to SEAM_RECORD on its local/hygiene path, so it must see the same fixed value rather than
+      # deriving SEAM_RECORD twice. fix-round H-2(ii): the base..head changed-file listing (fetched
+      # above, never author-supplied text) is handed to loop-state.sh as ARGV (`--changed`) — a
+      # base-only checkout has no local diff, so without this the live classifier would see an EMPTY
+      # change-set and fail OPEN to `ordinary` rather than FAIL-SAFED. Each gate's rc is captured so a
+      # red gate never stops the next; the step fails only via the final combined test, after all
+      # three have run and reported.
+      - name: Run the tracker-bound board gates from base
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          SEAM_ROOT: ${{ github.workspace }}
+          SEAM_HEAD: ${{ github.event.pull_request.head.sha }}
+          SEAM_RECORD: ${{ steps.read.outputs.record_path }}
+          KIT_TRACKER_RECORD: ${{ steps.read.outputs.record_path }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          rc_ls=0; sh conformance/loop-state.sh --head "$SEAM_HEAD" --changed /tmp/tbg-changed.txt || rc_ls=$?
+          rc_bp=0; sh conformance/backlog-presence.sh --dir "$SEAM_ROOT" --pr "$PR" --changed /tmp/tbg-changed.txt --head "$SEAM_HEAD" || rc_bp=$?
+          rc_bc=0; sh conformance/backlog-current.sh --head "$SEAM_HEAD" "$SEAM_ROOT" || rc_bc=$?
+          echo "tracker-board-gates: loop-state rc=$rc_ls · backlog-presence rc=$rc_bp · backlog-current rc=$rc_bc"
+          [ "$rc_ls" = 0 ] && [ "$rc_bp" = 0 ] && [ "$rc_bc" = 0 ]
+
+  # ── tracker-board-drift (TRACKER-DRIFT-SCHEDULED-WIRING). Daily + workflow_dispatch, from the
+  # default branch (no `ref:` — never the head of anything; `workflow_dispatch --ref` runs the chosen
+  # ref's definition, a write-access act; design §7). Runs board-drift.sh's tracker arm: a PR
+  # merged in the last 7 days whose Kit-Row key is still in-progress/in-review on the tracker reds,
+  # naming the row. It is a DETECTOR, not a merge gate. The tracker secret lives on TWO steps (the
+  # read step and the preflight step) as HYGIENE — S-1 already holds a job's steps share its
+  # secrets; the real control is base-only code + the pairing leg
+  # (conformance/proportional-gate-wired.sh). ─────────────────────────────────────────────────────
+  tracker-board-drift:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # RUNNER KNOB + the same two risks as tracker-board-gates above: an unmatched label queues
+    # forever (unset the variable or bring the runner online); a self-hosted runner belongs only on a
+    # private repo or an ephemeral runner.
+    runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve backend from the .kit/tracker.conf (drift; skip-on-md, error on malformed)
+        id: resolve
+        run: |
+          if [ ! -f .kit/tracker.conf ]; then
+            echo "::notice title=tracker-board-drift: skipped::No .kit/tracker.conf on this branch — this repo has no hosted-tracker backend declared. Nothing to check for drift."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! backend=$(sh scripts/tracker-conf.sh get backend .kit/tracker.conf 2>&1); then
+            echo "::error title=tracker-board-drift: malformed .kit/tracker.conf::A .kit/tracker.conf exists but did not validate — this is a real misconfiguration, NOT a reason to skip drift detection (D-240903-1, non-md backend never silent): ${backend}"
+            exit 1
+          fi
+          if [ "$backend" = "md" ]; then
+            echo "::notice title=tracker-board-drift: skipped::backend=md — the md board is covered by adopter-gates.yml; there is nothing for this job to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "backend=$backend" >> "$GITHUB_OUTPUT"
+
+      # ── PREFLIGHT FROM THIS RUNNER (TRACKER-PREFLIGHT-TIER-CARD, design §7/§14h). By hand only
+      # (workflow_dispatch: Actions → Adopter Tracker Gates → Run workflow), so no daily noise.
+      # Placed right after resolve so enum's rc 1 can never skip it. It prints the card's non-PASS
+      # lines as notices and NEVER fails the job. Notices carry only the card's own fixed text
+      # (S-6): a line off the card grammar is dropped, never echoed. ────────────────────────────
+      - name: Preflight from this runner (workflow_dispatch only; never fails the job)
+        if: github.event_name == 'workflow_dispatch' && steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.backend == 'jira'
+        env:
+          KIT_TRACKER_USER: ${{ secrets.KIT_TRACKER_USER }}
+          KIT_TRACKER_TOKEN: ${{ secrets.KIT_TRACKER_TOKEN }}
+        run: |
+          CARD="$RUNNER_TEMP/tracker-preflight.txt"
+          rc=0; sh conformance/tracker-contract.sh --preflight --as ci > "$CARD" 2>/dev/null || rc=$?
+          tab=$(printf '\t'); seen=0; reach_fail=0
+          while IFS="$tab" read -r pf_name pf_verdict pf_text || [ -n "$pf_name" ]; do
+            case "$pf_name" in ''|*[!A-Za-z0-9-]*) continue ;; esac
+            case "$pf_verdict" in
+              PASS) seen=1; continue ;;
+              FAIL|TIER|INFO|ASK|UNVERIFIED) seen=1 ;;
+              *) continue ;;
+            esac
+            pf_text=$(printf '%s' "$pf_text" | tr -d '\r' | sed 's/%/%25/g')
+            echo "::notice title=tracker preflight: ${pf_name}::${pf_verdict} ${pf_text}"
+            if [ "$pf_name" = reach-here ] && [ "$pf_verdict" = FAIL ]; then reach_fail=1; fi
+          done < "$CARD"
+          if [ "$reach_fail" = 1 ]; then
+            echo "::notice title=tracker preflight: this runner cannot reach the site::set the repository variable KIT_TRACKER_RUNNER to a self-hosted runner label inside your network, then re-run Actions → Adopter Tracker Gates → Run workflow"
+          fi
+          if [ "$seen" = 0 ]; then
+            echo "::notice title=tracker preflight: no card::the preflight printed no card (contract rc=$rc); run sh conformance/tracker-contract.sh --preflight locally"
+          fi
+          echo "tracker preflight: contract rc=$rc (informational; this step never fails the job)"
+          exit 0
+
+      - name: Enumerate PRs merged in the drift window (no secret)
+        id: enum
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          MERGED="$RUNNER_TEMP/tbd-merged.txt"
+          rc=0; sh conformance/board-drift.sh --merged-rows . > "$MERGED" || rc=$?
+          if [ "$rc" != 0 ]; then
+            echo "::error title=tracker-board-drift: cannot enumerate merged PRs::board-drift --merged-rows returned rc=$rc (gh missing or failing, pull-requests: read absent, or the 1000-result ceiling hit) — refusing a silent green."
+            exit 1
+          fi
+          echo "merged_path=$MERGED" >> "$GITHUB_OUTPUT"
+
+      - name: Read the tracker's in-flight lists (trusted reader, anchor subject)
+        id: read
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          KIT_TRACKER_USER: ${{ secrets.KIT_TRACKER_USER }}
+          KIT_TRACKER_TOKEN: ${{ secrets.KIT_TRACKER_TOKEN }}
+          MERGED: ${{ steps.enum.outputs.merged_path }}
+        run: |
+          RECORD_PATH="$RUNNER_TEMP/tbd-record.txt"      # FIXED in-step, never from env (S-10)
+          if ! project=$(sh scripts/tracker-conf.sh get project .kit/tracker.conf); then
+            echo "::error title=tracker-board-drift: cannot read the project key::.kit/tracker.conf did not yield a project key — check the file's grammar (D-240903-1, non-md backend never silent)."
+            exit 1
+          fi
+          # candidate anchors: merged Kit-Row keys IN this project (S-4 grammar), deduped, at most 3
+          candidates=$(awk '{print $2}' "$MERGED" | grep -E "^${project}-[0-9]+\$" | awk '!seen[$0]++' | head -n 3 || true)
+          if [ -z "$candidates" ]; then
+            echo "::notice title=tracker-board-drift: nothing to check::No PR merged in the window carries a Kit-Row key in this tracker project — nothing on this tracker can have drifted."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          for key in $candidates; do
+            if sh scripts/tracker-read.sh .kit/tracker.conf - "$RECORD_PATH" "$key" "$GITHUB_SHA" in-progress in-review; then
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "record_path=$RECORD_PATH" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error title=tracker-board-drift: no readable anchor::The trusted reader refused every candidate anchor (up to 3 merged in-project keys) — check the credential and that those issues exist; board-drift cannot run without a record."
+          exit 1
+
+      - name: Run board-drift's tracker arm from base
+        if: steps.resolve.outputs.skip != 'true' && steps.read.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEAM_RECORD: ${{ steps.read.outputs.record_path }}
+          SEAM_HEAD: ${{ github.sha }}
+        run: |
+          rc=0; sh conformance/board-drift.sh . || rc=$?
+          echo "tracker-board-drift: board-drift rc=$rc"
+          [ "$rc" = 0 ]

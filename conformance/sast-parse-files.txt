@@ -1,0 +1,9 @@
+# sast-parse-files.txt — the files semgrep's bundled tree-sitter-bash must parse WHOLE (0
+# PartialParsing / whole-file syntax errors). Fed to conformance/shell-parse-lint.sh (the
+# structural lint) AND ci.yml's SAST-parse-coverage step, so both read the SAME set.
+# One repo-relative path per line; `#`-comments and blank lines are ignored. Grows
+# monotonically — a later slice APPENDS a file, never removes one, so the control never
+# regresses (SEMGREP-BASH-PARSE-KIT-WIDE). ci.yml pins a literal floor with `grep -qxF` for
+# each entry below (security ruling condition 5) — keep this list and that floor in sync.
+scripts/tracker-jira.sh
+.claude/hooks/guard-core.sh

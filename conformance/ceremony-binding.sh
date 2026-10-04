@@ -920,7 +920,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/enterprise/meta-control.md.)" >&2
     fi
     echo "      Record one: scripts/promotion-verify.sh record --gate $_nm_gate --scope $_record_key \\" >&2
-    echo "        --approved-sha <approved-commit> --approved-by <human> --basis $_nm_basis ..." >&2
+    echo "        --approved-sha <approved-commit> --approved-by <the design commit's committer name or email> --basis $_nm_basis ..." >&2
     echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
     echo "      THAT ONE RECORD IS ENOUGH: CI matches the SAME branch key (BRANCH-SCOPE-END-TO-END)," >&2
     echo "      so there is NO re-record at PR creation any more — the [S4]#7 interim protocol is" >&2
@@ -944,7 +944,7 @@ run_ceremony_binding() {   # $1 = fixture listing ('' = derive from the ambient 
       echo "      '--gate governance' with a '$CB_GOV_GLOB' basis instead; see docs/enterprise/meta-control.md.)" >&2
     fi
     echo "      Record one: scripts/promotion-verify.sh record --gate $_nm_gate --scope $_record_key \\" >&2
-    echo "        --approved-sha <approved-commit> --approved-by <human> --basis $_nm_basis ..." >&2
+    echo "        --approved-sha <approved-commit> --approved-by <the design commit's committer name or email> --basis $_nm_basis ..." >&2
     echo "      THEN PUBLISH IT: git push origin refs/notes/promotions" >&2
     echo "      Do BOTH BEFORE opening the PR — this gate reads the ledger the moment the PR exists." >&2
     echo "      A BRANCH-scoped record is the one to write: it binds before the PR exists AND is what" >&2
@@ -1181,6 +1181,8 @@ check_design_record() {
         echo "FAIL: ceremony-binding — a control-plane DESIGN GATE needs an assurance stronger than" >&2
         echo "      [self-asserted]. Record with --approved-by matching the design commit's committer" >&2
         echo "      identity (yields [committer]) or sign the commit (yields [signed: gpg])." >&2
+        echo "      A design GO binds to the COMMITTER of the design commit; [committer] is only as strong as" >&2
+        echo "      user.name, and is hollow when the agent commits under the owner's identity." >&2
         echo "      ⚠️ INHERITING an already-merged design? The committer of a squash-merged commit is" >&2
         echo "      the FORGE, not a human. A GO naming the forge as approver is NOT a human approval" >&2
         echo "      and must not be recorded. Write THIS slice's own design artifact instead, which" >&2

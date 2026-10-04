@@ -1,0 +1,36 @@
+{
+  "id": "20014",
+  "key": "AB-7",
+  "self": "https://jira.example.com/rest/api/2/issue/20014",
+  "fields": {
+    "status": {
+      "self": "https://jira.example.com/rest/api/2/status/3",
+      "description": "This issue is being actively worked on.",
+      "iconUrl": "https://jira.example.com/images/icons/statuses/inprogress.png",
+      "name": "In Progress",
+      "id": "3",
+      "statusCategory": {
+        "self": "https://jira.example.com/rest/api/2/statuscategory/4",
+        "id": 4,
+        "key": "indeterminate",
+        "colorName": "yellow",
+        "name": "In Progress"
+      }
+    },
+    "project": {
+      "self": "https://jira.example.com/rest/api/2/project/10000",
+      "id": "10000",
+      "key": "AB",
+      "name": "AB Project",
+      "projectTypeKey": "software"
+    },
+    "assignee": {
+      "self": "https://jira.example.com/rest/api/2/user?username=jsmith",
+      "name": "jsmith",
+      "key": "jsmith",
+      "emailAddress": "jsmith@example.com",
+      "displayName": "John Smith",
+      "active": true
+    }
+  }
+}

@@ -7,8 +7,11 @@
 # SKIP-pass if absent (a dev may not have it) — the kit CI installs it and runs it for real, so
 # drift IN THE LINTED SCOPE is caught in CI. (The excluded .claude/hooks/ guard core is linted
 # NOWHERE — by design; it is regression-locked behaviorally instead, see collect() below.)
-#   sh conformance/shellcheck.sh [--selftest]
-# Exit: 0 = clean or SKIP · 1 = a finding · 2 = bad usage. POSIX sh; dash-clean.
+#   sh conformance/shellcheck.sh [--selftest | --listed <listing-file>]
+# --listed (PREPUSH-CORE-DEFAULT): lint only the files that are BOTH in collect()'s scope AND named, one
+#   repo-relative path per line, in <listing-file> — the pre-push lane's default arm lints the change's
+#   own shell, CI keeps the full lock. Same scope, same flags (one source: collect() + lint_set()).
+# Exit: 0 = clean or SKIP · 1 = a finding · 2 = bad usage (incl. a missing/unreadable listing). POSIX sh; dash-clean.
 set -eu
 
 # collect existing kit shell files into the positional params.
@@ -35,17 +38,36 @@ collect() {
   printf '%s\n' "$@"
 }
 
-run() {
-  command -v shellcheck >/dev/null 2>&1 || { echo "SKIP: shellcheck not installed (kit CI runs it for real)"; return 0; }
-  # shellcheck disable=SC2046  # word-splitting the file list is intended here
-  set -- $(collect)
-  [ "$#" -gt 0 ] || { echo "shellcheck: no kit shell files found"; return 1; }
+# lint_set <files…> — THE one shellcheck invocation (flags + messages), shared by run() and run_listed().
+lint_set() {
   if shellcheck -s sh -S warning "$@"; then
     echo "shellcheck: OK ($# kit shell file(s) clean at the error/warning floor)"
     return 0
   fi
   echo "shellcheck: FAIL (findings above) — fix or justify with a '# shellcheck disable=SCnnnn' + reason"
   return 1
+}
+
+run() {
+  command -v shellcheck >/dev/null 2>&1 || { echo "SKIP: shellcheck not installed (kit CI runs it for real)"; return 0; }
+  # shellcheck disable=SC2046  # word-splitting the file list is intended here
+  set -- $(collect)
+  [ "$#" -gt 0 ] || { echo "shellcheck: no kit shell files found"; return 1; }
+  lint_set "$@"
+}
+
+# run_listed <listing-file> — collect()'s scope INTERSECTED with the listing (exact whole-line match).
+# The listing is validated BEFORE the SKIP test: a bad operand is rc 2 whether or not shellcheck is here.
+run_listed() {
+  [ -f "$1" ] && [ -r "$1" ] || { echo "shellcheck: --listed needs a readable listing file: $1" >&2; return 2; }
+  command -v shellcheck >/dev/null 2>&1 || { echo "SKIP: shellcheck not installed (kit CI runs it for real)"; return 0; }
+  _rl_sel=$(collect | while IFS= read -r _rl_f; do
+    if grep -qxF -- "$_rl_f" "$1"; then printf '%s\n' "$_rl_f"; fi
+  done)
+  [ -n "$_rl_sel" ] || { echo "shellcheck: OK (no listed kit shell file)"; return 0; }
+  # shellcheck disable=SC2086  # word-splitting the intersected list is intended, as in run()
+  set -- $_rl_sel
+  lint_set "$@"
 }
 
 selftest() {
@@ -66,13 +88,31 @@ selftest() {
   # script's own `set -eu` before the exit code can be captured.
   if ( cd "$dd" && run >/dev/null 2>&1 ); then _rrc=0; else _rrc=$?; fi
   [ "$_rrc" != 0 ] || { echo "selftest FAIL: run() did not fail on a dirty tree (fail-closed broken)"; return 1; }
-  echo "shellcheck --selftest: OK (clean passes, dirty fails; fixtures left in $d)"
+  # --listed (PREPUSH-CORE-DEFAULT): lints a LISTED dirty file, ignores an UNLISTED dirty one, and is rc 2
+  # on a missing listing. Same temp-cwd pattern; every `return 1` is INSIDE selftest() (non-circular).
+  printf '#!/bin/sh\nx="hello"\nprintf "%%s\\n" "$x"\n' > "$dd/conformance/clean.sh"
+  printf '#!/bin/sh\nx=$1\nif [ "$x" == "bad" ]; then echo bad; fi\n' > "$dd/conformance/dirty2.sh"  # SC3014
+  printf 'conformance/dirty.sh\n' > "$dd/list-dirty"; printf 'conformance/clean.sh\n' > "$dd/list-clean"
+  printf 'README.md\n' > "$dd/list-none"
+  if ( cd "$dd" && run_listed "$dd/list-dirty" >/dev/null 2>&1 ); then _rc=0; else _rc=$?; fi
+  [ "$_rc" = 1 ] || { echo "selftest FAIL: --listed did not FAIL on a listed dirty file (rc $_rc)"; return 1; }
+  if _lo=$( cd "$dd" && run_listed "$dd/list-clean" 2>&1 ); then _rc=0; else _rc=$?; fi
+  [ "$_rc" = 0 ] || { echo "selftest FAIL: --listed linted an UNLISTED dirty file (rc $_rc)"; return 1; }
+  case $_lo in *"OK (1 kit shell file(s)"*) ;; *) echo "selftest FAIL: --listed did not lint exactly the one listed clean file: $_lo"; return 1 ;; esac
+  if _lo=$( cd "$dd" && run_listed "$dd/list-none" 2>&1 ); then _rc=0; else _rc=$?; fi
+  [ "$_rc" = 0 ] || { echo "selftest FAIL: --listed with no in-scope file was not rc 0 (rc $_rc)"; return 1; }
+  case $_lo in *"no listed kit shell file"*) ;; *) echo "selftest FAIL: --listed zero-intersection message missing: $_lo"; return 1 ;; esac
+  if ( cd "$dd" && run_listed "$dd/nope" >/dev/null 2>&1 ); then _rc=0; else _rc=$?; fi
+  [ "$_rc" = 2 ] || { echo "selftest FAIL: --listed on a missing listing was not rc 2 (rc $_rc)"; return 1; }
+  echo "shellcheck --selftest: OK (clean passes, dirty fails, --listed scopes; fixtures left in $d)"
   return 0
 }
 
 case "${1:-}" in
   --selftest) selftest ;;
+  --listed)   [ "$#" -eq 2 ] || { echo "usage: shellcheck.sh --listed <listing-file>" >&2; exit 2; }
+              run_listed "$2" ;;
   "")         run ;;
-  *)          echo "usage: shellcheck.sh [--selftest]" >&2; exit 2 ;;
+  *)          echo "usage: shellcheck.sh [--selftest | --listed <listing-file>]" >&2; exit 2 ;;
 esac
 exit $?

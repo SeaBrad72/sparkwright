@@ -1,0 +1,2 @@
+#type-id	10003
+security	option	Security Level	ZQALLOWED3	complete

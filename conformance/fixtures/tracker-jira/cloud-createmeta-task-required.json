@@ -1,0 +1,15 @@
+{"startAt":0,"maxResults":100,"total":14,"fields":[
+{"required":true,"hasDefaultValue":false,"schema":{"type":"team","custom":"com.atlassian.jira.plugin.system.customfieldtypes:atlassian-team","customId":10001},"name":"Team","operations":["set"],"fieldId":"customfield_10001"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10050},"name":"Delivery Area","operations":["set"],"allowedValues":[{"value":"Alpha","id":"10060"},{"value":"Beta","id":"10061"}],"fieldId":"customfield_10050"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"string","custom":"com.atlassian.jira.plugin.system.customfieldtypes:textfield","customId":10051},"name":"Cost Centre","operations":["set"],"fieldId":"customfield_10051"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"string","custom":"com.atlassian.jira.plugin.system.customfieldtypes:textarea","customId":10052},"name":"Rationale","operations":["set"],"fieldId":"customfield_10052"},
+{"required":true,"hasDefaultValue":true,"schema":{"type":"string","custom":"com.atlassian.jira.plugin.system.customfieldtypes:textfield","customId":10053},"name":"Defaulted Note","operations":["set"],"fieldId":"customfield_10053"},
+{"required":true,"hasDefaultValue":true,"schema":{"type":"user","system":"reporter"},"name":"Reporter","operations":["set"],"fieldId":"reporter"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"user","custom":"com.atlassian.jira.plugin.system.customfieldtypes:userpicker","customId":10054},"name":"Approver","operations":["set"],"fieldId":"customfield_10054"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"datetime","custom":"com.atlassian.jira.plugin.system.customfieldtypes:datetime","customId":10055},"name":"Start At","operations":["set"],"fieldId":"customfield_10055"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"array","items":"component","system":"components"},"name":"Components","operations":["add","set","remove"],"allowedValues":[{"name":"Api","id":"10070"},{"name":"Web","id":"10071"}],"fieldId":"components"},
+{"required":false,"hasDefaultValue":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10046},"name":"Size","operations":["set"],"allowedValues":[{"value":"XS","id":"10028"},{"value":"S","id":"10029"}],"fieldId":"customfield_10046"},
+{"required":false,"hasDefaultValue":true,"schema":{"type":"priority","system":"priority"},"name":"Priority","operations":["set"],"allowedValues":[{"name":"High","id":"2"},{"name":"Medium","id":"3"}],"defaultValue":{"name":"Medium","id":"3"},"fieldId":"priority"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"project","system":"project"},"name":"Project","operations":["set"],"fieldId":"project"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"issuetype","system":"issuetype"},"name":"Issue Type","operations":[],"fieldId":"issuetype"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"string","system":"summary"},"name":"Summary","operations":["set"],"fieldId":"summary"}]}

@@ -1,0 +1,1 @@
+[{"id":"summary","name":"Summary","custom":false,"schema":{"type":"string","system":"summary"}},"junk",{"id":"parent\nx","name":"Not Parent"},{"id":"customfield_10099","name":"Epic Link","custom":true,"schema":{"type":"any","custom":"other:thing"}}]

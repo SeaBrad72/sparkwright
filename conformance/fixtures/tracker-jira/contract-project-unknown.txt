@@ -1,0 +1,2 @@
+style	ZQHOSTILESTYLE
+id	10000

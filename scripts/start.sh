@@ -2,18 +2,25 @@
 # start.sh — the ONE-COMMAND loop entry: classify (act 1), claim (act 3), print the Entry Declaration
 # trailer block + the ceremony-budget line (acts 4-5). A THIN SEQUENCER over two tools that already
 # exist and are already governed — `conformance/promotion-readiness.sh --class` and
-# `scripts/board-claim.sh claim` — so it invents NO new policy, NO write path, and NO env dial of its
+# `scripts/board.sh claim` — so it invents NO new policy, NO write path, and NO env dial of its
 # own (SPARKWRIGHT-START-VERB, design 2026-09-16 D1/D2).
+#
+# TBG-BOARD-VERBS S-L5: the claim step is REROUTED through `board.sh claim` (never `board-claim.sh
+# claim` directly) — the git-ref-lock-first, backend-dispatching neutral verb, which itself calls
+# `board-claim.sh claim` unchanged for an md board, and composes `claim-ref` + a tracker write for a
+# declared tracker backend. On md the observable behaviour is BYTE-IDENTICAL (board.sh delegates
+# wholesale); on a tracker backend `start` gains real coverage it never had.
 #
 #   sh scripts/start.sh <ROW-ID> [--branch <name>] [--changed <listing>]
 #   sh scripts/start.sh --selftest
 #
 # What it changes:
-#   NOTHING of its own. The only writes are board-claim.sh's — the `refs/claims/<ROW>` ref on the
-#   remote and the board-row edit — and start.sh CALLs board-claim (never `exec`s, so acts 4-5 can
-#   still print) and prints nothing until board-claim has returned 0.
+#   NOTHING of its own. The only writes are board.sh's (which, for md, are board-claim.sh's own
+#   unchanged) — the `refs/claims/<ROW>` ref on the remote and the board-row edit / tracker
+#   transition — and start.sh CALLs board.sh (never `exec`s, so acts 4-5 can still print) and
+#   prints nothing until the claim has returned 0.
 # Guardrails: (the C8 disclosure)
-#   * writes nothing itself; every write is board-claim's, behind board-claim's own guard/grammars;
+#   * writes nothing itself; every write is board.sh's/board-claim.sh's, behind their own guard/grammars;
 #   * inherits board-claim's BOARD_CLAIM_REMOTE / BOARD_CLAIM_BOARD reach UNCHANGED;
 #   * sets no env dial of its own, and NEVER exports KIT_CLAIM_FRONT_DOOR (that front-door sentinel
 #     belongs to board-claim's own pushes — exporting it here would be the interpreter-wrapper
@@ -166,15 +173,17 @@ do_start() {
   fi
 
   # ── act 3: claim. CALL, never `exec` [C1] — `exec` would end the process before acts 4-5 print.
-  # Sibling resolved via $(dirname "$0"), never $PWD [C1]. Omit --branch iff not supplied, so
-  # board-claim's own `(detached)` refusal stays in ONE place. board-claim's grammars/guard/hygiene
-  # all apply UNCHANGED, and start prints nothing derived from argv (row, branch, listing) until this
-  # has returned 0 — so those values have already passed board-claim's own validation.
+  # Sibling resolved via $(dirname "$0"), never $PWD [C1] — resolves `board.sh`, the neutral write
+  # port (TBG-BOARD-VERBS S-L5); board.sh in turn resolves `board-claim.sh` by ITS OWN `$0`. Omit
+  # --branch iff not supplied, so board-claim's own `(detached)` refusal stays in ONE place.
+  # board-claim's grammars/guard/hygiene all apply UNCHANGED (board.sh calls it verbatim for md, and
+  # composes claim-ref for a tracker backend), and start prints nothing derived from argv (row,
+  # branch, listing) until this has returned 0 — so those values have already passed validation.
   _rc=0
   if [ "$_have_branch" = 1 ]; then
-    sh "$here/board-claim.sh" claim "$_row" --branch "$_branch" || _rc=$?
+    sh "$here/board.sh" claim "$_row" --branch "$_branch" || _rc=$?
   else
-    sh "$here/board-claim.sh" claim "$_row" || _rc=$?
+    sh "$here/board.sh" claim "$_row" || _rc=$?
   fi
 
   # ── PROPAGATE rc UNCHANGED [C1]. On non-zero: board-claim's stderr has already reached the caller
@@ -216,12 +225,14 @@ selftest() {
   printf 'docs/example.md\n' > "$st_base/listing-ordinary"
 
   # ---- leg (a): siblings via $(dirname "$0"); a real claim; the ref on the FIXTURE remote; act 1 ---
-  # A DECOY board-claim.sh sits in the cwd. If `start` resolved its sibling by $PWD it would run the
+  # A DECOY board.sh sits in the cwd (TBG-BOARD-VERBS S-L5: start's claim step now resolves board.sh,
+  # not board-claim.sh, as its sibling). If `start` resolved its sibling by $PWD it would run the
   # decoy (which prints DECOY-MARKER and never pushes); resolving by $0's directory it runs the REAL
-  # board-claim, the claim ref appears on the bare remote, and the marker is ABSENT. Non-vacuous: a
-  # cwd-relative resolver flips BOTH the marker check and the ref check.
-  printf '#!/bin/sh\necho DECOY-MARKER\nexit 0\n' > "$st_base/A/board-claim.sh"
-  chmod +x "$st_base/A/board-claim.sh"
+  # board.sh (which itself calls the real board-claim.sh), the claim ref appears on the bare remote,
+  # and the marker is ABSENT. Non-vacuous: a cwd-relative resolver flips BOTH the marker check and
+  # the ref check.
+  printf '#!/bin/sh\necho DECOY-MARKER\nexit 0\n' > "$st_base/A/board.sh"
+  chmod +x "$st_base/A/board.sh"
   st_run "$st_base/A" ROW-1 --branch feat/a --changed "$st_base/listing-ordinary"
   st_expect_rc 0 "leg a/claim: A claims a Ready row via start -> rc 0"
   if git ls-remote "$st_remote" refs/claims/ROW-1 2>/dev/null | grep -q refs/claims/ROW-1; then
@@ -229,7 +240,7 @@ selftest() {
   else
     st_fail "leg a/ref: refs/claims/ROW-1 absent from the fixture remote after a claimed rc 0"
   fi
-  st_hasnt "leg a/siblings: the cwd decoy board-claim.sh was NOT run (sibling resolved by \$0, not \$PWD)" "DECOY-MARKER"
+  st_hasnt "leg a/siblings: the cwd decoy board.sh was NOT run (sibling resolved by \$0, not \$PWD)" "DECOY-MARKER"
   st_has   "leg a/act1: the block carries the DERIVED ordinary class (act 1 wired the real classifier)" "Kit-Class: ordinary"
   st_hasnt "leg a/act1-twokey: an ordinary class prints the REDUCED two-key block (no Kit-Stage)" "Kit-Stage:"
   st_has   "leg a/trailer: the block leads with Kit-Row" "Kit-Row: ROW-1"

@@ -1,0 +1,2 @@
+Done	resolution	unsupported	Resolution
+In Review	customfield_10080	string	Review note

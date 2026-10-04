@@ -1,0 +1,8 @@
+wf	Software workflow for project AB	Backlog	10000	not
+wf	Software workflow for project AB	Blocked	10006	not
+wf	Software workflow for project AB	Create	10000	not
+wf	Software workflow for project AB	Done	10005	not
+wf	Software workflow for project AB	In Progress	10002	not
+wf	Software workflow for project AB	InReview	10003	not
+wf	Software workflow for project AB	Ready	10001	not
+wf	Software workflow for project AB	Released	10004	not

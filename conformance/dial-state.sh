@@ -6,7 +6,8 @@
 # valid Entry Declaration (KIT_PUSH_DECL), a change-set with no branch-scoped design GO
 # (KIT_PUSH_GO), a tree whose living-document citations have decayed (KIT_PUSH_CITE, the sixth
 # dial — ruling D-240815-2d), or a gated change-set whose board row is not yet bound to the branch
-# (KIT_PUSH_PRESENCE, the board-presence leg). Absence reads as OBSERVE — which is exactly right on an adopter export (first run
+# (KIT_PUSH_PRESENCE, the board-presence leg), or whether `land`/`actuate` REFUSE a row that was never
+# metered (RUNAWAY_METERING_GATE, read from the APPROVED tree). Absence reads as OBSERVE — which is exactly right on an adopter export (first run
 # is never red) and exactly WRONG on the kit's own tree, where it would make one deleted file a
 # silent, complete disarm of every dial this file locks. So on the kit tree the file's PRESENCE and its VALUES are
 # asserted, fail-closed: a missing file, a missing key, or a value that is not the ruled one is a
@@ -43,7 +44,8 @@ KIT_PUSH_GO=enforce
 KIT_SCOPE_MODE=enforce
 RELEASE_TAG_PROVENANCE=enforce
 KIT_PUSH_CITE=enforce
-KIT_PUSH_PRESENCE=enforce'
+KIT_PUSH_PRESENCE=enforce
+RUNAWAY_METERING_GATE=enforce'
 
 # dial_value <name> — the conf's value for <name>, or empty. PARSE, never source (the roster.conf
 # contract, mirrored by guard-core's kit_dial_mode reader this lock backstops).
@@ -64,6 +66,12 @@ run() {
   # that actually decide pushes live off-tree, outside the diff a reviewer reads — the same
   # judge-the-resolved-target reasoning the guard's own alias handling uses. The tracked dial file is
   # a regular file; anything else is refused with its own reason, never silently followed.
+  # fix round 3 (security F-A): the conf's PARENT DIR being a symlink is the same disarm one level up — `-L` on
+  # the file alone reads a `.kit -> dir-carrying-enforce` tree as PASS while the values live off the tracked path.
+  if [ -L "$(dirname "$CONF")" ]; then
+    echo "FAIL: $(dirname "$CONF") is a SYMLINK. The dial directory must be a real tracked directory: a link parses clean here while the values that decide pushes live off the tracked path and outside the reviewed diff. Replace it: git checkout HEAD -- $(dirname "$CONF")"
+    return 1
+  fi
   if [ -L "$CONF" ]; then
     echo "FAIL: $CONF is a SYMLINK. The dial file must be a regular tracked file: a link parses clean here while the values that decide pushes live off-tree and outside the reviewed diff. Replace it: git checkout HEAD -- $CONF"
     return 1
@@ -89,7 +97,7 @@ run() {
   # reasons are multi-line and a count would silently mis-read.
   grep -q '^DIAL-STATE-FAIL$' "$_OUT" && rc=1
   grep -v '^DIAL-STATE-FAIL$' "$_OUT" || true
-  [ "$rc" -eq 0 ] && echo "PASS: $CONF carries the ruled dial state (KIT_PUSH_DECL=enforce, KIT_PUSH_GO=enforce, KIT_SCOPE_MODE=enforce, RELEASE_TAG_PROVENANCE=enforce, KIT_PUSH_CITE=enforce, KIT_PUSH_PRESENCE=enforce) — a committed disarm reds here; a working-tree one does not (see the ceiling in this file's header)"
+  [ "$rc" -eq 0 ] && echo "PASS: $CONF carries the ruled dial state (KIT_PUSH_DECL=enforce, KIT_PUSH_GO=enforce, KIT_SCOPE_MODE=enforce, RELEASE_TAG_PROVENANCE=enforce, KIT_PUSH_CITE=enforce, KIT_PUSH_PRESENCE=enforce, RUNAWAY_METERING_GATE=enforce) — a committed disarm reds here; a working-tree one does not (see the ceiling in this file's header)"
   return $rc
 }
 
@@ -129,6 +137,14 @@ selftest() {
   ln -s elsewhere.conf "$W/link/.kit/dials.conf"
   ds_expect "mutant 5: a SYMLINKED conf reds even though it parses clean" 1 "$W/link"
   ds_expect_says "the symlink reason says SYMLINK" 'is a SYMLINK' "$W/link"
+
+  # mutant 5b (fix round 3): `.kit` ITSELF a symlink to a dir carrying the ruled conf reds — the file-level -L
+  # check alone reads it as PASS.
+  ds_tree "$W/dirlink" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=enforce' 'KIT_PUSH_PRESENCE=enforce'
+  mv "$W/dirlink/.kit" "$W/dirlink/kitreal"
+  ln -s kitreal "$W/dirlink/.kit"
+  ds_expect "mutant 5b: .kit itself a SYMLINK to a dir carrying enforce reds" 1 "$W/dirlink"
+  ds_expect_says "the dir-symlink reason names the directory" '.kit is a SYMLINK' "$W/dirlink"
 
   # The SECOND dial is graded too (a lock reading only the first key would pass every case above).
   ds_tree "$W/flip2" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=observe' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=enforce' 'KIT_PUSH_PRESENCE=enforce'
@@ -176,6 +192,22 @@ selftest() {
   ds_expect "mutant 13: the KIT_PUSH_PRESENCE key DELETED reds" 1 "$W/presdrop"
   ds_expect_says "the missing-presence-key reason names the absent dial" 'no KIT_PUSH_PRESENCE key' "$W/presdrop"
 
+  # The SEVENTH key, RUNAWAY_METERING_GATE (RUNAWAY-METERING-LANDING-GATE; security F7 — LOAD-BEARING), on
+  # BOTH faces. The `land`/`actuate` gate reads this dial from the APPROVED tree, so a committed flip to
+  # observe (or a deleted key) is the one-line disarm of the whole gate: without these two legs, deleting
+  # `RUNAWAY_METERING_GATE=enforce` from REQUIRED leaves the selftest GREEN. (ds_tree appends the ruled
+  # gate line by default, so every OTHER leg above still isolates its own single defect.)
+  DS_GATE='RUNAWAY_METERING_GATE=observe'
+  ds_tree "$W/gateflip" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=enforce' 'KIT_PUSH_PRESENCE=enforce'
+  unset DS_GATE
+  ds_expect "mutant 14: RUNAWAY_METERING_GATE flipped to observe reds" 1 "$W/gateflip"
+  ds_expect_says "the flipped-gate reason names the dial and both values" 'RUNAWAY_METERING_GATE=observe' "$W/gateflip"
+  DS_GATE=''
+  ds_tree "$W/gatedrop" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=enforce' 'KIT_PUSH_PRESENCE=enforce'
+  unset DS_GATE
+  ds_expect "mutant 15: the RUNAWAY_METERING_GATE key DELETED reds" 1 "$W/gatedrop"
+  ds_expect_says "the missing-gate-key reason names the absent dial" 'no RUNAWAY_METERING_GATE key' "$W/gatedrop"
+
   # Scope: an adopter-shaped tree (no kit markers, no conf) is N/A — and the N/A is DISCLOSED.
   ds_natree "$W/adopter"
   ds_expect "an adopter-shaped tree (no kit markers, no conf) is N/A rc 0" 0 "$W/adopter"
@@ -187,7 +219,7 @@ selftest() {
   ds_expect "one kit marker + no conf still REDs (the guard is not always-N/A)" 1 "$W/onemarker"
 
   rm -rf "$W"
-  [ "$sfail" -eq 0 ] && { echo "dial-state --selftest: OK (anchor + 13 value/presence/symlink mutants + reason-text + scope both ways)"; return 0; }
+  [ "$sfail" -eq 0 ] && { echo "dial-state --selftest: OK (anchor + 16 value/presence/symlink mutants + reason-text + scope both ways)"; return 0; }
   echo "dial-state --selftest: FAIL"; return 1
 }
 
@@ -197,7 +229,9 @@ ds_tree() { # <dir> <conf-line>... — a KIT-MARKED tree carrying .kit/dials.con
   mkdir -p "$1/docs" "$1/.kit"
   : > "$1/docs/ROADMAP-KIT.md"
   _d=$1; shift
-  printf '%s\n' "$@" > "$_d/.kit/dials.conf"
+  # the ruled RUNAWAY_METERING_GATE line rides along by default; a leg overrides it through DS_GATE
+  # (set to a flipped value, or to '' for the DROP mutant — an empty string adds a blank line, no key).
+  printf '%s\n' "$@" "${DS_GATE-RUNAWAY_METERING_GATE=enforce}" > "$_d/.kit/dials.conf"
 }
 ds_natree() { # <dir> — an adopter-shaped tree: no kit markers, no conf
   mkdir -p "$1"

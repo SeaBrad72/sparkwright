@@ -1,0 +1,9 @@
+{
+  "id": "10007",
+  "key": "AB-7",
+  "self": "https://ex.atlassian.net/rest/api/3/issue/10007",
+  "fields": {
+    "status": { "id": "3\u001b[31;1mHACKED\u001b[0m\n", "name": "In Progress" },
+    "project": { "id": "10000", "key": "AB", "name": "AB Project" }
+  }
+}

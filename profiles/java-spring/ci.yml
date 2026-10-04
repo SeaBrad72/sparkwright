@@ -18,6 +18,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly FULL run of the kit's own selftests. A pull request that changes no control-plane path skips
+  # them (see the "Changed-path listing" step); this cron and every push to main still run them in full.
+  # It catches runner / tool drift only - the schedule is yours to tune or remove.
+  schedule:
+    - cron: '23 5 * * 1'
 
 permissions:
   contents: read
@@ -53,6 +58,23 @@ jobs:
         with:
           fetch-depth: 0   # full history for secret scanning
 
+      - name: Changed-path listing (pull_request only)
+        # ADOPTER-KIT-SELFTESTS-ON-CHANGE: write the PR's changed paths so verify.sh can skip the kit's own
+        # selftests when none of them is a control-plane path. The base sha is ENV-BOUND, never interpolated
+        # into the script. No listing (a failed diff, an empty diff, or a path containing a newline) means
+        # the aggregate below runs the FULL battery. Push and schedule runs never reach this step.
+        # Default-branch PRs only (security S2): a PR into any other base branch always runs the full battery.
+        if: github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          z="$RUNNER_TEMP/kit-changed.z"
+          if git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$z" \
+            && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
+            tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
+            echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
+          fi
+
       - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
         # No `gate-*` id: this is the aggregate, not one of the eight §14 gate ids
         # that conformance/ci-gates.sh REQUIREs. Blocks on the CONTROL battery — `[doc]` failures
@@ -60,7 +82,9 @@ jobs:
         # unwritten RPO/RTO. Placed before toolchain setup because the aggregate is POSIX sh with
         # no toolchain dependency; identical placement across every emitted pipeline is what makes
         # `conformance/verify-enforced-wired.sh --fleet` cheap to lock.
-        run: sh conformance/verify.sh --require
+        # KIT_CHANGED is set only by the pull_request listing step above; empty on push / schedule, so those
+        # run plain `verify.sh --require` (the full battery). Keep this ONE line (verify-enforced-wired reads it).
+        run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
 
       - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
         id: detect-dockerfile

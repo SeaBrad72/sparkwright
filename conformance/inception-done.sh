@@ -59,11 +59,19 @@ CI_GATES_SH="$(unset CDPATH; cd "$(dirname "$0")" && pwd)/ci-gates.sh"
 # A gate whose verdict an environment variable can choose is not a gate. HOME/XDG_CONFIG_HOME are
 # deliberately NOT stripped, for the reason guard-wired.sh states: they carry the operator's REAL
 # global git config, which git also honours at push time, so stripping them would judge a config the
-# push never uses. The `unset` is local to the subshell and never touches the caller's environment.
+# push never uses. Everything below is local to the subshell and never touches the caller's env.
+# ⚠️ `env -u`, NOT `unset` (whole-branch review I-1 / security L1, 2026-09-18): in bash-as-/bin/sh,
+# `unset` of a var that carried a TEMPORARY PREFIX assignment over an ALREADY-EXPORTED one RESTORES
+# the exported value instead of removing it — measured on vector 3 above too (`GIT_DIR`/`GIT_WORK_TREE`
+# survived and the donor repo's config was read). `env -u` removes the name from the CHILD environment
+# whatever the shell's unset semantics are; not POSIX, but present in GNU coreutils, the BSDs (macOS
+# included) and BusyBox. COUNT=0/PARAMETERS='' stay ASSIGNMENTS: git needs them INERT, not absent, and
+# a repo-local key must still be readable.
 _id_git() {
-  ( unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE \
-          GIT_CONFIG_COUNT GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
-          GIT_CONFIG GIT_CONFIG_PARAMETERS; git "$@" )
+  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
+    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+    env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CONFIG_GLOBAL \
+        -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG -u GIT_CEILING_DIRECTORIES -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@" )
 }
 
 # ── _id_head_matches <file> : 0 = <file> is byte-identical to HEAD:hooks/pre-push · 1 = it DIFFERS ·
@@ -405,7 +413,18 @@ else
                printf '%s\n' "$_bpo" | grep '^FAIL:' | tr -d '[:cntrl:]' | cut -c1-240 | sed 's/^/  /'
                echo "FAIL: branch protection — main is NOT protected on GitHub (required PR reviews / status checks missing)"; fail=1
              fi ;;
-          2) if [ "$MODE" = surface ]; then
+          2) # RT5-Q4: the live leg (--raw) cannot verify GitHub, but the RD-4 vacuous-tracker check
+             # is a purely OFFLINE, local-tree read (never touches gh) — run it separately so an
+             # incepted repo with a declared-but-vacuous tracker-board-gates is still refused even
+             # when GitHub itself is unreachable/unauthenticated. Own line, own fail=1, never folded
+             # into the "GitHub state unverifiable" summary below (that summary stays OUTSTANDING/
+             # FAIL purely about verifiability; this is a DIFFERENT, always-actionable defect).
+             if _bpdo=$(sh conformance/branch-protection.sh --declared-only 2>/dev/null); then _bpdorc=0; else _bpdorc=$?; fi
+             case "$_bpdo" in
+               *'tracker-board-gates is declared required but this tree'"'"'s backlog backend is md'*)
+                 echo "FAIL: branch protection — $(printf '%s\n' "$_bpdo" | grep '^FAIL:' | head -1 | tr -d '[:cntrl:]' | cut -c1-240 | sed 's/^FAIL: //')"; fail=1 ;;
+             esac
+             if [ "$MODE" = surface ]; then
                echo "OUTSTANDING: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent); re-run authenticated against a live repo, or in CI"
              else
                echo "FAIL: branch protection — GitHub state unverifiable (gh missing/unauthenticated, OR the remote repo is inaccessible/nonexistent) and verification is required (strict); authenticate gh / check the remote exists, or run --surface"; fail=1
@@ -806,6 +825,37 @@ selftest() {
   echo "--- (h4m) producer wording mirror (conformance/branch-protection.sh) ---"
   _bpsrc="$(dirname "$CI_GATES_SH")/branch-protection.sh"   # the kit's own, resolved like ci-gates.sh — never the fixture's stub
   if grep -q 'FAIL: required-check context(s) declared in .* but not live on .* — run: ' "$_bpsrc"; then echo "    ok  : producer anchors present (one line: prefix, on <branch>:, — run:)"; else echo "    FAIL: conformance/branch-protection.sh no longer emits the one-line 'FAIL: required-check context(s) declared in … but not live on …: … — run: …' inception-done parses — update BOTH sides"; st_fail=1; fi
+  # (h6-rd4) RD-4: a declared-but-vacuous tracker-board-gates (branch-protection.sh's new FAIL, T5)
+  # must surface as a hard FAIL in BOTH modes through this leg's EXISTING routing — it matches no
+  # special-cased anchor (h4's unbound-context line, h5's compound case), so it falls to the generic
+  # "print the FAIL line(s), fail=1" arm; asserting that here locks in that no future special-case
+  # anchor accidentally downgrades it to OUTSTANDING/advisory.
+  echo "--- (h6-rd4) declared-but-vacuous tracker-board-gates (bp exit 1) -> FAIL both modes, never advisory ---"
+  d=$(st_mkfix h6rd4 claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub "$d" 1 "FAIL: tracker-board-gates is declared required but this tree's backlog backend is md — the trusted job skips on md, so the context would be always-green; remove it from REQUIRED-CHECKS.md and from branch protection (see RUNBOOK, reverting a tracker)"
+  st_run "$d" strict;  st_has "FAIL: branch protection"; st_has "tracker-board-gates is declared required"; st_hasnt "OUTSTANDING"; st_rc 1
+  st_run "$d" surface; st_has "FAIL: branch protection"; st_hasnt "OUTSTANDING: branch protection"
+
+  # (h6-rd4m) MIRROR LOCK (RT5-Q5): a leg greps the REAL branch-protection.sh for the exact RD-4 FAIL
+  # sentence h6-rd4/h6-rd4-offline hand-copy into their stubs, so the stubbed copy cannot silently
+  # drift from the producer's own wording.
+  echo "--- (h6-rd4m) producer wording mirror (RD-4 vacuous-tracker FAIL sentence) ---"
+  if grep -qF "tracker-board-gates is declared required but this tree's backlog backend is md — the trusted job skips on md, so the context would be always-green; remove it from REQUIRED-CHECKS.md and from branch protection" "$_bpsrc"; then
+    echo "    ok  : producer's RD-4 FAIL sentence present verbatim"
+  else
+    echo "    FAIL: conformance/branch-protection.sh no longer emits the RD-4 vacuous-tracker FAIL sentence h6-rd4/h6-rd4-offline pin — update BOTH sides"; st_fail=1
+  fi
+
+  # (h6-rd4-offline) RT5-Q4: the LIVE leg is unverifiable (bp --raw exit 2) but the OFFLINE RD-4
+  # check (bp --declared-only) still runs and still refuses — its own FAIL line, never folded into
+  # the "GitHub state unverifiable" summary, and never downgraded to OUTSTANDING by --surface (the
+  # vacuous-tracker defect is not a GitHub-reachability problem; it is always-actionable locally).
+  echo "--- (h6-rd4-offline) live leg unverifiable (rc 2) + offline RD-4 declared-only leg FAILs separately ---"
+  d=$(st_mkfix h6rd4off claude-code); st_install_hook "$d"; st_gh "$d"
+  st_bpstub_split "$d" 2 1 "FAIL: tracker-board-gates is declared required but this tree's backlog backend is md — the trusted job skips on md, so the context would be always-green; remove it from REQUIRED-CHECKS.md and from branch protection (see RUNBOOK, reverting a tracker)"
+  st_run "$d" strict;  st_has "FAIL: branch protection — tracker-board-gates is declared required"; st_has "GitHub state unverifiable"; st_rc 1
+  st_run "$d" surface; st_has "FAIL: branch protection — tracker-board-gates is declared required"; st_has "OUTSTANDING: branch protection — GitHub state unverifiable"
+
   # (h5) COMPOUND rc 1 — unbound line PLUS another FAIL (no reviews required): the friendly arm must NOT be taken in either mode.
   echo "--- (h5) github unbound + reviews-not-required (compound rc 1) -> FAIL both modes ---"
   d=$(st_mkfix h5 claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 1 'FAIL: required PR reviews are not enabled on main
@@ -1005,6 +1055,15 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   # the AND: deployable must be TRUE, not just private+user-owned, for this leg to fire).
   echo "--- (s) gate-provenance repo-class: not deployable -> N/A regardless of privacy ---"
   d=$(st_mkfix s claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
+  # TBG-TRUSTED-JOB fix round: the cloned fixture template inherits the KIT's OWN tree, which now
+  # carries .github/workflows/tracker-live.yml — a kit-only, export-ignored workflow (never shipped
+  # to an adopter) whose `environment: tracker-live` job makes wf_is_deploy() true. A "NOT
+  # deployable" fixture must genuinely have no deploy surface; strip it here (the ONE leg in this
+  # file that asserts non-deployability — every other gate-provenance leg adds its own Dockerfile
+  # and is deployable on purpose). drift-watch.yml/golden-path.yml are ALSO kit-only/export-ignored
+  # but wf_is_deploy() does not read either as a deploy trigger (unaffected; this leg passed on
+  # `main` before tracker-live.yml existed).
+  rm -f "$d/.github/workflows/tracker-live.yml"
   _id_mkdisp_apply "$d"
   OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
   st_has "N/A: gate-provenance repo-class"
@@ -1092,11 +1151,56 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_hasnt "FAIL: stack decision"
   st_has "deferred to strict"
 
+  echo "--- (b10) sanitizer: a forged prefix over an EXPORTED triad, under bash-as-/bin/sh ---"
+  selftest_sanitizer_bash_unset
+
   rm -rf "$WORK" 2>/dev/null || true
   if [ "$st_fail" = 0 ]; then
     echo "inception-done --selftest: OK"; return 0
   fi
   echo "inception-done --selftest: FAIL" >&2; return 1
+}
+
+# ── selftest_sanitizer_bash_unset : the BASH-AS-/bin/sh regression lock for _id_git
+# (SANITIZER-UNSET-RESTORES-EXPORTED). It extracts the SHIPPED sanitizer from this very file (so it
+# grades the deployed text, not a copy) and runs it under `bash` with the hermetic lane's face-(a)
+# triad EXPORTED and a forged `core.hooksPath` applied as a TEMPORARY PREFIX on a function call —
+# exactly the shape fixture (b7) uses. In bash-as-/bin/sh, `unset` of a variable that carried a prefix
+# assignment over an ALREADY-EXPORTED one RESTORES the exported value instead of removing it, so an
+# `unset`-based sanitizer lets the forged GIT_CONFIG_KEY_0 through and the probe prints `hooks`.
+# ⚠️ Under `dash` this leg is TAUTOLOGICAL (dash's unset removes the variable outright); it is kept
+# and run under `bash` EXPLICITLY because macOS /bin/sh IS bash 3.2 and CI's per-PR hermetic face
+# runs these selftests under the face-(a) environment. HOME/XDG_CONFIG_HOME are pointed at the
+# throwaway dir because the sanitizer deliberately does NOT strip them (see _id_git's header).
+selftest_sanitizer_bash_unset() {
+  if ! command -v bash >/dev/null 2>&1; then
+    echo "selftest SKIP: sanitizer bash-as-sh leg (no bash on PATH — the regression it locks is bash-only)"
+    return 0
+  fi
+  _sbu_d=$(mktemp -d) || { echo "selftest FAIL: sanitizer bash-as-sh leg — no tmpdir"; st_fail=1; return 1; }
+  git -C "$_sbu_d" init -q >/dev/null 2>&1 || true
+  # Anchored on the OPENING (security L2; `/^_id_git/` starts at any column-0 line with that prefix).
+  # TWO VECTORS (review I-1): the config-injection triad AND the LOCATOR pair — GIT_DIR/GIT_WORK_TREE
+  # at a DONOR repo whose own config carries core.hooksPath — each ambient-exported and re-applied as the temporary prefix that `unset` restores. Either leak prints a value; a clean run prints nothing.
+  _sbu_src=$(awk '/^_id_git\(\) \{/,/^}$/' "$0")
+  _sbu_dn=$_sbu_d/donor; { git init -q "$_sbu_dn" && git -C "$_sbu_dn" config core.hooksPath DONOR; } >/dev/null 2>&1 || true
+  # `|| true`: a sanitized `git config --get` of an ABSENT key exits 1 — which is the PASSING case
+  # here — so the assignment's own status is never the verdict (and never trips a caller's `set -e`).
+  _sbu_out=$( cd "$_sbu_d" && HOME="$_sbu_d" XDG_CONFIG_HOME="$_sbu_d" \
+      GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true \
+      GIT_DIR="$_sbu_dn/.git" GIT_WORK_TREE="$_sbu_dn" \
+      bash -c "$_sbu_src
+_sbu_probe() { _id_git config --get core.hooksPath; }
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=hooks _sbu_probe
+GIT_DIR='$_sbu_dn/.git' GIT_WORK_TREE='$_sbu_dn' _sbu_probe" 2>&1 ) || true
+  rm -rf "$_sbu_d" 2>/dev/null || true
+  if [ -z "$_sbu_out" ]; then
+    echo "selftest PASS: _id_git neutralizes a forged prefix-over-exported GIT_CONFIG triad AND GIT_DIR/GIT_WORK_TREE locator pair (bash-as-/bin/sh; tautological under dash)"
+    return 0
+  fi
+  echo "selftest FAIL: _id_git let a forged core.hooksPath through under bash-as-/bin/sh -> [$_sbu_out]"
+  st_fail=1
+  return 1
 }
 
 # ── seed_fixture_template <root> <dest> : build a committed fixture-template repo at <dest> from
@@ -1195,6 +1299,16 @@ st_norem()  { git -C "$1" remote remove origin 2>/dev/null || true; }
 st_bpstub() {  # <fixture> <rc> [stdout-line]: the line travels via a side file, never interpolated into the stub's source
   [ -n "${3:-}" ] && printf '%s\n' "$3" > "$1/conformance/bp-stub.msg"
   printf '#!/bin/sh\n[ -f "$(dirname "$0")/bp-stub.msg" ] && cat "$(dirname "$0")/bp-stub.msg"\nexit %s\n' "$2" > "$1/conformance/branch-protection.sh"; chmod +x "$1/conformance/branch-protection.sh"; }
+# st_bpstub_split <fixture> <raw-rc> <declared-only-rc> <declared-only-line> (RT5-Q4): a flag-aware
+# stub — `--raw` returns <raw-rc> silently (mirrors the live leg being unverifiable), `--declared-
+# only` returns <declared-only-rc> printing <declared-only-line> (mirrors the OFFLINE RD-4 check
+# firing independently of GitHub's own reachability). The line travels via a side file, never
+# interpolated into the stub's source.
+st_bpstub_split() {
+  printf '%s\n' "$4" > "$1/conformance/bp-stub-do.msg"
+  printf '#!/bin/sh\ncase " $* " in\n  *" --declared-only "*) cat "$(dirname "$0")/bp-stub-do.msg"; exit %s ;;\n  *) exit %s ;;\nesac\n' "$3" "$2" > "$1/conformance/branch-protection.sh"
+  chmod +x "$1/conformance/branch-protection.sh"
+}
 # st_attest <dir>: append a non-GitHub attestation using the STABLE (§branch-protection) marker
 st_attest() { printf '%s\n' '- **Branch protection** (§branch-protection): attested: gitlab protected-branches' >> "$1/CLAUDE.md"; }
 

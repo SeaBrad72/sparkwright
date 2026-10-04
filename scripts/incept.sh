@@ -131,6 +131,8 @@ DB_BACKED="${INCEPT_DB_BACKED:-1}"
 # unpinned stamp would fabricate a conflict in CLAUDE.md / ADR-000-stack.md (files nobody touched).
 # A FLAG, never an env var: an ambient INCEPT_DATE would let a decoy redirect a control-plane stamp.
 DATE_PIN=''
+# TBG-TRACKER-CONF F1: backend-neutral brownfield modifier — default 0 (greenfield), --existing sets 1.
+EXISTING=0
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
 BACKLOG_BACKENDS="md github jira ado linear gitlab"
@@ -183,10 +185,24 @@ while [ $# -gt 0 ]; do
     --allow-nested) ALLOW_NESTED=1; shift ;;
     --allow-runtime-mismatch) ALLOW_RUNTIME_MISMATCH=1; shift ;;
     --noninteractive) INTERACTIVE=0; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--allow-runtime-mismatch] [--noninteractive]"; exit 0 ;;
+    # TBG-TRACKER-CONF F1: a BACKEND-NEUTRAL brownfield modifier — "the backlog backend already
+    # exists; don't stamp greenfield defaults." Only the jira conf-stamping BODY is jira-shaped
+    # (an empty state map + a --discover instruction, vs. the greenfield identity map); every other
+    # tracker backend accepts the flag with a brownfield note, and `md` refuses it (no external
+    # tracker to adopt into). Neutrality lives in the flag itself, not in a per-backend gate here.
+    --existing) EXISTING=1; shift ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--existing] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--allow-runtime-mismatch] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+# security L-5: validate the --existing/--backlog PAIR at arg-parse time, before ANY mutation (git
+# init, scaffold copy, .gitignore edit) — refusing this AFTER the scaffold is already written left a
+# half-incepted tree on a bad flag combination. Pure validation; no side effect above this line yet.
+if [ "$EXISTING" -eq 1 ] && [ "$BACKLOG" = "md" ]; then
+  echo "incept: --existing is not applicable to --backlog md (md has no external tracker to adopt into — for existing-repo adoption see docs/adoption/brownfield.md)" >&2
+  exit 1
+fi
 
 # --- CP-4: repository ownership is a hard precondition -------------------------------------
 # `git rev-parse --is-inside-work-tree` answers "is there a repo ABOVE me?" — not "is THIS dir the
@@ -615,6 +631,12 @@ if [ "$CI" = "github" ] && [ ! -f profiles/adopter-gates.yml ]; then
   echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
   exit 1
 fi
+# TBG-TRUSTED-JOB: the tracker-backed trusted job — same early refusal as adopter-gates.yml above.
+if [ "$CI" = "github" ] && [ ! -f profiles/adopter-tracker-gates.yml ]; then
+  echo "error: profiles/adopter-tracker-gates.yml is MISSING — cannot install the tracker-backed trusted job." >&2
+  echo "       This is a broken kit distribution; refusing to produce an ungoverned project. Nothing has been written." >&2
+  exit 1
+fi
 if [ -n "$FLUENCY" ]; then
   case " $OPERATOR_FLUENCIES " in *" $FLUENCY "*) : ;; *) echo "error: unknown --operator-fluency '$FLUENCY' (one of: $OPERATOR_FLUENCIES)" >&2; exit 2 ;; esac
 fi
@@ -671,7 +693,7 @@ if [ "$STACK_EXPLICIT" -eq 0 ]; then
   echo "notice: no --stack given — using '$STACK'. Choose deliberately (fit AND maturity): docs/STACK-SELECTION.md" >&2
 fi
 # KW5: never SILENTLY default the solo/team governance fork — announce it (SoD stays server-side).
-[ "$TEAM_EXPLICIT" -eq 1 ] || echo "notice: no --team given — using 'solo' (enforce_admins:false + admin-merge). Team scale? pass --team team + flip enforce_admins:true. See docs/operations/review-lane.md + START-HERE 'Solo / lite track'." >&2
+[ "$TEAM_EXPLICIT" -eq 1 ] || echo "notice: no --team given — using 'solo' (enforce_admins:false + admin-merge). Team scale? pass --team team, then run: sh scripts/branch-protection-apply.sh --replace --team (read its trap first: an admin can then no longer merge their own PR, so a second write collaborator must approve every PR). See docs/operations/review-lane.md + START-HERE 'Solo / lite track'." >&2
 # KW5: deploy-target is BYO (no default) — nudge a deliberate, fit-driven choice.
 echo "notice: choose your deploy target deliberately — docs/adoption/DEPLOYMENT-ENVIRONMENT.md (cards + fit rubric); record fit + maturity in RUNBOOK §4 (linted by conformance/deploy-decision-integrity.sh)." >&2
 # KW9-B: surface harness FIT + honest MATURITY — the harness is a concretization axis (instance #3).
@@ -937,6 +959,14 @@ if replace_kit_own SECURITY.md templates/SECURITY-TEMPLATE.md; then
     sedi "s#\*\*Channel repo:\*\* \`\[owner/repo\]\`#**Channel repo:** \`$(esc "$CHANNEL_REPO")\`#" SECURITY.md
   fi
 fi
+# TBG-TRACKER-CONF-BACKENDS (RT3-Q1): the SINGLE source of truth for "does THIS run stamp a
+# .kit/tracker.conf for $BACKLOG" — jira only, today. Set ONCE, here, and read at both the
+# REQUIRED-CHECKS sixth-line site below and the `case "$BACKLOG"` block further down that actually
+# calls stamp_tracker_conf, so the two can never drift apart again.
+case "$BACKLOG" in
+  jira) _TBG_CONF_STAMPED=1 ;;
+  *)    _TBG_CONF_STAMPED=0 ;;
+esac
 # REQUIRED-CHECKS.md (B4) — the declared required-check contexts conformance/branch-protection.sh
 # and scripts/branch-protection-apply.sh read; same BACKLOG-pattern stamp, always written regardless
 # of backlog backend (it is not a backlog concern).
@@ -961,8 +991,17 @@ if [ "$CI" = github ] && grep -q '^<your-check-name>$' REQUIRED-CHECKS.md; then
   # `ci` only when a CI workflow is actually installed (custom stacks may ship none — binding a context
   # that never posts would make every PR permanently unmergeable, the kit's own doctrine turned footgun).
   _ci_line='ci'; [ -f "profiles/${STACK}/ci.yml" ] || _ci_line='# ci                     <- uncomment once you add a CI workflow whose job key is ci'
-  awk -v ci="$_ci_line" '$0=="<your-check-name>"{print ci; print "control-plane-ratification"; print "backlog-presence"; print "ceremony-binding"; print "loop-state"; next}1' REQUIRED-CHECKS.md > REQUIRED-CHECKS.md.tmp && mv REQUIRED-CHECKS.md.tmp REQUIRED-CHECKS.md \
-    || { rm -f REQUIRED-CHECKS.md.tmp; echo "incept: could not fill REQUIRED-CHECKS.md — declare ci, control-plane-ratification, backlog-presence, ceremony-binding, loop-state by hand (inception-done will name them)" >&2; }
+  # TBG-TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT (T3, RT3-Q1 fix): a SIXTH context, tracker-board-gates,
+  # ONLY where THIS RUN ACTUALLY STAMPS a .kit/tracker.conf (design §2a "the conf is stamped") — never
+  # merely "backlog != md". The trusted job can only read a tracker it has a stamped conf for, and today
+  # that is jira alone; github/ado/linear/gitlab get the md behaviour here (five lines, no notes) because
+  # no trusted job can read them yet. `_TBG_CONF_STAMPED` is the ONE variable both this site and the
+  # `case "$BACKLOG"` block below (the site that actually calls stamp_tracker_conf) read, so the two
+  # cannot drift apart — a future backend joins BOTH by flipping ONE line, not two independently.
+  _tbg_line=''
+  [ "$_TBG_CONF_STAMPED" -eq 1 ] && _tbg_line='tracker-board-gates'
+  awk -v ci="$_ci_line" -v tbg="$_tbg_line" '$0=="<your-check-name>"{print ci; print "control-plane-ratification"; print "backlog-presence"; print "ceremony-binding"; print "loop-state"; if (tbg != "") print tbg; next}1' REQUIRED-CHECKS.md > REQUIRED-CHECKS.md.tmp && mv REQUIRED-CHECKS.md.tmp REQUIRED-CHECKS.md \
+    || { rm -f REQUIRED-CHECKS.md.tmp; echo "incept: could not fill REQUIRED-CHECKS.md — declare ci, control-plane-ratification, backlog-presence, ceremony-binding, loop-state${_tbg_line:+, $_tbg_line} by hand (inception-done will name them)" >&2; }
   # FIRST-RUN TRUTH, PRINTED RATHER THAN ASSUMED. loop-state is now a live required context and it
   # ENFORCES, so the adopter's very first PR must carry an Entry Declaration or it will not merge.
   # There is no incept commit on their branch to carry one for them (this script writes a kit-base
@@ -978,6 +1017,27 @@ if [ "$CI" = github ] && grep -q '^<your-check-name>$' REQUIRED-CHECKS.md; then
   echo "      Ordinary work owes those two. A sensitive or control-plane change owes Kit-Stage and"
   echo "      Kit-Skill as well — see CLAUDE.md section 1. To opt out entirely, set LOOP_STATE_MODE to"
   echo "      observe in .github/workflows/adopter-gates.yml AND delete loop-state from REQUIRED-CHECKS.md."
+  # TRACKER FACE ONLY (T3, RT3-Q2 fix): a second first-run truth, for the trusted board job's own
+  # preconditions. `auth` is read from whatever .kit/tracker.conf is ALREADY ON DISK at this point in
+  # the script — THIS BRANCH IS REACHABLE, not unconditionally absent: a brownfield tree can carry a
+  # pre-existing .kit/tracker.conf (valid per scripts/tracker-conf.sh) from BEFORE incept ever ran, and
+  # that file is read here, before stamp_tracker_conf (which never overwrites an existing conf — see its
+  # brownfield-safe guard) runs later in the `case "$BACKLOG"` block below. On a true greenfield tree no
+  # conf exists yet at this point, so the design's own "or absent" fallback applies and both variable
+  # names are named. Either way: a non-basic `auth=` (e.g. `bearer`) drops KIT_TRACKER_USER from the note.
+  if [ -n "$_tbg_line" ]; then
+    echo "note: tracker-board-gates is a required context on this tracker-backed repo — bind branch protection BEFORE your first PR: sh scripts/branch-protection-apply.sh --apply"
+    _tbg_auth=basic
+    if [ -f .kit/tracker.conf ]; then
+      _tbg_a=$(grep '^auth=' .kit/tracker.conf 2>/dev/null | head -1 | cut -d= -f2)
+      [ -z "$_tbg_a" ] || _tbg_auth="$_tbg_a"
+    fi
+    if [ "$_tbg_auth" = basic ]; then
+      echo "note: the trusted board job reads your tracker with repository secrets — add KIT_TRACKER_TOKEN and KIT_TRACKER_USER (Settings → Secrets and variables → Actions) before your first PR, or it will report the missing secret by name."
+    else
+      echo "note: the trusted board job reads your tracker with repository secrets — add KIT_TRACKER_TOKEN (Settings → Secrets and variables → Actions) before your first PR, or it will report the missing secret by name."
+    fi
+  fi
 elif [ "$CI" != github ]; then
   echo "note: REQUIRED-CHECKS.md left as the placeholder — its contexts are GitHub check names; on ${CI} the protected-branch equivalent is adopter-owned (docs/operations/ci-platforms.md), and inception-done cannot name unbound contexts there."
 fi
@@ -1077,15 +1137,91 @@ stamp_board_governance_waiver() {   # $1 = the chosen backend token
   echo "NOT ENFORCED: backend '$1' — board-bound governance is not verified on this tree (the kit reads BACKLOG.md only; see docs/work-tracking/adapters.md §Which gates bind). Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver (templates/WAIVER-REGISTER.md)."
   echo "note: WAIVER-REGISTER.md now carries a pre-filled 'board-governance' row with [owner] and [security-owner] PLACEHOLDERS. Until a human fills both, your board-bound CI gates stay red — that is the point: the gap is real and it is now visible."
 }
+# TBG-TRACKER-CONF: stamp .kit/tracker.conf for the jira backend, per design §5. `--existing`
+# (F1's jira arm) writes an EMPTY state map plus a --discover instruction instead of the greenfield
+# identity map — the adopter's Jira statuses are unknown until they run the live discovery leg.
+# The stamped conf is validated against the SAME grammar tracker-contract.sh reads (F4 — never a
+# second parser), so a placeholder host/project that fails scripts/tracker-conf.sh here would also
+# fail it later; both arms are written to satisfy that grammar exactly.
+stamp_tracker_conf() {  # $1 = existing (0|1)
+  mkdir -p .kit
+  if [ -f .kit/tracker.conf ]; then
+    echo "note: .kit/tracker.conf already exists — not overwritten (brownfield-safe)."
+    return 0
+  fi
+  if [ "$1" -eq 1 ]; then
+    cat > .kit/tracker.conf <<'EOF_TC'
+# .kit/tracker.conf — stamped by `incept --backlog jira --existing`. Fail-closed key=value grammar;
+# see docs/architecture/2026-09-19-tracker-backed-governance-design.md §5, or `sh scripts/
+# tracker-conf.sh <this-file>` to validate. Credentials are ENV ONLY: KIT_TRACKER_USER /
+# KIT_TRACKER_TOKEN (JIRA_EMAIL/JIRA_TOKEN honoured as aliases) — never stamp a token here.
+version=1
+backend=jira
+base_url=https://your-site.example.invalid
+flavour=cloud
+auth=basic
+project=PROJ
+list_cap=200
+# --existing: the state map below is intentionally EMPTY. Set KIT_TRACKER_USER/KIT_TRACKER_TOKEN,
+# then run `sh conformance/tracker-contract.sh --discover` to print this instance's id<->name state
+# map, and add one `state.<kit-state>=<tracker-status>` line per §4.1 kit state (the FIRST line for
+# a given kit state is the `move` target). field.<name>=customfield_NNNNN|label:<prefix>|none lines
+# follow the same discovery step.
+# create.issuetype is the issue type `board create` makes. Field ids are PER ISSUE TYPE on
+# team-managed projects: map field.size/field.risk to THIS type's ids, printed by
+# `sh conformance/tracker-contract.sh --fields`.
+# A field your Jira REQUIRES on create (it will be listed under REQUIRED by --fields) needs a line here:
+# create.<fieldId>=<value> (a team default) or create.<fieldId>=prompt (the agent supplies it per card).
+create.issuetype=Task
+EOF_TC
+  else
+    cat > .kit/tracker.conf <<'EOF_TC'
+# .kit/tracker.conf — stamped by `incept --backlog jira`. Fail-closed key=value grammar; see
+# docs/architecture/2026-09-19-tracker-backed-governance-design.md §5, or `sh scripts/
+# tracker-conf.sh <this-file>` to validate. Credentials are ENV ONLY: KIT_TRACKER_USER /
+# KIT_TRACKER_TOKEN (JIRA_EMAIL/JIRA_TOKEN honoured as aliases) — never stamp a token here.
+# Edit base_url/project for your instance, then verify with `sh conformance/tracker-contract.sh`.
+version=1
+backend=jira
+base_url=https://your-site.example.invalid
+flavour=cloud
+auth=basic
+project=PROJ
+state.backlog=Backlog
+state.ready=Ready
+state.in-progress=In Progress
+state.in-review=In Review
+state.released=Released
+state.done=Done
+state.blocked=Blocked
+field.size=label:size
+field.risk=label:risk
+list_cap=200
+# create.issuetype is the issue type `board create` makes. Field ids are PER ISSUE TYPE on
+# team-managed projects: map field.size/field.risk to THIS type's ids, printed by
+# `sh conformance/tracker-contract.sh --fields`.
+# A field your Jira REQUIRES on create (it will be listed under REQUIRED by --fields) needs a line here:
+# create.<fieldId>=<value> (a team default) or create.<fieldId>=prompt (the agent supplies it per card).
+create.issuetype=Task
+EOF_TC
+  fi
+  echo "note: .kit/tracker.conf stamped — credentials go in env only: KIT_TRACKER_USER, KIT_TRACKER_TOKEN (JIRA_EMAIL/JIRA_TOKEN also honoured). Never stamp a token into the conf."
+}
+
 case "$BACKLOG" in
-  md) [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;
+  md)
+    [ -f BACKLOG.md ] || { cp templates/BACKLOG-TEMPLATE.md BACKLOG.md; sedi "s/\[Project Name\]/${ENAME}/g" BACKLOG.md; } ;;
   jira)
     [ -f JIRA-SETUP.md ] || { cp templates/JIRA-SETUP-TEMPLATE.md JIRA-SETUP.md; sedi "s/\[Project Name\]/${ENAME}/g" JIRA-SETUP.md; }
     echo "note: backlog backend 'jira' selected — JIRA-SETUP.md written; configure it, then verify with 'sh conformance/tracker-contract.sh'. Declare the backend in CLAUDE.md §3."
+    [ "$_TBG_CONF_STAMPED" -eq 1 ] && stamp_tracker_conf "$EXISTING"
     stamp_board_governance_waiver jira ;;
   *)
     [ -f TRACKER-SETUP.md ] || { cp templates/TRACKER-SETUP-TEMPLATE.md TRACKER-SETUP.md; sedi "s/\[Project Name\]/${ENAME}/g; s/\[BACKEND\]/${BACKLOG}/g" TRACKER-SETUP.md; }
     echo "note: backlog backend '$BACKLOG' selected (convention-tier) — TRACKER-SETUP.md written; map it via docs/work-tracking/adapters.md. Declare it in CLAUDE.md §3."
+    if [ "$EXISTING" -eq 1 ]; then
+      echo "note: --existing acknowledged for backend '$BACKLOG' — no incept-time brownfield adapter ships for it yet; map it via docs/work-tracking/adapters.md and docs/adoption/brownfield.md."
+    fi
     stamp_board_governance_waiver "$BACKLOG" ;;
 esac
 mkdir -p docs/architecture
@@ -1197,6 +1333,15 @@ case "$CI" in
       echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
       exit 1
     fi
+    # TBG-TRUSTED-JOB: the tracker-backed trusted job, installed unconditionally like adopter-gates.yml
+    # above — it skips entirely on a `md` backend (R1a), so it costs a pristine adopter nothing.
+    if [ -f profiles/adopter-tracker-gates.yml ]; then
+      cp_kit_replace profiles/adopter-tracker-gates.yml .github/workflows/adopter-tracker-gates.yml 'COPY & ADAPT|Sparkwright'
+    else
+      echo "incept: profiles/adopter-tracker-gates.yml is MISSING — cannot install the tracker-backed trusted job." >&2
+      echo "        This is a broken kit distribution; refusing to produce an ungoverned project. Aborting." >&2
+      exit 1
+    fi
     if [ -f "profiles/${STACK}/ci.yml" ]; then
       install_pipeline "profiles/${STACK}/ci.yml" .github/workflows/ci.yml 'Kit-own CI|Sparkwright'
       [ -f "profiles/${STACK}/CODEOWNERS" ] && install_codeowners "profiles/${STACK}/CODEOWNERS" .github/CODEOWNERS
@@ -1294,8 +1439,9 @@ fi
 # ALL stack profiles, so scanning a FOREIGN profile's scaffold (e.g. profiles/python/scaffold/tests/
 # urllib) reddens a TS adopter's very FIRST CI on code they never wrote. incept is the first point the
 # stack is known (the release is stack-neutral), so prune here — mirroring `adopter-export --profile`
-# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/adopter-gates.yml
-# (B6 — same top-level, non-stack asset shape as ratification.yml), profiles/_TEMPLATE.md,
+# (scripts/adopter-export.sh). Keep profiles/<STACK>/, profiles/ratification.yml, profiles/adopter-gates.yml,
+# profiles/adopter-tracker-gates.yml (TBG-TRUSTED-JOB — same top-level, non-stack asset shape as
+# ratification.yml/adopter-gates.yml, B6), profiles/_TEMPLATE.md,
 # profiles/.gitignore (the tree-level build-output ignore file — CP7R5-K4-IGNORE; it MUST outlive the prune)
 # (adopter-export iterates known-profile DIRS only). Prune BOTH the working tree AND KIT_BASE_STAGE:
 # capture_kit_base already staged the UNPRUNED set (before $STACK was known), so pruning both keeps
@@ -1362,6 +1508,26 @@ fi
 # NEVER TOUCHES THE WORKTREE OR THE ADOPTER'S INDEX: built through a TEMPORARY index with GIT_WORK_TREE
 # pointed at the staging dir. No checkout, no stash, no `git add` against the real index. `git status` is
 # byte-identical before and after.
+# KIT-UPDATE-BASE-ADVANCES: read the export's `.kit-source` (adopter-export.sh) from the staged base.
+# Sets KB_SRC_SHA / KB_SRC_VER and returns 0 only for a STRICTLY well-formed record: exactly two lines,
+# `commit <40 lowercase hex>` then `version <non-empty, no whitespace>`. Absent -> 1 silently (an older
+# kit's export: legacy behaviour); present but malformed -> 1 with a one-line warning (never guess).
+KB_SRC_SHA=''; KB_SRC_VER=''
+read_kit_source() {
+  KB_SRC_SHA=''; KB_SRC_VER=''
+  [ -f "$KIT_BASE_STAGE/.kit-source" ] || return 1
+  _ks_n=$(wc -l < "$KIT_BASE_STAGE/.kit-source" | tr -d ' ')
+  _ks_l1=$(sed -n 1p "$KIT_BASE_STAGE/.kit-source"); _ks_l2=$(sed -n 2p "$KIT_BASE_STAGE/.kit-source")
+  _ks_sha=${_ks_l1#commit }; _ks_ver=${_ks_l2#version }
+  if [ "$_ks_n" = 2 ] && [ "$_ks_l1" != "$_ks_sha" ] && [ "$_ks_l2" != "$_ks_ver" ] \
+     && [ "${#_ks_sha}" = 40 ] && [ -n "$_ks_ver" ] \
+     && ! printf '%s' "$_ks_sha" | grep -q '[^0-9a-f]' && ! printf '%s' "$_ks_ver" | grep -q '[[:space:]]'; then
+    KB_SRC_SHA=$_ks_sha; KB_SRC_VER=$_ks_ver; return 0
+  fi
+  echo "warning: .kit-source is malformed — recording kit-base without the Kit-Source trailer." >&2
+  return 1
+}
+
 commit_kit_base() {
   [ -n "$KIT_BASE_STAGE" ] && [ -d "$KIT_BASE_STAGE" ] || return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
@@ -1389,19 +1555,28 @@ commit_kit_base() {
   #   manifest is AUTHORITATIVE: every path we staged must be committed. A bare `git add -A` honours the
   #   adopter's ignore config and would SILENTLY DROP kit files (a global `*.md` ignore dropped 190),
   #   producing a base that reports success while being wrong — with no 3-way anchor for those files later.
+  # A well-formed .kit-source adds the Kit-Source/Kit-Version trailer paragraph (LAST paragraph, contiguous)
+  # and a sha-qualified tag, so two pre-release exports of one VERSION are distinguishable. Absent or
+  # malformed: today's message and `kit-base/v<VER>` tag, unchanged.
+  _kb_msg="kit-base: pristine Sparkwright export v${VER} (the tree this project was adopted from)"
+  _kb_tag="kit-base/v${VER}"
+  if read_kit_source; then
+    _kb_msg=$(printf '%s\n\nKit-Source: %s\nKit-Version: %s' "$_kb_msg" "$KB_SRC_SHA" "$KB_SRC_VER")
+    _kb_tag="kit-base/v${VER}+$(printf '%s' "$KB_SRC_SHA" | cut -c1-12)"
+  fi
   if ( cd "$KIT_BASE_STAGE" && GIT_DIR="$_kb_gd" GIT_INDEX_FILE="$_kb_idx" \
          GIT_WORK_TREE="$KIT_BASE_STAGE" git add -Af . ) 2>/dev/null &&
      _kb_tree=$(GIT_DIR="$_kb_gd" GIT_INDEX_FILE="$_kb_idx" git write-tree 2>/dev/null) &&
      _kb_cmt=$(GIT_DIR="$_kb_gd" GIT_AUTHOR_NAME='Sparkwright kit-base' GIT_AUTHOR_EMAIL='kit-base@sparkwright.local' \
          GIT_COMMITTER_NAME='Sparkwright kit-base' GIT_COMMITTER_EMAIL='kit-base@sparkwright.local' \
          git commit-tree "$_kb_tree" \
-         -m "kit-base: pristine Sparkwright export v${VER} (the tree this project was adopted from)" 2>/dev/null) &&
+         -m "$_kb_msg" 2>/dev/null) &&
      GIT_DIR="$_kb_gd" git update-ref refs/heads/kit-base "$_kb_cmt" '' 2>/dev/null; then
     # Create-only tag (no -f): S2 already refused if the branch existed; guard the tag independently.
-    if GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/kit-base/v${VER}" >/dev/null 2>&1; then :; else
-      GIT_DIR="$_kb_gd" git tag "kit-base/v${VER}" "$_kb_cmt" >/dev/null 2>&1 || true
+    if GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/${_kb_tag}" >/dev/null 2>&1; then :; else
+      GIT_DIR="$_kb_gd" git tag "$_kb_tag" "$_kb_cmt" >/dev/null 2>&1 || true
     fi
-    echo "recorded kit-base: the pristine v${VER} export you adopted from (branch 'kit-base', tag 'kit-base/v${VER}')"
+    echo "recorded kit-base: the pristine v${VER} export you adopted from (branch 'kit-base', tag '${_kb_tag}')"
     echo "  It is the merge base 'kit-update' will diff against. Do not delete it. See docs/operations/kit-base.md."
   else
     echo "warning: could not record the kit-base branch — 'kit-update' will be unavailable for this project." >&2

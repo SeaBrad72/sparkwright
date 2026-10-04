@@ -26,6 +26,50 @@ title = "sparkwright secret-scan config"
 [extend]
 useDefault = true
 
+# KIT RULE `kit-tracker-token` (TRACKER-TOKEN-SECRET-SCAN-RULE): a credential committed under the
+# kit's own KIT_TRACKER_TOKEN variable (the tracker adapter's API token) is caught by name, not by
+# luck. The default `generic-api-key` rule only catches such a value probabilistically: it drops any
+# match containing one of its long stopwords (e.g. "admin"), which measured ~2.7% of random
+# tracker-shaped values on gitleaks 8.24.3 and 8.30.1. This rule has NO substring stopwords on
+# purpose: a stopword matches anywhere in the value, so a real token that happens to contain `your`
+# or `example` would be dropped. It matches `NAME=v`, `NAME = v`, `export NAME=v`, YAML `NAME: v`,
+# JSON `"NAME": "v"`, Make `NAME := v` and `NAME ?= v`, and Ruby `"NAME" => "v"` (separator set
+# `=>`, `:=`, `?=`, `=`, `:`). The value may not START with `-`, so a shell default
+# `${KIT_TRACKER_TOKEN:-literal}` (the `:` is followed by `-`) does not fire; `${KIT_TRACKER_TOKEN:=literal}`
+# DOES fire, because it commits a literal. It does not match `${{ secrets.KIT_TRACKER_TOKEN }}` (no
+# separator follows the name). The committed `# KIT_TRACKER_TOKEN=replace-me` placeholder never
+# reaches the rule's match: the value class requires 20 or more characters, and `replace-me` is shorter.
+#
+# The trailing non-captured group `(?:[^A-Za-z0-9_+/=.\-(]|$)` makes the value END at a character that
+# is neither a value character nor `(`, or at end of input. It exists so a FUNCTION CALL such as
+# `KIT_TRACKER_TOKEN = getTrackerTokenFromKeychain();` is not read as a credential: the value is
+# followed by `(`, and RE2 has no lookahead to say so any other way. A shorter capture cannot rescue
+# the match by backtracking, because a shorter capture is followed by a value character, which the
+# tail refuses. `secretGroup = 1` still selects the capture only, so the tail is never reported.
+#
+# Two secret-targeted allowlist regexes (the rule-level default regexTarget is the secret):
+#   1. a PLACEHOLDER value, anchored whole-value: only a value made ENTIRELY of letters, `_`, `.`, `-`
+#      that contains one of replace/your/placeholder/example/changeme/redacted is skipped (so
+#      `your-jira-api-token-goes-here` passes, but a real token with `your` mid-string and digits does not);
+#   2. an ENV LOOKUP value such as `process.env.X`, `os.environ.X`, `settings.X`: code reading the
+#      variable, not a literal credential.
+# This file ships to adopters in the export, so the rule reaches every adopter's `gitleaks git .`;
+# conformance/secret-scan-wired.sh asserts the rule is present (default mode) and proves it live
+# (--live legs L1-L5, N1-N6, R1, M1).
+[[rules]]
+id = "kit-tracker-token"
+description = "Tracker credential under the kit's KIT_TRACKER_TOKEN variable"
+regex = '''(?i)kit_tracker_token["']?\s*(?:=>|:=|\?=|=|:)\s*["']?([A-Za-z0-9_+/=.][A-Za-z0-9_+/=.\-]{19,})(?:[^A-Za-z0-9_+/=.\-(]|$)'''
+secretGroup = 1
+keywords = ["kit_tracker_token"]
+
+[[rules.allowlists]]
+description = "whole-value placeholders and env lookups"
+regexes = [
+  '''(?i)^[a-z_.-]*(replace|your|placeholder|example|changeme|redacted)[a-z_.-]*$''',
+  '''^(process\.env|import\.meta\.env|os\.environ|settings|config)\.[A-Za-z_]+$''',
+]
+
 [allowlist]
 description = "promotion-note approval-token free-text field (scripts/promotion-verify.sh:593)"
 regexTarget = "line"

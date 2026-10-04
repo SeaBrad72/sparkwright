@@ -42,6 +42,14 @@ names are GitHub check contexts; the protected-branch equivalent is adopter-owne
 exits 0, and GitHub treats that as satisfying a required check, so you would be left with a required
 context that enforces nothing. Flip the mode first, then bind; unbind first, then flip back.
 
+**`tracker-board-gates` — tracker backends only.** On a backend incept stamps a `.kit/tracker.conf` for (today `jira`), `incept` adds
+`tracker-board-gates` (the base-defined trusted job in `adopter-tracker-gates.yml`) as a sixth line:
+it is the context that actually governs the board there, and the PR-tree `backlog-presence` job steps
+aside only while the base branch's LIVE protection requires it. **Never declare it on an `md` repo** —
+the job skips there, so it would be a required context that is always green (`branch-protection.sh
+--declared-only` and `inception-done` FAIL on that). Reverting to `md`: remove the line and unbind it
+in the same change.
+
 ```
 <your-check-name>
 ```

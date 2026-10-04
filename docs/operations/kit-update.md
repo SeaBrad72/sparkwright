@@ -18,7 +18,18 @@ divergently-edited project, and it carries no row in `conformance/claims.tsv` (t
 ```sh
 sh scripts/kit-update.sh --from https://github.com/SeaBrad72/sparkwright     # the update: report + patch
 sh scripts/kit-update.sh --reconstruct-base /tmp/base                        # just the merge base
+sh scripts/kit-update.sh --advance-base --from <same source>                 # after the PR merges and is pulled: record what you took, publish it
 ```
+
+### The flow, as one sequence
+
+1. `--from <source>`: the report and a patch at a scratch path. Writes nothing. It ends with a `NEXT` line (below).
+2. Apply the patch (all of it, or the parts you want), commit, open the PR, merge it.
+3. Pull, so your `HEAD` carries the merge.
+4. **The agent runs `--advance-base --from <same source>`**. It is a mechanical step: no human keystroke, and `--from`
+   never does it for you. It records, **per path**, what your `HEAD` took, and then publishes `kit-base` (see
+   *Recording what you took* below).
+5. The next `--from` is computed against what you actually took.
 
 ---
 
@@ -52,6 +63,7 @@ The proof that the reconstruction is right is an **identity**: for an adopter wh
 | Requirement | Why | If it's missing |
 |---|---|---|
 | the **`kit-base`** branch (`docs/operations/kit-base.md`) | it *is* the merge base | **refuses**, by name — a guessed base yields a wrong delta, which is worse than none |
+| a **current** `kit-base` — its tip's `Kit-Source` equals your `HEAD`'s `.kit-source` | a base that is not the release you took yields a wrong delta | **refuses as STALE** and prints the one `--advance-base` command that fixes it |
 | the **inception stamps** in `CLAUDE.md` §3 (project, intent owner, created date, stack, backlog, mode, governance, harness) | they are the inputs it replays `incept` with | **refuses**, listing each missing stamp |
 
 Two stamps — **CI platform** and **DB archetype** — were only added later. A project incepted before
@@ -63,17 +75,39 @@ reconstruction stamped with today's date would fabricate a conflict in files nob
 
 ---
 
-## The report: three categories
+## The report: four categories
 
 | Category | Meaning | What to do |
 |---|---|---|
-| **offered** | the kit changed it; **you never touched it** | it applies cleanly — this is what the patch contains |
-| **CONFLICT** | changed **upstream and by you** | **yours to decide.** Nothing is resolved silently |
+| **offered** | your file equals the kit's content at **some release your `kit-base` chain records**, and the new release differs | it applies cleanly — this is what the patch contains |
+| **current** | already equal to the new release | nothing |
+| **CONFLICT** | changed **upstream and by you**, and the file is **not the kit's content at any release you took** | **yours to decide.** Nothing is resolved silently |
 | **untouched** | yours; the kit proposes nothing for it | nothing — it is named so that silence is never mistaken for a promise |
 
-**CONFLICT is deliberately wider than git's own conflict list.** Git will happily auto-merge two edits
-to different hunks of the same file. `kit-update` will not present that as settled: if you touched a
-file and the kit touched it, you decide.
+"Pristine" therefore means *equal to a release your chain records*, not *never edited*. A hunk you declined
+last time is still the kit's content, so it is **offered again**; to keep a file as yours, edit it. A path
+offered because it is pristine only at an **older** release is marked `(pristine at <sha12> …)`, and a file
+absent from your tree (you deleted it, or never took it) is marked `(re-add)`.
+
+**CONFLICT is not git's conflict list.** Git will happily auto-merge two edits to different hunks of the
+same file; `kit-update` will not present that as settled: a file you changed and the kit changed, which is
+not the kit's own content at any release you took, is yours to decide. Git's textual-conflict count is
+printed as information only.
+
+The report's header reads `kit-update: v<BASE>@<sha12> (kit-base) -> v<NEW>@<sha12> (--from)`: the
+`VERSION@sha` pairs name the exact vendor commits compared, because a version alone cannot tell two
+pre-release commits apart.
+
+### Grouped by vendor change
+
+After the categories the report lists the reported (offered + CONFLICT) paths **grouped by the vendor
+commit that changed them**. A commit that changed several reported paths is marked
+`! land together — this one vendor commit changed N reported paths; take them as one change`. Paths the
+exporter generates (`.kit-manifest`, `.kit-digests`, `.kit-source`) are listed on their own line. A path
+that incept rewrote is **"attributed by matching lines"**: that is an **inference** from the changed lines,
+not a record, and it can fail (one commit must account for all of a path's changed lines). Where it cannot
+attribute, the report says so and why (a legacy chain commit with no `Kit-Source`, a vendor commit not in
+`--from`'s history, or paths no single commit accounts for).
 
 A patch containing **only the offered paths** is written to a scratch path (printed at the end of the
 run). Review it, then apply it with your own tools:
@@ -124,12 +158,97 @@ Neither writes to your repo, and neither applies anything.
 
 ---
 
+## Recording what you took: `--advance-base`
+
+Run it after the update's PR has merged **and you have pulled**. The patch carries the new `.kit-source`, so your
+`HEAD` names the vendor commit; `--advance-base` then appends that release to the `kit-base` chain (see
+`docs/operations/kit-base.md`, *Taking an update*). **Until you do, the next `--from` refuses as STALE.** It
+prints the one command that fixes it, and says the agent runs it once the PR has merged and been pulled.
+
+**It refuses until HEAD is on the shared line.** `HEAD` must be reachable from `refs/remotes/<remote>/HEAD`
+(default remote `origin`): merge, pull, then advance, so `kit-base` never records a release only your branch has. If
+`refs/remotes/<remote>/HEAD` is not set it says so and names the cure (`git remote set-head <remote> -a` after a
+fetch). `--no-push` skips this check, for a solo or offline clone. Nothing is written on a refusal.
+
+### Per path, and PARTIAL
+
+A release is not always taken whole. For each path the release changed, the advance asks whether `HEAD` **took** it:
+`HEAD` has the release's content, or git's own 3-way says the release's hunks are already in your file (a hand-merge
+counts as taken). A path `HEAD` did not take is recorded **behind**.
+
+- **Every path taken:** the chain commit carries `Kit-Behind: 0`, and the release's tag is created.
+- **Some path behind:** the chain commit carries `Kit-Behind: <N>` and one `behind <chain commit> <path>` line per
+  path, and **no tag is created**: a tag always names a release fully taken. The `--from` report header then
+  reads `kit-base: v<VER>@<sha12> PARTIAL — N file(s) behind (listed under offered/CONFLICT)`.
+
+A behind path is never hidden. The next `--from` rebuilds BASE from the *effective* base (each behind path from the
+chain commit its record names), so a behind file you have not touched is **offered**, and one you changed is
+**CONFLICT**.
+
+**Finishing a partial release:** take the remainder (apply the offered hunks, or merge them by hand), merge, pull,
+and run the **same** `--advance-base --from <same source>` again. It records what you took since, and creates the
+tag when the count reaches 0. It refuses (rc 1, nothing written) when the release is in the chain but not at the tip,
+when the tip is already complete (`Kit-Behind: 0`), or when nothing new was taken since the last advance.
+
+### The NEXT line
+
+A `--from` report with something to record (a release newer than the tip's, or a tip still PARTIAL) ends with:
+
+```
+NEXT (the agent, after this update's PR merges and is pulled): sh scripts/kit-update.sh --advance-base --from '<src>'
+```
+
+When `--from` is the tip's own release and the tip is complete, there is nothing to record and it ends
+`NEXT: none — kit-base is current.` On a partial tip, if a behind path in your tree already equals the tip's release
+(you took it after the advance), the report adds one `NOTE` line: run `--advance-base` first to record them.
+
+### Publishing: `--remote`, `--no-push`, rc 3
+
+After the local write, `--advance-base` runs **one atomic, non-forced push** to `--remote` (default `origin`): your
+local `refs/heads/kit-base` to the remote's **`refs/kit/base`**, plus every local `kit-base/*` tag that points into the
+chain. It is a non-branch ref on purpose: the kit's pre-push hook grades every `refs/heads/*` push, and a base commit
+has no `Kit-Row`. It runs through your own git credentials and configuration. A fresh clone gets the base back with
+`git fetch origin refs/kit/base:refs/heads/kit-base`; doing that automatically is row `KIT-BASE-SHARED`, **not built**.
+
+- **No such remote:** it says `kit-base stays local` and exits 0.
+- **`--no-push`:** everything stays local; it prints the push line to run later.
+- **Only the tool's own tags are pushed:** `kit-base/v<VER>+<sha12>` whose `<sha12>` is the first 12 characters of the
+  tagged chain commit's `Kit-Source`, plus the legacy root tag `kit-base/v<VER>` at the chain root. Any other
+  `kit-base/*` tag stays local. The push runs with a scrubbed git config environment (`GIT_CONFIG_*`,
+  `GIT_NAMESPACE` cleared); your `HOME`, repo and user config, and credential helpers still apply.
+- **Exit 3:** the push was rejected or failed. **The local write stands.** It prints git's own message and exits 3. If
+  git reports a rejection (`[rejected]` / non-fast-forward) it names the rejected ref(s) and says the remote's
+  `refs/kit/base` most likely moved (a teammate advanced it); any other failure says so instead. Reconcile by hand: `git fetch <remote>
+  refs/kit/base`, compare `git log --oneline FETCH_HEAD` with `git log --oneline kit-base`, then publish with the
+  printed push line. The tool never forces.
+
+### Legacy trees
+
+For a tree adopted or updated before `.kit-source` existed, `HEAD` cannot say which release you took.
+Tell it with `--at <sha>`, **oldest release first**, one `--at` per release you applied; each is recorded as
+**ASSERTED**, not read from your tree. A wrong `--at` can misclassify files; it cannot delete one without
+your apply, because the patch is only a suggestion.
+
+### If it refuses as STALE
+
+`kit-base`'s tip does not record the release your `HEAD` took. The cure is the printed `--advance-base` command, once
+the update's PR has merged and been pulled. If instead it reports the base is **ahead** of `HEAD` (a chain commit
+already records your `HEAD`'s release but is not the tip), something moved `kit-base` past what `HEAD` took:
+inspect `git log kit-base` and `git reflog kit-base` before going on.
+
+---
+
 ## What it writes
 
-**Nothing of yours.** Your worktree, index, refs, objects and config are never written: your `HEAD` is
-read with `git fetch`/`git archive` into a throwaway workbench repo. It writes only (a) the directory
-you name with `--reconstruct-base` — which must be empty and **outside** any git repo — (b) temp dirs
-it deletes, and (c) the patch file, at a scratch path it prints.
+- **`--from` / `--reconstruct-base`: nothing of yours.** Your worktree, index, refs, objects and config
+  are never written: your `HEAD` is read with `git fetch`/`git archive` into a throwaway workbench repo.
+  They write only (a) the directory you name with `--reconstruct-base` — which must be empty and
+  **outside** any git repo — (b) temp dirs they delete, and (c) the patch file, at a scratch path they print.
+- **`--advance-base`: `refs/heads/kit-base`, one create-only tag when the release is fully taken, and the objects
+  they need — atomically** (one ref transaction; decisions D-241002-1 and D-241003-1). Never your worktree, index,
+  `HEAD` or config. After the local write it **publishes**: one atomic, non-forced push of `kit-base` to the remote's
+  `refs/kit/base`, plus the chain's `kit-base/*` tags (`--no-push` skips it). It is the only part of `kit-update`
+  that writes to your repository or pushes.
 
 ---
 
@@ -141,11 +260,23 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
 - **LATEST ONLY.** `--from` carries whatever that source's `HEAD` is, and the public mirror carries only
   the **current** release. **This cannot move you to an intermediate version.** There is no
   `--to v3.100.0`.
-- **IT PRESENTS, IT DOES NOT APPLY.** No auto-merge in v1. Not one byte of your repo is written. Every
-  hunk is your decision; the patch is a suggestion at a scratch path.
+- **IT PRESENTS, IT DOES NOT APPLY.** No auto-merge in v1. `--from` writes not one byte of your repo
+  (only `--advance-base` writes, and only the `kit-base` ref and, for a fully taken release, a tag; it then publishes them). Every hunk is your decision; the
+  patch is a suggestion at a scratch path.
 - **IT REQUIRES AN INTACT `kit-base`.** The entire delta is computed against `incept_old(kit-base)`. If
   that branch is gone, the tool refuses — **a wrong base is worse than no base**, because you would
   trust its output.
+- **`kit-base` IS ONLY AS GOOD AS ITS RECORD.** Skip an `--advance-base` and the next run refuses as
+  STALE; on a legacy tree the `--at` shas are your assertion, not a record. The advance records per path what
+  `HEAD` took and re-offers the rest (PARTIAL), but it **cannot detect** a base that an advance made *before*
+  this change over-claims (it recorded a whole release); see `docs/operations/kit-base.md`, *My base over-claims*.
+  Publishing is to `refs/kit/base` only; fetching it into a clone that has none, and verifying shared chain
+  commits before their `incept` runs, is row `KIT-BASE-SHARED` (not built). Grouping by vendor commit is
+  partly inference (see above).
+- **A KIT FILE YOU DELETED THAT AN OLDER RELEASE DID NOT HAVE IS OFFERED AGAIN.** A kit file you deleted
+  that an *older* release you took did not have (absent == absent there) is offered again, marked
+  `(re-add)`; decline by not applying that hunk. One present at every release you took reads as yours
+  (CONFLICT if the kit changed it).
 - **`--from` IS UNTRUSTED INPUT, AND THIS TOOL EXECUTES CODE FROM IT.** Building THEIRS means running
   **that release's own** `scripts/adopter-export.sh` and `scripts/incept.sh`. That is inherent to the
   design (re-running the real scripts is what makes `incept`'s transformation cancel) and inherent to
@@ -171,6 +302,7 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
 
 ## Related
 
-- `docs/operations/kit-base.md` — the base this all depends on. Do not delete it.
+- `docs/operations/kit-base.md` — the base this all depends on, and the advance step. Do not delete it.
+- `conformance/kit-update-advance.sh` — the chain legs: advance, STALE refusal, declined/stranded hunks.
 - `conformance/kit-update-identity.sh` — the identity proof (unmodified adopter ⇒ empty diff).
 - `conformance/kit-update-merge.sh` — the two engines, same fixture, same answer.

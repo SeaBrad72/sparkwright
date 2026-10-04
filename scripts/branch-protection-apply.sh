@@ -13,23 +13,39 @@
 #              EVERY protection setting (review requirements, enforce_admins, restrictions), not
 #              just contexts, so it sits behind a SECOND, differently-worded, TTY-GATED confirmation
 #              that must be typed at an actual interactive terminal (see below). Prefer --apply.
+#              Default profile = SOLO. It ALSO pins the repository's merge methods to squash-only
+#              (a second call, PATCH repos/{owner}/{repo}, under the same confirmation, both
+#              profiles).
+#   --team     (only with --replace; any other use exits 2) writes the TEAM profile instead of the
+#              solo one: enforce_admins:true · required_approving_review_count:1 ·
+#              dismiss_stale_reviews:true · require_last_push_approval:true ·
+#              require_code_owner_reviews:true. THE TRAP: with enforce_admins:true an admin can no
+#              longer merge their own PR — a second person with write access must approve every PR;
+#              alone, this locks you out until you --replace back to solo. --team WARNs (never
+#              refuses) when the repo has no second collaborator with write access, or a CODEOWNERS
+#              login has only a pending invitation; an unreadable collaborator/invitation list is
+#              said, not silent.
 # NEVER emits `--admin` and is not a bypass surface. Scoped precisely to --apply: it can only ADD a
 # required check via the additive endpoint, never remove branch protection or merge anything (the
-# promotion-contract deny stands). --replace is NOT additive — it is a weakening path that RESETS
-# every non-context protection setting to the solo-owner profile: enforce_admins:false ·
-# required_approving_review_count:1 · dismiss_stale_reviews:true · require_last_push_approval:true ·
-# require_code_owner_reviews:false (named again at the confirmation prompt and in
-# profiles/<stack>/BRANCH-PROTECTION.md). The two review flags are not cosmetic defaults: since
-# REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) they carry the properties review-lane's deleted
-# attestation leg used to read out of the forge, and conformance/branch-protection.sh FAILs without
-# them.
+# promotion-contract deny stands). --replace is NOT additive — it RESETS every non-context
+# protection setting to the chosen profile. SOLO (the default; a weakening path):
+# enforce_admins:false · required_approving_review_count:1 · dismiss_stale_reviews:true ·
+# require_last_push_approval:true · require_code_owner_reviews:false; TEAM (--team) as above. Both are
+# named again at the confirmation prompt and in profiles/<stack>/BRANCH-PROTECTION.md. The two review
+# flags are not cosmetic defaults: since REVIEW-LANE-WAITING-IS-GREEN (2026-09-05) they carry the
+# properties review-lane's deleted attestation leg used to read out of the forge, and
+# conformance/branch-protection.sh FAILs without them. The merge-method pin
+# (allow_squash_merge:true · allow_merge_commit:false · allow_rebase_merge:false — a fixed literal
+# body, no interpolation) NARROWS what the repo allows; re-allow a method in the repo's Settings.
+# TWO CALLS, NOT ATOMIC: the protection PUT runs first, then the merge-method PATCH. If the PATCH
+# fails after the PUT landed the run exits 1 and says which half landed — it never claims success.
 #
 # CEILING: it binds contexts; it cannot prevent later unbinding (an admin can still remove one by
 # hand, or edit the declaration to match a weakened forge state — see branch-protection.sh's own
 # ceiling paragraph). Real prevention is org rulesets / Terraform's github_branch_protection
 # resource, not this script.
 #   usage: sh scripts/branch-protection-apply.sh [--repo=OWNER/REPO] [--branch=NAME]
-#            [--declaration=FILE] [--apply | --replace]
+#            [--declaration=FILE] [--apply | --replace [--team]]
 #          sh scripts/branch-protection-apply.sh --selftest
 #          sh scripts/branch-protection-apply.sh --declaration=FILE --print-parsed   (debug: prints
 #            the parsed active-context list, one per line, no gh calls — used by
@@ -38,7 +54,8 @@
 #   2 = UNVERIFIED (no gh, no repo context, live fetch failed — NOT a pass) · usage errors also exit 2.
 # What it changes: read-only unless --apply or --replace is passed AND its confirmation is answered
 #   affirmatively; --apply POSTs only the declared-but-unbound contexts (additive); --replace PUTs
-#   the whole protection object (the clobber path). Never touches anything outside branch protection.
+#   the whole protection object (the clobber path) and then PATCHes the repo's merge-method settings
+#   to squash-only. Never touches anything outside branch protection and those three merge-method flags.
 # Guardrails: default is show-only (no mutation without an explicit flag AND a confirmation); the
 #   additive endpoint is used for --apply so unrelated settings are never touched; --replace requires
 #   typing the literal word REPLACE at an actual /dev/tty (a plain pipe/redirect, e.g. `yes REPLACE |`,
@@ -63,15 +80,17 @@ BRANCH=main
 DECLARATION="REQUIRED-CHECKS.md"
 MODE=dry-run
 PRINT_PARSED=0
+TEAM=0
 
 usage() {
-  echo "usage: branch-protection-apply.sh [--repo=OWNER/REPO] [--branch=NAME] [--declaration=FILE] [--apply | --replace | --print-parsed] | --selftest" >&2
+  echo "usage: branch-protection-apply.sh [--repo=OWNER/REPO] [--branch=NAME] [--declaration=FILE] [--apply | --replace [--team] | --print-parsed] | --selftest" >&2
 }
 
 for a in "$@"; do
   case "$a" in
     --apply) MODE=apply ;;
     --replace) MODE=replace ;;
+    --team) TEAM=1 ;;
     --repo=*) REPO_OVERRIDE=${a#--repo=} ;;
     --branch=*) BRANCH=${a#--branch=} ;;
     --declaration=*) DECLARATION=${a#--declaration=} ;;
@@ -80,6 +99,10 @@ for a in "$@"; do
     *) usage; exit 2 ;;
   esac
 done
+if [ "$TEAM" = 1 ] && [ "$MODE" != replace ] && [ "${1:-}" != "--selftest" ]; then
+  echo "branch-protection-apply.sh: --team requires --replace (it selects the profile --replace writes; it is meaningless on its own or with --apply)" >&2
+  exit 2
+fi
 
 # valid_context_name <name> -> 0 if it matches ^[A-Za-z0-9][A-Za-z0-9._/-]*$ and length<=100, else 1.
 # Duplicated verbatim from conformance/branch-protection.sh (D4: this script is self-contained, no
@@ -215,17 +238,131 @@ json_list() {
 # when jq is absent, and even there the re-validated charset ([A-Za-z0-9._/-], no
 # quote/brace/colon/comma/backslash reachable) makes naive interpolation structurally safe — a
 # second, independent layer, never a substitute for the upstream validation.
+#
+# build_replace_payload <space-list> [solo|team] — ONE builder, parameterised by profile (default solo,
+# whose output is byte-identical to the pre-team builder). The only profile-dependent values are the
+# two booleans below, taken from internal literals — never from input. Any other profile name returns 1.
 build_replace_payload() {
   _brp_list=$1
+  case "${2:-solo}" in
+    solo) _brp_ea=false; _brp_co=false ;;
+    team) _brp_ea=true; _brp_co=true ;;
+    *) printf '%s\n' "FAIL: refusing to build the --replace payload — unknown profile '${2:-}'" >&2; return 1 ;;
+  esac
   for _brp_c in $_brp_list; do
     valid_context_name "$_brp_c" || { printf '%s\n' "FAIL: refusing to build the --replace payload — '$_brp_c' failed re-validation" >&2; return 1; }
   done
   if command -v jq >/dev/null 2>&1; then
-    _brp_json=$(printf '%s\n' $_brp_list | grep -v '^$' | jq -R . | jq -s -c \
-      '{required_status_checks:{strict:true,contexts:.},enforce_admins:false,required_pull_request_reviews:{required_approving_review_count:1,dismiss_stale_reviews:true,require_last_push_approval:true,require_code_owner_reviews:false},restrictions:null}' 2>/dev/null) || _brp_json=""
+    _brp_json=$(printf '%s\n' $_brp_list | grep -v '^$' | jq -R . | jq -s -c --argjson ea "$_brp_ea" --argjson co "$_brp_co" \
+      '{required_status_checks:{strict:true,contexts:.},enforce_admins:$ea,required_pull_request_reviews:{required_approving_review_count:1,dismiss_stale_reviews:true,require_last_push_approval:true,require_code_owner_reviews:$co},restrictions:null}' 2>/dev/null) || _brp_json=""
     if [ -n "$_brp_json" ]; then printf '%s' "$_brp_json"; return 0; fi
   fi
-  printf '{"required_status_checks":{"strict":true,"contexts":[%s]},"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true,"require_code_owner_reviews":false},"restrictions":null}' "$(json_list "$_brp_list")"
+  printf '{"required_status_checks":{"strict":true,"contexts":[%s]},"enforce_admins":%s,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true,"require_code_owner_reviews":%s},"restrictions":null}' "$(json_list "$_brp_list")" "$_brp_ea" "$_brp_co"
+}
+
+# build_merge_payload — the merge-method PATCH body: a FIXED LITERAL, no interpolation of any kind.
+build_merge_payload() {
+  printf '%s' '{"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false}'
+}
+
+# MM_JQ — reads the three TOP-LEVEL merge fields with gh's built-in jq (S-1). A text scan of the repo JSON
+# took the first occurrence of each key, which a `template_repository` object (listed BEFORE the top-level
+# keys, repeating them) would shadow: a false squash-only. jq's `.allow_*` is the top-level field, always.
+MM_JQ='[.allow_squash_merge,.allow_merge_commit,.allow_rebase_merge]|map(tostring)|join(" ")'
+
+# parse_merge_methods <"true false false"-style output of MM_JQ> -> squash-only | the allowed methods
+# (comma-joined, squash,merge,rebase order) | unknown (not exactly three true/false words — null/absent
+# fields, an unreadable token, an empty read). Duplicated in conformance/branch-protection.sh (this script
+# is self-contained); that file's selftest diffs the two copies.
+parse_merge_methods() {
+  set -- $1
+  [ "$#" = 3 ] || { printf '%s' "unknown"; return 0; }
+  _pmm_out=""
+  for _pmm_p in "squash:$1" "merge:$2" "rebase:$3"; do
+    case "${_pmm_p#*:}" in
+      true) _pmm_out="$_pmm_out,${_pmm_p%%:*}" ;;
+      false) : ;;
+      *) printf '%s' "unknown"; return 0 ;;
+    esac
+  done
+  _pmm_out=${_pmm_out#,}
+  case "$_pmm_out" in
+    "") printf '%s' "unknown" ;;
+    squash) printf '%s' "squash-only" ;;
+    *) printf '%s' "$_pmm_out" ;;
+  esac
+}
+
+# valid_repo <OWNER/REPO> — ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$, and neither half is `.` or `..` (R-4/S-4:
+# the value is interpolated into the API path of every call, including the two writes).
+valid_repo() {
+  case "$1" in */*/*|*/|/*|"") return 1 ;; */*) : ;; *) return 1 ;; esac
+  case "$1" in *[!A-Za-z0-9._/-]*) return 1 ;; esac
+  case "/$1/" in */./*|*/../*) return 1 ;; esac
+  return 0
+}
+
+# valid_branch <name> — refuses empty, a leading `-`, `..`, and any of ? # % * [ \ whitespace/control bytes:
+# the name is interpolated into the protection path. Duplicated in conformance/branch-protection.sh.
+valid_branch() {
+  case "$1" in ""|-*|*..*|*[\?#%*\[\\]*|*[[:space:][:cntrl:]]*) return 1 ;; esac
+  return 0
+}
+
+# gh_quiet <args...> — one `gh` call with the GH env containment (SEC M-3) applied.
+gh_quiet() { (unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh "$@"); }
+
+# fetch_merge_methods <repo> -> the parsed merge methods on stdout (unknown on any read failure).
+fetch_merge_methods() {
+  if _fmm_body=$(gh_quiet api "repos/$1" --jq "$MM_JQ" 2>/dev/null); then parse_merge_methods "$_fmm_body"; else printf '%s' "unknown"; fi
+}
+
+# do_replace <repo> <branch> <solo|team> <contexts> — the post-confirmation write path: the protection
+# PUT, then the merge-method PATCH. Returns 0 only when BOTH landed; otherwise 1, naming which half did.
+do_replace() {
+  _dr_repo=$1; _dr_branch=$2; _dr_profile=$3
+  _dr_payload=$(build_replace_payload "$4" "$_dr_profile") || return 1
+  if ! printf '%s' "$_dr_payload" | gh_quiet api -X PUT "repos/$_dr_repo/branches/$_dr_branch/protection" --input - >/dev/null 2>&1; then
+    printf '%s\n' "FAIL: the full PUT did not report success — run show-only (no flag) to read the live state; the merge-method PATCH was not attempted"
+    return 1
+  fi
+  if ! build_merge_payload | gh_quiet api -X PATCH "repos/$_dr_repo" --input - >/dev/null 2>&1; then
+    printf '%s\n' "FAIL: PARTIAL — the protection PUT LANDED on $_dr_repo:$_dr_branch ($_dr_profile profile), but the merge-method PATCH FAILED: merge methods are UNCHANGED. Re-run --replace, or set 'Allow squash merging' only in the repo's Settings."
+    return 1
+  fi
+  printf '%s\n' "OK: replaced $_dr_repo:$_dr_branch protection wholesale with the declared contexts and the $_dr_profile profile (every OTHER setting was reset per the --replace payload above), and pinned the merge methods to squash-only"
+  return 0
+}
+
+# co_logins <dir> — the @login owners named in the tree's CODEOWNERS (one per line, sorted, unique).
+# `@org/team` handles are skipped: an invitation can only be pending for an individual account.
+co_logins() {
+  for _col_f in "$1/.github/CODEOWNERS" "$1/CODEOWNERS" "$1/docs/CODEOWNERS"; do
+    [ -f "$_col_f" ] || continue
+    sed 's/#.*//' "$_col_f" | tr -s ' \t' '\n\n' | grep '^@[A-Za-z0-9-]*$' | sed 's/^@//'
+  done | sort -u
+}
+
+# team_preflight <repo> <dir> — --team only. WARNs, never refuses (the owner may be inviting the second
+# person next; the WARN is the trap stated before it springs). Unreadable is said, not silent.
+team_preflight() {
+  if _tpf_c=$(gh_quiet api --paginate "repos/$1/collaborators" --jq '.[] | select(.permissions.push == true or .permissions.admin == true) | .login' 2>/dev/null); then
+    _tpf_n=$(printf '%s\n' "$_tpf_c" | grep -c . || true)
+    if [ "$_tpf_n" -lt 2 ]; then
+      printf '%s\n' "WARN: no second collaborator with write access on $1 ($_tpf_n found) — with enforce_admins:true nobody can merge your PRs until a second person with write access exists."
+    fi
+  else
+    printf '%s\n' "WARN: could not read collaborators on $1 with this token — cannot tell whether a second person with write access exists (the lock-out trap below applies if there is none)."
+  fi
+  if _tpf_i=$(gh_quiet api --paginate "repos/$1/invitations" --jq '.[].invitee.login' 2>/dev/null); then
+    for _tpf_l in $(co_logins "$2"); do
+      if printf '%s\n' "$_tpf_i" | grep -qixF -e "$_tpf_l"; then
+        printf '%s\n' "WARN: CODEOWNERS names $_tpf_l but that account has only a PENDING invitation to $1 — their review can never satisfy code-owner review until they accept."
+      fi
+    done
+  else
+    printf '%s\n' "WARN: could not read invitations on $1 with this token — cannot tell whether a CODEOWNERS login is still only invited."
+  fi
 }
 
 confirm() {  # <prompt> -> 0 on y/yes (case-insensitive), 1 otherwise. Reads stdin (pipeable).
@@ -239,14 +376,27 @@ confirm() {  # <prompt> -> 0 on y/yes (case-insensitive), 1 otherwise. Reads std
 # --replace at all — measured previously doing exactly that. Displays the concrete solo-default
 # payload values (SEC M-2/REV H2) before checking for a tty, so the disclosure is seen even on the
 # abort path.
-confirm_replace() {
+confirm_replace() {  # [solo|team] [current merge methods]
+  _cr_profile=${1:-solo}
   printf '%s\n' "WARNING: --replace performs a full PUT that OVERWRITES every branch-protection setting on" >&2
   printf '%s\n' "  $BRANCH (review requirements, enforce_admins, restrictions) — not just status-check" >&2
-  printf '%s\n' "  contexts. The reset values are the solo-owner defaults: enforce_admins:false ·" >&2
-  printf '%s\n' "  required_approving_review_count:1 · dismiss_stale_reviews:true ·" >&2
-  printf '%s\n' "  require_last_push_approval:true · require_code_owner_reviews:false." >&2
-  printf '%s\n' "  The last two are what carry review-lane's retired attestation leg since" >&2
+  if [ "$_cr_profile" = team ]; then
+    printf '%s\n' "  contexts. Profile: TEAM profile. The reset values are: enforce_admins:true ·" >&2
+    printf '%s\n' "  required_approving_review_count:1 · dismiss_stale_reviews:true ·" >&2
+    printf '%s\n' "  require_last_push_approval:true · require_code_owner_reviews:true." >&2
+  else
+    printf '%s\n' "  contexts. Profile: SOLO profile. The reset values are the solo-owner defaults: enforce_admins:false ·" >&2
+    printf '%s\n' "  required_approving_review_count:1 · dismiss_stale_reviews:true ·" >&2
+    printf '%s\n' "  require_last_push_approval:true · require_code_owner_reviews:false." >&2
+  fi
+  printf '%s\n' "  The review flags are what carry review-lane's retired attestation leg since" >&2
   printf '%s\n' "  REVIEW-LANE-WAITING-IS-GREEN (2026-09-05); conformance/branch-protection.sh FAILs without them." >&2
+  if [ "$_cr_profile" = team ]; then
+    printf '%s\n' "  THE TRAP: with enforce_admins:true an admin can no longer merge their own PR. A second person" >&2
+    printf '%s\n' "  with write access must approve every PR. If you are alone, this locks you out until you --replace back to solo." >&2
+  fi
+  printf '%s\n' "  It ALSO pins the repo's merge methods (a second call, PATCH repos/${REPO:-OWNER/REPO}): current=${2:-unknown}" >&2
+  printf '%s\n' "  -> target=squash-only (allow_squash_merge:true · allow_merge_commit:false · allow_rebase_merge:false)." >&2
   printf '%s\n' "  Prefer --apply (additive) unless you mean this." >&2
   if ! exec 3<>/dev/tty 2>/dev/null; then
     printf '%s\n' "ABORT: --replace requires an interactive terminal (/dev/tty) for its confirmation — refusing to proceed non-interactively (piping input, e.g. 'yes REPLACE |', can never drive this by design)." >&2
@@ -329,6 +479,10 @@ main() {
   printf '%s\n' "  to-add:        ${TOADD:-(none)}"
   printf '%s\n' "  already-bound: ${BOUND:-(none)}"
   printf '%s\n' "  live-extra:    ${EXTRA:-(none)} $_extra_note"
+  if [ "$MODE" != apply ]; then
+    MM_CURRENT=$(fetch_merge_methods "$REPO")
+    printf '%s\n' "  merge-methods: current=$MM_CURRENT target=squash-only (pinned by --replace, both profiles; show-only never changes it)"
+  fi
 
   case "$MODE" in
     dry-run)
@@ -352,21 +506,28 @@ main() {
       printf '%s\n' "FAIL: the additive POST failed"
       exit 1 ;;
     replace)
-      confirm_replace || { printf '%s\n' "Aborted — no change made."; exit 1; }
-      PAYLOAD=$(build_replace_payload "$AD_LIST") || exit 1
-      if printf '%s' "$PAYLOAD" | (unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api -X PUT "repos/$REPO/branches/$BRANCH/protection" --input -) >/dev/null 2>&1; then
-        printf '%s\n' "OK: replaced $REPO:$BRANCH protection wholesale with the declared contexts (every OTHER setting was reset per the --replace payload above)"
-        exit 0
-      fi
-      printf '%s\n' "FAIL: the full PUT failed"
-      exit 1 ;;
+      PROFILE=solo; [ "$TEAM" = 1 ] && PROFILE=team
+      _dd=$(dirname -- "$DECLARATION"); _top=$(git -C "$_dd" rev-parse --show-toplevel 2>/dev/null) || _top=$_dd
+      [ "$PROFILE" = team ] && team_preflight "$REPO" "$_top"
+      confirm_replace "$PROFILE" "$MM_CURRENT" || { printf '%s\n' "Aborted — no change made."; exit 1; }
+      do_replace "$REPO" "$BRANCH" "$PROFILE" "$AD_LIST" || exit 1
+      exit 0 ;;
   esac
+}
+
+validate_args() {
+  if [ -n "$REPO_OVERRIDE" ] && ! valid_repo "$REPO_OVERRIDE"; then
+    echo "branch-protection-apply.sh: invalid --repo (must be OWNER/REPO, characters A-Za-z0-9._- only, no . or .. segment)" >&2; exit 2
+  fi
+  if ! valid_branch "$BRANCH"; then
+    echo "branch-protection-apply.sh: invalid --branch (empty, leading '-', '..', whitespace, or one of ? # % * [ backslash is refused)" >&2; exit 2
+  fi
 }
 
 selftest() {
   st=0
-  _d=""; _ghdir=""; _extradir=""; _ghenvdir=""
-  trap 'rm -rf "$_d" "$_ghdir" "$_extradir" "$_ghenvdir" 2>/dev/null || true' EXIT
+  _d=""; _ghdir=""; _extradir=""; _ghenvdir=""; _tp=""
+  trap 'rm -rf "$_d" "$_ghdir" "$_extradir" "$_ghenvdir" "$_tp" 2>/dev/null || true' EXIT
   _d=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the declaration fixture"; exit 1; }
   printf '```\nci\ncontrol-plane-ratification\n```\n' > "$_d/decl.md"
 
@@ -573,6 +734,8 @@ STUBALL
   printf 'n\n' | { PATH="$_ghdir:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --apply; } >/dev/null 2>&1 || true
   printf 'y\n' | { PATH="$_ghdir:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --replace; } >/dev/null 2>&1 || true
   printf 'REPLACE\n' | { PATH="$_ghdir:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --replace; } >/dev/null 2>&1 || true
+  printf 'REPLACE\n' | { PATH="$_ghdir:$PATH" sh "$0" --repo=me/repo --declaration="$_d/decl.md" --replace --team; } >/dev/null 2>&1 || true
+  ( PATH="$_ghdir:$PATH"; do_replace me/repo main team "ci" ) >/dev/null 2>&1 || true
   if grep -q -- '--admin' "$_alllog" 2>/dev/null; then
     echo "selftest FAIL: a gh invocation carried --admin (this script must never emit it) — accumulated log: $(cat "$_alllog" 2>/dev/null)"; st=1
   else
@@ -648,11 +811,160 @@ STUBENV
     echo "selftest FAIL: --print-parsed wrong output or touched gh (out=[$_pp] log=[$(cat "$_log" 2>/dev/null)])"; st=1
   fi
 
+  # ── PROTECTION-TEAM-PROFILE (design 2026-10-03 §4). Every cell below drives gh through a PATH stub;
+  # none touches the network. do_replace() is the post-confirmation write path and is called
+  # IN-PROCESS (the confirmation itself is tty-gated and cannot be driven from a harness).
+  _tp=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the team-profile stub"; exit 1; }
+  _tplog="$_tp/log"
+  cat > "$_tp/gh" <<'STUBTP'
+#!/bin/sh
+printf '%s\n' "$*" >> "$STUB_DIR/log"
+env | grep '^GH_' | sort >> "$STUB_DIR/env.log" 2>/dev/null || true
+case "$*" in
+  *"-X PUT"*) cat > "$STUB_DIR/put.body"; exit "${STUB_PUT_RC:-0}" ;;
+  *"-X PATCH"*) cat > "$STUB_DIR/patch.body"; exit "${STUB_PATCH_RC:-0}" ;;
+  *"-X POST"*) exit 0 ;;
+  *"/collaborators"*) [ -z "${STUB_COLLAB_FAIL:-}" ] || exit 1; for l in ${STUB_COLLAB:-}; do echo "$l"; done ;;
+  *"/invitations"*) [ -z "${STUB_INVITES_FAIL:-}" ] || exit 1; for l in ${STUB_INVITES:-}; do echo "$l"; done ;;
+  *"branches/main/protection"*) printf '%s' '{"required_pull_request_reviews":{},"required_status_checks":{"contexts":["ci"]}}' ;;
+  *"--jq"*) printf '%s\n' "${STUB_MM:-true true true}" ;;
+  *) printf '%s' '{"full_name":"me/repo"}' ;;
+esac
+STUBTP
+  chmod +x "$_tp/gh"
+  _solo_lit='{"required_status_checks":{"strict":true,"contexts":["ci","control-plane-ratification"]},"enforce_admins":false,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true,"require_code_owner_reviews":false},"restrictions":null}'
+  _team_lit='{"required_status_checks":{"strict":true,"contexts":["ci","control-plane-ratification"]},"enforce_admins":true,"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true,"require_code_owner_reviews":true},"restrictions":null}'
+  _merge_lit='{"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false}'
+
+  # T1. the team payload carries the five team values; T2. the solo payload is byte-identical to the
+  # pre-team builder's output. Both with jq (the encoder) and with jq forced to fail (POSIX fallback).
+  _p=$(build_replace_payload "ci control-plane-ratification" team 2>/dev/null) || _p=""
+  if [ "$_p" = "$_team_lit" ]; then echo "selftest PASS: --team payload carries the five team values (jq path)"; else echo "selftest FAIL: --team payload wrong (got [$_p])"; st=1; fi
+  _p=$(jq() { return 1; }; build_replace_payload "ci control-plane-ratification" team 2>/dev/null) || _p=""
+  if [ "$_p" = "$_team_lit" ]; then echo "selftest PASS: --team payload carries the five team values (POSIX fallback path)"; else echo "selftest FAIL: --team fallback payload wrong (got [$_p])"; st=1; fi
+  _p=$(build_replace_payload "ci control-plane-ratification" solo 2>/dev/null) || _p=""
+  _p2=$(build_replace_payload "ci control-plane-ratification" 2>/dev/null) || _p2=""
+  if [ "$_p" = "$_solo_lit" ] && [ "$_p2" = "$_solo_lit" ]; then echo "selftest PASS: solo payload is byte-identical to the pre-team payload (explicit and default profile)"; else echo "selftest FAIL: solo payload drifted (got [$_p] / [$_p2])"; st=1; fi
+  _p=$(jq() { return 1; }; build_replace_payload "ci control-plane-ratification" 2>/dev/null) || _p=""
+  if [ "$_p" = "$_solo_lit" ]; then echo "selftest PASS: solo payload byte-identical on the POSIX fallback path too"; else echo "selftest FAIL: solo fallback payload drifted (got [$_p])"; st=1; fi
+  if build_replace_payload "ci" bogus >/dev/null 2>&1; then echo "selftest FAIL: an unknown profile built a payload"; st=1; else echo "selftest PASS: an unknown profile refuses to build a payload"; fi
+
+  # T3. --team is accepted only with --replace.
+  _o=$(sh "$0" --team --repo=me/repo --declaration="$_d/decl.md" 2>&1) && _rc=0 || _rc=$?
+  if [ "$_rc" = 2 ] && printf '%s\n' "$_o" | grep -qF -- "--team requires --replace"; then echo "selftest PASS: --team without --replace exits 2 naming the rule"; else echo "selftest FAIL: --team alone (rc=$_rc, out=$_o)"; st=1; fi
+  _o=$(sh "$0" --team --apply --repo=me/repo --declaration="$_d/decl.md" 2>&1) && _rc=0 || _rc=$?
+  if [ "$_rc" = 2 ] && printf '%s\n' "$_o" | grep -qF -- "--team requires --replace"; then echo "selftest PASS: --team with --apply exits 2 naming the rule"; else echo "selftest FAIL: --team --apply (rc=$_rc, out=$_o)"; st=1; fi
+
+  # T4. the merge-method PATCH body is the exact fixed literal.
+  _p=$(build_merge_payload 2>/dev/null) || _p=""
+  if [ "$_p" = "$_merge_lit" ]; then echo "selftest PASS: the merge-method PATCH payload is the exact squash-only literal"; else echo "selftest FAIL: merge payload wrong (got [$_p])"; st=1; fi
+
+  # T5. show-only prints current vs target merge methods.
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" sh "$0" --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF -- "merge-methods: current=squash,merge,rebase target=squash-only"; then echo "selftest PASS: show-only prints the merge-method diff (current vs target)"; else echo "selftest FAIL: show-only lacks the merge-method diff (out=$_o)"; st=1; fi
+
+  # T6. do_replace: PUT then PATCH on success; the PATCH body is the literal; the PUT body is the profile's.
+  : > "$_tplog"; rm -f "$_tp/put.body" "$_tp/patch.body"
+  _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; export STUB_DIR; do_replace me/repo main team "ci control-plane-ratification" ) 2>&1 ) && _rc=0 || _rc=$?
+  if [ "$_rc" = 0 ] && [ "$(cat "$_tp/put.body" 2>/dev/null)" = "$_team_lit" ] && [ "$(cat "$_tp/patch.body" 2>/dev/null)" = "$_merge_lit" ] \
+     && grep -n -e '-X PUT' -e '-X PATCH' "$_tplog" | head -n 1 | grep -qF -- '-X PUT' && grep -qF -- "-X PATCH repos/me/repo" "$_tplog"; then
+    echo "selftest PASS: do_replace PUTs the team payload then PATCHes the squash-only literal"
+  else
+    echo "selftest FAIL: do_replace success path (rc=$_rc, out=$_o, log=$(cat "$_tplog" 2>/dev/null))"; st=1
+  fi
+  # T7. a PATCH failure AFTER a PUT success exits 1, names the half that landed, never claims success.
+  : > "$_tplog"
+  _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PATCH_RC=1; export STUB_DIR STUB_PATCH_RC; do_replace me/repo main solo "ci" ) 2>&1 ) && _rc=0 || _rc=$?
+  if [ "$_rc" = 1 ] && printf '%s\n' "$_o" | grep -qF "PUT LANDED" && printf '%s\n' "$_o" | grep -qF "PATCH FAILED" && ! printf '%s\n' "$_o" | grep -q '^OK:'; then
+    echo "selftest PASS: PATCH failure after PUT success exits 1 naming which half landed (no success claim)"
+  else
+    echo "selftest FAIL: partial-landing report (rc=$_rc, out=$_o)"; st=1
+  fi
+  # T7b. a PUT failure never attempts the PATCH.
+  : > "$_tplog"
+  _o=$( ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; STUB_PUT_RC=1; export STUB_DIR STUB_PUT_RC; do_replace me/repo main solo "ci" ) 2>&1 ) && _rc=0 || _rc=$?
+  if [ "$_rc" = 1 ] && ! grep -qF -- "-X PATCH" "$_tplog" && printf '%s\n' "$_o" | grep -qF "did not report success" && ! printf '%s\n' "$_o" | grep -qF "nothing landed"; then echo "selftest PASS: a failed PUT exits 1, never attempts the PATCH, and does not claim nothing landed (S-5)"; else echo "selftest FAIL: PUT-failure path (rc=$_rc, log=$(cat "$_tplog" 2>/dev/null))"; st=1; fi
+  # T7c. GH env containment reaches the new calls (PUT and PATCH).
+  : > "$_tp/env.log"
+  ( PATH="$_tp:$PATH"; STUB_DIR="$_tp"; GH_HOST=evil.example GH_REPO=evil/evil GH_ENTERPRISE_TOKEN=x GH_CONFIG_DIR=/evil GH_TOKEN=real; export STUB_DIR GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR GH_TOKEN; do_replace me/repo main solo "ci" ) >/dev/null 2>&1 || true
+  if ! grep -q '^GH_HOST=\|^GH_REPO=\|^GH_ENTERPRISE_TOKEN=\|^GH_CONFIG_DIR=' "$_tp/env.log" && grep -q '^GH_TOKEN=real' "$_tp/env.log"; then
+    echo "selftest PASS: GH env containment holds for the PUT and the PATCH (GH_TOKEN still honoured)"
+  else
+    echo "selftest FAIL: GH env containment on do_replace (log: $(cat "$_tp/env.log" 2>/dev/null))"; st=1
+  fi
+
+  # T8. the --team confirmation names the profile, the exact values, and the trap; solo does not carry the trap.
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_COLLAB="a b" sh "$0" --team --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF "TEAM profile" && printf '%s\n' "$_o" | grep -qF "enforce_admins:true" \
+     && printf '%s\n' "$_o" | grep -qF "require_code_owner_reviews:true" && printf '%s\n' "$_o" | grep -qF "can no longer merge their own PR" \
+     && printf '%s\n' "$_o" | grep -qF "locks you out until you --replace back to solo" && printf '%s\n' "$_o" | grep -qF "allow_merge_commit:false"; then
+    echo "selftest PASS: --team confirmation names the profile, the exact values, the trap, and the merge-method pin"
+  else
+    echo "selftest FAIL: --team confirmation text (out=$_o)"; st=1
+  fi
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" sh "$0" --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF "SOLO profile" && ! printf '%s\n' "$_o" | grep -qF "locks you out" && printf '%s\n' "$_o" | grep -qF "allow_merge_commit:false"; then
+    echo "selftest PASS: solo --replace names its profile, carries no team trap, and still shows the merge-method pin"
+  else
+    echo "selftest FAIL: solo --replace confirmation (out=$_o)"; st=1
+  fi
+
+  # T9. --team WARNs (never refuses): no second write collaborator; a CODEOWNERS login with only a
+  # pending invitation; unreadable collaborators/invitations say so. The WARNs print BEFORE the tty gate.
+  mkdir -p "$_d/.github"
+  printf '* @SeaBrad72 @reviewer-login @acme/team\n' > "$_d/.github/CODEOWNERS"
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_COLLAB="SeaBrad72" STUB_INVITES="reviewer-login" sh "$0" --team --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF "WARN: no second collaborator with write access" \
+     && printf '%s\n' "$_o" | grep -qF "WARN: CODEOWNERS names reviewer-login but that account has only a PENDING invitation" \
+     && ! printf '%s\n' "$_o" | grep -qF "WARN: CODEOWNERS names SeaBrad72" && ! printf '%s\n' "$_o" | grep -qF "acme/team"; then
+    echo "selftest PASS: --team WARNs on a lone write collaborator and on a pending-invitation CODEOWNER (and only that one)"
+  else
+    echo "selftest FAIL: --team collaborator/invitation WARNs (out=$_o)"; st=1
+  fi
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_COLLAB="SeaBrad72 reviewer-login" STUB_INVITES="" sh "$0" --team --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if ! printf '%s\n' "$_o" | grep -qF "WARN:"; then echo "selftest PASS: --team is silent when a second write collaborator exists and nothing is pending"; else echo "selftest FAIL: spurious WARN (out=$_o)"; st=1; fi
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_COLLAB_FAIL=1 STUB_INVITES_FAIL=1 sh "$0" --team --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF "WARN: could not read collaborators" && printf '%s\n' "$_o" | grep -qF "WARN: could not read invitations"; then
+    echo "selftest PASS: unreadable collaborators/invitations are said, not silent"
+  else
+    echo "selftest FAIL: unreadable collaborators/invitations (out=$_o)"; st=1
+  fi
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_COLLAB="SeaBrad72" sh "$0" --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if ! printf '%s\n' "$_o" | grep -qF "WARN:"; then echo "selftest PASS: the collaborator check runs for --team only (solo --replace stays quiet)"; else echo "selftest FAIL: solo --replace carried a team WARN (out=$_o)"; st=1; fi
+  # S-1: show-only reads the TOP-LEVEL merge fields (the stub prints what gh --jq would).
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_MM="true true false" sh "$0" --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF "merge-methods: current=squash,merge target=squash-only"; then echo "selftest PASS: show-only reads merge methods through the top-level jq read"; else echo "selftest FAIL: merge-method read (out=$_o)"; st=1; fi
+  # R-4/S-4: --repo and --branch that could redirect the API path are refused (rc 2) before any gh call.
+  for _bad in 'a/b/c' 'ab' '../x' 'x/..' 'a/b?x' 'a b/c' '/b' 'a/'; do
+    : > "$_tplog"
+    _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" sh "$0" --repo="$_bad" --declaration="$_d/decl.md" 2>&1) && _rc=0 || _rc=$?
+    if [ "$_rc" = 2 ] && printf '%s\n' "$_o" | grep -qF "invalid --repo" && ! grep -q . "$_tplog"; then echo "selftest PASS: --repo='$_bad' refused (rc 2, no gh call)"; else echo "selftest FAIL: --repo='$_bad' (rc=$_rc, out=$_o)"; st=1; fi
+  done
+  for _bad in 'a..b' 'x?y' 'x#y' '-rf' 'a b' ''; do
+    : > "$_tplog"
+    _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" sh "$0" --repo=me/repo --branch="$_bad" --declaration="$_d/decl.md" 2>&1) && _rc=0 || _rc=$?
+    if [ "$_rc" = 2 ] && printf '%s\n' "$_o" | grep -qF "invalid --branch" && ! grep -q . "$_tplog"; then echo "selftest PASS: --branch='$_bad' refused (rc 2, no gh call)"; else echo "selftest FAIL: --branch='$_bad' (rc=$_rc, out=$_o)"; st=1; fi
+  done
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" sh "$0" --repo=me/repo --branch=release/1.x --declaration="$_d/decl.md" 2>&1) && _rc=0 || _rc=$?
+  if [ "$_rc" = 0 ]; then echo "selftest PASS: an ordinary branch name (release/1.x) is accepted"; else echo "selftest FAIL: release/1.x refused (rc=$_rc, out=$_o)"; st=1; fi
+  # The confirmation prints the real PATCH target, not a placeholder.
+  _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" sh "$0" --replace --repo=me/repo --declaration="$_d/decl.md" 2>&1) || true
+  if printf '%s\n' "$_o" | grep -qF "PATCH repos/me/repo" && ! printf '%s\n' "$_o" | grep -qF "OWNER/REPO"; then echo "selftest PASS: the confirmation names the real PATCH target"; else echo "selftest FAIL: confirmation target (out=$_o)"; st=1; fi
+  # R-7: CODEOWNERS is found from the git top-level, not the declaration's own directory.
+  if command -v git >/dev/null 2>&1; then
+    _gt=$(mktemp -d) && git init -q "$_gt" 2>/dev/null && mkdir -p "$_gt/sub" "$_gt/.github" \
+      && cp "$_d/decl.md" "$_gt/sub/decl.md" && printf '* @reviewer-login\n' > "$_gt/.github/CODEOWNERS"
+    _o=$(PATH="$_tp:$PATH" STUB_DIR="$_tp" STUB_COLLAB="a b" STUB_INVITES="reviewer-login" sh "$0" --team --replace --repo=me/repo --declaration="$_gt/sub/decl.md" 2>&1) || true
+    if printf '%s\n' "$_o" | grep -qF "WARN: CODEOWNERS names reviewer-login"; then echo "selftest PASS: CODEOWNERS is located from the git top-level"; else echo "selftest FAIL: CODEOWNERS not found from a subdirectory declaration (out=$_o)"; st=1; fi
+    rm -rf "$_gt" 2>/dev/null || true
+  fi
+  rm -rf "$_tp" 2>/dev/null || true
+
   [ "$st" = "0" ] && echo "branch-protection-apply --selftest: OK"
   return "$st"
 }
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
-  *) if [ "$PRINT_PARSED" = 1 ]; then print_parsed; fi; main ;;
+  *) validate_args; if [ "$PRINT_PARSED" = 1 ]; then print_parsed; fi; main ;;
 esac

@@ -1,0 +1,10 @@
+{
+  "issues": [
+    {"id": "11001", "key": "AB-1", "fields": {"labels": ["size:S"]}},
+    {"id": "11002", "key": "AB-2", "fields": {"labels": ["size:S", "size:L"]}},
+    {"id": "11003", "key": "AB-3", "fields": {"labels": ["team:backend"]}},
+    {"id": "11004", "key": "AB-4", "fields": {"labels": ["size:S\"\n", "size:S\u001b"]}}
+  ],
+  "isLast": true,
+  "nextPageToken": null
+}

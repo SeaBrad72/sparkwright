@@ -23,8 +23,7 @@
 # verify.sh prints beside its Summary (PR 10) — rows · unique scripts · files on disk · files no row
 # invokes, at runtime; the earlier "three methods, three answers" note is retired. This gate restates
 # none of it: it DEFINES its census as the `^check control ` row count and says so wherever it prints
-# one. It also
-# prints the `^check ` total, because the two populations differ and neither is the other. A TOP-LEVEL
+# one. It also prints the `^check ` total, because the two populations differ and neither is the other. A TOP-LEVEL
 # check wired only in ci.yml is invisible to (c) but fully visible to (a) and (b) — note the
 # qualifier: a check living in a conformance/ SUBDIRECTORY is invisible to all three surfaces, which
 # is the family-wide convention this glob inherits, not a property of this gate. What remains of
@@ -161,7 +160,8 @@ GENESIS_FIXTURE=25000   # measured 24969 by the VERBATIM command above at HEAD b
 # outside a dev-clone and agent-boundary.sh reds it as an unratified control-plane change. The honest
 # ceiling is the same as the one at :50-53 — that makes the edit VISIBLE and reviewable, not
 # impossible; a ratifier who waves it through still waves it through.
-LOGIC_GLIDE_TARGET=""
+# MASS-BUDGET-DOWNWARD (2026-09-19): setting LOGIC_GLIDE_TARGET restates, but does not discharge, the panel's mass-budget condition — the glide is ADVISORY and UNENFORCED, and the only control this gate enforces remains unchanged: a raise still costs a ratified ack in conformance/mass-acks.txt.
+LOGIC_GLIDE_TARGET=34106
 
 # mb_files_list <root>: print each NON-RECURSIVE <root>/conformance/*.sh path, one per line.
 mb_files_list() {
@@ -1284,6 +1284,25 @@ selftest() {
        printf '%s\n' "$_mD" | grep -Fq 'MAX_LOGIC=25 ' && ! printf '%s\n' "$_mD" | grep -Fq 'MAX_LOGIC=30 '; then
       echo "PASS: selftest -- leg d-v a byte-identical ack on both branches lands ONCE (ceiling 25, not 30): git collapses identical changes before the union driver"
     else echo "FAIL: selftest -- leg d-v the identical ack on both branches did not land exactly once: [$_mD]"; sfail=1; fi
+  fi
+
+  # leg xxviii -- MASS-BUDGET-DOWNWARD: THE GLIDE ARM FIRES FOR REAL, on the actual kit tree with the
+  # actual ratified target (not a fixture double), so the panel's re-stated condition is provably
+  # wired rather than merely selftest-shaped. It pins the ARM, not the literal: asserting 34106 or a
+  # frozen residual integer would break on every future logic-count change, which is the vacuity trap
+  # this leg exists to avoid.
+  _xroot=$(cd "$(dirname "$0")/.." && pwd)
+  if [ ! -f "$_xroot/docs/ROADMAP-KIT.md" ] && [ ! -f "$_xroot/.github/workflows/golden-path.yml" ]; then
+    echo "SKIP: selftest -- leg xxviii NOT EXERCISED (no kit marker: an adopter tree; the ratified glide target is graded on the kit tree only)"
+  else
+    _xo=$(mb_verdict "$_xroot" "$GENESIS_LINES" "$GENESIS_FILES" "$GENESIS_CENSUS" \
+                      "$GENESIS_LOGIC" "$GENESIS_FIXTURE" "$HISTORICAL_LINES_ACKS" 2>&1) || :
+    if printf '%s\n' "$_xo" | grep -Fq 'glide target:' &&
+       printf '%s\n' "$_xo" | grep -Fq 'ADVISORY ONLY' &&
+       printf '%s\n' "$_xo" | grep -Fq 'distance' &&
+       ! printf '%s\n' "$_xo" | grep -Fq "not set (owner's)"; then
+      echo "PASS: selftest -- leg xxviii the glide arm fires on the real tree with the ratified target: ADVISORY ONLY + a distance line, never the unset branch"
+    else echo "FAIL: selftest -- leg xxviii the real-tree glide arm did not fire as advisory-with-distance: [$_xo]"; sfail=1; fi
   fi
 
   [ "$sfail" -eq 0 ] && { echo "OK: conformance-mass-budget selftest"; exit 0; } || { echo "FAIL: conformance-mass-budget selftest"; exit 1; }

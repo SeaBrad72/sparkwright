@@ -1,0 +1,10 @@
+{
+  "startAt": 0,
+  "maxResults": 50,
+  "total": 99,
+  "issues": [
+    { "id": "71001", "key": "AB-1", "fields": {} },
+    { "id": "71002", "key": "AB-2", "fields": {} },
+    { "id": "71003", "key": "AB-3", "fields": {} }
+  ]
+}

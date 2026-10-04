@@ -1,0 +1,11 @@
+{"startAt":0,"maxResults":100,"total":10,"fields":[
+{"required":false,"schema":{"type":"number","custom":"com.pyxis.greenhopper.jira:jsw-story-points","customId":10016},"name":"Story point estimate","operations":["set"],"fieldId":"customfield_10016"},
+{"required":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10046},"name":"Size","operations":["set"],"allowedValues":[{"value":"XS","id":"10028"},{"value":"S","id":"10029"},{"value":"M","id":"10030"},{"value":"L","id":"10031"},{"value":"XL","id":"10032"}],"fieldId":"customfield_10046"},
+{"required":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10047},"name":"Risk","operations":["set"],"allowedValues":[{"value":"Low","id":"10033"},{"value":"Medium","id":"10034"},{"value":"High","id":"10035"}],"fieldId":"customfield_10047"},
+{"required":false,"schema":{"type":"string","system":"description"},"name":"Description","operations":["set"],"fieldId":"description"},
+{"required":true,"schema":{"type":"issuetype","system":"issuetype"},"name":"Issue Type","operations":[],"fieldId":"issuetype"},
+{"required":false,"schema":{"type":"array","items":"string","system":"labels"},"name":"Labels","operations":["add","set","remove"],"fieldId":"labels"},
+{"required":false,"schema":{"type":"issuelink","system":"parent"},"name":"Parent","operations":["set"],"fieldId":"parent"},
+{"required":false,"schema":{"type":"priority","system":"priority"},"name":"Priority","operations":["set"],"fieldId":"priority"},
+{"required":true,"schema":{"type":"project","system":"project"},"name":"Project","operations":["set"],"fieldId":"project"},
+{"required":true,"schema":{"type":"string","system":"summary"},"name":"Summary","operations":["set"],"fieldId":"summary"}]}

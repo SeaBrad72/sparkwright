@@ -1,0 +1,2 @@
+#type-id	10003
+customfield_10072	unsupported	Cascade		complete

@@ -174,21 +174,28 @@ _no_readme_count() {
 # Only ever called in `||` / `if` context: under `set -e` a bare call would exit on the empty-grep
 # before the fail-closed message could print.
 _link_safety() {
-  _ls_root=$1; _ls_rc=0; _ls_kept=$(mktemp); _ls_ar=$(mktemp)
+  _ls_root=$1; _ls_rc=0; _ls_kept=$(mktemp); _ls_ar=$(mktemp); _ls_dir=$(mktemp -d)
   if ! ( cd "$_ls_root" && git archive --worktree-attributes HEAD ) > "$_ls_ar" 2>/dev/null; then
     echo "FAIL: 'git archive HEAD' failed (no commits, or not a git repo) — the link-safety scan has no KEPT set"
-    rm -f "$_ls_kept" "$_ls_ar"; return 1
+    rm -rf "$_ls_kept" "$_ls_ar" "$_ls_dir"; return 1
   fi
-  tar -tf "$_ls_ar" 2>/dev/null | grep '\.md$' > "$_ls_kept"
+  # KEPT is built from an EXTRACTION walked with find, not from `tar -t`: in the C locale (CI shells,
+  # `env -i`) bsdtar and GNU tar print a non-ASCII name ESCAPED ("docs/caf\303\251.md"), so the -Fx
+  # filter below dropped a real kept->ignored hit; find prints raw bytes in any locale (measured).
+  if ! tar -xf "$_ls_ar" -C "$_ls_dir" 2>/dev/null; then
+    echo "FAIL: the archive could not be extracted — the link-safety scan has no KEPT set"
+    rm -rf "$_ls_kept" "$_ls_ar" "$_ls_dir"; return 1
+  fi
+  ( cd "$_ls_dir" && find . -type f -name '*.md' ) | sed 's#^\./##' > "$_ls_kept"
   if [ ! -s "$_ls_kept" ]; then
     echo "FAIL: the archive lists no .md docs — the link-safety scan has no KEPT set"
-    rm -f "$_ls_kept" "$_ls_ar"; return 1
+    rm -rf "$_ls_kept" "$_ls_ar" "$_ls_dir"; return 1
   fi
-  rm -f "$_ls_ar"
+  rm -rf "$_ls_ar" "$_ls_dir"
   for _ls_p in $IGN; do
     _ls_bn=$(basename "$(printf '%s' "$_ls_p" | sed 's#/$##')")
     # core.quotePath=false: git grep would C-quote a non-ASCII path ("docs/caf\303\251.md") while
-    # tar prints it raw, and the -Fx filter would drop a REAL kept->ignored hit (measured, review R1).
+    # KEPT holds it raw, and the -Fx filter would drop a REAL kept->ignored hit (measured, review R1).
     if ( cd "$_ls_root" && git -c core.quotePath=false grep -I -lE "\]\([^)]*${_ls_bn}" -- '*.md' 2>/dev/null ) | grep -Fxf "$_ls_kept" | grep -q .; then
       echo "FAIL: export-ignored '$_ls_p' is a markdown-link target from a KEPT doc (would break check-links on the adopter tree)"; _ls_rc=1
     fi
@@ -377,10 +384,21 @@ run() {
     # both. Prune empty dirs from BOTH trees so the fixpoint asserts same files + same content, not
     # incidental directory entries.
     find "$_fp1" "$_fp2" -depth -type d -empty -not -path '*/.git/*' -delete 2>/dev/null || true
-    if diff -rq --exclude=.git "$_fp1" "$_fp2" >/dev/null 2>&1; then
+    # KIT-UPDATE-BASE-ADVANCES: .kit-source records WHICH commit was archived — the mirror's commit differs
+    # from the kit's by construction — so .kit-source alone is excluded from the byte compare (its
+    # well-formedness is asserted below). .kit-digests IS compared, minus only the line digesting .kit-source.
+    grep -v ' \.kit-source$' "$_fp1/.kit-digests" > "$_fp/d1" 2>/dev/null || true
+    grep -v ' \.kit-source$' "$_fp2/.kit-digests" > "$_fp/d2" 2>/dev/null || true
+    if [ ! -s "$_fp/d1" ] || ! cmp -s "$_fp/d1" "$_fp/d2"; then
+      echo "FAIL: export-of-an-export .kit-digests differs beyond the .kit-source line (or is empty)"; rc=1
+    fi
+    if ! sed -n 1p "$_fp2/.kit-source" 2>/dev/null | grep -qE '^commit [0-9a-f]{40}$'; then
+      echo "FAIL: export-of-an-export carries no well-formed .kit-source"; rc=1
+    fi
+    if diff -rq --exclude=.git --exclude=.kit-source --exclude=.kit-digests "$_fp1" "$_fp2" >/dev/null 2>&1; then
       echo "PASS: adopter-export is a fixpoint (public-mirror re-export succeeds)"
     else
-      echo "FAIL: adopter-export is not a fixpoint — export(export(X)) != export(X):"; diff -rq --exclude=.git "$_fp1" "$_fp2" 2>&1 | head; rc=1
+      echo "FAIL: adopter-export is not a fixpoint — export(export(X)) != export(X):"; diff -rq --exclude=.git --exclude=.kit-source --exclude=.kit-digests "$_fp1" "$_fp2" 2>&1 | head; rc=1
     fi
   else
     echo "FAIL: export-of-an-export FAILED — the published mirror's front door is broken (an adopter following the README cannot run adopter-export on the mirror; cause: the Backlog-backend carve rejects the already-carved zero-match state)"; rc=1

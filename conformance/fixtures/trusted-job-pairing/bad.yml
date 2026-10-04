@@ -1,0 +1,23 @@
+# NEGATIVE FIXTURE — conformance/proportional-gate-wired.sh's S-1 pairing leg must RED on this file.
+# A job that pairs a tracker secret with a PR-head checkout is exactly the pull_request_target
+# credential-theft shape the trusted job (profiles/adopter-tracker-gates.yml) exists to avoid.
+# NOT a real workflow: GitHub never runs anything under conformance/fixtures/.
+# nosemgrep justification: INTENTIONAL negative fixture — the pull_request_target+head-checkout
+# anti-pattern that conformance/proportional-gate-wired.sh's S-1 pairing leg is built to REJECT.
+# Never executed as a workflow; scanned only because it lives in-tree.
+name: bad-tracker-job
+on:
+  pull_request_target:
+permissions:
+  contents: read
+jobs:
+  bad-job:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3 # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Run PR-head code with the tracker token in env
+        env:
+          KIT_TRACKER_TOKEN: ${{ secrets.KIT_TRACKER_TOKEN }}
+        run: sh scripts/tracker-read.sh .kit/tracker.conf - /tmp/x.json ROW-1

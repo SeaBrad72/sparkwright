@@ -123,7 +123,7 @@ document and never will. Record its GO on the **governance** gate, not the desig
 
 ```sh
 sh scripts/promotion-verify.sh record --gate governance --scope PR-<n> \
-   --approved-sha <commit> --approved-by <human> --basis <the meta-control artifact>
+   --approved-sha <commit> --approved-by <the PR reviewer's forge login> --go-by <the owner> --basis <the meta-control artifact>
 ```
 
 `record` fetches the ledger before it writes and publishes the record itself — there is no separate

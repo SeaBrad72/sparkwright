@@ -1,0 +1,16 @@
+kit-tracker-read 1
+backend jira
+pin sha256:6f89f371364bb79f9cd56fd60c305d102273746fb0b5cfc5d9a723f02af16661
+head 1111111111111111111111111111111111111111
+requested AB-7
+read-day NORMALIZED
+credential ok
+verdict bound
+row AB-7 state=in-progress claimed=yes
+row AB-1 state=in-progress
+row AB-4 state=in-progress
+row AB-2 state=ready dor-acceptance=no dor-metric=no
+row AB-3 state=ready dor-acceptance=no dor-metric=no dor-size=no
+list in-progress AB-1 AB-4 AB-7
+list in-review
+list ready AB-2 AB-3

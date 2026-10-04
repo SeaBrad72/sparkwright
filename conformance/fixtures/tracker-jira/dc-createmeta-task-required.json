@@ -1,0 +1,6 @@
+{"maxResults":50,"startAt":0,"total":5,"isLast":true,"values":[
+{"required":true,"hasDefaultValue":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10200},"name":"Size","operations":["set"],"allowedValues":[{"value":"S","id":"10300"},{"value":"M","id":"10301"}],"fieldId":"customfield_10200"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"user","custom":"com.atlassian.jira.plugin.system.customfieldtypes:userpicker","customId":10201},"name":"Approver","operations":["set"],"fieldId":"customfield_10201"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"user","system":"reporter"},"name":"Reporter","operations":["set"],"fieldId":"reporter"},
+{"required":true,"hasDefaultValue":false,"schema":{"type":"string","system":"summary"},"name":"Summary","operations":["set"],"fieldId":"summary"},
+{"required":false,"schema":{"type":"string","system":"description"},"name":"Description","operations":["set"],"fieldId":"description"}]}

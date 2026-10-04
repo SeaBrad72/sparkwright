@@ -1,9 +1,13 @@
 #!/bin/sh
 # What it changes: nothing directly — a pure router that dispatches (via exec) to the named
-# subcommand's script (doctor/postmortem/tier-advice/explain/status/resume/start); every effect
-# belongs to that subcommand. `status` is board-claim.sh's read-only who-holds-what view; `resume` is
-# slice-resume.sh, which is read-only by contract; `start` is start.sh, the one-command loop entry
-# (classify · claim · print the trailer block) — its only writes are board-claim.sh's own.
+# subcommand's script (doctor/postmortem/tier-advice/explain/status/resume/start/board/prepush);
+# every effect belongs to that subcommand. `status` is board-claim.sh's read-only who-holds-what
+# view; `resume` is slice-resume.sh, which is read-only by contract; `start` is start.sh, the
+# one-command loop entry (classify · claim · print the trailer block) — its only writes are
+# board-claim.sh's own; `board` is board.sh, the MCP-neutral write port (claim/release/move/
+# create) — its writes are its own, behind its own backend dispatch and proofs; `prepush` is
+# conformance/prepush-lane.sh, the CI-parity lane (the only arm outside scripts/, resolved
+# `$0`-relative via $here — never $PWD), which runs checks and writes nothing to the tree or refs.
 # Guardrails: no privileges of its own; empty/-h/--help prints usage and exits 2; an unknown subcommand
 # exits 2 without dispatching; all behavior is delegated to the subcommand it execs.
 set -eu
@@ -16,6 +20,8 @@ case "${1:-}" in
   status) shift; exec sh "$here/board-claim.sh" status "$@" ;;
   resume) shift; exec sh "$here/slice-resume.sh" "$@" ;;
   start) shift; exec sh "$here/start.sh" "$@" ;;
-  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain, status, resume, start" >&2; exit 2 ;;
-  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain, status, resume, start" >&2; exit 2 ;;
+  board) shift; exec sh "$here/board.sh" "$@" ;;
+  prepush) shift; exec sh "$here/../conformance/prepush-lane.sh" "$@" ;;
+  ""|-h|--help) echo "usage: sparkwright <command>; commands: doctor, postmortem, tier-advice, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
+  *) echo "sparkwright: unknown command '$1'; commands: doctor, postmortem, tier-advice, explain, status, resume, start, board, prepush" >&2; exit 2 ;;
 esac

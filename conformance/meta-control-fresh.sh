@@ -33,6 +33,7 @@
 set -eu
 _here=$(CDPATH='' cd "$(dirname "$0")" && pwd)
 . "$_here/version-helpers.sh"
+. "$_here/backlog-lib.sh"
 cd "$_here/.."
 ROOT="${META_CONTROL_ROOT:-.}"
 N="${META_CONTROL_N:-5}"
@@ -67,18 +68,38 @@ count_newer() {
   printf '%s' "$_c"
 }
 
+# header_row — the log's header row text (the `| Date | Version | ... |` line), or empty if absent.
+# Used as the column-count REFERENCE for trailing_deferred's fail-closed arity check (M-1).
+header_row() {
+  awk -F'|' '
+    /^[ \t]*\|/ {
+      t=$2; gsub(/^[ \t]+|[ \t]+$/,"",t)
+      if (t=="Date") { print; exit }
+    }
+  ' "$ROOT/$LOG" 2>/dev/null
+}
+
 # log_field <awk-index> — trimmed value of a column from the log's LAST data row (skips header +
-# separator). awk split on "|" yields a[1]="" so Version=a[3], Verdict=a[6]. Exit 1 if no data row.
+# separator). Signature is unchanged (RAW awk-split index: a[1]="" so Version=a[3], Verdict=a[6]) so
+# callers don't move; internally it selects the last data row with a plain `|`-scan (that scan never
+# touches cell CONTENT, only counts header/separator lines, so an escaped `\|` can't confuse it), then
+# hands the row to backlog-lib.sh's cell() — the shared GFM-exact parser (BOARD-PIPE-ESCAPE T3) — which
+# is 1-based over REAL columns. raw a[idx] == cell(idx-1): idx=3 (Version) -> cell 2, idx=6 (Verdict)
+# -> cell 5. cell() prints nothing (rc 0, empty stdout) for an out-of-range index — a read past the
+# row's real column count fails CLOSED here because callers compare the result, never trust its
+# presence (see validate_state's desync check, §6.2 leg 7).
 log_field() {
-  awk -F'|' -v idx="$1" '
+  _lf_last=$(awk -F'|' '
     /^[ \t]*\|/ {
       t=$2; gsub(/^[ \t]+|[ \t]+$/,"",t)
       if (t=="Date") next                       # header row
       if ($0 ~ /^[ \t]*\|[ \t:|-]+$/) next      # separator row (dashes/colons only)
       last=$0
     }
-    END { if (last=="") exit 1; split(last,a,"|"); v=a[idx]; gsub(/^[ \t]+|[ \t]+$/,"",v); print v }
-  ' "$ROOT/$LOG"
+    END { print last }
+  ' "$ROOT/$LOG")
+  [ -n "$_lf_last" ] || return 1
+  cell "$_lf_last" $(($1 - 1))
 }
 
 # applicability — 0 = applies, 3 = N/A (cadence not adopted on an adopter tree).
@@ -148,23 +169,64 @@ validate_state() {
   _lver=$(ver_norm "$_lver")
   MVERDICT=$(norm_verdict "$MVERDICT"); _lverdict=$(norm_verdict "$_lverdict")
   if [ "$MVER" != "$_lver" ] || [ "$MVERDICT" != "$_lverdict" ]; then
-    echo "FAIL: marker/log desync — marker='$MVER $MVERDICT' but log's last row='$_lver $_lverdict'. The two must advance together (update $MARKER whenever you append to $LOG)."
+    _lver_s=$(printf '%s' "$_lver" | tr -d '[:cntrl:]' | cut -c1-80)
+    _lverdict_s=$(printf '%s' "$_lverdict" | tr -d '[:cntrl:]' | cut -c1-80)
+    echo "FAIL: marker/log desync — marker='$MVER $MVERDICT' but log's last row='$_lver_s $_lverdict_s'. The two must advance together (update $MARKER whenever you append to $LOG)."
     return 1
   fi
   return 0
 }
 
-# trailing_deferred — count consecutive DEFERRED verdicts from the END of the log (the serial-defer cap).
+# trailing_deferred — count consecutive DEFERRED verdicts from the END of the log (the serial-defer
+# cap). The row-selection scan below only counts header/separator lines by structure (never reads
+# cell CONTENT), so it stays correct regardless of escaped pipes inside a row; each selected row's
+# Verdict is then read via backlog-lib.sh's cell() (cell column 5 = raw awk a[6], the same mapping as
+# log_field) instead of a raw `$6` split — the raw split let an earlier `\|` in a row shift $6 onto
+# the wrong column, silently reading a non-DEFERRED value and evading the serial-defer cap (C7,
+# BOARD-PIPE-ESCAPE §6.1 leg 6).
+#
+# M-1 (the leg-6 TWIN, BOARD-PIPE-ESCAPE fix round): leg 6 closed the ESCAPED-pipe vector, but an
+# earlier row that is MALFORMED under the shared GFM parser — a RAW (unescaped) `|` in Trigger/Profile
+# (which genuinely adds a GFM column, so cell(row,5) reads the wrong field), or a truncated short row
+# (fewer real columns, column 5 empty) — was still read positionally and, on a non-DEFERRED-looking
+# result, hit the `else break` and silently RESET the streak as if it were a clean addressed verdict.
+# Fail CLOSED instead: a row whose real column count (gfm_nf) differs from the header's, or whose
+# Verdict cell reads empty, is treated as streak-CONTINUING (DEFERRED-equivalent) rather than
+# streak-resetting. Chosen over a separate "unparseable" sentinel/FAIL because freshness's only
+# consumption of this count is the numeric cap comparison (`_trail -ge _defcap`) — widening the
+# contract to a new token would touch freshness's message contract and every caller for a case whose
+# correct remedy is identical to a real cap trip (a required panel run); counting it in is the
+# minimal, most robust fix consistent with existing consumption.
 trailing_deferred() {
-  awk -F'|' '
+  _td_hdr=$(header_row)
+  _td_hdr_nf=$(gfm_nf "$_td_hdr")
+  # Select data rows bottom-to-top by STRUCTURE only (header/separator skip — never reads cell
+  # content), then walk them one per line via `while IFS= read -r` (the safe idiom; no IFS=newline
+  # + set -f + word-split, which semgrep bash.lang.security.ifs-tampering flags).
+  _td_c=0
+  while IFS= read -r _td_row; do
+    [ -n "$_td_row" ] || continue
+    _td_nf=$(gfm_nf "$_td_row")
+    _td_vraw=$(cell "$_td_row" 5)
+    if [ "$_td_nf" != "$_td_hdr_nf" ] || [ -z "$_td_vraw" ]; then
+      # malformed for this read (arity mismatch or empty Verdict cell) — fail closed: count it as
+      # streak-continuing rather than trusting a positionally-misaligned non-DEFERRED read (M-1).
+      _td_c=$((_td_c + 1)); continue
+    fi
+    _td_v=$(norm_verdict "$_td_vraw")
+    if [ "$_td_v" = "DEFERRED" ]; then _td_c=$((_td_c + 1)); else break; fi
+  done <<EOF
+$(awk -F'|' '
     /^[ \t]*\|/ {
       t=$2; gsub(/^[ \t]+|[ \t]+$/,"",t)
       if (t=="Date") next
       if ($0 ~ /^[ \t]*\|[ \t:|-]+$/) next
-      v=$6; gsub(/^[ \t]+|[ \t]+$/,"",v); rows[++n]=toupper(v)
+      rows[++n]=$0
     }
-    END { c=0; for (i=n;i>=1;i--){ if(rows[i]=="DEFERRED") c++; else break } print c+0 }
-  ' "$ROOT/$LOG" 2>/dev/null
+    END { for (i=n;i>=1;i--) print rows[i] }
+  ' "$ROOT/$LOG" 2>/dev/null)
+EOF
+  printf '%s\n' "$_td_c"
 }
 
 # freshness — prints FRESH/OVERDUE/ESCALATED; returns 0/1. Uses MVER (set by validate_state).
@@ -352,6 +414,45 @@ if [ "${1:-}" = "--selftest" ]; then
   { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t | l | DEFERRED | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | l | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
   rc=0; out=$( ROOT="$_d"; META_CONTROL_TAGS="1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6 1.0.7 1.0.8 1.0.9 1.0.10 1.0.11" run 2>&1 ) || rc=$?
   _expect_tier "cap AND >2N = ESCALATED (count-keyed escalation wins the overlap)" 1 '^ESCALATED:' '^OVERDUE:' "$out" "$rc"
+
+  # V. BOARD-PIPE-ESCAPE T3 leg 6 (C7 fail-open bypass): two consecutive DEFERRED rows, the EARLIER
+  #    one carrying an escaped `\|` in its Trigger cell (left of Verdict). Under the OLD raw `awk -F'|'`
+  #    split this shifted $6 onto the wrong column, silently read a non-DEFERRED value, `break`-reset the
+  #    consecutive count, and evaded the serial-defer cap (freshness falsely greened). Must be OVERDUE.
+  _d="$_t/v"; mkdir -p "$_d/docs/governance"; : > "$_d/docs/ROADMAP-KIT.md"; printf '99.99.99\n' > "$_d/VERSION"
+  printf '1.0.0 DEFERRED\n' > "$_d/docs/governance/.meta-control-last"
+  { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | a\\| b | light | DEFERRED | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | light | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
+  rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run ) >/dev/null 2>&1 || rc=$?
+  _expect "T3 leg 6: escaped-pipe-shifted DEFERRED row still trips the serial-defer cap = OVERDUE" 1 "$rc"
+
+  # V2. BOARD-PIPE-ESCAPE M-1 (the leg-6 TWIN): two consecutive DEFERRED rows, the EARLIER one carrying
+  #     a RAW (unescaped) `|` in its Trigger cell. Unlike leg V's escaped `\|` (which cell() correctly
+  #     joins back into one column), a raw pipe genuinely adds a GFM column — gfm_nf(row) != the
+  #     header's column count. The old code still read cell(row,5) positionally and got a non-DEFERRED
+  #     value (or the wrong cell), `break`-reset the streak, and evaded the cap. Must stay OVERDUE.
+  _d="$_t/v2"; mkdir -p "$_d/docs/governance"; : > "$_d/docs/ROADMAP-KIT.md"; printf '99.99.99\n' > "$_d/VERSION"
+  printf '1.0.0 DEFERRED\n' > "$_d/docs/governance/.meta-control-last"
+  { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | a|b | light | DEFERRED | a | s |\n'; printf '| 2026-01-02 | 1.0.0 | t | light | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
+  rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run ) >/dev/null 2>&1 || rc=$?
+  _expect "M-1: raw-unescaped-pipe earlier row fails closed (streak-continuing) = OVERDUE" 1 "$rc"
+
+  # V3. BOARD-PIPE-ESCAPE M-1 (the truncated-row twin): the earlier row is short — fewer real columns
+  #     than the header (column 5 / Verdict reads empty under cell()). Must NOT silently `break`-reset
+  #     the streak as a clean non-DEFERRED verdict; fail closed (streak-continuing) = OVERDUE.
+  _d="$_t/v3"; mkdir -p "$_d/docs/governance"; : > "$_d/docs/ROADMAP-KIT.md"; printf '99.99.99\n' > "$_d/VERSION"
+  printf '1.0.0 DEFERRED\n' > "$_d/docs/governance/.meta-control-last"
+  { printf '| Date | Version | Trigger | Profile | Verdict | Artifact | Ledger |\n'; printf '|---|---|---|---|---|---|---|\n'; printf '| 2026-01-01 | 0.9.0 | t |\n'; printf '| 2026-01-02 | 1.0.0 | t | light | DEFERRED | a | s |\n'; } > "$_d/docs/governance/meta-control-log.md"
+  rc=0; ( ROOT="$_d"; META_CONTROL_TAGS="1.0.0" run ) >/dev/null 2>&1 || rc=$?
+  _expect "M-1: truncated (short) earlier row fails closed (streak-continuing) = OVERDUE" 1 "$rc"
+
+  # W. BOARD-PIPE-ESCAPE T3 leg 7 (fail-direction, §6.2): log_field with an index past the row's real
+  #    column count must return empty (fail-closed), never a silently wrong value from a shifted split.
+  #    log_field 99 has no such column; the caller-side comparison in validate_state then mismatches
+  #    (empty != MVER), so the FAIL path fires rather than a false pass.
+  _d="$_t/w"; _mkfix "$_d" "1.0.0 GO" "1.0.0" "GO"
+  _lf_out=$( ROOT="$_d"; log_field 99 )
+  [ -z "$_lf_out" ]; _lf_rc=$?
+  _expect "T3 leg 7: log_field past the row's column count returns empty (fail-closed)" 0 "$_lf_rc"
 
   rm -rf "$_t"
   [ "$sfail" -eq 0 ] && { echo "meta-control-fresh --selftest: OK"; exit 0; } || exit 1

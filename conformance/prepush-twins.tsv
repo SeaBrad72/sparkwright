@@ -1,0 +1,88 @@
+# prepush-twins.tsv — the twin table for conformance/prepush-lane.sh (PREPUSH-CI-PARITY).
+# DESIGN OF RECORD: docs/architecture/2026-09-17-prepush-ci-parity-design.md §3.2.
+#
+# TAB-SEPARATED, SEVEN COLUMNS, in this order (a `#` line and a blank line are ignored):
+#   1 basename   the check, WITHOUT `conformance/` and WITHOUT `.sh`; [a-z0-9-]+; conformance/<it>.sh
+#                must be a regular file under the repo root.
+#   2 kind       twin | exclude | heavy | env
+#   3 ci-shape   a literal SUBSTRING of the physical ci.yml line this row accounts. Accounting is by
+#                SHAPE, never by basename alone (security C19): a second, differently-shaped
+#                invocation of the same check stays UNACCOUNTED until it gets its own row.
+#   4 local-argv the argv the lane runs LOCALLY (twin) / `NAME=value` (env). Empty for exclude+heavy.
+#   5 expect-rc  the rc the local run must produce (twin; integer or blank elsewhere).
+#   6 budget-s   integer wall-clock ceiling in seconds — REQUIRED on `heavy`, blank elsewhere.
+#   7 reason     free text, no tab. REQUIRED on `exclude` (and always worth writing).
+#
+# PER-KIND CONTRACT (design §3.2):
+#   twin    — a context line -> its local argv. Accounts the mention by ci-shape. Needs 3, 4, 5.
+#   exclude — accounted, never executed (CI-only, disabled in CI, a heredoc/echo/grep mention).
+#             Needs 3 and 7.
+#   heavy   — annotates an invocation ALREADY in the census numerator as too slow for the core.
+#             Accounts NOTHING (a heavy row can never hide a mention). Needs 6.
+#   env     — one literal NAME=value a single derived check may receive. Accounts nothing.
+#             local-argv matches ^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9._/=-]+$ and the NAME must not be
+#             on the §3.1 sensitive list. No `env` row is needed today; the column contract stands.
+#
+# `local-argv` GRAMMAR: the §3.1 invocation grammar (the scanner's own validator judges it), plus a
+# CLOSED placeholder set — {listing} {branch} {base-board} {head}. Any other `{`, or a `$`, backtick
+# or quote, REDS the census and the row is never executed. Placeholders are substituted into
+# POSITIONAL PARAMETERS (`set --`), never into a string: a branch named `x;$(touch /tmp/pwned)`
+# yields exactly one literal token and no file.
+#
+# `read_twins` exposes each valid row downstream (task 3's runner) in this same tab-separated shape.
+#
+# A STALE row — one whose ci-shape matches no denominator line — REDS the census: this table may
+# never outlive the ci.yml it describes.
+#
+#basename	kind	ci-shape	local-argv	expect-rc	budget-s	reason
+#
+# --- the five twins the design named, plus the three the census surfaced -----------------------
+review-lane	twin	review-lane.sh --pr "$PR_NUMBER" --head "$HEAD_SHA"	review-lane.sh --pre-push	0		CI grades a PR number it reads from the event; --pre-push grades the same tree with no forge.
+loop-state	twin	loop-state.sh --head "$HEAD_SHA"	loop-state.sh --head {head}	0		CI passes the event SHA; locally HEAD is the same commit.
+backlog-presence	twin	backlog-presence.sh --dir . --pr "$PR" --changed /tmp/changed.txt --branch "$HEAD_REF" --base-board	backlog-presence.sh --dir . --pr 0 --changed {listing} --branch {branch} --claims --base-board {base-board}	0		CI derives the listing and the base board from the event; the lane derives both itself (design §3.3).
+ceremony-binding	twin	ceremony-binding.sh --scope "PR-$PR_NUMBER" --head-branch "$HEAD_REF"	ceremony-binding.sh --pre-push	0		CI scopes to the PR; --pre-push is the same gate scoped to the branch head.
+tracker-contract	twin	if sh conformance/tracker-contract.sh; then	tracker-contract.sh	2		CI asserts the honest non-pass INSIDE an if-block (so the step is context); rc 2 is the expected verdict without creds.
+escalation-wired	twin	sh conformance/escalation-wired.sh --selftest	escalation-wired.sh --selftest	0		The step is a two-line block whose FIRST line runs scripts/escalate.sh, so the whole step is context; this half is a plain local selftest.
+adopter-told	twin	sh conformance/adopter-told.sh	adopter-told.sh	0		Context only because the step sets TMPDIR: ${{ runner.temp }}; env is never applied (§3.1) and the lane gives every child its own work root as TMPDIR, so the local run is the same run.
+# --- heavy: annotates a DERIVED invocation; accounts no mention ---------------------------------
+agent-autonomy	heavy				1128	Measured ~564 s in the CI-RUNTIME-BUDGET profile (the pipeline's single largest adopter-facing check); budget-s = 2x measured.
+agent-autonomy	exclude	sh conformance/agent-autonomy.sh   # guard-battery bare run, workspace variant				CI-BARE-BATTERY-ONCE: the producer leg (a case arm of the guard-battery matrix job), run once per variant in CI; it never runs locally.
+agent-autonomy	exclude	sh conformance/agent-autonomy.sh   # guard-battery bare run, tmpclone variant				Same, the /tmp-clone variant (cd "$d/kit" in a case arm).
+agent-autonomy	exclude	got=$(sh conformance/agent-autonomy.sh --dims) || got="<--dims failed>"				CI-BARE-BATTERY-ONCE N1: the producer legs' dims assertion (prints one token, runs no cells); it never runs locally.
+kit-update-merge	heavy				292	Measured 146 s standalone on the builder's box at 9846b73d, where the lane's FIRST LIVE RUN caught it over the 120 s core ceiling (rc 0, just slow); budget-s = 2x measured. The design's other remedy — raising the default ceiling — was refused: it would weaken the bound for every check to accommodate one.
+kit-update-advance	heavy				1740	Measured 819–867 s standalone locally (after the A15–A20 legs: per-path provenance, effective-base rebuilds and a bare-repo publish add several incept builds per leg; was 216–411 s); budget-s ≈ 2x the slower run. Same reasoning as kit-update-merge: raising the default ceiling for every check to accommodate one was refused.
+# --- exclude: CI-only state the lane cannot honestly reproduce ----------------------------------
+ci-classify-changes	exclude	ci-classify-changes.sh --push-graded				CI-only: grades the LIVE run from the forge's pulls/run/jobs JSON, which no local run has.
+ci-classify-changes	exclude	ci-classify-changes.sh /tmp/changed.txt				CI-only: its verdict drives CI's own job skipping and it reads CI's /tmp listing.
+ci-classify-changes	exclude	ci-classify-changes.sh --export-ignored-only				CI-only: same classifier, feeding the export-shard pathfilter outputs.
+agent-boundary	exclude	agent-boundary.sh --check-complete --changed				CI-only: env-prefixed (CI=) and reads CI's derived listing; env is never applied (§3.1).
+agent-boundary	exclude	agent-boundary.sh --conclusion "$rc" --for-class control-plane				CI-only: maps a gate rc to the check-run title/summary prose; there is no check-run locally.
+agent-boundary	exclude	agent-boundary.sh --conclusion "$rc" \				CI-only: the ceremony-binding job's two prose-mapper branches (both continuation lines), same reason.
+agent-boundary	exclude	grep -q -- '--check-complete' conformance/agent-boundary.sh				A grep on the SCRIPT FILE (a base-tree capability probe), not an invocation.
+agent-boundary	exclude	grep -q -- '--for-gate' conformance/agent-boundary.sh				A grep on the SCRIPT FILE (a base-tree capability probe), not an invocation.
+agent-boundary	exclude	predates --check-complete				The basename appears inside an echo, not a command.
+agent-boundary	exclude	predates --for-gate				The basename appears inside an echo, not a command.
+selftest-hermetic	exclude	sh conformance/selftest-hermetic.sh --touched				Env-prefixed with CI's HERMETIC_BASE; the lane's core-selftest bucket makes this exact call itself (design §3.3).
+union-ratchet	exclude	sh conformance/union-ratchet.sh				Inside a pull_request-only block that fetches the base ref and N/As on push; no PR base exists locally.
+ci-gates	exclude	sh conformance/ci-gates.sh "$p" --expect-seams				Inside a for-loop over profiles/*/ci.yml; the two single-profile invocations of the same check derive and run.
+security-channel-live	exclude	sh conformance/security-channel-live.sh .				Live forge probe under a step GH_TOKEN, CI-only: the lane scrubs every GH_* and must not exercise an operator token with more authority than CI's (design §3.4).
+adopter-export-wired	exclude	sh conformance/adopter-export-wired.sh				Both the live lock and its --selftest (one shape; the --selftest line contains this one): step-conditional on CI's export_ignored_only pathfilter, inside the heavy cf-export job.
+brownfield-walk	exclude	sh conformance/brownfield-walk.sh --selftest				Step-conditional on CI's export_ignored_only pathfilter, inside the heavy cf-export job.
+green-on-clone	exclude	sh conformance/green-on-clone.sh				Step-conditional in a cf-* job; the lane's --green-on-clone heavy arm runs it explicitly, never in the core (design §3.3).
+adopter-export-claims	exclude	sh conformance/adopter-export-claims.sh				Step-conditional in a cf-* job; the lane's --exports heavy arm runs it explicitly.
+non-vacuity	exclude	sh conformance/non-vacuity.sh --shard				Matrix-sharded ${{ }} invocation; locally the lane offers --non-vacuity <basename>, never the full sweep (design §3.3).
+inception-done	exclude	sh conformance/inception-done.sh --surface				Runs against a temp project bootstrapped by scripts/incept.sh earlier in the same block; the whole step is context.
+verify	exclude	sh conformance/verify.sh --require > "$RUNNER_TEMP/verify-artifact.txt"				Runs INSIDE the incepted adopter artifact (cd-prefixed block, artifact-gate job), not this tree.
+verify	exclude	sh conformance/verify.sh --require > "$RUNNER_TEMP/verify-gl.txt"				Same, on the GitLab-flavoured artifact (artifact-gate-gitlab).
+verify	exclude	sh conformance/verify.sh --require > "$RUNNER_TEMP/verify-bf.txt"				Same, on the brownfield artifact (artifact-gate-brownfield).
+verify	exclude	grep -cE '^check .*--kitself( |$)' conformance/verify.sh				A grep on the artifact's OWN registry file (all three artifact-gate jobs), not an invocation.
+verify	exclude	conformance/verify.sh — the registry did not parse				The path appears inside an echo, not a command.
+verify-enforced-wired	exclude	out=$(sh conformance/verify-enforced-wired.sh)				Runs inside the brownfield artifact (cd-prefixed block), in a command substitution.
+repo-ownership	exclude	sh conformance/repo-ownership.sh --kit-root				Judges the EXPORTED artifact built by the preceding line of the same block; the plain invocation of this check derives.
+backlog-presence	exclude	--branch "$HEAD_REF" --claims 2>&1				The no-base-board fallback branch of the same CI step; the twin row above covers the graded shape.
+ceremony-binding	exclude	ceremony-binding.sh --render --scope				Renders the PR summary into $GITHUB_STEP_SUMMARY; the twin row above covers the gate itself.
+review-lane	exclude	grep -q -- '--pr)' conformance/review-lane.sh				A grep on the SCRIPT FILE (a base-tree capability probe), not an invocation.
+review-lane	exclude	grep -v '^[[:space:]]*#' conformance/review-lane.sh				A grep on the SCRIPT FILE (a base-tree capability probe), not an invocation.
+review-lane	exclude	base predates the grader				The path appears inside an echo (a ::notice), not a command.
+review-lane	exclude	base grader still reads the forge				The path appears inside an echo (a ::notice), not a command.
+branch-protection	exclude	asserted live by conformance/branch-protection.sh in the branch-protection-live check				The path appears inside a summary= prose string, not a command.

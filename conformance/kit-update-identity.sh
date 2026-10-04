@@ -100,8 +100,9 @@ build_adopter() {  # <dir>
     echo "FAIL: kit-update-identity — incept did not record refs/heads/kit-base (no base to reconstruct from)" >&2
     return 1; }
   _v=$(cat "$ROOT/VERSION" 2>/dev/null || echo unknown)
-  git -C "$1" rev-parse --verify --quiet "refs/tags/kit-base/v${_v}" >/dev/null 2>&1 || {
-    echo "FAIL: kit-update-identity — incept did not tag kit-base/v${_v}" >&2; return 1; }
+  # The tag is `kit-base/v<VER>+<sha12>` (export carries .kit-source) or the legacy `kit-base/v<VER>`.
+  [ -n "$(git -C "$1" tag -l "kit-base/v${_v}" "kit-base/v${_v}+*")" ] || {
+    echo "FAIL: kit-update-identity — incept did not tag kit-base/v${_v}[+<sha12>]" >&2; return 1; }
 }
 
 # materialize <repo> <dir> — the RAW kit-base tree, un-incepted. The negatives drive incept themselves.

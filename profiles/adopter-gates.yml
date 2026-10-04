@@ -154,6 +154,10 @@ jobs:
       contents: read
       pull-requests: read  # the PR files-API listing below 403s without this (probe #500, measured)
     steps:
+      # base.sha, never head.sha (RT2-Q4): load-bearing for --base-dir "$GITHUB_WORKSPACE" below —
+      # pinned by conformance/adopter-gates-parity.sh::assert_t2_base_checkout (a dedicated leg;
+      # proportional-gate-wired.sh's generic taint scanner is scoped to ratification.yml/ci.yml and
+      # allows either subject, so it does not pin THIS job's checkout).
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -203,13 +207,16 @@ jobs:
           # itself a waiver and rewrite the rules that judge it in the same commit. The remaining
           # self-ratification ceiling (author == owner == ratifier, in one commit) is the register's
           # own, stated in docs/work-tracking/adapters.md, not introduced here.
+          # `|| fetch_rc=$?` below is load-bearing: under the run: shell's `-e`, a failing `x=$(cmd)`
+          # assignment aborts the step before the 404 branch (ADOPTER-GATES-JIRA-BLOCKERS; measured
+          # on the cold test's PR #1).
           mkdir -p /tmp/board
           : > /tmp/board.err
           for f in BACKLOG.md CLAUDE.md WAIVER-REGISTER.md; do
+            fetch_rc=0
             err=$(gh api "repos/${REPO}/contents/${f}?ref=${SHA}" \
                     -H "Accept: application/vnd.github.raw+json" \
-                    2>&1 >"/tmp/board/$f")
-            fetch_rc=$?
+                    2>&1 >"/tmp/board/$f") || fetch_rc=$?
             if [ "$fetch_rc" -eq 0 ]; then
               echo "backlog-presence: fetched $f from the PR head"
             else
@@ -222,6 +229,29 @@ jobs:
               fi
             fi
           done
+      - name: Fetch the base branch's LIVE required contexts (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T2)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # BASE_REF is PR-influenceable (the target branch) — env-bound and referenced only as a
+          # shell variable below, never interpolated as a `${{ }}` expression into the run: line.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # A FAILED call here leaves /tmp/live-contexts ABSENT (the `||` fallback below removes any
+          # partial file), which is a DIFFERENT state from a SUCCESSFUL call against an unprotected
+          # base: an unprotected base has no required-context entries to emit, so a successful read
+          # leaves the file EMPTY (fail-closed), not absent. Either way the gate step's --live-
+          # contexts arm fails closed: bp_tracker_delegated requires the file to exist and be
+          # non-empty to step aside, and a tracker-declaring base then reads NOT ENFORCED (rc 3)
+          # rather than silently skipping the board-presence check. This step itself never fails the
+          # job — only the gate's own rc does.
+          #
+          # `select(.name == env.BASE_REF)` (RT2-Q2): the contexts must be BASE_REF's own — reading
+          # a single-branch endpoint's `.protection...` field without first confirming `.name`
+          # matches BASE_REF means a branch name the URL path mis-parses (a raw `#` or `%` BASE_REF
+          # could otherwise reach a differently-resolved branch) would silently yield ANOTHER
+          # branch's required contexts instead of empty/fail-closed.
+          gh api "repos/${REPO}/branches/${BASE_REF}" --jq 'select(.name == env.BASE_REF) | .protection.required_status_checks.contexts[]?' > /tmp/live-contexts 2>/tmp/live-contexts.err || { rm -f /tmp/live-contexts; echo "backlog-presence: could not read the base branch's required contexts — the tracker step-aside stays off (rc 3 if a tracker is declared)"; }
       - name: Board-presence merge-gate — the gate's rc is this job's exit
         env:
           PR: ${{ github.event.pull_request.number }}
@@ -260,7 +290,7 @@ jobs:
               rc=2
               out="backlog-presence: gate error — the changed-file listing could not be verified COMPLETE (see the step above). An unverifiable change-set cannot be classified."
             else
-              out=$(sh conformance/backlog-presence.sh --dir /tmp/board --pr "$PR" --changed /tmp/changed.txt --branch "$HEAD_REF" 2>&1); rc=$?
+              out=$(sh conformance/backlog-presence.sh --dir /tmp/board --pr "$PR" --changed /tmp/changed.txt --branch "$HEAD_REF" --base-dir "$GITHUB_WORKSPACE" --live-contexts /tmp/live-contexts 2>&1); rc=$?
             fi
           fi
           set -e
@@ -495,13 +525,54 @@ jobs:
           # credential drops at checkout, before the PR-controlled loop-state.sh (and, via
           # promotion-readiness.sh --class, PR-tree conformance/*.sh) runs.
           persist-credentials: false
+      # LOOP-STATE-TRACKER-STEP-ASIDE T2 — a SECOND, base checkout, added AFTER the head checkout
+      # above so base content wins (LS-D2): a head-carried, non-repo `.kit-base/` directory is wiped
+      # by actions/checkout's own `prepareExistingDirectory` step before this checkout writes into
+      # it (NOT `clean: true`, which acts on an existing git repo, not a bare/absent one). A
+      # symlink- or file-shaped `.kit-base` makes this checkout fail (red) or resolve to base
+      # content, never silently keep head content at gate time. Shallow and credential-free: this
+      # step reads no PR-controlled code, and the base tree it lands is public repository content,
+      # not a secret.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .kit-base
+          fetch-depth: 1
+          persist-credentials: false
+      # A3 — NO TOKEN AND NO API CALL ON AN `md` ADOPTER. This step runs ONLY when the base branch
+      # declares a hosted tracker (.kit/tracker.conf present in the base checkout above); on `md`
+      # the file is absent, the `if:` short-circuits, and the step (its token included) never runs.
+      # The `gh api` command is byte-identical to the backlog-presence job's own copy
+      # (profiles/adopter-gates.yml:251) — same target, jq filter and env: shape, so the two gates
+      # can never silently diverge on the same predicate. The fallback echo differs by design (it
+      # names `loop-state`, not `backlog-presence`), so the reader knows which gate logged it. The
+      # `GH_TOKEN` here is HYGIENE, NOT ISOLATION (adopter-tracker-gates.yml:
+      # 49-52): `${{ github.token }}` is reachable by any head through the workflow file, and it is
+      # confined to this one step's env:, which runs no head code, so nothing downstream inherits it.
+      - name: Fetch the base branch's LIVE required contexts (TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T2)
+        if: hashFiles('.kit-base/.kit/tracker.conf') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          gh api "repos/${REPO}/branches/${BASE_REF}" --jq 'select(.name == env.BASE_REF) | .protection.required_status_checks.contexts[]?' > /tmp/live-contexts 2>/tmp/live-contexts.err || { rm -f /tmp/live-contexts; echo "loop-state: could not read the base branch's required contexts — the tracker step-aside stays off"; }
       - name: Entry Declaration on the PR head commit (row · stage · class · skill)
         id: gate
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set +e
-          sh conformance/loop-state.sh --head "$HEAD_SHA"
+          # VERSION SKEW (mirrors :280's --check-complete guard): the workflow can pass flags the
+          # checked-out conformance/loop-state.sh does not have yet — guaranteed on the PR
+          # introducing them, and the normal upgrade path for a tree whose profiles/ and
+          # conformance/ advance out of step. Fall back to the old call shape rather than break.
+          if grep -q -- '--base-dir' conformance/loop-state.sh 2>/dev/null; then
+            sh conformance/loop-state.sh --head "$HEAD_SHA" --base-dir "$GITHUB_WORKSPACE/.kit-base" --live-contexts /tmp/live-contexts
+          else
+            echo "loop-state: this checkout's conformance/loop-state.sh predates --base-dir, so the tracker step-aside is OFF for this run (old call shape). Expected during an upgrade where profiles/ and conformance/ advance out of step."
+            sh conformance/loop-state.sh --head "$HEAD_SHA"
+          fi
           rc=$?
           set -e
           case "$rc" in

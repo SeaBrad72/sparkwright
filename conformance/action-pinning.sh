@@ -14,6 +14,7 @@ set -eu
 
 REF_RATIFICATION="profiles/ratification.yml"  # CP-9 §13 gate; RATIFY-PARITY: the single stack-neutral source
 REF_ADOPTER_GATES="profiles/adopter-gates.yml"  # B6 board/loop gates; the single stack-neutral source
+REF_ADOPTER_TRACKER_GATES="profiles/adopter-tracker-gates.yml"  # TBG-TRUSTED-JOB; pull_request_target, contents: read
 KIT_WORKFLOWS=".github/workflows"                         # the workflows the kit itself runs
 
 # has_uses <workflow>: 0 if the file declares at least one real `uses:` step.
@@ -156,6 +157,9 @@ check_target "$REF_RATIFICATION" 1 || rc=1
 # 1c) B6: the board/loop merge-time gates ship as their own workflow too, and post via checks:write
 # in several jobs (gate-backlog-presence, post-ceremony-binding, post-loop-state) — strict, same as 1b.
 check_target "$REF_ADOPTER_GATES" 1 || rc=1
+# 1d) TBG-TRUSTED-JOB: the tracker-backed trusted job, base-defined `pull_request_target` — strict,
+# same reasoning as 1b/1c (it holds a tracker credential).
+check_target "$REF_ADOPTER_TRACKER_GATES" 1 || rc=1
 # 2) the kit's OWN workflows (broadened in H4b): every actually-run workflow pins its actions
 if [ -d "$KIT_WORKFLOWS" ]; then
   for wf in "$KIT_WORKFLOWS"/*.yml "$KIT_WORKFLOWS"/*.yaml; do

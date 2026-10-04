@@ -39,9 +39,9 @@ Reviewer: ___
 
 ## Rounds
 One row per review round. Every `commit` must be inside this PR (an ancestor of the head, and not
-already in the base). The **last** round must be `APPROVE`, and every commit after it must be
-bookkeeping only (`docs/reviews/`, `docs/plans/`, `BACKLOG.md`) — a code commit after the approval
-re-opens the round, because nobody has reviewed it.
+already in the base). The **last** round must be `APPROVE` (an open `NEEDS-FIXES` round fails). A commit
+after it that is not bookkeeping (`docs/reviews/`, `docs/plans/`, `BACKLOG.md`) only WARNs — nobody has
+reviewed it, and the forge's `dismiss_stale_reviews` re-gates it.
 
 | commit | reviewer seat | verdict (APPROVE\|NEEDS-FIXES) | findings (n) |
 |---|---|---|---|
@@ -67,7 +67,7 @@ the token appears on an **executable line**, not a comment — or says `not buil
 | ___ | `path::test-name` |
 
 ## Security review
-`D-240904-1`: the diff security review is the default. One of:
+`D-240904-1`: the diff security review is the default; only that a verdict is present is graded. One of:
 
 - `ran — seat <…>, verdict: <…>` (findings go in the table above), or
 - `waived — no-untrusted-input · no-new-permission · no-control-plane-surface · no-operator-shell`

@@ -184,8 +184,8 @@ LS_CLASS_FN="derive_class"
 # selftest reaches THIS function's degraded arm by pointing LS_CLASS_FN at a stub instead.
 # ⚠️ Do not "restore" the parameter to silence a future warning — a disable comment here would have
 # hidden a real dead-argument defect rather than removed it.
-ls_class_for_required() {
-  if _ls_cfr=$("$LS_CLASS_FN"); then
+ls_class_for_required() {   # [$1 = optional changed-listing path — TBG-TRUSTED-JOB fix-round H-2]
+  if _ls_cfr=$("$LS_CLASS_FN" "${1:-}"); then
     printf '%s\n' "$_ls_cfr"
     return 0
   fi
@@ -597,6 +597,13 @@ check_class() {   # $1 = sha, [$2 = fixture listing], [$3 = ALREADY-derived clas
 # tree with no CLAUDE.md and no board, which is exactly an adopter's first PR.
 LS_BOARDROOT="$DIR"
 
+# LOOP-STATE-TRACKER-STEP-ASIDE T1 (design §2): the step-aside's two inputs, by ARGUMENT ONLY
+# (RD-3) — never env, never cwd. Both empty means today's behaviour (AC2): no --base-dir/
+# --live-contexts pair was given, so bp_tracker_delegated is never called (it fails closed on an
+# empty base-dir anyway, but the caller does not even reach it — see check_row below).
+LS_BASE_DIR=""
+LS_LIVE_CONTEXTS=""
+
 # check_row — Kit-Row resolves to a real board row, WHERE A BOARD APPLIES.
 #
 # N/A ROUTES (design section 10.2). .gitattributes marks BACKLOG.md export-ignore, so a fresh
@@ -609,7 +616,11 @@ LS_ROW_STATE="unknown"
 
 check_row() {   # $1 = sha
   _ls_row=$(decl_field "$1" Kit-Row | head -1)
-  _ls_backend=$(resolve_backend "$LS_BOARDROOT")
+  # TBG-SEAM-MD-ARM: the ONLY board access this function performs, on any backend — SEAM_ROOT
+  # tracks LS_BOARDROOT (which fixture legs re-point at throwaway trees) so the seam always
+  # resolves in the same root this function's other, unrouted board reads (below) already use.
+  SEAM_ROOT="$LS_BOARDROOT"
+  _ls_backend=$(seam_backend)
 
   # ⚠️ SELF-SERVICE N/A — DISCLOSED, NOT CLOSED. The backend field and the board are read from the
   # PR's OWN worktree, so a change can grant itself an N/A in the same commit: flip the backend to
@@ -625,6 +636,35 @@ check_row() {   # $1 = sha
       LS_ROW_STATE="refused"
       return 1 ;;
     github|jira|ado|linear|gitlab)
+      # TBG-RECORD-GATES-BIND (design §2 scope C, §8a H-4): a SET SEAM_RECORD switches this branch
+      # to the tracker arm — bind (rc0) or refuse UNVERIFIED (rc2 inside the seam, surfaced here as
+      # a plain gate refusal), NEVER waivable, NEVER falling through to not_enforced_notice. An
+      # UNSET SEAM_RECORD keeps today's behaviour byte-identical below (rc 3 NOT ENFORCED, waiver
+      # ladder preserved) — H-4's "no adopter green->red" rule.
+      if seam_tracker_record_set; then
+        SEAM_HEAD="$1"
+        _ls_tn=$(seam_row_count "$_ls_row") || _ls_tn=""
+        case "$_ls_tn" in
+          1)
+            LS_ROW_STATE="resolved (tracker record)"
+            return 0 ;;
+          *)
+            echo "loop-state: Kit-Row '$(ls_safe "$_ls_row")' did not bind on the tracker record at \$SEAM_RECORD — UNVERIFIED, refusing (never waivable — a set record is never routed through the waiver ladder)" >&2
+            LS_ROW_STATE="refused"
+            return 1 ;;
+        esac
+      fi
+      # LOOP-STATE-TRACKER-STEP-ASIDE T1 (design §2, AC1/AC4): checked ONLY HERE, strictly AFTER
+      # the seam_tracker_record_set block above has already returned — the trusted job (which sets
+      # SEAM_RECORD) is never itself excused by its own required-context wiring (RD-2, no
+      # self-delegation; proven by delegate/record-wins plus a hoist mutant). Both --base-dir and
+      # --live-contexts must have been given (LS_BASE_DIR/LS_LIVE_CONTEXTS non-empty); the shared
+      # predicate itself fails closed on anything missing/malformed (backlog-lib.sh::bp_tracker_delegated).
+      if [ -n "$LS_BASE_DIR" ] && [ -n "$LS_LIVE_CONTEXTS" ] && bp_tracker_delegated "$LS_BASE_DIR" "$LS_LIVE_CONTEXTS"; then
+        LS_ROW_STATE="N/A (delegated to tracker-board-gates — live on the base branch)"
+        echo "loop-state: row check $(tracker_delegated_notice)"
+        return 0
+      fi
       # NOT AN N/A ANY MORE (NON-MD-BACKEND-NEVER-SILENT, D-240903-1 §3). This branch used to say
       # "the row lives in an external tracker" and return 0 — but the kit cannot READ that tracker,
       # so what it actually said was "not checked", in the voice of "checked and fine". The row
@@ -637,7 +677,10 @@ check_row() {   # $1 = sha
       # validator is not present, treating the waiver as absent". Folding that into the captured
       # stdout would splice a diagnostic into the verdict line the summary prints, and the note
       # belongs on stderr where a reader can tell the two apart.
-      _ls_neout=$(not_enforced_notice "$_ls_backend" "$LS_BOARDROOT" "$DIR/conformance/waivers-valid.sh") || _ls_ne=$?
+      # LOOP-STATE-TRACKER-STEP-ASIDE amendment A2: the same cure both gates give, lifted into the
+      # one shared helper — an agent reading either gate's refusal gets the same instruction, not
+      # loop-state's own generic waiver-only clause (backlog-lib.sh::not_enforced_notice's default).
+      _ls_neout=$(not_enforced_notice "$_ls_backend" "$LS_BOARDROOT" "$DIR/conformance/waivers-valid.sh" "$(tracker_delegated_cure)") || _ls_ne=$?
       # STREAM FOLLOWS VERDICT (security S-L3). A waived run is a PASS and its notice is a verdict —
       # stdout. An unwaived run is a REFUSAL and its sentence is the reason — stderr, like every
       # other refusal in this function. That is not cosmetic: hooks/pre-push captures this
@@ -698,7 +741,7 @@ check_row() {   # $1 = sha
     LS_ROW_STATE="refused"
     return 1
   fi
-  _ls_n=$(row_count "$_ls_board" "$_ls_row") || _ls_n=""
+  _ls_n=$(seam_row_count "$_ls_row") || _ls_n=""
   case "$_ls_n" in
     ''|*[!0-9]*)
       # FAIL-CLOSED. A counter that did not run is never `resolved`.
@@ -1298,6 +1341,49 @@ ls_fx_build() {
   mkdir -p "$LS_FXDIR/backend-bogus"
   printf '# Fixture charter\n\n- **Backlog backend**: markdow\n' > "$LS_FXDIR/backend-bogus/CLAUDE.md"
 
+  # --- LOOP-STATE-TRACKER-STEP-ASIDE T1 fixtures — the `delegate/*` legs (design §3, modelled on
+  # backlog-presence.sh's own `delegate/*` builders) ------------------------------------------------
+  # A BASE checkout bp_tracker_delegated can accept: declares jira, ships its OWN copy of the real
+  # scripts/tracker-conf.sh (never this process's), and a .kit/tracker.conf that validator accepts.
+  mkdir -p "$LS_FXDIR/t1-base/scripts" "$LS_FXDIR/t1-base/.kit"
+  cp "$DIR/scripts/tracker-conf.sh" "$LS_FXDIR/t1-base/scripts/tracker-conf.sh"
+  printf '# Base\n\n- **Backlog backend** (§6): jira\n' > "$LS_FXDIR/t1-base/CLAUDE.md"
+  cat > "$LS_FXDIR/t1-base/.kit/tracker.conf" <<'EOF'
+version=1
+backend=jira
+base_url=https://ex.atlassian.net
+flavour=cloud
+auth=basic
+project=AB
+list_cap=200
+state.ready=Selected
+state.in-progress=In Progress
+field.acceptance=description
+field.metric=label:metric
+field.size=label:size
+field.risk=customfield_10088
+EOF
+
+  # base-declares-md: the SAME valid tracker conf, but the base's OWN CLAUDE.md declares md — the
+  # predicate's condition (i) must fail first (AC5).
+  mkdir -p "$LS_FXDIR/t1-base-md/scripts" "$LS_FXDIR/t1-base-md/.kit"
+  cp "$LS_FXDIR/t1-base/scripts/tracker-conf.sh" "$LS_FXDIR/t1-base-md/scripts/tracker-conf.sh"
+  cp "$LS_FXDIR/t1-base/.kit/tracker.conf" "$LS_FXDIR/t1-base-md/.kit/tracker.conf"
+  printf '# Base\n\n- **Backlog backend** (§6): md\n' > "$LS_FXDIR/t1-base-md/CLAUDE.md"
+
+  # bypass-head-conf: LS_BOARDROOT (the head's own dir) plants its own valid tracker.conf, but
+  # LS_BASE_DIR stays the md base above — the predicate must never read LS_BOARDROOT's .kit/.
+  mkdir -p "$LS_FXDIR/t1-head-conf/scripts" "$LS_FXDIR/t1-head-conf/.kit"
+  cp "$LS_FXDIR/t1-base/scripts/tracker-conf.sh" "$LS_FXDIR/t1-head-conf/scripts/tracker-conf.sh"
+  cp "$LS_FXDIR/t1-base/.kit/tracker.conf" "$LS_FXDIR/t1-head-conf/.kit/tracker.conf"
+  printf '# Head\n\n- **Backlog backend** (§6): jira\n' > "$LS_FXDIR/t1-head-conf/CLAUDE.md"
+
+  # live-contexts files.
+  printf 'ci\ntracker-board-gates\nbacklog-presence\n' > "$LS_FXDIR/t1-live.txt"
+  printf 'ci\nbacklog-presence\n' > "$LS_FXDIR/t1-live-missing.txt"
+  : > "$LS_FXDIR/t1-live-empty.txt"
+  printf 'ci\ntracker-board-gates (pull_request_target)\nbacklog-presence\n' > "$LS_FXDIR/t1-live-suffix.txt"
+
   # Map-completeness drift directions (b) and (c). Plan T1 step 4 required both and neither was
   # fixtured: review measured that gutting either check left the suite GREEN. The code was correct
   # and nothing held it there.
@@ -1495,9 +1581,19 @@ ls_fx_build() {
 # copy of the authority and would drift from it silently. Until now a bare invocation printed the
 # "--head required" line and this arm did not exist.
 print_help() {
-  echo "usage: sh conformance/loop-state.sh --head <sha>   grade the Entry Declaration on that commit"
+  echo "usage: sh conformance/loop-state.sh --head <sha> [--changed <listing>] [--base-dir <dir> --live-contexts <file>]"
+  echo "                                                 grade the Entry Declaration on that commit"
   echo "       sh conformance/loop-state.sh --selftest     run this check's own fixtures"
   echo "       sh conformance/loop-state.sh --help         this text, plus the roster's stage->skill map"
+  echo
+  echo "--changed <listing>        a caller-built changed-paths listing (base..head), for a BASE-ONLY"
+  echo "                           checkout with no local diff (trusted-job use)."
+  echo "--base-dir / --live-contexts (LOOP-STATE-TRACKER-STEP-ASIDE): must be given TOGETHER. When"
+  echo "                           the base at <dir> delegates board governance to the trusted"
+  echo "                           'tracker-board-gates' context and <file> proves it is LIVE-required"
+  echo "                           on the base branch, the row leg stands aside with an N/A instead of"
+  echo "                           NOT ENFORCED. Never fires inside the trusted job itself (no"
+  echo "                           self-delegation) and never on the honest md path."
   echo
   echo "The Entry Declaration (CLAUDE.md S1, act 4) is a block of trailers that must be the LAST"
   echo "paragraph of the commit message, and contiguous — a blank line inside it truncates the block,"
@@ -1892,6 +1988,213 @@ selftest() {
     check_row "$LS_FX_OK" >/dev/null 2>&1 \
       && { echo "selftest FAIL: an unrecognised backend must FAIL-CLOSED, not N/A"; st_fail=1; }
 
+    # --- LOOP-STATE-TRACKER-STEP-ASIDE T1 — the `delegate/*` legs (design §3, plan T1 step 1) ------
+    # Every leg below drives check_row DIRECTLY (in-process function calls, not a subprocess) —
+    # LS_BASE_DIR/LS_LIVE_CONTEXTS are globals the parser sets (see the parser legs further below
+    # for the subprocess-level proof that the flags actually reach them).
+    LS_BOARDROOT="$LS_FXDIR/backend-github"
+
+    # (a) delegated: LS_BASE_DIR/LS_LIVE_CONTEXTS point at a delegation-eligible base -> rc 0, the
+    # delegated N/A, and LS_ROW_STATE records it (AC1).
+    LS_BASE_DIR="$LS_FXDIR/t1-base"; LS_LIVE_CONTEXTS="$LS_FXDIR/t1-live.txt"
+    _st_dg_out=$(check_row "$LS_FX_OK" 2>&1) && _st_dg_rc=0 || _st_dg_rc=$?
+    [ "$_st_dg_rc" -eq 0 ] \
+      || { echo "selftest FAIL: delegate/delegated: wanted rc0, got rc=$_st_dg_rc out='$_st_dg_out'"; st_fail=1; }
+    case "$_st_dg_out" in
+      *"N/A: board governance is delegated to the required context 'tracker-board-gates' (live on the base branch)"*) : ;;
+      *) echo "selftest FAIL: delegate/delegated: missing the delegated N/A sentence, got <$_st_dg_out>"; st_fail=1 ;;
+    esac
+    # A command-substitution call runs in a SUBSHELL (POSIX): LS_ROW_STATE set inside it never
+    # reaches this shell. Re-run directly (output discarded) to read the real assignment, exactly
+    # as the pre-existing hosted-backend legs above already do.
+    check_row "$LS_FX_OK" >/dev/null 2>&1 || true
+    case "$LS_ROW_STATE" in
+      "N/A (delegated to tracker-board-gates — live on the base branch)") : ;;
+      *) echo "selftest FAIL: delegate/delegated: LS_ROW_STATE wrong, got '$LS_ROW_STATE'"; st_fail=1 ;;
+    esac
+    echo "selftest PASS: delegate/delegated: base tracker+conf+live-listed -> rc 0, the delegated N/A"
+
+    # (b) other-legs-bind: the step-aside excuses ONLY the row leg — a control-plane head missing
+    # Kit-Stage still reds the WHOLE gate (AC3), driven through run_gate so the class/stage/skill
+    # legs actually run.
+    # The class must come from a FIXTURE listing, never from the ambient checkout diff: without
+    # $2, ls_class_for_required reads the live git diff against trunk, so this leg's verdict would
+    # depend on whatever branch it happens to run on (control-plane on #711's own branch, ordinary
+    # on any docs-only PR) rather than on the fixture head under test.
+    echo "conformance/loop-state.sh" > "$LS_FXDIR/t1-cp-listing.txt"
+    _st_oth_out=$(run_gate "$LS_FX_CP3" "$LS_FXDIR/t1-cp-listing.txt" 2>&1) && _st_oth_rc=0 || _st_oth_rc=$?
+    [ "$_st_oth_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/other-legs-bind: wanted rc 1 (missing Kit-Stage), got rc=$_st_oth_rc; out='$_st_oth_out'"; st_fail=1; }
+    case "$_st_oth_out" in
+      *"carries no parseable 'Kit-Stage' trailer"*) : ;;
+      *) echo "selftest FAIL: delegate/other-legs-bind: refusal was not the STAGE sentence (would also pass for a row refusal), got <$_st_oth_out>"; st_fail=1 ;;
+    esac
+    case "$_st_oth_out" in
+      *"N/A: board governance is delegated to the required context 'tracker-board-gates' (live on the base branch)"*)
+        echo "selftest PASS: delegate/other-legs-bind: control-plane head missing Kit-Stage -> rc 1, the STAGE refusal sentence AND the delegated N/A — the step-aside excused the row leg while the stage leg still refused" ;;
+      *)
+        echo "selftest FAIL: delegate/other-legs-bind: missing the delegated N/A sentence (step-aside did not fire), got <$_st_oth_out>"; st_fail=1 ;;
+    esac
+
+    # (c) not-live: the live-contexts file exists but lacks the exact line -> rc 1, NOT ENFORCED.
+    LS_LIVE_CONTEXTS="$LS_FXDIR/t1-live-missing.txt"
+    _st_nl_out=$(check_row "$LS_FX_OK" 2>&1) && _st_nl_rc=0 || _st_nl_rc=$?
+    [ "$_st_nl_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/not-live: wanted rc 1, got rc=$_st_nl_rc"; st_fail=1; }
+    case "$_st_nl_out" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: delegate/not-live: wrong sentence, got <$_st_nl_out>"; st_fail=1 ;;
+    esac
+    case "$_st_nl_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/not-live: wrongly delegated (N/A present), got <$_st_nl_out>"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/not-live: tracker-board-gates absent from the live-contexts file -> rc 1, the NOT ENFORCED sentence, no delegated N/A" ;;
+    esac
+
+    # (c2) not-live-cure (amendment A2): the refusal names the real cure — bind tracker-board-gates —
+    # not the generic waiver-only clause.
+    case "$_st_nl_out" in
+      *"Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --apply — or move the board to BACKLOG.md, or ratify a board-governance waiver"*)
+        echo "selftest PASS: delegate/not-live-cure: the refusal stderr names tracker-board-gates + REQUIRED-CHECKS.md (A2)" ;;
+      *)
+        echo "selftest FAIL: delegate/not-live-cure: missing the real cure, got <$_st_nl_out>"; st_fail=1 ;;
+    esac
+
+    # (d) no-live-file: --live-contexts names a file that does not exist -> rc 1, FAIL-CLOSED to
+    # TODAY'S PATH (not_enforced_notice), never rc 2 (LS-T2-Q6: rc 2 is reserved for a USAGE
+    # anomaly in the PARSER — a missing argument/unknown/dup flag — never for a step-aside input
+    # that is merely absent or malformed once both flags WERE given; the A3 md-base wiring passes
+    # exactly this shape, a --live-contexts path the conditional fetch step never created).
+    LS_LIVE_CONTEXTS="$LS_FXDIR/t1-no-such-file.txt"
+    _st_nlf_out=$(check_row "$LS_FX_OK" 2>&1) && _st_nlf_rc=0 || _st_nlf_rc=$?
+    [ "$_st_nlf_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/no-live-file: wanted rc 1, got rc=$_st_nlf_rc"; st_fail=1; }
+    case "$_st_nlf_out" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: delegate/no-live-file: wrong sentence, got <$_st_nlf_out>"; st_fail=1 ;;
+    esac
+    case "$_st_nlf_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/no-live-file: wrongly delegated (N/A present), got <$_st_nlf_out>"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/no-live-file: --live-contexts names a file that does not exist -> rc 1, the NOT ENFORCED sentence, no delegated N/A (fail-closed to today's path, never rc 2)" ;;
+    esac
+
+    # (e) empty-live: a present, zero-byte --live-contexts file -> rc 1 (fail-closed), never rc 2.
+    LS_LIVE_CONTEXTS="$LS_FXDIR/t1-live-empty.txt"
+    _st_el_out=$(check_row "$LS_FX_OK" 2>&1) && _st_el_rc=0 || _st_el_rc=$?
+    [ "$_st_el_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/empty-live: wanted rc 1, got rc=$_st_el_rc"; st_fail=1; }
+    case "$_st_el_out" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: delegate/empty-live: wrong sentence, got <$_st_el_out>"; st_fail=1 ;;
+    esac
+    case "$_st_el_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/empty-live: wrongly delegated (N/A present), got <$_st_el_out>"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/empty-live: an EMPTY --live-contexts file -> rc 1, the NOT ENFORCED sentence, no delegated N/A (never rc 2)" ;;
+    esac
+
+    # (f) live-suffix: an event-suffixed spelling must not satisfy the exact-line match -> rc 1.
+    LS_LIVE_CONTEXTS="$LS_FXDIR/t1-live-suffix.txt"
+    _st_lsx_out=$(check_row "$LS_FX_OK" 2>&1) && _st_ls_rc=0 || _st_ls_rc=$?
+    [ "$_st_ls_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/live-suffix: wanted rc 1, got rc=$_st_ls_rc"; st_fail=1; }
+    case "$_st_lsx_out" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: delegate/live-suffix: wrong sentence, got <$_st_lsx_out>"; st_fail=1 ;;
+    esac
+    case "$_st_lsx_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/live-suffix: wrongly delegated (N/A present), got <$_st_lsx_out>"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/live-suffix: live-contexts holding only the event-suffixed spelling must not satisfy -> rc 1, the NOT ENFORCED sentence, no delegated N/A" ;;
+    esac
+
+    # (g) base-declares-md: a valid tracker conf sits under a base whose OWN backend is md ->
+    # rc 1, never the delegated N/A (AC5).
+    LS_LIVE_CONTEXTS="$LS_FXDIR/t1-live.txt"
+    LS_BASE_DIR="$LS_FXDIR/t1-base-md"
+    _st_bmd_out=$(check_row "$LS_FX_OK" 2>&1) && _st_bmd_rc=0 || _st_bmd_rc=$?
+    [ "$_st_bmd_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/base-declares-md: wanted rc 1, got rc=$_st_bmd_rc"; st_fail=1; }
+    case "$_st_bmd_out" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: delegate/base-declares-md: wrong sentence, got <$_st_bmd_out>"; st_fail=1 ;;
+    esac
+    case "$_st_bmd_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/base-declares-md: wrongly delegated"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/base-declares-md: base on md, head declares jira + conf -> rc 1, the NOT ENFORCED sentence (AC5)" ;;
+    esac
+
+    # (h) bypass-head-conf: LS_BOARDROOT (the head's own dir) plants its own valid tracker.conf,
+    # base stays md -> still rc 1 — the predicate never reads LS_BOARDROOT's .kit/ at all.
+    LS_BOARDROOT="$LS_FXDIR/t1-head-conf"
+    _st_bhc_out=$(check_row "$LS_FX_OK" 2>&1) && _st_bhc_rc=0 || _st_bhc_rc=$?
+    [ "$_st_bhc_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/bypass-head-conf: wanted rc 1, got rc=$_st_bhc_rc"; st_fail=1; }
+    case "$_st_bhc_out" in
+      *"NOT ENFORCED: backend 'jira'"*) : ;;
+      *) echo "selftest FAIL: delegate/bypass-head-conf: wrong sentence, got <$_st_bhc_out>"; st_fail=1 ;;
+    esac
+    case "$_st_bhc_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/bypass-head-conf: wrongly delegated"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/bypass-head-conf: head plants its own tracker.conf on an md base -> rc 1, the NOT ENFORCED sentence" ;;
+    esac
+    LS_BOARDROOT="$LS_FXDIR/backend-github"
+
+    # (i) record-wins (AC4, RD-2): SEAM_RECORD set + a delegation-eligible base+live -> the record
+    # arm runs and returns FIRST — the delegated N/A must never print, even though the predicate
+    # would otherwise pass. Reuses the TBG-RECORD-GATES-BIND tracked fixture tree so the record's
+    # pin matches a real tracker.conf digest.
+    # A head whose Kit-Row matches the tracker record's project-id grammar (F-5: `AB-[1-9]...`,
+    # the tracked fixture's project=AB) — LS_FX_OK's "DEMO-ROW" cannot be reused here.
+    echo t1rw > "$LS_FXDIR/a"; git -C "$LS_FXDIR" add a
+    printf 'delegate/record-wins fixture\n\nbody\n\nKit-Row: AB-1\nKit-Class: ordinary\n' \
+      | git -C "$LS_FXDIR" commit -q -F -
+    LS_FX_ROWAB1=$(git -C "$LS_FXDIR" rev-parse HEAD)
+    _st_rw_trk="$DIR/conformance/fixtures/tbg-record-gates-bind/tracker-jira"
+    _st_rw_trkpin=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } < "$_st_rw_trk/.kit/tracker.conf" 2>/dev/null | awk '{print $1}')
+    _st_rw_today=$(date -u +%Y-%m-%d)
+    _st_rw_rec="$LS_FXDIR/t1-record-wins.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_rw_trkpin"
+      echo "head $LS_FX_ROWAB1"
+      echo "requested AB-1"
+      echo "read-day $_st_rw_today"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=in-progress"
+    } > "$_st_rw_rec"
+    LS_BOARDROOT="$_st_rw_trk"
+    LS_BASE_DIR="$LS_FXDIR/t1-base"; LS_LIVE_CONTEXTS="$LS_FXDIR/t1-live.txt"
+    SEAM_RECORD="$_st_rw_rec"
+    _st_rw_out=$(check_row "$LS_FX_ROWAB1" 2>&1) && _st_rw_rc=0 || _st_rw_rc=$?
+    [ "$_st_rw_rc" -eq 0 ] \
+      || { echo "selftest FAIL: delegate/record-wins: wanted rc0 (record arm binds), got rc=$_st_rw_rc out='$_st_rw_out'"; st_fail=1; }
+    case "$_st_rw_out" in
+      *"delegated to the required context"*) echo "selftest FAIL: delegate/record-wins: the record arm never ran — printed the delegated N/A instead"; st_fail=1 ;;
+      *) echo "selftest PASS: delegate/record-wins: SEAM_RECORD set + the flags -> the record arm, never the N/A" ;;
+    esac
+    check_row "$LS_FX_ROWAB1" >/dev/null 2>&1 || true
+    SEAM_RECORD=""
+    case "$LS_ROW_STATE" in
+      "resolved (tracker record)") : ;;
+      *) echo "selftest FAIL: delegate/record-wins: LS_ROW_STATE did not record the tracker arm, got '$LS_ROW_STATE'"; st_fail=1 ;;
+    esac
+
+    # (j) waiver-unchanged (AC2): no --base-dir/--live-contexts pair given at all -> today's waived
+    # NOT ENFORCED path, byte-identical.
+    LS_BOARDROOT="$LS_FXDIR/backend-github-waived"
+    LS_BASE_DIR=""; LS_LIVE_CONTEXTS=""
+    _st_wu_out=$(check_row "$LS_FX_OK" 2>&1) && _st_wu_rc=0 || _st_wu_rc=$?
+    [ "$_st_wu_rc" -eq 0 ] \
+      || { echo "selftest FAIL: delegate/waiver-unchanged: wanted rc0, got rc=$_st_wu_rc"; st_fail=1; }
+    case "$_st_wu_out" in
+      *"NOT ENFORCED: backend 'github' — waived until $LS_FX_WV_EXP by @jdoe"*) echo "selftest PASS: delegate/waiver-unchanged: no flags + a ratified waiver -> today's waived verdict" ;;
+      *) echo "selftest FAIL: delegate/waiver-unchanged: wrong sentence, got <$_st_wu_out>"; st_fail=1 ;;
+    esac
+
+    # Reset before the legs that follow (they read hosted backends without expecting a step-aside).
+    LS_BOARDROOT="$LS_FXDIR/backend-github"
+    LS_BASE_DIR=""; LS_LIVE_CONTEXTS=""
+
     # UNIVERSALITY — on an N/A'd tree the class and skill legs still refuse.
     # ⚠️ HONEST LABEL: these two legs are TAUTOLOGICAL as written, and review measured why —
     # check_class and check_skill contain ZERO references to LS_BOARDROOT, so setting it cannot
@@ -1905,6 +2208,1153 @@ selftest() {
       && { echo "selftest FAIL: Kit-Class must still apply on an N/A'd board tree"; st_fail=1; }
 
     LS_BOARDROOT="$_st_board_saved"
+
+    # --- T6b (TBG-RECORD-GATES-BIND): the tracker arm ------------------------------------------
+    # The deliverable fixture tree (design §2 scope D) is the TRACKED half —
+    # conformance/fixtures/tbg-record-gates-bind/tracker-jira/{.kit/tracker.conf,CLAUDE.md}, no
+    # BACKLOG.md (the treeless proof). The SEAM_RECORD content is generated HERE, at test time —
+    # a tracked record file would go stale (L-2 today/yesterday) or drift (M-1 pin digest) the
+    # day either side of the tree changed without the other.
+    _st_trk="$DIR/conformance/fixtures/tbg-record-gates-bind/tracker-jira"
+    _st_trkconf="$_st_trk/.kit/tracker.conf"
+    _st_trkpin=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } < "$_st_trkconf" 2>/dev/null | awk '{print $1}')
+    _st_trkhead="1111111111111111111111111111111111111111"
+    _st_trktoday=$(date -u +%Y-%m-%d)
+    _st_trkrec="$LS_FXDIR/tracker-record-good.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=in-progress"
+    } > "$_st_trkrec"
+
+    # TREELESS POSITIVE — seam_row_count/state BIND on the good record, on a tree with NO
+    # BACKLOG.md at all (§3, §6b R2 acceptance).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_trkrec"; SEAM_HEAD="$_st_trkhead"
+    _st_tc=$(seam_row_count AB-1 2>/dev/null) && _st_trc=0 || _st_trc=$?
+    [ "$_st_trc" -eq 0 ] && [ "$_st_tc" = "1" ] \
+      || { echo "selftest FAIL: tracker seam_row_count must BIND 1 on a good record (treeless — no BACKLOG.md in $_st_trk)"; st_fail=1; }
+    _st_ts=$(seam_row_state AB-1 2>/dev/null) && _st_trc=0 || _st_trc=$?
+    [ "$_st_trc" -eq 0 ] && [ "$_st_ts" = "in-progress" ] \
+      || { echo "selftest FAIL: tracker seam_row_state must BIND 'in-progress' on a good record"; st_fail=1; }
+
+    # H-3/M-5 rewritten for TBG-READER-FLAGS-LIST T7 (was: "both arms UNVERIFIED-by-construction,
+    # unconditionally" — now live). pr-bound is the ONE flag answered from a bound record's mere
+    # STRUCTURE (§3f: always 'n/a' on a tracker, never a lookup) even here, on the single-row/
+    # no-list good record; seam_rows_in_state still refuses (rc2, H-3) on THIS record because
+    # $_st_trkrec carries no `list` line at all for any state.
+    _st_trpb=$(seam_row_flag AB-1 pr-bound 2>/dev/null) && _st_trpbrc=0 || _st_trpbrc=$?
+    [ "$_st_trpbrc" -eq 0 ] && [ "$_st_trpb" = "n/a" ] \
+      || { echo "selftest FAIL: tracker seam_row_flag pr-bound must bind 'n/a' (T7), got rc=$_st_trpbrc val=$_st_trpb"; st_fail=1; }
+    seam_rows_in_state ready >/dev/null 2>&1 \
+      && { echo "selftest FAIL: seam_rows_in_state must refuse (rc2, H-3) when the record carries no list line at all for that state"; st_fail=1; }
+
+    # Each negative below is ONE mutation of the good record, asserted RED against the positive
+    # (assert-differs, §8.2/§6). A shared helper keeps each leg to one line.
+    _st_trk_neg() {   # $1 = record content, $2 = description
+      _stn_f="$LS_FXDIR/tracker-record-neg.txt"
+      printf '%s' "$1" > "$_stn_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_f"; SEAM_HEAD="$_st_trkhead"
+      if seam_row_count AB-1 >/dev/null 2>&1; then
+        echo "selftest FAIL: tracker negative ($2) must REFUSE, not bind"; st_fail=1
+      fi
+    }
+    _st_good_body=$(cat "$_st_trkrec")
+
+    # H-2 — wrong head.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed "s/^head .*/head 2222222222222222222222222222222222222222/")" "wrong head (H-2)"
+
+    # M-1 — stale pin (record's pin no longer matches the base conf's actual bytes).
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/^pin sha256:.*/pin sha256:0000000000000000000000000000000000000000000000000000000000000000/')" "stale pin (M-1)"
+
+    # M-6 — unmapped state token (charset-legal, not in the §4.1 vocabulary).
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=frobnicated/')" "unmapped state (M-6)"
+
+    # M-6 — duplicate singleton key (a second verdict line).
+    _st_trk_neg "$(printf '%s\nverdict bound\n' "$_st_good_body")" "duplicate verdict key (M-6)"
+
+    # M-6 — row id != requested. AB-2 is an F-5-valid id for this fixture's project (AB) that
+    # simply differs from the record's actual row (AB-1) — so this leg's refusal is caused ONLY
+    # by the M-6 subject-mismatch rule, never confounded by a coincidental F-5 grammar failure
+    # (TBG-FIX-2 was NOT project-AB-shaped, so its label didn't match its true cause).
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/^requested .*/requested AB-2/')" "row id != requested (M-6)"
+
+    # M-6 — verdict bound with no row line.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | grep -v '^row ')" "bound without a row line (M-6)"
+
+    # M-6 — hostile charset byte (a literal backtick) smuggled into the row line.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress`/')" "hostile charset byte (M-6)"
+
+    # M-3 — credential unverified coexisting with verdict bound.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/^credential ok/credential unverified/')" "unverified credential + bound verdict (M-3)"
+
+    # M-4 — backend mismatch: the record claims github while the base conf/CLAUDE.md say jira.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/^backend jira/backend github/')" "backend mismatch (M-4)"
+
+    # L-2 — read-day outside the today/yesterday window.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/^read-day .*/read-day 2020-01-01/')" "stale read-day (L-2)"
+
+    # N-1 — a duplicate token KEY inside one `row` line must refuse (last-wins is not permitted).
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress state=done/')" "duplicate state= token in one row line (N-1)"
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress claimed=yes claimed=no/')" "duplicate claimed= token in one row line (N-1)"
+
+    # N-2 — a NUL byte embedded in the record must refuse (invisible to the per-line charset gate).
+    _stn_nul="$LS_FXDIR/tracker-record-nul.txt"
+    printf '%s\n' "$_st_good_body" > "$_stn_nul"
+    printf '\000' >> "$_stn_nul"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_nul"; SEAM_HEAD="$_st_trkhead"
+    seam_row_count AB-1 >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a NUL byte embedded in the record must be REFUSED (N-2)"; st_fail=1; }
+
+    # N-4 — a base conf carrying a DUPLICATE backend= line must refuse (routed through the one
+    # parser, scripts/tracker-conf.sh get, not a second ad hoc `grep '^backend=' | head -1`). The
+    # record's own pin is re-digested against THIS conf's actual bytes so the M-1 pin check passes
+    # and the leg actually exercises the N-4 backend-compare path, not an unrelated stale-pin refusal.
+    _stn_dupconfdir="$LS_FXDIR/tracker-dupbackend"
+    mkdir -p "$_stn_dupconfdir/.kit"
+    printf '%s\n' "version=1
+backend=jira
+backend=jira
+base_url=https://example.atlassian.net
+project=AB" > "$_stn_dupconfdir/.kit/tracker.conf"
+    cp "$_st_trk/CLAUDE.md" "$_stn_dupconfdir/CLAUDE.md"
+    _stn_dupdigest=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } < "$_stn_dupconfdir/.kit/tracker.conf" | awk '{print $1}')
+    _stn_dupback="$LS_FXDIR/tracker-record-dupback.txt"
+    printf '%s\n' "$_st_good_body" | sed "s/^pin sha256:.*/pin sha256:$_stn_dupdigest/" > "$_stn_dupback"
+    SEAM_ROOT="$_stn_dupconfdir"; SEAM_RECORD="$_stn_dupback"; SEAM_HEAD="$_st_trkhead"
+    seam_row_count AB-1 >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a base conf with a duplicate backend= line must be REFUSED (N-4)"; st_fail=1; }
+
+    # L-a — an unbounded unknown-key length must not be echoed unbounded onto stderr.
+    _stn_longkey=$(awk 'BEGIN{s="a"; for(i=0;i<12;i++) s=s s; print s}')
+    _stn_longrec="$LS_FXDIR/tracker-record-longkey.txt"
+    printf 'kit-tracker-read 1\n%s value\n' "$_stn_longkey" > "$_stn_longrec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_longrec"; SEAM_HEAD="$_st_trkhead"
+    _stn_longout=$(seam_row_count AB-1 2>&1 >/dev/null) || true
+    if [ "${#_stn_longout}" -gt 90 ]; then
+      echo "selftest FAIL: an unknown-key refusal must be BOUNDED (L-a), got ${#_stn_longout} bytes: <$_stn_longout>"; st_fail=1
+    fi
+    case "$_stn_longout" in
+      *"key"*) : ;;
+      *) echo "selftest FAIL: a bounded unknown-key refusal must still name 'key' (L-a), got <$_stn_longout>"; st_fail=1 ;;
+    esac
+
+    # L-b — `verdict unverified` on an otherwise-sound record must refuse with a NAMED sentence.
+    _stn_unvrec="$LS_FXDIR/tracker-record-unverified.txt"
+    printf '%s\n' "$_st_good_body" | sed 's/^verdict bound/verdict unverified/' | grep -v '^row ' > "$_stn_unvrec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_unvrec"; SEAM_HEAD="$_st_trkhead"
+    _stn_unvout=$(seam_row_count AB-1 2>&1 >/dev/null) || true
+    case "$_stn_unvout" in
+      *"unverified"*) : ;;
+      *) echo "selftest FAIL: 'verdict unverified' must refuse with a NAMED sentence (L-b), got <$_stn_unvout>"; st_fail=1 ;;
+    esac
+
+    # L-c — a malformed dor-* token key (empty metric name, or a second `=` folded into the value)
+    # must refuse.
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress dor-=yes/')" "empty dor- metric name (L-c)"
+    _st_trk_neg "$(printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress dor-metric=yes=no/')" "second = folded into a dor- value (L-c)"
+
+    # missing 512-line cap positive leg — a 513-line record must refuse (M-2's cap, previously
+    # untested in this direction).
+    _stn_513="$LS_FXDIR/tracker-record-513.txt"
+    {
+      echo "kit-tracker-read 1"
+      _st_i=1
+      while [ "$_st_i" -le 512 ]; do
+        printf 'requested AB-1\n'
+        _st_i=$((_st_i + 1))
+      done
+    } > "$_stn_513"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_513"; SEAM_HEAD="$_st_trkhead"
+    seam_row_count AB-1 >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a 513-line record must be REFUSED (the 512-line cap, M-2)"; st_fail=1; }
+
+    # M-2 — a symlinked record path.
+    _stn_sym="$LS_FXDIR/tracker-record-sym.txt"
+    ln -sf "$_st_trkrec" "$_stn_sym"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_sym"; SEAM_HEAD="$_st_trkhead"
+    seam_row_count AB-1 >/dev/null 2>&1 \
+      && { echo "selftest FAIL: a symlinked record path must be REFUSED (M-2)"; st_fail=1; }
+
+    # M-2 — an oversized record (>64 KiB).
+    _stn_big="$LS_FXDIR/tracker-record-big.txt"
+    { printf '%s\n' "$_st_good_body"; awk 'BEGIN{for(i=0;i<70000;i++) printf "x"}'; } > "$_stn_big"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_big"; SEAM_HEAD="$_st_trkhead"
+    seam_row_count AB-1 >/dev/null 2>&1 \
+      && { echo "selftest FAIL: an oversized record must be REFUSED (M-2)"; st_fail=1; }
+
+    # M-3 — over-privileged BINDS, with a stderr NOTICE (never a refusal).
+    _stn_ovp="$LS_FXDIR/tracker-record-ovp.txt"
+    printf '%s\n' "$_st_good_body" | sed 's/^credential ok/credential over-privileged/' > "$_stn_ovp"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_ovp"; SEAM_HEAD="$_st_trkhead"
+    _st_ovpout=$(seam_row_count AB-1 2>&1 >/dev/null) && _st_ovprc=0 || _st_ovprc=$?
+    [ "$_st_ovprc" -eq 0 ] \
+      || { echo "selftest FAIL: an over-privileged credential must still BIND (M-3)"; st_fail=1; }
+    case "$_st_ovpout" in
+      *NOTICE*"over-privileged"*) : ;;
+      *) echo "selftest FAIL: an over-privileged credential must carry a stderr NOTICE (M-3), got <$_st_ovpout>"; st_fail=1 ;;
+    esac
+
+    # L-1 — sentence hygiene: the hostile-byte leg's refusal must never echo the hostile byte itself.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$LS_FXDIR/tracker-record-neg.txt"
+    printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress`whoami`/' > "$SEAM_RECORD"
+    SEAM_HEAD="$_st_trkhead"
+    _st_hostout=$(seam_row_count AB-1 2>&1 >/dev/null) || true
+    case "$_st_hostout" in
+      *'`whoami`'*) echo "selftest FAIL: a refusal must NEVER echo the hostile record bytes (L-1), got <$_st_hostout>"; st_fail=1 ;;
+      *) : ;;
+    esac
+
+    unset -f _st_trk_neg
+
+    # --- T6a (TBG-READER-FLAGS-LIST T6a): multi-`row`/multi-`list` capture, closed dor- names, two
+    # new tokens (bijection itself is T6b — not tested here). Design §3b's example record, on the
+    # SAME fixture tree/conf as the T6b section above (project=AB in $_st_trkconf, so AB-* ids are
+    # in-grammar) — read-day/head/pin built the same way the existing good-record builder does.
+    _st_mr_rec="$LS_FXDIR/tracker-record-multirow.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-7"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-7 state=in-progress claimed=yes"
+      echo "row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes"
+      echo "row AB-31 state=ready dor-acceptance=yes dor-metric=no dor-size=yes dor-risk=yes"
+      echo "list ready AB-12 AB-31"
+      echo "list in-progress AB-7"
+    } > "$_st_mr_rec"
+
+    # Leg 1 — the good multi-row/multi-list record BINDS (seam_row_count on the subject = 1).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_mrc=$(seam_row_count AB-7 2>/dev/null) && _st_mrrc=0 || _st_mrrc=$?
+    [ "$_st_mrrc" -eq 0 ] && [ "$_st_mrc" = "1" ] \
+      || { echo "selftest FAIL: T6a leg1 — a good multi-row/multi-list record must BIND seam_row_count=1 for the subject, got rc=$_st_mrrc val=$_st_mrc"; st_fail=1; }
+    # F-1(a): also assert the resolved STATE is the subject's own (AB-7 -> in-progress), never a
+    # non-subject row's (AB-12/AB-31 -> ready) — a mutant that takes `state=` from the LAST row
+    # scanned rather than the MATCHING row would still bind (count=1) but return the wrong value.
+    _st_mrs=$(seam_row_state AB-7 2>/dev/null) && _st_mrsrc=0 || _st_mrsrc=$?
+    [ "$_st_mrsrc" -eq 0 ] && [ "$_st_mrs" = "in-progress" ] \
+      || { echo "selftest FAIL: T6a leg1 — seam_row_state AB-7 must be in-progress (the subject's own row), got rc=$_st_mrsrc val=$_st_mrs"; st_fail=1; }
+
+    # Leg 1b (F-1(b)) — the SUBJECT row LAST, after rows in OTHER states (single-spaced, lists
+    # consistent). Leg 1 alone leaves the subject-first shape as the only one exercised; a mutant
+    # that resolves `state=` from the LAST row _seam_rows_state_of scans (MA), rather than the
+    # one whose id actually matches, would still pass leg1 (subject first == last row happens to be
+    # a non-subject `ready` row there too, but leg1 doesn't probe that) — this leg pins the case
+    # where "last scanned" and "the subject" are provably different rows.
+    _st_mrlast_rec="$LS_FXDIR/tracker-record-multirow-last.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-7"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-12 state=ready"
+      echo "row AB-31 state=done"
+      echo "row AB-7 state=in-progress"
+      echo "list ready AB-12"
+      echo "list done AB-31"
+      echo "list in-progress AB-7"
+    } > "$_st_mrlast_rec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mrlast_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_mrlc=$(seam_row_count AB-7 2>/dev/null) && _st_mrlrc=0 || _st_mrlrc=$?
+    [ "$_st_mrlrc" -eq 0 ] && [ "$_st_mrlc" = "1" ] \
+      || { echo "selftest FAIL: T6a leg1b — subject-row-last must still BIND seam_row_count=1, got rc=$_st_mrlrc val=$_st_mrlc"; st_fail=1; }
+    _st_mrls=$(seam_row_state AB-7 2>/dev/null) && _st_mrlrc=0 || _st_mrlrc=$?
+    [ "$_st_mrlrc" -eq 0 ] && [ "$_st_mrls" = "in-progress" ] \
+      || { echo "selftest FAIL: T6a leg1b — subject-row-last must resolve seam_row_state=in-progress (not a non-subject row's state), got rc=$_st_mrlrc val=$_st_mrls"; st_fail=1; }
+
+    # Leg 2 — _SRV_ROWS holds EXACTLY all three rows (newline-joined, in file order, one trailing
+    # newline per T6a's append convention) and _SRV_LISTS EXACTLY both lists, asserted with WHOLE-
+    # STRING equality (F-1(c): a substring `case` match cannot tell "newline-joined" from
+    # "space-joined" apart — MB drops the newline separator and every substring is still present,
+    # just glued onto one line — so this leg pins the SEPARATOR, not merely the content). Also
+    # asserts _seam_record_load itself returned 0 (a PLAIN call, never `$(...)`, so the globals it
+    # sets land in THIS shell — same convention LS_ROW_STATE's assertion above already relies on;
+    # captured via the `cmd && rc=0 || rc=$?` idiom so a future non-zero can't abort the whole
+    # selftest under `set -e` before its own FAIL: line prints).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _seam_record_load >/dev/null 2>&1 && _st_t6a_l2rc=0 || _st_t6a_l2rc=$?
+    [ "$_st_t6a_l2rc" -eq 0 ] \
+      || { echo "selftest FAIL: T6a leg2 — _seam_record_load must return 0 on the good multi-row/multi-list record, got rc=$_st_t6a_l2rc"; st_fail=1; }
+    _st_t6a_want_rows="AB-7 state=in-progress claimed=yes
+AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes
+AB-31 state=ready dor-acceptance=yes dor-metric=no dor-size=yes dor-risk=yes
+"
+    _st_t6a_want_lists="ready AB-12 AB-31
+in-progress AB-7
+"
+    [ "$_SRV_ROWS" = "$_st_t6a_want_rows" ] \
+      || { echo "selftest FAIL: T6a leg2 — _SRV_ROWS must equal the three newline-joined rows exactly, got <$_SRV_ROWS>"; st_fail=1; }
+    [ "$_SRV_LISTS" = "$_st_t6a_want_lists" ] \
+      || { echo "selftest FAIL: T6a leg2 — _SRV_LISTS must equal the two newline-joined lists exactly, got <$_SRV_LISTS>"; st_fail=1; }
+
+    _st_mr_body=$(cat "$_st_mr_rec")
+    _st_mr_neg() {   # $1 = record content, $2 = description — one mutation of the T6a good
+      # multi-row/multi-list record, asserted RED against it (assert-differs, mirrors _st_trk_neg).
+      _stmrn_f="$LS_FXDIR/tracker-record-mr-neg.txt"
+      printf '%s' "$1" > "$_stmrn_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stmrn_f"; SEAM_HEAD="$_st_trkhead"
+      if seam_row_count AB-7 >/dev/null 2>&1; then
+        echo "selftest FAIL: T6a negative ($2) must REFUSE, not bind"; st_fail=1
+      fi
+    }
+
+    # Leg 3 — a duplicate `row` id on two lines must refuse.
+    _st_mr_neg "$(printf '%s\n' "$_st_mr_body"; printf 'row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes\n')" "duplicate row id on two lines (leg3)"
+
+    # Leg 4 — two `list ready` lines must refuse (a duplicate LIST STATE, not a duplicate id).
+    _st_mr_neg "$(printf '%s\n' "$_st_mr_body"; printf 'list ready AB-12\n')" "two list ready lines (leg4)"
+
+    # Leg 5 — a duplicate id WITHIN one `list` line must refuse.
+    _st_mr_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready AB-12 AB-12 AB-31/')" "duplicate id within one list line (leg5)"
+
+    # Leg 6 — a `dor-bogus=yes` token on a row must refuse (the P-2 closed dor- name set).
+    _st_mr_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/dor-risk=yes$/dor-risk=yes dor-bogus=yes/')" "dor-bogus on a row (leg6)"
+
+    # Leg 7 — `outcome-recorded=yes` and `blocked-by-open=no` on a row are ACCEPTED (booleans, F-9
+    # forward-compat: the reader does not emit them yet, but the parser must not refuse them).
+    _st_mr_pos_f="$LS_FXDIR/tracker-record-mr-pos.txt"
+    printf '%s\n' "$_st_mr_body" | sed 's/^row AB-7 state=in-progress claimed=yes$/row AB-7 state=in-progress claimed=yes outcome-recorded=yes blocked-by-open=no/' > "$_st_mr_pos_f"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_pos_f"; SEAM_HEAD="$_st_trkhead"
+    _st_mrp_c=$(seam_row_count AB-7 2>/dev/null) && _st_mrp_rc=0 || _st_mrp_rc=$?
+    [ "$_st_mrp_rc" -eq 0 ] && [ "$_st_mrp_c" = "1" ] \
+      || { echo "selftest FAIL: T6a leg7 — outcome-recorded=yes/blocked-by-open=no on a row must be ACCEPTED (binds), got rc=$_st_mrp_rc val=$_st_mrp_c"; st_fail=1; }
+    # F-1(a): also assert the resolved STATE is still the subject's own (in-progress), not a
+    # non-subject row's (ready) — same MA mutant coverage as leg1, on a record shape leg1 doesn't
+    # cover (the subject row carries the two new forward-compat tokens).
+    _st_mrps=$(seam_row_state AB-7 2>/dev/null) && _st_mrpsrc=0 || _st_mrpsrc=$?
+    [ "$_st_mrpsrc" -eq 0 ] && [ "$_st_mrps" = "in-progress" ] \
+      || { echo "selftest FAIL: T6a leg7 — seam_row_state AB-7 must be in-progress (the subject's own row), got rc=$_st_mrpsrc val=$_st_mrps"; st_fail=1; }
+
+    # Leg 8 — the two new booleans are BOOLEANS ONLY: `blocked-by-open=maybe` and
+    # `outcome-recorded=n/a` must each refuse (never a silent pass, mirrors dor-*'s M-5 rule).
+    _st_mr_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-7 state=in-progress claimed=yes$/row AB-7 state=in-progress claimed=yes blocked-by-open=maybe/')" "blocked-by-open=maybe (leg8)"
+    _st_mr_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-7 state=in-progress claimed=yes$/row AB-7 state=in-progress claimed=yes outcome-recorded=n\/a/')" "outcome-recorded=n/a (leg8)"
+
+    unset -f _st_mr_neg
+
+    # F-2 (fix round 1, Minor) — _SRV_ROWS/_SRV_LISTS must be CLEARED on every rc-2 refusal, never
+    # a stale partially-parsed capture surviving past a refused record. The duplicate-row-id record
+    # (same mutation as leg3) is refused AFTER its first row has already been appended to
+    # _SRV_ROWS — the load-bearing shape a leak here would actually carry real row data past a
+    # refusal. A PLAIN call (never `$(...)`), so the globals _seam_record_load sets land in THIS
+    # shell and can be inspected afterward.
+    _st_f2_f="$LS_FXDIR/tracker-record-f2-dup.txt"
+    { printf '%s\n' "$_st_mr_body"; printf 'row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes\n'; } > "$_st_f2_f"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_f2_f"; SEAM_HEAD="$_st_trkhead"
+    _seam_record_load >/dev/null 2>&1 && _st_f2rc=0 || _st_f2rc=$?
+    [ "$_st_f2rc" -eq 2 ] \
+      || { echo "selftest FAIL: F-2 — a duplicate-row-id record must return rc=2, got rc=$_st_f2rc"; st_fail=1; }
+    [ -z "$_SRV_ROWS" ] \
+      || { echo "selftest FAIL: F-2 — _SRV_ROWS must be cleared on refusal, got <$_SRV_ROWS>"; st_fail=1; }
+    # T6b Step 0b (re-review Minor): the F-2 leg above asserted only _SRV_ROWS was cleared — a
+    # mutant that cleared _SRV_ROWS but left _SRV_LISTS alone would survive it. This fixture's
+    # record carries a `list` line too (part of $_st_mr_body), so _SRV_LISTS is non-empty mid-parse
+    # by the time the duplicate-row-id refusal fires; assert it is ALSO cleared.
+    [ -z "$_SRV_LISTS" ] \
+      || { echo "selftest FAIL: F-2 — _SRV_LISTS must ALSO be cleared on refusal, got <$_SRV_LISTS>"; st_fail=1; }
+
+    # T6b Step 0b item 2 — the LATE-refusal leg: a good multi-row/multi-list record whose
+    # SEAM_HEAD is wrong is refused AFTER the row/list scan already populated _SRV_ROWS/_SRV_LISTS
+    # (H-2's head compare runs near the END of _seam_record_load_parse, well after the row/list
+    # loop) — both captures must STILL come back empty (F-2's clear-on-refusal must cover every
+    # refusal site, not just the mid-scan one the F-2 leg above already pins).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="2222222222222222222222222222222222222222"
+    _seam_record_load >/dev/null 2>&1 && _st_lr_rc=0 || _st_lr_rc=$?
+    [ "$_st_lr_rc" -eq 2 ] \
+      || { echo "selftest FAIL: T6b Step 0b — a wrong-SEAM_HEAD refusal on a good multi-row record must return rc=2, got rc=$_st_lr_rc"; st_fail=1; }
+    [ -z "$_SRV_ROWS" ] \
+      || { echo "selftest FAIL: T6b Step 0b — _SRV_ROWS must be cleared on a LATE (post-row-scan) refusal, got <$_SRV_ROWS>"; st_fail=1; }
+    [ -z "$_SRV_LISTS" ] \
+      || { echo "selftest FAIL: T6b Step 0b — _SRV_LISTS must be cleared on a LATE (post-row-scan) refusal, got <$_SRV_LISTS>"; st_fail=1; }
+    # T6b Step 0b item 3 (hardening) — _SRV_ROWID/_SRV_ROWSTATE are set by the subject-match step,
+    # which runs BEFORE the H-2 head compare, so a LATE refusal like this one leaves them set by
+    # _seam_record_load_parse; the wrapper must clear these two too, not just _SRV_ROWS/_SRV_LISTS.
+    [ -z "$_SRV_ROWID" ] \
+      || { echo "selftest FAIL: T6b Step 0b — _SRV_ROWID must be cleared on a LATE refusal too, got <$_SRV_ROWID>"; st_fail=1; }
+    [ -z "$_SRV_ROWSTATE" ] \
+      || { echo "selftest FAIL: T6b Step 0b — _SRV_ROWSTATE must be cleared on a LATE refusal too, got <$_SRV_ROWSTATE>"; st_fail=1; }
+    # T6b-fix1 Minor 3 — the wrapper must clear EVERY _SRV_* global on refusal (step 0b said "every";
+    # only 4 of the 11 were, before this fix). Same LATE-refusal fixture as above.
+    [ -z "$_SRV_REQUESTED" ] \
+      || { echo "selftest FAIL: T6b-fix1 Minor 3 — _SRV_REQUESTED must be cleared on a LATE refusal too, got <$_SRV_REQUESTED>"; st_fail=1; }
+    [ -z "$_SRV_VERDICT" ] \
+      || { echo "selftest FAIL: T6b-fix1 Minor 3 — _SRV_VERDICT must be cleared on a LATE refusal too, got <$_SRV_VERDICT>"; st_fail=1; }
+    [ -z "$_SRV_SUBJ_STATE" ] \
+      || { echo "selftest FAIL: T6b-fix1 Minor 3 — _SRV_SUBJ_STATE must be cleared on a LATE refusal too, got <$_SRV_SUBJ_STATE>"; st_fail=1; }
+    SEAM_HEAD="$_st_trkhead"
+
+    # Leg 9 (lens 7: `loop-state` unaffected) — today's shape, one `row` line, no flags, no `list`
+    # at all, still binds — the ORIGINAL $_st_trkrec built earlier in this section, re-asserted
+    # here explicitly (not just relying on its earlier use above) as the N=1 regression guard for
+    # everything T6a changed.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_trkrec"; SEAM_HEAD="$_st_trkhead"
+    _st_l9c=$(seam_row_count AB-1 2>/dev/null) && _st_l9rc=0 || _st_l9rc=$?
+    [ "$_st_l9rc" -eq 0 ] && [ "$_st_l9c" = "1" ] \
+      || { echo "selftest FAIL: T6a leg9 — today's shape (one row line, no flags, no list) must still BIND, got rc=$_st_l9rc val=$_st_l9c"; st_fail=1; }
+    _st_l9s=$(seam_row_state AB-1 2>/dev/null) && _st_l9rc=0 || _st_l9rc=$?
+    [ "$_st_l9rc" -eq 0 ] && [ "$_st_l9s" = "in-progress" ] \
+      || { echo "selftest FAIL: T6a leg9 — today's shape must still resolve seam_row_state=in-progress, got rc=$_st_l9rc val=$_st_l9s"; st_fail=1; }
+
+    # --- T6b (TBG-READER-FLAGS-LIST T6b): the §3b bijection rules, the F-5 project-id check, and
+    # M-6's one-space rule (design §3b/§3c, plan task T6 "Re-slicing" row T6b). Built on the SAME
+    # $_st_mr_rec / $_st_mr_body multi-row/multi-list good record T6a already established (project
+    # AB, subject AB-7 state=in-progress, non-subject AB-12/AB-31 state=ready, `list ready AB-12
+    # AB-31` / `list in-progress AB-7`). ------------------------------------------------------------
+
+    # Leg 0 (T6a review, M-6) — FIRST, before any bijection code reads the captures: exactly ONE
+    # ASCII space between tokens on every line. Two spaces on a `row` line, two spaces on a `list`
+    # line, and a trailing space must each refuse (rc2) — `list done` and `list done  ` would
+    # otherwise capture differently, and a reader treating "present list, zero ids" as a real
+    # answer (H-3) would read the trailing-space form as non-empty.
+    _st_t6b_neg() {   # $1 = record content, $2 = description — one mutation of $_st_mr_body,
+      # asserted RED against it (assert-differs, mirrors T6a's _st_mr_neg).
+      _stn6b_f="$LS_FXDIR/tracker-record-t6b-neg.txt"
+      printf '%s' "$1" > "$_stn6b_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn6b_f"; SEAM_HEAD="$_st_trkhead"
+      if seam_row_count AB-7 >/dev/null 2>&1; then
+        echo "selftest FAIL: T6b negative ($2) must REFUSE, not bind"; st_fail=1
+      fi
+    }
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-7 state=in-progress claimed=yes$/row AB-7  state=in-progress claimed=yes/')" "two spaces on a row line (leg0/M-6)"
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready  AB-12 AB-31/')" "two spaces on a list line (leg0/M-6)"
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list in-progress AB-7$/list in-progress AB-7 /')" "trailing space on a list line (leg0/M-6)"
+
+    # Leg 1 — a listed id with no `row` line at all -> rc2 (§3b bijection).
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready AB-12 AB-31 AB-99/')" "listed id AB-99 names no row line (leg1)"
+
+    # Leg 2 — a `row` whose state= differs from the list it appears in -> rc2 (§3b bijection).
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes$/row AB-12 state=in-progress dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes/')" "row AB-12 state disagrees with the list ready it is under (leg2)"
+
+    # Leg 3 — a non-subject `row` that appears in no list -> rc2 (§3b bijection). AB-31 keeps its
+    # row line but is dropped from the ready list.
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready AB-12/')" "non-subject row AB-31 appears in no list (leg3)"
+
+    # Leg 4 — one id in two DIFFERENT lists -> rc2 (§3b bijection). AB-12 (ready) is ALSO added to
+    # the in-progress list.
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list in-progress AB-7$/list in-progress AB-7 AB-12/')" "AB-12 listed under two different states (leg4)"
+
+    # Leg 5 — the subject id in ANOTHER state's list -> rc2 (§3b bijection). AB-7 (state=
+    # in-progress) is listed under `ready` instead of `in-progress`.
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready AB-12 AB-31 AB-7/
+s/^list in-progress AB-7$/list in-progress/')" "subject AB-7 listed under another state (leg5)"
+
+    # T6b-fix1 Important 1 (a) — the "iff" half of §3b: the subject's OWN state (ready) IS listed
+    # (list ready AB-12 AB-31 is present), but the subject (now state=ready) is absent from it ->
+    # rc2. The `list in-progress AB-7` line is dropped entirely (rather than left stale) so rule B
+    # (row/list state agreement) cannot fire first — the ONLY defect left is the "iff" gap.
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-7 state=in-progress claimed=yes$/row AB-7 state=ready claimed=yes/
+/^list in-progress AB-7$/d')" "subject AB-7 (now state=ready) absent from the listed ready state (fix1-important1a)"
+
+    # T6b-fix1 Important 1 (b) — the subject's own state (in-progress) IS listed, but with ZERO
+    # ids (an empty `list in-progress` line) -> rc2. Distinct from Leg 7's positive control (NO
+    # list line at all for that state).
+    _st_t6b_neg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list in-progress AB-7$/list in-progress/')" "subject AB-7's own state listed but EMPTY (fix1-important1b)"
+
+    unset -f _st_t6b_neg
+
+    # Leg 6 — the subject row in its OWN state's list -> binds (positive). This is exactly
+    # $_st_mr_rec's own shape (AB-7 state=in-progress, `list in-progress AB-7`) — re-asserted here
+    # explicitly as the T6b positive control now that the bijection pass (Legs 1-3) is fully wired.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t6b_l6c=$(seam_row_count AB-7 2>/dev/null) && _st_t6b_l6rc=0 || _st_t6b_l6rc=$?
+    [ "$_st_t6b_l6rc" -eq 0 ] && [ "$_st_t6b_l6c" = "1" ] \
+      || { echo "selftest FAIL: T6b leg6 — the subject listed under its OWN state must still BIND, got rc=$_st_t6b_l6rc val=$_st_t6b_l6c"; st_fail=1; }
+
+    # Leg 7 — the subject row in NO list at all -> binds (positive, presence-only read). AB-7 keeps
+    # its row (state=in-progress) but there is no `list in-progress` line at all; AB-12 keeps its
+    # own single `list ready` membership so rule (c) (every non-subject row lists exactly once)
+    # still holds for it — a genuinely different shape from T6a leg9's "one row, no list at all".
+    _st_t6b_l7_rec="$LS_FXDIR/tracker-record-t6b-leg7.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-7"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-7 state=in-progress claimed=yes"
+      echo "row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes"
+      echo "list ready AB-12"
+    } > "$_st_t6b_l7_rec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t6b_l7_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t6b_l7c=$(seam_row_count AB-7 2>/dev/null) && _st_t6b_l7rc=0 || _st_t6b_l7rc=$?
+    [ "$_st_t6b_l7rc" -eq 0 ] && [ "$_st_t6b_l7c" = "1" ] \
+      || { echo "selftest FAIL: T6b leg7 — the subject listed under NO state (presence-only read) must still BIND, got rc=$_st_t6b_l7rc val=$_st_t6b_l7c"; st_fail=1; }
+
+    # Leg 8 — `verdict bound` with no row equal to `requested` -> rc2. Already covered by the
+    # pre-T6a "row id != requested (M-6)" negative (single-row shape) and by the pre-existing
+    # _seam_rows_state_of check itself (unchanged by this slice) — pinned HERE too, on the
+    # MULTI-row good record (requested renamed to an id no row carries), per the brief's own
+    # "if T6a already covers it, pin it here with a mutant instead and say so."
+    _st_t6b_neg2() {
+      _stn6b2_f="$LS_FXDIR/tracker-record-t6b-neg2.txt"
+      printf '%s' "$1" > "$_stn6b2_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn6b2_f"; SEAM_HEAD="$_st_trkhead"
+      if seam_row_count AB-99 >/dev/null 2>&1; then
+        echo "selftest FAIL: T6b negative ($2) must REFUSE, not bind"; st_fail=1
+      fi
+    }
+    _st_t6b_neg2 "$(printf '%s\n' "$_st_mr_body" | sed 's/^requested AB-7$/requested AB-99/')" "verdict bound but no row equals requested (leg8, multi-row pin)"
+    unset -f _st_t6b_neg2
+
+    # Leg 9 (F-5) — an id not matching ^<conf project>-[1-9][0-9]*$ in a `row` -> rc2; in a `list`
+    # -> rc2. Leading zeros refused (AB-07 must not alias AB-7). Project is "AB" ($_st_trkconf).
+    # Each mutation renames BOTH the row AND its list occurrence consistently, so F-5's grammar
+    # check is the ONLY defect exercised (never confounded with the bijection rules above).
+    _st_t6b_neg3() {
+      _stn6b3_f="$LS_FXDIR/tracker-record-t6b-neg3.txt"
+      printf '%s' "$1" > "$_stn6b3_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn6b3_f"; SEAM_HEAD="$_st_trkhead"
+      if seam_row_count AB-7 >/dev/null 2>&1; then
+        echo "selftest FAIL: T6b negative ($2) must REFUSE, not bind"; st_fail=1
+      fi
+    }
+    # T6b-fix1 Important 2 (step 3 rework): this "row" sub-case renames BOTH the row AND its list
+    # occurrence together, so its refusal today comes from the LIST-side check (a listed id failing
+    # F-5), not independently from the row-side check — re-labelled to say so honestly. The row-side
+    # check is independently, load-bearingly exercised by the LONE-SUBJECT legs below (no `list` line
+    # at all), added fresh for this fix.
+    _st_t6b_neg3 "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes$/row AB-07 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes/
+s/^list ready AB-12 AB-31$/list ready AB-07 AB-31/')" "row+list id AB-07 fails the project grammar, leading zero (leg9/F-5, confounded with the list-side check — row isolation is fix1-important2)"
+    _st_t6b_neg3 "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-31 state=ready dor-acceptance=yes dor-metric=no dor-size=yes dor-risk=yes$/row CD-31 state=ready dor-acceptance=yes dor-metric=no dor-size=yes dor-risk=yes/
+s/^list ready AB-12 AB-31$/list ready AB-12 CD-31/')" "list id CD-31 fails the project grammar, wrong project (leg9/F-5, list)"
+    unset -f _st_t6b_neg3
+
+    # T6b-fix1 Important 2 (step 2) — F-5 must cover the SUBJECT id too (today it is skipped by a
+    # `continue` in the row-loop's F-5 call, leaving that call dead: leg9 above only ever exercises
+    # NON-subject ids, and always alongside a matching list-side mutation, so the row-side call's own
+    # contribution is never independently proven — the reviewer's mutant MR, replacing the row-loop's
+    # `_seam_id_matches_project "$_srb_rid"` call with an unconditional success, survives every
+    # existing leg). These two legs use the LONE-SUBJECT single-row fixture ($_st_good_body, project
+    # AB, NO `list` line at all) so the row-side check is the ONLY code path that can catch a bad
+    # subject id — renaming `requested` and its `row` consistently (they must still agree, M-6).
+    _st_t6bfix1_neg4() {
+      _stn6bf1_f="$LS_FXDIR/tracker-record-t6bfix1-neg.txt"
+      printf '%s' "$1" > "$_stn6bf1_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn6bf1_f"; SEAM_HEAD="$_st_trkhead"
+      if seam_row_count "$2" >/dev/null 2>&1; then
+        echo "selftest FAIL: T6b-fix1 negative ($3) must REFUSE, not bind"; st_fail=1
+      fi
+    }
+    _st_t6bfix1_neg4 "$(printf '%s\n' "$_st_good_body" | sed 's/^requested AB-1$/requested AB-07/
+s/^row AB-1 /row AB-07 /')" "AB-07" "lone subject id AB-07 fails the project grammar, leading zero, no list at all (fix1-important2)"
+    _st_t6bfix1_neg4 "$(printf '%s\n' "$_st_good_body" | sed 's/^requested AB-1$/requested ZZ-9/
+s/^row AB-1 /row ZZ-9 /')" "ZZ-9" "lone subject id ZZ-9 fails the project grammar, wrong project, no list at all (fix1-important2)"
+    unset -f _st_t6bfix1_neg4
+
+    # --- WB-FIX-A A1: the two seam-answer legs moved OUT of scripts/tracker-read.sh's own selftest
+    # (Q2 / T5d leg 6) — a public seam call from that file made board-parser-drift clause (c) treat
+    # it as a seam-routed board consumer, and it names curl (D-240919-4: curl is POSITIVELY scoped,
+    # never file-allowlisted). The reader keeps its own emit + exact-line grep + _seam_record_load
+    # parse; the ANSWER half lives here, on the SAME record shapes those legs still byte-grep, built
+    # from this section's own tracker-record helpers ($_st_trk/$_st_trkpin/$_st_trkhead/$_st_trktoday).
+
+    # WB-FIX-A Q2: a legal-empty `list ready` line (no ids) still binds, and seam_rows_in_state
+    # answers rc 0 empty — the same shape tracker-read.sh's own Q2 leg byte-greps
+    # (`grep -q '^list ready$'`).
+    _st_wbA_q2rec="$LS_FXDIR/tracker-record-wbA-q2.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=in-progress"
+      echo "list ready"
+    } > "$_st_wbA_q2rec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_wbA_q2rec"; SEAM_HEAD="$_st_trkhead"
+    _st_wbA_q2out=$(seam_rows_in_state ready 2>/dev/null) && _st_wbA_q2rc=0 || _st_wbA_q2rc=$?
+    [ "$_st_wbA_q2rc" -eq 0 ] && [ -z "$_st_wbA_q2out" ] \
+      || { echo "selftest FAIL: WB-FIX-A Q2 — seam_rows_in_state ready on a legal-empty 'list ready' record must bind rc0 empty, got rc=$_st_wbA_q2rc val=<$_st_wbA_q2out>"; st_fail=1; }
+
+    # WB-FIX-A T5d leg6: the all-four-dor-*=yes subject row — the same shape tracker-read.sh's own
+    # T5d leg 6 byte-greps (`grep -q '^row AB-1 state=ready claimed=yes dor-acceptance=yes
+    # dor-metric=yes dor-size=yes dor-risk=yes$'`); seam_row_flag answers dor-risk and
+    # dor-acceptance 'yes' rc0 via the same unmodified tracker arm T7 leg2/leg4 below already exercise.
+    _st_wbA_l6rec="$LS_FXDIR/tracker-record-wbA-t5dleg6.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=ready claimed=yes dor-acceptance=yes dor-metric=yes dor-size=yes dor-risk=yes"
+      # WB-FIX-2 item 4: mirror the reader's own T5d leg 6 record exactly — its `state.ready=Selected`
+      # + `list-in-states` fixture also emits a `list ready AB-1` line for this exact subject/state.
+      echo "list ready AB-1"
+    } > "$_st_wbA_l6rec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_wbA_l6rec"; SEAM_HEAD="$_st_trkhead"
+    _st_wbA_risk=$(seam_row_flag AB-1 dor-risk 2>/dev/null) && _st_wbA_riskrc=0 || _st_wbA_riskrc=$?
+    _st_wbA_acc=$(seam_row_flag AB-1 dor-acceptance 2>/dev/null) && _st_wbA_accrc=0 || _st_wbA_accrc=$?
+    [ "$_st_wbA_riskrc" -eq 0 ] && [ "$_st_wbA_risk" = yes ] && [ "$_st_wbA_accrc" -eq 0 ] && [ "$_st_wbA_acc" = yes ] \
+      || { echo "selftest FAIL: WB-FIX-A T5d leg6 — seam_row_flag dor-risk/dor-acceptance must bind 'yes' rc0 on the all-four-yes record, got risk-rc=$_st_wbA_riskrc risk=$_st_wbA_risk acc-rc=$_st_wbA_accrc acc=$_st_wbA_acc"; st_fail=1; }
+
+    # T7 Step 0 — the ISOLATING leg (re-review carryover, Minor). The subject's F-5 project-id
+    # grammar is today checked TWICE for the same value whenever a `row` line exists — once at
+    # _seam_record_bijection's `requested`-id check, once again inside the row loop when the
+    # scanned row id happens to equal `requested` — so a mutant defeating EITHER check ALONE
+    # still refuses (the other one catches it) and neither call is independently proven. A record
+    # with ZERO `row` lines removes the row loop from the picture entirely (it never executes,
+    # empty or not), isolating the sole remaining source of refusal to the `requested`-id check.
+    _st_iso_rec="$LS_FXDIR/tracker-record-iso-f5.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested ZZ-9"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict unverified"
+    } > "$_st_iso_rec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_iso_rec"; SEAM_HEAD="$_st_trkhead"
+    _seam_record_load >/dev/null 2>&1 && _st_iso_rc=0 || _st_iso_rc=$?
+    [ "$_st_iso_rc" -eq 2 ] \
+      || { echo "selftest FAIL: T7 Step0 isolating leg — a zero-row record with a bad-grammar requested id (ZZ-9) must refuse rc=2, got rc=$_st_iso_rc"; st_fail=1; }
+
+    # --- H-4 (loop-state binding: unset SEAM_RECORD -> rc3 byte-identical; set-but-missing -> rc2,
+    # NEVER waivable even under an active waiver) ------------------------------------------------
+    unset SEAM_RECORD
+    LS_BOARDROOT="$LS_FXDIR/backend-github"
+    _st_h4out=$(check_row "$LS_FX_OK" 2>&1) && _st_h4rc=0 || _st_h4rc=$?
+    [ "$_st_h4rc" -ne 0 ] || { echo "selftest FAIL: jira/github + SEAM_RECORD unset must stay the H-4 rc3 NOT ENFORCED path"; st_fail=1; }
+    case "$_st_h4out" in
+      *"NOT ENFORCED: backend 'github'"*) : ;;
+      *) echo "selftest FAIL: unset SEAM_RECORD must print today's NOT ENFORCED sentence verbatim (H-4), got <$_st_h4out>"; st_fail=1 ;;
+    esac
+
+    SEAM_RECORD="$LS_FXDIR/does-not-exist.txt"
+    LS_BOARDROOT="$LS_FXDIR/backend-github-waived"
+    _st_h4rc2=0
+    check_row "$LS_FX_OK" >/dev/null 2>&1 || _st_h4rc2=$?
+    [ "$_st_h4rc2" -ne 0 ] \
+      || { echo "selftest FAIL: SEAM_RECORD SET-BUT-MISSING must REFUSE even under an active board-governance waiver (H-4, never waivable)"; st_fail=1; }
+    LS_BOARDROOT="$_st_board_saved"
+    SEAM_RECORD=""
+
+    # --- H-1: THE ROUND-TRIP LEG — tracker-read.sh's OWN production code writes a REAL record;
+    # the seam binds against it, never a hand-authored fixture (anti-drift, "verify the real API"). --
+    (
+      _rt_tmp=$(mktemp -d) || exit 1
+      trap 'rm -rf "$_rt_tmp"' EXIT
+      mkdir -p "$_rt_tmp/scripts" "$_rt_tmp/.kit"
+      cp "$DIR/scripts/tracker-read.sh" "$_rt_tmp/scripts/tracker-read.sh"
+      cp "$DIR/scripts/tracker-conf.sh" "$_rt_tmp/scripts/tracker-conf.sh"
+      # A fake `jira` adapter under the THROWAWAY root — TR_ROOT resolves from $0's own dirname, so
+      # invoking the COPIED tracker-read.sh (never the real one) dispatches to THIS file, never the
+      # real scripts/tracker-jira.sh (J1 neutrality — no network reachable from here).
+      cat > "$_rt_tmp/scripts/tracker-jira.sh" <<'EOF'
+#!/bin/sh
+case "$1" in
+  get-issue) printf 'key\tAB-1\n'; printf 'status-id\t3\n'; printf 'status-name\tIn Progress\n'; exit 0 ;;
+  permissions) echo ok; exit 0 ;;
+esac
+EOF
+      chmod +x "$_rt_tmp/scripts/tracker-jira.sh"
+      cat > "$_rt_tmp/.kit/tracker.conf" <<'EOF'
+version=1
+backend=jira
+base_url=https://ex.atlassian.net
+flavour=cloud
+auth=basic
+project=AB
+state.in-progress=In Progress
+EOF
+      printf '# Fixture\n\n- **Backlog backend**: Jira\n' > "$_rt_tmp/CLAUDE.md"
+      # H-2/F-11 (TBG-READER-FLAGS-LIST T4): the head is a CALLER ASSERTION passed as tracker-read.sh's
+      # 5th positional arg — there is no internal `git rev-parse HEAD` fallback any more (the internal
+      # derivation was the H-2 replay hole; a base checkout cannot derive the subject's head).
+      # This is a fixed, valid, non-zero sha the trusted job would have fetched, asserted verbatim.
+      _rt_head="1111111111111111111111111111111111111111"
+      _rt_rc=0
+      KIT_TRACKER_USER="user@example.com" KIT_TRACKER_TOKEN="s3cr3t" \
+        sh "$_rt_tmp/scripts/tracker-read.sh" "$_rt_tmp/.kit/tracker.conf" - "$_rt_tmp/record.txt" AB-1 "$_rt_head" >/dev/null 2>&1 || _rt_rc=$?
+      [ "$_rt_rc" -eq 0 ] && grep -q '^verdict bound$' "$_rt_tmp/record.txt" 2>/dev/null \
+        || { echo "selftest FAIL: H-1 round-trip — the real tracker-read.sh writer did not produce a bound record (rc=$_rt_rc)"; exit 1; }
+      grep -q "^head $_rt_head\$" "$_rt_tmp/record.txt" 2>/dev/null \
+        || { echo "selftest FAIL: H-1 round-trip — expected the caller-asserted head verbatim, got: $(cat "$_rt_tmp/record.txt")"; exit 1; }
+      SEAM_ROOT="$_rt_tmp"; SEAM_RECORD="$_rt_tmp/record.txt"; SEAM_HEAD="$_rt_head"
+      _rt_c=$(seam_row_count AB-1 2>/dev/null) || { echo "selftest FAIL: H-1 round-trip — seam_row_count did not bind on the real writer's output"; exit 1; }
+      [ "$_rt_c" = "1" ] || { echo "selftest FAIL: H-1 round-trip — seam_row_count returned '$_rt_c', want 1"; exit 1; }
+      _rt_s=$(seam_row_state AB-1 2>/dev/null) || { echo "selftest FAIL: H-1 round-trip — seam_row_state did not bind"; exit 1; }
+      [ "$_rt_s" = "in-progress" ] || { echo "selftest FAIL: H-1 round-trip — seam_row_state returned '$_rt_s', want in-progress"; exit 1; }
+      exit 0
+    ) || st_fail=1
+
+    # --- TBG-READER-FLAGS-LIST T7: the seam's live tracker answers ------------------------------
+    # seam_row_flag / seam_rows_in_state, on the SAME good multi-row/multi-list record T6a/T6b
+    # already established ($_st_mr_rec / $_st_mr_body: project AB, subject AB-7 state=in-progress
+    # claimed=yes, AB-12/AB-31 state=ready with dor-*, `list ready AB-12 AB-31` / `list in-progress
+    # AB-7`).
+
+    # Leg 1 — a NON-subject id's flag (AB-12's dor-size=no) binds. Proves this arm carries no
+    # subject check at all (§3d: the flag/list arms never get the relaxed subject check the
+    # subject-keyed arms carry) — a mutant enforcing requested==id here would refuse this leg.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-12 dor-size 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 0 ] && [ "$_st_t7_v" = "no" ] \
+      || { echo "selftest FAIL: T7 leg1 — seam_row_flag AB-12 dor-size must bind 'no' (non-subject id), got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 2 — the subject's own flag (AB-7 claimed=yes) binds.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 claimed 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 0 ] && [ "$_st_t7_v" = "yes" ] \
+      || { echo "selftest FAIL: T7 leg2 — seam_row_flag AB-7 claimed must bind 'yes', got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 3 — a flag the row does not carry at all (AB-7's row has no dor-risk token) -> rc2,
+    # empty stdout (M-5: never `n/a` for an ABSENT flag — `n/a` is reserved for a literal value).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 dor-risk 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg3 — seam_row_flag AB-7 dor-risk (absent flag) must rc2 empty (M-5), got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 4 — a LITERAL `dor-risk=n/a` on a row binds 'n/a' (the parser accepts the literal per
+    # §4.3's grammar; the answer is honest — never confused with leg3's ABSENT-flag rc2).
+    _st_t7_narec="$LS_FXDIR/tracker-record-t7-na.txt"
+    printf '%s\n' "$_st_mr_body" | sed 's/^row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes$/row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=n\/a/' > "$_st_t7_narec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t7_narec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-12 dor-risk 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 0 ] && [ "$_st_t7_v" = "n/a" ] \
+      || { echo "selftest FAIL: T7 leg4 — seam_row_flag AB-12 dor-risk with a literal =n/a must bind 'n/a', got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 5 (fix1 R1) — an id not in the record at all -> rc2 UNVERIFIED, empty stdout. A tracker
+    # record is a partial read (the subject + the listed ids), so an absent id means "not read" —
+    # rc1 stays reserved for grammar/mapping refusals (leg6's unknown flag name, leg9c's unknown
+    # state), never for "not read".
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-999 claimed 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7-fix1 leg5 (R1) — seam_row_flag AB-999 claimed (id absent) must rc2 empty, got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 5b (fix1 F-1/R1, Important 1) — pr-bound on an id not in the record at all -> rc2 empty
+    # too, never the old n/a-regardless-of-id answer: the absent-id check must run BEFORE the
+    # pr-bound special case, so pr-bound is not exempt from R1 either (applies to EVERY flag).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-999 pr-bound 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7-fix1 leg5b (R1) — seam_row_flag AB-999 pr-bound (id absent) must rc2 empty, got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 6 — a flag name outside the closed §4.2 set -> rc1 (never a lookup at all).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 bogus 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 1 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg6 — seam_row_flag AB-7 bogus (unknown flag name) must rc1 empty, got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 7 — pr-bound on a tracker record -> n/a, rc0 (§4.2: always answered from the Kit-Row
+    # trailer on a tracker, never a record lookup — backlog-presence uses state+claimed instead).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 pr-bound 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 0 ] && [ "$_st_t7_v" = "n/a" ] \
+      || { echo "selftest FAIL: T7 leg7 — seam_row_flag AB-7 pr-bound must bind 'n/a' on a tracker, got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+
+    # Leg 7b (fix1 F-2/R2) — `mine` on a tracker always refuses (rc2), explicit, fail-closed:
+    # §4.2 "local only — CI never knows who 'me' is" — a gate reading `n/a` on an ownership check
+    # could pass open, so `mine` is never folded into the generic per-row lookup. The refusal must
+    # name "local only" on stderr (captured separately, `2>&1 >/dev/null` per the kit's own
+    # stderr-only capture idiom).
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 mine 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7-fix1 leg7b (R2) — seam_row_flag AB-7 mine must rc2 empty, got rc=$_st_t7_rc val=$_st_t7_v"; st_fail=1; }
+    seam_row_flag AB-7 mine 2>&1 >/dev/null | grep -Fq 'local only' \
+      || { echo "selftest FAIL: T7-fix1 leg7b (R2) — seam_row_flag AB-7 mine's refusal must name 'local only' on stderr"; st_fail=1; }
+
+    # Leg 8 — seam_rows_in_state ready -> the listed ids, one per line, IN LIST ORDER, rc0.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_mr_rec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_ris=$(seam_rows_in_state ready 2>/dev/null) && _st_t7_risrc=0 || _st_t7_risrc=$?
+    [ "$_st_t7_risrc" -eq 0 ] && [ "$_st_t7_ris" = "AB-12
+AB-31" ] \
+      || { echo "selftest FAIL: T7 leg8 — seam_rows_in_state ready must list AB-12 then AB-31 in order, got rc=$_st_t7_risrc val=<$_st_t7_ris>"; st_fail=1; }
+
+    # Leg 9a — a PRESENT list with ZERO ids ('list in-review' with no trailing ids) -> empty
+    # stdout, rc0 (the one legal empty, §4.2).
+    _st_t7_zerorec="$LS_FXDIR/tracker-record-t7-zerolist.txt"
+    { printf '%s\n' "$_st_mr_body"; printf 'list in-review\n'; } > "$_st_t7_zerorec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t7_zerorec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_z=$(seam_rows_in_state in-review 2>/dev/null) && _st_t7_zrc=0 || _st_t7_zrc=$?
+    [ "$_st_t7_zrc" -eq 0 ] && [ -z "$_st_t7_z" ] \
+      || { echo "selftest FAIL: T7 leg9a — seam_rows_in_state in-review (present, zero ids) must be empty rc0, got rc=$_st_t7_zrc val=<$_st_t7_z>"; st_fail=1; }
+
+    # Leg 9b — a state with NO list line at all (done, on the SAME record) -> rc2 (H-3: never
+    # folded into the same empty-rc0 answer as 9a — presence, not mere absence-of-ids, is what
+    # legalises the empty).
+    _st_t7_v=$(seam_rows_in_state "done" 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg9b — seam_rows_in_state done (no list line at all) must rc2 empty (H-3), got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+
+    # Leg 9c — a state outside the closed §4.1 set -> rc1, whatever the record says.
+    _st_t7_v=$(seam_rows_in_state bogus 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 1 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg9c — seam_rows_in_state bogus (outside §4.1) must rc1 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+
+    # T89s leg1 (item 1, T7 seat L-2) — the state gate was a SUBSTRING membership over " $tokens ",
+    # so a caller-supplied argument spanning two adjacent tokens (`ready in-progress`, one quoted
+    # arg) read as a literal match and bypassed the vocabulary gate straight into a real record
+    # load — same class tr_valid_state (tracker-read.sh F-2) already closed on the adapter twin.
+    # Both examples must refuse rc1, exactly like leg9c's plain "bogus": a concatenation of two
+    # valid tokens, and "in" (a substring shared by in-progress/in-review — never itself a token).
+    _st_t7_v=$(seam_rows_in_state "ready in-progress" 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 1 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T89s leg1a — seam_rows_in_state 'ready in-progress' (concatenation) must rc1 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+    _st_t7_v=$(seam_rows_in_state "in" 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 1 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T89s leg1b — seam_rows_in_state 'in' (substring of two tokens) must rc1 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+
+    # Leg 10 — `verdict unverified` on an otherwise-sound/consistent record -> BOTH arms rc2, empty
+    # stdout (neither ever answers on an unbound read, whatever the record structurally contains).
+    _st_t7_unvrec="$LS_FXDIR/tracker-record-t7-unverified.txt"
+    printf '%s\n' "$_st_mr_body" | sed 's/^verdict bound$/verdict unverified/' > "$_st_t7_unvrec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t7_unvrec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 claimed 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg10 — seam_row_flag on verdict-unverified must rc2 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+    _st_t7_v=$(seam_rows_in_state ready 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg10 — seam_rows_in_state on verdict-unverified must rc2 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+
+    # Leg 11 — a record the PARSER ITSELF refuses (a duplicate row id, the §3b bijection's own
+    # refusal — the same shape T6a leg3 already proves red) -> BOTH arms rc2, empty stdout.
+    _st_t7_refrec="$LS_FXDIR/tracker-record-t7-refused.txt"
+    { printf '%s\n' "$_st_mr_body"; printf 'row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes\n'; } > "$_st_t7_refrec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t7_refrec"; SEAM_HEAD="$_st_trkhead"
+    _st_t7_v=$(seam_row_flag AB-7 claimed 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg11 — seam_row_flag on a parser-refused record must rc2 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+    _st_t7_v=$(seam_rows_in_state ready 2>/dev/null) && _st_t7_rc=0 || _st_t7_rc=$?
+    [ "$_st_t7_rc" -eq 2 ] && [ -z "$_st_t7_v" ] \
+      || { echo "selftest FAIL: T7 leg11 — seam_rows_in_state on a parser-refused record must rc2 empty, got rc=$_st_t7_rc val=<$_st_t7_v>"; st_fail=1; }
+
+    # T89s leg2 (item 2, T4 seat M-1, the seam twin) — the pin/head hex checks use `[0-9a-f]`
+    # bracket ranges; measured (T2a's pattern) that under LC_ALL=en_US.UTF-8 macOS `sh`/`bash`
+    # collate the range to ALSO match uppercase, so a head ending in uppercase 'A' is wrongly
+    # ACCEPTED as hex — a caller-locale-dependent verdict on a security-relevant grammar gate.
+    # A fresh sh/dash/bash process, via `<interp> -c CODE "$DIR/conformance/loop-state.sh" …` so
+    # $0 still resolves the kit root the way backlog-lib.sh's own pin check needs (mirrors
+    # tracker-read.sh's 0a locale-leg pattern, generalised for a sourced library's $0 dependency).
+    _st_t89s_lchead="111111111111111111111111111111111111111A"
+    _st_t89s_lcrec="$LS_FXDIR/tracker-record-t89s-locale.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_t89s_lchead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=in-progress"
+    } > "$_st_t89s_lcrec"
+    _st_t89s_lccode='. "$1"; SEAM_ROOT="$2"; SEAM_RECORD="$3"; SEAM_HEAD="$4"; seam_row_count AB-1 >/dev/null 2>&1; exit $?'
+    _st_t89s_lc_rc=0
+    LC_ALL=en_US.UTF-8 sh -c "$_st_t89s_lccode" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_t89s_lcrec" "$_st_t89s_lchead" >/dev/null 2>&1 || _st_t89s_lc_rc=$?
+    _st_t89s_lc_sh_ok=0; [ "$_st_t89s_lc_rc" -ne 0 ] && _st_t89s_lc_sh_ok=1
+    _st_t89s_lc_dash_note=""
+    if command -v dash >/dev/null 2>&1; then
+      _st_t89s_lc_rc=0
+      LC_ALL=en_US.UTF-8 dash -c "$_st_t89s_lccode" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_t89s_lcrec" "$_st_t89s_lchead" >/dev/null 2>&1 || _st_t89s_lc_rc=$?
+      _st_t89s_lc_dash_ok=0; [ "$_st_t89s_lc_rc" -ne 0 ] && _st_t89s_lc_dash_ok=1
+    else
+      _st_t89s_lc_dash_ok=1; _st_t89s_lc_dash_note=" (dash arm SKIPPED — UNVERIFIED: no dash on PATH)"
+    fi
+    _st_t89s_lc_bash_note=""
+    if command -v bash >/dev/null 2>&1; then
+      _st_t89s_lc_rc=0
+      LC_ALL=en_US.UTF-8 bash -c "$_st_t89s_lccode" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_t89s_lcrec" "$_st_t89s_lchead" >/dev/null 2>&1 || _st_t89s_lc_rc=$?
+      _st_t89s_lc_bash_ok=0; [ "$_st_t89s_lc_rc" -ne 0 ] && _st_t89s_lc_bash_ok=1
+    else
+      _st_t89s_lc_bash_ok=1; _st_t89s_lc_bash_note=" (bash arm SKIPPED — UNVERIFIED: no bash on PATH)"
+    fi
+    _st_t89s_lc_locale_note=""
+    if ! command -v locale >/dev/null 2>&1 || ! locale -a 2>/dev/null | grep -qi '^en_us\.utf-\?8$'; then
+      _st_t89s_lc_locale_note=" (locale UNVERIFIED — en_US.UTF-8 not in \`locale -a\`)"
+    fi
+    if [ "$_st_t89s_lc_sh_ok" -eq 1 ] && [ "$_st_t89s_lc_dash_ok" -eq 1 ] && [ "$_st_t89s_lc_bash_ok" -eq 1 ]; then
+      echo "selftest PASS: T89s leg2 — a record head ending in uppercase 'A' refuses under LC_ALL=en_US.UTF-8 on a fresh sh AND dash AND bash process${_st_t89s_lc_dash_note}${_st_t89s_lc_bash_note}${_st_t89s_lc_locale_note}"
+    else
+      echo "selftest FAIL: T89s leg2 — the uppercase-A head was not refused under LC_ALL=en_US.UTF-8 (sh_ok=$_st_t89s_lc_sh_ok dash_ok=$_st_t89s_lc_dash_ok bash_ok=$_st_t89s_lc_bash_ok)"; st_fail=1
+    fi
+
+    # T89s leg4 (item 4, T7 seat M-1) — the parse memo: `_seam_record_load` must skip the re-parse
+    # ONLY when SEAM_RECORD/SEAM_ROOT/SEAM_HEAD and the record file's own sha256 all still match
+    # the last rc-0 load; ANY change forces a reload, and a failed load is never itself cached.
+    # EVERY call below asserts `_seam_record_load` DIRECTLY, PLAIN (`cmd && rc=0 || rc=$?`, T6a
+    # leg2's own idiom) — never through a wrapper's stdout, and never `$(...)`, which forks a
+    # subshell whose memo-global writes are discarded the instant it exits (the file's own
+    # :484-494 dead end); going through `seam_row_state` would also let its OWN downstream
+    # `_SRV_REQUESTED`/verdict checks mask a memo bug that still leaves `_seam_record_load` wrongly
+    # rc0 (measured: exactly this happened when leg4c first went through the wrapper).
+    _SRV_MEMO_OK=0
+    _st_t89s_memorec="$LS_FXDIR/tracker-record-t89s-memo.txt"
+    _st_t89s_memohead="2222222222222222222222222222222222222222"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_t89s_memohead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=in-progress"
+    } > "$_st_t89s_memorec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t89s_memorec"; SEAM_HEAD="$_st_t89s_memohead"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 0 ] && [ "$_SRV_ROWSTATE" = "in-progress" ] \
+      || { echo "selftest FAIL: T89s leg4 setup — the first load must BIND in-progress, got rc=$_st_t89s_rc val=<$_SRV_ROWSTATE>"; st_fail=1; }
+
+    # leg4a — rewrite the SAME path's bytes (path/root/head all unchanged); the second call must
+    # see the NEW content, never a stale memo hit keyed only on the unchanged path/root/head.
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_t89s_memohead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=done"
+    } > "$_st_t89s_memorec"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 0 ] && [ "$_SRV_ROWSTATE" = "done" ] \
+      || { echo "selftest FAIL: T89s leg4a — a record rewritten between calls must be re-read (new state), got rc=$_st_t89s_rc val=<$_SRV_ROWSTATE>"; st_fail=1; }
+
+    # leg4b — SEAM_HEAD changed between calls (bytes unchanged) forces a reload; the record's own
+    # `head` line no longer matches SEAM_HEAD, so the reload must now refuse.
+    SEAM_HEAD="3333333333333333333333333333333333333333"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 2 ] && [ -z "$_SRV_ROWSTATE" ] \
+      || { echo "selftest FAIL: T89s leg4b — a changed SEAM_HEAD must force a reload and refuse (mismatched head), got rc=$_st_t89s_rc val=<$_SRV_ROWSTATE>"; st_fail=1; }
+
+    # leg4c — a failed load is NEVER cached: repeating the SAME still-wrong SEAM_HEAD unchanged
+    # must refuse again (rc2, and the globals cleared), not take a memo shortcut that turns the
+    # prior failure into a bare rc0 success.
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 2 ] && [ -z "$_SRV_ROWSTATE" ] \
+      || { echo "selftest FAIL: T89s leg4c — a repeated still-failing call must not read a cached success, got rc=$_st_t89s_rc val=<$_SRV_ROWSTATE>"; st_fail=1; }
+
+    # leg4d — restore the matching SEAM_HEAD (memo currently invalid from leg4c's refusal), reset
+    # the test-only load counter, then call N times on one unchanged record: exactly ONE real
+    # parse (the first, arming the memo), the rest are memo hits.
+    SEAM_HEAD="$_st_t89s_memohead"
+    SEAM_TEST_LOAD_COUNT=0
+    _st_t89s_i=0
+    while [ "$_st_t89s_i" -lt 5 ]; do
+      _seam_record_load >/dev/null 2>&1
+      _st_t89s_i=$((_st_t89s_i + 1))
+    done
+    [ "$SEAM_TEST_LOAD_COUNT" -eq 1 ] \
+      || { echo "selftest FAIL: T89s leg4d — 5 calls on one unchanged record must parse exactly once, got $SEAM_TEST_LOAD_COUNT"; st_fail=1; }
+
+    # T89s leg5 (item 5, T7 seat M-1) — the single-pass bijection scan: EVERY existing T6b/T7
+    # bijection leg above (Leg0-9, T6b-fix1 Important 1/2, T7 Step 0's isolating leg) already
+    # re-runs unchanged against the new _seam_bijection_scan and stays green (same accept/refuse
+    # set) — this leg adds the ONE thing they don't cover: a timing bound at scale. A record with
+    # 480 rows and 480 listed ids (measured: the old O(listed*rows) nested scan took ~2000ms for
+    # this shape on this machine, the new O(listed+rows) awk pass ~6ms) must still load well under
+    # a generous bound here, so the leg never flakes on a slower CI box.
+    _st_t89s_bigrec="$LS_FXDIR/tracker-record-t89s-480.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend jira"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      _st_t89s_bigi=1
+      _st_t89s_bigids=""
+      while [ "$_st_t89s_bigi" -le 480 ]; do
+        echo "row AB-$_st_t89s_bigi state=ready"
+        _st_t89s_bigids="$_st_t89s_bigids AB-$_st_t89s_bigi"
+        _st_t89s_bigi=$((_st_t89s_bigi + 1))
+      done
+      _st_t89s_bigids=${_st_t89s_bigids# }
+      echo "list ready $_st_t89s_bigids"
+    } > "$_st_t89s_bigrec"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t89s_bigrec"; SEAM_HEAD="$_st_trkhead"
+    _st_t89s_bigt0=$(date -u +%s)
+    _st_t89s_v=$(seam_row_count AB-1 2>/dev/null) && _st_t89s_rc=0 || _st_t89s_rc=$?
+    _st_t89s_bigt1=$(date -u +%s)
+    _st_t89s_bigelapsed=$((_st_t89s_bigt1 - _st_t89s_bigt0))
+    [ "$_st_t89s_rc" -eq 0 ] && [ "$_st_t89s_v" = "1" ] && [ "$_st_t89s_bigelapsed" -le 10 ] \
+      || { echo "selftest FAIL: T89s leg5 — 480 rows/480 listed ids must BIND under 10s (generous bound), got rc=$_st_t89s_rc val=<$_st_t89s_v> elapsed=${_st_t89s_bigelapsed}s"; st_fail=1; }
+
+    # T89s-fix1 H1 (security HIGH) — the memo/answer globals are read before this process ever
+    # sets them, so an env var exported before the library is sourced (GITHUB_ENV, a poisoned
+    # profile) could pre-arm the memo and a parser-refused record would still answer bound. A
+    # fresh sh/dash process exports the five memo vars + verdict=bound/requested/rowstate, THEN
+    # sources the library and asks it about a garbage record via the real seam_row_state surface.
+    _st_h1_garbage="$LS_FXDIR/tracker-record-t89s-fix1-h1-garbage.txt"
+    printf 'not a real record\n' > "$_st_h1_garbage"
+    _st_h1_sha=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } < "$_st_h1_garbage" 2>/dev/null | awk '{print $1}')
+    _st_h1_code='
+lib="$1"; root="$2"; rec="$3"; head="$4"; sha="$5"
+export _SRV_MEMO_OK=1 _SRV_MEMO_RECORD="$rec" _SRV_MEMO_ROOT="$root" _SRV_MEMO_HEAD="$head" _SRV_MEMO_SHA="$sha"
+export _SRV_VERDICT=bound _SRV_REQUESTED=AB-1 _SRV_ROWSTATE=done
+. "$lib"
+SEAM_ROOT="$root"; SEAM_RECORD="$rec"; SEAM_HEAD="$head"
+seam_row_state AB-1
+exit $?
+'
+    _st_h1_out=$(sh -c "$_st_h1_code" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_h1_garbage" "$_st_trkhead" "$_st_h1_sha" 2>/dev/null) && _st_h1_sh_rc=0 || _st_h1_sh_rc=$?
+    [ "$_st_h1_sh_rc" -eq 2 ] && [ -z "$_st_h1_out" ] \
+      || { echo "selftest FAIL: T89s-fix1 H1 (sh) — a pre-seeded memo + verdict=bound must not survive the file-scope reset, got rc=$_st_h1_sh_rc val=<$_st_h1_out>"; st_fail=1; }
+    if command -v dash >/dev/null 2>&1; then
+      _st_h1_out=$(dash -c "$_st_h1_code" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_h1_garbage" "$_st_trkhead" "$_st_h1_sha" 2>/dev/null) && _st_h1_dash_rc=0 || _st_h1_dash_rc=$?
+      [ "$_st_h1_dash_rc" -eq 2 ] && [ -z "$_st_h1_out" ] \
+        || { echo "selftest FAIL: T89s-fix1 H1 (dash) — a pre-seeded memo must not survive the file-scope reset, got rc=$_st_h1_dash_rc val=<$_st_h1_out>"; st_fail=1; }
+    fi
+
+    # T89s-fix1 Q2 (quality blocking 2) — SEAM_ROOT and SEAM_RECORD are BOTH still part of the
+    # memo key, but removing either comparison alone leaves the rest of the suite green; pin both.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t89s_memorec"; SEAM_HEAD="$_st_t89s_memohead"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 0 ] \
+      || { echo "selftest FAIL: T89s-fix1 Q2 setup — arming the memo on the known-good record must bind, got rc=$_st_t89s_rc"; st_fail=1; }
+
+    # Q2a — switch SEAM_ROOT to a root whose tracker.conf pin cannot match this record (record
+    # bytes/head unchanged): must reparse and refuse, never a stale hit keyed on the old root.
+    _st_q2_altroot="$LS_FXDIR/tbg-fix1-q2-altroot"
+    mkdir -p "$_st_q2_altroot/.kit"
+    { cat "$_st_trkconf"; echo "# q2 differs"; } > "$_st_q2_altroot/.kit/tracker.conf"
+    SEAM_ROOT="$_st_q2_altroot"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 2 ] \
+      || { echo "selftest FAIL: T89s-fix1 Q2a — a SEAM_ROOT switch to a pin-mismatched root must refuse (SEAM_ROOT pinned in the memo key), got rc=$_st_t89s_rc"; st_fail=1; }
+
+    # Q2b — re-arm the memo, then point SEAM_RECORD at a byte-identical COPY under a NEW path: the
+    # load counter must still increment (a real reparse), never a hit keyed on content alone.
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_t89s_memorec"; SEAM_HEAD="$_st_t89s_memohead"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 0 ] \
+      || { echo "selftest FAIL: T89s-fix1 Q2b setup — re-arming the memo must bind, got rc=$_st_t89s_rc"; st_fail=1; }
+    _st_q2_copy="$LS_FXDIR/tracker-record-t89s-fix1-q2-copy.txt"
+    cp "$_st_t89s_memorec" "$_st_q2_copy"
+    SEAM_TEST_LOAD_COUNT=0
+    SEAM_RECORD="$_st_q2_copy"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$SEAM_TEST_LOAD_COUNT" -eq 1 ] \
+      || { echo "selftest FAIL: T89s-fix1 Q2b — a byte-identical copy at a NEW path must still reparse (SEAM_RECORD pinned in the memo key), got count=$SEAM_TEST_LOAD_COUNT"; st_fail=1; }
+
+    # T89s-fix1 H3 (security Low, hash-vs-parse window) — a COLD symlinked SEAM_RECORD is already
+    # refused by the parser's own [ -L ] check, so that leg alone would be vacuous (green with or
+    # without this fix). The real gap: memo state armed on a REGULAR file, then the SAME path is
+    # swapped to a symlink pointing at a byte-identical file — a memo hit (matching sha, never
+    # re-checking [ -L ]) would skip the parser's check entirely. Establish a real bind, THEN swap.
+    _st_h3_path="$LS_FXDIR/tracker-record-t89s-fix1-h3.txt"
+    cp "$_st_trkrec" "$_st_h3_path"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_st_h3_path"; SEAM_HEAD="$_st_trkhead"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 0 ] \
+      || { echo "selftest FAIL: T89s-fix1 H3 setup — the initial regular-file bind must succeed, got rc=$_st_t89s_rc"; st_fail=1; }
+    _st_h3_real2="$LS_FXDIR/tracker-record-t89s-fix1-h3-real2.txt"
+    cp "$_st_h3_path" "$_st_h3_real2"
+    rm -f "$_st_h3_path"
+    ln -s "$_st_h3_real2" "$_st_h3_path"
+    _seam_record_load >/dev/null 2>&1 && _st_t89s_rc=0 || _st_t89s_rc=$?
+    [ "$_st_t89s_rc" -eq 2 ] \
+      || { echo "selftest FAIL: T89s-fix1 H3 — swapping the SAME path to a symlink over byte-identical content must refuse (a stale sha-only memo hit must not skip the parser's [ -L ] check), got rc=$_st_t89s_rc"; st_fail=1; }
+
+    # T89s-fix1 L2 (security Medium, the locale class at the other sites) — the whole-line charset
+    # gate and the backend grammar used bracket RANGES, which collate a Unicode letter (whole-line)
+    # or an uppercase letter (backend, same class item2 already closed for pin/head) as "inside"
+    # the range under LC_ALL=en_US.UTF-8; spelling both out closes it. Asserted by the STDERR
+    # MESSAGE, not rc alone — either bug still refuses the whole record eventually (a later check
+    # catches the fallout), but only the FIXED code names the right rule.
+    _st_l2_code='
+lib="$1"; root="$2"; rec="$3"; head="$4"
+. "$lib"
+SEAM_ROOT="$root"; SEAM_RECORD="$rec"; SEAM_HEAD="$head"
+_seam_record_load 2>&1 1>/dev/null
+'
+    _st_l2_uline="$LS_FXDIR/tracker-record-t89s-fix1-l2-unicode.txt"
+    printf 'kit-tracker-read 1\nbackend\303\251 jira\n' > "$_st_l2_uline"
+    _st_l2_msg=$(LC_ALL=en_US.UTF-8 sh -c "$_st_l2_code" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_l2_uline" "$_st_trkhead") || true
+    _st_l2_sh_ok=0
+    printf '%s' "$_st_l2_msg" | grep -Fq 'outside the closed charset' && _st_l2_sh_ok=1
+    _st_l2_bash_note=""
+    if command -v bash >/dev/null 2>&1; then
+      _st_l2_msg=$(LC_ALL=en_US.UTF-8 bash -c "$_st_l2_code" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_l2_uline" "$_st_trkhead") || true
+      _st_l2_bash_ok=0
+      printf '%s' "$_st_l2_msg" | grep -Fq 'outside the closed charset' && _st_l2_bash_ok=1
+    else
+      _st_l2_bash_ok=1; _st_l2_bash_note=" (bash arm SKIPPED — UNVERIFIED: no bash on PATH)"
+    fi
+    [ "$_st_l2_sh_ok" -eq 1 ] && [ "$_st_l2_bash_ok" -eq 1 ] \
+      || { echo "selftest FAIL: T89s-fix1 L2a — a record key carrying a Unicode letter (é) must refuse via the whole-line charset gate under LC_ALL=en_US.UTF-8 on sh AND bash${_st_l2_bash_note}"; st_fail=1; }
+
+    _st_l2_urec="$LS_FXDIR/tracker-record-t89s-fix1-l2-upper.txt"
+    {
+      echo "kit-tracker-read 1"
+      echo "backend JIRA"
+      echo "pin sha256:$_st_trkpin"
+      echo "head $_st_trkhead"
+      echo "requested AB-1"
+      echo "read-day $_st_trktoday"
+      echo "credential ok"
+      echo "verdict bound"
+      echo "row AB-1 state=in-progress"
+    } > "$_st_l2_urec"
+    _st_l2_msg=$(LC_ALL=en_US.UTF-8 sh -c "$_st_l2_code" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_l2_urec" "$_st_trkhead") || true
+    _st_l2_sh_ok=0
+    printf '%s' "$_st_l2_msg" | grep -Fq 'key backend refused (malformed token)' && _st_l2_sh_ok=1
+    _st_l2_bash_note=""
+    if command -v bash >/dev/null 2>&1; then
+      _st_l2_msg=$(LC_ALL=en_US.UTF-8 bash -c "$_st_l2_code" "$DIR/conformance/loop-state.sh" "$DIR/conformance/backlog-lib.sh" "$_st_trk" "$_st_l2_urec" "$_st_trkhead") || true
+      _st_l2_bash_ok=0
+      printf '%s' "$_st_l2_msg" | grep -Fq 'key backend refused (malformed token)' && _st_l2_bash_ok=1
+    else
+      _st_l2_bash_ok=1; _st_l2_bash_note=" (bash arm SKIPPED — UNVERIFIED: no bash on PATH)"
+    fi
+    [ "$_st_l2_sh_ok" -eq 1 ] && [ "$_st_l2_bash_ok" -eq 1 ] \
+      || { echo "selftest FAIL: T89s-fix1 L2b — an uppercase backend value must refuse via the backend grammar under LC_ALL=en_US.UTF-8 on sh AND bash${_st_l2_bash_note}"; st_fail=1; }
+
+    # T89s-fix1 M6 (quality minor, keep the reasons) — the single-pass bijection scan used to
+    # collapse every rule to ONE generic sentence; each mutation below is the SAME fixture T6b's
+    # own legs 1/2/3/Important-1a already construct, re-asserted here on the STDERR MESSAGE so an
+    # operator can tell WHICH rule refused.
+    _st_m6_msg() {   # $1 = record content, $2 = expected fixed-text substring, $3 = description
+      _stm6_f="$LS_FXDIR/tracker-record-t89s-fix1-m6.txt"
+      printf '%s' "$1" > "$_stm6_f"
+      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stm6_f"; SEAM_HEAD="$_st_trkhead"
+      _stm6_msg=$(seam_row_count AB-7 2>&1 1>/dev/null) || true
+      printf '%s' "$_stm6_msg" | grep -Fq "$2" \
+        || { echo "selftest FAIL: T89s-fix1 M6 ($3) — expected the fixed sentence naming <$2>, got <$_stm6_msg>"; st_fail=1; }
+    }
+    _st_m6_msg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready AB-12 AB-31 AB-99/')" \
+      "a listed id names no row line" "norow, leg1's own fixture"
+    _st_m6_msg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-12 state=ready dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes$/row AB-12 state=in-progress dor-acceptance=yes dor-metric=yes dor-size=no dor-risk=yes/')" \
+      "a row's state disagrees with the list it is listed under" "statemismatch, leg2's own fixture"
+    _st_m6_msg "$(printf '%s\n' "$_st_mr_body" | sed 's/^list ready AB-12 AB-31$/list ready AB-12/')" \
+      "a non-subject row appears in no list" "unlisted, leg3's own fixture"
+    _st_m6_msg "$(printf '%s\n' "$_st_mr_body" | sed 's/^row AB-7 state=in-progress claimed=yes$/row AB-7 state=ready claimed=yes/
+/^list in-progress AB-7$/d')" \
+      "the subject's own state was listed but the subject id is absent from it" "iff, fix1-important1a's own fixture"
+    unset -f _st_m6_msg
 
     # --- T7 (B9): Kit-Scope — the declared path set vs the measured changed set ----------------
     # Every leg runs against the fixture repo with the base PINNED, so none of them can be
@@ -2232,6 +3682,91 @@ selftest() {
     fi
   fi
 
+  # --- LOOP-STATE-TRACKER-STEP-ASIDE T1 — the parser legs (design §2 RD-3, amendment A1 LS-D3) ---
+  # T1-Q1 fix round 1: no selftest may write objects into $DIR's real repo (the prior `commit-tree`
+  # block did, and aborted under a hermetic/unconfigured git identity — rc 128 "no email was
+  # given").
+  # T1 fix round 2 (BLOCKER): a bare `sh "$0" --head 0000...` subprocess makes rc 2 AMBIGUOUS —
+  # run_gate ALSO returns rc 2 for a non-commit SHA ("is not a commit in this repository"), so
+  # dropping the pair check, skipping the unknown-flag branch, or letting a repeated --head
+  # silently overwrite would all still read as "rc 2" and the leg would pass for the WRONG reason.
+  # Graded IN-PROCESS instead (as delegate/changed-after-flags already does): each leg calls
+  # ls_parse_args directly in a subshell, exactly as a real invocation would reach it (before any
+  # commit is ever read), and asserts BOTH the function's own rc AND its own stderr sentence — so
+  # a sibling fault that happens to share the same rc cannot pass this leg.
+  _st_pf_head="0000000000000000000000000000000000000000"
+
+  # (half-args) only ONE of the pair -> rc 2, "must be given together", both directions.
+  _st_ha1_err=$(ls_parse_args --head "$_st_pf_head" --base-dir /tmp/does-not-matter 2>&1 >/dev/null) && _st_ha1=0 || _st_ha1=$?
+  if [ "$_st_ha1" -eq 2 ] && case "$_st_ha1_err" in *"must be given together"*) true ;; *) false ;; esac; then
+    echo "selftest PASS: delegate/half-args: --base-dir alone -> rc 2, 'must be given together'"
+  else
+    echo "selftest FAIL: delegate/half-args: --base-dir alone rc=$_st_ha1 out='$_st_ha1_err', wanted rc 2 + 'must be given together'"; st_fail=1
+  fi
+  _st_ha2_err=$(ls_parse_args --head "$_st_pf_head" --live-contexts /tmp/does-not-matter 2>&1 >/dev/null) && _st_ha2=0 || _st_ha2=$?
+  if [ "$_st_ha2" -eq 2 ] && case "$_st_ha2_err" in *"must be given together"*) true ;; *) false ;; esac; then
+    echo "selftest PASS: delegate/half-args: --live-contexts alone -> rc 2, 'must be given together'"
+  else
+    echo "selftest FAIL: delegate/half-args: --live-contexts alone rc=$_st_ha2 out='$_st_ha2_err', wanted rc 2 + 'must be given together'"; st_fail=1
+  fi
+
+  # (unknown-flag) LS-D3: an unrecognised flag must refuse, never be silently dropped -> rc 2,
+  # "unknown argument".
+  _st_uf_err=$(ls_parse_args --head "$_st_pf_head" --frobnicate 2>&1 >/dev/null) && _st_uf=0 || _st_uf=$?
+  if [ "$_st_uf" -eq 2 ] && case "$_st_uf_err" in *"unknown argument"*) true ;; *) false ;; esac; then
+    echo "selftest PASS: delegate/unknown-flag: an unknown flag -> rc 2, 'unknown argument' (LS-D3)"
+  else
+    echo "selftest FAIL: delegate/unknown-flag: rc=$_st_uf out='$_st_uf_err', wanted rc 2 + 'unknown argument'"; st_fail=1
+  fi
+
+  # (dup-flag) each flag at most once -> rc 2, "given more than once".
+  _st_df_err=$(ls_parse_args --head "$_st_pf_head" --head "$_st_pf_head" 2>&1 >/dev/null) && _st_df=0 || _st_df=$?
+  if [ "$_st_df" -eq 2 ] && case "$_st_df_err" in *"given more than once"*) true ;; *) false ;; esac; then
+    echo "selftest PASS: delegate/dup-flag: a repeated flag -> rc 2, 'given more than once'"
+  else
+    echo "selftest FAIL: delegate/dup-flag: rc=$_st_df out='$_st_df_err', wanted rc 2 + 'given more than once'"; st_fail=1
+  fi
+
+  # (changed-after-flags) LS-D3, T1-Q1(d)/Q2: `--changed` must reach the classifier no matter
+  # where it falls among the other flags. Graded IN-PROCESS against `ls_parse_args` directly (no
+  # subprocess, no repo object writes) — each order runs in a subshell so the parsed globals from
+  # one order never leak into the next, and each asserts the parsed --changed/--base-dir/
+  # --live-contexts globals equal the literal inputs given.
+  _st_caf_c="/tmp/does-not-exist-changed-C"
+  _st_caf_b="/tmp/does-not-exist-base-B"
+  _st_caf_l="/tmp/does-not-exist-live-L"
+  _st_caf_x="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+  _st_caf_check_order() {
+    # runs in a subshell (command substitution below) so globals never leak between orders
+    ls_parse_args "$@" || return 1
+    [ "$_ls_p_changed" = "$_st_caf_c" ] || { echo "changed mismatch: got '$_ls_p_changed'"; return 1; }
+    [ "$_ls_p_basedir" = "$_st_caf_b" ] || { echo "base-dir mismatch: got '$_ls_p_basedir'"; return 1; }
+    [ "$_ls_p_livecontexts" = "$_st_caf_l" ] || { echo "live-contexts mismatch: got '$_ls_p_livecontexts'"; return 1; }
+    return 0
+  }
+
+  _st_caf_err=$(_st_caf_check_order --head "$_st_caf_x" --changed "$_st_caf_c" --base-dir "$_st_caf_b" --live-contexts "$_st_caf_l" 2>&1)
+  if [ $? -eq 0 ]; then
+    echo "selftest PASS: delegate/changed-after-flags: order 1 (--head --changed --base-dir --live-contexts) parses all globals"
+  else
+    echo "selftest FAIL: delegate/changed-after-flags: order 1 failed: $_st_caf_err"; st_fail=1
+  fi
+
+  _st_caf_err=$(_st_caf_check_order --base-dir "$_st_caf_b" --live-contexts "$_st_caf_l" --head "$_st_caf_x" --changed "$_st_caf_c" 2>&1)
+  if [ $? -eq 0 ]; then
+    echo "selftest PASS: delegate/changed-after-flags: order 2 (--base-dir --live-contexts --head --changed) parses all globals"
+  else
+    echo "selftest FAIL: delegate/changed-after-flags: order 2 failed: $_st_caf_err"; st_fail=1
+  fi
+
+  _st_caf_err=$(_st_caf_check_order --changed "$_st_caf_c" --head "$_st_caf_x" --live-contexts "$_st_caf_l" --base-dir "$_st_caf_b" 2>&1)
+  if [ $? -eq 0 ]; then
+    echo "selftest PASS: delegate/changed-after-flags: order 3 (--changed --head --live-contexts --base-dir) parses all globals"
+  else
+    echo "selftest FAIL: delegate/changed-after-flags: order 3 failed: $_st_caf_err"; st_fail=1
+  fi
+
   if [ "$st_fail" -ne 0 ]; then echo "loop-state --selftest: FAIL" >&2; return 1; fi
   echo "loop-state --selftest: OK"
   echo "  map        — positive; drift (a) skill-absent, (b) entry-with-no-skill, (c) unmapped-stage;"
@@ -2329,7 +3864,12 @@ ls_assert_reason_selfcheck() {
 
 # run_gate — the whole floor against ONE commit. Every leg runs so the author sees every problem
 # in one CI round rather than peeling them off one per push.
-run_gate() {   # $1 = sha
+run_gate() {   # $1 = sha, [$2 = optional changed-listing path — TBG-TRUSTED-JOB fix-round H-2]
+  # M-2 hygiene: KIT_TRACKER_RECORD maps to SEAM_RECORD ONLY here, on the local/hygiene path (no
+  # distinct trusted job exists yet — that wiring is a later JOIN slice, design §8 honest ceiling).
+  # backlog-lib.sh's tracker arm NEVER reads ${KIT_TRACKER_RECORD} itself — only $SEAM_RECORD, set
+  # once, at this ONE call site, exactly as SEAM_ROOT already tracks LS_BOARDROOT.
+  SEAM_RECORD="${KIT_TRACKER_RECORD:-}"
   _ls_bad=0
   _ls_nonscope_bad=0   # tracks whether ANY leg other than scope failed (the A3i discriminant input)
   git -C "$LS_REPO" cat-file -e "$1^{commit}" 2>/dev/null || {
@@ -2339,7 +3879,10 @@ run_gate() {   # $1 = sha
   # declaration leg, and the declaration leg needs its answer to know what to require. A
   # derivation failure yields FAIL-SAFED, which ls_required_keys maps to the FULL set; check_class
   # independently reds on the same condition (fail-closed), so degradation never buys anything.
-  _ls_class=$(ls_class_for_required)
+  # $2, when supplied, is a caller-built changed-listing (H-2): a BASE-ONLY checkout (the trusted
+  # job) has no local diff, so the live git-diff-against-trunk derivation would otherwise read an
+  # empty change-set and fail OPEN to `ordinary` rather than FAIL-SAFED.
+  _ls_class=$(ls_class_for_required "${2:-}")
   check_declaration "$1" "$_ls_class" || { _ls_bad=1; _ls_nonscope_bad=1; }
   check_class       "$1" "" "$_ls_class" || { _ls_bad=1; _ls_nonscope_bad=1; }
   check_skill_if_present "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
@@ -2390,17 +3933,126 @@ run_gate() {   # $1 = sha
 }
 
 # --- dispatch ---
-case "${1:-}" in
-  --selftest) selftest; exit $? ;;
-  # K20: --help answers the stage->skill question where the trailers are written. It is placed
-  # BEFORE --head's requirement and changes nothing about it: a BARE invocation still exits 2.
-  -h|--help)  print_help; exit 0 ;;
-  # NEVER defaults to HEAD. On pull_request, actions/checkout checks out refs/pull/N/merge —
-  # GitHub's ephemeral merge commit, whose message carries NO trailers. A gate built on HEAD would
-  # either false-RED every PR or get "fixed" into walking back until a trailer is found, at which
-  # point ANY ancestor satisfies it (design section 3.1, Security C2 — CRITICAL).
-  --head)     [ $# -ge 2 ] || { echo "loop-state: --head needs a SHA" >&2; exit 2; }
-              run_gate "$2"; exit $? ;;
-  *)          echo "loop-state: --head <sha> or --selftest required (never defaults to HEAD); --help prints the stage->skill map" >&2
-              exit 2 ;;
-esac
+# LOOP-STATE-TRACKER-STEP-ASIDE T1 (design §2 RD-3, amendment A1 LS-D3): a REAL parser, a
+# `while [ $# -gt 0 ]` loop, order-independent — today's dispatch (a single `case "${1:-}"` on the
+# first token only) silently dropped an unknown argument placed after `--head SHA`, and losing the
+# trusted job's own `--changed` that way hands the classifier an empty diff (the H-2 hazard this
+# gate exists to avoid). Each flag is accepted AT MOST ONCE (a repeat is a usage anomaly, rc 2);
+# an unrecognised flag is rc 2; `--base-dir` and `--live-contexts` must arrive as a PAIR.
+# T1-Q1(c): the dispatch loop lives in a function, `ls_parse_args`, so the selftest can grade it
+# either as a real subprocess (`sh "$0" ...`) or in-process (a direct call, in a subshell) without
+# duplicating the parsing logic. No behaviour change: it sets the same globals it always did.
+ls_parse_args() {
+_ls_seen_selftest=0; _ls_seen_help=0; _ls_seen_head=0; _ls_seen_changed=0
+_ls_seen_basedir=0; _ls_seen_livecontexts=0
+_ls_p_head=""; _ls_p_changed=""; _ls_p_basedir=""; _ls_p_livecontexts=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --selftest)
+      if [ "$_ls_seen_selftest" -ne 0 ]; then
+        echo "loop-state: --selftest given more than once" >&2
+        exit 2
+      fi
+      _ls_seen_selftest=1
+      shift
+      ;;
+    -h|--help)
+      if [ "$_ls_seen_help" -ne 0 ]; then
+        echo "loop-state: --help given more than once" >&2
+        exit 2
+      fi
+      _ls_seen_help=1
+      shift
+      ;;
+    --head)
+      if [ "$_ls_seen_head" -ne 0 ]; then
+        echo "loop-state: --head given more than once" >&2
+        exit 2
+      fi
+      [ $# -ge 2 ] || { echo "loop-state: --head needs a SHA" >&2; exit 2; }
+      _ls_seen_head=1
+      _ls_p_head=$2
+      shift 2
+      ;;
+    # --changed is OPTIONAL, trusted-job-only in practice (TBG-TRUSTED-JOB fix-round H-2): a
+    # caller whose checkout is BASE ONLY (never the PR head/merge commit) has no local diff for
+    # the class classifier to see, and promotion-readiness.sh's live git-diff-against-trunk
+    # derivation over that tree reads as an EMPTY change-set — which fails OPEN to `ordinary`, not
+    # FAIL-SAFED, silently under-requiring the trailer set for what may be a real control-plane
+    # PR. This is NOT a general author-facing fixture flag (the file's own header above still
+    # forbids that): the listing here is built by the CALLER from forge metadata (a base..head
+    # compare), never author-supplied text.
+    --changed)
+      if [ "$_ls_seen_changed" -ne 0 ]; then
+        echo "loop-state: --changed given more than once" >&2
+        exit 2
+      fi
+      [ $# -ge 2 ] || { echo "loop-state: --changed needs a listing path" >&2; exit 2; }
+      _ls_seen_changed=1
+      _ls_p_changed=$2
+      shift 2
+      ;;
+    --base-dir)
+      if [ "$_ls_seen_basedir" -ne 0 ]; then
+        echo "loop-state: --base-dir given more than once" >&2
+        exit 2
+      fi
+      [ $# -ge 2 ] || { echo "loop-state: --base-dir needs a directory" >&2; exit 2; }
+      _ls_seen_basedir=1
+      _ls_p_basedir=$2
+      shift 2
+      ;;
+    --live-contexts)
+      if [ "$_ls_seen_livecontexts" -ne 0 ]; then
+        echo "loop-state: --live-contexts given more than once" >&2
+        exit 2
+      fi
+      [ $# -ge 2 ] || { echo "loop-state: --live-contexts needs a file" >&2; exit 2; }
+      _ls_seen_livecontexts=1
+      _ls_p_livecontexts=$2
+      shift 2
+      ;;
+    *)
+      echo "loop-state: unknown argument '$1' (--head <sha> or --selftest required; --help prints usage)" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# --base-dir / --live-contexts must be given TOGETHER (LOOP-STATE-TRACKER-STEP-ASIDE design §2,
+# RD-3): exactly one of the two is a usage anomaly, never a silent partial step-aside. Checked
+# HERE, inside ls_parse_args itself (T1 fix round 2), so the in-process grading path
+# (delegate/half-args, called the same way delegate/changed-after-flags already is) can assert
+# this function's OWN rc AND its own stderr sentence, instead of trusting a bare rc 2 that a
+# sibling fault (e.g. run_gate's "not a commit" path) could equally have produced.
+if [ "$_ls_seen_basedir" -ne "$_ls_seen_livecontexts" ]; then
+  echo "loop-state: --base-dir and --live-contexts must be given together" >&2
+  exit 2
+fi
+}
+
+ls_parse_args "$@"
+
+if [ "$_ls_seen_selftest" -eq 1 ]; then
+  selftest; exit $?
+fi
+
+# K20: --help answers the stage->skill question where the trailers are written. It is placed
+# BEFORE --head's requirement and changes nothing about it: a BARE invocation still exits 2.
+if [ "$_ls_seen_help" -eq 1 ]; then
+  print_help; exit 0
+fi
+
+# NEVER defaults to HEAD. On pull_request, actions/checkout checks out refs/pull/N/merge —
+# GitHub's ephemeral merge commit, whose message carries NO trailers. A gate built on HEAD would
+# either false-RED every PR or get "fixed" into walking back until a trailer is found, at which
+# point ANY ancestor satisfies it (design section 3.1, Security C2 — CRITICAL).
+if [ "$_ls_seen_head" -ne 1 ]; then
+  echo "loop-state: --head <sha> or --selftest required (never defaults to HEAD); --help prints the stage->skill map" >&2
+  exit 2
+fi
+
+LS_BASE_DIR="$_ls_p_basedir"
+LS_LIVE_CONTEXTS="$_ls_p_livecontexts"
+run_gate "$_ls_p_head" "$_ls_p_changed"
+exit $?

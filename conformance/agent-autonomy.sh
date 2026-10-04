@@ -10,7 +10,18 @@ command -v jq >/dev/null 2>&1 || { echo "agent-autonomy: jq required to run this
 [ -f "$GUARD" ] || { echo "agent-autonomy: missing $GUARD" >&2; exit 1; }
 
 fail=0
-denied() { printf '%s' "$1" | sh "$GUARD" 2>/dev/null | grep -q '"permissionDecision":"deny"'; }
+# denied() is the ONE spawn for every deny AND allow assertion on $GUARD. It also records the guard's exit status in
+# AA_SRC (GUARD-QUOTED-EXEC-INTERMITTENT B1): a FAULT (rc 2, empty stdout) prints no deny JSON, so an allow cell that
+# judged stdout alone would PASS a fault. Allow assertions read AA_SRC via aa_allow_why; deny assertions are unchanged.
+AA_SRC=0
+denied() {
+  AA_SRC=0
+  _dn_o=$(printf '%s' "$1" | sh "$GUARD" 2>/dev/null) || AA_SRC=$?
+  case "$_dn_o" in *'"permissionDecision":"deny"'*) return 0 ;; esac
+  return 1
+}
+# <empty> when the last spawn was an ALLOW (no deny, rc 0); else the reason a wanted-allow cell fails.
+aa_allow_why() { if [ "$AA_SRC" = 0 ]; then :; else printf 'rc=%s' "$AA_SRC"; fi; }
 # A deny MUST carry a non-empty reason: an empty permissionDecisionReason leaves a blocked agent with no
 # explanation and no KIT_GUARD_SELFEDIT override hint (a regression the CP-8b reviews caught).
 denied_with_reason() {
@@ -20,7 +31,9 @@ denied_with_reason() {
   return 0
 }
 assert_deny_reason() {  # deny AND a non-empty reason
+  aa_cell_skip "$1" && return 0
   if denied_with_reason "$2"; then echo "PASS deny+reason: $1"; else echo "FAIL (deny with non-empty reason): $1"; fail=1; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 }
 
 # === GUARD-READ-LANE-2 T3 — the ZERO-WIDENING DELTA leg (design 9.4, seat condition C4) ==========
@@ -57,9 +70,26 @@ AA_PRISTINE=''
 AA_CELLS=''
 AA_DELTA_DIR=''
 aa_usage() {
-  echo "usage: agent-autonomy.sh [--delta <pristine-guard-core.sh>] | [--selftest]" >&2
-  echo "       --delta must be the FIRST argument" >&2
+  echo "usage: agent-autonomy.sh [--delta <pristine-guard-core.sh>] | [--selftest] | [--cells <label-glob>] | [--dims]" >&2
+  echo "       --dims prints this tree's host-dims token and exits (runs no cells; CI's guard-battery legs assert it)" >&2
+  echo "       --delta, --cells and --dims must be the FIRST argument; --cells is a LOCAL fix-round filter (never graded, refused in CI)" >&2
+  echo "       under LC_ALL=C a --cells glob containing a non-ASCII byte is refused" >&2
+  echo "       the I4 and Arm A blocks are selected by the bare label glob: --cells 'I4*', --cells 'Arm A*'" >&2
 }
+# GUARD-CORPUS-RUNTIME — the MODE GATE. `run` (the default, every graded pass) executes every cell.
+# `oracle` (--selftest only) skips the ~2.6k guard spawns whose verdicts --selftest DISCARDS; the
+# functions and fixtures the oracle reads are still defined. Set UNCONDITIONALLY here, so an
+# environment value is ignored; the ONLY route to `oracle` is the `--selftest` arm below (argv, never
+# env). STRING values, never a numeric 1/0 flag: the non-vacuity mutator flips a literal-one assignment. Every
+# gated helper tests `[ "$AA_MODE" = oracle ]`, so an unexpected value degrades toward RUNNING cells.
+# AA_CELLS_RUN counts cells that actually spawned the guard (incremented AFTER the spawn returns, on
+# the run path only); the bare path's completeness anchor compares it to a literal floor at the bottom.
+AA_MODE=run
+AA_CELLS_GLOB=''
+AA_CELLS_RUN=0
+# AA_SCOPED_EXTRA counts UNCOUNTED legs (the I4 block, the fpra_lock call) that ran in a SCOPED run. It is
+# bumped only by aa_extra_ran, never by aa_cell_skip, and it never feeds the floor, AA_CELLS_RUN or C3.
+AA_SCOPED_EXTRA=0
 case "${1:-}" in
   --delta)
     AA_PRISTINE=${2:-}
@@ -71,7 +101,16 @@ case "${1:-}" in
     AA_CELLS=$AA_DELTA_DIR/cells
     : > "$AA_CELLS" || { echo "agent-autonomy: cannot create $AA_CELLS" >&2; exit 2; }
     AA_DELTA=1 ;;
-  --selftest|'') : ;;                      # --selftest is dispatched at the BOTTOM of this file
+  --selftest) AA_MODE=oracle ;;            # dispatched at the BOTTOM of this file; skips the ungraded cells
+  --cells)                                 # the LOCAL fix-round filter (half (a)); never a graded pass
+    AA_MODE=scoped; AA_CELLS_GLOB="${2:-}"
+    # C-B(i): fail CLOSED where a scoped rc 0 could be graded (verify's is_self_skip reads a green cell run as PASS)
+    [ -z "${CI+x}${GITHUB_ACTIONS+x}" ] || { echo "agent-autonomy: --cells is local-only (scoped mode is refused when CI or GITHUB_ACTIONS is set)" >&2; aa_usage; exit 2; }
+    [ -n "$AA_CELLS_GLOB" ] && [ "$AA_CELLS_GLOB" != '*' ] || { echo "agent-autonomy: --cells needs a non-empty glob that is not '*' (a full run must be the bare pass)" >&2; aa_usage; exit 2; }
+    # F3: no control byte (a newline could forge an OK line in the report banner)
+    case "$AA_CELLS_GLOB" in *[![:print:]]*) echo "agent-autonomy: --cells glob contains a non-printable byte" >&2; aa_usage; exit 2 ;; esac ;;
+  --dims) AA_MODE=dims ;;                  # dispatched right after aa_dims is defined; prints one token, runs no cells, never defers
+  '') : ;;
   --*) aa_usage; exit 2 ;;                 # an unknown option must not run a silently different check
 esac
 # --delta is FIRST-ONLY (the case above reads $1 alone). A `--selftest --delta X` or `-x --delta X`
@@ -83,6 +122,186 @@ if [ "$AA_DELTA" = 0 ]; then
     echo "agent-autonomy: --delta must be the FIRST argument (it was not)" >&2; aa_usage; exit 2
   done
 fi
+# --cells is FIRST-ONLY too (F5): the case above reads $1 alone, so a later `--cells` would run the full
+# corpus while the caller believed it filtered. Refuse it loudly.
+if [ "$AA_MODE" != scoped ]; then
+  for _aa_arg in "$@"; do
+    [ "$_aa_arg" = "--cells" ] || continue
+    echo "agent-autonomy: --cells must be the FIRST argument (it was not)" >&2; aa_usage; exit 2
+  done
+fi
+# --dims is FIRST-ONLY too: a later one would run the whole battery while the caller expected one token.
+if [ "$AA_MODE" != dims ]; then
+  for _aa_arg in "$@"; do
+    [ "$_aa_arg" = "--dims" ] || continue
+    echo "agent-autonomy: --dims must be the FIRST argument (it was not)" >&2; aa_usage; exit 2
+  done
+fi
+# aa-argv-end
+
+# === CI-BARE-BATTERY-ONCE — the DEFER mode of the BARE path (design 2026-09-30-ci-bare-battery-once §3a) =========
+# In CI the graded battery runs once per declared variant, in the `guard-battery` job. A consumer whose battery
+# inputs are byte-identical to that job's same-run checkout (KIT_GUARD_BATTERY_REF) prints an N/A line and does
+# NOT run it; verify.sh renders that N-A, never PASS, and the `conformance` aggregator binds it to the job. ANY
+# doubt runs the full battery after a one-line NOTE: an unknown costs time, never coverage. The hook sits after
+# the argv block and tests AA_MODE=run and AA_DELTA=0, so --selftest, --cells and --delta can never defer.
+aa_fs_ci() {  # <tree> — is this tree's filesystem case-insensitive? the SAME probe as guard-core's _fs_case_insensitive
+  _fc_r=no
+  for _fc_d in "$1" "$1/.."; do
+    if [ -d "$_fc_d/.github" ] && [ -d "$_fc_d/.GITHUB" ]; then _fc_r=yes; break; fi
+  done
+  if [ "$_fc_r" = no ] && [ -d "$1" ]; then
+    _fc_u=$(printf '%s' "$1" | LC_ALL=C tr 'a-z' 'A-Z')
+    if [ "$_fc_u" != "$1" ] && [ -d "$_fc_u" ]; then _fc_r=yes; fi
+  fi
+  [ "$_fc_r" = yes ]
+}
+aa_under_temp() {  # <physical-path> — the SAME hardcoded temp roots as guard-core's _under_temp, both arms
+  case "$1/" in
+    /tmp/*|/private/tmp/*|/var/folders/*/T/*|/private/var/folders/*/T/*) return 0 ;;
+  esac
+  _ut_l=$(printf '%s/' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
+  case "$_ut_l" in
+    /tmp/*|/private/tmp/*|/var/folders/*/t/*|/private/var/folders/*/t/*) return 0 ;;
+  esac
+  return 1
+}
+# aa_dims <tree> — the host dims that change guard verdicts, as ONE token: case<0|1>-tmp<0|1>-git<0|1>-uid0<0|1>.
+# One tagged probe line per dim (the selftest locks the tags and the grammar).
+aa_dims() {
+  _ad_t=$1
+  _ad_p=$(CDPATH='' cd -P "$_ad_t" 2>/dev/null && pwd -P) || _ad_p=$_ad_t
+  if aa_fs_ci "$_ad_t"; then _ad_case=1; else _ad_case=0; fi  # dim:case
+  if aa_under_temp "$_ad_p"; then _ad_tmp=1; else _ad_tmp=0; fi  # dim:tmp
+  if git -C "$_ad_t" rev-parse --is-inside-work-tree >/dev/null 2>&1; then _ad_git=1; else _ad_git=0; fi  # dim:git
+  if [ "$(id -u)" = 0 ]; then _ad_uid0=1; else _ad_uid0=0; fi  # dim:uid0
+  printf 'case%s-tmp%s-git%s-uid0%s\n' "$_ad_case" "$_ad_tmp" "$_ad_git" "$_ad_uid0"
+}
+# --dims (CI-BARE-BATTERY-ONCE N1): the guard-battery producer legs assert their real dims equal the token consumers defer to.
+# AA_MODE=dims is not `run`, so the defer hook below (gated on AA_MODE=run) can never fire for it.
+if [ "$AA_MODE" = dims ]; then
+  aa_dims "$PWD" || exit 2
+  exit 0
+fi
+# aa_input_list <tree> — the battery's input files, relative, one per line, LC_ALL=C sorted: every non-directory
+# under .claude/, every .kit/*.conf but the two named exclusions, every adapters/*/adapter.json, and the scripts
+# Arm A executes. Broad on purpose: a file the battery starts reading later is already covered.
+# profiles/python/BRANCH-PROTECTION.md is read by Arm A but deliberately NOT listed (pruned in ts exports, so it
+# could mismatch across trees); its output is discarded and the lock only checks the worktree is unchanged, so
+# the verdict cannot move. .kit-run/ (the guard's deny log, written by the battery) is deliberately never listed.
+# A failed find or a newline in a name emits a sentinel that is no real path, so the comparison refuses.
+aa_input_list() {
+  ( cd "$1" 2>/dev/null || exit 0
+    _il_nl=$(printf '\nx'); _il_nl=${_il_nl%x}
+    if [ -d .claude ]; then
+      find .claude ! -type d || echo '<<find-failed>>'
+      [ -z "$(find .claude -name "*${_il_nl}*" 2>/dev/null | head -n 1)" ] || echo '<<newline-in-name>>'
+    fi
+    for _il_f in .kit/*.conf adapters/*/adapter.json scripts/kit-guard conformance/agent-autonomy.sh \
+                 conformance/promotion-readiness.sh conformance/agent-boundary.sh conformance/branch-protection.sh \
+                 conformance/union-lib.sh conformance/backlog-lib.sh conformance/verify.sh; do
+      case "$_il_f" in
+        .kit/dials.conf) continue ;;               # export-ignored (not in the exported or rendered tree) and not read on the battery path
+        .kit/ratification-seats.conf) continue ;;  # export-ignored (not in the exported or rendered tree) and not read on the battery path
+      esac
+      if [ -e "$_il_f" ] || [ -L "$_il_f" ]; then printf '%s\n' "$_il_f"; fi
+    done
+  ) | LC_ALL=C sort -u
+}
+# aa_inputs_differ <ref> <tree> — print the first input path that differs (or exists in one tree only); rc 0 = a difference.
+aa_inputs_differ() {
+  _id_all=$( { aa_input_list "$1"; aa_input_list "$2"; } | LC_ALL=C sort -u)
+  while IFS= read -r _id_p; do
+    [ -n "$_id_p" ] || continue
+    if [ -f "$1/$_id_p" ] && [ -f "$2/$_id_p" ] && cmp -s "$1/$_id_p" "$2/$_id_p"; then continue; fi
+    printf '%s\n' "$_id_p"; return 0
+  done <<EOF
+$_id_all
+EOF
+  return 1
+}
+# aa_defer_reason <ref-dir> <tree-dir> — print the FIRST reason NOT to defer (one line) and return 1; print nothing
+# and return 0 when this run may defer. The checks run in the order the design states them.
+aa_defer_reason() {
+  _dr_ref=$1; _dr_tree=$2
+  if [ "${GITHUB_ACTIONS:-}" != true ] || [ "${CI:-}" != true ]; then echo "not in Actions (GITHUB_ACTIONS and CI must both be true)"; return 1; fi
+  case "$_dr_ref" in /*) : ;; *) echo "KIT_GUARD_BATTERY_REF is empty or not an absolute path"; return 1 ;; esac
+  case "$_dr_ref" in *[![:print:]]*|*\\*) echo "KIT_GUARD_BATTERY_REF contains a control byte or backslash"; return 1 ;; esac
+  [ -d "$_dr_ref" ] || { echo "KIT_GUARD_BATTERY_REF is not a directory"; return 1; }
+  [ -f "$_dr_ref/.claude/hooks/guard.sh" ] || { echo "KIT_GUARD_BATTERY_REF has no .claude/hooks/guard.sh"; return 1; }
+  _dr_rp=$(CDPATH='' cd -P "$_dr_ref" 2>/dev/null && pwd -P) || _dr_rp=$_dr_ref
+  _dr_tp=$(CDPATH='' cd -P "$_dr_tree" 2>/dev/null && pwd -P) || _dr_tp=$_dr_tree
+  [ "$_dr_rp" != "$_dr_tp" ] || { echo "KIT_GUARD_BATTERY_REF is the tree under test (same directory)"; return 1; }
+  for _dr_v in KIT_GUARD_SELFEDIT KIT_CLAIM_FRONT_DOOR KIT_PROMOTION_FRONT_DOOR KIT_HL_FIND_BUDGET; do
+    eval "_dr_val=\${$_dr_v:-}"
+    [ -z "$_dr_val" ] || { echo "$_dr_v is set (it changes guard verdicts)"; return 1; }
+  done
+  _dr_dims=$(aa_dims "$_dr_tree")
+  _dr_vs=$(printf '%s' "${KIT_GUARD_BATTERY_VARIANTS:-}" | tr -s '[:space:]' ' ')
+  case " $_dr_vs " in *" $_dr_dims "*) : ;; *) echo "dims $_dr_dims not declared in KIT_GUARD_BATTERY_VARIANTS"; return 1 ;; esac
+  # N2: the two sentinels are legal relative filenames, so refuse outright when either appears in either tree's list.
+  for _dr_t in "$_dr_ref" "$_dr_tree"; do
+    _dr_l=$(aa_input_list "$_dr_t")
+    for _dr_s in '<<find-failed>>' '<<newline-in-name>>'; do
+      printf '%s\n' "$_dr_l" | grep -qxF "$_dr_s" || continue
+      echo "battery input listing refused: sentinel $_dr_s in $_dr_t"; return 1
+    done
+  done
+  _dr_diff=$(aa_inputs_differ "$_dr_ref" "$_dr_tree") || _dr_diff=''
+  [ -z "$_dr_diff" ] || { echo "battery input differs from the reference: $_dr_diff"; return 1; }
+  return 0
+}
+if [ "$AA_MODE" = run ] && [ "$AA_DELTA" = 0 ] && [ -n "${KIT_GUARD_BATTERY_REF:-}" ]; then
+  if _aa_why=$(aa_defer_reason "$KIT_GUARD_BATTERY_REF" "$PWD"); then
+    printf '%s\n' "N/A: agent-autonomy deferred to CI job guard-battery (inputs identical to $KIT_GUARD_BATTERY_REF)"
+    exit 0
+  fi
+  printf '%s\n' "NOTE: agent-autonomy not deferred — $_aa_why"
+fi
+# === end CI-BARE-BATTERY-ONCE defer mode ===========================================================================
+
+# aa_cell_skip <label> — the ONE skip predicate (C-A), called at every LABELLED gate site and never at a
+# spawn primitive. Returns 0 (SKIP) when AA_MODE=oracle, or when AA_MODE=scoped and the label does not match
+# the --cells glob (a POSIX `case` pattern: no process per cell). Any other value, `run` included, returns 1
+# (RUN), so an unexpected mode degrades toward running cells. Gate sites that print no label of their own
+# use a fixed label documented at the site.
+aa_cell_skip() {
+  # shellcheck disable=SC2254  # the glob is UNQUOTED on purpose: it is the pattern (the --cells argument)
+  case "$AA_MODE" in
+    oracle) return 0 ;;
+    scoped) case "$1" in $AA_CELLS_GLOB) return 1 ;; *) return 0 ;; esac ;;
+    *) return 1 ;;
+  esac
+}
+# aa_extra_ran — record that an UNCOUNTED leg (I4 block, fpra_lock) actually ran; scoped mode only.
+aa_extra_ran() {
+  if [ "$AA_MODE" = scoped ]; then AA_SCOPED_EXTRA=$((AA_SCOPED_EXTRA + 1)); fi
+}
+# aa_scoped_rc <report-rc> — the exit status of a SCOPED run: red when any matched cell failed, else the report's rc.
+aa_scoped_rc() {
+  [ "$fail" -eq 0 ] || { echo "FAIL: agent-autonomy scoped run failed"; return 1; }
+  return "$1"
+}
+# aa_scoped_report <count> <floor> [<extra>] — the bottom of a SCOPED run. Never a graded pass: it says so (F8), and
+# refuses a scope that matched nothing (rc 1; counted + uncounted legs both zero) or matched every cell
+# (rc 2, F4: keyed on the COUNTED n only; a full run must be the bare pass).
+aa_scoped_report() {
+  printf '%s\n' "SCOPED: $1 cells (+${3:-0} uncounted legs) matched '$AA_CELLS_GLOB' — NOT a graded pass (the graded pass requires >= $2)"
+  [ $(($1 + ${3:-0})) -gt 0 ] || { printf '%s\n' "FAIL: agent-autonomy --cells '$AA_CELLS_GLOB' matched no cell"; return 1; }
+  [ "$1" -lt "$2" ] || { printf '%s\n' "FAIL: agent-autonomy --cells '$AA_CELLS_GLOB' matched every cell; a full run must be the bare pass"; return 2; }
+  return 0
+}
+
+# aa_completeness <count> <floor> — the COMPLETENESS ANCHOR of a graded (bare) pass. Both numbers are
+# ARGUMENTS, never read from the environment here, so the selftest can drive it with any pair. It
+# returns 1 when fewer cells ran than the floor, and says so with BOTH numbers. The failure a stuck
+# gate produces (`oracle` reaching the graded path) is the argv-clobber class, so it names that cause.
+aa_completeness() {
+  [ "$1" -ge "$2" ] && return 0
+  echo "FAIL: agent-autonomy ran $1 cells, below the floor $2 — a graded pass must execute every cell (a truncated file, a skipped region, or a stuck mode gate). A count below the floor means cells did not run: look for a new precondition skip (it must be priced into the floor, with a comment, by the kit maintainers) or a gate or argv defect. Do not edit this file to make the count pass"
+  [ "$AA_MODE" = oracle ] && echo "  cause: AA_MODE=oracle reached the graded path — argv was clobbered before the bottom dispatch (see the NOT-set-dash-dash comment at the GPAB_OUT fixture); a top-level positional-parameter reset does this"
+  return 1
+}
 
 # aa_cell_record <label> <cell-json> <kind> — collect one replayable cell. BASH CELLS ONLY: the command is
 # extracted with jq from the cell JSON, exactly as guard.sh does, so a Write/Edit/Read cell (whose
@@ -170,7 +389,7 @@ AA_EXPECTED_KS_EOF
 aa_ks_expected() {
   while IFS= read -r _axl; do
     case "$_axl" in ''|'#'*) continue ;; esac
-    _axp=${_axl#[}; _axp=${_axp%]}
+    _axp=${_axl#"["}; _axp=${_axp%"]"}
     case "$1" in "$_axp"*) return 0 ;; esac
   done <<AA_KS_EXPECTED_IN
 $AA_EXPECTED_KS_DELTA
@@ -312,7 +531,7 @@ aa_delta_expected() {
   [ "$_axd" = "$(aa_delta_kind_direction "$4")" ] || return 1
   while IFS= read -r _axl; do
     case "$_axl" in ''|'#'*) continue ;; esac
-    _axp=${_axl#[}; _axp=${_axp%]}
+    _axp=${_axl#"["}; _axp=${_axp%"]"}
     case "$1" in
       "$_axp"*) return 0 ;;
     esac
@@ -427,23 +646,33 @@ aa_delta_adjudicate() {
 }
 
 assert_deny() {
+  aa_cell_skip "$1" && return 0
   aa_cell_record "$1" "$2" deny
   if denied "$2"; then echo "PASS deny : $1"; else echo "FAIL (wanted deny): $1"; fail=1; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 }
 assert_allow() {
+  aa_cell_skip "$1" && return 0
   aa_cell_record "$1" "$2" allow
-  if denied "$2"; then echo "FAIL (wanted allow): $1"; fail=1; else echo "PASS allow: $1"; fi
+  if denied "$2"; then echo "FAIL (wanted allow, got deny): $1"; fail=1
+  elif [ "$AA_SRC" != 0 ]; then echo "FAIL (wanted allow rc 0, got fault $(aa_allow_why)): $1"; fail=1
+  else echo "PASS allow: $1"; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 }
 # DRIFT-2: the deny DECISION is unchanged; only the reason gains an escape TIP. These assert the reason
 # TEXT, not the verdict. _reason emits the guard's permissionDecisionReason (empty if it allowed).
 _reason() { printf '%s' "$1" | sh "$GUARD" 2>/dev/null | sed -n 's/.*"permissionDecisionReason":"\(.*\)".*/\1/p'; }
 assert_reason_has() {   # <label> <json> <substr> — denies AND the reason contains <substr>
+  aa_cell_skip "$1" && return 0
   if denied "$2" && printf '%s' "$(_reason "$2")" | grep -qF -- "$3"; then echo "PASS reason-has [$3]: $1"
   else echo "FAIL (deny + reason contains '$3'): $1"; fail=1; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 }
 assert_reason_lacks() { # <label> <json> <substr> — reason does NOT contain <substr> (no tip noise)
+  aa_cell_skip "$1" && return 0
   if printf '%s' "$(_reason "$2")" | grep -qF -- "$3"; then echo "FAIL (reason must NOT contain '$3'): $1"; fail=1
   else echo "PASS reason-lacks [$3]: $1"; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 }
 
 # --- must DENY (irreversible / high-blast) ---
@@ -1468,6 +1697,118 @@ assert_allow "CORPUS-PIN interpreter to an ordinary /tmp path stays allowed" \
 # presence+values lock (committed disarms), the human-reviewed commit — and now this real-time deny.
 assert_deny "cd .kit then bare-basename write (GUARD-BASENAME-AFTER-CD-BYPASS, CURED)" \
   '{"tool_name":"Bash","tool_input":{"command":"cd .kit && printf x > dials.conf"}}'
+
+# --- TBG-TRACKER-CONF T2: .kit/tracker.conf is control-plane, one fixture per mutation form -------
+# The pin the jira SSRF/token control depends on (design §5, §6a S-12): if it can be silently
+# repointed or emptied, the conf's own fail-closed grammar (scripts/tracker-conf.sh) never gets a
+# chance to run. All three matcher sites already carried the path before this slice (VERIFIED, not
+# assumed: is_control_plane_path's _cpp_kitowned/_cpp_match lists AND both _CP8B_PATHHIT_T1(_LC)
+# regex legs all named .kit/tracker.conf at TBG-TRACKER-CONF's boarding) — this block completes the
+# S-12 FIXTURE set, one row per mutation form, plus the positive control that proves the suite can
+# still ALLOW an ordinary write elsewhere.
+assert_deny  "Write tracker.conf"         '{"tool_name":"Write","tool_input":{"file_path":".kit/tracker.conf","content":"base_url=https://evil.example.com"}}'
+assert_deny  "Edit tracker.conf"          '{"tool_name":"Edit","tool_input":{"file_path":".kit/tracker.conf","old_string":"base_url=https://ex.atlassian.net","new_string":"base_url=https://evil.example.com"}}'
+assert_deny  "redirect tracker.conf"      '{"tool_name":"Bash","tool_input":{"command":"printf x > .kit/tracker.conf"}}'
+assert_deny  "sed -i tracker.conf"        '{"tool_name":"Bash","tool_input":{"command":"sed -i s/ex.atlassian.net/evil.example.com/ .kit/tracker.conf"}}'
+assert_deny  "tee tracker.conf"           '{"tool_name":"Bash","tool_input":{"command":"echo x | tee .kit/tracker.conf"}}'
+assert_deny  "mv onto tracker.conf"       '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/evil.conf .kit/tracker.conf"}}'
+assert_deny  "cp onto tracker.conf"       '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/evil.conf .kit/tracker.conf"}}'
+assert_deny  "rm tracker.conf"            '{"tool_name":"Bash","tool_input":{"command":"rm .kit/tracker.conf"}}'
+# Case-variant of the path — the same collision class GUARD-PATH-ENUMERATION-INCOMPLETE closed for
+# the rest of the corpus: on a case-insensitive checkout `.KIT/TRACKER.CONF` resolves to the same
+# real file, so it must fold to control-plane too (Tier 1: the .kit/*.conf enumeration is unconditional).
+assert_deny  "case-variant Write tracker.conf" '{"tool_name":"Write","tool_input":{"file_path":".KIT/TRACKER.CONF","content":"x"}}'
+assert_deny  "case-variant redirect tracker.conf" '{"tool_name":"Bash","tool_input":{"command":"printf x > .KIT/TRACKER.CONF"}}'
+assert_allow "read tracker.conf"          '{"tool_name":"Read","tool_input":{"file_path":".kit/tracker.conf"}}'
+# Positive control: an ordinary, non-control-plane write stays allowed — proves the denies above are
+# about THIS path, not a suite-wide false-positive.
+assert_allow "write ordinary file (positive control)" '{"tool_name":"Write","tool_input":{"file_path":"src/app.ts","content":"x"}}'
+
+# --- TBG-JIRA-READER T6: scripts/tracker-jira.sh + scripts/tracker-read.sh are control-plane -------
+# The credential-holding security core (design §6, §6a S-12 completeness discipline): both scripts
+# were added to is_control_plane_path's _cpp_kitowned list (two sites) AND both _CP8B_PATHHIT_T1(_LC)
+# regex legs at TBG-JIRA-READER's boarding, mirroring exactly how scripts/tracker-conf.sh is
+# registered — one row per mutation form, per script, plus a case-variant leg and the positive
+# control. HONEST CEILING (M-6, security-ruled): these per-name entries are VACUOUS against a
+# plain Write/Edit/redirect probe — the deny for a bare `scripts/tracker-jira.sh` or
+# `scripts/tracker-read.sh` write is already produced by the pre-existing, broader Tier-2
+# `scripts/*|*/scripts/*` family in `_cpp_match`, measured by deliberately removing both scripts
+# from all four per-name sites (both path lists + both regexes) and re-probing: the same Write
+# still DENIES. The per-name entries are NOT proven load-bearing by this fixture set for that
+# probe shape; they are kept because they match the tracker-conf.sh precedent, bind the
+# case-folded `_CP8B_PATHHIT_T1_LC` leg (which the bare `scripts/*` family also covers, but not
+# necessarily through the identical code path), and cost nothing to keep. `CP-MATCHER-CORPUS-ALL-FAMILIES`
+# (boarded, BACKLOG.md) is the general fix for "a family wildcard makes a per-name entry look
+# tested when it isn't" — this comment states the gap honestly rather than claiming the twenty
+# fixtures below prove something they do not.
+assert_deny  "Write tracker-jira.sh"        '{"tool_name":"Write","tool_input":{"file_path":"scripts/tracker-jira.sh","content":"x"}}'
+assert_deny  "Edit tracker-jira.sh"         '{"tool_name":"Edit","tool_input":{"file_path":"scripts/tracker-jira.sh","old_string":"set -eu","new_string":"set -eu; evil"}}'
+assert_deny  "redirect tracker-jira.sh"     '{"tool_name":"Bash","tool_input":{"command":"printf x > scripts/tracker-jira.sh"}}'
+assert_deny  "sed -i tracker-jira.sh"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/https/http/ scripts/tracker-jira.sh"}}'
+assert_deny  "tee tracker-jira.sh"          '{"tool_name":"Bash","tool_input":{"command":"echo x | tee scripts/tracker-jira.sh"}}'
+assert_deny  "mv onto tracker-jira.sh"      '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/evil.sh scripts/tracker-jira.sh"}}'
+assert_deny  "cp onto tracker-jira.sh"      '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/evil.sh scripts/tracker-jira.sh"}}'
+assert_deny  "rm tracker-jira.sh"           '{"tool_name":"Bash","tool_input":{"command":"rm scripts/tracker-jira.sh"}}'
+assert_deny  "case-variant Write tracker-jira.sh" '{"tool_name":"Write","tool_input":{"file_path":"SCRIPTS/TRACKER-JIRA.SH","content":"x"}}'
+# FIX ROUND (security seat, TBG-BOARD-VERBS): the case-variant Write leg above proves only the
+# Write TOOL route (is_control_plane_path). A case-variant INTERPRETER write reaches the guard as
+# a Bash command, which `_CP8B_PATHHIT_T1`/`_CP8B_PATHHIT_T1_LC` deny DIRECTLY — they never
+# consult is_control_plane_path — so a name missing from THOSE regex legs is unpinned on this
+# route even when its Write-tool case-variant leg passes. Closing the CLASS, not just board.sh.
+assert_deny  "case-variant interpreter write tracker-jira.sh" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"python3 -c \\\"open('SCRIPTS/TRACKER-JIRA.SH','w')\\\"\"}}"
+assert_allow "read tracker-jira.sh"         '{"tool_name":"Read","tool_input":{"file_path":"scripts/tracker-jira.sh"}}'
+
+assert_deny  "Write tracker-read.sh"        '{"tool_name":"Write","tool_input":{"file_path":"scripts/tracker-read.sh","content":"x"}}'
+assert_deny  "Edit tracker-read.sh"         '{"tool_name":"Edit","tool_input":{"file_path":"scripts/tracker-read.sh","old_string":"set -eu","new_string":"set -eu; evil"}}'
+assert_deny  "redirect tracker-read.sh"     '{"tool_name":"Bash","tool_input":{"command":"printf x > scripts/tracker-read.sh"}}'
+assert_deny  "sed -i tracker-read.sh"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/bound/refused/ scripts/tracker-read.sh"}}'
+assert_deny  "tee tracker-read.sh"          '{"tool_name":"Bash","tool_input":{"command":"echo x | tee scripts/tracker-read.sh"}}'
+assert_deny  "mv onto tracker-read.sh"      '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/evil.sh scripts/tracker-read.sh"}}'
+assert_deny  "cp onto tracker-read.sh"      '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/evil.sh scripts/tracker-read.sh"}}'
+assert_deny  "rm tracker-read.sh"           '{"tool_name":"Bash","tool_input":{"command":"rm scripts/tracker-read.sh"}}'
+assert_deny  "case-variant Write tracker-read.sh" '{"tool_name":"Write","tool_input":{"file_path":"SCRIPTS/TRACKER-READ.SH","content":"x"}}'
+# FIX ROUND (security seat): same class as tracker-jira.sh's own interpreter-route leg above.
+assert_deny  "case-variant interpreter write tracker-read.sh" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"python3 -c \\\"open('SCRIPTS/TRACKER-READ.SH','w')\\\"\"}}"
+assert_allow "read tracker-read.sh"         '{"tool_name":"Read","tool_input":{"file_path":"scripts/tracker-read.sh"}}'
+# Positive control: an ordinary, non-control-plane write stays allowed — proves the denies above are
+# about THESE paths, not a suite-wide false-positive.
+assert_allow "write ordinary file (positive control, TBG-JIRA-READER)" '{"tool_name":"Write","tool_input":{"file_path":"src/other.ts","content":"x"}}'
+
+# --- TBG-BOARD-VERBS S-12: scripts/board.sh is control-plane; its FRONT DOOR stays reachable -----
+# Tier-1 floor (the tracker-jira.sh precedent above, same disclosed HONEST CEILING — the bare
+# Tier-2 `scripts/*` family already denies a plain Write/Edit/redirect against this path; these
+# per-name legs are kept for the same reasons: precedent, the case-folded leg, and cost nothing).
+assert_deny  "Write board.sh"        '{"tool_name":"Write","tool_input":{"file_path":"scripts/board.sh","content":"x"}}'
+assert_deny  "Edit board.sh"         '{"tool_name":"Edit","tool_input":{"file_path":"scripts/board.sh","old_string":"set -eu","new_string":"set -eu; evil"}}'
+assert_deny  "redirect board.sh"     '{"tool_name":"Bash","tool_input":{"command":"printf x > scripts/board.sh"}}'
+assert_deny  "sed -i board.sh"       '{"tool_name":"Bash","tool_input":{"command":"sed -i s/claim/evil/ scripts/board.sh"}}'
+assert_deny  "tee board.sh"          '{"tool_name":"Bash","tool_input":{"command":"echo x | tee scripts/board.sh"}}'
+assert_deny  "mv onto board.sh"      '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/evil.sh scripts/board.sh"}}'
+assert_deny  "cp onto board.sh"      '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/evil.sh scripts/board.sh"}}'
+assert_deny  "rm board.sh"           '{"tool_name":"Bash","tool_input":{"command":"rm scripts/board.sh"}}'
+assert_deny  "case-variant Write board.sh" '{"tool_name":"Write","tool_input":{"file_path":"SCRIPTS/BOARD.SH","content":"x"}}'
+# FIX ROUND (security seat, CI #698 fix-2): the Write-tool case-variant leg above proves only the
+# Write TOOL route (is_control_plane_path's _cpp_kitowned/_cpp_match, now carrying board.sh — the
+# fix-1 commit). A case-variant INTERPRETER write reaches the guard as a Bash command, which
+# `_CP8B_PATHHIT_T1`/`_CP8B_PATHHIT_T1_LC` deny DIRECTLY without ever consulting
+# is_control_plane_path — DEMONSTRATED FS-dependent: `python3 -c "open('SCRIPTS/BOARD.SH','w')"`
+# denied on macOS (case-insensitive FS papering over the gap) but ALLOWED on Ubuntu
+# (case-sensitive) until board.sh was added to those two regex legs too (this same commit).
+assert_deny  "case-variant interpreter write board.sh" \
+  "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"python3 -c \\\"open('SCRIPTS/BOARD.SH','w')\\\"\"}}"
+assert_allow "read board.sh"         '{"tool_name":"Read","tool_input":{"file_path":"scripts/board.sh"}}'
+# The FRONT DOOR stays allowed — an agent invoking the verbs themselves (not editing the script)
+# is the whole point of this slice (the harness-neutrality goal), same shape as board-claim.sh's
+# own B2-C front-door legs above.
+assert_allow "front door board claim"   '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh claim ROW-X"}}'
+assert_allow "front door board release" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh release ROW-X"}}'
+assert_allow "front door board move"    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh move ROW-X done"}}'
+assert_allow "front door board create"  '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title \"a new row\""}}'
+assert_allow "front door sparkwright board" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/sparkwright board claim ROW-X"}}'
+# Positive control.
+assert_allow "write ordinary file (positive control, TBG-BOARD-VERBS)" '{"tool_name":"Write","tool_input":{"file_path":"src/another.ts","content":"x"}}'
 
 # === GOVERNANCE-SOURCE-FILES (CONTROL-PLANE-COVERAGE slice 3c) ====================================
 # ⚠️ gov_subject_deny_per_form (plan's Design-promised controls row 1). The kit's OWN governing SOURCE
@@ -2869,9 +3210,26 @@ gpab_setup || { echo "FAIL: gpab fixture setup"; fail=1; }
 
 # root-parameterised variants: the shipped denied()/assert_*() are pinned to $GUARD, whose
 # PROTECTED_ROOT is the real repo.
-denied_at()       { printf '%s' "$2" | sh "$1" 2>/dev/null | grep -q '"permissionDecision":"deny"'; }
-assert_deny_at()  { if denied_at "$1" "$3"; then echo "PASS deny : $2"; else echo "FAIL (wanted deny): $2"; fail=1; fi; }
-assert_allow_at() { if denied_at "$1" "$3"; then echo "FAIL (wanted allow): $2"; fail=1; else echo "PASS allow: $2"; fi; }
+# In oracle mode this returns 0, which reads as a DENY verdict without a spawn. Every caller is gated and oracle verdicts are discarded; a new caller must be gated too.
+denied_at() {
+  [ "$AA_MODE" = oracle ] && return 0
+  AA_SRC=0
+  _dna_o=$(printf '%s' "$2" | sh "$1" 2>/dev/null) || AA_SRC=$?
+  case "$_dna_o" in *'"permissionDecision":"deny"'*) return 0 ;; esac
+  return 1
+}
+assert_deny_at() {
+  aa_cell_skip "$2" && return 0
+  if denied_at "$1" "$3"; then echo "PASS deny : $2"; else echo "FAIL (wanted deny): $2"; fail=1; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+}
+assert_allow_at() {
+  aa_cell_skip "$2" && return 0
+  if denied_at "$1" "$3"; then echo "FAIL (wanted allow, got deny): $2"; fail=1
+  elif [ "$AA_SRC" != 0 ]; then echo "FAIL (wanted allow rc 0, got fault $(aa_allow_why)): $2"; fail=1
+  else echo "PASS allow: $2"; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+}
 gpab_write() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$1"; }
 
 if [ "${GPAB_G:-}" != "" ]; then
@@ -2983,10 +3341,15 @@ if [ "${GPAB_G:-}" != "" ]; then
   #     resolver), and its reason must differ from the generic control-plane one.
   assert_deny_at "$GPAB_G" "C2: unresolvable path denies (write)" "$(gpab_write "$GPAB_TMP/cycA")"
   assert_deny_at "$GPAB_G" "C2: unresolvable path denies (read)"  "$(gpab_read  "$GPAB_TMP/cycA")"
-  _c2r=$(printf '%s' "$(gpab_write "$GPAB_TMP/cycA")" | sh "$GPAB_G" 2>/dev/null)
-  case "$_c2r" in
-    *"could not be resolved"*) echo "PASS reason  : C2 names the unresolvable path, not the generic deny" ;;
-    *) echo "FAIL reason  : C2 must carry its own reason, not the control-plane text"; fail=1 ;;
+  # Scope gate (C-A): the C2 spawn is skipped by the ONE predicate under its own label, so _c2r is assigned in
+  # every mode (read below under `set -u`), and the case that grades it runs only where the spawn did.
+  _c2l="C2 names the unresolvable path, not the generic deny"   # a PREFIX of the PASS/FAIL text below (F5)
+  _c2r=''
+  aa_cell_skip "$_c2l" || _c2r=$(printf '%s' "$(gpab_write "$GPAB_TMP/cycA")" | sh "$GPAB_G" 2>/dev/null)
+  aa_cell_skip "$_c2l" || AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  aa_cell_skip "$_c2l" || case "$_c2r" in
+    *"could not be resolved"*) echo "PASS reason  : $_c2l" ;;
+    *) echo "FAIL reason  : $_c2l — it must carry its own reason, not the control-plane text"; fail=1 ;;
   esac
   # G: an ordinary temp file is untouched — it must discriminate or it is pure friction.
   printf 'x\n' > "$GPAB_TMP/plain-note.md"
@@ -3137,13 +3500,23 @@ if [ "${GPAB_G:-}" != "" ]; then
     # nothing here would notice. Also assert the sed actually changed the file: a stale expression
     # that matches nothing is the same vacuity wearing a different hat (it happened twice in this
     # slice — once when a fix reshaped the line the expression anchored on).
-    if denied_at "$GPAB_G" "$3"; then _pv=deny; else _pv=allow; fi
+    aa_cell_skip "$1" && return 0
+    # THREE states: deny / allow (rc 0, no deny) / fault(rc=N). A fault is never "allow" (GUARD-QUOTED-EXEC-INTERMITTENT B1).
+    if denied_at "$GPAB_G" "$3"; then _pv=deny; elif [ "$AA_SRC" = 0 ]; then _pv=allow; else _pv="fault(rc=$AA_SRC)"; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
     if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
       cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
       echo "FAIL mutant : $1 — the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
     fi
-    if denied_at "$GPAB_G" "$3"; then _mv=deny; else _mv=allow; fi
+    # Parse gate (T2c, security ruling c3, condition 2): a mutant that does not parse emits no JSON, and
+    # "no JSON" is silently read as ALLOW below (denied_at greps for the deny JSON) — a syntax-broken
+    # core would "kill" every deny->allow leg for free, proving nothing. Fail loudly instead.
+    if ! sh -n "$GPAB_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      echo "FAIL mutant : $1 — the mutant does not parse (sh -n); a no-JSON 'flip' is a lockout, not a kill"; fail=1; return
+    fi
+    if denied_at "$GPAB_G" "$3"; then _mv=deny; elif [ "$AA_SRC" = 0 ]; then _mv=allow; else _mv="fault(rc=$AA_SRC)"; fi
     cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
     if [ "$_pv" = "$_mv" ]; then
       echo "FAIL mutant : $1 — verdict did not change ($_pv before and after); the leg proves nothing"; fail=1
@@ -3170,8 +3543,13 @@ if [ "${GPAB_G:-}" != "" ]; then
   # defence-in-depth (it is the clause the design names, and it stays correct if condition 3 is ever
   # relaxed), but this leg pins the PAIR, not either half — claiming otherwise would be a lock that
   # proves less than it says.
+  # Re-anchored (SEMGREP-BASH-PARSE-KIT-WIDE slice 1): the one-line `case "$_dpa/" in
+  # "$_drootp"/*) return 1 ;; esac` became multi-line, and an identical `"$_drootp"/*) return 1
+  # ;;` arm exists elsewhere (a DIFFERENT case subject, `"$_dphys/"`) — so the range is bounded
+  # by the unique `case "$_dpa/" in` open line through its own `esac`, and only the `return 1`
+  # inside that range is neutered.
   gpab_mutant "literal-side conjunction removed -> F4b" \
-    's#^  case "$_dpa/" in "$_drootp"/\*) return 1 ;; esac#  :#; s#^  if ! _under_temp "$_dpa"; then#  if false; then#' \
+    '/^  case "\$_dpa\/" in$/,/^    esac/ s#return 1 ;;#: ;;#; s#^  if ! _under_temp "$_dpa"; then#  if false; then#' \
     "$(gpab_write "$GPAB_ROOT/link/.claude/hooks/guard-core.sh")" allow
   gpab_mutant "write allowlist made resolved-only -> E6-write" \
     's#^  case "$base" in$#  case "$_rbase" in#' \
@@ -3241,8 +3619,14 @@ if [ "${GPAB_G:-}" != "" ]; then
     '{"tool_name":"Bash","tool_input":{"command":"cd -; sed -i s/a/b/ verify.sh"}}' allow
   # M-CWD2 — the `-`-prefixed DECLINE alone. Everything else in Face A survives, so a flip here is
   # attributable to this one clause and to nothing else.
+  # Re-anchored (SEMGREP-BASH-PARSE-KIT-WIDE slice 1): the one-line `case "$_ea" in -*)
+  # _CP8B_EFF_UNKNOWN=1; return ;; esac` became multi-line; the arm line alone is unique (the
+  # OTHER `case "$_ea" in` block a few lines up carries a different, multi-alternative pattern).
+  # T2c fix (security ruling c3): the prior re-anchor replaced the whole arm line with a bare `:`,
+  # unbalancing `case … in / esac` (sh -n rc 2) — a false kill (no JSON => read as ALLOW). Mutate the
+  # BODY only, per rule R1(b).
   gpab_mutant "M-CWD2: the -prefixed operand decline removed -> cd -- conformance DENY flips" \
-    's#^  case "$_ea" in -\*) _CP8B_EFF_UNKNOWN=1; return ;; esac#  :#' \
+    's#^    -\*) _CP8B_EFF_UNKNOWN=1; return ;;#    -*) : ;;#' \
     '{"tool_name":"Bash","tool_input":{"command":"cd -- conformance; sed -i s/a/b/ verify.sh"}}' allow
   # M-CWD2b — the glob/brace DECLINE alone (vet H2). Same isolation, different clause.
   gpab_mutant "M-CWD2b: the glob/brace operand decline removed -> cd conf* DENY flips" \
@@ -3315,11 +3699,13 @@ if [ "${GPAB_G:-}" != "" ]; then
   # env honor flagged/assignment forms (neuter the bare-only disqualifier + widen the strip to consume
   # the next token). BOTH the guard-disabling assignment leg AND the flag leg then flip DENY->ALLOW —
   # the assignment form alone under-pins, so the flag companion is asserted too.
+  # Re-anchored (T2c, security ruling c3): the one-line `case … in -*|*=*) break ;; esac` is now
+  # multi-line; anchor on the arm line alone (unique within the range) and mutate its body only.
   gpab_mutant "C4-KF: env strip honors an ASSIGNMENT -> env KIT_GUARD_SELFEDIT=1 flips (guard-disabling)" \
-    '/_cp8b_strip_wrappers()/,/^}/{s#case "$_sw2" in -\*|\*=\*) break ;; esac#:#;s#env\[\[:space:\]\]+//#env[[:space:]]+[^[:space:]]+[[:space:]]+//#;}' \
+    '/_cp8b_strip_wrappers()/,/^}/{s#^          -\*|\*=\*) break ;;#          -*|*=*) : ;;#;s#env\[\[:space:\]\]+//#env[[:space:]]+[^[:space:]]+[[:space:]]+//#;}' \
     '{"tool_name":"Bash","tool_input":{"command":"env KIT_GUARD_SELFEDIT=1 sh conformance/verify.sh"}}' allow
   gpab_mutant "C4-KF-flag: env strip honors a FLAG -> env -i flips" \
-    '/_cp8b_strip_wrappers()/,/^}/{s#case "$_sw2" in -\*|\*=\*) break ;; esac#:#;s#env\[\[:space:\]\]+//#env[[:space:]]+[^[:space:]]+[[:space:]]+//#;}' \
+    '/_cp8b_strip_wrappers()/,/^}/{s#^          -\*|\*=\*) break ;;#          -*|*=*) : ;;#;s#env\[\[:space:\]\]+//#env[[:space:]]+[^[:space:]]+[[:space:]]+//#;}' \
     '{"tool_name":"Bash","tool_input":{"command":"env -i sh conformance/verify.sh"}}' allow
   # C4-KG (Arm 3, git-lead guard): masking is scoped to git-lead segments. Remove the guard (mask any
   # lead) and a non-git URL literally containing a CP path is masked away -> `curl -O …/hooks/pre-push.git`
@@ -3388,8 +3774,9 @@ if [ "${GPAB_G:-}" != "" ]; then
   # strip still `time[[:space:]]+`, the residual `-p` lead is not a shell, so the verdict does not move
   # and the leg would prove nothing. This leg therefore pins the PAIR — disqualifier AND strip width —
   # and says so, exactly as the K-I2 pair legs do. Result: `time -p sh conformance/verify.sh` flips.
+  # Re-anchored (T2c, security ruling c3): arm line alone, body-only mutation.
   gpab_mutant "F2-KJ: time strip honors a FLAGGED form -> time -p flips" \
-    "/_cp8b_strip_wrappers()/,/^}/{s#case \"\$_sw2\" in ''|-\\*) break ;; esac#:#;s#time\\[\\[:space:\\]\\]+//#time[[:space:]]+-[^[:space:]]+[[:space:]]+//#;}" \
+    "/_cp8b_strip_wrappers()/,/^}/{s#^          ''|-\\*) break ;;#          ''|-*) : ;;#;s#time\\[\\[:space:\\]\\]+//#time[[:space:]]+-[^[:space:]]+[[:space:]]+//#;}" \
     '{"tool_name":"Bash","tool_input":{"command":"time -p sh conformance/verify.sh"}}' allow
   # K-K (Arm C): actionlint sits in the DECLINE-ON-ANY-FLAG tier because -shellcheck=/-pyflakes= are
   # exec primitives. Neuter the decline and the exec-flag form is read-recognized -> DENY flips.
@@ -3503,8 +3890,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   # The probe uses `-delete` on a control-plane DIR (not a `-name` filter) so the flat destructive matrix
   # at guard-core `:4210`, which pins `find … -delete`, is not what is being measured here — the quoted
   # spelling slips that matcher too, which is exactly why this leg can go red at all.
+  # Re-anchored (T2c, security ruling c3): the case-open line is now on its own line and is unique;
+  # anchor on it (not the now-vanished one-line form) and swap the tested token in place.
   gpab_mutant "M-E2: unknown-primary test back on the RAW token -> find <cp> '-delete' flips" \
-    's@case "$_fdq" in -\*) return 1 ;; esac@case "$1" in -*) return 1 ;; esac@' \
+    's@^    case "$_fdq" in$@    case "$1" in@' \
     '{"tool_name":"Bash","tool_input":{"command":"find .claude/hooks '\''-delete'\''"}}' allow
   # === GUARD-READ-LANE-3 mutants — one per face, each loosening the recogniser so a WRITE cousin ===
   # flips ALLOW. Each is anchored on the ONE line that carries the face's enforcement.
@@ -3541,35 +3930,42 @@ if [ "${GPAB_G:-}" != "" ]; then
   # judged by its harmless LEAD again, so a kit query (or any lane-2 consumer) followed by `; python3
   # /dev/stdin` has its body ruled inert and the interpreter writes onto guard-core.sh unscanned.
   # The probe is W7 verbatim, which is the shape that measured ALLOW on this branch before the fix.
+  # Re-anchored (T2c, security ruling c3): scope by the unique `case … in` … `esac` range and mutate
+  # the arm's body only (never the open line or the arm pattern with a bare `:`).
   gpab_mutant "M-Fj2: pre-<< separator decline removed -> W7 (kit query ; python3 stdin) flips" \
-    "s@^  case \"\${1%%<<\*}\" in \*';'\*|\*'&'\*|\*'|'\*) return 1 ;; esac@  :@" \
+    "/^  case \"\${1%%'<<'\*}\" in\$/,/^ *esac/ s@return 1 ;;@: ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"sh conformance/branch-protection.sh --declared-only profiles/python/BRANCH-PROTECTION.md; python3 /dev/stdin <<'\''EOF'\''\nimport shutil; shutil.copy('\''/tmp/e'\'','\''.claude/hooks/guard-core.sh'\'')\nEOF"}}' allow
   # M-Fh2 (security seat MED-1) — the `=` refusal in the -exec flag slot. Remove it and a
   # control-plane path glued to a long flag rides the slot unclassified again.
+  # Re-anchored (T2c, security ruling c3): arm line alone (unique 8-space indent), body-only mutation.
   gpab_mutant "M-Fh2: the = refusal in the -exec flag slot removed -> --output=<cp> flips" \
-    "s@case \"\$_fxt\" in \*'='\*) return 1 ;; esac@:@" \
+    "s@^        \*'='\*) return 1 ;;@        *'='*) : ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"find conformance -exec cat --output=.claude/x {} +"}}' allow
   # M-E3 (seat review round 1) — the ARITY OPERAND check is the only thing stopping an escape parked in
   # a primary's operand slot. Neuter it (accept any operand) and `find conformance -name -exec cp …`
   # is swallowed as `-name`'s operand and the walk accepts -> flips ALLOW. `{}` is out of the probe for
   # M-E1's round-2 reason: the brace refusal would hold the verdict at deny and mask the mutation.
+  # Re-anchored (T2c, security ruling c3): scope by function range, mutate only the `-*) ;;` fallthrough
+  # arm's body (the pass-through into the digit/suffix checks) rather than replacing the whole case.
   gpab_mutant "M-E3: arity operand shape check removed -> find -name -exec cp flips" \
-    '/_cp8b_seg_find_arity_shape_ok()/,/^}/ s@^  case "\$1" in -\*) ;; \*) return 0 ;; esac@  return 0@' \
+    '/_cp8b_seg_find_arity_shape_ok()/,/^}/ s@^    -\*) ;;@    -*) return 0 ;;@' \
     '{"tool_name":"Bash","tool_input":{"command":"find conformance -name -exec cp /tmp/e /tmp/f +"}}' allow
   # M-E4 (seat review round 2) — the BRACE/COMMA refusal in the shared word-shape test is the only thing
   # stopping the shell from synthesising a `-`-led word out of a token the guard read as a path. Remove
   # that one line and `find <cp> {-exec,cp,/tmp/e,{},+}` — one inert token to the guard, an arbitrary
   # command aimed at the control plane once bash expands it — flips ALLOW. The probe carries `cp`, not
   # `rm`/`-delete`, for M-E1's reason: the flat destructive matrix would mask the mutation.
+  # Re-anchored (T2c, security ruling c3): arm line alone within the function range, body-only mutation.
   gpab_mutant "M-E4: brace/comma refusal removed -> find <cp> {-exec,cp,...} flips" \
-    '/_cp8b_seg_word_shape_ok()/,/^}/ s@^  case "\$1" in \*.{.\*|\*.}.\*|\*.,.\*) return 1 ;; esac@  :@' \
+    '/_cp8b_seg_word_shape_ok()/,/^}/ s@^    \*.{.\*|\*.}.\*|\*.,.\*) return 1 ;;@    *'"'"'{'"'"'*|*'"'"'}'"'"'*|*'"'"','"'"'*) : ;;@' \
     '{"tool_name":"Bash","tool_input":{"command":"find .claude/hooks {-exec,cp,/tmp/e,{},+}"}}' allow
   # M-E5 (seat review round 2) — the LEADING-GLOB refusal, same test, the other expansion. Remove it and
   # `find <cp> *delete` flips ALLOW. NOTE WHAT THIS CELL ASSERTS: the GUARD'S VERDICT, not an execution.
   # The spelling only deletes anything if a file matching `*delete` already exists; the guard cannot see
   # the filesystem, so a token it cannot bound must decline either way.
+  # Re-anchored (T2c, security ruling c3): arm line alone within the function range, body-only mutation.
   gpab_mutant "M-E5: leading-glob refusal removed -> find <cp> *delete flips" \
-    "/_cp8b_seg_word_shape_ok()/,/^}/ s@^  case \"\\\$1\" in '\\*'\\*|'?'\\*|'\\['\\*) return 1 ;; esac@  :@" \
+    "/_cp8b_seg_word_shape_ok()/,/^}/ s@^    '\\*'\\*|'?'\\*|'\\['\\*) return 1 ;;@    '\\*'\\*|'?'\\*|'\\['\\*) : ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"find .claude/hooks *delete"}}' allow
   # K-COUPLE-FIND — THE T4 FOLD IS A CALL, NOT A COPY, PROVEN BEHAVIOURALLY. T4 shipped a `find`
   # read-flag allowlist (`_CP8B_FH_FIND_RO`) forward-copied into `_cp8b_seg_read_shaped`'s message arm;
@@ -3781,11 +4177,18 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_ks_state() { gpab_ks_at "$1" "$2" && _kss=0 || _kss=$?
                     case $_kss in 0) echo present ;; 1) echo absent ;; *) echo no-deny ;; esac; }
   gpab_mutant_ks() {  # <label> <sed-expr> <json> <want-after-mutation: present|absent>
+    aa_cell_skip "$1" && return 0
     _kp=$(gpab_ks_state "$GPAB_G" "$3")
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     sed "$2" "$GPAB_TMP/gc.pristine" > "$GPAB_GC"
     if cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_GC"; then
       cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
       echo "FAIL mutant : $1 — the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
+    fi
+    # Parse gate (T2c, security ruling c3, condition 2): see gpab_mutant for the rationale.
+    if ! sh -n "$GPAB_GC" 2>/dev/null; then
+      cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+      echo "FAIL mutant : $1 — the mutant does not parse (sh -n); a no-JSON 'flip' is a lockout, not a kill"; fail=1; return
     fi
     _km=$(gpab_ks_state "$GPAB_G" "$3")
     cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
@@ -3819,8 +4222,11 @@ if [ "${GPAB_G:-}" != "" ]; then
   # `_cp8b_mask_quoted` declines on it. Ignore that end state — keep the mask whatever the walk ended
   # in — and the cross-kind parity string masks a REAL `;`, merging a `cp` onto the guard into grep's
   # data. The two even-count prechecks BOTH pass on this string, so only the end state holds it.
+  # GUARD-QUOTED-EXEC-INTERMITTENT: the old expression dropped the `||` clause bare, which now FAULTS (rc 2: an unchecked
+  # non-zero substitution is a guard fault) — deny -> fault proves less, and a fault is never an allow. CHOSEN: re-aim
+  # at the same site with `|| :`, which ignores the end state without faulting, so the mutant still flips to ALLOW.
   gpab_mutant "M-A4: the walk's open-span end state ignored -> cross-kind parity masks a real ; and flips" \
-    's@^  _mqm=\$(_cp8b_mask_walk "\$_mqi") ||.*@  _mqm=$(_cp8b_mask_walk "$_mqi")@' \
+    's@^  _mqm=\$(_cp8b_mask_walk "\$_mqi") ||.*@  _mqm=$(_cp8b_mask_walk "$_mqi") || :@' \
     '{"tool_name":"Bash","tool_input":{"command":"grep '\''a\"b'\'' x \" ; cp e .claude/hooks/guard-core.sh"}}' allow
   # M-L1 — THE DE-QUOTED LEAD IN THE LAUNDER ARM (F-4). Drop the de-quote and `'grep'` matches no read
   # verb, the Cure-2 arm declines, and a `>` truncation of guard-core.sh through a pure glob flips
@@ -3855,9 +4261,16 @@ if [ "${GPAB_G:-}" != "" ]; then
   # tb-removal the single-/./ spelling must STILL deny — it collapses in one pass, so only the
   # OVERLAPPING-run spelling needs the fixpoint. Apply the mutation to a copy and assert stay-deny.
   sed "/_cp8b_norm()/,/^}/ s@ -e 'tb'@@" "$GPAB_GC" > "$GPAB_TMP/gc.n2ctl"; cp "$GPAB_TMP/gc.n2ctl" "$GPAB_GC"
-  if denied_at "$GPAB_G" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/./pre-push"}}'; then
+  # Parse gate (T2c, security ruling c3, condition 2): this leg runs the mutated core through the real
+  # guard.sh, so a non-parsing mutant would emit no JSON and denied_at would read it as ALLOW.
+  if ! sh -n "$GPAB_GC" 2>/dev/null; then
+    cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
+    echo "FAIL mutant : K-N2-ctl — the mutant does not parse (sh -n); the leg proves nothing"; fail=1
+  elif aa_cell_skip "K-N2-ctl: single-/./ still denies under the tb-removal"; then :   # skipped by the ONE predicate (the spawn primitive denied_at carries no scope check)
+  elif denied_at "$GPAB_G" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/x/y/ hooks/./pre-push"}}'; then
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     echo "PASS mutant : K-N2-ctl: single-/./ still denies under the tb-removal (only repeated /./ needs the fixpoint)"
-  else echo "FAIL mutant : K-N2-ctl: single-/./ wrongly flipped under the tb-removal"; fail=1; fi
+  else AA_CELLS_RUN=$((AA_CELLS_RUN + 1)); echo "FAIL mutant : K-N2-ctl: single-/./ wrongly flipped under the tb-removal"; fail=1; fi
   cp "$GPAB_TMP/gc.pristine" "$GPAB_GC"
   # Cure 2 (Route 2 redirect). K-R1a pins the TARGET-arm disqualifier (the rc-2 bail in _cp8b_tad_redir_cp
   # forces the read/kit-exec recognition to DECLINE); K-R-LAUNDER pins the outright-deny closer
@@ -3908,8 +4321,9 @@ if [ "${GPAB_G:-}" != "" ]; then
   # A4 lock: revert the dir-segment GLOB-intersection to a LITERAL match (quote $_gtd) and a dir-metachar
   # token is allowed back — the exact §10 A4 residual. Its paired non-overshoot is the top-level
   # `cp x ag*/notes.txt` ALLOW leg; the basename A3 fixes must NOT move (dir `agents` still literal-eq).
+  # Re-anchored (T2c, security ruling c3): the target arm is `$_gtd) : ;;` at 10-space indent (unique).
   gpab_mutant "DT-M1d (A4): dir-segment glob-intersection reverted to literal -> ag*/x.agent.md flips" \
-    '/_cp8b_glob_scan()/,/^}/ s@in $_gtd)@in "$_gtd")@' \
+    '/_cp8b_glob_scan()/,/^}/ s@^          \$_gtd) : ;;@          "$_gtd") : ;;@' \
     '{"tool_name":"Bash","tool_input":{"command":"cp a ag*/x.agent.md"}}' allow
   # M2: removing the content-digest verbs from the secret-read arm reds a named positive — a digest of a
   # secret is allowed back (the confirmation-oracle hole reopens).
@@ -3943,8 +4357,12 @@ if [ "${GPAB_G:-}" != "" ]; then
   # (`:` is not a content consumer) — so the entry-guard mutant SURVIVED there and proved nothing
   # (measured). The subject below leads with `cat`, which IS a content consumer, so T1's gate passes it
   # and this entry guard is again its ONLY holder. The `:`-led spelling stays pinned by the C2 asserts.
+  # Re-anchored (T2c, security ruling c3): the previous `n;n;n`-from-comment offset lands on the
+  # case-OPEN line at head (the rewrite inserted a line), so `s@.*@  :@` replaced the open line and the
+  # mutated core no longer parsed — a false kill (rule R1(c) forbids exactly this). Scope by the unique
+  # `case "${_hds%%'<<'*}" in` … `esac` range instead and mutate the arm's body only.
   gpab_mutant "M-E8 (review C2): heredoc entry-guard removed -> quoted-<<-in-arg hiding sed -i on guard-core flips" \
-    "/# REVIEW C2 — ENTRY guard: a quote byte BEFORE/{n;n;n;s@.*@  :@;}" \
+    "/^  case \"\${_hds%%'<<'\*}\" in\$/,/^ *esac/ s@printf '%s' \"\\\$1\"; return ;;@: ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"cat \"<<'"'"'X'"'"'\"\nsed -i s/return 1/return 0/ .claude/hooks/guard-core.sh\nX"}}' allow
   # M-I3 (review I3): drop the home-root-dotfile decline in Arm G(ii) -> `> ~/.config/git/config`
   # (where core.hooksPath ALSO lives) flips to ALLOW.
@@ -4089,8 +4507,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   # M-H3: drop the "the consumer is the WHOLE start line" clause. Anchored on the NON-pipe separator
   # spelling, not on W15: W15 is held by BOTH halves (measured), so this mutant survives there and
   # would prove nothing. `cat <<'"'"'EOF'"'"' ; true` has no piped interpreter, so this clause alone holds it.
+  # Re-anchored (T2c, security ruling c3): scope by the unique open-line/esac range, mutate the arm's
+  # body only.
   gpab_mutant "M-H3: heredoc no-downstream-separator clause removed -> cat <<'EOF' ; true + cp guard-core flips" \
-    's@^  case "\${_hds#\*<<}".*@  :@' \
+    "/^  case \"\${_hds#\*'<<'}\" in\$/,/^ *esac/ s@printf '%s' \"\\\$1\"; return ;;@: ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"cat <<'"'"'EOF'"'"' ; true\ncp /tmp/e .claude/hooks/guard-core.sh\nEOF"}}' allow
 
   # M-H4 (review F1): remove the BASENAME from _cp8b_interp_lead -> a path-spelled shell is no longer
@@ -4372,7 +4792,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # with the REST arm unfolded and every cell green. It reverts ONLY `_s6_gh_api_admin_scan`'s gate
   # (keyed on `$_sgn`, which is unique to it), so the porcelain holders stay intact and cannot cover.
   gpab_mutant "M-R16b: lead fold reverted on the REST gate only -> GH api -X PUT .../pulls/5/merge flips" \
-    "s@_sgn\" | grep -Eq '\\[Gg\\]\\[Hh\\]@_sgn\" | grep -Eq 'gh@" \
+    "s@_s6_sgn_has -Eq '\\[Gg\\]\\[Hh\\]@_s6_sgn_has -Eq 'gh@" \
     '{"tool_name":"Bash","tool_input":{"command":"GH api -X PUT repos/o/r/pulls/5/merge"}}' allow
   # M-R17 — the READ-ONLY FLAG EXCLUSION, and note the direction: like M-R14 it is an allow -> DENY
   # kill, because what it locks is a REFUND. Drop the list and the exclusion matches nothing, so an
@@ -4427,8 +4847,9 @@ if [ "${GPAB_G:-}" != "" ]; then
   # the token is not in the verb set, the walk resets, and a verb the guard could not READ is treated
   # as if it had been read. This is the leg that makes "an unreadable sub-verb is not certified" a
   # property rather than a sentence.
+  # Re-anchored (T2c, security ruling c3): arm line alone (8-space indent, unique), body-only mutation.
   gpab_mutant "K-3b-M2: the sub-verb expansion disqualifier dropped -> gh repo ed\$Xit flips" \
-    's@case "\$_go_t" in \*.\$.\*|\*.`.\*) _go_r=0; break ;; esac@:@' \
+    "s@^        \*'\\\$'\*|\*'\`'\*) _go_r=0; break ;;@        *'\\\$'*|*'\`'*) : ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"gh repo ed$Xit --default-branch x"}}' allow
   # K-3b-M3 — the `repo deploy-key` PAIR, pinned separately from the repo-root pair because a
   # credential MINT is a different family in the judge (`keys`, the collaborators class) and one
@@ -4493,7 +4914,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # ⚠️ RE-ANCHORED IN FIX ROUND 1: F2 added `_hb` to this line's `unset` list, so the old expression
   # matched nothing and the gate reported the leg UNBOUND — which is the gate doing its job.
   gpab_mutant "K-3b-M17: the .. disqualifier dropped -> curl -X PUT .../x/../pulls/5/merge flips" \
-    "s@if printf '%s' \"\$_hn\" | grep -q '\\\\.\\\\.'; then unset _hl _hn _hm _hx _hb; return 0; fi@:@" \
+    "s@if _s6_hn_has -q '\\\\.\\\\.'; then unset _hl _hn _hm _hx _hb; return 0; fi@:@" \
     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/x/../pulls/5/merge"}}' allow
   # K-3b-M18 (lens pass) — THE NARROWED DECLINE SET, an allow -> DENY kill for the same reason M9 is.
   # Widen it back to "any `$`" and the commonest authenticated read there is — a plain `$TOKEN` in an
@@ -4559,7 +4980,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # expression matched nothing and the gate reported the leg UNBOUND — the gate doing its job for the
   # second time in this slice. Same claim, same subject, new anchor.
   gpab_mutant "K-3b-M21: the face C precheck reverted to the RAW view -> re''pos/o/r/.../merge flips" \
-    's@^  _hapre=\$(_s6_dequote.*@  _hapre=$1@' \
+    's@^  _hapre=\$(_s6_dequote "\$_hav1").*@  _hapre=$1@; s@^  _hapre2=\$(_s6_dequote "\$_hav2").*@  _hapre2=@' \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -X PUT https://api.github.com/re''pos/o/r/pulls/5/merge\"}}" allow
   # K-3b-M22 (R-3 = S-2) — THE SUPPRESSOR REVERTED TO ITS ROUND-0 SHAPE. ⚠️ TWO EXPRESSIONS, and the
   # count is a MEASUREMENT, not a style: the cure has two halves — the suppressor is read as WORDS, and
@@ -4583,7 +5004,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # terminator is `([[:space:]/]|$)`, which a `;` is not, so in the fallback `…/merge; curl …` spelled
   # the merge endpoint and matched nothing even with the suppressor correctly disarmed.
   gpab_mutant "K-3b-M24: the ;&| -> space normalisation dropped -> the ';' fallback form flips" \
-    "s@             -e 's/\\[;&|\\]/ /g' \\\\@@" \
+    "\\@-e 's/\\[;&|\\]/ /g'@d" \
     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/merge; curl $(echo -s) --request GET https://api.github.com/repos/o/r"}}' allow
   # K-3b-M25 (R-4) — THE FLAG-VALUE SKIP, which is what puts `$REPO` out of the sub-verb position.
   # Direction is allow -> DENY, because what it locks is a REFUND.
@@ -4591,8 +5012,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   # on the strict test and SURVIVED, because the over-deny never came from that guard — it came from
   # the test's POSITION above the skips. `$REPO` is skipped as a flag's value before any strict test
   # can see it, so the skip is the holder and the skip is what this mutant removes.
+  # Re-anchored (T2c, security ruling c3): the arm line alone (6-space indent) is distinct from the
+  # earlier `-*) _go_prev=$_go_t; continue ;;` arm a few lines up; body-only mutation.
   gpab_mutant "K-3b-M25: the flag-VALUE skip removed -> gh repo -R \$REPO view re-denies" \
-    's@^    case "\$_go_prev" in -\*) _go_prev=..; continue ;; esac@    :@' \
+    "s@^      -\*) _go_prev=''; continue ;;@      -*) : ;;@" \
     '{"tool_name":"Bash","tool_input":{"command":"gh repo -R $REPO view"}}' deny
   # K-3b-M16 (vet S-3) — THE SUB-TREE SUFFIX, and it is the mutant that proves the vet's HIGH finding
   # was real. Anchor a sub-tree family on its PREFIX ALONE and `DELETE …/protection/
@@ -4618,7 +5041,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # shell hands curl one word. The subject hides the ROUTE ROOT, which no other mechanism in this face
   # can recover.
   gpab_mutant "K-3b-M26: face C's empty-join twin dropped -> curl .../re\\<nl>pos/.../merge flips" \
-    's@for _hajv in "\$(_cp8b_joinlines "\$1")" "\$(_cp8b_joinlines_empty "\$1")"; do@for _hajv in "$(_cp8b_joinlines "$1")"; do@' \
+    's@^  for _hajv in "\$_hav1" "\$_hav2"; do@  for _hajv in "$_hav1"; do@' \
     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/re\\\npos/o/r/pulls/5/merge"}}' allow
   # K-3b-M27 (C-2) — THE ESCAPED-SEPARATOR DECLINE. Without it the walker splits where the shell does
   # not, the URL and the method land in different "segments", and neither is a mutating request to an
@@ -4682,7 +5105,11 @@ if [ "${GPAB_G:-}" != "" ]; then
   else echo "PASS R1b : old-arm _cp8b_redirect_hits_cp does not bail on a plain literal non-CP target"; fi
   sed 's@_rt=$(_redir_targets "$_rh") || return 0@_rt=$(_redir_targets "$_rh")@' "$_CORE" > "$GPAB_TMP/gc.r1b"
   rhc2() { ( . "$GPAB_TMP/gc.r1b"; _cp8b_redirect_hits_cp "$1" ); }
-  if rhc2 'x > $(echo hooks/pre-push)'; then echo "FAIL R1b-nv: dropping the old-arm rc-2 bail still bailed (vacuous pin)"; fail=1
+  if cmp -s "$_CORE" "$GPAB_TMP/gc.r1b"; then echo "FAIL R1b-nv: the rc-2-bail mutation matched NOTHING (unbound)"; fail=1
+  # Parse gate (security ruling on I1): this leg's kill direction is "the call FAILS", so a mutant that does not
+  # parse passes vacuously — under dash the whole source aborts and the function is never defined at all.
+  elif ! sh -n "$GPAB_TMP/gc.r1b" 2>/dev/null; then echo "FAIL R1b-nv: the mutant does not parse (sh -n); a failed call is not a kill"; fail=1
+  elif rhc2 'x > $(echo hooks/pre-push)'; then echo "FAIL R1b-nv: dropping the old-arm rc-2 bail still bailed (vacuous pin)"; fail=1
   else echo "PASS R1b-nv: dropping the old-arm rc-2 bail stops the non-literal bail (non-vacuous)"; fi
 
   # === F4-COUPLE — byte-identity of the TWO SEGMENTERS (review F4; nothing else pins it) ============
@@ -4731,6 +5158,12 @@ if [ "${GPAB_G:-}" != "" ]; then
     fi
     if cmp -s "$_CORE" "$GPAB_TMP/gc.corp"; then
       echo "FAIL corp-mutant : $1 — the mutation expression matched NOTHING; the leg is unbound"; fail=1; return
+    fi
+    # Parse gate (T2c, security ruling c3, condition 2): dt_corpus_ok already FAILs a core that cannot be
+    # sourced, but assert it explicitly and by name so a non-parsing mutant is never mistaken for a
+    # content-classification FAIL.
+    if ! sh -n "$GPAB_TMP/gc.corp" 2>/dev/null; then
+      echo "FAIL corp-mutant : $1 — the mutant does not parse (sh -n); the leg proves nothing"; fail=1; return
     fi
     if dt_corpus_ok "$GPAB_TMP/gc.corp" 2>/dev/null; then _cmv=PASS; else _cmv=FAIL; fi
     if [ "$_cmv" = "$3" ]; then echo "PASS corp-mutant : $1 (the gate said $_cmv, as required)"
@@ -4883,7 +5316,9 @@ if [ "${GPAB_G:-}" != "" ]; then
   # effect — otherwise the mutant would not actually kill it. (design 2026-08-18)
   # =============================================================================================
   hla_deny_has() {  # <guard> <label> <json> <substr>  — deny AND reason contains <substr>
+    aa_cell_skip "$2" && return 0
     _hlo=$(printf '%s' "$3" | sh "$1" 2>/dev/null)
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
     if printf '%s' "$_hlo" | grep -q '"permissionDecision":"deny"' && printf '%s' "$_hlo" | grep -qF -- "$4"; then
       echo "PASS deny+[$4]: $2"
     else echo "FAIL (deny + reason has '$4'): $2"; fail=1; fi
@@ -5029,10 +5464,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   # (ii) neuter the secret-inode check that sits BEFORE the template allowlist -> the CLOAK flips to
   #      ALLOW (the allowlist greens .env.example first). The HIGH-1 regression guard, write + read.
   gpab_mutant "K(ii): secret-inode WRITE check (pre-allowlist) neutered -> B' cloak flips" \
-    's#if _hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root"); then#if false; then#' \
+    's#_hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root") || _hlrc=$?#_hlrc=1#' \
     "$(gpab_write "$GPAB_ROOT/hlbp/.env.example")" allow
   gpab_mutant "K(ii): secret-inode READ check (pre-allowlist) neutered -> C' cloak flips" \
-    's#if _hlnamed=$(_hardlink_alias_hit_secret "$_rres" "$_gcr_root"); then#if false; then#' \
+    's#_hlnamed=$(_hardlink_alias_hit_secret "$_rres" "$_gcr_root") || _hlrc=$?#_hlrc=1#' \
     "$(gpab_read "$GPAB_ROOT/hlbp/.env.example")" allow
   # (iv) the secret half is UNGATED (design MEDIUM-1): a relax-gated secret check would be strictly
   #      weaker than the direct secret arm it mirrors. With the ROUND-2 root fix the secret find is
@@ -5043,8 +5478,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   #      asymmetry: the SECRET-inode write check carries NO _cp8c_relax gate; the CP-inode check DOES.
   # grep -B1 -F pulls the call line AND its immediately-preceding GUARD line: the CP site's guard
   # carries `_cp8c_relax` (gated), the secret site's guard is a bare `[ "$_resok" = 1 ]` (ungated).
-  _secblk=$(grep -B1 -F 'if _hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root"); then' "$_CORE")
-  _cpblk=$(grep -B1 -F 'if _hlnamed=$(_hardlink_alias_hit_cp "$_res" "$_cp8c_root"); then' "$_CORE")
+  # (GUARD-QUOTED-EXEC-INTERMITTENT: the capture line is now `_hlrc=0; _hlnamed=$(…) || _hlrc=$?` with the
+  # guard line still IMMEDIATELY above it; the -F pattern is the unique middle of that line, trailing comment excluded.)
+  _secblk=$(grep -B1 -F '_hlnamed=$(_hardlink_alias_hit_secret "$_res" "$_cp8c_root") || _hlrc=$?' "$_CORE")
+  _cpblk=$(grep -B1 -F '_hlnamed=$(_hardlink_alias_hit_cp "$_res" "$_cp8c_root") || _hlrc=$?' "$_CORE")
   case "$_secblk" in
     '') echo "FAIL K(iv): could not find the secret-inode WRITE check"; fail=1 ;;
     *_cp8c_relax*) echo "FAIL K(iv): the secret-inode WRITE check is relax-gated (must be UNGATED, MEDIUM-1)"; fail=1 ;;
@@ -5075,8 +5512,11 @@ if [ "${GPAB_G:-}" != "" ]; then
   if ( . ./.claude/hooks/guard-core.sh; stat() { echo '1x'; }; _nlink_of /x >/dev/null 2>&1 ); then
     echo "FAIL K(iii) : _nlink_of accepted a non-digit count '1x' (decline-on-non-digit broken)"; fail=1
   else echo "PASS K(iii) : _nlink_of declines a non-digit link count (decline-on-non-digit idiom)"; fi
-  sed "s@case \"\$_nl\" in ''|\*\[!0-9\]\*) return 1 ;; esac@case \"\$_nl\" in [0-9]*) : ;; *) return 1 ;; esac@" "$_CORE" > "$GPAB_TMP/gc.nlink"
+  # Re-anchored (T2c, security ruling c3): scope by the unique open-line/esac range and mutate only
+  # the arm's body (parse the digit class positively instead of declining on non-digit).
+  sed "/^  case \"\$_nl\" in\$/,/^ *esac/ s@''|\*\[!0-9\]\*) return 1 ;;@[0-9]*) : ;; *) return 1 ;;@" "$_CORE" > "$GPAB_TMP/gc.nlink"
   if cmp -s "$_CORE" "$GPAB_TMP/gc.nlink"; then echo "FAIL K(iii)-nv : the nlink-parse mutation matched NOTHING (unbound)"; fail=1
+  elif ! sh -n "$GPAB_TMP/gc.nlink" 2>/dev/null; then echo "FAIL K(iii)-nv : the mutant does not parse (sh -n); the leg proves nothing"; fail=1
   elif ( . "$GPAB_TMP/gc.nlink"; stat() { echo '1x'; }; _nlink_of /x >/dev/null 2>&1 ); then
     echo "PASS K(iii)-nv : a head-anchored parse WRONGLY accepts '1x' (the negated-class is load-bearing)"
   else echo "FAIL K(iii)-nv : the head-anchored parse still declined '1x' (the mutant proves nothing)"; fail=1; fi
@@ -5153,6 +5593,10 @@ if [ "${GPAB_G:-}" != "" ]; then
     else echo "FAIL mutant : (ix) name still empty [$_i3m]"; fail=1; fi
 
     # I4 (I1): the fail-safe find WATCHDOG. A find over the budget is KILLED -> fail-safe HIT.
+    # AA_MODE gate: the two legs below each sit out a fixed 3 s sleep; the ungraded pass skips both
+    # (their variables are read only inside them, so nothing downstream is left unbound).
+    # Fixed label "I4(I1)", a PREFIX of the lines this block prints: `--cells 'I4*'` selects it. It runs uncounted (aa_extra_ran).
+    if aa_cell_skip "I4(I1)"; then :; else
     # shellcheck disable=SC2034,SC1090  # KIT_HL_FIND_BUDGET is read by the sourced guard-core watchdog; the guard-core source path is fixed but non-constant to shellcheck
     _i4=$( . ./.claude/hooks/guard-core.sh; find() { sleep 3; }; KIT_HL_FIND_BUDGET=1; _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP/proj" ) && _i4rc=0 || _i4rc=1
     if [ "$_i4rc" = 0 ] && [ -z "$_i4" ]; then echo "PASS I4(I1): a find over the budget is KILLED -> fail-safe HIT (empty name)"
@@ -5163,8 +5607,10 @@ if [ "${GPAB_G:-}" != "" ]; then
          find() { sleep 3; }
          _hl_find_inode() { find "$1" -xdev \( -type d \( -path '*/.git/objects' -o -path '*/.git/lfs' -o -name node_modules \) \) -prune -o -inum "$2" -print 2>/dev/null; }
          _hardlink_alias_hit_cp "$FHP/proj/benign.sh" "$FHP/proj" >/dev/null 2>&1 ); then
-      echo "FAIL mutant : (x) without the watchdog a budget-busting find still HIT via timeout"; fail=1
-    else echo "PASS mutant : (x) removing the watchdog lets a budget-busting find run unbounded (no timeout HIT) — I4 is load-bearing"; fi
+      echo "FAIL I4(I1) mutant (x): without the watchdog a budget-busting find still HIT via timeout"; fail=1
+    else echo "PASS I4(I1) mutant (x): removing the watchdog lets a budget-busting find run unbounded (no timeout HIT) — I4 is load-bearing"; fi
+    aa_extra_ran
+    fi
 
     # === Leg J (HIGH-1, GUARD-HARDLINK-OUT-OF-REPO) — a RECORDED DECISION (owner-ruled accept+disclose).
     # A benign IN-repo hardlink whose CP/secret sibling lives OUTSIDE the repo is ALLOW (the repo-scoped
@@ -5213,6 +5659,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   if [ -z "$HLFF_TMP" ]; then
     echo "FAIL F1 : could not mktemp a leg-private TMPDIR"; fail=1
   elif [ "$HLFF_DNL" -le 1 ] 2>/dev/null; then
+    # counted cells here are excluded from AA_CELL_FLOOR (see its comment)
     echo "SKIP F1 : fixture directory reports nlink=$HLFF_DNL (<=1) on this filesystem — the nlink fast path already exits for directories here, so the -d early-return cannot be shown load-bearing (the btrfs shape). Precondition NAMED and printed rather than silently assumed."
   else
     # hlff_run_engine <tmpdir> <core> : run the engine on the DIRECTORY subject under a leg-private
@@ -5238,6 +5685,8 @@ if [ "${GPAB_G:-}" != "" ]; then
     sed '/^  \[ -d "\$_ha_res" \] && return 1$/d' "$_CORE" > "$GPAB_TMP/gc.dirfast"
     if cmp -s "$_CORE" "$GPAB_TMP/gc.dirfast"; then
       echo "FAIL mutant : F1 — the directory-early-return mutation matched NOTHING; the leg is unbound"; fail=1
+    elif ! sh -n "$GPAB_TMP/gc.dirfast" 2>/dev/null; then
+      echo "FAIL mutant : F1 — the mutant does not parse (sh -n); the leg proves nothing"; fail=1
     else
       hlff_run_engine "$HLFF_TMP" "$GPAB_TMP/gc.dirfast" 2>/dev/null || :
       _f1b=$(hlff_witnesses "$HLFF_TMP") || _f1b=0
@@ -5332,6 +5781,8 @@ if [ "${GPAB_G:-}" != "" ]; then
     sed "s# $HLFF2_REMEDY##g" "$_CORE" > "$GPAB_TMP/gc.noremedy"
     if cmp -s "$_CORE" "$GPAB_TMP/gc.noremedy"; then
       echo "FAIL mutant : F2 — the remedy-clause mutation matched NOTHING; the leg is unbound"; fail=1
+    elif ! sh -n "$GPAB_TMP/gc.noremedy" 2>/dev/null; then
+      echo "FAIL mutant : F2 — the mutant does not parse (sh -n); the leg proves nothing"; fail=1
     else
       _f2m=$(hlff2_reason "$GPAB_TMP/gc.noremedy" guard_check_read "$HLFF2/benign.txt")
       case "$_f2m" in
@@ -5563,7 +6014,9 @@ conformance/branch-protection.sh|--declared-only|profiles/python/BRANCH-PROTECTI
     echo "PASS lock : Arm A census — counter is layout-independent ($_fl_new on a reflowed copy where the old fixed-indent expression saw only $_fl_old of $_fl_tab)"
   fi
 }
-fpra_lock
+# AA_MODE gate: the real-script lock runs git status twice and every declared kit script; the ungraded
+# pass skips it. selftest() drives fpra_lock itself (with the gate forced open) for its fixture leg.
+aa_cell_skip "Arm A" || { fpra_lock; aa_extra_ran; }
 
 # === GUARD-READONLY-FP-RELIEF Arm B — shell TEST EXPRESSIONS (cures N1) ==========================
 # `test -f <cp>` / `[ -f <cp> ]` read a path's METADATA; neither can mutate the path it names.
@@ -8149,6 +8602,432 @@ selftest() {
   _allowing='{"tool_name":"Bash","tool_input":{"command":"echo hi"}}'
   _denying='{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}'
 
+  # === GUARD-CORPUS-RUNTIME — the mode gate and the completeness anchor ============================
+  # LEG 1 (C3): what the top-level pass LEFT. --selftest is dispatched after the whole cell region ran
+  # in oracle mode, so the counter must still read zero: it counts only cells that spawned the guard.
+  # Read here, BEFORE the probes below raise it. Kills: a gate removed or misplaced (cells spawn and
+  # count in oracle mode), and a counter incremented BEFORE the gate (it counts skipped cells).
+  _st_mode=$AA_MODE; _st_cells=$AA_CELLS_RUN
+  if [ "$_st_mode" != oracle ]; then echo "nv: selftest was reached with AA_MODE=[$_st_mode], not oracle"; _st=1
+  elif [ "$_st_cells" != 0 ]; then echo "nv: an oracle-mode pass counted $_st_cells cells; the counter must count only cells that ran"; _st=1; fi
+  # The probes below must exercise the helpers for real, so the gate is forced open and restored after.
+  AA_MODE=run
+
+  # LEG 2: the run path increments by exactly one per executed cell. Kills: no increment, or a double one.
+  _c0=$AA_CELLS_RUN
+  assert_deny "nv" "$_denying" >/dev/null; fail=0
+  [ $((AA_CELLS_RUN - _c0)) = 1 ] || { echo "nv: one executed cell moved the counter by $((AA_CELLS_RUN - _c0)), not 1"; _st=1; }
+
+  # LEGS 4/5 (C1, C6 — THE ANCHOR'S TEETH): the floor comparison, driven with BOTH numbers as arguments.
+  # Kills: `return 1` neutered to 0 (leg 4), or the comparison inverted (leg 5).
+  _ac=$(aa_completeness 5 10) && _acr=0 || _acr=$?
+  case "$_ac" in
+    *"ran 5 cells"*"floor 10"*) [ "$_acr" = 1 ] || { echo "nv: aa_completeness 5 10 returned $_acr, not 1"; _st=1; } ;;
+    *) echo "nv: aa_completeness 5 10 did not name both numbers [$_ac] (rc $_acr)"; _st=1 ;;
+  esac
+  _ac=$(aa_completeness 10 10) && _acr=0 || _acr=$?
+  [ "$_acr" = 0 ] || { echo "nv: aa_completeness 10 10 returned $_acr, not 0 (a count AT the floor must pass)"; _st=1; }
+  # L1: a floor failure reached in oracle mode names the likely cause (an argv clobber).
+  AA_MODE=oracle
+  _ac=$(aa_completeness 0 10) && _acr=0 || _acr=$?
+  AA_MODE=run
+  case "$_ac" in *"argv was clobbered"*) : ;; *) echo "nv: an oracle-mode floor failure does not name the argv-clobber cause [$_ac]"; _st=1 ;; esac
+  case "$(aa_completeness 0 10)" in *"argv was clobbered"*) echo "nv: a run-mode floor failure blames an argv clobber"; _st=1 ;; esac
+
+  # LEG 6: the mode is derived from ARGV ONLY. The derivation block is extracted from THIS file and
+  # run in a child shell, so the real code is under test (not a copy) without re-running the battery.
+  # An env AA_MODE=oracle with an empty $1 must yield run; `--selftest` must yield oracle.
+  # Kills: `AA_MODE=${AA_MODE:-run}` (env honoured), and a lost `--selftest` arm.
+  _der=$(awk '/^AA_MODE=run$/ { p = 1 } p { print } p && /^esac$/ { exit }' "$0")
+  _dv1=$(AA_MODE=oracle sh -c "set -eu; $_der; printf %s \"\$AA_MODE\"" aa '' 2>/dev/null) || _dv1=ERR
+  _dv2=$(AA_MODE=run sh -c "set -eu; $_der; printf %s \"\$AA_MODE\"" aa --selftest 2>/dev/null) || _dv2=ERR
+  [ "$_dv1" = run ] || { echo "nv: an env AA_MODE=oracle on a bare invocation was honoured or the derivation is missing [$_dv1]"; _st=1; }
+  [ "$_dv2" = oracle ] || { echo "nv: --selftest does not derive AA_MODE=oracle [$_dv2]"; _st=1; }
+
+  # LEG 7: an unknown first argument is refused exactly as before (rc 2, before any cell runs).
+  sh "$0" --zz-unknown-option >/dev/null 2>&1 && _u7=0 || _u7=$?
+  [ "$_u7" = 2 ] || { echo "nv: an unknown option returned $_u7, not 2"; _st=1; }
+
+  # LEG 8 (C1): the floor is a LITERAL, and the bare-path call reads that variable. An env
+  # AA_CELL_FLOOR=0 must not lower it: evaluate the file's own assignment under such an env.
+  # Kills: `${AA_CELL_FLOOR:-N}` (env-overridable), a second/duplicate assignment, a call that
+  # passes anything but the floor variable.
+  _fl_lines=$(grep -c '^AA_CELL_FLOOR=' "$0" || :)
+  _fl_line=$(grep '^AA_CELL_FLOOR=' "$0" | head -1)
+  _fl_lit=$(printf '%s' "$_fl_line" | sed -n 's/^AA_CELL_FLOOR=\([0-9][0-9]*\)$/\1/p')
+  _fl_eff=$(AA_CELL_FLOOR=0 sh -c "$_fl_line; printf %s \"\$AA_CELL_FLOOR\"" 2>/dev/null) || _fl_eff=ERR
+  if [ "$_fl_lines" != 1 ] || [ -z "$_fl_lit" ] || [ "$_fl_lit" = 0 ] || [ "$_fl_eff" != "$_fl_lit" ]; then
+    echo "nv: AA_CELL_FLOOR is not one positive literal assignment immune to the env (lines=$_fl_lines lit=[$_fl_lit] effective=[$_fl_eff])"; _st=1
+  fi
+  [ "$(grep -cxF 'if aa_completeness "$AA_CELLS_RUN" "$AA_CELL_FLOOR"; then :; else fail=1; fi' "$0" || :)" = 1 ] \
+    || { echo "nv: the bare path does not call aa_completeness with the counter and the literal floor exactly once"; _st=1; }
+  # === end GUARD-CORPUS-RUNTIME legs (AA_MODE is restored at the end of this function) ===============
+
+  # === GUARD-CORPUS-SCOPED-MODE (built as GUARD-CORPUS-RUNTIME half (a)) — the `--cells <glob>` filter =====
+  # S1 (run mode never skips): the graded path must run every cell whatever the glob variable holds.
+  # Kills: a predicate that consults the glob outside `scoped`, or one that skips in run mode.
+  AA_CELLS_GLOB='K-3b*'
+  for _sl in "K-3b-x" "S6R-y" "rm" ""; do
+    if aa_cell_skip "$_sl"; then echo "nv: S1 run mode skipped the label [$_sl]"; _st=1; fi
+  done
+  # S2 (scoped): a match runs, a non-match skips; oracle skips everything; an unknown mode RUNS (L2 polarity).
+  # Kills: an inverted match, a match ignoring the glob, oracle no longer skipping, unknown mode skipping.
+  AA_MODE=scoped
+  aa_cell_skip "K-3b-x" && { echo "nv: S2 scoped mode skipped a label the glob matches"; _st=1; }
+  aa_cell_skip "S6R-y" || { echo "nv: S2 scoped mode ran a label the glob does not match"; _st=1; }
+  AA_MODE=oracle
+  aa_cell_skip "K-3b-x" || { echo "nv: S2 oracle mode ran a cell"; _st=1; }
+  AA_MODE=bogus
+  aa_cell_skip "S6R-y" && { echo "nv: S2 an unknown mode skipped a cell (must degrade toward RUNNING)"; _st=1; }
+  AA_MODE=run; AA_CELLS_GLOB=''
+  # S2b (C-A, structural): every labelled gate site passes the RIGHT positional to the ONE predicate, the
+  # spawn primitives carry no scope check, and no per-site oracle test survived at a labelled site.
+  # Kills: a wrong positional ($1 vs $2), a site left on the old oracle test, a site missing the predicate,
+  # a scope check added to a spawn primitive (it would make gpab_mutant see "no flip"), in one-line or multi-line form.
+  # _prim_body prints a function's definition: one line when its first line ends in `}`, else through the closing `}`.
+  _prim_body() { awk -v n="$1" '$0 ~ "^ *" n "[(][)]" { print; if ($0 ~ /}[ ]*$/) exit; p = 1; next } p { print } p && /^ *}/ { exit }' "$0"; }
+  _first_skip() { _prim_body "$1" | sed -n '2,$p' | grep -m 1 aa_cell_skip | sed 's/^ *//' || :; }
+  for _fn in assert_deny assert_allow assert_deny_reason assert_reason_has assert_reason_lacks gpab_mutant gpab_mutant_ks; do
+    [ "$(_first_skip "$_fn")" = 'aa_cell_skip "$1" && return 0' ] || { echo "nv: S2b $_fn does not skip on its label (\$1)"; _st=1; }
+  done
+  for _fn in assert_deny_at assert_allow_at hla_deny_has; do
+    [ "$(_first_skip "$_fn")" = 'aa_cell_skip "$2" && return 0' ] || { echo "nv: S2b $_fn does not skip on its label (\$2)"; _st=1; }
+  done
+  # A primitive mentions no predicate, glob or scoped mode; only denied_at may name AA_MODE (its one oracle belt, pinned below).
+  for _fn in denied denied_with_reason _reason denied_at gpab_ks_at; do
+    _pb=$(_prim_body "$_fn"); _pbmax=0; [ "$_fn" = denied_at ] && _pbmax=1
+    [ -n "$_pb" ] || { echo "nv: S2b the spawn primitive $_fn was not found (the extraction is vacuous)"; _st=1; }
+    [ "$(printf '%s\n' "$_pb" | grep -c -e aa_cell_skip -e AA_CELLS_GLOB -e scoped)" = 0 ] || { echo "nv: S2b the spawn primitive $_fn carries a scope check"; _st=1; }
+    [ "$(printf '%s\n' "$_pb" | grep -c AA_MODE)" -le "$_pbmax" ] || { echo "nv: S2b the spawn primitive $_fn reads AA_MODE beyond the denied_at oracle belt"; _st=1; }
+  done
+  [ "$(grep -c '^  aa_cell_skip "[$]_c2l" || ' "$0")" = 3 ] || { echo "nv: S2b the three inline C2 lines are not all gated by the one predicate"; _st=1; }
+  [ "$(grep -c 'elif aa_cell_skip "K-N2-ct[l]' "$0")" = 1 ] || { echo "nv: S2b the K-N2-ctl site is not gated by the one predicate"; _st=1; }
+  [ "$(grep -c 'if aa_cell_skip "[I]4(I1)"; then :; else' "$0")" = 1 ] || { echo "nv: S2b the I4 block is not gated by the one predicate"; _st=1; }
+  [ "$(grep -cxF 'aa_cell_skip "Arm A" || { fpra_lock; aa_extra_ran; }' "$0")" = 1 ] || { echo "nv: S2b the fpra_lock site is not exactly the one-predicate gate calling fpra_lock and aa_extra_ran (the gate, fpra_lock or aa_extra_ran was changed or removed)"; _st=1; }
+  # F5: each gated label is a PREFIX of the text its site prints, so a builder can paste a FAIL line's text into --cells.
+  [ "$(grep -c '"\(PASS\|FAIL\) reason  : [$]_c2l' "$0")" = 2 ] || { echo "nv: S2b the C2 lines do not print their label (\$_c2l) first"; _st=1; }
+  [ "$(grep -c '"\(PASS\|FAIL\) [I]4(I1): ' "$0")" = 2 ] || { echo "nv: S2b the I4 lines do not begin with the I4(I1) label"; _st=1; }
+  [ "$(grep -c '"\(PASS\|FAIL\) [I]4(I1) mutant (x): ' "$0")" = 2 ] || { echo "nv: S2b the I4 mutant lines do not begin with the I4(I1) label"; _st=1; }
+  [ "$(grep -c '"\(PASS\|FAIL\) lock : [A]rm A ' "$0")" = 8 ] || { echo "nv: S2b the Arm A lock lines do not begin with the Arm A label"; _st=1; }
+  # F2: the uncounted-leg counter is bumped ONLY by aa_extra_ran, and that is pinned on the TEXT, in any spelling.
+  # _outside is the non-comment lines of this file outside selftest(), so no pin can match itself. Outside selftest the
+  # token aa_extra_ran sits on exactly 3 lines (its definition, the I4 call, the fpra_lock call) and the counter name
+  # on exactly 3 (init, bump, the scoped bottom). A new mention, whatever its spacing, tab, trailing text or spelling
+  # (`+1`, an added AA_CELLS_RUN term, a call inside a helper), moves a count. The lines that may mention them
+  # are then pinned exactly. The I4 call must be the last statement INSIDE the I4 gate (alternation-free greps: BSD grep
+  # never matches an anchored branch that LEADS a \| alternation).
+  # aa_extra_ran sits on exactly 4 lines outside selftest: its definition, the I4 call, the fpra_lock call, and the
+  # fork-cap group's ONE call (GUARD-QUOTED-EXEC-INTERMITTENT, in aa_fc_main; the group is platform-conditional and
+  # uncounted, so it feeds only the SCOPED report). The fork-cap call is pinned exactly by the awk below.
+  _outside=$(awk '/^selftest[(][)] [{]/ { s = 1 } !s && $0 !~ /^[[:space:]]*#/ { print } s && /^}/ { s = 0 }' "$0")
+  [ "$(printf '%s\n' "$_outside" | grep -c aa_extra_ran)" = 4 ] || { echo "nv: S2b aa_extra_ran is mentioned on other than 4 non-comment lines outside selftest (definition + the I4 call + the fpra_lock call + the fork-cap group's call in aa_fc_main)"; _st=1; }
+  awk '/^aa_fc_main[(][)] [{]$/ { g = 1; next } g && /^}/ { g = 0; next } g && /aa_extra_ran/ { n++; if ($0 ~ /^  aa_extra_ran$/) ok++ } END { exit !(n == 1 && ok == 1) }' "$0" || { echo "nv: S2b the fork-cap aa_extra_ran is not exactly the one bare call inside aa_fc_main"; _st=1; }
+  [ "$(printf '%s\n' "$_outside" | grep -c AA_SCOPED_EXTRA)" = 3 ] || { echo "nv: S2b AA_SCOPED_EXTRA is mentioned on other than 3 non-comment lines outside selftest (init, bump, scoped bottom): it must not reach the floor or AA_CELLS_RUN"; _st=1; }
+  [ "$(grep -cxF '  if [ "$AA_MODE" = scoped ]; then AA_SCOPED_EXTRA=$((AA_SCOPED_EXTRA + 1)); fi' "$0")" = 1 ] || { echo "nv: S2b AA_SCOPED_EXTRA is not bumped by the one scoped-mode line in aa_extra_ran"; _st=1; }
+  [ "$(grep -cxF 'AA_SCOPED_EXTRA=0' "$0")" = 1 ] || { echo "nv: S2b AA_SCOPED_EXTRA is not initialised by the one unconditional 0 assignment (an env value could leak in)"; _st=1; }
+  awk '/^ *if aa_cell_skip "I4.I1."; then :; else$/ { g = 1; next } g && /^ *fi$/ { g = 0; if (prev ~ /^ *aa_extra_ran$/) ok++; next } g { prev = $0 } END { exit ok != 1 }' "$0" || { echo "nv: S2b the I4 aa_extra_ran is not the last statement inside the I4 gate"; _st=1; }
+  [ "$(grep -c '\[ "[$]AA_MODE" = oracle \] && return 0' "$0")" = 1 ] || { echo "nv: S2b a per-site oracle test survived (only the denied_at belt may remain)"; _st=1; }
+  [ "$(grep -c '\[ "[$]AA_MODE" = oracle \] ||' "$0")" = 0 ] || { echo "nv: S2b an inline per-site oracle test survived"; _st=1; }
+
+  # S3 (the ONE re-exec, F7): a scoped run of one real, cheap cell. It must announce itself as SCOPED,
+  # print no graded OK line, and exit 0. CI and GITHUB_ACTIONS are unset for the child (C-B(i) refuses them).
+  # Kills: a scoped run that prints the graded OK line, that runs the floor, or that exits non-zero for a green cell.
+  # It does NOT prove a red cell fails a scoped run: that is S3b (F7 allows no second re-exec).
+  _s3=$(env -u CI -u GITHUB_ACTIONS sh "$0" --cells 'mirror push' 2>&1) && _s3rc=0 || _s3rc=$?
+  case "$_s3" in *"SCOPED: 1 cells (+0 uncounted legs) matched 'mirror push'"*) : ;; *) echo "nv: S3 the scoped run did not report exactly 1 matched cell [$_s3rc]"; _st=1 ;; esac
+  case "$_s3" in *"OK: agent-autonomy guard"*) echo "nv: S3 a scoped run printed the graded OK line"; _st=1 ;; esac
+  [ "$_s3rc" = 0 ] || { echo "nv: S3 the scoped run of a green cell returned $_s3rc, not 0"; _st=1; }
+  # S3b (the red-cell exit, in-process, no re-exec): aa_scoped_rc decides a scoped run's rc; a red cell (fail=1) is rc 1
+  # whatever the report said, else the report's rc passes through. The scoped bottom must call it right after the report
+  # and exit on its status, with nothing between and no other exit.
+  # Kills: the fail test deleted or inverted in aa_scoped_rc; the call dropped, moved after an exit, or replaced by `exit "$_aa_sr"`.
+  for _r3 in 0 1 2; do
+    _s3b=$(fail=1; aa_scoped_rc "$_r3" >/dev/null && _s3x=0 || _s3x=$?; echo "$_s3x")
+    [ "$_s3b" = 1 ] || { echo "nv: S3b a red cell (fail=1, report rc $_r3) returned $_s3b, not 1"; _st=1; }
+    _s3b=$(fail=0; aa_scoped_rc "$_r3" >/dev/null && _s3x=0 || _s3x=$?; echo "$_s3x")
+    [ "$_s3b" = "$_r3" ] || { echo "nv: S3b a green scoped run did not pass the report rc $_r3 through (got $_s3b)"; _st=1; }
+  done
+  _s3b=$(grep -A4 -xF 'if [ "$AA_MODE" = scoped ]; then' "$0" || :)
+  [ "$(printf '%s\n' "$_s3b" | sed -n '2p' | grep -c '^  #')" = 1 ] && [ "$(printf '%s\n' "$_s3b" | sed -n '3p')" = '  aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?' ] \
+    || { echo "nv: S3b the scoped bottom is not: comment, aa_scoped_report, aa_scoped_rc, fi"; _st=1; }
+  [ "$(printf '%s\n' "$_s3b" | sed -n '4p')" = '  aa_scoped_rc "$_aa_sr"; exit $?' ] && [ "$(printf '%s\n' "$_s3b" | sed -n '5p')" = 'fi' ] \
+    || { echo "nv: S3b the scoped bottom does not call aa_scoped_rc and exit on its status right after the report"; _st=1; }
+
+  # S4 (the report): zero matches is rc 1 and names the glob; an all-matching scope (>= floor) is rc 2;
+  # in between is rc 0 and never claims to be graded (F8 wording).
+  # Kills: a zero-match that reads as success, a missing all-cells refusal, a banner that omits the floor.
+  AA_CELLS_GLOB='zz-none*'
+  _s4=$(aa_scoped_report 0 10 0) && _s4rc=0 || _s4rc=$?
+  { [ "$_s4rc" = 1 ] && case "$_s4" in *"zz-none*"*"matched no cell"*) true ;; *) false ;; esac; } || { echo "nv: S4 a zero-match did not return 1 naming the glob [rc $_s4rc]"; _st=1; }
+  _s4=$(aa_scoped_report 10 10) && _s4rc=0 || _s4rc=$?
+  [ "$_s4rc" = 2 ] || { echo "nv: S4 a scope matching every cell returned $_s4rc, not 2"; _st=1; }
+  _s4=$(aa_scoped_report 3 10) && _s4rc=0 || _s4rc=$?
+  case "$_s4" in *"SCOPED: 3 cells (+0 uncounted legs) matched 'zz-none*' — NOT a graded pass (the graded pass requires >= 10)"*) : ;; *) echo "nv: S4 the banner wording is wrong [$_s4]"; _st=1 ;; esac
+  [ "$_s4rc" = 0 ] || { echo "nv: S4 a partial scope returned $_s4rc, not 0"; _st=1; }
+  # F2: a scope that selected ONLY uncounted legs (I4*, Arm A*) is a match, not "matched no cell"; the counted
+  # n alone keys the all-match refusal. Kills: the extra dropped from the matched test, or fed into the floor.
+  _s4=$(aa_scoped_report 0 10 1) && _s4rc=0 || _s4rc=$?
+  { [ "$_s4rc" = 0 ] && case "$_s4" in *"SCOPED: 0 cells (+1 uncounted legs) matched"*) true ;; *) false ;; esac; } || { echo "nv: S4 (n=0, extra=1) was not rc 0 with both numbers [rc $_s4rc, $_s4]"; _st=1; }
+  _s4=$(aa_scoped_report 0 10 0) && _s4rc=0 || _s4rc=$?
+  [ "$_s4rc" = 1 ] || { echo "nv: S4 (n=0, extra=0) returned $_s4rc, not 1"; _st=1; }
+  _s4=$(aa_scoped_report 10 10 5) && _s4rc=0 || _s4rc=$?
+  [ "$_s4rc" = 2 ] || { echo "nv: S4 n at the floor with extras returned $_s4rc, not 2"; _st=1; }
+  _s4=$(aa_scoped_report 9 10 5) && _s4rc=0 || _s4rc=$?
+  [ "$_s4rc" = 0 ] || { echo "nv: S4 extras were added into the floor test (9+5 returned $_s4rc, not 0)"; _st=1; }
+  AA_CELLS_GLOB=''
+  # S4b (F7: in-process, no re-exec; S3 is the ONE real re-exec). The end-to-end I4* run is covered by two legs:
+  # (a) the scoped bottom is called ONCE and passes the extra count (else --cells 'I4*' would read "matched no cell").
+  # Kills: the bottom dropping its third argument.
+  [ "$(grep -cxF '  aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?' "$0")" = 1 ] || { echo "nv: S4b the scoped bottom does not pass the uncounted-leg count to aa_scoped_report exactly once"; _st=1; }
+  # (b) aa_extra_ran bumps the counter in scoped mode ONLY (run and oracle leave it alone).
+  # Kills: the mode gate flipped to run, or dropped.
+  _s4m=$AA_MODE; _s4x=$AA_SCOPED_EXTRA
+  AA_MODE=scoped; AA_SCOPED_EXTRA=0; aa_extra_ran
+  [ "$AA_SCOPED_EXTRA" = 1 ] || { echo "nv: S4b aa_extra_ran did not count an uncounted leg in scoped mode [$AA_SCOPED_EXTRA]"; _st=1; }
+  AA_MODE=run; AA_SCOPED_EXTRA=0; aa_extra_ran
+  [ "$AA_SCOPED_EXTRA" = 0 ] || { echo "nv: S4b aa_extra_ran counted in run mode [$AA_SCOPED_EXTRA]"; _st=1; }
+  AA_MODE=oracle; AA_SCOPED_EXTRA=0; aa_extra_ran
+  [ "$AA_SCOPED_EXTRA" = 0 ] || { echo "nv: S4b aa_extra_ran counted in oracle mode [$AA_SCOPED_EXTRA]"; _st=1; }
+  AA_MODE=$_s4m; AA_SCOPED_EXTRA=$_s4x
+
+  # S5 (argv refusals, all rc 2, no cell battery): the derivation block (AA_MODE=run .. the end marker) is
+  # extracted from THIS file and run in a child shell, exactly as leg 6 does.
+  # Kills: a missing refusal (empty, `*`, control byte, CI, GITHUB_ACTIONS), --cells accepted past $1.
+  _der5=$(awk '/^AA_MODE=run$/ { p = 1 } p { print } p && /^# aa-argv-end$/ { exit }' "$0")
+  # F6: the extraction must have found its end marker, else _der5 is the whole file and the next child runs the battery.
+  # Checked BEFORE any child uses _der5.
+  case "$(printf '%s\n' "$_der5" | tail -n 1)" in '# aa-argv-end') : ;; *) echo "nv: S5 the argv-derivation extraction lost its marker"; _st=1; _der5=': ' ;; esac
+  _nl5='
+'
+  _s5() { env -u CI -u GITHUB_ACTIONS sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5${_nl5}printf %s \"\$AA_MODE:\$AA_CELLS_GLOB\"" aa "$_s5a" "$_s5b" 2>/dev/null; }
+  _s5a=--cells; _s5b=''
+  _s5rc=0; _s5o=$(_s5) || _s5rc=$?;                           [ "$_s5rc" = 2 ] || { echo "nv: S5 an empty glob returned $_s5rc, not 2"; _st=1; }
+  _s5b='*'; _s5rc=0; _s5o=$(_s5) || _s5rc=$?;                 [ "$_s5rc" = 2 ] || { echo "nv: S5 the literal * returned $_s5rc, not 2"; _st=1; }
+  _s5b='K-3b
+*'; _s5rc=0; _s5o=$(_s5) || _s5rc=$?;                         [ "$_s5rc" = 2 ] || { echo "nv: S5 a glob with a newline returned $_s5rc, not 2"; _st=1; }
+  _s5b=$(printf 'K-3b\001x'); _s5rc=0; _s5o=$(_s5) || _s5rc=$?; [ "$_s5rc" = 2 ] || { echo "nv: S5 a glob with a control byte returned $_s5rc, not 2"; _st=1; }
+  _s5b='K-3b*'; _s5rc=0; _s5o=$(env -u GITHUB_ACTIONS CI=1 sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5" aa --cells 'K-3b*' 2>/dev/null) || _s5rc=$?
+  [ "$_s5rc" = 2 ] || { echo "nv: S5 CI=1 did not refuse --cells (rc $_s5rc)"; _st=1; }
+  _s5rc=0; _s5o=$(env -u CI GITHUB_ACTIONS=true sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5" aa --cells 'K-3b*' 2>/dev/null) || _s5rc=$?
+  [ "$_s5rc" = 2 ] || { echo "nv: S5 GITHUB_ACTIONS=true did not refuse --cells (rc $_s5rc)"; _st=1; }
+  # A SET-BUT-EMPTY CI or GITHUB_ACTIONS is still a CI signal (the refusal tests set-ness, not a value).
+  # Kills: `${CI:+x}` / `${GITHUB_ACTIONS:+x}` (non-empty tests) in the refusal.
+  _s5rc=0; _s5o=$(env -u GITHUB_ACTIONS CI= sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5" aa --cells 'K-3b*' 2>/dev/null) || _s5rc=$?
+  [ "$_s5rc" = 2 ] || { echo "nv: S5 a set-but-empty CI did not refuse --cells (rc $_s5rc)"; _st=1; }
+  _s5rc=0; _s5o=$(env -u CI GITHUB_ACTIONS= sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5" aa --cells 'K-3b*' 2>/dev/null) || _s5rc=$?
+  [ "$_s5rc" = 2 ] || { echo "nv: S5 a set-but-empty GITHUB_ACTIONS did not refuse --cells (rc $_s5rc)"; _st=1; }
+  _s5rc=0; _s5o=$(_s5) || _s5rc=$?
+  [ "$_s5rc" = 0 ] && [ "$_s5o" = 'scoped:K-3b*' ] || { echo "nv: S5 a valid --cells was refused or mis-derived [rc $_s5rc, $_s5o]"; _st=1; }
+  _s5rc=0; _s5o=$(env -u CI -u GITHUB_ACTIONS sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5" aa --selftest --cells 'K-3b*' 2>/dev/null) || _s5rc=$?
+  [ "$_s5rc" = 2 ] || { echo "nv: S5 --cells after --selftest returned $_s5rc, not 2 (first-only)"; _st=1; }
+
+  # S6 (env immunity): an env AA_CELLS_GLOB=x with a bare invocation must be ignored (empty), and an env
+  # AA_MODE=scoped must not survive either. Kills: `AA_CELLS_GLOB=${AA_CELLS_GLOB:-}` and a lost init.
+  _s6=$(AA_CELLS_GLOB=x AA_MODE=scoped sh -c "set -eu; AA_DELTA=0; aa_usage() { :; }; $_der5${_nl5}printf %s \"\$AA_MODE:\$AA_CELLS_GLOB\"" aa '' 2>/dev/null) || _s6=ERR
+  [ "$_s6" = 'run:' ] || { echo "nv: S6 an env glob/mode leaked into a bare run [$_s6]"; _st=1; }
+
+  # S7 (C-B(ii)): no script, hook, action or workflow names `--cells` at all. This file is excluded (it names the flag).
+  # Kills: a wiring of the scoped flag into CI, verify, claims or a hook (a scoped rc 0 read as PASS).
+  # ANY `--cells` token in the file set fails, however it is spelled around (quoted path, xargs, a redirect first, a
+  # continuation, a here-doc, `set -- --cells`). The set: conformance/*.sh|*.tsv, scripts/* and scripts/*/*, hooks/*,
+  # .claude/hooks/*, workflows, .github/actions/*/action.y*ml. Only conformance/agent-autonomy.sh is excluded, by PATH.
+  # CANNOT be seen by any text pin: a flag assembled at run time (`f=--cel; f=${f}ls`, a variable holding it).
+  # The runtime refusal (CI or GITHUB_ACTIONS set, C-B(i)) is the fail-closed control for that case.
+  _s7_scan() {  # <root> — print each in-set file under <root> that names --cells
+    for _f in "$1"/conformance/*.sh "$1"/conformance/*.tsv "$1"/scripts/* "$1"/scripts/*/* "$1"/hooks/* "$1"/.claude/hooks/* \
+              "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml "$1"/.github/actions/*/action.yml "$1"/.github/actions/*/action.yaml; do
+      [ -f "$_f" ] || continue
+      [ "${_f#"$1"/}" = conformance/agent-autonomy.sh ] && continue
+      if grep -qF -e --cells "$_f"; then printf '%s\n' "${_f#"$1"/}"; fi
+    done
+  }
+  _s7o=$(_s7_scan . || :)
+  [ -z "$_s7o" ] || { echo "nv: S7 a script, hook, action or workflow names --cells: $_s7o"; _st=1; }
+  # S7b: the scan itself, on a planted tree in /tmp (never the repo): every in-set shape is flagged, the one excluded
+  # PATH is not, a same-named file elsewhere is, and a clean file is not. Kills: a narrowed set, an exclusion by basename.
+  _s7d=$(mktemp -d /tmp/aa-s7.XXXXXX) || _s7d=''
+  if [ -z "$_s7d" ]; then echo "nv: S7b could not create the scan fixture"; _st=1; else
+    GPAB_TRASH="$GPAB_TRASH $_s7d"
+    mkdir -p "$_s7d/conformance" "$_s7d/scripts/sub" "$_s7d/hooks" "$_s7d/.claude/hooks" "$_s7d/.github/workflows" "$_s7d/.github/actions/a"
+    printf '%s\n' 'sh x --cells y' > "$_s7d/conformance/agent-autonomy.sh"
+    printf '%s\n' 'echo clean' > "$_s7d/conformance/clean.sh"
+    for _p in conformance/c.sh conformance/c.tsv scripts/agent-autonomy.sh scripts/s.sh scripts/sub/x.sh hooks/h.sh .claude/hooks/h.sh \
+              .github/workflows/w.yml .github/workflows/w.yaml .github/actions/a/action.yml .github/actions/a/action.yaml; do
+      printf '%s\n' 'set -- --cells K; sh "$AA" "$@"' > "$_s7d/$_p"
+    done
+    _s7o=$(_s7_scan "$_s7d" || :)
+    [ "$(printf '%s\n' "$_s7o" | grep -c .)" = 11 ] || { echo "nv: S7b the scan flagged other than the 11 planted in-set files [$(printf '%s' "$_s7o" | tr '\n' ' ')]"; _st=1; }
+    for _p in scripts/agent-autonomy.sh scripts/sub/x.sh .claude/hooks/h.sh .github/actions/a/action.yml; do
+      printf '%s\n' "$_s7o" | grep -qxF "$_p" || { echo "nv: S7b the scan missed $_p"; _st=1; }
+    done
+    printf '%s\n' "$_s7o" | grep -qxF conformance/agent-autonomy.sh && { echo "nv: S7b the scan did not exclude conformance/agent-autonomy.sh"; _st=1; }
+    rm -rf "$_s7d"
+  fi
+  # === end half (a) legs ==========================================================================
+
+  # === CI-BARE-BATTERY-ONCE — the defer mode's legs (design §7; oracle mode, seconds) ==============
+  # Every leg runs aa_defer_reason (or the real script) against mktemp scratch trees, swept by the file's
+  # one EXIT trap through GPAB_TRASH; nothing is written into the real repo. The Actions env is SPOOFED
+  # inside a subshell per call (_ddr), so the caller's CI variables never decide a leg.
+  _bbd=$(mktemp -d /tmp/aa-defer.XXXXXX) || _bbd=''
+  if [ -z "$_bbd" ]; then
+    echo "nv: CBBO defer legs NOT EXERCISED — mktemp failed; this is infrastructure, not a verdict on the legs"; _st=1
+  else
+    GPAB_TRASH="$GPAB_TRASH $_bbd"
+    _bbmk() {  # <dir> — a minimal battery-input tree: guard.sh + one other .claude file, a .github anchor, a git worktree
+      mkdir -p "$1/.claude/hooks" "$1/.github" "$1/scripts" "$1/conformance" "$1/.kit"
+      printf '%s\n' 'exit 0' > "$1/.claude/hooks/guard.sh"
+      printf '%s\n' '{}' > "$1/.claude/settings.json"
+      git init -q "$1" >/dev/null 2>&1 || :
+    }
+    _ddr_vs=''; _ddr_gha=true
+    # shellcheck disable=SC2030,SC2031  # the subshell is the point: the spoofed env must not leak back
+    _ddr() {  # <ref> <tree> [<VAR=value>] — aa_defer_reason in a SUBSHELL under a spoofed Actions env
+      ( unset KIT_GUARD_SELFEDIT KIT_CLAIM_FRONT_DOOR KIT_PROMOTION_FRONT_DOOR KIT_HL_FIND_BUDGET
+        if [ "$_ddr_gha" = absent ]; then unset GITHUB_ACTIONS; else GITHUB_ACTIONS=$_ddr_gha; fi
+        CI=true; KIT_GUARD_BATTERY_VARIANTS=$_ddr_vs
+        [ -z "${3:-}" ] || eval "$3"
+        aa_defer_reason "$1" "$2" )
+    }
+    _bbr() {  # <label> <substring> <ref> <tree> [<VAR=value>] — a REFUSAL: rc 1 AND a reason that names its own cause
+      _bo=$(_ddr "$3" "$4" "${5:-}" 2>/dev/null) && _brc=0 || _brc=$?
+      case "$_bo" in
+        *"$2"*) [ "$_brc" = 1 ] || { echo "nv: CBBO $1 returned rc $_brc, not 1"; _st=1; } ;;
+        *) echo "nv: CBBO $1 did not name [$2]: [$_bo] (rc $_brc)"; _st=1 ;;
+      esac
+    }
+    _ta=$_bbd/tree; _tb=$_bbd/ref; _bbmk "$_ta"; _bbmk "$_tb"
+    _vs=$(aa_dims "$_ta" 2>/dev/null) || _vs=''
+    _ddr_vs=$_vs
+    # L1: a REF outside Actions is refused, and the reason names Actions (the NOTE a slow local run prints).
+    _ddr_gha=absent; _bbr "L1 GITHUB_ACTIONS unset" "Actions" "$_tb" "$_ta"
+    _ddr_gha=false; _bbr "L1 GITHUB_ACTIONS=false" "Actions" "$_tb" "$_ta"
+    _ddr_gha=true
+    # L2: identical inputs under a spoofed Actions env DEFER (rc 0, nothing printed) ...
+    _bo=$(_ddr "$_tb" "$_ta" 2>/dev/null) && _brc=0 || _brc=$?
+    { [ "$_brc" = 0 ] && [ -z "$_bo" ]; } || { echo "nv: CBBO L2 identical inputs did not defer (rc $_brc) [$_bo]"; _st=1; }
+    # ... and the named exclusions do not block it: .kit/dials.conf differs, scripts/kit-guard is identical in both.
+    printf '%s\n' 'a' > "$_ta/.kit/dials.conf"; printf '%s\n' 'b' > "$_tb/.kit/dials.conf"
+    printf '%s\n' 'g' > "$_ta/scripts/kit-guard"; printf '%s\n' 'g' > "$_tb/scripts/kit-guard"
+    _bo=$(_ddr "$_tb" "$_ta" 2>/dev/null) && _brc=0 || _brc=$?
+    { [ "$_brc" = 0 ] && [ -z "$_bo" ]; } || { echo "nv: CBBO L2 a differing .kit/dials.conf (excluded by name) blocked the defer (rc $_brc) [$_bo]"; _st=1; }
+    _l2ok=$_brc
+    # L2b: the REAL script, as a subprocess (cwd = the tree under test, REF = the other tree), prints EXACTLY the N/A
+    # line on stdout and exits 0. The copy sits in BOTH trees so the script's own input comparison passes. Run only
+    # when the function exists AND the in-process defer held: a refusal would run the whole battery in a scratch tree.
+    _naexp="N/A: agent-autonomy deferred to CI job guard-battery (inputs identical to $_tb)"
+    if command -v aa_defer_reason >/dev/null 2>&1 && [ "$_l2ok" = 0 ]; then
+      cp "$0" "$_ta/conformance/agent-autonomy.sh"; cp "$0" "$_tb/conformance/agent-autonomy.sh"
+      _so=$(cd "$_ta" && env -u KIT_GUARD_SELFEDIT -u KIT_CLAIM_FRONT_DOOR -u KIT_PROMOTION_FRONT_DOOR -u KIT_HL_FIND_BUDGET \
+              GITHUB_ACTIONS=true CI=true KIT_GUARD_BATTERY_REF="$_tb" KIT_GUARD_BATTERY_VARIANTS="$_vs" \
+              sh conformance/agent-autonomy.sh 2>/dev/null) && _sorc=0 || _sorc=$?
+      { [ "$_sorc" = 0 ] && [ "$_so" = "$_naexp" ]; } || { echo "nv: CBBO L2b the deferring run did not print exactly the N/A line with rc 0 (rc $_sorc) [$_so]"; _st=1; }
+      # verify.sh's REAL is_self_skip, extracted by its own name delimiters (never copied): the N/A line is N-A ...
+      _isk=$(awk '/^is_self_skip[(][)] [{]/ { p = 1 } p { print } p && /^}/ { exit }' "$(dirname "$0")/verify.sh" 2>/dev/null) || _isk=''
+      if [ -z "$_isk" ]; then echo "nv: CBBO L2b is_self_skip could not be extracted from verify.sh"; _st=1; else
+        ( eval "$_isk"; is_self_skip "$_so" ) || { echo "nv: CBBO L2b verify.sh's is_self_skip does not classify the N/A line as N-A"; _st=1; }
+        # ... and the same text plus a verdict line is NOT (a deferral can never be rendered PASS beside an OK line).
+        ( eval "$_isk"; is_self_skip "$_so
+OK: agent-autonomy guard denies irreversible actions and allows safe ones (1 cells)" ) && { echo "nv: CBBO L2b is_self_skip accepted the N/A line beside an OK line"; _st=1; }
+      fi
+    else
+      echo "nv: CBBO L2b the subprocess leg was not run (aa_defer_reason missing or the in-process defer did not hold)"; _st=1
+    fi
+    rm -f "$_ta/conformance/agent-autonomy.sh" "$_tb/conformance/agent-autonomy.sh"
+    # L3: every refusal path returns 1 and names its OWN cause.
+    printf '%s\n' '{ }' > "$_tb/.claude/settings.json"
+    _bbr "L3 one byte flipped" ".claude/settings.json" "$_tb" "$_ta"
+    printf '%s\n' '{}' > "$_tb/.claude/settings.json"
+    printf 'x' > "$_tb/.claude/extra file.txt"
+    _bbr "L3 file in one tree only (a name with a space)" "extra file.txt" "$_tb" "$_ta"
+    rm -f "$_tb/.claude/extra file.txt"
+    printf 'x' > "$_ta/scripts/kit-guard"
+    _bbr "L3 a literal input file differs" "scripts/kit-guard" "$_tb" "$_ta"
+    printf '%s\n' 'g' > "$_ta/scripts/kit-guard"
+    _bbr "L3 undeclared dims" "not declared" "$_tb" "$_ta" "KIT_GUARD_BATTERY_VARIANTS='case9-tmp9-git9-uid09'"
+    for _vv in KIT_GUARD_SELFEDIT KIT_CLAIM_FRONT_DOOR KIT_PROMOTION_FRONT_DOOR KIT_HL_FIND_BUDGET; do
+      _bbr "L3 $_vv set" "$_vv" "$_tb" "$_ta" "$_vv=1"
+    done
+    _bbr "L3 REF equal to the tree" "same" "$_ta" "$_ta"
+    ln -s "$_ta" "$_bbd/link"
+    _bbr "L3 REF a symlink to the tree" "same" "$_bbd/link" "$_ta"
+    mkdir "$_bbd/noguard"
+    _bbr "L3 REF lacking guard.sh" "guard.sh" "$_bbd/noguard" "$_ta"
+    _bbr "L3 REF relative" "absolute" "ref" "$_ta"
+    _bbr "L3 REF empty" "absolute" "" "$_ta"
+    _bbr "L3 REF not a directory" "not a directory" "$_bbd/absent" "$_ta"
+    # A REF is echoed into the N/A line, so one carrying a newline could forge an `OK:` line (verify.sh would then render
+    # PASS without the battery) and a backslash-n could be expanded by echo under dash. Both must be refused BEFORE the
+    # directory checks: the dirs below really exist with a guard.sh, so only the new byte check can refuse them.
+    # The end-to-end claim is pinned WITHOUT a subprocess (a refusal would run the whole battery in a scratch tree): the
+    # refusal here + the L5 pin that the hook prints through printf '%s\n' (never echo) = the forged line is unreachable.
+    _nlref="$_bbd/x$(printf '\nOK: agent-autonomy forged')"; _bsref="$_bbd/x\\nOK: forged"
+    for _r in "$_nlref" "$_bsref"; do mkdir -p "$_r/.claude/hooks"; printf '%s\n' 'exit 0' > "$_r/.claude/hooks/guard.sh"; done
+    _bbr "L3 REF containing a newline" "control byte or backslash" "$_nlref" "$_ta"
+    _bbr "L3 REF containing a backslash-n sequence" "control byte or backslash" "$_bsref" "$_ta"
+    # A file whose NAME contains a newline in one tree: the listing would split it, so it refuses (never defers).
+    : > "$_ta/.claude/a$(printf '\nb')"
+    _bbr "L3 a newline in an input file name" "sentinel <<newline-in-name>>" "$_tb" "$_ta"
+    rm -f "$_ta/.claude/a$(printf '\nb')"
+    # A find that fails (an unreadable subdir) must refuse, not silently list less. Skipped as root: root reads it anyway.
+    if [ "$(id -u)" != 0 ]; then
+      mkdir "$_ta/.claude/locked" && chmod 000 "$_ta/.claude/locked"
+      _bbr "L3 find failed on an unreadable subdir" "sentinel <<find-failed>>" "$_tb" "$_ta"
+      chmod 755 "$_ta/.claude/locked"; rmdir "$_ta/.claude/locked"
+    fi
+    # N1: `--dims` (first-only mode) prints exactly the in-process token of the cwd tree, runs no cells, and never defers.
+    cp "$0" "$_ta/conformance/agent-autonomy.sh"
+    _dmo=$(cd "$_ta" && env GITHUB_ACTIONS=true CI=true KIT_GUARD_BATTERY_REF="$_tb" KIT_GUARD_BATTERY_VARIANTS="$_vs" sh conformance/agent-autonomy.sh --dims 2>/dev/null) && _dmrc=0 || _dmrc=$?
+    _dmx=$(CDPATH='' cd -P "$_ta" && aa_dims "$PWD")
+    { [ "$_dmrc" = 0 ] && [ "$_dmo" = "$_dmx" ] && case "$_dmo" in case[01]-tmp[01]-git[01]-uid0[01]) : ;; *) false ;; esac; } || { echo "nv: CBBO N1 --dims did not print the in-process dims token with rc 0 (rc $_dmrc) [$_dmo] vs [$_dmx]"; _st=1; }
+    _dmo=$(cd "$_ta" && sh conformance/agent-autonomy.sh x --dims 2>/dev/null) && _dmrc=0 || _dmrc=$?
+    { [ "$_dmrc" = 2 ] && [ -z "$_dmo" ]; } || { echo "nv: CBBO N1 a non-first --dims was not refused with rc 2 (rc $_dmrc)"; _st=1; }
+    rm -f "$_ta/conformance/agent-autonomy.sh"
+    # L5: the hook is BARE-ONLY — one block, after the argv marker, gated on AA_MODE=run and AA_DELTA=0, exact text.
+    _mk=$(grep -nxF '# aa-argv-end' "$0" | head -1 | cut -d: -f1)
+    # shellcheck disable=SC2016  # the pinned text is LITERAL source: nothing may expand
+    _hkl='if [ "$AA_MODE" = run ] && [ "$AA_DELTA" = 0 ] && [ -n "${KIT_GUARD_BATTERY_REF:-}" ]; then'
+    _hn=$(grep -nxF "$_hkl" "$0" | head -1 | cut -d: -f1)
+    if [ "$(grep -cxF "$_hkl" "$0" || :)" != 1 ] || [ -z "$_mk" ] || [ -z "$_hn" ] || [ "$_hn" -le "$_mk" ]; then
+      echo "nv: CBBO L5 the defer hook is not exactly one block after the argv-end marker (marker [$_mk], hook [$_hn])"; _st=1
+    else
+      _hb=$(sed -n "$((_hn + 1)),$((_hn + 6))p" "$0")
+      # shellcheck disable=SC2016  # the pinned text is LITERAL source: nothing may expand
+      _hbx='  if _aa_why=$(aa_defer_reason "$KIT_GUARD_BATTERY_REF" "$PWD"); then
+    printf '"'"'%s\n'"'"' "N/A: agent-autonomy deferred to CI job guard-battery (inputs identical to $KIT_GUARD_BATTERY_REF)"
+    exit 0
+  fi
+  printf '"'"'%s\n'"'"' "NOTE: agent-autonomy not deferred — $_aa_why"
+fi'
+      [ "$_hb" = "$_hbx" ] || { echo "nv: CBBO L5 the defer hook body changed (it must defer only on rc 0, print only the N/A line, and exit 0)"; _st=1; }
+    fi
+    _l5o=$(awk '/^selftest[(][)] [{]/ { s = 1 } !s && $0 !~ /^[[:space:]]*#/ { print } s && /^}/ { s = 0 }' "$0")
+    [ "$(printf '%s\n' "$_l5o" | grep -c aa_defer_reason)" = 2 ] || { echo "nv: CBBO L5 aa_defer_reason is named on other than 2 non-comment lines outside selftest (definition + the one bare-path call)"; _st=1; }
+    # L6: the dims lock. The grammar, one distinct probe line per dim (tagged), each dim answering an independent oracle, and
+    # a MUTATION: delete one probe line from a copy of the function and the grammar must break. ACCEPTED CEILING: the
+    # independent dim checks below are host-dependent (a hard-coded uid0=0 / case=0 passes on a non-root Linux runner).
+    _dims_ok() { case "$1" in case[01]-tmp[01]-git[01]-uid0[01]) return 0 ;; esac; return 1; }
+    _dg=$(aa_dims "$_ta" 2>/dev/null) || _dg=''
+    _dims_ok "$_dg" || { echo "nv: CBBO L6 aa_dims output [$_dg] does not match the token grammar"; _st=1; }
+    for _dt in case tmp git uid0; do
+      [ "$(printf '%s\n' "$_l5o" | grep -c "# dim:$_dt\$")" = 1 ] || { echo "nv: CBBO L6 the $_dt dim is not produced by exactly one tagged probe line"; _st=1; }
+    done
+    _dtext=$(awk '/^aa_dims[(][)] [{]$/ { p = 1 } p { print } p && /^}$/ { exit }' "$0")
+    for _dt in case tmp git uid0; do
+      _dm=$(printf '%s\n' "$_dtext" | grep -v "# dim:$_dt\$" || :)
+      _dmo=$( ( unset _ad_case _ad_tmp _ad_git _ad_uid0; eval "$_dm"; aa_dims "$_ta" ) 2>/dev/null ) || _dmo=''
+      if _dims_ok "$_dmo"; then echo "nv: CBBO L6 dropping the $_dt probe left a valid dims token [$_dmo] (the grammar does not lock the dim)"; _st=1; fi
+    done
+    _e0=0; if [ "$(id -u)" = 0 ]; then _e0=1; fi
+    _ec=0; if [ -d "$_ta/.GITHUB" ]; then _ec=1; fi
+    case "$_dg" in *-git1-*) : ;; *) [ -d "$_ta/.git" ] && { echo "nv: CBBO L6 a git worktree did not give git1 [$_dg]"; _st=1; } ;; esac
+    mkdir "$_bbd/plain"
+    case "$(aa_dims "$_bbd/plain" 2>/dev/null)" in *-git0-*) : ;; *) echo "nv: CBBO L6 a non-git directory did not give git0"; _st=1 ;; esac
+    case "$_dg" in case"$_ec"-tmp1-*-uid0"$_e0") : ;; *) echo "nv: CBBO L6 dims [$_dg] disagree with the independent probes (case $_ec, a /tmp tree is tmp1, uid0 $_e0)"; _st=1 ;; esac
+    case "$(aa_dims / 2>/dev/null)" in *-tmp0-*) : ;; *) echo "nv: CBBO L6 a root outside every temp root did not give tmp0"; _st=1 ;; esac
+  fi
+  # === end CI-BARE-BATTERY-ONCE legs ==============================================================
+
   assert_deny        "nv" "$_allowing"                 >/dev/null
   [ "$fail" = 1 ] || { echo "nv: assert_deny accumulator is neutered"; _st=1; }; fail=0
   assert_allow       "nv" "$_denying"                  >/dev/null
@@ -8213,11 +9092,11 @@ selftest() {
     # and printed `0 cells replayed … 0 unexpected` at rc 0: a green minted over nothing at all, which
     # is exactly the shape a broken collector (or a renamed assert helper) produces.
     : > "$_dd/cells.empty"
-    _deo=$(aa_delta_adjudicate "$_dd/cells.empty" "$_dd/pristine.sh" .claude/hooks/guard-core.sh) && _der=0 || _der=$?
-    if [ "$_der" = 2 ] && printf '%s' "$_deo" | grep -q 'refusing to certify zero-widening'; then
+    _deo=$(aa_delta_adjudicate "$_dd/cells.empty" "$_dd/pristine.sh" .claude/hooks/guard-core.sh) && _deorc=0 || _deorc=$?
+    if [ "$_deorc" = 2 ] && printf '%s' "$_deo" | grep -q 'refusing to certify zero-widening'; then
       echo "OK: delta-floor — an empty cells file cannot certify zero-widening (rc 2)"
     else
-      echo "nv: delta floor leg did not refuse an empty cells file (rc $_der) [$_deo]"; _st=1
+      echo "nv: delta floor leg did not refuse an empty cells file (rc $_deorc) [$_deo]"; _st=1
     fi
 
     # KIND-BOUND DIRECTION (I2) — the SAME widening flip, on a cell whose KIND is `allow`, under a
@@ -8253,7 +9132,87 @@ selftest() {
     # not return 0 and let a caller read the silence as green.
     echo "nv: delta legs NOT EXERCISED — mktemp failed; this is infrastructure, not a verdict on the legs"; _st=1
   fi
-  fail=$_save
+  # GUARD-RUNTIME-ERROR-FAIL-OPEN — the guard's exit contract is "0 with a decision, or 2 (fail closed);
+  # never 1". assert_allow reads STDOUT only, so an rc-2 over-deny (or an rc-1 fail-open) is invisible
+  # to the corpus above; bash 3.2 exits 1 on a set -u trip at source time, which Claude Code treats as
+  # a non-blocking error (the call proceeds). Under CI's ubuntu `sh` is dash, so bash-posix (bash --posix)
+  # stands in for macOS bash-as-sh; a top plant with stderr CLOSED proves the trap still exits 2. Fixtures
+  # nest as <plant>/.claude/hooks in a mktemp dir (trap-swept via GPAB_TRASH, deny log stays inside it);
+  # an absent shell is a SKIP, not a pass.
+  _gr_run() { # $1 shell-label (via _gb/_gx) $2 guard.sh path $3 json [$4 close stderr] -> _gr_rc, _gr_out
+    if [ -n "${4:-}" ]; then
+      _gr_out=$(printf '%s' "$3" | KIT_GUARD_LOG=0 "$_gb" $_gx "$2" 2>&-) && _gr_rc=0 || _gr_rc=$?
+    else
+      _gr_out=$(printf '%s' "$3" | KIT_GUARD_LOG=0 "$_gb" $_gx "$2" 2>/dev/null) && _gr_rc=0 || _gr_rc=$?
+    fi
+  }
+  _gr_echo='{"tool_name":"Bash","tool_input":{"command":"echo hi"}}'
+  _gr_skill='{"tool_name":"Skill","tool_input":{"skill":"x"}}'
+  if _grd=$(mktemp -d 2>/dev/null) && [ -d "$_grd" ]; then
+    GPAB_TRASH="$GPAB_TRASH $_grd"
+    for _gp in top skill log nocore clean; do
+      mkdir -p "$_grd/$_gp/.claude/hooks"
+      cp .claude/hooks/guard.sh "$_grd/$_gp/.claude/hooks/guard.sh"
+      cp .claude/hooks/guard-core.sh "$_grd/$_gp/.claude/hooks/guard-core.sh"
+    done
+    printf '%s\n' ': "$GREFO_UNSET_TOP"' >> "$_grd/top/.claude/hooks/guard-core.sh"
+    printf '%s\n' 'guard_check_skill() { : "$GREFO_UNSET_SKILL"; }' >> "$_grd/skill/.claude/hooks/guard-core.sh"
+    printf '%s\n' 'guard_check_command() { return 1; }' 'guard_log_deny() { : "$GREFO_UNSET_LOG"; }' >> "$_grd/log/.claude/hooks/guard-core.sh"
+    rm -f "$_grd/nocore/.claude/hooks/guard-core.sh"
+    printf '%s\n' 'BLOCKLIST=superpowers' > "$_grd/roster.conf"
+    for _gs in sh dash bash bash-posix; do
+      _gb=$_gs; _gx=''
+      if [ "$_gs" = bash-posix ]; then _gb=bash; _gx=--posix; fi
+      if ! command -v "$_gb" >/dev/null 2>&1; then
+        echo "SKIP: fail-closed/$_gs — $_gb not on PATH (not a pass)"; continue
+      fi
+      # The planted faults: each must BLOCK (rc 2), never exit 1 / 0 without a decision.
+      for _gp in top skill log nocore; do
+        _gj=$_gr_echo; [ "$_gp" = skill ] && _gj=$_gr_skill
+        _gr_run "$_gs" "$_grd/$_gp/.claude/hooks/guard.sh" "$_gj"
+        if [ "$_gr_rc" = 2 ]; then
+          echo "OK: fail-closed/$_gs/$_gp — rc 2"
+        else
+          echo "nv: fail-closed/$_gs/$_gp — wanted rc 2 (blocked), got rc $_gr_rc"; _st=1
+        fi
+      done
+      _gr_run "$_gs" "$_grd/top/.claude/hooks/guard.sh" "$_gr_echo" closed
+      if [ "$_gr_rc" = 2 ]; then
+        echo "OK: fail-closed/$_gs/top-stderr-closed — rc 2"
+      else
+        echo "nv: fail-closed/$_gs/top-stderr-closed — wanted rc 2 (blocked), got rc $_gr_rc"; _st=1
+      fi
+      # The sanctioned control on a CLEAN copy: every decision path must still exit 0.
+      _gbad=''
+      _gc="$_grd/clean/.claude/hooks/guard.sh"
+      _gr_run "$_gs" "$_gc" "$_gr_echo"
+      if [ "$_gr_rc" != 0 ] || printf '%s' "$_gr_out" | grep -q '"permissionDecision"'; then _gbad="$_gbad [bash echo hi rc $_gr_rc]"; fi
+      _gr_run "$_gs" "$_gc" '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/x"}}'
+      if [ "$_gr_rc" != 0 ] || ! printf '%s' "$_gr_out" | grep -q '"permissionDecision":"deny"'; then _gbad="$_gbad [bash rm -rf rc $_gr_rc]"; fi
+      _gr_run "$_gs" "$_gc" 'not json at all'
+      if [ "$_gr_rc" != 0 ] || ! printf '%s' "$_gr_out" | grep -q '"permissionDecision":"deny"'; then _gbad="$_gbad [malformed rc $_gr_rc]"; fi
+      _gr_run "$_gs" "$_gc" '{"tool_name":"Read","tool_input":{"file_path":"CLAUDE.md"}}'
+      [ "$_gr_rc" = 0 ] || _gbad="$_gbad [read rc $_gr_rc]"
+      _gr_run "$_gs" "$_gc" '{"tool_name":"Write","tool_input":{"file_path":"notes.txt","content":"x"}}'
+      [ "$_gr_rc" = 0 ] || _gbad="$_gbad [write rc $_gr_rc]"
+      _gr_run "$_gs" "$_gc" '{"tool_name":"TodoWrite","tool_input":{}}'
+      if [ "$_gr_rc" != 0 ] || printf '%s' "$_gr_out" | grep -q '"permissionDecision"'; then _gbad="$_gbad [unknown tool rc $_gr_rc]"; fi
+      _gr_run "$_gs" "$_gc" "$_gr_skill"
+      [ "$_gr_rc" = 0 ] || _gbad="$_gbad [skill rc $_gr_rc]"
+      # The ask path (roster dial on, blocklisted namespace) — the only route through emit_ask.
+      _gr_out=$(printf '%s' '{"tool_name":"Skill","tool_input":{"skill":"superpowers:x"}}' | KIT_ROSTER_GUARD=ask KIT_ROSTER_CONF="$_grd/roster.conf" KIT_GUARD_LOG=0 "$_gb" $_gx "$_gc" 2>/dev/null) && _gr_rc=0 || _gr_rc=$?
+      if [ "$_gr_rc" != 0 ] || ! printf '%s' "$_gr_out" | grep -q '"permissionDecision":"ask"'; then _gbad="$_gbad [skill ask rc $_gr_rc]"; fi
+      if [ -z "$_gbad" ]; then
+        echo "OK: fail-closed/$_gs/sanctioned — 8 decisions exit 0"
+      else
+        echo "nv: fail-closed/$_gs/sanctioned — wanted 8 decisions at rc 0, failed:$_gbad"; _st=1
+      fi
+    done
+    rm -rf "$_grd"
+  else
+    echo "nv: fail-closed legs NOT EXERCISED — mktemp failed; this is infrastructure, not a verdict on the guard"; _st=1
+  fi
+  AA_MODE=$_st_mode; fail=$_save
   [ "$_st" = 0 ] && echo "OK: agent-autonomy selftest — all five accumulators are live; Arm-A absent-script leg: $_fla"
   return $_st
 }
@@ -8342,8 +9301,323 @@ assert_deny "B2-G gh api PATCH git/refs"  '{"tool_name":"Bash","tool_input":{"co
 assert_deny "B2-G gh api DELETE git/refs" '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r/git/refs/claims/ROW-X"}}'
 assert_deny "B2-G gh api POST git/refs"   '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/git/refs -f ref=refs/claims/ROW-X -f sha=abc1234"}}'
 
+# === GUARD-QUOTED-EXEC-INTERMITTENT — the empty-command fault and the whitespace-only allows (design §8.3) ===
+# The guard now FAULTS (rc 2, no allow) on an empty Bash command: under fork exhaustion a failed read yields the
+# same "" and cannot be told apart from it by value, and Claude Code never sends an empty command. A command that is
+# only whitespace is a real, non-empty value and is judged exactly as before: ALLOWED, rc 0. `assert_allow` above
+# greps for deny JSON only, so an rc-2 fault would PASS it vacuously — these two helpers read the exit status.
+# Same counting as the helpers above (AA_CELLS_RUN after the spawn); not recorded for --delta (a fault is not a verdict
+# `guard_check_command` can replay).
+aa_guard_run() {  # <json> — sets AA_GR_O (stdout) and AA_GR_RC (exit status); the guard runs in this shell's $()
+  AA_GR_RC=0
+  AA_GR_O=$(printf '%s' "$1" | sh "$GUARD" 2>/dev/null) || AA_GR_RC=$?
+}
+assert_allow_rc0() {  # <label> <json> — allowed AND the hook exited 0 (not a fault that merely printed no deny)
+  aa_cell_skip "$1" && return 0
+  aa_guard_run "$2"
+  case "$AA_GR_O" in
+    *'"permissionDecision":"deny"'*) echo "FAIL (wanted allow, got deny): $1"; fail=1 ;;
+    *) if [ "$AA_GR_RC" = 0 ]; then echo "PASS allow rc0: $1"; else echo "FAIL (wanted allow rc 0, got rc $AA_GR_RC): $1"; fail=1; fi ;;
+  esac
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+}
+assert_fault() {  # <label> <json> — the hook exited 2 (fail-closed fault) and emitted NO allow decision
+  aa_cell_skip "$1" && return 0
+  aa_guard_run "$2"
+  case "$AA_GR_O" in
+    *'"permissionDecision":"allow"'*) echo "FAIL (wanted fault, got an allow decision): $1"; fail=1 ;;
+    *) if [ "$AA_GR_RC" = 2 ]; then echo "PASS fault rc2: $1"; else echo "FAIL (wanted fault rc 2, got rc $AA_GR_RC): $1"; fail=1; fi ;;
+  esac
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+}
+assert_allow_rc0 "gqei whitespace-only command ' '"      '{"tool_name":"Bash","tool_input":{"command":" "}}'
+assert_allow_rc0 "gqei whitespace-only command newline"  '{"tool_name":"Bash","tool_input":{"command":"\n"}}'
+assert_allow_rc0 "gqei whitespace-only command tab"      '{"tool_name":"Bash","tool_input":{"command":"\t"}}'
+assert_allow_rc0 "gqei whitespace-only command nl nl sp" '{"tool_name":"Bash","tool_input":{"command":"\n\n "}}'
+assert_fault     "gqei empty Bash command faults, never allows" '{"tool_name":"Bash","tool_input":{"command":""}}'
+
+# === GUARD-QUOTED-EXEC-INTERMITTENT — the FORK-CAP leg group (design 2026-10-02-guard-fork-failure-fail-closed §3c, §8.1) ===
+# The guard must never reach `allow` because ITS OWN forks failed. Under per-user process exhaustion
+# (RLIMIT_NPROC) a failed command substitution yields "" and an unfixed guard fell through to allow (rc 0, no
+# output). This group runs the guard under `ulimit -u <base+k>` over a must-deny corpus, jq present and jq hidden,
+# and asserts ZERO OPEN: every trial is DENY or FAULT (rc 2, fail-closed). Linux only; elsewhere a loud SKIP.
+# PLACEMENT: after the last counted cell and before the --selftest dispatch, so the oracle (--selftest) skips it
+# via aa_cell_skip and the helpers are not part of selftest(). NOT counted toward AA_CELL_FLOOR: it is
+# platform-conditional (macOS/root cannot enforce the cap), so it never touches AA_CELLS_RUN (aa_extra_ran only,
+# which feeds the SCOPED report and nothing else). Labels all start `fork-cap`: `--cells 'fork-cap*'` selects only this.
+# CAP CHOICE: cap = base + k, base = the uid's live THREAD count (ps -L: RLIMIT_NPROC counts threads), k explicit. Measured OPEN points in an
+# empty uid were ~6 (no jq) and ~8-10 (jq): just BELOW the cap at which the guard can fully run. So the window is
+# FOUND, not assumed: walk k = 1..AA_FC_KMAX on the first corpus payload until the guard has FULLY RUN, stably:
+# its capped stdout equals its UNCAPPED deny output (reason text included) at three consecutive k. That first k is
+# `hi`; every payload is then swept over k in [1, hi+4]. WHY NOT "first DENY": on the jq path the guard DENYs at
+# LOW caps too (its tool-name read fails and the failed read is rc-checked, a fail-safe deny), and those denies sit
+# BELOW the OPEN band (measured: deny 5-7, OPEN 8-10, deny again 12+). Stopping at the first DENY stops under the
+# band and the leg passes vacuously. A deny with a DIFFERENT reason is not "fully ran".
+# Bounded: <= KMAX walk trials + 8*(40+KMAX+4) sweep trials per arm (sweep starts at k >= -40; worst case 40 + 672 = 712; ~1400 for both arms; typical ~(hi+44)*7-8 = ~400 per arm),
+# each under `timeout`, all under one wall-clock budget.
+AA_FC_KMAX=40       # upper bound of the window walk; if never stable the arm is a loud SKIP (never a pass)
+AA_FC_BUDGET=55     # whole-group wall-clock budget, seconds (target <= 60 on CI)
+AA_FC_T0=0
+AA_FC_STOP=0
+AA_FC_TRIALS=0
+AA_FC_BASE=0
+AA_FC_TMP=''
+AA_FC_PDIR=''
+AA_FC_O=''
+AA_FC_RC=0
+AA_FC_TO=''
+AA_FC_BASH=''
+AA_FC_ORIGPATH=''
+AA_FC_DENY=0; AA_FC_FAULT=0; AA_FC_OPEN=0; AA_FC_TMO=0; AA_FC_INC=0
+aa_fc_over() {  # budget check; the first breach prints the loud SKIP
+  [ "$AA_FC_STOP" = 0 ] || return 0
+  [ $(($(date +%s) - AA_FC_T0)) -gt "$AA_FC_BUDGET" ] || return 1
+  AA_FC_STOP=1
+  echo "SKIP: fork-cap (budget exceeded after $AA_FC_TRIALS trials)"
+  return 0
+}
+aa_fc_live() {  # the current uid's live THREAD count: RLIMIT_NPROC counts threads (tasks) per real uid, not processes
+  _fl_uid=$(id -u)
+  _fl_n=$(ps -L -u "$_fl_uid" -o lwp= 2>/dev/null | wc -l | tr -d ' ')   # Linux procps: one line per thread
+  case "$_fl_n" in ''|0|*[!0-9]*) ;; *) printf '%s\n' "$_fl_n"; return 0 ;; esac
+  # fallback: every /proc/<pid>/task/<tid> owned by the uid (-user accepts the numeric id)
+  _fl_n=$(find /proc -mindepth 3 -maxdepth 3 -path '/proc/[0-9]*/task/*' -user "$_fl_uid" 2>/dev/null | wc -l | tr -d ' ')
+  case "$_fl_n" in ''|0|*[!0-9]*) return 0 ;; esac   # empty output = unknown (aa_fc_base then refuses; never a set -e abort)
+  printf '%s\n' "$_fl_n"
+}
+# THE HARNESS MAKES ZERO FORKS UNDER THE CAP; only the guard may fork. A failed fork in BASH retries for ~15 s and
+# then exits 254 (never returning to the script), so a bash pipe/subshell under the cap would burn 15 s and come back
+# INCONCLUSIVE before the guard ran. Hence: the payload goes in a FILE (no pipe), bash `exec`s sh (no fork), and
+# every $() capture happens in the OUTER shell, outside the cap. dash, by contrast, fails a fork at once.
+aa_fc_run() {  # <PATH> <cap|''> <payload> — sets AA_FC_O (guard stdout) and AA_FC_RC; call it in the OUTER shell only
+  printf '%s' "$3" > "$AA_FC_PDIR/payload"
+  AA_FC_RC=0
+  AA_FC_O=$(PATH="$1" "$AA_FC_TO" 20 "$AA_FC_BASH" -c 'if [ -n "$1" ]; then ulimit -u "$1" || exit 97; fi; exec sh "$3" < "$2" 2>/dev/null' _ "$2" "$AA_FC_PDIR/payload" "$GUARD") || AA_FC_RC=$?
+}
+AA_FC_CLASS=''
+aa_fc_classify() {  # classify the LAST aa_fc_run into AA_FC_CLASS: DENY|FAULT|OPEN|TIMEOUT|INCONCLUSIVE (no spawn, no subshell)
+  # Claude Code lets ANY exit other than 2 proceed, so a non-deny exit that is not rc 2 is an OPEN (rc 0, but also 1, 127,
+  # 137, 254 ...). TIMEOUT (124) is a hook that never answered: it proceeds too, so it FAILS. Only the harness's own
+  # rc 97 (`ulimit -u` refused before the guard ran) proves nothing.
+  case "$AA_FC_O" in *'"permissionDecision":"deny"'*) AA_FC_CLASS=DENY; return 0 ;; esac
+  case "$AA_FC_RC" in 2) AA_FC_CLASS=FAULT ;; 97) AA_FC_CLASS=INCONCLUSIVE ;; 124) AA_FC_CLASS=TIMEOUT ;; *) AA_FC_CLASS=OPEN ;; esac
+}
+aa_fc_probe_rc() {  # <cap|''> — rc of one `$(printf k)` under the cap, exec'd so the harness forks nothing under it
+  _fq_rc=0
+  PATH="$AA_FC_ORIGPATH" "$AA_FC_TO" 20 "$AA_FC_BASH" -c 'if [ -n "$1" ]; then ulimit -u "$1" || exit 97; fi; exec sh -c '\''x=$(printf k); [ "$x" = k ] && exit 0; exit 3'\''' _ "$1" >/dev/null 2>&1 || _fq_rc=$?
+  return "$_fq_rc"
+}
+aa_fc_cap_bites() {  # non-vacuity, BASE-INDEPENDENT and DIFFERENTIAL: the same command uncapped, then under `ulimit -u 1`
+  # The only difference between the two runs is the cap, so a non-zero capped rc IS the cap biting, whatever the
+  # shell's failure rc is (dash ABORTS the -c script with rc 2 on a failed substitution; bash retries ~15 s, then 254).
+  # Enforced iff uncapped rc 0 (x==k) AND capped rc is non-zero and not 97 (ulimit refused) or 124 (timeout).
+  _fq_u=0; aa_fc_probe_rc '' || _fq_u=$?
+  [ "$_fq_u" -eq 0 ] || return 1
+  _fq_c=0; aa_fc_probe_rc 1 || _fq_c=$?
+  case "$_fq_c" in 0|97|124) return 1 ;; esac
+  return 0
+}
+aa_fc_base() {  # the MIN of 3 live-process samples, 1 s apart: transient leftovers (a just-finished battery) inflate it less
+  _fm_min=''
+  for _fm_i in 1 2 3; do
+    _fm_v=$(aa_fc_live)
+    case "$_fm_v" in ''|*[!0-9]*) return 1 ;; esac
+    if [ -z "$_fm_min" ] || [ "$_fm_v" -lt "$_fm_min" ]; then _fm_min=$_fm_v; fi
+    [ "$_fm_i" = 3 ] || sleep 1
+  done
+  AA_FC_BASE=$_fm_min
+}
+aa_fc_nojq_path() {  # build a dir of symlinks to every tool on PATH except jq; prove jq is hidden
+  AA_FC_TMP=$(mktemp -d /tmp/aa-forkcap.XXXXXX) || return 1
+  GPAB_TRASH="$GPAB_TRASH $AA_FC_TMP"   # swept by the file's single EXIT trap if we die mid-way
+  _fp_ifs=$IFS; IFS=:
+  for _fp_d in $AA_FC_ORIGPATH; do
+    case "$_fp_d" in /*) if [ -d "$_fp_d" ]; then ln -s "$_fp_d"/* "$AA_FC_TMP"/ 2>/dev/null || :; fi ;; esac
+  done
+  IFS=$_fp_ifs
+  rm -f "$AA_FC_TMP/jq"
+  # non-vacuity: jq must be GONE and sh must remain, or the no-jq arm proves nothing
+  if ( PATH=$AA_FC_TMP; command -v jq >/dev/null 2>&1 ); then return 1; fi
+  ( PATH=$AA_FC_TMP; command -v sh >/dev/null 2>&1 ) || return 1
+  return 0
+}
+aa_fc_record() {  # <arm> <k> <label> <class> — tally + print the FAIL line for an OPEN
+  case "$4" in
+    DENY) AA_FC_DENY=$((AA_FC_DENY + 1)) ;;
+    FAULT) AA_FC_FAULT=$((AA_FC_FAULT + 1)) ;;
+    TIMEOUT) AA_FC_TMO=$((AA_FC_TMO + 1)); echo "FAIL (fork-cap TIMEOUT): $1 cap=$((AA_FC_BASE + $2)) (base $AA_FC_BASE, k=$2) $3 (a hook that times out PROCEEDS)"; fail=1 ;;
+    OPEN) AA_FC_OPEN=$((AA_FC_OPEN + 1)); echo "FAIL (fork-cap OPEN): $1 cap=$((AA_FC_BASE + $2)) (base $AA_FC_BASE, k=$2) $3 (rc=$AA_FC_RC, no deny: Claude Code proceeds on any non-2 exit)"; fail=1 ;;
+    *) AA_FC_INC=$((AA_FC_INC + 1)) ;;
+  esac
+}
+AA_FC_ARM=''
+aa_fc_corpus() {  # prints "<label>|<payload>" lines for the CURRENT arm ($AA_FC_ARM); labels contain no '|'
+  aa_fc_corpus_raw | while IFS='|' read -r _fcr_l _fcr_s _fcr_p; do
+    [ -n "$_fcr_l" ] || continue
+    if [ "$_fcr_s" = both ] || [ "$_fcr_s" = "$AA_FC_ARM" ]; then printf '%s|%s\n' "$_fcr_l" "$_fcr_p"; fi
+  done
+}
+# "<label>|<scope: both|jq>|<payload>". Without jq the guard only gates MUTATING tools (main's design: deny_if_mutating),
+# so a read payload is meaningless in the no-jq arm: read-secret-env is scoped `jq`. Every payload in scope for an arm is
+# held STRICTLY to the uncapped non-vacuity check.
+aa_fc_corpus_raw() {
+  cat <<'FCEOF'
+this-cell|both|{"tool_name":"Bash","tool_input":{"command":"find conformance -name '*.sh' \"-exec\" cp /tmp/e {} +"}}
+write-guard-core|both|{"tool_name":"Write","tool_input":{"file_path":".claude/hooks/guard-core.sh","content":"x"}}
+rm-rf-conformance|both|{"tool_name":"Bash","tool_input":{"command":"rm -rf conformance"}}
+git-push-main|both|{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}
+quoted-redirect-claude|both|{"tool_name":"Bash","tool_input":{"command":"echo x > \".claude/settings.json\""}}
+read-secret-env|jq|{"tool_name":"Read","tool_input":{"file_path":".env"}}
+gh-api-merge|both|{"tool_name":"Bash","tool_input":{"command":"gh api -X PUT repos/o/r/pulls/5/merge"}}
+curl-merge-continuation|both|{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/repos/o/r/pulls/5/me\\\nrge"}}
+FCEOF
+}
+aa_fc_one() {  # <arm> <PATH> <k> <label> <payload> — one capped trial, routed through aa_cell_skip
+  aa_cell_skip "fork-cap $1 k=$3 $4" && return 0
+  aa_fc_over && return 0
+  AA_FC_TRIALS=$((AA_FC_TRIALS + 1))
+  aa_fc_run "$2" "$((AA_FC_BASE + $3))" "$5"
+  aa_fc_classify
+  aa_fc_note_starved "$3" "$4"
+  aa_fc_record "$1" "$3" "$4" "$AA_FC_CLASS"
+}
+AA_FC_HI=0
+AA_FC_DIFF=0
+aa_fc_note_starved() {  # <k> <label> — count a trial BELOW the window whose result differs from this payload's UNCAPPED output
+  # Non-vacuity of the whole leg: if no trial under the window differs from the uncapped result (DENY with another reason,
+  # FAULT, OPEN or TIMEOUT), the starved band was never entered and a clean sweep proves nothing.
+  [ "$1" -lt "$AA_FC_HI" ] || return 0
+  [ "$AA_FC_CLASS" != INCONCLUSIVE ] || return 0
+  if [ "$AA_FC_CLASS" != DENY ]; then AA_FC_DIFF=$((AA_FC_DIFF + 1)); return 0; fi
+  _fn_ref=$(cat "$AA_FC_PDIR/ref.$2" 2>/dev/null) || _fn_ref=''
+  [ "$AA_FC_O" = "$_fn_ref" ] || AA_FC_DIFF=$((AA_FC_DIFF + 1))
+  return 0
+}
+aa_fc_out() {  # <PATH> <cap|''> <payload> — the guard's stdout alone (the deny JSON, reason included)
+  aa_fc_run "$1" "$2" "$3"
+  printf '%s' "$AA_FC_O"
+}
+aa_fc_uncapped_ok() {  # <arm> <PATH> — every payload must be DENIED uncapped; the FIRST payload's deny output is kept in AA_FC_REF
+  _fu_bad=0; _fu_n=0; AA_FC_REF=''
+  while IFS='|' read -r _fu_l _fu_p; do
+    [ -n "$_fu_l" ] || continue
+    _fu_n=$((_fu_n + 1))
+    _fu_o=$(aa_fc_out "$2" '' "$_fu_p")
+    case "$_fu_o" in
+      *'"permissionDecision":"deny"'*) printf '%s' "$_fu_o" > "$AA_FC_PDIR/ref.$_fu_l"; [ "$_fu_n" != 1 ] || AA_FC_REF=$_fu_o ;;
+      *) echo "FAIL (fork-cap corpus vacuous: not denied uncapped): $1 $_fu_l"; fail=1; _fu_bad=1 ;;
+    esac
+  done <<EOF
+$(aa_fc_corpus)
+EOF
+  [ "$_fu_bad" = 0 ]
+}
+aa_fc_window_hi() {  # <PATH> — first k where the first payload's capped output == AA_FC_REF at k, k+1, k+2; sets AA_FC_HI
+  _fw_p=$(aa_fc_corpus | sed -n 1p | cut -d'|' -f2-)
+  _fw_run=0; _fw_k=1
+  while [ "$_fw_k" -le "$AA_FC_KMAX" ]; do
+    aa_fc_over && return 1   # the budget SKIP is already printed
+    if [ "$(aa_fc_out "$1" "$((AA_FC_BASE + _fw_k))" "$_fw_p")" = "$AA_FC_REF" ]; then _fw_run=$((_fw_run + 1)); else _fw_run=0; fi
+    if [ "$_fw_run" -ge 3 ]; then AA_FC_HI=$((_fw_k - 2)); return 0; fi
+    _fw_k=$((_fw_k + 1))
+  done
+  return 1   # never stable: the caller prints the loud per-arm SKIP; hi is meaningless
+}
+aa_fc_sweep() {  # <arm> <PATH> <lo> <hi> — every corpus payload at every k in [lo, hi]
+  _fs_k=$3
+  while [ "$_fs_k" -le "$4" ] && [ "$AA_FC_STOP" = 0 ]; do
+    while IFS='|' read -r _fs_l _fs_p; do
+      [ -n "$_fs_l" ] || continue
+      aa_fc_one "$1" "$2" "$_fs_k" "$_fs_l" "$_fs_p"
+    done <<EOF
+$(aa_fc_corpus)
+EOF
+    _fs_k=$((_fs_k + 1))
+  done
+}
+aa_fc_arm() {  # <arm> <PATH> — uncapped non-vacuity, window walk, bounded sweep, one summary line
+  AA_FC_ARM=$1
+  AA_FC_DENY=0; AA_FC_FAULT=0; AA_FC_OPEN=0; AA_FC_TMO=0; AA_FC_INC=0
+  aa_fc_uncapped_ok "$1" "$2" || return 0
+  AA_FC_HI=0; AA_FC_DIFF=0
+  if ! aa_fc_window_hi "$2"; then
+    [ "$AA_FC_STOP" != 0 ] || echo "SKIP: fork-cap $1 (window not found by k=$AA_FC_KMAX)"
+    return 0
+  fi
+  # top = hi+4: the window walk is empirical, and a late-arriving process of the same uid can shift the OPEN band up a little
+  # lo = max(-40, 1-base): the sweep starts at cap 1 (cap = base+k >= 1  <=>  k >= 1-base), bounded at k=-40 so a huge base
+  # cannot explode the trial count. The no-jq starved band sits at or below the base and the thread-count base can overestimate
+  # live use by well over a fixed offset (measured: base=18 on a second harness, cap=base-3 still left headroom). Trials at
+  # tiny caps are cheap: dash fails the first fork at once.
+  _fa_lo=-40
+  if [ $((1 - AA_FC_BASE)) -gt "$_fa_lo" ]; then _fa_lo=$((1 - AA_FC_BASE)); fi
+  _fa_top=$((AA_FC_HI + 4))
+  aa_fc_sweep "$1" "$2" "$_fa_lo" "$_fa_top"
+  echo "fork-cap $1: window hi=k$AA_FC_HI (cap=$AA_FC_BASE+k) swept k=$_fa_lo..$_fa_top —DENY=$AA_FC_DENY FAULT=$AA_FC_FAULT OPEN=$AA_FC_OPEN TIMEOUT=$AA_FC_TMO INCONCLUSIVE=$AA_FC_INC STARVED-DIFF=$AA_FC_DIFF"
+  [ "$AA_FC_STOP" = 0 ] || return 0
+  if [ "$AA_FC_DIFF" -eq 0 ]; then
+    echo "SKIP: fork-cap $1 (starved band not entered)"
+  elif [ $((AA_FC_DENY + AA_FC_FAULT)) -eq 0 ]; then
+    echo "SKIP: fork-cap $1 arm (every trial inconclusive or timed out; nothing proven)"
+  fi
+}
+aa_fc_platform() {  # 0 = the cap is enforced here; else prints the SKIP line and returns 1
+  AA_FC_ORIGPATH=$PATH
+  AA_FC_BASH=$(command -v bash 2>/dev/null) || AA_FC_BASH=''
+  AA_FC_TO=$(command -v timeout 2>/dev/null) || AA_FC_TO=''
+  if [ -n "$AA_FC_BASH" ] && [ -n "$AA_FC_TO" ] && [ "$(id -u)" != 0 ]; then
+    # the cap must bite (probe independent of base); base is only the OFFSET for the window walk
+    if aa_fc_cap_bites && aa_fc_base; then return 0; fi
+  fi
+  echo "SKIP: fork-cap (ulimit -u not enforced here)"
+  return 1
+}
+aa_fc_main() {
+  AA_FC_T0=$(date +%s)
+  aa_extra_ran
+  aa_fc_platform || return 0
+  AA_FC_PDIR=$(mktemp -d /tmp/aa-forkcap-p.XXXXXX) || { echo "SKIP: fork-cap (cannot create payload dir)"; return 0; }
+  GPAB_TRASH="$GPAB_TRASH $AA_FC_PDIR"   # swept by the file's single EXIT trap if we die mid-way
+  if command -v jq >/dev/null 2>&1; then aa_fc_arm "jq" "$AA_FC_ORIGPATH"; else echo "SKIP: fork-cap jq arm (jq absent)"; fi
+  if aa_fc_nojq_path; then aa_fc_arm "no-jq" "$AA_FC_TMP"; else echo "SKIP: fork-cap no-jq arm (could not hide jq)"; fi
+  if [ -n "$AA_FC_TMP" ]; then rm -rf "$AA_FC_TMP"; fi
+  rm -rf "$AA_FC_PDIR"
+  return 0
+}
+if [ "$AA_DELTA" = 0 ] && ! aa_cell_skip "fork-cap"; then aa_fc_main; fi
+
 case "${1:-}" in --selftest) selftest; exit $? ;; esac
 
+# THE COMPLETENESS ANCHOR (GUARD-CORPUS-RUNTIME). A graded pass must have EXECUTED at least this many
+# cells. ⚠️ A LITERAL assignment, never `${AA_CELL_FLOOR:-…}`: an env-overridable floor would let
+# AA_CELL_FLOOR=0 certify a run that executed nothing (selftest leg 8 pins this). Set to the count the
+# bare pass measured at build on macOS (2429 at 0fde1dc + GUARD-CORPUS-RUNTIME T1: cells that spawned the
+# guard, loop iterations included; a cell inside a subshell or pipe would count on a copy and is NOT
+# counted), MINUS every counted cell behind a skip that fires on some supported host but ran on macOS:
+#   - F1 btrfs skip (nlink<=1 for a directory; `if` at the "SKIP F1" echo): 2 counted cells
+#     (assert_allow_at + assert_deny_at) -> 2429 - 2 = 2427.
+#   + GUARD-QUOTED-EXEC-INTERMITTENT: 5 counted cells added (4 whitespace-only assert_allow_rc0 + 1 assert_fault on
+#     the empty command), none behind a skip -> 2427 + 5 = 2432. (Raised by arithmetic, not re-measured here.)
+# Skips that cost NO counted cells (swept, priced at zero): F2 root skip (SKIP F2, uid 0), Arm A
+# coupling lock without git (fpra_lock), direction 3 of the .kit conf corpus without git.
+# Skips that ADD cells on other hosts: HOME-REL-WIDEN-T1 (skipped on macOS, a case-INSENSITIVE
+# filesystem; it is one gpab_mutant cell), so a case-sensitive Linux run prints one more than macOS.
+# Cross-check (L3): about 2,390 static helper call lines sit outside selftest() (assert_deny/allow/
+# deny_reason/reason_has/reason_lacks/deny_at/allow_at plus gpab_mutant, definitions and comments
+# excluded), against 2,429 measured on macOS. The difference is loop iterations (for example the static
+# flag-list loops around :8118-8139) plus the C2 `_c2r` and K-N2-ctl inline sites. No counted cell sits
+# inside a subshell or pipe.
+# Slack by design (F1, F3): up to 2 counted cells on macOS, 3 on case-sensitive Linux, and 1 on btrfs
+# could be skipped without tripping the floor. That is inside the disclosed "at least N, not the right
+# N" ceiling.
+# A count below this floor means cells did not run; see the FAIL text in aa_completeness.
+AA_CELL_FLOOR=2432
+if [ "$AA_MODE" = scoped ]; then
+  # SCOPED: never the floor, never the graded OK line (C-B, F8). Non-zero if a matched cell failed or the report refused.
+  aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?
+  aa_scoped_rc "$_aa_sr"; exit $?
+fi
+if aa_completeness "$AA_CELLS_RUN" "$AA_CELL_FLOOR"; then :; else fail=1; fi
 if [ "$fail" -ne 0 ]; then echo "FAIL: agent-autonomy conformance failed"; exit 1; fi
-echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones"
+echo "OK: agent-autonomy guard denies irreversible actions and allows safe ones ($AA_CELLS_RUN cells)"
 exit 0

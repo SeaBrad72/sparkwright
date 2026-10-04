@@ -159,8 +159,40 @@ check() {
 
   # The tag must bind the base to the version it came from.
   _ver=$(cat "$ROOT/VERSION" 2>/dev/null || echo unknown)
-  if ! git -C "$_p" rev-parse --verify --quiet "refs/tags/kit-base/v${_ver}" >/dev/null 2>&1; then
-    echo "FAIL: kit-base — no tag kit-base/v${_ver}; the base is not bound to a kit version" >&2
+  # KIT-UPDATE-BASE-ADVANCES: the export carries .kit-source, so the base carries Kit-Source/Kit-Version
+  # trailers equal to it, and the tag is `kit-base/v<VER>+<sha12>` pointing at kit-base.
+  _src_sha=$(sed -n 's/^commit //p' "$_p/.kit-source" 2>/dev/null)
+  if [ "${#_src_sha}" -ne 40 ]; then
+    echo "FAIL: kit-base — the export carries no well-formed .kit-source (commit line)" >&2; return 1
+  fi
+  _tag="kit-base/v${_ver}+$(printf '%s' "$_src_sha" | cut -c1-12)"
+  if [ "$(git -C "$_p" rev-parse --verify --quiet "refs/tags/${_tag}^{commit}" 2>/dev/null)" != "$(git -C "$_p" rev-parse kit-base)" ]; then
+    echo "FAIL: kit-base — no tag ${_tag} pointing at kit-base; the base is not bound to a kit commit" >&2
+    return 1
+  fi
+  if [ "$(git -C "$_p" log -1 --format=%B kit-base | sed -n 's/^Kit-Source: //p')" != "$_src_sha" ] \
+     || [ "$(git -C "$_p" log -1 --format=%B kit-base | sed -n 's/^Kit-Version: //p')" != "$_ver" ]; then
+    echo "FAIL: kit-base — the base commit lacks Kit-Source/Kit-Version trailers equal to .kit-source" >&2
+    return 1
+  fi
+  if ! git -C "$_p" show kit-base:.kit-source >/dev/null 2>&1; then
+    echo "FAIL: kit-base — .kit-source is not carried in the base tree" >&2; return 1
+  fi
+  # LEGACY leg: an export WITHOUT .kit-source keeps today's message and the plain `kit-base/v<VER>` tag.
+  _lg="$_t/legacy"
+  # an export failure here is a FAIL, never a skip (a skipped leg would read green having proven nothing).
+  if ! sh "$ROOT/scripts/adopter-export.sh" "$_lg" >/dev/null 2>&1; then
+    echo "FAIL: kit-base — the legacy leg's own export failed (not a skip)" >&2; return 1
+  fi
+  ( cd "$_lg" && rm -f .kit-source && grep -vx '\.kit-source' .kit-manifest > .km && mv .km .kit-manifest \
+      && grep -v ' \.kit-source$' .kit-digests > .kd && mv .kd .kit-digests \
+      && git init -q . && git add -A && git -c user.email=t@t -c user.name=t commit -qm init \
+      && sh scripts/incept.sh --noninteractive --name L --intent-owner L --stack typescript-node --no-db ) \
+      >/dev/null 2>&1 || true
+  if ! git -C "$_lg" rev-parse --verify --quiet "refs/tags/kit-base/v${_ver}" >/dev/null 2>&1 \
+     || [ -n "$(git -C "$_lg" tag -l "kit-base/v${_ver}+*")" ] \
+     || git -C "$_lg" log -1 --format=%B kit-base | grep -q '^Kit-Source:'; then
+    echo "FAIL: kit-base — a legacy export (no .kit-source) must keep tag kit-base/v${_ver} and no trailer" >&2
     return 1
   fi
 

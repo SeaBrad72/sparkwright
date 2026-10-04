@@ -104,6 +104,14 @@
 #       marker / a dead input on an armed tree · 2 = bad usage. POSIX sh + one awk pass; dash-clean.
 set -eu
 
+# section_present/cells_in_section (backlog-lib.sh; cells_in_section is the batched form of
+# section_rows+cell, BOARD-PIPE-ESCAPE T1's ONE GFM-exact board parser) — PASS 1's board read
+# (below) is built on these, never a bespoke split. TBG-ROADMAP-CURRENT-SEAM / carve-out (d) /
+# D-240919-5: this file's board read is EXCLUSIVELY section_present+cells_in_section — see
+# board-parser-drift.sh's standing absence leg (allowlist-shaped, H-1), which reds on any OTHER
+# live line in this file that reads the board and fails closed if one reappears.
+. "$(dirname "$0")/backlog-lib.sh"
+
 SELFTEST=no
 case "${1:-}" in
   "") : ;;
@@ -111,13 +119,37 @@ case "${1:-}" in
   *) echo "usage: roadmap-current.sh [--selftest]" >&2; exit 2 ;;
 esac
 
-# ── THE SINGLE AWK PASS ─────────────────────────────────────────────────────────────────────────────
-# One process for both files, read with getline in BEGIN (citation-live's idiom) rather than as ARGV
-# input files: getline distinguishes "absent" (-1) from "empty" (0), which is exactly the distinction
-# the arming block is built on, and a two-file NR==FNR discrimination silently collapses when the
-# first file is missing.
+# ── THE BOARD READ (shell, GFM-exact) + THE AWK PASS FOR THE ROADMAP ───────────────────────────────
+# PASS 1 (the board's `## Done` section) is read in SHELL via section_present/cells_in_section
+# (backlog-lib.sh) — the ONE GFM-exact parser, never a bespoke `split(ln,c,"|")`. Its readability
+# (-1/0 distinction, same as the roadmap's own getline) and "## Done section present" are computed
+# here and handed to awk as -v scalars; each Done row's raw cell-1 text is handed over one-per-line
+# through a temp file awk reads with getline, so the join (`bounded()`, a substring search over that
+# same raw text) is UNCHANGED in semantics. PASS 2 (ROADMAP.md — marker glyphs, id extraction) stays
+# bespoke: it is not a board read and has no seam surface (design §3A).
 rc_awk() {  # <roadmap-path> <backlog-path> <armed 0|1>
-  LC_ALL=C awk -v roadmap="$1" -v backlog="$2" -v armed="$3" '
+  _rc_bl="$2"
+  _rc_bstat=0
+  _rc_seen_done=0
+  _rc_donefile=$(mktemp)
+  # L-1: a SIGINT/SIGTERM mid-run must not leak this temp file (the normal-path `rm -f` below only
+  # fires on ordinary return). Reset to the default on the way out so this trap never leaks past
+  # rc_awk's own scope.
+  trap 'rm -f "$_rc_donefile"' EXIT INT TERM
+  if [ ! -r "$_rc_bl" ]; then
+    _rc_bstat=-1
+  else
+    if section_present "$_rc_bl" Done; then
+      _rc_seen_done=1
+      # TBG-ROADMAP-CURRENT-SEAM / L-2: cells_in_section batches ALL of `## Done`'s cell-1 reads into
+      # ONE awk pass (~40x fewer spawns than section_rows|cell per row on a 287-row board), byte-
+      # identical to the former per-row `section_rows "$_rc_bl" Done | while read row; do cell "$row" 1;
+      # done` loop.
+      cells_in_section "$_rc_bl" Done 1 > "$_rc_donefile"
+    fi
+  fi
+  LC_ALL=C awk -v roadmap="$1" -v backlog="$2" -v armed="$3" \
+    -v donefile="$_rc_donefile" -v bstat0="$_rc_bstat" -v seen_done0="$_rc_seen_done" '
     function bounded(s, id,   pos, off, b, a) {
       off = 0
       while (1) {
@@ -155,20 +187,14 @@ rc_awk() {  # <roadmap-path> <backlog-path> <armed 0|1>
       PEND[1] = LEG[2]; PEND[2] = LEG[3]; PEND[3] = LEG[4]; PEND[4] = LEG[5]
       npend = 4
 
-      # ── PASS 1: the board. Cell 1 of every row inside `## Done`, and nothing else.
-      ndone = 0; bstat = 0; seen_done = 0
-      while (1) {
-        r = (getline ln < backlog)
-        if (r < 0) { bstat = -1; break }
-        if (r == 0) break
-        if (ln ~ /^## Done/) { seen_done = 1; indone = 1; continue }
-        if (indone && ln ~ /^## /) indone = 0
-        if (indone && substr(ln, 1, 1) == "|") {
-          n = split(ln, c, "|")
-          if (n >= 2) done1[++ndone] = c[2]
-        }
+      # ── PASS 1: the board. Cell 1 of every row inside `## Done`, and nothing else — computed in
+      # SHELL (section_rows/cell) and handed over one-per-line via `donefile`. bstat/seen_done are
+      # likewise computed in shell (-r / grep) and passed as scalars.
+      ndone = 0; bstat = bstat0 + 0; seen_done = seen_done0 + 0
+      if (seen_done == 1) {
+        while ((getline dl < donefile) > 0) done1[++ndone] = dl
+        close(donefile)
       }
-      close(backlog)
 
       # ── PASS 2: the roadmap. Item rows, marker cell, id, and the join.
       nmark = 0; nstale = 0; npendrow = 0; rstat = 0; noid = 0; nrows = 0
@@ -249,6 +275,14 @@ rc_awk() {  # <roadmap-path> <backlog-path> <armed 0|1>
       exit 1
     }
   '
+  _rc_rc=$?
+  rm -f "$_rc_donefile"
+  # `trap - EXIT INT TERM` RESETS these traps to the shell default; it does NOT restore a caller's
+  # own prior trap. Safe today: rc_awk's only caller (selftest) runs it inside a child `sh`, whose
+  # exit discards this state anyway. A future in-process caller (same shell, no subshell) that sets
+  # its own trap before calling rc_awk must re-establish it itself after this returns.
+  trap - EXIT INT TERM
+  return "$_rc_rc"
 }
 
 run() {
@@ -413,6 +447,23 @@ selftest() {
   rc_board "$W/renamed" "| THE-SAME-WORK-RENAMED | 2026-01-01 | Shipped v9.9.9 |"
   rc_expect "a renamed board row breaks the join and GREENS (the disclosed ceiling)" 0 "$W/renamed"
   rc_says  "and the ceiling is visible in the denominator" "0 stale of 1 marked" "$W/renamed"
+
+  # ── THE GFM ESCAPED-PIPE BRANCH, EXERCISED IN-PR (second security round, HIGH-B.1.2). A Done row
+  # whose cell 1 carries a LITERAL escaped pipe (`\|`, an odd backslash run -- not a delimiter) must
+  # still join on the id substring search: proves cells_in_section's escaped-pipe branch is exercised
+  # by THIS file's own selftest, not only the shared corpus in board-parser-drift.sh.
+  # TBG-ROADMAP-CURRENT-SEAM / L-1 (security seat): the id used to sit BEFORE the escaped pipe
+  # (`P9.17 shipped\|escaped-pipe row`), so a mutant that naively split on the escaped pipe anyway
+  # still produced a first field containing the whole id substring ("P9.17 shipped\") -- the leg
+  # couldn't discriminate an honest escape-join from a broken one. The id now sits AFTER the escaped
+  # pipe: honest cell 1 = "shipped\|P9.17 -- escaped-pipe row" (the join makes "P9.17" reachable);
+  # a broken-split mutant yields a first field of "shipped\" alone, which does not contain "P9.17",
+  # so the STALE join is missed and this leg REDS.
+  rc_init "$W/escpipe"
+  rc_put "$W/escpipe" "ROADMAP.md" "| Item | What | Effort |\n|---|---|---|\n| **P9.17 — shipped, escaped-pipe board row** | what | $G_HAMMER |\n"
+  rc_board "$W/escpipe" "| shipped\\\\|P9.17 — escaped-pipe row | 2026-01-01 | Shipped v9.9.9 |"
+  rc_expect "an escaped-pipe Done row still joins on cell 1 (GFM branch exercised)" 1 "$W/escpipe"
+  rc_says  "and is reported stale" "1 stale of 1 marked" "$W/escpipe"
 
   # ── A PHASE-3-SHAPED (two-column, marker-less) ROW IS NOT GRADED, even when its id sits in Done.
   rc_init "$W/phase3"

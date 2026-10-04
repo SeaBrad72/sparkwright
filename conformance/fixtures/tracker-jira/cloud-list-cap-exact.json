@@ -1,0 +1,8 @@
+{
+  "isLast": true,
+  "issues": [
+    { "id": "61101", "key": "AB-1", "fields": {} },
+    { "id": "61102", "key": "AB-2", "fields": {} },
+    { "id": "61103", "key": "AB-3", "fields": {} }
+  ]
+}

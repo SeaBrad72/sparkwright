@@ -1,0 +1,6 @@
+{"startAt":0,"maxResults":100,"total":5,"fields":[
+{"required":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10049},"name":"Size","operations":["set"],"allowedValues":[{"value":"XS","id":"10036"},{"value":"S","id":"10037"},{"value":"M","id":"10038"},{"value":"L","id":"10039"},{"value":"XL","id":"10040"}],"fieldId":"customfield_10049"},
+{"required":false,"schema":{"type":"option","custom":"com.atlassian.jira.plugin.system.customfieldtypes:select","customId":10050},"name":"Risk","operations":["set"],"allowedValues":[{"value":"Low","id":"10041"},{"value":"Medium","id":"10042"},{"value":"High","id":"10043"}],"fieldId":"customfield_10050"},
+{"required":false,"schema":{"type":"string","system":"description"},"name":"Description","operations":["set"],"fieldId":"description"},
+{"required":false,"schema":{"type":"array","items":"string","system":"labels"},"name":"Labels","operations":["add","set","remove"],"fieldId":"labels"},
+{"required":false,"schema":{"type":"issuelink","system":"parent"},"name":"Parent","operations":["set"],"fieldId":"parent"}]}

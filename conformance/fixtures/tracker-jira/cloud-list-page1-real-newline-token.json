@@ -1,0 +1,7 @@
+{
+  "isLast": false,
+  "nextPageToken": "T\nX",
+  "issues": [
+    { "id": "51001", "key": "AB-1", "fields": {} }
+  ]
+}

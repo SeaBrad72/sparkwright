@@ -65,7 +65,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # --- FIXTURE A: "gap" tree — dispatcher does NOT route 'doctor' ---
   # sparkwright exists but routes to exit 1 for everything (broken dispatcher)
   mkdir -p "$tmp/gap"
-  printf '#!/bin/sh\necho "stub doctor.sh"\nsh conformance/verify.sh 2>/dev/null || true\necho "POSTURE"\necho "  conformance   PASS"\necho "  claims        PASS"\necho "  git OK [branch=test; clean; tagged=v0.0.0]"\necho ""\necho "Overall: PASS"\necho "drift-self-check.md"\n' > "$tmp/gap/doctor.sh"
+  printf '#!/bin/sh\necho "stub doctor.sh"\necho "POSTURE"\necho "  conformance   PASS"\necho "  claims        PASS"\necho "  git OK [branch=test; clean; tagged=v0.0.0]"\necho ""\necho "Overall: PASS"\necho "drift-self-check.md"\n' > "$tmp/gap/doctor.sh"
   chmod +x "$tmp/gap/doctor.sh"
   # broken dispatcher — does not route 'doctor', exits 1 for all
   printf '#!/bin/sh\necho "broken dispatcher" >&2; exit 1\n' > "$tmp/gap/sparkwright"

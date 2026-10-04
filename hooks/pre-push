@@ -101,6 +101,123 @@ _kit_dial() { # <DIAL_NAME> — sets _kd_mode; resolves each dial at most ONCE p
 # is the selftest's own positive control (a normal branch line must invoke the predicate) plus the
 # discriminating negative cases (D1 skip rules, D2 degradation, D3 verdict handling) below the
 # marker — not the sweep.
+# _seam_tracker_prepare <head-sha> — TBG-WIRE-LOCAL T1 (design
+# docs/architecture/2026-09-26-tbg-wire-local-design.md §7). Runs the local trusted reader on a
+# recognised tracker backend so decl_check_ref's loop-state call BINDS on a local record instead of
+# degrading to NOT ENFORCED (backlog-lib.sh's `seam_tracker_record_set` H-4 switch). NEVER refuses
+# the push itself (A2: a local speed-bump, CI is the backstop) — it only exports SEAM_RECORD/
+# SEAM_HEAD on a clean bind, and otherwise leaves them UNSET so today's NOT ENFORCED behaviour
+# (dial-controlled, waiver ladder intact) is unchanged. Sets `_SEAM_TRACKER_SENTENCE` for the
+# caller to relay, one line, when it has something worth saying (never on the plain md/unrecognised
+# skip, which must stay byte-identical to today).
+# FAIL-CLOSED ON NO ORIGIN COPY (S-2, security-lens refinement): with no origin `.kit/tracker.conf`
+# to pin-compare against, the token is NEVER sent — not even to obtain a real UNVERIFIED. `-` (the
+# reader's "no origin" sentinel) is used ONLY by callers skipping entirely (never here — this
+# function either supplies a real origin-conf temp file or does not invoke the reader at all).
+# TOFU persistence of the pin (`TRACKER-S2-TOFU-PIN-PERSIST`) is deferred; safe because this
+# fail-closed branch means the undefended window degrades to UNVERIFIED, never an unprotected send.
+#
+# C1 FIX (review round 1, A2 violation): the reader's exit code is mapped to exactly one of three
+# outcomes for the caller —
+#   rc 0 (bound)                        -> SEAM_RECORD/SEAM_HEAD exported, loop-state binds.
+#   rc 1 (refused, incl. S-2 mismatch)
+#   rc 2 (UNVERIFIED: no token/unreachable/no jq)
+#   the no-origin fail-closed branch above -> _SEAM_TRACKER_UNVERIFIED=1 (+ the sentence). The
+#     local reader NEVER hard-blocks (A2): decl_check_ref relays the sentence and allows the push,
+#     BEFORE and INDEPENDENT of the KIT_PUSH_DECL dial — it must not fall through to loop-state,
+#     because a tracker adopter whose token lives only in CI would otherwise have every push
+#     refused in enforce mode for a condition no local commit can fix.
+#   rc 3 (NOT ENFORCED: no adapter for the declared backend) -> SEAM_RECORD/SEAM_HEAD stay unset,
+#     falls through to today's loop-state NOT ENFORCED path unchanged (waiver ladder intact, may
+#     refuse in enforce — this is a genuinely un-adaptered backend, not a credential problem).
+_SEAM_TRACKER_SENTENCE=""
+_SEAM_TRACKER_UNVERIFIED=""
+_seam_tracker_prepare() {
+  _SEAM_TRACKER_SENTENCE=""
+  _SEAM_TRACKER_UNVERIFIED=""
+  # I2: clear on every entry — decl_check_ref runs once per pushed ref-line in one shell, so a
+  # prior ref's bind (or an inherited env value) must never leak into a later ref/fail path.
+  # M-2 FIX (security seat): these are PLAIN (non-exported) shell variables, not process-env
+  # exports — decl_check_ref binds them onto the loop-state invocation's own command line
+  # (command-scoped), so ONLY that child sees them. Exporting them into the pre-push process
+  # environment previously leaked them into presence_check_ref's later, separate invocation of
+  # the board-presence predicate (run with no --head), which inherited SEAM_RECORD/
+  # KIT_TRACKER_RECORD, saw seam_tracker_record_set true, and called bp_tracker_presence "" —
+  # refusing a control-plane push with the wrong ("PR head is not a well-formed sha") remedy.
+  _stp_record_bound=""; _stp_head_bound=""
+  _stp_head=$1
+  _stp_lib="$ROOT/conformance/backlog-lib.sh"
+  [ -f "$_stp_lib" ] && [ -r "$_stp_lib" ] || return 0
+  # shellcheck disable=SC1090  # dynamic source path; readability checked above
+  . "$_stp_lib"
+  # shellcheck disable=SC2034  # SEAM_ROOT is read by the sourced backlog-lib.sh seam functions
+  SEAM_ROOT=$ROOT
+  _stp_backend=$(seam_backend)
+  case "$_stp_backend" in
+    github | jira | ado | linear | gitlab) : ;;
+    *) return 0 ;;   # md, empty (undeclared), unrecognized:* — byte-identical, reader never runs
+  esac
+  _stp_conf="$ROOT/.kit/tracker.conf"
+  [ -f "$_stp_conf" ] && [ -r "$_stp_conf" ] || return 0
+  _stp_row=$(git -C "$ROOT" log -1 --format='%(trailers:key=Kit-Row,valueonly)' "$_stp_head" 2>/dev/null | head -1)
+  [ -n "$_stp_row" ] || return 0
+  # M-1: a malformed Kit-Row must not spend the token — fall through to loop-state's own id
+  # refusal instead of handing an unvalidated string to the reader.
+  row_id_ok "$_stp_row" || return 0
+  # PP9's single-derivation lock (below the --selftest marker) forbids THIS hook deriving a
+  # branch key of its own — so the default branch is never asked for by name here; mirror
+  # _push_class_listing's own two-try convention (main, then master) instead.
+  _stp_origin=$(mktemp 2>/dev/null) || return 0
+  if ! { git -C "$ROOT" show origin/main:.kit/tracker.conf 2>/dev/null \
+        || git -C "$ROOT" show origin/master:.kit/tracker.conf 2>/dev/null; } >"$_stp_origin" \
+      || [ ! -s "$_stp_origin" ]; then
+    rm -f "$_stp_origin"
+    _SEAM_TRACKER_SENTENCE="no origin pin to compare — token not sent (S-2); TOFU persistence is TRACKER-S2-TOFU-PIN-PERSIST, deferred"
+    _SEAM_TRACKER_UNVERIFIED=1
+    return 0
+  fi
+  # M2: an absolute git-dir so the record path holds for linked worktrees / `.git`-file setups too.
+  _stp_record="$(git -C "$ROOT" rev-parse --absolute-git-dir)/kit-tracker-local-record"   # S-10: fixed, per-repo, never env-inherited
+  # PREPUSH_TRACKER_READER — an injectable, EVAL'D via `sh -c`, exactly the BOARD_DRIFT_PR_STATE
+  # convention (conformance/board-drift.sh): set ONLY from trusted config (the selftest's own
+  # fixture), NEVER from repo/PR input. M1: the DEFAULT reader is invoked via positional args
+  # directly (quote-safe on paths with spaces) — the `sh -c` eval is reserved for the injectable
+  # test override only.
+  if [ -n "${PREPUSH_TRACKER_READER:-}" ]; then
+    _stp_out=$(sh -c "$PREPUSH_TRACKER_READER"' "$@"' sh "$_stp_conf" "$_stp_origin" "$_stp_record" \
+      "$_stp_row" "$_stp_head" ready in-progress in-review 2>&1)
+  else
+    _stp_out=$(sh "$ROOT/scripts/tracker-read.sh" "$_stp_conf" "$_stp_origin" "$_stp_record" \
+      "$_stp_row" "$_stp_head" ready in-progress in-review 2>&1)
+  fi
+  _stp_rc=$?
+  rm -f "$_stp_origin"
+  if [ "$_stp_rc" -eq 0 ]; then
+    # H-1: loop-state.sh:run_gate's FIRST line overwrites SEAM_RECORD with
+    # ${KIT_TRACKER_RECORD:-} — decl_check_ref binds both names, command-scoped, on the
+    # loop-state invocation line only (M-2), so the predicate still sees the bound record without
+    # it ever entering the pre-push process environment.
+    _stp_record_bound=$_stp_record
+    _stp_head_bound=$_stp_head
+    return 0
+  fi
+  # No token / S-2 pin mismatch / any other reader refusal (rc 1-3): relay the reader's own
+  # already-sanitised sentence (S-6 — the hook adds no tracker text of its own) and leave
+  # _stp_record_bound/_stp_head_bound unset (already cleared above) so a genuinely un-adaptered
+  # backend (rc 3) falls through to today's NOT ENFORCED path, dial-controlled exactly as before
+  # this slice.
+  # Info: belt-and-braces C0/DEL strip on the relay, so the hook does not rely solely on the
+  # reader's own S-6 sanitisation discipline for what reaches the operator's terminal.
+  _SEAM_TRACKER_SENTENCE=$(printf '%s' "$_stp_out" | tr -d '\000-\037\177')
+  # C1: rc 1 (refused, incl. S-2 mismatch) and rc 2 (UNVERIFIED) are local-unverifiable, not a
+  # genuine NOT ENFORCED backend — the caller must allow independent of the dial (A2). rc 3
+  # (no adapter) is excluded on purpose: it falls through to loop-state below, unchanged.
+  case "$_stp_rc" in
+    1 | 2) _SEAM_TRACKER_UNVERIFIED=1 ;;
+  esac
+  return 0
+}
+
 # THE DIAL IS REPO-CARRIED (DIAL-DELIVERY Δ-A): `KIT_PUSH_DECL=enforce` (exact string) in the tracked,
 # control-plane, export-ignored .kit/dials.conf refuses instead of observing; an absent file — the
 # adopter export's state — is observe. Read through _kit_dial -> guard-core's kit_dial_mode, whose
@@ -134,13 +251,40 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
   # D2 — degradation: an absent/unreadable predicate N/As silently (first-run-green on adopter trees).
   _decl_predicate="$ROOT/conformance/loop-state.sh"
   [ -f "$_decl_predicate" ] && [ -r "$_decl_predicate" ] || return 0
+  # TBG-WIRE-LOCAL T1 (design docs/architecture/2026-09-26-tbg-wire-local-design.md §7): on a
+  # recognised tracker backend, produce the local tracker record BEFORE the predicate runs, so it
+  # BINDS on SEAM_RECORD instead of falling through to NOT ENFORCED. Any relay sentence this
+  # collects is printed once, ahead of the predicate's own output.
+  _seam_tracker_prepare "$_decl_local_sha"
+  if [ -n "$_SEAM_TRACKER_SENTENCE" ]; then
+    printf 'kit pre-push (note): %s\n' "$_SEAM_TRACKER_SENTENCE" >&2
+  fi
+  # M-1 FIX (review round 2): the early `return 0` here on _SEAM_TRACKER_UNVERIFIED used to skip
+  # loop-state ENTIRELY — but loop-state's one invocation also runs the backend-independent legs
+  # (check_declaration/class/skill/scope), which a tracker-unverified push still owes. ALWAYS run
+  # loop-state below; the UNVERIFIED downgrade (C1/A2) is now applied AFTER the predicate runs, and
+  # ONLY to a genuine "NOT ENFORCED" verdict — never to a class/skill/scope refusal.
   # Capture stderr only (the predicate's reasons); its stdout success line is not this leg's business.
   # </dev/null: this runs inside the caller's stdin `while read` loop over the git push protocol
   # lines. Without isolating the child's stdin, a predicate that reads stdin (deliberately or by
   # accident) can consume the loop's remaining push-protocol lines before this leg ever returns —
   # fail-open past the guard leg for every ref-line after the one being graded (measured: SEC
   # MEDIUM-1, killed by the selftest's stdin-isolation case below).
-  if _decl_out=$(sh "$_decl_predicate" --head "$_decl_local_sha" 2>&1 >/dev/null </dev/null); then
+  # M-2: SEAM_RECORD/SEAM_HEAD/KIT_TRACKER_RECORD are bound COMMAND-SCOPED, on this invocation
+  # line only — and only when _seam_tracker_prepare actually bound a record. An unset
+  # _stp_record_bound means these three names must reach the predicate exactly as unset as they
+  # were before this slice (I2), never as an empty string set-but-blank.
+  if [ -n "$_stp_record_bound" ]; then
+    _decl_out=$(SEAM_RECORD="$_stp_record_bound" SEAM_HEAD="$_decl_local_sha" \
+        KIT_TRACKER_RECORD="$_stp_record_bound" \
+        sh "$_decl_predicate" --head "$_decl_local_sha" 2>&1 >/dev/null </dev/null)
+  else
+    # I2: blank these three names for the child explicitly — a caller-inherited exported value
+    # (a prior ref's bind, or an inherited env value) must never leak into an unbound/fail path.
+    _decl_out=$(SEAM_RECORD="" SEAM_HEAD="" KIT_TRACKER_RECORD="" \
+        sh "$_decl_predicate" --head "$_decl_local_sha" 2>&1 >/dev/null </dev/null)
+  fi
+  if [ $? -eq 0 ]; then
     # D3 — rc 0: PASS. [A2, B9 §10-A2] This path used to capture the predicate's stderr and drop it
     # on the floor, so a warning from a PASSING predicate was silently swallowed. Relay it and stay
     # rc 0. Conditional on non-empty: a clean pass must not print a bare prefix line.
@@ -162,6 +306,34 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
   # Δ-A: the dial is read from .kit/dials.conf via _kit_dial (env escalates only), not from bare env.
   _kit_dial KIT_PUSH_DECL
   if [ "$_kd_mode" = "enforce" ]; then
+    # M-1 (C1/A2 preserved): downgrade to allow ONLY when the verdict itself is a genuine
+    # "NOT ENFORCED" (a hosted-tracker backend the kit cannot read) AND the local reader could not
+    # verify locally (no token / unreachable / S-2 mismatch / no origin copy). A tracker adopter
+    # whose token lives only in CI must never have every local push refused for a condition no
+    # commit can fix. Every OTHER refusal (missing Kit-Class/Kit-Skill, bad scope) keeps its rc 1 —
+    # loop-state's backend-independent legs are never skipped by an unverified token.
+    # THE DISCRIMINANT: every non-blank, non-boilerplate line of the verdict must be PART OF the
+    # row leg's own NOT ENFORCED sentence — a combined refusal (e.g. a missing Kit-Class ALONGSIDE
+    # an unverified row) carries at least one OTHER reason line, and that line must never be
+    # swallowed by this downgrade. loop-state's fixed epilogue ("loop-state: FAIL — ... does not
+    # carry a valid Entry Declaration" + its two boilerplate follow-up lines) is printed on EVERY
+    # refusal regardless of which leg failed, so it is trimmed first — it carries no leg-specific
+    # information and would otherwise "other-ify" even the pure single-leg NOT ENFORCED case.
+    _decl_pre_epilogue=$(printf '%s\n' "$_decl_out" | sed '/^loop-state: FAIL /,$d')
+    _decl_other=$(printf '%s\n' "$_decl_pre_epilogue" | grep -v 'NOT ENFORCED' | grep -v '^[[:space:]]*$') || :
+    case "$_decl_out" in
+      *"NOT ENFORCED"*)
+        if [ -n "$_SEAM_TRACKER_UNVERIFIED" ] && [ -z "$_decl_other" ]; then
+          if [ -n "$_decl_out" ]; then
+            printf '%s\n' "$_decl_out" | while IFS= read -r _decl_line; do
+              printf 'kit pre-push (note): %s\n' "$_decl_line" >&2
+            done
+          fi
+          printf 'kit pre-push (note):   the local tracker reader could not verify this row locally; CI is the backstop.\n' >&2
+          return 0
+        fi
+        ;;
+    esac
     # [-n check] a predicate that fails closed with no stderr (e.g. rc 2, could-not-evaluate,
     # with nothing printed) must not relay a bare "kit pre-push: " line with no reason on it.
     if [ -n "$_decl_out" ]; then
@@ -184,10 +356,10 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
       *"NOT ENFORCED"*)
         printf 'kit pre-push:   remedy: this is NOT a trailer problem and no commit fixes it. This repo\n' >&2
         printf 'kit pre-push:            declares a hosted-tracker backlog backend, and the kit reads\n' >&2
-        printf 'kit pre-push:            BACKLOG.md only, so the row check is NOT ENFORCED. Adopt\n' >&2
-        printf 'kit pre-push:            TRACKER-BACKED-GOVERNANCE when it ships, move the board to\n' >&2
-        printf 'kit pre-push:            BACKLOG.md, or ratify a board-governance waiver in\n' >&2
-        printf 'kit pre-push:            WAIVER-REGISTER.md (a human fills Owner and Ratified-by).\n' >&2 ;;
+        printf 'kit pre-push:            BACKLOG.md only, so the row check is NOT ENFORCED. Bind the\n' >&2
+        printf 'kit pre-push:            trusted job (add tracker-board-gates to REQUIRED-CHECKS.md,\n' >&2
+        printf 'kit pre-push:            then a repo admin runs sh scripts/branch-protection-apply.sh\n' >&2
+        printf 'kit pre-push:            --apply) — move the board to BACKLOG.md, or ratify a board-governance waiver.\n' >&2 ;;
       *)
         printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
         printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
@@ -328,7 +500,7 @@ go_relay() { # captured-reasons
     printf 'kit pre-push:   remedy: record the design GO FOR THIS BRANCH through the ceremonial front\n' >&2
     printf 'kit pre-push:            door, then publish it (the lines above name the exact key):\n' >&2
     printf 'kit pre-push:            scripts/promotion-verify.sh record --gate design --scope branch/<name> \\\n' >&2
-    printf 'kit pre-push:              --approved-sha <design-commit> --approved-by <human> --basis <design-doc>\n' >&2
+    printf 'kit pre-push:              --approved-sha <design-commit> --approved-by <the design commit'"'"'s committer name or email> --basis <design-doc>\n' >&2
     printf 'kit pre-push:            git push origin refs/notes/promotions\n' >&2
     printf '  override (deliberate): git push --no-verify\n' >&2
     return 1
@@ -984,6 +1156,21 @@ if [ "${1:-}" = "--selftest" ]; then
     chmod +x "$T/conformance/loop-state.sh"
   }
 
+  decl_plant_stub_seam() { # rc [record-file] — like decl_plant_stub, plus a "<record-file>.seam"
+    # snapshot of SEAM_RECORD/SEAM_HEAD as _seam_tracker_prepare left them, for the T1 tracker legs.
+    mkdir -p "$T/conformance"
+    _dpss_rc=$1; _dpss_rec=${2:-}
+    {
+      echo '#!/bin/sh'
+      if [ -n "$_dpss_rec" ]; then
+        printf 'echo called >> "%s"\n' "$_dpss_rec"
+        printf 'printf "SEAM_RECORD=%%s SEAM_HEAD=%%s\\n" "${SEAM_RECORD:-<unset>}" "${SEAM_HEAD:-<unset>}" > "%s.seam"\n' "$_dpss_rec"
+      fi
+      printf 'exit %s\n' "$_dpss_rc"
+    } > "$T/conformance/loop-state.sh"
+    chmod +x "$T/conformance/loop-state.sh"
+  }
+
   decl_run() { # KIT_PUSH_DECL-value ref-line -> sets decl_out, decl_rc (re-invokes $SELF in $T)
     decl_out=$(cd "$T" && printf '%s\n' "$2" \
       | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL="$1" sh "$SELF" 2>&1); decl_rc=$?
@@ -1040,7 +1227,7 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_expect_rc "$decl_rc" refuse "S-L3: enforce + a NOT ENFORCED row leg still refuses"
   decl_expect_contains "S-L3 the remedy names NOT ENFORCED" "NOT ENFORCED" "$decl_out"
   decl_expect_contains "S-L3 the remedy names the waiver ladder" "board-governance waiver" "$decl_out"
-  decl_expect_contains "S-L3 the remedy names the tracker seam" "TRACKER-BACKED-GOVERNANCE" "$decl_out"
+  decl_expect_contains "S-L3 the remedy names the trusted-job bind" "tracker-board-gates" "$decl_out"
   if printf '%s' "$decl_out" | grep -qF -- "fix the trailer block"; then
     echo "FAIL: S-L3 a NOT ENFORCED refusal must NOT hand the author the trailer remedy"; fail=1
   else
@@ -1148,6 +1335,304 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_expect_rc "$decl_rc" allow "absent predicate script allows the push"
   [ -z "$decl_out" ] && echo "PASS: absent predicate script is silent" \
     || { echo "FAIL: absent predicate script must be silent, got: $decl_out"; fail=1; }
+
+  # ---------------------------------------------------------------------------------------------
+  # TBG-WIRE-LOCAL T1 — _seam_tracker_prepare (design
+  # docs/architecture/2026-09-26-tbg-wire-local-design.md §7), FIX ROUND 2 (H-1/M-1).
+  # conformance/backlog-lib.sh is STUBBED for the dispatch-only legs immediately below (its own
+  # seam_backend is proven where it lives) — the BIND and CLASS-REFUSAL legs further down swap in
+  # the REAL conformance/loop-state.sh + conformance/backlog-lib.sh, copied from this repo's own
+  # tree. FIX-ROUND-2 MANDATE: a stubbed predicate is exactly what let H-1 hide for a whole review
+  # round — the hook exported SEAM_RECORD but never KIT_TRACKER_RECORD, and a stub that always
+  # answers its scripted rc can never notice a caller failing to bind the env var the REAL
+  # predicate reads (loop-state.sh:run_gate's `SEAM_RECORD="${KIT_TRACKER_RECORD:-}"` overwrite).
+  # ---------------------------------------------------------------------------------------------
+  tracker_plant_backend() { # backend-token -> a stub conformance/backlog-lib.sh whose seam_backend echoes it
+    mkdir -p "$T/conformance"
+    {
+      printf 'seam_backend() { printf "%%s\\n" "%s"; }\n' "$1"
+      # row_id_ok — the real grammar (backlog-lib.sh's own definition), so the dispatch-only legs
+      # below (which stub seam_backend but still exercise M-1's row_id_ok gate) do not crash.
+      printf 'row_id_ok() { case "$1" in [A-Z0-9]*) case "$1" in *[!A-Z0-9-]*) return 1;; esac; return 0;; *) return 1;; esac; }\n'
+    } > "$T/conformance/backlog-lib.sh"
+  }
+  mkdir -p "$T/.kit"
+  # The full §5 grammar (scripts/tracker-conf.sh), not a minimal 'backend=jira' — the REAL
+  # backlog-lib.sh's tracker arm cross-checks this file's backend through that ONE parser, which
+  # fails closed on an incomplete conf (the dispatch-only legs below stub backlog-lib.sh entirely
+  # and never read this file's grammar, so the extra fields cost them nothing).
+  printf 'version=1\nbackend=jira\nbase_url=https://example.atlassian.net\nflavour=cloud\nauth=basic\nproject=AB\nstate.in-progress=In Progress\n' \
+    > "$T/.kit/tracker.conf"
+  # A head whose trailer carries a real Kit-Row and NOTHING ELSE — no Kit-Class/Kit-Stage/
+  # Kit-Skill, on purpose: this head is reused by the M-1 class-refusal leg below, where the
+  # missing Kit-Class must refuse regardless of the tracker's own verdict. AB-1 matches the
+  # tracker.conf's `project=AB` (the jira id grammar the real backlog-lib.sh enforces).
+  TRACKER_HEAD=$(cd "$T" && printf 'tracker fixture\n\nKit-Row: AB-1\n' | git -c user.email=t@kit -c user.name=kit commit -q --allow-empty -F - \
+    && git rev-parse HEAD)
+  # A committed origin copy of the SAME conf, reachable as origin/main (S-2's pin comparand) — a
+  # real commit + refs/remotes/origin/main, the same idiom this selftest already uses elsewhere
+  # (e.g. the GO leg's `git update-ref refs/remotes/origin/main "$HEAD"`).
+  ORIGIN_BLOB=$(cd "$T" && git hash-object -w .kit/tracker.conf)
+  ORIGIN_SUBTREE=$(cd "$T" && printf '100644 blob %s\ttracker.conf\n' "$ORIGIN_BLOB" | git mktree)
+  ORIGIN_TREE=$(cd "$T" && printf '040000 tree %s\t.kit\n' "$ORIGIN_SUBTREE" | git mktree)
+  ORIGIN_COMMIT=$(cd "$T" && git -c user.email=t@kit -c user.name=kit commit-tree "$ORIGIN_TREE" -p "$TRACKER_HEAD" -m origin-conf)
+  ( cd "$T" && git update-ref refs/remotes/origin/main "$ORIGIN_COMMIT" )
+
+  # Injectable stubs (PREPUSH_TRACKER_READER — the BOARD_DRIFT_PR_STATE convention): a good reader
+  # that writes a record, an UNVERIFIED (no-token) reader, and a no-adapter (rc 3) reader. Each
+  # records its own invocation.
+  TRACKER_READER_CALLED="$T/reader-called"
+  TRACKER_READER_OK="$T/reader-ok.sh"
+  printf '#!/bin/sh\necho called >> "%s"\necho "seam record" > "$3"\nexit 0\n' "$TRACKER_READER_CALLED" \
+    > "$TRACKER_READER_OK"
+  TRACKER_READER_UNVERIFIED="$T/reader-unverified.sh"
+  printf '#!/bin/sh\necho called >> "%s"\necho "unverified: no token — KIT_TRACKER_TOKEN not set" >&2\nexit 2\n' \
+    "$TRACKER_READER_CALLED" > "$TRACKER_READER_UNVERIFIED"
+  TRACKER_READER_NOADAPTER="$T/reader-noadapter.sh"
+  printf '#!/bin/sh\necho called >> "%s"\necho "unverified: no adapter for backend (rc 3, not enforced)" >&2\nexit 3\n' \
+    "$TRACKER_READER_CALLED" > "$TRACKER_READER_NOADAPTER"
+  # A REAL reader — used ONLY by the H-1/M-1 real-predicate legs below. It computes the pin off the
+  # ACTUAL conf path it is given ($1) at call time (never a canned value) and writes a genuine
+  # §4.3 bound record keyed on the caller's own row/head ($4/$5).
+  TRACKER_READER_REAL="$T/reader-real.sh"
+  cat > "$TRACKER_READER_REAL" <<EOF_READER
+#!/bin/sh
+echo called >> "$TRACKER_READER_CALLED"
+PIN=\$( { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } < "\$1" 2>/dev/null | awk '{print \$1}')
+TODAY=\$(date -u +%Y-%m-%d)
+{
+  echo "kit-tracker-read 1"
+  echo "backend jira"
+  echo "pin sha256:\$PIN"
+  echo "head \$5"
+  echo "requested \$4"
+  echo "read-day \$TODAY"
+  echo "credential ok"
+  echo "verdict bound"
+  echo "row \$4 state=in-progress"
+} > "\$3"
+exit 0
+EOF_READER
+  chmod +x "$TRACKER_READER_REAL"
+
+  tracker_run() { # reader-cmd ref-line -> sets decl_out/decl_rc (like decl_run, plus the injectable)
+    rm -f "$TRACKER_READER_CALLED"
+    decl_out=$(cd "$T" && printf '%s\n' "$2" \
+      | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL=enforce PREPUSH_TRACKER_READER="$1" \
+        sh "$SELF" 2>&1); decl_rc=$?
+  }
+
+  # binds (dispatch smoke check, STUB predicate): a good record + an origin copy present ->
+  # SEAM_RECORD/SEAM_HEAD reach the predicate BEFORE it runs. This only proves _seam_tracker_prepare's
+  # OWN dispatch — the REAL bind proof (H-1, against the genuine loop-state.sh) is further down.
+  tracker_plant_backend jira
+  decl_plant_stub_seam 0 "$T/decl-invoked"
+  tracker_run "sh $TRACKER_READER_OK" "refs/heads/feature/x $TRACKER_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "tracker binds: push allowed"
+  if [ -f "$T/decl-invoked.seam" ] && grep -qF 'SEAM_RECORD=' "$T/decl-invoked.seam" \
+      && ! grep -qF 'SEAM_RECORD=<unset>' "$T/decl-invoked.seam"; then
+    echo "PASS: tracker binds — SEAM_RECORD is set before loop-state runs"
+  else
+    echo "FAIL: tracker binds — SEAM_RECORD must be set before loop-state runs"; fail=1
+  fi
+  grep -qF "SEAM_HEAD=$TRACKER_HEAD" "$T/decl-invoked.seam" 2>/dev/null \
+    && echo "PASS: tracker binds — SEAM_HEAD carries the pushed head" \
+    || { echo "FAIL: tracker binds — SEAM_HEAD must carry the pushed head"; fail=1; }
+
+  # no-origin fail-closed (S-2, design §7 step 2): no origin copy at all -> the READER is NEVER
+  # invoked (the token is not sent), UNVERIFIED relayed, push allowed. M-1 FIX (review round 2):
+  # the early ALLOW return in decl_check_ref is GONE — loop-state now ALWAYS runs (the stub here
+  # answers rc 0, so the push still allows); only the READER's own no-origin gate, inside
+  # _seam_tracker_prepare and untouched by M-1, still withholds the token.
+  ( cd "$T" && git update-ref -d refs/remotes/origin/main )
+  rm -f "$T/decl-invoked"
+  decl_plant_stub_seam 0 "$T/decl-invoked"
+  tracker_run "sh $TRACKER_READER_OK" "refs/heads/feature/x $TRACKER_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "no-origin fail-closed: push allowed"
+  decl_expect_contains "no-origin fail-closed: relays the S-2 sentence" "token not sent (S-2)" "$decl_out"
+  [ -f "$TRACKER_READER_CALLED" ] \
+    && { echo "FAIL: no-origin fail-closed must NOT invoke the reader (no live send)"; fail=1; } \
+    || echo "PASS: no-origin fail-closed — the reader was never invoked"
+  [ -f "$T/decl-invoked" ] \
+    && echo "PASS: M-1 — no-origin fail-closed still runs loop-state (backend-independent legs are never skipped by an unverified token)" \
+    || { echo "FAIL: M-1 — loop-state must run even when the tracker is UNVERIFIED"; fail=1; }
+  ( cd "$T" && git update-ref refs/remotes/origin/main "$ORIGIN_COMMIT" )
+
+  # no-token: origin copy present, but the reader itself reports UNVERIFIED (no token) -> relayed,
+  # push allowed (the stub predicate passes rc 0 regardless). Same M-1 update: loop-state runs.
+  rm -f "$T/decl-invoked"
+  decl_plant_stub_seam 0 "$T/decl-invoked"
+  tracker_run "sh $TRACKER_READER_UNVERIFIED" "refs/heads/feature/x $TRACKER_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "no-token: push allowed"
+  decl_expect_contains "no-token: relays the reader's UNVERIFIED sentence" "unverified: no token" "$decl_out"
+  [ -f "$T/decl-invoked" ] \
+    && echo "PASS: M-1 — no-token still runs loop-state (backend-independent legs are never skipped by an unverified token)" \
+    || { echo "FAIL: M-1 — loop-state must run even when the tracker is UNVERIFIED"; fail=1; }
+
+  # ---------------------------------------------------------------------------------------------
+  # H-1 / M-1 — THE REAL conformance/loop-state.sh + conformance/backlog-lib.sh, copied from this
+  # repo's own tree (never a stub). A stubbed predicate always answers whatever rc it is scripted
+  # with, so a caller that forgets to bind KIT_TRACKER_RECORD is invisible to it — this is what hid
+  # H-1 for a whole review round. Every leg below uses a head with a FULL, matching entry
+  # declaration (Kit-Row + Kit-Class ordinary + Kit-Stage Build + Kit-Skill skills/build, plus a
+  # real file change so the live classifier derives 'ordinary' deterministically rather than
+  # falling back on the empty-changeset fail-safe) EXCEPT the M-1 class-refusal leg, which reuses
+  # TRACKER_HEAD (Kit-Row only) precisely because it must NOT carry a valid declaration.
+  # ---------------------------------------------------------------------------------------------
+  KIT_REPO_ROOT="$(CDPATH='' cd -- "$(dirname -- "$SELF")/.." && pwd)"
+  tracker_plant_real() {   # -> $T/conformance is a REAL copy of this repo's own; $T/CLAUDE.md declares Jira
+    rm -rf "$T/conformance" "$T/skills" "$T/.claude" "$T/scripts"
+    mkdir -p "$T/conformance" "$T/.claude/hooks"
+    cp -R "$KIT_REPO_ROOT/conformance/." "$T/conformance/"
+    cp -R "$KIT_REPO_ROOT/skills" "$T/skills"
+    # backlog-lib.sh's tracker arm cross-checks the base conf's backend through the ONE parser,
+    # scripts/tracker-conf.sh, resolved off $0's own dirname/.. (this kit checkout's root).
+    cp -R "$KIT_REPO_ROOT/scripts" "$T/scripts"
+    cp "$KIT_REPO_ROOT/.kit/roster.conf" "$T/.kit/roster.conf"
+    # The live classifier (promotion-readiness.sh, called by loop-state.sh's derive_class) needs
+    # the REAL guard core's is_control_plane_path to derive anything but a FAIL-SAFED control-plane
+    # — without it, NOTES.md would classify control-plane too, and the 'ordinary' declaration below
+    # would never match. Committed so the classifier's git-tracked reads see it too.
+    cp "$KIT_REPO_ROOT/.claude/hooks/guard-core.sh" "$T/.claude/hooks/guard-core.sh"
+    printf 'Backlog backend: Jira\n' > "$T/CLAUDE.md"
+    ( cd "$T" && git add -A \
+        && git -c user.email=t@kit -c user.name=kit commit -q -m fixture-setup )
+    # Re-point origin/main at THIS commit (still the same .kit/tracker.conf bytes, so S-2's pin
+    # comparand is unchanged) so the live classifier's diff for every head built on top is JUST
+    # that head's own change — not this fixture's own conformance/skills/.claude copy, which is
+    # control-plane by path and would otherwise contaminate every diff computed against it.
+    ( cd "$T" && git update-ref refs/remotes/origin/main "$(git rev-parse HEAD)" )
+  }
+  tracker_plant_real
+
+  FULL_HEAD=$(cd "$T" && printf 'x\n' > NOTES.md && git add NOTES.md \
+    && printf 'tracker fixture full\n\nKit-Row: AB-1\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\n' \
+       | git -c user.email=t@kit -c user.name=kit commit -q -F - && git rev-parse HEAD)
+
+  # 1. BIND (H-1, mandatory de-vacuified leg): a valid, pin-matching record for the pushed head's
+  # Kit-Row -> the row leg RESOLVES against the tracker record ("resolved (tracker record)"), never
+  # NOT ENFORCED — against the REAL loop-state.sh, with a genuinely conformant declaration.
+  # THIS LEG MUST RED ON THE PRE-FIX CODE: pre-fix, _seam_tracker_prepare exports SEAM_RECORD but
+  # never KIT_TRACKER_RECORD, and loop-state.sh:run_gate's first line overwrites SEAM_RECORD with
+  # ${KIT_TRACKER_RECORD:-} (unset) — the row falls through to NOT ENFORCED and (this head
+  # declaring no board-governance waiver) the push is refused in enforce. CONFIRMED: reverting the
+  # KIT_TRACKER_RECORD export (H-1's fix) reproduces exactly that refusal, RED as expected.
+  tracker_run "sh $TRACKER_READER_REAL" "refs/heads/feature/x $FULL_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "H-1: a bound tracker record BINDS against the REAL loop-state.sh"
+  case "$decl_out" in
+    *"NOT ENFORCED"*) echo "FAIL: H-1 — a bound record must never fall through to NOT ENFORCED"; fail=1 ;;
+    *) echo "PASS: H-1 — the bound record never falls through to NOT ENFORCED" ;;
+  esac
+
+  # 2. no-token + a FULLY VALID declaration -> the row leg is the ONLY thing loop-state refuses,
+  # and its sentence is the genuine NOT ENFORCED one -> M-1 downgrades to ALLOW (A2: a tracker
+  # adopter whose token lives only in CI must never have every local push refused for a condition
+  # no commit can fix).
+  tracker_run "sh $TRACKER_READER_UNVERIFIED" "refs/heads/feature/x $FULL_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "M-1: no-token + a fully valid declaration -> the sole NOT ENFORCED refusal is downgraded to ALLOW (A2)"
+  decl_expect_contains "M-1: relays the reader's UNVERIFIED sentence" "unverified: no token" "$decl_out"
+
+  # 3. M-1's mandatory RED leg: no-token + a head MISSING Kit-Class (TRACKER_HEAD) -> loop-state
+  # refuses for a REAL reason (the missing trailer), not merely NOT ENFORCED, so the refusal text
+  # carries OTHER content beside the NOT ENFORCED sentence -> M-1's downgrade must NOT fire.
+  # THIS LEG MUST RED ON THE PRE-M-1 EARLY-RETURN: pre-fix, decl_check_ref returned ALLOW the
+  # instant _SEAM_TRACKER_UNVERIFIED was set, BEFORE loop-state (and its class/declaration legs)
+  # ever ran — a tracker adopter with no local token could push a head missing Kit-Class and no
+  # local gate would ever say so.
+  tracker_run "sh $TRACKER_READER_UNVERIFIED" "refs/heads/feature/x $TRACKER_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "M-1: no-token + a head MISSING Kit-Class still REFUSES (backend-independent legs are never skipped by an unverified token)"
+  decl_expect_contains "M-1: the refusal names the missing Kit-Class trailer" "no parseable 'Kit-Class'" "$decl_out"
+
+  # 4. no-adapter (rc 3, a genuinely un-adaptered backend, NOT a credential problem) + a fully
+  # valid declaration -> the row leg is STILL the only refusal and its text is STILL the NOT
+  # ENFORCED sentence, but _SEAM_TRACKER_UNVERIFIED is UNSET for rc 3 (by design) -> M-1's downgrade
+  # must NOT fire here either -> REFUSED (the waiver ladder still governs a genuinely un-adaptered
+  # backend; H-4's "no adopter green->red" rule is preserved).
+  tracker_run "sh $TRACKER_READER_NOADAPTER" "refs/heads/feature/x $FULL_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "M-1: no-adapter (rc 3) + a fully valid declaration still REFUSES — never downgraded (governance preserved)"
+
+  # 5. malformed Kit-Row -> row_id_ok refuses BEFORE the reader is ever invoked (the token is not
+  # spent on a value that cannot resolve against any board) -> loop-state runs for real and refuses
+  # the id itself once it reaches the row leg's own resolution.
+  MALFORMED_HEAD=$(cd "$T" && printf 'malformed row\n\nKit-Row: tbg-test\nKit-Stage: Build\nKit-Class: ordinary\nKit-Skill: skills/build\n' \
+    | git -c user.email=t@kit -c user.name=kit commit -q --allow-empty -F - && git rev-parse HEAD)
+  tracker_run "sh $TRACKER_READER_REAL" "refs/heads/feature/x $MALFORMED_HEAD refs/heads/feature/x $Z"
+  [ -f "$TRACKER_READER_CALLED" ] \
+    && { echo "FAIL: M-1 — a malformed Kit-Row must NOT spend the token (row_id_ok gates the reader call)"; fail=1; } \
+    || echo "PASS: M-1 — a malformed Kit-Row never reaches the reader (row_id_ok gates it)"
+  decl_expect_rc "$decl_rc" refuse "M-1: a malformed Kit-Row still REFUSES (falls through to loop-state's own id refusal)"
+
+  # 6. M-2 (security seat, must-fix): SEAM_RECORD/SEAM_HEAD/KIT_TRACKER_RECORD must never enter the
+  # pre-push PROCESS ENVIRONMENT. presence_check_ref runs the REAL conformance/backlog-presence.sh
+  # in a SEPARATE invocation, with NO --head — if it inherits a bound record from
+  # _seam_tracker_prepare it sees seam_tracker_record_set true and calls bp_tracker_presence "",
+  # which refuses with the WRONG remedy ("the PR head is not a well-formed ... sha") on a
+  # control-plane push whose tracker record is genuinely bound (the happy path). Reuses
+  # TRACKER_READER_REAL (a clean bind, rc 0) against a CONTROL-PLANE head (presence's ordinary-class
+  # early-return, above, would otherwise mask this leg entirely).
+  # THIS LEG MUST RED ON THE PRE-FIX CODE: pre-fix, _seam_tracker_prepare EXPORTS SEAM_RECORD/
+  # SEAM_HEAD/KIT_TRACKER_RECORD into the shell decl_check_ref and presence_check_ref both run in —
+  # presence_check_ref's later, separate `sh conformance/backlog-presence.sh ... ` (no --head)
+  # inherits them, and the push is wrongly refused. CONFIRMED: reverting the command-scoped bind
+  # (M-2's fix) back to an export reproduces exactly that refusal, RED as expected.
+  CP_HEAD=$(cd "$T" && mkdir -p conformance && printf 'x\n' > conformance/m2-fixture.sh \
+    && git add conformance/m2-fixture.sh \
+    && printf 'tracker fixture control-plane\n\nKit-Row: AB-1\nKit-Stage: Build\nKit-Class: control-plane\nKit-Skill: skills/build\n' \
+       | git -c user.email=t@kit -c user.name=kit commit -q -F - && git rev-parse HEAD)
+  m2_out=$(cd "$T" && printf '%s\n' "refs/heads/feature/m2 $CP_HEAD refs/heads/feature/m2 $Z" \
+    | KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL=enforce KIT_PUSH_PRESENCE=enforce \
+      PREPUSH_TRACKER_READER="sh $TRACKER_READER_REAL" \
+      sh "$SELF" 2>&1); m2_rc=$?
+  if printf '%s' "$m2_out" | grep -qF 'the PR head is not a well-formed'; then
+    echo "FAIL: M-2 — a bound tracker record must NOT leak SEAM_RECORD/SEAM_HEAD/KIT_TRACKER_RECORD into presence_check_ref's environment (got the wrong 'PR head is not a well-formed sha' remedy)"; fail=1
+  else
+    echo "PASS: M-2 — the bound tracker record does not leak into presence_check_ref's environment"
+  fi
+  decl_expect_rc "$m2_rc" allow "M-2: a control-plane push with a genuinely bound tracker record is allowed (board-presence is NOT ENFORCED for a hosted-tracker backend, never a credential-leak refusal)"
+
+  # 7. md byte-identical (deferred to below, after tracker_plant_backend md restores the fake
+  # backlog-lib.sh) — the reader must never be invoked on the md backend regardless of any of the
+  # real-predicate wiring above.
+
+  # ---------------------------------------------------------------------------------------------
+  # I2 — SEAM_RECORD/SEAM_HEAD must be cleared at _seam_tracker_prepare's OWN entry, so a value
+  # inherited from the caller's env (simulating a prior ref's bind leaking in the same shell) can
+  # never survive into a fail path. KIT_TRACKER_RECORD gets the same I2 treatment (H-1's fix
+  # clears it alongside SEAM_RECORD/SEAM_HEAD at function entry).
+  # ---------------------------------------------------------------------------------------------
+  rm -f "$T/decl-invoked" "$T/decl-invoked.seam"
+  decl_plant_stub_seam 0 "$T/decl-invoked"
+  ( cd "$T" && printf '%s\n' "refs/heads/feature/x $TRACKER_HEAD refs/heads/feature/x $Z" \
+    | SEAM_RECORD="leaked-record" SEAM_HEAD="leaked-head" KIT_TRACKER_RECORD="leaked-tracker-record" \
+      KIT_GUARD_CORE="$DECL_CORE" KIT_PUSH_DECL=enforce PREPUSH_TRACKER_READER="sh $TRACKER_READER_NOADAPTER" \
+      sh "$SELF" ) >/dev/null 2>&1 || true
+  if [ -f "$T/decl-invoked.seam" ] && grep -qF 'SEAM_RECORD=<unset>' "$T/decl-invoked.seam" \
+      && grep -qF 'SEAM_HEAD=<unset>' "$T/decl-invoked.seam"; then
+    echo "PASS: I2 — a caller-inherited SEAM_RECORD/SEAM_HEAD is cleared at function entry"
+  else
+    echo "FAIL: I2 — SEAM_RECORD/SEAM_HEAD must be cleared at function entry, got: $(cat "$T/decl-invoked.seam" 2>/dev/null)"; fail=1
+  fi
+
+  # md byte-identical: on the md backend the reader is NEVER invoked and nothing is relayed.
+  tracker_plant_backend md
+  decl_plant_stub_seam 0 "$T/decl-invoked"
+  tracker_run "sh $TRACKER_READER_OK" "refs/heads/feature/x $TRACKER_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" allow "md: push allowed, unchanged"
+  [ -f "$TRACKER_READER_CALLED" ] \
+    && { echo "FAIL: md backend must NEVER invoke the reader"; fail=1; } \
+    || echo "PASS: md backend never invokes the reader (byte-identical)"
+  case "$decl_out" in
+    *'token not sent'* | *'unverified'*)
+      echo "FAIL: md backend must relay no tracker sentence at all, got: $decl_out"; fail=1 ;;
+    *) echo "PASS: md backend relays no tracker sentence" ;;
+  esac
+
+  # cleanup — leave $T in the state the rest of this selftest expects.
+  ( cd "$T" && git update-ref -d refs/remotes/origin/main ) 2>/dev/null || true
+  rm -rf "$T/conformance" "$T/skills"
+  mkdir -p "$T/conformance"
+  rm -f "$T/decl-invoked" "$T/decl-invoked.seam" "$TRACKER_READER_CALLED" "$TRACKER_READER_NOADAPTER"
+  rm -rf "$T/.kit"
 
   # ---------------------------------------------------------------------------------------------
   # [SEC MEDIUM-1] stdin isolation — a predicate must not be able to consume subsequent

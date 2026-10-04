@@ -1,0 +1,3 @@
+Task	description	string	Description
+Task	labels	array	Labels
+Task	parent	issuelink	Parent

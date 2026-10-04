@@ -1,0 +1,3 @@
+#type-id	10003
+#dropped	1
+customfield_10070	option	Team	ZQALLOWED1|ZQALLOWED2	truncated

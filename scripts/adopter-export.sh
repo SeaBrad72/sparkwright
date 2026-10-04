@@ -5,7 +5,7 @@
 #   sh scripts/adopter-export.sh <dest-dir> [--profile <stack>] [--selftest]
 # Operates on committed HEAD. NEVER writes inside the kit repo. Exit: 0 ok · 1 runtime · 2 usage.
 # POSIX sh; dash-clean.
-# What it changes: Writes the exported kit distribution into <dest-dir> (creates it), including the .kit-manifest and .kit-digests records of what and which bytes it shipped; never writes inside the kit repo.
+# What it changes: Writes the exported kit distribution into <dest-dir> (creates it), including the .kit-manifest and .kit-digests records of what and which bytes it shipped and the .kit-source record of which kit commit it archived; never writes inside the kit repo.
 # Guardrails: Operates on committed HEAD via `git archive`; refuses a non-empty <dest-dir> (no clobber); rejects an unknown --profile; never mutates the kit repo.
 set -eu
 
@@ -348,6 +348,24 @@ _export_into() {  # <staging-dir> <profile-or-empty>  — all the real work; wri
       } > "$_dest/docs/STACK-SELECTION.md"
     fi
   fi
+  # --- KIT-UPDATE-BASE-ADVANCES: the export STATES which vendor commit it archived (.kit-source) ------
+  # Two lines: `commit <40-hex>` and `version <VERSION>`. VERSION alone cannot tell two pre-release
+  # `main`s apart, so kit-update/incept key the kit-base chain on this sha. Written BEFORE the manifest
+  # and digests below, so it is listed and digested like any shipped file. The ambient-GIT_DIR refusal
+  # in do_export already guarantees `git rev-parse HEAD` here reads the KIT's repo. Unresolvable or
+  # malformed -> refuse: a silent record-less export would re-create the stale-base defect.
+  _ks_sha=$( cd "$ROOT" && git rev-parse --verify HEAD 2>/dev/null ) || _ks_sha=''
+  case "$_ks_sha" in
+    *[!0-9a-f]*|'') _ks_sha='' ;;
+  esac
+  if [ "${#_ks_sha}" -ne 40 ]; then
+    echo "adopter-export: could not resolve a 40-hex HEAD sha in '$ROOT' for .kit-source — refusing" >&2; return 1
+  fi
+  _ks_ver=$(tr -d '[:space:]' < "$_dest/VERSION" 2>/dev/null || true)
+  # A tree with no VERSION (a foreign/vendored derivative) still records its commit; the version reads `unknown`.
+  [ -n "$_ks_ver" ] || _ks_ver=unknown
+  printf 'commit %s\nversion %s\n' "$_ks_sha" "$_ks_ver" > "$_dest/.kit-source" && chmod 644 "$_dest/.kit-source"
+
   # --- P1.2-pre: the export STATES what it shipped (.kit-manifest) -----------------------------------
   # The exporter is the ONLY actor that knows the kit-own file set: it just built it (git archive, minus
   # export-ignore, minus the --profile prune above) and, until now, threw it away. Every attempt to
@@ -629,6 +647,16 @@ if [ "${1:-}" = "--selftest" ]; then
   # git-inited tree, and a detached git gc still writing into .git races a bare rm into ENOTEMPTY
   # under `set -eu` — reddening a PASSING selftest (measured: PR #501 battery 2, 2026-08-07).
   rm -rf "$_a6d" 2>/dev/null || true
+
+  # --- KIT-UPDATE-BASE-ADVANCES: the export carries a well-formed .kit-source == the kit's HEAD, and it is
+  # listed in .kit-manifest and digested in .kit-digests like any shipped file.
+  _ks_head=$( cd "$ROOT" && git rev-parse HEAD 2>/dev/null )
+  if [ "$(cat "$_d/.kit-source" 2>/dev/null)" = "$(printf 'commit %s\nversion %s' "$_ks_head" "$(git -C "$ROOT" show HEAD:VERSION | tr -d '[:space:]')")" ] \
+     && grep -qx '\.kit-source' "$_d/.kit-manifest" && grep -q ' \.kit-source$' "$_d/.kit-digests"; then
+    echo "PASS: .kit-source records the kit HEAD + VERSION and is in the manifest and digests"
+  else
+    echo "FAIL: .kit-source missing, malformed, not equal to HEAD/VERSION, or not in manifest/digests"; fail=1
+  fi
 
   # --- B6 rider (c) — ADOPTER-EXPORT-CARVES-FOREIGN-TREES: a FOREIGN tree's own, legitimate policy
   # declarations must SURVIVE being run through this script — every carve above is KIT-SELF logic and

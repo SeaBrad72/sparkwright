@@ -1,0 +1,9 @@
+wf	Builds Workflow	Build Failed	401	not
+wf	Builds Workflow	Build Passed	5	not
+wf	Builds Workflow	Close Issue	6	not
+wf	Builds Workflow	Create Issue	1	not
+wf	Builds Workflow	Reopen Issue	4	not
+wf	Builds Workflow	Resolve Issue	5	not
+wf	Builds Workflow	Start Progress	3	enforced
+wf	Builds Workflow	Stop Progress	1	enforced
+wf	Builds Workflow	Wait for Build	400	not

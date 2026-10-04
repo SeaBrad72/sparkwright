@@ -1,0 +1,4 @@
+#type-id	10003
+customfield_10046	option	Size	XS|S|M|L|XL	complete
+customfield_10070	option	Team	ZQALLOWED1|ZQALLOWED2	complete
+customfield_10071	string	Reviewer note		complete

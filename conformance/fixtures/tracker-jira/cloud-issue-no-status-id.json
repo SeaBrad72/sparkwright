@@ -1,0 +1,9 @@
+{
+  "id": "10007",
+  "key": "AB-7",
+  "self": "https://ex.atlassian.net/rest/api/3/issue/10007",
+  "fields": {
+    "status": { "name": "Some Custom Status With No Id" },
+    "project": { "id": "10000", "key": "AB", "name": "AB Project" }
+  }
+}

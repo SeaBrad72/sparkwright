@@ -1,0 +1,1 @@
+[{"id":"parent","name":"Parent","custom":false,"schema":{"type":"issuelink","system":"parent"}},{"id":"customfield_10014","name":"Epic Link","custom":true,"schema":{"type":"any","custom":"com.pyxis.greenhopper.jira:gh-epic-link","customId":10014}}]

@@ -350,6 +350,49 @@ _judge() {
   return 1
 }
 
+# ── K5 (ADOPTER-KIT-SELFTESTS-ON-CHANGE) — the emitted pipelines pass `--changed` ONLY on a pull request ──
+# Design §4.3/§7. A pipeline may let verify.sh skip the kit's own selftests only when (1) the listing comes
+# from a step gated to pull_request, whose base sha is ENV-BOUND (never interpolated into a `run:` line) and
+# which refuses a newline-bearing path set; (2) the ONE verify.sh line passes `--changed` only through
+# `${KIT_CHANGED:+…}`, so push / schedule / a failed or refused diff run plain `verify.sh --require`
+# (the full battery); and (3) GitHub also passes `--summary-file "$GITHUB_STEP_SUMMARY"`, plus a WEEKLY
+# `schedule:` cron. The verify.sh line stays ONE line on purpose: _ep_github/_ep_gitlab above read a
+# single-line `run:`/script item. Comment lines are ignored. Each helper prints one reason per violation.
+_KST_GH_LINE='run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}'
+_KST_GL_LINE='- sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}'
+_kst_wiring_github() {  # <file> -> 0 conforming; else 1 with reasons
+  _kw_t=$(grep -v '^[[:space:]]*#' "$1") || _kw_t=""; _kw_rc=0
+  printf '%s\n' "$_kw_t" | grep -Eq '^  schedule:' || { echo "K5: $1 has no 'schedule:' trigger"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -Eq "^[[:space:]]*-[[:space:]]*cron:[[:space:]]*['\"][0-9*/,-]+ [0-9*/,-]+ \* \* [0-6]['\"]" || { echo "K5: $1 has no WEEKLY cron (want 'm h * * <0-6>')"; _kw_rc=1; }
+  _kw_n=$(printf '%s\n' "$_kw_t" | grep -c 'github\.event\.pull_request\.base\.sha') || true
+  _kw_ok=$(printf '%s\n' "$_kw_t" | grep -Ec '^[[:space:]]+BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}[[:space:]]*$') || true
+  { [ "$_kw_n" -ge 1 ] && [ "$_kw_n" = "$_kw_ok" ]; } || { echo "K5: $1 must use the PR base sha ONLY as an env: 'BASE_SHA: \${{ github.event.pull_request.base.sha }}' (found $_kw_n use(s), $_kw_ok env-bound)"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | awk '
+    function flush() { if (d) { if (g && nl) good = 1; else bad = 1 } d = 0; g = 0; nl = 0 }
+    /^[[:space:]]*-[[:space:]]+name:/ { flush() }
+    /git diff/ { d = 1; if ($0 !~ /--no-renames/ || $0 !~ / -z /) bad = 1 }
+    /if:[[:space:]]*github\.event_name == .pull_request./ && /github\.base_ref == github\.event\.repository\.default_branch/ { g = 1 }
+    /tr -cd .\\n./ { nl = 1 }
+    END { flush(); exit(good && !bad ? 0 : 1) }' || { echo "K5: $1 has no 'git diff -z --no-renames' listing step gated by if: github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch (S2) that refuses a newline-bearing path set (tr -cd '\\n', R6)"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -q 'GITHUB_ENV' || { echo "K5: $1's listing step never exports KIT_CHANGED via GITHUB_ENV"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -qF -- "$_KST_GH_LINE" || { echo "K5: $1 lacks the single verify line: $_KST_GH_LINE"; _kw_rc=1; }
+  _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -e '--changed') || true
+  [ "$_kw_n" = 1 ] || { echo "K5: $1 mentions --changed on $_kw_n non-comment line(s), want exactly the one verify line"; _kw_rc=1; }
+  return "$_kw_rc"
+}
+_kst_wiring_gitlab() {  # <file> -> 0 conforming; else 1 with reasons
+  _kw_t=$(grep -v '^[[:space:]]*#' "$1") || _kw_t=""; _kw_rc=0
+  for _kw_k in merge_request_event CI_MERGE_REQUEST_DIFF_BASE_SHA CI_MERGE_REQUEST_TARGET_BRANCH_NAME CI_DEFAULT_BRANCH '--no-renames' 'git diff -z' 'mktemp' "tr -cd '\\n'"; do
+    printf '%s\n' "$_kw_t" | grep -qF -e "$_kw_k" || { echo "K5: $1 lacks '$_kw_k' in the listing step (merge-request + default-branch gate, mktemp files, newline refusal)"; _kw_rc=1; }
+  done
+  ! printf '%s\n' "$_kw_t" | grep -qF '/tmp/kit-changed' || { echo "K5: $1 uses a fixed /tmp/kit-changed.* listing path (use mktemp)"; _kw_rc=1; }
+  printf '%s\n' "$_kw_t" | grep -qF -- "$_KST_GL_LINE" || { echo "K5: $1 lacks the single verify line: $_KST_GL_LINE"; _kw_rc=1; }
+  ! printf '%s\n' "$_kw_t" | grep -q 'GITHUB_STEP_SUMMARY' || { echo "K5: $1 passes GITHUB_STEP_SUMMARY on GitLab"; _kw_rc=1; }
+  _kw_n=$(printf '%s\n' "$_kw_t" | grep -c -e '--changed') || true
+  [ "$_kw_n" = 1 ] || { echo "K5: $1 mentions --changed on $_kw_n non-comment line(s), want exactly the one verify line"; _kw_rc=1; }
+  return "$_kw_rc"
+}
+
 # _fleet_run <root> <expect_github> <expect_gitlab> -> 0 all pipelines enforce & counts match, else 1
 # WHY COUNTS ARE STATED, NOT DERIVED: deriving the expected count from the very glob being checked
 # makes the assertion circular — a glob that silently matched nothing would then "pass". WHY
@@ -364,11 +407,13 @@ _fleet_run() {
     [ -f "$_fr_f" ] || continue
     _fr_n_gh=$((_fr_n_gh + 1))
     enforcing_present "$_fr_f" github || { echo "FAIL: $_fr_f does not run a real 'verify.sh --require'"; _fr_rc=1; }
+    _fr_k5=$(_kst_wiring_github "$_fr_f") || { echo "FAIL: $_fr_k5"; _fr_rc=1; }
   done
   for _fr_f in "$_fr_root"/profiles/*/ci.gitlab-ci.yml; do
     [ -f "$_fr_f" ] || continue
     _fr_n_gl=$((_fr_n_gl + 1))
     enforcing_present "$_fr_f" gitlab || { echo "FAIL: $_fr_f does not run a real 'verify.sh --require'"; _fr_rc=1; }
+    _fr_k5=$(_kst_wiring_gitlab "$_fr_f") || { echo "FAIL: $_fr_k5"; _fr_rc=1; }
   done
   # A zero enumeration is ALWAYS a failure, never a silent pass: a check that cannot find its
   # subjects must not report success (the presence-check-cannot-see-substitution class).
@@ -487,10 +532,56 @@ if [ "${1:-}" = "--selftest" ]; then
   # ── --fleet legs (CP7R5-GATE-AUTHORITY) ─────────────────────────────────────────────────────────
   # These drive the REAL _fleet_run, not a replica — testing a copy of the logic is the classic way a
   # green proves nothing about the shipped path (the K3 lesson).
+  # K5 conforming fixtures (the shape the shipped profiles carry) — every fleet fixture that must PASS uses these.
+  _kst_fx_gh() {  # <file>
+    { printf 'on:\n  pull_request:\n  push:\n    branches: [main]\n  schedule:\n    - cron: %s\n' "'23 5 * * 1'"
+      printf 'jobs:\n  ci:\n    steps:\n      - name: Changed-path listing\n        if: github.event_name == %s && github.base_ref == github.event.repository.default_branch\n' "'pull_request'"
+      printf '        env:\n          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n        run: |\n'
+      printf '          git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$RUNNER_TEMP/z"\n'
+      printf '          [ "$(%s < "$RUNNER_TEMP/z" | wc -c)" -eq 0 ]\n' "tr -cd '\\n'"
+      printf '          echo "KIT_CHANGED=$RUNNER_TEMP/list" >> "$GITHUB_ENV"\n      - name: Conformance aggregate\n        %s\n' "$_KST_GH_LINE"
+    } > "$1"
+  }
+  _kst_fx_gl() {  # <file>
+    { printf 'conformance-aggregate:\n  stage: verify\n  before_script:\n    - |\n'
+      printf '      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] && [ "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" = "$CI_DEFAULT_BRANCH" ] && kz=$(mktemp) && kl=$(mktemp) && git diff -z --name-only --no-renames "$CI_MERGE_REQUEST_DIFF_BASE_SHA...HEAD" > "$kz" && [ "$(%s < "$kz" | wc -c)" -eq 0 ]; then export KIT_CHANGED="$kl"; fi\n' "tr -cd '\\n'"
+      printf '  script:\n    %s\n' "$_KST_GL_LINE"
+    } > "$1"
+  }
   _fd=$(mktemp -d) || { echo "verify-enforced-wired --selftest: FAIL (no tmpdir for the fleet legs)"; exit 1; }
   mkdir -p "$_fd/good/profiles/a" "$_fd/good/profiles/b"
-  printf '      - name: x\n        run: sh conformance/verify.sh --require\n' > "$_fd/good/profiles/a/ci.yml"
-  printf 'gate-x:\n  script: [sh conformance/verify.sh --require]\n'          > "$_fd/good/profiles/b/ci.gitlab-ci.yml"
+  _kst_fx_gh "$_fd/good/profiles/a/ci.yml"
+  _kst_fx_gl "$_fd/good/profiles/b/ci.gitlab-ci.yml"
+  # ── K5 legs: the conforming fixtures PASS first (a check broken shut satisfies every mutant), then one mutant
+  # per property must FAIL, each against the SAME base fixture so a green mutant means that property is unchecked.
+  _kst_wiring_github "$_fd/good/profiles/a/ci.yml" >/dev/null || { echo "FAIL: K5 — the conforming GitHub fixture was REJECTED (checker broken shut)"; st=1; }
+  _kst_wiring_gitlab "$_fd/good/profiles/b/ci.gitlab-ci.yml" >/dev/null || { echo "FAIL: K5 — the conforming GitLab fixture was REJECTED (checker broken shut)"; st=1; }
+  _kst_mut() {  # <label> <sed-script> — mutate the GitHub fixture; the checker must now FAIL
+    sed "$2" "$_fd/good/profiles/a/ci.yml" > "$_fd/mut.yml"
+    if cmp -s "$_fd/mut.yml" "$_fd/good/profiles/a/ci.yml"; then echo "FAIL: K5 mutant '$1' changed nothing (vacuous)"; st=1; return 0; fi
+    ! _kst_wiring_github "$_fd/mut.yml" >/dev/null || { echo "FAIL: K5 — mutant '$1' was ACCEPTED (that property is not checked)"; st=1; }
+  }
+  _kst_mut no-schedule      '/^  schedule:/d;/cron:/d'
+  _kst_mut daily-cron       's/\* \* 1/* * */'
+  _kst_mut no-pr-gate       '/if: github.event_name/d'
+  _kst_mut base-sha-in-run  's/"\$BASE_SHA\.\.\.HEAD"/"${{ github.event.pull_request.base.sha }}...HEAD"/'
+  _kst_mut renames-on       's/ --no-renames//'
+  _kst_mut no-nul-list      's/git diff -z/git diff/'
+  _kst_mut no-summary-file  's/ --summary-file "\$GITHUB_STEP_SUMMARY"//'
+  _kst_mut unconditional    's/\${KIT_CHANGED:+--changed "\$KIT_CHANGED" --summary-file "\$GITHUB_STEP_SUMMARY"}/--changed list.txt/'
+  _kst_mut no-default-branch 's/ && github.base_ref == github.event.repository.default_branch//'
+  _kst_mut no-newline-refusal '/tr -cd/d'
+  _kst_mutgl() {
+    sed "$2" "$_fd/good/profiles/b/ci.gitlab-ci.yml" > "$_fd/mutgl.yml"
+    if cmp -s "$_fd/mutgl.yml" "$_fd/good/profiles/b/ci.gitlab-ci.yml"; then echo "FAIL: K5 GitLab mutant '$1' changed nothing (vacuous)"; st=1; return 0; fi
+    ! _kst_wiring_gitlab "$_fd/mutgl.yml" >/dev/null || { echo "FAIL: K5 — GitLab mutant '$1' was ACCEPTED"; st=1; }
+  }
+  _kst_mutgl no-mr-gate   's/merge_request_event/push/'
+  _kst_mutgl no-target-branch-gate 's/CI_MERGE_REQUEST_TARGET_BRANCH_NAME/CI_X/'
+  _kst_mutgl fixed-tmp    's/\$(mktemp)/\/tmp\/kit-changed.z/g'
+  _kst_mutgl no-newline-refusal 's/ && \[ "\$(tr -cd [^|]*| wc -c)" -eq 0 \]//'
+  _kst_mutgl unconditional 's/\${KIT_CHANGED:+--changed "\$KIT_CHANGED"}/--changed list.txt/'
+  rm -f "$_fd/mut.yml" "$_fd/mutgl.yml"
   _fleet_run "$_fd/good" 1 1 >/dev/null || { echo "FAIL: fleet — a fully-enforcing fixture must PASS"; st=1; }
 
   mkdir -p "$_fd/bad/profiles/a" "$_fd/bad/profiles/b"
@@ -514,10 +605,10 @@ if [ "${1:-}" = "--selftest" ]; then
   # separates them: here the counts MATCH what is asserted, so the equality checks are satisfied and
   # only the OTHER platform's zero guard can register the failure.
   mkdir -p "$_fd/gh-only/profiles/a"
-  printf '      - name: x\n        run: sh conformance/verify.sh --require\n' > "$_fd/gh-only/profiles/a/ci.yml"
+  _kst_fx_gh "$_fd/gh-only/profiles/a/ci.yml"
   _fleet_run "$_fd/gh-only" 1 0 >/dev/null && { echo "FAIL: fleet — a tree with ZERO gitlab pipelines must FAIL on the GITLAB zero guard alone"; st=1; }
   mkdir -p "$_fd/gl-only/profiles/a"
-  printf 'gate-x:\n  script: [sh conformance/verify.sh --require]\n' > "$_fd/gl-only/profiles/a/ci.gitlab-ci.yml"
+  _kst_fx_gl "$_fd/gl-only/profiles/a/ci.gitlab-ci.yml"
   _fleet_run "$_fd/gl-only" 0 1 >/dev/null && { echo "FAIL: fleet — a tree with ZERO github pipelines must FAIL on the GITHUB zero guard alone"; st=1; }
   rm -rf "$_fd" 2>/dev/null || true
 

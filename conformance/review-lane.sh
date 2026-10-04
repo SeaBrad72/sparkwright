@@ -211,6 +211,92 @@ rl_docs_only() {   # $1 = listing file -> 0 = docs-only
   [ "$(sh "$DIR/conformance/ci-classify-changes.sh" "$1" 2>/dev/null | tail -1)" = "docs_only=true" ]
 }
 
+# rl_warn — a FORM finding: advisory, never sets a failure accumulator (RECORD-GRAMMAR-ESSENTIALS §2).
+# `WARN: <RL-token>: <what> — fix: <one line>` on stderr (ci-gates.sh's shape); under Actions the same
+# text is also a `::warning::` annotation so it shows on the PR where the approver looks.
+rl_warn() {
+  printf 'WARN: %s\n' "$1" >&2
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then printf '::warning::%s\n' "$(rl_annot_escape "$1")"; fi
+  return 0
+}
+# rl_annot_escape — GitHub's workflow-command data encoding: % -> %25, CR -> %0D, LF -> %0A, so a path
+# or value in the text cannot end the annotation early or forge a second command.
+rl_annot_escape() {
+  _ae_cr=$(printf '\r')
+  printf '%s' "$1" | sed -e 's/%/%25/g' -e "s/$_ae_cr/%0D/g" \
+    | awk '{ if (NR > 1) printf "%%0A"; printf "%s", $0 }'
+}
+
+# ── THE XS/S ORDINARY CEILING (RECORD-GRAMMAR-ESSENTIALS §3). Every arm that cannot PROVE "ordinary,
+#    sized XS/S at the merge-base, row bound to this PR" returns 1 = owed, today's RL-TRAILER path.
+# rl_row_size <base> <row-id> <tmpdir> -> prints the row's Size cell on the BASE board; rc 1 = unknown.
+rl_row_size() {
+  _rs_f="$3/base-board.md"
+  git -C "$RL_REPO" show "$1:BACKLOG.md" > "$_rs_f" 2>/dev/null || return 1
+  mkdir -p "$3/bk"
+  git -C "$RL_REPO" show "$1:CLAUDE.md" > "$3/bk/CLAUDE.md" 2>/dev/null || : > "$3/bk/CLAUDE.md"
+  # shellcheck source=/dev/null
+  . "$DIR/conformance/backlog-lib.sh"
+  # The seam's own wrapper (never raw resolve_backend). A non-zero rc (unset root) or any non-md token
+  # (a tracker backend, an unrecognized value) -> size unknown -> owed.
+  # shellcheck disable=SC2034  # read by the sourced seam_backend (backlog-lib.sh)
+  SEAM_ROOT="$3/bk"
+  _rs_be=$(seam_backend 2>/dev/null) || return 1
+  case "$_rs_be" in ''|md) ;; *) return 1 ;; esac
+  _rs_hits=0; _rs_size=""
+  for _rs_sec in "Ready" "In Progress" "In Review" "Blocked" "Released" "Done" "Backlog (unrefined)"; do
+    _rs_rows=$(section_rows "$_rs_f" "$_rs_sec")
+    [ -n "$_rs_rows" ] || continue
+    _rs_hdr=$(printf '%s\n' "$_rs_rows" | head -1); _rs_ix=$(col_index "$_rs_hdr" Size); _rs_n=0
+    while IFS= read -r _rs_row; do
+      _rs_n=$((_rs_n + 1)); [ "$_rs_n" -eq 1 ] && continue
+      is_sep_row "$_rs_row" && continue
+      [ "$(backtick_id "$(gfm_cell "$_rs_row" 1)")" = "$2" ] || continue
+      # A row already Done/Released at the merge-base cannot be the slice being built -> owed.
+      case "$_rs_sec" in Done|Released) return 1 ;; esac
+      _rs_hits=$((_rs_hits + 1))
+      [ -z "$_rs_ix" ] || _rs_size=$(gfm_cell "$_rs_row" "$_rs_ix")
+    done <<EOF
+$_rs_rows
+EOF
+  done
+  [ "$_rs_hits" -eq 1 ] && [ -n "$_rs_size" ] || return 1
+  printf '%s' "$_rs_size"
+}
+
+# rl_row_touched <base> <head> <row-id> — the id, backticked, sits on an added/changed BACKLOG.md line.
+rl_row_touched() {
+  # shellcheck source=/dev/null
+  . "$DIR/conformance/backlog-lib.sh"
+  _rt_added=$(git -C "$RL_REPO" diff "$1" "$2" -- BACKLOG.md 2>/dev/null | grep '^+' | grep -v '^+++' || true)
+  [ -n "$_rt_added" ] || return 1
+  # Only a TABLE ROW whose Item cell LEADS with exactly this id counts: an Order line, a prose line or
+  # another row's cell that merely mentions the id must not bind it.
+  while IFS= read -r _rt_l; do
+    _rt_l=${_rt_l#+}
+    case "$_rt_l" in '|'*) ;; *) continue ;; esac
+    [ "$(backtick_id "$(gfm_cell "$_rt_l" 1)")" = "$3" ] && return 0
+  done <<EOF
+$_rt_added
+EOF
+  return 1
+}
+
+# rl_ceiling_exempt <head> <class> <tmpdir> — rc 0 (and a NOTE) iff ordinary AND the head's Kit-Row is
+# sized XS/S at the merge-base AND this PR's board diff touches it AND the head volunteers no records.
+rl_ceiling_exempt() {
+  [ "$2" = ordinary ] && [ -n "${_rl_mb:-}" ] || return 1
+  [ "$(rl_trailer_count "$1" Kit-Plan)" -eq 0 ] && [ "$(rl_trailer_count "$1" Kit-Review)" -eq 0 ] || return 1
+  [ "$(rl_trailer_count "$1" Kit-Row)" -eq 1 ] || return 1
+  _ce_row=$(rl_trailer "$1" Kit-Row | head -1)
+  case "$_ce_row" in ''|[!A-Z0-9]*|*[!A-Z0-9-]*) return 1 ;; esac
+  _ce_size=$(rl_row_size "$_rl_mb" "$_ce_row" "$3") || return 1
+  case "$_ce_size" in XS|S) ;; *) return 1 ;; esac
+  rl_row_touched "$_rl_mb" "$1" "$_ce_row" || return 1
+  echo "review-lane: NOTE — XS/S ordinary ($_ce_row, size $_ce_size): no plan/record owed; the design note + task brief ride the PR body, the verdict rides the PR (body/comment) and the owner's forge Approve"
+  return 0
+}
+
 # ── TRAILERS. loop-state's parser idiom, REUSED rather than re-derived: `%(trailers:key=…,valueonly)`
 #    parses the trailer BLOCK, where `grep '^Kit-'` matches any line anywhere in the message — the
 #    severed-block defect loop-state's own fixture pins. The two gates must not disagree on parsing, so
@@ -346,7 +432,7 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
     git -C "$RL_REPO" diff --name-only "$_glast" "$1" > "$_gtail" 2>/dev/null || : > "$_gtail"
     if grep -q '[^[:space:]]' "$_gtail"; then
       if ! rl_docs_only "$_gtail"; then
-        echo "RL-OPEN-ROUND: commits after the closing APPROVE ($_glast) are not docs-only — re-review and re-approve at the new head"; _gr=2
+        rl_warn "RL-OPEN-ROUND: commits after the closing APPROVE ($_glast) are not docs-only — fix: re-review and re-approve at the new head if the change is substantive"
       else
         while IFS= read -r _gt; do
           [ -n "$_gt" ] || continue
@@ -354,7 +440,7 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
           for _gpfx in $RL_POST_APPROVE_PATHS; do
             case "$_gt" in "$_gpfx"*) _gok=0; break ;; esac
           done
-          [ "$_gok" = 0 ] || { echo "RL-OPEN-ROUND: '$(rl_safe "$_gt")' changed after the closing APPROVE and is outside the bookkeeping set ($RL_POST_APPROVE_PATHS)"; _gr=2; }
+          [ "$_gok" = 0 ] || rl_warn "RL-OPEN-ROUND: '$(rl_safe "$_gt")' changed after the closing APPROVE and is outside the bookkeeping set ($RL_POST_APPROVE_PATHS) — fix: re-review at the new head, or keep post-approval edits to the record, plan and board"
         done < "$_gtail"
       fi
     fi
@@ -509,6 +595,7 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
     echo "review-lane: N-A — ordinary AND docs-only. The scope cut is the CLASSIFIER's, not this gate's judgment (design 4.1)."
     return 0
   fi
+  if rl_ceiling_exempt "$_rl_head" "$_rl_class" "$_rl_d"; then return 0; fi
   echo "review-lane: grading head $_rl_head (class=$_rl_class)"
 
   # ★ LEG ORDER IS PART OF THE CONTRACT, NOT AN ACCIDENT OF LAYOUT (design 4.2, rules 1 then 2).
@@ -780,7 +867,10 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "open round (NEEDS-FIXES, no APPROVE)" 2 "$(fx_run "$r" prepush)" RL-OPEN-ROUND
 
-  # (−) a CODE commit after the closing APPROVE re-opens the round (the closed-round rule, vet H3).
+  # (+) RECORD-GRAMMAR-ESSENTIALS (owner Q1): a CODE commit after the closing APPROVE is FORM, not
+  #     substance — it WARNs (`WARN: RL-OPEN-ROUND: …`, same token operators already grep) and rc stays 0.
+  #     It was rc 2; this leg is RED against that code. RL-OPEN-ROUND for a genuinely open round stays
+  #     FAIL (the "open round" leg above).
   r=$(fx_full reopen)
   printf 'more\n' > "$r/conformance/late.sh"; git -C "$r" add -A >/dev/null
   git -C "$r" commit -qm "late code
@@ -789,7 +879,30 @@ Kit-Row: FIXTURE
 Kit-Class: control-plane
 Kit-Plan: docs/plans/2026-09-04-fixture.md
 Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
-  ck "code commit after the closing APPROVE" 2 "$(fx_run "$r" prepush)" "RL-OPEN-ROUND: commits after the closing APPROVE"
+  ck "code commit after the closing APPROVE warns, does not fail" 0 "$(fx_run "$r" prepush)" "WARN: RL-OPEN-ROUND: commits after the closing APPROVE"
+
+  # (+) the second demoted rule: a docs-only commit after the APPROVE that is OUTSIDE the bookkeeping
+  #     set (NOTES.md is not under docs/reviews/, docs/plans/ or BACKLOG.md) also WARNs, rc 0.
+  r=$(fx_full reopenpath)
+  printf 'prose\n' > "$r/NOTES.md"; git -C "$r" add -A >/dev/null
+  git -C "$r" commit -qm "late prose
+
+Kit-Row: FIXTURE
+Kit-Class: control-plane
+Kit-Plan: docs/plans/2026-09-04-fixture.md
+Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
+  ck "path outside the bookkeeping set after the APPROVE warns, does not fail" 0 "$(fx_run "$r" prepush)" "WARN: RL-OPEN-ROUND: 'NOTES.md' changed after the closing APPROVE"
+
+  # (+) the WARN is ALSO an annotation in Actions, where the approver looks (design §2).
+  _ga_was="${GITHUB_ACTIONS-__unset__}"
+  export GITHUB_ACTIONS=true
+  ck "WARN under GITHUB_ACTIONS=true still rc 0" 0 "$(fx_run "$r" prepush)" "WARN: RL-OPEN-ROUND"
+  if grep -qF '::warning::' "$_fx/last.log" 2>/dev/null; then
+    echo "OK: the WARN is emitted as a ::warning:: annotation under GITHUB_ACTIONS=true"
+  else
+    echo "selftest FAIL: no ::warning:: annotation under GITHUB_ACTIONS=true"; sed 's/^/    | /' "$_fx/last.log"; st=1
+  fi
+  if [ "$_ga_was" = "__unset__" ]; then unset GITHUB_ACTIONS; else export GITHUB_ACTIONS="$_ga_was"; fi
 
   # (−) a finding with no disposition.
   r=$(fx_full find); t=$(git -C "$r" rev-parse HEAD~1)
@@ -984,6 +1097,120 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md,docs/reviews/2026-09-04-second.md
   printf 'code\n' > "$r/conformance/thing.sh"; git -C "$r" add -A >/dev/null; git -C "$r" commit -qm code >/dev/null
   fx_strip_base "$r"
   ck "no base in --pr mode" 2 "$(fx_run "$r" pr -)" RL-NO-BASE
+
+  # ── RECORD-GRAMMAR-ESSENTIALS — THE XS/S ORDINARY CEILING (design §3). ─────────────────────────────
+  # fx_ord <name> <base-size> <head-size> <touch> <row-id|-> <code-path> [backend-text]
+  #   Builds a repo whose BASE (main) carries a BACKLOG.md with row `XSROW` at <base-size>, and a feat/x
+  #   head with ONE code commit at <code-path> carrying `Kit-Row: <row-id>` + `Kit-Class: ordinary`
+  #   (no Kit-Plan / Kit-Review — the point). <touch> = 1 rewrites the row's Intent (and Size to
+  #   <head-size>) on the head; 2 also boards a brand-new `NEWROW`; 0 leaves the board alone.
+  #   <code-path> src/app.js derives ORDINARY and is not docs-only; conformance/thing.sh is control-plane.
+  #   [backend-text] seeds a base CLAUDE.md `Backlog backend:` line. Prints the repo dir.
+  fx_board() {   # $1 = file, $2 = size, $3 = intent text, [$4 = done | dup]
+    printf '# Backlog\n\n## Ready\n| Item | Intent | Size |\n|---|---|---|\n' > "$1"
+    [ "${4:-}" = "done" ] || printf '| `XSROW` · a slice | %s | %s |\n' "$3" "$2" >> "$1"
+    printf '| `OTHER` · unrelated | o | XS |\n' >> "$1"
+    [ "${4:-}" != dup ] || printf '\n## In Progress\n| Item | Owner |\n|---|---|\n| `XSROW` · dup | me |\n' >> "$1"
+    # the `done` variant's Done table CARRIES a Size column (XSROW sized there), so the ONLY thing
+    # that makes that leg owed is the Done/Released check, not a missing Size column.
+    if [ "${4:-}" = "done" ]; then printf '\n## Done\n| Item | Closed | Size |\n|---|---|---|\n' >> "$1"
+    else printf '\n## Done\n| Item | Closed | Retro/outcome |\n|---|---|---|\n' >> "$1"; fi
+    [ "${4:-}" != "done" ] || printf '| `XSROW` · a slice | %s | %s |\n' "$3" "$2" >> "$1"
+  }
+  fx_ord() {
+    _r=$(fx_new "$1")
+    fx_board "$_r/BACKLOG.md" "$2" "base intent" "${8:-}"
+    [ -z "${7:-}" ] || printf 'Backlog backend: %s\n' "$7" > "$_r/CLAUDE.md"
+    git -C "$_r" add -A >/dev/null; git -C "$_r" commit -qm board >/dev/null
+    git -C "$_r" checkout -qb feat/x
+    mkdir -p "$(dirname "$_r/$6")"; printf 'code\n' > "$_r/$6"
+    if [ "$4" != 0 ]; then
+      case "$4" in
+        3|4) fx_board "$_r/BACKLOG.md" "$3" "base intent" "${8:-}" ;;   # the row ITSELF is unchanged
+        *)   fx_board "$_r/BACKLOG.md" "$3" "head intent" "${8:-}" ;;
+      esac
+      [ "$4" != 2 ] || printf '| `NEWROW` · new | n | XS |\n' >> "$_r/BACKLOG.md"
+      [ "$4" != 3 ] || printf '> Order: `XSROW` first, then `OTHER`\n' >> "$_r/BACKLOG.md"
+      [ "$4" != 4 ] || printf '| `OTHER2` · follows `XSROW` | x | XS |\n' >> "$_r/BACKLOG.md"
+    fi
+    _m="slice"
+    if [ "$5" = - ]; then _m="$_m
+
+Kit-Class: ordinary"; else _m="$_m
+
+Kit-Row: $5
+Kit-Class: ordinary"; fi
+    git -C "$_r" add -A >/dev/null; git -C "$_r" commit -qm "$_m" >/dev/null
+    printf '%s' "$_r"
+  }
+
+  # (+) XS ordinary, no trailers, row touched by this PR's own board diff, size read at the merge-base
+  #     -> rc 0 with the NOTE. RED against the code that preceded this slice (it demanded the trailers).
+  r=$(fx_ord xs XS XS 1 XSROW src/app.js)
+  ck "XS ordinary, no trailers, row touched -> no plan/record owed" 0 "$(fx_run "$r" prepush)" "XS/S ordinary (XSROW, size XS): no plan/record owed"
+  r=$(fx_ord sz S S 1 XSROW src/app.js)
+  ck "S ordinary, no trailers, row touched -> no plan/record owed" 0 "$(fx_run "$r" prepush)" "size S"
+
+  # (−) over-owe: every unknown or larger arm falls through to today's RL-TRAILER refusal.
+  r=$(fx_ord mrow M M 1 XSROW src/app.js)
+  ck "M ordinary, no trailers -> still owes the trailers" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  r=$(fx_ord cpxs XS XS 1 XSROW conformance/thing.sh)
+  ck "control-plane change citing an XS row -> still owes the trailers" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  r=$(fx_ord shrink M S 1 XSROW src/app.js)
+  ck "row shrunk M->S in the PR's own diff -> size is the BASE's, still owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  r=$(fx_ord norow XS XS 1 - src/app.js)
+  ck "ordinary non-docs with no Kit-Row -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  r=$(fx_ord absent XS XS 2 NEWROW src/app.js)
+  ck "Kit-Row boarded in this PR (absent at the base) -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  r=$(fx_ord untouched XS XS 0 XSROW src/app.js)
+  ck "Kit-Row names an XS row this PR's board diff does not touch -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  r=$(fx_ord trk XS XS 1 XSROW src/app.js Jira)
+  ck "tracker backend -> size unknown -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+
+  # ── FIX ROUND 1 legs (row binding must be the ROW, not a mention; Done/Released/duplicate owed;
+  #    annotation escaping). (a)(b)(c) and (e) are RED against the pre-fix hunk; (d) is a guard.
+  # (a) the head edits a prose/Order-style line naming `XSROW`, not the row itself -> owed.
+  r=$(fx_ord bindprose XS XS 3 XSROW src/app.js)
+  ck "an Order/prose line mentioning the id does not bind the row" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  # (b) ANOTHER row's added cell mentions `XSROW` -> owed.
+  r=$(fx_ord bindcell XS XS 4 XSROW src/app.js)
+  ck "another row's cell mentioning the id does not bind the row" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  # (c) the row is already Done at the merge-base (and touched on the head) -> owed.
+  r=$(fx_ord bdone XS XS 1 XSROW src/app.js "" "done")
+  ck "a row already Done at the base cannot be the slice -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  # (d) the same id on two base sections -> ambiguous -> owed.
+  r=$(fx_ord bdup XS XS 1 XSROW src/app.js "" dup)
+  ck "a duplicate id at the base -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  # (e) a '%' in a WARN's text is percent-encoded in the ::warning:: annotation (and stays literal on stderr).
+  r=$(fx_full warnesc)
+  printf 'prose\n' > "$r/NOTES%x.md"; git -C "$r" add -A >/dev/null
+  git -C "$r" commit -qm "late prose
+
+Kit-Row: FIXTURE
+Kit-Class: control-plane
+Kit-Plan: docs/plans/2026-09-04-fixture.md
+Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
+  _ga_was="${GITHUB_ACTIONS-__unset__}"; export GITHUB_ACTIONS=true
+  ck "WARN naming a path with a percent sign, under Actions" 0 "$(fx_run "$r" prepush)" "WARN: RL-OPEN-ROUND: 'NOTES%x.md'"
+  if grep -qF "::warning::RL-OPEN-ROUND: 'NOTES%25x.md'" "$_fx/last.log" 2>/dev/null; then
+    echo "OK: the ::warning:: annotation percent-encodes '%' as %25"
+  else
+    echo "selftest FAIL: the ::warning:: annotation is not percent-encoded"; sed 's/^/    | /' "$_fx/last.log"; st=1
+  fi
+  if [ "$_ga_was" = "__unset__" ]; then unset GITHUB_ACTIONS; else export GITHUB_ACTIONS="$_ga_was"; fi
+
+  # (−) a VOLUNTEERED pair of trailers is graded exactly as today: XS ordinary + a stub plan -> refused.
+  r=$(fx_ord vol XS XS 1 XSROW src/app.js); t=$(git -C "$r" rev-parse HEAD)
+  printf '# Plan\n' > "$r/docs/plans/2026-09-30-vol.md"
+  fx_record "$r/docs/reviews/2026-09-30-vol.md" builder-seat reviewer-seat "$t" APPROVE
+  git -C "$r" add -A >/dev/null
+  git -C "$r" commit -qm "record
+
+Kit-Row: XSROW
+Kit-Class: ordinary
+Kit-Plan: docs/plans/2026-09-30-vol.md
+Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
+  ck "XS ordinary that volunteers the trailers is graded (stub plan refused)" 2 "$(fx_run "$r" prepush)" RL-PLAN-STUB
 
   # ── THE STRUCK MODE IS STILL AN ASSERTION. `--stamp` was removed by `D-240904-2`, and the failure to
   # guard against is not that it stops working — it is that it silently starts DOING NOTHING while

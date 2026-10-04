@@ -1,0 +1,4 @@
+type	10200
+status	1	Open
+status	3	In Progress
+status	6	Closed

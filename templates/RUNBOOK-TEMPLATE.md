@@ -17,6 +17,7 @@
 - Test: `[test command]` · Coverage: `[coverage command]` (≥80%, 100% critical)
 - Lint / type-check: `[commands]`
 - Build: `[build command]`
+- **CI troubleshooting:** `kit selftests not re-run: …` in the job summary is expected on a PR that touches no control-plane path. To force the full battery, run `sh conformance/verify.sh --require` (no `--changed`) or push to `main`; the weekly schedule also runs it in full.
 - **Test data:** [approach] *(data-handling projects — synthetic/masked/never-raw-prod; see `docs/operations/test-data-management.md`)*
 - **Data handling:** [classification · retention · deletion path] *(personal-data projects — `docs/enterprise/data-governance.md`)*
 
@@ -37,7 +38,7 @@ Documented in `.env.example` (committed, placeholders only). Required:
 - Scoped tokens: OIDC->role, short TTL ([mechanism]) — enforced: [date]  <!-- Least-privilege, time-boxed credentials -->
 - Prod credentials: separate + break-glass ([mechanism]) — enforced: [date]  <!-- Agents never hold prod write creds; SoD -->
 - Cost governance: per-run budget + platform spend-cap ([Anthropic usage limit | harness budget]) — enforced: [date]  <!-- LLM/metered-API spend bounded by a declared budget + the platform cap; docs/operations/cost-governance.md; run `sh conformance/cost-governance-ready.sh` to check this declaration+attestation — nothing you receive runs it for you. If no metered external/LLM spend: N/A — [reason] -->
-- **Runaway kill-switch:** ceilings in `.kit/budget.conf`; the orchestration loop calls `scripts/runaway-guard.sh step` (see `docs/operations/runaway-killswitch.md`).
+- **Runaway kill-switch:** ceilings in `.kit/budget.conf`; the orchestration loop calls `scripts/runaway-guard.sh step --row <ROW>` (one budget per slice/row; a new row starts at zero; see `docs/operations/runaway-killswitch.md`).
 
 <!-- mode:enterprise -->
 **Container / Kubernetes deploy (if applicable):**

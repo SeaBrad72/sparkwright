@@ -47,6 +47,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Weekly FULL run of the kit's own selftests (a PR that changes no control-plane path skips them; see
+  # the "Changed-path listing" step). Catches runner / tool drift only - yours to tune or remove.
+  schedule:
+    - cron: '23 5 * * 1'
 permissions:
   contents: read
 jobs:
@@ -58,6 +62,27 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           fetch-depth: 0   # full history so the secret scan sees all commits
+      - name: Changed-path listing (pull_request only)
+        # ADOPTER-KIT-SELFTESTS-ON-CHANGE (mirrors profiles/typescript-node/ci.yml; locked by
+        # conformance/verify-enforced-wired.sh --fleet, leg K5). The base sha is ENV-BOUND, never
+        # interpolated into the script; no listing (failed/empty diff, newline in a path) = full battery.
+        # Default-branch PRs only (security S2): a PR into any other base branch always runs the full battery.
+        if: github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          z="$RUNNER_TEMP/kit-changed.z"
+          if git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$z" \
+            && [ -s "$z" ] && [ "$(tr -cd '\n' < "$z" | wc -c)" -eq 0 ]; then
+            tr '\0' '\n' < "$z" > "$RUNNER_TEMP/kit-changed.txt"
+            echo "KIT_CHANGED=$RUNNER_TEMP/kit-changed.txt" >> "$GITHUB_ENV"
+          fi
+
+      - name: Conformance aggregate (required — DEVELOPMENT-STANDARDS.md §14)
+        # KIT_CHANGED is set only by the listing step above; empty on push / schedule, so those run the
+        # plain full battery. Keep this ONE line (verify-enforced-wired reads it).
+        run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
+
       # TODO: add your language/runtime setup action (SHA-pin it, e.g. actions/setup-go@<sha>  # vX)
       - name: Lint
         id: gate-lint
@@ -186,7 +211,7 @@ gh api --method POST repos/OWNER/REPO/branches/main/protection/required_status_c
 
 > "Builder ≠ sole merger" is enforced by required reviews + CODEOWNERS. GitHub cannot strictly forbid every user from merging their own PR on all plans; on GitHub Enterprise use rulesets / required reviewers. Document the policy in the project `CLAUDE.md` regardless.
 
-> **Solo + agent-authored track:** the apply script's `--replace` payload already sets `"enforce_admins": false` so the owner can admin-merge their own PR (`gh pr merge --admin`) — the audit-trailed self-ratification of `START-HERE.md`'s solo/lite track — and `"require_code_owner_reviews": false`, because **GitHub forbids self-approval**: while the sole owner is also the sole code owner, a required code-owner review is structurally unsatisfiable (the PR stays BLOCKED with green CI; only `--admin` clears it). Flip `enforce_admins` back to `true` and enable code-owner review only once a second reviewer exists. See [`docs/operations/review-lane.md`](../../docs/operations/review-lane.md) "Solo + agent-authored PRs".
+> **Solo + agent-authored track:** the apply script's `--replace` payload already sets `"enforce_admins": false` so the owner can admin-merge their own PR (`gh pr merge --admin`) — the audit-trailed self-ratification of `START-HERE.md`'s solo/lite track — and `"require_code_owner_reviews": false`, because **GitHub forbids self-approval**: while the sole owner is also the sole code owner, a required code-owner review is structurally unsatisfiable (the PR stays BLOCKED with green CI; only `--admin` clears it). Flip to the team profile (`sh scripts/branch-protection-apply.sh --replace --team`: `enforce_admins:true` + code-owner review together) only once a second reviewer exists. See [`docs/operations/review-lane.md`](../../docs/operations/review-lane.md) "Solo + agent-authored PRs".
 EOF
 
 OK=1   # all files created; the EXIT trap will keep them

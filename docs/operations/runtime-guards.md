@@ -25,6 +25,17 @@ How the kit's destructive-action deny-matrix protects **more than the Claude Cod
 | Any other runtime | `scripts/kit-guard` CLI | full command + path matrix | runtime pipes commands through it |
 | CI (any harness) | `conformance/agent-boundary.sh` + `control-plane-ratification` job | control-plane-diff ratification | automatic on every PR — the harness-independent floor |
 
+**Claude Code hook exit contract (fails closed).** `guard.sh` exits 0 with a decision (allow = no output, deny/ask = the JSON) or 2 = blocked — never 1, because Claude Code treats any code other than 0 or 2 as a non-blocking hook error and runs the call. If the hook ends without rendering a decision — a runtime fault in the core, a missing or unreadable core, a `set -e` abort — an EXIT trap exits 2 with a one-line stderr reason. The trap is keyed on a completion sentinel, not `$?` (under bash 3.2 `$?` in an EXIT trap after a fatal shell error is not the failure status). Proven per shell (`sh`, `dash`, `bash`) by the `fail-closed/*` legs of `agent-autonomy.sh --selftest`.
+- Ceiling: a kill, OOM or hook timeout is decided by the harness, not the hook.
+- Ceiling: a deleted or unrunnable `guard.sh` exits before any trap exists; that is held by `guard-wired.sh` and the control-plane write deny.
+- `kit-guard` (any non-zero = deny) and `pre-push` (git aborts on non-zero) were already fail-closed.
+
+**Fault contract under process exhaustion.** A failed command substitution used to become an empty string, and an empty derived value read as "nothing dangerous". When the guard's own forks fail it now denies with exit 2 and the stderr sentence `agent-guard: internal fault at <site> - a command substitution failed (usually the process limit: stop the sibling battery or other heavy job, then retry); denying fail-closed`, also written to the deny log. The cure is the operator's: stop the heavy job, then retry.
+- Ceiling: proven on Linux with dash and bash 5.2. macOS cannot enforce `ulimit -u`, and bash 3.2 (macOS `/bin/sh`) was not measured.
+- Ceiling: under bash-as-`sh`, bash's own fork retry makes a starved guard take about 105 s (8/8 runs at a cap of 6, all exit 2) before it fails closed. Claude Code lets a PreToolUse hook that times out (default 600 s) proceed, so the bound matters, and a flapping limit could stretch it. Boarded as `GUARD-BASH-FORK-RETRY-LATENCY`.
+- Ceiling: coverage is the must-deny corpus, exhaustively single-fork-swept with an out-of-tree `LD_PRELOAD` instrument (its source and driver are reproduced in `docs/reviews/2026-10-02-guard-fork-failure-fail-closed.md`). A residual in another payload class is a row.
+- Ceiling: the layers overlap (chokepoint faults, the deny-predicate boundaries, the USR1 signal, the allow probe), so removing any single layer is caught by another and per-layer mutation kills are not claimed. Reverting the tool-name site to main's form, or dropping both the USR1 signal and the control-plane boundaries, is caught by the in-tree `fork-cap` legs (the cap sweep).
+
 ### Wiring a non-Claude runtime
 Pipe each proposed shell command through the CLI before running it:
 ```sh
@@ -447,7 +458,8 @@ number rather than a chat tally.
 
 - **The file:** `<repo-root>/.kit-run/guard-denials.ndjson` — one JSON object per line. It is
   **local**: already in `.gitignore`, never committed, never exported to adopters, never pushed. It
-  lives in the same run directory as the runaway killswitch's tally (`runaway-killswitch.md`).
+  lives in `.kit-run/`; the runaway killswitch's tally is no longer there — it is
+  `$HOME/.local/state/sparkwright/runaway/<root-commit>/tally.v2` (`runaway-killswitch.md`).
 - **The fields**, in order: `ts` (UTC ISO-8601) · `surface` (`pretooluse` | `kit-guard`) · `tool`
   (`Bash`/`Write`/… or `-`) · `arm` (the reason's numeric tag, e.g. `13`) · `trigger` (e.g. `pathhit`,
   `redir-nonliteral`, or `-`) · `segment` (the guard's own offending segment, ≤160 bytes, control

@@ -14,6 +14,21 @@
 #     by name; a live-but-undeclared context is an ADVISORY (never fatal, never buries the existing
 #     code-owner ADVISORY below it); no declaration file present -> behaves exactly as before
 #     (byte-compatible rc for inception-done's --raw consumption).
+#     PROTECTION-TEAM-PROFILE (2026-10-03): it ALSO prints one `settings:` line on every 200 —
+#     `settings: enforce_admins=<true|false> code_owner_reviews=<true|false> approvals=<n|absent>
+#     last_push=<true|false> dismiss_stale=<true|false> merge_methods=<squash-only|squash,merge,rebase|…|unknown>`
+#     — so a solo→team flip is PROVEN by the output, not assumed from a UI click; and a `governance:` line
+#     naming the mode this tree DECLARES (CLAUDE.md's `**Governance** (§ solo/team): <mode>` line, read
+#     strictly: team | solo | undeclared). When the tree declares TEAM, the live leg FAILs — naming the
+#     setting and the cure `sh scripts/branch-protection-apply.sh --replace --team` — if enforce_admins is
+#     not true, require_code_owner_reviews is not true, or the merge methods are readable and not
+#     squash-only. Merge methods UNREADABLE with the token on a team tree (the CI PAT cannot read them,
+#     measured) are a loud ADVISORY — the squash-only pin is UNVERIFIED on <repo> — never a red, so a team
+#     adopter's CI is not red on every PR; the settings line still says merge_methods=unknown. A solo or undeclared tree
+#     keeps today's verdicts (the settings line is informational; non-squash merge methods are an
+#     ADVISORY). A CODEOWNERS login with only a PENDING invitation is a WARN (their review can never
+#     satisfy code-owner review); unreadable invitations print `invitations: not readable with this
+#     token`. --declared-only and the offline leg are unchanged.
 # THREE-STATE contract (the live leg):
 #   exit 0  — verified protected (PR reviews + status checks required, declared contexts all bound)
 #   exit 1  — verified NOT protected / a required setting or a declared context missing (FAIL)
@@ -73,6 +88,146 @@ is_kit_tree() {
   [ -f "$REPO_ROOT/docs/ROADMAP-KIT.md" ] || [ -f "$REPO_ROOT/.github/workflows/golden-path.yml" ]
 }
 
+# resolve_backend (§backend seam, TBG-*) is sourced, never re-derived (RD-4: one resolver, not two).
+[ -f "$REPO_ROOT/conformance/backlog-lib.sh" ] && . "$REPO_ROOT/conformance/backlog-lib.sh"
+
+# vacuous_tracker_check <tree-dir> — RD-4 (design A1 §9): a REQUIRED-CHECKS.md declaring the exact
+# active line `tracker-board-gates` while <tree-dir>'s resolved backlog backend is `md` (or the tree
+# carries no .kit/tracker.conf at all) would be a required context that is ALWAYS GREEN — the
+# trusted job (profiles/adopter-tracker-gates.yml `resolve` step) exits/skips before it ever runs on
+# an md tree, so a branch-protection rule requiring it blocks nothing. Reads $RD_LIST, already set by
+# the caller's read_declaration() — this is never a second parser. Prints the FAIL line and returns 1
+# on the vacuous shape; returns 0 (silent) otherwise, INCLUDING when `tracker-board-gates` is absent
+# from RD_LIST (a blanket ban on the name is not the point — only the always-green shape is).
+vacuous_tracker_check() {
+  _vtc_tree=$1
+  case " $RD_LIST " in
+    *' tracker-board-gates '*) : ;;
+    *) return 0 ;;
+  esac
+  # RT5-Q3: seam_backend must exist after sourcing the lib above — fail closed (never silently
+  # pass a check this function could not actually run) if the source failed or the function is
+  # missing for any other reason.
+  if ! command -v seam_backend >/dev/null 2>&1; then
+    printf '%s\n' "FAIL: tracker-board-gates is declared required but this tree's backlog backend is md — the trusted job skips on md, so the context would be always-green; remove it from REQUIRED-CHECKS.md and from branch protection (see RUNBOOK, reverting a tracker)"
+    return 1
+  fi
+  # RT5-Q1: mirror the trusted job's OWN skip rule (profiles/adopter-tracker-gates.yml `resolve`
+  # step) rather than re-deriving it from CLAUDE.md alone — the job skips on the CONF's `backend=`,
+  # read via the tree's OWN scripts/tracker-conf.sh, not on CLAUDE.md's declaration. Vacuous when
+  # ANY of: the conf is absent; the conf's own reader returns `md` OR fails to run at all (fail
+  # closed, mirroring the job's own conf-absent/skip path); OR CLAUDE.md itself resolves to `md`
+  # (a second, independent signal — CLAUDE.md is what a human/agent reads as the declared backend).
+  # Read through the seam's public accessor (seam_backend, backlog-lib.sh) rather than calling
+  # resolve_backend directly — a pure wrapper, same output, but keeps every backend read routed
+  # through the one seam (board-parser-drift.sh's DERIVED-CONSUMER(RESOLVE-BACKEND) check).
+  _vtc_conf="$_vtc_tree/.kit/tracker.conf"
+  _vtc_vacuous=0
+  if [ ! -f "$_vtc_conf" ]; then
+    _vtc_vacuous=1
+  elif [ -f "$_vtc_tree/scripts/tracker-conf.sh" ]; then
+    if _vtc_confbackend=$(sh "$_vtc_tree/scripts/tracker-conf.sh" get backend "$_vtc_conf" 2>/dev/null); then
+      [ "$_vtc_confbackend" = "md" ] && _vtc_vacuous=1
+    else
+      _vtc_vacuous=1
+    fi
+  else
+    _vtc_vacuous=1
+  fi
+  _vtc_backend=$(SEAM_ROOT="$_vtc_tree" seam_backend 2>/dev/null || true)
+  [ "$_vtc_backend" = "md" ] && _vtc_vacuous=1
+  if [ "$_vtc_vacuous" = 1 ]; then
+    printf '%s\n' "FAIL: tracker-board-gates is declared required but this tree's backlog backend is md — the trusted job skips on md, so the context would be always-green; remove it from REQUIRED-CHECKS.md and from branch protection (see RUNBOOK, reverting a tracker)"
+    return 1
+  fi
+  return 0
+}
+
+# ── PROTECTION-TEAM-PROFILE: state classify() reads. run() assigns every one of these itself; they are
+# reset here UNCONDITIONALLY so an ambient environment variable can never pre-set a governance mode,
+# a merge-method read or an invitation state (an env var must never be able to force a pass).
+GOV_MODE=undeclared; GOV_NOTE=""; MERGE_METHODS=unknown; INVITES_STATE=""; PENDING_OWNERS=""
+
+# read_governance <CLAUDE.md> — set GOV_MODE (and GOV_NOTE) from the tree's `**Governance** (§ solo/team): <mode>`
+# FIELD lines (scripts/incept.sh stamps one; the value is followed by the template's prose). Only ANCHORED field
+# lines count — a bullet/bare line that BEGINS with the field — so a prose mention of the phrase is ignored. The
+# value's FIRST word must be exactly `team` or `solo`. One field line: that mode, else undeclared (absent file,
+# no field, the unfilled `[solo / team]` placeholder, another case or word). More than one field line is
+# AMBIGUOUS: `team` if ANY says team (fail toward the stricter reading), else undeclared; GOV_NOTE says so, so
+# the choice is visible on the governance: line.
+GOV_FIELD='^[-*+ ]*\*\*Governance\*\* (§ solo/team):'
+read_governance() {
+  GOV_MODE=undeclared; GOV_NOTE=""
+  [ -f "$1" ] || return 0
+  _rg_n=$(grep -c -e "$GOV_FIELD" "$1" || true)
+  [ "$_rg_n" -ge 1 ] || return 0
+  _rg_vals=$(sed -n 's#^[-*+ ]*\*\*Governance\*\* (§ solo/team): \([^ ]*\).*$#\1#p' "$1")
+  [ "$_rg_n" = 1 ] || GOV_NOTE="ambiguous: $_rg_n field lines"
+  for _rg_v in $_rg_vals; do
+    [ "$_rg_v" = team ] && { GOV_MODE=team; return 0; }
+  done
+  [ "$_rg_n" = 1 ] && [ "$_rg_vals" = solo ] && GOV_MODE=solo
+  return 0
+}
+
+# MM_JQ — reads the three TOP-LEVEL merge fields with gh's built-in jq (S-1). A text scan of the repo JSON
+# took the first occurrence of each key, which a `template_repository` object (listed BEFORE the top-level
+# keys, repeating them) would shadow: a false squash-only. jq's `.allow_*` is the top-level field, always.
+MM_JQ='[.allow_squash_merge,.allow_merge_commit,.allow_rebase_merge]|map(tostring)|join(" ")'
+
+# parse_merge_methods <"true false false"-style output of MM_JQ> -> squash-only | the allowed methods
+# (comma-joined, squash,merge,rebase order) | unknown (not exactly three true/false words — null/absent
+# fields, an unreadable token, an empty read). Duplicated in scripts/branch-protection-apply.sh (that script
+# is self-contained); this file's selftest diffs the two copies.
+parse_merge_methods() {
+  set -- $1
+  [ "$#" = 3 ] || { printf '%s' "unknown"; return 0; }
+  _pmm_out=""
+  for _pmm_p in "squash:$1" "merge:$2" "rebase:$3"; do
+    case "${_pmm_p#*:}" in
+      true) _pmm_out="$_pmm_out,${_pmm_p%%:*}" ;;
+      false) : ;;
+      *) printf '%s' "unknown"; return 0 ;;
+    esac
+  done
+  _pmm_out=${_pmm_out#,}
+  case "$_pmm_out" in
+    "") printf '%s' "unknown" ;;
+    squash) printf '%s' "squash-only" ;;
+    *) printf '%s' "$_pmm_out" ;;
+  esac
+}
+
+# valid_branch <name> — refuses empty, a leading `-`, `..`, and any of ? # % * [ \ whitespace/control bytes:
+# the name is interpolated into the protection path. Duplicated in scripts/branch-protection-apply.sh.
+valid_branch() {
+  case "$1" in ""|-*|*..*|*[\?#%*\[\\]*|*[[:space:][:cntrl:]]*) return 1 ;; esac
+  return 0
+}
+
+# bp_flag <whitespace-stripped body> <key> -> true | false (absent reads as false, exactly like the
+# review-flag arms: a missing key is not "on").
+bp_flag() {
+  if printf '%s' "$1" | grep -q "\"$2\":true"; then printf '%s' true; else printf '%s' false; fi
+}
+
+# bp_enforce_admins <whitespace-stripped body> -> true | false. GitHub nests it as
+# "enforce_admins":{"url":…,"enabled":<bool>}; the bare "enforce_admins":<bool> shape is read too.
+bp_enforce_admins() {
+  _bea=$(printf '%s' "$1" | sed -n 's/.*"enforce_admins":{[^}]*"enabled":\([a-z]*\).*/\1/p')
+  [ -n "$_bea" ] || _bea=$(printf '%s' "$1" | sed -n 's/.*"enforce_admins":\([a-z]*\).*/\1/p')
+  if [ "$_bea" = true ]; then printf '%s' true; else printf '%s' false; fi
+}
+
+# co_logins <dir> — the @login owners named in the tree's CODEOWNERS (one per line, sorted, unique);
+# `@org/team` handles are skipped (an invitation can only be pending for an individual account).
+co_logins() {
+  for _col_f in "$1/.github/CODEOWNERS" "$1/CODEOWNERS" "$1/docs/CODEOWNERS"; do
+    [ -f "$_col_f" ] || continue
+    sed 's/#.*//' "$_col_f" | tr -s ' \t' '\n\n' | grep '^@[A-Za-z0-9-]*$' | sed 's/^@//'
+  done | sort -u
+}
+
 REQUIRE="${REQUIRE:-0}"
 RAW=0
 BRANCH=main
@@ -89,6 +244,7 @@ for a in "$@"; do
     *) if [ "$DECLARED_ONLY" = 1 ]; then DECLARATION="$a"; DECL_EXPLICIT=1; else BRANCH="$a"; fi ;;
   esac
 done
+valid_branch "$BRANCH" || { printf '%s\n' "branch-protection.sh: invalid branch name (empty, '..', whitespace, or one of ? # % * [ backslash is refused)" >&2; exit 2; }
 [ "$DECL_EXPLICIT" = 1 ] || DECLARATION="$REPO_ROOT/REQUIRED-CHECKS.md"
 [ "$RAW" = 0 ] && [ -n "${CI:-}" ] && REQUIRE=1   # CI makes the gate runnable — UNLESS --raw asked for the raw state
 
@@ -241,12 +397,48 @@ declared_only() {
     printf '%s\n' "FAIL: $_dof declares zero active required-check contexts (empty declaration, not the pristine template)"
     exit 1
   fi
+  vacuous_tracker_check "$(dirname -- "$_dof")" || exit 1
   printf '%s\n' "OK: $_dof declares $_don required-check context(s):$RD_LIST"
   # ★ SAY WHAT THIS GREEN DOES NOT COVER (round 1, finding 2): this leg reads a FILE and cannot see the
   # live setting that blocks a merge — and that setting is load-bearing for a SIBLING check's colour.
   # A maintainer reading "OK" here must not conclude the requirement is in place.
   printf '%s\n' "NOTE: declaration integrity only. required_approving_review_count (>=1) is a LIVE-LEG check — run this script with no flag (needs gh + admin) to verify the review requirement that actually blocks an unratified control-plane merge."
   exit 0
+}
+
+# judge_team_profile <whitespace-stripped body> <approvals|absent> — PROTECTION-TEAM-PROFILE (design 2026-10-03).
+# Print what was READ — always, on every 200 — so the flip from solo to team is provable from the output instead
+# of assumed from a UI click; then judge it against the tree's DECLARED governance mode (CLAUDE.md, read
+# strictly; absent/odd = undeclared). Absent keys read as false, exactly like the review-flag arms. Sets the
+# global classify() owns: ok (1 on a FAIL).
+judge_team_profile() {
+  _jt_ea=$(bp_enforce_admins "$1"); _jt_co=$(bp_flag "$1" require_code_owner_reviews)
+  _jt_mm=${MERGE_METHODS:-unknown}; _jt_gov=${GOV_MODE:-undeclared}
+  printf '%s\n' "settings: enforce_admins=$_jt_ea code_owner_reviews=$_jt_co approvals=$2 last_push=$(bp_flag "$1" require_last_push_approval) dismiss_stale=$(bp_flag "$1" dismiss_stale_reviews) merge_methods=$_jt_mm"
+  printf '%s\n' "governance: $_jt_gov (CLAUDE.md Governance line${GOV_NOTE:+; $GOV_NOTE})"
+  _jt_cure="sh scripts/branch-protection-apply.sh --replace --team"
+  if [ "$_jt_gov" = team ]; then
+    [ "$_jt_ea" = true ] || { printf '%s\n' "FAIL: CLAUDE.md declares governance team but enforce_admins is not true on $BRANCH — an admin can still merge past every required check and review (gh pr merge --admin). Cure (an admin act; read its confirmation, it locks you out if you are alone): $_jt_cure"; ok=1; }
+    [ "$_jt_co" = true ] || { printf '%s\n' "FAIL: CLAUDE.md declares governance team but require_code_owner_reviews is not true on $BRANCH — a CODEOWNER's review is not required, so builder ≠ sole reviewer does not hold on protected paths. Cure: $_jt_cure"; ok=1; }
+    case "$_jt_mm" in
+      squash-only) : ;;
+      unknown) printf '%s\n' "ADVISORY: merge methods are not readable with this token — the squash-only pin is UNVERIFIED on ${REPO:-?} (team declaration); an admin can confirm it with sh scripts/branch-protection-apply.sh (show-only prints merge-methods: current=…)" ;;
+      *) printf '%s\n' "FAIL: CLAUDE.md declares governance team but the repo's merge methods are not squash-only (allowed: $_jt_mm) on ${REPO:-?} — the kit's merge standard is squash. Cure: $_jt_cure"; ok=1 ;;
+    esac
+  else
+    case "$_jt_mm" in
+      squash-only|unknown) : ;;
+      *) printf '%s\n' "ADVISORY: merge methods allowed on ${REPO:-?} are $_jt_mm — the kit's standard is squash-only; pin it with sh scripts/branch-protection-apply.sh --replace (informational on a $_jt_gov tree)." ;;
+    esac
+  fi
+  # L 80: a CODEOWNERS login with only a PENDING invitation can never satisfy code-owner review.
+  if [ "${INVITES_STATE:-}" = unreadable ]; then
+    printf '%s\n' "invitations: not readable with this token"
+  else
+    for _jt_po in ${PENDING_OWNERS:-}; do
+      printf '%s\n' "WARN: CODEOWNERS names $_jt_po but that account has only a PENDING invitation to ${REPO:-?} — their review can never satisfy code-owner review until they accept."
+    done
+  fi
 }
 
 # classify RC BODY — decide PASS/FAIL/UNVERIFIED from the HTTP outcome, NOT body substrings.
@@ -299,7 +491,8 @@ classify() {
     printf '%s' "$body" | grep -q '"required_status_checks"' || { printf '%s\n' "FAIL: required status checks not enabled on $BRANCH"; ok=1; }
     # advisory (non-fatal): CODEOWNER-review enforcement is recommended but not required by this gate
     # (an adopter who never fills CODEOWNERS can leave builder=reviewer paths under-covered — §12).
-    printf '%s' "$body" | grep -q '"require_code_owner_reviews":[[:space:]]*true' || printf '%s\n' "ADVISORY: require_code_owner_reviews is not enabled on $BRANCH — CODEOWNER review is recommended so builder ≠ sole reviewer holds on protected paths (DEVELOPMENT-PROCESS.md §12)."
+    [ "${GOV_MODE:-undeclared}" = team ] || printf '%s' "$body" | grep -q '"require_code_owner_reviews":[[:space:]]*true' || printf '%s\n' "ADVISORY: require_code_owner_reviews is not enabled on $BRANCH — CODEOWNER review is recommended so builder ≠ sole reviewer holds on protected paths (DEVELOPMENT-PROCESS.md §12)."
+    judge_team_profile "$_bp_rc_flat" "${_bp_rc_count:-absent}"
     # Declared-contexts comparison (B4, D1). SEC H-3/REV M3: this never skips SILENTLY any more — an
     # absent declaration, a pristine template, or a malformed one (dup/placeholder-mixed/bad-charset/
     # too-many) always prints a one-line disclosure; a malformed declaration ESCALATES to FAIL under
@@ -308,6 +501,9 @@ classify() {
       printf '%s\n' "ADVISORY: declared-context comparison SKIPPED (no $DECLARATION in this tree)"
     else
       read_declaration "$DECLARATION"
+      # RD-4: a declared-but-vacuous tracker-board-gates FAILs here unconditionally (never advisory,
+      # never gated by --require) — the live leg must surface it exactly like the offline leg does.
+      vacuous_tracker_check "$(dirname -- "$DECLARATION")" || ok=1
       set -- $RD_LIST; _cls_don=$#
       _cls_skip=""; _cls_malformed=0
       if [ "$RD_TOOMANY" != 0 ]; then
@@ -367,11 +563,33 @@ classify() {
   unverifiable "protection endpoint returned non-200 (token may lack repo-admin, or transient/empty) on ${REPO:-?}"
 }
 
+# gather_team_state — the live-leg reads classify() judges beyond the protection body: the tree's declared
+# governance mode, the repo's merge methods (`gh api repos/OWNER/REPO`; unknown when the token cannot read
+# the three fields), and which CODEOWNERS logins have only a pending invitation (`.../invitations`;
+# INVITES_STATE=unreadable when the token cannot read it). Read-only GETs; GH env containment applies.
+gather_team_state() {
+  read_governance "$REPO_ROOT/CLAUDE.md"
+  if _gts_repo=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api "repos/$REPO" --jq "$MM_JQ" 2>/dev/null); then
+    MERGE_METHODS=$(parse_merge_methods "$_gts_repo")
+  else
+    MERGE_METHODS=unknown
+  fi
+  if _gts_inv=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api --paginate "repos/$REPO/invitations" --jq '.[].invitee.login' 2>/dev/null); then
+    INVITES_STATE=ok; PENDING_OWNERS=""
+    for _gts_l in $(co_logins "$REPO_ROOT"); do
+      if printf '%s\n' "$_gts_inv" | grep -qixF -e "$_gts_l"; then PENDING_OWNERS="$PENDING_OWNERS $_gts_l"; fi
+    done
+  else
+    INVITES_STATE=unreadable; PENDING_OWNERS=""
+  fi
+}
+
 run() {
   have_gh || unverifiable "gh not installed"
   REPO=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
   [ -n "$REPO" ] || unverifiable "no GitHub repo context"
   PROT=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api "repos/$REPO/branches/$BRANCH/protection" 2>/dev/null) && rc=0 || rc=$?
+  [ "$rc" = 0 ] && gather_team_state
   classify "$rc" "$PROT"
 }
 
@@ -529,6 +747,72 @@ selftest() {
   clsdo 1 "cap exceeded" "$_bpdir/toomany.md" "more than 100 declared context lines -> FAIL (DoS bound)"
   clsdo 0 "declares 2 required-check context(s)" "$_bpdir/twofence.md" "second fence-open ignored (usage-example never merges in) -> OK naming 2"
 
+  # ── RD-4 (T5): a declared-but-vacuous `tracker-board-gates` must FAIL — the trusted job skips on
+  # an md tree, so the required context would be always-green. Trees carry their OWN
+  # REQUIRED-CHECKS.md (so `dirname` of the DECLARATION file resolves to the tree vacuous_tracker_check reads).
+  _rd4md="$_bpdir/rd4-md"; mkdir -p "$_rd4md"
+  printf 'Backlog backend: md\n' > "$_rd4md/CLAUDE.md"
+  printf '```\nci\ntracker-board-gates\n```\n' > "$_rd4md/REQUIRED-CHECKS.md"
+  _rd4trk="$_bpdir/rd4-trk"; mkdir -p "$_rd4trk/.kit" "$_rd4trk/scripts"
+  printf 'Backlog backend: jira\n' > "$_rd4trk/CLAUDE.md"
+  printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net/jira\nproject=AB\n' > "$_rd4trk/.kit/tracker.conf"
+  cp "$REPO_ROOT/scripts/tracker-conf.sh" "$_rd4trk/scripts/tracker-conf.sh"
+  printf '```\nci\ntracker-board-gates\n```\n' > "$_rd4trk/REQUIRED-CHECKS.md"
+  _rd4cmt="$_bpdir/rd4-cmt"; mkdir -p "$_rd4cmt"
+  printf 'Backlog backend: md\n' > "$_rd4cmt/CLAUDE.md"
+  printf '```\nci\n# tracker-board-gates (commented, not active)\n```\n' > "$_rd4cmt/REQUIRED-CHECKS.md"
+  clsdo 1 "tracker-board-gates is declared required but this tree's backlog backend is md" \
+    "$_rd4md/REQUIRED-CHECKS.md" "RD-4: md tree + declared tracker-board-gates -> FAIL"
+  clsdo 0 "declares 2 required-check context(s)" \
+    "$_rd4trk/REQUIRED-CHECKS.md" "RD-4: tracker tree (valid conf) + declared tracker-board-gates -> OK unchanged"
+  clsdo 0 "declares 1 required-check context(s)" \
+    "$_rd4cmt/REQUIRED-CHECKS.md" "RD-4: md tree + a COMMENTED mention (not an active line) -> OK, no FAIL"
+
+  # RT5-Q2: pin each arm against the JOB's own conf-backend skip rule, not CLAUDE.md alone.
+  # Arm 1 — CLAUDE.md declares a hosted tracker (linear) but NO conf at all -> FAIL (conf-absent
+  # mirrors the job's own "no .kit/tracker.conf on base" skip route).
+  _rd4lin="$_bpdir/rd4-linear-noconf"; mkdir -p "$_rd4lin/scripts"
+  cp "$REPO_ROOT/scripts/tracker-conf.sh" "$_rd4lin/scripts/tracker-conf.sh"
+  printf 'Backlog backend: linear\n' > "$_rd4lin/CLAUDE.md"
+  printf '```\nci\ntracker-board-gates\n```\n' > "$_rd4lin/REQUIRED-CHECKS.md"
+  clsdo 1 "tracker-board-gates is declared required but this tree's backlog backend is md" \
+    "$_rd4lin/REQUIRED-CHECKS.md" "RT5-Q2 arm 1: CLAUDE.md=linear + no conf -> FAIL"
+  # Arm 2 — CLAUDE.md declares jira but the CONF's own backend= is md -> FAIL (the job reads the
+  # conf, not CLAUDE.md, to decide skip=true; a stale/mismatched CLAUDE.md must not launder this).
+  _rd4mismatch="$_bpdir/rd4-jira-confmd"; mkdir -p "$_rd4mismatch/.kit" "$_rd4mismatch/scripts"
+  printf 'Backlog backend: jira\n' > "$_rd4mismatch/CLAUDE.md"
+  printf 'version=1\nbackend=md\nbase_url=https://ex.atlassian.net/jira\nproject=AB\n' > "$_rd4mismatch/.kit/tracker.conf"
+  cp "$REPO_ROOT/scripts/tracker-conf.sh" "$_rd4mismatch/scripts/tracker-conf.sh"
+  printf '```\nci\ntracker-board-gates\n```\n' > "$_rd4mismatch/REQUIRED-CHECKS.md"
+  clsdo 1 "tracker-board-gates is declared required but this tree's backlog backend is md" \
+    "$_rd4mismatch/REQUIRED-CHECKS.md" "RT5-Q2 arm 2: CLAUDE.md=jira + conf backend=md -> FAIL"
+  # Arm 3 — CLAUDE.md declares jira AND the conf's own backend= is jira -> OK (the existing tracker
+  # leg above, rd4trk, IS this arm; re-asserted here by name for RT5-Q2's record).
+  clsdo 0 "declares 2 required-check context(s)" \
+    "$_rd4trk/REQUIRED-CHECKS.md" "RT5-Q2 arm 3: CLAUDE.md=jira + conf backend=jira -> OK (the existing tracker leg)"
+
+  # RT5-Q3: if seam_backend is not defined after sourcing the lib (any reason — the source
+  # failed, the lib moved, etc.), vacuous_tracker_check must FAIL CLOSED, never silently pass a
+  # check it could not actually run. Unset it in a subshell (never affecting the outer script's
+  # own copy) on the otherwise-valid tracker tree (rd4trk) — a shape that would OK without this
+  # guard, so a real FAIL here proves the fail-closed path, not the ordinary md/conf-absent path.
+  _q3out=$( ( DECLARATION="$_rd4trk/REQUIRED-CHECKS.md"; unset -f seam_backend; declared_only ) 2>&1 ) && _q3rc=0 || _q3rc=$?
+  if [ "$_q3rc" = 1 ] && printf '%s\n' "$_q3out" | grep -qF "tracker-board-gates is declared required but this tree's backlog backend is md"; then
+    echo "selftest PASS: RT5-Q3: seam_backend undefined -> FAIL closed, never a silent pass -> exit $_q3rc"
+  else
+    echo "selftest FAIL: RT5-Q3: seam_backend undefined -> want FAIL closed, got rc=$_q3rc out=[$_q3out]"; st=1
+  fi
+
+  # RD-4 through the LIVE leg's classify() comparison path too (inception-done's existing call is
+  # the live leg, not --declared-only — RD-4 must surface there as a real FAIL, not an ADVISORY).
+  clsd 1 "tracker-board-gates is declared required but this tree's backlog backend is md" 0 0 \
+    '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{"contexts":["ci","tracker-board-gates"]}}' \
+    "$_rd4md/REQUIRED-CHECKS.md" "RD-4 via classify() (the live leg): md tree, both contexts bound -> FAIL anyway (vacuous, never advisory)"
+
+  # kit self-check (Verify §): the kit's own tree is `md` and must NEVER declare
+  # `tracker-board-gates` in its own REQUIRED-CHECKS.md, or this leg would FAIL on the kit itself.
+  clsdo 0 "" "$REPO_ROOT/REQUIRED-CHECKS.md" "the kit's own REQUIRED-CHECKS.md (md tree) -> still OK (does not declare tracker-board-gates)"
+
   # R-3: the invalid-name FAIL line must never carry a raw control/ESC byte (measured erasing the
   # FAIL prefix on ANSI terminals). Assert the sanitized form directly rather than trusting a visual
   # read: stripping control bytes from the actual output must be a no-op if it was already clean.
@@ -623,6 +907,162 @@ STUB
   else
     echo "selftest FAIL: GH_TOKEN was stripped too (it must be honored, not contained) (log: $(cat "$_ghenvlog" 2>/dev/null))"; st=1
   fi
+
+  # ── PROTECTION-TEAM-PROFILE (design 2026-10-03 §4): the settings line, the declared governance
+  # mode, and the team-declared FAILs. classify() reads GOV_MODE / MERGE_METHODS / INVITES_STATE /
+  # PENDING_OWNERS, which run() always assigns itself (never from the environment); the cells set them
+  # in the subshell exactly as run() would.
+  _rv='"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true'
+  _TEAM_LIVE='{'"$_rv"',"require_code_owner_reviews":true},"required_status_checks":{"contexts":[]},"enforce_admins":{"url":"u","enabled":true}}'
+  _SOLO_LIVE='{'"$_rv"',"require_code_owner_reviews":false},"required_status_checks":{"contexts":[]},"enforce_admins":{"url":"u","enabled":false}}'
+  _TEAM_NOCO='{'"$_rv"',"require_code_owner_reviews":false},"required_status_checks":{"contexts":[]},"enforce_admins":{"url":"u","enabled":true}}'
+  clst() {  # expect_rc needle require gov merge-methods pending-owners body label
+    e=$1; needle=$2; req=$3; gov=$4; mm=$5; pend=$6; b=$7; lbl=$8
+    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE="$gov"; MERGE_METHODS="$mm"; INVITES_STATE=ok; PENDING_OWNERS="$pend"; classify 0 "$b" ) 2>&1 ) && g=0 || g=$?
+    if [ "$g" = "$e" ] && printf '%s\n' "$out" | grep -qF -e "$needle"; then
+      echo "selftest PASS: $lbl -> exit $g"
+    else
+      echo "selftest FAIL: $lbl want rc=$e needle='$needle' got rc=$g out=[$out]"; st=1
+    fi
+  }
+  clst_not() {  # needle-must-be-absent variant: expect_rc needle require gov mm pend body label
+    e=$1; needle=$2; req=$3; gov=$4; mm=$5; pend=$6; b=$7; lbl=$8
+    out=$( ( REQUIRE="$req"; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE="$gov"; MERGE_METHODS="$mm"; INVITES_STATE=ok; PENDING_OWNERS="$pend"; classify 0 "$b" ) 2>&1 ) && g=0 || g=$?
+    if [ "$g" = "$e" ] && ! printf '%s\n' "$out" | grep -qF -e "$needle"; then
+      echo "selftest PASS: $lbl -> exit $g"
+    else
+      echo "selftest FAIL: $lbl want rc=$e and no '$needle' got rc=$g out=[$out]"; st=1
+    fi
+  }
+  _CURE="sh scripts/branch-protection-apply.sh --replace --team"
+  clst 0 "settings: enforce_admins=true code_owner_reviews=true approvals=1 last_push=true dismiss_stale=true merge_methods=squash-only" 0 team squash-only "" "$_TEAM_LIVE" "team declared + team live + squash-only -> PASS, the settings line reads what it saw"
+  clst 1 "enforce_admins" 0 team squash-only "" "$_SOLO_LIVE" "team declared + solo live (enforce_admins false) -> FAIL naming enforce_admins"
+  clst 1 "$_CURE" 0 team squash-only "" "$_SOLO_LIVE" "team declared + solo live -> the FAIL names the cure verb"
+  clst 1 "require_code_owner_reviews" 0 team squash-only "" "$_TEAM_NOCO" "team declared + code-owner review off -> FAIL naming it"
+  clst 1 "merge methods" 0 team "squash,merge,rebase" "" "$_TEAM_LIVE" "team declared + merge commits allowed -> FAIL naming the merge methods"
+  clst 1 "$_CURE" 0 team squash,merge "" "$_TEAM_LIVE" "team declared + non-squash merge methods -> the FAIL names the cure verb"
+  clst 0 "ADVISORY: merge methods are not readable with this token — the squash-only pin is UNVERIFIED on selftest (team declaration); an admin can confirm it with sh scripts/branch-protection-apply.sh (show-only prints merge-methods: current=…)" 0 team unknown "" "$_TEAM_LIVE" "team declared + merge methods unreadable -> a loud ADVISORY, rc 0 (owner ruling: the CI PAT cannot read them)"
+  clst 0 "ADVISORY: merge methods are not readable with this token — the squash-only pin is UNVERIFIED on selftest (team declaration); an admin can confirm it with sh scripts/branch-protection-apply.sh (show-only prints merge-methods: current=…)" 1 team unknown "" "$_TEAM_LIVE" "team declared + merge methods unreadable + --require/CI -> still the ADVISORY at rc 0 (never red on every PR)"
+  clst_not 0 "ADVISORY: merge methods are not readable" 0 team squash-only "" "$_TEAM_LIVE" "team declared + readable squash-only -> no unreadable-ADVISORY"
+  clst_not 0 "ADVISORY: merge methods are not readable" 0 solo unknown "" "$_TEAM_LIVE" "solo declared + unreadable merge methods -> unchanged (no ADVISORY, settings line says unknown)"
+  clst 1 "FAIL: CLAUDE.md declares governance team but require_code_owner_reviews" 0 team unknown "" "$_TEAM_NOCO" "team declared + unreadable merge methods + code-owner off -> still a hard FAIL (rc 1)"
+  clst 1 "enforce_admins" 0 team unknown "" "$_SOLO_LIVE" "team declared + a verified FAIL outranks an unreadable merge-method read (rc 1)"
+  clst 0 "merge_methods=unknown" 0 team unknown "" "$_TEAM_LIVE" "an unreadable merge-method read shows merge_methods=unknown on the settings line"
+  clst_not 1 "ADVISORY: require_code_owner_reviews" 0 team squash-only "" "$_TEAM_NOCO" "team declared + code-owner off -> the FAIL says it; the ADVISORY is skipped (R-7)"
+  clst 0 "OK:" 0 solo squash-only "" "$_TEAM_LIVE" "solo declared + team live -> PASS"
+  clst 0 "settings: enforce_admins=false code_owner_reviews=false approvals=1 last_push=true dismiss_stale=true merge_methods=squash-only" 0 undeclared squash-only "" "$_SOLO_LIVE" "undeclared + solo live -> today's PASS verdict plus the settings line"
+  clst 0 "OK:" 0 solo "squash,merge,rebase" "" "$_SOLO_LIVE" "solo declared + merge commits allowed -> still PASS"
+  clst 0 "ADVISORY: merge methods" 0 solo "squash,merge,rebase" "" "$_SOLO_LIVE" "solo declared + non-squash merge methods -> an ADVISORY naming it"
+  clst 0 "ADVISORY: merge methods" 0 undeclared "squash,merge,rebase" "" "$_SOLO_LIVE" "undeclared + non-squash merge methods -> an ADVISORY naming it"
+  clst_not 0 "ADVISORY: merge methods" 0 solo squash-only "" "$_SOLO_LIVE" "squash-only -> no merge-method ADVISORY"
+  clst_not 0 "ADVISORY: merge methods" 0 undeclared unknown "" "$_SOLO_LIVE" "unknown merge methods on an undeclared tree -> no merge-method ADVISORY (the line says unknown)"
+  clst 0 "WARN: CODEOWNERS names reviewer-login but that account has only a PENDING invitation" 0 team squash-only "reviewer-login" "$_TEAM_LIVE" "a pending CODEOWNERS invitation -> WARN naming the login (non-fatal)"
+  out=$( ( REQUIRE=0; REPO=selftest; DECLARATION="/nonexistent-required-checks-$$"; GOV_MODE=solo; MERGE_METHODS=squash-only; INVITES_STATE=unreadable; PENDING_OWNERS=""; classify 0 "$_SOLO_LIVE" ) 2>&1 ) && g=0 || g=$?
+  if [ "$g" = 0 ] && printf '%s\n' "$out" | grep -qF "invitations: not readable with this token"; then echo "selftest PASS: unreadable invitations are said, never silent"; else echo "selftest FAIL: unreadable invitations (rc=$g out=[$out])"; st=1; fi
+  # the existing 200-body cells carry no settings of their own: they must not have changed rc under the new defaults.
+  clst 0 "OK:" 0 undeclared unknown "" '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{}}' "defaults (undeclared, merge methods unknown) keep today's PASS"
+
+  # read_governance: the strict read of the tree's CLAUDE.md Governance line. Anything but exactly
+  # `team` / `solo` as the first word of the value is "undeclared" — never a guess.
+  _gv="$_bpdir/gov"; mkdir -p "$_gv"
+  gov_cell() {  # want label line...   (writes the lines to a CLAUDE.md and reads it)
+    want=$1; lbl=$2; shift 2
+    : > "$_gv/CLAUDE.md"; for _gl in "$@"; do printf '%s\n' "$_gl" >> "$_gv/CLAUDE.md"; done
+    got=$( ( read_governance "$_gv/CLAUDE.md"; printf '%s' "${GOV_MODE:-}" ) 2>/dev/null ) || got="ERR"
+    if [ "$got" = "$want" ]; then echo "selftest PASS: read_governance $lbl -> $want"; else echo "selftest FAIL: read_governance $lbl want '$want' got '$got'"; st=1; fi
+  }
+  gov_cell team "stamped bullet (team + the template's trailing prose)" '- **Governance** (§ solo/team): team — solo = admin-merge; team = non-author approval'
+  gov_cell solo "stamped bullet (solo)" '- **Governance** (§ solo/team): solo — solo = admin-merge; team = non-author approval'
+  gov_cell team "bare value, no bullet, end of line" '**Governance** (§ solo/team): team'
+  gov_cell undeclared "unfilled placeholder [solo / team]" '- **Governance** (§ solo/team): [solo / team] — solo = admin-merge'
+  gov_cell undeclared "a value that merely starts with team" '- **Governance** (§ solo/team): teamwork'
+  gov_cell undeclared "wrong case" '- **Governance** (§ solo/team): Team'
+  gov_cell undeclared "garbage value" '- **Governance** (§ solo/team): hybrid'
+  gov_cell team "two field lines solo+team (ambiguous: fail toward strict -> team)" '- **Governance** (§ solo/team): solo' '- **Governance** (§ solo/team): team'
+  gov_cell undeclared "two field lines both solo (ambiguous, no team -> undeclared)" '- **Governance** (§ solo/team): solo' '**Governance** (§ solo/team): solo'
+  gov_cell team "one real field line + a prose mention of the phrase (prose is ignored)" 'We discuss **Governance** (§ solo/team): solo elsewhere' '- **Governance** (§ solo/team): team'
+  gov_cell solo "one real solo field line + a prose mention that says team (prose is ignored)" 'We discuss **Governance** (§ solo/team): team elsewhere' '- **Governance** (§ solo/team): solo'
+  gov_cell undeclared "no Governance line at all" '# Project' 'nothing here'
+  gov_cell undeclared "Governance named inside prose, not as the field" 'We discuss **Governance** (§ solo/team): team elsewhere, mid-sentence'
+  : > "$_gv/CLAUDE.md"; printf '%s\n%s\n' '- **Governance** (§ solo/team): solo' '- **Governance** (§ solo/team): team' >> "$_gv/CLAUDE.md"
+  got=$( ( read_governance "$_gv/CLAUDE.md"; printf '%s' "${GOV_NOTE:-}" ) 2>/dev/null ) || got="ERR"
+  if [ "$got" = "ambiguous: 2 field lines" ]; then echo "selftest PASS: read_governance names the ambiguity (2 field lines) so it is visible"; else echo "selftest FAIL: read_governance ambiguity note got '$got'"; st=1; fi
+  got=$( ( read_governance "$_gv/does-not-exist"; printf '%s' "${GOV_MODE:-}" ) 2>/dev/null ) || got="ERR"
+  if [ "$got" = "undeclared" ]; then echo "selftest PASS: read_governance absent file -> undeclared"; else echo "selftest FAIL: read_governance absent file got '$got'"; st=1; fi
+
+  # parse_merge_methods: the three TOP-LEVEL repo fields as `gh api --jq` prints them
+  # (`[.allow_squash_merge,.allow_merge_commit,.allow_rebase_merge]|map(tostring)|join(" ")`) -> squash-only |
+  # the allowed list | unknown. Reading them with jq (not a text scan) is what keeps a `template_repository`
+  # object, which repeats the keys BEFORE the top-level ones, from being read instead (S-1).
+  mm_cell() {  # want label fields
+    got=$(parse_merge_methods "$3" 2>/dev/null) || got="ERR"
+    if [ "$got" = "$1" ]; then echo "selftest PASS: parse_merge_methods $2 -> $1"; else echo "selftest FAIL: parse_merge_methods $2 want '$1' got '$got'"; st=1; fi
+  }
+  mm_cell squash-only "squash only" 'true false false'
+  mm_cell squash,merge,rebase "all three allowed" 'true true true'
+  mm_cell squash,merge "squash + merge commit" 'true true false'
+  mm_cell unknown "fields null (token cannot read them)" 'null null null'
+  mm_cell unknown "one field null" 'true false null'
+  mm_cell unknown "two fields only" 'true false'
+  mm_cell unknown "garbage" 'yes no maybe'
+  mm_cell unknown "empty" ''
+  if command -v jq >/dev/null 2>&1; then
+    # S-1 against a real jq: a template_repository (squash-only) BEFORE top-level keys that allow merge commits.
+    got=$(printf '%s' '{"template_repository":{"allow_squash_merge":true,"allow_merge_commit":false,"allow_rebase_merge":false},"allow_squash_merge":true,"allow_merge_commit":true,"allow_rebase_merge":false}' \
+      | jq -r '[.allow_squash_merge,.allow_merge_commit,.allow_rebase_merge]|map(tostring)|join(" ")' 2>/dev/null) || got=""
+    got=$(parse_merge_methods "$got" 2>/dev/null) || got="ERR"
+    if [ "$got" = "squash,merge" ]; then echo "selftest PASS: S-1 the jq filter reads the top-level fields, never a template_repository's"; else echo "selftest FAIL: S-1 template_repository shadowed the top-level fields (got '$got')"; st=1; fi
+  fi
+
+  # Drift locks: the helpers duplicated into the self-contained apply script must stay identical.
+  for _dl in parse_merge_methods co_logins valid_branch; do
+    _dl_a=$(sed -n "/^$_dl() {/,/^}/p" "$0")
+    _dl_b=$(sed -n "/^$_dl() {/,/^}/p" "$REPO_ROOT/scripts/branch-protection-apply.sh")
+    if [ -n "$_dl_a" ] && [ "$_dl_a" = "$_dl_b" ]; then echo "selftest PASS: $_dl() is identical in both scripts (no drift)"; else echo "selftest FAIL: $_dl() drifted between branch-protection.sh and branch-protection-apply.sh"; st=1; fi
+  done
+
+  # R-4/S-4: a branch argument that could redirect the API path is refused (rc 2) before any gh call.
+  for _bb in 'a..b' 'x?y' 'x#y' 'a b'; do   # (a leading '-' is already a usage error, rc 2)
+    out=$(CI='' sh "$0" "$_bb" 2>&1) && g=0 || g=$?
+    if [ "$g" = 2 ] && printf '%s\n' "$out" | grep -qF "invalid branch"; then echo "selftest PASS: branch '$_bb' refused (rc 2)"; else echo "selftest FAIL: branch '$_bb' want rc 2 + 'invalid branch' got rc=$g out=[$out]"; st=1; fi
+  done
+
+  # End to end through run() with gh stubbed via PATH, in a fixture TREE (REPO_ROOT derives from $0, so
+  # the script is copied in beside a CLAUDE.md and a CODEOWNERS).
+  _e2e="$_bpdir/e2e"; mkdir -p "$_e2e/conformance" "$_e2e/.github" "$_e2e/bin"
+  cp "$0" "$_e2e/conformance/branch-protection.sh"
+  printf '%s\n' '- **Governance** (§ solo/team): team — solo = admin-merge' > "$_e2e/CLAUDE.md"
+  printf '* @SeaBrad72 @reviewer-login @acme/reviewers\n' > "$_e2e/.github/CODEOWNERS"
+  cat > "$_e2e/bin/gh" <<'STUBE2E'
+#!/bin/sh
+case "$*" in
+  *"repo view"*) echo "me/repo" ;;
+  *"/invitations"*) [ -z "${STUB_INVITES_FAIL:-}" ] || exit 1; for l in ${STUB_INVITES:-}; do echo "$l"; done ;;
+  *"branches/main/protection"*) printf '%s' "$STUB_PROTECTION" ;;
+  *) [ -z "${STUB_REPO_FAIL:-}" ] || exit 1; printf '%s' "$STUB_REPOJSON" ;;
+esac
+STUBE2E
+  chmod +x "$_e2e/bin/gh"
+  e2e() {  # lbl want-rc needle protection repojson [VAR=val...]   -> runs the fixture tree's script under the stub
+    lbl=$1; want=$2; needle=$3; prot=$4; repoj=$5; shift 5
+    out=$( ( PATH="$_e2e/bin:$PATH"; STUB_PROTECTION="$prot"; STUB_REPOJSON="$repoj"; export STUB_PROTECTION STUB_REPOJSON; env CI='' REQUIRE=0 "$@" sh "$_e2e/conformance/branch-protection.sh" ) 2>&1 ) && g=0 || g=$?
+    if [ "$g" = "$want" ] && printf '%s\n' "$out" | grep -qF -e "$needle"; then echo "selftest PASS: e2e $lbl -> exit $g"; else echo "selftest FAIL: e2e $lbl want rc=$want needle='$needle' got rc=$g out=[$out]"; st=1; fi
+  }
+  _RJ_SQ='true false false'
+  _RJ_ALL='true true true'
+  _RJ_TMPL='true true false'   # what jq prints for the TOP-LEVEL fields when a template_repository says squash-only (S-1)
+  e2e "team declared + team live + squash-only" 0 "merge_methods=squash-only" "$_TEAM_LIVE" "$_RJ_SQ"
+  e2e "team declared + solo live" 1 "$_CURE" "$_SOLO_LIVE" "$_RJ_SQ"
+  e2e "team declared + merge commits allowed" 1 "merge methods" "$_TEAM_LIVE" "$_RJ_ALL"
+  e2e "team declared + top-level merge commits allowed (a template_repository must not mask it)" 1 "merge methods" "$_TEAM_LIVE" "$_RJ_TMPL"
+  e2e "team declared + repo JSON unreadable" 0 "ADVISORY: merge methods are not readable with this token — the squash-only pin is UNVERIFIED on me/repo (team declaration)" "$_TEAM_LIVE" "" STUB_REPO_FAIL=1
+  e2e "pending CODEOWNERS invitation (and a team handle is ignored)" 0 "WARN: CODEOWNERS names reviewer-login" "$_TEAM_LIVE" "$_RJ_SQ" STUB_INVITES=reviewer-login
+  e2e "team declared + code-owner off: the FAIL says it, the ADVISORY is skipped (R-7)" 1 "FAIL: CLAUDE.md declares governance team but require_code_owner_reviews" "$_TEAM_NOCO" "$_RJ_SQ"
+  e2e "invitations unreadable" 0 "invitations: not readable with this token" "$_TEAM_LIVE" "$_RJ_SQ" STUB_INVITES_FAIL=1
+  printf '%s\n' '- **Governance** (§ solo/team): solo — solo = admin-merge' > "$_e2e/CLAUDE.md"
+  e2e "solo declared + team live + merge commits allowed" 0 "ADVISORY: merge methods" "$_TEAM_LIVE" "$_RJ_ALL"
+  rm -f "$_e2e/CLAUDE.md"
+  e2e "no CLAUDE.md (kit tree / pre-incept) -> undeclared, solo protection passes" 0 "settings: enforce_admins=false" "$_SOLO_LIVE" "$_RJ_ALL"
 
   [ "$st" = "0" ] && echo "branch-protection --selftest: OK"
   return "$st"

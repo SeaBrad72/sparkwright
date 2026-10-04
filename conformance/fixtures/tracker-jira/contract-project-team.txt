@@ -1,0 +1,2 @@
+style	next-gen
+id	10000

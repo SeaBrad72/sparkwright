@@ -1,0 +1,3 @@
+reach	ok
+auth	ZQHOSTILEAUTH
+type	ZQHOSTILETYPE

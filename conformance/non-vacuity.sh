@@ -464,8 +464,10 @@ tally_core() {
 }
 
 # ── sweep_clean : remove EVERY harness artifact (.nv-mut-* / .nv-ctl-* [+ .meta]) from each targeted
-#    check's directory. The `.nv-` prefix is written ONLY by this harness (via _mktemp_in), so this is
-#    unambiguous + safe. Per-judge cleanup already removes each judge's own files; this is a
+#    check's directory. The `.nv-` prefix is written ONLY by this harness (via _mktemp_in), with one
+#    other named writer: board-drift.sh's own leg-Z teeth check, which writes its scratch mutant to
+#    `.nv-zmut-*` (a distinct prefix from this harness's `.nv-mut-*`, so a concurrent sweep_clean never
+#    deletes it mid-run). Per-judge cleanup already removes each judge's own files; this is a
 #    ROOT-CAUSE-AGNOSTIC belt-and-suspenders that guarantees the sweep NEVER leaves an artifact behind,
 #    even if a check's own selftest machinery (e.g. adopter-export-wired's git-archive→verify chain)
 #    produces a straggler in a way a single judge can't see. Run at sweep start (defensive vs. an

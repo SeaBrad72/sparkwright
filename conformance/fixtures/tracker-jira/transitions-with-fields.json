@@ -1,0 +1,11 @@
+{
+  "transitions": [
+    { "id": "11", "name": "Start Progress", "to": { "id": "3", "name": "In Progress" },
+      "fields": { "comment": { "required": false, "hasDefaultValue": false, "name": "Comment", "schema": { "type": "string" } } } },
+    { "id": "21", "name": "Close", "to": { "id": "5", "name": "Done" },
+      "fields": {
+        "resolution": { "required": true, "hasDefaultValue": false, "name": "Resolution", "schema": { "type": "resolution" } },
+        "customfield_10060": { "required": true, "hasDefaultValue": true, "name": "Defaulted Reason", "schema": { "type": "string" } },
+        "comment": { "required": false, "hasDefaultValue": false, "name": "Comment", "schema": { "type": "string" } } } }
+  ]
+}

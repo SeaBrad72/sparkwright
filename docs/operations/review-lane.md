@@ -9,7 +9,8 @@ evidence converts to real two-human segregation of duties the moment a teammate 
 > used to say it was not.** Until that date this read: "process discipline, not a fail-closed gate — a
 > solo human *can* skip writing the record". That is **no longer true where a second identity exists**.
 > `conformance/review-lane.sh` is a required status context (`review-lane`) that refuses a
-> sensitive/control-plane PR — and any non-docs-only ordinary one — whose head commit does not carry
+> sensitive/control-plane PR — and an ordinary one whose row is Size M+ or unreadable (unknown is owed;
+> an XS/S ordinary PR owes none, `D-240930-1`) — whose head commit does not carry
 > `Kit-Plan:` and `Kit-Review:` trailers naming a tracked plan file and a graded review record.
 > See *The graded record* below. The
 > **approval** is enforced beside it by branch protection, not by this check (amended 2026-09-05).
@@ -32,9 +33,9 @@ Since 2026-09-04 the review stage leaves a file, and a gate refuses without it.
 |---|---|
 | **Plan artifact** | `docs/plans/<date>-<row-slug>.md` from [`PLAN-RECORD-TEMPLATE`](../../templates/PLAN-RECORD-TEMPLATE.md) · trailer `Kit-Plan:` |
 | **Review artifact** | `docs/reviews/<date>-<row-slug>.md` from [`REVIEW-RECORD-TEMPLATE`](../../templates/REVIEW-RECORD-TEMPLATE.md) · trailer `Kit-Review:` (comma-separated for a consolidated PR) |
-| **Graded for** | Builder ≠ Reviewer · rounds citing commits inside the PR, closing on APPROVE · every finding disposed (`fixed <sha>` \| `accepted — <reason>` \| `waived — WAIVER-<id>`) · every design-promised control resolving to an executable `path::test-name` · a security-review verdict, or a waiver carrying all four `D-240904-1` criteria |
+| **Graded for** | Builder ≠ Reviewer · rounds citing commits inside the PR, closing on APPROVE (a later non-bookkeeping commit WARNs) · every finding disposed (`fixed <sha>` \| `accepted — <reason>` \| `waived — WAIVER-<id>`) · every design-promised control resolving to an executable `path::test-name` · a security-review verdict, or a waiver carrying all four `D-240904-1` criteria |
 | **Attested by** | **branch protection, not this check** (amended 2026-09-05, `REVIEW-LANE-WAITING-IS-GREEN`). The approver types **nothing** and clicks **Approve**; three server-side settings carry it — `required_approving_review_count >= 1` (a non-author approval exists), `dismiss_stale_reviews` (a push dismisses every prior approval, so an approval carried across a fix push does not count), `require_last_push_approval` (whoever pushed the head cannot approve their own push). `conformance/branch-protection.sh` FAILs when any of the three is false or absent, and that leg is the required context `branch-protection-live`. *(The gate itself read the forge's review list until 2026-09-05 and returned WAITING while none existed — which a job renders RED, cleared only by a manual re-run. Deleted: the forge enforces the same properties on every merge attempt, with no run to wait on. And `D-240904-2`, 2026-09-04, had already struck the typed attestation line — author-controlled text proved only that someone could copy a string a command printed for them.)* |
-| **Scope cut** | an **ordinary AND docs-only** change-set is N-A. That is the classifier's cut, not the gate's judgment. |
+| **Scope cut** | two cuts are N-A: an **ordinary AND docs-only** change-set (the classifier's cut, unchanged), and an **ordinary** change-set whose `Kit-Row` is Size XS/S at the merge-base with its own row line changed by the PR and not Done/Released at the base (unknown, tracker-backed or unbound = owed; `D-240930-1`). For that class the forge Approve is the only graded evidence of review. |
 | **Verdicts** | `0` pass/N-A · `2` refusal — a missing, malformed or self-reviewed **record**, or a change-set the gate could not derive. Two values, and no third: the check runs **once per push** and is green or red like every other gate. *(`1` meant WAITING and is retired, not recycled — see the Attested-by row.)* |
 
 **What makes "never reviewed" RED is the record, not the keystroke.** The T1 defect — 24 of 24
@@ -85,7 +86,7 @@ accept **compensating controls** for small orgs, *provided they are real and rec
 "we'll add review later" deferral (the trap WS-rejected opt-in re-creates) — it is the control,
 operating, with an audit trail.
 
-## Upgrade to two-human SoD — one setting, zero rework of evidence
+## Upgrade to two-human SoD — one verb, zero rework of evidence
 
 GitHub branch protection on `main` already requires **one non-author approval**. Solo, you satisfy it
 with an **owner admin-merge** (`gh pr merge --admin`, `enforce_admins: false`) — GitHub logs the bypass,
@@ -93,15 +94,36 @@ and that log is the audit trail of "solo maintainer self-ratified" (see `../../S
 **second human with write access** joins, you tighten to real, *enforced* two-human SoD:
 
 - *they* approve the PR — the existing required-review rule is now met by a real second party, **and**
-- you **flip `enforce_admins: true`** (one setting) so an owner admin-merge can no longer bypass that
-  required review. *(With `enforce_admins: false`, an admin keeps the `--admin` bypass even after a
-  second approval exists — so the flip is what actually enforces the second human.)*
+- an admin runs **`sh scripts/branch-protection-apply.sh --replace --team`** so an owner admin-merge can
+  no longer bypass that required review. It writes `enforce_admins:true`, `require_code_owner_reviews:true`,
+  one approving review, `dismiss_stale_reviews:true` and `require_last_push_approval:true` together, and pins
+  the repo's merge methods to squash-only. *(With `enforce_admins: false`, an admin keeps the `--admin`
+  bypass even after a second approval exists — so the flip is what actually enforces the second human.)*
+
+> **The trap, stated before it springs.** With `enforce_admins:true` an admin can no longer merge their
+> own PR; a second person with write access must approve every PR. **If you are alone, the flip locks you
+> out** until you `--replace` back to solo (`sh scripts/branch-protection-apply.sh --replace`). The verb
+> prints this at its typed, tty-gated confirmation, and it WARNs (never refuses) when the repo has no second
+> collaborator with write access or a `CODEOWNERS` login has only a pending invitation — that review can never
+> count. Invite and let them accept **before** you flip.
+
+**Prove the flip — by the verifier's output, not a UI click.** `sh conformance/branch-protection.sh` prints
+one `settings:` line on every live read. After the flip it must read
+`settings: enforce_admins=true code_owner_reviews=true approvals=1 last_push=true dismiss_stale=true merge_methods=squash-only`.
+A tree whose `CLAUDE.md` declares `**Governance** (§ solo/team): team` turns RED — naming the setting and this
+verb as the cure — while `enforce_admins` or code-owner review is off or a merge commit is still allowed (merge
+methods unreadable with the token — a CI token that cannot read them — is a loud ADVISORY that the
+squash-only pin is UNVERIFIED, not a red); a solo or undeclared tree keeps its verdicts, and
+non-squash merge methods are only an ADVISORY there. **CI does not prove squash-only:** the
+`branch-protection-live` job's read-only token cannot read the merge-method fields (measured), so in CI that
+line reads `merge_methods=unknown`. Confirm the pin with an admin's show-only run of
+`sh scripts/branch-protection-apply.sh`, which prints `merge-methods: current=…`.
 
 That is the **only** change: no process is rebuilt and no evidence re-created — every `REVIEW-RECORD` you
-wrote solo remains valid history, and the branch-protection rule itself is unchanged. Optionally also set
-`require_code_owner_reviews` + populate `CODEOWNERS` to route approval by path (the P1 branch-protection
-advisory nudges this) — **but only once a second human exists; enabling it solo traps you (see the caveats below).** So the solo→team upgrade is **one `enforce_admins` flip with zero rework of the
-recorded compensating-control evidence** — not a re-architecture.
+wrote solo remains valid history. Code-owner review is part of the team profile because a second human
+exists by then; **enabling it while you are the only code owner traps you (see the caveats below).** So the
+solo→team upgrade is **one verb with zero rework of the recorded compensating-control evidence** — not a
+re-architecture.
 
 > **Caveat — a private repo needs a paid plan for this flip.** Full branch protection (including
 > `enforce_admins`) on a **private** repo requires GitHub **Pro / Team / Enterprise**; on a private
@@ -170,7 +192,7 @@ disclosure is emitted beside the approval instead of living in a doc.
 
 **The flip (D2).** When a second human with write access joins: delete the seat line from
 `.kit/ratification-seats.conf`, stop declaring two-person review absent, and flip
-`enforce_admins: true` per the upgrade section above. One person, one file, one setting.
+the team profile per the upgrade section above (`sh scripts/branch-protection-apply.sh --replace --team`; read its lock-out warning first). One person, one file, one verb.
 
 ## See also
 - [`drift-self-check.md`](./drift-self-check.md) — the agent's in-loop re-check; **run it before requesting review** so the reviewer inherits less drift (the cheapest catch is the earliest one).

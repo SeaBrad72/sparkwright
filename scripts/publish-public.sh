@@ -1,6 +1,7 @@
 #!/bin/sh
 # publish-public.sh — promote a released kit into the PUBLIC product repo.
 #   sh scripts/publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] [--selftest]
+#   sh scripts/publish-public.sh --gate [--require-ids]   # (--require-ids: rc 2 if the identifier list is absent/empty) read-only Layer-2 scan of committed HEAD; runs on every PR (CI secret-scan)
 #
 # THE MENTAL MODEL (load-bearing): promotion is REGENERATION, not cherry-picking. You never hand-pick
 # files or commits to move public — that is where leaks come from. The public repo is a GENERATED
@@ -45,7 +46,7 @@ PUBLIC_REMOTE_DEFAULT="https://github.com/SeaBrad72/sparkwright.git"
 # so it never reaches an export. Overridable for the selftest.
 PUBLISH_ID_FILE="${PUBLISH_ID_FILE:-$ROOT/.publish-identifiers}"
 
-usage() { echo "usage: publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] [--selftest]" >&2; exit 2; }
+usage() { echo "usage: publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] | --gate [--require-ids] | --selftest" >&2; exit 2; }
 
 # --- P1.2-pre-b: the immutability rule, as a PURE function so it can be proven ------------------
 # publish_decision <tag_already_published:0|1> <changed_paths:N> -> publish | noop | refuse
@@ -120,8 +121,12 @@ REMOTE=$PUBLIC_REMOTE_DEFAULT
 DRY_RUN=0
 ALLOW_UNTAGGED=0
 SELFTEST=0
+GATE=0
+REQUIRE_IDS=0
 while [ $# -gt 0 ]; do
   case $1 in
+    --gate)           GATE=1; shift ;;
+    --require-ids)    REQUIRE_IDS=1; shift ;;
     --remote)         [ $# -ge 2 ] || usage; REMOTE=$2; shift 2 ;;
     --dry-run)        DRY_RUN=1; shift ;;
     --allow-untagged) ALLOW_UNTAGGED=1; shift ;;
@@ -148,6 +153,9 @@ done
 #   - Harvest/field-report/postmortem docs — scoped to docs/ so a SHIPPED script like
 #     scripts/postmortem.sh (a maintainer tool, not a candid report) is not swept up (the C1/M1
 #     regression this closes).
+#   - The kit's OWN postmortems — the ROOT `postmortems/` directory exactly (PUBLISH-WITHHOLD-ROOT-
+#     POSTMORTEMS), beside its `.gitattributes` export-ignore. Not a `*postmortem*` name pattern:
+#     templates/POSTMORTEM-TEMPLATE.md and scripts/postmortem.sh are the product and must ship.
 #   - Owner identifiers in file CONTENT — the owner's name/email/home-path, read from the
 #     EXPORT-IGNORED `.publish-identifiers` file (see PUBLISH_ID_FILE). A GENERIC /Users|/home scan
 #     was rejected: it false-positives on legitimately-shipped example paths (e.g. a `/home/u/.ssh/
@@ -157,6 +165,11 @@ done
 #     identity-neutral. Binaries are scanned too (grep -a), since the export is small. If the file is
 #     absent (an adopter's checkout), this dimension is N/A — the path denylist + gitleaks + step-4
 #     still apply.
+#     FIXTURE CONVENTION (PUBLIC-DEIDENT-FIXTURE-LOGINS): a fixture or test that needs a forge login
+#     uses a NEUTRAL placeholder, never a real account — a second-person login (a reviewer / approver)
+#     is `reviewer-login`, an author is `author-login` (a cased variant keeps its case shape, e.g.
+#     `Reviewer-Login`). Agents write fixtures from the logins they see in a session; this is the word
+#     to use instead. `--gate` runs this same scan on every PR, so a real login is red at review time.
 # MAINTENANCE OBLIGATION: when a new candid document type appears, add it HERE — step 4 is a
 # backstop, not a substitute.
 sensitive_hits() {
@@ -176,6 +189,7 @@ sensitive_hits() {
        -o -iname 'meta-control-log.md' \
        -o -iname '.meta-control-last' \
        -o -ipath "$_tree/docs/architecture/*" \
+       -o -ipath "$_tree/postmortems/*" \
        -o \( -ipath "$_tree/docs/*" \
              -a \( -iname '*harvest*' -o -iname '*field-report*' -o -iname '*postmortem*' \) \) \
     \) -print 2>>"$_errf" | sed "s|^$_tree/||"
@@ -198,6 +212,80 @@ sensitive_hits() {
   fi
   rm -f "$_errf"
   return 0
+}
+
+# --- gate — the Layer-2 scan, runnable on every PR (PUBLIC-DEIDENT-FIXTURE-LOGINS) ---------------
+# `--gate`: export COMMITTED HEAD with the same generator a publish uses (scripts/adopter-export.sh),
+# run sensitive_hits over that tree AND over every `public:` block of CHANGELOG.md (the release notes —
+# CHANGELOG.md is export-ignored, so the tree scan cannot see them). Read-only: no tag check, no dirty
+# check (it archives HEAD, so uncommitted edits are not scanned), no mirror, no network, no gitleaks
+# (the CI job it runs in already runs gitleaks over full history).
+#   rc 0 clean · rc 1 a hit (each offending PATH printed, never an identifier value, plus one cure line)
+#   rc 2 a scan could not complete (fail-closed, same as the publish path)
+gate() {
+  cd "$ROOT"
+  _gw=$(mktemp -d "${TMPDIR:-/tmp}/sw-gate.XXXXXX") || { echo "publish-public: gate: mktemp failed" >&2; exit 2; }
+  trap 'rm -rf "$_gw"' EXIT
+  trap 'exit 2' HUP INT TERM
+  # The exporter honours the WORKTREE .gitattributes (export-ignore) while archiving HEAD's content, so an
+  # uncommitted attributes edit would change what is scanned: refuse rather than scan a hybrid.
+  # LIMIT: only the root .gitattributes is checked; nested */.gitattributes and .git/info/attributes also steer
+  # `git archive --worktree-attributes`, which a fresh CI checkout cannot carry dirty.
+  if [ -n "$(git status --porcelain -- .gitattributes 2>/dev/null)" ]; then
+    echo "publish-public: gate: .gitattributes has uncommitted changes — the exporter reads the worktree copy, so the scan would not match committed HEAD. Commit or stash it." >&2
+    exit 2
+  fi
+  say "gate: scanning the tree COMMITTED at HEAD (git archive) — uncommitted edits are not seen"
+  if [ "$REQUIRE_IDS" -eq 1 ]; then
+    if [ ! -f "$PUBLISH_ID_FILE" ] || ! grep -v '^[[:space:]]*#' "$PUBLISH_ID_FILE" | grep -q '[^[:space:]]'; then
+      echo "publish-public: gate: --require-ids: the identifier list is absent or has no entries — the owner-identifier scan would be vacuous." >&2
+      exit 2
+    fi
+  fi
+  [ -f "$PUBLISH_ID_FILE" ] || say "gate: no identifier list at \$PUBLISH_ID_FILE — the owner-identifier dimension is N/A; the withheld-path scan still runs"
+  if ! sh scripts/adopter-export.sh "$_gw/export" >/dev/null 2>"$_gw/export.err"; then
+    echo "publish-public: gate: adopter-export failed — nothing could be scanned: $(head -1 "$_gw/export.err")" >&2
+    exit 2
+  fi
+  # every public block of the COMMITTED CHANGELOG.md -> one scan target (absent CHANGELOG at HEAD: rc 2)
+  mkdir -p "$_gw/note"; : > "$_gw/note/release-notes.md"
+  # The kit repo always carries a CHANGELOG.md: absent at HEAD means the note scan cannot run -> rc 2.
+  git cat-file -e HEAD:CHANGELOG.md 2>/dev/null || { echo "publish-public: gate: no CHANGELOG.md at HEAD — the release-note scan cannot run" >&2; exit 2; }
+  git show HEAD:CHANGELOG.md > "$_gw/CHANGELOG.md" || { echo "publish-public: gate: cannot read CHANGELOG.md at HEAD" >&2; exit 2; }
+  # The scanned note text is the UNION of (1) every block, by a line-level awk (a line naming BOTH markers —
+  # the header prose that documents the convention — is not a block) and (2) what the PUBLISH ships for every
+  # `## [<v>]` heading: extract_public_notes itself, run on this same HEAD copy, so the two cannot diverge.
+  awk 'index($0, "<!-- public:start -->") && index($0, "<!-- public:end -->") { next }
+       index($0, "<!-- public:start -->") { on=1; next }
+       index($0, "<!-- public:end -->")   { on=0; next }
+       on { print }' "$_gw/CHANGELOG.md" > "$_gw/note/release-notes.md" \
+    || { echo "publish-public: gate: could not extract the public release-note blocks" >&2; exit 2; }
+  _gvers=$(sed -n 's/^## \[\([^]]*\)\].*/\1/p' "$_gw/CHANGELOG.md") || { echo "publish-public: gate: could not list CHANGELOG versions" >&2; exit 2; }
+  _gi=0
+  printf '%s\n' "$_gvers" | while IFS= read -r _gv; do
+    [ -n "$_gv" ] || continue
+    extract_public_notes "$_gv" "$_gw/CHANGELOG.md" > "$_gw/note/v-$_gi.md" 2>/dev/null || : > "$_gw/note/v-$_gi.md"
+    _gi=$((_gi+1))
+  done
+  _gbad=0
+  _gtree=$(sensitive_hits "$_gw/export") || { echo "publish-public: gate: the tree scan could not complete (an unscannable tree is not proven clean)" >&2; exit 2; }
+  if [ -n "$_gtree" ]; then
+    _gbad=1
+    echo "publish-public: gate: the generated tree carries content that must not go public, in:" >&2
+    printf '%s\n' "$_gtree" | sort -u | sed 's/^/  /' >&2
+  fi
+  _gnote=$(sensitive_hits "$_gw/note") || { echo "publish-public: gate: the release-note scan could not complete" >&2; exit 2; }
+  if [ -n "$_gnote" ]; then
+    _gbad=1
+    echo "publish-public: gate: a CHANGELOG.md public block (release note) carries owner content, in:" >&2
+    echo "  CHANGELOG.md (between <!-- public:start --> and <!-- public:end -->)" >&2
+  fi
+  if [ "$_gbad" -ne 0 ]; then
+    echo "publish-public: gate: cure — replace the owner identifier with a neutral placeholder (reviewer-login / author-login); the identifier list is .publish-identifiers (export-ignored); a withheld-document path is cured by export-ignoring it in .gitattributes." >&2
+    exit 1
+  fi
+  say "gate: clean — $(find "$_gw/export" -type f | wc -l | tr -d ' ') exported files and the public release-note blocks carry no owner identifier or withheld path"
+  exit 0
 }
 
 # --- selftest — the non-vacuity oracle ----------------------------------------------------------
@@ -227,6 +315,8 @@ selftest() {
   : > "$_t/meta-control-log.md"
   : > "$_t/.meta-control-last"
   : > "$_t/docs/architecture/a-design.md"
+  mkdir -p "$_t/postmortems"
+  : > "$_t/postmortems/x.md"                        # the kit's own root postmortems (PUBLISH-WITHHOLD-ROOT-POSTMORTEMS)
   : > "$_t/docs/2026-07-11-a-harvest.md"
   : > "$_t/docs/2026-07-11-a-field-report.md"
   : > "$_t/docs/2026-07-11-a-postmortem.md"
@@ -262,6 +352,7 @@ selftest() {
   _hit  meta-control-log.md                 "candid go/no-go verdicts"
   _hit  .meta-control-last                  "meta-control state"
   _hit  docs/architecture/a-design.md       "internal architecture doc"
+  _hit  postmortems/x.md                    "the kit's own root postmortems never ship (PUBLISH-WITHHOLD-ROOT-POSTMORTEMS)"
   _hit  docs/2026-07-11-a-harvest.md        "harvest (candid synthesis)"
   _hit  docs/2026-07-11-a-field-report.md   "field report"
   _hit  docs/2026-07-11-a-postmortem.md     "postmortem"
@@ -278,6 +369,12 @@ selftest() {
   _pass scripts/postmortem.sh               "shipped maintainer script (not a report)"
   _hit  docs/adoption/templates/a-postmortem.md "candid report under a nested templates/ (M1: no smuggling)"
   _pass SECURITY.md                         "product vocabulary is not a record"
+  # case variant, in its OWN tree (it would collide with postmortems/ on a case-insensitive macOS FS)
+  _t_main=$_t
+  _t=$(mktemp -d "${TMPDIR:-/tmp}/sw-pub-st-case.XXXXXX") || die "mktemp failed"
+  mkdir -p "$_t/Postmortems"; : > "$_t/Postmortems/y.md"
+  _hit  Postmortems/y.md                    "case variant: the gate is the backstop where git archive is case-sensitive"
+  rm -rf "$_t"; _t=$_t_main
 
   # rc contract — the scan must fail CLOSED, and the caller idiom must surface it.
   if sensitive_hits "$_t/does-not-exist" >/dev/null 2>&1; then
@@ -394,12 +491,113 @@ EOF
     echo "  ok   NOTES no internal bullet leaks on a dangling start"
   fi
 
+  # --- PUBLIC-DEIDENT-FIXTURE-LOGINS: `--gate` on a throwaway git repo ---------------------------------
+  # FAITHFUL, not stubbed: the throwaway repo carries COPIES of the real publish-public.sh and
+  # adopter-export.sh, so `--gate` derives its ROOT from its own location (no override knob needed) and
+  # exports the repo's committed HEAD through the real generator. The identifier list is the selftest's
+  # TEST list (PUBLISH_ID_FILE above) — never the real .publish-identifiers.
+  echo "publish-public --selftest: --gate (per-PR Layer-2 scan of committed HEAD)"
+  _gate_repo() {  # <dir> <fixture-body> <public-block-body>
+    mkdir -p "$1/scripts" "$1/docs"
+    cp "$ROOT/scripts/publish-public.sh" "$1/scripts/publish-public.sh"
+    cp "$ROOT/scripts/adopter-export.sh" "$1/scripts/adopter-export.sh"
+    # the kit export-ignores CHANGELOG.md too; this copy of the script holds the TEST tokens as literals
+    # (it is the machinery under test, not a shipped fixture), so it must not be exported into the scan.
+    printf 'CHANGELOG.md export-ignore\nscripts/publish-public.sh export-ignore\n' > "$1/.gitattributes"
+    printf '%s\n' "$2" > "$1/docs/fixture.md"
+    printf '# Changelog\n\n## [1.0.0]\n<!-- public:start -->\n%s\n<!-- public:end -->\n- internal bullet\n' "$3" > "$1/CHANGELOG.md"
+    ( cd "$1" && git init -q && git config user.email t@t && git config user.name t \
+        && git add -A && git commit -q -m fixture ) >/dev/null 2>&1
+  }
+  _gate_run() {  # <dir> [extra-flag] [id-file]  -> sets _grc and _gout
+    _grc=0
+    _gout=$( cd "$1" && env -u GIT_DIR -u GIT_WORK_TREE PUBLISH_ID_FILE="${3:-$PUBLISH_ID_FILE}" sh scripts/publish-public.sh --gate ${2:-} 2>&1 ) || _grc=$?
+  }
+  _gate_commit() {  # <dir> — commit whatever the test just changed in the throwaway repo
+    ( cd "$1" && git add -A && git commit -q -m change ) >/dev/null 2>&1
+  }
+  _want_rc() {  # <want> <pass-label> <fail-label>
+    if [ "$_grc" -eq "$1" ]; then echo "  ok   $2"; else echo "  FAIL $3: want rc $1, got rc $_grc"; _fail=$((_fail+1)); fi
+  }
+  _no_value() {  # <label> <planted value>
+    if printf '%s' "$_gout" | grep -qiF -e "$2"; then echo "  FAIL VALUE $1: output echoed the planted identifier"; _fail=$((_fail+1))
+    else echo "  ok   VALUE $1: the planted identifier is never echoed"; fi
+  }
+  _gate_repo "$_t/gate-tree" "seat: ACME-OWNER-TOKEN-42 reviews this" "A clean user-facing summary."
+  _gate_run "$_t/gate-tree"
+  if [ "$_grc" -eq 1 ] && printf '%s\n' "$_gout" | grep -qxF "  docs/fixture.md"; then
+    echo "  ok   GATE  identifier in a shipped fixture -> rc 1, file named"
+  else echo "  FAIL GATE  tree plant: want rc 1 naming docs/fixture.md, got rc $_grc"; _fail=$((_fail+1)); fi
+  _no_value "tree plant" "ACME-OWNER-TOKEN-42"
+  _gate_repo "$_t/gate-note" "a clean fixture" "Shipped with help from ownerlogin."
+  _gate_run "$_t/gate-note"
+  if [ "$_grc" -eq 1 ] && printf '%s\n' "$_gout" | grep -qF "CHANGELOG.md (between"; then
+    echo "  ok   GATE  identifier in a CHANGELOG public block -> rc 1, release note named"
+  else echo "  FAIL GATE  note plant: want rc 1 naming the CHANGELOG public block, got rc $_grc"; _fail=$((_fail+1)); fi
+  _no_value "note plant" "ownerlogin"
+  _gate_repo "$_t/gate-clean" "a clean fixture" "A clean user-facing summary."
+  _gate_run "$_t/gate-clean"
+  if [ "$_grc" -eq 0 ]; then echo "  ok   GATE  clean tree + clean notes -> rc 0 (the red above is load-bearing)"
+  else echo "  FAIL GATE  clean repo: want rc 0, got rc $_grc ($_gout)"; _fail=$((_fail+1)); fi
+  # an identifier in a NON-public part of CHANGELOG.md is out of scope (internal history is not shipped)
+  _gate_repo "$_t/gate-internal" "a clean fixture" "A clean user-facing summary."
+  # ...including after a header-prose line that names BOTH markers inline (not a block: must not open one)
+  printf -- '> each entry carries a <!-- public:start -->...<!-- public:end --> block\n- internal note about ownerlogin\n' >> "$_t/gate-internal/CHANGELOG.md"
+  ( cd "$_t/gate-internal" && git commit -q -am internal ) >/dev/null 2>&1
+  _gate_run "$_t/gate-internal"
+  if [ "$_grc" -eq 0 ]; then echo "  ok   GATE  identifier only in the internal (non-public) changelog, even after an inline marker mention -> rc 0 (not shipped)"
+  else echo "  FAIL GATE  internal-only plant should not red, got rc $_grc"; _fail=$((_fail+1)); fi
+
+  # S-1: the gate must scan AT LEAST what the publish ships. A line naming BOTH markers inside a `## [v]`
+  # section opens a block for extract_public_notes (the publish's extractor) — the gate scans its output too.
+  _gate_repo "$_t/gate-both" "a clean fixture" "A clean user-facing summary."
+  printf '## [2.0.0]\n> prose <!-- public:start -->x<!-- public:end --> inline\nthanks to ownerlogin\n<!-- public:end -->\n' >> "$_t/gate-both/CHANGELOG.md"
+  _gate_commit "$_t/gate-both"
+  _gate_run "$_t/gate-both"
+  if [ "$_grc" -eq 1 ] && printf '%s\n' "$_gout" | grep -qF "CHANGELOG.md (between"; then
+    echo "  ok   GATE  both-markers line inside a version section: what the publish extractor ships is scanned -> rc 1"
+  else echo "  FAIL GATE  both-markers divergence: want rc 1 naming the release note, got rc $_grc"; _fail=$((_fail+1)); fi
+  _no_value "both-markers plant" "ownerlogin"
+
+  # S-2: fail-closed WIRING — an exporter that fails, or a missing CHANGELOG, is rc 2 (never clean, never rc 1/0).
+  _gate_repo "$_t/gate-exportfail" "a clean fixture" "A clean user-facing summary."
+  # the stub leaves a partial CLEAN tree behind before failing, so only the exporter's rc (not a later scan
+  # error on an empty/absent tree) can produce rc 2 — deleting the gate's exit-2 on export failure goes red.
+  printf 'mkdir -p "$1"; echo ok > "$1/a.md"; exit 1\n' > "$_t/gate-exportfail/scripts/adopter-export.sh"
+  _gate_commit "$_t/gate-exportfail"
+  _gate_run "$_t/gate-exportfail"
+  _want_rc 2 "GATE  adopter-export failing -> rc 2 (fail-closed)" "GATE  exporter failure"
+  if printf '%s\n' "$_gout" | grep -qF "gate: clean"; then echo "  FAIL GATE  exporter failure printed a clean line"; _fail=$((_fail+1))
+  else echo "  ok   GATE  exporter failure prints no clean line"; fi
+  _gate_repo "$_t/gate-nocl" "a clean fixture" "A clean user-facing summary."
+  ( cd "$_t/gate-nocl" && git rm -q CHANGELOG.md && git commit -q -m nocl ) >/dev/null 2>&1
+  _gate_run "$_t/gate-nocl"
+  _want_rc 2 "GATE  no CHANGELOG.md at HEAD -> rc 2 (the note scan cannot run)" "GATE  absent CHANGELOG"
+
+  # S-3: --require-ids — a vacuous identifier dimension is rc 2 only when the caller demands the list.
+  _gate_run "$_t/gate-clean" --require-ids "$_t/no-such-ids"
+  _want_rc 2 "GATE  --require-ids with an ABSENT list -> rc 2" "GATE  require-ids absent"
+  printf '# only comments\n\n   \n' > "$_t/ids-comments"
+  _gate_run "$_t/gate-clean" --require-ids "$_t/ids-comments"
+  _want_rc 2 "GATE  --require-ids with a COMMENTS-ONLY list -> rc 2" "GATE  require-ids comments-only"
+  _gate_run "$_t/gate-clean" "" "$_t/no-such-ids"
+  _want_rc 0 "GATE  absent list WITHOUT --require-ids keeps the N/A behaviour -> rc 0" "GATE  absent list default"
+  _gate_run "$_t/gate-clean" --require-ids
+  _want_rc 0 "GATE  --require-ids with a populated list -> rc 0" "GATE  require-ids populated"
+
+  # S-4: the exporter reads the WORKTREE .gitattributes, so an uncommitted edit would scan a hybrid.
+  printf '# uncommitted\n' >> "$_t/gate-clean/.gitattributes"
+  _gate_run "$_t/gate-clean"
+  _want_rc 2 "GATE  uncommitted .gitattributes -> rc 2 (refuses to scan a hybrid)" "GATE  dirty gitattributes"
+
   rm -rf "$_t"; rm -f "$PUBLISH_ID_FILE"
   [ "$_fail" -eq 0 ] || { echo "publish-public --selftest: $_fail failed" >&2; exit 1; }
   echo "publish-public --selftest: all passed"
   exit 0
 }
 [ "$SELFTEST" -eq 1 ] && selftest
+[ "$REQUIRE_IDS" -eq 1 ] && [ "$GATE" -eq 0 ] && { echo "publish-public: --require-ids is only valid with --gate" >&2; usage; }
+[ "$GATE" -eq 1 ] && gate
 
 # --- preconditions ------------------------------------------------------------------------------
 cd "$ROOT"

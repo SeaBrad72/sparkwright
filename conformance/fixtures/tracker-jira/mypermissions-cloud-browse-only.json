@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "CREATE_ISSUES": { "id": "11", "key": "CREATE_ISSUES", "name": "Create Issues", "type": "PROJECT", "havePermission": false },
+    "EDIT_ISSUES": { "id": "12", "key": "EDIT_ISSUES", "name": "Edit Issues", "type": "PROJECT", "havePermission": false },
+    "TRANSITION_ISSUES": { "id": "13", "key": "TRANSITION_ISSUES", "name": "Transition Issues", "type": "PROJECT", "havePermission": false },
+    "ASSIGN_ISSUES": { "id": "14", "key": "ASSIGN_ISSUES", "name": "Assign Issues", "type": "PROJECT", "havePermission": false },
+    "ADMINISTER_PROJECTS": { "id": "23", "key": "ADMINISTER_PROJECTS", "name": "Administer Projects", "type": "PROJECT", "havePermission": false }
+  }
+}

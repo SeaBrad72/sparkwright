@@ -345,7 +345,7 @@ if [ "${1:-}" = "--selftest" ]; then
     b4_err=$( cd "$b4_s/repo" \
       && git init -q . && git config user.email e@x && git config user.name e \
       && echo seed > seed.txt && git add seed.txt && git commit -q -m seed \
-      && HOME="$b4_s" KIT_RUNAWAY_SANDBOX="$b4_s" RUNAWAY_BUDGET_CONFIG="$b4_s/conf" \
+      && HOME="$b4_s" KIT_RUNAWAY_SANDBOX="$b4_s" KIT_RUN_ROW=B4-BANNER RUNAWAY_BUDGET_CONFIG="$b4_s/conf" \
          RUNAWAY_TALLY="$b4_s/tally" OTEL_TRACE_FILE="$b4_s/trace" \
          sh "$b4_loop" alpha 2>&1 >/dev/null ) || true
     case "$b4_err" in

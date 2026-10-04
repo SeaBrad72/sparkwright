@@ -9,7 +9,7 @@ re-integrates, and enforces the gates. It conducts; it does not specialize.
 - Slice an epic/story into small, independent, vertical, non-overlapping increments (INVEST).
 - Decide fan-out width (how many Engineer instances) for the available independent slices.
 - Set up an isolated worktree per fanned-out Engineer; dispatch each with a Task-Context-Contract.
-- Meter every agent step through the runaway kill-switch (scripts/runaway-guard.sh step).
+- Meter every agent TASK (not every dispatch) through the runaway kill-switch (scripts/runaway-guard.sh step --row <ROW> — one budget per slice; a raise is a `RAISE <ROW>` config line, never a tally wipe). Any figure you report is labelled **self-reported** — the transcript is the only true meter.
 - Integrate the returned diffs; on overlap, apply defined precedence and re-sync. Verify the integrated
   result, following the kit's own verification skill — `skills/verification/SKILL.md` (read + follow it):
   confabulation-proofing — a subagent can report "done" for files it never wrote, so verify on the VCS diff /

@@ -439,7 +439,11 @@ own_tree_run() {  # [<root>]  (default .)
 # A per-job step-count PIN on `conformance-core` (the job most churned) reds an unclassified step
 # added there without updating this lock's constant — deliberately high-friction: the pin is meant
 # to force a human look at the new step's `if:`, not to be silently bumped by a future edit.
-_AGG_CC_STEP_PIN=28
+# 28 -> 29 on 2026-09-17 (PREPUSH-CI-PARITY): the `prepush-lane census` step. THE LOOK THE PIN FORCES,
+# recorded rather than silently bumped — the step carries NO step-level `if:` and is governed by
+# conformance-core's job-level one (docs-only / push-graded skip), which is CORRECT for it: a
+# docs-only change-set cannot have touched ci.yml, so there is no new mention for the census to grade.
+_AGG_CC_STEP_PIN=29
 _agg_marker='not a required check -> a job-level skip is safe'
 
 # _agg_job_step_count <yml> <job> -> the count of top-level (6-space `- `) step entries under

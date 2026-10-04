@@ -9,7 +9,7 @@ A founder hands the **Orchestrator** an epic. It slices the epic into disjoint, 
 ## Who drives, what's mechanical
 
 - **The LLM Orchestrator drives.** It follows `agents/orchestrator.agent.md` (Claude binding: `.claude/agents/orchestrator.md`) and makes the judgment calls — slicing, fan-out width, conflict resolution — dispatching **real** Engineer subagents.
-- **Harness-neutral shell mechanics** are the substrate the Orchestrator calls: `scripts/orchestrator-run.sh` (worktree-per-agent + the `runaway-guard.sh step` meter + bracketed span emission + clean-merge integration).
+- **Harness-neutral shell mechanics** are the substrate the Orchestrator calls: `scripts/orchestrator-run.sh` (worktree-per-agent + the `runaway-guard.sh step --row <ROW>` meter (one budget per slice; `KIT_RUN_ROW` names the row; the loop never wipes the tally) + bracketed span emission + clean-merge integration).
 
 ## The roster & lifecycle
 

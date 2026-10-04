@@ -1,0 +1,2 @@
+wf	Builds Workflow	Start Progress	3	not
+wf	Builds Workflow	Stop Progress	1	enforced

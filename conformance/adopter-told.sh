@@ -171,7 +171,7 @@ at_invoked() {
 at_live_rows() {
   [ -f "$1" ] || return 0
   grep '^check ' "$1" 2>/dev/null \
-    | grep -v -e '--kitself' -e '--selftest' \
+    | grep -v -E -e '[[:space:]]--kitself([[:space:]]|$)' -e '--selftest' \
     | grep -oE 'conformance/[A-Za-z0-9_.-]+\.sh' || true
 }
 
@@ -450,6 +450,16 @@ selftest() {
   at_claim "$W/kit2" "docs/a.md" 'Enforced by `conformance/nowhere.sh` in the kit'"'"'s own CI.'
   at_expect "kit token + a KIT-UNREACHABLE script still reds (the token narrows, never exempts)" 1 "$W/kit2"
   at_says "the kit-token red says the token does not excuse the claim" 'FAIL[kit-token]' "$W/kit2"
+
+  # --KITSELFTEST IS A LIVE ROW (ADOPTER-KIT-SELFTESTS-ON-CHANGE fix round 1, R1). `--kitselftest` rows run in an
+  # adopter's CI by default (only a diff-gated skip can N-A them), so a check whose ONLY live row carries the flag is
+  # hard-reachable. The exclusion once matched `--kitself` as a SUBSTRING and silently dropped these rows (3 false
+  # unreachable claims on agent-autonomy). Whole-word match keeps the row live; `--kitself` rows stay excluded (kit1/kit2).
+  at_fix "$W/kst"
+  printf 'check control ksonly --kitselftest sh conformance/ksonly.sh\n' >> "$W/kst/export/conformance/verify.sh"
+  : > "$W/kst/export/conformance/ksonly.sh"
+  at_claim "$W/kst" "docs/a.md" 'Enforced by `conformance/ksonly.sh` on every push.'
+  at_expect "a check whose only live row carries --kitselftest is hard-reachable (the --kitself exclusion is whole-word)" 0 "$W/kst"
 
   # ── THE TWO-LIST DETECTOR (ADOPTER-TOLD-LEXICON-RESIDUAL) ─────────────────────────────────────
   # LIST HYGIENE FIRST, and it is checked BOTH WAYS. Two lists only mean something while they are

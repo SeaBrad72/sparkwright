@@ -4,7 +4,7 @@
 > kit's security posture — **NOT a template**. Write your own from
 > [`templates/THREAT-MODEL-TEMPLATE.md`](../../templates/THREAT-MODEL-TEMPLATE.md).
 
-**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.230.0 · **Date:** 2026-09-16
+**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.232.0 · **Date:** 2026-10-04
 
 <!-- The phrase "Sparkwright — an agentic SDLC kit" on the line above is the K4 copy-denial
      fingerprint conformance/threat-obligation.sh checks for (OBL_KIT_FINGERPRINT_1) — do not
@@ -91,7 +91,7 @@ never file contents, so no adopter data crosses into kit-owned tooling.
 
 | Risk | Posture |
 |---|---|
-| **Excessive agency** | The guard's deny set plus the recorded-GO requirement. Agents actuate mechanics; humans hold judgment. A runaway-guard check caps token/step/agent dimensions. |
+| **Excessive agency** | The guard's deny set plus the recorded-GO requirement. Agents actuate mechanics; humans hold judgment. A runaway-guard check caps token/step/agent dimensions per slice (board row); steps are off by default. |
 | **Prompt injection** | Board rows, records and glob arguments are attacker-influenceable text reaching check output. An injection battery (shell substitution, backticks, format strings, raw ANSI) is measured to produce zero command execution and zero caller bytes reaching a verdict. |
 | **Tool misuse** | Gate-defining arguments are fenced (see T8). Fixture flags are test-mode gated, except via the process environment (disclosed above). |
 | **Identity & impersonation** | `builder ≠ reviewer ≠ ratifier`, enforced by a non-author check. |

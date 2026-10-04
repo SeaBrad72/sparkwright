@@ -1,0 +1,24 @@
+[
+  {
+    "self": "https://jira.example.com/rest/api/2/issuetype/10000",
+    "id": "10000",
+    "name": "Task",
+    "subtask": false,
+    "statuses": [
+      { "self": "https://jira.example.com/rest/api/2/status/10001", "description": "", "iconUrl": "", "name": "Selected", "id": "10001" },
+      { "self": "https://jira.example.com/rest/api/2/status/3", "description": "", "iconUrl": "", "name": "In Progress", "id": "3" },
+      { "self": "https://jira.example.com/rest/api/2/status/10002", "description": "", "iconUrl": "", "name": "In Dev", "id": "10002" }
+    ]
+  },
+  {
+    "self": "https://jira.example.com/rest/api/2/issuetype/10001",
+    "id": "10001",
+    "name": "Bug",
+    "subtask": false,
+    "statuses": [
+      { "self": "https://jira.example.com/rest/api/2/status/10001", "description": "", "iconUrl": "", "name": "Selected", "id": "10001" },
+      { "self": "https://jira.example.com/rest/api/2/status/10003", "description": "", "iconUrl": "", "name": "In Review", "id": "10003" },
+      { "self": "https://jira.example.com/rest/api/2/status/10004", "description": "", "iconUrl": "", "name": "Done", "id": "10004" }
+    ]
+  }
+]
