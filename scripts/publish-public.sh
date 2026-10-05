@@ -170,16 +170,158 @@ done
 #     is `reviewer-login`, an author is `author-login` (a cased variant keeps its case shape, e.g.
 #     `Reviewer-Login`). Agents write fixtures from the logins they see in a session; this is the word
 #     to use instead. `--gate` runs this same scan on every PR, so a real login is red at review time.
+#   - ENTRY FORMS (PUBLISH-GATE-HARDENING), one parser (publish_ids) for the scan and --require-ids:
+#       `Acmely`        plain  — a case-insensitive fixed SUBSTRING (the default; unchanged).
+#       `word:Acmely`   whole-word — matches `Acmely`, `acmely-corp`, `Acmely.`, not `tacmely` or
+#                       `acmely_token`. For a name that is also a substring of an ordinary word. Pinned to
+#                       LC_ALL=C (a word character is [A-Za-z0-9_]); an empty or non-ASCII `word:` value is
+#                       rc 2, naming the list line number only. A non-ASCII name stays a plain entry.
+#     Blank lines, `#` lines (indented too) and a trailing CR (a CRLF list) are ignored/stripped. A typo
+#     is refused (rc 2, line number only), never silently matched to nothing: whitespace around an
+#     entry or after `word:`, `Word:`/`word :` near-misses of the prefix, and a CR inside an entry.
+#   - NAMES (PUBLISH-GATE-HARDENING): every file and directory NAME is scanned with the same entries. A hit
+#     prints `<prefix>/<name withheld> [name]`: the value is never echoed (see _redact_path).
+#   - SYMLINKS (PUBLISH-GATE-HARDENING): a symlink in the tree is a hit, `<path> [symlink]`. Its target is
+#     never read; the kit ships none. Cure: replace it with the file.
+#   - The scan runs RELATIVE to the tree (cd into it), so the tree path never reaches a glob or a regex.
 # MAINTENANCE OBLIGATION: when a new candid document type appears, add it HERE — step 4 is a
 # backstop, not a substitute.
 sensitive_hits() {
   _tree=$1
   [ -d "$_tree" ] || { echo "SCAN-ERROR: not a directory: $_tree" >&2; return 2; }
   _errf=$(mktemp "${TMPDIR:-/tmp}/sw-scan.XXXXXX") || return 2
+  _idl=$(mktemp "${TMPDIR:-/tmp}/sw-scan-ids.XXXXXX") || { rm -f "$_errf"; return 2; }
+  # one parse of the list for the whole scan; a malformed entry is rc 2 (publish_ids names the line).
+  publish_ids > "$_idl" || { rm -f "$_errf" "$_idl"; return 2; }
 
-  # (1) withheld-document PATHS. find's stderr (unreadable dir, permission denied) is captured and
-  #     turned into a scan failure below — an unseeable subtree must not read as clean.
-  find "$_tree" \
+  # The scan runs INSIDE the tree: the tree path never reaches a glob or a regex (`[`, `*`, `?` in a
+  # TMPDIR cannot make a rule fail open). A subshell that fails (a failed cd, an aborted pipeline step)
+  # is a scan failure, never a clean tree.
+  _scan_rc=0
+  ( CDPATH='' cd -- "$_tree" && _scan_tree ) 2>>"$_errf" || _scan_rc=$?
+
+  # fail CLOSED: a failed scan, or any stderr from find/grep, means the scan could not see everything.
+  if [ "$_scan_rc" -ne 0 ] || [ -s "$_errf" ]; then
+    echo "SCAN-ERROR: scan could not complete: $(_err_text "$_errf")" >&2
+    rm -f "$_errf" "$_idl"; return 2
+  fi
+  rm -f "$_errf" "$_idl"
+  return 0
+}
+
+# _pi_bad <line-number> <reason> — publish_ids' error line: the NUMBER only, never the value.
+_pi_bad() { echo "SCAN-ERROR: .publish-identifiers line $1: $2" >&2; }
+
+# publish_ids — the ONE parser of $PUBLISH_ID_FILE (the scan and `--require-ids` both read it).
+#   stdout : one normalised entry per line, `plain<TAB>value` or `word<TAB>value`
+#   rc     : 0 · 2 = a malformed `word:` entry (SCAN-ERROR names the line NUMBER, never the value)
+# An absent file is no entries, rc 0 (the caller decides whether that is acceptable).
+publish_ids() {
+  [ -f "$PUBLISH_ID_FILE" ] || return 0
+  _pi_cr=$(printf '\r'); _pi_tab=$(printf '\t'); _pi_n=0
+  while IFS= read -r _pi || [ -n "$_pi" ]; do
+    _pi_n=$((_pi_n+1))
+    _pi=${_pi%"$_pi_cr"}                                    # a CRLF list: strip one trailing CR
+    case $_pi in *"$_pi_cr"*) _pi_bad "$_pi_n" "a carriage return inside an entry (a CR-only list?)"; return 2 ;; esac
+    case $_pi in *[![:space:]]*) ;; *) continue ;; esac     # blank
+    _pi_lead=${_pi%%[![:space:]]*}
+    case ${_pi#"$_pi_lead"} in \#*) continue ;; esac        # comment, indented or not
+    # a typo must fail closed, never silently match nothing: whitespace around an entry, and any
+    # near-miss of the exact lowercase `word:` prefix, are refused (line number only, never the value).
+    case $_pi in
+      [[:space:]]*|*[[:space:]]) _pi_bad "$_pi_n" "an entry has leading or trailing whitespace"; return 2 ;;
+    esac
+    case $_pi in
+      word:*)
+        _pi_v=${_pi#word:}
+        if [ -z "$_pi_v" ] || printf '%s\n' "$_pi_v" | LC_ALL=C grep -q '[^ -~]'; then
+          _pi_bad "$_pi_n" "a word: entry must be a non-empty printable-ASCII value (a non-ASCII name is a plain entry)"; return 2
+        fi
+        case $_pi_v in [[:space:]]*) _pi_bad "$_pi_n" "a word: entry has whitespace after the colon"; return 2 ;; esac
+        printf 'word%s%s\n' "$_pi_tab" "$_pi_v" ;;
+      [Ww][Oo][Rr][Dd]:*|[Ww][Oo][Rr][Dd][[:space:]]*:*)
+        _pi_bad "$_pi_n" "only exactly lowercase word: starts a whole-word entry"; return 2 ;;
+      *) printf 'plain%s%s\n' "$_pi_tab" "$_pi" ;;
+    esac
+  done < "$PUBLISH_ID_FILE"
+  return 0
+}
+
+# _id_grep <plain|word> <value> <grep-flag> [path…] — the ONLY place a list entry becomes a grep.
+# plain: case-insensitive fixed substring, ambient locale. word: whole word, LC_ALL=C (measured identical
+# on BSD, GNU and BusyBox grep). Content, names and redaction all call it, so "does it match" has one answer.
+_id_grep() {
+  _ig_form=$1; _ig_val=$2; _ig_flag=$3; shift 3
+  if [ "$_ig_form" = word ]; then
+    LC_ALL=C grep -iwF "$_ig_flag" -e "$_ig_val" "$@"
+  else
+    grep -iF "$_ig_flag" -e "$_ig_val" "$@"
+  fi
+}
+
+# _name_listed <path-component> — rc 0 when any list entry (in $_idl) matches the component.
+_name_listed() {
+  _nl_tab=$(printf '\t')
+  while IFS= read -r _nl_e; do
+    if printf '%s\n' "$1" | _id_grep "${_nl_e%%"$_nl_tab"*}" "${_nl_e#*"$_nl_tab"}" -q; then return 0; fi
+  done < "$_idl"
+  return 1
+}
+
+# _redact_path <path> — sets _rp_out to the path with the first component that matches a list entry
+# replaced by `<name withheld>` (the rest dropped), so a value never reaches stdout or a CI log; sets
+# _rp_hit=1 when a component was withheld, else 0 (the path is kept bare). Sets variables, not stdout, so
+# the flag survives (no command substitution); always rc 0 (it runs under set -e).
+_redact_path() {
+  _rp_rest=$1; _rp_pre=''; _rp_hit=0
+  while [ -n "$_rp_rest" ]; do
+    case $_rp_rest in
+      */*) _rp_c=${_rp_rest%%/*}; _rp_rest=${_rp_rest#*/} ;;
+      *)   _rp_c=$_rp_rest; _rp_rest='' ;;
+    esac
+    if _name_listed "$_rp_c"; then
+      _rp_hit=1; _rp_out="${_rp_pre:+$_rp_pre/}<name withheld>"; return 0
+    fi
+    _rp_pre=${_rp_pre:+$_rp_pre/}$_rp_c
+  done
+  _rp_out=$_rp_pre
+  return 0
+}
+
+# _err_text <file> — the first line of a tool's stderr, or a notice when that line names a listed value
+# (an unreadable path named after an entry must not carry the value into a CI log). Always rc 0.
+_err_text() {
+  _et_l=$(head -1 "$1"); _et_tab=$(printf '\t')
+  _et_ids=$(publish_ids 2>/dev/null) || { echo '<error text withheld: the identifier list is unreadable>'; return 0; }
+  while IFS= read -r _et_e; do
+    [ -n "$_et_e" ] || continue
+    if printf '%s\n' "$_et_l" | _id_grep "${_et_e%%"$_et_tab"*}" "${_et_e#*"$_et_tab"}" -q; then
+      echo '<error text withheld: it names a listed value>'; return 0
+    fi
+  done <<EOF
+$_et_ids
+EOF
+  printf '%s\n' "$_et_l"
+  return 0
+}
+
+# _redact_lines [tag] — stdin: repo-relative paths; stdout: each redacted, with ` [tag]` when given.
+# A path matching an entry only as a whole (no single component does) prints `<path withheld>` instead.
+_redact_lines() {
+  while IFS= read -r _rl_p; do
+    _redact_path "$_rl_p"
+    # the whole path may match an entry (one spanning components) when no single component does: withhold it
+    if [ "$_rp_hit" -eq 0 ] && _name_listed "$_rl_p"; then _rp_out='<path withheld>'; fi
+    printf '%s%s\n' "$_rp_out" "${1:+ [$1]}"
+  done
+}
+
+# _scan_tree — runs with the CWD at the tree root (see sensitive_hits); reads the parsed list at $_idl.
+_scan_tree() {
+  _scan_tab=$(printf '\t')
+  # (1) withheld-document PATHS. find's stderr (unreadable dir, permission denied) is captured by the
+  #     caller and turned into a scan failure — an unseeable subtree must not read as clean.
+  find . \
     \( -iname 'BACKLOG.md' \
        -o -iname 'SPARKWRIGHT-CONSOLIDATED-BACKLOG.md' \
        -o -iname 'CHANGELOG.md' \
@@ -188,29 +330,26 @@ sensitive_hits() {
        -o -iname 'ROADMAP-KIT.md' \
        -o -iname 'meta-control-log.md' \
        -o -iname '.meta-control-last' \
-       -o -ipath "$_tree/docs/architecture/*" \
-       -o -ipath "$_tree/postmortems/*" \
-       -o \( -ipath "$_tree/docs/*" \
+       -o -ipath './docs/architecture/*' \
+       -o -ipath './postmortems/*' \
+       -o \( -ipath './docs/*' \
              -a \( -iname '*harvest*' -o -iname '*field-report*' -o -iname '*postmortem*' \) \) \
-    \) -print 2>>"$_errf" | sed "s|^$_tree/||"
+    \) -print | sed 's|^\./||' | _redact_lines
 
-  # (2) owner identifiers in CONTENT, from the export-ignored config (identity-neutral by construction;
-  #     absent => this dimension is N/A). -F: fixed strings, no regex surprises; -a: scan binaries too;
-  #     -i: case-INSENSITIVE — a cased variant of a denylisted token (e.g. a login capitalised in
-  #     prose) must not slip past a case-sensitive match (PUBLIC-DEIDENTIFICATION fix round).
-  if [ -f "$PUBLISH_ID_FILE" ]; then
-    while IFS= read -r _id || [ -n "$_id" ]; do
-      case "$_id" in ''|\#*) continue ;; esac
-      grep -rlaiF -e "$_id" "$_tree" 2>>"$_errf" | sed "s|^$_tree/||"
-    done < "$PUBLISH_ID_FILE"
-  fi
+  # (2) owner identifiers in CONTENT. -F fixed strings (no regex surprises); -a scans binaries too;
+  #     -i case-INSENSITIVE — a cased variant of a denylisted token must not slip past (PUBLIC-DEIDENTIFICATION).
+  while IFS= read -r _sc_e; do
+    _id_grep "${_sc_e%%"$_scan_tab"*}" "${_sc_e#*"$_scan_tab"}" -rla . | sed 's|^\./||' | _redact_lines
+  done < "$_idl"
 
-  # fail CLOSED: any stderr from find/grep means the scan could not see everything.
-  if [ -s "$_errf" ]; then
-    echo "SCAN-ERROR: scan could not complete: $(head -1 "$_errf")" >&2
-    rm -f "$_errf"; return 2
-  fi
-  rm -f "$_errf"
+  # (3) NAMES: every file and directory name, against the same entries.
+  _scan_names=$(find . -print | sed -e 's|^\./||' -e '/^\.$/d')
+  while IFS= read -r _sc_e; do
+    printf '%s\n' "$_scan_names" | _id_grep "${_sc_e%%"$_scan_tab"*}" "${_sc_e#*"$_scan_tab"}" -h | _redact_lines name
+  done < "$_idl"
+
+  # (4) SYMLINKS are refused; the target is never read or printed.
+  find . -type l -print | sed 's|^\./||' | _redact_lines symlink
   return 0
 }
 
@@ -237,14 +376,16 @@ gate() {
   fi
   say "gate: scanning the tree COMMITTED at HEAD (git archive) — uncommitted edits are not seen"
   if [ "$REQUIRE_IDS" -eq 1 ]; then
-    if [ ! -f "$PUBLISH_ID_FILE" ] || ! grep -v '^[[:space:]]*#' "$PUBLISH_ID_FILE" | grep -q '[^[:space:]]'; then
+    # the same parser the scan uses (a malformed entry is rc 2 from publish_ids itself)
+    publish_ids > "$_gw/ids" || exit 2
+    if [ ! -f "$PUBLISH_ID_FILE" ] || [ ! -s "$_gw/ids" ]; then
       echo "publish-public: gate: --require-ids: the identifier list is absent or has no entries — the owner-identifier scan would be vacuous." >&2
       exit 2
     fi
   fi
   [ -f "$PUBLISH_ID_FILE" ] || say "gate: no identifier list at \$PUBLISH_ID_FILE — the owner-identifier dimension is N/A; the withheld-path scan still runs"
   if ! sh scripts/adopter-export.sh "$_gw/export" >/dev/null 2>"$_gw/export.err"; then
-    echo "publish-public: gate: adopter-export failed — nothing could be scanned: $(head -1 "$_gw/export.err")" >&2
+    echo "publish-public: gate: adopter-export failed — nothing could be scanned: $(_err_text "$_gw/export.err")" >&2
     exit 2
   fi
   # every public block of the COMMITTED CHANGELOG.md -> one scan target (absent CHANGELOG at HEAD: rc 2)
@@ -281,7 +422,7 @@ gate() {
     echo "  CHANGELOG.md (between <!-- public:start --> and <!-- public:end -->)" >&2
   fi
   if [ "$_gbad" -ne 0 ]; then
-    echo "publish-public: gate: cure — replace the owner identifier with a neutral placeholder (reviewer-login / author-login); the identifier list is .publish-identifiers (export-ignored); a withheld-document path is cured by export-ignoring it in .gitattributes." >&2
+    echo "publish-public: gate: cure — replace the owner identifier with a neutral placeholder (reviewer-login / author-login); the identifier list is .publish-identifiers (export-ignored); a withheld-document path is cured by export-ignoring it in .gitattributes; a [name] hit is cured by renaming (the withheld component sits under the printed prefix: git ls-files '<prefix>/'); a [symlink] hit is cured by replacing the link with the file." >&2
     exit 1
   fi
   say "gate: clean — $(find "$_gw/export" -type f | wc -l | tr -d ' ') exported files and the public release-note blocks carry no owner identifier or withheld path"
@@ -375,6 +516,158 @@ selftest() {
   mkdir -p "$_t/Postmortems"; : > "$_t/Postmortems/y.md"
   _hit  Postmortems/y.md                    "case variant: the gate is the backstop where git archive is case-sensitive"
   rm -rf "$_t"; _t=$_t_main
+
+  # --- PUBLISH-GATE-HARDENING: two entry forms, names, symlinks, a tree-relative scan --------------
+  # Each control has ONE load-bearing negative. Every list below is a TEST list (never the real one);
+  # every identifier is invented. Plants live in their own tree so no other fixture can satisfy a leg.
+  echo "publish-public --selftest: identifier forms, names, symlinks, relative scan"
+  _t_main=$_t; _ids_main=$PUBLISH_ID_FILE
+  _h=$(mktemp -d "${TMPDIR:-/tmp}/sw-pub-st-h.XXXXXX") || die "mktemp failed"
+  _hids=$(mktemp "${TMPDIR:-/tmp}/sw-pub-ids-h.XXXXXX") || die "mktemp failed"
+  _sef=$(mktemp "${TMPDIR:-/tmp}/sw-pub-err-h.XXXXXX") || die "mktemp failed"
+  _t=$_h; PUBLISH_ID_FILE=$_hids
+  # trap-clean: every temp path above is reaped on ANY exit (a die or a signal included).
+  trap 'rm -rf "${_t_main:-}" "${_h:-}" "${_gb:-}"; rm -f "${_ids_main:-}" "${_hids:-}" "${_sef:-}"' EXIT
+  trap 'exit 2' HUP INT TERM
+  _fresh() { rm -rf "$_h"; mkdir -p "$_h/docs"; }
+  _src()   { _srcr=0; _so=$(sensitive_hits "$_t" 2>"$_sef") || _srcr=$?; }
+  _rc_zero() {  # <label> — the last _src completed its scan (rc 0); hits are stdout, never the rc
+    if [ "$_srcr" -eq 0 ]; then echo "  ok   RC    $1 -> rc 0"
+    else echo "  FAIL RC    $1: want rc 0, got rc $_srcr"; _fail=$((_fail+1)); fi
+  }
+  _vfree() {  # <label> <value> — neither stdout nor stderr of the last _src carries the value
+    if printf '%s\n' "$_so" | grep -qiF -e "$2" || grep -qiF -e "$2" "$_sef"; then
+      echo "  FAIL VALUE $1: output echoed the listed value"; _fail=$((_fail+1))
+    else echo "  ok   VALUE $1: the listed value is never echoed"; fi
+  }
+
+  # (a) a `word:` entry reds a whole-word hit, not its superstring (the load-bearing negative).
+  _fresh
+  printf 'word:acmely\nword:zorbix labs\n' > "$_hids"
+  printf 'shipped by Acmely.\n'      > "$_h/docs/w-hit.md"
+  printf 'ACMELY-corp notes\n'       > "$_h/docs/w-case.md"
+  printf 'by Zorbix Labs today\n'    > "$_h/docs/w-multi.md"
+  printf 'tacmely and acmelyish\n'   > "$_h/docs/w-super.md"
+  printf 'acmely_token and acmely2\n' > "$_h/docs/w-joined.md"
+  printf 'tacmely then Acmely.\n'  > "$_h/docs/w-second.md"
+  _hit  docs/w-second.md "word: entry: a superstring first, then the real word on the same line, still reds"
+  _hit  docs/w-hit.md    "word: entry reds a whole-word hit"
+  _hit  docs/w-case.md   "word: entry is case-insensitive (ACMELY-corp)"
+  _hit  docs/w-multi.md  "word: entry holds a multi-word value"
+  _pass docs/w-super.md  "word: entry does NOT red a superstring (tacmely, acmelyish)"
+  _pass docs/w-joined.md "word: entry does NOT red a word-joined form (acmely_token, acmely2)"
+  # (b) a plain entry is still a substring (the default form is unchanged).
+  printf 'zorb\n' > "$_hids"; printf 'a zorbix here\n' > "$_h/docs/p-sub.md"
+  _hit  docs/p-sub.md    "plain entry keeps substring recall"
+
+  # (c) malformed word: entries fail CLOSED (rc 2, line number only, never the value).
+  _fresh; printf '# header\nword:\n' > "$_hids"
+  _src
+  if [ "$_srcr" -eq 2 ] && grep -qF 'line 2' "$_sef"; then echo "  ok   RC    empty word: value -> rc 2 naming the line"
+  else echo "  FAIL RC    empty word: value: want rc 2 naming line 2, got rc $_srcr"; _fail=$((_fail+1)); fi
+  printf 'word:caf\303\251\n' > "$_hids"
+  _src
+  if [ "$_srcr" -eq 2 ] && grep -qF 'line 1' "$_sef"; then echo "  ok   RC    non-ASCII word: value -> rc 2 naming the line"
+  else echo "  FAIL RC    non-ASCII word: value: want rc 2 naming line 1, got rc $_srcr"; _fail=$((_fail+1)); fi
+  _vfree "malformed word: entry" "caf"
+
+  # (c2) typos fail CLOSED (rc 2, line number only), never silently match nothing.
+  _closed() {  # <label> <printf-format> <value that must not be echoed>
+    _fresh; printf "$2" > "$_hids"; _src
+    if [ "$_srcr" -eq 2 ] && grep -qF 'line 1' "$_sef"; then echo "  ok   RC    $1 -> rc 2 naming the line"
+    else echo "  FAIL RC    $1: want rc 2 naming line 1, got rc $_srcr"; _fail=$((_fail+1)); fi
+    _vfree "$1" "$3"
+  }
+  _closed "word: with a space before the value"   'word: acmely\n'           acmely
+  _closed "a plain entry with trailing whitespace" 'ACME-OWNER-TOKEN-42 \n'  ACME-OWNER-TOKEN-42
+  _closed "an indented word: entry"               '  word:acmely\n'          acmely
+  _closed "Word: in another case"                 'Word:acmely\n'            acmely
+  _closed "WORD: in another case"                 'WORD:acmely\n'            acmely
+  _closed "word : with a space before the colon"  'word :acmely\n'           acmely
+  _closed "a CR-only (classic Mac) list"          'ACME-OWNER-TOKEN-42\rword:acmely\r'  ACME-OWNER-TOKEN-42
+  # the load-bearing negative: a clean list with comments (indented, trailing space) is NOT refused.
+  _fresh; printf '# c\n  # indented comment \n\nword:acmely\nzorb ix\n' > "$_hids"; _src
+  if [ "$_srcr" -eq 0 ]; then echo "  ok   RC    a well-formed list (comments, blanks, both forms) -> rc 0"
+  else echo "  FAIL RC    well-formed list refused: rc $_srcr"; _fail=$((_fail+1)); fi
+
+  # (c3) a tool's stderr naming a listed value is withheld, not echoed (rc stays 2). Root ignores mode 000.
+  if [ "$(id -u)" -eq 0 ]; then echo "  SKIP ERR   running as root: mode 000 is not enforced, the unreadable-directory leg cannot run"
+  else
+    _fresh; printf 'ACME-OWNER-TOKEN-42\n' > "$_hids"
+    mkdir -p "$_h/docs/ACME-OWNER-TOKEN-42"; chmod 000 "$_h/docs/ACME-OWNER-TOKEN-42"
+    _src; chmod 755 "$_h/docs/ACME-OWNER-TOKEN-42"
+    if [ "$_srcr" -eq 2 ]; then echo "  ok   RC    an unreadable directory -> rc 2 (fail-closed)"
+    else echo "  FAIL RC    unreadable directory: want rc 2, got rc $_srcr"; _fail=$((_fail+1)); fi
+    _vfree "scan error naming a listed directory" "ACME-OWNER-TOKEN-42"
+  fi
+
+  # (d) a CRLF list still matches (the strip; without it a CR-ended entry misses every LF file).
+  _fresh; printf 'ACME-OWNER-TOKEN-42\r\nword:acmely\r\n' > "$_hids"
+  printf 'seat ACME-OWNER-TOKEN-42 here\n' > "$_h/docs/crlf-plain.md"
+  printf 'shipped by Acmely.\n'            > "$_h/docs/crlf-word.md"
+  _hit  docs/crlf-plain.md "CRLF list: a plain entry still matches LF content"
+  _hit  docs/crlf-word.md  "CRLF list: a word: entry still matches LF content"
+
+  # (e) one parser: an indented comment is a comment, not an identifier.
+  _fresh; printf '  # commented-token-7\nword:acmely\n' > "$_hids"
+  printf '  # commented-token-7\n' > "$_h/docs/indented.md"
+  _pass docs/indented.md   "an indented # line in the list is a comment, not scanned as an identifier"
+
+  # (f) a listed name in a file or directory NAME reds, redacted; the value is never echoed.
+  _fresh; printf 'ACME-OWNER-TOKEN-42\nword:acmely\n' > "$_hids"
+  mkdir -p "$_h/docs/ACME-OWNER-TOKEN-42"; : > "$_h/docs/ACME-OWNER-TOKEN-42/x.md"
+  : > "$_h/docs/acmely-notes.md"; : > "$_h/docs/tacmely-notes.md"
+  _hit  "docs/<name withheld> [name]" "a listed name in a directory or file name reds, redacted"
+  _src
+  _vfree "name hit" "ACME-OWNER-TOKEN-42"
+  _vfree "name hit (word:)" "acmely"
+  if printf '%s\n' "$_so" | grep -qF 'tacmely'; then echo "  FAIL NAME  superstring name reported"; _fail=$((_fail+1))
+  else echo "  ok   NAME  a superstring in a name is not a word: hit"; fi
+
+  # (g) a tracked symlink is refused, target never read; a regular file beside it stays clean.
+  _fresh; printf 'ACME-OWNER-TOKEN-42\n' > "$_hids"
+  : > "$_h/docs/real.md"; ln -s ../SECURITY.md "$_h/docs/link.md"
+  ln -s ../SECURITY.md "$_h/docs/ACME-OWNER-TOKEN-42-link.md"
+  _hit  "docs/link.md [symlink]"            "a symlink is refused"
+  _hit  "docs/<name withheld> [symlink]"    "a symlink with a listed name is refused, redacted"
+  _pass docs/real.md                        "a regular file beside the symlink is not reported"
+  _src
+  _rc_zero "a tree with symlink hits (hits are stdout; the scan itself completed)"
+  _vfree "symlink hit" "ACME-OWNER-TOKEN-42"
+
+  # (h) no value is echoed across EVERY hit class (content hit on a path that is itself named).
+  _fresh; printf 'ACME-OWNER-TOKEN-42\n' > "$_hids"
+  printf 'seat ACME-OWNER-TOKEN-42\n' > "$_h/docs/ACME-OWNER-TOKEN-42.md"
+  : > "$_h/BACKLOG.md"
+  ln -s x "$_h/docs/ACME-OWNER-TOKEN-42.lnk"
+  _src
+  _rc_zero "a tree with content, name, symlink and withheld-path hits"
+  if [ -n "$_so" ]; then echo "  ok   VALUE every hit class produced output to check"
+  else echo "  FAIL VALUE no hit output to check"; _fail=$((_fail+1)); fi
+  _vfree "content + name + symlink + withheld-path hits" "ACME-OWNER-TOKEN-42"
+
+  # (h2) a path-shaped entry that matches the WHOLE path but no single component is withheld too,
+  #      for every tag (here a content hit and a name hit).
+  _fresh; printf 'zq/split\n' > "$_hids"
+  mkdir -p "$_h/zq"; printf 'see zq/split here\n' > "$_h/zq/split"
+  _src
+  if [ -n "$_so" ]; then echo "  ok   VALUE a path-spanning entry produced hits to check"
+  else echo "  FAIL VALUE path-spanning entry produced no hit"; _fail=$((_fail+1)); fi
+  _vfree "path-spanning entry (content + name hits)" "zq/split"
+
+  # (i) the scan is relative to the tree: glob and regex metacharacters in the tree path do not fail open.
+  _gb=$(mktemp -d "${TMPDIR:-/tmp}/sw-pub-st-g.XXXXXX") || die "mktemp failed"
+  printf 'ACME-OWNER-TOKEN-42\n' > "$_hids"
+  for _gd in 'glob[x]' 'g*b?' 'a.b'; do
+    _t="$_gb/$_gd"; mkdir -p "$_t/docs/architecture" "$_t/docs"
+    : > "$_t/docs/architecture/a.md"; printf 'ACME-OWNER-TOKEN-42\n' > "$_t/docs/leak.md"
+    _hit  docs/architecture/a.md "tree path '$_gd': a withheld path is still found"
+    _hit  docs/leak.md           "tree path '$_gd': an identifier in content is still found"
+  done
+  _t=$_h; rm -rf "$_gb"
+
+  # (the end-to-end --gate legs of this control are at "S-5" below, once the gate helpers exist)
+  _t=$_t_main; PUBLISH_ID_FILE=$_ids_main
 
   # rc contract — the scan must fail CLOSED, and the caller idiom must surface it.
   if sensitive_hits "$_t/does-not-exist" >/dev/null 2>&1; then
@@ -590,7 +883,32 @@ EOF
   _gate_run "$_t/gate-clean"
   _want_rc 2 "GATE  uncommitted .gitattributes -> rc 2 (refuses to scan a hybrid)" "GATE  dirty gitattributes"
 
-  rm -rf "$_t"; rm -f "$PUBLISH_ID_FILE"
+  # S-5 (PUBLISH-GATE-HARDENING): end to end through --gate, the CI path. A word: plant reds and names its
+  # file, its superstring stays green, and a malformed or comments-only list is rc 2 under --require-ids.
+  printf 'word:acmely\n' > "$_hids"
+  _gate_repo "$_h/gate-w" "shipped by Acmely." "A clean user-facing summary."
+  _gate_run "$_h/gate-w" "" "$_hids"
+  if [ "$_grc" -eq 1 ] && printf '%s\n' "$_gout" | grep -qxF "  docs/fixture.md"; then
+    echo "  ok   GATE  word: plant in a shipped file -> rc 1, file named"
+  else echo "  FAIL GATE  word: plant: want rc 1 naming docs/fixture.md, got rc $_grc"; _fail=$((_fail+1)); fi
+  _gate_repo "$_h/gate-s" "tacmely is not it" "A clean user-facing summary."
+  _gate_run "$_h/gate-s" "" "$_hids"
+  _want_rc 0 "GATE  a superstring of a word: entry stays clean -> rc 0" "GATE  word: superstring"
+  printf '  # only an indented comment\n' > "$_hids"
+  _gate_run "$_h/gate-s" --require-ids "$_hids"
+  _want_rc 2 "GATE  --require-ids with only an indented comment -> rc 2 (one parser)" "GATE  require-ids indented comment"
+  printf 'word:\n' > "$_hids"
+  _gate_run "$_h/gate-s" --require-ids "$_hids"
+  _want_rc 2 "GATE  --require-ids with a malformed word: entry -> rc 2" "GATE  require-ids malformed"
+  # an exporter whose stderr names a listed value: rc 2, and the value is withheld from the message
+  _gate_repo "$_h/gate-errv" "a clean fixture" "A clean user-facing summary."
+  printf 'echo "cannot read ACME-OWNER-TOKEN-42/file" >&2; exit 1\n' > "$_h/gate-errv/scripts/adopter-export.sh"
+  _gate_commit "$_h/gate-errv"
+  _gate_run "$_h/gate-errv"
+  _want_rc 2 "GATE  an exporter error naming a listed value -> rc 2" "GATE  exporter error with a value"
+  _no_value "exporter error text" "ACME-OWNER-TOKEN-42"
+
+  rm -rf "$_t" "$_h"; rm -f "$PUBLISH_ID_FILE" "$_hids" "$_sef"
   [ "$_fail" -eq 0 ] || { echo "publish-public --selftest: $_fail failed" >&2; exit 1; }
   echo "publish-public --selftest: all passed"
   exit 0
@@ -645,7 +963,7 @@ if ! HITS=$(sensitive_hits "$TREE"); then
 fi
 if [ -n "$HITS" ]; then
   echo "publish-public: ABORT — Layer-2 gate found content that must not go public:" >&2
-  echo "$HITS" | sed 's/^/  /' >&2
+  printf '%s\n' "$HITS" | sort -u | sed 's/^/  /' >&2
   die "nothing published."
 fi
 if command -v gitleaks >/dev/null 2>&1; then

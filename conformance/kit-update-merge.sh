@@ -190,7 +190,7 @@ check() {
   fingerprint "$_p" > "$_t/fp.before"
 
   # ── THE RUN ────────────────────────────────────────────────────────────────────────────────────────
-  if ! ( cd "$_p" && sh scripts/kit-update.sh --from "$_t/rel" ) >"$_t/report" 2>"$_t/report.err"; then
+  if ! ( cd "$_p" && env -u CI -u GITHUB_ACTIONS sh scripts/kit-update.sh --from "$_t/rel" ) >"$_t/report" 2>"$_t/report.err"; then
     echo "FAIL: kit-update-merge — 'kit-update.sh --from <new release>' failed:" >&2
     sed 's/^/    /' "$_t/report" >&2 || :
     sed 's/^/    /' "$_t/report.err" >&2 || :
@@ -204,6 +204,15 @@ check() {
     echo "FAIL: NON-MUTATION — kit-update WROTE to the adopter's repo. This is the one thing it must never do:" >&2
     diff -u "$_t/fp.before" "$_t/fp.after" | grep -E '^[+-][^+-]' | head -20 >&2 || :
     st=1
+  fi
+
+  # ── HOOK-REFRESH [SILENT-WHEN-FRESH] — the load-bearing negative of D6's staleness control: a FRESH
+  #    installed hook and a release that does not touch hooks/pre-push must print NO HOOK REFRESH section. ──
+  if grep -qF '== HOOK REFRESH' "$_t/report"; then
+    echo "FAIL: HOOK-REFRESH [SILENT-WHEN-FRESH] — a fresh hook and a hook-free release still printed a HOOK REFRESH section" >&2
+    st=1
+  else
+    echo "PASS: HOOK-REFRESH [SILENT-WHEN-FRESH] — a fresh hook and a hook-free release print no HOOK REFRESH section"
   fi
 
   # ── V3 — THE TOOL MUST SHOW ITS WORK. Three non-zero tree counts. A tool that computed nothing cannot
@@ -698,11 +707,188 @@ check_unpruned() {
   return $st
 }
 
+# ── KIT-UPDATE-PROFILE-CI-DRIFT: the CI WIRING section of the report ──────────────────────────────────────
+# A fixture adopter whose workflow was ADAPTED (the listing wiring removed, a local comment added) and whose
+# stack profile the release then changed reads CONFLICT in the 3-way — one line among many. The report must
+# ALSO carry the `== CI WIRING` section with the SAME notice text `verify-enforced-wired.sh --drift` prints
+# (one function, two surfaces). The load-bearing negative is an adopter whose workflow already has the
+# capability: the same release must print NO such section (a section that always printed would be noise).
+CI_WF=.github/workflows/ci.yml
+check_ci_wiring() {
+  _t=$(mktemp -d) || { echo "kit-update-merge: cannot mktemp" >&2; return 2; }
+  # shellcheck disable=SC2064
+  trap "_cleanup '$_t'" EXIT INT TERM
+  st=0
+  build_adopter "$_t/stale" || return 1
+  [ -f "$_t/stale/$CI_WF" ] || { echo "FAIL: CI-WIRING — the fixture adopter has no $CI_WF" >&2; return 1; }
+  sed 's/ \${KIT_CHANGED:+[^}]*}//' "$_t/stale/$CI_WF" > "$_t/stale/wf.adapted"
+  if cmp -s "$_t/stale/wf.adapted" "$_t/stale/$CI_WF"; then
+    echo "FAIL: CI-WIRING — the adaptation changed nothing (vacuous fixture: the shipped verify line moved?)" >&2; return 1
+  fi
+  echo '# adopter local: our own runners' >> "$_t/stale/wf.adapted"
+  mv "$_t/stale/wf.adapted" "$_t/stale/$CI_WF"
+  ( cd "$_t/stale" && git add -A && $GIT_C commit -qm 'adopter adapts the workflow' ) >/dev/null 2>&1 || return 1
+  build_adopter "$_t/cur" || return 1
+  _v=$(cat "$ROOT/VERSION" 2>/dev/null || echo 0.0.0)
+  build_release "$_t/rel" "${_v}-fixture" || return 1
+  printf '\n# upstream tweak to the profile pipeline (fixture)\n' >> "$_t/rel/profiles/$STACK/ci.yml"
+  ( cd "$_t/rel" && git add -A && $GIT_C commit -qm 'release: the profile pipeline changes' ) >/dev/null 2>&1 || return 1
+
+  ( cd "$_t/stale" && sh scripts/kit-update.sh --from "$_t/rel" ) >"$_t/stale.report" 2>"$_t/stale.err" || {
+    echo "FAIL: CI-WIRING — kit-update failed on the adapted-workflow adopter:" >&2; sed 's/^/    /' "$_t/stale.err" >&2 || :; return 1; }
+  if in_section "$_t/stale.report" CONFLICT "$CI_WF"; then
+    echo "PASS: CI-WIRING [FIXTURE-IS-A-CONFLICT] — the adapted workflow reads CONFLICT (the one-line-among-N case)"
+  else
+    echo "FAIL: CI-WIRING [FIXTURE-IS-A-CONFLICT] — the fixture is not the case it claims ($CI_WF is not under CONFLICT)" >&2; st=1
+  fi
+  if grep -qF '== CI WIRING (github)' "$_t/stale.report"; then
+    echo "PASS: CI-WIRING — a stale adapted workflow gets the '== CI WIRING (github)' section"
+  else
+    echo "FAIL: CI-WIRING — the report has no '== CI WIRING (github)' section for a stale adapted workflow" >&2; st=1
+  fi
+  # the SAME text: run the new release's --drift form on the adopter's workflow + the release's profile
+  mkdir -p "$_t/cmp/.github/workflows" "$_t/cmp/profiles/$STACK"
+  git -C "$_t/stale" show "HEAD:$CI_WF" > "$_t/cmp/$CI_WF"
+  cp "$_t/rel/profiles/$STACK/ci.yml" "$_t/cmp/profiles/$STACK/ci.yml"
+  ( cd "$_t/cmp" && sh "$ROOT/conformance/verify-enforced-wired.sh" --drift --wf="$CI_WF" --profile="profiles/$STACK/ci.yml" ) >"$_t/cmp.out" 2>&1 || :
+  sed -n '/^CI-DRIFT: /,/^  Or decline it/p' "$_t/cmp.out" > "$_t/notice.ci"
+  sed -n '/^CI-DRIFT: /,/^  Or decline it/p' "$_t/stale.report" > "$_t/notice.ku"
+  if [ -s "$_t/notice.ci" ] && grep -qF 'changed-listing' "$_t/notice.ci" && cmp -s "$_t/notice.ci" "$_t/notice.ku"; then
+    echo "PASS: CI-WIRING [SAME-TEXT] — the report's notice is byte-identical to what verify-enforced-wired --drift prints"
+  else
+    echo "FAIL: CI-WIRING [SAME-TEXT] — the report's notice differs from (or is missing against) the --drift text:" >&2
+    diff -u "$_t/notice.ci" "$_t/notice.ku" | head -20 >&2 || :; st=1
+  fi
+
+  ( cd "$_t/cur" && sh scripts/kit-update.sh --from "$_t/rel" ) >"$_t/cur.report" 2>"$_t/cur.err" || {
+    echo "FAIL: CI-WIRING — kit-update failed on the current-workflow adopter:" >&2; sed 's/^/    /' "$_t/cur.err" >&2 || :; return 1; }
+  if in_section "$_t/cur.report" offered "$CI_WF" && ! grep -qF '== CI WIRING' "$_t/cur.report"; then
+    echo "PASS: CI-WIRING [SILENT-WHEN-CURRENT] — an adopter whose workflow already has the capability gets no CI WIRING section"
+  else
+    echo "FAIL: CI-WIRING [SILENT-WHEN-CURRENT] — the current-workflow adopter either lost the offered hunk or was told about CI wiring" >&2; st=1
+  fi
+  # A release whose verify-enforced-wired.sh predates --drift: ONE line says so, and no section header.
+  build_release "$_t/old" "${_v}-fixture" || return 1
+  # A stub that behaves like an older release (no --drift form): no dependence on any commit in history.
+  printf '#!/bin/sh\necho "FAIL: unknown argument"\nexit 1\n' > "$_t/old/conformance/verify-enforced-wired.sh"
+  if grep -q -e '--drift' "$_t/old/conformance/verify-enforced-wired.sh"; then
+    echo "FAIL: CI-WIRING [NO-DRIFT-RELEASE] — the fixture tool still has --drift (vacuous)" >&2; return 1
+  fi
+  ( cd "$_t/old" && git add -A && $GIT_C commit -qm 'release: a verify-enforced-wired without --drift' ) >/dev/null 2>&1 || return 1
+  ( cd "$_t/stale" && sh scripts/kit-update.sh --from "$_t/old" ) >"$_t/old.report" 2>"$_t/old.err" || {
+    echo "FAIL: CI-WIRING — kit-update failed against the no-drift release:" >&2; sed 's/^/    /' "$_t/old.err" >&2 || :; return 1; }
+  if grep -qF 'CI wiring check: not available in the release at --from' "$_t/old.report" && ! grep -qF '== CI WIRING' "$_t/old.report"; then
+    echo "PASS: CI-WIRING [NO-DRIFT-RELEASE] — a --from release without --drift gets one explanatory line and no section"
+  else
+    echo "FAIL: CI-WIRING [NO-DRIFT-RELEASE] — expected the 'not available in the release at --from' line and no section header" >&2; st=1
+  fi
+  # THE CI LEG on REAL incepted trees: a FRESH incept never goes red (its workflow is a copy of the in-tree
+  # profile), and the adapted one is red with the notice — the same verdict the adopter's own CI would give.
+  if ( cd "$_t/cur" && sh conformance/verify-enforced-wired.sh ) >"$_t/cur.vew" 2>&1 && grep -qF 'CI capabilities current: changed-listing' "$_t/cur.vew"; then
+    echo "PASS: CI-WIRING [FRESH-INCEPT-GREEN] — a freshly incepted adopter passes the drift leg and says it checked"
+  else
+    echo "FAIL: CI-WIRING [FRESH-INCEPT-GREEN] — a freshly incepted tree fails or skips the drift leg:" >&2; sed 's/^/    /' "$_t/cur.vew" >&2 || :; st=1
+  fi
+  if ( cd "$_t/stale" && sh conformance/verify-enforced-wired.sh ) >"$_t/stale.vew" 2>&1; then
+    echo "FAIL: CI-WIRING [ADAPTED-INCEPT-RED] — a kit-emitted, adapted, stale workflow passed the drift leg" >&2; st=1
+  elif grep -qF 'CI-DRIFT:' "$_t/stale.vew"; then
+    echo "PASS: CI-WIRING [ADAPTED-INCEPT-RED] — the emitted-but-stale workflow fails the adopter's own check with the notice"
+  else
+    echo "FAIL: CI-WIRING [ADAPTED-INCEPT-RED] — it failed, but not with the notice:" >&2; sed 's/^/    /' "$_t/stale.vew" >&2 || :; st=1
+  fi
+  if [ "$st" -eq 0 ]; then
+    echo "OK: kit-update-merge [CI-WIRING] — a stale adapted workflow is named in its own section (same text as the CI leg); a current one is not"
+  fi
+  return $st
+}
+
+# ── JIRA-ADOPTION-DOCS-RESIDUALS-2 / D6: the HOOK REFRESH section of the report ───────────────────────────
+# (cold test 2, items 101 and 102). Three controls, one load-bearing negative each:
+#   LEADS-WITH-SETTING  an incepted (copy-mode) adopter + a release that changes hooks/pre-push: the section
+#                       names `git config core.hooksPath hooks` BEFORE the `cp` line. Negative: the same adopter
+#                       with a `.husky/` dir present gets the cp and no hooksPath line (precondition P2 fails).
+#   STALE-REPORTED      a stale installed hook + a release that does NOT touch hooks/pre-push: the section still
+#                       appears and carries the gate's own `FAIL: pre-push rung ... STALE` line. Negative: check()
+#                       asserts a FRESH adopter + a docs-only release prints no `== HOOK REFRESH` at all.
+#   SAME-TEXT           the rung line is byte-identical to what the adopter's own guard-wired.sh prints.
+# Every kit-update run blanks CI/GITHUB_ACTIONS: under CI the rung leg prints its disclosed N/A, which would
+# make the positives vacuous on a runner (a positive that asserts the FAIL:/setting text reds on that).
+# NB `env -u`, not `CI=''`: kit-update.sh assigns its own shell variable CI (the pipeline it found: github|gitlab),
+# and assigning a name that was IMPORTED keeps it exported, so a blank-but-exported CI reaches guard-wired as
+# CI=github and its rung leg prints the CI N/A. Removing the names is the only blanking that survives that.
+_hr_run() {  # <adopter> <release> <report-out> — one kit-update --from run with CI removed from the environment
+  ( cd "$1" && env -u CI -u GITHUB_ACTIONS sh scripts/kit-update.sh --from "$2" ) >"$3" 2>"$3.err"
+}
+_hr_section() { sed -n '/^== HOOK REFRESH/,/^$/p' "$1"; }
+check_hook_refresh() {
+  _t=$(mktemp -d) || { echo "kit-update-merge: cannot mktemp" >&2; return 2; }
+  # shellcheck disable=SC2064
+  trap "_cleanup '$_t'" EXIT INT TERM
+  st=0
+  _v=$(cat "$ROOT/VERSION" 2>/dev/null || echo 0.0.0)
+  build_adopter "$_t/lead" || return 1
+  if [ -n "$( cd "$_t/lead" && git config --get core.hooksPath 2>/dev/null || : )" ]; then
+    echo "N/A: HOOK-REFRESH — this host's git config sets core.hooksPath (global or system), so the adopter is not in the precondition-holds state; the legs are skipped (disclosed, never red)"
+    return 0
+  fi
+  build_adopter "$_t/husky" || return 1
+  mkdir -p "$_t/husky/.husky" && : > "$_t/husky/.husky/.gitkeep"
+  ( cd "$_t/husky" && git add -A && $GIT_C commit -qm 'adopter adds a hook manager dir' ) >/dev/null 2>&1 || return 1
+  build_adopter "$_t/stale" || return 1
+  build_release "$_t/relhook" "${_v}-fixture" || return 1
+  printf '\n# upstream change to the push hook (fixture)\n' >> "$_t/relhook/hooks/pre-push"
+  ( cd "$_t/relhook" && git add -A && $GIT_C commit -qm 'release: hooks/pre-push changes' ) >/dev/null 2>&1 || return 1
+  build_release "$_t/reldocs" "${_v}-fixture" || return 1
+
+  _hr_run "$_t/lead" "$_t/relhook" "$_t/lead.report" || { echo "FAIL: HOOK-REFRESH — kit-update failed on the lead adopter:" >&2; sed 's/^/    /' "$_t/lead.report.err" >&2 || :; return 1; }
+  _hr_section "$_t/lead.report" > "$_t/lead.sec"
+  _ln_set=$(grep -nF 'git config core.hooksPath hooks' "$_t/lead.sec" | sed -n '1p' | sed 's/:.*//')
+  _ln_cp=$(grep -nF 'cp hooks/pre-push' "$_t/lead.sec" | sed -n '1p' | sed 's/:.*//')
+  if [ -n "$_ln_set" ] && [ -n "$_ln_cp" ] && [ "$_ln_set" -lt "$_ln_cp" ]; then
+    echo "PASS: HOOK-REFRESH [LEADS-WITH-SETTING] — the one-time 'git config core.hooksPath hooks' comes before the cp line"
+  else
+    echo "FAIL: HOOK-REFRESH [LEADS-WITH-SETTING] — expected the setting line before the cp line (setting at '${_ln_set:-none}', cp at '${_ln_cp:-none}')" >&2
+    sed 's/^/    /' "$_t/lead.sec" >&2 || :; st=1
+  fi
+
+  _hr_run "$_t/husky" "$_t/relhook" "$_t/husky.report" || { echo "FAIL: HOOK-REFRESH — kit-update failed on the .husky adopter:" >&2; sed 's/^/    /' "$_t/husky.report.err" >&2 || :; return 1; }
+  _hr_section "$_t/husky.report" > "$_t/husky.sec"
+  if grep -qF 'cp hooks/pre-push' "$_t/husky.sec" && ! grep -qF 'git config core.hooksPath hooks' "$_t/husky.sec"; then
+    echo "PASS: HOOK-REFRESH [NO-SETTING-WITH-HOOK-MANAGER] — a .husky/ adopter gets the cp and no hooksPath advice"
+  else
+    echo "FAIL: HOOK-REFRESH [NO-SETTING-WITH-HOOK-MANAGER] — a .husky/ adopter was told to set core.hooksPath (or lost the cp line)" >&2
+    sed 's/^/    /' "$_t/husky.sec" >&2 || :; st=1
+  fi
+
+  printf '#' >> "$_t/stale/.git/hooks/pre-push"
+  _hr_run "$_t/stale" "$_t/reldocs" "$_t/stale.report" || { echo "FAIL: HOOK-REFRESH — kit-update failed on the stale-hook adopter:" >&2; sed 's/^/    /' "$_t/stale.report.err" >&2 || :; return 1; }
+  _hr_section "$_t/stale.report" > "$_t/stale.sec"
+  _rung=$(grep -F 'FAIL: pre-push rung' "$_t/stale.sec" | sed -n '1p')
+  case "$_rung" in
+    *STALE*) echo "PASS: HOOK-REFRESH [STALE-REPORTED] — a stale hook the release did not touch still gets the section, with the gate's FAIL line" ;;
+    *) echo "FAIL: HOOK-REFRESH [STALE-REPORTED] — no 'FAIL: pre-push rung ... STALE' line in a HOOK REFRESH section for a stale installed hook" >&2
+       sed 's/^/    /' "$_t/stale.report" >&2 || :; st=1 ;;
+  esac
+  ( cd "$_t/stale" && CI='' GITHUB_ACTIONS='' sh conformance/guard-wired.sh "$_t/stale" 2>&1 ) | grep -F 'FAIL: pre-push rung' | sed -n '1p' > "$_t/gate.line" || :
+  if [ -s "$_t/gate.line" ] && [ "$_rung" = "$(cat "$_t/gate.line")" ]; then
+    echo "PASS: HOOK-REFRESH [SAME-TEXT] — the report's rung line is byte-identical to the adopter's own guard-wired.sh line"
+  else
+    echo "FAIL: HOOK-REFRESH [SAME-TEXT] — the report's rung line differs from guard-wired.sh's:" >&2
+    echo "    report: $_rung" >&2; echo "    gate:   $(cat "$_t/gate.line")" >&2; st=1
+  fi
+  if [ "$st" -eq 0 ]; then
+    echo "OK: kit-update-merge [HOOK-REFRESH] — leads with the one-time setting when safe; reports a stale hook with the gate's own text"
+  fi
+  return $st
+}
+
 case "${1:-}" in
   "")
     _rc=0
     ( check ); _c=$?; [ "$_c" -eq 0 ] || _rc=$_c
     ( check_unpruned ); _u=$?; [ "$_u" -eq 0 ] || _rc=$_u
+    ( check_ci_wiring ); _w=$?; [ "$_w" -eq 0 ] || _rc=$_w
+    ( check_hook_refresh ); _h=$?; [ "$_h" -eq 0 ] || _rc=$_h
     exit $_rc ;;
   *) echo "usage: kit-update-merge.sh" >&2; exit 2 ;;
 esac

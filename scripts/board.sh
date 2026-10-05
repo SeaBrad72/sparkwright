@@ -22,6 +22,13 @@
 #   or label:<prefix>), checked against that type's create-meta BEFORE any POST. Acceptance criteria ride
 #   `--description`: `create` writes no separate `field.acceptance` custom field (fill that by hand).
 #
+# `release --stale` on a TRACKER backend (today: jira) is the merged-PR close: with a claim ref held its proof is a merged
+#   PR (release-ref's P2), so the card ends at `state.done` (not `state.ready`), and the ref is deleted after the transition
+#   (S-5 order). EXCEPTION: with NO claim ref there is no proof to check — the card is moved on the caller's word, and a
+#   stderr line says UNPROVEN (a forge-UI hand-close must work). A card already at `state.done` gets no transition call.
+#   The holder's plain `release` (an abandoned claim) still ends at `state.ready`. `md` is unchanged: the Done row
+#   rides the PR. `land`/`actuate` call `release <ROW> --stale` after the merge; run it by hand after a forge-UI merge.
+#
 # EXIT: 0 the verb succeeded AND its effect was PROVEN by a post-read · 1 the tracker-side write
 #   (or its proof) failed — for claim/release this is reported by board-claim.sh's claim-ref/
 #   release-ref, whose own compensation already ran (S-5) · 2 usage / undeclared or unsupported
@@ -74,7 +81,7 @@ BD_LIB_SH="$(dirname "$here")/conformance/backlog-lib.sh"
 bd_usage() {
   echo "usage:" >&2
   echo "  board.sh claim   <ROW-ID> [--branch <name>]" >&2
-  echo "  board.sh release <ROW-ID> [--stale]" >&2
+  echo "  board.sh release <ROW-ID> [--stale]   (on a tracker, --stale = close after the merge: card ends Done; plain release ends Ready; no claim ref = UNPROVEN)" >&2
   echo "  board.sh move    <ROW-ID> <state>" >&2
   echo "  board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>] [--parent <KEY>] [--description <text>]" >&2
   echo "                   [--field <token>=<value>]...   (repeatable: the value of a field the project REQUIRES; the token is" >&2
@@ -245,26 +252,70 @@ do_release() {
       return $? ;;
     jira)
       bd_tracker_ctx || return 1
-      _target=$(bd_tc_get state.ready)
-      [ -n "$_target" ] || { echo "board release: .kit/tracker.conf has no state.ready mapping." >&2; return 2; }
+      # `--stale` on a tracker backend is the MERGED-PR close: with a claim ref its proof (release-ref's P2) is a merged PR (no ref = UNPROVEN, below),
+      # so the card ends at state.done. The holder's plain release (an abandoned claim) still ends at state.ready.
+      if [ "$_stale" = 1 ]; then _tkey=state.done; else _tkey=state.ready; fi
+      _target=$(bd_tc_get "$_tkey")
+      [ -n "$_target" ] || { echo "board release: .kit/tracker.conf has no $_tkey mapping." >&2; return 2; }
+      if [ "$_stale" = 1 ]; then bd_release_jira_stale; return $?; fi
       # MEDIUM-2: see the identical note in do_claim above.
       _then="sh '$(bd_sq "$BD_JIRA_SH")' transition '$(bd_sq "$_btbase")' '$(bd_sq "$_btflavour")' '$(bd_sq "$_btproject")' '$(bd_sq "$_row")' '$(bd_sq "$_target")'"
       # LOW-B: see the identical note in do_claim above — `cmd || return $?`, never a bare
       # `cmd; _rc=$?` that `set -e` would have already made unreachable on the failure path.
-      if [ "$_stale" = 1 ]; then sh "$BD_CLAIM_SH" release-ref "$_row" --stale --then "$_then" || return $?
-      else                       sh "$BD_CLAIM_SH" release-ref "$_row" --then "$_then" || return $?
-      fi
-      _post=$(sh "$BD_JIRA_SH" get-issue "$_btbase" "$_btflavour" "$_btproject" "$_row" 2>&1) || {
-        echo "board release: the ref+tracker write succeeded but the post-read could not run — cannot prove the release." >&2
-        return 1
-      }
-      if [ "$(bd_field "$_post" status-name)" = "$_target" ]; then
-        echo "board release: OK — \`$_row\` released (tracker transition to '$_target' + ref deleted), proven by post-read."
-        return 0
-      fi
-      echo "board release: the write ran but the post-read did NOT prove status '$_target' — treating as unproven." >&2
-      return 1 ;;
+      sh "$BD_CLAIM_SH" release-ref "$_row" --then "$_then" || return $?
+      bd_release_proof "released (tracker transition to '$_target' + ref deleted)"
+      return $? ;;
     *) echo "board release: undeclared or unsupported backend '$_be' — no write adapter for it." >&2; return 2 ;;
+  esac
+}
+
+# bd_release_proof <what>: the post-read every tracker release ends with. rc 0 only on an EXACT match of $_target.
+bd_release_proof() {
+  _post=$(sh "$BD_JIRA_SH" get-issue "$_btbase" "$_btflavour" "$_btproject" "$_row" 2>&1) || {
+    echo "board release: the ref+tracker write succeeded but the post-read could not run — cannot prove the release." >&2
+    return 1
+  }
+  if [ "$(bd_field "$_post" status-name)" = "$_target" ]; then
+    echo "board release: OK — \`$_row\` $1, proven by post-read."
+    return 0
+  fi
+  echo "board release: the write ran but the post-read did NOT prove status '$_target' — treating as unproven." >&2
+  return 1
+}
+
+# bd_release_jira_stale: `release <ROW> --stale` on a tracker backend; reads $_row/$_target/$_bt* from do_release.
+# A pre-read comes first (Jira has no transition from a state to itself, so an already-Done card gets NO transition
+# call), then `board-claim.sh check`: a held ref is released through release-ref's S-5 order (the transition runs
+# FIRST, the ref is deleted only after it succeeds, and the merged-PR proof gates the whole thing); no ref = there is
+# nothing to release, so the card is moved on its own. Every path ends with the exact-match post-read.
+bd_release_jira_stale() {
+  _pre=$(sh "$BD_JIRA_SH" get-issue "$_btbase" "$_btflavour" "$_btproject" "$_row" 2>&1) || _pre=""
+  _already=0
+  [ "$(bd_field "$_pre" status-name)" = "$_target" ] && _already=1
+  _crc=0
+  sh "$BD_CLAIM_SH" check "$_row" >/dev/null || _crc=$?
+  case "$_crc" in
+    0)
+      _then="sh '$(bd_sq "$BD_JIRA_SH")' transition '$(bd_sq "$_btbase")' '$(bd_sq "$_btflavour")' '$(bd_sq "$_btproject")' '$(bd_sq "$_row")' '$(bd_sq "$_target")'"
+      if [ "$_already" = 1 ]; then
+        sh "$BD_CLAIM_SH" release-ref "$_row" --stale || return $?
+      else
+        sh "$BD_CLAIM_SH" release-ref "$_row" --stale --then "$_then" || return $?
+      fi
+      bd_release_proof "closed (tracker transition to '$_target' + ref deleted)"
+      return $? ;;
+    1)
+      echo "board release: no claim to release on \`$_row\`."
+      echo "board release: UNPROVEN — no claim ref on '$_row', so no merged-PR proof was checked; moving to '$_target' on the caller's word." >&2
+      if [ "$_already" != 1 ]; then
+        if ! bd_transition "$_row" "$_target"; then
+          [ "$_tr_rc" -eq 5 ] || echo "board release: the tracker transition to '$_target' failed or was refused." >&2
+          return 1
+        fi
+      fi
+      bd_release_proof "closed (tracker already at, or moved to, '$_target'; no claim ref; merge proof not checked)"
+      return $? ;;
+    *) echo "board release: could not read the claim ref (remote unreachable) — nothing was changed." >&2; return 2 ;;
   esac
 }
 
@@ -998,6 +1049,81 @@ STUB_EOF
   bd_out=$(cd "$bd_jclone" && STUB_STATE='Selected for Development' do_move ROW-JIRA-7 'done' 2>&1); bd_rc=$?
   if [ "$bd_rc" -ne 0 ]; then bd_pass "leg jira/move-postread-mismatch: a post-read that does not confirm the new state is non-zero"
   else bd_fail_ "leg jira/move-postread-mismatch: wrongly returned 0 despite a mismatched post-read"; fi
+
+  # ── release legs (LAND-WRITES-CARD-STATE): on a tracker, `--stale` (proof: a merged PR) ends at state.done and a
+  # plain release ends at state.ready. A gh stub on PATH answers release-ref's P2 query from $bd_gh/prlist. ────────
+  bd_gh="$bd_base/gh"; mkdir -p "$bd_gh"; printf 'MERGED false\n' > "$bd_gh/prlist"
+  cat > "$bd_gh/gh" <<'GH_EOF'
+#!/bin/sh
+case "$1" in pr) cat "$(dirname "$0")/prlist" ;; *) exit 1 ;; esac
+GH_EOF
+  chmod +x "$bd_gh/gh"
+  bd_rl_log="$bd_base/.rllog"; bd_rl_sf="$bd_base/.rlsf"
+  bd_refpresent() { git ls-remote "$bd_remote" "refs/claims/$1" 2>/dev/null | grep -q "refs/claims/$1"; }
+  # bd_rl_claim <ROW>: take a real claim (the stub card ends In Progress), log reset
+  bd_rl_claim() {
+    printf 'Selected for Development' > "$bd_rl_sf"
+    (cd "$bd_jclone" && STUB_STATE_FILE="$bd_rl_sf" do_claim "$1" --branch "feat/$1") >/dev/null 2>&1 || true
+    : > "$bd_rl_log"
+  }
+  # bd_rl <ROW> [args]: one release, in-process, gh stubbed, the stub card state in $bd_rl_sf, STUB_* passed through
+  bd_rl() {
+    _rl_row=$1; shift
+    bd_out=$(cd "$bd_jclone" && PATH="$bd_gh:$PATH" STUB_LOG="$bd_rl_log" STUB_STATE_FILE="$bd_rl_sf" do_release "$_rl_row" "$@" 2>&1); bd_rc=$?
+  }
+
+  # C3 (positive): a held claim + a merged PR -> `--stale` ends at Done, the ref is gone, proven by the post-read
+  bd_rl_claim AB-10
+  bd_rl AB-10 --stale
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_rl_sf")" = Done ] && ! bd_refpresent AB-10 && grep -q '^transition .* AB-10 Done$' "$bd_rl_log"; then
+    bd_pass "leg jira/release-stale-done: release --stale on a held claim + merged PR ends the card at Done and deletes the ref, proven by post-read"
+  else bd_fail_ "leg jira/release-stale-done: rc=$bd_rc state=[$(cat "$bd_rl_sf")] out=[$bd_out]"; fi
+
+  # C3 (negative): the holder's plain release is NOT the merged close — it still ends at Ready, never Done
+  bd_rl_claim AB-11
+  bd_rl AB-11
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_rl_sf")" = 'Selected for Development' ] && ! bd_refpresent AB-11; then
+    bd_pass "leg jira/release-plain-ready: a plain release (abandoned claim) still ends at Ready, not Done"
+  else bd_fail_ "leg jira/release-plain-ready: rc=$bd_rc state=[$(cat "$bd_rl_sf")] out=[$bd_out]"; fi
+
+  # C4 (negative): the transition fails -> rc 1, the card is not Done, and the claim ref is STILL HELD (S-5 order)
+  bd_rl_claim AB-12
+  bd_out=$(cd "$bd_jclone" && PATH="$bd_gh:$PATH" STUB_LOG="$bd_rl_log" STUB_STATE_FILE="$bd_rl_sf" STUB_TRANSITION_FAIL=1 do_release AB-12 --stale 2>&1); bd_rc=$?
+  if [ "$bd_rc" -eq 1 ] && [ "$(cat "$bd_rl_sf")" = 'In Progress' ] && bd_refpresent AB-12; then
+    bd_pass "leg jira/release-stale-order: a failed transition leaves rc 1, the card unmoved and refs/claims/AB-12 still held (S-5)"
+  else bd_fail_ "leg jira/release-stale-order: rc=$bd_rc state=[$(cat "$bd_rl_sf")] ref=$(bd_refpresent AB-12 && echo held || echo gone) out=[$bd_out]"; fi
+
+  # C5 (negative): the card is already Done and no ref is held -> rc 0 and NO transition call reached the adapter
+  printf 'Done' > "$bd_rl_sf"; : > "$bd_rl_log"
+  bd_rl AB-13 --stale
+  if [ "$bd_rc" -eq 0 ] && ! grep -q '^transition ' "$bd_rl_log" && printf '%s' "$bd_out" | grep -q 'no claim to release'; then
+    bd_pass "leg jira/release-stale-idempotent: an already-Done card with no claim is rc 0 and makes no transition call"
+  else bd_fail_ "leg jira/release-stale-idempotent: rc=$bd_rc log=[$(cat "$bd_rl_log")] out=[$bd_out]"; fi
+  # ...and with the claim still held on a Done card: ref-only (no transition), the ref is deleted
+  bd_rl_claim AB-14
+  printf 'Done' > "$bd_rl_sf"
+  bd_rl AB-14 --stale
+  if [ "$bd_rc" -eq 0 ] && ! grep -q '^transition ' "$bd_rl_log" && ! bd_refpresent AB-14; then
+    bd_pass "leg jira/release-stale-done-held: an already-Done card with a held ref is released ref-only (no transition call)"
+  else bd_fail_ "leg jira/release-stale-done-held: rc=$bd_rc log=[$(cat "$bd_rl_log")] ref=$(bd_refpresent AB-14 && echo held || echo gone) out=[$bd_out]"; fi
+
+  # no claim ref, card not Done: the card is still moved (a manual forge-UI merge), and the output says there was no claim
+  printf 'In Progress' > "$bd_rl_sf"; : > "$bd_rl_log"
+  bd_rl AB-15 --stale
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_rl_sf")" = Done ] && printf '%s' "$bd_out" | grep -q 'no claim to release' \
+     && printf '%s' "$bd_out" | grep -qF "UNPROVEN — no claim ref on 'AB-15', so no merged-PR proof was checked; moving to 'Done' on the caller's word." \
+     && printf '%s' "$bd_out" | grep -qF 'merge proof not checked'; then
+    bd_pass "leg jira/release-stale-noclaim: no claim ref + card not Done -> the card is moved to Done, the output says no claim and UNPROVEN"
+  else bd_fail_ "leg jira/release-stale-noclaim: rc=$bd_rc state=[$(cat "$bd_rl_sf")] out=[$bd_out]"; fi
+
+  # the merged-PR proof still gates a HELD claim: an unmerged PR refuses before any transition
+  bd_rl_claim AB-16
+  printf 'CLOSED false\n' > "$bd_gh/prlist"
+  bd_rl AB-16 --stale
+  printf 'MERGED false\n' > "$bd_gh/prlist"
+  if [ "$bd_rc" -eq 1 ] && [ "$(cat "$bd_rl_sf")" = 'In Progress' ] && bd_refpresent AB-16 && ! grep -q '^transition ' "$bd_rl_log"; then
+    bd_pass "leg jira/release-stale-unproven: a held claim without a merged PR is refused before any transition (the card is not closed on no proof)"
+  else bd_fail_ "leg jira/release-stale-unproven: rc=$bd_rc state=[$(cat "$bd_rl_sf")] out=[$bd_out]"; fi
 
   # ── create legs (BOARD-CREATE-HONOURS-FIELD-MAP): per-type recorded meta files + a scriptable
   # post-read; every "refused" leg asserts ZERO `create` calls reached the stub (the POST). ─────────

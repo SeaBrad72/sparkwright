@@ -295,6 +295,18 @@ usage() {
   echo "        merge: gh pr merge <ref> --squash --match-head-commit <sha> — NEVER --admin, NEVER --delete-branch." >&2
   echo "        Verb-scoped: land refuses a recordless merge on its OWN path; the universal net for a" >&2
   echo "        recordless merge is the CI recordless-merge backstop (promotion-verify.sh trace --recent)." >&2
+  echo "  BOARD TAIL (land AND actuate): after the merge both verbs release the row's claim and, on a JIRA" >&2
+  echo "        backend, close its card (\`board.sh release <ROW> --stale\`: card -> Done). On every run that MERGED" >&2
+  echo "        the LAST line of stdout is exactly one of (a stable contract; read this line, not the exit code):" >&2
+  echo "          board: row closes with the PR (md); claim released" >&2
+  echo "          board: row closes with the PR (md); claim NOT released — see the WARN above" >&2
+  echo "          board: row closes with the PR (md); no claim to release   (md, the note has no kit-row)" >&2
+  echo "          board: closed                                        (jira: card Done; proven by post-read when a" >&2
+  echo "                                                                claim ref was held, else the output says so)" >&2
+  echo "          board: NOT CLOSED — see the WARN above               (merge done; the WARN names the one command;" >&2
+  echo "                                                                also any other tracker: no write adapter)" >&2
+  echo "        rc stays 0 on all of them: the merge succeeded and no rc can undo it. A forge-UI merge moves no card:" >&2
+  echo "        run \`sh scripts/board.sh release <ROW> --stale\` by hand." >&2
 }
 
 # Derive the assurance label for `approved-by`, HONESTLY, from the commit's own evidence.
@@ -1190,8 +1202,35 @@ do_check() {
 # ⚠️ FAILURE HERE IS A **WARN**, NEVER A MERGE FAILURE. The merge ALREADY HAPPENED — returning
 # non-zero now would report a successful, verified promotion as failed, and no rc can un-merge it.
 # What is printed is the exact command to run by hand.
+#
+# LAND-WRITES-CARD-STATE: on a TRACKER backend the merge is also the close of the row's CARD, which no
+# PR can write (the Done row rides the PR only on `md`, D-240903-2 (1)). So the helper routes by backend
+# (the same `seam_backend` land's A9 leg uses): `md`, empty, unrecognised or a seam rc 2 keep the call
+# above exactly; `jira` (the one backend with a board.sh write adapter) runs
+# `sh <beside>/board.sh release <row> --stale`, which ends the card at Done and deletes the claim ref after
+# the transition; any other recognised tracker keeps the ref-only call plus a WARN to move the card by hand.
+# ⚠️ THE TRACKER EXCEPTION TO THE PROOF ARGUMENT ABOVE: with a claim ref held, board.sh's release-ref still
+# demands P2 (a merged PR). With NO claim ref there is no proof to check at all (board.sh prints UNPROVEN and
+# moves the card on the caller's word — a forge-UI hand-close must work). For land/actuate the standing
+# argument is therefore different: the proof is the VERIFIED MERGE of the approved commit whose `Kit-Row`
+# trailer names the row. A wrong trailer that reviewers approved closes the wrong card; that is a review
+# failure, not something this helper can see.
+# A failure is the same WARN-never-failure, naming that command. EVERY run that merged sets $PV_BOARD_TAIL, the
+# ONE line `land`/`actuate` print LAST (a stated contract in usage; every line is listed there). rc stays 0:
+# the merge is done and verified.
+pv_tracker_backend() {  # -> the tracker backend name on stdout, or nothing (md / empty / unrecognised / seam rc 2)
+  _pvlib="$ROOT/conformance/backlog-lib.sh"
+  [ -f "$_pvlib" ] && [ -r "$_pvlib" ] || return 0
+  # sourced in a subshell: this helper must not leak the seam's globals into the verb that called it
+  # shellcheck disable=SC1090  # dynamic source path (the kit's own backlog-lib.sh); existence/readability checked above
+  if _pvb=$( . "$_pvlib"; SEAM_ROOT=$ROOT; seam_backend 2>/dev/null ); then :; else return 0; fi
+  case "$_pvb" in github | jira | ado | linear | gitlab) printf '%s' "$_pvb" ;; esac
+  return 0
+}
+
 pv_release_claim() {
   _pvnote="$1"; _pvverb="$2"
+  PV_BOARD_TAIL='board: NOT CLOSED — see the WARN above'
   _pvkr_line="$(printf '%s\n' "$_pvnote" | grep '^kit-row:' | head -1 || true)"
   _pvkr="${_pvkr_line#kit-row:}"
   # ⚠️ CONTROL BYTES OUT FIRST (security S-L6). It comes from a GIT NOTE — self-authorable text —
@@ -1201,17 +1240,77 @@ pv_release_claim() {
   # board-claim.sh) sees the sanitised value; board-claim's own row grammar is the second gate.
   _pvkr="$(printf '%s' "$_pvkr" | tr -d '[:cntrl:]' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   _pvbc="$(dirname -- "$0")/board-claim.sh"
+  _pvbd="$(dirname -- "$0")/board.sh"
+  _pvtb="$(pv_tracker_backend)"
   if [ -z "$_pvkr" ] || [ "$_pvkr" = '(none)' ]; then
     echo "$_pvverb: no kit-row on the GO note — no board claim to release (nothing invented)."
-  elif [ ! -f "$_pvbc" ]; then
-    echo "$_pvverb: WARN — board-claim.sh not found beside this script; claim on '$_pvkr' NOT released." >&2
-  elif sh "$_pvbc" release "$_pvkr" --stale; then
-    echo "$_pvverb: board claim on '$_pvkr' released (refs/claims/$_pvkr deleted on origin)."
-  else
-    echo "$_pvverb: WARN — could not release the board claim on '$_pvkr' (refs/claims/$_pvkr may still exist)." >&2
-    echo "        The merge SUCCEEDED and is verified; release by hand:" >&2
-    echo "        sh scripts/board-claim.sh release $_pvkr --stale" >&2
+    if [ -n "$_pvtb" ]; then
+      echo "$_pvverb: WARN — no row, so no card was closed; close it by hand if one exists." >&2
+    else
+      PV_BOARD_TAIL='board: row closes with the PR (md); no claim to release'
+    fi
+    return 0
   fi
+  # ROW GRAMMAR, whole string (security Low 1): the value comes from a self-authorable note, and the commands
+  # printed below are meant to be pasted. A value outside [A-Z0-9][A-Z0-9-]* releases nothing, closes nothing,
+  # and is NEITHER echoed NOR turned into a paste-able command.
+  case "$_pvkr" in
+    [!A-Z0-9]* | *[!A-Z0-9-]*)
+      echo "$_pvverb: kit-row is not a valid row id; nothing released or closed."
+      echo "$_pvverb: WARN — the GO note's kit-row is not a valid row id; no claim was released and no card was closed." >&2
+      return 0 ;;
+  esac
+  if [ "$_pvtb" = jira ]; then
+    pv_close_card_jira
+  elif [ -n "$_pvtb" ]; then
+    # a recognised tracker with NO board.sh write adapter: the claim ref is still released, the card is moved by hand
+    pv_release_claim_ref || :
+    echo "$_pvverb: WARN — no write adapter for '$_pvtb'; move the card on '$_pvkr' by hand." >&2
+  elif pv_release_claim_ref; then
+    PV_BOARD_TAIL='board: row closes with the PR (md); claim released'
+  else
+    PV_BOARD_TAIL='board: row closes with the PR (md); claim NOT released — see the WARN above'
+  fi
+  return 0
+}
+
+# pv_release_claim_ref: the ref-only release (the md call, text unchanged). rc 0 released, 1 not (a WARN printed).
+pv_release_claim_ref() {
+  if [ ! -f "$_pvbc" ]; then
+    echo "$_pvverb: WARN — board-claim.sh not found beside this script; claim on '$_pvkr' NOT released." >&2
+    return 1
+  fi
+  if sh "$_pvbc" release "$_pvkr" --stale; then
+    echo "$_pvverb: board claim on '$_pvkr' released (refs/claims/$_pvkr deleted on origin)."
+    return 0
+  fi
+  echo "$_pvverb: WARN — could not release the board claim on '$_pvkr' (refs/claims/$_pvkr may still exist)." >&2
+  echo "        The merge SUCCEEDED and is verified; release by hand:" >&2
+  echo "        sh scripts/board-claim.sh release $_pvkr --stale" >&2
+  return 1
+}
+
+# pv_close_card_jira: `board.sh release <row> --stale` (card -> Done). Sets PV_BOARD_TAIL on success; a failure is a WARN.
+pv_close_card_jira() {
+  if [ ! -f "$_pvbd" ]; then
+    echo "$_pvverb: WARN — board.sh not found beside this script; the card on '$_pvkr' was NOT closed." >&2
+    echo "        The merge SUCCEEDED and is verified; close it by hand:" >&2
+    echo "        sh scripts/board.sh release $_pvkr --stale" >&2
+    return 0
+  fi
+  if _pvout=$(sh "$_pvbd" release "$_pvkr" --stale); then
+    [ -z "$_pvout" ] || printf '%s\n' "$_pvout"
+    case "$_pvout" in
+      *'no claim to release'*) echo "$_pvverb: board card on '$_pvkr' Done (no claim ref; merge proof not checked)." ;;
+      *) echo "$_pvverb: board card on '$_pvkr' closed (Done, proven by post-read; claim released)." ;;
+    esac
+    PV_BOARD_TAIL='board: closed'
+    return 0
+  fi
+  [ -z "$_pvout" ] || printf '%s\n' "$_pvout"
+  echo "$_pvverb: WARN — could not close the card on '$_pvkr' (refs/claims/$_pvkr may still exist)." >&2
+  echo "        The merge SUCCEEDED and is verified; close it by hand:" >&2
+  echo "        sh scripts/board.sh release $_pvkr --stale" >&2
   return 0
 }
 
@@ -1609,6 +1708,7 @@ do_actuate() {
   # server-side branch protection + the human-only admin bypass). Do not imply the label authenticates.
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
   echo "OK: actuated $ref on recorded GO (approved-sha $asha) — shipped == approved"
+  echo "${PV_BOARD_TAIL:-board: NOT CLOSED — see the WARN above}"
   return 0
 }
 
@@ -2147,6 +2247,7 @@ do_land() {
   echo "    record time (a drift control at the note's own tier), so server-side branch protection +"
   echo "    required review is what binds; the net for a recordless merge is the CI recordless-merge"
   echo "    backstop."
+  echo "${PV_BOARD_TAIL:-board: NOT CLOSED — see the WARN above}"
   return 0
 }
 

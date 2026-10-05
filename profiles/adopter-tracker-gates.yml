@@ -83,6 +83,17 @@ jobs:
     # parses fork head objects beside the tracker credential).
     runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}
     steps:
+      # First step, so no later skip or failure can hide it. Inert, warn-only: risk (2) above, made
+      # visible on the run (TRACKER-RUNNER-PUBLIC-SELFHOSTED-WARN; pinned by proportional-gate-wired.sh).
+      # Silent where runner.environment is unset (older GHES, runners pinned with --disableupdate or a
+      # pinned image) and on internal repos (private: true, yet every enterprise member can fork-PR).
+      - name: Warn when a public repo runs this job on a self-hosted runner (never fails the job)
+        if: runner.environment == 'self-hosted' && github.event.repository.private == false
+        continue-on-error: true
+        run: |
+          echo "::warning title=tracker-board-gates: public repo on a self-hosted runner::This pull_request_target job parses fork pull-request data beside the tracker credential on a self-hosted runner. Use a GitHub-hosted runner (unset the repository variable KIT_TRACKER_RUNNER), make the repository private, or accept the risk with an ephemeral, network-isolated runner and record it in your waiver register (JIRA-SETUP §0). GitHub's guidance: https://docs.github.com/en/actions/reference/security/secure-use#hardening-for-self-hosted-runners"
+          exit 0
+
       # ── base checkout ONLY. No PR-tree code runs in this job (S-1). ────────────────────────────
       # nosemgrep justification: base-only checkout (ref: base.sha), NOT the PR head; no head-tree
       # code executes — S-1 / D-240919-2. The head is fetched as objects only and the seam-consuming

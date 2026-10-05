@@ -355,6 +355,90 @@ selftest() {
     fail "CLAIM-RELEASE-WARN: rc=$RC OUT=[$OUT]"
   fi
 
+  # LAND-WRITES-CARD-STATE C2: the `md` path is UNCHANGED. A board.sh stub BESIDE the gate copy writes a marker if it is
+  # ever run; on an md fixture (no tracker backend) it must NOT be — routing md through board.sh reds this leg. The
+  # existing message text stays intact, and the verb now ends on the one md tail line.
+  D="$(mkrepo)" || { fail "fixture build (claim-release/md-tail)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 0
+  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && [ ! -f "$D/.board-sh-ran" ] && grep -q 'release ROW-X --stale' "$D/.released" \
+     && printf '%s' "$OUT" | grep -q "board claim on 'ROW-X' released" \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim released' ]; then
+    pass "CLAIM-RELEASE-MD-TAIL (C2): an md row never runs board.sh, keeps its message, and ends 'board: row closes with the PR (md); claim released'"
+  else
+    fail "CLAIM-RELEASE-MD-TAIL: rc=$RC boardsh=$([ -f "$D/.board-sh-ran" ] && echo RAN || echo no) OUT=[$OUT]"
+  fi
+
+  # md tail lines for the two non-happy cases: a FAILING release, and a note with no row (nothing released).
+  D="$(mkrepo)" || { fail "fixture build (md-tail/fail)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 1
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim NOT released — see the WARN above' ]; then
+    pass "CLAIM-RELEASE-MD-TAIL-FAIL: a failing md release ends 'claim NOT released — see the WARN above' (rc 0)"
+  else
+    fail "CLAIM-RELEASE-MD-TAIL-FAIL: rc=$RC OUT=[$OUT]"
+  fi
+  D="$(mkrepo)" || { fail "fixture build (md-tail/none)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _mk_release_fixture "$D" 0
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && ! printf '%s' "$OUT" | grep -q 'WARN' \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); no claim to release' ]; then
+    pass "CLAIM-RELEASE-MD-TAIL-NONE: md + no kit-row keeps today's output (no new WARN) and ends 'no claim to release'"
+  else
+    fail "CLAIM-RELEASE-MD-TAIL-NONE: rc=$RC OUT=[$OUT]"
+  fi
+
+  # LAND-WRITES-CARD-STATE review Major: only `jira` has a board.sh write adapter. A github-declared repo keeps the
+  # ref-only `board-claim.sh release ROW-X --stale`, board.sh is NEVER run, and a WARN + `NOT CLOSED` say to move the card.
+  D="$(mkrepo)" || { fail "fixture build (no-adapter)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 0
+  mkdir -p "$D/conformance"; cp "$(dirname "$VERIFY")/../conformance/backlog-lib.sh" "$D/conformance/backlog-lib.sh"
+  printf 'Backlog backend: github\n' > "$D/CLAUDE.md"
+  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && [ ! -f "$D/.board-sh-ran" ] && grep -q 'release ROW-X --stale' "$D/.released" \
+     && printf '%s' "$OUT" | grep -qF "no write adapter for 'github'; move the card on 'ROW-X' by hand" \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
+    pass "CLAIM-RELEASE-NOADAPTER: github-declared -> ref-only release, board.sh never run, WARN 'no write adapter', tail NOT CLOSED"
+  else
+    fail "CLAIM-RELEASE-NOADAPTER: rc=$RC boardsh=$([ -f "$D/.board-sh-ran" ] && echo RAN || echo no) released=[$(cat "$D/.released" 2>/dev/null)] OUT=[$OUT]"
+  fi
+
+  # security Low 1: a kit-row outside [A-Z0-9][A-Z0-9-]* releases and closes NOTHING, is not echoed, and prints no
+  # paste-able command.
+  D="$(mkrepo)" || { fail "fixture build (bad-row)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: X;echo pwned' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 0
+  printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
+  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
+  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  if [ "$RC" = 0 ] && [ ! -f "$D/.released" ] && [ ! -f "$D/.board-sh-ran" ] \
+     && printf '%s' "$OUT" | grep -qF 'kit-row is not a valid row id; nothing released or closed' \
+     && ! printf '%s' "$OUT" | grep -qF 'pwned' && ! printf '%s' "$OUT" | grep -qF 'sh scripts/board' \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
+    pass "CLAIM-RELEASE-BADROW: kit-row 'X;echo pwned' -> nothing released or closed, value not echoed, no command printed, tail NOT CLOSED"
+  else
+    fail "CLAIM-RELEASE-BADROW: rc=$RC released=$([ -f "$D/.released" ] && echo yes || echo no) OUT=[$OUT]"
+  fi
+
   # ---------------------------------------------------------------------------------------
   # GUARD fixtures: the --admin bypass stays DENIED; the gate is immutable-but-runnable; normal merge
   # allowed. Control-plane path strings live in a DATA FILE (never on a command line) so the real
@@ -913,6 +997,39 @@ AWK
   if [ -z "$_l1bad" ]; then pass "L1: land --go-by '' / whitespace -> rc 2 'empty or whitespace-only', no merge"; else fail "L1: got:$_l1bad"; fi
   rm -rf "$LDR" "$_lg" 2>/dev/null || true
 
+  # LAND-WRITES-CARD-STATE C1: on a TRACKER backend `land` closes the row's card after the merge, and a failed move is
+  # LOUD but never a failed merge. Real board.sh + tracker-conf.sh + backlog-lib.sh beside a COPY of the gate; stubs for
+  # board-claim.sh (no claim ref: `check` rc 1) and the Jira adapter (a state file, STUB_TRANSITION_FAIL). The A9 reader
+  # is stubbed to N/A (LAND_TRACKER_READER=false) so only the card step is under test. The tail line is the contract.
+  _mkland_jira_fx || { fail "C1: fixture build"; return 1; }
+  _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
+  printf 'In Progress' > "$LDR/state"
+  _lv="$VERIFY"; VERIFY="$LDR/c/scripts/promotion-verify.sh"
+  STUB_STATE_FILE="$LDR/state" LAND_TRACKER_READER=false; export STUB_STATE_FILE LAND_TRACKER_READER
+  _land_run "$_lg" reviewer-login SeaBrad72
+  if [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ "$(cat "$LDR/state")" = Done ] \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: closed' ]; then
+    pass "LAND-CARD-CLOSE (C1 +): tracker land -> merge ran, the card reads Done (post-read), the last line is 'board: closed' (rc 0)"
+  else
+    fail "LAND-CARD-CLOSE: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) state=[$(cat "$LDR/state")] OUT=[$OUT]"
+  fi
+  VERIFY="$_lv"; rm -rf "$LDR" "$_lg" 2>/dev/null || true
+  _mkland_jira_fx || { VERIFY="$_lv"; unset STUB_STATE_FILE LAND_TRACKER_READER; fail "C1n: fixture build"; return 1; }
+  _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"   # the review JSON binds THIS fixture's sha
+  printf 'In Progress' > "$LDR/state"; VERIFY="$LDR/c/scripts/promotion-verify.sh"
+  STUB_STATE_FILE="$LDR/state" STUB_TRANSITION_FAIL=1; export STUB_STATE_FILE STUB_TRANSITION_FAIL
+  _land_run "$_lg" reviewer-login SeaBrad72
+  unset STUB_TRANSITION_FAIL
+  if [ "$RC" = 0 ] && [ -f "$LDMARK" ] && [ "$(cat "$LDR/state")" != Done ] \
+     && printf '%s' "$OUT" | grep -qF 'WARN' && printf '%s' "$OUT" | grep -qF 'sh scripts/board.sh release AB-1 --stale' \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
+    pass "LAND-CARD-CLOSE-FAIL (C1 -): a failed card move is rc 0 (merge kept), a WARN naming 'board.sh release AB-1 --stale', the card not Done, tail 'board: NOT CLOSED'"
+  else
+    fail "LAND-CARD-CLOSE-FAIL: rc=$RC merged=$([ -f "$LDMARK" ] && echo yes || echo no) state=[$(cat "$LDR/state")] OUT=[$OUT]"
+  fi
+  unset STUB_STATE_FILE LAND_TRACKER_READER; VERIFY="$_lv"
+  rm -rf "$LDR" "$_lg" 2>/dev/null || true
+
   # L5: an ORDINARY record (the self-asserted default, no --go-by) writes a 13-line note whose line 5 reads
   # `go-by: (none recorded)`, and trace recovers it. With --go-by the line carries the name, labelled
   # [self-asserted] by a FIXED literal. (record for ordinary/sensitive keeps its behaviour but for the line.)
@@ -1384,6 +1501,41 @@ _mkland_fx() {
     git push -q origin HEAD:refs/heads/main
     git checkout -q -b feat; printf 'x\n' >> f.txt; git add f.txt
     GIT_AUTHOR_NAME='Author A' GIT_AUTHOR_EMAIL='a@x' git commit -qm X
+    git rev-parse HEAD > "$LDR/.X" ) >/dev/null 2>&1 || return 1
+  LDX="$(cat "$LDR/.X")"; LDMARK="$LDR/.merged"
+  printf '#!/bin/sh\ntouch %s\n' "'$LDMARK'" > "$LDR/stub"; chmod +x "$LDR/stub"
+}
+# _mkland_jira_fx: _mkland_fx's shape on a TRACKER repo (LAND-WRITES-CARD-STATE). G carries CLAUDE.md (jira), the conf,
+# conformance/backlog-lib.sh and scripts/{board.sh,tracker-conf.sh} (real) + a COPY of the gate + stubs for board-claim.sh
+# (`check` -> rc 1: no claim ref) and tracker-jira.sh (state in $STUB_STATE_FILE; STUB_TRANSITION_FAIL=1 refuses). X
+# carries `Kit-Row: AB-1`. The caller sets VERIFY to the gate COPY ($LDR/c/scripts/promotion-verify.sh).
+_mkland_jira_fx() {
+  _jsrc="$(cd "$(dirname "$VERIFY")" && pwd)"
+  LDR="$(mktemp -d)"
+  git init -q --bare -b main "$LDR/origin.git" || return 1
+  ( set -e
+    git clone -q "$LDR/origin.git" "$LDR/c" 2>/dev/null
+    cd "$LDR/c"
+    git config user.email committer@example.com; git config user.name committer; git config commit.gpgsign false
+    mkdir -p .kit scripts conformance
+    printf 'Backlog backend: jira\n' > CLAUDE.md
+    printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nflavour=cloud\nauth=basic\nproject=AB\nstate.ready=Selected for Development\nstate.in-progress=In Progress\nstate.done=Done\n' > .kit/tracker.conf
+    cp "$_jsrc/../conformance/backlog-lib.sh" conformance/backlog-lib.sh
+    cp "$_jsrc/board.sh" "$_jsrc/tracker-conf.sh" scripts/
+    cp "$VERIFY" scripts/promotion-verify.sh
+    printf '#!/bin/sh\ncase "$1" in check) exit 1 ;; *) exit 0 ;; esac\n' > scripts/board-claim.sh
+    cat > scripts/tracker-jira.sh <<'JIRA_STUB'
+#!/bin/sh
+case "$1" in
+  get-issue) printf 'key\t%s\n' "$5"; printf 'status-name\t%s\n' "$(cat "$STUB_STATE_FILE")"; exit 0 ;;
+  transition) [ "${STUB_TRANSITION_FAIL:-0}" = 1 ] && exit 1; printf '%s' "$6" > "$STUB_STATE_FILE"; exit 0 ;;
+  *) exit 2 ;;
+esac
+JIRA_STUB
+    printf 'base\n' > f.txt; git add -A; git commit -qm G
+    git push -q origin HEAD:refs/heads/main
+    git checkout -q -b feat; printf 'x\n' >> f.txt; git add f.txt
+    GIT_AUTHOR_NAME='Author A' GIT_AUTHOR_EMAIL='a@x' git commit -qm X -m 'Kit-Row: AB-1'
     git rev-parse HEAD > "$LDR/.X" ) >/dev/null 2>&1 || return 1
   LDX="$(cat "$LDR/.X")"; LDMARK="$LDR/.merged"
   printf '#!/bin/sh\ntouch %s\n' "'$LDMARK'" > "$LDR/stub"; chmod +x "$LDR/stub"

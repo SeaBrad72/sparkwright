@@ -3519,6 +3519,164 @@ EOF
         fi
       fi
     fi
+    # ── TRACKER-RUNNER-PUBLIC-SELFHOSTED-WARN — the gates job's first step warns (never fails) when a
+    # PUBLIC repo runs it on a SELF-HOSTED runner. C1 first step; C2 the fact-based if: (verbatim +
+    # truth table); C3 never fails the job (continue-on-error + executed body); C4 inert (no env,
+    # with, uses, id, secrets, no ${{ in the body). The if: cannot be evaluated off GitHub: these legs
+    # prove the condition is SPELLED as designed and the body behaves, not that GitHub evaluates it.
+    _pf_wm='Warn when a public repo runs this job on a self-hosted runner'
+    _pf_wtitle='::warning title=tracker-board-gates: public repo on a self-hosted runner::'
+    _pf_wif_want="        if: runner.environment == 'self-hosted' && github.event.repository.private == false"
+    _pf_w_first() { _tj_job_block "$1" tracker-board-gates | grep -v '^[[:space:]]*#' | grep '^      - ' | head -1; }
+    _pf_w_inert() {
+      _pwi_blk=$(_t2_step_block "$_pf_wm" "$1" || true)
+      _pwi_body=$(_t2_run_body "$_pf_wm" "$1" || true)
+      [ -n "$_pwi_blk" ] && [ -n "$_pwi_body" ] || return 1
+      # ALLOWLIST: the step's keys are exactly name (first line), the pinned if:, continue-on-error:
+      # true and run: | — each once; any other key (env, with, uses, id, shell, working-directory,
+      # timeout-minutes, a quoted key) reds. Body lines are indented 10+.
+      printf '%s\n' "$_pwi_blk" | awk -v want_if="$_pf_wif_want" '
+        NR == 1 { if (index($0, "      - name: ") != 1) bad = 1; next }
+        /^[[:space:]]*$/ { next }
+        inrun && /^          / { next }
+        $0 == want_if { nif++; next }
+        $0 == "        continue-on-error: true" { ncoe++; next }
+        $0 == "        run: |" { nrun++; inrun = 1; next }
+        { bad = 1 }
+        END { exit (bad || nif != 1 || ncoe != 1 || nrun != 1) ? 1 : 0 }
+      ' || return 1
+      # No expression or secret anywhere in the step except the pinned if: line (which has neither).
+      if printf '%s\n' "$_pwi_blk" | grep -vxF "$_pf_wif_want" | grep -qF '${{'; then return 1; fi
+      if printf '%s\n' "$_pwi_blk" | grep -vxF "$_pf_wif_want" | grep -qF 'secrets'; then return 1; fi
+      # The body is a constant: no `$` at all (no variable, no ${{ }}, nothing to expand).
+      if printf '%s\n' "$_pwi_body" | grep -qF '$'; then return 1; fi
+      return 0
+    }
+    _pf_w_blk=$(_t2_step_block "$_pf_wm" "$_tj_atg" || true)
+    _pf_w_body=$(_t2_run_body "$_pf_wm" "$_tj_atg" || true)
+
+    # C1 — runs first.
+    case "$(_pf_w_first "$_tj_atg")" in
+      "      - name: $_pf_wm"*) echo "PASS: TPW/first: the public-self-hosted warning is the first step of tracker-board-gates (no later skip or failure can suppress it)" ;;
+      *) echo "FAIL: TPW/first: the first step of tracker-board-gates is not the public-self-hosted warning"; st=1 ;;
+    esac
+    awk -v m="$_pf_wm" '
+      index($0, "      - name: " m) == 1 { grab = 1 }
+      grab { held = held $0 "\n"; if ($0 ~ /^[[:space:]]*$/) grab = 0; next }
+      /^      - name: Resolve backend from the base / { printf "%s", held }
+      { print }
+    ' "$_tj_atg" > "$_pf_priv/m-first.yml"
+    if cmp -s "$_pf_priv/m-first.yml" "$_tj_atg"; then
+      echo "FAIL: TPW/first mutant setup — the planted copy did not differ from its source"; st=1
+    else
+      case "$(_pf_w_first "$_pf_priv/m-first.yml")" in
+        "      - name: $_pf_wm"*) echo "FAIL: TPW/first mutant (warning moved after the checkout) was not caught"; st=1 ;;
+        *) echo "PASS: TPW/first mutant (warning moved after the checkout) is caught" ;;
+      esac
+    fi
+
+    # C2 — fires on the runtime fact, public only.
+    _pf_w_if=$(printf '%s\n' "$_pf_w_blk" | grep '^        if: ' | head -1)
+    if [ "$_pf_w_if" = "$_pf_wif_want" ]; then
+      echo "PASS: TPW/if: the warning's if: is runner.environment == 'self-hosted' && private == false (verbatim)"
+    else
+      echo "FAIL: TPW/if: the warning's if: is not the pinned form; got '$_pf_w_if'"; st=1
+    fi
+    for _pf_we in self-hosted github-hosted; do
+      for _pf_wp in public private; do
+        _pf_wlit=true; [ "$_pf_wp" = public ] && _pf_wlit=false
+        _pf_wran=0
+        case "$_pf_w_if" in
+          *"runner.environment == '$_pf_we'"*"github.event.repository.private == $_pf_wlit"*) _pf_wran=1 ;;
+        esac
+        if [ "$_pf_we" = self-hosted ] && [ "$_pf_wp" = public ]; then _pf_wwant=1; else _pf_wwant=0; fi
+        if [ "$_pf_wran" = "$_pf_wwant" ]; then
+          echo "PASS: TPW/if: $_pf_we + $_pf_wp repo decides warn=$_pf_wwant (warns only for self-hosted + public)"
+        else
+          echo "FAIL: TPW/if: $_pf_we + $_pf_wp repo decides warn=$_pf_wran, want $_pf_wwant"; st=1
+        fi
+      done
+    done
+    sed "s/^        if: runner.environment == 'self-hosted' && github.event.repository.private == false\$/        if: vars.KIT_TRACKER_RUNNER != ''/" "$_tj_atg" > "$_pf_priv/m-if.yml"
+    if cmp -s "$_pf_priv/m-if.yml" "$_tj_atg"; then
+      echo "FAIL: TPW/if mutant setup — the planted copy did not differ from its source"; st=1
+    else
+      _pf_wmif=$(_t2_step_block "$_pf_wm" "$_pf_priv/m-if.yml" | grep '^        if: ' | head -1)
+      if [ "$_pf_wmif" = "$_pf_wif_want" ]; then
+        echo "FAIL: TPW/if mutant (the label, not the fact) was not caught"; st=1
+      else
+        echo "PASS: TPW/if mutant (the label, not the fact) is caught"
+      fi
+    fi
+
+    # C3 — never fails the job.
+    if printf '%s\n' "$_pf_w_blk" | grep -qxF '        continue-on-error: true'; then
+      echo "PASS: TPW/never-fails: the warning step carries continue-on-error: true"
+    else
+      echo "FAIL: TPW/never-fails: the warning step has no continue-on-error: true"; st=1
+    fi
+    if [ -n "$_pf_w_body" ]; then
+      _PF_RC=0
+      _PF_OUT=$(sh -ec "$_pf_w_body" 2>&1) || _PF_RC=$?
+      _pf_wn=$(printf '%s\n' "$_PF_OUT" | grep -cF "$_pf_wtitle" || true)
+      if [ "$_PF_RC" = 0 ] && [ "$_pf_wn" = 1 ] \
+          && printf '%s\n' "$_PF_OUT" | grep -qF 'KIT_TRACKER_RUNNER' \
+          && printf '%s\n' "$_PF_OUT" | grep -qF 'private' \
+          && printf '%s\n' "$_PF_OUT" | grep -qF 'ephemeral' \
+          && printf '%s\n' "$_PF_OUT" | grep -qF 'https://docs.github.com/'; then
+        echo "PASS: TPW/never-fails: the executed body ends rc 0 and prints exactly one warning naming KIT_TRACKER_RUNNER, private, ephemeral and the GitHub guidance"
+      else
+        echo "FAIL: TPW/never-fails: the executed body gave rc=$_PF_RC warnings=$_pf_wn: $_PF_OUT"; st=1
+      fi
+    else
+      echo "FAIL: TPW/never-fails: the warning step has no run: body"; st=1
+    fi
+    grep -vxF '        continue-on-error: true' "$_tj_atg" > "$_pf_priv/m-coe.yml" || true
+    if cmp -s "$_pf_priv/m-coe.yml" "$_tj_atg"; then
+      echo "FAIL: TPW/never-fails mutant setup — the planted copy did not differ from its source"; st=1
+    elif _t2_step_block "$_pf_wm" "$_pf_priv/m-coe.yml" | grep -qxF '        continue-on-error: true'; then
+      echo "FAIL: TPW/never-fails mutant (no continue-on-error) was not caught"; st=1
+    else
+      echo "PASS: TPW/never-fails mutant (no continue-on-error) is caught"
+    fi
+
+    # C4 — inert: no env/with/uses/id/secrets in the step, no ${{ in the body; one negative per input class.
+    if _pf_w_inert "$_tj_atg"; then
+      echo "PASS: TPW/inert: the warning step's keys are exactly name, the pinned if:, continue-on-error and run, with no \${{ expression or secret outside the if:"
+    else
+      echo "FAIL: TPW/inert: the warning step is not inert (a key beyond name/if/continue-on-error/run, or a \${{ expression or secret outside the pinned if:)"; st=1
+    fi
+    awk -v m="$_pf_wm" '
+      index($0, "      - name: " m) == 1 { inw = 1 }
+      { print }
+      inw && $0 == "        continue-on-error: true" { print "        env:"; print "          T: ${{ secrets.KIT_TRACKER_TOKEN }}"; inw = 0 }
+    ' "$_tj_atg" > "$_pf_priv/m-secret.yml"
+    awk -v m="$_pf_wm" '
+      index($0, "      - name: " m) == 1 { inw = 1 }
+      { print }
+      inw && $0 == "        run: |" { print "          echo \"${{ github.event.pull_request.title }}\""; inw = 0 }
+    ' "$_tj_atg" > "$_pf_priv/m-event.yml"
+    awk -v m="$_pf_wm" '
+      index($0, "      - name: " m) == 1 { inw = 1 }
+      { print }
+      inw && $0 == "        continue-on-error: true" { print "        working-directory: /tmp"; inw = 0 }
+    ' "$_tj_atg" > "$_pf_priv/m-key.yml"
+    awk -v m="$_pf_wm" '
+      index($0, "      - name: " m) == 1 { inw = 1 }
+      { print }
+      inw && index($0, "        if: runner.environment == ") == 1 { print "          || true"; inw = 0 }
+    ' "$_tj_atg" > "$_pf_priv/m-continuation.yml"
+    for _pf_wmut in secret event key continuation; do
+      if cmp -s "$_pf_priv/m-$_pf_wmut.yml" "$_tj_atg"; then
+        echo "FAIL: TPW/inert mutant setup ($_pf_wmut) — the planted copy did not differ from its source"; st=1
+      elif _pf_w_inert "$_pf_priv/m-$_pf_wmut.yml"; then
+        echo "FAIL: TPW/inert mutant ($_pf_wmut class) was not caught"; st=1
+      else
+        echo "PASS: TPW/inert mutant ($_pf_wmut class) is caught"
+      fi
+    done
+    unset -f _pf_w_first _pf_w_inert
+
     rm -rf "$_pf_priv" 2>/dev/null || true
     unset -f _pf_exec
   else

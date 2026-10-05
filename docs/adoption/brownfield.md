@@ -49,6 +49,8 @@ Obtain the tree with `sh scripts/adopter-export.sh <dest>` (it honors `export-ig
           script: [sh conformance/verify.sh --require]
   ```
 
+  **Once the step is in, `verify-enforced-wired.sh` may also print a `CI-DRIFT:` notice.** It means your pipeline lacks a kit-owned CI capability the stack profile carries (today: `changed-listing`, the changed-path listing that lets an app-only pull request skip the kit's own selftests; without it every PR runs the full battery, which is safe but slow). For an adopter-owned pipeline the notice is **disclosure only (exit 0, never a failure)**: it prints the profile lines to adopt (between `# >>> kit:owned changed-listing` and `# <<< kit:owned changed-listing` in `profiles/<stack>/ci.yml`). The check is line-based: it accepts a `verify.sh --require --changed <arg>` line whose variable is assigned elsewhere (or is a runner path such as `$RUNNER_TEMP/list`), but a wrapper script or a `\`-continued invocation reads as lacking. To keep the full battery on every PR instead (or to silence a wrapper's false notice), add the line `# kit-ci-decline: changed-listing` to your pipeline; the decline silences only this notice, never the aggregate check above.
+
 If your repo has its own root `CLAUDE.md`, keep it as your *project* `CLAUDE.md` and bring the kit's principles in as `ENGINEERING-PRINCIPLES.md` (the name the kit uses post-Inception).
 
 ## 2. The `.claude/` MERGE policy (do-no-harm core)
@@ -118,15 +120,17 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
 
    ```sh
    git config --get core.hooksPath          # must print NOTHING (unset)
-   ls -d .husky .lefthook .githooks 2>/dev/null   # must find NOTHING (no hook manager owns your hooks)
+   ls -d .husky .lefthook .githooks .pre-commit-config.yaml 2>/dev/null   # must find NOTHING (no hook manager owns your hooks)
+   ls "$(git rev-parse --git-path hooks)" | grep -v '\.sample$'   # must show no EXECUTABLE hook other than pre-push (works in a linked worktree too)
    ```
 
    If either check finds something, **use (b)** — this setting is single-valued and repointing it would silently take your hook manager's hooks out of service.
 
-   Three things to know before you choose it:
+   Four things to know before you choose it:
    - **`hooks/` is your live hooks directory now.** Any future file landing there with a git-hook name (`pre-commit`, `commit-msg`, …) goes live on the matching git operation. Treat `hooks/` as control-plane and review it like one — the kit's guard denies agent writes there **at the front door, with one measured residual** (a write naming only the basename after a `cd` into the directory is not recognised; tracked as the boarded matcher-cure row `GUARD-BASENAME-AFTER-CD-BYPASS` and asserted as a disclosed ALLOW in `conformance/agent-autonomy.sh`).
    - **A dirty `hooks/pre-push` is live code.** In this mode `guard-wired.sh` REDs when your working-tree hook differs from `HEAD:hooks/pre-push` — **before** it looks for the kit's marker, so deleting the marker line does not buy a "foreign hook, not ours to judge" pass — because what git runs on push would then be code no PR diff shows. The remedy is `git restore -- hooks/pre-push` or a commit — never a copy. That check runs at ceremony time (adoption, `kit-update`, the gates), not on every push: it is detection, not a continuous alarm.
    - **The live hook follows your checkout.** An old branch runs that branch's hook. That is self-consistent (the hook matches the tree it guards) but it differs from the copy model, where the installed version is pinned until you refresh it.
+   - **Checking out someone else's branch runs that branch's `hooks/*`.** `post-checkout` runs at checkout time; `pre-commit` and `pre-push` run on your next commit or push. Linked worktrees share the setting. So review an untrusted PR in a separate clone that does not carry the setting.
 
    **(b) Otherwise — copy the hook into place (the original install; unchanged):**
 
@@ -134,7 +138,7 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
    ```
 
-   In this mode the copy is yours to keep fresh: whenever `hooks/pre-push` moves upstream, re-run the `cp` (`kit-update.sh` prints a HOOK REFRESH reminder when the file changed).
+   In this mode the copy is yours to keep fresh: whenever `hooks/pre-push` moves upstream, re-run the `cp` (`kit-update.sh` prints a HOOK REFRESH reminder when the file changed). `kit-update.sh` leads with (a) when its two checks hold, and reports a stale copy on every run, even when the release did not touch the hook. (cold test 2, items 101 and 102)
 
    **Either way this is human-only, by design.** An agent seat **cannot** perform it: `git config core.hooksPath` in any spelling is guard-denied, shell copy/`chmod`/move on hook paths are guard-denied, and the agent's file-write tool cannot set mode `755`, so a hook an agent installs is non-executable and **silently ignored by git** (tracked as `AGENT-CANNOT-INSTALL-AN-EXECUTABLE-HOOK`).
 

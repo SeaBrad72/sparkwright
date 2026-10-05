@@ -74,6 +74,7 @@ gate-install:
 # --summary-file on GitLab: the notice is in the job log only. For a WEEKLY full run, add a pipeline
 # schedule in the GitLab UI (CI/CD > Schedules, e.g. `23 5 * * 1`) - a schedule is not expressible in this
 # YAML; it catches runner / tool drift only and is yours to tune.
+# >>> kit:owned changed-listing
 conformance-aggregate:
   stage: verify
   needs: []
@@ -90,6 +91,7 @@ conformance-aggregate:
       fi
   script:
     - sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED"}
+# <<< kit:owned changed-listing
 
 gate-lint:
   stage: verify

@@ -2255,6 +2255,107 @@ _cp8b_mask_quoted() {
   return 0
 }
 
+# === GUARD-TRAILER-IN-MESSAGE-FP — THE CARRIER NEWLINE JOIN (design §3, §10) ========================
+# THE DEFECT: `_cp8b_segments` is quote-BLIND, so the kit's own printed trailer block (`Kit-Skill:
+# skills/build`) pasted into an inline multi-line `git commit -m "…"` became its own segment and was
+# denied as a control-plane write. THE CURE is refuse-on-doubt, not a parser (D-240813-3): on a command
+# LED by a message carrier the kit tells an agent to use, a newline INSIDE a quoted span becomes a space.
+# Unquoted newlines, `;`, `&&`, `|` still split and each piece is judged on its own as today.
+# `_cp8b_mask_walk` is single-line and the read-lane mask depends on that, so this has its OWN walk.
+# _cp8b_lead_is_board_create "<seg>": 0 iff the leading tokens are exactly `sh scripts/board.sh create`
+# (design §3: bash-led, bare/absolute path and env-prefixed spellings all decline). The CALLER owns the
+# cwd condition — the relative script is attacker-authored code anywhere but the repo root (delta C1).
+_cp8b_lead_is_board_create() {
+  _blg=0; case "$-" in
+    *f*) _blg=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split of the segment; globbing disabled above
+  set -- $1
+  _blr=1
+  [ "${1:-}" = sh ] && [ "${2:-}" = scripts/board.sh ] && [ "${3:-}" = create ] && _blr=0
+  [ "$_blg" = 1 ] || set +f
+  return "$_blr"
+}
+# _cp8b_carrier_lead "<cmd>": 0 iff the FIRST line's leading tokens are `git commit`, `gh pr
+# create|edit|comment`, or `sh scripts/board.sh create` at the confident repo root (the SEED, since the
+# lead is the first command). NOT `git merge|tag|notes`, `gh issue|release` (design §8 L11).
+_cp8b_carrier_lead() {
+  _clg=0; case "$-" in
+    *f*) _clg=1 ;;
+    esac
+  set -f
+  _cll=${1%%"$_cp8b_nl"*}
+  # shellcheck disable=SC2086  # deliberate word-split of the first line; globbing disabled above
+  set -- $_cll
+  _clr=1
+  case "${1:-} ${2:-}" in
+    'git commit') _clr=0 ;;
+    'gh pr')
+      case "${3:-}" in
+        create|edit|comment) _clr=0 ;;
+      esac ;;
+  esac
+  [ "$_clg" = 1 ] || set +f
+  [ "$_clr" = 0 ] && return 0
+  # R5: the seed-root test below is a BELT. The board.sh segment is re-judged at the root by
+  # `_cp8b_tad_is_board_create` once the walk has the live cwd; this only keeps the JOIN off a non-root cwd.
+  [ -z "${_CP8B_SEED_EFF:-}" ] && [ "${_CP8B_SEED_UNKNOWN:-0}" = 0 ] && _cp8b_lead_is_board_create "$_cll"
+}
+# _cp8b_carrier_walk "<cmd>": the join. Tracks ONLY the open quote kind. Exits 1 (prints nothing) on any
+# doubt: `$`, backtick, `<<`, CR, a backslash before `"` `'` or `\`, an odd count of either quote, a span
+# open at the end, ANY `#` outside a span (vet C1: the shell ends a comment at the newline and a quote
+# byte inside it is inert, so a "span" after a `#` is really executed lines), or ANY `>` outside a span
+# (design §12 S1: a newline inside a quoted redirect TARGET became a space, `"x\n/../skills/…"` -> `"x /../…"`), or
+# ANY unquoted `;` `&` `|` or newline (design §13 H1: the join serves a SINGLE-COMMAND carrier only, so it can never
+# rewrite a quoted newline in a LATER command — `… && cp /tmp/e ".claude/skills/x\ny"`; the `>` rule is the belt). Inside a span a newline
+# becomes a space; outside, bytes are copied unchanged. On a decline it prints the REASON (the tip's
+# source, `_cp8b_carrier_why`) instead of the joined command, and `_cp8b_carrier_join` discards it.
+_cp8b_carrier_walk() {
+  printf '%s\n' "$1" | LC_ALL=C awk -v Q="$_cp8b_sq" '
+    { if (NR > 1) { if (q == "") why = (why == "") ? "an unquoted newline" : why; out = out (q == "" ? "\n" : " ") }
+      n = length($0)
+      for (i = 1; i <= n; i++) {
+        c = substr($0, i, 1); d = substr($0, i + 1, 1)
+        if (c == "$" || c == "`") why = (why == "") ? "a $ or backtick" : why
+        if (c == "<" && d == "<") why = (why == "") ? "a heredoc (<<)" : why
+        if (c == "\r" || (c == "\\" && (d == "\"" || d == Q || d == "\\"))) why = (why == "") ? "a CR or a backslash before a quote" : why
+        if (c == "\"") nd++
+        if (c == Q) ns++
+        if (q != "") { if (c == q) q = ""; continue }
+        if (c == "#") why = (why == "") ? "a # outside quotes" : why
+        if (c == ">") why = (why == "") ? "a > redirect outside quotes" : why
+        if (c == ";" || c == "&" || c == "|") why = (why == "") ? "a ; & or | outside quotes" : why
+        if (c == "\"" || c == Q) q = c
+      }
+      out = out $0 }
+    END { if (why == "" && (q != "" || nd % 2 || ns % 2)) why = "an odd number of " Q " or \" quotes (an apostrophe counts)"
+          if (why != "") { printf "%s", why; exit 1 }
+          printf "%s", out }'
+}
+# _cp8b_carrier_join "<cmd>": PRINTS the joined command, or the INPUT UNCHANGED when it declines. Exit
+# status is informational only (the `_cp8b_mask_quoted` contract), so a decline and a no-op look alike.
+_cp8b_carrier_join() {
+  case "$1" in
+    *"$_cp8b_nl"*) : ;;
+    *) printf '%s' "$1"; return 1 ;;
+  esac
+  _cp8b_carrier_lead "$1" || { printf '%s' "$1"; return 1; }
+  _cjo=$(_cp8b_carrier_walk "$1") || { printf '%s' "$1"; return 1; }
+  printf '%s' "$_cjo"
+}
+# _cp8b_carrier_why "<cmd>": for the deny tip (design §3 UX, §8 L2/L10). Prints the construct that made a
+# carrier-led MULTI-LINE command decline the join, or nothing when the command is not that shape.
+_cp8b_carrier_why() {
+  case "$1" in
+    *"$_cp8b_nl"*) : ;;
+    *) return 0 ;;
+  esac
+  _cp8b_carrier_lead "$1" || return 0
+  _cjw=$(_cp8b_carrier_walk "$1") && return 0
+  printf '%s' "$_cjw"
+}
+
 # _cp8b_unparseable "<seg>": 0 iff the segment carries a construct the guard CANNOT resolve to the bytes
 # the shell will actually execute: $VAR, $(...), `...`, <(...). The guard reads PRE-shell-parse bytes;
 # the tool acts POST-parse. Such a segment is NEVER relaxed - and, for a git WRITE subcommand, is denied
@@ -2322,8 +2423,28 @@ _cp8b_tok_is_cp() {
 #               legitimate. A destination-naming flag (-t/--target-directory) is bound explicitly below,
 #               in EITHER mode, because it inverts the positional heuristic.
 # Globbing is disabled around the word-split so `rm *.sh` cannot expand against the real filesystem.
+# _cp8b_cp_doubt "<seg>": 0 iff a cp/install segment is one whose LAST token cannot be trusted as the destination:
+# a whitespace-preceded `#` (design §11) or an odd count of `"` or `'` (design §12 A, a split quoted span).
+_cp8b_cp_doubt() {
+  case "$1" in
+    *[[:space:]]'#'*) return 0 ;;
+  esac
+  _cdq=$(printf '%s' "$1" | tr -dc '"' | wc -c | tr -d ' ')
+  [ -n "$_cdq" ] || return 0   # design §13 L2: an empty count would abort the arithmetic; doubt fails closed
+  [ "$((_cdq % 2))" = 0 ] || return 0
+  _cdq=$(printf '%s' "$1" | tr -dc "$_cp8b_sq" | wc -c | tr -d ' ')
+  [ -n "$_cdq" ] || return 0
+  [ "$((_cdq % 2))" = 0 ] || return 0
+  return 1
+}
 _cp8b_cp_target_in() {
   _m=$1
+  # GUARD-TRAILER-IN-MESSAGE-FP, design §11: `last` (cp/install) takes the LAST token as the destination, so a
+  # trailing `# word` made `word` the destination and `cp /tmp/e skills/build/SKILL.md # y` was ALLOWED. On a
+  # whitespace-preceded `#` (quoted or not: refuse on doubt, no comment parse) judge EVERY operand. Adds denies only.
+  # design §12 A: an ODD quote count is the same doubt — the segment is a FRAGMENT of a split quoted span
+  # (`cp /tmp/e <cp-path>" x --title "gh pr"` ends in a junk word), so the last token is not the destination.
+  if [ "$_m" = last ] && _cp8b_cp_doubt "$2"; then _m=all; fi
   _pg=0; case "$-" in
     *f*) _pg=1 ;;
     esac
@@ -2579,6 +2700,43 @@ _redir_targets() {
     *'>'*) : ;;
     *) return 0 ;;
     esac
+  # design §12 B: the extraction below keeps only the FIRST word of a target, so a QUOTED target that holds
+  # whitespace or a newline (`> "x /../skills/build/SKILL.md"`) resolved to the wrong path (`x`). Such a target is
+  # unresolvable; a control-plane token anywhere in it fails closed (rc 2). Covers `>>`, `>|`, `&>` and `n>`.
+  # design §13 M1: ANY quote byte in a target WORD (`>x" /../skills/…"`, `> ".claude/"hooks/…`, `>& "…"`) is the same doubt:
+  # the awk below prints each target word that carried a quote, de-quoted (backslashes dropped too), and a control-plane
+  # path in it returns rc 2. It reads the word to its first unquoted blank, which is no more than a refuse-on-doubt scan.
+  _rq=$(printf '%s' "$1" | tr '\n' ' ' | LC_ALL=C awk -v Q="$_cp8b_sq" '{
+    n = length($0); oq = ""
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      # design §16 R1: outside a span a backslash CONSUMES the next byte (`\x27` is a literal quote, not a span opener), and
+      # inside "…" it consumes `\"` and `\\`; without this an escaped quote opened a phantom span and the real `>` was skipped.
+      if (oq == "" && c == "\\") { i++; continue }
+      if (oq == "\"" && c == "\\") { i++; continue }
+      if (oq != "") { if (c == oq) oq = ""; continue }
+      if (c == "\"" || c == Q) { oq = c; continue }
+      if (c != ">") continue
+      j = i + 1
+      while (substr($0, j, 1) ~ /[|>&]/) j++
+      while (substr($0, j, 1) == " " || substr($0, j, 1) == "\t") j++
+      w = ""; hasq = 0; q = ""
+      for (; j <= n; j++) {
+        c = substr($0, j, 1)
+        if (c == "\\" && q != Q) { j++; w = w substr($0, j, 1); continue }
+        if (q == "") { if (c == " " || c == "\t") break; if (c == "\"" || c == Q) { q = c; hasq = 1; continue } }
+        else if (c == q) { q = ""; continue }
+        w = w c
+      }
+      if (hasq) print w
+      i = j
+    }
+  }') || :
+  if [ -n "$_rq" ] && _cp8b_pathhit "$_rq"; then return 2; fi
+  # BELT (design §16 R1): the quote-blind view from fcf126b4 as a second opinion, so a mis-tracked span in the awk above cannot
+  # hide a quoted-with-whitespace target.
+  _rq2=$(printf '%s' "$1" | tr '\n' ' ' | LC_ALL=C grep -Eo ">[|>]?[[:space:]]*(\"[^\"]*[[:space:]][^\"]*\"|'[^']*[[:space:]][^']*')") || :
+  if [ -n "$_rq2" ] && _cp8b_pathhit "$_rq2"; then return 2; fi
   _rt=$(printf '%s' "$1" | tr '\n' ' ' | sed -e 's/[0-9]*>>*|\{0,1\}/\n/g' | sed -e '1d' \
         -e 's/^[[:space:]]*//' -e 's/[[:space:]].*$//' -e 's/^["'"'"']//' -e 's/["'"'"']$//')
   [ -n "$_rt" ] || return 0
@@ -2830,6 +2988,10 @@ _cp8b_scan_denied() {
 # bypass (the command is still denied). The first matching arm returns, so the arms stay exclusive.
 _cp8b_message_tip() {
   _mt_raw=$1; _mt_seg=${2:-$1}
+  # GUARD-TRAILER-IN-MESSAGE-FP (design §3 UX): name WHY a carrier-led multi-line message was not joined, then
+  # fall through to the cure below. Additive to the reason text only; no verdict moves.
+  _mt_why=$(_cp8b_carrier_why "$_mt_raw")
+  [ -z "$_mt_why" ] || printf ' NOTE: this multi-line message was not treated as data because it contains %s.' "$_mt_why"
   case "$_mt_raw" in
     *"git commit"*|*"git merge"*|*"git tag"*|*"git notes"*|*"gh pr"*|*"gh issue"*|*"gh release"*)
       printf ' TIP: a multi-line commit/PR message body is scanned as data and can trip this; pass it from a FILE instead of an inline -m/--body — `git commit -F <file>` or `gh pr create --body-file <file>` (the file content is never executed).'
@@ -2891,6 +3053,8 @@ _cp8b_message_tip() {
 # _cp8b_trigger_tip "<trigger>" "<segment>": the target-arm sites that had NO tip at all.
 _cp8b_trigger_tip() {
   case "$1" in
+    xargs-git|xargs-filefed)
+      printf ' TIP: xargs turns data the guard cannot read into the arguments of a write verb, so give the verb an EXPLICIT operand list instead: `git add -u` or `git add <paths>`, `find … -delete`, or one invocation per file. escape card: docs/operations/runtime-guards.md §Over-deny' ;;
     redir-nonliteral)
       printf ' TIP: the redirect TARGET is not a plain literal (a `$VAR`, glob, substitution or backslash), so the guard cannot tell whether it names a protected path — and it refuses to guess. Spell the redirect target literally (`> /tmp/out.txt`), use a `~/`-rooted path, or use the Write tool. escape card: docs/operations/runtime-guards.md §Over-deny' ;;
   esac
@@ -3750,12 +3914,45 @@ _cp8b_is_interp() {
   esac
   return 1
 }
+# _cp8b_xargs_runs_write "<word>": 0 iff the command word an `xargs` runs is `git`, a write verb or an interpreter
+# (design §13 M2). The verb list is the guard's own mutation set, so `xargs grep`/`xargs cat` keep their ALLOW.
+_CP8B_XARGS_WRITE='git rm mv cp ln tee sed chmod chown install rsync shred truncate dd patch'
+_cp8b_xargs_runs_write() {
+  _cp8b_in_list "$1" "$_CP8B_XARGS_WRITE" || _cp8b_is_interp "$1"
+}
+# _cp8b_xargs_seg_write "<seg>": design §16 R2. 0 iff the segment carries an `xargs` WORD (de-quoted, basename — so
+# `/usr/bin/xargs`, `'xargs'` and `command xargs` all count) and a LATER token (de-quoted, basename) is `git`, a write verb or an
+# interpreter, as resolved by `_cp8b_interp_lead` on the normalised segment (so `xargs grep -l python` stays a read).
+_cp8b_xargs_seg_write() {
+  _xsg=0; case "$-" in
+    *f*) _xsg=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  _xsr=1; _xss=0; _xsn=''
+  while [ $# -gt 0 ]; do
+    _xst=$1; shift
+    _xsb=${_xst#[\"\']}; _xsb=${_xsb%[\"\']}; _xsb=${_xsb##*/}
+    if [ "$_xsb" = xargs ]; then _xss=1; _xst=xargs; fi      # normalise the word: `/usr/bin/xargs`, `'xargs'` -> `xargs`
+    _xsn="$_xsn $_xst"
+  done
+  [ "$_xsg" = 1 ] || set +f
+  [ "$_xss" = 1 ] || return 1
+  # the command word xargs RUNS comes from the existing wrapper peel (it knows xargs' own options), not from "any later token"
+  _xsl=$(_cp8b_interp_lead "$_xsn") || return 1
+  _xsl=${_xsl#[\"\']}; _xsl=${_xsl%[\"\']}; _xsl=${_xsl##*/}
+  _cp8b_xargs_runs_write "$_xsl"
+}
 _cp8b_pi_lead=''
+_cp8b_pi_xargs=0
+_cp8b_pi_nonlit=0
 _cp8b_piped_interp() {
   case "$1" in
     *'|'*) : ;;
     *) return 1 ;;
     esac
+  _cp8b_pi_xargs=0; _cp8b_pi_nonlit=0; _pip_cur=''
   # An empty result here would end the loop at once and read as "no piped interpreter" (allow-ward), so a failed
   # or vanished segmentation of a non-empty command is a fault (GUARD-QUOTED-EXEC-INTERMITTENT).
   _piw=$(_cp8b_pipe_segments "$1") || _guard_fault pipe-segments
@@ -3765,12 +3962,28 @@ _cp8b_piped_interp() {
       *"$_cp8b_nl"*) _pis=${_piw%%"$_cp8b_nl"*}; _piw=${_piw#*"$_cp8b_nl"} ;;
       *)             _pis=$_piw; _piw='' ;;
     esac
+    _pip_last=$_pip_cur; _pip_cur=$_pis
     case "$_pis" in
       "$_cp8b_stx"*) _pis=${_pis#"$_cp8b_stx"} ;;
       *) continue ;;
       esac
     _pil=$(_cp8b_interp_lead "$_pis")
     if _cp8b_is_interp "$_pil"; then _cp8b_pi_lead=$_pil; return 0; fi
+    # design §12 D: `… | xargs git …` turns pipe-fed DATA into git arguments (`echo "git push origin⏎HEAD:main" | xargs git`),
+    # so an xargs whose command word is `git` joins this rule. Not added to the shared lexicon, which would make every
+    # `| git apply` an interpreter; the rule still denies only when an upstream segment carries a control-plane token.
+    # design §13 M2: keyed on the xargs WORD, not the substring, and extended from `git` to a WRITE verb.
+    # design §16 R2: keyed on the de-quoted BASENAME of an xargs word, and a write verb fed by NON-LITERAL upstream data
+    # (anything but echo/printf: `cat list | xargs rm`) is refused on doubt, since the data cannot be read.
+    if _cp8b_xargs_seg_write "$_pis"; then
+      _cp8b_pi_lead=xargs-write; _cp8b_pi_xargs=1
+      _pil2=$(_cp8b_lead "${_pip_last#"$_cp8b_stx"}"); _pil2=${_pil2#[\"\']}; _pil2=${_pil2%[\"\']}
+      case "${_pil2##*/}" in
+        echo|printf) : ;;
+        *) _cp8b_pi_nonlit=1 ;;
+      esac
+      return 0
+    fi
   done
   return 1
 }
@@ -5286,7 +5499,34 @@ _cp8b_kit_query_toks() {
     # bans. So F-i lands as what the lock can carry: one measured pair, one lock line, one census bump.
     # The generalised form is boarded with its cost as evidence (GUARD-KIT-QUERY-REGISTERED-SET).
     conformance/branch-protection.sh)   printf '%s' '--declared-only' ;;
+    # GUARD-TRAILER-IN-MESSAGE-FP (design §3 "Tracker read forms", §10 item 3): the config validator's reads
+    # are POSITIONAL (the conf is the argument), so they are admitted at EXACT ARITY only, by
+    # `_cp8b_kq_tracker_conf_ok`; this set names the verbs it may carry. `check-create` and `--selftest` are
+    # deliberately absent. tracker-contract.sh is CUT (it reaches the network): GUARD-READ-TRACKER-PREFLIGHT-CONF.
+    scripts/tracker-conf.sh)            printf '%s' 'get get-all get-prefix' ;;
   esac
+}
+# _cp8b_kq_tracker_conf_ok "<args…>": 0 iff the arguments after `scripts/tracker-conf.sh` are exactly
+# `<conf>` (one non-flag token, not a verb) or `get|get-all|get-prefix <arg> <conf>` (arity 3, no flag-shaped
+# token). Any other arity or shape declines to today's verdict. The arity is what the script itself enforces.
+_cp8b_kq_tracker_conf_ok() {
+  case $# in
+    1)
+      case "$1" in
+        -*|get|get-all|get-prefix|check-create) return 1 ;;
+      esac
+      return 0 ;;
+    3)
+      _cp8b_in_list "$1" "$(_cp8b_kit_query_toks scripts/tracker-conf.sh)" || return 1
+      case "$2" in
+        -*) return 1 ;;
+      esac
+      case "$3" in
+        -*) return 1 ;;
+      esac
+      return 0 ;;
+  esac
+  return 1
 }
 _cp8b_tad_is_kit_query() {
   case "$1" in
@@ -5313,6 +5553,14 @@ _cp8b_tad_is_kit_query() {
   _kqv=$(_cp8b_kit_query_toks "$_kqs")
   [ -n "$_kqv" ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
   [ $# -gt 0 ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
+  if [ "$_kqs" = scripts/tracker-conf.sh ]; then   # GUARD-TRAILER-IN-MESSAGE-FP: positional, exact arity
+    # design §12 S2: a relative script is attacker-authored after a `cd`, so (as for board.sh) only at the confident root.
+    if [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ]; then
+      _cp8b_kq_tracker_conf_ok "$@" && _kqr=0 || _kqr=1
+    else _kqr=1; fi
+    [ "$_kqg" = 1 ] || set +f
+    return "$_kqr"
+  fi
   _cp8b_in_list "$1" "$_kqv" || { [ "$_kqg" = 1 ] || set +f; return 1; }
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -5378,15 +5626,45 @@ _cp8b_tad_is_test_expr() {
 # E3 — message carriers: git commit/merge/tag + gh pr/issue/release with a message flag and NO
 # redirect. A control-plane hit is inside the message DATA, not a target (an injected `;` splits to its
 # own segment and is judged there). The enforcement counterpart of the advisory _cp8b_message_tip.
+#
+# design §12 A: the exemption is LEAD-KEYED. It was a substring match, so `bash -c "true; cp /tmp/e <cp-path>"
+# x --title "gh pr"` — whose split fragment merely CONTAINED `gh pr` — wore the message costume (the C1 lesson of
+# 2026-08-19, applied to the function that missed it). The segment's first two whitespace-normalised tokens
+# must be a carrier pair; anything else (a `git -C d commit`, an env prefix, a group opener) declines and keeps
+# the scan, an over-deny and never a bypass.
 _cp8b_tad_is_msg_carrier() {
-  case "$1" in
-    *"git commit"*|*"git merge"*|*"git tag"*|*"gh pr"*|*"gh issue"*|*"gh release"*) : ;;
-    *) return 1 ;;
+  _mcs=$1
+  _mcg=0; case "$-" in
+    *f*) _mcg=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split of the segment; globbing disabled above
+  set -- $_mcs
+  _mcr=1
+  case "${1:-} ${2:-}" in
+    'git commit'|'git merge'|'git tag'|'gh pr'|'gh issue'|'gh release') _mcr=0 ;;
   esac
-  case "$1" in
+  [ "$_mcg" = 1 ] || set +f
+  [ "$_mcr" = 0 ] || return 1
+  case "$_mcs" in
     *'>'*) return 1 ;;
     esac
+  set -- "$_mcs"
   printf '%s' "$1" | grep -Eq '(^|[[:space:]])(-m|-F|--message|--body|--body-file|--notes|--title)([=[:space:]]|$)'
+}
+
+# GUARD-TRAILER-IN-MESSAGE-FP (design §3, §10 item 2): `sh scripts/board.sh create`'s `--title`,
+# `--description` and `--field` values are text or tokens, never paths; its flag set is closed and the
+# md backend writes nothing. Keyed on the LEAD TOKENS, ONLY at the confident repo root (delta C1: under a
+# `cd /tmp/x` the relative script is attacker-authored), and NEVER added to the substring matcher
+# `_cp8b_tad_is_msg_carrier` above (delta C2: that would re-open the trailing-comment theft). Declines on
+# a redirect, `$` or a backtick in the segment. `_cp8b_seg_poisons` still runs at the call site.
+_cp8b_tad_is_board_create() {
+  case "$1" in
+    *'>'*|*'<'*|*'$'*|*'`'*) return 1 ;;
+  esac
+  [ -z "$_CP8B_EFF" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ] || return 1
+  _cp8b_lead_is_board_create "$1"
 }
 
 # _cp8b_tad_pathhit "<segment>": trigger 1 — string-level pathhit (single source of truth).
@@ -5431,12 +5709,173 @@ _cp8b_tad_composed_tok() {
   _cp8b_tad_redir_cp "$_cts"
 }
 
+# === GUARD-TRAILER-IN-MESSAGE-FP design §14 — a GLOB in a write-verb operand =====================
+# `cp /tmp/e sk*`, `install /tmp/e sk*/build/SKILL.md`, `tee sk*/build/SKILL.md`, `cp /tmp/e *` were never matched
+# against the control-plane paths: the shell expands the glob AFTER the guard has judged the literal bytes.
+# THE CURE refuses on doubt and does not parse: expand the operand's glob segments against the ON-DISK tree the shell
+# would see (`case` as the pattern matcher, one segment per level, `set -f` held except for the listing), and deny
+# if ANY path it can reach is control-plane (a control-plane root makes everything beneath it one, so the walk stops
+# at the first hit). An absolute or `~` operand is walked from `/` (or `$HOME`). An uncertain cwd with a glob denies. Reads never reach here.
+# $1 = a path the glob reaches, $2 = the pattern segments still to come. A bare DIRECTORY name (`_ctm_match`) counts only
+# when the glob ENDS on it (`sk*` names the directory itself); on the way down only a file-level hit counts, so the
+# standing ruling that `cp a agents/foo*` is not a protected leaf is kept.
+_cp8b_glob_cp_path() {
+  is_control_plane_path "$1" && return 0
+  [ -z "$2" ] || return 1
+  case "$1" in
+    /*) _ctm_match "$1" && return 0; is_control_plane_path "$1/x"; return ;;   # absolute: the same suffix classifier the literal path gets
+    */*) return 1 ;;      # a NESTED directory name (`docs/governance`) keeps the standing broad-glob relief (`cp x docs/*`)
+  esac
+  _ctm_match "$1"
+}
+# design §15: the walk is bounded by WORK, not time. Every directory entry examined (and every literal-segment probe)
+# counts against `_gwq`, shared by every operand of the whole COMMAND (reset once in `guard_check_command`); past the budget the walk gives up and DENIES. A hook that
+# runs long is killed by the harness, and a killed hook does not block the command, so an unbounded walk
+# (`/usr/*/*/*/*/zz`: 20 s, `/System/*/*/*/*/zz`: 43 s) would FAIL OPEN. 1000 is ~8x the largest count a legitimate glob
+# in the corpus reaches (a repo-root listing is ~44 entries, `/tmp/*.bak` ~120); measured, it bounds the worst probe
+# (`/System/*/*/*/*/*/zz`) at ~3 s where 2000 took 7 s. No clock.
+_CP8B_GLOB_BUDGET=1000
+# _cp8b_glob_walk "<pattern>" ["/"]: with a second argument "/" the pattern is ABSOLUTE and the walk starts at the root
+# (design §14 follow-up). The six-segment cap counts from the FIRST glob segment, so a deep literal prefix is not penalised.
+_cp8b_glob_walk() {
+  _gwr=$1; _gwc=${2:-.}; _gwn=0; _gwg=0
+  while [ -n "$_gwr" ]; do
+    case "$_gwr" in
+      */*) _gws=${_gwr%%/*}; _gwr=${_gwr#*/} ;;
+      *)   _gws=$_gwr; _gwr='' ;;
+    esac
+    case "$_gws" in
+      *[*?[]*) _gwg=1 ;;
+    esac
+    [ "$_gwg" = 0 ] || { _gwn=$((_gwn + 1)); [ "$_gwn" -le 6 ] || return 0; }   # deeper than six glob-side segments: doubt
+    [ -n "$_gws" ] || continue
+    _gwx=''
+    while [ -n "$_gwc" ]; do
+      case "$_gwc" in
+        *"$_cp8b_nl"*) _gwd=${_gwc%%"$_cp8b_nl"*}; _gwc=${_gwc#*"$_cp8b_nl"} ;;
+        *)             _gwd=$_gwc; _gwc='' ;;
+      esac
+      case "$_gws" in
+        *[*?[]*)
+          # design §16 R3: a BOUNDED stream, not a shell expansion — `for e in dir/*` expands and sorts the whole directory
+          # before anything is counted, so a huge pre-staged directory outlasted the hook timeout. `head -n` stops `find`
+          # after (remaining budget + 1) entries, and a full list means the budget is exceeded: DENY.
+          _gwl=${_gwd%/}
+          _gwlim=$((_CP8B_GLOB_BUDGET - ${_gwq:-0} + 1))
+          [ "$_gwlim" -gt 0 ] || return 0
+          # OPTION INJECTION: `_gwl` comes from the command text or a directory name the agent created, so it can begin with `-`
+          # (`mkdir -- -delete`; GNU find would read `-delete` as an expression and delete the hook's cwd). Never hand find a path
+          # that can start with `-`: a relative path gets `./`, an absolute one starts with `/`, and `.` is safe as it stands.
+          case "$_gwl" in
+            ''|/*|.) _gwf=${_gwl:-/} ;;
+            *)       _gwf=./$_gwl ;;
+          esac
+          # An END MARKER inside the same `$(…)`: a find or fork that dies mid-pipeline aborts the subshell before the printf, so a
+          # missing marker is a FAILED listing (never an empty directory, the #738 class) and DENIES.
+          _gwlist=$(find -H "$_gwf" -mindepth 1 -maxdepth 1 2>/dev/null | head -n "$_gwlim"; printf '%s' "$_cp8b_etx") || return 0
+          case "$_gwlist" in
+            *"$_cp8b_etx") _gwlist=${_gwlist%"$_cp8b_etx"} ;;
+            *) return 0 ;;
+          esac
+          _gwrest=$_gwlist
+          while [ -n "$_gwrest" ]; do
+            case "$_gwrest" in
+              *"$_cp8b_nl"*) _gwe=${_gwrest%%"$_cp8b_nl"*}; _gwrest=${_gwrest#*"$_cp8b_nl"} ;;
+              *)             _gwe=$_gwrest; _gwrest='' ;;
+            esac
+            [ -n "$_gwe" ] || continue
+            _gwq=$((${_gwq:-0} + 1)); [ "$_gwq" -le "$_CP8B_GLOB_BUDGET" ] || return 0
+            _gwb=${_gwe##*/}
+            # leading-dot entries are ALWAYS considered: bash `dotglob` / zsh `GLOB_DOTS` make `*` and `?` match them and the agent can set
+            # either itself, so the guard cannot know the shell's glob options (refuse on doubt)
+            case "$_gwb" in
+              $_gws) : ;;
+              *) continue ;;
+            esac
+            _gwp=${_gwe#./}
+            if _cp8b_glob_cp_path "$_gwp" "$_gwr"; then return 0; fi
+            [ -d "$_gwe" ] && _gwx="$_gwx$_gwp$_cp8b_nl"
+          done
+          ;;
+        *)
+          _gwq=$((${_gwq:-0} + 1)); [ "$_gwq" -le "$_CP8B_GLOB_BUDGET" ] || return 0
+          if [ "$_gwd" = . ]; then _gwp=$_gws; else _gwp=${_gwd%/}/$_gws; fi
+          if _cp8b_glob_cp_path "$_gwp" "$_gwr"; then return 0; fi
+          [ -d "$_gwp" ] && _gwx="$_gwx$_gwp$_cp8b_nl" ;;
+      esac
+    done
+    _gwc=${_gwx%"$_cp8b_nl"}
+    [ -n "$_gwc" ] || [ -z "$_gwr" ] || return 1                  # nothing left to descend into
+  done
+  return 1
+}
+# _cp8b_glob_operand_denied "<seg>": 0 iff a non-flag operand of this write-verb segment carries an unquoted glob byte
+# and could expand onto a control-plane path. Fail closed: any odd state denies.
+_cp8b_glob_operand_denied() {
+  _gog=0; case "$-" in
+    *f*) _gog=1 ;;
+    esac
+  _gov=${2:-}
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  [ $# -gt 0 ] && shift
+  # design §16 R3/R5: collect the candidates first. `-t X`, `-tX` and `--target-directory[=]X` are DESTINATIONS (R5). For cp and
+  # install only the destination can write the control plane, so only it is walked — a huge SOURCE glob is never listed (R3);
+  # every other verb (mv moves its sources away, rm, tee, ...) walks every operand. `sed` counts only with `-i`.
+  _goc=''; _goa=''; _gol=''; _gos=0
+  while [ $# -gt 0 ]; do
+    _got=$1; shift
+    case "$_got" in
+      -t|--target-directory) if [ $# -gt 0 ]; then _goc="$_goc $1"; shift; fi; continue ;;
+      --target-directory=*)  _goc="$_goc ${_got#*=}"; continue ;;
+      -t?*)                  _goc="$_goc ${_got#-t}"; continue ;;
+      -i*|--in-place*)       _gos=1; continue ;;
+      -*)                    continue ;;
+      of=*)                  _got=${_got#of=} ;;
+    esac
+    _gol=$_got; _goa="$_goa $_got"
+  done
+  if [ "$_gov" = sed ] && [ "$_gos" = 0 ]; then [ "$_gog" = 1 ] || set +f; return 1; fi
+  case "$_gov" in
+    cp|install) if [ -n "$_goc" ]; then :; else _goc=" $_gol"; fi ;;
+    *)          _goc="$_goc$_goa" ;;
+  esac
+  _gor=1
+  # shellcheck disable=SC2086  # deliberate word-split of the candidate list; globbing is off
+  for _got in $_goc; do
+    case "$_got" in
+      *[*?[]*) : ;;
+      *) continue ;;
+    esac
+    _got=$(_cp8b_dequote "$_got")
+    [ -n "$_got" ] || { _gor=0; break; }                    # an empty operand after de-quoting is a fault: deny
+    # design §14 follow-up: a `~` operand is HOME-rooted (any `~user` form denies on doubt), an absolute operand is walked
+    # from `/`; matches are classified by the same suffix patterns a literal absolute path already gets.
+    case "$_got" in
+      '~'|'~/'*) if [ -z "${HOME:-}" ]; then _gor=0; break; fi; _got=$HOME${_got#'~'} ;;
+      '~'*) _gor=0; break ;;
+    esac
+    case "$_got" in
+      /*) if _cp8b_glob_walk "${_got#/}" /; then _gor=0; break; fi; continue ;;
+    esac
+    _got=${_got#./}
+    if [ "${_CP8B_EFF_UNKNOWN:-0}" = 1 ]; then _gor=0; break; fi
+    [ -z "${_CP8B_EFF:-}" ] || _got=$_CP8B_EFF/$_got
+    if _cp8b_glob_walk "$_got"; then _gor=0; break; fi
+  done
+  [ "$_gog" = 1 ] || set +f
+  return $_gor
+}
+
 # E6 — cp/install destination-binding: judge the copy DESTINATION (literal last token, per :1004-1005,
 # OR the composed destination), not "any control-plane token" — so `cp conformance/verify.sh /tmp/b`
 # (copy-OUT) stays ALLOW while `cd conformance && cp /tmp/x verify.sh` denies. Declines to close the
 # open GUARD-CP-HARDLINK-ALIAS row (cp -l aliasing) — leaves it exactly as today, stated not claimed.
 _cp8b_tad_cp_dest_denied() {
   _cp8b_cp_target_in last "$1" && return 0
+  # design §11: with a whitespace-preceded `#` the composed (cd-relative) operands are judged too.
+  if _cp8b_cp_doubt "$1"; then _cp8b_tad_composed_tok "$1" && return 0; fi
   _cd=$(printf '%s' "$1" | awk '{for(i=NF;i>=1;i--) if(substr($i,1,1)!="-"){print $i; exit}}')
   _cp8b_composed_is_cp "$_cd" && return 0
   _cp8b_tad_redir_cp "$1"
@@ -5778,9 +6217,66 @@ _cp8b_seg_poisons() {
   done
 }
 
+# _cp8b_xargs_git_denied "<cmd>": design §12 D, the whole-command half. A pipe into `xargs git` makes the pipe's
+# DATA git's arguments, and a quoted newline in it splits `git push origin⏎HEAD:main` across segments, so no segment
+# holds both the push and the ref. On a raw `… | xargs git …`, a control-plane token or a push-to-main shape in the
+# newline-flattened command denies. Everything else piped into xargs git keeps today's verdict.
+_cp8b_xargs_filefed_denied() {
+  case "$1" in
+    *xargs*) : ;;
+    *) return 1 ;;
+  esac
+  _xfw=$(_cp8b_segments "$1") || _guard_fault xargs-filefed-segments
+  _guard_vanished xargs-filefed-segments "$1" "$_xfw"        # design §16: a vanished split must fault, not read as "nothing to judge"
+  while [ -n "$_xfw" ]; do
+    case "$_xfw" in
+      *"$_cp8b_nl"*) _xfs=${_xfw%%"$_cp8b_nl"*}; _xfw=${_xfw#*"$_cp8b_nl"} ;;
+      *)             _xfs=$_xfw; _xfw='' ;;
+    esac
+    # file-fed = a `<` redirect or xargs' own `-a` / `--arg-file` (design §16 R2); the word match is the de-quoted basename
+    case "$_xfs" in
+      *'<'*|*[[:space:]]-a*|*--arg-file*) : ;;
+      *) continue ;;
+    esac
+    if _cp8b_xargs_seg_write "$_xfs"; then return 0; fi
+  done
+  return 1
+}
+_cp8b_xargs_git_denied() {
+  case "$1" in
+    *xargs*) : ;;
+    *) return 1 ;;
+  esac
+  _cp8b_piped_interp "$1" || return 1
+  [ "$_cp8b_pi_xargs" = 1 ] || return 1
+  [ "$_cp8b_pi_nonlit" = 0 ] || return 0                      # a write verb fed by data the guard cannot read
+  _xg=$(printf '%s' "$1" | tr '\n' ' ')
+  _cp8b_pathhit "$_xg" && return 0
+  printf '%s' "$_xg" | grep -Eq 'push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'
+}
+
+# _cp8b_exec_arg_denied "<cmd>": design §12 C. `git rebase -x|--exec <cmd>`, `git bisect run <cmd>` and
+# `git submodule foreach <cmd>` RUN their argument as a command, and a quoted newline inside it splits into
+# a fragment the segment walk reads as a different verb (`cp /tmp/e skills/x" HEAD~1` -> destination `HEAD~1`).
+# Refuse on doubt: on the RAW command, a control-plane token anywhere denies. No quote parse.
+_cp8b_exec_arg_denied() {
+  # design §13 L1: fork-free fast path (no subcommand word, nothing to do), then ANY words between `git` and the
+  # subcommand (global options with or without values) and `--e…` abbreviations of `--exec`. Refuse on doubt.
+  case "$1" in
+    *rebase*|*bisect*|*submodule*) : ;;
+    *) return 1 ;;
+  esac
+  _ea=$(printf '%s' "$1" | tr '\n' ' ')
+  printf '%s' "$_ea" | LC_ALL=C grep -Eq '(^|[;&|[:space:](])git[[:space:]]+([^;&|]*[[:space:]])?(rebase[[:space:]]+(.*[[:space:]])?(-x|--e)|bisect[[:space:]]+run|submodule[[:space:]]+foreach)' || return 1
+  _cp8b_pathhit "$_ea"
+}
+
 # _cp8b_target_arm_denied "<cmd>": PREDICATE - Parts A+B+C. Prints the reason and returns 0 to deny.
 _cp8b_target_arm_denied() {
   _tad_raw=$1
+  if _cp8b_exec_arg_denied "$1"; then _cp8b_target_reason "$1" exec-arg; return 0; fi
+  if _cp8b_xargs_filefed_denied "$1"; then _cp8b_target_reason "$1" xargs-filefed; return 0; fi
+  if _cp8b_xargs_git_denied "$1"; then _cp8b_target_reason "$1" xargs-git; return 0; fi
   # GUARD-READ-LANE-2 T1, half 2 (design §5) — same pre-check, same reason shape as the old arm.
   if _cp8b_piped_interp_hit "$1"; then _cp8b_target_reason "$_cp8b_pi_seg" pathhit; _cp8b_pi_note; return 0; fi
   # Arm E: a quoted heredoc BODY is inert data. F-a (T8): and a quoted separator is not a separator.
@@ -5809,6 +6305,11 @@ _cp8b_target_arm_denied() {
       esac
     _lv=$(_cp8b_lead "$_seg")
     if [ "$_lv" = cd ]; then _cp8b_eff_update "$_seg"; continue; fi
+    # design §14: a glob in a write-verb operand is matched against the on-disk control-plane paths (see the function).
+    case "$_lv" in
+      cp|install|mv|tee|ln|rsync|touch|rm|rmdir|chmod|chown|truncate|dd|shred|sed)
+        if _cp8b_glob_operand_denied "$_seg" "$_lv"; then _cp8b_target_reason "$_seg" glob-operand; return 0; fi ;;
+    esac
     # `pushd`/`popd` are a directory change this tracker has never modelled — it keeps the prefix and
     # walks on, which is why `pushd conformance && sed -i s/a/b/ verify.sh` ALLOWED. Keeping the
     # prefix is still right (a no-op only ever RETAINS denials); what was missing is the admission.
@@ -5877,11 +6378,15 @@ _cp8b_target_arm_denied() {
     # $_segm) because the mask is what refunds a quoted separator INSIDE a read; kit-exec gets the
     # UNMASKED view only, so a kit-script segment is judged on its raw bytes and can never be exempted
     # on the strength of a mask. One argument here is the narrower answer, not a missing one.
-    if _cp8b_tad_is_kit_exec "$_seg"; then
+    # design §13 U: a RELATIVE kit script run after a `cd` (or from an uncertain cwd) is the attacker's own script
+    # (`cd /tmp/x && sh scripts/anything.sh`), so kit-exec and the kit-query table apply only at the confident root. The
+    # condition sits at THIS call site, not inside the recognisers: the launder arm calls kit-exec on the DENY side.
+    _kroot=0; [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ] && _kroot=1
+    if [ "$_kroot" = 1 ] && _cp8b_tad_is_kit_exec "$_seg"; then
       [ "$_CP8B_RES_POISON" = 1 ] || continue
       _CP8B_RES_POISON_HIT=1
     fi
-    if _cp8b_tad_is_kit_query "$_seg"; then      # Arm A: a DECLARED read-only kit query (see the table)
+    if [ "$_kroot" = 1 ] && _cp8b_tad_is_kit_query "$_seg"; then      # Arm A: a DECLARED read-only kit query (see the table)
       [ "$_CP8B_RES_POISON" = 1 ] || continue
       _CP8B_RES_POISON_HIT=1
     fi
@@ -5890,6 +6395,11 @@ _cp8b_target_arm_denied() {
       _CP8B_RES_POISON_HIT=1
     fi
     if _cp8b_tad_is_msg_carrier "$_seg"; then
+      [ "$_CP8B_RES_POISON" = 1 ] || continue
+      _CP8B_RES_POISON_HIT=1
+    fi
+    # GUARD-TRAILER-IN-MESSAGE-FP (design §3): `sh scripts/board.sh create` is a carrier, keyed on its LEAD.
+    if _cp8b_tad_is_board_create "$_seg"; then
       [ "$_CP8B_RES_POISON" = 1 ] || continue
       _CP8B_RES_POISON_HIT=1
     fi
@@ -5964,10 +6474,31 @@ _cp8b_target_arm_denied() {
 # This is NOT the rewriting CP-8a forbade: that was splitting the command and REJOINING it with ';',
 # which perturbed the OTHER ~40 rules. Here only this ONE rule's window narrows; every other rule still
 # sees the raw, unsplit string (`curl x | sh` keeps its pipe, `--admin` keeps its end-of-string anchor).
+# design §13 H3: the regex took only `-c <kv>` between `git` and `push`, so `git -C d push origin HEAD:main`, `--git-dir=`,
+# `--no-pager` and `-P` slipped past (and the force-push rule below has the same shape). _CP8B_GITG is a CHAIN of git
+# GLOBAL options (`-C v`, `-c kv`, `--opt=v`, `--opt v` for the value-taking longs, any other flag); the first
+# non-dash word ends it, so `git commit -m "… push …"` is not matched. Unknown shapes fall to the over-deny side.
+# _cp8b_dq_vanished "<label>" "<in>" "<dequoted>": a de-quoted view that came back EMPTY from non-empty input is a fault — unless
+# the input held nothing but quote, backslash and blank bytes (a lone `"` is what a quoted newline leaves behind after a split).
+_cp8b_dq_vanished() {
+  [ -z "$3" ] || return 0
+  case "$2" in
+    *[!\"\'\\[:space:]]*) _guard_fault "$1" ;;
+  esac
+  return 0
+}
+_CP8B_GITG='([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|--(git-dir|work-tree|exec-path|namespace|config-env|super-prefix)[[:space:]=][^[:space:]]+|-[A-Za-z]|--[a-z-]+(=[^[:space:]]*)?))*'
 _cp8b_push_main_denied() {
   _cp8b_segments_load "$1"
   while _cp8b_next_seg; do
-    if printf '%s' "$_seg" | grep -Eq 'git[[:space:]]+(-c[[:space:]]+[^[:space:]]+[[:space:]]+)*push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'; then
+    # design §16 R4: also judged on the view with quotes and backslashes deleted (`git "push" …`, `git -C "x" push …`).
+    _pmq=$_seg
+    case "$_seg" in
+      *'"'*|*"$_cp8b_sq"*|*'\'*)
+        _pmq=$(printf '%s' "$_seg" | tr -d "\"'\\\\") || _guard_fault pushmain-dequote
+        _cp8b_dq_vanished pushmain-dequote "$_seg" "$_pmq" ;;
+    esac
+    if printf '%s\n%s' "$_seg" "$_pmq" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'; then
       return 0
     fi
   done
@@ -7110,15 +7641,29 @@ _cp8b_walk_load() {
   _wl_rc=0; _wl_h=$(_cp8b_strip_heredocs "$1") || _wl_rc=$?
   [ "$_wl_rc" -le 1 ] || _guard_fault walk-strip-heredocs
   _guard_vanished walk-strip-heredocs "$1" "$_wl_h"
-  _wl_m=$(_cp8b_mask_quoted "$_wl_h") || :
-  _guard_vanished walk-mask-quoted "$_wl_h" "$_wl_m"
+  # GUARD-TRAILER-IN-MESSAGE-FP (design §3): the carrier join sits HERE, between heredoc strip and mask,
+  # so every walk that loads through this function (target arm, older CP walk) sees the joined bytes.
+  # R6: a fork-free newline precheck, so the common one-line command pays no subshell for the join.
+  case "$_wl_h" in
+    *"$_cp8b_nl"*) _wl_j=$(_cp8b_carrier_join "$_wl_h") || : ;;
+    *) _wl_j=$_wl_h ;;
+  esac
+  _guard_vanished walk-carrier-join "$_wl_h" "$_wl_j"
+  _wl_m=$(_cp8b_mask_quoted "$_wl_j") || :
+  _guard_vanished walk-mask-quoted "$_wl_j" "$_wl_m"
   _walk=$(_cp8b_segments "$_wl_m") || _guard_fault walk-segments
   _guard_vanished walk-segments "$_wl_m" "$_walk"
 }
 # `_cp8b_segments_load "<cmd>"`: the same for a raw (unmasked) split — sets $_walk.
 _cp8b_segments_load() {
-  _walk=$(_cp8b_segments "$1") || _guard_fault segments
-  _guard_vanished segments "$1" "$_walk"
+  # GUARD-TRAILER-IN-MESSAGE-FP (design §3): the hooksPath and push-main arms load here, so they see the join too.
+  case "$1" in
+    *"$_cp8b_nl"*) _sl_j=$(_cp8b_carrier_join "$1") || : ;;   # R6: fork-free newline precheck
+    *) _sl_j=$1 ;;
+  esac
+  _guard_vanished segments-carrier-join "$1" "$_sl_j"
+  _walk=$(_cp8b_segments "$_sl_j") || _guard_fault segments
+  _guard_vanished segments "$_sl_j" "$_walk"
 }
 
 # guard_check_command "<cmd>" ["<cwd>"]: print reason + return 1 if denied, else return 0.
@@ -7128,6 +7673,19 @@ _cp8b_segments_load() {
 guard_check_command() {
   cmd=$1
   _cp8b_seed_from_cwd "${2:-}"
+  # design §15: the glob-walk budget is per COMMAND. Every walk draws on this one count (the target arm that runs them is a
+  # single `$(…)` per command, so its segments share the subshell's counter and no per-operand cap is needed).
+  _gwq=0
+  # design §13 L3: the segmenter maps a backslash-newline to a SPACE but the shell DELETES it (`SKI\<nl>LL.md` is one
+  # word). Judge the deleted view too, in a subshell so no state leaks; deny-only (the original is judged below).
+  case "$cmd" in
+    *'\'"$_cp8b_nl"*)
+      if [ "${3:-}" != l3-view ]; then   # the recursion is marked by a PARAMETER, not an environment-shaped variable
+        _l3v=$(_cp8b_joinlines_empty "$cmd") || _guard_fault l3-joinlines
+        _guard_vanished l3-joinlines "$cmd" "$_l3v"
+        _l3r=$(guard_check_command "$_l3v" "${2:-}" l3-view) || { printf '%s' "$_l3r"; return 1; }
+      fi ;;
+  esac
   # --- control-plane shell mutation (moved from guard.sh:81-93, + new files) ---
   # GUARD-HOOKSPATH-CASE-BYPASS: unconditional case-fold (`-Eq` -> `-Eiq`), no fork. Git config
   # KEYS are case-insensitive by spec on every platform, so this can only ever ADD a deny — no
@@ -7139,7 +7697,21 @@ guard_check_command() {
   if ! selfedit_allowed; then
     _cp8b_segments_load "$cmd"
     while _cp8b_next_seg; do
-      printf '%s' "$_seg" | grep -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath' || continue
+      # design §12 E: `git -c core.hooksPath=… <sub>` (and `--config-env=`) sets the key for ONE command with no `git config`.
+      # Measured open too: the env spelling `GIT_CONFIG_KEY_<n>=core.hooksPath` / `GIT_CONFIG_PARAMETERS=…`, with or without `export`.
+      # design §13 H2/M2: quote splicing hides the key (`-c "core.hooksPath=…"`, `core.hooks""Path`, `GIT_CONFIG_KEY_0='core'.hooksPath`),
+      # so the match also runs on a view with quotes and backslashes DELETED, as the `--admin` arm does. Fork-free when the
+      # segment carries none of those bytes.
+      _dqv=$_seg
+      case "$_seg" in
+        *'"'*|*"$_cp8b_sq"*|*'\'*)
+          _dqv=$(printf '%s' "$_seg" | tr -d "\"'\\\\") || _guard_fault h2-dequote
+          _cp8b_dq_vanished h2-dequote "$_seg" "$_dqv" ;;
+      esac
+      if printf '%s\n%s' "$_seg" "$_dqv" | grep -Eiq -e 'git[[:space:]]+([^;&|]*[[:space:]])?(-c|--config-env)[[:space:]=]*core\.hooksPath' -e 'GIT_CONFIG_(KEY_[0-9]+|PARAMETERS)=[^;&|]*core\.hooksPath' && ! _cp8b_gitcfg_msg_data "$_seg"; then
+        printf '%s' '13: git -c core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
+      fi
+      printf '%s\n%s' "$_seg" "$_dqv" | grep -Eiq 'git[[:space:]]+config[[:space:]]+([^;&|]*[[:space:]])?core\.hooksPath' || continue
       _cp8b_gitcfg_msg_data "$_seg" && continue
       _cp8b_gitcfg_is_read "$_seg" && continue
       printf '%s' '13: git config core.hooksPath would disable the agent guard - human-gated. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'; return 1
@@ -7452,7 +8024,13 @@ guard_check_command() {
   if printf '%s' "$cmd" | grep -Eq '(npm|yarn|pnpm)[[:space:]]+publish'; then
     { printf '%s' '13: publishing a package is externally irreversible - human-gated.'; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq 'git[[:space:]]+(-c[[:space:]]+[^[:space:]]+[[:space:]]+)*push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
+  _fpq=$cmd   # design §16 R4: the force-push rule also reads the quote-and-backslash-deleted view
+  case "$cmd" in
+    *'"'*|*"$_cp8b_sq"*|*'\'*)
+      _fpq=$(printf '%s' "$cmd" | tr -d "\"'\\\\") || _guard_fault forcepush-dequote
+      _cp8b_dq_vanished forcepush-dequote "$cmd" "$_fpq" ;;
+  esac
+  if printf '%s\n%s' "$cmd" "$_fpq" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
     { printf '%s' '13: force/mirror push rewrites or deletes published history - human-gated.'; return 1; }
   fi
   # push to main/master in any refspec form: 'main', '+main', 'HEAD:main', 'x:master', "main" (incl. git -c … push)

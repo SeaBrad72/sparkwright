@@ -31,6 +31,21 @@ sh scripts/kit-update.sh --advance-base --from <same source>                 # a
    *Recording what you took* below).
 5. The next `--from` is computed against what you actually took.
 
+### Your first update: the order
+
+The verbs an update brings (`board create --parent`, the `create.<field>` map) arrive *with* the update, and the
+conf they need is one an agent cannot edit in place. So the first update goes in this order:
+
+1. Make the update's row with the verbs your tree has **now**: the existing `board create` without `--parent`, or by
+   hand in the tracker. Claim it.
+2. Run `--from`, apply, and open the PR. It is control-plane, so it costs what `START-HERE.md`'s solo track says.
+3. **The owner merges.**
+4. Pull, and the agent runs `--advance-base`.
+5. **Only then** use the verbs the update brought. Any `.kit/tracker.conf` line the new release asks for is a
+   dev-clone edit (`templates/JIRA-SETUP-TEMPLATE.md` §4).
+
+(cold test 2, items 34 and 38)
+
 ---
 
 ## How it works (one paragraph, because you should not trust a tool you cannot picture)
@@ -97,6 +112,31 @@ printed as information only.
 The report's header reads `kit-update: v<BASE>@<sha12> (kit-base) -> v<NEW>@<sha12> (--from)`: the
 `VERSION@sha` pairs name the exact vendor commits compared, because a version alone cannot tell two
 pre-release commits apart.
+
+### CI wiring
+
+An adapted CI workflow that the release also changed reads **CONFLICT**, which hides the one line a new CI
+capability may depend on. After the grouping, the report therefore carries a `== CI WIRING (<platform>) ==`
+section when your workflow lacks a **kit-owned CI capability** that the release's stack profile has (today:
+`changed-listing`, the step that lets an app-only pull request skip the kit's own selftests; without it
+every PR runs the full battery, which is safe but slow). The section prints the same `CI-DRIFT:` notice your
+CI's `verify-enforced` check prints: the capability, the release it arrived in, the profile lines to adopt
+(between the `# >>> kit:owned <id>` and `# <<< kit:owned <id>` markers), and the one-line decline.
+
+- **Workflow offered** (still the kit's own content at a release you took): one line, the patch adopts it.
+- **CONFLICT, untouched, or a declined hunk:** the notice. Adopt the lines by hand, or decline with
+  `# kit-ci-decline: changed-listing` in the workflow (the full battery then runs on every PR).
+- **Nothing stale:** no section. **`--from` has no `--drift`:** one line says so.
+
+The key treats these as having the capability: a `verify.sh --require --changed <arg>` line whose variable
+is assigned on another line, earlier on the same line, as a YAML `env:`/`variables:` key, or whose `<arg>`
+starts with `$RUNNER_TEMP/`, `$GITHUB_WORKSPACE/`, `$CI_PROJECT_DIR/` or `$CI_BUILDS_DIR/`. A wrapper script
+(`make conformance`) or a `\`-continued invocation still reads as lacking: decline it with the line below.
+
+The detection is line-based and runs the **`--from` release's own** `conformance/verify-enforced-wired.sh
+--drift` on your workflow (read-only; nothing is written). It does not judge whether an adapted listing step
+is safe. The first update that brings this feature prints no section, because your installed `kit-update`
+predates it; your CI's own check reports the drift on that update's pull request.
 
 ### Grouped by vendor change
 
@@ -238,6 +278,19 @@ inspect `git log kit-base` and `git reflog kit-base` before going on.
 
 ---
 
+## After an update: your open PRs
+
+A branch opened before the update does not carry it. `loop-state` grades the PR's **final** commit, and a merge of
+`main` into the branch puts a trailer-less merge commit last. Two ways out:
+
+- **(a) Merge `main` in locally, then re-carry the trailer block on that merge commit before you push.** Amend its
+  message so the contiguous `Kit-*` block is its last paragraph. The commit is unpublished, so this needs no force push.
+- **(b) Ask a human to rebase and force-push.** The guard reserves force pushes to a human.
+
+Do not push the merge commit and amend it afterwards: that *is* a force push. (cold test 2, item 60)
+
+---
+
 ## What it writes
 
 - **`--from` / `--reconstruct-base`: nothing of yours.** Your worktree, index, refs, objects and config
@@ -273,6 +326,13 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
   Publishing is to `refs/kit/base` only; fetching it into a clone that has none, and verifying shared chain
   commits before their `incept` runs, is row `KIT-BASE-SHARED` (not built). Grouping by vendor commit is
   partly inference (see above).
+- **A STALE INSTALLED HOOK IS REPORTED, NOT CURED.** The HOOK REFRESH section appears when a release changes
+  `hooks/pre-push` and also when your installed hook is stale and the release did not touch it: it prints the
+  adopter's own `guard-wired.sh` pre-push verdict. It never writes `.git/` or `core.hooksPath`; the one-time setting
+  (or the `cp`) stays a human act, and until it happens the gate stays red. Every run prints a verdict or says it
+  could not check (`hook state: not checked (<reason>)`, e.g. the gate is absent, printed no verdict, or only its
+  N/A); a clean PASS stays silent. The state is read only when someone runs `kit-update` or `guard-wired.sh`.
+  (cold test 2, items 101 and 102)
 - **A KIT FILE YOU DELETED THAT AN OLDER RELEASE DID NOT HAVE IS OFFERED AGAIN.** A kit file you deleted
   that an *older* release you took did not have (absent == absent there) is offered again, marked
   `(re-add)`; decline by not applying that hunk. One present at every release you took reads as yours

@@ -29,6 +29,22 @@
 #   no pipeline at all, incepted | FAIL (fail-closed)
 #   no pipeline, raw pre-incept  | N/A
 #
+# THE DRIFT LEG (KIT-UPDATE-PROFILE-CI-DRIFT) runs AFTER a PASS verdict above, never instead of one, and
+# compares the workflow against the in-tree profiles/*/ pipelines by a SEMANTIC key (a capability registry,
+# `_cap_registry`), never by bytes:
+#
+#   tree / state                                   | drift disposition
+#   -----------------------------------------------+------------------------------------------------
+#   kit source (_kit_source)                       | N/A — the kit's profiles are locked by --fleet
+#   no in-tree profile pipeline for the platform   | N/A — nothing to compare against
+#   the in-tree profiles lack the capability       | silent — current against what the adopter took
+#   the workflow has it                            | silent (one OK clause: "CI capabilities current")
+#   lacks it, carries `# kit-ci-decline: <id>`     | N/A — declined (declinable ids only; drift leg only)
+#   lacks it, origin emitted                       | FAIL + the CI-DRIFT notice
+#   lacks it, origin adopter (brownfield)          | the notice, rc 0 — a disclosed obligation, never red
+#   a predicate error                              | FAIL (fail-closed)
+#   (`--drift --wf= --profile=` is the same comparison for ONE pair, for kit-update: rc 0/1/2)
+#
 # PROVENANCE is the origin marker `# kit-pipeline-origin: emitted` that scripts/incept.sh stamps into
 # the pipeline it INSTALLS (design §4, ratified P2; locked by conformance/pipeline-origin.sh, which
 # also asserts the marker literal below has not drifted from incept's). Present -> kit-emitted;
@@ -307,7 +323,7 @@ _remedy_yaml() {
 # step was simply ABSENT: a brownfield tree was told something false and a GitLab tree was told about
 # a GitHub path it does not have.
 _judge() {
-  CI_WF=$1; _PLATFORM=$2
+  CI_WF=$1; _PLATFORM=$2; _J_PASS=0; _J_ORIGIN=''
   _j_step=$(enforcing_present "$CI_WF" "$_PLATFORM" && echo 1 || echo 0)
   _j_origin=$(_pipeline_origin "$CI_WF")
   # THE KIT-SOURCE DOWNGRADE (design §3, review F1) lives in the IMPURE layer — "am I the kit repo" is a
@@ -318,6 +334,7 @@ _judge() {
   if [ "$_j_origin" = adopter ] && [ "$(_kit_source)" = 1 ]; then _j_origin=kitsource; fi
   case "$(_wf_disposition 1 1 "$_j_origin" "$_j_step")" in
     PASS)
+      _J_PASS=1; _J_ORIGIN=$_j_origin   # the drift leg runs only on a PASS, and needs the provenance
       echo "OK: $CI_WF enforces the conformance aggregate ($_PLATFORM: a real 'verify.sh --require' step; origin: $_j_origin)"
       return 0 ;;
     FAIL)
@@ -393,6 +410,191 @@ _kst_wiring_gitlab() {  # <file> -> 0 conforming; else 1 with reasons
   return "$_kw_rc"
 }
 
+# ── KIT-UPDATE-PROFILE-CI-DRIFT — kit-owned CI CAPABILITIES (design 2026-10-05) ─────────────────────
+# A kit-owned CI block is a CAPABILITY: a named fact about the pipeline the kit needs and the adopter can
+# satisfy any way they like. The registry below is the one source of `since` (checked against CHANGELOG
+# headings by --fleet, lock 3). Profiles carry only `# >>> kit:owned <id>` / `# <<< kit:owned <id>` markers,
+# which exist to PRINT the block in the notice — detection never reads them (an adopter's adapted workflow
+# has none), it uses a SEMANTIC key (_drift_has), never a byte comparison.
+# _VEW_DRIFT is the greppable switch the selftest flips in a copy to prove the leg is the only red.
+_VEW_DRIFT=on
+_cap_registry() {  # id|since|declinable|purpose — no forge, stack or organisation named in a purpose
+  echo "changed-listing|3.232.0|yes|an app-only pull request skips the kit's own selftests"
+}
+_cap_ids() { _cap_registry | awk -F'|' '{ print $1 }'; }
+_cap_field() {  # <id> <2=since|3=declinable|4=purpose>
+  _cap_registry | awk -F'|' -v id="$1" -v n="$2" '$1 == id { print $n }'
+}
+# _drift_has <id> <file> -> 0 the pipeline HAS the capability · 1 it lacks it · 2 error (unknown id / no file).
+# changed-listing: (a) an uncommented line runs conformance/verify.sh with --require AND --changed <arg>;
+# (b) if <arg> is a shell variable reference NAME, NAME must be defined somewhere. Defined means ANY of: some
+# OTHER uncommented line assigns `NAME=`; the SAME verify line assigns it before `--changed`
+# (`L=$(mktemp); sh conformance/verify.sh --require --changed "$L"`); a YAML mapping key `NAME:` (a GitHub
+# `env:` / GitLab `variables:` entry); or <arg> starts with a runner-provided variable used as a PATH PREFIX —
+# exactly `$X/…` or `${X}/…` (optionally quoted) with X one of RUNNER_TEMP, GITHUB_WORKSPACE, CI_PROJECT_DIR,
+# CI_BUILDS_DIR (the runner defines them; a bare `$RUNNER_TEMP` is a directory, not a listing, and `$HOME` is not
+# on the list). The widening is deliberate: silence is the safe direction (the cost of a false silence is the slow
+# path). Line-based: a wrapper script or a `\`-continued invocation still reads as lacking (a false notice); a
+# variable defined but never to a real listing reads as having. Design §2 D3.
+_drift_has() {
+  case "$1" in changed-listing) ;; *) return 2 ;; esac
+  [ -f "$2" ] || return 2
+  awk '
+    /^[[:space:]]*#/ { next }
+    {
+      s = $0; sub(/[[:space:]]#.*/, "", s)
+      if (s ~ /conformance\/verify\.sh/ && s ~ /--require/ && s ~ /--changed/) {
+        nv++; a = s; sub(/.*--changed[ =]*/, "", a); sub(/[[:space:]].*/, "", a)
+        vname[nv] = ""; vsafe[nv] = 0; vpre[nv] = substr(s, 1, index(s, "--changed") - 1)
+        if (match(a, /\$\{?[A-Za-z_][A-Za-z0-9_]*/)) { n = substr(a, RSTART + 1, RLENGTH - 1); sub(/^\{/, "", n); vname[nv] = n }
+        if (a ~ /^"?\$\{?(RUNNER_TEMP|GITHUB_WORKSPACE|CI_PROJECT_DIR|CI_BUILDS_DIR)\}?\//) vsafe[nv] = 1
+        next
+      }
+      other[++no] = s
+    }
+    END {
+      for (i = 1; i <= nv; i++) {
+        if (vname[i] == "" || vsafe[i]) exit 0
+        pat = "(^|[^A-Za-z0-9_])" vname[i] "="
+        if (vpre[i] ~ pat) exit 0
+        key = "^[[:space:]]*" vname[i] ":[[:space:]]"
+        for (j = 1; j <= no; j++) if (other[j] ~ pat || other[j] ~ key) exit 0
+      }
+      exit 1
+    }' "$2"
+}
+# _cap_id_ok <id> -> 0 iff the id is ^[a-z0-9-]+$ (it is used inside an ERE by _drift_declined and in awk -v).
+_cap_id_ok() { printf '%s\n' "$1" | grep -Eq '^[a-z0-9-]+$'; }
+# _drift_declined <id> <file> -> 0 iff the id is declinable AND the file carries `# kit-ci-decline: <id>`.
+# The decline silences ONLY the drift leg (never _judge, never the aggregate leg).
+_drift_declined() {
+  [ "$(_cap_field "$1" 3)" = yes ] || return 1
+  grep -Eq "^[[:space:]]*#[[:space:]]*kit-ci-decline:[[:space:]]*$1([[:space:]]|\$)" "$2"
+}
+# _drift_block <id> <file> -> the marked block verbatim (markers excluded); rc 1 unless EXACTLY one balanced pair.
+_drift_block() {
+  awk -v id="$1" '
+    $0 ~ "^[[:space:]]*# >>> kit:owned " id "[[:space:]]*$" { if (state != 0) bad = 1; state = 1; no++; next }
+    $0 ~ "^[[:space:]]*# <<< kit:owned " id "[[:space:]]*$" { if (state != 1) bad = 1; state = 2; nc++; next }
+    state == 1 { buf[++n] = $0 }
+    END { if (bad || no != 1 || nc != 1 || state != 2) exit 1; for (i = 1; i <= n; i++) print buf[i] }
+  ' "$2"
+}
+# _drift_notice <wf> <platform> <profile> <id>... — the ONE notice text (CI and kit-update print the same).
+_drift_notice() {
+  _dn_wf=$1; _dn_pl=$2; _dn_pr=$3; shift 3
+  echo "CI-DRIFT: $_dn_wf ($_dn_pl) lacks a kit-owned CI capability its stack profile carries:"
+  for _dn_id in "$@"; do
+    echo "  $_dn_id (since kit v$(_cap_field "$_dn_id" 2)): $(_cap_field "$_dn_id" 4)."
+    if _dn_blk=$(_drift_block "$_dn_id" "$_dn_pr"); then
+      echo "  Adopt these lines from $_dn_pr (between '# >>> kit:owned $_dn_id' and '# <<< kit:owned $_dn_id'):"
+      # the block is profile text (from a --from release in kit-update): strip control bytes, keep tab/newline
+      printf '%s\n' "$_dn_blk" | tr -d '\000-\010\013-\037\177' | sed 's/^/    /'
+    else
+      echo "  Adopt the lines the profile carries for it: see $_dn_pr."
+    fi
+    if [ "$(_cap_field "$_dn_id" 3)" = yes ]; then
+      echo "  Or decline it: add the line '# kit-ci-decline: $_dn_id' to $_dn_wf (the full battery then runs on every PR)."
+    fi
+  done
+}
+# _drift_profiles <github|gitlab> -> the in-tree profile pipelines of that platform (cwd-relative), one per line.
+_drift_profiles() {
+  if [ "$1" = gitlab ]; then _dp_g='profiles/*/ci.gitlab-ci.yml'; else _dp_g='profiles/*/ci.yml'; fi
+  for _dp_f in $_dp_g; do [ -f "$_dp_f" ] && echo "$_dp_f"; done
+  return 0
+}
+# _drift_leg <wf> <platform> <origin> -> 0 · 1 (FAIL). Runs AFTER a PASS verdict from _judge only; fail-closed
+# on a predicate error. Dispositions: design §2 D4.
+_drift_leg() {
+  [ "$_VEW_DRIFT" = on ] || return 0
+  _dl_wf=$1; _dl_pl=$2; _dl_origin=$3
+  if [ "$(_kit_source)" = 1 ]; then
+    echo "N/A: CI drift — $_dl_wf is the kit's own source pipeline; its profiles are locked by --fleet"; return 0
+  fi
+  _dl_profs=$(_drift_profiles "$_dl_pl")
+  if [ -z "$_dl_profs" ]; then
+    echo "N/A: CI drift — no profile pipeline ($_dl_pl) in this tree to compare $_dl_wf against"; return 0
+  fi
+  _dl_first=$(printf '%s\n' "$_dl_profs" | sed -n 1p)
+  _dl_stale=""; _dl_cur=""
+  for _dl_id in $(_cap_ids); do
+    _dl_all=1
+    # line by line (a profile path may hold a space); a here-doc, not a pipe, so _dl_all survives the loop
+    while IFS= read -r _dl_p; do
+      [ -n "$_dl_p" ] || continue
+      _dl_r=0; _drift_has "$_dl_id" "$_dl_p" || _dl_r=$?
+      case "$_dl_r" in 0) ;; 1) _dl_all=0 ;; *) echo "FAIL: CI drift — cannot evaluate capability '$_dl_id' on $_dl_p"; return 1 ;; esac
+    done <<EOF
+$_dl_profs
+EOF
+    [ "$_dl_all" = 1 ] || continue   # the in-tree profiles predate it: the adopter is current against what they took
+    _dl_r=0; _drift_has "$_dl_id" "$_dl_wf" || _dl_r=$?
+    case "$_dl_r" in
+      0) _dl_cur="$_dl_cur $_dl_id" ;;
+      1) if _drift_declined "$_dl_id" "$_dl_wf"; then
+           echo "N/A: CI drift — declined: $_dl_id; the full battery runs on every PR"
+         else _dl_stale="$_dl_stale $_dl_id"; fi ;;
+      *) echo "FAIL: CI drift — cannot evaluate capability '$_dl_id' on $_dl_wf"; return 1 ;;
+    esac
+  done
+  [ -z "$_dl_cur" ] || echo "OK: CI capabilities current:$_dl_cur"
+  [ -n "$_dl_stale" ] || return 0
+  # shellcheck disable=SC2086
+  _drift_notice "$_dl_wf" "$_dl_pl" "$_dl_first" $_dl_stale
+  case "$_dl_origin" in
+    emitted) return 1 ;;   # the kit installed it: a stale pipeline is drift
+    adopter) return 0 ;;   # adopter-owned (brownfield): a disclosed obligation, never a red
+    *)       return 1 ;;   # unenumerated provenance fails closed
+  esac
+}
+# _drift_cli <wf> <profile> -> the `--drift` form kit-update runs: 0 nothing stale · 1 stale (notice printed) · 2 error.
+_drift_cli() {
+  [ -f "$1" ] || { echo "FAIL: --wf='$1' names no file (fail-closed)"; return 2; }
+  [ -f "$2" ] || { echo "FAIL: --profile='$2' names no file (fail-closed)"; return 2; }
+  case "$1" in *gitlab*) _dc_pl=gitlab ;; *) _dc_pl=github ;; esac
+  _dc_stale=""
+  for _dc_id in $(_cap_ids); do
+    _dc_r=0; _drift_has "$_dc_id" "$2" || _dc_r=$?
+    case "$_dc_r" in 0) ;; 1) continue ;; *) echo "FAIL: cannot evaluate capability '$_dc_id' on $2"; return 2 ;; esac
+    _dc_r=0; _drift_has "$_dc_id" "$1" || _dc_r=$?
+    case "$_dc_r" in
+      0) ;;
+      1) _drift_declined "$_dc_id" "$1" || _dc_stale="$_dc_stale $_dc_id" ;;
+      *) echo "FAIL: cannot evaluate capability '$_dc_id' on $1"; return 2 ;;
+    esac
+  done
+  [ -n "$_dc_stale" ] || return 0
+  # shellcheck disable=SC2086
+  _drift_notice "$1" "$_dc_pl" "$2" $_dc_stale
+  return 1
+}
+# _since_ok <since> <root> -> 0 iff <since> is above <root>/VERSION (a pending release) or <root>/CHANGELOG.md
+# has a `## [<since>]` heading. A mis-guessed version reds as soon as the release ships without it.
+_since_ok() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+  _so_v=$(tr -d ' \t\r\n' < "$2/VERSION" 2>/dev/null) || _so_v=""
+  [ -n "$_so_v" ] || return 1
+  if awk -v a="$1" -v b="$_so_v" 'BEGIN { split(a, x, "."); split(b, y, "."); for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 } exit 1 }'; then return 0; fi
+  _so_re=$(printf '%s' "$1" | sed 's/\./\\./g')   # the value is [0-9.]+ (checked above): only the dots need escaping
+  grep -Eq "^## \\[$_so_re\\]" "$2/CHANGELOG.md" 2>/dev/null
+}
+# _fleet_caps <profile> -> 0 · 1 with FAIL lines. Locks 1 and 2 (design D6): balanced markers for every
+# registry id, no marker id outside the registry, and the profile satisfies its OWN predicate.
+_fleet_caps() {
+  _fc_rc=0
+  for _fc_id in $(_cap_ids); do
+    _drift_block "$_fc_id" "$1" >/dev/null || { echo "FAIL: $1 lacks exactly one balanced '# >>> kit:owned $_fc_id' / '# <<< kit:owned $_fc_id' marker pair (open before close)"; _fc_rc=1; }
+    _fc_r=0; _drift_has "$_fc_id" "$1" || _fc_r=$?
+    [ "$_fc_r" = 0 ] || { echo "FAIL: $1 lacks capability '$_fc_id' by the drift key (a profile must satisfy its own predicate)"; _fc_rc=1; }
+  done
+  _fc_all=$(grep -E '^[[:space:]]*# (>>>|<<<) kit:owned ' "$1" | sed 's/.*kit:owned //; s/[[:space:]]*$//' | sort -u) || _fc_all=""
+  for _fc_m in $_fc_all; do
+    _cap_ids | grep -qxF "$_fc_m" || { echo "FAIL: $1 marks kit:owned id '$_fc_m', which is not in the capability registry (a block with no row is invisible to the drift leg)"; _fc_rc=1; }
+  done
+  return "$_fc_rc"
+}
+
 # _fleet_run <root> <expect_github> <expect_gitlab> -> 0 all pipelines enforce & counts match, else 1
 # WHY COUNTS ARE STATED, NOT DERIVED: deriving the expected count from the very glob being checked
 # makes the assertion circular — a glob that silently matched nothing would then "pass". WHY
@@ -408,12 +610,25 @@ _fleet_run() {
     _fr_n_gh=$((_fr_n_gh + 1))
     enforcing_present "$_fr_f" github || { echo "FAIL: $_fr_f does not run a real 'verify.sh --require'"; _fr_rc=1; }
     _fr_k5=$(_kst_wiring_github "$_fr_f") || { echo "FAIL: $_fr_k5"; _fr_rc=1; }
+    _fr_dc=$(_fleet_caps "$_fr_f") || { printf '%s\n' "$_fr_dc"; _fr_rc=1; }
   done
   for _fr_f in "$_fr_root"/profiles/*/ci.gitlab-ci.yml; do
     [ -f "$_fr_f" ] || continue
     _fr_n_gl=$((_fr_n_gl + 1))
     enforcing_present "$_fr_f" gitlab || { echo "FAIL: $_fr_f does not run a real 'verify.sh --require'"; _fr_rc=1; }
     _fr_k5=$(_kst_wiring_gitlab "$_fr_f") || { echo "FAIL: $_fr_k5"; _fr_rc=1; }
+    _fr_dc=$(_fleet_caps "$_fr_f") || { printf '%s\n' "$_fr_dc"; _fr_rc=1; }
+  done
+  for _fr_id in $(_cap_ids); do
+    _since_ok "$(_cap_field "$_fr_id" 2)" "$_fr_root" || { echo "FAIL: capability '$_fr_id' since $(_cap_field "$_fr_id" 2): that version is neither above $_fr_root/VERSION (pending) nor a '## [<since>]' heading in $_fr_root/CHANGELOG.md — a mis-guessed since"; _fr_rc=1; }
+    _cap_id_ok "$_fr_id" || { echo "FAIL: registry id '$_fr_id' is not ^[a-z0-9-]+\$ (ids are matched inside an ERE)"; _fr_rc=1; }
+    _fr_ref=''; _fr_refn=''   # the marked block must be byte-identical across every GitHub profile (one notice)
+    for _fr_f in "$_fr_root"/profiles/*/ci.yml; do
+      [ -f "$_fr_f" ] || continue
+      _fr_b=$(_drift_block "$_fr_id" "$_fr_f" 2>/dev/null) || continue   # missing markers are lock 1's finding
+      if [ -z "$_fr_refn" ]; then _fr_ref=$_fr_b; _fr_refn=$_fr_f
+      elif [ "$_fr_b" != "$_fr_ref" ]; then echo "FAIL: the kit:owned '$_fr_id' block in $_fr_f is not byte-identical to the one in $_fr_refn (the notice must read the same whichever profile is shown)"; _fr_rc=1; fi
+    done
   done
   # A zero enumeration is ALWAYS a failure, never a silent pass: a check that cannot find its
   # subjects must not report success (the presence-check-cannot-see-substitution class).
@@ -447,7 +662,7 @@ if [ "${1:-}" = "--fleet" ]; then
 fi
 
 if [ "${1:-}" = "--selftest" ]; then
-  d=$(mktemp -d); st=0
+  d=$(mktemp -d) || { echo "verify-enforced-wired --selftest: FAIL (no tmpdir)"; exit 1; }; st=0
   # ── §3 disposition matrix, as a PURE FUNCTION over arguments ────────────────────────────────────
   # Every row of the spec's table, both provenance values. POSITIVE (PASS) rows first, deliberately:
   # a function broken SHUT — one that answers FAIL to everything — satisfies every negative row here
@@ -471,7 +686,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # equivalent mutant) but 'adopter' would yield NA-REMEDY — so only 'adopter <invalid>' proves the guard.
   [ "$(_wf_disposition 1 1 adopter 9)" = FAIL ] || { echo "FAIL: disposition — an UNENUMERATED step value must fail-closed"; st=1; }
   # Lock the marker-detection half too (a rename returning 0 on an incepted tree would fail-OPEN to NA):
-  _mh=$(mktemp -d)
+  _mh=$(mktemp -d) || { echo "verify-enforced-wired --selftest: FAIL (no tmpdir for the marker legs)"; exit 1; }
   [ "$(_must_have_workflow "$_mh")" = 0 ] || { echo "FAIL: _must_have_workflow — markerless tree (raw export) must be 0"; st=1; }
   for _mk in ENGINEERING-PRINCIPLES.md docs/ROADMAP-KIT.md .github/workflows/golden-path.yml; do
     mkdir -p "$_mh/$(dirname "$_mk")"; : > "$_mh/$_mk"
@@ -484,7 +699,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # an incepted brownfield adopter carries it (incept renames CLAUDE.md) but carries NEITHER kit marker,
   # so folding it into this predicate would misclassify that adopter as kit-source and wrongly FAIL them —
   # the exact trap §3 exists to avoid. This leg goes RED if the predicate is widened to include it.
-  _ks=$(mktemp -d)
+  _ks=$(mktemp -d) || { echo "verify-enforced-wired --selftest: FAIL (no tmpdir for the kit-source legs)"; exit 1; }
   [ "$(_kit_source "$_ks")" = 0 ] || { echo "FAIL: _kit_source — markerless tree (raw export/adopter) must be 0"; st=1; }
   : > "$_ks/ENGINEERING-PRINCIPLES.md"
   [ "$(_kit_source "$_ks")" = 0 ] || { echo "FAIL: _kit_source — ENGINEERING-PRINCIPLES.md is an INCEPTED-ADOPTER marker, NOT kit-source; must stay 0 (disjointness)"; st=1; }
@@ -535,21 +750,24 @@ if [ "${1:-}" = "--selftest" ]; then
   # K5 conforming fixtures (the shape the shipped profiles carry) — every fleet fixture that must PASS uses these.
   _kst_fx_gh() {  # <file>
     { printf 'on:\n  pull_request:\n  push:\n    branches: [main]\n  schedule:\n    - cron: %s\n' "'23 5 * * 1'"
-      printf 'jobs:\n  ci:\n    steps:\n      - name: Changed-path listing\n        if: github.event_name == %s && github.base_ref == github.event.repository.default_branch\n' "'pull_request'"
+      printf 'jobs:\n  ci:\n    steps:\n      # >>> kit:owned changed-listing\n      - name: Changed-path listing\n        if: github.event_name == %s && github.base_ref == github.event.repository.default_branch\n' "'pull_request'"
       printf '        env:\n          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n        run: |\n'
       printf '          git diff -z --name-only --no-renames "$BASE_SHA...HEAD" > "$RUNNER_TEMP/z"\n'
       printf '          [ "$(%s < "$RUNNER_TEMP/z" | wc -c)" -eq 0 ]\n' "tr -cd '\\n'"
-      printf '          echo "KIT_CHANGED=$RUNNER_TEMP/list" >> "$GITHUB_ENV"\n      - name: Conformance aggregate\n        %s\n' "$_KST_GH_LINE"
+      printf '          echo "KIT_CHANGED=$RUNNER_TEMP/list" >> "$GITHUB_ENV"\n      - name: Conformance aggregate\n        %s\n      # <<< kit:owned changed-listing\n' "$_KST_GH_LINE"
     } > "$1"
   }
   _kst_fx_gl() {  # <file>
-    { printf 'conformance-aggregate:\n  stage: verify\n  before_script:\n    - |\n'
+    { printf '# >>> kit:owned changed-listing\nconformance-aggregate:\n  stage: verify\n  before_script:\n    - |\n'
       printf '      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] && [ "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" = "$CI_DEFAULT_BRANCH" ] && kz=$(mktemp) && kl=$(mktemp) && git diff -z --name-only --no-renames "$CI_MERGE_REQUEST_DIFF_BASE_SHA...HEAD" > "$kz" && [ "$(%s < "$kz" | wc -c)" -eq 0 ]; then export KIT_CHANGED="$kl"; fi\n' "tr -cd '\\n'"
-      printf '  script:\n    %s\n' "$_KST_GL_LINE"
+      printf '  script:\n    %s\n# <<< kit:owned changed-listing\n' "$_KST_GL_LINE"
     } > "$1"
   }
+  _fx_meta() {  # <root> — the VERSION + CHANGELOG heading the fleet's since-lock reads
+    printf '3.232.0\n' > "$1/VERSION"; printf '## [3.232.0] - fixture\n' > "$1/CHANGELOG.md"
+  }
   _fd=$(mktemp -d) || { echo "verify-enforced-wired --selftest: FAIL (no tmpdir for the fleet legs)"; exit 1; }
-  mkdir -p "$_fd/good/profiles/a" "$_fd/good/profiles/b"
+  mkdir -p "$_fd/good/profiles/a" "$_fd/good/profiles/b"; _fx_meta "$_fd/good"
   _kst_fx_gh "$_fd/good/profiles/a/ci.yml"
   _kst_fx_gl "$_fd/good/profiles/b/ci.gitlab-ci.yml"
   # ── K5 legs: the conforming fixtures PASS first (a check broken shut satisfies every mutant), then one mutant
@@ -584,7 +802,7 @@ if [ "${1:-}" = "--selftest" ]; then
   rm -f "$_fd/mut.yml" "$_fd/mutgl.yml"
   _fleet_run "$_fd/good" 1 1 >/dev/null || { echo "FAIL: fleet — a fully-enforcing fixture must PASS"; st=1; }
 
-  mkdir -p "$_fd/bad/profiles/a" "$_fd/bad/profiles/b"
+  mkdir -p "$_fd/bad/profiles/a" "$_fd/bad/profiles/b"; _fx_meta "$_fd/bad"
   printf '      - name: x\n        run: sh conformance/verify.sh --selftest\n' > "$_fd/bad/profiles/a/ci.yml"
   printf 'gate-x:\n  script: [sh conformance/verify.sh --require]\n'           > "$_fd/bad/profiles/b/ci.gitlab-ci.yml"
   _fleet_run "$_fd/bad" 1 1 >/dev/null && { echo "FAIL: fleet — ONE pipeline missing the step must FAIL the fleet"; st=1; }
@@ -592,7 +810,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # THE VACUITY LEG, and the reason the zero-guard is not redundant with the equality check: here
   # found==expected==0, so equality alone would report success over an empty tree. Only the explicit
   # zero-guard turns that into a failure.
-  mkdir -p "$_fd/empty/profiles"
+  mkdir -p "$_fd/empty/profiles"; _fx_meta "$_fd/empty"
   _fleet_run "$_fd/empty" 0 0 >/dev/null && { echo "FAIL: fleet — ZERO enumerated pipelines must FAIL, never pass vacuously"; st=1; }
 
   _fleet_run "$_fd/good" 2 1 >/dev/null && { echo "FAIL: fleet — found FEWER than asserted must FAIL"; st=1; }
@@ -604,12 +822,56 @@ if [ "${1:-}" = "--selftest" ]; then
   # which is precisely the vacuous-proof shape this slice keeps reproducing. A SINGLE-PLATFORM tree
   # separates them: here the counts MATCH what is asserted, so the equality checks are satisfied and
   # only the OTHER platform's zero guard can register the failure.
-  mkdir -p "$_fd/gh-only/profiles/a"
+  mkdir -p "$_fd/gh-only/profiles/a"; _fx_meta "$_fd/gh-only"
   _kst_fx_gh "$_fd/gh-only/profiles/a/ci.yml"
   _fleet_run "$_fd/gh-only" 1 0 >/dev/null && { echo "FAIL: fleet — a tree with ZERO gitlab pipelines must FAIL on the GITLAB zero guard alone"; st=1; }
-  mkdir -p "$_fd/gl-only/profiles/a"
+  mkdir -p "$_fd/gl-only/profiles/a"; _fx_meta "$_fd/gl-only"
   _kst_fx_gl "$_fd/gl-only/profiles/a/ci.gitlab-ci.yml"
   _fleet_run "$_fd/gl-only" 0 1 >/dev/null && { echo "FAIL: fleet — a tree with ZERO github pipelines must FAIL on the GITHUB zero guard alone"; st=1; }
+
+  # ── KIT-UPDATE-PROFILE-CI-DRIFT fleet locks (design D6), each killed by ITS property alone ──────────
+  # The shipped fixture tree must PASS first (a lock broken shut satisfies every negative below).
+  _fleet_run "$_fd/good" 1 1 >/dev/null || { echo "FAIL: drift fleet — the marker-carrying fixture tree must PASS the locks (positive first)"; st=1; }
+  for _fl in nomarker-close nomarker-open unknown-id no-capability no-changelog; do
+    mkdir -p "$_fd/$_fl/profiles/a" "$_fd/$_fl/profiles/b"; _fx_meta "$_fd/$_fl"
+    _kst_fx_gh "$_fd/$_fl/profiles/a/ci.yml"; _kst_fx_gl "$_fd/$_fl/profiles/b/ci.gitlab-ci.yml"
+  done
+  sed '/<<< kit:owned/d' "$_fd/good/profiles/a/ci.yml" > "$_fd/nomarker-close/profiles/a/ci.yml"
+  _fleet_run "$_fd/nomarker-close" 1 1 >/dev/null && { echo "FAIL: drift fleet — a profile with its '<<<' marker deleted must FAIL (lock 1, close)"; st=1; }
+  sed '/>>> kit:owned/d' "$_fd/good/profiles/b/ci.gitlab-ci.yml" > "$_fd/nomarker-open/profiles/b/ci.gitlab-ci.yml"
+  _fleet_run "$_fd/nomarker-open" 1 1 >/dev/null && { echo "FAIL: drift fleet — a profile with its '>>>' marker deleted must FAIL (lock 1, open)"; st=1; }
+  { cat "$_fd/good/profiles/a/ci.yml"; printf '# >>> kit:owned zzz-unknown\n# <<< kit:owned zzz-unknown\n'; } > "$_fd/unknown-id/profiles/a/ci.yml"
+  _fleet_run "$_fd/unknown-id" 1 1 >/dev/null && { echo "FAIL: drift fleet — a kit:owned id missing from the registry must FAIL (lock 1, enumeration)"; st=1; }
+  sed 's/--changed "\$KIT_CHANGED"//' "$_fd/good/profiles/a/ci.yml" > "$_fd/no-capability/profiles/a/ci.yml"
+  _fleet_run "$_fd/no-capability" 1 1 2>&1 | grep -qF 'by the drift key' || { echo "FAIL: drift fleet — a profile that lacks the capability by the D3 key must FAIL naming it (lock 2)"; st=1; }
+  rm -f "$_fd/no-changelog/CHANGELOG.md"
+  _fleet_run "$_fd/no-changelog" 1 1 >/dev/null && { echo "FAIL: drift fleet — a since with no CHANGELOG heading (and not above VERSION) must FAIL (lock 3)"; st=1; }
+  _sx=$(mktemp -d) || { echo "verify-enforced-wired --selftest: FAIL (no tmpdir for the since legs)"; exit 1; }
+  _fx_meta "$_sx"
+  _since_ok 3.232.0 "$_sx" || { echo "FAIL: drift fleet — a since at VERSION with its heading must be accepted"; st=1; }
+  _since_ok 3.233.0 "$_sx" || { echo "FAIL: drift fleet — a since above VERSION (pending release) must be accepted"; st=1; }
+  _since_ok 3.231.5 "$_sx" && { echo "FAIL: drift fleet — a since of 3.231.5 (<= VERSION, no heading) must FAIL (lock 3)"; st=1; }
+  # the heading match is anchored to a line start with the dots literal: a `###` heading, prose that quotes
+  # the heading mid-line, and a dot-wildcard near miss must NOT satisfy it
+  printf '## [3.232.0] - fixture\n### [3.231.5] - a sub-heading\nsee ## [3.231.5] in the notes\n## [3x231.4] - near miss\n' > "$_sx/CHANGELOG.md"
+  _since_ok 3.231.5 "$_sx" && { echo "FAIL: drift fleet — a '###' heading or mid-line prose must not satisfy the since lock (anchor ^## [x.y.z])"; st=1; }
+  _since_ok 3.231.4 "$_sx" && { echo "FAIL: drift fleet — '3x231' must not satisfy a since of 3.231.4 (dots are literal)"; st=1; }
+  printf '## [3.232.0] - fixture\n## [3.231.5] - real\n' > "$_sx/CHANGELOG.md"
+  _since_ok 3.231.5 "$_sx" || { echo "FAIL: drift fleet — a real '## [3.231.5]' heading must satisfy the since lock"; st=1; }
+  # registry ids are used inside an ERE (the decline match): only [a-z0-9-]+ is accepted
+  _cap_id_ok changed-listing || { echo "FAIL: drift fleet — the shipped id must pass the id-shape lock"; st=1; }
+  for _bi in 'a.b' 'A' 'a|b' 'a b' ''; do
+    _cap_id_ok "$_bi" && { echo "FAIL: drift fleet — id '$_bi' must fail the id-shape lock (^[a-z0-9-]+\$)"; st=1; }
+  done
+  # the marked block is byte-identical across every GitHub profile (one notice, whichever profile is shown)
+  for _fl in dup-same dup-diff; do
+    mkdir -p "$_fd/$_fl/profiles/a" "$_fd/$_fl/profiles/b" "$_fd/$_fl/profiles/c"; _fx_meta "$_fd/$_fl"
+    _kst_fx_gh "$_fd/$_fl/profiles/a/ci.yml"; _kst_fx_gh "$_fd/$_fl/profiles/b/ci.yml"; _kst_fx_gl "$_fd/$_fl/profiles/c/ci.gitlab-ci.yml"
+  done
+  _fleet_run "$_fd/dup-same" 2 1 >/dev/null || { echo "FAIL: drift fleet — two identical marked blocks must PASS (positive first)"; st=1; }
+  sed 's#RUNNER_TEMP/list#RUNNER_TEMP/list2#' "$_fd/dup-same/profiles/b/ci.yml" > "$_fd/dup-diff/profiles/b/ci.yml"
+  _fleet_run "$_fd/dup-diff" 2 1 2>&1 | grep -qF 'not byte-identical' || { echo "FAIL: drift fleet — a marked block that differs between two GitHub profiles must FAIL (lock: identical blocks)"; st=1; }
+  rm -rf "$_sx" 2>/dev/null || true
   rm -rf "$_fd" 2>/dev/null || true
 
   # ── §5 STEP/JOB-SCOPED SUPPRESSION — FALSE-POSITIVE (PASS) LEGS FIRST (the governing lesson) ───────
@@ -858,6 +1120,123 @@ if [ "${1:-}" = "--selftest" ]; then
   _mtg=$(_mx_tree argv-gl); _mx_pipe "$_mtg" gitlab emitted nostep
   _mx_assert "$_mtf" 1 '.gitlab-ci.yml' '--wf= a gitlab file is judged with the GITLAB matcher, from a github cwd' "--wf=$_mtg/.gitlab-ci.yml"
   _mx_assert "$_mtf" 1 'names no file' '--wf= a nonexistent path must FAIL (fail-closed), never pass vacuously' "--wf=$_mx/nope.yml"
+
+  # ── KIT-UPDATE-PROFILE-CI-DRIFT (design §3): the drift leg on the REAL dispatch ────────────────────
+  # One load-bearing negative per control. The fixture PROFILE is the K5-conforming fixture above (it
+  # carries the kit:owned markers), read from the fixture tree's own profiles/ — never the kit's.
+  _dr_assert() {  # <tree> <expect-rc> <must-contain|-> <label> [argv...] — run the dispatch (or a copy: _DR_SELF)
+    _da_t=$1; _da_rc=$2; _da_c=$3; _da_l=$4; shift 4
+    _MX_OUT=$( cd "$_da_t" && sh "${_DR_SELF:-$_self}" "$@" 2>&1 ) && _MX_RC=0 || _MX_RC=$?
+    if [ "$_MX_RC" != "$_da_rc" ]; then echo "FAIL: drift [$_da_l] — expected rc=$_da_rc, got rc=$_MX_RC :: $_MX_OUT"; st=1; return 0; fi
+    if [ "$_da_c" != - ] && ! printf '%s\n' "$_MX_OUT" | grep -qF -e "$_da_c"; then
+      echo "FAIL: drift [$_da_l] — rc=$_da_rc as expected, but the output never says '$_da_c' :: $_MX_OUT"; st=1
+    fi
+    return 0
+  }
+  _dr_prof() {  # <tree> <github|gitlab> — the in-tree profile pipeline the leg compares against
+    mkdir -p "$1/profiles/p"
+    if [ "$2" = github ]; then _kst_fx_gh "$1/profiles/p/ci.yml"; else _kst_fx_gl "$1/profiles/p/ci.gitlab-ci.yml"; fi
+  }
+  _dr_stale_wf() {  # <tree> <emitted|adopter> — the plain-step workflow (no --changed) of a pre-3.232.0 adopter
+    _mx_pipe "$1" github "$2" step
+  }
+  # (1) drift -> notice; positive FIRST (a leg that never fires satisfies every silent leg below)
+  _dt=$(_mx_tree dr-stale); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: emitted GitHub workflow without the listing -> FAIL with the notice'
+  for _dn in 'changed-listing' '3.232.0' 'git diff -z --name-only' 'kit-ci-decline: changed-listing' '>>> kit:owned changed-listing'; do
+    printf '%s\n' "$_MX_OUT" | grep -qF -e "$_dn" || { echo "FAIL: drift [notice] — the notice never says '$_dn' :: $_MX_OUT"; st=1; }
+  done
+  # load-bearing negative: the greppable switch flipped OFF in a copy -> the leg goes green (it is live)
+  sed 's/^_VEW_DRIFT=on$/_VEW_DRIFT=off/' "$_self" > "$_mx/vew-off.sh"
+  if cmp -s "$_mx/vew-off.sh" "$_self"; then echo "FAIL: drift [switch] — no '_VEW_DRIFT=on' line to flip (vacuous negative)"; st=1; fi
+  _DR_SELF="$_mx/vew-off.sh"
+  _dr_assert "$_dt" 0 - 'drift: switch OFF -> the same fixture is green (the leg was the only red)'
+  _DR_SELF=''   # explicit reset: a prefix assignment on a function call persists under dash and bash-as-sh
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift [switch] — OFF still printed a notice"; st=1; }
+  # (2) current -> silent
+  _dt=$(_mx_tree dr-current); _dr_prof "$_dt" github
+  { printf '%s\n' "$_MXMARK"; cat "$_dt/profiles/p/ci.yml"; } > "$_dt/.github-wf.tmp"; mkdir -p "$_dt/.github/workflows"; mv "$_dt/.github-wf.tmp" "$_dt/.github/workflows/ci.yml"
+  _dr_assert "$_dt" 0 'CI capabilities current: changed-listing' 'drift: workflow == profile -> silent and says it checked'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift [current] — a current workflow got a notice"; st=1; }
+  # (3) equivalent adapted -> silent; the (b) half is live
+  _dt=$(_mx_tree dr-adapted); _dr_prof "$_dt" github; mkdir -p "$_dt/.github/workflows"
+  { printf '%s\n' "$_MXMARK"; printf 'jobs:\n  mine:\n    steps:\n      - name: my own diff\n        run: echo "MY_LIST=$RUNNER_TEMP/l" >> "$GITHUB_ENV"\n      - name: Gate\n        run: sh conformance/verify.sh --require ${MY_LIST:+--changed "$MY_LIST"}\n'; } > "$_dt/.github/workflows/ci.yml"
+  _dr_assert "$_dt" 0 'CI capabilities current' 'drift: renamed variable, no --summary-file, other step name -> silent'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift [adapted] — an equivalent adaptation got a notice"; st=1; }
+  { printf '%s\n' "$_MXMARK"; printf 'jobs:\n  mine:\n    steps:\n      - name: Gate\n        run: sh conformance/verify.sh --require ${NOPE:+--changed "$NOPE"}\n'; } > "$_dt/.github/workflows/ci.yml"
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: --changed "$NOPE" with no NOPE= anywhere -> notice (the variable half is live)'
+  # (4) brownfield never red; the origin marker is what makes it red
+  _dt=$(_mx_tree dr-brown); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" adopter
+  _dr_assert "$_dt" 0 'CI-DRIFT:' 'drift: unmarked (adopter-owned) stale workflow -> notice, rc 0'
+  _dt=$(_mx_tree dr-brown-marked); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: the SAME file with the origin marker -> rc 1 (provenance is the discriminator)'
+  # (5) decline is scoped to the drift leg
+  _dt=$(_mx_tree dr-decl); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
+  printf '# kit-ci-decline: changed-listing\n' >> "$_dt/.github/workflows/ci.yml"
+  _dr_assert "$_dt" 0 'declined: changed-listing' 'drift: decline line -> rc 0 with the declined line'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT:' && { echo "FAIL: drift [decline] — a declined capability still printed the notice"; st=1; }
+  _dt=$(_mx_tree dr-decl-nostep); _dr_prof "$_dt" github; _mx_pipe "$_dt" github emitted nostep
+  printf '# kit-ci-decline: changed-listing\n' >> "$_dt/.github/workflows/ci.yml"
+  _dr_assert "$_dt" 1 'kit-pipeline-origin' 'drift: the decline never silences the aggregate FAIL (decline is scoped)'
+  _dt=$(_mx_tree dr-decl-unknown); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
+  printf '# kit-ci-decline: no-such-capability\n' >> "$_dt/.github/workflows/ci.yml"
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: a decline for a different id does not silence changed-listing'
+  # (6) compared against the IN-TREE profile: an older profile without the capability -> silent
+  _dt=$(_mx_tree dr-oldprof); mkdir -p "$_dt/profiles/p"
+  printf 'jobs:\n  ci:\n    steps:\n      - name: Gate\n        run: sh conformance/verify.sh --require\n' > "$_dt/profiles/p/ci.yml"
+  _dr_stale_wf "$_dt" emitted
+  _dr_assert "$_dt" 0 - 'drift: the in-tree profile lacks the capability (older release) -> silent'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT' && { echo "FAIL: drift [in-tree] — judged against something other than the in-tree profile"; st=1; }
+  # (7) N/A faces
+  _dt=$(_mx_tree dr-src raw); _mx_kitmark "$_dt"; _dr_prof "$_dt" github; _dr_stale_wf "$_dt" adopter
+  _dr_assert "$_dt" 0 'locked by --fleet' 'drift: kit-source tree -> N/A naming source'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'CI-DRIFT:' && { echo "FAIL: drift [source] — the kit's own pipeline got a notice"; st=1; }
+  _dt=$(_mx_tree dr-noprof); _dr_stale_wf "$_dt" emitted
+  _dr_assert "$_dt" 0 'no profile pipeline' 'drift: no in-tree profile -> N/A naming it'
+  # (8) GitLab: the notice is the GitLab block, no GitHub word; the profile as the workflow is silent
+  _dt=$(_mx_tree dr-gl); _dr_prof "$_dt" gitlab; _mx_pipe "$_dt" gitlab emitted step
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: emitted GitLab pipeline without the listing -> FAIL with the notice'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'conformance-aggregate:' || { echo "FAIL: drift [gitlab] — the notice does not print the GitLab block :: $_MX_OUT"; st=1; }
+  printf '%s\n' "$_MX_OUT" | grep -qF 'GITHUB_' && { echo "FAIL: drift [gitlab] — a GitHub string leaked into a GitLab notice :: $_MX_OUT"; st=1; }
+  { printf '%s\n' "$_MXMARK"; cat "$_dt/profiles/p/ci.gitlab-ci.yml"; } > "$_dt/.gitlab-ci.yml"
+  _dr_assert "$_dt" 0 'CI capabilities current' 'drift: the GitLab profile copied as the workflow -> silent'
+  # (9) the --drift form (what kit-update runs): same text, rc 1 stale / 0 current, errors fail closed
+  _dt=$(_mx_tree dr-form); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
+  _dr_assert "$_dt" 1 'CI-DRIFT: .github/workflows/ci.yml (github)' 'drift: --drift form prints the notice with the given paths' --drift --wf=.github/workflows/ci.yml --profile=profiles/p/ci.yml
+  _dr_assert "$_dt" 0 - 'drift: --drift form on a current workflow is silent' --drift --wf=profiles/p/ci.yml --profile=profiles/p/ci.yml
+  _dr_assert "$_dt" 2 'names no file' 'drift: --drift form with a missing workflow fails closed' --drift --wf=nope.yml --profile=profiles/p/ci.yml
+  _dr_assert "$_dt" 2 'requires' 'drift: --drift form without --profile fails closed' --drift --wf=.github/workflows/ci.yml
+  # _drift_has on a block-scalar `run: |` (verify line on its own line) is equivalent too
+  printf 'jobs:\n  a:\n    steps:\n      - run: |\n          echo "L=x" >> "$GITHUB_ENV"\n          sh conformance/verify.sh --require ${L:+--changed "$L"}\n' > "$_mx/bs.yml"
+  _drift_has changed-listing "$_mx/bs.yml" || { echo "FAIL: drift [key] — a block-scalar run: with the verify line on its own line must have the capability"; st=1; }
+  # ── review round: equivalent wirings the first (b) rule read as lacking (silence is the safe direction) ──
+  _hk() {  # <label> <file-content-printf-format> — an equivalent wiring must HAVE the capability
+    printf "$2" > "$_mx/hk.yml"
+    _drift_has changed-listing "$_mx/hk.yml" || { echo "FAIL: drift [key] — $1 must have the capability"; st=1; }
+  }
+  _hk 'a NAME= assignment earlier on the SAME verify line' 'jobs:\n  a:\n    steps:\n      - run: L=$(mktemp); sh conformance/verify.sh --require --changed "$L"\n'
+  _hk 'a GitHub env: mapping key' 'jobs:\n  a:\n    env:\n      MY_LIST: /tmp/x\n    steps:\n      - run: sh conformance/verify.sh --require --changed "$MY_LIST"\n'
+  _hk 'a GitLab variables: mapping key' 'job:\n  variables:\n    MY_LIST: /tmp/x\n  script:\n    - sh conformance/verify.sh --require --changed "$MY_LIST"\n'
+  _hk 'a RUNNER_TEMP path prefix' 'jobs:\n  a:\n    steps:\n      - run: sh conformance/verify.sh --require --changed "$RUNNER_TEMP/list"\n'
+  _hk 'a ${CI_PROJECT_DIR} path prefix' 'job:\n  script:\n    - sh conformance/verify.sh --require --changed "${CI_PROJECT_DIR}/list"\n'
+  # load-bearing negatives: the widened rule is NOT "anything goes"
+  printf 'jobs:\n  a:\n    steps:\n      - run: sh conformance/verify.sh --require --changed "$HOME/list"\n' > "$_mx/hk.yml"
+  _drift_has changed-listing "$_mx/hk.yml" && { echo "FAIL: drift [key] — \$HOME is not a runner-provided listing prefix; it must lack the capability"; st=1; }
+  printf 'jobs:\n  a:\n    steps:\n      - run: sh conformance/verify.sh --require --changed "$RUNNER_TEMP"\n' > "$_mx/hk.yml"
+  _drift_has changed-listing "$_mx/hk.yml" && { echo "FAIL: drift [key] — a bare \$RUNNER_TEMP (a directory, no path suffix) must lack the capability"; st=1; }
+  printf 'jobs:\n  a:\n    steps:\n      - run: sh conformance/verify.sh --require --changed "$NOPE"\n      - name: other\n        run: echo NOPE_X=1\n' > "$_mx/hk.yml"
+  _drift_has changed-listing "$_mx/hk.yml" && { echo "FAIL: drift [key] — NOPE_X= must not satisfy NOPE (whole-name match)"; st=1; }
+  # a profile directory name with a space must not word-split into a false "cannot evaluate"
+  _dt=$(_mx_tree dr-space); mkdir -p "$_dt/profiles/my stack"; _kst_fx_gh "$_dt/profiles/my stack/ci.yml"; _dr_stale_wf "$_dt" emitted
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: a profile dir name with a space is still compared (no word-splitting)'
+  printf '%s\n' "$_MX_OUT" | grep -qF 'cannot evaluate' && { echo "FAIL: drift [space] — word-splitting produced a false 'cannot evaluate' :: $_MX_OUT"; st=1; }
+  # control bytes in the profile block never reach the notice (the same strip kit-update applies)
+  _dt=$(_mx_tree dr-ctl); _dr_prof "$_dt" github; _dr_stale_wf "$_dt" emitted
+  _esc=$(printf '\033')
+  awk -v e="$_esc" '/<<< kit:owned changed-listing/ { print "      # note " e "[31mred" } { print }' "$_dt/profiles/p/ci.yml" > "$_dt/profiles/p/ci.new" && mv "$_dt/profiles/p/ci.new" "$_dt/profiles/p/ci.yml"
+  grep -qF "$_esc" "$_dt/profiles/p/ci.yml" || { echo "FAIL: drift [ctl] — the fixture never carried the control byte (vacuous)"; st=1; }
+  _dr_assert "$_dt" 1 'CI-DRIFT:' 'drift: a control byte in the profile block still yields the notice'
+  printf '%s\n' "$_MX_OUT" | grep -qF "$_esc" && { echo "FAIL: drift [ctl] — an ESC byte from the profile block reached the notice"; st=1; }
   rm -rf "$_mx" 2>/dev/null || true
 
   if [ "$st" = 0 ]; then
@@ -875,7 +1254,10 @@ OK: verify-enforced-wired selftest — the §3 disposition matrix on the REAL di
                        allow_failure, when:manual/never (normalised: True/TRUE/yes/on, quoted, trailing
                        comment, leading '- '), hidden .job, non-script list items; an arbitrary job-level
                        if: branch guard stays honest-ceiling (NOT evaluated); cross-platform isolation;
-                       fleet counts stated-not-derived; each per-platform zero guard killed ALONE.
+                       fleet counts stated-not-derived; each per-platform zero guard killed ALONE;
+                       the CI-DRIFT leg (notice on a stale emitted pipeline, silent on a current or
+                       equivalently adapted one, rc 0 for brownfield, decline scoped, in-tree profile,
+                       GitLab, --drift form) and its three --fleet locks (markers, own predicate, since).
     CEILING — what this green does NOT say. The matrix covers the rows ENUMERATED in the header;
     the input space is NOT proven exhausted, and a disposition invented for an unenumerated cell
     is exactly what took this file two review BLOCKs. Unenumerated combinations fail CLOSED, which
@@ -905,13 +1287,25 @@ fi
 # env seam is deleted (an env-redirectable control-plane path is the vacuity this repo forbids, and
 # it had zero code consumers). A stale invocation carrying it would otherwise silently judge the CWD
 # tree instead of the named file — a wrong answer, quietly. The replacement seam is `--wf=<path>`.
-_wf_arg=''
+_wf_arg=''; _drift_mode=0; _profile_arg=''
 for _a in "$@"; do
   case "$_a" in
     --wf=*) _wf_arg=${_a#--wf=} ;;
-    *) echo "FAIL: unknown argument '$_a' (usage: [--wf=<path>] | --selftest | --fleet --expect-github=<n> --expect-gitlab=<m>)"; exit 1 ;;
+    --drift) _drift_mode=1 ;;
+    --profile=*) _profile_arg=${_a#--profile=} ;;
+    *) echo "FAIL: unknown argument '$_a' (usage: [--wf=<path>] | --drift --wf=<path> --profile=<path> | --selftest | --fleet --expect-github=<n> --expect-gitlab=<m>)"; exit 1 ;;
   esac
 done
+
+# `--drift` (what kit-update runs on the new release): compare ONE workflow against ONE profile pipeline.
+# 0 = nothing to say · 1 = stale, the notice is printed · 2 = bad argv / unreadable input (fail-closed).
+if [ "$_drift_mode" = 1 ]; then
+  if [ -z "$_wf_arg" ] || [ -z "$_profile_arg" ]; then
+    echo "FAIL: --drift requires --wf=<path> AND --profile=<path>"; exit 2
+  fi
+  _drift_cli "$_wf_arg" "$_profile_arg"; exit $?
+fi
+if [ -n "$_profile_arg" ]; then echo "FAIL: --profile= is only valid with --drift"; exit 1; fi
 
 if [ -n "$_wf_arg" ]; then
   if [ ! -f "$_wf_arg" ]; then
@@ -920,8 +1314,9 @@ if [ -n "$_wf_arg" ]; then
   fi
   # The platform derives from the NAMED file, not from the cwd — the whole point of naming it.
   case "$_wf_arg" in *gitlab*) _wfa_p=gitlab ;; *) _wfa_p=github ;; esac
-  _judge "$_wf_arg" "$_wfa_p"
-  exit $?
+  _wfa_rc=0; _judge "$_wf_arg" "$_wfa_p" || _wfa_rc=1
+  if [ "$_wfa_rc" = 0 ] && [ "$_J_PASS" = 1 ]; then _drift_leg "$_wf_arg" "$_wfa_p" "$_J_ORIGIN" || _wfa_rc=1; fi
+  exit "$_wfa_rc"
 fi
 
 # EVERY PIPELINE PRESENT IS JUDGED, and the tree passes only if every one of them passes (design D-1).
@@ -930,8 +1325,13 @@ fi
 # Judging all of them is strictly stronger and cannot create a bypass. (Measured: the kit's own repo
 # has .github/workflows/ci.yml and no .gitlab-ci.yml, so its own result is unchanged.)
 _n_seen=0; _tree_rc=0
-if [ -f "$GH_WF" ]; then _n_seen=$((_n_seen + 1)); _judge "$GH_WF" github || _tree_rc=1; fi
-if [ -f "$GL_WF" ]; then _n_seen=$((_n_seen + 1)); _judge "$GL_WF" gitlab || _tree_rc=1; fi
+_judge_and_drift() {  # <wf> <platform> — the verdict first; the drift leg only on a PASS (a louder verdict wins)
+  if _judge "$1" "$2"; then
+    if [ "$_J_PASS" = 1 ]; then _drift_leg "$1" "$2" "$_J_ORIGIN" || _tree_rc=1; fi
+  else _tree_rc=1; fi
+}
+if [ -f "$GH_WF" ]; then _n_seen=$((_n_seen + 1)); _judge_and_drift "$GH_WF" github; fi
+if [ -f "$GL_WF" ]; then _n_seen=$((_n_seen + 1)); _judge_and_drift "$GL_WF" gitlab; fi
 
 if [ "$_n_seen" = 0 ]; then
   case "$(_wf_disposition 0 "$(_must_have_workflow)" none 0)" in

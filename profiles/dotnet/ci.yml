@@ -58,6 +58,7 @@ jobs:
         with:
           fetch-depth: 0
 
+      # >>> kit:owned changed-listing
       - name: Changed-path listing (pull_request only)
         # ADOPTER-KIT-SELFTESTS-ON-CHANGE: write the PR's changed paths so verify.sh can skip the kit's own
         # selftests when none of them is a control-plane path. The base sha is ENV-BOUND, never interpolated
@@ -85,6 +86,7 @@ jobs:
         # KIT_CHANGED is set only by the pull_request listing step above; empty on push / schedule, so those
         # run plain `verify.sh --require` (the full battery). Keep this ONE line (verify-enforced-wired reads it).
         run: sh conformance/verify.sh --require ${KIT_CHANGED:+--changed "$KIT_CHANGED" --summary-file "$GITHUB_STEP_SUMMARY"}
+      # <<< kit:owned changed-listing
 
       - name: Detect Dockerfile (drives the push-only image-provenance gate; G1)
         id: detect-dockerfile

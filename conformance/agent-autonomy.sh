@@ -2313,7 +2313,7 @@ assert_allow "commit msg says --output" '{"tool_name":"Bash","tool_input":{"comm
 #     never executed). These assert the REASON TEXT; the deny/allow decision is unchanged (proven by every
 #     other assertion in this file still passing). ---
 # (i) a multiline commit message that trips the control-plane deny must POINT AT the -F/--body-file escape.
-assert_reason_has  "multiline commit msg -> tip"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"Fix thing\nrewrite cp conformance/verify.sh handling\""}}' 'body-file'
+assert_reason_has  "multiline commit msg -> tip"  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"Fix thing\nrewrite cp conformance/verify.sh handling $HOME\""}}' 'body-file'
 # (ii) the gh PR body path carries the same tip.
 assert_reason_has  "gh pr body -> tip"            '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body \"summary\nrm conformance/verify.sh in the diff\""}}' 'body-file'
 # (iii) a NON-message control-plane deny must NOT carry the tip (no noise on unrelated denials). Its
@@ -2341,7 +2341,7 @@ assert_reason_lacks "non-readtool cp deny lacks read tip" \
 #   would be TAUTOLOGICAL — a git command's lead verb is never in the read-set {sed,awk,…}, so no tip-arm
 #   mutation can make a git deny carry the read tip; N2a is the over-fire guard — so it is deliberately absent.)
 assert_reason_has  "git-msg cp deny -> body-file tip" \
-  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"Fix\nrm .claude/hooks/guard-core.sh now\""}}' \
+  '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"Fix\nrm .claude/hooks/guard-core.sh now $HOME\""}}' \
   "body-file"
 # P3a — a truncation deny names the Write tool.
 assert_reason_has  "truncation -> Write-tool tip" \
@@ -2770,9 +2770,9 @@ assert_deny "DT-M1 >& AGENTS glob"       '{"tool_name":"Bash","tool_input":{"com
 assert_deny "DT-M1 >& kit script"        '{"tool_name":"Bash","tool_input":{"command":"echo x >&conformance/verify.sh"}}'
 assert_deny "DT-M1 >& kit-guard"         '{"tool_name":"Bash","tool_input":{"command":"echo x >&scripts/kit-guard"}}'
 # ---- M1 NEGATIVES — the H-1 over-deny poles (a naive case-in-token shape reds these) ------------
-assert_allow "DT-M1 neg bare star"       '{"tool_name":"Bash","tool_input":{"command":"cp x.txt *"}}'
-assert_allow "DT-M1 neg chmod -R star"   '{"tool_name":"Bash","tool_input":{"command":"chmod -R 755 *"}}'
-assert_allow "DT-M1 neg cp ./star"       '{"tool_name":"Bash","tool_input":{"command":"cp x.txt ./*"}}'
+assert_deny "DT-M1 neg bare star (re-kinded by design §14: a bare * reaches skills/)"       '{"tool_name":"Bash","tool_input":{"command":"cp x.txt *"}}'
+assert_deny "DT-M1 neg chmod -R star (re-kinded by design §14)"   '{"tool_name":"Bash","tool_input":{"command":"chmod -R 755 *"}}'
+assert_deny "DT-M1 neg cp ./star (re-kinded by design §14)"       '{"tool_name":"Bash","tool_input":{"command":"cp x.txt ./*"}}'
 assert_allow "DT-M1 neg cp docs/star"    '{"tool_name":"Bash","tool_input":{"command":"cp x.txt docs/*"}}'
 assert_allow "DT-M1 neg cp build/out-*"  '{"tool_name":"Bash","tool_input":{"command":"cp x.txt build/out-*"}}'
 assert_allow "DT-M1 neg cp build/out-1"  '{"tool_name":"Bash","tool_input":{"command":"cp x.txt build/out-1.txt"}}'
@@ -3767,7 +3767,7 @@ if [ "${GPAB_G:-}" != "" ]; then
     '/_cp8b_strip_wrappers()/,/^}/ s#_cp8b_tok_is_cp "$_swl" && break#:#' \
     '{"tool_name":"Bash","tool_input":{"command":"SELFTEST=hooks/pre-push sh conformance/verify.sh"}}' allow
   gpab_mutant "F2-KI3b: CP-value decline (composed) removed -> cd hooks + SELFTEST=pre-push flips" \
-    '/_cp8b_strip_wrappers()/,/^}/ s#_cp8b_composed_is_cp "$_swl" && break#:#' \
+    '/_cp8b_strip_wrappers()/,/^}/ s#_cp8b_composed_is_cp "$_swl" && break#:#; s@  _kroot=0; \[ -z .*@  _kroot=1@' \
     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && SELFTEST=pre-push sh conformance/verify.sh"}}' allow
   # K-J (Arm B): `time` strips BARE only. Neuter the flag disqualifier AND widen the strip to eat the
   # flag token. THE HALF-ONLY MUTANT SURVIVES (measured, review F4): with the disqualifier gone but the
@@ -4298,13 +4298,13 @@ if [ "${GPAB_G:-}" != "" ]; then
     '/_redir_targets()/,/^}/ s%\*\[!A-Za-z0-9._/@:+=,-\]\*%*[$]*%' \
     '{"tool_name":"Bash","tool_input":{"command":"printf x > hooks\\/pre-push"}}' allow
   gpab_mutant "K-R-COMPOSED: _cp8b_tad_redir_cp composed catch dropped -> cd hooks + verify>pre-push flips" \
-    '/_cp8b_tad_redir_cp()/,/^}/ s@_cp8b_composed_is_cp "$1"@false@' \
+    '/_cp8b_tad_redir_cp()/,/^}/ s@_cp8b_composed_is_cp "$1"@false@; s@    _kroot=0; \[ -z .*@    _kroot=1@' \
     '{"tool_name":"Bash","tool_input":{"command":"cd hooks && sh conformance/verify.sh > pre-push"}}' allow
 
   # === GUARD-DENY-TRIO M1 mutants — the two NON-OPTIONAL poles (design §4, D-240816-1) ==============
   # (a) removing the disqualification reds a named positive: the glob-spelled leaf write is allowed back.
   gpab_mutant "DT-M1a: glob-write disqualification removed -> cp x.txt hooks/pre-pus* flips" \
-    's@  _cp8b_glob_hits_cp "$1" && return 0@  :@' \
+    's@  _cp8b_glob_hits_cp "$1" && return 0@  :@; s@if _cp8b_glob_operand_denied "$_seg" "$_lv"; then@if false; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"cp x.txt hooks/pre-pus*"}}' allow
   # (b) THE H-1 REGRESSION LOCK: dropping the slash-count guard is the naive `case "<leaf>" in <token>)`
   # shape the design REJECTED — POSIX `*` crosses `/`, so `docs/*` matches `docs/governance/…` and the
@@ -4316,14 +4316,14 @@ if [ "${GPAB_G:-}" != "" ]; then
   # is allowed back — the exact hole both review seats caught. Its paired non-overshoot negative is the
   # top-level `agents/foo*` ALLOW leg (which must NOT move under any of these).
   gpab_mutant "DT-M1c (A3): pattern-leaf directional test neutered -> agents/reviewer.agent.m* flips" \
-    '/_cp8b_glob_scan()/,/^}/ s@"$_gl0"\*)@"zZ")@' \
+    '/_cp8b_glob_scan()/,/^}/ s@"$_gl0"\*)@"zZ")@; s@if _cp8b_glob_operand_denied "$_seg" "$_lv"; then@if false; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"cp a agents/reviewer.agent.m*"}}' allow
   # A4 lock: revert the dir-segment GLOB-intersection to a LITERAL match (quote $_gtd) and a dir-metachar
   # token is allowed back — the exact §10 A4 residual. Its paired non-overshoot is the top-level
   # `cp x ag*/notes.txt` ALLOW leg; the basename A3 fixes must NOT move (dir `agents` still literal-eq).
   # Re-anchored (T2c, security ruling c3): the target arm is `$_gtd) : ;;` at 10-space indent (unique).
   gpab_mutant "DT-M1d (A4): dir-segment glob-intersection reverted to literal -> ag*/x.agent.md flips" \
-    '/_cp8b_glob_scan()/,/^}/ s@^          \$_gtd) : ;;@          "$_gtd") : ;;@' \
+    '/_cp8b_glob_scan()/,/^}/ s@^          \$_gtd) : ;;@          "$_gtd") : ;;@; s@if _cp8b_glob_operand_denied "$_seg" "$_lv"; then@if false; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"cp a ag*/x.agent.md"}}' allow
   # M2: removing the content-digest verbs from the secret-read arm reds a named positive — a digest of a
   # secret is allowed back (the confirmation-oracle hole reopens).
@@ -4348,7 +4348,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # M-F7 (review C1): revert the message-carrier exemption to a SUBSTRING match — a trailing
   # `# git commit -m x` comment steals the exemption while the hooksPath WRITE runs.
   gpab_mutant "M-F7 (review C1): msg-carrier exemption reverts to substring -> hooksPath write + trailing '# git commit' comment flips" \
-    's@  _gmd=\$(printf .*cut -d. . -f1,2)@  _gmd="git commit"@' \
+    's@  _gmd=\$(printf .*cut -d. . -f1,2)@  _gmd="git commit"@; s@  \[ "\$_mcr" = 0 \] || return 1@  :@' \
     '{"tool_name":"Bash","tool_input":{"command":"git config core.hooksPath /tmp/evil # git commit -m x"}}' allow
   # M-E8 (review C2): remove the quoted-`<<`-in-argument ENTRY guard — a quoted `<<'"'"'X'"'"'` argument
   # then an attacker terminator strips a real `sed -i` on guard-core.sh out of the CP scan.
@@ -4454,7 +4454,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # other four guards to bare `continue`) and a kit script run under a poisoned PATH — which executes
   # the kit script's internals from `/tmp` — flips ALLOW. This is the leg behind design decision 3.
   gpab_mutant "K-3a-M6: the poison skip narrowed to reads alone -> export PATH; sh <kit> flips" \
-    's@    if _cp8b_tad_is_kit_exec "$_seg"; then@    _cp8b_tad_is_kit_exec "$_seg" \&\& continue\n    if false; then@' \
+    's@    if \[ "$_kroot" = 1 \] && _cp8b_tad_is_kit_exec "$_seg"; then@    [ "$_kroot" = 1 ] \&\& _cp8b_tad_is_kit_exec "$_seg" \&\& continue\n    if false; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"export PATH=/tmp; sh conformance/verify.sh"}}' allow
   # K-3a-M7 — THE SITE, and this is the leg the security vet's HIGH finding exists for. Consult the
   # poison flag INSIDE `_cp8b_tad_is_read` — the "obvious" place — and the recogniser starts answering
@@ -4812,7 +4812,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # force arm. So the space-vs-empty CHOICE has no subject in this family and is not claimed as
   # locked — the same call M-R3/M-R6's retirement made, made again rather than papered over.
   gpab_mutant "M-J1: _cp8b_joinlines made a pass-through -> git push \\<nl>--force origin main flips" \
-    's@^_cp8b_joinlines() {@_cp8b_joinlines() { printf "%s" "$1"; return 0 #@' \
+    's@^_cp8b_joinlines() {@_cp8b_joinlines() { printf "%s" "$1"; return 0 #@; s@^      if \[ "${3:-}" != l3-view \]; then@      if false; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"git push \\\n--force origin main"}}' allow
 
   # === GUARD-ADMIN-ARMS (K-3b) mutants — one per load-bearing clause of the extracted judge =========
@@ -5041,7 +5041,7 @@ if [ "${GPAB_G:-}" != "" ]; then
   # shell hands curl one word. The subject hides the ROUTE ROOT, which no other mechanism in this face
   # can recover.
   gpab_mutant "K-3b-M26: face C's empty-join twin dropped -> curl .../re\\<nl>pos/.../merge flips" \
-    's@^  for _hajv in "\$_hav1" "\$_hav2"; do@  for _hajv in "$_hav1"; do@' \
+    's@^  for _hajv in "\$_hav1" "\$_hav2"; do@  for _hajv in "$_hav1"; do@; s@^      if \[ "${3:-}" != l3-view \]; then@      if false; then@' \
     '{"tool_name":"Bash","tool_input":{"command":"curl -X PUT https://api.github.com/re\\\npos/o/r/pulls/5/merge"}}' allow
   # K-3b-M27 (C-2) — THE ESCAPED-SEPARATOR DECLINE. Without it the walker splits where the shell does
   # not, the URL and the method land in different "segments", and neither is a mutating request to an
@@ -5954,7 +5954,11 @@ scripts/kit-guard|cmd|cat conformance/verify.sh
 scripts/kit-guard|mcp|mcp__probe__read
 conformance/promotion-readiness.sh|--class|--changed $_fl_d/listing.txt
 conformance/agent-boundary.sh|--changed|$_fl_d/listing.txt --ratified 0
-conformance/branch-protection.sh|--declared-only|profiles/python/BRANCH-PROTECTION.md"
+conformance/branch-protection.sh|--declared-only|profiles/python/BRANCH-PROTECTION.md
+scripts/tracker-conf.sh|get|project conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
+scripts/tracker-conf.sh|get-all|project conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
+scripts/tracker-conf.sh|get-prefix|create. conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
+scripts/tracker-conf.sh|conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf|"
   # RUN list = declared list unless the oracle handed a fixture; the CENSUS half always measures _fl_decl.
   _fl_pairs=${_fl_in:-$_fl_decl}; : > "$_fl_d/absent"
   printf '%s\n' "$_fl_pairs" | while IFS='|' read -r _fl_s _fl_q _fl_a; do
@@ -9584,6 +9588,258 @@ aa_fc_main() {
   rm -rf "$AA_FC_PDIR"
   return 0
 }
+# === GUARD-TRAILER-IN-MESSAGE-FP (design docs/architecture/2026-10-04-guard-trailer-in-message-fp-design.md) =====
+# The kit prints a `Kit-Skill: skills/build` trailer block for an agent to paste into its commit message;
+# pasted into an inline multi-line `-m "…"` it was segmented on its newlines and denied as a write to a
+# control-plane path. §3 joins a newline INSIDE a quoted span on four carrier leads, and declines on any doubt.
+# Labels are all `GTM-`: `--cells 'GTM-*'` selects only this block. The DENY cells are the mutation twins:
+# each is a spelling of the same command in which the joined bytes would have been EXECUTED, not recorded.
+# --- ALLOW: the cold session's logged commands, replayed (design §2 rows 1, 2, 3, 5, 6; §10 items 1-3) ---
+assert_allow "GTM-A1 trailer commit -m, multi-line" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"feat: x\n\nbody line\n\nKit-Row: R\nKit-Skill: skills/build\nKit-Class: control-plane\""}}'
+assert_allow "GTM-A2 trailer commit --message=" '{"tool_name":"Bash","tool_input":{"command":"git commit --message=\"feat: x\n\nKit-Skill: skills/build\""}}'
+assert_allow "GTM-A3 trailer commit, single-quoted" '{"tool_name":"Bash","tool_input":{"command":"git commit -m '\''feat: x\n\nKit-Skill: skills/build'\''"}}'
+assert_allow "GTM-A4 gh pr create --body trailer" '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title x --body \"Summary\n\nKit-Skill: skills/build\""}}'
+assert_allow "GTM-A5 gh pr edit --body multi-line" '{"tool_name":"Bash","tool_input":{"command":"gh pr edit 5 --body \"Summary\n\nKit-Skill: skills/build\""}}'
+assert_allow "GTM-A6 gh pr comment --body multi-line" '{"tool_name":"Bash","tool_input":{"command":"gh pr comment 5 --body \"Note\n\nsee skills/build\""}}'
+assert_allow "GTM-A7 board.sh create --description names a kit script" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title t --description \"run sh scripts/kit-update.sh\""}}'
+assert_allow "GTM-A8 board.sh create --description names the conf" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title t --description \"read .kit/tracker.conf\""}}'
+assert_allow "GTM-A9 tracker-conf get" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh get project .kit/tracker.conf"}}'
+assert_allow "GTM-A10 tracker-conf get-all" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh get-all project .kit/tracker.conf"}}'
+assert_allow "GTM-A11 tracker-conf get-prefix" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh get-prefix create. .kit/tracker.conf"}}'
+assert_allow "GTM-A12 tracker-conf positional conf" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh .kit/tracker.conf"}}'
+assert_allow "GTM-A13 pin: board.sh create kit-update title" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title \"kit-update: take 3.232.0\""}}'
+assert_allow "GTM-A14 pin: gh api -q .title" '{"tool_name":"Bash","tool_input":{"command":"gh api repos/o/r/pulls/1 -q .title"}}'
+# --- DENY: the comment-carried twins (vet C1). A `#` outside a span ends the line for the shell, so a quote
+#     byte inside the comment is inert and the "span" the walk sees is really executed lines. Both quote
+#     kinds, two leads, and a different executed line 2 each. ---
+assert_deny "GTM-D1 comment twin sq: cp into skills" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x # '\''\ncp /tmp/e skills/build/SKILL.md\n#'\''"}}'
+assert_deny "GTM-D2 comment twin dq: cp into skills" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x # \"\ncp /tmp/e skills/build/SKILL.md\n#\""}}'
+assert_deny "GTM-D3 comment twin sq: hooksPath" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x # '\''\ngit config core.hooksPath /tmp/e\n#'\''"}}'
+assert_deny "GTM-D4 comment twin dq: hooksPath, gh lead" '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title x # \"\ngit config core.hooksPath /tmp/e\n#\""}}'
+assert_deny "GTM-D5 comment twin sq: rm -rf skills" '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title x # '\''\nrm -rf skills/build\n#'\''"}}'
+assert_deny "GTM-D6 comment twin dq: rm -rf skills" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x # \"\nrm -rf skills/build\n#\""}}'
+# --- DENY: substitution inside the message, and a joined carrier's executable tail ---
+assert_deny "GTM-D7 trailer -m with a substitution" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build $(rm -rf skills/build)\""}}'
+assert_deny "GTM-D8 trailer -m with a backtick" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build `rm -rf skills/build`\""}}'
+assert_deny "GTM-D9 trailer -m then ; redirect" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build\" ; echo x > skills/a"}}'
+assert_deny "GTM-D10 trailer -m then && rm -rf" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build\" && rm -rf skills/build"}}'
+assert_deny "GTM-D11 trailer -m then unquoted newline redirect" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build\"\necho x > skills/a"}}'
+assert_deny "GTM-D12 trailing-comment theft (leading-token keyed)" '{"tool_name":"Bash","tool_input":{"command":"git config core.hooksPath /tmp/e # git commit -m \"a\nb\""}}'
+assert_deny "GTM-D12b non-carrier lead, quoted newline, carrier text on line 2" '{"tool_name":"Bash","tool_input":{"command":"rm -rf skills/build \"a\ngit commit -m b\""}}'
+assert_deny "GTM-D13 odd-quote multi-line -m" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build"}}'
+assert_deny "GTM-D14 joined carrier then push to main" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build\" ; git push origin HEAD:main"}}'
+assert_deny "GTM-D15 joined carrier then gh pr merge --admin" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build\" ; gh pr merge 1 --admin"}}'
+assert_deny "GTM-D16 joined carrier then redirect into conformance" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build\" ; echo x > conformance/verify.sh"}}'
+# --- DENY: the narrowing pins (design §3, §8 L11): carriers with no logged over-deny keep today's verdict ---
+assert_deny "GTM-N1 git tag -a multi-line -m keeps its deny" '{"tool_name":"Bash","tool_input":{"command":"git tag -a v9 -m \"x\nKit-Skill: skills/build\""}}'
+assert_deny "GTM-N2 git merge -m multi-line keeps its deny" '{"tool_name":"Bash","tool_input":{"command":"git merge -m \"x\nKit-Skill: skills/build\" topic"}}'
+assert_deny "GTM-N3 git notes add -m multi-line keeps its deny" '{"tool_name":"Bash","tool_input":{"command":"git notes add -m \"x\nKit-Skill: skills/build\""}}'
+assert_deny "GTM-N4 gh issue create --body multi-line keeps its deny" '{"tool_name":"Bash","tool_input":{"command":"gh issue create --title t --body \"x\nKit-Skill: skills/build\""}}'
+assert_deny "GTM-N5 gh release create --notes multi-line keeps its deny" '{"tool_name":"Bash","tool_input":{"command":"gh release create v9 --notes \"x\nKit-Skill: skills/build\""}}'
+# --- DENY: board.sh lead variants (delta vet C1/C2): the exemption is keyed on the exact lead AND the root cwd ---
+assert_deny "GTM-B1 board.sh create after a cd (attacker-authored script)" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x && sh scripts/board.sh create --title \"skills/x\""}}'
+assert_deny "GTM-B2 board.sh behind a comment" '{"tool_name":"Bash","tool_input":{"command":"rm skills/x # sh scripts/board.sh create --title y"}}'
+assert_deny "GTM-B3 board.sh under a poisoned PATH" '{"tool_name":"Bash","tool_input":{"command":"PATH=/tmp/p:$PATH; sh scripts/board.sh create --title \"skills/x\""}}'
+assert_deny "GTM-B4 bash-led board.sh spelling" '{"tool_name":"Bash","tool_input":{"command":"bash scripts/board.sh create --description \"skills/x\""}}'
+# --- DENY: tracker-conf variants outside the exact-arity read forms ---
+assert_deny "GTM-T1 tracker-conf get redirected onto the conf" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh get k .kit/tracker.conf > .kit/tracker.conf"}}'
+assert_deny "GTM-T2 tracker-conf --selftest carrying the conf" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh --selftest .kit/tracker.conf"}}'
+assert_deny "GTM-T3 env-prefixed tracker-conf" '{"tool_name":"Bash","tool_input":{"command":"env X=1 sh scripts/tracker-conf.sh .kit/tracker.conf"}}'
+assert_deny "GTM-T4 tracker-conf check-create with a control-plane token" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh check-create skills/x .kit/tracker.conf"}}'
+assert_deny "GTM-T5 tracker-conf get at arity 4" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh get k .kit/tracker.conf extra"}}'
+# --- DENY: the read-lane mask still declines a joined read-led command (vet H2), and the one kept deny (§5) ---
+assert_deny "GTM-M1 read-led quoted newline still declines the mask" '{"tool_name":"Bash","tool_input":{"command":"grep \"a\nb\" conformance/verify.sh ; echo x > conformance/verify.sh"}}'
+assert_deny "GTM-M2 heredoc prose naming --admin stays denied (design §5)" '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body-file - <<'\''EOF'\''\nrun gh pr merge 1 --admin\nEOF"}}'
+assert_reason_has "GTM-U1 tip names a substitution before the cure" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"x\nKit-Skill: skills/build $(rm -rf skills/build)\""}}' 'contains a $ or backtick'
+assert_reason_has "GTM-U2 tip names a # outside quotes" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x # '\''\ncp /tmp/e skills/build/SKILL.md\n#'\''"}}' 'contains a # outside quotes'
+assert_deny "GTM-M3 heredoc-fed admitted tracker query (vet L4)" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh get k .kit/tracker.conf <<'\''EOF'\''\nx\nEOF"}}'
+# --- design §11: cp/install took the LAST token as the destination, so a trailing `# word` hid the real one ---
+assert_deny "GTM-H1 cp onto a skill, comment word" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e skills/build/SKILL.md # y"}}'
+assert_deny "GTM-H2 cp onto a skill, bare #" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e skills/build/SKILL.md #"}}'
+assert_deny "GTM-H3 cp onto a skill, glued #y" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e skills/build/SKILL.md #y"}}'
+assert_deny "GTM-H4 cp onto the guard core, comment" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e .claude/hooks/guard-core.sh # y"}}'
+assert_deny "GTM-H5 cp onto a conformance script, comment" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e conformance/verify.sh # y"}}'
+assert_deny "GTM-H6 cp onto the tracker conf, comment" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e .kit/tracker.conf # y"}}'
+assert_deny "GTM-H7 cp -r onto a skill dir, comment" '{"tool_name":"Bash","tool_input":{"command":"cp -r /tmp/e skills/build # y"}}'
+assert_deny "GTM-H8 install onto a skill, comment" '{"tool_name":"Bash","tool_input":{"command":"install /tmp/e skills/build/SKILL.md # y"}}'
+assert_deny "GTM-H9 install -m onto a skill, comment" '{"tool_name":"Bash","tool_input":{"command":"install -m 644 /tmp/e skills/build/SKILL.md # y"}}'
+assert_allow "GTM-H10 pin: cp INTO /tmp (no comment) stays allowed" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e skills/build/SKILL.md /tmp"}}'
+# --- design §12 S1: the join turned a newline inside a quoted REDIRECT TARGET into a space (`x\n/../skills/…` -> `x /../skills/…`) ---
+assert_deny "GTM-S1a redirect target after a joined commit: skill" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cat /tmp/e > \"x\n/../skills/build/SKILL.md\""}}'
+assert_deny "GTM-S1b redirect target after a joined commit: guard core" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cat /tmp/e > \"x\n/../.claude/hooks/guard-core.sh\""}}'
+assert_deny "GTM-S1c >> into the tracker conf" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && echo hi >> \"x\n/../.kit/tracker.conf\""}}'
+assert_deny "GTM-S1d redirect into settings.json" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cat /tmp/e > \"x\n/../.claude/settings.json\""}}'
+assert_deny "GTM-S1e printf into conformance" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && printf x > \"x\n/../conformance/verify.sh\""}}'
+assert_deny "GTM-S1f gh pr create lead" '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title \"a\nb\" && cat /tmp/e > \"x\n/../skills/build/SKILL.md\""}}'
+assert_deny "GTM-S1g the carrier itself redirected" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" > \"x\n/../skills/build/SKILL.md\""}}'
+assert_deny "GTM-S1h redirect into a git hook" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cat /tmp/e > \"x\n/../.git/hooks/pre-push\""}}'
+assert_deny "GTM-S1i >| clobber" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cat /tmp/e >| \"x\n/../.claude/hooks/guard.sh\""}}'
+assert_deny "GTM-S1j &> redirect" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cat /tmp/e &> \"x\n/../.claude/hooks/guard.sh\""}}'
+assert_deny "GTM-S1k board.sh create lead" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title \"a\nb\" && cat /tmp/e > \"x\n/../skills/build/SKILL.md\""}}'
+# --- design §12 S2: tracker-conf is a relative script, attacker-authored after a `cd` ---
+assert_deny "GTM-S2a cd then tracker-conf get (cp path)" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x && sh scripts/tracker-conf.sh get x skills/build/SKILL.md"}}'
+assert_deny "GTM-S2b cd then tracker-conf positional" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x && sh scripts/tracker-conf.sh .claude/hooks/guard-core.sh"}}'
+assert_deny "GTM-S2c cd to a relative sibling then tracker-conf" '{"tool_name":"Bash","tool_input":{"command":"cd ../x && sh scripts/tracker-conf.sh get x skills/build/SKILL.md"}}'
+assert_deny "GTM-S2d cd then tracker-conf on the conf" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x\nsh scripts/tracker-conf.sh get x .kit/tracker.conf"}}'
+# --- design §12 A: the message-carrier exemption was a SUBSTRING match, so `gh pr` / `git commit` anywhere exempted a fragment ---
+assert_deny "GTM-PA1 bash -c cp with a gh pr title" '{"tool_name":"Bash","tool_input":{"command":"bash -c \"true; cp /tmp/e .claude/hooks/guard-core.sh\" x --title \"gh pr\""}}'
+assert_deny "GTM-PA2 bash -c cp with a git commit -m spoof" '{"tool_name":"Bash","tool_input":{"command":"bash -c \"true; cp /tmp/e skills/build/SKILL.md\" -m \"git commit\""}}'
+assert_deny "GTM-PA4 bash -c tee fragment naming gh pr (lead-key)" '{"tool_name":"Bash","tool_input":{"command":"bash -c \"true; tee skills/build/SKILL.md\" x --title \"gh pr\""}}'
+# --- design §12 B: a quoted redirect target holding whitespace or a newline resolves to the wrong path ---
+assert_deny "GTM-PB1 quoted target with a space: skill" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/e > \"x /../skills/build/SKILL.md\""}}'
+assert_deny "GTM-PB2 quoted target with a space: guard core" '{"tool_name":"Bash","tool_input":{"command":"echo hi > \"x /../.claude/hooks/guard-core.sh\""}}'
+# --- design §12 C: `git rebase -x` runs its argument as a command ---
+assert_deny "GTM-PC1 git rebase -x with a newline cp" '{"tool_name":"Bash","tool_input":{"command":"git rebase -x \"true\ncp /tmp/e skills/build/SKILL.md\" HEAD~1"}}'
+# --- design §12 D: xargs feeding git / an interpreter ---
+assert_deny "GTM-PD1 xargs git fed a push to main" '{"tool_name":"Bash","tool_input":{"command":"echo \"git push origin\nHEAD:main\" | xargs git"}}'
+# --- design §12 E: `git -c core.hooksPath=…` disables the guard's hooks ---
+assert_deny "GTM-PE1 git -c core.hooksPath on commit" '{"tool_name":"Bash","tool_input":{"command":"git -c core.hooksPath=/dev/null commit --amend --no-edit"}}'
+assert_deny "GTM-PE2 GIT_CONFIG_KEY env spelling" '{"tool_name":"Bash","tool_input":{"command":"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit --amend --no-edit"}}'
+assert_deny "GTM-PE3 exported GIT_CONFIG_KEY spelling" '{"tool_name":"Bash","tool_input":{"command":"export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null; git commit --amend --no-edit"}}'
+assert_allow "GTM-PE4 pin: git -c on an ordinary key" '{"tool_name":"Bash","tool_input":{"command":"git -c user.name=x commit -m y"}}'
+assert_allow "GTM-PE5 pin: a message that only NAMES -c core.hooksPath" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"mention git -c core.hooksPath=x\""}}'
+# --- design §13 (security re-check). H1: the join rewrote quoted newlines in LATER segments ---
+assert_deny "GTM-RH1a cp to a quoted newline destination after a carrier" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" && cp /tmp/e \".claude/skills/x\ny\""}}'
+assert_deny "GTM-RH1b ; then a quoted-newline write" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\" ; cp /tmp/e \"skills/build/x\ny\""}}'
+assert_deny "GTM-RH1c unquoted newline then a quoted-newline write" '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"a\nb\"\ncp /tmp/e \"skills/build/x\ny\""}}'
+# H2: quote splicing hides the hooks-path key
+assert_deny "GTM-RH2a git -c with the whole assignment quoted" '{"tool_name":"Bash","tool_input":{"command":"git -c \"core.hooksPath=/dev/null\" commit -m y"}}'
+assert_deny "GTM-RH2b git -c with a spliced key" '{"tool_name":"Bash","tool_input":{"command":"git -c '\''core'\''.hooksPath=/dev/null commit -m y"}}'
+assert_deny "GTM-RH2c git config with an empty-quote splice" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title t ; git config core.hooks\"\"Path /dev/null"}}'
+assert_deny "GTM-RH2d GIT_CONFIG_KEY quoted" '{"tool_name":"Bash","tool_input":{"command":"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=\"core.hooksPath\" GIT_CONFIG_VALUE_0=/dev/null git commit --amend --no-edit"}}'
+assert_deny "GTM-RH2e GIT_CONFIG_KEY spliced" '{"tool_name":"Bash","tool_input":{"command":"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooks\"\"Path GIT_CONFIG_VALUE_0=/dev/null git commit --amend --no-edit"}}'
+# M1: a quote byte in a redirect target word
+assert_deny "GTM-RM1a mid-word quote in the target" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/e >x\" /../skills/build/SKILL.md\""}}'
+assert_deny "GTM-RM1b a quoted span holding only a prefix" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/e > \".claude/\"hooks/guard-core.sh"}}'
+assert_deny "GTM-RM1c >& with a quoted target" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/e >& \"x /../skills/build/SKILL.md\""}}'
+assert_deny "GTM-RM1d >& with a quoted prefix" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/e >&\".claude/\"hooks/guard-core.sh"}}'
+# M2: xargs keyed on the word; a write verb or interpreter fed from a pipe or a file
+assert_deny "GTM-RM2a pipe-fed xargs git with a quoted hooks-path" '{"tool_name":"Bash","tool_input":{"command":"echo x | xargs git -c \"core.hooksPath=/dev/null\" commit -m y"}}'
+assert_deny "GTM-RM2b pipe-fed xargs rm" '{"tool_name":"Bash","tool_input":{"command":"printf '\''skills/build/SKILL.md\\n'\'' | xargs rm"}}'
+assert_deny "GTM-RM2c pipe-fed xargs cp onto a control-plane path" '{"tool_name":"Bash","tool_input":{"command":"echo .claude/hooks/guard-core.sh | xargs -I{} cp /tmp/e {}"}}'
+assert_deny "GTM-RM2d file-fed xargs rm" '{"tool_name":"Bash","tool_input":{"command":"xargs rm < /tmp/list"}}'
+assert_deny "GTM-RM2e file-fed xargs sh" '{"tool_name":"Bash","tool_input":{"command":"xargs sh < /tmp/list"}}'
+assert_allow "GTM-RM2f pin: xargs grep is a read" '{"tool_name":"Bash","tool_input":{"command":"printf '\''a\\n'\'' | xargs grep -l x"}}'
+# L1: the exec-arg subcommand behind global options; abbreviated --exec
+assert_deny "GTM-RL1a rebase -x behind -C (balanced fragment quotes)" '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x rebase -x '\''true\ncp /tmp/e skills/build/SKILL.md'\'' \"it'\''s\" HEAD~1"}}'
+assert_deny "GTM-RL1b abbreviated --exe" '{"tool_name":"Bash","tool_input":{"command":"git rebase --exe '\''true\ncp /tmp/e skills/build/SKILL.md'\'' \"it'\''s\" HEAD~1"}}'
+assert_deny "GTM-RL1c bisect run behind --no-pager" '{"tool_name":"Bash","tool_input":{"command":"git --no-pager bisect run sh -c '\''true\ncp /tmp/e skills/build/SKILL.md'\'' \"it'\''s\""}}'
+assert_deny "GTM-RL1d pin: plain rebase -x (no global option)" '{"tool_name":"Bash","tool_input":{"command":"git rebase -x '\''true\ncp /tmp/e skills/build/SKILL.md'\'' \"it'\''s\" HEAD~1"}}'
+# H3: push to main behind a global option
+assert_deny "GTM-RH3a push main behind -C" '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x push origin HEAD:main"}}'
+assert_deny "GTM-RH3b push main behind --no-pager" '{"tool_name":"Bash","tool_input":{"command":"git --no-pager push origin HEAD:main"}}'
+assert_deny "GTM-RH3c push main behind --git-dir=" '{"tool_name":"Bash","tool_input":{"command":"git --git-dir=/tmp/x push origin HEAD:main"}}'
+assert_deny "GTM-RH3d push main behind -P" '{"tool_name":"Bash","tool_input":{"command":"git -P push origin HEAD:main"}}'
+assert_deny "GTM-RH3e force push behind -C" '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x push --force origin feature"}}'
+# L3: a backslash-newline joins the word in the shell
+assert_deny "GTM-RL3a cp destination split by a backslash-newline" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e skills/build/SKI\\\nLL.md"}}'
+assert_deny "GTM-RL3b cd split by a backslash-newline" '{"tool_name":"Bash","tool_input":{"command":"cd x\\\n/../skills/build && cp /tmp/e SKILL.md"}}'
+# U: a kit script run from a foreign cwd is attacker-authored
+assert_deny "GTM-RU1 tracker-conf from a foreign cwd" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x && sh scripts/tracker-conf.sh /tmp/a"}}'
+assert_deny "GTM-RU2 conformance script from a foreign cwd" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x && sh conformance/branch-protection.sh --declared-only"}}'
+# R1: the multi-line bash -c spoof after a joined carrier
+assert_deny "GTM-RR1 carrier then multi-line bash -c cp spoof" '{"tool_name":"Bash","tool_input":{"command":"git commit -m x && bash -c \"true\ncp /tmp/e skills/build/SKILL.md\" -m \"git commit\""}}'
+# --- design §14: a glob in a write-verb operand was never matched against the control-plane paths ---
+assert_deny "GTM-G1 cp onto a glob root (sk*)" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e sk*"}}'
+assert_deny "GTM-G2 cp onto a ?-glob root" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e skill?"}}'
+assert_deny "GTM-G3 cp into a glob root child" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e sk*/build"}}'
+assert_deny "GTM-G4 cp onto a bracket-glob root" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e con[f]ormance"}}'
+assert_deny "GTM-G5 install onto a glob skill file" '{"tool_name":"Bash","tool_input":{"command":"install /tmp/e sk*/build/SKILL.md"}}'
+assert_deny "GTM-G6 mv onto a glob skill file" '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/e sk*/build/SKILL.md"}}'
+assert_deny "GTM-G7 tee onto a glob skill file" '{"tool_name":"Bash","tool_input":{"command":"tee sk*/build/SKILL.md < /tmp/e"}}'
+assert_deny "GTM-G8 cp onto a bare * at the repo root" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e *"}}'
+assert_deny "GTM-G9 pin: cp onto a .cl*/hooks glob" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e .cl*/hooks"}}'
+assert_deny "GTM-G10 glob under an uncertain cwd" '{"tool_name":"Bash","tool_input":{"command":"cd /tmp/x && cp /tmp/e sk*"}}'
+assert_deny "GTM-G15 absolute glob into the project's skills" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e '"$PWD"'/sk*/build"}}'
+assert_deny "GTM-G16 absolute glob onto a skill file (mv)" '{"tool_name":"Bash","tool_input":{"command":"mv /tmp/e '"$PWD"'/sk*/build/SKILL.md"}}'
+case "$PWD" in   # only meaningful when the checkout lives under HOME (a container's does not)
+  "$HOME"/*) assert_deny "GTM-G17 ~ glob into the project (HOME-rooted)" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e ~/'"${PWD#"$HOME"/}"'/sk*/build"}}' ;;
+esac
+assert_allow "GTM-G18 pin: absolute glob outside the project" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e /tmp/*.bak"}}'
+assert_deny "GTM-G19 a deep absolute glob is bounded by work, not time (design §15)" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e /usr/*/*/*/*/*/zz"}}'
+_g20="cp /tmp/e /etc/*/z0"; for _n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do _g20="$_g20; cp /tmp/e /etc/*/z$_n"; done
+assert_deny "GTM-G20 the glob budget is per COMMAND: 26 chained segments, each under the budget alone" '{"tool_name":"Bash","tool_input":{"command":"'"$_g20"'"}}'
+# --- design §16 (the security seat's conditions on 1ce1527c) ---
+# R1: a backslash-escaped quote outside a span must not open a phantom span in the redirect-target scan
+assert_deny "GTM-Q1 escaped ' before a quoted redirect target" '{"tool_name":"Bash","tool_input":{"command":"echo \\'\''  > \"x /../skills/build/SKILL.md\""}}'
+assert_deny "GTM-Q2 escaped \" before a quoted redirect target" '{"tool_name":"Bash","tool_input":{"command":"echo \\\" > \"x /../skills/build/SKILL.md\""}}'
+# R2: the xargs gate matches the WORD (basename, de-quoted, behind wrappers), covers -a / --arg-file, and refuses a write verb fed by non-literal data
+assert_deny "GTM-Q3 absolute-path xargs git" '{"tool_name":"Bash","tool_input":{"command":"echo \"git push origin\nHEAD:main\" | /usr/bin/xargs git"}}'
+assert_deny "GTM-Q4 quoted xargs rm" '{"tool_name":"Bash","tool_input":{"command":"printf '\''skills/build/SKILL.md\\n'\'' | '\''xargs'\'' rm"}}'
+assert_deny "GTM-Q5 command xargs cp" '{"tool_name":"Bash","tool_input":{"command":"echo .claude/hooks/guard-core.sh | command xargs -I{} cp /tmp/e {}"}}'
+assert_deny "GTM-Q6 xargs -a with a write verb" '{"tool_name":"Bash","tool_input":{"command":"xargs -a /tmp/list rm"}}'
+assert_deny "GTM-Q7 xargs --arg-file with an interpreter" '{"tool_name":"Bash","tool_input":{"command":"xargs --arg-file=/tmp/list sh"}}'
+assert_deny "GTM-Q8 cat list piped into xargs rm (non-literal upstream)" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/list | xargs rm"}}'
+assert_allow "GTM-Q9 pin: git ls-files into xargs grep (a read)" '{"tool_name":"Bash","tool_input":{"command":"git ls-files | xargs grep -n x"}}'
+# R4: git global options with `=value` / quoting before push; R5: glob in -t / --target-directory, and sed -i
+assert_deny "GTM-Q10 push main behind --attr-source=x" '{"tool_name":"Bash","tool_input":{"command":"git --attr-source=x push origin HEAD:main"}}'
+assert_deny "GTM-Q11 quoted push subcommand" '{"tool_name":"Bash","tool_input":{"command":"git \"push\" origin HEAD:main"}}'
+assert_deny "GTM-Q12 force push behind a quoted -C value" '{"tool_name":"Bash","tool_input":{"command":"git -C \"x\" push --force origin feature"}}'
+assert_deny "GTM-Q13 cp -t with a glob destination" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e -t sk*"}}'
+assert_deny "GTM-Q14 cp --target-directory= glob" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e --target-directory=sk*"}}'
+assert_deny "GTM-Q15 cp -tGLOB glued" '{"tool_name":"Bash","tool_input":{"command":"cp -tsk* /tmp/e"}}'
+assert_deny "GTM-Q16 sed -i on a glob skill file" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/a/b/ sk*/build/SKILL.md"}}'
+assert_allow "GTM-Q17 pin: sed without -i on a glob (a read)" '{"tool_name":"Bash","tool_input":{"command":"sed -n 1p sk*/build/SKILL.md"}}'
+# R3: a huge SOURCE glob must neither time out nor deny: only the destination of cp/install/mv is walked
+if ! aa_cell_skip "GTM-G21"; then
+  _g21=$(mktemp -d /tmp/gtmg21.XXXXXX) && { GPAB_TRASH="$GPAB_TRASH $_g21"; awk 'BEGIN { for (i = 1; i <= 20000; i++) print "f" i }' | (cd "$_g21" && xargs touch); }
+  _g21t0=$(date +%s)
+  assert_allow "GTM-G21 a 20000-file SOURCE glob is not walked (cp <dir>/* /tmp/out/)" '{"tool_name":"Bash","tool_input":{"command":"cp '"$_g21"'/* /tmp/out/"}}'
+  _g21t1=$(date +%s)
+  if [ $((_g21t1 - _g21t0)) -lt 5 ]; then echo "PASS time : GTM-G21 decided in $((_g21t1 - _g21t0))s"; else echo "FAIL (GTM-G21 took $((_g21t1 - _g21t0))s, wanted < 5)"; fail=1; fi
+fi
+# GTM-I1 (option injection): the glob walk hands `find` a directory name the agent chose. A name such as `-delete` must be a
+# PATH to find, never an expression (GNU find would delete the hook's cwd). SAFE BY CONSTRUCTION: it runs in a mktemp scratch dir,
+# never the repo, and asserts the sentinel and the `-delete` dir survive.
+case "$GUARD" in /*) _gg=$GUARD ;; *) _gg=$PWD/$GUARD ;; esac   # the cell cd's away: the hook path must be absolute
+for _gin in -delete -fprint; do
+  if ! aa_cell_skip "GTM-I1"; then
+    _gi=$(mktemp -d /tmp/gtmi1.XXXXXX) || continue
+    GPAB_TRASH="$GPAB_TRASH $_gi"
+    mkdir "$_gi/$_gin"; : > "$_gi/$_gin/f"; : > "$_gi/keep"
+    (cd "$_gi" && printf '%s' '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e \"'"$_gin"'\"/*"}}' | CLAUDE_PROJECT_DIR=$_gi sh "$_gg" >/dev/null 2>&1) || :
+    if [ -e "$_gi/keep" ] && [ -d "$_gi/$_gin" ] && [ "$(ls -A "$_gi" | wc -l | tr -d ' ')" = 2 ]; then echo "PASS option-injection : GTM-I1 $_gin survived"; else echo "FAIL (GTM-I1: a directory named $_gin was read as a find expression)"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  fi
+done
+# GTM-F1 (fail-open, the #738 class): a `find` that dies mid-listing must not read as an EMPTY directory. A stub `find` that kills its
+# own pipeline subshell stands in for a failed fork; the hook must fault or deny, never ALLOW. GTM-F2 (a dot-entry): a shell `*` skips
+# `.claude`, so `mv * dist/` in a dir that holds a `.claude` dot-dir stays ALLOW. Both run in a mktemp scratch dir.
+if ! aa_cell_skip "GTM-F1"; then
+  _gi=$(mktemp -d /tmp/gtmf1.XXXXXX) || _gi=''
+  if [ -n "$_gi" ]; then
+    GPAB_TRASH="$GPAB_TRASH $_gi"; mkdir "$_gi/bin" "$_gi/skills"
+    printf '#!/bin/sh\nkill -9 $PPID\n' > "$_gi/bin/find"; chmod +x "$_gi/bin/find"
+    _gfo=$(cd "$_gi" && printf '%s' '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e sk*"}}' | PATH="$_gi/bin:$PATH" CLAUDE_PROJECT_DIR=$_gi sh "$_gg" 2>/dev/null); _gfr=$?
+    if [ -n "$_gfo" ] || [ "$_gfr" != 0 ]; then echo "PASS fail-closed : GTM-F1 a dying find is not an empty directory"; else echo "FAIL (GTM-F1: a failed find read as an empty directory and the glob was ALLOWED)"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  fi
+fi
+if ! aa_cell_skip "GTM-F2"; then
+  _gi=$(mktemp -d /tmp/gtmf2.XXXXXX) || _gi=''
+  if [ -n "$_gi" ]; then
+    GPAB_TRASH="$GPAB_TRASH $_gi"; mkdir -p "$_gi/.claude" "$_gi/dist"; : > "$_gi/a.js"
+    _gfo=$(cd "$_gi" && printf '%s' '{"tool_name":"Bash","tool_input":{"command":"mv * dist/"}}' | CLAUDE_PROJECT_DIR=$_gi sh "$_gg" 2>/dev/null); _gfr=$?
+    # RE-KINDED to DENY: the guard cannot know the shell's glob options (bash `dotglob`, zsh `GLOB_DOTS` make `*` match dot-entries,
+    # and the agent can set them itself), so the walk always considers dot-entries. The over-deny only bites where a control-plane
+    # dot-dir sits in the globbed directory.
+    if [ -n "$_gfo" ] || [ "$_gfr" != 0 ]; then echo "PASS deny : GTM-F2 a * glob beside a .claude dot-dir denies (refuse on doubt)"; else echo "FAIL (GTM-F2 wanted deny: a * glob must consider dot-entries)"; fail=1; fi
+    AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  fi
+fi
+assert_deny "GTM-F6 dotglob makes ? match .claude" '{"tool_name":"Bash","tool_input":{"command":"shopt -s dotglob; cp -r /tmp/e/hooks ?claude"}}'
+assert_deny "GTM-F7 GLOB_DOTS makes ? match .claude" '{"tool_name":"Bash","tool_input":{"command":"setopt globdots; cp /tmp/e ?claude/hooks/guard-core.sh"}}'
+assert_deny "GTM-F8 ?claude with no option set" '{"tool_name":"Bash","tool_input":{"command":"cp /tmp/e ?claude/hooks/guard-core.sh"}}'
+assert_reason_has "GTM-F3 the xargs-git deny names the escape" '{"tool_name":"Bash","tool_input":{"command":"git ls-files | xargs git rm"}}' 'git add'
+assert_reason_has "GTM-F4 the file-fed xargs deny names the escape" '{"tool_name":"Bash","tool_input":{"command":"xargs rm < /tmp/list"}}' 'EXPLICIT'
+assert_reason_has "GTM-F5 the non-literal-pipe xargs deny names the escape" '{"tool_name":"Bash","tool_input":{"command":"cat /tmp/list | xargs rm"}}' 'EXPLICIT'
+assert_allow "GTM-G11 pin: cp a non-control-plane glob" '{"tool_name":"Bash","tool_input":{"command":"cp build/*.js dist/"}}'
+assert_allow "GTM-G12 pin: mv a non-control-plane glob" '{"tool_name":"Bash","tool_input":{"command":"mv build/*.js dist/"}}'
+assert_allow "GTM-G13 pin: ls a control-plane glob (a read)" '{"tool_name":"Bash","tool_input":{"command":"ls sk*"}}'
+assert_allow "GTM-G14 pin: grep a control-plane glob (a read)" '{"tool_name":"Bash","tool_input":{"command":"grep -n x sk*/build/SKILL.md"}}'
+assert_allow "GTM-PA3 pin: cp with balanced quotes into /tmp" '{"tool_name":"Bash","tool_input":{"command":"cp \"a b\" /tmp/x"}}'
+# design §12 F (a new file under .kit/ by redirect) is NOT built: see the build report. The matcher covers an enumerated set of .kit/*.conf names by design.
+
 if [ "$AA_DELTA" = 0 ] && ! aa_cell_skip "fork-cap"; then aa_fc_main; fi
 
 case "${1:-}" in --selftest) selftest; exit $? ;; esac

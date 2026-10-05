@@ -1630,6 +1630,47 @@ grouping_section() {
 }
 grouping_section
 
+# ── CI WIRING (KIT-UPDATE-PROFILE-CI-DRIFT, design D7) ────────────────────────────────────────────────
+# The 3-way sees the adopter's workflow like any file, but an ADAPTED one reads CONFLICT — one line among N —
+# and nothing says it is the line a new CI capability depends on. This runs the NEW release's own
+# `conformance/verify-enforced-wired.sh --drift` (the same function the adopter's CI leg runs, so the notice is the
+# same text) on the adopter's workflow (OURS) against that release's stack profile (THEIRS), copied to scratch
+# files under the real relative paths. Read-only: nothing here writes to the adopter's repo.
+# Ceiling: the check is the --from release's code (already the tool's stated ceiling, below); a --from that has no
+# `--drift` is said so in one line.
+ci_wiring_section() {
+  case "$STACK" in
+    ''|*[!A-Za-z0-9_-]*) echo "CI wiring check: skipped (the stamped stack is not a plain profile name)."; echo ""; return 0 ;;
+  esac
+  if [ "$CI" = gitlab ]; then _cw_wf=.gitlab-ci.yml; _cw_pf=ci.gitlab-ci.yml; else _cw_wf=.github/workflows/ci.yml; _cw_pf=ci.yml; fi
+  _cw_prof="profiles/$STACK/$_cw_pf"; _cw_tool=conformance/verify-enforced-wired.sh
+  git -C "$W" cat-file -e "$C_OURS:$_cw_wf" 2>/dev/null || return 0      # no workflow in HEAD: nothing to compare
+  git -C "$W" cat-file -e "$C_THEIRS:$_cw_prof" 2>/dev/null || return 0  # the release has no profile pipeline for it
+  _cw_d="$TMP/ciw"; rm -rf "$_cw_d"; mkdir -p "$_cw_d/$(dirname "$_cw_wf")" "$_cw_d/$(dirname "$_cw_prof")" "$_cw_d/conformance"
+  git -C "$W" show "$C_OURS:$_cw_wf" > "$_cw_d/$_cw_wf" 2>/dev/null || return 0
+  git -C "$W" show "$C_THEIRS:$_cw_prof" > "$_cw_d/$_cw_prof" 2>/dev/null || return 0
+  if ! git -C "$W" show "$C_THEIRS:$_cw_tool" > "$_cw_d/$_cw_tool" 2>/dev/null || ! grep -q -e '--drift' "$_cw_d/$_cw_tool"; then
+    echo "CI wiring check: not available in the release at --from (its conformance/verify-enforced-wired.sh has no --drift)."
+    echo ""; return 0
+  fi
+  _cw_rc=0
+  _cw_out=$( cd "$_cw_d" && sh "$_cw_tool" --drift --wf="$_cw_wf" --profile="$_cw_prof" 2>&1 ) || _cw_rc=$?
+  case "$_cw_rc" in
+    0) return 0 ;;
+    1) echo "== CI WIRING ($CI) — your workflow lacks a CI capability the release's stack profile carries =="
+       if grep -qxF -- "$_cw_wf" "$TMP/offered"; then
+         echo "  The offered patch on $_cw_wf adopts it (the workflow is still the kit's own content at a release you took)."
+       else
+         printf '%s\n' "$_cw_out" | strip_ctl
+       fi
+       echo "" ;;
+    *) echo "CI wiring check: could not be evaluated (rc=$_cw_rc): $(printf '%s' "$_cw_out" | sed -n '1p' | strip_ctl)"
+       echo "" ;;
+  esac
+  return 0
+}
+ci_wiring_section
+
 # HOOK REFRESH — human step, not in the patch (B3, design D5). Git hooks are NOT version-controlled,
 # so `hooks/pre-push` moving in offered/conflict is invisible where it matters: nothing this tool
 # computes ever touches `.git/hooks/pre-push`, and a stale installed copy is exactly the fail-open
@@ -1666,21 +1707,99 @@ hook_mode() {
 }
 HOOK_MODE=$(hook_mode)
 
-if grep -qx 'hooks/pre-push' "$TMP/offered" "$TMP/conflict" 2>/dev/null; then
+# _hr_rung — the adopter's OWN conformance/guard-wired.sh, run once read-only, keeping its `pre-push rung` lines
+# verbatim (after strip_ctl): the gate's own text, so this report and the gate cannot disagree (JIRA-ADOPTION-
+# DOCS-RESIDUALS-2 / D6, cold test 2 item 101). It runs in this process; the agent's guard never sees it.
+_hr_rung() {
+  [ -f "$REPO/conformance/guard-wired.sh" ] \
+    || { echo "hook state: not checked (conformance/guard-wired.sh absent)"; return 0; }
+  # the same env scrub list _ku_git uses: an ambient GIT_DIR / GIT_CONFIG_* must not steer the gate's git reads
+  _hr_out=$( cd "$REPO" && env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CONFIG_GLOBAL \
+      -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS \
+      -u GIT_CEILING_DIRECTORIES -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE \
+      sh conformance/guard-wired.sh "$REPO" 2>&1 ) || :
+  _hr_lines=$( printf '%s\n' "$_hr_out" | strip_ctl | grep -F 'pre-push rung' ) || :
+  [ -n "$_hr_lines" ] || { echo "hook state: not checked (conformance/guard-wired.sh printed no pre-push rung verdict)"; return 0; }
+  printf '%s\n' "$_hr_lines"
+}
+# P1: no core.hooksPath in ANY config scope (the value is never printed). P2: no hook-manager dir at the top
+# level. The same two checks brownfield.md §2 step 5 tells a human to make before typing the setting.
+_hr_p1() { [ -z "$( _ku_git -C "$REPO" config --get core.hooksPath 2>/dev/null )" ]; }
+# P2 also fails on a pre-commit framework config, or on any executable hook in the hooks dir other than pre-push
+# and *.sample: with core.hooksPath hooks that other hook would silently go out of service.
+_hr_p2() {
+  for _hr_d in .husky .lefthook .githooks .pre-commit-config.yaml; do [ -e "$REPO/$_hr_d" ] && return 1; done
+  _hr_hd=$( _ku_git -C "$REPO" rev-parse --git-path hooks 2>/dev/null ) || return 1
+  case "$_hr_hd" in /*) : ;; *) _hr_hd="$REPO/$_hr_hd" ;; esac
+  for _hr_f in "$_hr_hd"/*; do
+    [ -f "$_hr_f" ] && [ -x "$_hr_f" ] || continue
+    case "${_hr_f##*/}" in pre-push|*.sample) continue ;; *) return 1 ;; esac
+  done
+  return 0
+}
+# A rung with neither a PASS: nor a FAIL: line (gate absent, silent, or only an N/A) is disclosed, never silent.
+_hr_note() {
+  printf '%s\n' "$HR_RUNG" | grep -q '^PASS:' && return 0
+  printf '%s\n' "$HR_RUNG" | grep -q '^FAIL:' && return 0
+  case "$HR_RUNG" in "hook state:"*) printf '%s\n' "$HR_RUNG" ;;
+    *) echo "hook state: not checked ($( printf '%s\n' "$HR_RUNG" | sed -n '1p' ))" ;; esac
+}
+_hr_copy_line() { echo "    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push"; }
+_hr_installed_lead() {
+  echo "== HOOK REFRESH — one human setting, then never again =="
+  printf '%s\n' "$HR_RUNG"
+  echo "  $HR_WHY"
+  echo "  git config core.hooksPath hooks"
+  echo "    a one-time human act: the runtime guard denies it to an agent, because it can repoint the push rung."
+  echo "    Read docs/adoption/brownfield.md §2 step 5 (a) first, including its caveats."
+  echo "  after it, hooks/pre-push IS the live hook — no copy exists to go stale"
+  echo "  Or keep the copy (repeat this whenever hooks/pre-push moves):"
+  _hr_copy_line
+  echo "  sh conformance/guard-wired.sh confirms the result (present, executable, FRESH)."
+}
+_hr_installed_copy() {
+  echo "== HOOK REFRESH — human step, not in the patch =="
+  printf '%s\n' "$HR_RUNG"
+  if [ -n "$HR_CHANGED" ]; then
+    echo "  $HR_WHY This tool computed a delta for the TRACKED source file"
+    echo "  only; it cannot refresh the INSTALLED hook at .git/hooks/ — git hooks are not version-"
+  else
+    echo "  $HR_WHY The INSTALLED hook at .git/hooks/ is not version-"
+  fi
+  echo "  controlled, and no patch this tool emits ever writes there. Refresh it yourself, the same"
+  echo "  human-only way brownfield adoption does (docs/adoption/brownfield.md §2 step 5):"
+  _hr_copy_line
+  _hr_p1 || echo "  core.hooksPath is set (in this repo or your global config): do not repoint it — see brownfield.md §2 step 5"
+  echo "  sh conformance/guard-wired.sh confirms the result (present, executable, FRESH)."
+}
+HR_RUNG=$(_hr_rung)
+HR_WHY="the installed hook is not current (the gate line above says why)."
+HR_SHOW=""; HR_CHANGED=""; HR_FAIL=""
+printf '%s\n' "$HR_RUNG" | grep -q '^FAIL:' && { HR_SHOW=1; HR_FAIL=1; }
+if grep -qx 'hooks/pre-push' "$TMP/offered" "$TMP/conflict" 2>/dev/null; then HR_SHOW=1; HR_CHANGED=1; HR_WHY="hooks/pre-push changed upstream."; fi
+
+if [ -z "$HR_SHOW" ]; then
+  HR_NOTE=$(_hr_note)
+  [ -z "$HR_NOTE" ] || { printf '%s\n\n' "$HR_NOTE"; }
+fi
+if [ -n "$HR_SHOW" ]; then
   if [ "$HOOK_MODE" = tracked ]; then
     echo "== HOOK REFRESH — nothing to refresh: this repo runs TRACKED-HOOKS mode =="
-    echo "  hooks/pre-push changed upstream. core.hooksPath points at this repo's own hooks/ dir, so the"
-    echo "  TRACKED file IS the live hook: applying the delta above (or resolving its conflict) is the"
-    echo "  whole update. There is no installed copy to keep in step, and no cp to run."
+    if [ -n "$HR_FAIL" ]; then printf '%s\n' "$HR_RUNG"; else _hr_note; fi
+    [ -n "$HR_CHANGED" ] || HR_WHY="the live hook is not current (the gate line above says why)."
+    if [ -n "$HR_CHANGED" ]; then
+      echo "  $HR_WHY core.hooksPath points at this repo's own hooks/ dir, so the"
+      echo "  TRACKED file IS the live hook: applying the delta above (or resolving its conflict) is the"
+      echo "  whole update. There is no installed copy to keep in step, and no cp to run."
+    else
+      echo "  $HR_WHY core.hooksPath points at this repo's own hooks/ dir, so the"
+      echo "  TRACKED file IS the live hook; the gate line above names the cure."
+    fi
     echo "  sh conformance/guard-wired.sh confirms the result (live, executable, worktree matches HEAD)."
+  elif _hr_p1 && _hr_p2; then
+    _hr_installed_lead
   else
-    echo "== HOOK REFRESH — human step, not in the patch =="
-    echo "  hooks/pre-push changed upstream. This tool computed a delta for the TRACKED source file"
-    echo "  only; it cannot refresh the INSTALLED hook at .git/hooks/ — git hooks are not version-"
-    echo "  controlled, and no patch this tool emits ever writes there. Refresh it yourself, the same"
-    echo "  human-only way brownfield adoption does (docs/adoption/brownfield.md §2 step 5):"
-    echo "    cp hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push"
-    echo "  sh conformance/guard-wired.sh confirms the result (present, executable, FRESH)."
+    _hr_installed_copy
   fi
   echo ""
 fi
@@ -1720,6 +1839,10 @@ echo "    account for ALL of a path's changed lines); 'not attributable' says so
 echo "    commit in --from's history, and says when it is not."
 echo "  * --from IS UNTRUSTED INPUT AND THIS TOOL EXECUTES CODE FROM IT (that release's own"
 echo "    adopter-export.sh and incept.sh, above). Point it only at a source you trust."
+echo "  * CI WIRING IS A LINE-BASED CHECK, RUN WITH THE --from RELEASE'S OWN CODE. It names a kit-owned CI capability"
+echo "    your workflow lacks; it cannot see one hidden behind a wrapper script, and it does not judge whether an"
+echo "    adapted listing step is SAFE. The first update that brings this check prints no CI WIRING section (your"
+echo "    installed kit-update predates it) — your CI's own verify-enforced check speaks on that update's PR instead."
 echo "  * A CONFLICT is not a defect — it is the tool refusing to overwrite you. Nothing above was merged"
 echo "    into your files; the merge was computed in a throwaway repo and read back."
 echo "  * TWO MERGE ENGINES, AND THEY ARE NOT BYTE-IDENTICAL. Which one ran is printed above. They agree"
@@ -1740,7 +1863,9 @@ if [ "$HOOK_MODE" = tracked ]; then
 else
   echo "  * GIT HOOKS ARE NOT IN THE PATCH. hooks/pre-push is a tracked SOURCE file like any other — the"
   echo "    delta above covers it — but the INSTALLED .git/hooks/pre-push is untracked and this tool never"
-  echo "    writes there. A HOOK REFRESH section above (when it appears) names the human-run command;"
+  echo "    writes there. A HOOK REFRESH section above (when it appears) names the human-run command; it"
+  echo "    appears when this release changes hooks/pre-push AND when the installed hook is stale anyway (the"
+  echo "    gate's own pre-push rung verdict, reported on every run, even if this release did not touch the hook);"
   echo "    sh conformance/guard-wired.sh is how you confirm it landed. (The other documented install —"
   echo "    core.hooksPath pointing at the tracked hooks/ dir — has no copy to refresh: brownfield.md §2 step 5.)"
 fi

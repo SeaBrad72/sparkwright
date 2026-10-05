@@ -12,7 +12,7 @@ Before the conf exists: `sh conformance/tracker-contract.sh --preflight --base h
 - **Run it once with each credential:** `--as ci` with the CI reader's token (§5a), `--as dev` with a developer's.
 - **CI reachability is measured on the runner, not on your machine.** Once §4 and §5 are merged, open `Actions → Adopter Tracker Gates → Run workflow`; its preflight step reports whether the runner can reach the site.
 - **If CI cannot reach it** (IP allowlist or VPN), set the repository variable `KIT_TRACKER_RUNNER` to a self-hosted runner label inside your network.
-- **Two runner risks.** (1) A label no runner matches **queues forever**, and because `tracker-board-gates` is a required check every PR waits: unset `KIT_TRACKER_RUNNER` or bring the runner online. (2) A self-hosted runner for a `pull_request_target` job belongs **only on a private repo or an ephemeral runner** (the job parses fork head objects beside the Jira secret).
+- **Two runner risks.** (1) A label no runner matches **queues forever**, and because `tracker-board-gates` is a required check every PR waits: unset `KIT_TRACKER_RUNNER` or bring the runner online. (2) A self-hosted runner for a `pull_request_target` job belongs **only on a private repo or an ephemeral runner** (the job parses fork head objects beside the Jira secret); the gates job warns when it sees a public repo on a self-hosted runner (an ephemeral, network-isolated runner is a risk you accept and record in your waiver register, not a cure). The warning stays silent where `runner.environment` is unset (older GHES, or runners pinned with `--disableupdate` or a pinned image) and on internal repos (`private: true`, yet every enterprise member can open a PR from a fork).
 
 ## 1. Workflow statuses (the six §6 states + Blocked) — **HUMAN ACT — an agent stops and asks the
 owner**: this is a Jira project-admin edit.
@@ -78,6 +78,15 @@ ASCII, at most 80 bytes, no `|`, no leading or trailing space). Each key appears
 id. Validate it any time with:
 `sh scripts/tracker-conf.sh .kit/tracker.conf`
 
+**Who may edit it.** `.kit/tracker.conf` is control-plane: an agent cannot edit it in place, because the
+runtime guard denies every mutation form on that file. That is by design, since the conf pins the host the
+trusted job sends the Jira secret to. There are two routes: the owner edits it, or the agent edits it with
+Edit/Write in a **dev-clone** under the temp root (`git clone . /private/tmp/<name>`, a literal path;
+`docs/operations/runtime-guards.md` §*The dev-clone affordance*), validates it there with
+`sh scripts/tracker-conf.sh .kit/tracker.conf`, and pushes a branch. Either way the change is a control-plane
+PR, so it costs what `START-HERE.md`'s solo track says. One gap is disclosed: a dev-clone carries no installed
+pre-push hook, so CI and the owner's review are the checks on that branch. (cold test 2, items 36, 42 and 78)
+
 **Two modes:**
 - **Greenfield** (`incept --backlog jira`, no `--existing`): the conf ships with a full identity
   state map (every kit state names itself) — edit `base_url`/`project` for your instance, and
@@ -137,6 +146,15 @@ before running a write verb — writes read `KIT_TRACKER_AUTH` from the environm
 Basic to the `base_url` in your working tree's `.kit/tracker.conf` — the credential does not leave
 that host, but Data Center will reject it.
 
+**`land` closes the card where your credential is.** After the merge, `land` (and `actuate`) run
+`sh scripts/board.sh release <ROW> --stale`: on a tracker that moves the card to your `state.done`
+(with a claim ref held the proof is the merged PR; with none, nothing is checked and `board.sh` says UNPROVEN), proves it by post-read, and deletes the claim ref. This happens in
+the shell that runs `land`, so it needs the credential above exported there. If the move fails the
+merge stands (exit 0), a WARN names the one command, and the last line reads
+`board: NOT CLOSED — see the WARN above`; the happy path ends `board: closed`. A merge made in the
+forge UI moves nothing: run `sh scripts/board.sh release <ROW> --stale` afterwards. (`board release`
+without `--stale`, the holder giving a claim back, still ends the card at `state.ready`.)
+
 **5c. What the over-privilege probe does — detects, never blocks.**
 Every credential is probed for five permissions on the project: `CREATE_ISSUES`, `EDIT_ISSUES`,
 `TRANSITION_ISSUES`, `ASSIGN_ISSUES`, `ADMINISTER_PROJECTS` (`scripts/tracker-jira.sh`'s
@@ -170,6 +188,14 @@ PR's own workflow-file or script edits cannot reach the secret. The Browse-Proje
 single-project account (§5a) further bounds what that secret is worth if it were ever exposed.
 Rotate `KIT_TRACKER_TOKEN`/`KIT_TRACKER_USER` if the workflow file or `.kit/tracker.conf` is ever
 found to have changed outside a ratified control-plane PR.
+
+The same "base-branch code only" control means a PR that *changes* the trusted job
+(`.github/workflows/adopter-tracker-gates.yml`, its scripts, or `.kit/tracker.conf`) is judged by the **old**
+job, so it may not pass `tracker-board-gates` on its own PR. When it does not pass, **solo:** the owner merges
+it with the admin merge (the agent records the GO; the guard denies the agent `--admin`), and the new job's
+first real run is the next PR. **Team (`enforce_admins:true`):** untested. Expect the owner to lift
+`tracker-board-gates` from the required checks for that one merge and restore it afterwards; do not leave it
+lifted. (cold test 2, item 47)
 
 **5f. The forbid list — never:**
 - a human developer's own token as the CI secret (§5a always uses a dedicated service account);
