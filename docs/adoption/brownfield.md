@@ -20,7 +20,7 @@ It must print `guard-wired: OK`. If it FAILs, look at the wording: `guard-wired:
 
 ## When to use this guide
 
-- **Greenfield** (new/empty repo): start from the kit, run `sh scripts/incept.sh`. Use `../../START-HERE.md`.
+- **Greenfield** (new/empty repo): start from the kit, run `sh scripts/incept.sh`. Use `../../START-HERE.md`. Do not re-run `incept` over a directory that already held another trial or stack: it refuses on a different `kit-base` (see `../operations/kit-base.md`, "foreign base"). Use a fresh directory, or `kit-update --from` to move to a newer kit.
 - **Brownfield** (existing repo with code): follow this guide. You **copy the kit in** and **merge** `.claude/` rather than starting from the kit.
 
 ## 1. Copy the kit in

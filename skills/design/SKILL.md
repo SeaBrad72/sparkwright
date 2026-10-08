@@ -35,7 +35,7 @@ Before any feature, component, behaviour change, or new project — the moment i
 4. **Present the design in sections** scaled to complexity; get approval per section.
 5. **HARD GATE — owner approval before any implementation.**
 6. **Write the spec** to `docs/architecture/<date>-<topic>-design.md` (tracked, cold-resumable) or `docs/superpowers/specs/` (local); commit it.
-7. **Self-review the spec** — placeholders, internal consistency, scope, ambiguity; fix inline.
+7. **Self-review the spec** — placeholders, internal consistency, scope, ambiguity, and the lens review below; fix inline.
 8. **Owner reviews the written spec**, then hand to the **plan** skill. Do NOT start implementation from this skill.
 
 ## Design provenance — four sources, two artifact shapes
@@ -78,6 +78,31 @@ A **confirming design** records a judgment, and must carry:
 - **Enumeration boards its detection sibling.** A check whose domain is an enumerated idiom (a verb lexicon, a skip-idiom list, a citation grammar) boards its detection-shaped sibling row at ship time, or states in the design why the enumeration is complete — three residuals of this class shipped in one phase (meta-control #41 retro-1).
 - **Right-weight / anti-ceremony.** Prefer extending an existing gate to adding one; defer build-ahead (no infrastructure for needs that do not exist yet). **A design that adds a new `conformance/*.sh` must NAME the existing check it considered extending and why extension fails** — a surfaceable answer, the same shape as the enumeration bullet above, not a preference. Measured: as a bare preference this sentence did not bind — the 35 days after it shipped added 30,981 conformance lines and 39 new checks. `conformance/conformance-mass-budget.sh` is what makes the answer load-bearing: a new file costs a ratified `files` ack line in `conformance/mass-acks.txt`, so growth without the answer simply reds. The gate can only tell that growth was *declared*; whether the answer is honest is the reviewer's job.
 - **Progressive disclosure.** Make the rigorous path the default, surfaced progressively — a novice is not crushed, an expert is not constrained.
+
+## Lens review — twelve questions, scaled to the change
+Every design answers the twelve lenses below, plus any lens your project's principles name. A lens is answered by
+its evidence, or by **N/A — <reason>**; N/A with a reason is a complete answer. How much you write follows the
+ceremony rule above:
+- **XS/S ordinary** — one line in the PR's design note: `lenses: no findings except <lens>: <finding>` (or `lenses: no findings`).
+- **M, Sensitive or Control-plane** — the full table in the design doc, under a `## Lens review` heading (a section
+  number in front is fine: `## 9. Lens review`), one row per lens, with the lens name alone in a cell exactly as
+  written below. Put your project's own lenses after the twelve. `conformance/review-lane.sh` checks that a design
+  doc the change adds has the heading and all twelve names; it never reads what you wrote in them.
+
+| # | Lens | The question | What discharges it |
+|---|---|---|---|
+| 1 | Project principles | Does it hold to the principles this project's `CLAUDE.md` declares? | The principle at stake and how the design keeps it, or the ruling that lets it bend. |
+| 2 | Friction | Who does this remove friction for, and who pays for it? | Who gains, who pays, and what they pay. |
+| 3 | Software practice | Would a strong engineer build it this way? | The more standard alternative you considered, and why this one. |
+| 4 | Agentic practice | Does it suit how agents work: context, hand-offs, what the agent can and cannot verify? | What an agent must read, what it hands on, and which claims it can check versus must trust. |
+| 5 | CI | What does it do to CI time, reliability and coverage? | Minutes added or saved, any new flake surface, coverage gained or lost. |
+| 6 | DevOps and operations | Can it be deployed, rolled back and observed? | The deploy and rollback path, and the signal that shows it working or failing. |
+| 7 | Security, privacy and guardrails | Does any agent gain a capability it lacks today? What data does it touch, and what happens to it? Any regulatory obligation? | Yes or no on capability, with the code that shows it; the data and where it goes; the obligation, or none. **This row sets the Definition of Ready's conditional flags**: threat model / privacy review, eval criteria, compliance. |
+| 8 | Cost and size | Is the size honest, and what does it cost in tokens, CI minutes and infrastructure, to run and to maintain? | The size with its basis; the run cost and the upkeep cost. |
+| 9 | Product | Does it serve a real need, with a success metric? | The need, who has it, and the metric that will say it worked. |
+| 10 | Design | Is it the simplest shape that solves the problem? | The smaller shape you considered and why it falls short. |
+| 11 | Architecture | Does it respect the seams, contracts and neutrality already frozen? | The seam or contract touched and how it is kept, or the ruling that changes it. |
+| 12 | UX and accessibility | What does the person at the keyboard see and do? | The message, prompt or screen they meet; WCAG 2.1 AA for a user-facing surface. |
 
 ## Decompose if too large
 If the request spans multiple independent subsystems, decompose into sub-projects first and design the first through this flow. Each sub-project gets its own design → plan → build cycle.

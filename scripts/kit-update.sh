@@ -499,6 +499,15 @@ build_base() {
     || die "could not materialize the kit-base tree into '$1'"
   _bb_lbl='kit-base'
   [ -z "${2:-}" ] || _bb_lbl="kit-base chain commit $(short12 "$2")"
+  # KIT-BASE-MANIFEST-CONCORDANCE: a base recorded from ANOTHER stack's incept cannot be replayed with this project's
+  # stamped stack, and used to fail inside its own incept with an opaque `unknown --stack`. Name it before that runs.
+  # (No .kit-manifest = a legacy base: nothing to read, the old behaviour stands.)
+  if [ -f "$1/.kit-manifest" ]; then
+    _bb_have=$(sed -n 's#^profiles/\([^/]*\)/.*#\1#p' "$1/.kit-manifest" | LC_ALL=C sort -u)
+    if ! printf '%s\n' "$_bb_have" | grep -qxF -- "$STACK"; then
+      die "FOREIGN BASE: the ${_bb_lbl} carries the profile(s) $(printf '%s' "$_bb_have" | tr '\n' ' ')but this project is stamped '$STACK'. It was recorded from a different stack's incept (for example a trial run in this directory first), so it is not the tree this project was adopted from and no update can be computed from it. Rename it aside ('git branch -m kit-base kit-base-foreign'), then import a verified published base with 'kit-update --from <vendor>' if your team has one, or re-adopt the project from a fresh export."
+    fi
+  fi
   run_incept "$1" "$_bb_lbl"
 }
 

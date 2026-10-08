@@ -124,8 +124,12 @@ check() {
   _branch_before=$( cd "$_p" && git rev-parse --abbrev-ref HEAD )
 
   ( cd "$_p" && sh scripts/incept.sh --noninteractive --name Probe --intent-owner Probe \
-      --stack typescript-node --no-db ) >/dev/null 2>&1 || {
+      --stack typescript-node --no-db ) >"$_t/first.out" 2>&1 || {
     echo "FAIL: kit-base — incept failed on the fixture" >&2; return 1; }
+  # CONCORDANCE greenfield ALLOW: a first incept (no prior base) never meets the foreign-base refusal.
+  if grep -q 'FOREIGN BASE' "$_t/first.out"; then
+    echo "FAIL: kit-base — a GREENFIELD first incept printed the foreign-base refusal" >&2; return 1
+  fi
 
   base_is_faithful "$_p" || return 1
 
@@ -253,6 +257,162 @@ check() {
   return 0
 }
 
+# ── KIT-BASE-MANIFEST-CONCORDANCE ─────────────────────────────────────────────────────────────────────────
+# A second incept over a directory that already holds a `kit-base` must compare the base it would record with
+# the one that is there, BEFORE it mutates anything. One load-bearing negative per control:
+#   REFUSE        a foreign base (another stack's export) and no flag: rc 1, names kit-update --from first, then both
+#                 flags; nothing mutated; the tip unchanged.
+#   TREE-IDENTITY the same stack and the same file list but one doc's bytes differ: also refused (a path-set
+#                 predicate passes it). The refusal's own counts prove the path sets are equal.
+#   REPLACE       --kit-base-replace renames the old base and its colliding tag aside; nothing is deleted.
+#   KEEP          --kit-base-keep is today's behaviour, now opt-in and loud.
+#   BOTH          both flags together are a usage error (rc 2) before any mutation.
+#   ALLOW         the same export re-incepted proceeds, tip unchanged, no refusal text.
+_kbm_out=''
+_kbm_wipe() {  # <dir> — empty a work tree but keep .git (a "trial" directory that is about to be reused)
+  for _kw in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+    [ "${_kw##*/}" = .git ] && continue
+    if [ -e "$_kw" ] || [ -L "$_kw" ]; then rm -rf "$_kw"; fi
+  done
+}
+_kbm_commit() {  # <dir> <message>
+  ( cd "$1" && git add -A && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m "$2" ) >/dev/null 2>&1
+}
+_kbm_incept() {  # <dir> <stack> [flags...] — output in $_kbm_out; returns incept's own rc
+  _ki_d=$1; _ki_s=$2; shift 2
+  ( cd "$_ki_d" && sh scripts/incept.sh --noninteractive --name Probe --intent-owner Probe \
+      --stack "$_ki_s" --no-db "$@" ) >"$_kbm_out" 2>&1
+}
+_kbm_reuse() {  # <dir> <scratch> — wipe <dir> (keep .git), drop a FRESH export in, commit it
+  rm -rf "$2"
+  sh "$ROOT/scripts/adopter-export.sh" "$2" >/dev/null 2>&1 || return 1
+  _kbm_wipe "$1"
+  cp -R "$2/." "$1/" && _kbm_commit "$1" 'second export'
+}
+_kbm_seed() {  # <dir> <scratch> [doc] — a repo that was exported, committed and incepted for typescript-node
+  sh "$ROOT/scripts/adopter-export.sh" "$1" >/dev/null 2>&1 || return 1
+  [ -z "${3:-}" ] || printf '\n<!-- trial edit -->\n' >> "$1/$3"
+  ( cd "$1" && git init -q . ) >/dev/null 2>&1 && _kbm_commit "$1" init && _kbm_incept "$1" typescript-node
+}
+_kbm_tip() { git -C "$1" rev-parse --verify --quiet refs/heads/kit-base 2>/dev/null || echo none; }
+_kbm_fail() { echo "FAIL: kit-base [concordance] — $1" >&2; sed 's/^/    | /' "$_kbm_out" >&2 || :; return 1; }
+
+check_concordance() {
+  _t=$(mktemp -d "${TMPDIR:-/tmp}/kbm.XXXXXX") || { echo "kit-base: cannot mktemp" >&2; return 2; }
+  # shellcheck disable=SC2064
+  trap "_cleanup '$_t'" EXIT INT TERM
+  _kbm_out="$_t/out"
+  _ver=$(cat "$ROOT/VERSION" 2>/dev/null || echo unknown)
+
+  _kbm_seed "$_t/seed" "$_t/x" || _kbm_fail "could not seed a typescript-node trial" || return 1
+  _old=$(_kbm_tip "$_t/seed")
+  [ "$_old" != none ] || _kbm_fail "the seed recorded no kit-base (a vacuous fixture)" || return 1
+  cp -R "$_t/seed" "$_t/foreign" && cp -R "$_t/seed" "$_t/same" || return 1
+  _kbm_reuse "$_t/foreign" "$_t/x1" || _kbm_fail "could not reuse the trial for a python export" || return 1
+  # An export is stack-neutral: incepting it with --stack python records a different (pruned) base than the
+  # typescript-node one already there. That is the K3 shape (a trial of one stack, then another).
+
+  # REFUSE — rc 1, the upgrade route first, both flags named, the owner's decision stated, no mutation.
+  cp -R "$_t/foreign" "$_t/refuse" || return 1
+  _rc=0; _kbm_incept "$_t/refuse" python || _rc=$?
+  [ "$_rc" -eq 1 ] || _kbm_fail "REFUSE: a foreign base with no flag must exit 1 (got $_rc)" || return 1
+  grep -q 'FOREIGN BASE' "$_kbm_out" || _kbm_fail "REFUSE: the refusal does not say FOREIGN BASE" || return 1
+  _l_up=$(grep -n 'kit-update --from' "$_kbm_out" | sed -n '1p' | sed 's/:.*//')
+  _l_fb=$(grep -n 'FOREIGN BASE' "$_kbm_out" | sed -n '1p' | sed 's/:.*//')
+  _l_keep=$(grep -n -e '--kit-base-keep' "$_kbm_out" | sed -n '1p' | sed 's/:.*//')
+  _l_rep=$(grep -n -e '--kit-base-replace' "$_kbm_out" | sed -n '1p' | sed 's/:.*//')
+  # A1 holds literally: the upgrade route is on the refusal's FIRST line (the one that says FOREIGN BASE), before both flags
+  if [ -z "$_l_up" ] || [ -z "$_l_fb" ] || [ -z "$_l_keep" ] || [ -z "$_l_rep" ] || [ "$_l_up" != "$_l_fb" ] || [ "$_l_up" -ge "$_l_keep" ]; then
+    _kbm_fail "REFUSE: expected 'kit-update --from' on the FIRST refusal line, before both flags (up=$_l_up first=$_l_fb keep=$_l_keep replace=$_l_rep)" || return 1
+  fi
+  grep -qi "owner" "$_kbm_out" || _kbm_fail "REFUSE: the message does not say the choice is the owner's" || return 1
+  [ ! -e "$_t/refuse/ENGINEERING-PRINCIPLES.md" ] || _kbm_fail "REFUSE: incept MUTATED the tree before refusing" || return 1
+  [ "$(_kbm_tip "$_t/refuse")" = "$_old" ] || _kbm_fail "REFUSE: the kit-base tip moved" || return 1
+  echo "PASS: kit-base [concordance REFUSE] — a foreign base is refused before any mutation, naming kit-update --from first, then both flags"
+
+  # TREE-IDENTITY — same stack, same path set, one doc's bytes differ in the BASE: also refused.
+  _kbm_seed "$_t/m2" "$_t/x" DEVELOPMENT-STANDARDS.md || _kbm_fail "could not seed the byte-edited trial" || return 1
+  _old2=$(_kbm_tip "$_t/m2")
+  _kbm_reuse "$_t/m2" "$_t/x2" || _kbm_fail "could not reuse the byte-edited trial" || return 1
+  _rc=0; _kbm_incept "$_t/m2" typescript-node || _rc=$?
+  [ "$_rc" -eq 1 ] || _kbm_fail "TREE-IDENTITY: same stack and file list, different bytes must be refused (got rc $_rc)" || return 1
+  grep -q '0 added, 1 modified, 0 deleted' "$_kbm_out" \
+    || _kbm_fail "TREE-IDENTITY: the path sets must be EQUAL (0 added, 1 modified, 0 deleted) or this leg proves nothing" || return 1
+  [ "$(_kbm_tip "$_t/m2")" = "$_old2" ] || _kbm_fail "TREE-IDENTITY: the kit-base tip moved" || return 1
+  echo "PASS: kit-base [concordance TREE-IDENTITY] — an equal path set with one differing doc is refused (a path-set predicate would pass it)"
+
+  # REPLACE — the old base and its colliding tag are renamed aside, never deleted; the new base is the python export.
+  cp -R "$_t/foreign" "$_t/replace" || return 1
+  _tag_old=$(git -C "$_t/replace" tag -l 'kit-base/*' | sed -n '1p')
+  _rc=0; _kbm_incept "$_t/replace" python --kit-base-replace || _rc=$?
+  [ "$_rc" -eq 0 ] || _kbm_fail "REPLACE: --kit-base-replace must exit 0 (got $_rc)" || return 1
+  git -C "$_t/replace" show kit-base:.kit-manifest 2>/dev/null | grep -q '^profiles/python/' \
+    || _kbm_fail "REPLACE: the new kit-base does not carry profiles/python" || return 1
+  _aside="kit-base-replaced-$(printf '%s' "$_old" | cut -c1-12)"
+  [ "$(git -C "$_t/replace" rev-parse --verify --quiet "refs/heads/$_aside" 2>/dev/null)" = "$_old" ] \
+    || _kbm_fail "REPLACE: the old tip is not preserved at $_aside" || return 1
+  [ -n "$_tag_old" ] && [ "$(git -C "$_t/replace" rev-parse --verify --quiet "refs/tags/${_tag_old}^{commit}" 2>/dev/null)" = "$(_kbm_tip "$_t/replace")" ] \
+    || _kbm_fail "REPLACE: the colliding tag '$_tag_old' does not resolve into the NEW chain" || return 1
+  [ "$(git -C "$_t/replace" rev-parse --verify --quiet "refs/tags/kit-base-replaced/${_tag_old#kit-base/}^{commit}" 2>/dev/null)" = "$_old" ] \
+    || _kbm_fail "REPLACE: the old tag was not renamed aside to kit-base-replaced/..." || return 1
+  echo "PASS: kit-base [concordance REPLACE] — old base kept at $_aside, colliding tag renamed aside, new base is the python export"
+
+  # REPLACE-BLOCKED — a kit-base-replaced/<name> tag already exists, so a kit-base/<name> tag cannot move aside: the replace is
+  # UNDONE and fails loudly, never half-moved (old tip and tag where they were, no aside branch).
+  cp -R "$_t/foreign" "$_t/blocked" || return 1
+  git -C "$_t/blocked" tag "kit-base-replaced/${_tag_old#kit-base/}" "$(git -C "$_t/blocked" rev-parse HEAD)" || return 1
+  _rc=0; _kbm_incept "$_t/blocked" python --kit-base-replace || _rc=$?
+  [ "$_rc" -ne 0 ] || _kbm_fail "REPLACE-BLOCKED: a replace that could not move a tag must fail, not report success" || return 1
+  [ "$(_kbm_tip "$_t/blocked")" = "$_old" ] || _kbm_fail "REPLACE-BLOCKED: the old kit-base tip is not back where it was" || return 1
+  [ "$(git -C "$_t/blocked" rev-parse --verify --quiet "refs/tags/${_tag_old}^{commit}" 2>/dev/null)" = "$_old" ] \
+    || _kbm_fail "REPLACE-BLOCKED: the old tag '$_tag_old' is not back on the old tip" || return 1
+  [ -z "$(git -C "$_t/blocked" for-each-ref 'refs/heads/kit-base-replaced-*')" ] \
+    || _kbm_fail "REPLACE-BLOCKED: an aside branch was left behind (half-moved)" || return 1
+  grep -q "kit-base-replaced/${_tag_old#kit-base/}" "$_kbm_out" || _kbm_fail "REPLACE-BLOCKED: the failure does not name the tag that blocked it" || return 1
+  echo "PASS: kit-base [concordance REPLACE-BLOCKED] — a blocked tag move undoes the replace and fails, naming the tag"
+
+  # HOOKS — the temp-index add that hashes the stage runs no git hook and no configured filter of the repo (a post-index-change
+  # hook or a clean filter planted in an adopter's repo must not fire when incept only COMPARES bases).
+  cp -R "$_t/foreign" "$_t/hooked" || return 1
+  mkdir -p "$_t/hooked/.git/hooks"
+  printf '#!/bin/sh\necho fired > "%s/hook.fired"\n' "$_t" > "$_t/hooked/.git/hooks/post-index-change"
+  chmod +x "$_t/hooked/.git/hooks/post-index-change"
+  printf '#!/bin/sh\necho fired > "%s/filter.fired"\ncat\n' "$_t" > "$_t/clean.sh"
+  chmod +x "$_t/clean.sh"
+  git -C "$_t/hooked" config filter.kbm.clean "$_t/clean.sh"
+  printf '* filter=kbm\n' > "$_t/hooked/.git/info/attributes"
+  _rc=0; _kbm_incept "$_t/hooked" python || _rc=$?
+  [ "$_rc" -eq 1 ] || _kbm_fail "HOOKS: the foreign-base refusal must still be reached (got $_rc)" || return 1
+  [ ! -e "$_t/hook.fired" ] || _kbm_fail "HOOKS: a git hook fired during the base comparison" || return 1
+  [ ! -e "$_t/filter.fired" ] || _kbm_fail "HOOKS: a configured clean filter fired during the base comparison" || return 1
+  echo "PASS: kit-base [concordance HOOKS] — the base comparison fires no hook and no clean filter"
+
+  # KEEP — today's behaviour, loud: rc 0, tip untouched, kit-update's refusal named.
+  cp -R "$_t/foreign" "$_t/keep" || return 1
+  _rc=0; _kbm_incept "$_t/keep" python --kit-base-keep || _rc=$?
+  [ "$_rc" -eq 0 ] || _kbm_fail "KEEP: --kit-base-keep must exit 0 (got $_rc)" || return 1
+  [ "$(_kbm_tip "$_t/keep")" = "$_old" ] || _kbm_fail "KEEP: the kit-base tip moved" || return 1
+  grep -q 'FOREIGN BASE' "$_kbm_out" || _kbm_fail "KEEP: the warning does not name kit-update's FOREIGN BASE refusal" || return 1
+  echo "PASS: kit-base [concordance KEEP] — --kit-base-keep keeps the foreign base and says kit-update will refuse it"
+
+  # BOTH — a usage error, before any mutation.
+  cp -R "$_t/foreign" "$_t/both" || return 1
+  _rc=0; _kbm_incept "$_t/both" python --kit-base-keep --kit-base-replace || _rc=$?
+  [ "$_rc" -eq 2 ] || _kbm_fail "BOTH: the two flags together must exit 2 (got $_rc)" || return 1
+  [ ! -e "$_t/both/ENGINEERING-PRINCIPLES.md" ] || _kbm_fail "BOTH: incept mutated before the usage error" || return 1
+  echo "PASS: kit-base [concordance BOTH] — keep and replace together are a usage error"
+
+  # ALLOW — the same export re-incepted: no flag, tip unchanged, no refusal.
+  _kbm_reuse "$_t/same" "$_t/x3" || _kbm_fail "could not reuse the trial for the same export" || return 1
+  _rc=0; _kbm_incept "$_t/same" typescript-node || _rc=$?
+  [ "$_rc" -eq 0 ] || _kbm_fail "ALLOW: re-incepting the same export must exit 0 (got $_rc)" || return 1
+  [ "$(_kbm_tip "$_t/same")" = "$_old" ] || _kbm_fail "ALLOW: the kit-base tip moved" || return 1
+  if grep -q 'FOREIGN BASE' "$_kbm_out"; then _kbm_fail "ALLOW: the refusal text appeared for an identical export" || return 1; fi
+  echo "PASS: kit-base [concordance ALLOW] — the same export re-incepted proceeds and the base is unchanged (tag v${_ver})"
+  echo "OK: kit-base [concordance] — refuse, tree identity, replace, keep, both, allow"
+  return 0
+}
+
 # ── ORACLE — below the ^selftest() marker; the mutation harness never neuters it. ──
 selftest() {
   st=0
@@ -330,6 +490,10 @@ missing.txt' .kit-manifest a.txt
 
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
-  "")         check;    exit $? ;;
+  "")
+    _rc=0
+    ( check ); _c=$?; [ "$_c" -eq 0 ] || _rc=$_c
+    ( check_concordance ); _k=$?; [ "$_k" -eq 0 ] || _rc=$_k
+    exit $_rc ;;
   *) echo "usage: kit-base.sh [--selftest]" >&2; exit 2 ;;
 esac

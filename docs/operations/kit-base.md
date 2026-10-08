@@ -228,6 +228,44 @@ verb (the full list, and what remains, is `docs/operations/runtime-guards.md` R2
 
 ---
 
+## A base that is not this export's (foreign base)
+
+Running `incept` a second time over a directory that already holds a `kit-base` used to keep that base without
+comment, even when it came from another stack's trial (a typescript-node trial, then a python export in the same
+directory). `incept` now compares, **before it changes anything**: it builds the tree it would record from this export
+(scoped by `.kit-manifest`, pruned to `--stack`) and compares it with the tree of the `kit-base` already there. The test
+is **tree identity**, not a list of paths, so a base from an older release of the same stack, with the same file list
+and different bytes, is just as foreign.
+
+- **Identical** (the same export again): it proceeds, says the base is identical, and records nothing new.
+- **Different, no flag**: exit 1, nothing written. The first line says that moving to a newer kit is
+  `kit-update --from <new kit>`, not a second `incept`. Then come the existing base's profiles against your `--stack`,
+  counts of what would differ, and the two exits. Which exit to take is the **owner's** decision; an agent reports the
+  refusal and does not pick one.
+- **`--kit-base-keep`**: keep the existing base (today's behaviour, now explicit). `kit-update` refuses the
+  project with `FOREIGN BASE` (naming the base's profiles and your stamped stack, before it runs the base's own `incept`) only when the
+  kept base came from another stack; a kept older or different export of the same stack is used as the base.
+- **`--kit-base-replace`**: record this export as the base. The old branch is **renamed aside** to
+  `kit-base-replaced-<sha12>` and every `kit-base/*` tag that points into it to `kit-base-replaced/<name>`; nothing is
+  deleted. The agent guard treats this flag as human-gated, like `gh pr merge --admin`.
+- Both flags together are a usage error (exit 2).
+
+If a `kit-base-replaced/<name>` tag already exists and blocks moving a `kit-base/<name>` tag, the replace is **undone and
+fails** (naming the tag); the previous base is never left half-moved.
+
+**Honest ceiling of the guard gate.** The agent guard reads the command's text. It denies `--kit-base-replace` in every
+spelling it can read (quote, backslash, escape, brace and parameter forms next to the `--kit-base-` prefix, a reader such as
+`echo` wrapped around a substitution, a copy of the script, a glob for its name). It cannot see: a flag built with no
+`kit-base-` text at all, a script the agent writes first and runs in a later call, or a copy of the script run with a built
+flag. Two more routes are also invisible to it. Write-then-run in the SAME call through repo state, for example committing
+the flag as message text and then `sh -c "$(git log -1 --format=%B)"`, hides the flag from the command text. A git or gh
+alias configured by an earlier call (`git x -m ...`) hides what the command runs. The control that binds those is the owner reading the diff and the `kit-base-replaced-*` branch, not the text guard.
+
+Out of scope: a foreign base that was already **published** to `refs/kit/base`. `--publish-base` never forces, so it would
+be rejected, and recovering a published base is a human step on the remote.
+
+---
+
 ## If you don't have one
 
 Older exports predate this mechanism. `incept` says so plainly rather than guessing:

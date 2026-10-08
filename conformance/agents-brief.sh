@@ -66,7 +66,12 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # region 2329 bytes with this script's own ec_region_bytes; set to 2329 + the 3-byte bite = 2332, so
 # the next edit that needs room asks for it in a reviewed PR — the point of this constant. The bump is
 # +179 for content, NOT recomputed headroom.
-EC_MAX_BYTES=2332
+# ⚠️ GOVERNED BUMP AT DESIGN-SKILL-LENS-LIST (2026-10-08): 2332 -> 2396, for the ONE clause the design
+# ratifies in act 2 — `; a design answers the twelve lenses in `skills/design/SKILL.md``, so an agent that
+# reads §1 first is pointed at the lens list (amendment A2: it names the path). Measured merged region
+# 2393 bytes with this script's own ec_region_bytes (CLAUDE.md, AGENTS.md and the project template all
+# agree); set to 2393 + the 3-byte bite = 2396. The bump is +64 for content, NOT recomputed headroom.
+EC_MAX_BYTES=2396
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {

@@ -1131,6 +1131,17 @@ _ctm_match() {
 # so a site cannot quietly grow past the list either), plus an on-disk leg over `git ls-files .kit/*.conf`.
 # It lives HERE, in the control plane, so no agent can widen the corpus silently.
 _KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats control-plane tracker'
+# === ROOT-LEVEL CONTROL-PLANE LEAVES corpus (CP-MATCHER-CORPUS-ALL-FAMILIES) ======================
+# The third family that is named by hand at the same SIX sites: EVERY root-level control-plane leaf
+# named at the `case` sites (CLAUDE.md and the two DEVELOPMENT-* documents included) that belongs to
+# neither the `.kit/*.conf` corpus nor the governance-source corpus below. Real-case names, one per
+# leaf; `agents/*.agent.md` is the one PATTERN leaf (exactly one `*`, in the final segment — the shape
+# `_cp8b_glob_scan` handles and the shape `dt_root_corpus_ok` asserts). DECLARATION ONLY: nothing here
+# consults it at hook time. `dt_root_corpus_ok` in conformance/agent-autonomy.sh grades it against
+# the six sites (every listed leaf reachable at every site; every `_CP8B_GLOB_LEAVES` /
+# `_CP8B_GLOB_LEAVES_LC` token belongs to one of the three corpora), so a root name dropped from any one
+# site reds the battery. It lives HERE, in the control plane, so no agent widens or shrinks it silently.
+_ROOT_LEAF_CORPUS='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml agents/*.agent.md'
 # === GOVERNANCE-SOURCE-FILES corpus (CONTROL-PLANE-COVERAGE slice 3c) ============================
 # The kit's OWN governing SOURCE files: the templates `incept`/`postmortem` stamp into an adopter's
 # charter, the templates a LIVE gate reads by path at runtime, and the three named governance
@@ -1142,8 +1153,8 @@ _KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats c
 # shrink coverage. `.kit/tracker.conf` is NOT here — it rides the `.kit/*.conf` corpus (`_KIT_CONF_CORPUS`
 # + `dt_corpus_ok`) with the other confs. It lives HERE, in the control plane, so no agent widens it silently.
 _GOV_SUBJECT_CORPUS='docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md'
-_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
-_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md CLAUDE.md DEVELOPMENT-STANDARDS.md DEVELOPMENT-PROCESS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md claude.md development-standards.md development-process.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
 
 # _cp8b_glob_scan "<token>" "<leaf-list>": 0 iff <token> (a glob pattern, already normalized/folded)
 # segment-safe intersects a leaf. Slash-count equality per leaf (pure parameter-expansion counter, no
@@ -2901,8 +2912,8 @@ _cp8b_redirect_hits_cp() {
 # introduced by it, and it is fail-SAFE in the direction it errs. It is stated rather than fixed
 # because narrowing the shared CODEOWNERS anchor class is a change to an existing deny with its own
 # fixtures and its own monotonicity run — not a tidy-up to ride along here.
-_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md)'
-_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md)'
+_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^a-zA-Z.])CLAUDE\.md|(^|[^a-zA-Z.])DEVELOPMENT-STANDARDS\.md|(^|[^a-zA-Z.])DEVELOPMENT-PROCESS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md)'
+_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^a-z.])claude\.md|(^|[^a-z.])development-standards\.md|(^|[^a-z.])development-process\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md)'
 # TIER 2 gains `scripts/` and `profiles/` — the redirect-route half of the directory families added to
 # `_cpp_match`. They land HERE and never in T1, for the identical reason: T1 folds on every platform,
 # and an unconditionally-folded `scripts/` would reinstate the measured case-sensitive FP class on the
@@ -2919,15 +2930,19 @@ _CP8B_PATHHIT_T2='(skills/[^[:space:]]*|conformance/[^[:space:]]*|adapters/[^[:s
 _cp8b_pathhit() {
   printf '%s' "$1" | grep -Eq "${_CP8B_PATHHIT_T1}|${_CP8B_PATHHIT_T2}" && return 0
   # Arm 1 above is byte-identical to the pre-fold regex and returns first (the `_under_temp`
-  # add-only shape at :309-328) — this can only ever ADD a pathhit. HOT PATH (Fix 2, dual-review
-  # round): guard on an UPPERCASE byte only (`*[A-Z]*`), mirroring `is_control_plane_path:93` — `tr
-  # 'A-Z' 'a-z'` cannot change a string that has no uppercase byte, so an all-lowercase command (the
-  # common case, on every Bash call) pays zero extra subprocess. `*[A-Za-z]*` (ANY letter) was wrong:
-  # it forked `tr`+`grep` on nearly every ordinary lowercase command, since almost every command has
-  # a letter somewhere.
+  # add-only shape at :309-328) — this can only ever ADD a pathhit. HOT PATH: guard the `tr` fork on an
+  # UPPERCASE byte only (`*[A-Z]*`), mirroring `is_control_plane_path:93` — `tr 'A-Z' 'a-z'` cannot
+  # change a string that has no uppercase byte, so an all-lowercase command is its own fold and needs
+  # no `tr`. It still needs `_CP8B_PATHHIT_T1_LC`, though: `_T1` does not match the lowercase spelling
+  # of an uppercase-named leg (`CODEOWNERS`, `AGENTS.md`, `REQUIRED-CHECKS.md`, the governance
+  # `decisions.md`, the lowercase template names), so skipping `_LC` here left an all-lowercase
+  # interpreter write to them ALLOWed. The all-lowercase route therefore costs exactly ONE `grep` and
+  # no `tr`. (`*[A-Za-z]*` — ANY letter — was wrong: it forked `tr` on nearly every command.)
   case "$1" in
     *[A-Z]*) : ;;
-    *) return 1 ;;
+    *)
+      printf '%s' "$1" | grep -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
+      return 1 ;;
     esac
   _phl=$(printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z')
   printf '%s' "$_phl" | grep -Eq "$_CP8B_PATHHIT_T1_LC" && return 0
@@ -8259,6 +8274,14 @@ guard_check_command() {
     fi
   fi
 
+  # KIT-BASE-MANIFEST-CONCORDANCE (design A2): `incept.sh --kit-base-replace` is HUMAN-GATED, the same shape as
+  # `gh pr merge --admin`. The flag renames the project's kit-base aside and records another tree as the merge base, which is
+  # the swap the arm above denies as a raw git write; a sanctioned route to it would hand an agent that capability.
+  # `--kit-base-keep` is today's behaviour and stays open. See `_kbr_replace_denied`.
+  if ! selfedit_allowed && _kbr_replace_denied "$cmd" "$_b2_claims_cmd"; then
+    printf '%s' "$_kbr_tip"; return 1
+  fi
+
   # CP-8b: the CO-OCCURRENCE block that used to live here matched a mutation verb and a control-plane
   # path ANYWHERE in the flat string, and never asked whether the verb's TARGET was that path — which
   # is both why `cp conformance/x /tmp/b` (copying OUT) was denied and why `git archive -o conformance/x`
@@ -9368,4 +9391,266 @@ _cp8b_git_view() {
   _gv_w=$(_cp8b_lead "$_gv_s")
   [ "${_gv_w##*/}" = git ] || return 0
   printf 'git %s' "$(_cp8b_drop_tok "$_gv_s")"
+}
+
+# KIT-BASE-MANIFEST-CONCORDANCE (design A2) - `incept.sh --kit-base-replace` is human-gated.
+# A SPEED BUMP on the string, like the `--admin` arm: a script an agent wrote first and then ran, or a flag assembled
+# from a variable, is not seen. What it does see: the flag on a segment led by anything that is not a plain reader
+# (`sh`, `bash -c`, `env X=1 sh`, a path to incept.sh, `xargs` fed the flag), with quotes, backslashes and `$` stripped and the
+# case folded, so `--kit-base-""replace` is read as spelled. A read or a prose mention (`grep`, `cat`, `echo`, `git commit -m`)
+# is not the act and stays open. `--kit-base-keep` is today's behaviour and is not gated.
+_kbr_tip='13: incept.sh --kit-base-replace swaps the project kit merge base: it renames the existing kit-base aside and records another tree as the base kit-update uses to tell the kit own files from the adopter edits. An agent raw git writes onto kit-base are already denied, so this flag is human-gated too (trigger=kit-base-replace). Report the incept refusal to the owner, who runs the replace in their own terminal (!sh scripts/incept.sh ... --kit-base-replace). --kit-base-keep is not gated. See docs/operations/kit-base.md.'
+# _kbr_replace_denied "<cmd>" "<the cmd with quotes, backslashes and $ stripped>": PREDICATE, 0 = deny.
+_kbr_replace_denied() {
+  # fork-free gate. Open on the intact text `kit-base-` (stripped view), OR on any word that starts like the flag once an
+  # escape, brace, expansion, glob or quote could hide the rest: `--k...` or `--` followed by one of $ { ? [ * \ " ' (a script
+  # name is NOT the key: a glob or a copy of the script defeats it, and neither is a bare `kit-base-` before the word)
+  _kbr_g=0
+  case "$2" in
+    *[Kk][Ii][Tt]-[Bb][Aa][Ss][Ee]-*) _kbr_g=1 ;;
+  esac
+  case "$1" in
+    *--[Kk]*|*-'$'*|*-'{'*|*-'?'*|*-'['*|*-'*'*|*-"\\"*|*-'"'*|*-"'"*|*"\$'"*|*"\$\""*) _kbr_g=1 ;;
+  esac
+  [ "$_kbr_g" = 1 ] || return 1
+  _kbr_c=$(_kbr_strip_hd "$1") || _guard_fault kbr-hd
+  _guard_vanished kbr-hd "$1" "$_kbr_c"
+  _kbr_cn=0
+  if _kbr_any_hit "$_kbr_c"; then _kbr_cn=1; fi
+  _cp8b_walk_load "$_kbr_c"
+  while _cp8b_next_seg; do
+    case $_seg in
+      *[![:space:]]*) ;;
+      *) continue ;;
+    esac
+    case "$_seg" in
+      *["$_cp8b_mk_all"]*)
+        _kbr_um=$(_cp8b_unmask_quoted "$_seg") || _guard_fault kbr-unmask
+        _guard_vanished kbr-unmask "$_seg" "$_kbr_um"
+        _seg=$_kbr_um ;;
+    esac
+    # (a segment with no letter or digit, such as the `)"` left after a heredoc substitution, holds no flag)
+    case $_seg in
+      *[[:alnum:]]*) ;;
+      *) continue ;;
+    esac
+    _kbr_s=$(printf '%s' "$_seg" | tr -d "\"\$\\\\'" | tr '()`' '   ' | tr '[:upper:]' '[:lower:]') || _guard_fault kbr-seg
+    _guard_vanished kbr-seg "$_seg" "$_kbr_s"
+    _kbr_pl=$(_cp8b_group_peel "$_kbr_s") || _guard_fault kbr-peel
+    _kbr_lead=$(_cp8b_lead "$_kbr_pl") || _guard_fault kbr-lead
+    _kbr_lead=${_kbr_lead##*/}
+    # a flag fed through xargs rides the pipe, not this segment (the whole command already holds the flag text)
+    if [ "$_kbr_lead" = xargs ] && [ "$_kbr_cn" = 1 ]; then return 0; fi
+    if ! _kbr_any_hit "$_seg"; then continue; fi
+    # a reader lead exempts the segment unless the flag text (or a doubt word) sits INSIDE a substitution span that runs:
+    # `echo $(sh ... --kit-base-replace)` runs it, `echo "$(git log -1)" --kit-base-replace` only prints it. A quoted heredoc
+    # body was already stripped by the walk load (data).
+    case "$_kbr_lead" in
+      git|gh|grep|egrep|fgrep|rg|cat|head|tail|less|more|sed|wc|diff|echo|printf|ls|jq|tr|sort|cut|nl)
+        _kbr_spans "$_seg"
+        if [ -n "$_kbr_spantxt" ] && _kbr_any_hit "$_kbr_spantxt"; then return 0; fi
+        continue ;;
+    esac
+    return 0
+  done
+  return 1
+}
+
+# _kbr_strip_hd "<cmd>": the command without the BODY of a quoted-delimiter heredoc that only feeds `cat` (the repo's standard
+# `git commit -m "$(cat <<'EOF' ... EOF)"`). That body is data. A heredoc that feeds anything else (`sh <<'EOF'`, `cat <<'EOF' | sh`,
+# `cat <<'EOF' > file`) keeps its body, because a shell can run it.
+_kbr_strip_hd() {
+  printf '%s\n' "$1" | awk '
+    { n++; L[n] = $0 }
+    END {
+      i = 1
+      while (i <= n) {
+        line = L[i]
+        if (match(line, /<<-?[ \t]*(\047[A-Za-z_][A-Za-z0-9_]*\047|"[A-Za-z_][A-Za-z0-9_]*"|\\[A-Za-z_][A-Za-z0-9_]*)/)) {
+          rs = RSTART; rl = RLENGTH
+          op = substr(line, rs, rl); pre = substr(line, 1, rs - 1); post = substr(line, rs + rl)
+          dash = (op ~ /^<<-/)
+          d = op; sub(/^<<-?[ \t]*/, "", d); gsub(/[\047"\\]/, "", d)
+          ok = 1
+          # only a git/gh line whose double-quoted message argument holds the whole `$(cat <<...)`
+          if (pre !~ /^[ \t]*(git|gh)[ \t]/) ok = 0
+          if (pre !~ /(-[A-Za-z]*m|--message|-F|--body|--title|--notes)[ \t=]+"\$\([ \t]*cat[ \t]*$/) ok = 0
+          if (pre ~ /eval|[ \t]-c|<\(/) ok = 0
+          if (post !~ /^[ \t)"\047]*$/) ok = 0
+          cnt = 0; e = 0
+          for (j = 1; j <= n; j++) {
+            t = L[j]; if (dash) sub(/^\t+/, "", t)
+            if (t == d) { cnt++; if (j > i && e == 0) e = j }
+          }
+          if (cnt != 1 || e == 0) ok = 0
+          # refuse on doubt: a body line that merely BEGINS with the delimiter (bash 3.2 ends a heredoc at `EOF)`) is not data
+          if (ok) {
+            for (j = i + 1; j < e; j++) {
+              t = L[j]; if (dash) sub(/^\t+/, "", t)
+              if (substr(t, 1, length(d)) == d) ok = 0
+            }
+          }
+          if (ok) { print substr(line, 1, rs - 1) substr(line, rs + rl); i = e + 1; continue }
+        }
+        print line; i++
+      }
+    }'
+}
+
+# _kbr_any_hit "<raw text>": 0 iff the text holds the flag or a doubt word (stripped, lowercased view for the text rule; the
+# raw words for the doubt rule).
+_kbr_any_hit() {
+  _kah_s=$(printf '%s' "$1" | tr -d "\"\$\\\\'" | tr '()`' '   ' | tr '[:upper:]' '[:lower:]') || _guard_fault kbr-hit
+  _guard_vanished kbr-hit "$1" "$_kah_s"
+  if _kbr_text_hit "$_kah_s"; then return 0; fi
+  _kbr_text_doubt "$1"
+}
+
+# _kbr_text_doubt "<raw text>": 0 iff some word could spell the flag by an escape, brace, expansion or glob: a `--` word
+# (optionally behind `$'`) that is not exactly --kit-base-keep and either starts with one of $ { ? [ * \ " ' after the dashes
+# or starts with k and carries one of those characters anywhere.
+_kbr_text_doubt() {
+  _kd_pg=0
+  case "$-" in
+    *f*) _kd_pg=1 ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  [ "$_kd_pg" = 1 ] || set +f
+  for _kd_w in "$@"; do
+    if _kbr_word_doubt "$_kd_w"; then return 0; fi
+  done
+  return 1
+}
+
+# _kbr_word_doubt "<raw word>": 0 iff the word could spell `--kit-base-replace` once its escapes, braces, expansions or globs
+# are resolved. The word must start with a dash (or `$'`, a quote), hold a special character ($ { ? [ * \ " '), and the
+# literal text between its leading dashes and that first special character, lowercased, must be a PREFIX of kit-base-replace
+# (the empty string is one). So `-{-,-}kit-base-replace`, `$'\x2d\x2d...'` and `--kit-bas?-replace` are doubt, and an ordinary
+# `--kubeconfig=$X`, `--key=$K` or `--keep=${X}` is not: its literal part diverges from the flag.
+_kbr_word_doubt() {
+  _kw=$1
+  _kw_a=0
+  case $_kw in
+    "\$'"*|"\$\""*) _kw_a=1; _kw=${_kw#?} ;;
+  esac
+  case $_kw in
+    "'"*|'"'*) _kw=${_kw#?} ;;
+  esac
+  # an empty literal (nothing literal between the dashes and the first special character) is doubt only beside kit/base/repl
+  # text anywhere in the word: `-$MODE`, `--"$ARG"` and `$'\t'` are ordinary, `--${K:-kit}-base-replace` is not
+  _kw_hint=0
+  case $1 in
+    *[Kk][Ii][Tt]*|*[Bb][Aa][Ss][Ee]*|*[Rr][Ee][Pp][Ll]*) _kw_hint=1 ;;
+  esac
+  case $_kw in
+    -*) : ;;
+    *)
+      if [ "$_kw_a" = 0 ]; then return 1; fi
+      # a `$'...'` word with no literal leading dash: doubt only if its first escape decodes to a dash, or it carries a hint
+      case $_kw in
+        "\\x2d"*|"\\x2D"*|"\\055"*|"\\55"*) _kw_hint=1 ;;
+      esac
+      if [ "$_kw_hint" = 0 ]; then return 1; fi ;;
+  esac
+  while :; do
+    case $_kw in
+      -*) _kw=${_kw#-} ;;
+      *) break ;;
+    esac
+  done
+  _kw_lit=''; _kw_sp=0
+  while [ -n "$_kw" ]; do
+    _kw_c=${_kw%"${_kw#?}"}
+    case $_kw_c in
+      '$'|'{'|'?'|'['|'*'|"\\"|'"'|"'")
+        _kw_sp=1
+        break ;;
+    esac
+    _kw_lit=$_kw_lit$_kw_c
+    _kw=${_kw#?}
+  done
+  if [ "$_kw_sp" = 0 ]; then return 1; fi
+  case $_kw_lit in
+    *[A-Z]*)
+      _kw_lit=$(printf '%s' "$_kw_lit" | tr '[:upper:]' '[:lower:]') || _guard_fault kbr-lit ;;
+  esac
+  if [ -z "$_kw_lit" ] && [ "$_kw_hint" = 0 ]; then return 1; fi
+  _kw_full=kit-base-replace
+  case $_kw_full in
+    "$_kw_lit"*) return 0 ;;
+  esac
+  return 1
+}
+
+# _kbr_spans "<raw segment>": sets _kbr_spantxt to the text INSIDE every command substitution `$(...)`, process substitution
+# `<(...)` / `>(...)` and backtick pair of the segment (nesting counted, an unterminated span runs to the end).
+_kbr_spans() {
+  _ks_r=$1; _ks_o=''; _ks_d=0; _ks_p=''; _ks_bt=0
+  while [ -n "$_ks_r" ]; do
+    _ks_c=${_ks_r%"${_ks_r#?}"}
+    _ks_r=${_ks_r#?}
+    if [ "$_ks_d" -gt 0 ]; then
+      case $_ks_c in
+        '(')
+          _ks_d=$((_ks_d + 1)); _ks_o="$_ks_o$_ks_c" ;;
+        ')')
+          _ks_d=$((_ks_d - 1))
+          if [ "$_ks_d" -gt 0 ]; then _ks_o="$_ks_o$_ks_c"; else _ks_o="$_ks_o "; fi ;;
+        *)
+          _ks_o="$_ks_o$_ks_c" ;;
+      esac
+    elif [ "$_ks_bt" = 1 ]; then
+      case $_ks_c in
+        '`')
+          _ks_bt=0; _ks_o="$_ks_o " ;;
+        *)
+          _ks_o="$_ks_o$_ks_c" ;;
+      esac
+    else
+      case $_ks_c in
+        '(')
+          case $_ks_p in
+            '$'|'<'|'>') _ks_d=1 ;;
+          esac ;;
+        '`')
+          _ks_bt=1 ;;
+      esac
+    fi
+    _ks_p=$_ks_c
+  done
+  _kbr_spantxt=$_ks_o
+}
+
+# _kbr_text_hit "<lowercased text>": 0 iff the text holds the flag `kit-base-replace`, or `--kit-base-` followed by anything
+# other than exactly `keep` at a word boundary (refusing on doubt: an escape, a brace or a default expansion leaves a
+# different tail after the prefix). A file name such as kit-base-shared.sh has no `--` before it and is not a hit.
+_kbr_text_hit() {
+  # the intact flag text `kit-base-replace` ending at a word boundary, whatever precedes it (the dashes may be hidden by an
+  # escape or a brace); the aside branch kit-base-replaced-<sha> is released by the boundary (the next byte is d)
+  _kbh_r=$1
+  while :; do
+    case "$_kbh_r" in
+      *kit-base-replace*) : ;;
+      *) break ;;
+    esac
+    _kbh_r=${_kbh_r#*kit-base-replace}
+    case "$_kbh_r" in
+      [a-z0-9_]*) : ;;
+      *) return 0 ;;
+    esac
+  done
+  _kbh_r=$1
+  while :; do
+    case "$_kbh_r" in
+      *--kit-base-*) : ;;
+      *) return 1 ;;
+    esac
+    _kbh_r=${_kbh_r#*--kit-base-}
+    case "$_kbh_r" in
+      keep|keep[!a-z0-9_-]*) : ;;
+      *) return 0 ;;
+    esac
+  done
 }

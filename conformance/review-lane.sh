@@ -32,7 +32,8 @@
 #   well-formed, name commits INSIDE this PR, name a Reviewer string that differs from the Builder
 #   string, close every round, dispose of every finding, resolve every design-promised control to an
 #   EXECUTABLE line, and carry a security-review verdict (or a waiver with all four D-240904-1
-#   criteria).
+#   criteria). A design doc this change adds carries the twelve lens names under a Lens review heading
+#   (presence, never content; DESIGN-SKILL-LENS-LIST).
 #
 #   ⚠️ THE REVIEWER TYPES NOTHING (owner ruling `D-240904-2`, 2026-09-04). Before that ruling the gate
 #   required the approver to paste a typed attestation line (record path, its sha256, the head sha and
@@ -117,6 +118,22 @@ RL_MAX_RECORD_BYTES=16384
 RL_TEMPLATE_MARKER='Copy into your project'
 RL_PLAN_PREFIX='docs/plans/'
 RL_REVIEW_PREFIX='docs/reviews/'
+# DESIGN-SKILL-LENS-LIST: the design docs this gate grades for lens PRESENCE, and the twelve lens names a
+# `## Lens review` table must carry. Constants, not environment-overridable (the rule above): the list is
+# the single copy in skills/design/SKILL.md, and the selftest copies that section so the two cannot drift.
+RL_DESIGN_GLOB='docs/architecture/*-design.md'
+RL_LENSES='Project principles
+Friction
+Software practice
+Agentic practice
+CI
+DevOps and operations
+Security, privacy and guardrails
+Cost and size
+Product
+Design
+Architecture
+UX and accessibility'
 # The four D-240904-1 waiver criteria, verbatim tokens. A security waiver must carry ALL FOUR — the
 # design's test made literal, so "waived" can never be a bare word.
 RL_WAIVER_CRITERIA='no-untrusted-input no-new-permission no-control-plane-surface no-operator-shell'
@@ -339,6 +356,52 @@ rl_rows() {   # stdin: a section; stdout: its data rows
   grep '^|' | grep -vE '^\|[[:space:]]*:?-' | awk 'NR>1'
 }
 rl_cell() { printf '%s' "$1" | awk -F'|' -v n="$2" '{print $(n+1)}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'; }
+
+# rl_added_designs — the design docs this change-set ADDS (never amends: the 142 existing docs are in the
+# base), one path per line to $2. --no-renames: a rename is an add plus a delete, so it owes the table.
+rl_added_designs() {   # $1 = head, $2 = out file
+  if [ -n "${_rl_mb:-}" ]; then
+    git -C "$RL_REPO" diff --name-only --no-renames --diff-filter=A "$_rl_mb" "$1" > "$2.all" 2>/dev/null || return 1
+  else
+    git -C "$RL_REPO" show --name-only --no-renames --diff-filter=A --pretty=format: "$1" > "$2.all" 2>/dev/null || return 1
+  fi
+  : > "$2"
+  while IFS= read -r _ad_p; do
+    # shellcheck disable=SC2254  # the glob IS the pattern; RL_DESIGN_GLOB is a constant, never head-controlled
+    case "$_ad_p" in
+      $RL_DESIGN_GLOB) printf '%s\n' "$_ad_p" >> "$2" ;;
+      # git QUOTES a name with a non-ASCII byte, control char, quote or backslash (core.quotePath); the
+      # quoted line never matches the glob, so it is passed on for rl_lens_leg to refuse by charset.
+      '"docs/architecture/'*'-design.md"') printf '%s\n' "$_ad_p" >> "$2" ;;
+    esac
+  done < "$2.all"
+  return 0
+}
+
+# rl_lens_leg — rule 9. Each added design doc needs a `## Lens review` heading and a table cell equal to
+# each of the twelve names. PRESENCE only: content is never read (the skill's veto on prose scanners).
+rl_lens_leg() {   # $1 = head, $2 = scratch dir -> 0 | 2
+  _ll_rc=0
+  rl_added_designs "$1" "$2/added.txt" || { echo "RL-NO-CHANGESET: the added design docs could not be listed — fail closed"; return 2; }
+  while IFS= read -r _ll_p; do
+    [ -n "$_ll_p" ] || continue
+    if ! rl_path_ok "$_ll_p" docs/architecture/ || ! rl_blob_ok "$1" "$_ll_p"; then
+      # printf, never echo: dash and macOS sh turn a quoted name's literal \n back into a real newline (log forgery)
+      printf '%s\n' "RL-DESIGN-PATH: '$(rl_safe "$_ll_p")' is an added design doc that is not a tracked regular file with a plain name — fail closed"; _ll_rc=2; continue
+    fi
+    rl_blob "$1" "$_ll_p" | tr -d '\r' > "$2/design.md"
+    if ! grep -Eq '^## ([0-9]+[.] )?Lens review' "$2/design.md"; then
+      echo "RL-DESIGN-NO-LENS-TABLE: $_ll_p is a design doc added by this change and has no '## Lens review' section — the M/Sensitive/Control-plane design answers the twelve lenses in skills/design/SKILL.md (N/A with a reason is an answer)"; _ll_rc=2; continue
+    fi
+    awk 'BEGIN{i=0;d=0} /^## /{ if (d==0 && $0 ~ /^## ([0-9]+[.] )?Lens review/) { i=1; d=1 } else { i=0 }; next } i==1 && /^\|/ { n=split($0, f, "|"); for (k=2; k<n; k++) { c=f[k]; gsub(/^[ \t]+/, "", c); gsub(/[ \t]+$/, "", c); if (length(c) > 4 && substr(c,1,2) == "**" && substr(c,length(c)-1) == "**") c=substr(c,3,length(c)-4); print c } }' "$2/design.md" > "$2/cells.txt"
+    while IFS= read -r _ll_n; do
+      grep -qFx "$_ll_n" "$2/cells.txt" || { echo "RL-DESIGN-LENS-MISSING: $_ll_p has a Lens review section but no row for '$_ll_n' — add the row; N/A with a reason is an answer"; _ll_rc=2; }
+    done <<EOF
+$RL_LENSES
+EOF
+  done < "$2/added.txt"
+  return "$_ll_rc"
+}
 
 # rl_containment — a cited commit must be an ANCESTOR of the graded head AND NOT an ancestor of the
 # merge-base with the base. ceremony-binding's two legs, and for its measured reason: leg 1 alone is
@@ -592,6 +655,13 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
   rl_changed "$_rl_head" "$_rl_d/changed.txt" || { echo "RL-NO-CHANGESET: the change-set could not be derived — fail closed"; return 2; }
   _rl_class=$(rl_class "$_rl_d/changed.txt") || { echo "RL-CLASS-UNDERIVABLE: the change-class could not be derived; fail closed (never an implicit 'ordinary')"; return 2; }
   if [ "$_rl_nobase" = 0 ] && [ "$_rl_class" = ordinary ] && rl_docs_only "$_rl_d/changed.txt"; then
+    # DESIGN-SKILL-LENS-LIST amendment A1: a design doc added on a docs-only change-set is graded too, or
+    # an M design filed in its own docs PR is never seen. No added design doc -> the N-A line below, unchanged.
+    rl_added_designs "$_rl_head" "$_rl_d/docs-added.txt" || { echo "RL-NO-CHANGESET: the added design docs could not be listed — fail closed"; return 2; }
+    if [ -s "$_rl_d/docs-added.txt" ]; then
+      if rl_ceiling_exempt "$_rl_head" "$_rl_class" "$_rl_d"; then return 0; fi
+      rl_lens_leg "$_rl_head" "$_rl_d" || return 2
+    fi
     echo "review-lane: N-A — ordinary AND docs-only. The scope cut is the CLASSIFIER's, not this gate's judgment (design 4.1)."
     return 0
   fi
@@ -651,6 +721,9 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
 $_rl_vals
 EOF
   done
+  # --- rule 9: an added design doc carries the twelve lens names (presence). After the trailer loop so its
+  # refusals print beside an RL-TRAILER one; past both scope cuts above, so XS/S ordinary is never graded.
+  rl_lens_leg "$_rl_head" "$_rl_d" || _rl_rc=2
   [ "$_rl_rc" = 0 ] || return 2
 
   # --- rule 8: the attestation, DECLARED RATHER THAN EVALUATED, and identically in both modes since
@@ -754,6 +827,10 @@ selftest() {
   # build a fully-conformant head, then let the caller perturb one thing
   fx_full() {   # $1 name -> repo dir, leaves $HEADSHA set
     _r=$(fx_new "$1")
+    if [ "${2:-}" = olddoc ]; then   # the BASE carries an old design doc with no lens table
+      mkdir -p "$_r/docs/architecture"; printf '# old design\nno table\n' > "$_r/docs/architecture/2026-01-01-old-design.md"
+      git -C "$_r" add -A >/dev/null; git -C "$_r" commit -qm olddoc >/dev/null
+    fi
     git -C "$_r" checkout -qb feat/x
     printf 'code\n' > "$_r/conformance/thing.sh"; git -C "$_r" add -A >/dev/null
     git -C "$_r" commit -qm "task
@@ -1211,6 +1288,62 @@ Kit-Class: ordinary
 Kit-Plan: docs/plans/2026-09-30-vol.md
 Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   ck "XS ordinary that volunteers the trailers is graded (stub plan refused)" 2 "$(fx_run "$r" prepush)" RL-PLAN-STUB
+
+  # ── DESIGN-SKILL-LENS-LIST — the lens leg. A design doc the change ADDS carries the twelve lens names.
+  # fx_design <repo> <mode: full|eleven|none> — writes an added design doc; `full` is the Lens review
+  # section COPIED OUT OF the shipped skill, so a lens renamed in the skill or in RL_LENSES reds leg 1.
+  fx_design() {
+    mkdir -p "$1/docs/architecture"
+    _fd="$1/docs/architecture/2026-10-08-fixture-design.md"
+    case "$2" in
+      none) printf '# fixture design\n\nno table here\n' > "$_fd" ;;
+      *)    { printf '# fixture design\n\n'
+            awk '/^## /{ i = ($0 ~ /^## Lens review/) } i' "$DIR/skills/design/SKILL.md"
+            } > "$_fd"
+            [ "$2" != eleven ] || { grep -v '| Cost and size |' "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd"; } ;;
+    esac
+    git -C "$1" add -A >/dev/null
+  }
+  # leg 1 (+): control-plane, added doc with the full table; the OLD doc is amended without one (not graded)
+  r=$(fx_full lensok olddoc)
+  printf '# old design\namended, still no table\n' > "$r/docs/architecture/2026-01-01-old-design.md"
+  fx_design "$r" full; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "added design doc carries the lens table -> pass" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
+  # leg 2 (−): eleven rows, no 'Cost and size' -> named. LOAD-BEARING: the call site in rl_run.
+  r=$(fx_full lensmiss)
+  fx_design "$r" eleven; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "M/CP design doc without a full lens table is named" 2 "$(fx_run "$r" prepush)" RL-DESIGN-LENS-MISSING
+  grep -qF "Cost and size" "$_fx/last.log" || { echo "selftest FAIL: the refusal must NAME the missing lens 'Cost and size'"; st=1; }
+  # leg 3 (+): XS ordinary adding a design doc with no table is exempt (the ceiling cut runs first)
+  r=$(fx_ord xslens XS XS 1 XSROW src/app.js)
+  fx_design "$r" none; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "XS ordinary design doc without a table is not flagged" 0 "$(fx_run "$r" prepush)" "XS/S ordinary (XSROW, size XS)"
+  # leg 5 (−): git quotes a non-ASCII name; the quoted line must reach RL-DESIGN-PATH, not be skipped.
+  # LOAD-BEARING: remove the quoted-name arm in rl_added_designs and this reds (rc 0).
+  r=$(fx_full lensquote)
+  mkdir -p "$r/docs/architecture"; printf '# x\n' > "$r/docs/architecture/caf$(printf '\303\251')-design.md"
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "a quoted-name added design doc is refused" 2 "$(fx_run "$r" prepush)" RL-DESIGN-PATH
+  # leg 5b (−): a newline in the name must not forge a log line (echo would expand the literal \n). LOAD-BEARING: swap printf for echo and this reds under dash.
+  r=$(fx_full lensnl)
+  _nl=$(printf '\nX'); _nl=${_nl%X}
+  mkdir -p "$r/docs/architecture"; printf '# x\n' > "$r/docs/architecture/a${_nl}FORGED-LINE-design.md"
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "a newline-bearing design doc name is refused" 2 "$(fx_run "$r" prepush)" RL-DESIGN-PATH
+  ! grep -q '^FORGED-LINE' "$_fx/last.log" || { echo "selftest FAIL: a filename forged a log line"; st=1; }
+  # leg 5c (+): a quoted NON-design name under docs/architecture is not the lens leg's business
+  r=$(fx_full lensnd)
+  mkdir -p "$r/docs/architecture"; printf '# x\n' > "$r/docs/architecture/caf$(printf '\303\251')-notes.md"
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "a quoted non-design name is not refused by the lens leg" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
+  # leg 6 (+): an XS ordinary design-only docs PR (no code) is exempt. LOAD-BEARING: delete the
+  # rl_ceiling_exempt line on the docs-only path and the lens leg reds this (rc 2).
+  r=$(fx_ord xsdocs XS XS 1 XSROW docs/architecture/2026-10-08-fixture-design.md)
+  ck "XS ordinary design-only docs PR without a table is not flagged" 0 "$(fx_run "$r" prepush)" "XS/S ordinary (XSROW, size XS)"
+  # leg 4 (−), amendment A1: a design-only docs PR is graded too. LOAD-BEARING: the call site above the N-A return.
+  r=$(fx_new lensdocs); git -C "$r" checkout -qb feat/x
+  fx_design "$r" none; git -C "$r" commit -qm "design only" >/dev/null
+  ck "design-only docs PR adding a design doc without the table is named" 2 "$(fx_run "$r" prepush)" RL-DESIGN-NO-LENS-TABLE
 
   # ── THE STRUCK MODE IS STILL AN ASSERTION. `--stamp` was removed by `D-240904-2`, and the failure to
   # guard against is not that it stops working — it is that it silently starts DOING NOTHING while

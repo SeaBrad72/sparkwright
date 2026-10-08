@@ -882,9 +882,50 @@ check_hook_refresh() {
   return $st
 }
 
+# ── KIT-BASE-MANIFEST-CONCORDANCE: kit-update names a FOREIGN BASE ─────────────────────────────────────────
+# A project whose `kit-base` came from another stack's incept (kept with --kit-base-keep) used to fail with
+# "unknown --stack" from the base's own incept. It must now say FOREIGN BASE and name both profiles, before
+# that incept runs. Load-bearing negative: with the check removed the output carries `unknown --stack` instead.
+check_foreign_base() {
+  _t=$(mktemp -d "${TMPDIR:-/tmp}/kbm.XXXXXX") || { echo "kit-update-merge: cannot mktemp" >&2; return 2; }
+  # shellcheck disable=SC2064
+  trap "_cleanup '$_t'" EXIT INT TERM
+  build_adopter "$_t/p" || return 1
+  _v=$(cat "$ROOT/VERSION" 2>/dev/null || echo 0.0.0)
+  build_release "$_t/rel" "${_v}-fixture" || return 1
+  rm -rf "$_t/x"
+  sh "$ROOT/scripts/adopter-export.sh" "$_t/x" >/dev/null 2>&1 || {
+    echo "FAIL: FOREIGN-BASE — the second export failed" >&2; return 1; }
+  for _e in "$_t/p"/* "$_t/p"/.[!.]* "$_t/p"/..?*; do
+    [ "${_e##*/}" = .git ] && continue
+    if [ -e "$_e" ] || [ -L "$_e" ]; then rm -rf "$_e"; fi
+  done
+  cp -R "$_t/x/." "$_t/p/" && ( cd "$_t/p" && git add -A && $GIT_C commit -qm 'second export' ) >/dev/null 2>&1 || {
+    echo "FAIL: FOREIGN-BASE — could not stage the second export" >&2; return 1; }
+  ( cd "$_t/p" && sh scripts/incept.sh --noninteractive --name Flow --intent-owner B --stack python \
+      --date "$ADOPT_DATE" --no-db --kit-base-keep ) >"$_t/incept.out" 2>&1 || {
+    echo "FAIL: FOREIGN-BASE — the python incept with --kit-base-keep failed:" >&2; sed 's/^/    /' "$_t/incept.out" >&2 || :; return 1; }
+  ( cd "$_t/p" && git add -A && $GIT_C commit -qm 'inception' ) >/dev/null 2>&1 || return 1
+  if ! git -C "$_t/p" show kit-base:.kit-manifest | grep -q '^profiles/typescript-node/'; then
+    echo "FAIL: FOREIGN-BASE — the fixture's kit-base is not the typescript-node one (a vacuous fixture)" >&2; return 1
+  fi
+  _rc=0
+  ( cd "$_t/p" && env -u CI -u GITHUB_ACTIONS sh scripts/kit-update.sh --from "$_t/rel" ) >"$_t/out" 2>&1 || _rc=$?
+  if [ "$_rc" -eq 1 ] && grep -q 'FOREIGN BASE' "$_t/out" && grep -q 'typescript-node' "$_t/out" \
+     && grep -q 'python' "$_t/out" && ! grep -q 'unknown --stack' "$_t/out"; then
+    echo "PASS: FOREIGN-BASE — kit-update refuses a base from another stack by name (FOREIGN BASE, both profiles) before its incept"
+    echo "OK: kit-update-merge [FOREIGN-BASE] — the opaque 'unknown --stack' failure is gone"
+    return 0
+  fi
+  echo "FAIL: FOREIGN-BASE — expected rc 1 with FOREIGN BASE naming typescript-node and python (got rc $_rc):" >&2
+  sed 's/^/    /' "$_t/out" >&2 || :
+  return 1
+}
+
 case "${1:-}" in
   "")
     _rc=0
+    ( check_foreign_base ); _f=$?; [ "$_f" -eq 0 ] || _rc=$_f
     ( check ); _c=$?; [ "$_c" -eq 0 ] || _rc=$_c
     ( check_unpruned ); _u=$?; [ "$_u" -eq 0 ] || _rc=$_u
     ( check_ci_wiring ); _w=$?; [ "$_w" -eq 0 ] || _rc=$_w

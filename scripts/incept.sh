@@ -134,6 +134,10 @@ DB_BACKED="${INCEPT_DB_BACKED:-1}"
 DATE_PIN=''
 # TBG-TRACKER-CONF F1: backend-neutral brownfield modifier — default 0 (greenfield), --existing sets 1.
 EXISTING=0
+# KIT-BASE-MANIFEST-CONCORDANCE: what to do when a `kit-base` already exists that is NOT the base this export would
+# record. Neither flag = refuse, before any mutation. The choice is the OWNER's (the guard human-gates replace).
+KB_KEEP=0
+KB_REPLACE=0
 # Canonical named backlog backends (one source of truth — conformance/backlog-adapters.sh
 # asserts this set agrees with DEVELOPMENT-PROCESS.md §6 and docs/work-tracking/adapters.md).
 BACKLOG_BACKENDS="md github jira ado linear gitlab"
@@ -192,10 +196,17 @@ while [ $# -gt 0 ]; do
     # tracker backend accepts the flag with a brownfield note, and `md` refuses it (no external
     # tracker to adopt into). Neutrality lives in the flag itself, not in a per-backend gate here.
     --existing) EXISTING=1; shift ;;
-    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--existing] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--allow-runtime-mismatch] [--noninteractive]"; exit 0 ;;
+    --kit-base-keep) KB_KEEP=1; shift ;;
+    --kit-base-replace) KB_REPLACE=1; shift ;;
+    -h|--help) echo "usage: incept.sh [--name N] [--intent-owner O] [--stack S] [--team solo|team] [--backlog md|github|jira|ado|linear|gitlab] [--existing] [--ci github|gitlab] [--harness claude-code[,generic,...]] [--operator-fluency novice|adjacent|practitioner] [--mode lean|enterprise] [--date YYYY-MM-DD] [--no-db] [--allow-runtime-mismatch] [--kit-base-keep | --kit-base-replace] [--noninteractive]"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ "$KB_KEEP" -eq 1 ] && [ "$KB_REPLACE" -eq 1 ]; then
+  echo "incept: --kit-base-keep and --kit-base-replace are opposites; pass at most one (usage error, nothing was changed)" >&2
+  exit 2
+fi
 
 # security L-5: validate the --existing/--backlog PAIR at arg-parse time, before ANY mutation (git
 # init, scaffold copy, .gitignore edit) — refusing this AFTER the scaffold is already written left a
@@ -724,6 +735,127 @@ done
 DATE=$(esc "${DATE_PIN:-$(date +%Y-%m-%d)}")
 VER=$(cat VERSION 2>/dev/null || echo "unknown")
 ENAME=$(esc "$NAME"); EOWNER=$(esc "$OWNER")
+
+# --- KIT-BASE-MANIFEST-CONCORDANCE: a `kit-base` that is not THIS export's base is refused, BEFORE any mutation ----
+# MEASURED (T1 ledger harvest K3): incepting a python export over a directory that held a typescript-node trial
+# kept the trial's base with rc 0 and the line "'kit-update' will use the existing base". It never compared them.
+# The comparison lives HERE and not in commit_kit_base, because commit_kit_base runs after every mutation, which is
+# too late to refuse. At this point $STACK and $VER are trusted and nothing in the worktree has been touched.
+#
+# THE PREDICATE IS TREE IDENTITY with the base THIS incept would record: the stage (the export, scoped by its own
+# .kit-manifest) pruned exactly as it will be recorded, hashed by the SAME helper commit_kit_base uses, so the check and
+# the record can never compute the tree two ways. A path-set difference cannot see a same-profile, older-release base
+# (identical file list, different bytes), which is just as foreign; it is only the DISPLAY in the refusal.
+# No .kit-manifest means an empty stage and nothing to compare: the legacy behaviour is unchanged.
+_prune_profiles_in() {  # <dir> — remove non-$STACK stack profiles + surgically reconcile <dir>/.kit-manifest
+  _pp_dir=$1
+  [ -d "$_pp_dir/profiles" ] || return 0
+  _pp_re=''
+  for _pp in $STACK_PROFILES; do
+    [ "$_pp" = "$STACK" ] && continue
+    [ -d "$_pp_dir/profiles/$_pp" ] && rm -rf "$_pp_dir/profiles/$_pp"
+    [ -f "$_pp_dir/profiles/$_pp.md" ] && rm -f "$_pp_dir/profiles/$_pp.md"
+    # Regex-ESCAPE the name before it enters the grep -Ev alternation below. Profile DIRS are not
+    # charset-validated at the registry (unlike --stack, which is), so a metachar-bearing dir name must
+    # not be able to broaden/narrow the manifest carve (security review, defense-in-depth; matches the
+    # fixed-string discipline of adopter-export.sh). The disk rm above is already fixed-string + [ -d ]-guarded.
+    _pp_esc=$(printf '%s' "$_pp" | sed 's/[][(){}.^$*+?|\\]/\\&/g')
+    _pp_re="${_pp_re:+$_pp_re|}$_pp_esc"
+  done
+  # Surgical manifest reconcile: drop ONLY the pruned profiles' lines — never a find-regenerate (incept
+  # runs in a messier context than adopter-export's clean staging). No manifest (old export) => no-op.
+  if [ -n "$_pp_re" ] && [ -f "$_pp_dir/.kit-manifest" ]; then
+    _pp_tmp="$_pp_dir/.kit-manifest.prune.$$"
+    if grep -Ev "^profiles/($_pp_re)(/|\.md\$)" "$_pp_dir/.kit-manifest" > "$_pp_tmp"; then
+      mv "$_pp_tmp" "$_pp_dir/.kit-manifest"
+    else
+      rm -f "$_pp_tmp"
+    fi
+  fi
+}
+
+# _kb_tree_of <dir> — prints the git tree id of <dir> as the kit-base commit records it: a TEMPORARY index, `add -Af`
+# (force past any ignore config, the manifest is authoritative), `write-tree`. Never touches the adopter's index or
+# worktree; the only side effect is unreachable loose objects. Both the concordance check and commit_kit_base call it.
+_kb_tree_of() {
+  _kt_gd=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  # The temp index path must NOT EXIST: git reads an existing EMPTY file as a CORRUPT index.
+  _kt_idx=$(mktemp) && rm -f "$_kt_idx" || return 1
+  _kt_tree=''
+  _kt_dir=$1
+  # Hash the stage with NOTHING of the repo's own configuration able to run: no hook (post-index-change), no fsmonitor, no
+  # attributes file, and every configured clean/smudge/process filter command emptied (an in-tree .gitattributes may name any
+  # of them). Without this the comparison could execute a command an adopter's repo configured.
+  set -- -c core.hooksPath=/dev/null -c core.fsmonitor=false -c core.attributesFile=/dev/null
+  for _kt_k in $(git config --name-only --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null); do
+    _kt_b=${_kt_k%.*}
+    set -- "$@" -c "${_kt_b}.clean=" -c "${_kt_b}.smudge=" -c "${_kt_b}.process=" -c "${_kt_b}.required=false"
+  done
+  if ( cd "$_kt_dir" && GIT_DIR="$_kt_gd" GIT_INDEX_FILE="$_kt_idx" GIT_WORK_TREE="$_kt_dir" git "$@" add -Af . ) >/dev/null 2>&1; then
+    _kt_tree=$(GIT_DIR="$_kt_gd" GIT_INDEX_FILE="$_kt_idx" git "$@" write-tree 2>/dev/null) || _kt_tree=''
+  fi
+  rm -f "$_kt_idx" 2>/dev/null || true
+  [ -n "$_kt_tree" ] || return 1
+  printf '%s\n' "$_kt_tree"
+}
+
+KB_ALREADY=0          # 1 = the existing kit-base is identical to this export: nothing to record
+KB_DEFER_REPLACE=0    # 1 = --kit-base-replace on a mismatch: commit_kit_base renames the old base aside, then records
+_kb_refuse() {  # <existing tree> <new tree or empty> — the refusal; exits 1, nothing was mutated
+  _kr_subj=$(git log -1 --format=%s refs/heads/kit-base 2>/dev/null || echo '?')
+  _kr_src=$(git log -1 --format='%(trailers:key=Kit-Source,valueonly)' refs/heads/kit-base 2>/dev/null | sed -n '1p' | tr -d '[:space:]')
+  _kr_profs=$(git show refs/heads/kit-base:.kit-manifest 2>/dev/null | sed -n 's#^profiles/\([^/]*\)/.*#\1#p' | LC_ALL=C sort -u | tr '\n' ' ')
+  echo "incept: REFUSING (FOREIGN BASE). To move an existing project to a newer kit, run 'kit-update --from <new kit>'; a second incept is not an upgrade." >&2
+  echo "  The existing 'kit-base' branch is not the base this export would record." >&2
+  echo "  existing base : ${_kr_subj} (Kit-Source ${_kr_src:-none})" >&2
+  echo "  its profiles  : ${_kr_profs:-none}   this incept's --stack: ${STACK}" >&2
+  if [ -n "$2" ]; then
+    _kr_d=$(git diff-tree -r --name-status "$1" "$2" 2>/dev/null || true)
+    _kr_a=$(printf '%s\n' "$_kr_d" | grep -c '^A' || true)
+    _kr_m=$(printf '%s\n' "$_kr_d" | grep -c '^M' || true)
+    _kr_x=$(printf '%s\n' "$_kr_d" | grep -c '^D' || true)
+    echo "  recording this export would change the base by ${_kr_a} added, ${_kr_m} modified, ${_kr_x} deleted paths:" >&2
+    printf '%s\n' "$_kr_d" | sed -n '1,10p' | sed 's/^/    /' >&2
+  else
+    echo "  (the tree of this export could not be computed, so the base cannot be shown to match)" >&2
+  fi
+  echo "  Only if this directory really held another kit or stack, there are two exits:" >&2
+  echo "    --kit-base-keep     keep the existing base. 'kit-update' will then refuse it as a FOREIGN BASE." >&2
+  echo "    --kit-base-replace  rename it aside (branch kit-base-replaced-<sha12>, its tags kit-base-replaced/...) and record this export. Nothing is deleted." >&2
+  echo "  Choosing one is the OWNER's decision: an agent should report this refusal, not pick a flag." >&2
+  exit 1
+}
+_kb_concordance() {
+  _kc_tmp=$(mktemp -d) || { echo "incept: cannot create a temp dir to compare the kit-base" >&2; exit 1; }
+  _kc_new=''
+  if cp -R "$KIT_BASE_STAGE/." "$_kc_tmp/" 2>/dev/null; then
+    _prune_profiles_in "$_kc_tmp"
+    _kc_new=$(_kb_tree_of "$_kc_tmp") || _kc_new=''
+  fi
+  rm -rf "$_kc_tmp" 2>/dev/null || true
+  _kc_old=$(git rev-parse --verify --quiet 'refs/heads/kit-base^{tree}' 2>/dev/null) || _kc_old=''
+  if [ -n "$_kc_new" ] && [ "$_kc_new" = "$_kc_old" ]; then
+    KB_ALREADY=1
+    echo "kit-base already exists and is identical to this export — kept." >&2
+    return 0
+  fi
+  if [ "$KB_KEEP" -eq 1 ]; then
+    echo "warning: the existing 'kit-base' is NOT this export's base; kept on --kit-base-keep." >&2
+    echo "         'kit-update' will REFUSE this project (FOREIGN BASE) until the base is re-recorded or replaced." >&2
+    return 0
+  fi
+  if [ "$KB_REPLACE" -eq 1 ]; then
+    KB_DEFER_REPLACE=1
+    echo "note: --kit-base-replace — the existing 'kit-base' is renamed aside when the new base is recorded (nothing is deleted)." >&2
+    return 0
+  fi
+  _kb_refuse "$_kc_old" "$_kc_new"
+}
+if [ -n "${KIT_BASE_STAGE:-}" ] && [ -d "${KIT_BASE_STAGE:-}" ] \
+   && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+   && git rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1; then
+  _kb_concordance
+fi
 
 # --- ADOPTER-TREE-IDENTITY: replace the KIT's own SECURITY.md / README.md, never the adopter's ------
 # MEASURED: `.gitattributes` cannot carve these two (the public mirror IS an export; security-channel-
@@ -1450,32 +1582,8 @@ fi
 # matching pruned THEIRS (it reads kit-base:.kit-manifest first).
 # NOTE: conformance/kit-update-merge.sh builds its LEGACY-adopter fixture by stripping this block via the
 # `# --- 5a4.` / `# --- 5b0.` markers — do not rename them without updating that check (it asserts the strip).
-_prune_profiles_in() {  # <dir> — remove non-$STACK stack profiles + surgically reconcile <dir>/.kit-manifest
-  _pp_dir=$1
-  [ -d "$_pp_dir/profiles" ] || return 0
-  _pp_re=''
-  for _pp in $STACK_PROFILES; do
-    [ "$_pp" = "$STACK" ] && continue
-    [ -d "$_pp_dir/profiles/$_pp" ] && rm -rf "$_pp_dir/profiles/$_pp"
-    [ -f "$_pp_dir/profiles/$_pp.md" ] && rm -f "$_pp_dir/profiles/$_pp.md"
-    # Regex-ESCAPE the name before it enters the grep -Ev alternation below. Profile DIRS are not
-    # charset-validated at the registry (unlike --stack, which is), so a metachar-bearing dir name must
-    # not be able to broaden/narrow the manifest carve (security review, defense-in-depth; matches the
-    # fixed-string discipline of adopter-export.sh). The disk rm above is already fixed-string + [ -d ]-guarded.
-    _pp_esc=$(printf '%s' "$_pp" | sed 's/[][(){}.^$*+?|\\]/\\&/g')
-    _pp_re="${_pp_re:+$_pp_re|}$_pp_esc"
-  done
-  # Surgical manifest reconcile: drop ONLY the pruned profiles' lines — never a find-regenerate (incept
-  # runs in a messier context than adopter-export's clean staging). No manifest (old export) => no-op.
-  if [ -n "$_pp_re" ] && [ -f "$_pp_dir/.kit-manifest" ]; then
-    _pp_tmp="$_pp_dir/.kit-manifest.prune.$$"
-    if grep -Ev "^profiles/($_pp_re)(/|\.md\$)" "$_pp_dir/.kit-manifest" > "$_pp_tmp"; then
-      mv "$_pp_tmp" "$_pp_dir/.kit-manifest"
-    else
-      rm -f "$_pp_tmp"
-    fi
-  fi
-}
+# (`_prune_profiles_in` is DEFINED above, beside the kit-base concordance check that also prunes a copy; only its two
+# calls live here, between the markers.)
 _prune_profiles_in "."
 [ -n "${KIT_BASE_STAGE:-}" ] && [ -d "${KIT_BASE_STAGE:-}" ] && _prune_profiles_in "$KIT_BASE_STAGE"
 # Rewrite docs/STACK-SELECTION.md (working tree) to a single-profile stub so its links to the now-removed
@@ -1529,6 +1637,44 @@ read_kit_source() {
   return 1
 }
 
+# --kit-base-replace: rename the existing base AWAY, never delete it. The branch goes to kit-base-replaced-<sha12>; every
+# kit-base/* tag that resolves into its chain goes to kit-base-replaced/<name> (the new base's tag can then bind, and a
+# colliding name no longer points at the old chain). Runs only after the new commit object exists, so a failure before
+# this point leaves the old base untouched; a failure after it is undone by _kb_replace_undo.
+_kb_replace_aside() {
+  [ "$KB_DEFER_REPLACE" = 1 ] || return 0
+  _ra_tip=$(GIT_DIR="$_kb_gd" git rev-parse --verify --quiet refs/heads/kit-base 2>/dev/null) || return 1
+  _ra_br="kit-base-replaced-$(printf '%s' "$_ra_tip" | cut -c1-12)"
+  GIT_DIR="$_kb_gd" git branch -m kit-base "$_ra_br" >/dev/null 2>&1 || return 1
+  _kb_aside_br=$_ra_br
+  _ra_list=$(GIT_DIR="$_kb_gd" git for-each-ref --format='%(refname:strip=2)' refs/tags/kit-base/ 2>/dev/null) || _ra_list=''
+  for _ra_t in $_ra_list; do
+    _ra_obj=$(GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/${_ra_t}" 2>/dev/null) || continue
+    _ra_c=$(GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/${_ra_t}^{commit}" 2>/dev/null) || continue
+    GIT_DIR="$_kb_gd" git merge-base --is-ancestor "$_ra_c" "$_ra_tip" >/dev/null 2>&1 || continue
+    # create-only: a kit-base-replaced/<name> that already exists blocks the move. Never half-move: stop, and the caller undoes.
+    if GIT_DIR="$_kb_gd" git update-ref "refs/tags/kit-base-replaced/${_ra_t#kit-base/}" "$_ra_obj" '' >/dev/null 2>&1; then
+      GIT_DIR="$_kb_gd" git update-ref -d "refs/tags/${_ra_t}" "$_ra_obj" >/dev/null 2>&1 || true
+      _kb_moved_tags="${_kb_moved_tags} ${_ra_t}"
+    else
+      _kb_blocked_tag="kit-base-replaced/${_ra_t#kit-base/}"
+      return 1
+    fi
+  done
+  return 0
+}
+_kb_replace_undo() {
+  [ -n "${_kb_aside_br:-}" ] || return 0
+  for _ru_t in $_kb_moved_tags; do
+    _ru_obj=$(GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/kit-base-replaced/${_ru_t#kit-base/}" 2>/dev/null) || continue
+    GIT_DIR="$_kb_gd" git update-ref "refs/tags/${_ru_t}" "$_ru_obj" '' >/dev/null 2>&1 || continue
+    GIT_DIR="$_kb_gd" git update-ref -d "refs/tags/kit-base-replaced/${_ru_t#kit-base/}" >/dev/null 2>&1 || true
+  done
+  GIT_DIR="$_kb_gd" git rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1 \
+    || GIT_DIR="$_kb_gd" git branch -m "$_kb_aside_br" kit-base >/dev/null 2>&1 || true
+  _kb_aside_br=''
+}
+
 commit_kit_base() {
   [ -n "$KIT_BASE_STAGE" ] && [ -d "$KIT_BASE_STAGE" ] || return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
@@ -1537,15 +1683,15 @@ commit_kit_base() {
   # S2 (review #318): NEVER clobber an adopter's existing ref. On re-adoption or a prior kit-base install
   # the adopter may already have a `kit-base` branch or a `kit-base/v<VER>` tag; overwriting it is silent,
   # after-GC-unrecoverable data loss on a namespace we do not own. Refuse and say so.
-  if GIT_DIR="$_kb_gd" git rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1; then
-    echo "warning: a 'kit-base' branch already exists — NOT overwriting it (brownfield-safe)." >&2
-    echo "         'kit-update' will use the existing base. Delete it first to re-record." >&2
+  # KIT-BASE-MANIFEST-CONCORDANCE: by here the pre-mutation check (above) has already compared the two. An identical
+  # base needs no record; a kept foreign one is announced there; only --kit-base-replace reaches the record below,
+  # after the old base is renamed aside (kit-update's own `kit-base-unverified` rename-aside is the precedent).
+  if [ "$KB_DEFER_REPLACE" != 1 ] && GIT_DIR="$_kb_gd" git rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1; then
+    [ "$KB_ALREADY" = 1 ] || echo "warning: a 'kit-base' branch already exists — NOT overwriting it (brownfield-safe)." >&2
     rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true; return 0
   fi
 
-  # The temp index path must NOT EXIST: git reads an existing EMPTY file as a CORRUPT index
-  # ("index file smaller than expected"), not an empty one. mktemp creates it, so remove it.
-  _kb_idx=$(mktemp) && rm -f "$_kb_idx" || return 0
+  # (The temp index and `add -Af` live in _kb_tree_of, shared with the concordance check.)
 
   # The kit-base commit carries a KIT identity, supplied explicitly — NOT the adopter's. Two reasons:
   #   (1) a fresh `git init` adopter (the documented path) may have NO user.name/user.email configured,
@@ -1565,13 +1711,13 @@ commit_kit_base() {
     _kb_msg=$(printf '%s\n\nKit-Source: %s\nKit-Version: %s' "$_kb_msg" "$KB_SRC_SHA" "$KB_SRC_VER")
     _kb_tag="kit-base/v${VER}+$(printf '%s' "$KB_SRC_SHA" | cut -c1-12)"
   fi
-  if ( cd "$KIT_BASE_STAGE" && GIT_DIR="$_kb_gd" GIT_INDEX_FILE="$_kb_idx" \
-         GIT_WORK_TREE="$KIT_BASE_STAGE" git add -Af . ) 2>/dev/null &&
-     _kb_tree=$(GIT_DIR="$_kb_gd" GIT_INDEX_FILE="$_kb_idx" git write-tree 2>/dev/null) &&
+  _kb_aside_br=''; _kb_moved_tags=''; _kb_blocked_tag=''
+  if _kb_tree=$(_kb_tree_of "$KIT_BASE_STAGE") &&
      _kb_cmt=$(GIT_DIR="$_kb_gd" GIT_AUTHOR_NAME='Sparkwright kit-base' GIT_AUTHOR_EMAIL='kit-base@sparkwright.local' \
          GIT_COMMITTER_NAME='Sparkwright kit-base' GIT_COMMITTER_EMAIL='kit-base@sparkwright.local' \
          git commit-tree "$_kb_tree" \
          -m "$_kb_msg" 2>/dev/null) &&
+     _kb_replace_aside &&
      GIT_DIR="$_kb_gd" git update-ref refs/heads/kit-base "$_kb_cmt" '' 2>/dev/null; then
     # Create-only tag (no -f): S2 already refused if the branch existed; guard the tag independently.
     if GIT_DIR="$_kb_gd" git rev-parse --verify --quiet "refs/tags/${_kb_tag}" >/dev/null 2>&1; then :; else
@@ -1579,10 +1725,20 @@ commit_kit_base() {
     fi
     echo "recorded kit-base: the pristine v${VER} export you adopted from (branch 'kit-base', tag '${_kb_tag}')"
     echo "  It is the merge base 'kit-update' will diff against. Do not delete it. See docs/operations/kit-base.md."
+    [ -z "$_kb_aside_br" ] || echo "  The previous base is kept at branch '${_kb_aside_br}' (its tags are kit-base-replaced/...). Nothing was deleted."
   else
+    _kb_replace_undo
+    if [ "$KB_DEFER_REPLACE" = 1 ]; then
+      # --kit-base-replace was asked for and could not finish: the old base is back where it was (undone above), never half-moved.
+      echo "incept: --kit-base-replace FAILED and was undone: the previous 'kit-base' and its tags are as they were." >&2
+      if [ -n "$_kb_blocked_tag" ]; then
+        echo "  The tag '$_kb_blocked_tag' already exists and blocks the move. Move it aside yourself, then run again." >&2
+      fi
+      rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true
+      exit 1
+    fi
     echo "warning: could not record the kit-base branch — 'kit-update' will be unavailable for this project." >&2
   fi
-  rm -f "$_kb_idx" 2>/dev/null || true
   rm -rf "$KIT_BASE_STAGE" 2>/dev/null || true
 }
 commit_kit_base
