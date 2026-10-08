@@ -317,8 +317,12 @@ conformance/fixtures/tracker-jira/contract-pf-probe-403.txt
 conformance/fixtures/tracker-jira/contract-pf-probe-error.txt
 conformance/fixtures/tracker-jira/contract-pf-probe-hostile.txt
 conformance/fixtures/tracker-jira/contract-pf-probe-ok.txt
+conformance/fixtures/tracker-jira/contract-pf-probe-proxy-refused.txt
 conformance/fixtures/tracker-jira/contract-pf-probe-redirect.txt
 conformance/fixtures/tracker-jira/contract-pf-probe-unreach.txt
+conformance/fixtures/tracker-jira/contract-pf-probe-via-absent.txt
+conformance/fixtures/tracker-jira/contract-pf-probe-via-hostile.txt
+conformance/fixtures/tracker-jira/contract-pf-probe-via-proxy.txt
 conformance/fixtures/tracker-jira/contract-pf-server-cloud.txt
 conformance/fixtures/tracker-jira/contract-pf-server-dc.txt
 conformance/fixtures/tracker-jira/contract-pf-vis-equal-nolevels.txt

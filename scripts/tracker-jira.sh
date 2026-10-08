@@ -49,6 +49,8 @@ set -eu
 unset _TJ_RUNDIR 2>/dev/null || true
 # the same for the status-file hook `jira_curl_authed` honours (set only by `_tj_tr_post` below)
 unset _TJ_STATUS_FILE 2>/dev/null || true
+# and the route-file hook (set only by `_tj_cr_probe` below)
+unset _TJ_VIA_FILE 2>/dev/null || true
 
 # --- the ONE hardened jira-HTTP primitive (T1: S-3, T5, J2, J4, B-1, H-1, M-4) ------------------
 
@@ -65,9 +67,12 @@ _TJ_CURL_BIN=curl
 # ASCII-only, no whitespace, no control bytes, no quote/backslash — real Jira emails/API tokens/PATs
 # never need anything outside it.
 _tj_cred_ok() {
+  # spelled-out letter classes (no A-Z / a-z ranges: those admit accented letters under a UTF-8 locale);
+  # the allowed set lives in a variable used unquoted as a pattern, so the match is on the bytes themselves
+  _cr_set='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@._+/=:-'
   case "$1" in
     '') return 1 ;;
-    *[!A-Za-z0-9@._+/=:-]*) return 1 ;;
+    *[!$_cr_set]*) return 1 ;;
     *) : ;;
   esac
   _l=${#1}
@@ -124,6 +129,76 @@ _tj_jc_status_ok() {
   return 2
 }
 
+# _tj_proxy_ok <value> proxy|noproxy: the positive allowlist for a value about to be written into a `-K`
+# `proxy = "…"` / `noproxy = "…"` line (the twin of `_tj_cred_ok`). A quote or backslash ends/escapes the
+# quoted value early and a newline starts a NEW directive, so only the bytes a real proxy URL or no-proxy
+# list needs are admitted. A proxy may also carry a scheme, but only http:// or https:// (or none).
+_tj_proxy_ok() {
+  # The value is matched against the allowed set AS WRITTEN: no external filter (tr, sed, awk) sits between
+  # the check and the config line, because a filter that stops at an invalid byte would validate less than
+  # is emitted. The set is a variable used unquoted as a pattern (so a space needs no quote or backslash);
+  # letter classes are spelled out (A-Z / a-z ranges admit accented letters under a UTF-8 locale).
+  _po_set='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:/@._%+-'
+  case "$2" in
+    proxy)
+      case "$1" in
+        *[!$_po_set]*) return 1 ;;
+      esac
+      case "$1" in
+        http://*|https://*) : ;;
+        *://*) return 1 ;;
+        *) : ;;
+      esac ;;
+    *)
+      _po_set='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:/@._%+,* -'
+      case "$1" in
+        *[!$_po_set]*) return 1 ;;
+      esac ;;
+  esac
+  [ "${#1}" -le 512 ]
+}
+
+# _tj_proxy_lines: sets `_proxybit` to the optional `-K` lines for the environment's egress proxy, or to
+# empty. curl's own precedence: `https_proxy` before `HTTPS_PROXY`, `no_proxy` before `NO_PROXY`. The value
+# reaches curl ONLY through the stdin config — curl runs under `env -i`, so it is never in curl's
+# environment or on argv (a proxy URL often carries user:password@). Each value is allowlisted first; a
+# refused value is rc 1 with one fixed sentence (no caller bytes echoed) and NEVER falls back to a direct
+# call. CA/TLS variables stay scrubbed on purpose: no cacert/capath/insecure line is ever written.
+# `write-out` asks curl for %{http_connect} (non-zero = the tunnel was used) so the preflight can say so.
+_tj_proxy_lines() {
+  _proxybit=""
+  _pl_has_proxy=""
+  _pl_nl='
+'
+  _pl_proxy=${https_proxy:-${HTTPS_PROXY:-}}
+  _pl_noproxy=${no_proxy:-${NO_PROXY:-}}
+  if [ -n "$_pl_noproxy" ]; then
+    _tj_proxy_ok "$_pl_noproxy" noproxy || { echo "refused: NO_PROXY carries a byte outside the allowed set (letters, digits, and : / @ . _ % + - , * space); nothing was sent" >&2; return 1; }
+  fi
+  if [ -n "$_pl_proxy" ]; then
+    _tj_proxy_ok "$_pl_proxy" proxy || { echo "refused: HTTPS_PROXY is not a usable proxy URL (http:// or https://, letters, digits and : / @ . _ % + - only); nothing was sent" >&2; return 1; }
+    _proxybit="proxy = \"$_pl_proxy\"$_pl_nl"'write-out = "%{http_connect}"'
+    _pl_has_proxy=1
+  fi
+  if [ -n "$_pl_noproxy" ]; then
+    _proxybit="$_proxybit${_proxybit:+$_pl_nl}noproxy = \"$_pl_noproxy\""
+  fi
+  return 0
+}
+
+# _tj_via_read <scratch-file or empty>: `direct` when no proxy was configured or curl made no CONNECT
+# (%{http_connect} 000, e.g. NO_PROXY matched); `proxy` for any other 3-digit code; `unknown` when a proxy
+# was configured but curl's answer is unreadable (never a guess).
+_tj_via_read() {
+  if [ -z "$1" ]; then printf 'direct'; return 0; fi
+  _vr=$(cat "$1" 2>/dev/null || true)
+  case "$_vr" in
+    000) printf 'direct' ;;
+    [0-9][0-9][0-9]) printf 'proxy' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
 # jira_curl_authed <method> <url> [bodyfile]: prints the response body on stdout. Auth via `-K -`
 # fed a `user = "<user>:<token>"` (basic) or `header = "Authorization: Bearer <token>"` (bearer)
 # line on STDIN — never on argv, never a temp file. <bodyfile>, if given, carries a non-secret
@@ -168,25 +243,38 @@ jira_curl_authed() {
   esac
   _databit=""
   [ -n "$_bodyfile" ] && _databit=$(printf 'header = "Content-Type: application/json"\ndata = "@%s"\n' "$_bodyfile")
+  _tj_proxy_lines || return 1
   _attempt=0
   _maxattempts=3
   while [ "$_attempt" -lt "$_maxattempts" ]; do
     _attempt=$((_attempt + 1))
     _resp_tmp=$(_tj_mktemp resp) || { echo "unverified: could not create a scratch file" >&2; return 2; }
     _hdr_tmp=$(_tj_mktemp hdr) || { rm -f "$_resp_tmp"; echo "unverified: could not create a scratch file" >&2; return 2; }
+    _conn_tmp=""
+    if [ -n "$_pl_has_proxy" ]; then
+      _conn_tmp=$(_tj_mktemp conn) || { rm -f "$_resp_tmp" "$_hdr_tmp"; echo "unverified: could not create a scratch file" >&2; return 2; }
+    fi
     # N-1: each directive gets its OWN explicit `\n` at the join point (see the standalone note
     # below this function for the full history of why).
     _cfg_all=$(printf '%s\n%s\nrequest = "%s"\nurl = "%s"\nsilent\nshow-error\nproto = "=https"\ngloboff\nmax-redirs = 0\nconnect-timeout = 10\nmax-time = 30\n' \
       "$_cfgline" "$_databit" "$_method" "$_url")
+    # the proxy lines (validated above) ride AFTER the fixed block: with none set, the config above is
+    # byte-for-byte what it was before this row.
+    [ -z "$_proxybit" ] || _cfg_all=$(printf '%s\n%s' "$_cfg_all" "$_proxybit")
     _rc=0
+    # curl's stdout (the `write-out` of %{http_connect}, proxy case only) goes to a private scratch file.
     printf '%s' "$_cfg_all" | env -i PATH="/usr/bin:/bin:/usr/local/bin" \
-      "$_TJ_CURL_BIN" -q -K - -D "$_hdr_tmp" -o "$_resp_tmp" || _rc=$?
+      "$_TJ_CURL_BIN" -q -K - -D "$_hdr_tmp" -o "$_resp_tmp" >"${_conn_tmp:-/dev/null}" || _rc=$?
+    _via=$(_tj_via_read "$_conn_tmp")
+    [ -z "$_conn_tmp" ] || rm -f "$_conn_tmp"
     if [ "$_rc" -ne 0 ]; then
       rm -f "$_resp_tmp" "$_hdr_tmp"
       [ "$_attempt" -lt "$_maxattempts" ] && continue
       echo "unverified: curl exit $_rc after $_attempt attempt(s)" >&2
       return 2
     fi
+    # the site answered: name the route for a caller that asked (the preflight), whatever the status
+    [ -z "${_TJ_VIA_FILE:-}" ] || printf '%s' "$_via" > "$_TJ_VIA_FILE" 2>/dev/null || true
     _status=$(_tj_jc_status_ok "$_hdr_tmp") || { rm -f "$_resp_tmp" "$_hdr_tmp"; return 2; }
     case "$_status" in
       3??) rm -f "$_resp_tmp" "$_hdr_tmp"; echo "unverified: jira returned a redirect ($_status), not followed" >&2; return 2 ;;
@@ -976,7 +1064,16 @@ _tj_cr_soft() {
 # unreachable, 401, 403); only an unclassifiable failure is rc 2. type is read only when auth is ok.
 _tj_cr_probe() {
   _pb_rc=0
+  _pb_vf=$(_tj_mktemp via) || _pb_vf=""
+  [ -z "$_pb_vf" ] || _TJ_VIA_FILE=$_pb_vf
   _tj_cr_try GET "$1" || _pb_rc=$?
+  unset _TJ_VIA_FILE
+  _pb_via=$(cat "$_pb_vf" 2>/dev/null || true)
+  [ -z "$_pb_vf" ] || rm -f "$_pb_vf"
+  case "$_pb_via" in
+    proxy|direct) : ;;
+    *) _pb_via=unknown ;;
+  esac
   _pb_reach=ok; _pb_auth=unknown; _pb_type=unknown
   if [ "$_pb_rc" -eq 0 ]; then
     _pb_auth=ok
@@ -990,6 +1087,7 @@ _tj_cr_probe() {
       401|403) _pb_auth=$_ct_status ;;
       4??) : ;;
       *) case "$_ct_err" in
+           "refused: HTTPS_PROXY"*|"refused: NO_PROXY"*) _pb_reach=proxy-refused ;;
            *"curl exit"*) _pb_reach=unreachable ;;
            *"returned a redirect"*) _pb_reach=redirect ;;
            *"returned status 5"*|*"rate-limited"*) _pb_reach=error ;;
@@ -997,7 +1095,7 @@ _tj_cr_probe() {
          esac ;;
     esac
   fi
-  printf 'reach\t%s\nauth\t%s\ntype\t%s\n' "$_pb_reach" "$_pb_auth" "$_pb_type"
+  printf 'reach\t%s\nauth\t%s\ntype\t%s\nvia\t%s\n' "$_pb_reach" "$_pb_auth" "$_pb_type" "$_pb_via"
 }
 
 # _tj_cr_serverinfo <url>: deployment (cloud|datacenter|unknown) + build (digits <= 9, else unknown).
@@ -2127,7 +2225,10 @@ _TJ_FIXDIR() {
 _tj_selftest() {
   sfail=0
   tmpd=$(mktemp -d) || { echo "FAIL: could not create temp dir"; exit 1; }
-  trap 'rm -rf "$tmpd"; [ "${sfail:-1}" -eq 0 ] || exit 1' EXIT INT TERM
+  _tj_px_pid=""
+  # the selftest must not depend on the machine's egress: no ambient proxy or CA variable reaches any leg
+  unset https_proxy HTTPS_PROXY no_proxy NO_PROXY SSL_CERT_FILE CURL_CA_BUNDLE SSL_CERT_DIR 2>/dev/null || true
+  trap '[ -z "${_tj_px_pid:-}" ] || kill "$_tj_px_pid" 2>/dev/null; rm -rf "$tmpd"; [ "${sfail:-1}" -eq 0 ] || exit 1' EXIT INT TERM
   fixdir="$(_TJ_FIXDIR)/conformance/fixtures/tracker-jira"
 
   # --- a curl shim recording argv, proving the token is NEVER on argv (T5/J4). Response bodies
@@ -2432,6 +2533,8 @@ case "\$KIT_TJ_FIXTURE" in
   contract-field)                write_ok; write_body "\$FIXDIR/contract-field.json" ;;
   *) write_ok; [ -n "\$out" ] && printf '{}' > "\$out" ;;
 esac
+# TRACKER-ADAPTER-PROXY-PASSTHROUGH: stand in for curl's write-out of %{http_connect} (stdout), when a leg names one.
+if [ -f "\$_tj_shim_dir/.httpconnect" ]; then cat "\$_tj_shim_dir/.httpconnect"; fi
 exit 0
 SHIMEOF
   chmod +x "$shim"
@@ -2449,6 +2552,7 @@ SHIMEOF
   _tj_fxseq() { printf '%s\n' "$@" > "$tmpd/.fixture-seq"; }
 
   _tj_st_transport
+  _tj_st_proxy
   _tj_st_get_issue_perms
   _tj_st_writes
   _tj_st_createmeta
@@ -2610,6 +2714,238 @@ EOF
     echo "PASS: selftest — a real subprocess ignored the env-set _TJ_CURL_BIN; the canary never ran (H-1)"
   fi
 
+}
+# _tj_st_proxy: TRACKER-ADAPTER-PROXY-PASSTHROUGH legs — the adapter hands curl a proxy ONLY through the
+# stdin `-K` config (never env, never argv), allowlists each value first, and never trusts a CA variable.
+# (_tj_selftest has already cleared the ambient proxy and CA variables.)
+_tj_px_ok() {
+  if [ "$2" -eq 1 ]; then echo "PASS: selftest — $1"; else echo "FAIL: selftest — $1"; sfail=1; fi
+}
+# _tj_px_refuse <label> <var> <value> <name-the-sentence-must-carry> <bytes-that-must-not-be-echoed>
+_tj_px_refuse() {
+  rm -f "$tmpd/.methods" "$tmpd/.lastcfg" "$tmpd/.pxerr"
+  _pxr_rc=0
+  ( export "$2=$3"; jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>"$tmpd/.pxerr" ) || _pxr_rc=$?
+  _pxr_good=1
+  [ "$_pxr_rc" -eq 1 ] || _pxr_good=0
+  [ ! -s "$tmpd/.methods" ] || _pxr_good=0
+  grep -q "$4" "$tmpd/.pxerr" 2>/dev/null || _pxr_good=0
+  ! grep -qF "$5" "$tmpd/.pxerr" 2>/dev/null || _pxr_good=0
+  _tj_px_ok "$1 is refused: rc 1, zero requests, the sentence names $4, the value is not echoed (proxy passthrough)" "$_pxr_good"
+}
+_tj_st_proxy() {
+  _tj_fx cloud-issue-good
+  _px_nl_proxy=$(printf 'http://p.example:3128\nurl = "https://evil.example.com/steal"')
+  _px_nl_noproxy=$(printf 'a.example\nurl = "https://evil.example.com/steal"')
+
+  # --- 1. config injection (the security negatives): every value shape x both values x both cases ---
+  _tj_px_refuse "a newline plus a spoofed url in HTTPS_PROXY" HTTPS_PROXY "$_px_nl_proxy" HTTPS_PROXY evil.example.com
+  _tj_px_refuse "a newline plus a spoofed url in https_proxy" https_proxy "$_px_nl_proxy" HTTPS_PROXY evil.example.com
+  _tj_px_refuse "a quote in HTTPS_PROXY" HTTPS_PROXY 'http://p"x' HTTPS_PROXY 'p"x'
+  _tj_px_refuse "a backslash in HTTPS_PROXY" HTTPS_PROXY 'http://p\x' HTTPS_PROXY 'p\x'
+  _tj_px_refuse "a newline plus a spoofed url in NO_PROXY" NO_PROXY "$_px_nl_noproxy" NO_PROXY evil.example.com
+  _tj_px_refuse "a newline plus a spoofed url in no_proxy" no_proxy "$_px_nl_noproxy" NO_PROXY evil.example.com
+  _tj_px_refuse "a quote in NO_PROXY" NO_PROXY 'a.example"x' NO_PROXY 'a.example"x'
+  _tj_px_refuse "a backslash in NO_PROXY" NO_PROXY 'a.example\x' NO_PROXY 'a.example\x'
+  _tj_px_refuse "a socks5 scheme in HTTPS_PROXY" HTTPS_PROXY 'socks5://127.0.0.1:1080' HTTPS_PROXY 'socks5'
+  _tj_px_refuse "an ftp scheme in HTTPS_PROXY" HTTPS_PROXY 'ftp://127.0.0.1:21' HTTPS_PROXY 'ftp://'
+  _tj_px_refuse "a space in HTTPS_PROXY (the no-proxy list may carry one, the proxy may not)" HTTPS_PROXY 'http://p.example:3128 x' HTTPS_PROXY 'p.example'
+
+  # --- 2. CA and TLS variables are never handed over (the negative): scrubbed by env -i, never a config line ---
+  rm -f "$tmpd/.shimenv" "$tmpd/.lastcfg"
+  ( export SSL_CERT_FILE=/nonexistent/ca-sentinel CURL_CA_BUNDLE=/nonexistent/ca-sentinel SSL_CERT_DIR=/nonexistent/ca-sentinel
+    export HTTPS_PROXY=http://p.example:3128
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _px_good=1
+  [ -s "$tmpd/.shimenv" ] || _px_good=0
+  [ -s "$tmpd/.lastcfg" ] || _px_good=0
+  grep -q '^proxy = "http://p.example:3128"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  for _px_n in SSL_CERT_FILE CURL_CA_BUNDLE SSL_CERT_DIR; do
+    ! grep -q "$_px_n" "$tmpd/.shimenv" 2>/dev/null || _px_good=0
+  done
+  for _px_n in cacert capath insecure proxy-insecure proxy-cacert; do
+    ! grep -q "^$_px_n" "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  done
+  _tj_px_ok "SSL_CERT_FILE, CURL_CA_BUNDLE and SSL_CERT_DIR never reach curl's environment, and the config carries no cacert, capath, insecure or proxy-insecure line (proxy passthrough)" "$_px_good"
+
+  # --- 3. the env scrub stands: the proxy (with a credential in it) reaches curl ONLY through the stdin config ---
+  rm -f "$tmpd/.shimenv" "$tmpd/.lastcfg"; : > "$argvlog"
+  ( export HTTPS_PROXY=http://pxuser:PXPW-SENTINEL@p.example:3128 https_proxy=http://pxuser:PXPW-SENTINEL@p.example:3128
+    export NO_PROXY=internal.example no_proxy=internal.example
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _px_good=1
+  [ -s "$tmpd/.shimenv" ] || _px_good=0
+  ! grep -qi 'proxy' "$tmpd/.shimenv" 2>/dev/null || _px_good=0
+  ! grep -q 'PXPW-SENTINEL' "$tmpd/.shimenv" 2>/dev/null || _px_good=0
+  [ -s "$argvlog" ] || _px_good=0
+  ! grep -q 'PXPW-SENTINEL' "$argvlog" 2>/dev/null || _px_good=0
+  ! grep -qi 'proxy' "$argvlog" 2>/dev/null || _px_good=0
+  grep -q '^proxy = "http://pxuser:PXPW-SENTINEL@p.example:3128"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  grep -q '^noproxy = "internal.example"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  _tj_px_ok "the proxy (credential included) is absent from curl's environment and argv and present in the stdin config (proxy passthrough, T5/J4 + F1)" "$_px_good"
+
+  # --- 4. precedence: lowercase wins over uppercase, for both pairs; uppercase alone is honoured ---
+  rm -f "$tmpd/.lastcfg"
+  ( export https_proxy=http://lower.example:1 HTTPS_PROXY=http://UPPER.example:1 no_proxy=lower.example NO_PROXY=UPPER.example
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _px_good=1
+  grep -q '^proxy = "http://lower.example:1"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  grep -q '^noproxy = "lower.example"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  ! grep -q 'UPPER' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  _tj_px_ok "https_proxy wins over HTTPS_PROXY and no_proxy wins over NO_PROXY, as curl itself would choose (proxy passthrough)" "$_px_good"
+  rm -f "$tmpd/.lastcfg"
+  ( export HTTPS_PROXY=http://UPPER.example:1 NO_PROXY=UPPER.example
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _px_good=1
+  grep -q '^proxy = "http://UPPER.example:1"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  grep -q '^noproxy = "UPPER.example"$' "$tmpd/.lastcfg" 2>/dev/null || _px_good=0
+  _tj_px_ok "HTTPS_PROXY and NO_PROXY alone are honoured (proxy passthrough)" "$_px_good"
+  # a no-proxy list may carry commas, a star and a space
+  rm -f "$tmpd/.lastcfg"
+  ( export HTTPS_PROXY=http://p.example:3128 NO_PROXY='*.corp.example, 10.0.0.1'
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _px_good=0
+  if grep -qF 'noproxy = "*.corp.example, 10.0.0.1"' "$tmpd/.lastcfg" 2>/dev/null; then _px_good=1; fi
+  _tj_px_ok "a NO_PROXY list with commas, a star and a space is admitted (proxy passthrough positive control)" "$_px_good"
+
+  # --- 4b. with neither variable set the config is byte-identical to the one before this row ---
+  rm -f "$tmpd/.lastcfg"
+  jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 || true
+  printf 'user = "user@example.com:s3cr3t-token-XYZ"\n\nrequest = "GET"\nurl = "https://ex.atlassian.net/rest/api/3/myself"\nsilent\nshow-error\nproto = "=https"\ngloboff\nmax-redirs = 0\nconnect-timeout = 10\nmax-time = 30\n' > "$tmpd/.cfg-want"
+  _px_good=0
+  if cmp -s "$tmpd/.cfg-want" "$tmpd/.lastcfg"; then _px_good=1; fi
+  _tj_px_ok "with no proxy variable set the -K config is byte-identical to the one before this row (proxy passthrough)" "$_px_good"
+
+  # --- 5. the route the probe reports: via proxy | direct (curl's own %{http_connect}) ---
+  _tj_px_via() { # <label> <want> <http_connect-the-shim-prints> <proxy-or-empty> [<no-proxy>]
+    printf '%s' "$3" > "$tmpd/.httpconnect"
+    _tj_fx pf-myself-atlassian
+    _pxv_out=$( export HTTPS_PROXY="$4"; [ -n "$4" ] || unset HTTPS_PROXY; if [ -n "${5:-}" ]; then export NO_PROXY="$5"; fi; tj_contract_read https://ex.atlassian.net cloud probe 2>/dev/null ) || _pxv_out="RC=$?"
+    rm -f "$tmpd/.httpconnect"
+    case "$_pxv_out" in
+      *"via	$2") _tj_px_ok "$1" 1 ;;
+      *) _tj_px_ok "$1 (got: $_pxv_out)" 0 ;;
+    esac
+  }
+  _tj_px_via "probe via: a proxy and a non-zero http_connect prints 'via proxy'" proxy 200 http://p.example:3128
+  _tj_px_via "probe via: a proxy that curl skipped (http_connect 000, e.g. NO_PROXY matched) prints 'via direct'" direct 000 http://p.example:3128
+  _tj_px_via "probe via: no proxy prints 'via direct'" direct '' ''
+  _tj_px_via "probe via: NO_PROXY set with no proxy still prints 'via direct', not unknown (R1)" direct '' '' 'internal.example'
+  # a refused proxy value is a named reach state, not an unreadable probe (N1)
+  _px_want=$(printf 'reach\tproxy-refused\nauth\tunknown\ntype\tunknown\nvia\tunknown')
+  _tj_fx pf-myself-atlassian
+  # shellcheck disable=SC2089 # the literal quote IS the hostile byte under test
+  _px_out=$( export HTTPS_PROXY='http://p"x'; tj_contract_read https://ex.atlassian.net cloud probe 2>/dev/null ) || _px_out="RC=$?"
+  _px_good=0
+  if [ "$_px_out" = "$_px_want" ]; then _px_good=1; fi
+  _tj_px_ok "probe: a refused HTTPS_PROXY prints reach proxy-refused (proxy passthrough)" "$_px_good"
+  # shellcheck disable=SC2089 # the literal quote IS the hostile byte under test
+  _px_out=$( export NO_PROXY='a"b'; tj_contract_read https://ex.atlassian.net cloud probe 2>/dev/null ) || _px_out="RC=$?"
+  _px_good=0
+  if [ "$_px_out" = "$_px_want" ]; then _px_good=1; fi
+  _tj_px_ok "probe: a refused NO_PROXY prints reach proxy-refused (proxy passthrough)" "$_px_good"
+
+  # --- 7. invalid UTF-8 and accented bytes: the check must see exactly the bytes that would be written ---
+  _px_lc_had=${LC_ALL+set}; _px_lc_old=${LC_ALL:-}
+  LC_ALL=en_US.UTF-8; export LC_ALL
+  _px_ff_q=$(printf 'a.example\377"')
+  _px_ff_nl=$(printf 'a.example\377\nurl = "https://evil.invalid"')
+  _px_pff_q=$(printf 'http://p.example\377"')
+  _px_pff_nl=$(printf 'http://p.example\377\nurl = "https://evil.invalid"')
+  _px_eacute=$(printf 'caf\303\251')
+  _tj_px_refuse "NO_PROXY with an invalid byte before a quote (UTF-8 locale)" NO_PROXY "$_px_ff_q" NO_PROXY 'a.example'
+  _tj_px_refuse "NO_PROXY with an invalid byte before a newline and a spoofed url (UTF-8 locale)" NO_PROXY "$_px_ff_nl" NO_PROXY 'evil.invalid'
+  _tj_px_refuse "NO_PROXY with an accented letter (UTF-8 locale)" NO_PROXY "$_px_eacute" NO_PROXY 'caf'
+  _tj_px_refuse "HTTPS_PROXY with an invalid byte before a quote (UTF-8 locale)" HTTPS_PROXY "$_px_pff_q" HTTPS_PROXY 'p.example'
+  _tj_px_refuse "HTTPS_PROXY with an invalid byte before a newline and a spoofed url (UTF-8 locale)" HTTPS_PROXY "$_px_pff_nl" HTTPS_PROXY 'evil.invalid'
+  _tj_px_refuse "HTTPS_PROXY with an accented letter (UTF-8 locale)" HTTPS_PROXY "http://$_px_eacute" HTTPS_PROXY 'caf'
+  # the credential check, the same latent class: refused directly and through the primitive, zero requests
+  _px_good=1
+  for _px_v in "$_px_ff_q" "$(printf 'tok\377\nurl = "https://evil.invalid"')" "$_px_eacute"; do
+    if _tj_cred_ok "$_px_v"; then _px_good=0; fi
+  done
+  _tj_cred_ok 'user@example.com' || _px_good=0
+  _tj_px_ok "_tj_cred_ok refuses an invalid byte and an accented letter under a UTF-8 locale and still admits an email (proxy passthrough)" "$_px_good"
+  rm -f "$tmpd/.methods"
+  _px_rc=0
+  ( KIT_TRACKER_TOKEN=$(printf 'tok\377\nurl = "https://evil.invalid"'); export KIT_TRACKER_TOKEN
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || _px_rc=$?
+  _px_good=0
+  if [ "$_px_rc" -eq 1 ] && [ ! -s "$tmpd/.methods" ]; then _px_good=1; fi
+  _tj_px_ok "a credential with an invalid byte before a spoofed url is refused, rc 1, zero requests (UTF-8 locale)" "$_px_good"
+  # positive: an accepted no-proxy list emits exactly one noproxy line and exactly one url line
+  rm -f "$tmpd/.lastcfg"
+  # shellcheck disable=SC2090 # the quoted-looking value is deliberate: a space and a star in a no-proxy list
+  ( export HTTPS_PROXY=http://p.example:3128 NO_PROXY='*.corp.example, 10.0.0.1'
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _px_good=0
+  if [ "$(grep -c '^noproxy = ' "$tmpd/.lastcfg" 2>/dev/null)" = 1 ] && [ "$(grep -c '^url = ' "$tmpd/.lastcfg" 2>/dev/null)" = 1 ]; then _px_good=1; fi
+  _tj_px_ok "an accepted no-proxy list emits exactly one noproxy line and exactly one url line (UTF-8 locale)" "$_px_good"
+  if [ "$_px_lc_had" = set ]; then LC_ALL=$_px_lc_old; export LC_ALL; else unset LC_ALL; fi
+
+  # --- 6. real curl routes through the line: a fixture CONNECT logger on 127.0.0.1 (no external network) ---
+  _tj_px_fixture
+}
+# _tj_px_fixture: real curl (never the shim) pointed at a local CONNECT logger — proves the `proxy =` line
+# actually routes. SKIP if python3 or a local bind is unavailable, but a FAIL in CI.
+_tj_px_fixture() {
+  _pxf_dir="$tmpd/pxfix"; mkdir -p "$_pxf_dir"
+  : > "$_pxf_dir/log"
+  cat > "$_pxf_dir/proxy.py" <<'PYEOF'
+import socket, sys
+portfile, logfile = sys.argv[1], sys.argv[2]
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", 0))
+srv.listen(8)
+with open(portfile, "w") as pf:
+    pf.write(str(srv.getsockname()[1]))
+while True:
+    conn, _ = srv.accept()
+    conn.settimeout(5)
+    try:
+        first = conn.recv(4096).split(b"\r\n")[0].decode("ascii", "replace")
+        with open(logfile, "a") as lf:
+            lf.write(first + "\n")
+    except Exception:
+        pass
+    conn.close()
+PYEOF
+  _pxf_skip=""
+  command -v python3 >/dev/null 2>&1 || _pxf_skip="python3 is not installed"
+  if [ -z "$_pxf_skip" ]; then
+    python3 "$_pxf_dir/proxy.py" "$_pxf_dir/port" "$_pxf_dir/log" 2>/dev/null &
+    _tj_px_pid=$!
+    _pxf_i=0
+    while [ ! -s "$_pxf_dir/port" ] && [ "$_pxf_i" -lt 50 ]; do sleep 0.1; _pxf_i=$((_pxf_i + 1)); done
+    [ -s "$_pxf_dir/port" ] || _pxf_skip="local bind refused"
+  fi
+  if [ -n "$_pxf_skip" ]; then
+    if [ "${CI:-}" = true ]; then
+      echo "FAIL: selftest — the fixture CONNECT proxy could not run in CI ($_pxf_skip) (proxy passthrough)"; sfail=1
+    else
+      echo "SKIP: selftest — the fixture CONNECT proxy leg ($_pxf_skip)"
+    fi
+    [ -z "${_tj_px_pid:-}" ] || { kill "$_tj_px_pid" 2>/dev/null || true; wait "$_tj_px_pid" 2>/dev/null || true; _tj_px_pid=""; }
+    return 0
+  fi
+  _pxf_port=$(cat "$_pxf_dir/port")
+  _pxf_save=$_TJ_CURL_BIN; _TJ_CURL_BIN=curl
+  ( export HTTPS_PROXY="http://127.0.0.1:$_pxf_port"; jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 ) || true
+  _pxf_with=$(cat "$_pxf_dir/log")
+  : > "$_pxf_dir/log"
+  # no proxy variable: the target must be a name that can never resolve, so nothing leaves this machine
+  jira_curl_authed GET https://ex.invalid/rest/api/3/myself >/dev/null 2>&1 || true
+  _pxf_without=$(cat "$_pxf_dir/log")
+  _TJ_CURL_BIN=$_pxf_save
+  kill "$_tj_px_pid" 2>/dev/null || true; wait "$_tj_px_pid" 2>/dev/null || true; _tj_px_pid=""
+  case "$_pxf_with" in
+    "CONNECT ex.atlassian.net:443"*) _tj_px_ok "real curl with HTTPS_PROXY pointed at the fixture sends CONNECT ex.atlassian.net:443 (proxy passthrough)" 1 ;;
+    *) _tj_px_ok "real curl with HTTPS_PROXY pointed at the fixture did not send CONNECT ex.atlassian.net:443 (log: '$_pxf_with')" 0 ;;
+  esac
+  _px_good=0
+  if [ -z "$_pxf_without" ]; then _px_good=1; fi
+  _tj_px_ok "real curl without the proxy variable never touches the fixture (proxy passthrough)" "$_px_good"
 }
 _tj_st_get_issue_perms() {
 
@@ -7101,25 +7437,25 @@ _tj_st_preflight_reads() {
 
   # --- probe × {ok, app, 401, 403, 404, curl-fail, 3xx, 5xx, hostile type} ---
   _tj_fx pf-myself-atlassian
-  _pf_leg "probe ok prints reach/auth/type and never the name or email" 0 "$(printf 'reach\tok\nauth\tok\ntype\tatlassian')" "$_pf_b" cloud probe
+  _pf_leg "probe ok prints reach/auth/type/via and never the name or email" 0 "$(printf 'reach\tok\nauth\tok\ntype\tatlassian\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx pf-myself-app
-  _pf_leg "probe ok, app account" 0 "$(printf 'reach\tok\nauth\tok\ntype\tapp')" "$_pf_b" cloud probe
+  _pf_leg "probe ok, app account" 0 "$(printf 'reach\tok\nauth\tok\ntype\tapp\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx unauthorized
-  _pf_leg "probe 401 is rc 0 with auth 401" 0 "$(printf 'reach\tok\nauth\t401\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe 401 is rc 0 with auth 401" 0 "$(printf 'reach\tok\nauth\t401\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx forbidden
-  _pf_leg "probe 403 is rc 0 with auth 403" 0 "$(printf 'reach\tok\nauth\t403\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe 403 is rc 0 with auth 403" 0 "$(printf 'reach\tok\nauth\t403\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx not-found
-  _pf_leg "probe 404 is reach ok, auth unknown" 0 "$(printf 'reach\tok\nauth\tunknown\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe 404 is reach ok, auth unknown" 0 "$(printf 'reach\tok\nauth\tunknown\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx curl-fail
-  _pf_leg "probe transport failure is unreachable, rc 0" 0 "$(printf 'reach\tunreachable\nauth\tunknown\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe transport failure is unreachable, rc 0, via unknown" 0 "$(printf 'reach\tunreachable\nauth\tunknown\ntype\tunknown\nvia\tunknown')" "$_pf_b" cloud probe
   _tj_fx redirect
-  _pf_leg "probe 3xx is redirect, rc 0" 0 "$(printf 'reach\tredirect\nauth\tunknown\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe 3xx is redirect, rc 0" 0 "$(printf 'reach\tredirect\nauth\tunknown\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx server-error
-  _pf_leg "probe 5xx after retries is error, rc 0" 0 "$(printf 'reach\terror\nauth\tunknown\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe 5xx after retries is error, rc 0" 0 "$(printf 'reach\terror\nauth\tunknown\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx rate-limited
-  _pf_leg "probe 429 is error, rc 0" 0 "$(printf 'reach\terror\nauth\tunknown\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "probe 429 is error, rc 0" 0 "$(printf 'reach\terror\nauth\tunknown\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx pf-myself-hostile
-  _pf_leg "S-6: a hostile accountType prints unknown, never the value" 0 "$(printf 'reach\tok\nauth\tok\ntype\tunknown')" "$_pf_b" cloud probe
+  _pf_leg "S-6: a hostile accountType prints unknown, never the value" 0 "$(printf 'reach\tok\nauth\tok\ntype\tunknown\nvia\tdirect')" "$_pf_b" cloud probe
   _tj_fx pf-myself-atlassian
   _pf_leg "probe refuses an extra argument (rc 1)" 1 "" "$_pf_b" cloud probe extra
   : > "$argvlog"; _tj_fx pf-myself-atlassian

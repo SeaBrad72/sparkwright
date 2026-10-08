@@ -1,4 +1,4 @@
 reach	ok
 auth	ok
 type	atlassian
-via	direct
+via	ZQHOSTILE

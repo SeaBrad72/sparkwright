@@ -512,15 +512,21 @@ _pf_visibility_line() {
 _pf_head() {
   _ph_rc=0; _pf_read probe "$PFD/probe" || _ph_rc=$?
   if [ "$_ph_rc" -ne 0 ]; then _pf_line reach-here UNVERIFIED "the reachability probe could not be read"; return 1; fi
-  case $(_pf_enum "$(_pf_get "$PFD/probe" reach)" ok unreachable redirect error) in
+  case $(_pf_enum "$(_pf_get "$PFD/probe" reach)" ok unreachable redirect error proxy-refused) in
     ok) : ;;
-    unreachable) _pf_line reach-here FAIL "the site did not answer from this machine (network, VPN or IP allowlist); $_PF_RUNNER_CURE"; return 1 ;;
+    proxy-refused) _pf_line reach-here FAIL "HTTPS_PROXY or NO_PROXY carries a value the adapter refuses (letters, digits and : / @ . _ % + - only; percent-encode a proxy password's other characters)"; return 1 ;;
+    unreachable) _pf_line reach-here FAIL "the site did not answer from this machine (network, VPN, IP allowlist or an egress proxy: set HTTPS_PROXY); $_PF_RUNNER_CURE"; return 1 ;;
     redirect) _pf_line reach-here FAIL "the site redirected (an SSO or proxy interstitial); point base_url at the site itself"; return 1 ;;
     error) _pf_line reach-here UNVERIFIED "the site answered with an error or a rate limit; retry later"; return 1 ;;
     *) _pf_line reach-here UNVERIFIED "the reachability probe returned an unreadable answer"; return 1 ;;
   esac
   _pf_deployment_line
-  _pf_line reach-here PASS "the API answers from this machine"
+  case $(_pf_enum "$(_pf_get "$PFD/probe" via)" proxy direct) in
+    proxy) _ph_via=" (via a proxy)" ;;
+    direct) _ph_via=" (direct)" ;;
+    *) _ph_via="" ;;
+  esac
+  _pf_line reach-here PASS "the API answers from this machine$_ph_via"
   _pf_line reach-ci INFO "$_PF_REACH_CI"
   case $(_pf_enum "$(_pf_get "$PFD/probe" auth)" ok 401 403 unknown) in
     ok) _pf_line auth PASS "the site accepted the credential (basic auth, site URL)" ;;
@@ -1112,7 +1118,7 @@ EOF
   _pfv happy/order _pforder "card deployment reach-here reach-ci auth token-expiry project permissions claim-tier required epic-model visibility automation CARD "
   _pfv happy/grammar _pfgram
   _pfv happy/deployment _pfl deployment PASS "Cloud (build 100294)"
-  _pfv happy/reach-here _pfl reach-here PASS "the API answers from this machine"
+  _pfv happy/reach-here _pfl reach-here PASS "the API answers from this machine (direct)"
   _pfv happy/reach-ci _pfl reach-ci INFO "$_pf_ph"
   _pfv happy/auth _pfl auth PASS "the site accepted the credential (basic auth, site URL)"
   _pfv happy/no-account-for-dev _pfa account
@@ -1131,13 +1137,30 @@ EOF
   _pfv happy/probe-first [ "$(sed -n 1p "$faargv")" = "contract-read https://ex.atlassian.net cloud probe" ]
   # --- reach-here: unreachable / redirect stop the card with the cure; an error is UNVERIFIED and stops too ---
   pf_probe=probe-unreach; _pfr pfunreach --preflight --conf "$f7conf"
-  _pfv unreachable/fail-with-runner-cure _pfl reach-here FAIL "the site did not answer from this machine (network, VPN or IP allowlist); if CI cannot reach it either, set the repository variable $_pf_tk to a self-hosted runner label inside your network (JIRA-SETUP §0)"
+  _pfv unreachable/fail-with-runner-cure _pfl reach-here FAIL "the site did not answer from this machine (network, VPN, IP allowlist or an egress proxy: set HTTPS_PROXY); if CI cannot reach it either, set the repository variable $_pf_tk to a self-hosted runner label inside your network (JIRA-SETUP §0)"
   _pfv unreachable/stops _pfa auth
   _pfv unreachable/no-deployment-line _pfa deployment
   _pfv unreachable/header-still-first _pffirst "card${_pf_tab}INFO${_pf_tab}ex.atlassian.net · project AB · as dev · read-only"
   _pfv unreachable/card-last _pfl CARD FAIL "1 FAIL · 0 UNVERIFIED"
   _pfv unreachable/rc _pfok 1
   _pfv unreachable/one-adapter-call _pfcalls 1
+  # --- reach-here names the route: via a proxy / direct; an absent or hostile `via` renders no parenthesis ---
+  pf_probe=probe-via-proxy; _pfr pfviaproxy --preflight --conf "$f7conf"
+  _pfv via/proxy _pfl reach-here PASS "the API answers from this machine (via a proxy)"
+  _pfv via/proxy-order _pforder "card deployment reach-here reach-ci auth token-expiry project permissions claim-tier required epic-model visibility automation CARD "
+  pf_probe=probe-proxy-refused; _pfr pfproxyrefused --preflight --conf "$f7conf"
+  _pfv proxy-refused/fail _pfl reach-here FAIL "HTTPS_PROXY or NO_PROXY carries a value the adapter refuses (letters, digits and : / @ . _ % + - only; percent-encode a proxy password's other characters)"
+  _pfv proxy-refused/stops _pfa auth
+  _pfv proxy-refused/no-deployment-line _pfa deployment
+  _pfv proxy-refused/rc _pfok 1
+  _pfv proxy-refused/card-last _pfl CARD FAIL "1 FAIL · 0 UNVERIFIED"
+  pf_probe=probe-via-absent; _pfr pfviaabsent --preflight --conf "$f7conf"
+  _pfv via/absent-no-parenthesis _pfl reach-here PASS "the API answers from this machine"
+  _pfv via/absent-no-parenthesis-negative _pfnot "answers from this machine ("
+  pf_probe=probe-via-hostile; _pfr pfviahostile --preflight --conf "$f7conf"
+  _pfv via/hostile-no-parenthesis _pfnot "answers from this machine ("
+  _pfv via/hostile-never-echoed _pfnot ZQHOSTILE
+  _pfv via/hostile-still-passes _pfl reach-here PASS "the API answers from this machine"
   pf_probe=probe-redirect; _pfr pfredirect --preflight --conf "$f7conf"
   _pfv redirect/fail _pfl reach-here FAIL "the site redirected (an SSO or proxy interstitial); point base_url at the site itself"
   _pfv redirect/stops _pfa auth
