@@ -32,6 +32,12 @@ Net: the shell/interpreter deny-list is still a **speed bump**; one narrow surfa
 
 Adopt both. The guard reduces accidents cheaply and immediately; the platform boundary is what you certify to an auditor. Neither replaces the other.
 
+## The agent's OS sandbox, and the managed-settings tier
+
+Claude Code's OS sandbox is on in the shipped `.claude/settings.json` (`GUARD-CP-READONLY-SANDBOX`; detail in [`../operations/runtime-guards.md`](../operations/runtime-guards.md), "Below the text layer: the sandbox"). It keeps the agent's own enforcement layer (`.claude/`, `hooks/`, `.kit/`, the git hook and config files, the global git config and shell rc files) read-only to the agent's shell. It is **kit-enforced for Claude Code only**, it leaves the network open, and a human who owns the project can edit project-scoped settings, so it does not replace control #3 (a sandboxed filesystem, platform-owned) or control #1 (egress).
+
+**The hardening tier (org-owned).** Claude Code reads *managed settings* that an administrator installs on the machine (a root-owned file such as `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS or `/etc/claude-code/managed-settings.json` on Linux), and a project's settings cannot loosen them. Put the same `sandbox` block there, with `allowUnsandboxedCommands: false` and `failIfUnavailable: true` if you want a machine where the sandbox cannot start to refuse to run an agent at all, and the protection no longer depends on the project's own file. This is per machine and needs root, so the kit documents it and does not ship it.
+
 ## Human and other-runtime coverage
 
 The guard's PreToolUse hook governs the Claude Code runtime. Its deny-matrix is **reused across runtimes** (`../operations/runtime-guards.md`): a universal git `pre-push` hook covers force-push / push-to-main for **any** git client and humans, and a `kit-guard` CLI lets any other runtime check a proposed command against the same matrix. These widen the speed bump — they are **not** a boundary: `--no-verify`, an uncooperative runtime, or a language interpreter still bypasses them, which is why the boundary must live at the platform. And a hook that was never installed in *this* working copy is not a reduced speed bump — it is none at all: `git clone` copies neither `.git/hooks/` nor `.git/config`, so every fresh clone starts in that state, and `scripts/preflight.sh` refuses on it rather than letting it pass silently. See the runtime-coverage note in [README.md](README.md) and the §13 enforcement model in `DEVELOPMENT-PROCESS.md`.

@@ -444,6 +444,10 @@ AA_EXPECTED_DELTA=$(cat <<'AA_EXPECTED_DELTA_EOF'
 [B2-A ]
 [B2-B ]
 [B2-C ]
+[GTM-A15 tracker-contract --preflight --conf]
+[GTM-A16 tracker-contract --preflight --as ci --conf]
+[GTM-A17 tracker-contract flags in another order]
+[GSR-]
 AA_EXPECTED_DELTA_EOF
 )
 # ⚠️ A WIDENING PREFIX MUST NOT COVER ITS OWN FALSE-POSITIVE PINS, and the three entries below are
@@ -2015,9 +2019,13 @@ assert_allow "read adapters"        '{"tool_name":"Bash","tool_input":{"command"
 #     required security gate). All 3 mutation forms must DENY; a read must still ALLOW. Honest
 #     ceiling: covers DEDICATED scanner-config files (path-matchable) — thresholds embedded in
 #     shared files (pyproject.toml, .golangci.yml) are not path-matchable and are out of scope. ---
-# Write/Edit tool path -> guard_check_path -> is_control_plane_path -> DENY (covers all 6 files)
+# Write/Edit tool path -> guard_check_path -> is_control_plane_path -> DENY (covers all 7 files)
 assert_deny "Write .gitleaks.toml"  '{"tool_name":"Write","tool_input":{"file_path":".gitleaks.toml","content":"[allowlist]\npaths=[\".*\"]"}}'
 assert_deny "Write .gitleaksignore" '{"tool_name":"Write","tool_input":{"file_path":".gitleaksignore","content":"x"}}'
+assert_deny "Write .publish-identifiers" '{"tool_name":"Write","tool_input":{"file_path":".publish-identifiers","content":"Zorbix"}}'
+assert_deny "redirect .publish-identifiers" '{"tool_name":"Bash","tool_input":{"command":"echo Zorbix >> .publish-identifiers"}}'
+assert_deny "sed -i .publish-identifiers" '{"tool_name":"Bash","tool_input":{"command":"sed -i s/Zorbix/x/ .publish-identifiers"}}'
+assert_deny "python open .publish-identifiers" '{"tool_name":"Bash","tool_input":{"command":"python3 -c \"open('.publish-identifiers','w').write('Zorbix')\""}}'
 assert_deny "Edit .semgrepignore"   '{"tool_name":"Edit","tool_input":{"file_path":".semgrepignore","old_string":"a","new_string":"src/"}}'
 assert_deny "Write .checkov.yml"    '{"tool_name":"Write","tool_input":{"file_path":".checkov.yml","content":"skip-check: [CKV_ALL]"}}'
 # Shell redirect path -> guard_check_command -> control-plane redirect-target matcher -> DENY
@@ -5939,6 +5947,74 @@ _fpra_count_rows() {
     END { print n + 0 }
   ' "$1"
 }
+# GUARD-READ-TRACKER-PREFLIGHT-CONF (design §2 D2) — `conformance/tracker-contract.sh` reaches the network, so
+# its declared pair is NOT run by the generic loop below; it gets TWO hermetic runs:
+#   (1) a COPIED tree whose adapter is the fixture fake (the selftest's own T3b shape) — zero network by
+#       construction, run WITH placeholder credentials so the contract really reaches the (fake) adapter;
+#   (2) the LITERAL form in the real tree with every credential unset and a scratch `curl` stub on PATH.
+# ⚠️ MEASURED while building this: the stub on PATH is a BELT, not the wall. The real adapter calls
+# `env -i PATH=/usr/bin:/bin:/usr/local/bin curl` (tracker-jira.sh), so a PATH-prefixed stub cannot intercept it.
+# What makes run (2) network-free is that, with no credential, the contract exits 2 UNVERIFIED before it ever
+# reaches the adapter. That is why the credentials are unset, and why the stub's call log must stay empty.
+# _fpra_snap <dir> <out>: the file set + content checksums of a scratch tree.
+_fpra_snap() {
+  ( cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r _sf; do
+      cksum < "$_sf" | tr -d '\n'; printf ' %s\n' "$_sf"
+    done ) > "$2" 2>/dev/null
+}
+# _fpra_tc_literal_mutated <root> <scratch>: run the literal preflight form in <root> (every credential unset,
+# curl stub first on PATH) and return 0 iff it CHANGED <root>'s `git status` or reached the stub. 1 = clean.
+# _fpra_mktemp_shim <bindir> <base>: a `mktemp` for the hermetic runs that always templates under <base>. A bare
+# `mktemp [-d]` ignores TMPDIR on macOS and dies under an OS sandbox (measured), which would turn both runs into
+# a spurious "scratch directory could not be created" instead of the behaviour the lock is meant to see.
+_fpra_mktemp_shim() {
+  mkdir -p "$1" "$2" || return 0
+  printf '#!/bin/sh\nPATH=/usr/bin:/bin\ncase "$*" in\n  "") exec mktemp "%s/mt.XXXXXX" ;;\n  -d) exec mktemp -d "%s/mt.XXXXXX" ;;\nesac\nexec mktemp "$@"\n' "$2" "$2" > "$1/mktemp"
+  chmod +x "$1/mktemp"
+}
+_fpra_tc_literal_mutated() {
+  _tl_root=$1; _tl_d=$2; mkdir -p "$_tl_d/stub" || return 0
+  _fpra_mktemp_shim "$_tl_d/stub" "$_tl_d/tmp"
+  : > "$_tl_d/stub/calls"
+  printf '#!/bin/sh\necho "$*" >> "%s/stub/calls"\nexit 7\n' "$_tl_d" > "$_tl_d/stub/curl"; chmod +x "$_tl_d/stub/curl"
+  git -C "$_tl_root" status --porcelain -uall > "$_tl_d/lit.before" 2>/dev/null || : > "$_tl_d/lit.before"
+  ( cd "$_tl_root" || exit 0
+    unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN KIT_TRACKER_AUTH
+    PATH="$_tl_d/stub:$PATH"; export PATH
+    sh conformance/tracker-contract.sh --preflight --as ci --conf conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf > "$_tl_d/lit.out" 2>&1; echo $? > "$_tl_d/lit.rc" )
+  git -C "$_tl_root" status --porcelain -uall > "$_tl_d/lit.after" 2>/dev/null || : > "$_tl_d/lit.after"
+  cmp -s "$_tl_d/lit.before" "$_tl_d/lit.after" || return 0
+  [ -s "$_tl_d/stub/calls" ] && return 0
+  return 1
+}
+# _fpra_tracker_contract_run <scratch>: both hermetic runs; a mutation is recorded as a line in <scratch>/tcmut.
+_fpra_tracker_contract_run() {
+  _tr_d=$1; _tr_t="$_tr_d/tc"; _tr_fx="$PWD/conformance/fixtures/tracker-jira"
+  mkdir -p "$_tr_t/conformance" "$_tr_t/scripts" "$_tr_t/.kit" "$_tr_d/fa" \
+    && cp conformance/tracker-contract.sh "$_tr_t/conformance/tracker-contract.sh" \
+    && cp scripts/tracker-conf.sh "$_tr_t/scripts/tracker-conf.sh" \
+    && cp "$_tr_fx/contract-fake-adapter.sh" "$_tr_t/scripts/tracker-jira.sh" \
+    && cp "$_tr_fx/contract-conf-coh-ok.conf" "$_tr_t/.kit/tracker.conf" \
+    || { echo "copied-tree fixtures could not be assembled" >> "$_tr_d/tcmut"; return 0; }
+  _fpra_snap "$_tr_t" "$_tr_d/tc.before"
+  _fpra_mktemp_shim "$_tr_d/shim" "$_tr_d/tmp"
+  ( cd "$_tr_t" || exit 0
+    PATH="$_tr_d/shim:$PATH"; export PATH
+    FA_ARGVLOG="$_tr_d/fa/argv"; FA_ENVLOG="$_tr_d/fa/env"; FA_INVOKED="$_tr_d/fa/invoked"; FA_RC="$_tr_d/fa/rc"
+    FA_STATUSBODY="$_tr_d/fa/status"; FA_FXDIR=$_tr_fx
+    export FA_ARGVLOG FA_ENVLOG FA_INVOKED FA_RC FA_STATUSBODY FA_FXDIR
+    KIT_TRACKER_USER=placeholder; KIT_TRACKER_TOKEN=placeholder; export KIT_TRACKER_USER KIT_TRACKER_TOKEN
+    sh conformance/tracker-contract.sh --preflight --as ci --conf .kit/tracker.conf >/dev/null 2>&1 || : )
+  _fpra_snap "$_tr_t" "$_tr_d/tc.after"
+  cmp -s "$_tr_d/tc.before" "$_tr_d/tc.after" || echo "the copied-tree run changed its own tree" >> "$_tr_d/tcmut"
+  [ -f "$_tr_d/fa/invoked" ] || echo "the copied-tree run never reached the fake adapter (a vacuous run)" >> "$_tr_d/tcmut"
+  if _fpra_tc_literal_mutated . "$_tr_d/lit"; then echo "the literal real-tree run changed the worktree or reached curl" >> "$_tr_d/tcmut"; fi
+  # The literal run's own exit is part of the guarantee: with no credential it MUST stop at the early
+  # `UNVERIFIED: stamp` exit 2, which is the only thing keeping it off the network (the stub is a belt).
+  { [ "$(cat "$_tr_d/lit/lit.rc" 2>/dev/null)" = 2 ] && grep -q 'UNVERIFIED: stamp' "$_tr_d/lit/lit.out" 2>/dev/null; } \
+    || echo "the literal no-credential run did not stop at the early UNVERIFIED exit 2" >> "$_tr_d/tcmut"
+  return 0
+}
 fpra_lock() {
   _fl_in=${1:-}   # optional oracle-only FIXTURE pair list; read before `set --` clobbers $1 below
   command -v git >/dev/null 2>&1 || { echo "SKIP: Arm A coupling lock — git absent"; return 0; }
@@ -5958,7 +6034,8 @@ conformance/branch-protection.sh|--declared-only|profiles/python/BRANCH-PROTECTI
 scripts/tracker-conf.sh|get|project conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
 scripts/tracker-conf.sh|get-all|project conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
 scripts/tracker-conf.sh|get-prefix|create. conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf
-scripts/tracker-conf.sh|conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf|"
+scripts/tracker-conf.sh|conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf|
+conformance/tracker-contract.sh|--preflight|--as ci --conf .kit/tracker.conf"
   # RUN list = declared list unless the oracle handed a fixture; the CENSUS half always measures _fl_decl.
   _fl_pairs=${_fl_in:-$_fl_decl}; : > "$_fl_d/absent"
   printf '%s\n' "$_fl_pairs" | while IFS='|' read -r _fl_s _fl_q _fl_a; do
@@ -5966,11 +6043,17 @@ scripts/tracker-conf.sh|conformance/fixtures/tracker-jira/contract-conf-coh-ok.c
     # EXISTENCE BEFORE EXECUTION: an absent script is recorded (in a FILE — this body is a pipeline
     # subshell) and reded after the loop, never run as a silent no-op. GUARD-ALLOWLIST-OUTLIVES-ITS-SCRIPT.
     if [ -f "$_fl_s" ] && [ -r "$_fl_s" ]; then
-      # shellcheck disable=SC2086  # the fixture argument is deliberately word-split
-      sh "$_fl_s" "$_fl_q" $_fl_a >/dev/null 2>&1 || :
+      if [ "$_fl_s" = conformance/tracker-contract.sh ]; then _fpra_tracker_contract_run "$_fl_d"   # reaches the network: two hermetic runs, never the generic one
+      else
+        # shellcheck disable=SC2086  # the fixture argument is deliberately word-split
+        sh "$_fl_s" "$_fl_q" $_fl_a >/dev/null 2>&1 || :
+      fi
     else printf '%s|%s\n' "$_fl_s" "$_fl_q" >> "$_fl_d/absent"; fi
   done
   git status --porcelain > "$_fl_after" 2>/dev/null || : > "$_fl_after"
+  if [ -s "$_fl_d/tcmut" ]; then
+    echo "FAIL lock : Arm A — the hermetic tracker-contract --preflight runs: $(tr '\n' ';' < "$_fl_d/tcmut")"; fail=1
+  fi
   while IFS='|' read -r _fl_ms _fl_mq; do
     [ -z "$_fl_ms" ] || { echo "FAIL lock : Arm A — declared pair ($_fl_ms, $_fl_mq) names a script that is ABSENT or unreadable; the allowlist entry outlives its script, so nothing ran and its read-onliness is UNPROVABLE"; fail=1; }
   done < "$_fl_d/absent"
@@ -8580,6 +8663,184 @@ assert_deny "F-j W8 PRE-EXISTING: read lead + separator + interpreter stdin here
 assert_allow "F-j W8b a single-command start line still gets its relief (the cure is scoped)" \
   '{"tool_name":"Bash","tool_input":{"command":"sh conformance/promotion-readiness.sh --class --changed /dev/stdin <<'\''EOF'\''\nprofiles/python/BRANCH-PROTECTION.md\nEOF"}}'
 # === end GUARD-READ-LANE-3 F-j ===================================================================
+# === GUARD-SPELLING-RESIDUALS (GSR-*): nine spellings the guard misjudged, each cured by REFUSING ON DOUBT. =========
+# One load-bearing DENY per control (each is ALLOW on the guard before the cure, and goes back to ALLOW when ONLY its own
+# control is removed) plus the ALLOW guards that keep everyday commands moving. Every name below is invented (Acmely, Zorbix,
+# Quillon). The ordinary cells build their JSON with jq so the command text is stated once, unescaped. The C1 and C9 cells need
+# a real filesystem (a stub `find`, a symlink): they run in a mktemp scratch dir the CHECK makes, swept by the single EXIT trap
+# through GPAB_TRASH, never in the repo; they are fixture legs and sit outside the --delta replay (the ceiling above).
+gsr_json() { jq -cn --arg c "$1" '{tool_name:"Bash",tool_input:{command:$c}}'; }
+gsr_deny() { aa_cell_skip "$1" && return 0; assert_deny "$1" "$(gsr_json "$2")"; }
+gsr_allow() { aa_cell_skip "$1" && return 0; assert_allow "$1" "$(gsr_json "$2")"; }
+# gsr_fx <label> <deny|allow> <dir> <command> [<PATH>]: one fixture cell. PATH rides on the guard's command, never on a function call.
+gsr_fx() {
+  aa_cell_skip "$1" && return 0
+  _gfj=$(gsr_json "$4"); _gfp=${5:-$PATH}
+  _gfo=$(cd "$3" && printf '%s' "$_gfj" | PATH="$_gfp" HOME=$3 CLAUDE_PROJECT_DIR=$3 sh "$_gg" 2>/dev/null); _gfr=$?
+  case "$_gfo" in *'"permissionDecision":"deny"'*) _gfv=deny ;; *) _gfv=allow ;; esac
+  # an optional 6th argument: the deny reason must carry this text (the escape the message names)
+  if [ -n "${6:-}" ]; then case "$_gfo" in *"$6"*) : ;; *) _gfv=noreason ;; esac; fi
+  if [ "$_gfv" = "$2" ] && { [ "$2" = deny ] || [ "$_gfr" = 0 ]; }; then echo "PASS $2 : $1"; else echo "FAIL (wanted $2, got $_gfv rc=$_gfr): $1"; fail=1; fi
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+}
+case "$GUARD" in /*) _gg=$GUARD ;; *) _gg=$PWD/$GUARD ;; esac
+# C1: a failed or missing `find` is a FAULT, never an empty directory (the stub exits 1; the real find is the pin)
+if ! aa_cell_skip "GSR-C1*"; then
+  _gsi=$(mktemp -d /tmp/gsrc1.XXXXXX) || _gsi=''
+  if [ -n "$_gsi" ]; then
+    GPAB_TRASH="$GPAB_TRASH $_gsi"; mkdir "$_gsi/bin" "$_gsi/skills"
+    printf '#!/bin/sh\nexit 1\n' > "$_gsi/bin/find"; chmod +x "$_gsi/bin/find"
+    gsr_fx "GSR-C1 cp into a glob while find fails is denied, not read as an empty directory" deny "$_gsi" 'cp /tmp/e sk*' "$_gsi/bin:$PATH"
+    gsr_fx "GSR-C1-tee tee into a glob while find fails is denied" deny "$_gsi" 'tee sk*/build/SKILL.md' "$_gsi/bin:$PATH"
+    gsr_fx "GSR-C1-reason the find-fault deny names its escape" deny "$_gsi" 'cp /tmp/e sk*' "$_gsi/bin:$PATH" 'make find available'
+    gsr_fx "GSR-C1-pin pin: a glob that matches nothing, with a healthy find, stays allowed" allow "$_gsi" 'cp /tmp/e zz*'
+  fi
+fi
+# C2: a `#` (or an odd quote) beside a cp/install glob means the last token is not trusted: every operand is walked
+gsr_deny "GSR-C2 cp a glob skill file with a trailing # comment" 'cp /tmp/e sk*/build/SKILL.md # /tmp/y'
+gsr_deny "GSR-C2-install install with a trailing # comment" 'install /tmp/e sk*/build/SKILL.md # /tmp/y'
+gsr_deny "GSR-C2-quote cp with an odd quote after the glob" 'cp /tmp/e sk*/build/SKILL.md "# /tmp/y'
+assert_reason_has "GSR-C2-reason the cp-comment deny names its escape" "$(gsr_json 'cp /tmp/e sk*/build/SKILL.md # /tmp/y')" 'drop the # comment'
+gsr_allow "GSR-C2-pin pin: cp an Acmely glob with a comment" 'cp /tmp/acmely/*.txt /tmp/out/ # note'
+# C3: the xargs word is matched on a skeleton, so quote-splicing and expansion cannot hide it
+gsr_deny "GSR-C3 x\"\"args tee fed by a file" 'cat /tmp/l | x""args tee /tmp/o'
+gsr_deny "GSR-C3-sq x''args tee" "cat /tmp/l | x''args tee /tmp/o"
+gsr_deny "GSR-C3-mid xa\"rg\"s tee" 'cat /tmp/l | xa"rg"s tee /tmp/o'
+gsr_deny "GSR-C3-bs backslash-spliced xargs word, tee" 'cat /tmp/l | x\args tee /tmp/o'
+gsr_deny "GSR-C3-var x\${E}args tee" 'cat /tmp/l | x${E}args tee /tmp/o'
+gsr_deny "GSR-C3-ansi \$'xargs' tee" 'cat /tmp/l | $'\''xargs'\'' tee /tmp/o'
+gsr_deny "GSR-C3-lit a literal control-plane name into x\"\"args" 'echo .gitleaksignore | x""args rm'
+gsr_allow "GSR-C3-pin pin: x\"\"args cat is a read" 'cat /tmp/l | x""args cat'
+gsr_allow "GSR-C3-pin2 pin: git ls-files into xargs grep" 'git ls-files | xargs grep -n x'
+# C4a: xargs' own file-feed option in a cluster or as a GNU abbreviation
+gsr_deny "GSR-C4a xargs -0a file rm" 'xargs -0a /tmp/l rm'
+gsr_deny "GSR-C4a-ra xargs -ra file rm" 'xargs -ra /tmp/l rm'
+gsr_deny "GSR-C4a-long xargs --ar file rm" 'xargs --ar /tmp/l rm'
+gsr_deny "GSR-C4a-eq xargs --arg=file rm" 'xargs --arg=/tmp/l rm'
+gsr_allow "GSR-C4a-pin pin: xargs -0a file grep is a read" 'xargs -0a /tmp/l grep -n x'
+gsr_allow "GSR-C4a-pin2 pin: a NUL-fed xargs git add" "printf 'a\\0' | xargs -0 git add"
+# C4b: sed in-place inside a cluster, BSD -I, GNU abbreviation
+gsr_deny "GSR-C4b sed -ni on a glob skill file" 'sed -ni s/a/b/ sk*/build/SKILL.md'
+gsr_deny "GSR-C4b-E sed -Ei on a glob skill file" 'sed -Ei s/a/b/ sk*/build/SKILL.md'
+gsr_deny "GSR-C4b-I BSD sed -I on a glob skill file" 'sed -I s/a/b/ sk*/build/SKILL.md'
+gsr_deny "GSR-C4b-long sed --in=bak on a glob skill file" 'sed --in=bak s/a/b/ sk*/build/SKILL.md'
+gsr_allow "GSR-C4b-pin pin: sed -ne is a read" 'sed -ne s/a/b/p sk*/build/SKILL.md'
+# C5: a quoted global-option value holding whitespace no longer hides the push
+gsr_deny "GSR-C5m push main behind a quoted -c value with a space" 'git -c "x.y=a b" push origin main'
+gsr_deny "GSR-C5m-C push main behind a quoted -C path with a space" 'git -C "/tmp/a b" push origin main'
+gsr_deny "GSR-C5f force push behind a quoted -C path with a space" 'git -C "/tmp/a b" push -f origin feature/zorbix'
+gsr_deny "GSR-C5f-c force push behind a quoted -c value with a space" 'git -c "x.y=a b" push --force origin feature/zorbix'
+gsr_allow "GSR-C5-pin pin: a feature push behind the same quoted value" 'git -c "x.y=a b" push origin feature/zorbix'
+gsr_allow "GSR-C5-pin2 pin: a commit message that mentions push origin main" 'git -c "user.name=Acmely Bot" commit -m "push origin main now"'
+# C6: an echo/printf upstream that holds an expansion is not literal data
+gsr_deny "GSR-C6 echo of a command substitution into xargs tee" 'echo "$(cat /tmp/l)" | xargs tee'
+gsr_deny "GSR-C6-cp echo of a command substitution into xargs cp" 'echo "$(cat /tmp/l)" | xargs cp /tmp/e'
+gsr_deny "GSR-C6-var echo of a variable into xargs chmod" 'echo "$F" | xargs chmod +x'
+gsr_allow "GSR-C6-pin pin: a literal name into xargs tee" 'echo /tmp/acmely | xargs tee'
+gsr_allow "GSR-C6-pin2 pin: an expansion into xargs grep is a read" 'echo "$(cat /tmp/l)" | xargs grep -n x'
+# C7: a glob or magic pathspec in a worktree/index-writing git subcommand is doubt. One cell per subcommand.
+gsr_deny "GSR-C7-checkout checkout a :(glob) skill pathspec" "git checkout HEAD -- ':(glob)sk*/build/SKILL.md'"
+gsr_deny "GSR-C7-restore restore a :(glob) dotfile pathspec" "git restore -s HEAD~1 -- ':(glob).gitleak*'"
+gsr_deny "GSR-C7-rm rm --cached a :(glob) dotfile pathspec" "git rm --cached ':(glob).gitleak*'"
+gsr_deny "GSR-C7-stash stash push a :(glob) dotfile pathspec" "git stash push -- ':(glob).gitleak*'"
+gsr_deny "GSR-C7-reset reset a :(glob) dotfile pathspec" "git reset HEAD~1 -- ':(glob).gitleak*'"
+gsr_deny "GSR-C7-plain checkout a plain glob (git globs every pathspec)" "git checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7-exclude checkout with an :(exclude) pathspec" "git checkout HEAD -- ':(exclude)README.md'"
+# A2: the over-deny is pinned and visible: ANY glob in these pathspecs is refused (the escape is to name the files)
+gsr_deny "GSR-C7-A2 pinned over-deny: git rm --cached a *.log glob (name the files instead)" "git rm --cached '*.log'"
+gsr_allow "GSR-C7-pin pin: checkout -b a branch" 'git checkout -b feature/zorbix'
+gsr_allow "GSR-C7-pin2 pin: checkout one literal docs file" 'git checkout HEAD -- docs/plans/x.md'
+gsr_allow "GSR-C7-pin3 pin: restore one literal file" 'git restore src/app.ts'
+gsr_allow "GSR-C7-pin4 pin: restore a :(literal) bracketed filename" "git restore ':(literal)app/[slug]/page.tsx'"
+gsr_allow "GSR-C7-pin5 pin: stash push with a glob only in the message" 'git stash push -m "wip: Acmely * notes"'
+gsr_allow "GSR-C7-pin6 pin: a bare stash" 'git stash'
+gsr_allow "GSR-C7-pin7 pin: reset --soft" 'git reset --soft HEAD~1'
+gsr_allow "GSR-C7-pin8 pin: add a :(glob) docs pathspec" "git add ':(glob)docs/*.md'"
+gsr_allow "GSR-C7-pin9 pin: diff a :(glob) pathspec is a read" "git diff ':(glob).gitleak*'"
+gsr_allow "GSR-C7-pin10 pin: log a :(glob) pathspec is a read" "git log -- ':(glob)skills/**'"
+# C9: a write target reached through an existing symlink is judged at its PHYSICAL path (fixture made by the check itself)
+if ! aa_cell_skip "GSR-C9*"; then
+  _gsl=$(mktemp -d /tmp/gsrc9.XXXXXX) || _gsl=''
+  if [ -n "$_gsl" ]; then
+    GPAB_TRASH="$GPAB_TRASH $_gsl"; mkdir -p "$_gsl/skills/x"; : > "$_gsl/skills/x/SKILL.md"; : > "$_gsl/notes.txt"
+    ln -s skills/x/SKILL.md "$_gsl/lnk"; ln -s notes.txt "$_gsl/lnk2"
+    gsr_fx "GSR-C9 a redirect through a symlink to a control-plane file is denied" deny "$_gsl" 'echo x > lnk'
+    gsr_fx "GSR-C9-append an append through the same symlink is denied" deny "$_gsl" 'echo x >> lnk'
+    gsr_fx "GSR-C9-tee tee through the same symlink is denied" deny "$_gsl" 'tee lnk'
+    gsr_fx "GSR-C9-cp cp through the same symlink is denied" deny "$_gsl" 'cp /tmp/e lnk'
+    gsr_fx "GSR-C9-pin pin: a redirect through a symlink to an ordinary file" allow "$_gsl" 'echo x > lnk2'
+    gsr_fx "GSR-C9-pin2 pin: a redirect to a plain /tmp file" allow "$_gsl" 'echo x > /tmp/acmely.txt'
+    # fix round: an ANCESTOR link (the verb skip is for a LEAF link only), a composed cwd, -t, and a ~ target
+    mkdir -p "$_gsl/zz" "$_gsl/skills/build"; : > "$_gsl/skills/build/SKILL.md"
+    ln -s ../skills "$_gsl/zz/dl"; ln -s ../skills/x/SKILL.md "$_gsl/zz/zlnk"; ln -s skills/x/SKILL.md "$_gsl/hl"
+    gsr_fx "GSR-C9-anc-rm rm through an ANCESTOR link into the control plane" deny "$_gsl" 'rm zz/dl/build/SKILL.md'
+    gsr_fx "GSR-C9-anc-mv mv through an ancestor link" deny "$_gsl" 'mv zz/dl/build/SKILL.md /tmp/acmely.md'
+    gsr_fx "GSR-C9-anc-ln ln -sf through an ancestor link" deny "$_gsl" 'ln -sf /tmp/e zz/dl/build/SKILL.md'
+    gsr_fx "GSR-C9-anc-rsync rsync through an ancestor link" deny "$_gsl" 'rsync /tmp/e zz/dl/build/SKILL.md'
+    gsr_fx "GSR-C9-leaf-pin pin: rm of a LEAF link removes the link, not its target" allow "$_gsl" 'rm lnk'
+    gsr_fx "GSR-C9-cd-redir a redirect through a link after a cd" deny "$_gsl" 'cd zz && echo x > zlnk'
+    gsr_fx "GSR-C9-cd-tee tee through a link after a cd" deny "$_gsl" 'cd zz && tee zlnk'
+    gsr_fx "GSR-C9-cd-cp cp through a link after a cd" deny "$_gsl" 'cd zz && cp /tmp/e zlnk'
+    gsr_fx "GSR-C9-t cp -t into a directory behind an ancestor link" deny "$_gsl" 'cp /tmp/e -t zz/dl/build'
+    gsr_fx "GSR-C9-t-install install -t into a directory behind an ancestor link" deny "$_gsl" 'install -t zz/dl/build /tmp/e'
+    gsr_fx "GSR-C9-tilde-redir a ~ redirect through a link" deny "$_gsl" 'echo x > ~/hl'
+    gsr_fx "GSR-C9-tilde-tee tee through a ~ link" deny "$_gsl" 'tee ~/hl'
+    gsr_fx "GSR-C9-tilde-cp cp through a ~ link" deny "$_gsl" 'cp /tmp/e ~/hl'
+    gsr_fx "GSR-C9-reason the symlink deny names its escape" deny "$_gsl" 'echo x > lnk' '' 'behind a symlink'
+  fi
+fi
+# fix round: C7 on a normalised view (wrappers, assignments, quoting, quoted global values), --pathspec-from-file, C6 globs
+gsr_deny "GSR-C7v-env GIT_GLOB_PATHSPECS=1 git checkout a plain glob" "GIT_GLOB_PATHSPECS=1 git checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-assign an env assignment before git restore" "FOO=1 git restore ':(glob).gitleak*'"
+gsr_deny "GSR-C7v-env-wrap env git checkout" "env git checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-command command git checkout" "command git checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-nice nice git checkout" "nice git checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-path /usr/bin/git checkout" "/usr/bin/git checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-qgit a quoted git word" "\"git\" checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-splice g\"\"it spliced word" "g\"\"it checkout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-qsub a quoted subcommand" "git \"checkout\" HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-splitsub a spliced subcommand" "git che\"\"ckout HEAD -- 'sk*'"
+gsr_deny "GSR-C7v-group a parenthesised git" "(git checkout HEAD -- 'sk*')"
+gsr_deny "GSR-C7v-c a quoted -c value with a space before rm" 'git -c "x.y=a b" rm --cached '\''*.log'\'
+gsr_deny "GSR-C7v-C a quoted -C path with a space before checkout" "git -C \"/tmp/a b\" checkout HEAD -- 'sk*'"
+gsr_allow "GSR-C7v-pin pin: env git checkout -b" 'env git checkout -b feature/zorbix'
+gsr_allow "GSR-C7v-pin2 pin: a commit message that quotes a glob checkout" "git -c \"user.name=Acmely Bot\" commit -m \"git checkout HEAD -- 'sk*'\""
+gsr_allow "GSR-C7v-pin3 pin: echo of a git checkout is not git" "echo git checkout HEAD -- '*.log'"
+gsr_deny "GSR-C7f-checkout checkout --pathspec-from-file=" 'git checkout HEAD --pathspec-from-file=/tmp/l'
+gsr_deny "GSR-C7f-restore restore --pathspec-from-file with a separate value" 'git restore --pathspec-from-file /tmp/l'
+gsr_deny "GSR-C7f-stash stash push --pathspec-from-file=" 'git stash push --pathspec-from-file=/tmp/l'
+gsr_deny "GSR-C7f-prefix checkout with a unique prefix of --pathspec-from-file" 'git checkout HEAD --pathspec-from=/tmp/l'
+# a quoted pathspec holding whitespace is one word on the normalised view, so the RAW segment is judged too
+gsr_deny "GSR-C7r-checkout checkout a quoted bracket glob holding a space" "git checkout HEAD -- '[s ]kills/build/SKILL.md'"
+gsr_deny "GSR-C7r-rm rm --cached a quoted bracket glob holding a space" "git rm --cached '[s ]kills/build/SKILL.md'"
+gsr_deny "GSR-C7r-attr checkout an :(attr:) pathspec holding a space" "git checkout HEAD -- ':(attr:!a !b)sk*/build/SKILL.md'"
+gsr_allow "GSR-C7f-pin pin: add --pathspec-from-file is untouched" 'git add --pathspec-from-file=/tmp/l'
+gsr_deny "GSR-C6g echo of a bare * into xargs tee" 'echo * | xargs tee'
+gsr_deny "GSR-C6g-sed echo of a control-plane glob into xargs sed -i" 'echo sk*/build/SKILL.md | xargs sed -i s/a/b/'
+gsr_deny "GSR-C6g-printf printf of a glob into xargs tee" "printf '%s' sk*/build/SKILL.md | xargs tee"
+gsr_deny "GSR-C6g-brace echo of a brace expansion into xargs tee" 'echo {s,x}kills/x | xargs tee'
+# fix round: xargs / sed option scanning past separate-value options and quoted flags
+gsr_deny "GSR-C4v-maxargs xargs --max-args 1 then -0a file" 'xargs --max-args 1 -0a /tmp/l tee'
+gsr_deny "GSR-C4v-maxprocs xargs --max-procs 2 then -0a file" 'xargs --max-procs 2 -0a /tmp/l tee'
+gsr_deny "GSR-C4v-delim xargs --delimiter x then -0a file" 'xargs --delimiter x -0a /tmp/l tee'
+gsr_deny "GSR-C4v-qflag a double-quoted -0a" 'xargs "-0a" /tmp/l tee'
+gsr_deny "GSR-C4v-sqflag a single-quoted -ra" "xargs '-ra' /tmp/l tee"
+gsr_deny "GSR-C4v-qlong a quoted --ar" 'xargs -0 "--ar" /tmp/l tee'
+gsr_deny "GSR-C4v-attached -0a with the file attached" 'xargs -0a/tmp/l tee'
+gsr_allow "GSR-C4v-pin pin: attached -0a file feeding grep is a read" 'xargs -0a/tmp/l grep -n x'
+gsr_deny "GSR-C4v-sed a double-quoted sed -i on a glob skill file" 'sed "-i" s/a/b/ sk*/build/SKILL.md'
+gsr_deny "GSR-C4v-sed2 a single-quoted sed -ni on a glob skill file" "sed '-ni' s/a/b/ sk*/build/SKILL.md"
+gsr_allow "GSR-C4v-sedpin pin: a quoted sed -n is a read" 'sed "-n" 1p sk*/build/SKILL.md'
+# fix round: the push rules read ONE left-to-right collapse (a span holding whitespace is Q, other spans lose their quotes)
+gsr_deny "GSR-C5v-stray a stray quote inside a single-quoted -c value" "git -c 'a\"b' -c \"c d\" push origin main"
+gsr_deny "GSR-C5v-esc an escaped quote inside a double-quoted -c value" 'git -c "x.y=a \" b" push origin main'
+gsr_deny "GSR-C5v-sq an escaped single quote between spans" "git -c 'x.y=a '\\'' b' push origin main"
+gsr_deny "GSR-C5v-qref a quoted main refspec" 'git -c "x.y=a b" push origin "main"'
+gsr_deny "GSR-C5v-qhead a quoted HEAD:refs/heads/main refspec" "git -c \"x.y=a b\" push origin 'HEAD:refs/heads/main'"
+gsr_deny "GSR-C5v-splice a spliced main refspec" 'git -c "x.y=a b" push origin m"ai"n'
+gsr_allow "GSR-C5v-pin pin: a quoted feature refspec behind the same value" 'git -c "x.y=a b" push origin "feature/zorbix"'
+gsr_deny "GSR-C3v cat into x\$E''args tee" "cat /tmp/l | x\$E''args tee /tmp/o"
+
 # --- GUARD-READ-LANE-2 T3: the delta adjudication (only in --delta mode) --------------------------
 # Runs LAST, after every cell above has been collected. In the bare/CI run AA_DELTA is 0 and this is a
 # single test — the mode adds no work to the run everyone else executes.
@@ -8712,7 +8973,7 @@ selftest() {
   [ "$(grep -c '"\(PASS\|FAIL\) reason  : [$]_c2l' "$0")" = 2 ] || { echo "nv: S2b the C2 lines do not print their label (\$_c2l) first"; _st=1; }
   [ "$(grep -c '"\(PASS\|FAIL\) [I]4(I1): ' "$0")" = 2 ] || { echo "nv: S2b the I4 lines do not begin with the I4(I1) label"; _st=1; }
   [ "$(grep -c '"\(PASS\|FAIL\) [I]4(I1) mutant (x): ' "$0")" = 2 ] || { echo "nv: S2b the I4 mutant lines do not begin with the I4(I1) label"; _st=1; }
-  [ "$(grep -c '"\(PASS\|FAIL\) lock : [A]rm A ' "$0")" = 8 ] || { echo "nv: S2b the Arm A lock lines do not begin with the Arm A label"; _st=1; }
+  [ "$(grep -c '"\(PASS\|FAIL\) lock : [A]rm A ' "$0")" = 9 ] || { echo "nv: S2b the Arm A lock lines do not begin with the Arm A label"; _st=1; }
   # F2: the uncounted-leg counter is bumped ONLY by aa_extra_ran, and that is pinned on the TEXT, in any spelling.
   # _outside is the non-comment lines of this file outside selftest(), so no pin can match itself. Outside selftest the
   # token aa_extra_ran sits on exactly 3 lines (its definition, the I4 call, the fpra_lock call) and the counter name
@@ -9055,6 +9316,39 @@ fi'
   esac
   [ "$_fl_nv" = /dev/null ] || rm -f "$_fl_nv"; fail=0
 
+  # GUARD-READ-TRACKER-PREFLIGHT-CONF (design §2 D3) — the lock's ONE load-bearing negative: the literal-run
+  # oracle is not vacuous. A scratch git tree whose `conformance/tracker-contract.sh` WRITES into the tree must be
+  # reported as mutated by the SAME function the lock uses (`_fpra_tc_literal_mutated`), and a scratch tree whose
+  # script writes nothing must be reported clean (the positive control). The design's "stub writes into the worktree"
+  # shape is unreachable: the real adapter runs curl under `env -i PATH=…`, so a PATH stub is bypassed (measured).
+  _tcn=$(mktemp -d /tmp/fpranvtc.XXXXXX) || _tcn=''
+  if [ -n "$_tcn" ]; then
+    GPAB_TRASH="$GPAB_TRASH $_tcn"
+    mkdir -p "$_tcn/w/conformance" "$_tcn/c/conformance"
+    printf ': > .fpra-neg-write\n' > "$_tcn/w/conformance/tracker-contract.sh"
+    printf ':\n' > "$_tcn/c/conformance/tracker-contract.sh"
+    git init -q "$_tcn/w" >/dev/null 2>&1; git init -q "$_tcn/c" >/dev/null 2>&1
+    _fpra_tc_literal_mutated "$_tcn/w" "$_tcn/sw" || { echo "nv: the tracker-contract literal-run oracle did NOT flag a run that wrote into its tree (vacuous)"; _st=1; }
+    if _fpra_tc_literal_mutated "$_tcn/c" "$_tcn/sc"; then echo "nv: the tracker-contract literal-run oracle flagged a run that wrote nothing (positive control)"; _st=1; fi
+    # The WIRING, not only the oracle: drive `_fpra_tracker_contract_run` (what fpra_lock calls) on those trees, with the
+    # real scripts' fixtures copied in. The writing tree must leave BOTH the copied-tree line and the literal-run line
+    # (so deleting either call reds here); the silent tree must leave the early-exit line (so removing the literal run's
+    # rc/UNVERIFIED assertion reds here) and NOT the copied-tree line (positive control).
+    rm -f "$_tcn/w/.fpra-neg-write"   # the oracle leg above already left it; a pre-existing file would hide the write
+    for _tcx in w c; do
+      mkdir -p "$_tcn/$_tcx/scripts" "$_tcn/$_tcx/conformance/fixtures/tracker-jira"
+      cp scripts/tracker-conf.sh "$_tcn/$_tcx/scripts/"
+      cp conformance/fixtures/tracker-jira/contract-fake-adapter.sh conformance/fixtures/tracker-jira/contract-conf-coh-ok.conf "$_tcn/$_tcx/conformance/fixtures/tracker-jira/"
+      ( cd "$_tcn/$_tcx" && _fpra_tracker_contract_run "$_tcn/run-$_tcx" )
+    done
+    grep -qF 'the copied-tree run changed its own tree' "$_tcn/run-w/tcmut" 2>/dev/null || { echo "nv: the tracker-contract run did NOT flag a script that wrote into the copied tree (wiring)"; _st=1; }
+    grep -qF 'the literal real-tree run changed the worktree' "$_tcn/run-w/tcmut" 2>/dev/null || { echo "nv: the tracker-contract run did NOT flag a script that wrote into the literal-run tree (wiring)"; _st=1; }
+    grep -qF 'did not stop at the early UNVERIFIED exit 2' "$_tcn/run-c/tcmut" 2>/dev/null || { echo "nv: the tracker-contract run did NOT flag a literal no-credential run that exited other than 2 UNVERIFIED"; _st=1; }
+    if grep -qF 'changed its own tree' "$_tcn/run-c/tcmut" 2>/dev/null; then echo "nv: the tracker-contract run flagged a copied-tree run that wrote nothing (positive control)"; _st=1; fi
+    # And fpra_lock's dispatch: the generic `sh "$_fl_s" …` arm must sit in the ELSE of the tracker-contract branch.
+    awk '/if \[ "[$]_fl_s" = conformance\/tracker-contract[.]sh \]; then _fpra_tracker_contract_run/ { d = 1; next } d == 1 && /^ *else$/ { d = 2; next } d == 2 && /sh "[$]_fl_s" "[$]_fl_q"/ { ok = 1 } END { exit !ok }' "$0" || { echo "nv: fpra_lock does not keep the generic run in the else of the tracker-contract dispatch (the pair would run unhermetically)"; _st=1; }
+  else echo "nv: tracker-contract literal-run oracle leg NOT EXERCISED — mktemp failed (infrastructure, not a verdict on the leg)"; fi
+
   # === GUARD-READ-LANE-2 T3 — the delta leg's own teeth ==========================================
   # Both legs drive the REAL aa_delta_adjudicate against a SYNTHETIC pristine, so they are hermetic:
   # no slice-time artifact, no network, no dependence on which commit this tree sits on. The synthetic
@@ -9304,6 +9598,130 @@ assert_allow "B2-F MEASURED-UNCOVERED export sentinel"        '{"tool_name":"Bas
 assert_deny "B2-G gh api PATCH git/refs"  '{"tool_name":"Bash","tool_input":{"command":"gh api -X PATCH repos/o/r/git/refs/claims/ROW-X -f sha=abc1234"}}'
 assert_deny "B2-G gh api DELETE git/refs" '{"tool_name":"Bash","tool_input":{"command":"gh api -X DELETE repos/o/r/git/refs/claims/ROW-X"}}'
 assert_deny "B2-G gh api POST git/refs"   '{"tool_name":"Bash","tool_input":{"command":"gh api -X POST repos/o/r/git/refs -f ref=refs/claims/ROW-X -f sha=abc1234"}}'
+
+# === KIT-BASE-SHARED (design §11.1) — the raw-git routes INTO the shared kit-base are denied (adds-only) ===========
+# `kit-base` is imported VERIFIED by `sh scripts/kit-update.sh --from <vendor>` and published by `--publish-base`.
+# MEASURED BEFORE THE ARM: every raw spelling below was ALLOW, so the unverified route stayed open beside the verified one.
+# One DENY per write form (fetch with a destination, update-ref, branch, tag, push, checkout/switch -b), then the READS
+# (log/show/rev-parse/ls-remote/archive/diff/cat-file/for-each-ref, fetch with NO destination) and the two kit-update verbs.
+# `refs/kit/claim-*` (board-claim.sh's scratch namespace) is NOT kit-base: the B2-D cells above stay ALLOW.
+assert_deny "KBS-1 fetch with a destination"            '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/base:refs/heads/kit-base"}}'
+assert_deny "KBS-1 fetch forced + quoted refspec"       '{"tool_name":"Bash","tool_input":{"command":"git fetch origin \"+refs/kit/base:refs/heads/kit-base\""}}'
+assert_deny "KBS-1 fetch into a kit-base tag"           '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/tags/kit-base/v1:refs/tags/kit-base/v1"}}'
+assert_deny "KBS-2 update-ref"                          '{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/heads/kit-base abc1234"}}'
+assert_deny "KBS-2 update-ref -d"                       '{"tool_name":"Bash","tool_input":{"command":"git update-ref -d refs/heads/kit-base"}}'
+assert_deny "KBS-2 update-ref under git -C"             '{"tool_name":"Bash","tool_input":{"command":"git -C /tmp/x update-ref refs/heads/kit-base abc1234"}}'
+assert_deny "KBS-2 update-ref refs/kit/base"            '{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/kit/base abc1234"}}'
+assert_deny "KBS-2 update-ref unresolvable ref"         '{"tool_name":"Bash","tool_input":{"command":"git update-ref $REF abc1234"}}'
+assert_deny "KBS-3 branch -f"                           '{"tool_name":"Bash","tool_input":{"command":"git branch -f kit-base abc1234"}}'
+assert_deny "KBS-3 branch -M"                           '{"tool_name":"Bash","tool_input":{"command":"git branch -M kit-base"}}'
+assert_deny "KBS-3 branch -D"                           '{"tool_name":"Bash","tool_input":{"command":"git branch -D kit-base"}}'
+assert_deny "KBS-3 branch create"                       '{"tool_name":"Bash","tool_input":{"command":"git branch kit-base abc1234"}}'
+assert_deny "KBS-3 checkout -B"                         '{"tool_name":"Bash","tool_input":{"command":"git checkout -B kit-base abc1234"}}'
+assert_deny "KBS-4 tag -f"                              '{"tool_name":"Bash","tool_input":{"command":"git tag -f kit-base/v1+abc123abc123 abc1234"}}'
+assert_deny "KBS-4 tag -d"                              '{"tool_name":"Bash","tool_input":{"command":"git tag -d kit-base/v1+abc123abc123"}}'
+assert_deny "KBS-5 push refspec"                        '{"tool_name":"Bash","tool_input":{"command":"git push origin refs/heads/kit-base:refs/kit/base"}}'
+assert_deny "KBS-5 push delete"                         '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete refs/kit/base"}}'
+assert_deny "KBS-5 push bare operand"                   '{"tool_name":"Bash","tool_input":{"command":"git push origin kit-base"}}'
+assert_deny "KBS-6 spelling: uppercase"                 '{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/heads/KIT-BASE abc1234"}}'
+assert_deny "KBS-6 spelling: backslash"                 '{"tool_name":"Bash","tool_input":{"command":"git update-ref refs/heads/kit\\-base abc1234"}}'
+assert_deny "KBS-6 spelling: second segment"            '{"tool_name":"Bash","tool_input":{"command":"echo hi && git update-ref refs/heads/kit-base abc1234"}}'
+assert_deny "KBS-6 spelling: inside sh -c"              '{"tool_name":"Bash","tool_input":{"command":"sh -c \"git update-ref refs/heads/kit-base abc1234\""}}'
+assert_deny "KBS-9 checkout -b"                         '{"tool_name":"Bash","tool_input":{"command":"git checkout -b kit-base"}}'
+assert_deny "KBS-9 switch -c"                           '{"tool_name":"Bash","tool_input":{"command":"git switch -c kit-base"}}'
+assert_deny "KBS-9 switch -C"                           '{"tool_name":"Bash","tool_input":{"command":"git switch -C kit-base abc1234"}}'
+assert_deny "KBS-9 worktree add -b"                     '{"tool_name":"Bash","tool_input":{"command":"git worktree add -b kit-base /tmp/wt abc1234"}}'
+assert_deny "KBS-9 plain tag create"                    '{"tool_name":"Bash","tool_input":{"command":"git tag kit-base/v1+abc123abc123 abc1234"}}'
+assert_deny "KBS-9 annotated tag create"                '{"tool_name":"Bash","tool_input":{"command":"git tag -a kit-base/v1+abc123abc123 -m x"}}'
+assert_deny "KBS-9 update-ref --stdin fed by a pipe"    '{"tool_name":"Bash","tool_input":{"command":"printf \"update refs/heads/kit-base abc1234\\n\" | git update-ref --stdin"}}'
+assert_deny "KBS-9 fetch glob refs/*:refs/*"            '{"tool_name":"Bash","tool_input":{"command":"git fetch origin +refs/*:refs/*"}}'
+assert_deny "KBS-9 fetch glob heads into heads"         '{"tool_name":"Bash","tool_input":{"command":"git fetch origin +refs/heads/*:refs/heads/*"}}'
+assert_deny "KBS-9 fetch refs/kit glob to remotes"      '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/*:refs/remotes/o/*"}}'
+assert_deny "KBS-9 pull with a kit-base destination"    '{"tool_name":"Bash","tool_input":{"command":"git pull origin refs/kit/base:refs/heads/kit-base"}}'
+assert_deny "KBS-9 config remote.fetch naming refs/kit" '{"tool_name":"Bash","tool_input":{"command":"git config remote.origin.fetch +refs/kit/base:refs/heads/kit-base"}}'
+assert_deny "KBS-9 config --add remote.fetch refs/kit"  '{"tool_name":"Bash","tool_input":{"command":"git config --add remote.origin.fetch +refs/kit/*:refs/heads/*"}}'
+assert_allow "KBS-9 fetch glob into refs/remotes"       '{"tool_name":"Bash","tool_input":{"command":"git fetch origin +refs/heads/*:refs/remotes/origin/*"}}'
+assert_deny "KBS-9 worktree add of kit-base (a checked-out branch)" '{"tool_name":"Bash","tool_input":{"command":"git worktree add /tmp/wt kit-base"}}'
+assert_allow "KBS-9 worktree add --detach kit-base"     '{"tool_name":"Bash","tool_input":{"command":"git worktree add --detach /tmp/wt kit-base"}}'
+# --- fix round 1: ref-COMPONENT boundaries (the measured over-deny: a branch NAMED feature/kit-base-shared) ---
+assert_allow "KBS-10 push -u feature/kit-base-shared"   '{"tool_name":"Bash","tool_input":{"command":"git push -u origin feature/kit-base-shared"}}'
+assert_allow "KBS-10 checkout -b feature/kit-base-shared" '{"tool_name":"Bash","tool_input":{"command":"git checkout -b feature/kit-base-shared"}}'
+assert_allow "KBS-10 branch -D feature/kit-base-shared" '{"tool_name":"Bash","tool_input":{"command":"git branch -D feature/kit-base-shared"}}'
+assert_allow "KBS-10 push --delete feature/kit-base-shared" '{"tool_name":"Bash","tool_input":{"command":"git push origin --delete feature/kit-base-shared"}}'
+assert_allow "KBS-10 worktree add -b feature/kit-base-shared" '{"tool_name":"Bash","tool_input":{"command":"git worktree add ../wt -b feature/kit-base-shared"}}'
+assert_allow "KBS-10 fetch default refspec"            '{"tool_name":"Bash","tool_input":{"command":"git fetch origin +refs/heads/*:refs/remotes/origin/*"}}'
+assert_allow "KBS-10 config default fetch refspec"      '{"tool_name":"Bash","tool_input":{"command":"git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/*"}}'
+assert_allow "KBS-10 clone --mirror (a new repo)"       '{"tool_name":"Bash","tool_input":{"command":"git clone --mirror https://example.invalid/r.git /tmp/m"}}'
+assert_allow "KBS-10 branch -a"                         '{"tool_name":"Bash","tool_input":{"command":"git branch -a"}}'
+assert_allow "KBS-10 branch --list glob"                '{"tool_name":"Bash","tool_input":{"command":"git branch --list kit-base*"}}'
+# --- B2: a checked-out kit-base is a branch every later commit moves ---
+assert_deny "KBS-11 checkout kit-base"                  '{"tool_name":"Bash","tool_input":{"command":"git checkout kit-base"}}'
+assert_deny "KBS-11 switch kit-base"                    '{"tool_name":"Bash","tool_input":{"command":"git switch kit-base"}}'
+assert_deny "KBS-11 checkout --track origin/kit-base"   '{"tool_name":"Bash","tool_input":{"command":"git checkout --track origin/kit-base"}}'
+assert_deny "KBS-11 clone --branch kit-base"            '{"tool_name":"Bash","tool_input":{"command":"git clone --branch kit-base https://example.invalid/r.git /tmp/c"}}'
+assert_deny "KBS-11 clone -b kit-base"                  '{"tool_name":"Bash","tool_input":{"command":"git clone -b kit-base https://example.invalid/r.git /tmp/c"}}'
+assert_allow "KBS-11 checkout --detach kit-base"        '{"tool_name":"Bash","tool_input":{"command":"git checkout --detach kit-base"}}'
+# --- N1: --no-guess is not a detach ---
+assert_deny "KBS-11 checkout --no-guess -b"             '{"tool_name":"Bash","tool_input":{"command":"git checkout --no-guess -b kit-base origin/x"}}'
+assert_deny "KBS-11 switch --no-guess -c"               '{"tool_name":"Bash","tool_input":{"command":"git switch --no-guess -c kit-base origin/x"}}'
+assert_deny "KBS-11 checkout --no-guess --track"        '{"tool_name":"Bash","tool_input":{"command":"git checkout --no-guess --track origin/kit-base"}}'
+assert_allow "KBS-11 newline subshell block with git"   '{"tool_name":"Bash","tool_input":{"command":"(\ngit status\n)"}}'
+assert_allow "KBS-11 newline brace block with git"      '{"tool_name":"Bash","tool_input":{"command":"{\ngit log -1\n}"}}'
+assert_allow "KBS-11 gh pr create heredoc body"         '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body \"$(cat <<'"'"'EOF'"'"'\n## Summary\n- x\nEOF\n)\""}}'
+assert_allow "KBS-11 heredoc commit form"              '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"$(cat <<'"'"'EOF'"'"'\nfix: x\nEOF\n)\""}}'
+# --- B3: pull is a fetch + merge into the current branch ---
+assert_deny "KBS-12 pull origin refs/kit/base"          '{"tool_name":"Bash","tool_input":{"command":"git pull origin refs/kit/base"}}'
+assert_deny "KBS-12 pull --ff-only origin refs/kit/base" '{"tool_name":"Bash","tool_input":{"command":"git pull --ff-only origin refs/kit/base"}}'
+# --- B4: the skipped -c / --config-env values, aliases, clone, remote ---
+assert_deny "KBS-13 -c remote.fetch then fetch"         '{"tool_name":"Bash","tool_input":{"command":"git -c remote.origin.fetch=+refs/kit/base:refs/heads/kit-base fetch origin"}}'
+assert_deny "KBS-13 clone -c remote.fetch"              '{"tool_name":"Bash","tool_input":{"command":"git clone -c remote.origin.fetch=+refs/kit/base:refs/heads/kit-base https://example.invalid/r.git /tmp/c"}}'
+assert_deny "KBS-13 -c alias then update-ref"           '{"tool_name":"Bash","tool_input":{"command":"git -c alias.x=update-ref x refs/heads/kit-base abc1234"}}'
+assert_deny "KBS-13 --config-env remote.fetch"          '{"tool_name":"Bash","tool_input":{"command":"git --config-env=remote.origin.fetch=REFSPEC fetch origin"}}'
+assert_deny "KBS-13 remote add --mirror=fetch"          '{"tool_name":"Bash","tool_input":{"command":"git remote add x https://example.invalid/r.git --mirror=fetch"}}'
+assert_deny "KBS-13 remote add -f naming kit-base"      '{"tool_name":"Bash","tool_input":{"command":"git remote add -t kit-base x https://example.invalid/r.git"}}'
+# --- B5: parser differentials (quotes, a quoted global operand, a subshell, a command substitution) ---
+assert_deny "KBS-14 quoted subcommand"                  '{"tool_name":"Bash","tool_input":{"command":"git '"'"'update-ref'"'"' refs/heads/kit-base abc1234"}}'
+assert_deny "KBS-14 quoted -C operand with a space"     '{"tool_name":"Bash","tool_input":{"command":"git -C '"'"'a b'"'"' update-ref refs/heads/kit-base abc1234"}}'
+assert_deny "KBS-14 subshell"                           '{"tool_name":"Bash","tool_input":{"command":"(git update-ref refs/heads/kit-base abc1234)"}}'
+assert_deny "KBS-14 command substitution"               '{"tool_name":"Bash","tool_input":{"command":"x=$(git branch kit-base abc1234)"}}'
+assert_deny "KBS-14 unknown global option"              '{"tool_name":"Bash","tool_input":{"command":"git --frob update-ref refs/heads/kit-base abc1234"}}'
+# --- B6: -v / -a / -r are not list reads ---
+assert_deny "KBS-15 branch -v creates"                  '{"tool_name":"Bash","tool_input":{"command":"git branch -v kit-base abc1234"}}'
+# --- B7: update-ref --stdin is denied outright ---
+assert_deny "KBS-16 update-ref --stdin (no name in the text)" '{"tool_name":"Bash","tool_input":{"command":"git update-ref --stdin < /tmp/refs.txt"}}'
+# --- B8: a wrapper that feeds a ref writer ---
+assert_deny "KBS-17 xargs update-ref fed by echo"       '{"tool_name":"Bash","tool_input":{"command":"echo refs/heads/kit-base | xargs git update-ref HEAD"}}'
+# --- B9: glob refspecs on push / send-pack / config ---
+assert_deny "KBS-18 push refs/*:refs/*"                 '{"tool_name":"Bash","tool_input":{"command":"git push origin '"'"'refs/*:refs/*'"'"'"}}'
+assert_deny "KBS-18 push refs/heads/*:refs/heads/*"     '{"tool_name":"Bash","tool_input":{"command":"git push origin refs/heads/*:refs/heads/*"}}'
+assert_deny "KBS-18 config --add remote.fetch refs/*"   '{"tool_name":"Bash","tool_input":{"command":"git config --add remote.origin.fetch '"'"'+refs/*:refs/*'"'"'"}}'
+assert_deny "KBS-18 send-pack glob"                     '{"tool_name":"Bash","tool_input":{"command":"git send-pack origin refs/k*"}}'
+# --- B10: mirror ---
+assert_deny "KBS-19 fetch --mirror"                     '{"tool_name":"Bash","tool_input":{"command":"git fetch --mirror origin"}}'
+# --- B11: replace ---
+assert_deny "KBS-20 git replace kit-base"               '{"tool_name":"Bash","tool_input":{"command":"git replace kit-base abc1234"}}'
+assert_allow "KBS-9 config reads remote.fetch"          '{"tool_name":"Bash","tool_input":{"command":"git config --get remote.origin.fetch"}}'
+assert_allow "KBS-7 log"                                '{"tool_name":"Bash","tool_input":{"command":"git log kit-base"}}'
+assert_allow "KBS-7 log oneline"                        '{"tool_name":"Bash","tool_input":{"command":"git log --oneline -3 refs/heads/kit-base"}}'
+assert_allow "KBS-7 show"                               '{"tool_name":"Bash","tool_input":{"command":"git show kit-base:VERSION"}}'
+assert_allow "KBS-7 rev-parse"                          '{"tool_name":"Bash","tool_input":{"command":"git rev-parse kit-base"}}'
+assert_allow "KBS-7 fetch with no destination"          '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/base"}}'
+assert_allow "KBS-7 ls-remote"                          '{"tool_name":"Bash","tool_input":{"command":"git ls-remote origin refs/kit/base"}}'
+assert_allow "KBS-7 archive"                            '{"tool_name":"Bash","tool_input":{"command":"git archive kit-base"}}'
+assert_allow "KBS-7 diff"                               '{"tool_name":"Bash","tool_input":{"command":"git diff kit-base HEAD"}}'
+assert_allow "KBS-7 cat-file"                           '{"tool_name":"Bash","tool_input":{"command":"git cat-file -p kit-base"}}'
+assert_allow "KBS-7 for-each-ref"                       '{"tool_name":"Bash","tool_input":{"command":"git for-each-ref refs/tags/kit-base/"}}'
+assert_allow "KBS-7 branch --list"                      '{"tool_name":"Bash","tool_input":{"command":"git branch --list kit-base"}}'
+assert_allow "KBS-7 tag -l"                             '{"tool_name":"Bash","tool_input":{"command":"git tag -l kit-base/*"}}'
+assert_allow "KBS-7 commit message naming both"         '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"docs: git update-ref of kit-base is denied\""}}'
+assert_allow "KBS-7 push of an unrelated ref"           '{"tool_name":"Bash","tool_input":{"command":"git push origin feature/x"}}'
+assert_allow "KBS-7 read then unrelated push"           '{"tool_name":"Bash","tool_input":{"command":"git log kit-base ; git push origin feature/x"}}'
+assert_allow "KBS-8 kit-update --from"                  '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-update.sh --from ../kit"}}'
+assert_allow "KBS-8 kit-update --publish-base"          '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-update.sh --publish-base"}}'
+assert_allow "KBS-21 ledger scratch notes-remote"        '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags -f origin +refs/notes/promotions:refs/kit/notes-remote-1234"}}'
+assert_allow "KBS-21 ledger scratch promotions-presync"  '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags origin +refs/notes/promotions:refs/kit/promotions-presync-1234"}}'
+assert_deny "KBS-21 base into a scratch name"            '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/base:refs/kit/notes-remote-1"}}'
+assert_deny "KBS-21 scratch into kit-base"               '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/notes-remote-1:refs/heads/kit-base"}}'
 
 # === GUARD-QUOTED-EXEC-INTERMITTENT — the empty-command fault and the whitespace-only allows (design §8.3) ===
 # The guard now FAULTS (rc 2, no allow) on an empty Bash command: under fork exhaustion a failed read yields the
@@ -9609,6 +10027,16 @@ assert_allow "GTM-A11 tracker-conf get-prefix" '{"tool_name":"Bash","tool_input"
 assert_allow "GTM-A12 tracker-conf positional conf" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/tracker-conf.sh .kit/tracker.conf"}}'
 assert_allow "GTM-A13 pin: board.sh create kit-update title" '{"tool_name":"Bash","tool_input":{"command":"sh scripts/board.sh create --title \"kit-update: take 3.232.0\""}}'
 assert_allow "GTM-A14 pin: gh api -q .title" '{"tool_name":"Bash","tool_input":{"command":"gh api repos/o/r/pulls/1 -q .title"}}'
+# --- GUARD-READ-TRACKER-PREFLIGHT-CONF (design §2 D3): the post-incept preflight re-check, ONE exact shape ---
+assert_allow "GTM-A15 tracker-contract --preflight --conf" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --preflight --conf .kit/tracker.conf"}}'
+assert_allow "GTM-A16 tracker-contract --preflight --as ci --conf" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --preflight --as ci --conf .kit/tracker.conf"}}'
+assert_allow "GTM-A17 tracker-contract flags in another order" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --as dev --conf .kit/tracker.conf --preflight"}}'
+assert_deny "GTM-TC1 tracker-contract --deep on the conf" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --deep --conf .kit/tracker.conf"}}'
+assert_deny "GTM-TC2 tracker-contract --discover on the conf" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --discover --conf .kit/tracker.conf"}}'
+assert_deny "GTM-TC3 tracker-contract preflight redirected into .kit" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --preflight --conf .kit/tracker.conf > .kit/out"}}'
+assert_deny "GTM-TC4 tracker-contract preflight with a bad --as value" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --preflight --as root --conf .kit/tracker.conf"}}'
+assert_deny "GTM-TC5 tracker-contract preflight on another control-plane path" '{"tool_name":"Bash","tool_input":{"command":"sh conformance/tracker-contract.sh --preflight --conf .claude/settings.json"}}'
+assert_deny "GTM-TC6 cd then tracker-contract preflight (off the confident root)" '{"tool_name":"Bash","tool_input":{"command":"cd sub && sh conformance/tracker-contract.sh --preflight --conf .kit/tracker.conf"}}'
 # --- DENY: the comment-carried twins (vet C1). A `#` outside a span ends the line for the shell, so a quote
 #     byte inside the comment is inert and the "span" the walk sees is really executed lines. Both quote
 #     kinds, two leads, and a different executed line 2 each. ---
@@ -9854,6 +10282,13 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 #     (assert_allow_at + assert_deny_at) -> 2429 - 2 = 2427.
 #   + GUARD-QUOTED-EXEC-INTERMITTENT: 5 counted cells added (4 whitespace-only assert_allow_rc0 + 1 assert_fault on
 #     the empty command), none behind a skip -> 2427 + 5 = 2432. (Raised by arithmetic, not re-measured here.)
+#   + GUARD-SPELLING-RESIDUALS: 62 counted cells added (53 assert_* cells and 9 fixture cells, the C1 and C9 legs), none behind a
+#     skip that fires on a supported host (a failed mktemp skips the 3 C1 and 6 C9 fixture cells; priced as slack) -> 2432 + 62 = 2494.
+#     Measured: `--cells 'GSR-*'` reports 62 matched cells.
+#   + 59 more counted cells (the C9 ancestor/composed/-t/tilde and reason fixture cells,
+#     the C7 view, --pathspec-from-file, C6 glob, xargs/sed option, C5 collapse and C3 variable cells and their pins), same skip pricing
+#     -> 2494 + 59 = 2553. Measured: `--cells 'GSR-*'` now reports 121 matched cells.
+#   + GSR last fix (raw-segment C7, pathspec-from prefix): 4 more counted cells -> 2553 + 4 = 2557; `--cells 'GSR-*'` reports 125.
 # Skips that cost NO counted cells (swept, priced at zero): F2 root skip (SKIP F2, uid 0), Arm A
 # coupling lock without git (fpra_lock), direction 3 of the .kit conf corpus without git.
 # Skips that ADD cells on other hosts: HOME-REL-WIDEN-T1 (skipped on macOS, a case-INSENSITIVE
@@ -9867,7 +10302,7 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 # could be skipped without tripping the floor. That is inside the disclosed "at least N, not the right
 # N" ceiling.
 # A count below this floor means cells did not run; see the FAIL text in aa_completeness.
-AA_CELL_FLOOR=2432
+AA_CELL_FLOOR=2557
 if [ "$AA_MODE" = scoped ]; then
   # SCOPED: never the floor, never the graded OK line (C-B, F8). Non-zero if a matched cell failed or the report refused.
   aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?

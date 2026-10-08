@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.233.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
+`v3.234.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
 
 Sparkwright brings a **guided, agent-driven lifecycle** to your software — whether you're starting a new project or layering it onto a repo you already have. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It's opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 

@@ -103,17 +103,27 @@
 #                  --atomic` (never --force, no '+' refspec) of refs/heads/kit-base -> the remote's NON-BRANCH
 #                  ref refs/kit/base (not refs/heads/kit-base: the kit's pre-push hook grades every branch
 #                  push, and a base commit has no Kit-Row), + the local kit-base/* tags that point into the
-#                  chain, to --remote (default origin), through YOUR git credentials and config. A clone
-#                  gets it back with `git fetch origin refs/kit/base:refs/heads/kit-base` (fetching it
-#                  automatically when missing is row KIT-BASE-SHARED, not built here). No such remote: it
-#                  says "kit-base stays local", rc 0. Rejected (the remote's refs/kit/base moved): the local
-#                  write STANDS, rc 3, the cause and the reconcile hint are printed, nothing is forced.
-#                  --no-push keeps it all local (and skips the "HEAD is on the shared line" refusal). An
-#                  undo of a PUBLISHED base is an explicit `git push <remote> +<old tip>:refs/kit/base`
+#                  chain, to --remote (default origin), through YOUR git credentials and config. No such
+#                  remote: it says "kit-base stays local", rc 0. Rejected (the remote's refs/kit/base moved):
+#                  the local write STANDS, rc 3, the cause and the reconcile hint are printed, nothing is
+#                  forced. --no-push keeps it all local (and skips the "HEAD is on the shared line" refusal).
+#                  An undo of a PUBLISHED base is an explicit `git push <remote> +<old tip>:refs/kit/base`
 #                  that a human runs.
-# Guardrails: --from / --reconstruct-base are NON-MUTATING — they read the adopter via `git archive`/`git
-#             fetch` into a THROWAWAY workbench repo; never write their worktree, index, refs, objects or
-#             config. The merge is
+#                  KIT-BASE-SHARED — --from AND --advance-base ALSO IMPORT the remote's refs/kit/base (default
+#                  remote origin, --remote <name>), and that is the one write --from makes: when this clone has
+#                  no kit-base, or the remote's chain extends yours, `sync_base` fetches refs/kit/base through a
+#                  temporary refs/kit-import/base (fsck'd, deleted at once), VERIFIES every commit it would
+#                  import (verify_chain_commit) and only then writes `refs/heads/kit-base` (create-only, or a
+#                  compare-and-swap fast-forward) + the chain's own create-only `kit-base/*` tags in ONE
+#                  `update-ref --stdin` transaction, printing the undo. Anyone with push access to the remote
+#                  can write refs/kit/base, so a chain that fails verification, or is diverged, is NOT imported:
+#                  with a local base the run WARNS and continues on it (rc unchanged); with none it ends, rc 1.
+#                  Objects and FETCH_HEAD land in the adopter's repo as with any fetch. `--publish-base
+#                  [--remote <name>]` pushes the base you hold (the advance's one atomic, never-forced push) and
+#                  writes nothing locally.
+# Guardrails: --from / --reconstruct-base read the adopter via `git archive`/`git
+#             fetch` into a THROWAWAY workbench repo; apart from the verified base import above they never write
+#             their worktree, index, refs, objects or config. The merge is
 #             `git merge-tree --write-tree` (no checkout at all) where the git can do it, and otherwise
 #             plain `git merge` in a temporary worktree OF THE WORKBENCH — non-mutating either way, and
 #             the tool PRINTS which one ran. The choice is a runtime CAPABILITY PROBE, not a version
@@ -124,10 +134,16 @@ set -eu
 # ("file 1 is not in sorted order") under e.g. en_US.UTF-8 on C-sorted kit paths. Pin it for the whole run.
 # Nothing user-facing depends on the locale (git messages we match are English; paths print byte-for-byte).
 LC_ALL=C; export LC_ALL
+# KIT-BASE-SHARED (security G4): no `refs/replace/*` ref may substitute the content of a chain commit this tool verifies, archives
+# or walks. Every git below inherits this (the scrubbed wrappers `env -u` only the names they list). Not a switch: the greppable
+# line `GIT_NO_REPLACE_OBJECTS=1; export …` is replaced by an `unset` in a COPY by conformance/kit-base-shared.sh (M3) to prove its leg needs it (git treats =0 as SET, so 0 would not do).
+GIT_NO_REPLACE_OBJECTS=1; export GIT_NO_REPLACE_OBJECTS
 
 USAGE='usage: kit-update.sh --from <git-url|local-path> [--repo <path>] [--merge-impl auto|merge-tree|worktree]
        kit-update.sh --reconstruct-base <dir> [--repo <path>]
-       kit-update.sh --advance-base --from <git-url|local-path> [--at <sha>] [--repo <path>] [--remote <name>] [--no-push]'
+       kit-update.sh --advance-base --from <git-url|local-path> [--at <sha>] [--repo <path>] [--remote <name>] [--no-push]
+       kit-update.sh --publish-base [--repo <path>] [--remote <name>]
+       (--from and --advance-base also take --remote <name>: the remote whose refs/kit/base they import, verified)'
 usage() { echo "$USAGE" >&2; exit 2; }
 
 die() { echo "kit-update: $*" >&2; exit 1; }
@@ -151,6 +167,18 @@ _KU_BEHIND=on
 # taken on trust, so conformance/kit-update-advance.sh proves A21 genuinely needs it. Keep it a bare top-level
 # assignment on its own line.
 _KU_BEHIND_STRICT=on
+
+# THE IMPORT-VERIFICATION SWITCH (KIT-BASE-SHARED). `on` = a kit-base chain commit fetched from the remote is written
+# only after verify_chain_commit has checked its TREE against the exports that its Kit-Source's OWN exporter produces
+# (every entry must be one of them; no symlink, no submodule). `off` skips that tree check (the M1 mutant, in a COPY):
+# a forged scripts/incept.sh in a pushed chain commit is then imported — and RUN by the next --from — so
+# conformance/kit-base-shared.sh proves S5 genuinely needs the control. Keep it a bare top-level assignment on its own line.
+_KU_VERIFY_IMPORT=on
+
+# THE ANCHOR SWITCH (KIT-BASE-SHARED, H2). `on` = an imported chain commit's Kit-Source must be a release this project's OWN
+# history recorded in .kit-source. `off` (the M2 mutant, in a COPY) drops that one check: a chain claiming a genuine release
+# the project never took is then imported, so conformance/kit-base-shared.sh proves the anchor test needs it. Keep it bare.
+_KU_ANCHOR=on
 
 # ── selftest_sanitizer_bash_unset : the BASH-AS-/bin/sh regression lock for _ku_git
 # (SANITIZER-UNSET-RESTORES-EXPORTED), the twin of the legs in conformance/inception-done.sh (b10)
@@ -208,10 +236,11 @@ esac
 # same answer): a fallback nobody can run is a promise nobody can check. A FLAG, never an ambient env var —
 # the environment does not get to decide how your merge is computed.
 MERGE_MODE=auto
-REPO=""; OUT=""; FROM=""; ADVANCE=""; AT=""; REMOTE=origin; NO_PUSH=""; REMOTE_SET=""
+REPO=""; OUT=""; FROM=""; ADVANCE=""; AT=""; REMOTE=origin; NO_PUSH=""; REMOTE_SET=""; PUBLISH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --advance-base) ADVANCE=1; shift ;;
+    --publish-base) PUBLISH=1; shift ;;
     --no-push) NO_PUSH=1; shift ;;
     --remote)
       [ $# -ge 2 ] && [ -n "$2" ] || { echo "kit-update: --remote requires a remote name" >&2; exit 2; }
@@ -232,19 +261,24 @@ while [ $# -gt 0 ]; do
     *) echo "kit-update: unknown arg: $1" >&2; usage ;;
   esac
 done
-[ -n "$OUT" ] || [ -n "$FROM" ] || usage
+[ -n "$OUT" ] || [ -n "$FROM" ] || [ -n "$PUBLISH" ] || usage
+if [ -n "$PUBLISH" ] && [ -n "$OUT$FROM$ADVANCE$AT$NO_PUSH" ]; then
+  echo "kit-update: --publish-base is its own job (it pushes the base you already have; it takes only --repo and --remote) — pass it alone." >&2; exit 2
+fi
 [ -z "$OUT" ] || [ -z "$FROM" ] || { echo "kit-update: --from and --reconstruct-base are different jobs — pass one." >&2; exit 2; }
 [ -z "$ADVANCE" ] || [ -n "$FROM" ] || { echo "kit-update: --advance-base needs --from <src> (the vendor history that contains the release HEAD took)." >&2; exit 2; }
 [ -z "$ADVANCE" ] || [ -z "$OUT" ] || { echo "kit-update: --advance-base and --reconstruct-base are different jobs — pass one." >&2; exit 2; }
 [ -z "$AT" ] || [ -n "$ADVANCE" ] || { echo "kit-update: --at belongs to --advance-base." >&2; exit 2; }
-[ -z "$NO_PUSH$REMOTE_SET" ] || [ -n "$ADVANCE" ] || { echo "kit-update: --remote / --no-push belong to --advance-base (the one job that publishes; --from never writes)." >&2; exit 2; }
+[ -z "$NO_PUSH" ] || [ -n "$ADVANCE" ] || { echo "kit-update: --no-push belongs to --advance-base (the job that publishes after it writes)." >&2; exit 2; }
+[ -z "$REMOTE_SET" ] || [ -n "$ADVANCE$FROM$PUBLISH" ] || { echo "kit-update: --remote belongs to --from / --advance-base (the remote whose base they import) and --publish-base (where it pushes)." >&2; exit 2; }
 
 # CP-11, for the one writer: an ambient git locator (GIT_DIR / GIT_WORK_TREE / ...) makes git read and write a repo
 # OTHER than the one --repo names. --advance-base is refused at ENTRY, naming the variable, before any git runs.
-if [ -n "$ADVANCE" ]; then
+if [ -n "$ADVANCE$PUBLISH" ]; then
+  _ejob=--advance-base; [ -z "$PUBLISH" ] || _ejob=--publish-base
   for _eg in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES; do
     eval "_egv=\${$_eg:-}"
-    [ -z "$_egv" ] || die "--advance-base refuses with $_eg set in the environment: an ambient git locator would redirect the git that WRITES kit-base to a repo other than the one --repo names (CP-11). Unset it and re-run."
+    [ -z "$_egv" ] || die "$_ejob refuses with $_eg set in the environment: an ambient git locator would redirect the git that WRITES kit-base to a repo other than the one --repo names (CP-11). Unset it and re-run."
   done
 fi
 
@@ -260,20 +294,54 @@ REPO=$( CDPATH='' cd "$( git -C "$REPO" rev-parse --show-toplevel )" && pwd -P )
 #    kit-base mechanism. Either way there is NOTHING to reconstruct from and no honest fallback exists:
 #    "the tree at version X" is not even unique (the public mirror ships UN-pruned; this adopter's export
 #    was pruned to one profile). Say which, and what it means.
-git -C "$REPO" rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1 || {
+#    KIT-BASE-SHARED: for --from / --advance-base the refusal now comes AFTER the clone of --from and `sync_base`
+#    (it cannot import — verified — without --from), so it is a function the run calls when the sync found nothing.
+have_base() { git -C "$REPO" rev-parse --verify --quiet refs/heads/kit-base >/dev/null 2>&1; }
+refuse_no_base() {
   echo "kit-update: no 'kit-base' branch in $REPO." >&2
   echo "  kit-base is the PRISTINE EXPORT this project was adopted from — the merge base every update" >&2
   echo "  needs. incept vendors it (branch 'kit-base', tag 'kit-base/v<VER>+<sha12>'). It is missing because" >&2
   echo "  either (a) it was deleted, or (b) this project was incepted from a kit that predates the" >&2
   echo "  mechanism. There is NO safe fallback: a guessed base yields a WRONG delta, which is worse" >&2
-  echo "  than no delta. Recover the branch (git reflog / a clone that still has it), or re-adopt." >&2
+  echo "  than no delta. Recover the branch from YOUR OWN reflog (git reflog), or re-adopt." >&2
+  if [ -n "$OUT" ]; then
+    echo "  --from <vendor> imports a base a teammate published (verified): sh scripts/kit-update.sh --from <vendor>" >&2
+  else
+    echo "  whoever holds the base: kit-update --publish-base" >&2
+  fi
   echo "  See docs/operations/kit-base.md." >&2
   exit 1
 }
+# A1 (security G1): a local kit-base that CAME FROM A REMOTE BRANCH (a `git checkout kit-base` of origin/kit-base, which sets
+# branch.kit-base.remote/.merge; or a branch that equals a refs/remotes/*/kit-base) was never verified, and every `--from` /
+# `--reconstruct-base` runs its own scripts/incept.sh. It is refused BEFORE anything is built or run, with the verified route.
+refuse_unverified_base() {
+  have_base || return 0
+  _ub_why=''
+  if git -C "$REPO" config --get branch.kit-base.remote >/dev/null 2>&1 || git -C "$REPO" config --get branch.kit-base.merge >/dev/null 2>&1; then
+    _ub_why='it tracks a remote branch (branch.kit-base.remote/.merge is configured)'
+  else
+    _ub_tip=$(git -C "$REPO" rev-parse refs/heads/kit-base 2>/dev/null) || _ub_tip=''
+    if [ -n "$_ub_tip" ] && git -C "$REPO" for-each-ref --format='%(objectname) %(refname)' refs/remotes/ | grep -F -e "$_ub_tip refs/remotes/" | grep -q -e '/kit-base$'; then
+      _ub_why='it equals a remote-tracking branch kit-base'
+    fi
+  fi
+  [ -n "$_ub_why" ] || return 0
+  echo "kit-update: kit-base REFUSED as UNVERIFIED — it was created from a remote branch ($_ub_why). Nothing was built or run." >&2
+  echo "  A kit-base that arrived by a plain git branch was never checked, and every kit-update runs its own scripts/incept.sh." >&2
+  echo "  The verified route (a human step): set it aside with 'git branch -m kit-base kit-base-unverified', then re-run kit-update --from <vendor>," >&2
+  echo "  which imports the published refs/kit/base through the verification (docs/operations/kit-base.md)." >&2
+  exit 1
+}
+# --reconstruct-base has no --from, so it cannot verify and does not sync: it refuses here, as it always did.
+[ -z "$OUT" ] || [ -n "$PUBLISH" ] || have_base || refuse_no_base
+[ -n "$PUBLISH" ] || refuse_unverified_base
 
-# 2. THE STAMPS. CLAUDE.md §3 is where incept recorded every inception input.
+# 2. THE STAMPS. CLAUDE.md §3 is where incept recorded every inception input. (--publish-base pushes the base it
+#    already has and reconstructs nothing, so it needs none of them.)
+if [ -z "$PUBLISH" ]; then
 CM="$REPO/CLAUDE.md"
-[ -f "$CM" ] || die "no CLAUDE.md in $REPO — the project's inception stamps (§3) live there; without them the base cannot be reconstructed."
+[ -f "$CM" ] || { have_base || refuse_no_base; die "no CLAUDE.md in $REPO — the project's inception stamps (§3) live there; without them the base cannot be reconstructed."; }
 
 # A §3 config-list stamp: "- **<Field>** (§x): <value> — <template annotation…>". incept replaced ONLY the
 # bracketed choice-list, so the trailing prose survives — take the FIRST token, never the whole line.
@@ -389,6 +457,7 @@ if [ -n "$INFERRED" ]; then
   echo "  Record them once and this note goes away — add them to CLAUDE.md §3 (they are what incept now" >&2
   echo "  writes): '- **CI platform** (§14): <github|gitlab>' and '- **DB archetype** (§ archetype): <db-backed|no-db>'." >&2
 fi
+fi   # (end of: no stamps for --publish-base)
 
 stamps_line() {
   echo "    name='$NAME' owner='$OWNER' stack=$STACK team=$TEAM backlog=$BACKLOG ci=$CI mode=$MODE harness=$HARNESS date=$DATE${DB_FLAG:+ $DB_FLAG}"
@@ -628,7 +697,8 @@ warn_untrusted() {
   echo "    scripts is what makes incept's transformation cancel), and it is also what adoption always was:"
   echo "    running a kit's incept.sh. But point this ONLY at a source you trust as much as your own repo."
   echo "    It also runs the incept.sh stored in YOUR kit-base chain commits (trusted as code: they are your"
-  echo "    own history — do not fetch kit-base from a source you do not trust)."
+  echo "    own history). Anyone with push access to the remote can write refs/kit/base, so kit-update verifies every"
+  echo "    imported chain commit against this source before writing it; a base hand-fetched with raw git is NOT verified."
   echo ""
 }
 
@@ -701,10 +771,8 @@ advance_prepare() {
     || die "refs/heads/kit-base does not resolve to a commit."
   advance_shared_line
   advance_sha
-  warn_untrusted "--advance-base --from '$FROM'" \
-    "Recording the base means running THAT commit's OWN scripts/adopter-export.sh (it is checked out in a temp clone)"
-  git clone --quiet --no-tags -- "$FROM" "$TMP/new" >/dev/null 2>&1 \
-    || die "could not clone --from '$FROM'. It must be a git repository (a URL or a local path) holding the vendor history that contains the release HEAD took."
+  # (the warning and the clone of --from now happen ONCE, at the entry below, before `sync_base`: verifying an imported base
+  # needs the clone, and the advance reuses it.)
   FULL=$(git -C "$TMP/new" rev-parse --verify --quiet "${ADV_SHA}^{commit}" 2>/dev/null) \
     || die "vendor commit $ADV_SHA is unreachable in --from '$FROM' (not in its history, or an ambiguous short sha). REFUSING: a base built from some other commit is a wrong base."
   # reachable means IN --from's HEAD history: a local-path clone also copies dangling objects, which are not history
@@ -903,6 +971,9 @@ adv_publish_refs() {
 # incept MAKE are published: `v<VER>+<sha12>` whose <sha12> is the first 12 of the tagged commit's own Kit-Source, or
 # the legacy `v<VER>` at the chain ROOT. Any other `kit-base/*` tag on the chain (a teammate's note, a lookalike) stays local.
 adv_tag_is_ours() {
+  # K1 (security): the NAME is validated whole, because it is printed (the undo line) and used in a ref command: a version part
+  # carrying a quote, `$` or `;` must never reach either. `v<VER>+<sha12>` or the legacy `v<VER>`, VER = digit then [A-Za-z0-9.-].
+  printf '%s' "$1" | grep -Eq -e '^v[0-9][0-9A-Za-z.-]*\+[0-9a-f]{12}$' -e '^v[0-9][0-9A-Za-z.-]*$' || return 1
   case "$1" in
     v*+*)
       _ato_sha=${1##*+}; _ato_src=$(commit_source "$2")
@@ -942,7 +1013,8 @@ advance_publish() {
   adv_push $PUB_REFS > "$TMP/push.log" 2>&1 || _pb_rc=$?
   if [ "$_pb_rc" -eq 0 ]; then
     echo "  publish:       pushed $_pb_n ref(s) to '$REMOTE' in ONE atomic, non-forced push ($REMOTE's refs/kit/base + the kit-base tags in the chain)"
-    echo "                 a fresh clone gets the base back with: git fetch $REMOTE refs/kit/base:refs/heads/kit-base   (fetching it AUTOMATICALLY when missing is row KIT-BASE-SHARED, not built here)"
+    echo "                 a teammate's clone imports it, VERIFIED, on its next 'kit-update --from' (or '--advance-base') — nothing to fetch by hand"
+    echo "                 refs/kit/base has no forge protection: anyone with push access can write it; teammates' kit-update verifies every imported chain commit before running it"
     return 0
   fi
   PUBLISH_RC=3
@@ -952,8 +1024,8 @@ advance_publish() {
     echo "  REJECTED ref(s):" >&2
     grep -e '\[rejected\]' -e '\[remote rejected\]' "$TMP/push.log" | sed 's/^/    /' | strip_ctl >&2 || :
     echo "  '$REMOTE' has a ref this clone does not descend from (most likely a teammate advanced refs/kit/base)." >&2
-    echo "  Reconcile by hand — this tool never forces: 'git fetch $REMOTE refs/kit/base' then compare 'git log --oneline FETCH_HEAD' with" >&2
-    echo "  'git log --oneline kit-base'; once they agree (or you have decided which wins), publish: $_pb_hint" >&2
+    echo "  This tool never forces. Re-run 'kit-update --from <source>': it imports the teammate's chain through the verification" >&2
+    echo "  (a fast-forward of yours, or a DIVERGED report with the verified route), then publish again: $_pb_hint" >&2
   else
     echo "  The push failed for a reason that is not a rejection (see git's message above: network, credentials, a hook?)." >&2
     echo "  The local advance is intact; fix the cause and publish: $_pb_hint" >&2
@@ -963,6 +1035,321 @@ advance_publish() {
 # advance_base — THE ONLY WRITER. See the header: it writes refs/heads/kit-base (compare-and-swap), a tag only
 # when the release is complete, and the objects behind the commit — nothing else locally — then publishes.
 advance_base() { advance_prepare; advance_write; advance_report; advance_publish; }
+
+# ══ KIT-BASE-SHARED — RECEIVE the shared base from the remote, VERIFIED before it is used ═══════════════════════════
+# (design: docs/architecture/2026-10-05-kit-base-shared-design.md). Before this, a clone or a teammate had no base, and
+# the hand-fetch the docs offered was an UNVERIFIED code-execution channel: every `--from` re-runs the chain commits' OWN
+# scripts/incept.sh, and `refs/kit/base` sits outside branch protection. Now `--from` and `--advance-base` call
+# `sync_base`, which fetches the remote's `refs/kit/base` through the temporary `refs/kit-import/base` (deleted at once), classifies it
+# against the local `kit-base`, VERIFIES every commit it would import (`verify_chain_commit`) and only then writes —
+# create-when-absent or a compare-and-swap fast-forward, one `update-ref --stdin` transaction, plus the chain's own tags.
+
+# _ku_git: the same env-scrubbing wrapper guard-wired.sh's _gw_git and inception-done.sh's _id_git use
+# (review round 1). The consequence at hook_mode is milder than at a gate — the worst case is WRONG ADVICE
+# about whether a copy needs refreshing, not a forged verdict — but the fix is three lines and the
+# alternative is a third copy of the same known hole left open on purpose. The import's ref write goes through it too.
+# ⚠️ `env -u`, NOT `unset` (whole-branch review I-1 / security L1, 2026-09-18): in bash-as-/bin/sh,
+# `unset` of a var that carried a TEMPORARY PREFIX assignment over an ALREADY-EXPORTED one RESTORES
+# the exported value instead of removing it — measured on the locator family (GIT_DIR/GIT_WORK_TREE)
+# as well as the config-injection one. `env -u` removes the name from the CHILD environment whatever
+# the shell's unset semantics are; not POSIX, but present in GNU coreutils, the BSDs (macOS included)
+# and BusyBox. COUNT=0/PARAMETERS='' stay ASSIGNMENTS: git needs them INERT, not absent.
+_ku_git() {
+  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
+    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+    env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CONFIG_GLOBAL \
+        -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG -u GIT_CEILING_DIRECTORIES -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@" )
+}
+
+# ku_net <git args> — git for the commands that talk to the REMOTE (ls-remote, fetch): the scrubbed-config pattern of
+# adv_push (an ambient GIT_CONFIG_COUNT/KEY_n/VALUE_n/PARAMETERS or a redirected global/system config must not inject a
+# credential helper, a url rewrite or core.sshCommand into a network command), plus the repo LOCATOR family unset so the
+# fetched objects land in the repo --repo names. GIT_SSH_COMMAND/GIT_SSH/GIT_ASKPASS/GIT_PROXY_COMMAND are the user's own
+# transport settings and pass through; HOME and the repo/user config stay (the adopter's credentials and remotes are the point).
+ku_net() {
+  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
+    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+    env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_CEILING_DIRECTORIES -u GIT_NAMESPACE -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u GIT_CONFIG -u GIT_CONFIG_NOSYSTEM \
+        git -C "$REPO" "$@" )
+}
+
+# the longest chain one import will take (a bound on the exports verification pays for; a real chain is a handful)
+KBS_MAX_IMPORT=200
+KBS_VN=0
+
+# kbs_refuse <chain commit> <reason> — the import is REFUSED: the commit, the reason, "Nothing was written", the way out.
+kbs_refuse() {
+  echo "kit-update: kit-base import REFUSED — chain commit $(short12 "$1") $2. Nothing was written." >&2
+  echo "  Anyone with push access to '$REMOTE' can write refs/kit/base, so kit-update verifies every imported chain commit against '$FROM'; this one failed. Nothing from it was imported, and none of its code ran." >&2
+  echo "  Point --from at the source you adopted from, or ask the publisher to re-publish (kit-update --advance-base, then --publish-base, from a tree that records .kit-source)." >&2
+  exit 1
+}
+# kbs_unrecorded <chain commit> — a commit with no (valid) Kit-Source cannot be verified, and is never imported. There is
+# deliberately NO hand-import line here: any raw fetch of an unverifiable chain is the channel this control closes.
+kbs_unrecorded() {
+  echo "kit-update: kit-base import REFUSED — chain commit $(short12 "$1") records no Kit-Source (a base written before the chain carried one, or not by kit-update), so it cannot be verified. Nothing was written." >&2
+  echo "  The publisher re-publishes from a tree that records .kit-source (kit-update --advance-base, then --publish-base). Anyone with push access to '$REMOTE' can write refs/kit/base; an unverifiable chain is not imported." >&2
+  exit 1
+}
+
+# ku_dir_entries <dir> <outfile> — the entries git WOULD store for <dir>, `mode SP type SP blob TAB path`, one per line, a
+# NEWLINE inside a path mapped to \001 (so a path can never split an entry; verify_chain_commit refuses any control byte).
+# Hashed the way advance_write hashes the export (a temp index, `add -Af`), in the throwaway workbench.
+ku_dir_entries() {
+  ensure_workbench
+  ADV_GD="$W/.git"; ADV_IDX="$TMP/de.idx"; ADV_WT=$1; rm -f "$ADV_IDX"
+  adv_git -C "$1" add -Af . >/dev/null 2>&1 || return 1
+  _de_tree=$(adv_git write-tree) || return 1
+  adv_git ls-tree -r -z "$_de_tree" | tr '\000\n' '\n\001' > "$2"
+  [ -s "$2" ]
+}
+
+# kbs_union <Kit-Source 40-hex> <outfile> <chain commit> — <outfile> = the sorted union of the entries of the two exports
+# (un-pruned, and `--profile <stack>`) that Kit-Source's OWN adopter-export.sh makes, run in a worktree of the --from clone
+# detached there. A failed profile export (a release that lacks the profile) leaves the un-pruned export as the union.
+kbs_union() {
+  [ ! -s "$2" ] || return 0
+  KBS_VN=$((KBS_VN + 1)); _ku_w="$TMP/v.$KBS_VN"
+  git -C "$TMP/new" worktree add --detach -q "$_ku_w" "$1" >/dev/null 2>&1 \
+    || kbs_refuse "$3" "has a Kit-Source ($(short12 "$1")) that cannot be checked out in --from"
+  [ -f "$_ku_w/scripts/adopter-export.sh" ] || kbs_refuse "$3" "names a release ($(short12 "$1")) that has no scripts/adopter-export.sh"
+  sh "$_ku_w/scripts/adopter-export.sh" "$TMP/vx.$KBS_VN.f" >"$TMP/exp.log" 2>&1 \
+    || kbs_refuse "$3" "names a release ($(short12 "$1")) whose own adopter-export.sh failed"
+  ku_dir_entries "$TMP/vx.$KBS_VN.f" "$TMP/vx.$KBS_VN.f.e" || kbs_refuse "$3" "names a release ($(short12 "$1")) whose export came out empty"
+  cp "$TMP/vx.$KBS_VN.f.e" "$TMP/vx.$KBS_VN.u"
+  cut -f2- "$TMP/vx.$KBS_VN.f.e" | LC_ALL=C sort > "$2.pf"      # the un-pruned export's PATH SET (completeness, L1)
+  rm -f "$2.pp"
+  if sh "$_ku_w/scripts/adopter-export.sh" "$TMP/vx.$KBS_VN.p" --profile "$STACK" >"$TMP/exp.log" 2>&1 \
+     && ku_dir_entries "$TMP/vx.$KBS_VN.p" "$TMP/vx.$KBS_VN.p.e"; then
+    cat "$TMP/vx.$KBS_VN.p.e" >> "$TMP/vx.$KBS_VN.u"
+    cut -f2- "$TMP/vx.$KBS_VN.p.e" | LC_ALL=C sort > "$2.pp"   # …and the --profile export's
+  fi
+  LC_ALL=C sort -u "$TMP/vx.$KBS_VN.u" > "$2"
+  rm -rf "$_ku_w" "$TMP/vx.$KBS_VN.f" "$TMP/vx.$KBS_VN.p" 2>/dev/null || :
+}
+
+# verify_chain_commit <chain commit> <is_root 0|1> — THE SECURITY CONTROL (design §4). A commit fetched from the remote is
+# written into kit-base only if ALL hold; the first failure is a refusal that writes nothing (kbs_refuse exits 1):
+#   1. exactly one parent (none only for the chain's first commit, when the whole chain is being created), and a Kit-Source
+#      trailer that is 40 lowercase hex;
+#   2. that Kit-Source is a release YOUR history recorded in .kit-source (the anchor; `_KU_ANCHOR`), resolves in the --from
+#      clone AND is an ancestor of its HEAD. (The caller also checks the chain runs oldest to newest and that each commit's
+#      `behind`/`Kit-Behind` record passes read_behind's strict rules.) STACK is the CLAUDE.md §3 stamp the run already read;
+#   3. its tree has no control byte in a path, no symlink (120000) and no submodule (160000) entry, and holds
+#      scripts/incept.sh and .kit-manifest;
+#   4. EVERY entry (mode, blob, path) of its tree is an entry of one of the two exports that Kit-Source's OWN exporter
+#      produces, and the tree's PATH SET equals one export's (nothing added, nothing dropped) — so a forged
+#      scripts/incept.sh never gets in.
+# `_KU_VERIFY_IMPORT=off` (the M1 mutant, in a COPY) skips 3 and 4 only.
+verify_chain_commit() {
+  _vc=$1
+  _vc_np=$(git -C "$REPO" rev-list --parents -n 1 "$_vc" | awk '{ print NF - 1 }')
+  case "$_vc_np:$2" in
+    1:*|0:1) : ;;
+    *) kbs_refuse "$_vc" "has $_vc_np parent(s) — a chain commit has exactly one (only the chain's first commit has none)" ;;
+  esac
+  _vc_src=$(commit_source "$_vc")
+  [ -n "$_vc_src" ] || kbs_unrecorded "$_vc"
+  # ANCHOR (H2): the Kit-Source must be a release YOUR OWN history recorded in .kit-source (the set kbs_anchors collected),
+  # so a writer of refs/kit/base cannot make the chain claim a genuine release this project never took. A legacy tree whose
+  # history never recorded one (empty set) falls back to the --from-history rule below, with a printed warning.
+  if [ "$_KU_ANCHOR" = on ] && [ -s "$TMP/sb.anch" ] && ! grep -qxF -- "$_vc_src" "$TMP/sb.anch"; then
+    kbs_refuse "$_vc" "has a Kit-Source ($(short12 "$_vc_src")) that no commit of YOUR history recorded in .kit-source — it is not a release this project took (if a teammate's update recording it has merged, pull main and re-run)"
+  fi
+  if git -C "$TMP/new" rev-parse --verify --quiet "$_vc_src^{commit}" >/dev/null 2>&1 \
+     && git -C "$TMP/new" merge-base --is-ancestor "$_vc_src" HEAD 2>/dev/null; then :; else
+    kbs_refuse "$_vc" "has a Kit-Source ($(short12 "$_vc_src")) that is not in the history of --from"
+  fi
+  [ "$_KU_VERIFY_IMPORT" = on ] || return 0
+  git -C "$REPO" ls-tree -r -z "$_vc^{tree}" | tr '\000\n' '\n\001' > "$TMP/vc.ents"
+  [ -s "$TMP/vc.ents" ] || kbs_refuse "$_vc" "has an empty tree"
+  tr -d '\001-\010\013-\037\177' < "$TMP/vc.ents" | cmp -s - "$TMP/vc.ents" \
+    || kbs_refuse "$_vc" "has a path with a control character (a newline, an escape ...) — the kit ships none"
+  _vc_l=$(grep '^120000 ' "$TMP/vc.ents" | sed -n '1p' | cut -f2- | strip_ctl) || :
+  [ -z "$_vc_l" ] || kbs_refuse "$_vc" "has a symlink entry ('$_vc_l') — the kit ships none, and a link in the base would point outside the tree materialized from it"
+  _vc_l=$(grep '^160000 ' "$TMP/vc.ents" | sed -n '1p' | cut -f2- | strip_ctl) || :
+  [ -z "$_vc_l" ] || kbs_refuse "$_vc" "has a submodule entry ('$_vc_l') — the kit ships none"
+  for _vc_req in scripts/incept.sh .kit-manifest; do
+    cut -f2- "$TMP/vc.ents" | grep -qxF -- "$_vc_req" || kbs_refuse "$_vc" "has no '$_vc_req' — it is not a kit-base tree"
+  done
+  kbs_union "$_vc_src" "$TMP/vu.$_vc_src" "$_vc"
+  LC_ALL=C sort -u "$TMP/vc.ents" > "$TMP/vc.sorted"
+  _vc_out=$(comm -23 "$TMP/vc.sorted" "$TMP/vu.$_vc_src" | sed -n '1p')
+  if [ -n "$_vc_out" ]; then
+    _vc_pth=$(printf '%s\n' "$_vc_out" | cut -f2- | strip_ctl)
+    kbs_refuse "$_vc" "has a tree entry that no export of its Kit-Source ($(short12 "$_vc_src")) produces: '$_vc_pth' (mode $(printf '%s' "$_vc_out" | cut -d' ' -f1)) — a forged or altered base"
+  fi
+  # COMPLETENESS (L1): the PATH SET must equal that of one export (un-pruned or --profile <stack>); the blobs and modes may
+  # come from either shape's entry at that path (the union above). A tree that drops or adds a path is not a base of it.
+  cut -f2- "$TMP/vc.ents" | LC_ALL=C sort > "$TMP/vc.paths"
+  if cmp -s "$TMP/vc.paths" "$TMP/vu.$_vc_src.pf" || { [ -f "$TMP/vu.$_vc_src.pp" ] && cmp -s "$TMP/vc.paths" "$TMP/vu.$_vc_src.pp"; }; then return 0; fi
+  _vc_d=$( { comm -23 "$TMP/vc.paths" "$TMP/vu.$_vc_src.pf"; comm -13 "$TMP/vc.paths" "$TMP/vu.$_vc_src.pf"; } | sed -n '1p' | strip_ctl)
+  kbs_refuse "$_vc" "has a path set that matches no export of its Kit-Source ($(short12 "$_vc_src")) — it adds or drops files (e.g. '$_vc_d')"
+}
+
+# kbs_anchors — $TMP/sb.anch = every release THIS project's own history recorded in .kit-source (first-parent log of HEAD,
+# each version read with the same strict parse head_kit_source uses). Empty = a legacy tree: say so, fall back.
+kbs_anchors() {
+  : > "$TMP/sb.anch"
+  for _an_c in $(git -C "$REPO" log --first-parent --format=%H -- .kit-source 2>/dev/null); do
+    git -C "$REPO" show "$_an_c:.kit-source" > "$TMP/sb.ks" 2>/dev/null || continue
+    if parse_kit_source "$TMP/sb.ks"; then printf '%s\n' "$KS_SHA" >> "$TMP/sb.anch"; fi
+  done
+  [ -s "$TMP/sb.anch" ] && return 0
+  echo "kit-base: WARNING — this project's history never recorded a .kit-source (a legacy tree), so an imported chain cannot be anchored to a release you took; falling back to 'the Kit-Source is in --from's history'." >&2
+}
+
+# kbs_diverged — this clone's tip and the remote's each hold chain commits the other lacks: report both, write nothing.
+kbs_diverged() {
+  echo "kit-update: kit-base DIVERGED — this clone's kit-base ($(short12 "$KBS_L")) and '$REMOTE''s refs/kit/base ($(short12 "$KBS_R")) each hold chain commits the other lacks (or are more than $KBS_MAX_IMPORT commits apart). Nothing was written." >&2
+  echo "  This tool never forces. To keep yours, the owner of '$REMOTE' replaces its refs/kit/base deliberately, then: sh scripts/kit-update.sh --publish-base" >&2
+  echo "  To take the remote's chain VERIFIED: set yours aside (a human step: git branch -m kit-base kit-base-mine), then re-run kit-update --from — it imports through verify_chain_commit." >&2
+  return 1
+}
+
+# kbs_soft_fail <why> — the import FAILED CLOSED (nothing written). With a valid LOCAL base the RUN does not: say so loudly and
+# continue on the local base, exactly as before this import existed (rc unchanged). With NO local base there is nothing to
+# continue on: the run ends, rc 1.
+kbs_soft_fail() {
+  have_base || exit 1
+  echo "kit-update: WARNING — kit-base was NOT imported from '$REMOTE': $1 Nothing was written. Continuing on your LOCAL base, exactly as before the import existed (the result below is against YOUR base, not the remote's)." >&2
+  return 0
+}
+
+# kbs_tag_cmds <chain root> — $TMP/sb.tagcmds = `create refs/tags/kit-base/<t> <commit>` for each of the REMOTE's kit-base/*
+# tags that points at an IMPORTED commit, passes adv_tag_is_ours, is a valid ref name, and does not exist locally (an
+# existing tag is never touched). Sets KBS_TAGN.
+kbs_tag_cmds() {
+  : > "$TMP/sb.tagcmds"; KBS_TAGN=0; KBS_TAGS=''
+  # (a glob refspec cannot be fetched with no destination, so the names + shas come from the ls-remote read: an annotated
+  # tag's peeled `^{}` line wins. A raced or lying sha cannot matter — a tag is created only when its sha is an IMPORTED,
+  # already-verified commit.)
+  awk '$2 ~ /^refs\/tags\/kit-base\// { n = $2; sub(/^refs\/tags\/kit-base\//, "", n)
+         if (n ~ /\^\{\}$/) { sub(/\^\{\}$/, "", n); p[n] = $1 } else s[n] = $1 }
+       END { for (k in s) print (k in p ? p[k] : s[k]), k }' "$TMP/sb.ls" > "$TMP/sb.tags"
+  while read -r _tc_sha _tc_name; do
+    [ -n "$_tc_name" ] || continue
+    _tc_c=$(_ku_git -C "$REPO" rev-parse --verify --quiet "$_tc_sha^{commit}") || continue
+    grep -qxF -- "$_tc_c" "$TMP/sb.imp" || continue
+    git check-ref-format "refs/tags/kit-base/$_tc_name" >/dev/null 2>&1 || continue
+    adv_tag_is_ours "$_tc_name" "$_tc_c" "$1" || continue
+    ! _ku_git -C "$REPO" rev-parse --verify --quiet "refs/tags/kit-base/$_tc_name" >/dev/null 2>&1 || continue
+    printf 'create refs/tags/kit-base/%s %s\n' "$_tc_name" "$_tc_c" >> "$TMP/sb.tagcmds"
+    KBS_TAGN=$((KBS_TAGN + 1)); KBS_TAGS="$KBS_TAGS kit-base/$_tc_name"
+  done < "$TMP/sb.tags"
+}
+
+# kbs_verify_all — verify every commit in $TMP/sb.imp, oldest first: verify_chain_commit, the `behind`/`Kit-Behind` record
+# (read_behind's strict rules, against the chain as it will be after the import: a corrupt one dies), and MONOTONICITY (each
+# Kit-Source equals or is an ancestor, in --from, of its child's). Runs in a subshell; any failure exits 1 there.
+kbs_verify_all() {
+  kbs_anchors
+  echo "kit-base: verifying $_sb_n chain commit(s) from '$REMOTE' against '$FROM' (two exports each)"
+  _sb_root=1; [ -z "$KBS_L" ] || _sb_root=0
+  _sb_prev=''; [ -z "$KBS_L" ] || _sb_prev=$(commit_source "$KBS_L")
+  while IFS= read -r _sb_c; do
+    verify_chain_commit "$_sb_c" "$_sb_root"; _sb_root=0
+    read_behind "$_sb_c" "$TMP/rb.imp"
+    _sb_cs=$(commit_source "$_sb_c")
+    if [ -n "$_sb_prev" ] && [ "$_sb_prev" != "$_sb_cs" ] && ! git -C "$TMP/new" merge-base --is-ancestor "$_sb_prev" "$_sb_cs" 2>/dev/null; then
+      kbs_refuse "$_sb_c" "has a Kit-Source ($(short12 "$_sb_cs")) that is not newer than its parent's ($(short12 "$_sb_prev")) — a chain runs oldest to newest"
+    fi
+    _sb_prev=$_sb_cs
+  done < "$TMP/sb.imp"
+}
+
+# sync_base — see the block comment. Sets REMOTE_BASE_STATE (unknown | absent | present), which feeds the tail notice.
+# Needs the --from clone ($TMP/new) and the workbench helpers, so it runs from the --from / --advance-base entry below.
+REMOTE_BASE_STATE=unknown
+sync_base() {
+  if ! _ku_git -C "$REPO" config --get "remote.$REMOTE.url" >/dev/null 2>&1; then
+    echo "kit-base: no remote '$REMOTE' — using the local base only"; return 0
+  fi
+  if ! ku_net ls-remote "$REMOTE" refs/kit/base 'refs/tags/kit-base/*' >"$TMP/sb.ls" 2>"$TMP/sb.err"; then
+    echo "kit-base: could not reach '$REMOTE' to look for a shared base — using the local base only"
+    sed -n '1,3p' "$TMP/sb.err" | strip_ctl | sed 's/^/    /'
+    return 0
+  fi
+  if ! awk '$2 == "refs/kit/base" { f = 1 } END { exit !f }' "$TMP/sb.ls"; then
+    REMOTE_BASE_STATE=absent; echo "kit-base: '$REMOTE' has no refs/kit/base"; return 0
+  fi
+  REMOTE_BASE_STATE=present
+  # FETCH into a temporary NON-branch ref in the adopter repo (refs/kit-import/base), fsck'd, read once, deleted at once — the
+  # chosen route (L2) over a fetch into the throwaway workbench because the adopter's own remote config, url rewrites and
+  # credentials apply only to a fetch made by the adopter repo; the objects stay unreferenced until verification has passed.
+  # The sha is the one FETCHED, never the ls-remote one (the two reads could race); FETCH_HEAD is not read.
+  # `--refmap=` (K2): the remote's configured `fetch` refspecs must not also map the fetched ref anywhere else. The temporary ref
+  # is deleted by the EXIT/INT/TERM trap too (K3) — KBS_IMPORT_REF is set just before the fetch.
+  _sb_tmp=refs/kit-import/base
+  KBS_IMPORT_REF=1
+  if ! ku_net -c fetch.fsckObjects=true -c transfer.fsckObjects=true fetch --refmap= --no-tags -q "$REMOTE" "+refs/kit/base:$_sb_tmp" >"$TMP/sb.out" 2>&1; then
+    _ku_git -C "$REPO" update-ref -d "$_sb_tmp" >/dev/null 2>&1 || :
+    echo "kit-base: could not fetch refs/kit/base from '$REMOTE' — using the local base only"
+    sed -n '1,3p' "$TMP/sb.out" | strip_ctl | sed 's/^/    /'
+    return 0
+  fi
+  KBS_R=$(_ku_git -C "$REPO" rev-parse --verify --quiet "$_sb_tmp^{commit}") || KBS_R=''
+  _ku_git -C "$REPO" update-ref -d "$_sb_tmp" >/dev/null 2>&1 || :
+  KBS_IMPORT_REF=''
+  if [ -z "$KBS_R" ]; then
+    echo "kit-update: kit-base import REFUSED — '$REMOTE''s refs/kit/base is not a commit. Nothing was written." >&2
+    kbs_soft_fail "its refs/kit/base is not a commit."; return 0
+  fi
+  KBS_L=$(_ku_git -C "$REPO" rev-parse --verify --quiet 'refs/heads/kit-base^{commit}') || KBS_L=''
+  _sb_max=$((KBS_MAX_IMPORT + 1))
+  _ku_git -C "$REPO" rev-list --first-parent -n "$_sb_max" "$KBS_R" > "$TMP/sb.fpR"
+  if [ -n "$KBS_L" ]; then
+    _ku_git -C "$REPO" rev-list --first-parent -n "$_sb_max" "$KBS_L" > "$TMP/sb.fpL"
+    if grep -qxF -- "$KBS_R" "$TMP/sb.fpL"; then
+      echo "kit-base: matches '$REMOTE' (refs/kit/base is $(short12 "$KBS_R") or behind your tip) — nothing to import"; return 0
+    fi
+    if ! grep -qxF -- "$KBS_L" "$TMP/sb.fpR"; then
+      kbs_diverged || :
+      kbs_soft_fail "the base is diverged."; return 0
+    fi
+    awk -v l="$KBS_L" '$0 == l { exit } { print }' "$TMP/sb.fpR" > "$TMP/sb.new"
+  else
+    cp "$TMP/sb.fpR" "$TMP/sb.new"
+  fi
+  if [ "$(n "$TMP/sb.new")" -gt "$KBS_MAX_IMPORT" ]; then
+    echo "kit-update: kit-base import REFUSED — '$REMOTE''s refs/kit/base is more than $KBS_MAX_IMPORT chain commits long (a real chain is a handful). Nothing was written." >&2
+    kbs_soft_fail "the remote chain is implausibly long."; return 0
+  fi
+  awk '{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }' "$TMP/sb.new" > "$TMP/sb.imp"
+  _sb_n=$(n "$TMP/sb.imp")
+  # verification runs in a SUBSHELL: a refusal (kbs_refuse exits 1) ends it, not the run; the caller decides (M1).
+  if ! ( kbs_verify_all ); then
+    kbs_soft_fail "the chain failed verification (above)."; return 0
+  fi
+  kbs_tag_cmds "$(_ku_git -C "$REPO" rev-list --first-parent "$KBS_R" | tail -n 1)"
+  for _eg in GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES; do
+    eval "_egv=\${$_eg:-}"
+    [ -z "$_egv" ] || die "the kit-base import refuses with $_eg set in the environment: an ambient git locator would redirect the ref write to a repo other than the one --repo names (CP-11). Unset it and re-run. (Nothing was written.)"
+  done
+  { if [ -z "$KBS_L" ]; then printf 'create refs/heads/kit-base %s\n' "$KBS_R"
+    else printf 'update refs/heads/kit-base %s %s\n' "$KBS_R" "$KBS_L"; fi
+    cat "$TMP/sb.tagcmds"
+  } | _ku_git -C "$REPO" update-ref -m "kit-update: import kit-base from '$REMOTE'" --stdin \
+    || die "could not move kit-base in one transaction (it moved under this run, or a tag appeared). No ref was moved (the fetched objects may exist, unreferenced); re-run."
+  _sb_undo="git update-ref -d refs/heads/kit-base"; _sb_how=create-only
+  if [ -n "$KBS_L" ]; then _sb_undo="git update-ref refs/heads/kit-base $KBS_L"; _sb_how=compare-and-swap; fi
+  for _sb_t in $KBS_TAGS; do _sb_undo="$_sb_undo && git tag -d '$_sb_t'"; done
+  echo "kit-base: imported $_sb_n chain commit(s) from '$REMOTE' (refs/kit/base), each verified against '$FROM' — kit-base is now $(short12 "$KBS_R")."
+  echo "  wrote:        refs/heads/kit-base ($_sb_how) and $KBS_TAGN create-only tag(s), plus the fetched objects and FETCH_HEAD. Nothing else."
+  echo "  undo (local): $_sb_undo   (a HUMAN step: the agent guard denies raw ref writes to kit-base)"
+  echo ""
+}
+
+# publish_base — `--publish-base`: push the base this clone HAS, the same one atomic never-forced push the advance does.
+publish_base() {
+  have_base || die "no 'kit-base' branch in $REPO — there is nothing to publish. See docs/operations/kit-base.md."
+  git -C "$REPO" config --get "remote.$REMOTE.url" >/dev/null 2>&1 \
+    || die "no remote '$REMOTE' in this repo — nothing to publish to. Add one (git remote add $REMOTE <url>), or name another with --remote <name>."
+  echo "kit-update: --publish-base — publishing kit-base to '$REMOTE' (one atomic, never-forced push of refs/kit/base + the chain's own tags)"
+  advance_publish
+  exit "$PUBLISH_RC"
+}
 
 # ══ JOB 1 — --reconstruct-base: just BASE, for inspection and for conformance/kit-update-identity.sh ══
 if [ -n "$OUT" ]; then
@@ -1000,7 +1387,8 @@ fi
 
 # ══ JOB 2 — --from: THE UPDATE. BASE + OURS + THEIRS, a 3-way merge, and a report. ═══════════════════
 
-# ── THE STALE-BASE GATE — before anything is cloned or executed ───────────────────────────────────────
+# ── THE STALE-BASE GATE — before THEIRS is built or any of its code is run (the --from clone and the verified import of a
+#    published base have already happened at the entry below; nothing of --from's has been executed yet) ──────────────────
 # The base must be the release HEAD TOOK. HEAD:.kit-source RECORDS the vendor commit HEAD took (an update's
 # own patch carries it); the kit-base tip's Kit-Source trailer RECORDS what the base is. If they differ the
 # base is STALE: every file the last update applied would read "changed BOTH", and its newer upstream content
@@ -1008,7 +1396,7 @@ fi
 # A LEGACY tree (no HEAD:.kit-source) has no record to compare; it gets a NOTICE later, when the numbers show
 # the symptom (STALE_LEGACY).
 STALE_LEGACY=0
-TIP_SRC=$(commit_source refs/heads/kit-base)   # the vendor commit the tip records ('' = a legacy base commit)
+TIP_SRC=''   # the vendor commit the kit-base tip records ('' = a legacy base commit); set at the entry below, AFTER sync_base
 stale_base_gate() {
   _sg_rc=0; head_kit_source || _sg_rc=$?
   case "$_sg_rc" in
@@ -1035,8 +1423,11 @@ stale_base_gate() {
 }
 
 TMP=$(mktemp -d) || die "mktemp failed"
+KBS_IMPORT_REF=''
+# K3: also drop the temporary refs/kit-import/base a killed import could leave behind (set only around that fetch).
+kbs_cleanup() { if [ -n "$KBS_IMPORT_REF" ]; then _ku_git -C "$REPO" update-ref -d refs/kit-import/base >/dev/null 2>&1 || :; fi; }
 # shellcheck disable=SC2064  # expand TMP now: at trap time it is exactly this run's dir
-trap "rm -rf '$TMP' 2>/dev/null || true" EXIT INT TERM
+trap "rm -rf '$TMP' 2>/dev/null || true; kbs_cleanup" EXIT INT TERM
 
 # ── THE WORKBENCH — a THROWAWAY repo. Every object we create lands HERE, never in the adopter's repo. ─
 # OURS is FETCHED (read-only on their side), so it is their EXACT HEAD tree — not a re-hash. BASE and
@@ -1069,6 +1460,28 @@ strip_ctl() { tr -d '\000-\010\013-\037\177'; }
 
 # ══ JOB 3 — --advance-base: the ONE writer (same preconditions as above: kit-base + stamps). It is the FIX
 # for a stale base, so it must not sit behind the stale-base gate. ═════════════════════════════════════
+# ══ --publish-base (KIT-BASE-SHARED): push the base this clone HAS. No --from, no clone, no stamps. ═════════
+[ -z "$PUBLISH" ] || publish_base
+
+# ══ THE ENTRY for --from and --advance-base (KIT-BASE-SHARED) ═════════════════════════════════════════════
+# One order, so a base a teammate published is received BEFORE anything needs it, and VERIFIED against the source this
+# run already trusts: warn -> clone --from ONCE -> sync_base -> the "no kit-base" refusal (only when the sync found
+# nothing) -> the stale-base gate / the advance. --from is untrusted input whose code this tool EXECUTES: the warning is
+# printed BEFORE the clone, naming the source, while they can still stop.
+if [ -n "$ADVANCE" ]; then
+  warn_untrusted "--advance-base --from '$FROM'" \
+    "Recording the base means running THAT commit's OWN scripts/adopter-export.sh (it is checked out in a temp clone)"
+  _clone_why="It must be a git repository (a URL or a local path) holding the vendor history that contains the release HEAD took."
+else
+  warn_untrusted "--from '$FROM'" "Building THEIRS means running the new release's OWN scripts/adopter-export.sh and scripts/incept.sh"
+  _clone_why="It must be a git repository (a URL or a local path) with a committed HEAD: THEIRS is built by running THAT release's own adopter-export.sh, which archives HEAD."
+fi
+git clone --quiet --no-tags -- "$FROM" "$TMP/new" >/dev/null 2>&1 \
+  || die "could not clone --from '$FROM'. $_clone_why"
+sync_base
+have_base || refuse_no_base
+TIP_SRC=$(commit_source refs/heads/kit-base)
+
 if [ -n "$ADVANCE" ]; then
   advance_base
   exit "$PUBLISH_RC"
@@ -1076,13 +1489,6 @@ fi
 
 stale_base_gate
 
-# ── THE WARNING BEFORE THE ACT — `--from` is untrusted input and we are about to EXECUTE code from it ──
-# Not a footnote at the bottom of a report they have already acted on: it is printed BEFORE the clone,
-# naming the source, while they can still stop.
-warn_untrusted "--from '$FROM'" "Building THEIRS means running the new release's OWN scripts/adopter-export.sh and scripts/incept.sh"
-
-git clone --quiet --no-tags -- "$FROM" "$TMP/new" >/dev/null 2>&1 \
-  || die "could not clone --from '$FROM'. It must be a git repository (a URL or a local path) with a committed HEAD: THEIRS is built by running THAT release's own adopter-export.sh, which archives HEAD."
 [ -f "$TMP/new/scripts/adopter-export.sh" ] && [ -f "$TMP/new/scripts/incept.sh" ] \
   || die "'$FROM' has no scripts/adopter-export.sh + scripts/incept.sh — it is not a Sparkwright kit. Refusing to diff your project against something that is not the kit it was adopted from."
 
@@ -1681,22 +2087,8 @@ ci_wiring_section
 # tracked file IS the live hook — the delta computed above over hooks/pre-push IS the update, and a
 # prescribed `cp` would be actively wrong (there is nothing to copy to). Every failure to resolve
 # answers `installed`: the copy-mode advice is the safe default, since it is what an unset config means.
-# _ku_git: the same env-scrubbing wrapper guard-wired.sh's _gw_git and inception-done.sh's _id_git use
-# (review round 1). The consequence here is milder than at a gate — the worst case is WRONG ADVICE
-# about whether a copy needs refreshing, not a forged verdict — but the fix is three lines and the
-# alternative is a third copy of the same known hole left open on purpose.
-# ⚠️ `env -u`, NOT `unset` (whole-branch review I-1 / security L1, 2026-09-18): in bash-as-/bin/sh,
-# `unset` of a var that carried a TEMPORARY PREFIX assignment over an ALREADY-EXPORTED one RESTORES
-# the exported value instead of removing it — measured on the locator family (GIT_DIR/GIT_WORK_TREE)
-# as well as the config-injection one. `env -u` removes the name from the CHILD environment whatever
-# the shell's unset semantics are; not POSIX, but present in GNU coreutils, the BSDs (macOS included)
-# and BusyBox. COUNT=0/PARAMETERS='' stay ASSIGNMENTS: git needs them INERT, not absent.
-_ku_git() {
-  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
-    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
-    env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_CONFIG_GLOBAL \
-        -u GIT_CONFIG_SYSTEM -u GIT_CONFIG_NOSYSTEM -u GIT_CONFIG -u GIT_CEILING_DIRECTORIES -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_NAMESPACE git "$@" )
-}
+# (`_ku_git`, the env-scrubbing git wrapper this uses, is defined above the job dispatch: KIT-BASE-SHARED's
+# import writes through it too.)
 hook_mode() {
   _hm_top=$( _ku_git -C "$REPO" rev-parse --show-toplevel 2>/dev/null ) || { echo installed; return 0; }
   _hm_live=$( _ku_git -C "$REPO" rev-parse --git-path hooks/pre-push 2>/dev/null ) || { echo installed; return 0; }
@@ -1825,9 +2217,10 @@ echo "    one job that writes: refs/heads/kit-base, plus one tag when the releas
 echo "    refuses as STALE. It records PER PATH what HEAD took; a path HEAD did not take is recorded BEHIND and"
 echo "    re-offered, never hidden. A legacy tree's --at sha is ASSERTED, not recorded: a wrong one misclassifies"
 echo "    (it cannot delete — the patch is only a suggestion). --advance-base publishes kit-base to your remote's"
-echo "    refs/kit/base (a non-branch ref) in one atomic, non-forced push (--no-push keeps it local; a clone gets"
-echo "    it back with 'git fetch origin refs/kit/base:refs/heads/kit-base' — doing that automatically is row"
-echo "    KIT-BASE-SHARED, not built); --from itself never writes or pushes."
+echo "    refs/kit/base (a non-branch ref) in one atomic, non-forced push (--no-push keeps it local; --publish-base"
+echo "    pushes it on its own). A clone or teammate imports it on --from, every chain commit verified first; anyone"
+echo "    with push access to the remote can write refs/kit/base, so a chain that fails verification is not imported."
+echo "    --from never pushes; its one write is that verified import (printed, with its undo)."
 echo "  * 'PRISTINE' MEANS EQUAL TO A RELEASE YOUR kit-base CHAIN RECORDS — not 'never edited'. A hunk you"
 echo "    declined stays the kit's content, so it is OFFERED AGAIN next time; to keep a file, edit it. A file you"
 echo "    edited until it equals an older release reads as the kit's, not yours. A kit file you DELETED after"
@@ -1876,4 +2269,8 @@ if [ "$NEWSHA" != "$TIP_SRC" ] || [ "$BEHIND_N" -gt 0 ]; then
   echo "NEXT (the agent, after this update's PR merges and is pulled): sh scripts/kit-update.sh --advance-base --from '$FROM'"
 else
   echo "NEXT: none — kit-base is current."
+fi
+if [ "$REMOTE_BASE_STATE" = absent ]; then
+  echo ""
+  echo "kit-base is not on '$REMOTE' — a teammate's clone cannot run kit-update. Publish it: kit-update --publish-base"
 fi

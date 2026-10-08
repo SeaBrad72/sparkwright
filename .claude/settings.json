@@ -24,8 +24,30 @@
     "deny": [
       "Bash(rm -rf:*)",
       "Bash(npm publish:*)",
-      "Write(.env)"
+      "Edit(.env)",
+      "Edit(/.claude/**)",
+      "Edit(/hooks/**)",
+      "Edit(/.kit/**)"
     ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": false,
+    "failIfUnavailable": false,
+    "enableWeakerNetworkIsolation": true,
+    "network": {
+      "allowedDomains": ["*"],
+      "allowUnixSockets": ["/var/run/docker.sock", "~/.docker/run/docker.sock"]
+    },
+    "filesystem": {
+      "allowWrite": ["~", "/private/tmp", "/tmp", "/private/var/folders", "/var/folders"],
+      "denyWrite": [
+        "./.claude", "./hooks", "./.kit", "./.git/hooks", "./.git/config", "./.mcp.json",
+        "~/.gitconfig", "~/.config/git", "~/.zshrc", "~/.zshenv", "~/.zprofile",
+        "~/.bashrc", "~/.bash_profile", "~/.profile"
+      ]
+    }
   },
   "hooks": {
     "PreToolUse": [

@@ -23,13 +23,21 @@ sh scripts/kit-update.sh --advance-base --from <same source>                 # a
 
 ### The flow, as one sequence
 
-1. `--from <source>`: the report and a patch at a scratch path. Writes nothing. It ends with a `NEXT` line (below).
+1. `--from <source>`: the report and a patch at a scratch path. It applies nothing to your files; its one write is the
+   verified import of a published `kit-base` when your clone lacks it (see *What it writes*). It ends with a `NEXT` line (below).
 2. Apply the patch (all of it, or the parts you want), commit, open the PR, merge it.
 3. Pull, so your `HEAD` carries the merge.
 4. **The agent runs `--advance-base --from <same source>`**. It is a mechanical step: no human keystroke, and `--from`
    never does it for you. It records, **per path**, what your `HEAD` took, and then publishes `kit-base` (see
    *Recording what you took* below).
 5. The next `--from` is computed against what you actually took.
+
+**The sandbox and the patch.** The shipped `.claude/settings.json` makes `.claude/`, `hooks/` and `.kit/` read-only
+to the agent's shell (`docs/operations/runtime-guards.md`, "Below the text layer: the sandbox"). An update patch
+that touches them, applied in your main checkout from an agent session, fails part-way and leaves a half-applied
+tree. Applying the patch (step 2) and pulling a merged control-plane PR (step 3) are therefore **a human step**, run
+in your own terminal outside the agent's sandbox, or by the agent in a dev-clone or worktree outside the project.
+`--from` itself writes none of the protected paths, and `--advance-base` writes only the `kit-base` refs.
 
 ### Your first update: the order
 
@@ -247,8 +255,11 @@ When `--from` is the tip's own release and the tip is complete, there is nothing
 After the local write, `--advance-base` runs **one atomic, non-forced push** to `--remote` (default `origin`): your
 local `refs/heads/kit-base` to the remote's **`refs/kit/base`**, plus every local `kit-base/*` tag that points into the
 chain. It is a non-branch ref on purpose: the kit's pre-push hook grades every `refs/heads/*` push, and a base commit
-has no `Kit-Row`. It runs through your own git credentials and configuration. A fresh clone gets the base back with
-`git fetch origin refs/kit/base:refs/heads/kit-base`; doing that automatically is row `KIT-BASE-SHARED`, **not built**.
+has no `Kit-Row`. It runs through your own git credentials and configuration. A fresh clone or a teammate **imports**
+the base on its next `--from` / `--advance-base`, every chain commit verified first (see *The shared base* below and
+`docs/operations/kit-base.md`, *Share it*); `sh scripts/kit-update.sh --publish-base [--remote <name>]` runs this same
+publish on its own, for a base that was never advanced. `refs/kit/base` has no forge protection: anyone with push access can
+write it, and verification is the control.
 
 - **No such remote:** it says `kit-base stays local` and exits 0.
 - **`--no-push`:** everything stays local; it prints the push line to run later.
@@ -258,9 +269,22 @@ has no `Kit-Row`. It runs through your own git credentials and configuration. A 
   `GIT_NAMESPACE` cleared); your `HOME`, repo and user config, and credential helpers still apply.
 - **Exit 3:** the push was rejected or failed. **The local write stands.** It prints git's own message and exits 3. If
   git reports a rejection (`[rejected]` / non-fast-forward) it names the rejected ref(s) and says the remote's
-  `refs/kit/base` most likely moved (a teammate advanced it); any other failure says so instead. Reconcile by hand: `git fetch <remote>
-  refs/kit/base`, compare `git log --oneline FETCH_HEAD` with `git log --oneline kit-base`, then publish with the
-  printed push line. The tool never forces.
+  `refs/kit/base` most likely moved (a teammate advanced it); any other failure says so instead. The tool never forces:
+  re-run `kit-update --from <source>`, which imports the teammate's chain (verified) and fast-forwards yours, then publish
+  again. A diverged chain is reported with both tips and the verified route (set yours aside with `git branch -m kit-base
+  kit-base-mine`, a human step, then re-run `--from`).
+
+### The shared base: import and `--publish-base`
+
+`--from` and `--advance-base` first clone `--from` once, then fetch the remote's `refs/kit/base` through a temporary
+`refs/kit-import/base` (fsck'd, deleted at once) and import it **only after verifying every chain commit**: its
+`Kit-Source` is a release your own history recorded, the chain runs oldest to newest, every tree entry is an entry of the
+exports that release's own exporter makes, and the path set equals one export's. One compare-and-swap writes
+`refs/heads/kit-base` plus the chain's own `kit-base/*` tags, and the run prints the undo. A diverged or unverifiable
+chain, with a valid local base, is a loud WARNING and the run continues on the local base; with none, rc 1. A local
+`kit-base` that came from a **remote branch** (a `git checkout kit-base` of `origin/kit-base`) is refused as unverified
+before anything is built, and every git this tool runs ignores `refs/replace/*` (`GIT_NO_REPLACE_OBJECTS=1`).
+`--publish-base [--remote <name>]` pushes the base you hold. Full text: `docs/operations/kit-base.md`, *Share it*.
 
 ### Legacy trees
 
@@ -293,15 +317,21 @@ Do not push the merge commit and amend it afterwards: that *is* a force push. (c
 
 ## What it writes
 
-- **`--from` / `--reconstruct-base`: nothing of yours.** Your worktree, index, refs, objects and config
+- **`--reconstruct-base`: nothing of yours.** Your worktree, index, refs, objects and config
   are never written: your `HEAD` is read with `git fetch`/`git archive` into a throwaway workbench repo.
-  They write only (a) the directory you name with `--reconstruct-base` — which must be empty and
-  **outside** any git repo — (b) temp dirs they delete, and (c) the patch file, at a scratch path they print.
+  It writes only (a) the directory you name — which must be empty and **outside** any git repo — and (b) temp dirs it deletes.
+- **`--from`: one verified write, and only when it imports.** Your worktree, index, `HEAD` and config are never written.
+  When your clone has no `kit-base`, or the remote's `refs/kit/base` extends yours, it writes `refs/heads/kit-base` (create-only, or
+  a compare-and-swap fast-forward) plus the chain's own create-only `kit-base/*` tags, the fetched objects and `FETCH_HEAD`,
+  in one ref transaction, **after every imported chain commit passed verification** — and prints the undo. Otherwise it writes
+  only temp dirs it deletes and the patch file at a scratch path it prints. It never pushes.
+- **`--publish-base`: nothing local.** It pushes the base you hold (the advance's one atomic, never-forced push of `kit-base`
+  to the remote's `refs/kit/base` plus the chain's own tags) and writes no ref, object or config of yours.
 - **`--advance-base`: `refs/heads/kit-base`, one create-only tag when the release is fully taken, and the objects
   they need — atomically** (one ref transaction; decisions D-241002-1 and D-241003-1). Never your worktree, index,
   `HEAD` or config. After the local write it **publishes**: one atomic, non-forced push of `kit-base` to the remote's
-  `refs/kit/base`, plus the chain's `kit-base/*` tags (`--no-push` skips it). It is the only part of `kit-update`
-  that writes to your repository or pushes.
+  `refs/kit/base`, plus the chain's `kit-base/*` tags (`--no-push` skips it). It is the job that records what `HEAD`
+  took; `--from` (verified import) and `--publish-base` are the only other jobs that touch refs or the remote.
 
 ---
 
@@ -313,8 +343,8 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
 - **LATEST ONLY.** `--from` carries whatever that source's `HEAD` is, and the public mirror carries only
   the **current** release. **This cannot move you to an intermediate version.** There is no
   `--to v3.100.0`.
-- **IT PRESENTS, IT DOES NOT APPLY.** No auto-merge in v1. `--from` writes not one byte of your repo
-  (only `--advance-base` writes, and only the `kit-base` ref and, for a fully taken release, a tag; it then publishes them). Every hunk is your decision; the
+- **IT PRESENTS, IT DOES NOT APPLY.** No auto-merge in v1. `--from` applies not one byte to your files (its one write is the
+  verified `kit-base` import above; `--advance-base` writes the `kit-base` ref and, for a fully taken release, a tag, then publishes them). Every hunk is your decision; the
   patch is a suggestion at a scratch path.
 - **IT REQUIRES AN INTACT `kit-base`.** The entire delta is computed against `incept_old(kit-base)`. If
   that branch is gone, the tool refuses — **a wrong base is worse than no base**, because you would
@@ -323,9 +353,9 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
   STALE; on a legacy tree the `--at` shas are your assertion, not a record. The advance records per path what
   `HEAD` took and re-offers the rest (PARTIAL), but it **cannot detect** a base that an advance made *before*
   this change over-claims (it recorded a whole release); see `docs/operations/kit-base.md`, *My base over-claims*.
-  Publishing is to `refs/kit/base` only; fetching it into a clone that has none, and verifying shared chain
-  commits before their `incept` runs, is row `KIT-BASE-SHARED` (not built). Grouping by vendor commit is
-  partly inference (see above).
+  Publishing is to `refs/kit/base` only, which has **no forge protection** (anyone with push access can write it); a clone
+  imports it verified on `--from`, and the residuals are in `docs/operations/kit-base.md`, *Share it*. Grouping by vendor
+  commit is partly inference (see above).
 - **A STALE INSTALLED HOOK IS REPORTED, NOT CURED.** The HOOK REFRESH section appears when a release changes
   `hooks/pre-push` and also when your installed hook is stale and the release did not touch it: it prints the
   adopter's own `guard-wired.sh` pre-push verdict. It never writes `.git/` or `core.hooksPath`; the one-time setting
@@ -364,5 +394,6 @@ purpose — a ceiling only stated in a doc is a ceiling nobody reads.
 
 - `docs/operations/kit-base.md` — the base this all depends on, and the advance step. Do not delete it.
 - `conformance/kit-update-advance.sh` — the chain legs: advance, STALE refusal, declined/stranded hunks.
+- `conformance/kit-base-shared.sh` — the shared base: `--from` imports a published `kit-base` verified (a forged chain is refused and never runs), `--publish-base`. See `docs/operations/kit-base.md`, *Share it*.
 - `conformance/kit-update-identity.sh` — the identity proof (unmodified adopter ⇒ empty diff).
 - `conformance/kit-update-merge.sh` — the two engines, same fixture, same answer.

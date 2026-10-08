@@ -93,6 +93,100 @@ documented above are the whole of this page's enforcement. Acceptance stays at m
 ## Honesty boundary
 Each surface is a speed bump for honest mistakes, not containment of a hostile process. It is bypassable by design and does **not** claim to block every write/exfil path. **Local git only:** the git surfaces here (`pre-push`, `guard_check_push`) act *locally*, before the network round-trip. A **server-side `gh pr merge --admin`** is a GitHub API call — a different transport entirely — and is outside the guard's reach. **The S6 `--admin` deny is a local speed-bump, not this boundary:** it makes the bypass loud in the guard's own reasons and stops the honest-mistake local invocation, but a token with admin scope can still call the API directly (or a non-Claude runtime can). **The real boundary is credential-side — never issuing the agent an admin-scoped token** (`../enterprise/platform-safety-boundary.md`); a `gh` with only normal-merge scope simply *cannot* bypass. The boundary on *who merges* is GitHub branch protection + the agent's sanctioned path — a **normal** (non-`--admin`) merge on a recorded, authenticated GO via `scripts/promotion-verify.sh actuate` (team), or preparing the PR and handing the human the `--admin` kill-switch merge (solo) — see [`review-lane.md`](./review-lane.md), **not** the guard. Known bypass classes (all within this ceiling, not regressions): `--no-verify`; an uncooperative runtime; a language interpreter (`python -c`, `node -e`); a redirect/printf that writes a file without invoking a denied verb; an upload via `curl --data @file` / interpreter; and history-application like `git am` / `git apply`. The boundary that actually contains these is platform-owned — adopt the guard **with** the network-egress allowlist, separate prod credentials, sandboxed FS, and scoped tokens (`../enterprise/platform-safety-boundary.md`).
 
+## Below the text layer: the sandbox
+
+The guard reads the TEXT of a command. It cannot see what a script it never read will write, or what a patch it
+never opened contains. So the shipped `.claude/settings.json` also turns on Claude Code's **OS sandbox**
+(`GUARD-CP-READONLY-SANDBOX`), which judges the write, not the command: whatever the spelling, a write to the
+protected set fails. The guard stays in front as the early warning; the sandbox is what holds below it, and the PR
+gates (CODEOWNERS, ratification, `land`) still bind every committed change.
+
+**What is protected (read-only to the agent's shell):** the session's own enforcement layer: `.claude/` (the guard,
+its wiring, `settings.local.json`), `hooks/` (the tracked pre-push hook), `.kit/` (every dial and conf, present and
+future), `.git/hooks`, `.git/config`, `.mcp.json`, and in your home directory the global git config
+(`~/.gitconfig`, `~/.config/git`) and shell rc files (`~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.bashrc`,
+`~/.bash_profile`, `~/.profile`). `permissions.deny` adds `Edit(...)` rules for `.claude/`, `hooks/`, `.kit/` and
+`.env` for the Edit and Write tools (which are not sandboxed; the guard's structured path check also covers them).
+`conformance/guard-wired.sh` checks the block's load-bearing keys; `sh conformance/guard-wired.sh --sandbox-enforce`
+applies the shipped policy through the pinned sandbox runtime and judges by file hashes (a SKIP, exit 3, means the
+runtime could not start on this machine: it is never a pass).
+
+**On Ubuntu 23.10 or later** the sandbox cannot start under the default AppArmor restriction on unprivileged user
+namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`): bubblewrap fails with `Failed RTM_NEWADDR: Operation
+not permitted`, and Claude Code then runs unsandboxed. `scripts/preflight.sh` warns when this is the case. Two fixes,
+and the kit changes neither setting for you. **Preferred:** an AppArmor profile that grants `userns` to
+`/usr/bin/bwrap` only. It is narrower than the sysctl but not free: unprivileged user namespaces stay restricted
+for other programs, yet any local program that can run `bwrap` can still get one through it. First check
+`/etc/apparmor.d/` for an existing bwrap profile (some Ubuntu releases ship `bwrap-userns-restrict`), because a
+second `profile bwrap` would collide with it; if there is none, save the profile as `/etc/apparmor.d/bwrap`, then
+`sudo apparmor_parser -r /etc/apparmor.d/bwrap`:
+
+```
+abi <abi/4.0>,
+include <tunables/global>
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+```
+
+**Broader:** `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (persist it under `/etc/sysctl.d/`),
+which is simpler but lifts the restriction for every program on the machine.
+
+**What is deliberately open, and why.** The slice protects the enforcement layer; it is not general confinement.
+- **Your home directory** is writable (minus the files above): toolchain caches live there (npm, go, gradle, dotnet),
+  and without it five of eight stacks fail.
+- **`/tmp` and `/private/tmp`** are writable: the dev-clone workflow below needs them.
+- **`/var/folders` and `/private/var/folders`** are writable: on macOS a bare `mktemp` writes the per-user temp root
+  (`getconf DARWIN_USER_TEMP_DIR`, `/var/folders/<xx>/<hash>/T`) even with `TMPDIR` set, and a shipped file cannot
+  name that per-machine path or use a glob. Unix permissions keep it to your own user's directory (`0/`, `C/`, `T/`,
+  `X/`), where app caches live: a poisoned cache is the same deferred-execution class your home directory already
+  opens. None of the enforcement layer lives there. Linux has no such directory, so the entries do nothing there.
+  `guard-wired.sh` requires both entries; `--sandbox-enforce` proves the opening on macOS only.
+- **The network** is unrestricted (`allowedDomains: ["*"]`). Egress is a separate control (board row
+  `GUARD-SANDBOX-NETWORK-EGRESS`); the sandbox is no exfiltration defense.
+- **Docker** is reachable (`network.allowUnixSockets` names the two standard socket paths), so local-database
+  integration tests keep working. The Docker daemon runs outside the sandbox, so a session that can reach it has a
+  deliberate route around this protection. **The strict form:** remove the `allowUnixSockets` entry from
+  `.claude/settings.json` (a reviewed control-plane change; `guard-wired.sh` stays green without it) and Docker
+  becomes unreachable from the agent.
+- **A dev-clone outside the project** is writable by design: the protection is scoped to the session's own project,
+  and that is what lets control-plane work happen there (next section).
+
+**What an `Operation not permitted` means.** The OS refused a write to the protected set. There is no kit signpost on
+an OS error (the guard fires first on the text it can see). Do the work in a dev-clone or worktree outside the
+project, or hand the step to a human. On macOS a bare `mktemp` used to cause it (the per-user temp root was not
+writable); the shipped file now opens it, and a script should still pass an explicit template
+(`mktemp -d "${TMPDIR:-/tmp}/name.XXXXXX"`), because macOS `mktemp` ignores `TMPDIR`.
+
+**Recovery card (two frictions the project's own checkout now has).**
+1. `git config` and `git push -u` fail in the main checkout (the project's `.git/config` is locked). Push with
+   `git push origin <branch>` (no `-u`). Creating a branch from a remote branch sets tracking in that file, so
+   add `--no-track` where it matters.
+2. A branch switch, merge or pull in the main checkout that changes `.claude/`, `hooks/` or `.kit/` fails part-way
+   and leaves a half-applied tree. Do those in a worktree or dev-clone. A control-plane update to the main checkout
+   (a pulled control-plane PR, `kit-update`) is a **human step**. To recover, the human runs
+   `git checkout -- . && git checkout <branch>`.
+
+**Where the sandbox cannot start.** Linux and WSL2 need `bubblewrap` and `socat`; hosts and containers that block
+unprivileged user namespaces cannot run it; native Windows and any harness other than Claude Code get no OS layer
+from this block. With `failIfUnavailable: false` (the shipped value) the session then runs as it did before the
+sandbox, the guard still runs, and `scripts/preflight.sh` prints a `warn` naming the reason. The container tier
+(`docs/operations/containment.md`) is the harness-neutral answer.
+
+**The hardening tier.** Project-scoped settings can be changed by the human who owns the project. Where the boundary
+must hold against a project edit too, put the same block in Claude Code's managed settings (admin-required, and a
+repo setting cannot loosen it): see `docs/enterprise/platform-safety-boundary.md`.
+
+**Residuals, in brief.** The GO ledger (`refs/notes/promotions`) is not protected here: the agent writes GO records
+legitimately, so the OS cannot tell a real record from a forged one (`land` authenticates the forge approval, which
+a forged note cannot supply). A session whose project root is a linked git worktree keeps its shared git directory
+(under the home directory) writable, so start agent sessions at the main checkout or a full clone. Auto-approval of
+sandboxed Bash is switched off (`autoAllowBashIfSandboxed: false`), so prompting is unchanged from before the
+sandbox. The Edit and Write tools are covered by permission rules, not the OS, and in
+`bypassPermissions` mode protected-path prompts are skipped. Hooks and MCP servers run outside the sandbox. Anything
+the sandboxed shell writes that a later unsandboxed process runs is outside this control. Linux is covered by the
+CI leg where the runner can start a sandbox, and unmeasured elsewhere.
+
 ## Doing control-plane work — the sanctioned route (READ THIS BEFORE REACHING FOR THE KILL SWITCH)
 
 The guard **correctly** denies an agent editing `conformance/`, `.github/workflows/`, `.claude/`,
@@ -286,13 +380,27 @@ rule** (not by this arm), so in a shimmed runtime deleting a claim ref stays a h
 |---|---|---|---|
 | **R19** | **Heredoc prose that names `gh pr merge … --admin`** (a PR body, a note, a doc written by `cat <<'EOF'`). | The admin-merge arm guards the one owner-reserved bypass and scans the whole command so no spelling slips through; making it heredoc-aware means parsing heredocs, which `D-240813-3` forbids. | Write the prose with the **Write tool**, or pass it with `--body-file <file>`. |
 | **R20** | A **multi-line** `git merge -m`, `git tag -m`, `git notes add -m`, `gh issue create --body` or `gh release create --notes` whose text names a control-plane path. | Only `git commit`, `gh pr create\|edit\|comment` and `board.sh create` are carriers the kit tells an agent to use, and no over-deny was logged on the others (tags and releases are release-adjacent). Their single-line forms keep today's verdict. | `-F <file>` / `--notes-file <file>` / `--body-file <file>`. |
-| **R21** | `sh conformance/tracker-contract.sh --preflight --conf .kit/tracker.conf` (the post-incept preflight re-check). | The conf path is a control-plane argument and the script reaches the network, so it cannot ride the read-only query table. Boarded as `GUARD-READ-TRACKER-PREFLIGHT-CONF`. | Until it ships, use the `--base` form: `--base <site> --project <KEY>`. |
+| **R21** (cured in row `GUARD-READ-TRACKER-PREFLIGHT-CONF`) | Was `sh conformance/tracker-contract.sh --preflight --conf .kit/tracker.conf`. It now ALLOWs: no longer a kept deny. | See the paragraph below the table. Every other form of the script (`--deep`, `--discover`, `--fields`, `--selftest`, `--base`, `--project`, another `--conf` path, a redirect, a `cd` first) keeps today's verdict. | None needed. |
+| **R22** `kit-base-write` | A raw git command that **creates or moves a ref** named `kit-base`, `kit-base/…` or `refs/kit/…`, whatever the verb or flags (any case; quotes and backslashes stripped): `git fetch`/`pull` whose `:` destination names them or is a glob outside `refs/remotes/` (`+refs/*:refs/*`), `git update-ref` (any form; also an unresolvable ref; `--stdin` ALWAYS, whatever the text names), `git push`/`send-pack`, `git branch` that is not a list (a plain create, `-f`, `-m`, `-d`, `-c`), `git tag` that is not a list (a plain create, `-a`, `-f`, `-d`), `git checkout`/`switch`/`worktree add` of the name with `-b -B -c -C`/`--track`, or without `--detach` (`--no-guess` is not a detach), `git config` writing a `remote.*` key that names them. The name is matched at **ref-component boundaries** (`feature/kit-base-shared` is not it); `checkout`/`switch`/`worktree add`/`clone -b` of `kit-base` deny unless `--detach`; `pull` naming it denies; skipped `-c`/`--config-env` values, aliases and `update-ref --stdin` are judged; a subcommand the guard cannot resolve to a clean word is judged flat; a glob refspec destination outside `refs/remotes/` denies (the default `+refs/heads/*:refs/remotes/origin/*` stays allowed); `fetch --mirror`, `remote … --mirror` and `git replace` of the name deny. **Residuals, stated (not chased):** `checkout kit-base` THEN any history-moving command (commit, merge, reset, pull); `push --mirror/--all/--prune` deleting the REMOTE `refs/kit/base` (a DoS only: import verification binds); a bare `git pull`/`fetch`/`push` that relies on a refspec already configured; `git config alias.x` set in a separate command; short-name resolution (`fetch kit/base:refs/q/x` then a local push); a `refs/replace/` ref by sha (kit-update itself ignores replace refs); glob or variable spellings of the name; an interpreter writing the ref file. More residuals: two-token `git --config-env alias.x=VAR x`; `xargs -a <file> git update-ref`; `git stash branch kit-base`, `git fast-import` with a file body, `@{-N}` / `git checkout -`, a shell alias or function for git. Priced over-denies: a repo DIRECTORY named `kit-base` (`git -C ../kit-base …`), `git -P log kit-base`, prose in a `gh` body naming `git checkout kit-base`. `kit-update` additionally refuses to use a local `kit-base` that came from a remote branch — **a heuristic, not a seal**: it catches only the remote-branch DWIM route; removing the tracking config, a forged chain under another remote branch name, or checkout-then-history-move are not caught, and a LOCAL `kit-base` is otherwise trusted as your own history (verifying the local chain when this machine did not write its tip is follow-up row `KIT-BASE-LOCAL-CHAIN-VERIFY`). Priced over-denies: `git -c k=v checkout kit-base`, and a wrapper (`sh -c`, `env`) whose text merely names a verb beside the name. Reads are untouched (`log`, `show`, `rev-parse`, `ls-remote`, `archive`, `diff`, `cat-file`, `for-each-ref`, `fetch` with no destination), as are the kit's own scratch refs, exactly three prefixes: `refs/kit/claim-*` (board-claim), `refs/kit/notes-remote-*` and `refs/kit/promotions-presync-*` (the promotion ledger sync); `refs/kit/base` stays denied. | The base is imported **verified** (`kit-update --from` checks every chain commit against the exports of its `Kit-Source` before one compare-and-swap writes it); a raw write skips that check, and `refs/kit/base` has no forge protection, so an unverified fetch is a code-execution channel (every `--from` runs the base's own `scripts/incept.sh`). A narrowing, not a seal: glob and variable spellings, a config-set refspec, alias indirection and checkout-then-commit are not covered (stated in the guard's own comment). | `sh scripts/kit-update.sh --from <vendor>` imports a published base; `sh scripts/kit-update.sh --publish-base` publishes yours. A human's reconcile of a diverged base is a keystroke in their own terminal. **Under `kit-guard install-shims`** every child git is graded, so `kit-update`'s own ref writes (`--from`'s import, `--advance-base`, `--publish-base`) are denied: run it without the shim dir on `PATH` (row `KIT-BASE-SHIMS-FRONT-DOOR`). |
 
 Closed by the same slice (design §11): a `cp`/`install` with a trailing `# comment` used to be judged on the comment's word as the destination. With a whitespace-preceded `#`, every operand is now judged, so `cp /tmp/e skills/build/SKILL.md # y` denies — and so does a copy **out** of a control-plane path that carries a `#` (`cp skills/x /tmp # y`). Drop the comment; `cp skills/x /tmp` stays allowed.
 
 Also closed by that slice (design §12), each deny-only and each a possible new trip: a **quoted redirect target that holds whitespace or a newline** now denies when a control-plane token is in it (`> "my skills/x"`); `git rebase -x|--exec`, `git bisect run` and `git submodule foreach` deny when a control-plane token appears anywhere in the command (run the check from a script file instead); `… | xargs git …` denies when the command holds a control-plane token or a push to `main`; `git -c core.hooksPath=…`, `git --config-env=core.hooksPath=…` and `GIT_CONFIG_KEY_<n>=core.hooksPath` deny like `git config core.hooksPath`; a `cp`/`install` fragment with an **odd number of quotes** has every operand judged; the message-carrier exemption now needs the segment to *lead* with `git commit|merge|tag` or `gh pr|issue|release` (so `git -C dir commit -m …` is no longer exempt). Residual trips of the join, named: a `>` or `<` inside a joined message body, and a message line that begins with a destructive verb, still deny — pass the text with `-F` / `--body-file`. Design §13 closed more, each deny-only: the join serves a **single-command** carrier (any unquoted `;` `&` `|` or newline declines it, so `git commit -m "a⏎b" && cp …` is judged line by line as before); the hooks-path check also reads a quote-and-backslash-**deleted** view; a **quoted redirect target** that de-quotes to a control-plane path denies (`>&` included); `xargs` running `git`, a write verb or an interpreter denies when piped from text naming a control-plane path, and **always** when fed from a file (`xargs rm < list`: the list cannot be read); `git rebase -x`, `bisect run` and `submodule foreach` are found behind global options; push-to-main and force-push are found behind `-C`, `--git-dir=`, `--no-pager`, `-P`; a backslash-newline is judged as the shell reads it; and **a relative kit script (`sh scripts/…`, `sh conformance/…`) run after a `cd`, or from an uncertain cwd, is no longer treated as a kit script** — run kit scripts from the repo root. Design §14: a **glob operand of a write verb** (`cp`, `install`, `mv`, `tee`, `ln`, `rsync`, `touch`, `rm`, `chmod`, `truncate`, `dd of=`) is expanded against the on-disk tree, one path segment at a time, and denies if it can reach a control-plane path — so `cp /tmp/e sk*` and a bare `cp /tmp/e *` at the repo root deny, while `cp build/*.js dist/` does not; an **absolute or `~`-rooted glob** is walked from `/` (or `$HOME`) and classified like a literal absolute path (`~user` forms deny on doubt), a glob under an uncertain cwd denies, and a walk that examines more than 1000 directory entries gives up and **denies** (bounded by work, not time: a slow hook is killed and a killed hook does not block). **Not closed here, boarded as `GUARD-CP-READONLY-SANDBOX`:** write-then-run (write a script, run it) and patch application (`git apply`), which no text check can see. **Not closed:** a *new* file under `.kit/` by redirect — the control-plane matcher names the `.kit/*.conf` files individually, by standing design, not the directory.
 
 Admitted by the same slice, for completeness: `sh scripts/tracker-conf.sh <conf>` and `… get|get-all|get-prefix <arg> <conf>` **at exact arity** are read-only queries even when `<conf>` is `.kit/tracker.conf`; `check-create`, `--selftest` and any other arity keep today's verdict.
+
+**New read form from `GUARD-READ-TRACKER-PREFLIGHT-CONF` (2026-10-07), the cure for R21.** Exactly one shape of `sh conformance/tracker-contract.sh` is a read: `--preflight` once, `--conf .kit/tracker.conf` (or `./.kit/tracker.conf`) once, and `--as ci|dev` at most once, in any order, run from the repo root (after a `cd` it keeps today's verdict). The coupling lock runs the pair on every `agent-autonomy.sh` pass: once in a copied tree with the fixture fake adapter, and once literally against the fixture conf, in the real tree with every credential unset (it must stop at the early `UNVERIFIED` exit 2), and asserts nothing was written. The conf path must be unquoted: `--conf '.kit/tracker.conf'` keeps today's verdict (it fails closed). **Residual, named and not widened (row `GUARD-SANDBOX-NETWORK-EGRESS`):** `--conf /tmp/x.conf` with an agent-written `base_url` already ALLOWed before this slice and sends the developer's credential to that host. A conf's `base_url` may be any https URL; only the `--base` form is limited to `*.atlassian.net`. This adds nothing the agent lacked, since the credential is in the session's environment and any command can read it. The guard reads text and is the wrong layer for credential egress; the control is a network egress allowlist.
+
+**Added by `GUARD-SPELLING-RESIDUALS` (2026-10-06) — four new refusals, each a refuse-on-doubt cure, each with its retry.** Every cure only adds a deny; none runs agent text.
+
+| # | The shape that gets refused | Why it stays denied | The escape (one retry) |
+|---|---|---|---|
+| **R23** `git-pathspec` | A **glob or magic pathspec** in `git checkout`, `restore`, `rm`, `stash` or `reset`: `git rm --cached '*.log'`, `git restore '*.ts'`, `git checkout HEAD -- ':(glob).gitleak*'`, `':(exclude)README.md'`, `':!x'`, a bare `:/`. | Git globs **every** pathspec by default and its `*` crosses `/`, so `'sk*'` can name a control-plane file; the guard keeps no inventory of control-plane ancestors to match a glob against. The over-deny is wider than bracketed filenames, and it is pinned by a cell (`git rm --cached '*.log'`). | **Name the files** (`git rm --cached a.log b.log`; `git ls-files '*.log'` is a read and stays allowed, so list them first). A filename that holds brackets: `git restore ':(literal)app/[slug]/page.tsx'`. `git add`, `diff`, `log` and `show` take globs as before. Also refused: `--pathspec-from-file` (the file's lines are pathspecs the guard cannot read: name the files), and a stash message that is a single glob word (a `git stash save` message holding a glob byte is refused, both `'*wip'` and `"fix *bug"`, because the old `save` spelling is read as pathspecs; retry with `git stash push -m "…"`, which stays allowed, `-m "wip *"` included). The same view is read through `env`/`command`/`nice`/`timeout`, a leading assignment (`GIT_GLOB_PATHSPECS=1 git …`), a path (`/usr/bin/git`), quoting (`"git"`, `g""it`, `git "checkout"`) and a quoted `-c`/`-C` value. |
+| **R24** `xargs-expansion` | `echo "$(cat list)" \| xargs <git or a write verb>`, `echo "$FILES" \| xargs chmod +x`, an `echo`/`printf` upstream holding `$`, a backtick, a glob (`*` `?` `[`), a brace or a `~`; the same for an `xargs` word spliced with quotes, a backslash or an expansion (`x""args`, `x${E}args`, `$'xargs'`); and `xargs -0a list rm`, `-ra`, `--ar list`. | The data an expansion produces cannot be read, so a write verb fed by it is refused on doubt; the `xargs` word and its file-feed option are read on a quote-stripped view, so a spelling cannot hide them. | Give the verb an **explicit operand list** instead (`git add -u`, `git add a b`, `chmod +x a b`); a literal upstream (`echo /tmp/acmely \| xargs tee`) is unchanged, and so is a read (`xargs grep`). |
+| **R25** `cp-comment-glob` | `cp /tmp/e sk*/build/SKILL.md # note` (also `install`, and an odd number of quotes after the glob). | A `#` or an unbalanced quote means the last token may not be the destination, so every operand is walked, including a source glob that reaches a control-plane file. | Drop the `#` comment (`cp /tmp/acmely/*.txt /tmp/out/` is unchanged). |
+| **R26** `find-fault` | A write verb with a **glob operand** while `find` fails or is **missing** from `PATH` (the glob walk lists directories with `find`). | A failed listing is a fault, never an empty directory; reading it as empty let `tee sk*/build/SKILL.md` through. | Make `find` available (it ships with every POSIX system; check `command -v find` and `PATH`), or name the file literally. |
+
+Also from that slice, deny-only: `sed -ni`, `-Ei`, BSD `sed -I` and GNU `--in` are now in-place edits like `-i`; a quoted global-option value that holds whitespace (`git -c "x.y=a b" push origin main`, `git -C "/tmp/a b" push -f …`) no longer hides a push to `main` or a force-push; and a **redirect, `cp` or `tee` through an existing symlink** is judged at the link's physical path (`echo x > lnk` where `lnk` points at a control-plane file denies; a link to an ordinary file does not). **Not closed, boarded as `GUARD-WHOLE-TREE-RESTORE`:** `git checkout <rev> -- .`, `git restore -s <rev> .`, `git apply`, `git stash pop` and branch switching rewrite the tree from content the guard never sees; they need the layer below the text (`GUARD-CP-READONLY-SANDBOX`).
 
 **Added by `GUARD-READ-EXEC-LANE` (2026-09-08) — three shapes ON to the card.** Each was measured
 ALLOW against the live hook before the change and DENY after, and each carries its own cells in

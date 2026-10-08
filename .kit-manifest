@@ -467,6 +467,7 @@ conformance/incept-manifests/terraform.txt
 conformance/incept-manifests/typescript-node.txt
 conformance/inception-bootstrap-documented.sh
 conformance/inception-done.sh
+conformance/kit-base-shared.sh
 conformance/kit-base.sh
 conformance/kit-current.sh
 conformance/kit-manifest.sh

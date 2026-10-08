@@ -11,7 +11,7 @@ selfedit_allowed() { [ "${KIT_GUARD_SELFEDIT:-0}" = "1" ]; }
 
 # control-plane paths an agent must never silently modify (guard integrity + gates).
 # scanner-config allowlists/ignores — an edit here can silently narrow a required gate (KW10):
-# .gitleaks.toml / .gitleaksignore / .semgrepignore / .trivyignore / .checkov.yaml|.yml are
+# .gitleaks.toml / .gitleaksignore / .publish-identifiers / .semgrepignore / .trivyignore / .checkov.yaml|.yml are
 # enumerated in the case below (both bare + */-prefixed forms). Honest ceiling: this covers
 # DEDICATED scanner-config files (path-matchable). Coverage thresholds embedded in SHARED
 # multi-purpose files (pyproject.toml, .golangci.yml) are NOT path-matchable without blocking the
@@ -205,7 +205,7 @@ _cpp_kitowned() {
     required-checks.md|*/required-checks.md|\
     .gitattributes|*/.gitattributes|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
-    .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|\
+    .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|.publish-identifiers|*/.publish-identifiers|\
     .semgrepignore|*/.semgrepignore|.trivyignore|*/.trivyignore|\
     .checkov.yaml|*/.checkov.yaml|.checkov.yml|*/.checkov.yml|\
     docs/governance/.meta-control-last|*/docs/governance/.meta-control-last|\
@@ -398,7 +398,7 @@ _cpp_match() {
     templates/restore-drill-template.md|*/templates/restore-drill-template.md|\
     */hooks/pre-push|hooks/pre-push|*/scripts/kit-guard|scripts/kit-guard|\
     */.github/workflows/*|.github/workflows/*|*/codeowners|codeowners|*/.git/*|.git/*|\
-    .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|\
+    .gitleaks.toml|*/.gitleaks.toml|.gitleaksignore|*/.gitleaksignore|.publish-identifiers|*/.publish-identifiers|\
     .semgrepignore|*/.semgrepignore|.trivyignore|*/.trivyignore|\
     .checkov.yaml|*/.checkov.yaml|.checkov.yml|*/.checkov.yml|\
     conformance/*|*/conformance/*|adapters/*|*/adapters/*|\
@@ -1142,8 +1142,8 @@ _KIT_CONF_CORPUS='budget roster model-tiers model-map dials ratification-seats c
 # shrink coverage. `.kit/tracker.conf` is NOT here — it rides the `.kit/*.conf` corpus (`_KIT_CONF_CORPUS`
 # + `dt_corpus_ok`) with the other confs. It lives HERE, in the control plane, so no agent widens it silently.
 _GOV_SUBJECT_CORPUS='docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md'
-_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md .gitattributes .gitleaks.toml .gitleaksignore .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
-_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md .gitattributes .gitleaks.toml .gitleaksignore .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last CODEOWNERS AGENTS.md REQUIRED-CHECKS.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/DECISIONS.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/PROJECT-README-TEMPLATE.md templates/PROJECT-CLAUDE-TEMPLATE.md templates/RUNBOOK-TEMPLATE.md templates/REQUIRED-CHECKS-TEMPLATE.md templates/SECURITY-TEMPLATE.md templates/DECISIONS-TEMPLATE.md templates/WAIVER-REGISTER.md templates/BACKLOG-TEMPLATE.md templates/JIRA-SETUP-TEMPLATE.md templates/TRACKER-SETUP-TEMPLATE.md templates/THREAT-MODEL-TEMPLATE.md templates/PRIVACY-REVIEW-TEMPLATE.md templates/AI-SYSTEM-CARD-TEMPLATE.md templates/AI-POLICY-TEMPLATE.md templates/AI-TRANSPARENCY-SIGNOFF-TEMPLATE.md templates/A11Y-SIGNOFF-TEMPLATE.md templates/BIA-TEMPLATE.md templates/UAT-SIGNOFF-TEMPLATE.md templates/POSTMORTEM-TEMPLATE.md templates/REVIEW-RECORD-TEMPLATE.md templates/PLAN-RECORD-TEMPLATE.md templates/FEATURE-REQUEST-TEMPLATE.md templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md templates/OPPORTUNITY-BRIEF-TEMPLATE.md templates/SHAPING-DOC-TEMPLATE.md templates/KIT-FEEDBACK-TEMPLATE.md templates/AI-ARTIFACT-LINEAGE-TEMPLATE.md templates/EVAL-PLAN-TEMPLATE.md templates/TEST-PLAN-TEMPLATE.md templates/FIELD-REPORT-TEMPLATE.md templates/RESTORE-DRILL-TEMPLATE.md agents/*.agent.md'
+_CP8B_GLOB_LEAVES_LC='hooks/pre-push docs/governance/meta-control-log.md docs/governance/.meta-control-last codeowners agents.md required-checks.md .gitattributes .gitleaks.toml .gitleaksignore .publish-identifiers .semgrepignore .trivyignore .checkov.yaml .checkov.yml .kit/budget.conf .kit/roster.conf .kit/model-tiers.conf .kit/model-map.conf .kit/dials.conf .kit/ratification-seats.conf .kit/control-plane.conf .kit/tracker.conf docs/governance/decisions.md docs/governance/promotion-contract.md docs/governance/promotion-log.md templates/project-readme-template.md templates/project-claude-template.md templates/runbook-template.md templates/required-checks-template.md templates/security-template.md templates/decisions-template.md templates/waiver-register.md templates/backlog-template.md templates/jira-setup-template.md templates/tracker-setup-template.md templates/threat-model-template.md templates/privacy-review-template.md templates/ai-system-card-template.md templates/ai-policy-template.md templates/ai-transparency-signoff-template.md templates/a11y-signoff-template.md templates/bia-template.md templates/uat-signoff-template.md templates/postmortem-template.md templates/review-record-template.md templates/plan-record-template.md templates/feature-request-template.md templates/task-context-contract-template.md templates/opportunity-brief-template.md templates/shaping-doc-template.md templates/kit-feedback-template.md templates/ai-artifact-lineage-template.md templates/eval-plan-template.md templates/test-plan-template.md templates/field-report-template.md templates/restore-drill-template.md agents/*.agent.md'
 
 # _cp8b_glob_scan "<token>" "<leaf-list>": 0 iff <token> (a glob pattern, already normalized/folded)
 # segment-safe intersects a leaf. Slash-count equality per leaf (pure parameter-expansion counter, no
@@ -1576,9 +1576,9 @@ _s6_http_segments() {
 # more simply and more strictly: the suppressor may only speak when there is NO mutating method at all,
 # so both-present already denies and a separate flag for it could only ever disagree with the code.
 # A variable nothing reads is a claim nothing checks — the same call that deleted `_sgpost`.
-# ⚠️ FIX ROUND 1, R-3 = S-2 (HIGH). The suppressor was an unanchored, case-folded SUBSTRING —
-# `(-[A-Za-z]*X|--request|--method)[[:space:]=]*(get|head)` — so a token that is not a method at all
-# suppressed a real mutating request. All of these were ALLOW, measured:
+# ⚠️ HIGH. The method suppressor is not an unanchored, case-folded SUBSTRING test such as
+# `(-[A-Za-z]*X|--request|--method)[[:space:]=]*(get|head)`: that would let a token that is not a method at all
+# suppress a real mutating request. A substring test ALLOWED all of these (measured):
 #   curl -X PUT …/merge -A "-X GET"            the string lives in a USER-AGENT value
 #   … --data-urlencode "x=-X GET"              …in a body field
 #   … -H "X: --method=head"                    …in a header value
@@ -2451,7 +2451,7 @@ _cp8b_cp_target_in() {
   set -f
   # shellcheck disable=SC2086  # deliberate word-splitting; globbing disabled above
   set -- $2
-  [ $# -gt 0 ] && shift          # drop the leading verb
+  _cl_v=${1:-}; [ $# -gt 0 ] && shift          # drop the leading verb (kept for the GSR C9 link check)
   _hit=1; _last=''
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2463,7 +2463,7 @@ _cp8b_cp_target_in() {
       -t|--target-directory)
         if [ $# -ge 2 ]; then
           _dt=$(_cp8b_dequote "$2")
-          [ -n "$_dt" ] && is_control_plane_target "$_dt" && { _hit=0; break; }
+          [ -n "$_dt" ] && { is_control_plane_target "$_dt" || _cp8b_via_link_cp "$_dt" "$_cl_v"; } && { _hit=0; break; }
           shift
         fi
         shift; continue ;;
@@ -2478,16 +2478,16 @@ _cp8b_cp_target_in() {
       -t?*)
         _dt=$(_cp8b_dequote "${1#-t}")
         _dt=${_dt#=}
-        [ -n "$_dt" ] && is_control_plane_target "$_dt" && { _hit=0; break; }
+        [ -n "$_dt" ] && { is_control_plane_target "$_dt" || _cp8b_via_link_cp "$_dt" "$_cl_v"; } && { _hit=0; break; }
         shift; continue ;;
       --target-d*=*)
         _dt=$(_cp8b_dequote "${1#*=}")
-        [ -n "$_dt" ] && is_control_plane_target "$_dt" && { _hit=0; break; }
+        [ -n "$_dt" ] && { is_control_plane_target "$_dt" || _cp8b_via_link_cp "$_dt" "$_cl_v"; } && { _hit=0; break; }
         shift; continue ;;
       --target-d*)
         if [ $# -ge 2 ]; then
           _dt=$(_cp8b_dequote "$2")
-          [ -n "$_dt" ] && is_control_plane_target "$_dt" && { _hit=0; break; }
+          [ -n "$_dt" ] && { is_control_plane_target "$_dt" || _cp8b_via_link_cp "$_dt" "$_cl_v"; } && { _hit=0; break; }
           shift
         fi
         shift; continue ;;
@@ -2499,11 +2499,11 @@ _cp8b_cp_target_in() {
       esac
     if [ -n "$_d" ]; then
       _last=$_d
-      if [ "$_m" = all ] && is_control_plane_target "$_d"; then _hit=0; break; fi
+      if [ "$_m" = all ] && { is_control_plane_target "$_d" || _cp8b_via_link_cp "$_d" "$_cl_v"; }; then _hit=0; break; fi   # GSR C9
     fi
     shift
   done
-  if [ "$_m" = last ] && [ "$_hit" = 1 ] && [ -n "$_last" ] && is_control_plane_target "$_last"; then
+  if [ "$_m" = last ] && [ "$_hit" = 1 ] && [ -n "$_last" ] && { is_control_plane_target "$_last" || _cp8b_via_link_cp "$_last" "$_cl_v"; }; then
     _hit=0
   fi
   [ "$_pg" = 1 ] || set +f
@@ -2615,8 +2615,22 @@ _cp8b_git_target_is_cp() {
 # positive (CP-8a's recorded residual). Subcommand-binding resolves it.
 _cp8b_git_write_denied() {
   _ws=$1
+  # GSR C7: a glob or magic pathspec is judged on the NORMALISED view (wrappers, assignments, quoting and quoted `-c`/`-C` values peeled)
+  _wv=$(_cp8b_git_view "$_ws") || _guard_fault git-view
+  if [ -n "$_wv" ]; then
+    _wvs=$(_cp8b_git_sub "$_wv")
+    case "$_wvs" in
+      checkout|restore|rm|stash|reset)
+        _cp8b_git_pathspec_doubt "$_wv" "$_wvs" && return 0 ;;
+    esac
+  fi
   [ "$(_cp8b_lead "$_ws")" = git ] || return 1
   _wsub=$(_cp8b_git_sub "$_ws")
+  # the view collapses a quoted pathspec holding whitespace to one word, so the RAW segment is judged too (the two results are ORed)
+  case "$_wsub" in
+    checkout|restore|rm|stash|reset)
+      _cp8b_git_pathspec_doubt "$_ws" "$_wsub" && return 0 ;;
+  esac
   case "$_wsub" in
     archive|bundle|worktree|init|clone|checkout|restore) : ;;
     diff|log|show|format-patch)
@@ -2887,8 +2901,8 @@ _cp8b_redirect_hits_cp() {
 # introduced by it, and it is fail-SAFE in the direction it errs. It is stated rather than fixed
 # because narrowing the shared CODEOWNERS anchor class is a change to an existing deny with its own
 # fixtures and its own monotonicity run — not a tidy-up to ride along here.
-_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md)'
-_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md)'
+_CP8B_PATHHIT_T1='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/CODEOWNERS|(^|[^a-zA-Z.])CODEOWNERS|(^|[^a-zA-Z.])AGENTS\.md|(^|[^a-zA-Z.])REQUIRED-CHECKS\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(DECISIONS|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(PROJECT-README-TEMPLATE|PROJECT-CLAUDE-TEMPLATE|RUNBOOK-TEMPLATE|REQUIRED-CHECKS-TEMPLATE|SECURITY-TEMPLATE|DECISIONS-TEMPLATE|WAIVER-REGISTER|BACKLOG-TEMPLATE|JIRA-SETUP-TEMPLATE|TRACKER-SETUP-TEMPLATE|THREAT-MODEL-TEMPLATE|PRIVACY-REVIEW-TEMPLATE|AI-SYSTEM-CARD-TEMPLATE|AI-POLICY-TEMPLATE|AI-TRANSPARENCY-SIGNOFF-TEMPLATE|A11Y-SIGNOFF-TEMPLATE|BIA-TEMPLATE|UAT-SIGNOFF-TEMPLATE|POSTMORTEM-TEMPLATE|REVIEW-RECORD-TEMPLATE|PLAN-RECORD-TEMPLATE|FEATURE-REQUEST-TEMPLATE|TASK-CONTEXT-CONTRACT-TEMPLATE|OPPORTUNITY-BRIEF-TEMPLATE|SHAPING-DOC-TEMPLATE|KIT-FEEDBACK-TEMPLATE|AI-ARTIFACT-LINEAGE-TEMPLATE|EVAL-PLAN-TEMPLATE|TEST-PLAN-TEMPLATE|FIELD-REPORT-TEMPLATE|RESTORE-DRILL-TEMPLATE)\.md)'
+_CP8B_PATHHIT_T1_LC='((^|[^A-Za-z0-9._-])\.claude(/|[[:space:]]|$)|\.github/workflows|/codeowners|(^|[^a-z.])codeowners|(^|[^a-z.])agents\.md|(^|[^a-z.])required-checks\.md|(^|[^A-Za-z0-9._-])\.gitattributes|\.git(/|[[:space:]]|$)|hooks/pre-push|scripts/kit-guard|scripts/tracker-conf\.sh|scripts/tracker-jira\.sh|scripts/tracker-read\.sh|scripts/board\.sh|docs/governance/\.meta-control-last|docs/governance/meta-control-log\.md|\.kit/budget\.conf|\.kit/roster\.conf|\.kit/model-map\.conf|\.kit/model-tiers\.conf|\.kit/dials\.conf|\.kit/ratification-seats\.conf|\.kit/control-plane\.conf|scripts/model-tier\.sh|scripts/orchestrator-run\.sh|agents/[^[:space:]]*\.agent\.md|scripts/release-tag\.sh|scripts/promotion-verify\.sh|scripts/escalate\.sh|\.gitleaks\.toml|\.gitleaksignore|\.publish-identifiers|\.semgrepignore|\.trivyignore|\.checkov\.yaml|\.checkov\.yml|\.kit/tracker\.conf|(^|[^A-Za-z0-9._-])docs/governance/(decisions|promotion-contract|promotion-log)\.md|(^|[^A-Za-z0-9._-])templates/(project-readme-template|project-claude-template|runbook-template|required-checks-template|security-template|decisions-template|waiver-register|backlog-template|jira-setup-template|tracker-setup-template|threat-model-template|privacy-review-template|ai-system-card-template|ai-policy-template|ai-transparency-signoff-template|a11y-signoff-template|bia-template|uat-signoff-template|postmortem-template|review-record-template|plan-record-template|feature-request-template|task-context-contract-template|opportunity-brief-template|shaping-doc-template|kit-feedback-template|ai-artifact-lineage-template|eval-plan-template|test-plan-template|field-report-template|restore-drill-template)\.md)'
 # TIER 2 gains `scripts/` and `profiles/` — the redirect-route half of the directory families added to
 # `_cpp_match`. They land HERE and never in T1, for the identical reason: T1 folds on every platform,
 # and an unconditionally-folded `scripts/` would reinstate the measured case-sensitive FP class on the
@@ -3384,7 +3398,7 @@ _cp8b_selfedit_hint() {
 }
 _cp8b_deny_reason() {
   _dr=$(printf '%s' "$1" | cut -c1-160)
-  printf '13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity) - offending segment: [%s].%s%s' "$_dr" "$(_cp8b_message_tip "${_cp8b_raw:-}" "$1")" "$(_cp8b_selfedit_hint "$1" "${_cp8b_raw:-}")"
+  printf '13: mutating the guard / its config / CI gates via shell is denied (control-plane integrity) - offending segment: [%s].%s%s%s' "$_dr" "$(_cp8b_message_tip "${_cp8b_raw:-}" "$1")" "$(_cp8b_selfedit_hint "$1" "${_cp8b_raw:-}")" "${_cp8b_gsr_tip:-}"
 }
 
 # _cp8b_next_seg: pop the first newline-delimited segment off $_walk into $_seg, leaving the remainder in
@@ -3924,6 +3938,10 @@ _cp8b_xargs_runs_write() {
 # `/usr/bin/xargs`, `'xargs'` and `command xargs` all count) and a LATER token (de-quoted, basename) is `git`, a write verb or an
 # interpreter, as resolved by `_cp8b_interp_lead` on the normalised segment (so `xargs grep -l python` stays a read).
 _cp8b_xargs_seg_write() {
+  case "$1" in
+    *x*a*r*g*s*) : ;;     # GSR C3: the letters in order are necessary for any spelling the skeleton below can recognise
+    *) return 1 ;;
+  esac
   _xsg=0; case "$-" in
     *f*) _xsg=1 ;;
     esac
@@ -3934,6 +3952,12 @@ _cp8b_xargs_seg_write() {
   while [ $# -gt 0 ]; do
     _xst=$1; shift
     _xsb=${_xst#[\"\']}; _xsb=${_xsb%[\"\']}; _xsb=${_xsb##*/}
+    # GSR C3: quote-spliced / expanded spellings
+    case "$_xst" in
+      *'"'*|*"$_cp8b_sq"*|*'\'*|*'$'*|*'`'*)
+        _xsb=$(_cp8b_skeleton "$_xst") || _guard_fault xargs-skeleton
+        _xsb=${_xsb##*/} ;;
+    esac
     if [ "$_xsb" = xargs ]; then _xss=1; _xst=xargs; fi      # normalise the word: `/usr/bin/xargs`, `'xargs'` -> `xargs`
     _xsn="$_xsn $_xst"
   done
@@ -3979,7 +4003,11 @@ _cp8b_piped_interp() {
       _cp8b_pi_lead=xargs-write; _cp8b_pi_xargs=1
       _pil2=$(_cp8b_lead "${_pip_last#"$_cp8b_stx"}"); _pil2=${_pil2#[\"\']}; _pil2=${_pil2%[\"\']}
       case "${_pil2##*/}" in
-        echo|printf) : ;;
+        echo|printf)
+          # GSR C6: an echo/printf holding an expansion or a glob is not literal data
+          case "$_pip_last" in
+            *'$'*|*'`'*|*[*?[{~]*) _cp8b_pi_nonlit=1 ;;
+          esac ;;
         *) _cp8b_pi_nonlit=1 ;;
       esac
       return 0
@@ -4408,7 +4436,7 @@ _cp8b_composed_is_cp() {
   _cc_rc=0; _cc=$(_cp8b_compose "$_ct2") || _cc_rc=$?
   [ "$_cc_rc" -le 1 ] || _guard_fault compose
   [ "$_cc_rc" = 0 ] || return 1
-  [ -n "$_cc" ] && is_control_plane_target "$_cc"
+  [ -n "$_cc" ] && { is_control_plane_target "$_cc" || _cp8b_via_link_cp "$_ct2" "${_lv:-}"; }   # GSR C9: a composed target behind a link
 }
 
 # _cp8b_tad_redir_cp "<segment>": 0 iff a redirect TARGET bails to the deny side — either it classifies
@@ -4434,6 +4462,7 @@ _cp8b_tad_redir_cp() {
   while [ $# -gt 0 ]; do
     if [ -n "$1" ]; then
       is_control_plane_target "$1" && { [ "$_rg" = 1 ] || set +f; return 0; }
+      _cp8b_via_link_cp "$1" && { [ "$_rg" = 1 ] || set +f; return 0; }   # GSR C9
       _cp8b_composed_is_cp "$1" && { [ "$_rg" = 1 ] || set +f; return 0; }
     fi
     shift
@@ -5502,9 +5531,42 @@ _cp8b_kit_query_toks() {
     # GUARD-TRAILER-IN-MESSAGE-FP (design §3 "Tracker read forms", §10 item 3): the config validator's reads
     # are POSITIONAL (the conf is the argument), so they are admitted at EXACT ARITY only, by
     # `_cp8b_kq_tracker_conf_ok`; this set names the verbs it may carry. `check-create` and `--selftest` are
-    # deliberately absent. tracker-contract.sh is CUT (it reaches the network): GUARD-READ-TRACKER-PREFLIGHT-CONF.
+    # deliberately absent.
     scripts/tracker-conf.sh)            printf '%s' 'get get-all get-prefix' ;;
+    # GUARD-READ-TRACKER-PREFLIGHT-CONF (design §2 D1): the post-incept re-check the kit itself prescribes,
+    # `--preflight [--as ci|dev] --conf .kit/tracker.conf`, ONE shape, validated by `_cp8b_kq_tracker_contract_ok`
+    # (this set names the flags it may carry). It was CUT from the tracker-conf cut because the script reaches the
+    # network; the coupling lock now runs it hermetically (copied tree + fake adapter, and the literal real-tree
+    # run with every credential unset). `--deep --discover --fields --selftest --base --project` stay refused.
+    conformance/tracker-contract.sh)    printf '%s' '--preflight --as --conf' ;;
   esac
+}
+# _cp8b_kq_tracker_contract_ok "<args…>": 0 iff the arguments after `conformance/tracker-contract.sh` are exactly
+# `--preflight` once, `--conf .kit/tracker.conf|./.kit/tracker.conf` once, and `--as ci|dev` at most once, in any
+# order. Any other token, a repeated flag, a missing value or any other conf path declines to today's verdict.
+_cp8b_kq_tracker_contract_ok() {
+  _kcp=0; _kcc=0; _kca=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --preflight) _kcp=$((_kcp + 1)); shift ;;
+      --as)
+        _kca=$((_kca + 1)); [ $# -ge 2 ] || return 1
+        case "$2" in
+          ci|dev) ;;
+          *) return 1 ;;
+        esac
+        shift 2 ;;
+      --conf)
+        _kcc=$((_kcc + 1)); [ $# -ge 2 ] || return 1
+        case "$2" in
+          .kit/tracker.conf|./.kit/tracker.conf) ;;
+          *) return 1 ;;
+        esac
+        shift 2 ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$_kcp" = 1 ] && [ "$_kcc" = 1 ] && [ "$_kca" -le 1 ]
 }
 # _cp8b_kq_tracker_conf_ok "<args…>": 0 iff the arguments after `scripts/tracker-conf.sh` are exactly
 # `<conf>` (one non-flag token, not a verb) or `get|get-all|get-prefix <arg> <conf>` (arity 3, no flag-shaped
@@ -5557,6 +5619,13 @@ _cp8b_tad_is_kit_query() {
     # design §12 S2: a relative script is attacker-authored after a `cd`, so (as for board.sh) only at the confident root.
     if [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ]; then
       _cp8b_kq_tracker_conf_ok "$@" && _kqr=0 || _kqr=1
+    else _kqr=1; fi
+    [ "$_kqg" = 1 ] || set +f
+    return "$_kqr"
+  fi
+  if [ "$_kqs" = conformance/tracker-contract.sh ]; then   # GUARD-READ-TRACKER-PREFLIGHT-CONF: one exact shape, confident root only
+    if [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ]; then
+      _cp8b_kq_tracker_contract_ok "$@" && _kqr=0 || _kqr=1
     else _kqr=1; fi
     [ "$_kqg" = 1 ] || set +f
     return "$_kqr"
@@ -5738,7 +5807,7 @@ _CP8B_GLOB_BUDGET=1000
 # _cp8b_glob_walk "<pattern>" ["/"]: with a second argument "/" the pattern is ABSOLUTE and the walk starts at the root
 # (design §14 follow-up). The six-segment cap counts from the FIRST glob segment, so a deep literal prefix is not penalised.
 _cp8b_glob_walk() {
-  _gwr=$1; _gwc=${2:-.}; _gwn=0; _gwg=0
+  _gwr=$1; _gwc=${2:-.}; _gwn=0; _gwg=0; _gwprobe=0
   while [ -n "$_gwr" ]; do
     case "$_gwr" in
       */*) _gws=${_gwr%%/*}; _gwr=${_gwr#*/} ;;
@@ -5772,6 +5841,15 @@ _cp8b_glob_walk() {
           esac
           # An END MARKER inside the same `$(…)`: a find or fork that dies mid-pipeline aborts the subshell before the printf, so a
           # missing marker is a FAILED listing (never an empty directory, the #738 class) and DENIES.
+          # GUARD-SPELLING-RESIDUALS C1: the pipeline's status is `head`'s, so a `find` that fails or is MISSING (127) used to read
+          # as an empty directory. Probe it once per walk, in its own `$(…)` (a find that kills its parent dies with that subshell and
+          # prints no `ok`): no `ok` is a FAULT and DENIES. A group `{ find || printf fault; } | head` was tried and rejected: the group
+          # is itself a pipeline subshell, so a find that kills its parent erased the fault line and read as empty again (GTM-F1, Linux).
+          if [ "${_gwprobe:-0}" = 0 ]; then
+            _gwok=$(find -H . -maxdepth 0 >/dev/null 2>&1 && printf ok) || _gwok=''
+            [ "$_gwok" = ok ] || { _cp8b_gsr_tip=' TIP: the guard lists directories with find and it failed or is missing: make find available on PATH, or name the file literally.'; return 0; }
+            _gwprobe=1
+          fi
           _gwlist=$(find -H "$_gwf" -mindepth 1 -maxdepth 1 2>/dev/null | head -n "$_gwlim"; printf '%s' "$_cp8b_etx") || return 0
           case "$_gwlist" in
             *"$_cp8b_etx") _gwlist=${_gwlist%"$_cp8b_etx"} ;;
@@ -5815,7 +5893,7 @@ _cp8b_glob_operand_denied() {
   _gog=0; case "$-" in
     *f*) _gog=1 ;;
     esac
-  _gov=${2:-}
+  _gov=${2:-}; _gosg=$1
   set -f
   # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
   set -- $1
@@ -5826,19 +5904,39 @@ _cp8b_glob_operand_denied() {
   _goc=''; _goa=''; _gol=''; _gos=0
   while [ $# -gt 0 ]; do
     _got=$1; shift
+    # a quoted flag (`sed "-i"`) is the same flag
+    _gotf=$_got
     case "$_got" in
+      '"'*|"$_cp8b_sq"*) _gotf=$(_cp8b_dequote "$_got") || _guard_fault glob-flag-dequote ;;
+    esac
+    case "$_gotf" in
       -t|--target-directory) if [ $# -gt 0 ]; then _goc="$_goc $1"; shift; fi; continue ;;
-      --target-directory=*)  _goc="$_goc ${_got#*=}"; continue ;;
-      -t?*)                  _goc="$_goc ${_got#-t}"; continue ;;
-      -i*|--in-place*)       _gos=1; continue ;;
+      --target-directory=*)  _goc="$_goc ${_gotf#*=}"; continue ;;
+      -t?*)                  _goc="$_goc ${_gotf#-t}"; continue ;;
+      -i*|-I*|--i*)          _gos=1; continue ;;   # GSR C4b: GNU -i / --in-place and its `--in` abbreviations, BSD -I
+      -[!-]*)
+        # GSR C4b: `-ni`, `-Ei`: i before the first value letter
+        _gof=${_gotf#-}
+        case "${_gof%%[efl]*}" in
+          *[iI]*) _gos=1 ;;
+        esac
+        continue ;;
       -*)                    continue ;;
-      of=*)                  _got=${_got#of=} ;;
+      of=*)                  _got=${_gotf#of=} ;;
     esac
     _gol=$_got; _goa="$_goa $_got"
   done
   if [ "$_gov" = sed ] && [ "$_gos" = 0 ]; then [ "$_gog" = 1 ] || set +f; return 1; fi
   case "$_gov" in
-    cp|install) if [ -n "$_goc" ]; then :; else _goc=" $_gol"; fi ;;
+    cp|install) if [ -n "$_goc" ]; then :; else _goc=" $_gol"; fi
+      # GSR C2: under cp/install doubt (a `#` comment or an odd quote) the last token is not the destination: walk EVERY operand
+      case "$_goa" in
+        *[*?[]*)
+          if _cp8b_cp_doubt "$_gosg"; then
+            _goc="$_goc$_goa"
+            _cp8b_gsr_tip=' TIP: a # comment or an unbalanced quote beside a cp/install glob makes the guard walk every operand: drop the # comment (or the stray quote), or name the files literally.'
+          fi ;;
+      esac ;;
     *)          _goc="$_goc$_goa" ;;
   esac
   _gor=1
@@ -6083,7 +6181,7 @@ _cp8b_lane_selfedit_hint() {
 }
 _cp8b_target_reason() {
   _trs=$(printf '%s' "$1" | cut -c1-160)
-  printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s%s%s%s' "$2" "$_trs" "$(_cp8b_lane_tip)" "$(_cp8b_message_tip "${_tad_raw:-}" "$1")" "$(_cp8b_trigger_tip "$2")" "$(_cp8b_lane_selfedit_hint "$1")"
+  printf '13: writes/executes against a resolved control-plane target (guard / CI gates / conformance) - denied (control-plane integrity; trigger=%s). Offending segment: [%s].%s%s%s%s%s' "$2" "$_trs" "$(_cp8b_lane_tip)" "$(_cp8b_message_tip "${_tad_raw:-}" "$1")" "$(_cp8b_trigger_tip "$2")" "${_cp8b_gsr_tip:-}" "$(_cp8b_lane_selfedit_hint "$1")"
 }
 
 # C4 Arm 3 (face c) — remote-URL token disqualification for git-lead segments. Replaces each WHOLE
@@ -6223,7 +6321,7 @@ _cp8b_seg_poisons() {
 # newline-flattened command denies. Everything else piped into xargs git keeps today's verdict.
 _cp8b_xargs_filefed_denied() {
   case "$1" in
-    *xargs*) : ;;
+    *x*a*r*g*s*) : ;;
     *) return 1 ;;
   esac
   _xfw=$(_cp8b_segments "$1") || _guard_fault xargs-filefed-segments
@@ -6236,7 +6334,7 @@ _cp8b_xargs_filefed_denied() {
     # file-fed = a `<` redirect or xargs' own `-a` / `--arg-file` (design §16 R2); the word match is the de-quoted basename
     case "$_xfs" in
       *'<'*|*[[:space:]]-a*|*--arg-file*) : ;;
-      *) continue ;;
+      *) _cp8b_xargs_optscan "$_xfs" || continue; _xfs=$_xo_norm ;;     # GSR C4a: `-0a`, `-ra`, `--ar`, `--arg=` (judged in canonical form)
     esac
     if _cp8b_xargs_seg_write "$_xfs"; then return 0; fi
   done
@@ -6244,7 +6342,7 @@ _cp8b_xargs_filefed_denied() {
 }
 _cp8b_xargs_git_denied() {
   case "$1" in
-    *xargs*) : ;;
+    *x*a*r*g*s*) : ;;
     *) return 1 ;;
   esac
   _cp8b_piped_interp "$1" || return 1
@@ -6455,6 +6553,7 @@ _cp8b_target_arm_denied() {
     if _cp8b_tad_pathhit "$_tad_c"; then _cp8b_target_reason "$_seg" pathhit; return 0; fi
     if _cp8b_tad_literal_tok "$_tad_c"; then _cp8b_target_reason "$_seg" token; return 0; fi
     if _cp8b_tad_composed_tok "$_tad_c"; then _cp8b_target_reason "$_seg" composed; return 0; fi
+    if _cp8b_redir_link_denied "$_segm"; then _cp8b_target_reason "$_seg" token; return 0; fi   # GSR C9: a redirect THROUGH a symlink to the control plane
     # GUARD-CP-WRITE-ROUTES Cure 2: last, a reader/kit-exec laundering a non-literal redirect target
     # (no literal CP substring above to catch it — the pure-glob route) denies outright.
     # F-a: the LAUNDER arm is a redirect test, so it reads `$_segm` for the same reason the `[<>]` bail
@@ -6492,13 +6591,14 @@ _cp8b_push_main_denied() {
   _cp8b_segments_load "$1"
   while _cp8b_next_seg; do
     # design §16 R4: also judged on the view with quotes and backslashes deleted (`git "push" …`, `git -C "x" push …`).
-    _pmq=$_seg
+    _pmq=$_seg; _pmc=$_seg
     case "$_seg" in
       *'"'*|*"$_cp8b_sq"*|*'\'*)
         _pmq=$(printf '%s' "$_seg" | tr -d "\"'\\\\") || _guard_fault pushmain-dequote
-        _cp8b_dq_vanished pushmain-dequote "$_seg" "$_pmq" ;;
+        _cp8b_dq_vanished pushmain-dequote "$_seg" "$_pmq"
+        _pmc=$(_cp8b_collapse_quotes "$_seg") || _guard_fault pushmain-collapse ;;   # GSR C5: a quoted value holding whitespace is ONE word
     esac
-    if printf '%s\n%s' "$_seg" "$_pmq" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'; then
+    if printf '%s\n%s\n%s' "$_seg" "$_pmq" "$_pmc" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*[^a-zA-Z0-9_.-](main|master)([^a-zA-Z0-9_.-]|$)'; then
       return 0
     fi
   done
@@ -7666,6 +7766,278 @@ _cp8b_segments_load() {
   _guard_vanished segments "$_sl_j" "$_walk"
 }
 
+# ================================================================================================
+# KIT-BASE-SHARED (design §11.1) — the raw-git routes INTO the shared kit-base. ADD-ONLY: it can only turn an
+# ALLOW into a DENY (the same monotone shape as the claims arm), and it fails CLOSED on doubt.
+#
+# WHY. `kit-base` is imported VERIFIED by `kit-update --from` (every chain commit is checked against the exports of
+# its Kit-Source before one compare-and-swap writes it). `refs/kit/base` sits outside branch protection, so anyone with
+# push access can write it, and every `kit-update --from` runs the base's own scripts/incept.sh. MEASURED BEFORE THIS
+# ARM: `git fetch origin refs/kit/base:refs/heads/kit-base`, `git update-ref`, `git branch -f` and `git push` onto
+# those names were all ALLOW — the unverified route stayed open beside the verified one.
+#
+# WHAT IS DENIED: any CREATION or MOVE of a ref named `kit-base`, `kit-base/…` or `refs/kit/…`, whatever the verb or flags
+# (any case; quotes, backslashes and `$` stripped first, as the claims arm does): `update-ref` / `symbolic-ref` (any form,
+# deletes included; also when the ref is unresolvable; `update-ref --stdin` ALWAYS, whatever the text names), `push` /
+# `send-pack`, `fetch`/`pull` whose `:` destination names them OR is a glob outside refs/remotes/ (`+refs/*:refs/*`),
+# `branch` unless it is a list/read (so a plain `git branch kit-base <x>` denies), `tag` unless it is a list/read (a plain
+# `git tag kit-base/…` denies), `checkout`/`switch`/`worktree add` that creates a branch (-b -B -c -C), and `git config`
+# writing a `remote.*` key that names them. READS stay allowed: log, show, rev-parse, ls-remote, archive, diff, cat-file,
+# for-each-ref, `fetch` with no destination.
+# The kit's own scratch namespaces under refs/kit/ are carved out, EXACTLY these three prefixes: `refs/kit/claim-*`
+# (board-claim.sh), `refs/kit/notes-remote-*` and `refs/kit/promotions-presync-*` (promotion-verify.sh's ledger sync);
+# kit-update reads only refs/kit/base, which stays denied. `sh scripts/kit-update.sh ...` is allowed:
+# its own git calls are not hook-visible, and it is the verified route. UNDER `kit-guard install-shims` they ARE graded
+# (every child git passes this arm) and kit-update's own ref writes are denied: run kit-update without the shim dir on
+# PATH. A front-door pass is row KIT-BASE-SHIMS-FRONT-DOOR.
+#
+# HONEST CEILING (stated, not implied closed): a text guard has spelling residuals (GUARD-CP-READONLY-SANDBOX). NOT
+# covered: a glob spelling of the name (`kit-b?se`), a ref assembled from a variable the arm cannot see (`push`,
+# `fetch`, `branch` and `tag` only; `update-ref` fails closed), a bare `git pull`/`fetch`/`push` that relies on a refspec
+# ALREADY configured (the config write is denied, an existing one is not read), an alias defined elsewhere, `git checkout
+# kit-base` then a commit on it, an interpreter or another tool writing the ref file, and an actor at a plain terminal.
+# It narrows the default route; it does not close the channel.
+# The name test is at REF-COMPONENT boundaries (`kit-base`, `kit-base/…`,
+# `…/kit-base`, after `: + ^ ~ = ,`, `refs/kit[/…]`), so `feature/kit-base-shared` is not it; `checkout`/`switch`/`worktree add`/
+# `clone -b` of kit-base deny unless `--detach` (a checked-out kit-base is a branch every later commit moves); `pull` naming it
+# denies; skipped `-c`/`--config-env` values are scanned (a `remote.*.fetch` refspec, an `alias.`); a subcommand that does not
+# resolve on the original text to a CLEAN word (quotes, `(`, backticks, an unknown global) is judged FLAT; `branch -v/-a/-r` no
+# longer count as list reads; `update-ref --stdin` is denied unconditionally; a glob refspec whose destination is outside
+# refs/remotes/ (fetch, pull, push, send-pack, `config remote.*`) is denied, so the default `+refs/heads/*:refs/remotes/o/*`
+# stays; `fetch --mirror` / `remote … --mirror` deny; `xargs git <writer>` denies when the command names the refs;
+# `git replace` naming them denies. STATED RESIDUALS (not chased): `checkout kit-base` THEN any history-moving command
+# (commit, merge, reset, pull); `push --mirror/--all/--prune` deleting the REMOTE refs/kit/base (a DoS only: import verification
+# binds); `git config alias.x` set in a separate command; short-name resolution (`fetch kit/base:refs/q/x` then a local push);
+# a `refs/replace/` ref by sha (kit-update runs with GIT_NO_REPLACE_OBJECTS=1); N3 two-token `git --config-env alias.x=VAR x`;
+# N4 `xargs -a <file> git update-ref` (ref names from a file); N5 `git stash branch kit-base`, `git fast-import` with a file
+# body, `@{-N}` / `git checkout -`, a shell alias or function for git. `checkout`/`switch`/`worktree add` deny with -b/-c/--track
+# (`--no-guess` is not a detach) or without `--detach`.
+# N6 over-denies, accepted: a repo DIRECTORY named kit-base (`git -C ../kit-base …`), `git -P log kit-base`, prose in a gh body
+# that names `git checkout kit-base`.
+# Over-deny (accepted): `git -c k=v checkout kit-base`, `git checkout kit-base -- <path>`, a wrapper (`sh -c`, `env`, `xargs`)
+# text that merely names a verb beside the name.
+_kbs_tip='13: raw git writes to the shared kit-base refs (refs/heads/kit-base, refs/tags/kit-base/*, refs/kit/*) are denied: an unverified fetch into kit-base is a code-execution channel (every kit-update --from runs the base'"'"'s own scripts/incept.sh). kit-base is imported VERIFIED by `sh scripts/kit-update.sh --from <vendor>` and published by `sh scripts/kit-update.sh --publish-base`. Reads (log, show, rev-parse, ls-remote, archive, diff, cat-file, for-each-ref, fetch with no `:` destination) stay allowed. NOT covered, and not claimed to be: glob or variable spellings of the name, a bare git pull/fetch/push that relies on an already-configured refspec, alias indirection, checkout-then-commit, and an actor at a plain terminal. escape card: docs/operations/runtime-guards.md §Over-deny'
+
+# _kbs_seg_denied "<one segment: quotes/backslash/$ stripped, lowercased, claim-scratch carved out>" "<git sub or ''>" "<1 if unparseable>"
+# PREDICATE: returns 0 (deny) or 1. A resolved subcommand that is not a write verb is allowed on that binding alone (so a
+# commit MESSAGE naming both is not judged); an unresolved one (a wrapper lead, an unknown global) is judged flat.
+_kbs_seg_denied() {
+  _kbs_sub=$2; _kbs_unp=$3; _kbs_cmdn=$4; _kbs_lead=${5##*/}
+  _kbs_pg=0; case "$-" in
+    *f*) _kbs_pg=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  _kbs_git=0; _kbs_names=0; _kbs_colon=0; _kbs_ds=0; _kbs_td=0; _kbs_cb=0; _kbs_rd=0; _kbs_trd=0; _kbs_seen=0; _kbs_skip=0
+  _kbs_alias=0; _kbs_stdin=0; _kbs_glob=0; _kbs_rem=0; _kbs_det=0; _kbs_mir=0; _kbs_glany=0; _kbs_cfe=0
+  _kbs_v=' '
+  for _kbs_t in "$@"; do
+    # ANALYSIS of every token, a skipped `-c`/`-C` operand included (`git -c remote.origin.fetch=+refs/kit/base:refs/heads/kit-base fetch`):
+    # does it name the shared refs, carry a `src:dst` refspec, a glob whose destination is outside refs/remotes/, an alias?
+    if _kbs_nm "$_kbs_t"; then
+      _kbs_names=1
+      case "$_kbs_t" in
+        *:*) _kbs_colon=1 ;;
+        esac
+    fi
+    case "$_kbs_t" in
+      alias.*|*[=]alias.*) _kbs_alias=1 ;;
+      --config-env*)
+        case "$_kbs_t" in
+          *remote.*|*alias.*) _kbs_cfe=1 ;;
+          esac ;;
+    esac
+    case "$_kbs_t" in
+      -*) : ;;
+      *'*'*|*'?'*|*'['*) _kbs_glany=1 ;;
+    esac
+    case "$_kbs_t" in
+      *:*)
+        _kbs_src=${_kbs_t%%:*}; _kbs_dst=${_kbs_t#*:}
+        case "$_kbs_dst" in
+          refs/remotes/*) : ;;
+          *)
+            case "$_kbs_src$_kbs_dst" in
+              *'*'*|*'?'*|*'['*) _kbs_glob=1 ;;
+              esac ;;
+        esac ;;
+    esac
+    if [ "$_kbs_skip" = 1 ]; then _kbs_skip=0; continue; fi
+    # CLASSIFICATION of the unskipped tokens: the verbs and the flags that decide what a verb does
+    case "$_kbs_t" in
+      git|*/git) _kbs_git=1 ;;
+      update-ref|symbolic-ref|replace|push|send-pack|fetch|pull|branch|tag|checkout|switch|worktree|config|clone|remote) _kbs_v="$_kbs_v$_kbs_t "; _kbs_seen=1 ;;
+      --stdin) _kbs_stdin=1 ;;
+      remote.*) _kbs_rem=1 ;;
+      -c|-C) if [ "$_kbs_git" = 1 ] && [ "$_kbs_seen" = 0 ]; then _kbs_skip=1; else _kbs_ds=1; _kbs_cb=1; fi ;;
+      --force|--delete) _kbs_ds=1; _kbs_td=1 ;;
+      --move|--copy) _kbs_ds=1 ;;
+      --force-create|--orphan|--branch|--branch=*) _kbs_cb=1 ;;
+      --detach) _kbs_det=1 ;;
+      --mirror|--mirror=*) _kbs_mir=1 ;;
+      --list|--contains|--merged|--no-merged|--points-at|--show-current) _kbs_rd=1; _kbs_trd=1 ;;
+      --*) : ;;
+      -*)
+        _kbs_cl=${_kbs_t#-}
+        case "$_kbs_cl" in
+          *[fmcd]*) _kbs_ds=1 ;;
+          esac
+        case "$_kbs_cl" in
+          *[fd]*) _kbs_td=1 ;;
+          esac
+        case "$_kbs_cl" in
+          *[bc]*) _kbs_cb=1 ;;
+          esac
+        case "$_kbs_cl" in
+          *d*) _kbs_det=1 ;;
+          esac
+        case "$_kbs_cl" in
+          *l*) _kbs_rd=1 ;;
+          esac
+        case "$_kbs_cl" in
+          *[lnv]*) _kbs_trd=1 ;;
+          esac ;;
+    esac
+  done
+  [ "$_kbs_pg" = 1 ] || set +f
+  [ "$_kbs_git" = 1 ] || return 1
+  [ "$_kbs_cfe" = 0 ] || return 0
+  # a wrapper that FEEDS a git ref writer (`echo refs/heads/kit-base | xargs git update-ref HEAD`): the names ride the pipe
+  if [ "$_kbs_lead" = xargs ] && [ "$_kbs_cmdn" = 1 ]; then _kbs_names=1; fi
+  # THE VERB. A resolved, CLEAN subcommand binds on its own (so a commit MESSAGE naming a verb and the name is not judged);
+  # one the caller could not resolve, or one an alias in the segment could redefine, is judged FLAT: every verb token counts,
+  # and a `git` led segment that names the refs and resolves to nothing is denied outright.
+  if [ -n "$_kbs_sub" ] && [ "$_kbs_alias" = 0 ]; then
+    case "$_kbs_sub" in
+      update-ref|symbolic-ref|replace|push|send-pack|fetch|pull|branch|tag|checkout|switch|worktree|config|clone|remote) _kbs_v=" $_kbs_sub " ;;
+      *) return 1 ;;
+    esac
+  else
+    if [ "$_kbs_lead" = git ] && [ "$_kbs_names" = 1 ]; then return 0; fi
+    if [ "$_kbs_alias" = 1 ] && [ "$_kbs_names" = 1 ]; then return 0; fi
+  fi
+  case "$_kbs_v" in
+    *" update-ref "*|*" symbolic-ref "*)
+      # any form; `--stdin` carries its ref names in a body this walk cannot see, so it is denied unconditionally (kit-update's
+      # own writes are not hook-visible); an unresolvable ref fails closed
+      if [ "$_kbs_names" = 1 ] || [ "$_kbs_unp" = 1 ] || [ "$_kbs_stdin" = 1 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" fetch "*|*" pull "*|*" clone "*|*" remote "*|*" config "*)
+      # a refspec whose destination could be kit-base / refs/kit/* (a glob outside refs/remotes/, or a token naming them)
+      if [ "$_kbs_glob" = 1 ]; then return 0; fi
+      if [ "$_kbs_names" = 1 ] && [ "$_kbs_colon" = 1 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" fetch "*|*" remote "*) if [ "$_kbs_mir" = 1 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" push "*|*" send-pack "*) if [ "$_kbs_glany" = 1 ] || [ "$_kbs_glob" = 1 ]; then return 0; fi ;;
+  esac
+  [ "$_kbs_names" = 1 ] || return 1
+  case "$_kbs_v" in
+    *" push "*|*" send-pack "*|*" pull "*|*" remote "*|*" replace "*) return 0 ;;
+  esac
+  case "$_kbs_v" in
+    *" branch "*) if [ "$_kbs_ds" = 1 ] || [ "$_kbs_rd" = 0 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" tag "*) if [ "$_kbs_td" = 1 ] || [ "$_kbs_trd" = 0 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" checkout "*|*" switch "*|*" worktree "*)
+      # N1: `--no-guess` is NOT a detach (it still creates with -b/-c/--track). Deny a creating form, or any non-detached one;
+      # git rejects --detach beside -b/-B/-c/-C/--orphan, so no legitimate form is lost.
+      if [ "$_kbs_cb" = 1 ] || [ "$_kbs_det" = 0 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" clone "*) if [ "$_kbs_cb" = 1 ]; then return 0; fi ;;
+  esac
+  case "$_kbs_v" in
+    *" config "*) if [ "$_kbs_rem" = 1 ]; then return 0; fi ;;
+  esac
+  return 1
+}
+
+# _kbs_nm "<token>": 0 iff it names kit-base, kit-base/…, refs/kit or refs/kit/… at a REF-COMPONENT boundary — after `/`,
+# `:`, `+`, `^`, `~`, `=` or `,` — never as a substring (`feature/kit-base-shared` is not it). The token is already
+# lowercased, quote-stripped and claim-scratch-carved.
+_kbs_nm() {
+  case "$1" in
+    kit-base|kit-base/*|kit-base[~^@:]*|*/kit-base|*/kit-base/*|*/kit-base[~^@:]*) return 0 ;;
+    *[:+^~=,]kit-base|*[:+^~=,]kit-base/*|*[:+^~=,]kit-base[~^@:]*) return 0 ;;
+    refs/kit|refs/kit/*|*/refs/kit|*/refs/kit/*|*[:+^~=,]refs/kit|*[:+^~=,]refs/kit/*) return 0 ;;
+  esac
+  return 1
+}
+
+# _kitbase_ref_denied "<cmd>" "<the cmd, quotes/backslash/$ stripped>": PREDICATE (0 = deny, prints the tip). The cheap
+# `kit` gate is fork-free; only a command that mentions it pays for the segment walk.
+_kitbase_ref_denied() {
+  # the stripped view (built once for the claims arm) must not have VANISHED: an empty one beside a non-empty command is a
+  # failed fork (#738), not "nothing here" — fault, never allow
+  case "$1" in
+    *[[:alnum:]]*) _guard_vanished kitbase-view "$1" "$2" ;;
+  esac
+  case "$2" in
+    *[Kk][Ii][Tt]*|*[Gg][Ii][Tt]*) : ;;
+    *) return 1 ;;
+  esac
+  # does the WHOLE command name kit-base / refs/kit (for a wrapper that feeds a git ref writer through a pipe)?
+  _kbs_cn=0
+  case "$2" in
+    *[Kk][Ii][Tt]*)
+      _kbs_cl=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]') || _guard_fault kitbase-lower
+      case "$2" in
+        *[[:alnum:]]*) _guard_vanished kitbase-lower "$2" "$_kbs_cl" ;;
+      esac
+      case "$_kbs_cl" in
+        *kit-base*|*refs/kit*) _kbs_cn=1 ;;
+      esac ;;
+  esac
+  _cp8b_walk_load "$1"   # faults (exit 2) on a failed/vanished stage, as the CP arms do
+  while _cp8b_next_seg; do
+    case $_seg in
+      *[![:space:]]*) ;;
+      *) continue ;;
+    esac
+    case "$_seg" in
+      *["$_cp8b_mk_all"]*)
+        _kbs_um=$(_cp8b_unmask_quoted "$_seg") || _guard_fault kitbase-unmask
+        case "$_seg" in
+          *[[:alnum:]]*) _guard_vanished kitbase-unmask "$_seg" "$_kbs_um" ;;
+        esac
+        _seg=$_kbs_um ;;
+    esac
+    _kbs_pl=$(_cp8b_group_peel "$_seg") || _guard_fault kitbase-peel
+    # (a punctuation-only segment — `(`, `{`, `)`, `}` of a newline-separated block — peels to nothing, legitimately)
+    case "$_seg" in
+      *[[:alnum:]]*) _guard_vanished kitbase-peel "$_seg" "$_kbs_pl" ;;
+    esac
+    _kbs_lead=$(_cp8b_lead "$_kbs_pl") || _guard_fault kitbase-lead
+    # the subcommand is trusted ONLY when it resolves on the ORIGINAL text and is a clean word: a quote, a backslash, a
+    # `$`, a backtick or a `(` in it means the guard and the shell may disagree about it -> unresolved -> judged flat
+    _kbs_sub=''
+    if [ "$_kbs_lead" = git ]; then
+      _kbs_sub=$(_cp8b_git_sub "$_kbs_pl") || _guard_fault kitbase-sub
+      case "$_kbs_sub" in
+        *[!a-z-]*) _kbs_sub='' ;;
+      esac
+    fi
+    _kbs_unp=0; if _cp8b_unparseable "$_seg"; then _kbs_unp=1; fi
+    # strip quoting (`"` `'` `\` `$`), turn `(` `)` and the backtick into blanks so `x=$(git …)` / `(git …)` expose `git`,
+    # lowercase (a case-insensitive filesystem), carve out board-claim's scratch refs
+    _kbs_s=$(printf '%s' "$_seg" | tr -d '"$\\'"'" | tr '()`' '   ' | tr '[:upper:]' '[:lower:]' | sed -e 's#refs/kit/claim-[a-z0-9_.-]*#claimscratch#g' -e 's#refs/kit/notes-remote-[a-z0-9_.-]*#claimscratch#g' -e 's#refs/kit/promotions-presync-[a-z0-9_.-]*#claimscratch#g') || _guard_fault kitbase-seg
+    # (a segment with no letter or digit — the `)"` left after a heredoc `$(cat <<'EOF' … EOF)` — legitimately strips to blanks)
+    case "$_seg" in
+      *[[:alnum:]]*) _guard_vanished kitbase-seg "$_seg" "$_kbs_s" ;;
+    esac
+    if _kbs_seg_denied "$_kbs_s" "$_kbs_sub" "$_kbs_unp" "$_kbs_cn" "$_kbs_lead"; then printf '%s' "$_kbs_tip"; return 0; fi
+  done
+  return 1
+}
+
 # guard_check_command "<cmd>" ["<cwd>"]: print reason + return 1 if denied, else return 0.
 # GUARD-CWD-CONFIDENCE-UNKNOWN Face C: the OPTIONAL second argument is the directory the command will
 # run in — the harness's truth, not the model's (the model authors `tool_input`; `cwd` is a sibling of
@@ -7876,6 +8248,17 @@ guard_check_command() {
     printf '%s' '13: raw pushes whose refspec DESTINATION is refs/claims/ or refs/claims-log/ are denied, DELETES INCLUDED (`:refs/claims/X`, `--delete`, `-d`, `<sha>:refs/claims/X`, two-refspec, send-pack, --prune, and the `remote.*.push` configured routes, in any remote spelling). These refs are the work-in-progress truth (B4 counts the WIP ceiling from them) and the release record; a raw delete IS a release, and would make board-claim.sh refusing an unprovably-stale release into theatre. Use the front door: scripts/board-claim.sh claim | release [--stale] | status, which proves staleness, logs every non-holder release and passes its own pushes with KIT_CLAIM_FRONT_DOOR=1 in its process environment. Reads are allowed (`git ls-remote origin refs/claims/*`, the --depth=1 scratch fetch). NOT covered, and not claimed to be: local `update-ref`, `symbolic-ref` repointing, alias indirection, interpreter wrappers, `export KIT_CLAIM_FRONT_DOOR=1` as its own call (the sentinel reaches this arm from the process environment wherever the tool shell persists env - measured ALLOW, pinned as a fixture, and the same class the force dial discloses), and an actor with push rights at a plain terminal - the forge ruleset on refs/claims/** is the control that would bind those, and it is an owner keystroke, named not done.'; return 1
   fi
 
+  # KIT-BASE-SHARED (design §11.1): raw git writes onto kit-base / refs/kit/ — see `_kitbase_ref_denied`. Reads the
+  # quote-stripped view built for the claims arm above (no second fork). A rc >= 2 is a FAULT, as at the CP-8b boundary.
+  if ! selfedit_allowed; then
+    _kbs_prc=0; _kbs_reason=$(_kitbase_ref_denied "$cmd" "$_b2_claims_cmd") || _kbs_prc=$?
+    [ "$_kbs_prc" -le 1 ] || _guard_fault kitbase-ref
+    if [ "$_kbs_prc" = 0 ]; then
+      [ -n "$_kbs_reason" ] || _kbs_reason=$_kbs_tip
+      printf '%s' "$_kbs_reason"; return 1
+    fi
+  fi
+
   # CP-8b: the CO-OCCURRENCE block that used to live here matched a mutation verb and a control-plane
   # path ANYWHERE in the flat string, and never asked whether the verb's TARGET was that path — which
   # is both why `cp conformance/x /tmp/b` (copying OUT) was denied and why `git archive -o conformance/x`
@@ -8024,13 +8407,14 @@ guard_check_command() {
   if printf '%s' "$cmd" | grep -Eq '(npm|yarn|pnpm)[[:space:]]+publish'; then
     { printf '%s' '13: publishing a package is externally irreversible - human-gated.'; return 1; }
   fi
-  _fpq=$cmd   # design §16 R4: the force-push rule also reads the quote-and-backslash-deleted view
+  _fpq=$cmd; _fpc=$cmd   # design §16 R4: the force-push rule also reads the quote-and-backslash-deleted view
   case "$cmd" in
     *'"'*|*"$_cp8b_sq"*|*'\'*)
       _fpq=$(printf '%s' "$cmd" | tr -d "\"'\\\\") || _guard_fault forcepush-dequote
-      _cp8b_dq_vanished forcepush-dequote "$cmd" "$_fpq" ;;
+      _cp8b_dq_vanished forcepush-dequote "$cmd" "$_fpq"
+      _fpc=$(_cp8b_collapse_quotes "$cmd") || _guard_fault forcepush-collapse ;;   # GSR C5: the quote-collapsed third view
   esac
-  if printf '%s\n%s' "$cmd" "$_fpq" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
+  if printf '%s\n%s\n%s' "$cmd" "$_fpq" "$_fpc" | grep -Eq 'git'"$_CP8B_GITG"'[[:space:]]+push.*(--force|--force-with-lease|--mirror|[[:space:]]-f([[:space:]]|$)|[[:space:]+]\+[^[:space:]]*[[:space:]]*$)'; then
     { printf '%s' '13: force/mirror push rewrites or deletes published history - human-gated.'; return 1; }
   fi
   # push to main/master in any refspec form: 'main', '+main', 'HEAD:main', 'x:master', "main" (incl. git -c … push)
@@ -8547,7 +8931,7 @@ guard_check_path() {
         esac
       case "$_bn" in
         guard.sh|guard-core.sh|kit-guard|pre-push|settings.json|settings.local.json|mcp-policy.json|codeowners|.meta-control-last|meta-control-log.md|\
-        .gitleaks.toml|.gitleaksignore|.semgrepignore|.trivyignore|.checkov.yaml|.checkov.yml)
+        .gitleaks.toml|.gitleaksignore|.publish-identifiers|.semgrepignore|.trivyignore|.checkov.yaml|.checkov.yml)
           printf '13: modifying a control-plane file (%s) is denied (control-plane integrity). Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.' "$base"; return 1 ;;
       esac
     fi
@@ -8753,4 +9137,235 @@ kit_dial_mode() {
   fi
   [ "$_kdm_env" = enforce ] && { printf 'enforce\n'; return 0; }
   printf 'observe\n'; return 0
+}
+
+# === GUARD-SPELLING-RESIDUALS — nine spellings the guard misjudged, each cured by REFUSING ON DOUBT. ================
+# Every helper below can only ADD a deny. None executes agent text, and none hands agent text to `find` as a predicate: they
+# read bytes (parameter expansion, `case`, `sed` over DATA) or, for C9, run the guard's own `_resolve_physical` on an
+# absolute path. They sit at the END of the file on purpose, so the call sites above keep their line numbers stable.
+# Design: docs/architecture/2026-10-06-guard-spelling-residuals-design.md (C1-C7, C9).
+
+# _cp8b_skeleton "<token>": the token with `${…}`, `$(…)` and backtick spans deleted, then every quote, backslash and `$`.
+# Normalisation TOWARD the verb word (C3): `x""args`, `xa"rg"s`, `x\args`, `x${E}args` and `$'xargs'` all read `xargs`. Its only
+# failure is an over-match, which matters only when a later token is git, a write verb or an interpreter.
+_cp8b_skeleton() {
+  printf '%s' "$1" | sed -e 's/\${[^}]*}//g' -e 's/\$([^)]*)//g' -e 's/`[^`]*`//g' -e 's/\$[A-Za-z_][A-Za-z0-9_]*//g' -e "s/'//g" -e 's/"//g' -e 's/\\//g' -e 's/\$//g'
+}
+
+# _cp8b_xargs_optscan "<seg>": 0 iff xargs' OWN option tokens (from the xargs word to the command word it runs) carry a
+# file-feed: a short cluster whose letters before the first value-taking letter hold `a` (`-0a`, `-ra`), or a long option
+# `--a…` (GNU takes any unique prefix of `--arg-file`). Scanning only xargs' own options keeps `printf 'a\0' | xargs -0 git add`
+# a non-match. The plain `-a` / `--arg-file` substring test in the caller stays as it was.
+_cp8b_xargs_optscan() {
+  _xo_g=0; case "$-" in
+    *f*) _xo_g=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $1
+  _xo_hit=1; _xo_seen=0; _xo_n=''; _xo_norm=''
+  while [ $# -gt 0 ]; do
+    _xo_t=$1; shift
+    # every option token is matched DE-QUOTED (`"-0a"`, `'-ra'`, `"--ar"`)
+    case "$_xo_t" in
+      *'"'*|*"$_cp8b_sq"*|*'\'*|*'$'*|*'`'*)
+        _xo_t=$(_cp8b_skeleton "$_xo_t") || _guard_fault xargs-skeleton ;;
+    esac
+    if [ "$_xo_seen" = 0 ]; then
+      _xo_n="$_xo_n $_xo_t"
+      [ "${_xo_t##*/}" = xargs ] && _xo_seen=1
+      continue
+    fi
+    # On a hit the segment is handed back (`_xo_norm`) with the file-feed rewritten to xargs' canonical `-a` / `--arg-file`, because
+    # `_cp8b_interp_lead` peels only the canonical spellings with their value: `-0a /tmp/l rm` would otherwise read `/tmp/l` as the
+    # command word. A value attached to the cluster (`-0a/tmp/l`) is kept as the `-a` value. The caller resolves the command word
+    # the xargs RUNS on that normalised text.
+    case "$_xo_t" in
+      --) break ;;
+      -[nIdELPs]|--max-args|--max-procs|--max-lines|--max-chars|--delimiter|--eof|--process-slot-var)   # a SEPARATE value
+        _xo_n="$_xo_n $_xo_t"; [ $# -gt 0 ] && { _xo_n="$_xo_n $1"; shift; }; continue ;;
+      --a*=*) _xo_hit=0; _xo_norm="$_xo_n $_xo_t $*"; break ;;
+      --a*) _xo_hit=0; _xo_norm="$_xo_n --arg-file $*"; break ;;
+      -[!-]*)
+        _xo_c=${_xo_t#-}; _xo_c=${_xo_c%%[nIdELPs]*}
+        case "$_xo_c" in
+          *a*) _xo_hit=0; _xo_pre=${_xo_t%%a*}; _xo_norm="$_xo_n ${_xo_pre%-} -a ${_xo_t#*a} $*"; break ;;
+        esac ;;
+      -*) : ;;
+      *) break ;;
+    esac
+    _xo_n="$_xo_n $_xo_t"
+  done
+  [ "$_xo_g" = 1 ] || set +f
+  return $_xo_hit
+}
+
+# _cp8b_collapse_quotes "<text>": ONE left-to-right pass (C5, and the view C7 reads): a `"…"` or `'…'` span that holds whitespace
+# becomes the single token `Q`, every other span loses its quotes (`"main"`, `m"ai"n`, `'a"b'` read as the bare word), `\ ` becomes `Q`
+# and any other `\x` becomes `x`; inside `"…"` a backslash consumes the next byte. A third view for the push rules, ORed with the raw
+# and de-quoted ones, so a quoted global-option value no longer ends the option chain. Data only, never executed.
+_cp8b_collapse_quotes() {
+  printf '%s\n' "$1" | LC_ALL=C awk -v SQ="$_cp8b_sq" '{
+    out = ""; n = length($0); i = 1
+    while (i <= n) {
+      c = substr($0, i, 1)
+      if (c == "\\") { d = substr($0, i + 1, 1); out = out ((d == " " || d == "\t") ? "Q" : d); i += 2; continue }
+      if (c == "\"" || c == SQ) {
+        s = ""; j = i + 1
+        while (j <= n) {
+          e = substr($0, j, 1)
+          if (c == "\"" && e == "\\") { s = s substr($0, j + 1, 1); j += 2; continue }
+          if (e == c) break
+          s = s e; j++
+        }
+        out = out ((s ~ /[ \t]/) ? "Q" : s); i = j + 1; continue
+      }
+      out = out c; i++
+    }
+    print out
+  }'
+}
+
+# _cp8b_git_pathspec_doubt "<seg>" "<sub>": 0 (and prints the reason) iff a pathspec of this worktree/index-writing git
+# subcommand is a glob or magic whose target the guard cannot prove ordinary (C7). Pure text: no git call, no filesystem read.
+#   `:(<words>)<rest>`: `exclude`, or an empty <rest>, is doubt; `literal` judges <rest> as a plain control-plane target;
+#                       otherwise <rest> falls through.   `:!…` / `:^…` and a bare `:/` are doubt; `:/<rest>` falls through.
+#   what remains is doubt if it holds `*`, `?` or `[` (git globs every pathspec by default, and its `*` crosses `/`).
+# `stash` drops the value of -m/--message first, so `git stash push -m "wip *"` is not doubt.
+_cp8b_git_pathspec_doubt() {
+  _gp_seg=$1; _gp_sub=$2
+  if [ "$_gp_sub" = stash ]; then
+    _gp_seg=$(printf '%s' "$_gp_seg" | sed -E "s/(-m|--message)[[:space:]=]*(\"[^\"]*\"|'[^']*'|[^[:space:]]+)//g") || return 0
+  fi
+  _gp_g=0; case "$-" in
+    *f*) _gp_g=1 ;;
+    esac
+  set -f
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $_gp_seg
+  _gp_hit=1; _gp_seen=0
+  while [ $# -gt 0 ]; do
+    _gp_t=$1; shift
+    if [ "$_gp_seen" = 0 ]; then
+      [ "$_gp_t" = "$_gp_sub" ] && _gp_seen=1
+      continue
+    fi
+    case "$_gp_t" in
+      --pathspec-fr*) _gp_hit=0; break ;;     # the file's lines are pathspecs the guard cannot read (both `=` and separate-value forms)
+      -*) continue ;;
+    esac
+    _gp_d=$(_cp8b_dequote "$_gp_t") || _guard_fault pathspec-dequote
+    case "$_gp_d" in
+      ':('*')'*)
+        _gp_lp='('; _gp_rp=')'
+        _gp_w=${_gp_d#:"$_gp_lp"}; _gp_w=${_gp_w%%"$_gp_rp"*}; _gp_d=${_gp_d#*"$_gp_rp"}
+        case "$_gp_w" in
+          *exclude*) _gp_hit=0; break ;;
+        esac
+        [ -n "$_gp_d" ] || { _gp_hit=0; break; }
+        case "$_gp_w" in
+          *literal*) if _cp8b_tok_is_cp "$_gp_d"; then _gp_hit=0; break; fi; continue ;;
+        esac ;;
+      ':!'*|':^'*|':/') _gp_hit=0; break ;;
+      ':/'*) _gp_d=${_gp_d#:/} ;;
+    esac
+    case "$_gp_d" in
+      *[*?[]*) _gp_hit=0; break ;;
+    esac
+  done
+  [ "$_gp_g" = 1 ] || set +f
+  [ "$_gp_hit" = 0 ] || return 1
+  printf '13: git %s with a glob or magic pathspec cannot be proven to stay off the control plane (git globs every pathspec, and its * crosses /) - denied (refuse on doubt). Name the files literally, or wrap a file whose name holds brackets as the :(literal) form (git restore '"'"':(literal)app/[slug]/page.tsx'"'"'). KIT_GUARD_SELFEDIT=1 is for deliberate human maintenance.' "$_gp_sub"
+  return 0
+}
+
+# _cp8b_via_link_cp "<target>" ["<verb>"]: 0 iff a write target reaches a control-plane path THROUGH an existing symlink (C9).
+# The text-only redirect and write-verb routes judge the spelling, never where a link points; the tool routes already resolve it
+# (`_resolve_physical`). Walks the target's own prefixes with the builtin `[ -L ]` (no fork); only when the leaf or an ancestor
+# is a link does it resolve (in a subshell, so no variable leaks) and judge the PHYSICAL path. A resolution failure denies.
+# Verbs that replace or remove the link ITSELF (rm, mv, ln, rsync) do not write through it and are skipped. /dev/ is skipped.
+_cp8b_via_link_cp() {
+  _vl_t=$1; _vl_v=${2:-}
+  case "$_vl_t" in     # judged where the shell will write: `~/` is HOME-rooted, a relative target sits under the known `cd` prefix
+    ''|/dev/*) return 1 ;;
+    '~'|'~/'*) [ -n "${HOME:-}" ] || return 1; _vl_t=$HOME${_vl_t#'~'} ;;
+    /*) : ;;
+    *) [ -z "${_CP8B_EFF:-}" ] || _vl_t=$_CP8B_EFF/$_vl_t ;;
+  esac
+  _vl_r=$_vl_t; _vl_a=''; _vl_l=0
+  case "$_vl_r" in
+    /*) _vl_a=/; _vl_r=${_vl_r#/} ;;
+  esac
+  while [ -n "$_vl_r" ]; do
+    case "$_vl_r" in
+      */*) _vl_s=${_vl_r%%/*}; _vl_r=${_vl_r#*/} ;;
+      *)   _vl_s=$_vl_r; _vl_r='' ;;
+    esac
+    [ -n "$_vl_s" ] || continue
+    _vl_a=$_vl_a$_vl_s
+    if [ -L "$_vl_a" ]; then
+      # the FIRST link found decides the verb skip: a LEAF link is removed or replaced by rm/mv/ln/rsync (no write through it); an
+      # ANCESTOR link is traversed by every verb
+      if [ -z "$_vl_r" ]; then
+        case "${_vl_v##*/}" in
+          rm|rmdir|unlink|mv|ln|rsync) return 1 ;;
+        esac
+      fi
+      _vl_l=1; break
+    fi
+    _vl_a=$_vl_a/
+  done
+  [ "$_vl_l" = 1 ] || return 1
+  _cp8b_gsr_tip=' TIP: the target is behind a symlink that resolves into the control plane (the guard judges the PHYSICAL path): write the real path with the Edit/Write tool, or pick a target that is not behind that link.'
+  _vl_p=$(_resolve_physical "$_vl_t") || return 0
+  [ -n "$_vl_p" ] || return 0
+  if is_control_plane_target "$_vl_p"; then return 0; fi
+  _cp8b_gsr_tip=''
+  return 1
+}
+
+# _cp8b_redir_link_denied "<segment>": 0 iff a LITERAL redirect target of the segment reaches the control plane through an existing
+# symlink (C9). The text triggers cannot see it (`echo x > lnk` names nothing protected), so the target arm calls this as a trigger of
+# its own. A non-literal target (rc 2) is the launder arm's, not this one's. Under a known `cd` the target is composed first.
+_cp8b_redir_link_denied() {
+  case "$1" in
+    *'>'*) : ;;
+    *) return 1 ;;
+  esac
+  _rl_rc=0; _rl_t=$(_redir_targets "$1") || _rl_rc=$?        # rc 2 is a non-literal target (the launder arm's); more is a fault
+  [ "$_rl_rc" -le 2 ] || _guard_fault redir-link
+  while [ -n "$_rl_t" ]; do
+    case "$_rl_t" in
+      *"$_cp8b_nl"*) _rl_e=${_rl_t%%"$_cp8b_nl"*}; _rl_t=${_rl_t#*"$_cp8b_nl"} ;;
+      *)             _rl_e=$_rl_t; _rl_t='' ;;
+    esac
+    [ -n "$_rl_e" ] || continue
+    _cp8b_via_link_cp "$_rl_e" && return 0
+  done
+  return 1
+}
+
+# _cp8b_git_view "<seg>": the segment as git will read it, for C7. Quotes are collapsed (`g""it`, `"checkout"`, a quoted `-c` value with
+# a space), then a leading group opener, `NAME=value` assignments and the env/command/nice/timeout/time wrappers are peeled with the
+# guard's own helpers; if the word left is git (any path, any case of quoting) the view is `git <rest>`, else it is empty. Data only.
+_cp8b_git_view() {
+  case "$1" in
+    *g*i*t*) : ;;
+    *) return 0 ;;
+  esac
+  _gv_s=$(_cp8b_collapse_quotes "$1") || _guard_fault git-view
+  _gv_i=0
+  while [ "$_gv_i" -lt 4 ]; do
+    _gv_i=$((_gv_i + 1))
+    _gv_s=$(_cp8b_strip_assigns "$(_cp8b_group_peel "$_gv_s")") || _guard_fault git-view
+    _gv_w=$(_cp8b_lead "$_gv_s")
+    case "${_gv_w##*/}" in
+      env|command|nice|time|nohup|exec) _gv_s=$(_cp8b_drop_tok "$_gv_s") || _guard_fault git-view ;;
+      timeout) _gv_s=$(_cp8b_drop_tok "$(_cp8b_drop_tok "$_gv_s")") || _guard_fault git-view ;;
+      *) break ;;
+    esac
+  done
+  _gv_w=$(_cp8b_lead "$_gv_s")
+  [ "${_gv_w##*/}" = git ] || return 0
+  printf 'git %s' "$(_cp8b_drop_tok "$_gv_s")"
 }

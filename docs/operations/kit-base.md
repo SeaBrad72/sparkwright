@@ -61,7 +61,7 @@ git diff kit-base main -- conformance # what you have changed in a kit-owned are
 ## Taking an update
 
 ```sh
-sh scripts/kit-update.sh --from <source>                  # report + patch; writes nothing
+sh scripts/kit-update.sh --from <source>                  # report + patch; imports a published kit-base (verified) if you have none
 git apply <the patch>                                     # review it, commit it, open the PR, merge it
 git pull                                                  # so HEAD carries the merge
 sh scripts/kit-update.sh --advance-base --from <source>   # THE AGENT runs this: records what HEAD took, publishes it
@@ -106,14 +106,12 @@ because the kit's pre-push hook grades every `refs/heads/*` push and a base comm
 everything local; no such remote prints `kit-base stays local` (rc 0); a rejected push exits **rc 3** with the local
 write standing (see `docs/operations/kit-update.md`, *Publishing*).
 
-A fresh clone gets the base back with:
+`sh scripts/kit-update.sh --publish-base [--remote <name>]` runs the same publish on its own (no `--from`), for a base
+that was never advanced: incept's next steps name it after the first push. No remote exits rc 1.
 
-```sh
-git fetch origin refs/kit/base:refs/heads/kit-base
-git fetch origin 'refs/tags/kit-base/*:refs/tags/kit-base/*'
-```
-
-Fetching it automatically is row `KIT-BASE-SHARED`; it is **not built** yet.
+A fresh clone or a teammate **imports** the published base on its next `kit-update --from` (or `--advance-base`) with
+no manual step: see *Share it*. A hand `git fetch origin refs/kit/base:refs/heads/kit-base` is not needed, and the
+agent guard denies it (it would skip the verification).
 
 ### Undoing an advance
 
@@ -164,15 +162,69 @@ suggestion. Once a tree has taken an update that carries `.kit-source`, plain `-
 
 ## Share it
 
-> **Only push or share a `kit-base` you trust.** Every `--from` rebuilds BASE by running the chain commits'
-> own `scripts/incept.sh`, so the chain is executed code. A `kit-base` fetched from someone else is a
-> code-execution channel: **shared chain commits become code-execution input to your teammates.** Verifying chain
-> commits before running them is follow-up work under `KIT-BASE-SHARED`; until it ships, fetch only a base you trust.
+> **Who can write `refs/kit/base`, and what runs because of it.** `refs/kit/base` has **no forge protection**: the
+> kit's pre-push hook grades only `refs/heads/*`, and the ref sits outside branch protection, so **anyone with push
+> access to the repository can write it**. Every `--from` rebuilds BASE by running the chain commits' own
+> `scripts/incept.sh`, so a chain commit someone else wrote is code your teammates would run. **The control is the
+> import verification below**, not the ref. Whether a forge ruleset can protect `refs/kit/*` is **unmeasured**: GitHub's ruleset API lists only `branch`, `tag` and `push` targets and does not say a non-branch namespace can be matched, and no ruleset has been tried (row `KIT-BASE-REF-RULESET-MEASURE`). Treat the ref as unprotected.
 
-`--advance-base` publishes the base for you (see *Publishing* above). **`incept` does not push it**, so a fresh
-clone of a freshly incepted project has no base until an advance has published one and the clone fetches it
-(`git fetch origin refs/kit/base:refs/heads/kit-base`). Making the base shared and fetched by default is a known
-gap (row `KIT-BASE-SHARED`).
+`incept` does **not** push the base. Whoever holds it runs `sh scripts/kit-update.sh --publish-base` once (after the
+first push; incept's next steps say so), and `--advance-base` re-publishes after every advance. A teammate's fresh
+clone then needs nothing by hand: `kit-update --from` (and `--advance-base`) run `sync_base`, which fetches
+`refs/kit/base` through a temporary `refs/kit-import/base` (fsck'd, deleted at once, and by the exit trap), compares it
+with the local `kit-base`, and:
+
+- **no local base:** imports the whole chain;
+- **the local tip is on the remote's chain:** fast-forwards (imports only the newer commits), so a teammate's advance
+  no longer strands you;
+- **equal, or the remote is behind:** nothing to do;
+- **diverged:** prints both tips and the verified route, **warns and writes nothing; the run CONTINUES on your local
+  base** (rc unchanged; with no local base it ends rc 1). This tool never forces.
+
+**Honest ceiling of the next check:** it is a HEURISTIC that catches the remote-branch DWIM route only. Removing the tracking
+config, a forged chain under another remote branch name, or checkout-then-history-move are not caught; a LOCAL `kit-base`
+is otherwise trusted as your own history. Verifying the local chain when this machine did not write its tip is the
+follow-up row `KIT-BASE-LOCAL-CHAIN-VERIFY`.
+
+A local `kit-base` that **came from a remote branch** (`git checkout kit-base` of `origin/kit-base`, which configures
+`branch.kit-base.remote`, or a branch equal to a remote-tracking `kit-base`) was never verified, so `kit-update` refuses
+to use it ("UNVERIFIED", before anything is built or run); set it aside (`git branch -m kit-base kit-base-unverified`, a
+human step) and re-run `--from`. A base you pushed yourself as a branch is refused the same way while its tracking
+setting or the remote `kit-base` branch exists: publish it with `--publish-base` (which works from such a clone), then
+remove the tracking setting or the remote branch by hand. Every git `kit-update` runs ignores `refs/replace/*` (`GIT_NO_REPLACE_OBJECTS=1`), so a replace ref
+cannot swap a chain commit's content.
+
+**Every commit it would import is verified first** (`verify_chain_commit`): exactly one parent; a `Kit-Source` that
+**your own history recorded** in `.kit-source` (so a chain cannot claim a genuine release this project never took; a
+legacy tree with no `.kit-source` in its history falls back, with a printed warning, to "in `--from`'s history") and
+that resolves in `--from` and is in its history; the chain runs oldest to newest (each `Kit-Source` equals or is an
+ancestor of its child's); each commit's `behind`/`Kit-Behind` record passes the same strict parse the run applies to a
+local base; no symlink, submodule or control-byte path; **every tree entry (mode, blob, path) is an entry of one of the
+two exports** (un-pruned, `--profile <stack>`) **that `Kit-Source`'s own exporter makes**; and the tree's **path set
+equals one export's** (nothing added, nothing dropped). A forged `scripts/incept.sh` is not in those exports, so the
+commit is refused, naming it, before anything is written or run. One bad commit refuses the whole import. The remote
+is fetched through a temporary `refs/kit-import/base` (fsck'd, deleted at once), so nothing is referenced until the
+chain has passed. Only then does one `update-ref` transaction write
+`refs/heads/kit-base` (create-only when absent, otherwise compare-and-swap) plus the chain's own `kit-base/v<VER>+<sha12>`
+tags (create-only; an existing local tag is never moved; lookalike tags are not imported). The run prints what it wrote
+and the one-line undo. Cost: two exports per imported commit (about 2 s each), once.
+
+**The import fails closed; the run does not.** When this clone has a valid local base and the remote's chain is diverged
+or fails verification, `--from` prints a loud WARNING (what, why, nothing written) and continues on the local base,
+exactly as before, rc unchanged. With no local base there is nothing to continue on: rc 1, nothing written. To take a
+diverged remote's chain, set yours aside (`git branch -m kit-base kit-base-mine`, a human step) and re-run `--from`,
+which imports through the verification. A chain with no `Kit-Source` (written before the trailer, or not by
+`kit-update`) cannot be verified and is never imported; its publisher re-publishes from a tree that records
+`.kit-source` (`--advance-base`, then `--publish-base`). **No message prints a raw `git fetch`/`update-ref`/`branch`
+import command**: that route skips the verification. Offline or no remote: the run says so and uses the local base, as
+before. No local base and none on the remote: the refusal gains one line, `whoever holds the base: kit-update
+--publish-base`; and when the remote lacks a base this clone has, `--from` ends with the same pointer.
+
+Verification binds the *tree* and the *release*, not the story: an attacker who can write the ref can still choose *which
+of the releases your history recorded* a chain commit claims (in an order that is plausible), or write a misleading
+message (`Kit-Version`). Each yields a wrong **presented** delta; none runs code your trusted `--from` source did not
+ship. The agent guard also denies any raw creation or move of `kit-base`, `kit-base/*` or `refs/kit/*`, whatever the
+verb (the full list, and what remains, is `docs/operations/runtime-guards.md` R22). It is a narrowing, not a seal.
 
 ---
 
@@ -224,8 +276,14 @@ pruned, and never told the kit "added" something they chose not to take.
 - It records the trees **as you took them**: the adoption export and each release you advanced to. It cannot
   stop you deleting the branch later, and it is only as complete as your `--advance-base` runs (skip one and the
   next `--from` refuses; on an older tree the `--at` shas are your assertion, not a record).
-- It is published by `--advance-base` to the remote's `refs/kit/base`, not by `incept`, and a clone must fetch it by
-  hand until `KIT-BASE-SHARED` is built.
+- It is published by `--publish-base` or `--advance-base` to the remote's `refs/kit/base`, not by `incept`, and a clone
+  imports it, verified, on `--from`. **`refs/kit/base` has no forge protection** (anyone with push access can write
+  it); import verification is the control, and its residuals are in *Share it*. Hosts other than GitHub are
+  **unmeasured** for a non-branch `refs/kit/*` ref. Whether a forge ruleset can protect `refs/kit/*` is
+  unmeasured (row `KIT-BASE-REF-RULESET-MEASURE`). Verification needs the `Kit-Source` release in `--from`'s history: an adopter who incepted
+  from a dev tag and updates from the public mirror gets "not in the history of `--from`" and must point `--from` at
+  the source they adopted from. A base hand-fetched before this shipped is not verified after the fact: delete it and
+  let `--from` import it.
 - It cannot detect a base that over-claims because it was advanced before per-path recording (see *My base
   over-claims*).
 - It is *necessary but not sufficient* for a full update: it tells a tool which files the **exporter**
@@ -236,5 +294,6 @@ pruned, and never told the kit "added" something they chose not to take.
 - A kit file you deleted that an *older* release you took did not have (absent == absent there) is offered
   again, marked `(re-add)`; decline by not applying that hunk. One present at every release you took reads
   as yours (CONFLICT if the kit changed it).
-- It records nothing about **merging**. Computing and presenting a delta is a separate mechanism, and
-  `--advance-base` is the only part of `kit-update` that writes to your repository or pushes.
+- It records nothing about **merging**. Computing and presenting a delta is a separate mechanism. The only
+  parts of `kit-update` that write a ref are `--advance-base` and `--from`'s verified import of a published base;
+  `--advance-base` and `--publish-base` are the only parts that push.

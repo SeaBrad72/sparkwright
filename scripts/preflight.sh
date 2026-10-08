@@ -119,6 +119,59 @@ check_git_capability() {  # advisory: does the installed git support `merge-tree
   fi
 }
 
+# --- the agent's OS sandbox (GUARD-CP-READONLY-SANDBOX) -------------------------------------
+# The shipped .claude/settings.json turns on Claude Code's OS sandbox, which keeps the enforcement
+# layer read-only to the agent's shell. With `failIfUnavailable:false` (by design) a machine where it
+# cannot start runs the session UNSANDBOXED, so this reports that loudly. WARN-only: it never sets `miss`.
+# FLAG-NOT-ENV, like the git seam above: the PREFLIGHT_SANDBOX_* seams are honored only under a seam flag.
+# SANDBOX_REASON is set (not printed) so the selftest can assert it without parsing output.
+sandbox_unavailable_reason() {  # prints a reason and returns 1 when the sandbox cannot start; 0 if it can
+  _sos=$(uname -s 2>/dev/null) || _sos=""
+  _stools=""
+  _sbwrap_ok=1
+  if [ "${SEAMS:-0}" -eq 1 ]; then
+    _sos="${PREFLIGHT_SANDBOX_OS:-$_sos}"
+    _stools="${PREFLIGHT_SANDBOX_TOOLS:-}"
+    _sbwrap_ok="${PREFLIGHT_SANDBOX_BWRAP_OK:-1}"
+  else
+    for _t in sandbox-exec bwrap socat; do command -v "$_t" >/dev/null 2>&1 && _stools="$_stools $_t"; done
+    if command -v bwrap >/dev/null 2>&1 && bwrap --unshare-net --ro-bind / / true >/dev/null 2>&1; then _sbwrap_ok=1; else _sbwrap_ok=0; fi
+  fi
+  case "$_sos" in
+    Darwin)
+      case " $_stools " in *" sandbox-exec "*) return 0 ;; esac
+      echo "sandbox-exec is not on PATH"; return 1 ;;
+    Linux)
+      case " $_stools " in *" bwrap "*) : ;; *) echo "bubblewrap (bwrap) is not installed"; return 1 ;; esac
+      case " $_stools " in *" socat "*) : ;; *) echo "socat is not installed"; return 1 ;; esac
+      [ "$_sbwrap_ok" = 1 ] || { echo "bwrap cannot create a sandbox here (unprivileged user namespaces are blocked, as in many containers)"; return 1; }
+      return 0 ;;
+    *) echo "this OS has no supported sandbox (macOS, Linux and WSL2 only)"; return 1 ;;
+  esac
+}
+
+check_sandbox() {  # advisory: can the agent's OS sandbox start, and does settings.json turn it on?
+  _sfile=".claude/settings.json"
+  [ "${SEAMS:-0}" -eq 1 ] && _sfile="${PREFLIGHT_SANDBOX_SETTINGS:-$_sfile}"
+  if _sreason=$(sandbox_unavailable_reason); then
+    echo "  ok   agent OS sandbox can start here"
+  else
+    printf '%s\n' "  warn agent OS sandbox cannot start here: $_sreason."   # Rule 3
+    echo "       Claude Code will run WITHOUT the sandbox: the guard still runs, but the enforcement layer"
+    echo "       (.claude/, hooks/, .kit/, .git/hooks, .git/config) is not read-only to the agent's shell."
+    echo "       Fix: install the missing piece (Linux/WSL2: bubblewrap and socat), or accept the reduced"
+    echo "       protection. See docs/operations/runtime-guards.md, section \"Below the text layer: the sandbox\"."
+    rec=1
+  fi
+  [ -f "$_sfile" ] || return 0
+  command -v jq >/dev/null 2>&1 || { echo "  skip sandbox setting — jq absent, cannot read $_sfile"; return 0; }
+  if ! jq -e '.sandbox.enabled == true' "$_sfile" >/dev/null 2>&1; then
+    printf '%s\n' "  warn $_sfile does not set sandbox.enabled to true — the agent's OS sandbox is off."   # Rule 3
+    echo "       Restore the shipped block (kit-update, or copy it from the kit's .claude/settings.json)."
+    rec=1
+  fi
+}
+
 stack_tools() {  # print "tool|hint" lines for a stack; return 1 if unknown
   case "$1" in
     typescript-node) printf 'node|nodejs.org or nvm\nnpm|ships with Node\n' ;;
@@ -2859,6 +2912,44 @@ EOF
   esac
   fi
 
+  # — the agent's OS sandbox (GUARD-CP-READONLY-SANDBOX): available -> no warn; each missing reason -> a
+  # warn NAMING it; `miss` is untouched in every case (advisory only).
+  sbx_case() {  # <label> <expect-substring or ""> <os> <tools> <bwrap_ok> [settings-file]
+    # Called in the CURRENT shell (output to a file, not $( … )) so a stray `miss=` would be seen below.
+    miss=0; _sbx_rec=${rec:-0}
+    PREFLIGHT_SANDBOX_OS="$3"; PREFLIGHT_SANDBOX_TOOLS="$4"; PREFLIGHT_SANDBOX_BWRAP_OK="$5"
+    PREFLIGHT_SANDBOX_SETTINGS="${6:-/nonexistent-settings}"
+    export PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK PREFLIGHT_SANDBOX_SETTINGS
+    _sbx_out=$(mktemp)
+    check_sandbox >"$_sbx_out" 2>&1 || :
+    out=$(cat "$_sbx_out"); rm -f "$_sbx_out"
+    unset PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK PREFLIGHT_SANDBOX_SETTINGS
+    rec=$_sbx_rec
+    if [ -z "$2" ]; then
+      case "$out" in *warn*) echo "FAIL: sandbox [$1] warned when it should not ($out)"; fail=1 ;; *"ok   agent OS sandbox"*) echo "PASS: sandbox [$1] -> no warn" ;; *) echo "FAIL: sandbox [$1] printed no ok line ($out)"; fail=1 ;; esac
+    else
+      case "$out" in *warn*"$2"*) echo "PASS: sandbox [$1] -> warn naming '$2'" ;; *) echo "FAIL: sandbox [$1] did not warn naming '$2' ($out)"; fail=1 ;; esac
+    fi
+    if [ "$miss" -eq 0 ]; then :; else echo "FAIL: sandbox [$1] set miss (the sandbox check must stay advisory)"; fail=1; fi
+  }
+  sbx_case mac-available "" Darwin "sandbox-exec" 1
+  sbx_case mac-missing "sandbox-exec" Darwin "" 1
+  sbx_case linux-available "" Linux "bwrap socat" 1
+  sbx_case linux-no-bwrap "bubblewrap" Linux "socat" 1
+  sbx_case linux-no-socat "socat" Linux "bwrap" 1
+  sbx_case linux-userns-blocked "user namespaces" Linux "bwrap socat" 0
+  sbx_case other-os "no supported sandbox" Plan9 "" 1
+  _sbx=$(mktemp -d)
+  printf '{"sandbox":{"enabled":true}}\n' > "$_sbx/on.json"
+  printf '{"sandbox":{"enabled":false}}\n' > "$_sbx/off.json"
+  sbx_case settings-on "" Darwin "sandbox-exec" 1 "$_sbx/on.json"
+  sbx_case settings-off "does not set sandbox.enabled" Darwin "sandbox-exec" 1 "$_sbx/off.json"
+  rm -rf "$_sbx"
+  # WIRED: a real run (seams live) surfaces the warning, and does not change the exit code (advisory).
+  sbx_e2e=$(PREFLIGHT_SANDBOX_OS=Linux PREFLIGHT_SANDBOX_TOOLS='' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e 2>&1) || true
+  case "$sbx_e2e" in *"agent OS sandbox cannot start"*) echo "PASS: a real preflight run surfaces the sandbox warning" ;; *) echo "FAIL: a real preflight run did not surface the sandbox warning"; fail=1 ;; esac
+  miss=0
+
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }
 fi
 
@@ -2868,6 +2959,7 @@ need jq  "brew install jq | apt-get install jq | dnf install jq"
 need git "git-scm.com/downloads"
 need sh  "any POSIX shell"
 check_git_capability
+check_sandbox
 
 echo "Recommended (GitHub-based flows — skip on GitLab/ADO):"
 recommend gh "GitHub CLI — needed for the branch-protection setup at Inception (cli.github.com)"

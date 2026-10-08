@@ -70,6 +70,10 @@
 #   sh conformance/guard-wired.sh [project-dir]        (default: .)
 #   sh conformance/guard-wired.sh --rung1-only [project-dir]
 #   sh conformance/guard-wired.sh --selftest
+#   sh conformance/guard-wired.sh --sandbox-enforce [project-dir]   (does the OS enforce the shipped sandbox
+#     policy? exit 3 = SKIP when the runtime cannot start here; see sandbox_enforce below)
+# Beyond the guard, check_dir asserts the shipped `sandbox` block's load-bearing keys (enabled,
+# allowUnsandboxedCommands false, denyWrite a superset of the enforcement layer).
 # Exit: 0 = wired · 1 = NOT wired (dark) · 2 = UNVERIFIED (jq absent). POSIX sh; dash-clean.
 set -eu
 
@@ -79,6 +83,43 @@ set -eu
 # TWO divergent MCP tokens (different server AND action) force a genuine mcp__* wildcard: an
 # over-narrow matcher like mcp__server__.* or mcp__.*__action admits one but not the other -> FAIL.
 MUTATING_TOOLS='Bash Write Edit NotebookEdit mcp__alpha__read mcp__beta__write'
+
+# The enforcement layer the OS sandbox must keep read-only to the agent's shell (design
+# docs/architecture/2026-10-06-guard-cp-readonly-sandbox-design.md §5.1). The shipped denyWrite must be a
+# SUPERSET of this; network.allowUnixSockets is optional (absent = the strict form, still wired).
+SANDBOX_DENY_REQUIRED='./.claude ./hooks ./.kit ./.git/hooks ./.git/config ./.mcp.json ~/.gitconfig ~/.config/git ~/.zshrc ~/.zshenv ~/.zprofile ~/.bashrc ~/.bash_profile ~/.profile'
+
+# _gw_sandbox_leg <settings.json> -> prints PASS/FAIL lines, returns 1 on any gap. jq is already
+# confirmed present by the caller.
+_gw_sandbox_leg() {
+  _sl_rc=0
+  jq -e '.sandbox.enabled == true' "$1" >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.enabled is not true in settings.json — the OS layer under the guard is off"; _sl_rc=1; }
+  jq -e '.sandbox.allowUnsandboxedCommands == false' "$1" >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.allowUnsandboxedCommands is not false in settings.json — a command could opt out of the sandbox"; _sl_rc=1; }
+  jq -e '.sandbox.autoAllowBashIfSandboxed == false' "$1" >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.autoAllowBashIfSandboxed is not false in settings.json — sandboxed Bash would be auto-approved, skipping the permission prompt"; _sl_rc=1; }
+  jq -e '((.sandbox.excludedCommands // []) | length) == 0' "$1" >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.excludedCommands is set in settings.json — those commands run outside the sandbox"; _sl_rc=1; }
+  jq -e '(.sandbox.enableWeakerNestedSandbox // false) == false' "$1" >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.enableWeakerNestedSandbox is true in settings.json — the sandbox runs in its weaker nested form"; _sl_rc=1; }
+  jq -e '(.sandbox.network.allowAllUnixSockets // false) == false' "$1" >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.network.allowAllUnixSockets is true in settings.json — every unix socket is reachable from the shell"; _sl_rc=1; }
+  for _sl_r in 'Edit(/.claude/**)' 'Edit(/hooks/**)' 'Edit(/.kit/**)'; do
+    jq -e --arg p "$_sl_r" 'any((.permissions.deny // [])[]?; . == $p)' "$1" >/dev/null 2>&1 \
+      || { echo "FAIL: permissions.deny lacks $_sl_r — the Edit and Write tools can write that part of the enforcement layer"; _sl_rc=1; }
+  done
+  for _sl_e in $SANDBOX_DENY_REQUIRED; do
+    jq -e --arg p "$_sl_e" 'any((.sandbox.filesystem.denyWrite // [])[]?; . == $p)' "$1" >/dev/null 2>&1 \
+      || { echo "FAIL: sandbox.filesystem.denyWrite lacks $_sl_e — that part of the enforcement layer is writable from the shell"; _sl_rc=1; }
+  done
+  for _sl_t in /private/var/folders /var/folders; do
+    jq -e --arg p "$_sl_t" 'any((.sandbox.filesystem.allowWrite // [])[]?; . == $p)' "$1" >/dev/null 2>&1 \
+      || { echo "FAIL: sandbox.filesystem.allowWrite lacks $_sl_t — mktemp fails on macOS (it writes the per-user temp root, not TMPDIR)"; _sl_rc=1; }
+  done
+  [ "$_sl_rc" -ne 0 ] || echo "PASS: sandbox enabled, no opt-out or auto-approve, denyWrite and the Edit deny rules cover the enforcement layer, allowWrite carries the macOS temp root"
+  return "$_sl_rc"
+}
 
 # ── B3 rung-leg helpers (production code — pre-marker, swept by non-vacuity.sh) ────────────────────
 
@@ -292,6 +333,11 @@ check_dir() {
         else
           echo "PASS: guard matcher '$matcher' admits the mutating tools (Bash/Write/Edit/NotebookEdit/mcp__*)"
         fi
+      fi
+      # The OS layer below the text guard: the sandbox block's load-bearing keys. Not part of the
+      # PreToolUse-only scope, so --rung1-only does not evaluate it.
+      if [ "$mode" != "rung1only" ]; then
+        _gw_sandbox_leg "$S" || fail=1
       fi
     else
       echo "UNVERIFIED: jq absent — cannot structurally confirm the matcher admits mutating tools; install jq"
@@ -533,11 +579,119 @@ selftest() {
   base=$(mktemp -d)
 
   # mk <dir> <matcher>: a project whose PreToolUse guard.sh hook uses <matcher> + a valid guard.sh
+  # The fixture carries the sandbox block in its STRICT form (no network.allowUnixSockets), which the
+  # static leg must accept: allowUnixSockets is optional.
   mk() {
     _d="$1"; _m="$2"; mkdir -p "$_d/.claude/hooks"
-    printf '{"hooks":{"PreToolUse":[{"matcher":"%s","hooks":[{"type":"command","command":"sh .claude/hooks/guard.sh"}]}]}}\n' "$_m" > "$_d/.claude/settings.json"
+    printf '{"permissions":{"deny":["Edit(/.claude/**)","Edit(/hooks/**)","Edit(/.kit/**)"]},"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false,"allowUnsandboxedCommands":false,"filesystem":{"allowWrite":["~","/tmp","/private/var/folders","/var/folders"],"denyWrite":["./.claude","./hooks","./.kit","./.git/hooks","./.git/config","./.mcp.json","~/.gitconfig","~/.config/git","~/.zshrc","~/.zshenv","~/.zprofile","~/.bashrc","~/.bash_profile","~/.profile"]}},"hooks":{"PreToolUse":[{"matcher":"%s","hooks":[{"type":"command","command":"sh .claude/hooks/guard.sh"}]}]}}\n' "$_m" > "$_d/.claude/settings.json"
     printf '#!/bin/sh\nexit 0\n' > "$_d/.claude/hooks/guard.sh"
   }
+
+  # mk_sbx <dir> <jq-filter>: the full fixture, then <jq-filter> applied to its settings.json (a mutant).
+  mk_sbx() {
+    mk "$1" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+    jq "$2" "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
+  }
+
+  # Static sandbox leg: one mutant per required key / entry removed must FAIL, naming the gap; the strict
+  # form (no allowUnixSockets) passes (it is the mk() default, asserted by the 'full' leg above).
+  if command -v jq >/dev/null 2>&1; then
+    d="$base/sbx_off"; mk_sbx "$d" '.sandbox.enabled = false'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'sandbox.enabled'; then echo "selftest PASS: sandbox.enabled=false -> FAIL"; else echo "selftest FAIL: sandbox.enabled=false should FAIL (rc=$rc)"; st=1; fi
+    d="$base/sbx_nosandbox"; mk_sbx "$d" 'del(.sandbox)'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'sandbox.enabled'; then echo "selftest PASS: no sandbox block -> FAIL"; else echo "selftest FAIL: no sandbox block should FAIL (rc=$rc)"; st=1; fi
+    d="$base/sbx_unsandboxed"; mk_sbx "$d" '.sandbox.allowUnsandboxedCommands = true'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands=true -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands=true should FAIL (rc=$rc)"; st=1; fi
+    d="$base/sbx_nounsandboxedkey"; mk_sbx "$d" 'del(.sandbox.allowUnsandboxedCommands)'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands absent -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands absent should FAIL (rc=$rc)"; st=1; fi
+    # One mutant per added key/rule: each must FAIL naming the gap.
+    _sbx_mut() {  # <dir-name> <jq-filter> <expected-substring>
+      d="$base/$1"; mk_sbx "$d" "$2"
+      if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "$3"; then echo "selftest PASS: $1 -> FAIL"; else echo "selftest FAIL: $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+    }
+    _sbx_mut sbx_autoallow_removed 'del(.sandbox.autoAllowBashIfSandboxed)' 'autoAllowBashIfSandboxed'
+    _sbx_mut sbx_autoallow_true '.sandbox.autoAllowBashIfSandboxed = true' 'autoAllowBashIfSandboxed'
+    _sbx_mut sbx_excluded '.sandbox.excludedCommands = ["git"]' 'excludedCommands'
+    _sbx_mut sbx_weaker_nested '.sandbox.enableWeakerNestedSandbox = true' 'enableWeakerNestedSandbox'
+    _sbx_mut sbx_all_unix_sockets '.sandbox.network.allowAllUnixSockets = true' 'allowAllUnixSockets'
+    _sbx_mut sbx_deny_edit_claude 'del(.permissions.deny[] | select(. == "Edit(/.claude/**)"))' 'permissions.deny lacks Edit(/.claude/**)'
+    _sbx_mut sbx_deny_edit_hooks 'del(.permissions.deny[] | select(. == "Edit(/hooks/**)"))' 'permissions.deny lacks Edit(/hooks/**)'
+    _sbx_mut sbx_deny_edit_kit 'del(.permissions.deny[] | select(. == "Edit(/.kit/**)"))' 'permissions.deny lacks Edit(/.kit/**)'
+    for _t in /private/var/folders /var/folders; do
+      _sbx_mut "sbx_allow_$(printf '%s' "$_t" | tr -c 'A-Za-z0-9\n' '_')" "del(.sandbox.filesystem.allowWrite[] | select(. == \"$_t\"))" "allowWrite lacks $_t"
+    done
+    d="$base/sbx_excluded_empty"; mk_sbx "$d" '.sandbox.excludedCommands = []'
+    if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: an empty excludedCommands -> wired"; else echo "selftest FAIL: an empty excludedCommands should be wired"; st=1; fi
+    for _e in $SANDBOX_DENY_REQUIRED; do
+      d="$base/sbx_deny_$(printf '%s' "$_e" | tr -c 'A-Za-z0-9\n' '_')"
+      mk_sbx "$d" "del(.sandbox.filesystem.denyWrite[] | select(. == \"$_e\"))"
+      if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "denyWrite lacks $_e"; then echo "selftest PASS: denyWrite without $_e -> FAIL"; else echo "selftest FAIL: denyWrite without $_e should FAIL (rc=$rc)"; st=1; fi
+    done
+    d="$base/sbx_superset"; mk_sbx "$d" '.sandbox.filesystem.denyWrite += ["./extra"] | .sandbox.network.allowUnixSockets = ["/var/run/docker.sock"]'
+    if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: a superset denyWrite and an allowUnixSockets entry -> wired"; else echo "selftest FAIL: a superset denyWrite and allowUnixSockets should be wired"; st=1; fi
+    # --sandbox-enforce: no npx -> SKIP (rc 3, never a pass); no enabled sandbox block -> FAIL (rc 1).
+    d="$base/sbx_enf"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+    mkdir -p "$base/sbx_bin"; ln -sf "$(command -v jq)" "$base/sbx_bin/jq"
+    if out=$(PATH="$base/sbx_bin" /bin/sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -q '^SKIP: npx'; then echo "selftest PASS: --sandbox-enforce without npx -> SKIP rc 3"; else echo "selftest FAIL: --sandbox-enforce without npx should SKIP with rc 3 (rc=$rc)"; st=1; fi
+    d="$base/sbx_enf_off"; mk_sbx "$d" '.sandbox.enabled = false'
+    if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce on a tree with the sandbox off -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with the sandbox off should FAIL (rc=$rc)"; st=1; fi
+    # A SKIP must never hide a FAIL: with no /tmp in allowWrite and ./.claude un-denied, the write to
+    # .claude/hooks/x LANDS while the sentinel (under /tmp) cannot, so the run must exit 1, never 3.
+    d="$base/sbx_enf_landed"; mk_sbx "$d" '.sandbox.filesystem.allowWrite = ["~"] | del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
+    if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce with a landed protected write and no sentinel -> FAIL, not SKIP"
+    elif [ "$rc" -eq 3 ] && ! printf '%s' "$out" | grep -q '^FAIL'; then echo "selftest SKIP: landed-write negative (no sandbox runtime here)"
+    else echo "selftest FAIL: a landed protected write must exit 1, never SKIP (rc=$rc)"; st=1; fi
+  else
+    echo "selftest SKIP: static sandbox legs (jq absent)"
+  fi
+
+  # GUARD-SANDBOX-LINUX-CI-MEASURE: on the kit's own CI a sandbox SKIP (rc 3) must FAIL the job, or the
+  # Linux leg can go unmeasured while the job stays green. Text pin on the step's rc-3 line: it must
+  # carry `exit 1` and no `exit 0`, and the step carries no `continue-on-error`. The fixtures (good,
+  # old exit-0 form, continue-on-error form) run on EVERY tree, so the negatives are load-bearing
+  # everywhere. The pin on the real ci.yml is latched on the kit-only marker docs/ROADMAP-KIT.md (an
+  # incepted adopter has its own ci.yml and no marker): marker present and ci.yml missing FAILs
+  # (the export-face latch); marker absent is N/A.
+  _gw_root=$(cd "$(dirname -- "$0")/.." && pwd)
+  _gw_ci="$_gw_root/.github/workflows/ci.yml"
+  _gw_ci_ok() {
+    # $1 = a ci.yml-shaped file; 0 only if the rc-3 line exits 1 (never 0) and the step has no continue-on-error
+    _cr_l=$(grep -F 'sandbox enforcement SKIPPED' "$1" 2>/dev/null)
+    [ -n "$_cr_l" ] || return 1
+    printf '%s' "$_cr_l" | grep -qF 'exit 0' && return 1
+    printf '%s' "$_cr_l" | grep -qF 'exit 1' || return 1
+    _cr_b=$(awk '/- name: Sandbox enforcement/ {f=1} f && /^      - name:/ && !/Sandbox enforcement/ {f=0} f {print}' "$1")
+    [ -n "$_cr_b" ] || return 1
+    printf '%s' "$_cr_b" | grep -qF 'continue-on-error' && return 1
+    return 0
+  }
+  _gw_ci_fx() {  # $1 file, $2 the rc-3 exit, $3 an extra step line (may be empty)
+    printf '%s\n' '      - name: Sandbox enforcement (fixture)' > "$1"
+    [ -z "$3" ] || printf '%s\n' "$3" >> "$1"
+    printf '%s\n' '        run: |' '          if [ "$rc" -eq 3 ]; then echo "::error::sandbox enforcement SKIPPED on CI"; '"$2"'; fi' '      - name: Next step' '        continue-on-error: true' >> "$1"
+  }
+  _gw_ci_fx "$base/ci_good.yml" 'exit 1' ''
+  _gw_ci_fx "$base/ci_old.yml" 'exit 0' ''
+  _gw_ci_fx "$base/ci_coe.yml" 'exit 1' '        continue-on-error: true'
+  if _gw_ci_ok "$base/ci_good.yml"; then echo "selftest PASS: pin accepts the exit-1 rc-3 form (a later step's continue-on-error is out of scope)"; else echo "selftest FAIL: pin rejected the good fixture"; st=1; fi
+  if _gw_ci_ok "$base/ci_old.yml"; then echo "selftest FAIL: the old exit-0 rc-3 form was accepted (pin is vacuous)"; st=1; else echo "selftest PASS: scratch ci.yml with the old exit-0 rc-3 form -> pin reds"; fi
+  if _gw_ci_ok "$base/ci_coe.yml"; then echo "selftest FAIL: continue-on-error on the sandbox step was accepted (pin is vacuous)"; st=1; else echo "selftest PASS: scratch ci.yml with continue-on-error on the sandbox step -> pin reds"; fi
+  if [ ! -f "$_gw_root/docs/ROADMAP-KIT.md" ]; then
+    echo "selftest SKIP: ci.yml sandbox rc-3 pin on this tree (no kit marker: adopter, N/A)"
+  elif [ ! -f "$_gw_ci" ]; then
+    echo "selftest FAIL: kit tree has no .github/workflows/ci.yml, so the rc-3 pin cannot run (export-face latch)"; st=1
+  elif _gw_ci_ok "$_gw_ci"; then echo "selftest PASS: ci.yml sandbox-enforcement step exits non-zero on rc 3 and has no continue-on-error (a SKIP fails the kit's CI)"
+  else echo "selftest FAIL: ci.yml sandbox-enforcement step must exit non-zero on rc 3 (no exit 0, an exit 1) and carry no continue-on-error"; st=1
+  fi
 
   d="$base/full"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
   if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: full matcher -> wired"; else echo "selftest FAIL: full matcher should be wired"; st=1; fi
@@ -945,7 +1099,7 @@ selftest() {
   selftest_sanitizer_bash_unset
 
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
-  echo "guard-wired --selftest: OK (full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
+  echo "guard-wired --selftest: OK (sandbox block: each required key/denyWrite entry removed FAILs, strict form wired, --sandbox-enforce SKIP/FAIL routes; full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
 }
 
@@ -992,15 +1146,219 @@ GIT_DIR='$_sbu_dn/.git' GIT_WORK_TREE='$_sbu_dn' _sbu_probe" 2>&1 ) || true
   return 1
 }
 
+# ── --sandbox-enforce: does the OS enforce the SHIPPED sandbox policy? (design §7 legs 1, 2, 3, 7)
+# Applies the shipped `sandbox.filesystem` through the pinned sandbox runtime Claude Code is built on,
+# in a throwaway repo with a throwaway HOME (the real home is never touched), and judges by file HASHES,
+# never by exit codes. A minimal test, not an escape catalogue: plain writes to the protected paths, a
+# no-sandbox negative, liveness, and one whole-tree restore.
+# Exit: 0 = enforced · 1 = a protected write got through (or the negative could not write) · 2 = jq absent
+#       3 = SKIP (the runtime could not start here; never a pass).
+SRT_PKG='@anthropic-ai/sandbox-runtime@0.0.78'
+
+# _se_path <settings-path> <repo> <home> -> the absolute path the runtime needs.
+_se_path() {
+  case "$1" in
+    ./*) printf '%s\n' "$2/${1#./}" ;;
+    \~) printf '%s\n' "$3" ;;
+    \~/*) _rest=${1#??}; printf '%s\n' "$3/$_rest" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# _se_list <settings> <jq-array-path> <repo> <home> -> a JSON array of translated absolute paths.
+_se_list() {
+  jq -r "$2[]?" "$1" | while IFS= read -r _p; do _se_path "$_p" "$3" "$4"; done | jq -R 'select(length>0)' | jq -s .
+}
+
+# _se_cfg <settings> <repo> <home> <out> [nodeny|notemp] -> the runtime settings file for the shipped policy.
+_se_cfg() {
+  _aw=$(_se_list "$1" '.sandbox.filesystem.allowWrite' "$2" "$3")
+  _aw=$(printf '%s' "$_aw" | jq --arg r "$2" '. + [$r]')
+  if [ "${5:-}" = notemp ]; then _aw=$(printf '%s' "$_aw" | jq 'map(select(. != "/private/var/folders" and . != "/var/folders"))'); fi
+  if [ "${5:-}" = nodeny ]; then _dw='[]'; else _dw=$(_se_list "$1" '.sandbox.filesystem.denyWrite' "$2" "$3"); fi
+  jq -n --argjson aw "$_aw" --argjson dw "$_dw" \
+    '{network:{allowedDomains:[],deniedDomains:[]},filesystem:{denyRead:[],allowWrite:$aw,denyWrite:$dw}}' > "$4"
+}
+
+# _se_sbx <cfg> <shell-command> : run the command under the pinned runtime, inside the throwaway repo.
+_se_sbx() {
+  ( cd "$_se_repo" && HOME="$_se_home" npm_config_cache="$_se_cache" \
+      npx -y "$SRT_PKG" --settings "$1" -- sh -c "$2" ) >>"$_se_log" 2>&1 || true
+}
+
+_se_hash() { git hash-object "$1" 2>/dev/null || echo MISSING; }
+
+# _se_git <git-args...> : git in the throwaway repo, reading neither the operator's global/system config nor
+# its hooks (a global core.hooksPath or init template would otherwise leak into the seeding and the negatives).
+_se_git() {
+  HOME="$_se_home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    git -C "$_se_repo" -c user.name=gw-sandbox -c user.email=gw-sandbox@example.invalid "$@"
+}
+
+# _se_leg1 <cfg> <label> <expect: held|landed> -> 0 = every protected plain append behaved as expected,
+# 1 = it did not, 3 = the runtime did not run a probe at all. Each probe also writes a sentinel under the
+# allowed throwaway /tmp dir AFTER the protected write: a missing sentinel means the runtime errored (never
+# counted as a refusal); a present sentinel with an unchanged hash means the write itself was refused.
+_se_leg1() {
+  _bad=0; _skip=0
+  for _f in $_se_protected; do
+    _h0=$(_se_hash "$_f"); rm -f "$_se_tmpw/ran"
+    _se_sbx "$1" "echo '# x' >> '$_f'; echo ran > '$_se_tmpw/ran'"
+    _h1=$(_se_hash "$_f")
+    # Hash first: a landed write is a FAIL whatever the sentinel says. SKIP only when nothing changed AND
+    # the sentinel is missing (the runtime never ran the probe).
+    if [ "$_h0" = "$_h1" ] && [ ! -f "$_se_tmpw/ran" ]; then
+      echo "SKIP: [$2] the runtime did not run the probe for ${_f#"$_se_base"/}: $(tail -n 1 "$_se_log" | cut -c1-160)"; _skip=1; continue
+    fi
+    if [ "$3" = held ]; then
+      if [ "$_h0" = "$_h1" ]; then :; else echo "FAIL: [$2] a plain write to ${_f#"$_se_base"/} got through the sandbox (hash changed)"; _bad=1; fi
+    else
+      # The runtime also write-protects some paths on its own (.git/config, .git/hooks, .mcp.json), so only
+      # the five the shipped policy alone carries must land here.
+      case "$_f" in
+        */.claude/hooks/x|*/hooks/pre-push|*/.kit/dials.conf|"$_se_home"/.zshrc|"$_se_home"/.gitconfig)
+          if [ "$_h0" != "$_h1" ]; then :; else echo "FAIL: [$2] the write to ${_f#"$_se_base"/} did not land with denyWrite emptied — leg 1 would prove nothing"; _bad=1; fi ;;
+      esac
+    fi
+  done
+  [ "$_bad" -eq 0 ] || return 1
+  [ "$_skip" -eq 0 ] || return 3
+  return 0
+}
+
+# _se_gap -> a leg ended in "the runtime never ran a probe": SKIP (3) only if nothing has failed yet; a
+# recorded failure always wins (a SKIP must never hide a FAIL).
+_se_gap() {
+  [ "$rc" -eq 0 ] && return 3
+  echo "guard-wired --sandbox-enforce: FAIL" >&2
+  return 1
+}
+
+# _se_leg7 <cfg> -> a whole-tree restore under the sandbox leaves hooks/pre-push unchanged, and (only when it
+# did) the same restore with no sandbox changes it. Sets rc (shared with sandbox_enforce) on a failure.
+_se_leg7() {
+  _hh=$(_se_hash "$_se_repo/hooks/pre-push"); _l7=0
+  _se_sbx "$1" "git checkout $_se_rev1 -- ."
+  if [ "$_hh" = "$(_se_hash "$_se_repo/hooks/pre-push")" ]; then echo "PASS: [leg 7] a whole-tree restore leaves hooks/pre-push unchanged"; else echo "FAIL: [leg 7] a whole-tree restore rewrote hooks/pre-push under the sandbox"; rc=1; _l7=1; fi
+  # The negative is only meaningful when leg 7 held (a rewritten file leaves the restore nothing to change).
+  if [ "$_l7" -ne 0 ]; then echo "NOTE: [leg 7 negative] not evaluated, leg 7 already failed"; return 0; fi
+  _se_git checkout "$_se_rev1" -- . >/dev/null 2>&1 || true
+  if [ "$_hh" != "$(_se_hash "$_se_repo/hooks/pre-push")" ]; then echo "PASS: [leg 7 negative] the same restore with no sandbox changes hooks/pre-push"; else echo "FAIL: [leg 7 negative] the restore changed nothing with no sandbox — the leg proves nothing"; rc=1; fi
+}
+
+# _se_seed -> builds the throwaway repo (two revisions, hooks/pre-push differing) and home. 3 = SKIP.
+_se_seed() {
+  mkdir -p "$_se_repo/.claude/hooks" "$_se_repo/hooks" "$_se_repo/.kit" "$_se_home" "$_se_cache" "$_se_tmpw"
+  : > "$_se_log"
+  HOME="$_se_home" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git init -q "$_se_repo" >/dev/null 2>&1 || { echo "SKIP: git init failed"; return 3; }
+  echo 'x' > "$_se_repo/.claude/hooks/x"; echo 'v1' > "$_se_repo/hooks/pre-push"; echo 'x' > "$_se_repo/.kit/dials.conf"
+  mkdir -p "$_se_repo/.git/hooks"; echo 'x' > "$_se_repo/.git/hooks/x"
+  echo '{}' > "$_se_repo/.mcp.json"; echo 'x' > "$_se_repo/free.txt"
+  echo 'x' > "$_se_home/.zshrc"; echo 'x' > "$_se_home/.gitconfig"
+  if ! { _se_git add -A >/dev/null 2>&1 && _se_git commit -q -m v1 >/dev/null 2>&1; }; then echo "SKIP: could not seed the throwaway repo"; return 3; fi
+  echo 'v2' > "$_se_repo/hooks/pre-push"
+  _se_git commit -q -am v2 >/dev/null 2>&1 || { echo "SKIP: could not seed the second revision"; return 3; }
+  _se_rev1=$(_se_git rev-parse HEAD~1)
+  _se_protected="$_se_repo/.claude/hooks/x $_se_repo/hooks/pre-push $_se_repo/.kit/dials.conf $_se_repo/.git/hooks/x $_se_repo/.git/config $_se_repo/.mcp.json $_se_home/.zshrc $_se_home/.gitconfig"
+}
+
+# _se_temp <cfg> <label> -> sets _se_mk to the directory a bare mktemp -d made under the policy ("" = refused)
+# and _se_ran to 1 when the runtime ran the probe at all (the sentinel is written after the mktemp attempt).
+_se_temp() {
+  rm -f "$_se_tmpw/mk" "$_se_tmpw/ran"
+  _se_sbx "$1" "d=\$(mktemp -d) && echo \"\$d\" > '$_se_tmpw/mk' && rmdir \"\$d\"; echo ran > '$_se_tmpw/ran'"
+  _se_ran=0; [ -f "$_se_tmpw/ran" ] && _se_ran=1
+  _se_mk=""; [ -s "$_se_tmpw/mk" ] && _se_mk=$(cat "$_se_tmpw/mk")
+  return 0
+}
+
+# _se_leg_temp -> the macOS temp-root leg: a bare mktemp -d succeeds under the shipped policy, and is refused
+# with the two temp-root entries removed (else the leg proves nothing). N/A on Linux. Sets rc; returns 3 when
+# the runtime never ran a probe.
+_se_leg_temp() {
+  [ "$(uname -s)" = Darwin ] || { echo "N/A: [temp root] macOS only (Linux mktemp honours TMPDIR and has no per-user temp root)"; return 0; }
+  _tr=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null | sed 's:/*$::')
+  [ -n "$_tr" ] || { echo "SKIP: [temp root] getconf DARWIN_USER_TEMP_DIR is empty"; return 3; }
+  _se_temp "$_se_c" shipped
+  [ "$_se_ran" -eq 1 ] || { echo "SKIP: [temp root] the runtime did not run the probe: $(tail -n 1 "$_se_log" | cut -c1-160)"; return 3; }
+  case "$_se_mk" in
+    "$_tr"/*) echo "PASS: [temp root] a bare mktemp -d succeeds under the shipped policy" ;;
+    *) echo "FAIL: [temp root] a bare mktemp -d was refused under the shipped policy (allowWrite lacks the macOS temp root)"; rc=1; return 0 ;;
+  esac
+  _se_cfg "$_se_settings" "$_se_repo" "$_se_home" "$_se_base/notemp.json" notemp
+  _se_temp "$_se_base/notemp.json" notemp
+  if [ "$_se_ran" -eq 1 ] && [ -z "$_se_mk" ]; then
+    echo "PASS: [temp root negative] with the two entries removed the same mktemp -d is refused, so the leg is graded"
+  else
+    echo "FAIL: [temp root negative] mktemp -d still succeeded with the temp root removed — the temp-root leg proves nothing"; rc=1
+  fi
+  return 0
+}
+
+sandbox_enforce() {
+  _se_settings="$1/.claude/settings.json"
+  command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq absent — cannot translate the shipped sandbox policy; install jq" >&2; return 2; }
+  [ -f "$_se_settings" ] || { echo "FAIL: $_se_settings missing — no shipped sandbox policy to enforce"; return 1; }
+  jq -e '.sandbox.enabled == true' "$_se_settings" >/dev/null 2>&1 || { echo "FAIL: no enabled sandbox block in $_se_settings"; return 1; }
+  command -v npx >/dev/null 2>&1 || { echo "SKIP: npx not found — the pinned sandbox runtime cannot be fetched"; return 3; }
+  _se_base=$(mktemp -d /tmp/gw-sbx.XXXXXX) || { echo "SKIP: could not create a throwaway directory"; return 3; }
+  _se_base=$( cd "$_se_base" && pwd -P )
+  trap 'rm -rf "$_se_base"' EXIT HUP INT TERM
+  _se_repo="$_se_base/repo"; _se_home="$_se_base/home"; _se_cache="$_se_base/npm"; _se_log="$_se_base/runtime.log"
+  _se_tmpw="$_se_base/tmpw"
+  _se_seed || return $?
+  _se_c="$_se_base/policy.json"; _se_cfg "$_se_settings" "$_se_repo" "$_se_home" "$_se_c"
+
+  # Liveness first: a failure here is the runtime not starting (SKIP), never a pass and never a FAIL.
+  _h0=$(_se_hash "$_se_repo/free.txt"); _se_sbx "$_se_c" "echo live >> '$_se_repo/free.txt'"
+  if [ "$_h0" = "$(_se_hash "$_se_repo/free.txt")" ]; then
+    echo "SKIP: the sandbox runtime could not run an ordinary write here (no network to fetch $SRT_PKG, bubblewrap/socat missing, or user namespaces blocked): $(tail -n 1 "$_se_log" | cut -c1-160)"
+    return 3
+  fi
+  echo "PASS: [liveness] an ordinary write in the tree succeeds under the sandbox"
+  rc=0
+  # Leg 3 (liveness): a write under the throwaway /tmp dir, and a commit.
+  _se_sbx "$_se_c" "echo live > '$_se_tmpw/w.txt'"
+  if [ -s "$_se_tmpw/w.txt" ]; then echo "PASS: [liveness] a write under the throwaway /tmp dir succeeds"; else echo "FAIL: [liveness] a write under the throwaway /tmp dir was refused"; rc=1; fi
+  _hd=$(_se_git rev-parse HEAD)
+  _se_sbx "$_se_c" "git -c user.name=gw -c user.email=gw@example.invalid commit -q --allow-empty -m probe"
+  if [ "$_hd" != "$(_se_git rev-parse HEAD)" ]; then echo "PASS: [liveness] a git commit succeeds under the sandbox"; else echo "FAIL: [liveness] a git commit was refused under the sandbox"; rc=1; fi
+  # Leg 1: plain writes to every protected path are refused, hashes unchanged (a runtime error is a SKIP).
+  _l1=0; _se_leg1 "$_se_c" sandbox held || _l1=$?
+  [ "$_l1" -ne 3 ] || { _se_gap; return $?; }
+  if [ "$_l1" -eq 0 ]; then echo "PASS: [leg 1] a plain write to each protected path is refused; every hash unchanged"; else rc=1; fi
+  _se_leg7 "$_se_c"
+  _lt=0; _se_leg_temp || _lt=$?
+  [ "$_lt" -ne 3 ] || { _se_gap; return $?; }
+  # Leg 2: the same plain writes with no sandbox DO change every protected file (the test can write).
+  _bad=0
+  for _f in $_se_protected; do
+    _h0=$(_se_hash "$_f"); echo '# x' >> "$_f" 2>/dev/null || true
+    [ "$_h0" != "$(_se_hash "$_f")" ] || { echo "FAIL: [leg 2] a plain write with no sandbox did not change ${_f#"$_se_base"/}"; _bad=1; }
+  done
+  if [ "$_bad" -eq 0 ]; then echo "PASS: [leg 2] the same plain writes with no sandbox change every protected file"; else rc=1; fi
+  # Non-vacuity of the translation: with denyWrite emptied, the same plain writes DO land under the runtime.
+  _se_cfg "$_se_settings" "$_se_repo" "$_se_home" "$_se_base/broken.json" nodeny
+  _l1=0; _se_leg1 "$_se_base/broken.json" broken landed || _l1=$?
+  [ "$_l1" -ne 3 ] || { _se_gap; return $?; }
+  if [ "$_l1" -eq 0 ]; then echo "PASS: [non-vacuity] with denyWrite emptied the plain writes land, so leg 1 is graded"; else rc=1; fi
+  [ "$rc" -eq 0 ] && echo "guard-wired --sandbox-enforce: OK (the shipped policy is enforced by the OS for the protected paths)"
+  [ "$rc" -eq 0 ] || echo "guard-wired --sandbox-enforce: FAIL" >&2
+  return "$rc"
+}
+
 mode=full
 proj_dir="."
+enforce=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --selftest) selftest; exit $? ;;
     --rung1-only) mode=rung1only ;;
+    --sandbox-enforce) enforce=1 ;;
     *) proj_dir="$1" ;;
   esac
   shift
 done
+if [ "$enforce" -eq 1 ]; then sandbox_enforce "$proj_dir"; exit $?; fi
 check_dir "$proj_dir" "$mode"
 exit $?

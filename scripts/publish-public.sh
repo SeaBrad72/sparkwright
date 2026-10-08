@@ -1,7 +1,7 @@
 #!/bin/sh
 # publish-public.sh — promote a released kit into the PUBLIC product repo.
 #   sh scripts/publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] [--selftest]
-#   sh scripts/publish-public.sh --gate [--require-ids]   # (--require-ids: rc 2 if the identifier list is absent/empty) read-only Layer-2 scan of committed HEAD; runs on every PR (CI secret-scan)
+#   sh scripts/publish-public.sh --gate [--require-ids] [--ids-base <rev>]   # (--ids-base: WARN, counts only, when the list drops entries <rev> had; --require-ids: rc 2 if the identifier list is absent/empty) read-only Layer-2 scan of committed HEAD; runs on every PR (CI secret-scan)
 #
 # THE MENTAL MODEL (load-bearing): promotion is REGENERATION, not cherry-picking. You never hand-pick
 # files or commits to move public — that is where leaks come from. The public repo is a GENERATED
@@ -46,7 +46,7 @@ PUBLIC_REMOTE_DEFAULT="https://github.com/SeaBrad72/sparkwright.git"
 # so it never reaches an export. Overridable for the selftest.
 PUBLISH_ID_FILE="${PUBLISH_ID_FILE:-$ROOT/.publish-identifiers}"
 
-usage() { echo "usage: publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] | --gate [--require-ids] | --selftest" >&2; exit 2; }
+usage() { echo "usage: publish-public.sh [--remote <url>] [--dry-run] [--allow-untagged] | --gate [--require-ids] [--ids-base <rev>] | --selftest" >&2; exit 2; }
 
 # --- P1.2-pre-b: the immutability rule, as a PURE function so it can be proven ------------------
 # publish_decision <tag_already_published:0|1> <changed_paths:N> -> publish | noop | refuse
@@ -123,10 +123,12 @@ ALLOW_UNTAGGED=0
 SELFTEST=0
 GATE=0
 REQUIRE_IDS=0
+IDS_BASE=""
 while [ $# -gt 0 ]; do
   case $1 in
     --gate)           GATE=1; shift ;;
     --require-ids)    REQUIRE_IDS=1; shift ;;
+    --ids-base)       [ $# -ge 2 ] || usage; IDS_BASE=$2; shift 2 ;;
     --remote)         [ $# -ge 2 ] || usage; REMOTE=$2; shift 2 ;;
     --dry-run)        DRY_RUN=1; shift ;;
     --allow-untagged) ALLOW_UNTAGGED=1; shift ;;
@@ -244,6 +246,41 @@ publish_ids() {
       *) printf 'plain%s%s\n' "$_pi_tab" "$_pi" ;;
     esac
   done < "$PUBLISH_ID_FILE"
+  return 0
+}
+
+# _ids_warn <text> — a gate WARN on stderr; under GitHub Actions it also carries the annotation prefix.
+_ids_warn() {
+  if [ "${GITHUB_ACTIONS:-}" = true ]; then echo "::warning title=publish identifiers::publish-public: gate: WARN $1" >&2
+  else echo "publish-public: gate: WARN $1" >&2; fi
+}
+
+# _ids_compare <rev> <tmpdir> — `--gate --ids-base`: count the entries <rev>'s list has that this list lacks
+# (a removed, narrowed plain->word:, or substituted entry is one line of set difference). COUNTS ONLY on
+# output, never a value. Advisory: always returns 0 (the control-plane ratification is the blocking control).
+_ids_compare() {
+  _ic_rev=$1; _ic_d=$2; _ic_tab=$(printf '\t'); _ic_s=$(printf '%s' "$_ic_rev" | cut -c1-7)
+  case $_ic_rev in -*) _ids_warn "the identifier list was not compared with base $_ic_s: the base rev is unreadable."; return 0 ;; esac
+  if ! git rev-parse --verify -q "$_ic_rev^{commit}" >/dev/null 2>&1; then
+    _ids_warn "the identifier list was not compared with base $_ic_s: the base rev is unreadable."; return 0
+  fi
+  if ! git cat-file -e "$_ic_rev:.publish-identifiers" 2>/dev/null; then
+    say "identifier list: the base has none, nothing to compare"; return 0
+  fi
+  git show "$_ic_rev:.publish-identifiers" > "$_ic_d/base.list" 2>/dev/null \
+    || { _ids_warn "the identifier list was not compared with base $_ic_s: the base rev is unreadable."; return 0; }
+  _ic_save=$PUBLISH_ID_FILE; PUBLISH_ID_FILE=$_ic_d/base.list
+  _ic_rc=0; publish_ids > "$_ic_d/base.ids" 2>/dev/null || _ic_rc=$?
+  PUBLISH_ID_FILE=$_ic_save
+  [ "$_ic_rc" -eq 0 ] || { _ids_warn "the identifier list was not compared with base $_ic_s: the base list does not parse."; return 0; }
+  publish_ids > "$_ic_d/head.ids" 2>/dev/null || return 0   # a malformed head list is the scan's own rc 2
+  LC_ALL=C tr 'A-Z' 'a-z' < "$_ic_d/base.ids" | LC_ALL=C sort -u > "$_ic_d/base.fold"
+  LC_ALL=C tr 'A-Z' 'a-z' < "$_ic_d/head.ids" | LC_ALL=C sort -u > "$_ic_d/head.fold"
+  _ic_g=$(LC_ALL=C comm -23 "$_ic_d/base.fold" "$_ic_d/head.fold" | wc -l | tr -d ' ')
+  [ "$_ic_g" -gt 0 ] || return 0
+  _ic_b=$(wc -l < "$_ic_d/base.fold" | tr -d ' '); _ic_h=$(wc -l < "$_ic_d/head.fold" | tr -d ' ')
+  _ic_bw=$(grep -c "^word$_ic_tab" "$_ic_d/base.fold" || true); _ic_hw=$(grep -c "^word$_ic_tab" "$_ic_d/head.fold" || true)
+  _ids_warn "the identifier list is weaker than base $_ic_s: $_ic_g base entries missing or narrowed (base $_ic_b entries, $_ic_bw word:; this list $_ic_h entries, $_ic_hw word:). Counts only. Read the .publish-identifiers diff before the GO."
   return 0
 }
 
@@ -384,6 +421,7 @@ gate() {
     fi
   fi
   [ -f "$PUBLISH_ID_FILE" ] || say "gate: no identifier list at \$PUBLISH_ID_FILE — the owner-identifier dimension is N/A; the withheld-path scan still runs"
+  if [ -n "$IDS_BASE" ]; then _ids_compare "$IDS_BASE" "$_gw"; fi
   if ! sh scripts/adopter-export.sh "$_gw/export" >/dev/null 2>"$_gw/export.err"; then
     echo "publish-public: gate: adopter-export failed — nothing could be scanned: $(_err_text "$_gw/export.err")" >&2
     exit 2
@@ -907,6 +945,28 @@ EOF
   _gate_run "$_h/gate-errv"
   _want_rc 2 "GATE  an exporter error naming a listed value -> rc 2" "GATE  exporter error with a value"
   _no_value "exporter error text" "ACME-OWNER-TOKEN-42"
+
+  # S-6 (PUBLISH-IDENTIFIERS-CONTROL-PLANE): --ids-base warns, in counts only, when a base entry is missing or narrowed.
+  _gate_repo "$_h/gate-b" "a clean fixture" "A clean user-facing summary."
+  printf '.publish-identifiers export-ignore\n' >> "$_h/gate-b/.gitattributes"
+  printf 'Acmely\nZorbix\nword:Quillon\n' > "$_h/gate-b/.publish-identifiers"
+  _gate_commit "$_h/gate-b"
+  printf 'Acmely\nword:Quillon\n' > "$_h/gate-b/.publish-identifiers"
+  _gate_commit "$_h/gate-b"
+  _gate_run "$_h/gate-b" "--ids-base HEAD~1" "$_h/gate-b/.publish-identifiers"
+  _want_rc 0 "GATE  --ids-base with a dropped entry -> rc 0 (warns, never fails)" "GATE  ids-base dropped rc"
+  if printf '%s\n' "$_gout" | grep -qF "1 base entries missing or narrowed" \
+     && printf '%s\n' "$_gout" | grep -qF "base 3 entries, 1 word:; this list 2 entries, 1 word:"; then
+    echo "  ok   GATE  a dropped base entry prints the counts line"
+  else echo "  FAIL GATE  dropped entry: the counts line is missing"; _fail=$((_fail+1)); fi
+  _no_value "dropped entry (Zorbix)" "Zorbix"; _no_value "dropped entry (Acmely)" "Acmely"
+  printf 'Acmely\nword:Quillon\n# same entries, one comment\n' > "$_h/gate-b/.publish-identifiers"
+  _gate_commit "$_h/gate-b"
+  if [ -n "$(cd "$_h/gate-b" && git show HEAD~1:.publish-identifiers 2>/dev/null)" ]; then
+    _gate_run "$_h/gate-b" "--ids-base HEAD~1" "$_h/gate-b/.publish-identifiers"
+    if printf '%s\n' "$_gout" | grep -qF "weaker than base"; then echo "  FAIL GATE  an unchanged list printed the weaker-than-base line"; _fail=$((_fail+1))
+    else echo "  ok   GATE  an unchanged list prints no weaker-than-base line (the line above is load-bearing)"; fi
+  else echo "  FAIL GATE  setup: the base commit carries no list"; _fail=$((_fail+1)); fi
 
   rm -rf "$_t" "$_h"; rm -f "$PUBLISH_ID_FILE" "$_hids" "$_sef"
   [ "$_fail" -eq 0 ] || { echo "publish-public --selftest: $_fail failed" >&2; exit 1; }

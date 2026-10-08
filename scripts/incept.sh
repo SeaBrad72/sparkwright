@@ -81,6 +81,7 @@ Do the judgment steps incept does NOT automate (see START-HERE.md):
   1. Write the charter prose in CLAUDE.md (problem, vision, success metrics, scope).
   2. Record the real stack decision in docs/architecture/ADR-000-stack.md.
   3. Commit the incepted baseline — the FIRST commit (see docs/adoption/inception-bootstrap.md).
+     After the first push, share the kit base so teammates can run kit-update: sh scripts/kit-update.sh --publish-base
   4. ${PROTECT_HINT}
   5. Declare per-project config in CLAUDE.md §3 (autonomy tiers, SLO, review routing, WIP).
   6. Assign roles in CLAUDE.md §4.

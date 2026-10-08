@@ -2,6 +2,8 @@
 
 The kit's git workflow is **host-neutral**. GitHub and GitLab are worked examples; **any host works if it maps the contract below.** This mirrors `docs/work-tracking/adapters.md` (trackers) for the version-control-host axis — the kit owns the *contract*, you bring the *host*.
 
+> **`kit-update` shares its merge base at a non-branch ref.** The base lives at `refs/kit/base` (plus `refs/tags/kit-base/*`) on the remote, pushed by `kit-update --publish-base` / `--advance-base` and imported, verified, by teammates' `kit-update --from`. That a host accepts and serves a non-branch `refs/kit/*` ref is **proven on GitHub only**; GitLab, Azure DevOps and Bitbucket are unmeasured. The ref has no forge protection on any host (`docs/operations/kit-base.md`, *Share it*).
+
 ## The contract every host must satisfy
 
 The kit needs six things from your git host. The **names** differ per host; the **mechanics** don't:

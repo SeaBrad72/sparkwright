@@ -848,7 +848,8 @@ check() {
   # be refused. The base is published to the NON-BRANCH ref refs/kit/base. A clone made from b0 carries kit-base as a
   # branch on origin: drop it, so the legs below prove origin never gets refs/heads/kit-base from the tool.
   if ! { cp "$bF/hooks/pre-push" "$bF/.git/hooks/pre-push" && chmod +x "$bF/.git/hooks/pre-push" \
-         && git -C "$_org" update-ref -d refs/heads/kit-base && git -C "$_org" update-ref refs/kit/base "$_bF_old"; }; then
+         && git -C "$_org" update-ref -d refs/heads/kit-base && git -C "$_org" update-ref refs/kit/base "$_bF_old" \
+         && git -C "$bF" update-ref -d refs/remotes/origin/kit-base; }; then   # (the clone's stale remote-tracking kit-base would read as a base that came from a remote branch — KIT-BASE-SHARED A1)
     fail "A20 fixture: could not install the real hook / prepare origin's refs/kit/base"; return 1
   fi
   # the hook only WARNS ("observe") by default; an adopter that enforces it (a dial in .kit/dials.conf, or the env) has the

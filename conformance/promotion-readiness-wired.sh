@@ -167,6 +167,8 @@ selftest() {
   ck control-plane "$d/mix.txt"   "mixed -> highest wins"
   ck control-plane "$d/empty.txt" "empty set -> fail-safe up"
   ck control-plane "$d/no-such-file-$$.txt" "missing changed-file -> fail-safe up"
+  printf '.publish-identifiers\n' > "$d/ids.txt"
+  ck control-plane "$d/ids.txt"   "publish-identifier list -> control-plane (the list is a gate input)"
   # load-bearing negative: control-plane + sensitive must NOT downgrade to ordinary
   # (a classifier mutated to always-ordinary fails the cp/sens/mix checks above AND these).
   if [ "$(cls "$d/cp.txt")" = ordinary ]; then echo "FAIL: control-plane downgraded to ordinary"; st=1; fi

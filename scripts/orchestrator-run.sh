@@ -169,7 +169,7 @@ run() {
   cp_hit=$(LC_ALL=C awk -F'\t' '
     { p = tolower($1) }
     p == "claude.md" || p == "agents.md" || p == ".kit" || p == ".gitattributes" || p == ".gitmodules" || p == "codeowners" \
-      || p == ".gitleaks.toml" || p == ".gitleaksignore" || p == ".semgrepignore" || p == ".trivyignore" \
+      || p == ".gitleaks.toml" || p == ".gitleaksignore" || p == ".publish-identifiers" || p == ".semgrepignore" || p == ".trivyignore" \
       || p ~ /^development-[^\/]*\.md$/ || index(p, ".checkov") == 1 \
       || index(p, ".kit/") == 1 || index(p, "scripts/") == 1 || index(p, "conformance/") == 1 || index(p, "hooks/") == 1 \
       || index(p, ".github/") == 1 || index(p, ".claude/") == 1 || index(p, "skills/") == 1 || index(p, "agents/") == 1 \
