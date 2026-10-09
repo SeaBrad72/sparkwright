@@ -226,8 +226,146 @@ GIT_DIR='$_sbu_dn/.git' GIT_WORK_TREE='$_sbu_dn' _sbu_probe" 2>&1 ) || true
   return 1
 }
 
+# ── selftest_proxy_passthrough : KIT-UPDATE-GIT-PROXY-PASSTHROUGH. Extracts the SHIPPED wrappers from this file (the
+# deployed text, not a copy), puts a shim `git` first on PATH that RECORDS the command-scope config it was started
+# with (`git config --show-scope --list`, run by the shim under the wrapper's scrubbed environment), and drives each
+# wrapper under an ambient GIT_CONFIG_PARAMETERS that carries the proxy's two entries plus hostile ones. The ambient
+# value is produced by git itself (a `-c` alias echoing it), never assembled in shell. Legs:
+#   1 only the proxy's two entries reach adv_push and ku_net; adv_git and _ku_git see none (the load-bearing negative)
+#   2 no proxy variable: nothing is forwarded     3 a scope mismatch (port, scheme) forwards no helper
+#   3b positive anchors: userinfo+path, a default port and https_proxy-over-HTTPS_PROXY still match
+#   4 a newline in a selected value: nothing forwarded and the call is still made
+# The guard-verdict leg (the printed remedy is ALLOWED, the old raw push DENIED) lives with the guard's other verdict
+# cells in conformance/agent-autonomy.sh (KUGP-1, KUGP-2): a guard verdict needs the hook, which this file must not load.
+selftest_proxy_passthrough() {
+  _pp_tag="kit-update --sanitizer-selftest (proxy passthrough)"
+  _pp_d=$(mktemp -d) || { echo "$_pp_tag: FAIL (no tmpdir)" >&2; return 1; }
+  _pp_real=$(command -v git) || { rm -rf "$_pp_d"; echo "$_pp_tag: FAIL (no git on PATH)" >&2; return 1; }
+  _pp_fail=0; _pp_t=$(printf '\t')
+  mkdir -p "$_pp_d/bin" "$_pp_d/wt"
+  env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT -u GIT_DIR -u GIT_WORK_TREE HOME="$_pp_d" "$_pp_real" init -q "$_pp_d/repo" >/dev/null 2>&1 || _pp_bad "could not init the scratch repo"
+  cat > "$_pp_d/bin/git" <<'KUEOF'
+#!/bin/sh
+if [ "$1" = config ]; then exec "$KU_REAL_GIT" "$@"; fi
+{ echo called; echo "count=${GIT_CONFIG_COUNT-unset}"; echo "keys=$(env | sed -n 's/^\(GIT_CONFIG_KEY_[0-9]*\)=.*$/\1/p' | tr '\n' ' ')"; "$KU_REAL_GIT" config --show-scope --list 2>/dev/null | grep '^command'; } > "$KU_REC"
+exit 0
+KUEOF
+  chmod +x "$_pp_d/bin/git"
+  cat > "$_pp_d/drv.sh" <<'KUEOF'
+. "$KU_D/defs.sh"
+REPO=$KU_D/repo; REMOTE=origin; ADV_GD=$KU_D/repo/.git; ADV_IDX=$KU_D/idx; ADV_WT=$KU_D/wt
+PATH=$KU_D/bin:$PATH; export PATH
+cd "$KU_D/repo"
+KU_REC=$KU_D/rec.adv_git; export KU_REC; adv_git status
+KU_REC=$KU_D/rec._ku_git; export KU_REC; _ku_git status
+KU_REC=$KU_D/rec.adv_push; export KU_REC; adv_push refs/heads/x
+KU_REC=$KU_D/rec.ku_net; export KU_REC; ku_net ls-remote origin
+KUEOF
+  awk '/^(_ku_proxy_cfg|_ku_proxy_refused|adv_git|adv_push|_ku_git|ku_net)\(\) \{/,/^}$/' "$0" > "$_pp_d/defs.sh"
+  [ "$(grep -c '() {' "$_pp_d/defs.sh")" = 6 ] || _pp_bad "the extraction did not find the six shipped functions"
+  _pp_amb=$( cd "$_pp_d" && env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT HOME="$_pp_d" "$_pp_real" \
+      -c http.proxyAuthMethod=basic -c 'credential.http://localhost:61999.helper=!proxyhelper' \
+      -c 'credential.https://github.com.helper=!evil1' -c 'credential.http://other:1.helper=!evil2' \
+      -c 'url.https://evil.example/.insteadOf=https://github.com/' -c core.hooksPath=/evil -c core.sshCommand=evil \
+      -c http.extraHeader=X:evil -c 'alias.kuenv=!printf %s "$GIT_CONFIG_PARAMETERS"' kuenv ) || _pp_amb=''
+  [ -n "$_pp_amb" ] || _pp_bad "could not capture the ambient GIT_CONFIG_PARAMETERS from git"
+  _pp_nl=$(printf 'a\nb')
+
+  # leg 1 — the proxy's two entries, and only them, on the two network wrappers
+  _pp_run "$_pp_amb" HTTPS_PROXY=http://localhost:61999
+  _pp_net_ok "leg 1"
+  _pp_local_none "leg 1"
+  # leg 2 — no proxy variable: nothing forwarded, the call is still made
+  _pp_run "$_pp_amb"
+  _pp_net_none "leg 2 (no proxy variable)"
+  _pp_local_none "leg 2"
+  # leg 3 — a scope mismatch forwards no helper (a different port; a different scheme)
+  _pp_run "$_pp_amb" HTTPS_PROXY=http://localhost:62000
+  _pp_net_nocred "leg 3 (different port)"
+  _pp_run "$_pp_amb" HTTPS_PROXY=https://localhost:61999
+  _pp_net_nocred "leg 3 (different scheme)"
+  # leg 3b — the positive anchors: userinfo and a path are stripped; lowercase https_proxy wins over HTTPS_PROXY
+  _pp_run "$_pp_amb" HTTPS_PROXY=http://user:pw@localhost:61999/some/path
+  _pp_net_ok "leg 3b (userinfo + path)"
+  _pp_run "$_pp_amb" https_proxy=http://localhost:61999 HTTPS_PROXY=http://localhost:1
+  _pp_net_ok "leg 3b (https_proxy over HTTPS_PROXY)"
+  # leg 4 — a newline in a selected value: fail closed to the plain scrub, and the call is still made
+  # The newline must be IN the selected value (git -c cannot carry one into the capture), so the ambient config is the
+  # GIT_CONFIG_COUNT/KEY/VALUE form, which keeps it intact. PRECONDITION: git itself must report a newline inside that
+  # value (key NL, then a value holding a second NL = 2 newlines in the -z output); if not, this leg would pass
+  # vacuously, so it FAILS instead.
+  _pp_nlout=$( env -u GIT_CONFIG_PARAMETERS HOME="$_pp_d" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.http://localhost:61999.helper \
+      "GIT_CONFIG_VALUE_0=!a$_pp_nl" "$_pp_real" config --show-scope -z --get-regexp '^credential' | tr '\000' 'X' | tr -d -c '\n' | wc -c | tr -d ' ' ) || _pp_nlout=0
+  [ "${_pp_nlout:-0}" -ge 2 ] || _pp_bad "leg 4 is vacuous: git did not report a newline inside the helper value"
+  _pp_run "" HTTPS_PROXY=http://localhost:61999 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.http://localhost:61999.helper "GIT_CONFIG_VALUE_0=!a$_pp_nl"
+  _pp_net_none "leg 4 (newline in a value)"
+  _pp_local_none "leg 4"
+  # leg 5 — a RS byte (0x1e) inside a REPO-LOCAL helper value must not forge a command-scope record. The value is on the
+  # matched key, so git prints it; the helper reads in the repo that is the driver's cwd. PRECONDITION: git must hand the
+  # RS bytes back, else the leg is vacuous and FAILS. No command-scope proxy entries exist, so the right answer is COUNT=0.
+  _pp_forge=$(printf 'x\036command\036credential.http://localhost:61999.helper\n!evil')
+  env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT HOME="$_pp_d" "$_pp_real" -C "$_pp_d/repo" config --local \
+      'credential.http://localhost:61999.helper' "$_pp_forge" >/dev/null 2>&1 || _pp_bad "leg 5: could not set the forged local value"
+  _pp_rs=$( env -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT HOME="$_pp_d" "$_pp_real" -C "$_pp_d/repo" config --local -z --get-regexp '^credential' \
+      | tr -d -c '\036' | wc -c | tr -d ' ' ) || _pp_rs=0
+  [ "${_pp_rs:-0}" -ge 2 ] || _pp_bad "leg 5 is vacuous: git did not return the RS bytes from the local value"
+  _pp_run "" HTTPS_PROXY=http://localhost:61999
+  _pp_net_none "leg 5 (RS forgery in a local value)"
+  _pp_local_none "leg 5"
+  # leg 6 — _ku_proxy_refused: the proxy's refusal is recognised, a rejection or a sha holding 407 is not (stdin closed)
+  printf "fatal: unable to access 'https://x/r.git/': Proxy CONNECT aborted\n" > "$_pp_d/log.a"
+  printf 'fatal: unable to access: Received HTTP code 407 from proxy after CONNECT\n' > "$_pp_d/log.b"
+  printf ' ! [rejected]        refs/kit/base -> refs/kit/base (non-fast-forward)\n' > "$_pp_d/log.c"
+  printf '   a407bcd..9f4071e  kit-base -> kit-base\n' > "$_pp_d/log.d"
+  for _pp_l in a b; do
+    ( . "$_pp_d/defs.sh"; _ku_proxy_refused "$_pp_d/log.$_pp_l" ) </dev/null || _pp_bad "leg 6: log.$_pp_l was not recognised as a proxy refusal"
+  done
+  for _pp_l in c d; do
+    if ( . "$_pp_d/defs.sh"; _ku_proxy_refused "$_pp_d/log.$_pp_l" ) </dev/null; then _pp_bad "leg 6: log.$_pp_l was taken for a proxy refusal"; fi
+  done
+
+  rm -rf "$_pp_d" 2>/dev/null || true
+  if [ "$_pp_fail" = 0 ]; then
+    echo "$_pp_tag: OK (adv_push and ku_net forward only http.proxyAuthMethod + the helper scoped to the effective proxy origin; adv_git and _ku_git forward nothing; no proxy / a scope mismatch / a newline value forward nothing)"
+    return 0
+  fi
+  return 1
+}
+_pp_bad() { echo "$_pp_tag: FAIL ($1)" >&2; _pp_fail=1; }
+# _pp_run <ambient GIT_CONFIG_PARAMETERS> [VAR=val ...] — drive the four wrappers under that ambient config, a clean proxy env + the VARs.
+_pp_run() {
+  _ppr_amb=$1; shift
+  rm -f "$_pp_d"/rec.*
+  env -u https_proxy -u HTTPS_PROXY -u GIT_CONFIG_COUNT -u GIT_CONFIG_PARAMETERS HOME="$_pp_d" KU_D="$_pp_d" KU_REAL_GIT="$_pp_real" \
+      GIT_CONFIG_PARAMETERS="$_ppr_amb" "$@" sh "$_pp_d/drv.sh" >/dev/null 2>&1 || _pp_bad "the driver failed to run"
+}
+# _pp_cmd <wrapper> — the command-scope lines the shim recorded for that wrapper.
+_pp_cmd() { grep '^command' "$_pp_d/rec.$1" 2>/dev/null || :; }
+_pp_called() { grep -qx called "$_pp_d/rec.$1" 2>/dev/null || _pp_bad "$2: $1 never reached git"; }
+_pp_has() { _pp_cmd "$1" | grep -qxF -- "command${_pp_t}$3" || _pp_bad "$2: $1 did not forward $3"; }
+_pp_count() { [ "$(_pp_cmd "$1" | wc -l | tr -d ' ')" = "$3" ] || _pp_bad "$2: $1 saw $(_pp_cmd "$1" | wc -l | tr -d ' ') command-scope entries, wanted $3"; }
+_pp_net_ok() {
+  for _ppn_w in adv_push ku_net; do
+    _pp_called "$_ppn_w" "$1"; _pp_count "$_ppn_w" "$1" 2
+    _pp_has "$_ppn_w" "$1" 'http.proxyauthmethod=basic'
+    _pp_has "$_ppn_w" "$1" 'credential.http://localhost:61999.helper=!proxyhelper'
+  done
+}
+# _pp_rawcount <wrapper> <label> <n> — the RAW GIT_CONFIG_COUNT the wrapper handed to git (not git's parsed view, which
+# hides a half-built config that git rejects): a second assertion beside _pp_count.
+_pp_rawcount() { grep -qx "count=$3" "$_pp_d/rec.$1" 2>/dev/null || _pp_bad "$2: $1 handed git GIT_CONFIG_COUNT other than $3 (raw: $(grep '^count=' "$_pp_d/rec.$1" 2>/dev/null))"; }
+_pp_net_none() { for _ppn_w in adv_push ku_net; do _pp_called "$_ppn_w" "$1"; _pp_count "$_ppn_w" "$1" 0; _pp_rawcount "$_ppn_w" "$1" 0; done; }
+_pp_net_nocred() {
+  for _ppn_w in adv_push ku_net; do
+    _pp_called "$_ppn_w" "$1"
+    if _pp_cmd "$_ppn_w" | grep -q 'credential'; then _pp_bad "$1: $_ppn_w forwarded a credential helper"; fi
+    if _pp_cmd "$_ppn_w" | grep -q 'evil'; then _pp_bad "$1: $_ppn_w forwarded a hostile entry"; fi
+  done
+}
+_pp_local_none() { for _ppn_w in adv_git _ku_git; do _pp_called "$_ppn_w" "$1"; _pp_count "$_ppn_w" "$1" 0; _pp_rawcount "$_ppn_w" "$1" 0; done; }
+
 case "${1:-}" in
-  --sanitizer-selftest) if selftest_sanitizer_bash_unset; then exit 0; else exit 1; fi ;;
+  --sanitizer-selftest) _st=0; selftest_sanitizer_bash_unset || _st=1; selftest_proxy_passthrough || _st=1; exit "$_st" ;;
 esac
 
 # --merge-impl: which 3-way merge implementation to use. `auto` (the default) PROBES the capability and
@@ -992,28 +1130,106 @@ adv_tag_is_ours() {
   esac
 }
 
+# _ku_proxy_cfg — run INSIDE a network wrapper's subshell, BEFORE it zeroes the ambient config. KIT-UPDATE-GIT-PROXY-
+# PASSTHROUGH: a sandboxed agent's git authenticates to its egress proxy THROUGH the environment's command-scope config
+# (http.proxyAuthMethod + a credential helper scoped to the proxy's own origin), which the scrub below would drop —
+# git then reaches the proxy and fails its auth ("Proxy CONNECT aborted"). This reads the ambient command-scope
+# entries with GIT'S OWN parser (`git config --show-scope -z --get-regexp`; the quoted GIT_CONFIG_PARAMETERS format is
+# never parsed here), keeps ONLY http.proxyauthmethod and credential.<P>.helper where <P> is exactly the effective
+# proxy origin (https_proxy, else HTTPS_PROXY; userinfo and path stripped, a default port normalised away on both
+# sides), and EXPORTS them as GIT_CONFIG_COUNT/KEY_i/VALUE_i. Nothing else passes: no helper for another URL, no
+# url.*.insteadOf, no core.*, no other http.*. No proxy variable, a read failure or a newline in a selected value =
+# COUNT=0, today's plain scrub. It always ASSIGNS and exports GIT_CONFIG_COUNT (git needs it inert, not absent).
+# Only adv_push and ku_net call it; adv_git and _ku_git never talk to a remote and stay plain.
+_ku_proxy_cfg() {
+  _kpc_n=0; _kpc_list=''
+  if [ -n "${https_proxy:-${HTTPS_PROXY:-}}" ]; then
+    _kpc_list=$( { git config --show-scope -z --get-regexp '^http\.proxyauthmethod$' 2>/dev/null
+                   git config --show-scope -z --get-regexp '^credential\..*\.helper$' 2>/dev/null
+                 } | tr '\036\000' '\001\036' \
+      | KU_PROXY="${https_proxy:-${HTTPS_PROXY:-}}" awk '
+        function norm(u, strict,   i, s, r, p) {
+          i = index(u, "://"); if (i == 0) return ""
+          s = tolower(substr(u, 1, i - 1)); r = substr(u, i + 3)
+          if (s != "http" && s != "https") return ""
+          if (strict) { if (r ~ /[\/?#@ ]/) return "" } else { sub(/[\/?#].*$/, "", r); sub(/^.*@/, "", r) }
+          r = tolower(r); if (r == "") return ""
+          p = (s == "http") ? "80" : "443"
+          if (match(r, /:[0-9]+$/) && substr(r, RSTART + 1) == p) r = substr(r, 1, RSTART - 1)
+          return s "://" r
+        }
+        BEGIN { RS = "\036" }
+        { rec[NR] = $0 }
+        END {
+          want = norm(ENVIRON["KU_PROXY"], 0); if (want == "") exit 0
+          for (i = 1; i + 1 <= NR; i += 2) {
+            if (rec[i] != "command") continue
+            nl = index(rec[i + 1], "\n"); if (nl == 0) continue
+            key = substr(rec[i + 1], 1, nl - 1); val = substr(rec[i + 1], nl + 1)
+            sel = 0
+            if (key == "http.proxyauthmethod") sel = 1
+            else if (substr(key, 1, 11) == "credential." && length(key) > 18 && substr(key, length(key) - 6) == ".helper") sel = (norm(substr(key, 12, length(key) - 18), 1) == want)
+            if (!sel) continue
+            if (index(val, "\n") > 0 || index(val, "\001") > 0) exit 0
+            out = out key "\n" val "\n"
+          }
+          printf "%s", out
+        }'
+                 printf '.' )
+  fi
+  # the list is key NL value NL ... and a final "." (kept so the substitution cannot strip a trailing empty value)
+  while :; do
+    case $_kpc_list in
+      *"
+"*) ;;
+      *) break ;;
+    esac
+    _kpc_k=${_kpc_list%%"
+"*}; _kpc_list=${_kpc_list#*"
+"}
+    _kpc_v=${_kpc_list%%"
+"*}; _kpc_list=${_kpc_list#*"
+"}
+    eval "GIT_CONFIG_KEY_$_kpc_n=\$_kpc_k; GIT_CONFIG_VALUE_$_kpc_n=\$_kpc_v"
+    export "GIT_CONFIG_KEY_$_kpc_n" "GIT_CONFIG_VALUE_$_kpc_n"
+    _kpc_n=$((_kpc_n + 1))
+  done
+  GIT_CONFIG_COUNT=$_kpc_n; export GIT_CONFIG_COUNT
+}
+
 # adv_push — the publish push with a SCRUBBED git CONFIG environment (the pattern of adv_git/_ku_git: an ambient
 # GIT_CONFIG_COUNT/KEY_n/VALUE_n/PARAMETERS or a redirected global/system config must not inject config — a
 # credential helper, a url rewrite, core.sshCommand — into the one command that talks to the network). Only the
 # config-injection variables are scrubbed: GIT_SSH_COMMAND, GIT_SSH, GIT_ASKPASS and GIT_PROXY_COMMAND are the
 # user's own transport settings and pass through. HOME and the repo/user config files stay: the adopter's own
-# credentials and remotes are the point.
+# credentials and remotes are the point. The ONE config exception is _ku_proxy_cfg above: the proxy's own auth.
 adv_push() {
-  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
-    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+  ( _ku_proxy_cfg
+    GIT_CONFIG_PARAMETERS=''; export GIT_CONFIG_PARAMETERS
     env -u GIT_NAMESPACE -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u GIT_CONFIG -u GIT_CONFIG_NOSYSTEM \
         git -C "$REPO" push --atomic "$REMOTE" "$@" )
+}
+
+# _ku_proxy_refused <logfile> — true when git's output says the PROXY refused the connection (git: "Proxy CONNECT aborted";
+# curl: "Received HTTP code 407 from proxy after CONNECT" / "CONNECT tunnel failed, response 407"). A bare 407 is not
+# matched: it appears inside shas and ports.
+_ku_proxy_refused() {
+  grep -q -e 'Proxy CONNECT aborted' -e 'code 407' -e 'response 407' "$1" 2>/dev/null
 }
 
 # advance_publish — sets PUBLISH_RC (0 ok / skipped / no remote; 3 = the push failed).
 PUBLISH_RC=0
 advance_publish() {
-  _pb_hint="git push --atomic $REMOTE refs/heads/kit-base:refs/kit/base 'refs/tags/kit-base/*:refs/tags/kit-base/*'"
+  # The remedy is the tool's OWN verb: the raw `git push --atomic …` refspec is denied to an agent by the guard, so printing
+  # it left an agent with only a command it may not run. The raw form stays documented for a human in docs/operations/kit-base.md.
+  _pb_hint="sh scripts/kit-update.sh --publish-base"
+  [ "$REMOTE" = origin ] || _pb_hint="$_pb_hint --remote $REMOTE"
+  [ "$REPO" = "$(pwd -P)" ] || _pb_hint="$_pb_hint --repo \"$REPO\""
   if [ -n "$NO_PUSH" ]; then
     echo "  publish:       skipped (--no-push) — kit-base stays local. To publish later: $_pb_hint"; return 0
   fi
   if ! git -C "$REPO" config --get "remote.$REMOTE.url" >/dev/null 2>&1; then
-    echo "  publish:       no remote '$REMOTE' in this repo — kit-base stays local (name one with --remote <name>, or publish it yourself: $_pb_hint)"; return 0
+    echo "  publish:       no remote '$REMOTE' in this repo — kit-base stays local (name one with --remote <name>, then publish it: $_pb_hint)"; return 0
   fi
   adv_publish_refs
   _pb_n=$(printf '%s\n' "$PUB_REFS" | wc -w | tr -d ' ')
@@ -1038,6 +1254,9 @@ advance_publish() {
   else
     echo "  The push failed for a reason that is not a rejection (see git's message above: network, credentials, a hook?)." >&2
     echo "  The local advance is intact; fix the cause and publish: $_pb_hint" >&2
+    if _ku_proxy_refused "$TMP/push.log"; then
+      echo "  the proxy refused the connection; if your shell reaches the remote with plain git, your proxy authenticates through git config in the environment — see docs/operations/egress-control.md" >&2
+    fi
   fi
 }
 
@@ -1076,8 +1295,8 @@ _ku_git() {
 # fetched objects land in the repo --repo names. GIT_SSH_COMMAND/GIT_SSH/GIT_ASKPASS/GIT_PROXY_COMMAND are the user's own
 # transport settings and pass through; HOME and the repo/user config stay (the adopter's credentials and remotes are the point).
 ku_net() {
-  ( GIT_CONFIG_COUNT=0; GIT_CONFIG_PARAMETERS=''
-    export GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+  ( _ku_proxy_cfg
+    GIT_CONFIG_PARAMETERS=''; export GIT_CONFIG_PARAMETERS
     env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
         -u GIT_CEILING_DIRECTORIES -u GIT_NAMESPACE -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM -u GIT_CONFIG -u GIT_CONFIG_NOSYSTEM \
         git -C "$REPO" "$@" )

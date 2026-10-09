@@ -1,0 +1,14 @@
+Intent
+because alpha
+second line
+
+Acceptance criteria
+alpha passes | alpha holds
+
+Links
+docs/alpha.md
+
+Success metric
+alpha metric
+
+Migrated from board.md row `QLN-ALPHA` on 2026-10-08.

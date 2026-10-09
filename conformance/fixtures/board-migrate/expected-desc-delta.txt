@@ -1,0 +1,14 @@
+Intent
+delta intent
+
+Acceptance criteria
+delta ac
+
+Links
+—
+
+Success metric
+delta metric
+
+Absorbs `QLN-SHIFT`: shifted row, merged away
+Migrated from board.md row `QLN-DELTA` on 2026-10-08.

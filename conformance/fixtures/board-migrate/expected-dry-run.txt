@@ -1,0 +1,17 @@
+note: QLN-SHIFT has 6 cells but the Ready header has 9 (merged away, not migrated)
+epic	Milestone Q
+epic	Parked
+epic	Later Work
+epic	Empty Epic
+card	QLN-ALPHA — alpha moves first	Task	Milestone Q	ready	-	S	low
+card	QLN-DELTA — delta absorbs the shifted row	Task	Milestone Q	ready	-	S	low
+card	QLN-BRAVO — bravo is a defect	Bug	Milestone Q	ready	-	M	high
+card	QLN-FOXTROT — foxtrot waits	Task	Milestone Q	blocked	-	-	-
+card	QLN-HOTEL — hotel bullet text	Task	Milestone Q	backlog	-	M	-
+card	QLN-GOLF — golf bullet text	Task	Milestone Q	backlog	-	S	-
+card	QLN-CHARLIE — charlie is parked	Task	Parked	backlog	parked	L	med
+card	QLN-INDIA — india is parked	Task	Parked	backlog	parked	XL	-
+new	QLN-NEWONE	Task	Milestone Q	backlog	-	S	low
+new	QLN-NEWTWO	Task	Later Work	backlog	-	S	med
+left in place: 3 checkbox lines
+4 epics, 10 cards (3 ready, 1 blocked, 4 backlog, 2 parked), 1 dropped, 1 merged, 2 stayed

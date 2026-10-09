@@ -70,10 +70,13 @@
 #   sh conformance/guard-wired.sh [project-dir]        (default: .)
 #   sh conformance/guard-wired.sh --rung1-only [project-dir]
 #   sh conformance/guard-wired.sh --selftest
-#   sh conformance/guard-wired.sh --sandbox-enforce [project-dir]   (does the OS enforce the shipped sandbox
-#     policy? exit 3 = SKIP when the runtime cannot start here; see sandbox_enforce below)
-# Beyond the guard, check_dir asserts the shipped `sandbox` block's load-bearing keys (enabled,
-# allowUnsandboxedCommands false, denyWrite a superset of the enforcement layer).
+#   sh conformance/guard-wired.sh --sandbox-enforce [project-dir]   (does the OS enforce the strict
+#     profile? exit 3 = SKIP when the runtime cannot start here; see sandbox_enforce below)
+# Beyond the guard, check_dir accepts the shipped default (the OS sandbox OFF: no `sandbox` key is shipped, and
+# an explicit `enabled: false` is accepted too) while still requiring the Edit(...) denies; the strict profile (opt-in) is the template
+# templates/sandbox-strict.settings.local.json, whose load-bearing keys (enabled, allowUnsandboxedCommands
+# false, denyWrite a superset of the enforcement layer, the temp roots) are checked in the kit's own tree, and
+# on an adopter's EFFECTIVE block (settings.json merged with settings.local.json) when that turns the sandbox on.
 # Exit: 0 = wired · 1 = NOT wired (dark) · 2 = UNVERIFIED (jq absent). POSIX sh; dash-clean.
 set -eu
 
@@ -89,36 +92,98 @@ MUTATING_TOOLS='Bash Write Edit NotebookEdit mcp__alpha__read mcp__beta__write'
 # SUPERSET of this; network.allowUnixSockets is optional (absent = the strict form, still wired).
 SANDBOX_DENY_REQUIRED='./.claude ./hooks ./.kit ./.git/hooks ./.git/config ./.mcp.json ~/.gitconfig ~/.config/git ~/.zshrc ~/.zshenv ~/.zprofile ~/.bashrc ~/.bash_profile ~/.profile'
 
-# _gw_sandbox_leg <settings.json> -> prints PASS/FAIL lines, returns 1 on any gap. jq is already
-# confirmed present by the caller.
-_gw_sandbox_leg() {
-  _sl_rc=0
-  jq -e '.sandbox.enabled == true' "$1" >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.enabled is not true in settings.json — the OS layer under the guard is off"; _sl_rc=1; }
-  jq -e '.sandbox.allowUnsandboxedCommands == false' "$1" >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.allowUnsandboxedCommands is not false in settings.json — a command could opt out of the sandbox"; _sl_rc=1; }
-  jq -e '.sandbox.autoAllowBashIfSandboxed == false' "$1" >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.autoAllowBashIfSandboxed is not false in settings.json — sandboxed Bash would be auto-approved, skipping the permission prompt"; _sl_rc=1; }
-  jq -e '((.sandbox.excludedCommands // []) | length) == 0' "$1" >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.excludedCommands is set in settings.json — those commands run outside the sandbox"; _sl_rc=1; }
-  jq -e '(.sandbox.enableWeakerNestedSandbox // false) == false' "$1" >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.enableWeakerNestedSandbox is true in settings.json — the sandbox runs in its weaker nested form"; _sl_rc=1; }
-  jq -e '(.sandbox.network.allowAllUnixSockets // false) == false' "$1" >/dev/null 2>&1 \
-    || { echo "FAIL: sandbox.network.allowAllUnixSockets is true in settings.json — every unix socket is reachable from the shell"; _sl_rc=1; }
+# The strict profile (opt-in, SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN): the shipped template an adopter copies to
+# .claude/settings.local.json. Claude Code takes scalars from the higher-precedence scope (local over project)
+# and CONCATENATES the filesystem arrays (its settings and sandboxing docs), so the effective block is the
+# project's `sandbox` deep-merged with the local file's by this rule. _GW_DM mirrors it (the kit's own mirror of
+# documented behaviour, not a run of Claude Code).
+SANDBOX_STRICT_TEMPLATE='templates/sandbox-strict.settings.local.json'
+_GW_DM='def dm(a; b): a as $a | b as $b | if ($a|type)=="object" and ($b|type)=="object" then reduce ($b|keys_unsorted[]) as $k ($a; .[$k] = (if ($a|has($k)) then dm($a[$k]; $b[$k]) else $b[$k] end)) elif ($a|type)=="array" and ($b|type)=="array" then $a + $b else $b end;'
+
+# _gw_merge_json <project settings.json> [<local settings.json>] -> stdout: the project JSON with `.sandbox`
+# merged with the local file's `.sandbox`. jq is already confirmed present by the caller.
+_gw_merge_json() {
+  if [ -n "${2:-}" ] && [ -f "$2" ]; then
+    jq -s "$_GW_DM"' . as $in | $in[0] | .sandbox = dm($in[0].sandbox // {}; $in[1].sandbox // {})' "$1" "$2"
+  else
+    jq . "$1"
+  fi
+}
+
+# _gw_edit_denies <settings.json> -> the Edit and Write tools are denied the enforcement layer, in EVERY profile.
+_gw_edit_denies() {
+  _ed_rc=0
   for _sl_r in 'Edit(/.claude/**)' 'Edit(/hooks/**)' 'Edit(/.kit/**)'; do
     jq -e --arg p "$_sl_r" 'any((.permissions.deny // [])[]?; . == $p)' "$1" >/dev/null 2>&1 \
-      || { echo "FAIL: permissions.deny lacks $_sl_r — the Edit and Write tools can write that part of the enforcement layer"; _sl_rc=1; }
+      || { echo "FAIL: permissions.deny lacks $_sl_r — the Edit and Write tools can write that part of the enforcement layer"; _ed_rc=1; }
   done
+  return "$_ed_rc"
+}
+
+# _gw_sandbox_keys <json-text> <label> -> PASS/FAIL lines for the strict profile's load-bearing keys, returns 1 on
+# any gap. <json-text> is a settings document (the template, or an adopter's effective merged settings).
+_gw_sandbox_keys() {
+  _sl_rc=0; _sk_j="$1"; _sk_l="$2"
+  printf '%s\n' "$_sk_j" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.enabled is not true in $_sk_l — the OS layer under the guard is off"; _sl_rc=1; }
+  printf '%s\n' "$_sk_j" | jq -e '.sandbox.allowUnsandboxedCommands == false' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.allowUnsandboxedCommands is not false in $_sk_l — a command could opt out of the sandbox"; _sl_rc=1; }
+  printf '%s\n' "$_sk_j" | jq -e '.sandbox.autoAllowBashIfSandboxed == false' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.autoAllowBashIfSandboxed is not false in $_sk_l — sandboxed Bash would be auto-approved, skipping the permission prompt"; _sl_rc=1; }
+  printf '%s\n' "$_sk_j" | jq -e '((.sandbox.excludedCommands // []) | length) == 0' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.excludedCommands is set in $_sk_l — those commands run outside the sandbox"; _sl_rc=1; }
+  printf '%s\n' "$_sk_j" | jq -e '(.sandbox.enableWeakerNestedSandbox // false) == false' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.enableWeakerNestedSandbox is true in $_sk_l — the sandbox runs in its weaker nested form"; _sl_rc=1; }
+  printf '%s\n' "$_sk_j" | jq -e '(.sandbox.network.allowAllUnixSockets // false) == false' >/dev/null 2>&1 \
+    || { echo "FAIL: sandbox.network.allowAllUnixSockets is true in $_sk_l — every unix socket is reachable from the shell"; _sl_rc=1; }
   for _sl_e in $SANDBOX_DENY_REQUIRED; do
-    jq -e --arg p "$_sl_e" 'any((.sandbox.filesystem.denyWrite // [])[]?; . == $p)' "$1" >/dev/null 2>&1 \
-      || { echo "FAIL: sandbox.filesystem.denyWrite lacks $_sl_e — that part of the enforcement layer is writable from the shell"; _sl_rc=1; }
+    printf '%s\n' "$_sk_j" | jq -e --arg p "$_sl_e" 'any((.sandbox.filesystem.denyWrite // [])[]?; . == $p)' >/dev/null 2>&1 \
+      || { echo "FAIL: sandbox.filesystem.denyWrite lacks $_sl_e in $_sk_l — that part of the enforcement layer is writable from the shell"; _sl_rc=1; }
   done
   for _sl_t in /private/var/folders /var/folders; do
-    jq -e --arg p "$_sl_t" 'any((.sandbox.filesystem.allowWrite // [])[]?; . == $p)' "$1" >/dev/null 2>&1 \
-      || { echo "FAIL: sandbox.filesystem.allowWrite lacks $_sl_t — mktemp fails on macOS (it writes the per-user temp root, not TMPDIR)"; _sl_rc=1; }
+    printf '%s\n' "$_sk_j" | jq -e --arg p "$_sl_t" 'any((.sandbox.filesystem.allowWrite // [])[]?; . == $p)' >/dev/null 2>&1 \
+      || { echo "FAIL: sandbox.filesystem.allowWrite lacks $_sl_t in $_sk_l — mktemp fails on macOS (it writes the per-user temp root, not TMPDIR)"; _sl_rc=1; }
   done
-  [ "$_sl_rc" -ne 0 ] || echo "PASS: sandbox enabled, no opt-out or auto-approve, denyWrite and the Edit deny rules cover the enforcement layer, allowWrite carries the macOS temp root"
+  [ "$_sl_rc" -ne 0 ] || echo "PASS: $_sk_l: sandbox enabled, no opt-out or auto-approve, denyWrite covers the enforcement layer, allowWrite carries the macOS temp root"
   return "$_sl_rc"
+}
+
+# _gw_sandbox_leg <project-dir> -> prints PASS/FAIL lines, returns 1 on any gap. jq is already confirmed present
+# by the caller. The Edit denies are required in every profile. The shipped default has the OS sandbox OFF
+# (`sandbox.enabled` false or no `sandbox` key) and passes; when the EFFECTIVE block (settings.json merged with an
+# adopter's settings.local.json) turns it on, the strict profile's load-bearing keys are checked on that block.
+_gw_sandbox_leg() {
+  _sg_rc=0; _sg_proj="$1/.claude/settings.json"; _sg_loc="$1/.claude/settings.local.json"
+  _gw_edit_denies "$_sg_proj" || _sg_rc=1
+  if [ -f "$_sg_loc" ] && ! jq -e . "$_sg_loc" >/dev/null 2>&1; then
+    echo "FAIL: $_sg_loc is not valid JSON — the sandbox profile it sets cannot be read"; _sg_rc=1; _sg_loc=""
+  fi
+  if ! _sg_eff=$(_gw_merge_json "$_sg_proj" "$_sg_loc" 2>/dev/null); then
+    echo "FAIL: could not merge the sandbox block of $_sg_proj with $_sg_loc"; return 1
+  fi
+  if printf '%s\n' "$_sg_eff" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1; then
+    _gw_sandbox_keys "$_sg_eff" "the effective sandbox block (settings.json merged with settings.local.json)" || _sg_rc=1
+  else
+    echo "PASS: the OS sandbox is off (the shipped default); the guard hook and the Edit deny rules are the local layer, the strict profile is $SANDBOX_STRICT_TEMPLATE"
+  fi
+  return "$_sg_rc"
+}
+
+# _gw_template_check <project-dir> -> the strict template, in the kit's own tree (docs/ROADMAP-KIT.md marker): it
+# must exist, parse, and carry every load-bearing key. An adopter export carries the file too and is checked when
+# present; a tree with neither the marker nor the file is N/A. jq is already confirmed present.
+_gw_template_check() {
+  _tc_f="$1/$SANDBOX_STRICT_TEMPLATE"
+  if [ ! -f "$_tc_f" ]; then
+    if [ -f "$1/docs/ROADMAP-KIT.md" ]; then
+      echo "FAIL: $SANDBOX_STRICT_TEMPLATE is missing from a kit tree — the opt-in strict sandbox profile is not shipped"; return 1
+    fi
+    echo "N/A: $SANDBOX_STRICT_TEMPLATE not present (no kit-source marker); the strict profile is opt-in"; return 0
+  fi
+  if ! jq -e . "$_tc_f" >/dev/null 2>&1; then
+    echo "FAIL: $SANDBOX_STRICT_TEMPLATE is not valid JSON"; return 1
+  fi
+  _gw_sandbox_keys "$(jq -c . "$_tc_f")" "$SANDBOX_STRICT_TEMPLATE"
 }
 
 # ── B3 rung-leg helpers (production code — pre-marker, swept by non-vacuity.sh) ────────────────────
@@ -337,7 +402,8 @@ check_dir() {
       # The OS layer below the text guard: the sandbox block's load-bearing keys. Not part of the
       # PreToolUse-only scope, so --rung1-only does not evaluate it.
       if [ "$mode" != "rung1only" ]; then
-        _gw_sandbox_leg "$S" || fail=1
+        _gw_sandbox_leg "$dir" || fail=1
+        _gw_template_check "$dir" || fail=1
       fi
     else
       echo "UNVERIFIED: jq absent — cannot structurally confirm the matcher admits mutating tools; install jq"
@@ -578,30 +644,108 @@ selftest() {
   st=0
   base=$(mktemp -d)
 
-  # mk <dir> <matcher>: a project whose PreToolUse guard.sh hook uses <matcher> + a valid guard.sh
-  # The fixture carries the sandbox block in its STRICT form (no network.allowUnixSockets), which the
-  # static leg must accept: allowUnixSockets is optional.
+  # The strict profile's `sandbox` block as a fixture (the template's shape, in its STRICT form: no
+  # network.allowUnixSockets, which the leg must accept since allowUnixSockets is optional).
+  _gw_full_sbx='{"enabled":true,"autoAllowBashIfSandboxed":false,"allowUnsandboxedCommands":false,"filesystem":{"allowWrite":["~","/tmp","/private/var/folders","/var/folders"],"denyWrite":["./.claude","./hooks","./.kit","./.git/hooks","./.git/config","./.mcp.json","~/.gitconfig","~/.config/git","~/.zshrc","~/.zshenv","~/.zprofile","~/.bashrc","~/.bash_profile","~/.profile"]}}'
+
+  # mk <dir> <matcher>: a project whose PreToolUse guard.sh hook uses <matcher> + a valid guard.sh. The sandbox is
+  # No `sandbox` key at all, as shipped (an explicit false would outrank a developer's own user-level setting):
+  # the default profile (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN).
   mk() {
     _d="$1"; _m="$2"; mkdir -p "$_d/.claude/hooks"
-    printf '{"permissions":{"deny":["Edit(/.claude/**)","Edit(/hooks/**)","Edit(/.kit/**)"]},"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false,"allowUnsandboxedCommands":false,"filesystem":{"allowWrite":["~","/tmp","/private/var/folders","/var/folders"],"denyWrite":["./.claude","./hooks","./.kit","./.git/hooks","./.git/config","./.mcp.json","~/.gitconfig","~/.config/git","~/.zshrc","~/.zshenv","~/.zprofile","~/.bashrc","~/.bash_profile","~/.profile"]}},"hooks":{"PreToolUse":[{"matcher":"%s","hooks":[{"type":"command","command":"sh .claude/hooks/guard.sh"}]}]}}\n' "$_m" > "$_d/.claude/settings.json"
+    printf '{"permissions":{"deny":["Edit(/.claude/**)","Edit(/hooks/**)","Edit(/.kit/**)"]},"hooks":{"PreToolUse":[{"matcher":"%s","hooks":[{"type":"command","command":"sh .claude/hooks/guard.sh"}]}]}}\n' "$_m" > "$_d/.claude/settings.json"
     printf '#!/bin/sh\nexit 0\n' > "$_d/.claude/hooks/guard.sh"
   }
 
-  # mk_sbx <dir> <jq-filter>: the full fixture, then <jq-filter> applied to its settings.json (a mutant).
+  # mk_sbx <dir> <jq-filter>: the fixture with the STRICT block in settings.json, then <jq-filter> applied to the
+  # document (a mutant).
   mk_sbx() {
     mk "$1" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
-    jq "$2" "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
+    jq --argjson s "$_gw_full_sbx" ".sandbox = \$s | $2" "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
   }
 
-  # Static sandbox leg: one mutant per required key / entry removed must FAIL, naming the gap; the strict
-  # form (no allowUnixSockets) passes (it is the mk() default, asserted by the 'full' leg above).
+  # mk_loc <dir> <jq-filter>: an adopter's .claude/settings.local.json holding the strict block, then <jq-filter>
+  # applied to the document (a copy of the template, or a mutant of it).
+  mk_loc() {
+    jq -n --argjson s "$_gw_full_sbx" '{sandbox: $s}' | jq "$2" > "$1/.claude/settings.local.json"
+  }
+
+  # mk_tmpl <dir> <jq-filter>: the kit's templates/sandbox-strict.settings.local.json (or a mutant of it).
+  mk_tmpl() {
+    mkdir -p "$1/templates"
+    jq -n --argjson s "$_gw_full_sbx" '{sandbox: $s}' | jq "$2" > "$1/templates/sandbox-strict.settings.local.json"
+  }
+
+  # Static sandbox leg: the shipped default (sandbox OFF) is wired; the strict block, wherever it comes from
+  # (settings.json, an adopter's settings.local.json, or the shipped template), has one mutant per required key
+  # / entry removed that must FAIL, naming the gap.
   if command -v jq >/dev/null 2>&1; then
     d="$base/sbx_off"; mk_sbx "$d" '.sandbox.enabled = false'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'sandbox.enabled'; then echo "selftest PASS: sandbox.enabled=false -> FAIL"; else echo "selftest FAIL: sandbox.enabled=false should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'sandbox is off'; then echo "selftest PASS: sandbox.enabled=false -> wired (the shipped default)"; else echo "selftest FAIL: sandbox.enabled=false should be wired as the off default (rc=$rc)"; st=1; fi
     d="$base/sbx_nosandbox"; mk_sbx "$d" 'del(.sandbox)'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'sandbox.enabled'; then echo "selftest PASS: no sandbox block -> FAIL"; else echo "selftest FAIL: no sandbox block should FAIL (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'sandbox is off'; then echo "selftest PASS: no sandbox block -> wired (off)"; else echo "selftest FAIL: no sandbox block should be wired as off (rc=$rc)"; st=1; fi
+    # The Edit denies and the hook stay required in the OFF default (the layer left when the OS sandbox is off).
+    for _r in 'Edit(/.claude/**)' 'Edit(/hooks/**)' 'Edit(/.kit/**)'; do
+      d="$base/off_no_$(printf '%s' "$_r" | tr -c 'A-Za-z0-9\n' '_')"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+      jq --arg r "$_r" 'del(.permissions.deny[] | select(. == $r))' "$d/.claude/settings.json" > "$d/s.new" && mv "$d/s.new" "$d/.claude/settings.json"
+      if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "permissions.deny lacks $_r"; then echo "selftest PASS: off default without $_r -> FAIL"; else echo "selftest FAIL: off default without $_r should FAIL (rc=$rc)"; st=1; fi
+    done
+    # An adopter's settings.local.json turning the sandbox on: the EFFECTIVE block is checked (scalars local over
+    # project, filesystem arrays concatenated).
+    d="$base/loc_full"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" '.'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'PASS: the effective sandbox block'; then echo "selftest PASS: an adopter local file holding the full strict block -> wired"; else echo "selftest FAIL: an adopter local file holding the full strict block should be wired (rc=$rc)"; st=1; fi
+    d="$base/loc_short"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" 'del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'denyWrite lacks ./.claude'; then echo "selftest PASS: an adopter local file with a short denyWrite -> FAIL"; else echo "selftest FAIL: an adopter local file with a short denyWrite should FAIL (rc=$rc)"; st=1; fi
+    d="$base/loc_enabled_only"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; printf '{"sandbox":{"enabled":true}}\n' > "$d/.claude/settings.local.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'denyWrite lacks'; then echo "selftest PASS: an adopter local file that only sets enabled -> FAIL"; else echo "selftest FAIL: an adopter local file that only sets enabled should FAIL (rc=$rc)"; st=1; fi
+    d="$base/loc_unsandboxed"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_loc "$d" '.sandbox.allowUnsandboxedCommands = true'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'allowUnsandboxedCommands'; then echo "selftest PASS: an adopter local file with allowUnsandboxedCommands true -> FAIL"; else echo "selftest FAIL: an adopter local file with allowUnsandboxedCommands true should FAIL (rc=$rc)"; st=1; fi
+    d="$base/loc_badjson"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; printf '{ not json\n' > "$d/.claude/settings.local.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'not valid JSON'; then echo "selftest PASS: an adopter local file that is not JSON -> FAIL"; else echo "selftest FAIL: an adopter local file that is not JSON should FAIL (rc=$rc)"; st=1; fi
+    # The documented merge: arrays CONCATENATE across the two files (half the entries in each is the full set), and
+    # a local enabled:false turns a strict project file off (scalars: local over project).
+    d="$base/loc_split"; mk_sbx "$d" '.sandbox.filesystem.denyWrite = .sandbox.filesystem.denyWrite[0:5]'; mk_loc "$d" '.sandbox.filesystem.denyWrite = .sandbox.filesystem.denyWrite[5:]'
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ]; then echo "selftest PASS: denyWrite split across settings.json and the local file -> wired (arrays concatenate)"; else echo "selftest FAIL: a denyWrite split across the two files should be wired (rc=$rc)"; st=1; fi
+    d="$base/loc_turns_off"; mk_sbx "$d" '.'; printf '{"sandbox":{"enabled":false}}\n' > "$d/.claude/settings.local.json"
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'sandbox is off'; then echo "selftest PASS: a local enabled:false over a strict project file -> off, wired"; else echo "selftest FAIL: a local enabled:false should override the project (rc=$rc)"; st=1; fi
+    # The shipped strict template: exists and parses and carries every load-bearing key in the kit's own tree.
+    d="$base/tmpl_good"; mkdir -p "$d"; mk_tmpl "$d" '.'
+    if _gw_template_check "$d" >/dev/null 2>&1; then echo "selftest PASS: a complete strict template -> wired"; else echo "selftest FAIL: a complete strict template should be wired"; st=1; fi
+    _tm_mut() {  # <dir-name> <jq-filter> <expected-substring>
+      d="$base/tmpl_$1"; mkdir -p "$d"; mk_tmpl "$d" "$2"
+      if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "$3"; then echo "selftest PASS: strict template $1 -> FAIL"; else echo "selftest FAIL: strict template $1 should FAIL naming '$3' (rc=$rc)"; st=1; fi
+    }
+    _tm_mut enabled_false '.sandbox.enabled = false' 'sandbox.enabled'
+    _tm_mut unsandboxed_true '.sandbox.allowUnsandboxedCommands = true' 'allowUnsandboxedCommands'
+    _tm_mut unsandboxed_absent 'del(.sandbox.allowUnsandboxedCommands)' 'allowUnsandboxedCommands'
+    _tm_mut autoallow_true '.sandbox.autoAllowBashIfSandboxed = true' 'autoAllowBashIfSandboxed'
+    _tm_mut excluded '.sandbox.excludedCommands = ["git"]' 'excludedCommands'
+    for _t in /private/var/folders /var/folders; do
+      _tm_mut "allow_$(printf '%s' "$_t" | tr -c 'A-Za-z0-9\n' '_')" "del(.sandbox.filesystem.allowWrite[] | select(. == \"$_t\"))" "allowWrite lacks $_t"
+    done
+    for _e in $SANDBOX_DENY_REQUIRED; do
+      _tm_mut "deny_$(printf '%s' "$_e" | tr -c 'A-Za-z0-9\n' '_')" "del(.sandbox.filesystem.denyWrite[] | select(. == \"$_e\"))" "denyWrite lacks $_e"
+    done
+    d="$base/tmpl_badjson"; mkdir -p "$d/templates"; printf '{ not json\n' > "$d/templates/sandbox-strict.settings.local.json"
+    if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'not valid JSON'; then echo "selftest PASS: a strict template that is not JSON -> FAIL"; else echo "selftest FAIL: a non-JSON strict template should FAIL (rc=$rc)"; st=1; fi
+    d="$base/tmpl_nomarker"; mkdir -p "$d"
+    if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: no template and no kit marker -> N/A"; else echo "selftest FAIL: no template and no kit marker should be N/A (rc=$rc)"; st=1; fi
+    d="$base/tmpl_marker"; mkdir -p "$d/docs"; : > "$d/docs/ROADMAP-KIT.md"
+    if out=$(_gw_template_check "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF 'missing from a kit tree'; then echo "selftest PASS: a kit-source tree without the strict template -> FAIL"; else echo "selftest FAIL: a kit-source tree without the strict template should FAIL (rc=$rc)"; st=1; fi
     d="$base/sbx_unsandboxed"; mk_sbx "$d" '.sandbox.allowUnsandboxedCommands = true'
     if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'allowUnsandboxedCommands'; then echo "selftest PASS: allowUnsandboxedCommands=true -> FAIL"; else echo "selftest FAIL: allowUnsandboxedCommands=true should FAIL (rc=$rc)"; st=1; fi
@@ -636,20 +780,34 @@ selftest() {
     d="$base/sbx_superset"; mk_sbx "$d" '.sandbox.filesystem.denyWrite += ["./extra"] | .sandbox.network.allowUnixSockets = ["/var/run/docker.sock"]'
     if check_dir "$d" >/dev/null 2>&1; then echo "selftest PASS: a superset denyWrite and an allowUnixSockets entry -> wired"; else echo "selftest FAIL: a superset denyWrite and allowUnixSockets should be wired"; st=1; fi
     # --sandbox-enforce: no npx -> SKIP (rc 3, never a pass); no enabled sandbox block -> FAIL (rc 1).
-    d="$base/sbx_enf"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+    # --sandbox-enforce runs against the STRICT profile: the shipped settings.json (sandbox off) merged with the
+    # template under templates/, so every enforce fixture is a default project plus a (possibly mutated) template.
+    d="$base/sbx_enf"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.'
     mkdir -p "$base/sbx_bin"; ln -sf "$(command -v jq)" "$base/sbx_bin/jq"
     if out=$(PATH="$base/sbx_bin" /bin/sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
     if [ "$rc" -eq 3 ] && printf '%s' "$out" | grep -q '^SKIP: npx'; then echo "selftest PASS: --sandbox-enforce without npx -> SKIP rc 3"; else echo "selftest FAIL: --sandbox-enforce without npx should SKIP with rc 3 (rc=$rc)"; st=1; fi
-    d="$base/sbx_enf_off"; mk_sbx "$d" '.sandbox.enabled = false'
+    # _enf_fail <dir> <label>: the run must exit 1; rc 3 (no sandbox runtime here) is a disclosed SKIP, never a pass.
+    _enf_fail() {
+      if out=$(sh "$0" --sandbox-enforce "$1" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce $2 -> FAIL"
+      elif [ "$rc" -eq 3 ] && ! printf '%s' "$out" | grep -q '^FAIL'; then echo "selftest SKIP: --sandbox-enforce $2 (no sandbox runtime here)"
+      else echo "selftest FAIL: --sandbox-enforce $2 must exit 1 (rc=$rc)"; st=1; fi
+    }
+    # No template, or one that does not turn the sandbox on: there is no strict profile to enforce. Both exit 1
+    # before the runtime is started, so these two never SKIP.
+    d="$base/sbx_enf_notmpl"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
     if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce on a tree with the sandbox off -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with the sandbox off should FAIL (rc=$rc)"; st=1; fi
-    # A SKIP must never hide a FAIL: with no /tmp in allowWrite and ./.claude un-denied, the write to
-    # .claude/hooks/x LANDS while the sentinel (under /tmp) cannot, so the run must exit 1, never 3.
-    d="$base/sbx_enf_landed"; mk_sbx "$d" '.sandbox.filesystem.allowWrite = ["~"] | del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'strict'; then echo "selftest PASS: --sandbox-enforce with no strict template -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with no strict template should FAIL (rc=$rc)"; st=1; fi
+    d="$base/sbx_enf_off"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.sandbox.enabled = false'
     if out=$(sh "$0" --sandbox-enforce "$d" 2>&1); then rc=0; else rc=$?; fi
-    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce with a landed protected write and no sentinel -> FAIL, not SKIP"
-    elif [ "$rc" -eq 3 ] && ! printf '%s' "$out" | grep -q '^FAIL'; then echo "selftest SKIP: landed-write negative (no sandbox runtime here)"
-    else echo "selftest FAIL: a landed protected write must exit 1, never SKIP (rc=$rc)"; st=1; fi
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: --sandbox-enforce on a strict profile that is off -> FAIL"; else echo "selftest FAIL: --sandbox-enforce with the strict profile off should FAIL (rc=$rc)"; st=1; fi
+    # A SKIP must never hide a FAIL: with no /tmp in allowWrite and ./.claude missing from the template's denyWrite,
+    # the write to .claude/hooks/x LANDS while the sentinel (under /tmp) cannot, so the run must exit 1, never 3.
+    d="$base/sbx_enf_landed"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" '.sandbox.filesystem.allowWrite = ["~"] | del(.sandbox.filesystem.denyWrite[] | select(. == "./.claude"))'
+    _enf_fail "$d" "with a template missing ./.claude and a landed protected write and no sentinel"
+    # A template missing a home entry: the dotfile write lands under the runtime, so leg 1 must go red.
+    d="$base/sbx_enf_nozshrc"; mk "$d" 'Bash|Write|Edit|NotebookEdit|mcp__.*'; mk_tmpl "$d" 'del(.sandbox.filesystem.denyWrite[] | select(. == "~/.zshrc"))'
+    _enf_fail "$d" "with a template missing ~/.zshrc"
   else
     echo "selftest SKIP: static sandbox legs (jq absent)"
   fi
@@ -1099,7 +1257,7 @@ selftest() {
   selftest_sanitizer_bash_unset
 
   if [ "$st" -ne 0 ]; then echo "guard-wired --selftest: FAIL" >&2; return 1; fi
-  echo "guard-wired --selftest: OK (sandbox block: each required key/denyWrite entry removed FAILs, strict form wired, --sandbox-enforce SKIP/FAIL routes; full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
+  echo "guard-wired --selftest: OK (sandbox: the off default wired with the Edit denies still required; the strict block, in settings.json, an adopter's settings.local.json (arrays concatenate, local scalars win) or the shipped template, FAILs on each required key/denyWrite entry removed; --sandbox-enforce SKIP/FAIL routes against the merged strict profile; full/wildcard wired; no-mcp/degenerate/Read-only/partial/missing fail; rung fresh/foreign wired, absent/stale/non-exec/dangling/core-missing/tracked-missing FAIL, HEAD-less tree FAILs naming the missing first commit (never 'recopy'), no-git/CI=1/unqualifying/hooksPath-genuine N/A, linked-worktree+relative-hooksPath and --separate-git-dir and GIT_DIR-reroute and hostile-\$dir all correctly resolved, --rung1-only skips rung 2; tracked-hooks mode wired clean (main + linked worktree) and RED when the worktree hook is MODIFIED, kit-source disarm RED (local + global scope) while the adopter D2 skip holds; fixtures left in $base)"
   return 0
 }
 
@@ -1170,7 +1328,7 @@ _se_list() {
   jq -r "$2[]?" "$1" | while IFS= read -r _p; do _se_path "$_p" "$3" "$4"; done | jq -R 'select(length>0)' | jq -s .
 }
 
-# _se_cfg <settings> <repo> <home> <out> [nodeny|notemp] -> the runtime settings file for the shipped policy.
+# _se_cfg <settings> <repo> <home> <out> [nodeny|notemp] -> the runtime settings file for the strict profile.
 _se_cfg() {
   _aw=$(_se_list "$1" '.sandbox.filesystem.allowWrite' "$2" "$3")
   _aw=$(printf '%s' "$_aw" | jq --arg r "$2" '. + [$r]')
@@ -1214,7 +1372,7 @@ _se_leg1() {
       if [ "$_h0" = "$_h1" ]; then :; else echo "FAIL: [$2] a plain write to ${_f#"$_se_base"/} got through the sandbox (hash changed)"; _bad=1; fi
     else
       # The runtime also write-protects some paths on its own (.git/config, .git/hooks, .mcp.json), so only
-      # the five the shipped policy alone carries must land here.
+      # the five the strict profile alone carries must land here.
       case "$_f" in
         */.claude/hooks/x|*/hooks/pre-push|*/.kit/dials.conf|"$_se_home"/.zshrc|"$_se_home"/.gitconfig)
           if [ "$_h0" != "$_h1" ]; then :; else echo "FAIL: [$2] the write to ${_f#"$_se_base"/} did not land with denyWrite emptied — leg 1 would prove nothing"; _bad=1; fi ;;
@@ -1272,7 +1430,7 @@ _se_temp() {
   return 0
 }
 
-# _se_leg_temp -> the macOS temp-root leg: a bare mktemp -d succeeds under the shipped policy, and is refused
+# _se_leg_temp -> the macOS temp-root leg: a bare mktemp -d succeeds under the strict profile, and is refused
 # with the two temp-root entries removed (else the leg proves nothing). N/A on Linux. Sets rc; returns 3 when
 # the runtime never ran a probe.
 _se_leg_temp() {
@@ -1282,8 +1440,8 @@ _se_leg_temp() {
   _se_temp "$_se_c" shipped
   [ "$_se_ran" -eq 1 ] || { echo "SKIP: [temp root] the runtime did not run the probe: $(tail -n 1 "$_se_log" | cut -c1-160)"; return 3; }
   case "$_se_mk" in
-    "$_tr"/*) echo "PASS: [temp root] a bare mktemp -d succeeds under the shipped policy" ;;
-    *) echo "FAIL: [temp root] a bare mktemp -d was refused under the shipped policy (allowWrite lacks the macOS temp root)"; rc=1; return 0 ;;
+    "$_tr"/*) echo "PASS: [temp root] a bare mktemp -d succeeds under the strict profile" ;;
+    *) echo "FAIL: [temp root] a bare mktemp -d was refused under the strict profile (allowWrite lacks the macOS temp root)"; rc=1; return 0 ;;
   esac
   _se_cfg "$_se_settings" "$_se_repo" "$_se_home" "$_se_base/notemp.json" notemp
   _se_temp "$_se_base/notemp.json" notemp
@@ -1296,14 +1454,20 @@ _se_leg_temp() {
 }
 
 sandbox_enforce() {
-  _se_settings="$1/.claude/settings.json"
-  command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq absent — cannot translate the shipped sandbox policy; install jq" >&2; return 2; }
-  [ -f "$_se_settings" ] || { echo "FAIL: $_se_settings missing — no shipped sandbox policy to enforce"; return 1; }
-  jq -e '.sandbox.enabled == true' "$_se_settings" >/dev/null 2>&1 || { echo "FAIL: no enabled sandbox block in $_se_settings"; return 1; }
+  # The OS proof runs against the STRICT profile (the shipped default has the sandbox off): the shipped
+  # settings.json merged with the template an adopter copies to settings.local.json, by the documented rule
+  # (scalars local over project, filesystem arrays concatenated). That is the kit's mirror, not a run of Claude Code.
+  _se_settings="$1/.claude/settings.json"; _se_tmpl="$1/$SANDBOX_STRICT_TEMPLATE"
+  command -v jq >/dev/null 2>&1 || { echo "UNVERIFIED: jq absent — cannot translate the strict sandbox policy; install jq" >&2; return 2; }
+  [ -f "$_se_settings" ] || { echo "FAIL: $_se_settings missing — no shipped settings to merge the strict profile into"; return 1; }
+  [ -f "$_se_tmpl" ] || { echo "FAIL: $_se_tmpl missing — no strict sandbox profile to enforce"; return 1; }
+  _se_eff=$(_gw_merge_json "$_se_settings" "$_se_tmpl" 2>/dev/null) || { echo "FAIL: could not merge $_se_settings with $_se_tmpl (invalid JSON?) — no strict profile to enforce"; return 1; }
+  printf '%s\n' "$_se_eff" | jq -e '.sandbox.enabled == true' >/dev/null 2>&1 || { echo "FAIL: the strict profile (settings.json merged with $SANDBOX_STRICT_TEMPLATE) does not enable the sandbox"; return 1; }
   command -v npx >/dev/null 2>&1 || { echo "SKIP: npx not found — the pinned sandbox runtime cannot be fetched"; return 3; }
   _se_base=$(mktemp -d /tmp/gw-sbx.XXXXXX) || { echo "SKIP: could not create a throwaway directory"; return 3; }
   _se_base=$( cd "$_se_base" && pwd -P )
   trap 'rm -rf "$_se_base"' EXIT HUP INT TERM
+  printf '%s\n' "$_se_eff" > "$_se_base/effective.json"; _se_settings="$_se_base/effective.json"
   _se_repo="$_se_base/repo"; _se_home="$_se_base/home"; _se_cache="$_se_base/npm"; _se_log="$_se_base/runtime.log"
   _se_tmpw="$_se_base/tmpw"
   _se_seed || return $?
@@ -1342,7 +1506,7 @@ sandbox_enforce() {
   _l1=0; _se_leg1 "$_se_base/broken.json" broken landed || _l1=$?
   [ "$_l1" -ne 3 ] || { _se_gap; return $?; }
   if [ "$_l1" -eq 0 ]; then echo "PASS: [non-vacuity] with denyWrite emptied the plain writes land, so leg 1 is graded"; else rc=1; fi
-  [ "$rc" -eq 0 ] && echo "guard-wired --sandbox-enforce: OK (the shipped policy is enforced by the OS for the protected paths)"
+  [ "$rc" -eq 0 ] && echo "guard-wired --sandbox-enforce: OK (the strict profile, settings.json merged with the template, is enforced by the OS for the protected paths)"
   [ "$rc" -eq 0 ] || echo "guard-wired --sandbox-enforce: FAIL" >&2
   return "$rc"
 }

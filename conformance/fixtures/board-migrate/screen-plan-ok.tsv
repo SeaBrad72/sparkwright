@@ -1,0 +1,5 @@
+# No screen hit: QLN-PAPA is dropped (never becomes a card) and the new intent holds ZBXQ, a superstring of the word entry.
+epic	Milestone Q
+row	QLN-PAPA	drop	-	not needed
+row	QLN-QUEBEC	keep	Milestone Q
+new	QLN-ROMEO	Milestone Q	S	low	rolls out to ZBXQ customers

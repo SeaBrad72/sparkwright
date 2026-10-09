@@ -1,0 +1,23 @@
+# Bad `new` lines: an ID colliding with a board row, a duplicate new ID, a bad Size and Risk, a bad ID, an empty intent.
+epic	Milestone Q
+epic	Parked
+epic	Later Work
+epic	Empty Epic
+row	QLN-ALPHA	keep	Milestone Q
+row	QLN-DELTA	keep	Milestone Q
+row	QLN-SHIFT	merge:QLN-DELTA	-	same area, malformed cells
+row	QLN-BRAVO	keep	Milestone Q
+row	QLN-FOXTROT	keep	Milestone Q
+row	QLN-HOTEL	keep	Milestone Q
+row	QLN-GOLF	keep	Milestone Q
+row	QLN-CHARLIE	keep	Parked
+row	QLN-INDIA	keep	Parked
+row	QLN-ECHO	drop	-	superseded by alpha
+row	QLN-KILO	stay	-	it closes in the frozen file
+row	QLN-DONE-ONE	stay	-
+new	QLN-ALPHA	Milestone Q	S	low	collides with a board row
+new	QLN-NEWTWO	Milestone Q	S	low	first of a duplicate pair
+new	QLN-NEWTWO	Milestone Q	S	low	second of a duplicate pair
+new	QLN-NEWTHREE	Milestone Q	HUGE	extreme	bad size and risk
+new	bad id	Milestone Q	S	low	an ID outside the grammar
+new	QLN-NEWFOUR	Milestone Q	S	low

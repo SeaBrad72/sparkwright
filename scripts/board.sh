@@ -8,7 +8,8 @@
 #   sh scripts/board.sh release <ROW-ID> [--stale]
 #   sh scripts/board.sh move    <ROW-ID> <state>
 #   sh scripts/board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>]
-#                               [--parent <KEY>] [--description <text>] [--field <token>=<value>]...
+#                               [--parent <KEY>] [--description <text>] [--label <name>]... [--field <token>=<value>]...
+#   sh scripts/board.sh migrate --from <board.md> --plan <plan.tsv> [--dry-run | --freeze --date <D>] ...  (scripts/board-migrate.sh)
 #   sh scripts/board.sh --selftest
 #
 # `create` also fills the fields the PROJECT requires of that type (adapter `required-fields`): a value comes from
@@ -84,11 +85,15 @@ bd_usage() {
   echo "  board.sh release <ROW-ID> [--stale]   (on a tracker, --stale = close after the merge: card ends Done; plain release ends Ready; no claim ref = UNPROVEN)" >&2
   echo "  board.sh move    <ROW-ID> <state>" >&2
   echo "  board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>] [--parent <KEY>] [--description <text>]" >&2
+  echo "                   [--label <name>]...   (repeatable, at most 10; each [A-Za-z0-9_.:-]{1,64}; appended to the card's labels)" >&2
   echo "                   [--field <token>=<value>]...   (repeatable: the value of a field the project REQUIRES; the token is" >&2
   echo "                    tracker-conf.sh's create.<token> grammar; \`sh conformance/tracker-contract.sh --fields\` lists them)" >&2
   echo "                   (acceptance criteria ride --description; no separate field.acceptance is written;" >&2
   echo "                    a select --size/--risk must be one of the type's allowed values, matched case-insensitively," >&2
   echo "                    printable ASCII only; a free value is [A-Za-z0-9 _.-]{1,64}; a label value [A-Za-z0-9_-]{1,32})" >&2
+  echo "  board.sh migrate --from <board.md> --plan <plan.tsv> [--ledger <path>] [--screen <file>] [--date <YYYY-MM-DD>] [--dry-run]" >&2
+  echo "                   (moves a markdown board's open rows INTO the declared tracker through \`create\`; add --freeze --date <D> to freeze the file;" >&2
+  echo "                    see scripts/board-migrate.sh and docs/work-tracking/adapters.md 'Moving an existing board')" >&2
   echo "  board.sh --selftest" >&2
 }
 
@@ -479,6 +484,20 @@ bd_cr_desc() {
   _frag=$(printf '%s' "$_frag" | jq -c --argjson d "$_jv" '. + {description: $d}')
 }
 
+# bd_cr_user_labels: the --label values, appended to .labels (any size:/risk: label is already there).
+bd_cr_user_labels() {
+  [ -n "$_labels" ] || return 0
+  bd_cr_has labels || { echo "board create: issue type '$_type' has no labels field on its create screen, so --label cannot be written." >&2; return 2; }
+  while IFS= read -r _ul; do
+    [ -n "$_ul" ] || continue
+    _frag=$(printf '%s' "$_frag" | jq -c --arg l "$_ul" '.labels = ((.labels // []) + [$l])')
+    _cr_labels="$_cr_labels $_ul"
+  done <<EOF_UL
+$_labels
+EOF_UL
+  bd_cr_note labels ""
+}
+
 # bd_cr_text <text>: the Jira text shape, into $_jv — ADF paragraphs on Cloud, a plain string on Data Center.
 # The ONE shaper: --description and a required `text` (textarea) field both go through it.
 bd_cr_text() {
@@ -768,6 +787,7 @@ bd_create_jira() {
   bd_cr_field risk "$_risk" || return $?
   bd_cr_parent || return $?
   bd_cr_desc || return $?
+  bd_cr_user_labels || return $?
   bd_cr_required || return 1
   # created BY the numeric id create-meta resolved (never an ambiguous name); the fragment rides STDIN, not argv
   _key=$(printf '%s' "$_frag" | sh "$BD_JIRA_SH" create "$_btbase" "$_btflavour" "$_btproject" "$_title" "$_type_id" -) || {
@@ -795,11 +815,22 @@ bd_field_arg() {
 "
 }
 
+# bd_label_arg <name>: one --label (repeatable, at most 10), each ^[A-Za-z0-9_.:-]{1,64}$, collected in $_labels one per
+# line. A label rides the `labels` field the adapter already allowlists; it is appended to whatever size:/risk: labels the
+# field map writes, and is read back by bd_cr_prove.
+bd_label_arg() {
+  bd_val_ok "$1" 'A-Za-z0-9_.:-' 64 || { echo "board create: --label must match [A-Za-z0-9_.:-]{1,64} (no space)." >&2; return 2; }
+  [ "$_label_n" -lt 10 ] || { echo "board create: at most 10 --label values." >&2; return 2; }
+  _label_n=$((_label_n + 1))
+  _labels="$_labels$1
+"
+}
+
 do_create() {
-  _title=""; _size=""; _risk=""; _type=""; _parent=""; _desc=""; _cr_fields=""
+  _title=""; _size=""; _risk=""; _type=""; _parent=""; _desc=""; _cr_fields=""; _labels=""; _label_n=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --title|--size|--risk|--type|--parent|--description|--field)
+      --title|--size|--risk|--type|--parent|--description|--field|--label)
         [ $# -ge 2 ] || { echo "board create: $1 needs a value" >&2; return 2; }
         case "$1" in
           --title) _title=$2 ;;
@@ -809,10 +840,11 @@ do_create() {
           --parent) _parent=$2 ;;
           --description) _desc=$2 ;;
           --field) bd_field_arg "$2" || return 2 ;;
+          --label) bd_label_arg "$2" || return 2 ;;
         esac
         shift 2 ;;
       -*)      echo "board create: unknown option '$1'" >&2; bd_usage; return 2 ;;
-      *)       echo "board create: unexpected argument '$1' (use --title/--size/--risk/--type/--parent/--description/--field)" >&2; return 2 ;;
+      *)       echo "board create: unexpected argument '$1' (use --title/--size/--risk/--type/--parent/--description/--field/--label)" >&2; return 2 ;;
     esac
   done
   [ -n "$_title" ] || { echo "board create: --title is required" >&2; bd_usage; return 2; }
@@ -1274,6 +1306,38 @@ line two"
     bd_pass "leg jira/create-offline: a quote in --type, a bad --parent and a 32001-byte --description each refuse rc 2 with no tracker call"
   else bd_fail_ "leg jira/create-offline: rc=$bd_rc1/$bd_rc2/$bd_rc3 stubbytes=$bd_s1/$bd_s2/$bd_s3"; fi
 
+  # legs (create-label-flag, KIT-TREE-BOARD-MIGRATION): --label is repeatable, grammar-bound and capped at 10; a label
+  # reaches .labels in the create body (beside any size:/risk: label) and is proven by the post-read; every refusal is
+  # rc 2 with ZERO POSTs.
+  cp "$bd_cr_gf" "$bd_base/.gf.save"
+  bd_conf customfield_10046 customfield_10047 cloud
+  printf 'issuetype\tTask\nlabels\tparked ab:cd_1.2\n' > "$bd_cr_gf"
+  bd_cr --title "x" --label parked --label ab:cd_1.2
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_cr_body")" = '{"labels":["parked","ab:cd_1.2"]}' ] && [ "$(bd_posts)" = 1 ]; then
+    bd_pass "leg jira/create-label-flag: two --label values reach .labels in the create body, one POST, proven by the post-read"
+  else bd_fail_ "leg jira/create-label-flag: rc=$bd_rc posts=$(bd_posts) body=[$(cat "$bd_cr_body" 2>/dev/null)] out=[$bd_out]"; fi
+  bd_conf label:size label:risk cloud
+  printf 'issuetype\tTask\nlabels\tsize:S parked\n' > "$bd_cr_gf"
+  bd_cr --title "x" --size S --label parked
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_cr_body")" = '{"labels":["size:S","parked"]}' ]; then
+    bd_pass "leg jira/create-label-flag-merge: --label is appended to the labels a label:size mapping already writes"
+  else bd_fail_ "leg jira/create-label-flag-merge: rc=$bd_rc body=[$(cat "$bd_cr_body" 2>/dev/null)] out=[$bd_out]"; fi
+  bd_cr --title "x" --label 'a b'
+  bd_rc1=$bd_rc; bd_p1=$(bd_posts)
+  bd_cr --title "x" --label l1 --label l2 --label l3 --label l4 --label l5 --label l6 --label l7 --label l8 --label l9 --label l10 --label l11
+  bd_rc2=$bd_rc; bd_p2=$(bd_posts)
+  bd_cr --title "x" --label 'a"b'
+  bd_rc3=$bd_rc; bd_p3=$(bd_posts)
+  if [ "$bd_rc1" -eq 2 ] && [ "$bd_p1" = 0 ] && [ "$bd_rc2" -eq 2 ] && [ "$bd_p2" = 0 ] && [ "$bd_rc3" -eq 2 ] && [ "$bd_p3" = 0 ]; then
+    bd_pass "leg jira/create-label-flag-grammar: a label with a space or a quote, and an eleventh label, each refuse rc 2 with zero POSTs"
+  else bd_fail_ "leg jira/create-label-flag-grammar: rc=$bd_rc1/$bd_rc2/$bd_rc3 posts=$bd_p1/$bd_p2/$bd_p3"; fi
+  printf 'Task\tcustomfield_10046\toption\tSize\tXS|S|M|L|XL\nTask\tdescription\tstring\tDescription\t\n' > "$bd_cmdir/nolabels/Task.txt"
+  bd_cm_cur="$bd_cmdir/nolabels"; bd_cr --title "x" --label parked; bd_cm_cur="$bd_cmdir"
+  if [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'no labels field'; then
+    bd_pass "leg jira/create-label-flag-screen: a type whose create screen has no labels field refuses --label with zero POSTs"
+  else bd_fail_ "leg jira/create-label-flag-screen: rc=$bd_rc posts=$(bd_posts) out=[$bd_out]"; fi
+  cp "$bd_base/.gf.save" "$bd_cr_gf"
+
   # legs (create-gaps): each refusal is rc 2 with ZERO POSTs unless stated
   printf 'Task\tcustomfield_10046\toption\tSize\tXS|S|M|L|XL\nTask\tdescription\tstring\tDescription\t\n' > "$bd_cmdir/nolabels/Task.txt"
   printf 'Task\tcustomfield_10046\toption\tSize\tXS|S|M|L|XL\nTask\tlabels\tarray\tLabels\t\n' > "$bd_cmdir/nodesc/Task.txt"
@@ -1615,6 +1679,10 @@ create.parent=AB-1'; bd_conf - - cloud; bd_cr --title x; bd_cx=""
   bd_out=$(sh "$BD_SELF" claim --bogus ROW-1 2>&1); bd_rc=$?
   [ "$bd_rc" -eq 2 ] && bd_pass "leg usage/claim-unknown-opt: an unknown option is rc 2" \
     || bd_fail_ "leg usage/claim-unknown-opt: rc=$bd_rc"
+  # the migrate verb hands off to board-migrate.sh: no arguments is its usage refusal (rc 2), reached through this dispatch
+  bd_out=$(sh "$BD_SELF" migrate 2>&1); bd_rc=$?
+  if [ "$bd_rc" -eq 2 ] && printf '%s' "$bd_out" | grep -qF -e '--from'; then bd_pass "leg usage/migrate: the migrate verb dispatches to board-migrate.sh (no arguments is rc 2 with its usage)"
+  else bd_fail_ "leg usage/migrate: rc=$bd_rc out=[$bd_out]"; fi
 
   BD_JIRA_SH=$_saved_jira
   rm -rf "$bd_base" 2>/dev/null || true
@@ -1632,6 +1700,7 @@ case "${1:-}" in
   release)    shift; if do_release "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   move)       shift; if do_move "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   create)     shift; if do_create "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  migrate)    shift; exec sh "$here/board-migrate.sh" "$@" ;;
   -h|--help)  bd_usage; bd_rc_main=2 ;;
   "")         bd_usage; bd_rc_main=2 ;;
   *)          echo "board.sh: unknown verb '$1'" >&2; bd_usage; bd_rc_main=2 ;;

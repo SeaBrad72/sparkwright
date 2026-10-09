@@ -5,6 +5,8 @@ How to make platform-safety-boundary controls #2/#3/#4 real. Where the egress al
 `conformance/containment-ready.sh` verifies this posture is **declared + attested**; it does **not** verify enforcement. See `conformance/containment-readiness.md`.
 
 ## 1. Sandbox / read-only filesystem
+**The local tamper-resistance tier.** On a developer machine running Claude Code, the lightest form of this control is the kit's opt-in **strict profile**: Claude Code's OS sandbox, applied by merging the `sandbox` key of `templates/sandbox-strict.settings.local.json` into your existing `.claude/settings.local.json` (or copying the template there if you have none; strict is per checkout) (see `docs/operations/runtime-guards.md`, "Below the text layer: the strict profile (opt-in)"). It makes the guard files read-only to the agent's shell for unattended use, and it is off by default because it costs one terminal git command per update that changes a guard file. It does not confine the home directory or the network, so it is not a substitute for the container below. What reaches `main` is controlled by the forge, not by this.
+
 Run the agent in a container scoped to the work tree, with the root filesystem read-only and a `tmpfs` for scratch — so `~/.aws`, `~/.ssh`, other projects, and host secrets are simply not mounted.
 
 ```yaml

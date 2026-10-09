@@ -53,6 +53,38 @@ The repo-native backend (`../../templates/BACKLOG-TEMPLATE.md`). Every other ada
 - **Fit notes** — strongest workflow modeling and enterprise governance; a real server-enforced claim *when the transition condition is configured*. Heavyweight; resist the Story-Points-as-size trap.
 - **Bootstrap & verify** — `incept --backlog jira` writes a project-stamped `JIRA-SETUP.md` (statuses · Size/Risk fields · the Only-Assignee condition); verify in this order: `sh conformance/tracker-contract.sh --preflight` (reach, credential, permissions, tier card; read-only) → `--fields` (the required create fields and the conf lines to paste) → no flag (states and fields verified live) → `--deep` (the Only-Assignee condition on every transition into In Progress, a Jira-admin once-off).
 
+### Moving an existing board
+
+An adopter whose live board is `BACKLOG.md` moves its open rows into the declared tracker with one verb, `sparkwright board migrate` (`scripts/board-migrate.sh`). It reads the Ready and Blocked tables and the `## Backlog (unrefined)` bullets, and creates each card through `board create` (so every card gets that verb's required-field refusal and its read-back proof) and `tracker-jira.sh transition`; it writes nowhere else. It needs a declared tracker (`.kit/tracker.conf`); on `md` it refuses. Today the tracker is Jira.
+
+**The plan decides every row.** Nothing is inferred. You write a TAB-separated plan file, `#` starts a comment, and the order of the `row` lines is the rank order (a Jira Software board ranks a new issue last, so creating in plan order ranks the cards in plan order):
+
+```
+epic	Milestone C
+epic	Parked
+row	SHELLCHECK-NORC	keep	Milestone C
+row	OLD-IDEA	drop	-	superseded by the C roster work
+row	DUP-OF-IT	merge:SHELLCHECK-NORC	-	same fail-open class
+row	THE-SWITCH	stay	-	closes in the frozen file
+new	NEW-CARD	Milestone C	S	med	a card that is on no board today
+```
+
+- `epic` is created first, in file order. A name is 1 to 60 characters. An epic that receives no card is still created.
+- `keep` makes a card under the named (declared) epic; under an epic named `Parked` it also gets the label `parked`. `drop` makes no card, and `--freeze` writes the Done entry "dropped at migration triage - <reason>". `merge:<OTHER>` makes no card; `<OTHER>` must be a `keep` row, its card gains an "Absorbs" line, and `--freeze` writes a Done pointer. `stay` leaves the row, unedited, in the frozen file (use it for rows in Done or Released, for work in flight, and for the switch row itself). `drop` and `merge` need a reason of 1 to 200 characters.
+- `new` declares a card that is on no board today. Its ID is the summary and its intent the description. Size and Risk may be `-`, which means `S` and `med`. New cards are created after every `keep` card, in plan order.
+- A row in In Progress or In Review must be `stay`; work in flight is not moved by a batch.
+
+**The card.** Item becomes the summary (cut at the last space before 240 characters, the full text opening the description), and Intent, Acceptance criteria, Links and Success metric become four labelled description sections. Size and Risk go through the `field.size` / `field.risk` mapping. Type `defect` or `bug` makes a Bug, anything else a Task. A Ready row is transitioned to `state.ready`, a Blocked row to `state.blocked`, and an unrefined or parked row is left in the workflow's initial status, which the preflight cannot read; a mismatch with `state.backlog` shows in the census. No assignee is set. Bullets in the unrefined section are parsed only in the exact shape `> - [ ] **`ID`** (Size, ...) - text`; any other checkbox line is not a row, stays where it is, and is counted in the dry run as "left in place".
+
+**The run.**
+
+1. `sparkwright board migrate --from BACKLOG.md --plan <plan> --dry-run`. It makes no tracker call and needs no credentials. It refuses, listing every reason at once, when a row to be moved is missing from the plan, an ID repeats, a plan row is not on the board, an epic is undeclared, a merge target is not a `keep` row, a reason is missing, a field holds a control byte, a `new` line is malformed, or the plan creates more epics and cards than `list_cap`. Read the printed plan: one line per epic and card, in the order they will be created and ranked, then a count line.
+2. Optional: `--screen <file>` takes an identifier list in the publish gate's grammar (a plain line is a case-insensitive substring, a `word:` line is a whole word) and refuses any card whose summary or description matches, printing only the row ID and a hit count, never the entry or the text. It runs on a dry run too.
+3. The live run (the same command without `--dry-run`), with `KIT_TRACKER_USER` / `KIT_TRACKER_TOKEN` exported in your own shell. A preflight that only reads refuses before the first write if the credentials are missing, the account holds no write permission, an issue type or its `parent` / `labels` / description field is missing, a Size or Risk value is not an allowed value of its field, a required field would not be filled, or a mapped state is not a status of the project. Then it creates the epics, then the cards in plan order, appending `ROW-ID<TAB>KEY<TAB>created|done` to the ledger (`--ledger`, default `.kit/board-migration.tsv`) as it goes. A refusal from `board create` or a transition stops the run naming the row; nothing is retried blind. Re-run the same command to resume: finished rows are skipped, a created row only gets its transition. At the end the census reads the project and exits 1 if its card count differs from the ledger's (`census OK` otherwise).
+4. `sparkwright board migrate --from BACKLOG.md --plan <plan> --ledger <ledger> --freeze --date <YYYY-MM-DD>` rewrites the markdown board in place: a "this board is history" banner under the title, the moved rows removed (each of Ready, Blocked and the unrefined section keeps its heading and gains a "Moved to <project>" line), and a Done entry for every dropped and merged row. It makes no tracker call, refuses unless every planned row has a finished ledger line, and a second run changes nothing.
+
+Five ceilings. (1) Rank is the creation order; the fixtures prove the order, not that your site ranks by it, so look at the board. (2) A crash between a card's create and its ledger line, followed by a re-run, would create that card twice; the census shows it, and the cure is deleting the duplicate by hand. (3) The permission probe cannot name which write permission the account holds: it reports only that it holds one, so a missing create permission fails on the first epic and a missing transition permission fails on the first Ready card (resumable from the ledger). (4) The preflight cannot read the status a new card lands in; a workflow whose initial status is not `state.backlog` shows only in the census by state. (5) The census counts epics in the mapped `state.*` statuses; epics on a separate workflow show as a mismatch after a good run. `board create` takes the backend from the `CLAUDE.md` declaration, so for the live run the declaration must already name the tracker.
+
 ## Azure DevOps (Boards)
 
 - **State map** — the work-item **State** field / Board columns map to the six (e.g. New→Backlog, Approved→Ready, Active→In Progress, Resolved→In Review, Closed→Done; add a Released state via process customization). `Blocked` via a tag or the Blocked field.

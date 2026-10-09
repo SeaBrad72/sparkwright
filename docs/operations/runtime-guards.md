@@ -93,23 +93,63 @@ documented above are the whole of this page's enforcement. Acceptance stays at m
 ## Honesty boundary
 Each surface is a speed bump for honest mistakes, not containment of a hostile process. It is bypassable by design and does **not** claim to block every write/exfil path. **Local git only:** the git surfaces here (`pre-push`, `guard_check_push`) act *locally*, before the network round-trip. A **server-side `gh pr merge --admin`** is a GitHub API call — a different transport entirely — and is outside the guard's reach. **The S6 `--admin` deny is a local speed-bump, not this boundary:** it makes the bypass loud in the guard's own reasons and stops the honest-mistake local invocation, but a token with admin scope can still call the API directly (or a non-Claude runtime can). **The real boundary is credential-side — never issuing the agent an admin-scoped token** (`../enterprise/platform-safety-boundary.md`); a `gh` with only normal-merge scope simply *cannot* bypass. The boundary on *who merges* is GitHub branch protection + the agent's sanctioned path — a **normal** (non-`--admin`) merge on a recorded, authenticated GO via `scripts/promotion-verify.sh actuate` (team), or preparing the PR and handing the human the `--admin` kill-switch merge (solo) — see [`review-lane.md`](./review-lane.md), **not** the guard. Known bypass classes (all within this ceiling, not regressions): `--no-verify`; an uncooperative runtime; a language interpreter (`python -c`, `node -e`); a redirect/printf that writes a file without invoking a denied verb; an upload via `curl --data @file` / interpreter; and history-application like `git am` / `git apply`. The boundary that actually contains these is platform-owned — adopt the guard **with** the network-egress allowlist, separate prod credentials, sandboxed FS, and scoped tokens (`../enterprise/platform-safety-boundary.md`).
 
-## Below the text layer: the sandbox
+## Below the text layer: the strict profile (opt-in)
 
 The guard reads the TEXT of a command. It cannot see what a script it never read will write, or what a patch it
-never opened contains. So the shipped `.claude/settings.json` also turns on Claude Code's **OS sandbox**
-(`GUARD-CP-READONLY-SANDBOX`), which judges the write, not the command: whatever the spelling, a write to the
-protected set fails. The guard stays in front as the early warning; the sandbox is what holds below it, and the PR
-gates (CODEOWNERS, ratification, `land`) still bind every committed change.
+never opened contains. Claude Code's **OS sandbox** judges the write, not the command: whatever the spelling, a write
+to the protected set fails. The kit ships that sandbox as an **opt-in strict profile**; the shipped default has it
+**off**.
 
-**What is protected (read-only to the agent's shell):** the session's own enforcement layer: `.claude/` (the guard,
-its wiring, `settings.local.json`), `hooks/` (the tracked pre-push hook), `.kit/` (every dial and conf, present and
-future), `.git/hooks`, `.git/config`, `.mcp.json`, and in your home directory the global git config
+**The default (sandbox off), and what it costs in protection.** `.claude/settings.json` ships **no `sandbox` key**
+(an explicit `false` would outrank a developer's own user-level setting; project settings outrank user settings).
+In the default the agent's Bash, limited only by the text guard, can write:
+- the repo enforcement layer (`.claude/` including `settings.local.json`, `hooks/`, `.kit/`, `.git/hooks`,
+  `.git/config`, `.mcp.json`);
+- the home git config and shell startup files (`~/.gitconfig`, `~/.config/git`, `~/.zshrc`, `~/.zshenv`,
+  `~/.zprofile`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`);
+- Claude Code's user-level config under `~/.claude`;
+- any user-writable path outside the project and the temp roots;
+- any unix socket.
+
+The Edit and Write tools stay denied the repo enforcement layer by the `permissions.deny` `Edit(...)` rules for
+`.claude/`, `hooks/`, `.kit/` and `.env`, and the PreToolUse text guard is in front of Bash. **The consequence:**
+files outside the tracked tree never reach a PR; code planted in them runs later as the human, with the human's forge
+credentials. The forge controls bind identities, not that code; this is the kit's position before v3.234.0. What the forge
+does decide is what reaches `main` from the tracked tree: branch protection with admin enforcement, a non-author
+Approve, a GO bound to a commit, and CI that re-grades every push; a changed guard file surfaces at the PR as
+**control-plane** class. The OS sandbox is local tamper-resistance for unattended operation. It is off by default
+because Claude Code itself always write-protects `.claude/` settings, `.claude/hooks`, `.mcp.json`, `.git/hooks` and
+`.git/config` under it and nothing can exempt them (its sandboxing documentation, "Protected paths"); the measured
+cost was a human step on every update that changes the guard (3 of the last 4 releases). It will be revisited once
+fresh-clone sessions make the strict profile free. `scripts/preflight.sh` prints which
+profile is active, reading managed > local > project > user settings.
+
+**Apply the strict profile** for unattended or enterprise operation by merging the `sandbox` key of
+`templates/sandbox-strict.settings.local.json` into your existing `.claude/settings.local.json`, or copying the
+template there if you have none. Do not copy over an existing file: it would wipe the permission allows that file has
+accumulated. No kit update touches `settings.local.json`. Strict is **per checkout**: worktrees and clones do not
+inherit it, so repeat the step in each. Claude Code takes scalars from the higher-precedence scope (local over
+project), so the file's `enabled: true` wins, and it concatenates the filesystem arrays across scopes (its settings
+and sandboxing documentation). That merge is documented behaviour, not something the kit measures at runtime:
+`guard-wired.sh --sandbox-enforce` proves the OS layer for the shipped settings merged with the template by that rule,
+and a session started after merging the file is the runtime proof. Turning the sandbox on with only a partial block
+(for example through `/sandbox`) in `.claude/settings.local.json` makes `guard-wired.sh` red until the full block is
+present: it fails closed. `guard-wired.sh` checks the project and local settings; preflight also reads the user and
+managed files.
+**What it costs, in one sentence:** every update that changes a protected path (the guard, in 3 of the last 4
+releases) needs one git command run by a human in a terminal, because `allowUnsandboxedCommands: false` holds the
+unsandboxed retry off. For the boundary to hold against a project edit too, install the same block as managed
+settings (the hardening tier below).
+
+**What the strict profile protects (read-only to the agent's shell):** the session's own enforcement layer: `.claude/`
+(the guard, its wiring, `settings.local.json`), `hooks/` (the tracked pre-push hook), `.kit/` (every dial and conf,
+present and future), `.git/hooks`, `.git/config`, `.mcp.json`, and in your home directory the global git config
 (`~/.gitconfig`, `~/.config/git`) and shell rc files (`~/.zshrc`, `~/.zshenv`, `~/.zprofile`, `~/.bashrc`,
-`~/.bash_profile`, `~/.profile`). `permissions.deny` adds `Edit(...)` rules for `.claude/`, `hooks/`, `.kit/` and
-`.env` for the Edit and Write tools (which are not sandboxed; the guard's structured path check also covers them).
-`conformance/guard-wired.sh` checks the block's load-bearing keys; `sh conformance/guard-wired.sh --sandbox-enforce`
-applies the shipped policy through the pinned sandbox runtime and judges by file hashes (a SKIP, exit 3, means the
-runtime could not start on this machine: it is never a pass).
+`~/.bash_profile`, `~/.profile`). `conformance/guard-wired.sh` requires the Edit rules in every profile, checks the
+template's load-bearing keys in the kit's own tree, and checks the same keys on an adopter's effective block when their
+`settings.local.json` turns the sandbox on; `sh conformance/guard-wired.sh --sandbox-enforce` applies the strict
+profile through the pinned sandbox runtime and judges by file hashes (a SKIP, exit 3, means the runtime could not
+start on this machine: it is never a pass).
 
 **On Ubuntu 23.10 or later** the sandbox cannot start under the default AppArmor restriction on unprivileged user
 namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`): bubblewrap fails with `Failed RTM_NEWADDR: Operation
@@ -146,8 +186,8 @@ which is simpler but lifts the restriction for every program on the machine.
   `GUARD-SANDBOX-NETWORK-EGRESS`); the sandbox is no exfiltration defense.
 - **Docker** is reachable (`network.allowUnixSockets` names the two standard socket paths), so local-database
   integration tests keep working. The Docker daemon runs outside the sandbox, so a session that can reach it has a
-  deliberate route around this protection. **The strict form:** remove the `allowUnixSockets` entry from
-  `.claude/settings.json` (a reviewed control-plane change; `guard-wired.sh` stays green without it) and Docker
+  deliberate route around this protection. **The stricter form:** remove the `allowUnixSockets` entry from your
+  `.claude/settings.local.json` copy of the template (`guard-wired.sh` stays green without it) and Docker
   becomes unreachable from the agent.
 - **A dev-clone outside the project** is writable by design: the protection is scoped to the session's own project,
   and that is what lets control-plane work happen there (next section).
@@ -155,27 +195,29 @@ which is simpler but lifts the restriction for every program on the machine.
 **What an `Operation not permitted` means.** The OS refused a write to the protected set. There is no kit signpost on
 an OS error (the guard fires first on the text it can see). Do the work in a dev-clone or worktree outside the
 project, or hand the step to a human. On macOS a bare `mktemp` used to cause it (the per-user temp root was not
-writable); the shipped file now opens it, and a script should still pass an explicit template
+writable); the strict template opens it, and a script should still pass an explicit template
 (`mktemp -d "${TMPDIR:-/tmp}/name.XXXXXX"`), because macOS `mktemp` ignores `TMPDIR`.
 
-**Recovery card (two frictions the project's own checkout now has).**
+**Recovery card (two frictions a checkout has under the strict profile only; the default has neither).**
 1. `git config` and `git push -u` fail in the main checkout (the project's `.git/config` is locked). Push with
    `git push origin <branch>` (no `-u`). Creating a branch from a remote branch sets tracking in that file, so
    add `--no-track` where it matters.
 2. A branch switch, merge or pull in the main checkout that changes `.claude/`, `hooks/` or `.kit/` fails part-way
    and leaves a half-applied tree. Do those in a worktree or dev-clone. A control-plane update to the main checkout
-   (a pulled control-plane PR, `kit-update`) is a **human step**. To recover, the human runs
-   `git checkout -- . && git checkout <branch>`.
+   (a pulled control-plane PR, `kit-update`) is a **human step**. To recover, the human runs `git status`, restores
+   only the files the failed operation left half-applied with `git checkout -- <those paths>` (or `git stash`), then
+   repeats the pull or `git checkout <branch>`. A bare `git checkout -- .` would discard all uncommitted changes.
 
 **Where the sandbox cannot start.** Linux and WSL2 need `bubblewrap` and `socat`; hosts and containers that block
 unprivileged user namespaces cannot run it; native Windows and any harness other than Claude Code get no OS layer
-from this block. With `failIfUnavailable: false` (the shipped value) the session then runs as it did before the
-sandbox, the guard still runs, and `scripts/preflight.sh` prints a `warn` naming the reason. The container tier
+from this block. With `failIfUnavailable: false` (the template's value) the session then runs as it did before the
+sandbox, the guard still runs, and `scripts/preflight.sh` prints a `warn` naming the reason (only under the strict
+profile; with the sandbox off there is nothing to start). The container tier
 (`docs/operations/containment.md`) is the harness-neutral answer.
 
 **The hardening tier.** Project-scoped settings can be changed by the human who owns the project. Where the boundary
-must hold against a project edit too, put the same block in Claude Code's managed settings (admin-required, and a
-repo setting cannot loosen it): see `docs/enterprise/platform-safety-boundary.md`.
+must hold against a project edit too, put the template's block in Claude Code's managed settings (admin-required, and
+a repo setting cannot loosen it): see `docs/enterprise/platform-safety-boundary.md`.
 
 **Residuals, in brief.** The GO ledger (`refs/notes/promotions`) is not protected here: the agent writes GO records
 legitimately, so the OS cannot tell a real record from a forged one (`land` authenticates the forge approval, which

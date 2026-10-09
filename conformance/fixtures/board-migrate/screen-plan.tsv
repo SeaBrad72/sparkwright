@@ -1,0 +1,5 @@
+# Both screen hits: the keep row QLN-PAPA says ACMELY, and the new intent holds the whole word ZBX.
+epic	Milestone Q
+row	QLN-PAPA	keep	Milestone Q
+row	QLN-QUEBEC	keep	Milestone Q
+new	QLN-ROMEO	Milestone Q	S	low	rolls out to ZBX customers

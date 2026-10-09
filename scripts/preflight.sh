@@ -120,7 +120,7 @@ check_git_capability() {  # advisory: does the installed git support `merge-tree
 }
 
 # --- the agent's OS sandbox (GUARD-CP-READONLY-SANDBOX) -------------------------------------
-# The shipped .claude/settings.json turns on Claude Code's OS sandbox, which keeps the enforcement
+# The strict profile (opt-in) turns on Claude Code's OS sandbox, which keeps the enforcement
 # layer read-only to the agent's shell. With `failIfUnavailable:false` (by design) a machine where it
 # cannot start runs the session UNSANDBOXED, so this reports that loudly. WARN-only: it never sets `miss`.
 # FLAG-NOT-ENV, like the git seam above: the PREFLIGHT_SANDBOX_* seams are honored only under a seam flag.
@@ -150,24 +150,48 @@ sandbox_unavailable_reason() {  # prints a reason and returns 1 when the sandbox
   esac
 }
 
-check_sandbox() {  # advisory: can the agent's OS sandbox start, and does settings.json turn it on?
-  _sfile=".claude/settings.json"
-  [ "${SEAMS:-0}" -eq 1 ] && _sfile="${PREFLIGHT_SANDBOX_SETTINGS:-$_sfile}"
+sandbox_enabled_in() {  # <settings file> -> prints true, false or unset (the file's own sandbox.enabled)
+  [ -f "$1" ] || { echo unset; return 0; }
+  jq -r '.sandbox | if type == "object" and has("enabled") then (if .enabled == true then "true" else "false" end) else "unset" end' "$1" 2>/dev/null || echo unset
+}
+
+# The profile line (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN). The shipped .claude/settings.json carries NO sandbox
+# key (so a developer's own user-level setting is not overridden); the strict profile is the template
+# templates/sandbox-strict.settings.local.json merged into .claude/settings.local.json. Claude Code takes
+# scalars from the highest-precedence scope that sets them: managed > local > project > user. So the EFFECTIVE
+# enabled is the first of those files (in that order) that sets sandbox.enabled; none sets it = off. The managed
+# file is read where readable (macOS /Library/Application Support/ClaudeCode/managed-settings.json, Linux
+# /etc/claude-code/managed-settings.json). The "cannot start here" warn is shown only under strict: with the
+# sandbox off there is nothing to start. Informational: never sets `miss`.
+check_sandbox() {
+  _sfile=".claude/settings.json"; _sloc=".claude/settings.local.json"; _suser="${HOME:-}/.claude/settings.json"
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) _smgd="/Library/Application Support/ClaudeCode/managed-settings.json" ;;
+    *) _smgd="/etc/claude-code/managed-settings.json" ;;
+  esac
+  if [ "${SEAMS:-0}" -eq 1 ]; then
+    _sfile="${PREFLIGHT_SANDBOX_SETTINGS:-$_sfile}"; _sloc="${PREFLIGHT_SANDBOX_LOCAL:-$_sloc}"
+    _suser="${PREFLIGHT_SANDBOX_USER:-$_suser}"; _smgd="${PREFLIGHT_SANDBOX_MANAGED:-$_smgd}"
+  fi
+  command -v jq >/dev/null 2>&1 || { echo "  skip sandbox profile — jq absent"; return 0; }
+  _seff='unset'
+  for _sf in "$_smgd" "$_sloc" "$_sfile" "$_suser"; do
+    _sen=$(sandbox_enabled_in "$_sf")
+    if [ "$_sen" != unset ]; then _seff=$_sen; break; fi
+  done
+  if [ "$_seff" != true ]; then
+    echo "  ok   agent OS sandbox: off (default). The strict profile is available: templates/sandbox-strict.settings.local.json"
+    return 0
+  fi
+  echo "  ok   agent OS sandbox: strict (the guard files are read-only to the shell; an update that changes them is one terminal git command)"
   if _sreason=$(sandbox_unavailable_reason); then
     echo "  ok   agent OS sandbox can start here"
   else
     printf '%s\n' "  warn agent OS sandbox cannot start here: $_sreason."   # Rule 3
-    echo "       Claude Code will run WITHOUT the sandbox: the guard still runs, but the enforcement layer"
-    echo "       (.claude/, hooks/, .kit/, .git/hooks, .git/config) is not read-only to the agent's shell."
+    echo "       The strict profile is configured but Claude Code will run WITHOUT the sandbox: the guard still runs,"
+    echo "       but the guard files (.claude/, hooks/, .kit/, .git/hooks, .git/config) are not read-only to the shell."
     echo "       Fix: install the missing piece (Linux/WSL2: bubblewrap and socat), or accept the reduced"
-    echo "       protection. See docs/operations/runtime-guards.md, section \"Below the text layer: the sandbox\"."
-    rec=1
-  fi
-  [ -f "$_sfile" ] || return 0
-  command -v jq >/dev/null 2>&1 || { echo "  skip sandbox setting — jq absent, cannot read $_sfile"; return 0; }
-  if ! jq -e '.sandbox.enabled == true' "$_sfile" >/dev/null 2>&1; then
-    printf '%s\n' "  warn $_sfile does not set sandbox.enabled to true — the agent's OS sandbox is off."   # Rule 3
-    echo "       Restore the shipped block (kit-update, or copy it from the kit's .claude/settings.json)."
+    echo "       protection. See docs/operations/runtime-guards.md, section \"Below the text layer: the strict profile (opt-in)\"."
     rec=1
   fi
 }
@@ -2912,18 +2936,25 @@ EOF
   esac
   fi
 
-  # — the agent's OS sandbox (GUARD-CP-READONLY-SANDBOX): available -> no warn; each missing reason -> a
-  # warn NAMING it; `miss` is untouched in every case (advisory only).
-  sbx_case() {  # <label> <expect-substring or ""> <os> <tools> <bwrap_ok> [settings-file]
+  # — the agent's OS sandbox profile (SANDBOX-OFF-BY-DEFAULT-STRICT-OPT-IN). The availability cases run under
+  # STRICT (the default shipped file has the sandbox off, so nothing would be checked): available -> no warn;
+  # each missing reason -> a warn NAMING it; `miss` is untouched in every case (advisory only).
+  _sbx=$(mktemp -d)
+  printf '{"sandbox":{"enabled":true}}\n' > "$_sbx/on.json"
+  printf '{"sandbox":{"enabled":false}}\n' > "$_sbx/off.json"
+  printf '{"permissions":{}}\n' > "$_sbx/noblock.json"
+  sbx_case() {  # <label> <expect-substring or ""> <os> <tools> <bwrap_ok> [settings-file] [local-file] [user-file] [managed-file]
     # Called in the CURRENT shell (output to a file, not $( … )) so a stray `miss=` would be seen below.
     miss=0; _sbx_rec=${rec:-0}
     PREFLIGHT_SANDBOX_OS="$3"; PREFLIGHT_SANDBOX_TOOLS="$4"; PREFLIGHT_SANDBOX_BWRAP_OK="$5"
-    PREFLIGHT_SANDBOX_SETTINGS="${6:-/nonexistent-settings}"
-    export PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK PREFLIGHT_SANDBOX_SETTINGS
+    PREFLIGHT_SANDBOX_SETTINGS="${6:-$_sbx/on.json}"
+    PREFLIGHT_SANDBOX_LOCAL="${7:-/nonexistent-local}"
+    PREFLIGHT_SANDBOX_USER="${8:-/nonexistent-user}"; PREFLIGHT_SANDBOX_MANAGED="${9:-/nonexistent-managed}"
+    export PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED
     _sbx_out=$(mktemp)
     check_sandbox >"$_sbx_out" 2>&1 || :
     out=$(cat "$_sbx_out"); rm -f "$_sbx_out"
-    unset PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK PREFLIGHT_SANDBOX_SETTINGS
+    unset PREFLIGHT_SANDBOX_OS PREFLIGHT_SANDBOX_TOOLS PREFLIGHT_SANDBOX_BWRAP_OK PREFLIGHT_SANDBOX_SETTINGS PREFLIGHT_SANDBOX_LOCAL PREFLIGHT_SANDBOX_USER PREFLIGHT_SANDBOX_MANAGED
     rec=$_sbx_rec
     if [ -z "$2" ]; then
       case "$out" in *warn*) echo "FAIL: sandbox [$1] warned when it should not ($out)"; fail=1 ;; *"ok   agent OS sandbox"*) echo "PASS: sandbox [$1] -> no warn" ;; *) echo "FAIL: sandbox [$1] printed no ok line ($out)"; fail=1 ;; esac
@@ -2939,15 +2970,52 @@ EOF
   sbx_case linux-no-socat "socat" Linux "bwrap" 1
   sbx_case linux-userns-blocked "user namespaces" Linux "bwrap socat" 0
   sbx_case other-os "no supported sandbox" Plan9 "" 1
-  _sbx=$(mktemp -d)
-  printf '{"sandbox":{"enabled":true}}\n' > "$_sbx/on.json"
-  printf '{"sandbox":{"enabled":false}}\n' > "$_sbx/off.json"
-  sbx_case settings-on "" Darwin "sandbox-exec" 1 "$_sbx/on.json"
-  sbx_case settings-off "does not set sandbox.enabled" Darwin "sandbox-exec" 1 "$_sbx/off.json"
+  # The profile line: off by default (and no cannot-start warn, even where no sandbox could start), strict via the
+  # shipped file or via the local file (scalars: local over project), the local file turning a strict project off,
+  # and a project file with no sandbox block (off). The old "restore the shipped block" warn is gone.
+  printf '{"sandbox":{"enabled":true}}\n' > "$_sbx/local-on.json"
+  printf '{"sandbox":{"enabled":false}}\n' > "$_sbx/local-off.json"
+  sbx_prof() {  # <label> <off|strict> <settings> [local] <os> <tools> <bwrap_ok> [user] [managed] [expected-warn reason]
+    sbx_case "$1" "${10:-}" "$5" "$6" "$7" "$3" "${4:-}" "${8:-}" "${9:-}"
+    case "$out" in
+      *"agent OS sandbox: $2 ("*) echo "PASS: sandbox profile [$1] -> $2" ;;
+      *) echo "FAIL: sandbox profile [$1] did not print the $2 line ($out)"; fail=1 ;;
+    esac
+    case "$out" in
+      *"does not set sandbox.enabled"*|*"Restore the shipped block"*) echo "FAIL: sandbox profile [$1] printed the retired restore-the-shipped-block warn ($out)"; fail=1 ;;
+    esac
+    if [ "$2" = off ]; then
+      case "$out" in
+        *warn*|*"can start here"*) echo "FAIL: sandbox profile [$1] ran the availability check with the sandbox off ($out)"; fail=1 ;;
+      esac
+    fi
+  }
+  sbx_prof profile-off-default off "$_sbx/off.json" "" Plan9 "" 1
+  sbx_prof profile-off-no-block off "$_sbx/noblock.json" "" Plan9 "" 1
+  sbx_prof profile-strict-shipped strict "$_sbx/on.json" "" Darwin "sandbox-exec" 1
+  sbx_prof profile-strict-via-local strict "$_sbx/off.json" "$_sbx/local-on.json" Darwin "sandbox-exec" 1
+  sbx_prof profile-local-turns-off off "$_sbx/on.json" "$_sbx/local-off.json" Plan9 "" 1
+  # No sandbox key anywhere in the shipped file (the real default) is off. A user-level file (~/.claude) turning it
+  # on is strict when the project file says nothing; precedence is managed > local > project > user.
+  sbx_prof profile-off-absent-key off "$_sbx/noblock.json" "" Plan9 "" 1
+  sbx_prof profile-strict-via-user strict "$_sbx/noblock.json" "" Darwin "sandbox-exec" 1 "$_sbx/on.json"
+  sbx_prof profile-project-false-beats-user off "$_sbx/off.json" "" Plan9 "" 1 "$_sbx/on.json"
+  sbx_prof profile-strict-via-managed strict "$_sbx/noblock.json" "" Darwin "sandbox-exec" 1 "" "$_sbx/on.json"
+  sbx_prof profile-managed-beats-local strict "$_sbx/noblock.json" "$_sbx/local-off.json" Darwin "sandbox-exec" 1 "" "$_sbx/on.json"
+  sbx_prof profile-managed-off-beats-local off "$_sbx/noblock.json" "$_sbx/local-on.json" Plan9 "" 1 "" "$_sbx/off.json"
+  # Strict but unable to start: the profile line AND the warn naming the reason.
+  sbx_prof profile-strict-unavailable strict "$_sbx/off.json" "$_sbx/local-on.json" Linux "socat" 1 "" "" "bubblewrap"
+  case "$out" in
+    *warn*"bubblewrap"*) echo "PASS: sandbox profile [profile-strict-unavailable] -> warn naming bubblewrap" ;;
+    *) echo "FAIL: sandbox profile [profile-strict-unavailable] did not warn naming bubblewrap ($out)"; fail=1 ;;
+  esac
+  # WIRED: a real run (seams live) under strict surfaces the warning, and does not change the exit code (advisory).
+  sbx_e2e=$(PREFLIGHT_SANDBOX_SETTINGS="$_sbx/on.json" PREFLIGHT_SANDBOX_LOCAL=/nonexistent-local PREFLIGHT_SANDBOX_USER=/nonexistent-user PREFLIGHT_SANDBOX_MANAGED=/nonexistent-managed PREFLIGHT_SANDBOX_OS=Linux PREFLIGHT_SANDBOX_TOOLS='' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e 2>&1) || true
   rm -rf "$_sbx"
-  # WIRED: a real run (seams live) surfaces the warning, and does not change the exit code (advisory).
-  sbx_e2e=$(PREFLIGHT_SANDBOX_OS=Linux PREFLIGHT_SANDBOX_TOOLS='' PREFLIGHT_GH_CMD='false' ACTIONLINT_VALID_CMD='__skip__' sh "$0" --selftest-e2e 2>&1) || true
-  case "$sbx_e2e" in *"agent OS sandbox cannot start"*) echo "PASS: a real preflight run surfaces the sandbox warning" ;; *) echo "FAIL: a real preflight run did not surface the sandbox warning"; fail=1 ;; esac
+  case "$sbx_e2e" in
+    *"agent OS sandbox cannot start"*) echo "PASS: a real preflight run surfaces the sandbox warning under the strict profile" ;;
+    *) echo "FAIL: a real preflight run did not surface the sandbox warning under the strict profile"; fail=1 ;;
+  esac
   miss=0
 
   [ "$fail" -eq 0 ] && { echo "OK: preflight selftest"; exit 0; } || { echo "FAIL: preflight selftest"; exit 1; }

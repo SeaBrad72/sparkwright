@@ -1,0 +1,16 @@
+# A moved row (QLN-GOLF) is absent from the plan.
+epic	Milestone Q
+epic	Parked
+epic	Later Work
+epic	Empty Epic
+row	QLN-ALPHA	keep	Milestone Q
+row	QLN-DELTA	keep	Milestone Q
+row	QLN-SHIFT	merge:QLN-DELTA	-	same area, malformed cells
+row	QLN-BRAVO	keep	Milestone Q
+row	QLN-FOXTROT	keep	Milestone Q
+row	QLN-HOTEL	keep	Milestone Q
+row	QLN-CHARLIE	keep	Parked
+row	QLN-INDIA	keep	Parked
+row	QLN-ECHO	drop	-	superseded by alpha
+row	QLN-KILO	stay	-	it closes in the frozen file
+row	QLN-DONE-ONE	stay	-

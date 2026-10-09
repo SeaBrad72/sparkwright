@@ -1,0 +1,15 @@
+Intent
+(M, ordinary, unrefined)
+hotel bullet text
+  - a nested sub-bullet of hotel
+
+Acceptance criteria
+—
+
+Links
+—
+
+Success metric
+—
+
+Migrated from board.md row `QLN-HOTEL` on 2026-10-08.

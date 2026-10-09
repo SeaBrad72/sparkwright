@@ -32,12 +32,24 @@ sh scripts/kit-update.sh --advance-base --from <same source>                 # a
    *Recording what you took* below).
 5. The next `--from` is computed against what you actually took.
 
-**The sandbox and the patch.** The shipped `.claude/settings.json` makes `.claude/`, `hooks/` and `.kit/` read-only
-to the agent's shell (`docs/operations/runtime-guards.md`, "Below the text layer: the sandbox"). An update patch
-that touches them, applied in your main checkout from an agent session, fails part-way and leaves a half-applied
-tree. Applying the patch (step 2) and pulling a merged control-plane PR (step 3) are therefore **a human step**, run
-in your own terminal outside the agent's sandbox, or by the agent in a dev-clone or worktree outside the project.
-`--from` itself writes none of the protected paths, and `--advance-base` writes only the `kit-base` refs.
+**The sandbox and the patch.** The shipped default has Claude Code's OS sandbox **off**, so applying an update patch
+(step 2) and pulling a merged control-plane PR (step 3) need no human step. If you opted into the **strict profile**
+(the `sandbox` key of `templates/sandbox-strict.settings.local.json` merged into your existing
+`.claude/settings.local.json`, or copied there if you have none; strict is per checkout, so worktrees and clones do not
+inherit it; see `docs/operations/runtime-guards.md`, "Below the text layer: the strict profile (opt-in)"), a patch
+that changes any of `.claude/`, `hooks/`, `.kit/`, `.mcp.json`, `.git/hooks` or `.git/config` (the template's
+`denyWrite` plus Claude Code's own protected paths), applied in your main checkout from an agent session, fails
+part-way and leaves a half-applied tree. Then both steps are **a human step**: one git command in your own terminal
+outside the agent's sandbox, or run by the agent in a dev-clone or worktree outside the project. `--from` itself
+writes none of the protected paths, and `--advance-base` writes only the `kit-base` refs.
+
+**Upgrading from v3.234.0 or v3.235.x.** Your installed `.claude/settings.json` still has the sandbox ON, so THIS
+update changes protected paths and is one terminal step: run `git pull` (or apply the patch) in
+your own terminal. If an agent-run pull already failed part-way, first run `git status`, then restore only the files
+it left half-applied with `git checkout -- <those paths>` (or `git stash`); a bare `git checkout -- .` would discard
+all your uncommitted changes. The new default ships no `sandbox` key, so after it you are on the default profile. To stay on
+the strict profile, merge the template's `sandbox` key into `.claude/settings.local.json` in the terminal, before or
+with the update.
 
 ### Your first update: the order
 

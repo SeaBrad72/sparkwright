@@ -296,6 +296,11 @@ $(bpd_enum_offenders "$_blc" "$(bpd_enum_ranges "$_blc")")"
 #                                   `section_rows` (verified: this file carries zero section_rows/
 #                                   BACKLOG.md hits of its own -- only cell(), on an already-selected
 #                                   row string). No tracker analogue; not a board read.
+#         scripts/board-migrate.sh -- KIT-TREE-BOARD-MIGRATION carve-out (e): reads the md board as the
+#                                   SOURCE of a one-way move into the tracker (non-portable by
+#                                   definition); board read is only the shared parser + a literal-
+#                                   heading bullet parser; no curl (clause (c) still binds it; the
+#                                   selftest's absence leg + twin enforce that).
 #
 #   (b) resolve_backend, BY INVOCATION SHAPE, OUTSIDE the seam. EXCLUDED: backlog-lib.sh (defines +
 #       uses it internally, incl. via seam_backend's thin wrapper) and the named NON-board-governance
@@ -514,6 +519,18 @@ bpd_dc_bc_exempt() {
       # enforced by the STANDING ABSENCE LEG below (bpd_dc_open_offenders' own selftest greps
       # roadmap-current.sh for a raw board-operand read and asserts absence), so criterion (iii) is
       # given teeth by the absence leg, not by this exemption.
+      return 0 ;;
+    */board-migrate.sh)
+      # PRINCIPLED CARVE-OUT (e), KIT-TREE-BOARD-MIGRATION (owner ruling 2026-10-08), not a TODO:
+      # (i) non-tracker-portable by definition -- it reads the md board as the SOURCE of a one-way
+      # move INTO the tracker, so no seam read applies (the seam answers governance questions, rows
+      # in a state / a row's state, not the full cell content a card needs);
+      # (ii) its board read is EXCLUSIVELY the shared GFM-exact parser (section_rows/
+      # cells_in_section/cell, backlog-lib.sh), plus a literal-heading bullet parser for
+      # `## Backlog (unrefined)` that the shared lib lacks (BOARD-SECTION-PAREN-REGEX);
+      # (iii) it carries no curl: clause (c) still binds it (the raw idiom makes it a board reader
+      # regardless of this exemption) and its writes go only through `board.sh create` and
+      # `tracker-jira.sh transition`. Given teeth by the STANDING ABSENCE LEG in the selftest.
       return 0 ;;
   esac
   return 1
@@ -1362,6 +1379,33 @@ DCEOF
     done
   else
     echo "FAIL: selftest -- roadmap-current.sh not found at $_rc_seam_file (H-1 absence leg cannot run)"; sd=1
+  fi
+
+  # STANDING ABSENCE LEG (carve-out (e), KIT-TREE-BOARD-MIGRATION): scripts/board-migrate.sh is exempt
+  # from clause (a) only; it must carry no live whole-word `curl` (its writes go through board.sh /
+  # tracker-jira.sh), else clause (c) -- which still binds it -- would red the real tree.
+  _bm_file="$HERE/../scripts/board-migrate.sh"
+  if [ -f "$_bm_file" ]; then
+    _bm_curl=$(bpd_dc_curl_offenders "$_bm_file") || true
+    if [ -z "$_bm_curl" ]; then
+      echo "PASS: selftest -- board-migrate.sh carries NO live curl (carve-out (e) absence leg)"
+    else
+      echo "FAIL: selftest -- board-migrate.sh carries a live curl (carve-out (e) absence leg tripped):"
+      printf '%s\n' "$_bm_curl" | sed 's/^/    /'
+      sd=1
+    fi
+    # NON-VACUITY TWIN: splice a live curl into a scratch copy and prove clause (c) flags it end to end.
+    mkdir -p "$W/scripts"
+    awk '{ print } END { print "bm_twin_fetch() { curl https://x; }" }' "$_bm_file" > "$W/scripts/board-migrate.sh"
+    _bm_ee=0
+    _bm_out=$(BPD_DC_FILES_OVERRIDE="$W/scripts/board-migrate.sh" bpd_derived_consumer_check 2>&1) || _bm_ee=$?
+    if printf '%s\n' "$_bm_out" | grep -q '(CURL).*board-migrate\.sh'; then
+      echo "PASS: selftest -- curl spliced into a board-migrate.sh scratch copy IS flagged, end to end (carve-out (e) non-vacuity twin)"
+    else
+      echo "FAIL: selftest -- curl spliced into a board-migrate.sh scratch copy was NOT flagged (carve-out (e) twin FAILED -- the leg is vacuous)"; sd=1
+    fi
+  else
+    echo "FAIL: selftest -- board-migrate.sh not found at $_bm_file (carve-out (e) absence leg cannot run)"; sd=1
   fi
 
   rm -rf "$W"; trap - EXIT

@@ -1,0 +1,14 @@
+Intent
+Blocked on: the quillon vendor
+Since: 2026-09-01
+
+Acceptance criteria
+—
+
+Links
+docs/reviews/foxtrot.md
+
+Success metric
+—
+
+Migrated from board.md row `QLN-FOXTROT` on 2026-10-08.

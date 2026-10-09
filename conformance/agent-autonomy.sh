@@ -9945,7 +9945,11 @@ assert_allow "KBS-7 push of an unrelated ref"           '{"tool_name":"Bash","to
 assert_allow "KBS-7 read then unrelated push"           '{"tool_name":"Bash","tool_input":{"command":"git log kit-base ; git push origin feature/x"}}'
 assert_allow "KBS-8 kit-update --from"                  '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-update.sh --from ../kit"}}'
 assert_allow "KBS-8 kit-update --publish-base"          '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-update.sh --publish-base"}}'
-assert_allow "KBS-21 ledger scratch notes-remote"        '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags -f origin +refs/notes/promotions:refs/kit/notes-remote-1234"}}'
+# KIT-UPDATE-GIT-PROXY-PASSTHROUGH (D2): kit-update used to PRINT the raw push below as the publish remedy, which this guard denies; it now prints
+# its own verb. Both halves are pinned so the pair is load-bearing: the printed remedy is ALLOWED, the old printed line is DENIED.
+assert_allow "KUGP-1 printed remedy with --remote: kit-update --publish-base"  '{"tool_name":"Bash","tool_input":{"command":"sh scripts/kit-update.sh --publish-base --remote upstream"}}'
+assert_deny "KUGP-2 the old printed remedy: raw atomic push of kit-base"   '{"tool_name":"Bash","tool_input":{"command":"git push --atomic origin refs/heads/kit-base:refs/kit/base '"'"'refs/tags/kit-base/*:refs/tags/kit-base/*'"'"'"}}'
+assert_allow "KBS-21 ledger scratch notes-remote"       '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags -f origin +refs/notes/promotions:refs/kit/notes-remote-1234"}}'
 assert_allow "KBS-21 ledger scratch promotions-presync"  '{"tool_name":"Bash","tool_input":{"command":"git fetch --no-tags origin +refs/notes/promotions:refs/kit/promotions-presync-1234"}}'
 assert_deny "KBS-21 base into a scratch name"            '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/base:refs/kit/notes-remote-1"}}'
 assert_deny "KBS-21 scratch into kit-base"               '{"tool_name":"Bash","tool_input":{"command":"git fetch origin refs/kit/notes-remote-1:refs/heads/kit-base"}}'
