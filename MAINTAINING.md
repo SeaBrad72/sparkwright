@@ -85,7 +85,7 @@ This is what makes the kit *self-iterating*: the MD files, scripts, and referenc
 
 ## 5. The kit dogfoods its own loop
 
-The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own flow board (`BACKLOG.md` — the one authoritative board, long-range planning included); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
+The canonical kit repo runs the process in `DEVELOPMENT-PROCESS.md`: feature branches → PR → human ratification for any change to governing docs; its own `CHANGELOG`; its own flow board (the Jira project SWAS since 2026-10-09, long-range planning included; `BACKLOG.md` is frozen history after the migration run); its own L3 retros. If a rule is too heavy to follow on the kit itself, that is evidence to fix the rule.
 
 ---
 

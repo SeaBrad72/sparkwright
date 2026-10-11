@@ -25,6 +25,10 @@
 # Usage: sh scripts/doctor.sh [--require] | --selftest
 # POSIX sh; dash-clean.
 # What it changes: Read-only — composes conformance + claims checks into a posture report; mutates nothing.
+# Network (measured, SWAS-117 D5): doctor already reaches the network once, in the kit-update dimension (conformance/kit-current.sh
+# runs `git ls-remote --tags` against the release source). It now also makes up to TWO bounded reads of the tracker (the
+# identity and the permissions of the credential, each one attempt, 5s connect, 10s max) when a Jira credential is present.
+# Those reads SEND THE CREDENTIAL to the conf's base_url (S-L3); doctor does not compare that host to any pin.
 # Guardrails: exit 1 when a GATING dimension FAILs or is UNVERIFIED under --require/CI; the git dimension is advisory (WARN-only, never hard-fails alone).
 set -eu
 cd "$(dirname "$0")/.."
@@ -306,6 +310,187 @@ if [ "${1:-}" = "--selftest" ]; then
 
   rm -rf "$accd" 2>/dev/null || true
 
+  # — tracker credential line (SWAS-101, design D3). HERMETIC: a fixture conf and a stub store (the DOCTOR_* seams,
+  #   honored only under --selftest-e2e); the real conf and the real Keychain are never read here. The environment
+  #   is cleared per child by exporting the four names empty (an empty value counts as unset).
+  _tcd=$(mktemp -d)
+  printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nproject=AB\n' > "$_tcd/tracker.conf"
+  _tcd_mk() {  # <name> <rc>: a stub store, an account line when asked for attributes, a marker token when asked with -w
+    {
+      printf '#!/bin/sh\nrc=%s\nd=%s\n' "$2" "$_tcd"
+      cat <<'TSTUB'
+printf '%s\n' "$*" >> "$d/log"
+if [ "$rc" = 0 ]; then
+  case "$*" in
+    *" -w "*) printf 'DOCTOKMARK-77\n' ;;
+    *) printf '    "acct"\074blob\076="stored@example.com"\n' ;;
+  esac
+fi
+exit "$rc"
+TSTUB
+    } > "$_tcd/$1"
+    chmod +x "$_tcd/$1"
+  }
+  _tcd_mk present 0
+  _tcd_mk absent 44
+  _tcd_mk locked 36
+  _tcd_run() {  # <stub> <conf> [user] [token]: one default-posture doctor run, output on stdout
+    : > "$_tcd/log"
+    KIT_TRACKER_USER="${3:-}" KIT_TRACKER_TOKEN="${4:-}" JIRA_EMAIL='' JIRA_TOKEN='' \
+      DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_TRACKER_CONF="$2" DOCTOR_SECURITY_BIN="$1" sh "$0" --selftest-e2e 2>&1 || true
+  }
+  _o=$(_tcd_run "$_tcd/present" "$_tcd/tracker.conf")
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: keychain (item present; not read)' \
+    || { echo "doctor --selftest: FAIL (a stored item did not render the keychain (item present; not read) line)"; sfail=1; }
+  [ "$(wc -l < "$_tcd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_tcd/log" \
+    || { echo "doctor --selftest: FAIL (doctor made other than ONE attribute-only store call: $(cat "$_tcd/log"))"; sfail=1; }
+  # LOAD-BEARING NEGATIVE: the marker token the stub would return with -w never reaches doctor output. It kills a
+  # mutant that reads the secret (adds -w) and prints it, and one that prints any store output.
+  printf '%s\n' "$_o" | grep -qF 'DOCTOKMARK-77' \
+    && { echo "doctor --selftest: FAIL (a store value reached doctor output)"; sfail=1; } || true
+  _o=$(_tcd_run "$_tcd/absent" "$_tcd/tracker.conf")
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: none - store a token once: JIRA-SETUP-TEMPLATE §5b' \
+    || { echo "doctor --selftest: FAIL (an absent item did not render the none - store a token once line)"; sfail=1; }
+  _o=$(_tcd_run "$_tcd/locked" "$_tcd/tracker.conf")
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: keychain: the Keychain is locked' \
+    || { echo "doctor --selftest: FAIL (a locked Keychain did not render its failure sentence)"; sfail=1; }
+  _o=$(_tcd_run "$_tcd/present" "$_tcd/tracker.conf" env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env' \
+    || { echo "doctor --selftest: FAIL (an environment credential did not render the env line)"; sfail=1; }
+  [ ! -s "$_tcd/log" ] \
+    || { echo "doctor --selftest: FAIL (the store was consulted although the environment held a credential)"; sfail=1; }
+  printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net:8443\nproject=AB\n' > "$_tcd/port.conf"
+  _o=$(_tcd_run "$_tcd/present" "$_tcd/port.conf")
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: none: the tracker base url has no host usable for a Keychain lookup' \
+    || { echo "doctor --selftest: FAIL (an unusable base url did not render the none: reason line)"; sfail=1; }
+  _o=$(_tcd_run "$_tcd/present" "")
+  printf '%s\n' "$_o" | grep -qF 'tracker credential' \
+    && { echo "doctor --selftest: FAIL (a tree with no tracker.conf printed a tracker credential line)"; sfail=1; } || true
+
+  # — SWAS-117 D5: the identity and the agent bound. HERMETIC: DOCTOR_TRACKER_WHOAMI_CMD names a stub standing in for
+  #   `sh scripts/tracker-jira.sh` (honored only under --selftest-e2e). The stub logs its argv and answers by mode.
+  {
+    printf '#!/bin/sh\nd=%s\n' "$_tcd"
+    cat <<'WSTUB'
+printf '%s\n' "$*" >> "$d/alog"
+mode=$(cat "$d/mode")
+case "$4" in
+  whoami)
+    case "$mode" in
+      ok|admin|clean|unread) printf 'account-id\t712020:abc-00000042\ndisplay-name\tAgentFixture\n' ;;
+      hostile) printf 'account-id\t712020:abc-00000042\ndisplay-name\tZQ"HOSTILE$(id)\nemail\tDOCEMAIL-MARK@example.com\n' ;;
+      rejected) exit 6 ;;
+      refused) exit 1 ;;
+      *) exit 2 ;;
+    esac ;;
+  perms)
+    case "$mode" in
+      admin) printf 'BROWSE_PROJECTS\tyes\nADMINISTER_PROJECTS\tno\nADMINISTER\tyes\nSYSTEM_ADMIN\tno\nDELETE_ISSUES\tyes\n' ;;
+      unread) printf 'BROWSE_PROJECTS\tyes\nADMINISTER_PROJECTS\tno\nADMINISTER\tunknown\nSYSTEM_ADMIN\tunknown\nDELETE_ISSUES\tunknown\n' ;;
+      *) printf 'BROWSE_PROJECTS\tyes\nADMINISTER_PROJECTS\tno\nADMINISTER\tno\nSYSTEM_ADMIN\tno\nDELETE_ISSUES\tno\n' ;;
+    esac ;;
+esac
+exit 0
+WSTUB
+  } > "$_tcd/adapter"
+  _tcd_who() {  # <stub-store> <conf> <mode> [user] [token]: one default-posture run with the adapter stand-in; output on stdout
+    : > "$_tcd/log"; : > "$_tcd/alog"; printf '%s' "$3" > "$_tcd/mode"
+    KIT_TRACKER_USER="${4:-}" KIT_TRACKER_TOKEN="${5:-}" JIRA_EMAIL='' JIRA_TOKEN='' \
+      DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_TRACKER_WHOAMI_CMD="sh $_tcd/adapter" \
+      DOCTOR_TRACKER_CONF="$2" DOCTOR_SECURITY_BIN="$1" sh "$0" --selftest-e2e 2>&1 || true
+  }
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" clean)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: keychain (read for the identity check) - runs as AgentFixture (712020:abc-00000042)' \
+    || { echo "doctor --selftest: FAIL (identity: a stored credential did not render the runs-as line with the read-for-the-identity-check source)"; sfail=1; }
+  grep -qxF 'contract-read https://ex.atlassian.net cloud whoami --short' "$_tcd/alog" \
+    && grep -qxF 'contract-read https://ex.atlassian.net cloud perms AB --short' "$_tcd/alog" \
+    || { echo "doctor --selftest: FAIL (identity: doctor did not call whoami and perms with --short: $(cat "$_tcd/alog"))"; sfail=1; }
+  [ "$(wc -l < "$_tcd/alog" | tr -d ' ')" = 2 ] \
+    || { echo "doctor --selftest: FAIL (identity: doctor made other than TWO adapter reads)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'HOLDS' \
+    && { echo "doctor --selftest: FAIL (identity: a non-admin credential was told it HOLDS admin permissions - wolf crying)"; sfail=1; } || true
+  [ "$(wc -l < "$_tcd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_tcd/log" \
+    || { echo "doctor --selftest: FAIL (identity: doctor's own store call was other than ONE attribute-only call)"; sfail=1; }
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" clean env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - runs as AgentFixture (712020:abc-00000042)' \
+    || { echo "doctor --selftest: FAIL (identity: an environment credential did not render the runs-as line)"; sfail=1; }
+  # LOAD-BEARING (the agent bound): a credential that holds ADMINISTER or DELETE_ISSUES says so, names the cure, raises ONE doctor
+  # warn (Overall: WARN) and never fails the build (rc 0). Kills a mutant that drops the HOLDS suffix or the warn, or gates.
+  _wrc=0
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" admin env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - runs as AgentFixture (712020:abc-00000042) - HOLDS ADMINISTER, DELETE_ISSUES: lanes must run as a non-admin agent account, run --preflight --as agent' \
+    || { echo "doctor --selftest: FAIL (agent bound: an admin credential did not render the HOLDS line)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -q '^Overall: WARN' \
+    || { echo "doctor --selftest: FAIL (agent bound: an admin credential did not raise the doctor warn)"; sfail=1; }
+  KIT_TRACKER_USER=env-user@example.com KIT_TRACKER_TOKEN=env-token JIRA_EMAIL='' JIRA_TOKEN='' \
+    DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_TRACKER_WHOAMI_CMD="sh $_tcd/adapter" \
+    DOCTOR_TRACKER_CONF="$_tcd/tracker.conf" DOCTOR_SECURITY_BIN="$_tcd/present" sh "$0" --selftest-e2e >/dev/null 2>&1 || _wrc=$?
+  [ "$_wrc" = 0 ] \
+    || { echo "doctor --selftest: FAIL (agent bound: an admin credential changed doctor's exit to $_wrc - the line must stay advisory, never gate_fail)"; sfail=1; }
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" rejected env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - Jira did not accept it' \
+    || { echo "doctor --selftest: FAIL (identity: a rejected credential (rc 6) did not render 'Jira did not accept it')"; sfail=1; }
+  grep -qF ' perms ' "$_tcd/alog" \
+    && { echo "doctor --selftest: FAIL (identity: the perms read was made after the whoami read was rejected)"; sfail=1; } || true
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" down env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - not reachable' \
+    || { echo "doctor --selftest: FAIL (identity: an unreachable site did not render 'not reachable')"; sfail=1; }
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" refused)
+  printf '%s\n' "$_o" | grep -qF 'tracker credential: keychain (read for the identity check) - not read (the Keychain did not answer; an item made in Keychain Access.app prompts on every read' \
+    || { echo "doctor --selftest: FAIL (identity: a Keychain read that failed did not say the Keychain did not answer)"; sfail=1; }
+  # M-1: the stub answers as the REAL adapter now does: rc 1 is a refusal before any request. From the Keychain that is the
+  # Keychain sentence (above); from the environment (or any other source) it is a configuration refusal, never "not reachable".
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" refused env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - the adapter refused (configuration)' \
+    || { echo "doctor --selftest: FAIL (identity: a refusal from an environment credential did not render the configuration text)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qiF -e 'Keychain' -e 'not reachable' \
+    && { echo "doctor --selftest: FAIL (identity: a configuration refusal blamed the Keychain or the network)"; sfail=1; } || true
+  # S-L1: nothing held but the admin keys unanswered says so, and does not warn
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" unread env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - runs as AgentFixture (712020:abc-00000042) - admin keys unreadable' \
+    || { echo "doctor --selftest: FAIL (identity: unanswered admin keys did not render 'admin keys unreadable')"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'HOLDS' \
+    && { echo "doctor --selftest: FAIL (identity: unanswered admin keys were reported as HELD)"; sfail=1; } || true
+  # LOAD-BEARING (the hostile name): the line shows the reason, never the value, and never the email.
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" hostile env-user@example.com env-token)
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - runs as ? (outside the printable set) (712020:abc-00000042)' \
+    || { echo "doctor --selftest: FAIL (identity: a hostile display name was not rendered as ? (outside the printable set))"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF -e 'ZQ' -e 'DOCEMAIL-MARK' \
+    && { echo "doctor --selftest: FAIL (identity: a hostile name or the email reached doctor output)"; sfail=1; } || true
+  # no conf, or no credential: the seam is never called (count 0)
+  _o=$(_tcd_who "$_tcd/present" "" clean env-user@example.com env-token)
+  [ ! -s "$_tcd/alog" ] \
+    || { echo "doctor --selftest: FAIL (identity: an adapter read was made in a tree with no tracker.conf)"; sfail=1; }
+  _o=$(_tcd_who "$_tcd/absent" "$_tcd/tracker.conf" clean)
+  [ ! -s "$_tcd/alog" ] \
+    || { echo "doctor --selftest: FAIL (identity: an adapter read was made with no credential at all)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF 'tracker credential: none - store a token once: JIRA-SETUP-TEMPLATE §5b' \
+    || { echo "doctor --selftest: FAIL (identity: no credential did not keep the none - store a token once line)"; sfail=1; }
+  # a non-jira conf is not asked either
+  printf 'version=1\nbackend=md\nbase_url=https://ex.atlassian.net\nproject=AB\n' > "$_tcd/md.conf"
+  _o=$(_tcd_who "$_tcd/present" "$_tcd/md.conf" clean env-user@example.com env-token)
+  [ ! -s "$_tcd/alog" ] \
+    || { echo "doctor --selftest: FAIL (identity: an adapter read was made for a non-jira backend)"; sfail=1; }
+  # FLAG-NOT-ENV: an AMBIENT DOCTOR_TRACKER_WHOAMI_CMD is ignored in a real run. An isolated tree with a jira conf, an
+  # environment credential and an adapter stub that only records that the REAL path reached it (rc 2): the ambient seam's
+  # marker must stay absent, and the adapter marker must be present (otherwise the run never got that far and proves nothing).
+  _wd=$(mktemp -d); _wh=$(mktemp -d); _wm=$(mktemp -d)
+  mkdir -p "$_wd/scripts" "$_wd/.kit"
+  cp "$0" "$_wd/scripts/doctor.sh"
+  cp scripts/tracker-cred.sh scripts/tracker-conf.sh "$_wd/scripts/"
+  cp "$_tcd/tracker.conf" "$_wd/.kit/tracker.conf"
+  printf '#!/bin/sh\necho reached >> "%s/adapter"\nexit 2\n' "$_wm" > "$_wd/scripts/tracker-jira.sh"
+  HOME="$_wh" KIT_TRACKER_USER=env-user@example.com KIT_TRACKER_TOKEN=env-token DOCTOR_TRACKER_WHOAMI_CMD="touch $_wm/seam" \
+    sh "$_wd/scripts/doctor.sh" >/dev/null 2>&1 || true
+  [ -e "$_wm/seam" ] \
+    && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_TRACKER_WHOAMI_CMD was honored in a real run - env, not flag)"; sfail=1; } || true
+  [ -e "$_wm/adapter" ] \
+    || { echo "doctor --selftest: FAIL (the ambient-seam leg never reached the real adapter path: vacuous)"; sfail=1; }
+  rm -rf "$_wd" "$_wh" "$_wm" 2>/dev/null || true
+  rm -rf "$_tcd" 2>/dev/null || true
+
   [ "$sfail" -eq 0 ] && { echo "doctor --selftest: OK"; exit 0; } || exit 1
 fi
 
@@ -348,6 +533,13 @@ if [ "$SEAMS" -eq 1 ]; then
   DOCTOR_ACCRETION_USER="${DOCTOR_ACCRETION_USER:-}"
   DOCTOR_ACCRETION_TSV="${DOCTOR_ACCRETION_TSV:-conformance/sanctioned-commands.tsv}"
   DOCTOR_ACCRETION_JQ="${DOCTOR_ACCRETION_JQ:-jq}"
+  # tracker-credential line seams (honored ONLY under --selftest-e2e): the conf path defaults to EMPTY (no line)
+  # and the store binary to none, so a --selftest-e2e child never reads the real conf or the real Keychain.
+  DOCTOR_TRACKER_CONF="${DOCTOR_TRACKER_CONF:-}"
+  DOCTOR_SECURITY_BIN="${DOCTOR_SECURITY_BIN:-/nonexistent/security}"
+  # SWAS-117 D5: a stand-in for `sh scripts/tracker-jira.sh` (the identity and permission reads); empty = no read at all under
+  # the seam flag, so a --selftest-e2e child never reaches the network. Honored ONLY here, never in a real run.
+  DOCTOR_TRACKER_WHOAMI_CMD="${DOCTOR_TRACKER_WHOAMI_CMD:-}"
 else
   DOCTOR_VERIFY_CMD=""
   DOCTOR_CLAIMS_CMD=""
@@ -362,6 +554,10 @@ else
   DOCTOR_ACCRETION_USER="${HOME:-}/.claude/settings.json"
   DOCTOR_ACCRETION_TSV="conformance/sanctioned-commands.tsv"
   DOCTOR_ACCRETION_JQ="jq"
+  # the tracker-credential line reads the real conf and the real store binary (the library hardcodes it)
+  DOCTOR_TRACKER_CONF=".kit/tracker.conf"
+  DOCTOR_SECURITY_BIN=""
+  DOCTOR_TRACKER_WHOAMI_CMD=""
 fi
 
 gate_fail=0
@@ -797,6 +993,133 @@ elif [ -n "$ACC_LOUD" ] || [ -n "$ACC_TAMPER" ]; then
   printf '  %-14s       -> NB deny-beats-allow: a local allow that merely DUPLICATES a tracked deny is likely engine-ineffective, but is a real intent canary; equivalent-spelling evasions and the tamper keys ARE live. Advisory only — this never blocks you.\n' ""
 else
   printf '  %-14s OK    [no laundering or hook-tampering in the local permission surfaces]\n' "permissions"
+fi
+
+# 6. tracker credential [ADVISORY — one line, never a verdict, never sets gate_fail]
+# SECRETS-INJECTION-AT-LAUNCH (SWAS-101, design D3): which source would the tracker adapter use? It asks the
+# presence question first: the environment, or the attribute-only Keychain lookup (no -w), so a value is never
+# printed. A tree with no .kit/tracker.conf prints nothing.
+# TRACKER-CREDENTIAL-IDENTITY-MODEL (SWAS-117 D5): when a credential is present and the conf is Jira, doctor also asks the
+# ADAPTER (which alone reads the secret) who the credential is, with two bounded reads (`whoami --short`, `perms <KEY> --short`:
+# one attempt each, 5s connect, 10s max, so offline adds at most about 20s). The line then names the account, and a credential
+# that holds an admin or delete permission raises ONE doctor warn (advisory, never gate_fail): lanes must not run as it.
+# NOTE (S-L3): the identity read SENDS THE CREDENTIAL to the conf's base_url (the adapter authenticates its requests to that
+# host), exactly as `board` and the reader do. Doctor never checks that host against anything else, so a conf whose base_url an
+# attacker changed would receive the credential on a real run; the pin comparison (S-2) is the reader's control, not doctor's.
+# Honest about the Keychain: the read happens, so the source text says `(read for the identity check)`.
+# _dt_id_gate / _dt_name_gate: the account id [A-Za-z0-9:_-]{1,128} and display name [A-Za-z0-9 ._'-]{1,64} are re-gated
+# here (S-6: doctor never trusts a byte it did not check); anything else is `?`. The email is never read.
+_dt_id_gate() {
+  _dt_set='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:_-'
+  case "$1" in
+    ''|*[!$_dt_set]*) printf '?'; return 0 ;;
+  esac
+  if [ "${#1}" -le 128 ]; then printf '%s' "$1"; else printf '?'; fi
+}
+_dt_name_gate() {
+  _dt_nset="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ._'-"
+  case "$1" in
+    ''|*[!$_dt_nset]*) printf '? (outside the printable set)'; return 0 ;;
+  esac
+  if [ "${#1}" -le 64 ]; then printf '%s' "$1"; else printf '? (outside the printable set)'; fi
+}
+# _dt_adapter <args…>: the adapter, or the --selftest-e2e seam standing in for `sh scripts/tracker-jira.sh` (the seam is
+# word-split on purpose, like the other DOCTOR_*_CMD seams, so a stub is `sh <file>`).
+_dt_adapter() {
+  if [ -n "$DOCTOR_TRACKER_WHOAMI_CMD" ]; then
+    # shellcheck disable=SC2086  # deliberate word-split of the seam command
+    $DOCTOR_TRACKER_WHOAMI_CMD "$@"
+  else
+    sh scripts/tracker-jira.sh "$@"
+  fi
+}
+# _dt_held <perms-output>: the comma-joined admin or delete keys the credential holds (ADMINISTER, SYSTEM_ADMIN,
+# ADMINISTER_PROJECTS, DELETE_ISSUES), in that order; empty when none.
+_dt_held() {
+  _dh_out=''
+  for _dh_k in ADMINISTER SYSTEM_ADMIN ADMINISTER_PROJECTS DELETE_ISSUES; do
+    if printf '%s\n' "$1" | awk -F'\t' -v k="$_dh_k" '$1 == k && $2 == "yes" { f = 1 } END { exit !f }'; then
+      _dh_out="$_dh_out${_dh_out:+, }$_dh_k"
+    fi
+  done
+  printf '%s' "$_dh_out"
+}
+# _dt_unread <perms-output>: prints a word when any of ADMINISTER, SYSTEM_ADMIN, DELETE_ISSUES is not answered yes or no.
+_dt_unread() {
+  for _du_k in ADMINISTER SYSTEM_ADMIN DELETE_ISSUES; do
+    if ! printf '%s\n' "$1" | awk -F'\t' -v k="$_du_k" '$1 == k && ($2 == "yes" || $2 == "no") { f = 1 } END { exit !f }'; then
+      printf 'unread'; return 0
+    fi
+  done
+}
+if [ -n "$DOCTOR_TRACKER_CONF" ] && [ -f "$DOCTOR_TRACKER_CONF" ] && [ -f scripts/tracker-cred.sh ] && [ -f scripts/tracker-conf.sh ]; then
+  . ./scripts/tracker-cred.sh
+  [ -z "$DOCTOR_SECURITY_BIN" ] || _TCR_SEC_BIN="$DOCTOR_SECURITY_BIN"
+  _tcl_base=$(sh scripts/tracker-conf.sh get base_url "$DOCTOR_TRACKER_CONF" 2>/dev/null || true)
+  _tcl_suffix=""
+  if tracker_cred_available "$_tcl_base"; then
+    _tcl_src=$TRACKER_CRED_SOURCE
+    # does this run ask who the credential is? A real run does (when the adapter is present and the backend is jira); under
+    # --selftest-e2e only when the seam names a stand-in, so every older leg stays hermetic and its text unchanged.
+    _tcl_read=0
+    if [ "$(sh scripts/tracker-conf.sh get backend "$DOCTOR_TRACKER_CONF" 2>/dev/null || true)" = jira ]; then
+      if [ "$SEAMS" -eq 1 ]; then
+        [ -z "$DOCTOR_TRACKER_WHOAMI_CMD" ] || _tcl_read=1
+      elif [ -f scripts/tracker-jira.sh ]; then
+        _tcl_read=1
+      fi
+    fi
+    case "$_tcl_src" in
+      env) _tcl_text="env" ;;
+      *) if [ "$_tcl_read" -eq 1 ]; then _tcl_text="keychain (read for the identity check)"; else _tcl_text="keychain (item present; not read)"; fi ;;
+    esac
+    if [ "$_tcl_read" -eq 1 ]; then
+      _tcl_flav=$(sh scripts/tracker-conf.sh get flavour "$DOCTOR_TRACKER_CONF" 2>/dev/null || echo cloud)
+      [ -n "$_tcl_flav" ] || _tcl_flav=cloud
+      _tcl_proj=$(sh scripts/tracker-conf.sh get project "$DOCTOR_TRACKER_CONF" 2>/dev/null || true)
+      _tcl_rc=0; _tcl_who=$(_dt_adapter contract-read "$_tcl_base" "$_tcl_flav" whoami --short 2>/dev/null) || _tcl_rc=$?
+      if [ "$_tcl_rc" -eq 0 ]; then
+        _tcl_id=$(_dt_id_gate "$(printf '%s\n' "$_tcl_who" | awk -F'\t' '$1 == "account-id" { print $2; exit }')")
+        _tcl_nm=$(_dt_name_gate "$(printf '%s\n' "$_tcl_who" | awk -F'\t' '$1 == "display-name" { print $2; exit }')")
+        _tcl_suffix=" - runs as $_tcl_nm ($_tcl_id)"
+        _tcl_pm=''; _tcl_prc=0
+        _tcl_pm=$(_dt_adapter contract-read "$_tcl_base" "$_tcl_flav" perms "$_tcl_proj" --short 2>/dev/null) || _tcl_prc=$?
+        if [ "$_tcl_prc" -eq 0 ]; then
+          _tcl_held=$(_dt_held "$_tcl_pm")
+          if [ -n "$_tcl_held" ]; then
+            warns=$((warns+1))
+            _tcl_suffix="$_tcl_suffix - HOLDS $_tcl_held: lanes must run as a non-admin agent account, run --preflight --as agent"
+          elif [ -n "$(_dt_unread "$_tcl_pm")" ]; then
+            # S-L1: nothing held, but one of the admin keys was not answered (the site rejected the extended key set): say so
+            # instead of implying a clean bill
+            _tcl_suffix="$_tcl_suffix - admin keys unreadable"
+          fi
+        fi
+      elif [ "$_tcl_rc" -eq 6 ]; then
+        _tcl_suffix=" - Jira did not accept it"
+      elif [ "$_tcl_rc" -eq 1 ] && [ "$_tcl_src" = keychain ]; then
+        # the adapter refused BEFORE any request (rc 1) and the credential came from the Keychain: the read failed or timed
+        # out. An item made in Keychain Access.app prompts on every read (JIRA-SETUP-TEMPLATE §5b), so say so.
+        _tcl_suffix=" - not read (the Keychain did not answer; an item made in Keychain Access.app prompts on every read, JIRA-SETUP-TEMPLATE §5b)"
+      elif [ "$_tcl_rc" -eq 1 ]; then
+        # a refusal that is not the Keychain's (a bad flavour or base url, a missing jq): neither "Keychain" nor "not reachable"
+        _tcl_suffix=" - the adapter refused (configuration)"
+      else
+        _tcl_suffix=" - not reachable"
+      fi
+    fi
+  else
+    case "$TRACKER_CRED_SOURCE" in
+      keychain) _tcl_text="keychain: $TRACKER_CRED_WHY" ;;
+      env) _tcl_text="env: $TRACKER_CRED_WHY" ;;
+      *)
+        case "$TRACKER_CRED_WHY" in
+          ''|"no token stored for "*) _tcl_text="none - store a token once: JIRA-SETUP-TEMPLATE §5b" ;;
+          *) _tcl_text="none: $TRACKER_CRED_WHY" ;;
+        esac ;;
+    esac
+  fi
+  printf 'tracker credential: %s%s\n' "$_tcl_text" "$_tcl_suffix"
 fi
 
 # — VERDICT ——————————————————————————————————————————————————————————————————

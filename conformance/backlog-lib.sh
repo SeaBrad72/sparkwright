@@ -1052,7 +1052,7 @@ _seam_record_load_parse() {
         [ "$_srv_seen_credential" -eq 0 ] || { echo "record line $_srv_n: key credential refused (duplicate)" >&2; return 2; }
         _srv_seen_credential=1
         case "$_srv_rest" in
-          ok|over-privileged|unverified) ;;
+          ok|writer|over-privileged|unverified) ;;
           *) echo "record line $_srv_n: key credential refused (unknown token)" >&2; return 2 ;;
         esac
         _SRV_CRED=$_srv_rest ;;
@@ -1111,6 +1111,11 @@ _seam_record_load_parse() {
   fi
   if [ "$_SRV_CRED" = "over-privileged" ]; then
     echo "seam: NOTICE — record credential is over-privileged for this read (binding anyway, S-11)" >&2
+  fi
+  # A1 item 5: `writer` = can write but holds no admin-class key and no delete. It binds with its own distinct NOTICE (never
+  # the word over-privileged), so a reader's token that can write on a plan with no read-only role stays visible in the log.
+  if [ "$_SRV_CRED" = "writer" ]; then
+    echo "seam: NOTICE — record credential is a writer for this read (binding anyway, S-11; JIRA-SETUP 5a, KIT_TRACKER_READER_CEILING)" >&2
   fi
 
   # M-1: the pin proves CONSISTENCY (the record was made against the conf in force), never

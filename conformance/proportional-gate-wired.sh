@@ -77,7 +77,7 @@ TJ_FLEET_GLOBS=".github/workflows/*.yml profiles/*.yml profiles/*/ci.yml"
 # CI): incept.sh installs the kit-path source `profiles/adopter-tracker-gates.yml` TO this path on
 # every incepted/adopter tree (cp_kit_replace) — it is the SAME trusted job, at its INSTALLED
 # location, not a second one. The kit-path entry stays too: the kit's own tree carries the source
-# under `profiles/`, never installed at `.github/workflows/` on the kit repo itself.
+# under `profiles/`, and since KIT-TREE-BOARD-SWITCH PR-2 also an export-ignored installed copy here with two KIT DELTAs.
 # `conformance/backlog-current.sh` joins as a FIFTH setter (TBG-READER-FLAGS-LIST T10-n3, CI red on
 # the push otherwise): its ONE production-path assignment, `check_dir`'s
 # `SEAM_RECORD="${KIT_TRACKER_RECORD:-}"`, is the READING side of the trusted job's fixed path —
@@ -694,6 +694,16 @@ _tj_wiring_legs() {
     echo "FAIL: $_twl_f's reader step's own tracker-read.sh invocation does not carry the full in-progress in-review ready state list"; _twl_st=1
   fi
 
+  # SWAS-117 D6 (M-2): the reader step names the CI identity BEFORE the read, by the reader script's own --whoami arm, and the
+  # `||` keeps the step's rc untouched. LOAD-BEARING: delete the line (or move it after the read) and this leg goes red, so the
+  # PR log can silently stop saying which account the CI secret is.
+  _twl_wl='sh scripts/tracker-read.sh --whoami .kit/tracker.conf || echo "tracker reader: ?"'
+  _twl_wn=$(printf '%s\n' "$_twl_reader" | grep -nF -- "$_twl_wl" | head -1 | cut -d: -f1)
+  _twl_rn=$(printf '%s\n' "$_twl_reader" | grep -nF -- '"$HEAD_SHA" in-progress in-review ready' | head -1 | cut -d: -f1)
+  if [ -z "$_twl_wn" ] || [ -z "$_twl_rn" ] || [ "$_twl_wn" -ge "$_twl_rn" ]; then
+    echo "FAIL: $_twl_f's reader step does not call '$_twl_wl' before the read (SWAS-117 D6)"; _twl_st=1
+  fi
+
   if ! { printf '%s\n' "$_twl_gates" | grep -qF '|| rc_bp=$?' \
       && printf '%s\n' "$_twl_gates" | grep -qF '|| rc_ls=$?' \
       && printf '%s\n' "$_twl_gates" | grep -qF '|| rc_bc=$?' \
@@ -758,6 +768,18 @@ _t2_build_tree() {
   git -C "$_tbt_root" -c user.email=t2@example.invalid -c user.name=t2 add -A >/dev/null
   git -C "$_tbt_root" -c user.email=t2@example.invalid -c user.name=t2 commit -q -m "$(printf 'T2 fixture seed\n\nKit-Row: AB-1\n')"
   git -C "$_tbt_root" rev-parse HEAD
+}
+
+# _tj_copy_leg <copy> <profile>: the kit's installed copy minus its KIT DELTA blocks IS the profile, and its
+# first tracker-board-gates step is the fork refusal with `${{` only in env: values (R-4, security).
+_tj_copy_leg() {
+  awk '/KIT DELTA/{s=1} s{if($0==""||/environment: tracker-live$/)s=0;next} {print}' "$1" | cmp -s - "$2" \
+    || { echo "FAIL: $1 minus its KIT DELTA blocks differs from $2 - the installed copy drifted from its profile"; return 1; }
+  _tcl_first=$(_tj_job_block "$1" tracker-board-gates | awk '/^      - /{n++} n==1')
+  printf '%s\n' "$_tcl_first" | head -n 1 | grep -qF 'Refuse a pull request from a fork' \
+    || { echo "FAIL: $1's first tracker-board-gates step is not the fork refusal"; return 1; }
+  printf '%s\n' "$_tcl_first" | awk '/^        env:$/{e=1;next} /^        [a-z]/{e=0} /\$\{\{/&&!e{b=1} END{exit b}' \
+    || { echo "FAIL: $1's fork-refusal step interpolates \${{ outside env: values"; return 1; }
 }
 
 selftest() {
@@ -1962,6 +1984,37 @@ YAML
     else
       echo "FAIL: $_tj_atg does not pass all three T1 wiring legs (see above)"; st=1
     fi
+    # SWAS-117 M-2: the kit's INSTALLED copy carries the same call (the profile leg above covers only the profile), and the
+    # leg is load-bearing: a copy with the whoami line deleted, and one with it moved after the read, must each go red.
+    _twl_inst=".github/workflows/adopter-tracker-gates.yml"
+    if [ -f "$_twl_inst" ]; then
+      if _tj_wiring_legs "$_twl_inst" >/dev/null; then
+        echo "PASS: $_twl_inst passes the same wiring legs, including the --whoami call before the read (SWAS-117 D6)"
+      else
+        echo "FAIL: $_twl_inst does not pass the wiring legs (the --whoami call before the read, SWAS-117 D6)"; st=1
+      fi
+    fi
+    _twl_wd=$(mktemp -d)
+    grep -vF 'sh scripts/tracker-read.sh --whoami .kit/tracker.conf' "$_tj_atg" > "$_twl_wd/del.yml"
+    if cmp -s "$_twl_wd/del.yml" "$_tj_atg"; then
+      echo "FAIL: SWAS-117/whoami-mutant setup — the planted copy did not differ from its source"; st=1
+    elif _tj_wiring_legs "$_twl_wd/del.yml" >/dev/null; then
+      echo "FAIL: SWAS-117/whoami-mutant (the --whoami line deleted) was not caught"; st=1
+    else
+      echo "PASS: SWAS-117/whoami-mutant (the --whoami line deleted) is caught"
+    fi
+    awk -v w='sh scripts/tracker-read.sh --whoami .kit/tracker.conf' '
+      index($0, w) > 0 { held = $0; next }
+      held != "" && index($0, "\"$HEAD_SHA\" in-progress in-review ready") > 0 { print; print held; held = ""; next }
+      { print }' "$_tj_atg" > "$_twl_wd/moved.yml"
+    if cmp -s "$_twl_wd/moved.yml" "$_tj_atg"; then
+      echo "FAIL: SWAS-117/whoami-order-mutant setup — the planted copy did not differ from its source"; st=1
+    elif _tj_wiring_legs "$_twl_wd/moved.yml" >/dev/null; then
+      echo "FAIL: SWAS-117/whoami-order-mutant (the --whoami line moved after the read) was not caught"; st=1
+    else
+      echo "PASS: SWAS-117/whoami-order-mutant (the --whoami line moved after the read) is caught"
+    fi
+    rm -rf "$_twl_wd" 2>/dev/null || true
     # ── TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT (T4): the named, value-free credential pre-check that
     # runs immediately before the trusted reader. Mirrors the reader's own resolution (token ALWAYS,
     # user ONLY under auth=basic, read from the BASE conf) — RD-5 / D-240919-2(3): never a value.
@@ -2081,7 +2134,7 @@ YAML
               if [ "$_t4rm_rc" != 1 ]; then
                 echo "FAIL: T4-behavioural: auth=$_t4rm_auth token=$_t4rm_tokst user=$_t4rm_userst want rc1, got rc$_t4rm_rc"; _t4rm_bad=1
               fi
-              if ! printf '%s\n' "$_t4rm_out" | grep -qF "add the repository Actions secret $_t4rm_want_missing"; then
+              if ! printf '%s\n' "$_t4rm_out" | grep -qF "add the Actions secret $_t4rm_want_missing"; then
                 echo "FAIL: T4-behavioural: auth=$_t4rm_auth token=$_t4rm_tokst user=$_t4rm_userst -- ::error did not name exactly '$_t4rm_want_missing'"; _t4rm_bad=1
               fi
             else
@@ -3754,6 +3807,192 @@ EOF
       fi
     fi
     rm -rf "$_tds_t3_mut" 2>/dev/null || true
+
+    # ── TRACKER-CREDENTIAL-IDENTITY-MODEL (SWAS-117 D7) — THE EXECUTED LEG: tracker-live judges the record it just wrote.
+    # The live step's own run: body is extracted BY STEP NAME from the shipped workflow (never a hand copy) and run in a
+    # throwaway root whose scripts/tracker-read.sh is a stand-in that writes a canned record and exits a canned rc. Before this
+    # change the step wrote the record and never read it: a reader that bound `over-privileged`, or an `unverified` row, was a
+    # GREEN run. LOAD-BEARING: over-privileged, unverified and an unmapped verdict each red the step, each reason named.
+    _tl7_body=$(_t2_run_body 'Round-trip the trusted reader' "$_tj_tlive")
+    if [ -z "$_tl7_body" ]; then
+      echo "FAIL: TL7/liveness — the live step's run: body could not be extracted from $_tj_tlive (a step rename makes every TL7 leg vacuous)"; st=1
+    else
+      _tl7_dir=$(mktemp -d)
+      mkdir -p "$_tl7_dir/root/.kit" "$_tl7_dir/root/scripts" "$_tl7_dir/tmp"
+      printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nproject=AB\n' > "$_tl7_dir/root/.kit/tracker.conf"
+      printf '#!/bin/sh\nprintf "%%s" "$FAKE_RECORD" > "$3"\nexit "${FAKE_RC:-0}"\n' > "$_tl7_dir/root/scripts/tracker-read.sh"
+      printf '%s\n' "$_tl7_body" > "$_tl7_dir/body.sh"
+      # _tl7_run <record> [reader-rc] [token]: sets _tl7_rc and _tl7_out
+      _tl7_run() {
+        _tl7_rc=0
+        _tl7_out=$( cd "$_tl7_dir/root" && KIT_TRACKER_TOKEN="${3-tok}" KIT_TRACKER_USER=u KIT_TRACKER_LIVE_ROW=AB-1 RUNNER_TEMP="$_tl7_dir/tmp" \
+          GITHUB_SHA=1111111111111111111111111111111111111111 FAKE_RECORD="$1" FAKE_RC="${2:-0}" KIT_TRACKER_READER_CEILING="${4-}" KIT_TRACKER_READER_CEILING_CARD="${5-}" sh -e "$_tl7_dir/body.sh" 2>&1 ) || _tl7_rc=$?
+      }
+      _tl7_rec() { printf 'kit-tracker-read 1\nbackend jira\ncredential %s\nverdict %s\nrow AB-1 state=ready\n' "$1" "$2"; }
+      _tl7_run "$(_tl7_rec ok bound)"
+      case "$_tl7_out" in
+        *"tracker-live: bound"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -eq 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/bound-ok: a record with verdict bound and credential ok passes and says so"
+      else
+        echo "FAIL: TL7/bound-ok: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      _tl7_run "$(_tl7_rec over-privileged bound)"
+      case "$_tl7_out" in
+        *"credential is over-privileged"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/over-privileged: a bound record whose credential is over-privileged FAILS the step and names it (LOAD-BEARING: kills a mutant that never reads the credential field)"
+      else
+        echo "FAIL: TL7/over-privileged: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      _tl7_run "$(_tl7_rec unverified unverified)"
+      case "$_tl7_out" in
+        *"credential is unverified"*"verdict is unverified"*|*"verdict is unverified"*"credential is unverified"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/unverified: an unverified credential AND verdict FAIL the step, both reasons named"
+      else
+        echo "FAIL: TL7/unverified: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      _tl7_run "$(_tl7_rec ok unverified)"
+      case "$_tl7_out" in
+        *"verdict is unverified"*"non-epic card"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/verdict-unverified: a record whose verdict is unverified FAILS the step and points at the row choice (a non-epic card in a mapped status)"
+      else
+        echo "FAIL: TL7/verdict-unverified: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      _tl7_run "$(_tl7_rec "$(printf 'ok\033[31m')" "$(printf 'bound\033[31mZQ')")"
+      case "$_tl7_out" in
+        *ZQ*|*"$(printf '\033')"*) _tl7_ok=0 ;;
+        *"is unrecognised"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/hostile-record: a record value outside its enum is shown as 'unrecognised', never echoed, and FAILS the step"
+      else
+        echo "FAIL: TL7/hostile-record: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      _tl7_run "$(_tl7_rec ok bound)" 2
+      if [ "$_tl7_rc" -ne 0 ]; then
+        echo "PASS: TL7/reader-fails: a reader that exits non-zero (a rejected credential) FAILS the step before the record is judged"
+      else
+        echo "FAIL: TL7/reader-fails: a reader rc 2 left the step green (rc=$_tl7_rc out='$_tl7_out')"; st=1
+      fi
+      _tl7_run "$(_tl7_rec over-privileged bound)" 0 ""
+      case "$_tl7_out" in
+        *"tracker-live: skipped"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -eq 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/unconfigured: no token still SKIPS with a notice (rc 0), never fails"
+      else
+        echo "FAIL: TL7/unconfigured: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      # A1 item 5: the BOUNDED declared ceiling. Only `writer` (+ licensed-writer + a well-formed card, on a bound row) passes.
+      _tl7_run "$(_tl7_rec writer bound)" 0 tok licensed-writer SWAS-123
+      case "$_tl7_out" in
+        *"bound (declared ceiling)"*"licensed writer by declaration"*"licensed-writer, card SWAS-123"*"trail: GitHub settings audit log"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -eq 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/ceiling-writer: a writer reader under licensed-writer with a card passes, the notice naming the ceiling, the card and the audit-log trail"
+      else
+        echo "FAIL: TL7/ceiling-writer: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      # LOAD-BEARING (kills the UNBOUNDED build): an ADMIN-shaped reader (the record says over-privileged: an admin-class key
+      # or delete is held, e.g. a site-admin credential with clean project permissions) FAILS under licensed-writer, naming the reason. A delete-holding reader is the
+      # same record word and the same verdict.
+      _tl7_run "$(_tl7_rec over-privileged bound)" 0 tok licensed-writer SWAS-123
+      case "$_tl7_out" in
+        *"credential is over-privileged"*"never accepted"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/ceiling-admin-shaped: an over-privileged (admin-class) reader FAILS under licensed-writer and the reason is named (LOAD-BEARING: kills the unbounded ceiling)"
+      else
+        echo "FAIL: TL7/ceiling-admin-shaped: an admin-shaped reader was accepted or unnamed (rc=$_tl7_rc out='$_tl7_out')"; st=1
+      fi
+      # (A delete-holding reader is the same record word, `over-privileged`, so a separate case here would repeat the input above.
+      # That a held DELETE_ISSUES classifies as over-privileged is proved in tracker-jira.sh's selftest, the loop over the four
+      # admin-class keys beside CREATE_ISSUES.)
+      _tl7_run "$(_tl7_rec writer bound)" 0 tok licensed-writer ""
+      case "$_tl7_out" in
+        *"KEY-n"*"missing or ill-formed"*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/ceiling-no-card: licensed-writer with no card FAILS (the ceiling is tied to a card, not a date)"
+      else
+        echo "FAIL: TL7/ceiling-no-card: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      _tl7_bad=0
+      for _tl7_card in 'swas-123' 'SWAS123' 'SWAS-' '-123' 'SWAS-12x' 'SWAS-1-2' "ZQCARD$(printf '\033')-1" 'SWAS-123 x'; do
+        _tl7_run "$(_tl7_rec writer bound)" 0 tok licensed-writer "$_tl7_card"
+        case "$_tl7_out" in
+          *ZQCARD*|*"$(printf '\033')"*) _tl7_bad=1; echo "FAIL: TL7/ceiling-ill-formed-card: a hostile value was echoed" ;;
+        esac
+        # each value itself must never appear in the output (a non-empty one: the empty string is a substring of everything)
+        if [ -n "$_tl7_card" ]; then
+          case "$_tl7_out" in
+            *"$_tl7_card"*) _tl7_bad=1; echo "FAIL: TL7/ceiling-ill-formed-card: the value [$_tl7_card] was echoed" ;;
+          esac
+        fi
+        [ "$_tl7_rc" -ne 0 ] || { _tl7_bad=1; echo "FAIL: TL7/ceiling-ill-formed-card: [$_tl7_card] was accepted"; }
+      done
+      if [ "$_tl7_bad" -eq 0 ]; then
+        echo "PASS: TL7/ceiling-ill-formed-card: eight ill-formed cards (case, no dash, empty side, letters, two dashes, ESC, space) FAIL and are never echoed"
+      else
+        st=1
+      fi
+      # the declared pair on a viewer ceiling: writer under viewer FAILS
+      _tl7_run "$(_tl7_rec writer bound)" 0 tok viewer SWAS-123
+      if [ "$_tl7_rc" -ne 0 ]; then
+        echo "PASS: TL7/ceiling-viewer: a writer reader under the viewer ceiling FAILS"
+      else
+        echo "FAIL: TL7/ceiling-viewer: a writer under viewer was accepted (rc=$_tl7_rc)"; st=1
+      fi
+      # LOAD-BEARING: with the variable UNSET the default is viewer, so a WRITER reader FAILS. Kills a mutant that defaults the
+      # ceiling to accepting a licensed writer (even with a card present).
+      _tl7_run "$(_tl7_rec writer bound)" 0 tok "" SWAS-123
+      if [ "$_tl7_rc" -ne 0 ]; then
+        echo "PASS: TL7/ceiling-unset: a writer with no ceiling declared FAILS (the default is viewer)"
+      else
+        echo "FAIL: TL7/ceiling-unset: a writer with no ceiling was accepted (rc=$_tl7_rc)"; st=1
+      fi
+      _tl7_run "$(_tl7_rec unverified bound)" 0 tok licensed-writer SWAS-123
+      if [ "$_tl7_rc" -ne 0 ]; then
+        echo "PASS: TL7/ceiling-unverified: an unverified credential FAILS whatever the declared ceiling"
+      else
+        echo "FAIL: TL7/ceiling-unverified: unverified under licensed-writer was accepted (rc=$_tl7_rc)"; st=1
+      fi
+      _tl7_run "$(_tl7_rec writer unverified)" 0 tok licensed-writer SWAS-123
+      if [ "$_tl7_rc" -ne 0 ]; then
+        echo "PASS: TL7/ceiling-unbound-row: an unbound verdict FAILS even under licensed-writer"
+      else
+        echo "FAIL: TL7/ceiling-unbound-row: an unverified verdict under licensed-writer was accepted (rc=$_tl7_rc)"; st=1
+      fi
+      _tl7_run "$(_tl7_rec ok bound)" 0 tok "ZQBOGUS$(printf '\033')x" SWAS-123
+      case "$_tl7_out" in
+        *ZQBOGUS*|*"$(printf '\033')"*) _tl7_ok=0 ;;
+        *unrecognised*) _tl7_ok=1 ;;
+        *) _tl7_ok=0 ;;
+      esac
+      if [ "$_tl7_rc" -ne 0 ] && [ "$_tl7_ok" -eq 1 ]; then
+        echo "PASS: TL7/ceiling-bogus: a ceiling outside the enum FAILS as 'unrecognised' and is never echoed"
+      else
+        echo "FAIL: TL7/ceiling-bogus: rc=$_tl7_rc out='$_tl7_out'"; st=1
+      fi
+      rm -rf "$_tl7_dir" 2>/dev/null || true
+      unset -f _tl7_run _tl7_rec
+    fi
   elif [ -f "docs/ROADMAP-KIT.md" ]; then
     # kit-tree marker present (docs/ROADMAP-KIT.md, export-ignored) yet tracker-live.yml is
     # missing — that IS a real regression on the kit's own tree, never N/A there.
@@ -3765,6 +4004,25 @@ EOF
     # shape; an absent kit-only file is N/A, not a FAIL — the same disposition ladder every other
     # kit-tree-gated leg in this file already uses (docs/ROADMAP-KIT.md-gated blocks elsewhere).
     echo "N/A: $_tj_tlive shape legs — kit-only, export-ignored file, legitimately absent on this tree (not the kit's own)"
+  fi
+
+  # R-4 (security): the kit's installed copy keeps the profile's bytes apart from its KIT DELTA blocks, and the
+  # fork refusal stays first. Kit tree only: an adopter's copy IS the profile (no deltas, no refusal).
+  _tcl_c=".github/workflows/adopter-tracker-gates.yml"; _tcl_p="profiles/adopter-tracker-gates.yml"
+  if [ -f "$_tcl_c" ] && [ -f docs/ROADMAP-KIT.md ]; then
+    _tcl_d=$(mktemp -d)
+    _tcl_neg() {  # <label> <copy> <profile> <want-sentence>
+      if _tcl_o=$(_tj_copy_leg "$2" "$3" 2>&1); then _tcl_o=; fi
+      case "$_tcl_o" in *"$4"*) echo "PASS: R-4/mutant ($1) is caught: $4" ;; *) echo "FAIL: R-4/mutant ($1) was not caught with \"$4\" (got: ${_tcl_o:-a pass})"; st=1 ;; esac
+    }
+    if _tj_copy_leg "$_tcl_c" "$_tcl_p"; then echo "PASS: R-4 the installed copy equals its profile apart from the KIT DELTA blocks and opens with the fork refusal"; else echo "FAIL: R-4 the real installed pair does not pass the copy leg (see above)"; st=1; fi
+    sed '/KIT DELTA 2 of 2/,/^$/d' "$_tcl_c" > "$_tcl_d/nofork.yml"
+    _tcl_neg "fork-refusal step deleted" "$_tcl_d/nofork.yml" "$_tcl_p" "is not the fork refusal"
+    { cat "$_tcl_p"; echo '# drift'; } > "$_tcl_d/profile-moved.yml"
+    _tcl_neg "profile changed, copy not" "$_tcl_c" "$_tcl_d/profile-moved.yml" "drifted from its profile"
+    sed 's/"\$HEAD_REPO"/"${{ github.event.pull_request.head.repo.full_name }}"/' "$_tcl_c" > "$_tcl_d/interp.yml"
+    _tcl_neg "head repo interpolated into the script" "$_tcl_d/interp.yml" "$_tcl_p" '${{ outside env: values'
+    rm -rf "$_tcl_d"
   fi
 
   [ "$st" = 0 ] && echo "OK: proportional-gate-wired selftest" || echo "FAIL: proportional-gate-wired selftest"

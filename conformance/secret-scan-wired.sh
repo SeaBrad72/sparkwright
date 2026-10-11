@@ -46,9 +46,9 @@
 # is present, not that any given CI run scanned.
 #
 # What it changes: read-only — greps workflow/manifest files; --scan-selftest / --live write ONLY
-#   inside a mktemp -d they remove on exit (synthetic, runtime-random fixtures). Mutates nothing tracked.
-# Guardrails: read-only on the repo; no network; trap-cleans its temp dirs; never emits or commits a
-#   real secret (planted bodies are /dev/urandom base64); fails closed (rc 2) if gitleaks is unavailable.
+#   inside a mktemp -d they remove on exit (synthetic fixtures). Mutates nothing tracked.
+# Guardrails: read-only; no network; trap-cleans its temp dirs; never emits or commits a real secret
+#   (random PEM bodies; legs 3 and 6 plant fixed values); fails closed (rc 2) if gitleaks is unavailable.
 set -eu
 
 # The pinned scanner the profiles ship (parity is the point — neutrality). Kept in lockstep with
@@ -587,12 +587,16 @@ live() {
 
   # --- 3) The promotion-note `approval-token: "…"` grammar is allowlisted; an identical secret
   # OUTSIDE that grammar still reds (proves the allowlist is line-targeted, not blanket). ---
+  # A FIXED value, never /dev/urandom: the random plant was missed by generic-api-key 3.5% (8.24.3) /
+  # 4.5% (8.30.1) of 1,000 runs (leading `/` or `+`, or a stopword); this one is caught every run on
+  # both and feeds BOTH plants, so "identical" is literal. Assembled from two halves like leg 6 (SWAS-80).
+  _l3v=$(printf '%s%s' 'R7vK2mQ9xL4tW8nZ' 'c3Hj6pB1sF5yD0gT')
   mkdir -p "$d/note"
   _mk_repo "$d/note"
   {
     printf 'record: promotion GO (approve->execute->log)\n'
     printf 'approved-sha: abc123\n'
-    printf 'approval-token: "%s"\n' "$(head -c 40 /dev/urandom | base64 | tr -d '\n')"
+    printf 'approval-token: "%s"\n' "$_l3v"
     printf 'basis: none\n'
   } > "$d/note/promotion-log.md"
   git -C "$d/note" add -A
@@ -607,7 +611,7 @@ live() {
 
   mkdir -p "$d/leak"
   _mk_repo "$d/leak"
-  printf 'token = "%s"\n' "$(head -c 40 /dev/urandom | base64 | tr -d '\n')" > "$d/leak/fixture.txt"
+  printf 'token = "%s"\n' "$_l3v" > "$d/leak/fixture.txt"
   git -C "$d/leak" add -A
   git -C "$d/leak" commit -q -m "leak"
   set +e
@@ -656,7 +660,7 @@ live() {
   else echo "live FAIL: the allowlist masked a secret sharing its line with the note grammar (rc 0) — the allowlist regex is not anchored"; sf=1; fi
 
   # --- 6) KIT RULE `kit-tracker-token` (TRACKER-TOKEN-SECRET-SCAN-RULE). DETERMINISTIC legs: fixed
-  # planted values, never /dev/urandom (the leg-3 random-plant flake lesson). Every leg reads the
+  # planted values, never /dev/urandom (the cured leg-3 random-plant flake, SWAS-80). Every leg reads the
   # `-f json` report and asserts on RuleID, because when two rules match one secret gitleaks reports
   # only one finding, so an rc alone cannot say WHICH rule caught it. The planted values are
   # ASSEMBLED at runtime from two halves so the whole credential shape never appears in this source

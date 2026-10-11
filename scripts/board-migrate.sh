@@ -22,8 +22,8 @@
 #   make no tracker call of any kind. The ledger (`ROW-ID<TAB>KEY<TAB>created|done`, append-only, last line wins) makes a stopped run
 #   resumable: a re-run skips `done` rows, only transitions a `created` row, and creates the rest. The census reads the project
 #   through `list-in-states` and exits 1 on a count that differs from the ledger.
-# Guardrails: credentials are the environment's KIT_TRACKER_USER/KIT_TRACKER_TOKEN and are never taken as an argument, printed or
-#   stored. `BM_BOARD_SH` / `BM_JIRA_SH` / `BM_CONF_SH` / `BM_LIB_SH` are plain script variables (the board.sh precedent): only
+# Guardrails: credentials are the environment's KIT_TRACKER_USER/KIT_TRACKER_TOKEN (or, with the environment empty, the login Keychain
+#   item the adapter reads; this file only asks whether one exists) and are never taken as an argument, printed or stored. `BM_BOARD_SH` / `BM_JIRA_SH` / `BM_CONF_SH` / `BM_LIB_SH` are plain script variables (the board.sh precedent): only
 #   `--selftest` repoints them, at stubs it generates; nothing outside this file can redirect the writer. `--screen` refuses a card that
 #   names an entry of an identifier list (the publish gate's grammar) and prints only the row ID and a hit count.
 # STATED CEILINGS: rank is the creation order, which a Jira Software board turns into rank - the fixtures prove the order, not the
@@ -37,6 +37,8 @@ BM_JIRA_SH="$here/tracker-jira.sh"
 BM_CONF_SH="$here/tracker-conf.sh"
 BM_LIB_SH="$(dirname "$here")/conformance/backlog-lib.sh"
 BM_FIXTURES="$(dirname "$here")/conformance/fixtures/board-migrate"
+# SWAS-101: the presence check for a stored credential (attributes only, never the secret; the adapter alone reads it).
+if [ -f "$here/tracker-cred.sh" ]; then . "$here/tracker-cred.sh"; fi
 
 BM_TAB=$(printf '\t')
 # The unit separator (\037), not the control-A byte: bash 3.2 does not split `read` on it (its internal CTLESC byte).
@@ -75,6 +77,12 @@ bm_val() {
 }
 bm_unesc() { awk '{ gsub(/\\\|/, "|"); gsub(/<br ?\/?>/, "\n"); print }'; }   # a cell's text: \| -> |, <br> -> newline
 bm_cellv() { cell "$1" "$2" | bm_unesc; }
+# bm_metric_of <ROW-ID>: the Success metric to hand `board create --metric`, or empty (the conf maps no field.metric,
+# or the cell is empty or a bare dash).
+bm_metric_of() {
+  [ -n "${bm_mfield:-}" ] || return 0
+  bm_val "$(bm_rf "$1" metric)"
+}
 # bm_item_text <item cell>: the text after the backticked ID, leading decoration removed.
 bm_item_text() {
   _it=${1#*\`}; _it=${_it#*\`}
@@ -574,7 +582,8 @@ bm_print_plan() {
   _pp_r=0; _pp_b=0; _pp_k=0; _pp_p=0; _pp_m=0
   while IFS=$BM_US read -r _pp_kind _pp_id _pp_epic _pp_state _pp_lab _pp_type _pp_sz _pp_rk; do
     [ -n "$_pp_id" ] || continue
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_pp_kind" "$(cat "$bm_work/rows/$_pp_id/summary")" "$_pp_type" "$_pp_epic" "$_pp_state" "${_pp_lab:--}" "${_pp_sz:--}" "${_pp_rk:--}"
+    _pp_mk=""; [ -z "$(bm_metric_of "$_pp_id")" ] || _pp_mk="${BM_TAB}metric"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n' "$_pp_kind" "$(cat "$bm_work/rows/$_pp_id/summary")" "$_pp_type" "$_pp_epic" "$_pp_state" "${_pp_lab:--}" "${_pp_sz:--}" "${_pp_rk:--}" "$_pp_mk"
     _pp_m=$((_pp_m + 1))
     if [ -n "$_pp_lab" ]; then _pp_p=$((_pp_p + 1))
     else case "$_pp_state" in ready) _pp_r=$((_pp_r + 1)) ;; blocked) _pp_b=$((_pp_b + 1)) ;; *) _pp_k=$((_pp_k + 1)) ;; esac; fi
@@ -596,6 +605,7 @@ bm_pf_meta() { # <type>
     0) return 0 ;;
     3) bm_reason "issue type '$1' is not in project $bm_project (or the token lacks Create permission there)" ;;
     4) bm_reason "issue type name '$1' is ambiguous in project $bm_project" ;;
+    6) bm_reason "the tracker rejected the credential (Jira served the create-meta read anonymously or refused the login); check KIT_TRACKER_USER and the token or the Keychain item, and base_url" ;;
     *) bm_reason "could not read the create-meta of '$1' (unverified): $(tr -cd '\40-\176' < "$bm_work/pm.err" | cut -c1-120)" ;;
   esac
   return 1
@@ -622,6 +632,17 @@ bm_pf_value() {
   esac
 }
 
+# bm_pf_metric <type>: with field.metric mapped, a kept card of this type that carries a metric needs the field on the screen.
+bm_pf_metric() {
+  [ -n "$bm_mfield" ] || return 0
+  while IFS=$BM_US read -r _pm_kind _pm_id _pm_epic _pm_state _pm_lab _pm_type _pm_rest; do
+    [ "$_pm_type" = "$1" ] || continue
+    [ -n "$(bm_metric_of "$_pm_id")" ] || continue
+    bm_cm_has "$1" "$bm_mfield" || bm_reason "Success metric: $bm_mfield is not on the create screen of '$1'"
+    return 0
+  done < "$bm_work/cards"
+}
+
 bm_pf_type_checks() { # <type> (Task or Bug)
   bm_cm_has "$1" parent || bm_reason "issue type '$1' has no parent field on its create screen, so cards cannot be attached to their epic"
   bm_cm_has "$1" description || bm_reason "issue type '$1' has no description field on its create screen"
@@ -630,15 +651,26 @@ bm_pf_type_checks() { # <type> (Task or Bug)
   fi
   awk -F"$BM_US" -v t="$1" '$6 == t && $7 != "" { print $7 }' "$bm_work/cards" | sort -u > "$bm_work/vals.size"
   awk -F"$BM_US" -v t="$1" '$6 == t && $8 != "" { print $8 }' "$bm_work/cards" | sort -u > "$bm_work/vals.risk"
+  bm_pf_metric "$1"
   _tc_sm=$(bm_cget field.size); _tc_rm=$(bm_cget field.risk)
   while IFS= read -r _tc_v; do bm_pf_value "$1" Size "$_tc_sm" "$_tc_v"; done < "$bm_work/vals.size"
   while IFS= read -r _tc_v; do bm_pf_value "$1" Risk "$_tc_rm" "$_tc_v"; done < "$bm_work/vals.risk"
+}
+
+# bm_all_carry_metric <type>: rc 0 when every kept card of this type carries a Success metric (so --metric fills a required field.metric).
+bm_all_carry_metric() {
+  while IFS=$BM_US read -r _ac_kind _ac_id _ac_epic _ac_state _ac_lab _ac_type _ac_rest; do
+    [ "$_ac_type" = "$1" ] || continue
+    [ -n "$(bm_metric_of "$_ac_id")" ] || return 1
+  done < "$bm_work/cards"
+  return 0
 }
 
 # bm_pf_required <type>: a required field board create would not fill is a refusal now, not a stop at card 40.
 bm_pf_required() {
   _rq_rc=0
   _rq_out=$(sh "$BM_JIRA_SH" required-fields "$bm_base" "$bm_flavour" "$bm_project" "$1" 2>/dev/null) || _rq_rc=$?
+  if [ "$_rq_rc" -eq 6 ]; then bm_reason "the tracker rejected the credential (Jira did not accept it on the required-fields read); check KIT_TRACKER_USER and the token or the Keychain item, and base_url"; return 0; fi
   if [ "$_rq_rc" -ne 0 ]; then bm_reason "could not read the required fields of '$1' (unverified)"; return 0; fi
   _rq_sm=$(bm_cget field.size); _rq_rm=$(bm_cget field.risk)
   while IFS="$BM_TAB" read -r _rq_id _rq_kind _rq_name _rq_rest; do
@@ -650,6 +682,8 @@ bm_pf_required() {
     if [ "$1" != Epic ]; then
       case "$_rq_id" in parent|description) continue ;; esac
       if [ "$_rq_id" = "$_rq_sm" ] || [ "$_rq_id" = "$_rq_rm" ]; then continue; fi
+      # a required metric field is filled only by a card's --metric (R-4): skip it only when EVERY card of this type carries one
+      if [ -n "$bm_mfield" ] && [ "$_rq_id" = "$bm_mfield" ] && bm_all_carry_metric "$1"; then continue; fi
     fi
     _rq_def=$(printf '%s\n' "$bm_cdefs" | awk -F'\t' -v k="create.$_rq_id" '$1 == k { print $2; exit }')
     if [ -n "$_rq_def" ] && [ "$_rq_def" != prompt ]; then continue; fi
@@ -662,6 +696,7 @@ EOF_RQ
 bm_pf_states() {
   _ps_rc=0
   sh "$BM_JIRA_SH" status-ids "$bm_base" "$bm_flavour" "$bm_project" > "$bm_work/statuses" 2>/dev/null || _ps_rc=$?
+  if [ "$_ps_rc" -eq 6 ]; then bm_reason "the tracker rejected the credential (Jira did not accept it on the statuses read); check KIT_TRACKER_USER and the token or the Keychain item, and base_url"; return 0; fi
   if [ "$_ps_rc" -ne 0 ]; then bm_reason "could not read the project's statuses (unverified)"; return 0; fi
   for _ps_tok in ready blocked backlog; do
     awk -F"$BM_US" -v s="$_ps_tok" '$4 == s { y = 1 } END { exit !y }' "$bm_work/cards" || continue
@@ -693,17 +728,28 @@ bm_pf_ledger() {
   done < "$bm_ledger_path"
 }
 
+# bm_cred_present: the environment pair, or (with the environment holding nothing at all) a stored Keychain item.
+# SWAS-101: the presence question only. The adapter alone reads the stored secret.
+bm_cred_present() {
+  if [ -n "${KIT_TRACKER_USER:-}" ] && [ -n "${KIT_TRACKER_TOKEN:-}" ]; then return 0; fi
+  [ -z "${KIT_TRACKER_USER:-}${KIT_TRACKER_TOKEN:-}${JIRA_EMAIL:-}${JIRA_TOKEN:-}" ] || return 1
+  command -v tracker_cred_available >/dev/null 2>&1 || return 1
+  tracker_cred_available "$bm_base" && [ "${TRACKER_CRED_SOURCE:-}" = keychain ]
+}
+
 bm_preflight() {
-  if [ -z "${KIT_TRACKER_USER:-}" ] || [ -z "${KIT_TRACKER_TOKEN:-}" ]; then
-    bm_reason "credentials: KIT_TRACKER_USER and KIT_TRACKER_TOKEN must be set in the environment (the adapter reads only the environment)"
+  if ! bm_cred_present; then
+    bm_reason "credentials: KIT_TRACKER_USER and KIT_TRACKER_TOKEN must be set in the environment, or a token stored once in the login Keychain (templates/JIRA-SETUP-TEMPLATE.md section 5b)"
+    if [ "${TRACKER_CRED_SOURCE:-}" = keychain ] && [ -n "${TRACKER_CRED_WHY:-}" ]; then bm_reason "credentials: $TRACKER_CRED_WHY"; fi
     return 0
   fi
   if [ -z "$bm_base" ] || [ -z "$bm_project" ]; then bm_reason "base_url and project must be set in .kit/tracker.conf"; return 0; fi
-  # the adapter's permissions probe answers over-privileged when the account holds ANY write permission on the project,
-  # ok when it holds none; it cannot name which. A migration needs a writer.
+  # the adapter's permissions probe answers writer (write permissions, no admin-class key, no delete) or over-privileged (an
+  # admin-class key or delete held), ok when it holds none of them; it cannot name which. A migration needs a writer (A1 item 5:
+  # both answers qualify).
   _pf_perm=$(sh "$BM_JIRA_SH" permissions "$bm_base" "$bm_flavour" "$bm_project" 2>/dev/null) || _pf_perm=unverified
   case "$_pf_perm" in
-    over-privileged) : ;;
+    over-privileged|writer) : ;;
     ok) bm_reason "permission: this account holds no write permission (CREATE_ISSUES, TRANSITION_ISSUES) on project $bm_project" ;;
     *) bm_reason "permission: this account's permissions on project $bm_project could not be read (unverified)" ;;
   esac
@@ -765,6 +811,8 @@ bm_write_card() {
   [ -z "$_wc_sz" ] || set -- "$@" --size "$_wc_sz"
   [ -z "$_wc_rk" ] || set -- "$@" --risk "$_wc_rk"
   [ -z "$_wc_lab" ] || set -- "$@" --label "$_wc_lab"
+  _wc_mt=$(bm_metric_of "$_wc_id")
+  [ -z "$_wc_mt" ] || set -- "$@" --metric "$_wc_mt"
   set -- "$@" --description "$(cat "$bm_work/rows/$_wc_id/desc")"
   bm_create_card "$_wc_id" "$@" || return 1
   [ "$bm_step" != "done" ] || return 0
@@ -774,7 +822,17 @@ bm_write_card() {
     *) _wc_name="" ;;
   esac
   if [ -n "$_wc_name" ]; then
-    if ! sh "$BM_JIRA_SH" transition "$bm_base" "$bm_flavour" "$bm_project" "$bm_key" "$_wc_name" </dev/null; then
+    _wc_trc=0
+    sh "$BM_JIRA_SH" transition "$bm_base" "$bm_flavour" "$bm_project" "$bm_key" "$_wc_name" </dev/null 2>"$bm_work/tr.err" || _wc_trc=$?
+    cat "$bm_work/tr.err" >&2
+    if [ "$_wc_trc" -eq 6 ]; then
+      # a 2xx served anonymously to the transition POST may have applied (the adapter's suffix); otherwise it did not complete
+      _wc_did="did not complete"
+      if grep -qF '(the write may have applied anonymously)' "$bm_work/tr.err"; then _wc_did="may have applied (served anonymously; check the card)"; fi
+      echo "board migrate: STOPPED at $_wc_id: the tracker rejected the credential (above); the card exists as $bm_key and the transition to '$(bm_disp "$_wc_name")' $_wc_did. Fix the credential and re-run to retry only the transition." >&2
+      return 1
+    fi
+    if [ "$_wc_trc" -ne 0 ]; then
       echo "board migrate: STOPPED at $_wc_id: the card exists as $bm_key but the transition to '$(bm_disp "$_wc_name")' was refused (above). Re-run to retry only the transition." >&2
       return 1
     fi
@@ -799,10 +857,16 @@ bm_write_all() {
 bm_census() {
   _ce_ids=$(tr '\n' ' ' < "$bm_work/census.ids")
   # shellcheck disable=SC2086  # the status ids are a space-separated list of numeric ids
-  _ce_out=$(sh "$BM_JIRA_SH" list-in-states "$bm_base" "$bm_flavour" "$bm_project" "$bm_cap" $_ce_ids) || {
+  _ce_rc=0
+  _ce_out=$(sh "$BM_JIRA_SH" list-in-states "$bm_base" "$bm_flavour" "$bm_project" "$bm_cap" $_ce_ids) || _ce_rc=$?
+  if [ "$_ce_rc" -eq 6 ]; then
+    echo "board migrate: the tracker rejected the credential (above), so the census did not run; the cards were written, check the project by hand." >&2
+    return 1
+  fi
+  if [ "$_ce_rc" -ne 0 ]; then
     echo "board migrate: the census could not read the project (above); the cards were written, check the project by hand." >&2
     return 1
-  }
+  fi
   _ce_n=$(printf '%s\n' "$_ce_out" | grep -c . || true)
   _ce_l=$(awk -F'\t' '$3 == "done" { d[$1] = 1 } END { n = 0; for (k in d) n++; print n }' "$bm_ledger_path")
   if [ "$_ce_n" != "$_ce_l" ]; then
@@ -947,6 +1011,14 @@ bm_migrate_run() {
   fi
   bm_base=$(bm_cget base_url); bm_flavour=$(bm_cget flavour); [ -n "$bm_flavour" ] || bm_flavour=cloud
   bm_project=$(bm_cget project); bm_cap=$(bm_cget list_cap)
+  bm_mfield=$(bm_cget field.metric); [ "$bm_mfield" != none ] || bm_mfield=""
+  # SWAS-101 (H1): the auth kind comes from the conf (default basic) unless the caller already set it, for every direct
+  # adapter call below, so a Data Center bearer user needs no export.
+  if [ -z "${KIT_TRACKER_AUTH:-}" ]; then
+    KIT_TRACKER_AUTH=$(bm_cget auth)
+    [ -n "$KIT_TRACKER_AUTH" ] || KIT_TRACKER_AUTH=basic
+    export KIT_TRACKER_AUTH
+  fi
   : > "$bm_work/reasons"
   bm_parse_board
   bm_parse_plan
@@ -1005,6 +1077,9 @@ STUB_EOF
 #!/bin/sh
 D=@@D@@
 printf 'tracker %s\n' "$*" >> "$D/log"
+printf '%s\n' "${KIT_TRACKER_AUTH:-unset}" >> "$D/auth"
+# SWAS-113: a leg names a verb in $D/rc6-<verb> and the adapter answers rc 6 (Jira did not accept the credential) to it
+if [ -f "$D/rc6-$1" ]; then echo "unverified: stub credential rejected$(cat "$D/anon-suffix" 2>/dev/null)" >&2; exit 6; fi
 case "$1" in
   permissions) cat "$D/perm" ;;
   create-meta)
@@ -1051,7 +1126,7 @@ CONF_EOF
     printf '%s\tcustomfield_10046\toption\tSize\t%s\n%s\tcustomfield_10047\toption\tRisk\tLow|Med|High\n%s\tdescription\tstring\tDescription\t\n%s\tlabels\tarray\tLabels\t\n%s\tparent\tissuelink\tParent\t\n' "$1" "$2" "$1" "$1" "$1" "$1" > "$bm_stub/cm/$1.txt"
   }
   bm_reset() {
-    rm -rf "$bm_stub/cm" "$bm_stub/rf" "$bm_stub"/desc.* "$bm_stub/fail-create-at" "$bm_stub/fail-transition" "$bm_stub/census-extra"
+    rm -rf "$bm_stub/cm" "$bm_stub/rf" "$bm_stub"/desc.* "$bm_stub/fail-create-at" "$bm_stub/fail-transition" "$bm_stub/census-extra" "$bm_stub"/rc6-* "$bm_stub/anon-suffix"
     mkdir -p "$bm_stub/cm" "$bm_stub/rf"
     : > "$bm_stub/log"; echo 0 > "$bm_stub/counter"
     bm_cm Task 'XS|S|M|L|XL'; bm_cm Bug 'XS|S|M|L|XL'
@@ -1088,6 +1163,7 @@ $bm_err"
   if [ "$bm_rc" -eq 0 ] && [ "$(bm_writes)" = "$(cat "$fx/expected-calls.txt")" ] && ! grep -qi 'assign' "$bm_stub/log" && bm_has 'census OK'; then
     bm_pass "leg 2 live: the write calls equal expected-calls.txt (epics first, plan order, Bug for defect, parents, parked label, transitions for ready/blocked only, no assignee) and the census holds"
   else bm_fail_ "leg 2 live: rc=$bm_rc writes=$(bm_nwrites) out=[$bm_all]"; fi
+
   bm_first_write=$(grep -n -m1 -e '^board create' "$bm_stub/log" | cut -d: -f1)
   bm_last_read=$(grep -n -e '^tracker permissions' -e '^tracker create-meta' -e '^tracker status-ids' "$bm_stub/log" | tail -1 | cut -d: -f1)
   if [ -n "$bm_first_write" ] && [ -n "$bm_last_read" ] && [ "$bm_last_read" -lt "$bm_first_write" ] && grep -q '^tracker list-in-states' "$bm_stub/log"; then
@@ -1112,6 +1188,45 @@ $bm_err"
   if [ "$bm_rc" -eq 0 ] && [ "$(cksum < "$bm_repo/board.md")" = "$bm_sum1" ]; then
     bm_pass "leg 7 freeze-idempotent: a second --freeze changes nothing (the banner is detected)"
   else bm_fail_ "leg 7 freeze-idempotent: rc=$bm_rc out=[$bm_all]"; fi
+
+  # ── leg 2m: the Success metric — with field.metric mapped, a non-empty cell reaches board create as --metric and an empty
+  # cell passes none; unmapped, no card carries one; the dry run marks the cards that will carry it. Placed after the legs
+  # that grade leg 2's own run (its log, its desc.* files, its ledger), because it resets the fixture ──
+  bm_reset
+  bm_run --from board.md --plan plan.tsv $D $DT
+  _m_unmapped=$(grep -c -e '--metric' "$bm_stub/log" || true)
+  bm_reset; echo 'field.metric=customfield_10099' >> "$bm_repo/.kit/tracker.conf"
+  bm_cm Task 'XS|S|M|L|XL'; bm_cm Bug 'XS|S|M|L|XL'
+  printf 'Task\tcustomfield_10099\tstring\tSuccess metric\t\n' >> "$bm_stub/cm/Task.txt"
+  printf 'Bug\tcustomfield_10099\tstring\tSuccess metric\t\n' >> "$bm_stub/cm/Bug.txt"
+  bm_run --from board.md --plan plan.tsv --dry-run $D $DT
+  _m_dry=$(printf '%s\n' "$bm_out" | grep -c "^card${BM_TAB}QLN-ALPHA.*${BM_TAB}metric\$" || true)
+  _m_dry_bravo=$(printf '%s\n' "$bm_out" | grep -c "^card${BM_TAB}QLN-BRAVO.*metric" || true)
+  bm_run --from board.md --plan plan.tsv $D $DT
+  _m_rc=$bm_rc; _m_n=$(grep -c -e '--metric' "$bm_stub/log" || true)
+  _m_alpha=$(grep -c -F -e 'QLN-ALPHA — alpha moves first --parent ZB-1 --size S --risk low --metric alpha metric --description' "$bm_stub/log" || true)
+  _m_bravo=$(grep -F -e 'QLN-BRAVO' "$bm_stub/log" | grep -c -e '--metric' || true)
+  if [ "$_m_unmapped" = 0 ] && [ "$_m_rc" -eq 0 ] && [ "$_m_n" = 3 ] && [ "$_m_alpha" = 1 ] && [ "$_m_bravo" = 0 ] && [ "$_m_dry" = 1 ] && [ "$_m_dry_bravo" = 0 ]; then
+    bm_pass "leg 2m metric: a mapped metric reaches the create call (3 cards, ALPHA's exact call); an empty cell and an unmapped conf pass no --metric; the dry run marks only the cards that carry one"
+  else bm_fail_ "leg 2m metric: unmapped=$_m_unmapped rc=$_m_rc n=$_m_n alpha=$_m_alpha bravo=$_m_bravo dry=$_m_dry dry_bravo=$_m_dry_bravo"; fi
+  # R-4 off-screen: field.metric mapped but not on the Task/Bug create screen -> refused in the preflight, zero writes
+  # (deleting bm_pf_metric turns this red: the run would reach the write loop)
+  bm_reset; echo 'field.metric=customfield_10099' >> "$bm_repo/.kit/tracker.conf"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc" -eq 2 ] && [ "$(bm_nwrites)" = 0 ] && bm_has 'Success metric: customfield_10099 is not on the create screen'; then
+    bm_pass "leg 2m metric-off-screen: a mapped field.metric absent from the create screen refuses in the preflight (rc 2) with zero writes"
+  else bm_fail_ "leg 2m metric-off-screen: rc=$bm_rc writes=$(bm_nwrites) out=[$bm_all]"; fi
+  # R-4 required: the project REQUIRES the metric field and a card of the type carries no metric (BRAVO), so --metric cannot
+  # fill it for every card: refused in the preflight, zero writes. The skip is only for a type whose every card carries one.
+  bm_reset; echo 'field.metric=customfield_10099' >> "$bm_repo/.kit/tracker.conf"
+  printf 'Task\tcustomfield_10099\tstring\tSuccess metric\t\n' >> "$bm_stub/cm/Task.txt"
+  printf 'Bug\tcustomfield_10099\tstring\tSuccess metric\t\n' >> "$bm_stub/cm/Bug.txt"
+  printf 'customfield_10099\tstring\tSuccess metric\n' > "$bm_stub/rf/Task.txt"
+  printf 'customfield_10099\tstring\tSuccess metric\n' > "$bm_stub/rf/Bug.txt"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc" -eq 2 ] && [ "$(bm_nwrites)" = 0 ] && bm_has "requires 'Success metric'"; then
+    bm_pass "leg 2m metric-required: a required metric field with a card that carries no metric refuses in the preflight (rc 2) with zero writes"
+  else bm_fail_ "leg 2m metric-required: rc=$bm_rc writes=$(bm_nwrites) out=[$bm_all]"; fi
 
   # ── leg 4: resume — done skipped, created gets only its transition, the rest is created ──────────────────────────
   bm_reset; echo 6 > "$bm_stub/counter"
@@ -1167,14 +1282,56 @@ $bm_err"
   bm_run --from board.md --plan plan.tsv $D $DT
   if [ "$bm_rc" -eq 2 ] && [ "$(bm_nwrites)" = 0 ] && bm_has "Size 'L'"; then bm_pass "leg 5 size: a Size value outside the field's allowed set refuses in the preflight with zero writes"
   else bm_fail_ "leg 5 size: rc=$bm_rc writes=$(bm_nwrites) out=[$bm_all]"; fi
+  # A1 item 5: a `writer` probe answer (write rights, no admin-class key, no delete) is a writer too: the migration goes on to the
+  # next preflight check (the Size one) rather than refusing on permission
+  echo writer > "$bm_stub/perm"; : > "$bm_stub/log"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc" -eq 2 ] && [ "$(bm_nwrites)" = 0 ] && bm_has "Size 'L'" && ! bm_has 'permission:'; then bm_pass "leg 5 writer: a writer-class token passes the permission preflight (it reaches the Size check)"
+  else bm_fail_ "leg 5 writer: rc=$bm_rc writes=$(bm_nwrites) out=[$bm_all]"; fi
   bm_cm Task 'XS|S|M|L|XL'; : > "$bm_stub/log"; bm_conf 3
   bm_run --from board.md --plan plan.tsv $D $DT
   if [ "$bm_rc" -eq 2 ] && [ "$(bm_logbytes)" = 0 ] && bm_has 'list_cap'; then bm_pass "leg 5 list_cap: more cards than list_cap refuses before any call"
   else bm_fail_ "leg 5 list_cap: rc=$bm_rc out=[$bm_all]"; fi
+  _TCR_SEC_BIN="$bm_t/no-store"
   bm_conf 200; KIT_TRACKER_USER=; KIT_TRACKER_TOKEN=
   bm_run --from board.md --plan plan.tsv $D $DT
-  if [ "$bm_rc" -eq 2 ] && [ "$(bm_logbytes)" = 0 ] && bm_has 'KIT_TRACKER_USER'; then bm_pass "leg 5 credentials: a live run without credentials refuses before any tracker call"
+  if [ "$bm_rc" -eq 2 ] && [ "$(bm_logbytes)" = 0 ] && bm_has 'KIT_TRACKER_USER' && bm_has 'section 5b'; then bm_pass "leg 5 credentials: a live run without credentials refuses before any tracker call, naming the Keychain recipe"
   else bm_fail_ "leg 5 credentials: rc=$bm_rc out=[$bm_all]"; fi
+  # SWAS-101: with the environment empty, a stored item (a stub store) satisfies the credential question, and the
+  # presence check never passes -w; an absent item (rc 44) refuses as before.
+  bm_crd="$bm_t/credstub"; mkdir -p "$bm_crd"
+  {
+    printf '#!/bin/sh\nd=%s\n' "$bm_crd"
+    cat <<'CSTUB'
+printf '%s\n' "$*" >> "$d/log"
+rc=$(cat "$d/rc")
+if [ "$rc" = 0 ]; then printf '    "acct"\074blob\076="stored@example.com"\n'; fi
+exit "$rc"
+CSTUB
+  } > "$bm_crd/security"
+  chmod +x "$bm_crd/security"
+  _TCR_SEC_BIN="$bm_crd/security"
+  printf '0' > "$bm_crd/rc"; : > "$bm_crd/log"
+  bm_conf 200; KIT_TRACKER_USER=; KIT_TRACKER_TOKEN=
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if ! bm_has 'credentials:' && [ -s "$bm_crd/log" ] && ! grep -qF -- '-w' "$bm_crd/log"; then bm_pass "leg 5 stored credential: an empty environment plus a stored item passes the credential question with no -w"
+  else bm_fail_ "leg 5 stored credential: rc=$bm_rc out=[$bm_all] store log=[$(cat "$bm_crd/log")]"; fi
+  printf '44' > "$bm_crd/rc"; : > "$bm_crd/log"
+  bm_reset; KIT_TRACKER_USER=; KIT_TRACKER_TOKEN=
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc" -eq 2 ] && [ "$(bm_logbytes)" = 0 ] && bm_has 'section 5b'; then bm_pass "leg 5 stored credential: no stored item refuses before any tracker call"
+  else bm_fail_ "leg 5 stored credential absent: rc=$bm_rc out=[$bm_all]"; fi
+  _TCR_SEC_BIN="$bm_t/no-store"
+  # SWAS-101 (H1): with KIT_TRACKER_AUTH unset, the direct adapter calls see the auth kind of the conf (bearer here)
+  bm_reset; KIT_TRACKER_USER=fixture-user; KIT_TRACKER_TOKEN=fixture-token
+  sed 's/^auth=basic$/auth=bearer/' "$bm_repo/.kit/tracker.conf" > "$bm_t/bearer.conf" && cp "$bm_t/bearer.conf" "$bm_repo/.kit/tracker.conf"
+  : > "$bm_stub/auth"; unset KIT_TRACKER_AUTH
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ -s "$bm_stub/auth" ] && [ "$(sort -u "$bm_stub/auth")" = bearer ]; then bm_pass "leg 5 auth: every direct adapter call saw KIT_TRACKER_AUTH=bearer from a bearer conf (none exported)"
+  else bm_fail_ "leg 5 auth: rc=$bm_rc seen=[$(sort -u "$bm_stub/auth" 2>/dev/null)]"; fi
+  # the auth leg made adapter calls: reset the call log so the all-at-once leg's zero-calls assertion reads only its own run
+  bm_reset
+  bm_conf 200
   KIT_TRACKER_USER=fixture-user; KIT_TRACKER_TOKEN=fixture-token
   bm_run --from board.md --plan bad-multi.tsv --dry-run $D $DT
   if [ "$bm_rc" -eq 2 ] && [ "$(bm_logbytes)" = 0 ] && bm_has 'QLN-GOLF' && bm_has 'Nowhere' && bm_has 'QLN-GHOST' && bm_has 'more than once' && bm_has 'needs a reason' && bm_has 'unknown line kind'; then
@@ -1184,6 +1341,37 @@ $bm_err"
   if [ "$bm_rc" -eq 2 ] && bm_has 'QLN-ALPHA' && bm_has 'QLN-NEWTWO' && bm_has 'HUGE' && bm_has 'extreme' && bm_has 'bad id' && bm_has 'QLN-NEWFOUR'; then
     bm_pass "leg 5 new: a colliding or duplicate new ID, a bad Size or Risk, a bad ID and an empty intent each refuse"
   else bm_fail_ "leg 5 new: rc=$bm_rc out=[$bm_all]"; fi
+
+  # ── leg 4 rc6 (SWAS-113): an adapter rc 6 = Jira did not accept the credential. A transition stops the run with the credential
+  # sentence (never the 'refused' wording) and a re-run retries only the transition; the preflight reads and the census name the
+  # rejection instead of "unverified" / "could not read". ─────────────────────────────────────────────────────────────────────────
+  bm_reset; : > "$bm_stub/rc6-transition"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  bm_rc1=$bm_rc; bm_o1=$bm_all
+  rm -f "$bm_stub/rc6-transition"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc1" -eq 1 ] && printf '%s' "$bm_o1" | grep -qF 'the tracker rejected the credential' && printf '%s' "$bm_o1" | grep -qF 'QLN-ALPHA' \
+     && ! printf '%s' "$bm_o1" | grep -qF 'was refused' && [ "$bm_rc" -eq 0 ] && [ "$(grep -c 'title QLN-ALPHA' "$bm_stub/log")" = 1 ]; then
+    bm_pass "leg 4 rc6/transition: an adapter rc 6 on a transition stops the run with the credential sentence, not 'refused'; the re-run retries only the transition"
+  else bm_fail_ "leg 4 rc6/transition: rc1=$bm_rc1 rc=$bm_rc o1=[$bm_o1] out=[$bm_all]"; fi
+  # a 2xx served anonymously to the transition POST carries the adapter's suffix: the stop says "may have applied", not "did not complete"
+  bm_reset; : > "$bm_stub/rc6-transition"; printf ' (the write may have applied anonymously)' > "$bm_stub/anon-suffix"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc" -eq 1 ] && bm_has 'may have applied' && bm_has 'QLN-ALPHA' && ! bm_has 'did not complete'; then
+    bm_pass "leg 4 rc6/transition-anon: an anonymously served transition stops the run saying it may have applied"
+  else bm_fail_ "leg 4 rc6/transition-anon: rc=$bm_rc out=[$bm_all]"; fi
+  bm_reset; : > "$bm_stub/rc6-list-in-states"
+  bm_run --from board.md --plan plan.tsv $D $DT
+  if [ "$bm_rc" -eq 1 ] && bm_has 'the tracker rejected the credential' && ! bm_has 'could not read the project' && ! bm_has 'census OK'; then
+    bm_pass "leg 6 rc6/census: an adapter rc 6 on the census names the rejection and exits 1, never 'census OK'"
+  else bm_fail_ "leg 6 rc6/census: rc=$bm_rc out=[$bm_all]"; fi
+  for bm_rcv in create-meta required-fields status-ids; do
+    bm_reset; : > "$bm_stub/rc6-$bm_rcv"
+    bm_run --from board.md --plan plan.tsv $D $DT
+    if [ "$bm_rc" -eq 2 ] && bm_has 'the tracker rejected the credential' && [ "$(bm_nwrites)" = 0 ]; then
+      bm_pass "leg 5 rc6/$bm_rcv: an adapter rc 6 on the $bm_rcv preflight read refuses (rc 2) naming the rejected credential, with zero writes"
+    else bm_fail_ "leg 5 rc6/$bm_rcv: rc=$bm_rc writes=$(bm_nwrites) out=[$bm_all]"; fi
+  done
 
   # ── leg 6: census — a project listing one card more than the ledger exits 1 with both numbers ────────────────────
   bm_reset; echo 1 > "$bm_stub/census-extra"

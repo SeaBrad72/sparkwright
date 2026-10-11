@@ -4,6 +4,9 @@
     "EDIT_ISSUES": { "id": "12", "key": "EDIT_ISSUES", "name": "Edit Issues", "type": "PROJECT", "havePermission": false },
     "TRANSITION_ISSUES": { "id": "13", "key": "TRANSITION_ISSUES", "name": "Transition Issues", "type": "PROJECT", "havePermission": true },
     "ASSIGN_ISSUES": { "id": "14", "key": "ASSIGN_ISSUES", "name": "Assign Issues", "type": "PROJECT", "havePermission": false },
-    "ADMINISTER_PROJECTS": { "id": "23", "key": "ADMINISTER_PROJECTS", "name": "Administer Projects", "type": "PROJECT", "havePermission": false }
+    "ADMINISTER_PROJECTS": { "id": "23", "key": "ADMINISTER_PROJECTS", "name": "Administer Projects", "type": "PROJECT", "havePermission": false },
+    "ADMINISTER": { "id": "0", "key": "ADMINISTER", "name": "Administer Jira", "type": "GLOBAL", "havePermission": false },
+    "SYSTEM_ADMIN": { "id": "44", "key": "SYSTEM_ADMIN", "name": "Jira System Administrators", "type": "GLOBAL", "havePermission": false },
+    "DELETE_ISSUES": { "id": "37", "key": "DELETE_ISSUES", "name": "Delete Issues", "type": "PROJECT", "havePermission": false }
   }
 }

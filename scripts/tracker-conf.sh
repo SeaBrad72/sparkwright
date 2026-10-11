@@ -3,7 +3,9 @@
 # §5 of docs/architecture/2026-09-19-tracker-backed-governance-design.md).
 # What it changes: read-only. Validates a conf file against the strict `key=value` grammar and,
 # on `get`/`get-all`, prints the value(s). Never writes, never touches the network, never sees a token (the
-# file carries no secret — credentials are env-only, KIT_TRACKER_USER/KIT_TRACKER_TOKEN).
+# file carries no secret. Credentials are the environment pair first, KIT_TRACKER_USER/KIT_TRACKER_TOKEN
+# (legacy JIRA_EMAIL/JIRA_TOKEN), then the macOS login Keychain item bound to this conf's base_url host,
+# read only by tracker-jira.sh through scripts/tracker-cred.sh.)
 # Guardrails: fail-closed (an unknown key or a malformed value REFUSES the whole file, not just
 # the line); https-only (no `http://`, no userinfo, no query — the host is the pin); every
 # refusal names the offending key, the violation, and the fix (F5); POSIX sh; the one `sed`

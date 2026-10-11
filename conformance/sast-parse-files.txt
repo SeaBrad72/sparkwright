@@ -7,3 +7,4 @@
 # each entry below (security ruling condition 5) — keep this list and that floor in sync.
 scripts/tracker-jira.sh
 .claude/hooks/guard-core.sh
+scripts/tracker-cred.sh

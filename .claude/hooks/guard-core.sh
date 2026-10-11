@@ -4368,8 +4368,17 @@ _CP8B_EFF_UNKNOWN=0
 # unset read aborted that `$(…)` rc 2, which `|| return 1` silently read as "not control-plane". '' is the
 # prefix's own "repo root, no descent" value and makes compose return 1 exactly as the swallowed abort did.
 _CP8B_EFF=''
+# SWAS-77 (design 2026-10-11-guard-dev-clone-exec-affordance §2 D1) — the dev clone the walk believes it is standing in.
+# `_CP8B_CLONE` is the PHYSICAL path of an independent clone `C` (see `_cp8b_dev_clone_phys`), or '' for "not in a
+# clone". It is set in exactly TWO places: the seed below (D1a, the session's cwd IS a clone) and the first-move rule in
+# `_cp8b_first_move` (D1b, the line's first segment is `cd <clone> &&`). It is reset at the start of every walk, cleared by
+# any later directory change, and the launder arm never reads it. `_CP8B_SEED_CLONE` is the seed's copy that each walk
+# resets from; `_CP8B_SEED_UNKNOWN` is STILL 1 in a clone (the STRIKABLE HALF stays unstruck), so every write arm reads the
+# cwd as unknown exactly as before.
+_CP8B_CLONE=''
+_CP8B_SEED_CLONE=''
 _cp8b_seed_from_cwd() {
-  _CP8B_SEED_EFF=''; _CP8B_SEED_UNKNOWN=0
+  _CP8B_SEED_EFF=''; _CP8B_SEED_UNKNOWN=0; _CP8B_SEED_CLONE=''
   [ -n "${1:-}" ] || return 0
   # A DELETED / UNREACHABLE cwd is UNKNOWN, not root: the agent is standing somewhere the guard
   # cannot name, which is the exact condition Face B prices. `pwd -P` matches PROTECTED_ROOT's own
@@ -4387,7 +4396,13 @@ _cp8b_seed_from_cwd() {
   # protected root is UNKNOWN — the fail-closed reading. Striking is THIS ONE LINE: delete it (leaving
   # `return 0`) and an outside cwd falls back to '' (root), i.e. today's behaviour for dev-clones, at
   # the price of the D1/D2 asymmetry staying open. The `K-CWD-outside ` cells are its own.
+  # (SWAS-77 update: the Bash route now has a NARROW dev-clone carve-out, `_cp8b_tad_is_clone_exec`, for a closed set of kit
+  # scripts. A cwd that is a clone is still UNKNOWN to every write arm; striking this line would still re-kind K-CWD-outside.)
   _CP8B_SEED_UNKNOWN=1
+  # SWAS-77 D1a: a cwd that is ITSELF a dev clone is recorded for the clone-exec carve-out. The unknown flag above is KEPT.
+  # Fail closed: any resolution error leaves '' (today's behaviour). Run in a command substitution so no helper state leaks.
+  # (The `[ -d .git ]` precheck is fork-free: a cwd with no `.git` directory is never a clone, so it pays no subshell.)
+  if [ -d "$_scr/.git" ]; then _scc=$(_cp8b_dev_clone_phys "$_scr") && _CP8B_SEED_CLONE=$_scc; fi
   return 0
 }
 
@@ -4428,6 +4443,385 @@ _cp8b_eff_update() {  # $1 = the cd segment ; reads/writes $_CP8B_EFF
   if _cp8b_glob_byte_in "$_ea"; then _CP8B_EFF_UNKNOWN=1; return; fi
   if [ -z "$_CP8B_EFF" ]; then _CP8B_EFF=$(_cp8b_norm "$_ea")
   else _CP8B_EFF=$(_cp8b_norm "$_CP8B_EFF/$_ea"); fi
+}
+
+# =============================================================================================
+# SWAS-77 GUARD-DEV-CLONE-EXEC-AFFORDANCE (design docs/architecture/2026-10-11-guard-dev-clone-exec-affordance-design.md rev 3).
+# An agent can run the kit's own checks in its DEV CLONE (`cd <clone> && sh scripts/x.sh --selftest`), and the read-only
+# verbs from the root. The Edit/Write route has had the dev-clone relaxation since GUARD-PATH-ALIAS-BYPASS; the Bash route had
+# none, so every way of running a clone's script was refused with `trigger=pathhit`. Everything below is an ALLOW-side
+# recogniser consulted at the existing carve-out site (the walk, "SWAS-77 D2"); a bug here fails CLOSED to today's deny.
+# HONEST CEILING (design §4): running a clone's script runs agent-authored code, and `sh /tmp/x.sh` already ran. These are
+# speed bumps for honest mistakes; the boundary is the PR-time ratification gate, not this text.
+# =============================================================================================
+
+# _cp8b_pop_tok "<text>": split the first whitespace-delimited token off <text>. Sets `_pt_tok` and `_pt_rest` (the remainder,
+# leading blanks dropped). Pure parameter expansion; no subshell, no globbing.
+_cp8b_pop_tok() {
+  _pt_s=${1#"${1%%[![:space:]]*}"}
+  case "$_pt_s" in
+    *[[:space:]]*) _pt_tok=${_pt_s%%[[:space:]]*}; _pt_rest=${_pt_s#"$_pt_tok"} ;;
+    *)             _pt_tok=$_pt_s; _pt_rest='' ;;
+  esac
+  _pt_rest=${_pt_rest#"${_pt_rest%%[![:space:]]*}"}
+}
+
+# _cp8b_dev_clone_phys "<abs dir>": print the PHYSICAL path of <dir> and return 0 iff it is a DEV CLONE (design §2 D1): (1) the
+# Edit/Write predicate `guard_dev_clone_relaxable` holds (under temp, outside the root, the root itself not under temp, no
+# surviving `..`) UNCHANGED; (2) it is an existing directory; (3) `<dir>/.git` is a DIRECTORY, i.e. an independent clone and its
+# top level. A git worktree (`.git` is a gitfile into `<root>/.git/worktrees/…`) does NOT qualify: git run by clone code would
+# write the root's common repository (refs/notes, refs/claims, config, hooks). Like the Edit/Write relaxation it does not check
+# that <dir> is a clone of THIS kit (§4 states why that is acceptable). Any error returns 1 (today's behaviour).
+_cp8b_dev_clone_phys() {
+  _dcp=$1
+  case "$_dcp" in
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  [ -n "${PROTECTED_ROOT:-}" ] || return 1
+  [ -d "$_dcp" ] || return 1
+  guard_dev_clone_relaxable "$_dcp" "$PROTECTED_ROOT" || return 1
+  [ -d "$_dcp/.git" ] && [ ! -L "$_dcp/.git" ] || return 1     # DC-GITDIR
+  _dcq=$(CDPATH='' cd -P -- "$_dcp" 2>/dev/null && pwd -P) || return 1
+  [ -n "$_dcq" ] || return 1
+  printf '%s' "$_dcq"
+}
+
+# _cp8b_first_move "<segment>": design §2 D1b. <segment> is the walk's FIRST non-blank segment (true bytes). Returns 0 iff the
+# whole command STARTS with the literal words `cd <abs> &&` and <segment> is that very `cd`, in which case it records the move:
+#   · <abs> resolves physically to the protected root  -> the walk is at the CONFIDENT root (the one unknown->confident move);
+#   · <abs> is a dev clone                              -> `_CP8B_CLONE` is set and the cwd stays UNKNOWN to every write arm;
+# Anything else returns 1 and the caller treats the `cd` exactly as before (not followed, unknown). The first move is the ONLY
+# place confidence is restored, because the segmenter cannot know whether a `cd` in any later position, or after `;`, `||`, `|`
+# or `&`, actually ran (guard-core's "an unfollowable cd only ever retains denials" invariant, :4334-4341, holds everywhere
+# else). "First" is the first segment of the WHOLE command string: a later line, a comment line, a heredoc, `(cd`, `{ cd`,
+# `X=1 cd`, `builtin cd` and `command cd` do not count. The operand is quote-free, `$`-free, glob-free, has no
+# `..`, and names an existing directory. Fail closed on every doubt.
+_cp8b_first_move() {   # $1 = the segment, $2 = its lead (the walk already computed it)
+  _fmr=${_tad_raw:-}
+  _fmr=${_fmr#"${_fmr%%[![:space:]]*}"}
+  case "$_fmr" in
+    cd[[:space:]]*) _fmr=${_fmr#cd} ;;   # FM-POSITION
+    *) return 1 ;;
+  esac
+  _cp8b_pop_tok "$_fmr"; _fmo=$_pt_tok; _fmr=$_pt_rest
+  case "$_fmr" in
+    '&&'*) : ;;   # FM-CONNECTOR
+    *) return 1 ;;
+  esac
+  case "$_fmo" in
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  case "$_fmo" in
+    *..*|*[!A-Za-z0-9._/@:+,-]*) return 1 ;;
+  esac
+  _cp8b_has_quote "$1" && return 1
+  _fml=$2                                                                   # FM-LEAD
+  [ "$_fml" = cd ] || return 1
+  [ "$(_cp8b_cd_arg "$1")" = "$_fmo" ] || return 1
+  [ -d "$_fmo" ] || return 1
+  [ -n "${PROTECTED_ROOT:-}" ] || return 1
+  _fmp=$(CDPATH='' cd -P -- "$_fmo" 2>/dev/null && pwd -P) || return 1
+  [ -n "$_fmp" ] || return 1
+  if [ "$_fmp" = "$PROTECTED_ROOT" ]; then
+    _CP8B_EFF=''; _CP8B_EFF_UNKNOWN=0; _CP8B_CLONE=''
+    return 0
+  fi
+  _fmc=$(_cp8b_dev_clone_phys "$_fmo") || return 1
+  _CP8B_CLONE=$_fmc; _CP8B_EFF_UNKNOWN=1
+  return 0
+}
+
+# _cp8b_abs_literal_phys "<path>": print the PHYSICAL resolution of a LITERAL ABSOLUTE path (no `..`, only the plain-literal
+# byte set `_redir_targets` already uses). rc 1 on anything else or on a resolution error. The CALLER decides what the
+# physical path must (not) be under; the two callers each keep their own containment test so a mutant can bind each alone.
+_cp8b_abs_literal_phys() {
+  case "$1" in
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *..*|*[!A-Za-z0-9._/@:+=,-]*) return 1 ;;
+  esac
+  _resolve_physical "$1"
+}
+
+# _cp8b_clone_redirs_ok "<segment>": design §2 D2.4. 0 iff every file-redirect TARGET of <segment> is a literal absolute path
+# whose PHYSICAL resolution is OUTSIDE the protected root. fd-dups (`N>&M`, `>&-`) are not targets and `_redir_targets` already
+# excludes them; `>&word` and `&>word` ARE file writes and arrive as targets. A relative target (cwd unknown) or a non-literal
+# one (rc 2) returns 1 and the segment keeps today's verdict.
+_cp8b_clone_redirs_ok() {
+  _ccrc=0; _ccrt=$(_redir_targets "$1") || _ccrc=$?
+  [ "$_ccrc" = 0 ] || return 1
+  _ccrr=$(_resolve_physical "${PROTECTED_ROOT:-}") || return 1
+  while [ -n "$_ccrt" ]; do
+    case "$_ccrt" in
+      *"$_cp8b_nl"*) _ccre=${_ccrt%%"$_cp8b_nl"*}; _ccrt=${_ccrt#*"$_cp8b_nl"} ;;
+      *)             _ccre=$_ccrt; _ccrt='' ;;
+    esac
+    [ -n "$_ccre" ] || continue
+    _ccrq=$(_cp8b_abs_literal_phys "$_ccre") || return 1
+    case "$_ccrq/" in
+      "$_ccrr"/*) return 1 ;;   # CLONE-OUTSIDE
+    esac
+  done
+  return 0
+}
+
+# _cp8b_clone_strip_redirs "<segment>": <segment> with its STRICT fd-dups (`N>&M`, `>&M`, `>&-`) and every `>` / `>>` / `&>`
+# redirect-plus-target removed, so the argument walk sees only words. rc 1 if a `>` survives. The targets themselves were judged
+# by `_cp8b_clone_redirs_ok` first.
+_cp8b_clone_strip_redirs() {
+  # The fd number must stand as its OWN word (`(^|blank)`): `--help2>/tmp/o` is the word `--help2` plus `>`, not an fd-2 redirect,
+  # so it is not stripped and the surviving `>` declines (sec L2). The fd-dup pass runs twice so `2>&1 >&2` strips both.
+  _ccs=$(printf '%s' "$1" | sed -E -e 's/(^|[[:space:]])[0-9]*>&([0-9]+|-)([[:space:]]|$)/\1 /g' -e 's/(^|[[:space:]])[0-9]*>&([0-9]+|-)([[:space:]]|$)/\1 /g' -e 's/(^|[[:space:]])(&|[0-9]*)>>?[[:space:]]*[^[:space:]]+/\1 /g')
+  case "$_ccs" in
+    *'>'*) return 1 ;;
+  esac
+  printf '%s' "$_ccs"
+}
+
+# _cp8b_clone_script_rel "<script token>": sets `_cx_rel` (the script's path RELATIVE to the clone) and returns 0 iff the token
+# is a kit script of the clone (design §2 D2.1): RELATIVE and matching the kit pattern, or ABSOLUTE and resolving physically to
+# `$_CP8B_CLONE/<kit pattern>`. The absolute spelling is admitted only once the agent is already in that clone (the caller
+# requires `_CP8B_CLONE`), so clone code always runs with its own tree as cwd and never grades or writes the root's tree.
+# Either way the PHYSICAL path must stay under the clone, so a symlinked `scripts/` pointing at the root declines.
+_cp8b_clone_script_rel() {
+  _cx_s=$(_cp8b_dequote "$1"); _cx_s=${_cx_s#./}
+  case "$_cx_s" in
+    *..*) return 1 ;;
+  esac
+  case "$_cx_s" in
+    /*)
+      _cx_p=$(_resolve_physical "$_cx_s") || return 1
+      case "$_cx_p" in
+        "$_CP8B_CLONE"/*) : ;;   # CLONE-UNDER-IN
+        *) return 1 ;;   # CLONE-UNDER
+      esac
+      _cx_rel=${_cx_p#"$_CP8B_CLONE"/} ;;
+    conformance/*.sh|scripts/*.sh|scripts/kit-guard|scripts/sparkwright)
+      _cx_p=$(_resolve_physical "$_CP8B_CLONE/$_cx_s") || return 1
+      case "$_cx_p" in
+        "$_CP8B_CLONE"/*) : ;;
+        *) return 1 ;;   # CLONE-REL
+      esac
+      _cx_rel=$_cx_s ;;
+    *) return 1 ;;
+  esac
+  case "$_cx_rel" in
+    conformance/*.sh|scripts/*.sh|scripts/kit-guard|scripts/sparkwright) return 0 ;;
+  esac
+  return 1
+}
+
+# _cp8b_clone_verb_ok "<script rel>" "<first arg>": design §2 D2.2, the CLOSED verb gate on both families. The first
+# argument must be: none (a bare gate, `conformance/*` only, and NEVER a bare `conformance/tracker-*.sh`); `--selftest`;
+# `--help` / `-h`; or one of the two named exceptions `scripts/kit-guard path|cmd|mcp` and `scripts/board-claim.sh check <KEY>`.
+# A scoped-battery flag and `scripts/sparkwright prepush` are NOT in the gate, and a bare tracker gate is refused
+# (clone code would reach the live tracker credential through the clone's own adapter; the tracker gates keep --selftest and
+# --help, which run hermetically). Everything else (every front-door writer, `--fix`) stays refused in a clone; those run the
+# reviewed code from the root.
+_cp8b_clone_verb_ok() {
+  case "$2" in
+    --selftest|--help|-h) return 0 ;;
+    '') case "$1" in
+          conformance/tracker-*.sh) return 1 ;;   # CLONE-TRACKER
+          conformance/*.sh) return 0 ;;
+        esac
+        return 1 ;;
+  esac
+  case "$1:$2" in
+    scripts/kit-guard:path|scripts/kit-guard:cmd|scripts/kit-guard:mcp) return 0 ;;
+    scripts/board-claim.sh:check) return 0 ;;
+  esac
+  return 1
+}
+
+# _cp8b_clone_arg_ok "<path-shaped token>": design §2 D2.3. 0 iff the token, resolved PHYSICALLY (a relative one as
+# `$_CP8B_CLONE/<token>`, never against the hook's own cwd), stays under the clone and is itself dev-clone-relaxable. Any `..`
+# declines; a symlink inside the clone that points at the root therefore declines. The final `_cp8b_via_link_cp` is
+# fed the already-physical path (so it is the belt, not the wall): the containment test above is the control.
+_cp8b_clone_arg_ok() {
+  case "$1" in
+    *..*) return 1 ;;
+  esac
+  case "$1" in
+    /*) _cxa_a=$1 ;;
+    *) _cxa_a=$_CP8B_CLONE/$1 ;;
+  esac
+  _cxa_p=$(_resolve_physical "$_cxa_a") || return 1
+  case "$_cxa_p/" in
+    "$_CP8B_CLONE"/*) : ;;
+    *) return 1 ;;
+  esac
+  guard_dev_clone_relaxable "$_cxa_p" "${PROTECTED_ROOT:-}" || return 1
+  _cp8b_via_link_cp "$_cxa_p" && return 1
+  return 0
+}
+
+# _cp8b_clone_val_ok "<value>": a value that is PATH-SHAPED (absolute, contains `/`, or names an entry that exists, even as a
+# dangling link, at `$_CP8B_CLONE/<value>`) must pass `_cp8b_clone_arg_ok`; anything else is data (a KEY, a number).
+_cp8b_clone_val_ok() {
+  [ -n "$1" ] || return 0
+  case "$1" in
+    /*|*/*) : ;;
+    *) [ -e "$_CP8B_CLONE/$1" ] || [ -L "$_CP8B_CLONE/$1" ] || return 0 ;;
+  esac
+  _cp8b_clone_arg_ok "$1"
+}
+
+# _cp8b_clone_flag_ok "<flag token>": a flag-glued value (`--out=<path>`) is judged as a path by the rules above; any OTHER
+# flag-shaped token that carries a `/` (`-o<path>`) declines.
+_cp8b_clone_flag_ok() {
+  case "$1" in
+    *=*) case "${1%%=*}" in
+           */*) return 1 ;;
+         esac
+         _cp8b_clone_val_ok "${1#*=}"; return ;;
+    */*) return 1 ;;
+  esac
+  return 0
+}
+
+# _cp8b_clone_tok_ok "<dequoted token>": one argument of the walk.
+_cp8b_clone_tok_ok() {
+  # The walk resolves a token LITERALLY under `set -f`, but the shell will expand it. Any
+  # byte outside the plain literal set (`* ? [ ] { } ~`, `$`, quotes, ...) declines, whole token and `=` value alike.
+  case "$1" in
+    *[!A-Za-z0-9._/@:+=,-]*) return 1 ;;   # CLONE-BYTES
+  esac
+  case "$1" in
+    '') return 0 ;;
+    -*) _cp8b_clone_flag_ok "$1"; return ;;
+  esac
+  _cp8b_clone_val_ok "$1" || return 1
+  case "$1" in
+    *=*) _cp8b_clone_val_ok "${1#*=}" || return 1 ;;
+  esac
+  return 0
+}
+
+# _cp8b_clone_cmd_ok "<text after cmd>": `scripts/kit-guard cmd '<cmd>'` has a FIXED ARITY of exactly one argument, a quoted
+# command string that is DATA (it is judged by the clone's guard, not run), so it is exempt from the path walk.
+# Any further argument, or a `$`, backtick, `<`, `>` or a nested quote inside the string, declines.
+_cp8b_clone_cmd_ok() {
+  _cxc_sq="'"; _cxc_dq='"'
+  case "$1" in
+    "$_cxc_sq"*"$_cxc_sq")
+      _cxc_i=${1#"$_cxc_sq"}; _cxc_i=${_cxc_i%"$_cxc_sq"}
+      case "$_cxc_i" in
+        *"$_cxc_sq"*|*'$'*|*'`'*|*'>'*|*'<'*) return 1 ;;
+      esac ;;
+    "$_cxc_dq"*"$_cxc_dq")
+      _cxc_i=${1#"$_cxc_dq"}; _cxc_i=${_cxc_i%"$_cxc_dq"}
+      case "$_cxc_i" in
+        *"$_cxc_dq"*|*\\*|*'$'*|*'`'*|*'>'*|*'<'*) return 1 ;;
+      esac ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# _cp8b_clone_args_ok "<rel>" "<verb>" "<text after the verb>": the argument walk, on the DEQUOTED view under `set -f`.
+# `board-claim.sh check` takes exactly one KEY; `kit-guard cmd` is arity 1.
+_cp8b_clone_args_ok() {
+  _cxw_rest=$3
+  case "$1:$2" in
+    scripts/kit-guard:cmd) _cp8b_clone_cmd_ok "$_cxw_rest"; return ;;
+    scripts/board-claim.sh:check)
+      _cp8b_pop_tok "$_cxw_rest"; _cxw_key=$_pt_tok
+      [ -n "$_cxw_key" ] && [ -z "$_pt_rest" ] || return 1
+      case "$_cxw_key" in
+        [A-Z0-9]*) case "$_cxw_key" in
+                     *[!A-Z0-9-]*) return 1 ;;
+                   esac ;;
+        *) return 1 ;;
+      esac
+      return 0 ;;
+  esac
+  _cxw_g=0; case "$-" in
+    *f*) _cxw_g=1 ;;
+  esac
+  set -f
+  _cxw_rc=0
+  # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
+  set -- $_cxw_rest
+  while [ $# -gt 0 ]; do
+    _cxw_t=$(_cp8b_dequote "$1"); shift
+    _cp8b_clone_tok_ok "$_cxw_t" || { _cxw_rc=1; break; }
+  done
+  [ "$_cxw_g" = 1 ] || set +f
+  return $_cxw_rc
+}
+
+# _cp8b_tad_is_clone_exec "<segment>": design §2 D2. 0 iff <segment> runs a KIT SCRIPT OF THE CLONE the walk is standing in
+# (`_CP8B_CLONE`): script form (relative, or absolute into the same clone), the closed verb gate, no argument leaving the clone,
+# and a strict redirect rule. Consulted at the walk's carve-out site whatever `_kroot` is, and inside the same line-poison
+# accounting as kit-exec. Any doubt returns 1 and the segment is judged exactly as today.
+_cp8b_tad_is_clone_exec() {
+  [ -n "${_CP8B_CLONE:-}" ] || return 1                                      # CLONE-GUARD
+  [ -n "${PROTECTED_ROOT:-}" ] || return 1
+  # The shell EXPANDS `{lnk,x}/y`, `l*`, `~-` before the script sees them, and the argument walk below resolves
+  # tokens literally. Whatever path the token takes, a clone-exec carve-out is declined when the WHOLE raw command (clone mode
+  # from the first move or from the seed alike) carries a brace, glob or tilde byte. `$?` (the exit status, as in `; echo rc=$?`)
+  # is not a glob and is blanked first. Over-denies a grep pattern on the same line: split such a pipeline into its own call.
+  _cx_raw=${_tad_raw:-}
+  while :; do
+    case "$_cx_raw" in
+      *'$?'*) _cx_raw=${_cx_raw%%'$?'*}${_cx_raw#*'$?'} ;;
+      *) break ;;
+    esac
+  done
+  case "$_cx_raw" in
+    *'{'*|*'}'*|*'*'*|*'?'*|*'['*|*']'*|*'~'*) return 1 ;;   # CLONE-RAWBYTES
+  esac
+  case "$1" in
+    *'<'*|*'$'*|*'`'*) return 1 ;;
+  esac
+  case "$1" in
+    *'>'*) _cp8b_tad_redir_cp "$1" && return 1
+           _cp8b_clone_redirs_ok "$1" || return 1 ;;
+  esac
+  _cx_seg=$(_cp8b_clone_strip_redirs "$1") || return 1
+  _cx_seg=$(_cp8b_strip_wrappers "$_cx_seg")
+  _cp8b_pop_tok "$_cx_seg"; _cx_tok=$_pt_tok; _cx_rest=$_pt_rest
+  case "$(_cp8b_dequote "$_cx_tok")" in
+    sh|bash|dash|zsh|ksh) _cp8b_pop_tok "$_cx_rest"; _cx_tok=$_pt_tok; _cx_rest=$_pt_rest ;;
+  esac
+  _cp8b_clone_script_rel "$_cx_tok" || return 1
+  _cx_rl=$_cx_rel
+  _cp8b_pop_tok "$_cx_rest"; _cx_verb=$(_cp8b_dequote "$_pt_tok"); _cx_rest=$_pt_rest
+  _cp8b_clone_verb_ok "$_cx_rl" "$_cx_verb" || return 1
+  _cp8b_clone_args_ok "$_cx_rl" "$_cx_verb" "$_cx_rest"
+}
+
+# _cp8b_canon_root_script "<segment>": design §2 D2 note, the SPELLING EQUIVALENCE. When the segment is
+# `[sh|bash|…] <abs script> …` and the script resolves PHYSICALLY to `$PROTECTED_ROOT/<kit pattern>`, print the segment with the
+# script respelled root-relative, so the EXISTING kit-exec and kit-query rules judge `sh <root>/scripts/board.sh show K`
+# exactly as `sh scripts/board.sh show K` (the caller applies it only at the confident root, where the relative spelling means
+# the same file). Otherwise print the segment unchanged. Without it kit-exec's argument walk sees the absolute token as a
+# control-plane argument and kit-query's positional lookup misses it.
+_cp8b_canon_root_script() {
+  _crs_in=$1
+  [ -n "${PROTECTED_ROOT:-}" ] || { printf '%s' "$_crs_in"; return 0; }
+  _cp8b_pop_tok "$_crs_in"; _crs_lead=$_pt_tok; _crs_rest=$_pt_rest; _crs_pre=''
+  case "$_crs_lead" in
+    sh|bash|dash|zsh|ksh) _crs_pre="$_crs_lead "; _cp8b_pop_tok "$_crs_rest"; _crs_lead=$_pt_tok; _crs_rest=$_pt_rest ;;
+  esac
+  case "$_crs_lead" in
+    /*) : ;;
+    *) printf '%s' "$_crs_in"; return 0 ;;
+  esac
+  case "$_crs_lead" in
+    *..*|*[!A-Za-z0-9._/@:+,-]*) printf '%s' "$_crs_in"; return 0 ;;
+  esac
+  _crs_phys=$(_resolve_physical "$_crs_lead") || { printf '%s' "$_crs_in"; return 0; }
+  case "$_crs_phys" in
+    "$PROTECTED_ROOT"/conformance/*.sh|"$PROTECTED_ROOT"/scripts/*.sh|"$PROTECTED_ROOT"/scripts/kit-guard|"$PROTECTED_ROOT"/scripts/sparkwright)
+      printf '%s%s %s' "$_crs_pre" "${_crs_phys#"$PROTECTED_ROOT"/}" "$_crs_rest" ;;
+    *) printf '%s' "$_crs_in" ;;
+  esac
 }
 
 # _cp8b_compose "<token>": composed normalized path (effective-dir ⊕ token) on stdout; rc 1 if the
@@ -5549,25 +5943,34 @@ _cp8b_kit_query_toks() {
     # deliberately absent.
     scripts/tracker-conf.sh)            printf '%s' 'get get-all get-prefix' ;;
     # GUARD-READ-TRACKER-PREFLIGHT-CONF (design §2 D1): the post-incept re-check the kit itself prescribes,
-    # `--preflight [--as ci|dev] --conf .kit/tracker.conf`, ONE shape, validated by `_cp8b_kq_tracker_contract_ok`
+    # `--preflight [--as ci|dev|agent] --conf .kit/tracker.conf`, ONE shape, validated by `_cp8b_kq_tracker_contract_ok`
     # (this set names the flags it may carry). It was CUT from the tracker-conf cut because the script reaches the
     # network; the coupling lock now runs it hermetically (copied tree + fake adapter, and the literal real-tree
     # run with every credential unset). `--deep --discover --fields --selftest --base --project` stay refused.
-    conformance/tracker-contract.sh)    printf '%s' '--preflight --as --conf' ;;
+    # SWAS-77 D3b: one more exact shape, `--fields --conf .kit/tracker.conf`, the live read of the create screen's field ids and
+    # allowed values (it prints no credential). Disclosed: it puts tracker-authored text (field names, allowed values)
+    # into the agent's context, an untrusted-input channel `board.sh show` already opens (fenced as data); named, not new.
+    conformance/tracker-contract.sh)    printf '%s' '--preflight --as --conf --fields' ;;
+    # SWAS-77 D3c: the migration DRY RUN, validated by `_cp8b_kq_board_migrate_ok` (this set names the verb it may carry).
+    # `--dry-run` writes nothing: it returns at scripts/board-migrate.sh before the preflight and before any ledger append.
+    # `.publish-identifiers` is a control-plane token in argv, which is why kit-exec declines `--screen .publish-identifiers`
+    # and a query row is needed at all.
+    scripts/board.sh)                   printf '%s' 'migrate' ;;
   esac
 }
 # _cp8b_kq_tracker_contract_ok "<args…>": 0 iff the arguments after `conformance/tracker-contract.sh` are exactly
-# `--preflight` once, `--conf .kit/tracker.conf|./.kit/tracker.conf` once, and `--as ci|dev` at most once, in any
+# `--preflight` once, `--conf .kit/tracker.conf|./.kit/tracker.conf` once, and `--as ci|dev|agent` at most once, in any
 # order. Any other token, a repeated flag, a missing value or any other conf path declines to today's verdict.
 _cp8b_kq_tracker_contract_ok() {
-  _kcp=0; _kcc=0; _kca=0
+  _kcp=0; _kcc=0; _kca=0; _kcf=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --preflight) _kcp=$((_kcp + 1)); shift ;;
+      --fields) _kcf=$((_kcf + 1)); shift ;;      # SWAS-77 D3b
       --as)
         _kca=$((_kca + 1)); [ $# -ge 2 ] || return 1
         case "$2" in
-          ci|dev) ;;
+          ci|dev|agent) ;;
           *) return 1 ;;
         esac
         shift 2 ;;
@@ -5581,7 +5984,89 @@ _cp8b_kq_tracker_contract_ok() {
       *) return 1 ;;
     esac
   done
+  # SWAS-77 D3b: `--fields` is its OWN exact shape, `--fields --conf .kit/tracker.conf` (no `--preflight`, no `--as`), and never
+  # rides with the preflight form.
+  if [ "$_kcf" -gt 0 ]; then
+    [ "$_kcf" = 1 ] && [ "$_kcp" = 0 ] && [ "$_kcc" = 1 ] && [ "$_kca" = 0 ]
+    return
+  fi
   [ "$_kcp" = 1 ] && [ "$_kcc" = 1 ] && [ "$_kca" -le 1 ]
+}
+# _cp8b_kq_lit_operand "<value>": a quote-free LITERAL path operand: non-empty, not flag-shaped, no `..`, and only the plain
+# literal byte set (so no `$`, glob, quote, backtick, space).
+_cp8b_kq_lit_operand() {
+  case "$1" in
+    ''|-*|*..*|*[!A-Za-z0-9._/@:+=,-]*) return 1 ;;
+  esac
+  return 0
+}
+# _cp8b_kq_board_migrate_ok "<args after migrate>": SWAS-77 D3c. 0 iff the arguments are exactly the migration DRY RUN:
+# `--from <p> --plan <p> --dry-run` once each (any order), plus optionally `--screen <p>`, `--ledger <p>` and
+# `--date <YYYY-MM-DD>` once each. `--freeze` (the writer) and every other token refuse. Every `<p>` is a quote-free literal;
+# `.publish-identifiers` is admitted only as the operand of `--screen`.
+_cp8b_kq_board_migrate_ok() {
+  _kmf=0; _kmp=0; _kmd=0; _kms=0; _kml=0; _kmt=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) _kmd=$((_kmd + 1)); shift ;;
+      --from|--plan|--screen|--ledger)
+        [ $# -ge 2 ] || return 1
+        _cp8b_kq_lit_operand "$2" || return 1
+        case "$2" in
+          *.publish-identifiers*) [ "$1" = --screen ] || return 1 ;;
+        esac
+        case "$1" in
+          --from) _kmf=$((_kmf + 1)) ;;
+          --plan) _kmp=$((_kmp + 1)) ;;
+          --screen) _kms=$((_kms + 1)) ;;
+          --ledger) _kml=$((_kml + 1)) ;;
+        esac
+        shift 2 ;;
+      --date)
+        [ $# -ge 2 ] || return 1
+        case "$2" in
+          [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+          *) return 1 ;;
+        esac
+        _kmt=$((_kmt + 1)); shift 2 ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$_kmf" = 1 ] && [ "$_kmp" = 1 ] && [ "$_kmd" = 1 ] && [ "$_kms" -le 1 ] && [ "$_kml" -le 1 ] && [ "$_kmt" -le 1 ]
+}
+# _cp8b_kq_strip_redirs "<segment>": SWAS-77 D3a. Print <segment> with its STRICT fd-dups (`N>&M`, `>&M`, `>&-`) removed and at
+# most ONE `>` / `>>` file redirect (target included) removed, and return 0; return 1 for anything else that carries a `>`.
+# The one target must be a literal absolute path whose PHYSICAL resolution is outside the protected root (a symlink out of the
+# root into it, or `..`, or a relative path, declines). `&>` and `>&word` are file writes with a different grammar and stay
+# refused whole.
+_cp8b_kq_strip_redirs() {
+  # (the fd number must stand as its own word, sec L2; the fd-dup pass runs twice so `2>&1 >&2` strips both)
+  _kq_a=$(printf '%s' "$1" | sed -E -e 's/(^|[[:space:]])[0-9]*>&([0-9]+|-)([[:space:]]|$)/\1 /g' -e 's/(^|[[:space:]])[0-9]*>&([0-9]+|-)([[:space:]]|$)/\1 /g')
+  case "$_kq_a" in
+    *'>'*) : ;;
+    *) printf '%s' "$_kq_a"; return 0 ;;
+  esac
+  case "$_kq_a" in
+    *'&>'*|*'>&'*) return 1 ;;
+  esac
+  _kq_n=$(printf '%s' "$_kq_a" | tr -cd '>' | wc -c | tr -d ' ')
+  case "$_kq_n" in
+    1|2) : ;;
+    *) return 1 ;;
+  esac
+  _kq_t=$(printf '%s' "$_kq_a" | sed -E -n 's/^[^>]*>>?[[:space:]]*([^[:space:]]+).*$/\1/p')
+  [ -n "$_kq_t" ] || return 1
+  _kq_b=$(printf '%s' "$_kq_a" | sed -E 's/(^|[[:space:]])[0-9]*>>?[[:space:]]*[^[:space:]]+/\1 /')
+  case "$_kq_b" in
+    *'>'*) return 1 ;;
+  esac
+  [ -n "${PROTECTED_ROOT:-}" ] || return 1
+  _kq_p=$(_cp8b_abs_literal_phys "$_kq_t") || return 1
+  _kq_r=$(_resolve_physical "$PROTECTED_ROOT") || return 1
+  case "$_kq_p/" in
+    "$_kq_r"/*) return 1 ;;   # KQ-OUTSIDE
+  esac
+  printf '%s' "$_kq_b"
 }
 # _cp8b_kq_tracker_conf_ok "<args…>": 0 iff the arguments after `scripts/tracker-conf.sh` are exactly
 # `<conf>` (one non-flag token, not a verb) or `get|get-all|get-prefix <arg> <conf>` (arity 3, no flag-shaped
@@ -5606,10 +6091,33 @@ _cp8b_kq_tracker_conf_ok() {
   return 1
 }
 _cp8b_tad_is_kit_query() {
-  case "$1" in
-    *'>'*|*'<'*) return 1 ;;
+  # SWAS-77 D3a: `<` stays refused. A strict fd-dup (`N>&M`, `>&M`, `>&-`) is removed, and ONE `>` / `>>` file target that is a
+  # literal ABSOLUTE path whose PHYSICAL resolution is outside the protected root is removed; any other `>` (`&>`, `>&word`, a
+  # relative or control-plane-relative target, a second redirect) still refuses the whole segment, exactly as before.
+  _kqseg=$1
+  case "$_kqseg" in
+    *'<'*) return 1 ;;
     esac
-  case "$1" in
+  case "$_kqseg" in
+    *'>'*)
+      # FORK-FREE precheck (review 4): this arm is consulted for EVERY segment at the confident root, and `npm test > /tmp/o 2>&1`
+      # must add no fork. Peel a bare interpreter and require the next token to be one of the table's scripts (the same names as
+      # `_cp8b_kit_query_toks`; a script added there must be added here) before paying for the sed/tr/wc strip below.
+      _kqp=${_kqseg#"${_kqseg%%[![:space:]]*}"}
+      case "$_kqp" in
+        sh[[:space:]]*|bash[[:space:]]*|dash[[:space:]]*|zsh[[:space:]]*|ksh[[:space:]]*)
+          _kqp=${_kqp#*[[:space:]]}; _kqp=${_kqp#"${_kqp%%[![:space:]]*}"} ;;
+      esac
+      _kqp=${_kqp#./}
+      case "$_kqp" in
+        scripts/kit-guard[[:space:]]*|conformance/promotion-readiness.sh[[:space:]]*|conformance/agent-boundary.sh[[:space:]]*|\
+        conformance/branch-protection.sh[[:space:]]*|scripts/tracker-conf.sh[[:space:]]*|conformance/tracker-contract.sh[[:space:]]*|\
+        scripts/board.sh[[:space:]]*) : ;;
+        *) return 1 ;;
+      esac
+      _kqseg=$(_cp8b_kq_strip_redirs "$_kqseg") || return 1 ;;
+    esac
+  case "$_kqseg" in
     *'$'*|*'`'*) return 1 ;;
     esac
   _kqg=0; case "$-" in
@@ -5617,7 +6125,7 @@ _cp8b_tad_is_kit_query() {
     esac
   set -f
   # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
-  set -- $1
+  set -- $_kqseg
   [ $# -gt 0 ] || { [ "$_kqg" = 1 ] || set +f; return 1; }
   case "$1" in
     sh|bash|dash|zsh|ksh) shift ;;
@@ -5641,6 +6149,18 @@ _cp8b_tad_is_kit_query() {
   if [ "$_kqs" = conformance/tracker-contract.sh ]; then   # GUARD-READ-TRACKER-PREFLIGHT-CONF: one exact shape, confident root only
     if [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ]; then
       _cp8b_kq_tracker_contract_ok "$@" && _kqr=0 || _kqr=1
+    else _kqr=1; fi
+    [ "$_kqg" = 1 ] || set +f
+    return "$_kqr"
+  fi
+  if [ "$_kqs" = scripts/board.sh ]; then   # SWAS-77 D3c: `board.sh migrate … --dry-run`, confident root only
+    # (The walk-state test below is a BELT only: the control is the `_kroot` gate at the call site, which the launder arm cannot
+    # reach. It is kept so a direct caller cannot get the row off the confident root. sec L4.)
+    if [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ]; then
+      case "$1" in
+        migrate) shift; _cp8b_kq_board_migrate_ok "$@" && _kqr=0 || _kqr=1 ;;
+        *) _kqr=1 ;;
+      esac
     else _kqr=1; fi
     [ "$_kqg" = 1 ] || set +f
     return "$_kqr"
@@ -6398,6 +6918,10 @@ _cp8b_target_arm_denied() {
   # `cwd` the seed is '' / confident, which is the pre-slice initialisation byte for byte.
   _CP8B_EFF=$_CP8B_SEED_EFF
   _CP8B_EFF_UNKNOWN=$_CP8B_SEED_UNKNOWN
+  # SWAS-77 D1: the clone the walk starts in is the SEED's (D1a), reset per walk; `_cp8b_segn` counts the non-blank segments so
+  # the first-move rule (D1b) can ask "is this the line's first segment". The launder arm never reads `_CP8B_CLONE`.
+  _CP8B_CLONE=${_CP8B_SEED_CLONE:-}
+  _cp8b_segn=0
   # K-3a face 2 — one more byte of per-LINE state, reset with the others. `_CP8B_RES_POISON` is set by
   # a segment that can re-route resolution and stays set for the REST of the line.
   _CP8B_RES_POISON=0
@@ -6417,7 +6941,12 @@ _cp8b_target_arm_denied() {
       *["$_cp8b_mk_all"]*) _seg=$(_cp8b_unmask_quoted "$_seg") ;;
       esac
     _lv=$(_cp8b_lead "$_seg")
-    if [ "$_lv" = cd ]; then _cp8b_eff_update "$_seg"; continue; fi
+    _cp8b_segn=$((_cp8b_segn + 1))
+    # SWAS-77 D1b: ONLY the line's first segment, and only as `cd <abs> &&` (see `_cp8b_first_move`), may restore confidence
+    # at the root or enter a dev clone. Every other `cd` falls through to today's handling below, and clears clone mode.
+    if [ "$_cp8b_segn" = 1 ] && _cp8b_first_move "$_seg" "$_lv"; then continue; fi
+    if [ "$_lv" = cd ]; then _cp8b_eff_update "$_seg"; _CP8B_CLONE=''   # CLONE-CLEAR
+      continue; fi
     # design §14: a glob in a write-verb operand is matched against the on-disk control-plane paths (see the function).
     case "$_lv" in
       cp|install|mv|tee|ln|rsync|touch|rm|rmdir|chmod|chown|truncate|dd|shred|sed)
@@ -6427,7 +6956,8 @@ _cp8b_target_arm_denied() {
     # walks on, which is why `pushd conformance && sed -i s/a/b/ verify.sh` ALLOWED. Keeping the
     # prefix is still right (a no-op only ever RETAINS denials); what was missing is the admission.
     case "$_lv" in
-      pushd|popd) _CP8B_EFF_UNKNOWN=1; continue ;;
+      pushd|popd) _CP8B_EFF_UNKNOWN=1; _CP8B_CLONE=''   # CLONE-CLEAR
+        continue ;;
       esac
     # S-H1 — the PEELED lead, used ONLY to add denies. `_lv` still drives every pre-existing arm
     # exactly as before; `_lvp` is a second, narrower reading consulted by Face B alone.
@@ -6440,9 +6970,24 @@ _cp8b_target_arm_denied() {
     case "$_lv" in
       cd|pushd|popd) : ;;
       *) case "$_lvp" in
-        cd|pushd|popd) _CP8B_EFF_UNKNOWN=1 ;;
+        cd|pushd|popd) _CP8B_EFF_UNKNOWN=1; _CP8B_CLONE=''   # CLONE-CLEAR
+          ;;
         esac ;;
     esac
+    # SWAS-77 D1b belt: a directory-change WORD anywhere else in the segment (`builtin cd`, `command cd`, `{ cd`, `X=1 cd`, an
+    # `if`/`do` head) is a move this walk cannot follow, so it also ends clone mode. Over-clears on `echo cd x`, which only
+    # costs the clone-exec relief for that line; never an allow.
+    # It judges the DEQUOTED segment (`'cd' sub` is a cd), and a `.` / `source` / `eval` lead can run a cd this walk cannot see,
+    # so those clear too (sec L3). Only forks while a clone is active.
+    if [ -n "${_CP8B_CLONE:-}" ]; then
+      _clb=$(_cp8b_dequote "$_seg")
+      case " $_clb " in
+        *[[:space:]]cd[[:space:]]*|*[[:space:]]pushd[[:space:]]*|*[[:space:]]popd[[:space:]]*) _CP8B_CLONE='' ;;
+      esac
+      case "$(_cp8b_lead "$_clb")" in
+        .|source|eval) _CP8B_CLONE='' ;;
+      esac
+    fi
     # S-H2 — THE REDIRECT CLAUSE RUNS FIRST, ahead of the read / message-carrier declines below.
     # `echo`, `printf` and `cat` are recognised as readers/message carriers and DECLINED there, so
     # `cd -; echo x >> guard-core.sh` never reached Face B's late redirect test at all — measured
@@ -6495,12 +7040,28 @@ _cp8b_target_arm_denied() {
     # (`cd /tmp/x && sh scripts/anything.sh`), so kit-exec and the kit-query table apply only at the confident root. The
     # condition sits at THIS call site, not inside the recognisers: the launder arm calls kit-exec on the DENY side.
     _kroot=0; [ -z "${_CP8B_EFF:-}" ] && [ "${_CP8B_EFF_UNKNOWN:-0}" = 0 ] && _kroot=1
-    if [ "$_kroot" = 1 ] && _cp8b_tad_is_kit_exec "$_seg"; then
+    # SWAS-77 D2 note: at the confident root an ABSOLUTE spelling of a root kit script is respelled root-relative BEFORE kit-exec
+    # and kit-query judge it, so `sh <root>/scripts/board.sh show K` is judged exactly as `sh scripts/board.sh show K`. Only
+    # the recognisers see the respelled copy; every later trigger keeps judging `$_seg`.
+    _segk=$_seg
+    if [ "$_kroot" = 1 ]; then   # CANON-ROOT (the case is a fork-free precheck: no `/conformance/` or `/scripts/` byte, nothing to respell)
+      case "$_seg" in
+        */conformance/*|*/scripts/*) _segk=$(_cp8b_canon_root_script "$_seg") ;;
+      esac
+    fi
+    if [ "$_kroot" = 1 ] && _cp8b_tad_is_kit_exec "$_segk"; then
       [ "$_CP8B_RES_POISON" = 1 ] || continue
       _CP8B_RES_POISON_HIT=1
     fi
-    if [ "$_kroot" = 1 ] && _cp8b_tad_is_kit_query "$_seg"; then      # Arm A: a DECLARED read-only kit query (see the table)
+    if [ "$_kroot" = 1 ] && _cp8b_tad_is_kit_query "$_segk"; then      # Arm A: a DECLARED read-only kit query (see the table)
       [ "$_CP8B_RES_POISON" = 1 ] || continue
+      _CP8B_RES_POISON_HIT=1
+    fi
+    # SWAS-77 D2: a kit script of the DEV CLONE the walk is standing in (D1a seed / D1b first move), whatever `_kroot` is. Same
+    # line-poison accounting as kit-exec above: a poisoned line loses the skip. `_CP8B_CLONE` is read ONLY here (never by the
+    # launder arm, which calls kit-exec on the deny side).
+    if [ -n "${_CP8B_CLONE:-}" ] && _cp8b_tad_is_clone_exec "$_seg"; then   # CLONE-SITE
+      [ "$_CP8B_RES_POISON" = 1 ] || continue   # CLONE-POISON
       _CP8B_RES_POISON_HIT=1
     fi
     if _cp8b_tad_is_test_expr "$_seg"; then      # Arm B: a `test`/`[` metadata expression
@@ -8371,6 +8932,10 @@ guard_check_command() {
   # residual CP-8a recorded — `git commit -m "… --output …"`, where a commit message merely *mentions*
   # the flag and `-o` means `--only` — without weakening the deny for any subcommand that can write.
   if guard_read_only_command "$cmd"; then return 0; fi
+  # GUARD-DENY-SECRET-STORE-READ (SWAS-109, design §2.3): a direct secret-store read. After the read-only exit (a single plain
+  # read that merely NAMES a shape stays open), with the destructive matrix, and NOT gated by selfedit_allowed: this arm
+  # only adds denies and the owner types secret commands in their own terminal. See `_ssr_denied`.
+  if _ssr_denied "$cmd"; then printf '%s' "$_SSR_TIP"; return 1; fi
   # recursive rm in any flag arrangement (-rf, -fr, -r -f, --recursive), bounded so
   # 'confirm'/'npm' are not matched, but quoted forms (bash -c "rm -rf") are.
   if printf '%s' "$cmd" | grep -Eq '(^|[^[:alnum:]_])rm[[:space:]]+([^;&|]*[[:space:]])?(-[[:alnum:]]*[rR]|--recursive)'; then
@@ -9653,4 +10218,160 @@ _kbr_text_hit() {
       *) return 0 ;;
     esac
   done
+}
+
+# === GUARD-DENY-SECRET-STORE-READ (SWAS-109): the agent's direct secret-store read is human-gated. ====================
+# A SEATBELT, not a boundary: it reads the text of the typed command and can only ADD a deny. ONE principle, literal-or-deny:
+# when a STORE WORD (security, op, secret-tool, lpass, standing alone; a full Keychain subcommand name; or a resolver
+# stem tracker-cred / tracker_cred / _tcr anywhere) is present, the RAW
+# command must be entirely LITERAL (a plain alphabet, no newline, no xargs / -exec / alias / hash / ln / cp word), else it is
+# refused. That closes the whole "value built at runtime" family (variables, substitution, braces, globs, pipes, xargs, a
+# multi-line alias or symlink) by construction. Only a literal command goes on to the precise judgement: a `security` token walk
+# over EVERY occurrence (global flags skipped, a -p flag consumes its value, -i refused, any PREFIX of find-generic-password,
+# find-internet-password or dump-keychain gets the -w/-g or -d flag rule; measured: `security` accepts any unambiguous prefix);
+# `op` / `lpass` / `secret-tool` followed by their reading verb; `op://` anywhere; and the resolver rows. NOT binary-independent:
+# the verb rows need the standalone binary word, so `op item get` under another binary name and a renamed binary with an
+# abbreviated Keychain subcommand are not seen (runtime-guards.md R27 ceiling). Every shape is asked of one blob of views (joined,
+# empty-joined, dequoted, substitution-stripped, skeleton), once as written and once lowercased (APFS is case-insensitive).
+_SSR_BASE_FIND='(^|[^a-z0-9])(find-generic-password|find-internet-password)([^a-z0-9]|$)'
+_SSR_BASE_DUMP='(^|[^a-z0-9])dump-keychain([^a-z0-9]|$)'
+_SSR_FLAG_WG='(^|[^A-Za-z0-9-])-[A-Za-z]*[wg][A-Za-z]*([^A-Za-z0-9]|$)'
+_SSR_FLAG_D='(^|[^A-Za-z0-9-])-[A-Za-z]*d[A-Za-z]*([^A-Za-z0-9]|$)'
+_SSR_OPFLAGS='([[:space:],]+-[^[:space:],]+([[:space:],]+[^-[:space:],][^[:space:],]*)?)*'
+_SSR_LEAD="(^|[[:space:]'\"/])"
+_SSR_OP="${_SSR_LEAD}op${_SSR_OPFLAGS}[[:space:],]+"
+_SSR_END='([^a-z0-9]|$)'
+# A store word stands alone: a boundary before it (space, quote, slash, line start, or a shell-structure byte, so `S=security`,
+# `${x:-security}` and `$(security` count, but `fix(security):` does not) and after it. `security-policy.sh`, `SECURITY.md`, `no-op` and `ops/run.sh` do not.
+_SSR_WB_PRE='(^|[[:space:]'"'"'"/{;&|<>=!`]|[$][(]|:[-=+?])'
+_SSR_WB_POST='([[:space:]'"'"'"{}()$`;&|<>]|$)'
+_SSR_STEMS='tracker[-_]cred([^a-z0-9-]|$)|(^|[^a-z0-9])_tcr([^a-z0-9]|$)'
+_SSR_PLAIN_BAD="[^A-Za-z0-9[:blank:]_.:@/=,'\"+-]"
+_SSR_SRC_POS='(^|[;&|({`'"'"'"]|[[:space:]](then|do|else))[[:space:]]*((command|builtin|if|elif|while|until|time|eval|!)[[:space:]]+)*(\.|source)[[:space:]]+(--[[:space:]]+)?[^[:space:];&|]*tracker-(cred|jira|read)\.sh'
+_ssr_nl='
+'
+_SSR_AWK='{ s = $0; gsub("[\"\047,]", " ", s); n = split(s, t, " "); st = 0; skip = 0
+  for (i = 1; i <= n; i++) { w = t[i]; lw = tolower(w)
+    if (st == 1) {
+      if (skip == 1) { skip = 0; continue }
+      if (substr(w, 1, 1) == "-") {
+        if (w ~ /^-[a-z]*i[a-z]*$/) print "deny"
+        else if (w ~ /p$/) skip = 1
+        continue }
+      if (index("find-generic-password", lw) == 1 || index("find-internet-password", lw) == 1) print "find"
+      else if (index("dump-keychain", lw) == 1) print "dump"
+      st = 0 }
+    if (lw == "security" || lw ~ "/security$") st = 1 } }'
+_SSR_TIP='13: reading a secret store directly (macOS Keychain find-generic-password or find-internet-password with -w or -g, dump-keychain -d; 1Password op read, inject, run, item get, document get, signin --raw; secret-tool lookup or search; the kit tracker credential resolver) is human-gated (trigger=secret-store-read). A command whose TEXT names one of these shapes is refused too, unless it is a single plain read such as grep -e PATTERN file. Message text: pass it with git commit -F file or gh pr create --body-file file; read files with the Read or Grep tool; a human runs any secret command in their own terminal. An attribute-only lookup (find-generic-password with no -w or -g, written in plain letters, digits and . : @ / = , + - only) is allowed. The abbreviated subcommands (security find -w) are refused too. See docs/operations/runtime-guards.md R27.'
+
+# _ssr_blob "<cmd>": print the views of <cmd>, one per line. A non-zero return is a failed fork; the caller faults on it.
+_ssr_blob() {
+  _sb_j=$(_cp8b_joinlines "$1") || return 1
+  _sb_e=$(_cp8b_joinlines_empty "$1") || return 1
+  _sb_x=$(_cp8b_strip_subst "$_sb_j") || return 1
+  _sb_xe=$(_cp8b_strip_subst "$_sb_e") || return 1
+  _sb_d1=$(_s6_dequote "$_sb_j") || return 1
+  _sb_d2=$(_s6_dequote "$_sb_e") || return 1
+  _sb_d3=$(_s6_dequote "$_sb_x") || return 1
+  _sb_d4=$(_s6_dequote "$_sb_xe") || return 1
+  _sb_k=$(_cp8b_skeleton "$_sb_j") || return 1
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$_sb_j" "$_sb_e" "$_sb_d1" "$_sb_d2" "$_sb_d3" "$_sb_d4" "$_sb_k"
+}
+
+# _ssr_grep "<ERE>" "<text>": 0 match, 1 none. A grep rc above 1 is a fault (deny), never "no match".
+_ssr_grep() {
+  printf '%s\n' "$2" | grep -Eq -e "$1"
+  _sg_rc=$?
+  [ "$_sg_rc" -le 1 ] || _guard_fault ssr-grep
+  return "$_sg_rc"
+}
+
+# _ssr_store_word "<lower>": 0 iff a store word stands alone in some view, or a full Keychain subcommand name is present (lead-free,
+# for a renamed binary). Only then does literal-or-deny apply, so `security-policy.sh`, `SECURITY.md`, `no-op` and `ops/run.sh` cost nothing.
+_ssr_store_word() {
+  _ssr_grep "${_SSR_WB_PRE}(security|op|secret-tool|lpass)${_SSR_WB_POST}" "$1" && return 0
+  _ssr_grep "$_SSR_BASE_FIND" "$1" && return 0
+  _ssr_grep "$_SSR_BASE_DUMP" "$1" && return 0
+  # A2.1: the resolver stems are store words too (inside a path, as the prefix of a function name), so a runtime-assembled
+  # resolver name or a sourcing route through a substitution is refused by literal-or-deny, not by spelling. The stems are
+  # right-bounded (tracker-cred must not run on into a letter, digit or hyphen; _tcr must stand as a name), so a branch, path or
+  # message that contains a stem inside a longer word (tracker-credential, tracker-cred-fix) is not a store word. A stem padded
+  # or split across a runtime expansion (tracker-credx trimmed at run time) is R27's stated ceiling (SWAS-122).
+  _ssr_grep "$_SSR_STEMS" "$1" && return 0
+  return 1
+}
+
+# _ssr_xtrace_hit "<lower>": 0 iff an adapter script (tracker-jira, tracker-read, tracker-cred) is run under xtrace (A2.8). Belt
+# and braces: the control is the adapter's own xtrace-off around the credential lines; this refuses the trace being asked for.
+_ssr_xtrace_hit() {
+  _ssr_grep '(^|[^a-z0-9_-])tracker-(jira|read|cred)([^a-z0-9]|$)' "$1" || return 1
+  _ssr_grep 'xtrace' "$1" && return 0
+  _ssr_grep '(^|[^a-z0-9_-])(sh|bash|dash|zsh|ksh)([[:space:]]+-[a-z]+)*[[:space:]]+-[a-z]*x[a-z]*([[:space:]]|$)' "$1" && return 0
+  _ssr_grep '(^|[^a-z0-9_-])set[[:space:]]+-[a-z]*x' "$1" && return 0
+  return 1
+}
+
+# _ssr_nonliteral "<lower>" "<raw>": 0 iff the RAW command is not entirely literal: a newline, a byte outside the plain alphabet
+# (a POSITIVE allowlist, so a byte nobody has thought of is refused too), or an xargs / -exec / alias / hash / ln / cp word.
+_ssr_nonliteral() {
+  case "$2" in
+    *"$_ssr_nl"*) return 0 ;;
+  esac
+  _ssr_grep "$_SSR_PLAIN_BAD" "$2" && return 0
+  _ssr_grep '(^|[^a-z0-9_-])(xargs|alias|hash|ln|cp)([^a-z0-9_-]|$)' "$1" && return 0
+  _ssr_grep '(^|[^a-z0-9])-exec' "$1" && return 0
+  return 1
+}
+
+# _ssr_precise "<blob>" "<lower>": the judgement on a LITERAL command that names a store word. 0 iff a refused read.
+_ssr_precise() {
+  _sk_find=0; _sk_dump=0
+  _ssr_grep "$_SSR_BASE_FIND" "$2" && _sk_find=1
+  _ssr_grep "$_SSR_BASE_DUMP" "$2" && _sk_dump=1
+  case "$2" in
+    *security*)
+      _sk_walk=$(printf '%s\n' "$1" | awk "$_SSR_AWK") || _guard_fault ssr-awk
+      case "$_sk_walk" in
+        *deny*) return 0 ;;
+      esac
+      case "$_sk_walk" in
+        *find*) _sk_find=1 ;;
+      esac
+      case "$_sk_walk" in
+        *dump*) _sk_dump=1 ;;
+      esac ;;
+  esac
+  if [ "$_sk_find" = 1 ] && _ssr_grep "$_SSR_FLAG_WG" "$1"; then return 0; fi
+  if [ "$_sk_dump" = 1 ] && _ssr_grep "$_SSR_FLAG_D" "$1"; then return 0; fi
+  _ssr_grep "${_SSR_OP}(read|inject|run)${_SSR_END}" "$2" && return 0
+  _ssr_grep "${_SSR_OP}(items?|documents?)${_SSR_OPFLAGS}[[:space:],]+get${_SSR_END}" "$2" && return 0
+  if _ssr_grep "${_SSR_OP}signin${_SSR_END}" "$2" && _ssr_grep '(^|[^a-z0-9])--raw([^a-z0-9]|$)' "$2"; then return 0; fi
+  _ssr_grep "${_SSR_LEAD}secret-tool[[:space:],]+(lookup|search)${_SSR_END}" "$2" && return 0
+  _ssr_grep "${_SSR_LEAD}lpass[[:space:],]+(show|export)${_SSR_END}" "$2" && return 0
+  return 1
+}
+
+# _ssr_resolver_hit "<lower>": 0 iff the text names the kit's own credential resolver, or sources its library OR an adapter that
+# sources it (tracker-jira.sh, tracker-read.sh: a stem-free wrapper that exposes the resolver once sourced). Running them with sh is fine.
+_ssr_resolver_hit() {
+  _ssr_grep 'tracker_cred_resolve|_tcr_[a-z]' "$1" && return 0
+  _ssr_grep "$_SSR_SRC_POS" "$1" && return 0
+  _ssr_grep '(^|[^a-z0-9_./-])source[[:space:]]+(--[[:space:]]+)?[^[:space:];&|]*tracker-(cred|jira|read)\.sh' "$1" && return 0
+  _ssr_grep 'env=[^[:space:]]*tracker-(cred|jira|read)\.sh' "$1" && return 0
+  _ssr_grep '--(init-file|rcfile)([[:space:]]+|=)[^[:space:]]*tracker-(cred|jira|read)\.sh' "$1" && return 0
+  return 1
+}
+
+# _ssr_denied "<cmd>": 0 iff <cmd> is a refused secret-store read. Main-shell call: a failed fork is a fault, not an ALLOW.
+_ssr_denied() {
+  _sd_blob=$(_ssr_blob "$1") || _guard_fault ssr-blob
+  _guard_vanished ssr-blob "$1" "$_sd_blob"
+  _sd_lower=$(printf '%s\n' "$_sd_blob" | LC_ALL=C tr 'A-Z' 'a-z') || _guard_fault ssr-lower
+  _guard_vanished ssr-lower "$1" "$_sd_lower"
+  _ssr_grep 'op://' "$_sd_lower" && return 0
+  _ssr_resolver_hit "$_sd_lower" && return 0
+  _ssr_xtrace_hit "$_sd_lower" && return 0
+  _ssr_store_word "$_sd_lower" || return 1
+  _ssr_nonliteral "$_sd_lower" "$1" && return 0
+  _ssr_precise "$_sd_blob" "$_sd_lower"
 }

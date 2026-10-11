@@ -27,6 +27,8 @@
 #
 # Usage:
 #   tracker-read.sh <conf-file> <origin-conf-file-or-'-'> <record-path> <requested-id> <head-sha> [state...]
+#   tracker-read.sh --whoami <conf-file>     (SWAS-117 D6: prints `tracker reader: …<last 8 of the account id>` or `tracker reader: ?`;
+#                                             writes no record, always rc 0; the display name is never printed)
 #   tracker-read.sh --selftest
 set -eu
 # 0a (T5a1 carried M-1): a caller's locale must not change a grammar check's verdict.
@@ -34,6 +36,9 @@ LC_ALL=C; export LC_ALL
 
 TR_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TR_CONF_SH="$TR_ROOT/scripts/tracker-conf.sh"
+# SWAS-101: the presence check for a stored credential (never reads the secret). Sourced here, while TR_ROOT is
+# the real tree (the selftest repoints it later). Absent in a partial tree -> the environment-only behaviour.
+if [ -f "$TR_ROOT/scripts/tracker-cred.sh" ]; then . "$TR_ROOT/scripts/tracker-cred.sh"; fi
 TR_STATES="backlog ready in-progress in-review released done blocked cancelled"
 # P-1: the seam refuses a record over 512 lines/64 KiB (backlog-lib.sh M-2) — this reader's own
 # budget catches it FIRST, before the record is even written.
@@ -43,6 +48,7 @@ TR_ROW_BUDGET=480
 # stay in budget but the DECORATED bytes bust the seam's own 512-line/64 KiB cap (backlog-lib.sh
 # M-2) after tr_apply_flags runs. Arithmetic (every figure the max the grammar allows):
 #   header (8 lines, 64-hex pin+head, a 32-char id, "credential over-privileged") = 282 B
+#   (A1 item 5 rechecked: the new value "writer" is 6 B, SHORTER than "over-privileged" (15 B), so the worst case and TR_ROW_BYTE_BUDGET stand.)
 #   (T10-harden-A R1: "over-privileged" is 5 B longer than "unverified" — that IS a
 #   reachable credential value on a bound record, S-11/T5, so it is the true worst case)
 #   the subject's own row (32-char id, "in-progress", claimed+4 dor-*=yes)   = 127 B
@@ -163,7 +169,10 @@ tr_state_from_name() {
   return 1
 }
 
-# --- H-3/S-11: the credential probe, fails CLOSED. Prints ok|over-privileged|unverified. --------
+# --- H-3/S-11: the credential probe, fails CLOSED. Prints ok|writer|over-privileged|unverified. --------
+# A1 item 5: `writer` = can create/edit/transition/assign but holds no admin-class key and no delete (decided in the adapter,
+# not in YAML); `over-privileged` = an admin-class key or delete is held. The classifier lives in tj_permissions; this
+# function only relays one of the four closed words and folds anything else to unverified.
 tr_probe_credential() {
   # 0e (m-2): unset first — this helper can be called directly, not only via tr_read's own unset.
   unset _TJ_CURL_BIN 2>/dev/null || true
@@ -171,6 +180,7 @@ tr_probe_credential() {
   _permout=$(sh "$_adapter" permissions "$_base" "$_flavour" "$_project" 2>/dev/null) || _permout=unverified
   case "$_permout" in
     over-privileged) printf 'over-privileged' ;;
+    writer) printf 'writer' ;;
     ok) printf 'ok' ;;
     *) printf 'unverified' ;;
   esac
@@ -345,8 +355,20 @@ tr_load_conf() {
 
   _user=$(tr_resolve_user); _token=$(tr_resolve_token)
   if [ -z "$_token" ]; then
-    echo "unverified: no token — KIT_TRACKER_TOKEN not set" >&2
-    return 2
+    # SWAS-101: no environment token. The presence question (attributes only, the secret is never read here)
+    # decides; the adapter alone reads the stored token when it makes its request. A user without a token in
+    # the environment means the environment wins, so the store is not asked.
+    if [ -z "$_user" ] && command -v tracker_cred_available >/dev/null 2>&1 && tracker_cred_available "$_base"; then
+      :
+    else
+      echo "unverified: no token — KIT_TRACKER_TOKEN not set" >&2
+      [ -z "${TRACKER_CRED_WHY:-}" ] || echo "tracker credential: $TRACKER_CRED_WHY" >&2
+      # the Keychain hint only where a Keychain exists (the store binary is executable)
+      if [ -x "${_TCR_SEC_BIN:-/usr/bin/security}" ]; then
+        echo "  or store one in the login Keychain once: templates/JIRA-SETUP-TEMPLATE.md section 5b" >&2
+      fi
+      return 2
+    fi
   fi
 
   # S-2: refuse to send the token at all on a pin mismatch — checked BEFORE any dispatch.
@@ -367,6 +389,9 @@ tr_adapter_read() {
 
   _ar_out=$(sh "$_ar_adapter" get-issue "$_ar_base" "$_ar_flavour" "$_ar_project" "$_ar_reqid" 2>/dev/null) || {
     _ar_rc=$?
+    # SWAS-113: rc 6 = Jira did not accept the credential (the answer was served anonymously, or the login was refused).
+    # UNVERIFIED with that reason, never "refused" and never a silent empty read.
+    if [ "$_ar_rc" -eq 6 ]; then echo "unverified: the tracker rejected the credential (the response was served anonymously or the login was refused); check the tracker credential and base_url" >&2; return 2; fi
     if [ "$_ar_rc" -eq 2 ]; then echo "unverified: adapter could not verify the read" >&2; return 2; fi
     echo "refused: adapter refused the read" >&2; return 1
   }
@@ -419,6 +444,8 @@ tr_resolve_state_ids() {
     return 2
   }
   _rsi_statusids=$(sh "$_rsi_adapter" status-ids "$_rsi_base" "$_rsi_flavour" "$_rsi_project" 2>/dev/null) || {
+    _rsi_rc=$?
+    if [ "$_rsi_rc" -eq 6 ]; then echo "unverified: adapter status-ids failed - the tracker rejected the credential" >&2; return 2; fi
     echo "unverified: adapter status-ids failed" >&2
     return 2
   }
@@ -505,7 +532,13 @@ $_tros_ids
 EOF_TROS_IDS
   # Q3: zero ids resolved (e.g. a state mapped to no names) omits too — say so, never silently.
   [ $# -ge 1 ] || { echo "omitted: list $_tros_state (no ids resolved for the state)" >&2; return 0; }
-  if ! _tros_keys=$(sh "$_tros_adapter" list-in-states "$_tros_base" "$_tros_flavour" "$_tros_project" "$_tros_cap" "$@" 2>/dev/null); then
+  _tros_lrc=0
+  _tros_keys=$(sh "$_tros_adapter" list-in-states "$_tros_base" "$_tros_flavour" "$_tros_project" "$_tros_cap" "$@" 2>/dev/null) || _tros_lrc=$?
+  if [ "$_tros_lrc" -eq 6 ]; then
+    echo "omitted: list $_tros_state (the tracker rejected the credential; an anonymous answer is never a list)" >&2
+    return 0
+  fi
+  if [ "$_tros_lrc" -ne 0 ]; then
     echo "omitted: list $_tros_state (the tracker query failed, F-10/F-6)" >&2
     return 0
   fi
@@ -987,6 +1020,32 @@ tr_read() {
   return 0
 }
 
+# --- SWAS-117 D6: name the reader. `--whoami <conf>` prints `tracker reader: …<last 8 characters of the account id>`, or
+# `tracker reader: ?` when it cannot. It resolves the backend, base url and flavour from the conf exactly as tr_read does, asks
+# the adapter's gated `whoami` (an id and a display name, each through a closed-charset gate) and prints ONLY the id's tail:
+# the reader step's log never carries a display name or a full id. It writes NO record, touches no file, and ALWAYS ends rc 0
+# (the trusted job calls it before the read and its failure must not change that step's rc).
+# tr_whoami <conf>
+tr_whoami() {
+  unset _TJ_CURL_BIN 2>/dev/null || true
+  _tw_conf=$1
+  tr_load_conf "$_tw_conf" "-" >/dev/null 2>&1 || { echo "tracker reader: ?"; return 0; }
+  _tw_adapter=$(tr_adapter_path "$_backend") || { echo "tracker reader: ?"; return 0; }
+  [ -f "$_tw_adapter" ] || { echo "tracker reader: ?"; return 0; }
+  export KIT_TRACKER_USER="$_user" KIT_TRACKER_TOKEN="$_token" KIT_TRACKER_AUTH="$_auth"
+  _tw_out=$(sh "$_tw_adapter" contract-read "$_base" "$_flavour" whoami --short 2>/dev/null) || { echo "tracker reader: ?"; return 0; }
+  _tw_id=$(printf '%s\n' "$_tw_out" | awk -F'\t' '$1 == "account-id" { print $2; exit }')
+  # re-gate: [A-Za-z0-9:_-]{1,128}, spelled-out classes (this file runs under LC_ALL=C)
+  _tw_set='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:_-'
+  case "$_tw_id" in
+    ''|*[!$_tw_set]*) echo "tracker reader: ?"; return 0 ;;
+  esac
+  [ "${#_tw_id}" -le 128 ] || { echo "tracker reader: ?"; return 0; }
+  _tw_tail=$(printf '%s' "$_tw_id" | awk '{ n = length($0); s = (n > 8) ? substr($0, n - 7) : $0; print s }')
+  echo "tracker reader: …$_tw_tail"
+  return 0
+}
+
 # --- selftest --------------------------------------------------------------------------------
 _tr_selftest() {
   # L-2: bound recursion even under a mutant that removes the S-10 refusal below — this depth
@@ -1020,6 +1079,14 @@ case "$1" in
     esac
     exit 0 ;;
   permissions) echo ok; exit 0 ;;
+  contract-read)
+    [ -z "${KIT_TRF_LOG:-}" ] || printf '%s\n' "$*" >> "$KIT_TRF_LOG"
+    case "${KIT_TRF_WHO:-good}" in
+      fail) exit 2 ;;
+      hostile) printf 'account-id\tab"cd\ndisplay-name\tZQWHONAME\n'; exit 0 ;;
+      short) printf 'account-id\tabc\ndisplay-name\tZQWHONAME\n'; exit 0 ;;
+      *) printf 'account-id\t712020:0a1b2c3d-0000-4000-8000-0000000000aa\ndisplay-name\tZQWHONAME\nemail\tWHOEMAIL@example.com\n'; exit 0 ;;
+    esac ;;
 esac
 EOF
   chmod +x "$fakeadapter"
@@ -1062,6 +1129,100 @@ EOF
     echo "PASS: selftest — a browse-only mypermissions probe folds through as 'credential ok' (S-11/T5)"
   else
     echo "FAIL: selftest — the record did not carry 'credential ok' (record: $(cat "$record" 2>/dev/null))"; sfail=1
+  fi
+
+  # --- SWAS-101: no environment credential and a stored item (a stub store): the presence question lets the
+  # read go ahead, and the store argv never carries -w (only the adapter reads the secret). An absent item
+  # refuses with rc 2 and names the Keychain recipe. ---
+  _crd="$tmpd/credstub"
+  mkdir -p "$_crd"
+  {
+    printf '#!/bin/sh\nd=%s\n' "$_crd"
+    cat <<'CSTUB'
+printf '%s\n' "$*" >> "$d/log"
+rc=$(cat "$d/rc")
+if [ "$rc" = 0 ]; then printf '    "acct"\074blob\076="stored@example.com"\n'; fi
+exit "$rc"
+CSTUB
+  } > "$_crd/security"
+  chmod +x "$_crd/security"
+  printf '0' > "$_crd/rc"; : > "$_crd/log"; : > "$record"
+  rc=0
+  (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; _TCR_SEC_BIN="$_crd/security"; KIT_TRF_MODE=good tr_read "$conf" "-" "$record" AB-1 "$_h40") >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ] && grep -q '^verdict bound$' "$record" 2>/dev/null && [ "$(wc -l < "$_crd/log" | tr -d ' ')" = "1" ] && ! grep -qF -- '-w' "$_crd/log"; then
+    echo "PASS: selftest — a stored credential (empty env) lets the read proceed; the reader made one attribute-only store call, no -w (SWAS-101)"
+  else
+    echo "FAIL: selftest — the stored-credential path (rc=$rc, store log: $(cat "$_crd/log" 2>/dev/null))"; sfail=1
+  fi
+  printf '44' > "$_crd/rc"; : > "$_crd/log"
+  rc=0
+  _crd_err=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; _TCR_SEC_BIN="$_crd/security"; KIT_TRF_MODE=good tr_read "$conf" "-" "$record" AB-1 "$_h40") 2>&1 >/dev/null ) || rc=$?
+  if [ "$rc" -eq 2 ] && printf '%s' "$_crd_err" | grep -qF 'section 5b'; then
+    echo "PASS: selftest — no environment credential and no stored item refuses with rc 2 and names the Keychain recipe (SWAS-101)"
+  else
+    echo "FAIL: selftest — the no-credential refusal (rc=$rc, stderr: $_crd_err)"; sfail=1
+  fi
+
+  # --- SWAS-117 D6: `--whoami` names the reader by the TAIL of the account id (the last 8 characters) and nothing else ---
+  : > "$tmpd/who.log"; : > "$record"
+  _wo_ls0=$(ls -A "$tmpd" | LC_ALL=C sort | tr '\n' ' '); _wo_ck0=$(cksum < "$record")
+  _wo_rc=0; _wo_out=$(KIT_TRF_LOG="$tmpd/who.log" tr_whoami "$conf" 2>/dev/null) || _wo_rc=$?
+  _wo_ls1=$(ls -A "$tmpd" | LC_ALL=C sort | tr '\n' ' '); _wo_ck1=$(cksum < "$record")
+  if [ "$_wo_rc" -eq 0 ] && [ "$_wo_out" = "tracker reader: …000000aa" ]; then
+    echo "PASS: selftest — SWAS-117: --whoami prints the last 8 characters of the account id (tracker reader: …000000aa)"
+  else
+    echo "FAIL: selftest — SWAS-117: --whoami (rc=$_wo_rc out='$_wo_out')"; sfail=1
+  fi
+  # LOAD-BEARING: the display name, the email and the id's head never reach the reader's output (the trusted job's log is public to the repo)
+  case "$_wo_out" in
+    *ZQWHONAME*|*WHOEMAIL*|*712020*) echo "FAIL: selftest — SWAS-117: --whoami printed a display name, an email or the id's head ('$_wo_out')"; sfail=1 ;;
+    *) echo "PASS: selftest — SWAS-117: --whoami never prints the display name, the email or the full id" ;;
+  esac
+  # LOAD-BEARING: --whoami writes NO record and creates no file (a mutant that routes through tr_read would truncate the record)
+  if [ "$_wo_ls0" = "$_wo_ls1" ] && [ "$_wo_ck0" = "$_wo_ck1" ]; then
+    echo "PASS: selftest — SWAS-117: --whoami writes no record and creates no file"
+  else
+    echo "FAIL: selftest — SWAS-117: --whoami changed the scratch tree or the record ('$_wo_ls0' vs '$_wo_ls1')"; sfail=1
+  fi
+  if [ "$(cat "$tmpd/who.log")" = "contract-read https://ex.atlassian.net cloud whoami --short" ]; then
+    echo "PASS: selftest — SWAS-117: --whoami asks the adapter for contract-read whoami --short (bounded), once"
+  else
+    echo "FAIL: selftest — SWAS-117: --whoami adapter call was '$(cat "$tmpd/who.log")'"; sfail=1
+  fi
+  _wo_rc=0; _wo_out=$(KIT_TRF_WHO=fail tr_whoami "$conf" 2>/dev/null) || _wo_rc=$?
+  if [ "$_wo_rc" -eq 0 ] && [ "$_wo_out" = "tracker reader: ?" ]; then
+    echo "PASS: selftest — SWAS-117: a failing whoami prints 'tracker reader: ?' and returns rc 0 (the reader step's rc is untouched)"
+  else
+    echo "FAIL: selftest — SWAS-117: a failing whoami (rc=$_wo_rc out='$_wo_out')"; sfail=1
+  fi
+  _wo_out=$(KIT_TRF_WHO=hostile tr_whoami "$conf" 2>/dev/null) || _wo_out="RC=$?"
+  [ "$_wo_out" = "tracker reader: ?" ] \
+    && echo "PASS: selftest — SWAS-117: an account id outside the grammar prints 'tracker reader: ?'" \
+    || { echo "FAIL: selftest — SWAS-117: a hostile id ('$_wo_out')"; sfail=1; }
+  _wo_out=$(KIT_TRF_WHO=short tr_whoami "$conf" 2>/dev/null) || _wo_out="RC=$?"
+  [ "$_wo_out" = "tracker reader: …abc" ] \
+    && echo "PASS: selftest — SWAS-117: an id shorter than 8 characters is shown whole" \
+    || { echo "FAIL: selftest — SWAS-117: a short id ('$_wo_out')"; sfail=1; }
+  printf '44' > "$_crd/rc"; : > "$tmpd/who.log"
+  _wo_rc=0
+  _wo_out=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN; _TCR_SEC_BIN="$_crd/security"; KIT_TRF_LOG="$tmpd/who.log" tr_whoami "$conf") 2>/dev/null ) || _wo_rc=$?
+  if [ "$_wo_rc" -eq 0 ] && [ "$_wo_out" = "tracker reader: ?" ] && [ ! -s "$tmpd/who.log" ]; then
+    echo "PASS: selftest — SWAS-117: no credential prints 'tracker reader: ?' and never calls the adapter"
+  else
+    echo "FAIL: selftest — SWAS-117: no credential (rc=$_wo_rc out='$_wo_out' calls=$(wc -l < "$tmpd/who.log" | tr -d ' '))"; sfail=1
+  fi
+  # the CLI arm itself: a missing conf argument is a usage error naming --whoami; an unreadable conf is rc 0 with the ?
+  _wo_rc=0; _wo_err=$(sh "$0" --whoami 2>&1 >/dev/null) || _wo_rc=$?
+  if [ "$_wo_rc" -eq 2 ] && printf '%s' "$_wo_err" | grep -qF -e '--whoami <conf>'; then
+    echo "PASS: selftest — SWAS-117: the usage line names --whoami <conf>, and --whoami without a conf is rc 2"
+  else
+    echo "FAIL: selftest — SWAS-117: --whoami usage (rc=$_wo_rc err='$_wo_err')"; sfail=1
+  fi
+  _wo_rc=0; _wo_out=$(sh "$0" --whoami "$tmpd/no-such.conf" 2>/dev/null) || _wo_rc=$?
+  if [ "$_wo_rc" -eq 0 ] && [ "$_wo_out" = "tracker reader: ?" ]; then
+    echo "PASS: selftest — SWAS-117: the CLI --whoami on an unreadable conf prints 'tracker reader: ?' with rc 0"
+  else
+    echo "FAIL: selftest — SWAS-117: CLI --whoami on an unreadable conf (rc=$_wo_rc out='$_wo_out')"; sfail=1
   fi
 
   # --- M-2 negative: an env-supplied state map is NOT consulted; only the conf's own map is ---
@@ -1225,6 +1386,31 @@ EOF
     echo "PASS: selftest — an over-privileged mypermissions probe folds through as 'credential over-privileged' (S-11/T5)"
   else
     echo "FAIL: selftest — the record did not carry 'credential over-privileged' (record: $(cat "$record" 2>/dev/null))"; sfail=1
+  fi
+
+  # --- A1 item 5: a `writer` probe folds through as 'credential writer' (a distinct word, still bound), and a word outside the
+  # closed four is folded to unverified (LOAD-BEARING: a mutant that relays the adapter's word raw would write it) ---
+  cat > "$fakedir/tracker-fixture.sh" <<'EOF'
+#!/bin/sh
+case "$1" in
+  get-issue) printf 'key\tAB-1\n'; printf 'status-id\t3\n'; printf 'status-name\tIn Progress\n'; exit 0 ;;
+  permissions) echo "${KIT_TRF_PERM:-writer}"; exit 0 ;;
+esac
+EOF
+  chmod +x "$fakedir/tracker-fixture.sh"
+  : > "$record"
+  KIT_TRF_PERM=writer tr_read "$conf" "-" "$record" AB-1 "$_h40" >/dev/null 2>&1 || true
+  if grep -q '^credential writer$' "$record" 2>/dev/null && grep -q '^verdict bound$' "$record" 2>/dev/null; then
+    echo "PASS: selftest — a writer probe folds through as 'credential writer' and the row still binds (A1 item 5)"
+  else
+    echo "FAIL: selftest — the record did not carry 'credential writer' with verdict bound (record: $(cat "$record" 2>/dev/null))"; sfail=1
+  fi
+  : > "$record"
+  KIT_TRF_PERM=superuser tr_read "$conf" "-" "$record" AB-1 "$_h40" >/dev/null 2>&1 || true
+  if grep -q '^credential unverified$' "$record" 2>/dev/null && ! grep -q 'superuser' "$record" 2>/dev/null; then
+    echo "PASS: selftest — a permissions word outside the closed four is written as 'credential unverified', never relayed (A1 item 5)"
+  else
+    echo "FAIL: selftest — an unknown permissions word was not folded to unverified (record: $(cat "$record" 2>/dev/null))"; sfail=1
   fi
 
   # --- H-3 negative: a probe that fails/is unparsable -> credential unverified, verdict NEVER bound ---
@@ -2244,6 +2430,45 @@ EOF
     echo "PASS: selftest — T5a2M leg 1: the fake adapter's list-in-states exits 2 and 1 on demand (KIT_TRF_LIS_MODE)"
   else
     echo "FAIL: selftest — T5a2M leg 1: list-in-states did not exit 2/1 as requested (rc2ok=$t5a2m_rc2ok rc1ok=$t5a2m_rc1ok)"; sfail=1
+  fi
+
+  # --- TRACKER-ANON-200-REJECT (SWAS-113): adapter rc 6 = Jira did not accept the credential. The reader maps it to UNVERIFIED
+  # with that reason (rc 2), never to "refused" (rc 1) and never to a silent empty read. Two fake adapters: one answers rc 6 to
+  # everything; one resolves status-ids and answers rc 6 only to list-in-states.
+  cat > "$fakedir/tracker-rc6.sh" <<'EOF'
+#!/bin/sh
+echo "unverified: Jira did not accept the credential (fixture)" >&2
+exit 6
+EOF
+  cat > "$fakedir/tracker-rc6-list.sh" <<EOF
+#!/bin/sh
+case "\$1" in
+  status-ids) cat "$_t5a2l_statusids"; exit 0 ;;
+  list-in-states) echo "unverified: Jira did not accept the credential (fixture)" >&2; exit 6 ;;
+esac
+exit 2
+EOF
+  chmod +x "$fakedir/tracker-rc6.sh" "$fakedir/tracker-rc6-list.sh"
+  rc=0
+  tr_adapter_read "$fakedir/tracker-rc6.sh" https://ex.atlassian.net cloud AB AB-1 2>"$tmpd/rc6-read.err" || rc=$?
+  if [ "$rc" -eq 2 ] && grep -q 'unverified: the tracker rejected the credential' "$tmpd/rc6-read.err"; then
+    echo "PASS: selftest — SWAS-113: adapter rc 6 on get-issue reads UNVERIFIED (rc 2) with the credential reason, not 'refused' (rc 1)"
+  else
+    echo "FAIL: selftest — SWAS-113: adapter rc 6 on get-issue (rc=$rc err='$(cat "$tmpd/rc6-read.err")')"; sfail=1
+  fi
+  rc=0
+  tr_resolve_state_ids "$lconf" "$fakedir/tracker-rc6.sh" https://ex.atlassian.net cloud AB ready >/dev/null 2>"$tmpd/rc6-si.err" || rc=$?
+  if [ "$rc" -eq 2 ] && grep -q 'the tracker rejected the credential' "$tmpd/rc6-si.err"; then
+    echo "PASS: selftest — SWAS-113: adapter rc 6 on status-ids reads UNVERIFIED (rc 2) with the credential reason"
+  else
+    echo "FAIL: selftest — SWAS-113: adapter rc 6 on status-ids (rc=$rc err='$(cat "$tmpd/rc6-si.err")')"; sfail=1
+  fi
+  rc=0
+  tr_read_one_state "$lconf" "$fakedir/tracker-rc6-list.sh" https://ex.atlassian.net cloud AB 200 ready >"$tmpd/rc6-ls.out" 2>"$tmpd/rc6-ls.err" || rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -s "$tmpd/rc6-ls.out" ] && grep -q 'the tracker rejected the credential' "$tmpd/rc6-ls.err"; then
+    echo "PASS: selftest — SWAS-113: adapter rc 6 on list-in-states omits the list with the credential reason (no list line, no rows)"
+  else
+    echo "FAIL: selftest — SWAS-113: adapter rc 6 on list-in-states (rc=$rc out='$(cat "$tmpd/rc6-ls.out")' err='$(cat "$tmpd/rc6-ls.err")')"; sfail=1
   fi
 
   # --- T5a2M leg 2 (F-10/F-6): a failed list-in-states call on ONE state omits only that state's
@@ -4181,8 +4406,11 @@ EOF
 # --- CLI ---------------------------------------------------------------------------------------
 case "${1:-}" in
   --selftest) _tr_selftest; exit $? ;;
-  '') echo "usage: tracker-read.sh <conf> <origin-conf|-> <record-path> <requested-id> <head-sha> [state...] | --selftest" >&2; exit 2 ;;
+  --whoami)
+    [ $# -eq 2 ] || { echo "usage: tracker-read.sh <conf> <origin-conf|-> <record-path> <requested-id> <head-sha> [state...] | --whoami <conf> | --selftest" >&2; exit 2; }
+    tr_whoami "$2"; exit 0 ;;
+  '') echo "usage: tracker-read.sh <conf> <origin-conf|-> <record-path> <requested-id> <head-sha> [state...] | --whoami <conf> | --selftest" >&2; exit 2 ;;
   *)
-    [ $# -ge 5 ] || { echo "usage: tracker-read.sh <conf> <origin-conf|-> <record-path> <requested-id> <head-sha> [state...] | --selftest" >&2; exit 2; }
+    [ $# -ge 5 ] || { echo "usage: tracker-read.sh <conf> <origin-conf|-> <record-path> <requested-id> <head-sha> [state...] | --whoami <conf> | --selftest" >&2; exit 2; }
     tr_read "$@"; exit $? ;;
 esac

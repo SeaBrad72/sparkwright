@@ -311,13 +311,13 @@ selftest() {
     *"gate: promotion  scope: PR #1010  approved-by: solo maintainer [self-asserted]  go-by: (none recorded)") echo "PASS: trace L9: the per-commit line ends with the approver and 'go-by: (none recorded)' (prefix unchanged)" ;;
     *) echo "FAIL: trace L9: expected the line to end '...scope: PR #1010  approved-by: solo maintainer [self-asserted]  go-by: (none recorded)'; got: $_tr_l9"; st=1 ;;
   esac
-  ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" --go-by "Bradley James" \
+  ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" --go-by "Owner Fixture" \
       --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1010" \
       --token "GO: merge #1010 at $ROWC" >/dev/null 2>&1 ) || true
   _tr_l9="$( ( cd "$R" && $VSH "$VERIFY" trace --ref "$SQROW" 2>/dev/null ) || true )"
   case "$_tr_l9" in
-    *"approved-by: solo maintainer [self-asserted]  go-by: Bradley James [self-asserted]") echo "PASS: trace L9: a recorded --go-by is printed beside the approver, labelled [self-asserted]" ;;
-    *) echo "FAIL: trace L9: expected 'go-by: Bradley James [self-asserted]' at the end of the line; got: $_tr_l9"; st=1 ;;
+    *"approved-by: solo maintainer [self-asserted]  go-by: Owner Fixture [self-asserted]") echo "PASS: trace L9: a recorded --go-by is printed beside the approver, labelled [self-asserted]" ;;
+    *) echo "FAIL: trace L9: expected 'go-by: Owner Fixture [self-asserted]' at the end of the line; got: $_tr_l9"; st=1 ;;
   esac
   # trace prints note-derived text: a control byte (an ESC in a hand-written go-by) must not reach the terminal.
   ( cd "$R" && git notes --ref=promotions show "$ROWC" | sed "s/^go-by: .*/go-by: Bad$(printf '\033')Name [self-asserted]/" \
@@ -327,7 +327,7 @@ selftest() {
     *"go-by: BadName"*) if printf '%s' "$_tr_l9" | grep -q "$(printf '\033')"; then echo "FAIL: trace: an ESC byte reached the output"; st=1; else echo "PASS: trace: control bytes in a note's go-by are stripped from the printed line"; fi ;;
     *) echo "FAIL: trace: expected 'go-by: BadName' (control byte stripped, not the line dropped); got: $_tr_l9"; st=1 ;;
   esac
-  ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" --go-by "Bradley James" \
+  ( cd "$R" && $VSH "$VERIFY" record --no-push --approved-sha "$ROWC" --approved-by "solo maintainer" --go-by "Owner Fixture" \
       --gate promotion --rung "Ordinary" --class Ordinary --scope "PR #1010" \
       --token "GO: merge #1010 at $ROWC" >/dev/null 2>&1 ) || true
   # L9 (ceremony-binding half): the design-gate remedy names the committer, not an unspecified <human>.

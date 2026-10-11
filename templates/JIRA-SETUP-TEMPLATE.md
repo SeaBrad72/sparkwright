@@ -9,7 +9,9 @@ Follow it to make a Jira project satisfy the kit's §6 work-item contract (`DEVE
 ## 0. Preflight — can the kit reach and use this site? (read-only; run it before §1)
 Before the conf exists: `sh conformance/tracker-contract.sh --preflight --base https://<site>.atlassian.net --project <KEY>`. After §4: `sh conformance/tracker-contract.sh --preflight` alone. **Data Center:** stamp §4 first (`--base` takes only an Atlassian Cloud site). Confirm the site on the card's first line is your own before trusting anything below it — Atlassian API tokens work on any Atlassian site.
 - **Verdict words:** PASS · FAIL · TIER · INFO · ASK · UNVERIFIED. **Fix every FAIL before §1**; TIER, INFO and ASK are information (ASK names a question for your site admin).
-- **Run it once with each credential:** `--as ci` with the CI reader's token (§5a), `--as dev` with a developer's.
+- **Minimum curl: 7.54.0.** The adapter's config sets `suppress-connect-headers` (so a proxy's `CONNECT` reply is never read as Jira's answer); an older curl rejects the unknown option and every request fails with `unverified: curl exit 2`. Check `curl --version` on every machine and runner that runs the adapter.
+- **A credential Jira did not accept is rc 6, not an empty result.** Jira Cloud serves a wrong token as an anonymous user; the preflight's `auth` line then reads FAIL "the site did not accept the credential", and `board list` and the other verbs say "the tracker rejected the credential".
+- **Run it once with each credential, and know what each role asserts.** For setup, run `--as dev` (the default) with **your own** credential: it checks you can browse, create, transition and assign, and sets no upper bound, because your own account may legitimately be an admin while you configure the site (a credential that is an admin gets one INFO line saying so). Then run `--as agent` with the **agent pair** (§5b): it adds the upper bound and FAILs when that credential holds `ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, because lanes must run as a dedicated non-admin account. Run `--as ci` with the CI reader's token (§5a): browse only, and FAIL on anything more. Every role prints an `identity` line naming the account (`--as ci` shows only the last 8 characters of its id).
 - **CI reachability is measured on the runner, not on your machine.** Once §4 and §5 are merged, open `Actions → Adopter Tracker Gates → Run workflow`; its preflight step reports whether the runner can reach the site.
 - **If CI cannot reach it** (IP allowlist or VPN), set the repository variable `KIT_TRACKER_RUNNER` to a self-hosted runner label inside your network.
 - **Two runner risks.** (1) A label no runner matches **queues forever**, and because `tracker-board-gates` is a required check every PR waits: unset `KIT_TRACKER_RUNNER` or bring the runner online. (2) A self-hosted runner for a `pull_request_target` job belongs **only on a private repo or an ephemeral runner** (the job parses fork head objects beside the Jira secret); the gates job warns when it sees a public repo on a self-hosted runner (an ephemeral, network-isolated runner is a risk you accept and record in your waiver register, not a cure). The warning stays silent where `runner.environment` is unset (older GHES, or runners pinned with `--disableupdate` or a pinned image) and on internal repos (`private: true`, yet every enterprise member can open a PR from a fork).
@@ -34,6 +36,7 @@ project-admin edit.
   type's Size/Risk ids and the lines to paste). Add Size/Risk to **that type's** create screen. A company-managed
   project usually shares one id across types.
 - **Acceptance Criteria.** Map `field.acceptance` to your Acceptance Criteria field so the DoR flag reads it. The DoR flag checks presence only, never content. `board create` still carries acceptance in the description.
+- **Success metric.** Add a **paragraph** (multi-line text) custom field named "Success metric" to the create screen of the issue type you create, then map `field.metric=customfield_NNNNN` beside `field.acceptance`. The trusted job grades a `dor-metric` flag on every Ready card, and a flag whose `field.*` key is unmapped reads UNVERIFIED (rc 2), which fails the job; `board create --metric <text>` writes the field. It cannot be mapped to `description`, since the conf refuses two `field.*` keys with one value, and the flag checks presence only. Find the id with `sh conformance/tracker-contract.sh --fields`.
 - **Fields your Jira requires on create** (a project may require Components, Fix Version, a Team select, and so on). Run `sh conformance/tracker-contract.sh --fields`: its REQUIRED section lists each one (id, kind, name, allowed values) and prints a paste line for every one the conf does not yet cover. Map each in `.kit/tracker.conf` with `create.<fieldId>=<value>` (a default for every card), or `create.<fieldId>=prompt` (the agent supplies it per card with `board create --field <fieldId>=<value>`). The conf holds **mechanics only**: which value is right for your team is semantics, and belongs in the project `CLAUDE.md` (the agent reads it there; if it is silent, the agent asks the owner). Without a mapping `board create` refuses before it posts, naming the line to add.
 Success signal (read-only): `sh conformance/tracker-contract.sh` (no flag) passes its field-presence
 leg without naming a missing Size/Risk field, **and** its create-coherence leg (`field.size`/`field.risk` is on the
@@ -112,8 +115,26 @@ Atlassian's scoped API tokens are served through a different gateway (`api.atlas
 the adapter does not route to yet, so use the service account's classic API token (Cloud) or Personal
 Access Token (Data Center) — least privilege comes from the account's own permission (Browse Projects
 only, one project), not the token type. "One project" holds only if no other project's permission
-scheme (or a site-wide group grant) gives that account anything: the §5c probe checks five
-permissions on this project only and never measures the account's reach into other projects. Give
+scheme (or a site-wide group grant) gives that account anything: the §5c probe checks eight
+permissions (five on this project, three that reach beyond it) and never measures the account's reach into other projects. Check the
+account with `sh conformance/tracker-contract.sh --preflight --as ci` using its token: it must read "browse only". On every PR the
+trusted job prints `tracker reader: …<last 8 characters of the account id>` before it reads, so the log names which identity the CI
+secret is (never a display name). (A live probe workflow, such as the kit's own `tracker-live`, needs the repository variable
+`KIT_TRACKER_LIVE_ROW` to name a long-lived **non-epic** card in a status the conf maps, and it fails any record that is not
+`bound` with credential `ok`.) **The Free-plan ceiling:** a Free Jira plan's permission scheme ("Default software scheme") cannot be
+edited and grants Browse together with Create, Edit, Transition and Assign to every licensed user, so no account on that plan can be
+a Viewer-only reader. If that is your plan, say so with two repository variables: `KIT_TRACKER_READER_CEILING=licensed-writer` and
+`KIT_TRACKER_READER_CEILING_CARD=<KEY-n>` (the boarded card that moves you to a plan with an editable scheme; form `ABC-123`).
+The ceiling is **bounded**: the record says `credential writer` for an account that can create, edit, transition or assign but holds
+no `ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` and no `DELETE_ISSUES`, and only `writer` passes the live probe, with a notice
+on every run naming the ceiling, the card and "trail: GitHub settings audit log". An `over-privileged` reader (any admin-class key
+or delete held) fails whatever the tier, `unverified` fails, a missing or ill-formed card fails, and unset or `viewer` keeps the strict
+reading (a `writer` then fails). `sh conformance/tracker-contract.sh --preflight --as ci` still prints FAIL for a writer, adding where
+it can be accepted. **Residual risk, stated:** on such a plan the per-PR `pull_request_target` job holds a board-**write** token as a
+repository secret, and the ceiling changes a verdict, not that exposure. Use a **dedicated account** for the CI reader with **no
+`DELETE_ISSUES`** (the probe checks that key only; other destructive project permissions are not probed), used on **no other
+project**, with an **expiring and rotated token**, and **separate from the agent account** (§5b). The card's KEY format is checked
+(`ABC-123`); the kit does not check that the card exists, so keep it on the board. Give
 the token an expiry where your Jira offers one, and rotate it on a schedule. The scoped-token route
 is boarded as `TRACKER-JIRA-SCOPED-TOKEN-ROUTE`. Store the token as a **repository Actions secret**, never a
 GitHub Environment secret unless you have added `environment:` to both jobs yourself (§5d).
@@ -131,21 +152,56 @@ Secrets: read (secret *names* only — values are never readable via the API); a
 credential is never an agent's. Otherwise it is a human check.
 
 If either required secret is missing, the job's own pre-check names it and nothing else, byte-for-byte:
-`::error title=tracker-board-gates: tracker credentials not configured::add the repository Actions secret $_missing`
-(`profiles/adopter-tracker-gates.yml`). Fix: add the named repository Actions secret and re-run.
+`::error title=tracker-board-gates: tracker credentials not configured::add the Actions secret $_missing (in the job's environment, if it declares one)`
+(`profiles/adopter-tracker-gates.yml`). Fix: add the named Actions secret and re-run.
 
 **5b. The developer's own credential — for the write verbs, never a CI secret.**
-`sparkwright board claim|release|move|create` (`scripts/board.sh`) writes with **your own**
+`sparkwright board claim|release|move|create|comment|rank` (`scripts/board.sh`; `list` only reads) writes with **your own**
 `KIT_TRACKER_USER`/`KIT_TRACKER_TOKEN`, exported in your own shell — **never** the CI secret above
 (A5, `scripts/board.sh` header: "the developer's own KIT_TRACKER_USER/TOKEN, never a CI-scoped
-token"). On Data Center with `auth=bearer`, also export **`KIT_TRACKER_AUTH=bearer`** in that shell
-before running a write verb — writes read `KIT_TRACKER_AUTH` from the environment (default
-`basic`), independently of what the conf declares for reads (DS-5). Without it the write runs as
-`basic`: if `KIT_TRACKER_USER` (or `JIRA_EMAIL`) is unset it is refused locally before any request
-("refused: credential (user) outside the allowed charset"); if it is set, the PAT goes as HTTP
-Basic to the `base_url` in your working tree's `.kit/tracker.conf` — the credential does not leave
-that host, but Data Center will reject it.
+token"). The auth kind (`basic` or, for a Data Center PAT, `bearer`) comes from the `auth=` line of
+`.kit/tracker.conf` (default `basic`), so a bearer user exports nothing for it: `board.sh` and
+`board migrate` read it from the conf unless `KIT_TRACKER_AUTH` is already set in the environment.
 
+**Store it once in the macOS login Keychain, and export nothing (SECRETS-INJECTION-AT-LAUNCH).** The adapter
+(`scripts/tracker-jira.sh`) looks for the credential in this order: first the environment (the four variables
+above, as a pair: if any of `KIT_TRACKER_USER`, `KIT_TRACKER_TOKEN`, `JIRA_EMAIL` or `JIRA_TOKEN` is set, the
+environment is used alone and the Keychain is never read, so an exported email is never paired with a stored token);
+then a login Keychain item whose **service** is `sparkwright-tracker:<host>` (the exact host as written in `base_url`
+in `.kit/tracker.conf`, case-sensitive; a `base_url` with a port cannot use the Keychain item, so it stays on the
+environment only), whose **account** is your email and whose **password** is the token. Run this once, in your own
+terminal:
+
+```
+security add-generic-password -U -s sparkwright-tracker:<host> -a <email> -w
+```
+
+With `-w` last, `security` prompts for the token twice, so it never lands on the command line or in shell history.
+**Make the item with this CLI command, not Keychain Access.app:** an item made in the app trusts only the app and would
+raise a dialog on every read, while the CLI's own item lists `security` in its access list and reads silently. This is
+macOS only: on Linux the environment path is unchanged.
+
+**Which identity the item holds.** Store the credential your agent sessions run as: a **dedicated agent account that is a
+Member of the project with no admin of any kind** (not Jira administrator, not system administrator, not project administrator),
+and **without Delete Issues** (remove Delete from its project role; the working set of create, edit, transition and assign stays;
+`--as agent` checks `DELETE_ISSUES` only, and other destructive project permissions are not probed).
+This is the only credential kept in the Keychain; it is never your own admin account. Verify it with
+`sh conformance/tracker-contract.sh --preflight --as agent`: that role FAILs, naming the cure, when the credential holds
+`ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, and its `identity` line names the account the lanes
+will act as. A different identity, such as your own, stays exported in that person's own terminal, where the environment wins.
+The host binding is a control: a `base_url` changed to another host looks up another service name and finds nothing, so the
+token cannot be sent to a different site.
+
+`sparkwright doctor` prints one line, `tracker credential: env - runs as <name> (<id>)`, `keychain (read for the identity check) - runs as <name> (<id>)`,
+`- Jira did not accept it`, `- not reachable`, a one-sentence Keychain failure, or `none - store a token once: JIRA-SETUP-TEMPLATE §5b`.
+With a credential present it makes two bounded reads of the site through the adapter (who the credential is, and which
+permissions it holds; at most about 20 seconds when offline), which is why the Keychain wording says the item is read. It never
+prints the token. When the credential holds an admin or delete permission the line adds `- HOLDS <list>: lanes must run as a
+non-admin agent account, run --preflight --as agent` and doctor shows one warning (advisory; it never fails the build).
+A locked Keychain or a pending dialog ends within 10 seconds with a message, never a hang.
+**Honest ceiling:** this moves the exposure and does not remove it. The token leaves the session environment and your
+typed exports, but while the login Keychain is unlocked, any shell that can run `security find-generic-password ... -w`
+reads it silently.
 **`land` closes the card where your credential is.** After the merge, `land` (and `actuate`) run
 `sh scripts/board.sh release <ROW> --stale`: on a tracker that moves the card to your `state.done`
 (with a claim ref held the proof is the merged PR; with none, nothing is checked and `board.sh` says UNPROVEN), proves it by post-read, and deletes the claim ref. This happens in
@@ -156,20 +212,28 @@ forge UI moves nothing: run `sh scripts/board.sh release <ROW> --stale` afterwar
 without `--stale`, the holder giving a claim back, still ends the card at `state.ready`.)
 
 **5c. What the over-privilege probe does — detects, never blocks.**
-Every credential is probed for five permissions on the project: `CREATE_ISSUES`, `EDIT_ISSUES`,
-`TRANSITION_ISSUES`, `ASSIGN_ISSUES`, `ADMINISTER_PROJECTS` (`scripts/tracker-jira.sh`'s
-`tj_permissions`, ~:1237). Holding **any one** of them makes the probe print `over-privileged`; the
+Every credential is probed for eight permissions: five on the project (`CREATE_ISSUES`, `EDIT_ISSUES`,
+`TRANSITION_ISSUES`, `ASSIGN_ISSUES`, `ADMINISTER_PROJECTS`) and three that reach beyond it (`ADMINISTER`,
+`SYSTEM_ADMIN`, `DELETE_ISSUES`), so a site administrator's secret is flagged on every PR's record
+(`scripts/tracker-jira.sh`'s `tj_permissions`). If a site rejects one of the three newer keys, the probe retries with the five
+original ones; it then reports `over-privileged` only if `ADMINISTER_PROJECTS` is held, and otherwise `unverified` (never `ok` and
+never `writer`, because the three global keys were not read: a write-capable reader on such a site records `unverified`, fail-closed
+by design). Holding an admin-class key (`ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS`) or `DELETE_ISSUES` makes the probe print
+`over-privileged`; holding only create, edit, transition or assign (with all four of those answered no) prints `writer`
+(the record says `credential writer`, bound with its own notice; see the ceiling in §5a); the
 trusted job then logs a **NOTICE and binds anyway** — byte-for-byte: `seam: NOTICE — record
 credential is over-privileged for this read (binding anyway, S-11)` (`conformance/backlog-lib.sh`).
 **The gate does not refuse an over-privileged credential; the adopter is the one who acts on the
 NOTICE** — the kit does not, and cannot, enforce least privilege from outside the account.
 A failed or unparsable probe itself prints the bare word `unverified` (`scripts/tracker-jira.sh`'s
-`tj_permissions` prints exactly one of `over-privileged` | `ok` | `unverified`); `tracker-read.sh`
+`tj_permissions` prints exactly one of `ok` | `writer` | `over-privileged` | `unverified`); `tracker-read.sh`
 then writes the record line `credential unverified` (`scripts/tracker-read.sh:~22`) and downgrades
 the read's own verdict to `unverified` rather than binding (never defaults to `ok`) — **this outcome
 is red**: the record never reaches `verdict bound`. The CI service account (Browse Projects only,
-§5a) will probe `ok`; your own write-capable developer token (§5b) is *expected* to probe
-`over-privileged` when you run it locally — that is not a bug.
+§5a) will probe `ok`; your own write-capable developer token (§5b) is *expected* to probe `writer` when it holds no admin-class
+key and no `DELETE_ISSUES` (`over-privileged` if it holds any of them) when you run it locally — that is not a bug. The probe
+checks `DELETE_ISSUES` only; other destructive project permissions (delete comments, attachments or worklogs, move issues, change
+the reporter, bulk change, manage sprints) are not probed.
 
 **5d. Environments — the shipped profile declares none.**
 `profiles/adopter-tracker-gates.yml` ships with no `environment:` key on either job, so a GitHub
@@ -199,7 +263,9 @@ lifted. (cold test 2, item 47)
 
 **5f. The forbid list — never:**
 - a human developer's own token as the CI secret (§5a always uses a dedicated service account);
-- a site-, org-, or project-admin account as the CI credential;
+- a site-, org-, or project-admin account as the CI credential, or as the agent credential (`--as agent` FAILs on it);
+- an admin token (a site administrator's, or any admin's) on disk: not in `.env`, not in a shell profile, not in the Keychain item the
+  lanes read. An admin acts in the admin's own terminal, with a token exported for that command only, and never anywhere else;
 - a password as `KIT_TRACKER_TOKEN` on Data Center — a Personal Access Token with `auth=bearer` only;
 - a token written into `.kit/tracker.conf` — the conf's own grammar (`scripts/tracker-conf.sh`)
   refuses an unknown key and refuses userinfo in `base_url`, so a `user:token@host` or a bespoke

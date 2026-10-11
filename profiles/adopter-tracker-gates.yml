@@ -83,7 +83,7 @@ jobs:
     # parses fork head objects beside the tracker credential).
     runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}
     steps:
-      # First step, so no later skip or failure can hide it. Inert, warn-only: risk (2) above, made
+      # Ahead of the checkout, so no later skip or failure can hide it. Inert, warn-only: risk (2) above, made
       # visible on the run (TRACKER-RUNNER-PUBLIC-SELFHOSTED-WARN; pinned by proportional-gate-wired.sh).
       # Silent where runner.environment is unset (older GHES, runners pinned with --disableupdate or a
       # pinned image) and on internal repos (private: true, yet every enterprise member can fork-PR).
@@ -235,8 +235,8 @@ jobs:
       # OWN `scripts/tracker-conf.sh get auth`, defaulting to `basic` when the key/file is absent,
       # exactly as the reader step below does. RD-5 / D-240919-2(3): the failure names the missing
       # variable's NAME ONLY (never its value, length, or host/project) and says where the secret
-      # belongs — a repository Actions secret; this workflow declares no `environment:` key, so
-      # there is no environment secret to point at instead. Presence-only tests (`[ -n … ]`) — the
+      # belongs — an Actions secret (in the job's environment, if it declares one), never a value
+      # pasted anywhere else. Presence-only tests (`[ -n … ]`) — the
       # variables are never echoed, printed, hashed, or otherwise surfaced.
       - name: Verify tracker credentials are configured (names only)
         if: steps.resolve.outputs.skip != 'true'
@@ -253,7 +253,7 @@ jobs:
             _missing="${_missing:+$_missing and }KIT_TRACKER_USER"
           fi
           if [ -n "$_missing" ]; then
-            echo "::error title=tracker-board-gates: tracker credentials not configured::add the repository Actions secret $_missing"
+            echo "::error title=tracker-board-gates: tracker credentials not configured::add the Actions secret $_missing (in the job's environment, if it declares one)"
             exit 1
           fi
 
@@ -275,6 +275,9 @@ jobs:
         run: |
           # THE RECORD PATH IS FIXED, in the job, never from env (S-10).
           RECORD_PATH="$RUNNER_TEMP/tbg-record.json"
+          # SWAS-117 D6: name the reader in this log BEFORE the read. The reader script prints only the last 8 characters of
+          # the account id (never a display name), writes no record, and never fails; the `||` keeps this step's rc untouched.
+          sh scripts/tracker-read.sh --whoami .kit/tracker.conf || echo "tracker reader: ?"
           _help=$(sh scripts/tracker-read.sh --help 2>&1 || true)
           if printf '%s' "$_help" | grep -q -- '<head-sha>'; then
             sh scripts/tracker-read.sh .kit/tracker.conf - "$RECORD_PATH" "$ROW" "$HEAD_SHA" in-progress in-review ready

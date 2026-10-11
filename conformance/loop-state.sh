@@ -2400,6 +2400,21 @@ project=AB" > "$_stn_dupconfdir/.kit/tracker.conf"
       *) echo "selftest FAIL: an over-privileged credential must carry a stderr NOTICE (M-3), got <$_st_ovpout>"; st_fail=1 ;;
     esac
 
+    # A1 item 5 — a `writer` credential BINDS, with its OWN NOTICE that does not say over-privileged (the distinct word is the point).
+    _stn_wr="$LS_FXDIR/tracker-record-writer.txt"
+    printf '%s\n' "$_st_good_body" | sed 's/^credential ok/credential writer/' > "$_stn_wr"
+    SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stn_wr"; SEAM_HEAD="$_st_trkhead"
+    _st_wrout=$(seam_row_count AB-1 2>&1 >/dev/null) && _st_wrrc=0 || _st_wrrc=$?
+    [ "$_st_wrrc" -eq 0 ] \
+      || { echo "selftest FAIL: a writer credential must BIND (A1 item 5)"; st_fail=1; }
+    case "$_st_wrout" in
+      *NOTICE*"is a writer"*) : ;;
+      *) echo "selftest FAIL: a writer credential must carry its own stderr NOTICE (A1 item 5), got <$_st_wrout>"; st_fail=1 ;;
+    esac
+    case "$_st_wrout" in
+      *"over-privileged"*) echo "selftest FAIL: a writer NOTICE must not say over-privileged (A1 item 5), got <$_st_wrout>"; st_fail=1 ;;
+    esac
+
     # L-1 — sentence hygiene: the hostile-byte leg's refusal must never echo the hostile byte itself.
     SEAM_ROOT="$_st_trk"; SEAM_RECORD="$LS_FXDIR/tracker-record-neg.txt"
     printf '%s\n' "$_st_good_body" | sed 's/state=in-progress/state=in-progress`whoami`/' > "$SEAM_RECORD"

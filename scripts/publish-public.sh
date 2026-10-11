@@ -511,7 +511,7 @@ selftest() {
   printf 'seat: ownerlogin\n'                               > "$_t/docs/leaky-login.md"
   printf 'see https://github.com/example-org/product for the public repo\n' > "$_t/docs/legit-public-org.md"
   # a CASED variant of a lowercase denylist token (real regression: a case-sensitive match let
-  # "Bradley James" past a lowercase "bradley" entry) — the config carries 'ownerlogin' lowercase,
+  # a capitalised name past its lowercase entry) — the config carries 'ownerlogin' lowercase,
   # this fixture carries it capitalised, proving the -i match catches it.
   printf 'ratification seat: OwnerLogin\n'                  > "$_t/docs/leaky-login-cased.md"
   # GREEN — shipped machinery / product vocabulary that must NOT trip the gate.

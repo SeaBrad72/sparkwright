@@ -7,7 +7,10 @@
 #   creds (a valid .kit/tracker.conf pins base_url; KIT_TRACKER_USER/KIT_TRACKER_TOKEN or legacy
 #     JIRA_EMAIL/JIRA_TOKEN supply the token) -> live REST check -> PASS/FAIL
 #   no creds                                         -> UNVERIFIED (exit 2; never a silent pass)
-#   --selftest                                       -> run the contract logic on fixtures (CI-safe)
+#   --selftest                                       -> run the contract logic on fixtures (CI-safe).
+#     Note: on macOS the child runs of this file source the real library, so with no environment credential
+#     they query the real login Keychain against the fixture hosts (an rc 44 lookup, harmless). A locked
+#     Keychain or a pending dialog can stall such a leg for up to 10 seconds (the library timer).
 # Base run checks the six §6 states + Size/Risk fields. With --deep, ALSO grades THIS project's own workflows
 # (the adapter's one bulk workflows read, never a site-wide search) and reports the tier it PROVED: every
 # transition into In Progress carries an exclusive Only-Assignee condition (server-enforced) · a team-managed
@@ -32,6 +35,9 @@ REQUIRED="Backlog Ready In-Progress In-Review Released Done Blocked Size Risk"
 _TC_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 TC_SH="$_TC_ROOT/scripts/tracker-conf.sh"
 TJ_SH="$_TC_ROOT/scripts/tracker-jira.sh"
+# SWAS-101: the presence check for a stored credential. This file only asks whether one exists (attributes
+# only, never the secret); the adapter alone reads it. Absent in a partial tree -> the environment-only gate.
+if [ -f "$_TC_ROOT/scripts/tracker-cred.sh" ]; then . "$_TC_ROOT/scripts/tracker-cred.sh"; fi
 
 # check_blob <file>: every required name must appear as an EXACT quoted value (whitespace-insensitive).
 check_blob() {
@@ -398,7 +404,7 @@ _pf_end() {
   _pe_v=PASS; _PF_RC=0
   if [ "$_PF_UNVS" -gt 0 ]; then _pe_v=UNVERIFIED; _PF_RC=2; fi
   if [ "$_PF_FAILS" -gt 0 ]; then _pe_v=FAIL; _PF_RC=1; fi
-  printf 'CARD\t%s\t%s FAIL · %s UNVERIFIED · run once with each credential (--as ci with the CI reader, --as dev with a developer'"'"'s)\n' "$_pe_v" "$_PF_FAILS" "$_PF_UNVS"
+  printf 'CARD\t%s\t%s FAIL · %s UNVERIFIED · run once with each credential (--as ci with the CI reader, --as agent with the agent account, --as dev with a developer'"'"'s)\n' "$_pe_v" "$_PF_FAILS" "$_PF_UNVS"
 }
 # _pf_get <file> <key>: the value of the first `key<TAB>value` line.
 _pf_get() { awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1"; }
@@ -421,35 +427,82 @@ _pf_num() {
 _pf_read() { : > "$2"; _tc_curl_authed "$@" 2>/dev/null; }
 # _pf_perm <NAME>: yes / no / unknown from the perms read.
 _pf_perm() { _pf_enum "$(_pf_get "$PFD/perms" "$1")" yes no unknown; }
+# _pf_held <KEY…>: the comma-joined subset of the keys the credential holds (yes); sets _ph_unk=1 when any of them is unknown.
+_pf_held() {
+  _ph_list=''; _ph_unk=''
+  for _ph_k in "$@"; do
+    case $(_pf_perm "$_ph_k") in
+      yes) _ph_list="$_ph_list${_ph_list:+, }$_ph_k" ;;
+      unknown) _ph_unk=1 ;;
+    esac
+  done
+}
+# _pf_perms_ci: browse only; any write, admin or delete permission is over-privileged (SWAS-117 D3: the nine keys).
+_pf_perms_ci() {
+  case $(_pf_perm BROWSE_PROJECTS) in
+    no) _pf_line permissions FAIL "the CI reader cannot browse the project; grant Browse Projects"; return 0 ;;
+    unknown) _pf_line permissions UNVERIFIED "the browse permission could not be read"; return 0 ;;
+  esac
+  _pf_held CREATE_ISSUES EDIT_ISSUES TRANSITION_ISSUES ASSIGN_ISSUES ADMINISTER_PROJECTS ADMINISTER SYSTEM_ADMIN DELETE_ISSUES
+  if [ -n "$_ph_list" ]; then
+    # A1 item 5: a reader that can write but holds no admin-class key and no delete (all four answered) is a WRITER. It keeps
+    # today's FAIL; the line only adds where such a reader can be accepted. An admin-shaped or half-read one gets no suffix.
+    _pc_held=$_ph_list
+    _pf_held ADMINISTER SYSTEM_ADMIN ADMINISTER_PROJECTS DELETE_ISSUES
+    _pc_sfx=''
+    if [ -z "$_ph_list" ] && [ -z "$_ph_unk" ]; then _pc_sfx=' (a licensed writer: accepted by tracker-live only where KIT_TRACKER_READER_CEILING declares it)'; fi
+    _pf_line permissions FAIL "over-privileged: the CI reader holds $_pc_held; JIRA-SETUP §5a$_pc_sfx"; return 0
+  fi
+  if [ -n "$_ph_unk" ]; then _pf_line permissions UNVERIFIED "could not read whether the CI reader holds write or admin permissions"; return 0; fi
+  _pf_line permissions PASS "browse only"
+}
+# _pf_floor_missing: sets _pf_fl_no (the needed permissions the credential lacks) and _pf_fl_unk (any needed one unreadable).
+_pf_floor_missing() {
+  _pf_fl_no=''; _pf_fl_unk=''
+  for _pp_p in BROWSE_PROJECTS CREATE_ISSUES TRANSITION_ISSUES ASSIGN_ISSUES; do
+    case $(_pf_perm "$_pp_p") in
+      no) _pf_fl_no="$_pf_fl_no${_pf_fl_no:+, }$_pp_p" ;;
+      unknown) _pf_fl_unk=1 ;;
+    esac
+  done
+}
+# _pf_perms_dev: the four needed permissions (unchanged by SWAS-117; the default role never gains an upper bound).
+_pf_perms_dev() {
+  _pf_floor_missing
+  if [ -n "$_pf_fl_no" ]; then _pf_line permissions FAIL "missing $_pf_fl_no; the project admin grants them (Project settings → Access, or the permission scheme)"; return 0; fi
+  if [ -n "$_pf_fl_unk" ]; then _pf_line permissions UNVERIFIED "a needed permission could not be read"; return 0; fi
+  _pf_line permissions PASS "browse · create · transition · assign"
+}
+# _pf_perms_agent: SWAS-117 D2 — the floor as dev, PLUS an upper bound. FAIL when the credential holds ADMINISTER, SYSTEM_ADMIN or
+# ADMINISTER_PROJECTS (a lane must run as a dedicated non-admin account) or DELETE_ISSUES (separable from the working set on
+# a plan with an editable permission scheme); an unreadable bound is UNVERIFIED. One line, the card grammar unchanged; the messages join with " · ".
+_pf_perms_agent() {
+  _pg_msg=''
+  _pf_held ADMINISTER SYSTEM_ADMIN ADMINISTER_PROJECTS; _pg_adm=$_ph_list; _pg_unk=$_ph_unk
+  if [ -n "$_pg_adm" ]; then _pg_msg="the agent credential holds $_pg_adm; lanes must run as a dedicated agent account (Member, no admin) - JIRA-SETUP §5b"; fi
+  _pf_held DELETE_ISSUES
+  [ -z "$_ph_unk" ] || _pg_unk=1
+  if [ -n "$_ph_list" ]; then _pg_msg="$_pg_msg${_pg_msg:+ · }the agent credential can delete issues; remove Delete from its project role - JIRA-SETUP §5b"; fi
+  _pf_floor_missing
+  if [ -n "$_pf_fl_no" ]; then _pg_msg="$_pg_msg${_pg_msg:+ · }missing $_pf_fl_no; the project admin grants them (Project settings → Access, or the permission scheme)"; fi
+  if [ -n "$_pg_msg" ]; then _pf_line permissions FAIL "$_pg_msg"; return 0; fi
+  if [ -n "$_pg_unk" ] || [ -n "$_pf_fl_unk" ]; then _pf_line permissions UNVERIFIED "could not read whether the agent credential holds admin or delete permissions, or a needed permission"; return 0; fi
+  _pf_line permissions PASS "browse · create · transition · assign; no admin, no delete"
+}
+# _pf_admin_info: dev only — the default role keeps its verdicts, but a credential that is an admin says so (SWAS-117 D2).
+_pf_admin_info() {
+  _pf_held ADMINISTER SYSTEM_ADMIN ADMINISTER_PROJECTS
+  [ -z "$_ph_list" ] || _pf_line admin INFO "this is an admin credential; lanes should not run as it - see --as agent"
+}
 # _pf_perms_line <role>: the permissions line.
 _pf_perms_line() {
   _pp_rc=0; _pf_read perms "$PFD/perms" "$PF_KEY" || _pp_rc=$?
   [ "$_pp_rc" -eq 0 ] || : > "$PFD/perms"
-  _pp_no=''; _pp_unk=''; _pp_over=''
-  if [ "$1" = ci ]; then
-    case $(_pf_perm BROWSE_PROJECTS) in
-      no) _pf_line permissions FAIL "the CI reader cannot browse the project; grant Browse Projects"; return 0 ;;
-      unknown) _pf_line permissions UNVERIFIED "the browse permission could not be read"; return 0 ;;
-    esac
-    for _pp_p in CREATE_ISSUES EDIT_ISSUES TRANSITION_ISSUES ASSIGN_ISSUES ADMINISTER_PROJECTS; do
-      case $(_pf_perm "$_pp_p") in
-        yes) _pp_over="$_pp_over${_pp_over:+, }$_pp_p" ;;
-        unknown) _pp_unk=1 ;;
-      esac
-    done
-    if [ -n "$_pp_over" ]; then _pf_line permissions FAIL "over-privileged: the CI reader holds $_pp_over; JIRA-SETUP §5a"; return 0; fi
-    if [ -n "$_pp_unk" ]; then _pf_line permissions UNVERIFIED "could not read whether the CI reader holds write or admin permissions"; return 0; fi
-    _pf_line permissions PASS "browse only"; return 0
-  fi
-  for _pp_p in BROWSE_PROJECTS CREATE_ISSUES TRANSITION_ISSUES ASSIGN_ISSUES; do
-    case $(_pf_perm "$_pp_p") in
-      no) _pp_no="$_pp_no${_pp_no:+, }$_pp_p" ;;
-      unknown) _pp_unk=1 ;;
-    esac
-  done
-  if [ -n "$_pp_no" ]; then _pf_line permissions FAIL "missing $_pp_no; the project admin grants them (Project settings → Access, or the permission scheme)"; return 0; fi
-  if [ -n "$_pp_unk" ]; then _pf_line permissions UNVERIFIED "a needed permission could not be read"; return 0; fi
-  _pf_line permissions PASS "browse · create · transition · assign"
+  case "$1" in
+    ci) _pf_perms_ci ;;
+    agent) _pf_perms_agent ;;
+    *) _pf_perms_dev; _pf_admin_info ;;
+  esac
 }
 # _pf_claim_line <style>: ONE line for the claim tier; the --deep engine (conf mode, classic only) is collapsed to it.
 _pf_claim_line() {
@@ -508,6 +561,39 @@ _pf_visibility_line() {
   [ "$_pv_l" != unknown ] || _pv_l='unknown (needs project admin)'
   _pf_line visibility PASS "$_pv_v of $_pv_t issues visible; $_pv_l issue-security levels"
 }
+# _pf_id_gate <value>: the account id when it matches [A-Za-z0-9:_-]{1,128}, else `?` (S-6, re-gated here although the adapter gated it:
+# this file never trusts a byte it did not check). Spelled-out classes, no ranges: the set is matched on bytes.
+_pf_id_gate() {
+  _pi_set='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789:_-'
+  case "$1" in
+    ''|*[!$_pi_set]*) printf '?'; return 0 ;;
+  esac
+  if [ "${#1}" -le 128 ]; then printf '%s' "$1"; else printf '?'; fi
+}
+# _pf_name_gate <value>: the display name when it is 1-64 bytes of [A-Za-z0-9 ._'-], else `?`.
+_pf_name_gate() {
+  _pm_set="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 ._'-"
+  case "$1" in
+    ''|*[!$_pm_set]*) printf '?'; return 0 ;;
+  esac
+  if [ "${#1}" -le 64 ]; then printf '%s' "$1"; else printf '?'; fi
+}
+# _pf_identity_line <role>: SWAS-117 D4 — which account this credential is. dev and agent name the account in full
+# (`<name> · <id>`, the operator's own terminal); ci shows ONLY the last 8 characters of the id (`…<tail>`), so the drift job's
+# notice relay never carries a display name or a full id. The email is never read. A failed read is INFO, never a verdict.
+_pf_identity_line() {
+  _pi_rc=0; _pf_read whoami "$PFD/who" || _pi_rc=$?
+  [ "$_pi_rc" -eq 0 ] || : > "$PFD/who"
+  _pi_id=$(_pf_id_gate "$(_pf_get "$PFD/who" account-id)")
+  _pi_nm=$(_pf_name_gate "$(_pf_get "$PFD/who" display-name)")
+  if [ "$_pi_id" = '?' ]; then _pf_line identity INFO "the account behind this credential could not be read"; return 0; fi
+  if [ "$1" = ci ]; then
+    _pi_tail=$(printf '%s' "$_pi_id" | awk '{ n = length($0); s = (n > 8) ? substr($0, n - 7) : $0; print s }')
+    _pf_line identity INFO "…$_pi_tail"; return 0
+  fi
+  [ "$_pi_nm" != '?' ] || _pi_nm='? (outside the printable set)'
+  _pf_line identity INFO "$_pi_nm · $_pi_id"
+}
 # _pf_head <role>: the lines up to and including auth. rc 1 = the card stops here (the stop line has been printed).
 _pf_head() {
   _ph_rc=0; _pf_read probe "$PFD/probe" || _ph_rc=$?
@@ -528,8 +614,9 @@ _pf_head() {
   esac
   _pf_line reach-here PASS "the API answers from this machine$_ph_via"
   _pf_line reach-ci INFO "$_PF_REACH_CI"
-  case $(_pf_enum "$(_pf_get "$PFD/probe" auth)" ok 401 403 unknown) in
+  case $(_pf_enum "$(_pf_get "$PFD/probe" auth)" ok 401 403 rejected unknown) in
     ok) _pf_line auth PASS "the site accepted the credential (basic auth, site URL)" ;;
+    rejected) _pf_line auth FAIL "the site did not accept the credential (it answered as an anonymous user, or the login was refused): check KIT_TRACKER_USER and the token or the Keychain item, and base_url"; return 1 ;;
     401) _pf_line auth FAIL "the site refused the credential: a wrong or revoked token, or a scoped token the kit does not route yet (see JIRA-SETUP §5)"; return 1 ;;
     403) _pf_line auth FAIL "the account cannot use the REST API (org token policy or product access); ask the site admin"; return 1 ;;
     *) _pf_line auth UNVERIFIED "the credential check was inconclusive"; return 1 ;;
@@ -538,10 +625,11 @@ _pf_head() {
     _ph_t=$(_pf_enum "$(_pf_get "$PFD/probe" type)" atlassian app customer unknown)
     _pf_line account INFO "$_ph_t account; use a dedicated account for the CI reader so a leaver does not break the gate"
   fi
+  _pf_identity_line "$1"
 }
 # _pf_deployment_line: from server-info; a conf flavour that disagrees with the measured one FAILs.
 _pf_deployment_line() {
-  if [ "$(_pf_enum "$(_pf_get "$PFD/probe" auth)" ok 401 403 unknown)" != ok ]; then
+  if [ "$(_pf_enum "$(_pf_get "$PFD/probe" auth)" ok 401 403 rejected unknown)" != ok ]; then
     _pf_line deployment INFO "not readable until the site accepts the credential"; return 0
   fi
   _pd_rc=0; _pf_read server-info "$PFD/server" || _pd_rc=$?
@@ -607,14 +695,17 @@ pf_noconf_conf() {
 }
 
 # --- arg parse: --deep, --discover, --fields and --selftest combine in any order; --conf overrides the path ---
-_TC_USAGE="usage: tracker-contract.sh [--deep] [--discover] [--fields [--issue <KEY>]] [--conf <path>] [--selftest] | --preflight [--as ci|dev] [--conf <path> | --base <url> --project <KEY>]"
+_TC_USAGE="usage: tracker-contract.sh [--deep] [--discover] [--fields [--issue <KEY>]] [--conf <path>] [--selftest] | --preflight [--as ci|dev|agent] [--conf <path> | --base <url> --project <KEY>]"
 DEEP=0; SELFTEST=0; DISCOVER=0; FIELDS=0; ISSUE=''; CONF=".kit/tracker.conf"
 PREFLIGHT=0; PF_AS=dev; PF_AS_SET=0; PF_BASE=''; PF_BASE_SET=0; PF_PROJECT=''; PF_PROJECT_SET=0; CONF_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --preflight) PREFLIGHT=1; shift ;;
     --as) [ $# -ge 2 ] || { echo "$_TC_USAGE" >&2; exit 2; }
-          case "$2" in ci|dev) PF_AS=$2; PF_AS_SET=1; shift 2 ;; *) echo "$_TC_USAGE" >&2; exit 2 ;; esac ;;
+          case "$2" in
+            ci|dev|agent) PF_AS=$2; PF_AS_SET=1; shift 2 ;;
+            *) echo "$_TC_USAGE" >&2; exit 2 ;;
+          esac ;;
     --base) [ $# -ge 2 ] || { echo "$_TC_USAGE" >&2; exit 2; }; PF_BASE=$2; PF_BASE_SET=1; shift 2 ;;
     --project) [ $# -ge 2 ] || { echo "$_TC_USAGE" >&2; exit 2; }; PF_PROJECT=$2; PF_PROJECT_SET=1; shift 2 ;;
     --deep) DEEP=1; shift ;;
@@ -1060,7 +1151,7 @@ EOF
   # 2026-10-03 §4/§14; plan interfaces B/C/D). Every leg runs the fake-adapter tree: the card reads answer from
   # recorded adapter output (FA_PF_*), never a network. pf_* shell variables select the fixtures for ONE _pfr run. ---
   pf_probe=''; pf_server=''; pf_perms=''; pf_vis=''; pf_epic=''; pf_rf=''; pf_proj=''; pf_pst=''; pf_wf=''; pf_wfrc=''; pf_myrc=''
-  pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0
+  pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0; pf_whoami=''; pf_whorc=''
   _pfr() {  # <tag> [contract-args…]: one run of the fake tree's contract; result in _pfrc/_pfout, files $tmpd/<tag>-*
     _pft=$1; shift; fa_reset
     ( unset JIRA_EMAIL JIRA_TOKEN KIT_TRACKER_USER KIT_TRACKER_TOKEN 2>/dev/null
@@ -1080,16 +1171,20 @@ EOF
       [ -z "$pf_permsrc" ] || FA_PF_PERMS_RC=$pf_permsrc
       [ -z "$pf_epicrc" ] || FA_PF_EPIC_RC=$pf_epicrc
       [ -z "$pf_serverrc" ] || FA_PF_SERVER_RC=$pf_serverrc
-      export FA_PF_PROBE FA_PF_SERVER FA_PF_PERMS FA_PF_VIS FA_PF_EPIC FA_RFBODY FA_PROJECT FA_PSTATUSES FA_WF FA_WF_RC FA_MYSELF_RC FA_PF_PROBE_RC FA_PF_PERMS_RC FA_PF_EPIC_RC FA_PF_SERVER_RC
+      [ -z "$pf_whoami" ] || FA_PF_WHOAMI="$fxdir/contract-pf-whoami-$pf_whoami.txt"
+      [ -z "$pf_whorc" ] || FA_PF_WHOAMI_RC=$pf_whorc
+      export FA_PF_PROBE FA_PF_SERVER FA_PF_PERMS FA_PF_VIS FA_PF_EPIC FA_RFBODY FA_PROJECT FA_PSTATUSES FA_WF FA_WF_RC FA_MYSELF_RC FA_PF_PROBE_RC FA_PF_PERMS_RC FA_PF_EPIC_RC FA_PF_SERVER_RC FA_PF_WHOAMI FA_PF_WHOAMI_RC
       if sh "$fadir/conformance/tracker-contract.sh" "$@" >"$tmpd/$_pft-out" 2>"$tmpd/$_pft-err"; then echo 0 > "$tmpd/$_pft-rc"; else echo $? > "$tmpd/$_pft-rc"; fi
     )
     _pfrc=$(cat "$tmpd/$_pft-rc" 2>/dev/null || printf '?'); _pfout=$(cat "$tmpd/$_pft-out" 2>/dev/null || true)
     pf_probe=''; pf_server=''; pf_perms=''; pf_vis=''; pf_epic=''; pf_rf=''; pf_proj=''; pf_pst=''; pf_wf=''; pf_wfrc=''; pf_myrc=''
-    pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0
+    pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0; pf_whoami=''; pf_whorc=''
   }
   # oracles over the last run: _pfl name verdict fragment (a card line) · _pfa name (no such line) · _pfok rc
   _pfl() { awk -F'\t' -v n="$1" -v v="$2" -v t="$3" '$1 == n && $2 == v && index($3, t) > 0 { f = 1 } END { exit !f }' "$tmpd/$_pft-out"; }
   _pfa() { ! awk -F'\t' -v n="$1" '$1 == n { f = 1 } END { exit !f }' "$tmpd/$_pft-out"; }
+  # _pfx name verdict text: a card line whose text is EXACTLY the given text (not a substring)
+  _pfx() { awk -F'\t' -v n="$1" -v v="$2" -v t="$3" '$1 == n && $2 == v && $3 == t { f = 1 } END { exit !f }' "$tmpd/$_pft-out"; }
   _pfok() { [ "$_pfrc" = "$1" ]; }
   _pfn() { [ "$(awk -F'\t' -v n="$1" '$1 == n' "$tmpd/$_pft-out" | wc -l | tr -d ' ')" = "$2" ]; }
   _pffirst() { [ "$(sed -n 1p "$tmpd/$_pft-out")" = "$1" ]; }
@@ -1115,7 +1210,7 @@ EOF
   _pfr pfhappy --preflight --conf "$f7conf"
   _pfv happy/rc _pfok 0
   _pfv happy/header-first _pffirst "card${_pf_tab}INFO${_pf_tab}ex.atlassian.net · project AB · as dev · read-only"
-  _pfv happy/order _pforder "card deployment reach-here reach-ci auth token-expiry project permissions claim-tier required epic-model visibility automation CARD "
+  _pfv happy/order _pforder "card deployment reach-here reach-ci auth identity token-expiry project permissions claim-tier required epic-model visibility automation CARD "
   _pfv happy/grammar _pfgram
   _pfv happy/deployment _pfl deployment PASS "Cloud (build 100294)"
   _pfv happy/reach-here _pfl reach-here PASS "the API answers from this machine (direct)"
@@ -1130,10 +1225,13 @@ EOF
   _pfv happy/epic-model _pfl epic-model PASS "parent"
   _pfv happy/visibility _pfl visibility PASS "16 of 16 issues visible; 0 issue-security levels"
   _pfv happy/automation _pfl automation ASK "automation rules are not readable without admin"
-  _pfv happy/card _pfl CARD PASS "0 FAIL · 0 UNVERIFIED · run once with each credential (--as ci with the CI reader, --as dev with a developer's)"
+  _pfv happy/card _pfl CARD PASS "0 FAIL · 0 UNVERIFIED · run once with each credential (--as ci with the CI reader, --as agent with the agent account, --as dev with a developer's)"
+  _pfv happy/identity-name-and-id _pfl identity INFO "AgentFixture · 712020:0a1b2c3d-0000-4000-8000-0000000000aa"
+  _pfv happy/no-admin-line-for-a-clean-account _pfa admin
+  _pfv happy/default-role-is-dev _pfhas "as dev · read-only"
   _pfv happy/card-last _pflast CARD
   _pfv happy/token-never-printed _pfnot pf-s3cret-tok
-  _pfv happy/argv-closed-list _pfargv "probe server-info project perms writable-create-keys required-fields epic-model visibility"
+  _pfv happy/argv-closed-list _pfargv "probe server-info whoami project perms writable-create-keys required-fields epic-model visibility"
   _pfv happy/probe-first [ "$(sed -n 1p "$faargv")" = "contract-read https://ex.atlassian.net cloud probe" ]
   # --- reach-here: unreachable / redirect stop the card with the cure; an error is UNVERIFIED and stops too ---
   pf_probe=probe-unreach; _pfr pfunreach --preflight --conf "$f7conf"
@@ -1147,7 +1245,7 @@ EOF
   # --- reach-here names the route: via a proxy / direct; an absent or hostile `via` renders no parenthesis ---
   pf_probe=probe-via-proxy; _pfr pfviaproxy --preflight --conf "$f7conf"
   _pfv via/proxy _pfl reach-here PASS "the API answers from this machine (via a proxy)"
-  _pfv via/proxy-order _pforder "card deployment reach-here reach-ci auth token-expiry project permissions claim-tier required epic-model visibility automation CARD "
+  _pfv via/proxy-order _pforder "card deployment reach-here reach-ci auth identity token-expiry project permissions claim-tier required epic-model visibility automation CARD "
   pf_probe=probe-proxy-refused; _pfr pfproxyrefused --preflight --conf "$f7conf"
   _pfv proxy-refused/fail _pfl reach-here FAIL "HTTPS_PROXY or NO_PROXY carries a value the adapter refuses (letters, digits and : / @ . _ % + - only; percent-encode a proxy password's other characters)"
   _pfv proxy-refused/stops _pfa auth
@@ -1191,6 +1289,11 @@ EOF
   pf_probe=probe-403; _pfr pf403 --preflight --conf "$f7conf"
   _pfv auth-403/fail _pfl auth FAIL "the account cannot use the REST API (org token policy or product access); ask the site admin"
   _pfv auth-403/stops _pfa project
+  # TRACKER-ANON-200-REJECT: a credential the site served anonymously is its own named FAIL (never `inconclusive`), and stops
+  pf_probe=probe-rejected; _pfr pfrejected --preflight --conf "$f7conf"
+  _pfv auth-rejected/fail _pfl auth FAIL "the site did not accept the credential (it answered as an anonymous user, or the login was refused): check KIT_TRACKER_USER and the token or the Keychain item, and base_url"
+  _pfv auth-rejected/stops _pfa project
+  _pfv auth-rejected/rc _pfok 1
   pf_probe=probe-hostile; _pfr pfhostile --preflight --conf "$f7conf"
   _pfv auth-hostile/unverified _pfl auth UNVERIFIED ""
   _pfv auth-hostile/never-echoed _pfnot ZQHOSTILE
@@ -1199,12 +1302,45 @@ EOF
   pf_perms=browse-only; _pfr pfci --preflight --as ci --conf "$f7conf"
   _pfv ci/header-role _pffirst "card${_pf_tab}INFO${_pf_tab}ex.atlassian.net · project AB · as ci · read-only"
   _pfv ci/account _pfl account INFO "atlassian account; use a dedicated account for the CI reader so a leaver does not break the gate"
-  _pfv ci/order _pforder "card deployment reach-here reach-ci auth account token-expiry project permissions claim-tier required epic-model visibility automation CARD "
+  _pfv ci/order _pforder "card deployment reach-here reach-ci auth account identity token-expiry project permissions claim-tier required epic-model visibility automation CARD "
   _pfv ci/browse-only-pass _pfl permissions PASS "browse only"
   _pfv ci/rc _pfok 0
   _pfv ci/required-info-no-createmeta _pfl required INFO "required create fields need Create issues, which the CI reader must not hold; run --preflight --as dev with a developer's credential"
   _pfv ci/no-createmeta-reads [ "$(grep -c -e required-fields -e writable-create-keys "$faargv" || true)" = 0 ]
-  _pfv ci/happy-argv-closed-list _pfargv "probe server-info project perms epic-model visibility"
+  _pfv ci/happy-argv-closed-list _pfargv "probe server-info whoami project perms epic-model visibility"
+  # SWAS-117 D4: --as ci shows the account id's LAST 8 characters only, so the drift job's ::notice relay (which copies a card
+  # line's text) never carries a display name or a full id. LOAD-BEARING negatives: the name and the full id are absent.
+  _pfv ci/identity-id-tail-only _pfx identity INFO "…000000aa"
+  _pfv ci/identity-no-display-name _pfnot AgentFixture
+  _pfv ci/identity-no-full-id _pfnot 712020:0a1b2c3d
+  _pfv ci/identity-never-the-email _pfnot WHOAMI-EMAIL-MARKER
+  pf_perms='browse-only'; pf_whoami='short-id'; _pfr pfcishort --preflight --as ci --conf "$f7conf"
+  _pfv ci/identity-short-id-shown-whole _pfx identity INFO "…abcd"
+  pf_perms='browse-only'; pf_whoami='id-raw'; _pfr pfciidraw --preflight --as ci --conf "$f7conf"
+  _pfv ci/identity-hostile-id-never-echoed _pfnot ZQHOSTILE
+  _pfv ci/identity-hostile-id-info _pfx identity INFO "the account behind this credential could not be read"
+  pf_perms='browse-only'; pf_whorc=2; _pfr pfciwhofail --preflight --as ci --conf "$f7conf"
+  _pfv ci/identity-unreadable-info _pfx identity INFO "the account behind this credential could not be read"
+  _pfv ci/identity-unreadable-never-changes-the-verdict _pfok 0
+  # SWAS-117 D3: --as ci judges the three new keys; each held alone is over-privileged (rc 1)
+  pf_perms='ci-admin'; _pfr pfciadm --preflight --as ci --conf "$f7conf"
+  _pfv ci/administer-is-over-privileged _pfx permissions FAIL "over-privileged: the CI reader holds ADMINISTER; JIRA-SETUP §5a"
+  _pfv ci/administer-rc _pfok 1
+  _pfv ci/admin-shaped-gets-no-writer-suffix _pfnot "accepted by tracker-live"
+  pf_perms='ci-sysadmin'; _pfr pfcisys --preflight --as ci --conf "$f7conf"
+  _pfv ci/system-admin-is-over-privileged _pfx permissions FAIL "over-privileged: the CI reader holds SYSTEM_ADMIN; JIRA-SETUP §5a"
+  pf_perms='ci-delete'; _pfr pfcidel --preflight --as ci --conf "$f7conf"
+  _pfv ci/delete-issues-is-over-privileged _pfx permissions FAIL "over-privileged: the CI reader holds DELETE_ISSUES; JIRA-SETUP §5a"
+  pf_perms='all-held'; _pfr pfciall --preflight --as ci --conf "$f7conf"
+  _pfv ci/all-held-gets-no-writer-suffix _pfnot "accepted by tracker-live"
+  pf_perms='ci-writer-unknown'; _pfr pfciwu --preflight --as ci --conf "$f7conf"
+  _pfv ci/writer-with-unread-admin-keys-gets-no-suffix _pfnot "accepted by tracker-live"
+  _pfv ci/writer-with-unread-admin-keys-still-fails _pfl permissions FAIL "over-privileged: the CI reader holds CREATE_ISSUES;"
+  pf_perms='all-held'; _pfr pfciall2 --preflight --as ci --conf "$f7conf"
+  _pfv ci/all-nine-held-names-every-one _pfx permissions FAIL "over-privileged: the CI reader holds CREATE_ISSUES, EDIT_ISSUES, TRANSITION_ISSUES, ASSIGN_ISSUES, ADMINISTER_PROJECTS, ADMINISTER, SYSTEM_ADMIN, DELETE_ISSUES; JIRA-SETUP §5a"
+  pf_perms='ci-global-unknown'; _pfr pfciglu --preflight --as ci --conf "$f7conf"
+  _pfv ci/global-keys-unreadable-is-unverified _pfx permissions UNVERIFIED "could not read whether the CI reader holds write or admin permissions"
+  _pfv ci/global-keys-unreadable-rc2 _pfok 2
   pf_perms=ci-unknown; _pfr pfciunk --preflight --as ci --conf "$f7conf"
   _pfv ci/perms-unknown-unverified _pfl permissions UNVERIFIED "could not read whether the CI reader holds write or admin permissions"
   _pfv ci/perms-unknown-rc2 _pfok 2
@@ -1213,6 +1349,10 @@ EOF
   _pfv ci/over-privileged-rc _pfok 1
   pf_perms=dev-missing; _pfr pfcipart --preflight --as ci --conf "$f7conf"
   _pfv ci/over-privileged-names-only-held _pfl permissions FAIL "the CI reader holds EDIT_ISSUES, TRANSITION_ISSUES; JIRA-SETUP §5a"
+  # A1 item 5: a WRITER-shaped reader (write rights, all four admin-class keys answered no) keeps the FAIL and its line adds where
+  # it can be accepted. LOAD-BEARING: the suffix is exact, and absent for every admin-shaped or half-read reader (below).
+  _pfv ci/writer-keeps-fail-and-names-where-accepted _pfx permissions FAIL "over-privileged: the CI reader holds EDIT_ISSUES, TRANSITION_ISSUES; JIRA-SETUP §5a (a licensed writer: accepted by tracker-live only where KIT_TRACKER_READER_CEILING declares it)"
+  _pfv ci/writer-rc1 _pfok 1
   pf_perms=no-browse; _pfr pfcinob --preflight --as ci --conf "$f7conf"
   _pfv ci/browse-missing _pfl permissions FAIL "the CI reader cannot browse the project; grant Browse Projects"
   pf_perms=dev-missing; _pfr pfdevmiss --preflight --conf "$f7conf"
@@ -1226,6 +1366,74 @@ EOF
   _pfv dev/unknown-card _pfl CARD UNVERIFIED "0 FAIL · 1 UNVERIFIED"
   pf_permsrc=2; _pfr pfpermsrc --preflight --conf "$f7conf"
   _pfv perms-unreadable/unverified _pfl permissions UNVERIFIED ""
+  # --- SWAS-117 D2: the default role is dev and carries NO upper bound (a new adopter's own credential may be an admin during
+  # setup, JIRA-SETUP §0). An admin credential keeps dev's verdict and gains ONE INFO line pointing at --as agent. ---
+  pf_perms='site-admin'; _pfr pfdevsite --preflight --conf "$f7conf"
+  _pfv dev/site-admin-keeps-pass _pfx permissions PASS "browse · create · transition · assign"
+  _pfv dev/site-admin-info _pfx admin INFO "this is an admin credential; lanes should not run as it - see --as agent"
+  _pfv dev/site-admin-rc0 _pfok 0
+  _pfv dev/site-admin-header-names-dev _pffirst "card${_pf_tab}INFO${_pf_tab}ex.atlassian.net · project AB · as dev · read-only"
+  pf_perms=sysadmin; _pfr pfdevsys --preflight --as dev --conf "$f7conf"
+  _pfv dev/system-admin-info _pfn admin 1
+  _pfv dev/system-admin-rc0 _pfok 0
+  pf_perms='proj-admin'; _pfr pfdevproj --preflight --conf "$f7conf"
+  _pfv dev/project-admin-info _pfn admin 1
+  _pfv dev/project-admin-rc0 _pfok 0
+  pf_perms=delete; _pfr pfdevdel --preflight --conf "$f7conf"
+  _pfv dev/delete-alone-is-not-an-admin-credential _pfa admin
+  _pfv dev/delete-alone-passes _pfx permissions PASS "browse · create · transition · assign"
+  # --- SWAS-117 D2: --as agent. The floor as dev, plus an upper bound. ---
+  _pfr pfagent --preflight --as agent --conf "$f7conf"
+  _pfv agent/header-role _pffirst "card${_pf_tab}INFO${_pf_tab}ex.atlassian.net · project AB · as agent · read-only"
+  _pfv agent/clean-account-passes _pfx permissions PASS "browse · create · transition · assign; no admin, no delete"
+  _pfv agent/rc0 _pfok 0
+  _pfv agent/grammar _pfgram
+  _pfv agent/identity-names-the-account _pfx identity INFO "AgentFixture · 712020:0a1b2c3d-0000-4000-8000-0000000000aa"
+  _pfv agent/no-dev-admin-info-line _pfa admin
+  _pfv agent/order _pforder "card deployment reach-here reach-ci auth identity token-expiry project permissions claim-tier required epic-model visibility automation CARD "
+  _pfv agent/reads-the-create-fields-like-dev _pfl required PASS "0 required create fields unmapped"
+  # LOAD-BEARING (kills a mutant that drops the upper bound): a site admin whose PROJECT permissions are clean
+  # (ADMINISTER_PROJECTS no, ADMINISTER yes) must FAIL as an agent.
+  pf_perms='site-admin'; _pfr pfagadm --preflight --as agent --conf "$f7conf"
+  _pfv agent/administer-fails _pfx permissions FAIL "the agent credential holds ADMINISTER; lanes must run as a dedicated agent account (Member, no admin) - JIRA-SETUP §5b"
+  _pfv agent/administer-rc1 _pfok 1
+  _pfv agent/administer-card-fail _pfl CARD FAIL "1 FAIL · 0 UNVERIFIED"
+  pf_perms=sysadmin; _pfr pfagsys --preflight --as agent --conf "$f7conf"
+  _pfv agent/system-admin-fails _pfx permissions FAIL "the agent credential holds SYSTEM_ADMIN; lanes must run as a dedicated agent account (Member, no admin) - JIRA-SETUP §5b"
+  _pfv agent/system-admin-rc1 _pfok 1
+  pf_perms='proj-admin'; _pfr pfagproj --preflight --as agent --conf "$f7conf"
+  _pfv agent/administer-projects-fails _pfx permissions FAIL "the agent credential holds ADMINISTER_PROJECTS; lanes must run as a dedicated agent account (Member, no admin) - JIRA-SETUP §5b"
+  _pfv agent/administer-projects-rc1 _pfok 1
+  pf_perms=delete; _pfr pfagdel --preflight --as agent --conf "$f7conf"
+  _pfv agent/delete-issues-fails _pfx permissions FAIL "the agent credential can delete issues; remove Delete from its project role - JIRA-SETUP §5b"
+  _pfv agent/delete-issues-rc1 _pfok 1
+  pf_perms='all-held'; _pfr pfagall --preflight --as agent --conf "$f7conf"
+  _pfv agent/all-held-names-admin-keys _pfl permissions FAIL "the agent credential holds ADMINISTER, SYSTEM_ADMIN, ADMINISTER_PROJECTS; lanes must run as a dedicated agent account (Member, no admin) - JIRA-SETUP §5b"
+  _pfv agent/all-held-names-delete-too _pfl permissions FAIL "the agent credential can delete issues; remove Delete from its project role - JIRA-SETUP §5b"
+  _pfv agent/all-held-is-one-permissions-line _pfn permissions 1
+  pf_perms='agent-missing'; _pfr pfagmiss --preflight --as agent --conf "$f7conf"
+  _pfv agent/floor-missing-fails _pfx permissions FAIL "missing CREATE_ISSUES, TRANSITION_ISSUES; the project admin grants them (Project settings → Access, or the permission scheme)"
+  pf_perms='global-unknown'; _pfr pfagunk --preflight --as agent --conf "$f7conf"
+  _pfv agent/global-keys-unreadable-is-unverified _pfx permissions UNVERIFIED "could not read whether the agent credential holds admin or delete permissions, or a needed permission"
+  _pfv agent/global-keys-unreadable-rc2 _pfok 2
+  pf_perms=all-yes; _pfr pfagsix --preflight --as agent --conf "$f7conf"
+  _pfv agent/project-admin-in-the-old-six-key-shape-fails _pfl permissions FAIL "the agent credential holds ADMINISTER_PROJECTS;"
+  # --- SWAS-117 D4: the identity line. dev and agent print the gated name and id; a hostile name prints the reason, never the
+  # value; the email is never printed; an unreadable identity is INFO and never changes the verdict. ---
+  pf_whoami='raw-hostile'; _pfr pfwhohost --preflight --conf "$f7conf"
+  _pfv identity/hostile-name-prints-the-reason-not-the-value _pfx identity INFO "? (outside the printable set) · 712020:0a1b2c3d-0000-4000-8000-0000000000aa"
+  _pfv identity/hostile-name-never-echoed _pfnot ZQHOSTILE
+  _pfv identity/the-email-is-never-printed _pfnot WHOAMI-EMAIL-MARKER
+  pf_whoami='name-hostile'; _pfr pfwhonm --preflight --conf "$f7conf"
+  _pfv identity/adapter-gated-name-renders-the-reason _pfx identity INFO "? (outside the printable set) · 712020:0a1b2c3d-0000-4000-8000-0000000000aa"
+  pf_whoami='id-bad'; _pfr pfwhoidbad --preflight --conf "$f7conf"
+  _pfv identity/adapter-gated-id-is-unreadable-info _pfx identity INFO "the account behind this credential could not be read"
+  pf_whoami='id-raw'; _pfr pfwhoid --preflight --conf "$f7conf"
+  _pfv identity/hostile-id-is-unreadable-info _pfx identity INFO "the account behind this credential could not be read"
+  _pfv identity/hostile-id-never-echoed _pfnot ZQHOSTILE
+  pf_whorc=2; _pfr pfwhofail --preflight --as agent --conf "$f7conf"
+  _pfv identity/unreadable-is-info _pfx identity INFO "the account behind this credential could not be read"
+  _pfv identity/unreadable-never-changes-the-verdict _pfok 0
   # --- project / claim-tier ---
   pf_proj=unknown; _pfr pfprojunk --preflight --conf "$f7conf"
   _pfv project-unknown/project-unverified _pfl project UNVERIFIED ""
@@ -1322,12 +1530,43 @@ EOF
   _pfu project-without-preflight --project AB
   _pfu as-without-preflight --as ci
   _pfu bad-role --preflight --as root --conf "$f7conf"
+  _pfu bad-role-case --preflight --as AGENT --conf "$f7conf"
+  _pfu bad-role-agentx --preflight --as agentx --conf "$f7conf"
+  _pfu agent-without-preflight --as agent
   _pfu base-without-project --preflight --base https://ex.atlassian.net
   _pfu project-without-base --preflight --project AB --conf "$f7conf"
   _pfu base-with-conf --preflight --base https://ex.atlassian.net --project AB --conf "$f7conf"
   _pfu with-deep --preflight --deep --conf "$f7conf"
   _pfu with-fields --preflight --fields --conf "$f7conf"
   _pfu with-discover --preflight --discover --conf "$f7conf"
+  # --- SWAS-101: the stored-credential presence question. The fake tree gets a copy of the library whose store binary
+  # is a stub (a sed on the copy, never the environment). With an empty environment, a present item lets the preflight
+  # go live and the stub argv never carries -w (this file only asks, the adapter alone reads the secret); an absent
+  # item stays UNVERIFIED (rc 2, adapter never invoked) and names the Keychain recipe. ---
+  _crd="$tmpd/credstub"
+  mkdir -p "$_crd"
+  {
+    printf '#!/bin/sh\nd=%s\n' "$_crd"
+    cat <<'CSTUB'
+printf '%s\n' "$*" >> "$d/log"
+rc=$(cat "$d/rc")
+if [ "$rc" = 0 ]; then printf '    "acct"\074blob\076="stored@example.com"\n'; fi
+exit "$rc"
+CSTUB
+  } > "$_crd/security"
+  chmod +x "$_crd/security"
+  sed -e "s|^_TCR_SEC_BIN=.*|_TCR_SEC_BIN=$_crd/security|" "$_TC_ROOT/scripts/tracker-cred.sh" > "$fadir/scripts/tracker-cred.sh"
+  _pfcrd_once() { [ "$(wc -l < "$_crd/log" | tr -d ' ')" = 1 ] && ! grep -qF -- '-w' "$_crd/log"; }
+  printf '0' > "$_crd/rc"; : > "$_crd/log"
+  pf_nocreds=1; _pfr pfstore --preflight --conf "$f7conf"
+  _pfv store/present-goes-live-not-unverified [ "$_pfrc" != 2 ]
+  _pfv store/present-one-attribute-call-no-w _pfcrd_once
+  _pfv store/present-adapter-invoked [ -s "$faargv" ]
+  printf '44' > "$_crd/rc"; : > "$_crd/log"
+  pf_nocreds=1; _pfr pfstoreabsent --preflight --conf "$f7conf"
+  _pfv store/absent-unverified-rc2 _pfok 2
+  _pfv store/absent-names-the-recipe _pfhas "section 5b"
+  _pfv store/absent-adapter-never-invoked _pfsilent
   pf_nocreds=1; _pfr pfnocreds --preflight --conf "$f7conf"
   _pfv no-credentials/unverified-rc2 _pfok 2
   _pfv no-credentials/stamp-sentence _pfhas "UNVERIFIED: stamp"
@@ -1421,7 +1660,15 @@ JIRA_TOKEN=${KIT_TRACKER_TOKEN:-${JIRA_TOKEN:-}}
 
 # SD-7(a): this gate requires BOTH a user and a token even under auth=bearer (which only needs a
 # token) — a token-only bearer conf stays deliberately UNVERIFIED here, never auto-verified.
-if [ -n "$BASE" ] && [ -n "${JIRA_EMAIL:-}" ] && [ -n "${JIRA_TOKEN:-}" ]; then
+_TC_CRED_FOUND=0
+if [ -n "${JIRA_EMAIL:-}" ] && [ -n "${JIRA_TOKEN:-}" ]; then
+  _TC_CRED_FOUND=1
+elif [ -n "$BASE" ] && command -v tracker_cred_available >/dev/null 2>&1; then
+  # SWAS-101: no usable environment pair. A stored Keychain item counts only when the environment holds
+  # nothing at all (the environment wins as a pair, so a half-set environment stays UNVERIFIED, SD-7a).
+  if tracker_cred_available "$BASE" && [ "${TRACKER_CRED_SOURCE:-}" = keychain ]; then _TC_CRED_FOUND=1; fi
+fi
+if [ -n "$BASE" ] && [ "$_TC_CRED_FOUND" -eq 1 ]; then
   # SD-3: KIT_TRACKER_AUTH is read from the PINNED CONF only, on the live path — never inherited
   # from the ambient environment (an unpinned KIT_TRACKER_AUTH could silently downgrade/upgrade the
   # auth scheme underneath a verified conf). Absent `auth=` in the conf -> basic.
@@ -1459,5 +1706,7 @@ if [ -n "$BASE" ] && [ -n "${JIRA_EMAIL:-}" ] && [ -n "${JIRA_TOKEN:-}" ]; then
 else
   echo "UNVERIFIED: stamp $_TC_CONF_SHOWN (base_url comes ONLY from the pinned conf — see JIRA-SETUP.md) and set KIT_TRACKER_USER + KIT_TRACKER_TOKEN (or legacy JIRA_EMAIL/JIRA_TOKEN) to verify a live Jira (exit 2, not a pass)."
   echo "  Configure per JIRA-SETUP.md; this is the kit's honest 'cannot run != pass' (conformance/README.md)."
+  [ -z "${TRACKER_CRED_WHY:-}" ] || echo "  tracker credential: $TRACKER_CRED_WHY"
+  echo "  Or store a token once in your login Keychain (macOS): templates/JIRA-SETUP-TEMPLATE.md section 5b."
   exit 2
 fi

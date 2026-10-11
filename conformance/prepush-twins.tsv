@@ -81,7 +81,7 @@ verify	exclude	grep -cE '^check .*--kitself( |$)' conformance/verify.sh				A gre
 verify	exclude	conformance/verify.sh — the registry did not parse				The path appears inside an echo, not a command.
 verify-enforced-wired	exclude	out=$(sh conformance/verify-enforced-wired.sh)				Runs inside the brownfield artifact (cd-prefixed block), in a command substitution.
 repo-ownership	exclude	sh conformance/repo-ownership.sh --kit-root				Judges the EXPORTED artifact built by the preceding line of the same block; the plain invocation of this check derives.
-backlog-presence	exclude	--branch "$HEAD_REF" --claims 2>&1				The no-base-board fallback branch of the same CI step; the twin row above covers the graded shape.
+backlog-presence	exclude	--branch "$HEAD_REF" --base-dir "$GITHUB_WORKSPACE/.kit-base" --live-contexts /tmp/live-contexts --claims 2>&1				The no-base-board fallback branch of the same CI step; the twin row above covers the graded shape.
 ceremony-binding	exclude	ceremony-binding.sh --render --scope				Renders the PR summary into $GITHUB_STEP_SUMMARY; the twin row above covers the gate itself.
 review-lane	exclude	grep -q -- '--pr)' conformance/review-lane.sh				A grep on the SCRIPT FILE (a base-tree capability probe), not an invocation.
 review-lane	exclude	grep -v '^[[:space:]]*#' conformance/review-lane.sh				A grep on the SCRIPT FILE (a base-tree capability probe), not an invocation.

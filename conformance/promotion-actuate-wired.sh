@@ -1046,12 +1046,12 @@ AWK
   else
     fail "L5: rc=$RC lines=$(printf '%s\n' "$N5" | wc -l | tr -d ' ') note=[$N5] trace=[$TR5]"
   fi
-  if ( cd "$DL5" && sh "$VERIFY" record --no-push --approved-sha "$XL5" --approved-by "Reviewer B" --go-by "Bradley James" \
+  if ( cd "$DL5" && sh "$VERIFY" record --no-push --approved-sha "$XL5" --approved-by "Reviewer B" --go-by "Owner Fixture" \
          --gate release-candidate --rung "Release candidate" --class Ordinary --scope "branch/l5" --token "GO" >/dev/null 2>&1 ) \
-     && [ "$(_note_of "$DL5" "$XL5" | sed -n '5p')" = 'go-by: Bradley James [self-asserted]' ]; then
-    pass "L5b: record --go-by 'Bradley James' -> line 5 'go-by: Bradley James [self-asserted]' (a FIXED literal label)"
+     && [ "$(_note_of "$DL5" "$XL5" | sed -n '5p')" = 'go-by: Owner Fixture [self-asserted]' ]; then
+    pass "L5b: record --go-by 'Owner Fixture' -> line 5 'go-by: Owner Fixture [self-asserted]' (a FIXED literal label)"
   else
-    fail "L5b: --go-by did not record 'go-by: Bradley James [self-asserted]': note=[$(_note_of "$DL5" "$XL5")]"
+    fail "L5b: --go-by did not record 'go-by: Owner Fixture [self-asserted]': note=[$(_note_of "$DL5" "$XL5")]"
   fi
   rm -rf "$DL5" "$GL5" 2>/dev/null || true
 

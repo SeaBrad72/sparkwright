@@ -1056,14 +1056,14 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   echo "--- (s) gate-provenance repo-class: not deployable -> N/A regardless of privacy ---"
   d=$(st_mkfix s claude-code); st_install_hook "$d"; st_gh "$d"; st_bpstub "$d" 0
   # TBG-TRUSTED-JOB fix round: the cloned fixture template inherits the KIT's OWN tree, which now
-  # carries .github/workflows/tracker-live.yml — a kit-only, export-ignored workflow (never shipped
-  # to an adopter) whose `environment: tracker-live` job makes wf_is_deploy() true. A "NOT
+  # carries .github/workflows/tracker-live.yml AND adopter-tracker-gates.yml (its installed copy) —
+  # kit-only, export-ignored workflows whose `environment: tracker-live` jobs make wf_is_deploy() true. A "NOT
   # deployable" fixture must genuinely have no deploy surface; strip it here (the ONE leg in this
   # file that asserts non-deployability — every other gate-provenance leg adds its own Dockerfile
   # and is deployable on purpose). drift-watch.yml/golden-path.yml are ALSO kit-only/export-ignored
   # but wf_is_deploy() does not read either as a deploy trigger (unaffected; this leg passed on
   # `main` before tracker-live.yml existed).
-  rm -f "$d/.github/workflows/tracker-live.yml"
+  rm -f "$d/.github/workflows/tracker-live.yml" "$d/.github/workflows/adopter-tracker-gates.yml"
   _id_mkdisp_apply "$d"
   OUT=$( ( INCEPTION_DONE_GH_CMD="$_priv_stub" MODE=strict run_gate "$d" ) 2>&1 ); RC=$?
   st_has "N/A: gate-provenance repo-class"

@@ -68,8 +68,8 @@ agent should explain or derive them, not surface them as unexplained required in
 
 - **Intent owner** (`--intent-owner`) — *the human who accepts the outcome and signs off on the project's
   "why."* For a certification/field test it is whoever accepts the result; for a product it is the sponsor.
-  Derive it from the charter's owner. A VCS `@handle` (e.g. `@seabrad72`) additionally seeds an active
-  CODEOWNERS rule; a plain name (`Bradley James`) does not (it is free text — see the CODEOWNERS handling in
+  Derive it from the charter's owner. A VCS `@handle` (e.g. `@owner-login`) additionally seeds an active
+  CODEOWNERS rule; a plain name (`Owner Fixture`) does not (it is free text — see the CODEOWNERS handling in
   `scripts/incept.sh`). When it is genuinely unknown, ask **once** — don't turn a lookup into a blocker.
 - **Representative real change** — *a small, real, tested change that exercises the full loop* (branch → PR →
   gates → merge), used to prove the emitted gates actually enforce (the "adopter operates" evidence, AC5).

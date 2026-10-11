@@ -55,7 +55,10 @@ case "$4" in
   # ($FA_PF_<X>, a file; default = the all-good fixture) and exit $FA_PF_<X>_RC when that is set.
   probe) [ -z "${FA_PF_PROBE_RC:-}" ] || exit "$FA_PF_PROBE_RC"; cat "${FA_PF_PROBE:-$FA_FXDIR/contract-pf-probe-ok.txt}" ;;
   server-info) [ -z "${FA_PF_SERVER_RC:-}" ] || exit "$FA_PF_SERVER_RC"; cat "${FA_PF_SERVER:-$FA_FXDIR/contract-pf-server-cloud.txt}" ;;
-  perms) [ -z "${FA_PF_PERMS_RC:-}" ] || exit "$FA_PF_PERMS_RC"; cat "${FA_PF_PERMS:-$FA_FXDIR/contract-pf-perms-all-yes.txt}" ;;
+  # SWAS-117: perms answers the NINE keys (the six, then ADMINISTER, SYSTEM_ADMIN, DELETE_ISSUES); the default shape is a clean
+  # non-admin working account, so the default role's card is the same as before. `whoami` answers the identity read.
+  perms) [ -z "${FA_PF_PERMS_RC:-}" ] || exit "$FA_PF_PERMS_RC"; cat "${FA_PF_PERMS:-$FA_FXDIR/contract-pf-perms-agent-clean.txt}" ;;
+  whoami) [ -z "${FA_PF_WHOAMI_RC:-}" ] || exit "$FA_PF_WHOAMI_RC"; cat "${FA_PF_WHOAMI:-$FA_FXDIR/contract-pf-whoami-ok.txt}" ;;
   visibility) [ -z "${FA_PF_VIS_RC:-}" ] || exit "$FA_PF_VIS_RC"; cat "${FA_PF_VIS:-$FA_FXDIR/contract-pf-vis-equal.txt}" ;;
   epic-model) [ -z "${FA_PF_EPIC_RC:-}" ] || exit "$FA_PF_EPIC_RC"; cat "${FA_PF_EPIC:-$FA_FXDIR/contract-pf-epic-parent.txt}" ;;
   # a site-wide read does not exist in the real adapter; a leg offers one anyway to prove the contract never asks

@@ -999,6 +999,19 @@ check_dir() {
       bc_tracker_ready "${_BC_HEAD:-}" || _bc_trc=$?
       return "$_bc_trc"
     fi
+    # KIT-TREE-BOARD-SWITCH D10: a jira tree with a VALID .kit/tracker.conf and NO reader record is the PR tree, where
+    # this gate is not run as a merge gate (adapters.md "Which gates bind"): the trusted job `tracker-board-gates`
+    # carries the record. Stand aside. This is the removal of a redundant red, not a control: the sentence asserts no
+    # binding it has not checked (it binds only where tracker-board-gates is a required context, and backlog-presence
+    # and loop-state verify that live). An invalid or missing conf, an UNFILLED incept stamp (a placeholder base_url on
+    # the .invalid TLD, R-3), or any other tracker token, falls through to the NOT ENFORCED verdict below, unchanged.
+    _bc_host=$(sed -n 's/^base_url=//p' "$_dir/.kit/tracker.conf" 2>/dev/null | head -n 1 | sed 's,^[A-Za-z]*://,,; s,[/:?#].*$,,; s,\.*$,,' | tr 'A-Z' 'a-z')
+    case "$_bc_host" in *.invalid) _bc_stamp=1 ;; *) _bc_stamp=0 ;; esac
+    if [ "$_tok" = "jira" ] && [ "$_bc_stamp" = 0 ] && [ -f "$_dir/.kit/tracker.conf" ] && [ -f "$(dirname "$0")/../scripts/tracker-conf.sh" ] \
+      && sh "$(dirname "$0")/../scripts/tracker-conf.sh" "$_dir/.kit/tracker.conf" >/dev/null 2>&1; then
+      echo "N/A: $_dir — backend 'jira' with a valid .kit/tracker.conf and no reader record; the trusted job tracker-board-gates carries the record and binds only where tracker-board-gates is a required context (backlog-presence and loop-state verify that live) — skipping"
+      return 0
+    fi
     _bc_ne=0
     not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" || _bc_ne=$?
     return "$_bc_ne"
@@ -1161,6 +1174,32 @@ selftest() {
     > "$d/WAIVER-REGISTER.md"
   assert_msg_rc "$d" "NOT ENFORCED: backend 'jira' — board-bound governance is not verified on this tree" 3 \
     "nonmd/stamp: the UNFILLED incept stamp -> still rc 3"
+
+  # D10 (KIT-TREE-BOARD-SWITCH): a jira tree with a VALID .kit/tracker.conf and no reader record stands aside (N/A,
+  # rc 0, naming tracker-board-gates). The leg asserts rc 0 AND the context name, so removing the stand-aside branch
+  # turns it red: that tree then returns the rc-3 NOT ENFORCED sentence, which carries neither. Invalid conf and
+  # a non-jira token stay rc 3; md is unchanged (the md legs above and below).
+  unset KIT_TRACKER_RECORD
+  d="$base/t_d10_valid"; mkdir -p "$d/.kit"; _claude_md 'jira' "$d/CLAUDE.md"
+  printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nflavour=cloud\nauth=basic\nproject=AB\nlist_cap=200\n' > "$d/.kit/tracker.conf"
+  assert_msg_rc "$d" "binds only where tracker-board-gates is a required context" 0 \
+    "d10/valid: jira + a valid tracker.conf + no record -> N/A naming tracker-board-gates, rc 0"
+  # R-3: the conf `incept --backlog jira` stamps (a base_url on the .invalid TLD) is an UNFILLED stamp and buys nothing
+  d="$base/t_d10_stamp"; mkdir -p "$d/.kit"; _claude_md 'jira' "$d/CLAUDE.md"
+  printf 'version=1\nbackend=jira\nbase_url=https://your-site.example.invalid\nflavour=cloud\nauth=basic\nproject=AB\nlist_cap=200\n' > "$d/.kit/tracker.conf"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'jira'" 3 \
+    "d10/unfilled-stamp: jira + a valid-shaped tracker.conf whose base_url host ends in .invalid + no record -> still rc 3"
+  d="$base/t_d10_invalid"; mkdir -p "$d/.kit"; _claude_md 'jira' "$d/CLAUDE.md"
+  printf 'version=1\nbackend=jira\nbase_url=http://ex.atlassian.net\nproject=AB\n' > "$d/.kit/tracker.conf"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'jira'" 3 \
+    "d10/invalid: jira + an invalid tracker.conf (http, not https) + no record -> still rc 3"
+  d="$base/t_d10_github"; mkdir -p "$d/.kit"; _claude_md 'github' "$d/CLAUDE.md"
+  cp "$base/t_d10_valid/.kit/tracker.conf" "$d/.kit/tracker.conf"
+  assert_msg_rc "$d" "NOT ENFORCED: backend 'github'" 3 \
+    "d10/adapterless: a declared tracker with no adapter keeps rc 3 even with a valid conf"
+  d="$base/t_d10_md"; mkdir -p "$d/.kit"; _claude_md 'md' "$d/CLAUDE.md"; _good_board "$d/BACKLOG.md"
+  cp "$base/t_d10_valid/.kit/tracker.conf" "$d/.kit/tracker.conf"
+  assert_ok "$d" "d10/md: an md tree is graded as before, a tracker.conf beside it changes nothing"
 
   # The ANNOTATED forms still RESOLVE to the right token — the property these legs were always
   # about — and now land on the NOT ENFORCED verdict rather than an N/A.
@@ -3800,12 +3839,15 @@ EOF9WC
   # --- L7 (H-4, fix1 R5 — quality 8): KIT_TRACKER_RECORD unset -> today's rc3 NOT ENFORCED path,
   # BYTES compared (cmp) against a direct not_enforced_notice call — a substring cannot see stray
   # extra bytes on either side.
+  # D10 moved the VALID-conf case to an N/A, so the root here has NO tracker.conf (the path D10 leaves unchanged).
   unset KIT_TRACKER_RECORD
   _BC_HEAD=""
+  _t9_l7root="$base/t9_l7"; mkdir -p "$_t9_l7root"
+  printf -- '- **Backlog backend**: Jira\n' > "$_t9_l7root/CLAUDE.md"
   _t9grc=0
-  check_dir "$_t9_l0root" >"$_t9_l0root/gate-unset.out" 2>"$_t9_l0root/gate-unset.err" || _t9grc=$?
+  check_dir "$_t9_l7root" >"$_t9_l0root/gate-unset.out" 2>"$_t9_l0root/gate-unset.err" || _t9grc=$?
   _t9_l7drc=0
-  not_enforced_notice jira "$_t9_l0root" "$(dirname "$0")/waivers-valid.sh" >"$_t9_l0root/gate-unset-direct.out" 2>&1 || _t9_l7drc=$?
+  not_enforced_notice jira "$_t9_l7root" "$(dirname "$0")/waivers-valid.sh" >"$_t9_l0root/gate-unset-direct.out" 2>&1 || _t9_l7drc=$?
   if [ "$_t9grc" -eq 3 ] && [ "$_t9_l7drc" -eq 3 ] && cmp -s "$_t9_l0root/gate-unset.out" "$_t9_l0root/gate-unset-direct.out"; then
     echo "selftest PASS: T9/L7 (H-4, fix1 R5): KIT_TRACKER_RECORD unset -> today's rc3 NOT ENFORCED sentence, byte-identical (cmp) to a direct not_enforced_notice call"
   else

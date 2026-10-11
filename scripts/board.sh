@@ -8,7 +8,13 @@
 #   sh scripts/board.sh release <ROW-ID> [--stale]
 #   sh scripts/board.sh move    <ROW-ID> <state>
 #   sh scripts/board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>]
-#                               [--parent <KEY>] [--description <text>] [--label <name>]... [--field <token>=<value>]...
+#                               [--parent <KEY>] [--description <text>] [--metric <text>] [--label <name>]... [--field <token>=<value>]...
+#   sh scripts/board.sh comment <KEY> --from-record docs/reviews/<name>.md [--dry-run]
+#   sh scripts/board.sh rank    KEY (--top | --before KEY | --after KEY) [--dry-run]
+#   sh scripts/board.sh list    [--limit N]
+#   sh scripts/board.sh show    <KEY> [--comments <n>]
+#   sh scripts/board.sh edit    <KEY> [--title <t> | --title-file <path>] [--description-file <path>] [--metric-file <path>] [--size <s>] [--risk <r>]
+#                               [--label-add <l>]... [--label-remove <l>]... [--parent <KEY>] [--dry-run]
 #   sh scripts/board.sh migrate --from <board.md> --plan <plan.tsv> [--dry-run | --freeze --date <D>] ...  (scripts/board-migrate.sh)
 #   sh scripts/board.sh --selftest
 #
@@ -22,6 +28,30 @@
 #   Risk go through the SAME `field.size`/`field.risk` mapping the readers use (customfield_N select/string,
 #   or label:<prefix>), checked against that type's create-meta BEFORE any POST. Acceptance criteria ride
 #   `--description`: `create` writes no separate `field.acceptance` custom field (fill that by hand).
+#   The Success metric rides `--metric <text>`: it is written to the conf's `field.metric` (a customfield_N paragraph
+#   field: ADF on Cloud, a plain string on Data Center) and proven present by the post-read. `--metric` with
+#   `field.metric` unmapped is refused before any POST, naming the conf line to add.
+# `comment <KEY> --from-record docs/reviews/<name>.md` posts one comment on a card through the adapter (the text rides
+#   stdin, never argv) and reads it back by id. The verb builds the body (the agent supplies no free text): the record's
+#   FIRST line (1..300 bytes, printable, a non-blank byte), then `Record: <path>`. The record must be a tracked regular
+#   file with no symlink in its path. On `md` it refuses (the retro rides the PR). `--dry-run` validates and prints what
+#   it would post, with no adapter call and no credentials.
+# `rank KEY (--top | --before KEY | --after KEY)` moves a card in the tracker's Rank order (adapter `rank`, Jira Software's
+#   agile endpoint; the account needs the Schedule Issues permission). KEY and any anchor must be OPEN cards (pre-read via
+#   `list-ranked`); success is reported only when a post-read shows the new order, else UNPROVEN (rc 2). `--top` on a card
+#   already first writes nothing. `--dry-run` runs every check and the pre-read, then prints the PUT it would make.
+#   `list [--limit N]` prints the open cards, KEY and status, in rank order. Both refuse on md (its order is the Order line).
+# `show <KEY>` reads one whole card (read-only, one request); its text is untrusted, so the adapter sanitises every printed
+#   byte, frames the description and comments as data and caps the output. `edit <KEY>` changes only the fields named (summary,
+#   description, Size, Risk, labels as add/remove deltas, parent) through the adapter's allowlisted `edit` (the adapter allows
+#   exactly the Size, Risk and Metric ids it is GIVEN on argv; THIS file supplies the conf's field.size, field.risk and field.metric), and PROVES each by a
+#   get-fields post-read; it never touches state, assignee or rank. `--description-file <path>` (create and edit) is the form for
+#   text the guard's scan cannot judge: contained to the repo root and $TMPDIR, no dot-leading component, no symlink, valid
+#   UTF-8, no key or token shape (bd_tf_load). Design: docs/architecture/2026-10-09-board-edit-show-verb-design.md.
+#   BOARD-TEXT-FILE-FORMS (design 2026-10-10): the same loader serves `--title-file` (create and edit; exactly one line of the
+#   inline --title grammar) and `--metric-file` (create and edit). `create` refuses --title with --title-file and --metric
+#   with --metric-file. `edit --metric-file` is the only edit form for the Success metric: it writes the conf's field.metric
+#   (the adapter allows that id because THIS file hands it over on argv) and the post-read proves it `present <bytes>`.
 #
 # `release --stale` on a TRACKER backend (today: jira) is the merged-PR close: with a claim ref held its proof is a merged
 #   PR (release-ref's P2), so the card ends at `state.done` (not `state.ready`), and the ref is deleted after the transition
@@ -84,13 +114,23 @@ bd_usage() {
   echo "  board.sh claim   <ROW-ID> [--branch <name>]" >&2
   echo "  board.sh release <ROW-ID> [--stale]   (on a tracker, --stale = close after the merge: card ends Done; plain release ends Ready; no claim ref = UNPROVEN)" >&2
   echo "  board.sh move    <ROW-ID> <state>" >&2
-  echo "  board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>] [--parent <KEY>] [--description <text>]" >&2
+  echo "  board.sh create  --title <text> [--size <s>] [--risk <r>] [--type <issuetype>] [--parent <KEY>] [--description <text>] [--metric <text>]" >&2
+  echo "                   (--title-file <path> / --metric-file <path> replace --title / --metric: one line of the title grammar; the metric as a description file)" >&2
   echo "                   [--label <name>]...   (repeatable, at most 10; each [A-Za-z0-9_.:-]{1,64}; appended to the card's labels)" >&2
   echo "                   [--field <token>=<value>]...   (repeatable: the value of a field the project REQUIRES; the token is" >&2
   echo "                    tracker-conf.sh's create.<token> grammar; \`sh conformance/tracker-contract.sh --fields\` lists them)" >&2
   echo "                   (acceptance criteria ride --description; no separate field.acceptance is written;" >&2
   echo "                    a select --size/--risk must be one of the type's allowed values, matched case-insensitively," >&2
   echo "                    printable ASCII only; a free value is [A-Za-z0-9 _.-]{1,64}; a label value [A-Za-z0-9_-]{1,32})" >&2
+  echo "  board.sh comment <KEY> --from-record docs/reviews/<name>.md [--dry-run]   (one comment on a card: the record's first line + its path; on md it refuses)" >&2
+  echo "  board.sh rank    KEY (--top | --before KEY | --after KEY) [--dry-run]   (move a card in the tracker's rank order; proven by a post-read; on md it refuses)" >&2
+  echo "  board.sh list    [--limit N]   (the open cards in rank order, KEY and status; on md it refuses)" >&2
+  echo "  board.sh show    <KEY> [--comments <n>]   (one whole card, read-only: header lines, the description and the last n comments (default 3, max 10), the text sanitised and framed as data)" >&2
+  echo "  board.sh edit    <KEY> [--title <t> | --title-file <path>] [--description-file <path>] [--metric-file <path>] [--size <s>] [--risk <r>] [--label-add <l>]... [--label-remove <l>]... [--parent <KEY>] [--dry-run]" >&2
+  echo "                   (changes only those fields, proven by a post-read; --description-file / --metric-file REPLACE the whole text (no inline edit --metric); --title is 1..255 printable ASCII;" >&2
+  echo "                    --size/--risk are matched against the card's editmeta; labels are add/remove deltas; --parent must be in this project; --dry-run makes no request)" >&2
+  echo "  board.sh create ... also takes --description-file <path> in place of --description (a regular non-symlink file of 1..32000 bytes under the repo root or \$TMPDIR," >&2
+  echo "                    no dot-leading path component, valid UTF-8, no key or token shape; the sanctioned form for text with < | ; \$ ' or a control-plane file name)" >&2
   echo "  board.sh migrate --from <board.md> --plan <plan.tsv> [--ledger <path>] [--screen <file>] [--date <YYYY-MM-DD>] [--dry-run]" >&2
   echo "                   (moves a markdown board's open rows INTO the declared tracker through \`create\`; add --freeze --date <D> to freeze the file;" >&2
   echo "                    see scripts/board-migrate.sh and docs/work-tracking/adapters.md 'Moving an existing board')" >&2
@@ -168,6 +208,13 @@ bd_tracker_ctx() {
   if [ -z "$_btbase" ] || [ -z "$_btproject" ]; then
     echo "board.sh: .kit/tracker.conf is missing base_url and/or project — cannot write to the tracker." >&2
     return 1
+  fi
+  # SWAS-101 (H1): the auth kind comes from the conf (default basic) unless the caller already set it, so a Data
+  # Center bearer user needs no export. The adapter reads KIT_TRACKER_AUTH; the credential itself is resolved there.
+  if [ -z "${KIT_TRACKER_AUTH:-}" ]; then
+    KIT_TRACKER_AUTH=$(bd_tc_get auth)
+    [ -n "$KIT_TRACKER_AUTH" ] || KIT_TRACKER_AUTH=basic
+    export KIT_TRACKER_AUTH
   fi
   return 0
 }
@@ -314,7 +361,11 @@ bd_release_jira_stale() {
       echo "board release: UNPROVEN — no claim ref on '$_row', so no merged-PR proof was checked; moving to '$_target' on the caller's word." >&2
       if [ "$_already" != 1 ]; then
         if ! bd_transition "$_row" "$_target"; then
-          [ "$_tr_rc" -eq 5 ] || echo "board release: the tracker transition to '$_target' failed or was refused." >&2
+          case "$_tr_rc" in
+            5) : ;;
+            6) if [ "$_tr_anon" -eq 1 ]; then echo "board release: the tracker rejected the credential but served the transition anonymously - the card may have moved; check with board show $_row" >&2; else bd_rejected release; fi ;;
+            *) echo "board release: the tracker transition to '$_target' failed or was refused." >&2 ;;
+          esac
           return 1
         fi
       fi
@@ -340,10 +391,28 @@ bd_state_ok() {
 # claim/release need no twin: their transition runs under board-claim.sh's `--then`, whose stderr is not captured.
 bd_transition() {
   _tr_errf=$(mktemp) || { echo "board: could not create a scratch file." >&2; _tr_rc=1; return 1; }
-  _tr_rc=0
+  _tr_rc=0; _tr_anon=0
   sh "$BD_JIRA_SH" transition "$_btbase" "$_btflavour" "$_btproject" "$1" "$2" 2>"$_tr_errf" || _tr_rc=$?
+  if bd_anon_wrote "$_tr_errf"; then _tr_anon=1; fi
   cat "$_tr_errf" >&2; rm -f "$_tr_errf"
   [ "$_tr_rc" -eq 0 ]
+}
+
+# bd_anon_wrote <errfile>: 0 when the adapter's rc-6 sentence in <errfile> carries its suffix "(the write may have applied
+# anonymously)": Jira answered a WRITE with a 2xx but served it to an unauthenticated user, so on a project that allows anonymous
+# writes the change may exist (SWAS-113 S-L1). Only that suffix decides it; nothing else of the file is read.
+bd_anon_wrote() {
+  grep -qF '(the write may have applied anonymously)' "$1" 2>/dev/null
+}
+
+# bd_rejected <verb> [<detail>]: the adapter answered rc 6 - Jira did not accept the credential (the response was served
+# anonymously, or the login was refused; SWAS-113). The request was refused before it could change anything, so this is never
+# "may have applied" UNLESS the adapter's sentence carries the anonymous-write suffix (a 2xx served to a write): the callers
+# test bd_anon_wrote first and use their own may-have-applied wording. The sentence names the cure. <detail> is the adapter's sentence when it was captured, else it is above.
+bd_rejected() {
+  _rj_where=" (the adapter's sentence is above)"
+  [ -z "${2:-}" ] || _rj_where=" - $2"
+  echo "board $1: the tracker rejected the credential${_rj_where}; nothing was changed." >&2
 }
 
 do_move() {
@@ -363,7 +432,11 @@ do_move() {
       if ! bd_transition "$_row" "$_target"; then
         # rc 5 = the adapter DIAGNOSED the refusal (its fixed sentence, already shown above, names the
         # screen fields); any other failure keeps the generic line.
-        [ "$_tr_rc" -eq 5 ] || echo "board move: the tracker transition to '$_target' failed or was refused." >&2
+        case "$_tr_rc" in
+          5) : ;;
+          6) if [ "$_tr_anon" -eq 1 ]; then echo "board move: the tracker rejected the credential but served the transition anonymously - the card may have moved; check with board show $_row" >&2; else bd_rejected move; fi ;;
+          *) echo "board move: the tracker transition to '$_target' failed or was refused." >&2 ;;
+        esac
         return 1
       fi
       _post=$(sh "$BD_JIRA_SH" get-issue "$_btbase" "$_btflavour" "$_btproject" "$_row" 2>&1) || {
@@ -431,22 +504,36 @@ bd_cr_wrong_screen() {
 # bd_cr_custom <name> <customfield_N> <value>: a select (option) is written {"value": <canonical allowed
 # value>} (case-insensitive match, so `low` becomes `Low`); a string as-is; any other schema type refused.
 bd_cr_custom() {
-  _cu_line=$(printf '%s\n' "$_cm" | awk -F'\t' -v f="$2" '$2 == f { print; exit }')
-  [ -n "$_cu_line" ] || { bd_cr_wrong_screen "$1" "$2"; return 2; }
-  bd_val_ok "$3" 'A-Za-z0-9 _.-' 64 || { echo "board create: --$1 must match [A-Za-z0-9 _.-]{1,64}." >&2; return 2; }
+  bd_cu_value create "$1" "$2" "$3" || return $?
+  case "$_cu_schema" in
+    option) _frag=$(printf '%s' "$_frag" | jq -c --arg id "$2" --arg v "$_cu_val" '. + {($id): {value: $v}}') ;;
+    *)      _frag=$(printf '%s' "$_frag" | jq -c --arg id "$2" --arg v "$_cu_val" '. + {($id): $v}') ;;
+  esac
+  bd_cr_note "$2" "$_cu_val"
+}
+
+# bd_cu_value <verb> <name> <customfield_N> <value>: the ONE select/string resolver, shared by `create` (against the
+# type's create-meta) and `edit` (against the card's editmeta) - both hand it the meta lines in $_cm (column 2 the field
+# id, 3 the schema type, 5 the `|`-joined allowed values). Sets $_cu_schema (option|string) and $_cu_val (the canonical
+# allowed value for a select, matched case-insensitively). rc 2 with a sentence naming <verb> on any refusal.
+bd_cu_value() {
+  _cu_line=$(printf '%s\n' "$_cm" | awk -F'\t' -v f="$3" '$2 == f { print; exit }')
+  if [ -z "$_cu_line" ]; then
+    if [ "$1" = create ]; then bd_cr_wrong_screen "$2" "$3"; else echo "board $1: field.$2=$3 is not editable on this card (it is absent from the card's editmeta) - nothing was changed." >&2; fi
+    return 2
+  fi
+  bd_val_ok "$4" 'A-Za-z0-9 _.-' 64 || { echo "board $1: --$2 must match [A-Za-z0-9 _.-]{1,64}." >&2; return 2; }
   _cu_schema=$(printf '%s' "$_cu_line" | cut -f3)
   case "$_cu_schema" in
     option)
       _cu_allowed=$(printf '%s' "$_cu_line" | cut -f5)
-      _cu_val=$(printf '%s\n' "$_cu_allowed" | awk -F'|' -v v="$3" 'BEGIN { lv = tolower(v) } { for (i = 1; i <= NF; i++) if (tolower($i) == lv) { print $i; exit } }')
-      [ -n "$_cu_val" ] || { echo "board create: --$1 '$3' is not an allowed value of $2; allowed: $(printf '%s' "$_cu_allowed" | sed 's/|/, /g') (printable ASCII only)." >&2; return 2; }
-      _frag=$(printf '%s' "$_frag" | jq -c --arg id "$2" --arg v "$_cu_val" '. + {($id): {value: $v}}') ;;
-    string)
-      _cu_val=$3
-      _frag=$(printf '%s' "$_frag" | jq -c --arg id "$2" --arg v "$_cu_val" '. + {($id): $v}') ;;
-    *) echo "board create: field.$1=$2 has schema type '$_cu_schema'; board create writes only a select (option) or string field." >&2; return 2 ;;
+      _cu_val=$(printf '%s\n' "$_cu_allowed" | awk -F'|' -v v="$4" 'BEGIN { lv = tolower(v) } { for (i = 1; i <= NF; i++) if (tolower($i) == lv) { print $i; exit } }')
+      [ -n "$_cu_val" ] || { echo "board $1: --$2 '$4' is not an allowed value of $3; allowed: $(printf '%s' "$_cu_allowed" | sed 's/|/, /g') (printable ASCII only)." >&2; return 2; }
+      ;;
+    string) _cu_val=$4 ;;
+    *) echo "board $1: field.$2=$3 has schema type '$_cu_schema'; board $1 writes only a select (option) or string field." >&2; return 2 ;;
   esac
-  bd_cr_note "$2" "$_cu_val"
+  return 0
 }
 
 # bd_cr_label <name> <prefix> <value>: the label `<prefix>:<value>`, the value in the reader's own grammar.
@@ -482,6 +569,22 @@ bd_cr_desc() {
   bd_cr_has description || { echo "board create: issue type '$_type' has no description field on its create screen." >&2; return 2; }
   bd_cr_text "$_desc" || return 1
   _frag=$(printf '%s' "$_frag" | jq -c --argjson d "$_jv" '. + {description: $d}')
+}
+
+# bd_cr_metric: --metric, written to the conf's field.metric through the text shaper (ADF on Cloud, a plain string on
+# Data Center), only when that field is mapped to a customfield_N and is on the type's screen. Unmapped is refused
+# (never a silent drop), naming the conf line. The post-read proves the field is present (the text kind's proof).
+bd_cr_metric() {
+  [ -n "$_metric" ] || return 0
+  _mt_id=$(bd_tc_get field.metric)
+  case "$_mt_id" in
+    customfield_*) : ;;
+    *) echo "board create: --metric / --metric-file needs field.metric=customfield_N in .kit/tracker.conf (conf has '${_mt_id:-unset}') - add that line, or drop the metric; nothing was created." >&2; return 2 ;;
+  esac
+  bd_cr_has "$_mt_id" || { bd_cr_wrong_screen metric "$_mt_id"; return 2; }
+  bd_cr_text "$_metric" || return 1
+  _frag=$(printf '%s' "$_frag" | jq -c --arg id "$_mt_id" --argjson d "$_jv" '. + {($id): $d}')
+  bd_cr_present "$_mt_id"
 }
 
 # bd_cr_user_labels: the --label values, appended to .labels (any size:/risk: label is already there).
@@ -542,11 +645,12 @@ bd_cr_meta() {
   _cm_errf=$(mktemp) || { echo "board create: could not create a scratch file." >&2; return 1; }
   _cm_rc=0
   _cm=$(sh "$BD_JIRA_SH" create-meta "$_btbase" "$_btflavour" "$_btproject" "$_type" 2>"$_cm_errf") || _cm_rc=$?
-  _cm_err=$(tr -cd '\40-\176' < "$_cm_errf" | cut -c1-200); rm -f "$_cm_errf"
+  _cm_err=$(tr '\n' ' ' < "$_cm_errf" | tr -cd '\40-\176' | cut -c1-200); rm -f "$_cm_errf"
   case "$_cm_rc" in
     0) : ;;
     3) echo "board create: issue type '$_type' is not in project $_btproject (or the token lacks Create permission in this project) - set create.issuetype in .kit/tracker.conf (or pass --type) to one of its types; \`sh conformance/tracker-contract.sh --fields\` lists them." >&2; return 2 ;;
     4) echo "board create: issue type name '$_type' is ambiguous in project $_btproject (more than one type carries it) - rename one in Jira; nothing was created." >&2; return 2 ;;
+    6) bd_rejected create "${_cm_err:-the adapter reported the rejection}"; return 1 ;;
     *) echo "board create: could not read the create-meta of '$_type' - ${_cm_err:-unverified}; nothing was created." >&2; return 1 ;;
   esac
   _type_id=$(printf '%s\n' "$_cm" | awk -F'\t' '$1 == "#type-id" { print $2; exit }')
@@ -587,6 +691,7 @@ bd_cr_flag_for() {
     description) echo '--description <text>'; return 0 ;;
     parent)      echo '--parent <KEY>'; return 0 ;;
   esac
+  [ "$1" != "$(bd_tc_get field.metric)" ] || { echo '--metric <text>'; return 0; }
   [ "$1" != "$(bd_tc_get field.size)" ] || { echo '--size <s>'; return 0; }
   [ "$1" != "$(bd_tc_get field.risk)" ] || { echo '--risk <r>'; return 0; }
   return 0
@@ -754,7 +859,8 @@ bd_cr_required() {
   _rf_errf=$(mktemp) || { echo "board create: could not create a scratch file." >&2; return 1; }
   _rf_rc=0
   _rf=$(sh "$BD_JIRA_SH" required-fields "$_btbase" "$_btflavour" "$_btproject" "$_type" 2>"$_rf_errf") || _rf_rc=$?
-  _rf_err=$(tr -cd '\40-\176' < "$_rf_errf" | cut -c1-200); rm -f "$_rf_errf"
+  _rf_err=$(tr '\n' ' ' < "$_rf_errf" | tr -cd '\40-\176' | cut -c1-200); rm -f "$_rf_errf"
+  if [ "$_rf_rc" -eq 6 ]; then bd_rejected create "${_rf_err:-the adapter reported the rejection}"; return 1; fi
   [ "$_rf_rc" -eq 0 ] || { echo "board create: could not read the required fields of '$_type' - ${_rf_err:-unverified}; nothing was created." >&2; return 1; }
   _cr_defaults=$(sh "$BD_CONF_SH" get-prefix create. "$(bd_conf_path)" 2>/dev/null) || _cr_defaults=""
   _cr_missed=0
@@ -787,13 +893,25 @@ bd_create_jira() {
   bd_cr_field risk "$_risk" || return $?
   bd_cr_parent || return $?
   bd_cr_desc || return $?
+  bd_cr_metric || return $?
   bd_cr_user_labels || return $?
   bd_cr_required || return 1
   # created BY the numeric id create-meta resolved (never an ambiguous name); the fragment rides STDIN, not argv
-  _key=$(printf '%s' "$_frag" | sh "$BD_JIRA_SH" create "$_btbase" "$_btflavour" "$_btproject" "$_title" "$_type_id" -) || {
+  _cr_crc=0
+  _cr_errf=$(mktemp) || { echo "board create: could not create a scratch file." >&2; return 1; }
+  _key=$(printf '%s' "$_frag" | sh "$BD_JIRA_SH" create "$_btbase" "$_btflavour" "$_btproject" "$_title" "$_type_id" - 2>"$_cr_errf") || _cr_crc=$?
+  cat "$_cr_errf" >&2; _cr_anon=0
+  if bd_anon_wrote "$_cr_errf"; then _cr_anon=1; fi
+  rm -f "$_cr_errf"
+  if [ "$_cr_crc" -eq 6 ]; then
+    if [ "$_cr_anon" -eq 1 ]; then echo "board create: the tracker rejected the credential but served the create anonymously - a card may have been created; check the board before re-running." >&2
+    else bd_rejected create; fi
+    return 1
+  fi
+  if [ "$_cr_crc" -ne 0 ]; then
     echo "board create: the tracker create request failed or was refused (a workflow validator may require a field create-meta does not report; see tracker-contract.sh --fields)." >&2
     return 1
-  }
+  fi
   bd_row_ok "$_key" || { echo "board create: the tracker returned a key outside the id grammar." >&2; return 1; }
   bd_cr_prove "$_key" || return 1
   echo "board create: OK — created \`$_key\`, proven by post-read."
@@ -826,38 +944,778 @@ bd_label_arg() {
 "
 }
 
+# ── --description-file (BOARD-EDIT-SHOW-VERB, design 2026-10-09 §2.3) ─────────────────────────────────────────
+# The sanctioned form for text the guard's scan cannot judge (`<`, `|`, `;`, `$`, apostrophes, control-plane names): the
+# bytes never ride the command line. Inline `--description "$(cat x)"` is declined by the guard, so a file option is a NEW way
+# to send a local file's bytes to the tracker - hence the containment below. It is a speed bump, stated as one: the credential
+# is already in the session's environment and the egress control is a network allowlist.
+
+# bd_df_under <physical-path> <root>: 0 when the path is under the root and NO component below the root starts with a dot
+# (.ssh, .aws, .env, .kit, .git). A root of `/` is never a root.
+bd_df_under() {
+  [ "$2" != / ] || return 1
+  case "$1" in
+    "$2"/*) : ;;
+    *) return 1 ;;
+  esac
+  case "/${1#"$2"/}" in
+    */.*) return 1 ;;
+  esac
+  return 0
+}
+
+# bd_df_contained <physical-path>: under the repo root, or under $TMPDIR (/tmp when unset) - both resolved physically.
+bd_df_contained() {
+  _dc_root=$(CDPATH='' cd -- "$(bd_root)" 2>/dev/null && pwd -P) || _dc_root=""
+  _dc_tmp=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P) || _dc_tmp=""
+  if [ -n "$_dc_root" ] && bd_df_under "$1" "$_dc_root"; then return 0; fi
+  if [ -n "$_dc_tmp" ] && bd_df_under "$1" "$_dc_tmp"; then return 0; fi
+  return 1
+}
+
+# bd_df_secret <physical-path>: 0 when the file holds a private-key header or a well-known token shape (the secret scan's
+# own families). The content is never echoed; the caller prints one fixed sentence.
+bd_df_secret() {
+  head -c 32001 "$1" | LC_ALL=C grep -Eq \
+    -e '-----BEGIN [A-Z ]*PRIVATE KEY' \
+    -e 'gh[pousr]_[A-Za-z0-9]{30,}' \
+    -e 'github_pat_[A-Za-z0-9_]{20,}' \
+    -e 'AKIA[0-9A-Z]{16}' \
+    -e 'xox[abprs]-[A-Za-z0-9-]{10,}' \
+    -e 'ATATT[A-Za-z0-9_=-]{20,}' \
+    -e 'sk-ant-[A-Za-z0-9_-]{20,}' \
+    -e 'AIza[0-9A-Za-z_-]{35}' \
+    -e 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.'
+}
+
+# bd_tf_load <verb> <kind> <path>: reads the file into $_tf_val (trailing newlines trimmed - an editor's final newline is not
+# content). kind is description, title or metric (BOARD-TEXT-FILE-FORMS, design 2026-10-10 §2.1) and names the flag:
+# --description-file / --title-file / --metric-file. Regular file, not a symlink, readable, physical path inside the
+# containment, 1..32000 bytes, no NUL, valid UTF-8, no secret shape; a title is also exactly one line of the inline --title
+# grammar. Read bounded (head -c). rc 2 with ONE fixed sentence on any refusal; no byte of the file or its path is echoed.
+bd_tf_load() {
+  _df_v=$1; _tf_kind=$2; _df_p=$3
+  _df_pre="board $_df_v: --$_tf_kind-file"
+  _tf_val=""
+  # every byte of the path must be printable ASCII (a newline included): counted with wc -c, never a residue test
+  [ -n "$_df_p" ] && [ "$(printf '%s' "$_df_p" | LC_ALL=C tr -cd '\040-\176' | wc -c | tr -d ' ')" = "$(printf '%s' "$_df_p" | wc -c | tr -d ' ')" ] \
+    || { echo "$_df_pre needs a path of printable ASCII characters (no newline or control byte)." >&2; return 2; }
+  _df_dir=$(CDPATH='' cd -- "$(dirname -- "$_df_p")" 2>/dev/null && pwd -P) || { echo "$_df_pre must be a readable regular file." >&2; return 2; }
+  _df_phys="$_df_dir/$(basename -- "$_df_p")"
+  # -L and -f on the EXACT path that is read below
+  if [ -L "$_df_phys" ]; then echo "$_df_pre must not be a symlink." >&2; return 2; fi
+  { [ -f "$_df_phys" ] && [ -r "$_df_phys" ]; } || { echo "$_df_pre must be a readable regular file." >&2; return 2; }
+  bd_df_contained "$_df_phys" \
+    || { echo "$_df_pre must sit under the repo root or \$TMPDIR, and no path component below that may start with a dot." >&2; return 2; }
+  # the file is read ONCE, bounded, into a private mode-600 copy; every check and the content come from that copy
+  _df_tmp=$( umask 077; mktemp ) || { echo "$_df_pre could not create a scratch file." >&2; return 2; }
+  trap 'rm -f "$_df_tmp"' EXIT
+  trap 'rm -f "$_df_tmp"; exit 130' INT
+  trap 'rm -f "$_df_tmp"; exit 143' TERM
+  _df_rc=0
+  head -c 32001 "$_df_phys" > "$_df_tmp" 2>/dev/null || _df_rc=2
+  if [ "$_df_rc" -eq 0 ]; then bd_tf_check "$_df_tmp" || _df_rc=$?; fi
+  rm -f "$_df_tmp"
+  trap - EXIT INT TERM
+  return "$_df_rc"
+}
+
+# bd_tf_check <copy>: the content checks, all on the private copy. Sets $_tf_val. rc 2 + one fixed sentence on any refusal.
+bd_tf_check() {
+  _df_n=$(wc -c < "$1" | tr -d ' ')
+  { [ "$_df_n" -ge 1 ] && [ "$_df_n" -le 32000 ]; } || { echo "$_df_pre must be 1..32000 bytes." >&2; return 2; }
+  [ "$(LC_ALL=C tr -d '\000' < "$1" | wc -c | tr -d ' ')" = "$_df_n" ] \
+    || { echo "$_df_pre must not hold a NUL byte." >&2; return 2; }
+  command -v iconv >/dev/null 2>&1 || { echo "$_df_pre needs iconv to verify UTF-8; install it." >&2; return 2; }
+  iconv -f UTF-8 -t UTF-8 < "$1" >/dev/null 2>&1 \
+    || { echo "$_df_pre must be valid UTF-8." >&2; return 2; }
+  if bd_df_secret "$1"; then
+    echo "$_df_pre holds a private-key header or a token shape; remove it and retry." >&2; return 2
+  fi
+  _tf_val=$(cat "$1")
+  [ -n "$_tf_val" ] || { echo "$_df_pre holds no content." >&2; return 2; }
+  [ "$_tf_kind" != title ] || { bd_tf_title || return 2; return 0; }
+  [ "$(bd_text_lines "$_tf_val")" -le 2000 ] || { echo "$_df_pre is over the 2000-line bound." >&2; return 2; }
+  return 0
+}
+
+# bd_tf_title: a title file is exactly one line, then the SAME grammar as inline --title (1..255 printable ASCII, no leading
+# or trailing space). On a refusal $_tf_val is cleared so no byte of the file survives the call.
+# (The single-line check gives the clearer refusal sentence; the printable-ASCII grammar would refuse a newline anyway.)
+bd_tf_title() {
+  case "$_tf_val" in
+    *"
+"*) _tf_val=""; echo "$_df_pre must hold exactly one line." >&2; return 1 ;;
+  esac
+  bd_val_ok "$_tf_val" '\40-\176' 255 || { _tf_val=""; echo "$_df_pre must be 1..255 printable ASCII characters." >&2; return 1; }
+  case "$_tf_val" in
+    ' '*|*' ') _tf_val=""; echo "$_df_pre must not start or end with a space." >&2; return 1 ;;
+  esac
+  return 0
+}
+
+# bd_text_lines <text>: the line count BOTH create and edit use for the 2000-line bound (a last line without a newline counts).
+bd_text_lines() {
+  printf '%s\n' "$1" | awk 'END { print NR }'
+}
+
 do_create() {
-  _title=""; _size=""; _risk=""; _type=""; _parent=""; _desc=""; _cr_fields=""; _labels=""; _label_n=0
+  _title=""; _titleset=0; _titlef=""; _size=""; _risk=""; _type=""; _parent=""; _desc=""; _descset=0; _descf=""; _metric=""; _metricset=0; _metricf=""; _cr_fields=""; _labels=""; _label_n=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --title|--size|--risk|--type|--parent|--description|--field|--label)
+      --title|--title-file|--size|--risk|--type|--parent|--description|--description-file|--metric|--metric-file|--field|--label)
         [ $# -ge 2 ] || { echo "board create: $1 needs a value" >&2; return 2; }
         case "$1" in
-          --title) _title=$2 ;;
+          --title) _title=$2; _titleset=1 ;;
+          --title-file) _titlef=$2 ;;
           --size) _size=$2 ;;
           --risk) _risk=$2 ;;
           --type) _type=$2 ;;
           --parent) _parent=$2 ;;
-          --description) _desc=$2 ;;
+          --description) _desc=$2; _descset=1 ;;
+          --description-file) _descf=$2 ;;
+          --metric) _metric=$2; _metricset=1 ;;
+          --metric-file) _metricf=$2 ;;
           --field) bd_field_arg "$2" || return 2 ;;
           --label) bd_label_arg "$2" || return 2 ;;
         esac
         shift 2 ;;
       -*)      echo "board create: unknown option '$1'" >&2; bd_usage; return 2 ;;
-      *)       echo "board create: unexpected argument '$1' (use --title/--size/--risk/--type/--parent/--description/--field/--label)" >&2; return 2 ;;
+      *)       echo "board create: unexpected argument '$1' (use --title/--title-file/--size/--risk/--type/--parent/--description/--description-file/--metric/--metric-file/--field/--label)" >&2; return 2 ;;
     esac
   done
-  [ -n "$_title" ] || { echo "board create: --title is required" >&2; bd_usage; return 2; }
+  [ -n "$_title" ] || [ -n "$_titlef" ] || { echo "board create: --title is required" >&2; bd_usage; return 2; }
+  if [ -n "$_titlef" ]; then
+    [ "$_titleset" -eq 0 ] || { echo "board create: --title and --title-file are mutually exclusive." >&2; return 2; }
+    bd_tf_load create title "$_titlef" || return 2
+    _title=$_tf_val
+  fi
+  if [ -n "$_descf" ]; then
+    [ "$_descset" -eq 0 ] || { echo "board create: --description and --description-file are mutually exclusive." >&2; return 2; }
+    bd_tf_load create description "$_descf" || return 2
+    _desc=$_tf_val
+  fi
+  if [ -n "$_metricf" ]; then
+    [ "$_metricset" -eq 0 ] || { echo "board create: --metric and --metric-file are mutually exclusive." >&2; return 2; }
+    bd_tf_load create metric "$_metricf" || return 2
+    _metric=$_tf_val
+  fi
   [ -z "$_type" ] || bd_type_ok "$_type" || { echo "board create: --type must match ^[A-Za-z][A-Za-z0-9 _-]{0,39}\$." >&2; return 2; }
   [ -z "$_parent" ] || bd_row_ok "$_parent" || { echo "board create: --parent must be an issue key matching [A-Z0-9][A-Z0-9-]*." >&2; return 2; }
   [ "$(printf '%s' "$_desc" | wc -c | tr -d ' ')" -le 32000 ] || { echo "board create: --description is over the 32000-byte bound." >&2; return 2; }
-  [ "$(printf '%s' "$_desc" | wc -l | tr -d ' ')" -le 2000 ] || { echo "board create: --description is over the 2000-line bound." >&2; return 2; }
+  [ "$(bd_text_lines "$_desc")" -le 2000 ] || { echo "board create: --description is over the 2000-line bound." >&2; return 2; }
+  [ "$(printf '%s' "$_metric" | wc -c | tr -d ' ')" -le 32000 ] || { echo "board create: --metric is over the 32000-byte bound." >&2; return 2; }
+  [ "$(bd_text_lines "$_metric")" -le 2000 ] || { echo "board create: --metric is over the 2000-line bound." >&2; return 2; }
   _be=$(bd_backend)
   case "$_be" in
     jira) bd_create_jira; return $? ;;
     md|'') echo "board create: no write adapter for backend '$_be' — add the row to BACKLOG.md by hand." >&2; return 2 ;;
     *)     echo "board create: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
   esac
+}
+
+# ── comment (KIT-TREE-BOARD-SWITCH, design 2026-10-09 §6) ─────────────────────────────────────────
+# `comment <KEY> --from-record docs/reviews/<name>.md [--dry-run]` posts one comment on a card. The request itself lives
+# in the adapter (tracker-jira.sh `comment`): this front door resolves the backend through the seam, validates the key
+# and the record path, composes the body itself, and hands it over on STDIN — never argv, so neither `ps` nor a command
+# log sees it. Refusals are fixed sentences; no record byte is echoed. The adapter re-validates everything (both layers, before any request).
+
+# bd_cmt_key_ok <KEY>: the adapter's own key grammar — this project, a dash, digits with no leading zero, <= 32 bytes.
+bd_cmt_key_ok() {
+  [ "${#1}" -le 32 ] || return 1
+  case "$1" in
+    "$_btproject"-[0-9]*) : ;;
+    *) return 1 ;;
+  esac
+  _ck_rest=${1#"$_btproject"-}
+  case "$_ck_rest" in
+    ''|*[!0-9]*|0*) return 1 ;;
+  esac
+  return 0
+}
+
+# bd_cmt_record <path>: the record the comment points at (design B1). The verb builds the whole body itself — the agent
+# supplies no free text: line 1 is the record's FIRST line, line 2 is `Record: <path>`. The path must be relative and
+# exactly docs/reviews/<name>.md (<name> of [A-Za-z0-9._-]), with no '..', no symlink in docs, docs/reviews or the
+# leaf, a regular readable file, and tracked in git. Sets _ck_body, _ck_bytes and _ck_lines. rc 2 with one fixed
+# sentence on any refusal; no record byte is echoed.
+bd_cmt_record() {
+  _cr_p=$1
+  _cr_shape="board comment: --from-record must be docs/reviews/<name>.md (relative, no '..', <name> of letters, digits, dot, dash, underscore)."
+  case "$_cr_p" in
+    *..*|/*) echo "$_cr_shape" >&2; return 2 ;;
+    docs/reviews/*.md) : ;;
+    *) echo "$_cr_shape" >&2; return 2 ;;
+  esac
+  _cr_name=${_cr_p#docs/reviews/}
+  case "$_cr_name" in
+    *[!A-Za-z0-9._-]*) echo "$_cr_shape" >&2; return 2 ;;
+  esac
+  [ -n "${_cr_name%.md}" ] || { echo "$_cr_shape" >&2; return 2; }
+  if [ -L docs ] || [ -L docs/reviews ] || [ -L "$_cr_p" ]; then
+    echo "board comment: the record path has a symlink in it (docs, docs/reviews or the file)." >&2; return 2
+  fi
+  { [ -f "$_cr_p" ] && [ -r "$_cr_p" ]; } || { echo "board comment: the record must be a readable regular file." >&2; return 2; }
+  git ls-files --error-unmatch -- "$_cr_p" >/dev/null 2>&1 \
+    || { echo "board comment: the record must be tracked in git (git add it first)." >&2; return 2; }
+  _cr_line=$(head -c 4096 "$_cr_p" | head -n 1)
+  _cr_bad=$(head -c 4096 "$_cr_p" | head -n 1 | LC_ALL=C tr -d '\012\040-\176\200-\377' | wc -c | tr -d ' ')
+  _cr_len=$(head -c 4096 "$_cr_p" | head -n 1 | tr -d '\012' | wc -c | tr -d ' ')
+  _cr_ink=$(head -c 4096 "$_cr_p" | head -n 1 | LC_ALL=C tr -d '\012\040' | wc -c | tr -d ' ')
+  if [ "$_cr_bad" != 0 ] || [ "$_cr_ink" -lt 1 ] || [ "$_cr_len" -gt 300 ]; then
+    echo "board comment: the record's first line must be 1..300 bytes with a non-blank byte and no control byte, CR or TAB." >&2; return 2
+  fi
+  _ck_body=$(printf '%s\nRecord: %s\n' "$_cr_line" "$_cr_p")
+  _ck_bytes=$(printf '%s\nRecord: %s\n' "$_cr_line" "$_cr_p" | wc -c | tr -d ' ')
+  _ck_lines=2
+  return 0
+}
+
+# bd_cmt_args <args…>: sets _ck_key/_ck_file (the record path)/_ck_dry. rc 2 on a usage fault.
+bd_cmt_args() {
+  _ck_key=""; _ck_file=""; _ck_dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from-record) [ $# -ge 2 ] || { echo "board comment: --from-record needs a value" >&2; return 2; }; _ck_file=$2; shift 2 ;;
+      --dry-run)   _ck_dry=1; shift ;;
+      -*)          echo "board comment: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; bd_usage; return 2 ;;
+      *)           [ -z "$_ck_key" ] || { echo "board comment: one card key, not two" >&2; return 2; }; _ck_key=$1; shift ;;
+    esac
+  done
+  [ -n "$_ck_key" ] && [ -n "$_ck_file" ] || { echo "board comment: a card key and --from-record docs/reviews/<name>.md are required" >&2; bd_usage; return 2; }
+  bd_require_row "$_ck_key"
+}
+
+do_comment() {
+  bd_cmt_args "$@" || return 2
+  _be=$(bd_backend)
+  case "$_be" in
+    jira) : ;;
+    md|'') echo "board comment: comment writes to a tracker; on md the retro rides the PR." >&2; return 2 ;;
+    *)     echo "board comment: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
+  esac
+  bd_tracker_ctx || return 2
+  bd_cmt_key_ok "$_ck_key" || { echo "board comment: '$(printf '%s' "$_ck_key" | tr -cd '\40-\176' | cut -c1-40)' is not a card key of project $_btproject (the project, a dash, digits with no leading zero)." >&2; return 2; }
+  bd_cmt_record "$_ck_file" || return 2
+  if [ "$_ck_dry" -eq 1 ]; then
+    echo "board comment: would POST a $_ck_bytes-byte, $_ck_lines-line comment to $_ck_key (dry run; no tracker call)"
+    return 0
+  fi
+  _ck_rc=0
+  _ck_errf=$(mktemp) || { echo "board comment: could not create a scratch file." >&2; return 1; }
+  _ck_id=$(printf '%s\n' "$_ck_body" | sh "$BD_JIRA_SH" comment "$_btbase" "$_btflavour" "$_btproject" "$_ck_key" - 2>"$_ck_errf") || _ck_rc=$?
+  cat "$_ck_errf" >&2; _ck_anon=0
+  if bd_anon_wrote "$_ck_errf"; then _ck_anon=1; fi
+  rm -f "$_ck_errf"
+  # the adapter's rc 1 is a grammar/body refusal this front door should have caught (usage-class, rc 2); any other
+  # failure is the write or its proof (rc 1)
+  case "$_ck_rc" in
+    0) : ;;
+    1) return 2 ;;
+    6)
+      if [ "$_ck_anon" -eq 1 ]; then echo "board comment: the tracker rejected the credential but served the post anonymously - a comment may have been posted on $_ck_key; check the card before re-running." >&2
+      else bd_rejected comment; fi
+      return 1 ;;
+    *) echo "board comment: the comment was not posted and proved on $_ck_key (the adapter's sentence is above)." >&2; return 1 ;;
+  esac
+  case "$_ck_id" in
+    ''|*[!0-9]*) echo "board comment: the adapter returned no comment id; cannot prove the post." >&2; return 1 ;;
+  esac
+  echo "board comment: $_ck_key comment $_ck_id posted and read back"
+}
+
+# ── show / edit (BOARD-EDIT-SHOW-VERB, design 2026-10-09) ──────────────────────────────────────────
+# `show <KEY> [--comments <n>]` prints one whole card (read-only, ONE request). `edit <KEY> ...` changes a closed list of a
+# card's fields - summary, description, Size, Risk, labels (add/remove deltas), parent - through the adapter's `edit` (which
+# carries its own allowlist) and PROVES every written value by a get-fields post-read. State, assignee, claim and rank are NOT
+# here (move / claim / release / rank). Both refuse on md (the board is a file an adopter edits by hand).
+
+# bd_se_ready <verb> <KEY>: the jira backend, the tracker context, and a key that belongs to this project. rc 2 backend or
+# context fault, 1 the key is outside the project (a refusal).
+bd_se_ready() {
+  _be=$(bd_backend)
+  case "$_be" in
+    jira) : ;;
+    md|'') echo "board $1: $1 needs a tracker backend; on md the board is BACKLOG.md - read or edit the file by hand." >&2; return 2 ;;
+    *)     echo "board $1: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
+  esac
+  bd_tracker_ctx || return 2
+  bd_cmt_key_ok "$2" || { echo "board $1: '$(printf '%s' "$2" | tr -cd '\40-\176' | cut -c1-40)' is not a card key of project $_btproject (the project, a dash, digits with no leading zero)." >&2; return 1; }
+  return 0
+}
+
+# bd_se_map <size|risk>: the conf's field.<name> when it is a customfield_N or a label:<prefix>, else `-` (what the adapter's show reads).
+bd_se_map() {
+  _sm_v=$(bd_tc_get "field.$1")
+  case "$_sm_v" in
+    customfield_*|label:*) printf '%s' "$_sm_v" ;;
+    *)                     printf '%s' - ;;
+  esac
+}
+
+do_show() {
+  _sh_key=""; _sh_n=3
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --comments) [ $# -ge 2 ] || { echo "board show: --comments needs a value" >&2; return 2; }; _sh_n=$2; shift 2 ;;
+      -*)         echo "board show: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; bd_usage; return 2 ;;
+      *)          [ -z "$_sh_key" ] || { echo "board show: one card key, not two" >&2; return 2; }; _sh_key=$1; shift ;;
+    esac
+  done
+  [ -n "$_sh_key" ] || { echo "board show: a card key is required" >&2; bd_usage; return 2; }
+  bd_require_row "$_sh_key" || return 1   # a key that fails the grammar is a refusal (design §2.1), not a usage fault
+  case "$_sh_n" in
+    [0-9]|10) : ;;
+    *) echo "board show: --comments must be 0..10." >&2; return 2 ;;
+  esac
+  bd_se_ready show "$_sh_key" || return $?
+  _sh_rc=0
+  sh "$BD_JIRA_SH" show "$_btbase" "$_btflavour" "$_btproject" "$_sh_key" "$(bd_se_map size)" "$(bd_se_map risk)" "$_sh_n" || _sh_rc=$?
+  case "$_sh_rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+    6) bd_rejected show; return 1 ;;
+    *) echo "board show: the card could not be read and verified (the adapter's sentence is above)." >&2; return 3 ;;
+  esac
+}
+
+# bd_ed_label <add|remove> <label>: one --label-add / --label-remove (each at most 10), the grammar create's --label has.
+bd_ed_label() {
+  bd_val_ok "$2" 'A-Za-z0-9_.:-' 64 || { echo "board edit: --label-$1 must match [A-Za-z0-9_.:-]{1,64} (no space)." >&2; return 2; }
+  if [ "$1" = add ]; then
+    [ "$_ed_na" -lt 10 ] || { echo "board edit: at most 10 --label-add values." >&2; return 2; }
+    _ed_na=$((_ed_na + 1)); _ed_ladd="$_ed_ladd$2
+"
+  else
+    [ "$_ed_nr" -lt 10 ] || { echo "board edit: at most 10 --label-remove values." >&2; return 2; }
+    _ed_nr=$((_ed_nr + 1)); _ed_lrem="$_ed_lrem$2
+"
+  fi
+}
+
+# bd_ed_args <args...>: sets _ed_key, _ed_title, _ed_titlef, _ed_descf, _ed_metricf, _ed_size, _ed_risk, _ed_parent, _ed_ladd, _ed_lrem, _ed_dry. rc 2 on a usage fault.
+bd_ed_args() {
+  _ed_key=""; _ed_title=""; _ed_titlef=""; _ed_metricf=""; _ed_metric=""; _ed_mid=""; _ed_descf=""; _ed_size=""; _ed_risk=""; _ed_parent=""; _ed_dry=0; _ed_ladd=""; _ed_lrem=""; _ed_na=0; _ed_nr=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) _ed_dry=1; shift ;;
+      --title|--title-file|--description-file|--metric-file|--size|--risk|--parent|--label-add|--label-remove)
+        [ $# -ge 2 ] && [ -n "$2" ] || { echo "board edit: $1 needs a non-empty value" >&2; return 2; }
+        case "$1" in
+          --title) _ed_title=$2 ;;
+          --title-file) _ed_titlef=$2 ;;
+          --metric-file) _ed_metricf=$2 ;;
+          --description-file) _ed_descf=$2 ;;
+          --size) _ed_size=$2 ;;
+          --risk) _ed_risk=$2 ;;
+          --parent) _ed_parent=$2 ;;
+          --label-add) bd_ed_label add "$2" || return 2 ;;
+          --label-remove) bd_ed_label remove "$2" || return 2 ;;
+        esac
+        shift 2 ;;
+      -*) echo "board edit: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; bd_usage; return 2 ;;
+      *)  [ -z "$_ed_key" ] || { echo "board edit: one card key, not two" >&2; return 2; }; _ed_key=$1; shift ;;
+    esac
+  done
+  [ -n "$_ed_key" ] || { echo "board edit: a card key is required" >&2; bd_usage; return 2; }
+  bd_require_row "$_ed_key" || return 2
+  [ -z "$_ed_title" ] || [ -z "$_ed_titlef" ] || { echo "board edit: --title and --title-file are mutually exclusive." >&2; return 2; }
+  [ -n "$_ed_title$_ed_titlef$_ed_descf$_ed_metricf$_ed_size$_ed_risk$_ed_parent$_ed_ladd$_ed_lrem" ] \
+    || { echo "board edit: nothing to change - pass at least one of --title, --title-file, --description-file, --metric-file, --size, --risk, --label-add, --label-remove, --parent" >&2; bd_usage; return 2; }
+  return 0
+}
+
+# bd_ed_values: every value through the SAME grammar create uses (bd_val_ok / bd_row_ok / the text bounds), locally, before any request.
+bd_ed_values() {
+  [ -z "$_ed_titlef" ] || { bd_tf_load edit title "$_ed_titlef" || return 2; _ed_title=$_tf_val; }
+  if [ -n "$_ed_title" ]; then
+    bd_val_ok "$_ed_title" '\40-\176' 255 || { echo "board edit: --title must be 1..255 printable ASCII characters." >&2; return 2; }
+    case "$_ed_title" in
+      ' '*|*' ') echo "board edit: --title must not start or end with a space." >&2; return 2 ;;
+    esac
+  fi
+  [ -z "$_ed_size" ] || bd_val_ok "$_ed_size" 'A-Za-z0-9 _.-' 64 || { echo "board edit: --size must match [A-Za-z0-9 _.-]{1,64}." >&2; return 2; }
+  [ -z "$_ed_risk" ] || bd_val_ok "$_ed_risk" 'A-Za-z0-9 _.-' 64 || { echo "board edit: --risk must match [A-Za-z0-9 _.-]{1,64}." >&2; return 2; }
+  [ -z "$_ed_parent" ] || bd_row_ok "$_ed_parent" || { echo "board edit: --parent must be an issue key matching [A-Z0-9][A-Z0-9-]*." >&2; return 2; }
+  while IFS= read -r _ev_l; do
+    [ -n "$_ev_l" ] || continue
+    if printf '%s' "$_ed_lrem" | grep -qxF -e "$_ev_l"; then
+      echo "board edit: the label '$_ev_l' is in both --label-add and --label-remove." >&2; return 2
+    fi
+  done <<EOF_EV
+$_ed_ladd
+EOF_EV
+  _desc=""
+  [ -z "$_ed_descf" ] || { bd_tf_load edit description "$_ed_descf" || return 2; _desc=$_tf_val; }
+  [ -z "$_ed_metricf" ] || { bd_tf_load edit metric "$_ed_metricf" || return 2; _ed_metric=$_tf_val; }
+  [ "$(printf '%s' "$_desc" | wc -c | tr -d ' ')" -le 32000 ] || { echo "board edit: the description is over the 32000-byte bound." >&2; return 2; }
+  [ "$(bd_text_lines "$_desc")" -le 2000 ] || { echo "board edit: the description is over the 2000-line bound." >&2; return 2; }
+  [ "$(printf '%s' "$_ed_metric" | wc -c | tr -d ' ')" -le 32000 ] || { echo "board edit: the metric is over the 32000-byte bound." >&2; return 2; }
+  [ "$(bd_text_lines "$_ed_metric")" -le 2000 ] || { echo "board edit: the metric is over the 2000-line bound." >&2; return 2; }
+  return 0
+}
+
+# bd_ed_cf <name>: sets _ed_cfid to the conf's field.<name> when it is a customfield_N (digits only), else refuses (rc 2).
+bd_ed_cf() {
+  _ed_cfid=$(bd_tc_get "field.$1")
+  case "$_ed_cfid" in
+    customfield_[0-9]*)
+      case "${_ed_cfid#customfield_}" in
+        *[!0-9]*) : ;;
+        *) [ "${#_ed_cfid}" -gt 22 ] || return 0 ;;  # the adapter's 22-character bound on a customfield id
+      esac ;;
+  esac
+  if [ "$1" = metric ]; then
+    echo "board edit: --metric-file needs field.metric=customfield_N in .kit/tracker.conf (conf has '$(bd_disp "${_ed_cfid:-unset}")') - add that line, or drop --metric-file. Nothing was changed." >&2
+    return 2
+  fi
+  echo "board edit: --$1 needs field.$1=customfield_N in .kit/tracker.conf (conf has '$(bd_disp "${_ed_cfid:-unset}")'); a label-mapped $1 is changed with --label-add / --label-remove. Nothing was changed." >&2
+  return 2
+}
+
+# bd_ed_dry: print the planned change set (plain words, no request, no credential).
+bd_ed_dry() {
+  echo "board edit: DRY RUN - would change $_ed_key on project $_btproject; no tracker call was made (the select check against the card's editmeta runs only on the live edit):"
+  [ -z "$_ed_title" ] || echo "  summary: \"$_ed_title\""
+  [ -z "$_ed_descf" ] || echo "  description: replaced whole, $(printf '%s' "$_desc" | wc -c | tr -d ' ') bytes, $(bd_text_lines "$_desc") lines"
+  [ -z "$_ed_metricf" ] || echo "  metric: replaced whole, $(printf '%s' "$_ed_metric" | wc -c | tr -d ' ') bytes, $(bd_text_lines "$_ed_metric") lines"
+  [ -z "$_ed_size" ] || echo "  size: $_ed_size"
+  [ -z "$_ed_risk" ] || echo "  risk: $_ed_risk"
+  [ -z "$_ed_parent" ] || echo "  parent: $_ed_parent"
+  [ -z "$_ed_ladd" ] || echo "  labels added: $(printf '%s' "$_ed_ladd" | tr '\n' ' ' | sed 's/ $//')"
+  [ -z "$_ed_lrem" ] || echo "  labels removed: $(printf '%s' "$_ed_lrem" | tr '\n' ' ' | sed 's/ $//')"
+  return 0
+}
+
+# bd_ed_meta: the card's own editmeta into $_cm (rc 1 = unverified, nothing changed).
+bd_ed_meta() {
+  _em_errf=$(mktemp) || { echo "board edit: could not create a scratch file." >&2; return 1; }
+  _em_rc=0
+  _cm=$(sh "$BD_JIRA_SH" edit-meta "$_btbase" "$_btflavour" "$_btproject" "$_ed_key" 2>"$_em_errf") || _em_rc=$?
+  _em_err=$(tr '\n' ' ' < "$_em_errf" | tr -cd '\40-\176' | cut -c1-200); rm -f "$_em_errf"
+  if [ "$_em_rc" -eq 6 ]; then bd_rejected edit "${_em_err:-the adapter reported the rejection}"; return 1; fi
+  [ "$_em_rc" -eq 0 ] || { echo "board edit: could not read the editmeta of $_ed_key - ${_em_err:-unverified}; nothing was changed." >&2; return 1; }
+  return 0
+}
+
+# bd_ed_need <field-id> <what>: the field must be in the card's editmeta ($_cm), else a named refusal before the PUT.
+bd_ed_need() {
+  bd_cr_has "$1" && return 0
+  echo "board edit: $2 ($1) is not editable on $_ed_key - the card's editmeta does not list it; nothing was changed." >&2
+  return 2
+}
+
+# bd_ed_expect <field-id> <expected>: what the post-read must show for this id (read back once).
+bd_ed_expect() {
+  _ed_exp="$_ed_exp$1$BD_TAB$2
+"
+  _ed_ids="$_ed_ids $1"
+}
+
+# bd_ed_select <size|risk> <value>: one select/string customfield into the fields object, matched against the card's editmeta.
+bd_ed_select() {
+  bd_ed_cf "$1" || return 2
+  bd_ed_need "$_ed_cfid" "$1" || return 2
+  bd_cu_value edit "$1" "$_ed_cfid" "$2" || return 2
+  case "$_cu_schema" in
+    option) _ed_ff=$(printf '%s' "$_ed_ff" | jq -c --arg id "$_ed_cfid" --arg v "$_cu_val" '. + {($id): {value: $v}}') ;;
+    *)      _ed_ff=$(printf '%s' "$_ed_ff" | jq -c --arg id "$_ed_cfid" --arg v "$_cu_val" '. + {($id): $v}') ;;
+  esac
+  bd_ed_expect "$_ed_cfid" "$_cu_val"
+  _ed_sel="$_ed_sel $_ed_cfid"
+  [ "$1" = size ] && _ed_sid=$_ed_cfid
+  [ "$1" = risk ] && _ed_rid=$_ed_cfid
+  return 0
+}
+
+# bd_ed_build: the edit fragment {"fields": {...}, "update": {"labels": [add/remove ops]}} in $_ed_frag, and what the post-read must show.
+bd_ed_build() {
+  _ed_ff='{}'; _ed_ul='[]'; _ed_exp=""; _ed_ids=""; _ed_sel=""; _ed_sid="-"; _ed_rid="-"; _ed_mida="-"
+  if [ -n "$_ed_title" ]; then
+    bd_ed_need summary "--title" || return 2
+    _ed_ff=$(printf '%s' "$_ed_ff" | jq -c --arg v "$_ed_title" '. + {summary: $v}')
+    bd_ed_expect summary "$_ed_title"
+  fi
+  if [ -n "$_ed_descf" ]; then
+    bd_ed_need description "--description-file" || return 2
+    bd_cr_text "$_desc" || return 1
+    _ed_ff=$(printf '%s' "$_ed_ff" | jq -c --argjson d "$_jv" '. + {description: $d}')
+    bd_ed_expect description "present $(printf '%s' "$_desc" | wc -c | tr -d ' ')"
+  fi
+  if [ -n "$_ed_metricf" ]; then
+    bd_ed_need "$_ed_mid" "--metric-file" || return 2
+    bd_cr_text "$_ed_metric" || return 1
+    _ed_ff=$(printf '%s' "$_ed_ff" | jq -c --arg id "$_ed_mid" --argjson d "$_jv" '. + {($id): $d}')
+    # the `:text` token asks get-fields for the description's own proof (`present <bytes>`) on this customfield
+    bd_ed_expect "$_ed_mid:text" "present $(printf '%s' "$_ed_metric" | wc -c | tr -d ' ')"
+    _ed_mida=$_ed_mid
+  fi
+  if [ -n "$_ed_parent" ]; then
+    bd_ed_need parent "--parent" || return 2
+    _ed_ff=$(printf '%s' "$_ed_ff" | jq -c --arg k "$_ed_parent" '. + {parent: {key: $k}}')
+    bd_ed_expect parent "$_ed_parent"
+  fi
+  [ -z "$_ed_size" ] || bd_ed_select size "$_ed_size" || return 2
+  [ -z "$_ed_risk" ] || bd_ed_select risk "$_ed_risk" || return 2
+  if [ -n "$_ed_ladd$_ed_lrem" ]; then
+    bd_ed_need labels "--label-add/--label-remove" || return 2
+    while IFS= read -r _eb_l; do
+      [ -z "$_eb_l" ] || _ed_ul=$(printf '%s' "$_ed_ul" | jq -c --arg l "$_eb_l" '. + [{add: $l}]')
+    done <<EOF_EBA
+$_ed_ladd
+EOF_EBA
+    while IFS= read -r _eb_l; do
+      [ -z "$_eb_l" ] || _ed_ul=$(printf '%s' "$_ed_ul" | jq -c --arg l "$_eb_l" '. + [{remove: $l}]')
+    done <<EOF_EBR
+$_ed_lrem
+EOF_EBR
+    _ed_ids="$_ed_ids labels"
+  fi
+  _ed_frag=$(jq -nc --argjson f "$_ed_ff" --argjson u "$_ed_ul" '(if ($f | length) > 0 then {fields: $f} else {} end) + (if ($u | length) > 0 then {update: {labels: $u}} else {} end)')
+}
+
+# bd_ed_prove: the post-read - every value written must read back EXACTLY (a select, the summary, the parent), a label delta by
+# membership / absence, the description by `present <bytes>`. A mismatch is rc 1 naming the field; never "ok".
+bd_ed_prove() {
+  # shellcheck disable=SC2086  # _ed_ids is a space-separated list of closed-grammar field ids
+  _pe_post=$(sh "$BD_JIRA_SH" get-fields "$_btbase" "$_btflavour" "$_btproject" "$_ed_key" $_ed_ids 2>&1) || {
+    echo "board edit: edited '$_ed_key' but the post-read could not run - cannot prove the change (the card may have changed)." >&2
+    return 1
+  }
+  while IFS="$BD_TAB" read -r _pe_id _pe_want; do
+    [ -n "$_pe_id" ] || continue
+    _pe_got=$(bd_field "$_pe_post" "$_pe_id")
+    [ "$_pe_got" = "$_pe_want" ] || { echo "board edit: edited '$_ed_key' but the post-read did NOT prove $_pe_id (wanted '$(bd_disp "$_pe_want")', read '$(bd_disp "$_pe_got")') - the card may be half-changed; check it with \`board show $_ed_key\`." >&2; return 1; }
+  done <<EOF_PE
+$_ed_exp
+EOF_PE
+  _pe_labels=" $(bd_field "$_pe_post" labels) "
+  while IFS= read -r _pe_l; do
+    [ -n "$_pe_l" ] || continue
+    case "$_pe_labels" in
+      *" $_pe_l "*) : ;;
+      *) echo "board edit: edited '$_ed_key' but the post-read did NOT prove the label '$_pe_l' was added." >&2; return 1 ;;
+    esac
+  done <<EOF_PA
+$_ed_ladd
+EOF_PA
+  while IFS= read -r _pe_l; do
+    [ -n "$_pe_l" ] || continue
+    case "$_pe_labels" in
+      *" $_pe_l "*) echo "board edit: edited '$_ed_key' but the post-read did NOT prove the label '$_pe_l' was removed." >&2; return 1 ;;
+    esac
+  done <<EOF_PR
+$_ed_lrem
+EOF_PR
+  return 0
+}
+
+# bd_ed_summary: the fields that changed, for the OK line.
+bd_ed_summary() {
+  _es=""
+  [ -z "$_ed_title" ] || _es="$_es summary"
+  [ -z "$_ed_descf" ] || _es="$_es description"
+  [ -z "$_ed_metricf" ] || _es="$_es metric"
+  [ -z "$_ed_size" ] || _es="$_es size"
+  [ -z "$_ed_risk" ] || _es="$_es risk"
+  [ -z "$_ed_parent" ] || _es="$_es parent"
+  [ -z "$_ed_ladd$_ed_lrem" ] || _es="$_es labels"
+  printf '%s' "${_es# }" | sed 's/ /, /g'
+}
+
+do_edit() {
+  bd_ed_args "$@" || return 2
+  bd_ed_values || return 2
+  bd_se_ready edit "$_ed_key" || return $?
+  # --parent: the key's project is checked here (no request); the adapter then reads the parent's REAL key and project before
+  # the PUT (a moved epic keeps its old key), so a re-parent can only land under a card that is in this project today.
+  [ -z "$_ed_parent" ] || bd_cmt_key_ok "$_ed_parent" \
+    || { echo "board edit: --parent '$(bd_disp "$_ed_parent")' is not a card key of project $_btproject - a card is never re-parented under another project; nothing was changed." >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "board edit: jq is required for edit (install jq)." >&2; return 2; }
+  [ -z "$_ed_size" ] || bd_ed_cf size || return 2
+  [ -z "$_ed_risk" ] || bd_ed_cf risk || return 2
+  [ -z "$_ed_metricf" ] || { bd_ed_cf metric || return 2; _ed_mid=$_ed_cfid; }
+  if [ "$_ed_dry" -eq 1 ]; then bd_ed_dry; return 0; fi
+  bd_ed_meta || return 1
+  bd_ed_build || return $?
+  _ed_rc=0
+  _ed_errf=$(mktemp) || { echo "board edit: could not create a scratch file." >&2; return 1; }
+  printf '%s' "$_ed_frag" | sh "$BD_JIRA_SH" edit "$_btbase" "$_btflavour" "$_btproject" "$_ed_key" "$_ed_sid" "$_ed_rid" "$_ed_mida" - >/dev/null 2>"$_ed_errf" || _ed_rc=$?
+  cat "$_ed_errf" >&2; _ed_anon=0
+  if bd_anon_wrote "$_ed_errf"; then _ed_anon=1; fi
+  rm -f "$_ed_errf"
+  # the adapter's rc 1 is a refusal before/at the PUT (a 400, the allowlist, a key/project mismatch): stays rc 1. Any other failure
+  # (a timeout, a 5xx, an unreadable answer) cannot say whether the edit applied: rc 3.
+  case "$_ed_rc" in
+    0) : ;;
+    1) echo "board edit: the tracker refused the edit of $_ed_key (the adapter's sentence is above); no field is known to have changed." >&2; return 1 ;;
+    6)
+      # a 2xx served anonymously may have applied (S-L1): keep "may have applied" and the unverified rc 3
+      if [ "$_ed_anon" -eq 1 ]; then echo "board edit: unverified - the tracker rejected the credential but served the edit anonymously, so it may have applied; check with board show $_ed_key" >&2; return 3; fi
+      bd_rejected edit; return 1 ;;
+    *) echo "board edit: unverified - the edit may have applied; check with board show $_ed_key" >&2; return 3 ;;
+  esac
+  bd_ed_prove || return 1
+  echo "board edit: OK — $_ed_key $(bd_ed_summary), proven by post-read."
+}
+
+# ── rank / list (BOARD-RANK-VERB, design 2026-10-09 D3) ──────────────────────────────────────────
+# `rank KEY (--top | --before KEY | --after KEY) [--dry-run]` moves a card in the tracker's Rank order (priority only:
+# state, assignee and labels are untouched); `list [--limit N]` prints the open cards in that order. Both go through the
+# adapter (tracker-jira.sh `rank` / `list-ranked`). `rank` reads the order BEFORE (KEY and any anchor must be open cards)
+# and AFTER the write, and reports OK only when the read-back order proves the move (UNPROVEN, rc 2, otherwise).
+
+# bd_rank_args <args…>: sets _rk_key/_rk_form (top|before|after)/_rk_anchor/_rk_dry. rc 2 on a usage fault.
+bd_rank_args() {
+  _rk_key=""; _rk_form=""; _rk_anchor=""; _rk_dry=0; _rk_forms=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --top)           _rk_forms=$((_rk_forms + 1)); _rk_form=top; shift ;;
+      --before|--after)
+        [ $# -ge 2 ] || { echo "board rank: $1 needs a card key" >&2; return 2; }
+        _rk_forms=$((_rk_forms + 1)); _rk_form=${1#--}; _rk_anchor=$2; shift 2 ;;
+      --dry-run)       _rk_dry=1; shift ;;
+      -*)              echo "board rank: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; bd_usage; return 2 ;;
+      *)               [ -z "$_rk_key" ] || { echo "board rank: one card key, not two" >&2; return 2; }; _rk_key=$1; shift ;;
+    esac
+  done
+  [ -n "$_rk_key" ] || { echo "board rank: a card key is required" >&2; bd_usage; return 2; }
+  [ "$_rk_forms" -eq 1 ] || { echo "board rank: give exactly one of --top, --before KEY, --after KEY" >&2; bd_usage; return 2; }
+  bd_require_row "$_rk_key" || return 2
+  [ -z "$_rk_anchor" ] || bd_require_row "$_rk_anchor"
+}
+
+# bd_rank_read: sets _rr_list (KEY<TAB>STATUS lines in rank order). The limit is the adapter's maximum, so a long
+# board is not mistaken for a truncation. rc 1 on any adapter failure (its sentence is already on stderr).
+bd_rank_read() {
+  _rr_rc=0
+  _rr_list=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject" 1000) || _rr_rc=$?
+  if [ "$_rr_rc" -eq 6 ]; then bd_rejected rank; return 1; fi
+  [ "$_rr_rc" -eq 0 ] || { echo "board rank: could not read the open cards of $_btproject in rank order (the adapter's sentence is above)." >&2; return 1; }
+  return 0
+}
+
+# bd_rank_pos <list> <KEY> -> the 1-based line of KEY, or nothing; bd_rank_at <list> <N> -> the key on line N, or nothing.
+bd_rank_pos() { printf '%s\n' "$1" | awk -F '\t' -v k="$2" '$1 == k { print NR; exit }'; }
+bd_rank_at()  { printf '%s\n' "$1" | awk -F '\t' -v n="$2" 'NR == n { print $1; exit }'; }
+
+# bd_rank_verify <list> <form> <KEY> <ANCHOR>: 0 when the order read back proves the move.
+bd_rank_verify() {
+  _rv_pos=$(bd_rank_pos "$1" "$3")
+  [ -n "$_rv_pos" ] || return 1
+  case "$2" in
+    top)    [ "$_rv_pos" -eq 1 ] ;;
+    before) [ "$(bd_rank_at "$1" $((_rv_pos + 1)))" = "$4" ] ;;
+    after)  [ "$(bd_rank_at "$1" $((_rv_pos - 1)))" = "$4" ] ;;
+    *)      return 1 ;;
+  esac
+}
+
+# bd_rank_plan: from the pre-read list, resolves _rk_dir/_rk_anchor. rc 2 when KEY or the anchor is not an open card;
+# rc 3 when --top and KEY already leads (nothing to write).
+bd_rank_plan() {
+  [ -n "$(bd_rank_pos "$_rr_list" "$_rk_key")" ] || { echo "board rank: $_rk_key is not an open card on $_btproject." >&2; return 2; }
+  # where the card sits now, so a bad move can be undone: first, or right after this neighbour
+  _rk_p=$(bd_rank_pos "$_rr_list" "$_rk_key")
+  if [ "$_rk_p" -eq 1 ]; then _rk_was="was first"; else _rk_was="was after $(bd_rank_at "$_rr_list" $((_rk_p - 1)))"; fi
+  if [ "$_rk_form" = top ]; then
+    _rk_anchor=$(bd_rank_at "$_rr_list" 1)
+    [ "$_rk_anchor" != "$_rk_key" ] || return 3
+    _rk_dir=before
+    return 0
+  fi
+  _rk_dir=$_rk_form
+  [ -n "$(bd_rank_pos "$_rr_list" "$_rk_anchor")" ] || { echo "board rank: $_rk_anchor is not an open card on $_btproject." >&2; return 2; }
+  return 0
+}
+
+do_rank() {
+  bd_rank_args "$@" || return 2
+  _be=$(bd_backend)
+  case "$_be" in
+    jira) : ;;
+    md|'') echo "board rank: the markdown board's order is its Order line; edit BACKLOG.md" >&2; return 2 ;;
+    *)     echo "board rank: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
+  esac
+  bd_tracker_ctx || return 2
+  bd_cmt_key_ok "$_rk_key" || { echo "board rank: '$_rk_key' is not a card key of project $_btproject." >&2; return 2; }
+  if [ -n "$_rk_anchor" ]; then
+    bd_cmt_key_ok "$_rk_anchor" || { echo "board rank: '$_rk_anchor' is not a card key of project $_btproject." >&2; return 2; }
+    [ "$_rk_anchor" != "$_rk_key" ] || { echo "board rank: a card cannot be ranked against itself." >&2; return 2; }
+  fi
+  bd_rank_read || return 1
+  _rk_prc=0; bd_rank_plan || _rk_prc=$?
+  if [ "$_rk_prc" -eq 3 ]; then echo "board rank: $_rk_key is already first"; return 0; fi
+  [ "$_rk_prc" -eq 0 ] || return "$_rk_prc"
+  if [ "$_rk_dry" -eq 1 ]; then
+    echo "board rank: would PUT /rest/agile/1.0/issue/rank: $_rk_key $_rk_dir $_rk_anchor"
+    return 0
+  fi
+  _rk_wrc=0
+  _rk_errf=$(mktemp) || { echo "board rank: could not create a scratch file." >&2; return 1; }
+  sh "$BD_JIRA_SH" rank "$_btbase" "$_btflavour" "$_btproject" "$_rk_key" "$_rk_dir" "$_rk_anchor" >/dev/null 2>"$_rk_errf" || _rk_wrc=$?
+  cat "$_rk_errf" >&2; _rk_anon=0
+  if bd_anon_wrote "$_rk_errf"; then _rk_anon=1; fi
+  rm -f "$_rk_errf"
+  # the adapter's rc 1 is a grammar refusal this front door should have caught (usage-class, rc 2); any other failure
+  # is the write or its proof (rc 1)
+  case "$_rk_wrc" in
+    0) : ;;
+    1) return 2 ;;
+    6)
+      if [ "$_rk_anon" -eq 1 ]; then echo "board rank: the tracker rejected the credential but served the rank anonymously - the order may have changed; read it back with board list ($_rk_key $_rk_was)." >&2
+      else bd_rejected rank; fi
+      return 1 ;;
+    *) echo "board rank: $_rk_key was not ranked (the adapter's sentence is above)." >&2; return 1 ;;
+  esac
+  if ! bd_rank_read; then
+    echo "board rank: UNPROVEN - the write was accepted but the post-read failed; read the order back with board list ($_rk_key $_rk_was)" >&2
+    return 2
+  fi
+  if bd_rank_verify "$_rr_list" "$_rk_form" "$_rk_key" "$_rk_anchor"; then
+    _rk_n=$(printf '%s\n' "$_rr_list" | awk 'END { print NR }')
+    echo "board rank: OK - $_rk_key now $_rk_dir $_rk_anchor (position $(bd_rank_pos "$_rr_list" "$_rk_key") of $_rk_n open cards), proven by post-read. ($_rk_key $_rk_was)"
+    return 0
+  fi
+  echo "board rank: UNPROVEN - the tracker took the write but the order read back differs (a concurrent re-rank?) ($_rk_key $_rk_was)" >&2
+  return 2
+}
+
+do_list() {
+  _ls_limit=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)
+        [ $# -ge 2 ] || { echo "board list: --limit needs a value" >&2; return 2; }
+        _ls_limit=$2; shift 2
+        case "$_ls_limit" in
+          ''|*[!0-9]*) echo "board list: --limit must be digits" >&2; return 2 ;;
+        esac ;;
+      -*) echo "board list: unknown option '$(printf '%s' "$1" | tr -d '[:cntrl:]')'" >&2; bd_usage; return 2 ;;
+      *)  echo "board list: takes no argument" >&2; bd_usage; return 2 ;;
+    esac
+  done
+  _be=$(bd_backend)
+  case "$_be" in
+    jira) : ;;
+    md|'') echo "board list: the markdown board's order is its Order line; read BACKLOG.md" >&2; return 2 ;;
+    *)     echo "board list: undeclared or unsupported backend '$_be'." >&2; return 2 ;;
+  esac
+  bd_tracker_ctx || return 2
+  _ls_rc=0
+  if [ -n "$_ls_limit" ]; then
+    _ls_out=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject" "$_ls_limit") || _ls_rc=$?
+  else
+    _ls_out=$(sh "$BD_JIRA_SH" list-ranked "$_btbase" "$_btflavour" "$_btproject") || _ls_rc=$?
+  fi
+  case "$_ls_rc" in
+    0) : ;;
+    1) return 2 ;;
+    6) bd_rejected list; return 1 ;;
+    *) echo "board list: could not read the open cards in rank order (the adapter's sentence is above)." >&2; return 1 ;;
+  esac
+  printf 'open cards on %s, in rank order:\n' "$_btproject"
+  [ -z "$_ls_out" ] || printf '%s\n' "$_ls_out"
 }
 
 # ── ORACLE MARKER: selftest() and everything below is the non-vacuity oracle region. ─────────────
@@ -956,7 +1814,11 @@ CONF_EOF
 #!/bin/sh
 set -eu
 log="${STUB_LOG:-/dev/null}"
+# SWAS-113: the anonymous-write suffix the adapter's rc-6 sentence carries when a leg asks for it
+sfx=""
+if [ -n "${STUB_ANON_SUFFIX:-}" ]; then sfx=" (the write may have applied anonymously)"; fi
 echo "$*" >> "$log"
+if [ -n "${STUB_AUTH_LOG:-}" ]; then echo "${KIT_TRACKER_AUTH:-unset}" >> "$STUB_AUTH_LOG"; fi
 case "$1" in
   get-issue)
     _cur="${STUB_STATE:-In Progress}"
@@ -973,11 +1835,15 @@ case "$1" in
     [ "${STUB_TRANSITION_FAIL:-0}" = 1 ] && exit 1
     # rc 5 = the adapter's diagnosed refusal: ONE fixed sentence on stderr (TRACKER-REQUIRED-FIELDS-DISCOVERY)
     if [ "${STUB_TRANSITION_RC:-0}" = 5 ]; then printf '%s\n' "${STUB_TRANSITION_ERR:-refused: stub transition}" >&2; exit 5; fi
+    # rc 6 = the adapter's "Jira did not accept the credential" (SWAS-113)
+    if [ "${STUB_TRANSITION_RC:-0}" = 6 ]; then echo "unverified: stub credential rejected$sfx" >&2; exit 6; fi
     STUB_STATE=$6
     if [ -n "${STUB_STATE_FILE:-}" ]; then printf '%s' "$STUB_STATE" > "$STUB_STATE_FILE"; fi
     exit 0 ;;
   create)
     [ "${STUB_CREATE_FAIL:-0}" = 1 ] && exit 1
+    # STUB_CREATE_RC: the adapter's own rc (6 = the credential was rejected, SWAS-113)
+    if [ -n "${STUB_CREATE_RC:-}" ]; then echo "unverified: stub create failure$sfx" >&2; exit "$STUB_CREATE_RC"; fi
     # the fields fragment board.sh pipes in on STDIN (arg 7 is `-`) — a leg compares it byte-for-byte
     if [ -n "${STUB_BODY_FILE:-}" ]; then cat > "$STUB_BODY_FILE"; else cat > /dev/null; fi
     printf '%s\n' "${STUB_CREATED_KEY:-AB-99}"
@@ -1006,6 +1872,50 @@ case "$1" in
     # the adapter's closed set; STUB_WCK names a file to narrow/replace it
     if [ -n "${STUB_WCK:-}" ] && [ -f "$STUB_WCK" ]; then cat "$STUB_WCK"; exit 0; fi
     printf 'customfield_N\npriority\ncomponents\nfixVersions\nduedate\nlabels\nparent\ndescription\n'
+    exit 0 ;;
+  comment)
+    # `comment <base> <flavour> <project> <KEY> -`: the body arrives on STDIN (never argv); a leg compares it byte-for-byte.
+    # STUB_COMMENT_RC non-zero = the adapter's refusal/failure with that rc and one fixed sentence
+    if [ -n "${STUB_BODY_FILE:-}" ]; then cat > "$STUB_BODY_FILE"; else cat > /dev/null; fi
+    if [ "${STUB_COMMENT_RC:-0}" != 0 ]; then echo "unverified: stub comment failure$sfx" >&2; exit "$STUB_COMMENT_RC"; fi
+    printf '%s\n' "${STUB_COMMENT_ID:-10042}"
+    exit 0 ;;
+  show)
+    # `show <base> <flavour> <project> <KEY> <size-map> <risk-map> <n>`: prints the leg's recorded card text; STUB_SHOW_RC non-zero = the adapter's rc
+    if [ "${STUB_SHOW_RC:-0}" != 0 ]; then echo "unverified: stub show failure" >&2; exit "$STUB_SHOW_RC"; fi
+    [ -n "${STUB_SHOW:-}" ] && [ -f "$STUB_SHOW" ] || exit 2
+    cat "$STUB_SHOW"
+    exit 0 ;;
+  edit-meta)
+    # the card's editmeta lines from $STUB_EM (rc 2 when the leg sets none)
+    if [ "${STUB_EM_RC:-0}" != 0 ]; then echo "unverified: stub editmeta failure" >&2; exit "$STUB_EM_RC"; fi
+    [ -n "${STUB_EM:-}" ] && [ -f "$STUB_EM" ] || exit 2
+    cat "$STUB_EM"
+    exit 0 ;;
+  edit)
+    # `edit <base> <flavour> <project> <KEY> <size-id|-> <risk-id|-> <metric-id|-> -`: the fragment arrives on STDIN; a leg compares it byte-for-byte
+    if [ -n "${STUB_BODY_FILE:-}" ]; then cat > "$STUB_BODY_FILE"; else cat > /dev/null; fi
+    if [ "${STUB_EDIT_RC:-0}" != 0 ]; then echo "refused: stub edit failure$sfx" >&2; exit "$STUB_EDIT_RC"; fi
+    printf 'ok\n'
+    exit 0 ;;
+  rank)
+    # `rank <base> <flavour> <project> KEY dir ANCHOR`: STUB_RANK_RC non-zero = that failure; else the write is marked done
+    # (the file STUB_RANK_DONE), which switches `list-ranked` from STUB_RANKED_PRE to STUB_RANKED_POST
+    if [ "${STUB_RANK_RC:-0}" != 0 ]; then echo "unverified: stub rank failure$sfx" >&2; exit "$STUB_RANK_RC"; fi
+    if [ -n "${STUB_RANK_DONE:-}" ]; then : > "$STUB_RANK_DONE"; fi
+    printf 'ranked %s %s %s\n' "$5" "$6" "$7"
+    exit 0 ;;
+  list-ranked)
+    # KEY<TAB>STATUS lines from STUB_RANKED_PRE, or from STUB_RANKED_POST once a rank has been written
+    if [ "${STUB_LIST_RC:-0}" != 0 ]; then echo "unverified: stub list failure" >&2; exit "$STUB_LIST_RC"; fi
+    # STUB_LIST_RC_AFTER: fail only once the write is done (the post-read)
+    if [ "${STUB_LIST_RC_AFTER:-0}" != 0 ] && [ -n "${STUB_RANK_DONE:-}" ] && [ -f "$STUB_RANK_DONE" ]; then
+      echo "unverified: stub post-read failure" >&2; exit "$STUB_LIST_RC_AFTER"
+    fi
+    _lf="${STUB_RANKED_PRE:-}"
+    if [ -n "${STUB_RANK_DONE:-}" ] && [ -f "$STUB_RANK_DONE" ] && [ -n "${STUB_RANKED_POST:-}" ]; then _lf=$STUB_RANKED_POST; fi
+    [ -n "$_lf" ] && [ -f "$_lf" ] || exit 2
+    cat "$_lf"
     exit 0 ;;
   get-fields)
     # the post-read: prints what the leg says the tracker holds (rc 2 when the leg sets none)
@@ -1396,6 +2306,585 @@ line two"
   if [ "$bd_rc" -ne 0 ]; then bd_pass "leg jira/create-fail: a failed tracker create yields non-zero"
   else bd_fail_ "leg jira/create-fail: wrongly returned 0"; fi
 
+  # ── --metric legs (KIT-TREE-BOARD-SWITCH, D8): the text shaper writes it to the conf's field.metric; unmapped or
+  # off-screen refuses with ZERO POSTs, naming the conf line ─────────────────────────────────────────────────────
+  mkdir -p "$bd_cmdir/metric" "$bd_cmdir/metricdc"
+  { bd_cm_lines Task 10046 10047; printf 'Task\tcustomfield_10077\tstring\tSuccess metric\t\n'; } > "$bd_cmdir/metric/Task.txt"
+  printf 'Task\tcustomfield_10077\tstring\tSuccess metric\t\nTask\tdescription\tstring\tDescription\t\n' > "$bd_cmdir/metricdc/Task.txt"
+  bd_cx='field.metric=customfield_10077'; bd_conf - - cloud
+  printf 'issuetype\tTask\ncustomfield_10077\tpresent\n' > "$bd_cr_gf"
+  bd_cm_cur="$bd_cmdir/metric"; bd_cr --title "x" --metric "Adoption rises
+second line"; bd_cm_cur="$bd_cmdir"
+  bd_want='{"customfield_10077":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"Adoption rises"}]},{"type":"paragraph","content":[{"type":"text","text":"second line"}]}]}}'
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_cr_body" 2>/dev/null)" = "$bd_want" ] && [ "$(bd_posts)" = 1 ]; then
+    bd_pass "leg jira/create-metric: --metric reaches field.metric as an ADF document on Cloud, one POST, proven present by the post-read"
+  else bd_fail_ "leg jira/create-metric: rc=$bd_rc posts=$(bd_posts) body=[$(cat "$bd_cr_body" 2>/dev/null)] out=[$bd_out]"; fi
+  bd_conf - - datacenter
+  printf 'issuetype\tTask\ncustomfield_10077\tplain metric\n' > "$bd_cr_gf"
+  bd_cm_cur="$bd_cmdir/metricdc"; bd_cr --title "x" --metric "plain metric"; bd_cm_cur="$bd_cmdir"
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_cr_body" 2>/dev/null)" = '{"customfield_10077":"plain metric"}' ] && [ "$(bd_posts)" = 1 ]; then
+    bd_pass "leg jira/create-metric-dc: --metric on Data Center is a plain string, one POST, proven by the post-read"
+  else bd_fail_ "leg jira/create-metric-dc: rc=$bd_rc posts=$(bd_posts) body=[$(cat "$bd_cr_body" 2>/dev/null)] out=[$bd_out]"; fi
+  bd_cx=""; bd_conf - - cloud
+  bd_cm_cur="$bd_cmdir/metric"; bd_cr --title "x" --metric "m"; bd_cm_cur="$bd_cmdir"
+  bd_rc1=$bd_rc; bd_p1=$(bd_posts); bd_o1=$bd_out
+  bd_cx='field.metric=none'; bd_conf - - cloud
+  bd_cm_cur="$bd_cmdir/metric"; bd_cr --title "x" --metric "m"; bd_cm_cur="$bd_cmdir"; bd_cx=""
+  if [ "$bd_rc1" -eq 2 ] && [ "$bd_p1" = 0 ] && printf '%s' "$bd_o1" | grep -qF 'field.metric=customfield_N' \
+     && [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF "conf has 'none'"; then
+    bd_pass "leg jira/create-metric-unmapped: --metric with field.metric unset, or none, is refused (rc 2) with zero POSTs, naming the conf line to add"
+  else bd_fail_ "leg jira/create-metric-unmapped: rc=$bd_rc1/$bd_rc posts=$bd_p1/$(bd_posts) o1=[$bd_o1] out=[$bd_out]"; fi
+  bd_cx='field.metric=customfield_10077'; bd_conf - - cloud
+  bd_cr --title "x" --metric "m"; bd_cx=""
+  if [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'create screen'; then
+    bd_pass "leg jira/create-metric-screen: a mapped field.metric that is not on the type's create screen is refused (rc 2, zero POSTs)"
+  else bd_fail_ "leg jira/create-metric-screen: rc=$bd_rc posts=$(bd_posts) out=[$bd_out]"; fi
+
+  # ── comment legs (KIT-TREE-BOARD-SWITCH §6.5 legs 10-13, B1 --from-record): the adapter is the stub; the record carries
+  # TOPSECRET so an argv/log/echo leak is visible, and its SECOND line must never reach the stub at all ───────────────
+  bd_cb="$bd_base/.cwant"; bd_cl="$bd_base/.cmtlog"; bd_cbo="$bd_base/.cmtcaptured"
+  bd_cclone="$bd_base/cmt-clone"; bd_sclone="$bd_base/cmt-symclone"
+  cp -R "$bd_jclone" "$bd_cclone"; cp -R "$bd_jclone" "$bd_sclone"
+  (
+    cd "$bd_cclone"
+    mkdir -p docs/reviews
+    printf 'TOPSECRET first line\nTOPSECRETBODY2 second line\n' > docs/reviews/x.md
+    printf 'TOPSECRET notes\n' > docs/reviews/n.txt
+    printf 'TOPSECRET\033x\n' > docs/reviews/c.md
+    printf 'TOPSECRET\tx\n' > docs/reviews/t.md
+    printf '   \nTOPSECRET second line\n' > docs/reviews/b.md
+    : > docs/reviews/e.md
+    awk 'BEGIN{printf "TOPSECRET"; for(i=0;i<300;i++) printf "T"; print ""}' > docs/reviews/big.md
+    ln -s x.md docs/reviews/l.md
+    git add docs/reviews/x.md docs/reviews/n.txt docs/reviews/c.md docs/reviews/t.md docs/reviews/b.md docs/reviews/e.md docs/reviews/big.md docs/reviews/l.md
+    printf 'TOPSECRET untracked\n' > docs/reviews/u.md
+  )
+  (
+    cd "$bd_sclone"
+    mkdir -p real docs
+    printf 'TOPSECRET first line\n' > real/x.md
+    ln -s ../real docs/reviews
+  )
+  printf 'TOPSECRET first line\nRecord: docs/reviews/x.md\n' > "$bd_cb"
+  bd_cmt() { # <dir> <args…>: one comment, in-process; the stub log is reset and its captured stdin lands in $bd_cbo
+    _cd_dir=$1; shift
+    : > "$bd_cl"; rm -f "$bd_cbo"
+    bd_out=$(cd "$_cd_dir" && STUB_LOG="$bd_cl" STUB_BODY_FILE="$bd_cbo" do_comment "$@" 2>&1); bd_rc=$?
+  }
+  # leg 10: --dry-run makes no adapter call and needs no credentials
+  bd_nbytes=$(wc -c < "$bd_cb" | tr -d ' ')
+  bd_out=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN KIT_TRACKER_AUTH JIRA_EMAIL JIRA_TOKEN; : > "$bd_cl"; cd "$bd_cclone" && STUB_LOG="$bd_cl" do_comment AB-7 --from-record docs/reviews/x.md --dry-run 2>&1) ); bd_rc=$?
+  if [ "$bd_rc" -eq 0 ] && [ ! -s "$bd_cl" ] \
+     && [ "$bd_out" = "board comment: would POST a $bd_nbytes-byte, 2-line comment to AB-7 (dry run; no tracker call)" ]; then
+    bd_pass "leg comment/dry-run: --dry-run with no credentials prints the byte and line count and makes no adapter call"
+  else bd_fail_ "leg comment/dry-run: rc=$bd_rc adapter-calls=$([ -s "$bd_cl" ] && echo yes || echo no) out=[$bd_out]"; fi
+  # leg 11: on md the verb refuses rc 2 BEFORE it reads the record (the record path does not even exist)
+  bd_cmt "$bd_base/md-clone" AB-7 --from-record docs/reviews/no-such.md
+  if [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cl" ] && printf '%s' "$bd_out" | grep -qF 'on md the retro rides the PR' \
+     && ! printf '%s' "$bd_out" | grep -qF 'regular file'; then
+    bd_pass "leg comment/md: on an md backend comment refuses rc 2 (the retro rides the PR) before it reads the body"
+  else bd_fail_ "leg comment/md: rc=$bd_rc out=[$bd_out]"; fi
+  # leg 12: every record-path and first-line refusal is rc 2 with ZERO adapter calls, no record byte echoed, and the
+  # sentence that names the check that fired (so a deleted check turns its own row red, not a neighbour's)
+  bd_bad=0
+  bd_cmt_refuse() { # <dir> <sentence fragment> <args…>
+    _cr_dir=$1; _cr_frag=$2; shift 2
+    bd_cmt "$_cr_dir" AB-7 "$@"
+    [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cl" ] || bd_bad=1
+    ! printf '%s' "$bd_out" | grep -qF 'TOPSECRET' || bd_bad=1
+    printf '%s' "$bd_out" | grep -qF "$_cr_frag" || bd_bad=1
+  }
+  bd_cmt_refuse "$bd_cclone" 'must be docs/reviews/<name>.md' --from-record .env
+  bd_cmt_refuse "$bd_cclone" 'must be docs/reviews/<name>.md' --from-record 'docs/reviews/../../x.md'
+  bd_cmt_refuse "$bd_cclone" 'must be docs/reviews/<name>.md' --from-record "$bd_cclone/docs/reviews/x.md"
+  bd_cmt_refuse "$bd_cclone" 'must be docs/reviews/<name>.md' --from-record docs/reviews/n.txt
+  bd_cmt_refuse "$bd_cclone" 'must be docs/reviews/<name>.md' --from-record 'docs/reviews/a b.md'
+  bd_cmt_refuse "$bd_cclone" 'symlink' --from-record docs/reviews/l.md
+  bd_cmt_refuse "$bd_sclone" 'symlink' --from-record docs/reviews/x.md
+  bd_cmt_refuse "$bd_cclone" 'readable regular file' --from-record docs/reviews/none.md
+  bd_cmt_refuse "$bd_cclone" 'tracked in git' --from-record docs/reviews/u.md
+  bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/c.md
+  bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/t.md
+  bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/b.md
+  bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/e.md
+  bd_cmt_refuse "$bd_cclone" 'first line must be' --from-record docs/reviews/big.md
+  for bd_k in XY-1 AB-07 'AB-1;x'; do
+    bd_cmt "$bd_cclone" "$bd_k" --from-record docs/reviews/x.md
+    [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cl" ] || bd_bad=1
+  done
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg comment/refusals: a dotenv-named path, '..', an absolute path, a non-.md file, a symlinked leaf, a symlinked docs/reviews, a missing record, an untracked record, a control-byte / TAB / blank / empty / over-300-byte first line, another project's key and a leading-zero key each refuse rc 2 with zero adapter calls and no record byte echoed"
+  else bd_fail_ "leg comment/refusals: bad=$bd_bad (last rc=$bd_rc out=[$bd_out])"; fi
+  # leg 13: the composed body (first line + the Record line, NOT the second line) reaches the stub on stdin byte-for-byte
+  # and is absent from the stub's argv log
+  bd_cmt "$bd_cclone" AB-7 --from-record docs/reviews/x.md
+  if [ "$bd_rc" -eq 0 ] && cmp -s "$bd_cb" "$bd_cbo" && ! grep -qF 'TOPSECRET' "$bd_cl" \
+     && ! grep -qF 'TOPSECRETBODY2' "$bd_cbo" \
+     && grep -qxF 'comment https://ex.atlassian.net cloud AB AB-7 -' "$bd_cl" \
+     && [ "$bd_out" = 'board comment: AB-7 comment 10042 posted and read back' ]; then
+    bd_pass "leg comment/stdin: the composed body reaches the adapter on stdin byte-for-byte, carries only the record's first line, is absent from its argv, and success names the comment id"
+  else bd_fail_ "leg comment/stdin: rc=$bd_rc log=[$(cat "$bd_cl")] out=[$bd_out]"; fi
+  # the adapter's failure is rc 1 (the write or its proof); its own refusal (rc 1) reaches the caller as rc 2; no id is not a success
+  bd_cmt_rc() { # <stub rc>
+    : > "$bd_cl"
+    bd_out=$(cd "$bd_cclone" && STUB_LOG="$bd_cl" STUB_COMMENT_RC="$1" do_comment AB-7 --from-record docs/reviews/x.md 2>&1); bd_rc=$?
+  }
+  bd_cmt_rc 2; bd_rc1=$bd_rc; bd_o1=$bd_out
+  bd_cmt_rc 1; bd_rc2=$bd_rc
+  bd_out=$(cd "$bd_cclone" && STUB_COMMENT_ID=x1 do_comment AB-7 --from-record docs/reviews/x.md 2>&1); bd_rc3=$?
+  if [ "$bd_rc1" -eq 1 ] && printf '%s' "$bd_o1" | grep -qF 'was not posted and proved' && ! printf '%s' "$bd_o1" | grep -qF 'TOPSECRET' \
+     && [ "$bd_rc2" -eq 2 ] && [ "$bd_rc3" -eq 1 ]; then
+    bd_pass "leg comment/rc: an adapter failure is rc 1, an adapter refusal is rc 2, and a non-numeric id is rc 1 (never a success)"
+  else bd_fail_ "leg comment/rc: rc=$bd_rc1/$bd_rc2/$bd_rc3 o1=[$bd_o1]"; fi
+
+  # ── show / edit legs (BOARD-EDIT-SHOW-VERB, design 2026-10-09 §4): the stub adapter records every call; each edit form alone
+  # asserts the exact fragment, ONE PUT, and the post-read; every refusal asserts ZERO PUTs (and, before any request, an EMPTY log). ──
+  bd_em="$bd_base/.em"; bd_em_cur="$bd_em"; bd_em_rc_cur=0; bd_ed_rc_cur=0; bd_show="$bd_base/.show"; bd_show_rc=0
+  printf 'edit\tsummary\tstring\tSummary\t\nedit\tdescription\tstring\tDescription\t\nedit\tlabels\tarray\tLabels\t\nedit\tparent\tissuelink\tParent\t\nedit\tcustomfield_10046\toption\tSize\tXS|S|M|L|XL\nedit\tcustomfield_10047\toption\tRisk\tLow|Medium|High\n' > "$bd_em"
+  printf 'edit\tsummary\tstring\tSummary\t\nedit\tdescription\tstring\tDescription\t\nedit\tlabels\tarray\tLabels\t\nedit\tparent\tissuelink\tParent\t\n' > "$bd_em.nosize"
+  bd_conf customfield_10046 customfield_10047 cloud
+  bd_x_run() { # <args…>: one edit, in-process, stderr folded in; the stub log and fragment capture are reset first
+    : > "$bd_cr_log"; rm -f "$bd_cr_body"
+    bd_out=$(cd "$bd_cc" && STUB_LOG="$bd_cr_log" STUB_BODY_FILE="$bd_cr_body" STUB_EM="$bd_em_cur" STUB_EM_RC="$bd_em_rc_cur" STUB_EDIT_RC="$bd_ed_rc_cur" STUB_GF="$bd_cr_gf" do_edit "$@" 2>&1); bd_rc=$?
+  }
+  bd_x_n() { grep -c "^$1 " "$bd_cr_log" 2>/dev/null || true; }
+  bd_x_one() { # <label> <want-fragment> <gf> <expected size/risk ids> <args…>: succeeds with exactly the fragment, ONE PUT, the post-read
+    _x_label=$1; _x_want=$2; _x_gf=$3; _x_ids=$4; shift 4
+    printf '%b' "$_x_gf" > "$bd_cr_gf"
+    bd_x_run "$@"
+    if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_cr_body" 2>/dev/null)" = "$_x_want" ] && [ "$(bd_x_n edit)" = 1 ] && [ "$(bd_x_n edit-meta)" = 1 ] && [ "$(bd_x_n get-fields)" = 1 ] \
+       && grep -qxF "edit https://ex.atlassian.net cloud AB AB-7 $_x_ids -" "$bd_cr_log" && printf '%s' "$bd_out" | grep -qF 'proven by post-read'; then
+      bd_pass "leg jira/edit-$_x_label: the exact fragment, one PUT, proven by the post-read"
+    else bd_fail_ "leg jira/edit-$_x_label: rc=$bd_rc puts=$(bd_x_n edit) body=[$(cat "$bd_cr_body" 2>/dev/null)] want=[$_x_want] out=[$bd_out]"; fi
+  }
+  bd_x_mis() { # <label> <gf> <needle> <args…>: the PUT happened, the post-read disagrees -> rc 1 naming the field, never ok
+    _x_label=$1; _x_gf=$2; _x_needle=$3; shift 3
+    printf '%b' "$_x_gf" > "$bd_cr_gf"
+    bd_x_run "$@"
+    if [ "$bd_rc" -eq 1 ] && [ "$(bd_x_n edit)" = 1 ] && printf '%s' "$bd_out" | grep -qF 'did NOT prove' && printf '%s' "$bd_out" | grep -qF -e "$_x_needle" && ! printf '%s' "$bd_out" | grep -qF 'OK'; then
+      bd_pass "leg jira/edit-mismatch-$_x_label: a post-read that disagrees is rc 1 naming the field"
+    else bd_fail_ "leg jira/edit-mismatch-$_x_label: rc=$bd_rc out=[$bd_out]"; fi
+  }
+  bd_x_off() { # <label> <rc> <needle> <args…>: refused BEFORE any request - the stub log is EMPTY, no content echoed
+    _x_label=$1; _x_rc=$2; _x_needle=$3; shift 3
+    bd_x_run "$@"
+    if [ "$bd_rc" -eq "$_x_rc" ] && [ ! -s "$bd_cr_log" ] && printf '%s' "$bd_out" | grep -qF -e "$_x_needle" && ! printf '%s' "$bd_out" | grep -qF TOPSECRET; then
+      bd_pass "leg jira/edit-refuse-$_x_label: refused rc $_x_rc with zero requests and no content echoed"
+    else bd_fail_ "leg jira/edit-refuse-$_x_label: rc=$bd_rc log=[$(cat "$bd_cr_log")] out=[$bd_out]"; fi
+  }
+  bd_l1='a < b | c; d $HOME '"'"'q'"'"' scripts/board.sh'
+  bd_df="$bd_base/d.txt"; printf '%s\nsecond\n' "$bd_l1" > "$bd_df"
+  bd_adf='{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"'"$bd_l1"'"}]},{"type":"paragraph","content":[{"type":"text","text":"second"}]}]}'
+  bd_dn=$(printf '%s\nsecond' "$bd_l1" | wc -c | tr -d ' ')
+
+  # each form alone
+  bd_x_one title '{"fields":{"summary":"New title"}}' 'summary\tNew title\n' '- - -' AB-7 --title "New title"
+  bd_x_one description "{\"fields\":{\"description\":$bd_adf}}" "description\\tpresent $bd_dn\\n" '- - -' AB-7 --description-file "$bd_df"
+  bd_x_one size '{"fields":{"customfield_10046":{"value":"S"}}}' 'customfield_10046\tS\n' 'customfield_10046 - -' AB-7 --size s
+  bd_x_one risk '{"fields":{"customfield_10047":{"value":"Medium"}}}' 'customfield_10047\tMedium\n' '- customfield_10047 -' AB-7 --risk medium
+  bd_x_one label-add '{"update":{"labels":[{"add":"parked"}]}}' 'labels\tkeep parked\n' '- - -' AB-7 --label-add parked
+  bd_x_one label-remove '{"update":{"labels":[{"remove":"old"}]}}' 'labels\tkeep\n' '- - -' AB-7 --label-remove old
+  bd_x_one parent '{"fields":{"parent":{"key":"AB-5"}}}' 'parent\tAB-5\n' '- - -' AB-7 --parent AB-5
+  bd_x_one combined '{"fields":{"summary":"T","customfield_10046":{"value":"L"}},"update":{"labels":[{"add":"a"},{"remove":"b"}]}}' 'summary\tT\ncustomfield_10046\tL\nlabels\ta keep\n' 'customfield_10046 - -' AB-7 --title T --size l --label-add a --label-remove b
+
+  # a mismatch leg per proof kind
+  bd_x_mis summary 'summary\tOther\n' 'summary' AB-7 --title X
+  bd_x_mis select 'customfield_10046\tM\n' 'customfield_10046' AB-7 --size S
+  bd_x_mis parent 'parent\tAB-6\n' 'parent' AB-7 --parent AB-5
+  bd_x_mis label-added 'labels\tkeep\n' "the label 'parked' was added" AB-7 --label-add parked
+  bd_x_mis label-removed 'labels\told\n' "the label 'old' was removed" AB-7 --label-remove old
+  bd_x_mis description 'description\tpresent 3\n' 'description' AB-7 --description-file "$bd_df"
+
+  # refused before any request
+  bd_x_off key-other-project 1 'not a card key' XY-7 --title x
+  bd_x_off key-leading-zero 1 'not a card key' AB-07 --title x
+  bd_x_off key-bad-grammar 2 'invalid row id' 'AB-7;x' --title x
+  bd_x_off label-both 2 "in both --label-add and --label-remove" AB-7 --label-add a --label-remove a
+  bd_x_off parent-other-project 1 'never re-parented under another project' AB-7 --parent XY-5
+  bd_x_off nothing 2 'nothing to change' AB-7
+  bd_x_off label-grammar 2 'must match' AB-7 --label-add 'a b'
+  bd_x_off size-grammar 2 'must match' AB-7 --size 'S;x'
+  bd_x_off title-grammar 2 'printable ASCII' AB-7 --title 'caf'"$(printf '\303\251')"
+  bd_x_off title-space 2 'start or end with a space' AB-7 --title ' x'
+  bd_x_off no-inline-description 2 'unknown option' AB-7 --description x
+  # a select value outside the card's allowed set: refused after the editmeta read, before the PUT
+  printf 'issuetype\tTask\n' > "$bd_cr_gf"
+  bd_x_run AB-7 --size XXL
+  if [ "$bd_rc" -eq 2 ] && [ "$(bd_x_n edit)" = 0 ] && [ "$(bd_x_n edit-meta)" = 1 ] && printf '%s' "$bd_out" | grep -qF 'XS, S, M, L, XL'; then
+    bd_pass "leg jira/edit-refuse-bad-value: a Size outside the editmeta's allowed set is refused with the set listed and zero PUTs"
+  else bd_fail_ "leg jira/edit-refuse-bad-value: rc=$bd_rc out=[$bd_out]"; fi
+  # editmeta lacking the field -> refused before the PUT, the field named; an unreadable editmeta -> unverified (rc 1), zero PUTs
+  bd_em_cur="$bd_em.nosize"; bd_x_run AB-7 --size S; bd_em_cur="$bd_em"
+  bd_rc1=$bd_rc; bd_e1=$(bd_x_n edit); bd_o1=$bd_out
+  bd_em_rc_cur=2; bd_x_run AB-7 --title x; bd_em_rc_cur=0
+  if [ "$bd_rc1" -eq 2 ] && [ "$bd_e1" = 0 ] && printf '%s' "$bd_o1" | grep -qF 'customfield_10046' && printf '%s' "$bd_o1" | grep -qF 'is not editable' \
+     && [ "$bd_rc" -eq 1 ] && [ "$(bd_x_n edit)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'unverified: stub editmeta failure'; then
+    bd_pass "leg jira/edit-refuse-editmeta: a field absent from the card's editmeta is refused naming it, and an unreadable editmeta is unverified - zero PUTs each"
+  else bd_fail_ "leg jira/edit-refuse-editmeta: rc=$bd_rc1/$bd_rc o1=[$bd_o1] out=[$bd_out]"; fi
+  # the PUT fails with anything but a refusal (adapter rc 2: a timeout, a 5xx) -> rc 3 "may have applied", never a post-read, never ok
+  bd_ed_rc_cur=2; bd_x_run AB-7 --title x; bd_ed_rc_cur=0
+  if [ "$bd_rc" -eq 3 ] && [ "$(bd_x_n get-fields)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'unverified - the edit may have applied; check with board show AB-7' && ! printf '%s' "$bd_out" | grep -qF 'OK'; then
+    bd_pass "leg jira/edit-unverified-put: an adapter failure other than a refusal is rc 3 saying the edit may have applied"
+  else bd_fail_ "leg jira/edit-unverified-put: rc=$bd_rc out=[$bd_out]"; fi
+  # the tracker refuses the PUT -> rc 1, no OK, no post-read
+  bd_ed_rc_cur=1; bd_x_run AB-7 --title x; bd_ed_rc_cur=0
+  if [ "$bd_rc" -eq 1 ] && [ "$(bd_x_n get-fields)" = 0 ] && ! printf '%s' "$bd_out" | grep -qF 'OK'; then
+    bd_pass "leg jira/edit-refuse-put: a PUT the adapter refuses is rc 1 and is never read back as ok"
+  else bd_fail_ "leg jira/edit-refuse-put: rc=$bd_rc out=[$bd_out]"; fi
+  # md backend: rc 2 before any request
+  : > "$bd_cr_log"
+  bd_out=$(cd "$bd_base/md-clone" && STUB_LOG="$bd_cr_log" do_edit AB-7 --title x 2>&1); bd_rc=$?
+  bd_out2=$(cd "$bd_base/md-clone" && STUB_LOG="$bd_cr_log" do_show AB-7 2>&1); bd_rc2=$?
+  if [ "$bd_rc" -eq 2 ] && [ "$bd_rc2" -eq 2 ] && [ ! -s "$bd_cr_log" ] && printf '%s' "$bd_out" | grep -qF 'needs a tracker backend'; then
+    bd_pass "leg jira/edit-md: on an md backend edit and show refuse rc 2 with zero requests"
+  else bd_fail_ "leg jira/edit-md: rc=$bd_rc/$bd_rc2 out=[$bd_out] out2=[$bd_out2]"; fi
+
+  # dry run: every flag validated, the plan printed, ZERO requests, and no credential needed
+  bd_out=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN KIT_TRACKER_AUTH JIRA_EMAIL JIRA_TOKEN; : > "$bd_cr_log"; cd "$bd_cc" && STUB_LOG="$bd_cr_log" do_edit AB-7 --title T --size S --description-file "$bd_df" --label-add x --label-remove y --parent AB-5 --dry-run 2>&1) ); bd_rc=$?
+  if [ "$bd_rc" -eq 0 ] && [ ! -s "$bd_cr_log" ] && printf '%s' "$bd_out" | grep -qF 'DRY RUN' && printf '%s' "$bd_out" | grep -qF "summary: \"T\"" \
+     && printf '%s' "$bd_out" | grep -qF "$bd_dn bytes, 2 lines" && printf '%s' "$bd_out" | grep -qF 'labels added: x' && printf '%s' "$bd_out" | grep -qF 'labels removed: y'; then
+    bd_pass "leg jira/edit-dry-run: --dry-run with no credentials prints the change set (text as bytes and lines) and makes no request"
+  else bd_fail_ "leg jira/edit-dry-run: rc=$bd_rc log=[$(cat "$bd_cr_log")] out=[$bd_out]"; fi
+  bd_out=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN; : > "$bd_cr_log"; cd "$bd_cc" && STUB_LOG="$bd_cr_log" do_edit AB-7 --title T --label-add x --label-remove x --dry-run 2>&1) ); bd_rc=$?
+  if [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cr_log" ]; then bd_pass "leg jira/edit-dry-run-validates: a dry run still refuses an invalid flag set (rc 2, zero requests)"
+  else bd_fail_ "leg jira/edit-dry-run-validates: rc=$bd_rc out=[$bd_out]"; fi
+
+  # --description-file refusals: each rc 2, ZERO requests, and no byte of the file echoed (every file carries TOPSECRET)
+  mkdir -p "$bd_cc/.hid" "$bd_base/nul"
+  printf 'TOPSECRET\n' > "$bd_cc/.hid/d.txt"
+  ln -s "$bd_df" "$bd_base/lnk.txt"
+  printf 'TOPSECRET\000x\n' > "$bd_base/nul.txt"
+  { printf 'TOPSECRET'; awk 'BEGIN { for (i = 0; i < 31992; i++) printf "a" }'; } > "$bd_base/big32001.txt"
+  { printf 'TOPSECRET\n-----BEGIN RSA PRIVATE'; printf ' KEY-----\n'; } > "$bd_base/pem.txt"
+  { printf 'TOPSECRET gh'; printf 'p_'; awk 'BEGIN { for (i = 0; i < 36; i++) printf "a" }'; printf '\n'; } > "$bd_base/tok.txt"
+  printf 'TOPSECRET \377\376\n' > "$bd_base/utf8.txt"
+  printf '\n\n' > "$bd_base/blank.txt"
+  bd_x_off file-symlink 2 'symlink' AB-7 --description-file "$bd_base/lnk.txt"
+  bd_x_off file-dot-path 2 'must sit under' AB-7 --description-file "$bd_cc/.hid/d.txt"
+  bd_x_off file-outside 2 'must sit under' AB-7 --description-file /etc/hosts
+  bd_x_off file-nul 2 'NUL' AB-7 --description-file "$bd_base/nul.txt"
+  bd_x_off file-over-32000 2 '1..32000 bytes' AB-7 --description-file "$bd_base/big32001.txt"
+  bd_x_off file-private-key 2 'private-key header' AB-7 --description-file "$bd_base/pem.txt"
+  bd_x_off file-token 2 'token shape' AB-7 --description-file "$bd_base/tok.txt"
+  bd_x_off file-utf8 2 'valid UTF-8' AB-7 --description-file "$bd_base/utf8.txt"
+  bd_x_off file-blank 2 'no content' AB-7 --description-file "$bd_base/blank.txt"
+  bd_x_off file-missing 2 'regular file' AB-7 --description-file "$bd_base/none.txt"
+  # a file named `foo<LF>` beside a symlink `foo`: the newline path is refused as a path, the symlink as a symlink - zero requests each
+  mkdir -p "$bd_base/nl"
+  bd_nlname=$(printf 'foo\nX'); bd_nlname=${bd_nlname%X}
+  printf 'TOPSECRET real\n' > "$bd_base/nl/$bd_nlname"
+  ln -s "$bd_df" "$bd_base/nl/foo"
+  bd_x_off file-newline-path 2 'printable ASCII' AB-7 --description-file "$bd_base/nl/$bd_nlname"
+  bd_x_off file-newline-beside-symlink 2 'symlink' AB-7 --description-file "$bd_base/nl/foo"
+
+  # create --description-file: the same file round-trips byte-exact (< | ; $ ' and a control-plane name) into the create fragment;
+  # --description with --description-file is refused; a refused file means zero POSTs
+  bd_conf - - cloud
+  printf 'issuetype\tTask\n' > "$bd_cr_gf"
+  bd_cr --title x --description-file "$bd_df"
+  if [ "$bd_rc" -eq 0 ] && [ "$(cat "$bd_cr_body")" = "{\"description\":$bd_adf}" ] && [ "$(bd_posts)" = 1 ]; then
+    bd_pass "leg jira/create-description-file: a file holding < | ; \$ ' and a control-plane file name reaches the create fragment byte-exact, one POST"
+  else bd_fail_ "leg jira/create-description-file: rc=$bd_rc posts=$(bd_posts) body=[$(cat "$bd_cr_body" 2>/dev/null)] out=[$bd_out]"; fi
+  bd_cr --title x --description inline --description-file "$bd_df"
+  bd_rc1=$bd_rc; bd_p1=$(bd_posts)
+  bd_cr --title x --description-file "$bd_base/pem.txt"
+  bd_rc2=$bd_rc; bd_p2=$(bd_posts)
+  if [ "$bd_rc1" -eq 2 ] && [ "$bd_p1" = 0 ] && [ "$bd_rc2" -eq 2 ] && [ "$bd_p2" = 0 ] && ! printf '%s' "$bd_out" | grep -qF TOPSECRET; then
+    bd_pass "leg jira/create-description-file-refuse: --description with --description-file, and a file holding a private-key header, each refuse rc 2 with zero POSTs"
+  else bd_fail_ "leg jira/create-description-file-refuse: rc=$bd_rc1/$bd_rc2 posts=$bd_p1/$bd_p2 out=[$bd_out]"; fi
+
+  # one line count for both verbs: 2001 lines is over the bound for an edit file and for a create --description, 2000 is not
+  awk 'BEGIN { for (i = 0; i < 2001; i++) print "a" }' > "$bd_base/l2001.txt"
+  awk 'BEGIN { for (i = 0; i < 2000; i++) print "a" }' > "$bd_base/l2000.txt"
+  bd_lines_2001=$(cat "$bd_base/l2001.txt")
+  bd_x_off file-2001-lines 2 '2000-line' AB-7 --description-file "$bd_base/l2001.txt"
+  bd_cr --title x --description "$bd_lines_2001"
+  bd_rc1=$bd_rc; bd_p1=$(bd_posts); bd_o1=$bd_out
+  bd_cr --title x --description-file "$bd_base/l2000.txt"
+  if [ "$bd_rc1" -eq 2 ] && [ "$bd_p1" = 0 ] && printf '%s' "$bd_o1" | grep -qF '2000-line' && [ "$bd_rc" -eq 0 ] && [ "$(bd_posts)" = 1 ]; then
+    bd_pass "leg jira/lines-shared: 2001 lines is refused by create --description and by an edit file alike; 2000 lines is accepted"
+  else bd_fail_ "leg jira/lines-shared: rc=$bd_rc1/$bd_rc posts=$bd_p1/$(bd_posts) o1=[$bd_o1]"; fi
+
+  # ── title / metric file forms (BOARD-TEXT-FILE-FORMS, design 2026-10-10 §4): one loader, three kinds. Fixtures are ASCII; every
+  # hostile byte is an octal escape. Each refusal asserts ZERO requests and no file content echoed (TOPSECRET rides each file). ──
+  bd_tl="a < b | c; d \$HOME 'q' scripts/board.sh"
+  printf '%s\n' "$bd_tl" > "$bd_base/t1.txt"
+  printf 'line one\nTOPSECRET line two\n' > "$bd_base/t2.txt"
+  printf 'TOPSECRET caf\303\251\n' > "$bd_base/tna.txt"
+  printf ' TOPSECRET lead\n' > "$bd_base/tsp.txt"
+  printf 'TOPSECRET %0300d\n' 0 > "$bd_base/t256.txt"
+  printf 'TOPSECRET\r\n' > "$bd_base/tcr.txt"
+  bd_mdf="$bd_base/m.txt"; printf '%s\nsecond metric line\n' "$bd_l1" > "$bd_mdf"
+  bd_madf='{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"'"$bd_l1"'"}]},{"type":"paragraph","content":[{"type":"text","text":"second metric line"}]}]}'
+  bd_mn=$(printf '%s\nsecond metric line' "$bd_l1" | wc -c | tr -d ' ')
+  printf 'edit\tsummary\tstring\tSummary\t\nedit\tcustomfield_10077\tstring\tSuccess metric\t\n' > "$bd_em.metric"
+
+  # create --title-file / --metric-file: byte-exact into the fragment, ONE POST
+  bd_cx='field.metric=customfield_10077'; bd_conf - - cloud
+  printf 'issuetype\tTask\ncustomfield_10077\tpresent\n' > "$bd_cr_gf"
+  bd_cm_cur="$bd_cmdir/metric"; bd_cr --title-file "$bd_base/t1.txt"; bd_cm_cur="$bd_cmdir"
+  bd_t1=$(cat "$bd_cr_log" 2>/dev/null)
+  if [ "$bd_rc" -eq 0 ] && [ "$(bd_posts)" = 1 ] && grep -qF "create https://ex.atlassian.net cloud AB $bd_tl " "$bd_cr_log"; then
+    bd_pass "leg jira/create-title-file: a title file holding < | ; \$ ' and a control-plane file name reaches the create call byte-exact, one POST"
+  else bd_fail_ "leg jira/create-title-file: rc=$bd_rc posts=$(bd_posts) log=[$bd_t1] out=[$bd_out]"; fi
+  bd_cm_cur="$bd_cmdir/metric"; bd_cr --title x --metric-file "$bd_mdf"; bd_cm_cur="$bd_cmdir"
+  if [ "$bd_rc" -eq 0 ] && [ "$(bd_posts)" = 1 ] && [ "$(cat "$bd_cr_body" 2>/dev/null)" = "{\"customfield_10077\":$bd_madf}" ]; then
+    bd_pass "leg jira/create-metric-file: a metric file holding < | ; \$ ' and a control-plane file name reaches field.metric byte-exact (ADF on Cloud), one POST, proven present"
+  else bd_fail_ "leg jira/create-metric-file: rc=$bd_rc posts=$(bd_posts) body=[$(cat "$bd_cr_body" 2>/dev/null)] out=[$bd_out]"; fi
+  # exclusivity and the loader's refusals on create: zero POSTs, no file content echoed
+  bd_cb2=0
+  bd_cm_cur="$bd_cmdir/metric"
+  bd_cr --title x --title-file "$bd_base/t1.txt";            { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'mutually exclusive'; } || bd_cb2=1
+  bd_cr --title x --metric m --metric-file "$bd_mdf";        { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'mutually exclusive'; } || bd_cb2=1
+  bd_cr --title-file "$bd_base/t2.txt";                      { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'exactly one line'; } || bd_cb2=1
+  bd_cr --title-file "$bd_base/tna.txt";                     { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'printable ASCII'; } || bd_cb2=1
+  bd_cr --title-file "$bd_base/blank.txt";                   { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'no content'; } || bd_cb2=1
+  bd_cr --title x --metric-file "$bd_base/pem.txt";          { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'private-key header'; } || bd_cb2=1
+  bd_cr --title x --metric-file "$bd_base/lnk.txt";          { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'symlink'; } || bd_cb2=1
+  bd_cr --title-file "$bd_cc/.hid/d.txt";                    { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'must sit under'; } || bd_cb2=1
+  bd_cr --title x --metric-file /etc/hosts;                  { [ "$bd_rc" -eq 2 ] && [ "$(bd_posts)" = 0 ] && printf '%s' "$bd_out" | grep -qF 'must sit under'; } || bd_cb2=1
+  bd_cm_cur="$bd_cmdir"
+  if [ "$bd_cb2" -eq 0 ] && ! printf '%s' "$bd_out" | grep -qF TOPSECRET; then
+    bd_pass "leg jira/create-text-file-refuse: --title with --title-file, --metric with --metric-file, a two-line / non-ASCII / blank title file, a key-bearing, symlinked, dot-path or outside-the-roots file each refuse rc 2 with zero POSTs"
+  else bd_fail_ "leg jira/create-text-file-refuse: bad=$bd_cb2 out=[$bd_out]"; fi
+  bd_cx=""
+
+  # edit --title-file: the exact fragment, one PUT, proven; a mismatch leg; the title grammar and the single-line rule
+  bd_conf customfield_10046 customfield_10047 cloud
+  bd_x_one title-file '{"fields":{"summary":"'"$bd_tl"'"}}' "summary\\t$bd_tl\\n" '- - -' AB-7 --title-file "$bd_base/t1.txt"
+  bd_x_mis title-file "summary\\tOther\\n" 'summary' AB-7 --title-file "$bd_base/t1.txt"
+  bd_x_off title-file-two-lines 2 'exactly one line' AB-7 --title-file "$bd_base/t2.txt"
+  bd_x_off title-file-grammar 2 'printable ASCII' AB-7 --title-file "$bd_base/tna.txt"
+  bd_x_off title-file-cr 2 'printable ASCII' AB-7 --title-file "$bd_base/tcr.txt"
+  bd_x_off title-file-space 2 'start or end with a space' AB-7 --title-file "$bd_base/tsp.txt"
+  bd_x_off title-file-256 2 '1..255' AB-7 --title-file "$bd_base/t256.txt"
+  bd_x_off title-file-blank 2 'no content' AB-7 --title-file "$bd_base/blank.txt"
+  bd_x_off title-and-file 2 'mutually exclusive' AB-7 --title x --title-file "$bd_base/t1.txt"
+  bd_x_off title-file-symlink 2 'symlink' AB-7 --title-file "$bd_base/lnk.txt"
+  bd_x_off title-file-dot-path 2 'must sit under' AB-7 --title-file "$bd_cc/.hid/d.txt"
+  bd_x_off title-file-outside 2 'must sit under' AB-7 --title-file /etc/hosts
+
+  # edit --metric-file: the exact fragment on the metric id, one PUT, the metric id on the adapter's argv slot, proven `present <bytes>`
+  bd_cx='field.metric=customfield_10077'; bd_conf customfield_10046 customfield_10047 cloud; bd_em_cur="$bd_em.metric"
+  bd_x_one metric-file "{\"fields\":{\"customfield_10077\":$bd_madf}}" "customfield_10077:text\\tpresent $bd_mn\\n" '- - customfield_10077' AB-7 --metric-file "$bd_mdf"
+  bd_x_mis metric-file 'customfield_10077:text\tpresent 3\n' 'customfield_10077:text' AB-7 --metric-file "$bd_mdf"
+  bd_x_mis metric-file-empty 'customfield_10077:text\tempty\n' 'customfield_10077:text' AB-7 --metric-file "$bd_mdf"
+  bd_x_off metric-file-symlink 2 'symlink' AB-7 --metric-file "$bd_base/lnk.txt"
+  bd_x_off metric-file-dot-path 2 'must sit under' AB-7 --metric-file "$bd_cc/.hid/d.txt"
+  bd_x_off metric-file-outside 2 'must sit under' AB-7 --metric-file /etc/hosts
+  bd_x_off metric-file-blank 2 'no content' AB-7 --metric-file "$bd_base/blank.txt"
+  bd_x_off metric-file-secret 2 'private-key header' AB-7 --metric-file "$bd_base/pem.txt"
+  bd_x_off metric-file-2001-lines 2 '2000-line' AB-7 --metric-file "$bd_base/l2001.txt"
+  bd_x_off no-inline-metric 2 'unknown option' AB-7 --metric x
+  # a metric that is unmapped (none, or absent) is refused before any request, naming the conf line
+  bd_cx='field.metric=none'; bd_conf customfield_10046 customfield_10047 cloud
+  bd_x_off metric-file-unmapped-none 2 'field.metric=customfield_N' AB-7 --metric-file "$bd_mdf"
+  bd_cx=""; bd_conf customfield_10046 customfield_10047 cloud
+  bd_x_off metric-file-unmapped-absent 2 'field.metric=customfield_N' AB-7 --metric-file "$bd_mdf"
+  # the metric field absent from the card's editmeta: refused after the editmeta read, before the PUT, the field named
+  bd_cx='field.metric=customfield_10077'; bd_conf customfield_10046 customfield_10047 cloud
+  bd_em_cur="$bd_em"; bd_x_run AB-7 --metric-file "$bd_mdf"
+  if [ "$bd_rc" -eq 2 ] && [ "$(bd_x_n edit)" = 0 ] && [ "$(bd_x_n edit-meta)" = 1 ] && printf '%s' "$bd_out" | grep -qF 'customfield_10077' && printf '%s' "$bd_out" | grep -qF 'is not editable'; then
+    bd_pass "leg jira/edit-refuse-metric-editmeta: a metric field absent from the card's editmeta is refused naming it, zero PUTs"
+  else bd_fail_ "leg jira/edit-refuse-metric-editmeta: rc=$bd_rc out=[$bd_out]"; fi
+  # a dry run of --metric-file (and --title-file) sends nothing and needs no credential; it lists the metric as bytes and lines
+  bd_em_cur="$bd_em.metric"
+  bd_out=$( (unset KIT_TRACKER_USER KIT_TRACKER_TOKEN KIT_TRACKER_AUTH JIRA_EMAIL JIRA_TOKEN; : > "$bd_cr_log"; cd "$bd_cc" && STUB_LOG="$bd_cr_log" do_edit AB-7 --metric-file "$bd_mdf" --title-file "$bd_base/t1.txt" --dry-run 2>&1) ); bd_rc=$?
+  if [ "$bd_rc" -eq 0 ] && [ ! -s "$bd_cr_log" ] && printf '%s' "$bd_out" | grep -qF 'DRY RUN' && printf '%s' "$bd_out" | grep -qF "metric: replaced whole, $bd_mn bytes, 2 lines" \
+     && printf '%s' "$bd_out" | grep -qF "summary: \"$bd_tl\""; then
+    bd_pass "leg jira/edit-metric-dry-run: --dry-run of --metric-file sends nothing, needs no credential and lists the metric as bytes and lines"
+  else bd_fail_ "leg jira/edit-metric-dry-run: rc=$bd_rc log=[$(cat "$bd_cr_log")] out=[$bd_out]"; fi
+  # an over-long metric id (over the adapter's 22-character bound) is refused at board level, dry run included, zero requests
+  bd_cx='field.metric=customfield_12345678901'; bd_conf customfield_10046 customfield_10047 cloud
+  bd_x_off metric-file-id-too-long 2 'field.metric=customfield_N' AB-7 --metric-file "$bd_mdf"
+  bd_x_off metric-file-id-too-long-dry 2 'field.metric=customfield_N' AB-7 --metric-file "$bd_mdf" --dry-run
+  bd_cx=""; bd_em_cur="$bd_em"; bd_conf customfield_10046 customfield_10047 cloud
+
+  # show: ONE adapter call (read-only), the card text passed through, the field mappings and the comment count handed on
+  bd_conf customfield_10046 customfield_10047 cloud
+  printf 'key: AB-7\nsummary: s\n' > "$bd_show"
+  bd_x_show() { # <args…>: one show, in-process
+    : > "$bd_cr_log"
+    bd_out=$(cd "$bd_cc" && STUB_LOG="$bd_cr_log" STUB_SHOW="$bd_show" STUB_SHOW_RC="$bd_show_rc" do_show "$@" 2>&1); bd_rc=$?
+  }
+  bd_x_show AB-7
+  if [ "$bd_rc" -eq 0 ] && [ "$bd_out" = "$(cat "$bd_show")" ] && [ "$(wc -l < "$bd_cr_log" | tr -d ' ')" = 1 ] \
+     && grep -qxF 'show https://ex.atlassian.net cloud AB AB-7 customfield_10046 customfield_10047 3' "$bd_cr_log"; then
+    bd_pass "leg jira/show: one read-only adapter call with the conf's Size/Risk fields and the default 3 comments; the card text is passed through"
+  else bd_fail_ "leg jira/show: rc=$bd_rc log=[$(cat "$bd_cr_log")] out=[$bd_out]"; fi
+  bd_conf label:size label:risk cloud
+  bd_x_show AB-7 --comments 5
+  if [ "$bd_rc" -eq 0 ] && grep -qxF 'show https://ex.atlassian.net cloud AB AB-7 label:size label:risk 5' "$bd_cr_log"; then
+    bd_pass "leg jira/show-args: --comments 5 and label-mapped Size/Risk reach the adapter"
+  else bd_fail_ "leg jira/show-args: rc=$bd_rc log=[$(cat "$bd_cr_log")]"; fi
+  bd_conf customfield_10046 customfield_10047 cloud
+  bd_show_bad=0
+  bd_x_show AB-7 --comments 11; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cr_log" ]; } || bd_show_bad=1
+  bd_x_show XY-7; { [ "$bd_rc" -eq 1 ] && [ ! -s "$bd_cr_log" ]; } || bd_show_bad=1
+  bd_x_show 'AB-7;x'; { [ "$bd_rc" -eq 1 ] && [ ! -s "$bd_cr_log" ]; } || bd_show_bad=1
+  bd_x_show; { [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_cr_log" ]; } || bd_show_bad=1
+  bd_show_rc=2; bd_x_show AB-7; { [ "$bd_rc" -eq 3 ] || bd_show_bad=1; }
+  # the adapter's rc 1 (a card that MOVED to another project, a foreign key) stays a refusal, rc 1
+  bd_show_rc=1; bd_x_show AB-7; { [ "$bd_rc" -eq 1 ] || bd_show_bad=1; }
+  bd_show_rc=0
+  if [ "$bd_show_bad" -eq 0 ]; then
+    bd_pass "leg jira/show-refuse: --comments 11 and no key are rc 2, a key of another project or off the grammar is rc 1, all before any request; an adapter refusal (a moved card) is rc 1; an adapter failure is rc 3"
+  else bd_fail_ "leg jira/show-refuse: bad=$bd_show_bad"; fi
+
+  # ── rank / list legs (BOARD-RANK-VERB): the stub serves STUB_RANKED_PRE until a rank is written, then STUB_RANKED_POST ──
+  bd_rkl="$bd_base/.rklog"; bd_rkd="$bd_base/.rkdone"; bd_rktab=$(printf '\t')
+  bd_rk_list() { # <file> <key>...: one open card per line, status To Do
+    _rl_f=$1; shift; : > "$_rl_f"
+    for _rl_k in "$@"; do printf '%s\tTo Do\n' "$_rl_k" >> "$_rl_f"; done
+  }
+  bd_rk_list "$bd_base/.rk-pre" AB-9 AB-2 AB-5 AB-7
+  bd_rk_list "$bd_base/.rk-post-top" AB-7 AB-9 AB-2 AB-5
+  bd_rk_list "$bd_base/.rk-post-before" AB-9 AB-7 AB-2 AB-5
+  bd_rk_list "$bd_base/.rk-post-after" AB-9 AB-2 AB-7 AB-5
+  bd_rk() { # <dir> <post-file> <args…>: one rank, in-process, adapter log reset, no stale write marker
+    _rk_cd=$1; _rk_postf=$2; shift 2
+    : > "$bd_rkl"; rm -f "$bd_rkd"
+    bd_out=$(cd "$_rk_cd" && STUB_LOG="$bd_rkl" STUB_RANK_DONE="$bd_rkd" STUB_RANKED_PRE="$bd_base/.rk-pre" STUB_RANKED_POST="$_rk_postf" do_rank "$@" 2>&1); bd_rc=$?
+  }
+  bd_rk_wrote() { grep -q '^rank ' "$bd_rkl"; }   # did the verb reach the adapter's write?
+  # leg rank/top|before|after: each writes once with the right adapter argv and reports OK with the proven position
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --top
+  if [ "$bd_rc" -eq 0 ] && grep -qxF 'rank https://ex.atlassian.net cloud AB AB-7 before AB-9' "$bd_rkl" \
+     && [ "$bd_out" = 'board rank: OK - AB-7 now before AB-9 (position 1 of 4 open cards), proven by post-read. (AB-7 was after AB-5)' ]; then
+    bd_pass "leg rank/top: --top resolves to before the first open card, one adapter write, OK with the proven position"
+  else bd_fail_ "leg rank/top: rc=$bd_rc log=[$(cat "$bd_rkl")] out=[$bd_out]"; fi
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-before" AB-7 --before AB-2
+  if [ "$bd_rc" -eq 0 ] && grep -qxF 'rank https://ex.atlassian.net cloud AB AB-7 before AB-2' "$bd_rkl" \
+     && [ "$bd_out" = 'board rank: OK - AB-7 now before AB-2 (position 2 of 4 open cards), proven by post-read. (AB-7 was after AB-5)' ]; then
+    bd_pass "leg rank/before: --before writes once and the post-read proves KEY sits immediately before the anchor"
+  else bd_fail_ "leg rank/before: rc=$bd_rc log=[$(cat "$bd_rkl")] out=[$bd_out]"; fi
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-after" AB-7 --after AB-2
+  if [ "$bd_rc" -eq 0 ] && grep -qxF 'rank https://ex.atlassian.net cloud AB AB-7 after AB-2' "$bd_rkl" \
+     && [ "$bd_out" = 'board rank: OK - AB-7 now after AB-2 (position 3 of 4 open cards), proven by post-read. (AB-7 was after AB-5)' ]; then
+    bd_pass "leg rank/after: --after writes once and the post-read proves KEY sits immediately after the anchor"
+  else bd_fail_ "leg rank/after: rc=$bd_rc log=[$(cat "$bd_rkl")] out=[$bd_out]"; fi
+  # leg rank/already-first and rank/dry-run: no write reaches the adapter
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-9 --top
+  if [ "$bd_rc" -eq 0 ] && ! bd_rk_wrote && [ "$bd_out" = 'board rank: AB-9 is already first' ]; then
+    bd_pass "leg rank/already-first: --top on the first card prints 'already first', rc 0, and makes no write"
+  else bd_fail_ "leg rank/already-first: rc=$bd_rc log=[$(cat "$bd_rkl")] out=[$bd_out]"; fi
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-before" AB-7 --before AB-2 --dry-run
+  if [ "$bd_rc" -eq 0 ] && ! bd_rk_wrote && grep -q '^list-ranked ' "$bd_rkl" \
+     && [ "$bd_out" = 'board rank: would PUT /rest/agile/1.0/issue/rank: AB-7 before AB-2' ]; then
+    bd_pass "leg rank/dry-run: --dry-run does the pre-read, prints the PUT it would make, and makes no write"
+  else bd_fail_ "leg rank/dry-run: rc=$bd_rc log=[$(cat "$bd_rkl")] out=[$bd_out]"; fi
+  # leg rank/usage: two forms, no form, a missing anchor value, an unknown option: rc 2, no adapter call at all
+  bd_bad=0
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --top --before AB-2; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --before; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --bogus; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" --top; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  # leg rank/keys: another project's key, a leading-zero key, a metacharacter, and ranking a card against itself: rc 2, no adapter call
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" XY-1 --top; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --after XY-2; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-07 --top; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --before 'AB-1;x'; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --before AB-7; [ "$bd_rc" -eq 2 ] && [ ! -s "$bd_rkl" ] || bd_bad=1
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg rank/refusals: two forms, no form, a missing anchor, an unknown option, no key, another project's key (as key or anchor), AB-07, a metacharacter and a self-rank each refuse rc 2 with no adapter call"
+  else bd_fail_ "leg rank/refusals: bad=$bd_bad (last rc=$bd_rc out=[$bd_out])"; fi
+  # leg rank/not-open: a well-formed key (or anchor) that is not an open card is refused after the pre-read, with no write
+  bd_bad=0
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-7 --before AB-3
+  { [ "$bd_rc" -eq 2 ] && ! bd_rk_wrote && printf '%s' "$bd_out" | grep -qF 'AB-3 is not an open card on AB'; } || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-top" AB-4 --top
+  { [ "$bd_rc" -eq 2 ] && ! bd_rk_wrote && printf '%s' "$bd_out" | grep -qF 'AB-4 is not an open card on AB'; } || bd_bad=1
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg rank/not-open: a key or an anchor that is not among the open cards is refused rc 2 naming it, with no write"
+  else bd_fail_ "leg rank/not-open: bad=$bd_bad (last rc=$bd_rc out=[$bd_out])"; fi
+  # leg rank/unproven (LOAD-BEARING NEGATIVE): the write succeeded but the order read back is unchanged. It must be UNPROVEN
+  # rc 2 and never OK. This kills the mutant that skips (or ignores) the post-read and reports success on the adapter's rc.
+  bd_bad=0
+  bd_rk "$bd_jclone" "$bd_base/.rk-pre" AB-7 --before AB-2
+  { [ "$bd_rc" -eq 2 ] && bd_rk_wrote && printf '%s' "$bd_out" | grep -qF 'UNPROVEN' && ! printf '%s' "$bd_out" | grep -qF 'OK'; } || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-pre" AB-7 --top
+  { [ "$bd_rc" -eq 2 ] && bd_rk_wrote && printf '%s' "$bd_out" | grep -qF 'UNPROVEN'; } || bd_bad=1
+  bd_rk "$bd_jclone" "$bd_base/.rk-post-before" AB-7 --after AB-2
+  { [ "$bd_rc" -eq 2 ] && bd_rk_wrote && printf '%s' "$bd_out" | grep -qF 'UNPROVEN'; } || bd_bad=1
+  if [ "$bd_bad" -eq 0 ]; then
+    bd_pass "leg rank/unproven: when the order read back does not show the move (before, top and after alike), the verb says UNPROVEN, rc 2, never OK"
+  else bd_fail_ "leg rank/unproven: bad=$bd_bad (last rc=$bd_rc out=[$bd_out])"; fi
+  # the UNPROVEN line names where the card was, so a bad move can be undone: after its old neighbour, or first
+  bd_rk "$bd_jclone" "$bd_base/.rk-pre" AB-7 --before AB-2
+  bd_o1=$bd_out
+  bd_rk "$bd_jclone" "$bd_base/.rk-pre" AB-9 --after AB-2
+  if printf '%s' "$bd_o1" | grep -qF '(AB-7 was after AB-5)' && printf '%s' "$bd_out" | grep -qF 'UNPROVEN' \
+     && printf '%s' "$bd_out" | grep -qF '(AB-9 was first)'; then
+    bd_pass "leg rank/was: the OK and UNPROVEN lines name the card's old neighbour (was after KEY) or 'was first'"
+  else bd_fail_ "leg rank/was: o1=[$bd_o1] out=[$bd_out]"; fi
+  # leg rank/post-read-failure: the write was accepted but the post-read fails: UNPROVEN rc 2 (never OK, never a silent rc 1)
+  : > "$bd_rkl"; rm -f "$bd_rkd"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANK_DONE="$bd_rkd" STUB_RANKED_PRE="$bd_base/.rk-pre" STUB_RANKED_POST="$bd_base/.rk-post-before" STUB_LIST_RC_AFTER=2 do_rank AB-7 --before AB-2 2>&1); bd_rc=$?
+  if [ "$bd_rc" -eq 2 ] && bd_rk_wrote \
+     && printf '%s' "$bd_out" | grep -qF 'board rank: UNPROVEN - the write was accepted but the post-read failed; read the order back with board list' \
+     && ! printf '%s' "$bd_out" | grep -qF 'OK -'; then
+    bd_pass "leg rank/post-read-failure: a failed post-read after an accepted write is UNPROVEN rc 2, never OK"
+  else bd_fail_ "leg rank/post-read-failure: rc=$bd_rc out=[$bd_out]"; fi
+  # leg rank/adapter-failure: a failed write is rc 1 (no OK), the adapter's own refusal (rc 1) is rc 2, a failed pre-read is rc 1 with no write
+  : > "$bd_rkl"; rm -f "$bd_rkd"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANK_DONE="$bd_rkd" STUB_RANKED_PRE="$bd_base/.rk-pre" STUB_RANKED_POST="$bd_base/.rk-post-before" STUB_RANK_RC=2 do_rank AB-7 --before AB-2 2>&1); bd_rc=$?
+  bd_rc1=$bd_rc; bd_o1=$bd_out
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANK_DONE="$bd_rkd" STUB_RANKED_PRE="$bd_base/.rk-pre" STUB_RANK_RC=1 do_rank AB-7 --before AB-2 2>&1); bd_rc2=$?
+  : > "$bd_rkl"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_LIST_RC=2 do_rank AB-7 --before AB-2 2>&1); bd_rc3=$?
+  if [ "$bd_rc1" -eq 1 ] && printf '%s' "$bd_o1" | grep -qF 'was not ranked' && ! printf '%s' "$bd_o1" | grep -qF 'OK' \
+     && [ "$bd_rc2" -eq 2 ] && [ "$bd_rc3" -eq 1 ] && ! bd_rk_wrote; then
+    bd_pass "leg rank/adapter-failure: a failed write is rc 1 and never OK, an adapter refusal is rc 2, an unreadable board is rc 1 with no write"
+  else bd_fail_ "leg rank/adapter-failure: rc=$bd_rc1/$bd_rc2/$bd_rc3 o1=[$bd_o1]"; fi
+  # leg rank/md and list/md: on md both verbs refuse rc 2 before any adapter call
+  : > "$bd_rkl"
+  bd_out=$(cd "$bd_base/md-clone" && STUB_LOG="$bd_rkl" do_rank AB-7 --top 2>&1); bd_rc1=$?; bd_o1=$bd_out
+  bd_out=$(cd "$bd_base/md-clone" && STUB_LOG="$bd_rkl" do_list 2>&1); bd_rc2=$?
+  if [ "$bd_rc1" -eq 2 ] && [ "$bd_rc2" -eq 2 ] && [ ! -s "$bd_rkl" ] && printf '%s' "$bd_o1" | grep -qF 'edit BACKLOG.md' \
+     && printf '%s' "$bd_out" | grep -qF 'read BACKLOG.md'; then
+    bd_pass "leg rank/md: on an md backend rank and list each refuse rc 2 (the order is the Order line) with no adapter call"
+  else bd_fail_ "leg rank/md: rc=$bd_rc1/$bd_rc2 log=[$(cat "$bd_rkl")] o1=[$bd_o1] o2=[$bd_out]"; fi
+  # leg list: the header, then the adapter's lines in the stub's order (no re-sort); --limit reaches the adapter; a bad limit is rc 2
+  : > "$bd_rkl"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list 2>&1); bd_rc=$?
+  bd_want="open cards on AB, in rank order:
+AB-9${bd_rktab}To Do
+AB-2${bd_rktab}To Do
+AB-5${bd_rktab}To Do
+AB-7${bd_rktab}To Do"
+  bd_rc1=$bd_rc; bd_o1=$bd_out
+  : > "$bd_rkl"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list --limit 5 2>&1); bd_rc2=$?
+  grep -qxF 'list-ranked https://ex.atlassian.net cloud AB 5' "$bd_rkl" && bd_lim=1 || bd_lim=0
+  : > "$bd_rkl"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" do_list --limit x 2>&1); bd_rc3=$?
+  bd_bad_empty=0; [ -s "$bd_rkl" ] && bd_bad_empty=1
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_LIST_RC=2 do_list 2>&1); bd_rc4=$?
+  if [ "$bd_rc1" -eq 0 ] && [ "$bd_o1" = "$bd_want" ] && [ "$bd_rc2" -eq 0 ] && [ "$bd_lim" -eq 1 ] \
+     && [ "$bd_rc3" -eq 2 ] && [ "$bd_bad_empty" -eq 0 ] && [ "$bd_rc4" -eq 1 ]; then
+    bd_pass "leg list: prints the header then the adapter's lines in order; --limit reaches the adapter; a non-digit limit is rc 2 with no call; an adapter failure is rc 1"
+  else bd_fail_ "leg list: rc=$bd_rc1/$bd_rc2/$bd_rc3/$bd_rc4 lim=$bd_lim o1=[$bd_o1]"; fi
+
+  # leg list-auth (SWAS-101 H1): with KIT_TRACKER_AUTH unset, the adapter sees the conf's auth kind (bearer here); an
+  # exported KIT_TRACKER_AUTH is left alone; a conf without an auth line gives basic.
+  cp "$bd_jclone/.kit/tracker.conf" "$bd_base/.conf.authsave"
+  sed 's/^auth=basic$/auth=bearer/' "$bd_base/.conf.authsave" > "$bd_jclone/.kit/tracker.conf"
+  bd_al="$bd_base/.authlog"; : > "$bd_al"
+  bd_out=$(cd "$bd_jclone" && unset KIT_TRACKER_AUTH && STUB_AUTH_LOG="$bd_al" STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list 2>&1); bd_rc=$?
+  bd_a1=$(sed -n 1p "$bd_al")
+  : > "$bd_al"
+  bd_out=$(cd "$bd_jclone" && KIT_TRACKER_AUTH=basic && export KIT_TRACKER_AUTH && STUB_AUTH_LOG="$bd_al" STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list 2>&1); bd_rc2=$?
+  bd_a2=$(sed -n 1p "$bd_al")
+  grep -v '^auth=' "$bd_base/.conf.authsave" > "$bd_jclone/.kit/tracker.conf"
+  : > "$bd_al"
+  bd_out=$(cd "$bd_jclone" && unset KIT_TRACKER_AUTH && STUB_AUTH_LOG="$bd_al" STUB_LOG="$bd_rkl" STUB_RANKED_PRE="$bd_base/.rk-pre" do_list 2>&1); bd_rc3=$?
+  bd_a3=$(sed -n 1p "$bd_al")
+  cp "$bd_base/.conf.authsave" "$bd_jclone/.kit/tracker.conf"
+  if [ "$bd_rc" -eq 0 ] && [ "$bd_a1" = bearer ] && [ "$bd_a2" = basic ] && [ "$bd_rc3" -eq 0 ] && [ "$bd_a3" = basic ]; then
+    bd_pass "leg list-auth: the adapter sees auth=bearer from a bearer conf with KIT_TRACKER_AUTH unset, an exported value is kept, and no auth line gives basic"
+  else bd_fail_ "leg list-auth: rc=$bd_rc/$bd_rc2/$bd_rc3 auth=[$bd_a1]/[$bd_a2]/[$bd_a3]"; fi
+
   # ── required-field legs (TRACKER-REQUIRED-FIELDS-DISCOVERY): the adapter's `required-fields` + conf
   # `create.<id>` defaults + --field, resolved BEFORE the POST; every refused leg asserts ZERO POSTs. ───
   printf 'issuetype\tTask\n' > "$bd_cr_gf"
@@ -1580,6 +3069,63 @@ create.parent=AB-1'; bd_conf - - cloud; bd_cr --title x; bd_cx=""
     bd_pass "leg jira/claim-rc5: an adapter rc 5 under claim keeps its sentence intact through the compensation (ref undone), rc non-zero"
   else bd_fail_ "leg jira/claim-rc5: rc=$bd_rc out=[$bd_out]"; fi
 
+  # ── adapter rc 6 (SWAS-113, TRACKER-ANON-200-REJECT): Jira did not accept the credential. Every verb that talks to the tracker
+  # maps it to "the tracker rejected the credential" (rc 1) and NEVER to its own failure wording ("may have applied", "failed or was
+  # refused", the validator hint, "was not ranked"): the request was refused before it could change anything. ───────────────────
+  bd_rj_chk() { # <label> <needle-that-must-NOT-appear or -> : rc 1, the rejection sentence, no wording of the caller's own
+    _rj_label=$1; _rj_not=$2
+    if [ "$bd_rc" -eq 1 ] && printf '%s' "$bd_out" | grep -qF 'the tracker rejected the credential' \
+       && { [ "$_rj_not" = - ] || ! printf '%s' "$bd_out" | grep -qF -e "$_rj_not"; }; then
+      bd_pass "leg rc6/$_rj_label: adapter rc 6 is rc 1 with 'the tracker rejected the credential' and none of the verb's own failure wording"
+    else bd_fail_ "leg rc6/$_rj_label: rc=$bd_rc out=[$bd_out]"; fi
+  }
+  : > "$bd_cl"
+  bd_cmt_rc 6
+  bd_rj_chk comment 'was not posted'
+  bd_show_rc=6; bd_x_show AB-7; bd_show_rc=0
+  bd_rj_chk show -
+  bd_ed_rc_cur=6; bd_x_run AB-7 --title X; bd_ed_rc_cur=0
+  bd_rj_chk edit 'may have applied'
+  bd_em_rc_cur=6; bd_x_run AB-7 --title X; bd_em_rc_cur=0
+  bd_rj_chk edit-meta 'could not read the editmeta'
+  : > "$bd_rkl"; rm -f "$bd_rkd"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANK_DONE="$bd_rkd" STUB_RANKED_PRE="$bd_base/.rk-pre" STUB_RANKED_POST="$bd_base/.rk-post-before" STUB_RANK_RC=6 do_rank AB-7 --before AB-2 2>&1); bd_rc=$?
+  bd_rj_chk rank-write 'was not ranked'
+  : > "$bd_rkl"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_LIST_RC=6 do_rank AB-7 --before AB-2 2>&1); bd_rc=$?
+  bd_rj_chk rank-read 'could not read the open cards'
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_LIST_RC=6 do_list 2>&1); bd_rc=$?
+  bd_rj_chk list 'could not read the open cards'
+  bd_out=$(cd "$bd_jclone" && STUB_STATE='Selected for Development' STUB_TRANSITION_RC=6 do_move ROW-JIRA-13 'done' 2>&1); bd_rc=$?
+  bd_rj_chk move 'failed or was refused'
+  bd_out=$(cd "$bd_cc" && STUB_CM_DIR="$bd_cmdir" STUB_CREATE_RC=6 do_create --title "x" 2>&1); bd_rc=$?
+  bd_rj_chk create 'workflow validator'
+  bd_out=$(cd "$bd_cc" && STUB_CM_DIR="$bd_cmdir" STUB_CM_RC=6 do_create --title "x" 2>&1); bd_rc=$?
+  bd_rj_chk create-meta 'could not read the create-meta'
+  bd_out=$(cd "$bd_cc" && STUB_CM_DIR="$bd_cmdir" STUB_RF_RC=6 do_create --title "x" 2>&1); bd_rc=$?
+  bd_rj_chk create-required 'could not read the required fields'
+
+  # S-L1: a 2xx served anonymously to a WRITE may have applied; the adapter's sentence ends "(the write may have applied
+  # anonymously)" and the verb must NOT say "nothing was changed" (edit keeps "may have applied", rc 3).
+  STUB_ANON_SUFFIX=1; export STUB_ANON_SUFFIX
+  bd_aw_chk() { # <label> <want-rc> <needle>
+    if [ "$bd_rc" -eq "$2" ] && printf '%s' "$bd_out" | grep -qF -e "$3" && ! printf '%s' "$bd_out" | grep -qF 'nothing was changed'; then
+      bd_pass "leg rc6-anon-write/$1: an anonymously served write is rc $2 saying '$3', never 'nothing was changed'"
+    else bd_fail_ "leg rc6-anon-write/$1: rc=$bd_rc out=[$bd_out]"; fi
+  }
+  bd_out=$(cd "$bd_cclone" && STUB_LOG="$bd_cl" STUB_COMMENT_RC=6 do_comment AB-7 --from-record docs/reviews/x.md 2>&1); bd_rc=$?
+  bd_aw_chk comment 1 'may have been posted'
+  bd_ed_rc_cur=6; bd_x_run AB-7 --title X; bd_ed_rc_cur=0
+  bd_aw_chk edit 3 'may have applied'
+  : > "$bd_rkl"; rm -f "$bd_rkd"
+  bd_out=$(cd "$bd_jclone" && STUB_LOG="$bd_rkl" STUB_RANK_DONE="$bd_rkd" STUB_RANKED_PRE="$bd_base/.rk-pre" STUB_RANKED_POST="$bd_base/.rk-post-before" STUB_RANK_RC=6 do_rank AB-7 --before AB-2 2>&1); bd_rc=$?
+  bd_aw_chk rank 1 'order may have changed'
+  bd_out=$(cd "$bd_jclone" && STUB_STATE='Selected for Development' STUB_TRANSITION_RC=6 do_move ROW-JIRA-13 'done' 2>&1); bd_rc=$?
+  bd_aw_chk move 1 'may have moved'
+  bd_out=$(cd "$bd_cc" && STUB_CM_DIR="$bd_cmdir" STUB_CREATE_RC=6 do_create --title "x" 2>&1); bd_rc=$?
+  bd_aw_chk create 1 'may have been created'
+  unset STUB_ANON_SUFFIX
+
   # --- FIX ROUND (security NO-GO on the FIRST head) — legs below ------------------------------
 
   # leg (row-grammar, BLOCKER-1c): board.sh's OWN front-door row-grammar refusal, before any
@@ -1700,6 +3246,11 @@ case "${1:-}" in
   release)    shift; if do_release "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   move)       shift; if do_move "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   create)     shift; if do_create "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  comment)    shift; if do_comment "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  rank)       shift; if do_rank "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  list)       shift; if do_list "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  show)       shift; if do_show "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
+  edit)       shift; if do_edit "$@"; then bd_rc_main=0; else bd_rc_main=$?; fi ;;
   migrate)    shift; exec sh "$here/board-migrate.sh" "$@" ;;
   -h|--help)  bd_usage; bd_rc_main=2 ;;
   "")         bd_usage; bd_rc_main=2 ;;
