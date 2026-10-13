@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.237.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
+`v3.238.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
 
 Sparkwright brings a **guided, agent-driven lifecycle** to your software — whether you're starting a new project or layering it onto a repo you already have. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It's opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -55,7 +55,7 @@ Any team — humans, agents, or both — that wants production-grade discipline 
 
 ## What makes it different (honestly)
 
-Three separations are **enforced, not suggested** — builder ≠ reviewer ≠ ratifier. Every capability is labeled by how far it actually goes — **enforced** (a gate fails the build), **advisory** (it warns), or **declared** (you attest) — so nothing is sold as guaranteed when it isn't. And the guardrails are built to one test: *would this still bind if the model stopped cooperating?* That's why the control-plane guard, the promotion record, and the conformance gates hold even when an agent doesn't.
+Three separations are designed in, not suggested — builder ≠ reviewer ≠ ratifier — with the ratifier a different forge identity, checked by `land` and branch protection (the kit's own repository has not yet moved its agent sessions to a separate identity; see `MATURITY.md`). Every capability is labeled by how far it actually goes — **enforced** (a gate fails the build), **advisory** (it warns), or **declared** (you attest) — so nothing is sold as guaranteed when it isn't. And the guardrails are built to one test: *would this still bind if the model stopped cooperating?* That's why the control-plane guard, the promotion record, and the conformance gates hold even when an agent doesn't.
 
 ## What you get
 
@@ -75,7 +75,7 @@ Between the gates, the work is done by a small **standing team of agents** — a
 
 Three things make that team trustworthy rather than just fast:
 
-- **Separation of duties, enforced.** Builder ≠ reviewer ≠ ratifier. Control-plane changes require an independent ratifier; the merge is a recorded GO/NO-GO bound to the reviewed commit (`shipped == approved`, verified by tree equality), and the agent actuates the mechanics — *the judgment is the control, not the keystroke*.
+- **Separation of duties, by design.** Builder ≠ reviewer ≠ ratifier, the ratifier a different forge identity checked by `land` and branch protection. Control-plane changes require an independent ratifier; the merge is a recorded GO/NO-GO bound to the reviewed commit (`shipped == approved`, verified by tree equality), and the agent actuates the mechanics — *the judgment is the control, not the keystroke*.
 - **Model tiering.** Each seat runs at an abstract tier (judgment/review seats pinned to the top model, builders free to run cheaper where the task allows, high-stakes work floored to the top). You declare the tier→model map for your provider — the kit is opinionated about *structure*, neutral about *which model*.
 - **Rigor you can verify.** Every capability ships as **contract → reference implementation → conformance check**, and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a registered check that can't fail is caught and fixed; checks outside that control set are surfaced as uncovered, never silently counted). **Honest coverage ceiling:** the sweep builds *one composite mutant per file*, so a `KILLED` green proves *at least one* mutable site is observed — not all of them, and it names no site. The kit's headline claims are themselves a registry (`conformance/claims.tsv`): **every row carries an executable verifier**, and a `REQUIRED_IDS` set pins the ones that cannot be silently dropped. Each row's `proof` column discloses how it is verified — by the check's own `--selftest`, or by a verifier that reads the live tree. The kit is built with its own loop and held to its own Definition of Done.
 

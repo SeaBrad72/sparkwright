@@ -419,7 +419,7 @@ tracker_delegated_notice() {
 # byte-identical — amendment A2: `loop-state.sh` passes this on every hosted-tracker refusal too,
 # so an agent reading either gate's red gets the SAME cure, not the generic waiver-only clause.
 tracker_delegated_cure() {
-  printf '%s\n' "bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --apply — or move the board to BACKLOG.md, or ratify a board-governance waiver"
+  printf '%s\n' "bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected — or move the board to BACKLOG.md, or ratify a board-governance waiver"
 }
 
 # --- THE ROW-ID SEAM (BOARD-ROW-IDENTIFIER) ---------------------------------------------

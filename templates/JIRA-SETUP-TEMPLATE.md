@@ -4,7 +4,46 @@
 
 Follow it to make a Jira project satisfy the kit's §6 work-item contract (`DEVELOPMENT-PROCESS.md` §6), then verify with `sh conformance/tracker-contract.sh`. Full mapping rationale: `docs/work-tracking/adapters.md` (Jira); which gates bind on your PR and the cure for each: `docs/work-tracking/adapters.md` §Which gates bind.
 
-**Tier.** This is the kit's **server-enforced** claim tier (the *Only Assignee* transition condition, §3 — the strongest of the hosted set). Convention-tier backends (last-writer-wins, claim-when-empty + re-read) use `TRACKER-SETUP-TEMPLATE.md` instead. The two are deliberately distinct, not redundant.
+**Tier.** Jira offers an *only the assignee* restriction on the transitions into In Progress (§3), the basis of the kit's **server-enforced** claim tier, but only through a workflow that already carries it. The rule is measured to display; enforcement against a non-assignee is not yet measured. The default is the **convention tier** (last-writer-wins, the git claim ref as the coordination record). Convention-tier backends (last-writer-wins, claim-when-empty + re-read) use `TRACKER-SETUP-TEMPLATE.md` instead. The two are deliberately distinct, not redundant.
+
+## Day-one act sheet
+
+Every row is a **HUMAN ACT**: an agent stops and asks the owner, and may run only the read-only success signal. Work down the table in order; each row links to the section that explains it. These are Jira Cloud paths; Data Center differs.
+
+**Minimum day one** for a one-account adopter is rows 3, 4, 10, 11 and 14, plus row 1 only if the site blocks API tokens. Rows 2, 5-9, 12, 13 and 15 are the team posture, and row 16 is optional. Your own token as the CI reader is recorded `over-privileged` (or `writer` if it holds no admin) and binds with a notice; a site that rejects the extended permission keys reads `unverified` and fails; and this places your own token in the per-PR job, which rows 5-9 remove.
+
+| # | act | who | where | success signal |
+|---|-----|-----|-------|----------------|
+| 1 | Clear an authentication policy that blocks API tokens on a claimed domain (N1) | org admin | Atlassian Administration → Security → Authentication policies | [§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1) `--preflight` `auth` line PASS (blocked: 401 at the site and at `api.atlassian.com`) |
+| 2 | Plan: Standard or above, to assign space roles and edit permission schemes (N2) | owner | Atlassian Administration → Billing | the space's People page offers roles beyond Administrator and Guest |
+| 3 | Your own credential for setup, set for the command only (`KIT_TRACKER_USER=<email> KIT_TRACKER_TOKEN="$T" sh conformance/tracker-contract.sh --preflight --base https://<site>.atlassian.net --project <KEY> --as dev`, T read silently as in N7), never exported in a shell that launches an agent; `unset T` after ([§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1)) | you | your terminal | `--preflight --as dev` PASS |
+| 4 | Statuses (the six plus Blocked), required fields, and, optionally, a workflow that carries "only the assignee" (§1-§3) | Jira admin | Settings → Work items → Workflows (statuses alongside) | `sh conformance/tracker-contract.sh` ([§7](#7-verify)) |
+| 5 | Space roles Member and Viewer, created once at site level (N3) | Jira admin | Settings → System → Security: Space roles → Add Space roles | both roles are listed |
+| 6 | Copy the permission scheme. Remove every write grant held by any logged-in user (`applicationRole`), Anyone (public) or a site-wide group, and confirm nothing is granted to Anyone. Keeping any-logged-in "Browse projects" is a disclosure choice; remove it if the board is confidential. Grant Viewer: "Browse projects", so the CI reader does not depend on the broad grant. Grant Member: "Create issues", "Edit issues", "Transition issues", "Assign issues", "Assignable user", "Add comments", "Schedule issues", "Resolve issues" and "Close issues", with no "Delete issues" and no admin (N4, N5). Associate the copy with the space | Jira admin | Settings → Work items → Work item attributes: Permission Schemes; then Space settings → Permissions → Actions → Use a different scheme → Associate | the space's Permissions page names the copy; rows 7 and 9 prove the grants |
+| 7 | The agent account: a dedicated account added as Member | owner | the space's People page → Add people (the role list shows Member once row 5 is done) | `--preflight --as agent` PASS: `browse · create · transition · assign; no admin, no delete`. The probe does not test "Schedule issues"; the proof is the first `board rank` |
+| 8 | The agent's token into the login Keychain ([§5](#5-credentials--two-credentials-two-jobs), 5b) | the operator, in their own terminal | `security add-generic-password …` | `sparkwright doctor`: `keychain (read for the identity check) - runs as <agent>` |
+| 9 | The CI reader: an existing dedicated non-human seat (not a person's own account, not the agent account), Viewer only on this space, used on no other space; its token expiring and rotated ([§5](#5-credentials--two-credentials-two-jobs), 5a; N6) | owner | the space's People page | `--preflight --as ci`: browse only |
+| 10 | Fill `.kit/tracker.conf` and land it on `main`: a control-plane PR the owner admin-merges, and until it lands no token is sent ([§4](#4-kittrackerconf--the-pin-tbg-tracker-conf), 5g) | owner | the repository | `sh scripts/tracker-conf.sh .kit/tracker.conf` exits 0 silently; the conf is on `origin/main` |
+| 11 | Repository secrets: `KIT_TRACKER_TOKEN`, plus `KIT_TRACKER_USER` under `auth=basic` (N7) | repo admin | `gh secret set` | `gh secret list`; the next PR's log prints `tracker reader: …<id tail>` |
+| 12 | Repository variables, only if needed: `KIT_TRACKER_RUNNER`; the reader-ceiling pair; `KIT_TRACKER_LIVE_ROW` ([§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1), 5a) | repo admin | Settings → Secrets and variables → Actions → Variables | `gh variable list` |
+| 13 | Prove the runner reaches the site ([§0](#0-preflight--can-the-kit-reach-and-use-this-site-read-only-run-it-before-1)) | repo admin | Actions → Adopter Tracker Gates → Run workflow | its preflight step reports reachability |
+| 14 | The bootstrap push, then bind branch protection: `--replace` on a fresh `main`, `--apply` after ([§6](#6-bind-branch-protection-before-your-first-pr--human-act--an-agent-stops-and-asks-the-owner-replace-typed-at-a-real-terminal); N8) | repo admin | a real terminal, with admin `gh` | the no-flag dry-run prints `Dry-run: nothing to add` |
+| 15 | A waiver, only if row 14 cannot bind (a ruleset, or a private repository whose read is unmeasured) | owner | `WAIVER-REGISTER.md`, a `board-governance` row | `sh conformance/waivers-valid.sh --active board-governance` |
+| 16 | Optional: `--deep` once, by a Jira admin, never in CI (5h, [§7](#7-verify)) | Jira admin | their own terminal | the tier is reported |
+
+**Notes**
+- **N1.** A clean 193-character classic token still reads 401 when the domain's authentication policy blocks API tokens. Fix the policy, not the token.
+- **N2.** On Free, space roles cannot be assigned and permission schemes cannot be edited. Standard unlocks both.
+- **N3.** Space roles are site-level. Create them once, then fill them per space on the People page.
+- **N4.** A copied scheme keeps every any-logged-in-user grant. Remove the writes explicitly.
+- **N5.** Without "Schedule issues", `board rank` answers 403 and names it. Without "Resolve issues" or "Close issues", the board's transitions fail.
+- **N6.** The CI reader is an existing licence, not a new one. The seat is dedicated and non-human: never a person's own account, never the agent account.
+- **N7. `gh secret set`.** The interactive paste can land the token in `KIT_TRACKER_USER`. Set the email with `--body`. For the token:
+  1. Read it silently: `read -rs T` (bash or zsh), or `trap 'stty echo' INT; stty -echo; IFS= read -r T; stty echo` in POSIX sh.
+  2. Step 2 needs row 10's conf on `main`. Prove it with the kit's own check, not curl, which would put the token in argv and accept an anonymous 200: `KIT_TRACKER_USER=<email> KIT_TRACKER_TOKEN="$T" sh conformance/tracker-contract.sh --preflight --as ci`.
+  3. Store it: `printf '%s' "$T" | gh secret set KIT_TRACKER_TOKEN`.
+  4. `unset T`.
+- **N8.** The approval that counts is the GitHub review button on the PR's current head. An "approved" said in an agent session does not register with branch protection.
 
 ## 0. Preflight — can the kit reach and use this site? (read-only; run it before §1)
 Before the conf exists: `sh conformance/tracker-contract.sh --preflight --base https://<site>.atlassian.net --project <KEY>`. After §4: `sh conformance/tracker-contract.sh --preflight` alone. **Data Center:** stamp §4 first (`--base` takes only an Atlassian Cloud site). Confirm the site on the card's first line is your own before trusting anything below it — Atlassian API tokens work on any Atlassian site.
@@ -13,7 +52,7 @@ Before the conf exists: `sh conformance/tracker-contract.sh --preflight --base h
 - **A credential Jira did not accept is rc 6, not an empty result.** Jira Cloud serves a wrong token as an anonymous user; the preflight's `auth` line then reads FAIL "the site did not accept the credential", and `board list` and the other verbs say "the tracker rejected the credential".
 - **Run it once with each credential, and know what each role asserts.** For setup, run `--as dev` (the default) with **your own** credential: it checks you can browse, create, transition and assign, and sets no upper bound, because your own account may legitimately be an admin while you configure the site (a credential that is an admin gets one INFO line saying so). Then run `--as agent` with the **agent pair** (§5b): it adds the upper bound and FAILs when that credential holds `ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, because lanes must run as a dedicated non-admin account. Run `--as ci` with the CI reader's token (§5a): browse only, and FAIL on anything more. Every role prints an `identity` line naming the account (`--as ci` shows only the last 8 characters of its id).
 - **CI reachability is measured on the runner, not on your machine.** Once §4 and §5 are merged, open `Actions → Adopter Tracker Gates → Run workflow`; its preflight step reports whether the runner can reach the site.
-- **If CI cannot reach it** (IP allowlist or VPN), set the repository variable `KIT_TRACKER_RUNNER` to a self-hosted runner label inside your network.
+- **If CI cannot reach it** (IP allowlist or VPN), set the repository variable `KIT_TRACKER_RUNNER` to a self-hosted runner label inside your network. **HUMAN ACT — an agent stops and asks the owner:** a repository admin sets it.
 - **Two runner risks.** (1) A label no runner matches **queues forever**, and because `tracker-board-gates` is a required check every PR waits: unset `KIT_TRACKER_RUNNER` or bring the runner online. (2) A self-hosted runner for a `pull_request_target` job belongs **only on a private repo or an ephemeral runner** (the job parses fork head objects beside the Jira secret); the gates job warns when it sees a public repo on a self-hosted runner (an ephemeral, network-isolated runner is a risk you accept and record in your waiver register, not a cure). The warning stays silent where `runner.environment` is unset (older GHES, or runners pinned with `--disableupdate` or a pinned image) and on internal repos (`private: true`, yet every enterprise member can open a PR from a fork).
 
 ## 1. Workflow statuses (the six §6 states + Blocked) — **HUMAN ACT — an agent stops and asks the
@@ -43,26 +82,21 @@ leg without naming a missing Size/Risk field, **and** its create-coherence leg (
 create type's screen; a `label:` mapping is not left beside a same-named select), **and** its required-field leg (every field Jira requires on create is covered by `field.size`/`field.risk` or a `create.<fieldId>=` line; the leg prints field ids and names, never allowed values). A FAIL names the line to paste.
 **Honest ceiling:** create-meta does not report a requirement enforced by a workflow validator (for example on the Create transition). Such a refusal still reaches you as a failed create, with a hint to run `--fields`; the kit cannot see it in advance.
 
-## 3. The atomic claim — "Only Assignee" transition condition (load-bearing) — **HUMAN ACT — an
+## 3. The claim — convention by default, server-enforced through a workflow that carries the condition (optional) — **HUMAN ACT — an
 agent stops and asks the owner**: this is a Jira workflow-admin edit.
-This is what makes Jira a **server-enforced** single-owner claim — the strongest of the hosted set. Without it you are on the **convention tier** (last-writer-wins).
+By default you are on the **convention tier**: `board claim` assigns and transitions, last-writer-wins, and the git claim ref is the coordination record. Jira's current workflow editors offer no assignee-only restriction to add (measured 2026-10-12: "Restrict who can move a work item" lists users, roles, permissions, groups and custom-field users, never the assignee), so the old recipe "add a Condition → Only Assignee" no longer exists. `tracker-contract.sh --deep` grades `TIER: convention` (rc 0, a supported tier) and, for a company-managed space, prints the route below.
 
-> **Caveat — the condition exists only on company-managed projects.** Jira's UI offers no "Only Assignee" restriction
-> on a team-managed project (its "restrict who can move a work item" lists users, permissions, groups and custom-field
-> users, never the assignee), so a team-managed project is on the **convention tier**: `board claim` still assigns and
-> transitions there, just not exclusively. `tracker-contract.sh --deep` reports which tier you are on and grades what the
-> workflow actually carries (`TIER: convention` is rc 0, a supported tier; a company-managed project missing the
-> condition FAILs). Reading a company-managed project's workflows needs a Jira-admin token (Administer Jira); without
-> one, or when the workflows could not be read, `--deep` prints UNVERIFIED (rc 2), never a pass. Data Center is
-> UNVERIFIED too (no REST read of transition conditions).
+**The route to the server-enforced tier (company-managed space) — measured to display, not yet to enforcement.** A workflow that already carries the rule still shows it, and can be copied:
+1. Settings → Work items → **Workflows**: find a workflow whose transition into In Progress shows "Restrict who can move a work item — only the assignee" (for example an inactive classic default workflow).
+2. Actions → **Copy**; in the copy, map its statuses to the space's statuses (including the conf's `state.in-progress`).
+3. Assign the copy to the space through its workflow scheme, then publish. If the workflow scheme is shared with other spaces, copy the scheme first and associate the copy with this space only.
+4. Verify with `sh conformance/tracker-contract.sh --deep` using an admin token: `PASS: deep — server-enforced claim` means every transition into In Progress carries the rule. A partial result names the uncovered transitions.
 
-1. Project settings → **Workflows** → edit the active workflow.
-2. Select the transition **into `In Progress`**.
-3. Add a **Condition** → **"Only Assignee"** (or "Only the reporter/assignee can execute"), so only the current assignee can move a card to In Progress.
-4. Publish the workflow.
+Honest ceiling: nobody has yet assigned a copy to a space and confirmed that a non-assignee cannot move the card; the rule is measured to display, not yet to enforcement.
 
-Now claiming = assign to the agent, then transition; a second agent cannot perform the transition → no double-claim.
-Success signal (read-only, an admin token, one-time — see §5h): `sh conformance/tracker-contract.sh --deep` verifies every transition into In Progress in this project's own workflows carries an exclusive Only-Assignee condition, or reports the tier it found.
+> **Caveat — team-managed spaces.** The measured option list in a team-managed space is the same and its custom-field picker is empty; no route was found, so a team-managed space stays on the **convention tier**. Reading a company-managed space's workflows needs a Jira-admin token (Administer Jira); without one, or when the workflows could not be read, `--deep` prints UNVERIFIED (rc 2), never a pass. Data Center is UNVERIFIED too (no REST read of transition conditions).
+
+Success signal (read-only, an admin token, one-time — see §5h): `sh conformance/tracker-contract.sh --deep` reports the tier it measured.
 
 ## 4. `.kit/tracker.conf` — the pin (TBG-TRACKER-CONF)
 `incept --backlog jira` stamped `.kit/tracker.conf`: a strict, fail-closed `key=value` file naming
@@ -141,6 +175,22 @@ GitHub Environment secret unless you have added `environment:` to both jobs your
 **HUMAN ACT — an agent stops and asks the owner:** adding a repository Actions secret needs repo-admin
 GitHub access.
 
+A site on a Standard plan or above can run the Viewer-reader posture with no ceiling variables set, and an existing **dedicated non-human** seat can be the reader with no new licence (the act sheet's row 9 and note N6).
+
+**HUMAN ACT — an agent stops and asks the owner:** setting or deleting `KIT_TRACKER_READER_CEILING`,
+`KIT_TRACKER_READER_CEILING_CARD` or `KIT_TRACKER_LIVE_ROW`. The two ceiling variables exempt a writer reader from the
+strict reading (builder is not ratifier); `KIT_TRACKER_LIVE_ROW` configures the live probe, and deleting it makes the probe
+skip green, which switches that check off rather than delaying it. A repository admin sets them in their own terminal or on
+the settings page. **Residual, stated:** no guard in the kit enforces this. An agent session that holds
+repository-admin GitHub rights (for example one running under the owner's own `gh` login) can set them, and the trail is
+GitHub's settings audit log; watch it for all three. The lock, agent sessions that hold no right to change repository
+settings, is stated in `docs/operations/separation-of-duties.md` §Forge identity (the identity set, the credential paths an
+owner login can still be reached through, and `sparkwright doctor --as agent`, which fails a session whose login holds
+admin); until the switch it describes sets up, give agent sessions a GitHub identity without repository admin where you can. The per-PR trusted job only detects an over-privileged reader (its record
+says `over-privileged` and it binds with a NOTICE, never refusing); only a live probe workflow fails it, and the kit ships
+none to adopters (its own `tracker-live` is kit-only and runs weekly or when dispatched by hand, so there a swapped token
+can bind for up to a week). Without such a workflow nothing fails it, and it binds on every PR until someone reads the NOTICE.
+
 - **`KIT_TRACKER_TOKEN`** — always required: the service account's API token (Cloud) or Personal
   Access Token (Data Center).
 - **`KIT_TRACKER_USER`** — the service account's email, required only under `auth=basic`; not needed
@@ -170,7 +220,7 @@ environment is used alone and the Keychain is never read, so an exported email i
 then a login Keychain item whose **service** is `sparkwright-tracker:<host>` (the exact host as written in `base_url`
 in `.kit/tracker.conf`, case-sensitive; a `base_url` with a port cannot use the Keychain item, so it stays on the
 environment only), whose **account** is your email and whose **password** is the token. Run this once, in your own
-terminal:
+terminal. **HUMAN ACT — an agent stops and asks the owner:** a human stores the token in their own terminal.
 
 ```
 security add-generic-password -U -s sparkwright-tracker:<host> -a <email> -w
@@ -181,9 +231,10 @@ With `-w` last, `security` prompts for the token twice, so it never lands on the
 raise a dialog on every read, while the CLI's own item lists `security` in its access list and reads silently. This is
 macOS only: on Linux the environment path is unchanged.
 
-**Which identity the item holds.** Store the credential your agent sessions run as: a **dedicated agent account that is a
-Member of the project with no admin of any kind** (not Jira administrator, not system administrator, not project administrator),
-and **without Delete Issues** (remove Delete from its project role; the working set of create, edit, transition and assign stays;
+**Which identity the item holds.** **HUMAN ACT — an agent stops and asks the owner:** a Jira site admin creates the
+account, and a human mints its token signed in as that account. Store the credential your agent sessions run as: a
+**dedicated agent account that is a Member of the space with no admin of any kind** (not Jira administrator, not system administrator, not space administrator (`ADMINISTER_PROJECTS`)),
+and **without Delete Issues** (remove Delete from its space role; the working set of create, edit, transition and assign stays;
 `--as agent` checks `DELETE_ISSUES` only, and other destructive project permissions are not probed).
 This is the only credential kept in the Keychain; it is never your own admin account. Verify it with
 `sh conformance/tracker-contract.sh --preflight --as agent`: that role FAILs, naming the cure, when the credential holds
@@ -198,7 +249,7 @@ With a credential present it makes two bounded reads of the site through the ada
 permissions it holds; at most about 20 seconds when offline), which is why the Keychain wording says the item is read. It never
 prints the token. When the credential holds an admin or delete permission the line adds `- HOLDS <list>: lanes must run as a
 non-admin agent account, run --preflight --as agent` and doctor shows one warning (advisory; it never fails the build).
-A locked Keychain or a pending dialog ends within 10 seconds with a message, never a hang.
+A locked Keychain or a pending dialog ends within 10 seconds with a message, never a hang (measured live 2026-10-12 with the dialog unanswered: 10.3 s) (a second line, 'credential (user) outside the allowed charset', may follow the timeout message; it comes from the timeout, not from a second fault).
 **Honest ceiling:** this moves the exposure and does not remove it. The token leaves the session environment and your
 typed exports, but while the login Keychain is unlocked, any shell that can run `security find-generic-password ... -w`
 reads it silently.
@@ -305,18 +356,18 @@ then `git fetch` locally so `origin/main` carries the copy `tracker-read.sh` com
 **5h. `--deep` needs Jira admin — HUMAN ACT — an agent stops and asks the owner, never in CI.**
 `sh conformance/tracker-contract.sh --deep` introspects the workflow's transition conditions, which
 needs the **global Administer Jira** permission for a company-managed project (it makes one
-`POST /rest/api/3/workflows` per issue type of this project; a team-managed project needs only project admin) — a permission neither the CI service account
+`POST /rest/api/3/workflows` per work type of this space; a team-managed space needs only space admin) — a permission neither the CI service account
 (§5a, Browse Projects only) nor an agent should ever hold. Run `--deep` **once**, by hand, in your own shell, with
 an admin's own token exported in that shell only for the duration of the command — never in `.env`,
 never in CI, never in an agent's shell. An agent (including the cold-test agent) runs only the base
 check (no flag) and `--discover`; it never runs `--deep`.
+Expect `--deep` to read `TIER: convention` for most spaces (rc 0, a supported tier): Jira's current editors offer no assignee-only restriction to add (§3).
 
-## 6. Bind branch protection before your first PR — **HUMAN ACT — an agent stops and asks the
-owner**: this needs an admin-authenticated `gh` and a `y/N` confirmation (`scripts/branch-protection-apply.sh`
-header).
+## 6. Bind branch protection before your first PR — **HUMAN ACT — an agent stops and asks the owner**: REPLACE typed at a real terminal
 
-Before opening the first PR on this repository, run:
-`sh scripts/branch-protection-apply.sh --apply`
+This needs an admin-authenticated `gh`. `--replace` asks for the word REPLACE typed at a real terminal, resets every protection setting, and pins the repository's merges to squash-only. It writes the solo profile by default; pass `--team` for a team (`profiles/<stack>/BRANCH-PROTECTION.md`; `scripts/branch-protection-apply.sh` header).
+
+Before opening the first PR on this repository, run `sh scripts/branch-protection-apply.sh --replace` on an unprotected `main` (the first time, after the bootstrap push); run `--apply` once `main` is protected. If the dry-run says "not protected yet", protection was never established: run `--replace`.
 Success signal (read-only, an agent can check it): run `sh scripts/branch-protection-apply.sh` with
 no flag — its default is show-only — and it prints `Dry-run: nothing to add — every declared context
 is already bound live.` once `tracker-board-gates` is bound.
@@ -344,6 +395,6 @@ cure per cell (`#708`).
 `sh conformance/tracker-contract.sh`
 It verifies the six states + Size/Risk fields live, reading `.kit/tracker.conf` (or, for a tree
 predating this slice, the legacy `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_TOKEN` triple). Add
-**`--deep`** to also read this project's own workflows and **report the tier** — *verified* server-enforced
-(Only-Assignee on every transition into In Progress), the team-managed convention tier, or UNVERIFIED (§3):
+**`--deep`** to also read this space's own workflows and **report the tier** — server-enforced
+(only-the-assignee on every transition into In Progress; the rule is measured to display, enforcement against a non-assignee not yet measured), the convention tier (none or only some transitions covered; a partial names what is uncovered), a FAIL only when no transition reaches In Progress or the conf's status is not a status of the space, or UNVERIFIED (§3):
 `sh conformance/tracker-contract.sh --deep`

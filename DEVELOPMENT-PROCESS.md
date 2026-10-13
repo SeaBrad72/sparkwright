@@ -422,7 +422,7 @@ Artifacts are created **and maintained**, not written once. Each has a producing
 |----------|-------------|----------------|-------|
 | Project `CLAUDE.md` | Inception (from template) | config/stack change | lead |
 | ADR (incl. ADR-000 stack) | Inception / Plan | decision superseded | deciding agent + human |
-| Spec (design) | Plan | scope changes | author agent + human |
+| Spec (design) — a small control-plane slice may commit a short design file (note + lens table) as its only GO basis, `D-241011-1` item 6 | Plan | scope changes | author agent + human |
 | Design assets / UX handoff | Discover → Plan (referenced in spec) | UX surface changes | designer (informs intent owner) |
 | Plan file `docs/plans/<date>-<row-slug>.md` (`templates/PLAN-RECORD-TEMPLATE.md`) — named by the head's `Kit-Plan:` trailer; carries the design-promised controls forward | Plan | the slice's task list or promised controls change | planning agent |
 | Code + tests | Build | every change | building agent |

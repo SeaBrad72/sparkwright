@@ -10784,6 +10784,10 @@ if [ "${GPAB_G:-}" != "" ]; then
   ln -s "$sx_rt/docs" "$sx_tm/l"               # a symlink from temp INTO the root (N1e, N10b)
   sx_br='{lnk,x}/.claude/x'                    # a LITERAL brace token that expands to the in-clone symlink to the root (N19c)
   sx_br2='{a,b}'                               # a plain brace token (N19d, a regression pin)
+  sx_gb='conformance/trac[k]er-x.sh'           # a glob byte in the SCRIPT token, kept in a variable so this shell never globs it (N19h)
+  sx_cx="$GPAB_TMP/sxcloneX"                   # an independent clone: .git a directory, one-line conformance scripts (N19e-g)
+  mkdir -p "$sx_cx/.git" "$sx_cx/conformance"
+  printf 'exit 0\n' > "$sx_cx/conformance/x.sh"; printf 'exit 0\n' > "$sx_cx/conformance/review-lane.sh"
   sx_gl="$GPAB_TMP/sxgitlnk"; sx_cs="$GPAB_TMP/sxclS"
   mkdir -p "$sx_gl" "$sx_cs/.git"
   ln -s "$sx_cl/.git" "$sx_gl/.git"            # a clone whose .git is a SYMLINK to a directory (N6b)
@@ -10971,8 +10975,17 @@ if [ "${GPAB_G:-}" != "" ]; then
     "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/x.sh --selftest ~-/.claude/settings.json")"
   assert_deny_at "$GPAB_G" "SWAS77-N19c [root] a brace-expansion argument" \
     "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/review-lane.sh --selftest $sx_br")"
-  assert_deny_at "$GPAB_G" "SWAS77-N19d [root] a plain brace argument (regression pin; no mutant)" \
+  assert_deny_at "$GPAB_G" "SWAS77-N19d [root] a plain brace argument (regression pin; bound to M16f)" \
     "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/review-lane.sh --selftest $sx_br2")"
+  # SWAS-143: measured 2026-10-11 on macOS: CLONE-BYTES alone denies the ARGUMENT brace cells N19d-g, and CLONE-RAWBYTES alone denies the SCRIPT-token glob N19h (M16d). Both controls are load-bearing. The d8c2551a x.sh allow did not reproduce. See docs/reviews/2026-10-11-dev-clone-rawbytes-load-bearing.md.
+  assert_deny_at "$GPAB_G" "SWAS77-N19e [root] a plain brace argument on x.sh (the exact d8c2551a shape, d8c2551a:conformance/agent-autonomy.sh:10971)" \
+    "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/x.sh --selftest $sx_br2")"
+  assert_deny_at "$GPAB_G" "SWAS77-N19f [root] a plain brace argument on x.sh in an independent clone (sxcloneX)" \
+    "$(sx_in "$sx_rt" "cd $sx_cx && sh conformance/x.sh --selftest $sx_br2")"
+  assert_deny_at "$GPAB_G" "SWAS77-N19g [root] a plain brace argument on review-lane.sh in an independent clone (sxcloneX)" \
+    "$(sx_in "$sx_rt" "cd $sx_cx && sh conformance/review-lane.sh --selftest $sx_br2")"
+  assert_deny_at "$GPAB_G" "SWAS77-N19h [root] a glob byte in the SCRIPT token (trac[k]er passes the CLONE-TRACKER literal match; only CLONE-RAWBYTES denies it)" \
+    "$(sx_in "$sx_rt" "cd $sx_cx && sh $sx_gb")"
   # --- DENY N20: the fd number must stand as its own word (sec L2) ---
   assert_deny_at "$GPAB_G" "SWAS77-N20 [root] --help2>file is a word plus a redirect, not an fd-2 redirect (clone-exec)" \
     "$(sx_in "$sx_rt" "cd $sx_cl && sh scripts/publish-public.sh --help x2>$sx_tm/o")"
@@ -11103,6 +11116,21 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "SWAS77-M16c: the same -> N19c (a brace argument) flips to ALLOW" \
     's/return 1 ;;   # CLONE-BYTES$/: ;;   # CLONE-BYTES/;s/return 1 ;;   # CLONE-RAWBYTES$/: ;;   # CLONE-RAWBYTES/' \
     "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/review-lane.sh --selftest $sx_br")" allow
+  gpab_mutant "SWAS77-M16f: both expansion-byte tests dropped -> N19d (a plain brace argument) flips to ALLOW" \
+    's/return 1 ;;   # CLONE-BYTES$/: ;;   # CLONE-BYTES/;s/return 1 ;;   # CLONE-RAWBYTES$/: ;;   # CLONE-RAWBYTES/' \
+    "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/review-lane.sh --selftest $sx_br2")" allow
+  gpab_mutant "SWAS77-M16g: both expansion-byte tests dropped -> N19e (a plain brace argument on x.sh) flips to ALLOW" \
+    's/return 1 ;;   # CLONE-BYTES$/: ;;   # CLONE-BYTES/;s/return 1 ;;   # CLONE-RAWBYTES$/: ;;   # CLONE-RAWBYTES/' \
+    "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/x.sh --selftest $sx_br2")" allow
+  gpab_mutant "SWAS77-M16h: both expansion-byte tests dropped -> N19f (a plain brace argument, independent clone) flips to ALLOW" \
+    's/return 1 ;;   # CLONE-BYTES$/: ;;   # CLONE-BYTES/;s/return 1 ;;   # CLONE-RAWBYTES$/: ;;   # CLONE-RAWBYTES/' \
+    "$(sx_in "$sx_rt" "cd $sx_cx && sh conformance/x.sh --selftest $sx_br2")" allow
+  gpab_mutant "SWAS77-M16i: both expansion-byte tests dropped -> N19g (review-lane.sh, independent clone) flips to ALLOW" \
+    's/return 1 ;;   # CLONE-BYTES$/: ;;   # CLONE-BYTES/;s/return 1 ;;   # CLONE-RAWBYTES$/: ;;   # CLONE-RAWBYTES/' \
+    "$(sx_in "$sx_rt" "cd $sx_cx && sh conformance/review-lane.sh --selftest $sx_br2")" allow
+  gpab_mutant "SWAS77-M16d: ONLY the raw-byte decline dropped -> N19h (a glob byte in the script token) flips to ALLOW" \
+    's/return 1 ;;   # CLONE-RAWBYTES$/: ;;   # CLONE-RAWBYTES/' \
+    "$(sx_in "$sx_rt" "cd $sx_cx && sh $sx_gb")" allow
   gpab_mutant "SWAS77-M17: the fd-number word anchor dropped from the clone redirect strip -> N20 flips to ALLOW" \
     's/(^|\[\[:space:\]\])(&|\[0-9\]\*)>>?/(\&|[0-9]*)>>?/' \
     "$(sx_in "$sx_rt" "cd $sx_cl && sh scripts/publish-public.sh --help x2>$sx_tm/o")" allow
@@ -11159,6 +11187,9 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 #     12 deny cells added (N16 --cells, N17 prepush, N18 bare tracker gate, N19a-c expansion bytes, N20, N20b fd-word anchor,
 #     N21, N21b clear-on-move, N6b .git symlink, N22 scripts/ symlink) plus 8 gpab_mutant legs (M16a-c, M17, M18, M19, M20, M21):
 #     107 + 12 + 8 = 127 -> 2760 + 127 = 2887. Raw-bytes round: N19d (a plain-brace regression pin) adds 1 deny cell -> 128 -> 2888.
+#   + DEV-CLONE-RAWBYTES-LOAD-BEARING (SWAS-143): 3 deny cells (N19e-g) plus 4 gpab_mutant legs (M16f-i, each binding N19d-g to the
+#     both-byte-tests-dropped mutant) = 7 -> 2888 + 7 = 2895. Fix round: N19h (a glob byte in the script token) and its
+#     raw-byte-only mutant M16d add 1 deny cell + 1 gpab_mutant leg = 2 -> 2895 + 2 = 2897.
 # Skips that cost NO counted cells (swept, priced at zero): F2 root skip (SKIP F2, uid 0), Arm A
 # coupling lock without git (fpra_lock), direction 3 of the .kit conf corpus without git.
 # Skips that ADD cells on other hosts: HOME-REL-WIDEN-T1 (skipped on macOS, a case-INSENSITIVE
@@ -11172,7 +11203,7 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 # could be skipped without tripping the floor. That is inside the disclosed "at least N, not the right
 # N" ceiling.
 # A count below this floor means cells did not run; see the FAIL text in aa_completeness.
-AA_CELL_FLOOR=2888
+AA_CELL_FLOOR=2897
 if [ "$AA_MODE" = scoped ]; then
   # SCOPED: never the floor, never the graded OK line (C-B, F8). Non-zero if a matched cell failed or the report refused.
   aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?

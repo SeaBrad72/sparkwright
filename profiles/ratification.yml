@@ -116,7 +116,7 @@ jobs:
       # It also makes the listing head-independent: it comes from the PR files API below, not a git diff
       # of a working tree — so "which ref did we check out" can no longer produce an EMPTY diff that
       # reads as "no control-plane paths" (rc=0) and goes GREEN on an unratified PR.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false

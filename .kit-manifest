@@ -407,7 +407,9 @@ conformance/fixtures/tracker-jira/contract-wf-builds.json
 conformance/fixtures/tracker-jira/contract-wf-builds.txt
 conformance/fixtures/tracker-jira/contract-wf-extra.txt
 conformance/fixtures/tracker-jira/contract-wf-global.txt
+conformance/fixtures/tracker-jira/contract-wf-hostile-name.txt
 conformance/fixtures/tracker-jira/contract-wf-missing.txt
+conformance/fixtures/tracker-jira/contract-wf-no-transition.txt
 conformance/fixtures/tracker-jira/contract-wf-one-of-two.txt
 conformance/fixtures/tracker-jira/contract-wf-team-enforced.txt
 conformance/fixtures/tracker-jira/contract-wf-team.json
@@ -667,6 +669,7 @@ docs/operations/dora-metrics.md
 docs/operations/drift-self-check.md
 docs/operations/egress-control.md
 docs/operations/feature-flags.md
+docs/operations/forge-identity-switch.md
 docs/operations/gitlab-adoption.md
 docs/operations/harness-adapters.md
 docs/operations/harness-enforcement-evidence.md

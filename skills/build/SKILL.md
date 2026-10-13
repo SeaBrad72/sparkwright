@@ -42,6 +42,7 @@ Read the owner-approved plan end to end (file structure, task order, which tasks
 Different altitudes, no overlap. **`build`** orchestrates *across* all tasks of a slice — dispatch, review, integrate. **`tdd`** builds *one* task test-first *within* a dispatched executor. `build` invokes `tdd` once per task; the two never do each other's job. This is why naming the skill `build` does not collide with `tdd`: the scope (whole plan vs. one task) is the boundary.
 
 ## Git hygiene
+- **An amendment that adds a mechanism is a revision, not a slip.** A change to the design after its GO that adds a mechanism, a variable, a record value, a gate leg or an exemption needs its own GO (`skills/design`, the flow's step 8).
 - **Pre-branch `git fetch origin main`.** Refresh the trunk before cutting a feature branch, so the branch is not born stale.
 - **A conflicting PR skips CI** — a green badge on a branch that conflicts with `main` means nothing (the checks never ran the merge). Re-check after rebasing onto current `main`.
 - **Verify trunk after merge.** Run the conformance suite on `main` post-merge, not only on the branch — a branch-green slice can still land a red trunk.

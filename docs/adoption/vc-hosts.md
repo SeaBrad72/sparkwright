@@ -28,6 +28,10 @@ If your host provides these — under whatever names — the kit runs unchanged.
 - **Protect** branches + **MR approval rules**: Settings → Repository → Protected branches; Settings → Merge requests → Approvals. See `docs/operations/gitlab-adoption.md`.
 - **Proposal:** Merge Request. **Checks:** the `.gitlab-ci.yml` gate-IDs. **Tag:** `release-tag.gitlab-ci.yml`.
 
+## The agent's identity on your host *(GitHub is the reference; map the rest by role)*
+
+Whatever the host, the rule is by role: **the identity agent sessions run as holds no admin on the forge; approvals come from a different identity than the author; CI uses its own token.** On GitHub that is a push-only collaborator (a machine user) for the agent, your own reviewing login for Approves, and `GITHUB_TOKEN` for CI; `sparkwright doctor --as agent` fails a session whose login holds admin or maintain. On GitLab or Bitbucket the same roles map to a member with the Developer-level (push, no settings) role or its equivalent, a separate approver, and the pipeline's own job token; the kit has no forge adapter for those hosts yet, so `doctor` prints `forge identity: N/A — no forge adapter for <host>` and `doctor --as agent` exits 2 (UNVERIFIED), never a failure. The model and the credential paths to close are in [`separation-of-duties.md`](../operations/separation-of-duties.md) §Forge identity; the numbered setup sheet, written with role names so you can use it as your own, is [`forge-identity-switch.md`](../operations/forge-identity-switch.md).
+
 ## Forge-adapter seam — authenticated `approved-by` *(GitHub wired; other forges remain the seam)*
 
 The promotion record (`scripts/promotion-verify.sh record`, KW1 · S5a) binds a GO to the approved

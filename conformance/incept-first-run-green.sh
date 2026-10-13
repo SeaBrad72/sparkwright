@@ -582,7 +582,7 @@ required_checks_tracker_face_tests() {  # appends to $st
     # RT3-Q4 (T3 fix round 1): check each note ON ITS OWN LINE — a whole-output glob (the old
     # `case "$INCEPT_OUT" in *a*b*`) is satisfied by two DIFFERENT lines carrying the two fragments in
     # order, which is not the same claim as "one line carries the whole sentence".
-    if printf '%s\n' "$INCEPT_OUT" | grep '^note: tracker-board-gates is a required context on this tracker-backed repo' | grep -q 'bind branch protection BEFORE your first PR: sh scripts/branch-protection-apply.sh --apply'; then
+    if printf '%s\n' "$INCEPT_OUT" | grep '^note: tracker-board-gates is a required context on this tracker-backed repo' | grep -q 'bind branch protection BEFORE your first PR: sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected'; then
       echo "selftest PASS: tracker face prints the bind-before-first-PR note, on one line"
     else
       echo "selftest FAIL: tracker face must print the bind-before-first-PR note on one line"; st=1

@@ -11,10 +11,11 @@
 #     Note: on macOS the child runs of this file source the real library, so with no environment credential
 #     they query the real login Keychain against the fixture hosts (an rc 44 lookup, harmless). A locked
 #     Keychain or a pending dialog can stall such a leg for up to 10 seconds (the library timer).
-# Base run checks the six §6 states + Size/Risk fields. With --deep, ALSO grades THIS project's own workflows
-# (the adapter's one bulk workflows read, never a site-wide search) and reports the tier it PROVED: every
-# transition into In Progress carries an exclusive Only-Assignee condition (server-enforced) · a team-managed
-# project with none (convention, rc 0) · a company-managed gap (FAIL) · unreadable / Data Center (UNVERIFIED, rc 2).
+# Base run checks the six §6 states + Size/Risk fields. With --deep, ALSO grades THIS space's own workflows
+# (the adapter's one bulk workflows read, never a site-wide search) and reports the tier it MEASURED: every
+# transition into In Progress carries an exclusive Only-Assignee condition (server-enforced, PASS) · none, or only
+# some (convention, rc 0, either space style; a partial names what is uncovered) · no transition into In Progress, or
+# the conf's in-progress status is not a status of the space (FAIL) · unreadable / Data Center (UNVERIFIED, rc 2).
 # `flavour=cloud` selects REST v3, `flavour=datacenter` selects REST v2 (design §6a S-9).
 # `--discover` prints the id<->name status map for the connected instance (design §6b R3) — a LOCAL
 # read run under the developer's own token; it proves nothing about a live host in --selftest.
@@ -89,7 +90,7 @@ live_check() {
 # --- --deep (TRACKER-CONTRACT-HONEST-TIER): grade THIS project's own workflows, never a site-wide read -------
 # The adapter's project-workflows op does the grading in jq and prints closed-grammar `wf` lines; this side only
 # resolves the conf's in-progress status ids, filters the lines and words the verdict. rc 0 = PASS or the
-# convention tier (a supported tier, not a gap) · 1 = a gap · 2 = UNVERIFIED (the tier is attested, not proven).
+# convention tier (a supported tier, not a gap) · 1 = a fixable gap (no transition, or a bad conf status) · 2 = UNVERIFIED (the tier could not be graded).
 _dl_unv() { echo "UNVERIFIED: deep — $1; the tier is attested, not proven"; }
 
 # _dl_ids <dir> <key>: the conf's state.in-progress names -> status ids (from project-statuses), space-joined.
@@ -114,17 +115,24 @@ _dl_verdict() {
   if [ -z "$_dv_hits" ]; then
     echo "FAIL: deep — no transition into the conf's in-progress status in $2's workflows (the claim cannot be server-enforced)"; return 1
   fi
-  _dv_bad=$(printf '%s\n' "$_dv_hits" | awk -F'\t' '$5 != "enforced" { printf "FAIL: deep — convention tier: transition \047%s\047 into In Progress in workflow \047%s\047 lacks an exclusive Only-Assignee condition reachable through ALL groups (JIRA-SETUP.md §3)\n", $3, $2 }')
+  # SWAS-170: the enforced count is taken over the in-progress hits only, never the whole workflow file.
+  _dv_bad=$(printf '%s\n' "$_dv_hits" | awk -F'\t' '$5 != "enforced" { printf "\047%s\047 in \047%s\047\n", $3, $2 }')
   if [ -z "$_dv_bad" ]; then
     DEEP_VERIFIED=1
-    echo "PASS: deep — server-enforced claim (Only-Assignee on every transition into In Progress in $(printf '%s\n' "$_dv_hits" | cut -f2 | sort -u | wc -l | tr -d ' ') workflow(s))"
+    echo "PASS: deep — server-enforced claim (Only-Assignee on every transition into In Progress in $(printf '%s\n' "$_dv_hits" | cut -f2 | sort -u | wc -l | tr -d ' ') workflow(s)) (the restriction is measured to display; enforcement against a non-assignee is not yet measured — JIRA-SETUP.md §3)"
     return 0
   fi
-  if [ "$3" = next-gen ] && ! printf '%s\n' "$_dv_hits" | grep -q '	enforced$'; then
-    echo "TIER: convention — Jira's UI offers no Only-Assignee restriction on a team-managed project, so $2 is on the convention tier; --deep grades what the workflow actually carries (see JIRA-SETUP.md §3). board claim still assigns and transitions, last-writer-wins."
+  _dv_nbad=$(printf '%s\n' "$_dv_bad" | wc -l | tr -d ' ')
+  _dv_nall=$(printf '%s\n' "$_dv_hits" | wc -l | tr -d ' ')
+  if [ "$_dv_nbad" -lt "$_dv_nall" ]; then
+    echo "TIER: convention (partial: $_dv_nbad uncovered — $(printf '%s\n' "$_dv_bad" | paste -s -d ',' - | sed 's/,/, /g')); board claim is last-writer-wins on the uncovered transitions and the git claim ref is the coordination record"
     return 0
   fi
-  printf '%s\n' "$_dv_bad"; return 1
+  echo "TIER: convention — Jira's current workflow editors offer no assignee-only restriction to add (measured 2026-10-12), so \`board claim\` assigns and transitions, last-writer-wins, and the git claim ref is the coordination record."
+  if [ "$3" != next-gen ]; then
+    echo "To earn the server-enforced tier, assign a workflow that already carries 'only the assignee' on its transitions into In Progress (copy one, then point the space's workflow scheme at the copy) — JIRA-SETUP.md §3"
+  fi
+  return 0
 }
 
 # deep_live <base-url> <rest-base>: project -> statuses -> one workflows read per issue type -> verdict. A 401 on
@@ -507,16 +515,18 @@ _pf_perms_line() {
 # _pf_claim_line <style>: ONE line for the claim tier; the --deep engine (conf mode, classic only) is collapsed to it.
 _pf_claim_line() {
   case "$1" in
-    next-gen) _pf_line claim-tier TIER "convention (team-managed: Jira offers no Only-Assignee condition; see --deep)"; return 0 ;;
+    next-gen) _pf_line claim-tier TIER "convention (Jira's current workflow editors offer no assignee-only restriction to add, measured 2026-10-12; board claim is last-writer-wins and the git claim ref is the coordination record; see --deep)"; return 0 ;;
     classic) : ;;
     *) _pf_line claim-tier UNVERIFIED "the project style is unknown, so the claim tier could not be graded"; return 0 ;;
   esac
   if [ "$PF_NOCONF" -eq 1 ]; then _pf_line claim-tier INFO "run --deep after JIRA-SETUP §4 maps state.in-progress"; return 0; fi
   _pc_rc=0; _pc_out=$(deep_live "$BASE" "$REST" 2>/dev/null) || _pc_rc=$?
-  _pc_k=$(printf '%s\n' "$_pc_out" | grep -c '^FAIL: deep — convention tier' || true)
-  _pc_n=$(printf '%s\n' "$_pc_out" | sed -n 's/.* in \([0-9][0-9]*\) workflow(s)).*/\1/p' | sed -n 1p)
-  if [ "$_pc_rc" -eq 0 ] && [ "$(_pf_num "$_pc_n")" != unknown ]; then _pf_line claim-tier PASS "server-enforced ($_pc_n workflow(s))"
-  elif [ "$_pc_rc" -eq 1 ] && [ "$_pc_k" -gt 0 ]; then _pf_line claim-tier FAIL "$_pc_k transition(s) into In Progress lack Only-Assignee; detail: --deep"
+  _pc_n=$(printf '%s\n' "$_pc_out" | sed -n 's/^PASS: deep .* in \([0-9][0-9]*\) workflow(s)).*/\1/p' | sed -n 1p)
+  _pc_u=$(printf '%s\n' "$_pc_out" | sed -n 's/^TIER: convention (partial: \([0-9][0-9]*\) uncovered.*/\1/p' | sed -n 1p)
+  if [ "$_pc_rc" -eq 0 ] && [ "$(_pf_num "$_pc_u")" != unknown ]; then _pf_line claim-tier TIER "convention (partial: $_pc_u uncovered; board claim is last-writer-wins on the uncovered transitions and the git claim ref is the coordination record; detail: --deep)"
+  elif [ "$_pc_rc" -eq 0 ] && printf '%s\n' "$_pc_out" | grep -q '^TIER: convention'; then _pf_line claim-tier TIER "convention (Jira's current workflow editors offer no assignee-only restriction to add, measured 2026-10-12; board claim is last-writer-wins and the git claim ref is the coordination record; see --deep)"
+  elif [ "$_pc_rc" -eq 0 ] && [ "$(_pf_num "$_pc_n")" != unknown ]; then _pf_line claim-tier PASS "server-enforced ($_pc_n workflow(s)); measured to display, enforcement against a non-assignee not yet measured"
+  elif [ "$_pc_rc" -eq 1 ] && printf '%s\n' "$_pc_out" | grep -q '^FAIL: deep —'; then _pf_line claim-tier FAIL "the conf's in-progress status is not a status, or no transition reaches it; detail: --deep"
   elif [ "$_pc_rc" -eq 2 ] && printf '%s' "$_pc_out" | grep -qF 'Administer Jira is required'; then _pf_line claim-tier ASK "ask an admin to run --deep"
   else _pf_line claim-tier UNVERIFIED "the claim tier could not be graded; run --deep for the detail"
   fi
@@ -872,15 +882,16 @@ EOF
   # --- TRACKER-CONTRACT-HONEST-TIER: --deep grades THIS project's own workflows, through the adapter's project-
   # scoped reads (recorded adapter output, proven byte-for-byte by tracker-jira.sh --selftest). One row per leg:
   # name:conf:project:statuses:workflow:wf-rc:myself-rc:want-rc:want-project-workflows-reads:want-text. Whole-output
-  # oracles on EVERY row: "incl. the verified Only-Assignee claim" appears iff PASS; no site-wide read is ever asked. ---
-  for _dl in "team-managed:basic:team:team:team:::0:1:TIER: convention — Jira's UI offers no Only-Assignee restriction on a team-managed project, so AB is on the convention tier; --deep grades what the workflow actually carries" \
-             "team-enforced:basic:team:team:team-enforced:::0:1:PASS: deep — server-enforced claim (Only-Assignee on every transition into In Progress in 1 workflow(s))" \
-             "company-enforced:basic:company:company:builds:::0:1:PASS: deep — server-enforced claim (Only-Assignee on every transition into In Progress in 1 workflow(s))" \
-             "company-any:basic:company:company:any:::1:1:FAIL: deep — convention tier: transition 'Start Progress' into In Progress in workflow 'Builds Workflow'" \
-             "company-extra-allowance:basic:company:company:extra:::1:1:FAIL: deep — convention tier: transition 'Start Progress' into In Progress in workflow 'Builds Workflow'" \
-             "company-missing:basic:company:company:missing:::1:1:FAIL: deep — convention tier: transition 'Start Progress' into In Progress in workflow 'Builds Workflow'" \
-             "company-one-of-two:basic:company:company:one-of-two:::1:1:FAIL: deep — convention tier: transition 'Start Progress' into In Progress in workflow 'Second Workflow'" \
-             "global-unconditioned:basic:company:company:global:::1:1:FAIL: deep — convention tier: transition 'Anyone Start' into In Progress in workflow 'Builds Workflow'" \
+  # oracles on EVERY row: "incl. the Only-Assignee claim, measured to display; ..." appears iff PASS; no site-wide read is ever asked. ---
+  for _dl in "team-managed:basic:team:team:team:::0:1:TIER: convention — Jira's current workflow editors offer no assignee-only restriction to add (measured 2026-10-12)" \
+             "team-enforced:basic:team:team:team-enforced:::0:1:PASS: deep — server-enforced claim (Only-Assignee on every transition into In Progress in 1 workflow(s)) (the restriction is measured to display; enforcement against a non-assignee is not yet measured — JIRA-SETUP.md §3)" \
+             "company-enforced:basic:company:company:builds:::0:1:PASS: deep — server-enforced claim (Only-Assignee on every transition into In Progress in 1 workflow(s)) (the restriction is measured to display; enforcement against a non-assignee is not yet measured — JIRA-SETUP.md §3)" \
+             "company-any:basic:company:company:any:::0:1:TIER: convention — Jira's current workflow editors offer no assignee-only restriction to add (measured 2026-10-12)" \
+             "company-extra-allowance:basic:company:company:extra:::0:1:TIER: convention — Jira's current workflow editors offer no assignee-only restriction to add (measured 2026-10-12)" \
+             "company-missing:basic:company:company:missing:::0:1:TIER: convention — Jira's current workflow editors offer no assignee-only restriction to add (measured 2026-10-12)" \
+             "company-one-of-two:basic:company:company:one-of-two:::0:1:TIER: convention (partial: 1 uncovered — 'Start Progress' in 'Second Workflow'); board claim is last-writer-wins on the uncovered transitions and the git claim ref is the coordination record" \
+             "global-unconditioned:basic:company:company:global:::0:1:TIER: convention (partial: 1 uncovered — 'Anyone Start' in 'Builds Workflow')" \
+             "classic-no-transition-fail:basic:company:company:no-transition:::1:1:FAIL: deep — no transition into the conf's in-progress status" \
              "no-permission:basic:company:company:builds:4:0:2:1:UNVERIFIED: deep — the token cannot read this project's workflows (Administer Jira is required for company-managed workflows); the tier is attested, not proven" \
              "no-credential:basic:company:company:builds:4:4:2:1:UNVERIFIED: deep — the credential was rejected by Jira" \
              "no-check:basic:company:company:builds:4:2:2:1:UNVERIFIED: deep — could not check the credential" \
@@ -900,20 +911,29 @@ EOF
     )
     _dlgot=$(cat "$tmpd/deep-$_dln-rc" 2>/dev/null || printf '?'); _dlout=$(cat "$tmpd/deep-$_dln-out" 2>/dev/null || true)
     _dlreads=$(grep -c ' project-workflows ' "$faargv" || true)
-    _dlsum=0; printf '%s' "$_dlout" | grep -q 'incl. the verified Only-Assignee claim' && _dlsum=1
+    _dlsum=0; printf '%s' "$_dlout" | grep -qF 'incl. the Only-Assignee claim, measured to display; enforcement against a non-assignee not yet measured' && _dlsum=1
     _dlpass=0; printf '%s' "$_dlout" | grep -q 'PASS: deep' && _dlpass=1
     if [ "$_dlgot" = "$_dlrc" ] && [ "$_dlreads" = "$_dlrd" ] && printf '%s' "$_dlout" | grep -qF "$_dlt" \
        && [ "$_dlsum" = "$_dlpass" ] && ! grep -q ' workflow$' "$faargv"; then
-      echo "PASS: selftest — deep/$_dln: rc $_dlrc, $_dlrd project-workflows read(s), the contract text carries the tier verdict, the verified claim only on PASS, no site-wide read"
+      echo "PASS: selftest — deep/$_dln: rc $_dlrc, $_dlrd project-workflows read(s), the contract text carries the tier verdict, the Only-Assignee claim line only on PASS, no site-wide read"
     else
       echo "FAIL: selftest — deep/$_dln: rc=$_dlgot want $_dlrc, reads=$_dlreads want $_dlrd, verified-summary=$_dlsum pass=$_dlpass out='$_dlout'"; sfail=1
     fi
     case $_dln in
       team-managed) grep -qx 'contract-read https://ex.atlassian.net cloud project-workflows 10000 10001 10002 10003 10004' "$faargv" \
         && grep -qx 'contract-read https://ex.atlassian.net cloud project AB' "$faargv" \
-        || { echo "FAIL: selftest — deep/team-managed: the reads asked were not project, project-statuses, then project-workflows for every issue type: $(cat "$faargv")"; sfail=1; } ;;
+        || { echo "FAIL: selftest — deep/team-managed: the reads asked were not project, project-statuses, then project-workflows for every issue type: $(cat "$faargv")"; sfail=1; }
+        ! printf '%s' "$_dlout" | grep -qF 'To earn the server-enforced tier' \
+        || { echo "FAIL: selftest — deep/team-managed: a team-managed TIER printed the company-managed route line: $_dlout"; sfail=1; } ;;
       company-one-of-two) ! printf '%s' "$_dlout" | grep -qF "workflow 'Builds Workflow'" \
-        || { echo "FAIL: selftest — deep/company-one-of-two: named the ENFORCED workflow too: $_dlout"; sfail=1; } ;;
+        || { echo "FAIL: selftest — deep/company-one-of-two: named the ENFORCED workflow too: $_dlout"; sfail=1; }
+        ! printf '%s' "$_dlout" | grep -qF 'To earn the server-enforced tier' \
+        || { echo "FAIL: selftest — deep/company-one-of-two: a classic PARTIAL tier printed the route line: $_dlout"; sfail=1; } ;;
+      global-unconditioned) ! printf '%s' "$_dlout" | grep -qF 'To earn the server-enforced tier' \
+        || { echo "FAIL: selftest — deep/global-unconditioned: a classic PARTIAL tier printed the route line: $_dlout"; sfail=1; } ;;
+      company-missing) printf '%s' "$_dlout" | grep -qF 'To earn the server-enforced tier, assign a workflow that already carries' \
+        && ! printf '%s' "$_dlout" | grep -qF 'partial:' \
+        || { echo "FAIL: selftest — deep/company-missing: the zero branch must print the route line and no partial: $_dlout"; sfail=1; } ;;
     esac
   done
   # deep/site-wide-ignored (the cold-test regression): the fake offers a site-wide ENFORCED workflow beside a
@@ -1220,7 +1240,7 @@ EOF
   _pfv happy/token-expiry _pfl token-expiry INFO "the API does not expose token expiry"
   _pfv happy/project _pfl project PASS "team-managed"
   _pfv happy/permissions _pfl permissions PASS "browse · create · transition · assign"
-  _pfv happy/claim-tier _pfl claim-tier TIER "convention (team-managed: Jira offers no Only-Assignee condition; see --deep)"
+  _pfv happy/claim-tier _pfl claim-tier TIER "convention (Jira's current workflow editors offer no assignee-only restriction to add, measured 2026-10-12;"
   _pfv happy/required _pfl required PASS "0 required create fields unmapped"
   _pfv happy/epic-model _pfl epic-model PASS "parent"
   _pfv happy/visibility _pfl visibility PASS "16 of 16 issues visible; 0 issue-security levels"
@@ -1440,14 +1460,31 @@ EOF
   _pfv project-unknown/claim-tier-unverified _pfl claim-tier UNVERIFIED ""
   _pfv project-unknown/never-echoed _pfnot ZQHOSTILE
   pf_proj=company; pf_pst=company; pf_wf=builds; _pfr pfclassicok --preflight --conf "$f7conf"
-  _pfv claim-tier/classic-conf-pass _pfl claim-tier PASS "server-enforced (1 workflow(s))"
+  _pfv claim-tier/classic-conf-pass _pfl claim-tier PASS "server-enforced (1 workflow(s)); measured to display, enforcement against a non-assignee not yet measured"
   _pfv claim-tier/classic-project-line _pfl project PASS "company-managed"
   _pfv claim-tier/one-line _pfn claim-tier 1
   pf_proj=company; pf_pst=company; pf_wf=any; _pfr pfclassicbad --preflight --conf "$f7conf"
-  _pfv claim-tier/classic-fail-collapsed _pfl claim-tier FAIL "1 transition(s) into In Progress lack Only-Assignee; detail: --deep"
+  _pfv claim-tier/classic-zero-is-tier _pfl claim-tier TIER "convention (Jira's current workflow editors offer no assignee-only restriction to add, measured 2026-10-12;"
   _pfv claim-tier/collapsed-one-line _pfn claim-tier 1
-  _pfv claim-tier/fail-rc _pfok 1
+  _pfv claim-tier/zero-tier-rc0 _pfok 0
   _pfv claim-tier/no-per-transition-text _pfnot "Start Progress"
+  pf_proj=company; pf_pst=company; pf_wf=one-of-two; _pfr pfclassicpartial --preflight --conf "$f7conf"
+  _pfv claim-tier/classic-partial-tier _pfl claim-tier TIER "convention (partial: 1 uncovered; board claim is last-writer-wins on the uncovered transitions and the git claim ref is the coordination record; detail: --deep)"
+  _pfv claim-tier/classic-partial-rc0 _pfok 0
+  _pfv claim-tier/classic-partial-no-transition-text _pfnot "Second Workflow"
+  # The order lock: a hostile workflow name shaped like the PASS token ("X in 2 workflow(s))") sits in a PARTIAL fixture; the
+  # preflight must read TIER partial (1 uncovered), never PASS. Were the PASS parse tried first or left unanchored, "2" would
+  # be read as a PASS workflow count and this row's expected TIER text would fail.
+  pf_proj=company; pf_pst=company; pf_wf=hostile-name; _pfr pfclassichostile --preflight --conf "$f7conf"
+  _pfv claim-tier/hostile-name-partial-is-tier _pfl claim-tier TIER "convention (partial: 1 uncovered; board claim is last-writer-wins"
+  _pfv claim-tier/hostile-name-is-not-pass _pfnot "server-enforced (2 workflow(s))"
+  _pfv claim-tier/hostile-name-rc0 _pfok 0
+  pf_proj=company; pf_pst=company; pf_wf=builds; _pfr pfclassicdoing --preflight --conf "$fxdir/contract-conf-doing.conf"
+  _pfv claim-tier/in-progress-not-a-status-fail _pfl claim-tier FAIL "the conf's in-progress status is not a status, or no transition reaches it; detail: --deep"
+  _pfv claim-tier/in-progress-not-a-status-fail-rc _pfok 1
+  pf_proj=company; pf_pst=company; pf_wf=no-transition; _pfr pfclassicnotrans --preflight --conf "$f7conf"
+  _pfv claim-tier/classic-no-transition-fail _pfl claim-tier FAIL "the conf's in-progress status is not a status, or no transition reaches it; detail: --deep"
+  _pfv claim-tier/classic-no-transition-fail-rc _pfok 1
   pf_proj=company; pf_pst=company; pf_wf=builds; pf_wfrc=4; pf_myrc=0; _pfr pfclassicask --preflight --conf "$f7conf"
   _pfv claim-tier/permission-ask _pfl claim-tier ASK "ask an admin to run --deep"
   _pfv claim-tier/permission-ask-rc0 _pfok 0
@@ -1688,17 +1725,17 @@ if [ -n "$BASE" ] && [ "$_TC_CRED_FOUND" -eq 1 ]; then
   if live_check "$BASE" "$REST"; then :; else ok=1; fi
   unv=0; DEEP_VERIFIED=0
   if [ "$DEEP" -eq 1 ]; then
-    echo "Deep: Only-Assignee transition condition (this project's own workflows):"
+    echo "Deep: the claim tier (this space's own workflows):"
     _dp_rc=0; deep_live "$BASE" "$REST" || _dp_rc=$?
     [ "$_dp_rc" -ne 1 ] || ok=1
     [ "$_dp_rc" -ne 2 ] || unv=1
   else
-    echo "ATTESTED (not auto-verified): confirm the Only-Assignee condition, or re-run with --deep to verify it — see JIRA-SETUP.md."
+    echo "NOT GRADED: the claim tier (server-enforced or convention) is read only by --deep; re-run with --deep — see JIRA-SETUP.md §3."
   fi
   if tc_coherence_live; then :; else ok=1; fi
   if [ "$ok" -eq 0 ]; then
-    [ "$unv" -eq 0 ] || { echo "UNVERIFIED: the §6 contract holds, but the Only-Assignee tier is attested, not proven (see above)"; exit 2; }
-    if [ "$DEEP_VERIFIED" -eq 1 ]; then echo "OK: Jira satisfies the §6 contract (incl. the verified Only-Assignee claim)"; else echo "OK: Jira satisfies the §6 contract"; fi
+    [ "$unv" -eq 0 ] || { echo "UNVERIFIED: the §6 contract holds, but the claim tier could not be graded (see above)"; exit 2; }
+    if [ "$DEEP_VERIFIED" -eq 1 ]; then echo "OK: Jira satisfies the §6 contract (incl. the Only-Assignee claim, measured to display; enforcement against a non-assignee not yet measured)"; else echo "OK: Jira satisfies the §6 contract"; fi
     exit 0
   else
     echo "FAIL: Jira does not satisfy the §6 contract (see above)"; exit 1

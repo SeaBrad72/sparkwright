@@ -6,7 +6,7 @@
 # container image supply-chain (gate-image-sbom + gate-image-provenance).
 #
 # HARDENING (do before production):
-#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v6.x).
+#  - Pin every `uses:` to a full 40-char commit SHA (e.g. actions/checkout@<sha>  # v7.x).
 #    Note `anchore/sbom-action@v0` is a MAJOR-version float (highest-risk) — pin it first.
 #  - Pin tool installs to exact versions.
 #  - OIDC is least-privilege here: id-token:write / packages:write live only on the
@@ -56,7 +56,7 @@ jobs:
       DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/app'
     # <<< kit:db-backed
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0   # full history so the secret scan sees all commits
 
@@ -351,7 +351,7 @@ jobs:
       id-token: write       # OIDC for digest-bound attestation
       attestations: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
         with:

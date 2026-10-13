@@ -97,7 +97,7 @@ EOF
 if [ "${1:-}" = "__emit-epilogue" ]; then
   NAME="<project>"; VER=$(cat VERSION 2>/dev/null || echo unknown); STACK="<stack>"; CI="<ci>"
   MODE="<mode>"; TEAM="<governance>"
-  PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --apply (see profiles/<stack>/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh"
+  PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected (see profiles/<stack>/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh"
   GUARD_STEP="(runtime-guard status — printed by a real inception run)"
   print_epilogue; exit 0
 fi
@@ -1159,7 +1159,7 @@ if [ "$CI" = github ] && grep -q '^<your-check-name>$' REQUIRED-CHECKS.md; then
   # conf exists yet at this point, so the design's own "or absent" fallback applies and both variable
   # names are named. Either way: a non-basic `auth=` (e.g. `bearer`) drops KIT_TRACKER_USER from the note.
   if [ -n "$_tbg_line" ]; then
-    echo "note: tracker-board-gates is a required context on this tracker-backed repo — bind branch protection BEFORE your first PR: sh scripts/branch-protection-apply.sh --apply"
+    echo "note: tracker-board-gates is a required context on this tracker-backed repo — bind branch protection BEFORE your first PR: sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected"
     _tbg_auth=basic
     if [ -f .kit/tracker.conf ]; then
       _tbg_a=$(grep '^auth=' .kit/tracker.conf 2>/dev/null | head -1 | cut -d= -f2)
@@ -1834,7 +1834,7 @@ if [ -n "$RKO_NOTEMPLATE" ]; then
 fi
 
 case "$CI" in
-  github) PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --apply (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh" ;;
+  github) PROTECT_HINT="Protect main NOW — declare required checks in REQUIRED-CHECKS.md, then run scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected (see profiles/${STACK}/BRANCH-PROTECTION.md); verify with: sh conformance/branch-protection.sh" ;;
   gitlab) PROTECT_HINT="Protect main NOW — in GitLab: Settings → Repository → Protected branches (require merge request + pipeline success + an approval rule). branch-protection.sh uses the GitHub API; the GitLab equivalent is adopter-owned — see docs/operations/ci-platforms.md." ;;
 esac
 print_epilogue

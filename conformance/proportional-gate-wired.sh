@@ -2766,10 +2766,10 @@ YAML
     _tds_d3=$(mktemp -d)
     awk '
       { print }
-      /actions\/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6\.0\.3$/ { seen=1 }
-      seen && /persist-credentials: false/ {
+      /^  [A-Za-z0-9_-]+:[ \t]*$/ { in_drift = ($0 ~ /^  tracker-board-drift:[ \t]*$/) }
+      in_drift && !done && /persist-credentials: false/ {
         print "          ref: ${{ github.event.pull_request.head.sha }}"
-        seen=0
+        done=1
       }
     ' "$_tj_atg" > "$_tds_d3/m3.yml"
     if cmp -s "$_tds_d3/m3.yml" "$_tj_atg"; then
@@ -3747,7 +3747,14 @@ EOF
     if code_only "$_tj_tlive" | grep -qF 'tracker-live: skipped'; then
       echo "PASS: $_tj_tlive still skips with a notice on an absent secret (§8.3/R1c)"
     else
-      echo "FAIL: $_tj_tlive lost its skip-with-notice guard — §8.3/R1c requires this leg never fail closed on an unconfigured secret"; st=1
+      echo "FAIL: $_tj_tlive lost its skip-with-notice guard — §8.3/R1c requires this leg never fail closed on an unconfigured secret (on an adopter tree)"; st=1
+    fi
+    # Q8 / SWAS-136: on the kit tree the same unconfigured states FAIL; the adopter arm above keeps the skip.
+    if code_only "$_tj_tlive" | grep -qF 'docs/ROADMAP-KIT.md' \
+       && code_only "$_tj_tlive" | grep -qF 'tracker-live: unconfigured on the kit tree'; then
+      echo "PASS: $_tj_tlive fails on the kit tree when unconfigured (Q8, SWAS-136)"
+    else
+      echo "FAIL: $_tj_tlive lost its kit-tree predicate or its 'unconfigured on the kit tree' error — an unconfigured live leg would skip silently on the kit tree (Q8, SWAS-136)"; st=1
     fi
     # M-2 / design §6b R1b, revised in the aggregate-coverage fix round: R1b is "the gates' own
     # selftests" — dispatch-proof must run loop-state.sh --selftest BY PATH (which carries the T6b
@@ -3896,6 +3903,38 @@ EOF
       else
         echo "FAIL: TL7/unconfigured: rc=$_tl7_rc out='$_tl7_out'"; st=1
       fi
+      # Q8 / SWAS-136: the same three unconfigured states on a KIT-TREE root (the marker file docs/ROADMAP-KIT.md present)
+      # FAIL the step (rc 1) and say so; the no-marker leg above keeps the adopter skip. LOAD-BEARING per arm: an arm whose
+      # exit 1 became exit 0, or that is removed, flips that leg red.
+      mkdir -p "$_tl7_dir/kroot/docs" "$_tl7_dir/kroot/.kit" "$_tl7_dir/kroot/scripts"
+      : > "$_tl7_dir/kroot/docs/ROADMAP-KIT.md"
+      cp "$_tl7_dir/root/.kit/tracker.conf" "$_tl7_dir/kroot/.kit/tracker.conf"
+      cp "$_tl7_dir/root/scripts/tracker-read.sh" "$_tl7_dir/kroot/scripts/tracker-read.sh"
+      # _tl7_kit_run <token> <live-row>: sets _tl7_rc and _tl7_out against the kit-tree root
+      _tl7_kit_run() {
+        _tl7_rc=0
+        _tl7_out=$( cd "$_tl7_dir/kroot" && KIT_TRACKER_TOKEN="$1" KIT_TRACKER_USER=u KIT_TRACKER_LIVE_ROW="$2" RUNNER_TEMP="$_tl7_dir/tmp" \
+          GITHUB_SHA=1111111111111111111111111111111111111111 FAKE_RECORD="$(_tl7_rec ok bound)" FAKE_RC=0 sh -e "$_tl7_dir/body.sh" 2>&1 ) || _tl7_rc=$?
+      }
+      _tl7_kit_check() {
+        case "$_tl7_out" in
+          *"unconfigured on the kit tree"*) _tl7_ok=1 ;;
+          *) _tl7_ok=0 ;;
+        esac
+        if [ "$_tl7_rc" -eq 1 ] && [ "$_tl7_ok" -eq 1 ]; then
+          echo "PASS: TL7/kit-tree-$1: $2 FAILS the step (rc 1) on the kit tree and names it (Q8, SWAS-136)"
+        else
+          echo "FAIL: TL7/kit-tree-$1: $2 on the kit tree must fail rc 1 with 'unconfigured on the kit tree' (rc=$_tl7_rc out='$_tl7_out')"; st=1
+        fi
+      }
+      _tl7_kit_run "" AB-1
+      _tl7_kit_check no-token "an empty KIT_TRACKER_TOKEN"
+      rm -f "$_tl7_dir/kroot/.kit/tracker.conf"
+      _tl7_kit_run tok AB-1
+      _tl7_kit_check no-conf "an absent .kit/tracker.conf"
+      cp "$_tl7_dir/root/.kit/tracker.conf" "$_tl7_dir/kroot/.kit/tracker.conf"
+      _tl7_kit_run tok ""
+      _tl7_kit_check no-live-row "an empty KIT_TRACKER_LIVE_ROW"
       # A1 item 5: the BOUNDED declared ceiling. Only `writer` (+ licensed-writer + a well-formed card, on a bound row) passes.
       _tl7_run "$(_tl7_rec writer bound)" 0 tok licensed-writer SWAS-123
       case "$_tl7_out" in

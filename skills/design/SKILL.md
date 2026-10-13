@@ -25,7 +25,7 @@ architecture-first still holds at Phase 0, it is simply gated there. **Do not co
      Edits that drop or rename them can turn the skill-spine lock RED. -->
 
 ## When to use
-Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin. **XS/S ordinary work does not owe a design doc, a plan file or a review record** (`D-240930-1`): the design note and task brief ride the PR body, one reviewer, security once on the built diff, nits accepted in the PR rather than a new round; M, Sensitive and Control-plane owe them as before.
+Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin. **XS/S ordinary work does not owe a design doc, a plan file or a review record**: the design note and task brief ride the PR body, one reviewer, security once on the built diff, nits accepted in the PR rather than a new round; M, Sensitive and Control-plane owe them as before, except the small control-plane lane: a control-plane slice under about 50 non-test lines that adds no mechanism (a trial through v3.239.0) may commit its own new short design file (the design note and the twelve-row lens table) as its design GO's only basis, and skip the long-form design and the independent lens seat; the plan file, the review record and the security pass are still owed. Say in the PR that the slice uses this lane.
 
 ## The flow (the proven spine)
 1. **Explore context first** — read the codebase, the kit's principles (`CLAUDE.md` / `DEVELOPMENT-STANDARDS.md`), recent commits, the relevant design docs. Never design from assumptions.
@@ -37,6 +37,7 @@ Before any feature, component, behaviour change, or new project — the moment i
 6. **Write the spec** to `docs/architecture/<date>-<topic>-design.md` (tracked, cold-resumable) or `docs/superpowers/specs/` (local); commit it.
 7. **Self-review the spec** — placeholders, internal consistency, scope, ambiguity, and the lens review below; fix inline.
 8. **Owner reviews the written spec**, then hand to the **plan** skill. Do NOT start implementation from this skill.
+   - An amendment made after a GO that adds a mechanism, a variable, a record value, a gate leg or an exemption is a design revision with its own GO, never a slip. The amendment's heading names every class of item it contains.
 
 ## Design provenance — four sources, two artifact shapes
 A design does not have to be *authored* by the slice that is governed by it. Provenance and artifact are different things:
@@ -92,7 +93,7 @@ ceremony rule above:
 | # | Lens | The question | What discharges it |
 |---|---|---|---|
 | 1 | Project principles | Does it hold to the principles this project's `CLAUDE.md` declares? | The principle at stake and how the design keeps it, or the ruling that lets it bend. |
-| 2 | Friction | Who does this remove friction for, and who pays for it? | Who gains, who pays, and what they pay. |
+| 2 | Friction | Who does this remove friction for, and who pays for it? | Who gains, who pays, and what they pay. A default-on control whose design names an adopter cost as real ships opt-in first. |
 | 3 | Software practice | Would a strong engineer build it this way? | The more standard alternative you considered, and why this one. |
 | 4 | Agentic practice | Does it suit how agents work: context, hand-offs, what the agent can and cannot verify? | What an agent must read, what it hands on, and which claims it can check versus must trust. |
 | 5 | CI | What does it do to CI time, reliability and coverage? | Minutes added or saved, any new flake surface, coverage gained or lost. |

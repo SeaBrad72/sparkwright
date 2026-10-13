@@ -14,7 +14,7 @@
 
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
 
-> **Guard refused a read-only command?** `docs/operations/runtime-guards.md` §*The escape card* names the six shapes it always refuses and the one retry for each.
+> **Guard refused a read-only command?** `docs/operations/runtime-guards.md` §*The escape card* names the shapes it always refuses and the one retry for each.
 
 ## What this file is
 

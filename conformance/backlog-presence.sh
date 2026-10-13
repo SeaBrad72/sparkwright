@@ -933,7 +933,7 @@ NODONE_EOF
   # is replaced by the real cure — bind the trusted job as a required context — alongside the two
   # cures that were always there (move the board to BACKLOG.md; ratify a waiver).
   d="$base/cp_nonmd_jira"
-  assert_msg "Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --apply — or move the board to BACKLOG.md, or ratify a board-governance waiver" 3 \
+  assert_msg "Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected — or move the board to BACKLOG.md, or ratify a board-governance waiver" 3 \
     "cp/non-md-cure: the NOT ENFORCED verdict names the real cure (bind tracker-board-gates), plus the other two" "$d" 280 "$cfg"
 
   # gated + a non-md backend + a RATIFIED, filled, unexpired board-governance waiver -> rc 0, and

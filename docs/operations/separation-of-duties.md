@@ -10,7 +10,7 @@ An agent must not ratify its own work. The contract is: **author ≠ approver �
 
 The critical constraint for agentic workflows is that the ratifying identity must be one the **building agent cannot assume**. A second token, a second bot account, or a second identity that the same agent process can mint or impersonate does not satisfy separation of duties — the agent would be self-approving with a credential it controls. The constraint is a *human-in-the-loop* or a *distinct controlled identity outside the build agent's reach* — not just a second label.
 
-**This kit's own repo does not satisfy this principle in full, and says so rather than implying otherwise.** It runs a declared **ratification seat** — a second account belonging to the same human as the author (`.kit/ratification-seats.conf`). That seat satisfies the *agentic* half of the constraint exactly: it is an identity outside the build agent's reach, so `agent ≠ ratifier` genuinely binds. It does **not** satisfy the *human* half: author and approver are one person, so **two-person review is declared ABSENT here**, not compensated for. Both halves are stated on every seat approval — the ratification check detects the seat **by login**
+**This kit's own repo does not satisfy this principle in full, and says so rather than implying otherwise.** It runs a declared **ratification seat** — a second account belonging to the same human as the author (`.kit/ratification-seats.conf`). That seat satisfies the *agentic* half of the constraint exactly: it is an identity outside the build agent's reach, so `agent ≠ ratifier` binds by design; until the forge identity switch is proven (agent sessions still run under the owner's login) it rests on convention plus the audit trail. It does **not** satisfy the *human* half: author and approver are one person, so **two-person review is declared ABSENT here**, not compensated for. Both halves are stated on every seat approval — the ratification check detects the seat **by login**
 (`scripts/sod-check.sh --seat-approvals`) and posts the disclosure itself as a notice, so nothing has to
 be typed into the approval box (the typed seat *sentence* was retired 2026-08-28) — and the arrangement retires the day a second human with write access joins (`D-240825-1`, revisit-condition D2). See [`review-lane.md`](review-lane.md#the-ratification-seat-solo) for the mechanics and the ceiling.
 
@@ -62,13 +62,13 @@ This runs the full fixture table (distinct approver, author-only approves, appro
 
 ## NATIVE — GitHub
 
-The recommended pattern on GitHub is a **GitHub App token** as the build agent's authoring identity:
+Two authoring identities satisfy the contract by role, and either is acceptable: a **GitHub App token** or a push-only **machine user** (below). The machine user is the recommended posture; this repo has chosen it and has not yet switched it on (see the status paragraph under [Forge identity](#forge-identity--agent-sessions-hold-no-admin)). `sparkwright doctor --as agent` verifies a *user* token; an App installation or CI token cannot read its own identity (HTTP 403), so the check reports it UNVERIFIED and the App's settings page is where its permissions are confirmed. The App pattern:
 
 - The App is a distinct PR author (its login is `<app-slug>[bot]`), so the PR author is different from any human reviewer from the moment the PR is opened.
 - A GitHub App token is scoped — the App can be granted only the permissions it needs (contents + pull-requests), with no human-seat cost.
 - The App must **not** be listed in `CODEOWNERS`. If it were, GitHub's code-owner review requirement would demand the App's approval for its own PR — structurally unsatisfiable (`review-lane.md` "Solo + agent-authored PRs", caveat 2). Keep the App off `CODEOWNERS` so that human code-owner approval is the *distinct* ratification.
 
-A **machine user** (a separate GitHub account) is the simpler alternative — no App registration required — at the cost of occupying a seat and offering less granular token scoping.
+A **machine user** (a separate GitHub account) is the simpler alternative — no App registration required — at the cost of occupying a seat and offering less granular token scoping. It is the recommended posture for the agent's own *authoring* identity, and what it must and must not hold is stated by role in [Forge identity](#forge-identity--agent-sessions-hold-no-admin) below.
 
 **Reference workflow:** [the reference workflow](sod-gate.github.yml) is a copy-and-adapt workflow at `docs/operations/sod-gate.github.yml`. It gathers identities from the PR event and the GitHub reviews API, passes them as `SOD_*` env vars, and calls `sh scripts/sod-check.sh --require`. Copy it into your repo's `.github/workflows/` and add `separation-of-duties / author-not-approver` as a **required status check** on `main`. All dynamic values flow via `env:` — no `${{ }}` expressions appear inside `run:` blocks.
 
@@ -93,6 +93,64 @@ Apply the contract through your forge's equivalent mechanism: an approval rule t
 
 ---
 
+## Forge identity — agent sessions hold no admin
+
+SoD above keeps an agent from ratifying its own work. This section keeps it from holding the *settings* too: the identity every agent session runs as must not be able to change repository settings, variables, secrets or branch protection. Identity is the lock that converges; a text guard over commands is a seatbelt, and it does not cover every settings call.
+
+**The rule, by role (host-neutral):** *the agent identity holds no admin on the forge; approvals come from a different identity than the author; CI uses its own token.* GitHub is the worked example below; `docs/adoption/vc-hosts.md` says how another host maps it.
+
+**Status in this repo.** The model is stated and `sparkwright doctor --as agent` measures it, but this repo has **not yet switched the boundary on**: agent sessions still run under the owner's login, and the residual (an admin login within the agents' reach) stays open until the switch is proven (the act sheet is [`forge-identity-switch.md`](forge-identity-switch.md)).
+
+**Solo project.** A one-account project runs the agent under its own login; `sparkwright doctor` reports that as INFO, not a warning (declaring a ratification seat in `.kit/ratification-seats.conf` turns the INFO into a counted warning). The switch becomes worth its cost once a separate identity reviews.
+
+### The identity set
+
+| Identity | Holds | Used for | Never used for |
+|---|---|---|---|
+| **The owner's admin login** | admin on the dev repository; owner of the public mirror | settings, variables, secrets, branch protection and the mirror's ruleset, the solo `--admin` merge where no reviewer exists | any agent session |
+| **The owner's reviewing login** | push on the dev repository (GitHub counts an approval only from a user with write) | Approves, which are the forge-authenticated `approved-by` that `land` verifies | authoring commits or pushing to a PR head; never stored where an agent can reach it, because an agent holding it could Approve its own PR and pass `land`'s forge separation of duties |
+| **The agent machine user** | push on the dev repository only; nothing on the mirror; admin nowhere | every agent session: branches, claims, GO notes, PRs, `land`'s merge, preparing a release | settings, variables, secrets, protection, rulesets, approvals, the mirror (dev CI publishes it) |
+| **CI** | `GITHUB_TOKEN` per workflow, plus a read-only protection-read token | the gates | — |
+
+The machine user's token is a classic token with exactly `repo` and `workflow` (step 1 of `forge-identity-switch.md`); the collaborator role bounds what the scopes can do. A fine-grained token waits for an organisation.
+
+**The overlap, named.** The owner's reviewing login and the Jira reader seat are one persona across two systems: on GitHub a push collaborator that renders Approves, on Jira a Viewer seat whose token is a CI secret. They are two tokens in two places with two ceilings, so a compromise of the Jira CI secret yields board read, not the GitHub login. **Judgment: acceptable, no split now.** Split them when any of these happens:
+
+- a second human reviewer joins;
+- the reader seat needs board write;
+- the reviewing login's credential is found on an agent-reachable store.
+
+### Where an owner credential is still reachable
+
+The machine user is a lock only if no owner credential is reachable by the OS user the agents run as. Six paths to check; `sparkwright doctor` sees only the first kind (the credential `gh` resolves) and says so:
+
+1. **The GitHub MCP connector** available to a session acts as whichever account connected it. Its control is the guard's MCP capability gate, which is policy, not a measured control. Disconnect it, or reconnect it as the machine user.
+2. **A personal access token exported from the shell profile** into every session's environment. Remove it and revoke it on the forge; removing it does not invalidate copies in running shells or logs.
+3. **An SSH key** registered to the admin login: a push over SSH authenticates as the admin, and with admins not enforced that reaches `main`.
+4. **`gh`'s token store** (the login Keychain on macOS) is keyed by host and login, not by config directory; a separate `GH_CONFIG_DIR` hides an account from the default listing and does not separate the store.
+5. **The reviewing login** must likewise sit in no store the agents can reach.
+6. **The browser-control extension.** If the owner's forge sessions (admin or reviewing) live in a browser profile the extension can drive, an agent could click Approve or change settings. Keep them in a profile the extension is not connected to, or disconnect the extension from agent sessions.
+
+**Honest ceiling.** On one shared OS user the removal of these paths is a strong seatbelt, not a boundary: anything the owner later stores on that user is reachable again. The real boundary is a separate OS user for agent sessions, holding only the machine user's credentials; it is a heavier, separate move.
+
+### The keystroke principle
+
+The owner decides and the agent does the keystroke: the judgment is the control, the keystroke is not. The one keystroke that is the owner's by design is the **Approve** on the forge; nothing here adds a second recurring one. The identity switch is a one-time, settings-class owner act (the steps the guard refuses an agent), and the machine user's token is re-issued once per expiry, which `doctor --as agent` warns about 30 days ahead when the forge exposes the expiry.
+
+### The design GO after the switch
+
+A control-plane design GO is bound today by `[committer]`, which derives only when the approver matches the design commit's committer. That tier never authenticated the owner (the agent commits under whatever identity it holds), and after the switch the committer is the machine user. The design GO record stays required before a build and is stated as `[self-asserted]`; the authenticated binding moves onto the reviewing login's Approve on the forge, the same tier `land` already uses. That change to the ceremony tooling is its own card and lands **before** the switch.
+
+### Neutrality
+
+- **The board backend is untouched.** Nothing here reads or writes the board; a `BACKLOG.md` adopter keeps every behaviour it had.
+- **The forge contract is host-neutral; GitHub is the reference.** The kit's forge surface is already GitHub-first (the CI profiles are GitHub Actions, the protection scripts use the GitHub API). This section follows that posture and does not create it.
+- **A host without a forge adapter is never a failure.** On such a host the default doctor line reads `forge identity: N/A — no forge adapter for <host>`, and `sparkwright doctor --as agent` exits 2 (UNVERIFIED, naming the missing adapter), never 1.
+
+`sparkwright doctor` prints one advisory `forge identity:` line (login, type, permission, and the remedy when it holds admin or maintain); the exit code is unchanged. `sparkwright doctor --as agent` runs that check alone and exits 1 on admin, maintain, a login that lacks push, a permission it cannot read, an unauthenticated `gh`, or a missing `gh`; 0 on push; 2 (UNVERIFIED) on a usage error, an unverifiable host, an `origin` whose push URL names another repository than its fetch URL, or a token that cannot read its own identity (HTTP 403: an App installation or CI token, such as CI's `GITHUB_TOKEN`; the default line is N/A there). The check reads the literal `origin` host, so an SSH host alias reports no adapter. It reads `origin`'s fetch and push URLs only: a push to another remote (`remote.pushDefault`, `branch.<b>.pushRemote`, or an explicit `git push <url>`) is not checked. It never sees the credential git itself pushes with; over HTTPS and SSH it prints the credential helper's name or says the SSH key is invisible to it.
+
+---
+
 ## Honest ceiling
 
 **Server-side enforcement is the adopter's responsibility**, not the kit's. The kit proves the neutral logic (`scripts/sod-check.sh`) and provides per-forge reference bindings (the workflow above, the GitLab pointer). What it cannot do:
@@ -112,5 +170,6 @@ The kit's honest position: it proves the neutral floor, documents the per-forge 
 - [`gitlab-adoption.md`](gitlab-adoption.md) — GitLab wiring guide; native MR approval settings for SoD.
 - [`runtime-guards.md`](runtime-guards.md) — the guard's honest ceiling and why `gh pr merge --admin` is outside its reach.
 - [`sod-gate.github.yml`](sod-gate.github.yml) — the GitHub reference workflow (copy into `.github/workflows/`).
+- [`forge-identity-switch.md`](forge-identity-switch.md) — the numbered act sheet that moves agent sessions to the push-only machine user, an actor and a proof per step.
 - `scripts/sod-check.sh` — the neutral FLOOR; `--selftest` proves the logic.
 - `conformance/author-not-approver-wired.sh` — the conformance lock; runs the self-test and verifies static wiring.

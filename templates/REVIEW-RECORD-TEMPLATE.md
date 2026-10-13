@@ -14,6 +14,10 @@ migration · prod deploy · money/irreversible) ALSO need the **Acknowledgments*
 | Change / PR | #___ |
 | Risk tier | `default` \| `high-risk` — trigger: ___ |
 | Builder | ___ |
+| Reads | ___ |
+| NEEDS-FIXES rows | ___ |
+| Size declared (XS-L) / built (lines) | ___ |
+| Cost (tokens) | ___ — counted once per message id; a resumed subagent metered as the delta |
 | Independent review by | the kit's `reviewer` (+ `security-reviewer` if a security/auth/data/AI boundary) subagent — findings recorded below |
 
 ---

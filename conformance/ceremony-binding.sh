@@ -270,6 +270,9 @@ esac
 #   admissible is narrower and stated exactly: they carry no MACHINE-EXECUTABLE surface, so a change to
 #   one cannot alter what CI or the guard DOES; the control over what they say is the owner's
 #   ratification of the PR, not this gate. Both were named to the owner at the design GO.
+#   `docs/plans/YYYY-MM-DD-*.md` and `docs/reviews/YYYY-MM-DD-*.md`: flat, dated record files; a nested
+#   path or an undated name is refused, because nested names include agent-instruction surfaces
+#   (`CLAUDE.md`, `AGENTS.md`, `.claude/`).
 _gov_path_in_set() {   # <path> -> 0 (true) when the path is INSIDE the governance set
   case "$1" in
     BACKLOG.md|docs/governance/DECISIONS.md|docs/governance/.meta-control-last) return 0 ;;
@@ -278,6 +281,9 @@ _gov_path_in_set() {   # <path> -> 0 (true) when the path is INSIDE the governan
     # `skills/a/b/SKILL.md`. Deliberate and harmless: the member is the SKILL.md convention, not a
     # depth rule, and nothing else in the tree is named SKILL.md.
     skills/*/SKILL.md) return 0 ;;
+    # NESTED record-directory paths are not records: no member below admits them (`*` crosses `/`).
+    docs/plans/*/*|docs/reviews/*/*) ;;
+    docs/plans/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md|docs/reviews/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md) return 0 ;;
   esac
   # ONE SPELLING for the meta-control family: the SAME glob the basis leg matches. Two spellings would
   # let an adopter narrow the basis convention while the diff guard kept admitting the old shape (or
@@ -545,7 +551,8 @@ GOV_SET_EOF
   printf '%s\n' "$_gds_bad" >&2
   echo "      The governance set is: BACKLOG.md · $CB_GOV_GLOB · docs/governance/DECISIONS.md ·" >&2
   echo "      docs/governance/.meta-control-last · docs/governance/meta-control-log.md ·" >&2
-  echo "      docs/kit-internals/meta-control.md · skills/*/SKILL.md · $CB_DESIGN_GLOB" >&2
+  echo "      docs/kit-internals/meta-control.md · skills/*/SKILL.md · $CB_DESIGN_GLOB ·" >&2
+  echo "      docs/plans/YYYY-MM-DD-*.md · docs/reviews/YYYY-MM-DD-*.md" >&2
   echo "      CURE — SPLIT YOUR CURES: route each payload change to its own boarded, designed slice," >&2
   echo "      or record a '--gate design' GO for the payload and let the DESIGN arm judge it. Mixing" >&2
   echo "      routed control-plane cures into a panel PR is the anti-pattern this arm refuses; the" >&2
@@ -2322,6 +2329,16 @@ selftest() {
   #     leg green while the arm's only predicate was inert.
   _legs=$((_legs+1))   # legG1
   _mkgov "$_tmp/fG1" conforming
+  # PREMISE, ASSERTED NOT ASSUMED: the record-directory members are only proven if the fixture's real
+  # derivation lists both new paths. FAIL, never skip (legG7-premise precedent).
+  _g1list="$( cd "$_tmp/fG1" && git diff --no-renames --name-only main...HEAD 2>/dev/null || true )"
+  if printf '%s\n' "$_g1list" | grep -qxF 'docs/plans/2026-08-15-meta-control-41-disposition.md' \
+     && printf '%s\n' "$_g1list" | grep -qxF 'docs/reviews/2026-08-15-meta-control-41-disposition.md'; then
+    echo "PASS legG1-premise: the conforming fixture's derivation lists both record-directory members"
+  else
+    echo "FAIL legG1: premise — the fixture's diff does not list docs/plans and docs/reviews records, so legG1 cannot prove those members: $_g1list"
+    _fails=$((_fails+1))
+  fi
   _outG1="$( cd "$_tmp/fG1" && DIR="$_tmp/fG1" run_ceremony_binding "$_tmp/changed-cp" \
                --scope PR-1 2>&1 )" && _rcG1=0 || _rcG1=$?
   case "$_rcG1:$_outG1" in
@@ -2543,6 +2560,20 @@ selftest() {
   else
     echo "PASS legG13: universal CB_GOV_GLOB -> refused"
   fi
+
+  # LEG G14 (THE RECORD-DIRECTORY NEGATIVE) — the plan and review members admit only flat, dated `.md`
+  # records. A fixture that differs from `conforming` only by escaping record-dir files must be REFUSED,
+  # naming EACH path, in the three refused shapes: a non-.md file, an undated name, and a nested path
+  # (agent-instruction files such as CLAUDE.md, AGENTS.md). Loosening any half of either member admits
+  # its path, drops it from the refusal, and reds exactly this leg.
+  _mkgov "$_tmp/fG14" recordscripts
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/plans/2026-08-15-x.sh" "a dated script in docs/plans is OUTSIDE the governance set"
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/reviews/2026-08-15-x.sh" "a dated script in docs/reviews is OUTSIDE the governance set"
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/reviews/CLAUDE.md" "an undated agent-instruction file in docs/reviews is OUTSIDE the governance set"
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/plans/2026-08-15-a/CLAUDE.md" "a DATED nested agent-instruction file in docs/plans is OUTSIDE the governance set"
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/plans/CLAUDE.md" "an undated agent-instruction file in docs/plans is OUTSIDE the governance set"
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/reviews/a/AGENTS.md" "a nested agent-instruction file in docs/reviews is OUTSIDE the governance set"
+  _expect_fail_gov legG14 "$_tmp/fG14" "docs/reviews/2026-08-15-a/AGENTS.md" "a DATED nested agent-instruction file in docs/reviews is OUTSIDE the governance set"
 
   if [ "$_fails" -eq 0 ]; then
     # COUNT IS COMPUTED, NEVER HARDCODED. It drifted twice — 17->18 unnoticed, then 25 while 20 ran
@@ -2973,9 +3004,11 @@ _mkfix() {
 #
 # Shapes — each differs from the PASSING one in exactly ONE respect, so a leg can only fail for the
 # reason it names (this file's hard-won rule; see leg 3 / leg 5):
-#   conforming   the branch touches EVERY member of the governance set and nothing else. The positive
-#                anchor — and because it exercises all eight members, DELETING a member from
+#   conforming   the branch touches every member of the governance set except CB_DESIGN_GLOB, and
+#                nothing else. The positive anchor — and because it exercises every other member, DELETING a member from
 #                _gov_path_in_set REDs it, which is what keeps the enumeration honest.
+#   recordscripts conforming + scripts and agent-instruction files in the record dirs (x.sh, CLAUDE.md,
+#                nested AGENTS.md).
 #   escapes      conforming + `conformance/x.sh`. THE SLICE'S THESIS: a valid governance record must
 #                not carry a control-plane payload.
 #   rename       `git mv .github/workflows/ci.yml docs/kit-internals/meta-control.md` — the destination is
@@ -2989,7 +3022,8 @@ _mkfix() {
 _mkgov() {
   _dv="$1"; _shv="$2"
   mkdir -p "$_dv/conformance" "$_dv/.claude/hooks" "$_dv/docs/architecture" "$_dv/docs/governance" \
-           "$_dv/docs/kit-internals" "$_dv/skills/design" "$_dv/.github/workflows"
+           "$_dv/docs/kit-internals" "$_dv/skills/design" "$_dv/.github/workflows" \
+           "$_dv/docs/plans" "$_dv/docs/reviews"
   cp "$DIR/conformance/promotion-readiness.sh" "$_dv/conformance/promotion-readiness.sh"
   if [ -f "$DIR/.claude/hooks/guard-core.sh" ]; then
     cp "$DIR/.claude/hooks/guard-core.sh" "$_dv/.claude/hooks/guard-core.sh"
@@ -3037,8 +3071,8 @@ _mkgov() {
         # derivation would see a modify instead of the delete this leg is about.
         git mv .github/workflows/ci.yml docs/kit-internals/meta-control.md ;;
       *)
-        # EVERY member of the governance set except the two globs (the artifact above is one of
-        # them), so the positive anchor proves the whole enumeration rather than one lucky member.
+        # EVERY member of the governance set (the meta-control glob is the artifact above;
+        # CB_DESIGN_GLOB is not exercised), so the positive anchor proves the whole enumeration rather than one lucky member.
         printf '%s\n' '- [x] GOVERNANCE-ROW — boarded by the panel' >> BACKLOG.md
         printf '%s\n' '- D-240815-1 — a ruling recorded at the sitting' >> docs/governance/DECISIONS.md
         printf '%s\n' 'v3.220.0 GO-WITH-CONDITIONS' > docs/governance/.meta-control-last
@@ -3047,7 +3081,25 @@ _mkgov() {
         printf '%s\n' '# Meta-control' 'The panel ceremony, amended at the sitting.' \
           > docs/kit-internals/meta-control.md
         printf '%s\n' '# Skill — design' 'Amended at the sitting: a governance GO names its panel artifact.' \
-          > skills/design/SKILL.md ;;
+          > skills/design/SKILL.md
+        printf '%s\n' '# Plan — panel 41 disposition' 'Tasks recorded at the sitting.' \
+          > docs/plans/2026-08-15-meta-control-41-disposition.md
+        printf '%s\n' '# Review — panel 41 disposition' 'Verdict recorded at the sitting.' \
+          > docs/reviews/2026-08-15-meta-control-41-disposition.md ;;
+    esac
+    case "$_shv" in
+      recordscripts)
+        # THE OTHER ESCAPE: a script dropped into a record directory. `.md`-only members keep it out.
+        printf '#!/bin/sh\necho "a script in a record directory"\n' > docs/plans/2026-08-15-x.sh
+        printf '#!/bin/sh\necho "a script in a record directory"\n' > docs/reviews/2026-08-15-x.sh
+        # Agent-instruction names: an undated direct child, and nested ones (A1).
+        mkdir -p docs/reviews/a docs/reviews/2026-08-15-a docs/plans/2026-08-15-a
+        printf '# agent instructions\n' > docs/plans/CLAUDE.md
+        printf '# agent instructions\n' > docs/reviews/CLAUDE.md
+        printf '# agent instructions\n' > docs/plans/2026-08-15-a/CLAUDE.md
+        printf '# agent instructions\n' > docs/reviews/a/AGENTS.md
+        # A DATED nested name: only the nested arm (not the date prefix) keeps this one out.
+        printf '# agent instructions\n' > docs/reviews/2026-08-15-a/AGENTS.md ;;
     esac
     case "$_shv" in
       escapes|composition)

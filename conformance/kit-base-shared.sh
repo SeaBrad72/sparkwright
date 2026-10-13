@@ -71,8 +71,14 @@ fail() { echo "FAIL: $*" >&2; ST=1; }
 sha12() { printf '%s' "$1" | cut -c1-12; }
 
 # ── fixtures ───────────────────────────────────────────────────────────────────────────────────────────
+quiet_repo() {  # <repo> — no background maintenance in a fixture repo (SWAS-156): receive-pack/commit/fetch start a detached
+  # `git maintenance run --auto` whose loose-objects task deletes packed loose objects while a local clone or `cp -R` copies
+  # objects/ (the intermittent Linux S8 red: git 2.55, run 38195416633). Set before the first write into the repo.
+  git -C "$1" config maintenance.auto false && git -C "$1" config gc.auto 0 && git -C "$1" config receive.autogc false
+}
 build_vendor() {  # <dir> — R0 = this kit's HEAD, R1 = one edit on top. Sets R0 R1.
   git clone --quiet --no-tags "$ROOT" "$1" >/dev/null 2>&1 || { fail "could not clone the kit into a vendor repo"; return 1; }
+  quiet_repo "$1" || { fail "could not quiet the vendor repo"; return 1; }
   R0=$(git -C "$1" rev-parse HEAD)
   printf '\n## R1 upstream change (kit-base-shared fixture)\n' >> "$1/$UP_A"
   ( cd "$1" && git add -A && $GIT_C commit -qm 'R1: one standards edit (fixture)' ) >/dev/null 2>&1 \
@@ -80,12 +86,12 @@ build_vendor() {  # <dir> — R0 = this kit's HEAD, R1 = one edit on top. Sets R
   R1=$(git -C "$1" rev-parse HEAD)
 }
 checkout_at() {  # <vendor> <sha> <dir> — a clone with HEAD detached at <sha>: a "release" to --from
-  if git clone --quiet --no-tags "$1" "$3" >/dev/null 2>&1 && git -C "$3" checkout -q --detach "$2" >/dev/null 2>&1; then return 0; fi
+  if git clone --quiet --no-tags "$1" "$3" >/dev/null 2>&1 && quiet_repo "$3" && git -C "$3" checkout -q --detach "$2" >/dev/null 2>&1; then return 0; fi
   fail "could not check out $2 of the vendor"; return 1
 }
 build_project() {  # <dir> <src-at-R0> — a REAL project: exported, committed, incepted, committed. incept's output -> <dir>.incept.log
   sh "$2/scripts/adopter-export.sh" "$1" --profile "$STACK" >/dev/null 2>&1 || { fail "adopter-export failed"; return 1; }
-  ( cd "$1" && git init -q . && git add -A && $GIT_C commit -qm 'kit export' ) >/dev/null 2>&1 || { fail "could not init the fixture repo"; return 1; }
+  ( cd "$1" && git init -q . && quiet_repo . && git add -A && $GIT_C commit -qm 'kit export' ) >/dev/null 2>&1 || { fail "could not init the fixture repo"; return 1; }
   ( cd "$1" && sh scripts/incept.sh --noninteractive --name Flow --intent-owner B --stack "$STACK" --date "$ADOPT_DATE" ) >"$1.incept.log" 2>&1 \
     || { fail "incept failed on the fixture"; return 1; }
   ( cd "$1" && git add -A && $GIT_C commit -qm 'inception' ) >/dev/null 2>&1 || { fail "could not commit the incepted fixture"; return 1; }
@@ -93,6 +99,7 @@ build_project() {  # <dir> <src-at-R0> — a REAL project: exported, committed, 
 }
 mk_remote() {  # <project> <bare dir> — a bare copy of the project's branches with NO kit-base refs (no shared base yet)
   git clone -q --bare "$1" "$2" >/dev/null 2>&1 || { fail "could not make the bare remote $2"; return 1; }
+  quiet_repo "$2" || { fail "could not quiet the bare remote $2"; return 1; }
   _mr_b=$(git -C "$1" symbolic-ref --short HEAD)
   git -C "$2" symbolic-ref HEAD "refs/heads/$_mr_b"
   for _mr_r in $(git -C "$2" for-each-ref --format='%(refname)' refs/heads/kit-base refs/tags/kit-base/); do
@@ -205,7 +212,7 @@ check() {
   fi
 
   # S2 — nothing to import: a clone of a remote WITHOUT refs/kit/base, and a clone with NO remote at all
-  git clone -q --no-tags "$org" "$_t/c" >/dev/null 2>&1 || { fail "fixture: could not clone the remote"; return 1; }
+  git clone -q --no-tags "$org" "$_t/c" >/dev/null 2>&1 && quiet_repo "$_t/c" || { fail "fixture: could not clone the remote"; return 1; }
   refuses_with 'S2 remote-lacks-the-base' "$_t/c" "$_t/s2a" 'no .kit-base. branch' --from "$_t/src0"
   has "$_t/s2a" "kit-update --publish-base" && pass "S2 [PUBLISH-LINE] — the refusal names '--publish-base'" \
     || fail "S2 [PUBLISH-LINE] — the refusal does not name '--publish-base'"
@@ -245,7 +252,7 @@ check() {
   fi
 
   # S1 — a FRESH CLONE imports the published base, and its report is the original clone's, byte for byte
-  git clone -q --no-tags "$org" "$_t/b" >/dev/null 2>&1 || { fail "fixture: could not clone origin"; return 1; }
+  git clone -q --no-tags "$org" "$_t/b" >/dev/null 2>&1 && quiet_repo "$_t/b" || { fail "fixture: could not clone origin"; return 1; }
   # D1: main leads a report with the clone's pre-push HOOK STATE, which is a property of the clone (a `git clone` carries no
   # installed hook; the original has incept's). The leg's claim is "same delta", not "same hook state": install the SAME hook in
   # the fresh clone (the way an adopter does), so both reports carry the same hook line.
@@ -320,7 +327,7 @@ check() {
   # ── the forged-chain legs: a remote whose refs/kit/base the attacker controls ────────────────────────────
   orgx=$_t/orgx.git
   mk_remote "$proj" "$orgx" || return 1
-  git clone -q --no-tags "$orgx" "$_t/g" >/dev/null 2>&1 || { fail "fixture: could not clone the forged-chain remote"; return 1; }
+  git clone -q --no-tags "$orgx" "$_t/g" >/dev/null 2>&1 && quiet_repo "$_t/g" || { fail "fixture: could not clone the forged-chain remote"; return 1; }
   _rc0=$(git -C "$proj" rev-parse 'refs/heads/kit-base^')        # the genuine R0 chain commit
   _t0tree=$(git -C "$proj" rev-parse "$_rc0^{tree}")
   _imode=$(git -C "$proj" ls-tree "$_rc0" scripts/incept.sh | cut -d' ' -f1)
@@ -411,13 +418,15 @@ check() {
   refuses_with 'S10h dropped-file' "$_t/g" "$_t/s10h" 'path set' --from "$_t/src0"
 
   # S8 — tags: the chain's own arrive; a lookalike does not; an existing local tag is never moved
+  # SWAS-155: an S8 failure prints its cause (git stderr from the fixture, kit-update's output) with an S8-WHY: prefix;
+  # nothing extra on a pass.
   orgt=$_t/orgt.git
   mk_remote "$proj" "$orgt" || return 1
   _tip=$(git -C "$proj" rev-parse refs/heads/kit-base)
   _tag1="kit-base/v$VER+$(sha12 "$R1")"
   git -C "$proj" rev-parse --verify --quiet "refs/tags/$_tag1" >/dev/null 2>&1 || { fail "S8 fixture: the advance made no tag $_tag1"; return 1; }
-  git -C "$proj" push -q "$orgt" "$_tip:refs/kit/base" "refs/tags/$_tag0:refs/tags/$_tag0" "refs/tags/$_tag1:refs/tags/$_tag1" >/dev/null 2>&1 \
-    || { fail "S8 fixture: could not publish the chain"; return 1; }
+  git -C "$proj" push -q "$orgt" "$_tip:refs/kit/base" "refs/tags/$_tag0:refs/tags/$_tag0" "refs/tags/$_tag1:refs/tags/$_tag1" >/dev/null 2>>"$_t/s8.fixerr" \
+    || { sed 's/^/S8-WHY: /' "$_t/s8.fixerr" >&2; fail "S8 fixture: could not publish the chain"; return 1; }
   git -C "$orgt" update-ref refs/tags/kit-base/x "$_tip"
   git -C "$orgt" update-ref refs/tags/kit-base/v0+aaaaaaaaaaaa "$_rc0"
   # K1: a tag whose VERSION part carries a quote, `;` and `$` but whose `+<sha12>` is the genuine one — the old shape test
@@ -425,14 +434,14 @@ check() {
   _inj="kit-base/v$VER'x;"'$y'"+$(sha12 "$R0")"
   git -C "$orgt" update-ref "refs/tags/$_inj" "$_rc0"
   git -C "$orgt" -c user.email=t@t -c user.name=t tag -a -m 'annotated lookalike' kit-base/y "$_tip"
-  git clone -q --no-tags "$orgt" "$_t/h" >/dev/null 2>&1 || { fail "S8 fixture: clone"; return 1; }
+  git clone -q --no-tags "$orgt" "$_t/h" >/dev/null 2>>"$_t/s8.fixerr" && quiet_repo "$_t/h" || { sed 's/^/S8-WHY: /' "$_t/s8.fixerr" >&2; fail "S8 fixture: clone"; return 1; }
   _hhead=$(git -C "$_t/h" rev-parse HEAD)
   # the anchor (H2) needs R1 in H's .kit-source HISTORY while HEAD says R0 (-> the run stops at its stale gate right after
   # the import, cheap)
   # (H's history already records R1 — the clone is of the project after it took R1 — so one commit puts R0 back on top)
   _ks0=$(git -C "$proj" show "$_rc0:.kit-source")
-  ( cd "$_t/h" && printf '%s\n' "$_ks0" > .kit-source && git add -A && $GIT_C commit -qm 'fixture: back to R0' ) >/dev/null 2>&1 \
-    || { fail "S8 fixture: could not shape H's .kit-source history"; return 1; }
+  ( cd "$_t/h" && printf '%s\n' "$_ks0" > .kit-source && git add -A && $GIT_C commit -qm 'fixture: back to R0' ) >/dev/null 2>>"$_t/s8.fixerr" \
+    || { sed 's/^/S8-WHY: /' "$_t/s8.fixerr" >&2; fail "S8 fixture: could not shape H's .kit-source history"; return 1; }
   _hhead=$(git -C "$_t/h" rev-parse HEAD)
   git -C "$_t/h" config --add remote.origin.fetch '+refs/kit/base:refs/heads/kit-mapped'   # K2: a configured refmap must not apply
   git -C "$_t/h" tag "$_tag1" "$_hhead"      # an EXISTING local tag of a name the remote also carries, pointing elsewhere
@@ -451,6 +460,7 @@ check() {
     pass "S8 [TAGS] — the chain's own tag was created, the lookalikes were not imported, and the existing local tag was not moved"
   else
     fail "S8 [TAGS] — tag import is wrong: $(git -C "$_t/h" tag -l 'kit-base/*' | tr '\n' ' ') (rc=$KU_RC; semicolon-in-output=$(grep -c ';' "$_t/s8" || :) mapped=$(git -C "$_t/h" for-each-ref refs/heads/kit-mapped refs/kit-import/ | wc -l | tr -d ' ') kitbase=$(git -C "$_t/h" rev-parse --verify --quiet refs/heads/kit-base | cut -c1-8) tip=$(printf '%s' "$_tip" | cut -c1-8))"
+    [ -f "$_t/s8" ] && tail -n 40 "$_t/s8" | sed 's/^/S8-WHY: /' >&2
   fi
 
   # S11 — the import fails CLOSED, the RUN does not: a clone with a valid LOCAL base, a remote chain that extends it but
@@ -472,7 +482,7 @@ check() {
   orgb=$_t/orgb.git
   mk_remote "$proj" "$orgb" || return 1
   git -C "$proj" branch kbs-tmp "$_fc" && git -C "$orgb" fetch -q "$proj" kbs-tmp:refs/heads/kit-base >/dev/null 2>&1; git -C "$proj" branch -D kbs-tmp >/dev/null 2>&1 || :
-  git clone -q --no-tags "$orgb" "$_t/g2" >/dev/null 2>&1 && git -C "$_t/g2" checkout -q kit-base >/dev/null 2>&1 && git -C "$_t/g2" checkout -q "$_br" >/dev/null 2>&1 \
+  git clone -q --no-tags "$orgb" "$_t/g2" >/dev/null 2>&1 && quiet_repo "$_t/g2" && git -C "$_t/g2" checkout -q kit-base >/dev/null 2>&1 && git -C "$_t/g2" checkout -q "$_br" >/dev/null 2>&1 \
     || { fail "A1 fixture: could not make a clone whose kit-base came from a remote branch"; return 1; }
   ku "$_t/g2" "$KU" "$_t/a1" --from "$_t/src1"
   if [ "$KU_RC" -eq 1 ] && has "$_t/a1" 'UNVERIFIED' && has "$_t/a1" 'git branch -m kit-base kit-base-unverified' && [ ! -e "$canary" ] \

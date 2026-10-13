@@ -22,13 +22,19 @@
 #   exit 1  — a GATING dimension FAILs, or UNVERIFIED when --require/CI
 #   exit 0  — PASS or WARN (git advisory warnings do not cause exit 1)
 #
-# Usage: sh scripts/doctor.sh [--require] | --selftest
+# Usage: sh scripts/doctor.sh [--require] [--full] | --as agent | --selftest
+#   --as agent  the forge-identity check ONLY (SWAS-124): exit 1 when the login gh resolves holds admin or maintain on origin's
+#               repo, or when that cannot be read (fail-closed) or gh is missing; 0 on push; 2 on a usage error or when the check cannot
+#               be run (no forge adapter, a push URL naming another repo, a 403 App/CI token: UNVERIFIED, never 1). The default run adds one advisory `forge identity:` line, never a verdict; for an admin or maintain login that line adds one warn only where a ratification seat is declared in .kit/ratification-seats.conf, and is an INFO line (no warn) otherwise.
 # POSIX sh; dash-clean.
 # What it changes: Read-only — composes conformance + claims checks into a posture report; mutates nothing.
 # Network (measured, SWAS-117 D5): doctor already reaches the network once, in the kit-update dimension (conformance/kit-current.sh
 # runs `git ls-remote --tags` against the release source). It now also makes up to TWO bounded reads of the tracker (the
 # identity and the permissions of the credential, each one attempt, 5s connect, 10s max) when a Jira credential is present.
 # Those reads SEND THE CREDENTIAL to the conf's base_url (S-L3); doctor does not compare that host to any pin.
+# Forge identity (SWAS-124): a default run makes two `gh api` reads (user, then the repository's permissions) and `--as agent` a third
+# (`-i user`, for the token-expiry header), to github.com only (host-gated on origin's literal host, so an SSH host alias reports no
+# adapter), sending gh's credential. Doctor sets no timeout of its own on them; gh's own network timeouts apply.
 # Guardrails: exit 1 when a GATING dimension FAILs or is UNVERIFIED under --require/CI; the git dimension is advisory (WARN-only, never hard-fails alone).
 set -eu
 cd "$(dirname "$0")/.."
@@ -491,6 +497,295 @@ WSTUB
   rm -rf "$_wd" "$_wh" "$_wm" 2>/dev/null || true
   rm -rf "$_tcd" 2>/dev/null || true
 
+  # — SWAS-124: the forge identity line and `--as agent`. HERMETIC: DOCTOR_FORGE_CMD names a stub standing in for `gh`,
+  #   DOCTOR_FORGE_ORIGIN for `git remote get-url origin` (both honored only under --selftest-e2e). The stub logs its argv and
+  #   answers by mode. Every fixture identity is a role name; no real login or email appears here.
+  _fgd=$(mktemp -d)
+  {
+    printf '#!/bin/sh\nd=%s\n' "$_fgd"
+    cat <<'FSTUB'
+printf '%s\n' "$*" >> "$d/flog"
+mode=$(cat "$d/fmode")
+case "$1 $2" in
+  "api user")
+    case "$mode" in
+      ci) echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+      unauth) echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 4 ;;
+      *) printf 'agent-fixture\nUser\n' ;;
+    esac ;;
+  "api -i")
+    printf 'HTTP/2.0 200 OK\r\nContent-Type: application/json\r\n'
+    [ ! -s "$d/fexp" ] || printf 'Github-Authentication-Token-Expiration: %s\r\n' "$(cat "$d/fexp")"
+    printf '\r\n{"login":"agent-fixture"}\n' ;;
+  "api repos/"*)
+    case "$mode" in
+      admin) echo '{"admin":true,"maintain":true,"push":true,"triage":true,"pull":true}' ;;
+      maintain) echo '{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}' ;;
+      pull) echo '{"admin":false,"maintain":false,"push":false,"triage":false,"pull":true}' ;;
+      unreadable) echo "null" ;;
+      *) echo '{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}' ;;
+    esac ;;
+esac
+exit 0
+FSTUB
+  } > "$_fgd/fstub"
+  : > "$_fgd/fexp"
+  # the ratification-seat declaration the forge line reads: a fixture with one SEAT= line (a role name), and one with none
+  printf '# fixture: a declared ratification seat\nSEAT=seat-role\n' > "$_fgd/seat.conf"
+  printf '# fixture: no seat declared\n' > "$_fgd/noseat.conf"
+  _fg_run() {  # <mode> <origin> [flags]: one run through the REAL body with the stand-in; output in _o, rc in _frc (no subshell)
+    : > "$_fgd/flog"; printf '%s' "$1" > "$_fgd/fmode"
+    _frc=0
+    # shellcheck disable=SC2086  # deliberate word-split of the flags
+    # ORDER MATTERS: the three empty token assignments come LAST, just before the command word. secret-scan's generic-api-key rule
+    # reads the assignment that follows a `TOKEN=''` as the key's value, and a clean run must not flag a plain env prefix.
+    _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+      DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="$2" DOCTOR_FORGE_TODAY=2026-10-12 \
+      DOCTOR_FORGE_PUSHURL="${_fg_pu:-}" DOCTOR_FORGE_HELPER="${_fg_hp:-}" DOCTOR_FORGE_SEATCONF="${_fg_sc:-$_fgd/seat.conf}" \
+      GH_TOKEN='' GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' \
+      sh "$0" --selftest-e2e ${3:-} 2>&1) || _frc=$?
+  }
+  _gh_o='https://github.com/acme/widgets.git'
+  # default mode: the exact lines
+  _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
+    || { echo "doctor --selftest: FAIL (forge: a push login did not render the exact identity line)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'HOLDS' \
+    && { echo "doctor --selftest: FAIL (forge: a push-only login was told it HOLDS ADMIN - wolf crying)"; sfail=1; } || true
+  _push_rc=$_frc
+  printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 0' \
+    || { echo "doctor --selftest: FAIL (forge-seat-warn: a push login counted a forge warn, or the counter line is missing)"; sfail=1; }
+  # forge-seat-warn: admin WITH a declared seat keeps the exact HOLDS ADMIN line AND counts one warn
+  _fg_run admin "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 1' \
+    || { echo "doctor --selftest: FAIL (forge-seat-warn: an admin login with a declared seat did not count its one warn)"; sfail=1; }
+  # forge-solo-info: admin with NO seat declared reads the exact INFO line and adds no warn
+  _fg_sc="$_fgd/noseat.conf"; _fg_run admin "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — admin on acme/widgets — INFO: a push-only machine user for agent sessions is the recommended posture once a separate identity reviews; see docs/operations/forge-identity-switch.md' \
+    || { echo "doctor --selftest: FAIL (forge-solo-info: an admin login with no declared seat did not render the exact INFO line)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'HOLDS' \
+    && { echo "doctor --selftest: FAIL (forge-solo-info: an admin login with no declared seat was told it HOLDS ADMIN)"; sfail=1; } || true
+  printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 0' \
+    || { echo "doctor --selftest: FAIL (forge-solo-info: an admin login with no declared seat counted a forge warn)"; sfail=1; }
+  _fg_run maintain "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'maintain on acme/widgets — INFO: a push-only machine user' \
+    || { echo "doctor --selftest: FAIL (forge-solo-info: a maintain login with no declared seat did not render the INFO line)"; sfail=1; }
+  # an absent conf is the same as no seat; the seat VALUE is never printed
+  _fg_sc="$_fgd/absent.conf"; _fg_run admin "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'admin on acme/widgets — INFO:' \
+    || { echo "doctor --selftest: FAIL (forge-solo-info: an absent seat conf did not read as no seat)"; sfail=1; }
+  _fg_sc=''; _fg_run admin "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'seat-role' \
+    && { echo "doctor --selftest: FAIL (forge-seat-warn: the seat value reached doctor output)"; sfail=1; } || true
+  # forge-seat-unreadable: a conf that exists but cannot be read counts as declared (fail toward the warning)
+  printf '# fixture: unreadable\n' > "$_fgd/unread.conf"; chmod 000 "$_fgd/unread.conf" 2>/dev/null || true
+  if [ -r "$_fgd/unread.conf" ]; then
+    echo "doctor --selftest: SKIP forge-seat-unreadable (the fixture stayed readable, as when running as root)"
+  else
+    _fg_sc="$_fgd/unread.conf"; _fg_run admin "$_gh_o"
+    printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 1' \
+      || { echo "doctor --selftest: FAIL (forge-seat-unreadable: an unreadable seat conf did not count the warn)"; sfail=1; }
+  fi
+  chmod 600 "$_fgd/unread.conf" 2>/dev/null || true
+  # forge-agent-noseat: --as agent is the explicit gate; with NO seat declared an admin login still exits 1 and reads HOLDS ADMIN
+  _fg_sc="$_fgd/noseat.conf"; _fg_run admin "$_gh_o" '--as agent'
+  [ "$_frc" = 1 ] || { echo "doctor --selftest: FAIL (forge-agent-noseat: --as agent on admin with no seat exited $_frc, expected 1)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'admin on acme/widgets — HOLDS ADMIN:' \
+    || { echo "doctor --selftest: FAIL (forge-agent-noseat: --as agent on admin with no seat did not print the HOLDS ADMIN line)"; sfail=1; }
+  _fg_sc=''
+  _fg_run admin "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF "forge identity: agent-fixture (User) — admin on acme/widgets — HOLDS ADMIN: agent sessions must run as the push-only machine user; run 'sparkwright doctor --as agent'" \
+    || { echo "doctor --selftest: FAIL (forge: an admin login did not render the exact HOLDS ADMIN line)"; sfail=1; }
+  # LOAD-BEARING (advisory): an admin login leaves doctor's exit code exactly what a push login leaves. Kills a mutant that gates default mode.
+  [ "$_frc" = "$_push_rc" ] \
+    || { echo "doctor --selftest: FAIL (forge: an admin login changed the default exit from $_push_rc to $_frc - the line must stay advisory)"; sfail=1; }
+  _fg_run maintain "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF "forge identity: agent-fixture (User) — maintain on acme/widgets — HOLDS ADMIN: agent sessions must run as the push-only machine user; run 'sparkwright doctor --as agent'" \
+    || { echo "doctor --selftest: FAIL (forge: a maintain login did not render the HOLDS ADMIN line)"; sfail=1; }
+  _fg_run unreadable "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — permission on acme/widgets unreadable' \
+    || { echo "doctor --selftest: FAIL (forge: an unreadable permission did not render its line)"; sfail=1; }
+  # CI's GITHUB_TOKEN: gh api user is 403 -> N/A, not a WARN, and the advisory stays quiet although GITHUB_TOKEN is set
+  : > "$_fgd/flog"; printf '%s' ci > "$_fgd/fmode"; _frc=0
+  _o=$(GITHUB_TOKEN=CIMARK-1 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_FORGE_CMD="sh $_fgd/fstub" \
+    DOCTOR_FORGE_ORIGIN="$_gh_o" sh "$0" --selftest-e2e 2>&1) || _frc=$?
+  printf '%s\n' "$_o" | grep -qxF "forge identity: N/A — this credential cannot read its own identity (HTTP 403, as under CI's GITHUB_TOKEN)" \
+    || { echo "doctor --selftest: FAIL (forge: CI's 403 did not render N/A)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF -e 'forge credential' -e 'CIMARK' \
+    && { echo "doctor --selftest: FAIL (forge: the advisory fired under CI's own GITHUB_TOKEN, or a value leaked)"; sfail=1; } || true
+  [ "$_frc" = "$_push_rc" ] \
+    || { echo "doctor --selftest: FAIL (forge: CI's 403 changed doctor's exit from $_push_rc to $_frc)"; sfail=1; }
+  # a non-GitHub origin: N/A with the adapter named, and the forge is never asked (no credential sent to a host we have no adapter for)
+  _fg_run push 'https://gitlab.example.com/acme/widgets.git'
+  printf '%s\n' "$_o" | grep -qxF 'forge identity: N/A — no forge adapter for gitlab.example.com' \
+    || { echo "doctor --selftest: FAIL (forge: a non-GitHub origin did not render N/A naming the missing adapter)"; sfail=1; }
+  [ ! -s "$_fgd/flog" ] \
+    || { echo "doctor --selftest: FAIL (forge: the forge was asked about a non-GitHub origin)"; sfail=1; }
+  # the seam is inert by default: with no stand-in named, a --selftest-e2e child prints no forge line at all
+  _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true DOCTOR_FORGE_ORIGIN="$_gh_o" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qF 'forge ' \
+    && { echo "doctor --selftest: FAIL (forge: a --selftest-e2e child with no stand-in printed a forge line)"; sfail=1; } || true
+  # names-only advisory, and the origin credential never printed
+  _o=$(GH_TOKEN=SECRETMARK-9 GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+    DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="https://x-access:ORIGMARK-3@github.com/acme/widgets.git" sh "$0" --selftest-e2e 2>&1) || true
+  printf '%s\n' "$_o" | grep -qxF 'forge credential: GH_TOKEN set in the environment (it decides which credential gh uses; doctor does not read it)' \
+    || { echo "doctor --selftest: FAIL (forge: a set GH_TOKEN did not render the names-only advisory)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF -e 'SECRETMARK' -e 'ORIGMARK' \
+    && { echo "doctor --selftest: FAIL (forge: a token value or an origin credential reached doctor output)"; sfail=1; } || true
+  grep -qxF 'api repos/acme/widgets --jq .permissions' "$_fgd/flog" \
+    || { echo "doctor --selftest: FAIL (forge: a credentialed origin did not resolve to acme/widgets: $(cat "$_fgd/flog"))"; sfail=1; }
+  _fg_run push 'git@github.com:acme/widgets.git'
+  printf '%s\n' "$_o" | grep -qxF "forge credential: origin is SSH (git push uses the SSH key, not gh's login; doctor cannot see whose key it is)" \
+    || { echo "doctor --selftest: FAIL (forge: an SSH origin did not render the SSH advisory)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
+    || { echo "doctor --selftest: FAIL (forge: an scp-style SSH origin did not resolve to acme/widgets)"; sfail=1; }
+
+  # --as agent: the gate
+  _fg_run admin "$_gh_o" '--as agent'
+  [ "$_frc" = 1 ] || { echo "doctor --selftest: FAIL (forge: --as agent on an ADMIN login exited $_frc, expected 1)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'holds admin on acme/widgets' \
+    || { echo "doctor --selftest: FAIL (forge: --as agent on admin did not say it holds admin)"; sfail=1; }
+  _fg_run maintain "$_gh_o" '--as agent'
+  [ "$_frc" = 1 ] || { echo "doctor --selftest: FAIL (forge: --as agent on a MAINTAIN login exited $_frc, expected 1)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'holds maintain on acme/widgets' \
+    || { echo "doctor --selftest: FAIL (forge: --as agent on maintain did not say it holds maintain)"; sfail=1; }
+  _fg_run unreadable "$_gh_o" '--as agent'
+  [ "$_frc" = 1 ] || { echo "doctor --selftest: FAIL (forge: --as agent on an UNREADABLE permission exited $_frc, expected 1 - fail-closed)"; sfail=1; }
+  _fg_run unauth "$_gh_o" '--as agent'
+  [ "$_frc" = 1 ] || { echo "doctor --selftest: FAIL (forge: --as agent when gh is unauthenticated exited $_frc, expected 1)"; sfail=1; }
+  _fg_run pull "$_gh_o" '--as agent'
+  [ "$_frc" = 1 ] || { echo "doctor --selftest: FAIL (forge: --as agent on a pull-only login exited $_frc, expected 1: a lane cannot push)"; sfail=1; }
+  _fg_run push "$_gh_o" '--as agent'
+  [ "$_frc" = 0 ] || { echo "doctor --selftest: FAIL (forge: --as agent on a push login exited $_frc, expected 0)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
+    || { echo "doctor --selftest: FAIL (forge: --as agent on push did not name the login with push)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'POSTURE' \
+    && { echo "doctor --selftest: FAIL (forge: --as agent ran the full posture, not the identity check only)"; sfail=1; } || true
+  # LOAD-BEARING NEGATIVE (neutrality): a non-GitHub host is UNVERIFIED rc 2 naming the adapter, never FAIL rc 1
+  _fg_run admin 'https://gitlab.example.com/acme/widgets.git' '--as agent'
+  [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (forge: --as agent on a non-GitHub origin exited $_frc, expected 2 UNVERIFIED, never 1)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'UNVERIFIED — the kit has no forge adapter for gitlab.example.com' \
+    || { echo "doctor --selftest: FAIL (forge: --as agent on a non-GitHub origin did not name the missing adapter)"; sfail=1; }
+  # the usage parser: rc 2, and an unknown argument is never ignored
+  for _fa in '--as' '--as human' '--as=' '--bogus' '--as agent --full' '--as agent extra'; do
+    _fg_run push "$_gh_o" "$_fa"
+    [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (forge: 'doctor $_fa' exited $_frc, expected 2 usage)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF 'usage: sparkwright doctor' \
+      || { echo "doctor --selftest: FAIL (forge: 'doctor $_fa' did not print the usage line)"; sfail=1; }
+  done
+  # the token-expiry warning: only when the header is readable AND <= 30 days away; silence otherwise, and never a gate
+  printf '2026-10-30 10:00:00 UTC' > "$_fgd/fexp"
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qF 'token expiry: 2026-10-30 (18 days) — WARN: renew' \
+    || { echo "doctor --selftest: FAIL (forge: an expiry 18 days away did not warn)"; sfail=1; }
+  [ "$_frc" = 0 ] || { echo "doctor --selftest: FAIL (forge: the expiry warning changed the exit to $_frc; it is a warning only)"; sfail=1; }
+  printf '2027-10-12 10:00:00 UTC' > "$_fgd/fexp"
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qF 'token expiry' \
+    && { echo "doctor --selftest: FAIL (forge: an expiry a year away warned - wolf crying)"; sfail=1; } || true
+  : > "$_fgd/fexp"
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qF 'token expiry' \
+    && { echo "doctor --selftest: FAIL (forge: an absent expiry header printed an expiry line - a guess)"; sfail=1; } || true
+  # — the review round: push URL (M1), HTTPS helper (M2), seams-active marker (M3), URL parsing (L4), App/CI token (I1)
+  # M3: an --as agent run under the seam flag says so on its first line; a default run carries no such marker
+  _fg_run push "$_gh_o" '--as agent'
+  [ "$(printf '%s\n' "$_o" | sed -n '1p')" = 'SELFTEST SEAMS ACTIVE — not a verdict' ] \
+    || { echo "doctor --selftest: FAIL (forge: an --as agent run under --selftest-e2e did not open with the SELFTEST SEAMS ACTIVE marker)"; sfail=1; }
+  _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'SELFTEST SEAMS ACTIVE' \
+    && { echo "doctor --selftest: FAIL (forge: a default run carried the --as agent seams marker)"; sfail=1; } || true
+  # M2: an HTTPS origin names git's credential helper (config, not a secret) and says doctor does not verify its identity
+  _fg_hp='osxkeychain'
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qxF "forge credential: git push over HTTPS uses git's credential helper (osxkeychain); doctor does not verify its identity" \
+    || { echo "doctor --selftest: FAIL (forge: an HTTPS origin did not render the credential-helper line)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF "agent identity: PASS — gh's login agent-fixture holds push only on acme/widgets" \
+    || { echo "doctor --selftest: FAIL (forge: the PASS line did not say it is gh's login that holds push)"; sfail=1; }
+  _fg_hp=''
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qxF "forge credential: git push over HTTPS uses git's credential helper (none set); doctor does not verify its identity" \
+    || { echo "doctor --selftest: FAIL (forge: an HTTPS origin with no helper did not render 'none set')"; sfail=1; }
+  _fg_hp='!f() { echo password=HELPERSECRET; }; f'
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qF 'HELPERSECRET' \
+    && { echo "doctor --selftest: FAIL (forge: an inline credential helper's body reached doctor output)"; sfail=1; } || true
+  _fg_hp=''
+  # a helper given as an absolute path prints its basename only: the path can carry a local username
+  _fg_hp='/Users/someone/bin/git-credential-foo'
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qxF "forge credential: git push over HTTPS uses git's credential helper (git-credential-foo); doctor does not verify its identity" \
+    || { echo "doctor --selftest: FAIL (forge: an absolute-path helper did not render as its basename)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF '/Users' \
+    && { echo "doctor --selftest: FAIL (forge: a helper path prefix reached doctor output)"; sfail=1; } || true
+  _fg_hp=''
+  # a helper scoped to github.com alone (credential.https://github.com.helper) is seen by the REAL git read, not the seam: an isolated
+  # git tree, HOME and system config redirected, a fake gh that fails (the helper line prints on every readable-or-failed identity)
+  _sd2=$(mktemp -d); _sh2=$(mktemp -d); _sb2=$(mktemp -d)
+  git -C "$_sd2" init -q && git -C "$_sd2" remote add origin "$_gh_o"
+  git -C "$_sd2" config 'credential.https://github.com.helper' scopedhelper
+  mkdir -p "$_sd2/scripts"; cp "$0" "$_sd2/scripts/doctor.sh"
+  printf '#!/bin/sh\nexit 1\n' > "$_sb2/gh"; chmod +x "$_sb2/gh"
+  _o=$(HOME="$_sh2" GIT_CONFIG_NOSYSTEM=1 PATH="$_sb2:$PATH" sh "$_sd2/scripts/doctor.sh" 2>&1) || true
+  printf '%s\n' "$_o" | grep -qxF "forge credential: git push over HTTPS uses git's credential helper (scopedhelper); doctor does not verify its identity" \
+    || { echo "doctor --selftest: FAIL (forge: a URL-scoped credential helper was not named)"; sfail=1; }
+  rm -rf "$_sd2" "$_sh2" "$_sb2" 2>/dev/null || true
+  # M1 (LOAD-BEARING NEGATIVE): a push URL naming another repository, host or an unparseable remote is rc 2, never 0, and gh is never asked
+  for _pu in 'https://github.com/acme/other.git' 'https://gitlab.example.com/acme/widgets.git' 'not a url' "https://github.com/acme/widgets.git
+https://github.com/acme/other.git"; do
+    _fg_pu=$_pu
+    _fg_run push "$_gh_o" '--as agent'
+    [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (forge: a push URL that differs from the fetch URL exited $_frc, expected 2 UNVERIFIED, never 0)"; sfail=1; }
+    printf '%s\n' "$_o" | grep -qF "origin's push URL differs from its fetch URL" \
+      || { echo "doctor --selftest: FAIL (forge: a differing push URL did not name the mismatch)"; sfail=1; }
+    [ ! -s "$_fgd/flog" ] || { echo "doctor --selftest: FAIL (forge: the forge was asked although the push URL differed)"; sfail=1; }
+  done
+  _fg_pu='git@github.com:acme/widgets.git'
+  _fg_run push "$_gh_o" '--as agent'
+  [ "$_frc" = 0 ] || { echo "doctor --selftest: FAIL (forge: a push URL naming the same repository over SSH exited $_frc, expected 0)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'forge credential: origin is SSH' \
+    || { echo "doctor --selftest: FAIL (forge: an SSH push URL did not raise the SSH advisory)"; sfail=1; }
+  _fg_pu=''
+  # L4: a URL whose authority disagrees with a URL parser, or a dot-segment owner, never yields a github.com repository
+  for _bad in 'https://evil.example#@github.com/a/b' 'https://evil.example?@github.com/a/b' 'https://github.com/../x' 'https://github.com/a/..'; do
+    _fg_run push "$_bad"
+    printf '%s\n' "$_o" | grep -qxF 'forge identity: N/A — no forge adapter for an unrecognised origin' \
+      || { echo "doctor --selftest: FAIL (forge: origin '$_bad' was not refused as an unrecognised origin)"; sfail=1; }
+    [ ! -s "$_fgd/flog" ] || { echo "doctor --selftest: FAIL (forge: the forge was asked for origin '$_bad')"; sfail=1; }
+  done
+  # I1 (LOAD-BEARING NEGATIVE): a token that cannot read its own identity (an App installation or CI token) is UNVERIFIED rc 2, not FAIL
+  _fg_run ci "$_gh_o" '--as agent'
+  [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (forge: --as agent under a 403 identity read exited $_frc, expected 2 UNVERIFIED)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qF 'confirm on the App'"'"'s settings that it holds no Administration permission' \
+    || { echo "doctor --selftest: FAIL (forge: a 403 identity read did not point at the App's Administration permission)"; sfail=1; }
+  # a non-403 failure is unreadable-and-fail-closed with its own sentence
+  _fg_run unauth "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF "forge identity: not readable — could not read the login (gh is unauthenticated or the forge is unreachable; run 'gh auth status')" \
+    || { echo "doctor --selftest: FAIL (forge: an unauthenticated read did not render its sentence)"; sfail=1; }
+  # no origin at all: UNVERIFIED rc 2 under --as agent
+  _fg_run push '' '--as agent'
+  [ "$_frc" = 2 ] || { echo "doctor --selftest: FAIL (forge: --as agent with no origin exited $_frc, expected 2)"; sfail=1; }
+  # an expired token warns (and stays a warning)
+  printf '2026-10-01 10:00:00 UTC' > "$_fgd/fexp"
+  _fg_run push "$_gh_o" '--as agent'
+  printf '%s\n' "$_o" | grep -qF 'token expiry: 2026-10-01 (expired) — WARN: renew' \
+    || { echo "doctor --selftest: FAIL (forge: an expired token did not warn)"; sfail=1; }
+  [ "$_frc" = 0 ] || { echo "doctor --selftest: FAIL (forge: the expired-token warning changed the exit to $_frc)"; sfail=1; }
+  : > "$_fgd/fexp"
+  # FLAG-NOT-ENV: an ambient DOCTOR_FORGE_CMD is ignored in a real run. An isolated git tree whose origin is on github.com, a fake
+  # `gh` on PATH that records it was reached and fails: the ambient seam's marker must stay absent and the fake gh's must be present.
+  _fd=$(mktemp -d); _fh=$(mktemp -d); _fm=$(mktemp -d); _fb=$(mktemp -d)
+  mkdir -p "$_fd/scripts"; cp "$0" "$_fd/scripts/doctor.sh"
+  git -C "$_fd" init -q && git -C "$_fd" remote add origin "$_gh_o"
+  printf '#!/bin/sh\necho reached >> "%s/gh"\nexit 1\n' "$_fm" > "$_fb/gh"; chmod +x "$_fb/gh"
+  HOME="$_fh" PATH="$_fb:$PATH" DOCTOR_FORGE_CMD="touch $_fm/seam" DOCTOR_FORGE_ORIGIN='https://gitlab.example.com/a/b' \
+    sh "$_fd/scripts/doctor.sh" >/dev/null 2>&1 || true
+  [ -e "$_fm/seam" ] \
+    && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_FORGE_CMD was honored in a real run - env, not flag)"; sfail=1; } || true
+  [ -e "$_fm/gh" ] \
+    || { echo "doctor --selftest: FAIL (the ambient forge-seam leg never reached the real gh path: vacuous)"; sfail=1; }
+  rm -rf "$_fd" "$_fh" "$_fm" "$_fb" "$_fgd" 2>/dev/null || true
+
   [ "$sfail" -eq 0 ] && { echo "doctor --selftest: OK"; exit 0; } || exit 1
 fi
 
@@ -498,16 +793,36 @@ REQUIRE=0
 FULL=0
 SEAMS=0
 [ -n "${CI:-}" ] && REQUIRE=1
-for _arg in "$@"; do
-  case "$_arg" in
+AS_ROLE=""
+AS_SET=0
+_doctor_usage() {
+  echo "usage: sparkwright doctor [--require] [--full] | --as agent" >&2
+  echo "  --as agent  check ONLY the forge identity: exit 1 if this session's login holds admin or maintain (or cannot be read), 0 on push, 2 if unverifiable" >&2
+  exit 2
+}
+# A real parser (SWAS-124): an unknown argument is a usage error (rc 2), not silently ignored, because `--as agent` is a
+# security check and a typo such as `--as=agnet` or `--agent` must never read as a clean run.
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --require) REQUIRE=1 ;;
     --full)    FULL=1    ;;
     # --selftest-e2e: INTERNAL. Turns the DOCTOR_*_CMD injection seams live so `--selftest`'s battery can
     # feed pass/fail fixtures through the REAL body. Deliberately absent from any usage line: the flag IS
     # the authorization. Mirrors preflight.sh's --selftest-e2e / PREFLIGHT_GIT_VERSION_CMD gating.
     --selftest-e2e) SEAMS=1 ;;
+    --as)
+      [ "$#" -ge 2 ] || _doctor_usage
+      AS_SET=1; AS_ROLE=$2; shift ;;
+    --as=*) AS_SET=1; AS_ROLE=${1#--as=} ;;
+    *) _doctor_usage ;;
   esac
+  shift
 done
+if [ "$AS_SET" -eq 1 ]; then
+  [ "$AS_ROLE" = agent ] || _doctor_usage
+  # the identity check is the whole run: refuse flags that imply the full posture rather than ignore them silently
+  [ "$FULL" -eq 0 ] || _doctor_usage
+fi
 
 # Variable-indirected gating + metrics commands — override in tests/selftest to inject pass/fail without
 # touching the real scripts. FLAG-NOT-ENV: the seams are honored ONLY when the internal --selftest-e2e
@@ -540,6 +855,17 @@ if [ "$SEAMS" -eq 1 ]; then
   # SWAS-117 D5: a stand-in for `sh scripts/tracker-jira.sh` (the identity and permission reads); empty = no read at all under
   # the seam flag, so a --selftest-e2e child never reaches the network. Honored ONLY here, never in a real run.
   DOCTOR_TRACKER_WHOAMI_CMD="${DOCTOR_TRACKER_WHOAMI_CMD:-}"
+  # SWAS-124: forge-identity seams (honored ONLY under --selftest-e2e). DOCTOR_FORGE_CMD stands in for `gh` and defaults to EMPTY,
+  # which under the seam flag means NO forge read at all (no line), so every older --selftest-e2e child stays offline and its
+  # output unchanged. DOCTOR_FORGE_ORIGIN stands in for `git remote get-url origin`; DOCTOR_FORGE_TODAY pins the date (YYYY-MM-DD)
+  # for the token-expiry arithmetic.
+  DOCTOR_FORGE_CMD="${DOCTOR_FORGE_CMD:-}"
+  DOCTOR_FORGE_ORIGIN="${DOCTOR_FORGE_ORIGIN:-}"
+  DOCTOR_FORGE_TODAY="${DOCTOR_FORGE_TODAY:-}"
+  DOCTOR_FORGE_PUSHURL="${DOCTOR_FORGE_PUSHURL:-}"
+  DOCTOR_FORGE_HELPER="${DOCTOR_FORGE_HELPER:-}"
+  # the ratification-seat declaration the forge line reads; under the seam a fixture conf stands in
+  DOCTOR_FORGE_SEATCONF="${DOCTOR_FORGE_SEATCONF:-.kit/ratification-seats.conf}"
 else
   DOCTOR_VERIFY_CMD=""
   DOCTOR_CLAIMS_CMD=""
@@ -558,6 +884,276 @@ else
   DOCTOR_TRACKER_CONF=".kit/tracker.conf"
   DOCTOR_SECURITY_BIN=""
   DOCTOR_TRACKER_WHOAMI_CMD=""
+  DOCTOR_FORGE_CMD=""
+  DOCTOR_FORGE_ORIGIN=""
+  DOCTOR_FORGE_TODAY=""
+  DOCTOR_FORGE_PUSHURL=""
+  DOCTOR_FORGE_HELPER=""
+  DOCTOR_FORGE_SEATCONF=".kit/ratification-seats.conf"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════
+# forge identity. Posture and act sheet: docs/operations/separation-of-duties.md §Forge identity and
+# docs/operations/forge-identity-switch.md.
+# Who is the forge login this session runs as, and what does it hold on origin's repo? Two read-only GitHub reads:
+#   gh api user --jq '.login,.type'      and      gh api repos/<owner>/<repo> --jq .permissions
+# The repo comes from `origin`; only owner/repo is ever printed (an origin URL may carry a credential).
+# STATED CEILING: doctor sees only the credential gh resolves. It cannot see the MCP connector, a token in another variable,
+# the SSH key or git's keychain entry; docs/operations/forge-identity-switch.md proves those.
+# Neutral by design: a host the kit has no forge adapter for is N/A (default) or UNVERIFIED rc 2 (--as agent), never a FAIL.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════
+_fg_enabled() {  # a real run always reads; under --selftest-e2e only when the seam names a stand-in
+  [ "$SEAMS" -eq 0 ] || [ -n "$DOCTOR_FORGE_CMD" ]
+}
+_fg_gh() {
+  if [ "$SEAMS" -eq 1 ]; then
+    # shellcheck disable=SC2086  # deliberate word-split of the seam command, like the other DOCTOR_*_CMD seams
+    $DOCTOR_FORGE_CMD "$@"
+  else
+    gh "$@"
+  fi
+}
+_fg_origin() {
+  if [ "$SEAMS" -eq 1 ]; then printf '%s' "$DOCTOR_FORGE_ORIGIN"; else git remote get-url origin 2>/dev/null || true; fi
+}
+# every push URL of origin (one per line): git pushes to THESE, so the repository checked must be the one pushed to (M1). Empty = none set.
+_fg_pushurls() {
+  if [ "$SEAMS" -eq 1 ]; then printf '%s\n' "$DOCTOR_FORGE_PUSHURL"; else git remote get-url --push --all origin 2>/dev/null || true; fi
+}
+# the credential helper NAMES git is configured with (config, not a secret); a value outside a plain helper name is not shown.
+_fg_helper() {
+  # --get-urlmatch also sees a helper scoped to this host alone (credential.https://<host>.helper), which --get-all would miss
+  if [ "$SEAMS" -eq 1 ]; then _fh_all=$DOCTOR_FORGE_HELPER; else _fh_all=$(git config --get-urlmatch credential.helper "https://$FG_HOST" 2>/dev/null || true); fi
+  _fh_out=''
+  while IFS= read -r _fh_l || [ -n "$_fh_l" ]; do
+    [ -n "$_fh_l" ] || continue
+    case "$_fh_l" in
+      *[!A-Za-z0-9._/-]*) _fh_l='(set; not shown)' ;;
+      */*) _fh_l=${_fh_l##*/}   # a path can carry a local username: print only the helper's own name
+           [ -n "$_fh_l" ] || _fh_l='(set; not shown)' ;;
+    esac
+    [ "${#_fh_l}" -le 64 ] || _fh_l='(set; not shown)'
+    _fh_out="$_fh_out${_fh_out:+, }$_fh_l"
+  done <<_FG_HELPER_EOF
+$_fh_all
+_FG_HELPER_EOF
+  if [ -n "$_fh_out" ]; then printf '%s' "$_fh_out"; else printf 'none set'; fi
+}
+# _fg_parse <origin-url>: sets FG_HOST (lowercased, gated), FG_OWNER, FG_REPO, FG_SSH. rc 1 when it is not a hosted remote.
+_fg_parse() {
+  FG_HOST=''; FG_OWNER=''; FG_REPO=''; FG_SSH=0; FG_HTTPS=0
+  _fp_u=$1
+  case "$_fp_u" in
+    ''|-*|/*|.*) return 1 ;;
+    *://*)
+      case "$_fp_u" in ssh://*) FG_SSH=1 ;; http://*|https://*) FG_HTTPS=1 ;; esac
+      _fp_r=${_fp_u#*://}
+      _fp_auth=${_fp_r%%/*}
+      _fp_path=${_fp_r#*/}
+      [ "$_fp_path" != "$_fp_r" ] || return 1
+      # the authority may carry userinfo, nothing else: a '#', '?', '\' or space here is how a URL parser and doctor disagree about the host
+      case "$_fp_auth" in *[!A-Za-z0-9._~%:@-]*) return 1 ;; esac
+      _fp_host=${_fp_auth##*@}
+      _fp_host=${_fp_host%%:*}
+      ;;
+    *:*)
+      FG_SSH=1
+      _fp_host=${_fp_u%%:*}
+      _fp_host=${_fp_host##*@}
+      _fp_path=${_fp_u#*:}
+      ;;
+    *) return 1 ;;
+  esac
+  _fp_path=${_fp_path%/}
+  _fp_path=${_fp_path%.git}
+  _fp_owner=${_fp_path%%/*}
+  _fp_repo=${_fp_path#*/}
+  case "$_fp_host" in ''|*[!A-Za-z0-9.-]*) return 1 ;; esac
+  case "$_fp_owner" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  case "$_fp_repo" in ''|*/*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  [ "$_fp_owner" != "$_fp_path" ] || return 1
+  case "$_fp_owner" in .|..) return 1 ;; esac
+  case "$_fp_repo" in .|..) return 1 ;; esac
+  FG_HOST=$(printf '%s' "$_fp_host" | tr '[:upper:]' '[:lower:]')
+  FG_OWNER=$_fp_owner
+  FG_REPO=$_fp_repo
+  return 0
+}
+# _fg_gate <value> <charset-ok-pattern-name>: a byte doctor did not check is never printed (the Jira line's rule, S-6).
+_fg_gate_login() {
+  _gl_core=${1%'[bot]'}   # a GitHub App login ends in [bot]; the rest is [A-Za-z0-9-]
+  case "$_gl_core" in ''|*[!A-Za-z0-9-]*) printf '?'; return 0 ;; esac
+  if [ "${#1}" -le 64 ]; then printf '%s' "$1"; else printf '?'; fi
+}
+_fg_gate_type() {
+  case "$1" in User|Bot|Organization|Mannequin) printf '%s' "$1" ;; *) printf '?' ;; esac
+}
+# _fg_identity: reads once. Sets FG_STATE:
+#   ok          FG_LOGIN FG_TYPE FG_LEVEL (admin|maintain|push|triage|pull) FG_OWNER FG_REPO are set
+#   noorigin    no origin remote                      nohost   origin is not on github.com (FG_HOST names it)
+#   nogh        gh is not installed                   ci       gh api user answered 403 (CI's GITHUB_TOKEN cannot read its identity)
+#   unauth      gh api user failed another way        unreadable  the login is known but its permission on the repo is not
+_fg_identity() {
+  FG_STATE=''; FG_LOGIN=''; FG_TYPE=''; FG_LEVEL=''; FG_HOST=''; FG_OWNER=''; FG_REPO=''; FG_SSH=0; FG_HTTPS=0
+  _fi_url=$(_fg_origin)
+  if [ -z "$_fi_url" ]; then FG_STATE=noorigin; return 0; fi
+  if ! _fg_parse "$_fi_url"; then FG_STATE=nohost; FG_HOST='an unrecognised origin'; return 0; fi
+  if [ "$FG_HOST" != github.com ]; then FG_STATE=nohost; return 0; fi
+  # M1: git pushes to origin's PUSH url(s), which may name another repository than the fetch url the permission is read for.
+  # Every push url must parse to the same host/owner/repo, or the check cannot say what a push would reach (no gh call is made).
+  _fi_fh=$FG_HOST; _fi_fo=$FG_OWNER; _fi_fr=$FG_REPO; _fi_fs=$FG_SSH; _fi_fx=$FG_HTTPS
+  _fi_pu=$(_fg_pushurls)
+  while IFS= read -r _fi_l || [ -n "$_fi_l" ]; do
+    [ -n "$_fi_l" ] || continue
+    if ! _fg_parse "$_fi_l" || [ "$FG_HOST" != "$_fi_fh" ] || [ "$FG_OWNER" != "$_fi_fo" ] || [ "$FG_REPO" != "$_fi_fr" ]; then
+      FG_STATE=pushdiff; FG_HOST=$_fi_fh; FG_OWNER=$_fi_fo; FG_REPO=$_fi_fr; FG_SSH=$_fi_fs; FG_HTTPS=$_fi_fx
+      return 0
+    fi
+    [ "$FG_SSH" -eq 0 ] || _fi_fs=1
+    [ "$FG_HTTPS" -eq 0 ] || _fi_fx=1
+  done <<_FG_PUSH_EOF
+$_fi_pu
+_FG_PUSH_EOF
+  FG_HOST=$_fi_fh; FG_OWNER=$_fi_fo; FG_REPO=$_fi_fr; FG_SSH=$_fi_fs; FG_HTTPS=$_fi_fx
+  if [ "$SEAMS" -eq 0 ] && ! command -v gh >/dev/null 2>&1; then FG_STATE=nogh; return 0; fi
+  # L5: a failed mktemp must not abort the default doctor (set -e): it is an unreadable identity, like any other read failure
+  _fi_d=$(mktemp -d 2>/dev/null) || { FG_STATE=unauth; return 0; }
+  _fi_rc=0; _fi_out=$(_fg_gh api user --jq '.login,.type' 2>"$_fi_d/err") || _fi_rc=$?
+  if [ "$_fi_rc" -ne 0 ]; then
+    if grep -q 'HTTP 403' "$_fi_d/err" 2>/dev/null; then FG_STATE=ci; else FG_STATE=unauth; fi
+    rm -rf "$_fi_d"; return 0
+  fi
+  FG_LOGIN=$(_fg_gate_login "$(printf '%s\n' "$_fi_out" | sed -n '1p')")
+  FG_TYPE=$(_fg_gate_type "$(printf '%s\n' "$_fi_out" | sed -n '2p')")
+  _fi_rc=0; _fi_perm=$(_fg_gh api "repos/$FG_OWNER/$FG_REPO" --jq .permissions 2>/dev/null) || _fi_rc=$?
+  rm -rf "$_fi_d"
+  _fi_p=$(printf '%s' "$_fi_perm" | tr -d ' \n\r')
+  FG_STATE=unreadable
+  [ "$_fi_rc" -eq 0 ] || return 0
+  # the keys the seat verified: admin, maintain, pull, push, triage. A response without admin AND push is unreadable (fail-closed).
+  case "$_fi_p" in *'"admin":'*) ;; *) return 0 ;; esac
+  case "$_fi_p" in *'"push":'*) ;; *) return 0 ;; esac
+  FG_STATE=ok
+  case "$_fi_p" in
+    *'"admin":true'*) FG_LEVEL="admin" ;;
+    *'"maintain":true'*) FG_LEVEL="maintain" ;;
+    *'"push":true'*) FG_LEVEL="push" ;;
+    *'"triage":true'*) FG_LEVEL="triage" ;;
+    *) FG_LEVEL="pull" ;;
+  esac
+  return 0
+}
+# _fg_seat_declared: true when the project declares a ratification seat, i.e. .kit/ratification-seats.conf holds at least one SEAT=
+# line (read with the grammar ratification.yml uses; the value is counted and NEVER printed). A project that declares a separate
+# ratification identity has bought into identity separation, so an admin login undoes a declared control.
+_fg_seat_declared() {
+  [ -f "$DOCTOR_FORGE_SEATCONF" ] || return 1
+  # a conf that exists but cannot be read is treated as declared: fail toward the warning
+  [ -r "$DOCTOR_FORGE_SEATCONF" ] || return 0
+  _fs_n=$(sed -n 's/^SEAT=//p' "$DOCTOR_FORGE_SEATCONF" 2>/dev/null | grep -c '' || true)
+  [ "${_fs_n:-0}" -gt 0 ]
+}
+# _fg_line [agent]: the identity line for the current FG_STATE. Under --as agent (the explicit gate) an admin or maintain login
+# always reads HOLDS ADMIN; in the default run it does so only where a ratification seat is declared, else it is an INFO line.
+_fg_line() {
+  case "$FG_STATE" in
+    noorigin) printf 'forge identity: N/A — no origin remote\n' ;;
+    nohost) printf 'forge identity: N/A — no forge adapter for %s\n' "$FG_HOST" ;;
+    nogh) printf 'forge identity: N/A — gh is not installed\n' ;;
+    ci) printf 'forge identity: N/A — this credential cannot read its own identity (HTTP 403, as under CI'"'"'s GITHUB_TOKEN)\n' ;;
+    unauth) printf "forge identity: not readable — could not read the login (gh is unauthenticated or the forge is unreachable; run 'gh auth status')\n" ;;
+    pushdiff) printf "forge identity: N/A — origin's push URL does not name the same repository as its fetch URL\n" ;;
+    unreadable) printf 'forge identity: %s (%s) — permission on %s/%s unreadable\n' "$FG_LOGIN" "$FG_TYPE" "$FG_OWNER" "$FG_REPO" ;;
+    ok)
+      _fl_s="forge identity: $FG_LOGIN ($FG_TYPE) — $FG_LEVEL on $FG_OWNER/$FG_REPO"
+      case "$FG_LEVEL" in
+        admin|maintain)
+          if [ "${1:-}" = agent ] || _fg_seat_declared; then
+            _fl_s="$_fl_s — HOLDS ADMIN: agent sessions must run as the push-only machine user; run 'sparkwright doctor --as agent'"
+          else
+            _fl_s="$_fl_s — INFO: a push-only machine user for agent sessions is the recommended posture once a separate identity reviews; see docs/operations/forge-identity-switch.md"
+          fi ;;
+      esac
+      printf '%s\n' "$_fl_s" ;;
+  esac
+}
+# _fg_advisory: NAMES ONLY (never a value): which variables decide the credential gh uses, and whether git pushes by SSH.
+_fg_advisory() {
+  _fa_names=''
+  for _fa_v in GH_TOKEN GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN; do
+    eval "_fa_val=\${$_fa_v:-}"
+    [ -z "$_fa_val" ] || _fa_names="$_fa_names${_fa_names:+, }$_fa_v"
+  done
+  [ -z "$_fa_names" ] || printf 'forge credential: %s set in the environment (it decides which credential gh uses; doctor does not read it)\n' "$_fa_names"
+  [ "$FG_SSH" -ne 1 ] || printf 'forge credential: origin is SSH (git push uses the SSH key, not gh'"'"'s login; doctor cannot see whose key it is)\n'
+  [ "$FG_HTTPS" -ne 1 ] || printf 'forge credential: git push over HTTPS uses git'"'"'s credential helper (%s); doctor does not verify its identity\n' "$(_fg_helper)"
+}
+# _fg_days <today> <expiry> (both YYYY-MM-DD): whole days from today to expiry; negative when past.
+_fg_days() {
+  awk -v a="$1" -v b="$2" '
+    function d(s,   p, y, m, dd, era, yoe, doy, doe) {
+      split(s, p, "-"); y = p[1] + 0; m = p[2] + 0; dd = p[3] + 0
+      if (m <= 2) y--
+      era = int(y / 400); yoe = y - era * 400
+      doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + dd - 1
+      doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+      return era * 146097 + doe
+    }
+    BEGIN { print d(b) - d(a) }'
+}
+# _fg_expiry: prints a warning line when the token-expiration response header (gh api -i user) shows <= 30 days left. Prints NOTHING
+# when the header is absent (a token that does not expire, or an OAuth login) or unparseable: it never guesses an expiry.
+_fg_expiry() {
+  _fx_h=$(_fg_gh api -i user 2>/dev/null | tr -d '\r' | grep -i '^github-authentication-token-expiration:' | sed -n '1p') || _fx_h=''
+  [ -n "$_fx_h" ] || return 0
+  _fx_date=$(printf '%s\n' "$_fx_h" | sed 's/^[^:]*: *//' | cut -c1-10)
+  case "$_fx_date" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) return 0 ;; esac
+  if [ "$SEAMS" -eq 1 ]; then _fx_today=$DOCTOR_FORGE_TODAY; else _fx_today=$(date -u +%Y-%m-%d); fi
+  case "$_fx_today" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;; *) return 0 ;; esac
+  _fx_n=$(_fg_days "$_fx_today" "$_fx_date")
+  if [ "$_fx_n" -lt 0 ]; then
+    printf 'token expiry: %s (expired) — WARN: renew the machine user'"'"'s token (docs/operations/forge-identity-switch.md step 1)\n' "$_fx_date"
+  elif [ "$_fx_n" -le 30 ]; then
+    printf 'token expiry: %s (%s days) — WARN: renew the machine user'"'"'s token before it lapses (docs/operations/forge-identity-switch.md step 1)\n' "$_fx_date" "$_fx_n"
+  fi
+}
+# --as agent: the identity check ONLY. 1 admin/maintain/lacks push/unreadable/unauthenticated/gh missing (fail-closed); 0 push;
+# 2 UNVERIFIED, never 1: no forge adapter for the host, no origin, a push URL naming another repository, or a token that cannot
+# read its own identity (403: an App installation or CI token, whose permissions are on the App's settings page).
+_fg_agent() {
+  # M3: a --selftest-e2e run reads a stand-in, never the forge, so its output must not be mistakable for a verdict
+  [ "$SEAMS" -eq 0 ] || echo "SELFTEST SEAMS ACTIVE — not a verdict"
+  echo "sparkwright doctor --as agent"
+  echo "-----------------------------"
+  if ! _fg_enabled; then
+    echo "agent identity: UNVERIFIED — no forge read in this run"
+    return 2
+  fi
+  _fg_identity
+  _fg_line agent
+  _fg_advisory
+  case "$FG_STATE" in
+    noorigin) echo "agent identity: UNVERIFIED — there is no origin remote to name a forge adapter for"; return 2 ;;
+    nohost) echo "agent identity: UNVERIFIED — the kit has no forge adapter for $FG_HOST; map the rule by role (docs/adoption/vc-hosts.md, docs/operations/separation-of-duties.md §Forge identity)"; return 2 ;;
+    nogh) echo "agent identity: FAIL — gh is not installed, so the identity cannot be verified (fail-closed)"; return 1 ;;
+    pushdiff) echo "agent identity: UNVERIFIED — origin's push URL differs from its fetch URL (a push could reach a different repository than the one checked); make them name the same repository"; return 2 ;;
+    ci) echo "agent identity: UNVERIFIED — this credential cannot read its own identity (HTTP 403: an App installation or CI token); confirm on the App's settings that it holds no Administration permission"; return 2 ;;
+    unauth) echo "agent identity: FAIL — could not read the login (gh is unauthenticated or the forge is unreachable; fail-closed)"; return 1 ;;
+    unreadable) echo "agent identity: FAIL — the permission on $FG_OWNER/$FG_REPO is unreadable (fail-closed)"; return 1 ;;
+  esac
+  case "$FG_LEVEL" in
+    admin) echo "agent identity: FAIL — $FG_LOGIN holds admin on $FG_OWNER/$FG_REPO; agent sessions must run as the push-only machine user (docs/operations/forge-identity-switch.md)"; return 1 ;;
+    maintain) echo "agent identity: FAIL — $FG_LOGIN holds maintain on $FG_OWNER/$FG_REPO; agent sessions must run as the push-only machine user (docs/operations/forge-identity-switch.md)"; return 1 ;;
+    push) ;;
+    *) echo "agent identity: FAIL — $FG_LOGIN holds only $FG_LEVEL on $FG_OWNER/$FG_REPO, so a lane cannot push"; return 1 ;;
+  esac
+  _fg_expiry
+  echo "agent identity: PASS — gh's login $FG_LOGIN holds push only on $FG_OWNER/$FG_REPO"
+  return 0
+}
+if [ "$AS_SET" -eq 1 ]; then
+  _fg_rc=0; _fg_agent || _fg_rc=$?
+  exit "$_fg_rc"
 fi
 
 gate_fail=0
@@ -1120,6 +1716,30 @@ if [ -n "$DOCTOR_TRACKER_CONF" ] && [ -f "$DOCTOR_TRACKER_CONF" ] && [ -f script
     esac
   fi
   printf 'tracker credential: %s%s\n' "$_tcl_text" "$_tcl_suffix"
+fi
+
+# 7. forge identity [ADVISORY — one line, never a verdict, never sets gate_fail] (SWAS-124)
+# Who this session is on the forge and what it holds on origin's repo (the functions above). A login that holds admin or maintain
+# raises ONE doctor warn (Overall: WARN) only where a ratification seat is declared (.kit/ratification-seats.conf holds a SEAT=
+# line); on a one-account tree the line is INFO and adds no warn. It is never a verdict and never changes the exit code;
+# `sparkwright doctor --as agent` is the gate. Under CI's GITHUB_TOKEN the identity read is 403: N/A, not a warn. The names-only
+# advisory is skipped on every N/A state (CI always sets GITHUB_TOKEN; advising there would be wolf-crying). Under --selftest-e2e
+# it is silent unless the seam names a stand-in, and then also prints whether it counted a warn (the Overall line cannot say,
+# because the git dimension warns on a dirty tree).
+if _fg_enabled; then
+  _fg_identity
+  _fg_line
+  case "$FG_STATE" in
+    ok|unreadable|unauth) _fg_advisory ;;
+  esac
+  _fg_w=0
+  if [ "$FG_STATE" = ok ]; then
+    case "$FG_LEVEL" in
+      admin|maintain) ! _fg_seat_declared || _fg_w=1 ;;
+    esac
+  fi
+  warns=$((warns+_fg_w))
+  [ "$SEAMS" -eq 0 ] || echo "SELFTEST forge warn counted: $_fg_w"
 fi
 
 # — VERDICT ——————————————————————————————————————————————————————————————————

@@ -41,7 +41,7 @@
 # `backlog-presence` (the PR's row is claimed and in flight) and `backlog-current` (every Ready row
 # meets Definition-of-Ready). It is a CONTROL only once `tracker-board-gates` is a REQUIRED status
 # check — incept declares it in REQUIRED-CHECKS.md when it stamps a tracker conf, but the adopter
-# still binds it live with `sh scripts/branch-protection-apply.sh --apply` (a human repo-admin act)
+# still binds it live with `sh scripts/branch-protection-apply.sh --replace` on an unprotected main (first time), `--apply` once it is protected (a human repo-admin act)
 # before the first PR (RUNBOOK). `tracker-board-drift` runs
 # daily (`schedule:`) and on `workflow_dispatch`, from the default branch (`workflow_dispatch --ref`
 # runs the chosen ref's definition, a write-access act; design §7), running board-drift.sh's
@@ -99,7 +99,7 @@ jobs:
       # code executes — S-1 / D-240919-2. The head is fetched as objects only and the seam-consuming
       # gates run from base. Enforced by conformance/proportional-gate-wired.sh's S-1 pairing leg +
       # the control-plane ratification. Security-seat verified (three rounds).
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3 # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1 # nosemgrep: yaml.github-actions.security.pull-request-target-code-checkout.pull-request-target-code-checkout
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
@@ -333,7 +333,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0

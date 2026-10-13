@@ -31,7 +31,7 @@ Isolation that only creates but never guards integration is half a discipline. B
 Each Engineer stays inside its assigned worktree and makes **zero out-of-slice edits** — it returns a diff plus a self-verify report; the Orchestrator integrates (builder ≠ integrator). An out-of-slice edit breaks the disjoint-set guarantee the parallel-safety rule depends on, so it is a boundary violation, not a convenience.
 
 ## Metering
-Every fanned-out step is metered through the runaway kill-switch — `scripts/runaway-guard.sh step --row <ROW>` (the budget is per slice: each row is graded alone). A guard STOP halts further fan-out (raise-don't-barrel-through); isolation does not exempt a runaway slice from the budget ceiling.
+Every fanned-out step is metered through the runaway kill-switch — `scripts/runaway-guard.sh step --row <ROW>` (the budget is per slice: each row is graded alone). A guard STOP halts further fan-out (raise-don't-barrel-through); isolation does not exempt a runaway slice from the budget ceiling. A resumed subagent reports its usage cumulatively, so a resume is metered as the delta from its previous metered report (its first report is metered in full), never summed with its earlier reports; a hand-metered line is a reported figure, never an estimate.
 
 ## Honest ceiling
 Isolation **bounds blast-radius; it is NOT a security sandbox.** A worktree limits accidental cross-slice writes — it is not containment, not a trust boundary, and not a defense against malicious code (that is the harness-sandbox concern, named elsewhere). Cleanup of unchanged trees is **best-effort and harness-owned** — do not assume a worktree is torn down for you; leave the trunk clean and let the harness reclaim workspaces.

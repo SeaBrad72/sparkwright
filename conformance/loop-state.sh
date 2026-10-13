@@ -2053,7 +2053,7 @@ selftest() {
     # (c2) not-live-cure (amendment A2): the refusal names the real cure — bind tracker-board-gates —
     # not the generic waiver-only clause.
     case "$_st_nl_out" in
-      *"Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --apply — or move the board to BACKLOG.md, or ratify a board-governance waiver"*)
+      *"Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected — or move the board to BACKLOG.md, or ratify a board-governance waiver"*)
         echo "selftest PASS: delegate/not-live-cure: the refusal stderr names tracker-board-gates + REQUIRED-CHECKS.md (A2)" ;;
       *)
         echo "selftest FAIL: delegate/not-live-cure: missing the real cure, got <$_st_nl_out>"; st_fail=1 ;;

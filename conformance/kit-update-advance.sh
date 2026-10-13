@@ -68,7 +68,7 @@
 #                  writes only the throwaway adopters here: refs/heads/kit-base, one tag per advance, and the
 #                  objects behind that commit.)
 # Guardrails: read-only wrt the kit; temp-only writes; teardown non-fatal. The refusals and the stale-base
-#             stop are fingerprinted (HEAD, every ref, index, config, worktree, object count) before and after.
+#             stop are fingerprinted (HEAD, every ref, index, config, worktree, object set) before and after.
 # Runtime: ~6-8 minutes (each `--from` run re-runs a real export+incept for THEIRS and BASE, ~9 s each; the
 #          pristine-chain walk adds one more per older chain commit). Fixtures are reused across the legs.
 #
@@ -110,9 +110,18 @@ header_line() { sed -n 's/^kit-update: \(v.*(--from)\)$/\1/p' "$1" | sed -n '1p'
 sha12() { printf '%s' "$1" | cut -c1-12; }
 
 # ── fixtures ───────────────────────────────────────────────────────────────────────────────────────────
+# quiet_repo <repo> — no background maintenance in a fixture repo (SWAS-156, SWAS-161): commit/fetch/receive-pack start a
+# detached `git maintenance run --auto` whose loose-objects task packs the loose objects between a leg's two fingerprints
+# (the intermittent Linux A8 red, git 2.55). Set before the first write into the repo. Maintenance that kit-update itself
+# would trigger in a fixture repo is suppressed on purpose; the write that would trigger it is still caught by the objects/refs lines.
+quiet_repo() {
+  git -C "$1" config maintenance.auto false && git -C "$1" config gc.auto 0 && git -C "$1" config receive.autogc false
+}
+
 # build_vendor <dir> — R0 = this kit's HEAD; R1, R2 = real commits on top. Sets R0 R1 R2 (40-hex).
 build_vendor() {
   git clone --quiet --no-tags "$ROOT" "$1" >/dev/null 2>&1 || { fail "could not clone the kit into a vendor repo"; return 1; }
+  quiet_repo "$1" || { fail "could not quiet the vendor repo"; return 1; }
   R0=$(git -C "$1" rev-parse HEAD)
   printf '\n## R1 upstream change (fixture)\n' >> "$1/$UP_A"
   printf '\n<!-- R1 upstream change (fixture) -->\n' >> "$1/$UP_D"
@@ -131,7 +140,7 @@ build_vendor() {
 
 # checkout_at <vendor> <sha> <dir> — a clone of the vendor with HEAD detached at <sha>: a "release" to --from.
 checkout_at() {
-  if git clone --quiet --no-tags "$1" "$3" >/dev/null 2>&1 && git -C "$3" checkout -q --detach "$2" >/dev/null 2>&1; then
+  if git clone --quiet --no-tags "$1" "$3" >/dev/null 2>&1 && quiet_repo "$3" && git -C "$3" checkout -q --detach "$2" >/dev/null 2>&1; then
     return 0
   fi
   fail "could not check out $2 of the vendor"; return 1
@@ -148,7 +157,7 @@ build_adopter() {
     sed '/^\.kit-source$/d' "$1/.kit-manifest" > "$1/.kit-manifest.new" && mv "$1/.kit-manifest.new" "$1/.kit-manifest"
     sed '/ \.kit-source$/d' "$1/.kit-digests" > "$1/.kit-digests.new" && mv "$1/.kit-digests.new" "$1/.kit-digests"
   fi
-  ( cd "$1" && git init -q . && git add -A && $GIT_C commit -qm 'kit export' ) >/dev/null 2>&1 \
+  ( cd "$1" && git init -q . && quiet_repo . && git add -A && $GIT_C commit -qm 'kit export' ) >/dev/null 2>&1 \
     || { fail "could not init the fixture repo"; return 1; }
   ( cd "$1" && sh scripts/incept.sh --noninteractive --name Flow --intent-owner B \
       --stack "$STACK" --date "$ADOPT_DATE" ) >/dev/null 2>&1 \
@@ -177,13 +186,15 @@ take() {
 }
 
 # fingerprint <repo> <all|other> — what a refusal / the advance is forbidden to touch.
-# `all`   = every ref + object count (a refusal writes NOTHING). `other` = everything EXCEPT kit-base refs
+# `all`   = every ref + the object set (a refusal writes NOTHING). `other` = everything EXCEPT kit-base refs
 # and objects (the advance may write exactly those).
 fingerprint() {
   echo "HEAD $(git -C "$1" rev-parse HEAD 2>/dev/null || echo unborn)"
   if [ "$2" = all ]; then
     git -C "$1" show-ref | LC_ALL=C sort
-    echo "objects $(find "$1/.git/objects" -type f | grep -c . || :)"
+    _fp_o=$(git -C "$1" cat-file --batch-all-objects --batch-check='%(objectname)' 2>/dev/null) || _fp_o=UNREADABLE
+    if [ "$_fp_o" = UNREADABLE ]; then echo "objects UNREADABLE"; else echo "objects $(printf '%s\n' "$_fp_o" | LC_ALL=C sort -u | cksum)"; fi
+    echo "-- alternates --"; cksum "$1/.git/objects/info/alternates" 2>/dev/null || :
   else
     git -C "$1" show-ref | grep -v ' refs/heads/kit-base$' | grep -v ' refs/tags/kit-base/' | LC_ALL=C sort
   fi
@@ -194,6 +205,10 @@ fingerprint() {
   echo "-- ref files --"
   ( cd "$1" && find .git/refs .git/packed-refs -type f -print 2>/dev/null | grep -v 'refs/heads/kit-base$' \
       | grep -v 'refs/tags/kit-base/' | LC_ALL=C sort | xargs cksum 2>/dev/null )
+}
+# fp_same <fp0> <fp1> — equal AND readable: an `objects UNREADABLE` baseline would make "writes nothing" pass vacuously.
+fp_same() {
+  ! grep -qx 'objects UNREADABLE' "$1" && diff -u "$1" "$2" >/dev/null 2>&1
 }
 
 # refuses <leg> <adopter> <reason-ERE> <out> <script-args…> — the run must exit 1, name the reason, write NOTHING.
@@ -207,8 +222,8 @@ refuses() {
   else
     fail "$_rf_leg — expected exit 1 naming '$_rf_re'; got rc=$KU_RC: $(sed -n '1,4p' "$_rf_o" | tr '\n' '|')"
   fi
-  if diff -u "$_rf_o.fp0" "$_rf_o.fp1" >/dev/null 2>&1; then
-    pass "$_rf_leg [writes nothing] — HEAD, every ref, index, config, worktree and the object count are unchanged"
+  if fp_same "$_rf_o.fp0" "$_rf_o.fp1"; then
+    pass "$_rf_leg [writes nothing] — HEAD, every ref, index, config, worktree and the object set are unchanged"
   else
     fail "$_rf_leg [writes nothing] — the refused run changed the adopter's repo"
     diff -u "$_rf_o.fp0" "$_rf_o.fp1" | grep -E '^[+-][^+-]' | head -8 >&2 || :
@@ -373,7 +388,7 @@ flow_partial() {
     fingerprint "$_fa" all > "$_fo.fp0"
     ku "$_fa" "$_fs" "$_fo.again" --advance-base --from "$_t/src1"
     fingerprint "$_fa" all > "$_fo.fp1"
-    if [ "$KU_RC" -eq 1 ] && diff -u "$_fo.fp0" "$_fo.fp1" >/dev/null 2>&1; then FP_17=1
+    if [ "$KU_RC" -eq 1 ] && fp_same "$_fo.fp0" "$_fo.fp1"; then FP_17=1
     else FP_WHY="${FP_WHY:+$FP_WHY; }a second re-advance on the complete tip was not refused rc 1 writing nothing (rc=$KU_RC)"; fi
   else
     FP_WHY="${FP_WHY:+$FP_WHY; }the re-advance at R1 did not write a child commit with Kit-Behind: 0 and the R1 tag (rc=$KU_RC, Kit-Behind='$(tip_trailer "$_fa" Kit-Behind)')"
@@ -421,7 +436,7 @@ check() {
   else
     fail "A4 [STALE-REFUSAL] — expected exit 1 + 'stale' + the '--advance-base --from' command; rc=$KU_RC: $(sed -n '1,4p' "$_t/a4" | tr '\n' '|')"
   fi
-  if diff -u "$_t/a4.fp0" "$_t/a4.fp1" >/dev/null 2>&1; then
+  if fp_same "$_t/a4.fp0" "$_t/a4.fp1"; then
     pass "A4 [writes nothing] — the stale-base refusal changed nothing"
   else
     fail "A4 [writes nothing] — the stale-base refusal changed the adopter's repo"
@@ -561,7 +576,7 @@ check() {
   refuses 'A8 malformed-sha'       "$a2" 'malformed' "$_t/a8d" --advance-base --from "$_t/vendor" --at 'not-a-sha'
   refuses 'A8 too-short-sha'       "$a2" 'malformed' "$_t/a8e" --advance-base --from "$_t/vendor" --at abc12
   refuses 'A8 unreachable-sha'     "$a2" 'unreachable' "$_t/a8f" --advance-base --from "$_t/vendor" --at aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-  _nokb=$_t/nokb; git init -q "$_nokb" >/dev/null 2>&1 || :
+  _nokb=$_t/nokb; git init -q "$_nokb" >/dev/null 2>&1 && quiet_repo "$_nokb" || :
   refuses 'A8 no-kit-base'         "$_nokb" "no 'kit-base' branch" "$_t/a8g" --advance-base --from "$_t/vendor" --at "$R1"
 
   # A14 — the write-side refusals (each: exit 1, names the reason, and NOTHING moved).
@@ -571,6 +586,7 @@ check() {
   git -C "$a2" tag -d "$_tag1" >/dev/null 2>&1 || :
   # a vendor commit whose VERSION makes a tag name git refuses: the refusal comes BEFORE any ref moves
   git clone --quiet --no-tags -- "$_t/vendor" "$_t/vbad" >/dev/null 2>&1 || { fail "fixture: cannot clone the bad-VERSION vendor"; return 1; }
+  quiet_repo "$_t/vbad" || { fail "fixture: could not quiet the bad-VERSION vendor"; return 1; }
   printf '1..2\n' > "$_t/vbad/VERSION"
   ( cd "$_t/vbad" && git add -A && $GIT_C commit -qm 'R3: a VERSION that is not a valid tag component (fixture)' ) >/dev/null 2>&1 \
     || { fail "fixture: cannot commit the bad-VERSION release"; return 1; }
@@ -579,7 +595,7 @@ check() {
   # a DANGLING commit: a local-path clone copies the object, but it is not in --from's history
   _dang=$(git -C "$_t/vendor" -c user.email=t@t -c user.name=t commit-tree "$R2^{tree}" -p "$R2" -m dangling 2>/dev/null) \
     || { fail "fixture: cannot create a dangling commit"; return 1; }
-  git clone --quiet --no-tags -- "$_t/vendor" "$_t/dchk" >/dev/null 2>&1 || :
+  git clone --quiet --no-tags -- "$_t/vendor" "$_t/dchk" >/dev/null 2>&1 && quiet_repo "$_t/dchk" || :
   if git -C "$_t/dchk" cat-file -e "$_dang^{commit}" 2>/dev/null; then
     refuses 'A14 dangling-not-history' "$a2" 'not in the history|unreachable' "$_t/a14c" --advance-base --from "$_t/vendor" --at "$_dang"
   else
@@ -807,6 +823,7 @@ check() {
   # (equal: taken), and kept its own binary B (merge-file cannot merge binaries; unequal: behind).
   vb=$_t/vb
   git clone --quiet --no-tags "$ROOT" "$vb" >/dev/null 2>&1 || { fail "A18 fixture: could not clone the binary vendor"; return 1; }
+  quiet_repo "$vb" || { fail "A18 fixture: could not quiet the binary vendor"; return 1; }
   printf 'bin-a-v0\000\001\002\n' > "$vb/docs/adoption/kuba-bin-a.dat"
   printf 'bin-b-v0\000\001\002\n' > "$vb/docs/adoption/kuba-bin-b.dat"
   ( cd "$vb" && git add -A && $GIT_C commit -qm 'B0: two binary files (fixture)' ) >/dev/null 2>&1 || { fail "A18 fixture: B0"; return 1; }
@@ -839,6 +856,7 @@ check() {
   # A20 [PUBLISH] — a local BARE repo as `origin` (no network). bF = R1 fully taken, not yet advanced.
   _org=$_t/origin.git
   git clone -q --bare "$b0" "$_org" >/dev/null 2>&1 || { fail "A20 fixture: could not make the bare origin"; return 1; }
+  quiet_repo "$_org" || { fail "A20 fixture: could not quiet the bare origin"; return 1; }
   if ! { git -C "$bF" remote add origin "$_org" && git -C "$bF" fetch -q origin >/dev/null 2>&1 \
          && git -C "$bF" remote set-head origin -a >/dev/null 2>&1; }; then fail "A20 fixture: could not wire origin"; return 1; fi
   _brn=$(git -C "$bF" symbolic-ref --short HEAD)
@@ -868,7 +886,7 @@ check() {
     fingerprint "$bF" all > "$_t/pr.fp0"; git -C "$_org" show-ref > "$_t/pr.org0" 2>&1 || :
     ku "$bF" "$KU" "$_t/pr.out" --advance-base --from "$_t/src1" --remote "$_rv"
     fingerprint "$bF" all > "$_t/pr.fp1"; git -C "$_org" show-ref > "$_t/pr.org1" 2>&1 || :
-    if [ "$KU_RC" -eq 2 ] && diff -u "$_t/pr.fp0" "$_t/pr.fp1" >/dev/null 2>&1 && diff -u "$_t/pr.org0" "$_t/pr.org1" >/dev/null 2>&1; then
+    if [ "$KU_RC" -eq 2 ] && fp_same "$_t/pr.fp0" "$_t/pr.fp1" && diff -u "$_t/pr.org0" "$_t/pr.org1" >/dev/null 2>&1; then
       pass "A20 [REMOTE-REFUSED] — --remote '$_rv' exits 2; nothing was written and origin is untouched"
     else
       fail "A20 [REMOTE-REFUSED] — --remote '$_rv' was not refused cleanly (rc=$KU_RC)"
@@ -901,7 +919,7 @@ check() {
     fail "A20 [PUBLISHED] — origin does not carry the new kit-base and tag (rc=$KU_RC): $(sed -n '1,8p' "$_t/pp3" | tr '\n' '|')"
   fi
   # a fresh clone gets the base back with the printed one-liner (the AUTOMATIC fetch-on-missing is KIT-BASE-SHARED)
-  _fresh=$_t/fresh; git init -q "$_fresh" >/dev/null 2>&1 || :
+  _fresh=$_t/fresh; git init -q "$_fresh" >/dev/null 2>&1 && quiet_repo "$_fresh" || :
   if git -C "$_fresh" fetch -q "$_org" refs/kit/base:refs/heads/kit-base >/dev/null 2>&1 \
      && [ "$(git -C "$_fresh" rev-parse refs/heads/kit-base)" = "$(git -C "$bF" rev-parse refs/heads/kit-base)" ]; then
     pass "A20 [FETCH-BACK] — 'git fetch origin refs/kit/base:refs/heads/kit-base' gives a fresh clone the published base"

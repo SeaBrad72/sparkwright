@@ -220,7 +220,9 @@ refusal on `land` writes no note, and a refusal on either verb attempts no merge
   ("cannot meter an unnamed row"), observe prints one line.
 - **The enforce refusal names the remedy:** record the slice's **actual summed dispatch usage** with
   `sh scripts/runaway-guard.sh step --row <ROW> --tokens N --agents N`; if the usage is unknown, stop and ask the owner,
-  **never estimate**; or the owner ratifies a dial change on the default branch. There is no per-call bypass flag.
+  **never estimate**; a resumed subagent reports its usage cumulatively, so sum each agent's last report once and
+  meter a resume as the delta from its previous metered report (its first report metered in full), never its reports
+  summed; or the owner ratifies a dial change on the default branch. There is no per-call bypass flag.
 - **Docs-only exemption, derived not declared.** The base is the **remote's** `main` (`git ls-remote origin
   refs/heads/main`, which must also exist locally), never the local `origin/main` ref an agent can move; the listing is
   `git diff --name-only --no-renames $(git merge-base <remote-main> <sha>) <sha>`, classified with `conformance/ci-classify-changes.sh` (reused, not
