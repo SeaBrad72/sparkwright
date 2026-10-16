@@ -276,7 +276,10 @@ usage() {
   echo "  promotion-verify.sh trace --ref <sha> | --recent <n> [--from <trunk-ref>]" >&2
   echo "        recover the board row for a commit that already landed (squash loses the trailer)" >&2
   echo "  promotion-verify.sh check  --ref <merged-ref|tag> [--approved-sha <sha>]" >&2
-  echo "  promotion-verify.sh actuate --ref <pr|tag|merged-ref> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
+  echo "  promotion-verify.sh actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
+  echo "        --ref is the PR's head branch, fetched, and must equal <sha> (refused before any merge otherwise); a" >&2
+  echo "        caller --merge-cmd is vetted like land's and must pin --match-head-commit <sha>; the GO note is read from" >&2
+  echo "        origin. The real shipped == approved check on the trunk is CI's: promotion-verify.sh trace --recent." >&2
   echo "  promotion-verify.sh land --ref <pr|tag|merged-ref> --merge-cmd \"<cmd>\" \\" >&2
   echo "                           --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> \\" >&2
   echo "                           --class <c> --scope <s> --token <str> --go-by <the GO-giver> [--basis <t>]" >&2
@@ -1154,7 +1157,10 @@ do_check() {
   fi
 }
 
-# actuate --ref <pr|tag|merged-ref> --approved-sha <sha> [--merge-cmd "<cmd>"]
+# actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd "<cmd>"]
+#   --ref is the PR's head branch at the approved sha (step 0 refuses anything else before a merge); a caller
+#   --merge-cmd is vetted like land's and must pin --match-head-commit <sha>; the GO note is read from ORIGIN;
+#   the post-check repeats step 0 and the real shipped == approved check is CI's `trace --recent` (SWAS-207a).
 #   The CONTROL-PLANE actuation GATE. Fails CLOSED unless a recorded, authenticated, SHA-bound GO
 #   exists AND the approver is a distinct party from the author, then performs a NORMAL (non-`--admin`)
 #   merge via a swappable --merge-cmd and re-verifies shipped == approved. Never emits `--admin`:
@@ -1255,7 +1261,7 @@ pv_release_claim() {
   # printed below are meant to be pasted. A value outside [A-Z0-9][A-Z0-9-]* releases nothing, closes nothing,
   # and is NEITHER echoed NOR turned into a paste-able command.
   case "$_pvkr" in
-    [!A-Z0-9]* | *[!A-Z0-9-]*)
+    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]* | *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*)
       echo "$_pvverb: kit-row is not a valid row id; nothing released or closed."
       echo "$_pvverb: WARN — the GO note's kit-row is not a valid row id; no claim was released and no card was closed." >&2
       return 0 ;;
@@ -1386,6 +1392,14 @@ pv_dial_mode() {
   return 0
 }
 
+# pv_remote_ref_sha <full-ref> -> stdout the sha of EXACTLY <full-ref> on origin; rc 0 found, 1 otherwise.
+# ls-remote patterns tail-match and refs sort, so a pushed `a/<full-ref>` also answers and sorts first
+# (SWAS-245); only a line whose ref field IS <full-ref> counts, and exactly one must exist.
+pv_remote_ref_sha() {
+  _rrout="$(GIT_TERMINAL_PROMPT=0 git -C "$ROOT" ls-remote origin "$1" 2>/dev/null)" || return 1
+  printf '%s\n' "$_rrout" | awk -v r="$1" '$2 == r { s = $1; n++ } END { if (n == 1) { print s; exit 0 } exit 1 }'
+}
+
 # pv_docs_only <sha> -> 0 only when the change-set base..<sha> is DOCS-ONLY by the SAME predicate the CI
 # lane uses (conformance/ci-classify-changes.sh; reused, not re-implemented). FAIL-SAFE: an unresolvable
 # base, an empty listing, or a classifier that is absent or fails all mean NOT docs-only. The listing comes
@@ -1397,8 +1411,7 @@ pv_docs_only() {
   # The base comes from the REMOTE (ls-remote), never the local origin/main ref (an agent can move it with
   # update-ref). Any failure — no network, ref absent, object absent locally — means NOT docs-only.
   # A failure for a BASE reason says so (one line, both modes) so the caller knows the fix is a fetch, not a rewrite.
-  _ddrb="$(GIT_TERMINAL_PROMPT=0 git -C "$ROOT" ls-remote --exit-code origin refs/heads/main 2>/dev/null | head -1)" || _ddrb=""
-  _ddrsha="${_ddrb%%[[:space:]]*}"
+  _ddrsha="$(pv_remote_ref_sha refs/heads/main)" || _ddrsha=""
   if [ -z "$_ddrsha" ]; then echo "docs-only exemption unavailable: cannot read origin's main"; return 1; fi
   if ! git -C "$ROOT" cat-file -e "${_ddrsha}^{commit}" 2>/dev/null; then
     echo "docs-only exemption unavailable: origin/main tip not fetched — git fetch origin"; return 1
@@ -1543,6 +1556,195 @@ pv_meter_gate() {
   esac
 }
 
+# pv_merge_cmd_vet <verb> <merge-cmd> -> 0 = the command passes | 1 = REFUSED (already printed, "<VERB> REFUSED: ...").
+# THE ONE VET BOTH MERGE VERBS APPLY (SWAS-207a): `land` ran it inline as steps 3b and 4, and `actuate` now runs the
+# SAME text, so a caller's --merge-cmd faces the same refusals on either path. Extracted from `land` UNCHANGED (verb
+# word aside), so land's refusals are byte-identical. It refuses, in order: (1) any shell metacharacter; (2) any
+# branch-deletion flag or short cluster; (3) any --admin form.
+#
+# (1) REFUSE any --merge-cmd carrying a shell metacharacter ANYWHERE. The eval'd shell can rebuild a --admin or
+#     --delete-branch flag from characters the token scan below cannot see: it sees only the PRE-eval bytes and strips
+#     only quotes/backslash, but the shell expands/word-splits.
+#     The DECLINED SET IS PARITY with the guard's own word-shape vet for a plain command operand —
+#     `_cp8b_seg_word_shape_ok` (.claude/hooks/guard-core.sh) refuses `{ } , * ? [`, and its sibling
+#     `_cp8b_seg_path_ok` refuses `$ ` backtick ` < > ; & |` — plus `\` (which the guard handles via its own
+#     backslash treatment). The verb and the guard therefore agree BY CONSTRUCTION: a merge-cmd character refused
+#     here is a character the guard refuses in an operand. Every one is a rebuild vector at eval:
+#       $ / backtick  — command/parameter substitution   (--$(echo admin), --`echo admin`)
+#       \             — quoting that the token scan strips only its own copy of (\--admin, --del\ete-…)
+#       ; & |         — command separators/operators glued to a flag   (--admin; , --admin|x, --admin&&:)
+#       < >           — redirections glued to a flag   (--admin>x)
+#       { } ,         — brace expansion   (--{admin,} , --ad{m,}in) — THE gap that evaded both land AND
+#                       the guard tier: the token scan's `--*` arm swallowed it as an inert flag
+#       * ? [         — globbing   (--admi[n]); refused ANYWHERE here (the guard gates the glob only
+#                       when LEADING a token because it splits per-token, but the merge-cmd is ONE
+#                       eval'd string, so a non-leading glob token is still a rebuild vector).
+#     No guard word-shape character is omitted. The default merge-cmd
+#     (gh pr merge "<ref>" --squash --match-head-commit "<sha>") carries NONE of these — only letters,
+#     digits, spaces, quotes, `/`, `.`, `-`, `:`; $ref and $asha are interpolated and charset-validated
+#     ([A-Za-z0-9._/-]) by the caller — so no legitimate merge is refused. Refused as a CLASS here,
+#     BEFORE the delete/--admin token scan; that scan then handles the quoted/=value/tab spellings that carry NO
+#     metacharacter.
+#
+# (2)+(3) REFUSE a branch deletion or an --admin bypass. TOKENIZE the merge-cmd on IFS (space/tab/newline) and
+#    inspect each token. TRUE SCOPE, no overclaim: the merge-cmd is the AGENT'S OWN string, so this is an ergonomic
+#    foot-gun guard at that string's trust tier, not an adversarial parser; it is tokenized (not shell-lexed) and
+#    defeatable by an uncooperative caller (the friction-test net stays the CI backstop). It refuses: any
+#    --delete-branch/--delete* long flag; any SHORT cluster (single '-', not '--', containing 'd', so
+#    -d/-sd/-ds/-dq); and ANY --admin form — bare --admin OR --admin=<value> (F3-1: a merge never needs --admin in
+#    ANY form, so the whole --admin=* class is refused — over-refusing the cosmetic --admin=false is the correct,
+#    disclosed trade).
+#    QUOTE-STRIP each token first (F3-1): the merge-cmd is one string, so a caller who QUOTES a flag
+#    ('--delete-branch', "--admin") or SPLITS it across adjacent quotes (--del''ete-branch) leaves the quote bytes
+#    on the token here — this is a tokenize, not a shell re-lex. Deleting every ', " and \ normalizes the quoted/split
+#    spelling to its bare form before the case. SCOPE OF "no evade" (N1/N3, corrected): this token scan defeats the
+#    QUOTED / =value / TAB-separated spellings that carry NO shell metacharacter; every metacharacter spelling —
+#    backslash, substitution, brace, glob and glued operator/redirect — is refused UPSTREAM by arm (1) (parity with
+#    the guard's word-shape vet), before this loop. The two arms together are what make "none evade" true.
+#    The verb NEVER deletes a branch (D-240819-4 — the branch object holds the commit the GO note binds) and NEVER
+#    emits a bypass.
+#    ⚠️ SCOPE — the GUARD does NOT cover branch deletion via `git push`: `git push origin --delete <b>` and
+#    `git push origin :<b>` are guard-ALLOW (uncovered, disclosed; D-240819-6 is about Claude's SETTINGS
+#    allow-rules — a prompt — not the guard tier). This matcher scans the merge-cmd precisely because that push form
+#    is not covered elsewhere. A `git push origin :<b>` colon-refspec deletion INSIDE a --merge-cmd is out of THIS
+#    token scan's scope (a bare `:branch` token carries no shell metacharacter): the friction-test net for it stays
+#    the CI backstop + branch protection.
+pv_merge_cmd_vet() {
+  _mv="$1"; _mvcmd="$2"
+  _mvVERB="$(printf '%s' "$_mv" | LC_ALL=C tr 'a-z' 'A-Z')"
+  case "$_mvcmd" in
+    *'$'* | *'`'* | *'\'* | *'<'* | *'>'* | *';'* | *'&'* | *'|'* | *'{'* | *'}'* | *','* | *'*'* | *'?'* | *'['*)
+      echo "$_mvVERB REFUSED: --merge-cmd carries a shell metacharacter — the merge command is eval'd and the" >&2
+      echo "              default needs none. The refused set is parity with the guard's word-shape vet:" >&2
+      echo "              \$ backtick \\ < > ; & | { } , * ? [. Such a spelling (e.g. \\--admin," >&2
+      echo "              --\$(echo admin), --{admin,}, --admi[n], --admin;) can smuggle a --admin or a" >&2
+      echo "              --delete-branch past the token scan, which strips only quotes, because the" >&2
+      echo "              eval'd shell rebuilds the flag. Re-run with a merge command free of those." >&2
+      return 1 ;;
+  esac
+  _mvdeny=""
+  _mvoifs=${IFS-__unset__}
+  _mvtab="$(printf '\t')"
+  _mvnl='
+'
+  IFS=" $_mvtab$_mvnl"
+  set -f
+  for _mvtok in $_mvcmd; do
+    # Strip every ', " and \ from the token before matching (F3-1 + N1 belt). tr's set is the two
+    # quote bytes plus backslash (a token bearing \ was already refused upstream).
+    _mvnorm="$(printf '%s' "$_mvtok" | tr -d "\"'\\\\")"
+    case "$_mvnorm" in
+      --delete-branch|--delete*) _mvdeny='delete' ;;
+      --admin|--admin=*)         _mvdeny='admin' ;;
+      --*)                       : ;;
+      -*d*)                      _mvdeny='delete' ;;
+    esac
+    if [ -n "$_mvdeny" ]; then break; fi
+  done
+  set +f
+  if [ "$_mvoifs" = __unset__ ]; then unset IFS; else IFS=$_mvoifs; fi
+  if [ "$_mvdeny" = delete ]; then
+    echo "$_mvVERB REFUSED: --merge-cmd carries a branch-deletion flag (--delete-branch/--delete or a" >&2
+    echo "              short cluster like -d/-sd/-ds) — $_mv NEVER deletes a branch. Deletion is a" >&2
+    echo "              separate human act (D-240819-4); the branch object holds the commit the GO" >&2
+    echo "              note binds. Re-run without the deletion flag." >&2
+    return 1
+  fi
+  if [ "$_mvdeny" = admin ]; then
+    echo "$_mvVERB REFUSED: --merge-cmd carries an --admin token — $_mv NEVER emits a branch-protection" >&2
+    echo "              bypass. Approval authorizes promotion, never a bypass (the bypass is the" >&2
+    echo "              human's solo kill-switch, denied to the agent by the guard). Re-run without" >&2
+    echo "              --admin." >&2
+    return 1
+  fi
+  return 0
+}
+
+# pv_actuate_cmd_shape <merge-cmd> -> 0 | 1 REFUSED (already printed). `actuate`'s CALLER-supplied --merge-cmd only
+# (SWAS-207a fix round); `land` and pv_merge_cmd_vet are untouched. The vet and the pin check read the command as
+# tokens, but the eval'd shell reads it as a program, so these shapes let a command pass both textually while the merge
+# runs unpinned: a `#` (the pin sits in a comment), a newline or CR (a second command, or the pin on a dead line), a quote
+# character (a quoted value the tokenizer and the shell read differently), and more than one pin token (the first
+# decides, the other is inert — or the reverse). Refuse each, naming itself, before any merge.
+pv_actuate_cmd_shape() {
+  _sh_cmd="$1"; _sh_nl='
+'; _sh_cr="$(printf '\r')"
+  case "$_sh_cmd" in
+    *'#'*) echo "ACTUATE REFUSED: --merge-cmd carries a '#' — a comment could hide the --match-head-commit pin from the shell. Nothing was merged." >&2; return 1 ;;
+    *"$_sh_nl"*) echo "ACTUATE REFUSED: --merge-cmd carries a newline — a second command line is not one pinned merge. Nothing was merged." >&2; return 1 ;;
+    *"$_sh_cr"*) echo "ACTUATE REFUSED: --merge-cmd carries a carriage return — a line break the tokenizer and the shell read differently. Nothing was merged." >&2; return 1 ;;
+    *"'"* | *'"'*) echo "ACTUATE REFUSED: --merge-cmd carries a quote character — a quoted value is read differently by the pin check and the shell. Write the command without quotes. Nothing was merged." >&2; return 1 ;;
+  esac
+  _sh_n=0
+  _sh_oifs=${IFS-__unset__}
+  IFS=" $(printf '\t')"
+  set -f
+  for _sh_tok in $_sh_cmd; do
+    case "$_sh_tok" in --match-head-commit | --match-head-commit=*) _sh_n=$((_sh_n+1)) ;; esac
+  done
+  set +f
+  if [ "$_sh_oifs" = __unset__ ]; then unset IFS; else IFS=$_sh_oifs; fi
+  if [ "$_sh_n" -gt 1 ]; then
+    echo "ACTUATE REFUSED: --merge-cmd carries more than one --match-head-commit token ($_sh_n) — exactly one pin, on the approved sha. Nothing was merged." >&2
+    return 1
+  fi
+  return 0
+}
+
+# pv_merge_cmd_pins <merge-cmd> <sha> -> 0 only when the command carries a `--match-head-commit` token whose value
+# (after the same quote-strip the vet applies) equals <sha>, as `--match-head-commit <sha>` or
+# `--match-head-commit=<sha>`. Tokenized, not shell-lexed: the same ergonomic tier as the vet.
+pv_merge_cmd_pins() {
+  _mpcmd="$1"; _mpsha="$2"; _mppin=1; _mpprev=""
+  _mpoifs=${IFS-__unset__}
+  _mptab="$(printf '\t')"
+  _mpnl='
+'
+  IFS=" $_mptab$_mpnl"
+  set -f
+  for _mptok in $_mpcmd; do
+    _mpnorm="$(printf '%s' "$_mptok" | tr -d "\"'\\\\")"
+    if [ "$_mpprev" = --match-head-commit ] && [ "$_mpnorm" = "$_mpsha" ]; then _mppin=0; fi
+    if [ "$_mpnorm" = "--match-head-commit=$_mpsha" ]; then _mppin=0; fi
+    _mpprev="$_mpnorm"
+  done
+  set +f
+  if [ "$_mpoifs" = __unset__ ]; then unset IFS; else IFS=$_mpoifs; fi
+  return "$_mppin"
+}
+
+# pv_origin_note <verb> <sha> -> prints the GO note bound to <sha> as ORIGIN holds it; rc 0 = printed | 1 = REFUSED
+# (already printed). The read-back `land` makes (its step 2) and `actuate` now makes too (SWAS-207a A3): a note that
+# lives only in this clone is not what CI's recordless-merge backstop reads, so a local `git notes show` would PASS
+# on the exact state the #658 hole is made of. Fetch origin's ledger into a PID-scoped throwaway notes ref, read the
+# bind on THAT copy, delete it with --no-deref. C2 (the B1 twin): `fetch -f` writes THROUGH a symbolic ref, and a
+# plain `update-ref -d` deletes through one, so refuse if ANYTHING is at the name. C1: --refmap= so the fetch cannot
+# ALSO update the local ledger.
+pv_origin_note() {
+  _on="$1"; _onsha="$2"
+  _onVERB="$(printf '%s' "$_on" | LC_ALL=C tr 'a-z' 'A-Z')"
+  _onref="kit-$_on-origin-$$"
+  if _pv_ref_exists "refs/notes/$_onref"; then
+    echo "$_onVERB REFUSED: the origin-read ref refs/notes/$_onref already exists (a stale leftover or a planted ref) —" >&2
+    echo "              refused before any fetch into it. Inspect it (git for-each-ref refs/notes/$_onref), delete it if stale, then re-run." >&2
+    return 1
+  fi
+  if git fetch --refmap= --no-tags -f origin "refs/notes/$NOTES_REF:refs/notes/$_onref" >/dev/null 2>&1; then
+    _onnote="$(git notes --ref="$_onref" show "$_onsha" 2>/dev/null || true)"
+  else
+    _onnote=""
+  fi
+  git update-ref --no-deref -d "refs/notes/$_onref" >/dev/null 2>&1 || true
+  if [ -z "$_onnote" ]; then
+    echo "$_onVERB REFUSED: no GO note bound to $_onsha on origin — nothing was merged. $_on reads the note from ORIGIN" >&2
+    echo "              (a local-only note is not what CI's recordless-merge backstop sees). Record and publish it" >&2
+    echo "              first: promotion-verify.sh record ... (without --no-push); an unreachable origin refuses too." >&2
+    return 1
+  fi
+  printf '%s\n' "$_onnote"
+  return 0
+}
+
 do_actuate() {
   ref=""; asha=""; merge_cmd=""
   while [ $# -gt 0 ]; do
@@ -1566,13 +1768,48 @@ do_actuate() {
   case "$asha" in *[!A-Za-z0-9._/-]*) echo "actuate: invalid --approved-sha '$asha' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
   # Default merge = the sanctioned NORMAL squash merge (no branch-protection bypass flag is ever
   # emitted here; see the header comment). Swapped for a stub in tests.
-  [ -n "$merge_cmd" ] || merge_cmd="gh pr merge \"$ref\" --squash"
+  # A CALLER-supplied command faces the extra shape refusals below; the default does not need them.
+  _act_caller=0; [ -z "$merge_cmd" ] || _act_caller=1
 
-  # 1. A GO note must bind EXACTLY this sha (git notes show fails closed on a bogus/unbound sha).
-  note="$(git notes --ref="$NOTES_REF" show "$asha" 2>/dev/null || true)"
-  if [ -z "$note" ]; then
-    echo "ACTUATE REFUSED: no recorded GO note on $asha" >&2; return 1
+  # 0. --ref MUST BE THE PR'S HEAD BRANCH, AT THE APPROVED SHA — checked BEFORE anything is read or merged (A2).
+  #    `--ref` resolves AND its commit equals the approved sha's commit, else nothing runs. A bare PR number with no
+  #    local ref, a branch that has moved past the GO, and a ref that does not exist all refuse here. (The tag form is
+  #    dropped: `gh pr merge <tag>` merges nothing. The merged-ref form is retired: it exists only AFTER the merge.)
+  _act_rc="$(git -C "$ROOT" rev-parse -q --verify "$ref^{commit}" 2>/dev/null || true)"
+  _act_full="$(git -C "$ROOT" rev-parse -q --verify "$asha^{commit}" 2>/dev/null || true)"
+  if [ -z "$_act_rc" ] || [ -z "$_act_full" ] || [ "$_act_rc" != "$_act_full" ]; then
+    echo "ACTUATE REFUSED: --ref '$ref' resolves to ${_act_rc:-nothing}, not the approved sha ${_act_full:-$asha} — nothing was merged." >&2
+    echo "                 --ref is the PR's head branch, fetched at the approved sha: git fetch origin <branch>:<branch>" >&2
+    return 2
   fi
+  # From here the approved sha is the FULL sha step 0 resolved (N3): the pin, the origin read and every later read use
+  # one spelling, whatever abbreviation the caller typed.
+  asha="$_act_full"
+
+  # Default merge = the sanctioned NORMAL squash merge (no branch-protection bypass flag is ever emitted here; see the
+  # header comment). PINNED to the approved head (--match-head-commit), exactly as `land`'s: a head pushed after the GO
+  # is rejected server-side instead of merged under a note bound to the older sha (SWAS-207a A1). Swapped for a stub in tests.
+  [ -n "$merge_cmd" ] || merge_cmd="gh pr merge \"$ref\" --squash --match-head-commit \"$asha\""
+
+  # 0b. THE MERGE COMMAND IS VETTED AND PINNED (A1). A caller's --merge-cmd passes through the SAME vet `land` applies
+  #     (metacharacters, branch deletion, every admin-bypass spelling), faces the caller-only shape refusals
+  #     (pv_actuate_cmd_shape), and must carry exactly one `--match-head-commit <approved-sha>`.
+  #     HONEST CEILING: the command is the agent's own string — an ergonomic guard at that string's trust tier,
+  #     not a parser an uncooperative caller cannot evade. What REMAINS after these refusals: a caller that runs a
+  #     different binary carrying the pin token (a no-op, say) passes the textual check, because a tokenized string
+  #     cannot prove what the eval'd shell will execute. The pin binds the forge's merge only when the command really
+  #     is the forge's merge; the server-side `--match-head-commit` and CI's `trace --recent` are what bind.
+  if [ "$_act_caller" = 1 ]; then pv_actuate_cmd_shape "$merge_cmd" || return 1; fi
+  pv_merge_cmd_vet actuate "$merge_cmd" || return 1
+  if ! pv_merge_cmd_pins "$merge_cmd" "$asha"; then
+    echo "ACTUATE REFUSED: --merge-cmd must pin --match-head-commit <approved-sha> ($asha) — nothing was merged." >&2
+    echo "                 Without the pin a head pushed after the GO would merge under a note bound to the older sha." >&2
+    return 1
+  fi
+
+  # 1. A GO note must bind EXACTLY this sha, as ORIGIN holds it (A3): a local-only or hand-written note is not what
+  #    CI's recordless-merge backstop reads. Same read-back `land` makes; a fetch that fails refuses too.
+  if ! note="$(pv_origin_note actuate "$asha")"; then return 1; fi
 
   # 2. Read the DERIVED label from the `approved-by:` line ONLY — extract the trailing [...] on that
   #    single line. NEVER substring-scan the note body: a --token/--basis/--scope value may legitimately
@@ -1585,6 +1822,7 @@ do_actuate() {
     *'['*']') label="${aby_rest##*\[}"; label="${label%]}" ;;
   esac
   if ! printf '%s' "$label" | grep -Eq '^authenticated: [A-Za-z0-9_-]+-review$'; then
+    label="$(printf '%s' "$label" | LC_ALL=C tr -d '[:cntrl:]')"   # N4: note-derived text never carries a control byte to the terminal
     echo "ACTUATE REFUSED: assurance '$label' does not meet the control-plane bar ([authenticated: <forge>-review] required)" >&2
     return 1
   fi
@@ -1609,6 +1847,7 @@ do_actuate() {
   cls_val="${cls_line#change-class:}"
   cls_val="$(printf '%s' "$cls_val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   cls_lc="$(printf '%s' "$cls_val" | LC_ALL=C tr 'A-Z' 'a-z')"
+  cls_val="$(printf '%s' "$cls_val" | LC_ALL=C tr -d '[:cntrl:]')"   # N4: judged raw above, echoed clean below
   # AN ALLOWLIST, NOT A DENYLIST (security review F2). A denylist on "control-plane" fails OPEN on
   # everything it does not recognise: a note with NO `change-class:` line at all, or a typo'd value,
   # or a class this vocabulary gains later, would all sail through the refusal and be merged. Since
@@ -1680,15 +1919,14 @@ do_actuate() {
     echo "ACTUATE FAILED: merge command exited $mrc" >&2; return "$mrc"
   fi
 
-  # 5. Verify shipped == approved post-merge (a mismatch is the loud SHIPPED != APPROVED, exit 1).
-  #    HONEST CEILING (seam): step 5 resolves $ref as a git ref/tag (do_check does git rev-parse
-  #    "$ref^{tree}"). The default --merge-cmd merges a PR by number; a bare PR number does NOT
-  #    resolve to a tree here. So the caller MUST pass a resolvable merged ref/tag as --ref for the
-  #    verification to hold; wiring the PR-number -> merge-commit-sha resolution is part of the
-  #    forge-adapter seam (docs/adoption/vc-hosts.md), unexercised solo. The fixtures pass a real
-  #    merged ref precisely because this is the contract the live team path must honour.
+  # 5. Post-check, KEEPING ITS RC — a merge that has happened ALWAYS reaches step 6 and the board tail (A4). The old
+  #    tail returned here on a failed check, so the merge ran but the claim was never released and the card never
+  #    moved (#806, #808, #840). A mismatch is still rc 1 and loud; it no longer leaves a stale claim behind.
+  #    HONEST CEILING: this local post-check REPEATS step 0 — the named head ref still carries the approved tree.
+  #    With the pin that means the forge merged the approved head; it does NOT read the trunk. The real
+  #    shipped == approved check is CI's recordless-merge backstop, `promotion-verify.sh trace --recent` on main,
+  #    which matches every trunk commit to a note by tree.
   if do_check --ref "$ref" --approved-sha "$asha"; then crc=0; else crc=$?; fi
-  if [ "$crc" -ne 0 ]; then return "$crc"; fi
 
   # 6. RELEASE THE BOARD CLAIM (BOARD-CLAIM-MECHANISM design §3.5). The merge is the end of the
   #    slice, so the row's claim ref (refs/claims/<kit-row>) has done its job and must not linger:
@@ -1707,9 +1945,13 @@ do_actuate() {
   # self-authorable (the label bar is audit + defense-in-depth over it; the real solo control is
   # server-side branch protection + the human-only admin bypass). Do not imply the label authenticates.
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
-  echo "OK: actuated $ref on recorded GO (approved-sha $asha) — shipped == approved"
+  if [ "$crc" -eq 0 ]; then
+    echo "OK: actuated $ref on recorded GO (approved-sha $asha) — head ref carries the approved tree (shipped == approved on the trunk is CI's check: promotion-verify.sh trace --recent)"
+  else
+    echo "ACTUATE: the merge HAS happened and the post-check failed (rc $crc, see SHIPPED != APPROVED above) — the board step below ran regardless." >&2
+  fi
   echo "${PV_BOARD_TAIL:-board: NOT CLOSED — see the WARN above}"
-  return 0
+  return "$crc"
 }
 
 # do_land — ONE transactional actuation verb for the DIRECT / control-plane path (SESSION-SURFACE
@@ -2115,110 +2357,9 @@ do_land() {
   #    merge to the exact reviewed head, so a race that advanced the PR branch is rejected server-side.
   [ -n "$merge_cmd" ] || merge_cmd="gh pr merge \"$ref\" --squash --match-head-commit \"$asha\""
 
-  # 3b. REFUSE any --merge-cmd carrying a shell metacharacter ANYWHERE. The eval'd shell (step 5) can
-  #     rebuild a --admin or --delete-branch flag from characters the step-4 token scan cannot see: it
-  #     sees only the PRE-eval bytes and strips only quotes/backslash, but the shell expands/word-splits.
-  #     The DECLINED SET IS PARITY with the guard's own word-shape vet for a plain command operand —
-  #     `_cp8b_seg_word_shape_ok` (.claude/hooks/guard-core.sh) refuses `{ } , * ? [`, and its sibling
-  #     `_cp8b_seg_path_ok` refuses `$ ` backtick ` < > ; & |` — plus `\` (which land already had and the
-  #     guard handles via its own backslash treatment). land and the guard therefore agree BY
-  #     CONSTRUCTION: a merge-cmd character land refuses is a character the guard refuses in an operand.
-  #     Every one is a rebuild vector at eval:
-  #       $ / backtick  — command/parameter substitution   (--$(echo admin), --`echo admin`)
-  #       \             — quoting that the token scan strips only its own copy of (\--admin, --del\ete-…)
-  #       ; & |         — command separators/operators glued to a flag   (--admin; , --admin|x, --admin&&:)
-  #       < >           — redirections glued to a flag   (--admin>x)
-  #       { } ,         — brace expansion   (--{admin,} , --ad{m,}in) — THE gap that evaded both land AND
-  #                       the guard tier: the token scan's `--*` arm swallowed it as an inert flag
-  #       * ? [         — globbing   (--admi[n]); refused ANYWHERE here (the guard gates the glob only
-  #                       when LEADING a token because it splits per-token, but the merge-cmd is ONE
-  #                       eval'd string, so a non-leading glob token is still a rebuild vector).
-  #     No guard word-shape character is omitted. The default merge-cmd
-  #     (gh pr merge "<ref>" --squash --match-head-commit "<sha>") carries NONE of these — only letters,
-  #     digits, spaces, quotes, `/`, `.`, `-`, `:`; $ref and $asha are interpolated and charset-validated
-  #     ([A-Za-z0-9._/-]) above — so no legitimate landing merge is refused. Refused as a CLASS here,
-  #     BEFORE the step-4 delete/--admin token scan; that scan then handles the quoted/=value/tab
-  #     spellings that carry NO metacharacter.
-  case "$merge_cmd" in
-    *'$'* | *'`'* | *'\'* | *'<'* | *'>'* | *';'* | *'&'* | *'|'* | *'{'* | *'}'* | *','* | *'*'* | *'?'* | *'['*)
-      echo "LAND REFUSED: --merge-cmd carries a shell metacharacter — the merge command is eval'd and the" >&2
-      echo "              default needs none. The refused set is parity with the guard's word-shape vet:" >&2
-      echo "              \$ backtick \\ < > ; & | { } , * ? [. Such a spelling (e.g. \\--admin," >&2
-      echo "              --\$(echo admin), --{admin,}, --admi[n], --admin;) can smuggle a --admin or a" >&2
-      echo "              --delete-branch past the token scan, which strips only quotes, because the" >&2
-      echo "              eval'd shell rebuilds the flag. Re-run with a merge command free of those." >&2
-      return 1 ;;
-  esac
-
-  # 4. REFUSE a branch deletion or an --admin bypass in the merge command. TOKENIZE the merge-cmd on
-  #    IFS (space/tab/newline) and inspect each token. TRUE SCOPE, no overclaim: the merge-cmd is the
-  #    AGENT'S OWN string — same trust model as `actuate` — so this is an ergonomic foot-gun guard,
-  #    not an adversarial parser; it is tokenized (not shell-lexed) and defeatable by an uncooperative
-  #    caller (the friction-test net stays the CI backstop). It exists because the old space-anchored
-  #    globs (`*' --delete-branch'*` etc.) missed a TAB-separated flag and a bundled short cluster
-  #    (`-sd`/`-ds` = --squash --delete-branch). It refuses: any --delete-branch/--delete* long flag;
-  #    any SHORT cluster (single '-', not '--', containing 'd', so -d/-sd/-ds/-dq); and ANY --admin
-  #    form — bare --admin OR --admin=<value> (F3-1: the old EXACT --admin arm let --admin=true ride
-  #    in on a value suffix; a landing merge never needs --admin in ANY form, so the whole --admin=*
-  #    class is refused — over-refusing the cosmetic --admin=false is the correct, disclosed trade).
-  #    QUOTE-STRIP each token first (F3-1): the merge-cmd is one string, so a caller who QUOTES a flag
-  #    ('--delete-branch', "--admin") or SPLITS it across adjacent quotes (--del''ete-branch) leaves
-  #    the quote bytes on the token here — this is a tokenize, not a shell re-lex. Deleting every ', "
-  #    and \ normalizes the quoted/split spelling to its bare form before the case. SCOPE OF "no evade"
-  #    (N1/N3, corrected): this token scan defeats the QUOTED / =value / TAB-separated spellings that
-  #    carry NO shell metacharacter; every metacharacter spelling — backslash (\--admin), substitution
-  #    (--$(echo admin)), brace (--{admin,}, --ad{m,}in), glob (--admi[n]) and glued operator/redirect
-  #    (--admin;, --admin|x, --admin>x) — is refused UPSTREAM by the step-3b metachar-decline arm (parity
-  #    with the guard's word-shape vet), before this loop. The two arms together are what make "none
-  #    evade" true — this scan alone did NOT catch the metacharacter spellings (their tokens are not
-  #    --admin/--delete* here — the brace/glob tokens fall through the `--*` arm as inert flags — but the
-  #    eval'd shell rebuilds them). The \ added to the tr set below is belt-and-suspenders: step-3b
-  #    already refused any token bearing one.
-  #    land NEVER deletes a branch (D-240819-4 — the branch object holds the commit the GO note binds)
-  #    and NEVER emits a bypass.
-  #    ⚠️ SCOPE — the GUARD does NOT cover branch deletion via `git push`: `git push origin --delete
-  #    <b>` and `git push origin :<b>` are guard-ALLOW (uncovered, disclosed; D-240819-6 is about
-  #    Claude's SETTINGS allow-rules — a prompt — not the guard tier). This matcher scans the
-  #    merge-cmd precisely because that push form is not covered elsewhere; `land` itself never deletes
-  #    and refuses a `--merge-cmd` that would. ⚠️ Likewise a `git push origin :<b>` colon-refspec
-  #    deletion INSIDE a --merge-cmd is out of THIS token scan's scope (disclosed at the guard tier): a
-  #    bare `:branch` token carries no shell metacharacter, so the step-3b metachar-decline arm does not
-  #    catch it either — the friction-test net for it stays the CI backstop + branch protection.
-  _land_deny=""
-  _land_oifs=${IFS-__unset__}
-  _land_tab="$(printf '\t')"
-  _land_nl='
-'
-  IFS=" $_land_tab$_land_nl"
-  set -f
-  for _land_tok in $merge_cmd; do
-    # Strip every ', " and \ from the token before matching (F3-1 + N1 belt). tr's set is the two
-    # quote bytes plus backslash (a token bearing \ was already refused upstream by step-3b).
-    _land_norm="$(printf '%s' "$_land_tok" | tr -d "\"'\\\\")"
-    case "$_land_norm" in
-      --delete-branch|--delete*) _land_deny='delete' ;;
-      --admin|--admin=*)         _land_deny='admin' ;;
-      --*)                       : ;;
-      -*d*)                      _land_deny='delete' ;;
-    esac
-    if [ -n "$_land_deny" ]; then break; fi
-  done
-  set +f
-  if [ "$_land_oifs" = __unset__ ]; then unset IFS; else IFS=$_land_oifs; fi
-  if [ "$_land_deny" = delete ]; then
-    echo "LAND REFUSED: --merge-cmd carries a branch-deletion flag (--delete-branch/--delete or a" >&2
-    echo "              short cluster like -d/-sd/-ds) — land NEVER deletes a branch. Deletion is a" >&2
-    echo "              separate human act (D-240819-4); the branch object holds the commit the GO" >&2
-    echo "              note binds. Re-run without the deletion flag." >&2
-    return 1
-  fi
-  if [ "$_land_deny" = admin ]; then
-    echo "LAND REFUSED: --merge-cmd carries an --admin token — land NEVER emits a branch-protection" >&2
-    echo "              bypass. Approval authorizes promotion, never a bypass (the bypass is the" >&2
-    echo "              human's solo kill-switch, denied to the agent by the guard). Re-run without" >&2
-    echo "              --admin." >&2
-    return 1
-  fi
+  # 3b+4. VET the merge command: the shared helper (metacharacters, branch deletion, --admin), extracted from
+  #     this verb UNCHANGED in SWAS-207a so `actuate` runs the very same vet. See pv_merge_cmd_vet.
+  pv_merge_cmd_vet land "$merge_cmd" || return 1
 
   # 5. MERGE. Non-zero -> loud failure and propagate; the GO note IS already recorded and recoverable,
   #    so only the merge did not complete.
@@ -2482,7 +2623,7 @@ _pv_sync_args() {
       --dry-run) _sy_dry=1; shift ;;
       --discard-local)
         _dv="${2:-}"
-        case "$_dv" in ''|*[!0-9a-f]*) _dv="" ;; esac
+        case "$_dv" in ''|*[!0123456789abcdef]*) _dv="" ;; esac
         if [ "${#_dv}" = 40 ]; then _sy_disc="$_sy_disc $_dv"
         elif [ "${#_dv}" -ge 4 ] && [ "${#_dv}" -lt 40 ]; then _sy_pref="$_sy_pref $_dv"
         else

@@ -475,7 +475,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # absence list when the one-router front door retired it. It is a KEPT-list veteran, so the move is
   # the only thing that proves the new export-ignore attribute actually took effect — a deletion from
   # the kept list alone would have shipped a botched .gitattributes entry green.
-  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt WALKTHROUGH.md .publish-identifiers; do
+  for p in docs/ROADMAP-KIT.md .github/workflows/golden-path.yml .github/workflows/drift-watch.yml CHANGELOG.md docs/governance/DECISIONS.md ARCHIVE-SAFE-SET.txt conformance/mass-acks.txt conformance/mass-release-baseline.txt WALKTHROUGH.md .publish-identifiers; do
     [ -e "$_d/$p" ] && { echo "FAIL: export-ignored path present: $p"; fail=1; } || echo "PASS: absent $p"
   done
   # kept → PRESENT (scripts/fixtures now SHIPS — the tier-advice/agent-scorecard selftests in the

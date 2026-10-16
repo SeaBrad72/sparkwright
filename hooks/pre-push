@@ -69,7 +69,9 @@ _kit_dial_resolve() { # <DIAL_NAME> — prints enforce|observe; the skew-guarded
     *)
       # The name is interpolated into an eval, so charset-guard it here exactly as kit_dial_mode
       # does on its own side — the fallback must not be the weaker of the two paths.
-      case "$1" in ''|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;; esac
+      case "$1" in
+        ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) printf 'observe\n'; return 0 ;;
+      esac
       _kd_env=$(eval "printf '%s' \"\${$1:-}\"")
       if [ "$_kd_env" = "enforce" ]; then printf 'enforce\n'; else printf 'observe\n'; fi ;;
   esac
@@ -321,7 +323,9 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
     # information and would otherwise "other-ify" even the pure single-leg NOT ENFORCED case.
     _decl_pre_epilogue=$(printf '%s\n' "$_decl_out" | sed '/^loop-state: FAIL /,$d')
     _decl_other=$(printf '%s\n' "$_decl_pre_epilogue" | grep -v 'NOT ENFORCED' | grep -v '^[[:space:]]*$') || :
-    case "$_decl_out" in
+    # SWAS-204 F2: the phrase is read from the text BEFORE the epilogue. The mode-3 epilogue's own
+    # words ("If it says NOT ENFORCED") must never excuse a refusal that has no such reason line.
+    case "$_decl_pre_epilogue" in
       *"NOT ENFORCED"*)
         if [ -n "$_SEAM_TRACKER_UNVERIFIED" ] && [ -z "$_decl_other" ]; then
           if [ -n "$_decl_out" ]; then
@@ -350,16 +354,44 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
     # NOT FORGEABLE FROM A TRAILER (security NEW-L-2): the phrase contains a SPACE, and every value
     # loop-state echoes back from a Kit-* trailer has already passed its `[A-Za-z0-9_.:/#-]`
     # charset, which admits none — so no trailer an author writes can put "NOT ENFORCED" on that
-    # stderr. The only writer of the phrase is the gate itself. And the stakes are small by
-    # construction anyway: this branch changes only which REMEDY is printed, never the refusal.
+    # stderr. The gate is the only writer of the phrase in a REASON line. Its own mode-3 epilogue
+    # ("If it says NOT ENFORCED ...") also carries the words, which is why the phrase is matched
+    # against the text BEFORE the epilogue ($_decl_pre_epilogue), never against all of $_decl_out.
+    # And the stakes are small by construction anyway: this branch changes only which REMEDY is
+    # printed, never the refusal.
+    # SWAS-204: the order keys on which EPILOGUE loop-state printed. "ROW leg ALSO refused" is printed
+    # only by a loop-state that knows the row leg split (a trailer leg AND the row leg failed), so an
+    # OLDER loop-state under this newer hook falls through to the NOT ENFORCED branch exactly as
+    # before (no S-L3 regression). These phrases are not unforgeable (a changed filename on the SCOPE
+    # path lines can carry spaces), but the worst a forgery does is choose which remedy is PRINTED.
+    _decl_kind=
     case "$_decl_out" in
-      *"NOT ENFORCED"*)
+      *"ROW leg ALSO refused"*) _decl_kind=also ;;
+      *"ROW leg alone"*) _decl_kind=rowalone ;;
+    esac
+    case "$_decl_pre_epilogue" in
+      *"NOT ENFORCED"*) [ "$_decl_kind" = also ] || _decl_kind=tracker ;;
+    esac
+    case "$_decl_kind" in
+      also)
+        printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
+        printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
+        printf 'kit pre-push:            sensitive/control-plane -> those two plus Kit-Stage + Kit-Skill.\n' >&2
+        printf 'kit pre-push:            A field you volunteer is still validated. git commit --amend,\n' >&2
+        printf 'kit pre-push:            then push again.\n' >&2
+        case "$_decl_pre_epilogue" in
+          *"NOT ENFORCED"*)
+            printf 'kit pre-push:   and the row check is ALSO NOT ENFORCED on this repo — after the trailers, see the tracker remedy (bind tracker-board-gates, or ratify a board-governance waiver).\n' >&2 ;;
+        esac ;;
+      tracker)
         printf 'kit pre-push:   remedy: this is NOT a trailer problem and no commit fixes it. This repo\n' >&2
         printf 'kit pre-push:            declares a hosted-tracker backlog backend, and the kit reads\n' >&2
         printf 'kit pre-push:            BACKLOG.md only, so the row check is NOT ENFORCED. Bind the\n' >&2
         printf 'kit pre-push:            trusted job (add tracker-board-gates to REQUIRED-CHECKS.md,\n' >&2
         printf 'kit pre-push:            then a repo admin runs sh scripts/branch-protection-apply.sh\n' >&2
         printf 'kit pre-push:            --apply) — move the board to BACKLOG.md, or ratify a board-governance waiver.\n' >&2 ;;
+      rowalone)
+        printf 'kit pre-push:   remedy: the other Entry Declaration legs passed. Act on the row reason above (board the row, correct Kit-Row, or fix the board/backend), then push again.\n' >&2 ;;
       *)
         printf 'kit pre-push:   remedy: fix the trailer block on the pushed head. WHAT IS REQUIRED\n' >&2
         printf 'kit pre-push:            DEPENDS ON THE CHANGE CLASS: ordinary -> Kit-Row + Kit-Class;\n' >&2
@@ -1239,6 +1271,69 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
   decl_expect_contains "S-L3 control: an ordinary declaration failure still names the trailer remedy" "fix the trailer block" "$decl_out"
 
+  # SWAS-204 — the remedy follows the EPILOGUE loop-state printed. The epilogue text is generated
+  # from the REAL ls_fail_epilogue (extracted from conformance/loop-state.sh next to this hook), so a
+  # fixture cannot drift from the shipped wording. decl_plant_stub_epi plants a loop-state stub that
+  # prints one reason line (or none) then the epilogue file, then exits 1.
+  # The epilogue fixtures live in their OWN scratch dir, never inside the fixture repo $T: tracker_plant_real
+  # runs `git add -A` there, and these files would otherwise become tracked content of the repo the real
+  # loop-state classifies.
+  _dp_dir=$(mktemp -d)
+  _dp_ls="$(dirname "$SELF")/../conformance/loop-state.sh"
+  sed -n '/^ls_fail_epilogue() {/,/^}/p' "$_dp_ls" > "$_dp_dir/ls_epilogue_fn.sh"
+  [ -s "$_dp_dir/ls_epilogue_fn.sh" ] || { echo "FAIL: SWAS-204 cannot extract ls_fail_epilogue from $_dp_ls"; fail=1; }
+  decl_make_epi() { # file mode row_bad
+    ( . "$_dp_dir/ls_epilogue_fn.sh"; ls_fail_epilogue "$2" abc "" "$3" 0 ) > "$1" 2>&1
+  }
+  decl_plant_stub_epi() { # reason-line(or empty) epilogue-file
+    mkdir -p "$T/conformance"
+    {
+      echo '#!/bin/sh'
+      [ -z "$1" ] || printf 'echo "%s" >&2\n' "$1"
+      printf 'cat "%s" >&2\n' "$2"
+      echo 'exit 1'
+    } > "$T/conformance/loop-state.sh"
+    chmod +x "$T/conformance/loop-state.sh"
+  }
+  decl_expect_absent() { # label needle haystack
+    if printf '%s' "$3" | grep -qF -- "$2"; then echo "FAIL: $1"; fail=1; else echo "PASS: $1"; fi
+  }
+  _dp_ne="loop-state: row check NOT ENFORCED: backend 'jira' - board-bound governance is not verified on this tree"
+  _dp_md="loop-state: Kit-Row 'ZZ-1' names no row on the board"
+  decl_make_epi "$_dp_dir/epi_m3" 3 1   # row leg alone; its own text mentions NOT ENFORCED
+  decl_make_epi "$_dp_dir/epi_m0b" 0 1  # trailer contract + the ROW leg ALSO refused
+  decl_make_epi "$_dp_dir/epi_m0" 0 0   # trailer contract only (what an OLDER loop-state prints)
+  # P1 NOT ENFORCED reason + the real row-only epilogue -> the tracker remedy, never the trailer remedy.
+  decl_plant_stub_epi "$_dp_ne" "$_dp_dir/epi_m3"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_contains "P1 row-only NOT ENFORCED names the not-a-trailer remedy" "NOT a trailer problem" "$decl_out"
+  decl_expect_absent "P1 row-only NOT ENFORCED never says fix the trailer block" "fix the trailer block" "$decl_out"
+  # P2 NOT ENFORCED + the trailer contract + "ALSO refused" -> the trailer remedy AND the also-NOT-ENFORCED line.
+  decl_plant_stub_epi "$_dp_ne" "$_dp_dir/epi_m0b"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_contains "P2 trailer + row failure names the trailer remedy" "fix the trailer block" "$decl_out"
+  decl_expect_contains "P2 trailer + row failure names the ALSO NOT ENFORCED line" "ALSO NOT ENFORCED" "$decl_out"
+  decl_expect_absent "P2 trailer + row failure never says NOT a trailer problem (the false sentence)" "NOT a trailer problem" "$decl_out"
+  # P3 an md-backend row reason (NO NOT ENFORCED reason) + the real row-only epilogue, whose own text
+  # says "NOT ENFORCED" -> the row remedy. This is the row that caught the false tracker remedy.
+  decl_plant_stub_epi "$_dp_md" "$_dp_dir/epi_m3"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_contains "P3 md row-only names the act-on-the-row-reason remedy" "Act on the row reason" "$decl_out"
+  decl_expect_absent "P3 md row-only never says fix the trailer block" "fix the trailer block" "$decl_out"
+  decl_expect_absent "P3 md row-only never says NOT a trailer problem (the epilogue's own words)" "NOT a trailer problem" "$decl_out"
+  # P3b the real row-only epilogue with NO reason line at all -> still the row remedy.
+  decl_plant_stub_epi "" "$_dp_dir/epi_m3"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_contains "P3b row-only epilogue alone names the row remedy" "Act on the row reason" "$decl_out"
+  # P5 an OLDER loop-state (NOT ENFORCED + today's trailer contract, no "ALSO refused") under this
+  # newer hook keeps today's NOT ENFORCED remedy: no S-L3 regression.
+  decl_plant_stub_epi "$_dp_ne" "$_dp_dir/epi_m0"
+  decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
+  decl_expect_contains "P5 old predicate + NOT ENFORCED keeps the not-a-trailer remedy" "NOT a trailer problem" "$decl_out"
+  decl_expect_absent "P5 old predicate + NOT ENFORCED never says fix the trailer block" "fix the trailer block" "$decl_out"
+  # The legs below expect the default two-line stub; the P-legs replaced it, so plant it again.
+  decl_plant_stub 1
+
   # observe (default) + rc1 -> ALLOWED, with the observe prefix and the escalation hint.
   decl_run "" "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
   decl_expect_rc "$decl_rc" allow "observe + failing predicate still allows the push"
@@ -1353,7 +1448,7 @@ if [ "${1:-}" = "--selftest" ]; then
       printf 'seam_backend() { printf "%%s\\n" "%s"; }\n' "$1"
       # row_id_ok — the real grammar (backlog-lib.sh's own definition), so the dispatch-only legs
       # below (which stub seam_backend but still exercise M-1's row_id_ok gate) do not crash.
-      printf 'row_id_ok() { case "$1" in [A-Z0-9]*) case "$1" in *[!A-Z0-9-]*) return 1;; esac; return 0;; *) return 1;; esac; }\n'
+      printf 'row_id_ok() { case "$1" in [ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*) case "$1" in *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1;; esac; return 0;; *) return 1;; esac; }\n'
     } > "$T/conformance/backlog-lib.sh"
   }
   mkdir -p "$T/.kit"
@@ -1531,6 +1626,14 @@ EOF_READER
   tracker_run "sh $TRACKER_READER_UNVERIFIED" "refs/heads/feature/x $FULL_HEAD refs/heads/feature/x $Z"
   decl_expect_rc "$decl_rc" allow "M-1: no-token + a fully valid declaration -> the sole NOT ENFORCED refusal is downgraded to ALLOW (A2)"
   decl_expect_contains "M-1: relays the reader's UNVERIFIED sentence" "unverified: no token" "$decl_out"
+
+  # 2b. SWAS-204 F2 — the real mode-3 epilogue ALONE (no NOT ENFORCED reason line) with the tracker
+  # unverified must REFUSE: the epilogue's own words ("If it says NOT ENFORCED") are not a reason.
+  # The real loop-state is swapped for a stub for this one leg and restored from the repo copy.
+  decl_plant_stub_epi "" "$_dp_dir/epi_m3"
+  tracker_run "sh $TRACKER_READER_UNVERIFIED" "refs/heads/feature/x $FULL_HEAD refs/heads/feature/x $Z"
+  decl_expect_rc "$decl_rc" refuse "F2: the row-only epilogue alone + an unverified tracker is NOT downgraded to ALLOW"
+  cp "$KIT_REPO_ROOT/conformance/loop-state.sh" "$T/conformance/loop-state.sh"
 
   # 3. M-1's mandatory RED leg: no-token + a head MISSING Kit-Class (TRACKER_HEAD) -> loop-state
   # refuses for a REAL reason (the missing trailer), not merely NOT ENFORCED, so the refusal text

@@ -4,7 +4,7 @@
 > kit's security posture — **NOT a template**. Write your own from
 > [`templates/THREAT-MODEL-TEMPLATE.md`](../../templates/THREAT-MODEL-TEMPLATE.md).
 
-**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.238.0 · **Date:** 2026-10-13
+**System:** Sparkwright — an agentic SDLC kit. **Kit version:** v3.239.0 · **Date:** 2026-10-16
 
 <!-- The phrase "Sparkwright — an agentic SDLC kit" on the line above is the K4 copy-denial
      fingerprint conformance/threat-obligation.sh checks for (OBL_KIT_FINGERPRINT_1) — do not
@@ -142,6 +142,9 @@ never file contents, so no adopter data crosses into kit-owned tooling.
    human act no guard enforces. It retires on a plan with an editable scheme.
 9. **Agent-written code in a dev clone** can reach the keychain through an admitted kit-script run; the
    control prevents accidental, not deliberate, use.
+10. **The secret scan covers a pull request's own commits, not every branch, on each run.** A secret pushed
+    to a branch with no open pull request is caught only by the weekly all-refs sweep, up to 7 days after
+    the push; rotate on detection, not on the sweep.
 
 **Explicitly not accepted:** a vacuous green. Where a check cannot prove its claim, it says so in its
 own header rather than passing quietly.

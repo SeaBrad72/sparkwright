@@ -36,7 +36,7 @@ check_pinned() {
     esac
     sha=${r#*@}
     case "$sha" in
-      *[!0-9a-f]*) echo "FAIL: $r is not SHA-pinned (tag/branch)"; f=1 ;;
+      *[!0123456789abcdef]*) echo "FAIL: $r is not SHA-pinned (tag/branch)"; f=1 ;;
       *) if [ "${#sha}" -eq 40 ]; then echo "PASS: $r"; else echo "FAIL: $r is not a 40-char SHA"; f=1; fi ;;
     esac
   done

@@ -66,16 +66,17 @@ fix-hint: build the distributable with `uv build` (feeds the provenance attestat
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-# The REAL protection: a FULL working-tree scan (`gitleaks git . --redact`, fetch-depth: 0)
-# via a pinned+checksum-verified binary. `gitleaks git` respects .gitignore, so build
+# The REAL protection: a HISTORY scan (`gitleaks git . --redact --log-opts=<scope>`, fetch-depth: 0;
+# scope = the PR's base..head, main's HEAD, every ref on a schedule) via a pinned+checksum-verified binary. `gitleaks git` respects .gitignore, so build
 # output (dist/, .coverage) is out of scope with NO allowlist file needed.
 assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
+assert: present --log-opts=
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 assert: scaffoldfile .gitignore ^/?dist/?$
 assert: scaffoldfile .gitignore ^\.coverage$
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (dist/, .coverage) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
+fix-hint: run `gitleaks git . --no-banner --redact` (a history scan scoped with --log-opts: the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0) and .gitignore the build output (dist/, .coverage) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 id: dep-scan
 precondition: present gate-dep-scan

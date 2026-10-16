@@ -2521,11 +2521,34 @@ _cp8b_cp_target_in() {
   return $_hit
 }
 
-# _cp8b_git_sub "<seg>": the git subcommand, after skipping GLOBAL options. Empty if unresolvable
-# (an unknown global option) -> the caller fails closed. A subcommand is a token in COMMAND POSITION:
+# _cp8b_optval_exp "<value token>" "<mode>": 0 iff a global option's value holds an UNQUOTED `$` or backtick (SWAS-227): the shell
+# word-splits it, so the value can carry its own subcommand. Mode u reads the RAW token's quoting (a `$` inside "..." or '...' is
+# quoted; a backslash escapes the next byte); mode c is for the quote-collapsed view, where quotedness is gone: any `$`/backtick counts.
+_cp8b_optval_exp() {
+  _ox_a=$1; _ox_q=''
+  while [ -n "$_ox_a" ]; do
+    _ox_c=${_ox_a%"${_ox_a#?}"}; _ox_a=${_ox_a#?}
+    if [ -n "$_ox_q" ]; then
+      [ "$_ox_c" = "$_ox_q" ] && _ox_q=''
+      [ "$_ox_c" = '\' ] && [ "$_ox_q" = '"' ] && _ox_a=${_ox_a#?}
+      continue
+    fi
+    case "$_ox_c" in
+      '$'|'`') return 0 ;;
+      "'"|'"') [ "$2" = u ] && _ox_q=$_ox_c ;;
+      '\') [ "$2" = u ] && _ox_a=${_ox_a#?} ;;
+    esac
+  done
+  return 1
+}
+
+# _cp8b_git_sub "<seg>" [u|c]: the git subcommand, after skipping GLOBAL options. Empty if unresolvable
+# (an unknown global option, or with a mode: a global option value holding an unquoted expansion, see _cp8b_optval_exp)
+# -> the caller fails closed. A subcommand is a token in COMMAND POSITION:
 # you cannot quote your way into `git commit` actually being `git diff`, which is why binding to the
 # SUBCOMMAND is sound where CP-8a's review proved binding to the TARGET was not.
 _cp8b_git_sub() {
+  _gm=${2:-}
   _pg=0; case "$-" in
     *f*) _pg=1 ;;
     esac
@@ -2538,8 +2561,10 @@ _cp8b_git_sub() {
     case "$1" in
       -c|-C|--git-dir|--work-tree|--exec-path|--namespace)
         [ $# -ge 2 ] || break
+        if [ -n "$_gm" ] && _cp8b_optval_exp "$2" "$_gm"; then break; fi
         shift 2; continue ;;
       --git-dir=*|--work-tree=*|--exec-path=*|--namespace=*)
+        if [ -n "$_gm" ] && _cp8b_optval_exp "$1" "$_gm"; then break; fi
         shift; continue ;;
       -p|--paginate|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
         shift; continue ;;
@@ -2617,6 +2642,41 @@ _cp8b_git_target_is_cp() {
   return $_hit
 }
 
+# A "word" after `git` is a token that does not start with `-`, or that holds `$` or a backtick (an unquoted `-$x` word-splits into a
+# flag plus a word). With no word git prints and exits (--version, --help, --exec-path, a bare git), so nothing is judged.
+#
+# _cp8b_git_sub_doubt "<view>" "<sub>": 0 (and prints the reason) iff the subcommand cannot be identified (SWAS-227, fail closed as
+# _cp8b_git_sub promises): (a) empty because of an unknown global option, with a word after git (above); (b) spelled as a shell expansion.
+_cp8b_git_sub_doubt() {
+  case "$2" in
+    '')
+      _hw_g=0; case "$-" in
+        *f*) _hw_g=1 ;;
+        esac
+      set -f
+      # shellcheck disable=SC2086
+      set -- $1
+      [ $# -gt 0 ] && shift
+      _hw_r=1
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -*'$'*|-*'`'*) _hw_r=0; break ;;
+          -*) : ;;
+          *) _hw_r=0; break ;;
+        esac
+        shift
+      done
+      [ "$_hw_g" = 1 ] || set +f
+      [ "$_hw_r" = 0 ] || return 1
+      printf '13: git with a global option the guard does not know before the subcommand, or an unquoted $ or backtick in a global option value (quote the value), cannot be judged (the subcommand is hidden) - denied (fail-closed). Drop the option, or use its environment form (GIT_OPTIONAL_LOCKS=0, GIT_ADVICE=0, GIT_NO_LAZY_FETCH=1, GIT_ATTR_SOURCE=<rev>); for -P use --no-pager; for --help <cmd> use git help <cmd>.'
+      return 0 ;;
+    *'$'*|*'`'*|*'{'*|*'*'*|*'?'*|*'['*)
+      printf '13: git with a subcommand spelled as a shell expansion ($, a backtick, a brace or a glob) cannot be judged - denied (fail-closed). Spell the subcommand literally.'
+      return 0 ;;
+  esac
+  return 1
+}
+
 # _cp8b_git_write_denied "<seg>": PREDICATE - returns 0 (TRUE, "deny this") and prints the reason, or 1
 # (allow). Note the inverted convention vs. the guard_check_* API: this is an internal predicate, named
 # so at the call site.
@@ -2629,14 +2689,19 @@ _cp8b_git_write_denied() {
   # GSR C7: a glob or magic pathspec is judged on the NORMALISED view (wrappers, assignments, quoting and quoted `-c`/`-C` values peeled)
   _wv=$(_cp8b_git_view "$_ws") || _guard_fault git-view
   if [ -n "$_wv" ]; then
-    _wvs=$(_cp8b_git_sub "$_wv")
+    # SWAS-227: a git led by a wrapper has lost its quoting in the view (mode c: any $ or backtick in a global option value counts);
+    # a git-led segment is judged on its RAW tokens below, where the quoting is still there
+    _wm=c; [ "$(_cp8b_lead "$_ws")" = git ] && _wm=''
+    _wvs=$(_cp8b_git_sub "$_wv" "$_wm")
+    _cp8b_git_sub_doubt "$_wv" "$_wvs" && return 0
     case "$_wvs" in
       checkout|restore|rm|stash|reset)
         _cp8b_git_pathspec_doubt "$_wv" "$_wvs" && return 0 ;;
     esac
   fi
   [ "$(_cp8b_lead "$_ws")" = git ] || return 1
-  _wsub=$(_cp8b_git_sub "$_ws")
+  _wsub=$(_cp8b_git_sub "$_ws" u)
+  [ -n "$_wsub" ] || { _cp8b_git_sub_doubt "$_ws" '' && return 0; }
   # the view collapses a quoted pathspec holding whitespace to one word, so the RAW segment is judged too (the two results are ORed)
   case "$_wsub" in
     checkout|restore|rm|stash|reset)
@@ -4156,16 +4221,34 @@ _cp8b_strip_heredocs() {
   _hdw=$(printf '%s' "$_hds" | sed -n 's/.*<<-\{0,1\}["'"'"']*\([A-Za-z0-9_][A-Za-z0-9_]*\).*/\1/p')
   [ -n "$_hdw" ] || { printf '%s' "$1"; return; }
   if _cp8b_tad_redir_cp "$_hds"; then printf '%s' "$1"; return; fi
-  _hdo=$(printf '%s\n' "$1" | awk -v start="$_hdl" -v w="$_hdw" '
+  # SWAS-230 — a quoted body is inert only OUTSIDE an open `$(`: under bash 3.2 (macOS /bin/bash and
+  # /bin/sh) a `)` in the body closes a `$(` opened above and the rest of the body runs as code. So
+  # decline (body stays scanned) when a `$(` precedes the `<<` AND a body line holds a `)`. Presence,
+  # not balance: no quote-aware counting (D-240813-3). F1: the shell removes a backslash-newline
+  # BEFORE it finds `$(`, and this strip runs on raw text, so read the pre-`<<` text collapsed to
+  # nothing (the empty-join: the space-join leaves `$ (`); the precheck is fork-free.
+  _hdpre=${1%%'<<'*}
+  case "$_hdpre" in
+    *'\'"$_cp8b_nl"*)
+      _hdraw=$_hdpre
+      _hdpre=$(_cp8b_joinlines_empty "$_hdraw") || _guard_fault heredoc-joinlines-empty
+      _guard_vanished heredoc-joinlines-empty "$_hdraw" "$_hdpre" ;;   # SF2: a vanished substitution faults, never reads as "no $("
+    esac
+  _hdsub=0
+  case "$_hdpre" in
+    *'$('*) _hdsub=1 ;;
+    esac
+  _hdo=$(printf '%s\n' "$1" | awk -v start="$_hdl" -v w="$_hdw" -v hs="$_hdsub" '
     NR <= start { pre = pre $0 "\n"; next }
     !seen {
       if ($0 == w) { seen = 1; next }
+      if (index($0, ")")) { par = 1 }
       t = $0; gsub(/^[ \t]+/, "", t); gsub(/[ \t]+$/, "", t)
       if (t == w) { amb = 1 }
       next
     }
     { post = post $0 "\n" }
-    END { if (!seen || amb) exit 3; printf "%s%s", pre, post }') || { printf '%s' "$1"; return; }
+    END { if (!seen || amb || (hs == 1 && par)) exit 3; printf "%s%s", pre, post }') || { printf '%s' "$1"; return; }
   printf '%s' "$_hdo"
 }
 
@@ -4587,6 +4670,7 @@ _cp8b_clone_strip_redirs() {
 # `$_CP8B_CLONE/<kit pattern>`. The absolute spelling is admitted only once the agent is already in that clone (the caller
 # requires `_CP8B_CLONE`), so clone code always runs with its own tree as cwd and never grades or writes the root's tree.
 # Either way the PHYSICAL path must stay under the clone, so a symlinked `scripts/` pointing at the root declines.
+# Since SWAS-186 the CLONE-REL containment test is a second wall (the name test below also declines an outside path), pinned jointly by SWAS77-M20.
 _cp8b_clone_script_rel() {
   _cx_s=$(_cp8b_dequote "$1"); _cx_s=${_cx_s#./}
   case "$_cx_s" in
@@ -4606,7 +4690,7 @@ _cp8b_clone_script_rel() {
         "$_CP8B_CLONE"/*) : ;;
         *) return 1 ;;   # CLONE-REL
       esac
-      _cx_rel=$_cx_s ;;
+      _cx_rel=${_cx_p#"$_CP8B_CLONE"/} ;;   # SWAS-186: the PHYSICAL name, so //, /./ and a symlink alias reduce to the real script; CLONE-REL-NAME
     *) return 1 ;;
   esac
   case "$_cx_rel" in
@@ -4618,15 +4702,23 @@ _cp8b_clone_script_rel() {
 # _cp8b_clone_verb_ok "<script rel>" "<first arg>": design §2 D2.2, the CLOSED verb gate on both families. The first
 # argument must be: none (a bare gate, `conformance/*` only, and NEVER a bare `conformance/tracker-*.sh`); `--selftest`;
 # `--help` / `-h`; or one of the two named exceptions `scripts/kit-guard path|cmd|mcp` and `scripts/board-claim.sh check <KEY>`.
-# A scoped-battery flag and `scripts/sparkwright prepush` are NOT in the gate, and a bare tracker gate is refused
+# A scoped-battery flag and `scripts/sparkwright prepush` are NOT in the gate, nor is its alias, a bare
+# `conformance/prepush-lane.sh` (the script the front door execs; SWAS-186), and a bare tracker gate is refused
 # (clone code would reach the live tracker credential through the clone's own adapter; the tracker gates keep --selftest and
 # --help, which run hermetically). Everything else (every front-door writer, `--fix`) stays refused in a clone; those run the
 # reviewed code from the root.
 _cp8b_clone_verb_ok() {
   case "$2" in
     --selftest|--help|-h) return 0 ;;
-    '') case "$1" in
+    '')
+        # _cx_p is the physical path _cp8b_clone_script_rel set for this same command (one caller). `test -ef` is POSIX
+        # (dash/bash/zsh/busybox); if it ever errored the name arms below still refuse the canonical spellings. The
+        # tracker loop needs filename globbing on; with it off, CLONE-EF-TRACKER falls back to the name arm (pinned by N11).
+        [ "${_cx_p-}" -ef "$_CP8B_CLONE/conformance/prepush-lane.sh" ] && return 1   # CLONE-EF-LANE: file identity, so a letter-case spelling or a hard link is the lane too (SWAS-186)
+        for _cx_t in "$_CP8B_CLONE"/conformance/tracker-*.sh; do [ "${_cx_p-}" -ef "$_cx_t" ] && return 1; done   # CLONE-EF-TRACKER
+        case "$1" in
           conformance/tracker-*.sh) return 1 ;;   # CLONE-TRACKER
+          conformance/prepush-lane.sh) return 1 ;;   # CLONE-PREPUSH-ALIAS: the body of `sparkwright prepush` (SWAS-186)
           conformance/*.sh) return 0 ;;
         esac
         return 1 ;;
@@ -4733,8 +4825,8 @@ _cp8b_clone_args_ok() {
       _cp8b_pop_tok "$_cxw_rest"; _cxw_key=$_pt_tok
       [ -n "$_cxw_key" ] && [ -z "$_pt_rest" ] || return 1
       case "$_cxw_key" in
-        [A-Z0-9]*) case "$_cxw_key" in
-                     *[!A-Z0-9-]*) return 1 ;;
+        [ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*) case "$_cxw_key" in
+                     *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;;
                    esac ;;
         *) return 1 ;;
       esac
@@ -5869,8 +5961,36 @@ _cp8b_tad_is_kit_exec() {
   set -f
   # shellcheck disable=SC2086
   set -- $_kx
+  # SWAS-181: the one exempt token is the word `governance`, de-quoted, standing immediately after a
+  # `--gate` that follows the verb `record` or `land` of scripts/promotion-verify.sh (the governance
+  # lane, `--gate governance`). `_ctm_match` classifies the bare word as a directory family, which
+  # would decline the whole segment. Fail-by-disqualification (D-240813-3): any miss keeps today's
+  # verdict. No skip when the segment carries `--merge-cmd` (`land` evals it, and this walk is
+  # quote-blind) or any `$`, backtick, `(`, `<` or `>` byte (a `--gate governance` pair could then sit
+  # inside a substitution and run there). The deny removal is ratified by the design GO (D-240813-2(c)).
+  _kgo=0
+  if [ "$_ksc" = scripts/promotion-verify.sh ]; then
+    case "$_kx" in
+      *--merge-cmd*) : ;;
+      # `;` `&` `|` newline and `#` are not in this set: `_cp8b_segments` splits on them upstream, so this check depends on that split.
+      *'$'*|*'`'*|*'('*|*'<'*|*'>'*) : ;;
+      *) _kgo=1 ;;
+    esac
+  fi
+  _kgs=0   # 0 idle · 1 script seen, next is the verb · 2 verb is record|land · 3 next is --gate's value · 9 done
   while [ $# -gt 0 ]; do
     _kt=$(_cp8b_dequote "$1"); _kt=${_kt#./}
+    if [ "$_kgs" = 3 ]; then
+      _kgs=2
+      if [ "$_kt" = governance ]; then shift; continue; fi
+    elif [ "$_kgs" = 2 ] && [ "$_kt" = --gate ]; then _kgs=3
+    elif [ "$_kgs" = 1 ]; then
+      case "$_kt" in
+        record|land) _kgs=2 ;;
+        *) _kgs=9 ;;
+      esac
+    elif [ "$_kgs" = 0 ] && [ "$_kgo" = 1 ] && [ "$_kt" = "$_ksc" ]; then _kgs=1
+    fi
     if [ "$_kt" != "$_ksc" ] && _cp8b_tok_is_cp "$1"; then [ "$_kpg" = 1 ] || set +f; return 1; fi
     shift
   done
@@ -9268,7 +9388,11 @@ guard_check_command() {
      || printf '%s' "$cmd" | grep -Eiq '(^[[:space:]]*|[;&|][[:space:]]*)(liquibase[[:space:]]+dropAll|flyway[[:space:]]+undo)'; then
     { printf '%s' '13: database drop via a client/migration tool is irreversible - human-gated.'; return 1; }
   fi
-  if printf '%s' "$cmd" | grep -Eq '(curl|wget|base64[[:space:]]+(-d|--decode)|xxd[[:space:]]+-r)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|python[0-9.]*|node|perl|ruby|php)([[:space:]]|$)'; then
+  # SWAS-187: the shell name used to end on whitespace only, so a quote, a bracket or an operator right
+  # after it (`sh -c '… | sh'`, `$(… | sh)`, `| sh;echo`) got past. The class lists the shell's word
+  # terminators (blank ; & | ( ) < >), the three bytes that close a quoted body, `$` (`| sh$X`) and the
+  # glob bytes * ? [ (`| sh*` runs /bin/sh when a file named sh is the only match).
+  if printf '%s' "$cmd" | grep -Eq '(curl|wget|base64[[:space:]]+(-d|--decode)|xxd[[:space:]]+-r)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|python[0-9.]*|node|perl|ruby|php)([[:space:]'\''"`$;&|()<>*?[]|$)'; then
     { printf '%s' '13: piping a fetched/decoded payload into a shell is high-blast-radius - human-gated.'; return 1; }
   fi
   # 9b: data-exfiltration channels (PARTIAL — binary-name denial only; interpreters
@@ -9683,7 +9807,7 @@ kit_dial_mode() {
   # A dial name is a shell identifier by construction; anything else would reach the indirection
   # below, so reject it here and fail safe (this function is never a place to evaluate input).
   case "$_kdm_name" in
-    ''|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;;
+    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) printf 'observe\n'; return 0 ;;
   esac
   _kdm_root="${ROOT:-}"
   [ -n "$_kdm_root" ] || _kdm_root=$(git rev-parse --show-toplevel 2>/dev/null) || _kdm_root=""
@@ -9814,11 +9938,51 @@ _cp8b_collapse_quotes() {
   }'
 }
 
+# _cp8b_restore_opt "<token>": git restore's own option sets (SWAS-227; man git-restore, git 2.48). rc 0 = a flag or a joined value,
+# 1 = the next token is its value (--source, --conflict, -s), 2 = not a restore option (doubt: the guard cannot know whether it takes a value).
+# A long option matches by PREFIX of the name, as git resolves abbreviations. Short letters: -p -W -S -q -m, plus -2/-3 (unconfirmed, over-listing is sound).
+_cp8b_restore_opt() {
+  _ro_t=${1#-}
+  case "$_ro_t" in
+    -*)
+      _ro_n=${_ro_t#-}; _ro_j=0
+      case "$_ro_n" in
+        *=*) _ro_n=${_ro_n%%=*}; _ro_j=1 ;;
+      esac
+      [ -n "$_ro_n" ] || return 2
+      case "$_ro_n" in
+        no-*) return 0 ;;
+      esac
+      for _ro_k in source conflict; do
+        case "$_ro_k" in
+          "$_ro_n"*) return $((1 - _ro_j)) ;;
+        esac
+      done
+      for _ro_k in patch worktree staged quiet progress ours theirs merge ignore-unmerged ignore-skip-worktree-bits recurse-submodules overlay pathspec-from-file pathspec-file-nul; do
+        case "$_ro_k" in
+          "$_ro_n"*) return 0 ;;
+        esac
+      done
+      return 2 ;;
+  esac
+  case "${_ro_t%%s*}" in
+    *[!pWSqm23]*) return 2 ;;
+  esac
+  case "$_ro_t" in
+    *s) [ "${_ro_t%s}" = "${_ro_t%%s*}" ] && return 1 ;;
+  esac
+  return 0
+}
+
 # _cp8b_git_pathspec_doubt "<seg>" "<sub>": 0 (and prints the reason) iff a pathspec of this worktree/index-writing git
 # subcommand is a glob or magic whose target the guard cannot prove ordinary (C7). Pure text: no git call, no filesystem read.
-#   `:(<words>)<rest>`: `exclude`, or an empty <rest>, is doubt; `literal` judges <rest> as a plain control-plane target;
-#                       otherwise <rest> falls through.   `:!…` / `:^…` and a bare `:/` are doubt; `:/<rest>` falls through.
+#   `:(<words>)<rest>`: `exclude`, `icase`, or an empty <rest>, is doubt; `literal` skips the glob test.
+#   short magic `:<run>[:]<rest>` (run of `/`, `!`, `^`; an empty run too): `!`/`^` or an empty <rest> is doubt.
+#   after ANY magic, <rest> that is a control-plane target is doubt.
 #   what remains is doubt if it holds `*`, `?` or `[` (git globs every pathspec by default, and its `*` crosses `/`).
+#   checkout/restore only (SWAS-188): a `{..,..}` / `{..'..'..}` brace shape is doubt; a token ending in a `.`/`..` component
+#   (after a trailing `/`), or an empty one, names the whole tree; a restore with no pathspec is the same. restore's source value
+#   (-s <rev>, --so* <rev>, a bundle whose first `s` is its last char) is judged but not counted. After `--` every token is a pathspec.
 # `stash` drops the value of -m/--message first, so `git stash push -m "wip *"` is not doubt.
 _cp8b_git_pathspec_doubt() {
   _gp_seg=$1; _gp_sub=$2
@@ -9831,38 +9995,105 @@ _cp8b_git_pathspec_doubt() {
   set -f
   # shellcheck disable=SC2086  # deliberate word-split; globbing disabled above
   set -- $_gp_seg
-  _gp_hit=1; _gp_seen=0
+  _gp_hit=1; _gp_seen=0; _gp_gv=0; _gp_dd=0; _gp_why=glob; _gp_np=0; _gp_sv=0
+  _gp_wt=0; case "$_gp_sub" in
+    checkout|restore) _gp_wt=1 ;;
+    esac
   while [ $# -gt 0 ]; do
     _gp_t=$1; shift
     if [ "$_gp_seen" = 0 ]; then
+      # global options are skipped as _cp8b_git_sub skips them: a two-token form consumes its value (which may spell the sub)
+      if [ "$_gp_gv" = 1 ]; then _gp_gv=0; continue; fi
+      case "$_gp_t" in
+        -c|-C|--git-dir|--work-tree|--exec-path|--namespace) _gp_gv=1; continue ;;
+      esac
       [ "$_gp_t" = "$_gp_sub" ] && _gp_seen=1
       continue
     fi
-    case "$_gp_t" in
-      --pathspec-fr*) _gp_hit=0; break ;;     # the file's lines are pathspecs the guard cannot read (both `=` and separate-value forms)
-      -*) continue ;;
-    esac
+    if [ "$_gp_dd" = 0 ]; then               # after `--` git reads every token as a pathspec, a `-x` one included
+      case "$_gp_t" in
+        --) _gp_dd=1; continue ;;
+        --pathspec-fr*) _gp_hit=0; break ;;   # the file's lines are pathspecs the guard cannot read (both `=` and separate-value forms)
+        -*)                                   # restore: its own closed option sets (SWAS-227); a value option's next token is judged, not counted
+          if [ "$_gp_sub" = restore ]; then
+            _cp8b_restore_opt "$_gp_t"
+            case $? in
+              1) _gp_sv=1 ;;
+              2) _gp_hit=0; _gp_why=opt; break ;;
+            esac
+          fi
+          continue ;;
+      esac
+    fi
     _gp_d=$(_cp8b_dequote "$_gp_t") || _guard_fault pathspec-dequote
+    _gp_lit=0; _gp_mg=0
     case "$_gp_d" in
       ':('*')'*)
         _gp_lp='('; _gp_rp=')'
-        _gp_w=${_gp_d#:"$_gp_lp"}; _gp_w=${_gp_w%%"$_gp_rp"*}; _gp_d=${_gp_d#*"$_gp_rp"}
+        _gp_w=${_gp_d#:"$_gp_lp"}; _gp_w=${_gp_w%%"$_gp_rp"*}; _gp_d=${_gp_d#*"$_gp_rp"}; _gp_mg=1
         case "$_gp_w" in
-          *exclude*) _gp_hit=0; break ;;
+          *exclude*|*icase*) _gp_hit=0; break ;;
         esac
         [ -n "$_gp_d" ] || { _gp_hit=0; break; }
         case "$_gp_w" in
-          *literal*) if _cp8b_tok_is_cp "$_gp_d"; then _gp_hit=0; break; fi; continue ;;
+          *literal*) _gp_lit=1 ;;
         esac ;;
-      ':!'*|':^'*|':/') _gp_hit=0; break ;;
-      ':/'*) _gp_d=${_gp_d#:/} ;;
+      :*)
+        # short magic: `:` then a run of [/!^] then an optional `:`, ALWAYS (an empty run too: `:conformance` is the pattern `conformance`)
+        _gp_m=${_gp_d#:}; _gp_run=${_gp_m%%[!/!^]*}; _gp_m=${_gp_m#"$_gp_run"}
+        case "$_gp_run" in
+          *'!'*|*'^'*) _gp_hit=0; break ;;     # exclude-only magic
+        esac
+        case "$_gp_m" in
+          :*) _gp_m=${_gp_m#:} ;;
+        esac
+        _gp_d=$_gp_m; _gp_mg=1
+        [ -n "$_gp_d" ] || { _gp_hit=0; break; } ;;
     esac
+    if [ "$_gp_mg" = 1 ] && _cp8b_tok_is_cp "$_gp_d"; then _gp_hit=0; break; fi
+    if [ "$_gp_wt" = 1 ]; then
+      # restore's source value is not a pathspec (not counted) but is still judged: `.` is never a valid rev
+      if [ "$_gp_sv" = 1 ]; then _gp_sv=0; else _gp_np=$((_gp_np + 1)); fi
+      _gp_x=$_gp_d
+      while :; do
+        case "$_gp_x" in
+          */) _gp_x=${_gp_x%/} ;;
+          *) break ;;
+        esac
+      done
+      case "$_gp_x" in
+        ''|.|..|*/.|*/..) _gp_hit=0; _gp_why=tree; break ;;
+        '~'*) _gp_hit=0; _gp_why=tilde; break ;;   # SWAS-227: a ~-led word is a shell expansion (~+ ~- ~) the guard cannot resolve
+      esac
+    fi
+    [ "$_gp_lit" = 1 ] && continue
     case "$_gp_d" in
       *[*?[]*) _gp_hit=0; break ;;
     esac
+    # checkout/restore: a shell brace expansion (`{a,b}`, `{1..3}`) can become other pathspecs; a ref such as `@{-1}` has neither shape
+    if [ "$_gp_wt" = 1 ]; then
+      case "$_gp_d" in
+        *'{'*,*'}'*|*'{'*..*'}'*) _gp_hit=0; break ;;
+      esac
+    fi
   done
   [ "$_gp_g" = 1 ] || set +f
+  if [ "$_gp_hit" = 1 ] && [ "$_gp_sub" = restore ] && [ "$_gp_seen" = 1 ] && [ "$_gp_np" = 0 ]; then
+    _gp_hit=0; _gp_why=tree
+  fi
   [ "$_gp_hit" = 0 ] || return 1
+  if [ "$_gp_why" = opt ]; then
+    printf '13: git restore with a restore option the guard does not know (it may take a value) cannot be judged - denied (fail-closed). Drop it or spell the option as git documents it.'
+    return 0
+  fi
+  if [ "$_gp_why" = tilde ]; then
+    printf '13: git %s with a ~-led pathspec (~+, ~-, ~) is a shell expansion the guard cannot resolve (it can name the whole tree) - denied (fail-closed). Name the path literally (git restore -s <rev> -- docs/x.md); for a file whose name starts with ~ use ./~x.' "$_gp_sub"
+    return 0
+  fi
+  if [ "$_gp_why" = tree ]; then
+    printf '13: git %s with a whole-tree or absent pathspec (., .., a path ending in /. or /.., :/., or no path) rewrites the control plane with the rest of the tree - denied (control-plane integrity). Name the paths (git restore -s <rev> -- docs/x.md); to unstage everything use git reset -q; to move branches use git switch / git checkout <branch>.' "$_gp_sub"
+    return 0
+  fi
   printf '13: git %s with a glob or magic pathspec cannot be proven to stay off the control plane (git globs every pathspec, and its * crosses /) - denied (refuse on doubt). Name the files literally, or wrap a file whose name holds brackets as the :(literal) form (git restore '"'"':(literal)app/[slug]/page.tsx'"'"'). KIT_GUARD_SELFEDIT=1 is for deliberate human maintenance.' "$_gp_sub"
   return 0
 }

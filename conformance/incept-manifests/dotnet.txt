@@ -94,20 +94,21 @@ assert: present -c Release
 skip-reason: no dotnet publish step in this profile — nothing to publish/attest
 fix-hint: run `dotnet publish src/App/App.csproj -c Release -o ./publish` so a build artifact exists for the provenance job
 
-# --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
+# --- Secret scan (gitleaks): history scan (scoped by --log-opts) via the pinned checksum-verified binary
 #     (`gitleaks git . --redact`, fetch-depth: 0). `gitleaks git` respects .gitignore, so .NET's
 #     build output (bin/, obj/, publish/) falls out of scope with NO allowlist file. ---
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
 assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
+assert: present --log-opts=
 assert: present gitleaks.*--redact
 assert: present fetch-depth:[[:space:]]*0
 assert: scaffoldfile .gitignore ^/?bin/?$
 assert: scaffoldfile .gitignore ^/?obj/?$
 assert: scaffoldfile .gitignore ^/?publish/?$
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (bin/, obj/, publish/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
+fix-hint: run `gitleaks git . --no-banner --redact` (a history scan scoped with --log-opts: the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0) and .gitignore the build output (bin/, obj/, publish/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 # --- Dependency vulnerability scan (`dotnet list package --vulnerable` over transitive deps,
 #     failing the job when any Critical/High/Moderate advisory is reported). ---

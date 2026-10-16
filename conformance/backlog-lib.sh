@@ -448,11 +448,13 @@ tracker_delegated_cure() {
 # measured against a mutant that widened board-claim's first arm to `[!A-Za-z0-9]*`. What that leg
 # does NOT prove, and the difference matters: it compares TEXT, not behaviour, so two identical
 # bodies in files whose surrounding shell options differ would still pass.
+# SWAS-200: bash 3.2 (macOS /bin/sh) collates a glob bracket RANGE by locale, so under en_US.UTF-8
+# `[A-Z]` admits `b`-`z` and accented letters. The class is SPELLED OUT here and in its twin.
 row_id_ok() {
   case "$1" in
     '')            return 1 ;;
-    [!A-Z0-9]*)    return 1 ;;
-    *[!A-Z0-9-]*)  return 1 ;;
+    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)    return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*)  return 1 ;;
   esac
   return 0
 }

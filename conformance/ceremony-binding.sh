@@ -1328,7 +1328,7 @@ check_design_record() {
   # `${#var}` is POSIX and dash-safe.
   _asha_raw="$_asha"
   case "$_asha" in
-    ''|*[!0-9a-fA-F]*)
+    ''|*[!0123456789abcdefABCDEF]*)
       echo "FAIL: ceremony-binding — approved-sha must be a hex object name, not a revision" >&2
       echo "      expression (a name like HEAD or a branch re-resolves at check time and binds" >&2
       echo "      nothing). Got: $_asha_raw" >&2

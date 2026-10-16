@@ -39,6 +39,8 @@ BM_LIB_SH="$(dirname "$here")/conformance/backlog-lib.sh"
 BM_FIXTURES="$(dirname "$here")/conformance/fixtures/board-migrate"
 # SWAS-101: the presence check for a stored credential (attributes only, never the secret; the adapter alone reads it).
 if [ -f "$here/tracker-cred.sh" ]; then . "$here/tracker-cred.sh"; fi
+# SWAS-196: bind the root this script derives from its own location, so the library reads the conf's as.agent.
+if command -v tracker_cred_bind_root >/dev/null 2>&1; then tracker_cred_bind_root "$here/.."; fi
 
 BM_TAB=$(printf '\t')
 # The unit separator (\037), not the control-A byte: bash 3.2 does not split `read` on it (its internal CTLESC byte).

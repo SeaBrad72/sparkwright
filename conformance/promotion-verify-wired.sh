@@ -1497,6 +1497,14 @@ EOF
   git -C "$LOA" update-ref refs/remotes/origin/main "${MG_ASHA}^"; mg_land
   mg_check "land METER(fix1 C): a code+docs change with the LOCAL origin/main moved to the approved parent is NOT docs-only -> refused" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only" "!docs-only exemption unavailable"
 
+  # SWAS-245: ls-remote tail-matches and sorts, so a pushed a/refs/heads/main must not stand in for main.
+  mg_fx decoyneg "$MG_DIAL_ENF" ROW-MG25 codedocs base
+  git -C "$LOA" push -q origin "${MG_ASHA}^:refs/heads/a/refs/heads/main"; mg_land
+  mg_check "land METER(SWAS-245 MG25): a decoy branch a/refs/heads/main at the approved parent does NOT make a code+docs change docs-only -> refused" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only"
+  mg_fx decoypos "$MG_DIAL_ENF" ROW-MG26 docs base
+  git -C "$LOA" push -q origin "$LOSHA:refs/heads/a/refs/heads/main"; mg_land
+  mg_check "land METER(SWAS-245 MG26): a genuinely docs-only change with a decoy branch present reads the REAL main -> N/A, proceeds" proceed "N/A: docs-only change"
+
   # fix round 1 (security LOW): an approved sha that does not resolve cannot have its dial read -> the gate refuses
   # (env enforce; otherwise it stays silent and `record` refuses it — the existing NEGATIVE(i) is kept unchanged).
   mg_fx unres "$MG_DIAL_OBS" ROW-MG24 code

@@ -39,6 +39,8 @@ TR_CONF_SH="$TR_ROOT/scripts/tracker-conf.sh"
 # SWAS-101: the presence check for a stored credential (never reads the secret). Sourced here, while TR_ROOT is
 # the real tree (the selftest repoints it later). Absent in a partial tree -> the environment-only behaviour.
 if [ -f "$TR_ROOT/scripts/tracker-cred.sh" ]; then . "$TR_ROOT/scripts/tracker-cred.sh"; fi
+# SWAS-196: bind the root this script already derived, so the library reads the conf's as.agent.
+if command -v tracker_cred_bind_root >/dev/null 2>&1; then tracker_cred_bind_root "$TR_ROOT"; fi
 TR_STATES="backlog ready in-progress in-review released done blocked cancelled"
 # P-1: the seam refuses a record over 512 lines/64 KiB (backlog-lib.sh M-2) — this reader's own
 # budget catches it FIRST, before the record is even written.

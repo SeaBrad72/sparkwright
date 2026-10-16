@@ -47,15 +47,16 @@ decide() {
   # coherence backstop INLINE: VERSION must not be behind a reachable tag (don't tag a stale/dup).
   sh "$COHERENCE" . --require >/dev/null 2>&1 || { echo "release-tag: coherence check failed for VERSION $v" >&2; return 1; }
   # idempotency: already tagged? remote first (authoritative), then local.
-  if git ls-remote --tags "$REMOTE" "v$v" 2>/dev/null | grep -Fq "refs/tags/v$v" \
+  if on_remote "v$v" \
      || git tag -l "v$v" 2>/dev/null | grep -qx "v$v"; then
     echo "NOOP v$v already tagged"; return 0
   fi
   echo "TAG v$v"; return 0
 }
 
-# on_remote V -> 0 if vV exists on the remote (authoritative), 1 otherwise
-on_remote() { git ls-remote --tags "$REMOTE" "$1" 2>/dev/null | grep -Fq "refs/tags/$1"; }
+# on_remote V -> 0 if vV exists on the remote (authoritative), 1 otherwise. EXACT match on refs/tags/V:
+# ls-remote tail-matches, so a pushed decoy x/refs/tags/V must not answer (SWAS-245).
+on_remote() { git ls-remote --tags "$REMOTE" "$1" 2>/dev/null | awk -v r="refs/tags/$1" '$2 == r { f = 1 } END { exit !f }'; }
 
 # ── CP-10: the on-branch gate. A release tag must point at a RELEASED commit.
 #
@@ -504,7 +505,7 @@ rt_dial_mode() {   # $1 = dial name · $2 = optional pre-read conf value
   # [fix round 1, nit 10]: `9LIVES` passes [A-Z0-9_] but is not a valid shell identifier, so the
   # indirect `eval` read below would be a SYNTAX ERROR, not an empty value — measured.
   case "$_rt_dn" in
-    ''|[0-9]*|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;;
+    ''|[0-9]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) printf 'observe\n'; return 0 ;;
   esac
   if [ "$#" -ge 2 ]; then _rt_dval=$2; else _rt_dval=$(rt_dial_conf_value "$_rt_dn"); fi
   # The env side, read INDIRECTLY (POSIX sh has no ${!name}); the name is charset-checked above.
@@ -902,6 +903,19 @@ selftest() {
   # B. v<VERSION> already exists -> NOOP
   d="$t/b"; _repo "$d" "1.0.0"; ( cd "$d" && git tag v1.0.0 ) >/dev/null 2>&1
   case "$(_dry "$d")" in *"NOOP v1.0.0 already tagged"*) echo "PASS: existing tag -> NOOP";; *) echo "FAIL: B"; st=1;; esac
+  # B2 (SWAS-245, teeth): a remote carrying ONLY a decoy tag x/refs/tags/v1.0.0 does not make v1.0.0 "already tagged"
+  # (ls-remote tail-matches; the old substring grep read the decoy as the real tag) -> TAG
+  d="$t/b2"; _repo "$d" "1.0.0"
+  ( git init -q --bare "$t/b2.git" && cd "$d" && git remote add origin "$t/b2.git" \
+    && git push -q origin HEAD:refs/tags/x/refs/tags/v1.0.0 ) >/dev/null 2>&1
+  case "$(_dry "$d")" in *"would create + push v1.0.0"*) echo "PASS: decoy-only remote tag -> TAG (not NOOP)";; *) echo "FAIL: B2 (a decoy tag read as the real tag)"; st=1;; esac
+  # B3 (SWAS-245, positive): a real ANNOTATED v1.0.0 on the remote, decoy beside it -> NOOP
+  d="$t/b3"; _repo "$d" "1.0.0"
+  ( git init -q --bare "$t/b3.git" && cd "$d" && git remote add origin "$t/b3.git" \
+    && git push -q origin HEAD:refs/tags/x/refs/tags/v1.0.0 \
+    && git -c user.email=c@k -c user.name=c tag -a -m rel v1.0.0 && git push -q origin refs/tags/v1.0.0 \
+    && git tag -d v1.0.0 ) >/dev/null 2>&1
+  case "$(_dry "$d")" in *"NOOP v1.0.0 already tagged"*) echo "PASS: real annotated remote tag -> NOOP";; *) echo "FAIL: B3"; st=1;; esac
   # C. VERSION BEHIND a reachable tag -> coherence fail (rc 1), no tag
   d="$t/c"; _repo "$d" "1.0.0"; ( cd "$d" && git tag v2.0.0 ) >/dev/null 2>&1
   [ "$(_rc "$d")" = "1" ] && echo "PASS: VERSION behind tag -> rc 1" || { echo "FAIL: C"; st=1; }

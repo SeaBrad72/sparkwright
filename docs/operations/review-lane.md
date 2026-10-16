@@ -160,7 +160,7 @@ a kept doc must not link to a file the adopter export prunes). It is the concret
 to caveat 2 above, and it is worth being exact about what it buys, because the honest version is
 narrower than a PR page suggests and wider than "it's fake".
 
-**What it is designed to enforce.** `agent ≠ ratifier`: by design, and until the forge identity switch is proven (agent sessions still run under the owner's login) by convention plus the audit trail. The building agent cannot mint that
+**What it is designed to enforce.** `agent ≠ ratifier`: by design, and only while no agent session can act as the seat's login or bypass the review requirement; where either is possible it rests on convention plus the audit trail. The building agent then cannot mint that
 approval: it has no credential for the seat, and no amount of model cooperation gets it one —
 **so long as no seat credential is present in the agent's environment (unchecked; environmental, not
 enforced)**. That survives the friction test — it still binds if the agent stops cooperating — which
@@ -175,9 +175,8 @@ On this repo two-person review is **declared absent**, not satisfied, and
 ratification check says so itself, as a GitHub **notice** on the run:
 
 > `<login>` is a declared ratification seat — a second account of the repository owner, not a
-> second person; this enforces agent != ratifier and is NOT a second-person review
-
-(The notice's 'enforces' is by design; until the forge identity switch is proven it rests on convention plus the audit trail.)
+> second person; agent != ratifier holds only while no agent session can act as this login or
+> bypass the review requirement, and this is NOT a second-person review
 
 `scripts/sod-check.sh --seat-approvals` does the detection **by login**, wired into the ratify step of
 `.github/workflows/ratification.yml`; the workflow renders the prose. It is a notice: it never changes

@@ -545,37 +545,73 @@ extract_job_block() {  # <workflow-file> <job-name> -> the job's line + every li
   ' "$1"
 }
 
-check_loop_state_credential_order() {  # <workflow-file> -> 0 ok, 1 drop absent/misordered
-  # F1: the `loop-state` job runs PR-controlled code — `conformance/loop-state.sh --head` AND
-  # `scripts/promotion-verify.sh trace` (the recordless-merge leg) — with a checkout token that must
-  # already be gone from .git/config, the sibling idiom the ceremony-binding and review-lane jobs use.
-  # This asserts the credential-drop line PRECEDES the job's first PR-TREE invocation, counting BOTH
-  # conformance/ AND scripts/ (F1-2: the loop-state job's `promotion-verify.sh trace` lives under
-  # scripts/ and is PR-tree code too — an earlier fix counted only conformance/, so a drop landing
-  # after a scripts/ call but before the first conformance/ call would have false-passed). No PR-tree
-  # invocation in the block at all -> nothing to order -> vacuous pass (a job by this name with a
-  # different shape is not this leg's concern).
-  _clo_block=$(extract_job_block "$1" loop-state)
-  if [ -z "$_clo_block" ]; then
-    echo "FAIL: loop-state job not found in $1" >&2
+check_cred_before_prtree() {  # <workflow-file> <job> -> 0 ok, 1 no effective drop before PR-tree code
+  # SWAS-250. A job that runs PR-controlled code (`conformance/` or `scripts/`, comments stripped;
+  # F1-2: BOTH count) must have no checkout credential reachable by then. Two shapes pass:
+  #   (a) every checkout before the first PR-tree line carries `persist-credentials: false`;
+  #   (b) the CRED-DROP block (BEGIN, VERIFY, VERIFY-END, END markers in order) sits wholly before
+  #       that line, and its verify is a `--show-origin ... --get-regexp` read with NO `--local`
+  #       (a `--local` read cannot see the includeIf file checkout v7 writes).
+  # The bare `--local --unset-all` string no longer counts: it removes nothing checkout v7 wrote.
+  # No PR-tree invocation at all -> vacuous pass.
+  _ccp_block=$(extract_job_block "$1" "$2")
+  if [ -z "$_ccp_block" ]; then echo "FAIL: $2 job not found in $1" >&2; return 1; fi
+  _ccp_code=$(printf '%s\n' "$_ccp_block" | sed 's/#.*//')
+  _ccp_pr=$(printf '%s\n' "$_ccp_code" | grep -nE 'conformance/|scripts/' | head -1 | cut -d: -f1)
+  [ -n "$_ccp_pr" ] || return 0
+  _ccp_co=$(printf '%s\n' "$_ccp_code" | head -n "$((_ccp_pr - 1))" | grep -c 'uses: actions/checkout')
+  _ccp_pf=$(printf '%s\n' "$_ccp_code" | head -n "$((_ccp_pr - 1))" | grep -c 'persist-credentials: false')
+  if [ "$_ccp_co" -gt 0 ] && [ "$_ccp_co" -eq "$_ccp_pf" ]; then return 0; fi
+  _ccp_m() { printf '%s\n' "$_ccp_block" | grep -n "$1" | head -1 | cut -d: -f1; }
+  _ccp_b=$(_ccp_m '# CRED-DROP-BEGIN'); _ccp_v=$(_ccp_m '# CRED-DROP-VERIFY$')
+  _ccp_ve=$(_ccp_m '# CRED-DROP-VERIFY-END'); _ccp_e=$(_ccp_m '# CRED-DROP-END')
+  if [ -z "$_ccp_b" ] || [ -z "$_ccp_v" ] || [ -z "$_ccp_ve" ] || [ -z "$_ccp_e" ] \
+     || ! [ "$_ccp_b" -lt "$_ccp_v" ] || ! [ "$_ccp_v" -lt "$_ccp_ve" ] || ! [ "$_ccp_ve" -lt "$_ccp_e" ] \
+     || [ "$(printf '%s\n' "$_ccp_block" | sed -n "${_ccp_v},${_ccp_ve}p" | sed 's/#.*//' | grep -c 'git config --show-origin .*--get-regexp')" -lt 1 ]; then
+    echo "FAIL: $2 job has no complete CRED-DROP block (markers in order, with an includes-following verify read) and not every checkout is persist-credentials: false" >&2
     return 1
   fi
-  # Comments stripped first (this file's existing convention — check_kit_seams does the same):
-  # a `#` reference to `conformance/` or `scripts/` in a prose comment (as this very job's own
-  # comments carry) must not count as the invocation the ordering protects.
-  _clo_stripped=$(printf '%s\n' "$_clo_block" | sed 's/#.*//')
-  _clo_conf=$(printf '%s\n' "$_clo_stripped" | grep -nE 'conformance/|scripts/' | head -1 | cut -d: -f1)
-  [ -n "$_clo_conf" ] || return 0
-  _clo_drop=$(printf '%s\n' "$_clo_stripped" | grep -n "unset-all 'http.https://github.com/.extraheader'" | head -1 | cut -d: -f1)
-  if [ -z "$_clo_drop" ]; then
-    echo "FAIL: loop-state job has no checkout-credential drop before its first PR-tree (conformance/ or scripts/) invocation" >&2
-    return 1
-  fi
-  if [ "$_clo_drop" -ge "$_clo_conf" ]; then
-    echo "FAIL: loop-state job's credential drop (block line $_clo_drop) does not precede its first PR-tree (conformance/ or scripts/) invocation (block line $_clo_conf)" >&2
+  if [ "$_ccp_e" -ge "$_ccp_pr" ]; then
+    echo "FAIL: $2 job's CRED-DROP block (ends at block line $_ccp_e) does not precede its first PR-tree (conformance/ or scripts/) invocation (block line $_ccp_pr)" >&2
     return 1
   fi
   return 0
+}
+
+check_loop_state_credential_order() { check_cred_before_prtree "$1" loop-state; }  # SWAS-250: old name kept
+
+cred_block() {  # <file> <job> [verify] -> the job's CRED-DROP block (or only its verify part), de-indented
+  extract_job_block "$1" "$2" | awk -v v="${3:-}" '
+    !v && /# CRED-DROP-END/ { print; exit }
+    v && /# CRED-DROP-VERIFY-END/ { exit }
+    v && /# CRED-DROP-VERIFY$/ { on=1 }
+    !v && /# CRED-DROP-BEGIN/ { on=1 }
+    on { print }' | sed 's/^          //'
+}
+
+cred_scenario() {  # <dir> <layout v7|v4|own|clean> <where rt|out> <script> -> _cs_pre _cs_rc _cs_out _cs_reach _cs_gone _cs_own
+  # A throwaway repo shaped like what actions/checkout leaves, then <script> under `bash -e` (how the
+  # runner runs a step with no `shell:`). HOME and the system config are pinned so the host cannot leak in.
+  _cs_d=$1; mkdir -p "$_cs_d/rt" "$_cs_d/out" "$_cs_d/home"; _cs_d=$(cd "$_cs_d" && pwd -P); _cs_r="$_cs_d/repo"
+  _cs_g() { env HOME="$_cs_d/home" XDG_CONFIG_HOME="$_cs_d/home" GIT_CONFIG_NOSYSTEM=1 git "$@"; }
+  _cs_g init -q "$_cs_r"
+  _cs_c="$_cs_d/$3/git-credentials-0b1e2c3d-aaaa-bbbb-cccc-0123456789ab.config"
+  case "$2" in
+    v7) printf '[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic SIMTOKEN250\n' > "$_cs_c"
+        _cs_g -C "$_cs_r" config "includeIf.gitdir:$_cs_r/.git.path" "$_cs_c"
+        _cs_g -C "$_cs_r" config "includeIf.gitdir:$_cs_r/.git/worktrees/*.path" "$_cs_c"
+        _cs_g -C "$_cs_r" config "includeIf.gitdir:/github/workspace/.git.path" "/github/runner_temp/$(basename "$_cs_c")" ;;
+    v4) _cs_g -C "$_cs_r" config 'http.https://github.com/.extraheader' 'AUTHORIZATION: basic SIMTOKEN250' ;;
+    own) printf '[user]\n\tname = x\n' > "$_cs_d/own.config"; _cs_g -C "$_cs_r" config "includeIf.gitdir:$_cs_r/.git.path" "$_cs_d/own.config" ;;
+    xinc) printf '[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic SIMTOKEN250\n' > "$_cs_d/other.config"  # a header in an include the name-scan cannot see
+        _cs_g -C "$_cs_r" config "includeIf.gitdir:$_cs_r/.git.path" "$_cs_d/other.config" ;;
+  esac
+  _cs_probe() { (cd "$_cs_r" && _cs_g config --get-all 'http.https://github.com/.extraheader' >/dev/null 2>&1 && echo REACHABLE || echo none); }
+  _cs_pre=$(_cs_probe)
+  if _cs_out=$(cd "$_cs_r" && env HOME="$_cs_d/home" XDG_CONFIG_HOME="$_cs_d/home" GIT_CONFIG_NOSYSTEM=1 RUNNER_TEMP="$_cs_d/rt" bash -e "$4" 2>&1); then _cs_rc=0; else _cs_rc=$?; fi
+  _cs_reach=$(_cs_probe)
+  if [ -f "$_cs_c" ]; then _cs_gone=present; else _cs_gone=gone; fi
+  if [ -f "$_cs_d/own.config" ] && _cs_g -C "$_cs_r" config --local --get-all "includeIf.gitdir:$_cs_r/.git.path" | grep -q own.config; then _cs_own=kept; else _cs_own=lost; fi
 }
 
 check_backlog_presence_base_board() {  # <workflow-file> -> 0 ok, 1 --base-board missing entirely
@@ -595,6 +631,270 @@ check_backlog_presence_base_board() {  # <workflow-file> -> 0 ok, 1 --base-board
     return 1
   fi
   return 0
+}
+
+# TRUNK-REF-TAG-SHADOW slice 1 (SWAS-247) — the trunk-tag tripwire step, in EVERY job that reads the
+# trunk after a tag-bearing checkout (each job's own checkout fetches the tags when THAT job runs, so a
+# decoy tag + a single-job rerun would otherwise derive narrow). One declared list per workflow; the TT4z
+# scan below ties each list to the YAML, so a new tag-bearing job cannot arrive without the step.
+TT_CI_JOBS="ceremony-binding loop-state review-lane backlog-presence threat-obligation uat-obligation a11y-obligation"
+TT_CI_EXCLUDED="conformance-core secret-scan conformance-docs"  # fetch-depth: 0 only; each reads full refs / shas, not a short name
+TT_AG_JOBS="ceremony-binding review-lane loop-state"
+TT_AG_EXCLUDED=""
+# Revision 3: the remote read (TRUNK_TAG_REMOTE: "1") lives ONLY in the job that already held the checkout
+# credential for its notes fetch; every other job judges its own local tags and needs no credential.
+TT_REMOTE_JOB="ceremony-binding"
+# Revision 3 (TT6): every listed checkout keeps the persist-credentials value it has on main, so no job
+# gains a token. "<workflow> <job> <values in checkout order: persisted|false>" (persisted = the default).
+TT_PC_TABLE="ci backlog-presence persisted,false
+ci threat-obligation persisted
+ci uat-obligation persisted
+ci a11y-obligation persisted
+ci ceremony-binding persisted
+ci review-lane persisted
+ci loop-state persisted,false
+ag ceremony-binding persisted
+ag review-lane persisted
+ag loop-state false,false"
+
+tt_step_of() {  # <workflow-file> <job> -> the raw text of that job's step that lists this checkout's tags
+  # (a comment-only mention above a step belongs to the PREVIOUS step's buffer and is stripped before
+  # the match, so prose can never stand in for the step).
+  extract_job_block "$1" "$2" | awk '
+    function flush() { if (sbuf ~ /git for-each-ref/ && sbuf ~ /refs\/tags/) printf "%s", buf; buf = ""; sbuf = "" }
+    /^      - / { flush() }
+    { buf = buf $0 "\n"; l = $0; sub(/#.*/, "", l); sbuf = sbuf l "\n" }
+    END { flush() }'
+}
+
+tt_body_of() {  # <workflow-file> <job> -> that step's run: body, indent removed (what the runner executes)
+  tt_step_of "$1" "$2" | awk '
+    /^        run: \|[[:space:]]*$/ { inb = 1; next }
+    inb { if ($0 ~ /^          /) print substr($0, 11); else if ($0 ~ /^[[:space:]]*$/) print ""; else exit }'
+}
+
+check_trunk_tag_tripwire() {  # <workflow-file> <job> -> 0 ok; 1 step absent, misordered, conditional, or followed by a fetch that may bring tags
+  _ctt_block=$(extract_job_block "$1" "$2")
+  if [ -z "$_ctt_block" ]; then echo "FAIL: $2 job not found in $1" >&2; return 1; fi
+  _ctt_strip=$(printf '%s\n' "$_ctt_block" | sed 's/#.*//')
+  _ctt_ls=$(printf '%s\n' "$_ctt_strip" | grep -n 'git for-each-ref.*refs/tags' | head -1 | cut -d: -f1)
+  if [ -z "$_ctt_ls" ]; then
+    echo "FAIL: $2 job has no trunk-tag tripwire step (git for-each-ref over refs/tags)" >&2; return 1
+  fi
+  _ctt_step=$(tt_step_of "$1" "$2" | sed 's/#.*//')
+  if ! printf '%s\n' "$_ctt_step" | grep -q 'TRUNK_TAG_REMOTE'; then
+    echo "FAIL: $2 trunk-tag tripwire lacks the TRUNK_TAG_REMOTE mode switch" >&2; return 1
+  fi
+  _ctt_co=$(printf '%s\n' "$_ctt_strip" | grep -n 'uses: actions/checkout' | tail -1 | cut -d: -f1)
+  if [ -z "$_ctt_co" ] || [ "$_ctt_co" -ge "$_ctt_ls" ]; then
+    echo "FAIL: $2 trunk-tag tripwire (block line $_ctt_ls) does not come after the job's last checkout" >&2; return 1
+  fi
+  # the first of the credential drop and the first PR-tree (conformance/ or scripts/) invocation: the step must precede it
+  # The drop is found by its marker line, searched in the UNSTRIPPED block (the strip deletes # comments, and the marker is one);
+  # a job with no drop block (persist-credentials: false) keeps the first-PR-tree-line limit. Stripping keeps line numbers, so the two compare.
+  _ctt_lim=$(printf '%s\n' "$_ctt_strip" | grep -n -e 'conformance/' -e 'scripts/' | head -1 | cut -d: -f1)
+  _ctt_drop=$(printf '%s\n' "$_ctt_block" | grep -n '^[[:space:]]*# CRED-DROP-BEGIN' | head -1 | cut -d: -f1)
+  if [ -n "$_ctt_drop" ] && { [ -z "$_ctt_lim" ] || [ "$_ctt_drop" -lt "$_ctt_lim" ]; }; then _ctt_lim=$_ctt_drop; fi
+  if [ -n "$_ctt_lim" ] && [ "$_ctt_ls" -ge "$_ctt_lim" ]; then
+    echo "FAIL: $2 trunk-tag tripwire (block line $_ctt_ls) does not precede the credential drop or the first PR-tree invocation (block line $_ctt_lim); a private repository could not be read, or PR code ran first" >&2; return 1
+  fi
+  if printf '%s\n' "$_ctt_step" | grep -Eq '^[[:space:]]*(- )?(if|continue-on-error):'; then
+    echo "FAIL: $2 trunk-tag tripwire step carries an if: or continue-on-error: key" >&2; return 1
+  fi
+  # rule (e): the remote mode is set to exactly "1" in the one job that held the credential on main, and nowhere else.
+  _ctt_envn=$(printf '%s\n' "$_ctt_strip" | grep -c '^[[:space:]]*TRUNK_TAG_REMOTE:' || true)
+  _ctt_env=$(printf '%s\n' "$_ctt_step" | awk '/^        env:[ \t]*$/ { e = 1; next } /^        run:/ { e = 0 } e { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print }')
+  if [ "$2" = "$TT_REMOTE_JOB" ]; then
+    if [ "$_ctt_env" != 'TRUNK_TAG_REMOTE: "1"' ] || [ "$_ctt_envn" != 1 ]; then
+      echo "FAIL: $2 trunk-tag tripwire step must carry exactly env: TRUNK_TAG_REMOTE: \"1\" (the remote read), and the job nowhere else sets it (rule e)" >&2; return 1
+    fi
+  elif [ -n "$_ctt_env" ] || [ "$_ctt_envn" != 0 ] || printf '%s\n' "$_ctt_step" | grep -q '^        env:'; then
+    echo "FAIL: $2 sets TRUNK_TAG_REMOTE or carries an env: key on the tripwire; only $TT_REMOTE_JOB reads the remote, so no other job may (rule e)" >&2; return 1
+  fi
+  _ctt_late=$(printf '%s\n' "$_ctt_strip" | awk -v n="$_ctt_ls" 'NR > n && /git fetch/ && (!/--no-tags/ || /--tags/) { print NR; exit }')
+  if [ -n "$_ctt_late" ]; then
+    echo "FAIL: $2 has a git fetch after the tripwire (block line $_ctt_late) that may bring tags in; every later fetch must carry --no-tags" >&2; return 1
+  fi
+  return 0
+}
+
+check_trunk_full_ref() {  # <workflow-file> -> 0 ok, 1 a trunk read a same-named tag could shadow
+  # SWAS-246: git resolves a short name with tags AHEAD of heads, so a pushed tag `main` (as a fetch
+  # source) or `origin/main` (as a local read) replaces the trunk the recordless-merge backstop and
+  # the board gate read. Selftest-only (no registered check name). Comments stripped first; line-based.
+  # (a) every operand of a `git fetch <remote> ...` starts with refs/ or +refs/.
+  # (b) a git show/diff/merge-base/log/rev-parse/rev-list line, or a --from line, never names
+  #     `origin/` unless it is preceded by `remotes/`.
+  # (c) the loop-state block's show-ref --verify guard comes BEFORE its `promotion-verify.sh trace`.
+  _tf_out=$(sed 's/#.*//' "$1" | awk -v f="$1" '
+    function bad(why) { print "FAIL: trunk-full-ref - " f ":" NR ": " why " [" $0 "]" }
+    function shadow(tok,   s, p) {
+      s = tok
+      while ((p = index(s, "origin/")) > 0) {
+        if (substr(s, 1, p - 1) !~ /remotes\/$/) return 1
+        s = substr(s, p + 7)
+      }
+      return 0
+    }
+    {
+      line = $0; gsub(/[;|&()<>`]/, " ; ", line); gsub(/[\047"]/, "", line)
+      n = split(line, t, /[ \t]+/)
+      for (i = 1; i <= n; i++) {
+        if (t[i] == "--from" || t[i] ~ /^--from=/) {
+          for (k = 1; k <= n; k++) if (shadow(t[k])) { bad("--from reads a short name; use refs/remotes/origin/<branch>"); break }
+        }
+        if (t[i] != "git") continue
+        j = i + 1
+        while (j <= n && t[j] != ";") {
+          if (t[j] == "-c") j += 2
+          else if (substr(t[j], 1, 1) == "-") j++
+          else break
+        }
+        sub_c = t[j]
+        if (sub_c == "fetch") {
+          for (k = j + 1; k <= n && substr(t[k], 1, 1) == "-"; k++) ;
+          for (k = k + 1; k <= n && t[k] != ";"; k++)
+            if (t[k] != "" && t[k] !~ /^[0-9]+$/ && t[k] !~ /^\+?refs\//) { bad("fetch operand " t[k] " is a short name; fetch +refs/heads/<branch>:refs/remotes/origin/<branch>"); break }
+        } else if (index(" show diff merge-base log rev-parse rev-list ", " " sub_c " ") > 0 && sub_c != "") {
+          for (k = j + 1; k <= n && t[k] != ";"; k++)
+            if (shadow(t[k])) { bad("git " sub_c " reads a short name; use refs/remotes/origin/<branch>"); break }
+        }
+      }
+    }
+  ')
+  if [ -n "$_tf_out" ]; then printf '%s\n' "$_tf_out" >&2; return 1; fi
+  _tf_block=$(extract_job_block "$1" loop-state | sed 's/#.*//')
+  _tf_trace=$(printf '%s\n' "$_tf_block" | grep -nF 'promotion-verify.sh trace' | head -1 | cut -d: -f1)
+  [ -n "$_tf_trace" ] || return 0
+  _tf_guard=$(printf '%s\n' "$_tf_block" | grep -nF 'show-ref --verify -q refs/remotes/origin/main' | head -1 | cut -d: -f1)
+  if [ -z "$_tf_guard" ] || [ "$_tf_guard" -ge "$_tf_trace" ]; then
+    echo "FAIL: trunk-full-ref - $1: loop-state has no 'git show-ref --verify -q refs/remotes/origin/main' before its trace (a tag named refs/remotes/origin/main would resolve)" >&2
+    return 1
+  fi
+  return 0
+}
+
+tt_tagbearing() {  # <workflow-file> -> "<job> <trigger>" for each way a job can hold tags (comment-stripped)
+  sed 's/#.*//' "$1" | awk '
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ { j = $1; sub(/:$/, "", j) }
+    j == "" { next }
+    /fetch-depth:[ \t]*0[ \t]*$/ { print j " fetch-depth:0" }
+    /fetch-tags:[ \t]*true/ { print j " fetch-tags:true" }
+    /git fetch/ && (!/--no-tags/ || /--tags/) { print j " git-fetch-may-bring-tags" }'
+}
+
+check_tt_tagbearing() {  # <workflow-file> <declared-jobs> <excluded-jobs> -> 0 ok; 1 a tag-bearing job is neither guarded nor a named exclusion
+  _cz=0
+  for _cz_hit in $(tt_tagbearing "$1" | sort -u | tr ' ' ':'); do
+    _cz_job=${_cz_hit%%:*}; _cz_trig=${_cz_hit#*:}
+    case " $2 " in
+      *" $_cz_job "*) continue ;;
+    esac
+    case " $3 " in
+      *" $_cz_job "*) [ "$_cz_trig" = "fetch-depth:0" ] && continue ;;
+    esac
+    echo "FAIL: $1 job $_cz_job holds tags ($_cz_trig) but carries no trunk-tag tripwire and is not a named exclusion" >&2; _cz=1
+  done
+  return "$_cz"
+}
+
+_tt_mut() {  # <workflow> <job> <delete|move|nofl> [<step-name-prefix>] -> stdout: the workflow with ONLY that job's step deleted, moved to the job's end, or its first later --no-tags fetch loosened
+  awk -v job="  $2:" -v mode="$3" -v pfx="      - name: ${4:-Trunk-name tag tripwire}" '
+    { a[NR] = $0 }
+    $0 == job { js = NR }
+    js && !je && NR > js && /^  [A-Za-z0-9_-]+:[ \t]*$/ { je = NR }
+    END {
+      if (!je) je = NR + 1
+      for (i = js + 1; i < je && !ss; i++) if (index(a[i], pfx) == 1) ss = i
+      for (se = ss + 1; se < je && a[se] !~ /^      - /; se++) ;
+      tg = je  # "afterdrop": land the step just after the step that holds the CRED-DROP-END marker (F1)
+      if (mode == "afterdrop") {
+        for (i = js + 1; i < je && !de; i++) if (a[i] ~ /^[ \t]*# CRED-DROP-END/) de = i
+        if (de) for (tg = de + 1; tg < je && a[tg] !~ /^      - /; tg++) ;
+      }
+      for (i = 1; i <= NR; i++) {
+        if (mode == "nofl") { if (i >= se && i < je && !done && a[i] ~ /git fetch --no-tags/) { sub(/ --no-tags/, "", a[i]); done = 1 }; print a[i]; continue }
+        if (ss && i >= ss && i < se) { if (mode == "move" || mode == "afterdrop") hold = hold a[i] "\n"; continue }
+        if (i == tg) printf "%s", hold
+        print a[i]
+      }
+      if (tg > NR) printf "%s", hold
+    }' "$1"
+}
+
+tt_pc_of() {  # <workflow-file> <job> -> the persist-credentials value of each actions/checkout in the job, in order, comma-joined (persisted|false)
+  extract_job_block "$1" "$2" | sed 's/#.*//' | awk '
+    function flush() { if (inco) out = out (out == "" ? "" : ",") (fl ? "false" : "persisted"); inco = 0; fl = 0 }
+    /^      - / { flush(); if ($0 ~ /uses: actions\/checkout/) inco = 1 }
+    inco && /persist-credentials:[ \t]*false/ { fl = 1 }
+    END { flush(); print out }'
+}
+
+check_tt_credentials() {  # <ci|ag> <workflow-file> <job> -> 0 when every checkout keeps main's persist-credentials value (TT6); 1 on any difference
+  _ctc_want=$(printf '%s\n' "$TT_PC_TABLE" | awk -v w="$1" -v j="$3" '$1 == w && $2 == j { print $3 }')
+  _ctc_got=$(tt_pc_of "$2" "$3")
+  if [ -z "$_ctc_want" ]; then echo "FAIL: $3 ($1) has no persist-credentials row in TT_PC_TABLE" >&2; return 1; fi
+  if [ "$_ctc_got" != "$_ctc_want" ]; then
+    echo "FAIL: $3 ($1) persist-credentials differs from main: checkouts are '$_ctc_got', main has '$_ctc_want' (no job may gain or lose a token)" >&2; return 1
+  fi
+  return 0
+}
+
+_tt_pcmut() {  # <workflow> <job> <remove|add> -> stdout: the workflow with ONLY that job's first `persist-credentials: false` removed, or one added to its first checkout
+  awk -v job="  $2:" -v mode="$3" '
+    $0 == job { inj = 1; print; next }
+    inj && /^  [A-Za-z0-9_-]+:[ \t]*$/ { inj = 0 }
+    inj && mode == "remove" && !done && /^          persist-credentials: false/ { done = 1; next }
+    inj && mode == "add" && !done && /uses: actions\/checkout/ { want = 1 }
+    { print }
+    inj && mode == "add" && !done && want && /^        with:/ { print "          persist-credentials: false"; done = 1; want = 0 }
+  ' "$1"
+}
+
+_tt_envmut() {  # <workflow> <job> <remove|zero|add> -> stdout: the workflow with ONLY that job's tripwire env removed, set to "0", or added
+  awk -v job="  $2:" -v mode="$3" '
+    $0 == job { inj = 1; print; next }
+    inj && /^  [A-Za-z0-9_-]+:[ \t]*$/ { inj = 0; instep = 0 }
+    inj && index($0, "      - name: Trunk-name tag tripwire") == 1 { instep = 1; print; if (mode == "add") { print "        env:"; print "          TRUNK_TAG_REMOTE: \"1\"" } ; next }
+    instep && /^      - / { instep = 0 }
+    instep && mode == "remove" && /^        env:[ \t]*$/ { skip = 1; next }
+    instep && skip { skip = 0; next }
+    instep && mode == "zero" && /TRUNK_TAG_REMOTE:/ { sub(/"1"/, "\"0\"") }
+    { print }
+  ' "$1"
+}
+
+# Fixture helpers for TT0-TT3 (selftest-only; throwaway bare repos under $d, file:// only, no network).
+_tt_git() { env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=tt -c user.email=tt@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
+
+_tt_fixture() {  # <dir> <default-branch> -> <dir>/origin.git: trunk commit A, branch pr = B (conformance/x.sh) then C (notes.md)
+  mkdir -p "$1/seed" || return 1
+  _tt_git init -q --bare -b "$2" "$1/origin.git" || return 1
+  _tt_git init -q -b "$2" "$1/seed" || return 1
+  printf 'a\n' > "$1/seed/README"
+  _tt_git -C "$1/seed" add README && _tt_git -C "$1/seed" commit -q -m a || return 1
+  _tt_a=$(_tt_git -C "$1/seed" rev-parse HEAD)
+  _tt_git -C "$1/seed" checkout -q -b pr || return 1
+  mkdir -p "$1/seed/conformance"; printf 'x\n' > "$1/seed/conformance/x.sh"
+  _tt_git -C "$1/seed" add conformance/x.sh && _tt_git -C "$1/seed" commit -q -m b || return 1
+  _tt_b=$(_tt_git -C "$1/seed" rev-parse HEAD)
+  printf 'n\n' > "$1/seed/notes.md"
+  _tt_git -C "$1/seed" add notes.md && _tt_git -C "$1/seed" commit -q -m c || return 1
+  _tt_c=$(_tt_git -C "$1/seed" rev-parse HEAD)
+  _tt_git -C "$1/seed" push -q "file://$1/origin.git" "$2" pr "$2:release" "$2:develop"
+}
+
+_tt_expect() {  # <leg> <clone> <want-rc> <needle|-> <what> -> runs the SHIPPED body ($_tt_bodyf) in <clone>, in the mode $_tt_mode (UNSET = the variable absent)
+  if [ "${_tt_mode+set}" = set ]; then
+    if _te_out=$(cd "$2" && env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="$d" TRUNK_TAG_WAITS="0 0 0" TRUNK_TAG_REMOTE="$_tt_mode" sh -e "$_tt_bodyf" 2>&1); then _te_rc=0; else _te_rc=$?; fi
+  else
+    if _te_out=$(cd "$2" && env -u TRUNK_TAG_REMOTE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_CEILING_DIRECTORIES="$d" TRUNK_TAG_WAITS="0 0 0" sh -e "$_tt_bodyf" 2>&1); then _te_rc=0; else _te_rc=$?; fi
+  fi
+  _te_ok=1
+  [ "$_te_rc" = "$3" ] || _te_ok=0
+  if [ "$4" != "-" ]; then case "$_te_out" in *"$4"*) : ;; *) _te_ok=0 ;; esac; fi
+  if [ "$_te_ok" = 1 ]; then echo "selftest PASS: $1 — $5"
+  else echo "selftest FAIL: $1 — $5 (rc=$_te_rc want $3; needle '$4'; out='$_te_out')"; sf=1; fi
 }
 
 selftest() {
@@ -1137,7 +1437,10 @@ AGGCLS
 
   # ── SESSION-SURFACE T3/F1 — loop-state credential-drop ordering ────────────────────────────
   mkdir -p "$d/ls"
-  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n          sh conformance/loop-state.sh --head X\n' > "$d/ls/good.yml"
+  # SWAS-250: a minimal CRED-DROP block (markers in order + an includes-following verify read) is what
+  # the pin now looks for; the bare `--local --unset-all` string no longer counts (LS8).
+  _ls_blk='          # CRED-DROP-BEGIN (SWAS-250)\n          # CRED-DROP-VERIFY\n          git config --show-origin --name-only --get-regexp x\n          # CRED-DROP-VERIFY-END\n          # CRED-DROP-END\n'
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n'"$_ls_blk"'          sh conformance/loop-state.sh --head X\n' > "$d/ls/good.yml"
   if check_loop_state_credential_order "$d/ls/good.yml" >/dev/null 2>&1; then
     echo "selftest PASS: LS1 — credential drop before the first conformance/ invocation -> PASS"
   else echo "selftest FAIL: LS1 — good fixture wrongly failed"; sf=1; fi
@@ -1149,7 +1452,7 @@ AGGCLS
   else echo "selftest PASS: LS2 — missing credential drop -> FAIL"; fi
 
   # negative — the drop line present but AFTER the conformance/ invocation
-  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          sh conformance/loop-state.sh --head X\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n' > "$d/ls/misordered.yml"
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          sh conformance/loop-state.sh --head X\n'"$_ls_blk" > "$d/ls/misordered.yml"
   if check_loop_state_credential_order "$d/ls/misordered.yml" >/dev/null 2>&1; then
     echo "selftest FAIL: LS3 — a credential drop AFTER the conformance/ invocation was NOT caught"; sf=1
   else echo "selftest PASS: LS3 — drop ordered after the conformance/ call -> FAIL"; fi
@@ -1157,20 +1460,72 @@ AGGCLS
   # regression backstop — the kit's OWN live ci.yml must pass this leg today (the SESSION-SURFACE
   # T3/F1 fix). Gated on the same kit-tree marker AGG5/AGG6 use, so an adopter export is unjudged.
   if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
-    if check_loop_state_credential_order "$_agg_kr/.github/workflows/ci.yml" >/dev/null 2>&1; then
-      echo "selftest PASS: LS4 — the kit's own ci.yml drops the loop-state credential before its first conformance/ invocation"
-    else echo "selftest FAIL: LS4 — the kit's own ci.yml regressed the loop-state credential-drop ordering"; sf=1; fi
+    # LS10 (SWAS-250; folds LS4) — the fleet pin: the six jobs that claim to hold no token, kit tree only.
+    _ls_ci="$_agg_kr/.github/workflows/ci.yml"; _ls_ag="$_agg_kr/profiles/adopter-gates.yml"; _ls_bad=""
+    for _ls_j in ceremony-binding loop-state review-lane; do
+      check_cred_before_prtree "$_ls_ci" "$_ls_j" >/dev/null 2>&1 || _ls_bad="$_ls_bad ci.yml:$_ls_j"
+      [ "$_ls_j" = loop-state ] || check_cred_before_prtree "$_ls_ag" "$_ls_j" >/dev/null 2>&1 || _ls_bad="$_ls_bad adopter-gates.yml:$_ls_j"
+    done
+    check_cred_before_prtree "$_ls_ag" loop-state >/dev/null 2>&1 || _ls_bad="$_ls_bad adopter-gates.yml:loop-state"
+    _ls_five=$(for _ls_x in "$_ls_ci:ceremony-binding" "$_ls_ci:loop-state" "$_ls_ci:review-lane" "$_ls_ag:ceremony-binding" "$_ls_ag:review-lane"; do cred_block "${_ls_x%%:*}" "${_ls_x#*:}" | cksum | cut -d' ' -f1; done | sort -u | wc -l | tr -d ' ')
+    if [ -z "$_ls_bad" ] && [ "$_ls_five" = 1 ] && [ -n "$(cred_block "$_ls_ci" ceremony-binding)" ]; then
+      echo "selftest PASS: LS10 — all six token-free jobs pass the pin and the five CRED-DROP blocks are byte-identical (folds LS4)"
+    else echo "selftest FAIL: LS10 — pin failures:${_ls_bad:- none}; distinct block copies=$_ls_five (want 1)"; sf=1; fi
   else
-    echo "selftest SKIP: LS4 — not a kit tree"
+    echo "selftest SKIP: LS10 — not a kit tree"
   fi
 
   # negative (F1-2) — a scripts/ invocation is PR-tree code too (the loop-state job's
   # `promotion-verify.sh trace`), so a credential drop AFTER a scripts/ call, but before the first
   # conformance/ call, must FAIL: the token is still readable when the scripts/ PR-code runs.
-  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          sh scripts/promotion-verify.sh trace --recent 1\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n          sh conformance/loop-state.sh --head X\n' > "$d/ls/scriptsfirst.yml"
+  printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          sh scripts/promotion-verify.sh trace --recent 1\n'"$_ls_blk"'          sh conformance/loop-state.sh --head X\n' > "$d/ls/scriptsfirst.yml"
   if check_loop_state_credential_order "$d/ls/scriptsfirst.yml" >/dev/null 2>&1; then
     echo "selftest FAIL: LS5 — a credential drop AFTER a scripts/ PR-code invocation was NOT caught"; sf=1
   else echo "selftest PASS: LS5 — drop ordered after a scripts/ PR-code call -> FAIL"; fi
+
+  # ── SWAS-250 — the drop must remove what checkout v7 writes (an includeIf file), not only a local key ──
+  # Run the real scripts under `bash -e` (how the runner runs a step); needs bash + git, else SKIP loudly.
+  if command -v bash >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+    printf '%s\n' "git config --local --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true" \
+      "if git config --local --get-all 'http.https://github.com/.extraheader' >/dev/null 2>&1; then exit 1; fi" > "$d/ls/old-drop.sh"
+    # LS6 — the reproduction: the OLD drop (--local unset, --local check) passes yet leaves the token reachable.
+    cred_scenario "$d/cs6" v7 rt "$d/ls/old-drop.sh"
+    if [ "$_cs_pre" = REACHABLE ] && [ "$_cs_rc" = 0 ] && [ "$_cs_reach" = REACHABLE ]; then
+      echo "selftest PASS: LS6 — the old --local drop exits 0 on the v7 layout and the token is still readable (the reproduction)"
+    else echo "selftest FAIL: LS6 — expected the old drop to pass while leaving the token reachable (pre=$_cs_pre rc=$_cs_rc reach=$_cs_reach)"; sf=1; fi
+    # LS8 — the load-bearing negative: a --local-only drop fails the pin, so it can never satisfy it again.
+    printf 'jobs:\n  loop-state:\n    steps:\n      - run: |\n          git config --local --unset-all '"'"'http.https://github.com/.extraheader'"'"'\n          git config --local --get-all x\n          sh conformance/loop-state.sh --head X\n' > "$d/ls/localonly.yml"
+    if check_cred_before_prtree "$d/ls/localonly.yml" loop-state >/dev/null 2>&1; then
+      echo "selftest FAIL: LS8 — a --local-only drop satisfied the pin"; sf=1
+    else echo "selftest PASS: LS8 — a --local-only drop (which leaves the v7 token reachable) fails the pin"; fi
+  else echo "selftest SKIP: LS6/LS8 — bash or git missing"; fi
+
+  if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; } && command -v bash >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+    cred_block "$_agg_kr/.github/workflows/ci.yml" ceremony-binding > "$d/ls/live.sh"
+    { echo 'set -f'; cred_block "$_agg_kr/.github/workflows/ci.yml" ceremony-binding verify; } > "$d/ls/verify.sh"
+    # LS7 — the LIVE block, extracted from the real ci.yml, executed under bash -e in five layouts.
+    _ls7=""
+    for _ls_l in "a v7 rt" "b v7 out" "c v4 rt" "d clean rt" "e own rt"; do
+      set -- $_ls_l
+      cred_scenario "$d/cs7$1" "$2" "$3" "$d/ls/live.sh"
+      [ "$_cs_rc" = 0 ] && [ "$_cs_reach" = none ] || _ls7="$_ls7 ($1: rc=$_cs_rc reach=$_cs_reach: $(printf '%s' "$_cs_out" | tail -n 2 | tr '\n' ' '))"
+      case "$1" in a|b|c) [ "$_cs_pre" = REACHABLE ] || _ls7="$_ls7 ($1: layout not live before the drop)" ;; esac
+      case "$1" in a|b) [ "$_cs_gone" = gone ] || _ls7="$_ls7 ($1: credentials file still present)" ;; esac
+      case "$1" in e) [ "$_cs_own" = kept ] || _ls7="$_ls7 (e: the adopter's own include was removed)" ;; esac
+    done
+    if [ -z "$_ls7" ]; then echo "selftest PASS: LS7 — the live CRED-DROP block runs clean under bash -e: v7 (in and outside RUNNER_TEMP), v4, clean repo, adopter-own include"
+    else echo "selftest FAIL: LS7 —$_ls7"; sf=1; fi
+    # LS9 — the live VERIFY part alone: it must refuse a live credential (names only) and pass a clean repo.
+    _ls9=""
+    for _ls_l in "v7 1" "v4 1" "xinc 1" "clean 0"; do
+      set -- $_ls_l
+      cred_scenario "$d/cs9$1" "$1" rt "$d/ls/verify.sh"
+      [ "$_cs_rc" = "$2" ] || _ls9="$_ls9 ($1: rc=$_cs_rc want $2)"
+      case "$_cs_out" in *SIMTOKEN250*) _ls9="$_ls9 ($1: the token appeared in the output)" ;; esac
+    done
+    if [ -z "$_ls9" ]; then echo "selftest PASS: LS9 — the live verify alone refuses v7, v4 and a header hidden in a foreign include (exit 1, names only, no token printed) and passes a clean repo"
+    else echo "selftest FAIL: LS9 —$_ls9"; sf=1; fi
+  else echo "selftest SKIP: LS7/LS9 — not a kit tree, or bash/git missing"; fi
 
   # ── SESSION-SURFACE T3/F4 — backlog-presence carries --base-board ──────────────────────────
   mkdir -p "$d/bp"
@@ -1193,6 +1548,262 @@ AGGCLS
   else
     echo "selftest SKIP: BP3 — not a kit tree"
   fi
+
+  # ── TRUNK-REF-TAG-SHADOW slice 1 (SWAS-247) — TT0-TT5: the trunk-tag tripwire ───────────────────
+  # Kit-tree only (the legs run the body that SHIPS in the kit's ci.yml, and TT5 pins the adopter copy
+  # byte-identical to it). Fixtures are throwaway bare repos under $d reached by file://, trap-cleaned.
+  if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
+    _tt_ci="$_agg_kr/.github/workflows/ci.yml"; _tt_ag="$_agg_kr/profiles/adopter-gates.yml"
+    _tt_bodyf="$d/tt-body.sh"; tt_body_of "$_tt_ci" ceremony-binding > "$_tt_bodyf"
+    # TT0 — the premise: a tag named origin/main wins the short name and the merge-base class derivation misses the PR's first commit.
+    mkdir -p "$d/tt0"; _tt_fixture "$d/tt0" main
+    _tt_git -C "$d/tt0/origin.git" update-ref refs/tags/origin/main "$_tt_b"
+    _tt_git clone -q "file://$d/tt0/origin.git" "$d/tt0/clone" && _tt_git -C "$d/tt0/clone" checkout -q -b prx refs/remotes/origin/pr
+    _t0_short=$(_tt_git -C "$d/tt0/clone" rev-parse origin/main 2>/dev/null || true)
+    _t0_full=$(_tt_git -C "$d/tt0/clone" rev-parse refs/remotes/origin/main 2>/dev/null || true)
+    _t0_bad=$(_tt_git -C "$d/tt0/clone" diff --name-only "$(_tt_git -C "$d/tt0/clone" merge-base HEAD origin/main 2>/dev/null)" HEAD 2>/dev/null || true)
+    _t0_good=$(_tt_git -C "$d/tt0/clone" diff --name-only "$(_tt_git -C "$d/tt0/clone" merge-base HEAD refs/remotes/origin/main)" HEAD 2>/dev/null || true)
+    case "$_t0_bad" in *conformance/x.sh*) _t0_ok=0 ;; *) _t0_ok=1 ;; esac
+    case "$_t0_good" in *conformance/x.sh*) : ;; *) _t0_ok=0 ;; esac
+    if [ "$_t0_short" = "$_tt_b" ] && [ "$_t0_full" = "$_tt_a" ] && [ "$_t0_ok" = 1 ]; then
+      echo "selftest PASS: TT0 — the origin/main tag wins the short name and the merge-base change set lacks conformance/x.sh (the premise)"
+    else echo "selftest FAIL: TT0 — the shadowing premise did not reproduce (short='$_t0_short' full='$_t0_full' bad='$_t0_bad' good='$_t0_good')"; sf=1; fi
+
+    # TT1 — no false positive: tags that merely resemble a refused name (exact prefix tests).
+    mkdir -p "$d/tt1"; _tt_fixture "$d/tt1" main; _tt1_a=$_tt_a
+    _tt_git clone -q "file://$d/tt1/origin.git" "$d/tt1/clone"
+    for _t1 in v1.0.0 release-1 mainline origin-x AHEAD; do
+      _tt_git -C "$d/tt1/origin.git" update-ref "refs/tags/$_t1" "$_tt1_a"
+      _tt_git -C "$d/tt1/clone" update-ref "refs/tags/$_t1" "$_tt1_a"
+    done
+    # both modes: the switch absent (local only) and exactly 1 (local plus remote). The fixture has branches release and develop, so release-1 is a tag that only resembles the branch release.
+    for _tt_m in unset 1; do
+      if [ "$_tt_m" = unset ]; then unset _tt_mode; _tt_ml=local; else _tt_mode=1; _tt_ml=remote; fi
+      _tt_expect "TT1[$_tt_ml]" "$d/tt1/clone" 0 "OK - no tag shadows the trunk or a branch" "v1.0.0, release-1 (beside a release branch), mainline, origin-x and AHEAD are not refused (exact rules)"
+    done
+
+    # TT2 — every refused shape, one at a time, in BOTH modes. Local mode: the tag exists only in the clone (the origin is not read). Remote mode: the tag exists only on the origin (the clone does not hold it), then in both. The shapes include HEAD, origin and the branch-name rule (develop, pr).
+    for _t2 in main master HEAD FETCH_HEAD origin origin/main refs/remotes/origin/main remotes/origin/main x/refs/y develop pr; do
+      _tt_git -C "$d/tt1/origin.git" update-ref "refs/tags/$_t2" "$_tt1_a" 2>/dev/null \
+        || { echo "selftest FAIL: TT2 — could not plant tag $_t2 on the origin"; sf=1; continue; }
+      _tt_git -C "$d/tt1/clone" update-ref "refs/tags/$_t2" "$_tt1_a" 2>/dev/null \
+        || { echo "selftest FAIL: TT2 — could not plant tag $_t2 in the clone"; sf=1; continue; }
+      unset _tt_mode
+      _tt_expect "TT2[$_t2][local]" "$d/tt1/clone" 1 "(refs/tags/$_t2; found: local)" "the tag held by the checkout is refused and named, found local, with the switch absent"
+      _tt_mode=1
+      _tt_expect "TT2[$_t2][both]" "$d/tt1/clone" 1 "(refs/tags/$_t2; found: local origin)" "the tag held by the checkout and the forge is refused and named, found local and origin"
+      _tt_git -C "$d/tt1/clone" update-ref -d "refs/tags/$_t2"
+      _tt_expect "TT2[$_t2][remote]" "$d/tt1/clone" 1 "(refs/tags/$_t2; found: origin)" "the tag only the forge holds is refused and named, found origin, in remote mode"
+      unset _tt_mode
+      _tt_expect "TT2[$_t2][local-clean]" "$d/tt1/clone" 0 "OK - no tag shadows the trunk or a branch (local only)" "the same tag on the forge only is NOT read in local mode (the local check judges this checkout)"
+      _tt_git -C "$d/tt1/origin.git" update-ref -d "refs/tags/$_t2"
+    done
+    mkdir -p "$d/tt2b"; _tt_fixture "$d/tt2b" trunk
+    _tt_git clone -q "file://$d/tt2b/origin.git" "$d/tt2b/clone"
+    _tt_git -C "$d/tt2b/origin.git" update-ref refs/tags/trunk "$_tt_a"
+    _tt_mode=1
+    _tt_expect "TT2[default=trunk]" "$d/tt2b/clone" 1 "(refs/tags/trunk; found: origin)" "a tag named for the origin's own default branch is refused and named (remote mode reads the HEAD symref)"
+    # local-only: fetched into the clone, then deleted from the forge, so ls-remote is clean but the local copy still shadows.
+    _tt_git -C "$d/tt1/origin.git" update-ref refs/tags/origin/main "$_tt1_a"
+    _tt_git -C "$d/tt1/clone" fetch -q origin refs/tags/origin/main:refs/tags/origin/main
+    _tt_git -C "$d/tt1/origin.git" update-ref -d refs/tags/origin/main
+    _tt_expect "TT2[local-only]" "$d/tt1/clone" 1 "found: local)" "a shadowing tag that only the checkout still holds is refused, found local only, even in remote mode"
+    _tt_git -C "$d/tt1/clone" tag -d origin/main >/dev/null
+
+    # TT3 — fail closed. Remote mode: an unreadable remote, a remote with no branches, a remote whose HEAD names an unborn branch (each clone keeps its local origin branches, so the remote cases are reached).
+    _tt_mode=1
+    _tt_git clone -q "file://$d/tt1/origin.git" "$d/tt3clone"
+    _tt_git -C "$d/tt3clone" remote set-url origin "file://$d/tt3-missing.git"
+    _tt_expect TT3a "$d/tt3clone" 1 "ls-remote failed 3 times" "an unreadable remote is refused after the retries (fail-closed)"
+    _tt_git init -q --bare -b main "$d/tt3-empty.git"
+    _tt_git clone -q "file://$d/tt1/origin.git" "$d/tt3empty" && _tt_git -C "$d/tt3empty" remote set-url origin "file://$d/tt3-empty.git"
+    _tt_expect TT3b "$d/tt3empty" 1 "the remote lists no branches" "a remote with no branches is refused (fail-closed)"
+    _tt_git init -q --bare -b nope "$d/tt3-unborn.git"
+    _tt_git -C "$d/tt1/seed" push -q "file://$d/tt3-unborn.git" main:other
+    _tt_git clone -q "file://$d/tt1/origin.git" "$d/tt3unborn" && _tt_git -C "$d/tt3unborn" remote set-url origin "file://$d/tt3-unborn.git"
+    _tt_expect TT3c "$d/tt3unborn" 1 "no HEAD symref" "a remote whose HEAD names an unborn branch is refused (fail-closed)"
+    # Local mode (and remote mode): a checkout with no refs/remotes/origin/* branch is refused, because a tag-bearing checkout always holds them.
+    _tt_git init -q "$d/tt3norb" && _tt_git -C "$d/tt3norb" remote add origin "file://$d/tt1/origin.git"
+    for _tt_m in unset 1; do
+      if [ "$_tt_m" = unset ]; then unset _tt_mode; else _tt_mode=1; fi
+      _tt_expect "TT3d[$_tt_m]" "$d/tt3norb" 1 "holds no refs/remotes/origin branch" "a checkout with no remote-tracking branch is refused (fail-closed)"
+    done
+    # The mode switch: unset and empty are local only (accepted); every other value is a red, never "off".
+    unset _tt_mode
+    _tt_expect "TT3[mode unset]" "$d/tt1/clone" 0 "(local only)" "the switch absent runs the local check only"
+    _tt_mode=""
+    _tt_expect "TT3[mode empty]" "$d/tt1/clone" 0 "(local only)" "an empty switch runs the local check only"
+    for _tt_mode in 0 yes " 1" true "1 " 2; do
+      _tt_expect "TT3[mode '$_tt_mode']" "$d/tt1/clone" 1 "TRUNK_TAG_REMOTE must be empty or 1" "a garbled switch value is refused, never treated as off"
+    done
+    # The local check runs BEFORE the switch is parsed: an unset switch with a shadowing LOCAL tag is red, and a garbled switch in a directory that is no repository fails on the refs listing, not on the switch.
+    unset _tt_mode
+    _tt_git -C "$d/tt1/clone" update-ref refs/tags/origin/main "$_tt1_a"
+    _tt_expect "TT3[unset+local tag]" "$d/tt1/clone" 1 "(refs/tags/origin/main; found: local)" "with the switch absent a local origin/main tag is still refused (the local check is not skipped)"
+    _tt_git -C "$d/tt1/clone" update-ref -d refs/tags/origin/main
+    mkdir -p "$d/tt3nogit"; _tt_mode="yes"
+    _tt_expect "TT3[local first]" "$d/tt3nogit" 1 "cannot list this checkout's refs" "the local listing runs before the switch is parsed (a garbled switch outside a repository dies on the listing first)"
+    unset _tt_mode
+
+    # TT4 / TT5 — per job, in both workflows (each mutant edits ONLY the named job's block, so a pass in one job cannot mask a miss in another).
+    for _tt_wf in ci ag; do
+      if [ "$_tt_wf" = ci ]; then _tt_f=$_tt_ci; _tt_jobs=$TT_CI_JOBS; _tt_excl=$TT_CI_EXCLUDED
+      else _tt_f=$_tt_ag; _tt_jobs=$TT_AG_JOBS; _tt_excl=$TT_AG_EXCLUDED; fi
+      for _tt_j in $_tt_jobs; do
+        _tt_l="$_tt_wf/$_tt_j"
+        if [ -f "$_tt_f" ] && check_trunk_tag_tripwire "$_tt_f" "$_tt_j" >/dev/null 2>&1; then
+          echo "selftest PASS: TT4a[$_tt_l] — the live job carries the step, ordered and unconditional (the anchor the mutants are measured against)"
+        else echo "selftest FAIL: TT4a[$_tt_l] — the live job does not pass the step check"; sf=1; fi
+        _tt_mut "$_tt_f" "$_tt_j" delete > "$d/tt-m.yml"
+        _t4_msg=$(check_trunk_tag_tripwire "$d/tt-m.yml" "$_tt_j" 2>&1 >/dev/null || true)
+        case "$_t4_msg" in
+          *"$_tt_j job has no trunk-tag tripwire step"*) echo "selftest PASS: TT4b[$_tt_l] — the step deleted -> FAIL, naming the job" ;;
+          *) echo "selftest FAIL: TT4b[$_tt_l] — the deleted step was not caught as absent; msg='$_t4_msg'"; sf=1 ;;
+        esac
+        _tt_mut "$_tt_f" "$_tt_j" move > "$d/tt-m.yml"
+        _t4_msg=$(check_trunk_tag_tripwire "$d/tt-m.yml" "$_tt_j" 2>&1 >/dev/null || true)
+        case "$_t4_msg" in
+          *"does not precede the credential drop or the first PR-tree invocation"*) echo "selftest PASS: TT4c[$_tt_l] — the step moved after the drop or the PR-tree invocation -> FAIL" ;;
+          *) echo "selftest FAIL: TT4c[$_tt_l] — the misordered step was not caught; msg='$_t4_msg'"; sf=1 ;;
+        esac
+        tt_body_of "$_tt_f" "$_tt_j" > "$d/tt-body-j.sh" 2>/dev/null || :
+        if [ -s "$_tt_bodyf" ] && cmp -s "$_tt_bodyf" "$d/tt-body-j.sh"; then
+          echo "selftest PASS: TT5[$_tt_l] — the run: body is byte-identical to the first copy"
+        else echo "selftest FAIL: TT5[$_tt_l] — the run: body is missing or differs from the first copy"; sf=1; fi
+        # rule (e): the remote switch is exactly "1" in the remote job (removed or "0" -> FAIL) and absent everywhere else (added -> FAIL).
+        if [ "$_tt_j" = "$TT_REMOTE_JOB" ]; then _tt_ems="remove zero"; else _tt_ems="add"; fi
+        for _tt_em in $_tt_ems; do
+          _tt_envmut "$_tt_f" "$_tt_j" "$_tt_em" > "$d/tt-m.yml"
+          _t4_msg=$(check_trunk_tag_tripwire "$d/tt-m.yml" "$_tt_j" 2>&1 >/dev/null || true)
+          case "$_t4_msg" in
+            *"(rule e)"*) echo "selftest PASS: TT4e[$_tt_l][$_tt_em] — the TRUNK_TAG_REMOTE env $_tt_em -> FAIL (rule e)" ;;
+            *) echo "selftest FAIL: TT4e[$_tt_l][$_tt_em] — the env mutant was not caught; msg='$_t4_msg'"; sf=1 ;;
+          esac
+        done
+        # TT6 — this job's checkouts keep main's persist-credentials values (no job gains a token).
+        if [ -f "$_tt_f" ] && check_tt_credentials "$_tt_wf" "$_tt_f" "$_tt_j" >/dev/null 2>&1; then
+          echo "selftest PASS: TT6[$_tt_l] — every checkout keeps main's persist-credentials value"
+        else echo "selftest FAIL: TT6[$_tt_l] — a checkout's persist-credentials differs from main"; sf=1; fi
+      done
+      # TT4z — the list itself: a job that holds tags (fetch-depth 0, fetch-tags true, or a fetch that may bring them) is guarded or a named exclusion.
+      if check_tt_tagbearing "$_tt_f" "$_tt_jobs" "$_tt_excl" >/dev/null 2>&1; then
+        echo "selftest PASS: TT4z[$_tt_wf] — every tag-bearing job is guarded or a named exclusion"
+      else echo "selftest FAIL: TT4z[$_tt_wf] — an unlisted tag-bearing job"; sf=1; fi
+    done
+    # TT4f (review F1) — the step placed between # CRED-DROP-END and the first conformance/ line (every job that carries a drop block): the drop is gone by then, so the step must still red. The limit is the marker, not a literal unset line.
+    for _tt_fw in ci:ceremony-binding ci:loop-state ci:review-lane ag:ceremony-binding ag:review-lane ag:loop-state; do
+      if [ "${_tt_fw%%:*}" = ci ]; then _tt_f=$_tt_ci; else _tt_f=$_tt_ag; fi
+      _tt_j=${_tt_fw#*:}
+      _tt_mut "$_tt_f" "$_tt_j" afterdrop > "$d/tt-m.yml"
+      _t4_msg=$(check_trunk_tag_tripwire "$d/tt-m.yml" "$_tt_j" 2>&1 >/dev/null || true)
+      case "$_t4_msg" in
+        *"does not precede the credential drop or the first PR-tree invocation"*) echo "selftest PASS: TT4f[$_tt_fw] — the step placed after # CRED-DROP-END, before the first conformance/ line -> FAIL" ;;
+        *) echo "selftest FAIL: TT4f[$_tt_fw] — the step after the drop block was not caught; msg='$_t4_msg'"; sf=1 ;;
+      esac
+    done
+    # A later fetch that may bring tags (ceremony-binding's --no-tags dropped) -> FAIL on rule (d).
+    _tt_mut "$_tt_ci" ceremony-binding nofl > "$d/tt-m.yml"
+    _t4_msg=$(check_trunk_tag_tripwire "$d/tt-m.yml" ceremony-binding 2>&1 >/dev/null || true)
+    case "$_t4_msg" in
+      *"may bring tags in"*) echo "selftest PASS: TT4d — a tag-fetching git fetch after the step -> FAIL" ;;
+      *) echo "selftest FAIL: TT4d — the tag-fetching fetch was not caught; msg='$_t4_msg'"; sf=1 ;;
+    esac
+    # TT6 load-bearing negatives, both directions: the revision-2 shape (the adopter loop-state head checkout WITHOUT persist-credentials: false, a token it never had) and its mirror (persist-credentials: false added to the kit ceremony-binding checkout, which would break its notes fetch and the remote read).
+    _tt_pcmut "$_tt_ag" loop-state remove > "$d/tt-m.yml"
+    _t4_msg=$(check_tt_credentials ag "$d/tt-m.yml" loop-state 2>&1 >/dev/null || true)
+    case "$_t4_msg" in
+      *"loop-state (ag) persist-credentials differs from main"*) echo "selftest PASS: TT6[LS] — the adopter loop-state head checkout without persist-credentials: false -> FAIL, naming the job" ;;
+      *) echo "selftest FAIL: TT6[LS] — the revision-2 credential shape was not caught; msg='$_t4_msg'"; sf=1 ;;
+    esac
+    _tt_pcmut "$_tt_ci" ceremony-binding add > "$d/tt-m.yml"
+    _t4_msg=$(check_tt_credentials ci "$d/tt-m.yml" ceremony-binding 2>&1 >/dev/null || true)
+    case "$_t4_msg" in
+      *"ceremony-binding (ci) persist-credentials differs from main"*) echo "selftest PASS: TT6[CB] — persist-credentials: false added to the kit ceremony-binding checkout -> FAIL, so the pin binds both ways" ;;
+      *) echo "selftest FAIL: TT6[CB] — the mirror mutant was not caught; msg='$_t4_msg'"; sf=1 ;;
+    esac
+    # TT4z mutants (job|yaml line|trigger): a new job with a depth-0 checkout, an excluded job gaining fetch-tags, a new job whose fetch lacks --no-tags.
+    for _tz in "zz-new|fetch-depth: 0|fetch-depth:0" "secret-scan|fetch-tags: true|fetch-tags:true" "zz-fetch|run: git fetch origin|git-fetch-may-bring-tags"; do
+      _tz_job=${_tz%%|*}; _tz_rest=${_tz#*|}; _tz_line=${_tz_rest%%|*}; _tz_trig=${_tz_rest#*|}
+      { cat "$_tt_ci"; printf '  %s:\n    steps:\n      - uses: actions/checkout@x\n        with:\n          %s\n' "$_tz_job" "$_tz_line"; } > "$d/tt-z.yml"
+      _t4_msg=$(check_tt_tagbearing "$d/tt-z.yml" "$TT_CI_JOBS" "$TT_CI_EXCLUDED" 2>&1 >/dev/null || true)
+      case "$_t4_msg" in
+        *"job $_tz_job holds tags ($_tz_trig)"*) echo "selftest PASS: TT4z[$_tz_job] — a new $_tz_trig trigger outside the list -> FAIL, naming the job and the trigger" ;;
+        *) echo "selftest FAIL: TT4z[$_tz_job] — the unlisted $_tz_trig trigger was not caught; msg='$_t4_msg'"; sf=1 ;;
+      esac
+    done
+  else
+    echo "selftest SKIP: TT0-TT5 — not a kit tree"
+  fi
+
+  # ── SWAS-246 — the trunk is read by its FULL ref (TF0-TF6) ─────────────────────────────────
+  mkdir -p "$d/tf"
+  _tf_hdr='jobs:\n  x:\n    steps:\n      - run: |\n'
+  _tf_fetch_old="git fetch --no-tags origin main:refs/remotes/origin/main || true"
+  _tf_bl='BACK''LOG.md'  # fixture TEXT only: assembled from parts so no source line is a literal board read to board-parser-drift
+  _tf_show_old="if git show origin/main:${_tf_bl} > /tmp/base-${_tf_bl} 2>/dev/null; then"
+  _tf_diff_old='git -c core.quotePath=false diff --name-only -z --no-renames "origin/${BASE_REF}...HEAD" > /tmp/changed.z'
+  _tf_ls_good="  loop-state:\n    steps:\n      - run: |\n          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main' || true\n          git show-ref --verify -q refs/remotes/origin/main || exit 1\n          sh scripts/promotion-verify.sh trace --recent 10 --from refs/remotes/origin/main\n"
+  printf "jobs:\n$_tf_ls_good  backlog-presence:\n    steps:\n      - run: |\n          git -c core.quotePath=false diff --name-only -z --no-renames \"refs/remotes/origin/\${BASE_REF}...HEAD\" > /tmp/changed.z\n          if git show refs/remotes/origin/main:${_tf_bl} > /tmp/base-${_tf_bl} 2>/dev/null; then\n" > "$d/tf/good.yml"
+  if check_trunk_full_ref "$d/tf/good.yml" >/dev/null 2>&1; then
+    echo "selftest PASS: TF1 — the four fixed spellings and the show-ref guard -> PASS"
+  else echo "selftest FAIL: TF1 — good fixture wrongly failed"; sf=1; fi
+  printf "${_tf_hdr}          $_tf_fetch_old\n" > "$d/tf/fetch.yml"
+  if check_trunk_full_ref "$d/tf/fetch.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: TF2 — today's short-name fetch line was NOT caught"; sf=1
+  else echo "selftest PASS: TF2 — today's short-name fetch line -> FAIL"; fi
+  printf "${_tf_hdr}          sh scripts/promotion-verify.sh trace --recent 10 --from origin/main\n" > "$d/tf/from.yml"
+  if check_trunk_full_ref "$d/tf/from.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: TF3 — --from origin/main was NOT caught"; sf=1
+  else echo "selftest PASS: TF3 — --from origin/main -> FAIL"; fi
+  printf "${_tf_hdr}          $_tf_show_old\n" > "$d/tf/show.yml"
+  printf "${_tf_hdr}          $_tf_diff_old\n" > "$d/tf/diff.yml"
+  if check_trunk_full_ref "$d/tf/show.yml" >/dev/null 2>&1 || check_trunk_full_ref "$d/tf/diff.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: TF4 — an exact live 'if git show origin/main' or 'git -c k=v diff origin/' line was NOT caught"; sf=1
+  else echo "selftest PASS: TF4 — the exact live git show and git -c diff lines -> FAIL"; fi
+  printf "jobs:\n$_tf_ls_good" | grep -vF 'show-ref' > "$d/tf/noguard.yml"
+  if check_trunk_full_ref "$d/tf/noguard.yml" >/dev/null 2>&1; then
+    echo "selftest FAIL: TF4b — a loop-state trace with no show-ref guard was NOT caught"; sf=1
+  else echo "selftest PASS: TF4b — loop-state without the show-ref guard -> FAIL"; fi
+  printf "${_tf_hdr}          # git show origin/main:${_tf_bl}\n          echo \"merge-base between HEAD and origin/\$X\"\n" > "$d/tf/prose.yml"
+  if check_trunk_full_ref "$d/tf/prose.yml" >/dev/null 2>&1; then
+    echo "selftest PASS: TF5 — a comment and an echo line are not judged"
+  else echo "selftest FAIL: TF5 — prose wrongly failed"; sf=1; fi
+
+  # TF6 real-fleet backstop (kit tree only): S1-S4 are fixed in every workflow and template.
+  if [ -f "$_agg_kr/.github/workflows/ci.yml" ] && { [ -f "$_agg_kr/docs/ROADMAP-KIT.md" ] || [ -f "$_agg_kr/.github/workflows/golden-path.yml" ]; }; then
+    _tf_bad=0
+    for _tf_wf in "$_agg_kr"/.github/workflows/*.yml "$_agg_kr"/profiles/*.yml "$_agg_kr"/profiles/*/ci.yml; do
+      [ -f "$_tf_wf" ] || continue
+      check_trunk_full_ref "$_tf_wf" || _tf_bad=1
+    done
+    if [ "$_tf_bad" = 0 ]; then
+      echo "selftest PASS: TF6 — every workflow and profile template reads the trunk by its full ref"
+    else echo "selftest FAIL: TF6 — a workflow or template reads the trunk by a short name a tag can shadow"; sf=1; fi
+  else
+    echo "selftest SKIP: TF6 — not a kit tree"
+  fi
+
+  # TF0 premise (local bare repo, no network): the short spelling lands a same-named tag, the full
+  # spelling lands the trunk, and show-ref --verify refuses a tag named refs/remotes/origin/main.
+  _tf_g="git -c commit.gpgsign=false -c user.name=t -c user.email=t@t"
+  git init -q --bare "$d/tf/o.git" && git init -q "$d/tf/w" && git -C "$d/tf/w" symbolic-ref HEAD refs/heads/main \
+    && $_tf_g -C "$d/tf/w" commit -q --allow-empty -m a && git -C "$d/tf/w" tag main \
+    && $_tf_g -C "$d/tf/w" commit -q --allow-empty -m b \
+    && git -C "$d/tf/w" push -q "$d/tf/o.git" refs/heads/main refs/tags/main 2>/dev/null
+  _tf_tag=$(git -C "$d/tf/w" rev-parse refs/tags/main 2>/dev/null); _tf_trunk=$(git -C "$d/tf/w" rev-parse refs/heads/main 2>/dev/null)
+  git init -q "$d/tf/c1" && git init -q "$d/tf/c2"
+  git -C "$d/tf/c1" fetch -q --no-tags "$d/tf/o.git" main:refs/remotes/origin/main 2>/dev/null
+  git -C "$d/tf/c2" fetch -q --no-tags "$d/tf/o.git" '+refs/heads/main:refs/remotes/origin/main' 2>/dev/null
+  if [ -n "$_tf_tag" ] && [ "$_tf_tag" != "$_tf_trunk" ] \
+    && [ "$(git -C "$d/tf/c1" rev-parse refs/remotes/origin/main 2>/dev/null)" = "$_tf_tag" ] \
+    && [ "$(git -C "$d/tf/c2" rev-parse refs/remotes/origin/main 2>/dev/null)" = "$_tf_trunk" ]; then
+    echo "selftest PASS: TF0 — the short fetch lands the tag, the full fetch lands the trunk"
+  else echo "selftest FAIL: TF0 — git's resolution no longer matches the premise of the full-ref lock"; sf=1; fi
+  git -C "$d/tf/w" tag refs/remotes/origin/main "$_tf_tag" 2>/dev/null
+  if [ "$(git -C "$d/tf/w" rev-parse refs/remotes/origin/main 2>/dev/null)" = "$_tf_tag" ] \
+    && ! git -C "$d/tf/w" show-ref --verify -q refs/remotes/origin/main; then
+    echo "selftest PASS: TF0b — a tag named refs/remotes/origin/main resolves, and show-ref --verify refuses it"
+  else echo "selftest FAIL: TF0b — the show-ref --verify guard no longer refuses a tag spelling"; sf=1; fi
 
   if [ "$sf" -eq 0 ]; then echo "OK: ci-gates selftest"; exit 0; else echo "FAIL: ci-gates selftest"; exit 1; fi
 }

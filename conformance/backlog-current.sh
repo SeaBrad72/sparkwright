@@ -3273,6 +3273,121 @@ EOF
     echo "  board-claim.sh::bc_row_ok:  <$(printf '%s' "$_rid_bc" | tr '\n' ';')>"
   fi
 
+  # ===== SWAS-200 — identifier gates spell their letter classes out ===============================
+  # bash 3.2 (macOS /bin/sh and /bin/bash) collates a glob bracket range by LOCALE: under
+  # en_US.UTF-8 `[A-Z]` admits `b`-`z` and accented letters (not `a`) and `[0-9a-f]` admits `A`-`E`
+  # and `é`. dash and bash 5 never widen, so CI cannot see it by behaviour. Two parts:
+  # (i) a BYTE leg on every platform: each in-scope gate carries the spelled class and no range;
+  # (ii) a BEHAVIOUR leg, each judged INSIDE one bash process that also proves the shape widens
+  #      (exit 97 = the vacuity probe saw no widening = FAIL on Darwin, never a pass).
+  _lc_root="$(dirname "$0")/.."
+  _lc_up=ABCDEFGHIJKLMNOPQRSTUVWXYZ
+  _lc_row="*[!${_lc_up}0123456789-]*"
+  _lc_dial="*[!${_lc_up}0123456789_]*"
+  _lc_hex="[!0123456789abcdefABCDEF]"
+  _lc_hexl="[!0123456789abcdef]"
+  _lc_byte() {  # <file> <range form it must not carry> <spelled form it must carry>
+    _lcb_f="$_lc_root/$1"
+    if [ ! -f "$_lcb_f" ]; then
+      echo "selftest FAIL: lc/byte: $1 is missing"; st_fail=1; return 0
+    fi
+    _lcb_bad=$(grep -nF -e "$2" "$_lcb_f" | grep -v '^[0-9][0-9]*:[[:space:]]*#' || true)
+    if [ -n "$_lcb_bad" ]; then
+      echo "selftest FAIL: lc/byte: $1 still carries the locale-collated range '$2': $_lcb_bad"; st_fail=1
+    elif ! grep -qF -e "$3" "$_lcb_f"; then
+      echo "selftest FAIL: lc/byte: $1 does not carry the spelled class '$3'"; st_fail=1
+    else
+      echo "selftest PASS: lc/byte: $1 spells its class out ($2 -> $3)"
+    fi
+  }
+  _lc_byte conformance/backlog-lib.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte scripts/board-claim.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte scripts/slice-resume.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte conformance/review-lane.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte conformance/review-lane.sh '[!0-9a-fA-F' "$_lc_hex"
+  _lc_byte scripts/promotion-verify.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte scripts/promotion-verify.sh "_dv\" in ''|*[!0-9a-f]*" "$_lc_hexl"
+  _lc_byte .claude/hooks/guard-core.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte .claude/hooks/guard-core.sh '[A-Z0-9]*)' "$_lc_dial"
+  _lc_byte scripts/tracker-jira.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte scripts/tracker-jira.sh '[A-Z0-9]*)' "$_lc_row"
+  _lc_byte conformance/loop-state.sh '[!A-Z0-9' "$_lc_dial"
+  _lc_byte hooks/pre-push '[!A-Z0-9' "$_lc_dial"
+  _lc_byte hooks/pre-push '[A-Z0-9]*)' "$_lc_row"
+  _lc_byte scripts/release-tag.sh '[!A-Z0-9' "$_lc_dial"
+  _lc_byte conformance/ceremony-binding.sh '[!0-9a-fA-F' "$_lc_hex"
+  _lc_byte conformance/action-pinning.sh '[!0-9a-f' "$_lc_hexl"
+  # loop-state's Kit-Row gate has ONE judge: the sourced row_id_ok. Pin the call, so L7 below is not
+  # a leg about a function nobody calls.
+  if grep -qF -e 'if ! row_id_ok "$_ls_row"; then' "$_lc_root/conformance/loop-state.sh"; then
+    echo "selftest PASS: lc/byte: loop-state.sh's Kit-Row gate still calls row_id_ok"
+  else
+    echo "selftest FAIL: lc/byte: loop-state.sh's Kit-Row gate no longer calls row_id_ok — L7 would grade a function nobody calls"; st_fail=1
+  fi
+
+  # --- the behaviour legs: one bash process carries the locale, the option AND the gate ---------------
+  _lc_noascii=""
+  if command -v bash >/dev/null 2>&1 && bash -c 'shopt globasciiranges' >/dev/null 2>&1; then
+    _lc_noascii="+O globasciiranges"
+  fi
+  _lc_run=1
+  if ! command -v bash >/dev/null 2>&1; then
+    _lc_run=0
+    echo "selftest SKIP: lc/behaviour: no bash on this runner (byte legs still ran)"
+  elif [ "$(uname -s)" != Darwin ] && ! locale -a 2>/dev/null | grep -qi '^en_US\.utf-\{0,1\}8$'; then
+    _lc_run=0
+    echo "selftest SKIP: lc/behaviour/locale: en_US.utf8 not installed on this runner (byte legs still ran)"
+  fi
+  # _lc_expect <leg> <want-rc> <text the output must carry or ''> <bash body> [args...]
+  _lc_expect() {
+    [ "$_lc_run" = 1 ] || return 0
+    _lce_leg=$1; _lce_want=$2; _lce_text=$3; _lce_body=$4; shift 4
+    # shellcheck disable=SC2086  # _lc_noascii is deliberately word-split into its two words
+    _lce_out=$(env LC_ALL=en_US.UTF-8 bash $_lc_noascii -c "case b in [A-Z]) ;; *) exit 97 ;; esac
+$_lce_body" _ "$@" 2>&1) && _lce_rc=0 || _lce_rc=$?
+    if [ "$_lce_rc" = 97 ]; then
+      echo "selftest FAIL: lc/$_lce_leg: VACUOUS — this shell does not widen [A-Z] under en_US.UTF-8, so the leg proves nothing"; st_fail=1
+    elif [ "$_lce_rc" != "$_lce_want" ]; then
+      echo "selftest FAIL: lc/$_lce_leg: wanted rc $_lce_want, got rc $_lce_rc: $_lce_out"; st_fail=1
+    else
+      case "$_lce_out" in
+        *"$_lce_text"*) echo "selftest PASS: lc/$_lce_leg: rc $_lce_rc under the widening shape" ;;
+        *) echo "selftest FAIL: lc/$_lce_leg: rc $_lce_rc but the output lacks '$_lce_text': $_lce_out"; st_fail=1 ;;
+      esac
+    fi
+  }
+  _lc_fn() {  # <file> <function> -> a sourceable copy of exactly that function, path on stdout
+    awk -v fn="$2" '$0 ~ "^" fn "\\(\\) \\{" { p=1 } p { print } p && /^\}/ { exit }' "$_lc_root/$1" > "$base/lc_$2.sh"
+    [ -s "$base/lc_$2.sh" ] || return 1
+    printf '%s\n' "$base/lc_$2.sh"
+  }
+  _lc_snip() {  # <file> <fixed start line text> <esac count> <function> -> a function wrapping the lines after the start line
+    { printf '%s() {\n_key=$1; _asha=$1\n' "$4"
+      awk -v m="$2" -v n="$3" '!p && index($0, m) { p=1; next } p { print } p && /^  esac$/ { c++; if (c >= n) exit }' "$_lc_root/$1"
+      printf 'return 0\n}\n'
+    } > "$base/lc_$4.sh"
+    [ "$(wc -l < "$base/lc_$4.sh")" -gt 6 ] || return 1
+    printf '%s\n' "$base/lc_$4.sh"
+  }
+  _lc_loop='for i in "$@"; do if row_id_ok "$i"; then echo "ACCEPTED:$i"; exit 1; fi; done; exit 0'
+  _lc_src='. "$1"; shift;'
+  # L1/L2/L7 — row_id_ok (the one definition behind loop-state's Kit-Row gate)
+  _lc_expect L1/row_id_ok-refuses 0 '' "$_lc_src $_lc_loop" "$_lc_root/conformance/backlog-lib.sh" bX-1 SWAs-200 "ÉX-1" "SWAS-2é0" "ＡB-1"
+  _lc_expect L2/row_id_ok-accepts 0 ok '. "$1"; shift; for i in "$@"; do row_id_ok "$i" || { echo "REFUSED:$i"; exit 1; }; done; echo ok' "$_lc_root/conformance/backlog-lib.sh" SWAS-200 KW6-A2
+  _lc_expect "L7/row_id_ok-no-a (loop-state's judge)" 0 '' "$_lc_src $_lc_loop" "$_lc_root/conformance/backlog-lib.sh" kw6-b2
+  # L3 — bc_row_ok (L4, board.sh's bd_row_ok, is a residual: SWAS-244)
+  _lc_f=$(_lc_fn scripts/board-claim.sh bc_row_ok) || { echo "selftest FAIL: lc/L3: could not extract bc_row_ok"; st_fail=1; _lc_f=/dev/null; }
+  _lc_expect L3/bc_row_ok-refuses 0 '' '. "$1"; shift; for i in "$@"; do if bc_row_ok "$i"; then echo "ACCEPTED:$i"; exit 1; fi; done; bc_row_ok SWAS-1' "$_lc_f" bX-1 SWAs-200
+  # L5 — the guard's board-claim.sh check allow, the whole guard core sourced
+  _lc_expect L5/guard-clone-args-refuses 0 '' '. "$1"; for k in bx-1 SWAs-1 "ÉX-1"; do if _cp8b_clone_args_ok scripts/board-claim.sh check "$k"; then echo "ACCEPTED:$k"; exit 1; fi; done; _cp8b_clone_args_ok scripts/board-claim.sh check SWAS-1' "$_lc_root/.claude/hooks/guard-core.sh"
+  # L6 — the Jira response key arms (hostile input): refused WITH the message, a good key accepted
+  # (the _tj_cr_body create-response arms, tracker-jira.sh ~2224/2228, are covered by the byte leg only)
+  _lc_f=$(_lc_snip scripts/tracker-jira.sh 'tracker-read.sh'"'"'s tr_valid_id for the same defect and a longer note).' 2 tj_key_arm) || { echo "selftest FAIL: lc/L6: could not extract the response-key arms"; st_fail=1; _lc_f=/dev/null; }
+  _lc_expect L6/jira-response-key-refuses 0 'failed the id grammar' '. "$1"; tj_key_arm SWAS-1 || exit 1; tj_key_arm bX-1 && { echo "ACCEPTED:bX-1"; exit 1; }; exit 0' "$_lc_f"
+  # L8 — ceremony-binding's approved-sha shape: a hex-plus-accent name is not an object name
+  _lc_f=$(_lc_snip conformance/ceremony-binding.sh '  _asha_raw="$_asha"' 1 cb_sha_arm) || { echo "selftest FAIL: lc/L8: could not extract the approved-sha arm"; st_fail=1; _lc_f=/dev/null; }
+  _lc_expect L8/ceremony-approved-sha-refuses 0 'must be a hex object name' '. "$1"; cb_sha_arm abcdef1 || exit 1; cb_sha_arm "abcdéf1" && { echo "ACCEPTED:abcdéf1"; exit 1; }; exit 0' "$_lc_f"
+
   # row_count over three fixture boards: absent (0), unique (1), duplicated (2).
   d="$base/t_rid_boards"; mkdir -p "$d"
   _good_board "$d/one.md"

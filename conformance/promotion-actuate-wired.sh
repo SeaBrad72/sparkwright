@@ -136,6 +136,7 @@ write_note() { # dir sha approved-by-value [basis] [change-class|OMIT]
 # Drive <gate> actuate in <dir>; capture RC + OUT (stdout+stderr merged).
 run_actuate() { # gate dir ref sha merge-cmd
   _gate="$1"; _dir="$2"; _ref="$3"; _sha="$4"; _mc="$5"
+  _act_origin "$_dir"
   if OUT="$( ( cd "$_dir" && sh "$_gate" actuate --ref "$_ref" --approved-sha "$_sha" --merge-cmd "$_mc" ) 2>&1 )"; then
     RC=0
   else
@@ -186,8 +187,8 @@ selftest() {
   D="$(mkrepo)" || { fail "fixture build (liveness)"; return 1; }
   X="$(cat "$D/.X")"
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$VERIFY" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$VERIFY" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] \
      && printf '%s' "$OUT" | grep -q 'OK: actuated' \
      && printf '%s' "$OUT" | grep -q 'shipped == approved'; then
@@ -201,9 +202,9 @@ selftest() {
   # ---------------------------------------------------------------------------------------
   D="$(mkrepo)" || { fail "fixture build (neg1)"; return 1; }
   X="$(cat "$D/.X")"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$VERIFY" "$D" merged "$X" "$MC"
-  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q 'no recorded GO note'; then
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$VERIFY" "$D" feat "$X" "$MC"
+  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q "no GO note bound to $X on origin"; then
     pass "NEG1: no note on X -> ACTUATE REFUSED, merge not invoked (rc=$RC)"
   else
     fail "NEG1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -215,9 +216,9 @@ selftest() {
   D="$(mkrepo)" || { fail "fixture build (neg2)"; return 1; }
   X="$(cat "$D/.X")"; G="$(cat "$D/.G")"
   write_note "$D" "$G" "Reviewer B [authenticated: github-review]"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$VERIFY" "$D" merged "$X" "$MC"
-  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q "no recorded GO note on $X"; then
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$VERIFY" "$D" feat "$X" "$MC"
+  if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q "no GO note bound to $X on origin"; then
     pass "NEG2: note binds G, actuate X -> refuse (SHA binding is exact) (rc=$RC)"
   else
     fail "NEG2: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
@@ -230,8 +231,8 @@ selftest() {
     D="$(mkrepo)" || { fail "fixture build (neg-label)"; return 1; }
     X="$(cat "$D/.X")"
     write_note "$D" "$X" "Reviewer B [$_lab]"
-    MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-    run_actuate "$VERIFY" "$D" merged "$X" "$MC"
+    MC="$(_act_stub "$D" "$X")"
+    run_actuate "$VERIFY" "$D" feat "$X" "$MC"
     if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] \
        && printf '%s' "$OUT" | grep -q 'does not meet the control-plane bar'; then
       pass "NEG(label): [$_lab] fails the bar -> refuse, merge not invoked (rc=$RC)"
@@ -247,8 +248,8 @@ selftest() {
     D="$(mkrepo)" || { fail "fixture build (neg6)"; return 1; }
     X="$(cat "$D/.X")"
     write_note "$D" "$X" "$_id [authenticated: github-review]"
-    MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-    run_actuate "$VERIFY" "$D" merged "$X" "$MC"
+    MC="$(_act_stub "$D" "$X")"
+    run_actuate "$VERIFY" "$D" feat "$X" "$MC"
     if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] \
        && printf '%s' "$OUT" | grep -q 'approver equals author'; then
       pass "NEG6: approver '$_id' == author -> refuse (builder!=ratifier), merge not invoked (rc=$RC)"
@@ -264,8 +265,8 @@ selftest() {
   D="$(mkrepo)" || { fail "fixture build (neg7)"; return 1; }
   X="$(cat "$D/.X")"
   write_note "$D" "$X" "Reviewer B [committer]" "GO [authenticated: x-review]"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$VERIFY" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$VERIFY" "$D" feat "$X" "$MC"
   if [ "$RC" != 0 ] && [ ! -f "$D/.invoked" ] \
      && printf '%s' "$OUT" | grep -q 'does not meet the control-plane bar'; then
     pass "NEG7: [committer] + [authenticated:] decoy in body -> still refuse (label read ignores body)"
@@ -279,8 +280,8 @@ selftest() {
   D="$(mkrepo)" || { fail "fixture build (neg8)"; return 1; }
   X="$(cat "$D/.X")"; G="$(cat "$D/.G")"
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
-  MC="git update-ref refs/heads/merged $G && : > $D/.invoked"   # merged points at G: tree != X
-  run_actuate "$VERIFY" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X" "$G")"   # the stub moves the head ref to G AFTER step 0: tree != X
+  run_actuate "$VERIFY" "$D" feat "$X" "$MC"
   if [ "$RC" != 0 ] && [ -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q 'SHIPPED != APPROVED'; then
     pass "NEG8: merge left tree != approved -> loud SHIPPED != APPROVED (merge ran, rc=$RC)"
   else
@@ -317,8 +318,8 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ -f "$D/.released" ] \
      && grep -q 'release ROW-X --stale' "$D/.released" \
      && printf '%s' "$OUT" | grep -q "board claim on 'ROW-X' released"; then
@@ -331,8 +332,8 @@ selftest() {
   X="$(cat "$D/.X")"
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _mk_release_fixture "$D" 0
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.released" ] \
      && printf '%s' "$OUT" | grep -q 'no kit-row on the GO note'; then
     pass "CLAIM-RELEASE-NOROW: a note with no kit-row releases NOTHING and says so (no row invented)"
@@ -345,8 +346,8 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 1
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] \
      && printf '%s' "$OUT" | grep -q 'WARN — could not release the board claim' \
      && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
@@ -364,8 +365,8 @@ selftest() {
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
   printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.board-sh-ran" ] && grep -q 'release ROW-X --stale' "$D/.released" \
      && printf '%s' "$OUT" | grep -q "board claim on 'ROW-X' released" \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim released' ]; then
@@ -380,8 +381,8 @@ selftest() {
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 1
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim NOT released — see the WARN above' ]; then
     pass "CLAIM-RELEASE-MD-TAIL-FAIL: a failing md release ends 'claim NOT released — see the WARN above' (rc 0)"
   else
@@ -391,8 +392,8 @@ selftest() {
   X="$(cat "$D/.X")"
   write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
   _mk_release_fixture "$D" 0
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && ! printf '%s' "$OUT" | grep -q 'WARN' \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); no claim to release' ]; then
     pass "CLAIM-RELEASE-MD-TAIL-NONE: md + no kit-row keeps today's output (no new WARN) and ends 'no claim to release'"
@@ -410,8 +411,8 @@ selftest() {
   mkdir -p "$D/conformance"; cp "$(dirname "$VERIFY")/../conformance/backlog-lib.sh" "$D/conformance/backlog-lib.sh"
   printf 'Backlog backend: github\n' > "$D/CLAUDE.md"
   printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.board-sh-ran" ] && grep -q 'release ROW-X --stale' "$D/.released" \
      && printf '%s' "$OUT" | grep -qF "no write adapter for 'github'; move the card on 'ROW-X' by hand" \
      && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: NOT CLOSED — see the WARN above' ]; then
@@ -428,8 +429,8 @@ selftest() {
   ( cd "$D" && git notes --ref=promotions append -m 'kit-row: X;echo pwned' "$X" ) >/dev/null 2>&1
   _mk_release_fixture "$D" 0
   printf '#!/bin/sh\n: > "%s/.board-sh-ran"\nexit 0\n' "$D" > "$D/board.sh"; chmod +x "$D/board.sh"
-  MC="git update-ref refs/heads/merged $X && : > $D/.invoked"
-  run_actuate "$D/promotion-verify.sh" "$D" merged "$X" "$MC"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
   if [ "$RC" = 0 ] && [ ! -f "$D/.released" ] && [ ! -f "$D/.board-sh-ran" ] \
      && printf '%s' "$OUT" | grep -qF 'kit-row is not a valid row id; nothing released or closed' \
      && ! printf '%s' "$OUT" | grep -qF 'pwned' && ! printf '%s' "$OUT" | grep -qF 'sh scripts/board' \
@@ -437,6 +438,174 @@ selftest() {
     pass "CLAIM-RELEASE-BADROW: kit-row 'X;echo pwned' -> nothing released or closed, value not echoed, no command printed, tail NOT CLOSED"
   else
     fail "CLAIM-RELEASE-BADROW: rc=$RC released=$([ -f "$D/.released" ] && echo yes || echo no) OUT=[$OUT]"
+  fi
+
+  # ---------------------------------------------------------------------------------------
+  # SWAS-207a — `actuate` binds the head before it merges. Every negative asserts ITS OWN refusal line (an earlier new leg
+  # refusing first would pass a bare rc!=0 for the wrong reason), AND that the merge stub never ran. The shared liveness
+  # for all of them is the LIVENESS anchor above: the same fixture, a pushed note, a head ref at the sha, a pinned stub.
+  # ---------------------------------------------------------------------------------------
+  # ACT-S0-NOREF (the Architect's cell): a bare PR number with no local ref resolves to nothing -> rc 2 BEFORE any merge.
+  D="$(mkrepo)" || { fail "fixture build (ACT-S0-NOREF)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$VERIFY" "$D" 999 "$X" "$MC"
+  if [ "$RC" = 2 ] && [ ! -f "$D/.invoked" ] \
+     && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --ref '999' resolves to nothing, not the approved sha $X"; then
+    pass "ACT-S0-NOREF: --ref 999 (no local ref) -> rc 2, step 0 refusal, merge stub never ran"
+  else
+    fail "ACT-S0-NOREF: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
+  fi
+
+  # ACT-S0-MOVED: the head branch advanced one commit past the GO sha -> rc 2 naming where it resolves, merge not run.
+  D="$(mkrepo)" || { fail "fixture build (ACT-S0-MOVED)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  git -C "$D" commit -q --allow-empty -m 'pushed after the GO'
+  MV="$(git -C "$D" rev-parse HEAD)"
+  MC="$(_act_stub "$D" "$X")"
+  run_actuate "$VERIFY" "$D" feat "$X" "$MC"
+  if [ "$RC" = 2 ] && [ ! -f "$D/.invoked" ] \
+     && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --ref 'feat' resolves to $MV, not the approved sha $X"; then
+    pass "ACT-S0-MOVED: head branch moved past the GO sha -> rc 2, step 0 refusal naming the new head, merge stub never ran"
+  else
+    fail "ACT-S0-MOVED: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
+  fi
+
+  # ACT-PIN-DEFAULT: the DEFAULT merge (no --merge-cmd) is `gh pr merge <ref> --squash --match-head-commit <asha>` — asserted
+  # on the argv a `gh` PATH shim recorded. ACT-VET-ADMIN: a caller --merge-cmd carrying --admin is refused by the SHARED vet,
+  # and the same shim proves the merge never ran. Both go through the real argv path (no --merge-cmd stub script).
+  D="$(mkrepo)" || { fail "fixture build (ACT-PIN-DEFAULT)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _act_origin "$D"
+  GHS="$(mktemp -d)"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/.gh-argv"\n' "$D" > "$GHS/gh"; chmod +x "$GHS/gh"
+  if OUT="$( cd "$D" && PATH="$GHS:$PATH" sh "$VERIFY" actuate --ref feat --approved-sha "$X" 2>&1 )"; then RC=0; else RC=$?; fi
+  if [ "$RC" = 0 ] && [ "$(cat "$D/.gh-argv" 2>/dev/null)" = "pr merge feat --squash --match-head-commit $X" ]; then
+    pass "ACT-PIN-DEFAULT: the default actuate merge carries --match-head-commit <asha> (gh shim argv: pr merge feat --squash --match-head-commit <asha>)"
+  else
+    fail "ACT-PIN-DEFAULT: rc=$RC argv=[$(cat "$D/.gh-argv" 2>/dev/null)] OUT=[$OUT]"
+  fi
+  rm -f "$D/.gh-argv"
+  if OUT="$( cd "$D" && PATH="$GHS:$PATH" sh "$VERIFY" actuate --ref feat --approved-sha "$X" \
+         --merge-cmd "gh pr merge feat --squash --admin --match-head-commit $X" 2>&1 )"; then RC=0; else RC=$?; fi
+  if [ "$RC" = 1 ] && [ ! -f "$D/.gh-argv" ] \
+     && printf '%s' "$OUT" | grep -qF 'ACTUATE REFUSED: --merge-cmd carries an --admin token'; then
+    pass "ACT-VET-ADMIN: a caller --merge-cmd carrying --admin -> refused by the shared vet, gh never ran (rc=$RC)"
+  else
+    fail "ACT-VET-ADMIN: rc=$RC ghran=$([ -f "$D/.gh-argv" ] && echo yes || echo no) OUT=[$OUT]"
+  fi
+  rm -rf "$D" "$GHS" 2>/dev/null || true
+
+  # ACT-PIN-REQUIRED: a caller --merge-cmd with NO pin, and one pinning a DIFFERENT sha, are both refused before the merge.
+  D="$(mkrepo)" || { fail "fixture build (ACT-PIN-REQUIRED)"; return 1; }
+  X="$(cat "$D/.X")"; G="$(cat "$D/.G")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _act_stub "$D" "$X" >/dev/null
+  _pinbad=""
+  for _pm in "sh $D/.stub.sh" "sh $D/.stub.sh --match-head-commit $G"; do
+    rm -f "$D/.invoked"
+    run_actuate "$VERIFY" "$D" feat "$X" "$_pm"
+    if [ "$RC" != 1 ] || [ -f "$D/.invoked" ] \
+       || ! printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --merge-cmd must pin --match-head-commit <approved-sha> ($X)"; then
+      _pinbad="$_pinbad [$_pm rc=$RC invoked=$(invoked "$D")]"
+    fi
+  done
+  if [ -z "$_pinbad" ]; then pass "ACT-PIN-REQUIRED: a --merge-cmd with no pin, or pinning another sha -> refused, merge stub never ran"
+  else fail "ACT-PIN-REQUIRED: got:$_pinbad"; fi
+
+  # ACT-SHAPE (fix round): a CALLER --merge-cmd can pass the vet and the pin check textually while the shell runs the merge
+  # unpinned. Each spelling is refused BEFORE the merge with ITS OWN line (the stub never runs); the `=` spelling is the
+  # liveness partner: a single well-formed pin written `--match-head-commit=<sha>` still merges.
+  _shape_case() {  # <label> <merge-cmd> <expected needle>
+    rm -f "$D/.invoked"
+    run_actuate "$VERIFY" "$D" feat "$X" "$2"
+    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: --merge-cmd carries $3"; then
+      pass "$1: refused with its own line, merge stub never ran"
+    else
+      fail "$1: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
+    fi
+  }
+  D="$(mkrepo)" || { fail "fixture build (ACT-SHAPE)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _act_stub "$D" "$X" >/dev/null
+  _shape_case "ACT-SHAPE-COMMENT" "sh $D/.stub.sh --match-head-commit $X # pinned" "a '#'"
+  _shape_case "ACT-SHAPE-QUOTE" "sh $D/.stub.sh --match-head-commit \"$X\"" "a quote character"
+  _shape_case "ACT-SHAPE-NEWLINE" "sh $D/.stub.sh --match-head-commit $X
+:" "a newline"
+  _shape_case "ACT-SHAPE-CR" "sh $D/.stub.sh --match-head-commit $X$(printf '\r')" "a carriage return"
+  _shape_case "ACT-SHAPE-DOUBLEPIN" "sh $D/.stub.sh --match-head-commit $X --match-head-commit=$X" "more than one --match-head-commit token"
+  rm -f "$D/.invoked"
+  run_actuate "$VERIFY" "$D" feat "$X" "sh $D/.stub.sh --match-head-commit=$X"
+  if [ "$RC" = 0 ] && [ -f "$D/.invoked" ] && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
+    pass "ACT-PIN-EQUALS: a single --match-head-commit=<sha> pin passes the shape, vet and pin checks and merges (rc=0)"
+  else
+    fail "ACT-PIN-EQUALS: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
+  fi
+
+  # ACT-FULLSHA (N3): an ABBREVIATED --approved-sha still pins the FULL sha the default merge sends the forge.
+  D="$(mkrepo)" || { fail "fixture build (ACT-FULLSHA)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  _act_origin "$D"
+  GHS="$(mktemp -d)"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/.gh-argv"\n' "$D" > "$GHS/gh"; chmod +x "$GHS/gh"
+  if OUT="$( cd "$D" && PATH="$GHS:$PATH" sh "$VERIFY" actuate --ref feat --approved-sha "$(printf '%s' "$X" | cut -c1-12)" 2>&1 )"; then RC=0; else RC=$?; fi
+  if [ "$RC" = 0 ] && [ "$(cat "$D/.gh-argv" 2>/dev/null)" = "pr merge feat --squash --match-head-commit $X" ]; then
+    pass "ACT-FULLSHA: an abbreviated --approved-sha -> the default merge pins the FULL sha (gh shim argv)"
+  else
+    fail "ACT-FULLSHA: rc=$RC argv=[$(cat "$D/.gh-argv" 2>/dev/null)] OUT=[$OUT]"
+  fi
+
+  # ACT-CNTRL (N4): note-derived text (the assurance label, the change-class) never reaches the terminal with a control
+  # byte. The ESC is planted in the NOTE; the refusal still names the bar, and the output carries no ESC.
+  _esc="$(printf '\033')"
+  for _cn in label class; do
+    D="$(mkrepo)" || { fail "fixture build (ACT-CNTRL $_cn)"; return 1; }
+    X="$(cat "$D/.X")"
+    if [ "$_cn" = label ]; then write_note "$D" "$X" "Reviewer B [evil${_esc}x]"
+    else write_note "$D" "$X" "Reviewer B [authenticated: github-review]" "reviewer APPROVE" "Ord${_esc}inary"; fi
+    run_actuate "$VERIFY" "$D" feat "$X" "$(_act_stub "$D" "$X")"
+    if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && ! printf '%s' "$OUT" | grep -q "$_esc" \
+       && printf '%s' "$OUT" | grep -qE "ACTUATE REFUSED: (assurance 'evilx'|unrecognised or missing change-class 'Ordinary')"; then
+      pass "ACT-CNTRL: a control byte in the note's $_cn is stripped from the refusal (no ESC in the output)"
+    else
+      fail "ACT-CNTRL ($_cn): rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
+    fi
+  done
+
+  # ACT-ORIGIN-LOCALONLY: the SAME note, recorded locally but NOT published -> refused (the origin read is the bar). The liveness
+  # partner is every actuate cell above: the identical fixture with the note pushed to the bare origin proceeds.
+  D="$(mkrepo)" || { fail "fixture build (ACT-ORIGIN-LOCALONLY)"; return 1; }
+  X="$(cat "$D/.X")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  MC="$(_act_stub "$D" "$X")"
+  ACT_LOCAL_ONLY=1; run_actuate "$VERIFY" "$D" feat "$X" "$MC"; ACT_LOCAL_ONLY=0
+  if [ "$RC" = 1 ] && [ ! -f "$D/.invoked" ] && [ -n "$(_note_of "$D" "$X")" ] \
+     && printf '%s' "$OUT" | grep -qF "ACTUATE REFUSED: no GO note bound to $X on origin"; then
+    pass "ACT-ORIGIN-LOCALONLY: a note present only locally -> refused 'no GO note bound to <sha> on origin', merge stub never ran"
+  else
+    fail "ACT-ORIGIN-LOCALONLY: rc=$RC invoked=$(invoked "$D") OUT=[$OUT]"
+  fi
+
+  # ACT-TAIL: the merge ran, the post-check MISMATCHES (the stub moves the head ref after step 0) -> rc 1 and loud, AND the
+  # board tail still ran: the claim was released and the tail line is the LAST line. (The old tail returned before step 6.)
+  D="$(mkrepo)" || { fail "fixture build (ACT-TAIL)"; return 1; }
+  X="$(cat "$D/.X")"; G="$(cat "$D/.G")"
+  write_note "$D" "$X" "Reviewer B [authenticated: github-review]"
+  ( cd "$D" && git notes --ref=promotions append -m 'kit-row: ROW-X' "$X" ) >/dev/null 2>&1
+  _mk_release_fixture "$D" 0
+  MC="$(_act_stub "$D" "$X" "$G")"
+  run_actuate "$D/promotion-verify.sh" "$D" feat "$X" "$MC"
+  if [ "$RC" = 1 ] && [ -f "$D/.invoked" ] && grep -q 'release ROW-X --stale' "$D/.released" \
+     && printf '%s' "$OUT" | grep -qF 'SHIPPED != APPROVED' \
+     && [ "$(printf '%s\n' "$OUT" | tail -1)" = 'board: row closes with the PR (md); claim released' ]; then
+    pass "ACT-TAIL: a post-check mismatch after the merge -> rc 1, SHIPPED != APPROVED, the claim released, the board-tail line is the last line"
+  else
+    fail "ACT-TAIL: rc=$RC released=[$(cat "$D/.released" 2>/dev/null)] OUT=[$OUT]"
   fi
 
   # ---------------------------------------------------------------------------------------
@@ -622,8 +791,8 @@ AWK
     DN="$(mkrepo)" || { fail "self-negative fixture build"; return 1; }
     XN="$(cat "$DN/.X")"
     write_note "$DN" "$XN" "Reviewer B [self-asserted]"
-    MCN="git update-ref refs/heads/merged $XN && : > $DN/.invoked"
-    run_actuate "$NEUT" "$DN" merged "$XN" "$MCN"
+    MCN="$(_act_stub "$DN" "$XN")"
+    run_actuate "$NEUT" "$DN" feat "$XN" "$MCN"
     if [ "$RC" = 0 ] && [ -f "$DN/.invoked" ]; then
       pass "LOCK SELF-NEGATIVE: neutralized bar actuated a [self-asserted] note -> the bar-check is LOAD-BEARING"
     else
@@ -653,8 +822,8 @@ AWK
   _run_record "$DL" "$GL" "PR #260" "Reviewer B" "$XL"
   NL="$(_note_of "$DL" "$XL")"
   if [ "$RC" = 0 ] && printf '%s\n' "$NL" | grep -qF 'approved-by: Reviewer B [authenticated: github-review]'; then
-    MC="git update-ref refs/heads/merged $XL && : > $DL/.invoked"
-    run_actuate "$VERIFY" "$DL" merged "$XL" "$MC"
+    MC="$(_act_stub "$DL" "$XL")"
+    run_actuate "$VERIFY" "$DL" feat "$XL" "$MC"
     if [ "$RC" = 0 ] && [ -f "$DL/.invoked" ] && printf '%s' "$OUT" | grep -q 'OK: actuated'; then
       pass "REC-L LIVENESS: derived [authenticated: github-review] -> actuate merged it (rc=0) — the gate is REACHABLE by a production path"
     else
@@ -799,8 +968,8 @@ AWK
   DCP="$(mkrepo)" || { fail "ACT-CP: fixture build"; return 1; }
   XCP="$(cat "$DCP/.X")"
   write_note "$DCP" "$XCP" "Reviewer B [authenticated: github-review]" "reviewer APPROVE" "Control-plane"
-  MC="git update-ref refs/heads/merged $XCP && : > $DCP/.invoked"
-  run_actuate "$VERIFY" "$DCP" merged "$XCP" "$MC"
+  MC="$(_act_stub "$DCP" "$XCP")"
+  run_actuate "$VERIFY" "$DCP" feat "$XCP" "$MC"
   if [ "$RC" != 0 ] && [ ! -f "$DCP/.invoked" ] \
      && printf '%s' "$OUT" | grep -q 'ACTUATE REFUSED' \
      && printf '%s' "$OUT" | grep -qF 'TIER-3-CP-MERGE-ACTUATION-RULING'; then
@@ -820,8 +989,8 @@ AWK
     DUK="$(mkrepo)" || { fail "ACT-UNKNOWN: fixture build"; return 1; }
     XUK="$(cat "$DUK/.X")"
     write_note "$DUK" "$XUK" "Reviewer B [authenticated: github-review]" "reviewer APPROVE" "$_uc"
-    MC="git update-ref refs/heads/merged $XUK && : > $DUK/.invoked"
-    run_actuate "$VERIFY" "$DUK" merged "$XUK" "$MC"
+    MC="$(_act_stub "$DUK" "$XUK")"
+    run_actuate "$VERIFY" "$DUK" feat "$XUK" "$MC"
     if [ "$RC" != 0 ] && [ ! -f "$DUK/.invoked" ] \
        && printf '%s' "$OUT" | grep -qF 'unrecognised or missing change-class'; then
       pass "ACT-UNKNOWN: change-class '$_uc' -> REFUSED by the allowlist, merge not invoked (rc=$RC)"
@@ -1137,10 +1306,12 @@ AWK
     ) || { fail "metering-gate fixture build"; return 1; }
     MX="$(cat "$MD/.X")"
     # A REAL origin: the gate takes the docs-only base from the REMOTE (ls-remote), never the local ref.
-    # `nobase` = the remote is unreachable (the local origin/main ref is still set, so a gate that trusted it would exempt).
+    # `nobase` = the remote answers but carries no `main` (the local origin/main ref is still set, so a gate that trusted
+    # it would exempt). It must stay REACHABLE: the GO note is read from origin first (SWAS-207a), so an unreachable
+    # origin would refuse on the note and never reach the base read this leg pins.
     _mo="$MD/.origin.git"; mkdir -p "$_mo"; git -C "$_mo" init -q --bare
-    if [ "${5:-}" = nobase ]; then git -C "$MD" remote add origin "$MD/no-such-origin"
-    else git -C "$MD" remote add origin "$_mo"; git -C "$MD" push -q origin "$(cat "$MD/.G"):refs/heads/main"; fi
+    git -C "$MD" remote add origin "$_mo"
+    if [ "${5:-}" != nobase ]; then git -C "$MD" push -q origin "$(cat "$MD/.G"):refs/heads/main"; fi
     git -C "$MD" update-ref refs/remotes/origin/main "$(cat "$MD/.G")"
     write_note "$MD" "$MX" "Reviewer B [authenticated: github-review]"
     [ "$_mrow" = NONE ] || ( cd "$MD" && git notes --ref=promotions append -m "kit-row: $_mrow" "$MX" ) >/dev/null 2>&1
@@ -1153,9 +1324,10 @@ AWK
   }
   mga_act() {   # -> RC, OUT. The ambient redirection/dial env is scrubbed; $MGA_ENVX re-adds a leg's own.
     rm -f "$MD/.invoked"
+    _act_origin "$MD"   # the GO note is read from ORIGIN: publish the leg's (possibly rewritten) note first
     if OUT="$( cd "$MD/${MGA_SUB:-}" && env -u KIT_RUNAWAY_SANDBOX -u RUNAWAY_TALLY -u RUNAWAY_BUDGET_CONFIG -u RUNAWAY_METERING_GATE \
-          HOME="$MH" $MGA_ENVX "$MGA_SH" "$MGA_K/scripts/promotion-verify.sh" actuate --ref merged --approved-sha "$MX" \
-          --merge-cmd "git update-ref refs/heads/merged $MX && : > $MD/.invoked" 2>&1 )"; then RC=0; else RC=$?; fi
+          HOME="$MH" $MGA_ENVX "$MGA_SH" "$MGA_K/scripts/promotion-verify.sh" actuate --ref feat --approved-sha "$MX" \
+          --merge-cmd "$(_act_stub "$MD" "$MX")" 2>&1 )"; then RC=0; else RC=$?; fi
   }
   mga_check() {   # <label> <proceed|refuse> <needle>... (a leading ! = must NOT appear)
     _ml="$1"; _mw="$2"; shift 2; _mbad=""
@@ -1245,11 +1417,11 @@ AWK
     git fetch -q "$_mgold" refs/notes/promotions:refs/notes/promotions ) || fail "could not build the notes-only fixture"
   if git -C "$MD" cat-file -e "${MX}^{commit}" 2>/dev/null; then fail "notes-only fixture unexpectedly holds the approved commit"; fi
   mga_act; rm -rf "$_mgold" 2>/dev/null || true
-  # ACTUATE-SOD-EMPTY-AUTHOR: SoD now speaks FIRST on an absent commit (it cannot compare an unreadable author), so the
-  # refusal is the SoD reason with the fetch remedy — NOT the metering gate's. The gate's own unresolvable-sha branch
-  # stays as a belt but is unreachable from this verb (pv_sod_author_check refuses earlier).
-  mga_check "ACT-METER(fix2 A): a note whose approved commit is ABSENT locally -> refused by SoD with the fetch remedy, NO merge (default env)" refuse \
-    "ACTUATE REFUSED: the approved commit" "is not in this clone — SoD cannot compare the approver to its author" "git fetch origin" "!(metering gate)"
+  # SWAS-207a step 0: the approved commit is ABSENT locally, so `--ref` cannot equal it and the verb refuses BEFORE it reads
+  # the note, SoD or the meter gate — the SoD/metering "absent commit" arms are now unreachable from `actuate` (they stay
+  # live for `land`). The refusal is step 0's own line, with the fetch remedy — NOT SoD's and NOT the metering gate's.
+  mga_check "ACT-METER(fix2 A): a note whose approved commit is ABSENT locally -> refused by step 0 with the fetch remedy, NO merge (default env)" refuse \
+    "ACTUATE REFUSED: --ref 'feat' resolves to nothing" "nothing was merged" "git fetch origin <branch>:<branch>" "!(metering gate)" "!SoD"
 
   # SODEA-A1: the same notes-only clone with the dial in OBSERVE — the reason must be the SoD one, and no merge.
   mga_fx "$MGA_OBS" ROW-SA1 code; _mgold="$MD"; MD="$(mktemp -d)"
@@ -1257,8 +1429,8 @@ AWK
     git fetch -q "$_mgold" refs/notes/promotions:refs/notes/promotions ) || fail "could not build the SODEA-A1 notes-only fixture"
   if git -C "$MD" cat-file -e "${MX}^{commit}" 2>/dev/null; then fail "SODEA-A1 fixture unexpectedly holds the approved commit"; fi
   mga_act; rm -rf "$_mgold" 2>/dev/null || true
-  mga_check "SODEA-A1: notes-only clone, observe -> refused by the SoD reason (names the missing commit + git fetch origin), NOT the metering gate, NO merge" refuse \
-    "ACTUATE REFUSED: the approved commit $MX is not in this clone" "SoD cannot compare the approver to its author" "git fetch origin" "!(metering gate)"
+  mga_check "SODEA-A1: notes-only clone, observe -> refused by step 0 (the approved commit is absent, so --ref cannot equal it; the SoD arm stays live for land), NOT the metering gate, NO merge" refuse \
+    "ACTUATE REFUSED: --ref 'feat' resolves to nothing, not the approved sha $MX" "git fetch origin <branch>:<branch>" "!(metering gate)" "!SoD"
 
   # SODEA-A2: a case-varied and a whitespace-varied self-approval (the author is 'Author A') are refused, NO merge.
   # Each is a note the fixture would otherwise PROCEED on (authenticated, ordinary, commit present), so step 3 is really reached.
@@ -1370,7 +1542,7 @@ AWK
   rm -rf "$MGA_ROOT" 2>/dev/null || true
 
   if [ "$st" = 0 ]; then
-    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends; GO identity: land L1-L4+L6 (the CP bar, the belt) + record L5/L7 (go-by))"
+    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends; GO identity: land L1-L4+L6 (the CP bar, the belt) + record L5/L7 (go-by); SWAS-207a head binding: step 0 x2, the pinned default, the shared vet, the pin requirement, the origin-read note, the never-skipped tail)"
   else
     echo "FAIL: promotion-actuate-wired selftest"
   fi
@@ -1483,6 +1655,30 @@ _run_record() {
 
 # _note_of <dir> <sha> -> the recorded note body ('' when none).
 _note_of() { ( cd "$1" && git notes --ref=promotions show "$2" 2>/dev/null ) || true; }
+
+# ── SWAS-207a actuate fixtures. `actuate` now (a) reads the GO note from ORIGIN, (b) refuses a --ref that is not the
+#    PR's head branch AT the approved sha before any merge, and (c) requires the merge command to pin
+#    --match-head-commit <sha> and pass land's vet. So every actuate cell needs: a bare origin holding the note, a
+#    head ref (`feat`, which mkrepo/mga_fx leave at the approved sha) and a merge stub that is a SCRIPT FILE (the
+#    merge command carries no shell metacharacter).
+# _act_origin <dir> — a bare origin as `origin`, with the dir's GO notes ref pushed (unless ACT_LOCAL_ONLY=1 — the
+#    note-stays-local negative). Idempotent; the push is forced so a leg that rewrote its note re-publishes it.
+_act_origin() {
+  _ao="$1/.act-origin.git"
+  if [ ! -d "$_ao" ]; then git init -q --bare "$_ao"; fi
+  git -C "$1" remote get-url origin >/dev/null 2>&1 || git -C "$1" remote add origin "$_ao"
+  if [ "${ACT_LOCAL_ONLY:-0}" != 1 ] && git -C "$1" rev-parse -q --verify refs/notes/promotions >/dev/null 2>&1; then
+    git -C "$1" push -q -f origin refs/notes/promotions:refs/notes/promotions >/dev/null 2>&1 || echo "FAIL: fixture could not publish the GO note to origin" >&2
+  fi
+}
+# _act_stub <dir> <sha> [move-head-to] — writes <dir>/.stub.sh (touches <dir>/.invoked, records its argv in
+#    <dir>/.argv, and optionally moves the head ref `feat` to <move-head-to> AFTER step 0 has passed) and echoes the
+#    --merge-cmd that runs it with the pin.
+_act_stub() {
+  printf '#!/bin/sh\n: > "%s/.invoked"\nprintf "%%s\\n" "$*" > "%s/.argv"\n' "$1" "$1" > "$1/.stub.sh"
+  [ -z "${3:-}" ] || printf 'git -C "%s" update-ref refs/heads/feat %s\n' "$1" "$3" >> "$1/.stub.sh"
+  printf 'sh %s/.stub.sh --match-head-commit %s\n' "$1" "$2"
+}
 
 # ── GO-IDENTITY-AND-LAND-SOD land fixtures. `land` records THROUGH origin and refuses --no-push, so these
 #    legs need a real bare origin (a throwaway under mktemp; PROMOTION_NOTES_REF names the fixture ledger,

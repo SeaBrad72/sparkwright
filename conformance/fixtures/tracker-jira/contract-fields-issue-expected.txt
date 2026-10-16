@@ -1,10 +1,11 @@
-issuetype	Size	Risk
-Epic	customfield_10049	customfield_10050
-Task	customfield_10046	customfield_10047
-Story	customfield_10043	customfield_10044
+issuetype	Size	Risk	Metric
+Epic	customfield_10049	customfield_10050	-
+Task	customfield_10046	customfield_10047	customfield_10077
+Story	customfield_10043	customfield_10044	customfield_10078
 paste into .kit/tracker.conf for create.issuetype=Task:
 field.size=customfield_10046
 field.risk=customfield_10047
+field.metric=customfield_10077
 REQUIRED (create screen of 'Task'):
 id	kind	name	allowed	required-by
 customfield_10046	option	Size	XS|S|M|L|XL	create

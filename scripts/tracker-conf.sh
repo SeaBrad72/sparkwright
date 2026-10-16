@@ -284,6 +284,13 @@ _tc_validate_line() {
       case "$_v" in
         ''|*[!A-Za-z0-9-]*) _tc_reason="refused: cloud_id must match ^[A-Za-z0-9-]+\$ (got '$(_tc_disp "$_v")')"; return 1 ;;
       esac ;;
+    as.agent)
+      # SWAS-196: the account the Keychain lookup must name (twin of tracker-cred.sh _tcr_acct_ok). An identifier, not a secret.
+      case "$_v" in
+        '') _tc_reason="refused: as.agent must not be empty (omit the key, or name the agent account email)"; return 1 ;;
+        *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@._+-]*) _tc_reason="refused: as.agent must match ^[A-Za-z0-9@._+-]+\$ (no space, quote or control byte) - got '$(_tc_disp "$_v")'"; return 1 ;;
+      esac
+      [ "${#_v}" -le 254 ] || { _tc_reason="refused: as.agent must be at most 254 bytes (got ${#_v})"; return 1; } ;;
     *)
       _tc_reason="refused: unknown key '$(_tc_disp "$_k")' (see docs/architecture/2026-09-19-tracker-backed-governance-design.md section 5 for the supported grammar) - fix: remove it or use a supported key"
       return 1 ;;
@@ -364,7 +371,7 @@ _tc_validate_file() {
       *' #'*|*"$(printf '\t')#"*) _v=$(printf '%s' "$_v" | sed -E 's/[ 	]+#.*$//') ;;
     esac
     # shellcheck disable=SC2194  # deliberate closed-set membership idiom (case " list " in *" $x "*)
-    case " version backend base_url flavour auth project list_cap proxy ca_file cloud_id create.issuetype " in
+    case " version backend base_url flavour auth project list_cap proxy ca_file cloud_id create.issuetype as.agent " in
       *" $_k "*)
         case "$_tc_seen" in
           *" $_k "*) _tc_reason="refused: $_k is set more than once (a duplicate singleton key can silently repoint the pin - remove all but one)"; return 1 ;;
@@ -425,6 +432,7 @@ list_cap=200
 proxy=https://proxy.example.com:8080
 ca_file=/etc/ssl/certs/ca.pem
 cloud_id=abc-123
+as.agent=a.b+c@ex.co
 EOF
 
   # --- positive anchor ---
@@ -513,6 +521,10 @@ EOF
   else
     echo "FAIL: selftest — get on an invalid conf must refuse with rc 1 and no stdout (got rc=$g_bad_rc, stdout='$g_bad_out')"; sfail=1
   fi
+  # SWAS-196: as.agent names the account the Keychain lookup must use; it reads back as written.
+  gaa=$(sh "$0" get as.agent "$ok" 2>/dev/null || true)
+  [ "$gaa" = "a.b+c@ex.co" ] && echo "PASS: selftest — as.agent=a.b+c@ex.co parses and reads back (SWAS-196)" \
+    || { echo "FAIL: selftest — as.agent was rejected or mis-read (got '$gaa')"; sfail=1; }
   # BOARD-CREATE-HONOURS-FIELD-MAP: create.issuetype admits a name with a space and reads back as written.
   cit_ok="$tmpd/cit-ok.conf"
   printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nproject=AB\ncreate.issuetype=Sub Task_2-x  # the type\n' > "$cit_ok"
@@ -659,6 +671,21 @@ create.issuetype="
   _assert_refused "create.issuetype repeated" "$_base
 create.issuetype=Task
 create.issuetype=Story"
+  # SWAS-196: as.agent is a singleton in the account charset, at most 254 bytes; each rule has its own sentence.
+  _assert_refused "as.agent repeated" "$_base
+as.agent=a@ex.co
+as.agent=b@ex.co"
+  _assert_refused "as.agent carries a space" "$_base
+as.agent=a b@ex.co"
+  _assert_refused "as.agent carries a quote" "$_base
+as.agent=a\"b@ex.co"
+  _assert_refused "as.agent value runs onto a second line" "$_base
+as.agent=a@ex.co
+b@ex.co"
+  _assert_refused "as.agent empty" "$_base
+as.agent="
+  _assert_refused "as.agent over 254 bytes" "$_base
+as.agent=$(printf 'a%.0s' $(seq 1 250))@ex.co"
   # TRACKER-REQUIRED-FIELDS-DISCOVERY: create.<token> — each rule refuses with its OWN sentence.
   _assert_refused "create token starts with a digit" "$_base
 create.1abc=x"

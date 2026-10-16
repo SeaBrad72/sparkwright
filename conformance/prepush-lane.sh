@@ -87,7 +87,8 @@
 #        sh conformance/prepush-lane.sh --derive | --census [--ci-file <path>] | --selftest | --help
 # THE DEFAULT RUN (no --warranted; PREPUSH-CORE-DEFAULT) proves the change's OWN surface, in this order:
 #   the scoped lint of the listing's shell files (shellcheck.sh --listed; the full lock stays in CI) ->
-#   the touched selftests (selftest-hermetic --touched) -> the board gates (when BACKLOG.md is touched) ->
+#   the secret scan of <merge-base>..HEAD (`core-secretscan`: secret-scan-wired.sh --range, the PR-range scan
+#   CI runs; gitleaks absent is UNVERIFIED and blocks, never a skip) -> the touched selftests (selftest-hermetic --touched) -> the board gates (when BACKLOG.md is touched) ->
 #   the twins. It does NOT run the ~80 CI-derived core-live checks: it counts them in one `core-live: N …
 #   NOT run` note. CI runs every one of them; `--warranted` runs them locally. Bucket derivation
 #   (--derive, --census, the `buckets:` line) is unchanged — only which buckets EXECUTE differs. The OK
@@ -592,10 +593,12 @@ subst_argv() {
 # `conformance/ci-classify-changes.sh` (docs_classify, reco) is the LANE'S OWN helper, not a derived
 # invocation (reviewer M-4): the lane calls it directly, so it runs OUTSIDE the scrub, the dash shim and
 # the ceiling, by design — it is CI's own classifier (D-240903-3), asked the same question CI asks, and
-# it must be answered BEFORE any bucket or work root exists to run it in.
-RUN_HB=""; RUN_RC=0; RUN_S=0; VERBOSE=0; BEST=0; HEAVY=""; HEAVY_ARG=""; WARRANTED=0; BASE="origin/main"
+# it must be answered BEFORE any bucket or work root exists to run it in. Likewise twin_na (SWAS-163) sources
+# `conformance/backlog-lib.sh` (resolve_backend) in a subshell, outside the scrub: this tree's own code, which the
+# twins already run, so it grants no new capability.
+RUN_HB=""; RUN_SPLIT=0; RUN_RC=0; RUN_S=0; VERBOSE=0; BEST=0; HEAVY=""; HEAVY_ARG=""; WARRANTED=0; BASE="origin/main"
 BASE_SHA=""; DOCS_ONLY=false; DASH=""; SHIMDIR=""; TIMEOUT_BIN=""; CEIL=120; FLOOR=6144; FREE=""
-ARGVLOG=""; UNV=""; FAILS=0; RAN=0; HCEIL=3600; SELFCEIL=3600
+ARGVLOG=""; UNV=""; MB=""; FAILS=0; RAN=0; HCEIL=3600; SELFCEIL=3600
 # SELFCEIL (reviewer I-1): the core-selftest face is ONE call to selftest-hermetic.sh --touched running
 # BOTH hermeticity faces over the whole touched set, so it is not bounded by the 120 s per-check core
 # ceiling; "add a heavy row" is the wrong remedy (it is the core, not a heavy invocation), so its overrun
@@ -665,6 +668,7 @@ base_check() {
 # path containing a NEWLINE cannot split into two: record count != line count, and the run is UNVERIFIED naming the offender (git quotes it safely).
 listing_derive() {
   _mb=$(git merge-base "$BASE_SHA" HEAD 2>/dev/null) || { unv "no merge-base with $BASE"; return 0; }
+  MB=$_mb                                          # carried out for the secret-scan range arm
   { git diff -z --name-only --no-renames "$_mb" HEAD; git ls-files -z --others --exclude-standard; } \
     > "$WORK/listing.z"
   tr '\0' '\n' < "$WORK/listing.z" | LC_ALL=C sort -u > "$WORK/listing"
@@ -765,9 +769,19 @@ run_inv() {
   _al=""; for _t in "$@"; do _al="$_al $(qtok "$_t")"; done
   printf '%s\n' "${_al# }" >> "$ARGVLOG"
   _t0=$(date +%s); RUN_RC=0
+  if [ "$RUN_SPLIT" -eq 1 ]; then   # SWAS-163: a board-bound twin keeps stderr apart (hooks/pre-push's discriminant reads stderr alone)
+    scrubbed_run "$_cl" "$@" > "$WORK/out" 2> "$WORK/err" < /dev/null || RUN_RC=$?
+    cat "$WORK/err" >> "$WORK/out"
+  else scrubbed_run "$_cl" "$@" > "$WORK/out" 2>&1 < /dev/null || RUN_RC=$?; fi
+  RUN_S=$(( $(date +%s) - _t0 ))
+}
+# scrubbed_run <ceiling> <argv…> — the scrubbed subshell run_inv executes (the body, factored out so the split-stderr path shares it).
+scrubbed_run() {
+  _cl=$1; shift
   (
     _kgl=${KIT_GUARD_LOG-}; _hb=$RUN_HB
     unset_pfx GH_; unset_pfx GIT_; unset_pfx KIT_; unset_pfx BOARD_CLAIM_; unset_pfx PREPUSH_
+    unset_pfx JIRA_   # SWAS-186: the tracker-contract twin's legacy credential pair (JIRA_EMAIL/JIRA_TOKEN); nothing else needs a JIRA_ name
     unset SSH_AUTH_SOCK SSH_ASKPASS BASH_ENV ENV CDPATH NODE_OPTIONS PYTHONPATH PERL5OPT RUBYOPT \
           HERMETIC_BASE IFS 2>/dev/null || :
     HOME=$WORK/empty; GH_CONFIG_DIR=$WORK/gh; TMPDIR=$WORK; LC_ALL=C
@@ -777,14 +791,19 @@ run_inv() {
     [ -z "$_kgl" ] || { KIT_GUARD_LOG=$_kgl; export KIT_GUARD_LOG; }
     [ -z "$_hb" ] || { HERMETIC_BASE=$_hb; export HERMETIC_BASE; }
     run_timed "$_cl" "$@"
-  ) > "$WORK/out" 2>&1 < /dev/null || RUN_RC=$?
-  RUN_S=$(( $(date +%s) - _t0 ))
+  )
 }
 # report_inv <bucket> <label> <expect-rc> <ceiling> — one line per invocation; a failing invocation's
 # output is printed IN FULL (never tail'd), indented so it can never be mistaken for a report line.
 report_inv() {
   RAN=$((RAN+1))
   if [ "$RUN_RC" -eq "$3" ]; then printf '  OK    %-18s %-46s %4ss\n' "$1" "$2" "$RUN_S"; return 0; fi
+  # UNVERIFIED (rc 2 from the secret-scan range arm = gitleaks absent): the scan did NOT run, which is not a
+  # FAIL and never an OK. It sets the lane's UNV, so the verdict is UNVERIFIED and the rc non-zero.
+  if [ "$RUN_RC" -eq 2 ] && [ "$1" = core-secretscan ]; then
+    printf '  UNVERIFIED  %-12s %-46s\n' "$1" "$2"; unv "secret-scan did not run: gitleaks absent or the scan could not run (UNVERIFIED; install gitleaks, CI runs the pinned scan)"
+    LC_ALL=C sed 's/^/        | /' "$WORK/out" 2>/dev/null || :; return 0
+  fi
   FAILS=$((FAILS+1))
   case $RUN_RC in
     124|137|143) [ "$RUN_S" -lt "$4" ] || {
@@ -865,6 +884,35 @@ run_shellcheck_scoped() {
     note "core-shellcheck: SKIPPED, not clean — shellcheck is not installed here (CI runs the full lock)"
   fi
 }
+# run_parselint_scoped — SWAS-236: CI's SAST-parse step reds on a parse error in any conformance/sast-parse-files.txt
+# file; shell-parse-lint.sh is the local matcher for it. Lints only the listing ∩ that list (one POSIX awk, entries
+# normalised: a CRLF or trailing-blank entry must not match nothing and fail OPEN). A FIXED argv, never eval.
+run_parselint_scoped() {
+  _pl=conformance/sast-parse-files.txt
+  if [ -f "$_pl" ] && grep -qxF 'conformance/shell-parse-lint.sh' "$WORK/scripts" 2>/dev/null; then
+    LC_ALL=C awk 'NR==FNR { sub(/[ \t\r]+$/, ""); sub(/^[ \t]+/, ""); sub(/^(\.\/)+/, ""); if ($0 == "" || $0 ~ /^[ \t]*#/) next; w[$0] = 1; next } ($0 in w)' "$_pl" "$WORK/listing" > "$WORK/parselint.list"
+  else : > "$WORK/parselint.list"; fi
+  [ -s "$WORK/parselint.list" ] || { note "skipped: SAST-parse lint — the listing names no $_pl file"; return 0; }
+  run_inv "$SELFCEIL" sh conformance/shell-parse-lint.sh --list "$WORK/parselint.list"
+  report_inv core-parselint "shell-parse-lint (touched sast-parse files)" 0 "$SELFCEIL"
+  [ "$RUN_RC" -eq 0 ] || note "core-parselint: put esac (and each arm) on its own line; CI's semgrep SAST-parse step stays the net"
+}
+# run_secretscan_scoped — SWAS-175: the pre-push turn runs the SAME scan CI runs on a pull request, over the
+# committed range <merge-base>..HEAD (`secret-scan-wired.sh --range`; a finding is reported BEFORE the push).
+# A FIXED argv through run_inv/report_inv — never eval. Blocking: gitleaks absent is UNVERIFIED (report_inv),
+# not a skip. No merge-base: the range cannot be derived, so nothing runs and the row is UNVERIFIED.
+run_secretscan_scoped() {
+  if [ -z "$MB" ]; then
+    RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-secretscan "no merge-base: the PR range is underivable, no scan ran"
+    unv "secret-scan range underivable (no merge-base)"; return 0
+  fi
+  if ! grep -qxF 'conformance/secret-scan-wired.sh' "$WORK/scripts" 2>/dev/null; then
+    RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-secretscan "conformance/secret-scan-wired.sh is not a regular file in this tree: the scan cannot run"
+    unv "secret-scan checker absent (conformance/secret-scan-wired.sh)"; return 0
+  fi
+  run_inv "$SELFCEIL" sh conformance/secret-scan-wired.sh --range "$MB"
+  report_inv core-secretscan "gitleaks range scan ($MB..HEAD)" 0 "$SELFCEIL"
+}
 # ---- PREPUSH-CORE-DEFAULT: the --warranted tree-key cache (design §3 item 3, §5) ----------------------
 # A CONVENIENCE FOR THE PERSON RUNNING THE LANE, NEVER EVIDENCE: it is local, per-user and forgeable (a
 # 32-bit cksum key, a plain file under $HOME), CI never reads it, and a SKIP line is not a pass. It applies
@@ -888,7 +936,7 @@ run_shellcheck_scoped() {
 #               owned by the current user, or is unreadable · the `passed` file is not a readable regular file.
 # The file is never sourced or eval'd: lookups are exact field equality (awk, via ENVIRON — no -v decoding),
 # and an arm label carrying a tab or newline is never cached.
-CACHE_OK=0; CACHE_FILE=""; CACHE_KEY_FULL=""; CACHE_KEY_BK=""; CACHE_HEAD=""; CACHE_SKIPS=0; CORE_N=0
+CACHE_OK=0; CACHE_FILE=""; CACHE_KEY_FULL=""; CACHE_KEY_BK=""; CACHE_HEAD=""; CACHE_SKIPS=0; CORE_N=0; TN=0
 cache_off() { CACHE_OK=0; note "cache: off — $1 (every --warranted arm runs)"; }
 # cache_cksum — stdin -> `<crc>-<len>` on stdout (empty on failure).
 cache_cksum() {
@@ -994,6 +1042,8 @@ run_core() {
     note "core-live: $CORE_N CI-derived checks NOT run by default — --warranted runs them; CI runs every one"
     run_shellcheck_scoped
   fi
+  run_parselint_scoped
+  run_secretscan_scoped
   if [ -s "$WORK/q.sel" ]; then
     RUN_HB=$BASE; run_inv "$SELFCEIL" sh conformance/selftest-hermetic.sh --touched; RUN_HB=""
     # The count is the HERMETIC LANE'S OWN (its `TARGET:` lines), not this lane's q.sel: it re-derives
@@ -1081,6 +1131,18 @@ run_board() {
     report_inv core-board "$_bn ($_bb.sh${_ba:+ $_ba})" 0 "$SELFCEIL"
   done 3< "$WORK/board.rows"
 }
+# twin_na <row> <rc> (SWAS-163) — 0 only for a board-bound twin whose ONLY failure is NOT ENFORCED on a
+# hosted-tracker tree: a closed two-name list, the row's own NOT ENFORCED rc, a hosted backend read by the
+# one resolver (sets TWIN_BE), and hooks/pre-push's M-1 discriminant over the captured output. rc 0 is never here.
+twin_na() {
+  case "$1:$2" in loop-state:1|backlog-presence:3) ;; *) return 1 ;; esac
+  TWIN_BE=$( exec 2>/dev/null; . conformance/backlog-lib.sh; resolve_backend . ) || TWIN_BE=""
+  case $TWIN_BE in ''|md|unrecognized:*) return 1 ;; esac
+  # loop-state: STDERR alone, minus its epilogue (the hook's stream); backlog-presence prints its notice on stdout, so it reads both.
+  _tp='/^$/d'; _tf=$WORK/out; [ "$1" != loop-state ] || { _tp='/^loop-state: FAIL /,$d'; _tf=$WORK/err; }
+  _tn_all=$(LC_ALL=C sed "$_tp" "$_tf" | LC_ALL=C grep -v '^[[:space:]]*$') || :
+  [ -n "$_tn_all" ] && [ -z "$(printf '%s\n' "$_tn_all" | LC_ALL=C grep -v 'NOT ENFORCED' || :)" ]
+}
 # The twin rows: the local argv of a CI shape the grammar refuses. Each one prints its row's REASON,
 # because a twin is a CLAIM about equivalence and the reader must be able to judge it.
 run_twins() {
@@ -1105,8 +1167,12 @@ run_twins() {
 $(subst_argv "$(fld 4 "$_row")")
 TWEOF
     _script=$1; shift
-    run_inv "$CEIL" sh "conformance/$_script" "$@"
-    report_inv twin "$_tb $(fld 4 "$_row")" "${_tx:-0}" "$CEIL"
+    case $_tb in loop-state|backlog-presence) RUN_SPLIT=1 ;; esac
+    run_inv "$CEIL" sh "conformance/$_script" "$@"; RUN_SPLIT=0
+    if twin_na "$_tb" "$RUN_RC"; then
+      RAN=$((RAN+1)); TN=$((TN+1)); basename_ok "$TWIN_BE" || TWIN_BE='(unsafe-name)'
+      printf "  N/A   %s  NOT ENFORCED only (backend '%s') — CI binds the row leg through tracker-board-gates where that context is required on the base; not verifiable locally\n" "$_tb" "$TWIN_BE"
+    else report_inv twin "$_tb $(fld 4 "$_row")" "${_tx:-0}" "$CEIL"; fi
     note "  twin reason: $(fld 7 "$_row")"
   done 4< "$WORK/twins.ok"
 }
@@ -1407,10 +1473,12 @@ reco() {
 # how many arms it took from the cache instead of executing. FAIL/UNVERIFIED lines and an unqualified
 # --warranted OK are unchanged. Never `RESULT:`; the caller prints it as the LAST line.
 ok_verdict() {
+  _tnc=""; [ "$TN" -eq 0 ] || _tnc="$TN board-bound twin(s) NOT ENFORCED locally — CI binds them"   # SWAS-163
   if [ "$WARRANTED" -eq 0 ] && [ "$CORE_N" -gt 0 ]; then
-    printf 'PARITY-CORE: OK (own surface — %s CI-derived core-live check(s) not run; --warranted and CI run them)\n' "$CORE_N"
+    printf 'PARITY-CORE: OK (own surface — %s CI-derived core-live check(s) not run; --warranted and CI run them%s)\n' "$CORE_N" "${_tnc:+; $_tnc}"
   elif [ "$WARRANTED" -eq 1 ] && [ "$CACHE_SKIPS" -gt 0 ]; then
-    printf 'PARITY-CORE: OK (%s arm(s) from cache, not executed this run)\n' "$CACHE_SKIPS"
+    printf 'PARITY-CORE: OK (%s arm(s) from cache, not executed this run%s)\n' "$CACHE_SKIPS" "${_tnc:+; $_tnc}"
+  elif [ -n "$_tnc" ]; then printf 'PARITY-CORE: OK (%s)\n' "$_tnc"
   else printf 'PARITY-CORE: OK\n'; fi
 }
 
@@ -1521,7 +1589,7 @@ selftest() {
               heavy_rows twin_grammar injection scrub docs_only rename newline newline_charset base \
               ceiling budget \
               floor argv core_selftest heavy_needs_flag dash verdict shim no_fanout no_write \
-              no_exec_of_context core_live_default shellcheck_scoped \
+              no_exec_of_context core_live_default shellcheck_scoped secretscan_scoped parselint_scoped twin_not_enforced \
               cache_skip_same_tree cache_code_change cache_bookkeeping cache_heavy_bookkeeping \
               cache_dirty_bypass cache_skip_output_never \
               cache_fail_never cache_unusable_dir cache_state_dir_modes cache_opt_out \
@@ -1550,7 +1618,7 @@ wantnot() { if printf '%s\n' "$DVOUT" | grep -q "$2"; then echo "FAIL: $1 — ma
 ctxcount() { printf '%s\n' "$DVOUT" | grep -c '^context'"$TAB" || :; }
 mkrepo() {   # a self-contained fixture repo: the lane resolves ITS root, so KIT_CI_FILE stays honest
   _d=$(mktemp -d "${TMPDIR:-/tmp}/fx-XXXXXX"); mkdir -p "$_d/.github/workflows" "$_d/conformance"
-  for _n in alpha beta verify; do printf '#!/bin/sh\nexit 0\n' > "$_d/conformance/$_n.sh"; done
+  for _n in alpha beta verify secret-scan-wired; do printf '#!/bin/sh\nexit 0\n' > "$_d/conformance/$_n.sh"; done
   ln -s alpha.sh "$_d/conformance/link.sh"   # the existence oracle must refuse a SYMLINK
   # the kit marker (green-on-clone.sh's own OR-of-markers): --census is KIT-SELF only; --derive is not.
   mkdir -p "$_d/docs"; : > "$_d/docs/ROADMAP-KIT.md"
@@ -2005,12 +2073,12 @@ selftest_scrub() {
   # Every BLANKET unset_pfx is probed by a name NOTHING else in the lane assigns (reviewer I-2): GIT_*
   # through GIT_SSH_COMMAND/GIT_DIR, never through GIT_CONFIG_GLOBAL — the scrub ASSIGNS that one two
   # lines later, so it survives the prefix-unset being deleted outright and proves nothing.
-  one_step; mkchk alpha 'printf "gh=[%s] ssh=[%s] kit=[%s] gsc=[%s] gdir=[%s] bc=[%s] pp=[%s] gcg=[%s] lc=[%s] home=[%s] tmp=[%s]\n" "${GH_TOKEN-}" "${SSH_AUTH_SOCK-}" "${KIT_NOSE-}" "${GIT_SSH_COMMAND-}" "${GIT_DIR-}" "${BOARD_CLAIM_X-}" "${PREPUSH_X-}" "${GIT_CONFIG_GLOBAL-}" "${LC_ALL-}" "$HOME" "$TMPDIR" > "$PWD/env.out"'
+  one_step; mkchk alpha 'printf "gh=[%s] ssh=[%s] kit=[%s] gsc=[%s] gdir=[%s] bc=[%s] pp=[%s] jira=[%s%s] gcg=[%s] lc=[%s] home=[%s] tmp=[%s]\n" "${GH_TOKEN-}" "${SSH_AUTH_SOCK-}" "${KIT_NOSE-}" "${GIT_SSH_COMMAND-}" "${GIT_DIR-}" "${BOARD_CLAIM_X-}" "${PREPUSH_X-}" "${JIRA_EMAIL-}" "${JIRA_TOKEN-}" "${GIT_CONFIG_GLOBAL-}" "${LC_ALL-}" "$HOME" "$TMPDIR" > "$PWD/env.out"'
   commit_fx
   # GIT_DIR is paired with GIT_WORK_TREE so the LANE's own git still works: unpaired, it points the lane itself at another repo — a different question (rc 2, "not a git repository").
-  DVOUT=$( cd "$d" && GH_TOKEN=tok SSH_AUTH_SOCK=/tmp/s KIT_NOSE=1 GIT_SSH_COMMAND='ssh -i /k' GIT_DIR=$d/.git GIT_WORK_TREE=$d BOARD_CLAIM_X=1 PREPUSH_X=1 sh "$LANE" --base HEAD --warranted 2>&1 )  # --warranted: the probe is a core-live check
+  DVOUT=$( cd "$d" && GH_TOKEN=tok SSH_AUTH_SOCK=/tmp/s KIT_NOSE=1 GIT_SSH_COMMAND='ssh -i /k' GIT_DIR=$d/.git GIT_WORK_TREE=$d BOARD_CLAIM_X=1 PREPUSH_X=1 JIRA_EMAIL=e@x JIRA_TOKEN=jt sh "$LANE" --base HEAD --warranted 2>&1 )  # --warranted: the probe is a core-live check
   _wr=$(workroot); _env=$(cat "$d/env.out" 2>/dev/null || echo MISSING)
-  sfx "scrub: every scrubbed prefix is empty, HOME is under the work root, LC_ALL is C" "gh=[] ssh=[] kit=[] gsc=[] gdir=[] bc=[] pp=[] gcg=[/dev/null] lc=[C] home=[$_wr/empty] tmp=[$_wr]" "$_env"
+  sfx "scrub: every scrubbed prefix is empty, HOME is under the work root, LC_ALL is C" "gh=[] ssh=[] kit=[] gsc=[] gdir=[] bc=[] pp=[] jira=[] gcg=[/dev/null] lc=[C] home=[$_wr/empty] tmp=[$_wr]" "$_env"
 }
 
 selftest_docs_only() {
@@ -2153,7 +2221,7 @@ YAML
   wantnot "heavy/flag: no heavy invocation is reported OK"      "^  OK    heavy "
   wantnot "heavy/flag: the job-placement heavy check never ran" "^#   sh conformance/alpha\.sh"
   wantnot "heavy/flag: the heavy-ROW check never ran"           "^#   sh conformance/beta\.sh"
-  sfx "heavy/flag: the executed-argv log is empty" "0" "$(printf '%s\n' "$DVOUT" | grep -c '^#   sh conformance/' || :)"
+  sfx "heavy/flag: the executed-argv log is empty (the always-on secret-scan row aside)" "0" "$(printf '%s\n' "$DVOUT" | grep '^#   sh conformance/' | grep -vc 'secret-scan-wired' || :)"
 }
 
 # dash absent: UNVERIFIED, non-zero — the lane never substitutes the operator's shell and calls the result parity. The PATH here is the real one minus every directory holding a dash.
@@ -2185,6 +2253,60 @@ selftest_verdict() {
   mkchk alpha 'dd if=/dev/urandom bs=4096 count=32 2>/dev/null; printf "bad \303\050 byte\n"; exit 4'
   commit_fx; rn "$d" --warranted
   sfx "verdict: a failing check with non-UTF-8 output still reaches its verdict" "PARITY-CORE: FAIL" "$(lastline)"
+}
+
+# SWAS-163 — a board-bound twin whose ONLY failure is NOT ENFORCED reads N/A on a hosted-tracker tree, and nowhere else.
+# twfx <backend> <loop-state-extra-line-or-empty> <loop-state-rc> <backlog-presence-rc> [<beta-rc>] — a fixture whose twin
+# checks are STUBS printing a chosen output and exiting a chosen rc (a vacuous stub could not red a mutant). Three twins:
+# loop-state, backlog-presence (the lane's closed list) and beta (not on it). The fixture carries the real resolver.
+twfx() {
+  mkcin 'if sh conformance/loop-state.sh; then echo ok; fi' 'if sh conformance/backlog-presence.sh; then echo ok; fi' \
+        'if sh conformance/beta.sh; then echo ok; fi' 'sh conformance/alpha.sh'
+  cp "$KROOT/conformance/backlog-lib.sh" "$d/conformance/backlog-lib.sh"; printf 'Backlog backend: %s\n' "$1" > "$d/CLAUDE.md"
+  [ "$1" != none ] || printf 'no backend field here\n' > "$d/CLAUDE.md"
+  tw loop-state twin 'if sh conformance/loop-state.sh' 'loop-state.sh' 0 '' 'fixture'
+  tw backlog-presence twin 'if sh conformance/backlog-presence.sh' 'backlog-presence.sh' 0 '' 'fixture'
+  tw beta twin 'if sh conformance/beta.sh' 'beta.sh' 0 '' 'fixture'
+  # like the real check: the scope line (and any $6 stray line) on STDOUT; every refusal reason and the epilogue on STDERR
+  mkchk loop-state 'echo "loop-state: scope check N/A (no scope declared)"; '"${6:+echo \"$6\"; }"'{ '"${2:+echo \"$2\"; }"'echo "loop-state: row check NOT ENFORCED: backend x — fixture"; echo "loop-state: FAIL — h does not carry a valid Entry Declaration."; echo "  boilerplate"; } >&2; exit '"$3"
+  mkchk backlog-presence 'echo "backlog-presence: NOT ENFORCED: backend x — fixture"; exit '"$4"
+  mkchk beta "exit ${5:-0}"
+  commit_fx; rn "$d" ${TWARG-}
+}
+selftest_twin_not_enforced() {
+  _two="PARITY-CORE: OK (own surface — 1 CI-derived core-live check(s) not run; --warranted and CI run them; 2 board-bound twin(s) NOT ENFORCED locally — CI binds them)"
+  twfx jira '' 1 3   # L1 jira, pure
+  want "twin-na/L1: loop-state reads N/A, naming the backend" "^  N/A   loop-state  NOT ENFORCED only (backend 'jira') — CI binds the row leg"
+  want "twin-na/L1: backlog-presence reads N/A" "^  N/A   backlog-presence  NOT ENFORCED only (backend 'jira')"
+  wantnot "twin-na/L1: neither is a FAIL" "FAIL  twin"
+  sfx "twin-na/L1: the default OK states the scope, exactly" "$_two" "$(lastline)"; sfx "twin-na/L1: rc 0" 0 "$DVRC"
+  twfx jira 'loop-state: no parseable Kit-Class trailer' 1 3   # L2 combined refusal
+  want "twin-na/L2: a combined refusal keeps loop-state FAIL" "FAIL  twin  *loop-state"
+  want "twin-na/L2: the pure backlog-presence row still reads N/A" "^  N/A   backlog-presence"
+  sfx "twin-na/L2: FAIL" "PARITY-CORE: FAIL" "$(lastline)"; sfx "twin-na/L2: rc 1" 1 "$DVRC"
+  twfx jira '' 1 3 5   # L3 another row fails
+  want "twin-na/L3: the unrelated twin FAILs" "FAIL  twin  *beta"; want "twin-na/L3: the N/A rows are still N/A" "^  N/A   loop-state"
+  sfx "twin-na/L3: N/A masks nothing" "PARITY-CORE: FAIL" "$(lastline)"
+  for _be in md frobnitz; do   # L4 md, L5 unrecognized
+    twfx "$_be" '' 1 3
+    want "twin-na/$_be: loop-state stays FAIL" "FAIL  twin  *loop-state"; want "twin-na/$_be: backlog-presence stays FAIL" "FAIL  twin  *backlog-presence"
+    wantnot "twin-na/$_be: no N/A" "^  N/A"; sfx "twin-na/$_be: FAIL" "PARITY-CORE: FAIL" "$(lastline)"
+  done
+  twfx jira '' 0 0   # L6 rc 0 with a waiver-style NOT ENFORCED line: a plain pass
+  want "twin-na/L6: rc 0 is a plain OK" "OK    twin  *loop-state"; wantnot "twin-na/L6: never N/A" "^  N/A"
+  sfx "twin-na/L6: no twin clause in the verdict" "PARITY-CORE: OK (own surface — 1 CI-derived core-live check(s) not run; --warranted and CI run them)" "$(lastline)"
+  twfx jira '' 1 2   # L7 backlog-presence NOT ENFORCED text with rc 2 (not its NOT ENFORCED partition)
+  want "twin-na/L7: the wrong rc stays FAIL" "FAIL  twin  *backlog-presence"; sfx "twin-na/L7: one N/A only" "1" "$(printf '%s\n' "$DVOUT" | grep -c '^  N/A')"
+  # the discriminant reads loop-state's STDERR alone (the hook's stream): a stdout-only stray line blocks nothing, a stderr reason does
+  twfx jira '' 1 3 0 'loop-state: Kit-Class does not equal the derived class (stdout only)'
+  want "twin-na/stdout-stray: a stdout-only stray line does not block N/A" "^  N/A   loop-state"
+  twfx jira 'loop-state: Kit-Class does not equal the derived class (stderr)' 1 3
+  want "twin-na/stderr-reason: the same line on STDERR keeps loop-state FAIL" "FAIL  twin  *loop-state"
+  wantnot "twin-na/stderr-reason: and loop-state is not N/A" "^  N/A   loop-state"
+  twfx none '' 1 3   # a tree declaring NO backend: undeclared is not hosted
+  want "twin-na/no-field: loop-state stays FAIL" "FAIL  twin  *loop-state"; wantnot "twin-na/no-field: no N/A" "^  N/A"
+  TWARG=--warranted; twfx jira '' 1 3; TWARG=   # the --warranted variant with no cache skips
+  sfx "twin-na/warranted: the OK carries the twin clause alone" "PARITY-CORE: OK (2 board-bound twin(s) NOT ENFORCED locally — CI binds them)" "$(lastline)"
 }
 
 selftest_shim() {
@@ -2224,7 +2346,7 @@ selftest_no_exec_of_context() {
   mkcin 'sh conformance/alpha.sh; echo NEEDLE-NOT-RUN' 'sh conformance/beta.sh --ok'
   mkchk alpha 'exit 0'; mkchk beta 'exit 0'; commit_fx; rn "$d" --warranted --verbose   # core-live runs only under --warranted
   want "no-exec: --verbose echoes the executed-argv log" "^#   sh conformance/beta\.sh --ok$"; wantnot "no-exec: no token from a context line is ever executed" "NEEDLE-NOT-RUN"
-  sfx "no-exec: exactly one invocation ran" "1" "$(printf '%s\n' "$DVOUT" | grep -c '^#   sh conformance/' || :)"
+  sfx "no-exec: exactly one invocation ran (the always-on secret-scan row aside)" "1" "$(printf '%s\n' "$DVOUT" | grep '^#   sh conformance/' | grep -vc 'secret-scan-wired' || :)"
   # M2: a QUOTED operand reaches the check UNQUOTED — shell-equivalent argv, not literal quote bytes.
   mkcin "sh conformance/beta.sh '--flag'"; commit_fx; rn "$d" --warranted --verbose
   want "no-exec/argv: a quoted operand is executed without its quotes" "^#   sh conformance/beta\.sh --flag$"
@@ -2280,6 +2402,76 @@ selftest_shellcheck_scoped() {
   rn "$d"
   want "shellcheck-scoped: a listing with no shell file skips the arm, naming why" "^# skipped: scoped shellcheck — the listing names no shell file"
   wantnot "shellcheck-scoped: and no core-shellcheck row is reported" "core-shellcheck"
+}
+
+# SWAS-175: the default run scans <merge-base>..HEAD through `secret-scan-wired.sh --range`. The fixture carries
+# the REAL checker and a STUB gitleaks (GITLEAKS_BIN) that records its argv, so the range reaches the scanner
+# exactly as CI hands it over. A finding is a FAIL naming the arm; the checker's rc 2 (gitleaks absent) renders
+# UNVERIFIED and BLOCKS (verdict UNVERIFIED, rc 1) -- never a skip, never an OK.
+selftest_secretscan_scoped() {
+  if [ -z "$KROOT" ] || [ ! -f "$KROOT/conformance/secret-scan-wired.sh" ]; then
+    echo "SKIP: secretscan-scoped: conformance/secret-scan-wired.sh is not in this tree — legs NOT exercised"; return 0
+  fi
+  one_step; cp "$KROOT/conformance/secret-scan-wired.sh" "$d/conformance/"; commit_fx
+  _gb=$WORK/gl-stub; _ga=$WORK/gl-argv; _hd=$(git -C "$d" rev-parse HEAD)
+  stub_gl() { printf '#!/bin/sh\nif [ "$1" = version ]; then echo 8.24.3; exit 0; fi\nprintf "%%s\\n" "$@" > %s\nexit %s\n' "$_ga" "$1" > "$_gb"; chmod +x "$_gb"; rm -f "$_ga"; }
+  stub_gl 0; env_rn "$d" GITLEAKS_BIN "$_gb"
+  sfx "secretscan-scoped: a clean range scan is OK (rc 0)" 0 "$DVRC"
+  want "secretscan-scoped: the core-secretscan row is OK" "^  OK    core-secretscan "
+  sfx "secretscan-scoped: the scanner got exactly --log-opts=<merge-base>..HEAD" "--log-opts=$_hd..HEAD" "$(grep -e '^--log-opts=' "$_ga" || :)"
+  stub_gl 1; env_rn "$d" GITLEAKS_BIN "$_gb"
+  sfx "secretscan-scoped: a finding FAILS the default run (rc 1)" 1 "$DVRC"
+  want "secretscan-scoped: the failing row is core-secretscan" "^  FAIL  core-secretscan "
+  mkchk secret-scan-wired 'exit 2'; commit_fx; rn "$d"
+  sfx "secretscan-scoped: gitleaks absent (checker rc 2) BLOCKS the default run (rc 1)" 1 "$DVRC"
+  want "secretscan-scoped: the row is UNVERIFIED, not FAIL and not OK" "^  UNVERIFIED  core-secretscan "
+  wantnot "secretscan-scoped: and never an OK row" "^  OK    core-secretscan "
+  sfx "secretscan-scoped: the verdict is UNVERIFIED naming the cause" "PARITY-CORE: UNVERIFIED (secret-scan did not run: gitleaks absent or the scan could not run (UNVERIFIED; install gitleaks, CI runs the pinned scan))" "$(lastline)"
+  rm -f "$d/conformance/secret-scan-wired.sh"; commit_fx; rn "$d"
+  sfx "secretscan-scoped: an ABSENT checker BLOCKS too (rc 1), never a skip note" 1 "$DVRC"
+  want "secretscan-scoped: the absent-checker row is UNVERIFIED" "^  UNVERIFIED  core-secretscan .*not a regular file"
+}
+
+# SWAS-236: the default run lints the touched files that are ALSO on the sast-parse list through the real
+# shell-parse-lint.sh (CI's SAST-parse net, caught before the push). The fixture carries the REAL lint at
+# <fixture>/conformance/ (it derives its ROOT from its own directory) and its own list. The keywords are
+# assembled from pieces so this file never carries a one-line case of its own.
+selftest_parselint_scoped() {
+  if [ -z "$KROOT" ] || [ ! -f "$KROOT/conformance/shell-parse-lint.sh" ]; then
+    echo "SKIP: parselint-scoped: conformance/shell-parse-lint.sh is not in this tree — legs NOT exercised"; return 0
+  fi
+  one_step; cp "$KROOT/conformance/shell-parse-lint.sh" "$d/conformance/"; mkdir -p "$d/scripts"
+  _kc=ca; _ks=se; _ke=es; _kx=ac
+  _one() { printf '#!/bin/sh\n%s%s "$1" in a) echo a ;; *) echo b ;; %s%s\n' "$_kc" "$_ks" "$_ke" "$_kx" > "$d/$1"; }
+  printf '%s\n' "scripts/planted.sh" > "$d/conformance/sast-parse-files.txt"; commit_fx
+  _one scripts/planted.sh; rn "$d"
+  sfx "parselint-scoped: a LISTED touched file with a one-line case FAILS the default run (rc 1)" 1 "$DVRC"
+  want "parselint-scoped: the failing row is core-parselint" "^  FAIL  core-parselint "
+  want "parselint-scoped: the lint names the file:line" "scripts/planted\.sh:2: a one-line case statement"
+  want "parselint-scoped: and the cure is printed" "put esac (and each arm) on its own line"
+  printf '#!/bin/sh\n%s%s "$1" in\n  a) echo a ;;\n  *) echo b ;;\n%s%s\n' "$_kc" "$_ks" "$_ke" "$_kx" > "$d/scripts/planted.sh"; rn "$d"
+  sfx "parselint-scoped: the same file split across lines passes (rc 0)" 0 "$DVRC"
+  want "parselint-scoped: the row is OK" "^  OK    core-parselint "
+  rm -f "$d/scripts/planted.sh"; _one scripts/unlisted.sh; rn "$d"
+  sfx "parselint-scoped: a one-line case in an UNLISTED file does not fail (rc 0)" 0 "$DVRC"
+  want "parselint-scoped: scope: the skip note names why" "^# skipped: SAST-parse lint — the listing names no conformance/sast-parse-files\.txt file"
+  wantnot "parselint-scoped: scope: and no core-parselint row" "core-parselint"
+  rm -f "$d/scripts/unlisted.sh"; : > "$d/notes.txt"; rn "$d"
+  want "parselint-scoped: nothing touched: the skip note" "^# skipped: SAST-parse lint"
+  wantnot "parselint-scoped: nothing touched: no core-parselint row" "core-parselint"
+  rm -f "$d/notes.txt"
+  # fail-open guard: a CRLF entry, a trailing-blank entry and an indented '#' line must each still lint the file
+  printf 'scripts/planted.sh\r\n   # an indented comment\n\n' > "$d/conformance/sast-parse-files.txt"; commit_fx
+  _one scripts/planted.sh; rn "$d"
+  want "parselint-scoped: a CRLF list entry still FAILS the file" "^  FAIL  core-parselint "
+  wantnot "parselint-scoped: and never skips as N/A" "skipped: SAST-parse lint"
+  printf 'scripts/planted.sh  \t\n\n' > "$d/conformance/sast-parse-files.txt"; rn "$d"
+  want "parselint-scoped: a trailing-blank list entry still FAILS the file" "^  FAIL  core-parselint "
+  wantnot "parselint-scoped: and never skips as N/A (blanks)" "skipped: SAST-parse lint"
+  printf './scripts/planted.sh\n' > "$d/conformance/sast-parse-files.txt"; rn "$d"
+  want "parselint-scoped: a ./-prefixed list entry still FAILS the file" "^  FAIL  core-parselint "
+  printf '  \tscripts/planted.sh\n' > "$d/conformance/sast-parse-files.txt"; rn "$d"
+  want "parselint-scoped: a leading-blank list entry still FAILS the file" "^  FAIL  core-parselint "
 }
 
 # --- PREPUSH-CORE-DEFAULT: the --warranted tree-key cache -------------------------------------------

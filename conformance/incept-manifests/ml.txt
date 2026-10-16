@@ -98,10 +98,11 @@ id: secret-gate
 precondition: present gitleaks
 when-absent: skip
 assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
+assert: present --log-opts=
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 skip-reason: no gitleaks step — nothing to scan
-fix-hint: `gitleaks git . --no-banner --redact`
+fix-hint: `gitleaks git . --no-banner --redact --log-opts=<scope>` (the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0)
 
 id: dep-scan
 precondition: present gate-dep-scan

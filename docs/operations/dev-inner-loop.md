@@ -97,7 +97,7 @@ rows without `--selftest`, derived from `conformance/verify.sh`) as `core-board`
 only, not general `verify.sh` parity.
 
 **The verdict is the last line**, always, and never imitates `verify.sh`'s `RESULT:`:
-`PARITY-CORE: OK` · `PARITY-CORE: FAIL` · `PARITY-CORE: UNVERIFIED (<reason>)`. A bare `OK` means `--warranted` with everything executed; the default run prints `PARITY-CORE: OK (own surface — N CI-derived core-live check(s) not run; --warranted and CI run them)`; `--warranted` with cache skips prints `PARITY-CORE: OK (K arm(s) from cache, not executed this run)`. Strict is the default
+`PARITY-CORE: OK` · `PARITY-CORE: FAIL` · `PARITY-CORE: UNVERIFIED (<reason>)`. A bare `OK` means `--warranted` with everything executed; the default run prints `PARITY-CORE: OK (own surface — N CI-derived core-live check(s) not run; --warranted and CI run them)`; `--warranted` with cache skips prints `PARITY-CORE: OK (K arm(s) from cache, not executed this run)`; on a hosted-tracker tree each `loop-state` / `backlog-presence` twin whose only failure is NOT ENFORCED reads `N/A` and the OK gains the clause `TN board-bound twin(s) NOT ENFORCED locally — CI binds them` (after a `; ` inside the existing parentheses, or alone as `OK (TN …)` when no other scope clause prints). Strict is the default
 (`--require` is the explicit spelling of it); `--best-effort` moves the exit code to 0 and leaves the
 verdict line reading what it reads.
 

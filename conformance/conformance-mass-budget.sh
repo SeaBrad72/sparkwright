@@ -529,6 +529,82 @@ mb_surface() {
   return "$_sbad"
 }
 
+# mb_sdelta <now> <then>: the signed difference, explicitly signed (+0 for none). Callers grade both
+# operands with mb_marker_ok first.
+mb_sdelta() {
+  _sd=$(($1 - $2))
+  if [ "$_sd" -lt 0 ]; then printf '%s\n' "$_sd"; else printf '+%s\n' "$_sd"; fi
+}
+
+# mb_unbudgeted <root>: GUARD-ADAPTER-MASS-REPORT (SWAS-147). An ADVISORY report of the growth of the
+# surfaces this budget does not count (scripts/ and .claude/hooks/) since the last RECORDED release,
+# read from conformance/mass-release-baseline.txt (one TAB line per release, fixed grammar, parsed and
+# never sourced). mb_verdict calls it as `( mb_unbudgeted "$_root" ) || :` AFTER its verdict line, so
+# nothing in here can reach the gate's rc: not set -e, not an exit, not dash's fatal arithmetic abort.
+# Every baseline number is graded with mb_marker_ok before arithmetic; every error path is one N/A line.
+mb_unbudgeted() {
+  _ur=$1; _ubp="$_ur/conformance/mass-release-baseline.txt"
+  _uhd="conformance-mass-budget: unbudgeted surfaces (ADVISORY ONLY — never changes the verdict)"
+  if [ ! -r "$_ubp" ]; then echo "$_uhd: N/A (conformance/mass-release-baseline.txt is missing or unreadable)"; return 0; fi
+  _ul=$(LC_ALL=C grep -v '^[[:space:]]*#' "$_ubp" | LC_ALL=C grep -v '^[[:space:]]*$' | tail -1) || _ul=""
+  if [ -z "$_ul" ]; then echo "$_uhd: N/A (the baseline file has no data line)"; return 0; fi
+  _unt=$(printf '%s' "$_ul" | LC_ALL=C tr -dc "$TAB" | LC_ALL=C wc -c | tr -d ' ')
+  if [ "$_unt" != 9 ]; then echo "$_uhd: N/A (malformed baseline line: want 10 TAB-separated fields, tag date scripts fixtures hooks + 5 path:size)"; return 0; fi
+  IFS=$TAB read -r _utag _udate _ubs _ubf _ubh _ut1 _ut2 _ut3 _ut4 _ut5 <<EOF
+$_ul
+EOF
+  _uok=1
+  printf '%s' "$_utag" | LC_ALL=C grep -qE '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || _uok=0
+  printf '%s' "$_udate" | LC_ALL=C grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || _uok=0
+  for _ux in "$_ubs" "$_ubf" "$_ubh"; do
+    mb_marker_ok "$_ux" || _uok=0
+    [ "${#_ux}" -le 9 ] || _uok=0   # 9-digit cap: an absurd value must not overflow mb_sdelta
+  done
+  for _ux in "$_ut1" "$_ut2" "$_ut3" "$_ut4" "$_ut5"; do
+    printf '%s' "${_ux%:*}" | LC_ALL=C grep -qE '^[A-Za-z0-9._/-]+$' || _uok=0
+    case "$_ux" in *:*) mb_marker_ok "${_ux##*:}" || _uok=0 ;; *) _uok=0 ;; esac
+    _usz=${_ux##*:}
+    [ "${#_usz}" -le 9 ] || _uok=0
+  done
+  if [ "$_uok" -ne 1 ]; then echo "$_uhd: N/A (malformed baseline line: a field failed its grammar)"; return 0; fi
+  if [ ! -d "$_ur/scripts" ] || [ ! -d "$_ur/.claude/hooks" ]; then echo "$_uhd: N/A (scripts/ or .claude/hooks/ is not a readable directory)"; return 0; fi
+  # Measure: TEXT files only (grep -I drops binaries). find without -H skips a symlinked hooks dir, and odd-named files are skipped (both under-report, never fail).
+  _urows=$(find "$_ur/scripts" "$_ur/.claude/hooks" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r _uf; do
+    _urel=${_uf#"$_ur"/}
+    printf '%s' "$_urel" | LC_ALL=C grep -qE '^[A-Za-z0-9._/-]+$' || continue
+    LC_ALL=C grep -Iq '' "$_uf" 2>/dev/null || continue
+    _un=$(LC_ALL=C awk 'END { print NR+0 }' "$_uf" 2>/dev/null) || continue
+    mb_marker_ok "$_un" || continue
+    printf '%s %s\n' "$_un" "$_urel"
+  done) || _urows=""
+  _utot=$(printf '%s\n' "$_urows" | LC_ALL=C awk 'NF == 2 { if ($2 ~ /^scripts\/fixtures\//) f += $1; else if ($2 ~ /^scripts\//) s += $1; else h += $1 } END { print s+0, f+0, h+0 }')
+  read -r _ums _umf _umh <<EOF
+$_utot
+EOF
+  for _ux in "$_ums" "$_umf" "$_umh"; do
+    mb_marker_ok "$_ux" || { echo "$_uhd: N/A (the measurement came back ungradeable)"; return 0; }
+  done
+  _utop=$(printf '%s\n' "$_urows" | LC_ALL=C awk 'NF == 2 && $2 !~ /^scripts\/fixtures\//' | LC_ALL=C sort -k1,1nr -k2,2 | head -5)
+  _utl=$(printf '%s\n' "$_utop" | while read -r _un _up; do
+    [ -n "$_up" ] || continue
+    _uthen=""
+    for _ux in "$_ut1" "$_ut2" "$_ut3" "$_ut4" "$_ut5"; do
+      if [ "${_ux%:*}" = "$_up" ]; then _uthen=${_ux##*:}; fi
+    done
+    if [ -n "$_uthen" ]; then echo "$_up $_un ($(mb_sdelta "$_un" "$_uthen"))"; else echo "$_up $_un (not in the baseline's top 5)"; fi
+  done | LC_ALL=C awk '{ printf "%s%s", (NR > 1 ? " · " : ""), $0 } END { print "" }')
+  echo "$_uhd, since $_utag (baseline recorded $_udate):"
+  echo "conformance-mass-budget:   scripts/ $_ums line(s) ($(mb_sdelta "$_ums" "$_ubs"))   scripts/fixtures/ $_umf line(s) ($(mb_sdelta "$_umf" "$_ubf"))   .claude/hooks/ $_umh line(s) ($(mb_sdelta "$_umh" "$_ubh"))   [text files only]"
+  echo "conformance-mass-budget:   top files: $(printf '%s' "$_utl" | mb_san)"
+  _uver=$(head -1 "$_ur/VERSION" 2>/dev/null || :)
+  if printf '%s' "$_uver" | LC_ALL=C grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then _unt="v$_uver"; else _unt="<tag>"; fi
+  _und=$(date +%Y-%m-%d 2>/dev/null || :)
+  printf '%s' "$_und" | LC_ALL=C grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || _und="<date>"
+  _unl=$(printf '%s\n' "$_utop" | LC_ALL=C awk -v t="$_unt" -v d="$_und" -v s="$_ums" -v f="$_umf" -v h="$_umh" 'BEGIN { OFS = "\t" } NF == 2 { e[++k] = $2 ":" $1 } END { print t, d, s, f, h, e[1], e[2], e[3], e[4], e[5] }')
+  echo "conformance-mass-budget:   next-baseline (the release cut appends the text after this label to conformance/mass-release-baseline.txt): $_unl"
+  return 0
+}
+
 # mb_verdict <root> <lines_gen> <files_gen> <cen_gen> <logic_gen> <fixture_gen> <historical_lines_acks>
 # ⚠️ SEVEN ARGUMENTS SINCE MASS-CEILING-ADDITIVE (2026-09-04), down from twelve: the five <max>
 # parameters are GONE because there is no ceiling to pass in. Each one is DERIVED below as
@@ -667,6 +743,8 @@ mb_verdict() {
   else
     echo "conformance-mass-budget: FAIL -- see above. SCOPE CEILING: non-recursive conformance/*.sh only; .md, subdirectories, scripts/, hooks/ and guard-core are outside this budget."
   fi
+  # GUARD-ADAPTER-MASS-REPORT: the LAST act, a subshell, `|| :` — the advisory block cannot move the rc.
+  ( mb_unbudgeted "$_root" ) || :
   return "$_bad"
 }
 
@@ -1304,6 +1382,71 @@ selftest() {
       echo "PASS: selftest -- leg xxviii the glide arm fires on the real tree with the ratified target: ADVISORY ONLY + a distance line, never the unset branch"
     else echo "FAIL: selftest -- leg xxviii the real-tree glide arm did not fire as advisory-with-distance: [$_xo]"; sfail=1; fi
   fi
+
+  # legs xxix..xxxiii --GUARD-ADAPTER-MASS-REPORT (SWAS-147): the unbudgeted-surfaces block is ADVISORY.
+  mb_ugen() { LC_ALL=C awk -v n="$2" 'BEGIN { for (i = 0; i < n; i++) print "line" }' > "$1"; }
+  mb_ufixture() {   # <dir>: an armed kit fixture + scripts/ (5), scripts/fixtures/ (3), hooks (7), a baseline
+    mb_fixture "$1" 4 10; mkdir -p "$1/scripts/fixtures" "$1/.claude/hooks"
+    mb_ugen "$1/scripts/a.sh" 5; mb_ugen "$1/scripts/fixtures/x.txt" 3; mb_ugen "$1/.claude/hooks/h.sh" 7
+    printf '\000\001\002\n' > "$1/scripts/blob.bin"
+    printf 'v1.0.0\t2026-01-01\t5\t3\t7\tscripts/a.sh:5\t.claude/hooks/h.sh:7\tscripts/x.sh:1\tscripts/y.sh:1\tscripts/z.sh:1\n' > "$1/conformance/mass-release-baseline.txt"
+  }
+  mb_rcrun() { _rr=0; mb_verdict "$1" 0 4 0 40 0 0 2>&1 || _rr=$?; printf 'RC=%s\n' "$_rr"; }
+  mb_vline() { grep -E '^conformance-mass-budget: (OK|FAIL -- see above)|^RC='; }
+
+  mb_ufixture "$W/u1"
+  _u1=$(mb_rcrun "$W/u1"); _u1v=$(printf '%s\n' "$_u1" | mb_vline)
+  _ovk=$(printf '%s\n' "$_u1" | grep -n 'conformance-mass-budget: OK' | cut -d: -f1)
+  _oun=$(printf '%s\n' "$_u1" | grep -n 'unbudgeted surfaces (ADVISORY ONLY' | cut -d: -f1)
+  if printf '%s\n' "$_u1" | grep -Fq 'scripts/ 5 line(s) (+0)   scripts/fixtures/ 3 line(s) (+0)   .claude/hooks/ 7 line(s) (+0)' &&
+     printf '%s\n' "$_u1" | grep -Fq 'since v1.0.0 (baseline recorded 2026-01-01)' &&
+     printf '%s\n' "$_u1" | grep -Fq 'top files: .claude/hooks/h.sh 7 (+0) · scripts/a.sh 5 (+0)' &&
+     printf '%s\n' "$_u1" | grep -Fq 'next-baseline' && [ -n "$_ovk" ] && [ -n "$_oun" ] && [ "$_oun" -gt "$_ovk" ]; then
+    echo "PASS: selftest -- leg xxix the block prints AFTER the verdict line: totals (binary skipped, fixtures apart), the top files with deltas, next-baseline"
+  else echo "FAIL: selftest -- leg xxix the unbudgeted block is absent or wrong: [$_u1]"; sfail=1; fi
+
+  mb_ugen "$W/u1/scripts/a.sh" 90000
+  _u2=$(mb_rcrun "$W/u1"); _u2v=$(printf '%s\n' "$_u2" | mb_vline)
+  if [ "$_u2v" = "$_u1v" ] && printf '%s\n' "$_u2" | grep -Fq 'scripts/ 90000 line(s) (+89995)'; then
+    echo "PASS: selftest -- leg xxx huge unbudgeted growth is REPORTED and the rc and verdict line are byte-identical"
+  else echo "FAIL: selftest -- leg xxx the verdict moved with unbudgeted growth: [$_u1v] vs [$_u2v]"; sfail=1; fi
+
+  _u3ok=1
+  for _u3 in 'v1.0.0\t2026-01-01\t5\t3' 'v1.0.0\t2026-01-01\t05\t3\t7\ta.sh:1\tb.sh:1\tc.sh:1\td.sh:1\te.sh:1' 'v1\t2026-01-01\t5\t3\t7\ta.sh:1\tb.sh:1\tc.sh:1\td.sh:1\te.sh:1' 'v1.0.0\t2026-01-01\t5\t3\t7\ta.sh:x\tb.sh:1\tc.sh:1\td.sh:1\te.sh:1' ''; do
+    mb_ufixture "$W/u3"; printf '%b\n' "$_u3" > "$W/u3/conformance/mass-release-baseline.txt"
+    _o3=$(mb_rcrun "$W/u3"); _v3=$(printf '%s\n' "$_o3" | mb_vline)
+    printf '%s\n' "$_o3" | grep -Fq 'unbudgeted surfaces (ADVISORY ONLY — never changes the verdict): N/A (' || _u3ok=0
+    [ "$_v3" = "$_u1v" ] || _u3ok=0
+  done
+  rm -f "$W/u3/conformance/mass-release-baseline.txt"
+  _o3=$(mb_rcrun "$W/u3"); _v3=$(printf '%s\n' "$_o3" | mb_vline)
+  printf '%s\n' "$_o3" | grep -Fq 'N/A (conformance/mass-release-baseline.txt is missing' || _u3ok=0
+  [ "$_v3" = "$_u1v" ] || _u3ok=0
+  if [ "$_u3ok" -eq 1 ]; then
+    echo "PASS: selftest -- leg xxxi a malformed (short, octal-looking, bad tag, bad size, empty) or missing baseline prints N/A and leaves the rc and verdict line unchanged"
+  else echo "FAIL: selftest -- leg xxxi a bad baseline did not print N/A with an unchanged verdict (last: [$_o3])"; sfail=1; fi
+
+  mb_ufixture "$W/u4"
+  _u4=$(mb_rcrun "$W/u4"); _u4v=$(printf '%s\n' "$_u4" | mb_vline)
+  _u5=$( ( mb_unbudgeted() { exit 7; }; mb_rcrun "$W/u4" ) 2>&1 ); _u5v=$(printf '%s\n' "$_u5" | mb_vline)
+  _u6=$( ( mb_unbudgeted() { _z=$((1/0)); }; mb_rcrun "$W/u4" ) 2>&1 ); _u6v=$(printf '%s\n' "$_u6" | mb_vline)
+  if [ -n "$_u4v" ] && [ "$_u5v" = "$_u4v" ] && [ "$_u6v" = "$_u4v" ]; then
+    echo "PASS: selftest -- leg xxxii mb_unbudgeted shadowed by exit 7 and by illegal arithmetic leaves mb_verdict's rc and OK/FAIL line byte-identical"
+  else echo "FAIL: selftest -- leg xxxii a crashing mb_unbudgeted moved the verdict: [$_u4v] / exit7 [$_u5v] / arith [$_u6v]"; sfail=1; fi
+
+  mb_ufixture "$W/u7"; rm -f "$W/u7/docs/ROADMAP-KIT.md"
+  _u7=$(mb_rcrun "$W/u7")
+  if printf '%s\n' "$_u7" | grep -Fq 'N/A: conformance-mass-budget' && ! printf '%s\n' "$_u7" | grep -Fq 'unbudgeted'; then
+    echo "PASS: selftest -- leg xxxiii the block never prints in an adopter tree"
+  else echo "FAIL: selftest -- leg xxxiii the block printed (or the gate did not stand down) in an adopter tree: [$_u7]"; sfail=1; fi
+
+  # leg xxxiv -- the baseline data file never ships: export-ignored AND on adopter-export's absence list.
+  if [ ! -f "$_xroot/docs/ROADMAP-KIT.md" ] && [ ! -f "$_xroot/.github/workflows/golden-path.yml" ]; then
+    echo "SKIP: selftest -- leg xxxiv NOT EXERCISED (no kit marker: an adopter tree carries neither the attribute nor the file)"
+  elif grep -Eq '^conformance/mass-release-baseline\.txt[[:space:]]+export-ignore' "$_xroot/.gitattributes" &&
+       grep -Eq 'for p in .*conformance/mass-release-baseline\.txt' "$_xroot/scripts/adopter-export.sh"; then
+    echo "PASS: selftest -- leg xxxiv the baseline data file is export-ignored and on the adopter-export absence list"
+  else echo "FAIL: selftest -- leg xxxiv the baseline data file is not export-ignored or not on the adopter-export absence list"; sfail=1; fi
 
   [ "$sfail" -eq 0 ] && { echo "OK: conformance-mass-budget selftest"; exit 0; } || { echo "FAIL: conformance-mass-budget selftest"; exit 1; }
 }

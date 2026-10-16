@@ -10,7 +10,7 @@ semantic axes (intent/scope, plan alignment, overclaim judgment) remain agent/hu
 ```
 sparkwright doctor
   ├─ conformance/verify.sh       [GATING]    every registered conformance check
-  ├─ conformance/claims-registry.sh [GATING] every headline claim's verifier
+  ├─ conformance/claims-registry.sh [GATING] every headline claim's verifier (kit-self; N/A on an adopter tree)
   ├─ git ground-truth            [ADVISORY]  branch, dirty-tree, tag alignment
   └─ conformance/kit-current.sh  [ADVISORY]  is the kit you ADOPTED behind the current release?
 ```
@@ -26,7 +26,7 @@ The split is intentional and the naming is exact.
 | Dimension    | Role    | What it runs                                       |
 |--------------|---------|----------------------------------------------------|
 | `conformance`| GATING  | `conformance/verify.sh` (all checks)               |
-| `claims`     | GATING  | `conformance/claims-registry.sh`                   |
+| `claims`     | GATING (kit-self) | `conformance/claims-registry.sh`; `N/A (kit-self…)` on an adopter tree |
 | `git`        | ADVISORY| branch · dirty-tree · tag alignment                |
 | `kit-update` | ADVISORY| `conformance/kit-current.sh` — adopted kit vs current release |
 
@@ -89,7 +89,8 @@ CI failures on untracked repos or fresh clones. The two concerns are deliberatel
 A missing composed script is **never a false PASS**:
 
 - `conformance/verify.sh` not present → `conformance: UNVERIFIED (not present)` (WARN; exit 1 under `--require`)
-- `conformance/claims-registry.sh` not present → `claims: UNVERIFIED (not present)` (WARN; exit 1 under `--require`)
+- `claims` is **kit-self**: the registry grades the kit's own headline claims, so on a tree with neither kit marker (`docs/ROADMAP-KIT.md`, `.github/workflows/golden-path.yml`) — every exported or incepted project — the row reads `claims N/A (kit-self…)`, runs nothing, and adds no WARN and no failure (also under `--require`). Your project's own claims are not graded here.
+- On a kit-marked tree, `conformance/claims-registry.sh` not present → `claims: UNVERIFIED (not present)` (WARN; exit 1 under `--require`)
 - `scripts/dora.sh` / `scripts/agent-scorecard.sh` not present → `N/A (not present)` in the metrics section
 
 An adopter who hasn't wired the full conformance suite yet sees honest UNVERIFIED/N/A, not a green
@@ -99,7 +100,7 @@ check that proves nothing.
 
 `sparkwright doctor` automates the **mechanizable** drift axes:
 
-- **D (claim-integrity)** — re-runs every registered claim's verifier via `claims-registry.sh`.
+- **D (claim-integrity)** — re-runs every registered claim's verifier via `claims-registry.sh` (kit-self; N/A on an adopter tree).
 - **E (git ground-truth)** — re-establishes branch, dirty-tree, and tag alignment without trusting stale in-context memory.
 
 It does **not** detect **semantic drift** — intent vs accepted spec, plan alignment, or whether a

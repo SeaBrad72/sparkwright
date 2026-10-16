@@ -33,18 +33,19 @@ assert: present --config p/default
 skip-reason: Rust static analysis is clippy run with -D warnings (see lint-clippy) — no semgrep step to scope
 fix-hint: keep clippy `-D warnings` enabled (see lint-clippy); a separate semgrep step is not expected for Rust
 
-# --- Secret scan (gitleaks): full working-tree scan via the pinned checksum-verified binary
+# --- Secret scan (gitleaks): history scan (scoped by --log-opts) via the pinned checksum-verified binary
 #     (`gitleaks git . --redact`, fetch-depth: 0). `gitleaks git` respects .gitignore, so Rust's
 #     build output (/target) falls out of scope with NO allowlist file. ---
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
 assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
+assert: present --log-opts=
 assert: present gitleaks.*--redact
 assert: present fetch-depth:[[:space:]]*0
 assert: scaffoldfile .gitignore ^/?target
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (/target) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
+fix-hint: run `gitleaks git . --no-banner --redact` (a history scan scoped with --log-opts: the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0) and .gitignore the build output (/target) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 # --- Dependency vulnerability scan (cargo-audit over the whole crate against the RustSec
 #     advisory DB). This is Rust's dep-scan analog to Go's govulncheck. ---

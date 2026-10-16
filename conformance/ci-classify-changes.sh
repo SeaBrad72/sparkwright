@@ -117,10 +117,13 @@ PG_HEAVY='conformance-core conformance-selftests cf-doctor cf-export cf-export-c
 _pg_no()  { echo "push_graded=false reason=$1"; }
 _pg_hex() { case "${1:-}" in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 40 ]; }
 _pg_jq()  { printf '%s' "$1" | jq -r "$2" 2>/dev/null; }
-_pg_conc() { printf '%s\n' "$_pgmap" | awk -F'\t' -v n="$1" '$1 == n { print $2; exit }'; }
+# _pg_conc <name>: the conclusion of the job AND its matrix legs `<name> (...)`; empty if none exist,
+# the shared conclusion if every instance agrees, `mixed` if not (success/skipped then need EVERY leg).
+_pg_conc() { printf '%s\n' "$_pgmap" | awk -F'\t' -v n="$1" '$1 == n || index($1, n " (") == 1 { c[$2] = 1; k++; v = $2 } END { if (k) print (length(c) == 1 ? v : "mixed") }'; }
 
 push_graded() {
   _pu=${1:-}; _ru=${2:-}; _jo=${3:-}; _pt=${4:-}; _ht=${5:-}; _sha=${6:-}; _repo=${7:-}
+  _wf=${8:-.github/workflows/ci.yml}   # the workflow FILE the graded run must come from (D3)
 
   # jq is the union tool (ci.yml probes it in two jobs); absent, we do not guess — we run everything.
   command -v jq >/dev/null 2>&1 || { _pg_no no-jq; return 0; }
@@ -156,10 +159,16 @@ push_graded() {
     && [ "$(_pg_jq "$_e" '.head.repo.full_name')" = "$_repo" ]; } || { _pg_no fork-head; return 0; }
   _hs=$(_pg_jq "$_e" '.head.sha'); _pg_hex "$_hs" || { _pg_no bad-head-sha; return 0; }
   _pr=$(_pg_jq "$_e" '.number')
+  case "$_pr" in ''|*[!0-9]*) _pg_no bad-pr-number; return 0 ;; esac
 
-  # 3. WHICH RUN, AND DID IT COMPLETE GREEN. Latest run_number/run_attempt among the CI runs.
-  _r=$(jq -c 'if type == "array" then . else (.workflow_runs // []) end
-              | [.[] | select(.name == "CI")] | sort_by(.run_number, .run_attempt) | last' "$_ru" 2>/dev/null) \
+  # 3. WHICH RUN, AND DID IT COMPLETE GREEN. Latest run_number/run_attempt among the runs of THIS
+  #    workflow file, triggered by pull_request, from THIS PR's own branch and repository. The run's
+  #    `pull_requests` list is EMPTY once the PR merged (measured live), so it cannot be the bind; the
+  #    merged PR's own head ref and repo are. Another branch's run, or a fork's, is never graded.
+  _hb=$(_pg_jq "$_e" '.head.ref')
+  _r=$(jq -c --arg p "$_wf" --arg b "$_hb" --arg r "$_repo" 'if type == "array" then . else (.workflow_runs // []) end
+              | [.[] | select(.path == $p and .event == "pull_request" and $b != ""
+                              and .head_branch == $b and .head_repository.full_name == $r)] | sort_by(.run_number, .run_attempt) | last' "$_ru" 2>/dev/null) \
     || { _pg_no unreadable-input; return 0; }
   { [ -n "$_r" ] && [ "$_r" != null ]; } || { _pg_no no-graded-run; return 0; }
   [ "$(_pg_jq "$_r" '.head_sha')" = "$_hs" ]     || { _pg_no run-head-mismatch; return 0; }
@@ -196,7 +205,13 @@ push_graded() {
     echo "push_graded=true graded_pr=$_pr graded_head=$_hs graded_run=$_rid reason=docs-only-induction"
     return 0
   fi
-  _pg_no needed-job-not-success
+  for _j in $PG_NEEDED; do   # name the FIRST failing entry, in the constant's order
+    _c=$(_pg_conc "$_j")
+    [ -n "$_c" ] || { _pg_no "needed-job-missing:$_j"; return 0; }
+    [ "$_c" = success ] || { _pg_no "needed-job-not-success:$_j"; return 0; }
+  done
+  [ -n "$_nv" ] || { _pg_no needed-job-missing:non-vacuity; return 0; }
+  _pg_no needed-job-not-success:non-vacuity
   return 0
 }
 
@@ -345,14 +360,15 @@ selftest_pg() {
   S=1111111111111111111111111111111111111111                       # $GITHUB_SHA (the merge commit)
   H=2222222222222222222222222222222222222222                       # the PR head sha
   R=acme/kit
+  PRS='"head_branch":"feat/x","head_repository":{"full_name":"acme/kit"},"event":"pull_request","pull_requests":[]'   # the live shape of a merged PR's run
 
   _mkpulls() { # _mkpulls <file> <merged_at> <merge_sha> <base_ref> <base_repo> <head_repo> <head_sha>
-    printf '[{"number":7,"merged_at":%s,"merge_commit_sha":"%s","base":{"ref":"%s","repo":{"full_name":"%s"}},"head":{"sha":"%s","repo":{"full_name":"%s"}}}]\n' \
+    printf '[{"number":7,"merged_at":%s,"merge_commit_sha":"%s","base":{"ref":"%s","repo":{"full_name":"%s"}},"head":{"ref":"feat/x","sha":"%s","repo":{"full_name":"%s"}}}]\n' \
       "$2" "$3" "$4" "$5" "$7" "$6" > "$1"
   }
   _mkrun() { # _mkrun <file> <status> <conclusion> <head_sha> [more-json-entries]
-    printf '{"workflow_runs":[{"id":900,"name":"CI","run_number":1,"run_attempt":1,"status":"%s","conclusion":"%s","head_sha":"%s"}%s]}\n' \
-      "$2" "$3" "$4" "${5:-}" > "$1"
+    printf '{"workflow_runs":[{"id":900,"name":"CI","path":".github/workflows/ci.yml","run_number":1,"run_attempt":1,"status":"%s","conclusion":"%s","head_sha":"%s",%s}%s]}\n' \
+      "$2" "$3" "$4" "$PRS" "${5:-}" > "$1"
   }
   _mkjobs() { # _mkjobs <file> <name=conclusion ...>   (`~` in a name stands for a space)
     _o=''; _dst=$1; shift
@@ -412,15 +428,15 @@ selftest_pg() {
   _case run-on-an-older-head                "push_graded=false reason=run-head-mismatch"
   _reset; _mkrun "$p/run" in_progress '' "$H"
   _case run-in-progress                     "push_graded=false reason=run-not-completed"
-  _reset; _mkrun "$p/run" completed success "$H" ',{"id":901,"name":"CI","run_number":2,"run_attempt":1,"status":"completed","conclusion":"failure","head_sha":"'"$H"'"}'
+  _reset; _mkrun "$p/run" completed success "$H" ',{"id":901,"name":"CI","path":".github/workflows/ci.yml","run_number":2,"run_attempt":1,"status":"completed","conclusion":"failure","head_sha":"'"$H"'",'"$PRS"'}'
   _case two-runs-latest-failed              "push_graded=false reason=run-not-success"
-  _reset; printf '{"workflow_runs":[{"id":9,"name":"Ratification","run_number":1,"run_attempt":1,"status":"completed","conclusion":"success","head_sha":"%s"}]}\n' "$H" > "$p/run"
+  _reset; printf '{"workflow_runs":[{"id":9,"name":"Ratification","path":".github/workflows/ratification.yml","run_number":1,"run_attempt":1,"status":"completed","conclusion":"success","head_sha":"%s"}]}\n' "$H" > "$p/run"
   _case no-CI-run-on-that-head              "push_graded=false reason=no-graded-run"
 
   # --- (−) grading ---
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
   _reset; _j=$(printf '%s' "$J_ALL" | sed 's/conformance-core=success/conformance-core=skipped/'); _mkjobs "$p/jobs" $_j
-  _case needed-job-skipped-on-a-code-run    "push_graded=false reason=needed-job-not-success"
+  _case needed-job-skipped-on-a-code-run    "push_graded=false reason=needed-job-not-success:conformance-core"
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
   _reset; _j=$(printf '%s' "$J_DOCS" | sed 's/conformance-docs=success/conformance-docs=failure/'); _mkjobs "$p/jobs" $_j
   _case docs-run-doc-job-red                "push_graded=false reason=docs-induction-docs-job-not-success"
@@ -434,7 +450,45 @@ selftest_pg() {
   # suite. Measured live against run 33754855186 (PR #638) — the honest, fail-safe answer.
   # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
   _reset; _j=$(printf '%s' "$J_DOCS" | sed 's/conformance-core=skipped/conformance-core=success/; s/conformance-selftests=skipped/conformance-selftests=success/; s/conformance-docs=success //'); _mkjobs "$p/jobs" $_j
-  _case legacy-mixed-docs-run               "push_graded=false reason=needed-job-not-success"
+  _case legacy-mixed-docs-run               "push_graded=false reason=needed-job-not-success:cf-doctor"
+
+  # --- (+/-) 233a: matrix legs, named reasons, and the run selected by workflow FILE (D3) ---
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/guard-battery=success/guard-battery~(1)=success guard-battery~(2)=success/'); _mkjobs "$p/jobs" $_j
+  _case matrix-two-green-legs-earn-true     "$OK_ALL"
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/guard-battery=success/guard-battery~(1)=failure guard-battery~(2)=success/'); _mkjobs "$p/jobs" $_j
+  _case matrix-one-red-leg-refuses          "push_graded=false reason=needed-job-not-success:guard-battery"
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/guard-battery=success //'); _mkjobs "$p/jobs" $_j
+  _case matrix-no-leg-at-all-is-missing     "push_graded=false reason=needed-job-missing:guard-battery"
+  _reset; _mkrun "$p/run" completed failure "$H" ',{"id":950,"name":"CI","path":".github/workflows/other.yml","run_number":9,"run_attempt":1,"status":"completed","conclusion":"success","head_sha":"'"$H"'",'"$PRS"'}'
+  _case decoy-workflow-is-never-selected    "push_graded=false reason=run-not-success"
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/guard-battery=success/guard-battery~(1)=success guard-battery~(2)=failure/'); _mkjobs "$p/jobs" $_j
+  _case matrix-last-leg-red-refuses         "push_graded=false reason=needed-job-not-success:guard-battery"
+  # shellcheck disable=SC2046,SC2086   # word-splitting the name=conclusion listing IS the fixture builder
+  _reset; _j=$(printf '%s' "$J_ALL" | sed 's/guard-battery=success/guard-battery-extra=success/'); _mkjobs "$p/jobs" $_j
+  _case prefix-collision-is-not-a-leg       "push_graded=false reason=needed-job-missing:guard-battery"
+
+  # --- 233a security N1/N2: the selected run is BOUND to the merged PR, and is a pull_request run ---
+  # The LIVE shape (a completed run of a MERGED PR, measured read-only on #841-#843 and run 38667437837):
+  # `pull_requests` is EMPTY once the PR merged, so the run is bound by head_branch and head_repository.
+  _later() { # _later <id> <head_branch> <head_repo> <event> : a NEWER green run, same sha and workflow file
+    printf ',{"id":%s,"name":"CI","path":".github/workflows/ci.yml","run_number":9,"run_attempt":1,"status":"completed","conclusion":"success","head_sha":"%s","head_branch":"%s","head_repository":{"full_name":"%s"},"event":"%s","pull_requests":[]}' "$1" "$H" "$2" "$3" "$4"
+  }
+  _reset; _case live-shape-empty-pull-requests-earns-the-skip "$OK_ALL"
+  _reset; _mkrun "$p/run" completed failure "$H" "$(_later 960 feat/other "$R" pull_request)"
+  _case later-green-run-of-another-branch   "push_graded=false reason=run-not-success"
+  _reset; _mkrun "$p/run" completed failure "$H" "$(_later 961 feat/x forker/kit pull_request)"
+  _case later-green-run-of-a-fork           "push_graded=false reason=run-not-success"
+  _reset; _mkrun "$p/run" completed failure "$H" "$(_later 962 feat/x "$R" push)"
+  _case later-green-run-of-another-event    "push_graded=false reason=run-not-success"
+  _reset; sed 's/"number":7/"number":"x"/' "$p/pulls" > "$p/pulls.x"; mv "$p/pulls.x" "$p/pulls"
+  _case non-numeric-pr-number-fails-closed  "push_graded=false reason=bad-pr-number"
+  _reset; sed 's/"ref":"feat\/x"/"ref":""/' "$p/pulls" > "$p/pulls.x"; mv "$p/pulls.x" "$p/pulls"
+  _mkrun "$p/run" completed success "$H" "$(_later 970 '' "$R" pull_request)"; sed 's/"head_branch":"feat\/x"/"head_branch":""/' "$p/run" > "$p/run.x"; mv "$p/run.x" "$p/run"
+  _case empty-head-ref-never-matches        "push_graded=false reason=no-graded-run"
 
   # --- (−) the tree identity and the unknowns ---
   _reset; _case trees-differ                "push_graded=false reason=tree-mismatch" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -542,8 +596,8 @@ EOF
 # once bare (docs_only) and once with --export-ignored-only, appending both key=value lines.
 case "${1:-}" in
   --selftest)            selftest; exit $? ;;
-  --push-graded)         shift; push_graded "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}"; exit 0 ;;
+  --push-graded)         shift; push_graded "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}"; exit 0 ;;
   --export-ignored-only) shift; export_ignored_only "${1:-}"; exit 0 ;;
-  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> | --selftest" >&2; exit 2 ;;
+  "")                    echo "usage: ci-classify-changes.sh <listing-file> | --export-ignored-only <listing-file> | --push-graded <pulls.json> <run.json> <jobs.json> <push_tree> <head_tree> <github_sha> <repo> [workflow-path] | --selftest" >&2; exit 2 ;;
   *)                     classify "$1"; exit 0 ;;
 esac

@@ -371,14 +371,120 @@ jobs:
           # NO persist-credentials: false HERE — the notes fetch below runs AFTER checkout and needs
           # the persisted credential. It is removed EXPLICITLY at the end of that step, before any
           # PR-controlled code executes. See ci.yml's ceremony-binding for the measured reason.
+      # Trunk-name tag tripwire. Git resolves a short name such as `origin/main` with refs/tags/ ahead of
+      # refs/remotes/, so a pushed tag of that name becomes "the trunk" for every short-name read in this
+      # job (the class derivation included). A forge tag ruleset may not bind the repository owner's
+      # account, so this step binds every pusher: the job is RED while any such tag exists in this
+      # checkout, and on the forge too (this job held the checkout credential for its notes fetch below,
+      # so the mode switch `TRUNK_TAG_REMOTE: "1"` also reads the forge with `ls-remote`, retried then
+      # fail-closed). It sits before the credential drop and is an inline step, so no PR-controlled code
+      # runs while the token is present. Any other value of the switch is a red, never "off".
+      # Detects, does not prevent. The run: body is kept byte-identical to the kit's own ci.yml step;
+      # keep commentary here, never inside the body.
+      - name: Trunk-name tag tripwire (fail while a tag shadows the trunk or a remote-tracking ref)
+        env:
+          TRUNK_TAG_REMOTE: "1"
+        run: |
+          L=$(mktemp)
+          if ! git for-each-ref --format='local%09%(refname)' refs/tags refs/remotes/origin > "$L"; then
+            echo "trunk-tag-tripwire: cannot list this checkout's refs (git for-each-ref failed) - refusing (fail-closed)."; exit 1
+          fi
+          case "${TRUNK_TAG_REMOTE-}" in
+            "")
+              remote=0
+              ;;
+            1)
+              remote=1
+              ;;
+            *)
+              echo "trunk-tag-tripwire: TRUNK_TAG_REMOTE must be empty or 1 - refusing (fail-closed)."; exit 1
+              ;;
+          esac
+          if [ "$remote" = 1 ]; then
+            R=$(mktemp); ok=0
+            for pause in ${TRUNK_TAG_WAITS:-0 2 5}; do
+              sleep "$pause"
+              if git ls-remote --symref origin > "$R"; then ok=1; break; fi
+            done
+            if [ "$ok" != 1 ]; then
+              echo "trunk-tag-tripwire: cannot list the remote's refs (git ls-remote failed 3 times) - refusing (fail-closed)."; exit 1
+            fi
+            cat "$R" >> "$L"
+          fi
+          awk -v remote="$remote" 'BEGIN { FS = "\t" }
+            $1 ~ /^ref: refs\/heads\// && $2 == "HEAD" { d = substr($1, 17); next }
+            $1 == "local" && $2 ~ /^refs\/remotes\/origin\// { b = substr($2, 21); if (b != "HEAD") { rbr++; br[b] = 1 }; next }
+            $1 != "local" && $2 ~ /^refs\/heads\// { heads++; br[substr($2, 12)] = 1; next }
+            $2 ~ /^refs\/tags\// {
+              t = substr($2, 11); sub(/\^\{\}$/, "", t)
+              w = ($1 == "local") ? "local" : "origin"
+              if (!((t, w) in seen)) { seen[t, w] = 1; where[t] = where[t] " " w }
+            }
+            END {
+              if (rbr == 0) { print "trunk-tag-tripwire: this checkout holds no refs/remotes/origin branch - refusing (fail-closed)."; exit 1 }
+              if (remote == 1 && heads == 0) { print "trunk-tag-tripwire: the remote lists no branches - refusing (fail-closed)."; exit 1 }
+              if (remote == 1 && d == "") { print "trunk-tag-tripwire: the remote advertises no HEAD symref (no default branch) - refusing (fail-closed)."; exit 1 }
+              bad = 0
+              for (t in where) {
+                if (t == "main" || t == "master" || t == "origin" || (d != "" && t == d) || (t in br) || t ~ /^([A-Z_]*_)?HEAD$/ || t ~ /^origin\// || t ~ /^(refs|remotes)\// || t ~ /\/refs\//) {
+                  printf "trunk-tag-tripwire: tag \"%s\" shadows the trunk, a branch or a remote-tracking ref (refs/tags/%s; found:%s). Delete it on the forge.\n", t, t, where[t]
+                  bad = 1
+                }
+              }
+              if (bad) exit 1
+              print "trunk-tag-tripwire: OK - no tag shadows the trunk or a branch (" (remote == 1 ? "local and remote" : "local only") ")."
+            }' "$L"
       - name: Fetch the promotion GO ledger (refs/notes/promotions), then drop the credential
         run: |
           git fetch --no-tags origin '+refs/notes/*:refs/notes/*'
-          git config --local --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true
-          if git config --local --get-all 'http.https://github.com/.extraheader' >/dev/null 2>&1; then
-            echo "ceremony-binding: the checkout credential is STILL present after unset — refusing to run PR-controlled code with a token in .git/config."
-            exit 1
+          # CRED-DROP-BEGIN (SWAS-250)
+          set -f
+          cd_count() {  # <label>: counts only, never a value
+            _l=$(git config --local --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+            case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+            _a=$(git config --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+            case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+            _f=0; [ -z "${RUNNER_TEMP:-}" ] || _f=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config' | wc -l | tr -d ' ')
+            echo "cred-drop: $1 - local extraheader keys=$(printf '%s' "$_l" | grep -c . || true), includes-following=$(printf '%s' "$_a" | grep -c . || true), credential files=$_f"
+          }
+          cd_count before
+          _keys=$(git config --local --name-only --get-regexp '^includeif\..*\.path$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_keys; do
+            _vals=$(git config --local --get-all "$_k") || { echo "cred-drop: cannot read $_k - refusing"; exit 1; }
+            for _p in $_vals; do
+              case "$_p" in */git-credentials-*.config) rm -f -- "$_p" ;; esac
+            done
+            git config --local --unset-all "$_k" 'git-credentials-[0-9a-fA-F-]*\.config$' && _r=0 || _r=$?
+            case $_r in 0|5) ;; *) echo "cred-drop: unset failed (rc=$_r) - refusing"; exit 1 ;; esac
+          done
+          [ -z "${RUNNER_TEMP:-}" ] || find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config' -exec rm -f {} +
+          _keys=$(git config --local --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_keys; do
+            git config --local --unset-all "$_k" && _r=0 || _r=$?
+            case $_r in 0|5) ;; *) echo "cred-drop: unset failed (rc=$_r) - refusing"; exit 1 ;; esac
+          done
+          # CRED-DROP-VERIFY
+          _left=$(git config --show-origin --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+          case $_r in
+            1) ;;
+            0) printf 'cred-drop: a credential header is STILL readable (origin and key only):\n%s\n' "$_left"; exit 1 ;;
+            *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;;
+          esac
+          _inc=$(git config --name-only --get-regexp '^include(if\..*)?\.path$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_inc; do
+            _vals=$(git config --get-all "$_k") || { echo "cred-drop: cannot read $_k - refusing"; exit 1; }
+            case "$_vals" in *git-credentials-*) echo "cred-drop: $_k still names a credentials file - refusing"; exit 1 ;; esac
+          done
+          if [ -n "${RUNNER_TEMP:-}" ] && [ -n "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config')" ]; then
+            echo "cred-drop: a credentials file remains in RUNNER_TEMP - refusing"; exit 1
           fi
+          # CRED-DROP-VERIFY-END
+          cd_count after
+          set +f
+          # CRED-DROP-END
           echo "ceremony-binding: GO ledger fetched; checkout credential removed."
       - name: DESIGN GATE binding (Sensitive/Control-plane change requires a recorded, scoped design GO)
         id: gate
@@ -539,6 +645,65 @@ jobs:
           path: .kit-base
           fetch-depth: 1
           persist-credentials: false
+      # Trunk-name tag tripwire (SWAS-247). Git resolves a short name such as `origin/main` with
+      # refs/tags/ ahead of refs/remotes/, so a pushed tag of that name becomes "the trunk" for the
+      # class derivation in this job (promotion-readiness.sh --class). This job's own checkout fetched the
+      # tags, so a decoy tag plus a rerun of this one job would derive a narrow class: the step reds the job
+      # while any such tag exists in this checkout (a LOCAL read: no network, no credential, so this job's
+      # `persist-credentials: false` head checkout is untouched). It sits after both checkouts, before any
+      # PR-controlled code. Inline, never a PR-tree script; the run: body is byte-identical to every other copy
+      # (the kit's ci.yml included), so commentary lives HERE, never in the body. Detects, does not prevent.
+      - name: Trunk-name tag tripwire (fail while a tag shadows the trunk or a remote-tracking ref)
+        run: |
+          L=$(mktemp)
+          if ! git for-each-ref --format='local%09%(refname)' refs/tags refs/remotes/origin > "$L"; then
+            echo "trunk-tag-tripwire: cannot list this checkout's refs (git for-each-ref failed) - refusing (fail-closed)."; exit 1
+          fi
+          case "${TRUNK_TAG_REMOTE-}" in
+            "")
+              remote=0
+              ;;
+            1)
+              remote=1
+              ;;
+            *)
+              echo "trunk-tag-tripwire: TRUNK_TAG_REMOTE must be empty or 1 - refusing (fail-closed)."; exit 1
+              ;;
+          esac
+          if [ "$remote" = 1 ]; then
+            R=$(mktemp); ok=0
+            for pause in ${TRUNK_TAG_WAITS:-0 2 5}; do
+              sleep "$pause"
+              if git ls-remote --symref origin > "$R"; then ok=1; break; fi
+            done
+            if [ "$ok" != 1 ]; then
+              echo "trunk-tag-tripwire: cannot list the remote's refs (git ls-remote failed 3 times) - refusing (fail-closed)."; exit 1
+            fi
+            cat "$R" >> "$L"
+          fi
+          awk -v remote="$remote" 'BEGIN { FS = "\t" }
+            $1 ~ /^ref: refs\/heads\// && $2 == "HEAD" { d = substr($1, 17); next }
+            $1 == "local" && $2 ~ /^refs\/remotes\/origin\// { b = substr($2, 21); if (b != "HEAD") { rbr++; br[b] = 1 }; next }
+            $1 != "local" && $2 ~ /^refs\/heads\// { heads++; br[substr($2, 12)] = 1; next }
+            $2 ~ /^refs\/tags\// {
+              t = substr($2, 11); sub(/\^\{\}$/, "", t)
+              w = ($1 == "local") ? "local" : "origin"
+              if (!((t, w) in seen)) { seen[t, w] = 1; where[t] = where[t] " " w }
+            }
+            END {
+              if (rbr == 0) { print "trunk-tag-tripwire: this checkout holds no refs/remotes/origin branch - refusing (fail-closed)."; exit 1 }
+              if (remote == 1 && heads == 0) { print "trunk-tag-tripwire: the remote lists no branches - refusing (fail-closed)."; exit 1 }
+              if (remote == 1 && d == "") { print "trunk-tag-tripwire: the remote advertises no HEAD symref (no default branch) - refusing (fail-closed)."; exit 1 }
+              bad = 0
+              for (t in where) {
+                if (t == "main" || t == "master" || t == "origin" || (d != "" && t == d) || (t in br) || t ~ /^([A-Z_]*_)?HEAD$/ || t ~ /^origin\// || t ~ /^(refs|remotes)\// || t ~ /\/refs\//) {
+                  printf "trunk-tag-tripwire: tag \"%s\" shadows the trunk, a branch or a remote-tracking ref (refs/tags/%s; found:%s). Delete it on the forge.\n", t, t, where[t]
+                  bad = 1
+                }
+              }
+              if (bad) exit 1
+              print "trunk-tag-tripwire: OK - no tag shadows the trunk or a branch (" (remote == 1 ? "local and remote" : "local only") ")."
+            }' "$L"
       # A3 — NO TOKEN AND NO API CALL ON AN `md` ADOPTER. This step runs ONLY when the base branch
       # declares a hosted tracker (.kit/tracker.conf present in the base checkout above); on `md`
       # the file is absent, the `if:` short-circuits, and the step (its token included) never runs.
@@ -661,6 +826,66 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+      # Trunk-name tag tripwire (SWAS-247). Git resolves a short name such as `origin/main` with
+      # refs/tags/ ahead of refs/remotes/, and this job's checkout is the BASE tree at fetch-depth 0, so
+      # the tags are here and the grader's `rl_base` tries a short name (`origin/<base_ref>`) before the
+      # full ref. A decoy tag plus a rerun of this one job would grade against the wrong base: the step
+      # reds the job while any such tag exists in this checkout (a LOCAL read: no network, no credential).
+      # It sits after the checkout and before the head fetch that drops the credential, so no
+      # PR-controlled code has run. Inline, never a PR-tree script; the run: body is
+      # byte-identical to every other copy (the kit's ci.yml included), so commentary lives HERE, never
+      # in the body. Detects, does not prevent.
+      - name: Trunk-name tag tripwire (fail while a tag shadows the trunk or a remote-tracking ref)
+        run: |
+          L=$(mktemp)
+          if ! git for-each-ref --format='local%09%(refname)' refs/tags refs/remotes/origin > "$L"; then
+            echo "trunk-tag-tripwire: cannot list this checkout's refs (git for-each-ref failed) - refusing (fail-closed)."; exit 1
+          fi
+          case "${TRUNK_TAG_REMOTE-}" in
+            "")
+              remote=0
+              ;;
+            1)
+              remote=1
+              ;;
+            *)
+              echo "trunk-tag-tripwire: TRUNK_TAG_REMOTE must be empty or 1 - refusing (fail-closed)."; exit 1
+              ;;
+          esac
+          if [ "$remote" = 1 ]; then
+            R=$(mktemp); ok=0
+            for pause in ${TRUNK_TAG_WAITS:-0 2 5}; do
+              sleep "$pause"
+              if git ls-remote --symref origin > "$R"; then ok=1; break; fi
+            done
+            if [ "$ok" != 1 ]; then
+              echo "trunk-tag-tripwire: cannot list the remote's refs (git ls-remote failed 3 times) - refusing (fail-closed)."; exit 1
+            fi
+            cat "$R" >> "$L"
+          fi
+          awk -v remote="$remote" 'BEGIN { FS = "\t" }
+            $1 ~ /^ref: refs\/heads\// && $2 == "HEAD" { d = substr($1, 17); next }
+            $1 == "local" && $2 ~ /^refs\/remotes\/origin\// { b = substr($2, 21); if (b != "HEAD") { rbr++; br[b] = 1 }; next }
+            $1 != "local" && $2 ~ /^refs\/heads\// { heads++; br[substr($2, 12)] = 1; next }
+            $2 ~ /^refs\/tags\// {
+              t = substr($2, 11); sub(/\^\{\}$/, "", t)
+              w = ($1 == "local") ? "local" : "origin"
+              if (!((t, w) in seen)) { seen[t, w] = 1; where[t] = where[t] " " w }
+            }
+            END {
+              if (rbr == 0) { print "trunk-tag-tripwire: this checkout holds no refs/remotes/origin branch - refusing (fail-closed)."; exit 1 }
+              if (remote == 1 && heads == 0) { print "trunk-tag-tripwire: the remote lists no branches - refusing (fail-closed)."; exit 1 }
+              if (remote == 1 && d == "") { print "trunk-tag-tripwire: the remote advertises no HEAD symref (no default branch) - refusing (fail-closed)."; exit 1 }
+              bad = 0
+              for (t in where) {
+                if (t == "main" || t == "master" || t == "origin" || (d != "" && t == d) || (t in br) || t ~ /^([A-Z_]*_)?HEAD$/ || t ~ /^origin\// || t ~ /^(refs|remotes)\// || t ~ /\/refs\//) {
+                  printf "trunk-tag-tripwire: tag \"%s\" shadows the trunk, a branch or a remote-tracking ref (refs/tags/%s; found:%s). Delete it on the forge.\n", t, t, where[t]
+                  bad = 1
+                }
+              }
+              if (bad) exit 1
+              print "trunk-tag-tripwire: OK - no tag shadows the trunk or a branch (" (remote == 1 ? "local and remote" : "local only") ")."
+            }' "$L"
       - name: Fetch the PR head as OBJECTS (never a checkout), then drop the credential
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -672,7 +897,54 @@ jobs:
             echo "review-lane: refs/pull/${PR_NUMBER}/head resolved to $fetched but the event reports $HEAD_SHA — refusing to grade an object the forge and the event disagree about."
             exit 1
           fi
-          git config --local --unset-all 'http.https://github.com/.extraheader' 2>/dev/null || true
+          # CRED-DROP-BEGIN (SWAS-250)
+          set -f
+          cd_count() {  # <label>: counts only, never a value
+            _l=$(git config --local --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+            case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+            _a=$(git config --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+            case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+            _f=0; [ -z "${RUNNER_TEMP:-}" ] || _f=$(find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config' | wc -l | tr -d ' ')
+            echo "cred-drop: $1 - local extraheader keys=$(printf '%s' "$_l" | grep -c . || true), includes-following=$(printf '%s' "$_a" | grep -c . || true), credential files=$_f"
+          }
+          cd_count before
+          _keys=$(git config --local --name-only --get-regexp '^includeif\..*\.path$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_keys; do
+            _vals=$(git config --local --get-all "$_k") || { echo "cred-drop: cannot read $_k - refusing"; exit 1; }
+            for _p in $_vals; do
+              case "$_p" in */git-credentials-*.config) rm -f -- "$_p" ;; esac
+            done
+            git config --local --unset-all "$_k" 'git-credentials-[0-9a-fA-F-]*\.config$' && _r=0 || _r=$?
+            case $_r in 0|5) ;; *) echo "cred-drop: unset failed (rc=$_r) - refusing"; exit 1 ;; esac
+          done
+          [ -z "${RUNNER_TEMP:-}" ] || find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config' -exec rm -f {} +
+          _keys=$(git config --local --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_keys; do
+            git config --local --unset-all "$_k" && _r=0 || _r=$?
+            case $_r in 0|5) ;; *) echo "cred-drop: unset failed (rc=$_r) - refusing"; exit 1 ;; esac
+          done
+          # CRED-DROP-VERIFY
+          _left=$(git config --show-origin --name-only --get-regexp '^http\..*extraheader$') && _r=0 || _r=$?
+          case $_r in
+            1) ;;
+            0) printf 'cred-drop: a credential header is STILL readable (origin and key only):\n%s\n' "$_left"; exit 1 ;;
+            *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;;
+          esac
+          _inc=$(git config --name-only --get-regexp '^include(if\..*)?\.path$') && _r=0 || _r=$?
+          case $_r in 0|1) ;; *) echo "cred-drop: git config failed (rc=$_r) - refusing"; exit 1 ;; esac
+          for _k in $_inc; do
+            _vals=$(git config --get-all "$_k") || { echo "cred-drop: cannot read $_k - refusing"; exit 1; }
+            case "$_vals" in *git-credentials-*) echo "cred-drop: $_k still names a credentials file - refusing"; exit 1 ;; esac
+          done
+          if [ -n "${RUNNER_TEMP:-}" ] && [ -n "$(find "$RUNNER_TEMP" -maxdepth 1 -name 'git-credentials-*.config')" ]; then
+            echo "cred-drop: a credentials file remains in RUNNER_TEMP - refusing"; exit 1
+          fi
+          # CRED-DROP-VERIFY-END
+          cd_count after
+          set +f
+          # CRED-DROP-END
       - name: STAGE ARTIFACTS (the plan file and the review record the head names, graded)
         id: gate
         env:

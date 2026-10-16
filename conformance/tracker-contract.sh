@@ -39,6 +39,8 @@ TJ_SH="$_TC_ROOT/scripts/tracker-jira.sh"
 # SWAS-101: the presence check for a stored credential. This file only asks whether one exists (attributes
 # only, never the secret); the adapter alone reads it. Absent in a partial tree -> the environment-only gate.
 if [ -f "$_TC_ROOT/scripts/tracker-cred.sh" ]; then . "$_TC_ROOT/scripts/tracker-cred.sh"; fi
+# SWAS-196: the library reads the conf's as.agent itself, at the root derived above from this script's $0.
+if command -v tracker_cred_bind_root >/dev/null 2>&1; then tracker_cred_bind_root "$_TC_ROOT"; fi
 
 # check_blob <file>: every required name must appear as an EXACT quoted value (whitespace-insensitive).
 check_blob() {
@@ -196,20 +198,29 @@ tc_cm_get() {
     sh "$TJ_SH" create-meta "$BASE" "$FLAVOUR" "$1" ${2:+"$2"} )
 }
 
-# tc_fields_render <meta-file>: `issuetype<TAB>Size<TAB>Risk` per type, `-` when a type has no such field.
+# tc_fields_render <meta-file> [<field.metric>]: `issuetype<TAB>Size<TAB>Risk<TAB>Metric` per type, `-` when a type has no
+# such field. Names compare trimmed (Jira keeps trailing spaces). Metric: a configured customfield id wins on any type where
+# it is a string field, whatever its name; only an unset field.metric falls back to a string field named "Success metric".
 tc_fields_render() {
-  awk -F'\t' '
-    !($1 in seen) { seen[$1] = 1; order[++n] = $1; sz[$1] = "-"; rk[$1] = "-" }
-    $2 ~ /^customfield_/ && tolower($4) == "size" && sz[$1] == "-" { sz[$1] = $2 }
-    $2 ~ /^customfield_/ && tolower($4) == "risk" && rk[$1] == "-" { rk[$1] = $2 }
-    END { print "issuetype\tSize\tRisk"; for (i = 1; i <= n; i++) print order[i] "\t" sz[order[i]] "\t" rk[order[i]] }' "$1"
+  awk -F'\t' -v cm="${2:-}" '
+    !($1 in seen) { seen[$1] = 1; order[++n] = $1; sz[$1] = "-"; rk[$1] = "-"; mt[$1] = "-" }
+    { nm = $4; gsub(/^[ \t]+|[ \t]+$/, "", nm); nm = tolower(nm) }
+    $2 ~ /^customfield_/ && nm == "size" && sz[$1] == "-" { sz[$1] = $2 }
+    $2 ~ /^customfield_/ && nm == "risk" && rk[$1] == "-" { rk[$1] = $2 }
+    cm ~ /^customfield_/ && $2 == cm && $3 == "string" && mt[$1] == "-" { mt[$1] = $2 }
+    (cm == "" || cm == "none") && $2 ~ /^customfield_/ && $3 == "string" && nm == "success metric" && mt[$1] == "-" { mt[$1] = $2 }
+    END { print "issuetype\tSize\tRisk\tMetric"; for (i = 1; i <= n; i++) print order[i] "\t" sz[order[i]] "\t" rk[order[i]] "\t" mt[order[i]] }' "$1"
 }
 
-# tc_fields <meta-file> <create-type>: the table, then the conf lines to paste for the create type.
+# tc_fields <meta-file> <create-type> [<field.metric>]: the table, then the conf lines to paste for the create type.
 tc_fields() {
-  tc_fields_render "$1"
+  tc_fields_render "$1" "${3:-}"
   echo "paste into .kit/tracker.conf for create.issuetype=$2:"
-  tc_fields_render "$1" | awk -F'\t' -v t="$2" '$1 == t { if ($2 != "-") print "field.size=" $2; if ($3 != "-") print "field.risk=" $3; found = 1 }
+  tc_fields_render "$1" "${3:-}" | awk -F'\t' -v t="$2" -v cm="${3:-}" '$1 == t { if ($2 != "-") print "field.size=" $2; if ($3 != "-") print "field.risk=" $3; found = 1
+      if ($4 != "-") print "field.metric=" $4
+      else if (cm == "" || cm == "none") print "# field.metric: \047" t "\047 has no paragraph field named \"Success metric\" on its create screen - add one (JIRA-SETUP section 2), then run --fields again"
+      else if (cm !~ /^customfield_/) print "# field.metric is \047" cm "\047, not a customfield id; --fields lists customfield ids only"
+      else print "# field.metric: field.metric is set but not a text field on \047" t "\047 - map a paragraph field on that type\047s create screen (JIRA-SETUP section 2)" }
     END { if (!found) print "# (no such type in this project: set create.issuetype to one of the rows above)" }'
 }
 
@@ -388,8 +399,9 @@ tc_fields_live() {
   if ! tc_cm_get "$(sh "$TC_SH" get project "$CONF")" > "$_fl_meta"; then
     echo "FAIL: could not read the project's create-meta"; rm -rf "$_fl_meta" "$_rq_dir"; trap - EXIT INT TERM; return 1
   fi
-  tc_fields "$_fl_meta" "$_fl_type"
-  _rq_sugg=$(tc_fields_render "$_fl_meta" | awk -F'\t' -v t="$_fl_type" '$1 == t { if ($2 != "-") print $2; if ($3 != "-") print $3 }')
+  _fl_metric=$(sh "$TC_SH" get field.metric "$CONF" 2>/dev/null || true)
+  tc_fields "$_fl_meta" "$_fl_type" "$_fl_metric"
+  _rq_sugg=$(tc_fields_render "$_fl_meta" "$_fl_metric" | awk -F'\t' -v t="$_fl_type" '$1 == t { if ($2 != "-") print $2; if ($3 != "-") print $3; if ($4 != "-") print $4 }')
   if tc_req_load "$_fl_type" && tc_req_fields "$_fl_type"; then _fl_rc=0; else _fl_rc=1; fi
   rm -rf "$_fl_meta" "$_rq_dir"; trap - EXIT INT TERM; return "$_fl_rc"
 }
@@ -592,6 +604,34 @@ _pf_name_gate() {
 # (`<name> · <id>`, the operator's own terminal); ci shows ONLY the last 8 characters of the id (`…<tail>`), so the drift job's
 # notice relay never carries a display name or a full id. The email is never read. A failed read is INFO, never a verdict.
 _pf_identity_line() {
+  _pf_identity_name "$1"
+  if [ "$1" = agent ]; then _pf_identity_verdict; fi
+  return 0
+}
+# _pf_identity_verdict: SWAS-196 (d). Compares the credential's account with the library's bound as.agent (never the
+# --conf file). The email is never printed. Skipped when the library is absent (a partial tree).
+_pf_identity_verdict() {
+  command -v tracker_cred_account >/dev/null 2>&1 || return 0
+  tracker_cred_account
+  if [ -z "$TRACKER_CRED_ACCT" ]; then
+    _pf_line identity ASK "the conf names no as.agent, so a Keychain lookup takes the first item stored for this host; add as.agent (JIRA-SETUP §4) or keep one tracker item per host in this login keychain"
+    return 0
+  fi
+  if [ -n "${JIRA_EMAIL:-}" ] || [ -n "${JIRA_TOKEN:-}" ]; then
+    if [ "${KIT_TRACKER_AUTH:-basic}" = bearer ]; then
+      _pf_line identity ASK "a bearer token carries no account to compare with as.agent; confirm the name above is the agent account"
+    elif [ "${JIRA_EMAIL:-}" != "$TRACKER_CRED_ACCT" ]; then
+      _pf_line identity FAIL "the credential's account is not the conf's as.agent; lanes would act as another identity - JIRA-SETUP §5b"
+    fi
+    return 0
+  fi
+  if ! tracker_cred_available "$BASE" && [ "${TRACKER_CRED_SOURCE:-}" = none ]; then
+    _pf_line identity FAIL "no Keychain item for the conf's as.agent account on ${BASE#https://} - JIRA-SETUP §5b"
+  fi
+  return 0
+}
+# _pf_identity_name <role>: the account line (the pre-SWAS-196 body of _pf_identity_line).
+_pf_identity_name() {
   _pi_rc=0; _pf_read whoami "$PFD/who" || _pi_rc=$?
   [ "$_pi_rc" -eq 0 ] || : > "$PFD/who"
   _pi_id=$(_pf_id_gate "$(_pf_get "$PFD/who" account-id)")
@@ -626,8 +666,8 @@ _pf_head() {
   _pf_line reach-ci INFO "$_PF_REACH_CI"
   case $(_pf_enum "$(_pf_get "$PFD/probe" auth)" ok 401 403 rejected unknown) in
     ok) _pf_line auth PASS "the site accepted the credential (basic auth, site URL)" ;;
-    rejected) _pf_line auth FAIL "the site did not accept the credential (it answered as an anonymous user, or the login was refused): check KIT_TRACKER_USER and the token or the Keychain item, and base_url"; return 1 ;;
-    401) _pf_line auth FAIL "the site refused the credential: a wrong or revoked token, or a scoped token the kit does not route yet (see JIRA-SETUP §5)"; return 1 ;;
+    rejected) _pf_line auth FAIL "the site did not accept the credential (it answered as an anonymous user, or the login was refused): check KIT_TRACKER_USER and the token or the Keychain item, and base_url, or a token truncated on store (JIRA-SETUP §5b)"; return 1 ;;
+    401) _pf_line auth FAIL "the site refused the credential: a wrong, revoked or truncated token (a macOS Keychain item stored with the bare -w prompt keeps only 128 characters), or a scoped token the kit does not route yet (see JIRA-SETUP §5)"; return 1 ;;
     403) _pf_line auth FAIL "the account cannot use the REST API (org token policy or product access); ask the site admin"; return 1 ;;
     *) _pf_line auth UNVERIFIED "the credential check was inconclusive"; return 1 ;;
   esac
@@ -740,7 +780,7 @@ if [ "$SELFTEST" -eq 0 ]; then
 fi
 
 if [ "$SELFTEST" -eq 1 ]; then
-  sfail=0
+  sfail=0; _cmr_abs=""
   okf=$(mktemp); printf '"Backlog" "Ready" "In Progress" "In Review" "Released" "Done" "Blocked" "Size" "Risk"\n' > "$okf"
   if check_blob "$okf" >/dev/null 2>&1; then echo "PASS: selftest — conformant config passes"; else echo "FAIL: selftest — conformant wrongly rejected"; sfail=1; fi
   gapf=$(mktemp); printf '"Backlog" "Ready" "In Progress" "In Review" "Released" "Done" "Blocked" "Size"\n' > "$gapf"
@@ -1077,7 +1117,7 @@ EOF
     _cmr_tag=$1; _cmr_conf=$2; _cmr_meta=$3; _cmr_rf=$4; shift 4
     fa_reset
     ( unset JIRA_EMAIL JIRA_TOKEN 2>/dev/null
-      KIT_TRACKER_USER="cm-user@example.com"; KIT_TRACKER_TOKEN="cm-tok"; FA_CMBODY="$fxdir/$_cmr_meta"
+      KIT_TRACKER_USER="cm-user@example.com"; KIT_TRACKER_TOKEN="cm-tok"; FA_CMBODY="${_cmr_abs:-$fxdir/$_cmr_meta}"
       FA_RFBODY=""; [ "$_cmr_rf" = "-" ] || FA_RFBODY="$fxdir/$_cmr_rf"
       FA_TFBODY="${_cmr_tf:-}"
       export KIT_TRACKER_USER KIT_TRACKER_TOKEN FA_CMBODY FA_RFBODY FA_TFBODY
@@ -1166,17 +1206,54 @@ EOF
   else
     echo "FAIL: selftest — fields/dropped: rc=$_cmr_rc out='$_cmr_out'"; sfail=1
   fi
+  # FIELDS-SUCCESS-METRIC-ID (SWAS-205): the Metric column and the field.metric paste line. _fm_chk <row> <want-cell>
+  # <want-paste|-> <comment-grep|->: rc 0, the Task row's Metric cell, exactly the paste line (or none), the comment (or none).
+  _fm_chk() {
+    _fm_cell=$(printf '%s\n' "$_cmr_out" | awk -F'\t' '$1 == "Task" { print $4; exit }')
+    _fm_paste=$(printf '%s\n' "$_cmr_out" | sed -n 's/^field\.metric=//p')
+    _fm_cmt=$(printf '%s\n' "$_cmr_out" | grep -c '^# field\.metric[: ]' || true)
+    if [ "$_cmr_rc" = 0 ] && [ "$_fm_cell" = "$2" ] && { [ "$3" = - ] && [ -z "$_fm_paste" ] || [ "$_fm_paste" = "$3" ]; } \
+       && { [ "$4" = - ] && [ "$_fm_cmt" = 0 ] || { [ "$4" != - ] && [ "$_fm_cmt" = 1 ] && printf '%s\n' "$_cmr_out" | grep -qF -- "$4"; }; }; then
+      echo "PASS: selftest — fields/$1"
+    else
+      echo "FAIL: selftest — fields/$1: rc=$_cmr_rc cell='$_fm_cell' paste='$_fm_paste' comments=$_fm_cmt out='$_cmr_out'"; sfail=1
+    fi
+  }
+  _cm_run fldsma "$f7conf" contract-createmeta-nometric.txt contract-rf-golden.txt --fields
+  if cmp -s "$tmpd/fldsma-out" "$fxdir/contract-fields-nometric-expected.txt"; then _fm_g=ok; else _fm_g=differs; fi
+  _fm_chk metric-absent - - "has no paragraph field named \"Success metric\" on its create screen"
+  [ "$_fm_g" = ok ] || { echo "FAIL: selftest — fields/metric-absent: output differs from the recorded golden"; sfail=1; }
+  # the load-bearing negative: a Success metric field of the wrong kind is never pasted (board create --metric cannot write it)
+  _cm_run fldsmw "$f7conf" contract-createmeta-metric-wrongkind.txt contract-rf-golden.txt --fields
+  _fm_chk metric-wrong-kind - - "has no paragraph field named \"Success metric\" on its create screen"
+  _cm_run fldsmc "$fxdir/contract-conf-metric-mapped.conf" contract-createmeta-metric-confmapped.txt contract-rf-golden.txt --fields
+  _fm_chk metric-conf-mapped customfield_10090 customfield_10090 -
+  _cm_run fldsmn "$fxdir/contract-conf-metric-mapped.conf" contract-createmeta-metric-confnottext.txt contract-rf-golden.txt --fields
+  _fm_chk metric-conf-not-text - - "field.metric is set but not a text field on 'Task'"
+  sed 's/Success metric$/Success metric /' "$fxdir/contract-createmeta-metric-trailing.txt" > "$tmpd/padded-meta.txt"
+  _cmr_abs="$tmpd/padded-meta.txt"
+  _cm_run fldsmt "$f7conf" ignored.txt contract-rf-golden.txt --fields
+  _cmr_abs=""
+  _fm_chk metric-trailing-space customfield_10077 customfield_10077 -
+  _cm_run fldsmd "$fxdir/contract-conf-metric-description.conf" contract-createmeta-all.txt contract-rf-golden.txt --fields
+  _fm_chk metric-conf-not-customfield - - "field.metric is 'description', not a customfield id"
+  # a REQUIRED Success metric field: its id is pasted once, as field.metric, never also as create.<id> (_rq_sugg column 4)
+  _cm_run fldsmr "$f7conf" contract-createmeta-all.txt contract-rf-metric-required.txt --fields
+  _fm_np=$(printf '%s\n' "$_cmr_out" | grep -c '^field\.metric=customfield_10077$' || true)
+  _fm_nc=$(printf '%s\n' "$_cmr_out" | grep -c '^create\.customfield_10077=' || true)
+  if [ "$_fm_np" = 1 ] && [ "$_fm_nc" = 0 ]; then echo "PASS: selftest — fields/metric-required-no-double-paste"
+  else echo "FAIL: selftest — fields/metric-required-no-double-paste: field.metric=$_fm_np create=$_fm_nc out='$_cmr_out'"; sfail=1; fi
 
   # --- TRACKER-PREFLIGHT-TIER-CARD: --preflight prints the tier card, `name<TAB>verdict<TAB>text` per line (design
   # 2026-10-03 §4/§14; plan interfaces B/C/D). Every leg runs the fake-adapter tree: the card reads answer from
   # recorded adapter output (FA_PF_*), never a network. pf_* shell variables select the fixtures for ONE _pfr run. ---
   pf_probe=''; pf_server=''; pf_perms=''; pf_vis=''; pf_epic=''; pf_rf=''; pf_proj=''; pf_pst=''; pf_wf=''; pf_wfrc=''; pf_myrc=''
-  pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0; pf_whoami=''; pf_whorc=''
+  pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0; pf_whoami=''; pf_whorc=''; pf_tree=''; pf_user=''
   _pfr() {  # <tag> [contract-args…]: one run of the fake tree's contract; result in _pfrc/_pfout, files $tmpd/<tag>-*
     _pft=$1; shift; fa_reset
     ( unset JIRA_EMAIL JIRA_TOKEN KIT_TRACKER_USER KIT_TRACKER_TOKEN 2>/dev/null
-      if [ "$pf_nocreds" -eq 0 ]; then KIT_TRACKER_USER="pf-user@example.com"; KIT_TRACKER_TOKEN="pf-s3cret-tok"; export KIT_TRACKER_USER KIT_TRACKER_TOKEN; fi
-      [ -z "$pf_probe" ] || FA_PF_PROBE="$fxdir/contract-pf-$pf_probe.txt"
+      if [ "$pf_nocreds" -eq 0 ]; then KIT_TRACKER_USER="${pf_user:-pf-user@example.com}"; KIT_TRACKER_TOKEN="pf-s3cret-tok"; export KIT_TRACKER_USER KIT_TRACKER_TOKEN; fi
+      [ -z "$pf_tree" ] || { HOME="$tmpd"; export HOME; }; [ -z "$pf_probe" ] || FA_PF_PROBE="$fxdir/contract-pf-$pf_probe.txt"  # SWAS-196: a library-bearing tree gets a HOME of its own
       [ -z "$pf_server" ] || FA_PF_SERVER="$fxdir/contract-pf-server-$pf_server.txt"
       [ -z "$pf_perms" ] || FA_PF_PERMS="$fxdir/contract-pf-perms-$pf_perms.txt"
       [ -z "$pf_vis" ] || FA_PF_VIS="$fxdir/contract-pf-vis-$pf_vis.txt"
@@ -1194,11 +1271,11 @@ EOF
       [ -z "$pf_whoami" ] || FA_PF_WHOAMI="$fxdir/contract-pf-whoami-$pf_whoami.txt"
       [ -z "$pf_whorc" ] || FA_PF_WHOAMI_RC=$pf_whorc
       export FA_PF_PROBE FA_PF_SERVER FA_PF_PERMS FA_PF_VIS FA_PF_EPIC FA_RFBODY FA_PROJECT FA_PSTATUSES FA_WF FA_WF_RC FA_MYSELF_RC FA_PF_PROBE_RC FA_PF_PERMS_RC FA_PF_EPIC_RC FA_PF_SERVER_RC FA_PF_WHOAMI FA_PF_WHOAMI_RC
-      if sh "$fadir/conformance/tracker-contract.sh" "$@" >"$tmpd/$_pft-out" 2>"$tmpd/$_pft-err"; then echo 0 > "$tmpd/$_pft-rc"; else echo $? > "$tmpd/$_pft-rc"; fi
+      if sh "${pf_tree:-$fadir}/conformance/tracker-contract.sh" "$@" >"$tmpd/$_pft-out" 2>"$tmpd/$_pft-err"; then echo 0 > "$tmpd/$_pft-rc"; else echo $? > "$tmpd/$_pft-rc"; fi
     )
     _pfrc=$(cat "$tmpd/$_pft-rc" 2>/dev/null || printf '?'); _pfout=$(cat "$tmpd/$_pft-out" 2>/dev/null || true)
     pf_probe=''; pf_server=''; pf_perms=''; pf_vis=''; pf_epic=''; pf_rf=''; pf_proj=''; pf_pst=''; pf_wf=''; pf_wfrc=''; pf_myrc=''
-    pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0; pf_whoami=''; pf_whorc=''
+    pf_proberc=''; pf_permsrc=''; pf_epicrc=''; pf_serverrc=''; pf_nocreds=0; pf_whoami=''; pf_whorc=''; pf_tree=''; pf_user=''
   }
   # oracles over the last run: _pfl name verdict fragment (a card line) · _pfa name (no such line) · _pfok rc
   _pfl() { awk -F'\t' -v n="$1" -v v="$2" -v t="$3" '$1 == n && $2 == v && index($3, t) > 0 { f = 1 } END { exit !f }' "$tmpd/$_pft-out"; }
@@ -1291,7 +1368,7 @@ EOF
   _pfv probe-unreadable/rc _pfok 2
   # --- auth: 401 / 403 FAIL and stop; a hostile enum is UNVERIFIED and never echoed (S-6) ---
   pf_probe=probe-401; _pfr pf401 --preflight --conf "$f7conf"
-  _pfv auth-401/fail _pfl auth FAIL "the site refused the credential: a wrong or revoked token, or a scoped token the kit does not route yet (see JIRA-SETUP §5)"
+  _pfv auth-401/fail _pfl auth FAIL "the site refused the credential: a wrong, revoked or truncated token (a macOS Keychain item stored with the bare -w prompt keeps only 128 characters), or a scoped token the kit does not route yet (see JIRA-SETUP §5)"
   _pfv auth-401/stops _pfa project
   _pfv auth-401/reach-before _pfl reach-here PASS ""
   _pfv auth-401/rc _pfok 1
@@ -1311,7 +1388,7 @@ EOF
   _pfv auth-403/stops _pfa project
   # TRACKER-ANON-200-REJECT: a credential the site served anonymously is its own named FAIL (never `inconclusive`), and stops
   pf_probe=probe-rejected; _pfr pfrejected --preflight --conf "$f7conf"
-  _pfv auth-rejected/fail _pfl auth FAIL "the site did not accept the credential (it answered as an anonymous user, or the login was refused): check KIT_TRACKER_USER and the token or the Keychain item, and base_url"
+  _pfv auth-rejected/fail _pfl auth FAIL "the site did not accept the credential (it answered as an anonymous user, or the login was refused): check KIT_TRACKER_USER and the token or the Keychain item, and base_url, or a token truncated on store (JIRA-SETUP §5b)"
   _pfv auth-rejected/stops _pfa project
   _pfv auth-rejected/rc _pfok 1
   pf_probe=probe-hostile; _pfr pfhostile --preflight --conf "$f7conf"
@@ -1412,6 +1489,68 @@ EOF
   _pfv agent/no-dev-admin-info-line _pfa admin
   _pfv agent/order _pforder "card deployment reach-here reach-ci auth identity token-expiry project permissions claim-tier required epic-model visibility automation CARD "
   _pfv agent/reads-the-create-fields-like-dev _pfl required PASS "0 required create fields unmapped"
+  # --- SWAS-196 (d): the identity verdicts against the conf's as.agent. A third fake tree carries the REAL credential
+  # library (its store path pointed at a fixture stand-in, never the real Keychain) and its own .kit/tracker.conf. ---
+  fadir3="$tmpd/fa3"; mkdir -p "$fadir3/conformance" "$fadir3/scripts" "$fadir3/.kit"
+  cp "$_TC_ROOT/conformance/tracker-contract.sh" "$fadir3/conformance/tracker-contract.sh"
+  cp "$_TC_ROOT/scripts/tracker-conf.sh" "$fadir3/scripts/tracker-conf.sh"
+  cp "$fxdir/contract-fake-adapter.sh" "$fadir3/scripts/tracker-jira.sh"
+  cp "$fxdir/contract-pf-keychain-stub.sh" "$fadir3/security"
+  chmod +x "$fadir3/scripts/tracker-jira.sh" "$fadir3/security"
+  sed -e "s|^_TCR_SEC_BIN=.*|_TCR_SEC_BIN=$fadir3/security|" "$_TC_ROOT/scripts/tracker-cred.sh" > "$fadir3/scripts/tracker-cred.sh"
+  _pf3_conf() {  # [account]: the tree's conf, with or without an as.agent line
+    cp "$f7conf" "$fadir3/.kit/tracker.conf"
+    if [ -n "${1:-}" ]; then printf 'as.agent=%s\n' "$1" >> "$fadir3/.kit/tracker.conf"; fi
+  }
+  _pf3_a="agent-fixture@example.com"; _pf3_b="pf-user@example.com"
+  _pf3_conf "$_pf3_a"
+  pf_tree=$fadir3; pf_user=$_pf3_a; _pfr pfidmatch --preflight --as agent --conf "$f7conf"
+  _pfv identity/match-is-the-name-line-alone _pfn identity 1
+  _pfv identity/match-rc0 _pfok 0
+  pf_tree=$fadir3; _pfr pfidmiss --preflight --as agent --conf "$f7conf"
+  _pfv identity/env-mismatch-fails _pfl identity FAIL "the credential's account is not the conf's as.agent; lanes would act as another identity - JIRA-SETUP §5b"
+  _pfv identity/env-mismatch-rc1 _pfok 1
+  _pfv identity/env-mismatch-card-fail _pfl CARD FAIL "1 FAIL"
+  _pfv identity/env-mismatch-names-no-email _pfnot "example.com"
+  pf_tree=$fadir3; _pfr pfiddev --preflight --as dev --conf "$f7conf"
+  _pfv identity/dev-role-is-not-compared _pfn identity 1
+  _pfv identity/dev-role-rc0 _pfok 0
+  pf_tree=$fadir3; _pfr pfidbearer --preflight --as agent --conf "$fxdir/contract-conf-bearer.conf"
+  _pfv identity/bearer-asks _pfl identity ASK "a bearer token carries no account to compare with as.agent"
+  _pfv identity/bearer-is-not-a-fail _pfok 0
+  _pf3_conf ""
+  pf_tree=$fadir3; _pfr pfidnokey --preflight --as agent --conf "$f7conf"
+  _pfv identity/no-key-asks _pfl identity ASK "the conf names no as.agent"
+  _pfv identity/no-key-rc0 _pfok 0
+  _pf3_conf "$_pf3_a"
+  # the Keychain path, in-process through the library's own seam: no item for the declared account FAILs, a present one is silent
+  for _pf3_st in absent present; do
+    rm -f "$fadir3/present"; if [ "$_pf3_st" = present ]; then printf '%s' "$_pf3_a" > "$fadir3/present"; fi
+    ( unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN 2>/dev/null
+      HOME="$tmpd"; export HOME; _TCR_SEC_BIN="$fadir3/security"; tracker_cred_bind_root "$fadir3"; BASE="https://ex.atlassian.net"; _PF_FAILS=0
+      _pf_identity_verdict ) > "$tmpd/pf3-kc-$_pf3_st" 2>&1
+  done
+  if grep -qF "identity${_TC_TAB}FAIL${_TC_TAB}no Keychain item for the conf's as.agent account" "$tmpd/pf3-kc-absent" && ! grep -qF "example.com" "$tmpd/pf3-kc-absent" && [ ! -s "$tmpd/pf3-kc-present" ]; then
+    echo "PASS: selftest — preflight/identity/keychain-missing-item-fails-and-present-item-is-silent"
+  else
+    echo "FAIL: selftest — preflight/identity/keychain: absent='$(cat "$tmpd/pf3-kc-absent")' present='$(cat "$tmpd/pf3-kc-present")'"; sfail=1
+  fi
+  # what an operator actually sees with no credential at all: the contract stops UNVERIFIED (rc 2) before any card line and names the as.agent account
+  rm -f "$fadir3/present"
+  pf_tree=$fadir3; pf_nocreds=1; _pfr pfidnocred --preflight --as agent --conf "$f7conf"
+  _pfv identity/no-credential-stops-unverified _pfok 2
+  _pfv identity/no-credential-names-the-as-agent-account _pfhas "for the conf's as.agent account"
+  _pfv identity/no-credential-names-no-email _pfnot "example.com"
+  # M1: a bound conf that is invalid fails closed (the store holds an item, yet it is not offered), never the store's first item
+  printf '%s' "$_pf3_a" > "$fadir3/present"; printf 'this-line-is-malformed\n' >> "$fadir3/.kit/tracker.conf"
+  _pf3_bad=$( unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN 2>/dev/null
+    HOME="$tmpd"; export HOME; _TCR_SEC_BIN="$fadir3/security"; tracker_cred_bind_root "$fadir3"; _pf3_r=0; tracker_cred_available "https://ex.atlassian.net" >/dev/null 2>&1 || _pf3_r=$?
+    printf '%s|%s' "$_pf3_r" "${TRACKER_CRED_WHY:-}" )
+  case "$_pf3_bad" in
+    "1|the tracker conf is invalid or unreadable"*) echo "PASS: selftest — preflight/identity/invalid-bound-conf-fails-closed-with-no-fallback" ;;
+    *) echo "FAIL: selftest — preflight/identity/invalid-bound-conf-fails-closed: got '$_pf3_bad'"; sfail=1 ;;
+  esac
+  _pf3_conf "$_pf3_a"; rm -f "$fadir3/present"
   # LOAD-BEARING (kills a mutant that drops the upper bound): a site admin whose PROJECT permissions are clean
   # (ADMINISTER_PROJECTS no, ADMINISTER yes) must FAIL as an agent.
   pf_perms='site-admin'; _pfr pfagadm --preflight --as agent --conf "$f7conf"
@@ -1621,6 +1760,138 @@ CSTUB
       echo "FAIL: selftest — preflight/messaging/$_pff must name both '$_pf_ph' and '$_pf_tk' verbatim (D: one source, three places)"; sfail=1
     fi
   done
+  # --- SWAS-197: the template's store recipe is ONE `{ …; }` group that feeds `security -i` on stdin (never the 128-character prompt) ---
+  _rc_ok() {
+    case $1 in
+      '{ '*'; }') : ;;
+      *) return 1 ;;
+    esac
+    for _rc_need in 'read -rs' '${#SW_TOKEN}' '| security -i' 'login.keychain-db' 'unset SW_TOKEN' 'add-generic-password -U -s sparkwright-tracker' "*[!=A-Za-z0-9@._+/:-]*"; do
+      case $1 in
+        *"$_rc_need"*) : ;;
+        *) return 1 ;;
+      esac
+    done
+    # history expansion (interactive zsh): every `[!` must be followed by `=`, which is exempt
+    _rc_bang=$(printf '%s' "$1" | sed 's/\[!=//g')
+    case $_rc_bang in
+      *'[!'*) return 1 ;;
+      *) : ;;
+    esac
+    # a bare -w (the 128-character prompt form): drop the legitimate "-w %s" value slot, then no -w may stand without a value
+    if printf '%s' "$1" | sed 's/ -w %s//g' | grep -qE -e ' -w($|[^A-Za-z0-9-])'; then return 1; fi
+    return 0
+  }
+  # the same predicate over every fenced line of the template that stores or reads (the human length check is exempt by its marker)
+  _rc_scan_ok() {
+    awk '/^```/ { f = !f; next } f' "$1" | grep -F -e 'add-generic-password' -e ' -w' | grep -vF -e 'find-generic-password' | while IFS= read -r _rc_l; do
+      _rc_ok "$_rc_l" || { echo bad; break; }
+    done
+  }
+  _rc_line=$(grep -F -e "{ printf 'Tracker token" "$_TC_ROOT/templates/JIRA-SETUP-TEMPLATE.md" || true)
+  if [ "$(printf '%s\n' "$_rc_line" | grep -c .)" = 1 ] && _rc_ok "$_rc_line"; then
+    echo "PASS: selftest — recipe/template: section 5b stores through one { …; } group and security -i on stdin"
+  else
+    echo "FAIL: selftest — recipe/template: section 5b must carry exactly one { …; } recipe line with read -rs, the charset guard, security -i, login.keychain-db and unset"; sfail=1
+  fi
+  if [ -z "$(_rc_scan_ok "$_TC_ROOT/templates/JIRA-SETUP-TEMPLATE.md")" ]; then
+    echo "PASS: selftest — recipe/block-scan: every fenced store line in the template passes the recipe predicate (no bare -w anywhere)"
+  else
+    echo "FAIL: selftest — recipe/block-scan: a fenced line in the template stores with a bare -w or a history-unsafe class"; sfail=1
+  fi
+  # negative: a synthetic 5b block carrying the real recipe PLUS a second store line with a bare -w elsewhere must be refused by the same scan
+  _rc_syn="$(mktemp)"
+  { printf '%s\n' '```' "$_rc_line" '```' 'prose' '```' 'tool add-generic-password -U -s sparkwright-tracker:h -a e -w' '```'; } > "$_rc_syn"
+  if [ -n "$(_rc_scan_ok "$_rc_syn")" ]; then
+    echo "PASS: selftest — recipe/negative-block-scan: a bare -w store line elsewhere in the block is refused by the scan"
+  else
+    echo "FAIL: selftest — recipe/negative-block-scan: the scan accepted a bare -w store line placed elsewhere in the block"; sfail=1
+  fi
+  rm -f "$_rc_syn"
+  # load-bearing negatives. Each mutant is the REAL recipe with exactly one defect, so deleting the clause that catches it turns the cell red.
+  _rc_mut=$(printf '%s' "$_rc_line" | sed 's/| security -i/| security -i -w/')
+  if _rc_ok "$_rc_mut"; then
+    echo "FAIL: selftest — recipe/negative-prompt-form: a valid-looking group with a trailing bare -w (128-character cut) was accepted"; sfail=1
+  else
+    echo "PASS: selftest — recipe/negative-prompt-form: a valid-looking group whose only defect is a bare -w is refused"
+  fi
+  _rc_mut=$(printf '%s' "$_rc_line" | sed 's/unset SW_TOKEN; }/case x in *[!A]*) : ;; esac; unset SW_TOKEN; }/')
+  if _rc_ok "$_rc_mut"; then
+    echo "FAIL: selftest — recipe/negative-bang-class: a recipe with a [!A class (zsh history expansion) was accepted"; sfail=1
+  else
+    echo "PASS: selftest — recipe/negative-bang-class: a recipe with a [! not followed by = is refused"
+  fi
+  # behavioural: the recipe's own case guard, run in an INTERACTIVE shell (history expansion on) with the store replaced by a sink
+  # Gate before ANY shell runs: the predicate passed AND the extracted text no longer names `security` (so the store cannot be reached)
+  _rc_extract() {
+    printf '%s' "$1" | sed -e 's/.*\(case \$SW_TOKEN in.*esac\).*/\1/' -e 's/| security -i/| cat >\/dev\/null/'
+  }
+  _rc_runnable() {
+    _rc_ok "$1" || return 1
+    case $(_rc_extract "$1") in
+      *security*) return 1 ;;
+      *) return 0 ;;
+    esac
+  }
+  # negatives: a pipe with no space (the sed would miss it), and a stray `security` word inside the guard that _rc_ok alone accepts
+  _rc_mut=$(printf '%s' "$_rc_line" | sed 's/| security -i/|security -i/')
+  if _rc_runnable "$_rc_mut"; then
+    echo "FAIL: selftest — recipe/negative-no-space-pipe: a |security -i recipe was cleared to run"; sfail=1
+  else
+    echo "PASS: selftest — recipe/negative-no-space-pipe: a |security -i recipe is refused before any shell runs"
+  fi
+  _rc_mut=$(printf '%s' "$_rc_line" | sed "s/echo 'refused:/security -i; echo 'refused:/")
+  if _rc_ok "$_rc_mut" && ! _rc_runnable "$_rc_mut"; then
+    echo "PASS: selftest — recipe/negative-security-word: a security word left in the extracted guard is refused before any shell runs"
+  else
+    echo "FAIL: selftest — recipe/negative-security-word: a guard still naming security was cleared to run"; sfail=1
+  fi
+  _rc_case=$(_rc_extract "$_rc_line")
+  _rc_home=$(mktemp -d)
+  # both shells run with no history file (HISTFILE=/dev/null, bash +o history) and a scratch HOME, so the cell writes nothing outside it
+  _rc_beh() {
+    printf 'SW_TOKEN=%s\n%s\n' "'$2'" "$3" | { env HISTFILE=/dev/null HOME="$_rc_home" $1 >/dev/null; } 2>&1
+  }
+  _rc_good='ATATT3xFfGF0abc=12.x'
+  _rc_old=$(printf '%s' "$_rc_case" | sed 's/\[!=A-Za-z0-9@._+\/:-\]/[!A-Za-z0-9@._+\/=:-]/')
+  for _rc_sh in 'zsh -fi' 'bash --norc -i +o history'; do
+    if ! _rc_runnable "$_rc_line"; then
+      echo "FAIL: selftest — recipe/behaviour/${_rc_sh%% *}: the template recipe is not cleared to run (predicate failed or the extracted guard still names security); nothing executed"; sfail=1
+      continue
+    fi
+    if ! command -v "${_rc_sh%% *}" >/dev/null 2>&1; then
+      echo "SKIP: selftest — recipe/behaviour/${_rc_sh%% *}: ${_rc_sh%% *} is not on PATH, so the interactive guard cannot be exercised here"
+      continue
+    fi
+    _rc_a=$(_rc_beh "$_rc_sh" "$_rc_good" "$_rc_case")
+    _rc_r=$(_rc_beh "$_rc_sh" 'ab cd' "$_rc_case")
+    if printf '%s' "$_rc_a" | grep -qF "read ${#_rc_good} characters" && printf '%s' "$_rc_r" | grep -qF 'refused:' && ! printf '%s\n%s' "$_rc_a" "$_rc_r" | grep -qiF 'event not found'; then
+      echo "PASS: selftest — recipe/behaviour/${_rc_sh%% *}: a token-shaped value is accepted, a value with a space is refused, no history-expansion error"
+    else
+      echo "FAIL: selftest — recipe/behaviour/${_rc_sh%% *}: accepted=[$(printf '%s' "$_rc_a" | tr '\n' ' ' | cut -c1-120)] refused=[$(printf '%s' "$_rc_r" | tr '\n' ' ' | cut -c1-120)]"; sfail=1
+    fi
+  done
+  # the behavioural cell can see the defect: the old spelling DOES die under interactive zsh
+  if command -v zsh >/dev/null 2>&1; then
+    if _rc_beh 'zsh -fi' "$_rc_good" "$_rc_old" | grep -qiF 'event not found'; then
+      echo "PASS: selftest — recipe/behaviour/negative-old-class: the old [!A spelling dies under interactive zsh (the cell is not vacuous)"
+    else
+      echo "FAIL: selftest — recipe/behaviour/negative-old-class: the old [!A spelling did not trigger history expansion, so the zsh cell cannot see the defect"; sfail=1
+    fi
+  fi
+  # the cell's negative: an interactive shell left a history file in the scratch HOME
+  if [ -z "$(ls -A "$_rc_home")" ]; then
+    echo "PASS: selftest — recipe/behaviour/no-history-file: the interactive shells wrote no history file"
+  else
+    echo "FAIL: selftest — recipe/behaviour/no-history-file: an interactive shell wrote a file under the scratch HOME: $(ls -A "$_rc_home" | tr '\n' ' ')"; sfail=1
+  fi
+  rm -rf "$_rc_home"
+  _rc_mut=$(printf '%s' "$_rc_line" | sed 's/| security -i/| cat/')
+  if _rc_ok "$_rc_mut"; then
+    echo "FAIL: selftest — recipe/negative-no-stdin-route: a recipe without security -i was accepted"; sfail=1
+  else
+    echo "PASS: selftest — recipe/negative-no-stdin-route: a recipe without security -i is refused"
+  fi
 
   # --- No second implementation (S-3): scan the WHOLE file EXCEPT the selftest block (from the
   # `if [ "$SELFTEST" -eq 1 ]` line to its matching `fi`, both unindented at column 0, per this

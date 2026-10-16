@@ -43,7 +43,7 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
 ## 3. Releasing (platform team)
 
 1. Land the change on a feature branch via PR (the kit's own loop — see §5).
-2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version.
+2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version; run `sh conformance/conformance-mass-budget.sh` at the release commit and append the `next-baseline:` line it prints (the text after the label) to `conformance/mass-release-baseline.txt`.
    - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
 

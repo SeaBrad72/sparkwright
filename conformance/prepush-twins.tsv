@@ -38,8 +38,8 @@
 #
 # --- the five twins the design named, plus the three the census surfaced -----------------------
 review-lane	twin	review-lane.sh --pr "$PR_NUMBER" --head "$HEAD_SHA"	review-lane.sh --pre-push	0		CI grades a PR number it reads from the event; --pre-push grades the same tree with no forge.
-loop-state	twin	loop-state.sh --head "$HEAD_SHA"	loop-state.sh --head {head}	0		CI passes the event SHA; locally HEAD is the same commit.
-backlog-presence	twin	backlog-presence.sh --dir . --pr "$PR" --changed /tmp/changed.txt --branch "$HEAD_REF" --base-board	backlog-presence.sh --dir . --pr 0 --changed {listing} --branch {branch} --claims --base-board {base-board}	0		CI derives the listing and the base board from the event; the lane derives both itself (design §3.3).
+loop-state	twin	loop-state.sh --head "$HEAD_SHA"	loop-state.sh --head {head}	0		CI passes the event SHA; locally HEAD is the same commit; on a hosted-tracker tree a NOT ENFORCED-only result reads N/A locally (the lane's board-bound list).
+backlog-presence	twin	backlog-presence.sh --dir . --pr "$PR" --changed /tmp/changed.txt --branch "$HEAD_REF" --base-board	backlog-presence.sh --dir . --pr 0 --changed {listing} --branch {branch} --claims --base-board {base-board}	0		CI derives the listing and the base board from the event; the lane derives both itself (design §3.3); on a hosted-tracker tree a NOT ENFORCED-only result reads N/A locally (the lane's board-bound list).
 ceremony-binding	twin	ceremony-binding.sh --scope "PR-$PR_NUMBER" --head-branch "$HEAD_REF"	ceremony-binding.sh --pre-push	0		CI scopes to the PR; --pre-push is the same gate scoped to the branch head.
 tracker-contract	twin	if sh conformance/tracker-contract.sh; then	tracker-contract.sh	2		CI asserts the honest non-pass INSIDE an if-block (so the step is context); rc 2 is the expected verdict without creds.
 escalation-wired	twin	sh conformance/escalation-wired.sh --selftest	escalation-wired.sh --selftest	0		The step is a two-line block whose FIRST line runs scripts/escalate.sh, so the whole step is context; this half is a plain local selftest.

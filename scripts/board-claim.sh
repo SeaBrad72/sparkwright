@@ -274,8 +274,8 @@ bc_usage() {
 bc_row_ok() {
   case "$1" in
     '')            return 1 ;;
-    [!A-Z0-9]*)    return 1 ;;
-    *[!A-Z0-9-]*)  return 1 ;;
+    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)    return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*)  return 1 ;;
   esac
   return 0
 }

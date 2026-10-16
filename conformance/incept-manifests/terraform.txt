@@ -97,10 +97,11 @@ id: secret-gate
 precondition: present gitleaks
 when-absent: skip
 assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
+assert: present --log-opts=
 assert: present --redact
 assert: present fetch-depth:[[:space:]]*0
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks git . --no-banner --redact` (full-tree, fetch-depth: 0)
+fix-hint: run `gitleaks git . --no-banner --redact` (a history scan scoped with --log-opts: the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0)
 
 id: provenance-gated
 precondition: present attest-build-provenance

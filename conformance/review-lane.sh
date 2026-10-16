@@ -306,7 +306,7 @@ rl_ceiling_exempt() {
   [ "$(rl_trailer_count "$1" Kit-Plan)" -eq 0 ] && [ "$(rl_trailer_count "$1" Kit-Review)" -eq 0 ] || return 1
   [ "$(rl_trailer_count "$1" Kit-Row)" -eq 1 ] || return 1
   _ce_row=$(rl_trailer "$1" Kit-Row | head -1)
-  case "$_ce_row" in ''|[!A-Z0-9]*|*[!A-Z0-9-]*) return 1 ;; esac
+  case "$_ce_row" in ''|[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;; esac
   _ce_size=$(rl_row_size "$_rl_mb" "$_ce_row" "$3") || return 1
   case "$_ce_size" in XS|S) ;; *) return 1 ;; esac
   rl_row_touched "$_rl_mb" "$1" "$_ce_row" || return 1
@@ -467,7 +467,7 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
     [ -n "$_grow" ] || continue
     _gc=$(rl_cell "$_grow" 1); _gvd=$(rl_cell "$_grow" 3)
     case "$_gc" in
-      *[!0-9a-fA-F]*|'') echo "RL-ROUND-SHA: round row cites '$(rl_safe "$_gc")', which is not a commit object name"; _gr=2; continue ;;
+      *[!0123456789abcdefABCDEF]*|'') echo "RL-ROUND-SHA: round row cites '$(rl_safe "$_gc")', which is not a commit object name"; _gr=2; continue ;;
     esac
     if ! git -C "$RL_REPO" rev-parse -q --verify "$_gc^{commit}" >/dev/null 2>&1; then
       echo "RL-ROUND-UNKNOWN: $_gp cites commit $_gc, which is not in this repository — a force-push after the record leaves it citing commits no longer in the PR; re-review and re-attest"; _gr=2; continue

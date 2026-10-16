@@ -1,0 +1,5 @@
+Task	customfield_10046	option	Size	XS|S|M|L|XL
+Task	customfield_10047	option	Risk	Low|Medium|High
+Task	customfield_10077	string	Success metric
+Task	customfield_10090	string	Hypothesis
+Task	description	string	Description

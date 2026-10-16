@@ -81,6 +81,8 @@ Declare the 8 ids however the platform names units of work (job, stage, step, ta
 
 This is the same honesty discipline as the three-state conformance model (`conformance/verify.sh`): **green ≠ verified** — an unverifiable control reports UNVERIFIED, never a silent pass. Porting these 10 scripts to GitLab/ADO APIs is deliberately out of scope (adopter-owned, named here) rather than faked.
 
+**Trunk-name tags.** Every gate job that reads the trunk (`ceremony-binding`, `loop-state` and `review-lane` in the shipped `adopter-gates.yml`) fails while a tag in its own checkout shadows the trunk, a branch or a remote-tracking ref (`main`, `master`, `HEAD`-style names, a branch name, `origin/…`, `refs/…`); `ceremony-binding` also checks the forge. The local check needs no credential, so no checkout's `persist-credentials` changes. Where your forge offers a tag ruleset (GitHub rulesets, GitLab protected tags, Azure DevOps ref policies), set one that refuses those names too. It stops the push rather than reddening the next PR. Check whether it binds the repository owner's or an admin's account: on GitHub a live test showed it did not, which is why the CI step is the control.
+
 For the full GitLab adopter guide — branch protection wiring, control-plane ratification (the
 keystone gap: the `control-plane-ratification` merge-gate has no kit-shipped GitLab equivalent), and
 DORA derivation — see [`gitlab-adoption.md`](gitlab-adoption.md).

@@ -60,18 +60,19 @@ fix-hint: scan the whole app (`semgrep --config p/default --error .`) so new cod
 id: secret-gate
 precondition: present gitleaks
 when-absent: skip
-# The REAL, effective protection (asserted-and-locked, not changed by KW3): a FULL working-tree scan
+# The REAL, effective protection (asserted-and-locked, not changed by KW3): a HISTORY scan scoped by --log-opts
 # (`gitleaks git . --redact`, fetch-depth: 0) whose only exclusion is build output that is already
 # .gitignore'd (dist/, coverage/) — and `gitleaks git` respects .gitignore, so generated artifacts are
 # out of scope; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field. (The former scaffold `.gitleaksignore` was inert: gitleaks'
 # allowlist holds finding FINGERPRINTS, not path globs, so path entries were rejected with a warning.)
 assert: present gitleaks git[[:space:]]+\.
+assert: present --log-opts=
 assert: present gitleaks.*--redact
 assert: present fetch-depth:[[:space:]]*0
 assert: scaffoldfile .gitignore ^/?dist/?$
 assert: scaffoldfile .gitignore ^/?coverage/?$
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) and .gitignore the build output (dist/, coverage/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
+fix-hint: run `gitleaks git . --no-banner --redact` (a history scan scoped with --log-opts: the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0) and .gitignore the build output (dist/, coverage/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 id: provenance-gated
 precondition: present attest-build-provenance

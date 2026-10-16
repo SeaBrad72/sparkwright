@@ -48,7 +48,9 @@ on:
   push:
     branches: [main]
   # Weekly FULL run of the kit's own selftests (a PR that changes no control-plane path skips them; see
-  # the "Changed-path listing" step). Catches runner / tool drift only - yours to tune or remove.
+  # the "Changed-path listing" step). It also carries this profile's ONLY all-branches secret sweep (the
+  # secret-scan step scans a PR's own commits and main's history, and every ref on a schedule): removing
+  # the schedule removes that sweep. Its cadence is yours to tune.
   schedule:
     - cron: '23 5 * * 1'
 permissions:
@@ -102,15 +104,41 @@ jobs:
           echo "TODO: build command"
       - name: Secret scan
         id: gate-secret-scan
-        # Range-independent full-tree scan via the pinned, checksum-verified gitleaks binary
-        # (H4b supply-chain pattern; language-agnostic). Avoids gitleaks-action's PR merge-ref
-        # failure mode and needs only contents:read.
+        # History scan via the pinned, checksum-verified gitleaks binary (H4b supply-chain pattern;
+        # language-agnostic). Avoids gitleaks-action's PR merge-ref failure mode and needs only
+        # contents:read.
+        # SCOPE: a pull request scans its own commits (base..head); a push to main scans main's own
+        # history; any other event (the weekly schedule, workflow_dispatch) scans every ref. The
+        # schedule is therefore your only all-branches sweep: removing it removes that sweep. Without
+        # --log-opts gitleaks runs `git log --all`, so one branch's finding would red every PR.
+        # Never put --all inside a PR range (it cancels the range). Event fields enter only via env:.
+        # OTHER FORGES: scan <target-tip>..<source-head> on change requests, the default branch's HEAD
+        # on default-branch pushes, and all refs on a schedule, from a full-depth clone. GitLab:
+        # GIT_DEPTH 0 and $CI_MERGE_REQUEST_DIFF_BASE_SHA..$CI_COMMIT_SHA (the shipped GitLab variant, profiles/typescript-node/ci.gitlab-ci.yml, still scans every branch; tracked separately). Elsewhere:
+        # `git merge-base origin/<target> HEAD` gives the left side of the range.
+        env:
+          GL_EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           GL_VER=8.24.3
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz" -o /tmp/gitleaks.tgz
           echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tgz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
-          /tmp/gitleaks git . --no-banner --redact
+          case "$GL_EVENT" in
+            pull_request) GL_SCOPE="$BASE_SHA..HEAD" ;;
+            push)         GL_SCOPE="HEAD" ;;
+            *)            GL_SCOPE="--full-history --all" ;;
+          esac
+          if [ "$GL_EVENT" = pull_request ]; then
+            { echo "$BASE_SHA" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?' \
+              && git rev-parse -q --verify "$BASE_SHA^{commit}" >/dev/null; } \
+              || { echo "secret-scan: PR range not resolvable in this checkout; refusing to guess a range"; exit 1; }
+            [ -n "$(git rev-list -n 1 "$BASE_SHA..HEAD")" ] \
+              || { echo "secret-scan: PR range is empty; refusing to report a scan of nothing"; exit 1; }
+          fi
+          # shellcheck disable=SC2086  # deliberate: the all-refs scope is TWO words and must split for rev-list.
+          echo "secret-scan scope ($GL_EVENT): $GL_SCOPE ($(git rev-list --count $GL_SCOPE 2>/dev/null || echo '?') commits)"
+          /tmp/gitleaks git . --no-banner --redact --log-opts="$GL_SCOPE"
       - name: Dependency vulnerability scan
         id: gate-dep-scan
         run: |

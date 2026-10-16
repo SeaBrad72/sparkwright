@@ -56,6 +56,9 @@ set -eu
 GL_VER="8.24.3"
 CI_FILE="${KIT_CI_FILE:-.github/workflows/ci.yml}"
 GL_TOML="${KIT_GITLEAKS_TOML:-.gitleaks.toml}"
+GI_NAME=".gitleaksignore"
+GI_FILE="${KIT_GITLEAKSIGNORE:-$GI_NAME}"
+DRIFT_FILE="${KIT_DRIFT_FILE:-.github/workflows/drift-watch.yml}"
 
 # The parity surface (design §3 / plan Task 2): every site that must run `gitleaks git .`, never
 # `gitleaks dir .`. Two buckets — files carrying the LITERAL invocation, and the incept manifests
@@ -93,6 +96,77 @@ conformance/incept-manifests/rust.txt
 conformance/incept-manifests/terraform.txt
 conformance/incept-manifests/typescript-node.txt
 "
+
+# _job_block <body-text> <job-name> -> prints the job's own block (its 2-space `<job>:` header to the next
+# 2-space job header, or EOF). _step_block <body-text> -> prints the `id: gate-secret-scan` step (from its
+# id line to the next step or job header). Both take COMMENT-STRIPPED text.
+_job_block() {
+  printf '%s\n' "$1" | awk -v j="$2" '$0=="  " j ":"{f=1;next} f&&/^  [A-Za-z0-9_-]+:[ \t]*$/{exit} f{print}'
+}
+_step_block() {
+  printf '%s\n' "$1" | awk '/id:[ \t]*gate-secret-scan/{f=1;next} f&&(/^      - /||/^  [A-Za-z0-9_-]+:[ \t]*$/){exit} f{print}'
+}
+
+# _scope_shape_ok <block-text> <label> -> 0 iff the secret-scan block carries the SWAS-175 scope shape,
+# else prints one FAIL per gap and returns 1: `--log-opts="$GL_SCOPE"`, all THREE scope arms, the
+# fail-closed PR-range refusal (design A1: with it deleted and empty shas the scope is `..`, which git
+# reads as HEAD..HEAD -- zero commits, a silent pass), and event fields only through `env:` (A8).
+_scope_shape_ok() {
+  _sb=$1; _sl=$2; _sr=0
+  printf '%s\n' "$_sb" | grep -Fq -e '--log-opts="$GL_SCOPE"' \
+    || { echo "FAIL: $_sl does not scope the scan with --log-opts=\"\$GL_SCOPE\" (an unscoped 'gitleaks git' runs 'git log --all': one branch's finding reds every PR)"; _sr=1; }
+  printf '%s\n' "$_sb" | grep -Eq 'pull_request\)[[:space:]]+GL_SCOPE="\$BASE_SHA\.\.HEAD"' \
+    || { echo "FAIL: $_sl is missing the 'pull_request) GL_SCOPE=\"\$BASE_SHA..HEAD\"' scope arm"; _sr=1; }
+  printf '%s\n' "$_sb" | grep -Eq 'push\)[[:space:]]+GL_SCOPE="HEAD"' \
+    || { echo "FAIL: $_sl is missing the 'push) GL_SCOPE=\"HEAD\"' scope arm"; _sr=1; }
+  printf '%s\n' "$_sb" | grep -Eq '\*\)[[:space:]]+GL_SCOPE="--full-history --all"' \
+    || { echo "FAIL: $_sl is missing the '*) GL_SCOPE=\"--full-history --all\"' scope arm"; _sr=1; }
+  # The base refusal (A9): BASE_SHA hex-checked and resolved with `git rev-parse -q --verify` (NOT cat-file or
+  # merge-base: the tracker-secret pairing lock taints those), then the EXACT `|| { echo ...; exit 1; }` line.
+  _hx="grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'"
+  if ! printf '%s\n' "$_sb" | grep -Fq -e "echo \"\$BASE_SHA\" | $_hx" \
+    || ! printf '%s\n' "$_sb" | grep -Fq -e 'git rev-parse -q --verify "$BASE_SHA^{commit}" >/dev/null' \
+    || ! printf '%s\n' "$_sb" | grep -Fq -e '|| { echo "secret-scan: PR range not resolvable in this checkout; refusing to guess a range"; exit 1; }'; then
+    echo "FAIL: $_sl is missing the exact fail-closed PR-base refusal (BASE_SHA hex check AND 'git rev-parse -q --verify', then the '|| { echo \"secret-scan: PR range not resolvable ...\"; exit 1; }' line)"; _sr=1
+  fi
+  # The empty-range refusal: a wrong checkout (HEAD on the base) would scan zero PR commits and pass.
+  if ! printf '%s\n' "$_sb" | grep -Fq -e '[ -n "$(git rev-list -n 1 "$BASE_SHA..HEAD")" ]' \
+    || ! printf '%s\n' "$_sb" | grep -Fq -e '|| { echo "secret-scan: PR range is empty; refusing to report a scan of nothing"; exit 1; }'; then
+    echo "FAIL: $_sl is missing the exact empty-range refusal (a PR range of zero commits must exit 1 naming 'PR range is empty')"; _sr=1
+  fi
+  # ${{ }} is allowed ONLY as `NAME: ${{ expr }}` inside the step's env: mapping (judged by indentation);
+  # from the `run:` line onward (its body, or a one-line `run: ${{ ... }}`) any ${{ is a violation. A fake
+  # `env:` line inside a run body cannot reopen the exemption: the run body is consumed first.
+  printf '%s\n' "$_sb" | awk '
+    /^[ \t]*$/ { next }
+    { match($0, /^ */); ind = RLENGTH }
+    inrun && ind > rind { if (index($0, "${{")) bad = 1; next }
+    { inrun = 0 }
+    $0 ~ /^ *(- )?run:/ { rind = ind; inrun = 1; if (index($0, "${{")) bad = 1; next }
+    $0 ~ /^ *env:[ \t]*$/ { eind = ind; inenv = 1; next }
+    inenv && ind > eind { if (index($0, "${{") && $0 !~ /^ +[A-Za-z_][A-Za-z0-9_]*: +[$][{][{][^}]*[}][}] *$/) bad = 1; next }
+    { inenv = 0; if (index($0, "${{")) bad = 1 }
+    END { exit bad }' \
+    || { echo "FAIL: $_sl interpolates \${{ }} outside the step's env: mapping (event fields must enter only through env:, never in or after the run: line)"; _sr=1; }
+  return "$_sr"
+}
+
+# _job_with_scan <body-text> -> the job block holding the `id: gate-secret-scan` step (comment-stripped text).
+# _checkout_ref_ok <job-text> <label> -> FAIL if an actions/checkout step in the job carries a `ref:` key
+# (A9: HEAD must be what the event checked out; an override could leave HEAD on the base, scanning nothing).
+_job_with_scan() {
+  printf '%s\n' "$1" | awk '/^  [A-Za-z0-9_-]+:[ \t]*$/ { if (hit) { printf "%s", buf; hit = 0; exit } buf = "" } { buf = buf $0 "\n" } /id:[ \t]*gate-secret-scan/ { hit = 1 } END { if (hit) printf "%s", buf }'
+}
+_checkout_ref_ok() {
+  # Each step is read as a whole (key order is irrelevant); a `ref` key in block, flow (`{ ref: x }`) or quoted
+  # (`"ref":`) form fails. A word test, not a YAML parser.
+  printf '%s\n' "$1" | awk 'function flush() { if (co && rf) bad = 1; co = 0; rf = 0 }
+    /^      - / { flush() }
+    /actions\/checkout/ { co = 1 }
+    /(^|[ \t{,])["\047]?ref["\047]?[ \t]*:/ { rf = 1 }
+    END { flush(); exit bad }' \
+    || { echo "FAIL: $2 has an actions/checkout step with a ref: key (HEAD would no longer be the event's own checkout)"; return 1; }
+}
 
 # _job_block_has_fetch_depth_0 <body-text> <job-name> -> 0 iff the <job-name> job's OWN block (from
 # its 2-space `<job>:` header to the next 2-space job header, or EOF) carries `fetch-depth: 0`, else 1
@@ -132,8 +206,10 @@ check_wired() {
   # merely SOME job in the file. See _job_block_has_fetch_depth_0 above.
   _job_block_has_fetch_depth_0 "$_body" "secret-scan" \
     || { echo "FAIL: $_wf's 'secret-scan' job does not carry 'fetch-depth: 0' on its own checkout (job-scoped; a different job's fetch-depth: 0 does not satisfy this)"; _fail=1; }
+  _scope_shape_ok "$(_job_block "$_body" secret-scan)" "$_wf's 'secret-scan' job" || _fail=1
+  _checkout_ref_ok "$(_job_block "$_body" secret-scan)" "$_wf's 'secret-scan' job" || _fail=1
   if [ "$_fail" = 0 ]; then
-    echo "OK: $_wf carries the pinned (v$GL_VER) 'gitleaks git' (history) secret-scan step (id: gate-secret-scan)"
+    echo "OK: $_wf carries the pinned (v$GL_VER) 'gitleaks git' (history) secret-scan step (id: gate-secret-scan), PR-scoped via --log-opts"
     return 0
   fi
   return 1
@@ -143,7 +219,6 @@ check_wired() {
 # else 1. Gitleaks-independent (pure grep); this is the byte lock the design demands across the
 # ~30-file parity surface, not just the one CI_FILE that check_wired covers.
 check_parity() {
-  _pfail=0
   # KIT-SELF CHECK (green-on-clone first-live-run, CONTROL-PLANE-COVERAGE 2026-09-10). Every parity
   # subject is KIT reference material: the kit's own ci.yml (export-ignored), the 10 profile
   # reference CIs (`profiles/*` — an adopter carries only their CHOSEN stack, so the others are
@@ -159,6 +234,14 @@ check_parity() {
     echo "N/A: profile parity is a kit-self check across the kit's own CI templates (ci.yml + profiles/*/ci.yml + fixtures + manifests); an adopter export does not carry the kit's profile reference set"
     return 0
   fi
+  _parity_run
+}
+
+# _parity_run -> the parity sweep over $_PARITY_INVOCATION_FILES / $_PARITY_MANIFEST_FILES, with NO kit-marker
+# latch. check_parity latches it to the kit tree; the selftest NEGs call it directly on fixtures they build
+# in their own temp dir, so they bite on ANY tree (an exported or incepted tree included).
+_parity_run() {
+  _pfail=0
   for _f in $_PARITY_INVOCATION_FILES; do
     [ -z "$_f" ] && continue
     if [ ! -f "$_f" ]; then
@@ -172,6 +255,11 @@ check_parity() {
       echo "FAIL: $_f has no 'gitleaks git .' invocation"
       _pfail=1
     fi
+    # SWAS-175: the same scope shape in EVERY site's gate-secret-scan step (comment-stripped).
+    _pb=$(_step_block "$(sed 's/#.*//' "$_f")")
+    [ -n "$_pb" ] || { echo "FAIL: $_f has no 'id: gate-secret-scan' step to scope-check"; _pfail=1; continue; }
+    _scope_shape_ok "$_pb" "$_f's gate-secret-scan step" || _pfail=1
+    _checkout_ref_ok "$(_job_with_scan "$(sed 's/#.*//' "$_f")")" "$_f" || _pfail=1
   done
   for _f in $_PARITY_MANIFEST_FILES; do
     [ -z "$_f" ] && continue
@@ -186,12 +274,100 @@ check_parity() {
       echo "FAIL: $_f has no 'assert: present gitleaks git' line"
       _pfail=1
     fi
+    if ! grep -Eq 'assert:[[:space:]]*present[[:space:]]+--log-opts=' "$_f"; then
+      echo "FAIL: $_f has no 'assert: present --log-opts=' line (the scan scope is unasserted)"
+      _pfail=1
+    fi
   done
   if [ "$_pfail" = 0 ]; then
-    echo "OK: profile parity — every secret-scan site runs 'gitleaks git' (history mode)"
+    echo "OK: profile parity — every secret-scan site runs 'gitleaks git' (history mode), scoped with --log-opts"
     return 0
   fi
   return 1
+}
+
+# _is_kit_tree -> 0 on the kit's own tree (either twin marker present), 1 on an adopter export.
+_is_kit_tree() { [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; }
+
+# check_sweep [file] -> 0 iff drift-watch.yml carries the weekly all-refs `secret-scan-sweep` job (SWAS-175 §4):
+# its own fetch-depth: 0, id: gate-secret-scan and the all-refs --log-opts. Kit-self (N/A on an adopter export).
+check_sweep() {
+  _sw=${1:-$DRIFT_FILE}
+  if [ -z "${1:-}" ] && ! _is_kit_tree; then echo "N/A: the all-refs sweep is a kit-self check (drift-watch.yml)"; return 0; fi
+  [ -f "$_sw" ] || { echo "FAIL: $_sw not found (the weekly all-refs secret sweep lives there)"; return 1; }
+  _swb=$(sed 's/#.*//' "$_sw")
+  _swj=$(_job_block "$_swb" secret-scan-sweep)
+  if [ -n "$_swj" ] && printf '%s\n' "$_swj" | grep -Eq 'fetch-depth:[[:space:]]*0' \
+    && printf '%s\n' "$_swj" | grep -Eq 'id:[[:space:]]*gate-secret-scan' \
+    && printf '%s\n' "$_swj" | grep -Fq -e "GL_VER=$GL_VER" \
+    && printf '%s\n' "$_swj" | grep -Fq -e 'sha256sum -c' \
+    && printf '%s\n' "$_swj" | grep -Fq -e 'gitleaks git . --no-banner --redact --log-opts="--full-history --all"'; then
+    echo "OK: $_sw carries the weekly all-refs 'secret-scan-sweep' job (fetch-depth: 0, id: gate-secret-scan, --full-history --all)"
+    return 0
+  fi
+  echo "FAIL: $_sw has no 'secret-scan-sweep' job with fetch-depth: 0, id: gate-secret-scan, the pinned GL_VER=$GL_VER, its sha256sum -c line and the all-refs invocation -- branches without a PR would go unscanned"
+  return 1
+}
+
+# check_ignore_not_shipped [repo-dir] -> 0 iff the gitleaks ignore file is NOT in `git archive HEAD` (what an
+# adopter receives: its entries fingerprint kit commits that do not exist in an adopter's history; D-241013-1
+# item 1). Asks the archive listing, never `git check-attr`. Kit-self; N/A outside a git work tree.
+check_ignore_not_shipped() {
+  _id=${1:-.}
+  if [ "$_id" = . ] && ! _is_kit_tree; then echo "N/A: the not-shipped lock is a kit-self check"; return 0; fi
+  git -C "$_id" rev-parse --git-dir >/dev/null 2>&1 || { echo "N/A: not a git work tree -- no archive listing to read"; return 0; }
+  # Fail CLOSED: an archive/tar error or an empty listing proves nothing, so it is a FAIL, never an OK.
+  _ta=$(mktemp -d)
+  if ! git -C "$_id" archive HEAD > "$_ta/a.tar" 2> "$_ta/err" || ! tar -tf "$_ta/a.tar" > "$_ta/list" 2>> "$_ta/err" || [ ! -s "$_ta/list" ]; then
+    echo "FAIL: could not read the 'git archive HEAD' listing ($(head -n 1 "$_ta/err" 2>/dev/null)) -- an unread listing cannot show $GI_NAME is export-ignored"
+    rm -rf "$_ta"; return 1
+  fi
+  if grep -Fxq -e "$GI_NAME" "$_ta/list"; then
+    rm -rf "$_ta"
+    echo "FAIL: $GI_NAME is in the 'git archive HEAD' listing -- it must stay export-ignored (its fingerprints name kit commits)"
+    return 1
+  fi
+  rm -rf "$_ta"
+  echo "OK: $GI_NAME is absent from the git archive listing (export-ignored)"
+  return 0
+}
+
+# check_gitleaksignore [file] -> 0 iff every entry of the ignore file is locked to ONE commit and reviewable
+# (SWAS-175 §2.3): a four-field `<40-hex>:<path>:<rule>:<line>` (a three-field entry is a GLOBAL fingerprint
+# in gitleaks 8.24.3: that path, rule and line in every commit); directly under a comment block whose first
+# line is `# YYYY-MM-DD <reason>` and whose text names the rule; and a `# entries: N` line equal to the entry
+# count once any non-grandfathered entry exists. The one entry that predates the lock is grandfathered here
+# (§2.5 a), exempt only from the date rule, so nobody edits the guard-denied file.
+_GI_GRANDFATHER="d3255a90895c517f82fc1e91e11c9fdc708d8e9c:scripts/doctor.sh:generic-api-key:534"
+check_gitleaksignore() {
+  _gf=${1:-$GI_FILE}
+  [ -f "$_gf" ] || { echo "N/A: $_gf absent -- no suppression channel to lock"; return 0; }
+  _gr=0; _gc=0; _gn=0; _gdecl=""; _gb1=""; _gb=""
+  while IFS= read -r _gln || [ -n "$_gln" ]; do
+    case "$_gln" in
+      '') _gb1=""; _gb="" ;;
+      '#'*)
+        if [ -z "$_gb1" ]; then _gb1=$_gln; fi
+        _gb="$_gb $_gln"
+        case "$_gln" in '# entries: '*) _gdecl=${_gln#'# entries: '} ;; esac ;;
+      *)
+        _gc=$((_gc + 1))
+        if ! printf '%s\n' "$_gln" | grep -Eq '^[0-9a-f]{40}:[^:]+:[a-z0-9-]+:[0-9]+$'; then
+          echo "FAIL: $_gf entry '$_gln' is not a four-field <40-hex commit>:<path>:<rule>:<line> fingerprint (a three-field entry suppresses that path, rule and line in EVERY commit)"; _gr=1
+        elif [ "$_gln" != "$_GI_GRANDFATHER" ]; then
+          _gn=$((_gn + 1)); _grule=$(printf '%s' "$_gln" | awk -F: '{print $3}')
+          printf '%s\n' "$_gb1" | grep -Eq '^# [0-9]{4}-[0-9]{2}-[0-9]{2} .' \
+            || { echo "FAIL: $_gf entry '$_gln' is not directly under a comment block whose first line is '# YYYY-MM-DD <reason>'"; _gr=1; }
+          case "$_gb" in *"$_grule"*) ;; *) echo "FAIL: $_gf entry '$_gln' has a reason that does not name its rule '$_grule'"; _gr=1 ;; esac
+        fi
+        _gb1=""; _gb="" ;;
+    esac
+  done < "$_gf"
+  if [ "$_gn" -gt 0 ] && [ -z "$_gdecl" ]; then echo "FAIL: $_gf holds $_gn non-grandfathered entr(y/ies) but no '# entries: N' line"; _gr=1; fi
+  if [ -n "$_gdecl" ] && [ "$_gdecl" != "$_gc" ]; then echo "FAIL: $_gf declares '# entries: $_gdecl' but holds $_gc entries"; _gr=1; fi
+  [ "$_gr" = 0 ] || return 1
+  echo "OK: $_gf shape lock holds ($_gc entr$([ "$_gc" = 1 ] && echo y || echo ies), $((_gc - _gn)) grandfathered)"
+  return 0
 }
 
 # _kit_rule_block_ok <toml> -> 0 if ONE [[rules]] block (from its header to the next table that is
@@ -298,7 +474,16 @@ selftest() {
     printf 'jobs:\n  secret-scan:\n    steps:\n'
     printf '      - uses: actions/checkout@x\n        with:\n          fetch-depth: 0\n'
     printf '      - name: Secret scan\n        id: gate-secret-scan\n'
-    printf '        run: |\n          GL_VER=%s\n          /tmp/gitleaks git . --no-banner --redact\n' "$GL_VER"
+    printf '        env:\n          GL_EVENT: ${{ github.event_name }}\n          BASE_SHA: ${{ github.event.pull_request.base.sha }}\n'
+    printf '        run: |\n          GL_VER=%s\n' "$GL_VER"
+    printf '          case "$GL_EVENT" in\n            pull_request) GL_SCOPE="$BASE_SHA..HEAD" ;;\n            push)         GL_SCOPE="HEAD" ;;\n'
+    printf '            *)            GL_SCOPE="--full-history --all" ;;\n          esac\n          if [ "$GL_EVENT" = pull_request ]; then\n'
+    printf '            { echo "$BASE_SHA" | grep -Eqx %s[0-9a-f]{40}([0-9a-f]{24})?%s \\\n' "'" "'"
+    printf '              && git rev-parse -q --verify "$BASE_SHA^{commit}" >/dev/null; } \\\n'
+    printf '              || { echo "secret-scan: PR range not resolvable in this checkout; refusing to guess a range"; exit 1; }\n'
+    printf '            [ -n "$(git rev-list -n 1 "$BASE_SHA..HEAD")" ] \\\n'
+    printf '              || { echo "secret-scan: PR range is empty; refusing to report a scan of nothing"; exit 1; }\n          fi\n'
+    printf '          /tmp/gitleaks git . --no-banner --redact --log-opts="$GL_SCOPE"\n'
   } > "$d/pos.yml"
   if check_wired "$d/pos.yml" >/dev/null 2>&1; then
     echo "selftest PASS: fully-wired workflow -> PASS"
@@ -406,7 +591,9 @@ selftest() {
 
   # --- check_parity fixtures (gitleaks-independent) ---
   # POS: every real parity site in the repo today has already been swapped -> PASS.
-  if check_parity >/dev/null 2>&1; then
+  # The one leg that needs the kit's real files: latched to the kit tree (N/A, stated, on an export).
+  if ! _is_kit_tree; then echo "selftest N/A: the real-fleet parity sweep needs the kit's own parity files (kit-marker latch: docs/ROADMAP-KIT.md / golden-path.yml absent -> an adopter export)"
+  elif check_parity >/dev/null 2>&1; then
     echo "selftest PASS: check_parity -> PASS on the real repo's parity sites"
   else echo "selftest FAIL: check_parity wrongly failed on the real repo"; sf=1; fi
 
@@ -467,6 +654,86 @@ selftest() {
     echo "selftest FAIL: .gitleaks.toml with the keywords in a DIFFERENT rule block wrongly passed"; sf=1
   else echo "selftest PASS: .gitleaks.toml with the keywords in a different [[rules]] block -> FAIL (block-scoped)"; fi
   GL_TOML="${KIT_GITLEAKS_TOML:-.gitleaks.toml}"
+
+  # --- SWAS-175 scope shape (design A1, A8): each NEG is the POS fixture minus ONE piece. ---
+  _sn() { # <file> <fragment> <label> -> check_wired must FAIL naming the fragment
+    if _o=$(check_wired "$1" 2>&1); then _r=0; else _r=$?; fi
+    if [ "$_r" -ne 0 ] && printf '%s' "$_o" | grep -qF -e "$2"; then echo "selftest PASS: $3 -> FAIL (names the gap)"
+    else echo "selftest FAIL: $3 not caught (rc=$_r): $_o"; sf=1; fi
+  }
+  grep -vF 'pull_request) GL_SCOPE' "$d/pos.yml" > "$d/neg-noarm.yml"
+  _sn "$d/neg-noarm.yml" "scope arm" "missing pull_request scope arm"
+  grep -vF '*)            GL_SCOPE' "$d/pos.yml" > "$d/neg-nostar.yml"
+  _sn "$d/neg-nostar.yml" "scope arm" "missing all-refs fallback arm"
+  sed 's/ --log-opts="\$GL_SCOPE"//' "$d/pos.yml" > "$d/neg-nologopts.yml"
+  _sn "$d/neg-nologopts.yml" "--log-opts" "missing --log-opts"
+  grep -vF 'refusing to guess a range' "$d/pos.yml" > "$d/neg-norefusal.yml"
+  _sn "$d/neg-norefusal.yml" "fail-closed PR-base refusal" "dropped PR-base refusal (an empty or unresolvable base would scan the wrong range)"
+  { cat "$d/pos.yml"; printf '          echo ${{ github.event.pull_request.head.sha }}\n'; } > "$d/neg-inline.yml"
+  _sn "$d/neg-inline.yml" "outside the step's env:" "inline \${{ }} in run:"
+  { cat "$d/pos.yml"; printf '          X: ${{ github.event.pull_request.title }}\n'; } > "$d/neg-inbody.yml"
+  _sn "$d/neg-inbody.yml" "outside the step's env:" "an 'X: \${{ ... }}' line inside the run body (looks like an env entry)"
+  sed 's/^        run: |$/        run: ${{ github.event.pull_request.title }}/' "$d/pos.yml" > "$d/neg-oneline.yml"
+  _sn "$d/neg-oneline.yml" "outside the step's env:" "a one-line 'run: \${{ ... }}'"
+  sed '/not resolvable/s/exit 1; }/exit 0; }/' "$d/pos.yml" > "$d/neg-exit0.yml"
+  _sn "$d/neg-exit0.yml" "exact fail-closed PR-base refusal" "base refusal exit 1 changed to exit 0"
+  grep -vF 'git rev-parse -q --verify' "$d/pos.yml" > "$d/neg-nobase.yml"
+  _sn "$d/neg-nobase.yml" "exact fail-closed PR-base refusal" "the BASE_SHA rev-parse --verify check dropped"
+  grep -vF 'PR range is empty' "$d/pos.yml" > "$d/neg-noempty.yml"
+  _sn "$d/neg-noempty.yml" "empty-range refusal" "the empty-range refusal dropped (a wrong checkout would scan nothing)"
+  sed '/PR range is empty/s/exit 1; }/exit 0; }/' "$d/pos.yml" > "$d/neg-empty0.yml"
+  _sn "$d/neg-empty0.yml" "empty-range refusal" "empty-range refusal exit 1 changed to exit 0"
+  awk '{ print } /fetch-depth: 0/ { print "          ref: main" }' "$d/pos.yml" > "$d/neg-ref.yml"
+  _sn "$d/neg-ref.yml" "checkout step with a ref: key" "a ref: key on the secret-scan job's checkout"
+  sed 's/^        with:$/        with: { fetch-depth: 0, ref: main }/; /^          fetch-depth: 0$/d' "$d/pos.yml" > "$d/neg-refflow.yml"
+  _sn "$d/neg-refflow.yml" "checkout step with a ref: key" "a flow-style 'with: { ..., ref: x }' on the checkout"
+  sed 's/^          fetch-depth: 0$/          "ref": main/' "$d/pos.yml" > "$d/neg-refquoted.yml"
+  _sn "$d/neg-refquoted.yml" "checkout step with a ref: key" "a quoted \"ref\": key on the checkout"
+  { printf 'jobs:\n  secret-scan:\n    steps:\n      - with:\n          fetch-depth: 0\n          ref: main\n        uses: actions/checkout@x\n'; sed '1,6d' "$d/pos.yml"; } > "$d/neg-reforder.yml"
+  _sn "$d/neg-reforder.yml" "checkout step with a ref: key" "a ref: under a with: written BEFORE uses:"
+  # Parity NEGs (cause C): each builds its OWN invocation file and manifest in $d and points _parity_run (the
+  # latch-free sweep) at them, so they bite on ANY tree. Only the real-fleet leg below needs the kit's files.
+  _sv_inv=$_PARITY_INVOCATION_FILES; _sv_man=$_PARITY_MANIFEST_FILES
+  printf 'id: x\nassert: present gitleaks git[[:space:]]+\\.\n' > "$d/neg-man.txt"
+  _PARITY_INVOCATION_FILES="$d/pos.yml"; _PARITY_MANIFEST_FILES=""
+  if _parity_run >/dev/null 2>&1; then echo "selftest PASS: parity accepts a scoped step"; else echo "selftest FAIL: parity rejected a scoped step"; sf=1; fi
+  _PARITY_INVOCATION_FILES="$d/neg-norefusal.yml"
+  if _parity_run >/dev/null 2>&1; then echo "selftest FAIL: parity accepted a step without the PR-range refusal"; sf=1; else echo "selftest PASS: parity rejects a step without the PR-range refusal"; fi
+  _PARITY_INVOCATION_FILES="$d/neg-ref.yml"
+  if _parity_run >/dev/null 2>&1; then echo "selftest FAIL: parity accepted a checkout with a ref: key"; sf=1; else echo "selftest PASS: parity rejects a checkout with a ref: key"; fi
+  _PARITY_INVOCATION_FILES=""; _PARITY_MANIFEST_FILES="$d/neg-man.txt"
+  if _parity_run >/dev/null 2>&1; then echo "selftest FAIL: parity accepted a manifest without 'present --log-opts='"; sf=1; else echo "selftest PASS: parity rejects a manifest without 'present --log-opts='"; fi
+  _PARITY_INVOCATION_FILES=$_sv_inv; _PARITY_MANIFEST_FILES=$_sv_man
+
+  # --- the weekly all-refs sweep job ---
+  printf 'jobs:\n  secret-scan-sweep:\n    steps:\n      - uses: x\n        with:\n          fetch-depth: 0\n      - id: gate-secret-scan\n        run: |\n          GL_VER=%s\n          echo "sum  /tmp/gitleaks.tgz" | sha256sum -c -\n          gitleaks git . --no-banner --redact --log-opts="--full-history --all"\n' "$GL_VER" > "$d/sweep.yml"
+  grep -vF 'sha256sum -c' "$d/sweep.yml" > "$d/sweep-nosum.yml"
+  if check_sweep "$d/sweep-nosum.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep without its sha256sum -c line passed"; sf=1; else echo "selftest PASS: sweep without its sha256sum -c line -> FAIL"; fi
+  if check_sweep "$d/sweep.yml" >/dev/null 2>&1; then echo "selftest PASS: sweep job wired -> PASS"; else echo "selftest FAIL: wired sweep job failed"; sf=1; fi
+  sed 's/ --all"/"/' "$d/sweep.yml" > "$d/sweep-neg.yml"
+  if check_sweep "$d/sweep-neg.yml" >/dev/null 2>&1; then echo "selftest FAIL: sweep without the all-refs scope passed"; sf=1; else echo "selftest PASS: sweep without the all-refs scope -> FAIL"; fi
+
+  # --- the ignore-file shape lock (§2.3) and the not-shipped lock (§2.4 a) ---
+  _fp=0123456789abcdef0123456789abcdef01234567; _new="$_fp:scripts/x.sh:generic-api-key:12"
+  _gi() { # <ok|fail> <label> <fragment>; the file is $d/gi.txt
+    if _o=$(check_gitleaksignore "$d/gi.txt" 2>&1); then _r=0; else _r=$?; fi
+    if [ "$1" = ok ] && [ "$_r" -eq 0 ]; then echo "selftest PASS: ignore lock: $2 -> PASS"
+    elif [ "$1" = fail ] && [ "$_r" -ne 0 ] && printf '%s' "$_o" | grep -qF -e "$3"; then echo "selftest PASS: ignore lock: $2 -> FAIL (names the gap)"
+    else echo "selftest FAIL: ignore lock: $2 (rc=$_r): $_o"; sf=1; fi
+  }
+  printf '# old\n%s\n' "$_GI_GRANDFATHER" > "$d/gi.txt"; _gi ok "only the grandfathered entry"
+  printf '# entries: 2\n\n# old, generic-api-key\n%s\n\n# 2026-10-13 generic-api-key false positive (SWAS-1)\n%s\n' "$_GI_GRANDFATHER" "$_new" > "$d/gi.txt"; _gi ok "a dated, rule-named, counted new entry"
+  printf '# entries: 2\n\n%s\n\n# 2026-10-13 generic-api-key false positive\nscripts/x.sh:generic-api-key:12\n' "$_GI_GRANDFATHER" > "$d/gi.txt"; _gi fail "a three-field (global) entry" "four-field"
+  printf '# entries: 2\n\n%s\n\n# generic-api-key false positive, no date\n%s\n' "$_GI_GRANDFATHER" "$_new" > "$d/gi.txt"; _gi fail "a second, undated entry" "YYYY-MM-DD"
+  printf '# entries: 2\n\n%s\n\n# 2026-10-13 a reason that names nothing\n%s\n' "$_GI_GRANDFATHER" "$_new" > "$d/gi.txt"; _gi fail "a reason that does not name the rule" "does not name its rule"
+  printf '# entries: 5\n\n%s\n\n# 2026-10-13 generic-api-key false positive\n%s\n' "$_GI_GRANDFATHER" "$_new" > "$d/gi.txt"; _gi fail "a count mismatch" "declares"
+  printf '%s\n\n# 2026-10-13 generic-api-key false positive\n%s\n' "$_GI_GRANDFATHER" "$_new" > "$d/gi.txt"; _gi fail "a new entry with no '# entries: N'" "no '# entries: N'"
+  mkdir -p "$d/ship"; _mk_repo "$d/ship"; printf 'x\n' > "$d/ship/$GI_NAME"; git -C "$d/ship" add -A; git -C "$d/ship" commit -q -m shipped
+  if check_ignore_not_shipped "$d/ship" >/dev/null 2>&1; then echo "selftest FAIL: an un-export-ignored ignore file passed"; sf=1; else echo "selftest PASS: the ignore file in the archive listing -> FAIL"; fi
+  mkdir -p "$d/emptyrepo"; _mk_repo "$d/emptyrepo"   # a git dir with no commit: `git archive HEAD` errors
+  if check_ignore_not_shipped "$d/emptyrepo" >/dev/null 2>&1; then echo "selftest FAIL: an unreadable archive listing passed"; sf=1; else echo "selftest PASS: an unreadable archive listing -> FAIL (fail-closed)"; fi
+  printf '/%s export-ignore\n' "$GI_NAME" > "$d/ship/.gitattributes"; git -C "$d/ship" add -A; git -C "$d/ship" commit -q -m ignored
+  if check_ignore_not_shipped "$d/ship" >/dev/null 2>&1; then echo "selftest PASS: an export-ignored ignore file -> PASS"; else echo "selftest FAIL: an export-ignored ignore file failed"; sf=1; fi
 
   if [ "$sf" -eq 0 ]; then echo "OK: secret-scan-wired selftest (wiring checker is load-bearing)"; exit 0
   else echo "FAIL: secret-scan-wired selftest"; exit 1; fi
@@ -754,11 +1021,70 @@ live() {
   else echo "FAIL: secret-scan-wired live"; exit 1; fi
 }
 
-# --selftest / --scan-selftest / --live dispatch — BEFORE the usage check, or the flag is read as a
-# filename.
+# range_scan <sha> — the pre-push face: the SAME scan CI runs on a pull request, over <sha>..HEAD at the repo
+# root (so .gitleaks.toml and the ignore file apply exactly as in CI). Committed work only. Needs gitleaks;
+# FAILS CLOSED (rc 2 UNVERIFIED) when absent. rc 1 = a finding.
+range_scan() {
+  printf '%s\n' "$1" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?' \
+    || { echo "usage: secret-scan-wired.sh --range <full 40/64-hex commit sha>" >&2; exit 2; }
+  _gl=$(resolve_gitleaks)
+  if [ -z "$_gl" ]; then
+    echo "UNVERIFIED: gitleaks is not available (set GITLEAKS_BIN or install gitleaks); the range scan did not run." >&2
+    exit 2
+  fi
+  _gv=$("$_gl" version 2>/dev/null | head -n 1 | sed 's/^v//')
+  echo "secret-scan --range: gitleaks ${_gv:-unknown}, scope $1..HEAD"
+  if [ "$_gv" != "$GL_VER" ]; then echo "parity: local gitleaks ${_gv:-unknown} != pinned $GL_VER (rules may differ)"; fi
+  "$_gl" git . --no-banner --redact --log-opts="$1..HEAD"
+}
+
+# scope_selftest — the SWAS-175 load-bearing negative: one branch's finding must not red another branch's PR
+# scope. Fixture = an origin with main (clean), a (clean), b (a synthetic key, markers assembled at runtime);
+# the clone checks out `a`, so b exists only as refs/remotes/origin/b -- the fetch-depth: 0 shape. Needs
+# gitleaks; FAILS CLOSED (rc 2) when absent.
+_sc_scan() { # <dir> <log-opts> -> sets _sc_rc; report in $d/sc.json
+  rm -f "$d/sc.json"; set +e
+  "$_gl" git "$1" --no-banner --redact -f json -r "$d/sc.json" ${2:+--log-opts="$2"} >/dev/null 2>&1
+  _sc_rc=$?; set -e
+}
+_sc_expect() { # <red|clean> <label> <dir> <log-opts>
+  _sc_scan "$3" "$4"
+  if [ "$1" = red ] && [ "$_sc_rc" -ne 0 ] && [ -s "$d/sc.json" ] && grep -q '"RuleID"' "$d/sc.json"; then
+    echo "scope-selftest PASS: $2 -> finding (rc=$_sc_rc)"
+  elif [ "$1" = clean ] && [ "$_sc_rc" -eq 0 ]; then echo "scope-selftest PASS: $2 -> clean (rc 0)"
+  else echo "scope-selftest FAIL: $2 -> expected $1 (rc=$_sc_rc)"; sf=1; fi
+}
+scope_selftest() {
+  _gl=$(resolve_gitleaks)
+  if [ -z "$_gl" ]; then
+    echo "UNVERIFIED: gitleaks is not available (set GITLEAKS_BIN or install gitleaks); the scope proof cannot run." >&2
+    exit 2
+  fi
+  sf=0; d=$(mktemp -d); trap 'rm -rf "$d"' EXIT INT TERM
+  git init -q -b main "$d/origin"; _mk_repo "$d/origin"
+  printf 'one\n' > "$d/origin/m.txt"; git -C "$d/origin" add -A; git -C "$d/origin" commit -q -m main
+  git -C "$d/origin" checkout -q -b a; printf 'two\n' > "$d/origin/a.txt"; git -C "$d/origin" add -A; git -C "$d/origin" commit -q -m a
+  git -C "$d/origin" checkout -q -b b main
+  { printf -- '-----BEGIN %s KEY-----\n' 'PRIVATE'; head -c 400 /dev/urandom | base64; printf -- '\n-----END %s KEY-----\n' 'PRIVATE'; } > "$d/origin/k.txt"
+  git -C "$d/origin" add -A; git -C "$d/origin" commit -q -m b
+  _m=$(git -C "$d/origin" rev-parse main); _a=$(git -C "$d/origin" rev-parse a); _b=$(git -C "$d/origin" rev-parse b)
+  git clone -q -b a "$d/origin" "$d/clone"; git clone -q -b main "$d/origin" "$d/mainclone"
+  _sc_expect clean "S1 PR scope for A ($_m..$_a) does not see B's secret" "$d/clone" "$_m..$_a"
+  _sc_expect red "S2 no --log-opts (all refs), from A's checkout, reproduces the 2026-10-12 bug" "$d/clone" ""
+  _sc_expect red "S3 PR scope for B still catches B's own secret" "$d/clone" "$_m..$_b"
+  _sc_expect clean "S4 push shape (HEAD) on a main checkout" "$d/mainclone" "HEAD"
+  _sc_expect red "S5 mutant: the README form '--all <main>..<a>' cancels the range (why --all is banned inside log-opts)" "$d/clone" "--all $_m..$_a"
+  if [ "$sf" -eq 0 ]; then echo "OK: secret-scan-wired scope-selftest (a branch's finding reds only its own PR scope)"; exit 0
+  else echo "FAIL: secret-scan-wired scope-selftest"; exit 1; fi
+}
+
+# --selftest / --scan-selftest / --scope-selftest / --live / --range dispatch — BEFORE the usage check, or the
+# flag is read as a filename.
 case "${1:-}" in
   --selftest) selftest; exit $? ;;
   --scan-selftest) scan_selftest; exit $? ;;
+  --scope-selftest) scope_selftest; exit $? ;;
+  --range) range_scan "${2:-}"; exit $? ;;
   --live) live; exit $? ;;
 esac
 
@@ -766,12 +1092,15 @@ case "${1:-}" in
   "")
     _rc=0
     check_wired "$CI_FILE" || _rc=1
+    check_sweep || _rc=1
     check_parity || _rc=1
     check_gitleaks_toml || _rc=1
+    check_gitleaksignore || _rc=1
+    check_ignore_not_shipped || _rc=1
     if [ "$_rc" -eq 0 ]; then exit 0; else
       echo "See DEVELOPMENT-STANDARDS.md §14 (secret-scan is a required, unwaivable gate) and the A8 / SECRET-SCAN-HISTORY-NOT-SCANNED design." >&2
       exit 1
     fi
     ;;
-  *) echo "usage: secret-scan-wired.sh [--selftest | --scan-selftest | --live]" >&2; exit 2 ;;
+  *) echo "usage: secret-scan-wired.sh [--selftest | --scan-selftest | --scope-selftest | --range <sha> | --live]" >&2; exit 2 ;;
 esac

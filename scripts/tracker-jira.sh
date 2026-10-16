@@ -83,6 +83,9 @@ unset _TJ_SHORT 2>/dev/null || true
 _TJ_CRED_LIB="$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)/tracker-cred.sh" || _TJ_CRED_LIB=""
 # shellcheck disable=SC1090  # the sibling library path is computed from $0 at run time
 if [ -f "$_TJ_CRED_LIB" ]; then . "$_TJ_CRED_LIB"; fi
+# SWAS-196: the library reads the conf's as.agent itself, at the repo root derived from THIS script's $0 (never the
+# working directory). Guarded: the scratch-copy selftest leg has no library beside it.
+if command -v tracker_cred_bind_root >/dev/null 2>&1; then tracker_cred_bind_root "$(dirname -- "$_TJ_CRED_LIB")/.."; fi
 
 # --- the ONE hardened jira-HTTP primitive (T1: S-3, T5, J2, J4, B-1, H-1, M-4) ------------------
 
@@ -339,17 +342,24 @@ jira_curl_authed() {
   # SWAS-109 A2.8: xtrace is switched OFF for every line that touches the credential (the resolve, the token copy, the `-K`
   # config build) and restored afterwards, so `sh -x` / `SHELLOPTS=xtrace` on this adapter never prints the token to stderr.
   _tj_xt_off
-  if command -v tracker_cred_resolve >/dev/null 2>&1; then tracker_cred_resolve "$_url" || true; fi
+  # An EMPTY value is not a charset breach: when the library failed and printed its own cause, that line is the one true
+  # cause (stay silent); any other empty value says so. Only a non-empty value outside the charset takes the charset refusal.
+  # Cleared first so a remembered failure (the library returns its stored rc without reprinting) cannot leave a stale cause behind.
+  _tj_rr=0; TRACKER_CRED_WHY=
+  if command -v tracker_cred_resolve >/dev/null 2>&1; then tracker_cred_resolve "$_url" || _tj_rr=$?; fi
   _auth_kind=${KIT_TRACKER_AUTH:-basic}
   case "$_auth_kind" in
     basic)
       _cfguser=${KIT_TRACKER_USER:-${JIRA_EMAIL:-}}
       _cfgtok=${KIT_TRACKER_TOKEN:-${JIRA_TOKEN:-}}
+      [ -n "$_cfguser" ] || { unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; [ "$_tj_rr" -ne 0 ] && [ -n "${TRACKER_CRED_WHY:-}" ] || echo "refused: no tracker credential (user is empty)" >&2; return 1; }
+      [ -n "$_cfgtok" ] || { unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; [ "$_tj_rr" -ne 0 ] && [ -n "${TRACKER_CRED_WHY:-}" ] || echo "refused: no tracker credential (token is empty)" >&2; return 1; }
       _tj_cred_ok "$_cfguser" || { unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; echo "refused: credential (user) outside the allowed charset" >&2; return 1; }
       _tj_cred_ok "$_cfgtok"  || { unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; echo "refused: credential (token) outside the allowed charset" >&2; return 1; }
       _cfgline=$(printf 'user = "%s:%s"\n' "$_cfguser" "$_cfgtok") ;;
     bearer)
       _cfgtok=${KIT_TRACKER_TOKEN:-${JIRA_TOKEN:-}}
+      [ -n "$_cfgtok" ] || { unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; [ "$_tj_rr" -ne 0 ] && [ -n "${TRACKER_CRED_WHY:-}" ] || echo "refused: no tracker credential (token is empty)" >&2; return 1; }
       _tj_cred_ok "$_cfgtok" || { unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; echo "refused: credential (token) outside the allowed charset" >&2; return 1; }
       _cfgline=$(printf 'header = "Authorization: Bearer %s"\n' "$_cfgtok") ;;
     *) unset _cfgtok _cfguser _cfgline _cfg_all; _tj_xt_on; echo "refused: unknown auth kind '$_auth_kind'" >&2; return 1 ;;
@@ -555,11 +565,11 @@ _tj_gi_body() {
   # byte after the first two characters passes silently (found building this fix; see
   # tracker-read.sh's tr_valid_id for the same defect and a longer note).
   case "$_key" in
-    [A-Z0-9]*) : ;;
+    [ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*) : ;;
     *) echo "refused: jira response key failed the id grammar" >&2; return 1 ;;
   esac
   case "$_key" in
-    *[!A-Z0-9-]*) echo "refused: jira response key failed the id grammar" >&2; return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) echo "refused: jira response key failed the id grammar" >&2; return 1 ;;
   esac
   _statusid=$(printf '%s' "$_body" | jq -r '.fields.status.id // empty' 2>/dev/null || true)
   # H-5: grammar-check status.id BEFORE any use or print.
@@ -2214,11 +2224,11 @@ _tj_cr_body() {
   rm -f "$_bodyfile"
   _key=$(printf '%s' "$_resp" | jq -r '.key // empty' 2>/dev/null || true)
   case "$_key" in
-    [A-Z0-9]*) : ;;
+    [ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*) : ;;
     *) echo "unverified: create response carried no valid 'key'" >&2; return 2 ;;
   esac
   case "$_key" in
-    *[!A-Z0-9-]*) echo "unverified: create response 'key' failed grammar" >&2; return 2 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) echo "unverified: create response 'key' failed grammar" >&2; return 2 ;;
   esac
   printf '%s\n' "$_key"
   return 0
@@ -3390,6 +3400,7 @@ SHIMEOF
   _tj_st_identity
   _tj_st_contract_tier
   _tj_st_cred_store
+  _tj_st_cred_empty
   _tj_st_xtrace
   _tj_st_ps4
   _tj_st_anon
@@ -9688,6 +9699,69 @@ CSTUB
   else
     echo "FAIL: selftest — the store was called $_cs_calls time(s) for one op invocation (want 2)"; sfail=1
   fi
+}
+
+# _ce_run LABEL WANT_STDERR: one jira_curl_authed call in a subshell, the environment set by the caller's _ce_env and a
+# stub resolve defined by its _ce_stub (neither leaks out of the subshell); asserts the exact stderr text and rc 1, and that no request was sent.
+_ce_run() {
+  : > "$argvlog"; _ce_rc=0
+  # with _ce_twice=1 the call runs twice in the one subshell (the library's memoised second request); the last rc counts
+  ( _ce_env; _ce_stub
+    [ "${_ce_twice:-0}" != 1 ] || jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>&1 || true
+    jira_curl_authed GET https://ex.atlassian.net/rest/api/3/myself >/dev/null 2>"$tmpd/.ce.err" ) || _ce_rc=$?
+  if [ "$_ce_rc" -eq 1 ] && [ ! -s "$argvlog" ] && [ "$(cat "$tmpd/.ce.err")" = "$2" ]; then
+    echo "PASS: selftest — $1 (SWAS-169)"
+  else
+    echo "FAIL: selftest — $1: rc=$_ce_rc stderr='$(cat "$tmpd/.ce.err")'"; sfail=1
+  fi
+}
+
+# _tj_st_cred_empty: SWAS-169. A failed credential lookup ends with ONE true cause: the library's own line when it printed
+# one, else "no tracker credential" (also on a remembered failure, because the cause is cleared before each resolve); never zero lines and never a false charset refusal for an EMPTY value. LOAD-BEARING
+# NEGATIVE: a NON-empty value outside the charset still takes the charset refusal (the injection control is unchanged).
+_tj_st_cred_empty() {
+  _ce_env() { unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_AUTH=basic; }
+  _ce_stub() { tracker_cred_resolve() { echo "tracker credential: the Keychain did not answer in 10s (a dialog may be waiting)" >&2; TRACKER_CRED_WHY=timeout; return 1; }; }
+  _ce_run "cred-resolve-fail-one-cause: the library's line is the only line" \
+    "tracker credential: the Keychain did not answer in 10s (a dialog may be waiting)"
+  _ce_stub() { tracker_cred_resolve() { return 1; }; }
+  _ce_run "cred-resolve-fail-silent-lib: a silent library failure still prints one line" \
+    "refused: no tracker credential (user is empty)"
+  _ce_stub() { tracker_cred_resolve() { return 0; }; }
+  _ce_env() { unset KIT_TRACKER_USER JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_TOKEN=tok; KIT_TRACKER_AUTH=basic; }
+  _ce_run "cred-env-empty-user: an empty user is not a charset breach" \
+    "refused: no tracker credential (user is empty)"
+  _ce_env() { unset KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_USER=u@example.com; KIT_TRACKER_AUTH=basic; }
+  _ce_run "cred-env-empty-token: an empty token is not a charset breach" \
+    "refused: no tracker credential (token is empty)"
+  _ce_env() { unset KIT_TRACKER_TOKEN KIT_TRACKER_USER JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_AUTH=bearer; }
+  _ce_run "cred-env-empty-token-bearer: the bearer arm says so too" \
+    "refused: no tracker credential (token is empty)"
+  # the success-with-stale-cause path: the stub returns 0 but sets a cause, as `available` can; only the rc half of the silence gate keeps this from going silent
+  _ce_env() { unset KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_USER=u@example.com; KIT_TRACKER_AUTH=basic; }
+  _ce_stub() { tracker_cred_resolve() { TRACKER_CRED_WHY=stale; return 0; }; }
+  _ce_run "cred-rc0-stale-cause: a resolve that succeeded does not silence an empty token" \
+    "refused: no tracker credential (token is empty)"
+  # the memoised path: the library returns its remembered failure on the second request without printing again
+  _ce_env() { unset KIT_TRACKER_USER KIT_TRACKER_TOKEN JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_AUTH=basic; }
+  _ce_stub() { _ce_n=0; tracker_cred_resolve() { _ce_n=$((_ce_n + 1)); [ "$_ce_n" -gt 1 ] || { echo "tracker credential: the Keychain did not answer in 10s (a dialog may be waiting)" >&2; TRACKER_CRED_WHY=timeout; }; return 1; }; }
+  _ce_twice=1
+  _ce_run "cred-resolve-fail-memoised: the second request still prints one line" \
+    "refused: no tracker credential (user is empty)"
+  _ce_twice=0
+  _ce_stub() { tracker_cred_resolve() { return 0; }; }
+  _ce_env() { unset JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_USER='a"b'; KIT_TRACKER_TOKEN=tok; KIT_TRACKER_AUTH=basic; }
+  _ce_run "cred-bad-charset-still-refused: a quote-bearing user" \
+    "refused: credential (user) outside the allowed charset"
+  _ce_env() { unset JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_USER=u@example.com; KIT_TRACKER_TOKEN=$(printf 'a\nb'); KIT_TRACKER_AUTH=basic; }
+  _ce_run "cred-bad-charset-still-refused: a newline-bearing token" \
+    "refused: credential (token) outside the allowed charset"
+  # a token that is ONLY a newline is non-empty (a command substitution would strip it, so it is written literally): the charset refusal, not the empty one
+  _ce_env() { unset JIRA_EMAIL JIRA_TOKEN TRACKER_CRED_WHY; KIT_TRACKER_USER=u@example.com; KIT_TRACKER_TOKEN='
+'; KIT_TRACKER_AUTH=basic; }
+  _ce_run "cred-bad-charset-still-refused: a newline-only token" \
+    "refused: credential (token) outside the allowed charset"
+  unset -f _ce_env _ce_stub 2>/dev/null || true
 }
 
 # _tj_st_xtrace: SWAS-109 A2.8. A fake token in the environment, a request run with xtrace ON against the curl shim: the token

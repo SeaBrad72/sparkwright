@@ -5,7 +5,7 @@
 #
 # Four posture dimensions:
 #   conformance [GATING]   — sh conformance/verify.sh
-#   claims      [GATING]   — sh conformance/claims-registry.sh
+#   claims      [GATING]   — sh conformance/claims-registry.sh (kit-self: N/A on an adopter tree, see below)
 #   git         [ADVISORY] — branch, dirty-tree, tag alignment (WARN-only; never hard-fails alone)
 #   kit-update  [ADVISORY] — is the kit you ADOPTED behind the current release? (conformance/kit-current.sh)
 #
@@ -169,6 +169,79 @@ if [ "${1:-}" = "--selftest" ]; then
   [ -e "$_sd/vf" ] && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_VERIFY_CMD was honored in a real run — env, not flag)"; sfail=1; } || true
   [ -e "$_sd/cl" ] && { echo "doctor --selftest: FAIL (an AMBIENT DOCTOR_CLAIMS_CMD was honored in a real run — env, not flag)"; sfail=1; } || true
   rm -rf "$_sd" "$_rd" 2>/dev/null || true
+
+  # — SWAS-168 silent-battery legs: the real conformance + claims calls announce themselves on STDERR
+  #   (before the result row, never on stdout); the seam paths stay silent (keeps the e2e check non-vacuous).
+  #   Same isolated-copy technique as above (no --selftest-e2e flag), with stub verify/claims that exit 0.
+  _rd=$(mktemp -d); mkdir -p "$_rd/scripts" "$_rd/conformance"; cp "$0" "$_rd/scripts/doctor.sh"
+  printf 'exit 0\n' > "$_rd/conformance/verify.sh"; printf 'exit 0\n' > "$_rd/conformance/claims-registry.sh"
+  _bl='doctor: running the conformance battery (conformance/verify.sh)'
+  _cl='doctor: checking the claims registry (conformance/claims-registry.sh)'
+  printf 'exit 0\n' > "$_rd/conformance/non-vacuity.sh"
+  # SWAS-199: claims is kit-self, so this leg plants a kit marker to keep testing the kit-tree path.
+  mkdir -p "$_rd/docs"; : > "$_rd/docs/ROADMAP-KIT.md"
+  _sout=$(cd "$_rd" && HOME="$_rd" GIT_CEILING_DIRECTORIES="$_rd" sh "$_rd/scripts/doctor.sh" 2>"$_rd/err" || true)
+  _fout=$(cd "$_rd" && HOME="$_rd" GIT_CEILING_DIRECTORIES="$_rd" sh "$_rd/scripts/doctor.sh" --full 2>"$_rd/err2" || true)
+  _both=$(cd "$_rd" && HOME="$_rd" GIT_CEILING_DIRECTORIES="$_rd" sh "$_rd/scripts/doctor.sh" 2>&1 || true)
+  _bn=$(printf '%s\n' "$_both" | grep -n "$_bl" | head -1 | cut -d: -f1)
+  _cn=$(printf '%s\n' "$_both" | grep -n "$_cl" | head -1 | cut -d: -f1)
+  _rn=$(printf '%s\n' "$_both" | grep -nE '^  conformance[[:space:]]' | head -1 | cut -d: -f1)
+  _kn=$(printf '%s\n' "$_both" | grep -nE '^  claims[[:space:]]' | head -1 | cut -d: -f1)
+  { grep -qF "$_bl" "$_rd/err" && ! printf '%s\n' "$_sout" | grep -qF "$_bl" \
+    && [ -n "$_bn" ] && [ -n "$_rn" ] && [ "$_bn" -lt "$_rn" ]; } \
+    || { echo "doctor --selftest: FAIL (the conformance-battery progress line is missing, on stdout, or not before the conformance row)"; sfail=1; }
+  { grep -qF "$_cl" "$_rd/err" && ! printf '%s\n' "$_sout" | grep -qF "$_cl" \
+    && [ -n "$_cn" ] && [ -n "$_kn" ] && [ "$_cn" -lt "$_kn" ]; } \
+    || { echo "doctor --selftest: FAIL (the claims-registry progress line is missing, on stdout, or not before the claims row)"; sfail=1; }
+  _nl='doctor: running the non-vacuity sweep (conformance/non-vacuity.sh)'
+  { grep -qF "$_nl" "$_rd/err2" && ! printf '%s\n' "$_fout" | grep -qF "$_nl"; } \
+    || { echo "doctor --selftest: FAIL (the --full non-vacuity progress line is missing from stderr or leaked onto stdout)"; sfail=1; }
+  _seam=$(cd "$_rd" && HOME="$_rd" GIT_CEILING_DIRECTORIES="$_rd" DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$_rd/scripts/doctor.sh" --selftest-e2e 2>&1 || true)
+  printf '%s\n' "$_seam" | grep -qE 'doctor: (running the conformance|checking the claims)' \
+    && { echo "doctor --selftest: FAIL (a seam run printed a progress line; the seam paths must stay silent)"; sfail=1; } || true
+  rm -rf "$_rd" 2>/dev/null || true
+
+  # — SWAS-199 claims is kit-self (rows A-D). Isolated copy, HOME redirected, no --selftest-e2e, stub registry
+  #   that exits 1 and leaves a sentinel. A = unmarked tree stands down; B = the kit tree still FAILs (the
+  #   load-bearing negative); C = one marker (golden-path.yml) is enough; D = a passing kit claim is PASS.
+  _kt_run() { # $1 = tree  $2 = extra doctor args ; sets _kt_out (stdout) and _kt_rc
+    _kt_rc=0
+    # shellcheck disable=SC2086
+    _kt_out=$(cd "$1" && HOME="$1" GIT_CEILING_DIRECTORIES="$1" sh "$1/scripts/doctor.sh" $2 2>"$1/err") || _kt_rc=$?
+  }
+  _kt_tree() { # $1 = registry exit code ; echoes a fresh tree path
+    _kd=$(mktemp -d); mkdir -p "$_kd/scripts" "$_kd/conformance"; cp "$0" "$_kd/scripts/doctor.sh"
+    printf 'exit 0\n' > "$_kd/conformance/verify.sh"
+    printf 'touch "%s/ran"\nexit %s\n' "$_kd" "$1" > "$_kd/conformance/claims-registry.sh"
+    echo "$_kd"
+  }
+  _ktD=$(_kt_tree 0); mkdir -p "$_ktD/docs"; : > "$_ktD/docs/ROADMAP-KIT.md"
+  _kt_run "$_ktD" ""
+  _dover=$(printf '%s\n' "$_kt_out" | grep -E '^Overall:' | head -1)
+  printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+PASS$' \
+    || { echo "doctor --selftest: FAIL (row D: a passing claim on a kit-marked tree did not render PASS)"; sfail=1; }
+  _ktA=$(_kt_tree 1)
+  for _kx in "" "--require"; do
+    _kt_run "$_ktA" "$_kx"
+    printf '%s\n' "$_kt_out" | grep -E '^  claims[[:space:]]' | grep -q "N/A (kit-self.*this project's own claims are not graded here)\$" \
+      || { echo "doctor --selftest: FAIL (row A: an unmarked tree did not render claims N/A (kit-self) [args: $_kx])"; sfail=1; }
+    [ ! -e "$_ktA/ran" ] || { echo "doctor --selftest: FAIL (row A: the claims registry ran on an unmarked tree [args: $_kx])"; sfail=1; }
+    ! grep -q 'checking the claims registry' "$_ktA/err" \
+      || { echo "doctor --selftest: FAIL (row A: a claims progress line appeared on an unmarked tree [args: $_kx])"; sfail=1; }
+    [ "$(printf '%s\n' "$_kt_out" | grep -E '^Overall:' | head -1)" = "$_dover" ] \
+      || { echo "doctor --selftest: FAIL (row A: the claims N/A changed the Overall line vs the passing-claim baseline [args: $_kx])"; sfail=1; }
+    [ "$_kx" != "--require" ] || [ "$_kt_rc" -ne 1 ] \
+      || { echo "doctor --selftest: FAIL (row A: claims N/A made --require exit 1)"; sfail=1; }
+  done
+  _ktB=$(_kt_tree 1); mkdir -p "$_ktB/docs"; : > "$_ktB/docs/ROADMAP-KIT.md"
+  _kt_run "$_ktB" ""
+  { printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+FAIL$' && printf '%s\n' "$_kt_out" | grep -q '^Overall: FAIL' && [ "$_kt_rc" -eq 1 ]; } \
+    || { echo "doctor --selftest: FAIL (row B: a failing claim on the kit tree did not render claims FAIL / Overall: FAIL / exit 1)"; sfail=1; }
+  _ktC=$(_kt_tree 1); mkdir -p "$_ktC/.github/workflows"; : > "$_ktC/.github/workflows/golden-path.yml"
+  _kt_run "$_ktC" ""
+  printf '%s\n' "$_kt_out" | grep -qE '^  claims[[:space:]]+FAIL$' \
+    || { echo "doctor --selftest: FAIL (row C: golden-path.yml alone did not arm the claims dimension)"; sfail=1; }
+  rm -rf "$_ktA" "$_ktB" "$_ktC" "$_ktD" 2>/dev/null || true
 
   # — permission-local-accretion legs (HERMETIC mktemp fixtures ONLY — the reader is pointed at throwaway
   #   JSON via the DOCTOR_ACCRETION_* seams; the owner's real ~/.claude/settings.json and
@@ -451,7 +524,7 @@ WSTUB
   _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" refused env-user@example.com env-token)
   printf '%s\n' "$_o" | grep -qxF 'tracker credential: env - the adapter refused (configuration)' \
     || { echo "doctor --selftest: FAIL (identity: a refusal from an environment credential did not render the configuration text)"; sfail=1; }
-  printf '%s\n' "$_o" | grep -qiF -e 'Keychain' -e 'not reachable' \
+  printf '%s\n' "$_o" | grep -F 'tracker credential:' | grep -qiF -e 'Keychain' -e 'not reachable' \
     && { echo "doctor --selftest: FAIL (identity: a configuration refusal blamed the Keychain or the network)"; sfail=1; } || true
   # S-L1: nothing held but the admin keys unanswered says so, and does not warn
   _o=$(_tcd_who "$_tcd/present" "$_tcd/tracker.conf" unread env-user@example.com env-token)
@@ -626,8 +699,10 @@ FSTUB
   printf '%s\n' "$_o" | grep -qF 'forge ' \
     && { echo "doctor --selftest: FAIL (forge: a --selftest-e2e child with no stand-in printed a forge line)"; sfail=1; } || true
   # names-only advisory, and the origin credential never printed
-  _o=$(GH_TOKEN=SECRETMARK-9 GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
-    DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="https://x-access:ORIGMARK-3@github.com/acme/widgets.git" sh "$0" --selftest-e2e 2>&1) || true
+  # The empty token assignments come LAST, just before `sh`: a value-shaped word after an empty-string token
+  # assignment is what generic-api-key captured as a credential (SWAS-124 / PR #825).
+  _o=$(GH_TOKEN=SECRETMARK-9 DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
+    DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="https://x-access:ORIGMARK-3@github.com/acme/widgets.git" GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' sh "$0" --selftest-e2e 2>&1) || true
   printf '%s\n' "$_o" | grep -qxF 'forge credential: GH_TOKEN set in the environment (it decides which credential gh uses; doctor does not read it)' \
     || { echo "doctor --selftest: FAIL (forge: a set GH_TOKEN did not render the names-only advisory)"; sfail=1; }
   printf '%s\n' "$_o" | grep -qF -e 'SECRETMARK' -e 'ORIGMARK' \
@@ -1438,6 +1513,7 @@ if [ -n "$DOCTOR_VERIFY_CMD" ]; then
 elif [ -f "conformance/verify.sh" ]; then
   _args=""
   [ "$REQUIRE" = "1" ] && _args="--require"
+  echo "doctor: running the conformance battery (conformance/verify.sh); this can take several minutes on a kit tree..." >&2
   # shellcheck disable=SC2086
   if _vout=$(sh conformance/verify.sh $_args 2>&1); then _vrc=0; else _vrc=$?; fi
   case "$_vrc" in
@@ -1466,7 +1542,13 @@ if [ -n "$DOCTOR_CLAIMS_CMD" ]; then
   esac
   printf '  %-14s %s\n' "claims" "$_cstatus"
   [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
+elif [ ! -f "docs/ROADMAP-KIT.md" ] && [ ! -f ".github/workflows/golden-path.yml" ]; then
+  # kit-self (SWAS-199): the registry grades the KIT's own headline claims. Neither kit marker (the same
+  # pair verify.sh --kitself uses) means this is an exported/incepted adopter tree: the dimension stands
+  # down, touching neither gate_fail nor warns, and runs nothing (so no stderr progress line either).
+  printf '  %-14s N/A (kit-self: the registry grades the kit'"'"'s own headline claims; this is not the kit'"'"'s tree; this project'"'"'s own claims are not graded here)\n' "claims"
 elif [ -f "conformance/claims-registry.sh" ]; then
+  echo "doctor: checking the claims registry (conformance/claims-registry.sh)..." >&2
   if _cout=$(sh conformance/claims-registry.sh 2>&1); then _crc=0; else _crc=$?; fi
   case "$_crc" in
     0) _cstatus="PASS" ;;
@@ -1650,6 +1732,7 @@ _dt_unread() {
 }
 if [ -n "$DOCTOR_TRACKER_CONF" ] && [ -f "$DOCTOR_TRACKER_CONF" ] && [ -f scripts/tracker-cred.sh ] && [ -f scripts/tracker-conf.sh ]; then
   . ./scripts/tracker-cred.sh
+  tracker_cred_bind_root "$PWD"  # SWAS-196: doctor has already changed to its root (line 40); that root governs as.agent
   [ -z "$DOCTOR_SECURITY_BIN" ] || _TCR_SEC_BIN="$DOCTOR_SECURITY_BIN"
   _tcl_base=$(sh scripts/tracker-conf.sh get base_url "$DOCTOR_TRACKER_CONF" 2>/dev/null || true)
   _tcl_suffix=""
@@ -1795,6 +1878,7 @@ if [ "$FULL" = "1" ]; then
     _nv_out=$($DOCTOR_NONVACUITY_CMD 2>&1) || true
     printf '%s\n' "$_nv_out" | tail -1
   elif [ -f "conformance/non-vacuity.sh" ]; then
+    echo "doctor: running the non-vacuity sweep (conformance/non-vacuity.sh); this can take several minutes..." >&2
     _nv_out=$(sh conformance/non-vacuity.sh 2>&1) || true
     printf '%s\n' "$_nv_out" | tail -1
   else

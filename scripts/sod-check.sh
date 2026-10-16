@@ -77,8 +77,9 @@ decide() {
 # own second identity, declared in .kit/ratification-seats.conf.
 #
 # WHY IT EXISTS. On a solo repo the second identity satisfies decide() perfectly while providing no
-# second person. That is not a fake control: the seat enforces `agent ≠ ratifier`, because the
-# building agent cannot mint that approval, and that property is friction-test-real. What it is NOT is
+# second person. That is not a fake control: the seat keeps `agent ≠ ratifier` while no agent
+# session can act as the seat's login or bypass the review requirement, because the building agent
+# then cannot mint that approval, and that property is friction-test-real. What it is NOT is
 # two-person review. The 2026-08-25 evaluation found 8/8 recent merged PRs with author = merger and
 # the seat as sole approver, against docs saying that does not satisfy SoD. The ruling reclassified
 # the seat rather than retiring it, and this mode is how the reclassification travels with each PR.

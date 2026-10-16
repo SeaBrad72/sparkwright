@@ -83,7 +83,7 @@ assert: present mvnw -q -DskipTests package
 skip-reason: no `mvn package` step in this profile — nothing to compile/attest
 fix-hint: run `./mvnw -q -DskipTests package` so a jar artifact exists for the provenance job
 
-# --- Secret scan (gitleaks): full working-tree scan via the pinned, checksum-verified binary
+# --- Secret scan (gitleaks): history scan (scoped by --log-opts) via the pinned, checksum-verified binary
 #     (`gitleaks git . --redact`, fetch-depth: 0). `gitleaks git` respects .gitignore, so Java's
 #     build output (target/) falls out of scope with NO allowlist file. The pinned binary is
 #     sha256-verified before use (H4b supply-chain pattern). ---
@@ -91,12 +91,13 @@ id: secret-gate
 precondition: present gitleaks
 when-absent: skip
 assert: present gitleaks git[[:space:]]+\.([[:space:]]|$)
+assert: present --log-opts=
 assert: present gitleaks.*--redact
 assert: present fetch-depth:[[:space:]]*0
 assert: present sha256sum -c
 assert: scaffoldfile .gitignore ^/?target/?$
 skip-reason: no gitleaks step in this profile — nothing to scan
-fix-hint: run `gitleaks git . --no-banner --redact` (full working-tree scan, fetch-depth: 0) from a pinned sha256-verified binary and .gitignore the build output (target/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
+fix-hint: run `gitleaks git . --no-banner --redact` (a history scan scoped with --log-opts: the PR's base..head, main's HEAD, every ref on a schedule; fetch-depth: 0) from a pinned sha256-verified binary and .gitignore the build output (target/) so generated artifacts fall out of scope — gitleaks git respects .gitignore; the shipped .gitleaks.toml allowlists only the promotion-note approval-token field
 
 # --- Dependency vulnerability scan (OWASP dependency-check over the whole project). Java's
 #     dep-scan analog (peer: go=govulncheck). The threshold is load-bearing: default failBuildOnCVSS

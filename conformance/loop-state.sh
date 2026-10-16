@@ -254,7 +254,7 @@ ls_print_stage_map() {
 ls_dial_mode() {   # $1 = dial name
   _ls_dn=$1
   case "$_ls_dn" in
-    ''|*[!A-Z0-9_]*) printf 'observe\n'; return 0 ;;
+    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) printf 'observe\n'; return 0 ;;
   esac
   _ls_dconf="$LS_REPO/.kit/dials.conf"
   _ls_dval=''
@@ -1059,7 +1059,7 @@ check_scope() {   # $1 = sha
 
 # ls_fail_epilogue — the run_gate failure epilogue, in THREE shapes (A3i, DIAL-DELIVERY Δ-B; I1/F4).
 #
-# The mode is computed by ls_scope_epilogue_mode (below) from the two facts run_gate already holds —
+# The mode is computed by ls_epilogue_mode (below) from the facts run_gate already holds —
 # NOT from any parse of the formatted LS_SCOPE_STATE string (design-gate LOW-6a):
 #   1 = a scope path-ESCAPE was the SOLE failure. The Entry-Declaration trailers are valid and the
 #       diff escaped the declared Kit-Scope; name the escaping path(s). Reached ONLY under enforce —
@@ -1070,10 +1070,21 @@ check_scope() {   # $1 = sha
 #       and NO path escaped, so the escape epilogue (and its "SCOPE=enforce") would be FALSE too — the
 #       I1 defect, doubly wrong under observe, where a hostile token is refused unconditionally at the
 #       boundary. scope_leg already printed the precise reason; this epilogue claims neither.
-#   0 = anything else — a real Entry-Declaration defect; print the trailer contract (CLAUDE.md §1).
+#   3 = the ROW leg was the SOLE failure (SWAS-204). The other legs passed, so the trailer contract
+#       would be false; the row reason printed above names the fix. Scope may ALSO have failed.
+#   0 = anything else — a real Entry-Declaration defect; print the trailer contract (CLAUDE.md §1),
+#       plus one line when the row leg ALSO refused.
 # The named paths go through ls_safe — a pushed filename is attacker-influenceable (the
 # every-interpolation rule at ls_safe:79-90).
-ls_fail_epilogue() {   # $1 = mode(0|1|2), $2 = sha, $3 = newline-separated escaping paths
+ls_fail_epilogue() {   # $1 = mode(0|1|2|3), $2 = sha, $3 = escaping paths, $4 = row_bad(0|1), $5 = scope_bad(0|1)
+  if [ "$1" -eq 3 ]; then
+    echo "loop-state: FAIL — $2 was refused by the ROW leg alone; the other Entry Declaration legs passed." >&2
+    echo "  The row reason is printed above. If it says NOT ENFORCED, the backlog backend is one the kit" >&2
+    echo "  cannot read, and no commit or trailer edit clears it. Otherwise the row reason above names the" >&2
+    echo "  fix (board the row, correct Kit-Row, or fix the board/backend)." >&2
+    [ "${5:-0}" -eq 0 ] || echo "  The SCOPE leg also refused (reason above)." >&2
+    return 0
+  fi
   if [ "$1" -eq 1 ]; then
     echo "loop-state: FAIL — $2 declares a Kit-Scope that its own changed paths escape (SCOPE=enforce)." >&2
     echo "  The Entry Declaration trailers are valid; this refusal is the SCOPE leg alone. Escaping path(s):" >&2
@@ -1093,20 +1104,23 @@ ls_fail_epilogue() {   # $1 = mode(0|1|2), $2 = sha, $3 = newline-separated esca
   echo "loop-state: FAIL — $2 does not carry a valid Entry Declaration." >&2
   echo "  The contract is CLAUDE.md section 1. Trailers must be the LAST paragraph of the commit" >&2
   echo "  message and CONTIGUOUS: a blank line before Co-Authored-By silently drops every Kit-* field." >&2
+  [ "${4:-0}" -eq 0 ] || echo "  The ROW leg ALSO refused (reason above); fixing the trailers alone will not clear it." >&2
   return 0
 }
 
-# ls_scope_epilogue_mode — the A3i/I1 discriminant, EXTRACTED from run_gate so it is directly testable
-# with controlled inputs. Driving the whole run_gate in the selftest is NOT hermetic: its check_class
-# leg derives the class from the AMBIENT working tree (derive_class runs promotion-readiness with no
-# fixture listing in the run_gate path — the deliberate "no --changed flag" at :289-293), so the
-# non-scope legs cannot be pinned green from a fixture commit. This function is the exact logic that
-# mislabelled a boundary refusal as a path escape before I1 — mode is escape(1) ONLY when a real
-# escape was captured, never merely because scope was the only failing leg.
-#   $1 = nonscope_bad (0|1) — did ANY non-scope leg fail?   $2 = captured escaping paths (maybe empty)
-ls_scope_epilogue_mode() {
-  [ "$1" -eq 0 ] || { printf 0; return 0; }   # a non-scope leg failed -> the trailer contract
-  [ -n "$2" ] && { printf 1; return 0; }       # a REAL escape was captured -> the escape epilogue
+# ls_epilogue_mode — the A3i/I1 + SWAS-204 discriminant, EXTRACTED from run_gate so it is directly
+# testable with controlled inputs. Driving the whole run_gate in the selftest is NOT hermetic: its
+# check_class leg derives the class from the AMBIENT working tree (derive_class runs promotion-readiness
+# with no fixture listing in the run_gate path — the deliberate "no --changed flag" at :289-293), so the
+# legs cannot be pinned green from a fixture commit unless they are overridden (T7d L7 does that).
+# Mode is escape(1) ONLY when a real escape was captured, never merely because scope was the only
+# failing leg.
+#   $1 = decl_bad (0|1): did a trailer leg (map, declaration, class, skill) fail?
+#   $2 = row_bad (0|1): did the row leg fail?   $3 = captured escaping paths (maybe empty)
+ls_epilogue_mode() {
+  [ "$1" -eq 0 ] || { printf 0; return 0; }   # a trailer leg failed -> the trailer contract
+  [ "$2" -eq 0 ] || { printf 3; return 0; }   # the ROW leg alone -> the row-only text
+  [ -n "$3" ] && { printf 1; return 0; }       # a REAL escape was captured -> the escape epilogue
   printf 2; return 0                            # scope-only, but NO escape -> a boundary refusal
 }
 
@@ -3355,7 +3369,8 @@ _seam_record_load 2>&1 1>/dev/null
     _st_m6_msg() {   # $1 = record content, $2 = expected fixed-text substring, $3 = description
       _stm6_f="$LS_FXDIR/tracker-record-t89s-fix1-m6.txt"
       printf '%s' "$1" > "$_stm6_f"
-      SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stm6_f"; SEAM_HEAD="$_st_trkhead"
+      # shellcheck disable=SC2034  # read by seam_row_count via the SEAM_* seam
+      { SEAM_ROOT="$_st_trk"; SEAM_RECORD="$_stm6_f"; SEAM_HEAD="$_st_trkhead"; }
       _stm6_msg=$(seam_row_count AB-7 2>&1 1>/dev/null) || true
       printf '%s' "$_stm6_msg" | grep -Fq "$2" \
         || { echo "selftest FAIL: T89s-fix1 M6 ($3) — expected the fixed sentence naming <$2>, got <$_stm6_msg>"; st_fail=1; }
@@ -3515,7 +3530,7 @@ _seam_record_load 2>&1 1>/dev/null
     LS_REPO="$_st_drepo_saved"
 
     # --- T7d (A3i; I1/F4): the run_gate failure epilogue is scope-aware ------------------------
-    # run_gate picks the epilogue via ls_scope_epilogue_mode from the two facts it already holds:
+    # run_gate picks the epilogue via ls_epilogue_mode from the facts it already holds:
     # whether any NON-scope leg failed, and whether check_scope captured a REAL escape. Three modes:
     #   1 = a path ESCAPE was the sole failure  -> name the path(s), each through ls_safe;
     #   2 = a scope BOUNDARY refusal (hostile token / dup key) was the sole failure -> the trailers
@@ -3525,14 +3540,14 @@ _seam_record_load 2>&1 1>/dev/null
     #       and doubly false under observe (where the boundary refuses unconditionally);
     #   0 = a real Entry-Declaration defect -> the trailer contract.
     # THE DISCRIMINANT IS TESTED DIRECTLY — driving the whole run_gate is not hermetic (its check_class
-    # leg derives class from the ambient tree; see ls_scope_epilogue_mode's note). The escape-vs-boundary
+    # leg derives class from the ambient tree; see ls_epilogue_mode's note). The escape-vs-boundary
     # legs are the I1 mutant kill: the pre-fix logic set the flag purely on "scope was the only failing
     # leg", so it returned the escape mode for BOTH — the `0 '' -> 2` leg is RED before the fix, GREEN after.
-    [ "$( ls_scope_epilogue_mode 0 'conformance/stray.sh' )" = 1 ] \
+    [ "$( ls_epilogue_mode 0 0 'conformance/stray.sh' )" = 1 ] \
       || { echo "selftest FAIL: I1 — a captured escape as the sole failure must be epilogue mode 1"; st_fail=1; }
-    [ "$( ls_scope_epilogue_mode 0 '' )" = 2 ] \
+    [ "$( ls_epilogue_mode 0 0 '' )" = 2 ] \
       || { echo "selftest FAIL: I1 — a scope-only refusal with NO captured escape must be mode 2, not a false escape"; st_fail=1; }
-    [ "$( ls_scope_epilogue_mode 1 'conformance/stray.sh' )" = 0 ] \
+    [ "$( ls_epilogue_mode 1 0 'conformance/stray.sh' )" = 0 ] \
       || { echo "selftest FAIL: I1 — a non-scope leg failure must be the trailer-contract mode 0"; st_fail=1; }
 
     # mode 1 — names the escaping path, does NOT print the trailer contract.
@@ -3572,6 +3587,79 @@ _seam_record_load 2>&1 1>/dev/null
     case "$_fe_decl" in
       *"declares a Kit-Scope"*) echo "selftest FAIL: A3i — a declaration failure must NOT print the scope epilogue"; st_fail=1 ;;
     esac
+
+    # --- T7d (SWAS-204): a refusal by the ROW leg alone stops blaming valid trailers ------------
+    # L1 the defect kill: the pre-fix grouping folded check_row into the trailer flag, so (0,1) gave 0.
+    [ "$( ls_epilogue_mode 0 1 '' )" = 3 ] \
+      || { echo "selftest FAIL: SWAS-204 L1 — the row leg alone must be epilogue mode 3 (trailer contract blamed valid trailers)"; st_fail=1; }
+    # L2 a trailer-leg failure keeps the trailer contract, with or without a row failure.
+    [ "$( ls_epilogue_mode 1 0 '' )" = 0 ] && [ "$( ls_epilogue_mode 1 1 '' )" = 0 ] \
+      || { echo "selftest FAIL: SWAS-204 L2 — a trailer-leg failure must stay mode 0, with or without a row failure"; st_fail=1; }
+    # L3 LOAD-BEARING NEGATIVE: invalid trailers are never given the row-only text.
+    for _fe_rb in 0 1; do
+      _fe_m0=$( ls_fail_epilogue 0 deadbeef "" "$_fe_rb" 0 2>&1 )
+      case "$_fe_m0" in
+        *"does not carry a valid Entry Declaration"*"LAST paragraph"*) ;;
+        *) echo "selftest FAIL: SWAS-204 L3 — mode 0 (row_bad=$_fe_rb) must print the trailer contract word for word"; st_fail=1 ;;
+      esac
+      case "$_fe_m0" in
+        *"ROW leg alone"*) echo "selftest FAIL: SWAS-204 L3 — mode 0 (row_bad=$_fe_rb) must NEVER print the row-only text"; st_fail=1 ;;
+      esac
+    done
+    # L4 mode 3 names the row leg and never the trailer contract.
+    _fe_m3=$( ls_fail_epilogue 3 deadbeef "" 1 0 2>&1 )
+    case "$_fe_m3" in
+      *"ROW leg alone"*"other Entry Declaration legs passed"*) ;;
+      *) echo "selftest FAIL: SWAS-204 L4 — mode 3 must say the ROW leg alone refused and the other legs passed"; st_fail=1 ;;
+    esac
+    case "$_fe_m3" in
+      *"LAST paragraph"*|*"does not carry"*) echo "selftest FAIL: SWAS-204 L4 — mode 3 must NOT print the trailer contract"; st_fail=1 ;;
+    esac
+    case "$_fe_m3" in
+      *"SCOPE leg also refused"*) echo "selftest FAIL: SWAS-204 L4 — mode 3 with scope passing must not claim a scope refusal"; st_fail=1 ;;
+    esac
+    case "$( ls_fail_epilogue 3 deadbeef "" 1 1 2>&1 )" in
+      *"SCOPE leg also refused"*) ;;
+      *) echo "selftest FAIL: SWAS-204 L4 — mode 3 with scope ALSO failing must say so"; st_fail=1 ;;
+    esac
+    # L5 the "ALSO refused" line appears in mode 0 only when the row leg failed too.
+    case "$( ls_fail_epilogue 0 deadbeef "" 1 0 2>&1 )" in
+      *"ROW leg ALSO refused"*) ;;
+      *) echo "selftest FAIL: SWAS-204 L5 — mode 0 with row_bad=1 must say the ROW leg ALSO refused"; st_fail=1 ;;
+    esac
+    case "$( ls_fail_epilogue 0 deadbeef "" 0 0 2>&1 )" in
+      *"ROW leg ALSO refused"*) echo "selftest FAIL: SWAS-204 L5 — mode 0 with row_bad=0 must NOT claim a row refusal"; st_fail=1 ;;
+    esac
+    # L6 the three I1 rows above are re-pointed to the new signature (row_bad 0); verdicts unchanged.
+    # L7 CALL-SITE PIN: run_gate computes the mode on EVERY failure. The leg functions are overridden
+    # in a subshell (hermetic); only check_row fails. Pre-fix, a row-only failure kept mode 0.
+    # `trap - EXIT`: the subshell inherits ls_fx_cleanup, which would rm the shared fixture dir on exit.
+    _fe_rg=$( trap - EXIT INT TERM; LS_REPO="$LS_FXDIR"
+      map_completeness() { return 0; }
+      check_declaration() { return 0; }
+      check_class() { return 0; }
+      check_skill_if_present() { return 0; }
+      check_scope() { return 0; }
+      ls_class_for_required() { printf ordinary; }
+      check_row() { echo "loop-state: row check NOT ENFORCED: backend 'jira' (fixture)" >&2; return 1; }
+      run_gate "$LS_FX_OK" 2>&1 >/dev/null && echo "rc=0" || echo "rc=$?" )
+    case "$_fe_rg" in
+      *"ROW leg alone"*"rc=1"*) ;;
+      *) echo "selftest FAIL: SWAS-204 L7 — run_gate with only check_row failing must print the row-only text and rc 1"; st_fail=1 ;;
+    esac
+    case "$_fe_rg" in
+      *"LAST paragraph"*) echo "selftest FAIL: SWAS-204 L7 — run_gate row-only failure must NOT print the trailer contract"; st_fail=1 ;;
+    esac
+    # L8 TEXT-CONSUMER INVARIANT: hooks/pre-push and conformance/prepush-lane.sh trim from the
+    # "loop-state: FAIL " prefix, so every epilogue's first line must start with it.
+    for _fe_c in "0 0" "0 1" "1 0" "2 0" "3 1"; do
+      _fe_cm=${_fe_c% *}; _fe_cr=${_fe_c#* }
+      _fe_first=$( ls_fail_epilogue "$_fe_cm" deadbeef "conformance/x.sh" "$_fe_cr" 0 2>&1 | head -n 1 )
+      case "$_fe_first" in
+        "loop-state: FAIL "*) ;;
+        *) echo "selftest FAIL: SWAS-204 L8 — epilogue mode $_fe_cm (row_bad=$_fe_cr) first line must start 'loop-state: FAIL '"; st_fail=1 ;;
+      esac
+    done
 
     # --- MAP COMPLETENESS, drift directions (b) and (c) ---------------------------------------
     # Plan T1 step 4 required these and they were missing; review measured that gutting either
@@ -3886,10 +3974,11 @@ run_gate() {   # $1 = sha, [$2 = optional changed-listing path — TBG-TRUSTED-J
   # once, at this ONE call site, exactly as SEAM_ROOT already tracks LS_BOARDROOT.
   SEAM_RECORD="${KIT_TRACKER_RECORD:-}"
   _ls_bad=0
-  _ls_nonscope_bad=0   # tracks whether ANY leg other than scope failed (the A3i discriminant input)
+  _ls_decl_bad=0   # a trailer leg failed (map, declaration, class, skill): the epilogue discriminant input
+  _ls_row_bad=0    # the row leg failed (SWAS-204: split out so a row-only refusal stops blaming trailers)
   git -C "$LS_REPO" cat-file -e "$1^{commit}" 2>/dev/null || {
     echo "loop-state: '$1' is not a commit in this repository" >&2; return 2; }
-  map_completeness   || { _ls_bad=1; _ls_nonscope_bad=1; }
+  map_completeness   || { _ls_bad=1; _ls_decl_bad=1; }
   # THE CLASSIFIER RUNS FIRST — it needs no trailers, so it can be hoisted ahead of the
   # declaration leg, and the declaration leg needs its answer to know what to require. A
   # derivation failure yields FAIL-SAFED, which ls_required_keys maps to the FULL set; check_class
@@ -3898,25 +3987,22 @@ run_gate() {   # $1 = sha, [$2 = optional changed-listing path — TBG-TRUSTED-J
   # job) has no local diff, so the live git-diff-against-trunk derivation would otherwise read an
   # empty change-set and fail OPEN to `ordinary` rather than FAIL-SAFED.
   _ls_class=$(ls_class_for_required "${2:-}")
-  check_declaration "$1" "$_ls_class" || { _ls_bad=1; _ls_nonscope_bad=1; }
-  check_class       "$1" "" "$_ls_class" || { _ls_bad=1; _ls_nonscope_bad=1; }
-  check_skill_if_present "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
-  check_row         "$1" || { _ls_bad=1; _ls_nonscope_bad=1; }
+  check_declaration "$1" "$_ls_class" || { _ls_bad=1; _ls_decl_bad=1; }
+  check_class       "$1" "" "$_ls_class" || { _ls_bad=1; _ls_decl_bad=1; }
+  check_skill_if_present "$1" || { _ls_bad=1; _ls_decl_bad=1; }
+  check_row         "$1" || { _ls_bad=1; _ls_row_bad=1; }
   # B9: the scope leg. It runs inside the existing --head path, so the installed pre-push hook and
   # CI's bound gate both get it with ZERO wiring edits. It cannot change the rc of any commit that
   # carries no Kit-Scope trailer (the N/A arm), which is every PR shape that is green today. Runs
-  # LAST so _ls_nonscope_bad already reflects every other leg when the scope-only flag is derived.
-  _ls_scope_mode=0
-  if ! check_scope "$1"; then
-    _ls_bad=1
-    # I1/F4: the epilogue mode is scope-ESCAPE (1) ONLY when a REAL escape was captured. A boundary
-    # refusal (hostile token / duplicate Kit-Scope key) leaves LS_SCOPE_ESCAPED empty and gets mode 2
-    # — NOT the false "changed paths escape (SCOPE=enforce)" with an empty path list (doubly false
-    # under observe). Derived from the discriminant inputs, never parsed from LS_SCOPE_STATE.
-    _ls_scope_mode=$(ls_scope_epilogue_mode "$_ls_nonscope_bad" "${LS_SCOPE_ESCAPED:-}")
-  fi
+  # LAST so the decl/row flags already reflect every other leg when the epilogue mode is derived.
+  _ls_scope_bad=0
+  check_scope "$1" || { _ls_bad=1; _ls_scope_bad=1; }
   if [ "$_ls_bad" -ne 0 ]; then
-    ls_fail_epilogue "$_ls_scope_mode" "$1" "${LS_SCOPE_ESCAPED:-}"
+    # I1/F4 + SWAS-204: the mode is computed on EVERY failure, from the facts held here, never parsed
+    # from LS_SCOPE_STATE. Scope-ESCAPE (1) only when a REAL escape was captured; a boundary refusal
+    # leaves LS_SCOPE_ESCAPED empty and gets mode 2; a row-only refusal gets mode 3.
+    _ls_mode=$(ls_epilogue_mode "$_ls_decl_bad" "$_ls_row_bad" "${LS_SCOPE_ESCAPED:-}")
+    ls_fail_epilogue "$_ls_mode" "$1" "${LS_SCOPE_ESCAPED:-}" "$_ls_row_bad" "$_ls_scope_bad"
     return 1
   fi
   # The success line states EXACTLY what each leg established — never "all resolve". Security review
