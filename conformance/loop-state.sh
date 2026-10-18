@@ -680,7 +680,7 @@ check_row() {   # $1 = sha
       # LOOP-STATE-TRACKER-STEP-ASIDE amendment A2: the same cure both gates give, lifted into the
       # one shared helper — an agent reading either gate's refusal gets the same instruction, not
       # loop-state's own generic waiver-only clause (backlog-lib.sh::not_enforced_notice's default).
-      _ls_neout=$(not_enforced_notice "$_ls_backend" "$LS_BOARDROOT" "$DIR/conformance/waivers-valid.sh" "$(tracker_delegated_cure)") || _ls_ne=$?
+      _ls_neout=$(not_enforced_notice "$_ls_backend" "$LS_BOARDROOT" "$DIR/conformance/waivers-valid.sh" "$(tracker_delegated_cure "$_ls_backend")") || _ls_ne=$?
       # STREAM FOLLOWS VERDICT (security S-L3). A waived run is a PASS and its notice is a verdict —
       # stdout. An unwaived run is a REFUSAL and its sentence is the reason — stderr, like every
       # other refusal in this function. That is not cosmetic: hooks/pre-push captures this
@@ -2066,11 +2066,40 @@ selftest() {
 
     # (c2) not-live-cure (amendment A2): the refusal names the real cure — bind tracker-board-gates —
     # not the generic waiver-only clause.
+    # SWAS-203: the cure follows the backend. This fixture declares github, which has no kit
+    # adapter: it is told the waiver or BACKLOG.md, and NEVER to bind a job it cannot have.
     case "$_st_nl_out" in
-      *"Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected — or move the board to BACKLOG.md, or ratify a board-governance waiver"*)
-        echo "selftest PASS: delegate/not-live-cure: the refusal stderr names tracker-board-gates + REQUIRED-CHECKS.md (A2)" ;;
+      *"no kit adapter reads 'github' yet"*"the owner (a human, never an agent) ratifies a board-governance waiver, or move the board to BACKLOG.md"*)
+        echo "selftest PASS: delegate/not-live-cure-adapterless: the github refusal names the missing adapter, the waiver and BACKLOG.md (SWAS-203)" ;;
       *)
-        echo "selftest FAIL: delegate/not-live-cure: missing the real cure, got <$_st_nl_out>"; st_fail=1 ;;
+        echo "selftest FAIL: delegate/not-live-cure-adapterless: missing the adapterless cure, got <$_st_nl_out>"; st_fail=1 ;;
+    esac
+    case "$_st_nl_out" in
+      *"tracker-board-gates"*)
+        echo "selftest FAIL: delegate/not-live-cure-adapterless-neg: a github refusal told the author to bind tracker-board-gates, got <$_st_nl_out>"; st_fail=1 ;;
+      *)
+        echo "selftest PASS: delegate/not-live-cure-adapterless-neg: a github refusal never names tracker-board-gates" ;;
+    esac
+    # …and a jira tree gets the bind first, the waiver where branch protection cannot be set, and
+    # never "no kit adapter". The jira fixture is the head-conf tree (CLAUDE.md declares jira); the
+    # live-contexts file still lacks the line, so the step-aside stays off and the row leg refuses.
+    _st_c3_root="$LS_BOARDROOT"
+    LS_BOARDROOT="$LS_FXDIR/t1-head-conf"
+    _st_c3_out=$(check_row "$LS_FX_OK" 2>&1) && _st_c3_rc=0 || _st_c3_rc=$?
+    LS_BOARDROOT="$_st_c3_root"
+    [ "$_st_c3_rc" -eq 1 ] \
+      || { echo "selftest FAIL: delegate/not-live-cure-jira: wanted rc 1 (the verdict is unchanged), got rc=$_st_c3_rc"; st_fail=1; }
+    case "$_st_c3_out" in
+      *"Cure: bind the trusted job (it needs a valid .kit/tracker.conf on main)"*"--replace"*"a free-plan private repository"*"one person may sign both"*"or move the board to BACKLOG.md"*)
+        echo "selftest PASS: delegate/not-live-cure-jira: the jira refusal leads with the bind, then the waiver for a free-plan private repository, then BACKLOG.md (SWAS-203)" ;;
+      *)
+        echo "selftest FAIL: delegate/not-live-cure-jira: missing the jira cure, got <$_st_c3_out>"; st_fail=1 ;;
+    esac
+    case "$_st_c3_out" in
+      *"no kit adapter"*)
+        echo "selftest FAIL: delegate/not-live-cure-jira-neg: a jira refusal said there is no kit adapter, got <$_st_c3_out>"; st_fail=1 ;;
+      *)
+        echo "selftest PASS: delegate/not-live-cure-jira-neg: a jira refusal is never told there is no kit adapter" ;;
     esac
 
     # (d) no-live-file: --live-contexts names a file that does not exist -> rc 1, FAIL-CLOSED to

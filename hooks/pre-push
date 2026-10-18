@@ -381,15 +381,16 @@ decl_check_ref() { # local_ref local_sha remote_ref remote_sha
         printf 'kit pre-push:            then push again.\n' >&2
         case "$_decl_pre_epilogue" in
           *"NOT ENFORCED"*)
-            printf 'kit pre-push:   and the row check is ALSO NOT ENFORCED on this repo — after the trailers, see the tracker remedy (bind tracker-board-gates, or ratify a board-governance waiver).\n' >&2 ;;
+            printf 'kit pre-push:   and the row check is ALSO NOT ENFORCED on this repo: after the trailers, bind tracker-board-gates on jira (--replace the first time, on an unprotected main), or ratify a board-governance waiver, or move the board to BACKLOG.md.\n' >&2 ;;
         esac ;;
       tracker)
         printf 'kit pre-push:   remedy: this is NOT a trailer problem and no commit fixes it. This repo\n' >&2
         printf 'kit pre-push:            declares a hosted-tracker backlog backend, and the kit reads\n' >&2
-        printf 'kit pre-push:            BACKLOG.md only, so the row check is NOT ENFORCED. Bind the\n' >&2
-        printf 'kit pre-push:            trusted job (add tracker-board-gates to REQUIRED-CHECKS.md,\n' >&2
-        printf 'kit pre-push:            then a repo admin runs sh scripts/branch-protection-apply.sh\n' >&2
-        printf 'kit pre-push:            --apply) — move the board to BACKLOG.md, or ratify a board-governance waiver.\n' >&2 ;;
+        printf 'kit pre-push:            BACKLOG.md only, so the row check is NOT ENFORCED. Bind\n' >&2
+        printf 'kit pre-push:            tracker-board-gates (the trusted job) on jira (a repo admin runs sh scripts/branch-protection-apply.sh\n' >&2
+        printf 'kit pre-push:            --replace the first time, on an unprotected main; --apply after), or the\n' >&2
+        printf 'kit pre-push:            owner (a human, never an agent) ratifies a board-governance waiver, or move\n' >&2
+        printf 'kit pre-push:            the board to BACKLOG.md. The NOT ENFORCED line above names the cure for your backend.\n' >&2 ;;
       rowalone)
         printf 'kit pre-push:   remedy: the other Entry Declaration legs passed. Act on the row reason above (board the row, correct Kit-Row, or fix the board/backend), then push again.\n' >&2 ;;
       *)
@@ -1063,7 +1064,7 @@ $_pr_dirty"
   # rc 3 — NOT ENFORCED (the gate's hosted-tracker partition, NON-MD-BACKEND-NEVER-SILENT). THE ONE
   # PLACE IN THE KIT THAT MAPS rc 3 TO ALLOW, and the reason is specific rather than general: nobody
   # can clear a NOT ENFORCED verdict by changing anything in the push in front of them — the ladder
-  # is a ratified `board-governance` waiver or the TRACKER-BACKED-GOVERNANCE seam. Under `enforce`
+  # is a ratified `board-governance` waiver or the tracker-backed seam (the trusted job, on jira). Under `enforce`
   # the dial below would otherwise refuse EVERY push a tracker adopter ever makes, which is exactly
   # how a hook earns a permanent `--no-verify` and takes the other four legs down with it.
   # THIS IS A SPEED-BUMP CEILING, NOT A BYPASS: the required CI context reds on the same rc 3
@@ -1260,6 +1261,7 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_expect_contains "S-L3 the remedy names NOT ENFORCED" "NOT ENFORCED" "$decl_out"
   decl_expect_contains "S-L3 the remedy names the waiver ladder" "board-governance waiver" "$decl_out"
   decl_expect_contains "S-L3 the remedy names the trusted-job bind" "tracker-board-gates" "$decl_out"
+  decl_expect_contains "S-L3 the remedy names --replace for a first bind (SWAS-203)" "--replace" "$decl_out"
   if printf '%s' "$decl_out" | grep -qF -- "fix the trailer block"; then
     echo "FAIL: S-L3 a NOT ENFORCED refusal must NOT hand the author the trailer remedy"; fail=1
   else
@@ -1313,6 +1315,7 @@ if [ "${1:-}" = "--selftest" ]; then
   decl_run enforce "refs/heads/feature/x $HEAD refs/heads/feature/x $Z"
   decl_expect_contains "P2 trailer + row failure names the trailer remedy" "fix the trailer block" "$decl_out"
   decl_expect_contains "P2 trailer + row failure names the ALSO NOT ENFORCED line" "ALSO NOT ENFORCED" "$decl_out"
+  decl_expect_contains "P2 the ALSO line carries the neutral short form, BACKLOG.md last (SWAS-203)" "or move the board to BACKLOG.md" "$decl_out"
   decl_expect_absent "P2 trailer + row failure never says NOT a trailer problem (the false sentence)" "NOT a trailer problem" "$decl_out"
   # P3 an md-backend row reason (NO NOT ENFORCED reason) + the real row-only epilogue, whose own text
   # says "NOT ENFORCED" -> the row remedy. This is the row that caught the false tracker remedy.

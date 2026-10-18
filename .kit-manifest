@@ -517,6 +517,7 @@ conformance/fixtures/tracker-jira/transitions-good.json
 conformance/fixtures/tracker-jira/transitions-with-fields.json
 conformance/fixtures/trusted-job-pairing/bad.yml
 conformance/gitlab-adoption-complete.sh
+conformance/go-toolchain-coherent.sh
 conformance/golden-path-filter-parity.sh
 conformance/golden-path-wired.sh
 conformance/governing-docs-current.sh

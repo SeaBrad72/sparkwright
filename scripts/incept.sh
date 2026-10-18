@@ -1249,7 +1249,14 @@ stamp_board_governance_waiver() {   # $1 = the chosen backend token
   # value, so a `\t`, a `\n` or a lone `\` in the text becomes something else inside the program —
   # a data-into-program path for a value the program then prints verbatim. Build the line with
   # printf, and hand awk only the FILE it is reading.
-  _sbw_row=$(printf '| board-governance | The kit reads BACKLOG.md only; board-bound gates cannot read '"'"'%s'"'"' | [owner] | %s | %s | Adopt TRACKER-BACKED-GOVERNANCE when released, or move the board to BACKLOG.md | [security-owner] |' "$1" "$DATE" "$_sbw_exp")
+  # SWAS-203: the Remediation cell names a cure that exists today. Jira has a kit adapter (the bind);
+  # every other backend has none, so its way out is its own adapter or BACKLOG.md. No pipe, no
+  # "when released": the validator reads this cell as a plan, and a plan must not wait on a release.
+  case "$1" in
+    jira) _sbw_fix="Bind tracker-board-gates once branch protection is available, or move the board to BACKLOG.md" ;;
+    *) _sbw_fix="Adopt a kit adapter for '$1', or move the board to BACKLOG.md" ;;
+  esac
+  _sbw_row=$(printf '| board-governance | The kit reads BACKLOG.md only; board-bound gates cannot read '"'"'%s'"'"' | [owner] | %s | %s | %s | [security-owner] |' "$1" "$DATE" "$_sbw_exp" "$_sbw_fix")
   # Insert directly after the Active table's separator row — awk to a temp file, then move, because
   # `sedi` is a substitution helper and this is an insertion. The row reaches awk through the
   # ENVIRONMENT (ENVIRON), which is not escape-processed.
@@ -1267,7 +1274,12 @@ stamp_board_governance_waiver() {   # $1 = the chosen backend token
     echo "incept: could not stamp the board-governance row into WAIVER-REGISTER.md (no '## Active waivers' table found) — add it by hand from templates/WAIVER-REGISTER.md before your first PR." >&2
     return 0
   fi
-  echo "NOT ENFORCED: backend '$1' — board-bound governance is not verified on this tree (the kit reads BACKLOG.md only; see docs/work-tracking/adapters.md §Which gates bind). Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver (templates/WAIVER-REGISTER.md)."
+  # The cure sentence is the gates' own (conformance/backlog-lib.sh::tracker_delegated_cure), so
+  # incept and the first red say the same thing. A tree without the library (never an adopter export)
+  # falls back to the neutral short form rather than printing nothing.
+  _sbw_cure=$( . conformance/backlog-lib.sh >/dev/null 2>&1 && tracker_delegated_cure "$1" ) || _sbw_cure=""
+  [ -n "$_sbw_cure" ] || _sbw_cure="bind tracker-board-gates (jira), or ratify a board-governance waiver, or move the board to BACKLOG.md"
+  echo "NOT ENFORCED: backend '$1' — board-bound governance is not verified on this tree (the kit reads BACKLOG.md only; see docs/work-tracking/adapters.md §Which gates bind). Cure: $_sbw_cure."
   echo "note: WAIVER-REGISTER.md now carries a pre-filled 'board-governance' row with [owner] and [security-owner] PLACEHOLDERS. Until a human fills both, your board-bound CI gates stay red — that is the point: the gap is real and it is now visible."
 }
 # TBG-TRACKER-CONF: stamp .kit/tracker.conf for the jira backend, per design §5. `--existing`

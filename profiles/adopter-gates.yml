@@ -148,7 +148,7 @@ jobs:
   # number into their own board — the check's ceiling is unchanged), while the judging script is not
   # the PR's to change.
   backlog-presence:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -316,7 +316,7 @@ jobs:
           case "$rc" in
             0) head="backlog-presence: PASS — board row bound, or not required." ;;
             1) head="backlog-presence: WAITING — NOT a build failure, and no test failed. To proceed: add or update a BACKLOG.md row whose PR cell names this pull request (or its branch), then push." ;;
-            3) head="backlog-presence: NOT ENFORCED — your repo declares a hosted-tracker backlog backend and the kit reads BACKLOG.md only, so board-bound governance is NOT verified on this tree. No edit to this PR clears it: adopt TRACKER-BACKED-GOVERNANCE when it ships, move the board to BACKLOG.md, or ratify a board-governance waiver (WAIVER-REGISTER.md — incept stamped the row for you; a human fills Owner and Ratified-by)." ;;
+            3) head="backlog-presence: NOT ENFORCED — your repo declares a hosted-tracker backlog backend and the kit reads BACKLOG.md only, so board-bound governance is NOT verified on this tree. No edit to this PR clears it: bind tracker-board-gates (jira; a repo admin runs sh scripts/branch-protection-apply.sh --replace the first time, on an unprotected main), or have the owner (a human, never an agent) ratify a board-governance waiver (WAIVER-REGISTER.md — incept stamped the row for you; a human fills Owner and Ratified-by), or move the board to BACKLOG.md. The NOT ENFORCED line below names the cure for your backend." ;;
             *) head="backlog-presence: GATE ERROR or misconfiguration — board presence could not be adjudicated. This one IS a real error and needs fixing." ;;
           esac
           # ONE body, written to BOTH surfaces: the log and the step summary (what a reviewer reads
@@ -340,7 +340,7 @@ jobs:
               1) _title='backlog-presence: WAITING — NOT a build failure'
                  _msg='To proceed: add or update a BACKLOG.md row whose PR cell names this pull request (or its branch) then push. No test failed and nothing is broken.' ;;
               3) _title='backlog-presence: NOT ENFORCED — a hosted-tracker backend is not board-governed'
-                 _msg='Your repo declares a non-BACKLOG.md backlog backend. The kit reads BACKLOG.md only so board-bound governance is NOT verified here. No edit to this PR clears it: adopt TRACKER-BACKED-GOVERNANCE move the board to BACKLOG.md or ratify a board-governance waiver in WAIVER-REGISTER.md.' ;;
+                 _msg='Your repo declares a non-BACKLOG.md backlog backend. The kit reads BACKLOG.md only so board-bound governance is NOT verified here. No edit to this PR clears it: bind tracker-board-gates (jira) or have the owner (a human and never an agent) ratify a board-governance waiver in WAIVER-REGISTER.md or move the board to BACKLOG.md. The NOT ENFORCED line in the log names the cure for your backend.' ;;
               *) _title='backlog-presence: GATE ERROR — board presence could not be adjudicated'
                  _msg=$(printf '%s' "$out" | tr '\n\r\t' '   ' | cut -c1-400) ;;
             esac
@@ -360,7 +360,7 @@ jobs:
   # rather than arranged. What survives is the credential drop below: PR-controlled code still runs
   # here, and it still must not run with a token in .git/config.
   ceremony-binding:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -618,7 +618,7 @@ jobs:
   # this job runs PR-controlled code — which is precisely why it must never hold a write scope. The
   # poster twin that used to hold one is deleted.
   loop-state:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       contents: read
@@ -816,7 +816,7 @@ jobs:
   # this job. The head objects are fetched because the containment legs need them; nothing about the PR
   # is read from the forge.
   review-lane:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     permissions:
       # `contents: read` only — `pull-requests: read` went with the leg that called `gh pr view`.

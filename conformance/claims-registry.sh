@@ -36,9 +36,30 @@ cr_san() { LC_ALL=C tr -d '[:cntrl:]'; }
 # constructible with the reviewer as its only detector.
 cr_proof_want() { case "$1" in *.sh\ --selftest*) echo selftest ;; *) echo tree ;; esac; }
 
+# rv_run <verifier>: run a verifier ONCE per run_registry pass and set rv_rc / rv_out. A verifier string that already ran in
+# this pass reuses its recorded exit code and output (SWAS-201; the wiring check backs three claims). The memo
+# is shell variables in this process and nothing else: no file, no environment variable, no flag, so no input from outside the
+# run can forge a recorded result. The key is the exact field-3 string. The indexed names are built from a counter this function
+# owns; the stored values are never re-parsed (eval sees `\$1` and `\$rv_out`, not their contents).
+rv_run() {
+  _rv_i=1; _rv_k=''
+  while [ "$_rv_i" -le "$_rv_n" ]; do
+    eval "_rv_k=\${_rv_key_$_rv_i}"
+    if [ "$_rv_k" = "$1" ]; then
+      eval "rv_rc=\${_rv_rc_$_rv_i}; rv_out=\${_rv_out_$_rv_i}"
+      return 0
+    fi
+    _rv_i=$((_rv_i + 1))
+  done
+  if rv_out=$(sh -c "$1" 2>&1); then rv_rc=0; else rv_rc=$?; fi
+  _rv_n=$((_rv_n + 1))
+  eval "_rv_key_$_rv_n=\$1; _rv_rc_$_rv_n=\$rv_rc; _rv_out_$_rv_n=\$rv_out"
+  return 0
+}
+
 # run_registry <tsv>: print PASS/UNVERIFIED/FAIL per claim + coverage gaps; return 1 on any non-pass.
 run_registry() {
-  _reg=$1; _fail=0; _seen=""; _no=0
+  _reg=$1; _fail=0; _seen=""; _no=0; _rv_n=0
   [ -f "$_reg" ] || { echo "FAIL: missing registry $_reg"; return 1; }
   while IFS= read -r _ln || [ -n "$_ln" ]; do   # `|| [ -n ]` = process a final line with no trailing newline (no silent skip)
     _no=$((_no + 1))
@@ -67,16 +88,16 @@ run_registry() {
     case " $_seen " in *" $_id "*) echo "FAIL: duplicate claim id '$(printf '%s' "$_id" | cr_san)'"; _fail=1; continue ;; esac
     _seen="$_seen $_id"
     # Capture output + exit code (set -e-safe). Classify three-state; surface diagnostics on non-pass.
-    if _out=$(sh -c "$_verifier" 2>&1); then
+    rv_run "$_verifier"
+    if [ "$rv_rc" = 0 ]; then
       echo "PASS: $_id"
     else
-      _rc=$?
-      if [ "$_rc" = 2 ]; then
+      if [ "$rv_rc" = 2 ]; then
         echo "UNVERIFIED: $_id — verifier could not confirm (exit 2): $_verifier"
       else
-        echo "FAIL: $_id — verifier reports drift (exit $_rc): $_verifier"
+        echo "FAIL: $_id — verifier reports drift (exit $rv_rc): $_verifier"
       fi
-      emit_diag "$_out"
+      emit_diag "$rv_out"
       _fail=1
     fi
   done < "$_reg"
@@ -153,6 +174,23 @@ if [ "${1:-}" = "--selftest" ]; then
   # (This is the 5-row error that made the split read 33/72 instead of the true 28/72.)
   cp "$d/ok.tsv" "$d/prose.tsv"; printf '%s\t%s\t%s\t%s\n' "prose-claim" "the check is wired and --selftest green" "true" "tree" >> "$d/prose.tsv"
   if run_registry "$d/prose.tsv" >/dev/null 2>&1; then echo "PASS: selftest — a --selftest MENTION in the claim prose does not derive 'selftest'"; else echo "FAIL: selftest — the derivation read the claim prose, not field 3"; sfail=1; fi
+  # (e) THE IN-RUN MEMO (SWAS-201). A verifier string that already ran in this pass is not run again, yet every row it covers still
+  #     prints its own verdict under its own id, and a non-pass still prints its diagnostics on every row. The oracle is a side
+  #     effect (an append to a marker file), not the output text. A row with a different verifier string still runs.
+  cp "$d/ok.tsv" "$d/memo.tsv"
+  for m in a b c; do printf '%s\t%s\t%s\t%s\n' "memo-$m" "shared verifier $m" "echo ran >> $d/memo-marker" "tree" >> "$d/memo.tsv"; done
+  printf '%s\t%s\t%s\t%s\n' "memo-d" "a different verifier" "echo ran >> $d/memo-marker-d" "tree" >> "$d/memo.tsv"
+  mout=$(run_registry "$d/memo.tsv" 2>&1) || { echo "FAIL: selftest — the memo fixture registry was rejected"; sfail=1; }
+  [ "$(wc -l < "$d/memo-marker" 2>/dev/null | tr -d ' ')" = 1 ] || { echo "FAIL: selftest — a verifier shared by three rows did not run exactly once"; sfail=1; }
+  [ "$(wc -l < "$d/memo-marker-d" 2>/dev/null | tr -d ' ')" = 1 ] || { echo "FAIL: selftest — a row with a different verifier string did not run"; sfail=1; }
+  [ "$(printf '%s\n' "$mout" | grep -c '^PASS: memo-')" = 4 ] || { echo "FAIL: selftest — a memoised row did not print its own PASS line under its own id"; sfail=1; }
+  cp "$d/ok.tsv" "$d/memof.tsv"
+  for m in x y z; do printf '%s\t%s\t%s\t%s\n' "memo-$m" "shared failing verifier $m" "echo ran >> $d/memo-marker-f; echo shared-diag; exit 1" "tree" >> "$d/memof.tsv"; done
+  fout=$(run_registry "$d/memof.tsv" 2>&1) && { echo "FAIL: selftest — a shared failing verifier did not fail the registry"; sfail=1; } || true
+  [ "$(wc -l < "$d/memo-marker-f" 2>/dev/null | tr -d ' ')" = 1 ] || { echo "FAIL: selftest — a shared failing verifier did not run exactly once"; sfail=1; }
+  [ "$(printf '%s\n' "$fout" | grep -c '^FAIL: memo-')" = 3 ] || { echo "FAIL: selftest — a memoised failing verifier did not print a FAIL line on each row it covers"; sfail=1; }
+  [ "$(printf '%s\n' "$fout" | grep -c '^    | shared-diag$')" = 3 ] || { echo "FAIL: selftest — a memoised failure's diagnostic was not printed on each row it covers"; sfail=1; }
+  [ "$sfail" -ne 0 ] || echo "PASS: selftest — a repeated verifier runs once, and every row it covers keeps its own verdict and diagnostics"
   if [ "$sfail" -eq 0 ]; then echo "OK: claims-registry selftest"; exit 0; else echo "FAIL: claims-registry selftest"; exit 1; fi
 fi
 

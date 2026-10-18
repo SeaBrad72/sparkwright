@@ -22,7 +22,9 @@
 #   exit 1  — a GATING dimension FAILs, or UNVERIFIED when --require/CI
 #   exit 0  — PASS or WARN (git advisory warnings do not cause exit 1)
 #
-# Usage: sh scripts/doctor.sh [--require] [--full] | --as agent | --selftest
+# Usage: sh scripts/doctor.sh [--require] [--full] [--quick] | --as agent | --selftest
+#   --quick     skip conformance and claims (both read UNVERIFIED, never a pass; Overall is WARN, or FAIL under --require/CI); refused with --full and --as agent.
+#   Progress: stderr only ("doctor [k/N] ...", "row i/T ...", an upfront estimate); stdout is unchanged. See docs/operations/doctor.md.
 #   --as agent  the forge-identity check ONLY (SWAS-124): exit 1 when the login gh resolves holds admin or maintain on origin's
 #               repo, or when that cannot be read (fail-closed) or gh is missing; 0 on push; 2 on a usage error or when the check cannot
 #               be run (no forge adapter, a push URL naming another repo, a 403 App/CI token: UNVERIFIED, never 1). The default run adds one advisory `forge identity:` line, never a verdict; for an admin or maintain login that line adds one warn only where a ratification seat is declared in .kit/ratification-seats.conf, and is an INFO line (no warn) otherwise.
@@ -35,6 +37,10 @@
 # Forge identity (SWAS-124): a default run makes two `gh api` reads (user, then the repository's permissions) and `--as agent` a third
 # (`-i user`, for the token-expiry header), to github.com only (host-gated on origin's literal host, so an SSH host alias reports no
 # adapter), sending gh's credential. Doctor sets no timeout of its own on them; gh's own network timeouts apply.
+# Merge relationship and branch protection (SWAS-207b): two more INFO-only reads. The default run reads `.kit/dials.conf` and `CLAUDE.md`
+# from origin's default branch with git (`ls-remote` against origin, no forge call and no credential beyond git's own) to print the
+# `merge relationship:` lines, and makes two more `gh api` reads (the default branch, then its protection) for the `branch protection:`
+# line. None of the three lines warns, fails or changes the exit code.
 # Guardrails: exit 1 when a GATING dimension FAILs or is UNVERIFIED under --require/CI; the git dimension is advisory (WARN-only, never hard-fails alone).
 set -eu
 cd "$(dirname "$0")/.."
@@ -591,6 +597,19 @@ case "$1 $2" in
     [ ! -s "$d/fexp" ] || printf 'Github-Authentication-Token-Expiration: %s\r\n' "$(cat "$d/fexp")"
     printf '\r\n{"login":"agent-fixture"}\n' ;;
   "api repos/"*)
+    case "$2" in
+      */protection)
+        # SWAS-207b: the branch-protection read. fprot picks the answer (default 200); the 403 cases print GitHub's own words
+        case "$(cat "$d/fprot" 2>/dev/null)" in
+          upgrade) echo "gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)" >&2; exit 1 ;;
+          notfound) echo "gh: Branch not protected (HTTP 404)" >&2; exit 1 ;;
+          plain403) echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1 ;;
+          *) echo '{"url":"fixture"}'; exit 0 ;;
+        esac ;;
+    esac
+    case "$*" in
+      *default_branch*) echo main; exit 0 ;;
+    esac
     case "$mode" in
       admin) echo '{"admin":true,"maintain":true,"push":true,"triage":true,"pull":true}' ;;
       maintain) echo '{"admin":false,"maintain":true,"push":true,"triage":true,"pull":true}' ;;
@@ -607,7 +626,7 @@ FSTUB
   printf '# fixture: a declared ratification seat\nSEAT=seat-role\n' > "$_fgd/seat.conf"
   printf '# fixture: no seat declared\n' > "$_fgd/noseat.conf"
   _fg_run() {  # <mode> <origin> [flags]: one run through the REAL body with the stand-in; output in _o, rc in _frc (no subshell)
-    : > "$_fgd/flog"; printf '%s' "$1" > "$_fgd/fmode"
+    : > "$_fgd/flog"; printf '%s' "$1" > "$_fgd/fmode"; printf '%s' "${_fg_pr:-200}" > "$_fgd/fprot"
     _frc=0
     # shellcheck disable=SC2086  # deliberate word-split of the flags
     # ORDER MATTERS: the three empty token assignments come LAST, just before the command word. secret-scan's generic-api-key rule
@@ -615,6 +634,7 @@ FSTUB
     _o=$(DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true DOCTOR_KITCURRENT_CMD=true \
       DOCTOR_FORGE_CMD="sh $_fgd/fstub" DOCTOR_FORGE_ORIGIN="$2" DOCTOR_FORGE_TODAY=2026-10-12 \
       DOCTOR_FORGE_PUSHURL="${_fg_pu:-}" DOCTOR_FORGE_HELPER="${_fg_hp:-}" DOCTOR_FORGE_SEATCONF="${_fg_sc:-$_fgd/seat.conf}" \
+      DOCTOR_FORGE_DIALS="${_fg_dl:-}" DOCTOR_FORGE_GOV="${_fg_gv:-}" \
       GH_TOKEN='' GITHUB_TOKEN='' GITHUB_PERSONAL_ACCESS_TOKEN='' \
       sh "$0" --selftest-e2e ${3:-} 2>&1) || _frc=$?
   }
@@ -714,6 +734,90 @@ FSTUB
     || { echo "doctor --selftest: FAIL (forge: an SSH origin did not render the SSH advisory)"; sfail=1; }
   printf '%s\n' "$_o" | grep -qxF 'forge identity: agent-fixture (User) — push on acme/widgets' \
     || { echo "doctor --selftest: FAIL (forge: an scp-style SSH origin did not resolve to acme/widgets)"; sfail=1; }
+
+  # — SWAS-207b: the merge relationship, the declaration agreement and the branch-protection line. All three are INFO: they never
+  #   warn, never fail and never change the exit code. DOCTOR_FORGE_DIALS / DOCTOR_FORGE_GOV name fixture files standing in for
+  #   .kit/dials.conf and CLAUDE.md on origin's default branch (seam only); a real run reads origin's tip with git (real-path leg below).
+  printf 'KIT_PUSH_DECL=enforce\nMERGE_RELATIONSHIP=solo\n' > "$_fgd/dial-solo"
+  printf 'MERGE_RELATIONSHIP=team\n' > "$_fgd/dial-team"
+  printf 'KIT_PUSH_DECL=enforce\n' > "$_fgd/dial-none"
+  printf -- '- **Governance** (§ solo/team): team — non-author approval\n' > "$_fgd/gov-team"
+  printf -- '- **Governance** (§ solo/team): solo — the human admin-merges\n' > "$_fgd/gov-solo"
+  _rel_expect() {  # <label> <dial-fixture|''> <gov-fixture|''> <exact line> [absent-needle]
+    _fg_dl="$2"; _fg_gv="$3"; _fg_run push "$_gh_o"; _fg_dl=''; _fg_gv=''
+    printf '%s\n' "$_o" | grep -qxF "$4" \
+      || { echo "doctor --selftest: FAIL ($1: the exact line is missing: $4)"; sfail=1; }
+    [ -z "${5:-}" ] || ! printf '%s\n' "$_o" | grep -qF "$5" \
+      || { echo "doctor --selftest: FAIL ($1: a line that must NOT appear did: $5)"; sfail=1; }
+  }
+  _rel_expect rel-solo "$_fgd/dial-solo" '' 'merge relationship: solo — the owner'"'"'s recorded GO, bound to the head sha, is the merge control for every class'
+  _rel_expect rel-team "$_fgd/dial-team" '' 'merge relationship: team — a non-author forge approval plus the owner'"'"'s recorded GO'
+  _rel_expect rel-undeclared "$_fgd/dial-none" '' 'merge relationship: undeclared — reads team; one forge account? declare MERGE_RELATIONSHIP=solo in .kit/dials.conf, record your GO on that PR (promotion-verify.sh record), then merge it yourself (docs/adoption/vc-hosts.md)'
+  _rel_expect rel-disagree "$_fgd/dial-solo" "$_fgd/gov-team" 'merge relationship: CLAUDE.md says Governance: team, .kit/dials.conf says solo — reads team' 'merge relationship: solo'
+  # a Governance `solo` alone grants nothing and is NOT a disagreement (incept stamps it by default): undeclared, no disagreement line
+  _rel_expect rel-gov-solo-alone "$_fgd/dial-none" "$_fgd/gov-solo" 'merge relationship: undeclared — reads team; one forge account? declare MERGE_RELATIONSHIP=solo in .kit/dials.conf, record your GO on that PR (promotion-verify.sh record), then merge it yourself (docs/adoption/vc-hosts.md)' 'CLAUDE.md says'
+  # an unreadable declaration says so (the seam names nothing) and reads team in the verbs
+  _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'merge relationship: unknown' \
+    || { echo "doctor --selftest: FAIL (rel-unreadable: an unreadable declaration did not say so)"; sfail=1; }
+  # branch protection: 200 -> enforced; each 403/404 by its TEXT; the exit code is the push login's in every case (LOAD-BEARING)
+  _fg_pr=200; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'branch protection: enforced on main' \
+    || { echo "doctor --selftest: FAIL (prot-200: a 200 did not render 'enforced on main')"; sfail=1; }
+  [ "$_frc" = "$_push_rc" ] || { echo "doctor --selftest: FAIL (prot-200: the protection line changed the exit to $_frc)"; sfail=1; }
+  _fg_pr=upgrade; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'branch protection: unprotected: convention tier — this plan cannot enforce protection on a private repository (a public repository or a paid plan can)' \
+    || { echo "doctor --selftest: FAIL (prot-upgrade: the upgrade-text 403 did not render unprotected: convention tier)"; sfail=1; }
+  [ "$_frc" = "$_push_rc" ] \
+    || { echo "doctor --selftest: FAIL (prot-upgrade: the upgrade-text 403 changed doctor's exit from $_push_rc to $_frc - the line must stay INFO)"; sfail=1; }
+  printf '%s\n' "$_o" | grep -qxF 'SELFTEST forge warn counted: 0' \
+    || { echo "doctor --selftest: FAIL (prot-upgrade: the unprotected line counted a warn)"; sfail=1; }
+  _fg_pr=notfound; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF 'branch protection: unprotected: convention tier — no protection rule on main' \
+    || { echo "doctor --selftest: FAIL (prot-404: 'Branch not protected' did not render the no-rule reason)"; sfail=1; }
+  # matched on the TEXT, never on rc alone: a 403 that is NOT the upgrade message must not read as unprotected
+  _fg_pr=plain403; _fg_run push "$_gh_o"
+  printf '%s\n' "$_o" | grep -qF 'unprotected' \
+    && { echo "doctor --selftest: FAIL (prot-plain403: a 403 without the upgrade text read as unprotected - rc alone is not the signal)"; sfail=1; } || true
+  printf '%s\n' "$_o" | grep -qxF 'branch protection: not readable — the read failed (not the plan-upgrade answer and not a missing rule)' \
+    || { echo "doctor --selftest: FAIL (prot-plain403: a plain 403 did not render 'not readable')"; sfail=1; }
+  _fg_pr=200
+  # N/A states reuse the identity states: a non-GitHub origin is never asked, and CI's 403 is N/A for the protection line too
+  _fg_run push 'https://gitlab.example.com/acme/widgets.git'
+  printf '%s\n' "$_o" | grep -qxF 'branch protection: N/A — no forge adapter for gitlab.example.com' \
+    || { echo "doctor --selftest: FAIL (prot-nohost: a non-GitHub origin did not render N/A naming the missing adapter)"; sfail=1; }
+  [ ! -s "$_fgd/flog" ] || { echo "doctor --selftest: FAIL (prot-nohost: the forge was asked about a non-GitHub origin)"; sfail=1; }
+  _fg_run ci "$_gh_o"
+  printf '%s\n' "$_o" | grep -qxF "branch protection: N/A — this credential cannot read its own identity (HTTP 403, as under CI's GITHUB_TOKEN)" \
+    || { echo "doctor --selftest: FAIL (prot-ci: CI's 403 did not render N/A for the protection line)"; sfail=1; }
+  # REAL-PATH leg: a real run (no seam) reads origin's DEFAULT BRANCH with git — a solo declaration on origin's main renders the solo line
+  _rd=$(mktemp -d); _rdo=$(mktemp -d); _rdh=$(mktemp -d)
+  mkdir -p "$_rd/scripts"; cp "$0" "$_rd/scripts/doctor.sh"
+  git init -q --bare "$_rdo"
+  git init -q "$_rd"
+  git -C "$_rd" config user.email doc@example.com; git -C "$_rd" config user.name doc
+  _rd_b=$(printf 'MERGE_RELATIONSHIP=solo\n' | git -C "$_rd" hash-object -w --stdin)
+  _rd_s=$(printf '100644 blob %s\tdials.conf\n' "$_rd_b" | git -C "$_rd" mktree)
+  _rd_t=$(printf '040000 tree %s\t.kit\n' "$_rd_s" | git -C "$_rd" mktree)
+  _rd_c=$(git -C "$_rd" commit-tree "$_rd_t" -m base)
+  git -C "$_rd" remote add origin "$_rdo"
+  git -C "$_rd" push -q origin "$_rd_c:refs/heads/main" 2>/dev/null || true
+  _o=$(HOME="$_rdh" sh "$_rd/scripts/doctor.sh" 2>&1) || true
+  printf '%s\n' "$_o" | grep -qxF 'merge relationship: solo — the owner'"'"'s recorded GO, bound to the head sha, is the merge control for every class' \
+    || { echo "doctor --selftest: FAIL (rel-real: a real run did not read origin's default branch and render the solo line)"; sfail=1; }
+  # ...and a dials.conf that is a SYMLINK entry (mode 120000; its blob text is the link target, here a solo line) is NOT read: the
+  # verbs read team for it, so doctor must never print solo. Red against a plain `git show` read, which prints the target text.
+  _rd_b2=$(printf 'MERGE_RELATIONSHIP=solo' | git -C "$_rd" hash-object -w --stdin)
+  _rd_s2=$(printf '120000 blob %s\tdials.conf\n' "$_rd_b2" | git -C "$_rd" mktree)
+  _rd_t2=$(printf '040000 tree %s\t.kit\n' "$_rd_s2" | git -C "$_rd" mktree)
+  _rd_c2=$(git -C "$_rd" commit-tree "$_rd_t2" -m linkbase)
+  git -C "$_rd" push -q -f origin "$_rd_c2:refs/heads/main" 2>/dev/null || true
+  _o=$(HOME="$_rdh" sh "$_rd/scripts/doctor.sh" 2>&1) || true
+  printf '%s\n' "$_o" | grep -qF 'merge relationship: solo' \
+    && { echo "doctor --selftest: FAIL (rel-real-symlink: a symlinked dials.conf on origin printed solo; the verbs read team for it)"; sfail=1; } || true
+  printf '%s\n' "$_o" | grep -qF 'merge relationship: unknown' \
+    || { echo "doctor --selftest: FAIL (rel-real-symlink: a symlinked dials.conf did not read as unknown)"; sfail=1; }
+  rm -rf "$_rd" "$_rdo" "$_rdh" 2>/dev/null || true
 
   # --as agent: the gate
   _fg_run admin "$_gh_o" '--as agent'
@@ -861,17 +965,201 @@ https://github.com/acme/other.git"; do
     || { echo "doctor --selftest: FAIL (the ambient forge-seam leg never reached the real gh path: vacuous)"; sfail=1; }
   rm -rf "$_fd" "$_fh" "$_fm" "$_fb" "$_fgd" 2>/dev/null || true
 
+  # — SWAS-201: step progress, the status-file verdict and --quick. Isolated copies on the REAL path (no seam flag) with stub
+  #   verify.sh and claims-registry.sh files. THIS SELFTEST RUNS UNDER CI, which forces REQUIRE=1, so every leg that asserts the
+  #   not-required behaviour runs its child as `env -u CI -u GITHUB_ACTIONS`, and each required-mode leg sets CI=1 or passes
+  #   --require itself. No row count is hard-coded: R is read back from the stub the leg wrote.
+  _pq_nci='env -u CI -u GITHUB_ACTIONS'
+  _pq_pfx=$_pq_nci
+  _pq_fail() { echo "doctor --selftest: FAIL ($1)"; sfail=1; }
+  _pq_stub() {  # <file> <check lines> <printed rows> <closing command>: a verify.sh that prints result rows like the real one
+    {
+      printf ": <<'ROWS'\n"
+      _pq_i=1; while [ "$_pq_i" -le "$2" ]; do printf 'check r%d\n' "$_pq_i"; _pq_i=$((_pq_i+1)); done
+      printf 'ROWS\n'
+      printf 'i=1\nwhile [ "$i" -le %s ]; do printf "  %%-9s %%-18s %%s\\n" "[control]" "r$i" PASS; i=$((i+1)); done\n' "$3"
+      printf '%s\n' "$4"
+    } > "$1"
+  }
+  _pq_tree() {  # <kit-marked 0|1> <printed rows> <verify closing cmd> [claims closing cmd]: a fresh tree, echoed
+    _pq_d=$(mktemp -d); mkdir -p "$_pq_d/scripts" "$_pq_d/conformance" "$_pq_d/docs"; cp "$0" "$_pq_d/scripts/doctor.sh"
+    [ "$1" != 1 ] || : > "$_pq_d/docs/ROADMAP-KIT.md"
+    _pq_stub "$_pq_d/conformance/verify.sh" 3 "$2" "touch \"$_pq_d/verify-ran\"; $3"
+    printf 'touch "%s/claims-ran"\n%s\n' "$_pq_d" "${4:-exit 0}" > "$_pq_d/conformance/claims-registry.sh"
+    printf 'exit 0\n' > "$_pq_d/conformance/non-vacuity.sh"
+    echo "$_pq_d"
+  }
+  _pq_run() {  # <tree> <doctor args...>: sets _pq_out (stdout), _pq_err (stderr), _pq_rc
+    _pq_t=$1; shift; _pq_rc=0
+    if [ "${_pq_ign:-0}" = 1 ]; then
+      # an INT-IGNORED launcher (what any background job gives its children): doctor, the battery and every stub inherit it, and a
+      # signal ignored on entry cannot be reset, so a stub that interrupts itself with INT is a no-op here
+      # shellcheck disable=SC2086  # deliberate word-split of the env prefix
+      _pq_out=$(cd "$_pq_t" && HOME="$_pq_t" GIT_CEILING_DIRECTORIES="$_pq_t" $_pq_pfx sh -c 'trap "" INT; exec sh "$@"' _ "$_pq_t/scripts/doctor.sh" "$@" 2>"$_pq_t/err") || _pq_rc=$?
+    else
+      # shellcheck disable=SC2086  # deliberate word-split of the env prefix
+      _pq_out=$(cd "$_pq_t" && HOME="$_pq_t" GIT_CEILING_DIRECTORIES="$_pq_t" $_pq_pfx sh "$_pq_t/scripts/doctor.sh" "$@" 2>"$_pq_t/err") || _pq_rc=$?
+    fi
+    _pq_err=$(cat "$_pq_t/err")
+  }
+  _pq_total() {  # the N announced on the estimate line of an stderr transcript
+    printf '%s\n' "$1" | sed -n 's/^doctor: \(--quick: \)\{0,1\}\([0-9][0-9]*\) steps;.*/\2/p' | head -1
+  }
+  _pq_reach() {  # <label> <stderr>: the last [k/N] has k = N (a normal exit never ends short of the count)
+    _pq_kn=$(printf '%s\n' "$2" | sed -n 's/^doctor \[\([0-9][0-9]*\)\/\([0-9][0-9]*\)\].*/\1 \2/p' | tail -1)
+    [ -n "$_pq_kn" ] && [ "${_pq_kn% *}" = "${_pq_kn#* }" ] \
+      || _pq_fail "C2: $1: the last progress line is [$_pq_kn], not k = N"
+  }
+
+  # C1: a progress line per step, a row line per verify result row, none on stdout
+  _pq_a=$(_pq_tree 1 3 'exit 0'); _pq_run "$_pq_a"
+  _pq_r=$(grep -c '^check ' "$_pq_a/conformance/verify.sh")
+  _pq_n=$(_pq_total "$_pq_err")
+  if [ -z "$_pq_n" ]; then _pq_fail "C1: no 'doctor: N steps;' estimate line on stderr"; _pq_n=0; fi
+  _pq_k=1
+  while [ "$_pq_k" -le "$_pq_n" ]; do
+    printf '%s\n' "$_pq_err" | grep -qE "^doctor \[$_pq_k/$_pq_n\] done in " \
+      || _pq_fail "C1: step $_pq_k of $_pq_n has no 'done in' line"
+    _pq_k=$((_pq_k+1))
+  done
+  _pq_i=1
+  while [ "$_pq_i" -le "$_pq_r" ]; do
+    printf '%s\n' "$_pq_err" | grep -qE "^doctor \[1/$_pq_n\]   row $_pq_i/$_pq_r r$_pq_i PASS \(" \
+      || _pq_fail "C1: verify row $_pq_i of $_pq_r was not relayed as a 'row i/R name STATUS' line"
+    _pq_i=$((_pq_i+1))
+  done
+  printf '%s\n' "$_pq_out" | grep -qF 'doctor [' && _pq_fail "C1: a progress line leaked onto stdout" || true
+  printf '%s\n' "$_pq_err" | grep -qE '^doctor: finished in ' || _pq_fail "C1: no 'doctor: finished in' line"
+
+  # C2: the count is honest (default, an unmarked tree, --full, a tree with a tracker.conf)
+  _pq_reach "default" "$_pq_err"
+  _pq_run "$(_pq_tree 0 3 'exit 0')"; _pq_reach "unmarked tree" "$_pq_err"
+  [ "$(_pq_total "$_pq_err")" = "$_pq_n" ] || _pq_fail "C2: an unmarked tree counted a different N (its skipped claims step is still a step)"
+  _pq_run "$_pq_a" --full; _pq_reach "--full" "$_pq_err"
+  [ "$(_pq_total "$_pq_err")" = "$((_pq_n+4))" ] || _pq_fail "C2: --full did not add its four metric steps to N"
+  _pq_tk=$(_pq_tree 1 3 'exit 0'); mkdir -p "$_pq_tk/.kit"
+  printf 'version=1\nbackend=jira\nbase_url=https://ex.atlassian.net\nproject=AB\n' > "$_pq_tk/.kit/tracker.conf"
+  cp scripts/tracker-cred.sh scripts/tracker-conf.sh "$_pq_tk/scripts/"
+  printf 'exit 2\n' > "$_pq_tk/scripts/tracker-jira.sh"
+  _pq_pfx="$_pq_nci KIT_TRACKER_USER=env-user@example.com KIT_TRACKER_TOKEN=env-token"
+  _pq_run "$_pq_tk"; _pq_reach "tracker.conf" "$_pq_err"
+  [ "$(_pq_total "$_pq_err")" = "$((_pq_n+1))" ] || _pq_fail "C2: a tree with a tracker.conf did not add the tracker credential step to N"
+  _pq_pfx=$_pq_nci
+
+  # C3: --quick skips exactly the two named steps and says so; C4: it is never a PASS
+  _pq_b=$(_pq_tree 1 3 'exit 0' 'exit 1'); _pq_run "$_pq_b" --quick
+  { [ ! -e "$_pq_b/verify-ran" ] && [ ! -e "$_pq_b/claims-ran" ]; } || _pq_fail "C3: --quick RAN a skipped step (a sentinel was touched)"
+  printf '%s\n' "$_pq_out" | grep -qE '^  conformance +UNVERIFIED \(skipped by --quick' || _pq_fail "C3: --quick did not render conformance UNVERIFIED (skipped by --quick"
+  printf '%s\n' "$_pq_out" | grep -qE '^  claims +UNVERIFIED \(skipped by --quick' || _pq_fail "C3: --quick did not render claims UNVERIFIED (skipped by --quick"
+  for _pq_row in git kit-update permissions; do
+    printf '%s\n' "$_pq_out" | grep -qE "^  $_pq_row +" || _pq_fail "C3: --quick dropped the advisory row $_pq_row"
+  done
+  printf '%s\n' "$_pq_err" | grep -qE '^doctor: --quick: [0-9]+ steps; estimate under 1 min.*NOT run' \
+    || _pq_fail "C3: --quick printed no estimate line of its own"
+  _pq_reach "--quick" "$_pq_err"
+  [ "$_pq_rc" = 0 ] || _pq_fail "C5: --quick (not required) exited $_pq_rc, expected 0"
+  printf '%s\n' "$_pq_out" | grep -qF 'Overall: WARN  (--quick: conformance and claims were NOT run; this is not a pass. Run doctor without --quick for the verdict)' \
+    || _pq_fail "C4: --quick (not required) did not end with the Overall: WARN (--quick: ...) wording"
+  printf '%s\n' "$_pq_out" | grep -q '^Overall: PASS' && _pq_fail "C4: --quick read as Overall: PASS (a skipped gate is never a pass)" || true
+  _pq_u=$(_pq_tree 0 3 'exit 0' 'exit 1'); _pq_run "$_pq_u" --quick
+  printf '%s\n' "$_pq_out" | grep -qE '^  claims +N/A \(kit-self' || _pq_fail "C3: --quick on an unmarked tree did not keep claims N/A (kit-self (SWAS-199 precedence)"
+  printf '%s\n' "$_pq_out" | grep -qE '^  conformance +UNVERIFIED \(skipped by --quick' || _pq_fail "C3: --quick on an unmarked tree did not render conformance UNVERIFIED"
+
+  # C5: exit codes and wording
+  _pq_run "$_pq_a"; [ "$_pq_rc" = 0 ] || _pq_fail "C5: a default all-pass run exited $_pq_rc, expected 0"
+  _pq_run "$(_pq_tree 1 3 'exit 1')"; [ "$_pq_rc" = 1 ] || _pq_fail "C5: a default verify-FAIL run exited $_pq_rc, expected 1"
+  _pq_run "$_pq_b" --quick --require
+  [ "$_pq_rc" = 1 ] || _pq_fail "C5: --quick --require exited $_pq_rc, expected 1"
+  printf '%s\n' "$_pq_out" | grep -qF -e '--quick under --require/CI' || _pq_fail "C5: --quick --require did not show the required-mode FAIL text"
+  printf '%s\n' "$_pq_out" | grep -qF 'a gating dimension failed' && _pq_fail "C5: --quick --require claimed a gating dimension FAILED (it was skipped)" || true
+  # an unmarked tree (claims N/A) leaves the skipped conformance row as the only gate: it must still carry the exit
+  _pq_run "$_pq_u" --quick --require
+  [ "$_pq_rc" = 1 ] || _pq_fail "C5: --quick --require on an unmarked tree exited $_pq_rc, expected 1 (the skipped conformance row must gate)"
+  _pq_pfx='env CI=1'; _pq_run "$_pq_b" --quick
+  [ "$_pq_rc" = 1 ] || _pq_fail "C5: CI=1 --quick exited $_pq_rc, expected 1"
+  printf '%s\n' "$_pq_out" | grep -qF -e '--quick under --require/CI' || _pq_fail "C5: CI=1 --quick did not show the required-mode FAIL text"
+  printf '%s\n' "$_pq_out" | grep -qF 'a gating dimension failed' && _pq_fail "C5: CI=1 --quick claimed a gating dimension FAILED" || true
+  _pq_pfx=$_pq_nci
+  for _pq_combo in '--quick --full' '--full --quick' '--quick --as agent' '--as agent --quick'; do
+    # shellcheck disable=SC2086  # deliberate word-split of the flag pair
+    _pq_run "$_pq_b" $_pq_combo
+    [ "$_pq_rc" = 2 ] || _pq_fail "C5: 'doctor $_pq_combo' exited $_pq_rc, expected 2 (usage)"
+  done
+
+  # C6: stdout is unchanged. The golden below is the stdout of the pre-change script on the same stub tree.
+  _pq_gold=$(cat <<'GOLD'
+sparkwright doctor
+------------------
+branch: unknown  sha: unknown  VERSION: unknown  latest-tag:
+
+POSTURE
+-------
+  conformance    PASS
+  claims         PASS
+  git            WARN  [branch=unknown; clean; WARN: vunknown untagged/unreleased]
+  kit-update     N/A   [N/A — conformance/kit-current.sh is not present in this tree.]
+  permissions    N/A   [the sanctioned enumeration (sanctioned-commands.tsv) is not present]
+forge identity: N/A — no origin remote
+merge relationship: N/A — no origin remote
+branch protection: N/A — no origin remote
+
+Overall: WARN  (review above — gating dimension(s) unverified or git advisory warnings present)
+
+Note: doctor automates the mechanizable drift axes (D claim-integrity, E git ground-truth
+from docs/operations/drift-self-check.md) but does NOT detect semantic drift (intent,
+scope, or overclaim) — that remains an agent/human judgment check.
+GOLD
+)
+  _pq_run "$_pq_a"
+  # trailing blanks are stripped on both sides: the header's `latest-tag:` line ends in a space an editor may drop from the golden
+  [ "$(printf '%s\n' "$_pq_out" | sed 's/[[:space:]]*$//')" = "$(printf '%s\n' "$_pq_gold" | sed 's/[[:space:]]*$//')" ] \
+    || _pq_fail "C6: the stdout of a default run changed (progress must be stderr only)"
+
+  # C7: a seam run stays silent
+  _pq_seam=$(cd "$_pq_a" && HOME="$_pq_a" GIT_CEILING_DIRECTORIES="$_pq_a" DOCTOR_VERIFY_CMD=true DOCTOR_CLAIMS_CMD=true sh "$_pq_a/scripts/doctor.sh" --selftest-e2e 2>&1 || true)
+  printf '%s\n' "$_pq_seam" | grep -qE -e '^doctor \[' -e '^doctor: .*steps;' -e '^doctor: finished' \
+    && _pq_fail "C7: a --selftest-e2e run printed a progress line" || true
+
+  # C8a: the verdict comes from verify's exit status, not from the rows it printed
+  _pq_run "$(_pq_tree 1 3 'exit 1')"
+  printf '%s\n' "$_pq_out" | grep -qE '^  conformance +FAIL$' || _pq_fail "C8a: a verify that printed PASS rows and exited 1 did not render conformance FAIL"
+  _pq_z=$(_pq_tree 1 0 'exit 0'); _pq_run "$_pq_z"
+  printf '%s\n' "$_pq_out" | grep -qE '^  conformance +PASS$' || _pq_fail "C8a: a silent verify that exited 0 did not render conformance PASS"
+  printf '%s\n' "$_pq_err" | grep -qE "^doctor \[1/[0-9]+\] done in .*\(row 0/$(grep -c '^check ' "$_pq_z/conformance/verify.sh") reported\)" \
+    || _pq_fail "C8a: a battery that reported no rows did not say 'row 0/R'"
+
+  # C8b (LOAD-BEARING NEGATIVE): an interrupted battery is never a PASS. Two distinct fail-closed paths, three stubs. The first two
+  # record a NON-ZERO status: one kills itself with SIGTERM (a real signal) and, if TERM is ignored, still exits 130; the other is
+  # a bare `exit 130`, independent of any signal disposition. The third kills its PARENT (the subshell that would have written the
+  # status) with TERM and then KILL (which cannot be ignored), so the status file stays EMPTY: only this leg tests the empty-status
+  # path (mutant: empty read as 0). All must FAIL. The whole set runs twice, the second time under an INT-IGNORED launcher (what any
+  # background job gives its children): an earlier version of this cell built its first stub from `kill -INT $$`, which is a NO-OP
+  # there, so the stub exited 0 and the cell rendered PASS (it failed open; reproduced on plain main d7b1ae27). The second pass
+  # pins that: a stub that depends on INT being deliverable reds it.
+  for _pq_ign in 0 1; do
+  for _pq_kill in 'kill -TERM $$; exit 130' 'exit 130' 'kill -TERM $PPID; kill -KILL $PPID; exit 0'; do
+    _pq_ik=$(_pq_tree 1 3 "$_pq_kill"); _pq_run "$_pq_ik"
+    printf '%s\n' "$_pq_out" | grep -qE '^  conformance +FAIL$' || _pq_fail "C8b: an interrupted battery ($_pq_kill; INT-ignored launcher=$_pq_ign) did not render conformance FAIL"
+    printf '%s\n' "$_pq_out" | grep -qE '^  conformance +PASS' && _pq_fail "C8b: an interrupted battery ($_pq_kill; INT-ignored launcher=$_pq_ign) rendered conformance PASS" || true
+    [ "$_pq_rc" = 1 ] || _pq_fail "C8b: an interrupted battery ($_pq_kill; INT-ignored launcher=$_pq_ign) exited $_pq_rc, expected 1"
+  done
+  done
+  _pq_ign=0
+  rm -rf "$_pq_a" "$_pq_b" "$_pq_u" "$_pq_tk" "$_pq_z" "$_pq_ik" 2>/dev/null || true
+
   [ "$sfail" -eq 0 ] && { echo "doctor --selftest: OK"; exit 0; } || exit 1
 fi
 
 REQUIRE=0
 FULL=0
+QUICK=0
 SEAMS=0
 [ -n "${CI:-}" ] && REQUIRE=1
 AS_ROLE=""
 AS_SET=0
 _doctor_usage() {
-  echo "usage: sparkwright doctor [--require] [--full] | --as agent" >&2
+  echo "usage: sparkwright doctor [--require] [--full] [--quick] | --as agent" >&2
+  echo "  --quick     skip the conformance battery and the claims registry (UNVERIFIED, never a pass); --quick is refused with --full and with --as agent" >&2
   echo "  --as agent  check ONLY the forge identity: exit 1 if this session's login holds admin or maintain (or cannot be read), 0 on push, 2 if unverifiable" >&2
   exit 2
 }
@@ -881,6 +1169,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --require) REQUIRE=1 ;;
     --full)    FULL=1    ;;
+    --quick)   QUICK=1   ;;
     # --selftest-e2e: INTERNAL. Turns the DOCTOR_*_CMD injection seams live so `--selftest`'s battery can
     # feed pass/fail fixtures through the REAL body. Deliberately absent from any usage line: the flag IS
     # the authorization. Mirrors preflight.sh's --selftest-e2e / PREFLIGHT_GIT_VERSION_CMD gating.
@@ -897,7 +1186,11 @@ if [ "$AS_SET" -eq 1 ]; then
   [ "$AS_ROLE" = agent ] || _doctor_usage
   # the identity check is the whole run: refuse flags that imply the full posture rather than ignore them silently
   [ "$FULL" -eq 0 ] || _doctor_usage
+  # ...and --quick: --as agent is a single-check mode with its own 0/1/2 contract and runs no posture dimension to skip
+  [ "$QUICK" -eq 0 ] || _doctor_usage
 fi
+# --quick skips the two slowest GATING steps; --full adds the slowest metric (non-vacuity). The two cannot be combined.
+[ "$QUICK" -eq 0 ] || [ "$FULL" -eq 0 ] || _doctor_usage
 
 # Variable-indirected gating + metrics commands — override in tests/selftest to inject pass/fail without
 # touching the real scripts. FLAG-NOT-ENV: the seams are honored ONLY when the internal --selftest-e2e
@@ -941,6 +1234,9 @@ if [ "$SEAMS" -eq 1 ]; then
   DOCTOR_FORGE_HELPER="${DOCTOR_FORGE_HELPER:-}"
   # the ratification-seat declaration the forge line reads; under the seam a fixture conf stands in
   DOCTOR_FORGE_SEATCONF="${DOCTOR_FORGE_SEATCONF:-.kit/ratification-seats.conf}"
+  # SWAS-207b: fixture FILES standing in for .kit/dials.conf and CLAUDE.md as origin's default branch holds them (empty = unreadable).
+  DOCTOR_FORGE_DIALS="${DOCTOR_FORGE_DIALS:-}"
+  DOCTOR_FORGE_GOV="${DOCTOR_FORGE_GOV:-}"
 else
   DOCTOR_VERIFY_CMD=""
   DOCTOR_CLAIMS_CMD=""
@@ -965,6 +1261,8 @@ else
   DOCTOR_FORGE_PUSHURL=""
   DOCTOR_FORGE_HELPER=""
   DOCTOR_FORGE_SEATCONF=".kit/ratification-seats.conf"
+  DOCTOR_FORGE_DIALS=""
+  DOCTOR_FORGE_GOV=""
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -1192,6 +1490,120 @@ _fg_expiry() {
     printf 'token expiry: %s (%s days) — WARN: renew the machine user'"'"'s token before it lapses (docs/operations/forge-identity-switch.md step 1)\n' "$_fx_date" "$_fx_n"
   fi
 }
+# — SWAS-207b (D-241014-1): the merge relationship, the declaration agreement and the branch-protection line. INFO ONLY: none of
+# these ever warns, fails or changes doctor's exit code. They report what `promotion-verify.sh actuate` and `land` will read, so they
+# read the same place the verbs do: .kit/dials.conf and CLAUDE.md on ORIGIN'S DEFAULT BRANCH (git, no forge call). Under the seam
+# (DOCTOR_FORGE_DIALS / DOCTOR_FORGE_GOV) a fixture file stands in for each. The grammar is the verbs' (pv_merge_relationship,
+# pv_rel_governance in scripts/promotion-verify.sh) and conformance/branch-protection.sh read_governance; KEEP THEM IN STEP.
+_fg_rel_blob() {  # <tip> <path>: the blob (regular files only); rc 0 printed | 1 absent | 2 present but not a regular file
+  _fb_ent=$(GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "$2" 2>/dev/null | head -1 || true)
+  if [ -z "$_fb_ent" ]; then
+    case "$2" in
+      */*)
+        _fb_d=$(GIT_NO_REPLACE_OBJECTS=1 git ls-tree --full-tree "$1" -- "${2%%/*}" 2>/dev/null | head -1 || true)
+        if [ -n "$_fb_d" ] && [ "${_fb_d%% *}" != 040000 ]; then return 2; fi ;;
+    esac
+    return 1
+  fi
+  case "${_fb_ent%% *}" in
+    100644|100755) ;;
+    *) return 2 ;;
+  esac
+  _fb_o=${_fb_ent#* }; _fb_o=${_fb_o#* }; _fb_o=${_fb_o%%"$(printf '\t')"*}
+  GIT_NO_REPLACE_OBJECTS=1 git cat-file blob "$_fb_o" 2>/dev/null
+}
+_fg_rel_read() {
+  FG_REL_READ=0; FG_REL_DIAL=undeclared; FG_REL_GOV=undeclared
+  if [ "$SEAMS" -eq 1 ]; then
+    [ -n "$DOCTOR_FORGE_DIALS$DOCTOR_FORGE_GOV" ] || return 0
+    _rr_dial=''; _rr_gov=''
+    [ -z "$DOCTOR_FORGE_DIALS" ] || _rr_dial=$(cat "$DOCTOR_FORGE_DIALS" 2>/dev/null || true)
+    [ -z "$DOCTOR_FORGE_GOV" ] || _rr_gov=$(cat "$DOCTOR_FORGE_GOV" 2>/dev/null || true)
+  else
+    git remote get-url origin >/dev/null 2>&1 || return 0
+    _rr_hd=$(GIT_TERMINAL_PROMPT=0 git ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)
+    case "$_rr_hd" in
+      refs/heads/?*) ;;
+      *) _rr_hd=refs/heads/main ;;
+    esac
+    case "$_rr_hd" in
+      *[!A-Za-z0-9._/-]*) _rr_hd=refs/heads/main ;;
+    esac
+    _rr_tip=$(GIT_TERMINAL_PROMPT=0 git ls-remote origin "$_rr_hd" 2>/dev/null | awk -v r="$_rr_hd" '$2 == r { s = $1; n++ } END { if (n == 1) print s }' || true)
+    [ -n "$_rr_tip" ] || return 0
+    GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${_rr_tip}^{commit}" 2>/dev/null || return 0
+    # Regular files only, and no replace refs (the verbs' pv_rel_blob): a symlinked .kit or dials.conf is NOT read, so doctor never
+    # prints solo where the verbs read team. An unreadable dial file is "unknown"; an unreadable CLAUDE.md reads Governance team.
+    _rr_rc=0; _rr_dial=$(_fg_rel_blob "$_rr_tip" .kit/dials.conf) || _rr_rc=$?
+    [ "$_rr_rc" -ne 2 ] || return 0
+    _rr_rc=0; _rr_gov=$(_fg_rel_blob "$_rr_tip" CLAUDE.md) || _rr_rc=$?
+    if [ "$_rr_rc" -ne 0 ] && [ "$_rr_rc" -ne 1 ]; then _rr_gov='- **Governance** (§ solo/team): team'; fi
+  fi
+  FG_REL_READ=1
+  _rr_v=$(printf '%s\n' "$_rr_dial" | grep -E '^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=' | tail -n1 | sed -E "s/^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//" || true)
+  case "$_rr_v" in
+    solo|team) FG_REL_DIAL=$_rr_v ;;
+  esac
+  _rr_gn=$(printf '%s\n' "$_rr_gov" | grep -c -e '^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team):' || true)
+  if [ "${_rr_gn:-0}" -ge 1 ]; then
+    _rr_gv=$(printf '%s\n' "$_rr_gov" | sed -n 's#^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team): \([^[:space:]]*\).*$#\1#p')
+    if printf '%s\n' "$_rr_gv" | grep -qx team; then
+      FG_REL_GOV=team
+    elif [ "$_rr_gn" = 1 ] && [ "$_rr_gv" = solo ]; then
+      FG_REL_GOV=solo
+    fi
+  fi
+}
+_fg_rel_lines() {
+  if [ "$FG_STATE" = noorigin ]; then printf 'merge relationship: N/A — no origin remote\n'; return 0; fi
+  _fg_rel_read
+  if [ "$FG_REL_READ" -ne 1 ]; then
+    printf "merge relationship: unknown — could not read .kit/dials.conf on origin's default branch (git fetch origin); the verbs read team until then\n"
+    return 0
+  fi
+  case "$FG_REL_DIAL:$FG_REL_GOV" in
+    solo:team)
+      printf 'merge relationship: CLAUDE.md says Governance: team, .kit/dials.conf says solo — reads team\n' ;;
+    team:solo)
+      printf 'merge relationship: CLAUDE.md says Governance: solo, .kit/dials.conf says team — reads team\n' ;;
+    solo:*)
+      printf "merge relationship: solo — the owner's recorded GO, bound to the head sha, is the merge control for every class\n" ;;
+    team:*)
+      printf "merge relationship: team — a non-author forge approval plus the owner's recorded GO\n" ;;
+    *)
+      printf 'merge relationship: undeclared — reads team; one forge account? declare MERGE_RELATIONSHIP=solo in .kit/dials.conf, record your GO on that PR (promotion-verify.sh record), then merge it yourself (docs/adoption/vc-hosts.md)\n' ;;
+  esac
+}
+# _fg_prot_line: `branch protection: enforced on <branch>` or `unprotected: convention tier — <reason>`. The reason is matched on GitHub's
+# own RESPONSE TEXT, never on the rc alone (the K8 rule, scripts/branch-protection-apply.sh): a 403 that is not the plan-upgrade
+# answer must never read as "unprotected". If GitHub rewords the message this degrades to "not readable", never to a false claim.
+_fg_prot_line() {
+  case "$FG_STATE" in
+    noorigin) printf 'branch protection: N/A — no origin remote\n'; return 0 ;;
+    nohost) printf 'branch protection: N/A — no forge adapter for %s\n' "$FG_HOST"; return 0 ;;
+    nogh) printf 'branch protection: N/A — gh is not installed\n'; return 0 ;;
+    ci) printf "branch protection: N/A — this credential cannot read its own identity (HTTP 403, as under CI's GITHUB_TOKEN)\n"; return 0 ;;
+    ok|unreadable) ;;
+    *) printf 'branch protection: not readable — the forge identity could not be read\n'; return 0 ;;
+  esac
+  _fp_d=$(mktemp -d 2>/dev/null) || { printf 'branch protection: not readable — no scratch space\n'; return 0; }
+  _fp_b=$(_fg_gh api "repos/$FG_OWNER/$FG_REPO" --jq .default_branch 2>/dev/null) || _fp_b=''
+  case "$_fp_b" in
+    ''|*[!A-Za-z0-9._/-]*)
+      rm -rf "$_fp_d"; printf 'branch protection: not readable — the default branch could not be read\n'; return 0 ;;
+  esac
+  _fp_rc=0; _fg_gh api "repos/$FG_OWNER/$FG_REPO/branches/$_fp_b/protection" >/dev/null 2>"$_fp_d/err" || _fp_rc=$?
+  if [ "$_fp_rc" -eq 0 ]; then
+    printf 'branch protection: enforced on %s\n' "$_fp_b"
+  elif grep -q 'Upgrade to GitHub Pro' "$_fp_d/err" 2>/dev/null; then
+    printf 'branch protection: unprotected: convention tier — this plan cannot enforce protection on a private repository (a public repository or a paid plan can)\n'
+  elif grep -q 'Branch not protected' "$_fp_d/err" 2>/dev/null; then
+    printf 'branch protection: unprotected: convention tier — no protection rule on %s\n' "$_fp_b"
+  else
+    printf 'branch protection: not readable — the read failed (not the plan-upgrade answer and not a missing rule)\n'
+  fi
+  rm -rf "$_fp_d"
+}
 # --as agent: the identity check ONLY. 1 admin/maintain/lacks push/unreadable/unauthenticated/gh missing (fail-closed); 0 push;
 # 2 UNVERIFIED, never 1: no forge adapter for the host, no origin, a push URL naming another repository, or a token that cannot
 # read its own identity (403: an App installation or CI token, whose permissions are on the App's settings page).
@@ -1233,6 +1645,116 @@ fi
 
 gate_fail=0
 warns=0
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════
+# step progress (SWAS-201). One "doctor [k/N] <step> ..." line when a step starts and "doctor [k/N] done in <t>" when it ends, a
+# "row i/T name STATUS (elapsed)" line per result row of the conformance battery, and an upfront estimate. ALL of it is STDERR, so
+# stdout stays byte-identical, and only a real run prints it (a --selftest-e2e run stays silent, which keeps the e2e greps
+# meaningful). N is counted from the same predicates the dimensions use, so [k/N] ends at k = N on a normal exit.
+# ═══════════════════════════════════════════════════════════════════════════════════════════════════
+PROGRESS=0
+[ "$SEAMS" -ne 0 ] || PROGRESS=1
+PG_K=0
+PG_N=0
+PG_T0=0
+PG_START=$(date +%s)
+_pg_fmt() {  # <seconds>: 41s, or 14m02s from one minute on
+  if [ "$1" -ge 60 ]; then printf '%dm%02ds' "$(($1 / 60))" "$(($1 % 60))"; else printf '%ds' "$1"; fi
+}
+_pg_since() {  # <start epoch>: the time elapsed since then, formatted (computed in steps, no nested substitution)
+  _pg_now=$(date +%s)
+  _pg_el=$((_pg_now - $1))
+  _pg_fmt "$_pg_el"
+}
+_pg_begin() {  # <step text>: the next step starts
+  PG_K=$((PG_K + 1)); PG_T0=$(date +%s)
+  [ "$PROGRESS" -eq 1 ] || return 0
+  printf 'doctor [%d/%d] %s ...\n' "$PG_K" "$PG_N" "$1" >&2
+}
+_pg_end() {  # [note]: the current step is done
+  [ "$PROGRESS" -eq 1 ] || return 0
+  _pg_took=$(_pg_since "$PG_T0")
+  _pg_note=''
+  [ -z "${1:-}" ] || _pg_note=" ($1)"
+  printf 'doctor [%d/%d] done in %s%s\n' "$PG_K" "$PG_N" "$_pg_took" "$_pg_note" >&2
+}
+_pg_skip() {  # <text>: a counted step that does not run on this tree
+  PG_K=$((PG_K + 1))
+  [ "$PROGRESS" -eq 1 ] || return 0
+  printf 'doctor [%d/%d] %s\n' "$PG_K" "$PG_N" "$1" >&2
+}
+_pg_kit_tree() {  # the kit's own tree: either kit marker (the pair verify.sh --kitself keys on)
+  [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]
+}
+_pg_tracker_enabled() {  # the tracker credential line runs: a conf and the two libraries it reads
+  [ -n "$DOCTOR_TRACKER_CONF" ] && [ -f "$DOCTOR_TRACKER_CONF" ] && [ -f scripts/tracker-cred.sh ] && [ -f scripts/tracker-conf.sh ]
+}
+_pg_count() {  # N: git, kit-update and permissions always run; conformance and claims unless --quick; then the conditional lines
+  PG_N=3
+  [ "$QUICK" -eq 1 ] || PG_N=$((PG_N + 2))
+  ! _pg_tracker_enabled || PG_N=$((PG_N + 1))
+  ! _fg_enabled || PG_N=$((PG_N + 1))
+  [ "$FULL" -eq 0 ] || PG_N=$((PG_N + 4))
+}
+_pg_announce() {  # the upfront estimate: a dated sentence, never computed (doctor writes nothing, so it cannot remember a run)
+  _pg_count
+  [ "$PROGRESS" -eq 1 ] || return 0
+  if [ "$QUICK" -eq 1 ]; then
+    echo "doctor: --quick: $PG_N steps; estimate under 1 min (plus up to about 20 s of bounded tracker reads); conformance and claims are NOT run." >&2
+  elif _pg_kit_tree; then
+    echo "doctor: $PG_N steps; estimate 55-95 min on the kit's own tree (an estimate from the 2026-10-15 measurements: the guard battery alone measured 30 min and the claims registry runs it again). Use --quick for the advisory lines in under a minute." >&2
+  else
+    echo "doctor: $PG_N steps; estimate 25-50 min on an adopter tree (an estimate from the 2026-10-14 field run; the guard battery alone measured 30 min). Use --quick for the advisory lines in under a minute." >&2
+  fi
+}
+_pg_finish() {
+  [ "$PROGRESS" -eq 1 ] || return 0
+  _pg_took=$(_pg_since "$PG_START")
+  printf 'doctor: finished in %s\n' "$_pg_took" >&2
+}
+# _pg_rows <row total> <out file>: copy the battery's output into <out file> and relay one line per result row. The verdict is
+# never read from this stream (see _pg_verify): a row line is a sign of life, not a result.
+_pg_rows() {
+  _pr_tot=$1; _pr_f=$2; _pr_i=0
+  while IFS= read -r _pr_l || [ -n "$_pr_l" ]; do
+    printf '%s\n' "$_pr_l" >> "$_pr_f"
+    case "$_pr_l" in
+      "  [control] "*|"  [doc] "*) ;;
+      *) continue ;;
+    esac
+    _pr_i=$((_pr_i + 1))
+    [ "$PROGRESS" -eq 1 ] || continue
+    _pr_r=${_pr_l#*] }
+    _pr_r=${_pr_r#"${_pr_r%%[! ]*}"}
+    _pr_took=$(_pg_since "$PG_T0")
+    printf 'doctor [%d/%d]   row %d/%s %s %s (%s)\n' "$PG_K" "$PG_N" "$_pr_i" "$_pr_tot" "${_pr_r%% *}" "${_pr_r##* }" "$_pr_took" >&2
+  done
+}
+# _pg_verify [args]: run conformance/verify.sh, stream its rows to _pg_rows, and set _vrc (its exit status) and _vout (its output).
+# POSIX sh has no pipefail, so the exit status leaves the pipeline through a STATUS FILE. FAIL-CLOSED: a status file that is missing,
+# empty or not a number (the run was interrupted, the child was killed, the write failed) is _vrc=1, never 0. The rows only ever
+# decide what is printed to stderr, never the verdict.
+_pg_verify() {
+  _pv_tot=$(grep -c '^check ' conformance/verify.sh 2>/dev/null) || _pv_tot=0
+  _pv_st=$(mktemp "${TMPDIR:-/tmp}/doctor-vstatus.XXXXXX") || { _vrc=1; _vout=''; return 0; }
+  _pv_out=$(mktemp "${TMPDIR:-/tmp}/doctor-vout.XXXXXX") || { rm -f "$_pv_st"; _vrc=1; _vout=''; return 0; }
+  trap 'rm -f "$_pv_st" "$_pv_out"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  {
+    if sh conformance/verify.sh "$@" 2>&1; then _pv_r=0; else _pv_r=$?; fi
+    echo "$_pv_r" > "$_pv_st"
+  } | _pg_rows "$_pv_tot" "$_pv_out" || true
+  trap - EXIT INT TERM
+  _pv_raw=$(cat "$_pv_st" 2>/dev/null) || _pv_raw=''
+  case "$_pv_raw" in
+    ''|*[!0-9]*) _vrc=1 ;;
+    *) _vrc=$_pv_raw ;;
+  esac
+  _vout=$(cat "$_pv_out" 2>/dev/null) || _vout=''
+  _pv_seen=$(printf '%s\n' "$_vout" | grep -c -e '^  \[control\] ' -e '^  \[doc\] ') || _pv_seen=0
+  rm -f "$_pv_st" "$_pv_out"
+}
 
 # ═══════════════════════════════════════════════════════════════════════════════════════════════════
 # permission-local-accretion — the going-forward advisory for the CI-UNREADABLE local permission
@@ -1478,6 +2000,7 @@ _ACC_FILES3_EOF
   return 0
 }
 
+_pg_announce
 _acc_analyze
 
 # — HEADER ——————————————————————————————————————————————————————————————————
@@ -1497,7 +2020,13 @@ echo "POSTURE"
 echo "-------"
 
 # 1. conformance [GATING]
-if [ -n "$DOCTOR_VERIFY_CMD" ]; then
+if [ "$QUICK" = "1" ]; then
+  # --quick (SWAS-201): the step is skipped, so the verdict is UNVERIFIED, never a pass. It reuses the UNVERIFIED path below:
+  # a warn, and a gate_fail under --require/CI. A seam command is skipped too: --quick means the battery does not run.
+  printf '  %-14s UNVERIFIED (skipped by --quick: run doctor without --quick for this verdict)\n' "conformance"
+  warns=$((warns+1))
+  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
+elif [ -n "$DOCTOR_VERIFY_CMD" ]; then
   # overridden (selftest/test path) — invoke stub directly, no [ -f ] guard
   if _vout=$($DOCTOR_VERIFY_CMD 2>&1); then _vrc=0; else _vrc=$?; fi
   case "$_vrc" in
@@ -1513,27 +2042,36 @@ if [ -n "$DOCTOR_VERIFY_CMD" ]; then
 elif [ -f "conformance/verify.sh" ]; then
   _args=""
   [ "$REQUIRE" = "1" ] && _args="--require"
+  _pg_begin "conformance battery (conformance/verify.sh)"
   echo "doctor: running the conformance battery (conformance/verify.sh); this can take several minutes on a kit tree..." >&2
   # shellcheck disable=SC2086
-  if _vout=$(sh conformance/verify.sh $_args 2>&1); then _vrc=0; else _vrc=$?; fi
+  _pg_verify $_args
   case "$_vrc" in
     0) _vstatus="PASS" ;;
     2) _vstatus="UNVERIFIED" ;;
     *) _vstatus="FAIL" ;;
   esac
+  _pg_end "row ${_pv_seen:-0}/${_pv_tot:-0} reported"
   printf '  %-14s %s\n' "conformance" "$_vstatus"
   case "$_vstatus" in
     FAIL)       gate_fail=1 ;;
     UNVERIFIED) [ "$REQUIRE" = "1" ] && gate_fail=1 || true ;;
   esac
 else
+  _pg_skip "conformance battery: conformance/verify.sh is not present, skipped"
   printf '  %-14s UNVERIFIED (not present)\n' "conformance"
   warns=$((warns+1))
   [ "$REQUIRE" = "1" ] && gate_fail=1 || true
 fi
 
 # 2. claims [GATING]
-if [ -n "$DOCTOR_CLAIMS_CMD" ]; then
+if [ "$QUICK" = "1" ] && { [ -n "$DOCTOR_CLAIMS_CMD" ] || _pg_kit_tree; }; then
+  # --quick on the kit's tree: skipped, so UNVERIFIED. On an unmarked (adopter) tree the dimension stays N/A below, because it does
+  # not apply there skip or not (SWAS-199 takes precedence).
+  printf '  %-14s UNVERIFIED (skipped by --quick: run doctor without --quick for this verdict)\n' "claims"
+  warns=$((warns+1))
+  [ "$REQUIRE" = "1" ] && gate_fail=1 || true
+elif [ -n "$DOCTOR_CLAIMS_CMD" ]; then
   # overridden (selftest/test path) — invoke stub directly, no [ -f ] guard
   if _cout=$($DOCTOR_CLAIMS_CMD 2>&1); then _crc=0; else _crc=$?; fi
   case "$_crc" in
@@ -1542,27 +2080,32 @@ if [ -n "$DOCTOR_CLAIMS_CMD" ]; then
   esac
   printf '  %-14s %s\n' "claims" "$_cstatus"
   [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
-elif [ ! -f "docs/ROADMAP-KIT.md" ] && [ ! -f ".github/workflows/golden-path.yml" ]; then
+elif ! _pg_kit_tree; then
   # kit-self (SWAS-199): the registry grades the KIT's own headline claims. Neither kit marker (the same
   # pair verify.sh --kitself uses) means this is an exported/incepted adopter tree: the dimension stands
-  # down, touching neither gate_fail nor warns, and runs nothing (so no stderr progress line either).
+  # down, touching neither gate_fail nor warns, and runs nothing (so no battery progress line either).
+  [ "$QUICK" = "1" ] || _pg_skip "claims registry: N/A on this tree (kit-self), skipped"
   printf '  %-14s N/A (kit-self: the registry grades the kit'"'"'s own headline claims; this is not the kit'"'"'s tree; this project'"'"'s own claims are not graded here)\n' "claims"
 elif [ -f "conformance/claims-registry.sh" ]; then
+  _pg_begin "claims registry (conformance/claims-registry.sh)"
   echo "doctor: checking the claims registry (conformance/claims-registry.sh)..." >&2
   if _cout=$(sh conformance/claims-registry.sh 2>&1); then _crc=0; else _crc=$?; fi
   case "$_crc" in
     0) _cstatus="PASS" ;;
     *) _cstatus="FAIL" ;;
   esac
+  _pg_end
   printf '  %-14s %s\n' "claims" "$_cstatus"
   [ "$_cstatus" = "FAIL" ] && gate_fail=1 || true
 else
+  _pg_skip "claims registry: conformance/claims-registry.sh is not present, skipped"
   printf '  %-14s UNVERIFIED (not present)\n' "claims"
   warns=$((warns+1))
   [ "$REQUIRE" = "1" ] && gate_fail=1 || true
 fi
 
 # 3. git [ADVISORY — WARN-only; never sets gate_fail]
+_pg_begin "git ground-truth"
 _git_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 _git_dirty=$(git status --porcelain 2>/dev/null || true)
 _git_tag_for_ver=$(git tag --list "v$_version" 2>/dev/null || true)
@@ -1600,6 +2143,7 @@ if [ "$_git_warn" = "1" ]; then
 else
   printf '  %-14s OK    [%s]\n' "git" "$_git_notes"
 fi
+_pg_end
 
 # 4. kit-update [ADVISORY — WARN-only; never sets gate_fail]
 # THE SURFACING (P1.2/T7). conformance/kit-current.sh answers one question — "is the kit you adopted
@@ -1613,6 +2157,7 @@ fi
 #   3 = N/A           -> N/A   (not an adopted tree — the kit's own repo; decided with NO network)
 # N/A prints its REASON (the check's own first line). A silent skip would be indistinguishable from a
 # check that quietly did nothing — which is the exact failure this dimension exists to kill.
+_pg_begin "kit-update (conformance/kit-current.sh; one bounded network read)"
 if [ -n "$DOCTOR_KITCURRENT_CMD" ]; then
   if _kout=$($DOCTOR_KITCURRENT_CMD 2>&1); then _krc=0; else _krc=$?; fi
 elif [ -f "conformance/kit-current.sh" ]; then
@@ -1621,6 +2166,7 @@ else
   _kout="kit-current: N/A — conformance/kit-current.sh is not present in this tree."
   _krc=3
 fi
+_pg_end
 # The check's own first line IS the note — doctor never re-states its verdict in its own words (that
 # would be a second source of truth about staleness, free to drift from the check that computed it).
 _knote=$(printf '%s\n' "$_kout" | sed -n '1p' | sed 's/^kit-current: *//')
@@ -1659,6 +2205,7 @@ esac
 # a pre-push line parses these two files on EVERY push (the hot path) and jq is NOT guaranteed present
 # (the codebase already probes `command -v jq`); accretion is a slow hygiene concern whose natural cadence
 # is the on-demand doctor run, which carries zero per-push tax. Recorded here per Q5, not dropped.
+_pg_begin "permissions (local permission surfaces)"
 if [ "$ACC_STATUS" = "na" ]; then
   printf '  %-14s N/A   [%s]\n' "permissions" "$ACC_NA_REASON"
 elif [ -n "$ACC_LOUD" ] || [ -n "$ACC_TAMPER" ]; then
@@ -1672,6 +2219,7 @@ elif [ -n "$ACC_LOUD" ] || [ -n "$ACC_TAMPER" ]; then
 else
   printf '  %-14s OK    [no laundering or hook-tampering in the local permission surfaces]\n' "permissions"
 fi
+_pg_end
 
 # 6. tracker credential [ADVISORY — one line, never a verdict, never sets gate_fail]
 # SECRETS-INJECTION-AT-LAUNCH (SWAS-101, design D3): which source would the tracker adapter use? It asks the
@@ -1730,7 +2278,8 @@ _dt_unread() {
     fi
   done
 }
-if [ -n "$DOCTOR_TRACKER_CONF" ] && [ -f "$DOCTOR_TRACKER_CONF" ] && [ -f scripts/tracker-cred.sh ] && [ -f scripts/tracker-conf.sh ]; then
+if _pg_tracker_enabled; then
+  _pg_begin "tracker credential (up to two bounded tracker reads)"
   . ./scripts/tracker-cred.sh
   tracker_cred_bind_root "$PWD"  # SWAS-196: doctor has already changed to its root (line 40); that root governs as.agent
   [ -z "$DOCTOR_SECURITY_BIN" ] || _TCR_SEC_BIN="$DOCTOR_SECURITY_BIN"
@@ -1799,6 +2348,7 @@ if [ -n "$DOCTOR_TRACKER_CONF" ] && [ -f "$DOCTOR_TRACKER_CONF" ] && [ -f script
     esac
   fi
   printf 'tracker credential: %s%s\n' "$_tcl_text" "$_tcl_suffix"
+  _pg_end
 fi
 
 # 7. forge identity [ADVISORY — one line, never a verdict, never sets gate_fail] (SWAS-124)
@@ -1810,11 +2360,14 @@ fi
 # it is silent unless the seam names a stand-in, and then also prints whether it counted a warn (the Overall line cannot say,
 # because the git dimension warns on a dirty tree).
 if _fg_enabled; then
+  _pg_begin "forge identity (read-only forge reads)"
   _fg_identity
   _fg_line
   case "$FG_STATE" in
     ok|unreadable|unauth) _fg_advisory ;;
   esac
+  _fg_rel_lines
+  _fg_prot_line
   _fg_w=0
   if [ "$FG_STATE" = ok ]; then
     case "$FG_LEVEL" in
@@ -1823,11 +2376,21 @@ if _fg_enabled; then
   fi
   warns=$((warns+_fg_w))
   [ "$SEAMS" -eq 0 ] || echo "SELFTEST forge warn counted: $_fg_w"
+  _pg_end
 fi
 
 # — VERDICT ——————————————————————————————————————————————————————————————————
 echo ""
-if [ "$gate_fail" = "1" ]; then
+if [ "$QUICK" = "1" ] && [ "$gate_fail" = "1" ] && [ "$REQUIRE" = "1" ]; then
+  # --quick under --require/CI: the gating rows were SKIPPED, not failed, and a required verdict can never be quick.
+  echo "Overall: FAIL  (--quick under --require/CI: the gating dimensions were skipped, not failed. A required verdict cannot be quick; run doctor without --quick)"
+elif [ "$QUICK" = "1" ] && [ "$gate_fail" = "1" ]; then
+  # an advisory path set gate_fail in a quick run: still name the skip first, and do not claim conformance or claims failed
+  echo "Overall: FAIL  (--quick: conformance and claims were NOT run (skipped, not failed), and another gating dimension failed; run doctor without --quick)"
+elif [ "$QUICK" = "1" ]; then
+  # never PASS: conformance is always UNVERIFIED here, so warns >= 1; the first token stays Overall: (PASS|WARN|FAIL) for parsers
+  echo "Overall: WARN  (--quick: conformance and claims were NOT run; this is not a pass. Run doctor without --quick for the verdict)"
+elif [ "$gate_fail" = "1" ]; then
   echo "Overall: FAIL  (a gating dimension failed — fix conformance/claims before shipping)"
 elif [ "$warns" != "0" ]; then
   echo "Overall: WARN  (review above — gating dimension(s) unverified or git advisory warnings present)"
@@ -1848,6 +2411,7 @@ if [ "$FULL" = "1" ]; then
   echo "-----------------------------------------------"
 
   # dora
+  _pg_begin "metric: dora"
   if [ -n "$DOCTOR_DORA_CMD" ]; then
     # overridden (test path) — run directly, discard rc
     _dora_out=$($DOCTOR_DORA_CMD 2>&1) || true
@@ -1858,8 +2422,10 @@ if [ "$FULL" = "1" ]; then
   else
     echo "  dora:           N/A (not present)"
   fi
+  _pg_end
 
   # agent-scorecard
+  _pg_begin "metric: agent-scorecard"
   if [ -n "$DOCTOR_SCORECARD_CMD" ]; then
     # overridden (test path) — run directly, discard rc
     _sc_out=$($DOCTOR_SCORECARD_CMD 2>&1) || true
@@ -1870,10 +2436,12 @@ if [ "$FULL" = "1" ]; then
   else
     echo "  agent-scorecard: N/A (not present)"
   fi
+  _pg_end
 
   # non-vacuity (advisory surfacing of the mutation-testing backstop; NEVER gates doctor).
   # Variable-indirected like the other metrics so the selftest stubs it (the real live sweep is
   # slow — it belongs in weekly drift-watch, not in every doctor --full / per-PR selftest run).
+  _pg_begin "metric: non-vacuity sweep"
   if [ -n "$DOCTOR_NONVACUITY_CMD" ]; then
     _nv_out=$($DOCTOR_NONVACUITY_CMD 2>&1) || true
     printf '%s\n' "$_nv_out" | tail -1
@@ -1884,6 +2452,7 @@ if [ "$FULL" = "1" ]; then
   else
     echo "  non-vacuity: N/A (not present)"
   fi
+  _pg_end
 
   # permission-local-accretion (C3 going-forward signal; COUNT ONLY — never the list, §5 privacy).
   # Reuses the union analysis computed once above; the LOUD laundering/tamper class renders in the
@@ -1895,6 +2464,7 @@ if [ "$FULL" = "1" ]; then
   fi
 
   # meta-control freshness (M2 — advisory surfacing of the cadence circuit-breaker; NEVER gates doctor)
+  _pg_begin "metric: meta-control freshness"
   if [ -n "$DOCTOR_META_CONTROL_CMD" ]; then
     _mc_out=$($DOCTOR_META_CONTROL_CMD 2>&1) || true
     printf '%s\n' "$_mc_out"
@@ -1904,6 +2474,8 @@ if [ "$FULL" = "1" ]; then
   else
     echo "  meta-control-fresh: N/A (not present)"
   fi
+  _pg_end
 fi
 
+_pg_finish
 [ "$gate_fail" = "1" ] && exit 1 || exit 0

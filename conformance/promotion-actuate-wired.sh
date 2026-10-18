@@ -105,8 +105,8 @@ mkrepo() {
 # directly — exactly the design's liveness-anchor method.
 #
 # ⚠️ THE `change-class:` DEFAULT IS `Ordinary`, AND THAT IS LOAD-BEARING, NOT COSMETIC. Since PR 11
-# `do_actuate` REFUSES a Control-plane-class note outright (the fail-closed arm the open
-# TIER-3-CP-MERGE-ACTUATION-RULING sitting will dispose of), so a fixture that wants to exercise the
+# `do_actuate` REFUSES a Control-plane-class note outright (now a pointer at `land`, by the closed
+# Tier-3 sitting's ruling, D-241014-1 item 6), so a fixture that wants to exercise the
 # label bar, the SoD teeth or the tree re-check must NOT also be control-plane — it would refuse one
 # step earlier and every one of those legs would be passing for the wrong reason. The 5th argument
 # carries the class, and ACT-CP below is the one leg that passes `Control-plane` deliberately.
@@ -609,6 +609,97 @@ selftest() {
   fi
 
   # ---------------------------------------------------------------------------------------
+  # SWAS-207b — a DECLARED merge relationship. `actuate` reads MERGE_RELATIONSHIP from ORIGIN'S DEFAULT BRANCH (never the
+  # approved tree) and, in a solo-declared repo only, judges the recorded GO by the SOLO BAR in place of the forge-review
+  # label and the author SoD. Every cell builds a base commit on origin's main with plumbing (_act_base) and a solo-shaped
+  # GO note (write_snote, all 13 lines), and asserts its OWN refusal line plus that the merge stub never ran. Liveness is
+  # SOLO-LIVE: the same note under a base that does not declare solo is refused by the team bar (BASE-*, GOV-*, UNDECLARED).
+  # ---------------------------------------------------------------------------------------
+  _solo_cell SOLO-LIVE merge "merge relationship: solo (origin/main" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" release-candidate AUTO
+  _solo_cell SOLO-LIVE-GOV merge "merge relationship: solo (origin/main" MERGE_RELATIONSHIP=solo '- **Governance** (§ solo/team): solo — the human admin-merges' "the owner [self-asserted]" release-candidate AUTO
+  for _g in '(none recorded)' 'the owner' 'the owner [signed: gpg]' ' [self-asserted]'; do
+    _solo_cell "SOLO-NEG-GOBY('$_g')" refuse "go-by" MERGE_RELATIONSHIP=solo NONE "$_g" release-candidate AUTO
+  done
+  # design-review and planning are held by NO exact denylist (design, design-arm, plan-record): they pin the PREFIX rule itself.
+  for _g in design-arm DESIGN-ARM plan-record ' Plan-record' design design-review planning; do
+    _solo_cell "SOLO-NEG-GATE('$_g')" refuse "pre-build gate" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" "$_g" AUTO
+  done
+  # a missing or empty gate line cannot be shown not to be a pre-build gate: refused (record always writes one)
+  _solo_cell SOLO-NEG-GATE-EMPTY refuse "records no gate" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" "" AUTO
+  # the Governance read FAILS (CLAUDE.md's blob is gone from this clone: cat-file rc 128, not a plain absence) while the dial says
+  # solo and the Governance line would read solo: a failed read must be team, never undeclared. Red against the rc-2-only guard.
+  SN_KIND=GOVGONE
+  _solo_cell GOV-READFAIL-NEG refuse "does not meet the control-plane bar" MERGE_RELATIONSHIP=solo '- **Governance** (§ solo/team): solo — the human admin-merges' "the owner [self-asserted]" release-candidate AUTO
+  SN_KIND=""
+  _solo_cell SOLO-NEG-TREE refuse "approved-tree" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" release-candidate BAD
+  SN_BOUND=0000000000000000000000000000000000000000
+  _solo_cell SOLO-NEG-BOUNDSHA refuse "does not bind" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" release-candidate AUTO
+  SN_BOUND=""
+  # Team unchanged (solo does not leak into team): the SAME solo-shaped note, [committer] label, is refused by the team bar.
+  _solo_cell UNDECLARED-NEG refuse "does not meet the control-plane bar" NONE NONE "the owner [self-asserted]" release-candidate AUTO
+  _solo_cell DIAL-TEAM-NEG refuse "does not meet the control-plane bar" MERGE_RELATIONSHIP=team NONE "the owner [self-asserted]" release-candidate AUTO
+  _solo_cell DIAL-UNKNOWN-NEG refuse "does not meet the control-plane bar" MERGE_RELATIONSHIP=soloish NONE "the owner [self-asserted]" release-candidate AUTO
+  # Governance only tightens: dial solo + a Governance `team` line -> team, and the override is SAID; Governance `solo` with no dial -> team.
+  _solo_cell GOV-TEAM-NEG refuse "CLAUDE.md Governance: team overrides MERGE_RELATIONSHIP=solo" MERGE_RELATIONSHIP=solo '- **Governance** (§ solo/team): team — non-author approval' "the owner [self-asserted]" release-candidate AUTO
+  _solo_cell GOV-TEAM-NEG-BAR refuse "does not meet the control-plane bar" MERGE_RELATIONSHIP=solo '- **Governance** (§ solo/team): team — non-author approval' "the owner [self-asserted]" release-candidate AUTO
+  _solo_cell GOV-SOLO-ALONE-NEG refuse "does not meet the control-plane bar" NONE '- **Governance** (§ solo/team): solo — the human admin-merges' "the owner [self-asserted]" release-candidate AUTO
+  # Unreadable declarations read team, each with a line saying why: .kit a symlink entry; the base tip not in this clone.
+  SN_KIND=LINK
+  _solo_cell BASE-LINK-NEG refuse "does not meet the control-plane bar" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" release-candidate AUTO
+  SN_KIND=REMOTE
+  _solo_cell BASE-UNFETCHED-NEG refuse "git fetch origin" MERGE_RELATIONSHIP=solo NONE "the owner [self-asserted]" release-candidate AUTO
+  SN_KIND=""
+
+  # BASE-NEG-APPROVED-TREE: the APPROVED TREE carries `solo` and the base does not -> the team bar applies (a PR cannot choose
+  # its own bar). The head commit adds .kit/dials.conf=solo; the note is solo-shaped and bound to that head.
+  SD="$(mkrepo)" || { fail "fixture build (BASE-NEG-APPROVED-TREE)"; return 1; }
+  ( cd "$SD" && mkdir .kit && printf 'MERGE_RELATIONSHIP=solo\n' > .kit/dials.conf && git add .kit/dials.conf && git commit -qm 'declare solo in the PR' && git rev-parse HEAD > .X )
+  SX="$(cat "$SD/.X")"
+  write_snote "$SD" "$SX" "the owner [self-asserted]" release-candidate AUTO
+  _act_base "$SD" NONE NONE; SMC="$(_act_stub "$SD" "$SX")"
+  run_actuate "$VERIFY" "$SD" feat "$SX" "$SMC"
+  if [ "$RC" != 0 ] && [ ! -f "$SD/.invoked" ] && printf '%s' "$OUT" | grep -qF 'does not meet the control-plane bar' \
+     && printf '%s' "$OUT" | grep -qF 'merge relationship: team'; then
+    pass "BASE-NEG-APPROVED-TREE: the approved tree declares solo but the base does not -> the team bar refuses, merge stub never ran"
+  else
+    fail "BASE-NEG-APPROVED-TREE: rc=$RC invoked=$(invoked "$SD") OUT=[$OUT]"
+  fi
+  rm -rf "$SD" 2>/dev/null || true
+
+  # ACT-CP-ORDER: the class arm runs BEFORE step 2. In TEAM, a control-plane note labelled [committer] is refused with the `land`
+  # pointer, NOT step 2's label refusal (reds if the class arm moves back after step 2). ACT-CP-SOLO: the same in a solo repo.
+  for _cpb in NONE MERGE_RELATIONSHIP=solo; do
+    SD="$(mkrepo)" || { fail "fixture build (ACT-CP-ORDER)"; return 1; }
+    SX="$(cat "$SD/.X")"
+    write_snote "$SD" "$SX" "the owner [self-asserted]" release-candidate AUTO control-plane "Reviewer B [committer]"
+    _act_base "$SD" "$_cpb" NONE; SMC="$(_act_stub "$SD" "$SX")"
+    run_actuate "$VERIFY" "$SD" feat "$SX" "$SMC"
+    if [ "$RC" = 1 ] && [ ! -f "$SD/.invoked" ] \
+       && printf '%s' "$OUT" | grep -qF 'promotion-verify.sh land --ref <PR number> --approved-sha' \
+       && printf '%s' "$OUT" | grep -qF "land's --ref is the PR NUMBER" \
+       && ! printf '%s' "$OUT" | grep -qF 'does not meet the control-plane bar' \
+       && ! printf '%s' "$OUT" | grep -qF 'TIER-3'; then
+      pass "ACT-CP-ORDER($_cpb): control-plane + [committer] -> the land pointer (class arm before step 2), not the label refusal, no TIER-3, stub never ran"
+    else
+      fail "ACT-CP-ORDER($_cpb): rc=$RC invoked=$(invoked "$SD") OUT=[$OUT]"
+    fi
+    rm -rf "$SD" 2>/dev/null || true
+  done
+  # ...and the unknown-class refusal also precedes any label judgment (a [committer] note with NO class line).
+  SD="$(mkrepo)" || { fail "fixture build (ACT-UNKNOWN-ORDER)"; return 1; }
+  SX="$(cat "$SD/.X")"
+  write_note "$SD" "$SX" "Reviewer B [committer]" "reviewer APPROVE" OMIT
+  SMC="$(_act_stub "$SD" "$SX")"
+  run_actuate "$VERIFY" "$SD" feat "$SX" "$SMC"
+  if [ "$RC" = 1 ] && [ ! -f "$SD/.invoked" ] && printf '%s' "$OUT" | grep -qF 'unrecognised or missing change-class' \
+     && ! printf '%s' "$OUT" | grep -qF 'does not meet the control-plane bar'; then
+    pass "ACT-UNKNOWN-ORDER: a [committer] note with no class -> the class refusal, before any label judgment"
+  else
+    fail "ACT-UNKNOWN-ORDER: rc=$RC invoked=$(invoked "$SD") OUT=[$OUT]"
+  fi
+  rm -rf "$SD" 2>/dev/null || true
+
+  # ---------------------------------------------------------------------------------------
   # GUARD fixtures: the --admin bypass stays DENIED; the gate is immutable-but-runnable; normal merge
   # allowed. Control-plane path strings live in a DATA FILE (never on a command line) so the real
   # PreToolUse guard cannot block us. Source the guard in a subshell WITHOUT set -e (its functions
@@ -958,12 +1049,19 @@ AWK
     '[{"user":{"login":"Reviewer B","type":"Bot"},"state":"APPROVED","commit_id":"@SHA@"}]' \
     '"AuthorLogin"' reviewer-is-bot
 
+  # REC-N11: a scope that is not exactly a PR number (`PR #12x`) is no-pr-scope, never a partial read of its digits: the
+  # one-line `case` that guards it was split for semgrep, and this pins the split arm. The reviews are qualifying, so only the scope refuses.
+  _rec_case REC-N11 base \
+    '[{"user":{"login":"Reviewer B","type":"User"},"state":"APPROVED","commit_id":"@SHA@"}]' \
+    '"AuthorLogin"' no-pr-scope "Reviewer B" "PR #12x"
+
   # ---------------------------------------------------------------------------------------
   # ACT-CP: with the derivation wired, an [authenticated:] label is producible for EVERY class, so
   # "control-plane stays human-actuated" stops being true by construction and needs an actual arm.
-  # A Control-plane-class note that clears the label bar AND the SoD teeth must still be REFUSED,
-  # citing the open TIER-3-CP-MERGE-ACTUATION-RULING sitting. Honestly a DRIFT CONTROL — the class
-  # field is caller-recorded, at the note's own trust tier — and removable by that ruling.
+  # The Tier-3 sitting that arm waited on is CLOSED (D-241014-1 item 6): control-plane merges go through `land`, in both
+  # relationships, and the arm is now a POINTER. A Control-plane-class note that clears the label bar AND the SoD teeth must
+  # still be REFUSED, naming the exact `land` command; the merge stub must not have run, and a refusal that still cites the
+  # sitting FAILS this cell. Honestly a DRIFT CONTROL — the class field is caller-recorded, at the note's own trust tier.
   # ---------------------------------------------------------------------------------------
   DCP="$(mkrepo)" || { fail "ACT-CP: fixture build"; return 1; }
   XCP="$(cat "$DCP/.X")"
@@ -972,8 +1070,10 @@ AWK
   run_actuate "$VERIFY" "$DCP" feat "$XCP" "$MC"
   if [ "$RC" != 0 ] && [ ! -f "$DCP/.invoked" ] \
      && printf '%s' "$OUT" | grep -q 'ACTUATE REFUSED' \
-     && printf '%s' "$OUT" | grep -qF 'TIER-3-CP-MERGE-ACTUATION-RULING'; then
-    pass "ACT-CP: Control-plane class + authenticated label -> REFUSED citing the open sitting, merge not invoked (rc=$RC)"
+     && printf '%s' "$OUT" | grep -qF 'promotion-verify.sh land --ref' \
+     && printf '%s' "$OUT" | grep -qF -- "--approved-sha $XCP --class control-plane" \
+     && ! printf '%s' "$OUT" | grep -qF 'TIER-3'; then
+    pass "ACT-CP: Control-plane class + authenticated label -> REFUSED with the land pointer (no sitting cited), merge stub not run (rc=$RC)"
   else
     fail "ACT-CP: rc=$RC invoked=$(invoked "$DCP") OUT=[$OUT]"
   fi
@@ -1541,8 +1641,58 @@ AWK
   done
   rm -rf "$MGA_ROOT" 2>/dev/null || true
 
+  # SAST-PARSE-MERGE-TOOL: one refuse cell per rewritten argument-vet arm in the merge tool (the one-line `case … esac` lines
+  # split for semgrep). Each pins its OWN refusal line and rc, so a rewrite that widens or drops a match goes red. They pass
+  # on the code before the split too: they pin behaviour, not red-first. (land's --approved-sha '-' arm is unreachable: land's
+  # peek refuses a flag-shaped value first, so only its charset arm has a cell.)
+  _rw_refuse() {  # <label> <expected rc> <needle> <verb> [args…] — run the verb in $D; it must refuse with that line
+    _rwl="$1"; _rwc="$2"; _rwn="$3"; shift 3
+    if OUT="$( cd "$D" && sh "$VERIFY" "$@" 2>&1 )"; then RC=0; else RC=$?; fi
+    if [ "$RC" = "$_rwc" ] && printf '%s' "$OUT" | grep -qF -e "$_rwn"; then
+      pass "$_rwl: refused with its own line (rc=$RC)"
+    else
+      fail "$_rwl: rc=$RC OUT=[$OUT]"
+    fi
+  }
+  D="$(mkrepo)" || { fail "fixture build (SAST-RW)"; return 1; }
+  _rw_refuse "SAST-RW-RECORD-ASHA" 2 "record: invalid --approved-sha '-x' (must not start with '-')" \
+    record --no-push --approved-sha -x --approved-by b --gate g --rung r --class Ordinary --scope s --token t
+  _rw_refuse "SAST-RW-TRACE-REF" 2 "trace: arguments must not start with '-' (got '-x')" trace --ref -x
+  _rw_refuse "SAST-RW-TRACE-FROM" 2 "trace: arguments must not start with '-' (got '-y')" trace --ref abc --from -y
+  _rw_refuse "SAST-RW-TRACE-RECENT" 2 "trace: --recent takes a positive integer" trace --recent 5x
+  _rw_refuse "SAST-RW-CHECK-REF" 2 "check: invalid --ref '-x' (must not start with '-')" check --ref -x --approved-sha abc
+  _rw_refuse "SAST-RW-CHECK-ASHA" 2 "check: invalid --approved-sha '-x' (must not start with '-')" check --ref feat --approved-sha -x
+  _rw_refuse "SAST-RW-ACT-REF" 2 "actuate: invalid --ref '-x' (must not start with '-')" actuate --ref -x --approved-sha abc
+  _rw_refuse "SAST-RW-ACT-ASHA" 2 "actuate: invalid --approved-sha '-x' (must not start with '-')" actuate --ref feat --approved-sha -x
+  _rw_refuse "SAST-RW-ACT-REF-CHARS" 2 "actuate: invalid --ref 'a;b' (allowed chars: A-Za-z0-9._/-)" actuate --ref 'a;b' --approved-sha abc
+  _rw_refuse "SAST-RW-ACT-ASHA-CHARS" 2 "actuate: invalid --approved-sha 'a b' (allowed chars: A-Za-z0-9._/-)" actuate --ref feat --approved-sha 'a b'
+  rm -rf "$D" 2>/dev/null || true
+  _mkland_fx || { fail "SAST-RW-LAND: fixture build"; return 1; }
+  _lg="$(_mkgh "$(_L_json "$_L_REV")" '"SeaBrad72"')"
+  _LREF='-x'; _land_run "$_lg" reviewer-login SeaBrad72; _LREF=""
+  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && printf '%s' "$OUT" | grep -qF "land: invalid --ref '-x' (must not start with '-')"; then
+    pass "SAST-RW-LAND-REF: land --ref -x -> rc 2 with its own line, merge never ran"
+  else fail "SAST-RW-LAND-REF: rc=$RC OUT=[$OUT]"; fi
+  _LREF='a;b'; _land_run "$_lg" reviewer-login SeaBrad72; _LREF=""
+  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && printf '%s' "$OUT" | grep -qF "land: invalid --ref 'a;b' (allowed chars: A-Za-z0-9._/-)"; then
+    pass "SAST-RW-LAND-REF-CHARS: land --ref 'a;b' -> rc 2 with its own line, merge never ran"
+  else fail "SAST-RW-LAND-REF-CHARS: rc=$RC OUT=[$OUT]"; fi
+  _land_run "$_lg" reviewer-login SeaBrad72 --approved-sha 'a;b'
+  if [ "$RC" = 2 ] && [ ! -f "$LDMARK" ] && printf '%s' "$OUT" | grep -qF "land: invalid --approved-sha 'a;b' (allowed chars: A-Za-z0-9._/-)"; then
+    pass "SAST-RW-LAND-ASHA-CHARS: land --approved-sha 'a;b' -> rc 2 with its own line, merge never ran"
+  else fail "SAST-RW-LAND-ASHA-CHARS: rc=$RC OUT=[$OUT]"; fi
+  _land_run "$_lg" reviewer-login SeaBrad72 --scope "PR #12x"
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && printf '%s' "$OUT" | grep -qF "is not a PR id"; then
+    pass "SAST-RW-LAND-SCOPE: land --scope 'PR #12x' -> rc 1 'is not a PR id', NO note, merge never ran"
+  else fail "SAST-RW-LAND-SCOPE: rc=$RC OUT=[$OUT]"; fi
+  _LREF=feat; _land_run "$_lg" reviewer-login SeaBrad72; _LREF=""
+  if [ "$RC" = 1 ] && [ ! -f "$LDMARK" ] && [ -z "$(_land_note)" ] && printf '%s' "$OUT" | grep -qF "the PR judged must be the PR merged"; then
+    pass "SAST-RW-LAND-REFNUM: land --ref feat (not a PR number) with --scope PR #260 -> rc 1, NO note, merge never ran"
+  else fail "SAST-RW-LAND-REFNUM: rc=$RC OUT=[$OUT]"; fi
+  rm -rf "$LDR" "$_lg" 2>/dev/null || true
+
   if [ "$st" = 0 ]; then
-    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends; GO identity: land L1-L4+L6 (the CP bar, the belt) + record L5/L7 (go-by); SWAS-207a head binding: step 0 x2, the pinned default, the shared vet, the pin requirement, the origin-read note, the never-skipped tail)"
+    echo "OK: promotion-actuate-wired selftest — actuate gate wired + non-vacuous (wiring: 1 liveness + 6 negatives; actuate: 1 liveness + 9 negatives + guard fixtures + lock self-negative; forge-review derivation: 3 liveness + 11 negatives + the class allowlist, both ends; GO identity: land L1-L4+L6 (the CP bar, the belt) + record L5/L7 (go-by); SWAS-207a head binding: step 0 x2, the pinned default, the shared vet, the pin requirement, the origin-read note, the never-skipped tail; SWAS-207b declared relationship: the solo bar legs, the base and Governance reads, the control-plane pointer and its order before step 2)"
   else
     echo "FAIL: promotion-actuate-wired selftest"
   fi
@@ -1680,6 +1830,97 @@ _act_stub() {
   printf 'sh %s/.stub.sh --match-head-commit %s\n' "$1" "$2"
 }
 
+# ── SWAS-207b solo fixtures.
+# _act_mktip <repo> <dial-line|NONE> <claude-md-line|NONE> [LINK] -> echoes a parentless BASE commit built with plumbing (no
+#    checkout, no index): .kit/dials.conf holds <dial-line> and CLAUDE.md holds <claude-md-line>; LINK makes `.kit` itself a
+#    symlink entry (120000). The commit exists in <repo>, so a push of it puts the tip on origin.
+_act_mktip() {
+  _mt_ents=""
+  _mt_nl='
+'
+  if [ "$2" != NONE ] && [ "${4:-}" = LINK ]; then
+    _mt_l="$(printf 'elsewhere' | git -C "$1" hash-object -w --stdin)"
+    _mt_ents="120000 blob $_mt_l	.kit$_mt_nl"
+  elif [ "$2" != NONE ]; then
+    _mt_b="$(printf '%s\n' "$2" | git -C "$1" hash-object -w --stdin)"
+    _mt_s="$(printf '100644 blob %s\tdials.conf\n' "$_mt_b" | git -C "$1" mktree)"
+    _mt_ents="040000 tree $_mt_s	.kit$_mt_nl"
+  fi
+  if [ "$3" != NONE ]; then
+    _mt_g="$(printf '%s\n' "$3" | git -C "$1" hash-object -w --stdin)"
+    _mt_ents="${_mt_ents}100644 blob $_mt_g	CLAUDE.md$_mt_nl"
+  fi
+  [ -n "$_mt_ents" ] || _mt_ents="100644 blob $(printf 'base\n' | git -C "$1" hash-object -w --stdin)	README$_mt_nl"
+  _mt_t="$(printf '%s' "$_mt_ents" | git -C "$1" mktree)"
+  git -C "$1" commit-tree "$_mt_t" -m 'base'
+}
+# _act_base <dir> <dial-line|NONE> <claude-md-line|NONE> — publishes that BASE commit as origin's refs/heads/main. SN_KIND=LINK
+#    makes `.kit` a symlink; SN_KIND=REMOTE builds and pushes the commit from a SECOND repo, so the tip is on origin but its
+#    objects are NOT in <dir> (the unfetched-tip shape). NONE+NONE still pushes a main (a plain base that declares nothing).
+_act_base() {
+  _act_origin "$1"
+  if [ "${SN_KIND:-}" = REMOTE ]; then
+    _ab_x="$(mktemp -d)"
+    git init -q "$_ab_x"; git -C "$_ab_x" config user.email other@example.com; git -C "$_ab_x" config user.name other
+    _ab_c="$(_act_mktip "$_ab_x" "$2" "$3")"
+    git -C "$_ab_x" push -q "$1/.act-origin.git" "$_ab_c:refs/heads/main"
+    rm -rf "$_ab_x"
+  else
+    _ab_c="$(_act_mktip "$1" "$2" "$3" "${SN_KIND:-}")"
+    git -C "$1" push -q -f origin "$_ab_c:refs/heads/main"
+    if [ "${SN_KIND:-}" = GOVGONE ]; then   # GOVGONE: delete CLAUDE.md's loose blob from <dir> AFTER the push, so its read fails with rc 128
+      _ab_g="$(printf '%s\n' "$3" | git -C "$1" hash-object --stdin)"
+      rm -f "$1/.git/objects/$(printf '%s' "$_ab_g" | cut -c1-2)/$(printf '%s' "$_ab_g" | cut -c3-)"
+    fi
+  fi
+}
+# write_snote <dir> <sha> <go-by-value> <gate> <tree|AUTO|BAD> [class] [approved-by-value] — a SOLO-shaped GO note: all 13 lines
+#    in `record`'s order, every key on its own line. SN_BOUND overrides the `approved-sha:` line (the bound-sha leg).
+write_snote() {
+  _sn_tree="$5"
+  if [ "$_sn_tree" = AUTO ]; then _sn_tree="$(git -C "$1" rev-parse "${2}^{tree}")"; fi
+  if [ "$_sn_tree" = BAD ]; then _sn_tree=0000000000000000000000000000000000000000; fi
+  printf '%s\n' \
+    "record: promotion GO (approve->execute->log)" \
+    "approved-sha: ${SN_BOUND:-$2}" \
+    "approved-tree: $_sn_tree" \
+    "approved-by: ${7:-Author A [committer]}" \
+    "go-by: $3" \
+    "gate: $4" \
+    "rung: Release candidate" \
+    "change-class: ${6-ordinary}" \
+    "kit-row: (none)" \
+    "scope: PR #260" \
+    "approval-token: \"GO: merge #260\"" \
+    "basis: the owner's words" \
+    "recorded-at: fixture" \
+    | ( cd "$1" && git notes --ref=promotions add -f -F - "$2" >/dev/null 2>&1 )
+}
+# _solo_cell <label> <merge|refuse> <needle> <dial|NONE> <claude-md-line|NONE> <go-by> <gate> <tree|AUTO|BAD> [class] [approved-by]
+#    One actuate run on a fresh fixture. merge: rc 0, the stub ran, OUT carries <needle>. refuse: rc != 0, the stub did NOT
+#    run, OUT carries <needle> (the cell's OWN refusal or line, never a bare rc).
+_solo_cell() {
+  _sc_l="$1"; _sc_w="$2"; _sc_n="$3"; _sc_dial="$4"; _sc_gov="$5"
+  _sc_d="$(mkrepo)" || { fail "$_sc_l: fixture build"; return 0; }
+  _sc_x="$(cat "$_sc_d/.X")"
+  write_snote "$_sc_d" "$_sc_x" "$6" "$7" "$8" "${9-ordinary}" "${10:-Author A [committer]}"
+  _act_base "$_sc_d" "$_sc_dial" "$_sc_gov"
+  run_actuate "$VERIFY" "$_sc_d" feat "$_sc_x" "$(_act_stub "$_sc_d" "$_sc_x")"
+  if [ "$_sc_w" = merge ]; then
+    if [ "$RC" = 0 ] && [ -f "$_sc_d/.invoked" ] && printf '%s' "$OUT" | grep -qF "$_sc_n" \
+       && printf '%s' "$OUT" | grep -qF 'OK: actuated'; then
+      pass "$_sc_l: solo base + a named go-by -> merged (rc 0), the relationship line says solo"
+    else
+      fail "$_sc_l: rc=$RC invoked=$(invoked "$_sc_d") OUT=[$OUT]"
+    fi
+  elif [ "$RC" != 0 ] && [ ! -f "$_sc_d/.invoked" ] && printf '%s' "$OUT" | grep -qF "$_sc_n"; then
+    pass "$_sc_l: refused naming '$_sc_n', merge stub never ran (rc=$RC)"
+  else
+    fail "$_sc_l: rc=$RC invoked=$(invoked "$_sc_d") OUT=[$OUT]"
+  fi
+  rm -rf "$_sc_d" 2>/dev/null || true
+}
+
 # ── GO-IDENTITY-AND-LAND-SOD land fixtures. `land` records THROUGH origin and refuses --no-push, so these
 #    legs need a real bare origin (a throwaway under mktemp; PROMOTION_NOTES_REF names the fixture ledger,
 #    so nothing here can touch the real one). The approved commit X is authored by `Author A`, which is
@@ -1755,12 +1996,12 @@ _land_onote() { git --git-dir="$LDR/origin.git" notes --ref=promotions show "$LD
 #   Every leg asserts the RECORDED LABEL, never a bare rc — a record NEVER fails on a derivation gap
 #   (it only ever declines to upgrade), so rc alone would pass vacuously on all ten negatives.
 _rec_case() {
-  _cl="$1"; _ce="$2"; _ct="$3"; _ca="$4"; _cn="$5"; _cw="${6:-Reviewer B}"
+  _cl="$1"; _ce="$2"; _ct="$3"; _ca="$4"; _cn="$5"; _cw="${6:-Reviewer B}"; _csc="${7:-PR #260}"
   _cd="$(mkrepo)" || { fail "$_cl: fixture build"; return 0; }
   _cx="$(cat "$_cd/.X")"
   _cj="$(printf '%s' "$_ct" | sed "s/@SHA@/$_cx/g")"
   _cg="$(_mkgh "$_cj" "$_ca")"
-  _run_record "$_cd" "$_cg" "PR #260" "$_cw" "$_cx"
+  _run_record "$_cd" "$_cg" "$_csc" "$_cw" "$_cx"
   _cb="$(_note_of "$_cd" "$_cx")"
   _cline="$(printf '%s\n' "$_cb" | grep '^approved-by:' || true)"
   if [ "$_ce" = auth ]; then

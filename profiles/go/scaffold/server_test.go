@@ -181,7 +181,10 @@ func TestConfigureProviderInstallsFileProvider(t *testing.T) {
 
 func TestConfigureProviderNoFlagFileKeepsEnvFloor(t *testing.T) {
 	t.Cleanup(ResetProvider)
-	os.Unsetenv("FLAG_FILE")
+	t.Setenv("FLAG_FILE", "") // registers the restore of the caller's value
+	if err := os.Unsetenv("FLAG_FILE"); err != nil {
+		t.Fatal(err)
+	}
 	ResetProvider()
 	configureProvider()
 	// Env floor: unset FEATURE_NEW_GREETING -> registry default OFF.

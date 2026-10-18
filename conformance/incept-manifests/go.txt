@@ -71,6 +71,8 @@ id: lint-golangci
 precondition: present golangci/golangci-lint-action
 when-absent: skip
 assert: present golangci/golangci-lint-action
+assert: present go-version-file:[[:space:]]*go\.mod
+assert: scaffoldfile .golangci.yml ^version:[[:space:]]*"?2
 assert: scaffoldfile .golangci.yml govet
 assert: scaffoldfile .golangci.yml staticcheck
 assert: scaffoldfile .golangci.yml errcheck

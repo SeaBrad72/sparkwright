@@ -37,7 +37,7 @@ The **`conformance/branch-protection.sh`** check is GitHub-only (`gh api`). On G
 **UNVERIFIED** (exit 2) — by design, never a false pass:
 
 ```
-UNVERIFIED: no GitHub repo context — run in CI or authenticate gh. (NOT a pass.)
+UNVERIFIED: no GitHub repo context for the gh identity above (pass --repo=OWNER/REPO, or use an account that can read this repo) — run in CI or authenticate gh. (NOT a pass.)
 ```
 
 Wire the GitLab equivalent manually in **Settings → Repository → Protected branches**:

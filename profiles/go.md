@@ -4,7 +4,7 @@
 
 > Reference profile. The concrete *how* for the universal `DEVELOPMENT-STANDARDS.md` on a Go stack. Copy/adapt per project; record selection as ADR-000.
 
-**Stack:** Go 1.22+ · net/http or chi · PostgreSQL + pgx/sqlc · `go test` · hosted (single-binary container / K8s)
+**Stack:** Go 1.27+ · net/http or chi · PostgreSQL + pgx/sqlc · `go test` · hosted (single-binary container / K8s)
 **Status:** reference
 
 ---
@@ -19,7 +19,7 @@ Choosing a stack? Compare all profiles → [../docs/STACK-SELECTION.md](../docs/
 ---
 
 ## 1. Toolchain
-- **Runtime:** Go 1.22+ · **Deps:** Go modules (`go.mod`/`go.sum` committed)
+- **Runtime:** Go 1.27+ · **Deps:** Go modules (`go.mod`/`go.sum` committed)
 - **Format/lint:** `gofmt` + `golangci-lint` · **Types:** the compiler (`go vet` / `go build`) · **Complexity/duplication** (recommended `gate-lint` config): `gocyclo` / `gocognit` + `dupl` via golangci-lint (`docs/operations/code-quality.md`)
 - **Tests:** `go test -race -cover` · **Test quality:** rapid/gopter (property-based) + go-mutesting (mutation — `docs/operations/test-quality.md`) · **Build:** `go build` (single static binary)
 - **Inner loop:** `pre-commit` (gofmt + golangci-lint; `go test ./<changed-pkg>`) — fast feedback before CI (`docs/operations/dev-inner-loop.md`)
@@ -93,7 +93,7 @@ Conformance: `sh conformance/ci-gates.sh profiles/go/ci.yml`. Note: `gate-type-c
 
 ## 9. Release & deploy
 - **Build artifact:** static binary + minimal container (distroless/scratch). **Deploy:** container to K8s/Fly; merge to `main` → deploy.
-- **Container (service):** build the multi-stage non-root image (`profiles/go/Dockerfile`, distroless `static` base), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/` (probes, resource limits, non-root `securityContext`). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. (A devcontainer isn't shipped — distroless has no shell; add one against `golang:1.22` if desired.)
+- **Container (service):** build the multi-stage non-root image (`profiles/go/Dockerfile`, distroless `static` base), run locally via `compose.yaml` (dev/prod parity). CI scans the image SBOM on every PR (`gate-image-sbom`) and, on merge to `main`, pushes to GHCR and attests **provenance bound to the image digest** (`gate-image-provenance`). Deploy the **attested digest** via `deploy/k8s/` or the Helm chart in `deploy/helm/` (probes, resource limits, non-root `securityContext`). Promote the same digest Dev → QA → UAT → Prod; rollback = redeploy the previous digest. (A devcontainer isn't shipped — distroless has no shell; add one against `golang:1.27` if desired.)
 - **Feature flags:** env-backed or a flag service; flag-off = fastest rollback.
 - **Rollout:** staging → prod; **rollback:** redeploy previous image / revert + redeploy.
 
@@ -106,6 +106,7 @@ chi or net/http · pgx + sqlc · go-playground/validator · golang-jwt + x/crypt
 - `go test -race` catches data races — keep it in CI; coverage is checked from `cover.out`.
 - `govulncheck` reports only *reachable* vulnerabilities — exits non-zero on a real finding.
 - Prefer the standard `log/slog` over third-party loggers for structured logging.
+- The Go version lives in `go.mod` (`go 1.27`, the minor only: a patch pins an old stdlib). CI reads it with `go-version-file` and takes the newest patch; bump `go.mod`, the Dockerfile tag and the lint version as one set, and note that golangci-lint must be built with a Go at least as new as `go.mod`'s or it refuses to run (`conformance/go-toolchain-coherent.sh` checks the set; the kit's weekly drift watch goes red before the minor reaches end of life).
 
 ---
 

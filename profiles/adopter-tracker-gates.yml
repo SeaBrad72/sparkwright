@@ -81,7 +81,7 @@ jobs:
     # every PR waits — unset the variable or bring the runner online; (2) a self-hosted runner for
     # a `pull_request_target` job belongs ONLY on a private repo or an ephemeral runner (this job
     # parses fork head objects beside the tracker credential).
-    runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-24.04' }}
     steps:
       # Ahead of the checkout, so no later skip or failure can hide it. Inert, warn-only: risk (2) above, made
       # visible on the run (TRACKER-RUNNER-PUBLIC-SELFHOSTED-WARN; pinned by proportional-gate-wired.sh).
@@ -328,7 +328,7 @@ jobs:
     # RUNNER KNOB + the same two risks as tracker-board-gates above: an unmatched label queues
     # forever (unset the variable or bring the runner online); a self-hosted runner belongs only on a
     # private repo or an ephemeral runner.
-    runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-24.04' }}
     permissions:
       contents: read
       pull-requests: read

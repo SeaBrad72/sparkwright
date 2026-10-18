@@ -82,7 +82,7 @@ SHA-pin when you adopt it:
 
 ```yaml
   dast:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: zaproxy/action-baseline@<pin-a-sha>   # OWASP ZAP baseline
         with:

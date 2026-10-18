@@ -60,6 +60,7 @@ conformance/escalation-wired.sh	KILLED	-
 conformance/eval-harness-runs.sh	KILLED	-
 conformance/eval-harness-wired.sh	KILLED	-
 conformance/feature-flags-wired.sh	KILLED	-
+conformance/go-toolchain-coherent.sh	KILLED	-
 conformance/guard-wired.sh	KILLED	-
 conformance/hardlink-integrity.sh	KILLED	-
 conformance/harness-adapter.sh	KILLED	-

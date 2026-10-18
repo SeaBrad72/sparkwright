@@ -9,10 +9,13 @@
 # pass under TWO FACES whose non-overlap is measured, not assumed:
 #   face (a) STRIPPED ENV — B2 §10-A9's exact recipe: GIT_CONFIG_GLOBAL=/dev/null
 #            GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly
-#            GIT_CONFIG_VALUE_0=true, HOME = a bare mktemp dir, GIT_AUTHOR_*/GIT_COMMITTER_* unset.
+#            GIT_CONFIG_VALUE_0=true, HOME = a bare mktemp dir, GIT_AUTHOR_*/GIT_COMMITTER_* unset,
+#            TMPDIR = a fresh dir made with an explicit mktemp template (macOS mktemp ignores TMPDIR, so a
+#            script that makes its fixtures with a bare `mktemp` lands outside it: SWAS-244).
 #            Catches ambient IDENTITY/CONFIG reads (a clone does NOT: it inherits global identity —
 #            measured by the B2 round-3 executor, independently confirmed).
-#   face (b) `git clone --no-local` of the containing repo into mktemp, selftest run inside it.
+#   face (b) `git clone --no-local` of the containing repo into mktemp, selftest run inside it, with
+#            TMPDIR = a fresh templated dir as in face (a).
 #            Catches ambient NOTES-REFS/OBJECT-STORE reads (a clone carries neither).
 #
 # MODES
@@ -53,7 +56,7 @@ TAB=$(printf '\t')
 BASE="${HERMETIC_BASE:-origin/main}"
 EXCL_FILE="conformance/hermetic-exclusions.txt"
 
-WORK=$(mktemp -d)
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/hermetic-XXXXXX")
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 # roster — selftest-capable scripts of the CURRENT repo (relative paths), ci-selftest-coverage
@@ -95,6 +98,21 @@ excluded() {
   return 1
 }
 
+# first_fails <face-output> — name the first FAIL lines of a red face BEFORE the tail (SWAS-244/248): a
+# FAIL in the middle of a long output sits above the PASS legs the tail shows. A FAIL line contains FAIL and
+# does not START with a PASS marker (tracker-contract prints PASS lines that name FAIL). grep answers rc 1 on
+# no match, so each is guarded under set -eu. Output stays bounded: a header and at most 10 lines.
+first_fails() {
+  _ff=$(LC_ALL=C grep -n -e FAIL "$1" | LC_ALL=C grep -v -E -e '^[0-9]+:[[:space:]]*(selftest )?PASS' || :)
+  if [ -z "$_ff" ]; then
+    echo "  no output line contains FAIL; see the tail below"
+    return 0
+  fi
+  _fk=$(printf '%s\n' "$_ff" | LC_ALL=C grep -c -e '^' || :)
+  if [ "$_fk" -gt 10 ]; then echo "  first 10 of $_fk FAIL lines:"; else echo "  $_fk FAIL lines:"; fi
+  printf '%s\n' "$_ff" | sed -n '1,10p' | LC_ALL=C cut -c1-300 | sed 's/^/    /'
+}
+
 _repo_of() { git -C "$(dirname "$1")" rev-parse --show-toplevel 2>/dev/null; }
 
 # run_faces <path> — run <path> --selftest under both faces. 0 = both pass; 1 = a face failed,
@@ -110,17 +128,21 @@ run_faces() {
 
   # face (a): stripped environment (B2 §10-A9's exact recipe)
   _hh="$WORK/home.$$"; mkdir -p "$_hh"
+  _ta=$(mktemp -d "$WORK/tmp.a.XXXXXX") || { echo "FAIL: face (a) — cannot make its TMPDIR"; return 1; }
   _fa=0
   (
     unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_COMMITTER_DATE || true
     HOME=$_hh; GIT_CONFIG_GLOBAL=/dev/null; GIT_CONFIG_SYSTEM=/dev/null
     GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=user.useConfigOnly; GIT_CONFIG_VALUE_0=true
-    export HOME GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+    TMPDIR=$_ta
+    export HOME GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 TMPDIR
     cd "$_top" && sh "$_rel" --selftest
   ) >"$_o" 2>&1 || _fa=$?
+  rm -rf "$_ta"
   if [ "$_fa" != 0 ]; then
     echo "FAIL: face (a) stripped-env — $_rel reds with no ambient identity/config (rc $_fa)."
     echo "  The selftest reads git identity/config it did not set (green on a dev tree, dead on a runner)."
+    first_fails "$_o"
     sed 's/^/    /' "$_o" | tail -30
     return 1
   fi
@@ -133,12 +155,14 @@ run_faces() {
     echo "FAIL: face (b) — $_rel is not in the clone: it is uncommitted. Face (b) grades HEAD; commit before running the lane."
     rm -rf "$_c"; return 1
   fi
+  _tb=$(mktemp -d "$WORK/tmp.b.XXXXXX") || { echo "FAIL: face (b) — cannot make its TMPDIR"; rm -rf "$_c"; return 1; }
   _fb=0
-  ( cd "$_c" && sh "$_rel" --selftest ) >"$_o" 2>&1 || _fb=$?
-  rm -rf "$_c"
+  ( cd "$_c" && TMPDIR=$_tb && export TMPDIR && sh "$_rel" --selftest ) >"$_o" 2>&1 || _fb=$?
+  rm -rf "$_c" "$_tb"
   if [ "$_fb" != 0 ]; then
     echo "FAIL: face (b) clone — $_rel reds inside a fresh git clone --no-local (rc $_fb)."
     echo "  The selftest reads ambient notes-refs/object-store/worktree state a clone does not carry."
+    first_fails "$_o"
     sed 's/^/    /' "$_o" | tail -30
     return 1
   fi
@@ -257,6 +281,59 @@ selftest() {
   st_expect "exclusions-only --touched diff with a reasonless entry FAILS (no N/A bypass)" 1 "$rc"
   printf '%s\n' "$out" | grep -q 'no <TAB>reason' || { echo "FAIL: selftest — the exclusions-only failure did not name the reasonless entry"; sfail=1; }
 
+  # 9. FIRST-FAIL CAPTURE (SWAS-244/248): a red face names its FAIL lines before the tail, so a FAIL in the
+  #    middle of a long output is not hidden under the PASS legs that follow it. One shared fixture repo.
+  st_repo "$st/fh"
+  for _k in fail1 nofail passshape fail15; do st_fix "$st/fh/conformance/$_k-check.sh" "$_k"; done
+  st_commit "$st/fh"
+  # H1 — one FAIL line, then 40 PASS lines: the FAIL line is listed with its line number
+  rc=0; out=$( cd "$st/fh" && sh "$_self" conformance/fail1-check.sh 2>&1 ) || rc=$?
+  st_expect "H1 first-FAIL: a lone FAIL line buried above 40 PASS lines is lane rc 1" 1 "$rc"
+  st_has "H1 the FAIL line is listed under '1 FAIL lines:'" "$out" '1 FAIL lines:'
+  st_has "H1 the FAIL line is listed with its line number" "$out" '1:selftest FAIL: boom'
+  # H2 — rc 1 with no FAIL word anywhere: the output says so
+  rc=0; out=$( cd "$st/fh" && sh "$_self" conformance/nofail-check.sh 2>&1 ) || rc=$?
+  st_expect "H2 no-FAIL: 40 PASS lines and rc 1 is lane rc 1" 1 "$rc"
+  st_has "H2 the output says no line contains FAIL" "$out" 'no output line contains FAIL; see the tail below'
+  # H5 — tracker-contract's real PASS shape that names FAIL is skipped; the real line is kept
+  rc=0; out=$( cd "$st/fh" && sh "$_self" conformance/passshape-check.sh 2>&1 ) || rc=$?
+  st_expect "H5 PASS-shape: lane rc 1" 1 "$rc"
+  st_has "H5 exactly one line is listed (the PASS-shaped line is skipped)" "$out" '1 FAIL lines:'
+  st_has "H5 the real line is the one listed (a blanket PASS exclusion would lose it)" "$out" '2:selftest FAIL: expected PASS'
+  # H6 — 15 FAIL lines: the header counts all, the list stops at 10
+  rc=0; out=$( cd "$st/fh" && sh "$_self" conformance/fail15-check.sh 2>&1 ) || rc=$?
+  st_expect "H6 cap: 15 FAIL lines is lane rc 1" 1 "$rc"
+  st_has "H6 the header reads 'first 10 of 15 FAIL lines:'" "$out" 'first 10 of 15 FAIL lines:'
+  _n=$(printf '%s\n' "$out" | grep -c -e ':selftest FAIL: leg ' || :)
+  st_expect "H6 exactly 10 FAIL lines are listed" 10 "$_n"
+
+  # H3 — an outer SENTINEL TMPDIR: each face must hold its own fresh TMPDIR (the fixture reds if TMPDIR still
+  #      equals the sentinel, or if its explicit-template mktemp does not land under the physical TMPDIR).
+  #      Equality, not mktemp behaviour, so a face that forgets to export TMPDIR reds on every platform.
+  _sent=$(mktemp -d "$WORK/sent.XXXXXX")
+  st_repo "$st/fs"
+  st_fix "$st/fs/conformance/sentinel-check.sh" sentinel
+  st_commit "$st/fs"
+  rc=0; out=$( cd "$st/fs" && TMPDIR=$_sent HERMETIC_ST_SENT=$_sent sh "$_self" conformance/sentinel-check.sh 2>&1 ) || rc=$?
+  st_expect "H3 both faces hold a fresh TMPDIR under an outer sentinel TMPDIR" 0 "$rc"
+  st_has "H3 face (a) passed" "$out" 'PASS: face (a)'
+  st_has "H3 face (b) passed" "$out" 'PASS: face (b)'
+
+  # N2 — a face whose TMPDIR cannot be made FAILS closed (never runs with TMPDIR empty and passes). A PATH shim
+  #      makes the explicit-template mktemp of one face exit 1; the hermetic twin would pass otherwise.
+  _real_mk=$(command -v mktemp)
+  mkdir -p "$WORK/shim"
+  # The shim refuses only an argument whose BASENAME is the face's own template, so an outer TMPDIR that
+  # itself has tmp.a. / tmp.b. path components (the lane inside a face) does not trip it.
+  printf '#!/bin/sh\nfor _a in "$@"; do\n  case "$_a" in\n    */"$FAIL_MK") exit 1 ;;\n  esac\ndone\nexec "%s" "$@"\n' "$_real_mk" > "$WORK/shim/mktemp"
+  chmod +x "$WORK/shim/mktemp"
+  _odd="$_sent/tmp.a.1/tmp.b.1"; mkdir -p "$_odd"
+  for _fc in a b; do
+    rc=0; out=$( cd "$st/ft" && TMPDIR=$_odd PATH="$WORK/shim:$PATH" FAIL_MK="tmp.$_fc.XXXXXX" sh "$_self" conformance/hermetic-check.sh 2>&1 ) || rc=$?
+    st_expect "N2 face ($_fc) with an unmakeable TMPDIR is lane rc 1" 1 "$rc"
+    st_has "N2 face ($_fc) names the TMPDIR failure" "$out" "FAIL: face ($_fc) — cannot make its TMPDIR"
+  done
+
   [ "$sfail" -eq 0 ] && { echo "selftest-hermetic --selftest: OK"; return 0; }
   echo "selftest-hermetic --selftest: FAIL"; return 1
 }
@@ -276,6 +353,27 @@ st_script() { # <path> <kind: bare|inline|notes> — a fixture conformance scrip
     inline) printf '#!/bin/sh\ncase "${1:-}" in --selftest) d=$(mktemp -d); ( cd "$d" && git init -q && echo x > f && git add f && git -c user.email=t@k -c user.name=t commit -q -m s ) || { rm -rf "$d"; echo FAIL; exit 1; }; rm -rf "$d"; echo OK ;; esac\n' > "$1" ;;
     notes)  printf '#!/bin/sh\ncase "${1:-}" in --selftest) git rev-parse -q --verify refs/notes/amb >/dev/null || { echo "FAIL: notes ref missing"; exit 1; }; echo OK ;; esac\n' > "$1" ;;
   esac
+}
+st_has() { # <label> <output> <fixed-string> — the output carries the string
+  if printf '%s\n' "$2" | grep -qF -e "$3"; then echo "PASS: selftest — $1"
+  else echo "FAIL: selftest — $1 (missing: $3)"; sfail=1; fi
+}
+st_fix() { # <path> <kind: fail1|nofail|passshape|fail15|sentinel> — a fixture whose --selftest prints a shaped output
+  case $2 in
+    fail1)     _b='echo "selftest FAIL: boom"; i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
+    nofail)    _b='i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
+    passshape) _b='echo "PASS: selftest — a non-zero adapter rc yields the exact FAIL sentence (rc -> FAIL)"; echo "selftest FAIL: expected PASS"; i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
+    fail15)    _b='i=0; while [ $i -lt 15 ]; do echo "selftest FAIL: leg $i"; i=$((i+1)); done; i=0; while [ $i -lt 40 ]; do echo "selftest PASS: leg $i"; i=$((i+1)); done; exit 1' ;;
+    sentinel)  _b='[ -n "${HERMETIC_ST_SENT:-}" ] || { echo "FAIL: no sentinel given"; exit 1; }
+    [ "${TMPDIR:-}" != "$HERMETIC_ST_SENT" ] || { echo "FAIL: TMPDIR is still the outer sentinel"; exit 1; }
+    d=$(mktemp -d "$TMPDIR/x.XXXXXX") || { echo "FAIL: no templated mktemp"; exit 1; }
+    p=$(cd "$d" && pwd -P); t=$(cd "$TMPDIR" && pwd -P); rm -rf "$d"
+    case "$p" in
+      "$t"/*) echo OK ;;
+      *) echo "FAIL: the templated mktemp did not land under TMPDIR"; exit 1 ;;
+    esac' ;;
+  esac
+  printf '#!/bin/sh\ncase "${1:-}" in\n  --selftest)\n    %s ;;\nesac\n' "$_b" > "$1"
 }
 st_expect() { # <label> <want-rc> <got-rc>
   if [ "$2" = "$3" ]; then echo "PASS: selftest — $1"

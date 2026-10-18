@@ -111,8 +111,8 @@ classify() {
 # a drift between the two is caught by the boarded AGGREGATOR-NEEDS-LOCK, not by a parse of ci.yml
 # from a script that must stay pure. `conformance-docs` is NOT in it — the aggregator IS, and the
 # aggregator needs conformance-docs, so R1 subsumes it without breaking on pre-slice runs.
-PG_NEEDED='changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-verify-selftest cf-claims cf-green-on-clone guard-battery conformance'
-PG_HEAVY='conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-verify-selftest cf-claims cf-green-on-clone'
+PG_NEEDED='changes conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone guard-battery conformance'
+PG_HEAVY='conformance-core conformance-selftests cf-doctor cf-export cf-export-claims cf-verify-enforced cf-claims cf-green-on-clone'
 
 _pg_no()  { echo "push_graded=false reason=$1"; }
 _pg_hex() { case "${1:-}" in ''|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 40 ]; }
@@ -380,11 +380,11 @@ selftest_pg() {
   }
   # the three canonical job listings
   J_ALL='changes=success conformance-core=success conformance-selftests=success cf-doctor=success
-    cf-export=success cf-export-claims=success cf-verify-enforced=success cf-verify-selftest=success
+    cf-export=success cf-export-claims=success cf-verify-enforced=success
     cf-claims=success cf-green-on-clone=success guard-battery=success conformance-docs=success docs-links=success
     conformance=success non-vacuity~(1)=success non-vacuity~(2)=success'
   J_DOCS='changes=success conformance-core=skipped conformance-selftests=skipped cf-doctor=skipped
-    cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped cf-verify-selftest=skipped
+    cf-export=skipped cf-export-claims=skipped cf-verify-enforced=skipped
     cf-claims=skipped cf-green-on-clone=skipped guard-battery=skipped conformance-docs=success docs-links=success
     conformance=success non-vacuity~(1)=skipped non-vacuity~(2)=skipped'
 

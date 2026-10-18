@@ -62,6 +62,29 @@ check_parity() {  # <workflow_file>
   return $_miss
 }
 
+# trigger_value <file> <trigger> <key>: the text after `<key>:` on the first such line inside the
+# 2-space `<trigger>:` block of the `on:` map ("" when the block or the key is absent).
+trigger_value() {
+  awk -v t="  $2:" -v k="$3:" '
+    $0 == t { inb = 1; next }
+    /^  [A-Za-z_]+:/ { inb = 0 }
+    inb && $1 == k { sub(/^[ \t]*[A-Za-z_]+:[ \t]*/, ""); print; exit }' "$1"
+}
+
+# check_push_filter <workflow_file> (SWAS-274): the push trigger is main-only, and its paths: list
+# is byte-identical to the pull_request one. filter_set unions every paths: line, so a push list that
+# drifted from the PR list would hide a gap there; a feature-branch push must not run golden-path.
+check_push_filter() {
+  _pf=$1; _pfr=0
+  _pf_br=$(trigger_value "$_pf" push branches)
+  _pf_pp=$(trigger_value "$_pf" push paths)
+  _pf_rp=$(trigger_value "$_pf" pull_request paths)
+  [ "$_pf_br" = "[main]" ] || { echo "FAIL: the golden-path push: trigger must carry branches: [main] (found '${_pf_br:-none}')"; _pfr=1; }
+  [ -n "$_pf_pp" ] || { echo "FAIL: the golden-path push: trigger carries no paths: list (block missing or paths dropped)"; _pfr=1; }
+  [ "$_pf_pp" = "$_pf_rp" ] || { echo "FAIL: the golden-path push: paths: list differs from the pull_request: one (must be byte-identical)"; _pfr=1; }
+  return "$_pfr"
+}
+
 selftest() {
   sfail=0; d=$(mktemp -d)
   # dirty: a.sh in filter + invoked; b.sh invoked but NOT in filter -> FAIL naming b.sh
@@ -84,6 +107,31 @@ selftest() {
   out=$(check_parity "$d/hash.yml" 2>&1) && { echo "FAIL: selftest — hash-in-string hid the invocation"; sfail=1; } || true
   printf '%s\n' "$out" | grep -q "scripts/e.sh" || { echo "FAIL: selftest — anchored comment-strip not load-bearing (e.sh not detected)"; sfail=1; }
   [ "$sfail" -ne 0 ] || echo "PASS: selftest — hash-in-string invocation still detected"
+  # SWAS-274 push-filter pins. PF0 is the positive control; each mutant below must red and name its cause.
+  _pf_mk() {  # <file> <push-branches-line|none> <push-paths-list|none>
+    { printf "on:\n  pull_request:\n    paths: ['scripts/a.sh', 'scripts/b.sh']\n"
+      [ "$2" = none ] && [ "$3" = none ] || printf "  push:\n"
+      [ "$2" = none ] || printf "    branches: %s\n" "$2"
+      [ "$3" = none ] || printf "    paths: %s\n" "$3"
+      printf "  schedule:\n    - cron: '0 7 * * 1'\n"; } > "$1"
+  }
+  _pf_case() {  # <id> <push-branches> <push-paths> <want: ok|fail> <description>
+    _pf_mk "$d/$1.yml" "$2" "$3"
+    if _pf_o=$(check_push_filter "$d/$1.yml" 2>&1); then _pf_g=ok; else _pf_g=fail; fi
+    if [ "$_pf_g" != "$4" ]; then echo "FAIL: selftest $1 — $5 (wanted $4, got $_pf_g)"; sfail=1
+    elif [ "$4" = fail ] && ! printf '%s\n' "$_pf_o" | grep -q "golden-path push"; then echo "FAIL: selftest $1 — red without naming the push trigger"; sfail=1
+    else echo "PASS: selftest $1 — $5"; fi
+  }
+  _pf_good="['scripts/a.sh', 'scripts/b.sh']"
+  _pf_case PF0 "[main]" "$_pf_good" ok "push on main with identical paths passes"
+  _pf_case PF1 none "$_pf_good" fail "push without branches reds"
+  _pf_case PF2 "['**']" "$_pf_good" fail "push with branches ['**'] reds"
+  _pf_case PF3 "[main]" "['scripts/a.sh']" fail "push paths one entry short reds"
+  _pf_case PF4 none none fail "push block deleted entirely reds"
+  if [ -f "$WF" ]; then
+    if check_push_filter "$WF" >/dev/null 2>&1; then echo "PASS: selftest PF5 — the real golden-path push trigger is main-only with the PR's paths"
+    else echo "FAIL: selftest PF5 — the real golden-path push trigger breaks the SWAS-274 pin"; sfail=1; fi
+  fi
   if [ "$sfail" -eq 0 ]; then echo "OK: golden-path-filter-parity selftest"; exit 0; else echo "FAIL: golden-path-filter-parity selftest"; exit 1; fi
 }
 
@@ -92,7 +140,10 @@ case "${1:-}" in
   "")
     # kit-self: golden-path.yml is kit-only (control-plane + export-ignored). N/A in an adopter tree.
     [ -f "$WF" ] || { echo "golden-path-filter-parity: N/A — kit-self check (golden-path workflow absent)"; exit 0; }
-    if check_parity "$WF"; then echo "OK: golden-path paths: filter covers every invoked script"; exit 0
-    else echo "FAIL: golden-path paths: filter is missing invoked script(s) above — add them so a change re-triggers golden-path"; exit 1; fi ;;
+    _live=0
+    check_parity "$WF" || { echo "FAIL: golden-path paths: filter is missing invoked script(s) above — add them so a change re-triggers golden-path"; _live=1; }
+    check_push_filter "$WF" || _live=1
+    [ "$_live" -eq 0 ] || exit 1
+    echo "OK: golden-path paths: filter covers every invoked script; push is main-only with the PR's paths"; exit 0 ;;
   *) echo "usage: golden-path-filter-parity.sh [--selftest]" >&2; exit 2 ;;
 esac

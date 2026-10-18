@@ -100,7 +100,7 @@ func EmitSpan(span map[string]any) {
 		return
 	}
 	if sink := os.Getenv("OTEL_TRACE_FILE"); sink != "" {
-		// #nosec G304 -- the trace sink is an operator-provided env var (OTEL_TRACE_FILE) by design.
+		// #nosec G304 G703 -- the trace sink is an operator-provided env var (OTEL_TRACE_FILE) by design.
 		f, err := os.OpenFile(sink, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return

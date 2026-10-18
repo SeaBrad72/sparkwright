@@ -177,8 +177,12 @@ rl_presence_leg() {
 rl_base() {   # $1 = graded head
   _rb_cands=""
   if [ -n "${_rl_base_ref:-}" ]; then
-    case "$_rl_base_ref" in -*) return 1 ;; esac
-    case "$_rl_base_ref" in ''|*[!A-Za-z0-9_.:/-]*) return 1 ;; esac
+    case "$_rl_base_ref" in
+      -*) return 1 ;;
+    esac
+    case "$_rl_base_ref" in
+      ''|*[!A-Za-z0-9_.:/-]*) return 1 ;;
+    esac
     _rb_cands="$_rl_base_ref origin/$_rl_base_ref refs/remotes/origin/$_rl_base_ref"
   else
     _rb_dh=$(git -C "$RL_REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
@@ -259,21 +263,28 @@ rl_row_size() {
   # shellcheck disable=SC2034  # read by the sourced seam_backend (backlog-lib.sh)
   SEAM_ROOT="$3/bk"
   _rs_be=$(seam_backend 2>/dev/null) || return 1
-  case "$_rs_be" in ''|md) ;; *) return 1 ;; esac
+  case "$_rs_be" in
+    ''|md) ;;
+    *) return 1 ;;
+  esac
   _rs_hits=0; _rs_size=""
   for _rs_sec in "Ready" "In Progress" "In Review" "Blocked" "Released" "Done" "Backlog (unrefined)"; do
     _rs_rows=$(section_rows "$_rs_f" "$_rs_sec")
     [ -n "$_rs_rows" ] || continue
     _rs_hdr=$(printf '%s\n' "$_rs_rows" | head -1); _rs_ix=$(col_index "$_rs_hdr" Size); _rs_n=0
+    # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
     while IFS= read -r _rs_row; do
       _rs_n=$((_rs_n + 1)); [ "$_rs_n" -eq 1 ] && continue
       is_sep_row "$_rs_row" && continue
       [ "$(backtick_id "$(gfm_cell "$_rs_row" 1)")" = "$2" ] || continue
       # A row already Done/Released at the merge-base cannot be the slice being built -> owed.
-      case "$_rs_sec" in Done|Released) return 1 ;; esac
+      case "$_rs_sec" in
+        Done|Released) return 1 ;;
+      esac
       _rs_hits=$((_rs_hits + 1))
       [ -z "$_rs_ix" ] || _rs_size=$(gfm_cell "$_rs_row" "$_rs_ix")
     done <<EOF
+\
 $_rs_rows
 EOF
   done
@@ -289,11 +300,16 @@ rl_row_touched() {
   [ -n "$_rt_added" ] || return 1
   # Only a TABLE ROW whose Item cell LEADS with exactly this id counts: an Order line, a prose line or
   # another row's cell that merely mentions the id must not bind it.
+  # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
   while IFS= read -r _rt_l; do
     _rt_l=${_rt_l#+}
-    case "$_rt_l" in '|'*) ;; *) continue ;; esac
+    case "$_rt_l" in
+      '|'*) ;;
+      *) continue ;;
+    esac
     [ "$(backtick_id "$(gfm_cell "$_rt_l" 1)")" = "$3" ] && return 0
   done <<EOF
+\
 $_rt_added
 EOF
   return 1
@@ -306,9 +322,14 @@ rl_ceiling_exempt() {
   [ "$(rl_trailer_count "$1" Kit-Plan)" -eq 0 ] && [ "$(rl_trailer_count "$1" Kit-Review)" -eq 0 ] || return 1
   [ "$(rl_trailer_count "$1" Kit-Row)" -eq 1 ] || return 1
   _ce_row=$(rl_trailer "$1" Kit-Row | head -1)
-  case "$_ce_row" in ''|[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;; esac
+  case "$_ce_row" in
+    ''|[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;;
+  esac
   _ce_size=$(rl_row_size "$_rl_mb" "$_ce_row" "$3") || return 1
-  case "$_ce_size" in XS|S) ;; *) return 1 ;; esac
+  case "$_ce_size" in
+    XS|S) ;;
+    *) return 1 ;;
+  esac
   rl_row_touched "$_rl_mb" "$1" "$_ce_row" || return 1
   echo "review-lane: NOTE — XS/S ordinary ($_ce_row, size $_ce_size): no plan/record owed; the design note + task brief ride the PR body, the verdict rides the PR (body/comment) and the owner's forge Approve"
   return 0
@@ -331,9 +352,17 @@ rl_path_ok() {   # $1 = path, $2 = required prefix
   case "$1" in
     ''|*[!A-Za-z0-9_./-]*) return 1 ;;
   esac
-  case "$1" in "$2"*) ;; *) return 1 ;; esac
-  case "$1" in *.md) ;; *) return 1 ;; esac
-  case "$1" in *..*) return 1 ;; esac
+  case "$1" in
+    "$2"*) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *.md) ;;
+    *) return 1 ;;
+  esac
+  case "$1" in
+    *..*) return 1 ;;
+  esac
   return 0
 }
 
@@ -378,8 +407,11 @@ rl_added_designs() {   # $1 = head, $2 = out file
   return 0
 }
 
-# rl_lens_leg — rule 9. Each added design doc needs a `## Lens review` heading and a table cell equal to
-# each of the twelve names. PRESENCE only: content is never read (the skill's veto on prose scanners).
+# rl_lens_leg — rule 9. Each added design doc needs a `## Lens review` heading (a section prefix such as
+# `9.`, `9a.` or `§9` is fine) and a table cell equal to each of the twelve names. PRESENCE only: content is
+# never read (the skill's veto on prose scanners). One pattern, read by the heading grep AND the awk cell pass.
+RL_LENS_SECT=$(printf '\302\247')   # U+00A7 SECTION SIGN as its two UTF-8 bytes; the source stays ASCII
+RL_LENS_HEAD="^## ((${RL_LENS_SECT})?[0-9]+[a-zA-Z]*[.]? )?Lens review"
 rl_lens_leg() {   # $1 = head, $2 = scratch dir -> 0 | 2
   _ll_rc=0
   rl_added_designs "$1" "$2/added.txt" || { echo "RL-NO-CHANGESET: the added design docs could not be listed — fail closed"; return 2; }
@@ -390,13 +422,15 @@ rl_lens_leg() {   # $1 = head, $2 = scratch dir -> 0 | 2
       printf '%s\n' "RL-DESIGN-PATH: '$(rl_safe "$_ll_p")' is an added design doc that is not a tracked regular file with a plain name — fail closed"; _ll_rc=2; continue
     fi
     rl_blob "$1" "$_ll_p" | tr -d '\r' > "$2/design.md"
-    if ! grep -Eq '^## ([0-9]+[.] )?Lens review' "$2/design.md"; then
+    if ! LC_ALL=C grep -Eq -e "$RL_LENS_HEAD" "$2/design.md"; then
       echo "RL-DESIGN-NO-LENS-TABLE: $_ll_p is a design doc added by this change and has no '## Lens review' section — the M/Sensitive/Control-plane design answers the twelve lenses in skills/design/SKILL.md (N/A with a reason is an answer)"; _ll_rc=2; continue
     fi
-    awk 'BEGIN{i=0;d=0} /^## /{ if (d==0 && $0 ~ /^## ([0-9]+[.] )?Lens review/) { i=1; d=1 } else { i=0 }; next } i==1 && /^\|/ { n=split($0, f, "|"); for (k=2; k<n; k++) { c=f[k]; gsub(/^[ \t]+/, "", c); gsub(/[ \t]+$/, "", c); if (length(c) > 4 && substr(c,1,2) == "**" && substr(c,length(c)-1) == "**") c=substr(c,3,length(c)-4); print c } }' "$2/design.md" > "$2/cells.txt"
+    LC_ALL=C awk -v re="$RL_LENS_HEAD" 'BEGIN{i=0;d=0} /^## /{ if (d==0 && $0 ~ re) { i=1; d=1 } else { i=0 }; next } i==1 && /^\|/ { n=split($0, f, "|"); for (k=2; k<n; k++) { c=f[k]; gsub(/^[ \t]+/, "", c); gsub(/[ \t]+$/, "", c); if (length(c) > 4 && substr(c,1,2) == "**" && substr(c,length(c)-1) == "**") c=substr(c,3,length(c)-4); print c } }' "$2/design.md" > "$2/cells.txt"
+    # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
     while IFS= read -r _ll_n; do
       grep -qFx "$_ll_n" "$2/cells.txt" || { echo "RL-DESIGN-LENS-MISSING: $_ll_p has a Lens review section but no row for '$_ll_n' — add the row; N/A with a reason is an answer"; _ll_rc=2; }
     done <<EOF
+\
 $RL_LENSES
 EOF
   done < "$2/added.txt"
@@ -501,7 +535,9 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
           [ -n "$_gt" ] || continue
           _gok=1
           for _gpfx in $RL_POST_APPROVE_PATHS; do
-            case "$_gt" in "$_gpfx"*) _gok=0; break ;; esac
+            case "$_gt" in
+              "$_gpfx"*) _gok=0; break ;;
+            esac
           done
           [ "$_gok" = 0 ] || rl_warn "RL-OPEN-ROUND: '$(rl_safe "$_gt")' changed after the closing APPROVE and is outside the bookkeeping set ($RL_POST_APPROVE_PATHS) — fix: re-review at the new head, or keep post-approval edits to the record, plan and board"
         done < "$_gtail"
@@ -519,7 +555,7 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
       # An unchecked sha is a citation to nothing: `fixed deadbeef` disposed of a HIGH finding with a
       # string. The sha must be a real commit AND contained in this change — the same two-leg test the
       # Rounds table gets, because a fix that lives outside the PR is a fix this PR does not carry.
-      fixed\ [0-9a-f]*)
+      'fixed '[0-9a-f]*)
         _gfx=$(printf '%s' "$_gd" | awk '{print $2}')
         if ! git -C "$RL_REPO" rev-parse -q --verify "$_gfx^{commit}" >/dev/null 2>&1; then
           echo "RL-FIX-OUTSIDE: finding '$(rl_safe "$_gi")' is disposed 'fixed $(rl_safe "$_gfx")', which is not a commit in this repository"
@@ -527,8 +563,8 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
           _gfc=0; rl_containment "$_gfx" "$1" || _gfc=$?
           [ "$_gfc" = 0 ] || echo "RL-FIX-OUTSIDE: finding '$(rl_safe "$_gi")' cites fix commit $_gfx, which is not part of THIS change (not an ancestor of the head, or already in the base)"
         fi ;;
-      accepted\ *) [ "${#_gd}" -ge 20 ] || echo "RL-FINDING-DISPOSITION: finding '$(rl_safe "$_gi")' is accepted with no reason of substance" ;;
-      waived\ *WAIVER-*) ;;
+      'accepted '*) [ "${#_gd}" -ge 20 ] || echo "RL-FINDING-DISPOSITION: finding '$(rl_safe "$_gi")' is accepted with no reason of substance" ;;
+      'waived '*WAIVER-*) ;;
       *) echo "RL-FINDING-DISPOSITION: finding '$(rl_safe "$_gi")' carries no disposition in the grammar (fixed <sha> | accepted - <reason> | waived - WAIVER-<id>)" ;;
     esac
   done > "$3/find" 2>/dev/null || true
@@ -558,7 +594,7 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
     [ -n "$_grow" ] || continue
     _gk=$(rl_cell "$_grow" 1); _gdd=$(rl_cell "$_grow" 2)
     case "$_gdd" in
-      *not\ built,\ because*)
+      *'not built, because'*)
         _gwhy=$(printf '%s' "$_gdd" | sed 's/.*not built, because//' | tr -d '[:space:]')
         [ "${#_gwhy}" -ge 20 ] || echo "RL-CONTROL-UNRESOLVED: control '$(rl_safe "$_gk")' says 'not built, because' with no reason of substance" ;;
       *::*)
@@ -685,7 +721,10 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
       _rl_rc=2; continue
     fi
     _rl_v=$(rl_trailer "$_rl_head" "$_rl_k" | head -1)
-    case "$_rl_k" in Kit-Plan) _rl_pfx="$RL_PLAN_PREFIX" ;; *) _rl_pfx="$RL_REVIEW_PREFIX" ;; esac
+    case "$_rl_k" in
+      Kit-Plan) _rl_pfx="$RL_PLAN_PREFIX" ;;
+      *) _rl_pfx="$RL_REVIEW_PREFIX" ;;
+    esac
     # Kit-Review may carry a COMMA-SEPARATED set when a consolidated PR absorbs several slices; each
     # element is confined independently, and every one is graded (design 4.4).
     # THE SPLIT NEVER TOUCHES $IFS — see loop-state.sh's note: semgrep's
@@ -698,6 +737,7 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
     # in the body, and a subshell would discard both — the gate would collect no records and then
     # report a structural pass over an empty set.
     _rl_vals=$(printf '%s' "$_rl_v" | tr ',' '\n')
+    # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
     while IFS= read -r _rl_p; do
       _rl_p=$(printf '%s' "$_rl_p" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       if ! rl_path_ok "$_rl_p" "$_rl_pfx"; then
@@ -718,6 +758,7 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
           || { echo "RL-PLAN-STUB: '$_rl_p' is under 200 bytes at the graded head — a stub is not a plan"; _rl_rc=2; }
       fi
     done <<EOF
+\
 $_rl_vals
 EOF
   done
@@ -790,7 +831,7 @@ selftest() {
       printf '\n## Findings\n| id | file:line | severity | disposition |\n|---|---|---|---|\n'
       printf '%s' "${6:-}"
       printf '\n## Design-promised controls\n| control | discharged by |\n|---|---|\n'
-      printf '%s\n' "${7:-| the grader refuses an unattested approval | \`conformance/probe.sh::test_review_lane_grades\` |}"
+      printf '%s\n' "${7:-"| the grader refuses an unattested approval | \`conformance/probe.sh::test_review_lane_grades\` |"}"
       printf '\n\n## Security review\n%s\n' "${8:-ran — seat fable, verdict: no findings}"
     } > "$_f"
   }
@@ -800,7 +841,10 @@ selftest() {
   # run the gate inside a fixture, with the fixture's own .bin first on PATH
   fx_run() {   # $1 = repo, $2 = mode(pr|prepush), [$3 = base ref; '-' means NONE (the S-M1 no-base case)]
     RL_REPO="$1"; _rl_mode="$2"; _rl_pr=1; _rl_head=$(git -C "$1" rev-parse HEAD)
-    case "${3:-main}" in -) _rl_base_ref="" ;; *) _rl_base_ref="${3:-main}" ;; esac
+    case "${3:-main}" in
+      -) _rl_base_ref="" ;;
+      *) _rl_base_ref="${3:-main}" ;;
+    esac
     # The gate's own output is CAPTURED, not discarded: a failing leg prints it (ck), so a red names
     # the refusal token rather than only the rc. A selftest that hides the reason costs an hour.
     _o=0; ( PATH="$1/.bin:$PATH"; rl_run ) > "$_fx/last.log" 2>&1 || _o=$?
@@ -862,7 +906,7 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
       echo "selftest FAIL: $1 gave the right rc $3 for the WRONG reason — expected the token '$4'"
       sed 's/^/    | /' "$_fx/last.log" 2>/dev/null || true; st=1; return 0
     fi
-    echo "OK: $1 -> rc $3${4:+ ($4)}"; return 0
+    echo "OK: $1 -> rc $3${4:+" ($4)"}"; return 0
   }
   # ── THE `--pr` CASES. There is no approval case left to write: since
   # `REVIEW-LANE-WAITING-IS-GREEN` nothing here reads the forge, so what `--pr` grades is what
@@ -1002,6 +1046,39 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "control cites an unresolvable path::test" 2 "$(fx_run "$r" prepush)" "RL-CONTROL-UNRESOLVED: control 'a control' cites test"
 
+  # SAST-PARSE-MERGE-TOOL: one cell per disposition / control arm whose case pattern was rewritten (a quoted literal where a
+  # backslash-blank stood). Each pins ITS OWN refusal token, plus a liveness partner; they pin behaviour, not red-first.
+  r=$(fx_full accshort); t=$(git -C "$r" rev-parse HEAD~1)
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | accepted - ok |
+'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "accepted with no reason of substance" 2 "$(fx_run "$r" prepush)" "is accepted with no reason of substance"
+  r=$(fx_full acclong); t=$(git -C "$r" rev-parse HEAD~1)
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | accepted - the reviewer judged this cosmetic and unreachable |
+'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "accepted with a reason of substance" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
+  r=$(fx_full fixabsent); t=$(git -C "$r" rev-parse HEAD~1)
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | fixed deadbeefdeadbeef |
+'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "fixed <sha> naming no commit" 2 "$(fx_run "$r" prepush)" "which is not a commit in this repository"
+  r=$(fx_full fixword); t=$(git -C "$r" rev-parse HEAD~1)
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | fixed zzz |
+'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "fixed <non-hex> is no disposition" 2 "$(fx_run "$r" prepush)" "carries no disposition in the grammar"
+  r=$(fx_full nbshort); t=$(git -C "$r" rev-parse HEAD~1)
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '| a control | not built, because no |
+'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "control 'not built, because' with no reason of substance" 2 "$(fx_run "$r" prepush)" "says 'not built, because' with no reason of substance"
+  r=$(fx_full nblong); t=$(git -C "$r" rev-parse HEAD~1)
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '| a control | not built, because the pinned test is deferred to a follow-up card |
+'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "control 'not built, because' with a reason of substance" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
+
   # (−) a control discharged by a COMMENT line only (vet M5's executable-line rule).
   r=$(fx_full cmt); t=$(git -C "$r" rev-parse HEAD~1)
   printf '# test_comment_only is mentioned only here\n' > "$r/conformance/probe.sh"
@@ -1050,6 +1127,27 @@ Kit-Class: control-plane
 Kit-Plan: docs/plans/2026-09-04-fixture.md
 Kit-Review: docs/reviews/../../etc/passwd.md" >/dev/null
   ck "traversing Kit-Review value" 2 "$(fx_run "$r" prepush)" RL-PATH
+  # SAST-PARSE-MERGE-TOOL: the other three rl_path_ok arms (charset, prefix, '.md' suffix), one cell each: all three assert `RL-PATH: `, and each value fails exactly one arm.
+  _bpn=0
+  for _bp in 'docs/reviews/a b.md' 'docs/plans/2026-09-04-fixture.md' 'docs/reviews/2026-09-04-fixture.txt'; do
+    _bpn=$((_bpn + 1)); r=$(fx_full "badpath$_bpn")
+    git -C "$r" commit -q --amend -m "record
+
+Kit-Row: FIXTURE
+Kit-Class: control-plane
+Kit-Plan: docs/plans/2026-09-04-fixture.md
+Kit-Review: $_bp" >/dev/null
+    ck "Kit-Review value '$_bp' is refused by the path confinement" 2 "$(fx_run "$r" prepush)" "RL-PATH: "
+  done
+  # SAST-PARSE-MERGE-TOOL: rl_base refuses a flag-shaped or metacharacter --base-ref (never handed to git): in --pr mode no
+  # base means RL-NO-BASE. The conformant head passes with the real base 'main' (the cell above), so the refusal is the ref's.
+  r=$(fx_full basedash)
+  ck "a --base-ref starting with '-' is refused" 2 "$(fx_run "$r" pr -x)" RL-NO-BASE
+  # The metacharacter ref is a REAL branch at the base (git allows ';'), so only rl_base's charset arm can refuse it.
+  r=$(fx_full basemeta); git -C "$r" branch 'ma;in' main
+  ck "a --base-ref with a metacharacter is refused" 2 "$(fx_run "$r" pr 'ma;in')" RL-NO-BASE
+  r=$(fx_full basegood)
+  ck "a plain --base-ref resolves" 0 "$(fx_run "$r" pr main)" "the approval is branch protection's"
 
   # (+) CONSOLIDATED PR — BOTH records are graded (rules 2-7). Under the typed line this case came in
   #     pairs (one record named, both named) because the approver had to enumerate them; `D-240904-2`
@@ -1243,6 +1341,9 @@ Kit-Class: ordinary"; fi
   ck "Kit-Row names an XS row this PR's board diff does not touch -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
   r=$(fx_ord trk XS XS 1 XSROW src/app.js Jira)
   ck "tracker backend -> size unknown -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
+  # SAST-PARSE-MERGE-TOOL: the ceiling's row-id charset arm (a one-line `case` split for semgrep) pins its own refusal.
+  r=$(fx_ord lowid XS XS 1 xsrow src/app.js)
+  ck "a lowercase Kit-Row is not a board id -> owed" 2 "$(fx_run "$r" prepush)" RL-TRAILER
 
   # ── FIX ROUND 1 legs (row binding must be the ROW, not a mention; Done/Released/duplicate owed;
   #    annotation escaping). (a)(b)(c) and (e) are RED against the pre-fix hunk; (d) is a guard.
@@ -1290,7 +1391,7 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   ck "XS ordinary that volunteers the trailers is graded (stub plan refused)" 2 "$(fx_run "$r" prepush)" RL-PLAN-STUB
 
   # ── DESIGN-SKILL-LENS-LIST — the lens leg. A design doc the change ADDS carries the twelve lens names.
-  # fx_design <repo> <mode: full|eleven|none> — writes an added design doc; `full` is the Lens review
+  # fx_design <repo> <mode: full|eleven|none> [heading] — writes an added design doc; `full` is the Lens review
   # section COPIED OUT OF the shipped skill, so a lens renamed in the skill or in RL_LENSES reds leg 1.
   fx_design() {
     mkdir -p "$1/docs/architecture"
@@ -1302,6 +1403,7 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
             } > "$_fd"
             [ "$2" != eleven ] || { grep -v '| Cost and size |' "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd"; } ;;
     esac
+    [ -z "${3:-}" ] || { awk -v h="$3" '/^## Lens review/ && !d { print h; d=1; next } 1' "$_fd" > "$_fd.tmp"; mv "$_fd.tmp" "$_fd"; }
     git -C "$1" add -A >/dev/null
   }
   # leg 1 (+): control-plane, added doc with the full table; the OLD doc is amended without one (not graded)
@@ -1314,6 +1416,29 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   fx_design "$r" eleven; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "M/CP design doc without a full lens table is named" 2 "$(fx_run "$r" prepush)" RL-DESIGN-LENS-MISSING
   grep -qF "Cost and size" "$_fx/last.log" || { echo "selftest FAIL: the refusal must NAME the missing lens 'Cost and size'"; st=1; }
+  # SWAS-239 heading grammar: a section prefix (9a. / §9) is accepted; a different word or an extra word is not.
+  # LOAD-BEARING: the positives and the agreement leg red (rc 2) on the pre-change `^## ([0-9]+[.] )?Lens review`.
+  _sec=$(printf '\302\247')
+  r=$(fx_full lenssub)
+  fx_design "$r" full "## 9a. Lens review"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "heading '## 9a. Lens review' is accepted" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
+  r=$(fx_full lenssect)
+  fx_design "$r" full "## ${_sec}9 Lens review"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "heading '## §9 Lens review' is accepted" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
+  r=$(fx_full lensless)
+  fx_design "$r" full "## 9a. Lessons review"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "heading '## 9a. Lessons review' is NO-LENS-TABLE" 2 "$(fx_run "$r" prepush)" RL-DESIGN-NO-LENS-TABLE
+  r=$(fx_full lensnot)
+  fx_design "$r" full "## Not a Lens review"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "heading '## Not a Lens review' is NO-LENS-TABLE" 2 "$(fx_run "$r" prepush)" RL-DESIGN-NO-LENS-TABLE
+  # agreement: the awk cell pass must see the section the grep accepted. LOAD-BEARING: revert only the awk and all twelve are named.
+  r=$(fx_full lensagree)
+  fx_design "$r" eleven "## ${_sec}9 Lens review"; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "section-sign heading with eleven rows names only the missing lens" 2 "$(fx_run "$r" prepush)" RL-DESIGN-LENS-MISSING
+  [ "$(grep -c RL-DESIGN-LENS-MISSING "$_fx/last.log")" = 1 ] || { echo "selftest FAIL: the section-sign heading must name exactly one missing lens"; st=1; }
+  grep -qF "'Cost and size'" "$_fx/last.log" || { echo "selftest FAIL: the section-sign refusal must NAME 'Cost and size'"; st=1; }
+  ! grep -qF "'Project principles'" "$_fx/last.log" || { echo "selftest FAIL: the awk cell pass missed the section the grep accepted"; st=1; }
+  ! grep -q RL-DESIGN-NO-LENS-TABLE "$_fx/last.log" || { echo "selftest FAIL: the section-sign heading was refused as no lens table"; st=1; }
   # leg 3 (+): XS ordinary adding a design doc with no table is exempt (the ceiling cut runs first)
   r=$(fx_ord xslens XS XS 1 XSROW src/app.js)
   fx_design "$r" none; git -C "$r" commit -q --amend --no-edit >/dev/null
@@ -1355,6 +1480,13 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   else
     echo "OK: --stamp is refused with a usage error (struck by D-240904-2)"
   fi
+  # SAST-PARSE-MERGE-TOOL: the dispatch's `--pr` number check (a one-line `case` split for semgrep) refuses a non-number, rc 2.
+  _pr_rc=0; _pr_out=$(sh "$0" --pr 12x --head abc 2>&1) || _pr_rc=$?
+  if [ "$_pr_rc" = 2 ] && printf '%s' "$_pr_out" | grep -qF 'review-lane: --pr needs a number'; then
+    echo "OK: --pr 12x is refused (rc 2, 'review-lane: --pr needs a number')"
+  else
+    echo "selftest FAIL: --pr 12x rc=$_pr_rc out=[$_pr_out]"; st=1
+  fi
 
   RL_REPO="$_sv_repo"
   rm -rf "$_fx"; trap - EXIT INT TERM
@@ -1381,7 +1513,9 @@ done
 case "$_rl_mode" in
   selftest) selftest ;;
   pr)
-    case "$_rl_pr" in ''|*[!0-9]*) echo "review-lane: --pr needs a number" >&2; exit 2 ;; esac
+    case "$_rl_pr" in
+      ''|*[!0-9]*) echo "review-lane: --pr needs a number" >&2; exit 2 ;;
+    esac
     [ -n "$_rl_head" ] || { echo "review-lane: --pr requires --head <sha>" >&2; exit 2; }
     _rc=0; rl_run || _rc=$?
     echo "review-lane => rc=$_rc (0 pass/N-A · 2 anomaly/refusal)"

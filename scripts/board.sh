@@ -149,8 +149,8 @@ bd_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 bd_row_ok() {
   case "$1" in
     '')           return 1 ;;
-    [!A-Z0-9]*)   return 1 ;;
-    *[!A-Z0-9-]*) return 1 ;;
+    [!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789]*)   return 1 ;;
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-]*) return 1 ;;
   esac
   return 0
 }
@@ -1006,7 +1006,7 @@ bd_tf_load() {
   if [ -L "$_df_phys" ]; then echo "$_df_pre must not be a symlink." >&2; return 2; fi
   { [ -f "$_df_phys" ] && [ -r "$_df_phys" ]; } || { echo "$_df_pre must be a readable regular file." >&2; return 2; }
   bd_df_contained "$_df_phys" \
-    || { echo "$_df_pre must sit under the repo root or \$TMPDIR, and no path component below that may start with a dot." >&2; return 2; }
+    || { echo "$_df_pre must sit under the repo root or \$TMPDIR, and no path component below that may start with a dot; on macOS make the file with mktemp \"\${TMPDIR:-/tmp}/x.XXXXXX\" (a bare mktemp ignores TMPDIR)." >&2; return 2; }
   # the file is read ONCE, bounded, into a private mode-600 copy; every check and the content come from that copy
   _df_tmp=$( umask 077; mktemp ) || { echo "$_df_pre could not create a scratch file." >&2; return 2; }
   trap 'rm -f "$_df_tmp"' EXIT
@@ -1721,13 +1721,25 @@ do_list() {
 # ── ORACLE MARKER: selftest() and everything below is the non-vacuity oracle region. ─────────────
 selftest() {
   bd_fail=0
-  bd_base=$(mktemp -d)
+  bd_base=$(mktemp -d "${TMPDIR:-/tmp}/board-st.XXXXXX")
   HOME="$bd_base/home"; mkdir -p "$HOME"; export HOME
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null; export GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM
   unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL 2>/dev/null || true
 
   bd_pass() { echo "selftest PASS: $1"; }
   bd_fail_() { echo "selftest FAIL: $1"; bd_fail=1; }
+
+  # ── fixture root: it lives under $TMPDIR (SWAS-244). macOS mktemp ignores TMPDIR, so the bare form landed in the
+  #    per-user temp dir under the pre-push lane and every text-file leg refused on bd_df_contained. B7 is the
+  #    behaviour (it passes on Linux with a bare mktemp, so it cannot stand alone); B8 pins the whole line.
+  _bd_phys_base=$(CDPATH='' cd -- "$bd_base" && pwd -P)
+  _bd_phys_tmp=$(CDPATH='' cd -- "${TMPDIR:-/tmp}" && pwd -P)
+  case "$_bd_phys_base" in
+    "$_bd_phys_tmp"/*) bd_pass "leg B7/fixture-root: the selftest fixture root sits under the physical \$TMPDIR" ;;
+    *) bd_fail_ "leg B7/fixture-root: $_bd_phys_base is not under $_bd_phys_tmp (a bare mktemp ignores TMPDIR on macOS)" ;;
+  esac
+  if grep -qxF -e '  bd_base=$(mktemp -d "${TMPDIR:-/tmp}/board-st.XXXXXX")' "$BD_SELF"; then bd_pass "leg B8/fixture-root-pin: the bd_base assignment names the TMPDIR template"
+  else bd_fail_ "leg B8/fixture-root-pin: the bd_base= assignment is no longer the explicit-template line"; fi
 
   # ── md-backend leg: claim/release DELEGATE to board-claim.sh's own claim/release ────────────
   bd_remote="$bd_base/github.com/fixture-owner/fixture-repo.git"

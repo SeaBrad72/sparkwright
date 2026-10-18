@@ -98,15 +98,17 @@
 #   * `never-infer` — that the agent WAITED for an explicit recorded per-gate human GO — is FLOOR
 #     discipline, NOT enforced by this tool. A green `check` proves what shipped carries the approved
 #     SHA; it does NOT prove the agent's judgment or that it refused to infer.
-# `actuate` wires ORDINARY and SENSITIVE promotions: on an authenticated, SHA-bound recorded GO it
-# performs the merge. CONTROL-PLANE is REFUSED by `actuate` pending the open
-# TIER-3-CP-MERGE-ACTUATION-RULING sitting (step 2b) — control-plane merges take the direct path
-# instead. That refusal is a DRIFT CONTROL, not a boundary: the class is caller-recorded.
+# `actuate` wires ORDINARY and SENSITIVE promotions: on a SHA-bound recorded GO it performs the merge.
+# TEAM (the default): the GO must carry an authenticated non-author forge approval. SOLO (an explicit
+# MERGE_RELATIONSHIP=solo declared on origin's default branch): the owner's named GO, bound to the sha, the
+# tree and origin, is the control (pv_solo_go_ok). CONTROL-PLANE is not merged by `actuate` in either: it is
+# REFUSED with a pointer at the exact `land` command (D-241014-1 item 6 closed the Tier-3 sitting).
+# That refusal is a DRIFT CONTROL, not a boundary: the class is caller-recorded.
 #
 # POSIX sh; dash-clean (no `local`, no bashisms). Operates on the current working tree's git repo.
 # The notes ref name is overridable with PROMOTION_NOTES_REF (default: promotions) for testing.
-# What it changes: `record` binds a GO record as a git NOTE under refs/notes/promotions (tree-invariant — the commit's tree/SHA is unchanged); `actuate` performs a real control-plane PR merge (default `gh pr merge --squash`, swappable via --merge-cmd) bound to the approved SHA; `sync` reconciles a diverged local ledger with origin's by tree content and publishes it (fast-forward only, never rewriting a published note; it moves refs/notes/promotions and leaves a local refs/kit/promotions-presync-<UTC> backup when it drops local content); `log`, `check` and `trace` are read-only.
-# Guardrails: `check` asserts shipped==approved by TREE equality (exit 1 on MISMATCH); the approved-by assurance label is DERIVED from the commit's own evidence (never from input) — a note BINDS, it does not AUTHENTICATE. `actuate` fails CLOSED unless a SHA-bound [authenticated: <forge>-review] GO exists and approver != author, rejects `$ref` metacharacters, NEVER emits `--admin`, and re-verifies shipped==approved after the merge. `record` derives `kit-row:` from the approved commit's own trailer (never a flag), records `(none)` rather than inventing one, and sanitises it with every other free-text field; `trace` matches a trunk commit to its note by TREE (never ancestry, which a squash breaks), reds on any recordless commit in a `--recent` window, and fails closed on an empty window. `sync` publishes only local-only notes that re-validate as exactly what `record` would write NOW (never a label it could not derive), never rewrites, forces or merges, refuses a note origin once held and removed (voids visible in origin's history). Operator-only by policy (the script does not detect CI or a subagent): never CI, never a subagent.
+# What it changes: `record` binds a GO record as a git NOTE under refs/notes/promotions (tree-invariant — the commit's tree/SHA is unchanged); `actuate` performs a real ordinary/sensitive PR merge (default `gh pr merge --squash --match-head-commit <sha>`, swappable via a vetted, pinned --merge-cmd) bound to the approved SHA, and points a control-plane note at `land`; `sync` reconciles a diverged local ledger with origin's by tree content and publishes it (fast-forward only, never rewriting a published note; it moves refs/notes/promotions and leaves a local refs/kit/promotions-presync-<UTC> backup when it drops local content); `log`, `check` and `trace` are read-only.
+# Guardrails: `check` asserts shipped==approved by TREE equality (exit 1 on MISMATCH); the approved-by assurance label is DERIVED from the commit's own evidence (never from input) — a note BINDS, it does not AUTHENTICATE. `actuate` fails CLOSED unless a SHA-bound GO exists on origin and the declared merge relationship's bar holds (team, the default: [authenticated: <forge>-review] and approver != author; solo, declared in .kit/dials.conf on origin's default branch: the named, sha- and tree-bound owner GO), rejects `$ref` metacharacters, NEVER emits `--admin`, and re-verifies shipped==approved after the merge. `record` derives `kit-row:` from the approved commit's own trailer (never a flag), records `(none)` rather than inventing one, and sanitises it with every other free-text field; `trace` matches a trunk commit to its note by TREE (never ancestry, which a squash breaks), reds on any recordless commit in a `--recent` window, and fails closed on an empty window. `sync` publishes only local-only notes that re-validate as exactly what `record` would write NOW (never a label it could not derive), never rewrites, forces or merges, refuses a note origin once held and removed (voids visible in origin's history). Operator-only by policy (the script does not detect CI or a subagent): never CI, never a subagent.
 set -eu
 # A `refs/replace/*` ref can make every object read (tree, blob, trailer, author) of an approved sha return a
 # crafted commit; the metering gate reads the approved commit, so it must read the REAL object.
@@ -287,9 +289,11 @@ usage() {
   echo "        the forge login of a non-author reviewer whose APPROVED review is on <sha> (checked BEFORE the" >&2
   echo "        record, so a refusal writes no note, and again from the note on origin BEFORE the merge); the" >&2
   echo "        owner who gave the GO goes in --go-by, recorded [self-asserted]. --scope must be the PR id (a" >&2
-  echo "        branch/<name> scope has no reviews to read, so land refuses it). SOLO (one account, no second" >&2
-  echo "        approver): land refuses; record the GO with 'record' and the HUMAN merges (admin merge is the" >&2
-  echo "        human's act, never the agent's)." >&2
+  echo "        branch/<name> scope has no reviews to read, so land refuses it). SOLO-DECLARED (MERGE_RELATIONSHIP=solo" >&2
+  echo "        in .kit/dials.conf on the default branch): no second approver is needed — land judges the solo bar" >&2
+  echo "        (a named --go-by, the tree, a non-design/plan gate) on the note read back from origin. An UNDECLARED" >&2
+  echo "        one-account repo reads team: land refuses; record the GO with 'record' and the HUMAN merges (admin" >&2
+  echo "        merge is the human's act, never the agent's). docs/adoption/vc-hosts.md explains declaring solo." >&2
   echo "        land is ONE transactional verb for the direct/control-plane path: it RECORDS the GO" >&2
   echo "        (record's own args + transaction), CONFIRMS the note reached origin, then MERGES then" >&2
   echo "        leaves the branch INTACT. If the record does not complete or the note is not on" >&2
@@ -390,7 +394,9 @@ forge_review_upgrade() {
     '#'*)     _fr_n="${_fr_scope#\#}" ;;
     *)        _fr_n="$_fr_scope" ;;
   esac
-  case "$_fr_n" in ''|*[!0-9]*) _fr_n="" ;; esac
+  case "$_fr_n" in
+    ''|*[!0-9]*) _fr_n="" ;;
+  esac
   [ -n "$_fr_n" ] || { _fr_fallback no-pr-scope "$_fr_lab"; return 0; }
   command -v gh >/dev/null 2>&1 || { _fr_fallback gh-unavailable "$_fr_lab"; return 0; }
   # 2. RESOLVE THE APPROVED SHA IN FULL before comparing. 27 of this repo's own records carry an
@@ -563,7 +569,9 @@ do_record() {
     echo "record: --go-by is empty or whitespace-only — rejected (omit the flag to record '(none recorded)')" >&2; return 2
   fi
   # Reject option-like values: a --approved-sha beginning with '-' must never reach git as a flag.
-  case "$asha" in -*) echo "record: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;; esac
+  case "$asha" in
+    -*) echo "record: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;;
+  esac
   # SANITIZE (S5a review, CRITICAL): the note body is line-structured text. A NEWLINE (or any control
   # char) in a free-text field would inject arbitrary lines — e.g. a forged `approved-by: x [signed:
   # gpg]` / `[authenticated: ...]` line that bypasses derive_assurance entirely. Reject any control
@@ -855,11 +863,14 @@ do_trace() {
   # character of the joined string, so `--ref abc --from -x` passed: the leading `-` was in the
   # middle of the concatenation and matched nothing. Each value is checked on its own.
   for _tr_arg in "$ref" "$recent" "$from"; do
-    case "$_tr_arg" in -*)
-      echo "trace: arguments must not start with '-' (got '$_tr_arg')" >&2; return 2 ;;
+    case "$_tr_arg" in
+      -*)
+        echo "trace: arguments must not start with '-' (got '$_tr_arg')" >&2; return 2 ;;
     esac
   done
-  case "$recent" in ''|*[!0-9]*) [ -z "$recent" ] || { echo "trace: --recent takes a positive integer" >&2; return 2; } ;; esac
+  case "$recent" in
+    ''|*[!0-9]*) [ -z "$recent" ] || { echo "trace: --recent takes a positive integer" >&2; return 2; } ;;
+  esac
   if ! git rev-parse -q --verify "refs/notes/$NOTES_REF" >/dev/null 2>&1; then
     echo "trace: no refs/notes/$NOTES_REF in this repository — nothing to trace against." >&2
     echo "       fetch it first: git fetch origin refs/notes/$NOTES_REF:refs/notes/$NOTES_REF" >&2
@@ -966,7 +977,7 @@ do_trace() {
     _tgo="$(printf '%s' "$_tgo" | LC_ALL=C tr -d '[:cntrl:]')"
     printf '%s  kit-row: %s  approved-sha: %s  gate: %s  scope: %s  approved-by: %s  go-by: %s\n' \
       "$(printf '%s' "$_tc" | cut -c1-12)" "$_trow" "$(printf '%s' "$_ta" | cut -c1-12)" \
-      "${_tgate:-(none)}" "${_tscope:-(none)}" "${_taby:-(none)}" "${_tgo:-(none recorded)}"
+      "${_tgate:-"(none)"}" "${_tscope:-"(none)"}" "${_taby:-"(none)"}" "${_tgo:-"(none recorded)"}"
     return 0
   }
 
@@ -1118,8 +1129,12 @@ do_check() {
   fi
   # Reject option-like values (Low finding): a --ref/--approved-sha beginning with '-' must never
   # be handed to git where it could be misparsed as a flag. Real refs/SHAs never start with '-'.
-  case "$ref"  in -*) echo "check: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;; esac
-  case "$asha" in -*) echo "check: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;; esac
+  case "$ref" in
+    -*) echo "check: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;;
+  esac
+  case "$asha" in
+    -*) echo "check: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;;
+  esac
 
   # the approved-sha must resolve to a real object; capture its TREE (the content fingerprint).
   atree="$(git rev-parse -q --verify "${asha}^{tree}" 2>/dev/null || true)"
@@ -1161,11 +1176,13 @@ do_check() {
 #   --ref is the PR's head branch at the approved sha (step 0 refuses anything else before a merge); a caller
 #   --merge-cmd is vetted like land's and must pin --match-head-commit <sha>; the GO note is read from ORIGIN;
 #   the post-check repeats step 0 and the real shipped == approved check is CI's `trace --recent` (SWAS-207a).
-#   The CONTROL-PLANE actuation GATE. Fails CLOSED unless a recorded, authenticated, SHA-bound GO
-#   exists AND the approver is a distinct party from the author, then performs a NORMAL (non-`--admin`)
-#   merge via a swappable --merge-cmd and re-verifies shipped == approved. Never emits `--admin`:
-#   approval authorizes PROMOTION, never a branch-protection BYPASS (the bypass is the human's solo
-#   kill-switch, denied to the agent by guard-core.sh — see docs/governance/promotion-contract.md).
+#   The ORDINARY/SENSITIVE actuation GATE (control-plane is a pointer at `land`, step 1b). Fails CLOSED unless a
+#   recorded, SHA-bound GO exists on origin and the bar for the declared MERGE RELATIONSHIP holds — TEAM (the
+#   default, and every undeclared or unreadable case): the label is [authenticated: <forge>-review] AND the
+#   approver is a distinct party from the author; SOLO: the solo bar (the named go-by, the tree, a non-pre-build
+#   gate) replaces both. Then performs a NORMAL (non-`--admin`) merge via a swappable --merge-cmd and
+#   re-verifies shipped == approved. Never emits `--admin`: approval authorizes PROMOTION, never a
+#   branch-protection BYPASS (the guard denies `--admin` to the agent — docs/governance/promotion-contract.md).
 #
 #   Fail-safe direction: ANY parse/lookup gap in steps 1-3 -> refuse before touching anything; a gap
 #   in step 5 (post-merge) -> loud SHIPPED != APPROVED (an incident, not a warning).
@@ -1173,8 +1190,8 @@ do_check() {
 #   HONEST CEILING (rewritten at PR 11, when the sentence it replaced stopped being true): the
 #   forge-review -> [authenticated: github-review] derivation IS NOW WIRED in `record`, so this gate
 #   is reachable by a production path and `actuate` opens for ORDINARY and SENSITIVE changes on an
-#   authenticated recorded GO. CONTROL-PLANE is refused here (step 2b) pending the open
-#   TIER-3-CP-MERGE-ACTUATION-RULING sitting; those merges use the direct path.
+#   authenticated recorded GO. CONTROL-PLANE is refused here (step 1b, before any label judgment) with a pointer at
+#   the exact `land` command, in BOTH relationships (D-241014-1 item 6 closed the Tier-3 sitting).
 #   WHAT IS STILL NOT PROVEN HERE: the live `gh pr merge` remains a swappable stub in tests, and the
 #   PR-number -> merge-commit-sha resolution for step 5 is still the forge-adapter seam. AND THE LABEL
 #   BAR IS NOT AUTHENTICATION: a note is self-authorable and the derivation trusts the local `gh`
@@ -1230,7 +1247,9 @@ pv_tracker_backend() {  # -> the tracker backend name on stdout, or nothing (md 
   # sourced in a subshell: this helper must not leak the seam's globals into the verb that called it
   # shellcheck disable=SC1090  # dynamic source path (the kit's own backlog-lib.sh); existence/readability checked above
   if _pvb=$( . "$_pvlib"; SEAM_ROOT=$ROOT; seam_backend 2>/dev/null ); then :; else return 0; fi
-  case "$_pvb" in github | jira | ado | linear | gitlab) printf '%s' "$_pvb" ;; esac
+  case "$_pvb" in
+    github | jira | ado | linear | gitlab) printf '%s' "$_pvb" ;;
+  esac
   return 0
 }
 
@@ -1627,6 +1646,8 @@ pv_merge_cmd_vet() {
   _mvtab="$(printf '\t')"
   _mvnl='
 '
+  # Reviewed (SWAS-277): the deliberate tokenizer of the merge vet. IFS is blank/tab/newline only, under `set -f`, restored below on every path; the loop only matches tokens and executes nothing.
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   IFS=" $_mvtab$_mvnl"
   set -f
   for _mvtok in $_mvcmd; do
@@ -1642,6 +1663,8 @@ pv_merge_cmd_vet() {
     if [ -n "$_mvdeny" ]; then break; fi
   done
   set +f
+  # Reviewed (SWAS-277): restores the IFS saved above (or unsets it), on every path out of the tokenizer loop.
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   if [ "$_mvoifs" = __unset__ ]; then unset IFS; else IFS=$_mvoifs; fi
   if [ "$_mvdeny" = delete ]; then
     echo "$_mvVERB REFUSED: --merge-cmd carries a branch-deletion flag (--delete-branch/--delete or a" >&2
@@ -1677,12 +1700,18 @@ pv_actuate_cmd_shape() {
   esac
   _sh_n=0
   _sh_oifs=${IFS-__unset__}
+  # Reviewed (SWAS-277): the newline was refused above, so IFS is blank/tab only, under `set -f`, restored below; the loop only counts pin tokens and executes nothing.
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   IFS=" $(printf '\t')"
   set -f
   for _sh_tok in $_sh_cmd; do
-    case "$_sh_tok" in --match-head-commit | --match-head-commit=*) _sh_n=$((_sh_n+1)) ;; esac
+    case "$_sh_tok" in
+      --match-head-commit | --match-head-commit=*) _sh_n=$((_sh_n+1)) ;;
+    esac
   done
   set +f
+  # Reviewed (SWAS-277): restores the IFS saved above (or unsets it).
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   if [ "$_sh_oifs" = __unset__ ]; then unset IFS; else IFS=$_sh_oifs; fi
   if [ "$_sh_n" -gt 1 ]; then
     echo "ACTUATE REFUSED: --merge-cmd carries more than one --match-head-commit token ($_sh_n) — exactly one pin, on the approved sha. Nothing was merged." >&2
@@ -1700,6 +1729,8 @@ pv_merge_cmd_pins() {
   _mptab="$(printf '\t')"
   _mpnl='
 '
+  # Reviewed (SWAS-277): IFS is blank/tab/newline only, under `set -f`, restored below; the loop only compares tokens to the sha and executes nothing.
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   IFS=" $_mptab$_mpnl"
   set -f
   for _mptok in $_mpcmd; do
@@ -1709,6 +1740,8 @@ pv_merge_cmd_pins() {
     _mpprev="$_mpnorm"
   done
   set +f
+  # Reviewed (SWAS-277): restores the IFS saved above (or unsets it).
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   if [ "$_mpoifs" = __unset__ ]; then unset IFS; else IFS=$_mpoifs; fi
   return "$_mppin"
 }
@@ -1745,6 +1778,168 @@ pv_origin_note() {
   return 0
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# THE MERGE RELATIONSHIP (SWAS-207b; D-241014-1). `solo` or `team`, DECLARED by the repo and read from ORIGIN'S DEFAULT BRANCH.
+#   team (the default, and what every unreadable or undeclared case reads): an authenticated non-author forge approval plus
+#        the owner's recorded GO — the bar both verbs always had.
+#   solo (an explicit `MERGE_RELATIONSHIP=solo` in .kit/dials.conf): one forge account, so the owner's recorded GO, bound to
+#        the head sha (pv_solo_go_ok), is the merge control for every class.
+# INVERTED KEY: every failure to read reads the STRICTER value. There is no environment variable. The declaration is NOT read
+# from the approved tree (a PR that flips team to solo would be judged by the bar it introduces); a flip takes effect only
+# after it has merged under the current relationship's bar.
+# A DRIFT CONTROL, NOT A BOUNDARY: it reads whatever `origin` resolves to in the agent's own clone, and `git remote set-url` or a
+# GIT_CONFIG_* pair can redirect that. What binds is server-side protection where the plan has it, and after-the-fact review of
+# the trail (`trace --recent`, the PR's diff of dials.conf).
+# ---------------------------------------------------------------------------------------------------------------------
+# pv_rel_blob <tip-sha> <path> -> prints the blob of <path> at <tip-sha> (regular files only, like pv_dial_mode); rc 0 = printed |
+# 1 = absent | 2 = present but NOT a regular file (a symlink, a gitlink, or a `.kit` that is not a directory).
+pv_rel_blob() {
+  _rbtip="$1"; _rbpath="$2"; _rbtab="$(printf '\t')"
+  _rbent="$(git -C "$ROOT" ls-tree --full-tree "$_rbtip" -- "$_rbpath" 2>/dev/null | head -1 || true)"
+  if [ -z "$_rbent" ]; then
+    # A symlinked `.kit` makes the path-through lookup return NOTHING, which is indistinguishable from absent: ask for the
+    # directory entry itself (the same F-A cure pv_dial_mode carries).
+    case "$_rbpath" in
+      */*)
+        _rbdent="$(git -C "$ROOT" ls-tree --full-tree "$_rbtip" -- "${_rbpath%%/*}" 2>/dev/null | head -1 || true)"
+        if [ -n "$_rbdent" ] && [ "${_rbdent%% *}" != 040000 ]; then return 2; fi ;;
+    esac
+    return 1
+  fi
+  case "${_rbent%% *}" in
+    100644|100755) ;;
+    *) return 2 ;;
+  esac
+  _rbobj="${_rbent#* }"; _rbobj="${_rbobj#* }"; _rbobj="${_rbobj%%"$_rbtab"*}"
+  git -C "$ROOT" cat-file blob "$_rbobj" 2>/dev/null
+}
+
+# pv_rel_governance <CLAUDE.md text> -> prints `team` | `solo` | `undeclared`. The grammar of conformance/branch-protection.sh
+# read_governance (GOV_FIELD, :154-175), RE-STATED here because that script cannot be sourced: ONLY an anchored
+# `**Governance** (§ solo/team): <mode>` field line counts; the FIRST word must be exactly `team` or `solo`; more than one field
+# line is ambiguous (`team` if ANY says team, else undeclared). KEEP THE TWO IN STEP.
+pv_rel_governance() {
+  _rgn="$(printf '%s\n' "$1" | grep -c -e '^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team):' || true)"
+  if [ "${_rgn:-0}" -lt 1 ]; then echo undeclared; return 0; fi
+  _rgvals="$(printf '%s\n' "$1" | sed -n 's#^[-*+[:space:]]*\*\*Governance\*\* (§ solo/team): \([^[:space:]]*\).*$#\1#p')"
+  if printf '%s\n' "$_rgvals" | grep -qx 'team'; then echo team; return 0; fi
+  if [ "$_rgn" = 1 ] && [ "$_rgvals" = solo ]; then echo solo; else echo undeclared; fi
+}
+
+# pv_rel_team <verb> <why> — prints the ONE relationship line for a `team` reading. Never prints note or origin text beyond
+# what the caller passes (control bytes are stripped).
+pv_rel_team() {
+  printf '%s: merge relationship: team (%s)\n' "$1" "$(printf '%s' "$2" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-200)"
+}
+
+# pv_merge_relationship <verb> -> sets PV_REL (`solo` | `team`) and prints ONE line saying which, and why when it is team.
+PV_REL=team
+pv_merge_relationship() {
+  _mrv="$1"; PV_REL=team
+  _mrhd="$(GIT_TERMINAL_PROMPT=0 git -C "$ROOT" ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" && $3 == "HEAD" { print $2; exit }' || true)"
+  case "$_mrhd" in
+    refs/heads/?*) ;;
+    *) _mrhd=refs/heads/main ;;
+  esac
+  case "$_mrhd" in
+    *[!A-Za-z0-9._/-]*) _mrhd=refs/heads/main ;;
+  esac
+  _mrbr="${_mrhd#refs/heads/}"
+  _mrtip="$(pv_remote_ref_sha "$_mrhd" || true)"
+  if [ -z "$_mrtip" ]; then
+    pv_rel_team "$_mrv" "cannot read origin's $_mrbr, so the declaration is unreadable and reads team"; return 0
+  fi
+  if ! git -C "$ROOT" cat-file -e "${_mrtip}^{commit}" 2>/dev/null; then
+    pv_rel_team "$_mrv" "origin/$_mrbr tip not fetched, so the declaration is unreadable and reads team until: git fetch origin"; return 0
+  fi
+  _mrrc=0; _mrdial="$(pv_rel_blob "$_mrtip" .kit/dials.conf)" || _mrrc=$?
+  if [ "$_mrrc" = 2 ]; then
+    pv_rel_team "$_mrv" ".kit/dials.conf on origin/$_mrbr is not a regular file (a symlink or other entry), so it is not read"; return 0
+  fi
+  _mrval=""
+  if [ "$_mrrc" = 0 ]; then
+    _mrline="$(printf '%s\n' "$_mrdial" | grep -E '^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=' | tail -n1 || true)"
+    if [ -n "$_mrline" ]; then
+      _mrval="$(printf '%s' "$_mrline" | sed -E "s/^[[:space:]]*MERGE_RELATIONSHIP[[:space:]]*=[[:space:]]*//; s/#.*$//; s/[\"']//g; s/[[:space:]].*$//")"
+    fi
+  fi
+  case "$_mrval" in
+    solo|team) ;;
+    '') _mrval=undeclared ;;
+    *) pv_rel_team "$_mrv" "MERGE_RELATIONSHIP='$_mrval' in .kit/dials.conf on origin/$_mrbr is not a recognised value (solo|team), so it reads team"; return 0 ;;
+  esac
+  _mrgrc=0; _mrgtxt="$(pv_rel_blob "$_mrtip" CLAUDE.md)" || _mrgrc=$?
+  _mrgov=undeclared
+  if [ "$_mrgrc" = 0 ]; then _mrgov="$(pv_rel_governance "$_mrgtxt")"; fi
+  # FAIL-CLOSED: a CLAUDE.md that exists but cannot be read as a regular file (rc 2), or any read failure other than a plain
+  # absence (rc 1), reads Governance `team`, so a solo dial can never grant on a Governance line it failed to read.
+  if [ "$_mrgrc" != 0 ] && [ "$_mrgrc" != 1 ]; then _mrgov=team; fi
+  if [ "$_mrval" = team ]; then pv_rel_team "$_mrv" "MERGE_RELATIONSHIP=team on origin/$_mrbr"; return 0; fi
+  if [ "$_mrval" = undeclared ]; then
+    if [ "$_mrgov" = solo ]; then
+      pv_rel_team "$_mrv" "undeclared: no MERGE_RELATIONSHIP on origin/$_mrbr; CLAUDE.md Governance: solo alone grants nothing"
+    else
+      pv_rel_team "$_mrv" "undeclared: no MERGE_RELATIONSHIP on origin/$_mrbr"
+    fi
+    return 0
+  fi
+  if [ "$_mrgov" = team ]; then
+    pv_rel_team "$_mrv" "CLAUDE.md Governance: team overrides MERGE_RELATIONSHIP=solo"; return 0
+  fi
+  PV_REL=solo
+  printf '%s: merge relationship: solo (origin/%s %s) — the recorded GO is the control\n' "$_mrv" "$_mrbr" "$(printf '%s' "$_mrtip" | cut -c1-8)"
+  return 0
+}
+
+# pv_solo_go_ok <verb> <note> <approved-sha> -> 0 = the SOLO BAR holds | 1 = REFUSED (already printed). Runs on the note as
+# ORIGIN holds it, replaces the forge-review label bar and the author SoD in a solo-declared repo, and reads every key LINE-ANCHORED
+# (never a body scan — a --token/--basis value may legitimately contain any text). Five legs:
+#   1. the note binds EXACTLY <approved-sha>;  2. `approved-tree:` is the sha's own tree;  3. `go-by:` names a giver;
+#   4. `gate:` is not a pre-build gate (design, plan: a design GO is not a merge GO);  5. `change-class:` is a recorded class.
+# WHAT AUTHENTICATES THE SOLO GO: NOTHING. The record says so and no new label is invented: `go-by` is [self-asserted] by design and
+# `approval-token:` holds the owner's words. The BINDING is what this checks — sha, tree, origin, and the forge's --match-head-commit
+# pin on the merge. A fabricated note that passes these legs merges; only after-the-fact review of the trail catches it.
+pv_solo_go_ok() {
+  _sgV="$(printf '%s' "$1" | LC_ALL=C tr 'a-z' 'A-Z')"; _sgn="$2"; _sga="$3"
+  _sgf() { printf '%s\n' "$_sgn" | sed -n "s/^$1: //p" | head -1; }
+  _sgclean() { printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-60; }
+  _sgb="$(_sgf approved-sha)"
+  if [ "$_sgb" != "$_sga" ]; then
+    echo "$_sgV REFUSED (solo bar): the GO note on origin does not bind $_sga exactly (its approved-sha line is '$(_sgclean "$_sgb")') — nothing was merged." >&2
+    return 1
+  fi
+  _sgt="$(_sgf approved-tree)"; _sgw="$(git -C "$ROOT" rev-parse -q --verify "${_sga}^{tree}" 2>/dev/null || true)"
+  if [ -z "$_sgw" ] || [ "$_sgt" != "$_sgw" ]; then
+    echo "$_sgV REFUSED (solo bar): the note's approved-tree ($(_sgclean "$_sgt")) is not the tree of $_sga — nothing was merged." >&2
+    return 1
+  fi
+  _sgg="$(_sgf go-by)"; _sgname=""
+  case "$_sgg" in
+    *' [self-asserted]') _sgname="${_sgg%" [self-asserted]"}" ;;
+  esac
+  if [ -z "$(printf '%s' "$_sgname" | tr -d '[:space:]')" ]; then
+    echo "$_sgV REFUSED (solo bar): the note records no named GO-giver (go-by is '$(_sgclean "$_sgg")'; the shape is '<name> [self-asserted]'). In a solo repo the" >&2
+    echo "              owner's named GO is the control: record it with --go-by <the GO-giver>. Nothing was merged." >&2
+    return 1
+  fi
+  _sgate="$(_sgf gate | LC_ALL=C tr 'A-Z' 'a-z' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  if [ -z "$_sgate" ]; then
+    echo "$_sgV REFUSED (solo bar): the note records no gate (a missing or empty gate: line cannot be shown not to be a pre-build gate) — nothing was merged." >&2
+    return 1
+  fi
+  case "$_sgate" in
+    design*|plan*)
+      echo "$_sgV REFUSED (solo bar): gate '$(_sgclean "$_sgate")' is a pre-build gate (design or plan) — a design or plan GO is not a merge GO. Record the" >&2
+      echo "              merge GO at its own gate (for example release-candidate). Nothing was merged." >&2
+      return 1 ;;
+  esac
+  if ! _pv_class_ok "$(_sgf change-class)"; then
+    echo "$_sgV REFUSED (solo bar): the note's change-class is not a recorded class (ordinary | sensitive | control-plane) — nothing was merged." >&2
+    return 1
+  fi
+  return 0
+}
+
 do_actuate() {
   ref=""; asha=""; merge_cmd=""
   while [ $# -gt 0 ]; do
@@ -1759,13 +1954,21 @@ do_actuate() {
   if [ -z "$asha" ]; then echo "actuate: --approved-sha required" >&2; usage; return 2; fi
   # Reject option-like values (as `check`/`record` do): a --ref/--approved-sha beginning with '-'
   # must never reach git where it could be misparsed as a flag. Real refs/SHAs never start with '-'.
-  case "$ref"  in -*) echo "actuate: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;; esac
-  case "$asha" in -*) echo "actuate: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;; esac
+  case "$ref" in
+    -*) echo "actuate: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;;
+  esac
+  case "$asha" in
+    -*) echo "actuate: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;;
+  esac
   # Charset-validate (defense-in-depth): a real ref/tag/PR-number/SHA contains only [A-Za-z0-9._/-].
   # $ref is interpolated into the default merge_cmd eval below, so reject any metacharacter outright —
   # the gate must never be a shell-injection primitive even though the caller is already the agent.
-  case "$ref"  in *[!A-Za-z0-9._/-]*) echo "actuate: invalid --ref '$ref' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
-  case "$asha" in *[!A-Za-z0-9._/-]*) echo "actuate: invalid --approved-sha '$asha' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
+  case "$ref" in
+    *[!A-Za-z0-9._/-]*) echo "actuate: invalid --ref '$ref' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;;
+  esac
+  case "$asha" in
+    *[!A-Za-z0-9._/-]*) echo "actuate: invalid --approved-sha '$asha' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;;
+  esac
   # Default merge = the sanctioned NORMAL squash merge (no branch-protection bypass flag is ever
   # emitted here; see the header comment). Swapped for a stub in tests.
   # A CALLER-supplied command faces the extra shape refusals below; the default does not need them.
@@ -1811,7 +2014,54 @@ do_actuate() {
   #    CI's recordless-merge backstop reads. Same read-back `land` makes; a fetch that fails refuses too.
   if ! note="$(pv_origin_note actuate "$asha")"; then return 1; fi
 
-  # 2. Read the DERIVED label from the `approved-by:` line ONLY — extract the trailing [...] on that
+  # 1b. CONTROL-PLANE IS NOT MERGED HERE — IT GOES THROUGH `land`, IN BOTH RELATIONSHIPS (D-241014-1 item 6: the owner CLOSED the
+  #     Tier-3 sitting). This arm is a POINTER, and it runs BEFORE any label or relationship judgment: a control-plane note with ANY
+  #     label (authenticated, or [committer] in a team repo) gets the exact `land` command, never the "does not meet the
+  #     control-plane bar" refusal below, and the unknown-class refusal also precedes any label judgment. Nothing gets weaker: the
+  #     same notes are refused, only the first message changes. `land` already holds the stronger transaction (record, confirm on
+  #     origin, vet, pin); routing control-plane there gives `actuate` no new power over it.
+  #     HONEST TIER: `change-class:` is CALLER-RECORDED, so this is a DRIFT CONTROL at the note's own trust tier, never a
+  #     boundary. Read LINE-ANCHORED from the `change-class:` line only (never a body scan — the S5a decoy lesson) and matched
+  #     EXACTLY after case-folding (a substring test would refuse a legitimate class merely containing the word).
+  cls_line="$(printf '%s\n' "$note" | grep '^change-class:' | head -1 || true)"
+  cls_val="${cls_line#change-class:}"
+  cls_val="$(printf '%s' "$cls_val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  cls_lc="$(printf '%s' "$cls_val" | LC_ALL=C tr 'A-Z' 'a-z')"
+  cls_val="$(printf '%s' "$cls_val" | LC_ALL=C tr -d '[:cntrl:]')"   # N4: judged raw above, echoed clean below
+  # AN ALLOWLIST, NOT A DENYLIST (security review F2). A denylist on "control-plane" fails OPEN on everything it does not
+  # recognise: a note with NO `change-class:` line at all, or a typo'd value, or a class this vocabulary gains later, would all
+  # sail through the refusal and be merged. Since the note is caller-recorded, that is a one-character evasion. Proceed ONLY for
+  # the two classes this subcommand is wired for; everything else — missing, empty, unrecognised — refuses with its own reason.
+  # `record` validates the same vocabulary at the front door, so a note reaching here with an unrecognised class was written by
+  # something other than `record`, which is worth saying out loud.
+  case "$cls_lc" in
+    ordinary|sensitive) ;;
+    control-plane)
+      echo "ACTUATE REFUSED: change-class '$cls_val' — control-plane merges go through land, in both relationships (D-241014-1 item 6). Nothing was merged. Run:" >&2
+      echo "  sh scripts/promotion-verify.sh land --ref <PR number> --approved-sha $asha --class control-plane --scope \"PR #<PR number>\" --go-by <the GO-giver> --approved-by <reviewer login> --gate <gate> --rung <rung> --token \"<the owner's words>\"" >&2
+      echo "land's --ref is the PR NUMBER (it must equal --scope), not actuate's head branch." >&2
+      return 1 ;;
+    *)
+      echo "ACTUATE REFUSED: unrecognised or missing change-class '$cls_val' — this gate proceeds only" >&2
+      echo "                 for an explicitly recorded 'ordinary' or 'sensitive' class (allowlist)." >&2
+      echo "                 A note with no class, or one this vocabulary does not know, cannot be" >&2
+      echo "                 judged, and an unjudgeable class is never a permission. Re-record the GO" >&2
+      echo "                 with \`record --class <ordinary|sensitive|control-plane>\`." >&2
+      return 1 ;;
+  esac
+
+  # 1c. THE MERGE RELATIONSHIP (D-241014-1), read from origin's default branch and said in ONE line before anything merges.
+  pv_merge_relationship actuate
+
+  # 2. SOLO: the solo bar (the owner's named GO, bound to the sha, the tree and origin; pv_solo_go_ok) REPLACES the label bar
+  #    below and the author SoD at step 3 — with one forge account the approver is the author by construction. TEAM (the default,
+  #    and every undeclared or unreadable case) is exactly what it always was. The team body below is deliberately NOT re-indented,
+  #    so this change leaves steps 2 and 3 themselves byte-identical.
+  if [ "$PV_REL" = solo ]; then
+    pv_solo_go_ok actuate "$note" "$asha" || return 1
+  else
+
+  # 2 (team). Read the DERIVED label from the `approved-by:` line ONLY — extract the trailing [...] on that
   #    single line. NEVER substring-scan the note body: a --token/--basis/--scope value may legitimately
   #    contain bracket text (the S5a injection lesson). Require the authenticated-forge-review bar.
   aby_line="$(printf '%s\n' "$note" | grep '^approved-by:' | head -1 || true)"
@@ -1827,52 +2077,7 @@ do_actuate() {
     return 1
   fi
 
-  # 2b. CONTROL-PLANE REFUSAL — the arm the forge-review derivation MADE NECESSARY (PR 11, design
-  #     §4.7 arm (a)). Before that derivation existed, "control-plane stays human-actuated through
-  #     this tool" was enforced BY CONSTRUCTION: no path could produce an [authenticated:] label, so
-  #     step 2 closed the gate for every class. Wiring the derivation opens step 2 for every class at
-  #     once — including control-plane, while TIER-3-CP-MERGE-ACTUATION-RULING is an OPEN SITTING.
-  #     Fail closed until that sitting rules, rather than let this slice render its ruling by side
-  #     effect (a lean is not a ruling).
-  #     This does NOT contradict the promotion contract's "the agent may actuate on a recorded GO,
-  #     control-plane included": that allowance is exercised today by the direct working path
-  #     (`gh pr merge --squash --match-head-commit <sha>` after `record`), which stays available. Only
-  #     this subcommand stays conservative.
-  #     HONEST TIER: `change-class:` is CALLER-RECORDED, so this is a DRIFT CONTROL at the note's own
-  #     trust tier — exactly like the label bar above it — never a boundary. Removable by the ruling.
-  #     Read LINE-ANCHORED from the `change-class:` line only (never a body scan — the S5a decoy
-  #     lesson), and matched EXACTLY after case-folding: a substring test would refuse a legitimate
-  #     class merely containing the word.
-  cls_line="$(printf '%s\n' "$note" | grep '^change-class:' | head -1 || true)"
-  cls_val="${cls_line#change-class:}"
-  cls_val="$(printf '%s' "$cls_val" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  cls_lc="$(printf '%s' "$cls_val" | LC_ALL=C tr 'A-Z' 'a-z')"
-  cls_val="$(printf '%s' "$cls_val" | LC_ALL=C tr -d '[:cntrl:]')"   # N4: judged raw above, echoed clean below
-  # AN ALLOWLIST, NOT A DENYLIST (security review F2). A denylist on "control-plane" fails OPEN on
-  # everything it does not recognise: a note with NO `change-class:` line at all, or a typo'd value,
-  # or a class this vocabulary gains later, would all sail through the refusal and be merged. Since
-  # the note is caller-recorded, that is a one-character evasion. Proceed ONLY for the two classes
-  # this subcommand is wired for; everything else — missing, empty, unrecognised — refuses with its
-  # own reason. `record` validates the same vocabulary at the front door, so a note reaching here with
-  # an unrecognised class was written by something other than `record`, which is worth saying out loud.
-  case "$cls_lc" in
-    ordinary|sensitive) ;;
-    control-plane)
-      echo "ACTUATE REFUSED: change-class '$cls_val' — control-plane actuation through this subcommand is" >&2
-      echo "                 held closed pending the open TIER-3-CP-MERGE-ACTUATION-RULING sitting." >&2
-      echo "                 Ordinary/Sensitive actuate here on an authenticated recorded GO. This is a" >&2
-      echo "                 DRIFT CONTROL (the class is caller-recorded, at the note's own trust tier)," >&2
-      echo "                 and it is removable by that ruling. Control-plane merges use the direct" >&2
-      echo "                 path: gh pr merge --squash --match-head-commit <approved-sha>." >&2
-      return 1 ;;
-    *)
-      echo "ACTUATE REFUSED: unrecognised or missing change-class '$cls_val' — this gate proceeds only" >&2
-      echo "                 for an explicitly recorded 'ordinary' or 'sensitive' class (allowlist)." >&2
-      echo "                 A note with no class, or one this vocabulary does not know, cannot be" >&2
-      echo "                 judged, and an unjudgeable class is never a permission. Re-record the GO" >&2
-      echo "                 with \`record --class <ordinary|sensitive|control-plane>\`." >&2
-      return 1 ;;
-  esac
+  # (2b, the control-plane refusal, moved ahead of step 2 — see 1b above.)
 
   # 3. approver != author (builder != ratifier — real SoD teeth). The approver id is the text BEFORE
   #    the trailing ' [label]'. Strip from the SAME last '[' the label read used (not a
@@ -1892,6 +2097,7 @@ do_actuate() {
   #    The author read, its fail-closed refusals (commit absent from this clone / unreadable author) and the
   #    case- and whitespace-insensitive compare live in pv_sod_author_check (shared with `land`).
   pv_sod_author_check actuate "$asha" "$aby_id" || return 1
+  fi   # closes the team arm (steps 2-3); the metering gate below runs in BOTH relationships
 
   # 3b. THE PER-SLICE METERING GATE (RUNAWAY-METERING-LANDING-GATE): after SoD, BEFORE the merge, so a
   #     refusal attempts no merge. The row is the note's OWN `kit-row:` projection (the same read
@@ -1942,8 +2148,10 @@ do_actuate() {
   pv_release_claim "$note" actuate
 
   # Honest success line: the note is RECORDED, not necessarily AUTHENTICATED — a git note is
-  # self-authorable (the label bar is audit + defense-in-depth over it; the real solo control is
-  # server-side branch protection + the human-only admin bypass). Do not imply the label authenticates.
+  # self-authorable (the label bar is audit + defense-in-depth over it). Where the plan can enforce it, server-side
+  # branch protection is what binds; in a solo-declared repo there is NO server-side kill-switch and the GO is
+  # self-asserted by name, so the control is the recorded GO bound to the sha + the forge's --match-head-commit pin,
+  # and only after-the-fact review of the trail (trace --recent) catches a fabricated one. Do not imply the label authenticates.
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
   if [ "$crc" -eq 0 ]; then
     echo "OK: actuated $ref on recorded GO (approved-sha $asha) — head ref carries the approved tree (shipped == approved on the trunk is CI's check: promotion-verify.sh trace --recent)"
@@ -1965,10 +2173,11 @@ do_actuate() {
 # only then MERGES — the record cannot be forgotten because the SAME verb writes it before the merge.
 # It NEVER deletes the branch (deletion is a separate human act, D-240819-4) and NEVER emits `--admin`.
 #
-# WHY A NEW SUBCOMMAND, NOT `actuate`. `actuate` refuses control-plane (step 2b) to protect the open
-# TIER-3-CP-MERGE-ACTUATION-RULING sitting; extending it to cover CP would delete that refusal and
-# render the sitting by side effect. `land` changes NO boundary: the guard still denies `--admin` and
-# CP Write/Edit, branch protection is unchanged, the human still renders the GO and directs the merge.
+# WHY A SEPARATE SUBCOMMAND, NOT `actuate`. The Tier-3 sitting is CLOSED (D-241014-1 item 6): `land` is the
+# control-plane verb, by ruling, in BOTH relationships, and `actuate` points a control-plane note here (its step
+# 1b). `land` already holds the stronger transaction (record, confirm on origin, vet, pin). It changes NO
+# boundary: the guard still denies `--admin` and CP Write/Edit, branch protection is unchanged, the human
+# still renders the GO.
 #
 # ⚠️ HONEST CEILING — VERB-SCOPED, NOT A HARD GATE (design A1, BUILD-BINDING). By the friction test —
 # would it bind if the model stopped cooperating? — `land` does NOT: a raw `gh pr merge` still exists
@@ -1987,9 +2196,13 @@ do_actuate() {
 # That label is derived over the LOCAL `gh` credential at record time: a drift control at the note's own
 # trust tier. An agent that controls PATH can fake reviews, and a raw `gh pr merge` still exists, so the
 # control that BINDS is server-side branch protection + required review; `land` refuses on its own path
-# and that is all it claims. SOLO (one account, no second approver) there is no authenticated approval to
-# find, so `land` refuses by construction: the agent records the GO (`record`) and the HUMAN merges
-# (an admin merge is the human's act; the guard denies the agent --admin).
+# and that is all it claims. SOLO-DECLARED (MERGE_RELATIONSHIP=solo on origin's default branch, D-241014-1): one
+# forge account, so there is no authenticated approval to find; `land` skips the author SoD and the forge
+# pre-derivation and judges the SOLO BAR (pv_solo_go_ok) on the note read back from origin instead — the owner's
+# named GO bound to the sha, the tree and origin, and pinned at the forge with --match-head-commit. That GO is
+# self-asserted by name and there is no server-side kill-switch; only after-the-fact review catches a fabricated
+# one. An UNDECLARED one-account repo still reads team, so `land` refuses it by construction: the agent records
+# the GO (`record`) and the HUMAN merges (an admin merge is the human's act; the guard denies the agent --admin).
 do_land() {
   ref=""; merge_cmd=""; asha=""; land_cls=""; land_aby=""; land_goby=""; land_goby_given=0; land_scope=""
   # Strip land's OWN two flags (--ref, --merge-cmd) and PEEK --approved-sha / --class / --approved-by /
@@ -2057,10 +2270,18 @@ do_land() {
   # command eval'd below, so a metacharacter must never reach the shell — even though the caller is
   # already the agent, this verb must never be a shell-injection primitive. Real refs/SHAs never
   # start with '-' and contain only [A-Za-z0-9._/-].
-  case "$ref"  in -*) echo "land: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;; esac
-  case "$asha" in -*) echo "land: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;; esac
-  case "$ref"  in *[!A-Za-z0-9._/-]*) echo "land: invalid --ref '$ref' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
-  case "$asha" in *[!A-Za-z0-9._/-]*) echo "land: invalid --approved-sha '$asha' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;; esac
+  case "$ref" in
+    -*) echo "land: invalid --ref '$ref' (must not start with '-')" >&2; return 2 ;;
+  esac
+  case "$asha" in
+    -*) echo "land: invalid --approved-sha '$asha' (must not start with '-')" >&2; return 2 ;;
+  esac
+  case "$ref" in
+    *[!A-Za-z0-9._/-]*) echo "land: invalid --ref '$ref' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;;
+  esac
+  case "$asha" in
+    *[!A-Za-z0-9._/-]*) echo "land: invalid --approved-sha '$asha' (allowed chars: A-Za-z0-9._/-)" >&2; return 2 ;;
+  esac
 
   # 0. CP-PATH VERB (F3-2, owner-adjudicated 2026-09-10). `land` is the direct/control-plane verb the
   #    design describes; ordinary and sensitive promotions actuate through `actuate`, which carries the
@@ -2088,7 +2309,15 @@ do_land() {
       return 2 ;;
   esac
 
-  # 0b. SoD (builder != ratifier) — RUN BEFORE do_record (N2). It sits beside the class gate, which
+  # 0a. THE MERGE RELATIONSHIP (D-241014-1), read from origin's default branch and said in ONE line before anything is
+  #     recorded or merged. SOLO (an explicit MERGE_RELATIONSHIP=solo on the base, no Governance `team` over it): steps 0b and
+  #     0d(ii) below are skipped — with one forge account there is no second approver to find or compare — and step 2b judges the
+  #     SOLO BAR on the note read back from origin instead of the forge-review label. Everything else `land` holds is kept in
+  #     both relationships: --go-by, scope == ref, the whole-note match, --no-push refused, the origin confirm, the vet and the
+  #     pin. TEAM (the default, and every undeclared or unreadable case) is exactly what it always was.
+  pv_merge_relationship land
+
+  # 0b. SoD (builder != ratifier) — RUN BEFORE do_record (N2). Team only (the arm is not re-indented, to keep its diff empty). It sits beside the class gate, which
   #     already runs pre-record with $asha/$land_aby in hand, so a self-approval NEVER publishes a GO
   #     note on origin: the old placement (after record + the on-origin confirm) meant every SoD refusal
   #     left a PUBLISHED self-approved note, and the recordless-merge backstop reads binding only, not
@@ -2102,6 +2331,7 @@ do_land() {
   #     real boundary is server-side branch protection + required review; a git note is self-authorable
   #     and this check rides on the caller-supplied approver. It catches the honest self-approval, not a
   #     determined one.
+  if [ "$PV_REL" != solo ]; then
   _land_aby_norm="$(printf '%s' "$land_aby" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   if [ -z "$_land_aby_norm" ]; then
     echo "LAND REFUSED: empty approver (--approved-by) — cannot satisfy builder != ratifier (SoD). This" >&2
@@ -2110,6 +2340,7 @@ do_land() {
     return 1
   fi
   pv_sod_author_check land "$asha" "$_land_aby_norm" || return 1
+  fi   # solo skips 0b: the approver is the author by construction (record still requires a non-empty --approved-by)
 
   # 0c. THE PER-SLICE METERING GATE (RUNAWAY-METERING-LANDING-GATE) — after SoD, BEFORE do_record, so a
   #     refusal writes NO note (the same property the class gate and SoD have). The row is the `Kit-Row`
@@ -2145,13 +2376,18 @@ do_land() {
     '#'*)    _land_sn="${land_scope#\#}" ;;
     *)       _land_sn="$land_scope" ;;
   esac
-  case "$_land_sn" in ''|*[!0-9]*) _land_sn="" ;; esac
+  case "$_land_sn" in
+    ''|*[!0-9]*) _land_sn="" ;;
+  esac
   if [ -z "$_land_sn" ]; then
     echo "LAND REFUSED: --scope '$(printf '%s' "$land_scope" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-60)' is not a PR id. A control-plane land is bound to the PR it merges and" >&2
     echo "              authenticates by that PR's reviews: --scope must be the PR id (PR #N, PR-N, #N or N)." >&2
     return 1
   fi
-  _land_rn="$ref"; case "$_land_rn" in *[!0-9]*) _land_rn="" ;; esac
+  _land_rn="$ref";
+  case "$_land_rn" in
+    *[!0-9]*) _land_rn="" ;;
+  esac
   if [ -z "$_land_rn" ] || [ "$(printf '%s' "$_land_rn" | sed 's/^0*//')" != "$(printf '%s' "$_land_sn" | sed 's/^0*//')" ]; then
     echo "LAND REFUSED: --scope names PR $_land_sn but --ref is '$ref' — the PR judged must be the PR merged." >&2
     echo "              Pass the same PR number as --ref and --scope. No note was written and nothing was merged." >&2
@@ -2161,6 +2397,8 @@ do_land() {
   #     requires (the same regex). forge_review_upgrade already refuses the PR author (case-insensitive), a
   #     Bot, a withdrawn or dismissed approval and a stale-sha one, and prints its fixed-enumeration reason
   #     on stderr (e.g. reviewer-not-in-reviews, reviewer-is-pr-author), which stays visible above.
+  #     Team only: a solo-declared repo has no second approver to derive (the arm is not re-indented, to keep its diff empty).
+  if [ "$PV_REL" != solo ]; then
   _land_pre="$(derive_assurance "$asha" "$land_aby")"
   _land_pre="$(forge_review_upgrade "$land_scope" "$asha" "$land_aby" "$_land_pre")"
   if ! printf '%s' "$_land_pre" | grep -Eq '^authenticated: [A-Za-z0-9_-]+-review$'; then
@@ -2169,13 +2407,15 @@ do_land() {
     echo "              '$_land_abyp' derives [$_land_pre] (the reason is on the line above)." >&2
     echo "              --approved-by is the forge LOGIN of a non-author reviewer whose APPROVED review is on" >&2
     echo "              $asha; the GO-giver (the owner) goes in --go-by." >&2
-    echo "              SOLO (one account, no second approver)? Record the GO with \`promotion-verify.sh record\`" >&2
-    echo "              (it takes --go-by too), then the HUMAN merges: an admin squash-merge is the human's act," >&2
-    echo "              never the agent's (the guard denies the agent --admin). No note was written and nothing" >&2
-    echo "              was merged. This is a drift control at the note's own tier (the label is derived over the" >&2
-    echo "              local gh credential); server-side branch protection + required review is what binds." >&2
+    echo "              SOLO (one forge account, no second approver)? Declare it: MERGE_RELATIONSHIP=solo in .kit/dials.conf on the" >&2
+    echo "              default branch, merged once by hand after you record your GO on that PR (docs/adoption/vc-hosts.md). Until" >&2
+    echo "              then, record the GO with \`promotion-verify.sh record\` (it takes --go-by too) and the HUMAN merges: an" >&2
+    echo "              admin squash-merge is the human's act, never the agent's (the guard denies the agent --admin). No note was" >&2
+    echo "              written and nothing was merged. This is a drift control at the note's own tier (the label is derived over" >&2
+    echo "              the local gh credential); server-side branch protection + required review is what binds." >&2
     return 1
   fi
+  fi   # closes the team arm of 0d(ii)
 
   # 1. RECORD FIRST — the whole point of the verb. do_record is a self-unwinding transaction (fetch,
   #    refuse on divergence, write, publish, unwind its own unpublished note on push reject); land
@@ -2234,6 +2474,10 @@ do_land() {
   case "$_land_bl" in
     *'['*']') _land_blab="${_land_bl##*\[}"; _land_blab="${_land_blab%]}" ;;
   esac
+  #     SOLO: the same note read back from origin is judged by the SOLO BAR instead of the label (its whole-note match below stays).
+  if [ "$PV_REL" = solo ]; then
+    pv_solo_go_ok land "$_land_cnote" "$asha" || return 1
+  else
   if ! printf '%s' "$_land_blab" | grep -Eq '^authenticated: [A-Za-z0-9_-]+-review$'; then
     _land_blab="$(printf '%s' "$_land_blab" | LC_ALL=C tr -d '[:cntrl:]' | cut -c1-80)"
     echo "LAND REFUSED: the GO note on origin carries assurance '[$_land_blab]', not [authenticated: <forge>-review] —" >&2
@@ -2242,6 +2486,7 @@ do_land() {
     echo "              Re-run land once the approval stands on $asha — record supersedes the note." >&2
     return 1
   fi
+  fi   # closes the team arm of the 2b label check (not re-indented, to keep its diff empty)
   #     THE WHOLE NOTE, NOT ONLY THE LABEL (security S2-1b): land and record parse the same argv separately, so
   #     the note on origin must say exactly what land judged. Each field is read by its own line key and
   #     compared byte-for-byte (class case-folded, as record accepts it); any mismatch refuses the merge.
@@ -2421,13 +2666,17 @@ trap '_pv_sig=130; [ "$_pv_crit" = 1 ] || _pv_die 130' INT
 trap '_pv_sig=143; [ "$_pv_crit" = 1 ] || _pv_die 143' TERM
 
 _pv_sync_clean() { LC_ALL=C tr -d '\000-\011\013-\037\177'; }
-_pv_sync_hex40() { case "$1" in *[!0-9a-f]*|'') return 1 ;; esac; [ "${#1}" = 40 ]; }
+_pv_sync_hex40() { case "$1" in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac; [ "${#1}" = 40 ]; }
 # ECHO SWEEP (whole-branch fix round 1, A5/B2): dash's builtin `echo` EXPANDS `\0NNN`, so an `echo` of any
 # variable that holds note text, a git-derived string or a remote string can emit a terminal escape on
 # Linux (and bash-as-sh on macOS does the same). Every message below that interpolates such text is a
 # `printf '%s\n'`, and the untrusted ones also go through _pv_sync_clean.
 _pv_sync_say() { if [ "$_sy_dry" = 1 ]; then printf '%s\n' "WOULD $*"; else printf '%s\n' "$*"; fi; }
-_pv_sync_is_discard() { case " $_sy_disc " in *" $1 "*) return 0 ;; esac; return 1; }
+_pv_sync_is_discard() { case " $_sy_disc " in
+    *" $1 "*) return 0 ;;
+  esac; return 1; }
 # FAIL-CLOSED READS (fix round 1): `do_sync` runs under `if`, so `set -e` is OFF. Every git read that
 # feeds the classification is captured into a variable FIRST and its rc checked; only then is the
 # text post-processed. A failed read is a refusal (rc 2), never "no difference" / "no history".
@@ -2465,7 +2714,9 @@ _pv_sync_refsha() {
 _pv_sync_field() { printf '%s\n' "$1" | sed -n "s/^$2: //p" | head -1; }
 # _pv_sync_resolve <hex> — the commit a (possibly abbreviated) sha names, or failure.
 _pv_sync_resolve() {
-  case "$1" in *[!0-9a-f]*|'') return 1 ;; esac
+  case "$1" in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac
   git rev-parse -q --verify "$1^{commit}" 2>/dev/null
 }
 # R1: identity fields byte-exact (approved-sha compared RESOLVED); only token/basis/recorded-at may differ.
@@ -2476,7 +2727,7 @@ _pv_sync_same_identity() {
   # go-by is an IDENTITY field (GO-IDENTITY-AND-LAND-SOD): a twin with a different GO-giver is a different
   # GO. A LEGACY note carries no go-by line and counts as `(none recorded)`, the same as a new note without one.
   _ig1="$(_pv_sync_field "$1" go-by)"; _ig2="$(_pv_sync_field "$2" go-by)"
-  [ "${_ig1:-(none recorded)}" = "${_ig2:-(none recorded)}" ] || return 1
+  [ "${_ig1:-"(none recorded)"}" = "${_ig2:-"(none recorded)"}" ] || return 1
   _ia="$(_pv_sync_field "$1" approved-sha)"; _ib="$(_pv_sync_field "$2" approved-sha)"
   [ "$_ia" = "$_ib" ] && return 0
   _ia="$(_pv_sync_resolve "$_ia")" || return 1
@@ -2563,6 +2814,7 @@ _pv_sync_classify() {
   _cl_raw="$(git diff-tree -r --no-renames --name-only "$1" "$2")" || { _pv_sync_refuse_read "diff the local and origin ledger trees"; return 2; }
   _cl_shas="$(printf '%s\n' "$_cl_raw" | tr -d '/' | sort -u)"
   # A `while read` over the captured text: a `for x in $var` would pathname-expand a '*' path (F4).
+  # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
   while IFS= read -r _cs; do
     if ! _pv_sync_hex40 "$_cs"; then
       # B3: a non-40-hex path on the LOCAL side is refused, never dropped (it would vanish with no backup);
@@ -2577,11 +2829,15 @@ _pv_sync_classify() {
     fi
     _pv_sync_one "$_cl_ot" "$_cl_lo" "$_cs" || return 2
   done <<EOF
+\
 $_cl_shas
 EOF
   set -f
   for _cd in $_sy_disc; do
-    case " $_sy_used " in *" $_cd "*) ;; *) printf '%s\n' "sync: note: --discard-local $_cd matched no refused or candidate record" >&2 ;; esac
+    case " $_sy_used " in
+      *" $_cd "*) ;;
+      *) printf '%s\n' "sync: note: --discard-local $_cd matched no refused or candidate record" >&2 ;;
+    esac
   done
   set +f
   return 0
@@ -2593,7 +2849,9 @@ EOF
 _pv_sync_prefix_hits() { # <prefix> — every note path (slashes stripped) in either listing that starts with it
   printf '%s\n%s\n' "$_cl_ot" "$_cl_lo" | while read -r _bm _bt _bb _bp; do
     _rq="$(printf '%s' "$_bp" | tr -d '/')"
-    case "$_rq" in "$1"*) printf '%s\n' "$_rq" ;; esac
+    case "$_rq" in
+      "$1"*) printf '%s\n' "$_rq" ;;
+    esac
   done
 }
 _pv_sync_resolve_prefixes() {
@@ -2623,7 +2881,9 @@ _pv_sync_args() {
       --dry-run) _sy_dry=1; shift ;;
       --discard-local)
         _dv="${2:-}"
-        case "$_dv" in ''|*[!0123456789abcdef]*) _dv="" ;; esac
+        case "$_dv" in
+          ''|*[!0123456789abcdef]*) _dv="" ;;
+        esac
         if [ "${#_dv}" = 40 ]; then _sy_disc="$_sy_disc $_dv"
         elif [ "${#_dv}" -ge 4 ] && [ "${#_dv}" -lt 40 ]; then _sy_pref="$_sy_pref $_dv"
         else
@@ -2731,21 +2991,29 @@ _pv_vc_grammar() {
     _pv_vc_fail grammar "a control byte other than the line feeds"; return 1; }
   # THE SHAPE: line 5 is `go-by: ...` in a new note and `gate: ...` in a legacy one.
   _vc_fmt=12
-  case "$(printf '%s\n' "$_vc_body" | sed -n '5p')" in "go-by: "*) _vc_fmt=13 ;; esac
+  case "$(printf '%s\n' "$_vc_body" | sed -n '5p')" in
+    "go-by: "*) _vc_fmt=13 ;;
+  esac
   _vc_goby="(none recorded)"
   _vc_n=0
+  # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
   while IFS= read -r _vc_l; do
     _vc_n=$((_vc_n + 1))
     # F4(b): `record` stores through `notes add -F -`, which strips trailing whitespace, so a line ending in a
     # space is not a body record wrote. (A trailing TAB is a control byte, refused above.)
-    case "$_vc_l" in *' ') _pv_vc_fail grammar "line $_vc_n ends in a space (record never stores one)"; return 1 ;; esac
+    case "$_vc_l" in
+      *' ') _pv_vc_fail grammar "line $_vc_n ends in a space (record never stores one)"; return 1 ;;
+    esac
     if [ "$_vc_n" = 1 ]; then
       [ "$_vc_l" = "record: promotion GO (approve->execute->log)" ] || { _pv_vc_fail grammar "line 1 is not record's header"; return 1; }
       continue
     fi
     _vc_k="$(_pv_vc_key "$_vc_n")"
     [ -n "$_vc_k" ] || { _pv_vc_fail grammar "more than the $_vc_fmt lines record writes"; return 1; }
-    case "$_vc_l" in "$_vc_k: "*) ;; *) _pv_vc_fail grammar "line $_vc_n is not '$_vc_k: ...'"; return 1 ;; esac
+    case "$_vc_l" in
+      "$_vc_k: "*) ;;
+      *) _pv_vc_fail grammar "line $_vc_n is not '$_vc_k: ...'"; return 1 ;;
+    esac
     _vc_v="${_vc_l#"$_vc_k: "}"
     case "$_vc_k" in
       approved-sha) _vc_asha="$_vc_v" ;; approved-tree) _vc_tree="$_vc_v" ;; approved-by) _vc_by="$_vc_v" ;;
@@ -2754,6 +3022,7 @@ _pv_vc_grammar() {
       approval-token) _vc_tok="$_vc_v" ;; basis) _vc_basis="$_vc_v" ;; recorded-at) _vc_ts="$_vc_v" ;;
     esac
   done <<EOF
+\
 $_vc_body
 EOF
   [ "$_vc_n" = "$_vc_fmt" ] || { _pv_vc_fail grammar "$_vc_n lines, record writes exactly $_vc_fmt for this note's shape (12 legacy, 13 with go-by)"; return 1; }
@@ -2777,22 +3046,32 @@ EOF
 # Checked inside V1 (pure string checks, no API call), so it runs before V7's forge derivation.
 _pv_vc_goby() {
   [ "$_vc_goby" != "(none recorded)" ] || return 0
-  case "$_vc_goby" in *' [self-asserted]') ;; *) _pv_vc_fail go-by "not '<name> [self-asserted]' or '(none recorded)' (the GO-giver is never authenticated)"; return 1 ;; esac
+  case "$_vc_goby" in
+    *' [self-asserted]') ;;
+    *) _pv_vc_fail go-by "not '<name> [self-asserted]' or '(none recorded)' (the GO-giver is never authenticated)"; return 1 ;;
+  esac
   _vc_gid="${_vc_goby%' [self-asserted]'}"
   [ -n "$(printf '%s' "$_vc_gid" | tr -d ' \t')" ] || { _pv_vc_fail go-by "the GO-giver name is whitespace-only (record refuses one)"; return 1; }
-  case "$_vc_gid" in *'['*|*']'*) _pv_vc_fail go-by "a bracket inside the name (the label is a fixed literal, never supplied)"; return 1 ;; esac
+  case "$_vc_gid" in
+    *'['*|*']'*) _pv_vc_fail go-by "a bracket inside the name (the label is a fixed literal, never supplied)"; return 1 ;;
+  esac
   return 0
 }
 # V7 — approved-by: `<id> [<label>]`; the label must equal one `record` could derive NOW. Runs LAST (I5):
 # the forge derivation interpolates the note's untrusted scope into an API path, so V1-V6 sanitize first.
 _pv_vc_by() {
-  case "$_vc_by" in *' ['*']') ;; *) _pv_vc_fail approved-by "not '<id> [<label>]'"; return 1 ;; esac
+  case "$_vc_by" in
+    *' ['*']') ;;
+    *) _pv_vc_fail approved-by "not '<id> [<label>]'"; return 1 ;;
+  esac
   _vc_id="${_vc_by%% \[*}"
   _vc_lab="${_vc_by#"$_vc_id" \[}"; _vc_lab="${_vc_lab%\]}"
   [ -n "$_vc_id" ] && [ "$_vc_id [$_vc_lab]" = "$_vc_by" ] || { _pv_vc_fail approved-by "not '<id> [<label>]'"; return 1; }
   # A3: `record` refuses a whitespace-only --approved-by; a note it could not have written is refused too.
   [ -n "$(printf '%s' "$_vc_id" | tr -d ' \t')" ] || { _pv_vc_fail approved-by "the approver id is whitespace-only (record refuses one)"; return 1; }
-  case "$_vc_id$_vc_lab" in *'['*|*']'*) _pv_vc_fail approved-by "a bracket inside the id or the label"; return 1 ;; esac
+  case "$_vc_id$_vc_lab" in
+    *'['*|*']'*) _pv_vc_fail approved-by "a bracket inside the id or the label"; return 1 ;;
+  esac
   _vc_e1="$(derive_assurance "$_vc_sha" "$_vc_id")"
   [ "$_vc_lab" != "$_vc_e1" ] || return 0
   # B6: relay the forge derivation's fallback notice (a FIXED enumeration; no API byte) instead of hiding it.
@@ -2809,7 +3088,9 @@ _pv_validate_candidate() { # <object-sha> <note-blob>
   git rev-parse -q --verify "$_vc_sha^{commit}" >/dev/null 2>&1 || {
     _pv_vc_fail approved-sha "the approved commit is not present locally, so the note cannot be re-derived"; return 1; }
   _pv_vc_grammar || return 1                                                                       # V1
-  case "$_vc_asha" in -*) _pv_vc_fail approved-sha "starts with '-'"; return 1 ;; esac
+  case "$_vc_asha" in
+    -*) _pv_vc_fail approved-sha "starts with '-'"; return 1 ;;
+  esac
   _vc_r="$(git rev-parse -q --verify "$_vc_asha^{commit}" 2>/dev/null)" || _vc_r=""
   [ "$_vc_r" = "$_vc_sha" ] || { _pv_vc_fail approved-sha "'$_vc_asha' resolves to '${_vc_r:-nothing}', not the note's own commit"; return 1; }   # V2
   _vc_t="$(git rev-parse -q --verify "$_vc_sha^{tree}" 2>/dev/null)" || _vc_t=""
@@ -2829,11 +3110,13 @@ _pv_validate_candidate() { # <object-sha> <note-blob>
 # the number classify found (rc 2 if they differ) before anything is built.
 _pv_sync_validate_all() {
   _va_n=0
+  # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
   while IFS=' ' read -r _va_s _va_b; do
     [ -n "$_va_s" ] || continue
     _va_n=$((_va_n + 1))
     _pv_validate_candidate "$_va_s" "$_va_b" </dev/null || _pv_sync_refuse
   done <<EOF
+\
 $_sy_cands
 EOF
   if [ "$_va_n" != "$_sy_cand" ]; then
@@ -2856,6 +3139,7 @@ _pv_sync_build() {
   elif _pv_ref_exists "$NOTES_SYNCREF"; then
     printf '%s\n' "sync: the build ref $NOTES_SYNCREF already exists — REFUSED; nothing changed." >&2; return 2
   fi
+  # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
   while IFS=' ' read -r _bd_s _bd_b; do
     [ -n "$_bd_s" ] || continue
     # I1, asserted: a candidate is absent from origin's tip BY CONSTRUCTION; if it is not, refuse.
@@ -2865,6 +3149,7 @@ _pv_sync_build() {
     KIT_PROMOTION_FRONT_DOOR=1 git notes --ref="${NOTES_SYNCREF#refs/notes/}" add -C "$_bd_b" "$_bd_s" >/dev/null 2>&1 || {
       printf '%s\n' "sync: could not add the note for $_bd_s to the build ref — REFUSED; nothing changed." >&2; return 2; }
   done <<EOF
+\
 $_sy_cands
 EOF
   _sy_res="$(git rev-parse -q --verify "$NOTES_SYNCREF^{commit}" 2>/dev/null)" || {
@@ -2900,7 +3185,10 @@ _pv_sync_publish() {
   # `push.recurseSubmodules` and `push.gpgSign` are not, so they are pinned OFF. No `--no-verify`: the
   # kit's pre-push hook still runs.
   if _pp_out="$(git push --no-follow-tags --no-recurse-submodules --no-signed origin "refs/notes/$NOTES_REF" 2>&1)"; then return 0; fi
-  case "$_pp_out" in *non-fast-forward*|*'fetch first'*) _pp_nonff=1 ;; *) _pp_nonff=0 ;; esac
+  case "$_pp_out" in
+    *non-fast-forward*|*'fetch first'*) _pp_nonff=1 ;;
+    *) _pp_nonff=0 ;;
+  esac
   _pp_out="$(printf '%s' "$_pp_out" | _pv_sync_clean)"
   if ! _pv_unwind "$_sy_lt" "$_sy_target"; then
     echo "sync: the push was rejected AND the ledger moved under this sync — refs/notes/$NOTES_REF is NOT unwound" >&2
@@ -2925,10 +3213,12 @@ _pv_sync_postcondition() {
   # line, or more than one, leaves _pc_r empty and refuses; only then compare.
   _pc_r=""; _pc_hit=0
   if _pc_raw="$(git ls-remote --exit-code origin "refs/notes/$NOTES_REF" 2>/dev/null)"; then
+    # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
     while read -r _pc_o _pc_n; do
       [ "$_pc_n" = "refs/notes/$NOTES_REF" ] || continue
       _pc_hit=$((_pc_hit + 1)); _pc_r="$_pc_o"
     done <<EOF
+\
 $_pc_raw
 EOF
     [ "$_pc_hit" = 1 ] || _pc_r=""
@@ -2956,9 +3246,11 @@ EOF
   return 2
 }
 _pv_sync_report() { # the per-record `published` lines, then the final line
+  # The heredoc's lone `\` first line is dropped by the shell (unquoted heredoc); semgrep's bash grammar needs it to parse this loop whole.
   while IFS=' ' read -r _rp_s _rp_b; do
     [ -z "$_rp_s" ] || printf '%s\n' "published $_rp_s"
   done <<EOF
+\
 $_sy_cands
 EOF
   _rp_bk="no backup"; [ -z "$_sy_bk" ] || _rp_bk="backup $_sy_bk"

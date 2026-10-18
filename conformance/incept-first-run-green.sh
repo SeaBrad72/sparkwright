@@ -395,6 +395,28 @@ board_governance_stamp_tests() {  # appends to $st
     else
       echo "selftest FAIL: incept --backlog jira must stamp a board-governance waiver row"; st=1
     fi
+    # SWAS-203 (cell h): the printed Cure is the Jira sentence (the bind first, --replace for a first
+    # bind, then the waiver for a free-plan private repository), never a card id or "no kit adapter";
+    # and the stamped Remediation cell names the bind and BACKLOG.md without "when released".
+    case "$INCEPT_OUT" in
+      *"Cure: bind the trusted job (it needs a valid .kit/tracker.conf on main)"*"--replace"*"a free-plan private repository"*"or move the board to BACKLOG.md"*)
+        echo "selftest PASS: incept --backlog jira prints the Jira cure (the bind first, then the waiver where protection cannot be set)" ;;
+      *) echo "selftest FAIL: incept --backlog jira must print the Jira cure sentence (SWAS-203)"; st=1
+         printf '%s\n' "$INCEPT_OUT" | grep -F 'NOT ENFORCED' | sed 's/^/    /' ;;
+    esac
+    case "$INCEPT_OUT" in
+      *"Cure: TRACKER-BACKED-GOVERNANCE"*|*"no kit adapter"*)
+        echo "selftest FAIL: incept --backlog jira printed a card id or 'no kit adapter' as the cure (SWAS-203)"; st=1 ;;
+      *) echo "selftest PASS: incept --backlog jira's printed cure names no card id and never says 'no kit adapter'" ;;
+    esac
+    _bg_row=$(grep '^| board-governance |' "$_t/WAIVER-REGISTER.md" 2>/dev/null | head -1)
+    case "$_bg_row" in
+      *"when released"*)
+        echo "selftest FAIL: the stamped board-governance row's Remediation still says 'when released' (SWAS-203): $_bg_row"; st=1 ;;
+      *"tracker-board-gates"*"BACKLOG.md"*)
+        echo "selftest PASS: the stamped Remediation names the bind and BACKLOG.md, with no 'when released'" ;;
+      *) echo "selftest FAIL: the stamped Remediation must name the bind (tracker-board-gates) and BACKLOG.md (SWAS-203): $_bg_row"; st=1 ;;
+    esac
     # THE LOAD-BEARING NEGATIVE: the stamp must NOT satisfy the read arm the gates consult.
     if sh "$_bg_root/conformance/waivers-valid.sh" --active board-governance "$_t/WAIVER-REGISTER.md" >/dev/null 2>&1; then
       echo "selftest FAIL: the UNFILLED stamp satisfied --active board-governance — incept would be waiving its own governance"; st=1
@@ -529,6 +551,16 @@ tracker_conf_stamp_tests() {  # appends to $st
         echo "selftest PASS: --backlog github --existing is accepted with a brownfield note (F1, backend-neutral)" ;;
       *) echo "selftest FAIL: --backlog github --existing must print the brownfield note"; st=1
          printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /' ;;
+    esac
+    # SWAS-203 (M3): an adapterless backend's stamped Remediation names its own way out and never
+    # tells the author to bind a job it cannot have.
+    _gh_row=$(grep '^| board-governance |' "$_t/WAIVER-REGISTER.md" 2>/dev/null | head -1)
+    case "$_gh_row" in
+      *"tracker-board-gates"*)
+        echo "selftest FAIL: the github board-governance row tells the author to bind tracker-board-gates (SWAS-203): $_gh_row"; st=1 ;;
+      *"Adopt a kit adapter for 'github'"*)
+        echo "selftest PASS: the github stamped Remediation names a kit adapter, never tracker-board-gates (SWAS-203)" ;;
+      *) echo "selftest FAIL: the github board-governance row must say \"Adopt a kit adapter for 'github'\" (SWAS-203): $_gh_row"; st=1 ;;
     esac
   else
     echo "selftest FAIL: incept --backlog github --existing exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1

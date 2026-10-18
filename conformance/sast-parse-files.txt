@@ -8,3 +8,5 @@
 scripts/tracker-jira.sh
 .claude/hooks/guard-core.sh
 scripts/tracker-cred.sh
+scripts/promotion-verify.sh
+conformance/review-lane.sh

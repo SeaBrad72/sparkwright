@@ -1,5 +1,9 @@
-# golangci-lint baseline for the Go profile (profiles/go.md §2: govet, staticcheck, errcheck, gosec).
+# golangci-lint v2 baseline for the Go profile (profiles/go.md §2: govet, staticcheck, errcheck, gosec).
 # Pin the runner version in ci.yml's golangci-lint-action `with: version:` so green is reproducible.
+# The linter must be built with a Go at least as new as go.mod's `go` line, or it refuses to run.
+# v2 keeps its `standard` default linters (govet, staticcheck, errcheck, ineffassign, unused; staticcheck now
+# also covers the old gosimple and stylecheck) and `enable` adds gosec, the Go SAST layer.
+version: "2"
 linters:
   enable:
     - govet

@@ -26,7 +26,7 @@
 # the credential seam (B4): its OFFLINE declaration-integrity leg (--declared-only — no gh, no
 # network) IS registered below; its LIVE forge-comparison leg still needs repo-admin gh and runs
 # operator-side, not here. "aggregate" means representative.
-#   usage: sh conformance/verify.sh [--require] [--changed <listing-file>] [--summary-file <path>] | --selftest
+#   usage: sh conformance/verify.sh [--require] [--changed <listing-file>] [--summary-file <path>] [--output-file <path>] | --selftest [--from-output <path>]
 #
 # ADOPTER-KIT-SELFTESTS-ON-CHANGE — `--changed <listing>` (a newline-delimited changed-paths file) lets an
 # ADOPTER's pull-request run skip the rows flagged `--kitselftest` (the kit's own selftests, whose subject
@@ -53,6 +53,260 @@ fi
 # leaves $0 as a relative path that no longer resolves once we have moved up a directory.
 _SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 _KS_ORIG_PWD=$(pwd)   # a relative --changed / --summary-file path means relative to the CALLER, not the repo root
+
+# ── CI-DEDUP-VERIFY-SELFTEST-NESTED (SWAS-282) — grade the ENFORCED run's record instead of re-running it ───
+# Two opt-in options, inert for a caller who never passes them (a run without them is today's run, byte for byte):
+#   --output-file <path>            beside --require: run the aggregate once and ALSO write a provenance-stamped
+#                                   record of it to <path> (header: head, verify.sh cksum, working-tree cksum,
+#                                   require, changed · the run's combined output · trailer: rc, line count).
+#   --selftest --from-output <path> grade that record in place of the nested aggregate run the selftest used to do.
+# The path should sit OUTSIDE the working tree (CI: $RUNNER_TEMP): a record inside it is an untracked file the
+# `dirty` checksum then sees. Design: docs/architecture/2026-10-16-ci-dedup-verify-selftest-nested-design.md.
+# The functions below are PURE (their positional parameters and the named file only), so --selftest drives the
+# shipped code on fixtures. SEMGREP: a one-line case-esac is rejected by the SAST parse step, so esac stays on its own line.
+
+# _vs_from_mode <args...> -> `nested` | `file <path>` | `error`. The selection is an ARGUMENT, never the environment:
+# the loop variables are assigned empty first, so an inherited variable of the same name is overwritten.
+_vs_from_mode() {
+  _vm_n=0; _vm_path=""; _vm_prev=""; _vm_a=""; _vm_first=${1:-}
+  for _vm_a in "$@"; do
+    if [ "$_vm_prev" = "--from-output" ]; then _vm_path=$_vm_a; fi
+    if [ "$_vm_a" = "--from-output" ]; then _vm_n=$((_vm_n+1)); fi
+    _vm_prev=$_vm_a
+  done
+  if [ "$_vm_n" = 0 ]; then echo nested; return 0; fi
+  # (not one `if` line carrying the first-word test: the mass budget prices the selftest marker off such a line)
+  if [ "$_vm_first" = "--selftest" ] && [ "$_vm_n" = 1 ] && [ -n "$_vm_path" ]; then printf 'file %s\n' "$_vm_path"; return 0; fi
+  echo error   # a stray flag (no --selftest first), a doubled flag, or no value: never falls back to nested
+}
+
+# _vs_record_field <header-or-trailer-line> <key> -> the value of ` key=value`
+_vs_record_field() { printf '%s\n' "$1" | sed -n "s/.* $2=\\([^ ]*\\).*/\\1/p"; }
+
+# _vs_record_check <path> <head> <self> <dirty> : 0 = the record is a complete, fresh, full enforced run;
+# otherwise print the reason and return 1. Reads ONLY the file and its arguments (the caller supplies the live values).
+_vs_record_check() {
+  _rc_f=$1
+  if [ ! -f "$_rc_f" ] || [ ! -r "$_rc_f" ]; then echo "not a readable file"; return 1; fi
+  if [ ! -s "$_rc_f" ]; then echo "empty: the file has no bytes"; return 1; fi
+  _rc_h=$(sed -n 1p "$_rc_f")
+  case "$_rc_h" in
+    "verify-output-file: v1 head="*" self="*" dirty="*" require="*" changed="*) ;;
+    *) echo "foreign: not written by verify.sh --output-file"; return 1 ;;
+  esac
+  _rc_hd=$(_vs_record_field "$_rc_h" head)
+  if [ -z "$_rc_hd" ] || [ "$_rc_hd" = none ] || [ "$2" = none ] || [ "$_rc_hd" != "$2" ]; then
+    echo "stale: written at another commit"; return 1
+  fi
+  if [ "$(_vs_record_field "$_rc_h" self)" != "$3" ]; then echo "stale: written by another verify.sh"; return 1; fi
+  if [ "$(_vs_record_field "$_rc_h" dirty)" != "$4" ]; then echo "stale: the working tree changed since the record"; return 1; fi
+  if [ "$(_vs_record_field "$_rc_h" require)" != 1 ] || [ "$(_vs_record_field "$_rc_h" changed)" != 0 ]; then
+    echo "not a full enforced run (require must be 1 and changed 0)"; return 1
+  fi
+  _rc_t=$(tail -n 1 "$_rc_f")
+  case "$_rc_t" in
+    "verify-output-end: v1 rc="*" lines="*) ;;
+    *) echo "truncated: no end line"; return 1 ;;
+  esac
+  _rc_rc=$(_vs_record_field "$_rc_t" rc); _rc_ln=$(_vs_record_field "$_rc_t" lines)
+  case "${_rc_rc}x${_rc_ln}" in
+    x*|*x|*[!0-9x]*) echo "truncated: the end line carries no numeric rc and lines"; return 1 ;;
+  esac
+  if [ "$(( $(sed -n '$=' "$_rc_f") - 2 ))" != "$_rc_ln" ]; then echo "truncated or edited: lines= disagrees with the body"; return 1; fi
+  _rc_body=$(sed '1d;$d' "$_rc_f")
+  if printf '%s\n' "$_rc_body" | grep -q '^RESULT: FAIL (INCOMPLETE'; then echo "interrupted run: the body carries an INCOMPLETE verdict"; return 1; fi
+  case "$(printf '%s\n' "$_rc_body" | tail -n 1)" in
+    "RESULT: OK"*) _rc_v=ok ;;
+    "RESULT: FAIL"*) _rc_v=fail ;;
+    *) echo "no verdict: the body does not end in RESULT: OK or RESULT: FAIL (a crash, or a test-seam run)"; return 1 ;;
+  esac
+  if { [ "$_rc_rc" = 0 ] && [ "$_rc_v" = fail ]; } || { [ "$_rc_rc" != 0 ] && [ "$_rc_v" = ok ]; }; then
+    echo "the exit status and the RESULT line disagree"; return 1
+  fi
+  return 0
+}
+
+# _vs_load_record <path> : the selftest's source switch for --from-output. Hands the LIVE head, this script's cksum and
+# the working-tree cksum to the pure check; on success sets `out` (the body) and `_vs_src`; on ANY refusal prints
+# `verify --selftest: FAIL (from-output: <reason> — <path>)` and returns 1. It never falls back to the nested run.
+_vs_load_record() {
+  _vl_p=$1
+  if [ "${_vl_p#/}" = "$_vl_p" ]; then _vl_p="$_KS_ORIG_PWD/$_vl_p"; fi
+  _vl_hd=$(git rev-parse HEAD 2>/dev/null) || _vl_hd=none
+  if [ -z "$_vl_hd" ]; then _vl_hd=none; fi
+  _vl_sf=$(cksum < "$_SELF" | tr ' ' '-')
+  _vl_dt=$(git status --porcelain --untracked-files=all 2>/dev/null | cksum | tr ' ' '-')
+  # Copy the record ONCE into a private mktemp and check and read that copy only (review L3): the file that was
+  # validated is then the file that is graded, whatever happens to <path> in between. A path that cannot be copied
+  # is handed to the check as it is, which names the true reason (missing, unreadable, not a regular file).
+  _vl_c=$(mktemp "${TMPDIR:-/tmp}/verify-rec-copy.XXXXXX" 2>/dev/null) || _vl_c=""
+  _vl_u=$_vl_p
+  if [ -f "$_vl_p" ] && [ -r "$_vl_p" ]; then
+    if [ -z "$_vl_c" ] || ! cp "$_vl_p" "$_vl_c" 2>/dev/null; then
+      if [ -n "$_vl_c" ]; then rm -f "$_vl_c"; fi
+      echo "verify --selftest: FAIL (from-output: cannot take a private copy of the record — $_vl_p)"
+      return 1
+    fi
+    _vl_u=$_vl_c
+  fi
+  if ! _vl_why=$(_vs_record_check "$_vl_u" "$_vl_hd" "$_vl_sf" "$_vl_dt"); then
+    if [ -n "$_vl_c" ]; then rm -f "$_vl_c"; fi
+    echo "verify --selftest: FAIL (from-output: $_vl_why — $_vl_p)"
+    return 1
+  fi
+  out=$(sed '1d;$d' "$_vl_u")
+  if [ -n "$_vl_c" ]; then rm -f "$_vl_c"; fi
+  _vs_src="recorded run at $(printf '%s' "$_vl_hd" | cut -c1-8)"
+  return 0
+}
+
+# _vs_ci_shape <workflow-file> : 0 when every job that records (--require --output-file P) also grades the SAME
+# record in a --selftest --from-output P line, and no uncommented --selftest line lacks --from-output (a dropped flag
+# silently re-nests the aggregate). The grading step must also be able to FAIL the job (review M1): no continue-on-error
+# on it or its job, no step `if:` other than exactly the not-cancelled expression, and no shell tail (a pipe, a semicolon
+# or an ampersand) after its command. Else print why and return 1. Comment lines never count.
+_vs_ci_shape() {
+  if _sh_msg=$(LC_ALL=C awk '
+    { l = $0; sub(/^[ \t]+/, "", l); ind = match($0, /[^ ]/) - 1 }
+    $0 ~ /^  [A-Za-z0-9_-]+:/ { job = $1; sub(/:.*/, "", job); inst = 0; cur = 0 }
+    substr(l, 1, 1) == "#" || l == "" { next }
+    { isnew = (substr(l, 1, 2) == "- " && (!inst || ind <= sind)) }
+    isnew { nst++; cur = nst; inst = 1; sind = ind; att = 1; l = substr(l, 3); sub(/^[ \t]+/, "", l) }
+    !isnew && inst && ind <= sind { inst = 0; cur = 0 }
+    !isnew && inst { att = (ind == sind + 2) }
+    !inst && ind == 4 && l ~ /^continue-on-error:/ { v = l; sub(/^continue-on-error:[ \t]*/, "", v); if (v != "false") jobcoe[job] = 1 }
+    inst && att && l ~ /^if:/ { v = l; sub(/^if:[ \t]*/, "", v); sub(/[ \t]+$/, "", v); hasif[cur] = 1; sif[cur] = v }
+    inst && att && l ~ /^continue-on-error:/ { v = l; sub(/^continue-on-error:[ \t]*/, "", v); if (v != "false") scoe[cur] = 1 }
+    index(l, "conformance/verify.sh") == 0 { next }
+    {
+      n = split(l, w, " "); rec = 0; sel = 0; op = ""; fo = ""
+      for (i = 1; i <= n; i++) {
+        if (w[i] == "--require") rec = 1
+        if (w[i] == "--selftest") sel = 1
+        if (w[i] == "--output-file") op = w[i + 1]
+        if (w[i] == "--from-output") fo = w[i + 1]
+      }
+      if (sel && fo == "") bare = bare " " job
+      if (sel && fo != "") {
+        k = job SUBSEP fo; grade[k] = 1; gstep[k] = gstep[k] " " cur
+        tail = substr(l, index(l, "--from-output") + 13); sub(/^[ \t]+[^ \t]+/, "", tail); sub(/[ \t]#.*/, "", tail)
+        if (tail ~ /[|;&]/) badtail[k] = 1
+      }
+      if (rec && op != "") recd[job SUBSEP op] = 1
+    }
+    END {
+      if (bare != "") { print "an uncommented verify.sh --selftest line in job" bare " has no --from-output (it would re-run the aggregate nested)"; bad = 1 }
+      for (k in recd) if (!(k in grade)) { split(k, p, SUBSEP); print "job " p[1] " records " p[2] " with --output-file but never grades that record with --selftest --from-output"; bad = 1 }
+      for (k in recd) if (k in grade) {
+        split(k, p, SUBSEP)
+        if (jobcoe[p[1]]) { print "job " p[1] " sets continue-on-error, so its grading step can never fail the job"; bad = 1 }
+        if (badtail[k]) { print "job " p[1] ": the grading command is followed by a pipe, semicolon or ampersand that can mask its exit status"; bad = 1 }
+        ns = split(gstep[k], sl, " ")
+        for (i = 1; i <= ns; i++) {
+          if (scoe[sl[i]]) { print "job " p[1] ": the grading step sets continue-on-error, so it can never fail the job"; bad = 1 }
+          if (hasif[sl[i]] && sif[sl[i]] != "${{ !cancelled() }}") { print "job " p[1] ": the grading step has an if: other than exactly ${{ !cancelled() }}, so it may never run"; bad = 1 }
+        }
+      }
+      exit (bad ? 3 : 0)
+    }' "$1"); then return 0; fi
+  echo "$_sh_msg"; return 1
+}
+
+# The writer's signal path: on INT or TERM print what the child captured, write NO record (the reader then refuses
+# the missing file), and exit 128 plus the signal.
+_vs_wr_signal() {
+  trap - INT TERM
+  kill -TERM "$_wr_pid" 2>/dev/null || true
+  wait "$_wr_pid" 2>/dev/null || true
+  if [ -f "$_wr_cap" ]; then cat "$_wr_cap"; fi
+  rm -f "$_wr_cap"
+  exit "$1"
+}
+
+# _vs_write_record <path> <child-args...> : re-execute this script with the SAME arguments minus the --output-file
+# pair, from the caller's directory, combined output captured WITHOUT a pipe so the exit status is the child's exactly;
+# then write the record, print the captured body, and exit with the child's status. Stderr is folded into stdout
+# (disclosed, design O6). A record that cannot be written warns and leaves the verdict untouched.
+_vs_write_record() {
+  _wr_path=$1; shift
+  if [ "${_wr_path#/}" = "$_wr_path" ]; then _wr_path="$_KS_ORIG_PWD/$_wr_path"; fi
+  _wr_root=$(cd "$(dirname "$_SELF")/.." && pwd)
+  # The capture and the staging file are mktemp-created in the record's directory (unpredictable names, 0600, never a
+  # pre-existing path an attacker could point a symlink at), then moved into place; both are removed on every exit.
+  _wr_dir=$(dirname "$_wr_path")
+  _wr_cap=$(mktemp "$_wr_dir/.verify-rec.XXXXXX" 2>/dev/null) || _wr_cap=""
+  _wr_req=0; _wr_chg=0
+  if [ -n "${CI:-}" ]; then _wr_req=1; fi
+  for _wr_a in "$@"; do
+    if [ "$_wr_a" = "--require" ]; then _wr_req=1; fi
+    if [ "$_wr_a" = "--changed" ]; then _wr_chg=1; fi
+  done
+  if [ -z "$_wr_cap" ]; then
+    echo "verify: WARNING — cannot create a capture file next to $_wr_path; running WITHOUT recording" >&2
+    exec sh "$_SELF" "$@"
+  fi
+  sh "$_SELF" "$@" > "$_wr_cap" 2>&1 &
+  _wr_pid=$!
+  # LOCAL-TERMINAL GAP (review m1): the async child starts with SIGINT ignored (POSIX), so on Ctrl-C only the PARENT's
+  # trap fires and it TERMs the child alone; a check the child is running finishes (or is orphaned) before the child
+  # prints INCOMPLETE. CI sends TERM/cancel to the job, which is the path this handles. No record is written either way.
+  trap '_vs_wr_signal 130' INT
+  trap '_vs_wr_signal 143' TERM
+  if wait "$_wr_pid"; then _wr_rc=0; else _wr_rc=$?; fi
+  trap - INT TERM
+  _wr_head=$(git -C "$_wr_root" rev-parse HEAD 2>/dev/null) || _wr_head=none
+  if [ -z "$_wr_head" ]; then _wr_head=none; fi
+  _wr_self=$(cksum < "$_SELF" | tr ' ' '-')
+  _wr_dirty=$(git -C "$_wr_root" status --porcelain --untracked-files=all 2>/dev/null | cksum | tr ' ' '-')
+  _wr_lines=$(sed -n '$=' "$_wr_cap")
+  _wr_nl=0
+  if [ -s "$_wr_cap" ] && [ -n "$(tail -c 1 "$_wr_cap")" ]; then _wr_nl=1; fi
+  _wr_tmp=$(mktemp "$_wr_dir/.verify-rec.XXXXXX" 2>/dev/null) || _wr_tmp=""
+  if [ -n "$_wr_tmp" ] && {
+    printf 'verify-output-file: v1 head=%s self=%s dirty=%s require=%s changed=%s\n' "$_wr_head" "$_wr_self" "$_wr_dirty" "$_wr_req" "$_wr_chg"
+    cat "$_wr_cap"
+    if [ "$_wr_nl" = 1 ]; then printf '\n'; fi
+    printf 'verify-output-end: v1 rc=%s lines=%s\n' "$_wr_rc" "${_wr_lines:-0}"
+  } > "$_wr_tmp" 2>/dev/null && mv -f "$_wr_tmp" "$_wr_path" 2>/dev/null; then
+    :
+  else
+    if [ -n "$_wr_tmp" ]; then rm -f "$_wr_tmp"; fi
+    echo "verify: WARNING — could not write the record to $_wr_path (the enforced verdict is unchanged)" >&2
+  fi
+  cat "$_wr_cap"
+  rm -f "$_wr_cap"
+  exit "$_wr_rc"
+}
+
+# A stray, doubled or valueless --from-output is a usage error BEFORE anything runs (never a silent green).
+if [ "$(_vs_from_mode "$@")" = error ]; then
+  echo "verify: usage error — --from-output <path> is valid only as: --selftest --from-output <path>, once, with a path (it never falls back to the nested run)" >&2
+  exit 2
+fi
+# --output-file <path>: strip the pair (rotating "$@"), then re-execute as the recorded run. The placement is fixed:
+# after the CI seam refusal above, before the traps and the cd below, from the caller's directory.
+_of_n=$#; _of_path=""; _of_cnt=0; _of_take=0
+while [ "$_of_n" -gt 0 ]; do
+  _of_a=$1; shift; _of_n=$((_of_n-1))
+  if [ "$_of_take" = 1 ]; then _of_take=0; _of_path=$_of_a; continue; fi
+  if [ "$_of_a" = "--output-file" ]; then _of_cnt=$((_of_cnt+1)); _of_take=1; continue; fi
+  set -- "$@" "$_of_a"
+done
+_of_first=${1:-}   # the first word LEFT after the pair is stripped: --output-file F --selftest is refused like --selftest --output-file F
+if [ "$_of_cnt" -gt 0 ]; then
+  if [ "$_of_cnt" -gt 1 ]; then echo "verify: usage error — --output-file given twice" >&2; exit 2; fi
+  if [ "$_of_take" = 1 ] || [ -z "$_of_path" ]; then echo "verify: usage error — --output-file needs a path" >&2; exit 2; fi
+  if [ "$_of_first" = "--selftest" ]; then echo "verify: usage error — --output-file cannot be combined with --selftest" >&2; exit 2; fi
+  for _of_seam in VERIFY_SELFTEST_REGISTRY VERIFY_CLASSIFIER VERIFY_SKIP_PREFLIGHT; do
+    eval "_of_sv=\${$_of_seam:-}"
+    if [ -n "$_of_sv" ]; then
+      echo "verify: REFUSED — --output-file will not record a run under $_of_seam (a test seam or a skipped pre-flight can forge a green, and its record would be a plausible file that proves nothing)" >&2
+      exit 2
+    fi
+  done
+  _vs_write_record "$_of_path" "$@"
+fi
+
 cd "$(dirname "$0")/.."
 
 REQUIRE=0
@@ -300,11 +554,243 @@ result_sentence() {
 if [ "${1:-}" = "--selftest" ]; then
   # deterministic: the aggregate renders its classification + honesty footer, and a
   # control failure is surfaced. We exercise the renderer, not live infra.
-  # $_SELF, not $0: after the top-level cd, a relative $0 no longer resolves. VERIFY_SKIP_PREFLIGHT
-  # because THIS nested run is the renderer probe — on a HEAD-less checkout the pre-flight would
-  # refuse it in a second and every leg below would grade an empty string (review R2). The pre-flight
-  # LANE stays proven: its dedicated leg further down runs a real --require WITHOUT this variable.
-  out=$(VERIFY_SKIP_PREFLIGHT=1 sh "$_SELF" 2>&1) || true
+  # The source of $out is chosen FIRST: with --from-output the enforced run's RECORD is loaded before any fixture leg,
+  # so a missing, stale, foreign or truncated record reds in seconds (exit 1, naming the path and the reason) and NEVER
+  # falls back to the nested run. The live head, this script's cksum and the working-tree cksum go to the PURE check.
+  _vs_fm=$(_vs_from_mode "$@")
+  _vs_src="nested run"
+  if [ "${_vs_fm#file }" != "$_vs_fm" ]; then
+    _vs_load_record "${_vs_fm#file }" || exit 1
+  fi
+  # ── CI-DEDUP-VERIFY-SELFTEST-NESTED (SWAS-282) legs — FIRST, because they are fixtures that cost seconds ──
+  # Design: docs/architecture/2026-10-16-ci-dedup-verify-selftest-nested-design.md section 5. They grade the
+  # record grammar (FROM-OUTPUT), the selection function (MODE), the writer's refusals (WRITER-REFUSAL) and the
+  # ci.yml shape (CI-SHAPE) with the SHIPPED functions, never a copy. They sit ahead of the nested aggregate so a
+  # broken mechanism fails in seconds rather than after the aggregate's minutes.
+  _vsd=$(mktemp -d) || { echo "verify --selftest: FAIL (no tmpdir for the record legs)"; exit 1; }
+  _vs_die() { rm -rf "$_vsd"; echo "verify --selftest: FAIL ($1)"; shift; for _vsl in "$@"; do echo "  $_vsl"; done; exit 1; }
+
+  # -- FROM-OUTPUT: one positive anchor, then one single-change negative per refusal reason ----------------
+  # The record is built from the _fo_* variables; a negative changes exactly ONE of them (in a subshell) or one
+  # ARGUMENT of the pure check. Without the anchor every negative below could pass on a check that refuses all.
+  _fo_hd=0123456789abcdef0123456789abcdef01234567; _fo_sf=111-222; _fo_dt=333-444
+  _fo_rq=1; _fo_ch=0; _fo_rc=0; _fo_ln=4
+  _fo_b1='Conformance verification (honest aggregate)'
+  _fo_b2='  [control] stub                   PASS'
+  _fo_b3='Summary: 1 control-checks'
+  _fo_b4='RESULT: OK (controls verified; docs present)'
+  _fo_write() {  # <path> : a record from the _fo_* variables
+    {
+      printf 'verify-output-file: v1 head=%s self=%s dirty=%s require=%s changed=%s\n' "$_fo_hd" "$_fo_sf" "$_fo_dt" "$_fo_rq" "$_fo_ch"
+      printf '%s\n' "$_fo_b1" "$_fo_b2" "$_fo_b3" "$_fo_b4"
+      printf 'verify-output-end: v1 rc=%s lines=%s\n' "$_fo_rc" "$_fo_ln"
+    } > "$1"
+  }
+  _fo_expect() {  # <label> <file> <reason-substring> [head self dirty] : the pure check must REFUSE with that reason
+    if _fo_r=$(_vs_record_check "$2" "${4:-$_fo_hd}" "${5:-$_fo_sf}" "${6:-$_fo_dt}"); then
+      _vs_die "FROM-OUTPUT($1): the malformed record was ACCEPTED — a stale, foreign or truncated file would be graded green"
+    fi
+    case "$_fo_r" in
+      *"$3"*) ;;
+      *) _vs_die "FROM-OUTPUT($1): refused with the wrong reason" "want: $3" "got: $_fo_r" ;;
+    esac
+  }
+  _fo_write "$_vsd/good"
+  _vs_record_check "$_vsd/good" "$_fo_hd" "$_fo_sf" "$_fo_dt" >/dev/null || _vs_die "FROM-OUTPUT(anchor): the well-formed record was REFUSED — every negative below would pass vacuously"
+  _fo_expect missing "$_vsd/none" 'not a readable file'
+  mkdir "$_vsd/adir"; _fo_expect not-regular "$_vsd/adir" 'not a readable file'
+  : > "$_vsd/empty"; _fo_expect empty "$_vsd/empty" 'empty: the file has no bytes'
+  sed '1s/.*/something else entirely/' "$_vsd/good" > "$_vsd/foreign"; _fo_expect foreign "$_vsd/foreign" 'foreign: not written by verify.sh --output-file'
+  _fo_expect head "$_vsd/good" 'stale: written at another commit' fedcba9876543210fedcba9876543210fedcba98
+  ( _fo_hd=none; _fo_write "$_vsd/headnone" ); _fo_expect head-none "$_vsd/headnone" 'stale: written at another commit' "$_fo_hd"
+  _fo_expect self "$_vsd/good" 'stale: written by another verify.sh' "$_fo_hd" 999-999
+  _fo_expect dirty "$_vsd/good" 'stale: the working tree changed since the record' "$_fo_hd" "$_fo_sf" 555-666
+  ( _fo_rq=0; _fo_write "$_vsd/req0" ); _fo_expect require "$_vsd/req0" 'not a full enforced run'
+  ( _fo_ch=1; _fo_write "$_vsd/chg1" ); _fo_expect changed "$_vsd/chg1" 'not a full enforced run'
+  sed '$d' "$_vsd/good" > "$_vsd/noend"; _fo_expect no-end "$_vsd/noend" 'truncated: no end line'
+  ( _fo_ln=5; _fo_write "$_vsd/lines" ); _fo_expect lines "$_vsd/lines" 'truncated or edited'
+  ( _fo_b2='RESULT: FAIL (INCOMPLETE — interrupted after 3 check(s); this is NOT a pass)'; _fo_write "$_vsd/incomplete" ); _fo_expect incomplete "$_vsd/incomplete" 'interrupted run'
+  ( _fo_b4='RESULT: UNVERIFIED (TEST SEAM ACTIVE: VERIFY_CLASSIFIER)'; _fo_write "$_vsd/seam" ); _fo_expect seam-run "$_vsd/seam" 'no verdict'
+  ( _fo_b4='sh: conformance/x.sh: Terminated'; _fo_write "$_vsd/crash" ); _fo_expect crash "$_vsd/crash" 'no verdict'
+  ( _fo_b4='RESULT: FAIL (a control check failed)'; _fo_write "$_vsd/rc0fail" ); _fo_expect rc0-fail "$_vsd/rc0fail" 'the exit status and the RESULT line disagree'
+  ( _fo_rc=1; _fo_write "$_vsd/rc1ok" ); _fo_expect rc1-ok "$_vsd/rc1ok" 'the exit status and the RESULT line disagree'
+
+  # -- MODE: the selection is an ARGUMENT, never the environment ---------------------------------------------
+  # Decoys are exported first (the option's would-be variable names and the function's own loop variables); an
+  # env-reading mutant answers `file /decoy` on the first case. A stray or doubled --from-output is an error.
+  _mo_is() {  # <want> args... : _vs_from_mode must answer exactly <want>
+    _mo_want=$1; shift
+    _mo_got=$(_vs_from_mode "$@")
+    [ "$_mo_got" = "$_mo_want" ] || _vs_die "MODE: _vs_from_mode $* answered '$_mo_got', want '$_mo_want'"
+  }
+  (
+    export VERIFY_FROM_OUTPUT=/decoy FROM_OUTPUT=/decoy _vm_n=1 _vm_path=/decoy _vm_prev=--from-output _vm_a=--from-output
+    _mo_is nested --selftest
+    _mo_is 'file /p' --selftest --from-output /p
+    _mo_is error --selftest --from-output
+    _mo_is error --require --from-output /p
+    _mo_is error --selftest --from-output /p --from-output /q
+  ) || exit 1
+  # The script maps `error` to exit 2 BEFORE the aggregate: one cheap child run, in a one-commit temp repo with no
+  # conformance/ directory, so even a mutant that ignored the flag fails every row at once instead of running minutes.
+  mkdir -p "$_vsd/repo/conformance"; cp "$_SELF" "$_vsd/repo/conformance/verify.sh"
+  ( cd "$_vsd/repo" && git init -q . && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q --allow-empty -m t ) >/dev/null 2>&1 || _vs_die "MODE: no fixture repo for the child runs"
+  _vs_child() {  # <env-assignment-or-empty> args... : the temp repo's copy, a scrubbed environment; sets _vc_rc and _vc_out
+    _vc_env=$1; shift
+    if [ -n "$_vc_env" ]; then
+      _vc_out=$(cd "$_vsd/repo" && env -u CI -u GITHUB_ACTIONS -u VERIFY_SELFTEST_REGISTRY -u VERIFY_CLASSIFIER -u VERIFY_SKIP_PREFLIGHT "$_vc_env" sh "$_vsd/repo/conformance/verify.sh" "$@" 2>&1) && _vc_rc=0 || _vc_rc=$?
+    else
+      _vc_out=$(cd "$_vsd/repo" && env -u CI -u GITHUB_ACTIONS -u VERIFY_SELFTEST_REGISTRY -u VERIFY_CLASSIFIER -u VERIFY_SKIP_PREFLIGHT sh "$_vsd/repo/conformance/verify.sh" "$@" 2>&1) && _vc_rc=0 || _vc_rc=$?
+    fi
+  }
+  _vs_child '' --require --from-output /p
+  [ "$_vc_rc" = 2 ] || _vs_die "MODE: a stray --from-output (no --selftest as the first word) exited $_vc_rc, not 2 — verify.sh --require --from-output F would run the aggregate and grade nothing"
+  _vs_child '' --selftest --from-output
+  [ "$_vc_rc" = 2 ] || _vs_die "MODE: --selftest --from-output with no value exited $_vc_rc, not 2 — it must never fall back to the nested run"
+  _vs_child '' --require --output-file
+  [ "$_vc_rc" = 2 ] || _vs_die "WRITER: --output-file with no value exited $_vc_rc, not 2"
+  _vs_child '' --require --output-file "$_vsd/a" --output-file "$_vsd/b"
+  [ "$_vc_rc" = 2 ] || _vs_die "WRITER: --output-file given twice exited $_vc_rc, not 2"
+  _vs_child '' --selftest --output-file "$_vsd/a"
+  [ "$_vc_rc" = 2 ] || _vs_die "WRITER: --output-file together with --selftest exited $_vc_rc, not 2"
+  # The first word LEFT after the pair is stripped decides it (review L2/m2), so the pair may come first. A mutant that
+  # reads the original first word would run a recorded SELFTEST here: this leg then recurses or exits non-2 and dies.
+  # The child is a copy whose --selftest block is replaced by `exit 0`: a mutant that lets the recorded selftest
+  # through then exits 0 here and dies on this assertion, instead of recursing into these very legs.
+  awk '{ print } $0 == "if [ \"${1:-}\" = \"--selftest\" ]; then" { print "  echo SELFTEST-STUB; exit 0" }' "$_SELF" > "$_vsd/repo/conformance/verify-stub.sh"
+  _vc_out=$(cd "$_vsd/repo" && env -u CI -u GITHUB_ACTIONS sh "$_vsd/repo/conformance/verify-stub.sh" --output-file "$_vsd/a" --selftest 2>&1) && _vc_rc=0 || _vc_rc=$?
+  [ "$_vc_rc" = 2 ] || _vs_die "WRITER: --output-file F --selftest (pair first) exited $_vc_rc, not 2 — a recorded selftest must be refused whichever order the words come in"
+
+  # -- WRITER-REFUSAL: the writer will not record a run it cannot vouch for ----------------------------------------
+  # A sourced replacement registry runs in-process and can print RESULT: OK and exit 0 before the footer's taint,
+  # so the record's grammar alone cannot refuse it: the WRITER does, before anything runs, one leg per variable.
+  printf '%s\n' 'check control stub true' > "$_vsd/registry.sh"
+  printf '#!/bin/sh\necho ordinary\n' > "$_vsd/classifier.sh"
+  for _wr_var in VERIFY_SELFTEST_REGISTRY VERIFY_CLASSIFIER VERIFY_SKIP_PREFLIGHT; do
+    case "$_wr_var" in
+      VERIFY_SELFTEST_REGISTRY) _wr_val="$_vsd/registry.sh" ;;
+      VERIFY_CLASSIFIER) _wr_val="$_vsd/classifier.sh" ;;
+      *) _wr_val=1 ;;
+    esac
+    _vs_child "$_wr_var=$_wr_val" --require --output-file "$_vsd/rec-$_wr_var"
+    [ "$_vc_rc" = 2 ] || _vs_die "WRITER-REFUSAL($_wr_var): exited $_vc_rc, not 2"
+    printf '%s\n' "$_vc_out" | grep -q "^verify: REFUSED.*--output-file.*$_wr_var" || _vs_die "WRITER-REFUSAL($_wr_var): no 'verify: REFUSED' line naming --output-file and the variable" "output was:" "$_vc_out"
+    if printf '%s\n' "$_vc_out" | grep -q 'Conformance verification'; then _vs_die "WRITER-REFUSAL($_wr_var): the aggregate STARTED — the refusal must come before anything runs"; fi
+    [ -z "$(find "$_vsd" -name "rec-$_wr_var*" -o -name '.verify-rec.*')" ] || _vs_die "WRITER-REFUSAL($_wr_var): a file was written at the record path (or a staging file left) although the writer refused"
+  done
+
+  # -- LOAD-RECORD: a refused record reds with the reason and NEVER falls back to the nested run ----------------
+  # (The glue is a function so this leg can drive it; a child `--selftest --from-output` run would recurse into
+  # these very legs.) A missing path and an empty file, then the well-formed record from the FROM-OUTPUT leg
+  # accepted only when the live values match: here it is refused as stale, which proves the live values are handed over.
+  # TMPDIR points at an empty directory, so the reader's private copy of the record (review L3) is observable: it
+  # must be gone again after the call, on the refusal path too.
+  mkdir "$_vsd/tmp"
+  for _lr_p in "$_vsd/none" "$_vsd/empty" "$_vsd/good"; do
+    if _lr_o=$( TMPDIR="$_vsd/tmp"; export TMPDIR; _vs_load_record "$_lr_p" ); then _vs_die "LOAD-RECORD: $_lr_p was accepted"; fi
+    case "$_lr_o" in
+      "verify --selftest: FAIL (from-output: "*) ;;
+      *) _vs_die "LOAD-RECORD: the refusal of $_lr_p did not print the FAIL line" "got: $_lr_o" ;;
+    esac
+    [ -z "$(ls -A "$_vsd/tmp")" ] || _vs_die "LOAD-RECORD: the reader left its private copy of the record behind after refusing $_lr_p"
+  done
+  # And the copy is what is graded: a refused record from the good file proves a copy WAS taken and then checked.
+  ( TMPDIR="$_vsd/tmp"; export TMPDIR; _vs_load_record "$_vsd/good" ) | grep -q 'stale: written at another commit' || _vs_die "LOAD-RECORD: the good fixture was not refused as stale against the live head"
+
+  # -- WRITER-RECORD: the recording run keeps the child's exit status and writes a record the reader ACCEPTS ----
+  # In the temp repo (no conformance/ directory) the aggregate fails every row at once, so the child's status is
+  # non-zero and known: the recorded run must exit with EXACTLY that status, and its record must pass the pure
+  # check against the live values. Without this leg a writer that swallowed the status, or wrote a record the
+  # reader refuses, would be caught only by CI's first live run.
+  _vs_child '' --require
+  _wp_rc=$_vc_rc
+  _vs_child '' --require --output-file "$_vsd/rec-live"
+  [ "$_vc_rc" = "$_wp_rc" ] || _vs_die "WRITER-RECORD: the recorded run exited $_vc_rc, the plain run $_wp_rc — the writer must pass the child's status through exactly"
+  [ -f "$_vsd/rec-live" ] || _vs_die "WRITER-RECORD: no record was written"
+  _wp_hd=$(git -C "$_vsd/repo" rev-parse HEAD)
+  _wp_sf=$(cksum < "$_vsd/repo/conformance/verify.sh" | tr ' ' '-')
+  _wp_dt=$(git -C "$_vsd/repo" status --porcelain --untracked-files=all | cksum | tr ' ' '-')
+  _wp_why=$(_vs_record_check "$_vsd/rec-live" "$_wp_hd" "$_wp_sf" "$_wp_dt") || _vs_die "WRITER-RECORD: the writer's own record was REFUSED by the reader ($_wp_why)"
+  grep -q "^verify-output-end: v1 rc=$_wp_rc " "$_vsd/rec-live" || _vs_die "WRITER-RECORD: the trailer does not carry the child's status ($_wp_rc)"
+  [ -z "$(find "$_vsd" -name '.verify-rec.*')" ] || _vs_die "WRITER-RECORD: the writer left a .verify-rec.* capture or staging file behind"
+
+  # -- CI-SHAPE: the merged job keeps BOTH steps and they name the SAME record --------------------------------------
+  # Kit tree only (disclosed N/A elsewhere, as the --kitself rows). Three fixtures, then the live ci.yml.
+  _cs_good='    steps:
+      - run: sh conformance/verify.sh --require --output-file "$RUNNER_TEMP/v.out"
+      - name: grade
+        if: ${{ !cancelled() }}
+        run: sh conformance/verify.sh --selftest --from-output "$RUNNER_TEMP/v.out"
+      # sh conformance/verify.sh --selftest   (a COMMENTED bare line must not count)'
+  _cs_expect() {  # <label> <yaml-body> <ok|bad>
+    printf 'jobs:\n  cf-x:\n%s\n' "$2" > "$_vsd/ci-fixture.yml"
+    if _cs_r=$(_vs_ci_shape "$_vsd/ci-fixture.yml"); then _cs_ok=ok; else _cs_ok=bad; fi
+    [ "$_cs_ok" = "$3" ] || _vs_die "CI-SHAPE($1): graded '$_cs_ok', want '$3'" "reason: $_cs_r"
+    case "$_cs_r" in
+      *"${4:-}"*) ;;
+      *) _vs_die "CI-SHAPE($1): refused for the wrong reason" "want: $4" "got: $_cs_r" ;;
+    esac
+  }
+  _cs_expect 'flag present' "$_cs_good" ok
+  _cs_expect 'flag dropped' '    steps:
+      - run: sh conformance/verify.sh --require --output-file "$RUNNER_TEMP/v.out"
+      - run: sh conformance/verify.sh --selftest' bad
+  _cs_expect 'grading step deleted' '    steps:
+      - run: sh conformance/verify.sh --require --output-file "$RUNNER_TEMP/v.out"' bad
+  _cs_expect 'extra bare selftest line' "$_cs_good
+      - run: sh conformance/verify.sh --selftest" bad
+  _cs_expect 'different record path' '    steps:
+      - run: sh conformance/verify.sh --require --output-file "$RUNNER_TEMP/v.out"
+      - run: sh conformance/verify.sh --selftest --from-output "$RUNNER_TEMP/other.out"' bad
+  # A NEUTRALISED grading step is as dark as a deleted one (review M1): each fixture changes ONE thing in the good
+  # pair, and the reason must name the disqualifier. continue-on-error and a step `if:` other than the exact
+  # !cancelled() expression stop the step from ever failing the job; a shell tail after the command masks its status.
+  _cs_req='      - run: sh conformance/verify.sh --require --output-file "$RUNNER_TEMP/v.out"'
+  _cs_gr='        run: sh conformance/verify.sh --selftest --from-output "$RUNNER_TEMP/v.out"'
+  _cs_expect 'continue-on-error on the step' "    steps:
+$_cs_req
+      - name: grade
+        if: \${{ !cancelled() }}
+        continue-on-error: true
+$_cs_gr" bad 'the grading step sets continue-on-error'
+  _cs_expect 'continue-on-error on the job' "    continue-on-error: true
+    steps:
+$_cs_req
+      - name: grade
+        if: \${{ !cancelled() }}
+$_cs_gr" bad 'job cf-x sets continue-on-error'
+  _cs_expect 'step if: false' "    steps:
+$_cs_req
+      - name: grade
+        if: false
+$_cs_gr" bad 'an if: other than exactly'
+  _cs_expect 'command || true' "    steps:
+$_cs_req
+      - name: grade
+        if: \${{ !cancelled() }}
+$_cs_gr || true" bad 'can mask its exit status'
+  _cs_expect 'continue-on-error: false is allowed' "    steps:
+$_cs_req
+      - name: grade
+        if: \${{ !cancelled() }}
+        continue-on-error: false
+$_cs_gr" ok
+  if [ -f docs/ROADMAP-KIT.md ] || [ -f .github/workflows/golden-path.yml ]; then
+    [ -f .github/workflows/ci.yml ] || _vs_die "CI-SHAPE: the kit tree has no .github/workflows/ci.yml to grade"
+    _cs_live=$(_vs_ci_shape .github/workflows/ci.yml) || _vs_die "CI-SHAPE: the live ci.yml is mis-shaped" "$_cs_live"
+  else
+    echo "verify --selftest: CI-SHAPE leg N/A — not the kit tree (no kit markers), so there is no ci.yml of the kit to grade"
+  fi
+  rm -rf "$_vsd"
+
+  # -- the source of $out: the record loaded at the top of this block, or, without --from-output, the nested run as ever --
+  if [ "$_vs_src" = "nested run" ]; then
+    # $_SELF, not $0: after the top-level cd, a relative $0 no longer resolves. VERIFY_SKIP_PREFLIGHT
+    # because THIS nested run is the renderer probe — on a HEAD-less checkout the pre-flight would
+    # refuse it in a second and every leg below would grade an empty string (review R2). The pre-flight
+    # LANE stays proven: its dedicated leg further down runs a real --require WITHOUT this variable.
+    out=$(VERIFY_SKIP_PREFLIGHT=1 sh "$_SELF" 2>&1) || true
+  fi
   printf '%s\n' "$out" | grep -q "control-checks" || { echo "verify --selftest: FAIL (no summary)"; exit 1; }
   printf '%s\n' "$out" | grep -q "UNVERIFIED is NOT a pass" || { echo "verify --selftest: FAIL (no honesty footer)"; exit 1; }
   printf '%s\n' "$out" | grep -Eq '\[control\]|\[doc\]' || { echo "verify --selftest: FAIL (no classification)"; exit 1; }
@@ -840,7 +1326,8 @@ if [ "${1:-}" = "--selftest" ]; then
   echo "                       + PRE-FLIGHT: NO COMMITS fails in seconds naming the missing first"
   echo "                         commit, and stays silent on a tree that has history — both probes"
   echo "                         ANCHORED to the pre-flight's OWN sentence, so a failing child's prose"
-  echo "                         mentioning '(no commits yet)' is never read as the pre-flight firing)"; exit 0
+  echo "                         mentioning '(no commits yet)' is never read as the pre-flight firing)"
+  echo "verify --selftest: graded: $_vs_src"; exit 0
 fi
 
 # ── PRE-FLIGHT: an EMPTY HISTORY is not a conformance failure, it is a missing first commit ─────────
@@ -1436,6 +1923,12 @@ check control incept-first-run-green-dotnet  --kitself sh conformance/incept-fir
 check control incept-first-run-green-terraform  --kitself sh conformance/incept-first-run-green.sh profiles/terraform
 check control incept-first-run-green-data-engineering  --kitself sh conformance/incept-first-run-green.sh profiles/data-engineering
 check control incept-first-run-green-ml  --kitself sh conformance/incept-first-run-green.sh profiles/ml
+# SWAS-202 (GO-PROFILE-BASELINE-CI-RED) — the Go profile's toolchain pins (go.mod, setup-go, Dockerfile tag, linter,
+# docs) move as ONE set. The bare run is --adopter: it grades the kit's profile in the kit and the adopter's OWN root
+# go.mod / Dockerfile / emitted ci.yml after incept (advisory there: a WARN, never a red --require). The --eol face is
+# drift-watch's, not this aggregate's (it is time-dependent). The selftest builds its own fixtures: --kitselftest.
+check control go-toolchain-coherent  --adopter sh conformance/go-toolchain-coherent.sh
+check control go-toolchain-coherent-selftest  --kitselftest sh conformance/go-toolchain-coherent.sh --selftest
 check control stack-decision-integrity  sh conformance/stack-decision-integrity.sh --selftest
 # --adopter (ADOPTER-GATES-INERT A3): the LIVE leg's subject is the ADOPTER'S OWN stack-choice ADR
 # rationale — it correctly N/As pre-inception (no ADR authored yet) and ARMS once the adopter writes

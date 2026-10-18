@@ -40,7 +40,7 @@
 #   auto-escalation below (the `[ "$RAW" = 0 ]` line) — an explicit --require passed alongside --raw
 #   still escalates (that is NOT overridden by --raw; only the ambient-CI auto-escalation is), so a
 #   policy-applying caller (inception-done) can tell "unverifiable" (2) from "verified-unprotected" (1).
-#   usage: sh conformance/branch-protection.sh [BRANCH] [--require] [--raw]
+#   usage: sh conformance/branch-protection.sh [BRANCH] [--repo=OWNER/REPO] [--require] [--raw]
 #          sh conformance/branch-protection.sh --declared-only [FILE]   (offline; no gh; no network)
 #          sh conformance/branch-protection.sh --selftest
 # NOTE (T4-B1 -> REQUIRED-CONTEXT-SET-LOCK, 2026-08-28): the LIVE leg is NOT in verify.sh (it needs a
@@ -57,10 +57,13 @@
 # is admin-bypassable by the kit's own prescribed solo merge path (`gh pr merge --admin`). The
 # offline leg proves declaration INTEGRITY, never forge state. The apply script binds contexts; it
 # cannot prevent later unbinding.
-# GH ENV CONTAINMENT (B4 fix round 1, SEC M-3): every `gh` call below strips GH_HOST, GH_REPO,
-# GH_ENTERPRISE_TOKEN, GH_CONFIG_DIR from the subshell before invoking `gh` — a hostile value in any
-# of those could redirect the API host, retarget the mutation at a different repo, or swap the
-# config/creds gh reads. GH_TOKEN is left untouched and honored (the operator's real credential).
+# GH ENV (B4 fix round 1, SEC M-3, narrowed by SWAS-198 — see DECISIONS.md D-241015-2): the
+# environment is NOT a trust boundary here (PATH, HOME and XDG_CONFIG_HOME still steer `gh`, measured).
+# Every `gh` call below strips GH_HOST, GH_REPO, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN as
+# stale-state hygiene: a value exported for another project must not silently retarget the read
+# (--repo= names a repo explicitly). GH_TOKEN, GITHUB_TOKEN and GH_CONFIG_DIR select the operator's
+# ACCOUNT and are honored (as `gh` and `sparkwright doctor` honor them). The acting identity is printed
+# to stderr first (gh_identity_line), so a wrong account is visible before any lookup or verdict.
 # CONTEXT-NAME CHARSET (B4 fix round 1, SEC C-1/H-2/L-2..L-4): every parsed declared context name
 # must match ^[A-Za-z0-9][A-Za-z0-9._/-]*$ with length<=100, checked identically here and in
 # scripts/branch-protection-apply.sh (see valid_context_name() in both — item 9's selftest cell
@@ -228,9 +231,46 @@ co_logins() {
   done | sort -u
 }
 
+# valid_repo <OWNER/REPO> — ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$, and neither half is `.` or `..` (R-4/S-4:
+# the value is interpolated into the API path of every call, including the two writes).
+valid_repo() {
+  case "$1" in */*/*|*/|/*|"") return 1 ;; */*) : ;; *) return 1 ;; esac
+  case "$1" in *[!A-Za-z0-9._/-]*) return 1 ;; esac
+  case "/$1/" in */./*|*/../*) return 1 ;; esac
+  return 0
+}
+
+# valid_login <login> — ^[A-Za-z0-9-]{1,39}$ with the class spelled out (no locale range): only a
+# well-formed login is ever echoed, so a hostile or garbled `api user` reply cannot reach the terminal.
+valid_login() {
+  case "$1" in
+    ""|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 39 ]
+}
+
+# gh_identity_line — name the account the next `gh` calls act as, on STDERR (never stdout, never the rc).
+# Credential source only; token values are never printed. Under CI no API call is made and no login is named.
+gh_identity_line() {
+  if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then _gil_src="token in environment"; else _gil_src="gh stored login"; fi
+  if [ -n "${CI:-}" ]; then
+    # Under CI "none" means no token in the environment (a stored gh login on a self-hosted runner is not detected).
+    [ "$_gil_src" = "token in environment" ] || _gil_src="none"
+    printf '%s\n' "acting gh identity: not read in CI (credential: $_gil_src)" >&2
+    return 0
+  fi
+  if _gil_login=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh api user --jq .login 2>/dev/null) && valid_login "$_gil_login"; then
+    printf '%s\n' "acting gh identity: $_gil_login (credential: $_gil_src)" >&2
+  else
+    printf '%s\n' "acting gh identity: not resolved (credential: $_gil_src; gh api user failed, so the next calls will likely fail too)" >&2
+  fi
+}
+
 REQUIRE="${REQUIRE:-0}"
 RAW=0
 BRANCH=main
+REPO_ARG=""
+REPO_SET=0
 DECLARED_ONLY=0
 DECLARATION="REQUIRED-CHECKS.md"
 DECL_EXPLICIT=0
@@ -239,11 +279,20 @@ for a in "$@"; do
     --require) REQUIRE=1 ;;
     --raw) RAW=1 ;;   # emit the un-escalated three-state (0/1/2), overriding ONLY the ambient-CI auto-escalation below; an explicit --require alongside --raw still escalates
     --declared-only) DECLARED_ONLY=1 ;;
+    --repo=*) REPO_ARG=${a#--repo=}; REPO_SET=1 ;;
     --selftest) ;;  # dispatched below
-    -*) printf '%s\n' "usage: branch-protection.sh [BRANCH] [--require] [--raw] | --declared-only [FILE] | --selftest" >&2; exit 2 ;;
+    -*) printf '%s\n' "usage: branch-protection.sh [BRANCH] [--repo=OWNER/REPO] [--require] [--raw] | --declared-only [FILE] | --selftest" >&2; exit 2 ;;
     *) if [ "$DECLARED_ONLY" = 1 ]; then DECLARATION="$a"; DECL_EXPLICIT=1; else BRANCH="$a"; fi ;;
   esac
 done
+# --repo names the LIVE leg's repo; the offline leg has none. Checked after the loop so the order of the
+# two flags never matters (the tail dispatch reads only $1).
+if [ "$REPO_SET" = 1 ] && [ "$DECLARED_ONLY" = 1 ]; then
+  printf '%s\n' "branch-protection.sh: --repo is a live-leg flag and cannot be combined with --declared-only (the offline leg has no repo)" >&2; exit 2
+fi
+if [ "$REPO_SET" = 1 ] && ! valid_repo "$REPO_ARG"; then
+  printf '%s\n' "branch-protection.sh: invalid --repo (must be OWNER/REPO, characters A-Za-z0-9._- only, no . or .. segment)" >&2; exit 2
+fi
 valid_branch "$BRANCH" || { printf '%s\n' "branch-protection.sh: invalid branch name (empty, '..', whitespace, or one of ? # % * [ backslash is refused)" >&2; exit 2; }
 [ "$DECL_EXPLICIT" = 1 ] || DECLARATION="$REPO_ROOT/REQUIRED-CHECKS.md"
 [ "$RAW" = 0 ] && [ -n "${CI:-}" ] && REQUIRE=1   # CI makes the gate runnable — UNLESS --raw asked for the raw state
@@ -569,12 +618,12 @@ classify() {
 # INVITES_STATE=unreadable when the token cannot read it). Read-only GETs; GH env containment applies.
 gather_team_state() {
   read_governance "$REPO_ROOT/CLAUDE.md"
-  if _gts_repo=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api "repos/$REPO" --jq "$MM_JQ" 2>/dev/null); then
+  if _gts_repo=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh api "repos/$REPO" --jq "$MM_JQ" 2>/dev/null); then
     MERGE_METHODS=$(parse_merge_methods "$_gts_repo")
   else
     MERGE_METHODS=unknown
   fi
-  if _gts_inv=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api --paginate "repos/$REPO/invitations" --jq '.[].invitee.login' 2>/dev/null); then
+  if _gts_inv=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh api --paginate "repos/$REPO/invitations" --jq '.[].invitee.login' 2>/dev/null); then
     INVITES_STATE=ok; PENDING_OWNERS=""
     for _gts_l in $(co_logins "$REPO_ROOT"); do
       if printf '%s\n' "$_gts_inv" | grep -qixF -e "$_gts_l"; then PENDING_OWNERS="$PENDING_OWNERS $_gts_l"; fi
@@ -586,9 +635,12 @@ gather_team_state() {
 
 run() {
   have_gh || unverifiable "gh not installed"
-  REPO=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
-  [ -n "$REPO" ] || unverifiable "no GitHub repo context"
-  PROT=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GH_CONFIG_DIR; gh api "repos/$REPO/branches/$BRANCH/protection" 2>/dev/null) && rc=0 || rc=$?
+  gh_identity_line
+  REPO="$REPO_ARG"
+  if [ -z "$REPO" ]; then REPO=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true); fi
+  [ -n "$REPO" ] || unverifiable "no GitHub repo context for the gh identity above (pass --repo=OWNER/REPO, or use an account that can read this repo)"
+  valid_repo "$REPO" || unverifiable "gh reported a repository name that is not OWNER/REPO (characters A-Za-z0-9._- only, no . or .. segment), so no API path is built from it"
+  PROT=$(unset GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; gh api "repos/$REPO/branches/$BRANCH/protection" 2>/dev/null) && rc=0 || rc=$?
   [ "$rc" = 0 ] && gather_team_state
   classify "$rc" "$PROT"
 }
@@ -877,35 +929,152 @@ selftest() {
   done
   [ "$_pdb_bad" = 0 ] && echo "selftest PASS: both parsers agree across the fixture battery (no drift)"
 
-  # GH env containment (SEC M-3): GH_HOST/GH_REPO/GH_ENTERPRISE_TOKEN/GH_CONFIG_DIR must never reach
-  # the gh subprocess (a hostile value could redirect the API host, retarget the repo, or swap
-  # creds/config); GH_TOKEN must still reach it (the operator's real credential). Proven with a stub
-  # gh that dumps its OWN environment — this environment has no controlling tty and CI has no reason
-  # to spoof GH_HOST, so this is the assert-the-unset path the design anticipates as an alternative to
-  # "still hits the stub" (a stub has no real host to differentiate against).
+  # GH env (SEC M-3, narrowed by SWAS-198): GH_HOST/GH_REPO/GH_ENTERPRISE_TOKEN/GITHUB_ENTERPRISE_TOKEN
+  # must never reach the gh subprocess (stale-state hygiene); GH_TOKEN and GH_CONFIG_DIR (which pick the
+  # operator's account) must reach it. Proven with a stub gh that dumps its OWN environment under a
+  # `== ARGS: <args>` header per call, so each env block is tied to its call. Every cell that expects the
+  # non-CI identity read sets CI='' (ci.yml runs this selftest with CI=true).
   _ghenvdir=$(mktemp -d) || { echo "selftest FAIL: no tmpdir for the GH-env fixture"; st=1; }
   _ghenvlog="$_ghenvdir/env.log"
   : > "$_ghenvlog"
   cat > "$_ghenvdir/gh" <<STUB
 #!/bin/sh
-env | grep '^GH_' | sort >> "$_ghenvlog" 2>/dev/null || true
+printf '== ARGS: %s\n' "\$*" >> "$_ghenvlog"
+env | grep -e '^GH_' -e '^GITHUB_ENTERPRISE_TOKEN=' | sed 's/^\([A-Za-z_]*TOKEN\)=.*/\1=<set>/' | sort >> "$_ghenvlog" 2>/dev/null || true
 case "\$*" in
-  *"repo view"*) echo "me/repo" ;;
+  *"api user"*) [ -z "\${STUB_USER_FAIL:-}" ] || exit 1; echo "\${STUB_USER_OUT:-stub-login}" ;;
+  *"repo view"*) echo "\${STUB_REPO_OUT:-me/repo}" ;;
+  *"branches/main/protection"*) [ -z "\${STUB_PROT_FAIL:-}" ] || exit 1; printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{"contexts":[]}}' ;;
   *) printf '%s' '{"required_pull_request_reviews":{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_last_push_approval":true},"required_status_checks":{"contexts":[]}}' ;;
 esac
 STUB
   chmod +x "$_ghenvdir/gh"
-  GH_HOST=evil.example GH_REPO=evil/evil GH_ENTERPRISE_TOKEN=evil-ent-token GH_CONFIG_DIR=/evil-config GH_TOKEN=real-op-token \
-    PATH="$_ghenvdir:$PATH" sh "$0" --raw >/dev/null 2>&1 || true
-  if grep -q '^GH_HOST=\|^GH_REPO=\|^GH_ENTERPRISE_TOKEN=\|^GH_CONFIG_DIR=' "$_ghenvlog"; then
-    echo "selftest FAIL: a stripped GH_* var reached the gh subprocess (log: $(cat "$_ghenvlog" 2>/dev/null))"; st=1
+  # blk <log> <header-needle> — the env block(s) recorded under the call(s) whose header holds the needle.
+  blk() { awk -v h="$2" '/^== ARGS: /{p=(index($0,h)>0)} p' "$1"; }
+  # redact — failure diagnostics show variable NAMES only (an ambient credential must never be echoed).
+  redact() { sed 's/^\([A-Za-z_][A-Za-z_]*\)=.*/\1=<withheld>/'; }
+  _evil_env() { env GH_HOST=evil.example GH_REPO=evil/evil GH_ENTERPRISE_TOKEN=evil-ent-token GITHUB_ENTERPRISE_TOKEN=evil-gh-ent GH_CONFIG_DIR=/op-config GH_TOKEN=real-op-token "$@"; }
+  : > "$_ghenvlog"
+  _evil_env CI='' PATH="$_ghenvdir:$PATH" sh "$0" --raw >"$_ghenvdir/out" 2>"$_ghenvdir/err" && _idrc=0 || _idrc=$?
+  # C1 (= A1+A2+A3). GH_CONFIG_DIR reaches gh; the four stale-state variables never do; GH_TOKEN does.
+  _ncall=$(grep -c '^== ARGS: ' "$_ghenvlog" || true)
+  _ncfg=$(grep -c '^GH_CONFIG_DIR=/op-config' "$_ghenvlog" || true)
+  if [ "$_ncall" -gt 0 ] && [ "$_ncall" = "$_ncfg" ]; then
+    echo "selftest PASS: GH_CONFIG_DIR (the operator's account selector) reaches EVERY gh call ($_ncfg of $_ncall)"
   else
-    echo "selftest PASS: GH_HOST/GH_REPO/GH_ENTERPRISE_TOKEN/GH_CONFIG_DIR never reach the gh subprocess"
+    echo "selftest FAIL: GH_CONFIG_DIR was stripped (log: $(redact < "$_ghenvlog"))"; st=1
   fi
-  if grep -q '^GH_TOKEN=real-op-token' "$_ghenvlog"; then
+  for _sv in GH_HOST GH_REPO GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN; do
+    if grep -q "^$_sv=" "$_ghenvlog"; then
+      echo "selftest FAIL: $_sv reached the gh subprocess (log: $(redact < "$_ghenvlog"))"; st=1
+    else
+      echo "selftest PASS: $_sv never reaches the gh subprocess"
+    fi
+  done
+  if grep -q '^GH_TOKEN=<set>' "$_ghenvlog"; then
     echo "selftest PASS: GH_TOKEN (the operator's real credential) still reaches the gh subprocess"
   else
-    echo "selftest FAIL: GH_TOKEN was stripped too (it must be honored, not contained) (log: $(cat "$_ghenvlog" 2>/dev/null))"; st=1
+    echo "selftest FAIL: GH_TOKEN was stripped too (it must be honored, not contained) (log: $(redact < "$_ghenvlog"))"; st=1
+  fi
+  # The identity read and every later call (repo view, the protection GET) are contained too.
+  _ub=$(blk "$_ghenvlog" "api user")
+  if [ -n "$_ub" ] && ! printf '%s\n' "$_ub" | grep -q -e '^GH_HOST=' -e '^GH_REPO=' -e '^GH_ENTERPRISE_TOKEN=' -e '^GITHUB_ENTERPRISE_TOKEN='; then
+    echo "selftest PASS: the identity read ran (api user) with the stale-state variables stripped"
+  else
+    echo "selftest FAIL: no api user call, or it carried a stripped variable (block: $(printf '%s\n' "$_ub" | redact))"; st=1
+  fi
+  # C5. the identity is on stderr only, before repo view, and moves neither stdout nor the exit code.
+  _un=$(grep -n '^== ARGS: api user' "$_ghenvlog" | head -n 1 | cut -d: -f1)
+  _rv=$(grep -n '^== ARGS: repo view' "$_ghenvlog" | head -n 1 | cut -d: -f1)
+  cp "$_ghenvdir/out" "$_ghenvdir/out.ok"; _okrc=$_idrc
+  if grep -qF 'acting gh identity: stub-login (credential: token in environment)' "$_ghenvdir/err" \
+     && ! grep -qF 'acting gh identity' "$_ghenvdir/out" \
+     && [ -n "$_un" ] && [ -n "$_rv" ] && [ "$_un" -lt "$_rv" ]; then
+    echo "selftest PASS: the acting gh identity is named on stderr only, before repo view"
+  else
+    echo "selftest FAIL: identity line placement (err=[$(cat "$_ghenvdir/err")] api-user@$_un repo-view@$_rv)"; st=1
+  fi
+  _evil_env CI='' STUB_USER_FAIL=1 PATH="$_ghenvdir:$PATH" sh "$0" --raw >"$_ghenvdir/out" 2>"$_ghenvdir/err" && _idrc=0 || _idrc=$?
+  if grep -qF 'acting gh identity: not resolved (credential: token in environment;' "$_ghenvdir/err" \
+     && cmp -s "$_ghenvdir/out" "$_ghenvdir/out.ok" && [ "$_idrc" = "$_okrc" ]; then
+    echo "selftest PASS: an unreadable identity says 'not resolved' and never moves stdout or the exit code"
+  else
+    echo "selftest FAIL: failed identity read (err=[$(cat "$_ghenvdir/err")] rc=$_idrc vs $_okrc)"; st=1
+  fi
+  # L2. a malformed login (space, control byte, over 39 characters) is never echoed: it reads 'not resolved'.
+  _long=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  for _ml in 'bad login' 'x;rm' "$_long"; do
+    _evil_env CI='' STUB_USER_OUT="$_ml" PATH="$_ghenvdir:$PATH" sh "$0" --raw >/dev/null 2>"$_ghenvdir/err" || true
+    if grep -qF 'acting gh identity: not resolved' "$_ghenvdir/err" && ! grep -qF -e "$_ml" "$_ghenvdir/err"; then
+      echo "selftest PASS: a malformed login is never echoed (L2)"
+    else
+      echo "selftest FAIL: malformed login reached the terminal (err=[$(cat "$_ghenvdir/err")])"; st=1
+    fi
+  done
+  # L3. a repo name gh reports that is not OWNER/REPO is UNVERIFIED (rc 2) before any protection call.
+  : > "$_ghenvlog"
+  out=$(_evil_env CI='' STUB_REPO_OUT='../x' PATH="$_ghenvdir:$PATH" sh "$0" 2>&1) && g=0 || g=$?
+  if [ "$g" = 2 ] && printf '%s\n' "$out" | grep -qF 'UNVERIFIED: gh reported a repository name that is not OWNER/REPO' && ! grep -qF 'branches/main/protection' "$_ghenvlog"; then
+    echo "selftest PASS: an invalid repo name from gh is UNVERIFIED rc 2 with no protection call (L3)"
+  else
+    echo "selftest FAIL: invalid gh repo name (rc=$g out=[$out])"; st=1
+  fi
+  # C2. --repo=OWNER/REPO replaces `repo view`; the protection GET targets that repo; api user comes first.
+  : > "$_ghenvlog"
+  _evil_env CI='' PATH="$_ghenvdir:$PATH" sh "$0" --raw --repo=me/repo >/dev/null 2>&1 || true
+  _un=$(grep -n '^== ARGS: api user' "$_ghenvlog" | head -n 1 | cut -d: -f1)
+  _gt=$(grep -n '^== ARGS: api repos/me/repo/branches/main/protection' "$_ghenvlog" | head -n 1 | cut -d: -f1)
+  if ! grep -q '^== ARGS: repo view' "$_ghenvlog" && [ -n "$_un" ] && [ -n "$_gt" ] && [ "$_un" -lt "$_gt" ]; then
+    echo "selftest PASS: --repo=me/repo skips repo view and reads repos/me/repo/branches/main/protection after the identity read"
+  else
+    echo "selftest FAIL: --repo handling (api-user@$_un protection-get@$_gt log: $(redact < "$_ghenvlog"))"; st=1
+  fi
+  # C3. an invalid --repo is refused (rc 2, the specific wording) before ANY gh call.
+  for _bad in 'a/b/c' '../x' 'a/..' './x' 'a b/c' '/x' 'x/' ''; do
+    : > "$_ghenvlog"
+    out=$(CI='' PATH="$_ghenvdir:$PATH" sh "$0" --repo="$_bad" 2>&1) && g=0 || g=$?
+    if [ "$g" = 2 ] && printf '%s\n' "$out" | grep -qF "invalid --repo" && ! grep -q . "$_ghenvlog"; then
+      echo "selftest PASS: --repo='$_bad' refused (rc 2, no gh call)"
+    else
+      echo "selftest FAIL: --repo='$_bad' want rc 2 + 'invalid --repo' + no gh call, got rc=$g out=[$out]"; st=1
+    fi
+  done
+  # C4. valid_repo parity: both copies, extracted from their files, give the same verdicts on one vector set.
+  _vr_a=$(sed -n '/^valid_repo() {/,/^}/p' "$0")
+  _vr_b=$(sed -n '/^valid_repo() {/,/^}/p' "$REPO_ROOT/scripts/branch-protection-apply.sh")
+  _vr_bad=0
+  for _vv in 'me/repo' 'a.b/c-d_e' 'ab' 'a/b/c' '../x' 'a/..' './x' 'a/.' 'a b/c' '/x' 'x/' 'a?b/c' ''; do
+    _va=$( eval "$_vr_a"; if valid_repo "$_vv"; then echo valid; else echo invalid; fi )
+    _vb=$( eval "$_vr_b"; if valid_repo "$_vv"; then echo valid; else echo invalid; fi )
+    [ "$_va" = "$_vb" ] || { echo "selftest FAIL: valid_repo drift on '$_vv' (check=$_va apply=$_vb)"; st=1; _vr_bad=1; }
+  done
+  _va=$( eval "$_vr_a"; if valid_repo me/repo && ! valid_repo ../x; then echo anchored; fi )
+  if [ "$_vr_bad" = 0 ] && [ "$_va" = anchored ]; then echo "selftest PASS: valid_repo gives the same verdicts in both scripts (and is not vacuous)"; else echo "selftest FAIL: valid_repo parity or anchors"; st=1; fi
+  # C6. --repo is a live-leg flag: with --declared-only it is a usage error, in EITHER order, before any gh call.
+  for _pair in '--declared-only --repo=me/repo' '--repo=me/repo --declared-only'; do
+    : > "$_ghenvlog"
+    # shellcheck disable=SC2086  # the two flags are deliberately word-split
+    out=$(CI='' PATH="$_ghenvdir:$PATH" sh "$0" $_pair 2>&1) && g=0 || g=$?
+    if [ "$g" = 2 ] && printf '%s\n' "$out" | grep -qF -e "cannot be combined with --declared-only" && ! grep -q . "$_ghenvlog"; then
+      echo "selftest PASS: '$_pair' refused (rc 2, no gh call)"
+    else
+      echo "selftest FAIL: '$_pair' want rc 2 naming --repo and no gh call, got rc=$g out=[$out]"; st=1
+    fi
+  done
+  # C7. under CI only the credential source is named (no API call, no login) and the escalation is unchanged:
+  # an unreadable protection endpoint is rc 1 under CI, rc 2 without it.
+  : > "$_ghenvlog"
+  out=$(_evil_env CI=true STUB_PROT_FAIL=1 PATH="$_ghenvdir:$PATH" sh "$0" --repo=me/repo 2>"$_ghenvdir/err") && g=0 || g=$?
+  _ci_api=$(grep -c '^== ARGS: api user' "$_ghenvlog" || true)
+  _noc=$(env CI=true GH_TOKEN='' GITHUB_TOKEN='' PATH="$_ghenvdir:$PATH" sh "$0" --repo=me/repo 2>&1 >/dev/null) || true
+  out2=$(_evil_env CI='' STUB_PROT_FAIL=1 PATH="$_ghenvdir:$PATH" sh "$0" --repo=me/repo 2>/dev/null) && g2=0 || g2=$?
+  if [ "$g" = 1 ] && [ "$g2" = 2 ] && printf '%s\n' "$out" | grep -qF 'FAIL: branch-protection could not verify' \
+     && printf '%s\n' "$out2" | grep -qF 'UNVERIFIED:' && grep -qF 'acting gh identity: not read in CI (credential: token in environment)' "$_ghenvdir/err" \
+     && ! grep -qF 'stub-login' "$_ghenvdir/err" && [ "$_ci_api" = 0 ] \
+     && printf '%s\n' "$_noc" | grep -qF 'acting gh identity: not read in CI (credential: none)'; then
+    echo "selftest PASS: under CI the identity line names only the credential source (no API call, no login); escalation unchanged"
+  else
+    echo "selftest FAIL: CI identity line or escalation (rc=$g/$g2 err=[$(cat "$_ghenvdir/err")] none=[$_noc])"; st=1
   fi
 
   # ── PROTECTION-TEAM-PROFILE (design 2026-10-03 §4): the settings line, the declared governance
@@ -1015,7 +1184,7 @@ STUB
   fi
 
   # Drift locks: the helpers duplicated into the self-contained apply script must stay identical.
-  for _dl in parse_merge_methods co_logins valid_branch; do
+  for _dl in parse_merge_methods co_logins valid_branch valid_repo; do
     _dl_a=$(sed -n "/^$_dl() {/,/^}/p" "$0")
     _dl_b=$(sed -n "/^$_dl() {/,/^}/p" "$REPO_ROOT/scripts/branch-protection-apply.sh")
     if [ -n "$_dl_a" ] && [ "$_dl_a" = "$_dl_b" ]; then echo "selftest PASS: $_dl() is identical in both scripts (no drift)"; else echo "selftest FAIL: $_dl() drifted between branch-protection.sh and branch-protection-apply.sh"; st=1; fi
@@ -1036,6 +1205,7 @@ STUB
   cat > "$_e2e/bin/gh" <<'STUBE2E'
 #!/bin/sh
 case "$*" in
+  *"api user"*) echo stub-login ;;
   *"repo view"*) echo "me/repo" ;;
   *"/invitations"*) [ -z "${STUB_INVITES_FAIL:-}" ] || exit 1; for l in ${STUB_INVITES:-}; do echo "$l"; done ;;
   *"branches/main/protection"*) printf '%s' "$STUB_PROTECTION" ;;

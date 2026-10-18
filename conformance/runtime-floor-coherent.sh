@@ -114,8 +114,31 @@ ci_of() {
     _v=$(grep -E "^[[:space:]]*${_k}:" "$_f" | head -1 | sed 's/#.*//' | awk -F: '{print $2}' | tr -d " '\"")
     if [ -n "$_v" ]; then _raw=$_v; break; fi
   done
-  [ -n "$_raw" ] || return 1
+  if [ -z "$_raw" ]; then
+    # setup-go may name no numeric version and read it from a file instead (the Go profile: go.mod).
+    _gvf=$(grep -E '^[[:space:]]*go-version-file:' "$_f" | head -1 | sed 's/#.*//' | awk -F: '{print $2}' | tr -d " '\"")
+    if [ -n "$_gvf" ]; then gover_of_file "$1" "$_gvf"; return 0; fi
+    return 1
+  fi
   mm "$_raw" || return 1
+}
+
+# gover_of_file <profile-dir> <go-version-file value> — the CI runtime named by setup-go's go-version-file, as
+# major.minor, or "FAIL:<reason>" (printed, rc 0). The path resolves against the profile dir, then its scaffold/
+# (the profile's CI runs from the scaffold's root once incepted). Go semantics: a `toolchain` directive, when
+# present, is the toolchain that runs; else the `go` directive. A file that is missing, or names neither, FAILs
+# closed — never a silent pass.
+gover_of_file() {
+  _gf=""
+  for _cand in "$1/$2" "$1/scaffold/$2"; do
+    if [ -f "$_cand" ]; then _gf=$_cand; break; fi
+  done
+  if [ -z "$_gf" ]; then printf 'FAIL:go-version-file %s not found under %s' "$2" "$1"; return 0; fi
+  _gv=$(awk '$1 == "toolchain" { print $2; exit }' "$_gf")
+  if [ -z "$_gv" ]; then _gv=$(awk '$1 == "go" { print $2; exit }' "$_gf"); fi
+  if [ -z "$_gv" ]; then printf 'FAIL:go-version-file %s has no go or toolchain directive' "$_gf"; return 0; fi
+  _gm=$(mm "$_gv") || { printf 'FAIL:go-version-file %s version unparseable (%s)' "$_gf" "$_gv"; return 0; }
+  printf '%s' "$_gm"
 }
 
 # container_major <profile-dir> — the builder-stage FROM runtime MAJOR, or "NA:no Dockerfile", or
@@ -144,6 +167,9 @@ eval_profile() {
     NA:*)   echo "N/A: $_p ${_floor#NA:}"; return 0 ;;
   esac
   _ci=$(ci_of "$_d") || _ci=""
+  case "$_ci" in
+    FAIL:*) echo "FAIL: $_p CI runtime unreadable — ${_ci#FAIL:}"; return 1 ;;
+  esac
   if [ -z "$_ci" ]; then
     echo "FAIL: $_p declares floor $(disp "$_floor") but has no numeric CI runtime to verify against"
     return 1
@@ -314,6 +340,48 @@ selftest() {
     echo "PASS: selftest — (3b) garbled manifest FAILs (unparseable), not a green N/A (rc 1)"
   else
     echo "FAIL: selftest — (3b) garbled manifest: rc=$_r out=[$_o]"; _sf=1
+  fi
+
+  # (6) go-version-file — setup-go with no numeric go-version reads the version from a file (go.mod). The
+  #     CI runtime is then that file's `toolchain` (else `go`) directive; a missing/unparseable file FAILs.
+  _sf_mkgomod() { mkdir -p "$1"; printf 'module example.com/app\n\ngo %s\n' "$2" > "$1/${3:-go.mod}"; }
+  _sf_mkgoci()  { mkdir -p "$1"; printf 'jobs:\n  x:\n    steps:\n      - uses: actions/setup-go@x\n        with:\n          go-version-file: %s\n          check-latest: true\n' "$2" > "$1/ci.yml"; }
+  _sf_mkgomod "$_base/gopos/scaffold" '1.27'; _sf_mkgoci "$_base/gopos" 'go.mod'
+  if _o=$(eval_profile "$_base/gopos" 2>&1); then _r=0; else _r=$?; fi
+  if [ "$_r" = 0 ] && printf '%s' "$_o" | grep -q '^PASS:.*floor 1.27 == CI 1.27'; then
+    echo "PASS: selftest — (6a) go-version-file coherent with the go.mod floor passes (rc 0)"
+  else
+    echo "FAIL: selftest — (6a) go-version-file coherent: rc=$_r out=[$_o]"; _sf=1
+  fi
+  _sf_mkgomod "$_base/goneg/scaffold" '1.27'; _sf_mkgomod "$_base/goneg/tools" '1.26' go.work; _sf_mkgoci "$_base/goneg" 'tools/go.work'
+  if _o=$(eval_profile "$_base/goneg" 2>&1); then _r=0; else _r=$?; fi
+  if [ "$_r" = 1 ] && printf '%s' "$_o" | grep -q 'floor 1.27 != CI 1.26'; then
+    echo "PASS: selftest — (6b) floor above the go-version-file value FAILs (rc 1, 'floor 1.27 != CI 1.26')"
+  else
+    echo "FAIL: selftest — (6b) floor above go-version-file: rc=$_r out=[$_o]"; _sf=1
+  fi
+  _sf_mkgomod "$_base/gomiss/scaffold" '1.27'; _sf_mkgoci "$_base/gomiss" 'nowhere/go.mod'
+  if _o=$(eval_profile "$_base/gomiss" 2>&1); then _r=0; else _r=$?; fi
+  if [ "$_r" = 1 ] && printf '%s' "$_o" | grep -q '^FAIL:.*go-version-file.*nowhere/go.mod'; then
+    echo "PASS: selftest — (6c) go-version-file naming a missing file FAILs closed (rc 1)"
+  else
+    echo "FAIL: selftest — (6c) missing go-version-file: rc=$_r out=[$_o]"; _sf=1
+  fi
+  _sf_mkgomod "$_base/gotc/scaffold" '1.27'; _sf_mkgoci "$_base/gotc" 'tools/go.work'
+  mkdir -p "$_base/gotc/tools"; printf 'go 1.27\ntoolchain go1.28.1\n' > "$_base/gotc/tools/go.work"
+  if _o=$(eval_profile "$_base/gotc" 2>&1); then _r=0; else _r=$?; fi
+  if [ "$_r" = 1 ] && printf '%s' "$_o" | grep -q 'floor 1.27 != CI 1.28'; then
+    echo "PASS: selftest — (6d) a toolchain directive overrides the go directive as the CI runtime (rc 1)"
+  else
+    echo "FAIL: selftest — (6d) toolchain directive: rc=$_r out=[$_o]"; _sf=1
+  fi
+  _sf_mkgomod "$_base/gobad/scaffold" '1.27'; _sf_mkgoci "$_base/gobad" 'tools/go.work'
+  mkdir -p "$_base/gobad/tools"; printf 'use ./x\n' > "$_base/gobad/tools/go.work"
+  if _o=$(eval_profile "$_base/gobad" 2>&1); then _r=0; else _r=$?; fi
+  if [ "$_r" = 1 ] && printf '%s' "$_o" | grep -q '^FAIL:.*go-version-file'; then
+    echo "PASS: selftest — (6e) go-version-file with no go directive FAILs closed (rc 1)"
+  else
+    echo "FAIL: selftest — (6e) unparseable go-version-file: rc=$_r out=[$_o]"; _sf=1
   fi
 
   # (4) fail-closed — an empty fleet root -> run_fleet rc 1 with 'no profiles found' (never vacuous pass).

@@ -326,22 +326,20 @@ gfm_cell() { cell "$1" "$2"; }
 # WHY IT IS RED AT ALL: with a hosted tracker declared, all three gates used to print an `N/A` and
 # return 0 — three green lights and no governance (ruling D-240903-1 §3, "governance may never
 # switch off silently"). Nobody can CLEAR this red by editing code; the ladder is the waiver
-# register below, or `TRACKER-BACKED-GOVERNANCE`. That visible cost is the ruling's intent.
+# register below, or (on a Jira backend) the bind of the trusted job. That visible cost is the ruling's intent.
 # THE WAIVER READ IS FAIL-CLOSED: an absent or unreadable waivers-valid.sh, an absent register, a
 # placeholder row and an expired row all read as NO WAIVER. A green here requires a human-signed,
 # dated row and nothing less.
-#   <cure-sentence> (4th, OPTIONAL): overrides the default "TRACKER-BACKED-GOVERNANCE, or ratify a
-#   board-governance waiver" clause in the final (non-waived) message. Both `backlog-presence.sh`
-#   and `loop-state.sh` supply the real cure (`tracker_delegated_cure()`, above) once the trusted
-#   job exists (LOOP-STATE-TRACKER-STEP-ASIDE amendment A2 — one cure, both gates, so an agent
-#   reading either gate's refusal gets the same instruction); `backlog-current.sh` still omits it
-#   and keeps today's sentence byte-identical (not this task's file to touch or message to change).
+#   <cure-sentence> (4th, OPTIONAL): overrides the default in the final (non-waived) message. The
+#   default is `tracker_delegated_cure <backend>` (below), the one backend-aware source of the cure
+#   (SWAS-203): every gate, with or without the override, says the same thing about the same
+#   backend, so an agent reading any gate's refusal gets the same instruction.
 not_enforced_notice() {
   # The backend token is repo text on its way to a CI log. It is one of five fixed tokens on this
   # path today, but strip C0/DEL anyway — the same reason loop-state's ls_safe exists.
   _ne_b=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')
   _ne_d="$2"; _ne_s="$3"; _ne_w=""
-  _ne_cure="${4:-TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver}"
+  _ne_cure="${4:-$(tracker_delegated_cure "$_ne_b")}"
   if [ -f "$_ne_s" ]; then
     _ne_w=$(sh "$_ne_s" --active board-governance "$_ne_d/WAIVER-REGISTER.md" 2>/dev/null) || _ne_w=""
   else
@@ -418,8 +416,21 @@ tracker_delegated_notice() {
 # `not_enforced_notice`'s 4th argument since TRACKER-TRUSTED-JOB-REQUIRED-CONTEXT T1 (`:552`),
 # byte-identical — amendment A2: `loop-state.sh` passes this on every hosted-tracker refusal too,
 # so an agent reading either gate's red gets the SAME cure, not the generic waiver-only clause.
+#
+# SWAS-203: <backend> (the 1st argument) picks the cure, so this is the ONE source of it. `jira` has
+# a kit adapter, so its cure is the bind FIRST, then the waiver where branch protection cannot be set
+# (a free-plan private repository) or cannot be read, then BACKLOG.md. Every other token has no kit
+# adapter, so it is never told to bind a job it cannot have: it gets the waiver or BACKLOG.md.
+# `not_enforced_notice` defaults to this with its own backend; surfaces that cannot see the backend
+# (the workflows, the pre-push hook) carry a neutral short form instead of a copy of either sentence.
 tracker_delegated_cure() {
-  printf '%s\n' "bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected — or move the board to BACKLOG.md, or ratify a board-governance waiver"
+  _tdc_b=$(printf '%s' "${1:-}" | LC_ALL=C tr -d '\000-\037\177')
+  case "$_tdc_b" in
+    jira)
+      printf '%s\n' "bind the trusted job (it needs a valid .kit/tracker.conf on main): a repo admin runs sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected (tracker-board-gates must be listed in REQUIRED-CHECKS.md; incept lists it) — or, where branch protection cannot be set (a free-plan private repository) or the kit cannot read it (a ruleset, or a private repository whose protection read returns nothing), the owner (a human, never an agent) ratifies the board-governance waiver in WAIVER-REGISTER.md by filling Owner and Ratified-by (one person may sign both) — or move the board to BACKLOG.md" ;;
+    *)
+      printf '%s\n' "no kit adapter reads '$_tdc_b' yet (docs/work-tracking/adapters.md §Which gates bind): the owner (a human, never an agent) ratifies a board-governance waiver, or move the board to BACKLOG.md" ;;
+  esac
 }
 
 # --- THE ROW-ID SEAM (BOARD-ROW-IDENTIFIER) ---------------------------------------------

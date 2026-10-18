@@ -127,7 +127,9 @@ is_agentic() {
     _line=$(grep -Ei '^[-*[:space:]]*agentic[^:]*:' "$_f" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') || true
     [ -n "$_line" ] || continue
     printf '%s' "$_line" | grep -Eq '\[[^]]*yes[^]]*/[^]]*\]' && continue
-    _val=${_line#*:}; printf '%s' "$_val" | grep -Eqw 'yes' && return 0
+    # the template's field grammar is `value — guidance`: read the VALUE, not the guidance prose
+    # (whose '**yes** ⇒' made a filled 'no' fire). Same cut as backlog-lib.sh resolve_backend.
+    _val=$(printf '%s' "${_line#*:}" | sed 's/—.*$//'); printf '%s' "$_val" | grep -Eqw 'yes' && return 0
   done
   return 1
 }
@@ -144,7 +146,8 @@ declares_sensitive() {
     _line=$(grep -Ei 'data classification[^:]*:' "$_f" 2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]') || true
     [ -n "$_line" ] || continue
     printf '%s' "$_line" | grep -Eq '\[[^]]*(public|internal|confidential|restricted)[^]]*/[^]]*\]' && continue
-    _val=${_line#*:}; printf '%s' "$_val" | grep -Eq 'confidential|restricted' && return 0
+    # value, not guidance: cut at the first em dash (the guidance names 'Confidential/Restricted').
+    _val=$(printf '%s' "${_line#*:}" | sed 's/—.*$//'); printf '%s' "$_val" | grep -Eq 'confidential|restricted' && return 0
   done
   return 1
 }

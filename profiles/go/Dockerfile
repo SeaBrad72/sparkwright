@@ -5,7 +5,8 @@
 # multi-stage, non-root, minimal base, healthcheck.
 
 # ---- builder: full Go toolchain, never shipped ----
-FROM golang:1.22-bookworm AS builder
+# The tag is the go.mod minor; a floating minor tag gets the newest patch. Bump it with go.mod and the linter.
+FROM golang:1.27-bookworm AS builder
 WORKDIR /src
 # Stdlib-only scaffold: there is no go.sum (no external modules). COPY only go.mod;
 # `go mod download` is a no-op. If you add dependencies, run `go mod tidy` to generate

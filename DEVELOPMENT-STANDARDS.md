@@ -296,7 +296,7 @@ deploy-prod:
   needs: ci
   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
   environment: production   # set required reviewers on this environment in repo settings
-  runs-on: ubuntu-latest
+  runs-on: ubuntu-24.04
   steps:
     - run: echo "promote the verified artifact to production (canary/blue-green — see docs/operations/progressive-delivery.md)"
     - name: smoke

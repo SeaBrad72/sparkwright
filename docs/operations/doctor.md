@@ -82,7 +82,54 @@ CI failures on untracked repos or fresh clones. The two concerns are deliberatel
 | *(none)*    | Posture sweep. Exit 1 on GATING FAIL. UNVERIFIED → warn only. |
 | `--require` | Strict: UNVERIFIED also exits 1. Auto-set inside CI (`$CI` env). |
 | `--full`    | Posture + metrics (informational). Exit code unchanged by metrics. |
+| `--quick`   | The advisory lines only: skips conformance and claims, which read `UNVERIFIED (skipped by --quick…)`. Never a pass; see below. Refused (exit 2) with `--full` and with `--as agent`. |
 | `--selftest`| Built-in regression test: stubs the composed commands, verifies the render contract and exit-code logic. Wired to CI via `conformance/doctor-wired.sh`. |
+
+## Progress, the estimate and `--quick` (SWAS-201)
+
+A full run on a real tree takes tens of minutes, so doctor says where it is. **Everything below is on stderr**; stdout is
+byte-identical to a run without it. A `--selftest-e2e` run stays silent.
+
+```
+doctor: 7 steps; estimate 25-50 min on an adopter tree (an estimate from the 2026-10-14 field run; ...). Use --quick for the advisory lines in under a minute.
+doctor [1/7] conformance battery (conformance/verify.sh) ...
+doctor [1/7]   row 3/<T> agent-autonomy PASS (14m02s)
+doctor [1/7] done in 41m10s (row <T>/<T> reported)
+doctor [2/7] claims registry: N/A on this tree (kit-self), skipped
+...
+doctor: finished in 41m31s
+```
+
+- **`[k/N]`** counts the steps this run will enter, from the same predicates the dimensions use, so k ends at N on a normal
+  exit. The default run has up to 7 (conformance, claims, git, kit-update, permissions, the tracker credential line when a
+  `.kit/tracker.conf` exists, the forge identity line); `--full` adds four metric steps.
+- **`row i/T name STATUS (elapsed)`** relays one line per result row of `verify.sh`. `T` is read at run time from the
+  `^check ` lines of `conformance/verify.sh`; no count is written down anywhere. The time is elapsed, not an ETA: row times
+  vary by two orders of magnitude, so an extrapolation would be wrong where it matters most.
+- **The verdict never comes from that stream.** `verify.sh`'s exit status travels through a status file (POSIX `sh` has no
+  `pipefail`). A status file that is missing, empty or not a number (an interrupted run, a killed child) renders
+  `conformance FAIL`, never PASS.
+- **The estimate is a dated sentence, not a computation.** Doctor mutates nothing, so it cannot remember an earlier run. The
+  figures are 25-50 min on an adopter tree (verify alone) and 55-95 min on the kit's own tree (verify, then a claims registry
+  that runs the guard battery again). **Re-measure them at each MINOR** from the `done in` lines of a real run and change the
+  sentence in `scripts/doctor.sh` (`_pg_announce`) and the figures here together.
+
+**`--quick`** skips exactly two steps, conformance and claims, and still runs git, kit-update, permissions, the tracker
+credential line and the forge identity line. It prints its own estimate (`doctor: --quick: N steps; estimate under 1 min
+(plus up to about 20 s of bounded tracker reads); conformance and claims are NOT run.`).
+
+- The conformance row reads `UNVERIFIED (skipped by --quick: run doctor without --quick for this verdict)`. So does the
+  claims row on a kit-marked tree. On an unmarked (adopter) tree claims stays `N/A (kit-self…)`, because the dimension does
+  not apply there, skip or not.
+- **Overall is never PASS under `--quick`.** Not required: `Overall: WARN  (--quick: conformance and claims were NOT run;
+  this is not a pass. …)`, exit 0. Required (`--require`, or `$CI` set): `Overall: FAIL  (--quick under --require/CI: the
+  gating dimensions were skipped, not failed. …)`, exit 1. A required verdict cannot be quick.
+- `--quick --full` and `--quick --as agent` (either order) are usage errors, exit 2.
+
+**The claims registry runs a repeated verifier once.** Inside one `claims-registry.sh` pass, a verifier string that already
+ran reuses its recorded exit code and output (the memo is shell variables in that process, no file or flag). Every row still
+prints its own PASS, UNVERIFIED or FAIL line under its own id, and a non-pass prints its diagnostics on every row it covers.
+Today that is the three claims that share one orchestrator-loop wiring check.
 
 ## Graceful degradation in adopter repos
 

@@ -86,7 +86,7 @@ its evidence, or by **N/A — <reason>**; N/A with a reason is a complete answer
 ceremony rule above:
 - **XS/S ordinary** — one line in the PR's design note: `lenses: no findings except <lens>: <finding>` (or `lenses: no findings`).
 - **M, Sensitive or Control-plane** — the full table in the design doc, under a `## Lens review` heading (a section
-  number in front is fine: `## 9. Lens review`), one row per lens, with the lens name alone in a cell exactly as
+  prefix in front is fine: `## 9. Lens review`, `## 9a. Lens review` or `## §9 Lens review`), one row per lens, with the lens name alone in a cell exactly as
   written below. Put your project's own lenses after the twelve. `conformance/review-lane.sh` checks that a design
   doc the change adds has the heading and all twelve names; it never reads what you wrote in them.
 

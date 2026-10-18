@@ -2524,8 +2524,13 @@ _cp8b_cp_target_in() {
 # _cp8b_optval_exp "<value token>" "<mode>": 0 iff a global option's value holds an UNQUOTED `$` or backtick (SWAS-227): the shell
 # word-splits it, so the value can carry its own subcommand. Mode u reads the RAW token's quoting (a `$` inside "..." or '...' is
 # quoted; a backslash escapes the next byte); mode c is for the quote-collapsed view, where quotedness is gone: any `$`/backtick counts.
+# SWAS-232: rc stays 0 (doubt) / 1 (none); the state the token ENDS in is reported in _ox_open: empty (closed), `"` or `'` (inside that
+# quote), or `\` (an unquoted trailing backslash, which joins the shell word to the next token). An optional third argument is the state
+# carried in from the previous token (`"`/`'` starts inside that quote; `\` starts unquoted, the backslash having consumed the
+# whitespace). Mode c always leaves _ox_open empty. Mode u is to be called ONLY through _cp8b_optval_span (cell SWAS232-B1).
 _cp8b_optval_exp() {
-  _ox_a=$1; _ox_q=''
+  _ox_a=$1; _ox_q=${3:-}; _ox_open=''
+  [ "$_ox_q" = '\' ] && _ox_q=''
   while [ -n "$_ox_a" ]; do
     _ox_c=${_ox_a%"${_ox_a#?}"}; _ox_a=${_ox_a#?}
     if [ -n "$_ox_q" ]; then
@@ -2536,10 +2541,30 @@ _cp8b_optval_exp() {
     case "$_ox_c" in
       '$'|'`') return 0 ;;
       "'"|'"') [ "$2" = u ] && _ox_q=$_ox_c ;;
-      '\') [ "$2" = u ] && _ox_a=${_ox_a#?} ;;
+      '\')
+        if [ "$2" = u ]; then
+          [ -n "$_ox_a" ] || { _ox_open='\'; return 1; }
+          _ox_a=${_ox_a#?}
+        fi ;;
     esac
   done
+  _ox_open=$_ox_q
   return 1
+}
+
+# _cp8b_optval_span "<first value token>" [<the tokens after it>...]: the ONLY mode-u entry (SWAS-232). The segment is split on
+# whitespace, which cuts ONE shell word in two when a quote is left open (or a backslash escapes the whitespace). While the word is
+# open this scans the NEXT token only, from the carried state, so each byte is scanned once. rc 0 = doubt: an unquoted `$`/backtick, or a
+# word still open after the last token. rc 1 = none; _ox_n is the number of extra tokens the value took. It never shifts the caller's arguments.
+_cp8b_optval_span() {
+  _os_t=$1; shift; _ox_n=0; _os_s=''
+  while :; do
+    _cp8b_optval_exp "$_os_t" u "$_os_s" && return 0
+    [ -n "$_ox_open" ] || return 1
+    [ "$_ox_open" = '\' ] && [ "${_gsw:-0}" = 1 ] && return 0
+    [ $# -gt 0 ] || return 0
+    _os_s=$_ox_open; _os_t=$1; shift; _ox_n=$((_ox_n + 1))
+  done
 }
 
 # _cp8b_git_sub "<seg>" [u|c]: the git subcommand, after skipping GLOBAL options. Empty if unresolvable
@@ -2552,6 +2577,12 @@ _cp8b_git_sub() {
   _pg=0; case "$-" in
     *f*) _pg=1 ;;
     esac
+  # SWAS-232: the split below collapses whitespace RUNS, so a backslash followed by 2+ whitespace bytes in the raw text ends the shell word
+  # after the escaped byte; the span cannot tell that from a join, so it reads a trailing-backslash carry as doubt when this is set.
+  _gsw=0
+  case "$1" in
+    *'\'[[:space:]][[:space:]]*) _gsw=1 ;;
+  esac
   set -f
   # shellcheck disable=SC2086
   set -- $1
@@ -2561,9 +2592,19 @@ _cp8b_git_sub() {
     case "$1" in
       -c|-C|--git-dir|--work-tree|--exec-path|--namespace)
         [ $# -ge 2 ] || break
+        if [ "$_gm" = u ]; then
+          shift; _gv=$1; shift
+          _cp8b_optval_span "$_gv" "$@" && break
+          shift $_ox_n; continue
+        fi
         if [ -n "$_gm" ] && _cp8b_optval_exp "$2" "$_gm"; then break; fi
         shift 2; continue ;;
       --git-dir=*|--work-tree=*|--exec-path=*|--namespace=*)
+        if [ "$_gm" = u ]; then
+          _gv=$1; shift
+          _cp8b_optval_span "$_gv" "$@" && break
+          shift $_ox_n; continue
+        fi
         if [ -n "$_gm" ] && _cp8b_optval_exp "$1" "$_gm"; then break; fi
         shift; continue ;;
       -p|--paginate|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
@@ -4252,6 +4293,223 @@ _cp8b_strip_heredocs() {
   printf '%s' "$_hdo"
 }
 
+# === SWAS-184 GUARD-SUBSTITUTION-GIT-WRITE =========================================================
+# design: docs/architecture/2026-10-14-guard-substitution-git-write-design.md (amendment A1, rule A1-R; A3 moves the
+# plain-literal test to the lead word of each substitution and makes an interpreter name a script).
+# A command-substitution body rides inside its outer segment, so no per-segment arm judges it as a command. This block is a
+# COARSE DISQUALIFICATION, not a parser (`D-240813-3`): it never looks for a close, never tracks quotes, never extracts a
+# body. It takes the text after the FIRST opener, turns the shell's separators into stop tokens, splits on whitespace,
+# de-quotes, and runs word tests: a git word must be followed by one of nine measured reads, with no global option before
+# the subcommand. Over-denying is the accepted price; it can only turn an ALLOW into a DENY.
+_s84_win=''; _s84_n=0; _s84s=0; _s84k=0; _s84l=0; _s84e=0; _s84xa=0; _s84w=0; _s84i=0; _s84ir=0; _s84q=0; _s84pn=0; _s84pv=''
+
+# _cp8b_sub_window "<cmd>": SWAS-184 - the text after the FIRST opener (`$(` of any kind, `$((` included; a backtick; `<(`;
+# `>(`) in $_s84_win. rc 1 when there is none. A byte position, not a parse.
+_cp8b_sub_window() {
+  _s84_n=0; _s84_win=''
+  _s84a=${1%%'$('*}; _s84k2=${1%%'`'*}; _s84b=${1%%'<('*}; _s84c=${1%%'>('*}
+  # A funsub opens at `${` then any byte that cannot start a parameter expansion (a blank, a tab, a newline, `|`, a future byte).
+  _s84d=${1%%'${'[!A-Za-z0-9_#!@*?\$-]*}   # SWAS184-FUNSUB
+  _s84m=${#1}
+  if [ "${#_s84d}" -lt "$_s84m" ]; then _s84m=${#_s84d}; _s84_win=${1#"$_s84d"???}; _s84_n=1; fi
+  if [ "${#_s84a}" -lt "$_s84m" ]; then _s84m=${#_s84a}; _s84_win=${1#"$_s84a"??}; _s84_n=1; fi   # SWAS184-DOLLAR
+  if [ "${#_s84k2}" -lt "$_s84m" ]; then _s84m=${#_s84k2}; _s84_win=${1#"$_s84k2"?}; _s84_n=1; fi   # SWAS184-TICK
+  if [ "${#_s84b}" -lt "$_s84m" ]; then _s84m=${#_s84b}; _s84_win=${1#"$_s84b"??}; _s84_n=1; fi   # SWAS184-PROC
+  if [ "${#_s84c}" -lt "$_s84m" ]; then _s84m=${#_s84c}; _s84_win=${1#"$_s84c"??}; _s84_n=1; fi   # SWAS184-PROC
+  [ "$_s84_n" = 1 ]
+}
+
+# _cp8b_sub_longflag "<--name>": SWAS-184 - 0 iff <--name> is, or abbreviates, a diff-family flag that writes a file or
+# runs a configured program (git accepts any unambiguous prefix of a long option).
+_cp8b_sub_longflag() {
+  for _s84g in --output --ext-diff --textconv --upload-pack --receive-pack --exec; do
+    case $_s84g in
+      "$1"*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# _cp8b_sub_lead "<marked window>": SWAS-184 (A3) - PREDICATE, 0 = deny. The window carries an `@@` marker at every opener. The
+# LEAD word of each substitution - the first word after the marker, past leading parens, quote-only tokens and NAME=value
+# assignments - must be a plain literal, else DENY: every spelling that hides a program name holds a byte outside the set
+# (quotes, backslash, $, braces, globs, a glued redirect). When the lead is a kept wrapper, EVERY token up to the next stop
+# is tested too. Later words of a body are not tested (prose lines of a heredoc body are not leads); the any-position word
+# test in _cp8b_sub_tok still reads them. This does not recognise git.
+_cp8b_sub_lead() {
+  _s84lf=0
+  case "$-" in
+    *f*) _s84lf=1 ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $1
+  _s84nx=0; _s84md=0; _s84lr=1
+  for _s84lt in "$@"; do
+    if [ "$_s84lt" = '@@' ]; then _s84nx=1; continue; fi
+    if [ "$_s84lt" = ';' ]; then _s84nx=0; _s84md=0; continue; fi
+    [ "$_s84nx" = 1 ] || [ "$_s84md" = 1 ] || continue
+    while :; do   # a subshell paren opens the body; the word after it is the lead (a loop, since semgrep cannot parse `(` in a bracket expression)
+      case $_s84lt in
+        '('*) _s84lt=${_s84lt#?} ;;
+        *) break ;;
+      esac
+    done
+    case $_s84lt in
+      *[!\"\']*) : ;;
+      *) continue ;;
+    esac
+    case $_s84lt in
+      [A-Za-z_]*=*)
+        case ${_s84lt%%=*} in
+          *[!A-Za-z0-9_]*) : ;;
+          *) continue ;;
+        esac ;;
+    esac
+    case $_s84lt in
+      *[!A-Za-z0-9._/+:,@%=-]*) _s84lr=0; break ;;   # SWAS184-LEAD
+    esac
+    if [ "$_s84nx" = 1 ]; then
+      _s84nx=0
+      case ${_s84lt##*/} in
+        env|command|nice|time|nohup|exec|timeout|sudo) _s84md=1 ;;
+      esac
+    fi
+  done
+  [ "$_s84lf" = 1 ] || set +f
+  return $_s84lr
+}
+
+# _cp8b_sub_stdin "<token>": SWAS-184 (A3, item 3) - PREDICATE, 0 = deny. Called for each token while an interpreter is armed
+# (_s84i = 1): before its run ends it must reach a script operand, a plain token holding / or . (that clears _s84i). Flags
+# and the target of an output redirect are skipped. An input redirect, a lone -, an inline-code flag in any position, a
+# non-plain token or a plain token with no / or . denies. A stop (or the window's end) with the interpreter still armed
+# denies in the caller, which closes the pipe, |& and sequence channels by construction.
+_cp8b_sub_stdin() {
+  if [ "$_s84ir" = 1 ]; then _s84ir=0; return 1; fi   # the word after an output redirect
+  case $1 in
+    '<'*|-) return 0 ;;
+    *'>') _s84ir=1; return 1 ;;
+    -c|-e|-E|-p|-s|--eval|--eval=*|--print|--print=*|-[ceEps]*|-[!-]*[ceEps]*) return 0 ;;   # SWAS184-STDINFLAG
+    *'>'*|-*) return 1 ;;
+    *[!A-Za-z0-9._/+:,@%=-]*) return 0 ;;
+    */*|*.*) _s84i=0; return 1 ;;
+  esac
+  return 0
+}
+
+# _cp8b_sub_tok "<token>": SWAS-184 - PREDICATE, 0 = deny. One de-quoted window token, with the run state in globals
+# (_s84s: 1 expecting a git subcommand, 2 inside log/show/diff; _s84k: skip a flag value; _s84l/_s84e: an interpreter / env
+# just seen; _s84xa: an xargs earlier in the run). A `;` stop token ends the run.
+_cp8b_sub_tok() {
+  _s84t=$1; _s84w=0
+  case $_s84t in
+    ';') [ "$_s84i" = 1 ] && return 0; _s84s=0; _s84k=0; _s84l=0; _s84e=0; _s84xa=0; _s84q=0; _s84ir=0; _s84pn=0; _s84pv=''; return 1 ;;
+    GIT_*=*)   # SWAS184-GITENV
+      case ${_s84t%%=*} in
+        *[!A-Za-z0-9_]*) : ;;
+        *) return 0 ;;
+      esac ;;
+  esac
+  # a lookup (which, type, whereis as a run's first word; command -v) names an interpreter as data
+  case $_s84t in
+    which|type|whereis) [ "$_s84pn" = 0 ] && _s84q=1 ;;
+    -v|-V) [ "$_s84pv" = command ] && _s84q=1 ;;
+  esac
+  _s84pn=1; _s84pv=$_s84t
+  if [ "$_s84k" = 1 ]; then _s84k=0; return 1; fi
+  if [ "$_s84l" = 1 ]; then   # SWAS184-ADJ
+    _s84l=0
+    case $_s84t in
+      -c|-e|-E|-p|-s|--eval|--print|-[ceEps]*|-[!-]*[ceEps]*) return 0 ;;   # SWAS184-INTERP
+    esac
+  fi
+  if [ "$_s84i" = 1 ]; then   # an armed interpreter must reach a script operand
+    if _cp8b_sub_stdin "$_s84t"; then return 0; fi
+    return 1
+  fi
+  if [ "$_s84e" = 1 ]; then _s84e=0; if [ "$_s84t" = -S ]; then return 0; fi; fi   # SWAS184-ENVS
+  if [ "$_s84s" = 1 ]; then   # SWAS184-CFLAG
+    case $_s84t in
+      -C|--git-dir|--work-tree) _s84k=1; return 1 ;;   # SWAS184-KEEPC
+      --git-dir=*|--work-tree=*|--no-pager|-P|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs) return 1 ;;   # SWAS184-KEEP
+      -*) return 0 ;;   # SWAS184-GLOBALS
+    esac
+    _s84s=0
+    case $_s84t in
+      log|show|diff) _s84s=2; return 1 ;;
+      rev-list) _s84s=2; return 1 ;;   # SWAS184-RLFLAGS (accepts diff options; measured: only rev-list on this list writes via --output)
+      rev-parse|status|describe|merge-base|ls-files) return 1 ;;   # SWAS184-LIST
+      *) return 0 ;;   # SWAS184-ALLOW
+    esac
+  fi
+  if [ "$_s84s" = 2 ]; then
+    case $_s84t in
+      --) _s84s=0 ;;
+      -o*) return 0 ;;   # SWAS184-FLAGS
+      --?*) if _cp8b_sub_longflag "${_s84t%%=*}"; then return 0; fi ;;   # SWAS184-FLAGS
+    esac
+  fi
+  case $_s84t in
+    *'{'*)
+      case $_s84t in
+        *git*) return 0 ;;   # SWAS184-BRACE
+      esac ;;
+  esac
+  _s84bw=${_s84t%%'<'*}; _s84bw=${_s84bw%%'>'*}; _s84bw=${_s84bw##*/}   # a glued redirect does not hide the word (sh>out, git>x)
+  case $_s84bw in
+    eval) return 0 ;;   # SWAS184-EVAL
+    [Gg][Ii][Tt]-*) return 0 ;;   # SWAS184-CASE
+    [Gg][Ii][Tt]|[Gg][Ii][Tt].[Ee][Xx][Ee]) _s84s=1; _s84w=1 ;;   # SWAS184-CASE
+    env) _s84e=1; _s84w=1 ;;
+    sh|bash|dash|zsh|ksh|python*|perl*|ruby*|node*) _s84l=1; _s84w=1; [ "$_s84q" = 1 ] || _s84i=1 ;;   # SWAS184-ARM
+    xargs) _s84xa=1 ;;
+  esac
+  [ "$_s84xa" = 1 ] && [ "$_s84w" = 1 ]   # SWAS184-XARGS
+}
+
+# _cp8b_subst_denied "<cmd>": SWAS-184 - PREDICATE, 0 = deny. Gate: the command holds an opener. Window: the text after the
+# first one (so every body is in it). Lead pass: a private copy marks every opener, makes `; & | )` stops and glues a paren to
+# the word before it; the first word after each marker must be plain. Word-test pass (the shared stop text): `(` is a stop
+# too, a `$` right before a quote is deleted (`gi$'t'` is git), the text is de-quoted (`g\it`, `"g"it` are git) and split on
+# whitespace; a git word must then be followed by a measured read, and an interpreter must name a script.
+_cp8b_subst_denied() {
+  case "$1" in
+    *'$('*|*'<('*|*'>('*|*'`'*|*'${'[!A-Za-z0-9_\#!@*?\$-]*) : ;;
+    *) return 1 ;;
+  esac
+  _cp8b_sub_window "$1" || return 1
+  _s84y=$(printf '%s' "$_s84_win" | tr '\n`' ';;' | sed -e 's/[;&|)]/ ; /g' -e 's/</ < /g') || _guard_fault subst-window   # SWAS184-STOP
+  _guard_vanished subst-window "$_s84_win" "$_s84y"
+  _s84gl='s/\([^[:space:](]\)(/\1_/g'   # the paren glue; it is private to the lead test (F1: shared, it hid a nested opener)
+  _s84o=$(printf '@@ %s' "$_s84_win" | sed -e 's/\$(/ @@ /g' -e 's/`/ @@ /g' -e 's/[<>](/ @@ /g' -e 's/\${[^A-Za-z0-9_#!@*?$-]/ @@ /g' -e 's/[;&|)]/ ; /g') || _guard_fault subst-window
+  _guard_vanished subst-window "$_s84_win" "$_s84o"
+  _s84g=$(printf '%s' "$_s84o" | sed -e "$_s84gl") || _guard_fault subst-window
+  _guard_vanished subst-window "$_s84o" "$_s84g"
+  if _cp8b_sub_lead "$_s84g"; then return 0; fi
+  _s84x=$(printf '%s' "$_s84y" | sed -e "s/\\$\\([\"']\\)/\\1/g" -e 's/[()]/ ; /g') || _guard_fault subst-window   # SWAS184-DQUOTE
+  _s84x=$(_cp8b_dequote "$_s84x") || _guard_fault subst-window   # SWAS184-DQ
+  _s84f=0
+  case "$-" in
+    *f*) _s84f=1 ;;
+  esac
+  set -f
+  # shellcheck disable=SC2086
+  set -- $_s84x
+  _s84s=0; _s84k=0; _s84l=0; _s84e=0; _s84xa=0; _s84r=1; _s84i=0; _s84ir=0; _s84q=0; _s84pn=0; _s84pv=''
+  for _s84tk in "$@"; do
+    if _cp8b_sub_tok "$_s84tk"; then _s84r=0; break; fi
+  done
+  [ "$_s84i" = 1 ] && _s84r=0   # the window ended with an interpreter still waiting for a script
+  [ "$_s84f" = 1 ] || set +f
+  return $_s84r
+}
+
+# _cp8b_sub_reason: SWAS-184 - the refusal text for a substitution deny (escape-card row R28 `substitution-git`).
+_cp8b_sub_reason() {
+  printf '13: after a command substitution ($(...), backtick, <(...)) the command may hold a git command only as a measured read (rev-parse, log, show, diff, status, describe, merge-base, ls-files, rev-list) with no -c/--config-env/--exec-path/--namespace before the subcommand, no GIT_*= assignment, no eval, no program name that is not a plain literal, and an interpreter only with a script path (no -c/-e flag, no stdin) - denied (control-plane integrity; coarse fail-closed). Run the git command as its OWN command, not after a substitution; for a message use git commit -F <file> or gh pr create --body-file <file>; or split the command in two. Set KIT_GUARD_SELFEDIT=1 for deliberate human maintenance.'
+}
+
 # _cp8b_control_plane_denied "<cmd>": PREDICATE - the CP-8b control-plane decision. Walks the segments
 # and binds each segment's LEADING VERB to that segment's OWN arguments (design section 9.4).
 _cp8b_control_plane_denied() {
@@ -4260,6 +4518,9 @@ _cp8b_control_plane_denied() {
   # upstream segment before anything below can exempt it as data. Add-only — a miss falls straight
   # through to today's walk.
   if _cp8b_piped_interp_hit "$1"; then _cp8b_deny_reason "$_cp8b_pi_seg"; _cp8b_pi_note; return 0; fi
+  # SWAS-184: the text after the first substitution opener of the WHOLE command is judged before any segment is, so a
+  # lead-based arm (a read lead, an assignment, a kit-exec script) cannot step past a body the segmenter would cut.
+  if _cp8b_subst_denied "$1"; then _cp8b_sub_reason; return 0; fi   # SWAS184-SITE-A
   # GUARD-READ-LANE-2 T8 (design §3-F-a): segment the QUOTED-SPAN MASK when it was kept. It declines to
   # the identical string on every ambiguous byte and whenever the gate does not hold, so this line is a
   # no-op for every command that is not a read-led whole.

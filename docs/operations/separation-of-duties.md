@@ -93,6 +93,17 @@ Apply the contract through your forge's equivalent mechanism: an approval rule t
 
 ---
 
+## The minimum identity model — one human plus one agent identity
+
+The kit's minimum is one human and one agent identity. The agent is a member of the team that works on the humans' behalf, under **its own limited identity on every system it touches** (the forge and the tracker), never a human's credentials. It holds no admin anywhere; approvals are meant to come from a human identity (a boundary only once no owner login is reachable from agent sessions, see the last bullet); CI uses its own token where the system offers one.
+
+- **One agent identity serves the whole team**: one extra seat in total, not one per person.
+- **On a free tier, the same agent account may also be the CI reader**, declared as a writer with a notice on every run (`JIRA-SETUP.md` §5a). That saves a seat; it does not reduce exposure (the residuals are in §5a and the threat model, T12). The reader is then **the agent, never the reviewing persona** of [the overlap, named](#forge-identity--agent-sessions-hold-no-admin): the reader and the reviewing login stay one persona only where the reader is a separate Viewer seat.
+- **How to create the identity** is each system's own setup: the forge in [`forge-identity-switch.md`](forge-identity-switch.md) and `docs/adoption/vc-hosts.md`, the tracker in its setup sheet (`JIRA-SETUP.md`, or `docs/work-tracking/adapters.md` §The agent's identity on each tracker for the others).
+- **What it means for merging:** with its own forge account, the agent is not the approving identity, so the repository runs the **team** relationship, the default ([`docs/adoption/vc-hosts.md` §Solo or team](../adoption/vc-hosts.md#solo-or-team--pick-the-merge-relationship-declared-in-your-repo-the-default-is-team)). That holds as a boundary only once no owner login is reachable from agent sessions (forge-identity-switch steps 0, 2 and 5 close those paths, and step 7 proves it): until then the agent could approve as you, and team is a convention. Solo is for a repository where the agent works under the owner's one account.
+
+---
+
 ## Forge identity — agent sessions hold no admin
 
 SoD above keeps an agent from ratifying its own work. This section keeps it from holding the *settings* too: the identity every agent session runs as must not be able to change repository settings, variables, secrets or branch protection. Identity is the lock that converges; a text guard over commands is a seatbelt, and it does not cover every settings call.
@@ -101,7 +112,7 @@ SoD above keeps an agent from ratifying its own work. This section keeps it from
 
 **Status in this repo.** The model is stated and `sparkwright doctor --as agent` measures it, but this repo has **not yet switched the boundary on**: agent sessions still run under the owner's login, and the residual (an admin login within the agents' reach) stays open until the switch is proven (the act sheet is [`forge-identity-switch.md`](forge-identity-switch.md)).
 
-**Solo project.** A one-account project runs the agent under its own login; `sparkwright doctor` reports that as INFO, not a warning (declaring a ratification seat in `.kit/ratification-seats.conf` turns the INFO into a counted warning). The switch becomes worth its cost once a separate identity reviews.
+**Solo project.** A one-account project runs the agent under its own login; `sparkwright doctor` reports that as INFO, not a warning (declaring a ratification seat in `.kit/ratification-seats.conf` turns the INFO into a counted warning). The switch becomes worth its cost once a separate identity reviews. (This is below the minimum model; see [above](#the-minimum-identity-model--one-human-plus-one-agent-identity).)
 
 ### The identity set
 
@@ -118,6 +129,7 @@ The machine user's token is a classic token with exactly `repo` and `workflow` (
 
 - a second human reviewer joins;
 - the reader seat needs board write;
+- the reader becomes the agent account (free plan): the reviewing persona then holds no reader seat;
 - the reviewing login's credential is found on an agent-reachable store.
 
 ### Where an owner credential is still reachable

@@ -83,7 +83,9 @@ validation-terminal-state	templates/TASK-CONTEXT-CONTRACT-TEMPLATE.md	subject-un
 #    HONEST CEILING: this pins PRECEDENCE, not content agreement. If CLAUDE.md adds or renames a DoD
 #    category, §12's category prose can drift silently — the deferral is what makes that drift
 #    harmless, because the restatement permanently declares itself subordinate.
-dod-precedence	DEVELOPMENT-STANDARDS.md	The authoritative checklist is in \*\*`CLAUDE\.md`\*\*	dod-precedence: standards §12 defers to the authoritative checklist	any
+#    The name alternation: incept renames the principles doc and rewrites this very sentence to name
+#    ENGINEERING-PRINCIPLES.md (scripts/incept.sh), so both names are the deferral (SWAS-213).
+dod-precedence	DEVELOPMENT-STANDARDS.md	The authoritative checklist is in \*\*`(CLAUDE|ENGINEERING-PRINCIPLES)\.md`\*\*	dod-precedence: standards §12 defers to the authoritative checklist	any
 #
 # ── collected-not-gated (PREFLIGHT-DOCTOR-MERGE disposition, PR 9 / D-240828-4) — the three
 #    measurement instruments each carry a header disclosure stating plainly that they are exercised

@@ -168,6 +168,11 @@ DM_SELF_EOF
     fi
   done
 
+  if printf '%s\n' "$_cases" | grep -qx -e dod-precedence; then
+    _dod_arm || st=1
+    _total=$((_total+3))
+  fi
+
   if [ "$st" = 0 ]; then
     echo "SELFTEST OK: doc-markers — $_total table-row mutant(s)/latch arm(s) killed, row counts pinned, liveness green on every case"
     return 0
@@ -204,6 +209,46 @@ _mutate() {  # <case> <n> <file-rel> <regex> <expected-FAIL-label>
     echo "SELFTEST PASS: $_mc mutant $_mn — stripping '$_mrx' -> RED via '$_mlab'"; return 0
   fi
   echo "SELFTEST FAIL: $_mc mutant $_mn — went RED but WITHOUT the '$_mlab' FAIL label: $_out"; return 1
+}
+
+# _dod_arm — dod-precedence on an INCEPTED tree (SWAS-213). incept renames the principles doc and
+# rewrites the very sentence the row pins, so the marker must hold on both trees. D1's line is
+# GENERATED: incept.sh's own sed expression applied to the real DEVELOPMENT-STANDARDS.md, so a change
+# to incept's rewrite cannot drift from the marker. D2 = the kit-tree line as it ships. D3 = the
+# incepted line bold-stripped, which must go RED with the row's label.
+_dod_arm() {
+  _dlab=$(dm_rows dod-precedence | cut -f3)
+  _dex=$(grep -F -e 'The authoritative checklist is in' scripts/incept.sh | head -1 | sed "s/^[[:space:]]*-e '//; s/'[[:space:]]*\\\\$//")
+  [ -n "$_dex" ] || { echo "SELFTEST FAIL: dod-precedence arm — incept.sh no longer carries the §12 rewrite expression"; return 1; }
+  _dkit=$(grep -F -e 'The authoritative checklist is in' DEVELOPMENT-STANDARDS.md | head -1)
+  _dinc=$(printf '%s\n' "$_dkit" | sed "$_dex")
+  if ! printf '%s\n' "$_dinc" | grep -Fq -e ENGINEERING-PRINCIPLES; then
+    echo "SELFTEST FAIL: dod-precedence arm — incept's rewrite no longer yields ENGINEERING-PRINCIPLES (D1 would collapse into D2)"
+    return 1
+  fi
+  _drc=0
+  for _dn in D1 D2 D3; do
+    _dd="$SELFBASE/dod-arm/$_dn"; mkdir -p "$_dd/docs" || return 1
+    : > "$_dd/docs/ROADMAP-KIT.md"
+    case $_dn in
+      D1) printf '%s\n' "$_dinc" > "$_dd/DEVELOPMENT-STANDARDS.md" ;;
+      D2) printf '%s\n' "$_dkit" > "$_dd/DEVELOPMENT-STANDARDS.md" ;;
+      D3) printf '%s\n' "$_dinc" | sed 's/\*\*//g; s/`//g' > "$_dd/DEVELOPMENT-STANDARDS.md" ;;
+    esac
+    _dout=$(run dod-precedence "$_dd" 2>&1) && _dok=1 || _dok=0
+    if [ "$_dn" = D3 ]; then
+      if [ "$_dok" = 0 ] && printf '%s\n' "$_dout" | grep -qF "FAIL: $_dlab"; then
+        echo "SELFTEST PASS: dod-precedence $_dn — incepted line bold-stripped -> RED via '$_dlab'"
+      else
+        echo "SELFTEST FAIL: dod-precedence $_dn — bold-stripped incepted line did not go RED with the row label: $_dout"; _drc=1
+      fi
+    elif [ "$_dok" = 1 ] && printf '%s\n' "$_dout" | grep -q 'dod-precedence: OK'; then
+      echo "SELFTEST PASS: dod-precedence $_dn — GREEN on the $( [ "$_dn" = D1 ] && echo incepted || echo kit ) line"
+    else
+      echo "SELFTEST FAIL: dod-precedence $_dn — expected GREEN: $_dout"; _drc=1
+    fi
+  done
+  return $_drc
 }
 
 _usage() { echo "usage: doc-markers.sh <case> [--selftest] | --selftest [case]   (takes no project-dir)" >&2; exit 2; }

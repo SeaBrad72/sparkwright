@@ -4025,11 +4025,12 @@ if [ "${GPAB_G:-}" != "" ]; then
     "$_msd"'s#^          -\*.\$.\*|.*_hw_r=0; break ;;#          ZNEVERZ) _hw_r=0; break ;;#' \
     "$(_m188j 'git -$S')" allow
   # SEC-M1 (final round): one load-bearing negative per call site and per clause of the unquoted-expansion rule
+  # Re-anchored by SWAS-232: the mode-u check now lives in _cp8b_optval_span, called from each arm's own u branch (range-scoped to that arm)
   gpab_mutant "SWAS227 MV13: the separate-value arm's expansion check is disabled -> D12 (-C \$D) DENY flips" \
-    's#_cp8b_optval_exp "\$2" "\$_gm"#false#' \
+    '/^      -c|-C|--git-dir|--work-tree|--exec-path|--namespace)$/,/shift 2; continue ;;$/ s#_cp8b_optval_span "\$_gv" "\$@" && break#_ox_n=0; false \&\& break#' \
     "$(_m188j 'git -C $D status')" allow
   gpab_mutant "SWAS227 MV13b: the =value arm's expansion check is disabled -> D12 (--git-dir=\$D) DENY flips" \
-    's#_cp8b_optval_exp "\$1" "\$_gm"#false#' \
+    '/^      --git-dir=\*|--work-tree=\*|--exec-path=\*|--namespace=\*)$/,/shift; continue ;;$/ s#_cp8b_optval_span "\$_gv" "\$@" && break#_ox_n=0; false \&\& break#' \
     "$(_m188j 'git --git-dir=$D status')" allow
   gpab_mutant "SWAS227 MV13c: the backtick clause is dropped -> D12 (-C backtick) DENY flips" \
     '/_cp8b_optval_exp()/,/^}/ s#.\$.|.`.) return 0 ;;#\\$) return 0 ;;#' \
@@ -4040,12 +4041,72 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "SWAS227 MV13e: the wrapped form is not judged in mode c -> D12e (env git -C \$D) DENY flips" \
     's#_wm=c; #_wm=; #' \
     "$(_m188j 'env git -C $D status')" allow
-  gpab_mutant "SWAS227 MV13f: the quote-close line is deleted -> D12j (-C \"x\"\$D) DENY flips" \
+  # Re-targeted by SWAS-232: with the close line gone every quote stays open, the span answers doubt, and D12j stays DENY (the leg would
+  # prove nothing there); A4 (-C "$D", a quoted variable) is the cell that flips ALLOW -> DENY.
+  gpab_mutant "SWAS227 MV13f: the quote-close line is deleted -> A4 (-C \"\$D\") ALLOW flips" \
     '/_cp8b_optval_exp()/,/^}/ s#^      \[ "\$_ox_c" = "\$_ox_q" \] .. _ox_q=..$#      :#' \
-    '{"tool_name":"Bash","tool_input":{"command":"git -C \"x\"$D status"}}' allow
+    '{"tool_name":"Bash","tool_input":{"command":"git -C \"$D\" status"}}' deny
+  # Re-anchored by SWAS-232: the '\' arm is multi-line now; the escaped-byte consume line is the one neutered
   gpab_mutant "SWAS227 MV13g: the outside-quotes backslash clause is deleted -> A4j (-C \\\$D) ALLOW flips" \
-    '/_cp8b_optval_exp()/,/^}/ s#^      .\\.) \[ "\$2" = u \] .. _ox_a=.*;;$#      ZNEVERZ) : ;;#' \
+    '/_cp8b_optval_exp()/,/^}/ s#^          _ox_a=\${_ox_a\#?}$#          :#' \
     '{"tool_name":"Bash","tool_input":{"command":"git -C \\$D status"}}' deny
+
+  # === SWAS-232 mutants (GUARD-GIT-OPTVAL-QUOTE-SPLIT): each flips the cell it pins. Range-scoped to the function or arm that holds the line. ===
+  # _aa_b1_ok <guard-core copy>: rc 0 iff no non-comment line outside the span helper calls _cp8b_optval_exp with a literal u mode, the helper
+  # is defined once, and it is called from both value arms (so the check is not vacuous). Sets _b1_msg. Shared by cell SWAS232-B1 and MW5.
+  # It sees a bare or quoted u. A mode held in a variable is OUT OF ITS REACH (the existing "$_gm" calls are mode c or ''; the u branch returns first).
+  _aa_b1_ok() {
+    _b1_out=$(sed '/^_cp8b_optval_span()/,/^}/d' "$1" | grep -v '^[[:space:]]*#' | grep -c -e '_cp8b_optval_exp[^()]* u$' -e '_cp8b_optval_exp[^()]* u[^a-z]' -e '_cp8b_optval_exp[^()]* ["'"'"']u["'"'"']' || :)
+    _b1_calls=$(sed '/^_cp8b_optval_span()/,/^}/d' "$1" | grep -v '^[[:space:]]*#' | grep -c '_cp8b_optval_span "' || :)
+    _b1_def=$(grep -c '^_cp8b_optval_span()' "$1" || :)
+    _b1_msg="outside=$_b1_out calls=$_b1_calls def=$_b1_def"
+    [ "$_b1_out" = 0 ] && [ "$_b1_calls" = 2 ] && [ "$_b1_def" = 1 ]
+  }
+  _mos='/^_cp8b_optval_span()/,/^}/ '
+  _moe='/_cp8b_optval_exp()/,/^}/ '
+  _mgs='/^      -c|-C|--git-dir|--work-tree|--exec-path|--namespace)$/,/shift 2; continue ;;$/ '
+  _mgj='/^      --git-dir=\*|--work-tree=\*|--exec-path=\*|--namespace=\*)$/,/shift; continue ;;$/ '
+  _w232() { printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$1"; }
+  gpab_mutant "SWAS232 MW1: the span's continue step is removed (an open word is read as closed) -> D1 DENY flips" \
+    "$_mos"'s#^    \[ -n "\$_ox_open" \] || return 1#    return 1#' \
+    "$(_w232 'git -C \"a b\"$D status')" allow
+  gpab_mutant "SWAS232 MW1 (D3): the same removal -> -c DENY flips" \
+    "$_mos"'s#^    \[ -n "\$_ox_open" \] || return 1#    return 1#' \
+    "$(_w232 'git -c \"a b\"$K status')" allow
+  gpab_mutant "SWAS232 MW1 (D4): the same removal -> the single-quoted form DENY flips" \
+    "$_mos"'s#^    \[ -n "\$_ox_open" \] || return 1#    return 1#' \
+    "$(_w232 "git -C 'a b'\$D status")" allow
+  gpab_mutant "SWAS232 MW1 (D5): the same removal -> the two-space form DENY flips" \
+    "$_mos"'s#^    \[ -n "\$_ox_open" \] || return 1#    return 1#' \
+    "$(_w232 'git -C \"a b c\"$D status')" allow
+  gpab_mutant "SWAS232 MW1 (D6): the same removal -> the backtick form DENY flips" \
+    "$_mos"'s#^    \[ -n "\$_ox_open" \] || return 1#    return 1#' \
+    "$(_w232 'git -C \"a b\"`x` status')" allow
+  gpab_mutant "SWAS232 MW1b: the =value arm goes back to a single-token scan -> D2 DENY flips" \
+    "$_mgj"'s#_cp8b_optval_span "\$_gv" "\$@" && break#_cp8b_optval_exp "$_gv" u \&\& break; _ox_n=0#' \
+    "$(_w232 'git --git-dir=\"a b\"$D status')" allow
+  gpab_mutant "SWAS232 MW2: an open word is read as doubt (the over-denying option) -> A1 ALLOW flips" \
+    "$_mos"'s#^    \[ -n "\$_ox_open" \] || return 1#    [ -n "$_ox_open" ] \&\& return 0; return 1#' \
+    "$(_w232 'git -C \"/tmp/a b\" status')" deny
+  gpab_mutant "SWAS232 MW2b: the same, =value arm -> A4 ALLOW flips" \
+    "$_mgj"'s#_cp8b_optval_span "\$_gv" "\$@" && break#_cp8b_optval_exp "$_gv" u; [ -n "$_ox_open" ] \&\& break; _ox_n=0#' \
+    "$(_w232 'git --work-tree=\"/tmp/a b\" status')" deny
+  gpab_mutant "SWAS232 MW3: the trailing-backslash line is removed -> D8 DENY flips" \
+    "$_moe"'s#^          \[ -n "\$_ox_a" \] .. { _ox_open=.\\.; return 1; }#          :#' \
+    "$(_w232 'git -C a\\ b$D status')" allow
+  gpab_mutant "SWAS232 MW4: a trailing unquoted backslash answers doubt instead of setting the open state -> A7 ALLOW flips" \
+    "$_moe"'s#{ _ox_open=.\\.; return 1; }#return 0#' \
+    "$(_w232 'git -C /tmp/a\\ b status')" deny
+  gpab_mutant "SWAS232 MW6: the whitespace-run flag check is removed from the span -> S1 DENY flips" \
+    "$_mos"'s#^    \[ "\$_ox_open" = .\\. \] && \[ "\${_gsw:-0}" = 1 \] && return 0$#    :#' \
+    "$(_w232 'git -C /tmp/a\\  diff HEAD --output=/tmp/f')" allow
+  # MW5: a byte check, so the leg mutates a COPY of the guard core and runs the SAME predicate the B1 cell runs on the real file
+  sed 's#_cp8b_optval_exp "\$2" "\$_gm"#_cp8b_optval_exp "$2" u#' "$GPAB_TMP/gc.pristine" > "$GPAB_TMP/mw5.core"
+  if aa_cell_skip "SWAS232 MW5"; then :
+  elif cmp -s "$GPAB_TMP/gc.pristine" "$GPAB_TMP/mw5.core"; then echo "FAIL mutant : SWAS232 MW5 — the mutation matched NOTHING; the leg is unbound"; fail=1
+  elif _aa_b1_ok "$GPAB_TMP/gc.pristine" && ! _aa_b1_ok "$GPAB_TMP/mw5.core"; then echo "PASS mutant : SWAS232 MW5: a direct mode-u call outside the span helper -> B1 PASS flips (killed the leg as required)"
+  else echo "FAIL mutant : SWAS232 MW5 — B1 did not flip pass -> fail on a direct mode-u call"; fail=1; fi
+  aa_cell_skip "SWAS232 MW5" || AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
 
   # === Leg K-CWD mutants (GUARD-CWD-CONFIDENCE-UNKNOWN) ==========================================
   # M-CWD3 — the CORE SEED. Neutered by forcing the pre-slice initialisation ('' / confident) at the
@@ -9448,6 +9509,48 @@ gsr_allow "SWAS227-A4c -C quoted rev-parse substitution" 'git -C "$(git rev-pars
 gsr_allow "SWAS227-A4d -C \"\$dir\" log" 'git -C "$dir" log -1'
 gsr_allow "SWAS227-A4e -C a single-quoted literal" "git -C '\$D' status"
 gsr_allow "SWAS227-A4f git -C docs status" 'git -C docs status'
+# SWAS-232 (GUARD-GIT-OPTVAL-QUOTE-SPLIT): a git global-option value is ONE shell word even when a quoted or backslash-escaped part of
+# it holds whitespace, so an unquoted expansion after that part is judged like any other (D1-D9). A quoted value that merely holds
+# whitespace stays allowed (A1-A7, N). O1 is the priced over-deny (escape: assign the substitution to a variable, pass it quoted).
+# Labels SWAS232-* so `--cells 'SWAS232*'` runs them alone.
+gsr_deny "SWAS232-D1 -C a spaced double-quoted part then an unquoted variable" 'git -C "a b"$D status'
+gsr_deny "SWAS232-D2 --git-dir= the same, joined arm" 'git --git-dir="a b"$D status'
+gsr_deny "SWAS232-D3 -c the same" 'git -c "a b"$K status'
+gsr_deny "SWAS232-D4 a spaced single-quoted part then an unquoted variable" "git -C 'a b'\$D status"
+gsr_deny "SWAS232-D5 a part holding two spaces then an unquoted variable" 'git -C "a b c"$D status'
+gsr_deny "SWAS232-D6 a spaced part then an unquoted backtick substitution" 'git -C "a b"`x` status'
+gsr_deny "SWAS232-D7 pin: a whole-tree restore behind a spaced quoted -C" 'git -C "/tmp/a b" restore -s HEAD .'
+gsr_deny "SWAS232-D7b pin: a whole-tree checkout behind a spaced quoted -C" 'git -C "/tmp/a b" checkout HEAD -- .'
+gsr_deny "SWAS232-D8 -C a backslash-escaped space then an unquoted variable" 'git -C a\ b$D status'
+gsr_deny "SWAS232-D9 --git-dir= the same, joined arm" 'git --git-dir=a\ b$D status'
+gsr_deny "SWAS232-S1 an escaped space then more whitespace ends the value; the real subcommand is the next token" 'git -C /tmp/a\  diff HEAD --output=/tmp/f'
+gsr_deny "SWAS232-N7 the wrapped (mode c) form of the gap" 'env git -C "a b"$D status'
+gsr_deny "SWAS232-O1 priced: a quoted substitution whose own argument is quoted and preceded by a space" 'git -C "$(dirname "$f")" status'
+gsr_allow "SWAS232-A1 -C a spaced double-quoted path, status" 'git -C "/tmp/a b" status'
+gsr_allow "SWAS232-A1b -C a spaced quoted path, log" 'git -C "/tmp/a b" log --oneline -3'
+gsr_allow "SWAS232-A1c -C a spaced quoted path, checkout <branch>" 'git -C "/tmp/a b" checkout main'
+gsr_allow "SWAS232-A1d -C a spaced quoted path, restore <docs file>" 'git -C "/tmp/a b" restore docs/x.md'
+gsr_allow "SWAS232-A2 -C a spaced single-quoted path" "git -C '/tmp/a b' status"
+gsr_allow "SWAS232-A3 -c a quoted value holding a space, status" 'git -c "user.name=A B" status'
+gsr_allow "SWAS232-A3b -c a quoted value holding a space, commit -m" 'git -c "user.name=A B" commit -m wip'
+gsr_allow "SWAS232-A4 --work-tree= a spaced quoted path" 'git --work-tree="/tmp/a b" status'
+gsr_allow "SWAS232-A5 two adjacent spaced double-quoted spans" 'git -C "a b""c d" status'
+gsr_allow "SWAS232-A5b a double space inside the quotes" 'git -C "/tmp/a  b" status'
+gsr_allow "SWAS232-A5c a tab inside the quotes" "git -C \"/tmp/a	b\" status"
+gsr_allow "SWAS232-A5d escaped inner double quotes" 'git -c "x.y=a \"b\"" status'
+gsr_allow "SWAS232-A6 a spaced quoted span then an escaped dollar" 'git -C "a b"\$D status'
+gsr_allow "SWAS232-A7 -C a backslash-escaped space in a literal path" 'git -C /tmp/a\ b status'
+gsr_allow "SWAS232-A7b -c a backslash-escaped space in a value" 'git -c x.y=a\ b status'
+gsr_allow "SWAS232-N17 -C a quoted variable" 'git -C "$REPO" status'
+gsr_allow "SWAS232-N3-3 -c a quoted value with a semicolon" 'git -c "x.y=a;b" status'
+gsr_allow "SWAS232-N3-5 a semicolon after a spaced quoted value inside commit -m" 'git -C "/tmp/a b" commit -m "a; b"'
+gsr_allow "SWAS232-N3-7 -C a quoted HOME path holding a space" 'git -C "$HOME/my repo" status'
+# B1: the byte fact the design leans on. `_cp8b_optval_span` is the ONLY mode-u entry of `_cp8b_optval_exp` (predicate `_aa_b1_ok`, above).
+if ! aa_cell_skip "SWAS232-B1"; then
+  AA_CELLS_RUN=$((AA_CELLS_RUN + 1))
+  if _aa_b1_ok "$(dirname "$GUARD")/guard-core.sh"; then echo "PASS byte : SWAS232-B1 the span helper is the only mode-u entry ($_b1_msg)"
+  else echo "FAIL byte : SWAS232-B1 a mode-u _cp8b_optval_exp call outside _cp8b_optval_span, or the helper is not called from both arms ($_b1_msg)"; fail=1; fi
+fi
 # the reason TEXT of each fail-closed deny, so a deleted printf turns red
 assert_reason_has "SWAS227-N1 empty-subcommand reason text" '{"tool_name":"Bash","tool_input":{"command":"git --no-advice status"}}' 'the subcommand is hidden'
 assert_reason_has "SWAS227-N1b expansion-subcommand reason text" '{"tool_name":"Bash","tool_input":{"command":"git $S status"}}' 'spelled as a shell expansion'
@@ -11699,6 +11802,407 @@ if [ "${GPAB_G:-}" != "" ]; then
   gpab_mutant "SWAS77-M21 (compound since SWAS-186): the bare-tracker-gate refusal and the file-identity test dropped -> N18 flips to ALLOW" \
     '/# CLONE-TRACKER$/d;/# CLONE-EF-TRACKER$/d' \
     "$(sx_in "$sx_rt" "cd $sx_cl && sh conformance/tracker-contract.sh")" allow
+
+  # === SWAS184 - GUARD-SUBSTITUTION-GIT-WRITE (SWAS-184): a git command inside a command substitution =================
+  # A substitution body is judged as a command: a git command in one is allowed only as a measured read (rev-parse, log,
+  # show, diff, status, describe, merge-base, ls-files, rev-list), with no -c/--config-env/--exec-path/--namespace before the
+  # subcommand. The labels carry SWAS184 so `--cells 'SWAS184*'` runs the block alone in a fix round. Placeholders only:
+  # <rev> = abc1234, <cp dir> = conformance. S = must DENY, N = a named-flag negative, A = must stay ALLOW.
+  assert_deny "SWAS184 S1: glued substitution under a read lead" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S2: backtick body under a read lead" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo `git -C . restore -s abc1234 conformance`"}}'
+  assert_deny "SWAS184 S3: substitution inside double quotes, nested quoted word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"$(git -C . checkout abc1234 -- \"conformance\")\""}}'
+  assert_deny "SWAS184 S4: assignment lead" \
+    '{"tool_name":"Bash","tool_input":{"command":"X=$(git -C . checkout abc1234 -- .claude/hooks)"}}'
+  assert_deny "SWAS184 S5: kit-script lead" \
+    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/incept.sh --name $(git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S6: reset in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . reset --hard abc1234)"}}'
+  assert_deny "SWAS184 S7: process substitution body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo <(git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S8: body split by ;" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log -1; git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S9: body split by &&" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log -1 && git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S10: body split by a pipe" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log -1 | git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S11: the unmatched \$(( subshell, which the window must still reach" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $((git -C . switch x) )"}}'
+  assert_deny "SWAS184 S11b: git spelled g\\it" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(g\\it -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S11c: git spelled gi quote-pair t" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(gi\"\"t -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S11d: git spelled with a quoted first letter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(\"g\"it -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S11e: git spelled with a leading backslash" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(\\git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S11f: git spelled gi dollar-quote t" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(gi$'"'"'t'"'"' -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S11g: git as a brace word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $({git,checkout} abc1234)"}}'
+  assert_deny "SWAS184 S11h: a path-qualified git word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(/usr/bin/git checkout abc1234)"}}'
+  assert_deny "SWAS184 S11i: a wrapper in front of git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sudo git checkout abc1234)"}}'
+  assert_deny "SWAS184 S11j: a GIT_ token in the window" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date); GIT_X=1 true"}}'
+  assert_deny "SWAS184 S11k: a git write after a substitution in the same command" \
+    '{"tool_name":"Bash","tool_input":{"command":"sh scripts/x.sh \"$(git rev-parse HEAD)\" ; git checkout abc1234 -- ."}}'
+  assert_deny "SWAS184 S11l: env -S" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(env -S \"git checkout x\")"}}'
+  assert_deny "SWAS184 S11m: node --eval" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(node --eval x)"}}'
+  assert_deny "SWAS184 S11n: env -S" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(env -S ls)"}}'
+  assert_deny "SWAS184 S11o: xargs running env" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | xargs env y)"}}'
+  # A2: the command word must be a plain literal, so every spelling that hides a program name is refused outright.
+  assert_deny "SWAS184 S30: git as a brace-split word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $({gi,checkou}t abc1234)"}}'
+  assert_deny "SWAS184 S30b: git as an ANSI-C hex word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $($'"'"'\\x67'"'"'it checkout abc1234)"}}'
+  assert_deny "SWAS184 S30c: git as an ANSI-C octal word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $($'"'"'\\147it'"'"' checkout abc1234)"}}'
+  assert_deny "SWAS184 S30d: git as a ? glob" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(gi? checkout abc1234)"}}'
+  assert_deny "SWAS184 S30e: git as a [] glob" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(gi[t] checkout abc1234)"}}'
+  assert_deny "SWAS184 S30f: upper-case GIT" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(GIT checkout abc1234)"}}'
+  assert_deny "SWAS184 S30g: mixed-case path-qualified Git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(/usr/bin/Git checkout abc1234)"}}'
+  assert_deny "SWAS184 S30h: git with a glued redirect out" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git>/dev/null checkout abc1234)"}}'
+  assert_deny "SWAS184 S30i: git with a glued redirect in" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git</dev/null checkout abc1234)"}}'
+  # S30j is a DOCUMENTED RESIDUAL (A3, design section 12): the stop pass is quote-blind, so a quoted or escaped stop byte in a
+  # git global's value splits the run and the subcommand after it is never judged. Pinned as ALLOW so a change shows.
+  assert_allow "SWAS184 S30j: RESIDUAL - a quoted stop byte resets the run (stated, boarded)" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C '"'"'x;y'"'"' checkout abc1234)"}}'
+  assert_deny "SWAS184 S30k: a funsub opener" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo ${ git switch x; }"}}'
+  assert_deny "SWAS184 S30l: a variable as the command word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $($G checkout abc1234)"}}'
+  assert_deny "SWAS184 S30m: timeout in front of git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(timeout 5 git checkout abc1234)"}}'
+  assert_deny "SWAS184 S30n: sudo with a flag in front of git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sudo -u x git checkout abc1234)"}}'
+  assert_deny "SWAS184 S30o: a keyword-led run" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(if :; then git checkout abc1234; fi)"}}'
+  assert_deny "SWAS184 S30p: an unlisted wrapper in front of git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid git checkout abc1234)"}}'
+  assert_deny "SWAS184 S30q: an unlisted wrapper in front of a backslash spelling" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid g\\it checkout abc1234)"}}'
+  assert_deny "SWAS184 S30r: an unlisted wrapper in front of a dollar-quote spelling" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid gi$'"'"'t'"'"' checkout abc1234)"}}'
+  assert_deny "SWAS184 S30s: an unlisted wrapper in front of a brace word holding git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid {git,checkout} abc1234)"}}'
+  assert_deny "SWAS184 S12: global -c before an allow-listed verb" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -c core.fsmonitor=true status)"}}'
+  assert_deny "SWAS184 S13: symbolic-ref is off the list" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git symbolic-ref HEAD refs/heads/x)"}}'
+  assert_deny "SWAS184 S14: ls-remote is off the list" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git ls-remote --upload-pack=true .)"}}'
+  assert_deny "SWAS184 S15: grep is off the list" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git grep -Otrue x)"}}'
+  assert_deny "SWAS184 S16: --ext-diff on log" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log --ext-diff -p)"}}'
+  assert_deny "SWAS184 S17: env-wrapped git is judged through the git view" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(env X=1 git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S18: an interpreter -c body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh -c \"true\")"}}'
+  assert_deny "SWAS184 S18d: an inline-code flag in front of a script-looking operand (the flag, not the operand, decides)" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh -c ./x)"}}'
+  assert_deny "SWAS184 S18e: a cluster ending in E, not adjacent to the interpreter, before a dotted code word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -lE x.y)"}}'
+  assert_deny "SWAS184 S18f: a cluster ending in E, adjacent to the interpreter, before a dotted code word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -lE x.y)"}}'
+  assert_deny "SWAS184 S18g: a cluster ending in p, not adjacent to the interpreter, before a dotted code word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -lp x.y)"}}'
+  assert_deny "SWAS184 S18h: a glued inline-code flag (E), after another flag, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -Eprint x.y)"}}'
+  assert_deny "SWAS184 S18i: a glued inline-code flag (e), after another flag, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -eprint x.y)"}}'
+  assert_deny "SWAS184 S18j: a glued inline-code flag (c) on python, after another flag, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(python3 -B -cprint x.y)"}}'
+  # The glued code holds NONE of c, e, E, p, s: only the flag letter itself marks it as an inline-code flag.
+  assert_deny "SWAS184 S18k: an adjacent glued e flag, code without a code letter, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -e1 x.y)"}}'
+  assert_deny "SWAS184 S18l: a glued E flag after another flag, code without a code letter, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -E1 x.y)"}}'
+  assert_deny "SWAS184 S18m: an adjacent glued E flag, code without a code letter, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -E1 x.y)"}}'
+  assert_deny "SWAS184 S18n: a glued c flag on python after another flag, code without a code letter, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(python3 -B -c1 x.y)"}}'
+  assert_deny "SWAS184 S18o: an adjacent glued c flag on python, code without a code letter, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(python3 -c1 x.y)"}}'
+  assert_deny "SWAS184 S18p: a glued e flag after another flag, code without a code letter, before a dotted operand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -e1 x.y)"}}'
+  assert_deny "SWAS184 S18b: an eval body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(eval ls)"}}'
+  assert_deny "SWAS184 S18c: xargs running git" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | xargs git log)"}}'
+  assert_deny "SWAS184 S19a: a GIT_ assignment leading an allow-listed verb" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(GIT_EXTERNAL_DIFF=true git diff)"}}'
+  assert_deny "SWAS184 S19b: a GIT_ assignment as an env argument" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(env GIT_CONFIG_PARAMETERS=x git status)"}}'
+  assert_deny "SWAS184 S20a: checkout of a rev with pathspec . in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git checkout abc1234 -- .)"}}'
+  assert_deny "SWAS184 S20b: restore with pathspec . in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git restore .)"}}'
+  assert_deny "SWAS184 S20c: checkout of a rev with no pathspec in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git checkout abc1234)"}}'
+  assert_deny "SWAS184 S24: a quoted close paren does not end the body early" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(echo \")\"; git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 S21: a case compound inside a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(case x in a) git -C . checkout abc1234 -- conformance ;; esac)"}}'
+  assert_deny "SWAS184 S22: a keyword-led segment inside a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(if true; then git -C . checkout abc1234 -- conformance; fi)"}}'
+  assert_deny "SWAS184 S23: a comment inside a body cannot hide the close" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(true # )\ngit -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 N1: --output on diff in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git diff --output=conformance/x.txt)"}}'
+  # Push-review triage: rev-list accepts diff options, so its output flag writes a file (measured on every verb of the read list).
+  assert_deny "SWAS184 N1b: --output on rev-list in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git rev-list --output=conformance/x.txt HEAD)"}}'
+  assert_deny "SWAS184 N1c: an abbreviated --output on rev-list in a body" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git rev-list --outp=conformance/x.txt HEAD)"}}'
+  assert_allow "SWAS184 A21: a plain rev-list read in a body stays allowed" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git rev-list --max-count=1 --objects HEAD)"}}'
+  # A3 (design section 12). F1: a git write in a SECOND substitution, not at a run's command position, in four glued shapes.
+  assert_deny "SWAS184 F1a: a second substitution after a plain word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) x $(git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 F1b: a second substitution glued to the first" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date)x$(git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 F1c: a second body in a process substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) x <(git -C . checkout abc1234 -- conformance)"}}'
+  assert_deny "SWAS184 F1d: a second substitution inside a quoted argument" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) \"$(git -C . checkout abc1234 -- conformance)\""}}'
+  # F3: a funsub opener is `${` then any byte that cannot start a parameter expansion (a tab and a newline, not only a blank).
+  assert_deny "SWAS184 F3a: a funsub opened by a tab" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo ${\tgit switch x; }"}}'
+  assert_deny "SWAS184 F3b: a funsub opened by a newline" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo ${\ngit switch x; }"}}'
+  # A3 item 3: an interpreter inside a window must name a script, so no channel can feed it a program on stdin.
+  assert_deny "SWAS184 I1: a pipe into an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | sh)"}}'
+  assert_deny "SWAS184 I2: a |& pipe into an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x |& bash)"}}'
+  assert_deny "SWAS184 I3: a pipe into env then an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | env sh)"}}'
+  assert_deny "SWAS184 I4: a pipe into timeout then an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | timeout 5 python3)"}}'
+  assert_deny "SWAS184 I5: a pipe into an absolute-path interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | /bin/sh)"}}'
+  assert_deny "SWAS184 I6: a here-string into an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh <<<x)"}}'
+  assert_deny "SWAS184 I7: a heredoc into an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh <<'"'"'EOF'"'"'\ntrue\nEOF\n)"}}'
+  assert_deny "SWAS184 I8: an input redirect into an interpreter, spaced" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh < f)"}}'
+  assert_deny "SWAS184 I9: an input redirect into an interpreter, glued" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh<f)"}}'
+  assert_deny "SWAS184 I10: a lone - operand reads the program from stdin" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(bash -)"}}'
+  assert_deny "SWAS184 I11: an inline-code flag that is not adjacent to the interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(bash -x -c y)"}}'
+  assert_deny "SWAS184 I12: a process-substitution input into an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(bash <(printf x))"}}'
+  assert_deny "SWAS184 I13: a pipe-fed interpreter whose output is redirected" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | sh >out.txt)"}}'
+  assert_deny "SWAS184 I14: a pipe-fed interpreter followed by a sequence" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | sh; true)"}}'
+  assert_deny "SWAS184 I15: a top-level pipe into an interpreter after a substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date); printf x | sh"}}'
+  assert_allow "SWAS184 A1: the documented loop-state substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"sh conformance/loop-state.sh --head \"$(git rev-parse HEAD)\""}}'
+  assert_allow "SWAS184 A2: log with a format" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log -1 --format=%H)"}}'
+  assert_allow "SWAS184 A3: arithmetic is not a substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"n=$((start+14)); echo $n"}}'
+  assert_allow "SWAS184 A3b: wc -c reads a file (the -c test is bound to git and interpreter words)" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(wc -c <f)"}}'
+  assert_allow "SWAS184 A3c: grep -c" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(grep -c x f)"}}'
+  assert_allow "SWAS184 A3d: head -c" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(head -c 8 f)"}}'
+  assert_allow "SWAS184 A3e: an inline-code flag is only denied right after an interpreter" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) && mkdir -p d && bash x.sh"}}'
+  assert_allow "SWAS184 A5b: a stop token ends the run after a bare git word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(which git) && ls"}}'
+  assert_allow "SWAS184 A5c: the documented hooks-path substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"ls \"$(git rev-parse --git-path hooks)\""}}'
+  assert_allow "SWAS184 A5d: a documented merge-base substitution after a git lead" \
+    '{"tool_name":"Bash","tool_input":{"command":"git diff --name-only $(git merge-base A B) B"}}'
+  assert_allow "SWAS184 A5f: a lone closing quote after the substitution is skipped" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"$(git rev-parse HEAD)\""}}'
+  assert_allow "SWAS184 A5g: a heredoc commit message carrying trailers" \
+    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"$(cat <<'"'"'EOF'"'"'\nfix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nKit-Row: SWAS-1\nEOF\n)\""}}'
+  assert_allow "SWAS184 A5e: the text before the first opener is outside the window" \
+    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"merge gh pr $(date)\""}}'
+  assert_allow "SWAS184 A4: a date substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date +%Y)"}}'
+  assert_allow "SWAS184 A5: a bare git word that is not the command word" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(which git)"}}'
+  assert_allow "SWAS184 A6: kept global options before the subcommand" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . --no-pager diff --stat)"}}'
+  assert_allow "SWAS184 A7: a quoted-delimiter heredoc body inside a substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"$(cat <<'"'"'EOF'"'"'\nit is (a) note\nEOF\n)\""}}'
+  # A3 ALLOW cells. The two PRICED over-denies (arithmetic assigning a GIT_ name; a glob byte in the lead word of arithmetic
+  # using *) are named in design section 12 and are not cells here: they deny by design.
+  assert_allow "SWAS184 A8: a heredoc commit whose prose lines open with punctuation" \
+    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"$(cat <<'"'"'EOF'"'"'\nfix: widen the thing (a note)\n\n(a parenthetical line opens with punctuation)\n[tag] a bracketed tag, it'"'"'s fine\n> a quoted line\nCo-Authored-By: A B <a@b.example>\nEOF\n)\""}}'
+  assert_allow "SWAS184 A9: a heredoc PR body whose prose lines open with punctuation" \
+    '{"tool_name":"Bash","tool_input":{"command":"gh pr create --title t --body \"$(cat <<'"'"'EOF'"'"'\n## Summary\n- (a) first point\n> a quoted line\nEOF\n)\""}}'
+  assert_allow "SWAS184 A10: a quoted substitution followed by a literal range suffix" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo \"$(git rev-parse HEAD)\"..HEAD"}}'
+  assert_allow "SWAS184 A11: item 3 - an interpreter naming a relative script" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh scripts/x.sh)"}}'
+  assert_allow "SWAS184 A12: item 3 - an interpreter naming a ./ script" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(bash ./x.sh arg)"}}'
+  assert_allow "SWAS184 A13: item 3 - flags before the script" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(python3 -u tools/x.py)"}}'
+  assert_allow "SWAS184 A14: item 3 - a script with a data < redirect" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh x.sh < in.txt)"}}'
+  assert_allow "SWAS184 A15: item 3 - which names an interpreter as data" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(which python3)"}}'
+  assert_allow "SWAS184 A16: item 3 - command -v names an interpreter as data" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(command -v bash)"}}'
+  assert_allow "SWAS184 A17: item 3 - a formatter pipe to jq after a substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) | jq ."}}'
+  assert_allow "SWAS184 A18: item 3 - a formatter pipe to column after a substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) | column -t"}}'
+  assert_allow "SWAS184 A19: item 3 - a formatter pipe to python3 -m <module> after a substitution" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) | python3 -m json.tool"}}'
+  assert_allow "SWAS184 A20: F3 - plain, length, indirect, default-value and positional parameter expansions" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo ${HOME} ${#HOME} ${!x} ${x:-y} ${1} ${@}"}}'
+  assert_allow "SWAS184 X1: DOCUMENTED ALLOW - an unterminated substitution is a syntax error, not an attack" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log -1"}}'
+  assert_allow "SWAS184 X2: DOCUMENTED ALLOW - a non-git xargs in a body (non-git execution is out of scope)" \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | xargs echo)"}}'
+  # Each mutant weakens ONE piece of the rule in a copy of the guard and must flip its cell. M4 is unused.
+  gpab_mutant "SWAS184-M1: call site A a no-op -> S1 flips to ALLOW" \
+    '/# SWAS184-SITE-A$/s/.*/  :/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . checkout abc1234 -- conformance)"}}' allow
+  gpab_mutant "SWAS184-M2: backtick bodies not emitted -> S2 flips to ALLOW" \
+    '/# SWAS184-TICK$/s/.*/  :/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo `git -C . restore -s abc1234 conformance`"}}' allow
+  gpab_mutant "SWAS184-M3: the GIT_ assignment disqualifier dropped -> S19a flips to ALLOW" \
+    '/# SWAS184-GITENV$/s/.*/    GIT_ZZNONE=*)/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(GIT_EXTERNAL_DIFF=true git diff)"}}' allow
+  gpab_mutant "SWAS184-M5: process-substitution openers dropped -> S7 flips to ALLOW" \
+    '/# SWAS184-PROC$/s/.*/  :/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo <(git -C . checkout abc1234 -- conformance)"}}' allow
+  gpab_mutant "SWAS184-M6: the allow-list test becomes git-led -> allow: S6 flips to ALLOW" \
+    '/# SWAS184-ALLOW$/s/.*/      *) return 1 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . reset --hard abc1234)"}}' allow
+  gpab_mutant "SWAS184-M6b: the same -> S20a (checkout of a rev, pathspec .) flips to ALLOW" \
+    '/# SWAS184-ALLOW$/s/.*/      *) return 1 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git checkout abc1234 -- .)"}}' allow
+  gpab_mutant "SWAS184-M6c: the same -> S20b (restore, pathspec .) flips to ALLOW" \
+    '/# SWAS184-ALLOW$/s/.*/      *) return 1 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git restore .)"}}' allow
+  gpab_mutant "SWAS184-M6d: the same -> S20c (checkout, no pathspec) flips to ALLOW" \
+    '/# SWAS184-ALLOW$/s/.*/      *) return 1 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git checkout abc1234)"}}' allow
+  gpab_mutant "SWAS184-M7: the allow-list test becomes git-led -> deny: A1 flips to DENY" \
+    '/# SWAS184-LIST$/s/.*/      zzz-none) return 1 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"sh conformance/loop-state.sh --head \"$(git rev-parse HEAD)\""}}' deny
+  gpab_mutant "SWAS184-M-ARITH-WIN: the window skips \$(( again -> S11 (the unmatched \$(( subshell) flips to ALLOW" \
+    '/# SWAS184-DOLLAR$/s/.*/  if [ "${#_s84a}" -lt "$_s84m" ]; then _s84m=${#_s84a}; _s84_win=${1#"$_s84a"??}; case $_s84_win in \\(*) _s84_win= ;; esac; _s84_n=1; fi/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $((git -C . switch x) )"}}' allow
+  gpab_mutant "SWAS184-M-WIN: the window becomes the whole command -> A5e flips to DENY" \
+    '/# SWAS184-DOLLAR$/s/.*/  if [ "${#_s84a}" -lt "$_s84m" ]; then _s84m=${#_s84a}; _s84_win=$1; _s84_n=1; fi/' \
+    '{"tool_name":"Bash","tool_input":{"command":"git commit -m \"merge gh pr $(date)\""}}' deny
+  gpab_mutant "SWAS184-M-STOP: stop tokens become plain spaces -> A5b flips to DENY" \
+    '/# SWAS184-STOP$/s@/ ; /g@/ /g@' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(which git) && ls"}}' deny
+  gpab_mutant "SWAS184-M-DQ: the de-quote dropped -> S30q (a wrapper, then g\\it) flips to ALLOW" \
+    '/# SWAS184-DQ$/s/.*/  :/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid g\\it checkout abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-LEAD: the lead-word plain-literal test dropped -> S30 (a brace-split git) flips to ALLOW" \
+    '/# SWAS184-LEAD$/s/.*/      zzz-none) _s84lr=0; break ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $({gi,checkou}t abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-GLUE-SHARED: the paren glue put back into the shared stop text -> F1a (a second substitution) flips to ALLOW" \
+    '/# SWAS184-DQUOTE$/s/ -e .s\/\[()\]\/ ; \/g./ -e "$_s84gl"&/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) x $(git -C . checkout abc1234 -- conformance)"}}' allow
+  gpab_mutant "SWAS184-M-FUNSUB-BLANK: the funsub opener narrowed back to a blank -> F3a (a tab) flips to ALLOW" \
+    '/# SWAS184-FUNSUB$/s/\[!A-Za-z0-9_#!@.*\]\*/ */' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo ${\tgit switch x; }"}}' allow
+  gpab_mutant "SWAS184-M-PIPE-INTERP: item 3 arming dropped -> I1 (a pipe into an interpreter) flips to ALLOW" \
+    '/# SWAS184-ARM$/s/; \[ "\$_s84q" = 1 \] || _s84i=1//' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | sh)"}}' allow
+  gpab_mutant "SWAS184-M-PIPE-INTERP-b: the same -> I6 (a here-string into an interpreter) flips to ALLOW" \
+    '/# SWAS184-ARM$/s/; \[ "\$_s84q" = 1 \] || _s84i=1//' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh <<<x)"}}' allow
+  gpab_mutant "SWAS184-M-CASE: the case fold dropped -> S30f (GIT) flips to ALLOW" \
+    '/# SWAS184-CASE$/s/\[Gg\]\[Ii\]\[Tt\]/git/g;/# SWAS184-CASE$/s/\[Ee\]\[Xx\]\[Ee\]/exe/g' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(GIT checkout abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-WORDTEST: the any-position git word test dropped -> S30m (timeout 5 git) flips to ALLOW" \
+    '/# SWAS184-CASE$/s/.*/      zzz-none) return 0 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(timeout 5 git checkout abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-WORDTEST-b: the same -> S30n (sudo -u x git) flips to ALLOW" \
+    '/# SWAS184-CASE$/s/.*/      zzz-none) return 0 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sudo -u x git checkout abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-EVAL: the eval test dropped -> S18b flips to ALLOW" \
+    '/# SWAS184-EVAL$/s/.*/    zzz-none) return 0 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(eval ls)"}}' allow
+  gpab_mutant "SWAS184-M-XARGS: the xargs test dropped -> S18c flips to ALLOW" \
+    '/# SWAS184-XARGS$/s/.*/  return 1/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(printf x | xargs env y)"}}' allow
+  gpab_mutant "SWAS184-M-BRACE: the brace-word test dropped -> S30s flips to ALLOW" \
+    '/# SWAS184-BRACE$/s/.*/        zzz-none) return 0 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid {git,checkout} abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-DOLLAR-QUOTE: the dollar-before-quote deletion dropped -> S30r flips to ALLOW" \
+    '/# SWAS184-DQUOTE$/s/\\\\\$/QQ/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(setsid gi$'"'"'t'"'"' checkout abc1234)"}}' allow
+  gpab_mutant "SWAS184-M-ENV-S: the env -S test dropped -> S11n flips to ALLOW" \
+    '/# SWAS184-ENVS$/s/.*/  :/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(env -S ls)"}}' allow
+  gpab_mutant "SWAS184-M-ADJ: the inline-code test goes window-wide -> A3e flips to DENY" \
+    '/# SWAS184-ADJ$/s/.*/  if true; then/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(date) && mkdir -p d && bash x.sh"}}' deny
+  gpab_mutant "SWAS184-M-CFLAG: the -c test goes window-wide -> A3b (wc -c) flips to DENY" \
+    '/# SWAS184-CFLAG$/s/.*/  case $_s84t in -c) return 0 ;; esac; if [ "$_s84s" = 1 ]; then/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(wc -c <f)"}}' deny
+  gpab_mutant "SWAS184-M9: the diff-family named-flag denial dropped -> S16 flips to ALLOW" \
+    '/# SWAS184-FLAGS$/s/.*/      -zz) : ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git log --ext-diff -p)"}}' allow
+  gpab_mutant "SWAS184-M9b: the same -> N1 (--output on diff) flips to ALLOW" \
+    '/# SWAS184-FLAGS$/s/.*/      -zz) : ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git diff --output=conformance/x.txt)"}}' allow
+  gpab_mutant "SWAS184-M9c: rev-list no longer arms the output-flag test -> N1b flips to ALLOW" \
+    '/# SWAS184-RLFLAGS/s/_s84s=2/_s84s=0/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git rev-list --output=conformance/x.txt HEAD)"}}' allow
+  gpab_mutant "SWAS184-M10: the strict global walk replaced by the git-sub skip -> S12 flips to ALLOW" \
+    '/# SWAS184-GLOBALS$/s/.*/      -c|--exec-path|--namespace) _s84k=1; return 1 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -c core.fsmonitor=true status)"}}' allow
+  gpab_mutant "SWAS184-M14: BOTH inline-code tests dropped (adjacent and armed; item 3 also denies the flag) -> S18d flips to ALLOW" \
+    '/# SWAS184-INTERP$/s/.*/      zzz-none) return 0 ;;/;/# SWAS184-STDINFLAG$/s/.*/    zzz-none) return 0 ;;/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(sh -c ./x)"}}' allow
+  gpab_mutant "SWAS184-M-CLUSTER-ARMED: the armed cluster test narrowed to lowercase c, e, s -> S18e (E-ending cluster) flips to ALLOW" \
+    '/# SWAS184-STDINFLAG$/s/\[ceEps\]/[ces]/g' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -lE x.y)"}}' allow
+  gpab_mutant "SWAS184-M-CLUSTER-ARMED-b: the same -> S18g (p-ending cluster) flips to ALLOW" \
+    '/# SWAS184-STDINFLAG$/s/\[ceEps\]/[ces]/g' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -lp x.y)"}}' allow
+  gpab_mutant "SWAS184-M-CLUSTER-ADJ: both cluster tests narrowed to lowercase -> S18f (adjacent E-ending cluster) flips to ALLOW" \
+    '/# SWAS184-STDINFLAG$/s/\[ceEps\]/[ces]/g;/# SWAS184-INTERP$/s/\[ceEps\]/[ce]/g' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -lE x.y)"}}' allow
+  gpab_mutant "SWAS184-M-CLUSTER-GLUED: the armed test loses the arm for the flag letter itself -> S18l (a glued E flag, code without a code letter) flips to ALLOW" \
+    '/# SWAS184-STDINFLAG$/s/|-\[ceEps\]\*|/|/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -w -E1 x.y)"}}' allow
+  gpab_mutant "SWAS184-M-CLUSTER-GLUED-b: the same -> S18n (a glued python c flag, code without a code letter) flips to ALLOW" \
+    '/# SWAS184-STDINFLAG$/s/|-\[ceEps\]\*|/|/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(python3 -B -c1 x.y)"}}' allow
+  gpab_mutant "SWAS184-M-CLUSTER-GLUED-ADJ: both tests lose the flag-letter arm -> S18k (an adjacent glued e flag) flips to ALLOW" \
+    '/# SWAS184-STDINFLAG$/s/|-\[ceEps\]\*|/|/;/# SWAS184-INTERP$/s/|-\[ceEps\]\*|/|/' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(perl -e1 x.y)"}}' allow
+  gpab_mutant "SWAS184-M16: -C and --no-pager removed from the kept globals -> A6 flips to DENY" \
+    '/# SWAS184-KEEPC$/s/-C|--git-dir/--git-dir/;/# SWAS184-KEEP$/s/--no-pager|-P|//' \
+    '{"tool_name":"Bash","tool_input":{"command":"echo $(git -C . --no-pager diff --stat)"}}' deny
 fi
 
 if [ "$AA_DELTA" = 0 ] && ! aa_cell_skip "fork-cap"; then aa_fc_main; fi
@@ -11756,7 +12260,9 @@ case "${1:-}" in --selftest) selftest; exit $? ;; esac
 # could be skipped without tripping the floor. That is inside the disclosed "at least N, not the right
 # N" ceiling.
 # A count below this floor means cells did not run; see the FAIL text in aa_completeness.
-AA_CELL_FLOOR=2897
+#   + GUARD-SUBSTITUTION-GIT-WRITE (SWAS-184, amendments A1 to A3): 168 counted cells in the `SWAS184` block (129 assert cells;
+#     39 gpab_mutant legs), none behind a skip -> 2897 + 168 = 3065. Measured: the bare pass on the merged tree reported 3563 cells.
+AA_CELL_FLOOR=3065
 if [ "$AA_MODE" = scoped ]; then
   # SCOPED: never the floor, never the graded OK line (C-B, F8). Non-zero if a matched cell failed or the report refused.
   aa_scoped_report "$AA_CELLS_RUN" "$AA_CELL_FLOOR" "$AA_SCOPED_EXTRA" && _aa_sr=0 || _aa_sr=$?

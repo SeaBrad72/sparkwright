@@ -1155,8 +1155,24 @@ selftest() {
       "nonmd/$_st_tok: -> NOT ENFORCED, rc 3 (red), never a silent N/A"
   done
   d="$base/t_nonmd_jira"
-  assert_msg_rc "$d" "Cure: TRACKER-BACKED-GOVERNANCE, or ratify a board-governance waiver" 3 \
-    "nonmd/cure: the verdict names both ladders"
+  # SWAS-203: the default cure is backend-aware (one helper). On jira the bind comes first, then the
+  # waiver where branch protection cannot be set, then BACKLOG.md; jira is never told "no kit adapter".
+  assert_msg_rc "$d" "Cure: bind the trusted job (it needs a valid .kit/tracker.conf on main)" 3 \
+    "nonmd/cure: the jira verdict leads with the bind"
+  assert_msg_rc "$d" "a free-plan private repository" 3 \
+    "nonmd/cure-free: the jira waiver clause names the free-plan private repository"
+  assert_msg_rc "$d" "sh scripts/branch-protection-apply.sh --replace" 3 \
+    "nonmd/cure-replace: the jira bind names --replace for a first bind"
+  assert_msg_rc_absent "$d" "no kit adapter" 3 \
+    "nonmd/cure-neg: a jira verdict is NEVER told there is no kit adapter"
+  d="$base/t_nonmd_github"
+  assert_msg_rc "$d" "no kit adapter reads 'github' yet" 3 \
+    "nonmd/cure-adapterless: a github verdict names the missing adapter"
+  assert_msg_rc_absent "$d" "tracker-board-gates" 3 \
+    "nonmd/cure-adapterless-neg: a github verdict is NEVER told to bind tracker-board-gates"
+  assert_msg_rc_absent "$d" "TRACKER-BACKED-GOVERNANCE" 3 \
+    "nonmd/cure-adapterless-neg2: a github verdict is NEVER pointed at a card id"
+  d="$base/t_nonmd_jira"
   # A ratified, filled, unexpired waiver -> rc 0, notice still printed.
   # TODAY-RELATIVE dates (security S-M1): a future `Opened` is now refused — it makes the 90-day
   # maximum nominal — so the 2099 dates this fixture used to carry would assert the opposite of the
@@ -3302,6 +3318,7 @@ EOF
   }
   _lc_byte conformance/backlog-lib.sh '[!A-Z0-9' "$_lc_row"
   _lc_byte scripts/board-claim.sh '[!A-Z0-9' "$_lc_row"
+  _lc_byte scripts/board.sh '[!A-Z0-9' "$_lc_row"
   _lc_byte scripts/slice-resume.sh '[!A-Z0-9' "$_lc_row"
   _lc_byte conformance/review-lane.sh '[!A-Z0-9' "$_lc_row"
   _lc_byte conformance/review-lane.sh '[!0-9a-fA-F' "$_lc_hex"
@@ -3323,6 +3340,14 @@ EOF
     echo "selftest PASS: lc/byte: loop-state.sh's Kit-Row gate still calls row_id_ok"
   else
     echo "selftest FAIL: lc/byte: loop-state.sh's Kit-Row gate no longer calls row_id_ok — L7 would grade a function nobody calls"; st_fail=1
+  fi
+
+  # board.sh's --parent checks (create and edit) have ONE judge, bd_row_ok: pin both calls, so L4 is not
+  # a leg about a function nobody calls.
+  if grep -qF -e 'bd_row_ok "$_parent"' "$_lc_root/scripts/board.sh" && grep -qF -e 'bd_row_ok "$_ed_parent"' "$_lc_root/scripts/board.sh"; then
+    echo "selftest PASS: lc/byte: board.sh's --parent checks still call bd_row_ok"
+  else
+    echo "selftest FAIL: lc/byte: board.sh's --parent checks no longer call bd_row_ok — L4 would grade a function nobody calls"; st_fail=1
   fi
 
   # --- the behaviour legs: one bash process carries the locale, the option AND the gate ---------------
@@ -3375,9 +3400,11 @@ $_lce_body" _ "$@" 2>&1) && _lce_rc=0 || _lce_rc=$?
   _lc_expect L1/row_id_ok-refuses 0 '' "$_lc_src $_lc_loop" "$_lc_root/conformance/backlog-lib.sh" bX-1 SWAs-200 "ÉX-1" "SWAS-2é0" "ＡB-1"
   _lc_expect L2/row_id_ok-accepts 0 ok '. "$1"; shift; for i in "$@"; do row_id_ok "$i" || { echo "REFUSED:$i"; exit 1; }; done; echo ok' "$_lc_root/conformance/backlog-lib.sh" SWAS-200 KW6-A2
   _lc_expect "L7/row_id_ok-no-a (loop-state's judge)" 0 '' "$_lc_src $_lc_loop" "$_lc_root/conformance/backlog-lib.sh" kw6-b2
-  # L3 — bc_row_ok (L4, board.sh's bd_row_ok, is a residual: SWAS-244)
+  # L3 — bc_row_ok, L4 — bd_row_ok (the function the --parent check and bd_require_row both call)
   _lc_f=$(_lc_fn scripts/board-claim.sh bc_row_ok) || { echo "selftest FAIL: lc/L3: could not extract bc_row_ok"; st_fail=1; _lc_f=/dev/null; }
   _lc_expect L3/bc_row_ok-refuses 0 '' '. "$1"; shift; for i in "$@"; do if bc_row_ok "$i"; then echo "ACCEPTED:$i"; exit 1; fi; done; bc_row_ok SWAS-1' "$_lc_f" bX-1 SWAs-200
+  _lc_f=$(_lc_fn scripts/board.sh bd_row_ok) || { echo "selftest FAIL: lc/L4: could not extract bd_row_ok"; st_fail=1; _lc_f=/dev/null; }
+  _lc_expect L4/bd_row_ok-refuses 0 '' '. "$1"; shift; for i in "$@"; do if bd_row_ok "$i"; then echo "ACCEPTED:$i"; exit 1; fi; done; bd_row_ok SWAS-1' "$_lc_f" bX-1 SWAs-200
   # L5 — the guard's board-claim.sh check allow, the whole guard core sourced
   _lc_expect L5/guard-clone-args-refuses 0 '' '. "$1"; for k in bx-1 SWAs-1 "ÉX-1"; do if _cp8b_clone_args_ok scripts/board-claim.sh check "$k"; then echo "ACCEPTED:$k"; exit 1; fi; done; _cp8b_clone_args_ok scripts/board-claim.sh check SWAS-1' "$_lc_root/.claude/hooks/guard-core.sh"
   # L6 — the Jira response key arms (hostile input): refused WITH the message, a good key accepted
@@ -3991,6 +4018,16 @@ assert_msg_rc() {
     echo "selftest PASS: $4"
   else
     echo "selftest FAIL: $4 (rc=${_r:-?} want=$3, out=<$_o>)"; st_fail=1
+  fi
+}
+# assert_msg_rc_absent <dir> <forbidden> <want-rc> <label> : check_dir must return exactly <want-rc>
+# and its output must NOT carry <forbidden>. The negative half of a wording contract.
+assert_msg_rc_absent() {
+  _o=$(check_dir "$1" 2>&1) && _r=0 || _r=$?
+  if [ "${_r:-0}" = "$3" ] && ! printf '%s\n' "$_o" | grep -Fq "$2"; then
+    echo "selftest PASS: $4"
+  else
+    echo "selftest FAIL: $4 (rc=${_r:-?} want=$3, out=<$_o>, must NOT contain <$2>)"; st_fail=1
   fi
 }
 # assert_rid_ok <token> <label> : row_id_ok must accept the token.

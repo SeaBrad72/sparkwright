@@ -19,9 +19,11 @@ This scaffold uses **only the Go standard library**. There are therefore:
 
 `go mod download` is a no-op, so there is **no lockfile step to keep in sync** — the *dependency
 graph* is green by construction the moment it is cloned. (One caveat: `gate-dep-scan` runs
-`govulncheck`, which also scans the Go **stdlib** — a future patch-level stdlib advisory in the
-pinned `go1.22.x` could flag the build until you bump the toolchain. That's time-dependent, not a
-scaffold defect.)
+`govulncheck`, which also scans the Go **stdlib**.) CI installs the newest patch of the minor that
+`go.mod` names (`go 1.27`, via `go-version-file` and `check-latest`), so patch-level stdlib fixes arrive
+on their own. Keep the directive minor-only: a patch (`go 1.27.0`) would pin an old stdlib. When that
+minor nears end of life your own weekly `govulncheck` run goes red and the bump is one set: `go.mod`, the
+Dockerfile tag and the lint version (`conformance/go-toolchain-coherent.sh` warns when they disagree).
 
 ## Endpoints (served by `server.go`)
 
@@ -52,7 +54,7 @@ rewriting the file flips `/greeting` on the running server with **no restart**
 
 | File                   | Role                                                                           |
 |------------------------|--------------------------------------------------------------------------------|
-| `go.mod`               | `module example.com/app`, `go 1.22`, stdlib-only (no `require`).               |
+| `go.mod`               | `module example.com/app`, `go 1.27`, stdlib-only (no `require`).               |
 | `health.go`            | `package main` — the pure `Health()` payload function.                          |
 | `server.go`            | the app spine: routing, security-header + telemetry middleware, `FLAG_FILE` boot gate, `-healthcheck` self-check, `serve`/`main`. |
 | `flags.go`             | flag registry + `FlagProvider` seam + env-floor provider.                      |

@@ -62,7 +62,7 @@ gate-install:
 # GitHub profile (proven green on an incepted tree by the artifact-gate job) this step is verified
 # STATICALLY only: conformance/verify-enforced-wired.sh --fleet asserts it is PRESENT and correctly
 # shaped, never that it PASSES here. The default image is node:24-bookworm rather than the
-# ubuntu-latest the GitHub proof used; a check that goes UNVERIFIED on this image would FAIL the run
+# ubuntu-24.04 the GitHub proof used; a check that goes UNVERIFIED on this image would FAIL the run
 # under --require. Tracked as CP7R5-GITLAB-UNEXECUTED — do not read this job's presence as a proof.
 #
 # ADOPTER-KIT-SELFTESTS-ON-CHANGE: in a MERGE-REQUEST pipeline whose diff touches no control-plane path,

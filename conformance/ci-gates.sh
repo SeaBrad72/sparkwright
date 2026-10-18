@@ -345,6 +345,86 @@ _own_judge() {
   esac
 }
 
+# check_pr_concurrency <workflow-file> (SWAS-274): the kit's PR-cancel lock. Exactly one concurrency: key,
+# at column 0 (a job-level one lets a new job escape it), whose group and cancel-in-progress lines equal
+# the design's strings byte for byte. A github.ref group, a missing github.workflow prefix, or a cancel
+# that is not synchronize-only would cancel or drop a main run, or red the head on a reopen.
+PRC_GROUP='${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}'
+PRC_CANCEL="\${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}"
+check_pr_concurrency() {  # <workflow-file> -> 0 ok; 1 block absent, duplicated, job-level, or its group/cancel line drifted
+  _pc_src=$(sed 's/#.*//' "$1")
+  _pc_n=$(printf '%s\n' "$_pc_src" | grep -cE '^[[:space:]]*["'"'"']?concurrency["'"'"']?:' || true)
+  _pc_top=$(printf '%s\n' "$_pc_src" | grep -c '^concurrency:[[:space:]]*$' || true)
+  if [ "$_pc_n" != 1 ] || [ "$_pc_top" != 1 ]; then
+    echo "FAIL: $1 concurrency: block must appear exactly once, at column 0 (found $_pc_n key(s), $_pc_top at column 0; a job-level one lets a new job escape the cancel)" >&2
+    return 1
+  fi
+  _pc_rc=0
+  _pc_g=$(printf '%s\n' "$_pc_src" | _prc_val group)
+  _pc_c=$(printf '%s\n' "$_pc_src" | _prc_val cancel-in-progress)
+  if [ "$_pc_g" != "$PRC_GROUP" ]; then
+    echo "FAIL: $1 concurrency group is '$_pc_g' (must be exactly '$PRC_GROUP'; a ref or sha key lets back-to-back main runs replace each other, and no workflow prefix lets CI and golden-path cancel each other)" >&2
+    _pc_rc=1
+  fi
+  if [ "$_pc_c" != "$PRC_CANCEL" ]; then
+    echo "FAIL: $1 concurrency cancel-in-progress is '$_pc_c' (must be exactly '$PRC_CANCEL'; anything wider can cancel a main run or a same-head reopen)" >&2
+    _pc_rc=1
+  fi
+  return "$_pc_rc"
+}
+
+_prc_val() {  # <key> (stdin: comment-stripped workflow) -> the trimmed value of the top-level concurrency block's two-space key
+  awk -v k="  $1:" '
+    /^concurrency:/ { inb = 1; next }
+    /^[^ \t]/ { inb = 0 }
+    inb && index($0, k) == 1 { v = substr($0, length(k) + 1); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); print v; exit }'
+}
+
+# check_runner_pinned <file> (SWAS-306): the kit's runner-pin lock (RP). Every `ubuntu-` token on a code line
+# (comments stripped, matched case-insensitively, a trailing . or - trimmed so "ubuntu-24.04." at a sentence end
+# compares as the label) must equal KIT_HOSTED_RUNNER. One text rule reds ubuntu-latest, ubuntu-slim, a stray
+# ubuntu-22.04, a matrix os: entry, an input default and an expression fallback, wherever they sit. A container
+# tag (ubuntu:26.04) has no "ubuntu-" and is not a runner label. It reads text: a label that arrives from a
+# variable at run time is invisible to it. The one place to move at an Ubuntu migration is this constant.
+KIT_HOSTED_RUNNER=ubuntu-24.04
+check_runner_pinned() {  # <file> -> 0 ok; 1 any ubuntu- token on a code line is not KIT_HOSTED_RUNNER
+  sed 's/#.*//' "$1" | awk -v want="$KIT_HOSTED_RUNNER" -v file="$1" '
+    { rest = tolower($0)
+      while (match(rest, /ubuntu-[a-z0-9._-]*/)) {
+        tok = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+        sub(/[.-]+$/, "", tok)
+        if (tok != want) {
+          printf "FAIL: %s:%d runner label '\''%s'\'' is not '\''%s'\'' (pin every kit runner to the one image the gates are proven on; SWAS-306)\n", file, NR, tok, want > "/dev/stderr"
+          bad = 1
+        }
+      }
+    }
+    END { exit bad }'
+}
+
+# check_runner_pins_tree <root> (SWAS-306): RP over a KIT tree. Reads every .github/workflows/*.yml|*.yaml, plus
+# the shipped adopter templates (profiles/*.yml, profiles/*/ci.yml, docs/operations/*.github.yml) when present;
+# a template glob that matches nothing is skipped. Liveness counts only the workflows: zero files read, or zero
+# ubuntu- tokens in them, is a FAIL (a glob that matched nothing must not pass).
+check_runner_pins_tree() {  # <root> -> 0 ok; 1 an unpinned label, or the leg read nothing
+  _rt_rc=0; _rt_files=0; _rt_tokens=0
+  for _rt_f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml; do
+    [ -f "$_rt_f" ] || continue
+    _rt_files=$((_rt_files + 1))
+    _rt_tokens=$((_rt_tokens + $(sed 's/#.*//' "$_rt_f" | grep -ci 'ubuntu-' || true)))
+    check_runner_pinned "$_rt_f" || _rt_rc=1
+  done
+  if [ "$_rt_files" = 0 ] || [ "$_rt_tokens" = 0 ]; then
+    echo "FAIL: RP liveness — read $_rt_files workflow file(s) and $_rt_tokens ubuntu- token line(s) under $1/.github/workflows (a kit tree runs on $KIT_HOSTED_RUNNER; a glob that matched nothing must not pass)" >&2
+    _rt_rc=1
+  fi
+  for _rt_f in "$1"/profiles/*.yml "$1"/profiles/*/ci.yml "$1"/docs/operations/*.github.yml; do
+    [ -f "$_rt_f" ] || continue
+    check_runner_pinned "$_rt_f" || _rt_rc=1
+  done
+  return "$_rt_rc"
+}
+
 own_tree_run() {  # [<root>]  (default .)
   _ot_root=${1:-.}
   if [ ! -d "$_ot_root" ]; then
@@ -397,6 +477,14 @@ own_tree_run() {  # [<root>]  (default .)
   if [ -f "$_ot_glwf" ]; then
     _ot_seen=$((_ot_seen + 1))
     _own_judge "$_ot_glwf" "$(_own_origin "$_ot_glwf" "$_ot_kit")" || _ot_rc=1
+  fi
+  if [ "$_ot_kit" = 1 ]; then  # SWAS-274: the kit's own PR-cancel lock (kit-tree guard; adopters carry no such block)
+    for _ot_cw in ci.yml golden-path.yml; do
+      # a missing file is skipped on purpose: golden-path-filter-parity.sh also treats an absent golden-path.yml as N/A
+      [ -f "$_ot_root/.github/workflows/$_ot_cw" ] || continue
+      check_pr_concurrency "$_ot_root/.github/workflows/$_ot_cw" || _ot_rc=1
+    done
+    check_runner_pins_tree "$_ot_root" || _ot_rc=1  # SWAS-306: the runner-pin lock (RP); kit trees only
   fi
   if [ "$_ot_seen" = 0 ]; then
     # The zero-found three-state (verify-enforced-wired.sh:845-849, copied).
@@ -1250,6 +1338,45 @@ selftest() {
     echo "selftest FAIL: DQ5 — invalid-file fail-safe yielded 'na' (fail-quiet, not fail-safe)"; sf=1
   fi
 
+  # RP2/RP3/RP5/RP6 (SWAS-306) — the runner-pin lock (RP). Hermetic: fixtures only, no kit tree needed.
+  # Every negative must RED and name its token and file; a function that is absent cannot pass a negative.
+  mkdir -p "$d/rp"
+  _rp_neg() { # <id> <want-token> <desc> <yaml-line> — one code line that must RED
+    printf 'jobs:\n  j:\n    %s\n' "$4" > "$d/rp/$1.yml"
+    if _rp_o=$(check_runner_pinned "$d/rp/$1.yml" 2>&1); then
+      echo "selftest FAIL: $1 — $3 was NOT caught"; sf=1
+    elif printf '%s\n' "$_rp_o" | grep -qF -- "'$2'" && printf '%s\n' "$_rp_o" | grep -qF -- "$d/rp/$1.yml"; then
+      echo "selftest PASS: $1 — $3 -> RED, naming '$2' and the file"
+    else echo "selftest FAIL: $1 — $3 reds without naming '$2' and the file: $_rp_o"; sf=1; fi
+  }
+  _rp_neg RP2a ubuntu-latest "runs-on: ubuntu-latest" 'runs-on: ubuntu-latest'
+  _rp_neg RP2b ubuntu-latest "an expression fallback to ubuntu-latest" "runs-on: \${{ vars.X || 'ubuntu-latest' }}"
+  _rp_neg RP2c ubuntu-latest "a matrix os: [ubuntu-latest]" 'matrix: { os: [ubuntu-latest] }'
+  _rp_neg RP2d ubuntu-22.04 "a wrong pin, ubuntu-22.04" 'runs-on: ubuntu-22.04'
+  _rp_neg RP2e ubuntu-slim "runs-on: ubuntu-slim" 'runs-on: ubuntu-slim'
+  _rp_neg RP2f ubuntu-latest "a mixed-case Ubuntu-Latest" 'runs-on: Ubuntu-Latest'
+  _rp_neg RP2g ubuntu-latest "a trailing hyphen, ubuntu-latest-" 'runs-on: ubuntu-latest-'
+  { printf 'jobs:\n  j:\n'
+    printf '    # ubuntu-latest moved to 26\n'
+    printf '    runs-on: ubuntu-24.04\n'
+    printf "    container: { image: ubuntu:26.04 }\n"
+    printf "    env: { R: \"\${{ vars.X || 'ubuntu-24.04' }}\" }\n"
+    printf '    steps:\n      - run: echo "the label is ubuntu-24.04."\n'
+  } > "$d/rp/RP3.yml"
+  if _rp_o=$(check_runner_pinned "$d/rp/RP3.yml" 2>&1); then
+    echo "selftest PASS: RP3 — a comment, the pin, a container tag, an expression fallback and a sentence-final pin all pass"
+  else echo "selftest FAIL: RP3 — an allowed shape was rejected: $_rp_o"; sf=1; fi
+  mkdir -p "$d/rp5/.github/workflows" "$d/rp5/docs" "$d/rp5b/.github/workflows" "$d/rp5b/docs"
+  : > "$d/rp5/docs/ROADMAP-KIT.md"; : > "$d/rp5b/docs/ROADMAP-KIT.md"
+  printf 'jobs:\n  j:\n    runs-on: self-hosted\n' > "$d/rp5b/.github/workflows/x.yml"
+  _ot_case RP5 "$d/rp5" 1 "RP liveness" "a kit tree with an empty .github/workflows -> RED (a glob that matched nothing must not pass)"
+  _ot_case RP5b "$d/rp5b" 1 "RP liveness" "a kit tree whose workflows hold no ubuntu- token -> RED"
+  mkdir -p "$d/rp6"; : > "$d/rp6/ENGINEERING-PRINCIPLES.md"
+  # shellcheck disable=SC2086 # $ALLG is a deliberate word-list
+  _ot_gh "$d/rp6" 1 $ALLG
+  printf '  other:\n    runs-on: ubuntu-latest\n' >> "$d/rp6/.github/workflows/ci.yml"
+  _ot_case RP6 "$d/rp6" 0 "OK: ci-gates --own-tree" "an adopter tree on ubuntu-latest -> green (RP is N/A off a kit tree)"
+
   # OT13/OT14 — KIT-SOURCE legs (skip with a reason off-kit: the ruling lock binds the KIT's
   # shipped file; an adopter tree has no such file — and MAY author its own, which must not red).
   _kr="$(dirname "$0")/.."
@@ -1275,6 +1402,85 @@ selftest() {
     grep -v 'id: gate-test' "$_kr/.github/workflows/ci.yml" > "$d/ot14/.github/workflows/ci.yml"
     cp "$_kr/conformance/gate-dispositions.txt" "$d/ot14/conformance/gate-dispositions.txt"
     _ot_case OT14 "$d/ot14" 1 "gate-test" "the real ci.yml minus id: gate-test -> RED (kit-side AC)"
+    # PC0-PC8 (SWAS-274) — the PR-cancel lock. PC0 is the positive control on both REAL workflows; each mutant
+    # below is a SCRATCH COPY of the real ci.yml and must red AND name its cause. A mutant is only judged
+    # when PC0 is green, so a missing block cannot make every mutant red for the wrong reason.
+    mkdir -p "$d/pc"
+    _pc_ctl=0
+    for _pc_w in ci.yml golden-path.yml; do
+      if check_pr_concurrency "$_kr/.github/workflows/$_pc_w" >/dev/null 2>&1; then
+        echo "selftest PASS: PC0 — the real $_pc_w carries the exact concurrency block"
+      else echo "selftest FAIL: PC0 — the real $_pc_w does not carry the exact concurrency block (SWAS-274)"; sf=1; _pc_ctl=1; fi
+    done
+    _pc_real="$_kr/.github/workflows/ci.yml"
+    if [ "$_pc_ctl" = 0 ]; then
+      sed "s/^  cancel-in-progress:.*/  cancel-in-progress: true/" "$_pc_real" > "$d/pc/m1.yml"
+      sed "s/ && github.event.action == 'synchronize'//" "$_pc_real" > "$d/pc/m2.yml"
+      sed 's/^  group:.*/  group: ${{ github.workflow }}-${{ github.ref }}/' "$_pc_real" > "$d/pc/m3.yml"
+      sed 's/^  group:.*/  group: ${{ github.event.pull_request.number || github.run_id }}/' "$_pc_real" > "$d/pc/m4.yml"
+      sed '/^concurrency:/,/^  cancel-in-progress:/d' "$_pc_real" > "$d/pc/m5.yml"
+      awk '{ print } $0 == "  changes:" { print "    concurrency:"; print "      group: x" }' "$_pc_real" > "$d/pc/m6.yml"
+      awk '{ print } $0 == "  changes:" { print "    \"concurrency\": x" }' "$_pc_real" > "$d/pc/m7.yml"
+      for _pc_m in "m1:cancel-in-progress:PC1:cancel-in-progress true (the main exemption dropped)" \
+                   "m2:cancel-in-progress:PC2:the synchronize condition dropped" \
+                   "m3:concurrency group:PC3:group on github.ref" \
+                   "m4:concurrency group:PC4:group without github.workflow" \
+                   "m5:exactly once:PC5:the block deleted" \
+                   "m6:exactly once:PC6:a second concurrency: key nested under the first real job" \
+                   "m7:exactly once:PC6b:a quoted concurrency key under a job"; do
+        _pc_f=${_pc_m%%:*}; _pc_r=${_pc_m#*:}; _pc_want=${_pc_r%%:*}; _pc_r=${_pc_r#*:}
+        _pc_id=${_pc_r%%:*}; _pc_desc=${_pc_r#*:}
+        if _pc_o=$(check_pr_concurrency "$d/pc/$_pc_f.yml" 2>&1); then
+          echo "selftest FAIL: $_pc_id — $_pc_desc was NOT caught"; sf=1
+        elif printf '%s\n' "$_pc_o" | grep -qF -- "$_pc_want"; then
+          echo "selftest PASS: $_pc_id — $_pc_desc -> RED, naming '$_pc_want'"
+        else echo "selftest FAIL: $_pc_id — $_pc_desc reds without naming '$_pc_want': $_pc_o"; sf=1; fi
+      done
+      # PC7/PC8 — the --own-tree wiring, through the REAL entry point on a kit-marked scratch tree: the real
+      # pair is green, and the same tree with a mutated ci.yml is RED naming the cancel line.
+      mkdir -p "$d/pc7/.github/workflows" "$d/pc7/docs" "$d/pc7/conformance"
+      : > "$d/pc7/docs/ROADMAP-KIT.md"
+      cp "$_pc_real" "$d/pc7/.github/workflows/ci.yml"
+      cp "$_kr/.github/workflows/golden-path.yml" "$d/pc7/.github/workflows/golden-path.yml"
+      cp "$_kr/conformance/gate-dispositions.txt" "$d/pc7/conformance/gate-dispositions.txt"
+      _ot_case PC7 "$d/pc7" 0 "OK: ci-gates --own-tree" "the real pair on a kit-marked tree -> green"
+      cp "$d/pc/m1.yml" "$d/pc7/.github/workflows/ci.yml"
+      _ot_case PC8 "$d/pc7" 1 "cancel-in-progress" "--own-tree reds a kit tree whose ci.yml cancels every run"
+    fi
+    # RP1/RP4 (SWAS-306) — the runner-pin lock through the REAL entry point on a kit-marked scratch tree holding
+    # the real workflows and profile templates: green as shipped; red, naming the file and the alias, when one
+    # runs-on (or one tracker fallback) is reverted. cmp guards: a mutant that equals the original proves nothing.
+    _rp_tree="$d/rp1"
+    mkdir -p "$_rp_tree/.github/workflows" "$_rp_tree/docs/operations" "$_rp_tree/conformance" "$_rp_tree/profiles"
+    : > "$_rp_tree/docs/ROADMAP-KIT.md"
+    cp "$_kr"/.github/workflows/*.yml "$_rp_tree/.github/workflows/"
+    cp "$_kr"/docs/operations/*.github.yml "$_rp_tree/docs/operations/"
+    cp "$_kr/conformance/gate-dispositions.txt" "$_rp_tree/conformance/"
+    for _rp_p in "$_kr"/profiles/*.yml "$_kr"/profiles/*/ci.yml; do
+      [ -f "$_rp_p" ] || continue
+      _rp_rel=${_rp_p#"$_kr"/profiles/}
+      mkdir -p "$_rp_tree/profiles/$(dirname "$_rp_rel")"
+      cp "$_rp_p" "$_rp_tree/profiles/$_rp_rel"
+    done
+    _ot_case RP1 "$_rp_tree" 0 "OK: ci-gates --own-tree" "the real workflows and profile templates on a kit-marked tree -> green"
+    _rp_mut() { # <id> <real-file> <awk-program> <want-file> <desc> — mutate one copy in place, judge, restore
+      _rm_id=$1; _rm_real=$2; _rm_dst="$_rp_tree/.github/workflows/$(basename "$2")"
+      awk "$3" "$_rm_real" > "$d/rp/$_rm_id.mut"
+      if cmp -s "$_rm_real" "$d/rp/$_rm_id.mut"; then
+        echo "selftest FAIL: $_rm_id — the mutant equals the original (nothing to revert; the shipped file is not pinned)"; sf=1; return
+      fi
+      cp "$d/rp/$_rm_id.mut" "$_rm_dst"
+      if _rm_o=$(sh "$0" --own-tree "$_rp_tree" 2>&1); then _rm_rc=0; else _rm_rc=$?; fi
+      cp "$_rm_real" "$_rm_dst"
+      if [ "$_rm_rc" = 1 ] && printf '%s' "$_rm_o" | grep -qF -- "'ubuntu-latest'" && printf '%s' "$_rm_o" | grep -qF -- "$4"; then
+        echo "selftest PASS: $_rm_id — $5 -> RED, naming 'ubuntu-latest' and $4"
+      else echo "selftest FAIL: $_rm_id — $5 (rc=$_rm_rc, want 1 naming 'ubuntu-latest' and $4): $_rm_o"; sf=1; fi
+    }
+    _rp_mut RP4a "$_kr/.github/workflows/ci.yml" '!d && /runs-on: ubuntu-24.04/ { sub(/ubuntu-24.04/, "ubuntu-latest"); d = 1 } { print }' \
+      "workflows/ci.yml:" "the real ci.yml with one runs-on reverted"
+    _rp_mut RP4b "$_kr/.github/workflows/adopter-tracker-gates.yml" "!d && /'ubuntu-24.04'/ { sub(/ubuntu-24.04/, \"ubuntu-latest\"); d = 1 } { print }" \
+      "workflows/adopter-tracker-gates.yml:" "the tracker workflow with one fallback reverted"
+
     # OT15 — gate-test STAYS TERMINAL (reviewer LOW-4): reaching the id attests every selftest
     # step above it passed ONLY while it is the LAST step of conformance-selftests — a step
     # planted after it is NOT attested (the anchor comment at the id states exactly this).

@@ -631,7 +631,9 @@ selftest() {
     _lgd="$(mktemp -d "$D/gh.XXXXXX")"
     {
       printf '#!/bin/sh\ncase "$*" in\n'
-      printf '  */reviews*) printf "APPROVED\\t%%s\\t%%s\\tUser\\n" "%s" "%s" ;;\n' "$1" "$2"
+      # LGH_NOREV=1 (SWAS-207b): the ONE-ACCOUNT forge — the reviews call answers NOTHING, so no approval can be derived
+      if [ -n "${LGH_NOREV:-}" ]; then printf '  */reviews*) : ;;\n'
+      else printf '  */reviews*) printf "APPROVED\\t%%s\\t%%s\\tUser\\n" "%s" "%s" ;;\n' "$1" "$2"; fi
       printf '  *) printf "AuthorLogin\\n" ;;\nesac\n'
     } > "$_lgd/gh"
     chmod +x "$_lgd/gh"
@@ -661,6 +663,90 @@ selftest() {
   else
     echo "FAIL: land liveness: want rc=0 + merge + note-on-origin, got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ) onorigin=$( onote "$LOSHA" && echo yes || echo no ); out=$_ld_out"; st=1
   fi
+
+  # =====================================================================================
+  # SWAS-207b — `land` in a SOLO-DECLARED repo. The base (origin's main) carries MERGE_RELATIONSHIP=solo, so the forge shim answers
+  # NO reviews (one account) and `land` still records, confirms on origin and merges: step 0b (SoD) and 0d(ii) (the forge
+  # pre-derivation) are skipped, `--go-by`, scope == ref, the whole-note match, the origin confirm and the vet stay, and step 2b
+  # judges the SOLO BAR on the note read back from origin. Every negative asserts the merge marker is ABSENT and its OWN reason.
+  # =====================================================================================
+  # lsolo_base <dial-line|NONE> [claude-md-line] — commits .kit/dials.conf (and CLAUDE.md) onto the fixture base and pushes it as
+  # origin's main; LOSHA becomes that commit, so the approved head is the base tip itself (its tree carries the declaration too).
+  lsolo_base() {
+    ( set -e; cd "$LOA"
+      if [ "$1" != NONE ]; then mkdir -p .kit; printf '%s\n' "$1" > .kit/dials.conf; git add .kit/dials.conf; fi
+      if [ -n "${2:-}" ]; then printf '%s\n' "$2" > CLAUDE.md; git add CLAUDE.md; fi
+      git commit -qm "declare the merge relationship"; git push -q origin HEAD:refs/heads/main )
+    LOSHA="$(git -C "$LOA" rev-parse HEAD)"
+  }
+  lsolo_report() {   # <label> <merge|refuse> <needle>: asserts rc, the marker and the label's own line from the last lland
+    _lsl="$1"; _lsw="$2"; _lsn="$3"
+    if [ "$_lsw" = merge ]; then
+      if [ "$_ldc" = 0 ] && [ -f "$LAND_MARK" ] && onote "$LOSHA" && printf '%s' "$_ld_out" | grep -qF -e "$_lsn"; then
+        echo "PASS: $_lsl"
+      else
+        echo "FAIL: $_lsl: want rc=0 + merge + note on origin + '$_lsn', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+      fi
+    elif [ "$_ldc" != 0 ] && [ ! -f "$LAND_MARK" ] && printf '%s' "$_ld_out" | grep -qF -e "$_lsn"; then
+      echo "PASS: $_lsl"
+    else
+      echo "FAIL: $_lsl: want rc!=0 + NO merge + '$_lsn', got rc=$_ldc merged=$( [ -f "$LAND_MARK" ] && echo yes || echo no ); out=$_ld_out"; st=1
+    fi
+  }
+  LGH_NOREV=1
+  mkorigin lsolo; lsolo_base MERGE_RELATIONSHIP=solo
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-live"
+  lsolo_report "land SOLO liveness: base declares solo, no forge review -> recorded, confirmed on origin, merged" merge "merge relationship: solo (origin/main"
+  if git --git-dir="$LO/remote.git" notes --ref="$LR2" show "$LOSHA" | grep '^approved-by:' | grep -qF 'authenticated'; then
+    echo "FAIL: land SOLO liveness: the recorded label claims an authenticated review that no forge gave"; st=1
+  else
+    echo "PASS: land SOLO liveness: the note on origin carries no authenticated label (nothing authenticates the solo GO)"
+  fi
+  # the author SoD (step 0b) is skipped in solo: the approver IS the commit author (one account)
+  mkorigin lsolosod; lsolo_base MERGE_RELATIONSHIP=solo
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-sod" --approved-by t
+  lsolo_report "land SOLO: approver == commit author is NOT refused (step 0b skipped) -> merged" merge "merge relationship: solo"
+  # the solo bar's gate leg, at 2b on the note read back from origin: a design GO is not a merge GO
+  mkorigin lsologate; lsolo_base MERGE_RELATIONSHIP=solo
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-gate" --gate design-arm
+  lsolo_report "land SOLO NEGATIVE: gate 'design-arm' fails the solo bar at 2b, refused before the merge" refuse "pre-build gate"
+  # --go-by stays REQUIRED in solo (0d(i) is kept)
+  mkorigin lsologoby; lsolo_base MERGE_RELATIONSHIP=solo
+  rm -f "$LAND_MARK"
+  if _ld_out="$( cd "$LOA" && PATH="$(lgh "$LOSHA" "x"):$PATH" PROMOTION_NOTES_REF="$LR2" $VSH "$VERIFY" land --ref 77 --merge-cmd "$LAND_STUB" \
+        --approved-sha "$LOSHA" --approved-by "solo maintainer" --gate release-candidate --rung "Release candidate" \
+        --class control-plane --scope "PR #77" --token "GO" 2>&1 )"; then _ldc=0; else _ldc=$?; fi
+  lsolo_report "land SOLO NEGATIVE: no --go-by is still refused (0d(i) kept), nothing merged" refuse "--go-by"
+  # a note planted on origin whose approved-tree is NOT the sha's tree: a post-receive hook on the bare origin rewrites the
+  # note record just published, so land's step 2 reads the planted copy back and the solo bar's tree leg refuses it
+  mkorigin lsolotree; lsolo_base MERGE_RELATIONSHIP=solo
+  printf '#!/bin/sh\nfor o in $(git notes --ref=%s list | cut -d" " -f2); do\n  git notes --ref=%s show "$o" | sed "s/^approved-tree: .*/approved-tree: 0000000000000000000000000000000000000000/" \\\n    | GIT_COMMITTER_NAME=x GIT_COMMITTER_EMAIL=x@example.com GIT_AUTHOR_NAME=x GIT_AUTHOR_EMAIL=x@example.com git notes --ref=%s add -f -F - "$o"\ndone\n' "$LR2" "$LR2" "$LR2" > "$LO/remote.git/hooks/post-receive"
+  chmod +x "$LO/remote.git/hooks/post-receive"
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-tree"
+  lsolo_report "land SOLO NEGATIVE: a note planted on origin with approved-tree != the sha's tree is refused BEFORE the merge" refuse "approved-tree"
+  # team unchanged: an UNDECLARED base keeps the authenticated-approval bar, so the same no-review run is refused at 0d(ii)
+  mkorigin lteam
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-team"
+  lsolo_report "land TEAM unchanged: an undeclared base + no forge review -> refused at 0d(ii), nothing merged" refuse "AUTHENTICATED NON-AUTHOR"
+  # the declaration is read from the BASE, not the approved tree: the head declares solo, origin's main does not -> team bar
+  mkorigin lsolobase
+  ( set -e; cd "$LOA"; git checkout -q -b declares-solo; mkdir -p .kit; printf 'MERGE_RELATIONSHIP=solo\n' > .kit/dials.conf
+    git add .kit/dials.conf; git commit -qm "declare solo in the PR" )
+  LOSHA="$(git -C "$LOA" rev-parse HEAD)"
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-base"
+  lsolo_report "land: the APPROVED TREE declares solo but origin's main does not -> the team bar refuses, nothing merged" refuse "AUTHENTICATED NON-AUTHOR"
+  # a Governance team line on the base tightens a solo dial
+  mkorigin lsologov; lsolo_base MERGE_RELATIONSHIP=solo '- **Governance** (§ solo/team): team — non-author approval'
+  rm -f "$LAND_MARK"
+  lland "$LAND_STUB" "$LOSHA" control-plane "branch/ls-gov"
+  lsolo_report "land: base dial solo + CLAUDE.md Governance team -> the team bar, and the override is said" refuse "CLAUDE.md Governance: team overrides MERGE_RELATIONSHIP=solo"
+  LGH_NOREV=""
 
   # (+claim) LAND RELEASES THE ROW'S OWN CLAIM [B2-SESSION-IDENTITY-LEDGER, design decision 6].
   #     `do_actuate` has released the claim since BOARD-CLAIM-MECHANISM §3.5; `do_land` ended at the
@@ -2414,25 +2500,42 @@ EOF
   lpass "$_lc" "sync L8(a) (+): a LEGACY 12-line note (no go-by line) is accepted and published" "anc=$_anc lines=$_l8n rc=$LRC out=$LOUT"
   mkledger s8new
   lrec "$LF/A" "$ASHA" "branch/s8na"
-  lrec "$LF/B" "$BSHA" "branch/s8nb" --no-push --go-by "SeaBrad72"
+  lrec "$LF/B" "$BSHA" "branch/s8nb" --no-push --go-by "owner-login"
   _l8n="$(git -C "$LF/B" notes --ref="$LR" show "$BSHA" | wc -l | tr -d ' ')"
   _l8g="$(git -C "$LF/B" notes --ref="$LR" show "$BSHA" | sed -n '5p')"
   if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
   lsync "$LF/B"
-  if [ "$_anc" = 0 ] && [ "$_l8n" = 13 ] && [ "$_l8g" = 'go-by: SeaBrad72 [self-asserted]' ] && [ "$LRC" = 0 ] \
+  if [ "$_anc" = 0 ] && [ "$_l8n" = 13 ] && [ "$_l8g" = 'go-by: owner-login [self-asserted]' ] && [ "$LRC" = 0 ] \
      && printf '%s' "$LOUT" | grep -q "published $BSHA" && [ "$(git --git-dir="$LF/remote.git" notes --ref="$LR" show "$BSHA" | sed -n '5p')" = "$_l8g" ]; then _lc=0; else _lc=1; fi
-  lpass "$_lc" "sync L8(b) (+): a 13-line note with 'go-by: SeaBrad72 [self-asserted]' at line 5 is accepted and published byte-identical" "anc=$_anc lines=$_l8n l5=$_l8g rc=$LRC out=$LOUT"
+  lpass "$_lc" "sync L8(b) (+): a 13-line note with 'go-by: owner-login [self-asserted]' at line 5 is accepted and published byte-identical" "anc=$_anc lines=$_l8n l5=$_l8g rc=$LRC out=$LOUT"
   for _l8lab in 'authenticated: github-review' 'committer' 'signed: gpg'; do
     _l8k=$((${_l8k:-0} + 1))
-    lfix "s8forge$_l8k"; lrec "$LF/B" "$BSHA" "branch/s8fb" --no-push --go-by "SeaBrad72"
-    lmut "$LF/B" "$BSHA" "s/^go-by: .*/go-by: SeaBrad72 [$_l8lab]/"
+    lfix "s8forge$_l8k"; lrec "$LF/B" "$BSHA" "branch/s8fb" --no-push --go-by "owner-login"
+    lmut "$LF/B" "$BSHA" "s/^go-by: .*/go-by: owner-login [$_l8lab]/"
     lvcase "sync L8(c) (−): a go-by carrying [$_l8lab] is refused naming go-by (the GO-giver is never authenticated), nothing moved" 'go-by'
   done
-  lfix s8blank; lrec "$LF/B" "$BSHA" "branch/s8bb" --no-push --go-by "SeaBrad72"
-  lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: SeaBrad72/'
+  lfix s8blank; lrec "$LF/B" "$BSHA" "branch/s8bb" --no-push --go-by "owner-login"
+  lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: owner-login/'
   lvcase "sync L8(c) (−): a go-by with no [self-asserted] label is refused naming go-by" 'go-by'
+  # SAST-PARSE-MERGE-TOOL: one refuse cell per vet arm whose one-line `case` was split. Each pins its OWN message (a rewrite that
+  # widens or drops a match turns it red); the cells pass on the code before the split too: they pin behaviour, not red-first.
+  lfix s8brk; lrec "$LF/B" "$BSHA" "branch/s8br" --no-push --go-by "owner-login"
+  lmut "$LF/B" "$BSHA" 's/^go-by: .*/go-by: owner[login [self-asserted]/'
+  lvcase "sync SAST(−): a bracket inside the go-by name is refused with its own line" 'a bracket inside the name'
+  lfix s8nolab; lrec "$LF/B" "$BSHA" "branch/s8nl" --no-push --go-by "owner-login"
+  lmut "$LF/B" "$BSHA" 's/^approved-by: .*/approved-by: nolabel/'
+  lvcase "sync SAST(−): an approved-by with no [label] is refused with its own line" "not '<id>"
+  lfix s8idbr; lrec "$LF/B" "$BSHA" "branch/s8ib" --no-push --go-by "owner-login"
+  lmut "$LF/B" "$BSHA" 's/^approved-by: .*/approved-by: a[b [self-asserted]/'
+  lvcase "sync SAST(−): a bracket inside the approved-by id is refused with its own line" 'a bracket inside the id or the label'
+  lfix s8dash; lrec "$LF/B" "$BSHA" "branch/s8da" --no-push --go-by "owner-login"
+  lmut "$LF/B" "$BSHA" 's/^approved-sha: .*/approved-sha: -abc/'
+  lvcase "sync SAST(−): an approved-sha starting with '-' is refused with its own line" "starts with '-'"
+  lfix s8nom; lsync "$LF/B" --dry-run --discard-local 1234567890123456789012345678901234567890
+  if [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -qF -e "--discard-local 1234567890123456789012345678901234567890 matched no refused or candidate record"; then _lc=0; else _lc=1; fi
+  lpass "$_lc" "sync SAST(+): a --discard-local naming no refused or candidate record is noted, not silently dropped (rc 0)" "rc=$LRC out=$LOUT"
   mkledger s8twin
-  lrec "$LF/A" "$ASHA" "branch/s8t" --go-by "SeaBrad72"
+  lrec "$LF/A" "$ASHA" "branch/s8t" --go-by "owner-login"
   lrec "$LF/B" "$ASHA" "branch/s8t" --no-push --token "local token" --go-by "SomeoneElse"
   if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
   _lpre="$(lrev "$LF/B")"
@@ -2441,8 +2544,8 @@ EOF
      && printf '%s' "$LOUT" | grep -q 'go-by: SomeoneElse \[self-asserted\]' && [ "$(lrev "$LF/B")" = "$_lpre" ]; then _lc=0; else _lc=1; fi
   lpass "$_lc" "sync L8(d) (−): a same-sha twin differing ONLY in go-by is a different GO -> rc 2 DIFFERENT identity, both notes printed, ledger untouched" "anc=$_anc rc=$LRC out=$LOUT"
   mkledger s8twin2
-  lrec "$LF/A" "$ASHA" "branch/s8t2" --go-by "SeaBrad72"
-  lrec "$LF/B" "$ASHA" "branch/s8t2" --no-push --token "local token" --go-by "SeaBrad72"
+  lrec "$LF/A" "$ASHA" "branch/s8t2" --go-by "owner-login"
+  lrec "$LF/B" "$ASHA" "branch/s8t2" --no-push --token "local token" --go-by "owner-login"
   if ldiverged "$LF/B"; then _anc=0; else _anc=1; fi
   lsync "$LF/B"
   if [ "$_anc" = 0 ] && [ "$LRC" = 0 ] && printf '%s' "$LOUT" | grep -q "twin-origin-wins $ASHA"; then _lc=0; else _lc=1; fi

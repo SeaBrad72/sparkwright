@@ -32,7 +32,7 @@ jobs:
   ci:
     outputs:
       has_dockerfile: ${{ steps.detect-dockerfile.outputs.has_dockerfile }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     # >>> kit:db-backed (incept removes for non-DB archetypes)
@@ -96,7 +96,11 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
-          go-version: '1.22'
+          # go.mod is the single source of the Go minor (`go 1.27`, minor only: a patch pins an old stdlib).
+          # check-latest takes the newest patch of that minor instead of the runner image's cached one.
+          # Bump go.mod, the Dockerfile tag and the lint version below as ONE set (conformance/go-toolchain-coherent.sh).
+          go-version-file: go.mod
+          check-latest: true
 
       - name: Install dependencies
         id: gate-install
@@ -104,9 +108,9 @@ jobs:
 
       - name: Lint
         id: gate-lint
-        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84  # v6
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
         with:
-          version: v1.62.2   # pin the linter so green is reproducible; uses the scaffold's .golangci.yml (govet/staticcheck/errcheck/gosec)
+          version: v2.14.0   # pin the linter so green is reproducible; it must be built with a Go >= go.mod's. Uses the scaffold's .golangci.yml (govet/staticcheck/errcheck/gosec)
 
       - name: Type-check
         id: gate-type-check
@@ -227,7 +231,7 @@ jobs:
   provenance:
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write       # scoped to this push-only job (build-provenance attestation)
@@ -246,7 +250,7 @@ jobs:
   image-provenance:
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_dockerfile == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write       # push image to GHCR (scoped to this push-only job)

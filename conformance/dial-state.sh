@@ -7,7 +7,9 @@
 # (KIT_PUSH_GO), a tree whose living-document citations have decayed (KIT_PUSH_CITE, the sixth
 # dial — ruling D-240815-2d), or a gated change-set whose board row is not yet bound to the branch
 # (KIT_PUSH_PRESENCE, the board-presence leg), or whether `land`/`actuate` REFUSE a row that was never
-# metered (RUNAWAY_METERING_GATE, read from the APPROVED tree). Absence reads as OBSERVE — which is exactly right on an adopter export (first run
+# metered (RUNAWAY_METERING_GATE, read from the APPROVED tree), and which MERGE RELATIONSHIP they apply (MERGE_RELATIONSHIP, read from
+# origin's default branch; INVERTED: its absence reads the STRICTER value, team, so the kit tree locks `team` and a committed `solo` or a
+# dropped key reds). For every OTHER key absence reads as OBSERVE — which is exactly right on an adopter export (first run
 # is never red) and exactly WRONG on the kit's own tree, where it would make one deleted file a
 # silent, complete disarm of every dial this file locks. So on the kit tree the file's PRESENCE and its VALUES are
 # asserted, fail-closed: a missing file, a missing key, or a value that is not the ruled one is a
@@ -45,7 +47,29 @@ KIT_SCOPE_MODE=enforce
 RELEASE_TAG_PROVENANCE=enforce
 KIT_PUSH_CITE=enforce
 KIT_PUSH_PRESENCE=enforce
-RUNAWAY_METERING_GATE=enforce'
+RUNAWAY_METERING_GATE=enforce
+MERGE_RELATIONSHIP=team'
+
+# reason_missing / reason_mismatch <name> <want> [got] — the FAIL wording, PER KEY. Every key above but one is an
+# observe/enforce dial, where absence reads as the WEAKER value (observe) and only the exact string `enforce` enforces.
+# MERGE_RELATIONSHIP (SWAS-207b) is INVERTED: absence reads the STRICTER value (team), and the weaker value is `solo`. Telling
+# a reader that a dropped MERGE_RELATIONSHIP "reads as OBSERVE" would be false, so it gets its own sentences.
+reason_missing() {
+  case "$1" in
+    MERGE_RELATIONSHIP)
+      echo "FAIL: $CONF carries no $1 key — absent reads team (stricter); the kit tree must still declare it explicitly (want $1=$2)" ;;
+    *)
+      echo "FAIL: $CONF carries no $1 key — a dial with no entry reads as OBSERVE (want $1=$2)" ;;
+  esac
+}
+reason_mismatch() {
+  case "$1" in
+    MERGE_RELATIONSHIP)
+      echo "FAIL: $CONF has $1=$3, want $1=$2 (absent reads team (stricter); a value other than team on the kit tree is a committed relaxation of the merge bar)" ;;
+    *)
+      echo "FAIL: $CONF has $1=$3, want $1=$2 (only the exact string 'enforce' enforces; anything else observes)" ;;
+  esac
+}
 
 # dial_value <name> — the conf's value for <name>, or empty. PARSE, never source (the roster.conf
 # contract, mirrored by guard-core's kit_dial_mode reader this lock backstops).
@@ -85,10 +109,10 @@ run() {
     _name=${_req%%=*}; _want=${_req#*=}
     _got=$(dial_value "$_name")
     if [ -z "$_got" ]; then
-      echo "FAIL: $CONF carries no $_name key — a dial with no entry reads as OBSERVE (want $_name=$_want)"
+      reason_missing "$_name" "$_want"
       echo "DIAL-STATE-FAIL"
     elif [ "$_got" != "$_want" ]; then
-      echo "FAIL: $CONF has $_name=$_got, want $_name=$_want (only the exact string 'enforce' enforces; anything else observes)"
+      reason_mismatch "$_name" "$_want" "$_got"
       echo "DIAL-STATE-FAIL"
     fi
   done > "$_OUT"
@@ -97,7 +121,9 @@ run() {
   # reasons are multi-line and a count would silently mis-read.
   grep -q '^DIAL-STATE-FAIL$' "$_OUT" && rc=1
   grep -v '^DIAL-STATE-FAIL$' "$_OUT" || true
-  [ "$rc" -eq 0 ] && echo "PASS: $CONF carries the ruled dial state (KIT_PUSH_DECL=enforce, KIT_PUSH_GO=enforce, KIT_SCOPE_MODE=enforce, RELEASE_TAG_PROVENANCE=enforce, KIT_PUSH_CITE=enforce, KIT_PUSH_PRESENCE=enforce, RUNAWAY_METERING_GATE=enforce) — a committed disarm reds here; a working-tree one does not (see the ceiling in this file's header)"
+  # the key list is GENERATED from REQUIRED, so a key added there can never be missing from the PASS line
+  _keys=$(printf '%s\n' "$REQUIRED" | sed 's/$/, /' | tr -d '\n' | sed 's/, $//')
+  [ "$rc" -eq 0 ] && echo "PASS: $CONF carries the ruled dial state ($_keys) — a committed disarm reds here; a working-tree one does not (see the ceiling in this file's header)"
   return $rc
 }
 
@@ -208,6 +234,24 @@ selftest() {
   ds_expect "mutant 15: the RUNAWAY_METERING_GATE key DELETED reds" 1 "$W/gatedrop"
   ds_expect_says "the missing-gate-key reason names the absent dial" 'no RUNAWAY_METERING_GATE key' "$W/gatedrop"
 
+  # The EIGHTH key, MERGE_RELATIONSHIP (SWAS-207b; an INVERTED key: absence reads the STRICTER value, team). The kit's own
+  # tree declares `team`, so a committed `=solo` is a relaxation of the merge bar on the kit tree and a dropped key leaves the
+  # declaration implicit; both red on BOTH faces, and each reason uses the per-key wording, not the observe/enforce one.
+  DS_REL='MERGE_RELATIONSHIP=solo'
+  ds_tree "$W/relflip" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=enforce' 'KIT_PUSH_PRESENCE=enforce'
+  unset DS_REL
+  ds_expect "mutant 16: MERGE_RELATIONSHIP flipped to solo reds" 1 "$W/relflip"
+  ds_expect_says "the flipped-relationship reason names the key and both values" 'MERGE_RELATIONSHIP=solo' "$W/relflip"
+  ds_expect_says "the flipped-relationship reason says it is a committed relaxation" 'committed relaxation' "$W/relflip"
+  DS_REL=''
+  ds_tree "$W/reldrop" 'KIT_PUSH_DECL=enforce' 'KIT_PUSH_GO=enforce' 'KIT_SCOPE_MODE=enforce' 'RELEASE_TAG_PROVENANCE=enforce' 'KIT_PUSH_CITE=enforce' 'KIT_PUSH_PRESENCE=enforce'
+  unset DS_REL
+  ds_expect "mutant 17: the MERGE_RELATIONSHIP key DELETED reds" 1 "$W/reldrop"
+  ds_expect_says "the missing-relationship reason names the absent key" 'no MERGE_RELATIONSHIP key' "$W/reldrop"
+  ds_expect_says "the missing-relationship reason says absence reads team, not observe" 'absent reads team' "$W/reldrop"
+  ds_expect_lacks "the relationship reasons do not borrow the observe wording (it would call the weaker value the default)" 'OBSERVE' "$W/reldrop"
+  ds_expect_lacks "the flipped-relationship reason does not borrow the enforce wording" "only the exact string 'enforce'" "$W/relflip"
+
   # Scope: an adopter-shaped tree (no kit markers, no conf) is N/A — and the N/A is DISCLOSED.
   ds_natree "$W/adopter"
   ds_expect "an adopter-shaped tree (no kit markers, no conf) is N/A rc 0" 0 "$W/adopter"
@@ -219,7 +263,7 @@ selftest() {
   ds_expect "one kit marker + no conf still REDs (the guard is not always-N/A)" 1 "$W/onemarker"
 
   rm -rf "$W"
-  [ "$sfail" -eq 0 ] && { echo "dial-state --selftest: OK (anchor + 16 value/presence/symlink mutants + reason-text + scope both ways)"; return 0; }
+  [ "$sfail" -eq 0 ] && { echo "dial-state --selftest: OK (anchor + 18 value/presence/symlink mutants + reason-text + scope both ways)"; return 0; }
   echo "dial-state --selftest: FAIL"; return 1
 }
 
@@ -231,7 +275,8 @@ ds_tree() { # <dir> <conf-line>... — a KIT-MARKED tree carrying .kit/dials.con
   _d=$1; shift
   # the ruled RUNAWAY_METERING_GATE line rides along by default; a leg overrides it through DS_GATE
   # (set to a flipped value, or to '' for the DROP mutant — an empty string adds a blank line, no key).
-  printf '%s\n' "$@" "${DS_GATE-RUNAWAY_METERING_GATE=enforce}" > "$_d/.kit/dials.conf"
+  # likewise the ruled MERGE_RELATIONSHIP line (DS_REL), the INVERTED key: the kit tree declares `team`.
+  printf '%s\n' "$@" "${DS_GATE-RUNAWAY_METERING_GATE=enforce}" "${DS_REL-MERGE_RELATIONSHIP=team}" > "$_d/.kit/dials.conf"
 }
 ds_natree() { # <dir> — an adopter-shaped tree: no kit markers, no conf
   mkdir -p "$1"
@@ -245,6 +290,12 @@ ds_expect_says() { # <label> <needle> <dir>
   _out=$( cd "$3" && sh "$_self" 2>&1 ) || :
   if printf '%s' "$_out" | grep -qF -- "$2"; then echo "PASS: selftest — $1"
   else echo "FAIL: selftest — $1 (missing '$2')"; echo "  got: $_out"; sfail=1; fi
+}
+
+ds_expect_lacks() { # <label> <needle> <dir> — the output must NOT carry <needle>
+  _out=$( cd "$3" && sh "$_self" 2>&1 ) || :
+  if printf '%s' "$_out" | grep -qF -- "$2"; then echo "FAIL: selftest — $1 (found '$2')"; echo "  got: $_out"; sfail=1
+  else echo "PASS: selftest — $1"; fi
 }
 
 # ---------------------------------------------------------------------------- dispatch

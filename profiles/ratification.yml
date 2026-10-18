@@ -1,6 +1,6 @@
 # Reference RATIFICATION workflow — the DEVELOPMENT-PROCESS.md §13 separation-of-duties gate, alone.
 # THE SINGLE, STACK-NEUTRAL SOURCE. This gate runs only conformance/agent-boundary.sh +
-# promotion-readiness.sh on ubuntu-latest — no toolchain step — so it is IDENTICAL for every stack and
+# promotion-readiness.sh on ubuntu-24.04 — no toolchain step — so it is IDENTICAL for every stack and
 # lives here once (profiles/ratification.yml — a shared, non-stack asset, like profiles/_TEMPLATE.md),
 # NOT once per profile. scripts/incept.sh installs it for EVERY stack, unconditionally;
 # conformance/ratification-parity.sh locks that it stays the sole, wired, stack-neutral copy. (It was
@@ -73,7 +73,7 @@ jobs:
     #
     # ⚠️ THE JOB KEY IS THE REQUIRED STATUS CONTEXT. It must stay exactly `control-plane-ratification`;
     # renaming it unbinds the gate from branch protection without any error anywhere.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # ⚠️ THERE IS NO JOB-LEVEL `if:` HERE, AND ITS ABSENCE IS A CONTROL. DO NOT ADD ONE.
     #
     # A SKIPPED JOB IS A MISSING REQUIRED VERDICT. The job key IS the required status context, so when a

@@ -29,10 +29,10 @@ CI if a `curl … | sh` pipe returns or a `sha256sum -c` verify goes missing.
 > its verification — class 1 covers it. Class 2 is the GitLab path, which installs by hand.
 
 ### 3. Runner-provided tools (`jq` · `gh` · `shellcheck` · `git` · POSIX text tools)
-The kit's own gates run on `ubuntu-latest` and rely on its preinstalled tools (`jq` is a hard
+The kit's own gates run on `ubuntu-24.04` and rely on its preinstalled tools (`jq` is a hard
 dependency of `agent-autonomy.sh`; `gh` drives the ratification gate; `shellcheck` lints; `git`/`grep`/
 `sed`/`awk` are used throughout). These are **not** version-pinned: pinning an apt package across
-`ubuntu-latest` image revisions is brittle, and the tools' integrity ultimately roots in the **base
+`ubuntu-24.04` image revisions is brittle, and the tools' integrity ultimately roots in the **base
 runner image**, which is **platform-owned** (GitHub-hosted runners) — outside what the kit can verify.
 
 ## The honest ceiling

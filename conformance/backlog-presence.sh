@@ -550,7 +550,7 @@ check_pr() {
     # (or a future edit that drops the cd) would silently read "validator absent" and treat every
     # waiver as missing. backlog-current.sh already resolved it this way; now both do.
     not_enforced_notice "$_tok" "$_dir" "$(dirname "$0")/waivers-valid.sh" \
-      "$(tracker_delegated_cure)" \
+      "$(tracker_delegated_cure "$_tok")" \
       || _bp_ne=$?
     return "$_bp_ne"
   fi
@@ -933,8 +933,34 @@ NODONE_EOF
   # is replaced by the real cure — bind the trusted job as a required context — alongside the two
   # cures that were always there (move the board to BACKLOG.md; ratify a waiver).
   d="$base/cp_nonmd_jira"
-  assert_msg "Cure: bind the trusted job as a required context: add tracker-board-gates to REQUIRED-CHECKS.md, then run sh scripts/branch-protection-apply.sh --replace on an unprotected main (first time), --apply once it is protected — or move the board to BACKLOG.md, or ratify a board-governance waiver" 3 \
-    "cp/non-md-cure: the NOT ENFORCED verdict names the real cure (bind tracker-board-gates), plus the other two" "$d" 280 "$cfg"
+  # SWAS-203: the cure is backend-aware. On jira it is the bind FIRST (--replace for a first bind),
+  # then the waiver where branch protection cannot be set (a free-plan private repository) or cannot
+  # be read, with the signer fact, then BACKLOG.md; and jira is never told "no kit adapter".
+  assert_msg "Cure: bind the trusted job (it needs a valid .kit/tracker.conf on main)" 3 \
+    "cp/non-md-cure: the jira verdict leads with the bind (SWAS-203)" "$d" 280 "$cfg"
+  assert_msg "sh scripts/branch-protection-apply.sh --replace" 3 \
+    "cp/non-md-cure-replace: the jira bind names --replace for a first bind" "$d" 280 "$cfg"
+  assert_msg "a free-plan private repository" 3 \
+    "cp/non-md-cure-free: the jira waiver clause names the free-plan private repository" "$d" 280 "$cfg"
+  assert_msg "one person may sign both" 3 \
+    "cp/non-md-cure-signer: the jira waiver clause says one person may sign both cells" "$d" 280 "$cfg"
+  assert_msg "or move the board to BACKLOG.md" 3 \
+    "cp/non-md-cure-md: the jira cure ends on BACKLOG.md" "$d" 280 "$cfg"
+  assert_msg "the owner (a human, never an agent)" 3 \
+    "cp/non-md-cure-actor: the jira cure names the owner (a human, never an agent) as the waiver ratifier" "$d" 280 "$cfg"
+  assert_msg_absent "no kit adapter" 3 \
+    "cp/non-md-cure-neg: jira is NEVER told there is no kit adapter" "$d" 280 "$cfg"
+  # …and an adapterless backend is told the opposite: no adapter, the waiver, BACKLOG.md, and never
+  # the bind (a github adopter cannot have the trusted job).
+  d="$base/cp_nonmd_github"
+  assert_msg "no kit adapter reads 'github' yet" 3 \
+    "cp/non-md-adapterless-cure: github names the missing adapter" "$d" 280 "$cfg"
+  assert_msg "the owner (a human, never an agent) ratifies a board-governance waiver, or move the board to BACKLOG.md" 3 \
+    "cp/non-md-adapterless-ladder: github's ladder is the waiver or BACKLOG.md" "$d" 280 "$cfg"
+  assert_msg_absent "tracker-board-gates" 3 \
+    "cp/non-md-adapterless-neg: github is NEVER told to bind tracker-board-gates" "$d" 280 "$cfg"
+  assert_msg_absent "TRACKER-BACKED-GOVERNANCE" 3 \
+    "cp/non-md-adapterless-neg2: github is NEVER pointed at a card id" "$d" 280 "$cfg"
 
   # gated + a non-md backend + a RATIFIED, filled, unexpired board-governance waiver -> rc 0, and
   # the notice still says NOT ENFORCED (the exception is never invisible; §3.5a).
@@ -993,7 +1019,7 @@ NODONE_EOF
   # real cure (bind the trusted job), not the stale "when it ships" remedy.
   _btlive_missing="$base/t1_live_missing.txt"; printf 'ci\nbacklog-presence\n' > "$_btlive_missing"
   d="$base/t1_not_live"; _proj_backend "$d" jira
-  assert_msg_ctx "Cure: bind the trusted job as a required context" 3 \
+  assert_msg_ctx "Cure: bind the trusted job (it needs a valid .kit/tracker.conf on main)" 3 \
     "delegate/not-live: tracker-board-gates absent from the live-contexts file -> rc 3, cure names the bind" "$d" 280 "$cfg" "$_btb" "$_btlive_missing"
 
   # (e) --live-contexts points at an absent file -> rc 3.
@@ -1802,6 +1828,23 @@ assert_msg() {
     echo "selftest PASS: $3"
   else
     echo "selftest FAIL: $3 (check_pr rc=$_rc wanted $2; out='$_out', wanted to contain '$1')"; st_fail=1
+  fi
+}
+# assert_msg_absent <forbidden-substring> <expected-rc> <label> <dir> <pr> <changed-file> : the same
+# drive as assert_msg, but the verdict must NOT carry the substring (and the rc must match). The
+# negative half of a wording contract: a cure that says the right thing AND the wrong thing passes
+# every positive assertion.
+assert_msg_absent() {
+  if _out=$(check_pr "$4" "$5" "$6" 2>&1); then _rc=0; else _rc=$?; fi
+  _ok=1
+  case "$_out" in
+    *"$1"*) _ok=0 ;;
+  esac
+  [ "$_rc" -eq "$2" ] || _ok=0
+  if [ "$_ok" = 1 ]; then
+    echo "selftest PASS: $3"
+  else
+    echo "selftest FAIL: $3 (check_pr rc=$_rc wanted $2; out='$_out', must NOT contain '$1')"; st_fail=1
   fi
 }
 # assert_msg_ctx <expected-substring> <expected-rc> <label> <dir> <pr> <changed-file> <base-dir>

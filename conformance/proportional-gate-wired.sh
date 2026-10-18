@@ -3385,22 +3385,22 @@ EOF
     # for lines that are not PASS, a line off the card grammar is never echoed (S-6), and a
     # reach-here FAIL adds the runner cure and the click path. Text-presence proves the shape; the
     # run proves the step behaves.
-    _pf_runs_on="    runs-on: \${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }}"
+    _pf_runs_on="    runs-on: \${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-24.04' }}"
     for _pf_job in tracker-board-gates tracker-board-drift; do
       if _tj_job_block "$_tj_atg" "$_pf_job" | grep -qxF "$_pf_runs_on"; then
-        echo "PASS: TPF/runs-on: $_pf_job takes its runner from vars.KIT_TRACKER_RUNNER (default ubuntu-latest)"
+        echo "PASS: TPF/runs-on: $_pf_job takes its runner from vars.KIT_TRACKER_RUNNER (default ubuntu-24.04)"
       else
-        echo "FAIL: TPF/runs-on: $_pf_job does not use runs-on: \${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-latest' }} — an adopter behind an IP allowlist has no runner knob"; st=1
+        echo "FAIL: TPF/runs-on: $_pf_job does not use runs-on: \${{ vars.KIT_TRACKER_RUNNER || 'ubuntu-24.04' }} — an adopter behind an IP allowlist has no runner knob"; st=1
       fi
     done
     _pf_priv=$(mktemp -d "$d/pf.XXXXXX")
-    sed "s/vars.KIT_TRACKER_RUNNER || 'ubuntu-latest'/'ubuntu-latest'/" "$_tj_atg" > "$_pf_priv/m-runs-on.yml"
+    sed "s/vars.KIT_TRACKER_RUNNER || 'ubuntu-24.04'/'ubuntu-24.04'/" "$_tj_atg" > "$_pf_priv/m-runs-on.yml"
     if cmp -s "$_pf_priv/m-runs-on.yml" "$_tj_atg"; then
       echo "FAIL: TPF/runs-on mutant setup — the planted copy did not differ from its source"; st=1
     elif _tj_job_block "$_pf_priv/m-runs-on.yml" tracker-board-drift | grep -qxF "$_pf_runs_on"; then
-      echo "FAIL: TPF/runs-on mutant (hard-coded ubuntu-latest) was not caught"; st=1
+      echo "FAIL: TPF/runs-on mutant (hard-coded ubuntu-24.04) was not caught"; st=1
     else
-      echo "PASS: TPF/runs-on mutant (hard-coded ubuntu-latest) is caught"
+      echo "PASS: TPF/runs-on mutant (hard-coded ubuntu-24.04) is caught"
     fi
 
     _pf_marker='Preflight from this runner'

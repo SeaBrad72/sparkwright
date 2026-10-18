@@ -57,7 +57,7 @@ permissions:
   contents: read
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -164,7 +164,7 @@ jobs:
   provenance:
     needs: ci
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write       # scoped to this push-only job (build-provenance attestation)

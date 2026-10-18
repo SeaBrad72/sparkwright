@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -212,7 +212,7 @@ jobs:
     # needs.ci.outputs.has_build mirrors the Upload-build-artifact guard above — no build target,
     # no artifact was uploaded, so this job would fail downloading a nonexistent 'build-artifact'.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.ci.outputs.has_build == 'true' && (github.event.repository.private == false || github.event.repository.owner.type == 'Organization')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write       # scoped to this push-only job (build-provenance attestation)

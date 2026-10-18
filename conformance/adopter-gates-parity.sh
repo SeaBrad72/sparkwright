@@ -638,6 +638,42 @@ STUB
   return "$_fs"
 }
 
+# _nt_check_text <yml> <what> <text> — SWAS-203: one rc 3 text (the head, or the annotation `_msg`) of
+# the backlog-presence job must carry the neutral short form: the waiver and BACKLOG.md as ways out,
+# and neither a card id named as a cure nor "when it ships" (TRACKER-BACKED-GOVERNANCE has shipped).
+_nt_check_text() {  # <yml> <what> <text>
+  _ntc=0
+  [ -n "$3" ] || { echo "FAIL: $1's backlog-presence job has no rc 3 $2 line — the NOT ENFORCED text is unreadable, so its cure cannot be graded (SWAS-203)"; return 1; }
+  printf '%s' "$3" | grep -qF 'board-governance waiver' \
+    || { echo "FAIL: $1's backlog-presence rc 3 $2 does not name the board-governance waiver — a one-account adopter is shown no cure they can perform (SWAS-203)"; _ntc=1; }
+  printf '%s' "$3" | grep -qF 'BACKLOG.md' \
+    || { echo "FAIL: $1's backlog-presence rc 3 $2 does not name BACKLOG.md as a way out (SWAS-203)"; _ntc=1; }
+  if printf '%s' "$3" | grep -qF 'when it ships'; then
+    echo "FAIL: $1's backlog-presence rc 3 $2 says 'when it ships' — the tracker-backed seam has shipped (SWAS-203)"; _ntc=1
+  fi
+  if printf '%s' "$3" | grep -qF 'TRACKER-BACKED-GOVERNANCE'; then
+    echo "FAIL: $1's backlog-presence rc 3 $2 names the card id TRACKER-BACKED-GOVERNANCE as a cure (SWAS-203)"; _ntc=1
+  fi
+  return "$_ntc"
+}
+
+# assert_notenforced_text <yml> — SWAS-203 (cell d): the backlog-presence job's rc 3 `head` and
+# annotation `_msg` carry the neutral short form. The workflow cannot see the backend, so it must not
+# carry a backend-specific cure; the full backend-aware cure is the gate's own verdict line below it.
+# Read from the job's OWN block, comment-stripped, so a comment cannot satisfy it.
+assert_notenforced_text() {  # <yml>
+  _nt=0
+  _nttmp=$(mktemp)
+  _extract_job_block "$1" "backlog-presence" "$_nttmp"
+  _ntcode=$(grep -v '^[[:space:]]*#' "$_nttmp") || _ntcode=""
+  _nthead=$(printf '%s\n' "$_ntcode" | grep -F '3) head=') || _nthead=""
+  _ntmsg=$(printf '%s\n' "$_ntcode" | awk '/3\) _title=/ { f=1; next } f && /_msg=/ { print; exit }') || _ntmsg=""
+  rm -f "$_nttmp"
+  _nt_check_text "$1" "head" "$_nthead" || _nt=1
+  _nt_check_text "$1" "_msg" "$_ntmsg" || _nt=1
+  return "$_nt"
+}
+
 # ---- the run --------------------------------------------------------------------------------------
 run() {
   if is_adopter_tree; then
@@ -666,9 +702,14 @@ run() {
     assert_t2_loop_state_token_scoped "$SRC" || fail=1
     assert_t2_loop_state_skew_guard "$SRC" || fail=1
     assert_fetch_survives_404 "$SRC" || fail=1
+    assert_notenforced_text "$SRC" || fail=1
   else
     echo "FAIL: the single source $SRC is MISSING — no stack would get the board/loop gates"
     fail=1
+  fi
+  # The kit's own ci.yml carries the same job (the kit's board is Jira too); its rc 3 text drifted once.
+  if [ -f "$CI_WF" ]; then
+    assert_notenforced_text "$CI_WF" || fail=1
   fi
   assert_single_source profiles      || fail=1
   assert_incept_universal "$INCEPT"  || fail=1
@@ -1491,6 +1532,71 @@ selftest() {
     fi
   else
     echo "SKIP: selftest case10 — $SRC or bash missing (not a pass)"
+  fi
+
+  # 11. SWAS-203 (cell d) — the rc 3 head and `_msg` of the backlog-presence job carry the neutral
+  #     short form. The positive anchors are the two REAL files (so an unfixed tree is RED here, not
+  #     only in the run); the negatives are mutants of a clean fixture, each flipping ONE property.
+  mk_nt_fixture() {  # <path> <head-text> <msg-text>
+    {
+      printf 'jobs:\n  backlog-presence:\n    steps:\n      - run: |\n'
+      printf '          case "$rc" in\n            3) head="%s" ;;\n          esac\n' "$2"
+      printf '          case "$rc" in\n            3) _title=%st%s\n               _msg=%s%s%s ;;\n          esac\n' "'" "'" "'" "$3" "'"
+      printf '  next-job:\n    steps:\n      - run: echo "3) head=elsewhere with a board-governance waiver and BACKLOG.md"\n'
+    } > "$1"
+  }
+  _nt_good_head='NOT ENFORCED. Bind tracker-board-gates (jira), or ratify a board-governance waiver, or move the board to BACKLOG.md. The verdict line below carries the cure for your backend.'
+  _nt_good_msg='NOT ENFORCED: bind tracker-board-gates (jira) or ratify a board-governance waiver or move the board to BACKLOG.md. The verdict line in the log has the cure for your backend.'
+  mk_nt_fixture "$base/nt_clean.yml" "$_nt_good_head" "$_nt_good_msg"
+  if assert_notenforced_text "$base/nt_clean.yml" >/dev/null 2>&1; then
+    echo "OK: a neutral-short-form rc 3 head and _msg -> PASS (assert_notenforced_text)"
+  else
+    echo "FAIL: selftest case11 — the clean neutral-short-form fixture was rejected"; st=1
+  fi
+  for _nt_file in "$SRC" "$CI_WF"; do
+    [ -f "$_nt_file" ] || continue
+    if assert_notenforced_text "$_nt_file" >/dev/null 2>&1; then
+      echo "OK: $_nt_file's rc 3 head and _msg carry the neutral short form"
+    else
+      echo "FAIL: selftest case11 — $_nt_file's rc 3 head or _msg does not carry the neutral short form (SWAS-203)"; st=1
+    fi
+  done
+  # 11a. the stale head ("adopt TRACKER-BACKED-GOVERNANCE when it ships") -> RED.
+  mk_nt_fixture "$base/nt_stale_head.yml" "NOT ENFORCED: adopt TRACKER-BACKED-GOVERNANCE when it ships, move the board to BACKLOG.md, or ratify a board-governance waiver." "$_nt_good_msg"
+  if assert_notenforced_text "$base/nt_stale_head.yml" >/dev/null 2>&1; then
+    echo "FAIL: selftest case11a — a head naming the card id and 'when it ships' passed"; st=1
+  else
+    echo "OK: a stale rc 3 head -> RED (the head leg is load-bearing)"
+  fi
+  # 11b. the stale annotation `_msg` -> RED (a leg on the head alone cannot see this).
+  mk_nt_fixture "$base/nt_stale_msg.yml" "$_nt_good_head" "NOT ENFORCED: adopt TRACKER-BACKED-GOVERNANCE move the board to BACKLOG.md or ratify a board-governance waiver."
+  if assert_notenforced_text "$base/nt_stale_msg.yml" >/dev/null 2>&1; then
+    echo "FAIL: selftest case11b — an _msg naming the card id passed"; st=1
+  else
+    echo "OK: a stale rc 3 _msg -> RED (the _msg leg is load-bearing)"
+  fi
+  # 11c. no waiver named -> RED; 11d. no BACKLOG.md named -> RED.
+  mk_nt_fixture "$base/nt_nowaiver.yml" "NOT ENFORCED. Bind tracker-board-gates, or move the board to BACKLOG.md." "$_nt_good_msg"
+  if assert_notenforced_text "$base/nt_nowaiver.yml" >/dev/null 2>&1; then
+    echo "FAIL: selftest case11c — a head with no board-governance waiver passed"; st=1
+  else
+    echo "OK: a head that omits the waiver -> RED"
+  fi
+  mk_nt_fixture "$base/nt_nomd.yml" "NOT ENFORCED. Bind tracker-board-gates, or ratify a board-governance waiver." "$_nt_good_msg"
+  if assert_notenforced_text "$base/nt_nomd.yml" >/dev/null 2>&1; then
+    echo "FAIL: selftest case11d — a head with no BACKLOG.md passed"; st=1
+  else
+    echo "OK: a head that omits BACKLOG.md -> RED"
+  fi
+  # 11e. scoping: the lines sit in ANOTHER job only (the backlog-presence block has none) -> RED.
+  {
+    printf 'jobs:\n  backlog-presence:\n    steps:\n      - run: echo nothing\n'
+    printf '  next-job:\n    steps:\n      - run: |\n          case "$rc" in\n            3) head="%s" ;;\n          esac\n' "$_nt_good_head"
+  } > "$base/nt_other_job.yml"
+  if assert_notenforced_text "$base/nt_other_job.yml" >/dev/null 2>&1; then
+    echo "FAIL: selftest case11e — a neutral head living in a DIFFERENT job satisfied the backlog-presence check"; st=1
+  else
+    echo "OK: the rc 3 text is read from the backlog-presence job's own block only"
   fi
 
   if [ "$st" = 0 ]; then echo "adopter-gates-parity --selftest: OK (all cases witnessed)"; else echo "adopter-gates-parity --selftest: FAIL"; fi
