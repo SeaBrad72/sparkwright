@@ -46,6 +46,7 @@ A team on Python deletes the Node workflow, writes their own, and stays conforma
 2. Bump `VERSION`; add a dated `CHANGELOG.md` entry under the new version; run `sh conformance/conformance-mass-budget.sh` at the release commit and append the `next-baseline:` line it prints (the text after the label) to `conformance/mass-release-baseline.txt`.
    - **Claim-verb discipline:** "proven"/"PROVEN" in CHANGELOG and README are scoped to the reference implementation unless the entry explicitly states broader coverage. A headline verb must not out-claim its own body.
 3. Merge to `main`; tag `vX.Y.Z`; the tag is the release.
+   - **`kit-current` on a scratch adopter tree is not performed by agents** (the guard refuses `incept` in a clone); a CI leg on the published tree is its own card.
 
 ### 3·cadence — publishing to the public mirror (milestone-gated, ratified 2026-07-23)
 
@@ -67,21 +68,21 @@ milestone-gated act** — you do NOT publish per slice.
 
 ### 3a. Authoring a control-plane change (the dev-clone)
 
-Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits. They are authored in a **dev-clone** — `git clone . <literal temp path>` — where the agent edits directly while **the guard stays armed on the real repo**, and they are dual-reviewed. What the human ratifies is a **CI-green diff**, not a script whose writes they must predict. Three disciplines, each learned from a real incident:
+Control-plane edits (guard, CI, conformance, claims, agent/skill defs, governance markers, `.gitattributes`) never land as silent agent commits. They are authored in a **dev-clone** — a `git clone` of the **forge URL** into a literal temp path, never `git clone .` (recipe: `docs/operations/runtime-guards.md`, the dev clone) — where the agent edits directly while **the guard stays armed on the real repo**, and they are dual-reviewed. What the human ratifies is a **CI-green diff**, not a script whose writes they must predict. Three disciplines, each learned from a real incident:
 
 - **Fold version finishing into the slice.** The `VERSION` bump + README badge + `CHANGELOG` entry land in the slice's own commits — never a follow-up — so the release step cannot be skipped.
 - **Never `KIT_GUARD_SELFEDIT`.** It is a **global kill switch**, not a scalpel: it disarms the destructive-op and secret-read denials too, for the whole session. The dev-clone is the sanctioned route *because* it leaves the guard armed. (Its honest limit: the clone relaxes `Edit`/`Write` only — `sed`/`cp`/`rm` against control-plane paths stay denied even inside it.)
-- **Prove in the clone, then prove the artifact — and don't mistake the clone for CI.** Run the gate in the dev-clone before asking for the GO, but remember: a `git clone .` is **not** a faithful CI simulation (it carries tags `actions/checkout` does not — see `skills/verification/SKILL.md`, dry-run parity), and local "conformance + shellcheck green" is TRUE and INSUFFICIENT — the emitted artifact is a larger surface (CI's SAST on the *artifact* has caught what a local run structurally could not).
+- **Prove in the clone, then prove the artifact — and don't mistake the clone for CI.** Run the gate in the dev-clone before asking for the GO, but remember: a local clone is **not** a faithful CI simulation (it carries tags `actions/checkout` does not — see `skills/verification/SKILL.md`, dry-run parity), and local "conformance + shellcheck green" is TRUE and INSUFFICIENT — the emitted artifact is a larger surface (CI's SAST on the *artifact* has caught what a local run structurally could not).
 
 ## 4. Contributing back (the closed loop, applied to the kit)
 
-The kit is improved by the teams using it. When a downstream team's **L3 process retro** (`DEVELOPMENT-PROCESS.md` §8) surfaces a kit-level improvement — a clearer standard, a better reference impl, a missing conformance check — it does **not** stop at the local copy:
+The kit flows out to its adopters; nothing is asked back. When a downstream team's **L3 process retro** (`DEVELOPMENT-PROCESS.md` §8) surfaces a kit-level improvement — a clearer standard, a better reference impl, a missing conformance check — it lands in **that project's own backlog**, where its owner ratifies or declines it.
 
-1. The team opens a **PR against the canonical kit** describing the improvement and the retro that motivated it.
-2. **Agents propose, humans ratify** — the kit's standing rule. A human maintainer reviews and accepts/declines.
-3. Accepted changes ship in the next release and flow to every adopter via §2.
+1. **Agents propose, humans ratify** — the kit's standing rule applies in every adopting project.
+2. A team that *chooses* to share an improvement may contribute it to the canonical kit; that is optional and opt-in, never a default step of the loop.
+3. Accepted kit changes ship in the next release and flow to every adopter via §2.
 
-This is what makes the kit *self-iterating*: the MD files, scripts, and reference impls are all subject to the same retrospective-and-refactor loop the kit prescribes for product code. A retro that changes nothing is theater — here, kit-level learning lands upstream.
+The MD files, scripts, and reference impls are all subject to the same retrospective-and-refactor loop the kit prescribes for product code. A retro that changes nothing is theater — so each project routes its own kit-level learning into its own backlog.
 
 ## 5. The kit dogfoods its own loop
 

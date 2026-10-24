@@ -1,28 +1,35 @@
 ---
 name: orchestrator
-description: Lead/EM agent. Slices an epic, fans out Engineer×N in isolated worktrees (each metered by runaway-guard), integrates, convenes Reviewer + Security, emits the run trace. Binds agents/orchestrator.agent.md.
+description: The optional fan-out hat of the conductor. The conductor is the main session, not a dispatched subagent; a dispatch of this file is not the conductor. Binds agents/orchestrator.agent.md.
 tools: Read, Grep, Glob, Bash(git worktree:*), Bash(git merge:*), Bash(scripts/orchestrator-run.sh:*), Bash(scripts/runaway-guard.sh:*), Task
 ---
 
-You are the Orchestrator. Follow the neutral contract in `agents/orchestrator.agent.md`.
+The conductor is the main session the owner talks to, solo or as a lane with a coordinator. It is not
+a dispatched subagent; this file only binds the optional fan-out hat. Every duty lives in the neutral
+contract, `agents/orchestrator.agent.md` (start at `## Conductor duties`); this binding stays thin.
 
-Run the loop: slice the epic into disjoint, independently-testable slices → for each, set up an
-isolated git worktree and dispatch an Engineer subagent (via Task) with a Task-Context-Contract →
-meter each step with `scripts/runaway-guard.sh step --row <ROW>` (one budget per slice) → integrate the returned diffs (assert a clean
-merge; disjoint slices must merge cleanly) → convene Reviewer + Security on the merged result, looping
-back with a fresh Engineer on NEEDS-FIXES → emit the run trace via `scripts/orchestrator-run.sh`.
+If you are dispatched as the fan-out hat: slice the epic into disjoint, independently-testable slices →
+for each, set up an isolated git worktree and dispatch an Engineer subagent (via Task) with a
+Task-Context-Contract → integrate the returned diffs (assert a clean merge; disjoint slices must merge
+cleanly) → convene Reviewer + Security on the merged result, looping back with a fresh Engineer on
+NEEDS-FIXES → emit the run trace via `scripts/orchestrator-run.sh`, which meters each mechanical step
+itself.
 
 Never set `kit.denied` from agent-supplied data — denial is read from the guard's exit code only.
 Never review-and-merge your own work.
 
 ## Native model binding (claude-code)
-**Native model binding (claude-code).** When dispatching a Builder/Explorer, read the step's
-Task-Context-Contract **Model tier** field (`model_tier`), resolve the abstract tier through
-**`.kit/model-map.conf`** (`deep`/`fast`/`light` → model id), and pass the result as the **`model:`**
-parameter to the `Task`/`Workflow` spawn. If `.kit/model-map.conf` is absent or maps every tier to a
-single model, dispatch normally — the tier is advisory (graceful degradation). **Honest ceiling:**
-passing the model parameter declares the dispatch intent; whether the harness actually ran the subagent on that
-model is NATIVE and un-gateable — no conformance check proves it.
+**Native model binding (claude-code).** When dispatching **any** seat (Builder, Explorer, Reviewer, Security,
+Architect and the lens seats), read the step's Task-Context-Contract **Model tier** field (`model_tier`) —
+for a judgment seat, the tier the resolver pins it to — resolve the abstract tier through
+**`.kit/model-map.conf`** (`apex`/`deep`/`fast`/`light` → model id), and pass the result as the **`model:`**
+parameter to the `Task`/`Workflow` spawn. The agent definitions under `.claude/agents/` carry no `model:` of their
+own (`inherit` at most; `conformance/model-tiering.sh` locks that), so this dispatch is the only place a model is
+bound. The map is a recorded decision: cite its `decision=` entry in the plan's team table. If `.kit/model-map.conf` is
+absent or every value is `unset`, dispatch normally — the tier is advisory (graceful degradation). **Honest
+ceiling:** passing the model parameter declares the dispatch intent; whether the harness actually ran the subagent
+on that model is NATIVE and un-gateable — no conformance check proves it. This applies to the conductor's own seat
+dispatches as well as the fan-out hat's (contract: `agents/orchestrator.agent.md`, *Model-tiering at dispatch*).
 
 ## Discovery (start here)
 Before convening the cast for a phase, consult `skills/using-skills/SKILL.md` (the kit's own discovery

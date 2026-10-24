@@ -87,6 +87,121 @@ set -eu
 # over-narrow matcher like mcp__server__.* or mcp__.*__action admits one but not the other -> FAIL.
 MUTATING_TOOLS='Bash Write Edit NotebookEdit mcp__alpha__read mcp__beta__write'
 
+# The ONE canonical fail-closed hook command (SWAS-316; docs/architecture/2026-10-18-guard-not-loaded-outside-root-design.md
+# section 3.1 (a)). A readability test, then a blanket test on the exit code: when guard.sh cannot run (missing, unreadable,
+# killed, or this shell's own 126/127) the call is BLOCKED with a stop line (exit 2) instead of proceeding, because a hook
+# exit other than 0 or 2 is a non-blocking error. It must equal the shipped .claude/settings.json value and both brownfield
+# fences, byte for byte. Single quotes inside it are spelled '\'' here. A change to it is a change to every shipped copy.
+GW_CANON='[ -r "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh" ] && sh "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh" || { rc=$?; [ "$rc" = 2 ] || printf '\''%s\n'\'' "agent-guard: the guard hook did not return a decision (rc $rc) - blocked; stop and tell the human (usual cause: the session was not started in the repository root; see docs/operations/runtime-guards.md, Is the guard loaded?)" >&2; exit 2; }'
+
+# _gw_canon_leg <project-dir> -> every PreToolUse hook command that runs guard.sh must equal GW_CANON. On the kit's own
+# tree a gap is a FAIL (returns 1); on an adopter tree it is a loud WARN that prints the one-line hunk to apply (a FAIL would
+# red every adopter at upgrade; the WARN repeats on every run until the hunk lands). Needs jq (the caller has confirmed it).
+_gw_canon_leg() {
+  _cl_s="$1/.claude/settings.json"
+  _cl_bad=$(jq -r --arg c "$GW_CANON" '[.hooks.PreToolUse[]?.hooks[]? | (.command // "") | select(test("guard\\.sh")) | select(. != $c)] | length' "$_cl_s" 2>/dev/null) || _cl_bad=1
+  case "$_cl_bad" in
+    0) echo "PASS: every guard hook command is the canonical fail-closed command (a guard that cannot run blocks the call)"; return 0 ;;
+  esac
+  _cl_hunk=$(jq -n --arg c "$GW_CANON" '$c')
+  if _gw_kitsource "$1"; then
+    printf '%s\n' "FAIL: a PreToolUse hook command running guard.sh is not the canonical fail-closed command - when guard.sh cannot run, the tool call would PROCEED unguarded. Set it to: \"command\": $_cl_hunk"
+    return 1
+  fi
+  printf '%s\n' "WARN: a PreToolUse hook command running guard.sh is not the canonical fail-closed command, so when guard.sh cannot run the tool call PROCEEDS unguarded (a SECURITY fix; see CHANGELOG.md). Apply this one line in $_cl_s, replacing the guard hook's \"command\" value:"
+  printf '%s\n' "  \"command\": $_cl_hunk"
+  return 0
+}
+
+# _gw_say <file> <fixed string> <what> -> 0 iff <file> carries the fixed string; else prints one FAIL line and returns 1.
+_gw_say() {
+  grep -qF -- "$2" "$1" 2>/dev/null && return 0
+  printf '%s\n' "FAIL: $1 lacks $3"
+  return 1
+}
+
+# _gw_dayone_text_leg <project-dir> -> GNL-D1, D2, D3 and D5 on the kit's own tree: the day-one text for the launch
+# directory exists where a person or an agent reads it first. The wording is the contract, so each piece is a fixed
+# string. Adopter: N/A (the files are the kit's own, and an adopter's CLAUDE.md is theirs).
+_gw_dayone_text_leg() {
+  _gw_kitsource "$1" || { echo "N/A: day-one launch-directory text lock - not a kit-source tree"; return 0; }
+  _dn_f=0
+  _dn_root="Start the session in this repository's root, not a parent or a subfolder"
+  for _dn_c in CLAUDE.md AGENTS.md templates/PROJECT-CLAUDE-TEMPLATE.md; do
+    _gw_say "$1/$_dn_c" "$_dn_root" "the section 1 launch-directory sentence (GNL-D1)" || _dn_f=1
+  done
+  for _dn_p in 'Start your agent session in the project root' 'subfolder' '/hooks' 'Setting sources'; do
+    _gw_say "$1/START-HERE.md" "$_dn_p" "the launch-directory box: '$_dn_p' (GNL-D2)" || _dn_f=1
+  done
+  _dn_rg="$1/docs/operations/runtime-guards.md"
+  _gw_say "$_dn_rg" '### Is the guard loaded? (the launch directory)' "the heading 'Is the guard loaded? (the launch directory)' (GNL-D3)" || _dn_f=1
+  if grep -qF -- 'that is held by `guard-wired.sh` and the control-plane write deny' "$_dn_rg" 2>/dev/null; then
+    printf '%s\n' "FAIL: $_dn_rg again claims a deleted or unrunnable guard.sh is held by guard-wired.sh and the write deny, which is false for a launch outside the root (GNL-D3)"; _dn_f=1
+  fi
+  _dn_pb="$1/docs/enterprise/platform-safety-boundary.md"
+  _gw_say "$_dn_pb" 'allowManagedHooksOnly' "the managed-settings option allowManagedHooksOnly (GNL-D3)" || _dn_f=1
+  _gw_say "$_dn_pb" 'Installing managed or user-level settings is a human or administrator act.' "the human-or-administrator sentence (GNL-D3)" || _dn_f=1
+  _dn_cl="$1/CHANGELOG.md"
+  _dn_json=$(jq -n --arg c "$GW_CANON" '$c')
+  grep -qxF -- "$GW_CANON" "$_dn_cl" 2>/dev/null || { printf '%s\n' "FAIL: $_dn_cl carries no SECURITY entry with the canonical command as shell text (GNL-D5)"; _dn_f=1; }
+  grep -qxF -- "\"command\": $_dn_json" "$_dn_cl" 2>/dev/null || { printf '%s\n' "FAIL: $_dn_cl carries no one-line hunk with the canonical command (GNL-D5)"; _dn_f=1; }
+  grep -qF -- 'SECURITY: the Claude Code guard hook command' "$_dn_cl" 2>/dev/null || { printf '%s\n' "FAIL: $_dn_cl has no SECURITY entry for the hook command (GNL-D5)"; _dn_f=1; }
+  [ "$_dn_f" -eq 0 ] || return 1
+  echo "PASS: the day-one launch-directory text is in place (section 1, START-HERE, runtime-guards, platform boundary, CHANGELOG)"
+  return 0
+}
+
+# The bite the entry-contract cap keeps over the measured region (agents-brief.sh, governed bump). A later slice that
+# bumps the cap by a different bite edits this one number in the same PR.
+# SWAS-301a (the retry wording, section 1 of every context document): the region shrank by 2 bytes (2673 to 2671) and
+# EC_MAX_BYTES stayed at 2676, so the bite is 3 + 2 = 5.
+GW_EC_BITE=5
+
+# _gw_ec_bite_check <agents-brief output> -> GNL-D4: the cap equals the measured region plus GW_EC_BITE. Reads the line
+# 'the entry contract measures N bytes (cap M)'. A missing line is a FAIL, never a pass.
+_gw_ec_bite_check() {
+  _ec_line=$(printf '%s\n' "$1" | grep -E 'the entry contract measures [0-9]+ bytes \(cap [0-9]+\)' | head -n1) || _ec_line=""
+  _ec_n=$(printf '%s' "$_ec_line" | sed -n 's/.*measures \([0-9][0-9]*\) bytes.*/\1/p')
+  _ec_m=$(printf '%s' "$_ec_line" | sed -n 's/.*(cap \([0-9][0-9]*\)).*/\1/p')
+  if [ -z "$_ec_n" ] || [ -z "$_ec_m" ]; then
+    echo "FAIL: could not read 'the entry contract measures N bytes (cap M)' from agents-brief.sh (GNL-D4)"; return 1
+  fi
+  if [ "$_ec_m" -eq $((_ec_n + GW_EC_BITE)) ]; then
+    echo "PASS: EC_MAX_BYTES ($_ec_m) is the measured entry-contract region ($_ec_n) plus the $GW_EC_BITE-byte bite"; return 0
+  fi
+  echo "FAIL: EC_MAX_BYTES is $_ec_m but the entry-contract region measures $_ec_n; the governed bump sets it to measured plus $GW_EC_BITE = $((_ec_n + GW_EC_BITE)) (GNL-D4)"
+  return 1
+}
+
+# _gw_ec_bite_leg <project-dir> -> GNL-D4 on the kit's own tree (runs agents-brief.sh there). Adopter: N/A.
+_gw_ec_bite_leg() {
+  _gw_kitsource "$1" || { echo "N/A: entry-contract cap bite lock - not a kit-source tree"; return 0; }
+  [ -f "$1/conformance/agents-brief.sh" ] || { printf '%s\n' "FAIL: $1/conformance/agents-brief.sh missing from a kit tree (GNL-D4)"; return 1; }
+  _eb_out=$(cd "$1" && sh conformance/agents-brief.sh 2>&1) || :
+  _gw_ec_bite_check "$_eb_out"
+}
+
+# _gw_brownfield_leg <project-dir> -> on the kit's own tree, both guard-hook fences in docs/adoption/brownfield.md decode
+# to GW_CANON byte for byte (FC-L2). The fence lines are one JSON object each, so each decodes with jq. Adopter: N/A.
+_gw_brownfield_leg() {
+  _gw_kitsource "$1" || { echo "N/A: brownfield fence lock - not a kit-source tree"; return 0; }
+  _bf="$1/docs/adoption/brownfield.md"
+  [ -f "$_bf" ] || { printf '%s\n' "FAIL: $_bf missing from a kit tree - its guard-hook fences cannot be locked"; return 1; }
+  _bf_n=0; _bf_bad=0
+  _bf_lines=$(grep -F '"type": "command"' "$_bf" | grep -F 'guard.sh') || _bf_lines=""
+  _bf_ok=$(printf '%s\n' "$_bf_lines" | while IFS= read -r _bf_l; do
+    [ -n "$_bf_l" ] || continue
+    printf '%s\n' "$_bf_l" | sed 's/^[[:space:]]*//' | jq -e --arg c "$GW_CANON" '.command == $c' >/dev/null 2>&1 && echo ok || echo bad
+  done)
+  _bf_n=$(printf '%s\n' "$_bf_ok" | grep -c '^ok$') || _bf_n=0
+  _bf_bad=$(printf '%s\n' "$_bf_ok" | grep -c '^bad$') || _bf_bad=0
+  if [ "$_bf_n" -eq 2 ] && [ "$_bf_bad" -eq 0 ]; then
+    echo "PASS: both brownfield guard-hook fences are the canonical fail-closed command"; return 0
+  fi
+  printf '%s\n' "FAIL: docs/adoption/brownfield.md must carry exactly two guard-hook fences, each the canonical fail-closed command byte for byte (found $_bf_n canonical, $_bf_bad not)"
+  return 1
+}
+
 # The enforcement layer the OS sandbox must keep read-only to the agent's shell (design
 # docs/architecture/2026-10-06-guard-cp-readonly-sandbox-design.md §5.1). The shipped denyWrite must be a
 # SUPERSET of this; network.allowUnixSockets is optional (absent = the strict form, still wired).
@@ -399,9 +514,13 @@ check_dir() {
           echo "PASS: guard matcher '$matcher' admits the mutating tools (Bash/Write/Edit/NotebookEdit/mcp__*)"
         fi
       fi
+      _gw_canon_leg "$dir" || fail=1
       # The OS layer below the text guard: the sandbox block's load-bearing keys. Not part of the
       # PreToolUse-only scope, so --rung1-only does not evaluate it.
       if [ "$mode" != "rung1only" ]; then
+        _gw_brownfield_leg "$dir" || fail=1
+        _gw_dayone_text_leg "$dir" || fail=1
+        _gw_ec_bite_leg "$dir" || fail=1
         _gw_sandbox_leg "$dir" || fail=1
         _gw_template_check "$dir" || fail=1
       fi
@@ -883,6 +1002,129 @@ selftest() {
   d="$base/empty"; mkdir -p "$d"
   if check_dir "$d" >/dev/null 2>&1; then rc=0; else rc=$?; fi
   if [ "$rc" -eq 1 ]; then echo "selftest PASS: no settings -> FAIL"; else echo "selftest FAIL: no settings should FAIL (got $rc)"; st=1; fi
+
+  # ── SWAS-316 FC-L1 / FC-L2 — the canonical fail-closed command lock. mk_cmd <dir> <command> <kit|adopter>: a project
+  # whose one PreToolUse guard hook runs <command>; kit adds the kit-source marker (docs/ROADMAP-KIT.md).
+  if command -v jq >/dev/null 2>&1; then
+    mk_cmd() {
+      mk "$1" 'Bash|Write|Edit|NotebookEdit|mcp__.*'
+      jq --arg c "$2" '.hooks.PreToolUse[0].hooks[0].command = $c' "$1/.claude/settings.json" > "$1/.claude/settings.json.new" && mv "$1/.claude/settings.json.new" "$1/.claude/settings.json"
+      [ "$3" != kit ] || { mkdir -p "$1/docs"; : > "$1/docs/ROADMAP-KIT.md"; }
+    }
+    _gw_cmd_leg() {  # $1 label, $2 command, $3 kit|adopter, $4 expected rc, $5 expected fragment
+      d="$base/cl_$1"; mk_cmd "$d" "$2" "$3"
+      if out=$(_gw_canon_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq "$4" ] && printf '%s' "$out" | grep -qF -- "$5"; then echo "selftest PASS: FC-L1 $1 -> rc $4"; else echo "selftest FAIL: FC-L1 $1 should give rc $4 naming '$5' (rc=$rc)"; st=1; fi
+    }
+    _gw_bare='sh "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh"'
+    _gw_nosuffix='[ -r "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh" ] && sh "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh"'
+    _gw_onebyte=$(printf '%s' "$GW_CANON" | sed 's/"\$rc" = 2/"$rc" = 3/')
+    _gw_cmd_leg canon_kit "$GW_CANON" kit 0 'PASS: every guard hook command is the canonical'
+    _gw_cmd_leg bare_kit "$_gw_bare" kit 1 'FAIL: a PreToolUse hook command running guard.sh is not the canonical'
+    _gw_cmd_leg nosuffix_kit "$_gw_nosuffix" kit 1 'FAIL: a PreToolUse hook command running guard.sh is not the canonical'
+    _gw_cmd_leg onebyte_kit "$_gw_onebyte" kit 1 'FAIL: a PreToolUse hook command running guard.sh is not the canonical'
+    _gw_cmd_leg bare_adopter "$_gw_bare" adopter 0 '  "command": "[ -r \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" ] && sh'
+    _gw_cmd_leg warn_adopter "$_gw_nosuffix" adopter 0 'WARN: a PreToolUse hook command running guard.sh is not the canonical'
+    _gw_cmd_leg canon_adopter "$GW_CANON" adopter 0 'PASS: every guard hook command is the canonical'
+    # a second guard hook entry that is bare is a gap too, even when the first is canonical
+    d="$base/cl_second_bare"; mk_cmd "$d" "$GW_CANON" kit
+    jq --arg b "$_gw_bare" '.hooks.PreToolUse += [{"matcher":"Bash","hooks":[{"type":"command","command":$b}]}]' "$d/.claude/settings.json" > "$d/.claude/settings.json.new" && mv "$d/.claude/settings.json.new" "$d/.claude/settings.json"
+    if out=$(_gw_canon_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: FC-L1 a canonical first hook and a bare second hook -> FAIL on the kit tree"; else echo "selftest FAIL: FC-L1 a bare second guard hook should FAIL (rc=$rc)"; st=1; fi
+    # integrated: a bare adopter tree is still WARN-only through check_dir (rc 0), a bare kit tree is red
+    d="$base/cl_int_adopter"; mk_cmd "$d" "$_gw_bare" adopter
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^WARN: a PreToolUse hook command'; then echo "selftest PASS: FC-L1 check_dir on an adopter tree with the bare command -> WARN, still wired"; else echo "selftest FAIL: FC-L1 an adopter tree with the bare command should WARN and stay wired (rc=$rc)"; st=1; fi
+    d="$base/cl_int_kit"; mk_cmd "$d" "$_gw_bare" kit
+    if out=$(check_dir "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q '^FAIL: a PreToolUse hook command'; then echo "selftest PASS: FC-L1 check_dir on a kit tree with the bare command -> FAIL"; else echo "selftest FAIL: FC-L1 a kit tree with the bare command should FAIL (rc=$rc)"; st=1; fi
+
+    # FC-L2: the brownfield fences. A kit fixture carries a copy of the real doc (or a mutant of it).
+    _gw_bf_real="$_gw_root/docs/adoption/brownfield.md"
+    _gw_bf_leg() {  # $1 label, $2 expected rc, $3 awk program ('' = leave the doc as is; 'none' = no doc)
+      d="$base/bf_$1"; mkdir -p "$d/docs/adoption"; : > "$d/docs/ROADMAP-KIT.md"
+      if [ "$3" = none ]; then :; elif [ -z "$3" ]; then cp "$_gw_bf_real" "$d/docs/adoption/brownfield.md"; else awk "$3" "$_gw_bf_real" > "$d/docs/adoption/brownfield.md"; fi
+      if out=$(_gw_brownfield_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq "$2" ]; then echo "selftest PASS: FC-L2 $1 -> rc $2"; else echo "selftest FAIL: FC-L2 $1 should give rc $2 (rc=$rc)"; st=1; fi
+    }
+    if [ -f "$_gw_bf_real" ]; then
+      _gw_bf_leg real 0 ''
+      _gw_bf_leg onebyte_first 1 '/"type": "command"/ && /guard.sh/ && !d { sub(/exit 2;/, "exit 3;"); d=1 } { print }'
+      _gw_bf_leg onebyte_second 1 '/"type": "command"/ && /guard.sh/ { n++; if (n == 2) sub(/exit 2;/, "exit 3;") } { print }'
+      _gw_bf_leg bare_fences 1 '/"type": "command"/ && /guard.sh/ { print "{ \"type\": \"command\", \"command\": \"sh guard.sh\" }"; next } { print }'
+      _gw_bf_leg no_fence 1 '/"type": "command"/ && /guard.sh/ { next } { print }'
+      _gw_bf_leg missing_doc 1 none
+      d="$base/bf_adopter"; mkdir -p "$d"
+      if out=$(_gw_brownfield_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: FC-L2 an adopter tree -> N/A"; else echo "selftest FAIL: FC-L2 an adopter tree should be N/A (rc=$rc)"; st=1; fi
+    else
+      echo "selftest FAIL: FC-L2 cannot find docs/adoption/brownfield.md at $_gw_bf_real"; st=1
+    fi
+
+    # GNL-D1, D2, D3, D5: the day-one text. A kit fixture holds copies of the real documents; each mutant edits one copy.
+    _gw_dn_files='CLAUDE.md AGENTS.md templates/PROJECT-CLAUDE-TEMPLATE.md START-HERE.md docs/operations/runtime-guards.md docs/enterprise/platform-safety-boundary.md CHANGELOG.md'
+    _gw_dn_fx() {  # $1 label -> $d = a kit-source fixture holding copies of the real day-one documents
+      d="$base/dn_$1"; mkdir -p "$d/docs/operations" "$d/docs/enterprise" "$d/templates"; : > "$d/docs/ROADMAP-KIT.md"
+      for _dn_x in $_gw_dn_files; do cp "$_gw_root/$_dn_x" "$d/$_dn_x"; done
+    }
+    _gw_dn_drop() {  # $1 file in $d, $2 a fixed string: delete every line carrying it
+      grep -vF -- "$2" "$d/$1" > "$d/$1.new" || :
+      mv "$d/$1.new" "$d/$1"
+    }
+    _gw_dn_leg() {  # $1 label, $2 expected rc, $3 expected output fragment
+      if out=$(_gw_dayone_text_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+      if [ "$rc" -eq "$2" ] && printf '%s' "$out" | grep -qF -- "$3"; then echo "selftest PASS: $1 -> rc $2"; else echo "selftest FAIL: $1 should give rc $2 naming '$3' (rc=$rc: $out)"; st=1; fi
+    }
+    _gw_dn_fx real
+    _gw_dn_leg 'GNL-D1/D2/D3/D5 the real day-one text' 0 'PASS: the day-one launch-directory text is in place'
+    _gw_dn_fx d1_all
+    for _dn_c in CLAUDE.md AGENTS.md templates/PROJECT-CLAUDE-TEMPLATE.md; do _gw_dn_drop "$_dn_c" "Start the session in this repository's root"; done
+    _gw_dn_leg 'GNL-D1 mutant: the sentence removed uniformly from every carrier (the byte lock cannot see this)' 1 '(GNL-D1)'
+    _gw_dn_fx d1_one
+    _gw_dn_drop AGENTS.md "Start the session in this repository's root"
+    _gw_dn_leg 'GNL-D1 mutant: the sentence removed from one carrier' 1 '(GNL-D1)'
+    _gw_dn_fx d2
+    _gw_dn_drop START-HERE.md 'Start your agent session in the project root'
+    _gw_dn_leg 'GNL-D2 mutant: the START-HERE box deleted' 1 '(GNL-D2)'
+    _gw_dn_fx d3_old
+    printf '%s\n' '- Ceiling: a deleted or unrunnable `guard.sh` exits before any trap exists; that is held by `guard-wired.sh` and the control-plane write deny.' >> "$d/docs/operations/runtime-guards.md"
+    _gw_dn_leg 'GNL-D3 mutant: the old runtime-guards claim restored' 1 'again claims a deleted or unrunnable guard.sh is held'
+    _gw_dn_fx d3_head
+    _gw_dn_drop docs/operations/runtime-guards.md '### Is the guard loaded? (the launch directory)'
+    _gw_dn_leg 'GNL-D3 mutant: the runtime-guards subsection heading removed' 1 '(GNL-D3)'
+    _gw_dn_fx d3_pb
+    _gw_dn_drop docs/enterprise/platform-safety-boundary.md 'Installing managed or user-level settings is a human or administrator act.'
+    _gw_dn_leg 'GNL-D3 mutant: the human-or-administrator sentence removed' 1 'human-or-administrator sentence'
+    _gw_dn_fx d5_shell
+    _gw_dn_drop CHANGELOG.md 'printf '"'"'%s\n'"'"' "agent-guard: the guard hook did not return a decision (rc $rc) - blocked; stop and tell the human (usual cause: the session was not started in the repository root; see docs/operations/runtime-guards.md, Is the guard loaded?)" >&2; exit 2; }'
+    _gw_dn_leg 'GNL-D5 mutant: the canonical shell text removed from the CHANGELOG' 1 '(GNL-D5)'
+    _gw_dn_fx d5_hunk
+    _gw_dn_drop CHANGELOG.md '"command": "[ -r'
+    _gw_dn_leg 'GNL-D5 mutant: the one-line hunk removed from the CHANGELOG' 1 'no one-line hunk'
+    _gw_dn_fx d5_head
+    _gw_dn_drop CHANGELOG.md 'SECURITY: the Claude Code guard hook command'
+    _gw_dn_leg 'GNL-D5 mutant: the SECURITY entry heading removed from the CHANGELOG' 1 'has no SECURITY entry'
+    d="$base/dn_adopter"; mkdir -p "$d"
+    if out=$(_gw_dayone_text_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: GNL-D an adopter tree -> N/A"; else echo "selftest FAIL: GNL-D an adopter tree should be N/A (rc=$rc)"; st=1; fi
+
+    # GNL-D4: the cap is the measured region plus the bite. The parse is exercised on canned agents-brief lines, and the
+    # live tree's own number is checked by the leg itself.
+    # SWAS-301a: the canned caps are derived from GW_EC_BITE, so a later governed bump edits the one number and not four literals.
+    if out=$(_gw_ec_bite_check "PASS: the entry contract measures 2674 bytes (cap $((2674 + GW_EC_BITE)))" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ]; then echo "selftest PASS: GNL-D4 cap = measured + $GW_EC_BITE"; else echo "selftest FAIL: GNL-D4 cap = measured + $GW_EC_BITE should pass (rc=$rc)"; st=1; fi
+    if out=$(_gw_ec_bite_check "PASS: the entry contract measures 2674 bytes (cap $((2674 + GW_EC_BITE + 1)))" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF '(GNL-D4)'; then echo "selftest PASS: GNL-D4 mutant: cap one byte over the bite -> FAIL"; else echo "selftest FAIL: GNL-D4 a cap one byte over measured + $GW_EC_BITE should FAIL (rc=$rc)"; st=1; fi
+    if out=$(_gw_ec_bite_check "PASS: the entry contract measures 2674 bytes (cap $((2674 + GW_EC_BITE - 1)))" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: GNL-D4 mutant: cap one byte under the bite -> FAIL"; else echo "selftest FAIL: GNL-D4 a cap under measured + $GW_EC_BITE should FAIL (rc=$rc)"; st=1; fi
+    if out=$(_gw_ec_bite_check 'no measurement line at all' 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 1 ]; then echo "selftest PASS: GNL-D4 no measurement line -> FAIL (never a pass)"; else echo "selftest FAIL: GNL-D4 a missing measurement line should FAIL (rc=$rc)"; st=1; fi
+    d="$base/dn_ec_adopter"; mkdir -p "$d"
+    if out=$(_gw_ec_bite_leg "$d" 2>&1); then rc=0; else rc=$?; fi
+    if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^N/A'; then echo "selftest PASS: GNL-D4 an adopter tree -> N/A"; else echo "selftest FAIL: GNL-D4 an adopter tree should be N/A (rc=$rc)"; st=1; fi
+  else
+    echo "selftest FAIL: FC-L1/FC-L2/GNL need jq (jq absent, so the canonical-command and day-one locks were not exercised)"; st=1
+  fi
 
   # ── B3 — the rung leg. mk_repo builds a FULL fixture (mk() above, satisfied so the pre-existing
   # legs' verdicts never mask the rung's own): a qualifying, git-initialized tree whose installed

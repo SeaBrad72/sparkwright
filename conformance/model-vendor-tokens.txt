@@ -1,0 +1,15 @@
+# model-vendor-tokens.txt — the vendor-model family list read by conformance/model-tiering.sh (the vendor lock,
+# SWAS-303a). DATA, one ERE fragment per line; the lock exempts this file and the project's own .kit/model-map.conf.
+# MODEL FAMILIES ONLY, never harness names. A family whose name is also a harness is listed only in a model-id form
+# (a harness card that says "gemini" is the neutrality recipe working, not a seat binding).
+# The lock also reads every non-unset value on the project's own map, so this list only needs the families a project
+# might name in a kit file WITHOUT using them. One line per new provider family.
+opus
+sonnet
+haiku
+fable
+claude-[0-9]
+gpt-[0-9]
+gemini-[0-9]
+llama-?[0-9]
+mistral-(large|small|medium|[0-9])

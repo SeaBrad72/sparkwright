@@ -1495,6 +1495,13 @@ EOF
     mkdir -p "$MG_H/.local/state/sparkwright/runaway/$_mgkey"
     printf '1757900000 keyA %s %s %s\n' "$1" "$2" "$3" >> "$MG_H/.local/state/sparkwright/runaway/$_mgkey/tally.v2"
   }
+  # mg_poison <row> — a tally the guard cannot read (rc 2). SWAS-302 (Q2 A2) dropped the unmetered-row refusal, so
+  # the legs that proved the dial is read from the APPROVED tree (and the docs-only exemption) by a refusal now
+  # take that refusal from this unreadable tally, which enforce still refuses.
+  mg_poison() {
+    mg_seed "$1" 1 1
+    printf 'this line is not the tally grammar\n' >> "$MG_H/.local/state/sparkwright/runaway/$_mgkey/tally.v2"
+  }
   # mg_land -> runs land from the fixture clone; the ambient redirection/dial env is scrubbed, $MG_ENVX re-adds a leg's own.
   mg_land() {
     rm -f "$LAND_MARK"
@@ -1530,9 +1537,16 @@ EOF
   # host has it (the A5 class: dash's echo expands \0NNN and its patterns differ) — so a plain
   # `sh conformance/promotion-verify-wired.sh --selftest` on macOS still proves the gate under dash.
   mg_legs() {
-  mg_fx enfun "$MG_DIAL_ENF" ROW-MG1 code; mg_land
-  mg_check "land METER(enforce, unmetered): refused, NO note on origin, NO merge, the remedy names the exact step command" refuse \
-    "LAND REFUSED (metering gate)" "step --row ROW-MG1 --tokens N --agents N" "never estimate" "default branch"
+  # SWAS-302 Q2-A2 (owner: "2 A2"): the dial stays at enforce, and ONLY the refusal of a row with no meter line is
+  # dropped. A row the conductor never metered lands (the unmetered line is a note, not a gate); a missing Kit-Row
+  # and an absent guard STILL refuse, and a poisoned tally (rc 2) still refuses (the tests above and below).
+  mg_fx a2unm "$MG_DIAL_ENF" ROW-A2U code; mg_land
+  mg_check "land METER(A2, enforce, unmetered): PROCEEDS (merge + note), prints the unmetered line, names no step remedy" proceed \
+    "unmetered: ROW-A2U" "!LAND REFUSED" "!step --row" "!never estimate"
+  mg_fx a2norow "$MG_DIAL_ENF" NONE code; mg_land
+  mg_check "land METER(A2 keeps, enforce, no Kit-Row): STILL refused — cannot meter an unnamed row" refuse "LAND REFUSED (metering gate)" "unnamed row"
+  mg_fx a2nog "$MG_DIAL_ENF" ROW-A2G code; mg_layout "$MG_ROOT/kit-a2nog" noguard; MG_K="$MG_ROOT/kit-a2nog"; mg_land; MG_K="$MG_KIT"
+  mg_check "land METER(A2 keeps, enforce, guard absent): STILL refused, naming the absence" refuse "LAND REFUSED (metering gate)" "the runaway guard script is absent (<path elided>)"
 
   mg_fx enfmet "$MG_DIAL_ENF" ROW-MG2 code; mg_seed ROW-MG2 100 2; mg_land
   mg_check "land METER(enforce, metered): proceeds and prints the meter line" proceed "metered: ROW-MG2 tokens(100/"
@@ -1558,20 +1572,20 @@ EOF
   mg_fx docs "$MG_DIAL_ENF" ROW-MG7 docs base; mg_land
   mg_check "land METER(docs-only, enforce, unmetered): N/A — proceeds" proceed "N/A: docs-only change"
 
-  mg_fx rename "$MG_DIAL_ENF" ROW-MG8 rename base; mg_land
+  mg_fx rename "$MG_DIAL_ENF" ROW-MG8 rename base; mg_poison ROW-MG8; mg_land
   mg_check "land METER(a .sh -> .md rename is NOT docs-only): refused in enforce" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only"
 
-  mg_fx nobase "$MG_DIAL_ENF" ROW-MG9 docs base
+  mg_fx nobase "$MG_DIAL_ENF" ROW-MG9 docs base; mg_poison ROW-MG9
   git -C "$LOA" remote set-url origin "$MG_ROOT/no-such-origin"; mg_land
   mg_check "land METER(remote unreachable -> no docs-only base): NOT docs-only — refused in enforce, says the base is unreadable (fix2 B)" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only" \
     "docs-only exemption unavailable: cannot read origin's main"
 
   # fix round 1 (security HIGH): the dial read is FULL-TREE — from a SUBDIRECTORY the gate still reads the root .kit/dials.conf.
-  mg_fx subdir "$MG_DIAL_ENF" ROW-MG21 code; mkdir -p "$LOA/sub"; MG_SUB=sub; mg_land; MG_SUB=""
-  mg_check "land METER(fix1 A): enforce + unmetered invoked from a SUBDIRECTORY -> still refused" refuse "LAND REFUSED (metering gate)" "step --row ROW-MG21"
+  mg_fx subdir "$MG_DIAL_ENF" ROW-MG21 code; mg_poison ROW-MG21; mkdir -p "$LOA/sub"; MG_SUB=sub; mg_land; MG_SUB=""
+  mg_check "land METER(fix1 A): enforce + unreadable tally invoked from a SUBDIRECTORY -> still refused" refuse "LAND REFUSED (metering gate)" "guard rc 2"
 
   # fix round 1 (security MEDIUM): a refs/replace ref pointing the approved sha at a commit whose dial says observe must not de-escalate.
-  mg_fx replace "$MG_DIAL_ENF" ROW-MG22 code
+  mg_fx replace "$MG_DIAL_ENF" ROW-MG22 code; mg_poison ROW-MG22
   ( set -e; cd "$LOA"; git checkout -q -b crafted; printf 'RUNAWAY_METERING_GATE=observe\n' > .kit/dials.conf; git add .kit
     printf 'crafted\n\nKit-Row: ROW-MG22\nKit-Class: control-plane\n' | git commit -q -F -
     git replace -f "$MG_ASHA" "$(git rev-parse HEAD)"; git checkout -q mgfeat ) || { echo "FAIL: could not build the replace-ref fixture"; st=1; }
@@ -1579,12 +1593,12 @@ EOF
   mg_check "land METER(fix1 B): a replace ref redirecting the approved sha to an observe tree does NOT de-escalate -> refused" refuse "LAND REFUSED (metering gate)"
 
   # fix round 1 (security MEDIUM): the docs-only base is the REMOTE's main, not the local origin/main ref an agent can move.
-  mg_fx movedbase "$MG_DIAL_ENF" ROW-MG23 codedocs base
+  mg_fx movedbase "$MG_DIAL_ENF" ROW-MG23 codedocs base; mg_poison ROW-MG23
   git -C "$LOA" update-ref refs/remotes/origin/main "${MG_ASHA}^"; mg_land
   mg_check "land METER(fix1 C): a code+docs change with the LOCAL origin/main moved to the approved parent is NOT docs-only -> refused" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only" "!docs-only exemption unavailable"
 
   # SWAS-245: ls-remote tail-matches and sorts, so a pushed a/refs/heads/main must not stand in for main.
-  mg_fx decoyneg "$MG_DIAL_ENF" ROW-MG25 codedocs base
+  mg_fx decoyneg "$MG_DIAL_ENF" ROW-MG25 codedocs base; mg_poison ROW-MG25
   git -C "$LOA" push -q origin "${MG_ASHA}^:refs/heads/a/refs/heads/main"; mg_land
   mg_check "land METER(SWAS-245 MG25): a decoy branch a/refs/heads/main at the approved parent does NOT make a code+docs change docs-only -> refused" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only"
   mg_fx decoypos "$MG_DIAL_ENF" ROW-MG26 docs base
@@ -1646,7 +1660,7 @@ EOF
   MG_ABY="Solo Maintainer"; mg_land; MG_ABY=""
   mg_check "SODEA-L2 (liveness): a DIFFERENT approver 'Solo Maintainer' still lands — the fold is not a refuse-all" proceed
 
-  mg_fx nocls "$MG_DIAL_ENF" ROW-MG10 docs base; mg_layout "$MG_ROOT/kit-nocls" noclassifier; MG_K="$MG_ROOT/kit-nocls"; mg_land; MG_K="$MG_KIT"
+  mg_fx nocls "$MG_DIAL_ENF" ROW-MG10 docs base; mg_poison ROW-MG10; mg_layout "$MG_ROOT/kit-nocls" noclassifier; MG_K="$MG_ROOT/kit-nocls"; mg_land; MG_K="$MG_KIT"
   mg_check "land METER(classifier absent): NOT docs-only (fail-safe) — refused in enforce" refuse "LAND REFUSED (metering gate)" "!N/A: docs-only"
 
   mg_fx norow "$MG_DIAL_ENF" NONE code; mg_land
@@ -1659,18 +1673,18 @@ EOF
   mg_fx bad 'RUNAWAY_METERING_GATE=enforcee' ROW-MG11 code; mg_land
   mg_check "land METER(malformed conf value): reads as observe and WARNs on the conf side" proceed "WARN" ".kit/dials.conf" "unmetered: ROW-MG11 (observe — not gating)"
 
-  mg_fx wtobs "$MG_DIAL_ENF" ROW-MG12 code
+  mg_fx wtobs "$MG_DIAL_ENF" ROW-MG12 code; mg_poison ROW-MG12
   printf 'RUNAWAY_METERING_GATE=observe\n' > "$LOA/.kit/dials.conf"; mg_land
   mg_check "land METER(F1): the working tree says observe but the APPROVED tree says enforce -> refused" refuse "LAND REFUSED (metering gate)"
   mg_fx wtenf NONE ROW-MG13 code
   mkdir -p "$LOA/.kit"; printf 'RUNAWAY_METERING_GATE=enforce\n' > "$LOA/.kit/dials.conf"; mg_land
   mg_check "land METER(F1 converse): the working tree says enforce but the approved tree carries no key -> silent, proceeds" proceed "!metering gate" "!unmetered"
 
-  mg_fx envobs "$MG_DIAL_ENF" ROW-MG14 code; MG_ENVX="RUNAWAY_METERING_GATE=observe"; mg_land; MG_ENVX=""
+  mg_fx envobs "$MG_DIAL_ENF" ROW-MG14 code; mg_poison ROW-MG14; MG_ENVX="RUNAWAY_METERING_GATE=observe"; mg_land; MG_ENVX=""
   mg_check "land METER(F1): env =observe cannot de-escalate an enforcing approved tree -> refused, and says so" refuse "LAND REFUSED (metering gate)" "cannot de-escalate"
-  mg_fx envenf NONE ROW-MG15 code; MG_ENVX="RUNAWAY_METERING_GATE=enforce"; mg_land; MG_ENVX=""
+  mg_fx envenf NONE ROW-MG15 code; mg_poison ROW-MG15; MG_ENVX="RUNAWAY_METERING_GATE=enforce"; mg_land; MG_ENVX=""
   mg_check "land METER(F1): env =enforce escalates a tree with no key -> refused" refuse "LAND REFUSED (metering gate)"
-  mg_fx envbad "$MG_DIAL_ENF" ROW-MG16 code; MG_ENVX="RUNAWAY_METERING_GATE=bogus"; mg_land; MG_ENVX=""
+  mg_fx envbad "$MG_DIAL_ENF" ROW-MG16 code; mg_poison ROW-MG16; MG_ENVX="RUNAWAY_METERING_GATE=bogus"; mg_land; MG_ENVX=""
   mg_check "land METER(F7): a garbage env value WARNs on the ENV side (worded apart from the conf side) and the tree still enforces" refuse "environment" "LAND REFUSED (metering gate)"
 
   mg_fx link LINK ROW-MG17 code; mg_land
@@ -1690,7 +1704,8 @@ EOF
     echo "PASS: land METER(F2) precondition: the sandbox env alone WOULD read ROW-MG18 as metered"
   else echo "FAIL: land METER(F2) precondition: the sandbox tally did not read as metered, the leg would be vacuous"; st=1; fi
   MG_ENVX="KIT_RUNAWAY_SANDBOX=$MG_ROOT/sbx RUNAWAY_TALLY=$MG_ROOT/sbx/tally.v2"; mg_land; MG_ENVX=""
-  mg_check "land METER(F2): the sandbox env exported while the temp-HOME tally is unmetered -> still refused" refuse "LAND REFUSED (metering gate)" "step --row ROW-MG18"
+  mg_check "land METER(F2): the sandbox env exported while the temp-HOME tally is unmetered -> the sandbox tally is NOT read (the row stays unmetered, noted, not refused)" proceed \
+    "unmetered: ROW-MG18" "!metered: ROW-MG18 tokens("
 
   mg_fx noguard "$MG_DIAL_ENF" ROW-MG19 code; mg_layout "$MG_ROOT/kit-nog" noguard; MG_K="$MG_ROOT/kit-nog"; mg_land; MG_K="$MG_KIT"
   mg_check "land METER(F8): the guard script absent -> refused in enforce, naming the absence (deterministic under every shell)" refuse "LAND REFUSED (metering gate)" "the runaway guard script is absent (<path elided>)"

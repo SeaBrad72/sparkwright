@@ -16,7 +16,7 @@
 - **Produced-at:** <YYYY-MM-DD>
 
 ## 2. Producing model
-- **Model ID + version:** <e.g. claude-opus-4-8>
+- **Model ID + version:** <provider-model-id>
 - **Provider:** <e.g. Anthropic>
 
 ## 3. Prompt / template

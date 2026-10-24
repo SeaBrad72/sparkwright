@@ -11,7 +11,7 @@
 ## Task-quality evals (the dataset + rubric)
 - **Dataset:** [path / size / how curated — golden set, versioned with the code]
 - **Scoring:** [exact-match | graded rubric | LLM-as-judge]
-- **Pinned judge + model version:** [e.g. claude-sonnet-4-6 as judge; system-under-test model + version]
+- **Pinned judge + model version:** [<provider-model-id> as judge; system-under-test model + version]
 
 ## Regression bar (the §7 gate)
 - **Regression threshold:** [threshold]   <!-- e.g. "score >= 0.85; no metric drops > 2pts vs baseline" — the bar the CI Eval gate enforces. Replace the bracketed placeholder above with a real value. -->

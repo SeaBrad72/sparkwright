@@ -67,7 +67,7 @@ _hli_marker_pin_ok() { # <core> <record> -> rc0 iff every nosem-bearing line + i
   LC_ALL=C grep -a -i -A1 -e 'nosem' -e "$_hmp_ls" "$1" | cmp -s - "$2"
 }
 
-# _hli_write_marker_record <outfile>: materializes the recorded 8 lines (3 nosem-bearing markers +
+# _hli_write_marker_record <outfile>: materializes the recorded 23 lines (8 nosem-bearing markers +
 # their governed next line each, grep-separator `--` included) via a QUOTED heredoc — no
 # parameter/command expansion, so the literal `$IFS`/`$_ha_ofs` text below is never evaluated. Callers
 # write this into an hli_mktempd file (never a dev-clone/tracked path) before comparing.
@@ -81,6 +81,21 @@ _hli_write_marker_record() {
 --
   # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   IFS=$_ha_ofs
+--
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  IFS=$_cp8b_nl
+--
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  IFS=$_cp8b_nl
+--
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  IFS=$_cp8b_nl
+--
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  IFS=$_ga_ofs
+--
+  # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
+  IFS=$_cp8b_nl
 HLI_MARKER_RECORD_EOF
 }
 

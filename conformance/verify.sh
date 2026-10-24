@@ -1942,6 +1942,14 @@ check control deploy-decision-integrity-run  --adopter sh conformance/deploy-dec
 check control harness-decision-integrity  sh conformance/harness-decision-integrity.sh --selftest
 # --adopter, same reason again: the subject is the adopter's OWN harness-fit rationale.
 check control harness-decision-integrity-run  --adopter sh conformance/harness-decision-integrity.sh
+# SWAS-303a: the model axis (#4) is a config row in the engine, not a shim. N/A while the map is all-`unset`.
+check control model-decision-integrity  sh conformance/decision-integrity.sh model --selftest
+# --adopter, same reason again: the subject is the adopter's OWN model-fit rationale (read only once their map binds a model).
+check control model-decision-integrity-run  --adopter sh conformance/decision-integrity.sh model
+# SWAS-303a: the vendor lock + the map's decision= record. --adopter: it grades the adopter's OWN map and their kit-shipped
+# seat-binding surfaces; it never skips (a single-model adopter reads PASS), and its fixtures run in the --selftest sibling.
+check control model-tiering  sh conformance/model-tiering.sh --selftest
+check control model-tiering-lock-run  --adopter sh conformance/model-tiering.sh
 check control script-disclosure  sh conformance/script-disclosure.sh --selftest
 check control script-disclosure-scan  sh conformance/script-disclosure.sh
 # shell-parse-lint (SEMGREP-BASH-PARSE-KIT-WIDE T1): the shared SAST-parse structural lint —

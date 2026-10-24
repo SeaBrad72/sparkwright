@@ -281,7 +281,7 @@ usage() {
   echo "  promotion-verify.sh actuate --ref <head-branch> --approved-sha <sha> [--merge-cmd \"<cmd>\"]" >&2
   echo "        --ref is the PR's head branch, fetched, and must equal <sha> (refused before any merge otherwise); a" >&2
   echo "        caller --merge-cmd is vetted like land's and must pin --match-head-commit <sha>; the GO note is read from" >&2
-  echo "        origin. The real shipped == approved check on the trunk is CI's: promotion-verify.sh trace --recent." >&2
+  echo "        origin. The real shipped == approved check on the trunk is promotion-verify.sh trace --recent (the kit's CI runs it; adopter-gates.yml does not yet, so an adopter runs it on main)." >&2
   echo "  promotion-verify.sh land --ref <pr|tag|merged-ref> --merge-cmd \"<cmd>\" \\" >&2
   echo "                           --approved-sha <sha> --approved-by <id> --gate <g> --rung <r> \\" >&2
   echo "                           --class <c> --scope <s> --token <str> --go-by <the GO-giver> [--basis <t>]" >&2
@@ -301,7 +301,7 @@ usage() {
   echo "        GO so it reaches origin — landing on a local-only note would reopen #658). Default" >&2
   echo "        merge: gh pr merge <ref> --squash --match-head-commit <sha> — NEVER --admin, NEVER --delete-branch." >&2
   echo "        Verb-scoped: land refuses a recordless merge on its OWN path; the universal net for a" >&2
-  echo "        recordless merge is the CI recordless-merge backstop (promotion-verify.sh trace --recent)." >&2
+  echo "        recordless merge is the recordless-merge backstop (promotion-verify.sh trace --recent: the kit's CI runs it, adopter-gates.yml does not yet)." >&2
   echo "  BOARD TAIL (land AND actuate): after the merge both verbs release the row's claim and, on a JIRA" >&2
   echo "        backend, close its card (\`board.sh release <ROW> --stale\`: card -> Done). On every run that MERGED" >&2
   echo "        the LAST line of stdout is exactly one of (a stable contract; read this line, not the exit code):" >&2
@@ -1342,8 +1342,10 @@ pv_close_card_jira() {
 # ---------------------------------------------------------------------------------------------
 # RUNAWAY-METERING-LANDING-GATE (design 2026-09-29, §2.2 with the §5a/§5b/§5c amendments binding).
 # `land` and `actuate` consult the PER-SLICE METER (`runaway-guard.sh meter`) behind the
-# RUNAWAY_METERING_GATE dial: a row that was never metered on this machine is REFUSED in enforce (before
-# any note is written / any merge is attempted), and noted in observe. The dial is ABSENT on an adopter
+# RUNAWAY_METERING_GATE dial. SWAS-302 (owner answer Q2 A2) dropped ONE refusal: a row that was never metered
+# on this machine is now only NOTED, in enforce and in observe. In enforce `land`/`actuate` still REFUSE (before
+# any note is written / any merge is attempted) an approved commit with no Kit-Row, an absent guard, and a
+# guard that cannot read the tally (rc 2) or exits any other rc. The dial is ABSENT on an adopter
 # export, and absent is SILENT — an adopter sees nothing.
 #
 # ⚠️ HONEST CEILING (design §5 + F5): the gate proves a row was metered "EVER", not metered "HONESTLY" —
@@ -1549,12 +1551,12 @@ pv_meter_gate() {
        PV_STOP_LINE="STOP: $_mgrow $_mgfig — ceiling breached (landed anyway: approved)"
        printf '%s\n' "$PV_STOP_LINE" >&2   # loud NOW (stderr); repeated in the landing report on stdout at the end
        return 0 ;;
-    3) if [ "$_mgmode" = enforce ]; then
-         printf '%s\n' "$_mgVERB REFUSED (metering gate): $_mgrow has no metered lines in this repo's tally on this machine." >&2
-         printf '%s\n' "              Record the slice's ACTUAL summed dispatch usage with \`sh scripts/runaway-guard.sh step --row $_mgrow --tokens N --agents N\`;" >&2
-         printf '%s\n' "              if the usage is unknown, STOP and ask the owner — never estimate. Or the owner ratifies a dial change" >&2
-         printf '%s\n' "              (RUNAWAY_METERING_GATE in .kit/dials.conf) on the default branch." >&2
-         return 1
+    3) # SWAS-302 (owner answer Q2 A2): a row with NO meter line no longer refuses, in enforce or observe.
+       # The kit does not meter a conductor's dispatches, so a zero-filled `step` line proved only "metered EVER".
+       # The refusals that stay in enforce are the unnamed row, an absent guard, rc 2 and any other rc.
+       # This gate no longer catches a forged Kit-Row: row identity is owned by loop-state and backlog-presence.
+       if [ "$_mgmode" = enforce ]; then
+         printf '%s\n' "$_mgverb: unmetered: $_mgrow (enforce — an unmetered row is not a landing condition)"; return 0
        fi
        printf '%s\n' "$_mgverb: unmetered: $_mgrow (observe — not gating)"; return 0 ;;
     2) _mgreason="$(printf '%s\n' "$_mgout" | grep -v -e '^runaway-guard: budget config ' -e '^runaway-guard: SANDBOX' -e '^WARN' | head -1 | tr -d '[:cntrl:]' | cut -c1-220)"
@@ -2154,7 +2156,7 @@ do_actuate() {
   # and only after-the-fact review of the trail (trace --recent) catches a fabricated one. Do not imply the label authenticates.
   [ -z "$PV_STOP_LINE" ] || printf '%s\n' "$PV_STOP_LINE"
   if [ "$crc" -eq 0 ]; then
-    echo "OK: actuated $ref on recorded GO (approved-sha $asha) — head ref carries the approved tree (shipped == approved on the trunk is CI's check: promotion-verify.sh trace --recent)"
+    echo "OK: actuated $ref on recorded GO (approved-sha $asha) — head ref carries the approved tree (shipped == approved on the trunk: run promotion-verify.sh trace --recent on main yourself; the kit's own CI runs it, an adopter's does not)"
   else
     echo "ACTUATE: the merge HAS happened and the post-check failed (rc $crc, see SHIPPED != APPROVED above) — the board step below ran regardless." >&2
   fi

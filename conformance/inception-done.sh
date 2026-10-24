@@ -930,6 +930,8 @@ FAIL: required-check context(s) declared in REQUIRED-CHECKS.md but not live on m
   st_has "Verify now: sh conformance/inception-done.sh --surface"
   st_has "Verify when a protected remote exists: sh conformance/inception-done.sh"
   st_hasnt "Verify: sh conformance/inception-done.sh"
+  # SWAS-316: the closing output tells the person where to launch the agent session (the guard loads only from the launch directory).
+  st_has "Start your agent session here: cd "
   # Review Minor 1: ORDER is part of the claim ("says the right things in the right ORDER") — the
   # commit step must precede "Verify now", which must precede the strict line. Presence alone
   # passed a mutation that relocated the commit step after the verify lines; these line-number

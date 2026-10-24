@@ -88,6 +88,8 @@ Do the judgment steps incept does NOT automate (see START-HERE.md):
   7. ${GUARD_STEP}
      Other runtimes: pipe proposed commands through scripts/kit-guard (docs/operations/runtime-guards.md).
 
+Start your agent session here: cd "${PWD}" && claude (not a parent or a subfolder; the guard loads only from the launch directory).
+
 Verify now: sh conformance/inception-done.sh --surface
 Verify when a protected remote exists: sh conformance/inception-done.sh
 EOF
@@ -1179,6 +1181,11 @@ fi
 # one; what must NOT exist is the kit's own copy, which is export-ignored for that reason.
 mkdir -p docs/governance
 [ -f docs/governance/DECISIONS.md ] || { cp templates/DECISIONS-TEMPLATE.md docs/governance/DECISIONS.md; sedi "s/\[Project Name\]/${ENAME}/g" docs/governance/DECISIONS.md; }
+# The seat -> model map (SWAS-303a, D-241018-2) — stamped from the template, every value `unset` (the honest
+# single-model case), same absent-only guard. The kit's own map names its maintainers' models and is export-ignored,
+# so an adopter never inherits a vendor default; an existing map (kit-update, brownfield) is never overwritten.
+mkdir -p .kit
+[ -f .kit/model-map.conf ] || cp templates/MODEL-MAP-TEMPLATE.conf .kit/model-map.conf
 # .env.example — the committed env template the DoD + RUNBOOK require (never a real .env).
 if [ ! -f .env.example ]; then
   cat > .env.example <<'ENVEOF'

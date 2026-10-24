@@ -79,4 +79,4 @@ A green check must *mean* something. Verification is also how you know the check
 - A tag-reading check verified only on a tag-carrying clone.
 
 ## Terminal state
-Every completion claim is backed by a fresh verification run whose exit code and failure count you read in this turn; subagent work is proven on the diff / a clone dry-run, never on the report; tag-reading checks are validated tagless; and any check you rely on has been seen to fail. The claim states its evidence. No evidence, no claim — fail-closed.
+Every completion claim is backed by a fresh verification run whose exit code and failure count you read in this turn; subagent work is proven on the diff / a clone dry-run, never on the report; tag-reading checks are validated tagless; and any check you rely on has been seen to fail. The claim states its evidence. No evidence, no claim — fail-closed. Every number in a claim is labelled measured or estimate; an estimate gives a range and its assumption (conduct, not enforced).

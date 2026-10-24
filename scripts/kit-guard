@@ -548,10 +548,20 @@ case "$_notes_msg" in
     echo "FAIL: the notes deny message claims to stop DESTRUCTION, which it does not"; fail=1 ;;
   *KIT_GUARD_SELFEDIT*)
     echo "FAIL: the notes deny message signposts KIT_GUARD_SELFEDIT (L2) — the one rule that must not"; fail=1 ;;
-  *"NOT covered"*"update-ref"*"PUSH refspecs"*"symbolic-ref"*)
-    echo "PASS deny: the notes deny message states what it does NOT cover (incl. push refspecs onto the ref and symbolic-ref) and names no off-switch" ;;
+  *"NOT covered"*|*update-ref*|*symbolic-ref*)
+    # SWAS-301a (security M1): a refusal an agent reads names no bypass; the ceiling moved to the escape-card row.
+    echo "FAIL: the notes deny message names a bypass route again (the ceiling belongs in the escape-card row), got: $_notes_msg"; fail=1 ;;
+  *"ceiling of this deny is stated in the escape-card row"*"escape card R36 promotion-ledger"*)
+    # ...and the row must still disclose them, incl. push refspecs onto the ref and symbolic-ref, so the disclosure is not lost.
+    if grep '^| \*\*R36\*\*' docs/operations/runtime-guards.md | grep -qF 'update-ref' \
+       && grep '^| \*\*R36\*\*' docs/operations/runtime-guards.md | grep -qF 'symbolic-ref' \
+       && grep '^| \*\*R36\*\*' docs/operations/runtime-guards.md | grep -qF 'fetch or push refspecs'; then
+      echo "PASS deny: the notes deny message points at the row that states what it does NOT cover, and names no bypass and no off-switch"
+    else
+      echo "FAIL: the R36 escape-card row does not disclose the uncovered routes (update-ref, symbolic-ref, push refspecs)"; fail=1
+    fi ;;
   *)
-    echo "FAIL: the notes deny message does not disclose the uncovered routes, got: $_notes_msg"; fail=1 ;;
+    echo "FAIL: the notes deny message does not point at its ceiling row, got: $_notes_msg"; fail=1 ;;
 esac
 
 # --- B2-SESSION-IDENTITY-LEDGER: raw writes AND DELETES of refs/claims/* + refs/claims-log/* ---
@@ -617,10 +627,20 @@ fi
 # it DOES claim destruction here, and it must still disclose the routes it leaves open.
 _claims_msg=$(sh "$0" cmd 'git push origin :refs/claims/ROW-X' 2>&1 >/dev/null || true)
 case "$_claims_msg" in
-  *"DELETES INCLUDED"*"NOT covered"*"update-ref"*"export KIT_CLAIM_FRONT_DOOR=1"*"plain terminal"*)
-    echo "PASS deny: the claim-ref deny message claims destruction AND discloses the routes it leaves open" ;;
+  *FRONT_DOOR*|*"NOT covered"*|*update-ref*)
+    echo "FAIL: the claim-ref deny message names a bypass or a sentinel again (the ceiling belongs in the escape-card row), got: $_claims_msg"; fail=1 ;;
+  *"DELETES INCLUDED"*"ceiling is stated in the escape-card row"*"escape card R18 claims"*)
+    # SWAS-301a (security M1): coverage stays in the message (it claims destruction); the ceiling is disclosed in the R18 row.
+    _claims_ceil=$(awk '/^\*\*Ceiling, stated here/{f=1} f&&/^$/{f=0} f' docs/operations/runtime-guards.md)
+    if printf '%s' "$_claims_ceil" | grep -qF 'export KIT_CLAIM_FRONT_DOOR=1' \
+       && printf '%s' "$_claims_ceil" | grep -qF 'update-ref' \
+       && printf '%s' "$_claims_ceil" | grep -qF 'plain terminal'; then
+      echo "PASS deny: the claim-ref deny message claims destruction, names no bypass, and the R18 row discloses the routes it leaves open"
+    else
+      echo "FAIL: the R18 escape-card ceiling does not disclose the front-door sentinel route"; fail=1
+    fi ;;
   *)
-    echo "FAIL: the claim-ref deny message does not state its coverage and its ceiling, got: $_claims_msg"; fail=1 ;;
+    echo "FAIL: the claim-ref deny message does not state its coverage and point at its ceiling row, got: $_claims_msg"; fail=1 ;;
 esac
 
 # --- GUARD-HOOKSPATH-CASE-BYPASS: config-key / secret-name matchers fold case (D-240813-1) ---
@@ -907,6 +927,16 @@ klog_check "write whose segment contains ] is read_shaped=0" "$(klog_rs)" "0"
 : > "$KLOG_FILE"
 klog_run 'for p in conformance/*.sh; do wc -l "$p"; done'
 klog_check "loop-head read the tier judged read is read_shaped=1" "$(klog_rs)" "1"
+# SWAS-301a (NOH-P4): the bit is read off the write-route pointer in the segment-FREE view of the reason. A refused READ whose own
+# command text quotes that pointer is still a read (the echoed segment, up to its first `]`, is cut out). A segment that
+# contains a `]` BEFORE the quoted marker still leaks the marker into the view; that is OPEN (SWAS-331, design 301 §8 M7).
+: > "$KLOG_FILE"
+klog_run "sh -c 'grep escape card R30 cp-write conformance/verify.sh'"
+klog_check "a refused read that quotes the write-route pointer is still read_shaped=1" "$(klog_rs)" "1"
+# …and the other direction: a refused WRITE carries the pointer in its own reason (not in the segment) and logs 0.
+: > "$KLOG_FILE"
+klog_run 'cp /tmp/x conformance/verify.sh'
+klog_check "a refused write that carries the write-route pointer is read_shaped=0" "$(klog_rs)" "0"
 # 3. An ALLOW writes NOTHING. (If this ever fails the log stops being a deny log.)
 rm -f "$KLOG_FILE"
 klog_run 'npm test'

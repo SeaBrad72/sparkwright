@@ -11,7 +11,16 @@ pointing at a tracked, non-stub file. An ordinary docs-only PR and an XS/S ordin
 | Row | `___` |
 | Design of record | `docs/architecture/<date>-<slug>-design.md` |
 | Change class (derived, never self-asserted) | `ordinary` \| `sensitive` \| `control-plane` |
-| Seats | builder ___ · reviewer ___ · security ___ |
+
+## Team
+*(Presented to the human after the design GO and before the build; non-blocking, the build proceeds unless the human changes a row. Name seats and tiers, and the concrete model your project's `.kit/model-map.conf` maps each tier to; the table lives only here. Add a row for any change from the project's defaults.)*
+
+| seat | tier | concrete model | why |
+|---|---|---|---|
+| conductor | ___ | ___ | ___ |
+| builder | ___ | ___ | ___ |
+| reviewer | ___ | ___ | ___ |
+| security | ___ | ___ | ___ |
 
 ## Task list
 *(The slice, INVEST-sliced into steps you will actually follow. The review record's Rounds table cites
@@ -19,16 +28,6 @@ the commits these produce.)*
 
 1. ___
 2. ___
-
-## Design-promised controls
-**Carried forward from the design, verbatim — this table is the SOURCE for the review record's table of
-the same name.** Every promise the design makes about a control that will exist gets a row here, and at
-review time each row must resolve to `path::test-name` or be recorded as `not built, because <reason>`.
-A design promise with no row here is how a control quietly stops being built.
-
-| control (from the design) | expected discharge |
-|---|---|
-| ___ | `path::test-name` |
 
 ## Ceremony budget
 One line, derived from the change class, so the owner can veto it in a sentence: ___

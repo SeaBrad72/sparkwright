@@ -8,7 +8,7 @@ description: Use BEFORE any creative or feature work — turning an idea, reques
 The kit's own design skill: take an idea → a design the owner has approved, through collaborative dialogue plus the kit's design disciplines. Replaces (does not depend on) superpowers `brainstorming`.
 
 <HARD-GATE>
-Do NOT write code, scaffold a project, or take any implementation action until you have presented a design and the owner has approved it. Every slice, however simple. A "simple" change gets a short design — but it is still presented and approved.
+Do NOT write code, scaffold a project, or take any implementation action until you have presented a design and the owner has approved it. Every slice, however simple. A "simple" change gets a short design — but it is still presented and approved. For XS/S the design is the note and its lens line, shown in the GO ask before any code (conduct, not enforced).
 </HARD-GATE>
 
 ### Inception exception (Phase 0 is not a loop feature)
@@ -25,7 +25,7 @@ architecture-first still holds at Phase 0, it is simply gated there. **Do not co
      Edits that drop or rename them can turn the skill-spine lock RED. -->
 
 ## When to use
-Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin. **XS/S ordinary work does not owe a design doc, a plan file or a review record**: the design note and task brief ride the PR body, one reviewer, security once on the built diff, nits accepted in the PR rather than a new round; M, Sensitive and Control-plane owe them as before, except the small control-plane lane: a control-plane slice under about 50 non-test lines that adds no mechanism (a trial through v3.239.0) may commit its own new short design file (the design note and the twelve-row lens table) as its design GO's only basis, and skip the long-form design and the independent lens seat; the plan file, the review record and the security pass are still owed. Say in the PR that the slice uses this lane.
+Before any feature, component, behaviour change, or new project — the moment implementation would otherwise begin. **XS/S ordinary work does not owe a design doc, a plan file or a review record**: the design note and task brief ride the PR body, one reviewer, security once on the built diff, nits accepted in the PR rather than a new round (on a tracker backend `review-lane` cannot read the size, so every non-docs ordinary PR owes a plan and a record until a later change reads it from the tracker); M, Sensitive and Control-plane owe them as before, except the small control-plane lane: a control-plane slice under about 50 non-test lines that adds no mechanism (a trial through v3.239.0) may commit its own new short design file (the design note and the twelve-row lens table) as its design GO's only basis, and skip the long-form design and the independent lens seat; the plan file, the review record and the security pass are still owed. Say in the PR that the slice uses this lane.
 
 ## The flow (the proven spine)
 1. **Explore context first** — read the codebase, the kit's principles (`CLAUDE.md` / `DEVELOPMENT-STANDARDS.md`), recent commits, the relevant design docs. Never design from assumptions.
@@ -34,8 +34,8 @@ Before any feature, component, behaviour change, or new project — the moment i
 3. **Propose 2-3 approaches** with trade-offs; lead with a recommendation and why.
 4. **Present the design in sections** scaled to complexity; get approval per section.
 5. **HARD GATE — owner approval before any implementation.**
-6. **Write the spec** to `docs/architecture/<date>-<topic>-design.md` (tracked, cold-resumable) or `docs/superpowers/specs/` (local); commit it.
-7. **Self-review the spec** — placeholders, internal consistency, scope, ambiguity, and the lens review below; fix inline.
+6. **Write the spec** to `docs/architecture/<date>-<topic>-design.md` (tracked, cold-resumable) or `docs/superpowers/specs/` (local); commit it. An M, Sensitive or Control-plane design carries a `## Design-promised controls` section (each control the design promises and the test that will discharge it); the review record's table is carried from it.
+7. **Self-review the spec** — placeholders, internal consistency, scope, ambiguity, and the lens review below; fix inline. For an M, Sensitive or Control-plane design, an independent seat (chosen by role, never by model) reads the twelve lenses on the committed design before the design GO is asked (conduct, not enforced).
 8. **Owner reviews the written spec**, then hand to the **plan** skill. Do NOT start implementation from this skill.
    - An amendment made after a GO that adds a mechanism, a variable, a record value, a gate leg or an exemption is a design revision with its own GO, never a slip. The amendment's heading names every class of item it contains.
 
@@ -99,7 +99,7 @@ ceremony rule above:
 | 5 | CI | What does it do to CI time, reliability and coverage? | Minutes added or saved, any new flake surface, coverage gained or lost. |
 | 6 | DevOps and operations | Can it be deployed, rolled back and observed? | The deploy and rollback path, and the signal that shows it working or failing. |
 | 7 | Security, privacy and guardrails | Does any agent gain a capability it lacks today? What data does it touch, and what happens to it? Any regulatory obligation? | Yes or no on capability, with the code that shows it; the data and where it goes; the obligation, or none. **This row sets the Definition of Ready's conditional flags**: threat model / privacy review, eval criteria, compliance. |
-| 8 | Cost and size | Is the size honest, and what does it cost in tokens, CI minutes and infrastructure, to run and to maintain? | The size with its basis; the run cost and the upkeep cost. |
+| 8 | Cost and size | Is the size honest, and what does it cost in tokens, CI minutes and infrastructure, to run and to maintain? | The size with its basis; the run cost and the upkeep cost. Each number is labelled measured or estimate; an estimate gives a range and its assumption (conduct, not enforced). |
 | 9 | Product | Does it serve a real need, with a success metric? | The need, who has it, and the metric that will say it worked. |
 | 10 | Design | Is it the simplest shape that solves the problem? | The smaller shape you considered and why it falls short. |
 | 11 | Architecture | Does it respect the seams, contracts and neutrality already frozen? | The seam or contract touched and how it is kept, or the ruling that changes it. |

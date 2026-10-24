@@ -46,7 +46,14 @@ set -eu
 # so TOTAL_BUDGET is raised 970 -> 972 to restore that 2-line bite rather than leave the total at a
 # knife's edge for the next doc edit. Both are CONSTANT edits in a reviewed PR, called out here so the
 # ratifier judges them explicitly.
-BUDGETS="CLAUDE.md:138 DEVELOPMENT-PROCESS.md:485 DEVELOPMENT-STANDARDS.md:350"
+# ⚠️ GOVERNED BUMP AT KIT-SPEC-MATCHES-PRACTICE (SWAS-299, 2026-10-22): CLAUDE.md 138 -> 140, +2, for the two new
+# Core Principles, 7 "Honest by default" (A1) and 8 "Neutral by construction" (A3), one line each. OWNER-RATIFIED:
+# the owner accepted principle amendments A1-A4 on 2026-10-18, and answered the design's question 4 (a), the governed
+# bump rather than a fold of the two into one line, with the design GO "GO 299 design, 1a 2a 3a 4a 5b 6a 7a 8a 9a 10a
+# 11a". RE-DERIVED with this gate's own `awk 'END{print NR}'`: CLAUDE.md 140 + DEVELOPMENT-PROCESS.md 482 +
+# DEVELOPMENT-STANDARDS.md 350 = 972, which sits exactly on TOTAL_BUDGET (no bite left on the total; the next edit to
+# any of the three asks for it in a reviewed PR). A CONSTANT edit in a reviewed PR, called out here for the ratifier.
+BUDGETS="CLAUDE.md:140 DEVELOPMENT-PROCESS.md:485 DEVELOPMENT-STANDARDS.md:350"
 TOTAL_BUDGET=972
 
 # check_one <path> <max>: print PASS/FAIL; return 1 if over budget or missing.

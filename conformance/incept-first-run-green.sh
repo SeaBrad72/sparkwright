@@ -513,6 +513,14 @@ tracker_conf_stamp_tests() {  # appends to $st
     else
       echo "selftest FAIL: the greenfield stamp must carry a state map"; st=1
     fi
+    # SWAS-303a: the kit's own model map is export-ignored, so incept stamps the adopter's from the template:
+    # every value `unset` and `decision=none` (the honest single-model case), never a vendor default.
+    if grep -q '^decision=none' "$_t/.kit/model-map.conf" 2>/dev/null &&
+       ! grep -E '^(apex|deep|fast|light)=' "$_t/.kit/model-map.conf" | grep -qv '=unset$'; then
+      echo "selftest PASS: incept stamps .kit/model-map.conf from the template, every value unset"
+    else
+      echo "selftest FAIL: incept must stamp .kit/model-map.conf from the template (decision=none, every value unset)"; st=1
+    fi
   else
     echo "selftest FAIL: incept --backlog jira exited non-zero"; printf '%s\n' "$INCEPT_OUT" | tail -5 | sed 's/^/    /'; st=1
   fi

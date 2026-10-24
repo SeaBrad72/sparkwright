@@ -61,11 +61,11 @@
 ## Extended spec (Plan phase) — *optional*
 > Fill this **only** when the request is promoted to **Plan** (`DEVELOPMENT-PROCESS.md` §4) and needs a
 > fuller PRD before Build. It is the **manual alternative** to a brainstorming-flow spec — tool-neutral;
-> if you use the superpowers brainstorming flow it produces an equivalent. A reviewer signs it off at
-> the **spec gate** (§7) before Build. Leave blank for small/obvious slices — a vibe-coder or a tiny
+> if you use the superpowers brainstorming flow it produces an equivalent. A reviewer reads it
+> with the design before Build. Leave blank for small/obvious slices — a vibe-coder or a tiny
 > increment never needs it. (The base sections above — *Problem & user*, *Success metric*,
 > *UX & accessibility* — carry forward; this section adds the Plan-phase depth, it doesn't repeat them.)
-> After sign-off, scope changes are a **new revision** — note them here.
+> After the design GO, scope changes are a **new revision** — note them here.
 
 ### Goals & non-goals
 > What this delivers; what it explicitly does **not** (the YAGNI fence).

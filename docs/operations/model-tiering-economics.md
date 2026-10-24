@@ -9,8 +9,9 @@ executable: the per-task **Model tier (dispatch)** field in
 the fan-out/serialize marking discipline in [`skills/plan/SKILL.md`](../../skills/plan/SKILL.md),
 the tier declarations in `.kit/model-tiers.conf`, and the CI lock
 [`conformance/model-tiering-plan-wired.sh`](../../conformance/model-tiering-plan-wired.sh) that
-keeps a plan from shipping without them. Ratification happens at **plan approval** (ruling
-`D-240804-5`), never per dispatch.
+keeps a plan from shipping without them. The tiers are **presented** in the plan's team table
+(`D-241021-2`, which amends `D-240804-5`): the human may change a row and nothing waits for a
+ratification; tiers are never set per dispatch.
 
 The receipt is written down here because until now it lived only in session memory — a doctrine
 whose justifying measurement is not in the repo is a doctrine the next reader has to take on trust.

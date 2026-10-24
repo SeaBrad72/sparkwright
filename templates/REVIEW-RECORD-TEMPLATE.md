@@ -14,10 +14,6 @@ migration · prod deploy · money/irreversible) ALSO need the **Acknowledgments*
 | Change / PR | #___ |
 | Risk tier | `default` \| `high-risk` — trigger: ___ |
 | Builder | ___ |
-| Reads | ___ |
-| NEEDS-FIXES rows | ___ |
-| Size declared (XS-L) / built (lines) | ___ |
-| Cost (tokens) | ___ — counted once per message id; a resumed subagent metered as the delta |
 | Independent review by | the kit's `reviewer` (+ `security-reviewer` if a security/auth/data/AI boundary) subagent — findings recorded below |
 
 ---
@@ -34,9 +30,11 @@ below is INDENTED — an example at column 0 would be the first match and the gr
 placeholder instead of your value (measured, 2026-09-04):
 
 ```
-  Builder: <seat/model/identity>
-  Reviewer: <seat/model/identity>        ← MUST differ from Builder
+  Builder: builder (two seats), conductor integrated   ← first word is a seat role
+  Reviewer: <seat/model/identity>                       ← MUST differ from Builder
 ```
+
+**Seat roles (`SWAS-300`).** The first word of the `Builder:` line, of every Rounds seat cell and of the word after `seat` on the security line is a role declared by the kit's `agents/*.agent.md` (`builder`, `reviewer`, `security`, `conductor`). Every Rounds seat is `reviewer`; on a Sensitive or Control-plane change the security seat is `security`. The model or tier after the role word is free text and is never graded. The check grades that the record **names** declared seats; it cannot see that a seat ran.
 
 Builder: ___
 Reviewer: ___
@@ -47,7 +45,7 @@ already in the base). The **last** round must be `APPROVE` (an open `NEEDS-FIXES
 after it that is not bookkeeping (`docs/reviews/`, `docs/plans/`, `BACKLOG.md`) only WARNs — nobody has
 reviewed it, and the forge's `dismiss_stale_reviews` re-gates it.
 
-| commit | reviewer seat | verdict (APPROVE\|NEEDS-FIXES) | findings (n) |
+| commit | reviewer seat (role first) | verdict (APPROVE\|NEEDS-FIXES) | findings (n) |
 |---|---|---|---|
 | ___ | ___ | ___ | ___ |
 
@@ -63,7 +61,7 @@ recordable result.
 |---|---|---|---|
 
 ## Design-promised controls
-Carried from the plan record's table of the same name. Each row resolves to `path::test-name` — where
+Carried from the design's table of the same name. Each row resolves to `path::test-name` — where
 the token appears on an **executable line**, not a comment — or says `not built, because <reason>`.
 
 | control (from the design) | discharged by |
@@ -71,13 +69,13 @@ the token appears on an **executable line**, not a comment — or says `not buil
 | ___ | `path::test-name` |
 
 ## Security review
-`D-240904-1`: the diff security review is the default; only that a verdict is present is graded. One of:
+`D-240904-1` as amended by `D-241021-1`: the diff security review by a separate seat is the default, and this section is where its verdict lives (the PR body carries no security line); only that a verdict is present is graded. Waivers are counted in the slice retro from these sections. One of:
 
-- `ran — seat <…>, verdict: <…>` (findings go in the table above), or
+- `ran — seat <role>, verdict: <PASS | PASS-WITH-NOTES | FAIL>` (findings go in the table above; the role is `security` on a Sensitive or Control-plane change), or
 - `waived — no-untrusted-input · no-new-permission · no-control-plane-surface · no-operator-shell`
   (all four criteria, verbatim, or it is not a waiver).
 
-ran — seat ___, verdict: ___
+ran — seat security, verdict: ___
 
 ## Task status  *(RECOMMENDED, UNGRADED — `conformance/review-lane.sh` neither requires nor reads it)*
 One row per numbered task in the plan, so a slice that is parked mid-build can be resumed cold.

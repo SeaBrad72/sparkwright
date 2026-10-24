@@ -210,19 +210,21 @@ refusal on `land` writes no note, and a refusal on either verb attempts no merge
   A branch cut before the key merged carries no key, so it reads observe at its head until it merges main.
 - **The meter is called with the redirection env scrubbed** (`KIT_RUNAWAY_SANDBOX`, `RUNAWAY_TALLY`,
   `RUNAWAY_BUDGET_CONFIG` are unset for that one call), so a caller cannot point the gate at a tally it wrote.
-- **Verdicts.** rc 0 (metered): print the meter line, proceed. rc 3 (never metered): enforce refuses, observe prints
-  `unmetered: <ROW> (observe — not gating)` and proceeds. rc 2 (the guard failed closed) and any other rc, including
+- **Verdicts.** rc 0 (metered): print the meter line, proceed. rc 3 (never metered): both modes proceed (SWAS-302: the
+  kit does not meter a conductor's dispatches); observe prints `unmetered: <ROW> (observe — not gating)` and enforce
+  prints `unmetered: <ROW> (enforce — an unmetered row is not a landing condition)`. rc 2 (the guard failed closed) and any other rc, including
   127 (guard script missing): enforce refuses naming it, observe prints one line. **rc 1 (metered, at or past the
   ceiling): proceed in both modes**, with `STOP: <ROW> tokens(n/N) … — ceiling breached (landed anyway: approved)` on
   stderr and repeated in the landing report. This is the owner's ruling (F3 "Option A"): `step` already stopped the work
   when the ceiling was crossed, so a refusal after Approve would only force an owner keystroke; surfacing a breach
   *before* Approve belongs to `RUNAWAY-METERING-REVIEW-LEG`. **No row** (no trailer, `(none)`): enforce refuses
   ("cannot meter an unnamed row"), observe prints one line.
-- **The enforce refusal names the remedy:** record the slice's **actual summed dispatch usage** with
-  `sh scripts/runaway-guard.sh step --row <ROW> --tokens N --agents N`; if the usage is unknown, stop and ask the owner,
-  **never estimate**; a resumed subagent reports its usage cumulatively, so sum each agent's last report once and
-  meter a resume as the delta from its previous metered report (its first report metered in full), never its reports
-  summed; or the owner ratifies a dial change on the default branch. There is no per-call bypass flag.
+- **Recording usage is optional.** The enforce refusal of an unmetered row (and the remedy it printed) was dropped by
+  SWAS-302. To record a slice's usage anyway, use `sh scripts/runaway-guard.sh step --row <ROW> --tokens N --agents N`
+  with the **actual summed dispatch usage**; if the usage is unknown, do not estimate it; a resumed subagent reports
+  its usage cumulatively, so sum each agent's last report once and meter a resume as the delta from its previous
+  metered report (its first report metered in full), never its reports summed. A dial change is the owner's, on the
+  default branch. There is no per-call bypass flag.
 - **Docs-only exemption, derived not declared.** The base is the **remote's** `main` (`git ls-remote origin
   refs/heads/main`, which must also exist locally), never the local `origin/main` ref an agent can move; the listing is
   `git diff --name-only --no-renames $(git merge-base <remote-main> <sha>) <sha>`, classified with `conformance/ci-classify-changes.sh` (reused, not
@@ -231,8 +233,9 @@ refusal on `land` writes no note, and a refusal on either verb attempts no merge
   empty listing, or an absent or failing classifier means **not** docs-only, and a `.sh` -> `.md` rename lists both
   paths, so it is not exempt. When the base is the reason, one line says so in both modes (`docs-only exemption unavailable:
   cannot read origin's main`, or `… origin/main tip not fetched — git fetch origin`). Docs is the class that ran away most recently (#710); exempting it is the owner's ruling.
-- **Honest ceiling.** The gate proves a row was metered **ever**, not **honestly**: `step --row R --tokens 1 --agents 1`
-  passes it. It does not own row identity: a trailer naming any metered row passes (the row-to-branch binding belongs to
+- **Honest ceiling.** Before SWAS-302 the gate proved a row was metered **ever**, not **honestly** (`step --row R --tokens 1
+  --agents 1` passed it), which is why the unmetered-row refusal was dropped. What remains is the ceiling STOP line (rc 1
+  never refuses). It does not own row identity: a trailer naming any row passes; a metered one is checked against its ceiling (the row-to-branch binding belongs to
   `loop-state` / `backlog-presence`). The tally is **per machine**, so a row metered on another machine reads as
   unmetered here. Both the STOP line and "metered" ride on that self-reported, uid-writable, per-machine tally (and on
   `$HOME`): whoever can write it can suppress them, which is inside the "ever, not honestly" ceiling. On `actuate` the
@@ -356,10 +359,10 @@ done
   limit in your LLM provider's console — this is the backstop above E4d, and the only control
   that can actually stop mid-completion billing. See `docs/operations/cost-governance.md`.
 - **The count is self-reported.** The harness supplies the numbers; the platform usage cap is the hard stop.
-- **Mandatory metering, only at landing, only where the dial says so.** A session that never steps is invisible
-  while it works; `land`/`actuate` refuse an unmetered row only in a repo whose approved tree carries
-  `RUNAWAY_METERING_GATE=enforce` (this repo does; an adopter export ships none), and the gate proves "ever metered",
-  not "honestly metered" (see *The landing gate*).
+- **Metering is optional at landing (SWAS-302).** A session that never steps is invisible while it works, and
+  `land`/`actuate` no longer refuse an unmetered row (they note it). In a repo whose approved tree carries
+  `RUNAWAY_METERING_GATE=enforce` (this repo does; an adopter export ships none) they still refuse a commit with no
+  `Kit-Row`, an absent guard and an unreadable tally (see *The landing gate*).
 - **A new row id gets a fresh budget.** `check`'s never-claimed flag makes a made-up row visible, not impossible.
 - **A ceiling across MACHINES.** The tally is per machine (and per repo): a slice built on two machines
   has two tallies. The provider's spend cap is the only control that spans them.

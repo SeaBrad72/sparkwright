@@ -3,11 +3,16 @@
 #
 # Resolves a teammate's effective MODEL tier from role + task signals, enforcing the
 # control-plane policy in .kit/model-tiers.conf: pinned judgment/verification seats always
-# resolve `deep`; control-plane/critical-path/sensitive tasks are FLOORED to `deep`; variable
-# seats (engineer/explorer) may run a requested tier within their allowed set, defaulting HIGHER
-# when unspecified or when a valid-but-disallowed tier is requested. Fail-closed (exit 2) on any
+# resolve `deep` and refuse a dispatch-time override; a change-class floor applies ONLY if the policy lists one
+# (the kit's shipped policy lists none since D-241018-2; --critical-path still forces `deep` until 303b); variable
+# seats (engineer/explorer) may run a requested tier within their allowed set, defaulting to the seat's
+# DEFAULT_<role> when unspecified or when a valid-but-disallowed tier is requested. Fail-closed (exit 2) on any
 # ambiguity — an unknown role never slips past the pins.
 #
+# SWAS-303a (D-241018-2): the shipped policy no longer carries a change-class floor, so control-plane and
+# sensitive work resolves to the seat's own tier. KNOWN ISSUE until 303b: this resolver still keeps a top tier
+# (TOP), still forces --critical-path to it, and still reads an unknown change-class as top. Those are the same
+# ranking assumption the floor made and leave with the seat/profile resolver.
 # NOTE: "tier" = MODEL tier, NOT the autonomy/promotion tier (scripts/tier-advice.sh, DEV-PROCESS §13).
 # The kit cannot INVOKE a model — this emits an abstract tier; a per-harness adapter binds tier->model
 # (.kit/model-map.conf, Slice 2). FLOOR: tier resolved + pins/floors enforced here in neutral shell.
@@ -18,8 +23,9 @@
 # Exit:   0 resolved (effective tier on stdout) | 2 UNVERIFIED (bad config/role/tier — fail-closed).
 # What it changes: read-only — reads .kit/model-tiers.conf and prints the resolved abstract tier; mutates nothing.
 # Guardrails: fail-closed (exit 2) on a missing/bad config, unknown role, or unknown requested tier; the policy
-#   config (.kit/model-tiers.conf) is control-plane (agent-immutable); pins + floors can only hold or RAISE a
-#   tier, never downgrade a pinned seat or a floored (control-plane/critical-path/sensitive) task.
+#   config (.kit/model-tiers.conf) is control-plane (agent-immutable); pins + any floors the policy lists can only
+#   hold or RAISE a tier, never downgrade a pinned seat or a floored task (--critical-path, and any change-class the
+#   policy lists; the kit's shipped policy lists none).
 set -eu
 
 CONFIG="${MODEL_TIERS_CONFIG:-.kit/model-tiers.conf}"
@@ -75,10 +81,11 @@ resolve() {
   #    malformed/miscased/typo'd class can never DOWNGRADE a floored task (the asymmetric-fail bug:
   #    role fails closed, so change-class must too). Empty change-class = not provided -> no floor
   #    (e.g. a read-only Explorer), so the requested/default tier stands.
-  #    FABLE-TIER (2026-07-23): the floor is evaluated FIRST — BEFORE apex-escalation and the pin — so a
-  #    control-plane / sensitive / critical task is forced to `deep` and can NEVER reach `apex` (D1: the
-  #    highest-scrutiny work stays on the most-proven model). Behavior-preserving for pinned seats (a pin
-  #    on a floored task returns TOP either way, so moving the floor above the pin changes nothing there).
+  #    FABLE-TIER (2026-07-23) put the floor FIRST — before apex-escalation and the pin — so a floored task could
+  #    never reach `apex` (clause D1: the highest-scrutiny work stays on the most-proven model). D1 IS SUPERSEDED by
+  #    D-241018-2 (SWAS-303a): the shipped policy lists no floor class, so a control-plane/sensitive engineer's explicit
+  #    `--requested apex` now reaches `apex` (step 2). Only --critical-path (and the unknown-class rule) still forces
+  #    `deep` here; both leave with 303b. The ordering is kept: a policy that lists a floor class still wins over apex.
   if [ "$critical" -eq 1 ]; then printf '%s\n' "$TOP"; return 0; fi
   if [ -n "$change_class" ]; then
     if in_csv "$change_class" "$floor_cc"; then printf '%s\n' "$TOP"; return 0; fi
@@ -135,6 +142,16 @@ selftest() {
     if ( resolve "$@" ) >/dev/null 2>&1; then echo "FAIL: $_d — wanted exit 2, got 0"; fail=1
     else _rc=$?; if [ "$_rc" -eq 2 ]; then echo "PASS: $_d (exit 2)"; else echo "FAIL: $_d — wanted exit 2 got $_rc"; fail=1; fi; fi
   }
+  # SWAS-303a: the legs below exercise the resolver's MECHANISM (pins, floors, apex, fail-closed) on a FIXTURE
+  # policy, so the kit's own policy file (which no longer carries a change-class floor) cannot fix the behaviour
+  # under test. The shipped policy is graded separately, after these legs, under "shipped:".
+  _shipped_config=$CONFIG
+  _fixture_config=$(mktemp)
+  printf '%s\n' 'TIERS=apex,deep,fast,light' 'PIN=orchestrator,reviewer,security,architect,plan,verification' \
+    'APEX_ELIGIBLE=engineer,architect,plan' 'VARIABLE=engineer,explorer' 'ALLOWED_engineer=deep,fast' \
+    'ALLOWED_explorer=deep,fast,light' 'DEFAULT_engineer=deep' 'DEFAULT_explorer=fast' \
+    'CHANGE_CLASSES=ordinary,sensitive,control-plane' 'FLOOR_CHANGE_CLASS=control-plane,sensitive' > "$_fixture_config"
+  CONFIG=$_fixture_config
   # PIN holds (load-bearing negative — a regression that downgrades a judgment seat MUST fail here)
   t  "pin: reviewer ignores downgrade"    deep  --role reviewer --requested fast
   t  "pin: security ignores downgrade"    deep  --role security --requested light
@@ -179,6 +196,36 @@ selftest() {
   t  "apex denied: orchestrator stays deep"     deep  --role orchestrator --requested apex
   # explorer: neither apex-eligible nor apex-in-ALLOWED -> clamps to its own default (never apex)
   t  "apex denied: explorer -> default fast"    fast  --role explorer --requested apex
+  # --- SWAS-303a: the SHIPPED policy (the change-class floor is retired as a kit default; D-241018-2) ---
+  CONFIG=$_shipped_config
+  # These legs grade the KIT'S OWN shipped policy, so they run on the kit tree only (the docs/ROADMAP-KIT.md marker an
+  # export strips). An adopter's model-tiers.conf is theirs: a pre-303a policy with a floor must not red on upgrade
+  # (owner Q3 a, MINOR). The adopter-shaped cell below proves it.
+  if [ -f "$(dirname "$0")/../docs/ROADMAP-KIT.md" ]; then
+    # liveness: a control-plane or sensitive builder resolves to the builder default, NOT the top tier. If the
+    # shipped policy floors them again, this leg reads deep and the retirement is undone.
+    t  "shipped: control-plane builder -> fast"           fast  --role engineer --requested fast --change-class control-plane
+    t  "shipped: control-plane builder (no request) -> fast" fast --role engineer --change-class control-plane
+    t  "shipped: sensitive builder -> fast"               fast  --role engineer --requested fast --change-class sensitive
+    # D-241018-2: with the floor retired, a control-plane engineer's explicit opt-in to apex now reaches it
+    t  "shipped: control-plane engineer --requested apex -> apex (D1 superseded)" apex --role engineer --requested apex --change-class control-plane
+    # the pin governance holds under the shipped policy: no dispatch-time request moves a judgment seat
+    t  "shipped: reviewer pin holds under the shipped config" deep --role reviewer --requested fast --change-class control-plane
+    # an adopter-shaped tree (no kit marker, a pre-303a policy with a floor and a deep default) must selftest green
+    # The inner run sets MODEL_TIER_ADOPTER_CELL=1 and skips this cell, so a broken marker gate turns the cell RED
+    # instead of recursing without a bound.
+    if [ -z "${MODEL_TIER_ADOPTER_CELL:-}" ]; then
+      _adopter=$(mktemp -d); mkdir -p "$_adopter/scripts" "$_adopter/.kit"
+      cp "$0" "$_adopter/scripts/model-tier.sh"; cp "$_fixture_config" "$_adopter/.kit/model-tiers.conf"
+      if ( cd "$_adopter" && env -u MODEL_TIERS_CONFIG MODEL_TIER_ADOPTER_CELL=1 sh scripts/model-tier.sh --selftest ) >/dev/null 2>&1; then
+        echo "PASS: an adopter-shaped tree (pre-303a policy, no kit marker) selftests green"
+      else
+        echo "FAIL: an adopter-shaped tree (pre-303a policy, no kit marker) must not red on the kit's shipped-policy legs"; fail=1
+      fi
+    fi
+  else
+    echo "SKIP: shipped: legs grade the kit's own policy and run on the kit tree only"
+  fi
   if [ "$fail" -eq 0 ]; then echo "model-tier selftest: ALL PASS"; return 0
   else echo "model-tier selftest: FAILURES"; return 1; fi
 }

@@ -50,6 +50,7 @@ conformance/container-supply-chain.sh	EXCLUDED	no --selftest substring — no or
 conformance/containment-audit-wired.sh	KILLED	-
 conformance/control-plane-revert-drill.sh	KILLED	-
 conformance/decision-id-live.sh	KILLED	-
+conformance/decision-integrity.sh	KILLED	-
 conformance/dep-scan-visibility.sh	KILLED	-
 conformance/deploy-decision-integrity.sh	EXCLUDED	no --selftest substring — no oracle to mutate
 conformance/dial-state.sh	KILLED	-
@@ -72,6 +73,7 @@ conformance/inception-done.sh	KILLED	-
 conformance/loop-state.sh	KILLED	-
 conformance/metrics-endpoint-wired.sh	KILLED	-
 conformance/mode-enforcement-blind.sh	UNCOVERED	context/run-location
+conformance/model-tiering.sh	KILLED	-
 conformance/named-adapters.sh	KILLED	-
 conformance/non-vacuity.sh	KILLED	-
 conformance/obligation-lib.sh	KILLED	-

@@ -40,8 +40,8 @@ INPUT=$(cat) || _guard_fault input-read
 # would then come back empty and look like "nothing to judge". Fork-free test.
 case $INPUT in *[![:space:]]*) : ;; *) _guard_fault input-read ;; esac
 
-# escape for a JSON double-quoted value (backslash + quote; reasons have no control chars)
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+# escape for a JSON double-quoted value (backslash + quote; reasons have no control chars, and any that a clone-controlled name smuggles in become a space)
+json_escape() { printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g'; }   # G-JSON-CTRL
 emit_deny() {
   # ⚠️⚠️ ORDER IS A SECURITY PROPERTY (C1b, review round 1) — THE DECISION IS PRINTED FIRST.
   # The first cut logged BEFORE this printf, which meant a logging pathology could preempt the
@@ -105,7 +105,7 @@ tool_name_grep() {
 deny_if_mutating() {
   case "$1" in
     Bash|Write|Edit|NotebookEdit|MultiEdit|mcp__*)
-      emit_deny "agent-guard: $2 (DEVELOPMENT-PROCESS.md 13). Mutating tools are denied until resolved." ;;
+      emit_deny "agent-guard: $2 (DEVELOPMENT-PROCESS.md 13). Mutating tools are denied until resolved.$(_guard_stop_pointer adapter)" ;;
     *) allow ;;
   esac
 }
@@ -118,7 +118,7 @@ if ! command -v jq >/dev/null 2>&1; then
   deny_if_mutating "$_gq_name" "jq is required to evaluate tool safety; install jq"
 fi
 if ! TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null); then
-  emit_deny "agent-guard: tool input is not valid JSON — cannot verify safety; denying (DEVELOPMENT-PROCESS.md 13)."
+  emit_deny "agent-guard: tool input is not valid JSON — cannot verify safety; denying (DEVELOPMENT-PROCESS.md 13).$(_guard_stop_pointer adapter)"
 fi
 # The jq read above exits 0 with "" when its producer fork failed (jq saw an empty stdin) — and "" reaches
 # the `*) allow` arm. A harness event always names its tool: an empty name is a fault.

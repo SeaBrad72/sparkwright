@@ -38,8 +38,8 @@ Otherwise a **one-line default** suffices (see the bottom of this template). Mat
 ### Model tier (dispatch)
 - **<deep|fast|light>** — the abstract MODEL tier this step is dispatched at, resolved by
   `scripts/model-tier.sh resolve --role <role> --change-class <c>` (pins + floors enforced there). The
-  Orchestrator surfaces this tier **with a one-line rationale in the Build Plan** for human approval (the
-  ratification point); a harness adapter binds it (Slice 2b). **Declared ≠ bound** — this records the tier
+  Orchestrator presents this tier **with a one-line rationale in the plan's team table** (non-blocking:
+  the human may change a row); a harness adapter binds it (Slice 2b). **Declared ≠ bound** — this records the tier
   the step was dispatched at, not proof the harness honored it. Pinned seats
   (orchestrator/reviewer/security/architect/plan/verification) are always `deep`; absent ⇒ `deep` (fail-safe).
 

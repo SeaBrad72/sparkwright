@@ -90,6 +90,20 @@ exactly the warranted set, serially:
 
 A docs-only delta runs the core and warrants nothing.
 
+**The heavy-arm lock** (SWAS-278b). Two pre-push runs on one machine, in two clones, no longer overlap their heavy phase.
+- A run takes one kernel lock, `$HOME/.local/state/sparkwright/heavy-arm.lock`, before its first heavy unit (`core-selftest` in the
+  default run; `core-live` and the Tier-2 arms under `--warranted`) and holds it until its last. The light units run unlocked.
+- A second run waits: it polls every 15 s, prints who holds the lock every 5 minutes, and gives up after one 5400 s budget per run.
+  Every remaining heavy unit is then `UNVERIFIED`, never `OK`. There is no knob for the budget.
+- The lock comes from `flock(1)` (Linux) or the system `/usr/bin/perl` (macOS). With neither, with a symlinked or foreign-owned lock
+  file, or with a world-writable state directory, the heavy units are `UNVERIFIED`. The lock file is never deleted; the kernel frees the
+  lock when its holder dies. The holder note beside it (`heavy-arm.holder`) is display only.
+- `heavy_busy` stays as a second check for heavy work started outside a lane, and the memory floor is re-read after a wait.
+- The pass cache now records the tree that produced a pass, and a run honours only its own tree's records (a pass the lane records in a clone never
+  skips an arm in the main checkout; the producer column is provenance, not authentication, since any process of the same user can write it). The `SKIP` line names the producer. The cache is off when `git ls-files -v` shows a tag other
+  than `H`, `core.sparseCheckout` is on, or a configured `clean`/`smudge`/`process` filter is applied to a tracked path (a filter configured
+  but applied by no path, such as a globally installed git-lfs, leaves the cache on).
+
 **The board-gate arm** (PREPUSH-BOARD-GATES-PARITY): when the push's listing contains `BACKLOG.md`, the core also
 runs the live board gates CI reaches only through `verify.sh --require` (the `backlog-*`/`board-*`/`roadmap-current` `check control`
 rows without `--selftest`, derived from `conformance/verify.sh`) as `core-board` rows, and a red one fails

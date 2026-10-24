@@ -68,7 +68,7 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
        {
          "matcher": "Bash|Write|Edit|NotebookEdit|mcp__.*",
          "hooks": [
-           { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
+           { "type": "command", "command": "[ -r \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" ] && sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" || { rc=$?; [ \"$rc\" = 2 ] || printf '%s\\n' \"agent-guard: the guard hook did not return a decision (rc $rc) - blocked; stop and tell the human (usual cause: the session was not started in the repository root; see docs/operations/runtime-guards.md, Is the guard loaded?)\" >&2; exit 2; }" }
          ]
        }
      ]
@@ -82,7 +82,7 @@ If your repo already has a `.claude/`, **do not overwrite it.** Keep your hooks 
    {
      "matcher": "Bash|Write|Edit|NotebookEdit|mcp__.*",
      "hooks": [
-       { "type": "command", "command": "sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\"" }
+       { "type": "command", "command": "[ -r \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" ] && sh \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard.sh\" || { rc=$?; [ \"$rc\" = 2 ] || printf '%s\\n' \"agent-guard: the guard hook did not return a decision (rc $rc) - blocked; stop and tell the human (usual cause: the session was not started in the repository root; see docs/operations/runtime-guards.md, Is the guard loaded?)\" >&2; exit 2; }" }
      ]
    }
    ```

@@ -5,7 +5,7 @@
 ## System summary
 - **Feature / story:** <link>
 - **What it does (1–2 lines):** [summary]
-- **Model + version:** [e.g. claude-opus-4-8 — orchestrated frontier model, not trained in-house]
+- **Model + version:** [<provider-model-id> — e.g. an orchestrated frontier model, not trained in-house]
 - **Build mode:** [orchestrate a frontier model · fine-tune · train from scratch]
 
 ## Risk classification (US-first)

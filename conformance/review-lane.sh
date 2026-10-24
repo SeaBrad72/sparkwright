@@ -453,6 +453,110 @@ rl_containment() {   # $1 = commit, $2 = head -> 0 contained, 1 outside, 2 uneva
   return 0
 }
 
+# ── RULE 10 — THE SEAT ROLES (SWAS-300; docs/architecture/2026-10-18-typed-seats-day-one-design.md §5).
+# The record names each seat by a ROLE (builder, reviewer, security, conductor), and the roles are
+# the vocabulary the kit's neutral definitions declare: one `Seat role: <name>` line per
+# `agents/*.agent.md`, read AS GIT OBJECTS at the MERGE-BASE, so a PR cannot widen the set it is graded
+# against (the same posture as the grader itself, above). No `.claude/` file, no subagent type string
+# and no model name is read: the vocabulary is harness-neutral, and the model or tier after the role
+# word is free text that is never graded or required.
+#
+# ⚠️ THE CEILING, SAID HERE SO NOBODY QUOTES A GREEN AS MORE (the same words as rule 4's): every token
+# is BUILDER-TYPED TEXT. A green from this rule means the record NAMES declared seats; it does not
+# show that any seat ran, that two seats were two dispatches, or that a seat followed its skill. A
+# conductor that reviewed inline can type `reviewer` and pass. The dispatch is conduct, not enforced.
+RL_SEAT_LINE_RE='^Seat role: ([a-z][a-z-]*)$'
+
+# rl_seat_vocab <scratch> — write the base's role set to <scratch>/vocab. Fails CLOSED (RL-SEAT-VOCAB, rc 2)
+# on: no merge-base, no definition, a definition with zero or two `Seat role:` lines or a line off the
+# strict grammar, or two definitions declaring the same role. A gate whose vocabulary is broken grades nothing.
+rl_seat_vocab() {
+  : > "$1/vocab"
+  if [ -z "${_rl_mb:-}" ]; then
+    echo "RL-SEAT-VOCAB: no merge-base, so there is no trusted seat vocabulary (the agents/*.agent.md definitions are read from the base, never the head) — fail closed"; return 2
+  fi
+  _sv=0
+  git -C "$RL_REPO" ls-tree --name-only "$_rl_mb" agents/ > "$1/defs" 2>/dev/null || : > "$1/defs"
+  while IFS= read -r _sv_p; do
+    case "$_sv_p" in
+      agents/*.agent.md) ;;
+      *) continue ;;
+    esac
+    rl_blob "$_rl_mb" "$_sv_p" > "$1/def.md" || : > "$1/def.md"
+    _sv_loose=$(grep -c '^Seat role:' "$1/def.md" || true)
+    _sv_strict=$(grep -Ec "$RL_SEAT_LINE_RE" "$1/def.md" || true)
+    if [ "$_sv_loose" != 1 ] || [ "$_sv_strict" != 1 ]; then
+      echo "RL-SEAT-VOCAB: the base definition '$(rl_safe "$_sv_p")' must carry exactly one line 'Seat role: <name>' ([a-z][a-z-]*, one space, nothing trailing) — found $_sv_loose, $_sv_strict well-formed"; _sv=2; continue
+    fi
+    grep -E "$RL_SEAT_LINE_RE" "$1/def.md" | sed 's/^Seat role: //' >> "$1/vocab"
+  done < "$1/defs"
+  if ! grep -q . "$1/vocab"; then
+    echo "RL-SEAT-VOCAB: the base tree declares no seat role (no agents/*.agent.md with a 'Seat role:' line) — fail closed"; return 2
+  fi
+  if [ -n "$(sort "$1/vocab" | uniq -d)" ]; then
+    echo "RL-SEAT-VOCAB: two base definitions declare the same role '$(rl_safe "$(sort "$1/vocab" | uniq -d | head -1)")' — a duplicate would let one seat stand in for another"; _sv=2
+  fi
+  return "$_sv"
+}
+
+# rl_seat_word — stdin: a record cell or line; prints its first whitespace-delimited word, normalised:
+# surrounding backticks and bold stripped, one trailing ':' or ',' stripped, lowercased.
+rl_seat_word() {
+  awk '{ print $1; exit }' | sed -e 's/^[`*]*//' -e 's/[`*]*[:,]\{0,1\}[`*]*$//' | LC_ALL=C tr 'A-Z' 'a-z'
+}
+
+# rl_seat_member <word> <vocab-file> — 0 iff the word is a well-formed role AND a member.
+rl_seat_member() {
+  case "$1" in
+    ''|[!a-z]*|*[!a-z-]*) return 1 ;;
+  esac
+  grep -qxF "$1" "$2"
+}
+
+# rl_seat_leg <record file> <scratch> <record path> — rule 10 proper. Prints one refusal per defect; 0 | 2.
+rl_seat_leg() {
+  _sl=0
+  rl_seat_vocab "$2" || return 2
+  _sl_set=$(tr '\n' ' ' < "$2/vocab" | sed 's/ $//')
+  # 1. the Builder line opens with a declared role (`conductor` is legal: building inline stays visible).
+  _sl_w=$(grep -m1 '^Builder:' "$1" | sed 's/^Builder:[[:space:]]*//' | rl_seat_word || true)
+  if ! rl_seat_member "$_sl_w" "$2/vocab"; then
+    echo "RL-SEAT-UNKNOWN: the Builder line of $3 opens with '$(rl_safe "$_sl_w")', which is not a declared seat role (declared: $_sl_set) — fix: open the line with a role, e.g. 'Builder: builder (two seats)'"; _sl=2
+  fi
+  # 2. every Rounds seat is a declared role, and the role is `reviewer`.
+  while IFS= read -r _sl_row; do
+    [ -n "$_sl_row" ] || continue
+    _sl_w=$(rl_cell "$_sl_row" 2 | rl_seat_word || true)
+    if ! rl_seat_member "$_sl_w" "$2/vocab"; then
+      echo "RL-SEAT-UNKNOWN: a Rounds row of $3 names the seat '$(rl_safe "$_sl_w")', which is not a declared seat role (declared: $_sl_set) — fix: open the cell with 'reviewer'"; _sl=2
+    elif [ "$_sl_w" != reviewer ]; then
+      echo "RL-SEAT-NOT-REVIEWER: a Rounds row of $3 names the seat '$(rl_safe "$_sl_w")'; every review round is the 'reviewer' role — fix: open the cell with 'reviewer'"; _sl=2
+    fi
+  done < "$2/rounds"
+  # 3 and 4. the security section: a `ran` line names a declared seat (`security` on Sensitive or
+  # Control-plane work), and a `waived` section is refused on those classes.
+  _sl_sec=$(rl_section "$1" 'Security review' 2>/dev/null || true)
+  _sl_hard=0
+  case "${_rl_class:-control-plane}" in
+    ordinary) ;;
+    *) _sl_hard=1 ;;
+  esac
+  if printf '%s' "$_sl_sec" | grep -qE "$RL_SEC_RAN_RE"; then
+    _sl_w=$(printf '%s\n' "$_sl_sec" | grep -E "$RL_SEC_RAN_RE" | head -1 \
+            | awk '{ for (i = 1; i < NF; i++) if ($i == "seat") { print $(i + 1); exit } }' | rl_seat_word || true)
+    if [ -z "$_sl_w" ]; then
+      echo "RL-SEAT-SECURITY-MISSING: the security line of $3 names no seat — fix: write 'ran — seat security, verdict: …' (declared roles: $_sl_set)"; _sl=2
+    elif ! rl_seat_member "$_sl_w" "$2/vocab"; then
+      echo "RL-SEAT-UNKNOWN: the security line of $3 names the seat '$(rl_safe "$_sl_w")', which is not a declared seat role (declared: $_sl_set) — fix: write 'seat security'"; _sl=2
+    elif [ "$_sl_hard" = 1 ] && [ "$_sl_w" != security ]; then
+      echo "RL-SEAT-SECURITY-NOT-DISTINCT: the security line of $3 names the seat '$(rl_safe "$_sl_w")'; on a ${_rl_class:-control-plane} change the security review is the separate 'security' seat — fix: write 'seat security'"; _sl=2
+    fi
+  elif [ "$_sl_hard" = 1 ] && printf '%s' "$_sl_sec" | grep -qE "$RL_SEC_WAIVED_RE"; then
+    echo "RL-SEAT-SECURITY-WAIVED-CP: $3 waives the security review on a ${_rl_class:-control-plane} change; the four waiver criteria are literal tokens, and a change with this surface cannot honestly claim them — run the 'security' seat"; _sl=2
+  fi
+  return "$_sl"
+}
+
 # ── THE RECORD GRADER (design 4.2 rules 2-7). Prints one refusal line per defect, each carrying a
 #    NAMED TOKEN so a consumer can key on the reason rather than on prose. Returns 0 or 2.
 rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
@@ -627,6 +731,9 @@ rl_grade_record() {   # $1 = head, $2 = record path, $3 = scratch dir
   else
     echo "RL-SECURITY-STATE: the security review section states neither 'ran' nor 'waived'"; _gr=2
   fi
+
+  # --- rule 10: the record names declared seat roles (SWAS-300). Shape, not occurrence — see rl_seat_leg.
+  rl_seat_leg "$_gf" "$3" "$_gp" || _gr=2
   return "$_gr"
 }
 
@@ -678,6 +785,8 @@ rl_run() {   # uses $_rl_mode $_rl_pr $_rl_head $_rl_base_ref
   #   --pre-push: GRADE ANYWAY, never N-A. A fresh local clone with no origin is a normal developer
   #               state and must not red for its shape, but it must also not buy the cut for free —
   #               so the artifacts are still required and containment degrades to reachability-only.
+  #               SWAS-300: rule 10 now DOES red a record-owing --pre-push run with no base (RL-SEAT-VOCAB):
+  #               there is no trusted seat vocabulary without a merge-base, and that is a deliberate refusal.
   _rl_mb=""; _rl_nobase=0
   _rl_mb=$(rl_base "$_rl_head") || { _rl_mb=""; _rl_nobase=1; }
   if [ "$_rl_nobase" = 1 ]; then
@@ -806,6 +915,11 @@ selftest() {
     printf 'base\n' > "$_r/README.md"
     printf 'WAIVER-0001 — a real waiver\n' > "$_r/WAIVER-REGISTER.md"
     printf 'x() { :; }\ntest_review_lane_grades() { :; }\n' > "$_r/conformance/probe.sh"
+    # SWAS-300: the BASE carries the four neutral seat definitions, so rule 10 has a vocabulary to read.
+    mkdir -p "$_r/agents"
+    for _fx_s in engineer:builder orchestrator:conductor reviewer:reviewer security:security; do
+      printf '# %s (fixture definition)\n\n## Role\nSeat role: %s\n' "${_fx_s%%:*}" "${_fx_s##*:}" > "$_r/agents/${_fx_s%%:*}.agent.md"
+    done
     git -C "$_r" add -A >/dev/null; git -C "$_r" commit -qm base >/dev/null
     git -C "$_r" branch -f main HEAD >/dev/null 2>&1 || true
     printf '%s\n' "$_r"
@@ -820,19 +934,19 @@ selftest() {
       printf '| an unattested approval is refused | `conformance/probe.sh::test_review_lane_grades` |\n'
     } > "$2"
   }
-  # fx_record <file> <builder> <reviewer> <round-sha> <verdict> <extra-lines...>
+  # fx_record <file> <builder> <reviewer> <round-sha> <verdict> [findings] [controls] [security-line] [rounds-seat]
   fx_record() {
     _f=$1; mkdir -p "$(dirname "$_f")"
     { printf '# Review record — FIXTURE — PR #1 | branch feat/x\n'
       printf 'Builder: %s\n' "$2"
       printf 'Reviewer: %s\n' "$3"
       printf '\n## Rounds\n| commit | reviewer seat | verdict | findings (n) |\n|---|---|---|---|\n'
-      printf '| %s | seat-b | %s | 0 |\n' "$4" "$5"
+      printf '| %s | %s | %s | 0 |\n' "$4" "${9:-reviewer}" "$5"
       printf '\n## Findings\n| id | file:line | severity | disposition |\n|---|---|---|---|\n'
       printf '%s' "${6:-}"
       printf '\n## Design-promised controls\n| control | discharged by |\n|---|---|\n'
       printf '%s\n' "${7:-"| the grader refuses an unattested approval | \`conformance/probe.sh::test_review_lane_grades\` |"}"
-      printf '\n\n## Security review\n%s\n' "${8:-ran — seat fable, verdict: no findings}"
+      printf '\n\n## Security review\n%s\n' "${8:-ran — seat security, verdict: no findings}"
     } > "$_f"
   }
   # (`fx_gh` — a `gh` stub answering `pr view --json reviews|author` from files — and `rv`, which built
@@ -875,6 +989,16 @@ selftest() {
       mkdir -p "$_r/docs/architecture"; printf '# old design\nno table\n' > "$_r/docs/architecture/2026-01-01-old-design.md"
       git -C "$_r" add -A >/dev/null; git -C "$_r" commit -qm olddoc >/dev/null
     fi
+    # SWAS-300: a BASE whose neutral definitions are broken (the vocabulary mutants N6, N8, N9).
+    case "${2:-}" in
+      upper) printf '# engineer\n\n## Role\nSeat role: Builder\n' > "$_r/agents/engineer.agent.md" ;;
+      dup)  printf '# security\n\n## Role\nSeat role: reviewer\n' > "$_r/agents/security.agent.md" ;;
+      zero) printf '# engineer\n\n## Role\nno role line here\n' > "$_r/agents/engineer.agent.md" ;;
+      two)  printf '# engineer\n\n## Role\nSeat role: builder\nSeat role: security\n' > "$_r/agents/engineer.agent.md" ;;
+    esac
+    case "${2:-}" in
+      dup|zero|two|upper) git -C "$_r" add -A >/dev/null; git -C "$_r" commit -qm "broken seat definitions" >/dev/null ;;
+    esac
     git -C "$_r" checkout -qb feat/x
     printf 'code\n' > "$_r/conformance/thing.sh"; git -C "$_r" add -A >/dev/null
     git -C "$_r" commit -qm "task
@@ -883,7 +1007,7 @@ Kit-Row: FIXTURE
 Kit-Class: control-plane" >/dev/null
     _task=$(git -C "$_r" rev-parse HEAD)
     fx_plan "$_r" "$_r/docs/plans/2026-09-04-fixture.md"
-    fx_record "$_r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$_task" APPROVE
+    fx_record "$_r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$_task" APPROVE
     git -C "$_r" add -A >/dev/null
     git -C "$_r" commit -qm "record
 
@@ -978,13 +1102,13 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
 
   # (−) a round commit OUTSIDE the PR (a base commit — leg 2 of containment is what catches it).
   r=$(fx_full out); b=$(git -C "$r" rev-parse main)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$b" APPROVE
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$b" APPROVE
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "round commit already in the base" 2 "$(fx_run "$r" prepush)" RL-ROUND-OUTSIDE
 
   # (−) an OPEN round — NEEDS-FIXES with no later APPROVE.
   r=$(fx_full open); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" NEEDS-FIXES
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" NEEDS-FIXES
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "open round (NEEDS-FIXES, no APPROVE)" 2 "$(fx_run "$r" prepush)" RL-OPEN-ROUND
 
@@ -1027,21 +1151,21 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
 
   # (−) a finding with no disposition.
   r=$(fx_full find); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | HIGH | noted |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '| F1 | a.sh:1 | HIGH | noted |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "finding with no disposition" 2 "$(fx_run "$r" prepush)" RL-FINDING-DISPOSITION
 
   # (−) a waived finding citing a WAIVER id that is not in the register.
   r=$(fx_full waiv); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | waived — WAIVER-9999 |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '| F1 | a.sh:1 | LOW | waived — WAIVER-9999 |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "waiver id absent from the register" 2 "$(fx_run "$r" prepush)" RL-WAIVER-MISSING
 
   # (−) a control row citing a path::test that does not resolve.
   r=$(fx_full ctl); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '| a control | `conformance/probe.sh::test_that_does_not_exist` |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '| a control | `conformance/probe.sh::test_that_does_not_exist` |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "control cites an unresolvable path::test" 2 "$(fx_run "$r" prepush)" "RL-CONTROL-UNRESOLVED: control 'a control' cites test"
@@ -1049,32 +1173,32 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
   # SAST-PARSE-MERGE-TOOL: one cell per disposition / control arm whose case pattern was rewritten (a quoted literal where a
   # backslash-blank stood). Each pins ITS OWN refusal token, plus a liveness partner; they pin behaviour, not red-first.
   r=$(fx_full accshort); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | accepted - ok |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '| F1 | a.sh:1 | LOW | accepted - ok |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "accepted with no reason of substance" 2 "$(fx_run "$r" prepush)" "is accepted with no reason of substance"
   r=$(fx_full acclong); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | accepted - the reviewer judged this cosmetic and unreachable |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '| F1 | a.sh:1 | LOW | accepted - the reviewer judged this cosmetic and unreachable |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "accepted with a reason of substance" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
   r=$(fx_full fixabsent); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | fixed deadbeefdeadbeef |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '| F1 | a.sh:1 | LOW | fixed deadbeefdeadbeef |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "fixed <sha> naming no commit" 2 "$(fx_run "$r" prepush)" "which is not a commit in this repository"
   r=$(fx_full fixword); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '| F1 | a.sh:1 | LOW | fixed zzz |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '| F1 | a.sh:1 | LOW | fixed zzz |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "fixed <non-hex> is no disposition" 2 "$(fx_run "$r" prepush)" "carries no disposition in the grammar"
   r=$(fx_full nbshort); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '| a control | not built, because no |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '| a control | not built, because no |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "control 'not built, because' with no reason of substance" 2 "$(fx_run "$r" prepush)" "says 'not built, because' with no reason of substance"
   r=$(fx_full nblong); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '| a control | not built, because the pinned test is deferred to a follow-up card |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '| a control | not built, because the pinned test is deferred to a follow-up card |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "control 'not built, because' with a reason of substance" 0 "$(fx_run "$r" prepush)" "the approval is branch protection's"
@@ -1082,21 +1206,21 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
   # (−) a control discharged by a COMMENT line only (vet M5's executable-line rule).
   r=$(fx_full cmt); t=$(git -C "$r" rev-parse HEAD~1)
   printf '# test_comment_only is mentioned only here\n' > "$r/conformance/probe.sh"
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '| a control | `conformance/probe.sh::test_comment_only` |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '| a control | `conformance/probe.sh::test_comment_only` |
 '
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "control discharged by a comment line" 2 "$(fx_run "$r" prepush)" "appears on no executable line"
 
   # (−) the security-review section is ABSENT.
   r=$(fx_full nosec); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '' ''
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '' ''
   sed '/^## Security review$/,+1d' "$r/docs/reviews/2026-09-04-fixture.md" > "$r/.t" && mv "$r/.t" "$r/docs/reviews/2026-09-04-fixture.md"
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "security review section absent" 2 "$(fx_run "$r" prepush)" RL-SECURITY-ABSENT
 
   # (−) a security WAIVER carrying only three of the four D-240904-1 criteria.
   r=$(fx_full w3); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '' \
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '' \
     'waived — no-untrusted-input · no-new-permission · no-control-plane-surface'
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "security waiver with three of four criteria" 2 "$(fx_run "$r" prepush)" "RL-SECURITY-WAIVER-INCOMPLETE: the security waiver omits the criterion 'no-operator-shell'"
@@ -1106,7 +1230,7 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
   #     completed review that merely owed a verdict word. Line-anchored now; this case is red before
   #     that fix and green after.
   r=$(fx_full ransub); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE '' '' \
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE '' '' \
     'no review was warranted here, and the transparent guarantee is that nothing untrusted is read'
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "prose containing the substring 'ran' is not a security verdict" 2 "$(fx_run "$r" prepush)" RL-SECURITY-STATE
@@ -1156,7 +1280,7 @@ Kit-Review: $_bp" >/dev/null
   #     Kit-Review trailer's job, and every record it names is graded. The SECOND record is
   #     deliberately well-formed here — the negative that matters is the next case, where it is not.
   r=$(fx_full cons); t=$(git -C "$r" rev-parse HEAD~1)
-  fx_record "$r/docs/reviews/2026-09-04-second.md" builder-seat reviewer-seat "$t" APPROVE
+  fx_record "$r/docs/reviews/2026-09-04-second.md" builder reviewer "$t" APPROVE
   git -C "$r" add -A >/dev/null
   git -C "$r" commit -q --amend -m "record
 
@@ -1188,11 +1312,11 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md,docs/reviews/2026-09-04-second.md
   #     its own markdown. This case reads THE SHIPPED FILE, so the two can never drift again.
   r=$(fx_full tmplok); t=$(git -C "$r" rev-parse HEAD~1)
   grep -vF "$RL_TEMPLATE_MARKER" "$DIR/templates/REVIEW-RECORD-TEMPLATE.md" \
-    | sed -e 's/^Builder: ___/Builder: builder-seat/' \
+    | sed -e 's/^Builder: ___/Builder: builder/' \
           -e 's/^Reviewer: ___/Reviewer: reviewer-seat/' \
           -e '/^| ___/d' \
-          -e 's/^ran — seat ___, verdict: ___/ran — seat fable, verdict: no findings/' \
-    | awk -v sha="$t" '{print} /^## Rounds$/{rr=1} rr==1 && /^\|---/{print "| " sha " | seat-b | APPROVE | 0 |"; rr=0}' \
+          -e 's/^ran — seat security, verdict: ___/ran — seat security, verdict: no findings/' \
+    | awk -v sha="$t" '{print} /^## Rounds$/{rr=1} rr==1 && /^\|---/{print "| " sha " | reviewer | APPROVE | 0 |"; rr=0}' \
     > "$r/docs/reviews/2026-09-04-fixture.md"
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "a record derived from the SHIPPED template grades" 0 "$(fx_run "$r" prepush)" "structural pass"
@@ -1212,7 +1336,7 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md,docs/reviews/2026-09-04-second.md
 
   # (−) m4 — a round citing a sha that is not in this repository at all.
   r=$(fx_full unk)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa APPROVE
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa APPROVE
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "round cites a sha not in the repository" 2 "$(fx_run "$r" prepush)" RL-ROUND-UNKNOWN
 
@@ -1249,7 +1373,7 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md,docs/reviews/2026-09-04-second.md
   # (−) S-L3 — `fixed <sha>` citing a commit that is already in the base. A disposition is a citation;
   #     an uncheckable one disposes of a HIGH finding with a string.
   r=$(fx_full fixout); t=$(git -C "$r" rev-parse HEAD~1); b=$(git -C "$r" rev-parse main)
-  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder-seat reviewer-seat "$t" APPROVE "| F1 | a.sh:1 | HIGH | fixed $b |
+  fx_record "$r/docs/reviews/2026-09-04-fixture.md" builder reviewer "$t" APPROVE "| F1 | a.sh:1 | HIGH | fixed $b |
 "
   git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
   ck "a fix sha outside this change" 2 "$(fx_run "$r" prepush)" RL-FIX-OUTSIDE
@@ -1380,7 +1504,7 @@ Kit-Review: docs/reviews/2026-09-04-fixture.md" >/dev/null
   # (−) a VOLUNTEERED pair of trailers is graded exactly as today: XS ordinary + a stub plan -> refused.
   r=$(fx_ord vol XS XS 1 XSROW src/app.js); t=$(git -C "$r" rev-parse HEAD)
   printf '# Plan\n' > "$r/docs/plans/2026-09-30-vol.md"
-  fx_record "$r/docs/reviews/2026-09-30-vol.md" builder-seat reviewer-seat "$t" APPROVE
+  fx_record "$r/docs/reviews/2026-09-30-vol.md" builder reviewer "$t" APPROVE
   git -C "$r" add -A >/dev/null
   git -C "$r" commit -qm "record
 
@@ -1469,6 +1593,67 @@ Kit-Review: docs/reviews/2026-09-30-vol.md" >/dev/null
   r=$(fx_new lensdocs); git -C "$r" checkout -qb feat/x
   fx_design "$r" none; git -C "$r" commit -qm "design only" >/dev/null
   ck "design-only docs PR adding a design doc without the table is named" 2 "$(fx_run "$r" prepush)" RL-DESIGN-NO-LENS-TABLE
+
+  # ── SWAS-300 — RULE 10, THE SEAT ROLES (design 2026-10-18-typed-seats-day-one-design.md, section 5.3).
+  # fx_seat <name> <base-mode> <builder> <rounds-seat> <security-line> — a control-plane fixture whose
+  # record is rewritten with the given seat words. <base-mode> '' | dup | zero | two breaks the BASE's
+  # neutral definitions (the vocabulary mutants). Prints the repo dir.
+  fx_seat() {
+    _s=$(fx_full "$1" "$2"); _st=$(git -C "$_s" rev-parse HEAD~1)
+    fx_record "$_s/docs/reviews/2026-09-04-fixture.md" "$3" reviewer "$_st" APPROVE '' '' "$5" "$4"
+    git -C "$_s" add -A >/dev/null; git -C "$_s" commit -q --amend --no-edit >/dev/null
+    printf '%s' "$_s"
+  }
+  r=$(fx_seat n1 "" builder general-purpose "")
+  ck "SEAT-N1 a Rounds seat outside the vocabulary" 2 "$(fx_run "$r" prepush)" RL-SEAT-UNKNOWN
+  r=$(fx_seat n2 "" builder reviewer "ran — seat reviewer, verdict: PASS")
+  ck "SEAT-N2 a combined reviewer-plus-security seat on Control-plane" 2 "$(fx_run "$r" prepush)" RL-SEAT-SECURITY-NOT-DISTINCT
+  r=$(fx_seat n3 "" builder reviewer "ran — verdict: PASS")
+  ck "SEAT-N3 a security line naming no seat (the v3.240.0 shape)" 2 "$(fx_run "$r" prepush)" RL-SEAT-SECURITY-MISSING
+  r=$(fx_seat n4 "" builder general-purpose "")
+  printf '# gp\n\n## Role\nSeat role: general-purpose\n' > "$r/agents/general-purpose.agent.md"
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "SEAT-N4 a definition the PR itself adds is not in the vocabulary" 2 "$(fx_run "$r" prepush)" RL-SEAT-UNKNOWN
+  r=$(fx_seat n5 "" builder reviewer "ran — seat security-reviewer, verdict: PASS")
+  ck "SEAT-N5 a harness binding name is not a role" 2 "$(fx_run "$r" prepush)" RL-SEAT-UNKNOWN
+  r=$(fx_seat n6 dup builder reviewer "")
+  ck "SEAT-N6 two base definitions declare the same role" 2 "$(fx_run "$r" prepush)" RL-SEAT-VOCAB
+  r=$(fx_seat n7 "" builder reviewer "waived — no-untrusted-input · no-new-permission · no-control-plane-surface · no-operator-shell")
+  ck "SEAT-N7 a security waiver on Control-plane" 2 "$(fx_run "$r" prepush)" RL-SEAT-SECURITY-WAIVED-CP
+  r=$(fx_seat n8 zero builder reviewer "")
+  ck "SEAT-N8 a base definition with no Seat role line" 2 "$(fx_run "$r" prepush)" RL-SEAT-VOCAB
+  r=$(fx_seat n9 two builder reviewer "")
+  ck "SEAT-N9 a base definition with two Seat role lines" 2 "$(fx_run "$r" prepush)" RL-SEAT-VOCAB
+  r=$(fx_seat n13 upper builder reviewer "")
+  ck "SEAT-N13 an off-grammar definition line" 2 "$(fx_run "$r" prepush)" RL-SEAT-VOCAB
+  r=$(fx_seat n10 "" builder reviewer ""); fx_strip_base "$r"
+  ck "SEAT-N10 no merge-base in --pr mode" 2 "$(fx_run "$r" pr -)" RL-NO-BASE
+  ck "SEAT-N10 no merge-base, pre-push: no trusted vocabulary is a refusal, not an empty pass" 2 "$(fx_run "$r" prepush -)" RL-SEAT-VOCAB
+  r=$(fx_seat n11 "" orchestrator reviewer "")
+  ck "SEAT-N11 a Builder line opening with a file name, not a role" 2 "$(fx_run "$r" prepush)" RL-SEAT-UNKNOWN
+  r=$(fx_seat n12 "" builder builder "")
+  ck "SEAT-N12 a Rounds seat that is a role but not reviewer" 2 "$(fx_run "$r" prepush)" RL-SEAT-NOT-REVIEWER
+  # P1: Ordinary M, security 'seat reviewer' is legal; the same record naming a seat outside the vocabulary is not.
+  r=$(fx_ord p1 M M 1 XSROW src/app.js); t=$(git -C "$r" rev-parse HEAD)
+  fx_plan "$r" "$r/docs/plans/2026-10-20-p1.md"
+  fx_record "$r/docs/reviews/2026-10-20-p1.md" builder reviewer "$t" APPROVE '' '' 'ran — seat reviewer, verdict: PASS'
+  git -C "$r" add -A >/dev/null
+  git -C "$r" commit -qm "record
+
+Kit-Row: XSROW
+Kit-Class: ordinary
+Kit-Plan: docs/plans/2026-10-20-p1.md
+Kit-Review: docs/reviews/2026-10-20-p1.md" >/dev/null
+  ck "SEAT-P1 Ordinary M, security seat reviewer is legal" 0 "$(fx_run "$r" prepush)" "structural pass"
+  fx_record "$r/docs/reviews/2026-10-20-p1.md" builder reviewer "$t" APPROVE '' '' 'ran — seat general-purpose, verdict: PASS'
+  git -C "$r" add -A >/dev/null; git -C "$r" commit -q --amend --no-edit >/dev/null
+  ck "SEAT-P1b Ordinary M, a security seat outside the vocabulary is still refused" 2 "$(fx_run "$r" prepush)" RL-SEAT-UNKNOWN
+  # P2: Control-plane, conductor builds inline, free text after the role is never graded.
+  r=$(fx_seat p2 "" "conductor integrated" "reviewer (deep tier)" "ran — seat security, verdict: PASS-WITH-NOTES")
+  ck "SEAT-P2 conductor, a tier note and a notes verdict are free text" 0 "$(fx_run "$r" prepush)" "structural pass"
+  # P3: the record's role word is normalised (backticks, bold, one trailing , or :, case) before membership.
+  r=$(fx_seat p3 "" '`Builder`: two seats' '**Reviewer**, deep tier' "ran — seat \`Security\`, verdict: PASS")
+  ck "SEAT-P3 a decorated, mixed-case role word is read as the role" 0 "$(fx_run "$r" prepush)" "structural pass"
 
   # ── THE STRUCK MODE IS STILL AN ASSERTION. `--stamp` was removed by `D-240904-2`, and the failure to
   # guard against is not that it stops working — it is that it silently starts DOING NOTHING while

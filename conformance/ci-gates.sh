@@ -425,6 +425,112 @@ check_runner_pins_tree() {  # <root> -> 0 ok; 1 an unpinned label, or the leg re
   return "$_rt_rc"
 }
 
+# check_sast_parse_spans <workflow-file> (SWAS-278 278a, SP): the kit's SAST-parse step must print where semgrep
+# says each parse error is. semgrep's message echoes the file's opening text, so the real location lives only in
+# each error's spans; without the spans line a parse failure names a file and no line. Inside the step named
+# "SAST parse coverage", exactly one `jq -r` line reads .errors[] | .spans[]? from sast-semgrep.json and prints
+# "semgrep-span:", and that same line ends `|| true` so it can never decide the verdict (the jq -e lines do).
+check_sast_parse_spans() {  # <workflow-file> -> 0 ok; 1 the spans line is absent, duplicated, or can fail the step
+  _sp_c=$(awk '
+    /^      - name: SAST parse coverage/ { inb = 1; next }
+    inb && /^      - name:/ { inb = 0 }
+    inb && /jq -r/ && /\.spans\[\]\?/ && /semgrep-span:/ && /sast-semgrep\.json/ { all++; if ($0 ~ /\|\| true[ \t]*$/) soft++ }
+    inb && /jq -r/ && /semgrep-loc:/ && /sast-semgrep\.json/ { lall++; if ($0 ~ /\|\| true[ \t]*$/) lsoft++ }
+    inb && /echo "semgrep-bisect: / { ball++ }
+    inb && /_spc_bisect "\$_spc_f"/ { call++; if ($0 ~ /_spc_bisect "\$_spc_f" \|\| true;/) csoft++ }
+    END { print all + 0, soft + 0, lall + 0, lsoft + 0, ball + 0, call + 0, csoft + 0 }' "$1")
+  set -- "$1" $_sp_c
+  _sp_all=$2; _sp_soft=$3; _sp_lall=$4; _sp_lsoft=$5; _sp_ball=$6; _sp_call=$7; _sp_csoft=$8
+  if [ "$_sp_ball" != 1 ]; then
+    echo "FAIL: $1 the SAST parse coverage step must carry exactly one line printing the prefix-bisect result (echo \"semgrep-bisect: ...\"); found $_sp_ball" >&2
+    return 1
+  fi
+  if [ "$_sp_call" != 1 ] || [ "$_sp_csoft" != 1 ]; then
+    echo "FAIL: $1 the prefix-bisect call must appear once and end '|| true' so the diagnostic is non-fatal and never decides the verdict (calls=$_sp_call, soft=$_sp_csoft)" >&2
+    return 1
+  fi
+  if [ "$_sp_lall" != 1 ]; then
+    echo "FAIL: $1 the SAST parse coverage step must carry exactly one jq -r line printing each PartialParsing location (semgrep-loc:, from the .type array); found $_sp_lall" >&2
+    return 1
+  fi
+  if [ "$_sp_lsoft" != 1 ]; then
+    echo "FAIL: $1 the semgrep-loc line must end '|| true' so it is non-fatal and never decides the verdict" >&2
+    return 1
+  fi
+  if [ "$_sp_all" != 1 ]; then
+    echo "FAIL: $1 the SAST parse coverage step must carry exactly one jq -r line printing each semgrep error's spans (semgrep-span:, from .errors[] | .spans[]?); found $_sp_all" >&2
+    return 1
+  fi
+  if [ "$_sp_soft" != 1 ]; then
+    echo "FAIL: $1 the semgrep-span line must end '|| true' so it is non-fatal and never decides the verdict" >&2
+    return 1
+  fi
+  return 0
+}
+
+# check_guard_delta_step <workflow-file> (SWAS-301 301a, GD): the `guard-delta` job must replay every recorded cell against the BASE
+# core (see the block comment inside). Nothing may mask its verdict: exactly one bare `--delta` line, no continue-on-error.
+check_guard_delta_step() {  # <workflow-file> -> 0 ok; 1 the step is absent, vacuous or masked
+  # SWAS-301 (round 3): the delta is its OWN job, `guard-delta`. The job must exist once with a timeout and the guard-battery lane
+  # condition, check out two commits, take HEAD^1 as its base (never HEAD, never a merge-base or a fetch), SKIP only through a
+  # diff of the WHOLE .claude/hooks/ directory and only with an explicit SKIP line, write the base core, end in a bare --delta
+  # line, and be named in the required `conformance` aggregator's needs: list so its failure blocks.
+  _gd_c=$(awk '
+    /^  guard-delta:[ \t]*$/ { inb = 1; jobs++; next }
+    inb && /^  [a-z]/ { inb = 0 }
+    inb && /^    timeout-minutes: [0-9]+[ \t]*$/ { tmo++ }
+    inb && /^    if: needs\.changes\.outputs\.docs_only != .true. && needs\.changes\.outputs\.push_graded != .true./ { lane++ }
+    inb && /^          fetch-depth: 2[ \t]/ { fd2++ }
+    inb && /fetch-depth:/ && !/fetch-depth: 2[ \t]/ { fdother++ }
+    inb && /^ *base=/ { bases++; if ($0 !~ /git rev-parse HEAD\^1\)/) badbase++ }
+    inb && /merge-base|git fetch/ { mbf++ }
+    inb && /git diff --quiet "\$base" HEAD -- \.claude\/hooks\/[ ;]/ { diffl++; if ($0 ~ /guard-core\.sh/) narrow++ }
+    inb && /echo "SKIP: guard delta/ && /no hook file changed since \$base/ { skipl++ }
+    inb && /git show "\$base:\.claude\/hooks\/guard-core\.sh" > "\$RUNNER_TEMP\/pristine-core\.sh"/ { show++ }
+    inb && /sh conformance\/agent-autonomy\.sh --delta/ { anyrun++ }
+    inb && /^ +sh conformance\/agent-autonomy\.sh --delta "\$RUNNER_TEMP\/pristine-core\.sh"[ \t]*$/ { run++ }
+    inb && /continue-on-error/ { coe++ }
+    END { print jobs + 0, tmo + 0, lane + 0, fd2 + 0, fdother + 0, bases + 0, badbase + 0, mbf + 0, diffl + 0, narrow + 0, skipl + 0, show + 0, anyrun + 0, run + 0, coe + 0 }' "$1")
+  _gd_w=$(awk '/^  conformance:[ \t]*$/ { inb = 1; next } inb && /^  [a-z]/ { inb = 0 } inb && /^    needs: / && /[ \[,]guard-delta[],]/ { w++ } END { print w + 0 }' "$1")
+  set -- "$1" $_gd_c "$_gd_w"
+  # $2 jobs $3 timeout $4 lane $5 fetch-depth:2 $6 other fetch-depth $7 base= lines $8 bad base $9 merge-base/fetch ${10} hooks diff
+  # ${11} narrowed diff ${12} SKIP line ${13} git show ${14} any --delta ${15} bare --delta ${16} continue-on-error ${17} wired
+  if [ "$2" != 1 ]; then
+    echo "FAIL: $1 the workflow must carry exactly one 'guard-delta' job (the zero-verdict-move proof); found $2" >&2; return 1
+  fi
+  if [ "$3" != 1 ]; then
+    echo "FAIL: $1 the guard-delta job must carry a timeout-minutes bound; found $3" >&2; return 1
+  fi
+  if [ "$4" != 1 ]; then
+    echo "FAIL: $1 the guard-delta job must carry guard-battery's lane condition (docs_only and push_graded); found $4" >&2; return 1
+  fi
+  if [ "$5" != 1 ] || [ "$6" != 0 ] || [ "$9" != 0 ]; then
+    echo "FAIL: $1 the guard-delta job must check out exactly two commits (fetch-depth: 2) and take its base from HEAD^1 with no other fetch-depth, merge-base or git fetch (fetch-depth 2=$5, other=$6, merge-base/fetch=$9)" >&2; return 1
+  fi
+  if [ "$7" != 1 ] || [ "$8" != 0 ]; then
+    echo "FAIL: $1 the guard-delta job must take its base only from git rev-parse HEAD^1, because a base pinned to HEAD compares a core with itself (base lines=$7, other=$8)" >&2; return 1
+  fi
+  if [ "${10}" != 1 ] || [ "${11}" != 0 ]; then
+    echo "FAIL: $1 the guard-delta skip must compare the WHOLE .claude/hooks/ directory (git diff --quiet \"\$base\" HEAD -- .claude/hooks/ ...), never guard-core.sh alone: a guard.sh-only change must not skip (whole-directory diffs=${10}, narrowed=${11})" >&2; return 1
+  fi
+  if [ "${12}" != 1 ]; then
+    echo "FAIL: $1 the guard-delta skip must print an explicit 'SKIP: guard delta ... no hook file changed since \$base' line, never a silent green; found ${12}" >&2; return 1
+  fi
+  if [ "${13}" != 1 ]; then
+    echo "FAIL: $1 the guard-delta job must write the base core with git show \"\$base:.claude/hooks/guard-core.sh\" to \$RUNNER_TEMP/pristine-core.sh; found ${13}" >&2; return 1
+  fi
+  if [ "${15}" != 1 ] || [ "${14}" != 1 ]; then
+    echo "FAIL: $1 the guard-delta job must run '--delta' exactly once as a bare line 'sh conformance/agent-autonomy.sh --delta \"\$RUNNER_TEMP/pristine-core.sh\"' with nothing after it, so its failure is not masked (--delta lines=${14}, bare lines=${15})" >&2; return 1
+  fi
+  if [ "${16}" != 0 ]; then
+    echo "FAIL: $1 the guard-delta job carries continue-on-error, which would mask its verdict" >&2; return 1
+  fi
+  if [ "${17}" != 1 ]; then
+    echo "FAIL: $1 the required 'conformance' aggregator does not name guard-delta in its needs: list, so a failing delta would not block the merge" >&2; return 1
+  fi
+  return 0
+}
+
 own_tree_run() {  # [<root>]  (default .)
   _ot_root=${1:-.}
   if [ ! -d "$_ot_root" ]; then
@@ -485,6 +591,8 @@ own_tree_run() {  # [<root>]  (default .)
       check_pr_concurrency "$_ot_root/.github/workflows/$_ot_cw" || _ot_rc=1
     done
     check_runner_pins_tree "$_ot_root" || _ot_rc=1  # SWAS-306: the runner-pin lock (RP); kit trees only
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_sast_parse_spans "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-278: the SAST-parse spans line (SP)
+    [ ! -f "$_ot_root/.github/workflows/ci.yml" ] || check_guard_delta_step "$_ot_root/.github/workflows/ci.yml" || _ot_rc=1  # SWAS-301: the guard delta step (GD)
   fi
   if [ "$_ot_seen" = 0 ]; then
     # The zero-found three-state (verify-enforced-wired.sh:845-849, copied).
@@ -1446,6 +1554,168 @@ selftest() {
       _ot_case PC7 "$d/pc7" 0 "OK: ci-gates --own-tree" "the real pair on a kit-marked tree -> green"
       cp "$d/pc/m1.yml" "$d/pc7/.github/workflows/ci.yml"
       _ot_case PC8 "$d/pc7" 1 "cancel-in-progress" "--own-tree reds a kit tree whose ci.yml cancels every run"
+    fi
+    # SP0-SP3 (SWAS-278 278a) — the SAST-parse spans lock. SP0 is the positive control on the REAL ci.yml; each mutant
+    # is a SCRATCH COPY of it and must red AND name its cause (judged only when SP0 is green, so a missing line cannot
+    # make a mutant red for the wrong reason). SP1 deletes the spans line; SP2 drops its `|| true`; SP3 runs the
+    # deletion through the REAL --own-tree entry point on the kit-marked scratch tree.
+    mkdir -p "$d/sp"
+    _sp_real="$_kr/.github/workflows/ci.yml"
+    if check_sast_parse_spans "$_sp_real" >/dev/null 2>&1; then
+      echo "selftest PASS: SP0 — the real ci.yml's SAST parse coverage step prints semgrep's error spans, non-fatally"
+      grep -v 'semgrep-span:' "$_sp_real" > "$d/sp/m1.yml"
+      sed '/semgrep-span:/s/ || true[[:space:]]*$//' "$_sp_real" > "$d/sp/m2.yml"
+      grep -v 'semgrep-loc:' "$_sp_real" > "$d/sp/m4.yml"
+      sed '/semgrep-loc:/s/ || true[[:space:]]*$//' "$_sp_real" > "$d/sp/m5.yml"
+      grep -v 'echo "semgrep-bisect: ' "$_sp_real" > "$d/sp/m6.yml"
+      sed 's/_spc_bisect "\$_spc_f" || true;/_spc_bisect "$_spc_f";/' "$_sp_real" > "$d/sp/m7.yml"
+      for _sp_m in "m1:exactly one jq -r line printing each semgrep error's spans:SP1:the spans line deleted" \
+                   "m6:printing the prefix-bisect result:SP6:the bisect line deleted" \
+                   "m7:prefix-bisect call must appear once and end '|| true':SP7:the bisect made fatal (|| true dropped)" \
+                   "m2:semgrep-span line must end '|| true':SP2:the spans line made fatal (|| true dropped)" \
+                   "m4:printing each PartialParsing location:SP4:the semgrep-loc line deleted" \
+                   "m5:semgrep-loc line must end '|| true':SP5:the semgrep-loc line made fatal (|| true dropped)"; do
+        _sp_f=${_sp_m%%:*}; _sp_r=${_sp_m#*:}; _sp_want=${_sp_r%%:*}; _sp_r=${_sp_r#*:}
+        _sp_id=${_sp_r%%:*}; _sp_desc=${_sp_r#*:}
+        if cmp -s "$_sp_real" "$d/sp/$_sp_f.yml"; then
+          echo "selftest FAIL: $_sp_id — the mutant equals the original (nothing to mutate; the spans line is not pinned)"; sf=1
+        elif _sp_o=$(check_sast_parse_spans "$d/sp/$_sp_f.yml" 2>&1); then
+          echo "selftest FAIL: $_sp_id — $_sp_desc was NOT caught"; sf=1
+        elif printf '%s\n' "$_sp_o" | grep -qF -- "$_sp_want"; then
+          echo "selftest PASS: $_sp_id — $_sp_desc -> RED, naming '$_sp_want'"
+        else echo "selftest FAIL: $_sp_id — $_sp_desc reds without naming '$_sp_want': $_sp_o"; sf=1; fi
+      done
+      mkdir -p "$d/sp3/.github/workflows" "$d/sp3/docs" "$d/sp3/conformance"
+      : > "$d/sp3/docs/ROADMAP-KIT.md"
+      cp "$_kr/conformance/gate-dispositions.txt" "$d/sp3/conformance/gate-dispositions.txt"
+      cp "$d/sp/m1.yml" "$d/sp3/.github/workflows/ci.yml"
+      _ot_case SP3 "$d/sp3" 1 "semgrep error's spans" "--own-tree reds a kit tree whose SAST parse step lost its spans line"
+    else
+      echo "selftest FAIL: SP0 — the real ci.yml's SAST parse coverage step does not print semgrep's error spans (SWAS-278 278a)"; sf=1
+    fi
+    # GD0-GD9 (SWAS-301 301a) — the guard-delta job lock. GD0 is the positive control on the REAL ci.yml; each mutant is a
+    # SCRATCH COPY and must red AND name its cause (judged only when GD0 is green). GD1 deletes the job, GD2 appends `|| true`
+    # to the --delta line, GD3 pins the base to HEAD (the vacuous comparison), GD5 narrows the skip's diff to guard-core.sh alone,
+    # GD6 makes the skip silent, GD7 drops the timeout, GD8 unwires the job from the required aggregator, GD4 runs the deletion
+    # through the REAL --own-tree entry point on a kit-marked scratch tree, and GD9 is the behavioural leg (a real git fixture).
+    mkdir -p "$d/gd"
+    _gd_real="$_kr/.github/workflows/ci.yml"
+    if check_guard_delta_step "$_gd_real" >/dev/null 2>&1; then
+      echo "selftest PASS: GD0 — the real ci.yml's guard-delta job runs --delta against HEAD^1's core, skips only explicitly, unmasked and wired"
+      awk '/^  guard-delta:/ { skip = 1; next } skip && /^  [a-z]/ { skip = 0 } !skip' "$_gd_real" > "$d/gd/m1.yml"
+      sed 's/pristine-core\.sh"$/pristine-core.sh" || true/' "$_gd_real" > "$d/gd/m2.yml"
+      sed 's/base=\$(git rev-parse HEAD^1)/base=$(git rev-parse HEAD)/' "$_gd_real" > "$d/gd/m3.yml"
+      sed 's/ -- \.claude\/hooks\/ \.claude\/mcp-policy\.json/ -- .claude\/hooks\/guard-core.sh .claude\/mcp-policy.json/' "$_gd_real" > "$d/gd/m5.yml"
+      sed '/echo "SKIP: guard delta/d' "$_gd_real" > "$d/gd/m6.yml"
+      sed '/^    timeout-minutes: /d' "$_gd_real" > "$d/gd/m7.yml"
+      sed 's/cf-green-on-clone, guard-battery, guard-delta\]/cf-green-on-clone, guard-battery]/' "$_gd_real" > "$d/gd/m8.yml"
+      for _gd_m in "m1:exactly one 'guard-delta' job:GD1:the guard-delta job deleted" \
+                   "m2:with nothing after it, so its failure is not masked:GD2:the --delta line made soft with '|| true'" \
+                   "m3:a base pinned to HEAD compares a core with itself:GD3:the base pinned to HEAD (vacuous)" \
+                   "m5:compare the WHOLE .claude/hooks/ directory:GD5:the skip narrowed to guard-core.sh alone" \
+                   "m6:print an explicit 'SKIP:GD6:the skip made silent" \
+                   "m7:timeout-minutes bound:GD7:the timeout removed" \
+                   "m8:does not name guard-delta in its needs:GD8:the job unwired from the required aggregator"; do
+        _gd_f=${_gd_m%%:*}; _gd_r=${_gd_m#*:}; _gd_want=${_gd_r%%:*}; _gd_r=${_gd_r#*:}
+        _gd_id=${_gd_r%%:*}; _gd_desc=${_gd_r#*:}
+        if cmp -s "$_gd_real" "$d/gd/$_gd_f.yml"; then
+          echo "selftest FAIL: $_gd_id — the mutant equals the original (nothing to mutate; the step is not pinned)"; sf=1
+        elif _gd_o=$(check_guard_delta_step "$d/gd/$_gd_f.yml" 2>&1); then
+          echo "selftest FAIL: $_gd_id — $_gd_desc was NOT caught"; sf=1
+        elif printf '%s\n' "$_gd_o" | grep -qF -- "$_gd_want"; then
+          echo "selftest PASS: $_gd_id — $_gd_desc -> RED, naming '$_gd_want'"
+        else echo "selftest FAIL: $_gd_id — $_gd_desc reds without naming '$_gd_want': $_gd_o"; sf=1; fi
+      done
+      mkdir -p "$d/gd4/.github/workflows" "$d/gd4/docs" "$d/gd4/conformance"
+      : > "$d/gd4/docs/ROADMAP-KIT.md"
+      cp "$_kr/conformance/gate-dispositions.txt" "$d/gd4/conformance/gate-dispositions.txt"
+      cp "$d/gd/m1.yml" "$d/gd4/.github/workflows/ci.yml"
+      _ot_case GD4 "$d/gd4" 1 "exactly one 'guard-delta' job" "--own-tree reds a kit tree whose workflow lost the guard-delta job"
+      # GD9 — the behavioural leg. The skip's pathspec is read OUT OF the real ci.yml and run in a throwaway git repo: a change to
+      # guard.sh ALONE must not skip (the diff reports a difference), a change outside the hook files must skip, and the
+      # guard-core.sh-only pathspec of GD5 would wrongly skip the guard.sh change, which shows the fixture is sensitive to it.
+      _gd_ln=$(grep -F 'git diff --quiet "$base" HEAD -- ' "$_gd_real" | head -n 1)
+      _gd_spec=${_gd_ln#*HEAD -- }; _gd_spec=${_gd_spec%%; then*}
+      _gd_fx="$d/gdfx"; mkdir -p "$_gd_fx/.claude/hooks" "$_gd_fx/docs"
+      _gd_git() { git -C "$_gd_fx" -c user.name=gd -c user.email=gd@example.invalid -c commit.gpgsign=false "$@"; }
+      if [ -n "$_gd_spec" ] && _gd_git init -q . >/dev/null 2>&1; then
+        printf 'a\n' > "$_gd_fx/.claude/hooks/guard-core.sh"; printf 'a\n' > "$_gd_fx/.claude/hooks/guard.sh"; printf 'a\n' > "$_gd_fx/docs/x.md"
+        _gd_git add -A >/dev/null 2>&1; _gd_git commit -q -m base >/dev/null 2>&1
+        printf 'b\n' > "$_gd_fx/.claude/hooks/guard.sh"
+        _gd_git commit -q -a -m guard-sh-only >/dev/null 2>&1
+        # shellcheck disable=SC2086  # the pathspec words are the point; none holds a glob byte
+        if _gd_git diff --quiet HEAD^ HEAD -- $_gd_spec; then
+          echo "selftest FAIL: GD9a — a guard.sh-only change would SKIP the guard delta (pathspec [$_gd_spec])"; sf=1
+        else echo "selftest PASS: GD9a — a change to guard.sh alone does NOT skip the guard delta"; fi
+        # shellcheck disable=SC2086
+        if _gd_git diff --quiet HEAD^ HEAD -- .claude/hooks/guard-core.sh .claude/mcp-policy.json .kit/roster.conf; then
+          echo "selftest PASS: GD9b — the narrowed (guard-core.sh only) pathspec WOULD skip it, so the fixture is sensitive to the narrowing"
+        else echo "selftest FAIL: GD9b — the fixture does not distinguish the narrowed pathspec"; sf=1; fi
+        printf 'b\n' > "$_gd_fx/docs/x.md"; _gd_git commit -q -a -m docs-only >/dev/null 2>&1
+        # shellcheck disable=SC2086
+        if _gd_git diff --quiet HEAD^ HEAD -- $_gd_spec; then
+          echo "selftest PASS: GD9c — a change outside the hook files SKIPs the guard delta"
+        else echo "selftest FAIL: GD9c — a docs-only change would not skip (pathspec [$_gd_spec])"; sf=1; fi
+      else echo "selftest FAIL: GD9 — could not read the skip pathspec from ci.yml or initialise the fixture repo"; sf=1; fi
+    else
+      echo "selftest FAIL: GD0 — the real ci.yml's guard-delta job is not sound (SWAS-301 301a)"; sf=1
+    fi
+    # GD10 (SWAS-332) — the guard-delta stress-cell exclusion lock. `agent-autonomy.sh --delta` does not replay a NAMED list of cap and
+    # budget stress cells (AA_DELTA_STRESS: each replay pass over them costs minutes); the guard-battery job runs them with an asserted
+    # DENY (an `scp_deny` cell), so a flipped verdict there is a bare-battery FAIL, not a delta finding. The lock: the list equals the
+    # pinned set exactly, the exclusion code is in aa_cell_record, and every excluded id has an `scp_deny` cell. GD10 is the positive
+    # control on the real file; each mutant is a scratch copy and must red AND name its cause.
+    _gd_stress_pin='SC-D27 SC-D28 SC-D31 SC-D45 SC-P9 SC-P10'
+    check_delta_stress() {   # <agent-autonomy.sh> -> rc 0 when the exclusion lock holds; names the break otherwise
+      _ds_list=$(sed -n "s/^AA_DELTA_STRESS='\(.*\)'\$/\1/p" "$1" | head -n 1 | tr -s ' ' | sed 's/^ //; s/ $//')
+      [ "$_ds_list" = "$_gd_stress_pin" ] || { echo "the exclusion list differs from the pinned set [$_ds_list]"; return 1; }
+      # the exclusion code, anchored INSIDE aa_cell_record and not in a comment line (a commented-out copy does not count)
+      sed -n '/^aa_cell_record() {/,/^}/p' "$1" | grep -v '^[[:space:]]*#' | grep -qF 'case "$1" in "$_as_id "*)' \
+        || { echo "the exclusion code is gone from aa_cell_record (or only commented out)"; return 1; }
+      grep -Eq '^AA_STRESS_PIN=9([^0-9]|$)' "$1" || { echo "the pinned count AA_STRESS_PIN=9 is gone"; return 1; }
+      grep -qF 'AA_STRESS_N" -ne "$AA_STRESS_PIN"' "$1" || { echo "the --delta check of the excluded count against AA_STRESS_PIN is gone"; return 1; }
+      for _ds_id in $_ds_list; do
+        grep -Eq "^ *scp_deny [^ ]+ \"$_ds_id " "$1" || { echo "excluded id $_ds_id has no asserted-DENY cell in the guard-battery"; return 1; }
+      done
+      # every battery line that carries a stress id must be an `scp_deny ... C` cell (a reused id on another kind of cell is refused),
+      # and there are exactly nine of them
+      _ds_alt=$(printf '%s' "$_ds_list" | tr ' ' '|')
+      _ds_bad=$(grep -E "\"($_ds_alt) " "$1" | grep -Ev '^ *scp_deny .* C$' | head -n 1)
+      [ -z "$_ds_bad" ] || { echo "a line carries a stress id but is not an scp_deny C cell: $_ds_bad"; return 1; }
+      _ds_n=$(grep -cE "\"($_ds_alt) " "$1")
+      [ "$_ds_n" = 9 ] || { echo "the stress-labelled cells number $_ds_n, the pinned count is 9"; return 1; }
+      return 0
+    }
+    _gd_aa="$_kr/conformance/agent-autonomy.sh"
+    mkdir -p "$d/gd10"
+    if check_delta_stress "$_gd_aa" >/dev/null 2>&1; then
+      echo "selftest PASS: GD10 — the delta's stress-cell exclusion list equals the pinned set, its code is in place and every excluded id has an asserted-DENY cell"
+      sed "s/^AA_DELTA_STRESS=' /AA_DELTA_STRESS=' SC-D1 /" "$_gd_aa" > "$d/gd10/m1.sh"
+      sed "s/^AA_DELTA_STRESS=' /AA_DELTA_STRESS=' cat /" "$_gd_aa" > "$d/gd10/m2.sh"
+      sed 's/case "\$1" in "\$_as_id "\*)/case "$1" in "zz "*)/' "$_gd_aa" > "$d/gd10/m3.sh"
+      sed '/^scp_deny .*"SC-D31 /d' "$_gd_aa" > "$d/gd10/m4.sh"
+      awk '{ print } /^scp_deny .*"SC-P9 / { print "assert_allow \"SC-P9 a reused id on a non-stress cell\" \"$(scpj \047echo x\047)\"" }' "$_gd_aa" > "$d/gd10/m5.sh"
+      sed 's/^    case "\$1" in "\$_as_id "\*)/    # case "$1" in "$_as_id "*)/' "$_gd_aa" > "$d/gd10/m6.sh"
+      sed 's/AA_STRESS_N" -ne "\$AA_STRESS_PIN"/AA_STRESS_N" -ne "$AA_STRESS_N"/' "$_gd_aa" > "$d/gd10/m7.sh"
+      for _gd_m in "m1:differs from the pinned set:GD10a:an SC-D1 cell added to the exclusion list" \
+                   "m2:differs from the pinned set:GD10b:an H3a-style cell (cat) added to the exclusion list" \
+                   "m3:exclusion code is gone:GD10c:the exclusion code removed from aa_cell_record" \
+                   "m4:no asserted-DENY cell:GD10d:an excluded id whose guard-battery DENY cell is deleted" \
+                   "m5:not an scp_deny C cell:GD10e:an assert_allow reusing the SC-P9 id on a non-stress cell" \
+                   "m6:or only commented out:GD10f:the exclusion code commented out inside aa_cell_record" \
+                   "m7:check of the excluded count against AA_STRESS_PIN is gone:GD10g:the --delta check of the excluded count removed"; do
+        _gd_f=${_gd_m%%:*}; _gd_r=${_gd_m#*:}; _gd_want=${_gd_r%%:*}; _gd_r=${_gd_r#*:}
+        _gd_id=${_gd_r%%:*}; _gd_desc=${_gd_r#*:}
+        if cmp -s "$_gd_aa" "$d/gd10/$_gd_f.sh"; then
+          echo "selftest FAIL: $_gd_id — the mutant equals the original (nothing to mutate; the lock is not pinned)"; sf=1
+        elif _gd_o=$(check_delta_stress "$d/gd10/$_gd_f.sh" 2>&1); then
+          echo "selftest FAIL: $_gd_id — $_gd_desc was NOT caught"; sf=1
+        elif printf '%s\n' "$_gd_o" | grep -qF -- "$_gd_want"; then
+          echo "selftest PASS: $_gd_id — $_gd_desc -> RED, naming '$_gd_want'"
+        else echo "selftest FAIL: $_gd_id — $_gd_desc reds without naming '$_gd_want': $_gd_o"; sf=1; fi
+      done
+    else
+      echo "selftest FAIL: GD10 — the delta's stress-cell exclusion lock does not hold on the real agent-autonomy.sh (SWAS-332)"; sf=1
     fi
     # RP1/RP4 (SWAS-306) — the runner-pin lock through the REAL entry point on a kit-marked scratch tree holding
     # the real workflows and profile templates: green as shipped; red, naming the file and the alias, when one

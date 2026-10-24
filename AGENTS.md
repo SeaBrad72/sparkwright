@@ -2,19 +2,19 @@
 
 ## 1. Entry contract — do this BEFORE any mutating action
 
-**Five acts, every slice, before the first edit / commit / PR.** The skills in `skills/` govern process work here (index: `skills/using-skills/SKILL.md`).
+⚠️ **Start the session in this repository's root, not a parent or a subfolder:** Claude Code loads the guard hooks only from the launch directory. If your launch directory (it is in your context) is not this root, stop before any edit and tell the human, who can confirm with `/hooks`. **Five acts, every slice, before the first edit / commit / PR.** The skills in `skills/` govern process work here (index: `skills/using-skills/SKILL.md`).
 
 1. **Derive the change class.** Put the changed paths in a file, one per line, and run `sh conformance/promotion-readiness.sh --class --changed <listing>`. Pass the listing file, never a path — a path argument gets its CONTENTS classified. `conformance/agent-boundary.sh --state` is not a classifier; without `--changed` it answers `NONE`. Never self-assert the class.
 2. **Read the governing skill; name it in act 4 if the class asks** — `skills/<name>/SKILL.md`. Design before code, evidence before "done"; search `docs/governance/DECISIONS.md` for a ruling on this surface; a design answers the twelve lenses in `skills/design/SKILL.md`.
 3. **Claim the row by its id** — the backticked `ROW-ID` that leads its Item cell (`[A-Z0-9][A-Z0-9-]*`), with `sh scripts/board.sh claim <ROW-ID>`; that id is your `Kit-Row` value. No row, no build.
 4. **Carry the Entry Declaration as commit trailers, proportional to the class** — Ordinary owes `Kit-Row` + `Kit-Class`; Sensitive/Control-plane owe `Kit-Stage` + `Kit-Skill` too (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` (stage→skill map: `sh conformance/loop-state.sh --help`) checks the DERIVED class's required set on your PR's final commit: present once each, row on the board, class matching; a volunteered field is validated too. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
-5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff.
+5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff. **Seats:** the conductor dispatches each build task to a **builder** seat, each review to a **reviewer** seat, and on Sensitive or Control-plane work a separate **security** seat. Each is typed by its `agents/*.agent.md` definition and dispatched through the harness's native binding where one exists (`START-HERE.md` step 7, `docs/operations/harness-adapters.md`). The conductor prefers a typed builder seat; when it builds, the Builder line says `conductor` (conduct, not enforced). The review record names each seat's role; `review-lane` grades the names and cannot see the dispatch.
 
 **One command:** `sparkwright start <ROW-ID> [--changed <listing>]` runs acts 1 and 3 and prints this trailer block; the printed class is provisional — the gate re-derives it.
 
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
 
-> **Guard refused a read-only command?** `docs/operations/runtime-guards.md` §*The escape card* names the shapes it always refuses and the one retry for each.
+> **Guard refused a command?** See `docs/operations/runtime-guards.md` §*The escape card*: one sanctioned retry per the escape card, else stop and escalate.
 
 ## What this file is
 
@@ -30,13 +30,14 @@ Discover → Plan → Build → Review → Release → Operate, with retrospecti
 - Conditional gates — each binds only when its trigger applies. The **CI conditional-gate set** is enumerated authoritatively in **`DEVELOPMENT-STANDARDS.md` §14** (the same five the Definition of Done in `CLAUDE.md` cites); the fuller set of conditional **process checkpoints** is the table in **`DEVELOPMENT-PROCESS.md` §7**. This card does not restate the membership — cite those sources.
 
 ## Security (non-negotiable)
-Secrets in env / a managed store, never committed · validate input at boundaries · parameterized queries / ORM · least-privilege, short-lived tokens · PII consent + redaction + erasure · immutable audit trail · AI: prompt-injection defense + output validation + evals. Summary in **`CLAUDE.md`**; full bar in **`DEVELOPMENT-STANDARDS.md` §2**.
+Secrets in env / a managed store, never committed; never read, print, measure, copy or reuse a secret or a token pasted into the conversation, not even its length or prefix; a human sets secrets; if a token appears in the conversation, stop and ask the human to rotate it; the kit's own board and tracker scripts (`sh scripts/board.sh`) are the sanctioned credential reader; never run a secret-store or Keychain command yourself (conduct, not enforced) · validate input at boundaries · parameterized queries / ORM · least-privilege, short-lived tokens · PII consent + redaction + erasure · immutable audit trail · AI: prompt-injection defense + output validation + evals. Summary in **`CLAUDE.md`**; full bar in **`DEVELOPMENT-STANDARDS.md` §2**.
 
 ## The agent boundary
 Agents act only within granted capabilities; the runtime guard blocks destructive and control-plane actions. **Agents propose; humans ratify** — never self-merge **unratified work**, never edit the control plane (guard, CI, CODEOWNERS, settings) without a human applying it. The guard sees only **local** git, **not** a server-side `gh pr merge --admin` — so for a **control-plane** change or any `gh pr merge --admin` bypass, prepare the green PR and **hand the human the merge command**; admin-merge only on an explicit "you merge it." For **Ordinary/Sensitive** changes after a recorded GO, the agent may execute the normal (non-`--admin`) merge — execution is delegable post-GO (see `docs/governance/promotion-contract.md`). Autonomy tiers + guard: **`DEVELOPMENT-PROCESS.md` §13**; solo-track ratification + the code-owner trap: **`docs/operations/review-lane.md`**.
 
 ## Working with the human
 - **Operator fluency** (adapt to the human's level): `docs/operations/operator-fluency.md`
+- **Running more than one session?** Read `agents/orchestrator.agent.md` (the conductor): checkout custody, the push slot, GO relays, pinned review checkouts.
 
 ## Your stack
 Concrete commands, libraries, and CI live in **`profiles/<stack>.md`** (chosen at Inception). New here? Start at **`START-HERE.md`**.

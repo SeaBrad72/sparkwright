@@ -2,19 +2,19 @@
 
 ## 1. Entry contract — do this BEFORE any mutating action
 
-**Five acts, every slice, before the first edit / commit / PR.** The skills in `skills/` govern process work here (index: `skills/using-skills/SKILL.md`).
+⚠️ **Start the session in this repository's root, not a parent or a subfolder:** Claude Code loads the guard hooks only from the launch directory. If your launch directory (it is in your context) is not this root, stop before any edit and tell the human, who can confirm with `/hooks`. **Five acts, every slice, before the first edit / commit / PR.** The skills in `skills/` govern process work here (index: `skills/using-skills/SKILL.md`).
 
 1. **Derive the change class.** Put the changed paths in a file, one per line, and run `sh conformance/promotion-readiness.sh --class --changed <listing>`. Pass the listing file, never a path — a path argument gets its CONTENTS classified. `conformance/agent-boundary.sh --state` is not a classifier; without `--changed` it answers `NONE`. Never self-assert the class.
 2. **Read the governing skill; name it in act 4 if the class asks** — `skills/<name>/SKILL.md`. Design before code, evidence before "done"; search `docs/governance/DECISIONS.md` for a ruling on this surface; a design answers the twelve lenses in `skills/design/SKILL.md`.
 3. **Claim the row by its id** — the backticked `ROW-ID` that leads its Item cell (`[A-Z0-9][A-Z0-9-]*`), with `sh scripts/board.sh claim <ROW-ID>`; that id is your `Kit-Row` value. No row, no build.
 4. **Carry the Entry Declaration as commit trailers, proportional to the class** — Ordinary owes `Kit-Row` + `Kit-Class`; Sensitive/Control-plane owe `Kit-Stage` + `Kit-Skill` too (`Kit-Intent`, `Kit-Ceremony`, `Kit-Stop` optional). `conformance/loop-state.sh` (stage→skill map: `sh conformance/loop-state.sh --help`) checks the DERIVED class's required set on your PR's final commit: present once each, row on the board, class matching; a volunteered field is validated too. Enforced by default; `LOOP_STATE_MODE: observe` in `adopter-gates.yml` opts out.
-5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff.
+5. **State the ceremony budget in one line**, derived from the class, so the owner can veto it in a sentence. Push board edits before you ask for review; seek approval only on the final diff. **Seats:** the conductor dispatches each build task to a **builder** seat, each review to a **reviewer** seat, and on Sensitive or Control-plane work a separate **security** seat. Each is typed by its `agents/*.agent.md` definition and dispatched through the harness's native binding where one exists (`START-HERE.md` step 7, `docs/operations/harness-adapters.md`). The conductor prefers a typed builder seat; when it builds, the Builder line says `conductor` (conduct, not enforced). The review record names each seat's role; `review-lane` grades the names and cannot see the dispatch.
 
 **One command:** `sparkwright start <ROW-ID> [--changed <listing>]` runs acts 1 and 3 and prints this trailer block; the printed class is provisional — the gate re-derives it.
 
 > ⚠️ **The trailer block must be the LAST paragraph of the commit message, and contiguous.** A blank line inside it truncates it — git reads only the paragraph after the blank, so every `Kit-*` field above it is lost.
 
-> **Guard refused a read-only command?** `docs/operations/runtime-guards.md` §*The escape card* names the shapes it always refuses and the one retry for each.
+> **Guard refused a command?** See `docs/operations/runtime-guards.md` §*The escape card*: one sanctioned retry per the escape card, else stop and escalate.
 
 ## What this document is
 
@@ -53,16 +53,18 @@ New here? **Read `START-HERE.md`.**
 1. **Production-grade from day one** — no demos. Everything is shippable.
 2. **Test-driven** — tests (and, for AI features, evals) are written with the code, not after. Quality is built in.
 3. **Architecture before implementation** — design and discuss trade-offs before building.
-4. **Automated quality gates** — if it isn't automated, it isn't enforced. CI on every push.
+4. **Automated quality gates** — if it isn't automated, it isn't enforced. CI on every push. Every process step is gated, or kept and labelled "conduct, not enforced" with its reason, or deleted. Keeping a step needs a measured catch or a ratified reason.
 5. **Security & governance are foundational** — built into every line from the start, not bolted on.
 6. **The loop closes** — production teaches the next iteration; learning routes back into an artifact (the "adjust" step).
+7. **Honest by default** — every claim says what is proved, what is only attested and what is estimated; numbers are labelled measured or estimate; a green never claims more than its check reads.
+8. **Neutral by construction** — stack, harness and model are chosen for fit and recorded with a revisit trigger; no seat depends on one vendor's model; enforcement is equal on every harness.
 
 ## Working style (human ↔ agent)
 
 - **Architecture first** — discuss approach before code.
 - **Agents propose, humans ratify** — agents never silently change the standards/process that govern them.
 - **Concise** — lead with the answer.
-- **Full lifecycle, every time** — no skipped phases (see `DEVELOPMENT-PROCESS.md`).
+- **Full lifecycle, every time** — every stage is visited; its weight scales with the derived change class × size; one review round plus one security pass is the norm, and reviewer round N notifies the owner (conduct, not enforced). See `DEVELOPMENT-PROCESS.md`.
 
 ---
 
@@ -70,7 +72,7 @@ New here? **Read `START-HERE.md`.**
 
 > **Authoritative summary.** These are the non-negotiable rules in brief; the full bar (secrets-at-scale, cost governance, per-rule detail) is their expansion in `DEVELOPMENT-STANDARDS.md` §2. This summary and that expansion must agree.
 
-- **Secrets:** never commit keys/passwords/tokens. Env vars + a committed `.env.example`. **Disclosure:** ship a `SECURITY.md` (coordinated-disclosure + a real contact); verified by `conformance/security-policy.sh`.
+- **Secrets:** never commit keys/passwords/tokens. Env vars + a committed `.env.example`. Never read, print, measure, copy or reuse a secret or a token pasted into the conversation, not even its length or prefix; a human sets secrets; if a token appears in the conversation, stop and ask the human to rotate it; the kit's own board and tracker scripts (`sh scripts/board.sh`) are the sanctioned credential reader; never run a secret-store or Keychain command yourself (conduct, not enforced; the guard is a seatbelt only where it is loaded). **Disclosure:** ship a `SECURITY.md` (coordinated-disclosure + a real contact); verified by `conformance/security-policy.sh`.
 - **Input validation:** validate and sanitize all input at system boundaries (schema-validate).
 - **Injection:** parameterized queries / ORM — never string-interpolate untrusted input.
 - **AuthN/Z:** hash passwords (strong adaptive hash); least-privilege tokens, short expiry.
@@ -112,7 +114,7 @@ A feature is NOT done until ALL are true:
 **Tests** — unit + integration (+ e2e for critical flows) passing · 80%+ coverage (100% on critical paths) · edge/error cases covered · **AI features: evals pass and don't regress**.
 **CI/CD** — pipeline green · build succeeds · the 7 required gates pass, incl. secret-scan and SBOM+provenance · the conditional gates (the five in `DEVELOPMENT-STANDARDS.md` §14) pass where their trigger applies, else N/A-with-reason · no known high/critical vulnerabilities in production/runtime dependencies.
 **Docs** — README, API docs, ADRs updated · **RUNBOOK** updated when the diff touches deploy workflows, `Dockerfile`, `.env*`, infra/runtime config, or ops runbooks (the §15 artifact-table trigger, `DEVELOPMENT-PROCESS.md`), else **N/A with the reason** · `.env.example` current · known issues/tech-debt captured · **project resumable cold by another engineer or agent**.
-**Review & merge** — PR reviewed (builder ≠ sole reviewer; **builder ≠ ratifier**) · approved · merged · branch deleted. The merge is a recorded **GO/NO-GO** judgment (not a keystroke) against a **promotion-readiness** surfacing whose content is the DoD + acceptance criteria; on that recorded GO the **agent may actuate** the merge/tag (control-plane included) bound to the approved SHA — see the promotion contract (`docs/governance/promotion-contract.md`). The judgment is the control; the keystroke is not.
+**Review & merge** — PR reviewed (builder ≠ sole reviewer; **builder ≠ ratifier**) · approved · merged · branch left intact (deletion is a separate act, `D-240819-4`). The merge is a recorded **GO/NO-GO** judgment (not a keystroke) against a **promotion-readiness** surfacing whose content is the DoD + acceptance criteria; on that recorded GO the **agent may actuate** the merge/tag (control-plane included) bound to the approved SHA — see the promotion contract (`docs/governance/promotion-contract.md`). The judgment is the control; the keystroke is not.
 **Accessibility** — keyboard-navigable · screen-reader/contrast checks pass (for user-facing UI); recorded in an a11y sign-off (`templates/A11Y-SIGNOFF-TEMPLATE.md`).
 **Production** — deployed · smoke-tested (post-deploy gate; `docs/operations/progressive-delivery.md`) · no errors in logs · rollback path ready · monitoring/alerting on critical paths · **DR proven for data services** (`conformance/dr-readiness.md`).
 

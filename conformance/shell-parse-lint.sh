@@ -64,6 +64,15 @@ lint_file() {
   _lf_k3=es; _lf_k3="${_lf_k3}ac"
   _lf_tab=$(printf '\t')
   _lf_bs_tab="\\${_lf_tab}"  # backslash + tab
+  _lf_sq="'"; _lf_dq='"'
+  # rule (f) keywords, assembled from pieces (self-match trap): the word that negates a pipeline, and the
+  # compound-command openers a negation must not precede (a brace group, if, case, for, while, until).
+  _lf_nneg='!'
+  _lf_ki=i; _lf_ki="${_lf_ki}f"
+  _lf_kf=fo; _lf_kf="${_lf_kf}r"
+  _lf_kw=whi; _lf_kw="${_lf_kw}le"
+  _lf_ku=unt; _lf_ku="${_lf_ku}il"
+  _lf_nkeys="{ ${_lf_ki} ${_lf_k1} ${_lf_kf} ${_lf_kw} ${_lf_ku}"
   _lf_n=0
   while IFS= read -r _lf_line; do
     _lf_n=$((_lf_n + 1))
@@ -278,6 +287,68 @@ lint_file() {
         esac
         ;;
     esac
+    # (f) a NEGATED COMPOUND COMMAND: the pipeline-negation word as a whole blank-delimited word, at the
+    # start of the line or after a separator / keyword / case-arm `)`, whose next word opens a compound
+    # command (a brace group, if, case, for, while, until). Bash accepts it; tree-sitter-bash's negated
+    # command takes a plain command, an assignment, a test or a subshell, never a compound, so the WHOLE
+    # file stops parsing. Quoted spans are blanked first (so `echo '...'` text is never read as code);
+    # runs of blanks are collapsed; `[ ! -e x ]`, a negated plain command or subshell, and `x=!` do not match.
+    _lf_fq=''
+    _lf_fr=$_lf_t
+    while :; do
+      case "$_lf_fr" in
+        *"$_lf_sq"*|*"$_lf_dq"*) : ;;
+        *) _lf_fq="${_lf_fq}${_lf_fr}"; break ;;
+      esac
+      _lf_pa=${_lf_fr%%"$_lf_sq"*}
+      _lf_pb=${_lf_fr%%"$_lf_dq"*}
+      if [ "${#_lf_pa}" -le "${#_lf_pb}" ]; then
+        _lf_qc=$_lf_sq
+        _lf_qpf=$_lf_pa
+      else
+        _lf_qc=$_lf_dq
+        _lf_qpf=$_lf_pb
+      fi
+      _lf_qr=${_lf_fr#"$_lf_qpf"}
+      _lf_qr=${_lf_qr#?}
+      case "$_lf_qr" in
+        *"$_lf_qc"*) _lf_qr=${_lf_qr#*"$_lf_qc"} ;;
+        *) _lf_qr='' ;;
+      esac
+      _lf_fq="${_lf_fq}${_lf_qpf}Q"
+      _lf_fr=$_lf_qr
+    done
+    while :; do
+      case "$_lf_fq" in
+        *"$_lf_tab"*) _lf_fq="${_lf_fq%%"$_lf_tab"*} ${_lf_fq#*"$_lf_tab"}" ;;
+        *'  '*) _lf_fq="${_lf_fq%%'  '*} ${_lf_fq#*'  '}" ;;
+        *) break ;;
+      esac
+    done
+    _lf_fs=" ${_lf_fq} "
+    _lf_fhit=0
+    for _lf_nk in $_lf_nkeys; do
+      _lf_nrem=$_lf_fs
+      _lf_npre=''
+      while :; do
+        case "$_lf_nrem" in
+          *" $_lf_nneg $_lf_nk "*) : ;;
+          *) break ;;
+        esac
+        _lf_npre="${_lf_npre}${_lf_nrem%%" $_lf_nneg $_lf_nk "*}"
+        _lf_nw=${_lf_npre##* }
+        case "$_lf_nw" in
+          ''|';'|'&&'|'||'|'|'|then|do|else|elif|if|while|until|'{'|'(') _lf_fhit=1 ;;
+          *';'|*'|'|*'&'|*')') _lf_fhit=1 ;;
+        esac
+        _lf_npre="${_lf_npre} ${_lf_nneg} ${_lf_nk}"
+        _lf_nrem=" ${_lf_nrem#*" $_lf_nneg $_lf_nk "}"
+      done
+    done
+    if [ "$_lf_fhit" -eq 1 ]; then
+      echo "${_lf_file}:${_lf_n}: a negated compound command (the negation word before a brace group or a compound statement; semgrep's bundled tree-sitter-bash cannot parse it)"
+      _lf_bad=1
+    fi
   done < "$_lf_file"
   return "$_lf_bad"
 }
@@ -626,6 +697,56 @@ selftest() {
 
   if [ "$l9allok" -eq 1 ]; then
     echo "PASS: selftest — the ruling's 14-fixture set (T1-T7 flag, F1-F7 clean) all check out, rule (b)"
+  fi
+
+  # leg 10: rule (f), a negated compound command. Every fixture is assembled from pieces (the negation word,
+  # the brace pair and the keywords are variables), so this selftest's own source never spells the shape.
+  # True positives: the negation word at the line start, after &&, after a keyword, after a case-arm `)`, and
+  # before a compound statement. False positives, which must stay quiet: a negated plain command, a test
+  # command, a negated subshell, an assignment value, quoted text naming the shape, and the status-preserving
+  # if/then/else rewrite of the same condition.
+  fb='!'; fl='{'; fr='}'
+  fki=i; fki="${fki}f"; fkw=whi; fkw="${fkw}le"; fkth=th; fkth="${fkth}en"
+  l10allok=1
+  for l10case in start andand after-then caseArm bang-if bang-while; do
+    case "$l10case" in
+      start)      l10line="  ${fb} ${fl} a && b; ${fr}" ;;
+      andand)     l10line="  a && ${fb} ${fl} b; ${fr}" ;;
+      after-then) l10line="  ${fkth} ${fb} ${fl} b; ${fr}" ;;
+      caseArm)    l10line="    x) ${fb} ${fl} b; ${fr} ;;" ;;
+      bang-if)    l10line="  ${fb} ${fki} a; ${fkth} b; fi" ;;
+      bang-while) l10line="  ${fb} ${fkw} a; do b; done" ;;
+    esac
+    printf '#!/bin/sh\nf() {\n%s\n}\n' "$l10line" > "$sd/l10-${l10case}.sh"
+    _rc=0; _out=$(run "$sd/l10-${l10case}.sh") || _rc=$?
+    case "$_rc:$_out" in
+      1:*"l10-${l10case}.sh:3: a negated compound command"*) : ;;
+      *) echo "FAIL: selftest — leg10 ${l10case} was not flagged, rule (f) (rc=$_rc out='$_out')"; st=1; l10allok=0 ;;
+    esac
+  done
+  {
+    printf '#!/bin/sh\nf() {\n'
+    printf '  %s a\n' "$fb"
+    printf '  [ %s -e x ]\n' "$fb"
+    printf '  %s ( a )\n' "$fb"
+    printf '  x=%s\n' "$fb"
+    printf "  echo '%s %s'\n" "$fb" "$fl"
+    printf '  %s a && b; %s false; else true; fi\n' "$fki" "$fkth"
+    printf '}\n'
+  } > "$sd/l10-clean.sh"
+  _rc=0; _out=$(run "$sd/l10-clean.sh") || _rc=$?
+  if [ "$_rc" -ne 0 ] || [ -n "$_out" ]; then
+    echo "FAIL: selftest — leg10 the rule-(f) false-positive set was flagged (rc=$_rc out='$_out')"; st=1; l10allok=0
+  fi
+  # the MUTANT: the negation word disabled in a scratch copy of the lint -> the true positive is no longer flagged,
+  # so the first leg above is load-bearing (the copy must differ, and must still lint a clean file clean).
+  sed "s/^  _lf_nneg='!'\$/  _lf_nneg='@'/" "$HERE/shell-parse-lint.sh" > "$sd/lint-mutant.sh"
+  _rc=0; _out=$(sh "$sd/lint-mutant.sh" "$sd/l10-start.sh") || _rc=$?
+  if cmp -s "$HERE/shell-parse-lint.sh" "$sd/lint-mutant.sh" || [ "$_rc" -ne 0 ]; then
+    echo "FAIL: selftest — leg10 MUTANT (rule (f) disabled) did not make the true positive pass unflagged (rc=$_rc out='$_out')"; st=1; l10allok=0
+  fi
+  if [ "$l10allok" -eq 1 ]; then
+    echo "PASS: selftest — rule (f): six negated-compound shapes flagged, the false-positive set quiet, and the disabled-rule mutant goes unflagged"
   fi
 
   # leg 5: an empty list -> rc 2, never a vacuous pass.

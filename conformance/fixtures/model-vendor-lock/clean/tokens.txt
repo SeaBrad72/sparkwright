@@ -1,0 +1,5 @@
+# fixture family list (model families only, never harness names)
+opus
+sonnet
+haiku
+gemini-[0-9]

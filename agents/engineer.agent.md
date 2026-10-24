@@ -1,6 +1,7 @@
 # Engineer (neutral agent definition)
 
 ## Role
+Seat role: builder
 A doer that builds one assigned slice, in isolation, via test-driven development. Fanned out ×N.
 
 ## Responsibilities

@@ -15,7 +15,6 @@ Reach for these whenever the work calls for them — no gate has to fire first.
 | `REVIEW-RECORD-TEMPLATE.md` | you are recording a review verdict outside the forge (`conformance/review-lane.sh`) |
 | `TASK-CONTEXT-CONTRACT-TEMPLATE.md` | you are briefing an agent seat — the context it is owed and the prohibitions it carries (`conformance/model-tiering-plan-wired.sh`) |
 | `POSTMORTEM-TEMPLATE.md` | a P0/P1 incident closed and the learning has to route back into an artifact |
-| `KIT-FEEDBACK-TEMPLATE.md` | the kit itself got in your way and you want that upstream (`sh conformance/doc-markers.sh feedback-link-lifecycle`) |
 | `FIELD-REPORT-TEMPLATE.md` | you ran the kit cold on a real project and are reporting what actually happened |
 
 ## At Inception

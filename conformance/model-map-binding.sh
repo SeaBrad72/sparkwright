@@ -24,7 +24,12 @@ check_root() {
   # 1. the adopter-owned map declares the four abstract tiers (FABLE-TIER added apex=). A tier added to
   #    TIERS with no map binding would leave a seat unbindable; the general "every TIERS entry bound" lock
   #    is boarded as a follow-up — here apex is required explicitly, with a load-bearing negative below.
-  if [ -f "$_map" ] && grep -q '^apex=' "$_map" && grep -q '^deep=' "$_map" && grep -q '^fast=' "$_map" && grep -q '^light=' "$_map"; then
+  #    SWAS-303a: the kit's own map is export-ignored, so an adopter's fresh export has none until incept stamps one
+  #    from the template. Off the kit tree (no docs/ROADMAP-KIT.md, which an export strips) an absent map is the honest
+  #    single-model case, not a miss; the kit's own tree must still carry its map.
+  if [ ! -f "$_map" ] && [ ! -f "$_root/docs/ROADMAP-KIT.md" ]; then
+    echo "PASS: no .kit/model-map.conf - single-model (an adopter export before incept stamps the map)"
+  elif [ -f "$_map" ] && grep -q '^apex=' "$_map" && grep -q '^deep=' "$_map" && grep -q '^fast=' "$_map" && grep -q '^light=' "$_map"; then
     echo "PASS: .kit/model-map.conf declares apex=/deep=/fast=/light="
   else
     echo "FAIL: .kit/model-map.conf missing or does not declare all of apex=/deep=/fast=/light="
@@ -88,7 +93,8 @@ selftest() {
   mk_good() {
     _d=$1
     mkdir -p "$_d/.kit" "$_d/.claude/agents" "$_d/.claude/hooks"
-    printf 'apex=fable\ndeep=opus\nfast=sonnet\nlight=haiku\n' > "$_d/.kit/model-map.conf"
+    # SWAS-303a: the map carries its record (decision=/recorded=/revisit-by=) ahead of the four tier keys.
+    printf 'decision=D-000000-1\nrecorded=2026-01-01\nrevisit-by=2026-04-01\napex=fable\ndeep=opus\nfast=sonnet\nlight=haiku\n' > "$_d/.kit/model-map.conf"
     # Mirrors the real doc shape: ONE instruction line carries the literal model: token, and a
     # separate honest-ceiling caveat line references the model parameter WITHOUT the literal token.
     # This is what lets Negative D prove the predicate is anchored to the instruction, not the caveat.
@@ -115,6 +121,36 @@ selftest() {
     echo "selftest PASS: good fixture -> PASS"
   else
     echo "selftest FAIL: a complete good fixture wrongly reddened"; st=1
+  fi
+
+  # POSITIVE (SWAS-303a): an all-unset map is a VALID map (the honest single-model case the template ships),
+  # not a missing one. It keeps the four keys declared; only their values are `unset`.
+  mk_good "$base/unset"
+  printf 'decision=none\napex=unset\ndeep=unset\nfast=unset\nlight=unset\n' > "$base/unset/.kit/model-map.conf"
+  if check_root "$base/unset" >/dev/null 2>&1; then
+    echo "selftest PASS: all-unset map -> PASS"
+  else
+    echo "selftest FAIL: an all-unset map (the template's shape) wrongly reddened"; st=1
+  fi
+
+  # POSITIVE (SWAS-303a pre-push fix): the kit's own map is export-ignored, so an adopter's export carries NO map until
+  # incept stamps one. With no kit marker (docs/ROADMAP-KIT.md, which an export strips) an absent map is the honest
+  # single-model case and must PASS; harness-adapter proves the claude-code `model-tiering: native` claim with this
+  # check, so a red here on a fresh export is a "lying-native" on every adopter's first push.
+  mk_good "$base/nomap"; rm "$base/nomap/.kit/model-map.conf"
+  if check_root "$base/nomap" >/dev/null 2>&1; then
+    echo "selftest PASS: adopter export with no map yet -> PASS"
+  else
+    echo "selftest FAIL: an adopter tree with no map (a fresh export) wrongly reddened"; st=1
+  fi
+
+  # NEGATIVE F (load-bearing): the kit's OWN tree (marker present) must keep its map - the relief above is for the
+  # export only, so a kit tree that loses its map must still FAIL.
+  mk_good "$base/negMap"; rm "$base/negMap/.kit/model-map.conf"; mkdir -p "$base/negMap/docs"; : > "$base/negMap/docs/ROADMAP-KIT.md"
+  if check_root "$base/negMap" >/dev/null 2>&1; then
+    echo "selftest FAIL: a kit tree with its map deleted still passed (the relief swallowed the kit tree)"; st=1
+  else
+    echo "selftest PASS: kit tree with the map deleted -> FAIL"
   fi
 
   # NEGATIVE A (load-bearing): strip the model: token from orchestrator.md -> must FAIL.

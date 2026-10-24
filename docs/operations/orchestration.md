@@ -11,6 +11,8 @@ A founder hands the **Orchestrator** an epic. It slices the epic into disjoint, 
 - **The LLM Orchestrator drives.** It follows `agents/orchestrator.agent.md` (Claude binding: `.claude/agents/orchestrator.md`) and makes the judgment calls — slicing, fan-out width, conflict resolution — dispatching **real** Engineer subagents.
 - **Harness-neutral shell mechanics** are the substrate the Orchestrator calls: `scripts/orchestrator-run.sh` (worktree-per-agent + the `runaway-guard.sh step --row <ROW>` meter (one budget per slice; `KIT_RUN_ROW` names the row; the loop never wipes the tally) + bracketed span emission + clean-merge integration).
 
+**The conductor is the main session, not a dispatched subagent.** The standing session the owner talks to conducts the loop, solo or as a lane with one coordinator when several sessions run in parallel. Its duties (entry, checkout custody, sha read-back, the push slot, GO asks, landing and watching main's CI, pinned review checkouts, guard refusals) and the relayed-GO record are in `agents/orchestrator.agent.md`, each labelled enforced or conduct. The fan-out loop described here is its optional hat.
+
 ## The roster & lifecycle
 
 One **standing** Orchestrator; the specialists are **ephemeral** subagents — dispatched fresh with a Task-Context-Contract, run to completion, return one artifact, context discarded. An agent's **span = its lifetime**.

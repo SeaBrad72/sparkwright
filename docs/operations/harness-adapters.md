@@ -17,7 +17,7 @@ Multi-harness coexistence rule: adapters occupy additive, non-conflicting namesp
 | **history-protection** | Universal `pre-push` hook (force-push / push-to-main) | *(none — universal hook is sufficient)* | `pre-push` presence |
 | **review-roles** | `agent-boundary` gate + branch-protection reference | Native subagents (`reviewer.md`, `security-reviewer.md`) | `conformance/branch-protection.sh` |
 | **mcp-gate** | N/A if no MCP | `mcp-policy` wired (`guard_check_mcp` + `mcp-policy.json`) | `conformance/mcp-policy.sh` |
-| **orchestration** | The four seat definitions present (`orchestrator`, `engineer`, `reviewer`, `security`) | Harness-native subagent dispatch | `agents/*.agent.md` presence |
+| **orchestration** | The four seat definitions present (`orchestrator`, `engineer`, `reviewer`, `security`), each with one `Seat role:` line (`conductor`, `builder`, `reviewer`, `security`); `review-lane` rule 10 reads the record's seat roles against them. Claude Code bindings: `orchestrator` (or the main session), `engineer`, `reviewer`, `security-reviewer` | Harness-native subagent dispatch | `agents/*.agent.md` presence |
 | **model-tiering** | `conformance/model-tiering.sh` present and passing | Harness-native per-seat model selection | `conformance/model-tiering.sh` |
 
 > **The dimension set is CLOSED.** These seven are the whole contract: a key outside them is a **FAIL**, not an extension, because the Kit enforces no floor for it and therefore cannot verify it. Declaring one does not add governance — it only creates an unverifiable claim, so `harness-adapter.sh` rejects the manifest and names the offending keys.
@@ -70,6 +70,16 @@ Each adapter declares its binding in `adapters/<harness>/adapter.json`. The shap
   > **Residual — `cursor`.** Cursor reads project rules from `.cursor/rules/*.mdc` and does **not** auto-load `AGENTS.md` on its own (`adapters/cursor/README.md`, the *"Adopting with Cursor"* section; the single-file `.cursorrules` form is deprecated and silently ignored in Agent mode). The declared value is therefore the **routing target**: the adopter adds a rule file under `.cursor/rules/` that points at `AGENTS.md`. Delivery depends on the adopter having done that; the kit cannot verify it from here.
 
   > **Residual — `gemini`.** Its `contextFile` is **`AGENTS.md`, not `GEMINI.md`**. `adapters/gemini/README.md`, its opening description and *"Adopting with Gemini CLI"* section, records that Gemini CLI reads `GEMINI.md` for project context — but **the kit ships no `GEMINI.md`**, so nothing would be loaded by that name. The honest framing is the same as `cursor`'s: the adopter creates a `GEMINI.md` that includes `AGENTS.md`, and the declared value names the document the governance actually lives in. No file was invented here to match a guess; an adopter who wires it up should add a tracked `GEMINI.md` and repoint this field.
+
+  **Open the harness on the repository root, not a parent or a subfolder.** A harness's project configuration (its rules file, its hooks if it has any) is found relative to where it starts. The floor (the git `pre-push` hook, `kit-guard`, the CI backstop) attaches to the repository, not the session, so it holds whatever the launch directory.
+
+  | Harness | Load condition for its project config | An inline guard that can go missing? | Grade |
+  |---|---|---|---|
+  | `claude-code` | the launch directory only; `/cd` loads the new directory's hooks, but the kit's hook command then blocks every call (`runtime-guards.md`, "Is the guard loaded? (the launch directory)") | yes; nothing in the kit detects a launch that loaded no project hooks yet | doc-quoted and measured |
+  | `codex` | `adapters/codex/README.md`: `AGENTS.md` "from the repo root on the first turn"; a parent or subfolder start is untested | none: floor only | **unknown, the adopter verifies** |
+  | `cursor` | `.cursor/rules/*.mdc` of the opened workspace (`adapters/cursor/README.md`) | none: floor only | **unknown, the adopter verifies** |
+  | `gemini` | the `GEMINI.md` hierarchy (`adapters/gemini/README.md`) | none: floor only | **unknown, the adopter verifies** |
+  | `generic` | whatever the harness reads; the floor holds regardless | none: floor only | definitional |
 
 - **`dimensions`** — all seven dimensions must appear, and **no others**. Each carries:
   - `level`: `"native"` | `"floor"` | `"n-a"`. Only `mcp-gate` may be `"n-a"` (when the harness has no MCP surface).

@@ -1422,6 +1422,12 @@ AWK
     mkdir -p "$MH/.local/state/sparkwright/runaway/$_mkey"
     printf '1757900000 keyA %s %s %s\n' "$1" "$2" "$3" >> "$MH/.local/state/sparkwright/runaway/$_mkey/tally.v2"
   }
+  mga_poison() {   # <row> — a tally the guard cannot read (rc 2), which enforce still refuses
+    # SWAS-302 (Q2 A2) dropped the unmetered-row refusal, so the legs that prove the dial is read from the APPROVED
+    # tree (and the docs-only exemption) by a refusal take that refusal from this unreadable tally instead.
+    mga_seed "$1" 1 1
+    printf 'this line is not the tally grammar\n' >> "$MH/.local/state/sparkwright/runaway/$_mkey/tally.v2"
+  }
   mga_act() {   # -> RC, OUT. The ambient redirection/dial env is scrubbed; $MGA_ENVX re-adds a leg's own.
     rm -f "$MD/.invoked"
     _act_origin "$MD"   # the GO note is read from ORIGIN: publish the leg's (possibly rewritten) note first
@@ -1452,9 +1458,14 @@ AWK
   # The legs run under EVERY producer shell this host has: `sh` (bash-as-sh on macOS, dash on Debian CI)
   # AND `dash` explicitly (the A5 class: dash's echo expands \0NNN, its patterns differ). MGA_SH names it.
   mga_legs() {
-  mga_fx "$MGA_ENF" ROW-MA1 code; mga_act
-  mga_check "ACT-METER(enforce, unmetered): refused, NO merge attempted, the remedy names the exact step command" refuse \
-    "ACTUATE REFUSED (metering gate)" "step --row ROW-MA1 --tokens N --agents N" "never estimate" "default branch"
+  # SWAS-302 Q2-A2 (owner: "2 A2"): enforce stays, and ONLY the refusal of a row with no meter line is dropped.
+  mga_fx "$MGA_ENF" ROW-A2U code; mga_act
+  mga_check "ACT-METER(A2, enforce, unmetered): PROCEEDS, prints the unmetered line, names no step remedy" proceed \
+    "unmetered: ROW-A2U" "OK: actuated" "!ACTUATE REFUSED" "!step --row" "!never estimate"
+  mga_fx "$MGA_ENF" NONE code; mga_act
+  mga_check "ACT-METER(A2 keeps, enforce, no kit-row): STILL refused — cannot meter an unnamed row" refuse "ACTUATE REFUSED (metering gate)" "unnamed row"
+  mga_fx "$MGA_ENF" ROW-A2G code; mga_layout "$MGA_ROOT/kit-a2nog" noguard; MGA_K="$MGA_ROOT/kit-a2nog"; mga_act; MGA_K="$MGA_KIT"
+  mga_check "ACT-METER(A2 keeps, enforce, guard absent): STILL refused, naming the absence" refuse "ACTUATE REFUSED (metering gate)" "the runaway guard script is absent (<path elided>)"
 
   mga_fx "$MGA_ENF" ROW-MA2 code; mga_seed ROW-MA2 100 2; mga_act
   mga_check "ACT-METER(enforce, metered): proceeds, prints the meter line" proceed "metered: ROW-MA2 tokens(100/" "OK: actuated"
@@ -1478,15 +1489,15 @@ AWK
   mga_fx "$MGA_ENF" ROW-MA7 docs base; mga_act
   mga_check "ACT-METER(docs-only, enforce, unmetered): N/A — proceeds" proceed "N/A: docs-only change"
 
-  mga_fx "$MGA_ENF" ROW-MA8 rename base; mga_act
+  mga_fx "$MGA_ENF" ROW-MA8 rename base; mga_poison ROW-MA8; mga_act
   mga_check "ACT-METER(a .sh -> .md rename is NOT docs-only): refused in enforce" refuse "ACTUATE REFUSED (metering gate)" "!N/A: docs-only"
 
-  mga_fx "$MGA_ENF" ROW-MA9 docs base nobase; mga_act
+  mga_fx "$MGA_ENF" ROW-MA9 docs base nobase; mga_poison ROW-MA9; mga_act
   mga_check "ACT-METER(unresolvable merge-base): NOT docs-only — refused in enforce, and says the base is unreadable (fix2 B)" refuse "ACTUATE REFUSED (metering gate)" "!N/A: docs-only" \
     "docs-only exemption unavailable: cannot read origin's main"
 
   # fix round 2 (Minor): the remote main tip is NOT present locally -> the exemption names the missing fetch.
-  mga_fx "$MGA_ENF" ROW-MA26 docs base
+  mga_fx "$MGA_ENF" ROW-MA26 docs base; mga_poison ROW-MA26
   ( set -e; _mgc="$(mktemp -d)"; git clone -q "$MD/.origin.git" "$_mgc/c"; cd "$_mgc/c"; git config user.email c@x; git config user.name c
     git checkout -q main 2>/dev/null || git checkout -q -b main origin/main; printf 'n\n' > newer.txt; git add newer.txt; git commit -qm newer
     git push -q origin HEAD:refs/heads/main; rm -rf "$_mgc" ) || fail "could not advance the fixture origin"
@@ -1495,18 +1506,18 @@ AWK
     "docs-only exemption unavailable: origin/main tip not fetched — git fetch origin"
 
   # fix round 1 (security HIGH): the dial read is FULL-TREE — from a SUBDIRECTORY the gate still reads the root dial.
-  mga_fx "$MGA_ENF" ROW-MA19 code; mkdir -p "$MD/sub"; MGA_SUB=sub; mga_act; MGA_SUB=""
-  mga_check "ACT-METER(fix1 A): enforce + unmetered invoked from a SUBDIRECTORY -> still refused" refuse "ACTUATE REFUSED (metering gate)" "step --row ROW-MA19"
+  mga_fx "$MGA_ENF" ROW-MA19 code; mga_poison ROW-MA19; mkdir -p "$MD/sub"; MGA_SUB=sub; mga_act; MGA_SUB=""
+  mga_check "ACT-METER(fix1 A): enforce + unreadable tally invoked from a SUBDIRECTORY -> still refused" refuse "ACTUATE REFUSED (metering gate)" "guard rc 2"
 
   # fix round 1 (security MEDIUM): a replace ref pointing the approved sha at an observe tree must not de-escalate.
-  mga_fx "$MGA_ENF" ROW-MA20 code
+  mga_fx "$MGA_ENF" ROW-MA20 code; mga_poison ROW-MA20
   ( set -e; cd "$MD"; git checkout -q -b crafted; printf 'RUNAWAY_METERING_GATE=observe\n' > .kit/dials.conf; git add .kit
     git commit -qm crafted; git replace -f "$MX" "$(git rev-parse HEAD)"; git checkout -q feat ) || fail "could not build the replace-ref fixture"
   mga_act
   mga_check "ACT-METER(fix1 B): a replace ref redirecting the approved sha to an observe tree does NOT de-escalate -> refused" refuse "ACTUATE REFUSED (metering gate)"
 
   # fix round 1 (security MEDIUM): the docs-only base is the REMOTE's main; moving the local ref must not exempt code+docs.
-  mga_fx "$MGA_ENF" ROW-MA21 codedocs base
+  mga_fx "$MGA_ENF" ROW-MA21 codedocs base; mga_poison ROW-MA21
   git -C "$MD" update-ref refs/remotes/origin/main "${MX}^"; mga_act
   mga_check "ACT-METER(fix1 C): a code+docs change with the LOCAL origin/main moved to the approved parent is NOT docs-only -> refused" refuse "ACTUATE REFUSED (metering gate)" "!N/A: docs-only" "!docs-only exemption unavailable"
 
@@ -1584,7 +1595,7 @@ AWK
   mga_act
   mga_check "SODEA-A5: a resolvable commit with a real author name and an EMPTY email -> refused with the empty-author reason, NO merge" refuse "ACTUATE REFUSED:" "author of the approved commit" "cannot be read"
 
-  mga_fx "$MGA_ENF" ROW-MA10 docs base; mga_layout "$MGA_ROOT/kit-nocls" noclassifier; MGA_K="$MGA_ROOT/kit-nocls"; mga_act; MGA_K="$MGA_KIT"
+  mga_fx "$MGA_ENF" ROW-MA10 docs base; mga_poison ROW-MA10; mga_layout "$MGA_ROOT/kit-nocls" noclassifier; MGA_K="$MGA_ROOT/kit-nocls"; mga_act; MGA_K="$MGA_KIT"
   mga_check "ACT-METER(classifier absent): NOT docs-only (fail-safe) — refused in enforce" refuse "ACTUATE REFUSED (metering gate)" "!N/A: docs-only"
 
   mga_fx "$MGA_ENF" NONE code; mga_act
@@ -1595,13 +1606,13 @@ AWK
   mga_fx 'RUNAWAY_METERING_GATE=enforcee' ROW-MA11 code; mga_act
   mga_check "ACT-METER(malformed conf value): reads as observe and WARNs on the conf side" proceed "WARN" ".kit/dials.conf" "unmetered: ROW-MA11 (observe — not gating)"
 
-  mga_fx "$MGA_ENF" ROW-MA12 code
+  mga_fx "$MGA_ENF" ROW-MA12 code; mga_poison ROW-MA12
   printf 'RUNAWAY_METERING_GATE=observe\n' > "$MD/.kit/dials.conf"; mga_act
   mga_check "ACT-METER(F1): the working tree says observe but the APPROVED tree says enforce -> refused" refuse "ACTUATE REFUSED (metering gate)"
 
-  mga_fx "$MGA_ENF" ROW-MA13 code; MGA_ENVX="RUNAWAY_METERING_GATE=observe"; mga_act; MGA_ENVX=""
+  mga_fx "$MGA_ENF" ROW-MA13 code; mga_poison ROW-MA13; MGA_ENVX="RUNAWAY_METERING_GATE=observe"; mga_act; MGA_ENVX=""
   mga_check "ACT-METER(F1): env =observe cannot de-escalate an enforcing approved tree -> refused, and says so" refuse "ACTUATE REFUSED (metering gate)" "cannot de-escalate"
-  mga_fx NONE ROW-MA14 code; MGA_ENVX="RUNAWAY_METERING_GATE=enforce"; mga_act; MGA_ENVX=""
+  mga_fx NONE ROW-MA14 code; mga_poison ROW-MA14; MGA_ENVX="RUNAWAY_METERING_GATE=enforce"; mga_act; MGA_ENVX=""
   mga_check "ACT-METER(F1): env =enforce escalates a tree with no key -> refused" refuse "ACTUATE REFUSED (metering gate)"
 
   # fix round 3 (F-C): a hand-written note whose kit-row differs from the approved commit's Kit-Row trailer
@@ -1619,7 +1630,8 @@ AWK
     pass "ACT-METER(F2) precondition: the sandbox env alone WOULD read ROW-MA16 as metered"
   else fail "ACT-METER(F2) precondition: the sandbox tally did not read as metered, the leg would be vacuous"; fi
   MGA_ENVX="KIT_RUNAWAY_SANDBOX=$MGA_ROOT/sbx RUNAWAY_TALLY=$MGA_ROOT/sbx/tally.v2"; mga_act; MGA_ENVX=""
-  mga_check "ACT-METER(F2): the sandbox env exported while the temp-HOME tally is unmetered -> still refused" refuse "ACTUATE REFUSED (metering gate)" "step --row ROW-MA16"
+  mga_check "ACT-METER(F2): the sandbox env exported while the temp-HOME tally is unmetered -> the sandbox tally is NOT read (the row stays unmetered, noted, not refused)" proceed \
+    "unmetered: ROW-MA16" "!metered: ROW-MA16 tokens("
 
   mga_fx "$MGA_ENF" ROW-MA17 code; mga_layout "$MGA_ROOT/kit-nog" noguard; MGA_K="$MGA_ROOT/kit-nog"; mga_act; MGA_K="$MGA_KIT"
   mga_check "ACT-METER(F8): the guard script absent -> refused in enforce, naming the absence (deterministic under every shell)" refuse "ACTUATE REFUSED (metering gate)" "the runaway guard script is absent (<path elided>)"

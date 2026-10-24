@@ -489,7 +489,32 @@ bpd_dc_seam_offenders() {
 bpd_dc_curl_offenders() {
   _f="$1"
   [ -f "$_f" ] || return 0
-  grep -n -w 'curl' "$_f" 2>/dev/null | bpd_dc_is_comment_excluded || true
+  grep -n -w 'curl' "$_f" 2>/dev/null | bpd_dc_is_comment_excluded | bpd_dc_curl_drop_exact "$_f" || true
+}
+
+# bpd_dc_curl_exact_ok <file> <line text> -> rc0 iff (file, EXACT line text) is on the allowlist. SWAS-278a:
+# the pre-push lane's selftest tripwire fixture names curl as a SHIM BINARY and calls the shim once, to prove
+# its recorders can be hit; neither line makes a tracker call, and the file is board-content-reading only by
+# the listing plumbing (bpd_dc_bc_exempt). Each entry is ONE line of ONE file, byte for byte (indentation
+# included): a new curl line in the same file, or the same text in another file, is still flagged.
+bpd_dc_curl_exact_ok() {
+  case "$1" in
+    */conformance/prepush-lane.sh)
+      case "$2" in
+        '  for _n in security op secret-tool gh git-credential-osxkeychain curl; do')
+          return 0 ;;
+        '  ( PATH="$_tw/bin:$PATH" curl --version ) >/dev/null 2>&1 || :')
+          return 0 ;;
+      esac ;;
+  esac
+  return 1
+}
+
+# bpd_dc_curl_drop_exact <file> -> stdin "<n>:<text>" lines, minus the exact allowlisted ones.
+bpd_dc_curl_drop_exact() {
+  while IFS= read -r _cd_l; do
+    bpd_dc_curl_exact_ok "$1" "${_cd_l#*:}" || printf '%s\n' "$_cd_l"
+  done
 }
 
 # bpd_dc_bc_exempt <file> -> rc0 iff <file> is the seam or a named D-240919-3/T2 carve-out, exempt
@@ -975,6 +1000,84 @@ $W/scripts/seam-plus-curl.sh"
     echo "FAIL: selftest -- curl-only-no-board.sh was wrongly flagged in the H-1 twin run"; sd=1
   else
     echo "PASS: selftest -- a curl-namer with no board read stays unflagged in the H-1 twin run too"
+  fi
+
+  # SWAS-278a exact-line allowlist for the two selftest-tripwire curl lines of conformance/prepush-lane.sh
+  # (shim-binary list, and the one shimmed-binary call; neither makes a tracker call). Three fixtures, all
+  # seam readers: (a) the lane file with ONLY the two allowlisted lines -> no CURL hit; (b) the lane file
+  # with the two lines AND a NEW curl line -> the NEW line reds and the two stay quiet; (c) the two
+  # allowlisted lines in a file with any other name -> they red (the entry is file AND line, never either).
+  mkdir -p "$W/a/conformance" "$W/b/conformance" "$W/c/conformance"
+  cat > "$W/a/conformance/prepush-lane.sh" <<'DCEOF'
+#!/bin/sh
+tw_fx() {
+  seam_rows_in_state in-review
+  for _n in security op secret-tool gh git-credential-osxkeychain curl; do
+    :
+  done
+  ( PATH="$_tw/bin:$PATH" curl --version ) >/dev/null 2>&1 || :
+}
+DCEOF
+  cat > "$W/b/conformance/prepush-lane.sh" <<'DCEOF'
+#!/bin/sh
+tw_fx() {
+  seam_rows_in_state in-review
+  for _n in security op secret-tool gh git-credential-osxkeychain curl; do
+    :
+  done
+  ( PATH="$_tw/bin:$PATH" curl --version ) >/dev/null 2>&1 || :
+  curl -s "https://example.invalid/new-line"
+}
+DCEOF
+  cat > "$W/c/conformance/some-other-gate.sh" <<'DCEOF'
+#!/bin/sh
+tw_fx() {
+  seam_rows_in_state in-review
+  for _n in security op secret-tool gh git-credential-osxkeychain curl; do
+    :
+  done
+}
+DCEOF
+  _dc_xa=$(BPD_DC_FILES_OVERRIDE="$W/a/conformance/prepush-lane.sh" bpd_derived_consumer_check 2>&1) && _dc_xa_rc=0 || _dc_xa_rc=$?
+  if [ "$_dc_xa_rc" -eq 0 ] && ! printf '%s\n' "$_dc_xa" | grep -q '(CURL)'; then
+    echo "PASS: selftest -- the two exact allowlisted tripwire lines of prepush-lane.sh are not flagged (rc 0)"
+  else
+    echo "FAIL: selftest -- the exact allowlisted tripwire lines were flagged (rc=$_dc_xa_rc): $_dc_xa"; sd=1
+  fi
+  _dc_xb=$(BPD_DC_FILES_OVERRIDE="$W/b/conformance/prepush-lane.sh" bpd_derived_consumer_check 2>&1) && _dc_xb_rc=0 || _dc_xb_rc=$?
+  if [ "$_dc_xb_rc" -eq 1 ] && printf '%s\n' "$_dc_xb" | grep -q '(CURL).*b/conformance/prepush-lane\.sh:[0-9]*:.*new-line'; then
+    echo "PASS: selftest -- a NEW curl line in prepush-lane.sh still reds the drift check (rc 1, the new line named)"
+  else
+    echo "FAIL: selftest -- a NEW curl line in prepush-lane.sh did not red the drift check (rc=$_dc_xb_rc): $_dc_xb"; sd=1
+  fi
+  if printf '%s\n' "$_dc_xb" | grep -q 'curl --version\|git-credential-osxkeychain'; then
+    echo "FAIL: selftest -- the allowlisted tripwire lines were flagged beside the new line: $_dc_xb"; sd=1
+  else
+    echo "PASS: selftest -- beside the new line the two allowlisted lines stay quiet (the entry is per line)"
+  fi
+  _dc_xc=$(BPD_DC_FILES_OVERRIDE="$W/c/conformance/some-other-gate.sh" bpd_derived_consumer_check 2>&1) && _dc_xc_rc=0 || _dc_xc_rc=$?
+  if [ "$_dc_xc_rc" -eq 1 ] && printf '%s\n' "$_dc_xc" | grep -q '(CURL).*some-other-gate\.sh'; then
+    echo "PASS: selftest -- the same line text in a file with another name still reds (the entry names the file)"
+  else
+    echo "FAIL: selftest -- the allowlisted line text was exempt in another file (rc=$_dc_xc_rc): $_dc_xc"; sd=1
+  fi
+  # MUTANT: the entry widened to the whole file -> the NEW curl line in prepush-lane.sh would no longer
+  # red, so the (b) assertion above is load-bearing. The override lives in a subshell and dies with it.
+  _dc_mut_run() {
+    bpd_dc_curl_exact_ok() {
+      case "$1" in
+        */conformance/prepush-lane.sh)
+          return 0 ;;
+      esac
+      return 1
+    }
+    BPD_DC_FILES_OVERRIDE="$W/b/conformance/prepush-lane.sh" bpd_derived_consumer_check 2>&1
+  }
+  _dc_xm=$(_dc_mut_run) && _dc_xm_rc=0 || _dc_xm_rc=$?
+  if [ "$_dc_xm_rc" -eq 0 ] && ! printf '%s\n' "$_dc_xm" | grep -q 'new-line'; then
+    echo "PASS: selftest -- MUTANT (the allowlist widened to the whole file) lets the new curl line through, so the per-line leg is load-bearing"
+  else
+    echo "FAIL: selftest -- MUTANT (the allowlist widened to the whole file) was NOT detected (rc=$_dc_xm_rc): $_dc_xm"; sd=1
   fi
 
   # Non-vacuity: the honest seam callers name no live curl, so the H-1 arm must NOT red the honest

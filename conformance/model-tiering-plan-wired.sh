@@ -1,8 +1,8 @@
 #!/bin/sh
 # model-tiering-plan-wired.sh — KW20(b) Slice 2a: the model-tier decision discipline is WIRED into the
-# neutral surfaces (TCC carries a Model-tier field; skills/plan prescribes surfacing a per-task tier for
-# human approval; the Orchestrator agent resolves+surfaces+dispatches it).
-# SCOPE — proves the discipline + contract field are DOCUMENTED/wired; NOT that any Build Plan obeyed it
+# neutral surfaces (TCC carries a Model-tier field; skills/plan prescribes presenting a per-task tier in
+# the plan's team table; the Orchestrator agent resolves+surfaces+dispatches it).
+# SCOPE — proves the discipline + contract field are DOCUMENTED/wired; NOT that any plan obeyed it
 # (declared != obeyed — same ceiling as the skill-spine lock + the TCC template), and NOT that a harness
 # bound a model (Slice 2b / NATIVE, un-gateable). Necessary, not sufficient.
 # What it changes: read-only — greps three tracked docs for the wiring markers; mutates nothing.

@@ -71,7 +71,26 @@ REFS="CLAUDE.md DEVELOPMENT-PROCESS.md DEVELOPMENT-STANDARDS.md"
 # reads §1 first is pointed at the lens list (amendment A2: it names the path). Measured merged region
 # 2393 bytes with this script's own ec_region_bytes (CLAUDE.md, AGENTS.md and the project template all
 # agree); set to 2393 + the 3-byte bite = 2396. The bump is +64 for content, NOT recomputed headroom.
-EC_MAX_BYTES=2396
+# ⚠️ GOVERNED BUMP AT GUARD-NOT-LOADED-OUTSIDE-ROOT (SWAS-316, slice 316a, 2026-10-20): 2396 -> 2676, for the ONE
+# sentence the design ratifies at the head of §1 in every context carrier: start the session in the repository
+# root, because Claude Code loads the guard hooks only from the launch directory (a session started in a parent
+# folder or a subfolder runs with no guard). It opens the line that carries the act-list lead-in, because CLAUDE.md
+# sits at its line budget (doc-budget.sh), so it adds no line. Measured merged region 2673 bytes with this script's
+# own ec_region_bytes (CLAUDE.md, AGENTS.md and the project template all agree); set to 2673 + the 3-byte bite = 2676.
+# The bump is +280 for content, NOT recomputed headroom.
+# ⚠️ GOVERNED BUMP AT TYPED-SEATS-300-0 (2026-10-20, SWAS-300), re-measured at the merge with main 8b9b0f0a:
+# the ONE sentence the design ratifies at the end of act 5 — the **Seats:** line that tells a cold conductor
+# to dispatch typed builder, reviewer and (on Sensitive or Control-plane work) security seats, and names the
+# honest ceiling (the grading rule is not active in this change; review-lane cannot see the dispatch). It
+# lands on top of 316a's launch-directory sentence; the cap is the merged region measured with this script's
+# own ec_region_bytes (CLAUDE.md, AGENTS.md and the project template all agree) + the 3-byte bite:
+# 2676 (316a) -> 3302 = the merged region 3299, measured at the merge with main 8b9b0f0a, + 3. It holds
+# 316a's launch-directory sentence and 300-0's Seats sentence; the standalone figures were not summed.
+# ⚠️ GOVERNED RE-MEASURE AT TYPED-SEATS-300 PART 2 (2026-10-21, SWAS-300): rule 10 now grades the seat names, so
+# the Seats sentence no longer says the grading is not active; it ends "review-lane grades the names and cannot
+# see the dispatch". The region measures 3260 bytes with this script's own ec_region_bytes (CLAUDE.md, AGENTS.md
+# and the project template all agree). The cap was 3302 and is now 3263 = the measured 3260 + the 3-byte bite.
+EC_MAX_BYTES=3263
 
 # check_brief <brief> <max-lines>: print PASS/FAIL; return 1 on any gap.
 check_brief() {

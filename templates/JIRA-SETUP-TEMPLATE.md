@@ -55,7 +55,7 @@ Before the conf exists: `sh conformance/tracker-contract.sh --preflight --base h
 - **Verdict words:** PASS · FAIL · TIER · INFO · ASK · UNVERIFIED. **Fix every FAIL before §1**; TIER, INFO and ASK are information (ASK names a question for your site admin).
 - **Minimum curl: 7.54.0.** The adapter's config sets `suppress-connect-headers` (so a proxy's `CONNECT` reply is never read as Jira's answer); an older curl rejects the unknown option and every request fails with `unverified: curl exit 2`. Check `curl --version` on every machine and runner that runs the adapter.
 - **A credential Jira did not accept is rc 6, not an empty result.** Jira Cloud serves a wrong token as an anonymous user; the preflight's `auth` line then reads FAIL "the site did not accept the credential", and `board list` and the other verbs say "the tracker rejected the credential".
-- **Run it once with each credential, and know what each role asserts.** For setup, run `--as dev` (the default) with **your own** credential: it checks you can browse, create, transition and assign, and sets no upper bound, because your own account may legitimately be an admin while you configure the site (a credential that is an admin gets one INFO line saying so). Then run `--as agent` with the **agent pair** (§5b): it adds the upper bound and FAILs when that credential holds `ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, because lanes must run as a dedicated non-admin account. Run `--as ci` with the CI reader's token (§5a): browse only, and FAIL on anything more (on Free under the minimum the reader is the agent account declared under the ceiling, so a writer FAIL is expected: N7 step 2). Every role prints an `identity` line naming the account (`--as ci` shows only the last 8 characters of its id).
+- **Run it once with each credential, and know what each role asserts.** For setup, run `--as dev` (the default) with **your own** credential: it checks you can browse, create, transition and assign, and sets no upper bound, because your own account may legitimately be an admin while you configure the site (a credential that is an admin gets one INFO line saying so). Then run `--as agent` with the **agent pair** (§5b): it adds the upper bound and FAILs when that credential holds `ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, because the agent's sessions must run as a dedicated non-admin account. Run `--as ci` with the CI reader's token (§5a): browse only, and FAIL on anything more (on Free under the minimum the reader is the agent account declared under the ceiling, so a writer FAIL is expected: N7 step 2). Every role prints an `identity` line naming the account (`--as ci` shows only the last 8 characters of its id).
 - **CI reachability is measured on the runner, not on your machine.** Once §4 and §5 are merged, open `Actions → Adopter Tracker Gates → Run workflow`; its preflight step reports whether the runner can reach the site.
 - **If CI cannot reach it** (IP allowlist or VPN), set the repository variable `KIT_TRACKER_RUNNER` to a self-hosted runner label inside your network. **HUMAN ACT — an agent stops and asks the owner:** a repository admin sets it.
 - **Two runner risks.** (1) A label no runner matches **queues forever**, and because `tracker-board-gates` is a required check every PR waits: unset `KIT_TRACKER_RUNNER` or bring the runner online. (2) A self-hosted runner for a `pull_request_target` job belongs **only on a private repo or an ephemeral runner** (the job parses fork head objects beside the Jira secret); the gates job warns when it sees a public repo on a self-hosted runner (an ephemeral, network-isolated runner is a risk you accept and record in your waiver register, not a cure). The warning stays silent where `runner.environment` is unset (older GHES, or runners pinned with `--disableupdate` or a pinned image) and on internal repos (`private: true`, yet every enterprise member can open a PR from a fork).
@@ -125,7 +125,7 @@ id. Validate it any time with:
 **Who may edit it.** `.kit/tracker.conf` is control-plane: an agent cannot edit it in place, because the
 runtime guard denies every mutation form on that file. That is by design, since the conf pins the host the
 trusted job sends the Jira secret to. There are two routes: the owner edits it, or the agent edits it with
-Edit/Write in a **dev-clone** under the temp root (`git clone . /private/tmp/<name>`, a literal path;
+Edit/Write in a **dev-clone** under the temp root (a `git clone` of the **forge URL** into `/private/tmp/<name>`, a literal path, never `git clone .`;
 `docs/operations/runtime-guards.md` §*The dev-clone affordance*), validates it there with
 `sh scripts/tracker-conf.sh .kit/tracker.conf`, and pushes a branch. Either way, once `main` exists, the
 change is a control-plane PR, so it costs what `START-HERE.md`'s solo track says. On a greenfield
@@ -177,7 +177,7 @@ it can be accepted. **Residual risk, stated:** on such a plan the per-PR `pull_r
 repository secret, and the ceiling changes a verdict, not that exposure. The stricter posture, and the one to prefer if you will spend the seat, is a **dedicated account** for the CI reader with **no
 `DELETE_ISSUES`** (the probe checks that key only; other destructive project permissions are not probed), used on **no other
 project**, with an **expiring and rotated token**, and **separate from the agent account** (§5b).
-**If the reader is the agent account instead** (Free, the minimum identity model), that saves a seat; it does not reduce exposure. Against a separate reader it widens it, in three ways. (i) **Attribution:** a leaked `pull_request_target` secret writes the board **as the agent**, and those writes cannot be told apart from the lanes' own. (ii) **Coupled rotation:** revoking the CI secret's token revokes the agent's lanes too, because it is one token, so every rotation is two human stores: the login Keychain item (§5b) and the repository secret. (iii) **Self-excusing loop:** until the forge identity steps 0, 2 and 5 are done and step 7 proves it (`docs/operations/forge-identity-switch.md`), the agent could set its own ceiling variables or approve as your reviewing login; that is a capability it must not use (accepted means unenforced, not permitted). It is still narrower than the one-account alternative of putting your own, often admin, token in the per-PR job. Never use the reviewing persona as the reader (`docs/operations/separation-of-duties.md`). Give
+**If the reader is the agent account instead** (Free, the minimum identity model), that saves a seat; it does not reduce exposure. Against a separate reader it widens it, in three ways. (i) **Attribution:** a leaked `pull_request_target` secret writes the board **as the agent**, and those writes cannot be told apart from the sessions' own. (ii) **Coupled rotation:** revoking the CI secret's token revokes the agent's sessions too, because it is one token, so every rotation is two human stores: the login Keychain item (§5b) and the repository secret. (iii) **Self-excusing loop:** until the forge identity steps 0, 2 and 5 are done and step 7 proves it (`docs/operations/forge-identity-switch.md`), the agent could set its own ceiling variables or approve as your reviewing login; that is a capability it must not use (accepted means unenforced, not permitted). It is still narrower than the one-account alternative of putting your own, often admin, token in the per-PR job. Never use the reviewing persona as the reader (`docs/operations/separation-of-duties.md`). Give
 the token an expiry where your Jira offers one, and rotate it on a schedule. The scoped-token route
 is boarded as `TRACKER-JIRA-SCOPED-TOKEN-ROUTE`. Store the token as a **repository Actions secret**, never a
 GitHub Environment secret unless you have added `environment:` to both jobs yourself (§5d).
@@ -276,7 +276,7 @@ and **without Delete Issues** (remove Delete from its space role; the working se
 `--as agent` checks `DELETE_ISSUES` only, and other destructive project permissions are not probed).
 This is the only credential kept in the Keychain; it is never your own admin account. Verify it with
 `sh conformance/tracker-contract.sh --preflight --as agent`: that role FAILs, naming the cure, when the credential holds
-`ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, and its `identity` line names the account the lanes
+`ADMINISTER`, `SYSTEM_ADMIN`, `ADMINISTER_PROJECTS` or `DELETE_ISSUES`, and its `identity` line names the account the sessions
 will act as. A different identity, such as your own, stays exported in that person's own terminal, where the environment wins.
 The host binding is a control: a `base_url` changed to another host looks up another service name and finds nothing, so the
 token cannot be sent to a different site.
@@ -316,7 +316,7 @@ credential is over-privileged for this read (binding anyway, S-11)` (`conformanc
 NOTICE** — the kit does not, and cannot, enforce least privilege from outside the account.
 A failed or unparsable probe itself prints the bare word `unverified` (`scripts/tracker-jira.sh`'s
 `tj_permissions` prints exactly one of `ok` | `writer` | `over-privileged` | `unverified`); `tracker-read.sh`
-then writes the record line `credential unverified` (`scripts/tracker-read.sh:~22`) and downgrades
+then writes the record line `credential unverified` (`scripts/tracker-read.sh`, its credential-probe step) and downgrades
 the read's own verdict to `unverified` rather than binding (never defaults to `ok`) — **this outcome
 is red**: the record never reaches `verdict bound`. The CI service account (Browse Projects only,
 §5a) will probe `ok`; your own write-capable developer token (§5b) is *expected* to probe `writer` when it holds no admin-class
@@ -354,7 +354,7 @@ lifted. (cold test 2, item 47)
 - a human developer's own token as the CI secret (§5a always uses a dedicated service account; on Free under the minimum, the agent account declared under the ceiling, §5a);
 - a site-, org-, or project-admin account as the CI credential, or as the agent credential (`--as agent` FAILs on it);
 - an admin token (a site administrator's, or any admin's) on disk: not in `.env`, not in a shell profile, not in the Keychain item the
-  lanes read. An admin acts in the admin's own terminal, with a token exported for that command only, and never anywhere else;
+  sessions read. An admin acts in the admin's own terminal, with a token exported for that command only, and never anywhere else;
 - a password as `KIT_TRACKER_TOKEN` on Data Center — a Personal Access Token with `auth=bearer` only;
 - a token written into `.kit/tracker.conf` — the conf's own grammar (`scripts/tracker-conf.sh`)
   refuses an unknown key and refuses userinfo in `base_url`, so a `user:token@host` or a bespoke
@@ -370,8 +370,8 @@ that script's origin-conf argument. `tracker-read.sh` itself does not know a bra
 compares the working tree's `.kit/tracker.conf` `base_url`/`project` against **the origin-conf file
 it was given**, and refuses to send the token at all on a mismatch — byte-for-byte:
 `refused: local .kit/tracker.conf pin diverges from origin's — token not sent (S-2)`
-(`scripts/tracker-read.sh:87`). When the file it was given does not exist,
-`tracker-read.sh` skips the compare (`:81`) and the read goes ahead — the token is sent with
+(`scripts/tracker-read.sh`, its pin-compare step). When the file it was given does not exist,
+`tracker-read.sh` skips the compare and the read goes ahead — the token is sent with
 nothing to compare against — but the pre-push hook never takes that path:
 with no origin copy of the conf it stops before calling the reader and sends no token
 (`hooks/pre-push:171-177`; the greenfield case below). In CI, the **base branch's own conf is the

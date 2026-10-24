@@ -1,0 +1,2 @@
+docs/plans/   export-ignore
+.kit/model-map.conf   export-ignore

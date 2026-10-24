@@ -182,7 +182,6 @@ EXPORT_ORPHAN_BASELINE="actionlint-valid.sh
 aggregate-coverage.sh
 claim-gate-counts.sh
 claims-registry.sh
-decision-integrity.sh
 drift-watch-wired.sh
 explain-wired.sh
 golden-path-filter-parity.sh
@@ -199,7 +198,6 @@ model-map-binding.sh
 model-tiering-legible.sh
 model-tiering-plan-wired.sh
 model-tiering-value.sh
-model-tiering.sh
 non-vacuity-wired.sh
 promotion-readiness-wired.sh
 promotion-readiness.sh
@@ -223,7 +221,7 @@ union-ratchet.sh"
 # ratified edit to this constant, in the diff, where a reviewer sees it.
 # Shape borrowed from HISTORICAL_LINES_ACKS in conformance-mass-budget.sh (the retirement pin) for the
 # same reason it exists there: a count sees a swap that a consistency check cannot.
-BASELINE_MAX=33
+BASELINE_MAX=31   # SWAS-303a: decision-integrity.sh and model-tiering.sh gained verify.sh rows, so they left the baseline (33 -> 31)
 
 # _on_baseline <baseline> <basename> -> 0 iff declared. Whole-line match; never a substring.
 _on_baseline() {

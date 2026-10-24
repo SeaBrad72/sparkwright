@@ -2,7 +2,7 @@
 
 *The agentic SDLC kit — guardrails that let anyone build production-grade software with AI agents, from an idea to operating software.*
 
-`v3.240.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
+`v3.241.0` · Apache-2.0 · [Releases](https://github.com/SeaBrad72/sparkwright/releases) · [Project site](https://inflectionsparks.ai)
 
 Sparkwright brings a **guided, agent-driven lifecycle** to your software — whether you're starting a new project or layering it onto a repo you already have. You bring the idea and the decisions; the kit brings the process, the guardrails, and a working pipeline to build on. It's opinionated about *how* to build well with agents, and neutral about *what* you build with — **your stack, environment, and deploy target are chosen and built as you engage the kit, not picked for you.**
 
@@ -34,8 +34,6 @@ Now **open your project in your AI coding tool** (Claude Code, or any `AGENTS.md
 > *"Walk me through START-HERE."*
 
 — or open **[`START-HERE.md`](START-HERE.md)** and follow it yourself.
-
-Hit friction with the kit itself? `templates/KIT-FEEDBACK-TEMPLATE.md` or a `.github/ISSUE_TEMPLATE/` issue is the route back to the maintainer.
 
 From there the kit **guides you through Inception**: it helps you **choose your stack**, scaffolds a runnable starter with a **green pipeline on the first run** (so you build on working software, not an empty repo), and sets your project up. Then you enter the build loop. Your stack, environment, and deploy target are all decisions the kit walks you through — **nothing is pre-selected.**
 
@@ -101,7 +99,7 @@ Claude Code is the default and the reference adapter, but any harness that reads
 | **`CLAUDE.md`** | Principles + Definition of Done. Authoritative. |
 | **`DEVELOPMENT-PROCESS.md`** | The agentic SDLC: Inception → Discover → Plan → Build → Review → Release → Done → Operate ↺. |
 | **`DEVELOPMENT-STANDARDS.md`** | The universal, stack-neutral quality bar. |
-| **`MAINTAINING.md`** | How the kit is built, versioned, and contributed back to. |
+| **`MAINTAINING.md`** | How the kit is built and versioned. |
 | **`profiles/`** | Per-stack specifics. `typescript-node.md` reference profile + `_TEMPLATE.md` to generate your own for *any* stack. |
 | **`adapters/`** | Per-harness adapters: `claude-code` (reference) + `codex`/`cursor`/`gemini` + `generic` + `_TEMPLATE`/`new-adapter.sh` to BYO. |
 | **`templates/`** | Project + intake/ops templates: `PROJECT-CLAUDE`, `BACKLOG`, `RUNBOOK`, `FEATURE-REQUEST`, `POSTMORTEM`, `BIA`, and more. |
@@ -125,7 +123,7 @@ Every capability ships as three parts (full detail in `MAINTAINING.md`):
 - **Reference implementation** — a working artifact you copy and adapt (in a profile or the repo). You own it.
 - **Conformance check** — proof the implementation still satisfies the contract (in `conformance/`), and **every check registered in `verify.sh`'s control set** is itself **mutation-tested** (a "non-vacuity" sweep proves each *registered* check *can* fail — a green that can't go red is caught and fixed, so the gates are real, not decorative; checks outside the control set are reported as uncovered rather than assumed load-bearing). **Honest coverage ceiling:** the sweep builds *one composite mutant per file*, so a `KILLED` green proves *at least one* mutable site is observed — not every site, and it names none of them.
 
-So the kit **dictates the contract and offers the implementation**: rewrite the reference freely as long as the conformance check still passes. The kit is itself a versioned product built with the very loop it prescribes — improvements adopters find flow back upstream as PRs.
+So the kit **dictates the contract and offers the implementation**: rewrite the reference freely as long as the conformance check still passes. The kit is itself a versioned product built with the very loop it prescribes.
 
 ## The core ideas
 

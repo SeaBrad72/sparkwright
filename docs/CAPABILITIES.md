@@ -68,13 +68,14 @@ ratifies its own output.
 The kit reasons in **abstract tiers** — `apex > deep > fast > light` — never concrete model names:
 
 - **Judgment/verification seats are pinned** to the top proven tier (reviewer, security, orchestrator,
-  verification always run `deep`); **builders may run cheaper** where the task allows; **high-stakes work is
-  floored** (control-plane/sensitive/critical-path force `deep`, and can never be escalated to the expensive
-  `apex` tier). `apex` (e.g. a frontier model) is opt-in, per-task, ratified at plan approval — never
-  automatic.
+  verification always run `deep`); **builders may run cheaper** where the task allows; **`--critical-path` work
+  and any change-class a project lists as a floor in `FLOOR_CHANGE_CLASS` resolve to the top tier** (the kit ships no class floor).
+  `apex` (e.g. a frontier model) is opt-in, per-task, and only `engineer`, `architect` and `plan` may be raised to it;
+  an `apex` or costlier-than-mapped tier needs the owner's explicit word before dispatch (conduct, not enforced:
+  `model-tier.sh resolve --requested apex` raises without any owner token), and is never automatic.
 - **You bind the tiers to your provider's models** in one adopter-owned file (`.kit/model-map.conf`) — the
-  reference binds `deep=opus`/`fast=sonnet`/`light=haiku`; a Codex/Gemini/Cursor adopter maps the same tiers to
-  their own model ladder. Opinionated about *structure*, neutral about *which model*.
+  kit ships it with every value `unset`, and each adopter maps the same tiers to their own provider's model
+  ladder, as a recorded decision. Opinionated about *structure*, neutral about *which model*.
 - **Fan-out economics are measured, not asserted.** A value-analysis model prices each run in *relative
   tier-weight units* ("deep-equivalents"), splitting the builder tier-discount from the orchestrator's
   reassembly tax, so cheaper fan-out is only counted as a win *net of* the integration cost. In one recorded

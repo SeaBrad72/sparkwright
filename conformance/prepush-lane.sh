@@ -120,6 +120,15 @@
 #   whose command line contains one of the five listed strings; (c) the guard is NAME-BASED and
 #   reads only what `ps` shows it — a restricted `ps` (another user's processes, a container
 #   boundary) leaves it blind to heavy work it cannot see.
+# THE HEAVY-ARM LOCK (SWAS-278b, design 2026-10-17-guard-dev-clone-prepush-design.md §6.2): the heavy phase of a run — core-selftest
+#   (the default run too), core-live and every Tier-2 arm — holds ONE kernel flock on $HOME/.local/state/sparkwright/heavy-arm.lock,
+#   taken before the first heavy unit and released after the last. A second run WAITS (polls every 15 s, prints the holder every 5 min)
+#   within one 5400 s budget per run, then every remaining heavy unit is UNVERIFIED, never OK. flock(1), else /usr/bin/perl; neither,
+#   a symlinked or foreign-owned lock path or an unsafe state dir is UNVERIFIED too. The lock is never broken or deleted; children run
+#   with descriptor 9 closed; there is no ancestor re-entry and no environment knob. heavy_busy stays as a second check.
+#   The --warranted cache honours only records its OWN tree produced (field 4 = the physical root; the SKIP line names it) and is off
+#   when `git ls-files -v` shows a tag other than H, core.sparseCheckout is on, or a configured clean/smudge/process filter is applied to a tracked path
+#   (`git check-attr`; a filter configured but applied by no path — a host-wide git-lfs — leaves it on; a check-attr that fails or prints an unreadable stream turns it off).
 # Board gates (PREPUSH-BOARD-GATES-PARITY): when the listing contains BACKLOG.md the core also runs the
 #   live conformance/backlog-*.sh / board-*.sh / roadmap-current.sh `check control` rows of verify.sh (no
 #   --selftest) as `core-board` rows, derived from the registry; a FAIL fails PARITY-CORE, and zero derived
@@ -145,7 +154,7 @@ die2() { printf 'prepush-lane: %s\n' "$1" >&2; exit 2; }
 
 # --------------------------------------------------------------- work root (design §3.7, minimal)
 WORK=""
-cleanup() { [ -n "$WORK" ] && rm -rf "$WORK" 2>/dev/null; return 0; }   # best-effort: a trap that
+cleanup() { hl_release; [ -n "$WORK" ] && rm -rf "$WORK" 2>/dev/null; return 0; }   # best-effort: a trap that
 trap 'cleanup' EXIT                                                    # FAILS would override exit 0
 # INT/TERM must EXIT (security L4): a handler that merely returns 0 resumes the script with its work
 # root already deleted. 130/143 are the conventional signal rcs; EXIT then re-cleans harmlessly.
@@ -726,6 +735,150 @@ heavy_allowed() {
                         unv "free memory below the floor"; return 1; }
 }
 
+# ---- SWAS-278b: the machine-wide heavy-arm lock (design docs/architecture/2026-10-17-guard-dev-clone-prepush-design.md §6.2) ----
+# A kernel advisory lock (flock) on $HOME/.local/state/sparkwright/heavy-arm.lock, held ONCE per run over the heavy phase:
+# core-selftest (the default run too), core-live, claims, non-vacuity, green-on-clone and the single heavy flags. The kernel drops
+# it when the last descriptor closes, a SIGKILLed holder included, so nothing is ever broken, aged or deleted. Back ends: flock(1)
+# at /usr/bin/flock or /bin/flock (Linux; never through PATH) or `cd / && env -i /usr/bin/perl` (macOS; no PERL5OPT, PERL5LIB, PERLLIB,
+# PERL_USE_UNSAFE_INC or cwd reaches it: true BY CONSTRUCTION of cd / and env -i, stated as a ceiling, not tested per route); neither -> UNVERIFIED. A symlinked or foreign-owned lock
+# path, or an unsafe state dir -> UNVERIFIED, nothing deleted. ONE run-level wait budget; no environment knob (these are plain
+# assignments, so an inherited HL_* name is overwritten; the selftest sets them inside its own subshells). NO ancestor re-entry
+# (rev 2.2): a nested run waits, or is a selftest under its own HOME. The holder note is DISPLAY ONLY, sanitised on write and read.
+# Not a security control: a forged or stuck lock costs a wait, then UNVERIFIED, never a false OK. Cooperative, per user.
+HL_BUDGET=5400; HL_POLL=15; HL_NOTE_S=300; HL_PERL=/usr/bin/perl; HL_FLOCKS="/usr/bin/flock /bin/flock"
+HL_STATE=none; HL_WHY=""; HL_TOOL=""; HL_FLOCK=""; HL_TRC=""; HL_DIR=""; HL_FILE=""; HL_HOLDER=""
+# Post-open re-check ceiling (honest): after the open, only the PATH is re-tested (symlink, owner). Descriptor/path identity is not
+# checkable portably (-ef /dev/fd/9 never matches on macOS, measured), so a same-uid process that swaps the path inside that window is
+# not seen. The effect is a wait or an UNVERIFIED verdict, never a false OK: the lock is cooperative and per user.
+# hl_clean <s> — only [A-Za-z0-9._/:-], at most 200 bytes, NO newline (GNU cut always appends one, BSD cut only when it truncates).
+hl_clean() { printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._/:-' '_' | LC_ALL=C cut -c1-200 | LC_ALL=C tr -d '\n'; }
+# numeric uid on both sides: a name compare can be fooled by a shadowing user name, and ls prints a number when a uid has no name
+hl_owner() { ls -ldn "$1" 2>/dev/null | LC_ALL=C awk '{ print $3 }'; }
+hl_owner_ok() { _hme=$(id -u 2>/dev/null) || _hme=""; _hown=$(hl_owner "$1"); [ -n "$_hme" ] && [ "$_hown" = "$_hme" ]; }
+# flock(1) is looked for at fixed absolute paths ONLY, never through PATH (a planted `flock` on PATH is not run).
+hl_tool() {
+  HL_TOOL=""; HL_FLOCK=""
+  for _hf in $HL_FLOCKS; do
+    if [ -x "$_hf" ]; then HL_FLOCK=$_hf; HL_TOOL=flock; break; fi
+  done
+  [ -n "$HL_TOOL" ] && return 0
+  if [ -x "$HL_PERL" ]; then HL_TOOL=perl
+  else HL_WHY="neither flock(1) nor $HL_PERL is available"; return 1; fi
+}
+# hl_open — open descriptor 9 on the lock file after the safety checks; rc 0, or rc 1 with HL_WHY.
+hl_open() {
+  HL_WHY=""
+  hl_tool || return 1
+  case ${HOME-} in /?*) ;; *) HL_WHY="HOME is unset or not absolute"; return 1 ;; esac
+  HL_DIR=$HOME/.local/state/sparkwright; HL_FILE=$HL_DIR/heavy-arm.lock; HL_HOLDER=$HL_DIR/heavy-arm.holder
+  if [ ! -e "$HL_DIR" ] && [ ! -L "$HL_DIR" ]; then
+    ( umask 077; mkdir -p "$HL_DIR" ) 2>/dev/null || { HL_WHY="the state dir cannot be created"; return 1; }
+  fi
+  _hls=$(ls -ld "$HL_DIR" 2>/dev/null) || { HL_WHY="the state dir cannot be inspected"; return 1; }
+  case ${_hls%% *} in
+    d????[!w]??[!w]*) ;;
+    *) HL_WHY="the state dir is not a plain directory, or is group/world-writable"; return 1 ;;
+  esac
+  hl_owner_ok "$HL_DIR" || { HL_WHY="the state dir is not owned by the current user"; return 1; }
+  [ ! -L "$HL_FILE" ] || { HL_WHY="the lock path is a symlink (never followed, never deleted)"; return 1; }
+  if [ -e "$HL_FILE" ]; then
+    [ -f "$HL_FILE" ] || { HL_WHY="the lock path is not a regular file"; return 1; }
+    hl_owner_ok "$HL_FILE" || { HL_WHY="the lock file is owned by another user"; return 1; }
+  fi
+  ( umask 077; exec 9>>"$HL_FILE" ) 2>/dev/null || { HL_WHY="the lock file cannot be opened"; return 1; }
+  _hum=$(umask); umask 077
+  exec 9>>"$HL_FILE"
+  umask "$_hum"
+  # the same checks again on the path (the window is disclosed, design §11). `-ef /dev/fd/9` was MEASURED unusable: on macOS it never
+  # equals the path, so descriptor/path identity is not a portable check and is not made.
+  if [ -L "$HL_FILE" ] || ! hl_owner_ok "$HL_FILE"; then
+    exec 9>&-
+    HL_WHY="the lock path changed while it was being opened"; return 1
+  fi
+  return 0
+}
+# hl_try — ONE non-blocking attempt on descriptor 9: rc 0 got it · 1 busy · 2 the helper failed.
+hl_try() {
+  _htr=0
+  case $HL_TOOL in
+    flock) "$HL_FLOCK" -n 9 || _htr=$? ;;
+    perl)  ( cd / && exec /usr/bin/env -i "$HL_PERL" -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 3; flock($f, LOCK_EX|LOCK_NB) or exit 1' ) || _htr=$? ;;
+    *) return 2 ;;
+  esac
+  case $_htr in 0) return 0 ;; 1) return 1 ;; *) HL_TRC=$_htr; return 2 ;; esac
+}
+# hl_holder_text — the holder note, one sanitised field per line in, one line out (display only).
+hl_holder_text() {
+  if [ ! -f "$HL_HOLDER" ] || [ -L "$HL_HOLDER" ]; then printf 'unknown (no holder note)'; return 0; fi
+  _hp=$(hl_clean "$(LC_ALL=C sed -n 1p "$HL_HOLDER" 2>/dev/null)"); _ht=$(hl_clean "$(LC_ALL=C sed -n 2p "$HL_HOLDER" 2>/dev/null)")
+  _hu=$(hl_clean "$(LC_ALL=C sed -n 3p "$HL_HOLDER" 2>/dev/null)"); _hs=$(hl_clean "$(LC_ALL=C sed -n 4p "$HL_HOLDER" 2>/dev/null)")
+  printf 'pid %s tree %s unit %s since %s' "${_hp:--}" "${_ht:--}" "${_hu:--}" "${_hs:--}"
+}
+# hl_note_write <unit> — the display-only holder note (temp file + mv, noclobber, sanitised, LC_ALL=C TZ=UTC0).
+hl_note_write() {
+  _hnt=$HL_HOLDER.$$
+  rm -f "$_hnt" 2>/dev/null || :
+  if ( set -C; umask 077
+       { hl_clean "$$"; echo; hl_clean "${ROOT-unknown}"; echo; hl_clean "$1"; echo; LC_ALL=C TZ=UTC0 date '+%Y-%m-%dT%H:%M:%SZ'; } > "$_hnt" ) 2>/dev/null
+  then
+    # a holder path that is a symlink, or exists and is not a regular file, is left alone (mv would write INTO a directory it names)
+    if [ -L "$HL_HOLDER" ] || { [ -e "$HL_HOLDER" ] && [ ! -f "$HL_HOLDER" ]; }; then rm -f "$_hnt" 2>/dev/null || :
+    else mv -f "$_hnt" "$HL_HOLDER" 2>/dev/null || rm -f "$_hnt" 2>/dev/null || :; fi
+  else rm -f "$_hnt" 2>/dev/null || :; fi
+  return 0
+}
+hl_fail() {
+  HL_STATE=failed; exec 9>&-
+  note "UNVERIFIED: heavy-arm lock — $1; the heavy units are not run"
+  unv "heavy-arm lock: $1"
+  return 0
+}
+# hl_acquire <unit> — rc 0 held (idempotent), rc 1 not held (UNV set). The ONLY wait of the run: a failure is remembered, so every
+# later unit fails fast instead of waiting again.
+hl_acquire() {
+  case $HL_STATE in held) return 0 ;; failed) return 1 ;; esac
+  hl_open || { hl_fail "$HL_WHY"; return 1; }
+  _hat=$(date +%s); _hatn=$_hat; _hafirst=1; _hawaited=0
+  while :; do
+    _har=0; hl_try || _har=$?
+    [ "$_har" -ne 0 ] || break
+    if [ "$_har" -ne 1 ]; then hl_fail "the lock helper failed (rc ${HL_TRC:-$_har})"; return 1; fi
+    if [ $(( $(date +%s) - _hat )) -ge "$HL_BUDGET" ]; then
+      hl_fail "the lock stayed busy for the ${HL_BUDGET}s run budget (holder: $(hl_holder_text))"; return 1
+    fi
+    if [ "$_hafirst" -eq 1 ] || [ $(( $(date +%s) - _hatn )) -ge "$HL_NOTE_S" ]; then
+      note "heavy-arm lock: busy (held by $(hl_holder_text)) — waiting for the $1 unit, polling every ${HL_POLL}s, run budget ${HL_BUDGET}s"
+      _hafirst=0; _hatn=$(date +%s)
+    fi
+    _hawaited=1; sleep "$HL_POLL"
+  done
+  HL_STATE=held
+  if [ "$_hawaited" -eq 1 ]; then
+    note "heavy-arm lock: acquired after $(( $(date +%s) - _hat ))s for the $1 unit"
+    FREE=$(mem_free_mb 2>/dev/null) || FREE=""     # the floor is re-read AFTER a wait: the reading from before it is stale
+    _hamg=0; mem_guard "${FREE-}" "${FLOOR-6144}" || _hamg=$?
+    [ "$_hamg" -eq 0 ] || note "WARNING: free memory ${FREE:-unreadable} MB is below the ${FLOOR-6144} MB floor after the wait — a Tier-2 arm would be refused"
+  else
+    note "heavy-arm lock: acquired for the $1 unit (held until the run's last heavy unit ends)"
+  fi
+  hl_note_write "$1"
+  return 0
+}
+# hl_need <unit> — the call every heavy unit makes first: rc 0 the lock is held, rc 1 the unit must not run.
+hl_need() {
+  hl_acquire "$1" && return 0
+  note "UNVERIFIED: heavy-arm lock not held — the $1 unit is not run"
+  return 1
+}
+# hl_release — the holder note goes first (while the lock is still ours), then the descriptor closes. The lock file is never deleted.
+hl_release() {
+  [ "$HL_STATE" = held ] || return 0
+  rm -f "$HL_HOLDER" 2>/dev/null || :
+  exec 9>&-
+  HL_STATE=released
+  return 0
+}
+
 # ------------------------------------------------------------------- the scrubbed, bounded execution
 # unset_pfx <PREFIX> — unset every EXPORTED name under it. A blanket, not a list: a list of names
 # fails open on the first name nobody thought of (§3.4, security C16). DISCLOSURE (M-3): a name
@@ -791,7 +944,7 @@ scrubbed_run() {
     [ -z "$_kgl" ] || { KIT_GUARD_LOG=$_kgl; export KIT_GUARD_LOG; }
     [ -z "$_hb" ] || { HERMETIC_BASE=$_hb; export HERMETIC_BASE; }
     run_timed "$_cl" "$@"
-  )
+  ) 9>&-   # SWAS-278b: the heavy-arm lock's descriptor is closed for every child, so a child that outlives the lane cannot hold the lock
 }
 # report_inv <bucket> <label> <expect-rc> <ceiling> — one line per invocation; a failing invocation's
 # output is printed IN FULL (never tail'd), indented so it can never be mistaken for a report line.
@@ -919,7 +1072,9 @@ run_secretscan_scoped() {
 # ONLY to --warranted's arms — each core-live check and each warranted heavy arm — never to the default
 # run, never to the board gates (they are cheap). After an arm PASSES the lane
 # records `<tree-key> TAB <arm label> TAB <head>` in $HOME/.local/state/sparkwright/prepush/<root-commit>/
-# passed (outside the repo: the lane still writes nothing in it); a later --warranted run on the same tree
+# passed (outside the repo: the lane still writes nothing in it) as `key TAB label TAB head TAB <producer root>` (SWAS-278b: the
+# physical tree that ran it; a run honours only its OWN. Field 4 is provenance, not authentication: any same-uid process can write it);
+# a later --warranted run on the same tree
 # prints `SKIP … passed at <head> on this tree` instead of running that arm. A FAIL is never recorded, and
 # neither is an arm whose output has a line starting `SKIP` (a tool-absent SKIP-pass is not a pass).
 # TWO KEYS, both a cksum of `git ls-tree -r HEAD`:
@@ -945,11 +1100,46 @@ cache_cksum() {
   case $_cc1$_cc2 in ''|*[!0-9]*) return 0 ;; esac
   printf '%s-%s\n' "$_cc1" "$_cc2"
 }
+# cache_filter_applied — rc 0: no configured filter is applied to a tracked path (the cache may stay on); rc 1: cache_off was called.
+# A filter.* key alone proves nothing (git-lfs installs a SYSTEM-level filter.lfs.* on many hosts and applies it to no path); the tree is
+# changed only by a configured clean/smudge/process driver that a path's `filter` attribute NAMES, so that is what is looked for.
+cache_filter_applied() {
+  _fr=0; git config --get-regexp '^filter\.' > "$WORK/cache.fl" 2>/dev/null || _fr=$?
+  if [ "$_fr" -gt 1 ]; then cache_off "the filter.* keys cannot be read"; return 1; fi
+  [ "$_fr" -eq 0 ] || return 0
+  # the configured driver NAMES: filter.<name>.(clean|smudge|process); a subsection name is case-sensitive, so it is kept as written
+  LC_ALL=C awk '{ k = $1; sub(/^filter\./, "", k); if (sub(/\.(clean|smudge|process)$/, "", k)) print k }' "$WORK/cache.fl" > "$WORK/cache.fn" ||
+    { cache_off "the configured filter names cannot be read"; return 1; }
+  [ -s "$WORK/cache.fn" ] || return 0
+  git ls-files -z > "$WORK/cache.lz" 2>/dev/null || { cache_off "git ls-files -z failed (check-attr cannot be run)"; return 1; }
+  git check-attr --stdin -z filter < "$WORK/cache.lz" > "$WORK/cache.at" 2>/dev/null ||
+    { cache_off "git check-attr failed (the filter attributes cannot be read)"; return 1; }
+  # fail closed on a stream that is not exactly one `path NUL attr NUL value NUL` triple per tracked path
+  _pn=$(tr -cd '\000' < "$WORK/cache.lz" | wc -c | tr -d ' '); _an=$(tr -cd '\000' < "$WORK/cache.at" | wc -c | tr -d ' ')
+  case $_pn$_an in ''|*[!0-9]*) cache_off "git check-attr output cannot be counted"; return 1 ;; esac
+  if [ "$_an" -ne $((_pn * 3)) ]; then cache_off "git check-attr output is not one path/attribute/value triple per tracked path"; return 1; fi
+  # a value line equal to a configured name: a SUPERSET of the applied set (a path that spells a name, or contains a newline, only over-matches), so it fails closed
+  tr '\000' '\n' < "$WORK/cache.at" > "$WORK/cache.av"
+  _gr=0; grep -qxFf "$WORK/cache.fn" "$WORK/cache.av" 2>/dev/null || _gr=$?
+  if [ "$_gr" -gt 1 ]; then cache_off "the filter attribute values cannot be compared"; return 1; fi
+  if [ "$_gr" -eq 0 ]; then cache_off "a configured filter is applied to tracked paths (a clean/smudge filter changes what the tree contains)"; return 1; fi
+  return 0
+}
 cache_init() {
   CACHE_OK=0
   [ "$WARRANTED" -eq 1 ] || return 0
   if [ "${PREPUSH_NO_CACHE-}" = 1 ]; then cache_off "PREPUSH_NO_CACHE=1"; return 0; fi
   case ${HOME-} in /?*) ;; *) cache_off "HOME is unset or not absolute"; return 0 ;; esac
+  # SWAS-278b (design 6.3): three things hide tree content from the HEAD-only keys. Checked BEFORE `git status`, which they can distort.
+  git --no-optional-locks ls-files -v > "$WORK/cache.lv" 2>/dev/null || { cache_off "git ls-files -v failed"; return 0; }
+  if LC_ALL=C awk 'substr($0, 1, 2) != "H " { f = 1 } END { exit !f }' "$WORK/cache.lv"; then
+    cache_off "git ls-files -v shows a tag other than H (skip-worktree or assume-unchanged entries hide tree content from the key)"; return 0
+  fi
+  _spr=0; _sp=$(git config --bool --get core.sparseCheckout 2>/dev/null) || _spr=$?
+  if [ "$_spr" -gt 1 ]; then cache_off "core.sparseCheckout cannot be read"; return 0; fi
+  if [ "$_sp" = true ]; then cache_off "core.sparseCheckout is on (the keys cover the committed tree, not the checked-out one)"; return 0; fi
+  cache_filter_applied || return 0
+  cache_label_ok "$ROOT" || { cache_off "the tree path holds a tab or newline (it is the producer column)"; return 0; }
   # ANY output at all (modified, staged, or untracked — every file, not collapsed dirs) means the HEAD-only
   # keys do not describe the tree under test. --no-optional-locks: a read must not write .git/index.
   git --no-optional-locks status --porcelain --untracked-files=all > "$WORK/cache.st" 2>/dev/null ||
@@ -995,10 +1185,11 @@ cache_skip() {
   [ -f "$CACHE_FILE" ] || return 1
   _cs_l="$1 $2 $3"; cache_label_ok "$_cs_l" || return 1
   cache_key_for "$1"
-  _cs_s=$(K=$_ckey L=$_cs_l awk -F'\t' '$1 == ENVIRON["K"] && $2 == ENVIRON["L"] { print $3; exit }' "$CACHE_FILE" 2>/dev/null) || _cs_s=""
+  # SWAS-278b (design 6.3): a record is honoured only when its producer (field 4) is THIS tree's own physical root.
+  _cs_s=$(K=$_ckey L=$_cs_l P=$ROOT awk -F'\t' '$1 == ENVIRON["K"] && $2 == ENVIRON["L"] && $4 == ENVIRON["P"] { print $3; exit }' "$CACHE_FILE" 2>/dev/null) || _cs_s=""
   case $_cs_s in ''|*[!0-9a-f]*) return 1 ;; esac
   _cs_x=""; [ "$1" = core-live ] || _cs_x=" (bookkeeping paths not compared; CI grades them)"
-  printf '  SKIP  %-18s %-46s — passed at %s on this tree%s\n' "$1" "$2${3:+ $3}" "$_cs_s" "$_cs_x"
+  printf '  SKIP  %-18s %-46s — passed at %s on this tree (producer %s)%s\n' "$1" "$2${3:+ $3}" "$_cs_s" "$ROOT" "$_cs_x"
   CACHE_SKIPS=$((CACHE_SKIPS+1))
   return 0
 }
@@ -1010,8 +1201,8 @@ cache_record() {
   cache_label_ok "$2" || return 0
   cache_key_for "$1"
   _cr_t=$CACHE_FILE.$$
-  { if [ -f "$CACHE_FILE" ]; then L=$2 awk -F'\t' '$2 != ENVIRON["L"]' "$CACHE_FILE" || :; fi
-    printf '%s\t%s\t%s\n' "$_ckey" "$2" "$CACHE_HEAD"; } > "$_cr_t" 2>/dev/null &&
+  { if [ -f "$CACHE_FILE" ]; then L=$2 P=$ROOT awk -F'\t' '$2 != ENVIRON["L"] || $4 != ENVIRON["P"]' "$CACHE_FILE" || :; fi
+    printf '%s\t%s\t%s\t%s\n' "$_ckey" "$2" "$CACHE_HEAD" "$ROOT"; } > "$_cr_t" 2>/dev/null &&
     mv -f "$_cr_t" "$CACHE_FILE" 2>/dev/null || rm -f "$_cr_t" 2>/dev/null
   return 0
 }
@@ -1036,6 +1227,7 @@ run_core() {
     while IFS= read -r _r <&3; do
       _rb=${_r%%"$TAB"*}; _ra=${_r#*"$TAB"}
       if cache_skip core-live "$_rb" "$_ra"; then continue; fi
+      hl_need core-live || { RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-live "the heavy-arm lock is not held: the remaining core-live checks are not run"; break; }
       exec_cached core-live "$_rb" "$_ra" 0 "$CEIL"
     done 3< "$WORK/q.order"
   else
@@ -1044,7 +1236,9 @@ run_core() {
   fi
   run_parselint_scoped
   run_secretscan_scoped
-  if [ -s "$WORK/q.sel" ]; then
+  if [ -s "$WORK/q.sel" ] && ! hl_need core-selftest; then
+    RAN=$((RAN+1)); printf '  UNVERIFIED  %-12s %s\n' core-selftest "the heavy-arm lock is not held: the touched selftests are not run"
+  elif [ -s "$WORK/q.sel" ]; then
     RUN_HB=$BASE; run_inv "$SELFCEIL" sh conformance/selftest-hermetic.sh --touched; RUN_HB=""
     # The count is the HERMETIC LANE'S OWN (its `TARGET:` lines), not this lane's q.sel: it re-derives
     # the set from its roster, so q.sel would misdescribe the subject that was actually run.
@@ -1167,6 +1361,19 @@ run_twins() {
 $(subst_argv "$(fld 4 "$_row")")
 TWEOF
     _script=$1; shift
+    # SWAS-278a R2 (and security L1): the tracker-contract twin is credential-free only because its --conf names a file that does NOT exist.
+    # If that file exists at run time, in any tree the twin runs in, the row would read it as a conf and could reach the credential library:
+    # refuse the row, named, UNVERIFIED, never run.
+    _cfp=''; _cpv=''
+    for _ca in "$@"; do if [ "$_cpv" = --conf ]; then _cfp=$_ca; fi; _cpv=$_ca; done
+    case $_cfp in
+      credential-free.conf|*/credential-free.conf)
+        if [ -e "$_cfp" ] || [ -L "$_cfp" ]; then
+          unv "twin $_tb: its credential-free conf $_cfp EXISTS in this tree - the row is refused and not run"
+          note "REFUSED: twin $_tb names $_cfp as its credential-free conf, and that file exists: a conf that exists is read, and could reach the credential library. Delete $_cfp; the row stays unrun (UNVERIFIED)"
+          continue
+        fi ;;
+    esac
     case $_tb in loop-state|backlog-presence) RUN_SPLIT=1 ;; esac
     run_inv "$CEIL" sh "conformance/$_script" "$@"; RUN_SPLIT=0
     if twin_na "$_tb" "$RUN_RC"; then
@@ -1181,6 +1388,7 @@ TWEOF
 # a job-placement heavy invocation with no row has no measured budget and is named, not run.
 run_heavy() {
   [ -n "$HEAVY" ] || return 0
+  hl_need "$HEAVY" || return 0
   heavy_allowed "$HEAVY" || return 0
   case $HEAVY in
     green-on-clone) exec_check heavy green-on-clone '' 0 "$HCEIL" ;;
@@ -1414,6 +1622,7 @@ run_warranted() {
     case $_arm in
       claims)
         if cache_skip heavy claims-registry ''; then continue; fi
+        hl_need warranted-claims || continue
         heavy_allowed warranted-claims || continue
         heavy_busy warranted-claims || continue
         exec_cached heavy claims-registry '' 0 "$HCEIL"
@@ -1427,12 +1636,14 @@ run_warranted() {
           continue
         fi
         if cache_skip heavy non-vacuity "--only $_nb.sh"; then continue; fi
+        hl_need warranted-non-vacuity || continue
         heavy_allowed warranted-non-vacuity || continue
         heavy_busy warranted-non-vacuity || continue
         exec_cached heavy non-vacuity "--only $_nb.sh" 0 "$HCEIL"
         ;;
       green-on-clone)
         if cache_skip heavy green-on-clone ''; then continue; fi
+        hl_need warranted-green-on-clone || continue
         heavy_allowed warranted-green-on-clone || continue
         heavy_busy warranted-green-on-clone || continue
         exec_cached heavy green-on-clone '' 0 "$HCEIL"
@@ -1513,7 +1724,7 @@ run_lane() {
                                   unv "the twin table is malformed — run --census"; }
   split_buckets
   if [ -n "$UNV" ]; then note "NOT RUN: $UNV"; verdict; return $?; fi
-  run_core; run_board; run_twins; run_heavy; run_warranted; reco
+  run_core; run_board; run_twins; run_heavy; run_warranted; hl_release; reco
   verdict
 }
 
@@ -1583,6 +1794,11 @@ selftest() {
   # second). So HOME is a temp dir and the cache is OFF for every leg; the cache_* legs turn it back on
   # explicitly (PREPUSH_NO_CACHE=0) with their own HOME.
   HOME=$WORK/home; mkdir -p "$HOME"; export HOME; PREPUSH_NO_CACHE=1; export PREPUSH_NO_CACHE
+  # SWAS-278b fix round (CI #880): a runner's SYSTEM git config (ubuntu ships git-lfs filter.lfs.* in /etc/gitconfig) must never reach a
+  # fixture, and neither may its global config (HOME is scrubbed, but a runner exports XDG_CONFIG_HOME, whose git/config git also reads).
+  # Both scopes are closed here for every fixture. The one cell that wants a system-like key supplies its own file (GIT_CONFIG_SYSTEM)
+  # and unsets NOSYSTEM for that run only.
+  GIT_CONFIG_NOSYSTEM=1; GIT_CONFIG_GLOBAL=/dev/null; export GIT_CONFIG_NOSYSTEM GIT_CONFIG_GLOBAL
   # THE ROSTER, in order; each name is a leg's function name verbatim (a missing one is a `not found`).
   for _leg in grammar continuation block_scalar disqualifiers env_not_applied doc_level ci_file \
               census_unbucketed census_denominator census_negative twin_stale twin_cishape \
@@ -1604,7 +1820,14 @@ selftest() {
               warranted_busy_ps_fail warranted_floor_refuses_all warranted_router_dial \
               board_gate_fails board_gate_passes board_gate_skipped board_gate_zero_rows \
               board_gate_derivation_pin board_gate_underived board_gate_refused \
-              board_gate_symlink board_gate_literal board_gate_selftest_prefix
+              board_gate_symlink board_gate_literal board_gate_selftest_prefix \
+              lock_acquire_release lock_acquire_e2e lock_phase_e2e lock_light_unlocked lock_wait lock_wait_e2e \
+              lock_kill9 lock_stale_note lock_budget_end lock_budget_runlevel lock_dir_unsafe lock_floor_reread \
+              lock_symlink lock_foreign_owner lock_holder_sanitised lock_home_scoped lock_no_tool lock_race \
+              lock_child_fd lock_ancestor_note lock_perl_env lock_flock_shim lock_owner_real lock_holder_symlink \
+              cache_producer_skip_line cache_producer_other_tree cache_off_index_tags cache_off_sparse_filter \
+              cache_filter_applied lock_kill_zero \
+              tripwire_lane tripwire_positive tripwire_scrub_mutant tripwire_conf_exists tripwire_old_argv
   do "selftest_$_leg"; done
   [ "$SF" -eq 0 ] && { echo "prepush-lane --selftest: OK"; return 0; }
   echo "prepush-lane --selftest: FAIL"; return 1
@@ -2542,7 +2765,7 @@ selftest_cache_heavy_bookkeeping() {
   printf 'r\n' > "$d/CHANGELOG.md"; mkdir -p "$d/docs/reviews"; printf 'r\n' > "$d/docs/reviews/y.md"; commit_fx
   _hr; sfx "cache/heavy: second run rc 0" 0 "$DVRC"
   sfx "cache/heavy: a bookkeeping-only commit does NOT re-run the heavy arms" 2 "$(_hn)"
-  want "cache/heavy: claims SKIPs, saying the bookkeeping paths were not compared" "^  SKIP  heavy  *claims-registry .*passed at [0-9a-f][0-9a-f]* on this tree (bookkeeping paths not compared; CI grades them)$"
+  want "cache/heavy: claims SKIPs, saying the bookkeeping paths were not compared" "^  SKIP  heavy  *claims-registry .*passed at [0-9a-f][0-9a-f]* on this tree (producer [^)]*) (bookkeeping paths not compared; CI grades them)$"
   want "cache/heavy: green-on-clone SKIPs the same way" "^  SKIP  heavy  *green-on-clone .*(bookkeeping paths not compared; CI grades them)$"
   sfx "cache/heavy: the core-live arm (full key) DID re-run" 2 "$(nruns)"
   sfx "cache/heavy: the verdict counts the two cached arms" "PARITY-CORE: OK (2 arm(s) from cache, not executed this run)" "$(lastline)"
@@ -2623,7 +2846,8 @@ selftest_cache_opt_out() {
   cfx; CRNC=1; cr; cr; CRNC=0
   sfx "cache/opt-out: with PREPUSH_NO_CACHE=1 both runs execute the check" 2 "$(nruns)"
   want "cache/opt-out: with one note" "^# cache: off — PREPUSH_NO_CACHE=1"
-  sfx "cache/opt-out: and nothing was written under HOME" no "$([ -e "$_h/.local" ] && echo yes || echo no)"
+  # (the heavy-arm lock legitimately creates $HOME/.local/state/sparkwright/; the cache's own state dir must be absent)
+  sfx "cache/opt-out: and no cache state was written under HOME" no "$([ -e "$_h/.local/state/sparkwright/prepush" ] && echo yes || echo no)"
 }
 
 # --- PREPUSH-BATTERY-CHANGE-SCOPED (T1: the derivation + skip lines) -------------------------
@@ -3085,6 +3309,574 @@ selftest_board_gate_selftest_prefix() {
   sfx "board/selftest-prefix: rc 1" 1 "$DVRC"
   want "board/selftest-prefix: the off-shape sibling is caught as (underived-registry-row)" "^  FAIL  core-board *(underived-registry-row) a board-gate registry row was not derived"
   sfx "board/selftest-prefix: the --selftest=1 row's stub never ran" no "$([ -e "$d/board-a-ran" ] && echo yes || echo no)"
+}
+
+# --- SWAS-278b: the machine-wide heavy-arm lock (design 6.2) and the cache producer rule (6.3) ---------
+# The lock cells drive hl_acquire / hl_need / hl_try in SUBSHELLS with a short budget and poll (plain shell variables, no env knob), a fixture
+# holder that `exec sleep`s on the lock (SIGKILL on its pid drops it), and shadowed hl_owner / mem_free_mb functions; the e2e cells run the lane.
+now_s() { date +%s; }
+# hlfx — a fresh HOME for one lock leg: sets _lh (HOME), _ld (the state dir), _ll (the lock file).
+hlfx() {
+  _lh=$(mktemp -d "${TMPDIR:-/tmp}/fx-lk-XXXXXX"); _ld=$_lh/.local/state/sparkwright; _ll=$_ld/heavy-arm.lock
+  mkdir -p "$_ld"; chmod 700 "$_ld"
+}
+# hl_run <home> <budget> <poll> <unit> — hl_acquire in a subshell; prints its notes, then rc/state/UNV/seconds waited and the holder note's first line.
+hl_run() {
+  ( set +e; HOME=$1; HL_BUDGET=$2; HL_POLL=$3; HL_STATE=none; UNV=""
+    _s0=$(now_s); _r=0; hl_acquire "$4" || _r=$?
+    printf 'rc=%s state=%s unv=[%s] waited=%s\n' "$_r" "${HL_STATE-}" "$UNV" "$(( $(now_s) - _s0 ))"
+    [ ! -f "$1/.local/state/sparkwright/heavy-arm.holder" ] || printf 'note1=%s\n' "$(sed -n 1p "$1/.local/state/sparkwright/heavy-arm.holder")" ) 2>&1
+}
+# hl_holder <home> <seconds> [note-pid] — a process that HOLDS the lock for <seconds>; sets HPID. exec sleep: the pid IS the holder.
+hl_holder() {
+  _hrdy=$1/ready; rm -f "$_hrdy"
+  ( set +e; HOME=$1; HL_WHY=""; hl_open || exit 7; hl_try || exit 8
+    printf '%s\n/fixture/tree\nfixture-unit\n2026-01-01T00:00:00Z\n' "${3:-4242}" > "$1/.local/state/sparkwright/heavy-arm.holder"
+    : > "$_hrdy"; exec sleep "$2" ) 2>/dev/null &
+  HPID=$!; _i=0
+  while [ ! -e "$_hrdy" ] && [ "$_i" -lt 100 ]; do
+    hl_kill "$HPID" -0 || break
+    sleep 0.1 2>/dev/null || sleep 1; _i=$((_i+1))
+  done
+}
+# hl_kill <pid> [signal] — the ONLY way a selftest cell signals a process. A pid that is empty, not all digits, or numerically 0 or 1 is
+# REFUSED (rc 1, nothing signalled): `kill 0` TERMs the caller's whole process group and `kill -1` every process the user may signal.
+# Otherwise it returns kill's own rc, so `hl_kill "$p" -0` is a liveness probe.
+# One line on purpose: selftest_lock_kill_zero reads these three definitions out of this file by their first line.
+hl_kill() { case ${1:-} in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -gt 1 ] 2>/dev/null || return 1; kill ${2:+"$2"} "$1" 2>/dev/null; }
+# hl_wait <pid> — wait for a pid that is a real number; an empty or non-numeric one is skipped (a bare `wait` would wait for every child).
+hl_wait() { case ${1:-} in ''|*[!0-9]*) return 0 ;; esac; wait "$1" 2>/dev/null || :; }
+hl_holder_stop() { hl_kill "${HPID:-}" || :; hl_wait "${HPID:-}"; HPID=; }
+# hl_free <home> — rc 0 when the lock is FREE (a fresh open file description can take it), 1 busy, 7 cannot open.
+hl_free() { ( set +e; HOME=$1; HL_WHY=""; hl_open || exit 7; hl_try ) >/dev/null 2>&1; }
+# nopath <cmd> — a directory of symlinks to /bin/* and /usr/bin/* minus <cmd> (selftest_dash's trick).
+nopath() {
+  _np=$(mktemp -d "${TMPDIR:-/tmp}/fx-np-XXXXXX")
+  for _f in /bin/* /usr/bin/*; do case ${_f##*/} in "$1") ;; *) ln -s "$_f" "$_np/${_f##*/}" 2>/dev/null || : ;; esac; done
+  printf '%s\n' "$_np"
+}
+# lkfx <stub-body> — a one-selftest fixture whose core-selftest stub runs <stub-body>; `gamma` is untracked, so it is TOUCHED.
+lkfx() {
+  mkcin 'sh conformance/gamma.sh --selftest'
+  mkchk selftest-hermetic "$1; echo \"TARGET: conformance/gamma.sh (both faces)\""
+  commit_fx; mkchk gamma 'exit 0'
+}
+# rnh <home> <repo> [args…] — a RUN with an explicit HOME -> DVOUT/DVRC.
+rnh() { _hh=$1; _r=$2; shift 2; DVOUT=$( cd "$_r" && HOME=$_hh sh "$LANE" --base HEAD "$@" 2>&1 ) && DVRC=0 || DVRC=$?; }
+
+# K1
+selftest_lock_acquire_release() {
+  hlfx
+  _o=$( ( set +e; HOME=$_lh; HL_BUDGET=5; HL_POLL=1; HL_STATE=none; UNV=""
+          _r=0; hl_acquire core-selftest || _r=$?
+          printf 'rc=%s state=%s\n' "$_r" "${HL_STATE-}"
+          if [ -f "$_ld/heavy-arm.holder" ]; then printf 'note-present unit=%s\n' "$(sed -n 3p "$_ld/heavy-arm.holder")"; else echo note-absent; fi
+          if hl_free "$_lh"; then echo busy-check=FREE; else echo busy-check=held; fi
+          hl_release || :
+          printf 'after state=%s\n' "${HL_STATE-}"
+          if [ -f "$_ld/heavy-arm.holder" ]; then echo note2-present; else echo note2-absent; fi
+          if hl_free "$_lh"; then echo free-check=free; else echo free-check=BUSY; fi ) 2>&1 ) || :
+  DVOUT=$_o
+  want "lock/acquire: the first heavy unit takes the lock" "^rc=0 state=held$"
+  want "lock/acquire: the holder note names the unit" "^note-present unit=core-selftest$"
+  want "lock/acquire: while held, a second open file description cannot take it (the lock is real)" "^busy-check=held$"
+  want "lock/release: the holder note is cleared" "^note2-absent$"
+  want "lock/release: and the lock is free again" "^free-check=free$"
+}
+# K1, end to end: the stub sees the note and a closed descriptor 9 DURING the unit; the lock is free and the note gone AFTER the run.
+selftest_lock_acquire_e2e() {
+  hlfx
+  lkfx 'cat "'"$_ld"'/heavy-arm.holder" > "$PWD/holder.seen" 2>&1; if ( : >&9 ) 2>/dev/null; then echo open > "$PWD/fd9.seen"; else echo closed > "$PWD/fd9.seen"; fi'
+  rnh "$_lh" "$d"; sfx "lock/e2e: rc 0" 0 "$DVRC"
+  want "lock/e2e: the run says it took the lock" "^# heavy-arm lock: acquired for the core-selftest unit"
+  sfx "lock/e2e: the holder note named the unit during the run" "core-selftest" "$(sed -n 3p "$d/holder.seen" 2>/dev/null || echo MISSING)"
+  sfx "lock/e2e: the unit ran with descriptor 9 closed" closed "$(cat "$d/fd9.seen" 2>/dev/null || echo MISSING)"
+  sfx "lock/e2e: the holder note is gone after the run" no "$([ -e "$_ld/heavy-arm.holder" ] && echo yes || echo no)"
+  _r=0; hl_free "$_lh" || _r=$?; sfx "lock/e2e: and the lock is free after the run" 0 "$_r"
+  sfx "lock/e2e: the state dir holds nothing but the lock file (the lane's own writes stay in its work root)" "heavy-arm.lock" "$(ls -A "$_ld" | tr '\n' ' ' | sed 's/ $//')"
+  sfx "lock/e2e: the lock file is kept (never deleted)" yes "$([ -f "$_ll" ] && echo yes || echo no)"
+}
+# One acquisition per run, held across core-live and the Tier-2 arms.
+selftest_lock_phase_e2e() {
+  hlfx; one_step; mkchk beta 'exit 0'
+  mkchk alpha 'cat "'"$_ld"'/heavy-arm.holder" > "$PWD/holder.seen" 2>&1'
+  mkchk claims-registry 'exit 0'; mkchk green-on-clone 'exit 0'
+  commit_fx; _b0=$(cd "$d" && git rev-parse HEAD)
+  : > "$d/conformance/claims.tsv"; commit_fx
+  _pd=$(mktemp -d "${TMPDIR:-/tmp}/fx-ps-XXXXXX"); printf '#!/bin/sh\necho "1 0 init"\n' > "$_pd/ps"; chmod +x "$_pd/ps"
+  DVOUT=$( cd "$d" && PATH="$_pd:$PATH" HOME=$_lh sh "$LANE" --base "$_b0" --warranted 2>&1 ) && DVRC=0 || DVRC=$?
+  rm -rf "$_pd"
+  sfx "lock/phase: rc 0" 0 "$DVRC"
+  sfx "lock/phase: the first heavy unit of a --warranted run is core-live" "core-live" "$(sed -n 3p "$d/holder.seen" 2>/dev/null || echo MISSING)"
+  sfx "lock/phase: ONE acquisition per run, whatever the number of units" 1 "$(printf '%s\n' "$DVOUT" | grep -c 'heavy-arm lock: acquired' || :)"
+  want "lock/phase: the Tier-2 arms ran under it" "OK    heavy  *green-on-clone"
+}
+# nothing heavy in the default run -> the lock is never touched.
+selftest_lock_light_unlocked() {
+  one_step; mkchk alpha 'exit 0'; commit_fx; _h2=$(mktemp -d "${TMPDIR:-/tmp}/fx-home-XXXXXX")
+  rnh "$_h2" "$d"; sfx "lock/light: rc 0" 0 "$DVRC"
+  sfx "lock/light: a default run with no heavy unit takes no lock (no lock file)" no "$([ -e "$_h2/.local/state/sparkwright/heavy-arm.lock" ] && echo yes || echo no)"
+}
+# K2
+selftest_lock_wait() {
+  hlfx; hl_holder "$_lh" 3
+  _o=$(hl_run "$_lh" 30 1 core-selftest) || :; hl_holder_stop; DVOUT=$_o
+  want "lock/wait: the second run acquires once the holder lets go" "^rc=0 state=held "
+  want "lock/wait: it printed who held it" "held by pid 4242 tree /fixture/tree unit fixture-unit since 2026-01-01T00:00:00Z"
+  _w=$(printf '%s\n' "$_o" | sed -n 's/.*waited=\([0-9]*\)$/\1/p')
+  sfx "lock/wait: and it really waited for the holder" yes "$([ "${_w:-0}" -ge 1 ] && echo yes || echo no)"
+}
+# K2, end to end (the poll is 15 s: this leg costs 15 s).
+selftest_lock_wait_e2e() {
+  hlfx; lkfx 'date +%s > "$PWD/ran.at"'
+  _t0=$(now_s); hl_holder "$_lh" 12
+  rnh "$_lh" "$d"; hl_holder_stop
+  sfx "lock/wait-e2e: rc 0" 0 "$DVRC"
+  want "lock/wait-e2e: the run said it was waiting, naming the holder" "heavy-arm lock: busy (held by pid 4242"
+  _ra=$(cat "$d/ran.at" 2>/dev/null || echo 0)
+  sfx "lock/wait-e2e: the core-selftest unit ran only after the holder let go" yes "$([ $((_ra - _t0)) -ge 3 ] && echo yes || echo no)"
+}
+# K3
+selftest_lock_kill9() {
+  hlfx; hl_holder "$_lh" 60
+  _o=$(hl_run "$_lh" 1 1 x) || :; DVOUT=$_o; want "lock/kill9: precondition — the live holder blocks" "^rc=1 "
+  hl_kill "${HPID:-}" -KILL || :; hl_wait "${HPID:-}"; HPID=
+  _o=$(hl_run "$_lh" 3 1 x) || :; DVOUT=$_o
+  want "lock/kill9: the kernel dropped the lock with the holder, and the waiter acquires" "^rc=0 state=held "
+}
+# K4
+selftest_lock_stale_note() {
+  hlfx; printf '99999999\n/gone/tree\nold-unit\n2020-01-01T00:00:00Z\n' > "$_ld/heavy-arm.holder"
+  _o=$(hl_run "$_lh" 5 1 core-selftest) || :; DVOUT=$_o
+  want "lock/stale-note: a dead holder's note with the lock free acquires at once" "^rc=0 state=held unv=\[\] waited=[01]$"
+  wantnot "lock/stale-note: and the note is replaced" "^note1=99999999$"
+}
+# K5
+selftest_lock_budget_end() {
+  hlfx; hl_holder "$_lh" 60
+  _o=$(hl_run "$_lh" 2 1 core-selftest) || :; hl_holder_stop; DVOUT=$_o
+  want "lock/budget: a live holder past the budget is UNVERIFIED, never OK" "^rc=1 state=failed unv=\[heavy-arm lock: "
+  want "lock/budget: the notes say so" "UNVERIFIED: heavy-arm lock"
+  wantnot "lock/budget: never an OK" "^rc=0 "
+}
+# K6
+selftest_lock_budget_runlevel() {
+  hlfx; hl_holder "$_lh" 60
+  _o=$( ( set +e; HOME=$_lh; HL_BUDGET=3; HL_POLL=1; HL_STATE=none; UNV=""
+          _a=$(now_s); hl_need core-live >/dev/null 2>&1 || :; _b=$(now_s)
+          hl_need warranted-claims 2>&1 || :; hl_need warranted-green-on-clone >/dev/null 2>&1 || :; _c=$(now_s)
+          echo "first=$((_b-_a)) rest=$((_c-_b))" ) 2>&1 ) || :; hl_holder_stop; DVOUT=$_o
+  _f=$(printf '%s\n' "$_o" | sed -n 's/^first=\([0-9]*\) .*/\1/p'); _t=$(printf '%s\n' "$_o" | sed -n 's/.* rest=\([0-9]*\)$/\1/p')
+  sfx "lock/runlevel: the first unit waits the whole budget" yes "$([ "${_f:-0}" -ge 3 ] && echo yes || echo no)"
+  sfx "lock/runlevel: every later unit fails fast (one wait per run, not one per unit)" yes "$([ "${_t:-9}" -lt 2 ] && echo yes || echo no)"
+  want "lock/runlevel: each skipped unit is named" "UNVERIFIED: heavy-arm lock not held — the warranted-claims unit is not run"
+}
+# K7
+selftest_lock_dir_unsafe() {
+  hlfx; chmod 777 "$_ld"
+  _o=$(hl_run "$_lh" 1 1 x) || :; DVOUT=$_o
+  want "lock/dir: a world-writable state dir is UNVERIFIED" "^rc=1 .*group/world-writable"
+  hlfx
+  _o=$( hl_owner() { echo some-other-user; }; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/dir: a foreign-owned state dir is UNVERIFIED" "^rc=1 .*not owned by the current user"
+  hlfx; chmod 777 "$_ld"; lkfx 'touch "$PWD/unit-ran"'
+  rnh "$_lh" "$d"
+  sfx "lock/dir-e2e: the run is rc 1" 1 "$DVRC"
+  want "lock/dir-e2e: the verdict is UNVERIFIED naming the lock" "^PARITY-CORE: UNVERIFIED (heavy-arm lock: "
+  sfx "lock/dir-e2e: and the heavy unit did not run" no "$([ -e "$d/unit-ran" ] && echo yes || echo no)"
+}
+# K8
+selftest_lock_floor_reread() {
+  hlfx; hl_holder "$_lh" 3
+  _o=$( ( set +e; mem_free_mb() { echo 100; }; HOME=$_lh; HL_BUDGET=30; HL_POLL=1; HL_STATE=none; UNV=""; FLOOR=6144; FREE=99999
+          hl_acquire core-selftest || :
+          echo "free-after=$FREE" ) 2>&1 ) || :; hl_holder_stop; DVOUT=$_o
+  want "lock/floor: after a wait the free-memory reading is taken again" "^free-after=100$"
+  want "lock/floor: and a reading below the floor is named" "WARNING: free memory 100 MB is below the 6144 MB floor"
+  hlfx
+  _o=$( ( set +e; mem_free_mb() { echo 100; }; HOME=$_lh; HL_BUDGET=30; HL_POLL=1; HL_STATE=none; UNV=""; FLOOR=6144; FREE=99999
+          hl_acquire core-selftest || :
+          echo "free-after=$FREE" ) 2>&1 ) || :; DVOUT=$_o
+  want "lock/floor: with no wait the earlier reading stands" "^free-after=99999$"
+}
+# K13
+selftest_lock_symlink() {
+  hlfx; _tg=$(mktemp -d "${TMPDIR:-/tmp}/fx-tg-XXXXXX"); printf 'keep\n' > "$_tg/target"; ln -s "$_tg/target" "$_ll"
+  _o=$(hl_run "$_lh" 1 1 x) || :; DVOUT=$_o
+  want "lock/symlink: a symlinked lock file is UNVERIFIED" "^rc=1 .*symlink"
+  sfx "lock/symlink: the link is still there" yes "$([ -L "$_ll" ] && echo yes || echo no)"
+  sfx "lock/symlink: and its target is untouched" keep "$(cat "$_tg/target")"
+  lkfx 'touch "$PWD/unit-ran"'
+  rnh "$_lh" "$d"
+  sfx "lock/symlink-e2e: the run is rc 1" 1 "$DVRC"
+  want "lock/symlink-e2e: UNVERIFIED naming the lock" "^PARITY-CORE: UNVERIFIED (heavy-arm lock: "
+  sfx "lock/symlink-e2e: the unit did not run" no "$([ -e "$d/unit-ran" ] && echo yes || echo no)"
+  sfx "lock/symlink-e2e: and nothing was deleted" yes "$([ -L "$_ll" ] && [ -f "$_tg/target" ] && echo yes || echo no)"
+}
+# K14
+selftest_lock_foreign_owner() {
+  hlfx; : > "$_ll"
+  _o=$( hl_owner() {
+          if [ "${1##*/}" = heavy-arm.lock ]; then echo some-other-user; else ls -ldn "$1" | awk '{ print $3 }'; fi
+        }
+        hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/owner: a lock file owned by another user is UNVERIFIED" "^rc=1 .*owned by another user"
+  sfx "lock/owner: and it is not deleted" yes "$([ -f "$_ll" ] && echo yes || echo no)"
+}
+# K15
+selftest_lock_holder_sanitised() {
+  hlfx; _x=$(awk 'BEGIN { for (i = 0; i < 400; i++) printf "x" }')
+  printf '4242\n/t/a\033[31mb%s\nunit\n2026-01-01T00:00:00Z\n' "$_x" > "$_ld/heavy-arm.holder"
+  _t=$( set +e; HOME=$_lh; HL_HOLDER=$_ld/heavy-arm.holder; hl_holder_text )
+  sfx "lock/sanitised: a hostile note prints only [A-Za-z0-9._/:-] and spaces" 0 "$(printf '%s' "$_t" | LC_ALL=C grep -c '[^A-Za-z0-9._/: -]' || :)"
+  sfx "lock/sanitised: no field exceeds 200 bytes" ok "$(printf '%s\n' "$_t" | awk '{ for (i = 1; i <= NF; i++) if (length($i) > 200) bad = 1 } END { print bad ? "long" : "ok" }')"
+  rm -f "$_ld/heavy-arm.holder"
+  _o=$( ( set +e; ROOT=$(printf '/t/a\nb\033[31m/c%s' "$_x"); HOME=$_lh; HL_BUDGET=1; HL_POLL=1; HL_STATE=none; UNV=""
+          hl_acquire core-selftest >/dev/null 2>&1
+          printf 'lines=%s\n' "$(grep -c '' "$_ld/heavy-arm.holder")"
+          printf 'bad=%s\n' "$(LC_ALL=C grep -c '[^A-Za-z0-9._/:-]' "$_ld/heavy-arm.holder" || :)" ) 2>&1 ) || :; DVOUT=$_o
+  want "lock/sanitised: the note the lane writes keeps four lines whatever the tree path holds" "^lines=4$"
+  want "lock/sanitised: and carries no byte outside the charset" "^bad=0$"
+}
+# K16
+selftest_lock_home_scoped() {
+  hlfx; _la=$_lh; hl_holder "$_la" 30; hlfx
+  _o=$(hl_run "$_lh" 0 1 x) || :; hl_holder_stop; DVOUT=$_o
+  want "lock/home: a run under another HOME has its own lock file and does not contend" "^rc=0 state=held "
+}
+# K17
+selftest_lock_no_tool() {
+  hlfx
+  _o=$( HL_FLOCKS=/nonexistent/flock; HL_PERL=/nonexistent/perl; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/no-tool: neither flock(1) nor perl -> UNVERIFIED, never an unlocked run" "^rc=1 .*neither flock(1) nor /nonexistent/perl"
+  # Sec-L6: flock is looked for at fixed absolute paths only, never through PATH (a planted `flock` on PATH is not used)
+  _fs=$(mktemp -d "${TMPDIR:-/tmp}/fx-fl-XXXXXX"); printf '#!/bin/sh\necho planted > "%s/planted"\nexit 0\n' "$_fs" > "$_fs/flock"; chmod +x "$_fs/flock"
+  _o=$( PATH=$_fs:$PATH; HL_FLOCKS=/nonexistent/flock; HL_PERL=/nonexistent/perl; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/no-tool: a flock planted on PATH does not count" "^rc=1 .*neither flock(1) nor"
+  sfx "lock/no-tool: and it was never run" no "$([ -e "$_fs/planted" ] && echo yes || echo no)"
+}
+# Sec-L4: the owner test is numeric and unshadowed — root's / is not ours unless we are root.
+selftest_lock_owner_real() {
+  if [ "$(id -u)" = 0 ]; then echo "SKIP: lock/owner-real: running as root — / IS ours; leg NOT exercised"; return 0; fi
+  _r=0; hl_owner_ok / || _r=$?; sfx "lock/owner-real: a directory owned by root is not ours (no shadowing)" 1 "$_r"
+  hlfx; _r=0; hl_owner_ok "$_ld" || _r=$?; sfx "lock/owner-real: and our own directory is" 0 "$_r"
+}
+# Sec-L3: a holder note path that is a symlink to a directory is never written through.
+selftest_lock_holder_symlink() {
+  hlfx; _tg=$(mktemp -d "${TMPDIR:-/tmp}/fx-tg-XXXXXX"); ln -s "$_tg" "$_ld/heavy-arm.holder"
+  _o=$(hl_run "$_lh" 1 1 x) || :; DVOUT=$_o
+  want "lock/holder-symlink: the lock is still taken" "^rc=0 state=held "
+  sfx "lock/holder-symlink: nothing was written into the link's target directory" "" "$(ls -A "$_tg")"
+  sfx "lock/holder-symlink: and the link itself is untouched" yes "$([ -L "$_ld/heavy-arm.holder" ] && echo yes || echo no)"
+  sfx "lock/holder-symlink: no temp note is left behind" "heavy-arm.holder heavy-arm.lock" "$(ls -A "$_ld" | tr '\n' ' ' | sed 's/ $//')"
+}
+# K18
+selftest_lock_race() {
+  _bad=0; _round=0
+  while [ "$_round" -lt 8 ]; do
+    _round=$((_round+1)); hlfx; _go=$_lh/go; _pids=""
+    for _n in 1 2 3 4; do
+      ( set +e; HOME=$_lh; HL_WHY=""; hl_open || exit 7
+        while [ ! -e "$_go" ]; do :; done
+        if hl_try; then echo won > "$_lh/res.$_n"; exec sleep 5; else echo lost > "$_lh/res.$_n"; fi ) 2>/dev/null &
+      _pids="$_pids $!"
+    done
+    sleep 0.5; : > "$_go"; _i=0
+    while [ "$(ls "$_lh"/res.* 2>/dev/null | wc -l | tr -d ' ')" -lt 4 ] && [ "$_i" -lt 60 ]; do sleep 0.1 2>/dev/null || sleep 1; _i=$((_i+1)); done
+    _w=$(cat "$_lh"/res.* 2>/dev/null | grep -c '^won$' || :)
+    [ "$_w" = 1 ] || _bad=$((_bad+1))
+    # the pids are collected from `$!`; each goes through the guard one at a time, so an empty list or a stray 0 signals nothing
+    for _kp in $_pids; do hl_kill "$_kp" || :; done; wait 2>/dev/null || :
+  done
+  sfx "lock/race: in 8 rounds of four simultaneous acquirers exactly one holds the lock every time" 0 "$_bad"
+}
+# K19
+selftest_lock_child_fd() {
+  hlfx; lkfx 'sleep 25 & echo $! > "$PWD/daemon.pid"'
+  rnh "$_lh" "$d"; sfx "lock/child-fd: rc 0" 0 "$DVRC"
+  _r=0; hl_free "$_lh" || _r=$?
+  sfx "lock/child-fd: a child left running by a unit does not keep the lock held" 0 "$_r"
+  hl_kill "$(cat "$d/daemon.pid" 2>/dev/null || :)" || :
+}
+# K20
+selftest_lock_ancestor_note() {
+  for _np in 1 "$PPID" "$$"; do
+    hlfx; hl_holder "$_lh" 60 "$_np"
+    _o=$(hl_run "$_lh" 2 1 x) || :; hl_holder_stop; DVOUT=$_o
+    want "lock/ancestor: a note naming pid $_np does not let the run skip the wait" "^rc=1 state=failed "
+  done
+}
+# K21
+selftest_lock_perl_env() {
+  [ -x /usr/bin/perl ] || { echo "SKIP: lock/perl-env: /usr/bin/perl is absent — leg NOT exercised"; return 0; }
+  hlfx; _pl=$WORK/perllib-$$; mkdir -p "$_pl"; _mk=$_lh/loaded
+  printf 'package fixture;\nopen(my $m, ">>", $ENV{FIXTURE_MARK}) or die;\nprint $m "loaded\\n";\nclose $m;\n1;\n' > "$_pl/fixture.pm"
+  ( PERL5LIB=$_pl PERL5OPT=-Mfixture FIXTURE_MARK=$_mk /usr/bin/perl -e 1 ) >/dev/null 2>&1 || :
+  sfx "lock/perl-env: control — the fixture module loads when PERL5OPT reaches perl" yes "$([ -s "$_mk" ] && echo yes || echo no)"
+  rm -f "$_mk"
+  _o=$( HL_FLOCKS=/nonexistent/flock; PERL5LIB=$_pl; PERL5OPT=-Mfixture; FIXTURE_MARK=$_mk; export PERL5LIB PERL5OPT FIXTURE_MARK; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/perl-env: the lock is still taken through perl" "^rc=0 state=held "
+  sfx "lock/perl-env: and the fixture PERL5OPT module was NOT loaded" no "$([ -e "$_mk" ] && echo yes || echo no)"
+  # Sec-L1: the helper runs from / under `env -i`: PERL_USE_UNSAFE_INC (a '.' in @INC) never reaches it. PERLIO's layer loading is not relied on either way; env -i drops every PERL* variable by construction.
+  hlfx; _cw=$(mktemp -d "${TMPDIR:-/tmp}/fx-cw-XXXXXX"); mkdir -p "$_cw/PerlIO"; _mk2=$_lh/loaded2
+  printf 'package PerlIO::fixture;\nopen(my $m, ">>", $ENV{FIXTURE_MARK}) or die;\nprint $m "loaded\\n";\nclose $m;\nsub PUSHED { -1 }\n1;\n' > "$_cw/PerlIO/fixture.pm"
+  # POSITIVE control (the cell is not vacuous): the same environment and cwd, with a perl run that does NOT go through the helper,
+  # loads the cwd module (PERL5OPT names it; PERL_USE_UNSAFE_INC puts '.' in @INC).
+  # The second half below is a REGRESSION cell, not a negative for `cd /` or `env -i`: its only loader is PERL5OPT, which any
+  # unset of PERL5OPT would also close. What tells `cd / && env -i` from an unset is the wrapper cell after it.
+  # CEILING, stated and not tested: that `env -i` and `cd /` close PERL_USE_UNSAFE_INC, PERLIO and every other PERL* route is true
+  # BY CONSTRUCTION (nothing is passed in, nothing is read from the cwd); no cell exercises each of those routes.
+  ( cd "$_cw" && PERL_USE_UNSAFE_INC=1 PERL5OPT=-MPerlIO::fixture FIXTURE_MARK=$_mk2 /usr/bin/perl -e 1 ) >/dev/null 2>&1 || :
+  sfx "lock/perl-env: control — without the helper's cd / and env -i the cwd module loads" yes "$([ -s "$_mk2" ] && echo yes || echo no)"
+  rm -f "$_mk2"
+  _o=$( cd "$_cw" && HL_FLOCKS=/nonexistent/flock; PERL_USE_UNSAFE_INC=1; PERL5OPT=-MPerlIO::fixture; FIXTURE_MARK=$_mk2; export PERL_USE_UNSAFE_INC PERL5OPT FIXTURE_MARK; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/perl-env: the lock is still taken with those set" "^rc=0 state=held "
+  sfx "lock/perl-env: regression — and the cwd module was NOT loaded" no "$([ -e "$_mk2" ] && echo yes || echo no)"
+  # What only `cd / && env -i` does: a wrapper standing in for perl records the cwd and environment the helper hands it, then runs the real perl.
+  hlfx; _ww=$_lh/perlwrap; _wc=$_lh/wrap.cwd; _we=$_lh/wrap.env
+  printf '#!/bin/sh\npwd -P > "%s"\nenv > "%s"\nexec /usr/bin/perl "$@"\n' "$_wc" "$_we" > "$_ww"; chmod +x "$_ww"
+  _o=$( cd "$_cw" && HL_FLOCKS=/nonexistent/flock; HL_PERL=$_ww; PERL_USE_UNSAFE_INC=1; PERL5OPT=-MPerlIO::fixture; PERLIO=:crlf; FIXTURE_MARK=$_mk2; export PERL_USE_UNSAFE_INC PERL5OPT PERLIO FIXTURE_MARK; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/perl-env: the lock is taken through the wrapper" "^rc=0 state=held "
+  sfx "lock/perl-env: the helper runs perl from /, not from the caller's cwd" "/" "$(cat "$_wc" 2>/dev/null || echo MISSING)"
+  sfx "lock/perl-env: and hands it no PERL5OPT, PERL_USE_UNSAFE_INC, PERLIO or FIXTURE_MARK (env -i)" 0 "$(grep -c '^\(PERL5OPT\|PERL_USE_UNSAFE_INC\|PERLIO\|FIXTURE_MARK\)=' "$_we" 2>/dev/null || :)"
+  sfx "lock/perl-env: the wrapper really ran (its env record exists)" yes "$([ -f "$_we" ] && echo yes || echo no)"
+}
+# The Linux back end: the lane calls flock(1) as `flock -n 9`; its rc 1 is busy, any other nonzero rc is a helper failure.
+selftest_lock_flock_shim() {
+  hlfx; _fs=$(mktemp -d "${TMPDIR:-/tmp}/fx-fl-XXXXXX")
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" > "%s/argv"\nexit "${FLOCK_RC:-0}"\n' "$_fs" > "$_fs/flock"; chmod +x "$_fs/flock"
+  _o=$( HL_FLOCKS=$_fs/flock; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/flock: flock(1) rc 0 is the lock" "^rc=0 state=held "
+  sfx "lock/flock: the lane calls it as 'flock -n 9'" "-n 9" "$(cat "$_fs/argv" 2>/dev/null || echo MISSING)"
+  hlfx; _o=$( HL_FLOCKS=$_fs/flock; FLOCK_RC=1; export FLOCK_RC; hl_run "$_lh" 1 1 x ) || :; DVOUT=$_o
+  want "lock/flock: flock(1) rc 1 is busy -> UNVERIFIED after the budget" "^rc=1 state=failed .*stayed busy"
+  hlfx; _o=$( HL_FLOCKS=$_fs/flock; FLOCK_RC=64; export FLOCK_RC; hl_run "$_lh" 30 1 x ) || :; DVOUT=$_o
+  want "lock/flock: any other rc is a helper failure at once, not a wait" "^rc=1 state=failed .*helper failed (rc 64)"
+}
+# K22 (SWAS-278b fix round 2, CI #880 non-vacuity): a pid that is empty, 0, 1, signed or not a number must never reach `kill`: `kill 0`
+# TERMs the caller's WHOLE process group (the CI step's shell, an adopter's own pre-push). The helpers under test are read out of this file.
+selftest_lock_kill_zero() {
+  _kd=$(grep -E '^(hl_kill|hl_wait|hl_holder_stop)\(\)' "$LANE")
+  # (a) SAFE: `kill` is shadowed by a function that only prints its argv, so no signal is ever sent, whatever the helpers do.
+  _kb='kill() { echo "KILL-CALLED $*"; }
+HPID=""; hl_holder_stop; HPID=; hl_holder_stop
+for _p in "" 0 00 000 1 01 -1 abc "2 3" "4;5"; do hl_kill "$_p"; hl_kill "$_p" -KILL; done
+hl_kill 4242 -0; echo done'
+  DVOUT=$(sh -c "$_kd
+$_kb" 2>&1) || :
+  want "lock/kill-zero: a real pid still reaches kill, with its signal" "^KILL-CALLED -0 4242$"
+  sfx "lock/kill-zero: and nothing else does (empty, 0, 00, 1, 01, -1, a word, a list)" 1 "$(printf '%s\n' "$DVOUT" | grep -c '^KILL-CALLED' || :)"
+  # (b) the real thing, in a process group of its own: a sentinel in the SAME group must survive the helpers with HPID empty.
+  _pg=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+  _cp=$(perl -e 'setpgrp(0,0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' sh -c 'ps -o pgid= -p $$' 2>/dev/null | tr -d ' ') || _cp=""
+  if [ -z "$_cp" ] || [ -z "$_pg" ] || [ "$_cp" = "$_pg" ]; then
+    echo "SKIP: lock/kill-zero: no perl setpgrp isolation here — the real-sentinel half NOT exercised (the shadowed-kill half above ran)"; return 0
+  fi
+  # a setpgrp that fails here dies BEFORE anything runs (its message is in DVOUT) and the two cells below FAIL loudly: never run un-isolated, never a silent pass
+  DVOUT=$(perl -e 'setpgrp(0,0) or die "setpgrp: $!"; exec @ARGV or die "exec: $!"' sh -c "$_kd
+sleep 30 & sp=\$!
+HPID=; hl_holder_stop; echo stop-survived
+if kill -0 \"\$sp\" 2>/dev/null; then echo sentinel-alive; else echo sentinel-dead; fi
+kill \"\$sp\" 2>/dev/null; :" 2>&1) || :
+  want "lock/kill-zero: the shell that stopped an empty HPID is still running" "^stop-survived$"
+  want "lock/kill-zero: and a sentinel in its process group is still alive" "^sentinel-alive$"
+}
+
+# --- the cache producer rule and the new off switches (design 6.3) ---
+# crd <dir> — a --warranted run with the cache ON in <dir>, against the leg's HOME.
+crd() { DVOUT=$( cd "$1" && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD --warranted 2>&1 ) && DVRC=0 || DVRC=$?; }
+# K9
+selftest_cache_producer_skip_line() {
+  cfx; cr; cr; _pp=$(cd "$d" && pwd -P)
+  want "cache/producer: the SKIP line names the producer tree" "^  SKIP  core-live *alpha .*passed at [0-9a-f][0-9a-f]* on this tree (producer $_pp)$"
+}
+# K10
+selftest_cache_producer_other_tree() {
+  cfx; cr; sfx "cache/other: precondition — the producer ran it once" 1 "$(nruns)"
+  _c=$(mktemp -d "${TMPDIR:-/tmp}/fx-clone-XXXXXX")/c; git clone -q "$d" "$_c" 2>/dev/null
+  crd "$_c"; sfx "cache/other: a record produced in another tree is NOT honoured (the check runs)" 2 "$(nruns)"
+  wantnot "cache/other: no SKIP off another tree's record" "^  SKIP  "
+  crd "$_c"; sfx "cache/other: the clone then skips off its OWN record" 2 "$(nruns)"
+  cr; sfx "cache/other: and the first tree still skips off its own (records are per producer)" 2 "$(nruns)"
+}
+# K11
+selftest_cache_off_index_tags() {
+  cfx; cr; sfx "cache/tags: precondition — ran once" 1 "$(nruns)"
+  ( cd "$d" && git update-index --skip-worktree conformance/beta.sh ); printf '# hidden\n' >> "$d/conformance/beta.sh"
+  cr; sfx "cache/tags: a skip-worktree entry turns the cache off (the check runs)" 2 "$(nruns)"
+  want "cache/tags: with one note" "^# cache: off — git ls-files -v shows a tag other than H"
+  ( cd "$d" && git update-index --no-skip-worktree conformance/beta.sh && git checkout -q -- conformance/beta.sh && git update-index --assume-unchanged conformance/beta.sh )
+  printf '# hidden\n' >> "$d/conformance/beta.sh"
+  cr; sfx "cache/tags: an assume-unchanged entry does too" 3 "$(nruns)"
+  ( cd "$d" && git update-index --no-assume-unchanged conformance/beta.sh && git checkout -q -- conformance/beta.sh )
+  cr; sfx "cache/tags: with the flags cleared the same tree skips again" 3 "$(nruns)"
+}
+# K12
+selftest_cache_off_sparse_filter() {
+  cfx; cr; sfx "cache/sparse: precondition — ran once" 1 "$(nruns)"
+  ( cd "$d" && git config core.sparseCheckout true )
+  cr; sfx "cache/sparse: core.sparseCheckout on turns the cache off" 2 "$(nruns)"
+  want "cache/sparse: with one note" "^# cache: off — core.sparseCheckout is on"
+  ( cd "$d" && git config --unset core.sparseCheckout && git config filter.fx.clean cat )
+  cr; sfx "cache/filter: a configured but UNAPPLIED filter leaves the cache on (the same tree skips)" 2 "$(nruns)"
+  printf '* filter=fx\n' > "$d/.git/info/attributes"   # info/attributes is untracked: it applies the filter without dirtying the tree
+  cr; sfx "cache/filter: a filter APPLIED to tracked paths turns it off" 3 "$(nruns)"
+  want "cache/filter: with one note" "^# cache: off — a configured filter is applied to tracked paths"
+  rm -f "$d/.git/info/attributes"; ( cd "$d" && git config --unset filter.fx.clean )
+  cr; sfx "cache/filter: with both cleared the same tree skips again" 3 "$(nruns)"
+}
+
+# --- the applied-filter rule (SWAS-278b fix round, CI #880) ---
+# crs — a --warranted run with the cache ON whose git sees a SYSTEM config file ($_sys): the faithful reproduction of a runner's /etc/gitconfig
+# (GIT_CONFIG_SYSTEM points git at the file; the selftest-wide GIT_CONFIG_NOSYSTEM is unset for this run only).
+crs() { DVOUT=$( cd "$d" && unset GIT_CONFIG_NOSYSTEM && GIT_CONFIG_SYSTEM=$_sys && export GIT_CONFIG_SYSTEM && HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD --warranted 2>&1 ) && DVRC=0 || DVRC=$?; }
+# crg — the same run with a `git` shim first on PATH ($_gs/git, from mkgitshim).
+crg() { DVOUT=$( cd "$d" && PATH=$_gs:$PATH HOME=$_h PREPUSH_NO_CACHE=0 sh "$LANE" --base HEAD --warranted 2>&1 ) && DVRC=0 || DVRC=$?; }
+# mkgitshim <dir> <what check-attr does> — a git wrapper that logs its argv and replaces ONLY `check-attr`; every other subcommand is the real git.
+mkgitshim() {
+  _rg=$(command -v git)
+  { printf '#!/bin/sh\n'; printf 'echo "$*" >> "%s/log"\n' "$1"
+    printf 'case $1 in check-attr) cat > /dev/null; %s ;; esac\n' "$2"
+    printf 'exec "%s" "$@"\n' "$_rg"; } > "$1/git"; chmod +x "$1/git"
+}
+# K13
+selftest_cache_filter_applied() {
+  cfx; cr; sfx "cache/applied: precondition — ran once" 1 "$(nruns)"
+  _sys=$(mktemp -d "${TMPDIR:-/tmp}/fx-sys-XXXXXX")/gitconfig
+  printf '[filter "lfs"]\n\tclean = git-lfs clean -- %%f\n\tsmudge = git-lfs smudge -- %%f\n\tprocess = git-lfs filter-process\n\trequired = true\n' > "$_sys"
+  _o=$( cd "$d" && unset GIT_CONFIG_NOSYSTEM && GIT_CONFIG_SYSTEM=$_sys && export GIT_CONFIG_SYSTEM && git config --get filter.lfs.process ) || _o=MISSING
+  sfx "cache/applied: precondition — git reads the runner-like system filter key" "git-lfs filter-process" "$_o"
+  crs; sfx "cache/applied: a SYSTEM-level filter no tracked path uses leaves the cache on (the check is skipped)" 1 "$(nruns)"
+  want "cache/applied: and it is a SKIP line" "^  SKIP  core-live *alpha .*passed at "
+  wantnot "cache/applied: with no cache-off note" "^# cache: off"
+  printf '* filter=lfs\n' > "$d/.git/info/attributes"
+  crs; sfx "cache/applied: the same system filter APPLIED to tracked paths turns it off" 2 "$(nruns)"
+  want "cache/applied: with one note" "^# cache: off — a configured filter is applied to tracked paths"
+  rm -f "$d/.git/info/attributes"
+  ( cd "$d" && git config filter.fx.clean cat ); printf 'conformance/beta.sh filter=fx\n' > "$d/.gitattributes"; commit_fx
+  cr; sfx "cache/applied: a COMMITTED .gitattributes applying a configured filter runs the check" 3 "$(nruns)"
+  want "cache/applied: and turns the cache off" "^# cache: off — a configured filter is applied to tracked paths"
+  printf 'conformance/beta.sh filter=ghost\n' > "$d/.gitattributes"; commit_fx
+  cr; cr; sfx "cache/applied: an attribute naming a filter with NO configured driver is not applied (one run, then it skips)" 4 "$(nruns)"
+  # fail closed: check-attr itself fails, or prints a stream that is not one path/attr/value triple per tracked path
+  _gs=$(mktemp -d "${TMPDIR:-/tmp}/fx-gs-XXXXXX"); mkgitshim "$_gs" 'exit 128'
+  crg; sfx "cache/applied: check-attr FAILING turns the cache off (the check runs)" 5 "$(nruns)"
+  want "cache/applied: with a note naming check-attr" "^# cache: off — .*check-attr"
+  _g=0; grep -q '^check-attr ' "$_gs/log" 2>/dev/null || _g=$?
+  sfx "cache/applied: non-vacuity — the shim really saw check-attr" 0 "$_g"
+  _gs=$(mktemp -d "${TMPDIR:-/tmp}/fx-gs-XXXXXX"); mkgitshim "$_gs" 'printf "p\\0filter\\0"; exit 0'
+  crg; sfx "cache/applied: an unparseable check-attr stream turns the cache off (the check runs)" 6 "$(nruns)"
+  want "cache/applied: with a note naming check-attr" "^# cache: off — .*check-attr"
+}
+
+# --- SWAS-278a plan task 0: the tracker-credential tripwire (design 3.6, "G1 and the credential: measured at plan task 0") ---
+# The pre-push runs a clone's OWN code, so the lane must never reach a tracker credential. This fixture is a tree that declares
+# the Jira backend, pins a host nobody owns, and carries RECORDERS for the credential library's store call and for the adapter,
+# plus a recording shim on PATH for every secret-store or network binary the kit names. The canary credentials sit in the
+# caller's environment. The lane (default, then --warranted) must leave every recorder log empty. The positive control proves
+# the recorders CAN be hit; the mutant proves the scrub is what keeps the canaries out.
+tw_fx() {   # sets d (the fixture tree) and _tw (the recorder dir); rc 1 = no kit tree to take the real twin row from
+  [ -n "$KROOT" ] && [ -f "$KROOT/conformance/tracker-contract.sh" ] && [ -f "$KROOT/conformance/prepush-twins.tsv" ] &&
+    [ -f "$KROOT/scripts/tracker-cred.sh" ] && [ -f "$KROOT/scripts/tracker-conf.sh" ] || return 1
+  d=$(mkrepo); _tw=$(mktemp -d "${TMPDIR:-/tmp}/fx-tw-XXXXXX"); mkdir -p "$d/scripts" "$d/.kit" "$_tw/bin"
+  cp "$KROOT/conformance/tracker-contract.sh" "$d/conformance/tracker-contract.sh"
+  cp "$KROOT/scripts/tracker-conf.sh" "$d/scripts/tracker-conf.sh"
+  # the REAL twin row, whatever its argv is today: cutting that row's reach is what turns this fixture green.
+  grep "^tracker-contract${TAB}" "$KROOT/conformance/prepush-twins.tsv" > "$d/conformance/prepush-twins.tsv"
+  # the credential library is the real one, with its store binary pointed at a recorder in FOUND mode (it answers like a stored item).
+  cat > "$_tw/security-rec" <<'TWSEC'
+#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/sec.log"
+printf '    "acct"\074blob\076="stored@example.com"\n'
+exit 0
+TWSEC
+  chmod +x "$_tw/security-rec"
+  sed -e "s|^_TCR_SEC_BIN=.*|_TCR_SEC_BIN=$_tw/security-rec|" "$KROOT/scripts/tracker-cred.sh" > "$d/scripts/tracker-cred.sh"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/jira.log"\nexit 1\n' "$_tw" > "$d/scripts/tracker-jira.sh"
+  for _n in security op secret-tool gh git-credential-osxkeychain curl; do
+    printf '#!/bin/sh\nprintf "%%s\\n" "%s $*" >> "%s/shim.log"\nexit 1\n' "$_n" "$_tw" > "$_tw/bin/$_n"; chmod +x "$_tw/bin/$_n"
+  done
+  # a check that records any canary credential it can see: the scrub's own witness (the twin, post-cut, never reads one).
+  printf '#!/bin/sh\n[ -z "${KIT_TRACKER_USER-}${KIT_TRACKER_TOKEN-}${JIRA_EMAIL-}${JIRA_TOKEN-}" ] || echo seen >> "%s/env.log"\nexit 0\n' "$_tw" > "$d/conformance/envprobe.sh"
+  printf 'Backlog backend: Jira (project TRIP, conf .kit/tracker.conf)\n' > "$d/CLAUDE.md"
+  printf 'version=1\nbackend=jira\nbase_url=https://tripwire.invalid\nflavour=cloud\nauth=basic\nproject=TRIP\n' > "$d/.kit/tracker.conf"
+  { printf 'name: fx\njobs:\n  j1:\n    steps:\n'
+    printf '      - name: Tracker-contract UNVERIFIED without creds (honest non-pass)\n'
+    printf "        run: 'if sh conformance/tracker-contract.sh; then echo \"ERROR: expected UNVERIFIED (exit 2), got a pass\"; exit 1; else test \$? -eq 2; fi'\n"
+    printf '      - name: witness\n        run: sh conformance/envprobe.sh\n'
+  } > "$d/.github/workflows/ci.yml"
+  commit_fx
+}
+# tw_run <lane> [lane args…] -> DVOUT/DVRC, with the canary credentials in the environment and the shims first on PATH.
+tw_run() {
+  _tl=$1; shift
+  DVOUT=$( cd "$d" && PATH="$_tw/bin:$PATH" KIT_TRACKER_USER=canary@example.com KIT_TRACKER_TOKEN=canary-token JIRA_EMAIL=canary@example.com JIRA_TOKEN=canary-token sh "$_tl" --base HEAD "$@" 2>&1 ) && DVRC=0 || DVRC=$?
+}
+# tw_logs -> one line per recorder that was hit; empty when none was.
+tw_logs() { for _f in sec jira shim env; do [ -s "$_tw/$_f.log" ] && { printf '%s.log:' "$_f"; tr '\n' '|' < "$_tw/$_f.log"; echo; }; done; return 0; }
+selftest_tripwire_lane() {
+  tw_fx || { echo "PASS: tripwire/lane: N/A - no kit tree to take the real twin row from"; return 0; }
+  _row=$(grep "^tracker-contract${TAB}" "$KROOT/conformance/prepush-twins.tsv" | cut -f4)
+  _cf=$(printf '%s\n' "$_row" | sed -n 's/^.*--conf \([^ ]*\)$/\1/p')
+  sfx "tripwire/lane: the twin row names a --conf path, and that path is not a file in the kit tree (an existing conf would end the credential-free argv)" "named-and-absent" \
+    "$([ -n "$_cf" ] && [ ! -e "$KROOT/$_cf" ] && echo named-and-absent || echo "row=[$_row]")"
+  tw_run "$LANE"
+  sfx "tripwire/default: every recorder log is empty after the default run" "" "$(tw_logs)"
+  tw_run "$LANE" --warranted
+  want "tripwire/warranted: the tracker-contract twin ran, rc 2 as the row expects (the leg is not vacuous)" "^  OK    twin  *tracker-contract tracker-contract\\.sh --conf "
+  want "tripwire/warranted: and so did the witness check" "^  OK    core-live  *envprobe"
+  sfx "tripwire/warranted: every recorder log is empty after --warranted (no store call, no adapter call, no secret-store or network binary, no canary credential in a child)" "" "$(tw_logs)"
+}
+selftest_tripwire_positive() {
+  tw_fx || { echo "PASS: tripwire/positive: N/A - no kit tree to take the real twin row from"; return 0; }
+  # the same fixture tree, tracker-contract.sh run directly with the default conf: nothing scrubs and nothing is cut.
+  ( cd "$d" && PATH="$_tw/bin:$PATH" sh conformance/tracker-contract.sh ) >/dev/null 2>&1 || :
+  sfx "tripwire/positive: run unscrubbed on the fixture, tracker-contract.sh reaches the library's store call (the recorder is hit)" yes "$([ -s "$_tw/sec.log" ] && echo yes || echo no)"
+  sfx "tripwire/positive: and then the adapter (the recorder is hit)" yes "$([ -s "$_tw/jira.log" ] && echo yes || echo no)"
+  ( cd "$d" && KIT_TRACKER_TOKEN=canary-token sh conformance/envprobe.sh ) >/dev/null 2>&1 || :
+  sfx "tripwire/positive: the witness records a canary credential when nothing scrubs it" yes "$([ -s "$_tw/env.log" ] && echo yes || echo no)"
+  ( PATH="$_tw/bin:$PATH" curl --version ) >/dev/null 2>&1 || :
+  sfx "tripwire/positive: a shimmed binary on PATH records its call" yes "$([ -s "$_tw/shim.log" ] && echo yes || echo no)"
+}
+# MUTANT: the lane without its KIT_ and JIRA_ unset must turn the tripwire red (the witness sees the canaries).
+selftest_tripwire_scrub_mutant() {
+  tw_fx || { echo "PASS: tripwire/mutant: N/A - no kit tree to take the real twin row from"; return 0; }
+  _lm=$WORK/lane-no-kit-jira-scrub.sh
+  sed -e 's/unset_pfx KIT_; //' -e '/^    unset_pfx JIRA_/d' "$LANE" > "$_lm"
+  sfx "tripwire/mutant: the mutation changed the lane, kept the other unsets, and removed the JIRA_ line" "differs,1,0" \
+    "$(cmp -s "$LANE" "$_lm" && echo same || echo differs),$(grep -c '^    unset_pfx GH_; unset_pfx GIT_; unset_pfx BOARD_CLAIM_; unset_pfx PREPUSH_$' "$_lm" || :),$(grep -c '^    unset_pfx JIRA_' "$_lm" || :)"
+  tw_run "$_lm" --warranted
+  sfx "tripwire/mutant: with the scrub dropped the witness records the canary, so the tripwire leg is RED" yes "$([ -s "$_tw/env.log" ] && echo yes || echo no)"
+  : > "$_tw/env.log"; tw_run "$LANE" --warranted
+  sfx "tripwire/mutant: and the real lane, run on the same fixture, leaves the witness silent (the canary was in the environment)" no "$([ -s "$_tw/env.log" ] && echo yes || echo no)"
+}
+
+# R2 (security L1): a credential-free conf that EXISTS at run time is read as a conf, so the twin is refused, named and UNVERIFIED, never run.
+selftest_tripwire_conf_exists() {
+  tw_fx || { echo "PASS: tripwire/conf-exists: N/A - no kit tree to take the real twin row from"; return 0; }
+  # the planted conf points at the pinned host: if the twin ran, the library's store recorder and the adapter would be hit.
+  cp "$d/.kit/tracker.conf" "$d/.kit/credential-free.conf"; commit_fx
+  tw_run "$LANE" --warranted
+  want "tripwire/conf-exists: the twin is refused by name" "^# REFUSED: twin tracker-contract names .kit/credential-free.conf as its credential-free conf, and that file exists"
+  wantnot "tripwire/conf-exists: and it did not run" "^  OK    twin  *tracker-contract"
+  sfx "tripwire/conf-exists: the verdict is UNVERIFIED, rc 1" "1" "$DVRC"
+  want "tripwire/conf-exists: UNVERIFIED names the twin" "UNVERIFIED (twin tracker-contract: its credential-free conf"
+  sfx "tripwire/conf-exists: and no recorder was hit" "" "$(tw_logs)"
+  # MUTANT: the refusal removed from a lane copy -> the twin runs and the store recorder is hit, so the leg above is load-bearing.
+  _lm=$WORK/lane-no-conf-refusal.sh
+  sed -e '/^        if \[ -e "\$_cfp" \] || \[ -L "\$_cfp" \]; then$/s/.*/        if false; then/' "$LANE" > "$_lm"
+  sfx "tripwire/conf-exists mutant: the mutation changed the lane" differs "$(cmp -s "$LANE" "$_lm" && echo same || echo differs)"
+  tw_run "$_lm" --warranted
+  sfx "tripwire/conf-exists mutant: without the refusal the planted conf reaches the store recorder (the leg is RED)" yes "$([ -s "$_tw/sec.log" ] && echo yes || echo no)"
+}
+# STANDING MUTANT: the old argv (no --conf) restored in the twin row must hit the store recorder, so the tripwire can see the regression.
+selftest_tripwire_old_argv() {
+  tw_fx || { echo "PASS: tripwire/old-argv: N/A - no kit tree to take the real twin row from"; return 0; }
+  sed 's/tracker-contract\.sh --conf \.kit\/credential-free\.conf/tracker-contract.sh/' "$d/conformance/prepush-twins.tsv" > "$d/conformance/twins.new"
+  mv "$d/conformance/twins.new" "$d/conformance/prepush-twins.tsv"; commit_fx
+  tw_run "$LANE" --warranted
+  sfx "tripwire/old-argv: with the old argv the twin reaches the library's store recorder" yes "$([ -s "$_tw/sec.log" ] && echo yes || echo no)"
+  sfx "tripwire/old-argv: and then the adapter recorder" yes "$([ -s "$_tw/jira.log" ] && echo yes || echo no)"
 }
 
 main "$@"
